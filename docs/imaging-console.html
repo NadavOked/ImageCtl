@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>שרת אימג'ים — סקיצה</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Hebrew:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --porcelain:#EEF1F4;
+  --surface:#FFFFFF;
+  --ink:#15202B;
+  --muted:#6B7B8A;
+  --hair:#DCE2E8;
+  --indigo:#2B3FA0;
+  --indigo-soft:#EAECF8;
+  --led-write:#E39A2B;
+  --led-ok:#2E9E6B;
+  --led-idle:#B7C1CA;
+  --danger:#C0453B;
+  --r:14px;
+  --r-sm:9px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  font-family:"IBM Plex Sans Hebrew",system-ui,sans-serif;
+  background:var(--porcelain);
+  color:var(--ink);
+  font-size:14px;
+  -webkit-font-smoothing:antialiased;
+}
+.mono{font-family:"IBM Plex Mono",monospace;font-feature-settings:"tnum";direction:ltr;display:inline-block}
+
+/* ---------- login ---------- */
+#login{
+  position:fixed;inset:0;z-index:60;
+  display:flex;align-items:center;justify-content:center;
+  background:
+    radial-gradient(1100px 600px at 78% -10%, #FFFFFF 0%, transparent 60%),
+    linear-gradient(160deg,#1B2735 0%,#111A24 100%);
+}
+#login.hidden{display:none}
+.card{
+  width:min(400px,90vw);background:var(--surface);
+  border-radius:20px;padding:38px 34px 30px;
+  box-shadow:0 30px 70px -20px rgba(8,16,26,.55);
+}
+.brand{display:flex;align-items:center;gap:11px;margin-bottom:26px}
+.mark{
+  width:34px;height:34px;border-radius:10px;flex:none;
+  background:var(--ink);position:relative;
+}
+.mark::before,.mark::after{
+  content:"";position:absolute;left:8px;right:8px;height:3px;border-radius:2px;background:#5C6C7C;
+}
+.mark::before{top:11px}
+.mark::after{top:19px;background:var(--led-write);width:9px;right:8px;left:auto}
+.brand h1{font-size:16px;font-weight:600;letter-spacing:-.2px}
+.brand p{font-size:11.5px;color:var(--muted);font-weight:400;margin-top:1px}
+label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px;font-weight:500}
+input[type=text],input[type=password]{
+  width:100%;padding:11px 13px;border:1px solid var(--hair);border-radius:var(--r-sm);
+  font-family:inherit;font-size:14px;background:#FBFCFD;color:var(--ink);margin-bottom:16px;
+}
+input:focus{outline:2px solid var(--indigo);outline-offset:1px;border-color:transparent}
+.btn{
+  font-family:inherit;font-size:13.5px;font-weight:500;cursor:pointer;
+  border:1px solid var(--hair);background:var(--surface);color:var(--ink);
+  padding:9px 15px;border-radius:var(--r-sm);transition:.14s;
+  display:inline-flex;align-items:center;gap:7px;
+}
+.btn:hover{background:#F5F7F9;border-color:#C8D2DA}
+.btn:focus-visible{outline:2px solid var(--indigo);outline-offset:2px}
+.btn.primary{background:var(--ink);color:#fff;border-color:var(--ink);width:100%;justify-content:center;padding:12px}
+.btn.primary:hover{background:#22303F}
+
+/* ---------- shell ---------- */
+#app{display:flex;flex-direction:column;height:100%}
+#app.hidden{display:none}
+header{
+  background:var(--surface);border-bottom:1px solid var(--hair);
+  padding:0 20px;display:flex;align-items:center;gap:18px;height:62px;flex:none;
+}
+.hbrand{display:flex;align-items:center;gap:10px;padding-left:18px;border-left:1px solid var(--hair);height:100%}
+.hbrand .mark{width:28px;height:28px;border-radius:8px}
+.hbrand .mark::before{top:9px;left:6px;right:6px;height:2.5px}
+.hbrand .mark::after{top:16px;left:auto;right:6px;width:8px;height:2.5px}
+.hbrand strong{font-size:14px;font-weight:600}
+.actions{display:flex;gap:8px}
+.who{margin-inline-start:auto;display:flex;align-items:center;gap:9px;font-size:12.5px;color:var(--muted)}
+.avatar{width:28px;height:28px;border-radius:50%;background:var(--indigo-soft);color:var(--indigo);
+  display:grid;place-items:center;font-weight:600;font-size:12px}
+
+main{flex:1;display:grid;grid-template-columns:268px 1fr 246px;gap:14px;padding:14px;min-height:0}
+.panel{background:var(--surface);border:1px solid var(--hair);border-radius:var(--r);overflow:auto;min-height:0}
+.ptitle{
+  font-size:11px;font-weight:600;letter-spacing:.7px;color:var(--muted);
+  padding:14px 16px 10px;text-transform:uppercase;
+}
+
+/* ---------- metrics (right) ---------- */
+.metric{padding:0 16px 16px}
+.metric .big{font-size:30px;font-weight:600;letter-spacing:-1px;line-height:1}
+.metric .big span{font-size:14px;font-weight:400;color:var(--muted);letter-spacing:0}
+.metric .sub{font-size:12px;color:var(--muted);margin-top:5px}
+.blocks{display:flex;gap:2px;margin:13px 0 0;height:26px}
+.blocks i{flex:1;border-radius:2px;background:#E4E9ED}
+.blocks i.on{background:var(--ink)}
+.blocks i.warn{background:var(--led-write)}
+.divide{height:1px;background:var(--hair);margin:2px 16px}
+
+/* the bay — signature element */
+.bay{margin:0 16px 16px;border:1px solid var(--hair);border-radius:var(--r-sm);overflow:hidden}
+.bay .slot{
+  background:#F7F9FA;padding:13px;display:flex;align-items:center;gap:11px;
+}
+.slot .tray{
+  width:46px;height:30px;border-radius:4px;background:var(--ink);flex:none;position:relative;
+  box-shadow:inset 0 -2px 0 rgba(255,255,255,.12);
+}
+.slot .tray::after{
+  content:"";position:absolute;bottom:5px;left:6px;width:5px;height:5px;border-radius:50%;
+  background:var(--led-ok);box-shadow:0 0 7px var(--led-ok);
+}
+.slot .tray.empty{background:#DDE3E8}
+.slot .tray.empty::after{background:var(--led-idle);box-shadow:none}
+.slot b{font-size:12.5px;font-weight:600;display:block}
+.slot small{font-size:11.5px;color:var(--muted)}
+.bay .act{padding:10px 13px;border-top:1px solid var(--hair);background:var(--surface)}
+.bay .act .btn{width:100%;justify-content:center;font-size:12.5px}
+
+.stat{display:flex;justify-content:space-between;padding:7px 16px;font-size:12.5px}
+.stat span{color:var(--muted)}
+
+/* ---------- tree (left) ---------- */
+.tree{padding:0 8px 12px}
+.node{
+  display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:8px;cursor:pointer;
+  font-size:13.5px;user-select:none;
+}
+.node:hover{background:#F3F6F8}
+.node.sel{background:var(--indigo-soft);color:var(--indigo);font-weight:600}
+.node .caret{width:9px;color:var(--muted);font-size:9px;transition:.15s;flex:none}
+.node.open .caret{transform:rotate(-90deg)}
+.node.sel .caret{color:var(--indigo)}
+.node .cnt{margin-inline-start:auto;font-size:11px;color:var(--muted);font-family:"IBM Plex Mono",monospace}
+.node.sel .cnt{color:var(--indigo)}
+.kids{padding-inline-start:20px;display:none}
+.kids.show{display:block}
+.kids .node{font-size:13px;padding:6.5px 10px}
+
+/* ---------- content (center) ---------- */
+.chead{padding:16px 20px 12px;display:flex;align-items:flex-end;gap:12px;border-bottom:1px solid var(--hair)}
+.chead h2{font-size:19px;font-weight:600;letter-spacing:-.4px}
+.chead p{font-size:12.5px;color:var(--muted);margin-top:3px}
+.chead .btn{margin-inline-start:auto}
+.rows{padding:8px}
+.row{
+  display:grid;grid-template-columns:auto 1fr auto auto;align-items:center;gap:14px;
+  padding:13px 12px;border-radius:10px;cursor:pointer;
+}
+.row:hover{background:#F3F6F8}
+.row.sel{background:var(--indigo-soft)}
+.chip{
+  width:38px;height:38px;border-radius:9px;background:var(--ink);flex:none;position:relative;
+}
+.chip::after{content:"";position:absolute;bottom:6px;left:6px;width:4px;height:4px;border-radius:50%;
+  background:var(--led-ok);box-shadow:0 0 6px var(--led-ok)}
+.row b{font-size:14px;font-weight:600;display:block}
+.row small{font-size:12px;color:var(--muted)}
+.size{font-family:"IBM Plex Mono",monospace;font-size:12.5px;color:var(--muted)}
+.date{font-size:12px;color:var(--muted);width:76px;text-align:left}
+.empty{padding:60px 20px;text-align:center;color:var(--muted);font-size:13.5px}
+
+/* detail drawer */
+.detail{border-top:1px solid var(--hair);padding:16px 20px;background:#FAFBFC}
+.detail h3{font-size:15px;font-weight:600;margin-bottom:3px}
+.detail .desc{font-size:13px;color:var(--muted);line-height:1.55;margin-bottom:14px}
+.meta{display:flex;gap:26px;margin-bottom:15px}
+.meta div small{font-size:11px;color:var(--muted);display:block;margin-bottom:2px}
+.meta div b{font-size:13px;font-weight:500;font-family:"IBM Plex Mono",monospace}
+.dbtns{display:flex;gap:7px;flex-wrap:wrap}
+.btn.warn{color:var(--danger);border-color:#EBD3D1}
+.btn.warn:hover{background:#FCF4F3;border-color:var(--danger)}
+
+/* ---------- modal ---------- */
+#modal{position:fixed;inset:0;z-index:50;display:none;align-items:center;justify-content:center;
+  background:rgba(17,26,36,.42);backdrop-filter:blur(3px)}
+#modal.show{display:flex}
+.sheet{width:min(560px,92vw);background:var(--surface);border-radius:18px;overflow:hidden;
+  box-shadow:0 34px 80px -24px rgba(8,16,26,.5)}
+.sheet header{height:auto;padding:18px 22px 14px;border-bottom:1px solid var(--hair);display:block}
+.sheet header h3{font-size:17px;font-weight:600;letter-spacing:-.3px}
+.sheet header p{font-size:12.5px;color:var(--muted);margin-top:3px}
+.steps{display:flex;gap:5px;padding:0 22px;margin-top:13px}
+.steps i{height:3px;flex:1;border-radius:2px;background:#E4E9ED}
+.steps i.on{background:var(--ink)}
+.sbody{padding:22px}
+.sfoot{padding:14px 22px;border-top:1px solid var(--hair);display:flex;gap:8px;justify-content:flex-start;background:#FAFBFC}
+.found{display:flex;align-items:center;gap:13px;padding:15px;border:1px solid var(--hair);border-radius:var(--r-sm);background:#F7F9FA}
+.found .tray{width:52px;height:34px;border-radius:5px;background:var(--ink);position:relative;flex:none}
+.found .tray::after{content:"";position:absolute;bottom:6px;left:7px;width:5px;height:5px;border-radius:50%;
+  background:var(--led-ok);box-shadow:0 0 8px var(--led-ok)}
+
+/* cloning grid inside modal */
+.grid12{display:grid;grid-template-columns:repeat(4,1fr);gap:9px}
+.pc{border:1px solid var(--hair);border-radius:var(--r-sm);padding:11px;background:#FBFCFD}
+.pc.off{opacity:.42}
+.pc b{font-size:12.5px;font-weight:600;display:block;margin-bottom:8px}
+.pc .trays{display:flex;gap:4px}
+.pc .trays i{width:15px;height:20px;border-radius:3px;background:var(--ink);position:relative}
+.pc .trays i.free{background:#DDE3E8}
+.pc .trays i::after{content:"";position:absolute;bottom:3px;left:3px;width:3px;height:3px;border-radius:50%;background:var(--led-ok)}
+.pc .trays i.free::after{background:var(--led-idle)}
+.tally{margin-top:16px;padding:13px 15px;background:var(--indigo-soft);border-radius:var(--r-sm);
+  font-size:13px;color:var(--indigo);font-weight:500}
+
+@media(max-width:1000px){
+  main{grid-template-columns:1fr;grid-template-rows:auto auto 1fr}
+  .actions{overflow:auto}
+}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="login">
+  <div class="card">
+    <div class="brand">
+      <div class="mark"></div>
+      <div>
+        <h1>שרת אימג'ים</h1>
+        <p>מרכז שיכפול והפצה</p>
+      </div>
+    </div>
+    <label for="u">שם משתמש</label>
+    <input id="u" type="text" value="nadav" autocomplete="off">
+    <label for="p">סיסמה</label>
+    <input id="p" type="password" value="••••••••">
+    <button class="btn primary" onclick="enter()">כניסה</button>
+  </div>
+</div>
+
+<!-- APP -->
+<div id="app" class="hidden">
+  <header>
+    <div class="hbrand"><div class="mark"></div><strong>שרת אימג'ים</strong></div>
+    <div class="actions">
+      <button class="btn" onclick="openModal('create')">יצירת אימג'</button>
+      <button class="btn" onclick="openModal('deploy')">הפצה למחשבי שיכפול</button>
+      <button class="btn" onclick="openModal('eject')">ניתוק כונן</button>
+      <button class="btn" onclick="openModal('settings')">הגדרות</button>
+    </div>
+    <div class="who"><span>נדב</span><div class="avatar">נ</div></div>
+  </header>
+
+  <main>
+    <!-- RIGHT: metrics -->
+    <section class="panel">
+      <div class="ptitle">אחסון</div>
+      <div class="metric">
+        <div class="big">2.4<span> TB פנוי מתוך 4</span></div>
+        <div class="sub">‎14 אימג'ים ב‑5 תיקיות</div>
+        <div class="blocks" id="blocks"></div>
+      </div>
+      <div class="divide"></div>
+      <div class="ptitle">מגירה בשרת</div>
+      <div class="bay">
+        <div class="slot">
+          <div class="tray"></div>
+          <div>
+            <b>מחובר — <span class="mono">sdb</span></b>
+            <small>Samsung 870 · 500GB</small>
+          </div>
+        </div>
+        <div class="act"><button class="btn" onclick="openModal('eject')">ניתוק בטוח</button></div>
+      </div>
+      <div class="divide"></div>
+      <div class="ptitle">מצב</div>
+      <div class="stat"><span>מחשבי שיכפול דולקים</span><b class="mono">7 / 12</b></div>
+      <div class="stat"><span>משימות פעילות</span><b class="mono">0</b></div>
+      <div class="stat"><span>הפצה אחרונה</span><b>אתמול</b></div>
+      <div style="height:12px"></div>
+    </section>
+
+    <!-- CENTER: content -->
+    <section class="panel">
+      <div class="chead">
+        <div>
+          <h2 id="fname">סייבר</h2>
+          <p id="fdesc">מעבדות אבטחת מידע — סמסטר ב'</p>
+        </div>
+        <button class="btn">עריכת תיקייה</button>
+      </div>
+      <div class="rows" id="rows"></div>
+      <div id="detail"></div>
+    </section>
+
+    <!-- LEFT: tree -->
+    <section class="panel">
+      <div class="ptitle">תיקיות</div>
+      <div class="tree" id="tree"></div>
+    </section>
+  </main>
+</div>
+
+<!-- MODAL -->
+<div id="modal" onclick="if(event.target===this)close_()">
+  <div class="sheet" id="sheet"></div>
+</div>
+
+<script>
+const data = {
+  "סייבר":{desc:"מעבדות אבטחת מידע — סמסטר ב'",imgs:[
+    {n:"Kali + Wireshark",d:"בסיס לקורס ניתוח תעבורה. כולל Wireshark, nmap, Burp.",s:"48.2 GB",t:"12.08.26"},
+    {n:"Windows Server — AD Lab",d:"שרת דומיין להדגמות הרשאות ו‑GPO.",s:"61.7 GB",t:"04.08.26"},
+    {n:"Metasploitable",d:"מכונת מטרה פגיעה לתרגילי חדירה.",s:"22.9 GB",t:"29.07.26"}]},
+  "רשתות":{desc:"קורסי תשתית ותקשורת",imgs:[
+    {n:"GNS3 + Packet Tracer",d:"סימולציית ציוד תקשורת לקורס נתבים.",s:"54.1 GB",t:"18.08.26"},
+    {n:"Linux — Networking",d:"Debian 13 עם כלי ניתוח רשת.",s:"31.4 GB",t:"11.08.26"}]},
+  "אופיס":{desc:"תחנות הוראה כלליות",imgs:[
+    {n:"Office 2024 — סטנדרט",d:"האימג' הנפוץ ביותר. 14 כיתות.",s:"58.8 GB",t:"22.08.26"},
+    {n:"Office + Adobe",d:"כיתות עיצוב בלבד.",s:"77.3 GB",t:"22.08.26"}]},
+  "וירטואליזציה":{desc:"קורסי VMware ו‑Proxmox",imgs:[
+    {n:"VMware Workstation",d:"תחנה עם היפרוויזר ו‑3 מכונות מוכנות.",s:"92.5 GB",t:"09.08.26"}]},
+  "ארכיון":{desc:"גרסאות קודמות — לא בשימוש פעיל",imgs:[]}
+};
+
+let cur="סייבר", sel=null;
+
+document.getElementById("blocks").innerHTML =
+  Array.from({length:32},(_,i)=>`<i class="${i<13?(i>10?'warn':'on'):''}"></i>`).join("");
+
+function drawTree(){
+  document.getElementById("tree").innerHTML = Object.keys(data).map(k=>{
+    const o=data[k], on=k===cur;
+    return `<div class="node ${on?'sel open':''}" onclick="pick('${k}')">
+      <span class="caret">▾</span><span>${k}</span><span class="cnt">${o.imgs.length}</span></div>
+      <div class="kids ${on?'show':''}">${o.imgs.map((m,i)=>
+        `<div class="node ${sel===i&&on?'sel':''}" onclick="event.stopPropagation();pickImg('${k}',${i})">
+          <span style="width:9px"></span><span>${m.n}</span></div>`).join("")||
+        `<div class="node" style="color:#9AA7B2;cursor:default">ריק</div>`}</div>`;
+  }).join("");
+}
+function drawRows(){
+  const o=data[cur];
+  document.getElementById("fname").textContent=cur;
+  document.getElementById("fdesc").textContent=o.desc;
+  document.getElementById("rows").innerHTML = o.imgs.length? o.imgs.map((m,i)=>
+    `<div class="row ${sel===i?'sel':''}" onclick="pickImg('${cur}',${i})">
+      <div class="chip"></div>
+      <div><b>${m.n}</b><small>${m.d}</small></div>
+      <div class="size">${m.s}</div><div class="date">${m.t}</div></div>`).join("")
+    : `<div class="empty">אין אימג'ים בתיקייה הזו.<br>אפשר ליצור אימג' חדש מהכפתור למעלה.</div>`;
+  const d=document.getElementById("detail");
+  if(sel===null||!o.imgs[sel]){d.innerHTML="";return}
+  const m=o.imgs[sel];
+  d.innerHTML=`<div class="detail">
+    <h3>${m.n}</h3><p class="desc">${m.d}</p>
+    <div class="meta">
+      <div><small>גודל</small><b>${m.s}</b></div>
+      <div><small>תאריך העלאה</small><b>${m.t}</b></div>
+      <div><small>תיקייה</small><b style="font-family:inherit">${cur}</b></div>
+    </div>
+    <div class="dbtns">
+      <button class="btn" onclick="openModal('deploy')">הפצה</button>
+      <button class="btn">שינוי שם</button>
+      <button class="btn">עריכת תיאור</button>
+      <button class="btn">העברה לתיקייה אחרת</button>
+      <button class="btn warn">מחיקה</button>
+    </div></div>`;
+}
+function pick(k){cur=k;sel=null;drawTree();drawRows()}
+function pickImg(k,i){cur=k;sel=i;drawTree();drawRows()}
+
+const sheets={
+  create:{t:"יצירת אימג'",p:"שלב 1 מתוך 3 — זיהוי כונן",s:1,n:3,b:`
+    <div class="found"><div class="tray"></div>
+      <div><b style="font-size:13.5px">נמצא כונן במגירה</b>
+      <div style="font-size:12.5px;color:var(--muted);margin-top:2px">
+        <span class="mono">/dev/sdb</span> · Samsung 870 EVO · 500 GB · תפוס 78 GB</div></div></div>
+    <p style="font-size:12.5px;color:var(--muted);margin-top:14px;line-height:1.6">
+      ייקראו רק הבלוקים התפוסים, לא כל הכונן. בסיום הקליטה הכונן ינותק אוטומטית ותקבל הודעה שאפשר לשלוף.</p>`,
+    f:`<button class="btn primary" style="width:auto">המשך</button>
+       <button class="btn" onclick="close_()">ביטול</button>
+       <button class="btn" style="margin-inline-start:auto">סריקה מחדש</button>`},
+  deploy:{t:"הפצה למחשבי שיכפול",p:"שלב 2 מתוך 3 — מחשבים זמינים",s:2,n:3,b:`
+    <div class="grid12">${
+      [["ש‑01",3,3],["ש‑02",3,3],["ש‑03",3,2],["ש‑04",2,2],["ש‑05",3,3],["ש‑06",2,0],
+       ["ש‑07",3,3],["ש‑08",3,0],["ש‑09",2,0],["ש‑10",3,0],["ש‑11",3,0],["ש‑12",2,0]]
+      .map(([n,cap,full])=>`<div class="pc ${full?'':'off'}"><b>${n}</b><div class="trays">${
+        Array.from({length:cap},(_,i)=>`<i class="${i<full?'':'free'}"></i>`).join("")}</div></div>`).join("")}
+    </div>
+    <div class="tally">‎7 מחשבים דולקים · ‎19 כוננים מוכנים לכתיבה · נדרשו 30</div>
+    <p style="font-size:12.5px;color:var(--muted);margin-top:12px;line-height:1.6">
+      יוקצה סבב ראשון ל‑19 כוננים. בסיום תחליף מגירות ותדליק מחדש — הסבב השני יתחיל אוטומטית.</p>`,
+    f:`<button class="btn primary" style="width:auto">בחירת אימג'</button>
+       <button class="btn" onclick="close_()">ביטול</button>`},
+  eject:{t:"ניתוק כונן",p:"מגירת השרת",s:1,n:1,b:`
+    <div class="found"><div class="tray"></div>
+      <div><b style="font-size:13.5px"><span class="mono">/dev/sdb</span> — מוכן לניתוק</b>
+      <div style="font-size:12.5px;color:var(--muted);margin-top:2px">אין כתיבות ממתינות</div></div></div>
+    <p style="font-size:12.5px;color:var(--muted);margin-top:14px;line-height:1.6">
+      המערכת תרוקן את המטמון, תנתק את מערכות הקבצים ותסיר את הכונן מהמערכת. הנורית תכבה כשאפשר לשלוף.</p>`,
+    f:`<button class="btn primary" style="width:auto">ניתוק עכשיו</button>
+       <button class="btn" onclick="close_()">ביטול</button>`},
+  settings:{t:"הגדרות",p:"מחשבי שיכפול",s:1,n:1,b:`
+    <div style="display:flex;gap:8px;margin-bottom:16px">
+      <button class="btn" style="background:var(--indigo-soft);color:var(--indigo);border-color:transparent">מחשבי שיכפול</button>
+      <button class="btn">כיתות</button><button class="btn">כללי</button>
+    </div>
+    ${[["ש‑01","00:00:5E:07:1A:C4",3],["ש‑02","00:00:5E:07:1A:D1",3],["ש‑03","00:00:5E:07:1B:02",3]]
+      .map(([n,m,c])=>`<div style="display:flex;align-items:center;gap:12px;padding:11px 12px;border-bottom:1px solid var(--hair)">
+        <b style="font-size:13px;width:50px">${n}</b>
+        <span class="mono" style="font-size:12px;color:var(--muted)">${m}</span>
+        <span style="margin-inline-start:auto;font-size:12px;color:var(--muted)">${c} מגירות</span></div>`).join("")}
+    <button class="btn" style="margin-top:14px">הוספת מחשב</button>`,
+    f:`<button class="btn primary" style="width:auto">שמירה</button>
+       <button class="btn" onclick="close_()">סגירה</button>`}
+};
+function openModal(k){
+  const s=sheets[k];
+  document.getElementById("sheet").innerHTML=`
+    <header><h3>${s.t}</h3><p>${s.p}</p></header>
+    ${s.n>1?`<div class="steps">${Array.from({length:s.n},(_,i)=>`<i class="${i<s.s?'on':''}"></i>`).join("")}</div>`:""}
+    <div class="sbody">${s.b}</div><div class="sfoot">${s.f}</div>`;
+  document.getElementById("modal").classList.add("show");
+}
+function close_(){document.getElementById("modal").classList.remove("show")}
+function enter(){
+  document.getElementById("login").classList.add("hidden");
+  document.getElementById("app").classList.remove("hidden");
+}
+document.addEventListener("keydown",e=>{if(e.key==="Escape")close_()});
+drawTree();drawRows();
+</script>
+</body>
+</html>

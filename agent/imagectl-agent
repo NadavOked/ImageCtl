@@ -1,0 +1,298 @@
+#!/bin/sh
+# imagectl-agent -- the main loop. Sends hello (interfaces.md section 2),
+# acts on the answer (section 3), consumes the stream (section 7) and
+# reports progress (section 4).
+#
+# hello doubles as both "I am here" and the poll: while a session is open,
+# the agent re-sends it and the server counts the machine as joined. No extra
+# join endpoint exists. The idle rate is not flat -- see poll.sh (#136).
+#
+# POSIX sh (busybox ash).
+
+LIB_DIR="${LIB_DIR:-/usr/lib/imagectl}"
+. "$LIB_DIR/common.sh"
+# waits.sh לפני כל מי שמזרים: התקרות שלו נקראות כבר בטעינה של restore.sh.
+. "$LIB_DIR/waits.sh"
+. "$LIB_DIR/jsonq.sh"
+. "$LIB_DIR/sysinfo.sh"
+. "$LIB_DIR/decide.sh"
+. "$LIB_DIR/progress.sh"
+. "$LIB_DIR/restore.sh"
+. "$LIB_DIR/expand.sh"
+. "$LIB_DIR/drawers.sh"
+. "$LIB_DIR/manifest.sh"
+. "$LIB_DIR/capture.sh"
+. "$LIB_DIR/classround.sh"
+. "$LIB_DIR/hostname.sh"
+. "$LIB_DIR/sshd.sh"
+. "$LIB_DIR/ui.sh"
+. "$LIB_DIR/buildmenu.sh"
+. "$LIB_DIR/buildcapture.sh"
+. "$LIB_DIR/roomflow.sh"
+. "$LIB_DIR/hold.sh"
+. "$LIB_DIR/poll.sh"
+
+mkdir -p "$RUN_DIR/targets"
+parse_cmdline
+
+# מעטפת ניפוי — רק כשהשרת ביקש במפורש בשורת הקרנל: על tty2 (Alt+F2),
+# ואם יש יציאה טורית — גם עליה. בווירטואליזציה הטורית היא לרוב הדרך
+# היחידה פנימה (named pipe), וההזרקה למקלדת אינה אמינה (מעבדה, #12).
+if [ "$IMAGECTL_DEBUG" = "1" ]; then
+    log "debug shell on tty2"
+    setsid sh -c 'while :; do sh < /dev/tty2 > /dev/tty2 2>&1; done' &
+    if [ -c /dev/ttyS0 ]; then
+        log "debug shell on ttyS0"
+        setsid sh -c 'while :; do sh < /dev/ttyS0 > /dev/ttyS0 2>&1; done' &
+    fi
+    # אותו שער, דרך הרשת: צינור סריאלי אחד עבד לשתי מכונות ולא
+    # יעבוד ל-20 (#44). מפתח ציבורי בלבד, ובלי מפתח ארוז אין האזנה.
+    ssh_start
+fi
+
+SERVER="$IMAGECTL_SERVER"
+[ -n "$SERVER" ] || die_local "no imagectl.server on the kernel command line"
+case "$SERVER" in
+    http://*|https://*) : ;;
+    *) SERVER="http://$SERVER" ;;
+esac
+
+# init leaves the DHCP result here.
+NET_FILE="${NET_FILE:-$RUN_DIR/net.conf}"
+[ -f "$NET_FILE" ] || die_local "no network configuration"
+. "$NET_FILE"
+[ -n "$IFACE" ] && [ -n "$IP" ] || die_local "incomplete network configuration"
+MAC=$(cat "$SYSROOT/sys/class/net/$IFACE/address" 2>/dev/null)
+RESP="$RUN_DIR/response.json"
+
+send_hello() {
+    build_hello > "$RUN_DIR/hello.json" || return 1
+    http_post_json "$SERVER/api/v1/agent/hello" "$RUN_DIR/hello.json" > "$RESP"
+}
+
+read_answer() {
+    D_SCHEMA=$(json_get "$RESP" ".schema")
+    D_KNOWN=$(json_get "$RESP" ".known")
+    D_ROLE=$(json_get "$RESP" ".role")
+    D_TASK=$(json_get "$RESP" ".task")
+    D_SESSION_STATE=$(json_get "$RESP" ".session.state")
+    [ "$D_SESSION_STATE" = "null" ] && D_SESSION_STATE="none"
+    D_MODE="$IMAGECTL_MODE"
+    D_SESSION_ID=$(json_get "$RESP" ".session.id")     # for poll.sh (#136)
+    D_REQUIRE_LOGIN=$(json_get "$RESP" ".ui.require_login")
+}
+
+build_console_screen() {
+    # The build machine's face. With the GUI in the image, this is still the
+    # kiosk browser showing the station page; without it -- which is every
+    # build since #32 was closed -- the text menu of #135: sign in, then the
+    # two or three things this server can be told to do from here.
+    #
+    # Blocking on `read` inside the poll loop is deliberate and safe: the
+    # server is passive, so nothing is pushed at a machine whose operator is
+    # reading a menu. Standby hands it back to the loop (#135).
+    if [ -x /usr/bin/imagectl-kiosk ] && [ "$_kiosk_started" != "1" ]; then
+        _kiosk_started=1
+        log "starting the kiosk browser"
+        /usr/bin/imagectl-kiosk "$SERVER/console/station/?mac=$MAC" \
+            >> "$LOG_FILE" 2>&1 &
+        return 0
+    fi
+    [ "$_kiosk_started" = "1" ] && return 0
+    [ "$_build_standby" = "1" ] && return 0
+    build_menu_flow
+}
+
+do_task() {
+    _type=$(json_get "$RESP" ".task.type")
+    _tid=$(json_get "$RESP" ".task.id")
+    if [ "$_type" != "capture" ]; then
+        # A task type this build does not know is not a reason to guess.
+        log "unknown task type '$_type' -- ignoring it"
+        sleep 5
+        return 0
+    fi
+
+    _disk=$(json_get "$RESP" ".task.disk")
+    ui_clear; ui_header
+    echo "  Capturing $(json_get "$RESP" ".task.name")"
+    echo "  Source disk: /dev/$_disk"
+    echo
+    echo "  Reading used blocks only. Do not power off."
+
+    progress_loop "" "$MAC" "$SERVER" "$_tid" &
+    _ppid=$!
+
+    # Both roads out of here end at report_final (#127). `sleep 4; kill` was
+    # the same gamble #101 took out of the round and the drawers, and on this
+    # path it is the worst of the three: the next step is `poweroff -f` with
+    # the drive about to be pulled out, so a capture the server never heard
+    # about stays open for ever against a machine that is off.
+    if capture_disk "$_tid" "$_disk"; then
+        if upload_manifest "$_tid" "$RUN_DIR/new-manifest.json"; then
+            echo "done" > "$RUN_DIR/state"
+            report_final "$_ppid" "" "$MAC" "$SERVER" "$_tid" \
+                || { hold_unheard "" "$_tid"; return 1; }
+            ui_clear; ui_header
+            echo "  Capture complete. The image is in the library."
+            echo "  You can power off and remove the drive."
+            [ "${IMAGECTL_TEST:-0}" = "1" ] && exit 0
+            sleep 20
+            sync; poweroff -f
+        fi
+        log "manifest upload failed"
+    fi
+    echo "failed" > "$RUN_DIR/state"
+    report_final "$_ppid" "" "$MAC" "$SERVER" "$_tid" \
+        || { hold_unheard "" "$_tid" \
+             "capture did not complete, and the server was not told"; return 1; }
+    ui_error_hold "capture did not complete" hold_beat
+    return 1
+}
+
+do_restore_drawers() {
+    # $1 = image id, $2 = session id. Cloning room: 2-3 drawers at once.
+    _disks=$(list_drawers)
+    [ -n "$_disks" ] || { log "no drawers detected -- waiting"; sleep 5; return 0; }
+
+    http_get "$SERVER/api/v1/images/$1/manifest" > "$RUN_DIR/manifest.json" \
+        || die_local "manifest fetch failed"
+    _total=$(json_get "$RUN_DIR/manifest.json" ".total_compressed_bytes")
+    for _d in $_disks; do
+        target_init "$_d" "$_total"
+    done
+
+    progress_loop "$2" "$MAC" "$SERVER" &
+    _ppid=$!
+    log "writing $(echo "$_disks" | wc -w) drawers: $_disks"
+
+    # shellcheck disable=SC2086 # the disk list is a word list on purpose
+    run_restore_drawers "multicast" "$SERVER" "$1" "$RUN_DIR/manifest.json" $_disks
+    _rc=$?
+
+    if [ "$_rc" -eq 0 ]; then
+        report_final "$_ppid" "$2" "$MAC" "$SERVER" \
+            || { hold_unheard "$2"; return 1; }
+        # Drawers are swapped with the machine off (spec appendix A), so
+        # powering down IS the next step of the round, not a failure.
+        log "drawers complete -- powering off for the swap"
+        [ "${IMAGECTL_TEST:-0}" = "1" ] && exit 0
+        sync; poweroff -f
+    fi
+    # ‏progress_loop ממשיך לרוץ, בדיוק כמו במסלול התחנה: הקונסולה חייבת
+    # להוסיף לראות 'failed'. הריגתו כאן היא שהשתיקה את המכונה (#64).
+    ui_error_hold "no drawer completed" hold_beat
+}
+
+name_this_machine() {
+    # $1 = disk, $2 = session id. Never fatal: an image that boots with the
+    # wrong name is fixable in a minute; one that does not boot is not.
+    _prefix=$(json_get "$RESP" ".session.prefix")
+    _suffix=$(json_get "$RESP" ".group.suffix")
+    if [ "$_prefix" = "null" ] || [ "$_suffix" = "null" ]; then
+        log "no prefix/suffix in the server answer -- skipping the hostname"
+        return 0
+    fi
+    echo "naming" > "$RUN_DIR/state"
+    _name=$(compose_hostname "$_prefix" "$_suffix")
+    _result=$(write_hostname "$1" "$RUN_DIR/manifest.json" "$_name")
+    echo "$_result" > "$RUN_DIR/hostname.json"
+    log "hostname: $_result"
+    echo "done" > "$RUN_DIR/state"
+}
+
+do_restore() {
+    _img=$(json_get "$RESP" ".session.image_id")
+    _ses=$(json_get "$RESP" ".session.id")
+    [ "$_img" != "null" ] && [ "$_ses" != "null" ] \
+        || die_local "running session without image or id"
+
+    if [ "$D_ROLE" = "cloner" ]; then
+        do_restore_drawers "$_img" "$_ses"
+        return $?
+    fi
+
+    _disk=$(pick_internal_disk) || die_local "no internal disk found"
+    http_get "$SERVER/api/v1/images/$_img/manifest" > "$RUN_DIR/manifest.json" \
+        || die_local "manifest fetch failed"
+    _total=$(json_get "$RUN_DIR/manifest.json" ".total_compressed_bytes")
+
+    target_init "$_disk" "$_total"
+    progress_loop "$_ses" "$MAC" "$SERVER" &
+    _ppid=$!
+
+    ui_clear; ui_header
+    echo "  Receiving $(json_get "$RUN_DIR/manifest.json" ".name")"
+    echo "  Target: /dev/$_disk"
+
+    if run_restore "multicast" "$_disk" "$SERVER" "$_img" "$RUN_DIR/manifest.json"; then
+        log "restore complete"
+        name_this_machine "$_disk" "$_ses"
+        report_final "$_ppid" "$_ses" "$MAC" "$SERVER" \
+            || { hold_unheard "$_ses"; return 1; }
+        [ "${IMAGECTL_TEST:-0}" = "1" ] && exit 0
+        sync; reboot -f
+    else
+        # progress_loop keeps running: the console must see 'failed'.
+        ui_error_hold "restore did not complete" hold_beat
+    fi
+}
+
+# --- main loop ---------------------------------------------------------------
+
+_fails=0
+_logged_wait=0
+while :; do
+    if ! send_hello; then
+        _fails=$((_fails + 1))
+        [ "$_fails" -ge 30 ] && die_local "server unreachable"
+        sleep 2
+        continue
+    fi
+    _fails=0
+    read_answer
+
+    case "$(decide)" in
+        local)
+            die_local "no work for this machine"
+            ;;
+        unknown)
+            ui_unknown "$MAC"
+            sleep 10
+            die_local "MAC not registered"
+            ;;
+        task)
+            do_task
+            ;;
+        recovery)
+            recovery_flow
+            ;;
+        wait_open)
+            # A station on the class network waits for nothing -- the stream
+            # never reaches its vlan. One hello is enough, no loop (#136).
+            poll_off_deploy_vlan && die_local "the round is on another vlan"
+            ui_waiting_draw \
+                "$(json_get "$RESP" ".session.prefix")" \
+                "$(json_get "$RESP" ".session.joined")" \
+                "$(json_get "$RESP" ".session.expected_clients")" \
+                "$(json_get "$RESP" ".session.starts_in_seconds")"
+            poll_sleep
+            ;;
+        wait_poll)
+            if [ "$_logged_wait" = "0" ]; then
+                log "cloner: reporting drawers, waiting for work"
+                _logged_wait=1
+            fi
+            poll_sleep
+            ;;
+        build_console)
+            build_console_screen
+            poll_sleep
+            ;;
+        restore)
+            do_restore
+            ;;
+    esac
+
+    [ "${IMAGECTL_TEST:-0}" = "1" ] && [ -n "${IMAGECTL_TEST_ONCE:-}" ] && break
+done

@@ -1,0 +1,96 @@
+name: "משימה"
+description: "עבודה מוגדרת שאינה באג ואינה יכולת חדשה — עם מה אסור, ומה נחשב גמור"
+title: "Task "
+labels: ["task"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        משימה אינה באג ואינה יכולת שהמפעיל מצביע עליה. היא עבודה מוגדרת:
+        תיעוד, סדר, חוב, או פירוק של Issue קיים ל-sub-issue.
+
+        **חולשת אבטחה אינה Issue.** דיווח דרך
+        [Security Advisories](https://github.com/NadavOked/ImageCtl/security/advisories/new).
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: רכיב
+      description: איפה זה יושב. אפשר לסמן יותר מאחד.
+      multiple: true
+      options:
+        - server
+        - agent
+        - boot
+        - console
+        - installer
+        - tools
+        - tests
+        - docs
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: המשימה
+      description: מה צריך לקרות, במשפט או שניים, לפני הראיות.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: למה עכשיו
+      description: איזו עבודה נחסמת בלי זה, או איזה כשל חוזר זה מונע.
+    validations:
+      required: true
+
+  - type: textarea
+    id: decisions
+    attributes:
+      label: החלטות שננעלו
+      description: מה כבר הוכרע ואינו פתוח לדיון.
+    validations:
+      required: false
+
+  - type: textarea
+    id: forbidden
+    attributes:
+      label: מה שאסור
+      description: |
+        הסעיף החשוב ביותר. אילו מימושים ייראו נכונים ויהיו שגויים.
+        אם באמת אין כזה — לכתוב "אין" ולהסביר למה.
+    validations:
+      required: true
+
+  - type: textarea
+    id: done
+    attributes:
+      label: הגדרת "גמור"
+      description: ראיה חיובית. לא "נראה שזה עובד".
+    validations:
+      required: true
+
+  - type: textarea
+    id: unverified
+    attributes:
+      label: מקור, ומה לא אומת
+      value: |
+        **מקור:**
+
+        **לא אומת:**
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: לפני הפתיחה
+      options:
+        - label: אין Issue קיים שמתאר את אותה משימה
+          required: true
+        - label: זו אינה חולשת אבטחה (אחרת — Security Advisory)
+          required: true
+        - label: label + milestone + מקום בלוח יוגדרו בפקודת היצירה
+          required: true

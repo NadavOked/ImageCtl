@@ -1,0 +1,394 @@
+﻿/* ImageCtl — הקונסולה. שפת העיצוב מהסקיצה: porcelain, RTL.
+
+   ערכת הצבעים כולה עוברת דרך המשתנים כאן. כלל: אין צבע קשיח בגוף
+   הקובץ — אחרת המצב הכהה נשבר בדיוק במקום אחד ששכחו.
+
+   שלושה מצבים: בהיר, כהה, ו"לפי המערכת" (ברירת המחדל). הבחירה נשמרת
+   בדפדפן של המשתמש, ולכן כל אחד רואה את מה שנוח לו על אותו שרת. */
+:root{
+  --porcelain:#EEF1F4; --surface:#FFFFFF; --ink:#15202B; --muted:#6B7B8A;
+  --hair:#DCE2E8; --indigo:#2B3FA0; --indigo-soft:#EAECF8;
+  --led-write:#E39A2B; --led-ok:#2E9E6B; --led-idle:#B7C1CA; --danger:#C0453B;
+
+  --hover:#F3F6F8;            /* רקע ריחוף על שורות */
+  --field:#FBFCFD;            /* רקע שדות קלט */
+  --field-line:#EDF1F4;       /* קו מפריד עדין בטבלאות */
+  --track:#E9EDF1;            /* מסילת פס ההתקדמות */
+  --sunken:#FAFBFC;           /* אזורים שקועים: מגירת פרטים, סרגל מודאל */
+  --btn-hover:#F5F7F9; --btn-hover-line:#C8D2DA;
+  --ink-hover:#22303F;        /* כפתור כהה בריחוף */
+  --on-ink:#fff;              /* טקסט על כפתור כהה */
+  --danger-line:#E7C6C3;
+  --warn-soft:#FBF1E2; --warn-ink:#9A6714;
+  --mark-line:#5C6C7C;        /* הפסים בלוגו */
+  --login-a:#1B2735; --login-b:#111A24; --login-glow:#FFFFFF;
+  --shadow-strong:rgba(8,16,26,.55); --shadow-soft:rgba(8,16,26,.45);
+  --scrim:rgba(17,26,36,.42);
+
+  --r:14px; --r-sm:9px;
+  color-scheme:light;
+}
+
+/* מצב כהה — נבחר מפורשות, או לפי העדפת המערכת כשלא נבחר דבר. */
+:root[data-theme="dark"]{
+  --porcelain:#0F1620; --surface:#18202B; --ink:#E7EDF3; --muted:#95A5B5;
+  --hair:#2A3644; --indigo:#93A6F5; --indigo-soft:#232D46;
+  --led-write:#E7A94A; --led-ok:#46B784; --led-idle:#4A5867; --danger:#E4756B;
+
+  --hover:#1F2937;
+  --field:#131B25;
+  --field-line:#222D3A;
+  --track:#2A3644;
+  --sunken:#141C26;
+  --btn-hover:#222C39; --btn-hover-line:#3A4757;
+  --ink-hover:#D3DCE6;
+  --on-ink:#0F1620;
+  --danger-line:#5E3733;
+  --warn-soft:#33291A; --warn-ink:#E7BE7A;
+  --mark-line:#8FA0B2;
+  --login-a:#141C26; --login-b:#0B1119; --login-glow:#26313F;
+  --shadow-strong:rgba(0,0,0,.65); --shadow-soft:rgba(0,0,0,.55);
+  --scrim:rgba(5,9,14,.62);
+
+  color-scheme:dark;
+}
+
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --porcelain:#0F1620; --surface:#18202B; --ink:#E7EDF3; --muted:#95A5B5;
+    --hair:#2A3644; --indigo:#93A6F5; --indigo-soft:#232D46;
+    --led-write:#E7A94A; --led-ok:#46B784; --led-idle:#4A5867; --danger:#E4756B;
+
+    --hover:#1F2937;
+    --field:#131B25;
+    --field-line:#222D3A;
+    --track:#2A3644;
+    --sunken:#141C26;
+    --btn-hover:#222C39; --btn-hover-line:#3A4757;
+    --ink-hover:#D3DCE6;
+    --on-ink:#0F1620;
+    --danger-line:#5E3733;
+    --warn-soft:#33291A; --warn-ink:#E7BE7A;
+    --mark-line:#8FA0B2;
+    --login-a:#141C26; --login-b:#0B1119; --login-glow:#26313F;
+    --shadow-strong:rgba(0,0,0,.65); --shadow-soft:rgba(0,0,0,.55);
+    --scrim:rgba(5,9,14,.62);
+
+    color-scheme:dark;
+  }
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  font-family:"IBM Plex Sans Hebrew",system-ui,sans-serif;
+  background:var(--porcelain); color:var(--ink); font-size:14px;
+  -webkit-font-smoothing:antialiased;
+}
+.mono{font-family:"IBM Plex Mono",monospace;direction:ltr}
+.hidden{display:none !important}
+
+/* ---------- login ---------- */
+#login{
+  position:fixed; inset:0; z-index:60;
+  display:flex; align-items:center; justify-content:center;
+  background:
+    radial-gradient(1100px 600px at 78% -10%, var(--login-glow) 0%, transparent 60%),
+    linear-gradient(160deg,var(--login-a) 0%,var(--login-b) 100%);
+}
+.card{
+  width:min(400px,90vw); background:var(--surface);
+  border-radius:20px; padding:38px 34px 30px;
+  box-shadow:0 30px 70px -20px var(--shadow-strong);
+}
+.brand{display:flex; align-items:center; gap:11px; margin-bottom:26px}
+.mark{
+  width:34px; height:34px; border-radius:10px; flex:none;
+  background:var(--ink); position:relative;
+}
+.mark::before,.mark::after{
+  content:""; position:absolute; left:8px; right:8px; height:3px;
+  border-radius:2px; background:var(--mark-line);
+}
+.mark::before{top:11px}
+.mark::after{top:19px; background:var(--led-write); width:9px; right:8px; left:auto}
+.brand h1{font-size:16px; font-weight:600}
+.brand p{font-size:11.5px; color:var(--muted); margin-top:1px}
+
+label{display:block; font-size:12px; color:var(--muted); margin-bottom:6px; font-weight:500}
+input[type=text],input[type=password],input[type=number],select,textarea{
+  width:100%; padding:10px 13px; border:1px solid var(--hair); border-radius:var(--r-sm);
+  font-family:inherit; font-size:14px; background:var(--field); color:var(--ink); margin-bottom:14px;
+}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--indigo); outline-offset:1px; border-color:transparent}
+.btn{
+  font-family:inherit; font-size:13.5px; font-weight:500; cursor:pointer;
+  border:1px solid var(--hair); background:var(--surface); color:var(--ink);
+  padding:9px 15px; border-radius:var(--r-sm); transition:.14s;
+  display:inline-flex; align-items:center; gap:7px; text-decoration:none;
+}
+.btn:hover{background:var(--btn-hover); border-color:var(--btn-hover-line)}
+.btn.primary{background:var(--ink); color:var(--on-ink); border-color:var(--ink); justify-content:center}
+.btn.primary:hover{background:var(--ink-hover)}
+.btn.danger{color:var(--danger); border-color:var(--danger-line)}
+.btn.icon{padding:7px 11px; font-size:15px; line-height:1}
+
+/* לוגו: תמונה שהועלתה מחליפה את הסמל, ומוגבלת לגובה השורה כדי
+   שקובץ ענק לא ידחוף את הכותרת. */
+.brandmark{display:inline-flex; align-items:center; flex:none}
+/* גובה מפורש ולא רק max-height: ל-SVG עם viewBox בלבד אין מידות
+   פנימיות, ותחת max-* הוא מתמוטט ל-0 במקום להתאים את עצמו. */
+.brandmark img{height:34px; width:auto; max-width:150px; object-fit:contain; display:block}
+.hbrand .brandmark img{height:30px; max-width:130px}
+.logo-row{display:flex; align-items:center; gap:16px}
+.logo-preview{width:64px; height:64px; border:1px solid var(--hair); border-radius:var(--r-sm);
+  display:grid; place-items:center; background:var(--field); flex:none; padding:6px}
+.logo-preview img{width:100%; height:auto; max-height:100%; object-fit:contain}
+.error{color:var(--danger); font-size:12.5px; min-height:18px; margin-top:6px}
+.ok{color:var(--led-ok); font-size:12.5px; min-height:18px; margin-top:6px}
+
+/* ---------- shell ---------- */
+#app{display:flex; flex-direction:column; height:100%}
+header{
+  background:var(--surface); border-bottom:1px solid var(--hair);
+  padding:0 20px; display:flex; align-items:center; gap:18px; height:62px; flex:none;
+}
+.hbrand{display:flex; align-items:center; gap:10px; padding-left:18px;
+  border-left:1px solid var(--hair); height:100%}
+.hbrand .mark{width:28px; height:28px; border-radius:8px}
+#tabs{display:flex; gap:4px}
+#tabs button{
+  font-family:inherit; font-size:13.5px; padding:8px 14px; cursor:pointer;
+  border:0; background:none; color:var(--muted); border-radius:var(--r-sm);
+}
+#tabs button.on{background:var(--indigo-soft); color:var(--indigo); font-weight:600}
+.who{margin-inline-start:auto; display:flex; align-items:center; gap:10px;
+  font-size:12.5px; color:var(--muted)}
+.avatar{width:28px; height:28px; border-radius:50%; background:var(--indigo-soft);
+  color:var(--indigo); display:grid; place-items:center; font-weight:600; font-size:12px}
+
+main{flex:1; overflow:auto; padding:14px}
+.tab{display:grid; grid-template-columns:1fr 1fr; gap:14px; align-items:start}
+.tab .wide{grid-column:1 / -1}
+.lib-grid{grid-template-columns:268px 1fr 246px; align-items:stretch; min-height:calc(100vh - 104px)}
+.wide-one{grid-template-columns:1fr}
+
+#subtabs{display:flex; gap:4px; padding:12px 16px 0; border-bottom:1px solid var(--hair)}
+#subtabs button{font-family:inherit; font-size:13.5px; padding:9px 16px; cursor:pointer;
+  border:0; background:none; color:var(--muted); border-bottom:2px solid transparent}
+#subtabs button.on{color:var(--ink); font-weight:600; border-bottom-color:var(--ink)}
+
+.group-block{border-bottom:1px solid var(--hair)}
+.group-block:last-child{border-bottom:0}
+.group-head{display:flex; align-items:center; gap:10px; padding:12px 16px;
+  cursor:pointer; list-style:none; user-select:none}
+.group-head::-webkit-details-marker{display:none}
+.group-head:hover{background:var(--sunken)}
+.group-head h3{font-size:15px; font-weight:600}
+.group-head .spacer{margin-inline-start:auto; display:flex; gap:6px}
+.group-head .caret{color:var(--muted); font-size:10px; transition:.15s; flex:none}
+/* גרירה: הידית היא כל השורה, ולכן חייבים לבטל את מחוות הגלילה במגע. */
+.can-reorder .group-head{touch-action:none}
+.reordering{cursor:grabbing}
+.reordering .group-head{cursor:grabbing}
+.group-block.dragging{background:var(--indigo-soft); border-radius:10px;
+  box-shadow:0 12px 28px -12px var(--shadow-soft); position:relative; z-index:5}
+.group-block.dragging .group-head{background:transparent}
+.group-block[open] > .group-head .caret{transform:rotate(-90deg)}
+.group-block[open] > .group-head{border-bottom:1px solid var(--hair)}
+.pill{font-size:11px; color:var(--muted); font-family:"IBM Plex Mono",monospace}
+.panel{background:var(--surface); border:1px solid var(--hair); border-radius:var(--r); overflow:hidden}
+.ptitle{font-size:11px; font-weight:600; letter-spacing:.7px; color:var(--muted);
+  padding:14px 16px 10px; text-transform:uppercase}
+.pad{padding:4px 16px 16px}
+.divide{height:1px; background:var(--hair); margin:2px 16px}
+.form-grid label{margin-bottom:2px}
+.form-grid .row{display:flex; gap:8px; margin-bottom:10px; align-items:center}
+/* בתוך שורה, השדות נמתחים והכפתור שומר על גודלו — אחרת הוא נדחס,
+   הטקסט נשבר לשתי שורות, והכפתור נראה ענק ביחס לשדות שלצדו. */
+.form-grid .row input,
+.form-grid .row select{margin-bottom:0; min-width:0}
+.form-grid .row .btn{flex:none; white-space:nowrap}
+.form-grid .row .a-mac{flex:0 0 230px}   /* מספיק ל-MAC מלא, בלי להתכווץ */
+.form-grid .row .a-name{flex:1 1 auto}
+.check{display:flex; align-items:center; gap:9px; font-size:13.5px; color:var(--ink)}
+.check input{width:auto; margin:0}
+.metrics-row{display:flex; gap:34px}
+.metric .big{font-size:30px; font-weight:600; line-height:1.2}
+.metric .sub{font-size:12px; color:var(--muted); margin-top:3px}
+
+/* ---------- tables ---------- */
+table{width:100%; border-collapse:collapse; font-size:13px}
+/* ממורכז, כי בטבלאות האלה יש עמודות LTR (MAC, IP) לצד עמודות עברית.
+   יישור לקצה היה מצמיד כל עמודה לצד אחר מהכותרת שלה. */
+th{font-size:11px; color:var(--muted); text-align:center; font-weight:600;
+  padding:7px 16px; border-bottom:1px solid var(--hair)}
+td{padding:8px 16px; border-bottom:1px solid var(--field-line);
+  vertical-align:middle; text-align:center}
+/* פירוט היומן הוא משפט, לא ערך — משפט ממורכז קשה לסריקה. */
+#journal-table td:last-child, #journal-table th:last-child{text-align:right}
+tr:last-child td{border-bottom:0}
+td .btn{padding:4px 10px; font-size:12px}
+
+/* ---------- library: tree / rows / detail (לפי הסקיצה) ---------- */
+.stat{display:flex; justify-content:space-between; padding:7px 16px; font-size:12.5px}
+.stat span{color:var(--muted)}
+.metric{padding:0 16px 10px}
+
+.tree{padding:0 8px 8px}
+.node{display:flex; align-items:center; gap:9px; padding:8px 10px; border-radius:8px;
+  cursor:pointer; font-size:13.5px; user-select:none}
+.node:hover{background:var(--hover)}
+.node.sel{background:var(--indigo-soft); color:var(--indigo); font-weight:600}
+.node .cnt{margin-inline-start:auto; font-size:11px; color:var(--muted);
+  font-family:"IBM Plex Mono",monospace}
+.node.sel .cnt{color:var(--indigo)}
+
+.chead{padding:16px 20px 12px; display:flex; align-items:flex-end; gap:12px;
+  border-bottom:1px solid var(--hair)}
+.chead h2{font-size:19px; font-weight:600; letter-spacing:-.4px}
+.chead p{font-size:12.5px; color:var(--muted); margin-top:3px}
+/* הפעולות נצמדות יחד לקצה. margin אוטומטי על כל כפתור בנפרד היה
+   מפזר אותם לשני קצוות הכותרת. */
+.chead-actions{margin-inline-start:auto; display:flex; gap:8px; flex:none}
+.chead > .btn{margin-inline-start:auto}
+.rows{padding:8px}
+.irow{display:grid; grid-template-columns:auto 1fr auto auto; align-items:center;
+  gap:14px; padding:13px 12px; border-radius:10px; cursor:pointer}
+.irow:hover{background:var(--hover)}
+.irow.sel{background:var(--indigo-soft)}
+.chip{width:38px; height:38px; border-radius:9px; background:var(--ink); flex:none; position:relative}
+.chip::after{content:""; position:absolute; bottom:6px; left:6px; width:4px; height:4px;
+  border-radius:50%; background:var(--led-ok); box-shadow:0 0 6px var(--led-ok)}
+.irow b{font-size:14px; font-weight:600; display:block}
+.irow small{font-size:12px; color:var(--muted)}
+.size{font-family:"IBM Plex Mono",monospace; font-size:12.5px; color:var(--muted)}
+.date{font-size:12px; color:var(--muted); width:76px; text-align:left}
+.lib-empty{padding:60px 20px; text-align:center; color:var(--muted); font-size:13.5px}
+.upload{padding:12px 20px; border-bottom:1px solid var(--hair); background:var(--sunken)}
+.upload-line{display:flex; justify-content:space-between; align-items:baseline;
+  font-size:12.5px; margin-bottom:7px}
+.upload-line span{color:var(--muted)}
+
+.detail{border-top:1px solid var(--hair); padding:16px 20px; background:var(--sunken)}
+.detail h3{font-size:15px; font-weight:600; margin-bottom:3px}
+.detail .desc{font-size:13px; color:var(--muted); line-height:1.55; margin-bottom:14px}
+.meta{display:flex; gap:26px; margin-bottom:15px}
+.meta div small{font-size:11px; color:var(--muted); display:block; margin-bottom:2px}
+.meta div b{font-size:13px; font-weight:500; font-family:"IBM Plex Mono",monospace}
+.dbtns{display:flex; gap:7px; flex-wrap:wrap}
+
+/* ---------- machines tab ---------- */
+.type-head{font-size:12px; font-weight:600; color:var(--muted); padding:12px 16px 4px}
+.gline{display:flex; align-items:center; gap:8px; padding:8px 16px; cursor:pointer;
+  font-size:13.5px; border-radius:8px; margin:0 8px}
+.gline:hover{background:var(--hover)}
+.gline.sel{background:var(--indigo-soft); color:var(--indigo); font-weight:600}
+.gline .cnt{margin-inline-start:auto; font-size:11px; color:var(--muted);
+  font-family:"IBM Plex Mono",monospace}
+.addline{padding:4px 16px 10px}
+details.paste{margin:0 16px 16px; border:1px solid var(--hair); border-radius:var(--r-sm)}
+details.paste summary{padding:10px 13px; cursor:pointer; font-size:13px; color:var(--muted)}
+details.paste .inner{padding:0 13px 13px}
+
+/* ---------- session view ---------- */
+.session-head{display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:10px}
+.session-line{cursor:pointer; border-radius:9px; padding:6px 8px; margin:-6px -8px}
+.session-line:hover{background:var(--sunken)}
+.session-members{max-height:55vh; overflow-y:auto}
+.session-head .state{font-size:11px; font-weight:600; padding:3px 9px; border-radius:20px}
+.state.open{background:var(--indigo-soft); color:var(--indigo)}
+.state.running{background:var(--warn-soft); color:var(--warn-ink)}
+/* שורת מחשב בסבב: שם למעלה, פס והתקדמות מתחתיו. הפאנל צר, ולכן
+   שורה אחת הייתה דוחסת את השם ושוברת את השגיאה למילה בשורה. */
+.member{padding:8px 0; border-bottom:1px solid var(--field-line)}
+.member:last-of-type{border-bottom:0}
+.member .who-line{display:flex; align-items:center; gap:6px; margin-bottom:5px}
+.member .who-line b{font-size:13.5px}
+.member .sub-mac{font-size:11px; color:var(--muted)}
+.member .bar{display:inline-block; width:calc(100% - 52px); vertical-align:middle}
+.member .pct{display:inline-block; width:44px; text-align:left; font-size:12px;
+  color:var(--muted); vertical-align:middle}
+.member .err{color:var(--danger); font-size:11.5px; margin-top:4px; line-height:1.45}
+.tag{font-size:10.5px; font-weight:600; padding:2px 7px; border-radius:20px;
+  background:var(--indigo-soft); color:var(--indigo); white-space:nowrap}
+.tag.warn{background:var(--warn-soft); color:var(--warn-ink)}
+.bar{flex:1; height:8px; background:var(--track); border-radius:5px; overflow:hidden}
+.bar i{display:block; height:100%; background:var(--led-write); border-radius:5px; transition:width .5s}
+.member.done .bar i{background:var(--led-ok)}
+.member.failed .bar i{background:var(--danger)}
+.member .pct{width:56px; text-align:left; font-size:12px; color:var(--muted)}
+.member .err{color:var(--danger); font-size:12px}
+.badline{color:var(--danger)}
+.goodline{color:var(--led-ok)}
+
+/* ---------- modal sheet (מהסקיצה) ---------- */
+#modal{position:fixed; inset:0; z-index:50; display:none; align-items:center;
+  justify-content:center; background:var(--scrim); backdrop-filter:blur(3px)}
+#modal.show{display:flex}
+.sheet{width:min(480px,92vw); max-height:92vh; display:flex; flex-direction:column;
+  background:var(--surface); border-radius:18px;
+  overflow:hidden; box-shadow:0 34px 80px -24px var(--shadow-strong)}
+.sheet .shead{padding:18px 22px 14px; border-bottom:1px solid var(--hair)}
+.sheet .shead h3{font-size:17px; font-weight:600; letter-spacing:-.3px}
+.sheet .shead p{font-size:12.5px; color:var(--muted); margin-top:3px}
+.sheet .sbody{padding:22px; overflow-y:auto; min-height:0}
+.sheet .sfoot{padding:14px 22px; border-top:1px solid var(--hair); display:flex;
+  gap:8px; background:var(--sunken)}
+/* מתג הצגת הסיסמה יושב בקצה הנגרר של השדה (שמאל ב-RTL). */
+.pw-wrap{position:relative}
+.pw-wrap input{padding-inline-end:62px}
+.pw-eye{position:absolute; inset-inline-end:8px; top:9px; padding:4px 9px;
+  font-family:inherit; font-size:11.5px; cursor:pointer; color:var(--muted);
+  background:var(--surface); border:1px solid var(--hair); border-radius:6px}
+.pw-eye:hover{color:var(--ink); border-color:var(--btn-hover-line)}
+
+/* ---------- toast ---------- */
+#toast{position:fixed; bottom:22px; right:50%; transform:translateX(50%);
+  background:var(--ink); color:var(--on-ink); padding:10px 18px; border-radius:10px;
+  font-size:13px; z-index:70; box-shadow:0 10px 30px -8px var(--shadow-strong)}
+
+/* --- לשונית הרשת: טבלה אחת — כרטיסי השרת (עם DHCP) ואז ההתקנים -------------- */
+#net-table{table-layout:fixed}
+#net-table th:nth-child(1){width:16%}
+#net-table th:nth-child(2){width:16%}
+#net-table th:nth-child(3){width:14%}
+#net-table th:nth-child(4){width:18%}
+#net-table th:nth-child(5){width:16%}
+#net-table td b{font-size:13.5px}
+#net-table .nic-on{color:var(--warn-ink); font-weight:600}
+
+/* --- כתובת השרת עצמו ונתיבים סטטיים (‏#55–#57) ------------------------------ */
+/* עמודת הרמזור צרה בכוונה: הנורה היא הדבר הראשון שקוראים בשורה, כי
+   היא מה ש-ip addr אומר — ולא מה שההגדרה אומרת. */
+#netcfg-table th:first-child, #netroutes-body th:first-child{width:22px}
+#netcfg-body .danger-text{color:var(--danger); font-size:12px; margin-top:3px}
+/* הבאנר של ההחזרה: ההודעה החשובה ביותר במסך, והכפתור שמסיים אותה. */
+#netcfg-pending{display:flex; align-items:center; gap:10px; flex-wrap:wrap}
+#netcfg-pending .btn{margin-inline-start:auto}
+#netcfg-count{font-variant-numeric:tabular-nums}
+
+/* --- בריאות המערכת: שורת בדיקה עם רמזור ------------------------------------ */
+.health-row{display:flex; align-items:center; gap:12px; padding:13px 4px;
+  border-bottom:1px solid var(--field-line); font-size:13.5px}
+.health-row:last-of-type{border-bottom:0}
+.health-row b{min-width:170px}
+.hlight{width:12px; height:12px; border-radius:50%; flex:none;
+  background:var(--led-idle)}
+.hlight.ok{background:var(--led-ok); box-shadow:0 0 8px var(--led-ok)}
+.hlight.warn{background:var(--led-write); box-shadow:0 0 8px var(--led-write)}
+.hlight.bad{background:var(--danger); box-shadow:0 0 8px var(--danger)}
+.switch{position:relative; width:44px; height:24px; border-radius:20px; background:var(--track);
+  border:1px solid var(--hair); cursor:pointer; flex:none; transition:background .2s}
+.switch::after{content:""; position:absolute; top:2px; right:2px; width:18px; height:18px;
+  border-radius:50%; background:var(--surface); box-shadow:0 1px 2px rgba(0,0,0,.2); transition:right .2s}
+.switch.on{background:var(--led-write); border-color:transparent}
+.switch.on::after{right:22px}
+.switch.proxy{background:var(--indigo)}
+.sheet-note{background:var(--warn-soft); color:var(--warn-ink); border-radius:var(--r-sm);
+  padding:9px 11px; font-size:12.5px; line-height:1.5; margin-bottom:10px}
+.sheet-note.danger{background:transparent; color:var(--danger); border:1px solid var(--danger-line)}
+pre.conf{direction:ltr; text-align:left; font-size:12px; background:var(--sunken);
+  border:1px solid var(--field-line); border-radius:var(--r-sm); padding:10px; white-space:pre-wrap;
+  max-height:50vh; overflow:auto}
+label.check{display:flex; align-items:center; gap:8px; flex-direction:row}
+label.check input{width:auto; margin:0}

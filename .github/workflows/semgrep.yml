@@ -1,0 +1,73 @@
+# Semgrep — דעה שנייה על הקוד, ובלי מודל שפה.
+#
+# למה זה נוסף (‏2026-08-31): ‏CodeQL סורק פייתון ו-JavaScript, ‏shellcheck
+# את ה-sh, ‏gitleaks את הסודות. מה שנשאר בלי כיסוי הוא **C** —
+# ‏`agent/fanout.c` ו-`agent/hivewrite.c`, הקוד שמנהל חוצצים על נתוני
+# רשת ורץ כ-root. ‏CodeQL יודע לסרוק C אבל דורש **שלב בנייה מוגדר**,
+# וזה מה שחוסם את #158. ‏Semgrep סורק אותו **בלי לבנות**.
+#
+# ובנוסף: הוא הצביע באופן עצמאי על אותה שורה ש-CodeQL הצביע עליה
+# (`branding.py`, פענוח SVG). שתי דעות שמסכימות שוות יותר מאחת —
+# **וגם כששתיהן טועות**, כפי שקרה שם: הבדיקה שרצה לפני הפענוח מנטרלת
+# את שתיהן, וההנחיה בקוד מסבירה את זה עם המדידה.
+#
+# אין כאן LLM, אין חשבון ואין אפליקציית צד-שלישי — ולכן אין מה שיפוג.
+
+name: semgrep
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  # על push ל-main ה-SHA נכנס לשם הקבוצה, אחרת GitHub מרשה
+  # ריצה ממתינה אחת בלבד וכל דחיפה חדשה דוחקת את קודמתה. זה
+  # תוקן ב-#236 ב-tests.yml בלבד; כאן זה נמדד על הסורקים.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # מוצמד: שדרוג של הסורק הוא החלטה, לא תוצאה של תאריך — אותו כלל
+  # שהוחל על התלויות ב-server/requirements.txt (#113).
+  SEMGREP_VERSION: "1.175.0"
+
+jobs:
+  semgrep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install semgrep
+        run: |
+          python -m pip install --quiet "semgrep==${SEMGREP_VERSION}"
+          semgrep --version
+
+      # חוסם ברמת ERROR בלבד. ‏`--metrics=off` — הכלי לא שולח דבר החוצה.
+      - name: Blocking scan (ERROR)
+        run: |
+          semgrep scan --config p/security-audit --config p/secrets \
+            --metrics=off --severity=ERROR --error \
+            server/ boot/ tools/ agent/
+
+      # השאר מדווח ואינו מאדים, כמו ב-codeql.yml ו-shellcheck.yml:
+      # אדום ב-CI שמור לכשל אמיתי כדי שאדום יישאר משמעותי.
+      - name: Full report (non-blocking)
+        if: always()
+        run: |
+          {
+            echo "## Semgrep — הדוח המלא"
+            echo
+            echo '```'
+            semgrep scan --config p/security-audit --config p/secrets \
+              --metrics=off --quiet server/ boot/ tools/ agent/ 2>&1 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

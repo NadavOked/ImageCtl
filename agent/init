@@ -1,0 +1,91 @@
+#!/bin/sh
+# init -- PID 1 of the ImageCtl initramfs. Mounts the pseudo-filesystems,
+# loads drivers, brings the network up with DHCP, then hands over to the
+# agent. If anything here fails, the machine reboots -- which lands back
+# in GRUB, whose default is the local disk.
+
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+fail() {
+    echo "imagectl init: $1 -- rebooting in 5s"
+    sleep 5
+    sync
+    reboot -f
+}
+
+mount -t proc     proc     /proc  2>/dev/null
+mount -t sysfs    sysfs    /sys   2>/dev/null
+mount -t devtmpfs devtmpfs /dev   2>/dev/null
+mkdir -p /dev/pts /run
+mount -t devpts   devpts   /dev/pts 2>/dev/null
+mount -t tmpfs    tmpfs    /run   2>/dev/null
+mkdir -p /run/imagectl
+
+# Storage and NIC drivers. The list is generated at build time from the
+# modules that were copied into the image; missing ones are not fatal --
+# the built-ins may cover the hardware.
+#
+# ‏`2>/dev/null` לבדו הפך כל כישלון טעינה לבלתי-נראה, ומודול שלא נטען
+# נראה בדיוק כמו מודול שנטען. ‏`sungem: Unknown symbol` נמצא ככה רק
+# כשהודפס dmesg ידנית במעבדה. סופרים ומדווחים (#76).
+_modfail=0
+if [ -f /etc/imagectl/modules ]; then
+    while read -r _m; do
+        [ -n "$_m" ] || continue
+        modprobe "$_m" 2>/dev/null || _modfail=$((_modfail + 1))
+    done < /etc/imagectl/modules
+fi
+[ "$_modfail" -gt 0 ] && echo "imagectl init: $_modfail modules did not load"
+
+# efivars for the SecureBoot bit in hello -- after the module load, because
+# efivarfs is itself one of them (CONFIG_EFIVAR_FS=m).
+#
+# מכונת BIOS פשוט אין לה /sys/firmware/efi, וזה לא כישלון. אבל מכונת
+# UEFI שה-efivars שלה לא נעגן היא מכונה שאיננו יודעים מה מצב ה-Secure
+# Boot שלה — וזה בדיוק מה ש-hello יגיד עליה. קודם לכן זה נבלע, המודול
+# לא היה שם בכלל, וכל מכונה דיווחה "כבוי" (#84).
+if [ -d /sys/firmware/efi ]; then
+    mkdir -p /sys/firmware/efi/efivars
+    mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null \
+        || echo "imagectl init: efivarfs would not mount -- SecureBoot state unknown"
+fi
+
+# Give USB/PCI enumeration a moment before looking for NICs and disks.
+sleep 2
+
+# --- network -----------------------------------------------------------------
+# Try every wired interface with a carrier, in order, until DHCP answers.
+# PXE got an address seconds ago on one of them, so this converges fast.
+
+ip link set lo up 2>/dev/null
+
+IFACE=""
+_deadline=$(( $(date +%s) + 90 ))
+while [ -z "$IFACE" ]; do
+    for _d in /sys/class/net/*; do
+        _n=$(basename "$_d")
+        [ "$_n" = "lo" ] && continue
+        ip link set "$_n" up 2>/dev/null
+        sleep 1
+        _carrier=$(cat "$_d/carrier" 2>/dev/null || echo 0)
+        [ "$_carrier" = "1" ] || continue
+        if udhcpc -i "$_n" -n -q -t 4 -T 3 -s /etc/imagectl/udhcpc.script \
+            >/dev/null 2>&1; then
+            IFACE="$_n"
+            break
+        fi
+    done
+    [ "$(date +%s)" -lt "$_deadline" ] || fail "no DHCP lease on any interface"
+done
+
+IP=$(ip -4 addr show "$IFACE" 2>/dev/null \
+     | sed -n 's/.*inet \([0-9.]*\).*/\1/p' | head -n 1)
+[ -n "$IP" ] || fail "DHCP succeeded but no address on $IFACE"
+
+printf 'IFACE=%s\nIP=%s\n' "$IFACE" "$IP" > /run/imagectl/net.conf
+echo "imagectl init: network up on $IFACE ($IP)"
+
+# --- hand over ---------------------------------------------------------------
+
+/usr/bin/imagectl-agent
+fail "agent exited"

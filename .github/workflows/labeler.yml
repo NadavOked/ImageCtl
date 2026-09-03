@@ -1,0 +1,24 @@
+# תיוג PR לפי הנתיבים ששונו. הכללים ב-.github/labeler.yml.
+#
+# ‏`pull_request_target` ולא `pull_request`: התיוג דורש הרשאת כתיבה,
+# ו-PR מ-fork מקבל טוקן לקריאה בלבד. ‏`pull_request_target` רץ בהקשר
+# של הריפו — **ולכן הוא לא נוגע בקוד של ה-PR ולא מריץ אותו**, וזו
+# בדיוק הסיבה שהוא בטוח כאן ומסוכן בכל מקום שבו כן מריצים.
+
+name: labeler
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/labeler@v7
+        with:
+          sync-labels: false          # לא מוריד תווית שאדם הוסיף ביד

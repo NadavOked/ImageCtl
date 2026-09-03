@@ -1,0 +1,109 @@
+# ImageCtl — הבדיקות רצות על כל push ו-pull request (אפיון, נספח ג' פער 7).
+#
+# ubuntu-latest מביא gcc, ולכן גם tests/test_fanout.py — הכותב המקבילי
+# עם הבידוד, הסיכון שנספח ב' מדרג כגבוה — רץ כאן באמת, מול צינורות.
+name: tests
+
+on:
+  # ‏`push` בלי סינון ענף רץ **במקביל** ל-`pull_request`, וכל PR הריץ
+  # את כל המטריצה פעמיים. נמדד ב-2026-08-31: ארבע ריצות pytest
+  # במקום שתיים, על כל דחיפה.
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# ריצה אחת לכל ענף ב-PR: דחיפה חדשה מבטלת את קודמתה.
+#
+# על main כל ריצה היא הרשומה של מיזוג, ואסור לבטל אותה. זה מה שההערה
+# הקודמת הצהירה — והמנגנון עשה את ההפך. עם קבוצה אחת לכל main,
+# GitHub מרשה **ריצה ממתינה אחת** בלבד: כל דחיפה חדשה מבטלת
+# את הממתינה שלפניה, גם כש-`cancel-in-progress` הוא false. ב-2026-09-01 מוזגו 15
+# PRs ב-67 שניות, ו-13 מהריצות בוטלו — 13 קומיטים על main בלי שום
+# ראיית בדיקה. הם לא נראים אדומים, ולכן איש לא הבחין (עיקרון 5).
+#
+# התיקון: על push, ה-SHA נכנס לשם הקבוצה — לכל קומיט קבוצה משלו, ואין מה
+# לדחוק. ב-PR הקבוצה נשארת לפי ענף, כדי שדחיפה חדשה תמשיך לבטל.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # שתי גרסאות פייתון, כי לפרויקט יש שתיים ולא אחת: דביאן 13 — הייצור
+    # וגם מעבדת ה-VM — מריצה 3.13, ותחנת הפיתוח מריצה 3.12. עד #113 ה-CI
+    # בדק רק את 3.12, כל האימות הידני נעשה על 3.13, ואף אחת מהשתיים לא
+    # ידעה על השנייה. `fail-fast: false` כי כישלון באחת אינו סיבה לבטל את
+    # המדידה של השנייה — צריך לדעת אם זו גרסה או קוד.
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    # כאן הכלים אמורים להיות, ולכן חבילה שדילגה היא תקלה ולא הערה:
+    # ‏gcc, ‏bash, ‏hivexget ו-libhivex-dev מותקנים בשלב הבא, וחבילת apt
+    # ששינתה שם או תמונת runner שהתעדכנה היו משאירות את הבנייה ירוקה
+    # עם אפס כיסוי לשלושת הרכיבים המסוכנים ביותר (#52).
+    env:
+      IMAGECTL_REQUIRE_NATIVE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          # התלויות מוצמדות ב-requirements.txt, ולכן מפתח המטמון יציב
+          # ומתחלף רק כששדרוג מוכרע במפורש.
+          cache: pip
+          cache-dependency-path: server/requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r server/requirements.txt pytest httpx
+          # ‏tests/test_hivewrite.py מקמפל את העוזר מול libhivex ומאמת
+          # עם hivexget — בלי החבילות האלה הוא היה מדולג בשקט. עכשיו
+          # ‏IMAGECTL_REQUIRE_NATIVE הופך התקנה שנכשלה לכישלון בדיקות.
+          # ‏busybox עובר לכאן משלב הפרסינג שבסוף: ‏tests/test_json_escape.py
+          # מריץ את `json_escape` תחת ה-awk של busybox דווקא, כי gawk (כאן),
+          # mawk (דביאן) ו-busybox awk קוראים אחרת את רצפי הבריחה של gsub —
+          # וזה בדיוק ההבדל שהשאיר את #145 ירוק בזמן שהסוכן נשבר.
+          sudo apt-get install -y --no-install-recommends \
+            libhivex-dev libhivex-bin dash busybox >/dev/null
+          # איזה busybox רץ כאן -- ‏gsub שלו נבדל בין בניות, וה-runner אינו
+          # בהכרח מה שנארז ב-initrd. בלי השורה הזאת אין דרך לדעת בדיעבד.
+          busybox | head -1
+      # ‏`set -o pipefail` אינו קישוט: ברירת המחדל של Actions היא
+      # ‏`bash -e`, **בלי pipefail**, ולכן `pytest | tee` היה מחזיר את
+      # קוד היציאה של `tee` — כלומר 0 תמיד. זה בדיוק הדפוס שעיקרון 5
+      # אוסר, והוא כבר הפיל את הפרויקט פעם (‏#52: חבילות שדילגו בשלמותן
+      # וה-CI נשאר ירוק).
+      - name: Run the test suite (fanout included)
+        run: |
+          set -o pipefail
+          python -m pytest tests -q -p no:cacheprovider 2>&1 | tee pytest.log
+
+      # ‏e2e_simulation מוחק את תיקיית העבודה שלו ב-`finally`, ולכן אין
+      # מה להעלות ממנה. מה שכן שורד הוא הפלט — והוא כבר מכיל את זנב
+      # לוג השרת, שהתסריט מדפיס בכל מסלול כישלון.
+      - name: End-to-end simulation — four machines against a real server
+        run: |
+          set -o pipefail
+          python tools/e2e_simulation.py 2>&1 | tee e2e.log
+
+      # רק בכישלון. ריצה ירוקה אינה זקוקה לארכיון, והעלאה בכל ריצה
+      # שורפת את מכסת האחסון על מה שאיש לא יפתח.
+      - name: Keep the logs when something failed
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: logs-py${{ matrix.python-version }}
+          path: |
+            pytest.log
+            e2e.log
+          retention-days: 14
+          if-no-files-found: ignore
+      - name: Agent scripts parse under a real POSIX shell
+        run: |
+          for f in agent/imagectl-agent agent/init agent/lib/*.sh; do
+            dash -n "$f" && busybox ash -n "$f"
+          done

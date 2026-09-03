@@ -1,0 +1,116 @@
+# ShellCheck — ניתוח סטטי של קוד המעטפת.
+#
+# למה זה כאן: בסוכן יש ~3,900 שורות POSIX sh שרצות **כ-root ומול
+# דיסקים**, וזו השכבה שהכי קשה לבדוק בטסטים — היא צריכה מכונה אמיתית.
+# עד 2026-08-31 היא לא נסרקה בכלל: CodeQL כיסה פייתון בלבד.
+#
+# מה הריצה הראשונה מצאה מיד: **שבע הנחיות `# shellcheck disable=`
+# שכתובות בתחביר שגוי** (`-- הסבר` במקום שורת הערה נפרדת). המשמעות
+# לא היתה רק שההשתקה לא עבדה — shellcheck **הפסיק לנתח** שם
+# ("Fix to allow more checks"), וכל תיקון חשף עוד שתיים שהיו מוסתרות
+# מאחורי הקודמות. זה עיקרון 5 בתחפושת: כלי בדיקה שנכשל בשקט ונראה
+# כאילו עבר.
+#
+# הסף החוסם הוא `warning` ומעלה. שלושה קודים מוחרגים כי הם תוצר של
+# מבנה הקוד ולא של באג: הסוכן טוען את `lib/` דרך נתיב משתנה, ולכן
+# shellcheck אינו יכול לעקוב (SC1090) — ומכאן מפל שווא של "משתנה לא
+# בשימוש" (SC2034) ו"משתנה לא מוקצה" (SC2154) על כל מה שמוגדר בקובץ
+# אחד ונקרא באחר. ההערות (`note`) מדווחות ואינן חוסמות.
+
+name: shellcheck
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# ריצה אחת לכל ענף. דחיפה חדשה בזמן שקודמתה עוד רצה מבטלת אותה —
+# אבל **רק ב-PR**: על main כל ריצה היא הרשומה של מיזוג, ואין לבטל אותה.
+concurrency:
+  # על push ל-main ה-SHA נכנס לשם הקבוצה, אחרת GitHub מרשה
+  # ריצה ממתינה אחת בלבד וכל דחיפה חדשה דוחקת את קודמתה. זה
+  # תוקן ב-#236 ב-tests.yml בלבד; כאן זה נמדד על הסורקים.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+
+      - name: Version
+        run: shellcheck --version
+
+      # הסוכן: POSIX sh (busybox ash). קבצי lib/ נטענים ב-`.` ואין להם
+      # shebang, ולכן ה-shell מוצהר במפורש ולא נגזר מהקובץ.
+      - name: Agent (POSIX sh) — blocking
+        run: |
+          shellcheck -s sh --severity=warning \
+            --exclude=SC1090,SC2034,SC2154 \
+            agent/imagectl-agent agent/init agent/lib/*.sh
+
+      - name: Lab tools (POSIX sh) — blocking
+        run: |
+          shellcheck -s sh --severity=warning \
+            tools/lab/college-dhcp/build-on-server.sh \
+            tools/lab/firewall/build-on-server.sh \
+            tools/lab/pxe4011-repro.sh
+
+      # רשימת הקבצים כאן מתוחזקת ביד, ולכן קובץ חדש אינו נסרק עד
+      # שמישהו זוכר להוסיף אותו — היעדר סריקה שנראה בדיוק כמו סריקה
+      # שעברה (עיקרון 5). ‏`test_issue_new_script.py` מוודא שהשורה הזו
+      # קיימת, כדי שהשכחה תיתפס בטסטים ולא בהיעדרם.
+      - name: Repo tools (POSIX sh) — blocking
+        run: |
+          shellcheck -s sh --severity=warning \
+            tools/issue-new.sh
+
+      # אלה נוספו ל-tools/ אחרי שהרשימה נכתבה, ולכן לא נסרקו כלל —
+      # לא חוב, אלא חוסר הגנה. ‏#247.
+      #
+      # הסוג נגזר מה-shebang ולא נכתב ביד: הניסיון הראשון פיצל
+      # אותם ל-bash ול-sh לפי ניחוש, וכל השמונה הם bash — ה-CI
+      # נפל על bashisms שהוצהרו כ-POSIX. החלטה שאפשר לגזור אין
+      # סיבה לנחש.
+      - name: Repo tools — blocking
+        run: |
+          set -euo pipefail
+          for f in \
+            tools/discuss.sh \
+            tools/git/after-merge-check.sh \
+            tools/git/lab-work-checkout.sh \
+            tools/lab/record-deploy.sh \
+          ; do
+            if head -1 "$f" | grep -q bash; then sh=bash; else sh=sh; fi
+            echo "== $f ($sh)"
+            shellcheck -s "$sh" --severity=warning "$f"
+          done
+
+      - name: Installer and initramfs builder (bash) — blocking
+        run: |
+          shellcheck -s bash --severity=warning \
+            install/setup-boot-server.sh tools/build_initramfs.sh
+
+      # דיווח בלבד: `note` הוא סגנון ורמיזות, ואדום ב-CI שמור לכשל
+      # אמיתי כדי שאדום יישאר משמעותי (אותה מדיניות כמו ב-codeql.yml).
+      # הדוח המלא נכתב לסיכום הריצה ולא רק ללוג: ממצא ברמת `note`
+      # שקבור באלף שורות הוא ממצא שאיש לא יקרא.
+      - name: Full report (notes included, non-blocking)
+        if: always()
+        run: |
+          {
+            echo "## ShellCheck — הדוח המלא"
+            echo
+            echo '```'
+            shellcheck -s sh --severity=style -f gcc               agent/imagectl-agent agent/init agent/lib/*.sh || true
+            shellcheck -s bash --severity=style -f gcc               install/setup-boot-server.sh tools/build_initramfs.sh || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

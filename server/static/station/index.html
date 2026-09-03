@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ImageCtl — מחשב בנייה</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Hebrew:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../console.css?v=3.8">
+<link rel="stylesheet" href="station.css?v=3.8">
+<script>
+  /* לפני הציור הראשון, אחרת הכרטיס מהבהב בבהיר לפני שהכהה נטען. */
+  (function () {
+    var choice = localStorage.getItem("imagectl-theme");
+    if (choice === "dark" || choice === "light")
+      document.documentElement.setAttribute("data-theme", choice);
+  })();
+</script>
+</head>
+<body class="station">
+
+<header class="st-head">
+  <div class="st-brand">
+    <span class="brandmark"><span class="mark"></span></span>
+    <div>
+      <h1 id="st-title">מחשב בניית אימג'ים</h1>
+      <p>שרת אימג'ים — מכללה</p>
+    </div>
+  </div>
+  <div class="st-tools">
+    <button class="btn icon" id="st-theme" title="ערכת צבעים"></button>
+    <div class="st-id mono" dir="ltr">
+      <div id="st-mac">–</div>
+      <div id="st-ip"></div>
+    </div>
+  </div>
+</header>
+
+<main class="st-main">
+  <!-- כניסה: קליטה והפצה הן פעולות, ופעולה מזדהה -->
+  <section class="sheet st-card hidden" id="st-login">
+    <div class="shead"><h3>כניסה</h3><p>הפעולות במסך הזה דורשות חשבון קונסולה.</p></div>
+    <form id="st-login-form">
+      <div class="sbody">
+        <label>שם משתמש <input type="text" id="st-user" autocomplete="username"></label>
+        <label>סיסמה</label>
+        <div class="pw-wrap">
+          <input type="password" id="st-pass" autocomplete="current-password">
+          <button type="button" class="pw-eye" id="st-eye">הצג</button>
+        </div>
+        <p class="error" id="st-login-error"></p>
+      </div>
+      <div class="sfoot"><button class="btn primary" type="submit">כניסה</button></div>
+    </form>
+  </section>
+
+  <!-- הבחירה: מנהל רואה שתי דרכים, משתמש הפצה מדלג ישר להפצה -->
+  <section class="sheet st-card hidden" id="st-menu">
+    <div class="shead"><h3>מה עושים?</h3><p id="st-menu-sub"></p></div>
+    <div class="sbody">
+      <button type="button" class="menu-card" id="st-menu-capture">
+        <span class="tray"></span>
+        <span><b>קליטת אימג' חדש</b>
+          <small>קוראים את הכונן שבמכונה ומעלים לספרייה</small></span>
+      </button>
+      <button type="button" class="menu-card" id="st-menu-room">
+        <span class="tray tray-multi"></span>
+        <span><b>הפצה למחשבי שיכפול</b>
+          <small>משדרים אימג' לכל המגירות בחדר, בגלים, עד היעד</small></span>
+      </button>
+      <button type="button" class="menu-card" id="st-menu-classes">
+        <span class="tray tray-multi"></span>
+        <span><b>הפצה לכיתות</b>
+          <small>בוחרים כיתה, מחשבים ואימג' — הסבב מעיר את הכיתה ורץ בשרת</small></span>
+      </button>
+    </div>
+  </section>
+
+  <!-- הפצה לכיתות — classes.js מצייר לתוך הגוף -->
+  <section class="sheet st-card hidden" id="st-class">
+    <div class="shead"><h3>הפצה לכיתות</h3><p id="st-class-sub"></p></div>
+    <div class="sbody" id="st-class-body"></div>
+    <div class="sfoot" id="st-class-foot"></div>
+  </section>
+
+  <!-- הכוננים: "מה מותקן עכשיו" מהסקיצה -->
+  <section class="sheet st-card hidden" id="st-pick">
+    <div class="shead"><h3>קליטת אימג' חדש</h3><p>מה מותקן עכשיו — בחרו את כונן המקור.</p></div>
+    <div class="sbody">
+      <div id="st-disks"></div>
+      <form id="st-form" class="hidden">
+        <label>שם האימג' <input type="text" id="st-name" placeholder="למשל: Office 2024 — סטנדרט"></label>
+        <label>תיאור (לא חובה) <input type="text" id="st-desc"></label>
+        <label>תיקיית יעד</label>
+        <div class="folder-row">
+          <select id="st-folder"><option value="">ללא תיקייה</option></select>
+          <button type="button" class="btn" id="st-newfolder">+ חדשה</button>
+        </div>
+        <input type="text" id="st-folder-new" class="hidden" placeholder="שם התיקייה החדשה">
+        <p class="error" id="st-form-error"></p>
+      </form>
+    </div>
+    <div class="sfoot">
+      <button class="btn primary hidden" id="st-start">התחל קליטה</button>
+      <button class="btn hidden" id="st-back-capture">חזרה</button>
+      <span class="sub" id="st-hint">הקליטה קוראת רק בלוקים תפוסים ואינה משנה את הכונן.</span>
+    </div>
+  </section>
+
+  <!-- הפצה לחדר — room.js מצייר לתוך הגוף -->
+  <section class="sheet st-card hidden" id="st-room">
+    <div class="shead"><h3>הפצה למחשבי שיכפול</h3><p id="st-room-sub"></p></div>
+    <div class="sbody" id="st-room-body"></div>
+    <div class="sfoot" id="st-room-foot"></div>
+  </section>
+
+  <!-- התקדמות קליטה -->
+  <section class="sheet st-card hidden" id="st-progress">
+    <div class="shead"><h3 id="st-prog-title">קולט…</h3><p id="st-prog-sub"></p></div>
+    <div class="sbody">
+      <div class="bar big-bar"><i id="st-bar" style="width:0%"></i></div>
+      <div class="st-prog-line">
+        <b id="st-pct">0%</b>
+        <span class="sub" id="st-bytes"></span>
+      </div>
+      <p class="sub">אל תכבו את המחשב. אפשר לעקוב גם מהקונסולה.</p>
+    </div>
+  </section>
+
+  <!-- סיום / שגיאה -->
+  <section class="sheet st-card hidden" id="st-done">
+    <div class="shead"><h3 id="st-done-title"></h3><p id="st-done-sub"></p></div>
+    <div class="sfoot"><button class="btn" id="st-again">קליטה נוספת</button></div>
+  </section>
+
+  <section class="sheet st-card hidden" id="st-message">
+    <div class="shead"><h3 id="st-msg-title"></h3><p id="st-msg-sub"></p></div>
+  </section>
+</main>
+
+<div id="toast" class="hidden"></div>
+<script src="station.js?v=3.8"></script>
+<script src="room.js?v=3.8"></script>
+<script src="classes.js?v=3.8"></script>
+</body>
+</html>

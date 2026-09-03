@@ -1,0 +1,111 @@
+# CodeQL — סריקה סטטית של קוד הפייתון וה-JavaScript.
+#
+# למה זה כאן: ב-2026-08-29 נמצא path traversal ב-`archive.py` (#110) —
+# מזהה אימג' מתוך קובץ שהמשתמש העלה שלט ביעד של `rename`, בלי שום
+# ולידציה. הוא נמצא בסקירה ידנית. סורק היה תופס אותו אוטומטית, וזו
+# בדיוק המחלקה שהוא חזק בה.
+#
+# ‏JavaScript נוסף ב-2026-08-31: בקונסולה ~3,400 שורות vanilla JS
+# שמטפלות בהתחברות, במחיקת אימג'ים ובפתיחת סבבים, והן לא נסרקו כלל.
+# ‏JS אינו דורש שלב בנייה — זו הרחבה בלי מחיר.
+#
+# הסריקה **אינה מפילה את ה-build**: ממצאים מגיעים ללשונית Security
+# כהתראות. אדום ב-CI שמור לבדיקות שנכשלו, כדי שאדום יישאר משמעותי.
+#
+# ‏C נוסף ב-2026-08-31 (#158): ‏`agent/fanout.c` מנהל חוצצים על נתוני
+# רשת מזרם המולטיקאסט, ו-`agent/hivewrite.c` כותב לרישום של Windows
+# דרך libhivex. שניהם רצים כ-root ומול דיסקים, וזו בדיוק המחלקה
+# שסורק C חזק בה: חריגת חוצץ, off-by-one, שימוש אחרי שחרור.
+#
+# ‏C אינו כמו פייתון ו-JS: ‏CodeQL מנתח אותו ב**האזנה להידור בפועל**,
+# ולכן `build-mode: manual` ושלב בנייה מפורש. **הפקודות כאן חייבות
+# להישאר זהות ל-`tools/build_initramfs.sh`** (שורות 207 ו-213) —
+# סריקה על דגלים אחרים אינה סריקה של מה שנארז בפועל.
+#
+# ⚠️ בנייה שנכשלת בשקט מייצרת סריקה **ריקה** שנראית כמו "נקי" — זה
+# עיקרון 5. לכן `-Werror` נשאר, ולכן יש שלב שסופר את קובצי המקור
+# שנראו בפועל ומפיל את הריצה אם C לא נסרק.
+#
+# קוד המעטפת של הסוכן נסרק ב-`shellcheck.yml`, לא כאן.
+
+name: codeql
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # פעם בשבוע: כללי CodeQL מתעדכנים, וקוד שלא השתנה יכול להיסרק
+    # מחדש ולהעלות ממצא חדש.
+    - cron: "0 3 * * 1"
+
+permissions:
+  contents: read
+  security-events: write
+
+# ריצה אחת לכל ענף. דחיפה חדשה בזמן שקודמתה עוד רצה מבטלת אותה —
+# אבל **רק ב-PR**: על main כל ריצה היא הרשומה של מיזוג, ואין לבטל אותה.
+concurrency:
+  # על push ל-main ה-SHA נכנס לשם הקבוצה, אחרת GitHub מרשה
+  # ריצה ממתינה אחת בלבד וכל דחיפה חדשה דוחקת את קודמתה. זה
+  # תוקן ב-#236 ב-tests.yml בלבד; כאן זה נמדד על הסורקים.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  analyze:
+    name: analyze ${{ matrix.language }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: python
+            build-mode: none
+          - language: javascript-typescript
+            build-mode: none
+          - language: c-cpp
+            build-mode: manual
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          queries: security-and-quality
+
+      # ‏libhivex-dev נדרש ל-hivewrite.c בלבד. ‏`tests.yml` כבר מתקין
+      # אותו לטסטים; כאן זו התקנה נפרדת כי זה job אחר.
+      - name: Install C build deps
+        if: matrix.language == 'c-cpp'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libhivex-dev
+
+      # אותם דגלים בדיוק כמו tools/build_initramfs.sh:207,213.
+      # שני התוצרים נבדקים בפועל אחרי ההידור. ‏`gcc` שנכשל מפיל את
+      # השלב, אבל "הפקודה יצאה 0" אינה ראיה שיש קובץ — הראיה היא
+      # הקובץ עצמו.
+      - name: Build C
+        if: matrix.language == 'c-cpp'
+        run: |
+          set -euo pipefail
+          gcc -O2 -Wall -Wextra -static -o /tmp/fanout agent/fanout.c
+          gcc -O2 -Wall -Wextra -o /tmp/hivewrite agent/hivewrite.c -lhivex
+          for b in /tmp/fanout /tmp/hivewrite; do
+            [ -s "$b" ] || { echo "::error::$b לא נוצר"; exit 1; }
+          done
+          ls -l /tmp/fanout /tmp/hivewrite
+
+      # ‏CodeQL ב-`build-mode: manual` נכשל מעצמו בשגיאה "No source code
+      # was seen during the build" כשההידור לא נצפה — כלומר סריקה ריקה
+      # **אינה** יכולה להיראות כאן כמו "נקי". זו ההגנה המובנית; הראיה
+      # החיובית שהסריקה באמת מסתכלת על הקוד היא הבקרה השלילית שמתועדת
+      # ב-#158 (חריגת חוצץ מכוונת שהוזרקה ל-fanout.c ודווחה).
+      - name: Analyze
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"

@@ -1,0 +1,280 @@
+﻿<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ImageCtl — קונסולה</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Hebrew:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="console.css?v=3.11">
+<script>
+  /* לפני הציור הראשון, אחרת המסך מהבהב בלבן לפני שהכהה נטען. */
+  (function () {
+    var choice = localStorage.getItem("imagectl-theme");
+    if (choice === "dark" || choice === "light")
+      document.documentElement.setAttribute("data-theme", choice);
+  })();
+</script>
+</head>
+<body>
+
+<div id="login">
+  <form class="card" id="login-form">
+    <div class="brand">
+      <span class="brandmark"><span class="mark"></span></span>
+      <div><h1>שרת אימג'ים</h1><p>מרכז שיכפול והפצה</p></div>
+    </div>
+    <label for="login-user">שם משתמש</label>
+    <input type="text" id="login-user" autocomplete="username" required>
+    <label for="login-pass">סיסמה</label>
+    <div class="pw-wrap">
+      <input type="password" id="login-pass" autocomplete="current-password" required>
+      <button type="button" class="pw-eye" data-pw="login-pass">הצג</button>
+    </div>
+    <button class="btn primary" type="submit">כניסה</button>
+    <p class="error" id="login-error"></p>
+  </form>
+</div>
+
+<div id="app" class="hidden">
+  <header>
+    <div class="hbrand"><span class="brandmark"><span class="mark"></span></span><strong>שרת אימג'ים</strong></div>
+    <nav id="tabs">
+      <button data-tab="library" class="on">אימג'ים</button>
+      <button data-tab="machines" data-admin>מחשבים</button>
+      <button data-tab="net" data-admin>רשת</button>
+      <button data-tab="health" data-admin>בריאות</button>
+      <button data-tab="users" data-admin>משתמשים</button>
+      <button data-tab="journal" data-admin>יומן</button>
+      <button data-tab="settings" data-admin>הגדרות</button>
+    </nav>
+    <div class="who">
+      <button class="btn icon" id="theme-toggle" title="ערכת צבעים"></button>
+      <span id="who-name"></span>
+      <span class="avatar" id="who-avatar"></span>
+      <button class="btn" id="logout">יציאה</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- הספרייה — מסך הבית, לפי הסקיצה: מדדים | תוכן תיקייה | עץ תיקיות -->
+    <section id="tab-library" class="tab lib-grid">
+      <div class="panel">
+        <div class="ptitle">מצב</div>
+        <div class="metric">
+          <div class="big" id="m-storage">–</div>
+          <div class="sub" id="m-storage-sub"></div>
+        </div>
+        <div class="stat"><span>אימג'ים בספרייה</span><b class="mono" id="m-images">–</b></div>
+        <div class="stat"><span>מחשבים רשומים</span><b class="mono" id="m-machines">–</b></div>
+        <div class="divide"></div>
+        <div class="ptitle">סבב פעיל</div>
+        <div id="session-body" class="pad">אין סבב פעיל.</div>
+      </div>
+
+      <div class="panel">
+        <div class="chead">
+          <div>
+            <h2 id="folder-name">הכל</h2>
+            <p id="folder-desc"></p>
+          </div>
+          <div class="chead-actions">
+            <button class="btn primary" id="capture-image" data-admin>קליטת אימג' חדש</button>
+            <button class="btn" id="upload-image" data-admin>↑ העלאת אימג'</button>
+            <button class="btn hidden" id="edit-folder" data-admin>עריכת תיקייה</button>
+          </div>
+        </div>
+        <div id="capture-bar"></div>
+        <div id="upload-bar" class="hidden"></div>
+        <div class="rows" id="image-rows"></div>
+        <div id="image-detail"></div>
+        <input type="file" id="upload-input" accept=".tar" class="hidden">
+      </div>
+
+      <div class="panel">
+        <div class="ptitle">תיקיות</div>
+        <div class="tree" id="folder-tree"></div>
+        <div class="pad" data-admin>
+          <button class="btn" id="add-folder">+ תיקייה חדשה</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- מחשבים — שלוש תתי-לשוניות, לפי שלושת סוגי המחשבים באפיון -->
+    <section id="tab-machines" class="tab wide-one hidden">
+      <div class="panel wide">
+        <nav id="subtabs">
+          <button data-role="classroom" class="on">מחשבי כיתות</button>
+          <button data-role="cloner">מחשבי שיכפול</button>
+          <button data-role="build">מחשב בניית אימג'ים</button>
+          <button data-role="seen">נראו ברשת</button>
+        </nav>
+        <div id="role-body"></div>
+      </div>
+    </section>
+
+    <!-- רשת — כרטיסי הרשת של השרת בלבד: כל שורה היא כרטיס, שיכול להיות
+         DHCP או לא (אפיון סעיף 24). מכונות שנראו ברשת — בלשונית המחשבים. -->
+    <section id="tab-net" class="tab wide-one hidden">
+      <div class="panel wide">
+        <div class="chead">
+          <div>
+            <h2>כרטיסי רשת</h2>
+            <p>מה מחובר לשרת — כרטיס לכל רשת או וילן. DHCP כבוי כברירת מחדל; הדלקה דורשת הקלדת שם הכרטיס.</p>
+          </div>
+          <div class="chead-actions">
+            <button class="btn" id="nic-add">+ הוספת כרטיס</button>
+            <button class="btn" id="dhcp-preview">קובץ dnsmasq</button>
+          </div>
+        </div>
+        <table id="net-table">
+          <thead><tr><th>שם</th><th>MAC</th><th>כתובת IP</th><th>תיאור</th><th>DHCP</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <!-- הצד השני של אותו כרטיס: איך השרת עצמו מחובר (#55–#57).
+           הנורה בכל שורה נקראת מ-ip addr, ולא מההגדרה ששמרנו. -->
+      <div class="panel wide">
+        <div class="chead">
+          <div>
+            <h2>כתובת השרת עצמו</h2>
+            <p>כתובת, שער ו-DNS לכל כרטיס — נכתבים ל-interfaces.d ושורדים
+              אתחול. הנורה משמאל אומרת מה <b>ip addr</b> מראה עכשיו, לא מה
+              שהוגדר. שינוי שיכול לנתק את הקונסולה מוחזר תוך דקה אם לא אושר.</p>
+          </div>
+          <button class="btn" id="netcfg-refresh">רענון</button>
+        </div>
+        <div id="netcfg-body"></div>
+      </div>
+
+      <div class="panel wide">
+        <div class="chead">
+          <div>
+            <h2>נתיבים סטטיים</h2>
+            <p>נתיב שנוסף כאן נכתב לקובץ הכרטיס ונשאר אחרי אתחול — בניגוד
+              ל-<b>ip route add</b>, שנעלם.</p>
+          </div>
+          <button class="btn" id="netroute-add">+ הוספת נתיב</button>
+        </div>
+        <div id="netroutes-body"></div>
+      </div>
+    </section>
+
+    <!-- בריאות — רמזור לכל בדיקה; בטרמינל נוגעים רק בהתקנה -->
+    <section id="tab-health" class="tab wide-one hidden">
+      <div class="panel wide">
+        <div class="chead">
+          <div>
+            <h2>בריאות המערכת</h2>
+            <p>מה שהיה דורש ss ו-journalctl בטרמינל — פורטים, dnsmasq, TFTP, השרת והכרטיסים.</p>
+          </div>
+          <button class="btn" id="health-refresh">רענון</button>
+        </div>
+        <div id="health-list"></div>
+      </div>
+
+      <!-- שתי דלתות SSH, מתג לכל אחת, וחיווי לפי מה שבאמת מאזין (#83) -->
+      <div class="panel wide">
+        <div class="chead">
+          <div>
+            <h2>‏SSH — מי יכול להיכנס, ומאיפה</h2>
+            <p>המתג אומר מה ביקשנו. הנורה שלידו אומרת מה מאזין עכשיו, לפי
+              טבלת הסוקטים של הקרנל ולפי התפריט שהשרת מגיש בפועל. כשהשניים
+              נבדלים — מה שמאזין הוא הנכון.</p>
+          </div>
+          <button class="btn" id="ssh-refresh">רענון</button>
+        </div>
+        <div id="ssh-body"></div>
+      </div>
+    </section>
+
+    <section id="tab-users" class="tab wide-one hidden">
+      <div class="panel wide">
+        <div class="chead">
+          <div>
+            <h2>משתמשים</h2>
+            <p>מנהל רואה הכל; משתמש הפצה בוחר אימג' ומפיץ, ותו לא.</p>
+          </div>
+          <button class="btn" id="add-user">+ משתמש חדש</button>
+        </div>
+        <table id="users-table">
+          <thead><tr><th>שם</th><th>תפקיד</th><th>נוצר</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="tab-journal" class="tab hidden">
+      <div class="panel wide">
+        <div class="ptitle">יומן פעולות — מי עשה מה ומתי</div>
+        <table id="journal-table">
+          <thead><tr><th>זמן</th><th>מי</th><th>מה קרה</th><th>פירוט</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="tab-settings" class="tab hidden">
+      <div class="panel">
+        <div class="ptitle">הגדרות</div>
+        <form id="settings-form" class="pad form-grid">
+          <label class="check">
+            <input type="checkbox" id="set-login">
+            שחזור תחנה בודדת דורש כניסה (מומלץ; כבו רק להדגמה)
+          </label>
+          <label>המתנה מהמצטרף האחרון (שניות)
+            <input type="number" id="set-wait" min="30" step="30">
+          </label>
+          <label>ניתוק אוטומטי בחוסר פעילות (שניות)
+            <input type="number" id="set-idle" min="60" step="30">
+          </label>
+          <button class="btn primary" type="submit">שמור</button>
+          <p id="settings-saved" class="ok"></p>
+        </form>
+      </div>
+      <div class="panel">
+        <div class="ptitle">לוגו</div>
+        <div class="pad">
+          <div class="logo-row">
+            <div class="logo-preview" id="logo-preview"></div>
+            <div>
+              <p class="sub">מחליף את הסמל בכותרת ובמסך הכניסה.</p>
+              <p class="sub">PNG, JPG, WEBP או SVG · עד 2MB.</p>
+            </div>
+          </div>
+          <div class="row" style="margin-top:12px">
+            <button class="btn" id="logo-pick">בחירת קובץ</button>
+            <button class="btn danger hidden" id="logo-clear">הסרה</button>
+          </div>
+          <p class="error" id="logo-error"></p>
+          <input type="file" id="logo-input" class="hidden"
+                 accept="image/png,image/jpeg,image/webp,image/svg+xml">
+        </div>
+      </div>
+      <div class="panel hidden" id="stop-panel">
+        <div class="ptitle">עצירת חירום</div>
+        <div class="pad">
+          <p id="stop-what"></p>
+          <p class="sub" style="margin:8px 0 14px">
+            עצירה מפסיקה את השידור לכל המחשבים בכיתה. מי שכבר סיים לכתוב לא
+            נפגע; מי שבאמצע יישאר עם דיסק לא שלם ויצטרך סבב נוסף.
+          </p>
+          <button class="btn danger" id="stop-round">עצור את הסבב</button>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="modal"><form class="sheet" id="sheet"></form></div>
+<div id="toast" class="hidden"></div>
+
+<script src="console.js?v=3.11"></script>
+<script src="reorder.js?v=3.11"></script>
+<script src="library.js?v=3.11"></script>
+<script src="machines.js?v=3.11"></script>
+<script src="net.js?v=3.11"></script>
+<script src="netcfg.js?v=3.11"></script>
+</body>
+</html>

@@ -1,0 +1,3 @@
+#!ipxe
+echo ImageCtl: continuing to local boot
+exit

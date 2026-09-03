@@ -1,0 +1,139 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1760" height="1110" viewBox="0 0 1760 1110" font-family="Segoe UI, Arial, Helvetica, sans-serif">
+  <rect width="1760" height="1110" fill="#ffffff"/>
+  <defs>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#1769d2"/></marker>
+    <marker id="arrow-green" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#2f8b3a"/></marker>
+    <marker id="arrow-purple" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#6a2eb8"/></marker>
+    <marker id="arrow-orange" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#be6b00"/></marker>
+    <marker id="arrow-red" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#dc1f1f"/></marker>
+    <style>
+      .title{font-size:28px;font-weight:700;fill:#10285c}.subtitle{font-size:14px;fill:#344054}.h1{font-size:18px;font-weight:700}.h2{font-size:15px;font-weight:700}.body{font-size:13px;fill:#101828}.small{font-size:12px;fill:#101828}.tiny{font-size:11px;fill:#344054}.box{fill:#fff;stroke-width:1.4}.server{stroke:#1769d2}.network{stroke:#e9a12a}.gui{stroke:#52a55c}.storage{stroke:#e9a12a}.safety{stroke:#e32626}.boot{stroke:#777}.purple{stroke:#6a2eb8}.dash{stroke-dasharray:7 5}.flow{fill:none;stroke-width:2}.pill{rx:5;ry:5}.rtl{direction:rtl;unicode-bidi:plaintext}
+    </style>
+  </defs>
+
+  <g id="title">
+    <text x="880" y="31" text-anchor="middle" class="title rtl">ארכיטקטורת ImageCtl — המצב הקיים</text>
+    <text x="880" y="53" text-anchor="middle" class="subtitle rtl">כל מה שמופיע כאן רץ היום. מסך הקיוסק הגרפי אינו כאן — הוא נבנה אך טרם הורץ על חומרה.</text>
+  <text x="880" y="75" text-anchor="middle" class="subtitle" fill="#344054" font-weight="700">‏מחשב בנייה ← קליטה לשרת  ·  השרת ← הפצה למחשבי שיכפול או לתחנות כיתה</text>
+  </g>
+
+  <g id="safety-default">
+    <rect x="24" y="58" width="405" height="251" rx="13" class="box safety" fill="#fff8f7"/>
+    <path d="M48 79 l12 -5 12 5 v11 c0 10 -6 17 -12 21 -6 -4 -12 -11 -12 -21z" fill="none" stroke="#dc1f1f" stroke-width="2"/>
+    <text x="226" y="88" text-anchor="middle" class="h1 rtl" fill="#b51616">בטיחות וברירת מחדל</text>
+    <text x="226" y="119" text-anchor="middle" class="small rtl">מכונה לא מזוהה (MAC לא רשום או schema לא מוכר)</text>
+    <g aria-label="עולה מהדיסק מיד, בלי תפריט — timeout=0">
+      <text x="226" y="139" text-anchor="middle" class="small rtl">עולה מהדיסק מיד, בלי תפריט — timeout=0</text>
+    </g>
+    <text x="226" y="164" text-anchor="middle" class="small rtl">שרת כבוי — PXE נכשל בקושחה, והתחנה עולה מהדיסק</text>
+    <text x="226" y="184" text-anchor="middle" class="small rtl">בלי לעבור בתפריט שלנו כלל</text>
+    <text x="226" y="209" text-anchor="middle" class="small rtl">מחשב שיכפול (cloner) — ישר לסוכן</text>
+    <g aria-label="timeout=0, default=imagectl">
+      <text x="226" y="229" text-anchor="middle" class="small">timeout=0, default=imagectl</text>
+    </g>
+    <text x="226" y="260" text-anchor="middle" class="tiny rtl">תחנה מזוהה — תפריט גלוי שממתין לאדם</text>
+    <text x="226" y="276" text-anchor="middle" class="tiny rtl">ללא הגבלת זמן (הכרעה #140)</text>
+    <line x1="44" y1="286" x2="409" y2="286" stroke="#e32626"/>
+    <text x="226" y="302" text-anchor="middle" class="h2 rtl" fill="#b51616">אין כתיבה לדיסק בלי משימה מפורשת</text>
+  </g>
+
+  <g id="imagectl-server">
+    <rect x="450" y="62" width="940" height="176" rx="14" class="box server" fill="#f7faff"/>
+    <rect x="548" y="63" width="374" height="38" rx="8" fill="#103e84"/>
+    <text x="735" y="89" text-anchor="middle" font-size="19" font-weight="700" fill="#fff">ImageCtl Server (שרת מרכזי)</text>
+    <!-- Five equal 180px columns: (940 - 2*20) / 5.  Each bullet is one
+         end-anchored text node at the column's right edge minus 8px. -->
+    <g id="fastapi">
+      <text x="560" y="126" text-anchor="middle" class="h2">FastAPI</text>
+      <text x="642" y="151" text-anchor="end" class="body">• REST API</text><text x="642" y="174" text-anchor="end" class="body">• Web UI</text><text x="642" y="197" text-anchor="end" class="body">• ניהול משימות</text><text x="642" y="220" text-anchor="end" class="body">• מכשירים וקבוצות</text>
+    </g>
+    <g id="http-server">
+      <text x="740" y="126" text-anchor="middle" class="h2">HTTP Server</text>
+      <text x="822" y="151" text-anchor="end" class="body">• קבצי אתחול</text><text x="822" y="174" text-anchor="end" class="body">• initramfs</text><text x="822" y="197" text-anchor="end" class="body">• HTML/CSS/JS</text><text x="822" y="220" text-anchor="end" class="body">• סטטיים</text>
+    </g>
+    <g id="image-library">
+      <text x="920" y="126" text-anchor="middle" class="h2">Image Library</text>
+      <text x="1002" y="151" text-anchor="end" class="body">• אחסון Images</text><text x="1002" y="174" text-anchor="end" class="body">• מטא־דאטה</text><text x="1002" y="197" text-anchor="end" class="body">• גרסאות</text><text x="1002" y="220" text-anchor="end" class="body">• Checksums</text>
+    </g>
+    <g id="grub-config">
+      <text x="1100" y="126" text-anchor="middle" class="h2">GRUB Config</text>
+      <text x="1182" y="151" text-anchor="end" class="body">• לפי MAC/קבוצה</text><text x="1182" y="174" text-anchor="end" class="body">• זיהוי סוג תחנה</text><text x="1182" y="197" text-anchor="end" class="body">• Build / Clone / Class</text><text x="1182" y="220" text-anchor="end" class="body">• Local Boot</text>
+    </g>
+    <g id="udp-sender">
+      <text x="1280" y="126" text-anchor="middle" class="h2">udp-sender</text>
+      <text x="1362" y="151" text-anchor="end" class="body">• Multicast Sender</text><text x="1362" y="174" text-anchor="end" class="body">• פריסה סימולטנית</text><text x="1362" y="197" text-anchor="end" class="body">• ניהול מהירות</text><text x="1362" y="220" text-anchor="end" class="body">• ניטור חבילות</text>
+    </g>
+  </g>
+
+  <g id="services-data">
+    <rect x="1435" y="63" width="295" height="154" rx="12" class="box purple" fill="#fcf9ff"/>
+    <text x="1582" y="94" text-anchor="middle" class="h1" fill="#32125d">Services &amp; Data</text>
+    <text x="1460" y="127" class="body">• Database (SQLite)</text><text x="1460" y="150" class="body">• Logs &amp; Metrics</text><text x="1460" y="173" class="body">• Audit Trail</text><text x="1460" y="196" class="body">• Jobs Queue</text>
+    <path d="M1390 145h45" class="flow purple dash" marker-end="url(#arrow-purple)"/>
+  </g>
+
+  <g id="network-boot" transform="translate(0 35)">
+    <rect x="164" y="284" width="1028" height="59" rx="10" class="box network" fill="#fffaf0"/>
+    <path d="M211 325c-14-1-15-19-2-23 3-17 28-18 33-3 17-1 22 23 5 26z" fill="none" stroke="#17202a" stroke-width="2"/>
+    <text x="291" y="322" class="h2">Network / Boot</text><text x="427" y="318" class="body">DHCP (Option 66/67)</text><path d="M555 313h35" class="flow network" marker-end="url(#arrow-orange)"/><text x="596" y="318" class="body">PXE (TFTP/HTTP)</text><path d="M718 313h38" class="flow network" marker-end="url(#arrow-orange)"/><text x="775" y="318" class="body">HTTP (Boot Files)</text><path d="M912 313h46" class="flow network" marker-end="url(#arrow-orange)"/><text x="978" y="318" class="body">Multicast (udpcast)</text>
+    <path d="M920 238v42" class="flow server" marker-end="url(#arrow-blue)"/>
+  </g>
+
+  <g id="build-machine" transform="translate(0 35)">
+    <rect x="46" y="372" width="382" height="490" rx="12" class="box boot dash" fill="#f8fbff"/>
+    <rect x="56" y="371" width="362" height="35" rx="5" fill="#16478f"/><text x="237" y="394" text-anchor="middle" class="h2 rtl" fill="#fff">1. מחשב בנייה (חדר שיכפולים)</text>
+    <rect x="121" y="421" width="183" height="27" class="box server pill"/><text x="212" y="440" text-anchor="middle" class="body">iPXE / PXE Boot</text><path d="M212 448v27" class="flow server" marker-end="url(#arrow-blue)"/>
+    <rect x="88" y="475" width="261" height="27" class="box server pill"/><text x="218" y="494" text-anchor="middle" class="body">Linux / initramfs (רץ מ־RAM)</text><path d="M218 502v31" class="flow green" marker-end="url(#arrow-green)"/>
+    <rect x="56" y="535" width="323" height="96" rx="10" class="box boot" fill="#fafafa"/>
+    <text x="217" y="572" text-anchor="middle" class="h1 rtl">מסך טקסט</text>
+    <text x="217" y="603" text-anchor="middle" class="body rtl">מפנה לקונסולה בדפדפן</text>
+    <path d="M218 631v118" class="flow server" marker-end="url(#arrow-blue)"/>
+    <rect x="56" y="750" width="319" height="97" rx="10" class="box storage" fill="#fffaf1"/><text x="215" y="775" text-anchor="middle" class="h2">Capture / Build (שכבת עיבוד)</text><text x="91" y="803" class="body">• partclone</text><text x="203" y="803" class="body">• zstd</text><text x="273" y="803" class="body">• sha256</text><text x="215" y="829" text-anchor="middle" class="body">• משלוח לשרת דרך HTTP</text>
+  </g>
+
+  <g id="cloner-machine" transform="translate(0 35)">
+    <rect x="451" y="372" width="335" height="490" rx="12" class="box gui dash" fill="#f7fff7"/>
+    <rect x="461" y="370" width="304" height="36" rx="5" fill="#267a31"/><text x="613" y="394" text-anchor="middle" class="h2 rtl" fill="#fff">2. מחשב שיכפול (ללא GUI)</text>
+    <rect x="510" y="457" width="200" height="26" class="box gui pill"/><text x="610" y="475" text-anchor="middle" class="body">iPXE / PXE Boot</text><rect x="492" y="504" width="232" height="26" class="box gui pill"/><text x="608" y="522" text-anchor="middle" class="body">Linux / initramfs (רץ מ־RAM)</text>
+    <rect x="480" y="550" width="242" height="45" rx="7" class="box boot" fill="#fafafa"/><text x="601" y="570" text-anchor="middle" class="body">Agent (ללא GUI)</text><text x="601" y="588" text-anchor="middle" class="small rtl">זיהוי חומרה ודיסקים</text>
+    <rect x="473" y="614" width="282" height="85" rx="9" class="box storage" fill="#fffaf1"/><text x="614" y="640" text-anchor="middle" class="h2 rtl">מגירות דיסק</text><text x="502" y="676" class="small">Drive 1</text><text x="583" y="676" class="small">Drive 2</text><text x="664" y="676" class="small">Drive 3</text><text x="730" y="676" class="small">…</text>
+    <rect x="461" y="721" width="304" height="105" rx="9" class="box gui" fill="#f8fcf3"/><text x="613" y="746" text-anchor="middle" class="h2">Writing Engine (ללא GUI)</text><text x="477" y="770" class="body">• partclone (write)</text><text x="477" y="793" class="body">• zstd (decompress)</text><text x="477" y="816" class="body">• כתיבה מקבילית מבוקרת</text><text x="681" y="770" class="small">Drive 1 ✓</text><text x="681" y="793" class="small">Drive 2 ✓</text><text x="681" y="816" class="small">Drive 3 !</text>
+    <text x="613" y="849" text-anchor="middle" class="h2 rtl" fill="#267a31">כשל במגירה אחת לא עוצר את האחרות</text>
+  </g>
+
+  <g id="student-machine" transform="translate(0 35)">
+    <rect x="807" y="372" width="375" height="490" rx="12" class="box purple dash" fill="#fcfaff"/>
+    <rect x="817" y="370" width="344" height="36" rx="5" fill="#6730aa"/><text x="989" y="394" text-anchor="middle" class="h2 rtl" fill="#fff">3. מחשב תלמיד / תחנת כיתה</text>
+    <rect x="892" y="457" width="208" height="27" class="box purple pill"/><text x="996" y="476" text-anchor="middle" class="body">iPXE / PXE Boot</text><rect x="880" y="504" width="232" height="27" class="box purple pill"/><text x="996" y="523" text-anchor="middle" class="body">Linux / initramfs (רץ מ־RAM)</text>
+    <rect x="817" y="548" width="334" height="96" rx="10" class="box boot" fill="#fafafa"/>
+    <text x="984" y="585" text-anchor="middle" class="h1 rtl">מסך טקסט</text>
+    <text x="984" y="616" text-anchor="middle" class="body rtl">מפנה לקונסולה בדפדפן</text>
+    <path d="M996 644v109" class="flow purple" marker-end="url(#arrow-purple)"/>
+    <rect x="818" y="755" width="344" height="96" rx="10" class="box storage" fill="#fffaf1"/><text x="990" y="780" text-anchor="middle" class="h2">Data Path (שחזור / פריסה)</text><rect x="822" y="798" width="100" height="35" class="box storage pill"/><text x="872" y="820" text-anchor="middle" class="small">udp-receiver</text><rect x="929" y="798" width="57" height="35" class="box storage pill"/><text x="957" y="820" text-anchor="middle" class="small">zstd</text><rect x="994" y="791" width="89" height="48" class="box storage pill"/><text x="1038" y="811" text-anchor="middle" class="small">partclone</text><text x="1038" y="828" text-anchor="middle" class="small">(write)</text><path d="M922 815h5M986 815h6M1083 815h10" class="flow network" marker-end="url(#arrow-orange)"/><text x="1127" y="820" text-anchor="middle" class="tiny rtl">דיסק מקומי</text>
+  </g>
+
+  <g id="secure-boot-chain" transform="translate(0 35)">
+    <rect x="1218" y="261" width="297" height="289" rx="12" class="box boot" fill="#fff"/>
+    <rect x="1218" y="261" width="297" height="70" rx="12" fill="#eeeeee"/><text x="1366" y="286" text-anchor="middle" class="h2 rtl">שרשרת אתחול נוכחית</text><text x="1366" y="313" text-anchor="middle" class="small rtl">Secure Boot בתחנות כיתה</text>
+    <text x="1282" y="361" class="body">♢</text><text x="1315" y="361" class="body">Firmware (UEFI)</text><text x="1282" y="400" class="body">♢</text><text x="1315" y="400" class="body">shim (חתום)</text><text x="1282" y="439" class="body">♢</text><text x="1315" y="439" class="body">GRUB (חתום)</text><text x="1282" y="478" class="body">♢</text><text x="1315" y="478" class="body">distro kernel (חתום)</text><text x="1282" y="517" class="body">♢</text><text x="1315" y="517" class="body">initramfs (רץ מ־RAM)</text>
+  </g>
+
+  <g id="legend" transform="translate(0 35)">
+    <rect x="1294" y="572" width="220" height="222" rx="12" class="box boot" fill="#fff"/><text x="1404" y="605" text-anchor="middle" class="h1 rtl">מקרא</text>
+    <rect x="1314" y="624" width="21" height="16" fill="#8bb9ee" stroke="#1769d2"/><text x="1355" y="638" class="body">Server / שירותים</text><rect x="1314" y="656" width="21" height="16" fill="#ffe8b9" stroke="#e9a12a"/><text x="1355" y="670" class="body">Network / Boot</text><rect x="1314" y="688" width="21" height="16" fill="#fff0c9" stroke="#e9a12a"/><text x="1355" y="702" class="body">Imaging / Storage</text><rect x="1314" y="720" width="21" height="16" fill="#f5b3b3" stroke="#e32626"/><text x="1355" y="734" class="body">Safety / Fallback</text><rect x="1314" y="752" width="21" height="16" fill="#ddd" stroke="#777"/><text x="1355" y="766" class="body">Boot Chain</text>
+  </g>
+
+  <g id="fallback-unit" transform="translate(0 35)">
+    <path d="M66 862v38h1384v18" class="flow safety dash" marker-end="url(#arrow-red)"/>
+    <rect x="1420" y="930" width="310" height="110" rx="12" class="box safety dash" fill="#fff9f8"/><text x="1575" y="963" text-anchor="middle" class="h1 rtl" fill="#c81818">יחידת Fallback</text><text x="1575" y="993" text-anchor="middle" class="small rtl" fill="#c81818">בכל תקלה או מצב לא מוכר</text><text x="1575" y="1023" text-anchor="middle" class="h2" fill="#c81818">→ Local Boot</text>
+  </g>
+
+<g id="data-flow">
+  <path d="M237 370v-25" class="flow server" marker-end="url(#arrow-blue)"/>
+  <text x="247" y="362" class="tiny" fill="#16478f">קליטה ← לשרת</text>
+  <path d="M618 345v25" class="flow server" marker-end="url(#arrow-blue)"/>
+  <text x="628" y="362" class="tiny" fill="#16478f">הפצה →</text>
+  <path d="M994 345v25" class="flow server" marker-end="url(#arrow-blue)"/>
+  <text x="1004" y="362" class="tiny" fill="#16478f">הפצה →</text>
+</g>
+</svg>

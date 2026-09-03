@@ -1,0 +1,79 @@
+# gitleaks — סריקת סודות בקוד ובהיסטוריה.
+#
+# למה זה כאן ולא מסתמכים על GitHub: סריקת הסודות המובנית **חינמית לריפו
+# ציבורי אבל מכסה דפוסי ספקים בלבד** — מפתח AWS, טוקן GitHub וכדומה.
+# ‏"non-provider patterns", ובהם **מפתחות פרטיים ומחרוזות התחברות**,
+# דורשים GitHub Secret Protection בתוכנית Team/Enterprise. נבדק
+# ב-2026-08-31: הפעלה דרך ה-API מוחזרת בשקט כ-`disabled`.
+#
+# בפרויקט הזה זה לא תיאורטי: `C:\ImageCtl-Lab\lab_key` הוא מפתח SSH
+# שמשמש מול מעבדת ה-VM, והריפו ציבורי. אם הוא ייכנס בטעות — GitHub
+# **לא יתריע**. ‏gitleaks כן.
+#
+# נסרקים שני דברים, ובכוונה: עץ העבודה **וההיסטוריה**. סוד שנדחף
+# ונמחק בקומיט הבא עדיין חשוף לכל מי שמושך את הריפו.
+#
+# הבינארי מאומת ב-sha256 ולא נלקח באמון: הורדה מהאינטרנט בתוך CI
+# שרץ על הקוד שלנו היא בדיוק המקום שבו "זה עבד" אינו "זה מה שביקשנו".
+
+name: gitleaks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  GITLEAKS_VERSION: "8.30.1"
+  GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+
+# ריצה אחת לכל ענף. דחיפה חדשה בזמן שקודמתה עוד רצה מבטלת אותה —
+# אבל **רק ב-PR**: על main כל ריצה היא הרשומה של מיזוג, ואין לבטל אותה.
+concurrency:
+  # על push ל-main ה-SHA נכנס לשם הקבוצה, אחרת GitHub מרשה
+  # ריצה ממתינה אחת בלבד וכל דחיפה חדשה דוחקת את קודמתה. זה
+  # תוקן ב-#236 ב-tests.yml בלבד; כאן זה נמדד על הסורקים.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # ההיסטוריה המלאה — בלעדיה `gitleaks git` רואה קומיט אחד
+          # ומדווח "נקי" על ריפו שלא נסרק. זה עיקרון 5.
+          fetch-depth: 0
+
+      - name: Fetch and verify gitleaks
+        run: |
+          set -euo pipefail
+          F="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL -o "$F" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${F}"
+          echo "${GITLEAKS_SHA256}  ${F}" | sha256sum -c -
+          tar xzf "$F" gitleaks
+          ./gitleaks version
+
+      - name: Scan working tree
+        run: ./gitleaks dir . --no-banner --redact
+
+      - name: Scan full history
+        run: ./gitleaks git . --no-banner --redact 2>&1 | tee /tmp/gl.log
+
+      # כמה קומיטים נסרקו בפועל. בלי זה "no leaks found" נראה זהה
+      # לסריקה שלא מצאה קבצים בכלל — עיקרון 5.
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## gitleaks"
+            echo
+            grep -oE "[0-9]+ commits scanned" /tmp/gl.log || echo "לא נסרקו קומיטים"
+            grep -oE "no leaks found|leaks found: [0-9]+" /tmp/gl.log || true
+          } >> "$GITHUB_STEP_SUMMARY"

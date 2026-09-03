@@ -1,0 +1,54 @@
+# ImageCtl — יחידת systemd לשרת ולקונסולה.
+#
+# התקנה (אחרי clone ל-/opt/imagectl והתקנת התלויות — ראו docs/server.md):
+#
+#   sudo cp install/imagectl-server.service /etc/systemd/system/
+#   sudo systemctl edit imagectl-server     # קובעים את IMAGECTL_URL
+#   sudo systemctl enable --now imagectl-server
+#
+# הכתובת חייבת להיות זו שהלקוחות רואים — לא localhost. אותה כתובת
+# שהוזנה למתקין שרת האתחול.
+
+[Unit]
+Description=ImageCtl image server and console
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# נקבע ב-systemctl edit: Environment=IMAGECTL_URL=http://10.99.12.10:8080
+Environment=IMAGECTL_URL=
+WorkingDirectory=/opt/imagectl
+ExecStartPre=/bin/sh -c 'test -n "$IMAGECTL_URL" || { echo "set IMAGECTL_URL via systemctl edit imagectl-server"; exit 1; }'
+ExecStart=/usr/bin/python3 -m server.main --server-url ${IMAGECTL_URL} \
+    --data-dir /var/lib/imagectl --images /srv/imagectl/images
+Restart=on-failure
+RestartSec=3
+
+# הקשחה בסיסית: השרת נוגע רק בנתונים, בספרייה שלו, ובשני קבצי ה-DHCP
+# שהוא כותב (לשונית הרשת, אפיון סעיף 24): זה של האינסטנס הראשי
+# ב-/etc/dnsmasq.d, וזה של אינסטנס ה-proxy המבודד ב-/etc/imagectl (#36).
+# ה-restart של dnsmasq ושל imagectl-proxy, והאזנה לפורט 68 (זיהוי DHCP
+# קיים), דורשים root — וזה ה-User של היחידה.
+#
+# ‏/etc/imagectl מסומן אופציונלי (מקף) בכוונה: בשרת ותיק שהתיקייה עוד
+# לא נוצרה בו, השרת יעלה כרגיל ורק כתיבת קובץ ה-proxy תיכשל עם הודעה
+# בקונסולה — עדיף על שרת שלא עולה. יוצרים אותה ומפעילים מחדש.
+#
+# ‏#55–#57: הגדרות הרשת של השרת עצמו נכתבות ל-`/etc/network/interfaces.d`
+# ‏(קובץ לכל כרטיס, `imagectl-<שם>`) ול-`/etc/resolv.conf`. שתי הדרישות
+# האלה הן מה שהופך "ההגדרה נשמרה" ל"הקובץ נכתב"; בלעדיהן ההחלה נכשלת
+# בגלוי והקונסולה אומרת זאת. ‏`/etc` כולו ב-ReadWritePaths אך ורק בגלל
+# ‏resolv.conf — הוא קובץ בשורש, ואין דרך לפתוח אותו לבדו.
+#
+# ההחזרה האוטומטית של שינוי רשת שלא אושר אינה כאן אלא ביחידה נפרדת
+# (`imagectl-netrollback`), ובכוונה: שינוי שהפיל את הרשת מפיל לעיתים
+# גם את השירות הזה, ומי שאמור להחזיר חייב לשרוד את זה.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/imagectl /srv/imagectl/images /etc/dnsmasq.d -/etc/imagectl /etc/network/interfaces.d /etc
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,9 @@
+# Issue ריק נשאר אפשרי בכוונה: לבעל הריפו יש שימושים לגיטימיים לפתק
+# מהיר, והטפסים אמורים לעזור ולא לחסום. מה שכן חייב מסלול נפרד הוא
+# אבטחה — ריפו ציבורי הופך Issue לפרסום.
+blank_issues_enabled: true
+
+contact_links:
+  - name: "\U0001F512 דיווח על חולשת אבטחה"
+    url: https://github.com/NadavOked/ImageCtl/security/advisories/new
+    about: "חולשה אינה נפתחת כ-Issue פומבי — הריפו ציבורי, וזה מפרסם אותה לפני שיש תיקון. הדיווח כאן פרטי. הפרטים ב-SECURITY.md."

@@ -1,0 +1,134 @@
+/* מסך התחנה — קיוסק על מחשב הבנייה. אותה שפת עיצוב כמו הקונסולה
+   (הטוקנים מגיעים מ-console.css); כאן רק הפריסה: כרטיס ממורכז על רקע
+   הכניסה הכהה, כמו בסקיצה station-recovery. */
+
+body.station{
+  min-height:100vh; display:flex; flex-direction:column;
+  background:
+    radial-gradient(1100px 600px at 78% -10%, var(--login-glow) 0%, transparent 60%),
+    linear-gradient(160deg, var(--login-a) 0%, var(--login-b) 100%);
+}
+
+.st-head{display:flex; justify-content:space-between; align-items:flex-start;
+  padding:26px 34px; background:none; border:0; height:auto}
+.st-brand{display:flex; gap:12px; align-items:center}
+.st-brand h1{font-size:18px; font-weight:600; color:#fff}
+.st-brand p{font-size:12px; color:#8FA0B2; margin-top:2px}
+.st-brand .mark{width:40px; height:40px; border-radius:11px}
+.st-id{color:#8FA0B2; font-size:13px; text-align:left; line-height:1.7}
+.st-tools{display:flex; gap:14px; align-items:flex-start}
+
+.st-main{flex:1; display:flex; align-items:center; justify-content:center; padding:20px}
+.st-card{width:min(680px, 94vw)}
+.st-card .sbody label{margin-top:6px}
+
+/* כרטיסי הכוננים — "מה מותקן עכשיו" */
+.disk-card{
+  display:flex; align-items:center; gap:14px; padding:16px;
+  border:1px solid var(--hair); border-radius:12px; cursor:pointer;
+  background:var(--field); margin-bottom:10px; width:100%;
+  font-family:inherit; text-align:inherit; color:var(--ink); transition:.14s;
+}
+.disk-card:hover{border-color:var(--indigo)}
+.disk-card.sel{border-color:var(--indigo); background:var(--indigo-soft)}
+.disk-card .tray{width:52px; height:34px; border-radius:6px; background:var(--ink);
+  flex:none; position:relative}
+.disk-card .tray::after{content:""; position:absolute; bottom:6px; left:7px;
+  width:5px; height:5px; border-radius:50%; background:var(--led-ok);
+  box-shadow:0 0 8px var(--led-ok)}
+.disk-card b{display:block; font-size:14.5px}
+.disk-card small{color:var(--muted); font-size:12.5px}
+.disk-card .dev{margin-inline-start:auto; font-family:"IBM Plex Mono",monospace;
+  color:var(--muted); direction:ltr}
+
+.big-bar{height:14px; border-radius:8px; margin:6px 0 10px}
+.st-prog-line{display:flex; justify-content:space-between; align-items:baseline}
+.st-prog-line b{font-size:22px}
+
+.st-card .sfoot{align-items:center}
+.st-card .sfoot .sub{margin-inline-start:auto}
+
+/* תפריט הבחירה — שני מסלולים, באותה שפה של כרטיסי הכוננים */
+.menu-card{
+  display:flex; align-items:center; gap:14px; padding:18px 16px;
+  border:1px solid var(--hair); border-radius:12px; cursor:pointer;
+  background:var(--field); margin-bottom:10px; width:100%;
+  font-family:inherit; text-align:inherit; color:var(--ink); transition:.14s;
+}
+.menu-card:hover{border-color:var(--indigo); background:var(--indigo-soft)}
+.menu-card .tray{width:52px; height:34px; border-radius:6px; background:var(--ink);
+  flex:none; position:relative}
+.menu-card .tray::after{content:""; position:absolute; bottom:6px; left:7px;
+  width:5px; height:5px; border-radius:50%; background:var(--led-ok);
+  box-shadow:0 0 8px var(--led-ok)}
+.menu-card .tray-multi{box-shadow:4px 4px 0 -1px var(--hair), 8px 8px 0 -2px var(--hair)}
+.menu-card b{display:block; font-size:15px}
+.menu-card small{color:var(--muted); font-size:12.5px}
+.menu-card.dim{opacity:.55; cursor:default}
+.menu-card.dim:hover{border-color:var(--hair); background:var(--field)}
+
+/* בחירת תיקייה בקליטה */
+.folder-row{display:flex; gap:8px; align-items:center}
+.folder-row select{flex:1}
+
+/* פסי השלבים הדקים — אחד-לאחד כמו הסקיצה station-recovery */
+.cls-bars{display:flex; gap:5px; margin-bottom:18px}
+.cls-bars i{height:3px; flex:1; border-radius:2px; background:var(--hair)}
+.cls-bars i.on{background:var(--ink)}
+
+/* רשימת האימג'ים כמו בסקיצה: קבוצות לפי תיקייה, שורה עם צ'יפ וגודל */
+.img-group{margin-bottom:16px}
+.glabel{font-size:11px; font-weight:600; letter-spacing:.7px; color:var(--muted);
+  margin-bottom:8px; text-transform:uppercase}
+.img-row{display:flex; align-items:center; gap:13px; padding:11px 12px;
+  border-radius:11px; cursor:pointer; border:1.5px solid transparent}
+.img-row:hover{background:var(--sunken)}
+.img-row.on{border-color:var(--indigo); background:var(--indigo-soft)}
+.img-row .chip{width:36px; height:36px; border-radius:9px; background:var(--ink);
+  flex:none; position:relative}
+.img-row .chip::after{content:""; position:absolute; bottom:6px; left:6px;
+  width:4px; height:4px; border-radius:50%; background:var(--led-ok);
+  box-shadow:0 0 6px var(--led-ok)}
+.img-row b{font-size:14px; display:block}
+.img-row small{font-size:12px; color:var(--muted); display:block}
+.img-row .sz{margin-inline-start:auto; font-size:12px; color:var(--muted)}
+.namewrap{border-top:1px solid var(--hair); margin-top:18px; padding-top:16px}
+
+/* בחירת מחשבים לכיתה — רשת שמות, כמו בסקיצה */
+.machgrid{display:grid; grid-template-columns:repeat(7,1fr); gap:8px}
+.mach{border:1.5px solid var(--hair); border-radius:9px; padding:9px 0;
+  text-align:center; font-family:"IBM Plex Mono",monospace; font-size:13px;
+  cursor:pointer; color:var(--muted); transition:.12s; user-select:none}
+.mach:hover{border-color:var(--indigo)}
+.mach.on{border-color:var(--indigo); background:var(--indigo-soft);
+  color:var(--ink); font-weight:600}
+
+/* חדר השיכפולים — שורת מכונה עם נורית */
+.room-machines{margin-top:10px; border:1px solid var(--hair); border-radius:12px;
+  overflow:hidden}
+.room-row{display:flex; align-items:center; gap:10px; padding:10px 14px;
+  border-bottom:1px solid var(--hair); font-size:13.5px}
+.room-row:last-child{border-bottom:0}
+.room-row.dim{opacity:.55}
+.room-row b{min-width:90px}
+.room-row .dev{font-size:12px}
+.room-row{flex-wrap:wrap}
+.room-row > span:last-child{margin-inline-start:auto}
+/* שורת המגירות יושבת בתוך שורת המכונה, בשורה משלה — כך המסגרת של
+   .room-machines ממשיכה להפריד בין מכונה למכונה, ולא בין מכונה למגירות
+   שלה. הסטטוס נדחף לקצה לפי המחלקה, כי הוא כבר לא הילד האחרון. */
+.room-row > .state{margin-inline-start:auto}
+.room-drawers{flex-basis:100%; display:flex; flex-wrap:wrap; gap:6px;
+  margin-top:6px; padding-inline-start:18px}
+.room-drawers .drawer{display:inline-flex; align-items:center; gap:6px;
+  font-size:12px; padding:2px 10px; border:1px solid var(--hair);
+  border-radius:999px; color:var(--muted)}
+.room-drawers .drawer.ok{border-color:var(--led-ok); color:var(--led-ok)}
+.room-drawers .drawer.bad{border-color:#E5484D; color:#E5484D}
+.room-row .led{width:8px; height:8px; border-radius:50%; background:var(--hair);
+  flex:none}
+.room-row .led.on{background:var(--led-ok); box-shadow:0 0 8px var(--led-ok)}
+.room-ok{color:var(--led-ok)}
+.room-bad{color:#E5484D}
+/* "הושלם חלקית" — לא ירוק ולא אדום: המכונה סיימה, אבל לא כמו שצריך (#67) */
+.room-warn{color:#B36B00}

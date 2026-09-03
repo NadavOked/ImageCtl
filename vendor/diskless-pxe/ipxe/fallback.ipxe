@@ -1,0 +1,4 @@
+#!ipxe
+echo ImageCtl fallback shell
+ifconf
+shell

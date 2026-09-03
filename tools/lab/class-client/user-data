@@ -1,0 +1,310 @@
+#cloud-config
+# לקוח כיתה אמיתי — מה שהופך את 3.8/3.9 לבדיקות מלאות (#50).
+#
+# המכונה: **ImageCtl-Student-LAN2**, על הסוויץ' `ImageCtl-Class`.
+# כתובת מ-`ImageCtl-CollegeDHCP` (10.97.0.2), שיושב על אותו וילן
+# ומגלם את ה-DHCP של המכללה. ה-gateway הוא חומת האש, 10.97.0.1.
+#
+# מה שכבר הוכח: טבלת נתיבי ה-HTTP, ‏17/17, אבל **מהמארח אל nginx**,
+# כלומר מ-MGMT. מה שלא הוכח ולכן הקובץ הזה קיים: המסלול מלקוח שיושב
+# באמת על וילן הכיתה — ה-redirect ב-prerouting, שרשרת ה-forward,
+# ו-L4/L5 (‏TFTP 69, ‏PXE 4011) שמעולם לא נבדקו.
+#
+# הבדיקות פונות ל-**10.98.10.8 האמיתי**, כתובת ה-LAN של השרת, בדיוק
+# כמו שתחנה בכיתה תפנה. אף בדיקה לא פונה ל-10.97.0.1 או ל-nginx
+# ישירות — פנייה כזו הייתה עוקפת את ה-redirect, כלומר את מה שנבדק.
+#
+# שני שלבים, כי מהכיתה אין apt (‏L8 חוסם כיתה→MGMT ואין יציאה
+# לאינטרנט):
+#   א. המכונה עולה פעם אחת על ImageCtl-LAN, מושכת curl ו-tftp,
+#      ומכינה את שירות הבדיקה.
+#   ב. מעבירים את הכרטיס ל-`ImageCtl-Class` ומדליקים. השירות רץ בכל
+#      אתחול ושופך את הפלט לקונסולה הסריאלית — הדרך היחידה לקרוא
+#      תוצאה ממכונה שהמארח חסום ממנה.
+#
+# **תלוי בנתיב חזרה בשרת.** בלי `ip route add 10.97.0.0/24 via
+# 10.98.10.9` על 10.98.10.8, תשובות השרת יוצאות ל-default gateway
+# שלו ולא חוזרות דרך חומת האש — וכל בדיקה כאן תיראה כמו חסימה.
+# הבקרות-נגד למטה נועדו לתפוס בדיוק את הבלבול הזה.
+hostname: imagectl-class-client
+ssh_pwauth: true
+users:
+  - name: test
+    plain_text_passwd: "CHANGE-ME-BEFORE-USE"
+    lock_passwd: false
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    ssh_authorized_keys:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEXAMPLEKEYEXAMPLEKEYEXAMPLEKEYEXAMPLEKEY imagectl-lab
+packages:
+  - curl
+  - tftp-hpa
+write_files:
+  - path: /usr/local/sbin/imagectl-l4-probe
+    permissions: "0755"
+    content: |
+      #!/usr/bin/python3
+      """בדיקת שכבה 4 מהלקוח: האם החבילה הגיעה בכלל אל מארח היעד.
+
+      שלוש תוצאות, לא שתיים:
+        answer    — השירות ענה. פתוח, ומישהו מקשיב.
+        refused   — הגיע ICMP port-unreachable / RST מהיעד. **גם זה
+                    פתוח**: החבילה עברה את חומת האש והמארח עצמו ענה
+                    "אין כאן שירות".
+        no-answer — שקט. או drop בחומת האש, או שירות ששותק. זו לא
+                    ראיה לפתיחות, ולכן היא נספרת ככישלון.
+
+      ההפרדה בין refused לבין no-answer היא כל העניין: בלעדיה כל
+      בדיקת UDP נגמרת ב-"open|filtered" של nmap, שאינה אומרת דבר.
+      זה אותו לקח של http=000 — "פתוח" נקבע לפי תשובה שהתקבלה.
+      """
+      import random
+      import socket
+      import struct
+      import sys
+
+
+      def pxe_request(mac):
+          """בקשת PXE יוניקאסט אמיתית — מה ש-4011 אמור לקבל."""
+          chaddr = bytes(int(x, 16) for x in mac.split(":"))
+          p = struct.pack("!BBBBIHHIIII", 1, 1, 6, 0,
+                          random.getrandbits(32), 0, 0x8000, 0, 0, 0, 0)
+          p += chaddr + b"\x00" * 10          # chaddr, ‏16 בתים
+          p += b"\x00" * 64 + b"\x00" * 128   # sname, file
+          p += b"\x63\x82\x53\x63"            # magic cookie
+          p += b"\x35\x01\x03"                # 53 = DHCPREQUEST
+          p += b"\x3c\x09PXEClient"           # 60 = vendor class
+          p += b"\x5d\x02\x00\x07"            # 93 = arch EFI x64
+          p += b"\xff"
+          return p
+
+
+      def probe_udp(host, port, payload, timeout):
+          # שולחים פעמיים: הודעת ה-ICMP נמסרת לפעולת הסוקט הבאה,
+          # וניסיון יחיד מפספס אותה לפעמים.
+          for attempt in (1, 2):
+              s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+              s.settimeout(timeout)
+              try:
+                  s.connect((host, port))
+                  s.send(payload)
+                  data = s.recv(2048)
+                  return "answer", "%d bytes" % len(data)
+              except ConnectionRefusedError:
+                  return "refused", "ICMP port-unreachable"
+              except socket.timeout:
+                  if attempt == 2:
+                      return "no-answer", "timeout %gs" % timeout
+              except OSError as exc:
+                  return "no-answer", str(exc)
+              finally:
+                  s.close()
+
+
+      def probe_tcp(host, port, timeout):
+          s = socket.socket()
+          s.settimeout(timeout)
+          try:
+              s.connect((host, port))
+              return "answer", "connected"
+          except ConnectionRefusedError:
+              return "refused", "RST"
+          except socket.timeout:
+              return "no-answer", "timeout %gs" % timeout
+          except OSError as exc:
+              return "no-answer", str(exc)
+          finally:
+              s.close()
+
+
+      def primary_mac():
+          """ה-MAC של הכרטיס שדרכו יוצא נתיב ברירת המחדל."""
+          import glob
+          for path in sorted(glob.glob("/sys/class/net/en*/address")):
+              with open(path) as fh:
+                  mac = fh.read().strip()
+              if mac and mac != "00:00:00:00:00:00":
+                  return mac
+          return "00:15:5d:10:00:ff"
+
+
+      if __name__ == "__main__":
+          proto, host, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
+          kind = sys.argv[4] if len(sys.argv) > 4 else "empty"
+          if proto == "tcp":
+              got, detail = probe_tcp(host, port, 6)
+          else:
+              body = pxe_request(primary_mac()) if kind == "pxe" else b"\x00"
+              got, detail = probe_udp(host, port, body, 6)
+          print("%s %s" % (got, detail))
+
+  - path: /usr/local/sbin/imagectl-class-verify
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      # ‏3.8 + 3.9 + L4/L5, מלקוח שיושב על וילן הכיתה.
+      set -u
+      SERVER="${SERVER:-10.98.10.8}"
+      MARK="imagectl-firewall: blocked"
+      fails=0
+
+      # $1 = blocked|open, $2 = תיאור, $3.. = ארגומנטים ל-curl
+      probe() {
+          _want=$1; _what=$2; shift 2
+          _out=$(curl -s -m 20 --path-as-is -w '\n%{http_code}' "$@" 2>&1)
+          _code=$(printf '%s' "$_out" | tail -n1)
+          # ‏"פתוח" הוא **תשובה** מהשרת, לא היעדר סימן של חומת האש.
+          # ‏http=000 הוא חיבור שנכשל, ובלי השורה הזו הוא נספר כ-PASS —
+          # כלומר 3.9 ירוקה בדיוק כשנתיבי הסוכן מנותקים. זה הכשל השקט
+          # שהבדיקה הזו קיימת כדי למנוע.
+          if [ -z "$_code" ] || [ "$_code" = "000" ]; then _got="no-answer"
+          elif printf '%s' "$_out" | grep -q "$MARK"; then _got=blocked
+          else _got=open; fi
+          if [ "$_want" = "$_got" ]; then _v="PASS"; else _v="FAIL"; fails=$((fails+1)); fi
+          printf '%-4s  %-8s got=%-9s http=%-4s  %s\n' \
+                 "$_v" "$_want" "$_got" "$_code" "$_what"
+      }
+
+      # $1 = reachable|silent (מה מצפים), $2 = תיאור, $3.. = ל-probe
+      l4() {
+          _want=$1; _what=$2; shift 2
+          _res=$(imagectl-l4-probe "$@" 2>&1)
+          _got=$(printf '%s' "$_res" | awk '{print $1}')
+          # ‏answer ו-refused שניהם מוכיחים שהחבילה הגיעה ליעד.
+          case "$_got" in answer|refused) _class=reachable ;; *) _class=silent ;; esac
+          if [ "$_want" = "$_class" ]; then _v="PASS"; else _v="FAIL"; fails=$((fails+1)); fi
+          printf '%-4s  %-9s got=%-9s (%s)  %s\n' "$_v" "$_want" "$_class" "$_res" "$_what"
+      }
+
+      # $1 = שם הקובץ ב-TFTP, $2 = reachable|silent
+      #
+      # דרך curl ולא דרך לקוח tftp ייעודי, ובכוונה: המכונה הזו עולה
+      # בוילן הכיתה, שאין בו אינטרנט — התקנת חבילות של cloud-init
+      # נכשלת שם **בשקט**. ‏tftp-hpa אכן לא הותקן, והבדיקה הריצה
+      # פקודה שאינה קיימת. הודעת השגיאה של timeout מכילה את המילה
+      # "timeout", ולכן היא נתפסה בדיוק בענף ה-"silent" ודיווחה
+      # שחומת האש חוסמת — כשל-שווא שהיה שולח לחפש כלל שגוי. ‏curl
+      # קיים באימג' הבסיס ואינו תלוי ב-apt.
+      tftp_get() {
+          _f=$1; _want=$2
+          rm -f /tmp/tftp.out
+          # כלי חסר אינו "חסום" — הבדיקה עצמה לא רצה, וזה מצב שלישי.
+          if ! command -v curl >/dev/null 2>&1; then
+              _class=probe-error; _det="אין curl — הבדיקה לא רצה"
+          else
+              _out=$(timeout 25 curl -sS -o /tmp/tftp.out \
+                         "tftp://$SERVER/$_f" 2>&1)
+              _rc=$?
+              _sz=0; [ -f /tmp/tftp.out ] && _sz=$(wc -c < /tmp/tftp.out)
+              # קובץ שהגיע = פתוח. גם הודעת שגיאה מהשרת ("File not found")
+              # היא **תשובה** — כלומר המסלול פתוח והשרת דיבר איתנו.
+              if [ "$_rc" = 0 ] && [ "$_sz" -gt 0 ]; then
+                  _class=reachable; _det="$_sz bytes"
+              elif [ "$_rc" = 124 ]; then
+                  _class=silent; _det="timeout"
+              elif printf '%s' "$_out" | grep -qi "not found\|access violation"; then
+                  _class=reachable; _det=$(printf '%s' "$_out" | tr '\n' ' ')
+              elif [ -n "$_out" ]; then
+                  _class=probe-error; _det=$(printf '%s' "$_out" | tr '\n' ' ')
+              else
+                  _class=silent; _det="rc=$_rc no output"
+              fi
+          fi
+          if [ "$_want" = "$_class" ]; then _v="PASS"; else _v="FAIL"; fails=$((fails+1)); fi
+          printf '%-4s  %-9s got=%-9s (%s)  TFTP get %s\n' \
+                 "$_v" "$_want" "$_class" "$_det" "$_f"
+      }
+
+      # הכתובת וה-MAC של הלקוח נגזרים בזמן ריצה ולא נכתבים קשיח:
+      # המכונה שתשמש לקוח כיתה עדיין לא הוכרעה, וערך קשיח שגוי היה
+      # מפיל את hello מסיבה שאין לה קשר לחומת האש.
+      _me=$(ip -4 -br addr show scope global | awk '{print $3}' | head -n1 | cut -d/ -f1)
+      _mac=$(cat /sys/class/net/en*/address 2>/dev/null | head -n1)
+
+      echo "===== IMAGECTL-CLASS-VERIFY BEGIN ====="
+      echo "date: $(date -Is)   server: $SERVER"
+      echo "client: ip=$_me mac=$_mac"
+      ip -br addr show scope global
+      ip route show
+      echo
+
+      echo "=== 3.8 — הקונסולה חסומה מוילן הכיתה ==="
+      probe blocked "GET  /"                        "http://$SERVER:8080/"
+      probe blocked "GET  /console/"                "http://$SERVER:8080/console/"
+      probe blocked "GET  /console/console.js"      "http://$SERVER:8080/console/console.js"
+      probe blocked "GET  /console/station/"        "http://$SERVER:8080/console/station/"
+      probe blocked "GET  /api/console/overview"    "http://$SERVER:8080/api/console/overview"
+      probe blocked "GET  /api/console/machines"    "http://$SERVER:8080/api/console/machines"
+      probe blocked "GET  /api/console/room"        "http://$SERVER:8080/api/console/room"
+      probe blocked "POST /api/console/login"       -X POST -H 'Content-Type: application/json' \
+                                                    -d '{"username":"admin","password":"x"}' \
+                                                    "http://$SERVER:8080/api/console/login"
+      probe blocked "GET  traversal ../console/"    "http://$SERVER:8080/api/v1/agent/../console/console.js"
+      probe blocked "GET  /api/v1/capture/x/manifest" "http://$SERVER:8080/api/v1/capture/x/manifest"
+
+      echo
+      echo "=== 3.9 — נתיבי הסוכן והתחנה נשארו פתוחים ==="
+      probe open "POST /api/v1/agent/hello"  -X POST -H 'Content-Type: application/json' \
+                 -d "{\"mac\":\"$_mac\",\"ip\":\"$_me\",\"disks\":[]}" \
+                 "http://$SERVER:8080/api/v1/agent/hello"
+      probe open "POST /api/v1/agent/login (אשף השחזור)" \
+                 -X POST -H 'Content-Type: application/json' \
+                 -d '{"username":"admin","password":"deliberately-wrong"}' \
+                 "http://$SERVER:8080/api/v1/agent/login"
+      probe open "POST /api/v1/agent/progress" -X POST -H 'Content-Type: application/json' \
+                 -d '{}' "http://$SERVER:8080/api/v1/agent/progress"
+      probe open "GET  /api/v1/agent/groups"  "http://$SERVER:8080/api/v1/agent/groups"
+      probe open "GET  /api/v1/agent/state"   "http://$SERVER:8080/api/v1/agent/state?mac=$_mac"
+      probe open "GET  /api/v1/agent/sessions/active" "http://$SERVER:8080/api/v1/agent/sessions/active"
+      probe open "GET  /boot/menu"            "http://$SERVER:8080/boot/menu?mac=$_mac"
+      probe open "GET  /api/v1/images/.../manifest" \
+                 "http://$SERVER:8080/api/v1/images/img_probe/manifest"
+
+      echo
+      echo "=== L4/L5 — שכבה 4 אל $SERVER (נבדק כאן לראשונה) ==="
+      tftp_get "grub/grub.cfg"  reachable
+      tftp_get "bootx64.efi"    reachable
+      # ‏L4 udp/69 **אינו** נבדק בבדיקת פורט גולמית, בכוונה: ‏TFTP עונה
+      # מפורט מקור חדש, וסוקט UDP מחובר לא יקבל תשובה מפורט אחר. בדיקה
+      # כזו נכשלת תמיד — גם כשהמסלול פתוח לגמרי, כפי ששתי השורות למעלה
+      # מוכיחות. בדיקה שלא יכולה לעבור אינה "מחמירה", היא רעש שמלמד
+      # להתעלם מאדום. שתי המשיכות למעלה הן הכיסוי האמיתי של udp/69.
+      l4 reachable "L5 udp/4011 PXE proxy"       udp "$SERVER" 4011 pxe
+      # בקרה שלילית: אלה **חייבים** לשתוק. אם גם הם 'reachable',
+      # חומת האש לא באמת חוסמת ושאר התוצאות חסרות משמעות.
+      l4 silent    "L6 tcp/22   ssh (חייב drop)"  tcp "$SERVER" 22
+      l4 silent    "L7 udp/53   DNS (חייב drop)"  udp "$SERVER" 53
+      l4 silent    "L8 tcp/22   אל MGMT 10.98.10.1" tcp 10.98.10.1 22
+      # בקרה חיובית: 8080 חייב לענות — הוא ה-redirect אל nginx.
+      l4 reachable "L3 tcp/8080 (redirect אל nginx)" tcp "$SERVER" 8080
+
+      echo
+      if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAIL"; fi
+      echo "===== IMAGECTL-CLASS-VERIFY END ====="
+      exit $fails
+
+  - path: /etc/systemd/system/imagectl-class-verify.service
+    content: |
+      [Unit]
+      # רץ בכל אתחול, ולא רק פעם אחת ב-runcmd: את המכונה מעבירים בין
+      # סוויצ'ים ומדליקים שוב, ו-cloud-init לא מריץ runcmd פעמיים.
+      Description=ImageCtl class-client firewall verification (3.8/3.9/L4)
+      After=cloud-final.service network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      # ‏> /dev/ttyS0 הוא הדרך היחידה לקרוא את התוצאה מהמארח: מהכיתה
+      # אין SSH שהמארח יכול לפתוח, והמארח עצמו חסום מהלקוח (L8).
+      ExecStart=/bin/sh -c '/usr/local/sbin/imagectl-class-verify 2>&1 | tee /var/log/imagectl-class-verify.log > /dev/ttyS0'
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  - systemctl daemon-reload
+  - systemctl enable imagectl-class-verify.service
+  # ריצה ראשונה כבר עכשיו — בשלב ההכנה זו בקרה מועילה: מ-ImageCtl-LAN
+  # חומת האש אינה במסלול כלל, ולכן הכול אמור לחזור 'open'.
+  - systemctl start --no-block imagectl-class-verify.service

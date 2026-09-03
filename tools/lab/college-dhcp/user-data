@@ -1,0 +1,58 @@
+#cloud-config
+# ‏"DHCP המכללה" — שרת DHCP זעיר שמדמה את השרת הקיים של המכללה.
+#
+# מאז #50 הוא יושב על **וילן הכיתה** (`ImageCtl-Class`, ‏10.97.0.0/24)
+# ולא על הרשת הרגילה. זו הנקודה של חלופה (ב): במכללה, וילן כיתה מקבל
+# כתובות מה-DHCP של המכללה — לא מ-ImageCtl ולא מחומת האש. חומת האש
+# היא נתב בלבד, וה-dnsmasq שהיה בתוכה כובה (שני מחלקים על וילן אחד
+# היו מפילים את 3.2 מסיבה מזויפת).
+#
+# הוא עדיין מחלק כתובות בלבד — בלי DNS. מה שכן נוסף כאן: **אופציות
+# 66/67**. זה מה שמאפשר לתחנה בכיתה לעלות ב-PXE בכלל: לשרת ImageCtl
+# אין ממשק על 10.97.0.0/24, ו-proxy-DHCP הוא ברודקאסט תוך-מקטעי —
+# הוא לעולם לא יראה את ה-DISCOVER. לכן ה-DHCP של המכללה מוסר את שם
+# הקובץ ואת כתובת ה-TFTP, והתחנה פונה משם **יוניקאסט** אל השרת
+# (‏L4/L5 בחומת האש). זו בדיוק ההגדרה שהמכללה תצטרך בשטח.
+hostname: college-dhcp
+ssh_pwauth: true
+users:
+  - name: test
+    plain_text_passwd: "CHANGE-ME-BEFORE-USE"
+    lock_passwd: false
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    ssh_authorized_keys:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEXAMPLEKEYEXAMPLEKEYEXAMPLEKEYEXAMPLEKEY imagectl-lab
+packages:
+  - dnsmasq
+write_files:
+  - path: /etc/dnsmasq.d/college.conf
+    content: |
+      # DHCP בלבד — בלי DNS, כמו שרת כתובות של מכללה.
+      port=0
+      dhcp-range=10.97.0.100,10.97.0.140,12h
+      dhcp-option=option:router,10.97.0.1
+      dhcp-option=option:dns-server,1.1.1.1
+      dhcp-authoritative
+
+      # --- אופציות 66/67 ---
+      # ‏66 = כתובת ה-TFTP (השדה האחרון), ‏67 = שם קובץ האתחול (הראשון).
+      # הכתובת היא **כתובת ה-LAN האמיתית של השרת**, 10.98.10.8 — לא
+      # כתובת וילן ההפצה ולא כתובת חומת האש. זה מה ש-#37/#39 נשענים
+      # עליו (שורת הקרנל נבנית מהכתובת שעליה השרת קיבל את החיבור),
+      # וזה מה שמשאיר את #42 דורש סיסמה באשף השחזור.
+      #
+      # ההתאמה לפי option:client-arch — אותה חלוקה כמו ב-server/dhcp.py,
+      # כדי שמכונות Gen2 (‏EFI) יקבלו shim ומכונות BIOS יקבלו core.0.
+      dhcp-match=set:efi-x86_64,option:client-arch,7
+      dhcp-match=set:efi-x86_64,option:client-arch,9
+      dhcp-match=set:bios,option:client-arch,0
+      dhcp-boot=tag:efi-x86_64,bootx64.efi,,10.98.10.8
+      dhcp-boot=tag:bios,grub/i386-pc/core.0,,10.98.10.8
+runcmd:
+  # ‏dnsmasq חייב לשרת את וילן הכיתה ורק אותו. אם הוא ידלוף לרשת
+  # הרגילה הוא יתנגש במה שיש שם ויפיל את 3.2.
+  - CLASS_IF=$(ip -br link | awk '/00:15:5d:10:00:61/{print $1}')
+  - printf 'interface=%s\nbind-interfaces\n' "$CLASS_IF" >> /etc/dnsmasq.d/college.conf
+  - systemctl enable --now dnsmasq
+  - systemctl restart dnsmasq

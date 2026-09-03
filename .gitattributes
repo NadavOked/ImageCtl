@@ -1,0 +1,4 @@
+# הפרויקט רץ על לינוקס. שומרים LF בריפו גם כשעורכים מוינדוס.
+* text=auto eol=lf
+*.png binary
+*.efi binary

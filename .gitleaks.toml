@@ -1,0 +1,31 @@
+# gitleaks — הרחבה של [gitleaks] שמריצה CI. ראה .github/workflows/gitleaks.yml
+#
+# למה יש קובץ כזה בכלל: סריקת הסודות של GitHub בתוכנית החינמית מכסה
+# **דפוסי ספקים בלבד** (מפתח AWS, טוקן של GitHub וכדומה). "non-provider
+# patterns" — ובהם **מפתחות פרטיים** — דורשים GitHub Secret Protection
+# בתשלום. כלומר `lab_key` שייכנס לריפו בטעות **לא ייתפס** על ידי GitHub.
+# gitleaks סוגר בדיוק את הפער הזה, בחינם.
+
+[extend]
+useDefault = true
+
+[[rules]]
+  id = "generic-api-key"
+  [rules.allowlist]
+    # סלט קבוע בעוזר הבדיקה שיוצר משתמש (tests/test_station.py). זו
+    # מחרוזת hex מובהקת-כמזויפת, מופע יחיד בכל הריפו, והיא בהיסטוריה
+    # מאז 2026-08-29. ההיתר הוא **על הערך הזה בלבד** ולא על tests/,
+    # כדי שסוד אמיתי שייכנס לטסטים ייתפס.
+    regexes = ['''aabbccddeeff00112233445566778899''']
+
+[[rules]]
+  # מפתחות Gemini/Google בפורמט החדש (2026): קידומת `AQ.` ו-~50 תווי
+  # base64url. **ברירת המחדל של gitleaks אינה תופסת אותם** — החוק
+  # המובנה (gcp-api-key) מכיר רק `AIza…`, ונמדד כאן שהוא מחזיר False
+  # על מפתח אמיתי בפורמט החדש. שלושה כאלה חיים על תחנת הפיתוח
+  # במשתני סביבה, ואחד מוגדר כסוד בריפו — כלומר זו בדיוק המשפחה
+  # שדליפה שלה לקוד היא התרחיש הסביר ביותר אצלנו.
+  id = "google-ai-key-aq-format"
+  description = "Google AI (Gemini) API key, new AQ.-prefixed format"
+  regex = '''\bAQ\.[A-Za-z0-9_\-]{40,80}\b'''
+  keywords = ["AQ."]

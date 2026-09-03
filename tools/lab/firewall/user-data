@@ -1,0 +1,208 @@
+#cloud-config
+# חומת האש של המעבדה — מימוש התייחסות ל-install/firewall-rules.md,
+# ומתקן הבדיקה של 3.8/3.9 ב-docs/lab-test-plan.md.
+#
+# שתי רגליים: 10.97.0.1 בוילן הכיתה המדומה, 10.98.10.9 ברשת הרגילה.
+# ‏nftables עושה את שכבה 3/4; ‏nginx עושה את החלק שתלוי בנתיב HTTP —
+# הכול על אותו פורט 8080, ולכן בלי רכיב מודע-HTTP אין מה לאכוף.
+#
+# שקיפות בשכבה 3 היא דרישה, לא נוחות: התחנה פונה ל-10.98.10.8 האמיתי,
+# ‏nftables מסיט את החיבור פנימה ב-redirect, ו-nginx מעביר הלאה
+# **לכתובת ה-LAN של השרת**. פנייה לכתובת וילן ההפצה (10.99.0.1) הייתה
+# מכבה את #42 — הסוכן היה מפסיק לדרוש סיסמה באשף השחזור.
+#
+# ‏#50 שינה כאן שלושה דברים: ‏MGMT צומצם למארח בודד, ‏dnsmasq ירד
+# (‏CollegeDHCP עבר לוילן הכיתה והוא ה-DHCP שם, כמו במכללה), ומתקן
+# ה-netns נמחק לטובת לקוח אמיתי — ‏tools/lab/class-client/.
+hostname: imagectl-firewall
+ssh_pwauth: true
+users:
+  - name: test
+    plain_text_passwd: "CHANGE-ME-BEFORE-USE"
+    lock_passwd: false
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    ssh_authorized_keys:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEXAMPLEKEYEXAMPLEKEYEXAMPLEKEYEXAMPLEKEY imagectl-lab
+packages:
+  - nftables
+  - nginx
+  - curl
+write_files:
+  - path: /etc/sysctl.d/99-imagectl-firewall.conf
+    content: |
+      # ניתוב דלוק כדי שמה שנחסם ייחסם ב-forward וייכנס ליומן,
+      # ולא ייעלם בשקט בשכבת הניתוב.
+      net.ipv4.ip_forward=1
+
+  - path: /etc/nftables.conf
+    permissions: "0755"
+    content: |
+      #!/usr/sbin/nft -f
+      # שכבה 3/4 — הטבלה L1..L11 ב-install/firewall-rules.md.
+      # ההתאמה לפי כתובות ולא לפי שם כרטיס: שמות כרטיסים בדביאן ענן
+      # תלויים ב-renderer, וכלל שקורס על שם כרטיס נראה כמו כלל שחוסם.
+      flush ruleset
+
+      define CLASS_NET = 10.97.0.0/24
+      define SERVER    = 10.98.10.8
+      # ‏MGMT הוא **תחנת הניהול בלבד**, לא הרשת הרגילה כולה. עד #50
+      # היה כאן 10.98.10.0/24, וזה היה חור: אותו /24 מכיל גם את השרת
+      # (‏10.98.10.8) וגם את תחנות הסטודנטים, כך שכל לקוח עם כתובת
+      # 10.98.10.x היה מסווג MGMT ומקבל את הקונסולה במלואה. המפרט
+      # (‏install/firewall-rules.md, טור המעבדה) אומר "מארח המעבדה,
+      # ‏10.98.10.1" — מארח בודד.
+      define MGMT      = 10.98.10.1
+      # הרשת הרגילה כולה — רק בשביל כלל ה-deny של L8.
+      define LAN_NET   = 10.98.10.0/24
+
+      table inet filter {
+        # ‏TFTP עונה מפורט מקור **חדש**, ולא מ-69: הבקשה יוצאת ל-69,
+        # והשרת פותח חיבור נפרד חזרה אל הלקוח. בלי helper, התשובה
+        # אינה established ואינה related — היא נופלת ל-policy drop
+        # בשקט, וה-PXE של הכיתה מת בלי שורה אחת ביומן.
+        #
+        # ‏`sysctl net.netfilter.nf_conntrack_helper` **אינו קיים יותר**
+        # בקרנלים חדשים (ההקצאה האוטומטית הוסרה) — ההקצאה חייבת להיות
+        # מפורשת כאן. אומת במעבדה: בלי זה `curl tftp://` פוקע, ואיתו
+        # מושך את grub.cfg (‏#50).
+        ct helper tftp {
+          type "tftp" protocol udp
+        }
+
+        chain helperassign {
+          type filter hook prerouting priority filter; policy accept;
+          ip saddr $CLASS_NET ip daddr $SERVER udp dport 69 ct helper set "tftp"
+        }
+
+        chain input {
+          type filter hook input priority 0; policy drop;
+          ct state established,related accept
+          ct state invalid drop
+          iif lo accept
+          icmp type echo-request accept
+          # מהכיתה: החיבור שהוסט אל nginx. ‏DHCP **אינו** מתקבל כאן
+          # יותר — מאז #50 מי שמחלק כתובות בוילן הכיתה הוא
+          # ‏ImageCtl-CollegeDHCP שיושב עליו, כמו במכללה. שני מחלקים
+          # על וילן אחד היו מפילים את 3.2 מסיבה מזויפת.
+          ip saddr $CLASS_NET tcp dport 8080 accept
+          # מהרשת הרגילה: כניסת ניהול למעבדה בלבד.
+          ip saddr $MGMT tcp dport 22 accept
+          # מחשב הניהול (המארח עצמו, 10.98.10.1) מגיע גם ל-nginx שכאן,
+          # כדי שאפשר יהיה לבדוק את טבלת הנתיבים מהמארח בלי כניסה
+          # למכונה. זה לא מרחיב הרשאות: לפי L2 במפרט, MGMT מגיע לשרת
+          # ישירות ממילא — התעבורה שלו לא עוברת דרך חומת האש כלל.
+          # ‏שים לב: זו בדיקה מ-MGMT, והיא **אינה** מוכיחה את 3.8/3.9.
+          # ההוכחה היא מלקוח על וילן הכיתה (tools/lab/class-client/).
+          ip saddr $MGMT tcp dport 8080 accept
+        }
+
+        chain forward {
+          type filter hook forward priority 0; policy drop;
+          ct state established,related accept
+          # L4/L5 — ‏TFTP ו-PXE proxy יוניקאסט אל השרת נשארים פתוחים.
+          ip saddr $CLASS_NET ip daddr $SERVER udp dport { 69, 4011 } accept
+          # L6/L7 — כל השאר אל השרת נחסם, ובגלוי.
+          ip saddr $CLASS_NET ip daddr $SERVER tcp dport 22 \
+              log prefix "imagectl-fw deny ssh " drop
+          ip saddr $CLASS_NET ip daddr $SERVER \
+              log prefix "imagectl-fw deny l4 " drop
+          # L8 — כיתה אל שאר הרשת הרגילה (כולל תחנת הניהול עצמה).
+          ip saddr $CLASS_NET ip daddr $LAN_NET \
+              log prefix "imagectl-fw deny mgmt " drop
+        }
+
+        chain output { type filter hook output priority 0; policy accept; }
+      }
+
+      table ip imagectl_nat {
+        chain prerouting {
+          type nat hook prerouting priority dstnat; policy accept;
+          # L3 — התעבורה אל 8080 של השרת נכנסת ל-nginx שעל המכונה הזו.
+          ip saddr $CLASS_NET ip daddr $SERVER tcp dport 8080 redirect to :8080
+        }
+        chain postrouting {
+          type nat hook postrouting priority srcnat; policy accept;
+          # ריק בכוונה — **אין masquerade**. ‏SNAT היה פותר את בעיית
+          # נתיב החזרה בלי לגעת בשרת, אבל הוא מסתיר את כתובת התחנה
+          # מהשרת ומכניס את חומת האש לתוך זהות החיבור. הפתרון הוא
+          # נתיב חזרה בשרת: ip route add 10.97.0.0/24 via 10.98.10.9
+        }
+      }
+
+  - path: /etc/nginx/conf.d/imagectl-firewall.conf
+    content: |
+      # שכבת הנתיבים — הטבלה H1..H7 ב-install/firewall-rules.md.
+      # ‏nginx מנרמל את $uri לפני התאמת location: מפענח %XX, מכווץ //
+      # ופותר ../ — כלומר /api/v1/agent/../console/ מגיע ל-location
+      # ‏/console/ ונחסם, וזה בדיוק מה שדרוש שם.
+      server {
+          listen 8080 default_server;
+          server_name _;
+          charset utf-8;
+
+          client_max_body_size 0;
+          proxy_http_version 1.1;
+          proxy_set_header Host $host;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          # קבצי מחיצה הם גיגה-בייטים בזרימה — בלי חציצה ובלי שעון קצר.
+          proxy_buffering off;
+          proxy_request_buffering off;
+          proxy_read_timeout 1h;
+          proxy_send_timeout 1h;
+
+          # גוף עם סימן מזהה: בדיקה 3.9 חייבת להבדיל בין 403 של חומת
+          # האש לבין 403 של השרת (משתמש deploy מול endpoint ניהולי).
+          # ‏proxy_intercept_errors off במפורש — עם on, ‏403 של השרת היה
+          # מוחלף בגוף של חומת האש, וההבדלה הזו הייתה נעלמת.
+          proxy_intercept_errors off;
+          error_page 403 /_imagectl_denied;
+          location = /_imagectl_denied {
+              internal;
+              default_type text/plain;
+              return 403 "imagectl-firewall: blocked (console/management path)\n";
+          }
+
+          # --- H1..H3: חסום ---
+          location /api/console/   { return 403; }
+          location /console/       { return 403; }
+          location /api/v1/capture/ { return 403; }
+
+          # --- H4..H6: פתוח ---
+          location /boot/          { proxy_pass http://10.98.10.8:8080; }
+          location /api/v1/agent/  { proxy_pass http://10.98.10.8:8080; }
+          location /api/v1/images/ { proxy_pass http://10.98.10.8:8080; }
+
+          # --- H7: ברירת מחדל — חסום. תופס גם / (הפניה לקונסולה). ---
+          location / { return 403; }
+      }
+
+  - path: /usr/local/share/imagectl-fw-README
+    content: |
+      # ‏אין כאן imagectl-fw-verify — בכוונה (#50).
+      #
+      # עד #50 ישב כאן סקריפט שבנה network namespace עם כתובת מוילן
+      # הכיתה ובדק ממנו. כל 18 הבדיקות שלו החזירו http=000 באופן
+      # אחיד, כולל אלה שאמורות היו לקבל תשובת חסימה — כלומר אף חבילה
+      # לא עזבה את ה-namespace. הסיבה: הוא נתן ל-namespace כתובת /32
+      # ונתיב ברירת מחדל אל ההתקן, בלי gateway; פתירת 10.98.10.8 על
+      # הלינק דורשת proxy_arp בצד veth של המארח, והוא לא היה דלוק.
+      #
+      # לא תיקנו — מחקנו. גם אילו עבד, namespace על אותו קרנל אינו
+      # מדמה את מה שחשוב כאן: נתיב חזרה, ניתוב א-סימטרי, ו-L4/L5
+      # (TFTP/PXE) שהם forwarding טהור. הוא הסתיר בדיוק את מה
+      # שהבדיקה קיימת כדי לחשוף.
+      #
+      # ההוכחה רצה עכשיו מלקוח אמיתי על וילן הכיתה:
+      # tools/lab/class-client/ — ImageCtl-Student-LAN2.
+
+runcmd:
+  - sysctl -p /etc/sysctl.d/99-imagectl-firewall.conf
+  # מודול ה-helper חייב להיטען לפני שהכללים מקצים אותו, ולשרוד אתחול.
+  - printf 'nf_conntrack_tftp\n' > /etc/modules-load.d/imagectl-firewall.conf
+  - modprobe nf_conntrack_tftp
+  - rm -f /etc/nginx/sites-enabled/default
+  - systemctl enable --now nftables
+  - nft -f /etc/nftables.conf
+  - nginx -t && systemctl restart nginx
+  - systemctl enable nginx
