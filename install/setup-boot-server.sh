@@ -489,11 +489,40 @@ run systemctl enable --now imagectl-server
 
 cat <<EOF
 
-$(printf '%s' "$GRN")מוכן.$(printf '%s' "$OFF")
-
   קונסולה        $SERVER_URL  (משתמש: $ADMIN_USER)
   TFTP root      $TFTP_ROOT  (bootx64.efi -> grubx64.efi -> grub/grub.cfg)
   נתונים         $DATA_DIR · אימג'ים: $IMAGES_DIR
+EOF
+
+# ---------------------------------------------------------------------------
+# שער הסיום — "מוכן." רק כשתחנה באמת יכולה לעלות (#332)
+# ---------------------------------------------------------------------------
+#
+# ההתקנה יצאה 0 והדפיסה "מוכן." בזמן ש-$HTTP_ROOT הייתה ריקה ושני
+# הקבצים שהתפריט מפנה אליהם החזירו 404. זו הגרסה החמורה של עיקרון 5:
+# לא בדיקה שנכשלה בשקט, אלא הצהרת הצלחה מפורשת על מצב שאינו עובד.
+#
+# השער נכון בשתי התשובות להכרעה שעדיין פתוחה — האם המתקין יבנה את
+# ה-initrd ויעתיק את הקרנל בעצמו. אם יבנה, השער יתפוס בנייה שנכשלה;
+# ואם לא, הוא לא ייפרד מהמפעיל במילה "מוכן".
+
+READY=1
+if (( DRY_RUN )); then
+    printf '%s    would run: install/verify-boot-payload.sh --server-url %s%s\n' \
+        "$DIM" "$SERVER_URL" "$OFF"
+else
+    say "בודק שהשרת מגיש את הקרנל ואת ה-initrd"
+    bash "$APP_DIR/install/verify-boot-payload.sh" \
+        --app-dir "$APP_DIR" --http-root "$HTTP_ROOT" --server-url "$SERVER_URL" \
+        || READY=0
+fi
+
+# הבדיקה כבר אמרה מה חסר ומה עושים. "מוכן." לא נאמר כאן.
+(( READY )) || exit 1
+
+cat <<EOF
+
+$(printf '%s' "$GRN")מוכן.$(printf '%s' "$OFF")
 
 $(printf '%s' "$YEL")מה עושים עכשיו — הכל מהקונסולה:$(printf '%s' "$OFF")
 

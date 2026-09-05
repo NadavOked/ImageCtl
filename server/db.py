@@ -544,10 +544,18 @@ def journal(conn: sqlite3.Connection, event: str, detail: str = "", user: str = 
     """שורת יומן. נובע ישירות מריבוי המשתמשים — מי עשה מה ומתי.
 
     נעול, כי זו הכתיבה היחידה שמגיעה גם מתהליכון הרקע של השידור.
+
+    ‏`writing` מאותה סיבה כמו ב-`net_seen` וב-`set_setting` (#379):
+    הנעילה מסדרת את הכותבים **שלנו** בתור הוגן, אבל היא אינה עושה
+    ``rollback`` ואינה מגנה מפני כותב חיצוני לתהליך — ‏`sqlite3` ידני
+    על השרת או גיבוי. שורת יומן שנכשלה בלי ``rollback`` משאירה את
+    החיבור בתוך טרנזאקציה, ומשם כל כתיבה עליו נכשלת **מיד** עד אתחול
+    השרת (#272). ‏`journal` נקרא כמעט מכל מסלול בשרת, ולכן חיבור
+    שהורעל כאן נודד לכל מי שיקבל את התהליכון אחריו — ‏uvicorn ממחזר
+    אותם.
     """
-    with _write_lock:
+    with _write_lock, writing(conn):
         conn.execute(
             "INSERT INTO journal (ts, user, event, detail) VALUES (?, ?, ?, ?)",
             (now_iso(), user, event, detail),
         )
-        conn.commit()
