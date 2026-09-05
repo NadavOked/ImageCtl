@@ -71,12 +71,19 @@ def do_capture(server, task_id, manifest=None, files=None):
 # --- יצירת המשימה -----------------------------------------------------------
 
 
-def test_capture_is_only_offered_to_a_build_machine(server):
-    from conftest import setup_classroom
-    ids = setup_classroom(server)
-    r = make_task(server, ids["mac1"])
+def test_capture_is_refused_to_a_cloner(server):
+    """‏#381 הרחיב את השער לרשימת היתר — ‏`cloner` נשאר בחוץ.
+
+    למכונת שיכפול אין מערכת מקומית משלה, ומשימת קליטה עליה היא בקשה
+    לקרוא דיסק ריק (#17). מחשב כיתה **כן** נקלט מאז #381, ומה שקורה
+    לאימג' שלו נבדק ב-`test_capture_mac_binding.py`.
+    """
+    server["admin"].post("/api/console/machines",
+                         json={"mac": "aa:bb:cc:00:00:20", "name": "שכפול 1",
+                               "group_id": "grp_CLONERS"})
+    r = make_task(server, "aa:bb:cc:00:00:20")
     assert r.status_code == 400
-    assert "בניית אימג'ים" in r.json()["detail"]
+    assert "cloner" in r.json()["detail"]
 
 
 def test_an_unregistered_machine_cannot_be_targeted(server):

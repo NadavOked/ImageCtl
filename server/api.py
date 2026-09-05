@@ -18,7 +18,7 @@ from boot.grub_menu import normalize_mac as lenient_mac
 from . import agent_loops, foreign_vlan, pulls, registry, reports, users
 from .db import journal
 from .hello import build_answer, login_required, off_deploy_vlan
-from .images import ImageLibrary
+from .images import ImageLibrary, restore_refusal
 from .sessions import SessionError, SessionStore
 
 log = logging.getLogger("imagectl.api")
@@ -141,9 +141,17 @@ def create_agent_router(ctx: ServerContext,
             pulls.journal_refusal(ctx.conn, mac, "MAC לא רשום")
             return _error(403, "this mac is not registered", "unknown_mac")
         image_id = body.get("image_id", "")
-        if ctx.library.get(image_id) is None:
+        manifest = ctx.library.get(image_id)
+        if manifest is None:
             pulls.journal_refusal(ctx.conn, mac, f"אימג' {image_id} לא קיים")
             return _error(404, "unknown image", "no_image")
+        # ‏#381: אימג' שנקלט ממחשב כיתה שייך למכונה שנקלט ממנה. הסירוב
+        # **גלוי** — הודעה שאומרת של מי הוא ומה ביקשנו — ולא נפילה שקטה
+        # לדיסק מקומי (עיקרון 5).
+        refusal = restore_refusal(manifest, [mac])
+        if refusal is not None:
+            pulls.journal_refusal(ctx.conn, mac, refusal)
+            return _error(403, refusal, "image_bound_to_another_machine")
 
         session = ctx.store.active_for_group(machine["group_id"])
         has_open = (session is not None and session["state"] == "open"

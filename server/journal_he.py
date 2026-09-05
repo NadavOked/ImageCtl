@@ -33,6 +33,7 @@ EVENTS_HE = {
     "session_start_auto": "השידור התחיל — ההמתנה הסתיימה",
     "session_start_manual": "השידור התחיל ידנית",
     "session_close": "סבב נסגר",
+    "session_image_bound": "פתיחת סבב נדחתה — האימג' קשור למכונה אחרת",
     "pull_open": "משיכת יוניקאסט התחילה",
     "pull_done": "משיכת יוניקאסט הסתיימה",
     "pull_refused": "משיכת יוניקאסט נדחתה",

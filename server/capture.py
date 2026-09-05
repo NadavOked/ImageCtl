@@ -26,13 +26,43 @@ from . import auth, registry
 from .api import ServerContext
 from .images import validate_display_name
 from .db import journal, now_iso, update_one
-from .images import inside, required_bytes, valid_image_id
+from .images import MACHINE_MAC, inside, required_bytes, valid_image_id
 from .tasks import active_task, staging_dir
 
 log = logging.getLogger("imagectl.capture")
 
 SAFE_FILE = re.compile(r"^p\d+\.[a-z]+\.pcl\.zst$")
 CHUNK = 1024 * 1024
+
+#: ממי מותר לקלוט — **רשימת היתר מפורשת**, ולא "כל מי שאינו build" (#381).
+#:
+#: ‏`classroom` נוסף כאן כדי שמחשב כיתה יקלוט את הדיסק של עצמו (מסלול 8
+#: ב-#380, הצד הכותב של #69). ‏`cloner` נשאר **בחוץ**: למכונת שיכפול אין
+#: מערכת מקומית משלה, ומשימת קליטה עליה היא בקשה לקרוא דיסק ריק (#17).
+#:
+#: רשימת היתר ולא רשימת מניעה, מאותו טעם שבו `public-manifest.list` הוא
+#: רשימת היתר (#369): תפקיד רביעי שייוולד מחר — צופה, מחשב ניהול — היה
+#: מקבל ביום היוולדו את הזכות לקלוט, בשקט.
+CAPTURE_ROLES = ("build", "classroom")
+
+
+def _bind_machine(conn, manifest: dict, mac: str) -> None:
+    """קושר את האימג' ל-MAC שנקלט ממנו, או משחרר אותו — ‏#381.
+
+    **הקשירה נכתבת כאן ולא מגיעה מהסוכן.** ‏`machine_mac` שהגיע במניפסט
+    שהמכונה העלתה נמחק בכל מקרה, בדיוק כמו `id` ו-`name`: השדה הזה הוא
+    שער בטיחות, ומכונה ברשת הלימודית אינה מי שקובעת אותו.
+
+    **הכיוון הבטוח הוא לקשור.** אימג' חופשי נולד רק מ**ראיה חיובית**
+    שהמכונה היא מחשב בנייה — הרשומה קיימת והתפקיד `build`. מכונה שנמחקה
+    מהמרשם בין יצירת המשימה לסיומה, או תפקיד שאיננו מכירים, מסתיימים
+    באימג' קשור: "לא ידענו" אינו "מותר לכולם" (עיקרון 5).
+    """
+    machine = registry.lookup(conn, mac)
+    if machine is not None and machine["role"] == "build":
+        manifest.pop(MACHINE_MAC, None)
+        return
+    manifest[MACHINE_MAC] = mac
 
 
 def _fail(conn, task_id: str, message: str) -> None:
@@ -113,6 +143,7 @@ def create_agent_capture_router(ctx: ServerContext) -> APIRouter:
         manifest["folder"] = row["folder"]
         manifest["created"] = now_iso()
         manifest["created_by"] = row["created_by"]
+        _bind_machine(ctx.conn, manifest, row["mac"])
         # ‏#82: הדרישה נגזרת מהפריסה, ולא מגודל דיסק המקור שהסוכן שלח.
         # הנרמול כאן ולא רק בקריאה כדי שהערך שמונח בספרייה יהיה הנכון —
         # הדיסק הוא מקור האמת, וסוכן ישן שממשיך לשלוח את גודל המקור
@@ -230,8 +261,12 @@ def create_console_capture_router(ctx: ServerContext) -> APIRouter:
         machine = registry.lookup(ctx.conn, mac) if mac else None
         if machine is None:
             raise HTTPException(400, "מכונה לא רשומה")
-        if machine["role"] != "build":
-            raise HTTPException(400, "קליטת אימג' נעשית ממחשב בניית אימג'ים בלבד")
+        role = machine["role"]
+        if role not in CAPTURE_ROLES:
+            raise HTTPException(
+                400,
+                "קליטת אימג' אינה נעשית ממכונה בתפקיד "
+                f"{role!r} — אין לה מערכת מקומית משלה שיש מה לקלוט ממנה")
         name = (body.get("name") or "").strip()
         disk = (body.get("disk") or "").strip()
         if not name or not disk:

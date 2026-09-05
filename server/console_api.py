@@ -18,6 +18,7 @@ from . import auth, registry, users
 from .api import ServerContext
 from .db import (_write_lock, get_setting, journal, now_iso, set_setting,
                  update_one, writing)
+from .images import restore_refusal
 from .journal_he import EVENTS_HE, JournalTranslator
 from .sessions import SessionError
 
@@ -288,7 +289,8 @@ def create_console_router(ctx: ServerContext) -> APIRouter:
         body = await request.json()
         image_id = body.get("image_id", "")
         group_id = body.get("group_id", "")
-        if ctx.library.get(image_id) is None:
+        manifest = ctx.library.get(image_id)
+        if manifest is None:
             raise HTTPException(400, "אימג' לא קיים בספרייה")
         if not registry_group_exists(group_id):
             raise HTTPException(400, "קבוצה לא קיימת")
@@ -300,6 +302,14 @@ def create_console_router(ctx: ServerContext) -> APIRouter:
             roster = sorted({registry.normalize_mac(m) for m in body["macs"]})
             if not roster or None in roster:
                 raise HTTPException(400, "בחירת המחשבים ריקה או מכילה MAC פגום")
+
+        # ‏#381, אחרי שה-roster ידוע: אימג' שנקלט ממחשב כיתה מסוים
+        # מסורב לכל יעד אחר, ובהודעה שנוקבת בשני הצדדים (עיקרון 5).
+        refusal = restore_refusal(manifest, roster)
+        if refusal is not None:
+            journal(ctx.conn, "session_image_bound", f"{image_id} — {refusal}",
+                    user[0])
+            raise HTTPException(400, refusal)
 
         machines = ctx.conn.execute(
             "SELECT COUNT(*) AS n FROM machines WHERE group_id = ?", (group_id,)

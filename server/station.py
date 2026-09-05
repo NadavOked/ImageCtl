@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from . import users
 from .api import ServerContext, _error
 from .db import journal
+from .images import restore_refusal
 from .registry import normalize_mac
 from .sessions import SessionError
 
@@ -144,7 +145,8 @@ def create_station_router(ctx: ServerContext) -> APIRouter:
         ).fetchone()
         if group is None or group["role"] != "classroom":
             return _error(400, "not a classroom group", "bad_group")
-        if ctx.library.get(body.get("image_id", "")) is None:
+        manifest = ctx.library.get(body.get("image_id", ""))
+        if manifest is None:
             return _error(400, "unknown image", "no_image")
 
         machines = ctx.conn.execute(
@@ -162,6 +164,14 @@ def create_station_router(ctx: ServerContext) -> APIRouter:
             if not roster or None in roster:
                 return _error(400, "missing or malformed mac in macs", "bad_macs")
             roster = sorted(set(roster))     # בחירה כפולה אינה שני מחשבים
+
+        # ‏#381, אחרי שה-roster ידוע: אימג' קשור נפרס רק על המכונה שלו,
+        # וכיתה שלמה בלי בחירת מחשבים אינה "רק היא".
+        refusal = restore_refusal(manifest, roster)
+        if refusal is not None:
+            journal(ctx.conn, "session_image_bound",
+                    f'{body.get("image_id", "")} — {refusal}')
+            return _error(400, refusal, "image_bound_to_another_machine")
 
         opener = normalize_mac(body.get("mac"))
         try:

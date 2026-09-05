@@ -27,6 +27,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from . import auth, reports
 from .db import journal, now_iso, update_one
+from .images import restore_refusal
 from .sessions import SessionError, SessionStore, SessionSuperseded
 
 log = logging.getLogger("imagectl.room")
@@ -132,8 +133,15 @@ def ready_drives(conn: sqlite3.Connection, store: SessionStore,
 
 
 def open_round(ctx, image_id: str, target_drives: int, user: str) -> dict:
-    if ctx.library.get(image_id) is None:
+    manifest = ctx.library.get(image_id)
+    if manifest is None:
         raise ValueError("אימג' לא קיים בספרייה")
+    # ‏#381: אימג' הקשור למכונה אחת אינו נשפך על מגירות. אין כאן רשימת
+    # יעדים בכלל — הכוננים יותקנו במכונות שאיש עוד אינו יודע מי הן —
+    # ולכן `restore_refusal` מסרב אותו, וזה הכיוון הנכון (עיקרון 5).
+    refusal = restore_refusal(manifest, None)
+    if refusal is not None:
+        raise ValueError(refusal)
     if target_drives < 1:
         raise ValueError("יעד הכוננים חייב להיות חיובי")
     machines = ctx.conn.execute(
