@@ -99,6 +99,33 @@ http_get_stream() {
         --speed-limit 1 --speed-time "$HTTP_STALL_TIMEOUT" "$1"
 }
 
+# --- boot trace (#400) -------------------------------------------------------
+# A cloning machine is headless by design (#17): no screen, no keyboard, no
+# mouse. When it stops between the GRUB menu and the first hello there is
+# nothing at all to look at -- that is what blocked the first test on real
+# hardware. So the agent says where it is, over HTTP, in one short request.
+#
+# Two rules, and they pull in opposite directions on purpose:
+#
+#   1. This NEVER fails its caller. A diagnostic that stops a machine from
+#      booting is damage. trace_step always returns 0.
+#   2. It is never silent. A failed delivery is logged here, and the server
+#      side has the full list of steps -- so a step that never arrives is
+#      itself the finding, not a gap.
+TRACE_TIMEOUT="${TRACE_TIMEOUT:-3}"
+
+trace_step() {
+    # $1 = step name. Uses $SERVER and $MAC, which the agent sets before it
+    # can do anything else anyway.
+    [ -n "$SERVER" ] && [ -n "$MAC" ] || return 0
+    if curl -sf -m "$TRACE_TIMEOUT" \
+        "$SERVER/boot/step?mac=$MAC&s=$1" > /dev/null 2>&1; then
+        return 0
+    fi
+    log "boot step '$1' was not delivered -- continuing"
+    return 0
+}
+
 # --- misc --------------------------------------------------------------------
 
 json_escape() {

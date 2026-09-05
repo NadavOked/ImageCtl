@@ -166,6 +166,22 @@ CREATE TABLE IF NOT EXISTS off_vlan_contacts (
     last_at  TEXT NOT NULL
 );
 
+-- שביל הפירורים של האתחול (#400): עד לאן הגיעה כל מכונה בין תפריט
+-- ה-GRUB לבין ה-hello הראשון. מחשב שיכפול חסר-ראש שנעצר באמצע אינו
+-- משאיר שום עקבה אחרת, וזה מה שחסם את הבדיקה על הברזל.
+--
+-- כמו agent_loops זו התמונה **החיה** בלבד: שורה אחת למכונה, שנדרסת
+-- בכל אתחול. ‏`idx` הוא מקומו של הצעד ברשימה המנויה (boot/trace.py),
+-- ושמור כאן כדי שהאיפוס — צעד שחזר אחורה, כלומר אתחול חדש — יוכרע
+-- בתוך ה-UPSERT עצמו ולא בקריאה-ואז-כתיבה שיש בה מרוץ.
+CREATE TABLE IF NOT EXISTS boot_steps (
+    mac      TEXT PRIMARY KEY,       -- קנוני: lowercase עם נקודתיים
+    step     TEXT NOT NULL,
+    idx      INTEGER NOT NULL,
+    at       TEXT NOT NULL,
+    first_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS net_devices (
     mac         TEXT PRIMARY KEY,       -- קנוני: lowercase עם נקודתיים
     ip          TEXT,

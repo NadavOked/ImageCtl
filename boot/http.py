@@ -22,9 +22,10 @@ uvicorn עצמו משמר את האותיות כפי שנשלחו, ולכן הנ
 import ipaddress
 import logging
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
 from urllib.parse import parse_qs
 
+from . import trace
 from .grub_menu import GrubConfig, normalize_mac, render, render_local_only
 
 log = logging.getLogger("imagectl.boot")
@@ -84,6 +85,39 @@ def build_config_text(
     text = render(answer, config)
     log.info("served boot config for %s from %s", mac, client_ip)
     return text
+
+
+#: מה שהשרת מספק לרישום צעד: ‏MAC קנוני ושם צעד מהרשימה, החוצה "נרשם".
+Recorder = Callable[[str, str], bool]
+
+
+def record_step(record: Recorder | None, raw_mac: object, raw_step: object,
+                client_ip: str | None) -> bool:
+    """רושם פירור אחד. לעולם לא זורקת — הקורא מחזיר ל-GRUB 200 בכל מקרה.
+
+    כל דחייה נכתבת ליומן השרת, ובכוונה: הבקשה עצמה היא הדבר היחיד
+    שהמכונה חסרת-הראש שולחת, ואם היא נופלת כאן בשקט — השביל **אינו
+    קיים** ואיש לא יידע. ‏MAC פגום וצעד שאינו מהרשימה הם שני מצבים
+    שונים, ולכן שתי שורות שונות ביומן.
+    """
+    mac = normalize_mac(raw_mac)
+    if mac is None:
+        log.warning("boot step %r from %s carried an unusable mac %r",
+                    raw_step, client_ip, raw_mac)
+        return False
+    if not trace.is_step(raw_step):
+        log.warning("boot step %r from %s (%s) is not in the declared list %s",
+                    raw_step, mac, client_ip, trace.STEPS)
+        return False
+    if record is None:
+        log.warning("boot step %r from %s arrived with no recorder wired in",
+                    raw_step, mac)
+        return False
+    try:
+        return bool(record(mac, raw_step))
+    except Exception:  # noqa: BLE001 — אבחון שמפיל בקשת אתחול הוא נזק
+        log.exception("could not record boot step %s for %s", raw_step, mac)
+        return False
 
 
 def gui_initrd_path(boot_dir: str | Path | None) -> str | None:
@@ -147,11 +181,15 @@ def _response_headers(content_type: bytes, length: int) -> list:
 
 
 def create_boot_asgi(resolve: Resolver, config: GrubConfig,
-                     boot_dir: str | Path | None = None):
+                     boot_dir: str | Path | None = None,
+                     record: Recorder | None = None):
     """אפליקציית ASGI לנתיבי ‎/boot: התפריט + קבצי הקרנל וה-initramfs.
 
     ממופה ב-mount על "/boot", ולכן ה-path שמגיע לכאן הוא היחסי:
-    "/menu", "/vmlinuz", "/initrd.img".
+    "/menu", "/step", "/vmlinuz", "/initrd.img".
+
+    ‏`record` הוא שביל הפירורים של #400 — מוזרק כמו ה-resolver, מאותה
+    סיבה: המודול הזה אינו מכיר DB.
     """
     root = Path(boot_dir).resolve() if boot_dir else None
 
@@ -172,11 +210,25 @@ def create_boot_asgi(resolve: Resolver, config: GrubConfig,
             path = path[len(prefix):] or "/"
         client_ip = scope.get("client")[0] if scope.get("client") else None
 
+        # ‏#400: פירור. תמיד 200 וגוף של בייט אחד, גם כשלא נרשם דבר —
+        # ‏GRUB מדפיס אותו, וקוד שגיאה כאן היה שגיאה על מסך האתחול.
+        if path in (trace.STEP_PATH, "/step", "/step/"):
+            params = parse_qs(scope.get("query_string", b"").decode())
+            record_step(record,
+                        (params.get("mac") or [None])[0],
+                        (params.get("s") or [None])[0],
+                        client_ip)
+            await send_all(send, 200, trace.TINY_BODY, MEDIA_TYPE.encode())
+            return
+
         if path in ("/menu", "/menu/"):
             macs = parse_qs(scope.get("query_string", b"").decode()).get("mac")
             # הכתובת שאליה התחנה באמת התחברה, ולא בהכרח זו שבתצורה (#39).
             body = build_config_text(macs[0] if macs else None, client_ip,
                                      resolve, config_for_scope(scope, config))
+            # הצעד הראשון בשביל, והיחיד שאינו תלוי בכך שהמכונה עוד
+            # מדברת: אם הוא לבדו רשום — היא נעצרה בדיוק כאן.
+            record_step(record, macs[0] if macs else None, "menu", client_ip)
             # תמיד 200. GRUB מטפל גרוע בקודי שגיאה, ומחשב שנתקע במסך
             # אתחול גרוע בהרבה ממחשב שעלה מהדיסק שלו.
             await send_all(send, 200, body.encode("ascii", "replace"),
@@ -206,6 +258,6 @@ def create_boot_asgi(resolve: Resolver, config: GrubConfig,
     return app
 
 
-__all__ = ["Resolver", "build_config_text", "config_for_scope",
-           "create_boot_asgi", "gui_initrd_path", "GUI_INITRD_NAME",
-           "BASE_HEADERS", "MEDIA_TYPE"]
+__all__ = ["Resolver", "Recorder", "build_config_text", "config_for_scope",
+           "create_boot_asgi", "gui_initrd_path", "record_step",
+           "GUI_INITRD_NAME", "BASE_HEADERS", "MEDIA_TYPE"]

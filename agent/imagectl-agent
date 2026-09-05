@@ -64,10 +64,11 @@ NET_FILE="${NET_FILE:-$RUN_DIR/net.conf}"
 . "$NET_FILE"
 [ -n "$IFACE" ] && [ -n "$IP" ] || die_local "incomplete network configuration"
 MAC=$(cat "$SYSROOT/sys/class/net/$IFACE/address" 2>/dev/null)
-RESP="$RUN_DIR/response.json"
+RESP="$RUN_DIR/response.json"; trace_step agent-start   # #400, see common.sh
 
 send_hello() {
     build_hello > "$RUN_DIR/hello.json" || return 1
+    [ -n "$_traced_hello" ] || { trace_step agent-hello; _traced_hello=1; }
     http_post_json "$SERVER/api/v1/agent/hello" "$RUN_DIR/hello.json" > "$RESP"
 }
 

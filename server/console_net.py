@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from . import auth, registry
+from . import auth, boottrace, registry
 from .api import ServerContext
 from .db import journal, now_iso, update_one
 
@@ -20,13 +20,20 @@ def create_net_router(ctx: ServerContext) -> APIRouter:
 
     @router.get("/net")
     def devices(user=Depends(current_user)):
-        """ההתקנים + האם הם רשומים, ובאיזו קבוצה."""
+        """ההתקנים + האם הם רשומים, ובאיזו קבוצה.
+
+        ‏#400: וגם **היכן באתחול** כל מכונה נמצאת. זו הרשימה שכל מכונה
+        שדיברה עם השרת מופיעה בה, ולכן זה המקום היחיד שבו מחשב שיכפול
+        חסר-ראש שנתקע בין התפריט ל-hello יכול להיראות בכלל.
+        """
         rows = ctx.conn.execute(
             "SELECT d.mac, d.ip, d.description, d.first_seen, d.last_seen,"
-            "       m.suffix, g.id AS group_id, g.label AS group_label, g.role"
+            "       m.suffix, g.id AS group_id, g.label AS group_label, g.role,"
+            "       b.step AS boot_step, b.at AS boot_at"
             "  FROM net_devices d"
             "  LEFT JOIN machines m ON m.mac = d.mac"
             "  LEFT JOIN groups g ON g.id = m.group_id"
+            "  LEFT JOIN boot_steps b ON b.mac = d.mac"
             " ORDER BY d.last_seen DESC"
         ).fetchall()
         return [
@@ -36,6 +43,7 @@ def create_net_router(ctx: ServerContext) -> APIRouter:
                 "registered": r["suffix"] is not None,
                 "name": r["suffix"], "group_id": r["group_id"],
                 "group_label": r["group_label"], "role": r["role"],
+                "boot": boottrace.describe(r["boot_step"], r["boot_at"]),
             }
             for r in rows
         ]

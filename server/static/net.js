@@ -233,6 +233,29 @@ function ago(iso) {
   return iso.slice(0, 10);
 }
 
+/* #400 — "איפה המכונה הזאת עכשיו באתחול".
+
+   מחשב שיכפול חסר-ראש שנתקע בין תפריט ה-GRUB ל-hello לא השאיר עד היום
+   שום עקבה, ו"נראה לאחרונה" לבדו אמר רק שהוא דיבר פעם. העמודה הזאת
+   נוקבת ב**שלב האחרון שהגיע**, וכשהוא תקוע — בשם השלב ש**לא** הגיע. */
+function bootWhere(b) {
+  if (!b) return `<span style="color:var(--muted)">—</span>`;
+  const when = b.seconds === null
+    ? ` <span class="tag warn">זמן לא נקרא</span>`
+    : ` <small style="color:var(--muted)">· ${esc(sinceSeconds(b.seconds))}</small>`;
+  const stuck = b.stalled
+    ? `<br><span class="tag warn">נעצר לפני: ${esc(b.next_label)}</span>` : "";
+  return `<b>${esc(b.label)}</b>
+    <small style="color:var(--muted)">(${b.index}/${b.total})</small>${when}${stuck}`;
+}
+
+function sinceSeconds(seconds) {
+  if (seconds < 90) return `לפני ${Math.round(seconds)} שנ'`;
+  if (seconds < 3600) return `לפני ${Math.round(seconds / 60)} דק'`;
+  if (seconds < 86400) return `לפני ${Math.round(seconds / 3600)} שע'`;
+  return `לפני ${Math.round(seconds / 86400)} ימים`;
+}
+
 async function renderSeenDevices(container, reload) {
   const devices = await api("/net");
   const rows = devices.map((d) => {
@@ -247,6 +270,7 @@ async function renderSeenDevices(container, reload) {
       <td class="mono" dir="ltr">${esc(d.ip) || "—"}</td>
       <td>${esc(d.description) || `<span style="color:var(--muted)">—</span>`}</td>
       <td>${ago(d.last_seen)}</td>
+      <td>${bootWhere(d.boot)}</td>
       <td>
         <button class="btn" data-net-desc="${esc(d.mac)}">תיאור</button>
         <button class="btn danger" data-net-forget="${esc(d.mac)}">הסר</button>
@@ -257,14 +281,16 @@ async function renderSeenDevices(container, reload) {
     <div class="chead">
       <div><h2>נראו ברשת</h2>
         <p>כל מכונה שדיברה עם השרת נרשמת כאן אוטומטית, עם הכתובת שקיבלה.
-           מכונה שאינה רשומה בטבלאות מסומנת — זה מה שתופס החלפת כרטיס או מחשב חדש.</p></div>
+           מכונה שאינה רשומה בטבלאות מסומנת — זה מה שתופס החלפת כרטיס או מחשב חדש.
+           עמודת "שלב האתחול" מראה עד לאן הגיעה כל מכונה בין תפריט ה-GRUB
+           ל-hello — לחסרות מסך זו הדרך היחידה לדעת איפה הן נעצרו.</p></div>
       <button class="btn" id="net-add">+ הוספה ידנית</button>
     </div>
     <table>
       <thead><tr><th>שם</th><th>MAC</th><th>כתובת IP</th><th>תיאור</th>
-        <th>נראה לאחרונה</th><th></th></tr></thead>
+        <th>נראה לאחרונה</th><th>שלב האתחול</th><th></th></tr></thead>
       <tbody>${rows
-        || `<tr><td colspan="6">עוד לא נראו התקנים. מכונה שתעלה ב-PXE תופיע כאן.</td></tr>`}</tbody>
+        || `<tr><td colspan="7">עוד לא נראו התקנים. מכונה שתעלה ב-PXE תופיע כאן.</td></tr>`}</tbody>
     </table>`;
 
   container.querySelectorAll("[data-net-desc]").forEach((b) => b.onclick = () => {

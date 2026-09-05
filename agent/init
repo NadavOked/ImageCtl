@@ -85,6 +85,31 @@ IP=$(ip -4 addr show "$IFACE" 2>/dev/null \
 printf 'IFACE=%s\nIP=%s\n' "$IFACE" "$IP" > /run/imagectl/net.conf
 echo "imagectl init: network up on $IFACE ($IP)"
 
+# --- boot trace (#400) --------------------------------------------------------
+# The first thing this machine can say for itself. It proves three things at
+# once: the initramfs unpacked, this script ran to here, and DHCP answered.
+#
+# There is deliberately no earlier breadcrumb for "init started": before DHCP
+# there is no network and nothing to report over. If this one is missing while
+# GRUB's pre-boot arrived, THAT gap is the finding -- which is the whole point
+# of keeping the step list closed on the server (boot/trace.py).
+#
+# common.sh is sourced rather than parsed again here: the kernel command line
+# has exactly one reader in this codebase (parse_cmdline), and a second one
+# would be a second, undocumented interface -- principle 2, guarded by
+# test_only_common_touches_proc_cmdline.
+#
+# Never fatal, and never silent: trace_step always returns 0 and logs a
+# failed delivery. A diagnostic that stops a machine booting is damage.
+LIB_DIR="${LIB_DIR:-/usr/lib/imagectl}"
+if [ -f "$LIB_DIR/common.sh" ]; then
+    . "$LIB_DIR/common.sh"
+    parse_cmdline
+    SERVER="$IMAGECTL_SERVER"
+    MAC=$(cat "/sys/class/net/$IFACE/address" 2>/dev/null)
+    trace_step agent-net
+fi
+
 # --- hand over ---------------------------------------------------------------
 
 /usr/bin/imagectl-agent

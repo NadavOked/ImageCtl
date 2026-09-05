@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from boot.grub_menu import GrubConfig
 from boot.http import create_boot_asgi, gui_initrd_path
 
+from . import boottrace
 from .api import ServerContext, create_agent_router
 from .console_api import create_console_router
 from .db import journal
@@ -190,6 +191,9 @@ def create_app(
                     extra_cmdline, ssh_switch.stations_enabled(conn)),
             ),
             boot_dir=boot_dir,
+            # ‏#400: שביל הפירורים. מוזרק כמו ה-resolver — ‏`boot/` אינו
+            # מכיר DB, והשרת אינו מכיר את תחביר ה-GRUB.
+            record=lambda mac, step: boottrace.record(conn, mac, step),
         )(scope, receive, send)
 
     app.mount("/boot", boot_asgi)
