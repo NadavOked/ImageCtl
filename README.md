@@ -315,6 +315,7 @@ Issue פומבי.
 | [docs/grub-generator.md](docs/grub-generator.md) | מחולל תפריט ה-GRUB וטבלת ההחלטה |
 | [docs/server-install.md](docs/server-install.md) | התקנת שרת האתחול |
 | [docs/lab-test-plan.md](docs/lab-test-plan.md) | תוכנית הבדיקות ומטריצת האימות |
+| [docs/verification-register.md](docs/verification-register.md) | מה מתוכה **הורץ**, על איזו סביבה, ו**מה נמדד** |
 | [CHANGELOG.md](CHANGELOG.md) | מה השתנה בכל גרסה |
 | `server/` · `agent/` · `boot/` | הקוד: קונסולה ו-API · initramfs · שרשרת אתחול |
 | `install/` · `tools/` | התקנה עצמאית, בניית initramfs, סימולציה |

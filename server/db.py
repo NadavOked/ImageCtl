@@ -528,12 +528,16 @@ def get_setting(conn: sqlite3.Connection, key: str) -> str | None:
 
 
 def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
-    conn.execute(
-        "INSERT INTO settings (key, value) VALUES (?, ?) "
-        "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-        (key, value),
-    )
-    conn.commit()
+    """מסלול הכתיבה של **כל** מסכי ההגדרות — DHCP, כתובות, מתג SSH,
+    רשימת התיקיות. ‏`_write_lock` ו-`writing` מאותה סיבה כמו ב-`net_seen`
+    (#313): כתיבה שנכשלה כאן משאירה את החיבור בטרנזאקציה, ומשם הקונסולה
+    מפסיקה לשמור עד אתחול השרת."""
+    with _write_lock, writing(conn):
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
 
 
 def journal(conn: sqlite3.Connection, event: str, detail: str = "", user: str = "") -> None:

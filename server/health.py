@@ -24,6 +24,14 @@ from . import agent_loops, auth, console_ssh, dhcp, foreign_vlan, ssh_switch
 
 BOOT_FILES = ("bootx64.efi", "grubx64.efi", "grub/grub.cfg")
 
+#: מה שהתחנה מושכת ב-HTTP אחרי התפריט, מתוך תיקיית האתחול (#333).
+#: ה-initramfs הגרפי (#32) אינו כאן: היעדרו נופל לטקסטואלי, ואינו חוסם.
+BOOT_ASSETS = ("vmlinuz", "initrd.img")
+
+#: רצפה גסה. קרנל ו-initramfs אמיתיים גדולים בהרבה, וגוף ה-404 של ‎/boot
+#: הוא **תשעה** בייטים — ולכן "יש תשובה ויש גודל" אינו "יש קובץ" (#332).
+MIN_ASSET_BYTES = 1 << 20
+
 
 def _sha256(path) -> str:
     """‏"" כשאי-אפשר לקרוא — נבדל מ-hash שנקרא, ואינו "תואם"."""
@@ -47,6 +55,7 @@ def default_hooks() -> dict:
         "shim_src": lambda: "/usr/lib/shim/shimx64.efi.signed",
         "unit_active": lambda name: _run(["systemctl", "is-active", name]).strip(),
         "http_get": _http_probe,
+        "http_size": _http_size,
         "http_text": _http_body,
         "interfaces": dhcp.list_interfaces,
         "tftp_root": lambda: Path("/srv/tftp"),
@@ -73,6 +82,41 @@ def _http_body(url: str) -> tuple[int | None, str]:
         return exc.code, ""
     except Exception:
         return None, ""
+
+
+def _http_size(url: str) -> tuple[int | None, int | None]:
+    """קוד תשובה **וגודל מוצהר**, בלי לקרוא את הגוף — initrd הוא עשרות
+    מגהבייט, ומסך בריאות אינו מושך אותם. גודל שלא הוצהר חוזר `None`,
+    שאינו 0 ואינו "בסדר"."""
+    try:
+        with urllib.request.urlopen(url, timeout=5) as response:
+            length = response.headers.get("Content-Length")
+            return response.status, int(length) if str(length).isdigit() else None
+    except urllib.error.HTTPError as exc:
+        return exc.code, None
+    except Exception:
+        return None, None
+
+
+def boot_asset_problems(probe, server_base: str) -> list[str]:
+    """‏vmlinuz ו-initrd.img — כפי שהתחנה מושכת אותם, לא כפי שהם בדיסק.
+
+    בהתקנה נקייה (#332) שניהם החזירו 404 בזמן שהשורה הייתה ירוקה.
+    הראיה כאן חיובית ומורכבת משניים — **200 וגם** גודל שאינו יכול
+    להיות גוף שגיאה — ומי מהם נכשל נאמר בשמו.
+    """
+    problems = []
+    for name in BOOT_ASSETS:
+        status, size = probe(server_base.rstrip("/") + "/boot/" + name)
+        if status is None:
+            problems.append(f"{name}: הבדיקה עצמה לא רצה (השרת לא ענה)")
+        elif status != 200:
+            problems.append(f"{name}: {status} מ-/boot")
+        elif size is None:
+            problems.append(f"{name}: 200 בלי גודל מוצהר — הבדיקה לא רצה")
+        elif size < MIN_ASSET_BYTES:
+            problems.append(f"{name}: {size} בייטים בלבד — אינו קובץ אתחול")
+    return problems
 
 
 def port_owner(ss_output: str, port: int) -> str | None:
@@ -130,15 +174,19 @@ def collect(ctx, hooks: dict, server_base: str) -> list[dict]:
                    "אי אפשר לבדוק כאן (systemctl לא זמין)") if not active
         else check("dnsmasq", "שירות dnsmasq", "bad", f"מצב: {active}"))
 
-    # קבצי שרשרת האתחול על שורש ה-TFTP.
+    # שרשרת האתחול, משני קצותיה: הקבצים על שורש ה-TFTP, ומיד אחריהם
+    # הקרנל וה-initramfs כפי שהתחנה מושכת אותם ב-HTTP (#333).
     root = hooks["tftp_root"]()
     missing = [name for name in BOOT_FILES if not (root / name).is_file()]
-    if not missing:
+    problems = [f"חסרים ב-{root}: {', '.join(missing)}"] if missing else []
+    problems += boot_asset_problems(hooks["http_size"], server_base)
+    if not problems:
         results.append(check("boot_files", "קבצי האתחול", "ok",
-                             f"shim, GRUB והתפריט הקבוע נמצאים ב-{root}"))
+                             f"shim, GRUB והתפריט הקבוע נמצאים ב-{root}, "
+                             "ו-vmlinuz ו-initrd.img נמשכו מ-/boot בגודל מלא"))
     else:
         results.append(check("boot_files", "קבצי האתחול", "bad",
-                             f"חסרים ב-{root}: {', '.join(missing)} — הריצו את המתקין"))
+                             " · ".join(problems) + " — הריצו את המתקין"))
 
     # ‏#329: המתקין מעתיק את ה-shim פעם אחת ולא מעדכן. מיקרוסופט
     # דוחפת עדכוני SBAT שמבטלים shim ישן, ואז **כל הצי** מפסיק לעלות

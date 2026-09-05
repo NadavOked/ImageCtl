@@ -191,7 +191,12 @@ def test_the_static_bootstrap_stops_a_legacy_machine_instead_of_chainloading():
     after = guard[guard.index("\n    fi\n", efi) :]
     assert "chain_local" not in after, "המסלול של Legacy חוזר אל chain_local"
     assert "chainloader" not in after
-    assert "halt" in after, "מחשב שיכפול שלא ניתן להעלות חייב לעצור"
+    # ‏#345: העצירה הייתה `halt`, וזה כיבוי ולא עצירה. הדרישה של #323 היא
+    # שהמכונה לא תמשיך אל הכוננים — לא שהיא תיכבה — ולכן מה שנאכף כאן הוא
+    # שהמסלול מסתיים בהמתנה שאין ממנה יציאה.
+    assert "sleep --interruptible" in after and "while " in after, (
+        "מחשב שיכפול שלא ניתן להעלות חייב לעצור"
+    )
 
 
 def test_every_fallback_in_the_static_bootstrap_goes_through_the_guard():

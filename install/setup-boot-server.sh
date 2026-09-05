@@ -104,8 +104,10 @@ function chain_local {
         echo "No operating system found on the local disk."
     fi
     echo "Contact IT. This computer will stay powered on."
-    sleep --interruptible 60
-    halt
+    set stay_on=y
+    while [ "$stay_on" = "y" ]; do
+        sleep --interruptible 60
+    done
 }
 
 function try_local {
@@ -121,8 +123,10 @@ function try_local {
     echo "Nothing will be started."
     echo "Fix the server or the network, then power-cycle this machine."
     echo "Contact IT. This computer will stay powered on."
-    sleep --interruptible 60
-    halt
+    set stay_on=y
+    while [ "$stay_on" = "y" ]; do
+        sleep --interruptible 60
+    done
 }
 
 # GRUB fills net_default_mac from the interface that PXE-booted, already in

@@ -63,6 +63,9 @@ def vlan_server(tmp_path: Path, images_root: Path, clock):
         "ss": lambda: "",
         "unit_active": lambda name: "active",
         "http_get": lambda url: 200,
+        # ‏/boot/vmlinuz ו-/boot/initrd.img (#333) — מוזרקים כאן כדי
+        # שהבדיקה לא תפנה לרשת אמיתית.
+        "http_size": lambda url: (200, 31_000_000),
         "http_text": lambda url: (200, "linux /boot/vmlinuz imagectl.server=x"),
         "interfaces": lambda: [],
         "tftp_root": lambda: tftp,
