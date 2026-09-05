@@ -11,10 +11,17 @@ import re
 import sqlite3
 from dataclasses import dataclass
 
-from .db import journal, now_iso
+from .db import _write_lock, journal, now_iso, writing
 
 _MAC_CLEAN = re.compile(r"[^0-9a-f]")
 _SUFFIX_NUM = re.compile(r"^\d{1,2}$")
+
+#: כל כתיבה כאן עוברת ב-``with _write_lock, writing(conn)`` — שני
+#: המנגנונים של `db.py`, מאותה סיבה שבגללה `net_seen` קיבל אותם (#272,
+#: ‏#356, ‏#313): כתיבה שנכשלה בלי ``rollback`` משאירה את החיבור בתוך
+#: טרנזאקציה, ומשם **כל** כתיבה עליו נכשלת מיד עד אתחול השרת — כלומר
+#: טבלת ה-MAC שהפסיקה לקבל רישומים. ‏`journal` נוטל את אותה נעילה
+#: בעצמו, והיא ``Lock`` ולא ``RLock``, ולכן הוא נשאר **מחוץ** לבלוק.
 
 
 def normalize_mac(text: str) -> str | None:
@@ -116,28 +123,31 @@ def import_lines(
     """
     saved = 0
     rejected: list[ImportLine] = []
-    for item in lines:
-        if item.error or item.mac is None or item.suffix is None:
-            rejected.append(item)
-            continue
-        row = conn.execute(
-            "SELECT suffix FROM machines WHERE mac = ?", (item.mac,)
-        ).fetchone()
-        if row and row["suffix"] != item.suffix:
-            item.error = (
-                f"רשום כבר עם הסיומת {row['suffix']} — "
-                "הסיומת קבועה למכונה; מחיקה מפורשת לפני שינוי"
+    # כיתה שלמה היא **רצף** כתיבות אחד: שורה שנכשלה באמצע משאירה את
+    # הנעילה של הקודמות יתומה, ו"נשמרו 12 מתוך 30" הוא בדיוק המצב
+    # שאיש אינו יודע לתקן ידנית.
+    with _write_lock, writing(conn):
+        for item in lines:
+            if item.error or item.mac is None or item.suffix is None:
+                rejected.append(item)
+                continue
+            row = conn.execute(
+                "SELECT suffix FROM machines WHERE mac = ?", (item.mac,)
+            ).fetchone()
+            if row and row["suffix"] != item.suffix:
+                item.error = (
+                    f"רשום כבר עם הסיומת {row['suffix']} — "
+                    "הסיומת קבועה למכונה; מחיקה מפורשת לפני שינוי"
+                )
+                rejected.append(item)
+                continue
+            conn.execute(
+                "INSERT INTO machines (mac, suffix, group_id, added_at) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (mac) DO UPDATE SET group_id = excluded.group_id",
+                (item.mac, item.suffix, group_id, now_iso()),
             )
-            rejected.append(item)
-            continue
-        conn.execute(
-            "INSERT INTO machines (mac, suffix, group_id, added_at) "
-            "VALUES (?, ?, ?, ?) "
-            "ON CONFLICT (mac) DO UPDATE SET group_id = excluded.group_id",
-            (item.mac, item.suffix, group_id, now_iso()),
-        )
-        saved += 1
-    conn.commit()
+            saved += 1
     journal(conn, "mac_import", f"group={group_id} saved={saved} rejected={len(rejected)}", user)
     return saved, rejected
 
@@ -164,11 +174,11 @@ def add_machine(
         )
     if conn.execute("SELECT 1 FROM machines WHERE mac = ?", (mac,)).fetchone():
         raise ValueError("ה-MAC כבר רשום — ערכו אותו במקום להוסיף שוב")
-    conn.execute(
-        "INSERT INTO machines (mac, suffix, group_id, added_at) VALUES (?, ?, ?, ?)",
-        (mac, name, group_id, now_iso()),
-    )
-    conn.commit()
+    with _write_lock, writing(conn):
+        conn.execute(
+            "INSERT INTO machines (mac, suffix, group_id, added_at) VALUES (?, ?, ?, ?)",
+            (mac, name, group_id, now_iso()),
+        )
     journal(conn, "machine_add", f"{mac} name={name} group={group_id}", user)
     return mac
 
@@ -194,11 +204,11 @@ def update_machine(
         raise ValueError(
             "סיומת חייבת להיות 01-99 או INS" if role == "classroom" else "שם באורך 1-32 תווים"
         )
-    conn.execute(
-        "UPDATE machines SET suffix = ?, group_id = ? WHERE mac = ?",
-        (name, target_group, mac),
-    )
-    conn.commit()
+    with _write_lock, writing(conn):
+        conn.execute(
+            "UPDATE machines SET suffix = ?, group_id = ? WHERE mac = ?",
+            (name, target_group, mac),
+        )
     journal(conn, "machine_edit", f"{mac} name={name} group={target_group}", user)
 
 

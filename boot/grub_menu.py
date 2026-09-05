@@ -434,6 +434,27 @@ LOCAL_BOOT_PATHS: tuple[str, ...] = (
     "/EFI/BOOT/bootx64.efi",
 )
 
+#: ‏#345: הזנב המשותף לשני מסכי העצירה — מה שרץ אחרי שכבר אין מה להעלות.
+#:
+#: כאן ישב `halt`, והוא סתר את המשפט שמעליו. ‏`halt` אינו "עצור והשאר את
+#: המסך": על EFI הוא ‏ResetSystem עם Shutdown, ועל i386-pc הוא כיבוי דרך
+#: ‏APM/ACPI — בשתי הפלטפורמות המכונה **נכבית**, והדקה שהמפעיל ראה היא
+#: ה-`sleep` שלפניו. המסך הזה קיים בדיוק כדי שטכנאי יקרא אותו, ומכונה
+#: שנכבית לפני שהוא מגיע נראית לו כתקלת חשמל ולא ככישלון אתחול.
+#:
+#: הלולאה בנויה מ-`[` ומ-`sleep` בלבד — שתי פקודות שכבר מוכחות בקובץ
+#: הזה. במכוון לא `while true`: ‏`true` הוא מודול נפרד ב-GRUB, וקריאה
+#: לפקודה שלא נטענה מדפיסה שגיאה על מסך שכל תפקידו להיקרא.
+#:
+#: ‏`--interruptible` נשאר כדי שלחיצת מקש תיקלט (ב-`sleep` רגיל GRUB
+#: אינו קורא מהמקלדת כלל, והמסך נראה תקוע). היא אינה יציאה: הלולאה
+#: חוזרת אל ה-`sleep` בכל מקרה, ו-`stay_on` נקבע פעם אחת ולא נוגעים בו.
+_STAY_POWERED_ON = """    echo "Contact IT. This computer will stay powered on."
+    set stay_on=y
+    while [ "$stay_on" = "y" ]; do
+        sleep --interruptible 60
+    done"""
+
 # חיפוש מערכת ההפעלה המקומית. ה-ESP הוא FAT ולכן fat+part_gpt מספיקים;
 # מכוון: לא טוענים ntfs, ואז search מדלג על מחיצות הנתונים ומסיים מהר.
 # מחשב לינוקס שלא נמצא לו bootloader הוא כשל שקט שקשה לאבחן בשטח, ולכן
@@ -492,9 +513,7 @@ function chain_local {
     else
         echo "No operating system found on the local disk."
     fi
-    echo "Contact IT. This computer will stay powered on."
-    sleep --interruptible 60
-    halt
+""" + _STAY_POWERED_ON + """
 }"""
 
 #: ‏#323: השומר שדרכו עוברת **כל** נפילה לדיסק המקומי.
@@ -526,9 +545,7 @@ _FUNC_TRY_LOCAL = """function try_local {
     echo "drives attached to it are the payload - they are never booted from."
     echo "Nothing will be started."
     echo "Fix the server or the network, then power-cycle this machine."
-    echo "Contact IT. This computer will stay powered on."
-    sleep --interruptible 60
-    halt
+""" + _STAY_POWERED_ON + """
 }"""
 
 

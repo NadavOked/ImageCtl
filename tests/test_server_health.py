@@ -55,11 +55,17 @@ def health_server(tmp_path: Path, images_root: Path, clock):
             # שתי דלתות ה-SSH (#83) — גם הן מוזרקות, כדי ששום בדיקה
             # לא תקרא את /proc של המכונה שהיא רצה עליה ולא תיגע ב-sshd.
             "listeners": Listeners(True),
+            # ‏vmlinuz ו-initrd.img כפי שהתחנה מושכת אותם (#333): קוד
+            # וגודל, כי 404 של ‎/boot הוא גוף בן תשעה בייטים (#332).
+            "assets": {"vmlinuz": (200, 9_000_000),
+                       "initrd.img": (200, 31_000_000)},
             "menu": "linux /boot/vmlinuz ip=dhcp imagectl.server=x console=tty0"}
     hooks = {
         "ss": lambda: fake["ss"],
         "unit_active": lambda name: fake["active"],
         "http_get": lambda url: fake["http"],
+        "http_size": lambda url: fake["assets"].get(url.rsplit("/", 1)[-1],
+                                                    (404, 9)),
         "http_text": lambda url: (200, fake["menu"]),
         "interfaces": lambda: fake["interfaces"],
         "tftp_root": lambda: tftp,
@@ -120,6 +126,67 @@ def test_missing_boot_files_are_named(health_server):
     assert "grubx64.efi" in rows["boot_files"]["detail"]
 
 
+# --- #333: שרשרת האתחול אינה נגמרת בשורש ה-TFTP -------------------------
+#
+# ‏shim, ‏GRUB ו-grub.cfg מביאים את התחנה עד התפריט. משם היא מושכת ב-HTTP
+# את ‎/boot/vmlinuz ואת ‎/boot/initrd.img מ-/srv/imagectl/boot, ואת
+# **אלה** ‎boot_files לא בדק. בהתקנה נקייה (#332) התיקייה נשארה ריקה,
+# שניהם החזירו 404, והשורה הייתה ירוקה בשני המקרים.
+
+def test_a_fresh_server_without_the_initrd_is_red(health_server):
+    """זה בדיוק מה שנמדד ב-#332: המתקין סיים "מוכן", התיקייה ריקה.
+
+    ‏shim, ‏GRUB והתפריט **כן** על ה-TFTP — ולכן השורה הייתה ירוקה
+    למרות ששום תחנה לא יכולה לעלות. הכרעה: `bad`. שרת שאינו יכול
+    להגיש אתחול אינו "אזהרה" — אי אפשר לפרוס ממנו.
+    """
+    health_server["fake"]["assets"] = {}          # שניהם 404, כמו בהתקנה נקייה
+    rows = by_id(health_server["admin"].get("/api/console/health").json())
+    assert rows["boot_files"]["state"] == "bad"
+    assert "initrd.img" in rows["boot_files"]["detail"]
+    assert "vmlinuz" in rows["boot_files"]["detail"]
+
+
+def test_a_truncated_asset_is_red_although_it_answers_200(health_server):
+    """גודל בלבד אינו ראיה, וגם 200 בלבד אינו.
+
+    גוף ה-404 של ‎/boot הוא תשעה בייטים — "יש תשובה ויש גודל" הוא בדיוק
+    המצב שנראה תקין ב-#332. קובץ שנקטע באמצע העתקה נראה אותו הדבר.
+    """
+    health_server["fake"]["assets"] = {"vmlinuz": (200, 9_000_000),
+                                       "initrd.img": (200, 9)}
+    rows = by_id(health_server["admin"].get("/api/console/health").json())
+    assert rows["boot_files"]["state"] == "bad"
+    assert "initrd.img" in rows["boot_files"]["detail"]
+
+
+def test_a_boot_asset_that_could_not_be_probed_is_red_not_ok(health_server):
+    """‏"לא הצלחנו לבדוק" אינו "בדקנו, הכל תקין" — עיקרון 5.
+
+    אם בדיקה שלא רצה הייתה מחזירה `ok`, היינו חוזרים בדיוק לבאג: מסך
+    ירוק על שרת שאינו יכול להגיש אתחול.
+
+    והשורה גם אומרת **מה** לא רצה. "הקובץ החזיר 200 בלי גודל" על שרת
+    שלא ענה בכלל שולח לחפש קובץ פגום במקום שרת שקט.
+    """
+    health_server["fake"]["assets"] = {"vmlinuz": (None, None),
+                                       "initrd.img": (None, None)}
+    rows = by_id(health_server["admin"].get("/api/console/health").json())
+    assert rows["boot_files"]["state"] == "bad"
+    assert rows["boot_files"]["state"] != "ok"
+    assert "לא רצה" in rows["boot_files"]["detail"]
+    assert "השרת לא ענה" in rows["boot_files"]["detail"]
+    assert "200" not in rows["boot_files"]["detail"]
+
+
+def test_the_green_row_says_the_assets_were_actually_pulled(health_server):
+    """הצד החיובי. שורה ירוקה שאינה מזכירה את ה-initrd היא שורה שלא
+    בדקה אותו — וזה מה שהיה כאן."""
+    rows = by_id(health_server["admin"].get("/api/console/health").json())
+    assert rows["boot_files"]["state"] == "ok"
+    assert "initrd.img" in rows["boot_files"]["detail"]
+
+
 def test_where_checks_cannot_run_the_light_is_grey_not_red(health_server):
     """על מכונת פיתוח בלי ss/systemctl המסך לא זועק אדום — הוא אומר
     שאי אפשר לבדוק כאן."""
@@ -165,6 +232,7 @@ def _shim(server, tmp_path, src_bytes, tftp_bytes):
     hooks = {**health.default_hooks(),
              "ss": lambda: SS_DNSMASQ, "unit_active": lambda n: "active",
              "http_get": lambda u: 200, "http_text": lambda u: (200, ""),
+             "http_size": lambda u: (200, 31_000_000),
              "interfaces": lambda: [{"name": "eth0", "state": "up",
                                      "mac": "aa", "addresses": []}],
              "listeners": lambda: Listeners(True),

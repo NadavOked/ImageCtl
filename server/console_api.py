@@ -16,12 +16,21 @@ from fastapi.responses import PlainTextResponse
 
 from . import auth, registry, users
 from .api import ServerContext
-from .db import get_setting, journal, now_iso, set_setting, update_one
+from .db import (_write_lock, get_setting, journal, now_iso, set_setting,
+                 update_one, writing)
 from .journal_he import EVENTS_HE, JournalTranslator
 from .sessions import SessionError
 
 WRITE_SETTINGS = {"recovery_require_login", "session_wait_seconds",
                   "console_idle_seconds"}
+
+#: כל כתיבה כאן עוברת ב-``with _write_lock, writing(ctx.conn)`` — שני
+#: המנגנונים של `db.py`, מאותה סיבה שבגללה `net_seen` קיבל אותם (#272,
+#: ‏#356, ‏#313): כתיבה שנכשלה בלי ``rollback`` משאירה את החיבור בתוך
+#: טרנזאקציה, ומשם **כל** כתיבה על התהליכון הזה נכשלת מיד עד אתחול
+#: השרת — קונסולה שמחזירה שגיאה בכל שמירה, גם אחרי שהעומס חלף.
+#: ‏`journal` נוטל את אותה נעילה בעצמו, והיא ``Lock`` ולא ``RLock``,
+#: ולכן הרישום ביומן נשאר **מחוץ** לבלוק.
 
 
 def create_console_router(ctx: ServerContext) -> APIRouter:
@@ -140,23 +149,22 @@ def create_console_router(ctx: ServerContext) -> APIRouter:
         # קבוצה חדשה נכנסת לסוף הרשימה, לא לאמצע.
         last = ctx.conn.execute("SELECT MAX(sort) AS n FROM groups").fetchone()["n"]
         try:
-            ctx.conn.execute(
-                "INSERT INTO groups (id, label, role, sort) VALUES (?, ?, ?, ?)",
-                (gid, label, role, (last or 0) + 1),
-            )
+            # ה-``rollback`` שעמד כאן ידנית (#184) יושב עכשיו ב-`writing`,
+            # והוא חל על **כל** מסלול יציאה ולא רק על `IntegrityError`:
+            # ה-INSERT שנכשל כבר פתח טרנזאקציית כתיבה, וחריגה שיוצאת
+            # בלי לסגור אותה משאירה **נעילה יתומה** — והכתיבה הבאה
+            # נופלת ב-`database is locked` בלי קשר נראה לעין בין
+            # השתיים (זה ה-gotcha של #54).
+            with _write_lock, writing(ctx.conn):
+                ctx.conn.execute(
+                    "INSERT INTO groups (id, label, role, sort) VALUES (?, ?, ?, ?)",
+                    (gid, label, role, (last or 0) + 1),
+                )
         except sqlite3.IntegrityError:
-            # ‏rollback לפני ה-raise, ולא אחרי (#184). ה-INSERT שנכשל
-            # כבר פתח טרנזאקציית כתיבה; חריגה שיוצאת בלי לסגור אותה
-            # משאירה **נעילה יתומה**, והכתיבה הבאה נופלת ב-
-            # ‏`database is locked` אחרי `busy_timeout` שלם — בלי שום
-            # קשר נראה לעין בין השתיים. זה ה-gotcha של #54.
-            #
-            # ותופסים `IntegrityError` ולא `Exception`: כשל אחר —
-            # דיסק מלא, סכימה שהשתנתה — היה מתחפש כאן ל"כבר קיימת",
-            # וזו בדיוק ההודעה שתשלח את המפעיל לחפש במקום הלא נכון.
-            ctx.conn.rollback()
+            # תופסים `IntegrityError` ולא `Exception`: כשל אחר — דיסק
+            # מלא, סכימה שהשתנתה — היה מתחפש כאן ל"כבר קיימת", וזו
+            # בדיוק ההודעה שתשלח את המפעיל לחפש במקום הלא נכון.
             raise HTTPException(409, "קבוצה בשם הזה כבר קיימת")
-        ctx.conn.commit()
         journal(ctx.conn, "group_create", f"{gid} ({role})", user[0])
         return {"ok": True}
 
@@ -170,9 +178,12 @@ def create_console_router(ctx: ServerContext) -> APIRouter:
         unknown = [i for i in ids if i not in known]
         if unknown:
             raise HTTPException(400, f"קבוצה לא קיימת: {unknown[0]}")
-        for index, gid in enumerate(ids):
-            ctx.conn.execute("UPDATE groups SET sort = ? WHERE id = ?", (index, gid))
-        ctx.conn.commit()
+        # שורה לכל קבוצה — רצף אחד. סדר שנכתב חלקית הוא רשימה שהמפעיל
+        # רואה אחרת ממה שגרר, ואינו יודע שזה מה שקרה.
+        with _write_lock, writing(ctx.conn):
+            for index, gid in enumerate(ids):
+                ctx.conn.execute("UPDATE groups SET sort = ? WHERE id = ?",
+                                 (index, gid))
         journal(ctx.conn, "group_reorder", ", ".join(ids), user[0])
         return {"ok": True}
 
@@ -182,10 +193,13 @@ def create_console_router(ctx: ServerContext) -> APIRouter:
         label = (body.get("label") or "").strip()
         if not label:
             raise HTTPException(400, "שם ריק")
-        if not update_one(ctx.conn,
-                          "UPDATE groups SET label = ? WHERE id = ?", (label, gid)):
-            raise HTTPException(404, "קבוצה לא קיימת")
-        ctx.conn.commit()
+        # ‏`update_one` מכסה את השורה שלא נמצאה; ‏`writing` מכסה את
+        # ה-UPDATE שנכשל בכלל, ואת ה-``commit`` שאחריו.
+        with _write_lock, writing(ctx.conn):
+            if not update_one(ctx.conn,
+                              "UPDATE groups SET label = ? WHERE id = ?",
+                              (label, gid)):
+                raise HTTPException(404, "קבוצה לא קיימת")
         journal(ctx.conn, "group_edit", f"{gid} label={label}", user[0])
         return {"ok": True}
 
@@ -196,8 +210,8 @@ def create_console_router(ctx: ServerContext) -> APIRouter:
             # חדר השיכפולים ומחשב הבנייה הם יחידים במערכת — אין להם
             # ניהול קבוצות, ולכן גם אי אפשר למחוק אותם.
             raise HTTPException(400, "קבוצה קבועה — אפשר להסיר ממנה מכונות, לא למחוק אותה")
-        ctx.conn.execute("DELETE FROM groups WHERE id = ?", (gid,))
-        ctx.conn.commit()
+        with _write_lock, writing(ctx.conn):
+            ctx.conn.execute("DELETE FROM groups WHERE id = ?", (gid,))
         journal(ctx.conn, "group_delete", gid, user[0])
         return {"ok": True}
 
@@ -253,8 +267,8 @@ def create_console_router(ctx: ServerContext) -> APIRouter:
     @router.delete("/machines/{mac}")
     def del_machine(mac: str, user=Depends(admin_only)):
         canonical = registry.normalize_mac(mac)
-        ctx.conn.execute("DELETE FROM machines WHERE mac = ?", (canonical,))
-        ctx.conn.commit()
+        with _write_lock, writing(ctx.conn):
+            ctx.conn.execute("DELETE FROM machines WHERE mac = ?", (canonical,))
         journal(ctx.conn, "machine_delete", canonical or mac, user[0])
         return {"ok": True}
 

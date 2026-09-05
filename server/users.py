@@ -13,7 +13,7 @@ import re
 import secrets
 import sqlite3
 
-from .db import journal, now_iso
+from .db import _write_lock, journal, now_iso, writing
 
 #: מספר הסבבים ל**סיסמאות חדשות**. סיסמה קיימת נבדקת במספר שנשמר איתה.
 _ITERATIONS = 200_000
@@ -22,6 +22,13 @@ _SCHEME = "pbkdf2"
 #: ‏`|` מפריד בין השדות בטוקן של הקונסולה (`auth.check`), ולכן שם
 #: שמכיל אותו מייצר חשבון שאי אפשר להתחבר אליו לעולם.
 _FORBIDDEN_IN_USERNAME = "|"
+
+#: כל כתיבה כאן עוברת ב-``with _write_lock, writing(conn)`` — שני
+#: המנגנונים של `db.py`, מאותה סיבה שבגללה `net_seen` קיבל אותם (#272,
+#: ‏#356, ‏#313): כתיבה שנכשלה בלי ``rollback`` משאירה את החיבור בתוך
+#: טרנזאקציה, ומשם **כל** כתיבה עליו נכשלת מיד עד אתחול השרת — כלומר
+#: ניהול משתמשים שהפסיק לעבוד. ‏`journal` נוטל את אותה נעילה בעצמו,
+#: והיא ``Lock`` ולא ``RLock``, ולכן הרישום ביומן נשאר **מחוץ** לבלוק.
 
 
 def _derive(password: str, salt: str, iterations: int) -> str:
@@ -78,11 +85,11 @@ def create(conn: sqlite3.Connection, username: str, password: str, role: str, by
     if not username or len(password) < 8:
         raise ValueError("שם משתמש ריק או סיסמה קצרה משמונה תווים")
     _check_username(username)
-    conn.execute(
-        "INSERT INTO users (username, pw_hash, role, created_at) VALUES (?, ?, ?, ?)",
-        (username, _hash(password, secrets.token_hex(16)), role, now_iso()),
-    )
-    conn.commit()
+    with _write_lock, writing(conn):
+        conn.execute(
+            "INSERT INTO users (username, pw_hash, role, created_at) VALUES (?, ?, ?, ?)",
+            (username, _hash(password, secrets.token_hex(16)), role, now_iso()),
+        )
     journal(conn, "user_create", f"{username} ({role})", by)
 
 
@@ -137,17 +144,20 @@ def update(
     if role == "deploy" and row["role"] == "admin" and admin_count(conn) <= 1:
         raise ValueError("זה המנהל האחרון — אי אפשר להוריד אותו מתפקידו")
 
+    # שני העדכונים הם טרנזאקציה אחת: תפקיד שהשתנה בלי הסיסמה שנשלחה
+    # איתו הוא חשבון שאיש אינו יודע באיזה מצב הוא.
     changed = []
-    if role is not None and role != row["role"]:
-        conn.execute("UPDATE users SET role = ? WHERE username = ?", (role, username))
-        changed.append(f"role={role}")
-    if password is not None:
-        conn.execute(
-            "UPDATE users SET pw_hash = ? WHERE username = ?",
-            (_hash(password, secrets.token_hex(16)), username),
-        )
-        changed.append("password")
-    conn.commit()
+    with _write_lock, writing(conn):
+        if role is not None and role != row["role"]:
+            conn.execute("UPDATE users SET role = ? WHERE username = ?",
+                         (role, username))
+            changed.append(f"role={role}")
+        if password is not None:
+            conn.execute(
+                "UPDATE users SET pw_hash = ? WHERE username = ?",
+                (_hash(password, secrets.token_hex(16)), username),
+            )
+            changed.append("password")
     if changed:
         journal(conn, "user_edit", f"{username} " + ", ".join(changed), by)
 
@@ -167,9 +177,9 @@ def set_disabled(conn: sqlite3.Connection, username: str, disabled: bool,
         raise ValueError("משתמש לא קיים")
     if disabled and row["role"] == "admin" and active_admin_count(conn) <= 1:
         raise ValueError("זה המנהל הפעיל האחרון — חסימתו תנעל את הקונסולה")
-    conn.execute("UPDATE users SET disabled_at = ? WHERE username = ?",
-                 (now_iso() if disabled else None, username))
-    conn.commit()
+    with _write_lock, writing(conn):
+        conn.execute("UPDATE users SET disabled_at = ? WHERE username = ?",
+                     (now_iso() if disabled else None, username))
     journal(conn, "user_disabled" if disabled else "user_enabled", username, by)
 
 
@@ -189,8 +199,8 @@ def admin_count(conn: sqlite3.Connection) -> int:
 
 
 def delete(conn: sqlite3.Connection, username: str, by: str) -> None:
-    conn.execute("DELETE FROM users WHERE username = ?", (username,))
-    conn.commit()
+    with _write_lock, writing(conn):
+        conn.execute("DELETE FROM users WHERE username = ?", (username,))
     journal(conn, "user_delete", username, by)
 
 

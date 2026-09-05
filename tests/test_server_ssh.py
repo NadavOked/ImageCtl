@@ -180,6 +180,9 @@ def ssh_server(tmp_path: Path, images_root: Path, clock):
         "ss": lambda: "",
         "unit_active": lambda name: "active",
         "http_get": lambda url: 200,
+        # ‏/boot/vmlinuz ו-/boot/initrd.img (#333) — מוזרקים כאן כדי
+        # שהבדיקה לא תפנה לרשת אמיתית.
+        "http_size": lambda url: (200, 31_000_000),
         "tftp_root": lambda: tftp,
         "interfaces": lambda: [dict(n) for n in fake["interfaces"]],
         # מתגי ה-SSH:
