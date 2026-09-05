@@ -50,7 +50,7 @@ REPO = Path(__file__).resolve().parent.parent
 #: לבדוק, ובמקום שבו הם אמורים להיות זה כישלון ולא דילוג (#52).
 native_tools = requires_native(("bash", BASH), "curl", "jq")
 
-MAC = "00:00:5e:07:1a:c4"
+MAC = "b4:2e:99:07:1a:c4"
 SESSION = "ses_a91f"
 IMAGE = "img_7f3a91"
 

@@ -14,12 +14,23 @@ import socket
 import subprocess
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends
 
-from . import agent_loops, auth, console_ssh, dhcp, ssh_switch
+import hashlib
+
+from . import agent_loops, auth, console_ssh, dhcp, foreign_vlan, ssh_switch
 
 BOOT_FILES = ("bootx64.efi", "grubx64.efi", "grub/grub.cfg")
+
+
+def _sha256(path) -> str:
+    """‏"" כשאי-אפשר לקרוא — נבדל מ-hash שנקרא, ואינו "תואם"."""
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return ""
 
 
 def _run(cmd: list[str]) -> str:
@@ -33,6 +44,7 @@ def _run(cmd: list[str]) -> str:
 def default_hooks() -> dict:
     return {
         "ss": lambda: _run(["ss", "-ulnp"]),
+        "shim_src": lambda: "/usr/lib/shim/shimx64.efi.signed",
         "unit_active": lambda name: _run(["systemctl", "is-active", name]).strip(),
         "http_get": _http_probe,
         "http_text": _http_body,
@@ -128,6 +140,22 @@ def collect(ctx, hooks: dict, server_base: str) -> list[dict]:
         results.append(check("boot_files", "קבצי האתחול", "bad",
                              f"חסרים ב-{root}: {', '.join(missing)} — הריצו את המתקין"))
 
+    # ‏#329: המתקין מעתיק את ה-shim פעם אחת ולא מעדכן. מיקרוסופט
+    # דוחפת עדכוני SBAT שמבטלים shim ישן, ואז **כל הצי** מפסיק לעלות
+    # ב-PXE בבת אחת — בלי שנגענו בכלום. ‏`apt upgrade` אינו מספיק:
+    # הוא מעדכן את /usr/lib/shim, לא את העותק כאן.
+    src, tftp = hooks["shim_src"](), root / "bootx64.efi"
+    a, b = _sha256(src), _sha256(tftp)
+    if a and b and a == b:
+        results.append(check("shim_fresh", "עדכניות ה-shim", "ok",
+                             "העותק ב-TFTP תואם למה שהמערכת מספקת"))
+    elif a and b:
+        results.append(check("shim_fresh", "עדכניות ה-shim", "bad",
+                             f"{tftp} ישן מ-{src} — הריצו את המתקין מחדש"))
+    else:
+        results.append(check("shim_fresh", "עדכניות ה-shim", "unknown",
+                             f"לא ניתן לקרוא {src if not a else tftp} — לא נבדק"))
+
     # השרת עצמו, בכתובת שהלקוחות רואים. הקונסולה שקוראת את זה כבר מדברת
     # איתנו — הבדיקה היא שהכתובת הציבורית (זו שב-GRUB) אכן עונה.
     status = hooks["http_get"](server_base.rstrip("/") + "/boot/menu?mac=00:00:00:00:00:00")
@@ -166,12 +194,21 @@ def collect(ctx, hooks: dict, server_base: str) -> list[dict]:
     # שתי דלתות ה-SSH (#83) — לפי מה שנקרא בחזרה, לא לפי ההגדרה.
     results.extend(ssh_checks(console_ssh.snapshot(ctx, hooks, server_base)))
 
-    # ואחרון, כי אורכו משתנה: מי נופל לסוכן בלולאה עכשיו (#112).
+    # ואחרונות, כי אורכן משתנה: מי נופל לסוכן בלולאה עכשיו (#112), ומי
+    # מדבר עם השרת מרשת שאינה וילן ההפצה (#137). שתי רשימות נפרדות —
+    # פנייה מרשת אחרת אינה לולאה, ואינה נספרת כאחת.
     try:
         loops = agent_loops.current(ctx.conn)
     except Exception:  # noqa: BLE001 — שאילתה שנפלה אינה "אין לולאות"
         loops = None
     results.extend(loop_checks(loops))
+
+    try:
+        strangers = foreign_vlan.current(ctx.conn)
+    except Exception:  # noqa: BLE001 — שאילתה שנפלה אינה "אף אחד לא פנה"
+        strangers = None
+    results.extend(vlan_checks(strangers,
+                               urlsplit(server_base).hostname or server_base))
 
     return results
 
@@ -209,6 +246,44 @@ def loop_checks(loops: list[dict] | None) -> list[dict]:
         check(f"agent_loop:{loop['mac']}", loop["name"] or loop["mac"], "bad",
               f"{loop['hits']} פעמים בלולאה הנוכחית · {_last_seen(loop['silent_seconds'])}")
         for loop in loops
+    ]
+    return rows
+
+
+def vlan_checks(contacts: list[dict] | None, deploy_vlan: str) -> list[dict]:
+    """מי מדבר עם השרת מרשת שאינה וילן ההפצה — שורה לכל מחשב (#137).
+
+    **רק אדום.** אין כאן דירוג בין "לגיטימי" ל"תקלה", כי לשרת אין ממה
+    להסיק אותו: אותה פנייה בדיוק היא נדב שעומד ליד מחשב ומושך אימג'
+    ביד, ומחשב שיכפול שחובר לשקע הלא נכון וייראה תקין עד שיתברר שאינו
+    עובד. ההכרעה היא שהאירוע נראה בשני המקרים.
+
+    השורה אומרת **מאיזו רשת** נפתחה הפנייה ומה מצופה — כי בלי זה
+    "משהו לא בסדר ברשת" הוא בדיוק המשפט ששולח לחפש במקום הלא נכון.
+
+    ‏None פירושו שהרשימה לא נקראה, וזו שורה **אדומה** ולא ריקה. וגם
+    הירוקה נזהרת בלשונה: היא אומרת מה נמדד — לא הגיעה פנייה כזאת
+    בעשר הדקות האחרונות — ולא "כל המחשבים בשקע הנכון". מחשב כבוי
+    שותק בדיוק כמו מחשב שהועבר, ואין אירוע שאומר "נרפא".
+    """
+    label = "מחשבים שפונים מרשת אחרת"
+    if contacts is None:
+        return [check("off_vlan", label, "bad",
+                      "רשימת הפניות מרשת אחרת לא נקראה — אין לדעת אם מחשב "
+                      "מדבר עם השרת מחוץ לווילן ההפצה")]
+    if not contacts:
+        return [check("off_vlan", label, "ok",
+                      f"אף מחשב לא פנה לשרת מחוץ לווילן ההפצה ב-"
+                      f"{foreign_vlan.SILENCE_SECONDS // 60} הדקות האחרונות. "
+                      "מחשב כבוי שותק גם הוא — ירידה מהרשימה אינה \"תוקן\"")]
+    rows = [check("off_vlan", label, "bad",
+                  f"{len(contacts)} מחשבים פונים לשרת מרשת שאינה וילן ההפצה — "
+                  "בדקו לאיזה שקע הם מחוברים")]
+    rows += [
+        check(f"off_vlan:{one['mac']}", one["name"] or one["mac"], "bad",
+              f"פנתה מ-{one['address']} · וילן ההפצה הוא {deploy_vlan} · "
+              f"{one['hits']} פניות · {_last_seen(one['silent_seconds'])}")
+        for one in contacts
     ]
     return rows
 

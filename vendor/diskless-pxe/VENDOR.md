@@ -38,5 +38,5 @@
 
 </div>
 
-[#230]: https://github.com/NadavOked/ImageCtl/issues/230
-[#231]: https://github.com/NadavOked/ImageCtl/issues/231
+[#230]: https://github.com/NadavOked/ImageCtl-archive/issues/230
+[#231]: https://github.com/NadavOked/ImageCtl-archive/issues/231

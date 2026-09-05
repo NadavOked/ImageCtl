@@ -280,14 +280,14 @@ def test_the_login_body_survives_a_password_with_a_quote(tmp_path):
     run.mkdir()
     out = bb(
         tmp_path,
-        f'export RUN_DIR="{run}" MAC="00:00:5e:07:1a:c4"\n'
+        f'export RUN_DIR="{run}" MAC="b4:2e:99:07:1a:c4"\n'
         + source_line(*LIBS)
         + 'login_body "$1" "$2"\n',
         "nadav", 'pa"ss\\word',
     )
     assert json.loads(out) == {
         "username": "nadav", "password": 'pa"ss\\word',
-        "mac": "00:00:5e:07:1a:c4",
+        "mac": "b4:2e:99:07:1a:c4",
     }
 
 
@@ -296,7 +296,7 @@ def test_the_open_round_body_survives_a_password_with_a_quote(tmp_path):
     run.mkdir()
     out = bb(
         tmp_path,
-        f'export RUN_DIR="{run}" MAC="00:00:5e:07:1a:c4"\n'
+        f'export RUN_DIR="{run}" MAC="b4:2e:99:07:1a:c4"\n'
         'RECOVERY_USER="labtech"; RECOVERY_PASS=\'p"a\\ss\'\n'
         + source_line("common.sh", "classround.sh")
         + "open_round_body grp_LAB1 img_7f3a91\n",
@@ -317,7 +317,7 @@ def test_the_failure_reason_reaches_the_console_intact(tmp_path):
         f'export RUN_DIR="{run}"\n'
         + source_line("common.sh", "progress.sh")
         + 'target_init sda 1024\ntarget_set sda failed "$1"\n'
-        "build_progress sess_1 00:00:5e:07:1a:c4\n",
+        "build_progress sess_1 b4:2e:99:07:1a:c4\n",
         reason,
     )
     body = json.loads(out)

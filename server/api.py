@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from boot.grub_menu import normalize_mac as lenient_mac
 
-from . import agent_loops, pulls, registry, reports, users
+from . import agent_loops, foreign_vlan, pulls, registry, reports, users
 from .db import journal
 from .hello import build_answer, login_required, off_deploy_vlan
 from .images import ImageLibrary
@@ -82,6 +82,11 @@ def create_agent_router(ctx: ServerContext,
         # המקומי ובכל זאת הסוכן ענה — השרשור לדיסק נכשל, וזה מה שמסך
         # הבריאות מראה (#112). ניטור בלבד: לא נוגע בתשובה שנשלחת.
         agent_loops.note(ctx.conn, ctx.store, mac, answer, off_vlan=off_vlan)
+        # ובשורה נפרדת משלו: המכונה מדברת איתנו מרשת שאינה וילן ההפצה
+        # (#137). לא לולאה — ולכן לא נספר שם — אבל כן אירוע שהמפעיל
+        # צריך לראות, בין אם הוא עומד ליד המחשב בכוונה ובין אם המחשב
+        # חובר לשקע הלא נכון. התראה, לא שער: התשובה למעלה כבר נבנתה.
+        foreign_vlan.note(ctx.conn, mac, request.scope, off_vlan=off_vlan)
         return JSONResponse(answer)
 
     @router.post("/agent/login")

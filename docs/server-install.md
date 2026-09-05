@@ -50,8 +50,52 @@ sudo ./install/setup-boot-server.sh
 רוצים רק לראות מה יקרה? `sudo ./setup-boot-server.sh --dry-run`.
 לאוטומציה יש דגלים שמדלגים על השאלות — `--help` מפרט.
 
-**הסקריפט עובד גם לבדו**: קובץ ה-GRUB הקבוע מוטמע בו, וכשהריפו לא
-לצידו הוא מושך את הקוד מ-GitHub. העתיקו אותו לשרת חדש והריצו.
+**הביאו את הריפו אל השרת והריצו את המתקין מתוכו.** קובץ ה-GRUB הקבוע
+אמנם מוטמע בסקריפט, אבל **העתקת הסקריפט לבדו כבר אינה מסלול עובד**:
+כשהריפו אינו לצידו הוא מנסה `git clone` מ-`ImageCtl-archive`, וזה ריפו
+**פרטי** — ‏clone בלי אישורים נכשל תמיד (`could not read Username for
+'https://github.com'`, יציאה 128). כשהריפו נמצא לצד הסקריפט המתקין
+מעתיק ממנו ואינו פונה לרשת כלל.
+
+---
+
+## שלב שני, חובה: הקרנל וה-initrd
+
+**המתקין אינו בונה את ה-initrd ואינו מעתיק קרנל.** בסיומו
+`/srv/imagectl/boot/` **ריקה**, ולכן `GET /boot/vmlinuz` ו-`GET
+/boot/initrd.img` מחזירים **404** — ותפריט ה-GRUB מפנה אליהם כל תחנה
+שיש לה משימה. בלי השלב הזה השרת עולה, הקונסולה עובדת, מסך הבריאות ירוק
+— ואף מחשב לא יצליח לעלות ל-ImageCtl.
+
+זהו המסלול היחיד שנבדק מקצה לקצה ב-#166, והוא הכשל שחוסם יום ראשון
+במכללה. **מסך הבריאות אינו תופס אותו** — הבדיקה "קבצי האתחול" בוחנת את
+שורש ה-TFTP בלבד (shim/GRUB/התפריט) ואינה יודעת דבר על שתי הכתובות
+האלה.
+
+```bash
+# הקרנל של דביאן, ולא הקרנל של אימג' הענן: ‏linux-image-cloud-amd64
+# נבנה בלי חלק ממודולי מערכות הקבצים והדרייברים שהסוכן מצהיר עליהם,
+# והבנייה תיעצר עם "missing required modules".
+sudo apt-get install -y linux-image-amd64
+
+KVER=$(ls /lib/modules | grep -v cloud | tail -n1)
+sudo bash tools/build_initramfs.sh --kernel-version "$KVER" \
+     --output /srv/imagectl/boot/initrd.img
+sudo cp "/boot/vmlinuz-$KVER" /srv/imagectl/boot/vmlinuz
+```
+
+**אימות — ראיה חיובית, לא `is-active`:**
+
+```bash
+curl -s -o /tmp/i -w '%{http_code} %{size_download}\n' \
+     http://<כתובת-השרת>:8080/boot/initrd.img
+cmp /tmp/i /srv/imagectl/boot/initrd.img && echo "זהה"
+```
+
+‏200 ו-`cmp` שקט = השרת מגיש בדיוק את מה שנבנה. ‏404 = התחנות לא יעלו.
+
+**עדכון הסוכן** = בניית הקובץ הזה מחדש והעתקתו שוב. אין חתימה ואין
+מפתחות.
 
 ---
 

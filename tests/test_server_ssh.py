@@ -84,7 +84,7 @@ def test_reading_ipv6_too(tmp_path: Path):
 
 NICS = [
     {"name": "eth0", "state": "up", "mac": "aa", "addresses": ["10.0.44.10/24"]},
-    {"name": "eth1", "state": "up", "mac": "bb", "addresses": ["10.96.0.10/24"]},
+    {"name": "eth1", "state": "up", "mac": "bb", "addresses": ["10.60.0.10/24"]},
 ]
 
 
@@ -230,16 +230,16 @@ def test_the_boot_menu_carries_the_debug_flag_only_while_the_switch_is_on(ssh_se
     מה שמכניס את `imagectl.debug` לשורת הקרנל."""
     setup_classroom(ssh_server)
     anon = ssh_server["anon"]
-    assert "imagectl.debug" not in anon.get("/boot/menu?mac=00:00:5e:07:1a:c4").text
+    assert "imagectl.debug" not in anon.get("/boot/menu?mac=b4:2e:99:07:1a:c4").text
 
     ssh_server["admin"].put("/api/console/ssh/stations",
                             json={"enabled": True, "confirm": "imagectl.debug"})
-    text = anon.get("/boot/menu?mac=00:00:5e:07:1a:c4").text
+    text = anon.get("/boot/menu?mac=b4:2e:99:07:1a:c4").text
     assert "imagectl.debug=1" in text
     assert "console=ttyS0,115200" in text          # תוספות המפעיל נשארו
 
     ssh_server["admin"].put("/api/console/ssh/stations", json={"enabled": False})
-    assert "imagectl.debug" not in anon.get("/boot/menu?mac=00:00:5e:07:1a:c4").text
+    assert "imagectl.debug" not in anon.get("/boot/menu?mac=b4:2e:99:07:1a:c4").text
 
 
 # --- עיקרון 7: הקלדת שם בכיוון המסוכן ----------------------------------------
@@ -253,7 +253,7 @@ def test_opening_the_station_door_requires_typing_the_word(ssh_server):
     assert "imagectl.debug" in response.json()["detail"]
     # ולא נפתח חצי: התפריט נשאר נקי.
     assert "imagectl.debug" not in ssh_server["anon"].get(
-        "/boot/menu?mac=00:00:5e:07:1a:c4").text
+        "/boot/menu?mac=b4:2e:99:07:1a:c4").text
 
 
 def test_closing_needs_no_typing_because_closing_is_the_safe_direction(ssh_server):
@@ -310,7 +310,7 @@ def test_opening_one_interface_writes_only_its_address_and_reads_it_back(ssh_ser
     assert result["ok"] is True and result["verified"] is True
     conf = ssh_server["fake"]["applied"][-1]
     assert "ListenAddress 10.0.44.10" in conf
-    assert "10.96.0.10" not in conf                 # וילן הכיתות לא נפתח
+    assert "10.60.0.10" not in conf                 # וילן הכיתות לא נפתח
     nics = {n["name"]: n for n in result["state"]["interfaces"]}
     assert nics["eth0"]["listening"] is True
     assert nics["eth1"]["listening"] is False
@@ -406,7 +406,7 @@ def test_the_health_screen_names_the_interface_that_is_open(ssh_server):
     rows = by_id(admin.get("/api/console/health").json())
     assert rows["ssh_server"]["state"] == "warn"
     assert "eth1" in rows["ssh_server"]["detail"]
-    assert "10.96.0.10" in rows["ssh_server"]["detail"]
+    assert "10.60.0.10" in rows["ssh_server"]["detail"]
 
 
 def test_a_local_only_menu_is_not_evidence_that_the_door_is_shut(ssh_server):
@@ -426,7 +426,7 @@ def test_the_menu_is_asked_for_a_machine_the_server_knows(ssh_server):
     setup_classroom(ssh_server)
     state = ssh_server["admin"].get("/api/console/ssh").json()
     assert state["stations"]["evidence"] == "closed"
-    assert "00:00:5e:07:1a:c4" in state["stations"]["detail"]
+    assert "b4:2e:99:07:1a:c4" in state["stations"]["detail"]
 
 
 def test_with_no_machine_registered_the_station_door_is_unknown(ssh_server):

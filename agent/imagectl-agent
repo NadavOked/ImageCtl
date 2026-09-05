@@ -21,6 +21,7 @@ LIB_DIR="${LIB_DIR:-/usr/lib/imagectl}"
 . "$LIB_DIR/expand.sh"
 . "$LIB_DIR/drawers.sh"
 . "$LIB_DIR/manifest.sh"
+. "$LIB_DIR/bootca.sh"   # לפני capture.sh: capture_disk קורא לו (#85)
 . "$LIB_DIR/capture.sh"
 . "$LIB_DIR/classround.sh"
 . "$LIB_DIR/hostname.sh"

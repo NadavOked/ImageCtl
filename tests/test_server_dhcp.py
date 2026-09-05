@@ -23,9 +23,9 @@ except ImportError:                                   # pragma: no cover
 
 
 GOOD = dict(
-    enabled=True, range_start="10.99.9.50", range_end="10.99.9.200",
-    netmask="255.255.255.0", gateway="10.99.9.1", dns=["10.99.0.5"],
-    lease="12h", server_ip="10.99.9.10",
+    enabled=True, range_start="10.44.9.50", range_end="10.44.9.200",
+    netmask="255.255.255.0", gateway="10.44.9.1", dns=["10.44.0.5"],
+    lease="12h", server_ip="10.44.9.10",
 )
 
 
@@ -39,12 +39,12 @@ def test_a_disabled_interface_needs_no_fields():
 @pytest.mark.parametrize(
     ("change", "fragment"),
     [
-        ({"range_start": "10.99.9.300"}, "תחילת הטווח"),
-        ({"range_end": "10.99.9.20"}, "גדולה מסופו"),
-        ({"range_end": "10.99.10.200"}, "מחוץ לרשת"),
-        ({"server_ip": "10.99.9.100"}, "בתוך הטווח"),
-        ({"server_ip": "10.99.8.10"}, "אינה ברשת"),
-        ({"gateway": "10.99.8.1"}, "השער"),
+        ({"range_start": "10.44.9.300"}, "תחילת הטווח"),
+        ({"range_end": "10.44.9.20"}, "גדולה מסופו"),
+        ({"range_end": "10.44.10.200"}, "מחוץ לרשת"),
+        ({"server_ip": "10.44.9.100"}, "בתוך הטווח"),
+        ({"server_ip": "10.44.8.10"}, "אינה ברשת"),
+        ({"gateway": "10.44.8.1"}, "השער"),
         ({"lease": "soon"}, "חכירה"),
     ],
 )
@@ -56,7 +56,7 @@ def test_bad_configs_are_refused_in_hebrew(change, fragment):
 
 MIXED = [
     InterfaceConfig("eth0", **GOOD),
-    InterfaceConfig("eth1.101", proxy=True, server_ip="10.99.101.10"),
+    InterfaceConfig("eth1.101", proxy=True, server_ip="10.44.101.10"),
     InterfaceConfig("eth2"),                           # כבוי — לא מופיע
 ]
 
@@ -65,9 +65,9 @@ def test_render_puts_each_interface_under_its_own_tag():
     text = render(MIXED)
     assert "interface=eth0" in text
     assert "interface=eth2" not in text
-    assert "dhcp-range=set:if-eth0,10.99.9.50,10.99.9.200,255.255.255.0,12h" in text
-    assert "option:router,10.99.9.1" in text
-    assert "dhcp-boot=tag:if-eth0,tag:efi-x86_64,bootx64.efi,,10.99.9.10" in text
+    assert "dhcp-range=set:if-eth0,10.44.9.50,10.44.9.200,255.255.255.0,12h" in text
+    assert "option:router,10.44.9.1" in text
+    assert "dhcp-boot=tag:if-eth0,tag:efi-x86_64,bootx64.efi,,10.44.9.10" in text
     assert "bind-interfaces" in text
 
 
@@ -87,7 +87,7 @@ def test_the_main_instance_never_touches_a_proxy_interface():
 def test_a_proxy_only_setup_still_leaves_the_main_instance_serving_tftp():
     """כשאין DHCP מלא בכלל, האינסטנס הראשי נשאר TFTP על כל הכרטיסים
     חוץ מזה של ה-proxy — אין לו טווח, אז הוא לא מחלק כלום."""
-    text = render([InterfaceConfig("eth1.101", proxy=True, server_ip="10.99.101.10")])
+    text = render([InterfaceConfig("eth1.101", proxy=True, server_ip="10.44.101.10")])
     assert "bind-interfaces" in text and "except-interface=eth1.101" in text
     assert "dhcp-range" not in text
 
@@ -102,7 +102,7 @@ def test_the_proxy_file_is_a_standalone_instance():
     assert "interface=eth0" not in text                # ה-DHCP המלא נשאר בראשי
     assert "enable-tftp" in text and "tftp-root=/srv/tftp" in text
     assert "dhcp-leasefile=" in text
-    assert "dhcp-range=set:if-eth1.101,10.99.101.10,proxy" in text
+    assert "dhcp-range=set:if-eth1.101,10.44.101.10,proxy" in text
     assert "option:router" not in text
 
 
@@ -125,7 +125,7 @@ def test_proxy_lets_dnsmasq_answer_with_its_own_address():
     """‏#37: ב-pxe-service אין שדה כתובת שרת — ואסור שיהיה. בלעדיו dnsmasq
     מגיש מה-TFTP שלו ושם ב-siaddr את כתובתו על הממשק שענה, וזו הכתובת
     שהתחנה באמת יכולה להגיע אליה. משם GRUB לוקח את net_default_server."""
-    text = render_proxy([InterfaceConfig("eth1.101", proxy=True, server_ip="10.99.101.10")])
+    text = render_proxy([InterfaceConfig("eth1.101", proxy=True, server_ip="10.44.101.10")])
     lines = [ln for ln in text.splitlines() if ln.startswith("pxe-service=")]
     assert len(lines) == 2
     for line in lines:
@@ -141,8 +141,8 @@ def test_render_splits_the_boot_loader_by_client_arch():
     text = render([InterfaceConfig("eth0", **GOOD)])
     assert "dhcp-match=set:bios,option:client-arch,0" in text
     assert "dhcp-match=set:efi-x86_64,option:client-arch,7" in text
-    assert "dhcp-boot=tag:if-eth0,tag:bios,grub/i386-pc/core.0,,10.99.9.10" in text
-    assert "dhcp-boot=tag:if-eth0,tag:efi-x86_64,bootx64.efi,,10.99.9.10" in text
+    assert "dhcp-boot=tag:if-eth0,tag:bios,grub/i386-pc/core.0,,10.44.9.10" in text
+    assert "dhcp-boot=tag:if-eth0,tag:efi-x86_64,bootx64.efi,,10.44.9.10" in text
     # אין שורת boot חסרת-תג שתתפוס קושחות לא מזוהות — ברירת המחדל
     # למי שאינו מוכר היא כלום, לא טוען שגוי.
     assert "dhcp-boot=tag:if-eth0,bootx64.efi" not in text
@@ -158,10 +158,10 @@ def test_list_interfaces_reads_sysfs_and_skips_loopback(tmp_path):
         d = tmp_path / name
         d.mkdir()
         (d / "operstate").write_text(state)
-        (d / "address").write_text("00:00:5e:07:1a:c4\n")
+        (d / "address").write_text("b4:2e:99:07:1a:c4\n")
     found = dhcp.list_interfaces(tmp_path)
     assert [i["name"] for i in found] == ["eth0", "eth1"]
-    assert found[0]["state"] == "up" and found[0]["mac"] == "00:00:5e:07:1a:c4"
+    assert found[0]["state"] == "up" and found[0]["mac"] == "b4:2e:99:07:1a:c4"
 
 
 def test_apply_reports_an_unwritable_path_instead_of_raising(tmp_path):
@@ -210,8 +210,8 @@ def dhcp_server(tmp_path: Path, images_root: Path, clock):
 
     fake = {
         "interfaces": [
-            {"name": "eth0", "state": "up", "mac": "aa:aa:aa:aa:aa:00", "addresses": ["10.99.9.10/24"]},
-            {"name": "eth1", "state": "up", "mac": "aa:aa:aa:aa:aa:01", "addresses": ["10.99.1.10/24"]},
+            {"name": "eth0", "state": "up", "mac": "aa:aa:aa:aa:aa:00", "addresses": ["10.44.9.10/24"]},
+            {"name": "eth1", "state": "up", "mac": "aa:aa:aa:aa:aa:01", "addresses": ["10.44.1.10/24"]},
         ],
         "existing": [],                 # מה ה-probe "רואה"
         "probe_checked": True,          # האם הבדיקה בכלל הצליחה לרוץ (#53)
@@ -234,7 +234,7 @@ def dhcp_server(tmp_path: Path, images_root: Path, clock):
         "apply_proxy": lambda text, active: (
             fake["proxy_applied"].append((text, active)), fake["proxy_error"])[1],
     }
-    app = create_app(tmp_path / "data", images_root, "http://10.99.12.10:8080",
+    app = create_app(tmp_path / "data", images_root, "http://10.44.12.10:8080",
                      now_fn=clock, dhcp_hooks=hooks)
     users.create(app.state.ctx.conn, "noc", "admin-pass-123", "admin", by="test")
     users.create(app.state.ctx.conn, "labtech", "deploy-pass-1", "deploy", by="test")
@@ -303,7 +303,7 @@ def test_every_interface_starts_off(dhcp_server):
     rows = dhcp_server["admin"].get("/api/console/net/interfaces").json()
     assert [r["name"] for r in rows] == ["eth0", "eth1"]
     assert all(r["enabled"] is False and r["proxy"] is False for r in rows)
-    assert rows[0]["addresses"] == ["10.99.9.10/24"] and rows[0]["state"] == "up"
+    assert rows[0]["addresses"] == ["10.44.9.10/24"] and rows[0]["state"] == "up"
 
 
 def test_turning_on_needs_the_interface_name_typed(dhcp_server):
@@ -319,15 +319,15 @@ def test_turning_on_needs_the_interface_name_typed(dhcp_server):
     assert r.json()["ok"] is True
     assert "interface=eth0" in dhcp_server["fake"]["applied"][-1]
     rows = admin.get("/api/console/net/interfaces").json()
-    assert rows[0]["enabled"] is True and rows[0]["range_start"] == "10.99.9.50"
+    assert rows[0]["enabled"] is True and rows[0]["range_start"] == "10.44.9.50"
 
 
 def test_an_existing_dhcp_server_blocks_the_switch(dhcp_server):
     """הסיכון מנספח ב': DHCP שני על רשת שכבר יש בה אחד."""
-    dhcp_server["fake"]["existing"] = ["10.99.9.1"]
+    dhcp_server["fake"]["existing"] = ["10.44.9.1"]
     admin = dhcp_server["admin"]
     r = admin.put("/api/console/net/interfaces/eth0", json={**GOOD, "confirm": "eth0"})
-    assert r.status_code == 409 and "10.99.9.1" in r.json()["detail"]
+    assert r.status_code == 409 and "10.44.9.1" in r.json()["detail"]
     assert dhcp_server["fake"]["applied"] == []
     # מי שיודע מה הוא עושה יכול לעקוף — במפורש.
     r = admin.put("/api/console/net/interfaces/eth0",
@@ -372,9 +372,9 @@ def test_the_probe_endpoint_tells_the_three_states_apart(dhcp_server):
     assert admin.get("/api/console/net/interfaces/eth0/probe").json() == {
         "interface": "eth0", "checked": True, "servers": []}
 
-    fake["existing"] = ["10.99.9.1"]
+    fake["existing"] = ["10.44.9.1"]
     assert admin.get("/api/console/net/interfaces/eth0/probe").json()["servers"] \
-        == ["10.99.9.1"]
+        == ["10.44.9.1"]
 
     fake["existing"], fake["probe_checked"] = [], False
     body = admin.get("/api/console/net/interfaces/eth0/probe").json()
@@ -388,8 +388,8 @@ def test_the_trunk_needs_a_second_confirmation(dhcp_server):
     assert r.status_code == 200
     assert admin.get("/api/console/net/interfaces").json()[1]["trunk"] is True
 
-    body = {**GOOD, "range_start": "10.99.1.50", "range_end": "10.99.1.200",
-            "gateway": "10.99.1.1", "server_ip": "10.99.1.10", "confirm": "eth1"}
+    body = {**GOOD, "range_start": "10.44.1.50", "range_end": "10.44.1.200",
+            "gateway": "10.44.1.1", "server_ip": "10.44.1.10", "confirm": "eth1"}
     r = admin.put("/api/console/net/interfaces/eth1", json=body)
     assert r.status_code == 409 and "confirm_trunk" in r.json()["detail"]
     r = admin.put("/api/console/net/interfaces/eth1", json={**body, "confirm_trunk": True})
@@ -399,12 +399,12 @@ def test_the_trunk_needs_a_second_confirmation(dhcp_server):
 def test_proxy_mode_does_not_hand_out_addresses(dhcp_server):
     admin, fake = dhcp_server["admin"], dhcp_server["fake"]
     r = admin.put("/api/console/net/interfaces/eth1",
-                  json={"proxy": True, "server_ip": "10.99.1.10",
+                  json={"proxy": True, "server_ip": "10.44.1.10",
                         "confirm": "eth1", "confirm_proxy_broken": True})
     assert r.status_code == 200, r.text
     text, active = fake["proxy_applied"][-1]
     assert active is True
-    assert "dhcp-range=set:if-eth1,10.99.1.10,proxy" in text
+    assert "dhcp-range=set:if-eth1,10.44.1.10,proxy" in text
     assert "option:router" not in text
     preview = admin.get("/api/console/net/dnsmasq").json()
     assert preview["text"] == fake["applied"][-1] and preview["proxy_text"] == text
@@ -418,7 +418,7 @@ def test_proxy_runs_in_its_own_instance_so_a_freeze_spares_the_main_dhcp(dhcp_se
     assert admin.put("/api/console/net/interfaces/eth0",
                      json={**GOOD, "confirm": "eth0"}).status_code == 200
     assert admin.put("/api/console/net/interfaces/eth1",
-                     json={"proxy": True, "server_ip": "10.99.1.10",
+                     json={"proxy": True, "server_ip": "10.44.1.10",
                            "confirm": "eth1",
                            "confirm_proxy_broken": True}).status_code == 200
 
@@ -439,7 +439,7 @@ def test_proxy_runs_in_its_own_instance_so_a_freeze_spares_the_main_dhcp(dhcp_se
 def test_a_proxy_failure_is_reported_next_to_the_main_one(dhcp_server):
     dhcp_server["fake"]["proxy_error"] = "imagectl-proxy לא הגיב ל-restart"
     r = dhcp_server["admin"].put("/api/console/net/interfaces/eth1",
-                                 json={"proxy": True, "server_ip": "10.99.1.10",
+                                 json={"proxy": True, "server_ip": "10.44.1.10",
                                        "confirm": "eth1",
                                        "confirm_proxy_broken": True})
     assert r.json()["ok"] is False and "imagectl-proxy" in r.json()["apply_error"]
@@ -448,7 +448,7 @@ def test_a_proxy_failure_is_reported_next_to_the_main_one(dhcp_server):
 def test_bad_values_never_reach_dnsmasq(dhcp_server):
     admin = dhcp_server["admin"]
     r = admin.put("/api/console/net/interfaces/eth0",
-                  json={**GOOD, "range_end": "10.99.9.20", "confirm": "eth0"})
+                  json={**GOOD, "range_end": "10.44.9.20", "confirm": "eth0"})
     assert r.status_code == 400 and "גדולה" in r.json()["detail"]
     assert dhcp_server["fake"]["applied"] == []
 

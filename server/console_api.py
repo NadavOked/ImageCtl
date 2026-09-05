@@ -11,13 +11,13 @@ import re
 import sqlite3
 import shutil
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import PlainTextResponse
 
 from . import auth, registry, users
 from .api import ServerContext
 from .db import get_setting, journal, now_iso, set_setting, update_one
-from .journal_he import JournalTranslator
+from .journal_he import EVENTS_HE, JournalTranslator
 from .sessions import SessionError
 
 WRITE_SETTINGS = {"recovery_require_login", "session_wait_seconds",
@@ -371,21 +371,82 @@ def create_console_router(ctx: ServerContext) -> APIRouter:
         users.delete(ctx.conn, username, by=user[0])
         return {"ok": True}
 
+    @router.get("/journal/events")
+    def read_journal_events(user=Depends(admin_only)):
+        # לתפריט הסינון — מציג את מה שהמפעיל רואה (השם בעברית), לא את
+        # מפתח האירוע הגולמי.
+        return sorted(
+            ({"event": k, "label": v} for k, v in EVENTS_HE.items()),
+            key=lambda e: e["label"],
+        )
+
     @router.get("/journal")
-    def read_journal(limit: int = 200, user=Depends(admin_only)):
+    def read_journal(
+        response: Response,
+        limit: int = 200,
+        event: str = "",
+        user_filter: str = Query("", alias="user"),
+        date_from: str = Query("", alias="from"),
+        date_to: str = Query("", alias="to"),
+        machine: str = "",
+        q: str = "",
+        user=Depends(admin_only),
+    ):
+        limit = max(1, min(limit, 1000))
+        conditions = []
+        params: list = []
+        # אירוע, משתמש וטווח זמן הם עמודות אמיתיות — מסננים בשאילתה עצמה.
+        if event:
+            conditions.append("event = ?")
+            params.append(event)
+        if user_filter:
+            conditions.append("user = ?")
+            params.append(user_filter)
+        if date_from:
+            conditions.append("ts >= ?")
+            params.append(date_from)
+        if date_to:
+            conditions.append("ts <= ?")
+            params.append(date_to)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        # מכונה/MAC וחיפוש חופשי חבויים בתוך detail הגולמי, לא בעמודה
+        # (המלכודת ב-#115: מה שהמפעיל רואה, כמו שם כיתה, אינו מה
+        # שכתוב בשורה — grp_a3f1 וכו'). לכן סורקים חלון גדול של שורות,
+        # מתרגמים אותן כמו למסך, ומסננים על התוצאה המתורגמת — לא על
+        # המזהה הגולמי שהמפעיל לא הקליד ולא ראה.
+        scan_cap = 20000
+        if machine or q:
+            scanned = ctx.conn.execute(
+                f"SELECT COUNT(*) AS n FROM journal {where}", params
+            ).fetchone()["n"]
+            # אם יש יותר שורות תואמות-לעמודות מהחלון שסרקנו, זו לא "אין
+            # תוצאות" — זו חיפוש שלא כיסה את כל היומן. עיקרון 5: אסור
+            # לקפל "לא בדקנו הכל" ל"בדקנו והכל תקין".
+            if scanned > scan_cap:
+                response.headers["X-Journal-Search-Truncated"] = "true"
         rows = ctx.conn.execute(
-            "SELECT ts, user, event, detail FROM journal ORDER BY id DESC LIMIT ?",
-            (min(limit, 1000),),
+            f"SELECT ts, user, event, detail FROM journal {where} "
+            "ORDER BY id DESC LIMIT ?",
+            (*params, scan_cap),
         ).fetchall()
-        # התרגום בקריאה: השורות נשמרות גולמיות, השמות נפתרים לפי ההווה.
         translator = JournalTranslator(ctx.conn, ctx.library)
+        machine_q = machine.strip().lower()
+        text_q = q.strip().lower()
         result = []
         for r in rows:
             label, text = translator.translate(r["event"], r["detail"])
+            if machine_q and machine_q not in text.lower() and machine_q not in r["detail"].lower():
+                continue
+            if text_q and not any(
+                text_q in field.lower() for field in (label, text, r["user"])
+            ):
+                continue
             result.append({
                 "ts": r["ts"], "user": r["user"], "event": r["event"],
                 "label": label, "text": text,
             })
+            if len(result) >= limit:
+                break
         return result
 
     @router.get("/settings")

@@ -25,19 +25,19 @@ def hello(server, mac, ip=None):
 
 def test_any_machine_that_talks_is_listed(server):
     """גם מכונה שאינה בטבלת ה-MAC — זה בדיוק הערך של הלשונית."""
-    hello(server, "aa:bb:cc:11:22:33", ip="10.99.12.50")
+    hello(server, "aa:bb:cc:11:22:33", ip="10.44.12.50")
     devices = server["admin"].get("/api/console/net").json()
     assert len(devices) == 1
     device = devices[0]
     assert device["mac"] == "aa:bb:cc:11:22:33"
-    assert device["ip"] == "10.99.12.50"
+    assert device["ip"] == "10.44.12.50"
     assert device["registered"] is False
     assert device["first_seen"] and device["last_seen"]
 
 
 def test_registered_machines_show_their_name_and_group(server):
     ids = setup_classroom(server)
-    hello(server, ids["mac1"], ip="10.99.12.51")
+    hello(server, ids["mac1"], ip="10.44.12.51")
     device = server["admin"].get("/api/console/net").json()[0]
     assert device["registered"] is True
     assert device["name"] == "05"
@@ -47,14 +47,14 @@ def test_registered_machines_show_their_name_and_group(server):
 
 def test_description_survives_the_next_hello(server):
     """התיאור הוא של האדם; דיווח חוזר מעדכן IP בלבד."""
-    hello(server, "aa:bb:cc:11:22:33", ip="10.99.12.50")
+    hello(server, "aa:bb:cc:11:22:33", ip="10.44.12.50")
     admin = server["admin"]
     assert admin.put("/api/console/net/aa:bb:cc:11:22:33",
                      json={"description": "מדפסת מעבדה 2"}).status_code == 200
-    hello(server, "aa:bb:cc:11:22:33", ip="10.99.12.99")
+    hello(server, "aa:bb:cc:11:22:33", ip="10.44.12.99")
     device = admin.get("/api/console/net").json()[0]
     assert device["description"] == "מדפסת מעבדה 2"
-    assert device["ip"] == "10.99.12.99"
+    assert device["ip"] == "10.44.12.99"
 
 
 def test_manual_add_normalizes_the_mac(server):

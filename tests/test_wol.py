@@ -25,8 +25,8 @@ from server.db import connect
 from server.wol import (LINK_DOWN, LINK_UNKNOWN, LINK_UP, broadcast_sender,
                         link_state, magic_packet, wake_group)
 
-MAC1 = "00:00:5e:07:1a:c4"
-MAC2 = "00:00:5e:07:1a:c5"
+MAC1 = "b4:2e:99:07:1a:c4"
+MAC2 = "b4:2e:99:07:1a:c5"
 CLONER = "aa:bb:cc:00:00:21"
 STRANGER = "de:ad:be:ef:00:99"
 
@@ -36,7 +36,7 @@ STRANGER = "de:ad:be:ef:00:99"
 
 def test_the_packet_is_six_ff_then_the_mac_sixteen_times():
     packet = magic_packet(MAC1)
-    raw = bytes.fromhex("00005e071ac4")
+    raw = bytes.fromhex("b42e99071ac4")
     assert len(packet) == 102                      # 6 + 16*6
     assert packet[:6] == b"\xff" * 6
     assert packet[6:] == raw * 16
@@ -47,8 +47,8 @@ def test_the_packet_is_six_ff_then_the_mac_sixteen_times():
 
 @pytest.mark.parametrize(
     "written",
-    ["00:00:5e:07:1a:c4", "00:00:5E:07:1A:C4", "00-00-5e-07-1a-c4",
-     "00-00-5E-07-1A-C4", "  00:00:5E:07:1a:C4  "],
+    ["b4:2e:99:07:1a:c4", "B4:2E:99:07:1A:C4", "b4-2e-99-07-1a-c4",
+     "B4-2E-99-07-1A-C4", "  b4:2E:99:07:1a:C4  "],
 )
 def test_every_way_of_writing_the_same_mac_gives_the_same_packet(written):
     """שלוש הווריאציות של סעיף 10 — הטבלה קנונית, אבל מי שיקרא לפונקציה
@@ -58,8 +58,8 @@ def test_every_way_of_writing_the_same_mac_gives_the_same_packet(written):
 
 @pytest.mark.parametrize(
     "bad",
-    ["not-a-mac", "", "00:00:5e:07:1a", "00:00:5e:07:1a:c4:c5",
-     "zz:2e:99:07:1a:c4", "00005e071ac", None, 42],
+    ["not-a-mac", "", "b4:2e:99:07:1a", "b4:2e:99:07:1a:c4:c5",
+     "zz:2e:99:07:1a:c4", "b42e99071ac", None, 42],
 )
 def test_a_bad_mac_raises_instead_of_sending_nonsense(bad):
     with pytest.raises(ValueError):
@@ -341,7 +341,7 @@ def test_a_group_wakes_only_its_own_machines(conn):
 
 def test_the_opener_is_not_woken_however_its_mac_is_written(conn):
     packets: list[bytes] = []
-    assert wake_group(conn, "grp_LAB1", exclude_mac="00-00-5E-07-1A-C4",
+    assert wake_group(conn, "grp_LAB1", exclude_mac="B4-2E-99-07-1A-C4",
                       send=packets.append) == 1
     assert macs_of(packets) == {MAC2}
 
@@ -428,7 +428,7 @@ def server(tmp_path: Path, images_root):
     from server.app import create_app
 
     woken: list[bytes] = []
-    app = create_app(tmp_path / "data", images_root, "http://10.99.12.10:8080",
+    app = create_app(tmp_path / "data", images_root, "http://10.44.12.10:8080",
                      wol_send=woken.append)
     ctx = app.state.ctx
     users.create(ctx.conn, "noc", "admin-pass-123", "admin", by="test")
@@ -499,7 +499,7 @@ def test_the_real_server_pins_wol_to_the_deployment_vlan(tmp_path, monkeypatch):
 
     monkeypatch.setattr(app_module.wol, "broadcast_sender", fake_sender)
     app_module.create_app(tmp_path / "d", tmp_path / "i",
-                          "http://10.99.0.1:8080", interface="eth0")
+                          "http://10.44.0.1:8080", interface="eth0")
     assert pinned == ["eth0"], "השרת לא כפה את ממשק וילן ההפצה על WoL"
 
 

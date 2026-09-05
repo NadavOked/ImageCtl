@@ -70,7 +70,7 @@ def test_an_injected_root_still_reads_normally(tmp_path):
         card = tmp_path / name
         card.mkdir()
         (card / "operstate").write_text(state)
-        (card / "address").write_text("00:00:5e:07:1a:c4\n")
+        (card / "address").write_text("b4:2e:99:07:1a:c4\n")
     found = dhcp.list_interfaces(tmp_path)
     assert [n["name"] for n in found] == ["eth0"]
 

@@ -11,6 +11,11 @@
 עם ולו דילוג אחד אינה ירוקה. זה המצב הנכון על שרת המעבדה וב-CI, שם
 הכלים אמורים להיות — "ירוק, אבל 22 דילוגים" הוא בדיוק המשפט שהחביא
 שלוש חבילות שלא רצו (#52).
+
+היוצא מן הכלל הוא **דילוג מוצהר** (#295): טסט שדורש כלי הקיים רק על
+תחנת הפיתוח — ‏PowerShell, שאינו על שרת המעבדה בכוונה. הוא נספר בנפרד,
+מדווח בשמו, ואינו מפיל. אחרת החבילה היתה אדומה שם לתמיד, ואדום קבוע
+מנרמל את עצמו עד שכשל אמיתי נבלע בתוכו.
 """
 
 from __future__ import annotations
@@ -53,6 +58,10 @@ GROUPS: dict[str, list[str]] = {
 
 TALLY = re.compile(r"(\d+) (passed|failed|skipped|error)")
 
+#: התג ש-`tests/native.py` מדפיס בסוף ריצה שהיו בה דילוגים מוצהרים.
+#: ‏ASCII, כי בקונסולת cp1252 העברית באותה שורה נבלעת ב-backslashreplace.
+DECLARED = re.compile(r"\[declared-skips=(\d+)\]")
+
 
 def uncovered_test_files() -> list[str]:
     """קבצי טסט שקיימים ב-tests/ ואינם באף קבוצה.
@@ -73,10 +82,12 @@ def run_pytest(files: list[str]) -> dict[str, int]:
         capture_output=True, cwd=REPO, stdin=subprocess.DEVNULL,
         encoding="utf-8", errors="replace",  # פלט הטסטים עברי; בווינדוס הלוקאל cp1252
     )
-    counts = {"passed": 0, "failed": 0, "skipped": 0, "error": 0}
+    counts = {"passed": 0, "failed": 0, "skipped": 0, "error": 0, "declared": 0}
     for line in proc.stdout.splitlines():
         for num, kind in TALLY.findall(line):
             counts[kind] = int(num)
+        if found := DECLARED.search(line):
+            counts["declared"] = int(found.group(1))
     if proc.returncode not in (0, 1) or (proc.returncode and not counts["failed"]):
         counts["error"] = counts["error"] or 1
         print(proc.stdout[-2000:], file=sys.stderr)
@@ -89,7 +100,7 @@ def main() -> int:
         stream.reconfigure(encoding="utf-8", errors="replace")
     with_sim = "--no-sim" not in sys.argv
     width = max(len(name) for name in GROUPS) + 2
-    total_failed = total_skipped = 0
+    total_failed = total_skipped = total_declared = 0
 
     if missing := uncovered_test_files():
         print("FAIL  קבצי טסט שלא רצו — אינם באף קבוצה ב-GROUPS:")
@@ -101,9 +112,13 @@ def main() -> int:
     for name, files in GROUPS.items():
         c = run_pytest(files)
         total_failed += c["failed"] + c["error"]
-        total_skipped += c["skipped"]
+        # דילוג מוצהר אינו "לא בדקנו בטעות" — נספר לחוד, ואינו מפיל (#295).
+        undeclared = c["skipped"] - c["declared"]
+        total_skipped += undeclared
+        total_declared += c["declared"]
         mark = "PASS" if not (c["failed"] or c["error"]) else "FAIL"
-        skips = f", {c['skipped']} דילוגים" if c["skipped"] else ""
+        skips = f", {undeclared} דילוגים" if undeclared else ""
+        skips += f", {c['declared']} מוצהרים" if c["declared"] else ""
         print(f"{mark}  {name:<{width}} {c['passed']} עברו"
               f"{', ' + str(c['failed'] + c['error']) + ' נפלו' if mark == 'FAIL' else ''}{skips}")
 
@@ -123,15 +138,17 @@ def main() -> int:
     if total_failed:
         print(f"נפל: {total_failed}. לא ממשיכים למעבדה לפני שזה ירוק.")
         return 1
+    declared_note = (f" {total_declared} דילוגים מוצהרים (תחנת פיתוח בלבד)."
+                     if total_declared else "")
     if total_skipped:
         strict = os.environ.get(NATIVE_FLAG, "").strip().lower() not in (
             "", "0", "no", "false")
         # דילוג הוא "לא בדקנו", ולכן במקום שהכלים אמורים להיות הוא כישלון
         # ולא הערה בשוליים. בעמדת פיתוח (ווינדוס) הדגל כבוי וזו אכן הערה.
         print(f"{'נפל' if strict else 'ירוק, אבל'} {total_skipped} דילוגים"
-              f" — על שרת המעבדה היעד הוא אפס.")
+              f" — על שרת המעבדה היעד הוא אפס.{declared_note}")
         return 1 if strict else 0
-    print("ירוק, אפס דילוגים.")
+    print(f"ירוק, אפס דילוגים לא-מוצהרים.{declared_note}")
     return 0
 
 

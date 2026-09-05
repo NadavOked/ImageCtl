@@ -88,6 +88,93 @@ def test_a_skipped_run_is_not_a_green_run_when_native_is_required(monkeypatch):
     assert any("gcc חסר" in line for line in verdict)
 
 
+# --- ‏#295: כלי תחנת-פיתוח — דילוג מוצהר, לא אדום קבוע ------------------------
+
+
+def test_a_dev_workstation_tool_that_is_here_does_not_skip_anything():
+    """הכיוון שבלעדיו זו מחיקה ולא דילוג.
+
+    ‏`skipif(True)` שחל בכל סביבה מוחק את הטסט בלי שאיש יבחין. הראיה
+    החיובית היא שכשהכלי **כן** כאן — הסימון אינו מדלג.
+    """
+    mark = native.requires_dev_workstation(("pwsh/powershell", "/usr/bin/pwsh"))
+    assert mark.name == "skipif" and mark.args[0] is False
+
+
+def test_a_missing_dev_workstation_tool_skips_with_its_name_in_the_reason():
+    mark = native.requires_dev_workstation("no-such-shell-ever", why="הסבר")
+    assert mark.name == "skipif" and mark.args[0] is True
+    reason = mark.kwargs["reason"]
+    assert native.DECLARED_PREFIX in reason
+    assert "no-such-shell-ever" in reason and "הסבר" in reason
+
+
+def test_a_requirement_without_a_tool_is_refused():
+    """דרישה ריקה היתה מדלגת תמיד — זו הדרך שדילוג הופך למחיקה."""
+    with pytest.raises(ValueError):
+        native.requires_dev_workstation()
+
+
+def test_a_declared_skip_is_counted_and_named_but_never_fails(monkeypatch):
+    """שתי האמירות של #295, ושתיהן נדרשות.
+
+    מוצהר → אינו מפיל גם כשהדגל דלוק (‏PowerShell נעדר מהמעבדה במכוון);
+    ולא-מוצהר → עדיין מפיל, כדי ש-#52 לא ייפתח מחדש דרך הפתח הזה.
+    """
+    monkeypatch.setenv(native.ENV_FLAG, "1")
+    audit = native.SkipAudit()
+    audit.record(_Report("tests/test_free_fleet.py::test_ps",
+                         f"{native.DECLARED_PREFIX}: חסר pwsh/powershell"))
+    assert audit.verdict() == [], "דילוג מוצהר הפיל ריצה — זה האדום שהוסר"
+
+    notes = audit.notes()
+    assert notes and "1 טסטים דולגו במוצהר" in notes[0]
+    # התג האנגלי הוא מה ש-`tools/verify.py` קורא — הוא שורד גם
+    # קונסולה שהחליפה את העברית ב-`\uXXXX`.
+    assert f"[{native.DECLARED_TAG}=1]" in notes[0]
+    assert any("test_free_fleet.py::test_ps" in line for line in notes)
+    assert any("pwsh/powershell" in line for line in notes)
+
+    audit.record(_Report("tests/test_fanout.py::test_a", "gcc חסר"))
+    assert len(audit.notes()) == 2, "דילוג סתמי נספר כמוצהר"
+    assert audit.verdict(), "דילוג שאינו מוצהר חדל להפיל — זה #52 חוזר"
+
+
+def test_declared_skips_are_reported_even_without_the_flag(monkeypatch):
+    """אדום קבוע מנרמל את עצמו — וגם ירוק שקט. סופרים בכל ריצה."""
+    monkeypatch.delenv(native.ENV_FLAG, raising=False)
+    audit = native.SkipAudit()
+    audit.record(_Report("tests/test_x.py::t",
+                         f"{native.DECLARED_PREFIX}: חסר pwsh/powershell"))
+    assert audit.notes(), "הדילוג המוצהר לא דווח בלי הדגל — זה דילוג שקט"
+
+
+def test_verify_reads_exactly_the_tag_that_the_run_prints():
+    """שני הקבצים חייבים להסכים על התג — אחרת המעבדה אדומה שוב, בשקט.
+
+    ‏`tools/verify.py` סופר דילוגים מתוך הפלט של pytest. אם `native.py`
+    ישנה את השורה ו-verify לא, הדילוג המוצהר ייספר כדילוג רגיל והאימות
+    ייפול — בדיוק האדום ש-#295 הסיר. הקישור הזה אינו נראה בשום diff,
+    ולכן הבדיקה מריצה את הרג'קס של verify על השורה שהריצה באמת מדפיסה.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parent.parent / "tools" / "verify.py"
+    spec = importlib.util.spec_from_file_location("verify_under_test", path)
+    verify = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verify)
+
+    audit = native.SkipAudit()
+    for i in range(3):
+        audit.record(_Report(f"tests/t.py::t{i}",
+                             f"{native.DECLARED_PREFIX}: חסר pwsh/powershell"))
+    headline = audit.notes()[0]
+    found = verify.DECLARED.search(headline)
+    assert found, f"‏verify אינו מזהה את השורה שהריצה מדפיסה: {headline!r}"
+    assert int(found.group(1)) == 3
+
+
 # --- ‏#79: מה שהריצה משאירה אחריה --------------------------------------------
 
 

@@ -32,6 +32,15 @@ import pytest
 ENV_FLAG = "IMAGECTL_REQUIRE_NATIVE"
 MISSING_MARK = "missing_native"
 
+#: תחילית קבועה בסיבת הדילוג — ‏`SkipAudit` מזהה לפיה דילוג **מוצהר**
+#: ומפריד אותו מדילוג סתמי. טקסט, כי זה מה ש-pytest מוסר בדוח.
+DECLARED_PREFIX = "תחנת פיתוח בלבד"
+
+#: תג ASCII בשורת הסיכום, כדי ש-`tools/verify.py` יוכל לקרוא את המספר.
+#: לא עברית: בווינדוס הקונסולה היא cp1252 והפלט נופל ל-backslashreplace,
+#: ואז כל עברית בשורה הופכת ל-`\uXXXX` — תג ASCII שורד את זה.
+DECLARED_TAG = "declared-skips"
+
 
 def native_required() -> bool:
     """נקרא בכל פעם מחדש, ולא נקבע ביבוא — הטסטים מזיזים את הדגל."""
@@ -70,6 +79,33 @@ def requires_native(
     return pytest.mark.skipif(True, reason=f"חסר כאן: {', '.join(missing)}{tail}")
 
 
+def requires_dev_workstation(*tools: str | tuple[str, object], why: str = ""):
+    """סימון pytest לכלי שקיים **רק** על תחנת הפיתוח, ובמכוון.
+
+    ‏`requires_native` מניח שהכלי אמור להיות בכל מקום שבו הדגל דלוק, ולכן
+    היעדרו שם הוא תקלת סביבה. ‏PowerShell הוא המקרה ההפוך: הוא נעדר משרת
+    המעבדה **לפי החלטה** — במכללה לא יהיה PowerShell על השרת, והמעבדה
+    אמורה להישאר דומה לשטח. התקנתו שם היתה מוסיפה תלות על סביבת האימות
+    עצמה כדי שהאימות ייראה ירוק (#295).
+
+    ולכן דילוג כאן חוקי בכל סביבה — אבל **לא שקט**: הוא נושא את
+    ‏`DECLARED_PREFIX`, ‏`SkipAudit` סופר אותו בנפרד, ו-`conftest` מדפיס
+    את המספר ואת הסיבה בסוף כל ריצה. "תמיד אדום שם" מנרמל את עצמו עד
+    שכשל אמיתי נבלע — וזה בדיוק מה שהוחלף כאן בדילוג שאומר את שמו.
+
+    אין כאן `posix`/`paths`: הדרישה היא כלי בשם, וזה מה שנמדד.
+    """
+    if not tools:
+        raise ValueError("דרישה בלי כלי מדלגת תמיד — זו מחיקה, לא דילוג")
+    missing = missing_requirements(*tools)
+    if not missing:
+        return pytest.mark.skipif(False, reason="הכלים כאן")
+    tail = f" — {why}" if why else ""
+    return pytest.mark.skipif(
+        True, reason=f"{DECLARED_PREFIX}: חסר {', '.join(missing)}{tail}"
+    )
+
+
 def fail_on_missing_native(item) -> None:
     """נקרא מ-`pytest_runtest_setup`: הופך את הסימון לכישלון בשם הטסט."""
     for mark in item.iter_markers(MISSING_MARK):
@@ -98,13 +134,39 @@ class SkipAudit:
         if report.skipped:
             self.skipped.setdefault(report.nodeid, skip_reason(report))
 
+    def declared(self) -> dict[str, str]:
+        """הדילוגים שהוצהרו מראש — כלי תחנת-פיתוח שאינו כאן במכוון."""
+        return {node: reason for node, reason in self.skipped.items()
+                if DECLARED_PREFIX in reason}
+
+    def unexplained(self) -> dict[str, str]:
+        """כל השאר. אלה שהדגל אמור להפיל."""
+        return {node: reason for node, reason in self.skipped.items()
+                if DECLARED_PREFIX not in reason}
+
     def verdict(self) -> list[str]:
         """שורות לדוח — ריק כשאין מה לדווח."""
-        if not self.skipped or not native_required():
+        unexplained = self.unexplained()
+        if not unexplained or not native_required():
             return []
         lines = [
-            f"{ENV_FLAG}=1 אבל {len(self.skipped)} טסטים דולגו — כאן היעד אפס:"
+            f"{ENV_FLAG}=1 אבל {len(unexplained)} טסטים דולגו — כאן היעד אפס:"
         ]
         lines += [f"    {nodeid}  ←  {reason}"
-                  for nodeid, reason in sorted(self.skipped.items())]
+                  for nodeid, reason in sorted(unexplained.items())]
+        return lines
+
+    def notes(self) -> list[str]:
+        """הדילוגים המוצהרים — נספרים ומודפסים תמיד, ואינם מפילים.
+
+        זו כל הנקודה של #295: לא להשתיק את האדום ולא להשאיר אותו. ריצה
+        שדילגה חייבת לומר **כמה** ו**למה**, גם כשהיא ירוקה.
+        """
+        declared = self.declared()
+        if not declared:
+            return []
+        lines = [f"{len(declared)} טסטים דולגו במוצהר, לא כישלון "
+                 f"[{DECLARED_TAG}={len(declared)}]:"]
+        lines += [f"    {nodeid}  ←  {reason}"
+                  for nodeid, reason in sorted(declared.items())]
         return lines

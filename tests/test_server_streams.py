@@ -23,9 +23,9 @@ pytest.importorskip("fastapi")
 from conftest import hello_body, setup_classroom
 
 #: הכתובת שאיתה נוצר השרת ב-conftest — וילן ההפצה.
-VLAN = "http://10.99.12.10:8080"
+VLAN = "http://10.44.12.10:8080"
 #: כתובת מקומית אחרת של אותו שרת: תחנה שמגיעה מרשת אחרת (#42).
-OFF_VLAN = "http://10.98.10.8:8080"
+OFF_VLAN = "http://10.10.10.8:8080"
 
 CREDS = {"username": "labtech", "password": "deploy-pass-1"}
 
@@ -42,11 +42,11 @@ def second_class(server) -> dict:
     result = server["admin"].post(
         "/api/console/machines/import",
         json={"group_id": "grp_LAB2",
-              "text": "00:00:5e:07:2a:01 07\n00:00:5e:07:2a:02 08\n"},
+              "text": "b4:2e:99:07:2a:01 07\nb4:2e:99:07:2a:02 08\n"},
     ).json()
     assert result["saved"] == 2 and not result["rejected"]
-    return {"group": "grp_LAB2", "mac1": "00:00:5e:07:2a:01",
-            "mac2": "00:00:5e:07:2a:02"}
+    return {"group": "grp_LAB2", "mac1": "b4:2e:99:07:2a:01",
+            "mac2": "b4:2e:99:07:2a:02"}
 
 
 def open_round(server, group: str, image: str = "img_7f3a91", expected: int = 2):
@@ -112,7 +112,7 @@ def test_a_room_wave_still_takes_the_slot_from_a_class_round(server):
     lab1 = setup_classroom(server)
     assert server["admin"].post(
         "/api/console/machines",
-        json={"mac": "00:00:5e:07:3a:01", "name": "01", "group_id": "grp_CLONERS"},
+        json={"mac": "b4:2e:99:07:3a:01", "name": "01", "group_id": "grp_CLONERS"},
     ).status_code == 200
     assert server["deploy"].post(
         "/api/console/room", json={"image_id": "img_7f3a91", "target_drives": 4},
@@ -337,7 +337,7 @@ def test_a_wrong_password_does_not_open_a_pull(server):
 def test_an_unregistered_machine_gets_no_pull(server):
     second_class(server)
 
-    response = pull(server, "00:00:5e:07:9f:ff")
+    response = pull(server, "b4:2e:99:07:9f:ff")
 
     assert response.status_code == 403
     assert response.json()["code"] == "unknown_mac"

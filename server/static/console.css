@@ -226,6 +226,15 @@ td{padding:8px 16px; border-bottom:1px solid var(--field-line);
   vertical-align:middle; text-align:center}
 /* פירוט היומן הוא משפט, לא ערך — משפט ממורכז קשה לסריקה. */
 #journal-table td:last-child, #journal-table th:last-child{text-align:right}
+
+/* --- סינון וחיפוש ביומן (#115) ------------------------------------------- */
+#journal-filters .row:last-child{margin-bottom:12px}
+#journal-filters select,
+#journal-filters input[type=text]{flex:1 1 0; min-width:0}
+.jf-date{display:flex; align-items:center; gap:8px; flex:1 1 0; margin-bottom:0;
+  font-size:12px; color:var(--muted); white-space:nowrap}
+.jf-date input{margin-bottom:0}
+#jf-clear{flex:none}
 tr:last-child td{border-bottom:0}
 td .btn{padding:4px 10px; font-size:12px}
 

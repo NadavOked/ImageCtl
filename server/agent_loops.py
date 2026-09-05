@@ -26,7 +26,7 @@ from datetime import datetime, timedelta
 
 from boot.grub_menu import LOCAL, decide
 
-from .db import journal, now_iso
+from .db import _write_lock, journal, now_iso, writing
 from .sessions import SessionStore
 
 log = logging.getLogger("imagectl.agent_loops")
@@ -123,18 +123,29 @@ def _count(conn: sqlite3.Connection, mac: str, ts: str) -> int | None:
 
     שתיקה ארוכה מ-`SILENCE_SECONDS` מתחילה ספירה חדשה באותה שורה:
     מכונה שחוזרת אחרי שתיקה אינה ממשיכה מונה ישן.
+
+    ‏`_write_lock` ו-`writing` הם אותם שני מנגנונים שתוקנו ב-#272 על
+    ‏`net_seen`, וזה **אותו מסלול hello בדיוק** (#356). התור מונע הרעבה
+    בין תהליכוני uvicorn, ו-`writing` מבטיח שכתיבה שנכשלה לא תשאיר
+    ``BEGIN`` פתוח על החיבור — חיבור מורעל אינו מתאושש עד אתחול
+    התהליך, והמונה כאן פשוט מפסיק לספור.
+
+    הנעילה עוטפת את הכתיבה **בלבד**: קריאת האימות ורישום היומן
+    שאחריה יושבים מחוצה לה, כי `journal` נוטל את אותה נעילה בעצמו
+    והיא ``Lock`` ולא ``RLock``.
     """
     cutoff = _cutoff(ts)
-    conn.execute(
-        "INSERT INTO agent_loops (mac, hits, first_at, last_at)"
-        " VALUES (?, 1, ?, ?)"
-        " ON CONFLICT (mac) DO UPDATE SET"
-        "   hits     = CASE WHEN last_at >= ? THEN hits + 1 ELSE 1 END,"
-        "   first_at = CASE WHEN last_at >= ? THEN first_at ELSE excluded.first_at END,"
-        "   last_at  = excluded.last_at",
-        (mac, ts, ts, cutoff, cutoff),
-    )
-    conn.commit()
+    with _write_lock, writing(conn):
+        conn.execute(
+            "INSERT INTO agent_loops (mac, hits, first_at, last_at)"
+            " VALUES (?, 1, ?, ?)"
+            " ON CONFLICT (mac) DO UPDATE SET"
+            "   hits     = CASE WHEN last_at >= ? THEN hits + 1 ELSE 1 END,"
+            "   first_at = CASE WHEN last_at >= ? THEN first_at"
+            "              ELSE excluded.first_at END,"
+            "   last_at  = excluded.last_at",
+            (mac, ts, ts, cutoff, cutoff),
+        )
     # ראיה חיובית: הערך נקרא בחזרה. שורה שאינה שם, או שהחותמת בה אינה
     # זו שנכתבה, פירושה שהספירה לא קרתה — ולא שהיא יצאה אחת (עיקרון 5).
     row = conn.execute(

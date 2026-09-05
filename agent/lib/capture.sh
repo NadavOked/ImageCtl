@@ -129,6 +129,8 @@ capture_disk() {
 
     _json_parts=""
     _total=0
+    # ‏#85: ה-ESP נקרא שוב אחרי הלולאה, לגזירת החותם של מטעני האתחול.
+    _esp_node=""
     while IFS='|' read -r _idx _guid _uguid _first _sizesec; do
         _node=$(partition_node "$_disk" "$_idx")
         _fs=$(_fs_of "$_node")
@@ -136,6 +138,7 @@ capture_disk() {
         # A generic linux-data GUID holding swap is still swap; a swap GUID
         # is swap regardless of what blkid says.
         [ "$_fs" = "swap" ] && _role="swap"
+        [ "$_role" = "esp" ] && _esp_node="$_node"
         if [ "$_role" = "swap" ]; then
             # Nothing in swap is worth keeping (spec section 14): it is described
             # in the manifest and recreated on restore, never read. ה-UUID כן
@@ -228,12 +231,20 @@ capture_disk() {
     _json_parts=${_json_parts%,}
     _json_parts=$(_mark_expandable "$_json_parts")
     _os=$(_image_os "$_json_parts")
+    # ‏#85, אחרי שהבייטים כבר עברו: החותם הוא מידע על האימג', לא שער עליו.
+    # ‏boot_ca_json לעולם אינו נכשל — הוא מחזיר `null` וסיבה.
+    _bootca=$(boot_ca_json "$_esp_node")
+    # תשובה ריקה היתה מייצרת `,,` — מניפסט שאינו JSON, אחרי שכל הבייטים
+    # כבר עברו והשרת כבר קיבל אותם. "לא הצלחנו לגזור" הוא מצב מוכר ויש
+    # לו ייצוג; מניפסט פגום אינו מצב, הוא תקלה שמתגלה בסוף שעה של קריאה.
+    [ -n "$_bootca" ] \
+        || _bootca='"boot_ca":null,"boot_ca_error":"החותם לא נגזר בקליטה הזו"'
 
     # הנתיב קבוע והקורא מכיר אותו. בלי echo של הנתיב ל-stdout: log()
     # מדבר גם הוא ל-stdout, ולכידת $(capture_disk) החזירה פעם בליל
     # שורות לוג במקום נתיב — וה-curl של המניפסט נכשל בשקט (מעבדה, #12).
-    printf '{"schema":1,"family":%s,"os":"%s","source_disk_bytes":%s,"min_target_bytes":%s,"target_floor_bytes":%s,"scheme":"gpt","sector_size":512,"disk_guid":"%s","partitions":[%s],"total_compressed_bytes":%s,"compression":"zstd-%s"}\n' \
-        "$_family" "$_os" "$_disk_bytes" "$_min_target" "$_floor_json" "$_disk_guid" "$_json_parts" "$_total" "$CAPTURE_LEVEL" \
+    printf '{"schema":1,"family":%s,"os":"%s",%s,"source_disk_bytes":%s,"min_target_bytes":%s,"target_floor_bytes":%s,"scheme":"gpt","sector_size":512,"disk_guid":"%s","partitions":[%s],"total_compressed_bytes":%s,"compression":"zstd-%s"}\n' \
+        "$_family" "$_os" "$_bootca" "$_disk_bytes" "$_min_target" "$_floor_json" "$_disk_guid" "$_json_parts" "$_total" "$CAPTURE_LEVEL" \
         > "$RUN_DIR/new-manifest.json"
 }
 

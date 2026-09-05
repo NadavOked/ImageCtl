@@ -25,8 +25,8 @@ from server.db import connect, now_iso
 from server.sessions import MULTICAST, UNICAST, SessionError, SessionStore
 
 GROUP = "grp_LAB1"
-MAC = "00:00:5e:07:1a:c4"
-OTHER_MAC = "00:00:5e:07:1a:c5"
+MAC = "b4:2e:99:07:1a:c4"
+OTHER_MAC = "b4:2e:99:07:1a:c5"
 IMAGE = "img_7f3a91"
 OTHER_IMAGE = "img_2c8e04"
 

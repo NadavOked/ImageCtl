@@ -145,7 +145,7 @@ def fake_machine(tmp_path):
     ש-build_hello קורא ממנו."""
     sysroot = tmp_path / "root"
     net = sysroot / "sys/class/net"
-    for name, mac in [("eth0", "00:00:5e:07:1a:c4"), ("eth1", "00:00:5e:07:1a:c5")]:
+    for name, mac in [("eth0", "b4:2e:99:07:1a:c4"), ("eth1", "b4:2e:99:07:1a:c5")]:
         (net / name).mkdir(parents=True)
         (net / name / "address").write_text(mac + "\n")
     (net / "lo").mkdir()
@@ -189,16 +189,16 @@ def test_hello_matches_the_interface(fake_machine):
     out = sh(
         f'export SYSROOT={posix(fake_machine["sysroot"])!r} '
         f'DEVROOT={posix(fake_machine["dev"])!r} '
-        f'RUN_DIR={posix(fake_machine["run"])!r} IFACE=eth0 IP=10.99.12.187; '
+        f'RUN_DIR={posix(fake_machine["run"])!r} IFACE=eth0 IP=10.44.12.187; '
         f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/sysinfo.sh; '
         f'build_hello'
     )
     hello = json.loads(out)
 
     assert hello["schema"] == 1
-    assert hello["mac"] == "00:00:5e:07:1a:c4"
-    assert hello["all_macs"] == ["00:00:5e:07:1a:c4", "00:00:5e:07:1a:c5"]
-    assert hello["ip"] == "10.99.12.187"
+    assert hello["mac"] == "b4:2e:99:07:1a:c4"
+    assert hello["all_macs"] == ["b4:2e:99:07:1a:c4", "b4:2e:99:07:1a:c5"]
+    assert hello["ip"] == "10.44.12.187"
     assert hello["hostname_current"] is None
     assert hello["uuid"].startswith("4C4C4544-0037")
     assert hello["firmware"] == "uefi"
@@ -265,7 +265,7 @@ def test_unknown_reaches_hello_as_a_bare_null_not_a_string(fake_machine):
     out = sh(
         f'export SYSROOT={posix(fake_machine["sysroot"])!r} '
         f'DEVROOT={posix(fake_machine["dev"])!r} '
-        f'RUN_DIR={posix(fake_machine["run"])!r} IFACE=eth0 IP=10.99.12.187; '
+        f'RUN_DIR={posix(fake_machine["run"])!r} IFACE=eth0 IP=10.44.12.187; '
         f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/sysinfo.sh; '
         f'build_hello'
     )
@@ -336,7 +336,7 @@ def test_hello_reports_the_slot_of_a_sata_drawer(fake_machine):
     out = sh(
         f'export SYSROOT={posix(sysroot)!r} '
         f'DEVROOT={posix(fake_machine["dev"])!r} '
-        f'RUN_DIR={posix(fake_machine["run"])!r} IFACE=eth0 IP=10.99.12.187; '
+        f'RUN_DIR={posix(fake_machine["run"])!r} IFACE=eth0 IP=10.44.12.187; '
         f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/sysinfo.sh; '
         f'build_hello'
     )
@@ -378,12 +378,12 @@ def test_progress_matches_the_interface(tmp_path):
     out = sh(
         f'export RUN_DIR={posix(run)!r}; '
         f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/progress.sh; '
-        f'build_progress ses_a91f 00:00:5e:07:1a:c4'
+        f'build_progress ses_a91f b4:2e:99:07:1a:c4'
     )
     report = json.loads(out)
 
     assert report["session_id"] == "ses_a91f"
-    assert report["mac"] == "00:00:5e:07:1a:c4"
+    assert report["mac"] == "b4:2e:99:07:1a:c4"
     assert report["state"] == "writing"
 
     by_dev = {t["dev"]: t for t in report["targets"]}
@@ -620,7 +620,7 @@ def wizard(tmp_path, keys, require_login="true", codes=("200",)):
     (run / "codes.txt").write_text("\n".join(codes) + "\n", encoding="utf-8")
     (run / "code_n").write_text("0\n", encoding="utf-8")
     script = (
-        f'export RUN_DIR={posix(run)!r} MAC="00:00:5e:07:1a:c4" '
+        f'export RUN_DIR={posix(run)!r} MAC="b4:2e:99:07:1a:c4" '
         f'SERVER="http://127.0.0.1:1" RESP={posix(run / "resp.json")!r} '
         f'IMAGECTL_TEST=1 HTTP_RETRIES=0 HTTP_TIMEOUT=1 '
         f'REQUIRE_LOGIN={require_login!r}; '
@@ -737,7 +737,7 @@ def test_the_login_body_survives_hostile_passwords(tmp_path):
     run = tmp_path / "run"
     run.mkdir()
     out = sh(
-        f'export RUN_DIR={posix(run)!r} MAC="00:00:5e:07:1a:c4"; '
+        f'export RUN_DIR={posix(run)!r} MAC="b4:2e:99:07:1a:c4"; '
         f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/jsonq.sh; '
         f'. {posix(AGENT)}/lib/sysinfo.sh; . {posix(AGENT)}/lib/restore.sh; '
         f'. {posix(AGENT)}/lib/progress.sh; . {posix(AGENT)}/lib/ui.sh; '
@@ -745,21 +745,21 @@ def test_the_login_body_survives_hostile_passwords(tmp_path):
     )
     body = json.loads(out)
     assert body == {"username": "nadav", "password": 'pa"ss\\word',
-                    "mac": "00:00:5e:07:1a:c4"}
+                    "mac": "b4:2e:99:07:1a:c4"}
 
 
 def test_the_open_round_body_matches_the_station_endpoint(tmp_path):
     run = tmp_path / "run"
     run.mkdir()
     out = sh(
-        f'export RUN_DIR={posix(run)!r} MAC="00:00:5e:07:1a:c4" '
+        f'export RUN_DIR={posix(run)!r} MAC="b4:2e:99:07:1a:c4" '
         f'RECOVERY_USER="labtech" RECOVERY_PASS=\'p"ss\'; '
         f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/classround.sh; '
         f'open_round_body grp_LAB1 img_7f3a91'
     )
     body = json.loads(out)
     assert body == {
-        "username": "labtech", "password": 'p"ss', "mac": "00:00:5e:07:1a:c4",
+        "username": "labtech", "password": 'p"ss', "mac": "b4:2e:99:07:1a:c4",
         "group_id": "grp_LAB1", "image_id": "img_7f3a91",
     }
 
@@ -769,14 +769,14 @@ def test_the_open_round_body_carries_the_chosen_machines(tmp_path):
     run = tmp_path / "run"
     run.mkdir()
     out = sh(
-        f'export RUN_DIR={posix(run)!r} MAC="00:00:5e:07:1a:c4" '
+        f'export RUN_DIR={posix(run)!r} MAC="b4:2e:99:07:1a:c4" '
         f'RECOVERY_USER="labtech" RECOVERY_PASS="pass"; '
         f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/classround.sh; '
         'open_round_body grp_LAB1 img_7f3a91 '
-        '\'["00:00:5e:07:1a:c5","00:00:5e:07:1a:c6"]\''
+        '\'["b4:2e:99:07:1a:c5","b4:2e:99:07:1a:c6"]\''
     )
     body = json.loads(out)
-    assert body["macs"] == ["00:00:5e:07:1a:c5", "00:00:5e:07:1a:c6"]
+    assert body["macs"] == ["b4:2e:99:07:1a:c5", "b4:2e:99:07:1a:c6"]
     assert body["group_id"] == "grp_LAB1"
 
 
@@ -803,8 +803,8 @@ def run_open_round_post(tmp_path):
     )
     out = sh(
         f'export PATH="$(cd {posix(stub_dir)!r} && pwd):$PATH"; '
-        f'export RUN_DIR={posix(run)!r} MAC="00:00:5e:07:1a:c4" '
-        f'SERVER="http://10.99.12.10:8080" '
+        f'export RUN_DIR={posix(run)!r} MAC="b4:2e:99:07:1a:c4" '
+        f'SERVER="http://10.44.12.10:8080" '
         f'RECOVERY_USER="labtech" RECOVERY_PASS="s3cret-in-the-classroom"; '
         f'chmod 0755 {posix(stub_dir)}/curl; '
         f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/classround.sh; '
@@ -1632,6 +1632,9 @@ REAL_BINARIES_USED = {
     "partclone.dd",
     # ‏SSH לטכנאי (#44) — נארז תמיד, מאזין רק מאחורי imagectl.debug=1.
     "dropbear", "dropbearkey",
+    # ‏#85 — קריאת החותם של מטעני האתחול שעל ה-ESP בזמן הקליטה. הוא גם
+    # אחד מארבעת הכלים החסרים שרשומים ב-#86 (הכשרת מכונה בזמן שחזור).
+    "openssl",
 }
 
 #: מקומפל מהמקור בבנאי ולכן אינו ברשימת ה-BINARIES שנאספת מהמערכת.

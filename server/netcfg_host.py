@@ -164,11 +164,11 @@ class LiveState:
 
 
 def parse_addr(text: str) -> dict[str, list[str]]:
-    """פלט `ip -4 -o addr show` → {כרטיס: ["10.99.9.10/24", …]}."""
+    """פלט `ip -4 -o addr show` → {כרטיס: ["10.44.9.10/24", …]}."""
     found: dict[str, list[str]] = {}
     for line in text.splitlines():
         fields = line.split()
-        # ‎"2: eth0    inet 10.99.9.10/24 brd … scope global eth0"
+        # ‎"2: eth0    inet 10.44.9.10/24 brd … scope global eth0"
         if len(fields) < 4 or fields[2] != "inet":
             continue
         found.setdefault(fields[1], []).append(fields[3])

@@ -21,7 +21,7 @@ from conftest import hello_body, setup_classroom          # noqa: E402
 from boot.grub_menu import AGENT, GrubConfig, LOCAL, decide, render  # noqa: E402
 from server.bootguard import ATTEMPT_LIMIT                # noqa: E402
 
-CONFIG = GrubConfig(server_base="http://10.99.12.10:8080")
+CONFIG = GrubConfig(server_base="http://10.44.12.10:8080")
 
 OPEN_SESSION = {
     "schema": 1, "known": True, "role": "classroom",
@@ -237,7 +237,7 @@ def test_hello_still_joins_and_resets_the_timer(server):
         "session"]["starts_in_seconds"] == first
 
     # והתפריט לא צירף אף אחד, גם אחרי שהתקציב נגמר.
-    boot_until_local(server, "00:00:5e:07:1a:c4")
+    boot_until_local(server, "b4:2e:99:07:1a:c4")
     assert server["admin"].get(
         "/api/console/overview").json()["session"]["joined"] == 2
 

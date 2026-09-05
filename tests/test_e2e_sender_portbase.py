@@ -25,7 +25,7 @@ PRODUCTION_PORTS = {DEFAULT_PORTBASE, DEFAULT_PORTBASE + 1}
 def _app(tmp_path: Path, **kwargs):
     return server.app.create_app(
         tmp_path / "data", tmp_path / "images",
-        "http://10.99.12.10:8080", **kwargs,
+        "http://10.44.12.10:8080", **kwargs,
     )
 
 
@@ -117,5 +117,5 @@ def test_main_wires_the_flag_into_create_app(tmp_path: Path, monkeypatch) -> Non
 def test_flag_defaults_to_none_so_production_keeps_9000() -> None:
     """ברירת המחדל של הדגל היא היעדר בקשה — לא מספר שמשוכפל לכאן."""
     parser = server.main.build_parser()
-    args = parser.parse_args(["--server-url", "http://10.99.12.10:8080"])
+    args = parser.parse_args(["--server-url", "http://10.44.12.10:8080"])
     assert args.sender_portbase is None

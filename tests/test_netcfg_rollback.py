@@ -40,7 +40,7 @@ NOW = 1_000_000.0
 def marker(**over) -> Pending:
     data = dict(interface="eth1", deadline=NOW + 60, armed_at="2026-08-29T10:00:00",
                 boot=BOOT_A, files=[{"name": "eth1", "text": "old text\n"}],
-                resolv="nameserver 10.99.0.5\n", setting='{"mode": "manual"}')
+                resolv="nameserver 10.44.0.5\n", setting='{"mode": "manual"}')
     return Pending(**{**data, **over})
 
 
@@ -106,7 +106,7 @@ def test_the_previous_file_comes_back_word_for_word(tmp_path: Path, store):
                                       now=NOW + 61, boot=BOOT_A)
     assert reason == "expired"
     assert store["confs"]["eth1"] == "old text\n"
-    assert store["resolv"] == "nameserver 10.99.0.5\n"
+    assert store["resolv"] == "nameserver 10.44.0.5\n"
     assert store["applied"] == ["eth1"]
     assert netcfg_rollback.read_pending(tmp_path) is None
 
@@ -186,7 +186,7 @@ def pending_file(server) -> dict | None:
 def test_touching_the_card_the_console_arrives_on_arms_the_rollback(net_server):
     """הקונסולה מגיעה דרך eth0. שינוי עליו הוא בדיוק המקרה שאין ממנו
     דרך חזרה — ולכן הוא חמוש."""
-    result = put(net_server, name="eth0", address="10.98.10.9").json()
+    result = put(net_server, name="eth0", address="10.10.10.9").json()
     assert result["rollback"]["pending"] is True
     assert result["rollback"]["interface"] == "eth0"
     assert result["rollback"]["seconds_left"] == 60
@@ -194,7 +194,7 @@ def test_touching_the_card_the_console_arrives_on_arms_the_rollback(net_server):
 
 
 def test_a_change_on_another_card_needs_no_confirmation(net_server):
-    result = put(net_server, address="10.99.9.11").json()
+    result = put(net_server, address="10.44.9.11").json()
     assert result["rollback"]["pending"] is False
     assert pending_file(net_server) is None
 
@@ -203,7 +203,7 @@ def test_a_gateway_or_dns_change_arms_it_on_any_card(net_server):
     """‏#57: שניהם יכולים לנתק את הקונסולה בדיוק כמו שינוי כתובת."""
     assert put(net_server, dns=["9.9.9.9"]).json()["rollback"]["pending"] is True
     confirm(net_server)
-    assert put(net_server, gateway="10.99.9.1").json()["rollback"]["pending"] is True
+    assert put(net_server, gateway="10.44.9.1").json()["rollback"]["pending"] is True
 
 
 def test_an_address_that_cannot_be_traced_to_a_card_is_treated_as_the_live_one(
@@ -211,18 +211,18 @@ def test_an_address_that_cannot_be_traced_to_a_card_is_treated_as_the_live_one(
     """מי שלא יודע דרך מה הוא מחובר חייב להניח שהוא מנתק את עצמו.
     ‏"לא ידוע" נופל לצד המגן, לא לצד המרשה (עיקרון 5)."""
     net_server["fake"]["local"] = ""
-    assert put(net_server, address="10.99.9.11").json()["rollback"]["pending"] is True
+    assert put(net_server, address="10.44.9.11").json()["rollback"]["pending"] is True
 
 
 def test_the_marker_is_on_disk_before_the_file_is_touched(net_server):
     """סדר הכתיבות הוא ההגנה. מכונה שמתה בין הכתיבה להחלה חייבת
     להשאיר סמן פתוח; סמן שנכתב **אחרי** השינוי משאיר חלון שבו השינוי
     כבר חי ואין מה שיחזיר אותו."""
-    put(net_server, name="eth0", address="10.98.10.9")
+    put(net_server, name="eth0", address="10.10.10.9")
     assert net_server["fake"]["writes"] == [("eth0", True)]
     # ולהפך: שינוי שאינו דורש חימוש נכתב בלי סמן בכלל.
     confirm(net_server, "eth0")
-    put(net_server, address="10.99.9.11")
+    put(net_server, address="10.44.9.11")
     assert net_server["fake"]["writes"][-1] == ("eth1", False)
 
 
@@ -230,7 +230,7 @@ def test_a_change_is_refused_when_the_rollback_arm_is_not_running(net_server):
     """הגנה שלא הוכחה אינה הגנה. בלי הטיימר השינוי הוא חד-כיווני,
     ולכן הוא פשוט לא מבוצע — ולא מבוצע "בזהירות"."""
     net_server["fake"]["timer"] = (False, "inactive")
-    response = put(net_server, name="eth0", address="10.98.10.9")
+    response = put(net_server, name="eth0", address="10.10.10.9")
     assert response.status_code == 409
     assert "imagectl-netrollback.timer" in response.json()["detail"]
     assert net_server["fake"]["confs"] == {}
@@ -239,12 +239,12 @@ def test_a_change_is_refused_when_the_rollback_arm_is_not_running(net_server):
 
 def test_a_change_that_needs_no_arming_runs_without_the_timer(net_server):
     net_server["fake"]["timer"] = (False, "inactive")
-    assert put(net_server, address="10.99.9.11").status_code == 200
+    assert put(net_server, address="10.44.9.11").status_code == 200
 
 
 def test_a_second_change_while_one_waits_is_refused(net_server):
-    put(net_server, name="eth0", address="10.98.10.9")
-    response = put(net_server, address="10.99.9.11")
+    put(net_server, name="eth0", address="10.10.10.9")
+    response = put(net_server, address="10.44.9.11")
     assert response.status_code == 409
     assert "ממתין לאישור" in response.json()["detail"]
 
@@ -253,11 +253,11 @@ def test_a_second_change_while_one_waits_is_refused(net_server):
 
 
 def test_confirming_clears_the_marker_and_keeps_the_change(net_server):
-    put(net_server, name="eth0", address="10.98.10.9")
+    put(net_server, name="eth0", address="10.10.10.9")
     result = confirm(net_server, "eth0")
     assert result.status_code == 200 and result.json()["ok"] is True
     assert pending_file(net_server) is None
-    assert "10.98.10.9" in net_server["fake"]["confs"]["eth0"]
+    assert "10.10.10.9" in net_server["fake"]["confs"]["eth0"]
     assert ("net_confirmed", "eth0") in journal_events(net_server)
 
 
@@ -265,7 +265,7 @@ def test_confirming_after_the_window_closed_does_not_undo_anything(net_server):
     """"אישור אחרי פקיעה אינו מבטל החזרה שכבר קרתה" — הוא נדחה, כי
     ההחזרה כבר קרתה או עומדת לקרות, ו"ביטול" שלה היה משאיר מצב שאיש
     לא בחר בו."""
-    put(net_server, name="eth0", address="10.98.10.9")
+    put(net_server, name="eth0", address="10.10.10.9")
     net_server["clock"].advance(61)
     response = confirm(net_server, "eth0")
     assert response.status_code == 409
@@ -274,11 +274,11 @@ def test_confirming_after_the_window_closed_does_not_undo_anything(net_server):
     assert netcfg_rollback.run_once(
         net_server["state_dir"], net_server["hooks"],
         now=net_server["clock"](), boot="boot-A") == "expired"
-    assert "10.98.10.9" not in (net_server["fake"]["confs"].get("eth0") or "")
+    assert "10.10.10.9" not in (net_server["fake"]["confs"].get("eth0") or "")
 
 
 def test_confirming_when_the_rollback_already_ran_says_so(net_server):
-    put(net_server, name="eth0", address="10.98.10.9")
+    put(net_server, name="eth0", address="10.10.10.9")
     net_server["clock"].advance(61)
     netcfg_rollback.run_once(net_server["state_dir"], net_server["hooks"],
                              now=net_server["clock"](), boot="boot-A")
@@ -288,7 +288,7 @@ def test_confirming_when_the_rollback_already_ran_says_so(net_server):
 
 
 def test_confirming_the_wrong_card_is_refused(net_server):
-    put(net_server, name="eth0", address="10.98.10.9")
+    put(net_server, name="eth0", address="10.10.10.9")
     assert confirm(net_server, "eth1").status_code == 409
 
 
@@ -300,7 +300,7 @@ def events(server, name: str) -> list[str]:
 
 
 def test_a_rollback_while_the_server_lives_reaches_the_journal_at_once(net_server):
-    put(net_server, name="eth0", address="10.98.10.9")
+    put(net_server, name="eth0", address="10.10.10.9")
     net_server["clock"].advance(61)
     netcfg_rollback.run_once(net_server["state_dir"], net_server["hooks"],
                              now=net_server["clock"](), boot="boot-A")
@@ -312,7 +312,7 @@ def test_a_rollback_while_the_server_lives_reaches_the_journal_at_once(net_serve
 
 
 def test_the_crumb_is_read_once_and_never_twice(net_server):
-    put(net_server, name="eth0", address="10.98.10.9")
+    put(net_server, name="eth0", address="10.10.10.9")
     net_server["clock"].advance(61)
     netcfg_rollback.run_once(net_server["state_dir"], net_server["hooks"],
                              now=net_server["clock"](), boot="boot-A")
@@ -324,7 +324,7 @@ def test_the_crumb_is_read_once_and_never_twice(net_server):
 def test_the_database_goes_back_with_the_machine(net_server):
     """הגדרה שמוצגת בקונסולה ואינה זו שעל הכרטיס היא אותו שקר בכיוון
     ההפוך — ולכן הפירור נושא גם את ההגדרה הקודמת."""
-    put(net_server, name="eth0", address="10.98.10.9")
+    put(net_server, name="eth0", address="10.10.10.9")
     net_server["clock"].advance(61)
     netcfg_rollback.run_once(net_server["state_dir"], net_server["hooks"],
                              now=net_server["clock"](), boot="boot-A")
@@ -337,7 +337,7 @@ def test_the_database_goes_back_with_the_machine(net_server):
 def test_a_rollback_at_boot_reports_the_boot_as_the_reason(net_server):
     """התרחיש שהמשימה קיימת בשבילו: השינוי הפיל את הרשת, השרת מת
     איתה, המכונה אותחלה — והזרוע מחזירה בעלייה, בלי לחכות לפקיעה."""
-    put(net_server, name="eth0", address="10.98.10.9")
+    put(net_server, name="eth0", address="10.10.10.9")
     assert netcfg_rollback.run_once(
         net_server["state_dir"], net_server["hooks"],
         now=net_server["clock"](), boot="boot-B") == "boot"
@@ -370,7 +370,7 @@ def test_a_crumb_left_while_the_server_was_down_is_read_at_startup(
         "at": "2026-08-29T04:05:06+03:00", "errors": [], "setting": None,
     }), encoding="utf-8")
 
-    app = create_app(tmp_path / "data", images_root, "http://10.98.10.8:8080",
+    app = create_app(tmp_path / "data", images_root, "http://10.10.10.8:8080",
                      now_fn=clock, netcfg_state_dir=state_dir)
     users.create(app.state.ctx.conn, "noc", "admin-pass-123", "admin", by="test")
     client = TestClient(app)

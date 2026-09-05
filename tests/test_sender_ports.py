@@ -280,3 +280,109 @@ def test_a_busy_port_with_an_unidentified_holder_still_refuses(library, monkeypa
     assert "תפוס" in engine.status()["error"]
     assert "PID" not in engine.status()["error"]     # לא ממציאים מזהה
     assert recorder.commands == []
+
+
+# --- ומה שנכנס בחלון: udp-sender נכשל, ומי מחזיק את הפורט (#202) -------------
+#
+# הבדיקה המקדימה היא צילום רגע: הסוקט שלה נסגר לפני ש-udp-sender נקשר,
+# ובחלון שביניהם תהליך אחר יכול לתפוס את הפורט. את החלון אי אפשר לסגור —
+# udp-sender צריך את הפורט לעצמו — ולכן מה שנבדק כאן הוא **ההודעה**
+# שבנתיב הכישלון, ולא ריפוי. שלושה מצבים, שלוש הודעות, ואף אחד מהם אינו
+# מקופל לאחר: נמצא מחזיק · נבדק ונמצא פנוי · הבדיקה עצמה לא רצה.
+
+
+@contextlib.contextmanager
+def free_pair():
+    """‏portbase ששני פורטיו פנויים, כך שהבדיקה המקדימה **עוברת**.
+
+    בלי זה הכישלון שנבדק כאן היה נתפס בבדיקה המקדימה, והנתיב שהטסט בא
+    לבדוק לא היה נרוץ בכלל.
+    """
+    for _ in range(20):
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        probe.bind(("127.0.0.1", 0))
+        base = probe.getsockname()[1]
+        probe.close()
+        if base + 1 <= 65535 and bindable(base) and bindable(base + 1):
+            yield base
+            return
+    pytest.fail("לא הצלחנו להעמיד זוג פורטים פנוי")
+
+
+@requires_native(paths=("/proc/net/udp",), why="זיהוי המחזיק קורא ב-/proc")
+def test_a_failure_after_the_precheck_still_names_who_holds_the_port(
+        library, tmp_path, monkeypatch):
+    """החלון עצמו: הבדיקה המקדימה עברה, ואז נתפס הפורט ו-udp-sender נכשל.
+
+    בלי בדיקה שנייה בנתיב הכישלון ההודעה חוזרת להיות אטומה — בדיוק
+    המצב שלפני #156, שבו האבחון נראה כמו תקלת רשת. ודווקא המקרה הנדיר
+    הוא זה שנשאר בלי הודעה, והנדיר הוא מה שקורה מול כיתה.
+    """
+    monkeypatch.setattr(sender, "SENDER_LOG", tmp_path / "no-such-log")
+    with free_pair() as base:
+        holder = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        recorder = Recorder(code=1)
+
+        def racing(cmd):
+            # תפיסת הפורט **אחרי** הבדיקה המקדימה ולפני "השידור": זה
+            # החלון, והוא נפתח כאן במכוון ולא במרוץ תלוי-תזמון.
+            if not recorder.commands:
+                holder.bind(("0.0.0.0", base + 1))
+            return recorder(cmd)
+
+        engine = SenderEngine(library, runner=racing, portbase=base)
+        engine.start({"id": "ses_1", "image_id": "img_7f3a91", "joined": 2})
+        try:
+            assert wait_for(lambda: engine.status()["state"] == "failed")
+            error = engine.status()["error"]
+            assert f"פורט {base + 1}" in error, error
+            assert f"PID {os.getpid()}" in error, error
+        finally:
+            holder.close()
+
+
+def test_a_failure_on_free_ports_does_not_invent_a_holder(
+        library, tmp_path, monkeypatch):
+    """‏udp-sender נכשל גם מסיבות אחרות. "בדקנו ולא מצאנו" אינו "היה תפוס".
+
+    ההודעה חייבת לומר שהפורטים פנויים ושהסיבה אינה ידועה — ולא להמציא
+    מחזיק כדי שיהיה מה לכתוב.
+    """
+    monkeypatch.setattr(sender, "SENDER_LOG", tmp_path / "no-such-log")
+    monkeypatch.setattr(sender, "port_holders", lambda port: [])
+    engine = SenderEngine(library, runner=Recorder(code=1),
+                          portbase=HIGH_PORT_FLOOR)
+    engine.start({"id": "ses_1", "image_id": "img_7f3a91", "joined": 2})
+
+    assert wait_for(lambda: engine.status()["state"] == "failed")
+    error = engine.status()["error"]
+    assert "פנוי" in error, error
+    assert "PID" not in error, error                 # לא ממציאים מחזיק
+
+
+@pytest.mark.parametrize("failure", [OSError, ValueError, RuntimeError])
+def test_a_failure_whose_port_check_could_not_run_says_exactly_that(
+        library, tmp_path, monkeypatch, failure):
+    """המצב השלישי: הבדיקה השנייה עצמה לא רצה (עיקרון 5).
+
+    "לא הצלחנו לבדוק" אינו "הפורטים פנויים", וגם אינו "היה תפוס" —
+    ושלושתם אינם אותה הודעה.
+    """
+    monkeypatch.setattr(sender, "SENDER_LOG", tmp_path / "no-such-log")
+    calls: list[int] = []
+
+    def blind_after_the_precheck(port):
+        calls.append(port)
+        if len(calls) > 2:            # שתי הראשונות הן הבדיקה המקדימה
+            raise failure("הבדיקה עצמה נפלה")
+        return []
+
+    monkeypatch.setattr(sender, "port_holders", blind_after_the_precheck)
+    engine = SenderEngine(library, runner=Recorder(code=1),
+                          portbase=HIGH_PORT_FLOOR)
+    engine.start({"id": "ses_1", "image_id": "img_7f3a91", "joined": 2})
+
+    assert wait_for(lambda: engine.status()["state"] == "failed")
+    error = engine.status()["error"]
+    assert "לא הצלחנו לבדוק" in error, error
+    assert "פנוי" not in error, error                # לא מקופל ל"פנוי"

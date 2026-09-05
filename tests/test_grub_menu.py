@@ -22,7 +22,7 @@ from boot.grub_menu import (
     LOCAL_BOOT_PATHS,
 )
 
-CFG = GrubConfig(server_base="http://10.99.12.10:8080")
+CFG = GrubConfig(server_base="http://10.44.12.10:8080")
 
 
 # --- תשובת שרת מלאה, מועתקת מסעיף 3 בממשקים ---------------------------------
@@ -60,21 +60,21 @@ OPEN_SESSION = {
 @pytest.mark.parametrize(
     "raw",
     [
-        "00:00:5e:07:1a:c4",
-        "00:00:5E:07:1A:C4",
-        "00-00-5e-07-1a-c4",
-        "00-00-5E-07-1A-C4",
-        "00005e071ac4",
-        "00005E071AC4",
-        "0000.5e07.1ac4",
+        "b4:2e:99:07:1a:c4",
+        "B4:2E:99:07:1A:C4",
+        "b4-2e-99-07-1a-c4",
+        "B4-2E-99-07-1A-C4",
+        "b42e99071ac4",
+        "B42E99071AC4",
+        "b42e.9907.1ac4",
     ],
 )
 def test_normalize_mac_accepts_every_variation_in_the_spec(raw):
-    assert normalize_mac(raw) == "00:00:5e:07:1a:c4"
+    assert normalize_mac(raw) == "b4:2e:99:07:1a:c4"
 
 
 @pytest.mark.parametrize(
-    "raw", ["", "not-a-mac", "00:00:5e:07:1a", "00:00:5e:07:1a:c4:d5", None, 42, ["b4"]]
+    "raw", ["", "not-a-mac", "b4:2e:99:07:1a", "b4:2e:99:07:1a:c4:d5", None, 42, ["b4"]]
 )
 def test_normalize_mac_rejects_garbage(raw):
     assert normalize_mac(raw) is None
@@ -199,9 +199,9 @@ def test_a_machine_with_no_task_defaults_to_the_local_disk():
 
 def test_agent_config_loads_kernel_and_initrd_from_the_server():
     text = render(answer(task={"id": "tsk_1"}), CFG)
-    assert "linux (http,10.99.12.10:8080)/boot/vmlinuz" in text
-    assert "initrd (http,10.99.12.10:8080)/boot/initrd.img" in text
-    assert "imagectl.server=http://10.99.12.10:8080" in text
+    assert "linux (http,10.44.12.10:8080)/boot/vmlinuz" in text
+    assert "initrd (http,10.44.12.10:8080)/boot/initrd.img" in text
+    assert "imagectl.server=http://10.44.12.10:8080" in text
 
 
 def test_agent_config_leaks_nothing_from_the_answer():
@@ -387,7 +387,7 @@ def test_the_boot_loop_guard_screen_also_points_at_recovery():
 
 def test_https_is_rejected_because_signed_grub_has_no_tls():
     with pytest.raises(ValueError, match="http"):
-        GrubConfig(server_base="https://10.99.12.10:8080")
+        GrubConfig(server_base="https://10.44.12.10:8080")
 
 
 def test_a_server_base_with_no_host_is_rejected():
@@ -416,7 +416,7 @@ def test_bootstrap_keeps_the_configured_address_as_a_fallback():
     """next-server חסר או שגוי לא משאיר את התחנה בלי תפריט: הכתובת
     המפורשת מהתצורה נשארת, גם כברירת מחדל וגם כניסיון שני בכל סבב."""
     text = render_bootstrap(CFG)
-    assert "set imagectl_fallback=10.99.12.10:8080" in text
+    assert "set imagectl_fallback=10.44.12.10:8080" in text
     assert "set imagectl_server=$imagectl_fallback" in text
     loop = text.split("for attempt in 1 2 3; do", 1)[1].split("done", 1)[0]
     assert "configfile (http,$imagectl_server)/boot/menu?mac=$net_default_mac" in loop
@@ -426,18 +426,76 @@ def test_bootstrap_keeps_the_configured_address_as_a_fallback():
 
 
 def test_bootstrap_defaults_to_port_80_when_the_address_has_none():
-    text = render_bootstrap(GrubConfig(server_base="http://10.99.12.10"))
+    text = render_bootstrap(GrubConfig(server_base="http://10.44.12.10"))
     assert "set imagectl_server=${net_default_server}:80" in text
-    assert "set imagectl_fallback=10.99.12.10" in text
+    assert "set imagectl_fallback=10.44.12.10" in text
 
 
 def test_bootstrap_falls_back_to_local_disk_when_the_server_is_down():
     text = render_bootstrap(CFG)
-    # chain_local must be both defined and called after the configfile line.
+    # try_local must be both defined and called after the configfile line.
+    # It is the only way in to chain_local since #323 -- a UEFI station still
+    # reaches the disk, a Legacy BIOS machine (a cloner) stops instead.
     assert "function chain_local" in text
+    assert "function try_local" in text
     after = text.split("configfile", 1)[1]
-    assert "chain_local" in after
+    assert "\ntry_local\n" in after
 
 
 def test_bootstrap_is_ascii():
     render_bootstrap(CFG).encode("ascii")
+
+
+# --- #61: chainloader שנדחה אינו "אין מערכת הפעלה" ---------------------------
+#
+# על הלנובו (Secure Boot, ‏2026-08-29) ‏bootmgfw.efi נמצא על הדיסק,
+# ‏chainloader נדחה בידי shim — והמסך אמר "No operating system found".
+# שני מצבים שונים שקופלו לאחד (עיקרון 5). הבדיקות כאן שומרות שהם נפרדים.
+
+
+def _chain_local() -> str:
+    text = render_local_only("x")
+    return text[text.index("function chain_local") :]
+
+
+def test_boot_runs_only_when_chainloader_actually_succeeded():
+    """‏`boot` אחרי chainloader שנכשל הדפיס 'you need to load the kernel
+    first' — רעש שהסתיר את השגיאה האמיתית. הצלחה נקבעת לפי ראיה חיובית."""
+    text = render_local_only("x")
+    try_chain = text[text.index("function try_chain") : text.index("function chain_local")]
+    assert 'if chainloader "$1"; then' in try_chain
+    assert try_chain.count("boot\n") == 1
+    assert try_chain.index('if chainloader "$1"; then') < try_chain.index("boot\n")
+
+
+def test_a_refused_loader_is_remembered_and_not_reported_as_no_os():
+    chain = _chain_local()
+    # הנתיב שנדחה נשמר, והמצב מאופס לפני כל סבב (משתני GRUB גלובליים,
+    # ו-chain_local נקרא משתי נקודות בקובץ הקבוע).
+    assert "set chain_refused=" in render_local_only("x")
+    assert chain.index("unset chain_refused") < chain.index("for path in")
+    # "No operating system found" נגיש רק כשלא נדחה כלום.
+    refused = chain.index('if [ -n "$chain_refused" ]')
+    no_os = chain.index("No operating system found")
+    assert refused < chain.index("else", refused) < no_os
+
+
+def test_the_refusal_screen_says_what_and_why():
+    chain = _chain_local()
+    refused = chain[chain.index('if [ -n "$chain_refused" ]') : chain.index("No operating system found")]
+    # מה: הנתיב שנמצא ונדחה, במילים שאומרות שהדיסק כן נמצא.
+    assert 'echo "  $chain_refused"' in refused
+    assert "found" in refused.lower() and "refused" in refused.lower()
+    # למה: Secure Boot רק כשיש ראיה — GRUB מייצא shim_lock=y בדיוק כשהוא
+    # מעביר chainloader דרך shim. בלי הראיה לא טוענים שזה Secure Boot.
+    assert 'if [ "$shim_lock" = "y" ]' in refused
+    assert "Secure Boot" in refused and "shim" in refused
+    sb = refused[refused.index('if [ "$shim_lock" = "y" ]') :]
+    assert "else" in sb, "a refusal without shim_lock=y must not be blamed on Secure Boot"
+
+
+def test_the_bootstrap_carries_the_same_refusal_screen():
+    boot = render_bootstrap(CFG)
+    assert 'if [ -n "$chain_refused" ]' in boot
+    assert 'if [ "$shim_lock" = "y" ]' in boot
+    boot.encode("ascii")

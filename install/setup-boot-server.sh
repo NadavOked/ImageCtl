@@ -30,7 +30,11 @@ HTTP_ROOT="/srv/imagectl/boot"
 APP_DIR="/opt/imagectl"
 DATA_DIR="/var/lib/imagectl"
 IMAGES_DIR="/srv/imagectl/images"
-REPO_URL="https://github.com/NadavOked/ImageCtl"
+# הריפו שונה שמו ל-ImageCtl-archive ב-09/2026 והפך לפרטי; השם הישן
+# `NadavOked/ImageCtl` שייך היום לפרויקט אחר, ו-clone ממנו היה מתקין
+# קוד זר על שרת האתחול בלי להתלונן. ‏clone מהארכיון דורש אישורים
+# ונכשל בקול — וזה המצב הרצוי מבין השניים.
+REPO_URL="https://github.com/NadavOked/ImageCtl-archive"
 DRY_RUN=0
 PORT=8080
 
@@ -62,8 +66,11 @@ function try_chain {
     search --no-floppy --file --set=espdev "$1"
     if [ -n "$espdev" ]; then
         set root=$espdev
-        chainloader "$1"
-        boot
+        if chainloader "$1"; then
+            boot
+        else
+            if [ -z "$chain_refused" ]; then set chain_refused=$1; fi
+        fi
     fi
 }
 
@@ -72,12 +79,47 @@ function chain_local {
     insmod fat
     insmod chain
     insmod search_fs_file
+    unset chain_refused
 
     for path in /EFI/Microsoft/Boot/bootmgfw.efi /EFI/ubuntu/shimx64.efi /EFI/ubuntu/grubx64.efi /EFI/debian/shimx64.efi /EFI/debian/grubx64.efi /EFI/fedora/shimx64.efi /EFI/fedora/grubx64.efi /EFI/centos/shimx64.efi /EFI/rocky/shimx64.efi /EFI/almalinux/shimx64.efi /EFI/opensuse/shim.efi /EFI/BOOT/bootx64.efi; do
         try_chain "$path"
     done
 
-    echo "No operating system found on the local disk."
+    echo ""
+    if [ -n "$chain_refused" ]; then
+        echo "A boot loader WAS found on the local disk:"
+        echo "  $chain_refused"
+        echo "but this menu was refused permission to start it (see the error above)."
+        if [ "$shim_lock" = "y" ]; then
+            echo "Why: Secure Boot is on. Every chainload from this menu is checked"
+            echo "by shim, and shim did not accept this file's signature."
+            echo "The disk and the operating system are most likely intact."
+            echo "To start it now: power off, then boot from the disk directly"
+            echo "(firmware boot menu, usually F12), bypassing PXE."
+        else
+            echo "Why: unknown. GRUB does not report a shim lock, so this is"
+            echo "not a Secure Boot refusal. Read the error above."
+        fi
+    else
+        echo "No operating system found on the local disk."
+    fi
+    echo "Contact IT. This computer will stay powered on."
+    sleep --interruptible 60
+    halt
+}
+
+function try_local {
+    if [ "$grub_platform" = "efi" ]; then
+        echo "Booting from the local disk."
+        chain_local
+    fi
+
+    echo ""
+    echo "This machine booted in Legacy BIOS mode, which on this network"
+    echo "means a cloning machine. It has no local system to start, and the"
+    echo "drives attached to it are the payload - they are never booted from."
+    echo "Nothing will be started."
+    echo "Fix the server or the network, then power-cycle this machine."
     echo "Contact IT. This computer will stay powered on."
     sleep --interruptible 60
     halt
@@ -86,9 +128,9 @@ function chain_local {
 # GRUB fills net_default_mac from the interface that PXE-booted, already in
 # lowercase-with-colons form -- the canonical format from the interface spec.
 if [ -z "$net_default_mac" ]; then
-    echo "ImageCtl: no network interface reported. Booting locally."
+    echo "ImageCtl: no network interface reported."
     sleep --interruptible 3
-    chain_local
+    try_local
 fi
 
 # Deployment address. net_default_server -- the DHCP or PXE-proxy server that
@@ -118,9 +160,13 @@ for attempt in 1 2 3; do
 done
 
 # Reached only if every fetch failed -- server down, cable out, DHCP wrong.
-echo "ImageCtl: server $imagectl_server unreachable. Booting from local disk."
+# try_local, not chain_local: this file runs before the machine has asked
+# about its own MAC, so it cannot know it is a cloning machine -- and with
+# the server down there is nobody to ask. $grub_platform is the one thing
+# it does know (#323).
+echo "ImageCtl: server $imagectl_server unreachable."
 sleep --interruptible 3
-chain_local
+try_local
 GRUBCFG
 
 # ---------------------------------------------------------------------------
@@ -283,9 +329,36 @@ if [[ -f "$SCRIPT_DIR/../server/main.py" ]]; then
         run cp -a "$SRC/." "$APP_DIR/"
     fi
 else
+    # ‏git נכשל כאן בקול, אבל בהודעה **שלו**: "could not read Username for
+    # 'https://github.com'". למי שמתקין שרת ואינו מכיר את הריפו זו הודעה
+    # שאינה אומרת לא מה קרה ולא מה לעשות — ‏ImageCtl-archive הוא ריפו
+    # פרטי, ו-clone אנונימי ממנו לא יצליח לעולם. אותו דפוס כמו
+    # ‏`Unable to locate package` של fonts-ibm-plex (#120): כשל אמיתי,
+    # הודעה שמובילה לכיוון הלא נכון.
     say "מושך את הקוד מ-$REPO_URL"
-    [[ -d "$APP_DIR/.git" ]] && run git -C "$APP_DIR" pull --ff-only \
-        || run git clone --depth 1 "$REPO_URL" "$APP_DIR"
+    if [[ -d "$APP_DIR/.git" ]]; then
+        run git -C "$APP_DIR" pull --ff-only || die "\
+עדכון הקוד ב-$APP_DIR נכשל (git pull). ראה את שגיאת git למעלה."
+    else
+        run git clone --depth 1 "$REPO_URL" "$APP_DIR" || die "\
+‏git clone מ-$REPO_URL נכשל.
+
+‏ImageCtl-archive הוא ריפו **פרטי**: ‏clone בלי אישורים נכשל תמיד, וזו
+הסיבה הסבירה ביותר לשגיאת git שמופיעה למעלה.
+
+הדרך המומלצת — להביא את הריפו אל השרת ולהריץ את המתקין מתוכו:
+
+  (מתחנה שיש לה גישה לריפו)
+  git clone https://github.com/NadavOked/ImageCtl-archive imagectl
+  tar czf imagectl.tgz imagectl && scp imagectl.tgz <שרת>:/tmp/
+
+  (על השרת)
+  tar xzf /tmp/imagectl.tgz -C ~ && cd ~/imagectl
+  sudo bash install/setup-boot-server.sh
+
+כשהריפו נמצא לצד הסקריפט המתקין מעתיק ממנו ואינו פונה לרשת כלל.
+לחלופין: הגדר אישורי git על השרת (credential helper או SSH) והרץ שוב."
+    fi
 fi
 
 # ---------------------------------------------------------------------------

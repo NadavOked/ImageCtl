@@ -110,7 +110,7 @@ fi
 
 # Binaries the agent scripts call. tests/test_agent.py cross-checks this
 # list against the actual commands in agent/ -- update both together.
-BINARIES=(curl jq zstd pv sgdisk blockdev sha256sum od hdparm ntfsresize
+BINARIES=(curl jq zstd pv sgdisk blockdev sha256sum od hdparm ntfsresize openssl
           ntfs-3g umount blkid df mount stty
           e2fsck resize2fs btrfs
           udp-receiver partclone.ntfs partclone.fat partclone.ext4
@@ -121,7 +121,7 @@ if [ "$SKIP_APT" -eq 0 ]; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get install -y --no-install-recommends \
         busybox-static zstd partclone udpcast gdisk curl jq pv \
-        ntfs-3g libhivex-dev hdparm coreutils util-linux \
+        ntfs-3g libhivex-dev hdparm coreutils util-linux openssl \
         e2fsprogs btrfs-progs cpio gzip gcc libc6-dev dropbear-bin
 fi
 
@@ -540,7 +540,16 @@ echo
 echo "Next steps:"
 echo "  1. Copy it, together with the matching kernel, to the HTTP root the"
 echo "     installer created (clients fetch /boot/vmlinuz and /boot/initrd.img):"
-echo "       cp $OUTPUT /srv/imagectl/boot/initrd.img"
+if [ "$WITH_GUI" = 1 ]; then
+    # --with-gui builds the kiosk initramfs. It is served next to the
+    # text one under a fixed name, and the menu generator hands it only
+    # to the roles that have a screen -- build and classroom (#32).
+    echo "       cp $OUTPUT /srv/imagectl/boot/initrd.img.gui"
+    echo "     (--with-gui: this is the GUI initramfs. Do NOT overwrite"
+    echo "      initrd.img with it -- cloning machines still need that one.)"
+else
+    echo "       cp $OUTPUT /srv/imagectl/boot/initrd.img"
+fi
 echo "       cp /boot/vmlinuz-$KVER /srv/imagectl/boot/vmlinuz"
 echo "  2. The GRUB menu generator already points clients at those paths."
 echo "  3. Updating the agent = rebuilding this file and copying it again."

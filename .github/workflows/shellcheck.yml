@@ -16,6 +16,24 @@
 # shellcheck אינו יכול לעקוב (SC1090) — ומכאן מפל שווא של "משתנה לא
 # בשימוש" (SC2034) ו"משתנה לא מוקצה" (SC2154) על כל מה שמוגדר בקובץ
 # אחד ונקרא באחר. ההערות (`note`) מדווחות ואינן חוסמות.
+#
+# ── רשימת הקבצים נגזרת מהעץ, ואינה נכתבת ביד (#371) ──────────────────
+# עד 2026-09-04 ישבו כאן **חמש רשימות ידניות**. שתי תקלות נפרדות יצאו
+# מאותו שורש: קובץ מעטפת חדש לא נסרק עד שמישהו זכר להוסיף אותו (#247),
+# והרשימות נקבו בנתיבים ש**הפרסום הנקי מוציא** (`tools/lab/`,
+# `tools/git/`, `tools/agents/`, `tools/discuss.sh`,
+# `tools/agent-claim.sh`, `tools/issue-new.sh`) — ולכן המניפסט סיווג
+# את הקובץ הזה כפרטי, והסורק נעלם מהריפו הציבורי, שהוא הריפו היחיד
+# שמריץ CI (#317). שתי התקלות הן אותו כשל: **היעדר סריקה שנראה בדיוק
+# כמו סריקה שעברה** (עיקרון 5).
+#
+# הגזירה הושוותה שורה-בשורה לחמש הרשימות לפני ההחלפה: **38 קבצים
+# בשני הצדדים, אפס הפרשים, ואותו ניב לכל קובץ.** אותו קובץ רץ ללא
+# שינוי בשני הריפואים — קובץ שאינו קיים פשוט אינו נמצא ואינו מפיל.
+#
+# `vendor/` מנוכה במפורש: הוא חור **מוצהר עם נימוק** ב-
+# `tests/test_shellcheck_coverage.py` (EXEMPT, ‏#231), ושתי ההצהרות
+# חייבות להישאר תואמות — הטסט נופל אם נוסף כאן ניכוי שאין לו נימוק שם.
 
 name: shellcheck
 
@@ -49,55 +67,75 @@ jobs:
       - name: Version
         run: shellcheck --version
 
-      # הסוכן: POSIX sh (busybox ash). קבצי lib/ נטענים ב-`.` ואין להם
-      # shebang, ולכן ה-shell מוצהר במפורש ולא נגזר מהקובץ.
-      - name: Agent (POSIX sh) — blocking
-        run: |
-          shellcheck -s sh --severity=warning \
-            --exclude=SC1090,SC2034,SC2154 \
-            agent/imagectl-agent agent/init agent/lib/*.sh
-
-      - name: Lab tools (POSIX sh) — blocking
-        run: |
-          shellcheck -s sh --severity=warning \
-            tools/lab/college-dhcp/build-on-server.sh \
-            tools/lab/firewall/build-on-server.sh \
-            tools/lab/pxe4011-repro.sh
-
-      # רשימת הקבצים כאן מתוחזקת ביד, ולכן קובץ חדש אינו נסרק עד
-      # שמישהו זוכר להוסיף אותו — היעדר סריקה שנראה בדיוק כמו סריקה
-      # שעברה (עיקרון 5). ‏`test_issue_new_script.py` מוודא שהשורה הזו
-      # קיימת, כדי שהשכחה תיתפס בטסטים ולא בהיעדרם.
-      - name: Repo tools (POSIX sh) — blocking
-        run: |
-          shellcheck -s sh --severity=warning \
-            tools/issue-new.sh
-
-      # אלה נוספו ל-tools/ אחרי שהרשימה נכתבה, ולכן לא נסרקו כלל —
-      # לא חוב, אלא חוסר הגנה. ‏#247.
-      #
-      # הסוג נגזר מה-shebang ולא נכתב ביד: הניסיון הראשון פיצל
-      # אותם ל-bash ול-sh לפי ניחוש, וכל השמונה הם bash — ה-CI
-      # נפל על bashisms שהוצהרו כ-POSIX. החלטה שאפשר לגזור אין
-      # סיבה לנחש.
-      - name: Repo tools — blocking
+      # הגזירה עצמה. שני פלטים:
+      #   $RUNNER_TEMP/agent — נתיב לשורה, כולם `sh`
+      #   $RUNNER_TEMP/rest  — "<ניב> <נתיב>" לשורה
+      - name: Collect shell files from the tree
         run: |
           set -euo pipefail
-          for f in \
-            tools/discuss.sh \
-            tools/git/after-merge-check.sh \
-            tools/git/lab-work-checkout.sh \
-            tools/lab/record-deploy.sh \
-          ; do
-            if head -1 "$f" | grep -q bash; then sh=bash; else sh=sh; fi
-            echo "== $f ($sh)"
-            shellcheck -s "$sh" --severity=warning "$f"
+          find . -name .git -prune -o -path ./vendor -prune -o \
+                 -type f -name '*.sh' -print \
+            | sed 's|^\./||' > "$RUNNER_TEMP/all"
+          # שתי נקודות הכניסה של הסוכן אינן נושאות סיומת `.sh`.
+          for extra in agent/imagectl-agent agent/init; do
+            if [ -f "$extra" ]; then echo "$extra" >> "$RUNNER_TEMP/all"; fi
           done
+          LC_ALL=C sort -o "$RUNNER_TEMP/all" "$RUNNER_TEMP/all"
 
-      - name: Installer and initramfs builder (bash) — blocking
+          : > "$RUNNER_TEMP/agent"
+          : > "$RUNNER_TEMP/rest"
+          while IFS= read -r f; do
+            case "$f" in
+              # קבצי הסוכן: הניב **מוצהר** ולא נגזר, כי `agent/lib/*.sh`
+              # נטענים ב-`.` ואין להם shebang. זו ההצהרה היחידה שנשארה,
+              # והם גם הקבוצה היחידה שיש לה החרגות מנומקות.
+              agent/lib/*.sh|agent/imagectl-agent|agent/init)
+                echo "$f" >> "$RUNNER_TEMP/agent" ;;
+              # לכל השאר הניב נגזר מה-shebang. הניסיון הראשון (#247)
+              # פיצל לפי ניחוש, וה-CI נפל על bashisms שהוצהרו כ-POSIX.
+              #
+              # קריאה שנכשלה **אינה** נופלת ל-`sh`: הנוסח הקודם
+              # (`head -1 "$f" | grep -q bash`) החזיר "לא bash" גם
+              # כשהקובץ לא היה קריא בכלל, כלומר ניחוש שמתחזה לגזירה.
+              *)
+                if ! first=$(head -n 1 "$f"); then
+                  echo "::error::אין קריאה של השורה הראשונה של $f — הניב אינו נגזר"
+                  exit 1
+                fi
+                case "$first" in *bash*) sh=bash ;; *) sh=sh ;; esac
+                echo "$sh $f" >> "$RUNNER_TEMP/rest" ;;
+            esac
+          done < "$RUNNER_TEMP/all"
+
+          n=$(wc -l < "$RUNNER_TEMP/all")
+          echo "נגזרו $n קובצי מעטפת מהעץ:"
+          cat -n "$RUNNER_TEMP/all"
+          # גזירה שנשברה מחזירה רשימה ריקה, וסריקה של כלום עוברת.
+          # רצפה מפורשת הופכת את זה לאדום במקום לירוק (עיקרון 5).
+          # הרצפה נקבעת לפי הריפו הציבורי הרזה (25 קבצים אחרי שהפרסום
+          # מוציא 13), לא לפי הפרטי (38).
+          if [ "$n" -lt 20 ]; then
+            echo "::error::הגזירה החזירה $n קבצים בלבד — היא נשברה."
+            exit 1
+          fi
+
+      - name: Agent (POSIX sh) — blocking
         run: |
-          shellcheck -s bash --severity=warning \
-            install/setup-boot-server.sh tools/build_initramfs.sh
+          set -euo pipefail
+          xargs -r shellcheck -s sh --severity=warning \
+            --exclude=SC1090,SC2034,SC2154 < "$RUNNER_TEMP/agent"
+
+      # כל השאר, כל קובץ בניב שנגזר לו. הלולאה אינה עוצרת בכשל הראשון:
+      # דוח חלקי היה שולח לסבב תיקונים אחד לכל קובץ.
+      - name: Everything else (dialect from the shebang) — blocking
+        run: |
+          set -euo pipefail
+          rc=0
+          while read -r sh f; do
+            echo "== $f ($sh)"
+            shellcheck -s "$sh" --severity=warning "$f" || rc=1
+          done < "$RUNNER_TEMP/rest"
+          exit "$rc"
 
       # דיווח בלבד: `note` הוא סגנון ורמיזות, ואדום ב-CI שמור לכשל
       # אמיתי כדי שאדום יישאר משמעותי (אותה מדיניות כמו ב-codeql.yml).
@@ -110,7 +148,10 @@ jobs:
             echo "## ShellCheck — הדוח המלא"
             echo
             echo '```'
-            shellcheck -s sh --severity=style -f gcc               agent/imagectl-agent agent/init agent/lib/*.sh || true
-            shellcheck -s bash --severity=style -f gcc               install/setup-boot-server.sh tools/build_initramfs.sh || true
+            xargs -r shellcheck -s sh --severity=style -f gcc \
+              < "$RUNNER_TEMP/agent" || true
+            while read -r sh f; do
+              shellcheck -s "$sh" --severity=style -f gcc "$f" || true
+            done < "$RUNNER_TEMP/rest"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

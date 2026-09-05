@@ -34,7 +34,8 @@ from server.imagefit import expandable_candidate, shrink_bytes
 from server.images import required_bytes
 
 from test_agent import AGENT, BASH, posix, sh
-from test_capture_refusals import ONE_PARTITION, capture_run, refusal_reason
+from test_capture_refusals import (CURL_SINK, ONE_PARTITION, capture_run,
+                                   refusal_reason)
 from test_image_sizing import (NVME_256, GOLDEN_FROM_VM, fits_box,
                                manifest, needs_shell)
 
@@ -73,21 +74,6 @@ def variant(**marks: bool) -> dict:
 #: ה-GPT. המספר כתוב כאן במפורש כדי שהטסטים למטה ישבו על **גבול**
 #: ולא על "בערך": רצפה אחת בדיוק מספיקה, ובייט אחד פחות אינה.
 ONE_PARTITION_NEED = (2048 * 512 + 100 * (1 << 20) + (1 << 20))
-
-
-#: ‏curl מזויף שמחקה `-T <קובץ>`: הוא **קורא** את ה-fifo שהקליטה פותחת.
-#: בלעדיו `tee` נחסם ב-open() לנצח — בדיוק המצב שהסוכן עצמו נכווה בו,
-#: וכאן הוא היה הופך בדיקה שאמורה לעבור לתקיעה של 45 שניות.
-CURL_SINK = (
-    '#!/bin/sh\n'
-    'f=""\n'
-    'while [ $# -gt 0 ]; do\n'
-    '  [ "$1" = "-T" ] && { f="$2"; shift; }\n'
-    '  shift\n'
-    'done\n'
-    '[ -n "$f" ] && cat "$f" > /dev/null\n'
-    'exit 0\n'
-)
 
 
 # --- ההכרעה עצמה --------------------------------------------------------------

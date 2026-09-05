@@ -189,7 +189,7 @@ def read_listeners(proc_net: str | Path = "/proc/net",
 
 
 def bare_address(address: str) -> str:
-    """‎"10.98.10.8/24" → "10.98.10.8"."""
+    """‎"10.10.10.8/24" → "10.10.10.8"."""
     return address.split("/")[0].strip()
 
 

@@ -198,7 +198,7 @@ def hello_of(fake) -> dict:
     out = sh(
         f'export SYSROOT={posix(fake["sysroot"])!r} '
         f'DEVROOT={posix(fake["dev"])!r} '
-        f'RUN_DIR={posix(fake["run"])!r} IFACE=eth0 IP=10.99.12.187; '
+        f'RUN_DIR={posix(fake["run"])!r} IFACE=eth0 IP=10.44.12.187; '
         f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/sysinfo.sh; '
         f'build_hello'
     )

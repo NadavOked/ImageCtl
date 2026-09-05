@@ -16,7 +16,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# נקבע ב-systemctl edit: Environment=IMAGECTL_URL=http://10.99.12.10:8080
+# נקבע ב-systemctl edit: Environment=IMAGECTL_URL=http://10.44.12.10:8080
 Environment=IMAGECTL_URL=
 WorkingDirectory=/opt/imagectl
 ExecStartPre=/bin/sh -c 'test -n "$IMAGECTL_URL" || { echo "set IMAGECTL_URL via systemctl edit imagectl-server"; exit 1; }'

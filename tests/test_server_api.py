@@ -45,8 +45,8 @@ def test_known_machine_without_a_session_boots_locally(server):
 
 def test_allowed_images_respect_the_reported_disk(server):
     setup_classroom(server)
-    small = hello(server, "00:00:5e:07:1a:c4", disk_bytes=256060514304)
-    big = hello(server, "00:00:5e:07:1a:c4", disk_bytes=500107862016)
+    small = hello(server, "b4:2e:99:07:1a:c4", disk_bytes=256060514304)
+    big = hello(server, "b4:2e:99:07:1a:c4", disk_bytes=500107862016)
     assert small["allowed_images"] == ["img_7f3a91"]
     assert big["allowed_images"] == ["img_2c8e04", "img_7f3a91"]
 
@@ -130,7 +130,7 @@ def test_failed_target_reaches_the_journal(server):
 
 
 def test_the_console_shows_names_not_identifiers(server):
-    """מי שמסתכל על הקונסולה מחפש "LAB1-05", לא 00:00:5e:07:1a:c4."""
+    """מי שמסתכל על הקונסולה מחפש "LAB1-05", לא b4:2e:99:07:1a:c4."""
     ids = open_session(server, expected=2)
     hello(server, ids["mac1"])
     view = server["admin"].get("/api/console/overview").json()["session"]
@@ -234,7 +234,7 @@ def test_extra_cmdline_reaches_the_boot_menu(tmp_path, images_root, clock):
     from server.app import create_app
 
     app = create_app(
-        tmp_path / "data", images_root, "http://10.99.12.10:8080",
+        tmp_path / "data", images_root, "http://10.44.12.10:8080",
         now_fn=clock,
         extra_cmdline=("console=ttyS0,115200", "imagectl.debug=1"),
     )
@@ -244,7 +244,7 @@ def test_extra_cmdline_reaches_the_boot_menu(tmp_path, images_root, clock):
                json={"username": "noc", "password": "admin-pass-123"})
     setup_classroom({"admin": admin})
 
-    text = TestClient(app).get("/boot/menu?mac=00:00:5e:07:1a:c4").text
+    text = TestClient(app).get("/boot/menu?mac=b4:2e:99:07:1a:c4").text
     assert "console=ttyS0,115200" in text
     assert "imagectl.debug" not in text
 
@@ -310,12 +310,12 @@ def test_agent_login_checks_the_console_users(server):
     """סעיף 15: ההרשאה יושבת בשרת — מסך התחנה מאמת מול אותם משתמשים."""
     ok = server["anon"].post("/api/v1/agent/login", json={
         "username": "labtech", "password": "deploy-pass-1",
-        "mac": "00:00:5e:07:1a:c4"})
+        "mac": "b4:2e:99:07:1a:c4"})
     assert ok.status_code == 200
     assert ok.json() == {"ok": True, "role": "deploy"}
 
     bad = server["anon"].post("/api/v1/agent/login", json={
-        "username": "labtech", "password": "wrong", "mac": "00:00:5e:07:1a:c4"})
+        "username": "labtech", "password": "wrong", "mac": "b4:2e:99:07:1a:c4"})
     assert bad.status_code == 401
     assert bad.json()["code"] == "bad_login"
 
@@ -326,8 +326,83 @@ def test_agent_login_checks_the_console_users(server):
 def test_recovery_login_toggle(server):
     """ברירת המחדל הבטוחה: recovery דורש כניסה. הדגמה יכולה לכבות."""
     setup_classroom(server)
-    assert hello(server, "00:00:5e:07:1a:c4")["ui"]["require_login"] is True
+    assert hello(server, "b4:2e:99:07:1a:c4")["ui"]["require_login"] is True
     assert server["admin"].post(
         "/api/console/settings", json={"recovery_require_login": "false"}
     ).status_code == 200
-    assert hello(server, "00:00:5e:07:1a:c4")["ui"]["require_login"] is False
+    assert hello(server, "b4:2e:99:07:1a:c4")["ui"]["require_login"] is False
+
+
+# --- סינון וחיפוש ביומן (#115) -------------------------------------------
+
+
+def test_journal_events_list_is_hebrew_labels(server):
+    events = server["admin"].get("/api/console/journal/events").json()
+    assert {"event": "login_failed", "label": "ניסיון כניסה כושל"} in events
+    # ממוין לפי התווית — כדי שהתפריט יהיה קריא, לא לפי סדר יצירה במילון.
+    labels = [e["label"] for e in events]
+    assert labels == sorted(labels)
+
+
+def test_journal_filter_by_event_type(server):
+    server["anon"].post("/api/console/login", json={"username": "x", "password": "no"})
+    server["admin"].post("/api/console/login", json={"username": "admin", "password": "wrong"})
+    rows = server["admin"].get("/api/console/journal", params={"event": "login_failed"}).json()
+    assert rows and all(r["event"] == "login_failed" for r in rows)
+
+
+def test_journal_filter_by_date_range_excludes_out_of_range_rows(server):
+    setup_classroom(server)
+    hello(server, "b4:2e:99:07:1a:c4")  # אין סבב — לא כותב ליומן, רק ה-group_create/machine_add למעלה
+    all_rows = server["admin"].get("/api/console/journal").json()
+    assert all_rows, "צריך לפחות שורה אחת כדי שהבדיקה תהיה משמעותית"
+    newest_ts = max(r["ts"] for r in all_rows)
+    # "עד" לפני השורה החדשה ביותר — היא לא אמורה לחזור.
+    before = server["admin"].get(
+        "/api/console/journal", params={"to": "2000-01-01T00:00:00"}
+    ).json()
+    assert before == []
+    after = server["admin"].get(
+        "/api/console/journal", params={"from": newest_ts}
+    ).json()
+    assert any(r["ts"] == newest_ts for r in after)
+
+
+def test_journal_machine_filter_matches_the_display_name_not_the_raw_id(server):
+    """המלכודת ב-#115: מפעיל מחפש את מה שהוא רואה על המסך (שם הכיתה),
+    לא את המזהה הגולמי (grp_...) שכתוב בפועל בשורת ה-DB."""
+    admin = server["admin"]
+    assert admin.post(
+        "/api/console/groups",
+        json={"id": "grp_9f2e", "label": "מבנה מדעים", "role": "classroom"},
+    ).status_code == 200
+
+    # ודאות שזה באמת מבחן על המלכודת: השם המוצג לא מופיע בתוך המזהה הגולמי.
+    assert "מבנה מדעים" not in "grp_9f2e"
+
+    by_label = admin.get(
+        "/api/console/journal", params={"machine": "מבנה מדעים"}
+    ).json()
+    assert any(r["event"] == "group_create" and "מבנה מדעים" in r["text"] for r in by_label)
+
+    by_raw_id = admin.get(
+        "/api/console/journal", params={"machine": "grp_9f2e"}
+    ).json()
+    assert any(r["event"] == "group_create" for r in by_raw_id)
+
+
+def test_journal_free_text_search_matches_translated_text(server):
+    setup_classroom(server)
+    rows = server["admin"].get("/api/console/journal", params={"q": "כיתה LAB1"}).json()
+    assert any(r["event"] == "group_create" for r in rows)
+    empty = server["admin"].get(
+        "/api/console/journal", params={"q": "מחרוזת שלא קיימת באמת"}
+    ).json()
+    assert empty == []
+
+
+def test_journal_filters_require_admin(server):
+    assert server["deploy"].get(
+        "/api/console/journal", params={"event": "login"}
+    ).status_code == 403
+    assert server["deploy"].get("/api/console/journal/events").status_code == 403

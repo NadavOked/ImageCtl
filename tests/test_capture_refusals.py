@@ -22,7 +22,9 @@ GPT, אין מחיצות, לא הצלחנו לחשב את הפריסה — הי�
 
 from __future__ import annotations
 
+import inspect
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -78,15 +80,37 @@ AWK_WITHOUT_AN_ANSWER = (
     'exec "$real" "$@"\n'
 )
 
+#: ‏curl מזויף שמחקה `-T <קובץ>`: הוא **קורא** את ה-fifo שהקליטה פותחת.
+#: בלעדיו `tee` נחסם ב-open() לנצח — בדיוק המצב שהסוכן עצמו נכווה בו,
+#: וכאן הוא היה הופך בדיקה שאמורה לעבור לתקיעה של 45 שניות. הוא יושב
+#: ליד ההרנס ולא בקובץ של #87: הוא מה שמניע את המסלול ה**מצליח**, וגם
+#: השומר של #338 שבסוף הקובץ צריך אותו.
+CURL_SINK = (
+    '#!/bin/sh\n'
+    'f=""\n'
+    'while [ $# -gt 0 ]; do\n'
+    '  [ "$1" = "-T" ] && { f="$2"; shift; }\n'
+    '  shift\n'
+    'done\n'
+    '[ -n "$f" ] && cat "$f" > /dev/null\n'
+    'exit 0\n'
+)
+
 
 def capture_run(tmp_path, *, present=True, image=GPT_DISK, stubs=None,
-                disk="sda", env=None) -> tuple[Path, Path, str]:
+                disk="sda", env=None, shell_pre="") -> tuple[Path, Path, str]:
     """מריץ את `capture_disk` האמיתי מול דיסק מזויף, ומחזיר (box, run, out).
 
     ‏`node_is_block` מוחלף כמו בכל שאר בדיקות הסוכן: אין דרך ליצור התקן
     בלוקים בלי root, ובדיקה שמדולגת בחצי מהסביבות היא ירוק בלי ראיה.
     ‏`disk_scheme` לעומת זאת רץ באמת — `dd` על קובץ רגיל קורא בדיוק כמו
     על צומת, ולכן המחרוזת שמגיעה להודעה היא זו שהכלי באמת החזיר.
+
+    שרשרת הטעינה היא זו של `agent/imagectl-agent`, באותו סדר. ‏`manifest.sh`
+    נעדר ממנה עד #338, ובסביבת בדיקה זה כשל **שקט**: ב-POSIX sh פונקציה
+    שאינה מוגדרת היא "command not found" ל-stderr, הריצה ממשיכה ומחזירה
+    ‏`rc=0`, והמניפסט יוצא עם `os` ריק ו-`partitions` ריק. שני השומרים
+    בסוף הקובץ אוכפים את שני הצדדים — השרשרת עצמה והתוצר שלה.
     """
     box = tmp_path / "box"
     dev = box / "dev"
@@ -113,9 +137,17 @@ def capture_run(tmp_path, *, present=True, image=GPT_DISK, stubs=None,
         f"SYSROOT={posix(box)!r} SERVER=http://s; " + extra_env
         + f". {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/sysinfo.sh; "
         f". {posix(AGENT)}/lib/waits.sh; . {posix(AGENT)}/lib/progress.sh; "
-        f". {posix(AGENT)}/lib/restore.sh; . {posix(AGENT)}/lib/capture.sh; "
+        # ‏manifest.sh (#338) ואז bootca.sh, בדיוק כסדר של
+        # `imagectl-agent`: ‏`capture_disk` קורא לשניהם בשורת המניפסט,
+        # ופונקציה שאינה טעונה היא מניפסט פגום — לא שגיאה.
+        f". {posix(AGENT)}/lib/restore.sh; . {posix(AGENT)}/lib/manifest.sh; "
+        f". {posix(AGENT)}/lib/bootca.sh; "
+        f". {posix(AGENT)}/lib/capture.sh; "
         f'node_is_block() {{ grep -qxF "$1" {posix(nodes)!r} 2>/dev/null; }}; '
-        f"capture_disk {TASK} {disk} > {posix(box)}/capture.out 2>&1; "
+        # ‏shell_pre רץ **אחרי** שרשרת הטעינה, ולכן הוא יכול להחליף
+        # פונקציה שנטענה — זה מה שמאפשר לבדוק מה קורה כשהיא מתנהגת רע.
+        + shell_pre
+        + f"capture_disk {TASK} {disk} > {posix(box)}/capture.out 2>&1; "
         'echo "rc=$?"; '
         f"build_progress '' {MAC} {TASK} > {posix(box)}/progress.json"
     )
@@ -290,3 +322,60 @@ def test_the_interfaces_document_says_when_the_capture_target_appears():
     doc = Path(__file__).resolve().parent.parent / "docs" / "interfaces.md"
     text = doc.read_text(encoding="utf-8")
     assert "#106" in text, "השינוי בהתנהגות השדה אינו מתועד"
+
+
+# --- ההרנס עצמו: ספרייה שאינה נטענת היא ירוק בלי בדיקה (#338) -----------------
+
+
+def test_the_harness_loads_every_lib_that_capture_calls():
+    """‏`213dc1f` הוסיף את `test_every_lib_file_is_loaded_and_packed` בדיוק
+    בשביל הכשל הזה — אבל הוא בודק את `agent/imagectl-agent` בלבד. הבקרה
+    השלילית שלו מדווחת שכשהוסרה משם שורת הטעינה **כל שאר 1365 הטסטים
+    עברו**. אותה עיוורון בדיוק השאירה את `manifest.sh` מחוץ להרנס הזה:
+    חמש פונקציות החזירו "command not found" ל-stderr, והטסטים ספרו
+    הצלחה (#338).
+
+    לכן הבדיקה **נגזרת** ואינה רשימה: כל ספריית `agent/lib` שמגדירה
+    פונקציה ש-`capture.sh` קורא לה בקוד חייבת להיות בשרשרת. ה-lib הבא
+    שייחתך מ-`capture.sh` (‏#211) ייתפס כאן ביום שהוא נוצר.
+    """
+    chain = set(re.findall(r"lib/(\w+\.sh)", inspect.getsource(capture_run)))
+    # ההערות יורדות: `ui_clear` מוזכר בהערה ב-capture.sh ואינו נקרא ממנה,
+    # והשומר היה דורש את `ui.sh` בשרשרת בלי סיבה.
+    body = re.sub(r"(?m)(?<!\S)#.*$", "",
+                  (AGENT / "lib" / "capture.sh").read_text(encoding="utf-8"))
+    missing = {}
+    for lib in sorted((AGENT / "lib").glob("*.sh")):
+        if lib.name in chain:
+            continue
+        defined = re.findall(r"(?m)^([A-Za-z_][A-Za-z0-9_]*)\(\)",
+                             lib.read_text(encoding="utf-8"))
+        used = [fn for fn in defined
+                if re.search(rf"(?<![\w.]){re.escape(fn)}\b", body)]
+        if used:
+            missing[lib.name] = used
+    assert not missing, \
+        f"‏capture.sh קורא לפונקציות מספריות שההרנס אינו טוען: {missing}"
+
+
+def test_a_successful_capture_produces_a_whole_manifest(tmp_path):
+    """הצד השני של אותו שער, על ה**תוצר**: ריצה שנספרת כהצלחה חייבת
+    להשאיר מניפסט מלא.
+
+    זה מה שהיה שבור בפועל — ‏`rc=0`, ובמניפסט `"os":""` ו-`"partitions":[]`:
+    ‏`os` ריק כי `_image_os` לא היה מוגדר, ו-`partitions` ריק כי
+    ‏`$(_mark_expandable ...)` החזיר כלום ובלע את הרשומה שנבנתה לפניו.
+    שדה ריק שנראה כמו תשובה הוא עיקרון 5, וכאן הוא ישב בתוך כלי הבדיקה:
+    כל טענה עתידית על `role`, ‏`fs`, ‏`used_bytes` או `expandable` הייתה
+    ירוקה בלי לבדוק דבר.
+    """
+    box, run, out = capture_run(
+        tmp_path, stubs={"sgdisk": ONE_PARTITION, "curl": CURL_SINK})
+    assert out.strip().endswith("rc=0"), \
+        out + (box / "capture.out").read_text(encoding="utf-8", errors="replace")
+    written = json.loads((run / "new-manifest.json").read_text(encoding="utf-8"))
+    assert written["os"], f"‏os ריק על ריצה שנספרה כהצלחה: {written}"
+    assert written["partitions"], f"מניפסט בלי מחיצות על ריצה מוצלחת: {written}"
+    # התפקיד מגיע מ-`_partition_role` על ה-GUID של `ONE_PARTITION`. מחרוזת
+    # ריקה הייתה עוברת כל טענה שמסתפקת בקיום המפתח.
+    assert written["partitions"][0]["role"] == "esp", written["partitions"]

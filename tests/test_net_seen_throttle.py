@@ -29,8 +29,8 @@ import pytest
 
 from server.db import NET_SEEN_MIN_INTERVAL_SECONDS, connect, net_seen
 
-MAC = "00:00:5e:07:1a:c4"
-IP = "10.99.12.187"
+MAC = "b4:2e:99:07:1a:c4"
+IP = "10.44.12.187"
 
 
 @contextlib.contextmanager
@@ -107,7 +107,7 @@ def test_two_machines_do_not_throttle_each_other(db):
     """החניקה היא לכל MAC בנפרד. כיתה שלמה שנדלקת יחד נרשמת כולה."""
     with writes_to(db.connection) as writes:
         for n in range(20):
-            net_seen(db, f"00:00:5e:07:1a:{n:02x}", IP)
+            net_seen(db, f"b4:2e:99:07:1a:{n:02x}", IP)
     assert len(writes) == 20
 
 
@@ -170,9 +170,9 @@ def test_a_new_address_is_written_at_once(db):
     """המכונה קיבלה כתובת אחרת — זה מידע חדש, לא ביקור חוזר."""
     net_seen(db, MAC, IP)
     with writes_to(db.connection) as writes:
-        net_seen(db, MAC, "10.99.12.200")
+        net_seen(db, MAC, "10.44.12.200")
     assert len(writes) == 1
-    assert row_of(db)["ip"] == "10.99.12.200"
+    assert row_of(db)["ip"] == "10.44.12.200"
 
 
 def test_new_disks_are_written_at_once(db):

@@ -2,12 +2,12 @@
 
 # ImageCtl
 
+<!-- אין badges: הריפו פרטי, ו-GitHub אינו מגיש badge לקורא אנונימי.
+     ה-badges שהיו כאן הצביעו על השם הישן, שתפוס היום על ידי פרויקט אחר,
+     והציגו "tests — passing" שלו. סימן ירוק שאינו מעיד על כלום. -->
+
 **שרת אימג'ים ופריסה לכיתות מחשבים.**
 
-[![tests](https://github.com/NadavOked/ImageCtl/actions/workflows/tests.yml/badge.svg)](https://github.com/NadavOked/ImageCtl/actions/workflows/tests.yml)
-[![codeql](https://github.com/NadavOked/ImageCtl/actions/workflows/codeql.yml/badge.svg)](https://github.com/NadavOked/ImageCtl/actions/workflows/codeql.yml)
-[![shellcheck](https://github.com/NadavOked/ImageCtl/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/NadavOked/ImageCtl/actions/workflows/shellcheck.yml)
-[![gitleaks](https://github.com/NadavOked/ImageCtl/actions/workflows/gitleaks.yml/badge.svg)](https://github.com/NadavOked/ImageCtl/actions/workflows/gitleaks.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![python](https://img.shields.io/badge/python-3.12%20%7C%203.13-blue)](server/requirements.txt)
 
@@ -19,9 +19,6 @@
 שרת ומשדרת אותו במולטיקאסט לכיתה שלמה בבת אחת. **הזמן לשכפל 30 מחשבים
 הופך לזמן של מחשב אחד** — והכוננים, הגרסאות והשמות מנוהלים ממסך אחד
 בעברית.
-
-**זהו הפרסום הנקי של הפרויקט — הקוד שרץ בפועל, נבדק ב-CI ירוק.**
-הפיתוח, ה-Issues והדיונים מתנהלים בריפו פרטי; כאן מתפרסם הקוד בלבד.
 
 </div>
 
@@ -182,7 +179,7 @@ firmware -> shim (Microsoft-signed) -> GRUB (Debian-signed) -> distro kernel -> 
 
 ```bash
 pip install -r server/requirements.txt
-python -m server.main --server-url http://10.99.12.10:8080
+python -m server.main --server-url http://10.44.12.10:8080
 ```
 
 <div dir="rtl">
@@ -195,7 +192,7 @@ python -m server.main --server-url http://10.99.12.10:8080
 </div>
 
 ```bash
-sudo ./install/setup-boot-server.sh --server-url http://10.99.12.10:8080 --interface eth0
+sudo ./install/setup-boot-server.sh --server-url http://10.44.12.10:8080 --interface eth0
 ```
 
 <div dir="rtl">
@@ -290,7 +287,13 @@ python tools/e2e_simulation.py                     # הלולאה המלאה מ�
 כולל בדיקות הכותב המקבילי שדורשות `gcc`.
 
 `IMAGECTL_REQUIRE_NATIVE=1` קיים כי חבילה שדילגה בשלמותה נראית בדיוק כמו
-חבילה שעברה. **על שרת המעבדה היעד הוא אפס דילוגים.**
+חבילה שעברה. **על שרת המעבדה היעד הוא אפס דילוגים לא-מוצהרים.**
+
+היוצא מן הכלל הוא דילוג **מוצהר** (#295): טסט שדורש כלי הקיים רק על תחנת
+הפיתוח — ‏PowerShell, שאינו על שרת המעבדה בכוונה, כי במכללה לא יהיה
+PowerShell על השרת. הריצה מדפיסה בסופה כמה טסטים דולגו כך ומאיזו סיבה,
+בשמם. דילוג כזה אינו מפיל, אבל גם אינו שקט — אדום קבוע מנרמל את עצמו עד
+שכשל אמיתי נבלע בתוכו.
 
 ## אבטחה
 
@@ -316,7 +319,7 @@ Issue פומבי.
 | `server/` · `agent/` · `boot/` | הקוד: קונסולה ו-API · initramfs · שרשרת אתחול |
 | `install/` · `tools/` | התקנה עצמאית, בניית initramfs, סימולציה |
 
-**הגרסה הנוכחית היא [התג האחרון](https://github.com/NadavOked/ImageCtl/tags)**
+**הגרסה הנוכחית היא [התג האחרון](https://github.com/NadavOked/ImageCtl-archive/tags)**
 — המספר לא נכתב כאן, כדי שהמסמך לא יפגר אחרי התגים.
 
 ## רישיון

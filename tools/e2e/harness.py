@@ -39,8 +39,8 @@ GB500 = 500107862016
 
 BUILD_MAC = "aa:bb:cc:00:00:10"
 CLONER_MAC = "aa:bb:cc:00:00:20"
-CLASS_MACS = ["00:00:5e:07:1a:c4", "00:00:5e:07:1a:c5",
-              "00:00:5e:07:1a:c6", "00:00:5e:07:1a:c7"]
+CLASS_MACS = ["b4:2e:99:07:1a:c4", "b4:2e:99:07:1a:c5",
+              "b4:2e:99:07:1a:c6", "b4:2e:99:07:1a:c7"]
 UNKNOWN_MAC = "de:ad:be:ef:00:01"
 
 ADMIN = {"username": "noc", "password": "sim-pass-1234"}
@@ -133,7 +133,7 @@ class Client:
 def hello(client: Client, mac: str, disks: list[dict]):
     """ממשק 2 — בדיוק מה שהסוכן האמיתי שולח כשה-initramfs עולה."""
     return client.json("POST", "/api/v1/agent/hello", {
-        "schema": 1, "mac": mac, "all_macs": [mac], "ip": "10.99.12.50",
+        "schema": 1, "mac": mac, "all_macs": [mac], "ip": "10.44.12.50",
         "hostname_current": None, "uuid": "SIM", "firmware": "uefi",
         "secure_boot": True, "agent_version": "0.1.0", "memory_bytes": 8 << 30,
         "disks": disks,

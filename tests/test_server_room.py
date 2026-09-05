@@ -36,7 +36,7 @@ def room_server(tmp_path: Path):
     woken: list[bytes] = []
     recorder = Recorder()
     app = create_app(
-        tmp_path / "data", images, "http://10.99.12.10:8080",
+        tmp_path / "data", images, "http://10.44.12.10:8080",
         now_fn=Clock(), sender_runner=recorder,
         wol_send=woken.append,
     )
@@ -322,7 +322,7 @@ def test_room_round_respects_the_single_session_invariant(room_server):
         "id": "grp_LAB9", "label": "כיתה 9", "role": "classroom",
     }).status_code == 200
     assert admin.post("/api/console/machines", json={
-        "mac": "00:00:5e:00:00:09", "name": "05", "group_id": "grp_LAB9",
+        "mac": "b4:2e:99:00:00:09", "name": "05", "group_id": "grp_LAB9",
     }).status_code == 200
     assert admin.post("/api/console/sessions", json={
         "group_id": "grp_LAB9", "image_id": "img_7f3a91",

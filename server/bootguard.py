@@ -28,7 +28,7 @@ import sqlite3
 
 from boot.grub_menu import AGENT, decide
 
-from .db import journal, now_iso
+from .db import _write_lock, journal, now_iso, writing
 
 log = logging.getLogger("imagectl.bootguard")
 
@@ -117,21 +117,32 @@ def _record(conn: sqlite3.Connection, mac: str, context: str) -> int | None:
 
     ההקשר הוא חלק מהעדכון עצמו: הקשר חדש מאפס את המונה באותה כתיבה,
     בלי מרוץ בין קריאה לכתיבה.
+
+    ‏`_write_lock` ו-`writing` הם אותם שני מנגנונים שתוקנו ב-#272 על
+    ‏`net_seen` (#356). כאן זה חמור יותר: זה **השומר של האתחול**.
+    כתיבה שנכשלה בלי ``rollback`` משאירה ``BEGIN`` פתוח על החיבור, כל
+    כתיבה אחריו נכשלת מיד — ותהליכון uvicorn ממוחזר, כלומר עומס חולף
+    אחד היה מחזיר ``None`` מכאן לכל מכונה עד אתחול השרת. ‏`guard`
+    מתרגם ``None`` ל-``exhausted``, כלומר כיתה שלמה שנשלחת לדיסק
+    המקומי באמצע סבב. שומר שקט אינו שומר (עיקרון 5).
+
+    הנעילה עוטפת את הכתיבה **בלבד**, וקריאת האימות שאחריה מחוצה לה:
+    ‏`guard` נוטל את אותה נעילה דרך `journal`, והיא ``Lock`` ולא ``RLock``.
     """
     ts = now_iso()
-    conn.execute(
-        "INSERT INTO boot_attempts (mac, context, attempts, first_at, last_at)"
-        " VALUES (?, ?, 1, ?, ?)"
-        " ON CONFLICT (mac) DO UPDATE SET"
-        "   attempts = CASE WHEN context = excluded.context"
-        "                   THEN attempts + 1 ELSE 1 END,"
-        "   first_at = CASE WHEN context = excluded.context"
-        "                   THEN first_at ELSE excluded.first_at END,"
-        "   context = excluded.context,"
-        "   last_at = excluded.last_at",
-        (mac, context, ts, ts),
-    )
-    conn.commit()
+    with _write_lock, writing(conn):
+        conn.execute(
+            "INSERT INTO boot_attempts (mac, context, attempts, first_at, last_at)"
+            " VALUES (?, ?, 1, ?, ?)"
+            " ON CONFLICT (mac) DO UPDATE SET"
+            "   attempts = CASE WHEN context = excluded.context"
+            "                   THEN attempts + 1 ELSE 1 END,"
+            "   first_at = CASE WHEN context = excluded.context"
+            "                   THEN first_at ELSE excluded.first_at END,"
+            "   context = excluded.context,"
+            "   last_at = excluded.last_at",
+            (mac, context, ts, ts),
+        )
     # ראיה חיובית: הערך נקרא בחזרה. שורה שאינה שם, או שההקשר בה אינו
     # זה שנכתב, פירושה שהספירה לא קרתה — ולא שהיא יצאה אחת.
     row = conn.execute(

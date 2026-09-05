@@ -33,7 +33,7 @@ ImageCtl מריץ שרת אתחול רשת: הוא מגיש שרשרת אתחו�
 הריפו:
 
 1. לשונית **Security** בריפו ← **Report a vulnerability**, או ישירות:
-   <https://github.com/NadavOked/ImageCtl/security/advisories/new>
+   <https://github.com/NadavOked/ImageCtl-archive/security/advisories/new>
 2. הדיווח נשאר פרטי עד שיוחלט לפרסמו.
 
 **אין כתובת דוא"ל לאבטחה, ואין תוכנית תגמול.** הפרויקט מתוחזק על ידי
@@ -100,7 +100,7 @@ repository is public, so **please do not open an issue for a security
 problem** — that publishes it before there is a fix.
 
 Report privately through GitHub Security Advisories:
-<https://github.com/NadavOked/ImageCtl/security/advisories/new>
+<https://github.com/NadavOked/ImageCtl-archive/security/advisories/new>
 
 Only the latest tag is supported; fixes land on `main` and get a new tag.
 There is no security email address and no bounty — this project has a single

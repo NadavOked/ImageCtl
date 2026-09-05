@@ -43,7 +43,7 @@ REPO = Path(__file__).resolve().parent.parent
 #: השדה `code` שנקרא ב-jq. בלעדיהם אין מה לבדוק — ובמעבדה זה כישלון (#52).
 pytestmark = requires_native(("bash", BASH), "curl", "jq")
 
-MAC = "00:00:5e:07:1a:c4"
+MAC = "b4:2e:99:07:1a:c4"
 IMAGE = "img_7f3a91"
 
 MANIFEST = {

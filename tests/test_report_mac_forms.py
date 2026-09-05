@@ -19,9 +19,9 @@ pytest.importorskip("fastapi")
 
 from conftest import hello_body, setup_classroom
 
-CANONICAL = "00:00:5e:07:1a:c4"
+CANONICAL = "b4:2e:99:07:1a:c4"
 #: שלוש הווריאציות שסעיף 6 והתיעוד של `normalize_mac` מבטיחים.
-FORMS = ["00:00:5E:07:1A:C4", "00-00-5e-07-1a-c4", "00005e071ac4"]
+FORMS = ["B4:2E:99:07:1A:C4", "b4-2e-99-07-1a-c4", "b42e99071ac4"]
 
 
 def hello(server, mac):
@@ -73,7 +73,7 @@ def test_a_member_reporting_in_dashes_is_recognized_and_the_round_closes(server)
     ids = open_session(server, expected=1)
     assert hello(server, CANONICAL)["session"]["joined"] == 1   # הצטרפה קנונית
 
-    response = progress(server, "00-00-5E-07-1A-C4", ids["session"],
+    response = progress(server, "B4-2E-99-07-1A-C4", ids["session"],
                         state="done", written=57982058496)
     assert response.status_code == 200
     assert response.json() == {"ok": True}
@@ -129,7 +129,7 @@ def test_a_capture_task_report_in_dashes_updates_the_task(server):
 
 @pytest.mark.parametrize("bad, code", [
     ("not-a-mac", "bad_mac"),          # תווים, לא MAC
-    ("00:00:5e:07:1a", "bad_mac"),     # חמש אוקטטות — קצר מדי
+    ("b4:2e:99:07:1a", "bad_mac"),     # חמש אוקטטות — קצר מדי
     ("  ", "bad_mac"),                 # רווחים
     (17, "bad_mac"),                   # לא מחרוזת בכלל
     ("", "bad_report"),                # השדה חסר — זו כבר שגיאת מבנה

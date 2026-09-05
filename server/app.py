@@ -13,7 +13,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from boot.grub_menu import GrubConfig
-from boot.http import create_boot_asgi
+from boot.http import create_boot_asgi, gui_initrd_path
 
 from .api import ServerContext, create_agent_router
 from .console_api import create_console_router
@@ -48,6 +48,11 @@ def create_app(
     now_fn=None,
     sender_runner=None,
     sender_portbase: int | None = None,
+    # שתי תקרות ההמתנה של udpcast. ‏None = ברירת המחדל של `sender.py`
+    # (כמו `sender_portbase`): הערך בייצור אינו זז, ומי שצריך תקרה קצרה —
+    # מעבדה, טסט, ‏e2e — מעביר אותה כאן במקום לחכות דקות (#341).
+    sender_max_wait: int | None = None,
+    sender_start_timeout: float | None = None,
     wol_send=None,
     interface: str | None = None,
     dhcp_hooks: dict | None = None,
@@ -113,6 +118,9 @@ def create_app(
         on_event=lambda event, detail: journal(conn, event, detail),
         **({"runner": sender_runner} if sender_runner else {}),
         **({"portbase": sender_portbase} if sender_portbase is not None else {}),
+        **({"max_wait": sender_max_wait} if sender_max_wait is not None else {}),
+        **({"start_timeout": sender_start_timeout}
+           if sender_start_timeout is not None else {}),
     )
     def wake_class(group_id: str, opener_mac: str | None,
                    roster: list[str] | None = None) -> None:
@@ -173,6 +181,11 @@ def create_app(
             resolve=resolve,
             config=GrubConfig(
                 server_base=server_base,
+                # ‏#32: נבדק בכל בקשה, ומאותה סיבה שהתצורה כולה נבנית
+                # בכל בקשה — ‏initramfs גרפי שנוסף או הוסר מתיקיית האתחול
+                # תופס מיד, בלי הפעלה מחדש של השרת. הבדיקה זולה (stat
+                # אחד), ובקשת אתחול היא ממילא אירוע נדיר לכל מכונה.
+                gui_initrd_path=gui_initrd_path(boot_dir),
                 extra_cmdline=ssh_switch.station_cmdline(
                     extra_cmdline, ssh_switch.stations_enabled(conn)),
             ),

@@ -539,16 +539,82 @@ $("#add-user").addEventListener("click", () => sheet({
   onSubmit: async (v) => { await post("/users", v); await loadUsers(); },
 }));
 
-/* ---------- יומן — עברית, שמות במקום מזהים ---------- */
+/* ---------- יומן — עברית, שמות במקום מזהים, סינון וחיפוש (#115) ---------- */
+
+let JOURNAL_EVENTS_LOADED = false;
+
+// המפתחות שהשרת מצפה להם ב-query string, כל אחד מקושר לשדה שלו במסך.
+const JOURNAL_FILTER_FIELDS = {
+  event: "#jf-event", machine: "#jf-machine", q: "#jf-q",
+  from: "#jf-from", to: "#jf-to",
+};
+
+async function loadJournalEvents() {
+  if (JOURNAL_EVENTS_LOADED) return;
+  const events = await api("/journal/events");
+  const select = $("#jf-event");
+  select.insertAdjacentHTML("beforeend", events.map((e) =>
+    `<option value="${esc(e.event)}">${esc(e.label)}</option>`).join(""));
+  JOURNAL_EVENTS_LOADED = true;
+}
+
+function journalFilterQuery() {
+  const params = new URLSearchParams();
+  for (const [key, sel] of Object.entries(JOURNAL_FILTER_FIELDS)) {
+    let value = $(sel).value.trim();
+    if (!value) continue;
+    // "עד תאריך" הוא דקה שלמה (datetime-local); בלי שניות, "10:00"
+    // כהשוואת מחרוזות היה פוסל אירוע ב-"10:00:15" — לפני הדקה הבאה
+    // אבל אחרי המחרוזת עצמה.
+    if (key === "to") value += ":59";
+    params.set(key, value);
+  }
+  const qs = params.toString();
+  return qs ? "?" + qs : "";
+}
 
 async function loadJournal() {
-  const rows = await api("/journal");
-  $("#journal-table tbody").innerHTML = rows.map((r) => `<tr>
-    <td class="mono" dir="ltr">${r.ts.replace("T", " ").slice(0, 19)}</td>
-    <td>${esc(r.user) || "המערכת"}</td><td><b>${esc(r.label)}</b></td>
-    <td>${esc(r.text)}</td>
-  </tr>`).join("");
+  await loadJournalEvents();
+  // fetch ישיר, לא api(): צריך את כותרת האזהרה על סינון חלקי, לא רק
+  // את הגוף (עיקרון 5 — "לא בדקנו הכל" אינו "אין תוצאות").
+  const response = await fetch("/api/console/journal" + journalFilterQuery(), { credentials: "same-origin" });
+  if (response.status === 401) { showLogin(); throw new Error("לא מחובר"); }
+  if (!response.ok) throw new Error("שגיאה " + response.status);
+  if (response.headers.get("X-Journal-Search-Truncated") === "true") {
+    toast("החיפוש מכסה רק את השורות האחרונות ביומן — נסו לצמצם עם טווח תאריכים");
+  }
+  const rows = await response.json();
+  $("#journal-table tbody").innerHTML = rows.length
+    ? rows.map((r) => `<tr>
+        <td class="mono" dir="ltr">${r.ts.replace("T", " ").slice(0, 19)}</td>
+        <td>${esc(r.user) || "המערכת"}</td><td><b>${esc(r.label)}</b></td>
+        <td>${esc(r.text)}</td>
+      </tr>`).join("")
+    : `<tr><td colspan="4" class="lib-empty">אין רשומות שתואמות לסינון.</td></tr>`;
 }
+
+// דיבאונס על שדות הטקסט — לא לירות בקשה על כל תו; הפתרון והלחיצות
+// (הסוג, האיפוס) רצות מיד.
+function debounce(fn, ms) {
+  let timer = null;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), ms);
+  };
+}
+
+const journalReload = () => loadJournal().catch((error) => toast("סינון היומן נכשל: " + error.message));
+const journalReloadDebounced = debounce(journalReload, 300);
+
+$("#jf-event").addEventListener("change", journalReload);
+$("#jf-from").addEventListener("change", journalReload);
+$("#jf-to").addEventListener("change", journalReload);
+$("#jf-machine").addEventListener("input", journalReloadDebounced);
+$("#jf-q").addEventListener("input", journalReloadDebounced);
+$("#jf-clear").addEventListener("click", () => {
+  for (const sel of Object.values(JOURNAL_FILTER_FIELDS)) $(sel).value = "";
+  journalReload();
+});
 
 /* ---------- הגדרות ---------- */
 

@@ -20,11 +20,11 @@ from conftest import MANIFEST_256, MANIFEST_500
 
 
 def test_the_magic_packet_is_shaped_right():
-    packet = magic_packet("00:00:5e:07:1a:c4")
+    packet = magic_packet("b4:2e:99:07:1a:c4")
     assert len(packet) == 102
     assert packet[:6] == b"\xff" * 6
-    assert packet[6:12] == bytes.fromhex("00005e071ac4")
-    assert packet[6:] == bytes.fromhex("00005e071ac4") * 16
+    assert packet[6:12] == bytes.fromhex("b42e99071ac4")
+    assert packet[6:] == bytes.fromhex("b42e99071ac4") * 16
 
 
 def test_a_bad_mac_raises_instead_of_waking_nothing():
@@ -43,7 +43,7 @@ def station(tmp_path, images_root, clock):
     from server.app import create_app
 
     woken: list[bytes] = []
-    app = create_app(tmp_path / "data", images_root, "http://10.99.12.10:8080",
+    app = create_app(tmp_path / "data", images_root, "http://10.44.12.10:8080",
                      now_fn=clock, wol_send=woken.append)
     ctx = app.state.ctx
     users.create(ctx.conn, "noc", "admin-pass-123", "admin", by="test")
@@ -295,7 +295,7 @@ def test_an_empty_class_cannot_be_opened(station):
                           json={"id": "grp_EMPTY", "label": "ריקה", "role": "classroom"})
     response = station["anon"].post(
         "/api/v1/agent/sessions",
-        json=open_body("00:00:5e:07:1a:c4", group_id="grp_EMPTY"))
+        json=open_body("b4:2e:99:07:1a:c4", group_id="grp_EMPTY"))
     assert response.status_code == 400
     assert response.json()["code"] == "empty_group"
 
@@ -371,7 +371,7 @@ def test_a_wake_failure_does_not_stop_the_rest(tmp_path, images_root, clock):
         if calls["n"] == 1:
             raise OSError("network is unhappy")
 
-    app = create_app(tmp_path / "data", images_root, "http://10.99.12.10:8080",
+    app = create_app(tmp_path / "data", images_root, "http://10.44.12.10:8080",
                      now_fn=clock, wol_send=flaky)
     ctx = app.state.ctx
     users.create(ctx.conn, "noc", "admin-pass-123", "admin", by="test")

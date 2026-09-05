@@ -14,7 +14,7 @@ uvicorn עצמו משמר את האותיות כפי שנשלחו, ולכן הנ
 
     app.mount("/boot", create_boot_asgi(
         resolve=my_lookup,                       # ראו חתימת Resolver למטה
-        config=GrubConfig(server_base="http://10.99.0.10:8080"),
+        config=GrubConfig(server_base="http://10.44.0.10:8080"),
         boot_dir="/srv/imagectl/boot",           # vmlinuz + initrd.img
     ))
 """
@@ -41,6 +41,12 @@ BASE_HEADERS = [
 
 MEDIA_TYPE = "text/plain; charset=us-ascii"
 FILE_CHUNK = 1 << 20
+
+#: שם ה-initramfs הגרפי בתיקיית האתחול, לצד `initrd.img` הטקסטואלי (#32).
+#: הבנייה מייצרת קובץ עם גרסה בשם (`initrd.img.gui-v0.15.11` במעבדה);
+#: המפעיל מעתיק או מקשר את הגרסה הפעילה לשם הקבוע הזה, בדיוק כמו
+#: `initrd.img` עצמו.
+GUI_INITRD_NAME = "initrd.img.gui"
 
 
 class Resolver(Protocol):
@@ -80,6 +86,30 @@ def build_config_text(
     return text
 
 
+def gui_initrd_path(boot_dir: str | Path | None) -> str | None:
+    """הנתיב המוגש של ה-initramfs הגרפי — ‏**רק אם הקובץ באמת שם** (#32).
+
+    ‏`grub_menu` טהור ואינו נוגע בדיסק, ולכן הבדיקה יושבת כאן, במודול
+    שממילא מגיש קבצים מהתיקייה הזאת. מה שחוזר הוא ראיה חיובית:
+    ‏`is_file()` ענה True. כל דבר אחר — אין תיקיית אתחול, הקובץ חסר, אין
+    הרשאה, נתיב פגום — מחזיר None, וכל התפקידים נופלים ל-initramfs
+    הטקסטואלי.
+
+    זה מה שמונע את הכשל הגרוע ביותר של #32: התפריט מפנה את GRUB לקובץ
+    שאינו קיים, השרת מחזיר 404, והמכונה לא עולה בכלל. מכונה בלי גואי
+    עובדת; מכונה שלא עולה לא (עיקרון 1).
+    """
+    if boot_dir is None:
+        return None
+    try:
+        if not (Path(boot_dir) / GUI_INITRD_NAME).is_file():
+            return None
+    except Exception:  # noqa: BLE001 — נתיב פגום או הרשאה חסרה = אין גואי
+        log.warning("could not check for %s under %r", GUI_INITRD_NAME, boot_dir)
+        return None
+    return f"/boot/{GUI_INITRD_NAME}"
+
+
 def config_for_scope(scope: dict, config: GrubConfig) -> GrubConfig:
     """אותה תצורה, אבל עם הכתובת שאליה הלקוח באמת התחבר (issue #39).
 
@@ -104,6 +134,7 @@ def config_for_scope(scope: dict, config: GrubConfig) -> GrubConfig:
             server_base=f"http://{host}:{port}",
             kernel_path=config.kernel_path,
             initrd_path=config.initrd_path,
+            gui_initrd_path=config.gui_initrd_path,
             extra_cmdline=config.extra_cmdline,
         )
     except Exception:  # noqa: BLE001 — כאן זו בדיוק הכוונה
@@ -176,4 +207,5 @@ def create_boot_asgi(resolve: Resolver, config: GrubConfig,
 
 
 __all__ = ["Resolver", "build_config_text", "config_for_scope",
-           "create_boot_asgi", "BASE_HEADERS", "MEDIA_TYPE"]
+           "create_boot_asgi", "gui_initrd_path", "GUI_INITRD_NAME",
+           "BASE_HEADERS", "MEDIA_TYPE"]

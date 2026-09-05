@@ -108,19 +108,19 @@ def test_manual_add_and_explicit_edit(server):
     setup_classroom(server)
 
     r = admin.post("/api/console/machines",
-                   json={"mac": "00-00-5E-07-1A-C9", "name": "7", "group_id": "grp_LAB1"})
-    assert r.status_code == 200 and r.json()["mac"] == "00:00:5e:07:1a:c9"
+                   json={"mac": "B4-2E-99-07-1A-C9", "name": "7", "group_id": "grp_LAB1"})
+    assert r.status_code == 200 and r.json()["mac"] == "b4:2e:99:07:1a:c9"
 
     # הוספה חוזרת — שגיאה מפורשת, לא דריסה.
     r = admin.post("/api/console/machines",
-                   json={"mac": "00:00:5e:07:1a:c9", "name": "08", "group_id": "grp_LAB1"})
+                   json={"mac": "b4:2e:99:07:1a:c9", "name": "08", "group_id": "grp_LAB1"})
     assert r.status_code == 400
 
     # עריכה מפורשת של השם — הדרך היחידה לשנות סיומת.
-    r = admin.put("/api/console/machines/00:00:5e:07:1a:c9", json={"name": "ins"})
+    r = admin.put("/api/console/machines/b4:2e:99:07:1a:c9", json={"name": "ins"})
     assert r.status_code == 200
     machines = {m["mac"]: m for m in admin.get("/api/console/machines").json()}
-    assert machines["00:00:5e:07:1a:c9"]["suffix"] == "INS"
+    assert machines["b4:2e:99:07:1a:c9"]["suffix"] == "INS"
 
 
 def test_cloner_machines_get_free_names(server):

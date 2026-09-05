@@ -87,9 +87,9 @@ def test_a_proxy_interface_no_longer_skips_validation():
     """כתובת השרת נכתבת ל-`dhcp-range=set:...,<כתובת>,proxy` — גם היא
     עברה קודם בלי בדיקה, כי ממשק proxy אינו enabled."""
     with pytest.raises(ValueError) as err:
-        validate(InterfaceConfig("eth1.700", proxy=True, server_ip="10.99.9.300"))
+        validate(InterfaceConfig("eth1.700", proxy=True, server_ip="10.44.9.300"))
     assert "כתובת השרת" in str(err.value)
-    validate(InterfaceConfig("eth1.700", proxy=True, server_ip="10.99.101.10"))
+    validate(InterfaceConfig("eth1.700", proxy=True, server_ip="10.44.101.10"))
 
 
 # --- השער האחרון לפני הקובץ --------------------------------------------------
@@ -149,7 +149,7 @@ def test_the_proxy_path_is_refused_too(dhcp_server):
     resp = admin.put(path_of(INJECTION),
                      json={"proxy": True, "confirm": INJECTION,
                            "confirm_proxy_broken": True, "allow_missing": True,
-                           "server_ip": "10.99.101.10"})
+                           "server_ip": "10.44.101.10"})
     assert resp.status_code == 400
     assert "שם כרטיס" in resp.json()["detail"]
     assert len(fake["proxy_applied"]) == before

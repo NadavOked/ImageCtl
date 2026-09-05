@@ -25,13 +25,13 @@ from conftest import MANIFEST_256, MANIFEST_500, MANIFEST_LINUX, Clock, write_im
 
 @pytest.mark.parametrize(
     "raw",
-    ["00:00:5E:07:1A:C4", "00-00-5e-07-1a-c4", "00005e07 1ac4", "00005e071ac4"],
+    ["B4:2E:99:07:1A:C4", "b4-2e-99-07-1a-c4", "b42e9907 1ac4", "b42e99071ac4"],
 )
 def test_mac_variants_normalize(raw):
-    assert registry.normalize_mac(raw) == "00:00:5e:07:1a:c4"
+    assert registry.normalize_mac(raw) == "b4:2e:99:07:1a:c4"
 
 
-@pytest.mark.parametrize("raw", ["", "00:00:5e:07:1a", "hello world!", "gg:2e:99:07:1a:c4", None])
+@pytest.mark.parametrize("raw", ["", "b4:2e:99:07:1a", "hello world!", "gg:2e:99:07:1a:c4", None])
 def test_bad_macs_are_rejected(raw):
     assert registry.normalize_mac(raw) is None
 
@@ -52,7 +52,7 @@ def test_bad_suffixes_are_rejected(raw):
 
 def test_paste_flags_duplicates_inside_the_paste():
     lines = registry.parse_paste(
-        "00:00:5e:07:1a:c4 01\n# הערה\n\n00005e071ac4 02\n"
+        "b4:2e:99:07:1a:c4 01\n# הערה\n\nb42e99071ac4 02\n"
     )
     assert lines[0].error is None
     assert "שורה 1" in lines[1].error
@@ -63,16 +63,16 @@ def test_conflicting_suffix_is_an_error_not_a_note(tmp_path):
     conn = connect(tmp_path / "t.db")
     conn.execute("INSERT INTO groups (id, label, role) VALUES ('g', 'g', 'classroom')")
     saved, _ = registry.import_lines(
-        conn, "g", registry.parse_paste("00:00:5e:07:1a:c4 01"), "t"
+        conn, "g", registry.parse_paste("b4:2e:99:07:1a:c4 01"), "t"
     )
     assert saved == 1
     saved, rejected = registry.import_lines(
-        conn, "g", registry.parse_paste("00:00:5e:07:1a:c4 INS"), "t"
+        conn, "g", registry.parse_paste("b4:2e:99:07:1a:c4 INS"), "t"
     )
     assert saved == 0 and "קבועה" in rejected[0].error
     # אותה סיומת שוב — עדכון שקט, לא שגיאה.
     saved, rejected = registry.import_lines(
-        conn, "g", registry.parse_paste("00:00:5e:07:1a:c4 01"), "t"
+        conn, "g", registry.parse_paste("b4:2e:99:07:1a:c4 01"), "t"
     )
     assert saved == 1 and not rejected
 

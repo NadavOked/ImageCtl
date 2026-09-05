@@ -125,7 +125,7 @@ async function groupBlock(group, type) {
     </table>
     <form class="pad form-grid" data-add-form="${esc(group.id)}">
       <div class="row">
-        <input type="text" class="mono a-mac" dir="ltr" placeholder="00:00:5e:07:1a:c4" required>
+        <input type="text" class="mono a-mac" dir="ltr" placeholder="b4:2e:99:07:1a:c4" required>
         <input type="text" class="a-name" placeholder="${esc(type.nameLabel)}" required>
         <button class="btn primary" type="submit">הוסף מכונה</button>
       </div>
@@ -135,7 +135,7 @@ async function groupBlock(group, type) {
       <summary>ייבוא בהדבקה — הרבה שורות בבת אחת, וייצוא CSV</summary>
       <div class="inner">
         <textarea rows="6" class="mono i-text" dir="ltr"
-          placeholder="00:00:5e:07:1a:c4 01&#10;00-00-5E-07-1A-C5 02"></textarea>
+          placeholder="b4:2e:99:07:1a:c4 01&#10;B4-2E-99-07-1A-C5 02"></textarea>
         <div class="row">
           <button class="btn" type="button" data-preview="${esc(group.id)}">תצוגה מקדימה</button>
           <button class="btn primary" type="button" data-save="${esc(group.id)}">שמור</button>

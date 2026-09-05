@@ -19,7 +19,7 @@ from boot.grub_menu import GrubConfig, render_bootstrap
 INSTALLER = Path(__file__).resolve().parent.parent / "install" / "setup-boot-server.sh"
 PLACEHOLDER = "@@GRUB_HOST@@"
 PORT_PLACEHOLDER = "@@GRUB_PORT@@"
-HOST = "10.99.12.10:8080"
+HOST = "10.44.12.10:8080"
 PORT = "8080"
 
 

@@ -252,7 +252,7 @@ def _dhcp_problems(cfg: NetConfig,
     שתי הבדיקות כאן ולא בשני מקומות: ‏`dhcp.validate()` כבר אוכף
     ש-`server_ip` יושב ברשת של הטווח, אבל הוא אינו יודע דבר על הכתובת
     שהכרטיס באמת יקבל. חיבור השניים הוא מה שמונע כרטיס שמחלק
-    ‏10.99.9.50-200 ומקבל כתובת ב-10.99.8.0/24.
+    ‏10.44.9.50-200 ומקבל כתובת ב-10.44.8.0/24.
     """
     if dhcp_cfg is None or not dhcp_cfg.enabled:
         return []
@@ -373,7 +373,7 @@ def changed(before: NetConfig, after: NetConfig) -> list[str]:
 
 
 def summary(cfg: NetConfig) -> str:
-    """תיאור קצר לשורת יומן: ‏"eth1 static 10.99.9.10/24"."""
+    """תיאור קצר לשורת יומן: ‏"eth1 static 10.44.9.10/24"."""
     if cfg.mode == MODE_STATIC:
         return f"{cfg.name} {cfg.mode} {cfg.cidr}"
     return f"{cfg.name} {cfg.mode}"

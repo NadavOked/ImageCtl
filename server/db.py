@@ -14,9 +14,18 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-#: כתיבות יומן מסודרות זו מול זו. ההגנה האמיתית מפני תהליכונים היא
-#: חיבור נפרד לכל תהליכון (ראו Database למטה) — הנעילה כאן היא חגורה
-#: נוספת למקרה שקוד עתידי יכתוב ליומן משני מקומות על אותו חיבור.
+#: התור של הכותבים בתוך התהליך. חיבור נפרד לכל תהליכון (ראו Database
+#: למטה) פותר את *שיתוף מצב הטרנזאקציה*, אבל לא את **ההוגנות**: ‏sqlite
+#: אינו מבטיח שכותב ממתין יקבל את הנעילה אי פעם. הממתין ישן ב-busy
+#: handler, ובזמן השינה האחרים כותבים שוב ושוב; כשכל commit ארוך (דיסק
+#: איטי, כמו של runner ב-CI) ההסתברות שהנעילה תהיה פנויה בדיוק ברגע
+#: ההתעוררות שואפת לאפס, וההמתנה מתכלה עד ``busy_timeout`` מלא. התוצאה
+#: היא ``database is locked`` שנראה כמו עומס והוא בסך הכל חוסר הוגנות
+#: ‏(#272 — ‏`journal` מעולם לא סבל מזה, ‏`net_seen` כן, וזה כל ההבדל).
+#:
+#: לכן כתיבה חמה שרצה מכמה תהליכונים עוברת כאן: התור בפייתון הוגן,
+#: ו-sqlite אינו רואה תחרות בין התהליכונים שלנו. הנעילה נלקחת סביב
+#: **הטרנזאקציה כולה** ולא סביב execute בודד — אחרת אין לה משמעות.
 _write_lock = threading.Lock()
 
 SCHEMA = """
@@ -140,6 +149,18 @@ CREATE TABLE IF NOT EXISTS boot_attempts (
 -- היומן, שאינו נמחק — ראו server/hello.py.
 CREATE TABLE IF NOT EXISTS agent_loops (
     mac      TEXT PRIMARY KEY,       -- קנוני: lowercase עם נקודתיים
+    hits     INTEGER NOT NULL DEFAULT 0,
+    first_at TEXT NOT NULL,
+    last_at  TEXT NOT NULL
+);
+
+-- מי פנה לשרת מכתובת מקומית שאינה כתובת וילן ההפצה (#137). כמו
+-- agent_loops זו התמונה החיה בלבד: השורה יורדת אחרי SILENCE_SECONDS
+-- בלי פנייה, והמונה איתה. `address` היא הרגל של השרת שעליה הבקשה
+-- התקבלה — כלומר מאיזו רשת המכונה מדברת. הארכיון הוא היומן.
+CREATE TABLE IF NOT EXISTS off_vlan_contacts (
+    mac      TEXT PRIMARY KEY,       -- קנוני: lowercase עם נקודתיים
+    address  TEXT NOT NULL,
     hits     INTEGER NOT NULL DEFAULT 0,
     first_at TEXT NOT NULL,
     last_at  TEXT NOT NULL
@@ -391,13 +412,21 @@ def update_one(conn, sql: str, parameters=()) -> bool:
 def writing(conn):
     """רצף כתיבות שמסתיים ב-``commit`` — ובכל מסלול יציאה אחר ב-``rollback``.
 
-    זו ההשלמה של ``update_one`` לרצפים. כתיבה **בודדת** שנכשלת אינה
-    משאירה דבר: היא לא הספיקה לתפוס את נעילת הכתיבה. אבל ברצף, הכתיבה
-    הראשונה כבר תפסה אותה, ואם השנייה זורקת ואיש אינו עושה ``rollback``
-    — הנעילה נשארת יתומה. החיבור הוא של התהליכון (``Database``) והוא
+    זו ההשלמה של ``update_one`` לרצפים. ברצף, הכתיבה הראשונה כבר תפסה
+    את נעילת הכתיבה, ואם השנייה זורקת ואיש אינו עושה ``rollback`` —
+    הנעילה נשארת יתומה. החיבור הוא של התהליכון (``Database``) והוא
     נשאר בחיים, ולכן היא משוחררת רק בכתיבה המוצלחת הבאה *באותו
     תהליכון*; בינתיים כל השאר ממתינים ``busy_timeout`` שלם ומקבלים
     "database is locked" (#54, ‏#184, ‏#200, ‏#290).
+
+    **וגם כתיבה בודדת צריכה את זה** — כאן עמדה קודם טענה הפוכה
+    ("כתיבה בודדת שנכשלת אינה משאירה דבר"), והיא נכונה רק לגבי
+    ה*נעילה*. ‏pysqlite מוציא ``BEGIN`` לפני כל DML; כתיבה בודדת
+    שנכשלה ב-``database is locked`` לא תפסה נעילה, אבל **הטרנזאקציה
+    נשארת פתוחה על החיבור**. מכאן והלאה כל כתיבה עליו נכשלת *מיד*, כי
+    ‏sqlite אינו מפעיל את ה-busy handler לשדרוג נעילה בתוך טרנזאקציה
+    פתוחה. תהליכון של uvicorn חי לאורך זמן וממוחזר, ולכן אירוע עומס
+    חולף אחד היה הופך אותו למורעל עד אתחול התהליך (#272).
 
     הכשל מתחזה לעומס, ולכן השחרור יושב **כאן, במקום אחד**, ולא כשורה
     שצריך לזכור בכל אתר קריאה.
@@ -480,14 +509,17 @@ def net_seen(
         return
 
     ts = now.isoformat(timespec="seconds")
-    conn.execute(
-        "INSERT INTO net_devices (mac, ip, first_seen, last_seen, disks_json)"
-        " VALUES (?, ?, ?, ?, ?) "
-        "ON CONFLICT (mac) DO UPDATE SET ip = COALESCE(excluded.ip, ip),"
-        " last_seen = ?, disks_json = COALESCE(excluded.disks_json, disks_json)",
-        (mac, ip, ts, ts, disks_json, ts),
-    )
-    conn.commit()
+    # ‏`_write_lock` — זו הכתיבה שכיתה שלמה דורכת עליה בו-זמנית, והיא
+    # חייבת תור הוגן ולא מרוץ על נעילת sqlite (#272). ‏`writing` —
+    # כתיבה שנכשלה חייבת להשאיר חיבור נקי; ראו שם.
+    with _write_lock, writing(conn):
+        conn.execute(
+            "INSERT INTO net_devices (mac, ip, first_seen, last_seen, disks_json)"
+            " VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT (mac) DO UPDATE SET ip = COALESCE(excluded.ip, ip),"
+            " last_seen = ?, disks_json = COALESCE(excluded.disks_json, disks_json)",
+            (mac, ip, ts, ts, disks_json, ts),
+        )
 
 
 def get_setting(conn: sqlite3.Connection, key: str) -> str | None:

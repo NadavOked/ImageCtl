@@ -67,7 +67,7 @@ def health_server(tmp_path: Path, images_root: Path, clock):
         "apply_sshd": lambda text: pytest.fail("בדיקה נגעה ב-sshd אמיתי"),
         "settle": lambda: None,
     }
-    app = create_app(tmp_path / "data", images_root, "http://10.99.12.10:8080",
+    app = create_app(tmp_path / "data", images_root, "http://10.44.12.10:8080",
                      now_fn=clock, health_hooks=hooks)
     users.create(app.state.ctx.conn, "noc", "admin-pass-123", "admin", by="test")
     users.create(app.state.ctx.conn, "labtech", "deploy-pass-1", "deploy", by="test")
@@ -144,3 +144,56 @@ def test_but_an_ssh_check_that_could_not_run_is_red_not_grey(health_server):
 
 def test_health_is_admin_only(health_server):
     assert health_server["deploy"].get("/api/console/health").status_code == 403
+
+
+# --- #329: סחיפת shim ---------------------------------------------------
+#
+# המתקין מעתיק את ה-shim פעם אחת ולא מעדכן. מיקרוסופט דוחפת עדכוני
+# SBAT שמבטלים shim ישן, ואז כל הצי מפסיק לעלות ב-PXE בבת אחת.
+# שלושת המצבים נפרדים: תואם · ישן · לא ניתן לקרוא. השלישי אינו
+# "תקין" — זו בדיקה שלא רצה.
+
+def _shim(server, tmp_path, src_bytes, tftp_bytes):
+    from server import health
+    src = tmp_path / "shimx64.efi.signed"
+    if src_bytes is not None:
+        src.write_bytes(src_bytes)
+    tftp = server["tftp"]
+    tftp.joinpath("bootx64.efi").write_bytes(tftp_bytes)
+    # אותם fakes כמו ב-fixture: אף בדיקה אינה נוגעת במכונה שמריצה
+    # אותה. ‏hostguard תופס בדיוק את זה (#113).
+    hooks = {**health.default_hooks(),
+             "ss": lambda: SS_DNSMASQ, "unit_active": lambda n: "active",
+             "http_get": lambda u: 200, "http_text": lambda u: (200, ""),
+             "interfaces": lambda: [{"name": "eth0", "state": "up",
+                                     "mac": "aa", "addresses": []}],
+             "listeners": lambda: Listeners(True),
+             "apply_sshd": lambda t: pytest.fail("נגעה ב-sshd אמיתי"),
+             "settle": lambda: None,
+             "tftp_root": lambda: tftp, "shim_src": lambda: src}
+    ctx = server["admin"].app.state.ctx
+    rows = health.collect(ctx, hooks, "http://x")
+    return by_id(rows)["shim_fresh"]
+
+
+def test_a_shim_that_matches_the_system_copy_is_ok(health_server, tmp_path):
+    r = _shim(health_server, tmp_path, b"same", b"same")
+    assert r["state"] == "ok"
+
+
+def test_a_stale_shim_in_tftp_is_reported_bad(health_server, tmp_path):
+    """זה התרחיש: apt שדרג את המערכת, והעותק ב-TFTP נשאר מאחור."""
+    r = _shim(health_server, tmp_path, b"new-after-sbat-revocation", b"old")
+    assert r["state"] == "bad"
+    assert "הריצו את המתקין" in r["detail"]
+
+
+def test_a_shim_that_cannot_be_read_is_unknown_and_not_ok(health_server, tmp_path):
+    """‏"לא הצלחנו לבדוק" אינו "בדקנו, תואם" — עיקרון 5.
+
+    אם חוסר-קריאה היה מחזיר `ok`, שרת בלי shim-signed מותקן היה
+    מדווח שהשרשרת עדכנית. זה בדיוק הכשל שהבדיקה נועדה למנוע.
+    """
+    r = _shim(health_server, tmp_path, None, b"whatever")
+    assert r["state"] == "unknown"
+    assert r["state"] != "ok"

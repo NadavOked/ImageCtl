@@ -50,7 +50,19 @@ def pytest_runtest_logreport(report) -> None:
     _skips.record(report)
 
 
+def _say(lines: list[str]) -> None:
+    text = "\n" + "\n".join(lines)
+    try:
+        print(text)
+    except UnicodeEncodeError:           # pragma: no cover — קונסולת cp1252
+        print(text.encode("ascii", "backslashreplace").decode())
+
+
 def pytest_sessionfinish(session, exitstatus) -> None:
+    # דילוג מוצהר אינו כישלון — אבל גם אינו שקט: מספר וסיבה, בכל ריצה (#295).
+    notes = _skips.notes()
+    if notes:
+        _say(notes)
     problems = _skips.verdict()
     problems += hygiene.session_verdict(_run["basetemp"], native.native_required())
     if hygiene.blocked_spawns:
@@ -58,11 +70,7 @@ def pytest_sessionfinish(session, exitstatus) -> None:
         problems += [f"    {' '.join(cmd)}" for cmd in hygiene.blocked_spawns]
     if not problems:
         return
-    text = "\n" + "\n".join(problems)
-    try:
-        print(text)
-    except UnicodeEncodeError:           # pragma: no cover — קונסולת cp1252
-        print(text.encode("ascii", "backslashreplace").decode())
+    _say(problems)
     session.exitstatus = 1
 
 
@@ -213,7 +221,7 @@ def _build_server(tmp_path: Path, images_root: Path, clock: Clock, recorder) -> 
     from server.app import create_app
 
     app = create_app(
-        tmp_path / "data", images_root, "http://10.99.12.10:8080",
+        tmp_path / "data", images_root, "http://10.44.12.10:8080",
         now_fn=clock, sender_runner=recorder,
     )
     ctx = app.state.ctx
@@ -265,14 +273,14 @@ def setup_classroom(server: dict, expected: int = 2) -> dict:
         "/api/console/machines/import",
         json={
             "group_id": "grp_LAB1",
-            "text": "00:00:5e:07:1a:c4 05\n00-00-5E-07-1A-C5, 6\n",
+            "text": "b4:2e:99:07:1a:c4 05\nB4-2E-99-07-1A-C5, 6\n",
         },
     ).json()
     assert result["saved"] == 2 and not result["rejected"]
     return {
         "group": "grp_LAB1",
-        "mac1": "00:00:5e:07:1a:c4",
-        "mac2": "00:00:5e:07:1a:c5",
+        "mac1": "b4:2e:99:07:1a:c4",
+        "mac2": "b4:2e:99:07:1a:c5",
         "expected": expected,
     }
 
@@ -283,7 +291,7 @@ def hello_body(mac: str, disk_bytes: int = 256060514304) -> dict:
         "schema": 1,
         "mac": mac,
         "all_macs": [mac],
-        "ip": "10.99.12.187",
+        "ip": "10.44.12.187",
         "hostname_current": None,
         "uuid": "4C4C4544-0037",
         "firmware": "uefi",

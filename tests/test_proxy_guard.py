@@ -162,9 +162,9 @@ def guarded(tmp_path: Path, images_root: Path, clock):
     hooks = {
         "interfaces": lambda: [
             {"name": "eth0", "state": "up", "mac": "aa:aa:aa:aa:aa:00",
-             "addresses": ["10.99.9.10/24"]},
+             "addresses": ["10.44.9.10/24"]},
             {"name": "eth1", "state": "up", "mac": "aa:aa:aa:aa:aa:01",
-             "addresses": ["10.99.1.10/24"]},
+             "addresses": ["10.44.1.10/24"]},
         ],
         "probe": lambda name: dhcp.ProbeResult(True, ()),
         "apply": lambda text: None,
@@ -172,7 +172,7 @@ def guarded(tmp_path: Path, images_root: Path, clock):
             fake["proxy_applied"].append((text, active)), None)[1],
         "dnsmasq_version": lambda: fake["dnsmasq_version"],
     }
-    app = create_app(tmp_path / "data", images_root, "http://10.99.12.10:8080",
+    app = create_app(tmp_path / "data", images_root, "http://10.44.12.10:8080",
                      now_fn=clock, dhcp_hooks=hooks)
     users.create(app.state.ctx.conn, "noc", "admin-pass-123", "admin", by="test")
     admin = TestClient(app)
@@ -181,7 +181,7 @@ def guarded(tmp_path: Path, images_root: Path, clock):
     return {"admin": admin, "fake": fake, "ctx": app.state.ctx, "app": app}
 
 
-ON = {"proxy": True, "server_ip": "10.99.1.10", "confirm": "eth1"}
+ON = {"proxy": True, "server_ip": "10.44.1.10", "confirm": "eth1"}
 
 
 def test_the_api_refuses_proxy_on_a_version_that_was_never_verified(guarded):
@@ -213,8 +213,8 @@ def test_switching_full_dhcp_to_proxy_is_gated_too(guarded):
     """מעבר מ-DHCP מלא ל-proxy אינו "הדלקה" (‏turning_on הוא False),
     ובלי בדיקה נפרדת הוא היה עוקף את השומר לגמרי."""
     admin = guarded["admin"]
-    good = dict(enabled=True, range_start="10.99.1.50", range_end="10.99.1.200",
-                netmask="255.255.255.0", lease="12h", server_ip="10.99.1.10")
+    good = dict(enabled=True, range_start="10.44.1.50", range_end="10.44.1.200",
+                netmask="255.255.255.0", lease="12h", server_ip="10.44.1.10")
     assert admin.put("/api/console/net/interfaces/eth1",
                      json={**good, "confirm": "eth1"}).status_code == 200
     assert admin.put("/api/console/net/interfaces/eth1",
@@ -234,7 +234,7 @@ def test_an_explicit_acknowledgement_lets_the_lab_turn_it_on(guarded):
     # האישור לבדו אינו מספיק — שם הכרטיס עדיין נדרש.
     admin.put("/api/console/net/interfaces/eth1", json={"proxy": False})
     refused = admin.put("/api/console/net/interfaces/eth1",
-                        json={"proxy": True, "server_ip": "10.99.1.10",
+                        json={"proxy": True, "server_ip": "10.44.1.10",
                               "confirm_proxy_broken": True})
     assert refused.status_code == 409 and "שם הממשק" in refused.json()["detail"]
 

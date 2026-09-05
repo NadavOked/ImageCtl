@@ -100,7 +100,7 @@ def test_concurrent_writers_do_not_break_each_other(tmp_path):
     def writer(index: int) -> None:
         for n in range(rounds):
             net_seen(db, f"aa:bb:cc:{index:02x}:{n // 256:02x}:{n % 256:02x}",
-                     "10.99.12.50")
+                     "10.44.12.50")
 
     failures = _run(3, writer)
     assert not failures, f"{len(failures)} כשלים, הראשון: {failures[0]!r}"

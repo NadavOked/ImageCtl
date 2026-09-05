@@ -69,7 +69,7 @@ def loop_server(tmp_path: Path, images_root: Path, clock):
         "apply_sshd": lambda text: pytest.fail("בדיקה נגעה ב-sshd אמיתי"),
         "settle": lambda: None,
     }
-    app = create_app(tmp_path / "data", images_root, "http://10.99.12.10:8080",
+    app = create_app(tmp_path / "data", images_root, "http://10.44.12.10:8080",
                      now_fn=clock, health_hooks=hooks,
                      sender_runner=Recorder(block=True))
     ctx = app.state.ctx

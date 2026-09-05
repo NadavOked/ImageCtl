@@ -12,8 +12,9 @@ import pytest
 
 pytest.importorskip("fastapi")
 
+from server import sender as sender_module
 from server.images import ImageLibrary
-from server.sender import SenderEngine
+from server.sender import DEFAULT_START_TIMEOUT, SenderEngine
 
 from conftest import MANIFEST_256, hello_body, setup_classroom, write_image
 
@@ -21,15 +22,18 @@ from conftest import MANIFEST_256, hello_body, setup_classroom, write_image
 class FakeProcess:
     """תהליך מזויף: נחסם עד ש-`release` נקרא, בדיוק כמו udp-sender שמחכה."""
 
-    def __init__(self, cmd, code=0, block=False):
+    def __init__(self, cmd, code=0, block=False, delay=0.0):
         self.cmd = cmd
         self.code = code
         self.terminated = False
+        self.delay = delay          # כמה זמן `wait` באמת לוקח (#341)
         self._gate = threading.Event()
         if not block:
             self._gate.set()
 
     def wait(self):
+        if self.delay:
+            threading.Event().wait(self.delay)
         self._gate.wait(timeout=5)
         return self.code
 
@@ -46,19 +50,32 @@ class FakeProcess:
 
 
 class Recorder:
-    def __init__(self, code=0, block=False):
+    def __init__(self, code=0, block=False, delay=0.0):
         self.commands: list[list[str]] = []
         self.processes: list[FakeProcess] = []
         self.code = code
         self.block = block
+        self.delay = delay
         self.spawned = threading.Event()
 
     def __call__(self, cmd):
         self.commands.append(cmd)
-        process = FakeProcess(cmd, self.code, self.block)
+        process = FakeProcess(cmd, self.code, self.block, self.delay)
         self.processes.append(process)
         self.spawned.set()
         return process
+
+
+@pytest.fixture()
+def free_ports(monkeypatch):
+    """‏`port_holders` קורא את `/proc/net/udp`, שאינו קיים בווינדוס — ושם
+    כל טסט כאן מת בכשל **סביבתי** (#312) שקובר את ההתנהגות הנבדקת.
+
+    מוחלף כאן **רק מקור האמת על הפורטים**: הלוגיקה של `_ports_are_free`
+    ושל `_port_verdict` רצה כרגיל ומקבלת תשובה חיובית "נבדק ונמצא פנוי",
+    ולא "לא הצלחנו לבדוק" שמקופל להצלחה (עיקרון 5).
+    """
+    monkeypatch.setattr(sender_module, "port_holders", lambda port: [])
 
 
 @pytest.fixture()
@@ -135,6 +152,48 @@ def test_a_round_with_no_joiners_still_asks_for_one_receiver(library):
 # --- כשלים ------------------------------------------------------------------
 
 
+def test_the_command_caps_the_wait_for_the_first_receiver(library, free_ports):
+    """‏#341: בלי `--start-timeout` שידור שאיש לא הצטרף אליו נתקע לנצח —
+    ‏`--max-wait` מתחיל לספור רק מהמקבל הראשון."""
+    recorder = Recorder()
+    engine = SenderEngine(library, runner=recorder)
+    engine.start({"id": "ses_1", "image_id": "img_7f3a91", "joined": 3})
+    assert wait_for(lambda: engine.status()["state"] == "done")
+
+    cmd = recorder.commands[0]
+    assert "--start-timeout" in cmd
+    assert cmd[cmd.index("--start-timeout") + 1] == str(DEFAULT_START_TIMEOUT)
+
+
+def test_nobody_joining_fails_and_says_that_nobody_joined(library, free_ports):
+    """‏#341: פקיעת ההמתנה אומרת **למה**, לא "השידור נכשל"."""
+    recorder = Recorder(code=1, delay=0.05)
+    engine = SenderEngine(library, runner=recorder, start_timeout=0.02)
+    engine.start({"id": "ses_1", "image_id": "img_7f3a91", "joined": 2})
+    assert wait_for(lambda: engine.status()["state"] == "failed")
+
+    error = engine.status()["error"]
+    assert "אף מחשב לא הצטרף" in error
+    assert "0.02" in error                 # התקרה נאמרת, ולא רק שפקעה
+    assert len(recorder.commands) == 1     # לא ממשיכים למחיצה הבאה
+
+
+def test_a_failure_long_after_the_ceiling_is_not_blamed_on_nobody_joining(
+    library, free_ports, monkeypatch,
+):
+    """מחיצה שכן התחילה להשתדר ונפלה בסופה רצה הרבה מעבר לתקרה — ואסור
+    לתלות בה "אף מחשב לא הצטרף". זה אבחון שלא נבדק (עיקרון 5)."""
+    monkeypatch.setattr(sender_module, "START_TIMEOUT_GRACE", 0.02)
+    recorder = Recorder(code=1, delay=0.15)
+    engine = SenderEngine(library, runner=recorder, start_timeout=0.01)
+    engine.start({"id": "ses_1", "image_id": "img_7f3a91", "joined": 2})
+    assert wait_for(lambda: engine.status()["state"] == "failed")
+
+    error = engine.status()["error"]
+    assert "אף מחשב לא הצטרף" not in error
+    assert "קוד 1" in error
+
+
 def test_a_failed_partition_stops_the_round(library):
     recorder = Recorder(code=3)
     engine = SenderEngine(library, runner=recorder)
@@ -143,6 +202,8 @@ def test_a_failed_partition_stops_the_round(library):
     # לא ממשיכים למחיצה הבאה אחרי כשל.
     assert len(recorder.commands) == 1
     assert "קוד 3" in engine.status()["error"]
+    # כישלון מהיר אינו פקיעת המתנה: אסור לתלות בו אבחון שלא נבדק.
+    assert "אף מחשב לא הצטרף" not in engine.status()["error"]
 
 
 def test_a_missing_image_fails_before_spawning_anything(library):

@@ -6,7 +6,7 @@
 <title>ImageCtl — קונסולה</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Hebrew:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="console.css?v=3.11">
+<link rel="stylesheet" href="console.css?v=3.12">
 <script>
   /* לפני הציור הראשון, אחרת המסך מהבהב בלבן לפני שהכהה נטען. */
   (function () {
@@ -208,6 +208,22 @@
     <section id="tab-journal" class="tab hidden">
       <div class="panel wide">
         <div class="ptitle">יומן פעולות — מי עשה מה ומתי</div>
+        <div class="pad form-grid" id="journal-filters">
+          <div class="row">
+            <select id="jf-event" aria-label="סוג אירוע"><option value="">כל סוגי האירועים</option></select>
+            <input type="text" id="jf-machine" placeholder="מכונה או MAC" aria-label="סינון לפי מכונה או MAC">
+            <input type="text" id="jf-q" placeholder="חיפוש חופשי" aria-label="חיפוש חופשי ביומן">
+          </div>
+          <div class="row">
+            <label class="jf-date">מ-תאריך
+              <input type="datetime-local" id="jf-from">
+            </label>
+            <label class="jf-date">עד תאריך
+              <input type="datetime-local" id="jf-to">
+            </label>
+            <button class="btn" id="jf-clear" type="button">איפוס סינון</button>
+          </div>
+        </div>
         <table id="journal-table">
           <thead><tr><th>זמן</th><th>מי</th><th>מה קרה</th><th>פירוט</th></tr></thead>
           <tbody></tbody>
@@ -270,11 +286,11 @@
 <div id="modal"><form class="sheet" id="sheet"></form></div>
 <div id="toast" class="hidden"></div>
 
-<script src="console.js?v=3.11"></script>
-<script src="reorder.js?v=3.11"></script>
-<script src="library.js?v=3.11"></script>
-<script src="machines.js?v=3.11"></script>
-<script src="net.js?v=3.11"></script>
-<script src="netcfg.js?v=3.11"></script>
+<script src="console.js?v=3.12"></script>
+<script src="reorder.js?v=3.12"></script>
+<script src="library.js?v=3.12"></script>
+<script src="machines.js?v=3.12"></script>
+<script src="net.js?v=3.12"></script>
+<script src="netcfg.js?v=3.12"></script>
 </body>
 </html>

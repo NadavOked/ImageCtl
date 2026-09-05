@@ -11,6 +11,8 @@ udpcast מותקן.
 
 שני הפורטים (`portbase` ו-`portbase+1`) נבדקים **לפני** השידור: תהליך
 יתום שמחזיק אותם מפיל את ההפצה הבאה, והאבחון נראה כמו תקלת רשת (#156).
+הבדיקה המקדימה היא צילום רגע ולא ערובה — ולכן מי שנכנס בחלון שאחריה
+נתפס בבדיקה שנייה **בנתיב הכישלון** (`_port_verdict`, ‏#202).
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ import os
 import subprocess
 import tempfile
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -38,6 +41,17 @@ DEFAULT_PORTBASE = PRODUCTION_PORTBASE
 #: כמה להמתין למקבלים שטרם התייצבו לפני שמשדרים בכל זאת. udpcast מחכה
 #: לכל אחד בנפרד, ומכונה שנתקעה באתחול לא אמורה לעצור כיתה שלמה.
 DEFAULT_MAX_WAIT = 120
+#: כמה להמתין ל**מקבל הראשון** לפני שמוותרים. ‏`--max-wait` מתחיל לספור רק
+#: מהמקבל הראשון, ולכן שידור שאיש לא הצטרף אליו אינו נכשל ואינו מסתיים —
+#: הוא נתקע, והמסך מול הכיתה פשוט לא זז (#341). ‏`--start-timeout` הוא
+#: התקרה על ההמתנה הזאת. שלוש דקות: מכונה שכבר אמרה hello צריכה פחות מזה
+#: כדי להתייצב כמקבל, והמפעיל אינו נשאר מול מסך קפוא יותר מזה.
+DEFAULT_START_TIMEOUT = 180
+#: כמה מעבר לתקרה עדיין נחשב "יצא **בגלל** התקרה". ‏udp-sender שמוותר על
+#: ההמתנה יוצא בתקרה עצמה; מחיצה שכן התחילה להשתדר ונכשלה בסופה רצה הרבה
+#: מעבר לה. בלי החסם העליון הזה כל כישלון בשידור ארוך היה מקבל את האבחון
+#: "אף מחשב לא הצטרף" — אבחון מומצא, בדיוק מה שעיקרון 5 אוסר.
+START_TIMEOUT_GRACE = 10
 
 
 #: הפלט של udp-sender מהשידור האחרון — הזנב שלו נכנס להודעת שגיאה.
@@ -147,6 +161,25 @@ def port_holders(port: int) -> list[int]:
     return _pids_holding(inodes) or [UNKNOWN_HOLDER]
 
 
+def holder_names(pids: list[int]) -> str:
+    """"udp-sender (PID 1234)" — שם התהליך ולא רק מספרו.
+
+    ‏PID לבדו אינו אומר למפעיל **מה לעשות**; השם אומר לו אם מולו סבב
+    קודם שלא נסגר או כלי אחר לגמרי. ‏`UNKNOWN_HOLDER` אינו PID, ולכן
+    אינו מקבל שם ואינו נספר כאן — מי שקורא אומר "לא זיהינו" בעצמו.
+    """
+    names = []
+    for pid in pids:
+        if pid == UNKNOWN_HOLDER:
+            continue
+        try:
+            comm = Path(f"/proc/{pid}/comm").read_text().strip()
+        except OSError:            # התהליך מת בינתיים, או /proc סגור בפנינו
+            comm = ""
+        names.append(f"{comm} (PID {pid})" if comm else f"PID {pid}")
+    return ", ".join(names)
+
+
 def sender_log_tail(limit: int = 400) -> str:
     try:
         text = SENDER_LOG.read_text(errors="replace")
@@ -177,6 +210,7 @@ class SenderEngine:
         portbase: int | None = None,
         interface: str | None = None,
         max_wait: int = DEFAULT_MAX_WAIT,
+        start_timeout: float = DEFAULT_START_TIMEOUT,
         max_bitrate: str | None = None,
         on_event: Callable[[str, str], None] | None = None,
     ):
@@ -187,6 +221,7 @@ class SenderEngine:
         self.portbase = DEFAULT_PORTBASE if portbase is None else portbase
         self.interface = interface
         self.max_wait = max_wait
+        self.start_timeout = start_timeout
         # ריסון קצב: מקבל חסום על כתיבה לדיסק גם שותק בפרוטוקול, וה-sender
         # זורק אותו ("Dropped by server"). ברשת 1G הכבל מרסן מעצמו; ברשת
         # מהירה (מעבדת VM, ‏10G) חייבים רסן מפורש בקצב שהדיסקים מעכלים (#24).
@@ -245,6 +280,8 @@ class SenderEngine:
             "--portbase", str(self.portbase),
             "--min-receivers", str(max(1, receivers)),
             "--max-wait", str(self.max_wait),
+            # בלי זה udpcast ממתין למקבל הראשון בלי גבול (#341).
+            "--start-timeout", str(self.start_timeout),
             "--nokbd",
             "--file", str(path),
         ]
@@ -289,13 +326,45 @@ class SenderEngine:
                            f" לא משדרים: {exc}")
                 return False
             if holders:
-                who = ", ".join(f"PID {pid}" for pid in holders
-                                if pid != UNKNOWN_HOLDER)
                 self._fail(f"פורט {port} תפוס על ידי "
-                           f"{who or 'תהליך שאין הרשאה לזהות'}"
+                           f"{holder_names(holders) or 'תהליך שאין הרשאה לזהות'}"
                            " — השידור לא יצא לדרך")
                 return False
         return True
+
+    def _port_verdict(self) -> str:
+        """מי מחזיק את הפורטים **אחרי** ש-udp-sender נכשל (#202).
+
+        הבדיקה המקדימה היא צילום רגע, והחלון שבינה לבין הקשירה של
+        udp-sender אינו ניתן לסגירה — הוא צריך את הפורט לעצמו. מי
+        שנכנס בחלון נשאר בלי אבחון, ודווקא הנדיר הוא מה שקורה מול
+        כיתה. זו **הודעה בלבד**: לא ריפוי ולא ניסיון חוזר.
+
+        שלוש תשובות ולא שתיים, ואף אחת אינה מקופלת לאחרת: נמצא מחזיק ·
+        נבדק ונמצא פנוי, ולכן הסיבה אחרת ואינה ידועה · הבדיקה עצמה לא
+        רצה (עיקרון 5). ‏udp-sender נכשל גם מסיבות אחרות, ולכן אסור
+        להמציא מחזיק רק כדי שיהיה מה לכתוב.
+        """
+        busy, unchecked = [], []
+        for port in (self.portbase, self.portbase + 1):
+            try:
+                holders = port_holders(port)
+            except Exception as exc:          # noqa: BLE001 — כמו בבדיקה המקדימה
+                unchecked.append(f"פורט {port}: {exc}")
+                continue
+            if holders:
+                busy.append(f"פורט {port} תפוס על ידי "
+                            f"{holder_names(holders) or 'תהליך שאין הרשאה לזהות'}")
+        if busy:
+            # מה שלא נבדק נאמר גם כאן: מחזיק שנמצא על פורט אחד אינו
+            # תשובה על הפורט שאותו לא הצלחנו לבדוק.
+            note = f" (ובנוסף: {'; '.join(unchecked)})" if unchecked else ""
+            return "; ".join(busy) + note + " — יש לעצור אותו ולשדר שוב"
+        if unchecked:
+            return ("לא הצלחנו לבדוק מי מחזיק את הפורטים כעת ("
+                    + "; ".join(unchecked) + ")")
+        return ("הפורטים נבדקו כעת ושניהם פנויים — הכישלון אינו התנגשות"
+                " על פורט, והסיבה אינה ידועה")
 
     def _run(self, session: dict) -> None:
         if not self._ports_are_free():
@@ -335,7 +404,9 @@ class SenderEngine:
             with self._lock:
                 self._process = process
                 self._state.commands.append(cmd)
+            spawned_at = time.monotonic()
             code = process.wait()
+            waited = time.monotonic() - spawned_at
             with self._lock:
                 self._process = None
             if self._stop.is_set():
@@ -343,8 +414,24 @@ class SenderEngine:
                 return
             if code != 0:
                 _tail = sender_log_tail()
+                if (self.start_timeout <= waited
+                        <= self.start_timeout + START_TIMEOUT_GRACE):
+                    # ‏udp-sender קיבל `--start-timeout`, ולכן כישלון **בדיוק
+                    # בתקרה** הוא המצב שהתקרה נועדה לו: איש לא התייצב כמקבל.
+                    # החלון סגור משני הצדדים — כישלון מהיר וכישלון בסוף שידור
+                    # ארוך אינם זה, ואסור לתלות בהם אבחון שלא נבדק. אומרים את
+                    # המנגנון ואת הזמן שנמדד, כדי שהמפעיל ישפוט בעצמו.
+                    self._fail(
+                        f"אף מחשב לא הצטרף לשידור תוך {self.start_timeout}"
+                        f" שניות — udp-sender ויתר על {part['file']}"
+                        f" (קוד {code}, המתנה {waited:.0f} שניות)."
+                        " יש לבדוק כבל רשת, אתחול PXE ורישום MAC"
+                        + (f": {_tail}" if _tail else "")
+                    )
+                    return
                 self._fail(f"udp-sender נכשל על {part['file']} (קוד {code})"
-                           + (f": {_tail}" if _tail else ""))
+                           + (f": {_tail}" if _tail else "")
+                           + f" · {self._port_verdict()}")
                 return
 
         with self._lock:
