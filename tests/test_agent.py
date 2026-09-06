@@ -1381,8 +1381,9 @@ def test_the_table_is_widened_before_the_data_arrives():
     השלב היחיד שחייב לחכות לנתונים."""
     source = (AGENT / "lib" / "restore.sh").read_text(encoding="utf-8")
     run = source[source.index("run_restore() {"):]
+    grow = "finish_grow" if "finish_grow" in run else "grow_expanded"
     assert run.index("expand_last") < run.index("restore_partition") \
-        < run.index("grow_expanded")
+        < run.index(grow)
     assert len(re.findall(r"^\s*mkswap ", source, flags=re.M)) == 1
 
 

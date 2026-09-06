@@ -189,8 +189,10 @@ def close_round(ctx, user: str) -> None:
 
 
 def tick(conn: sqlite3.Connection, store: SessionStore) -> None:
-    """מקדם את מכונת המצבים של הסבב. נקרא מכל hello של מחשב שיכפול
-    ומכל משיכת מצב של המסך — אין לו תהליכון משלו."""
+    """Advance on cloner hellos, never on screen reads.
+
+    With no hello, an idle room waits. No timer or additional SQLite writer.
+    """
     round_row = active_round(conn)
     if round_row is None:
         return
@@ -533,7 +535,7 @@ def create_room_router(ctx, wake=None) -> APIRouter:
 
     @router.get("")
     def status(user=Depends(current_user)):
-        tick(ctx.conn, ctx.store)
+        # Observation is never a room state-machine event (#446).
         return status_view(ctx)
 
     @router.post("")
