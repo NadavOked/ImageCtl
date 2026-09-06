@@ -242,13 +242,12 @@ const Classes = (() => {
          בעוד ${Math.floor(session.starts_in_seconds / 60)}:${String(session.starts_in_seconds % 60).padStart(2, "0")} דקות, או בלחיצה.`
       : "השידור רץ. עומדים בכיתה ורואים מי תקוע — בלי לעבור בין מסכים.";
     $("#cls-machines").innerHTML = session.members.map((m) => {
-      const pct = m.bytes_total
-        ? Math.round((100 * m.bytes_written) / m.bytes_total) : 0;
+      const progress = Progress.view(m);
       const status = m.state === "failed"
         ? `<span class="room-bad">נכשל · ${esc(m.error || "")}</span>`
         : m.done || m.state === "done" ? `<span class="room-ok">הסתיים</span>`
         : m.state === "waiting" ? `<span class="sub">ממתין לשידור</span>`
-        : `<span>${pct}%</span>`;
+        : `<span>${progress.label}</span>`;
       return `<div class="room-row">
         <span class="led on"></span>
         <b>${esc(m.hostname || m.name || m.mac)}</b>

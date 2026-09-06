@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from native import requires_native
+import sizelimit
 
 REPO = Path(__file__).resolve().parent.parent
 AGENT = REPO / "agent"
@@ -83,8 +84,8 @@ def test_script_parses(path):
 
 @pytest.mark.parametrize("path", SH_FILES, ids=lambda p: p.name)
 def test_agent_files_stay_small(path):
-    """מגבלת 300 השורות של הפרויקט."""
-    assert len(path.read_text(encoding="utf-8").splitlines()) <= 300
+    """מגבלת השורות של הפרויקט — קיר ב-300, נורה ב-280 (#483)."""
+    sizelimit.assert_within_limit(path)
 
 
 # --- טבלת ההחלטה -------------------------------------------------------------
@@ -635,12 +636,16 @@ def wizard(tmp_path, keys, require_login="true", codes=("200",)):
         'class_round_flow() { echo "STUB-CLASS user=${RECOVERY_USER:-}"; }; '
         'recovery_flow'
     )
+    # ‏input בבייטים ולא ב-text: עם `text=True` ווינדוס מתרגם כל `\n`
+    # שנכתב לצינור ל-`\r\n`, ‏`read -r` במעטפת מקבל `0\r`, וה-`case`
+    # לא מתאים — התשובה היא `invalid choice -- rebooting`. חמישה טסטים
+    # נפלו כך על סיבה שאינה מה שהם בודקים (#479). הפלט נשאר text.
     proc = subprocess.run(
         [BASH, "-c", 'export PATH="/usr/bin:$PATH"; ' + script],
-        capture_output=True, text=True, cwd=str(REPO),
-        input="".join(f"{k}\n" for k in keys),
+        capture_output=True, cwd=str(REPO),
+        input="".join(f"{k}\n" for k in keys).encode("utf-8"),
     )
-    return proc.stdout, proc.returncode
+    return proc.stdout.decode("utf-8", "replace"), proc.returncode
 
 
 MENU = "Deployment type:"
@@ -927,7 +932,7 @@ def test_every_supported_filesystem_has_a_partclone(fs, tool):
 
 def test_expansion_knows_every_filesystem_family():
     """ntfsresize ל-Windows, resize2fs ל-ext4, btrfs resize ל-btrfs."""
-    source = (AGENT / "lib" / "expand.sh").read_text(encoding="utf-8")
+    source = (AGENT / "lib" / "grow.sh").read_text(encoding="utf-8")
     grow = source[source.index("grow_filesystem() {"):]
     assert "ntfsresize" in grow
     assert "resize2fs" in grow
@@ -1149,7 +1154,7 @@ def run_expand(tmp_path, plan, disk_sectors):
         f'export SYSROOT={posix(box)!r} RUN_DIR={posix(run)!r} DEVROOT=/dev '
         f'LOG_FILE={posix(run / "log")!r}; '
         f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/waits.sh; '
-        f'. {posix(AGENT)}/lib/restore.sh; . {posix(AGENT)}/lib/expand.sh; '
+        f'. {posix(AGENT)}/lib/restore.sh; . {posix(AGENT)}/lib/expand.sh; . {posix(AGENT)}/lib/grow.sh; '
         f'manifest_plan() {{ cat {posix(plan_file)!r}; }}; '
         # הבדיקות האלה על *הגיאומטריה* של הטבלה, לא על הראיה שהיא הגיעה
         # לדיסק — זו נבדקת בפני עצמה ב-test_restore_evidence.py, ושם גם
@@ -1365,7 +1370,7 @@ def test_the_filesystem_grows_only_for_the_partition_that_was_widened(tmp_path):
     lib = (
         f'export RUN_DIR={posix(run)!r} DEVROOT=/dev LOG_FILE={posix(run / "log")!r}; '
         f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/restore.sh; '
-        f'. {posix(AGENT)}/lib/expand.sh; '
+        f'. {posix(AGENT)}/lib/expand.sh; . {posix(AGENT)}/lib/grow.sh; '
         f'grow_filesystem() {{ echo "grow:$1:$2"; }}; '
     )
     assert sh(lib + 'grow_expanded sda; echo "rc=$?"').strip() == "rc=0"
@@ -1381,8 +1386,9 @@ def test_the_table_is_widened_before_the_data_arrives():
     השלב היחיד שחייב לחכות לנתונים."""
     source = (AGENT / "lib" / "restore.sh").read_text(encoding="utf-8")
     run = source[source.index("run_restore() {"):]
+    grow = "finish_grow" if "finish_grow" in run else "grow_expanded"
     assert run.index("expand_last") < run.index("restore_partition") \
-        < run.index("grow_expanded")
+        < run.index(grow)
     assert len(re.findall(r"^\s*mkswap ", source, flags=re.M)) == 1
 
 
@@ -1536,7 +1542,7 @@ def test_every_drawer_gets_exactly_one_mkswap_and_nothing_is_streamed(tmp_path):
 def test_a_drawer_that_cannot_make_swap_does_not_stop_the_others(tmp_path):
     """תרחיש QA: כשל במגירה אחת לא עוצר את השאר — גם על ה-swap."""
     box, run, calls, prelude = swap_box(tmp_path, disks=("sda", "sdb"))
-    (box / "fail").write_text("/dev/sda3\n")
+    (box / "fail").write_text("/dev/sda3\n", newline="\n")
     out = sh(prelude + "restore_partition_drawers multicast http://s img 3 swap "
              f'null null "{SWAP_UUID}" sda sdb; echo "rc=$?"')
     assert out.strip() == "rc=0"

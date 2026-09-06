@@ -59,6 +59,7 @@ def default_hooks() -> dict:
         "http_text": _http_body,
         "interfaces": dhcp.list_interfaces,
         "tftp_root": lambda: Path("/srv/tftp"),
+        "udp_sender_pids": live_udp_sender_pids,
     }
 
 
@@ -132,6 +133,76 @@ def port_owner(ss_output: str, port: int) -> str | None:
 
 def check(check_id: str, label: str, state: str, detail: str) -> dict:
     return {"id": check_id, "label": label, "state": state, "detail": detail}
+
+
+def live_udp_sender_pids() -> list[int] | None:
+    """PIDs של udp-sender חיים. ‏None = לא הצלחנו לסרוק (#439)."""
+    root = Path("/proc")
+    if not root.is_dir():
+        return None
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return None
+    found: list[int] = []
+    saw = False
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            comm = (entry / "comm").read_text().strip()
+        except OSError:
+            continue
+        saw = True
+        if comm == "udp-sender":
+            found.append(int(entry.name))
+    return sorted(found) if saw else None
+
+
+def _hook_pids(hooks: dict) -> list[int] | None:
+    getter = hooks.get("udp_sender_pids")
+    if getter is None:
+        return None
+    try:
+        return getter()
+    except Exception:  # noqa: BLE001 — בדיקה שנפלה אינה "לא רץ"
+        return None
+
+
+def _send_in_progress(ctx) -> bool:
+    sender = getattr(ctx, "sender", None)
+    try:
+        status = sender.status() if sender is not None else None
+    except Exception:  # noqa: BLE001 — status שנפל אינו "אין סבב"
+        status = None
+    if status and status.get("state") in ("starting", "sending"):
+        return True
+    try:
+        return ctx.conn.execute(
+            "SELECT 1 FROM sessions WHERE state = 'running' LIMIT 1"
+        ).fetchone() is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def sender_check(pids: list[int] | None, live_round: bool) -> dict:
+    """רץ עם סבב → warn; רץ בלי סבב → bad; לא רץ → ok. לא הורג (#439).
+
+    ‏None (הבדיקה לא רצה) אינו ok: "לא רץ" הוא הירוק, ואי-בדיקה שנראית
+    כמו ירוק היא בדיוק עיקרון 5.
+    """
+    label = "משדר udp-sender"
+    if pids is None:
+        return check("udp_sender", label, "bad",
+                     "לא הצלחנו לבדוק אם udp-sender רץ — אין לדעת אם נשאר יתום")
+    if not pids:
+        return check("udp_sender", label, "ok", "לא רץ")
+    shown = ", ".join(f"PID {p}" for p in pids)
+    if live_round:
+        return check("udp_sender", label, "warn",
+                     f"רץ ({shown}) — יש סבב פתוח")
+    return check("udp_sender", label, "bad",
+                 f"רץ בלי סבב ({shown}) — יתום אחרי סגירה, יש לעצור אותו")
 
 
 def collect(ctx, hooks: dict, server_base: str) -> list[dict]:
@@ -216,6 +287,10 @@ def collect(ctx, hooks: dict, server_base: str) -> list[dict]:
     else:
         results.append(check("server", "השרת בכתובת ההפצה", "warn",
                              f"{server_base} החזיר {status}"))
+
+    # udp-sender חי בלי סבב הוא יתום שתופס את פורטי ההפצה (#439).
+    # הבדיקה מזהה ומראה — היא אינה הורגת: ההריגה שייכת לנתיב הסגירה.
+    results.append(sender_check(_hook_pids(hooks), _send_in_progress(ctx)))
 
     # כרטיסי הרשת — כמה מחוברים, וכמה מגישים DHCP (לפי ההגדרות השמורות).
     nics = hooks["interfaces"]()
