@@ -64,6 +64,22 @@ apply_gpt() {
     _scheme=$(json_get "$2" ".scheme")
     [ "$_scheme" = "gpt" ] || { log "unsupported scheme: $_scheme"; return 1; }
 
+    # השער האחרון לפני מחיקת הטבלה בשורה שמתחת, ומכאן והלאה אין חזרה.
+    # מחיצה שאינה swap ובלי קובץ היא **מניפסט פגום**, ולא מחיצת swap:
+    # ההסקה ההפוכה שלחה `mkswap` על מחיצת NTFS ומחקה אותה (#424). ‏jq -r
+    # מרנדר JSON null כמחרוזת `null`, ולכן שתי הצורות נבדקות. ‏PLAN_ERROR
+    # נושא את הסיבה אל `targets/<dev>/error`, כי "לא הצלחנו לכתוב טבלה"
+    # אינו אומר לטכנאי איזו מחיצה ולמה (עיקרון 4).
+    PLAN_ERROR=""
+    manifest_plan "$2" > "$RUN_DIR/gate.plan" || return 1
+    _bad=$(awk -F'|' '$4 != "swap" && ($7 == "" || $7 == "null") {
+        printf "%s%s (%s)", (n++ ? ", " : ""), $1, $4 }' "$RUN_DIR/gate.plan")
+    if [ -n "$_bad" ]; then
+        PLAN_ERROR="partition $_bad has no file but is not swap -- corrupt manifest"
+        log "$1: $PLAN_ERROR"
+        return 1
+    fi
+
     sgdisk --zap-all "$DEVROOT/$1" >> "$LOG_FILE" 2>&1 || return 1
     manifest_plan "$2" | while IFS='|' read -r _idx _guid _role _fs _start _size _f _sha _exp _uguid _uuid; do
         _end=$((_start + _size / 512 - 1))
@@ -234,10 +250,29 @@ grow_filesystem() {
     # tool (spec section 14) -- btrfs can only be resized while mounted.
     case "$1" in
         ntfs)
-            ntfsresize --force --no-progress-bar "$2" >> "$LOG_FILE" 2>&1 ;;
+            ntfsresize --force --no-progress-bar "$2" >> "$LOG_FILE" 2>&1
+            _rc=$?
+            [ "$_rc" = "0" ] && return 0
+            log "$2: ntfsresize נכשל (rc=${_rc:-לא נרשם})"
+            return 1 ;;
         ext4|ext3|ext2)
             e2fsck -f -y "$2" >> "$LOG_FILE" 2>&1
-            resize2fs "$2" >> "$LOG_FILE" 2>&1 ;;
+            _ck=$?
+            # 0=נקי, 1=תוקן. 4 ומעלה = נשארו שגיאות. בלי הבדיקה הזו
+            # קוד היציאה נזרק ורק resize2fs נספר — משפחת #346 על מסלול
+            # הרסני (#444). חסר אינו 0.
+            case "$_ck" in
+                ''|*[!0-9]*) log "$2: e2fsck לא החזיר קוד יציאה"; return 1 ;;
+            esac
+            if [ "$_ck" -ge 4 ]; then
+                log "$2: e2fsck נכשל (rc=$_ck)"
+                return 1
+            fi
+            resize2fs "$2" >> "$LOG_FILE" 2>&1
+            _rc=$?
+            [ "$_rc" = "0" ] && return 0
+            log "$2: resize2fs נכשל (rc=${_rc:-לא נרשם})"
+            return 1 ;;
         btrfs)
             _m="$RUN_DIR/grow"
             mkdir -p "$_m"
@@ -247,7 +282,24 @@ grow_filesystem() {
             umount "$_m" 2>/dev/null
             return $_rc ;;
         *)
-            log "no resize tool for $1 -- partition grown, filesystem left as is"
-            return 0 ;;
+            # המועמד כבר גדל ב-GPT. "אין כלי" אינו הצלחה (#444).
+            log "אין כלי הרחבה ל-$1 -- המחיצה גדלה, מערכת הקבצים נשארה בגודל המקורי"
+            return 1 ;;
     esac
+}
+
+finish_grow() {
+    # $1 = disk. שלב שני של ההרחבה: מערכת הקבצים אמורה לעקוב אחרי
+    # המחיצה שכבר גדלה. כישלון כאן אינו "האימג' עדיין שמיש" — המחיצה
+    # גדולה והפורמט לא, ו-done שולח לחפש אימג' קטן (#444).
+    if grow_expanded "$1"; then
+        target_set "$1" "done"
+        return 0
+    fi
+    _mark="$RUN_DIR/targets/$1/expanded"
+    _idx=$(cut -d'|' -f1 "$_mark" 2>/dev/null)
+    _fs=$(cut -d'|' -f2 "$_mark" 2>/dev/null)
+    target_set "$1" "failed" \
+        "partition ${_idx:-?}: ההרחבה של מערכת הקבצים (${_fs:-?}) נכשלה"
+    return 1
 }

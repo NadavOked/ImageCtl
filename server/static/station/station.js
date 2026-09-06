@@ -114,13 +114,10 @@ async function poll() {
 }
 
 function drawProgress(task) {
-  const pct = task.bytes_total
-    ? Math.round((100 * task.bytes_written) / task.bytes_total) : 0;
   $("#st-prog-title").textContent = `קולט: ${task.name}`;
   $("#st-prog-sub").textContent = task.state === "pending"
     ? "ממתין לסוכן — ודאו שהמחשב עלה ב-PXE" : `כונן המקור: ${task.disk}`;
-  $("#st-bar").style.width = pct + "%";
-  $("#st-pct").textContent = pct + "%";
+  Progress.apply($("#st-bar"), $("#st-pct"), task);
   $("#st-bytes").textContent = task.bytes_written
     ? `${fmtBytes(task.bytes_written)} נקראו` : "";
   show("st-progress");

@@ -52,6 +52,14 @@ DEFAULT_START_TIMEOUT = 180
 #: מעבר לה. בלי החסם העליון הזה כל כישלון בשידור ארוך היה מקבל את האבחון
 #: "אף מחשב לא הצטרף" — אבחון מומצא, בדיוק מה שעיקרון 5 אוסר.
 START_TIMEOUT_GRACE = 10
+#: אחרי כמה בקשות ACK ללא מענה udpcast מוותר על מקבל וממשיך בלעדיו.
+#: **בלי הדגל הזה udpcast מגדיר 200**, ואחרי העשירית כל המתנה היא לפחות
+#: שנייה — כלומר כ-190 שניות שבהן החדר כולו קפוא בגלל מכונה אחת שמתה.
+#: זה מפר תרחיש QA מפורש: "כשל בתחנה/מגירה אחת לא עוצר את השאר" (#437).
+#: ‏15 ולא 200: הוויתור נופל בערך כשמתחילות ההמתנות בנות השנייה, כך
+#: שהעצירה נמדדת בשניות. **לא `--async`** — ויתור על ACK פירושו דאטגרם
+#: אבוד שהופך לדיסק פגום, וזה בדיוק מה שהפרוטוקול הזה קיים כדי למנוע.
+DEFAULT_RETRIES_UNTIL_DROP = 15
 
 
 #: הפלט של udp-sender מהשידור האחרון — הזנב שלו נכנס להודעת שגיאה.
@@ -211,6 +219,7 @@ class SenderEngine:
         interface: str | None = None,
         max_wait: int = DEFAULT_MAX_WAIT,
         start_timeout: float = DEFAULT_START_TIMEOUT,
+        retries_until_drop: int = DEFAULT_RETRIES_UNTIL_DROP,
         max_bitrate: str | None = None,
         on_event: Callable[[str, str], None] | None = None,
     ):
@@ -222,6 +231,7 @@ class SenderEngine:
         self.interface = interface
         self.max_wait = max_wait
         self.start_timeout = start_timeout
+        self.retries_until_drop = retries_until_drop
         # ריסון קצב: מקבל חסום על כתיבה לדיסק גם שותק בפרוטוקול, וה-sender
         # זורק אותו ("Dropped by server"). ברשת 1G הכבל מרסן מעצמו; ברשת
         # מהירה (מעבדת VM, ‏10G) חייבים רסן מפורש בקצב שהדיסקים מעכלים (#24).
@@ -282,6 +292,9 @@ class SenderEngine:
             "--max-wait", str(self.max_wait),
             # בלי זה udpcast ממתין למקבל הראשון בלי גבול (#341).
             "--start-timeout", str(self.start_timeout),
+            # מקבל שמת אינו שולח CMD_DISCONNECT — הוא פשוט מפסיק לענות,
+            # וכל שאר החדר ממתין לו. זו התקרה על ההמתנה הזאת (#437).
+            "--retries-until-drop", str(self.retries_until_drop),
             "--nokbd",
             "--file", str(path),
         ]
