@@ -180,6 +180,20 @@ def streamed_partitions(manifest: dict) -> list[dict]:
     return [p for p in manifest["partitions"] if p.get("file")]
 
 
+def carries_a_stream_file(part: dict) -> bool:
+    """האם למחיצה הזו יש קובץ בזרם — ולא "משהו שאפשר לקרוא לו קובץ".
+
+    שלוש הצורות שאינן קובץ נבדקות יחד בכוונה: `null`, מחרוזת ריקה,
+    והמחרוזת `"null"`. השלישית אינה תיאורטית — הסוכן קורא את המניפסט
+    ב-`jq -r`, שמרנדר JSON null **כמחרוזת** `null`, ולכן שם אי אפשר
+    להבחין בין השתיים. מחיצה שבאמת נקראת `null` תיפסל כאן, וזה הכיוון
+    הנכון של השגיאה: להיכשל בקול על שם מוזר, ולא לתת לו להתפרש כ-swap
+    ולהגיע ל-`mkswap` (#424).
+    """
+    name = part.get("file")
+    return isinstance(name, str) and name.strip() not in ("", "null")
+
+
 def image_os(manifest: dict) -> str:
     """`os` מהמניפסט, ולאימג'ים שנקלטו לפני שהשדה נוסף — מתפקידי המחיצות."""
     declared = manifest.get("os")
@@ -309,8 +323,14 @@ class ImageLibrary:
             for field in REQUIRED_PARTITION_FIELDS:
                 if not isinstance(part, dict) or field not in part:
                     return f"partition missing field: {field}"
-            if part["file"] is None and part.get("role") != "swap":
-                return f"partition {part['index']} has no file"
+            # מי שפטור מקובץ הוא **`fs == "swap"`**, ולא `role == "swap"`:
+            # הסוכן מחליט לפי `fs` בלבד, ורשומה ששני השדות אינם מסכימים
+            # בה עברה כאן בשלמותה והגיעה שם ל-`mkswap` (#424). מחיצה
+            # שאינה swap ובלי קובץ היא מניפסט פגום, ונפסלת בשמה —
+            # עיקרון 6: פגום נתפס כאן, לא מול כיתה.
+            if not carries_a_stream_file(part) and part.get("fs") != "swap":
+                return (f"partition {part['index']} ({part.get('fs')}) has no file,"
+                        " and only a swap partition may have none")
         if not streamed_partitions(manifest):
             return "no partition carries data"
         return None

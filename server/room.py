@@ -178,6 +178,14 @@ def close_round(ctx, user: str) -> None:
     ).fetchone()
     if wave is not None and wave["state"] in ("open", "running"):
         ctx.store.close(wave["id"], user)
+    # store.close קורא on_closed → sender.stop רק כשהגל עוד open/running.
+    # גל שכבר סגור (או חסר) היה מחזיר ok והמשדר נשאר חי (#439).
+    left = ctx.sender.stop()
+    if left is not None:
+        who = f"PID {left}" if left > 0 else "לא הצלחנו לוודא שהוא מת"
+        raise SessionError(
+            f"udp-sender עדיין רץ ({who}) אחרי ניסיון העצירה — הסבב לא נסגר"
+        )
     ctx.conn.execute(
         "UPDATE room_rounds SET state = 'closed', closed_at = ? WHERE id = ?",
         (now_iso(), round_row["id"]),
@@ -189,8 +197,10 @@ def close_round(ctx, user: str) -> None:
 
 
 def tick(conn: sqlite3.Connection, store: SessionStore) -> None:
-    """מקדם את מכונת המצבים של הסבב. נקרא מכל hello של מחשב שיכפול
-    ומכל משיכת מצב של המסך — אין לו תהליכון משלו."""
+    """Advance on cloner hellos, never on screen reads.
+
+    With no hello, an idle room waits. No timer or additional SQLite writer.
+    """
     round_row = active_round(conn)
     if round_row is None:
         return
@@ -533,7 +543,7 @@ def create_room_router(ctx, wake=None) -> APIRouter:
 
     @router.get("")
     def status(user=Depends(current_user)):
-        tick(ctx.conn, ctx.store)
+        # Observation is never a room state-machine event (#446).
         return status_view(ctx)
 
     @router.post("")

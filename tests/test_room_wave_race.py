@@ -103,8 +103,7 @@ def _wave_ready_to_finish(room_server, target: int = 6) -> str:
 
 
 def ctx_wave_state(room_server) -> str | None:
-    """מצב הגל **בלי** לעבור ב-`GET /api/console/room` — הוא מריץ `tick`,
-    והיה מסיים את הגל לפני שהמרוץ בכלל מתחיל."""
+    """Inspect the wave directly; GET is also read-only now (#446)."""
     row = room_server["ctx"].conn.execute(
         "SELECT state FROM sessions WHERE kind = 'multicast'"
         " AND state IN ('open', 'running')").fetchone()
