@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 import pytest
 from conftest import Clock, hello_body, write_image, MANIFEST_256
@@ -112,6 +113,19 @@ def room(client) -> dict:
     return response.json()
 
 
+def heartbeat(room_server):
+    """Explicit agent event for tests that used GET as their clock (#446)."""
+    ctx = room_server["ctx"]
+    row = ctx.conn.execute("SELECT disks_json FROM net_devices WHERE mac = ?",
+                           (CLONER1,)).fetchone()
+    if row is None:
+        return
+    body = hello_body(CLONER1)
+    body.update(disks=json.loads(row["disks_json"]), joining=False)
+    response = room_server["anon"].post("/api/v1/agent/hello", json=body)
+    assert response.status_code == 200, response.text
+
+
 def test_round_wakes_room_and_autostarts_when_drives_cover_target(room_server):
     deploy, anon = room_server["deploy"], room_server["anon"]
 
@@ -126,8 +140,10 @@ def test_round_wakes_room_and_autostarts_when_drives_cover_target(room_server):
     assert answer["session"]["state"] == "open"
     cloner_hello(anon, CLONER2, ["S3", "S4"])
 
+    heartbeat(room_server)
     view = room(deploy)["round"]
     assert view["ready_drives"] in (0, 4)          # לפני/אחרי tick של ה-GET
+    heartbeat(room_server)
     assert room(deploy)["round"]["wave_state"] == "running"
 
 
@@ -141,6 +157,7 @@ def test_waves_accumulate_by_serial_until_target(room_server):
     cloner_hello(anon, CLONER2, ["S3", "S4"])
 
     # 4 מוכנות מול יתרה 6 — הגל לא יוצא לבד; "התחל עכשיו" כן.
+    heartbeat(room_server)
     assert room(deploy)["round"]["wave_state"] == "open"
     assert deploy.post("/api/console/room/start").status_code == 200
 
@@ -148,6 +165,7 @@ def test_waves_accumulate_by_serial_until_target(room_server):
     report(anon, wave1, CLONER2, {"sda": "done", "sdb": "done"})
 
     # הגל הסתיים: 4 נכתבו, גל שני נפתח מעצמו וממתין למגירות מוחלפות.
+    heartbeat(room_server)
     view = room(deploy)["round"]
     assert view["written_drives"] == 4
     assert view["wave_number"] == 2
@@ -160,9 +178,11 @@ def test_waves_accumulate_by_serial_until_target(room_server):
     answer = cloner_hello(anon, CLONER1, ["S5", "S6"])
     wave2 = answer["session"]["id"]
     assert wave2 != wave1
+    heartbeat(room_server)
     assert room(deploy)["round"]["wave_state"] == "running"
 
     report(anon, wave2, CLONER1, {"sda": "done", "sdb": "done"})
+    heartbeat(room_server)
     assert room(deploy)["round"] is None           # היעד הושג — הסבב נסגר
 
     events = [r["event"] for r in ctx.conn.execute("SELECT event FROM journal")]
@@ -175,17 +195,21 @@ def test_failed_drawer_is_not_counted_and_retries_next_wave(room_server):
     deploy.post("/api/console/room",
                 json={"image_id": "img_7f3a91", "target_drives": 2})
     wave1 = cloner_hello(anon, CLONER1, ["S1", "S2"])["session"]["id"]
+    heartbeat(room_server)
     assert room(deploy)["round"]["wave_state"] == "running"
 
     # מגירה אחת נכשלה — נספרת רק המוצלחת, בגלוי (עיקרון 4).
     report(anon, wave1, CLONER1, {"sda": "done", "sdb": "failed"})
+    heartbeat(room_server)
     view = room(deploy)["round"]
     assert view["written_drives"] == 1 and view["wave_state"] == "open"
 
     # אותה מכונה, אותן מגירות: S2 הכושלת עדיין טרייה — מצטרפים וכותבים שוב.
     wave2 = cloner_hello(anon, CLONER1, ["S1", "S2"])["session"]["id"]
+    heartbeat(room_server)
     assert room(deploy)["round"]["wave_state"] == "running"
     report(anon, wave2, CLONER1, {"sdb": "done"})
+    heartbeat(room_server)
     assert room(deploy)["round"] is None
 
 
@@ -208,6 +232,7 @@ def test_a_machine_that_lost_one_drawer_is_partial_and_not_done(room_server):
     report(anon, wave1, CLONER1,
            {"sda": "done", "sdb": "failed", "sdc": "done"}, top="partial")
 
+    heartbeat(room_server)
     machine = next(m for m in room(deploy)["machines"] if m["mac"] == CLONER1)
     assert machine["state"] == "partial", "המסך לא קיבל את המצב השלישי"
     assert "sdb" in (machine["error"] or "")
@@ -225,6 +250,7 @@ def test_a_machine_that_lost_one_drawer_is_partial_and_not_done(room_server):
     # וכשהשנייה מסיימת, הגל נסגר: `partial` הוא סיום, לא המתנה. בלי זה
     # מכונה שאיבדה מגירה הייתה תולה את החדר כולו.
     report(anon, wave1, CLONER2, {"sda": "done", "sdb": "done"})
+    heartbeat(room_server)
     view = room(deploy)["round"]
     assert view["written_drives"] == 4              # ‏S2 הכושלת לא נספרה
     assert view["wave_number"] == 2
@@ -248,6 +274,7 @@ def test_an_old_agent_that_still_says_done_keeps_working(room_server):
 
     report(anon, wave1, CLONER1, {"sda": "done", "sdb": "failed"})   # top=done
 
+    heartbeat(room_server)
     view = room(deploy)["round"]
     assert view["written_drives"] == 1 and view["wave_number"] == 2
     member = ctx.conn.execute(
@@ -269,6 +296,7 @@ def test_the_drawer_slot_travels_from_hello_to_the_console(room_server):
                 json={"image_id": "img_7f3a91", "target_drives": 3})
     wave = cloner_hello(anon, CLONER1, ["S1", "S2", "S3"])["session"]["id"]
 
+    heartbeat(room_server)
     machine = next(m for m in room(deploy)["machines"] if m["mac"] == CLONER1)
     assert [(d["port"], d["dev"]) for d in machine["drawer_list"]] == [
         (1, "sda"), (2, "sdb"), (3, "sdc")]
@@ -294,6 +322,7 @@ def test_the_drawer_slot_travels_from_hello_to_the_console(room_server):
 
     # ואחרי שהגל נסגר: המגירה שנכשלה נשארת הטרייה היחידה — לפי חריץ.
     report(anon, wave, CLONER1, {"sda": "done", "sdb": "done", "sdc": "failed"})
+    heartbeat(room_server)
     machine = next(m for m in room(deploy)["machines"] if m["mac"] == CLONER1)
     fresh = [d["port"] for d in machine["drawer_list"] if d["fresh"]]
     assert fresh == [3] and machine["fresh_drawers"] == 1
@@ -308,6 +337,7 @@ def test_an_agent_without_the_port_field_still_works(room_server):
     assert cloner_hello(anon, CLONER1, ["S1", "S2"],
                         ports=False)["session"]["state"] in ("open", "running")
 
+    heartbeat(room_server)
     machine = next(m for m in room(deploy)["machines"] if m["mac"] == CLONER1)
     assert [d["port"] for d in machine["drawer_list"]] == [None, None]
     assert [d["dev"] for d in machine["drawer_list"]] == ["sda", "sdb"]
@@ -349,6 +379,7 @@ def test_close_round_mid_wave_and_bad_requests(room_server):
                 json={"image_id": "img_7f3a91", "target_drives": 8})
     cloner_hello(anon, CLONER1, ["S1", "S2"])
     assert deploy.post("/api/console/room/close").json()["ok"] is True
+    heartbeat(room_server)
     assert room(deploy)["round"] is None
     # החריץ התפנה — אפשר לפתוח סבב חדש.
     assert deploy.post("/api/console/room",
@@ -388,6 +419,7 @@ def test_a_held_machine_beats_without_joining_the_wave(room_server):
     cloner_hello(anon, CLONER1, ["S1", "S2"], joining=False)
     cloner_hello(anon, CLONER2, ["S3", "S4"], joining=False)
 
+    heartbeat(room_server)
     view = room(deploy)
     assert view["round"]["wave_state"] == "open"     # לא יצא לדרך
     assert view["round"]["ready_drives"] == 0        # ולא נספרו כמוכנות
@@ -399,6 +431,7 @@ def test_a_held_machine_beats_without_joining_the_wave(room_server):
     # אותן מכונות ב-hello רגיל — עכשיו הגל כן יוצא.
     cloner_hello(anon, CLONER1, ["S1", "S2"])
     cloner_hello(anon, CLONER2, ["S3", "S4"])
+    heartbeat(room_server)
     assert room(deploy)["round"]["wave_state"] == "running"
 
 
@@ -410,6 +443,7 @@ def test_an_agent_that_omits_joining_still_joins(room_server):
                              "target_drives": 2}).status_code == 200
 
     cloner_hello(anon, CLONER1, ["S1", "S2"], joining=None)
+    heartbeat(room_server)
     assert room(deploy)["round"]["wave_state"] == "running"
 
 
@@ -434,6 +468,7 @@ def test_a_wave_closes_when_the_reports_come_in_another_mac_form(room_server):
            {"sda": "done", "sdb": "done"})
     report(anon, wave1, CLONER2.replace(":", ""), {"sda": "done", "sdb": "done"})
 
+    heartbeat(room_server)
     view = room(deploy)["round"]
     assert view["written_drives"] == 4        # ארבע מגירות נספרו
     assert view["wave_number"] == 2           # והגל הבא נפתח

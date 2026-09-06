@@ -115,13 +115,16 @@ def build_box(tmp_path, *, plan=PLAN, count=None, plan_cut=None, nodes=None,
     if plan_cut is not None:
         (box / "plan_cut").write_text(f"{plan_cut}\n")
     if sgdisk_fail:
-        (box / "sgdisk.fail").write_text("\n".join(sgdisk_fail) + "\n")
+        (box / "sgdisk.fail").write_text("\n".join(sgdisk_fail) + "\n", newline="\n")
     if rereadpt_fails:
-        (box / "rereadpt_fails").write_text("y\n")
+        (box / "rereadpt_fails").write_text("y\n", newline="\n")
 
-    live = [f"{box}/dev/sda{i}" for i in
+    # ‏posix(box) ולא box: ‏DEVROOT למטה עובר דרך posix(), וכאן הנתיב
+    # נכתב כמו שהוא. בווינדוס זה \\ מול /, ולכן node_is_block החזיר שקר **תמיד** —
+    # וחמישה טסטים נפלו על סיבה שאינה מה שהם בודקים.
+    live = [f"{posix(box)}/dev/sda{i}" for i in
             (nodes if nodes is not None else [int(line[0]) for line in plan])]
-    (box / "nodes").write_text("\n".join(live) + "\n" if live else "")
+    (box / "nodes").write_text("\n".join(live) + "\n" if live else "", newline="\n")
 
     # ‏chmod חובה: ‏cat > יוצר קובץ בלי סיבית הרצה, וזיוף שלא ניתן להרצה
     # עובר בווינדוס (שם כל קובץ "בר-הרצה") ונופל ב-CI בלבד.
@@ -140,7 +143,7 @@ def build_box(tmp_path, *, plan=PLAN, count=None, plan_cut=None, nodes=None,
         f'SYSROOT={posix(box)} TABLE_SETTLE_S={settle} WAIT_POLL_S=1; '
         f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/waits.sh; '
         f'. {posix(AGENT)}/lib/jsonq.sh; . {posix(AGENT)}/lib/progress.sh; '
-        f'. {posix(AGENT)}/lib/restore.sh; . {posix(AGENT)}/lib/expand.sh; '
+        f'. {posix(AGENT)}/lib/restore.sh; . {posix(AGENT)}/lib/expand.sh; . {posix(AGENT)}/lib/grow.sh; '
         # הבדיקה היחידה שאי אפשר לזייף בלי root: התקן בלוקים אמיתי.
         # רשימת הצמתים ה"חיים" יושבת בקופסה, ולכן "הקרנל לא בנה את
         # /dev/sda3" הוא מצב שאפשר להעמיד בו את הקוד.
