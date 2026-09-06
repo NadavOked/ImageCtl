@@ -339,7 +339,7 @@ function stuckNote(stuck, mac) {
 }
 
 function memberRow(m, session, note = "") {
-  const pct = m.bytes_total ? Math.round((100 * m.bytes_written) / m.bytes_total) : 0;
+  const progress = Progress.view(m);
   const cls = m.done || m.state === "done" ? "done" : m.state === "failed" ? "failed" : "";
   const err = m.error ? `<div class="err">${esc(m.error)}</div>` : "";
   // מזוהה בשם המחשב שייכתב לו; מכונה שאינה רשומה נופלת חזרה ל-MAC.
@@ -352,8 +352,8 @@ function memberRow(m, session, note = "") {
       <b>${esc(label)}</b>${single}
       ${m.hostname ? "" : `<span class="mono sub-mac">${esc(m.mac)}</span>`}
     </div>
-    <div class="bar"><i style="width:${pct}%"></i></div>
-    <span class="pct">${m.state === "waiting" ? "ממתין" : pct + "%"}</span>
+    ${Progress.bar(m)}
+    <span class="pct">${m.state === "waiting" ? "ממתין" : progress.label}</span>
     ${err}
     ${note && !m.done ? `<div class="err">${esc(note)}</div>` : ""}
   </div>`;
