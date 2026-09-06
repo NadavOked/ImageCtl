@@ -18,7 +18,7 @@ LIB_DIR="${LIB_DIR:-/usr/lib/imagectl}"
 . "$LIB_DIR/decide.sh"
 . "$LIB_DIR/progress.sh"
 . "$LIB_DIR/restore.sh"
-. "$LIB_DIR/expand.sh"
+. "$LIB_DIR/expand.sh"; . "$LIB_DIR/grow.sh"   # ההרחבה: לפני הזרם ואחריו (#478)
 . "$LIB_DIR/drawers.sh"
 . "$LIB_DIR/manifest.sh"
 . "$LIB_DIR/bootca.sh"   # לפני capture.sh: capture_disk קורא לו (#85)

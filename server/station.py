@@ -15,6 +15,7 @@ import json
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from .progress_view import capture_progress
 from . import users
 from .api import ServerContext, _error
 from .db import journal
@@ -113,8 +114,7 @@ def create_station_router(ctx: ServerContext) -> APIRouter:
             "task": {
                 "id": task["id"], "type": task["type"], "state": task["state"],
                 "disk": task["disk"], "name": task["name"], "error": task["error"],
-                "bytes_written": task["bytes_written"],
-                "bytes_total": task["bytes_total"],
+                **capture_progress(task),
             } if task else None,
         }
 

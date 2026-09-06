@@ -261,10 +261,15 @@ def run_flow(script: str, keys: tuple[str, ...], out_file: Path) -> None:
     """
     with out_file.open("w", encoding="utf-8") as sink:
         try:
+            # ‏input בבייטים ולא ב-text: עם `text=True` ווינדוס מתרגם כל `\n`
+            # שנכתב לצינור ל-`\r\n`, ו-`read -r _c` ב-`single_station_flow`
+            # מקבל `1\r` — ‏`*[!0-9]*` מתאים, והאשף מת ב-`invalid choice`
+            # (#491, אותו כשל כמו #479). הפלט ממילא הולך ל-`sink` ולא לצינור.
             subprocess.run(
                 [BASH, "-c", 'export PATH="/usr/bin:$PATH"; ' + script],
-                stdout=sink, stderr=subprocess.STDOUT, text=True, cwd=str(REPO),
-                input="".join(f"{k}\n" for k in keys), timeout=RUN_TIMEOUT_S,
+                stdout=sink, stderr=subprocess.STDOUT, cwd=str(REPO),
+                input="".join(f"{k}\n" for k in keys).encode("utf-8"),
+                timeout=RUN_TIMEOUT_S,
             )
         except subprocess.TimeoutExpired:
             raise AssertionError(
