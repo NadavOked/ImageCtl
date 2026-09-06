@@ -1,0 +1,15 @@
+/* Unknown totals must remain distinct even when animation is disabled. */
+.bar.indeterminate > i, .bar > i.indeterminate {
+  width: 40%;
+  background: repeating-linear-gradient(110deg, #4188af 0 8px, #a2cfe5 8px 16px);
+  animation: progress-unknown 1.5s ease-in-out infinite alternate;
+}
+.bar.unknown-idle > i, .bar > i.unknown-idle {
+  opacity: .25;
+  background: repeating-linear-gradient(110deg, #82939d 0 2px, transparent 2px 8px);
+}
+.bar.stopped > i, .bar > i.stopped { animation: none; }
+@keyframes progress-unknown { to { transform: translateX(145%); } }
+@media (prefers-reduced-motion: reduce) {
+  .bar.indeterminate > i, .bar > i.indeterminate { animation: none; }
+}

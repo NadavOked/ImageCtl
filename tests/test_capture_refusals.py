@@ -125,7 +125,8 @@ def capture_run(tmp_path, *, present=True, image=GPT_DISK, stubs=None,
     queue.mkdir(parents=True)
     (queue / "logical_block_size").write_text("512\n", encoding="utf-8")
     nodes = box / "nodes"
-    nodes.write_text(f"{posix(dev)}/{disk}\n" if present else "", encoding="utf-8")
+    nodes.write_text(f"{posix(dev)}/{disk}\n" if present else "",
+                     encoding="utf-8", newline="\n")
 
     # ‏env נכתב **לפני** ה-`.` של capture.sh: כל ה-`${X:-ברירת מחדל}` שבו
     # נגזרים בטעינה, וייצוא שמגיע אחריה אינו משנה דבר.

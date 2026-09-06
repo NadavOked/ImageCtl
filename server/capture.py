@@ -26,7 +26,9 @@ from . import auth, registry
 from .api import ServerContext
 from .images import validate_display_name
 from .db import journal, now_iso, update_one
-from .images import MACHINE_MAC, inside, required_bytes, valid_image_id
+from .images import (
+    MACHINE_MAC, carries_a_stream_file, inside, required_bytes, valid_image_id,
+)
 from .tasks import active_task, staging_dir
 
 log = logging.getLogger("imagectl.capture")
@@ -203,9 +205,15 @@ def create_agent_capture_router(ctx: ServerContext) -> APIRouter:
             if any(p.get("role") in ("windows", "linux") for p in after):
                 return "no system partition may follow the expandable partition"
         for part in parts:
-            if part.get("file") is None and part.get("role") == "swap":
-                continue                      # swap: recorded, never uploaded
-            name = part.get("file") or ""
+            # הפטור מקובץ נשען על `fs` ולא על `role` (#424): הסוכן מכריע
+            # לפי `fs` בלבד, ורשומה עם `role: "swap"` ו-`fs: "ntfs"` עברה
+            # כאן **בלי שום בדיקה** ואז קיבלה `mkswap` על מחיצת ווינדוס.
+            if not carries_a_stream_file(part):
+                if part.get("fs") == "swap":
+                    continue                  # swap: recorded, never uploaded
+                return (f"partition {part.get('index')} ({part.get('fs')}) has no"
+                        " file, and only a swap partition may have none")
+            name = part["file"]
             if not SAFE_FILE.match(name):
                 return f"unexpected partition file name: {name}"
             path = folder / name

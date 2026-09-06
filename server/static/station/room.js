@@ -63,8 +63,7 @@ const Room = (() => {
     return machines.map((m) => {
       let status;
       if (withProgress && m.joined) {
-        const pct = m.bytes_total
-          ? Math.round((100 * m.bytes_written) / m.bytes_total) : 0;
+        const progress = Progress.view(m);
         /* שלושה סופים, לא שניים (#67): מחשב שאיבד מגירה אחת מתוך שלוש
            אינו "הסתיים". שורת המגירות שמתחת אומרת איזו — כאן נאמר
            שהמחשב הזה עוד לא סיים את העבודה, ושאסור לשלוח אותו הלאה. */
@@ -76,8 +75,8 @@ const Room = (() => {
           : m.state === "done" ? `<span class="room-ok">הסתיים</span>`
           : m.state === "waiting" || !m.state ? `<span class="sub">מחכה לשידור</span>`
           : m.error
-          ? `<span>${pct}% · <span class="room-bad">${esc(m.error)}</span></span>`
-          : `<span>${pct}%</span>`;
+          ? `<span>${progress.label} · <span class="room-bad">${esc(m.error)}</span></span>`
+          : `<span>${progress.label}</span>`;
       } else {
         status = m.awake
           ? `<span class="room-ok">ער · ${m.fresh_drawers} מגירות מוכנות</span>`

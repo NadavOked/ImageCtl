@@ -4,9 +4,10 @@
 #
 # פוצל מ-restore.sh כשזה הגיע לגבול 300 השורות. החלוקה אינה שרירותית:
 # כאן יושב כל מה שנוגע ב*טבלת המחיצות* לפני שהגיע בייט אחד, ושם נשאר
-# מה שצורך את הזרם עצמו. שני השלבים של ההרחבה (‏expand_last לפני הזרם,
-# ‏grow_expanded אחריו) חייבים להישאר צמודים זה לזה, והם כאן — ואיתם
-# ‏apply_gpt, שכותב את אותה טבלה בדיוק ורץ שורה לפני ההרחבה.
+# מה שצורך את הזרם עצמו. כאן יושב השלב הראשון של ההרחבה (‏expand_last,
+# לפני הזרם) ואיתו apply_gpt, שכותב את אותה טבלה בדיוק ורץ שורה לפניו.
+# השלב השני (‏grow_expanded, אחרי הזרם) עבר ל-grow.sh ב-#478: הם אינם
+# קוראים זה לזה, אלא מצטמדים דרך הסימון `targets/<disk>/expanded`.
 #
 # ומכאן גם הראיה: ‏verify_table הוא הצד השני של אותה מטבע — מי שכותב
 # את הטבלה קורא אותה בחזרה מהדיסק לפני שמותר לזרם להתחיל. ‏#51 היה
@@ -63,6 +64,22 @@ apply_gpt() {
     [ "$_ss" = "512" ] || { log "unsupported sector size: $_ss"; return 1; }
     _scheme=$(json_get "$2" ".scheme")
     [ "$_scheme" = "gpt" ] || { log "unsupported scheme: $_scheme"; return 1; }
+
+    # השער האחרון לפני מחיקת הטבלה בשורה שמתחת, ומכאן והלאה אין חזרה.
+    # מחיצה שאינה swap ובלי קובץ היא **מניפסט פגום**, ולא מחיצת swap:
+    # ההסקה ההפוכה שלחה `mkswap` על מחיצת NTFS ומחקה אותה (#424). ‏jq -r
+    # מרנדר JSON null כמחרוזת `null`, ולכן שתי הצורות נבדקות. ‏PLAN_ERROR
+    # נושא את הסיבה אל `targets/<dev>/error`, כי "לא הצלחנו לכתוב טבלה"
+    # אינו אומר לטכנאי איזו מחיצה ולמה (עיקרון 4).
+    PLAN_ERROR=""
+    manifest_plan "$2" > "$RUN_DIR/gate.plan" || return 1
+    _bad=$(awk -F'|' '$4 != "swap" && ($7 == "" || $7 == "null") {
+        printf "%s%s (%s)", (n++ ? ", " : ""), $1, $4 }' "$RUN_DIR/gate.plan")
+    if [ -n "$_bad" ]; then
+        PLAN_ERROR="partition $_bad has no file but is not swap -- corrupt manifest"
+        log "$1: $PLAN_ERROR"
+        return 1
+    fi
 
     sgdisk --zap-all "$DEVROOT/$1" >> "$LOG_FILE" 2>&1 || return 1
     manifest_plan "$2" | while IFS='|' read -r _idx _guid _role _fs _start _size _f _sha _exp _uguid _uuid; do
@@ -215,39 +232,4 @@ _move_to_tail() {
         sgdisk -n "$_si:-$((_sb / 512)):0" -t "$_si:$_sg" $_su_arg "$DEVROOT/$1" \
             >> "$LOG_FILE" 2>&1 || exit 1
     done || return 1
-}
-
-grow_expanded() {
-    # $1 = disk name. The second half of the expansion: the partition was
-    # widened before the stream, and now that there is a filesystem inside it
-    # it is told to follow. Nothing was widened -- nothing to do.
-    _mark="$RUN_DIR/targets/$1/expanded"
-    [ -f "$_mark" ] || return 0
-    _idx=$(cut -d'|' -f1 "$_mark")
-    _fs=$(cut -d'|' -f2 "$_mark")
-    grow_filesystem "$_fs" "$(partition_node "$1" "$_idx")"
-}
-
-grow_filesystem() {
-    # $1 = fs, $2 = partition node. The partition has already been enlarged;
-    # this makes the filesystem inside it follow. Each family has its own
-    # tool (spec section 14) -- btrfs can only be resized while mounted.
-    case "$1" in
-        ntfs)
-            ntfsresize --force --no-progress-bar "$2" >> "$LOG_FILE" 2>&1 ;;
-        ext4|ext3|ext2)
-            e2fsck -f -y "$2" >> "$LOG_FILE" 2>&1
-            resize2fs "$2" >> "$LOG_FILE" 2>&1 ;;
-        btrfs)
-            _m="$RUN_DIR/grow"
-            mkdir -p "$_m"
-            mount -t btrfs "$2" "$_m" >> "$LOG_FILE" 2>&1 || return 1
-            btrfs filesystem resize max "$_m" >> "$LOG_FILE" 2>&1
-            _rc=$?
-            umount "$_m" 2>/dev/null
-            return $_rc ;;
-        *)
-            log "no resize tool for $1 -- partition grown, filesystem left as is"
-            return 0 ;;
-    esac
 }
