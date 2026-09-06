@@ -18,7 +18,9 @@ WAVE2 = [("sda", "done"), ("sdb", "done"), ("sdc", "done")]
 
 
 def _room(ctx) -> dict:
-    """מסך החדר, בעיני משתמש ההפצה. הקריאה עצמה גם מקדמת את ה-tick."""
+    """Read-only observation. SimMachine's real hello loop drives the room."""
+    if ctx.cloner.error is not None:
+        raise SystemExit(f"FAILED: room heartbeat stopped: {ctx.cloner.error}")
     status, view = ctx.deploy.json("GET", "/api/console/room")
     if status != 200:
         raise SystemExit(f"FAILED: מסך החדר החזיר {status}: {view}")
@@ -29,6 +31,9 @@ def run(ctx) -> None:
     print("\n9. חדר השיכפולים — 3 מגירות, מגירה אחת נכשלת")
     ctx.cloner.write_plans = [WAVE1, WAVE2]
     ctx.cloner.start()
+    # GET no longer supplies a heartbeat (#446). Keep the simulated agent
+    # polling through both waves, including after its final progress report.
+    check("cloner heartbeat enabled", not ctx.cloner.silent)
 
     view = wait_until(lambda: (v := _room(ctx))["machines"]
                       and v["machines"][0]["awake"] and v,
