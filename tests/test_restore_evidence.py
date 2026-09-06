@@ -140,7 +140,7 @@ def build_box(tmp_path, *, plan=PLAN, count=None, plan_cut=None, nodes=None,
         f'SYSROOT={posix(box)} TABLE_SETTLE_S={settle} WAIT_POLL_S=1; '
         f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/waits.sh; '
         f'. {posix(AGENT)}/lib/jsonq.sh; . {posix(AGENT)}/lib/progress.sh; '
-        f'. {posix(AGENT)}/lib/restore.sh; . {posix(AGENT)}/lib/expand.sh; '
+        f'. {posix(AGENT)}/lib/restore.sh; . {posix(AGENT)}/lib/expand.sh; . {posix(AGENT)}/lib/grow.sh; '
         # הבדיקה היחידה שאי אפשר לזייף בלי root: התקן בלוקים אמיתי.
         # רשימת הצמתים ה"חיים" יושבת בקופסה, ולכן "הקרנל לא בנה את
         # /dev/sda3" הוא מצב שאפשר להעמיד בו את הקוד.

@@ -58,14 +58,13 @@ async function loadCaptures() {
   const bar = $("#capture-bar");
   if (!tasks.length) { bar.innerHTML = ""; return; }
   bar.innerHTML = tasks.map((t) => {
-    const pct = t.bytes_total ? Math.round((100 * t.bytes_written) / t.bytes_total) : 0;
     const waiting = t.state === "pending";
     return `<div class="upload">
       <div class="upload-line">
         <b>קולט: ${esc(t.name)}</b>
         <span>${waiting ? "ממתין שמחשב הבנייה יעלה ב-PXE" : fmtBytes(t.bytes_written) + " נקראו"}</span>
       </div>
-      <div class="bar"><i style="width:${waiting ? 0 : pct}%"></i></div>
+      ${Progress.bar(t)}<span class="sub">${Progress.view(t).label}</span>
       <div class="row" style="margin-top:8px">
         <button class="btn danger" data-cancel-task="${esc(t.id)}">ביטול</button>
       </div>

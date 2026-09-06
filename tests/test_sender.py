@@ -140,6 +140,44 @@ def test_the_bitrate_cap_reaches_the_command_when_configured(library):
     assert "--max-bitrate" not in bare.command_for("x", 3)
 
 
+def test_the_drop_ceiling_is_stated_and_not_left_at_udpcast_default(library):
+    """‏05/09/2026: מכונה אחת מתה, וכל החדר קפא. ‏udpcast הוא סנכרוני לפי
+    פרוסות — הוא ממתין ל-ACK **מכל משתתף** לפני שהוא קורא את הפרוסה הבאה
+    מהדיסק. מקבל שמת אינו שולח `CMD_DISCONNECT`; הוא פשוט שותק, ונשאר
+    ב-`participantsDb`.
+
+    בלי `--retries-until-drop` udpcast מגדיר **200**, ואחרי העשירית כל
+    המתנה היא לפחות שנייה — כ-190 שניות של חדר קפוא. נמדד בפועל: המשדר
+    היה חי, ‏`read_bytes` לא זז בכלל בשש שניות, ו-`tx_bytes` גדל ב-4,082
+    בייט בחמש שניות. זה מפר תרחיש QA מפורש ב-`CLAUDE.md`:
+    **"כשל בתחנה/מגירה אחת לא עוצר את השאר"** (#437).
+
+    ⚠️ **מה הטסט הזה בודק, ומה לא.** הוא בודק ש**התקרה נאמרת במפורש**
+    ואינה נשארת על ברירת המחדל של udpcast. הוא **אינו** בודק שמקבל מת
+    באמת אינו מקפיא את החדר — לזה צריך שני `udp-receiver` אמיתיים ו-SIGKILL
+    באמצע, ו-`tests/hygiene.py` אוסר על pytest להריץ udpcast אמיתי (#79:
+    יתום החזיק את פורט הייצור יום וחמש שעות). השם הקודם של הטסט הבטיח את
+    ההתנהגות ולא את הדגל — בדיוק הפער שהעיקרון הזה קיים כדי למנוע.
+
+    **בקרה שלילית:** הסרת הדגל מ-`command_for` מפילה אותו."""
+    recorder = Recorder()
+    engine = SenderEngine(library, runner=recorder)
+    engine.start({"id": "ses_1", "image_id": "img_7f3a91", "joined": 2})
+    assert wait_for(lambda: engine.status()["state"] == "done")
+    cmd = recorder.commands[0]
+    assert "--retries-until-drop" in cmd, (
+        "בלי הדגל udpcast מוותר רק אחרי 200 בקשות — מקבל מת מקפיא את החדר"
+    )
+    dropped_after = int(cmd[cmd.index("--retries-until-drop") + 1])
+    assert 1 <= dropped_after <= 30, (
+        f"{dropped_after} בקשות ACK: גבוה מדי, החדר קפוא דקות; "
+        "נמוך מדי, מקבל בריא עם הפרעה רגעית נזרק"
+    )
+    # ‏--async מוותר על ה-ACK לגמרי: דאטגרם אבוד הופך לדיסק פגום בשקט,
+    # וזה בדיוק מה שעיקרון 4 ("אין זריקת בלוק בשקט") אוסר.
+    assert "--async" not in cmd
+
+
 def test_a_round_with_no_joiners_still_asks_for_one_receiver(library):
     recorder = Recorder()
     engine = SenderEngine(library, runner=recorder)
