@@ -118,14 +118,30 @@ def test_the_cloner_file_is_pure_ascii(a):
     render(a, CFG).encode("ascii")
 
 
-# --- מה שאסור לשבור: ‏#140 לשאר התפקידים -------------------------------------
+# --- מה שאסור לשבור: הצמצום הוא ל-cloner בלבד --------------------------------
 
 
-@pytest.mark.parametrize("role", ["classroom", "build", "unknown"])
-def test_every_other_role_keeps_its_visible_menu_with_the_local_disk(role):
-    """‏#140 לא זז: תחנת כיתה ומחשב בנייה בלי משימה מקבלים תפריט **גלוי**
-    בלי טיימר, ובו הדיסק המקומי לצד ImageCtl. הצמצום הוא ל-cloner בלבד."""
+@pytest.mark.parametrize("role", ["classroom", "build"])
+def test_a_gui_role_auto_boots_imagectl_with_a_hidden_local_entry(role):
+    """‏#641: תחנת כיתה ומחשב בנייה בלי משימה עולים ישר ל-ImageCtl
+    (‏`default=imagectl`, ‏`timeout=0`), אבל הדיסק המקומי **נשאר בקובץ**
+    (חבוי) — בשונה מ-cloner, שאין לו דיסק כלל. שני ערכים, ו-chain_local
+    מאחורי הערך המקומי."""
     text = render(answer(role=role), CFG)
+    conf = settings(text)
+    assert conf["set timeout"] == "0"
+    assert conf["set timeout_style"] == "hidden"
+    assert conf["set default"] == "imagectl"
+    assert text.count("menuentry ") == 2
+    assert "--id local {" in text
+    assert "chainloader" in text
+
+
+def test_a_menu_role_outside_the_gui_set_keeps_its_visible_menu():
+    """תפקיד רשום שאינו ב-ROLES_WITH_GUI (למשל unknown) לא השתנה ב-#641:
+    הוא עדיין מקבל את התפריט הגלוי של #140, בלי טיימר, עם הדיסק לצד
+    ImageCtl."""
+    text = render(answer(role="unknown"), CFG)
     conf = settings(text)
     assert conf["set timeout"] == "-1"
     assert conf["set timeout_style"] == "menu"

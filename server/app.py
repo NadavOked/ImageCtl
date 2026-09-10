@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -30,7 +31,7 @@ from .console_dhcp import create_dhcp_router
 from .console_netcfg import create_netcfg_router, drain_crumbs
 from .db import connect
 from .health import create_health_router
-from .hello import make_resolver
+from .hello import make_resolver, off_deploy_vlan
 from .images import ImageLibrary
 from .room import CLONERS_GROUP, create_room_router
 from .sessions import SessionStore
@@ -38,7 +39,22 @@ from .users import ensure_admin
 from . import ssh_switch
 from .work_areas import sweep as sweep_work_areas
 
+log = logging.getLogger("imagectl.app")
+
 STATIC_DIR = Path(__file__).parent / "static"
+
+
+def _off_vlan_decline(mac: str, step: str) -> bool:
+    """רושם שאינו רושם: פירור אתחול (#400) שהתקבל מחוץ לווילן ההפצה (#584).
+
+    ‏`GET /boot/step?mac=&s=` לוקח את ה-MAC מהשאילתה, וזה אינו זהות;
+    מחוץ לווילן ההפצה אין ראיה שהפונה הוא המכונה. מחזיר False —
+    **ראיה חיובית** שהפירור לא נרשם, לא היעדר חריגה — ורושם ביומן מי
+    ניסה ומה. ‏`record_step` מחזיר ל-GRUB 200 בכל מקרה (שקט כלפי מסך
+    האתחול, רועש ביומן), ולכן האבחון נשאר אמין בלי להפיל אתחול."""
+    log.warning("boot step %s for %s not recorded — off deployment vlan (#584)",
+                step, mac)
+    return False
 
 
 def create_app(
@@ -175,11 +191,24 @@ def create_app(
     # שעולה, וצריך להיות ניתן לכיבוי בלי לגעת ביחידת systemd ובלי
     # להפעיל מחדש. ‏`station_cmdline` גם *מסיר* את הדגל מתוספות המפעיל
     # כשהמתג כבוי — שני מקורות אמת לאותה דלת נגמרים בכך שהישן גובר בשקט.
-    resolve = make_resolver(conn, library, store)
+    resolve = make_resolver(conn, library, store, server_base)
 
     async def boot_asgi(scope, receive, send):
+        # ‏#584: שביל הפירורים (#400) נרשם רק אם הבקשה התקבלה על וילן
+        # ההפצה — אותה הכרעה בדיוק כמו הספירה של #536, ומאותו טעם:
+        # ה-MAC שבשאילתה אינו זהות, ומחוץ לווילן אין ראיה שהפונה הוא
+        # המכונה. פירור זר היה הופך "לא ידוע" ל"בדקנו, הגיע" (עיקרון 5)
+        # ומאפס את `first_at` של שביל אמיתי. ההכרעה המודעת (#584): פירור
+        # מחוץ לווילן **אינו נרשם**; המחיר המוצהר הוא שתחנת תרחיש-3 (#39)
+        # שמאתחלת מחוץ לווילן מאבדת את שביל האבחון שלה. ‏boot/ אינו מכיר
+        # טופולוגיית רשת, ולכן ההחלטה יושבת כאן, בדיוק כמו ה-resolver.
+        off_vlan = off_deploy_vlan(scope, server_base)
         await create_boot_asgi(
-            resolve=resolve,
+            # ‏#536: הסקופ של **הבקשה הזו** נכנס ל-resolver, שרק ממנו
+            # אפשר לדעת על איזו מכתובות השרת היא התקבלה. הספירה של
+            # ‏`bootguard` תלויה בזה, ולכן ה-resolver נקשר כאן ולא פעם
+            # אחת למעלה. ‏`boot/` אינו מכיר טופולוגיית רשת ואינו צריך.
+            resolve=lambda mac, ip: resolve(mac, ip, scope),
             config=GrubConfig(
                 server_base=server_base,
                 # ‏#32: נבדק בכל בקשה, ומאותה סיבה שהתצורה כולה נבנית
@@ -192,8 +221,10 @@ def create_app(
             ),
             boot_dir=boot_dir,
             # ‏#400: שביל הפירורים. מוזרק כמו ה-resolver — ‏`boot/` אינו
-            # מכיר DB, והשרת אינו מכיר את תחביר ה-GRUB.
-            record=lambda mac, step: boottrace.record(conn, mac, step),
+            # מכיר DB, והשרת אינו מכיר את תחביר ה-GRUB. ‏#584: מחוץ לווילן
+            # ההפצה הרושם דוחה את הפירור בגלוי במקום לכתוב אותו.
+            record=(_off_vlan_decline if off_vlan
+                    else lambda mac, step: boottrace.record(conn, mac, step)),
         )(scope, receive, send)
 
     app.mount("/boot", boot_asgi)

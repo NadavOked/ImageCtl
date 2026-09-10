@@ -357,6 +357,73 @@ def _hello(mac: str) -> dict:
     return hello_body(mac)
 
 
+# --- מי רשאי לכתוב פירור אתחול (‏#584) ----------------------------------------
+#
+# ‏`GET /boot/step?mac=<MAC>&s=<צעד>` רשם פירור לפי ה-MAC שבשאילתה, בלי
+# אימות הפונה. אותה משפחה בדיוק כמו #536: ‏MAC בשאילתה אינו זהות, ומחוץ
+# לווילן ההפצה אין ראיה שהפונה הוא המכונה. פירור מזויף הופך "לא ידוע"
+# ל"בדקנו, הגיע" (עיקרון 5) ומאפס את `first_at` של שביל אמיתי. ההכרעה
+# המודעת (#584): פירור מחוץ לווילן **אינו נרשם** — כמו שבקשת תפריט מחוץ
+# לווילן אינה נספרת — והמחיר הוא ששביל תחנת תרחיש-3 (#39) אינו נרשם.
+
+#: כתובת וילן ההפצה — זו שאיתה נוצר השרת ב-conftest.
+VLAN = "http://10.44.12.10:8080"
+#: כתובת מקומית אחרת של אותו שרת — תרחיש 3 (#39).
+OFF_VLAN = "http://10.10.10.8:8080"
+
+
+def step_row(server, mac: str):
+    """שורת `boot_steps` של ה-MAC — **המצב עצמו**. ‏None = לא נרשם פירור."""
+    return server["ctx"].conn.execute(
+        "SELECT step, first_at FROM boot_steps WHERE mac = ?", (mac,)).fetchone()
+
+
+def test_a_step_from_off_vlan_is_not_recorded(server):
+    """הבאג עצמו: ‏`GET /boot/step?mac=&s=` מרשת שאינה וילן ההפצה, למכונה
+    שמעולם לא אתחלה — אסור שישאיר לה פירור."""
+    anon = server["anon"]
+    assert step_row(server, MAC) is None
+
+    resp = anon.get(f"{OFF_VLAN}/boot/step?mac={MAC}&s=agent-start")
+    assert resp.status_code == 200              # ‏GRUB מקבל 200 בכל מקרה
+    assert resp.content == trace.TINY_BODY
+
+    assert step_row(server, MAC) is None
+
+
+def test_a_menu_breadcrumb_from_off_vlan_is_not_recorded(server):
+    """גם פירור ה-"menu" של מסלול התפריט מותנה באותו אופן: תפריט מחוץ
+    לווילן מוגש (תרחיש 3) אך אינו משאיר פירור."""
+    anon = server["anon"]
+    assert anon.get(f"{OFF_VLAN}/boot/menu?mac={MAC}").status_code == 200
+    assert step_row(server, MAC) is None
+
+
+def test_a_step_on_the_deployment_vlan_is_still_recorded(server):
+    """הבקרה לכיוון השני: הרישום אינו מבוטל. פירור שהתקבל על וילן
+    ההפצה נרשם כמו היום, אחרת התיקון מוחק את כל האבחון של #400."""
+    anon = server["anon"]
+    assert anon.get(f"{VLAN}/boot/step?mac={MAC}&s=agent-start").status_code == 200
+    row = step_row(server, MAC)
+    assert row is not None and row["step"] == "agent-start"
+
+
+def test_a_forged_step_from_off_vlan_does_not_reset_a_real_trail(server):
+    """הנזק שנמנע (#584, סעיף 2): שביל אמיתי נרשם על הווילן, ואז פירור
+    זר מרשת אחרת מנסה להחזיר אותו אחורה ("אתחול חדש") ולאפס את
+    `first_at`. מחוץ לווילן הוא נדחה, והשביל האמיתי נשאר כפי שהיה."""
+    anon = server["anon"]
+    assert anon.get(f"{VLAN}/boot/step?mac={MAC}&s=agent-start").status_code == 200
+    real = step_row(server, MAC)
+
+    # פירור זר, צעד מוקדם יותר — לפני התיקון היה מאפס את `first_at`.
+    assert anon.get(f"{OFF_VLAN}/boot/step?mac={MAC}&s=menu").status_code == 200
+
+    after = step_row(server, MAC)
+    assert after["step"] == "agent-start"          # לא נסוג ל-menu
+    assert after["first_at"] == real["first_at"]   # ולא אופס
+
+
 # --- הצד של הסוכן ------------------------------------------------------------
 
 

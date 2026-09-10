@@ -71,6 +71,37 @@ def test_the_socket_table_is_read_as_the_kernel_writes_it():
     assert ssh_switch.parse_proc_net_tcp(PROC_ONLY_ESTABLISHED)[1] == []
 
 
+@pytest.mark.parametrize("unreadable", [("tcp6",), ("tcp",), ("tcp", "tcp6")])
+def test_partial_socket_reads_are_unknown(tmp_path: Path, monkeypatch, unreadable):
+    for name in ("tcp", "tcp6"):
+        (tmp_path / name).write_text(PROC_TCP_HEADER + "\n")
+    original_read = Path.read_text
+    attempted = []
+
+    def read_table(path, *args, **kwargs):
+        if path.parent == tmp_path and path.name in ("tcp", "tcp6"):
+            attempted.append(path.name)
+            if path.name in unreadable:
+                raise OSError(13, "Permission denied")
+        return original_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_table)
+    result = ssh_switch.read_listeners(tmp_path)
+    assert attempted == ["tcp", "tcp6"]
+    assert result.checked is False
+    assert ssh_switch.exposure(result, NICS) == {}
+    for name in unreadable:
+        assert f"{name}: Permission denied" in result.reason
+
+
+def test_both_empty_socket_tables_are_checked_and_clean(tmp_path: Path):
+    for name in ("tcp", "tcp6"):
+        (tmp_path / name).write_text(PROC_TCP_HEADER + "\n")
+    result = ssh_switch.read_listeners(tmp_path)
+    assert result == ssh_switch.Listeners(True)
+    assert ssh_switch.exposure(result, NICS) == {"eth0": False, "eth1": False}
+
+
 def test_reading_ipv6_too(tmp_path: Path):
     (tmp_path / "tcp").write_text(PROC_TCP_HEADER + "\n")
     (tmp_path / "tcp6").write_text(

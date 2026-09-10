@@ -231,3 +231,45 @@ ssh -i ~/.ssh/imagectl-lab -o StrictHostKeyChecking=no \
 מה שאי אפשר לבדוק בלי חומרה — הצינור עצמו (udp-receiver, partclone,
 sgdisk על דיסק אמיתי), טעינת דרייברים, ו-DHCP — שייך לשלב א' של תוכנית
 הבדיקות: שני מחשבים על כבל.
+# Cloner dead-man recovery
+
+Headless, known `cloner` agents arm an independent `setsid` supervisor after
+their first valid hello. The lease is **600 seconds**, measured with
+`/proc/uptime`, not wall time. Classroom/build machines and explicit recovery
+menus do not arm it: those interfaces can legitimately wait for a person.
+An agent stuck before its first valid hello is not covered by this watchdog.
+
+Healthy means the controlling shell executes another hello/idle iteration,
+another bounded transfer/helper wait check (`wait_progress` / `wait_pid`),
+or another error-hold iteration. This includes waiting for a room wave and
+waiting up to 600 seconds for its first byte. Transfer waits already enforce
+their own inactivity limits using the real byte counter; a moving transfer
+can run for hours. A failed transfer that reaches a responsive error hold
+stays there for inspection. The background HTTP progress reporter never
+renews this lease: its survival cannot conceal a hung controlling shell.
+
+The supervisor opens `/dev/watchdog` once when present and when the driver's
+reported timeout is at least five seconds, and writes a keepalive every
+second while the lease is fresh. The builder includes optional `iTCO_wdt`
+and `lpc_ich` modules and their dependencies. Missing/unusable hardware is
+logged and selects the software dead-man (`reboot -f`). On stale heartbeat,
+both modes request a forced reboot; hardware feeding stops and the file
+descriptor remains open, without a magic-close byte. If reboot returns,
+it is logged and retried every five seconds. Transient heartbeat read/write
+and keepalive failures are logged; they do not silently terminate the loop.
+
+Every boot starts with a new RAM heartbeat and a full grace period. Idle,
+wave waiting, active transfers, and responsive failure holds keep renewing
+it; repeated HTTP errors alone are not a watchdog reboot trigger. There is
+no persistent local reboot counter on these diskless machines: repeated
+real hangs still depend on the server's existing boot guard. Long operations
+outside the instrumented wait loops have a 600-second budget as well.
+
+Technician SSH retains the `imagectl.debug=1` and public-key gates. Its
+independent `setsid` shell runs foreground dropbear, logs each exit status,
+and restarts it after five seconds. Previously `setsid` only detached the
+single dropbear process; there was no respawn. Agent process-group exit or
+hang should not kill the detached supervisor, but this cannot guarantee SSH
+during kernel hangs, NIC failure, OOM, or explicit system-wide kills. Software
+recovery also requires a schedulable kernel; actual TCO reset behavior, driver
+availability, and the cause of the observed SSH outage need hardware testing.

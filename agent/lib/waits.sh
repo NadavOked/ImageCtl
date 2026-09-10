@@ -61,6 +61,7 @@ wait_pid() {
     # על מה ולכמה, והקורא ממשיך לסמן failed ולעבור הלאה.
     _w_pid="$1"; _w_max="$2"; _w_what="$3"; _w_spent=0
     while kill -0 "$_w_pid" 2>/dev/null; do
+        if command -v watchdog_beat >/dev/null 2>&1; then watchdog_beat; fi
         if [ "$_w_spent" -ge "$_w_max" ]; then
             log "פג הזמן: $_w_what לא הסתיים תוך $_w_max שניות -- נכשל"
             kill -9 "$_w_pid" 2>/dev/null
@@ -85,6 +86,7 @@ wait_progress() {
     _p_pid="$1"; _p_file="$2"; _p_max="$3"; _p_stall="$4"; _p_what="$5"
     _p_seen=""; _p_still=0
     while kill -0 "$_p_pid" 2>/dev/null; do
+        if command -v watchdog_beat >/dev/null 2>&1; then watchdog_beat; fi
         sleep "$WAIT_POLL_S"
         # רק שורות מספריות: שורת שגיאה של `pv` היא שינוי בקובץ, והיא
         # נראתה כאן כמו "התקדמות" — כלומר איפסה את שעון התקיעה בדיוק

@@ -4,6 +4,7 @@
 # POSIX sh (busybox ash).
 #
 # טבלת המחיצות כולה יושבת ב-expand.sh — ‏apply_gpt, ההרחבה והראיה
+# (מתיחת מערכת הקבצים שאחרי הזרם עברה ל-grow.sh, #478)
 # שהטבלה הגיעה לדיסק (verify_table); שני הקבצים נטענים יחד. כאן נשאר
 # מה שצורך את הזרם עצמו. התקרות של כל ההמתנות כאן יושבות ב-waits.sh.
 
@@ -141,8 +142,8 @@ stream_source() {
     fi
 }
 
-is_swap_partition() {     # $1 = fs, $2 = file. בלי קובץ = אין מה לחכות לו בזרם.
-    [ "$1" = "swap" ] || [ "$2" = "null" ] || [ -z "$2" ]
+is_swap_partition() {     # $1 = fs. ‏swap נקבעת מ-fs בלבד (#424): "בלי קובץ"
+    [ "$1" = "swap" ]     # אינו swap אלא מניפסט פגום, ונתפס לפני מחיקת הטבלה.
 }
 
 make_swap() {
@@ -178,7 +179,7 @@ restore_partition() {
     node_is_block "$_node" \
         || { log "partition $5: $_node is not a block device"; return 1; }
 
-    if is_swap_partition "$6" "$7"; then
+    if is_swap_partition "$6"; then
         make_swap "$_node" "$9" || { log "partition $5: mkswap failed"; return 1; }
         target_partition_done "$4"
         return 0
@@ -260,7 +261,7 @@ run_restore() {
         fi
     fi
     if [ "$_table" -ne 1 ]; then
-        target_set "$2" "failed" "could not write the partition table"
+        target_set "$2" "failed" "${PLAN_ERROR:-could not write the partition table}"
         echo "failed" > "$RUN_DIR/state"
         return 1
     fi
@@ -293,8 +294,6 @@ run_restore() {
     fi
 
     echo "verifying" > "$RUN_DIR/state"
-    grow_expanded "$2" || log "WARNING: expansion failed, image still usable"
-
-    target_set "$2" "done"
+    finish_grow "$2" || { echo "failed" > "$RUN_DIR/state"; return 1; }
     echo "done" > "$RUN_DIR/state"
 }

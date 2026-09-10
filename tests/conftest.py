@@ -7,6 +7,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -42,7 +43,27 @@ def pytest_configure(config) -> None:
     hostguard.block_real_host_reads()
 
 
+#: קובץ עקבות אופציונלי — ‏`IMAGECTL_TEST_TRACE=<נתיב>`.
+#:
+#: ‏07/09: ריצה מלאה נגמרה ב-87% **בלי שורת סיכום כלל**, כלומר לא היה
+#: ממה לקרוא תוצאה. מוות כזה הוא תהליך-בן שהרג את הריצה לפני
+#: ‏`pytest_sessionfinish`, ו-`faulthandler_timeout` — מסלול האבחון
+#: הרגיל — **אינו זמין בווינדוס**. לכן הקובץ הזה: הוא כתוב ומסונכרן
+#: לדיסק **לפני** כל טסט, ולכן מוות שקט משאיר את שם הטסט האחרון.
+#:
+#: כבוי כברירת מחדל: כתיבה מסונכרנת לכל טסט היא תקורה אמיתית, והיא
+#: נחוצה רק כשמחפשים את הכשל הזה.
+_trace = os.environ.get("IMAGECTL_TEST_TRACE")
+
+
 def pytest_runtest_setup(item) -> None:
+    if _trace:
+        # ‏`flush` **ו-**`fsync`: חוצץ שנשאר בזיכרון נעלם עם התהליך,
+        # וזה בדיוק המקרה שהקובץ הזה אמור לתעד.
+        with open(_trace, "a", encoding="utf-8") as fh:
+            fh.write(f"{item.nodeid}\n")
+            fh.flush()
+            os.fsync(fh.fileno())
     native.fail_on_missing_native(item)
 
 

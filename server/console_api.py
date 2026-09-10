@@ -20,7 +20,9 @@ from .db import (_write_lock, get_setting, journal, now_iso, set_setting,
                  update_one, writing)
 from .images import restore_refusal
 from .journal_he import EVENTS_HE, JournalTranslator
+from .session_view import label as session_label
 from .sessions import SessionError
+from .station import ROUND_OPENER_ROLES
 
 WRITE_SETTINGS = {"recovery_require_login", "session_wait_seconds",
                   "console_idle_seconds"}
@@ -212,7 +214,8 @@ def create_console_router(ctx: ServerContext) -> APIRouter:
             # ניהול קבוצות, ולכן גם אי אפשר למחוק אותם.
             raise HTTPException(400, "קבוצה קבועה — אפשר להסיר ממנה מכונות, לא למחוק אותה")
         with _write_lock, writing(ctx.conn):
-            ctx.conn.execute("DELETE FROM groups WHERE id = ?", (gid,))
+            if not update_one(ctx.conn, "DELETE FROM groups WHERE id = ?", (gid,)):
+                raise HTTPException(404, "קבוצה לא קיימת")
         journal(ctx.conn, "group_delete", gid, user[0])
         return {"ok": True}
 
@@ -268,9 +271,12 @@ def create_console_router(ctx: ServerContext) -> APIRouter:
     @router.delete("/machines/{mac}")
     def del_machine(mac: str, user=Depends(admin_only)):
         canonical = registry.normalize_mac(mac)
+        if canonical is None:
+            raise HTTPException(400, "MAC לא תקין")
         with _write_lock, writing(ctx.conn):
-            ctx.conn.execute("DELETE FROM machines WHERE mac = ?", (canonical,))
-        journal(ctx.conn, "machine_delete", canonical or mac, user[0])
+            if not update_one(ctx.conn, "DELETE FROM machines WHERE mac = ?", (canonical,)):
+                raise HTTPException(404, "מכונה לא קיימת")
+        journal(ctx.conn, "machine_delete", canonical, user[0])
         return {"ok": True}
 
     @router.get("/machines.csv")
@@ -326,8 +332,28 @@ def create_console_router(ctx: ServerContext) -> APIRouter:
             raise HTTPException(409, str(exc))
         return {"id": session_id}
 
+    def round_operator(user=Depends(current_user)) -> tuple[str, str]:
+        """מחובר **וגם** בתפקיד שרשאי להפעיל סבב כיתה.
+
+        אותה רשימת-היתר שבה נפתח הסבב מהתחנה — ``ROUND_OPENER_ROLES``
+        (#94) — ולא עותק שלה: מדובר באותו אובייקט בדיוק, וכשיתווסף
+        תפקיד שלישי אסור ששתי הרשימות ייפרדו. חדר השיכפולים עשה את
+        אותה הכרעה ב-#152 (``room.ROOM_OPERATOR_ROLES``).
+
+        לפני #581 היה כאן ``current_user`` בלבד: הסבב נפתח מאחורי
+        בדיקת תפקיד ונסגר בלעדיה, וכל חשבון מחובר — תפקיד שיתווסף
+        מחר בכלל — יכול היה לעצור שידור חי לכיתה שלמה.
+        """
+        if user[1] not in ROUND_OPENER_ROLES:
+            journal(ctx.conn, "session_role_denied", f"{user[0]} ({user[1]})")
+            raise HTTPException(403, "פעולה למפעיל סבבים בלבד")
+        return user
+
     @router.post("/sessions/{session_id}/start")
-    def start_session(session_id: str, user=Depends(current_user)):
+    def start_session(session_id: str, user=Depends(round_operator)):
+        # תפקיד בלבד, בלי הקלדת שם — אותה הכרעה כמו ``/room/start``:
+        # עיקרון 7 נוקב ב"עצירת סבב", וההתחלה רק מקדימה את מה שהטיימר
+        # עומד לעשות ממילא.
         try:
             ctx.store.start_now(session_id, user[0])
         except SessionError as exc:
@@ -335,7 +361,25 @@ def create_console_router(ctx: ServerContext) -> APIRouter:
         return {"ok": True}
 
     @router.post("/sessions/{session_id}/close")
-    def close_session(session_id: str, user=Depends(current_user)):
+    async def close_session(session_id: str, request: Request,
+                            user=Depends(round_operator)):
+        # גוף ריק או לא-JSON הוא בדיוק המקרה שההקלדה נועדה לתפוס, ולכן
+        # הוא נופל לאישור ריק — 400 עם ההסבר, ולא 500 שנראה כתקלת שרת.
+        try:
+            body = await request.json()
+        except Exception:                              # noqa: BLE001
+            body = {}
+        typed = body.get("confirm_name", "") if isinstance(body, dict) else ""
+        row = ctx.conn.execute(
+            "SELECT image_id FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(409, "סבב לא קיים")
+        # פעולה הרסנית מאחורי הקלדת שם — אותו דפוס כמו מחיקת אימג'
+        # ועצירת סבב החדר (#533). מה שמוקלד הוא מה שהמסך כבר מציג,
+        # כולל הנפילה חזרה ל-`image_id` כשהמניפסט נמחק באמצע הסבב.
+        if typed != session_label(row, ctx.library):
+            raise HTTPException(400, "השם שהוקלד אינו זהה לשם האימג' שהסבב משדר")
         try:
             ctx.store.close(session_id, user[0])
         except SessionError as exc:
@@ -358,7 +402,10 @@ def create_console_router(ctx: ServerContext) -> APIRouter:
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc))
-        except Exception:
+        except sqlite3.IntegrityError:
+            # רק התנגשות UNIQUE היא "שם תפוס". כל חריגה אחרת — דיסק מלא,
+            # DB נעול — עולה כ-500 עם הסיבה האמיתית, ולא מתחפשת לשם תפוס
+            # ששולח את המפעיל לחפש חשבון שלא נוצר (עיקרון 5).
             raise HTTPException(409, "משתמש בשם הזה כבר קיים")
         return {"ok": True}
 
@@ -386,13 +433,13 @@ def create_console_router(ctx: ServerContext) -> APIRouter:
     def del_user(username: str, user=Depends(admin_only)):
         if username == user[0]:
             raise HTTPException(400, "אי אפשר למחוק את המשתמש המחובר")
-        if users.admin_count(ctx.conn) <= 1:
-            row = ctx.conn.execute(
-                "SELECT role FROM users WHERE username = ?", (username,)
-            ).fetchone()
-            if row and row["role"] == "admin":
-                raise HTTPException(400, "זה המנהל האחרון — מחיקתו תנעל את הקונסולה")
-        users.delete(ctx.conn, username, by=user[0])
+        # השומר על "יישאר מי שינהל" ירד ל-``users.delete`` ב-#521: שם הוא
+        # תנאי **בתוך** ה-DELETE ולא קריאה שלפניו, ולכן שני מנהלים שנמחקים
+        # בו-זמנית אינם רואים שניהם "יש שניים". כאן נשאר רק התרגום ל-HTTP.
+        try:
+            users.delete(ctx.conn, username, by=user[0])
+        except ValueError as exc:
+            raise HTTPException(404 if "לא קיים" in str(exc) else 400, str(exc))
         return {"ok": True}
 
     @router.get("/journal/events")

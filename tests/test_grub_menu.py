@@ -101,26 +101,34 @@ def test_known_must_be_exactly_true():
         assert decide(answer(known=value)).action == LOCAL
 
 
-def test_no_task_and_no_session_boots_locally():
+def test_no_task_and_no_session_auto_boots_imagectl_for_a_gui_role():
+    """‏#641 (היפוך #140): תחנת כיתה רשומה בלי משימה עולה ישר ל-ImageCtl,
+    אוטומטי — במקום התפריט הגלוי שהמתין לאדם."""
     d = decide(answer(task=None, session=None))
-    assert d.action == LOCAL
+    assert d.action == AGENT
+    assert d.show_menu is False
 
 
-def test_no_task_still_offers_recovery():
-    """הצוהר עצמו עבר מ-ESC חבוי לערך בתפריט הגלוי (#140), אבל הוא עדיין
-    כאן: מכונה בלי משימה מגיעה לשחזור בלי לעבור בקונסולה."""
+def test_no_task_still_reaches_recovery_on_a_classroom_station():
+    """הצוהר לשחזור נשאר — אבל עכשיו הוא אוטומטי: תחנת כיתה בלי משימה
+    עולה ישר ל-ImageCtl במצב recovery (#144, #641), בלי לעבור בקונסולה
+    ובלי תפריט."""
     d = decide(answer(task=None, session=None))
-    assert d.offer_recovery is True
-    assert d.show_menu is True
+    assert d.action == AGENT
+    assert d.recovery_mode is True
+    assert "imagectl.mode=recovery" in render(answer(), CFG)
 
 
-def test_build_machine_gets_a_visible_menu_but_still_defaults_to_disk():
+def test_build_machine_with_no_task_auto_boots_the_build_console():
+    """‏#641: מחשב הבנייה בלי משימה עולה ישר ל-ImageCtl (הערך הרגיל —
+    build_console, #29), אוטומטי, בלי תפריט שממתין לאדם."""
     d = decide(answer(role="build"))
-    assert d.action == LOCAL
-    assert d.show_menu is True
+    assert d.action == AGENT
+    assert d.show_menu is False
+    assert d.recovery_mode is False           # הערך הרגיל, לא recovery
     text = render(answer(role="build"), CFG)
-    assert "set default=local" in text
-    assert "set timeout_style=menu" in text
+    assert "set default=imagectl" in text
+    assert "set timeout_style=hidden" in text
 
 
 def test_build_menu_reaches_the_build_console_not_only_recovery():
@@ -147,7 +155,10 @@ def test_a_task_loads_the_agent():
 
 
 def test_an_empty_task_object_is_not_a_task():
-    assert decide(answer(task={})).action == LOCAL
+    """‏`{}` אינו משימה — ההחלטה נופלת למסלול no-task ולא ל-task-assigned.
+    (בתחנת כיתה המסלול הזה עולה אוטומטית ל-ImageCtl מ-#641, ולכן נבדק
+    ה-`code` ולא ה-action.)"""
+    assert decide(answer(task={})).code == "no-task"
 
 
 @pytest.mark.parametrize("state", ["open", "running"])
@@ -157,13 +168,15 @@ def test_a_joinable_session_loads_the_agent(state):
 
 
 def test_a_closed_session_is_not_joinable():
+    """סבב סגור אינו מצורף — ההחלטה נופלת ל-no-task, לא ל-session-joinable.
+    (בתחנת כיתה המסלול הזה עולה אוטומטית ל-ImageCtl מ-#641.)"""
     session = dict(OPEN_SESSION, state="closed")
-    assert decide(answer(session=session)).action == LOCAL
+    assert decide(answer(session=session)).code == "no-task"
 
 
-def test_an_unrecognised_session_state_boots_locally():
+def test_an_unrecognised_session_state_is_not_joined():
     session = dict(OPEN_SESSION, state="paused")
-    assert decide(answer(session=session)).action == LOCAL
+    assert decide(answer(session=session)).code == "no-task"
 
 
 def test_a_newer_contract_schema_boots_locally():
@@ -189,10 +202,12 @@ def test_a_non_object_answer_boots_locally(junk):
 # --- רינדור -----------------------------------------------------------------
 
 
-def test_a_machine_with_no_task_defaults_to_the_local_disk():
-    """התפריט כן מכיל ערך שחזור חבוי, אבל ברירת המחדל היא הדיסק."""
+def test_a_machine_with_no_task_auto_boots_imagectl_but_keeps_a_local_entry():
+    """‏#641: ברירת המחדל עברה ל-ImageCtl, אבל הערך המקומי נשאר בקובץ
+    (חבוי) — הבחירה בדיסק עוברת אל תוך מסך ה-ImageCtl, לא נעלמת."""
     text = render(answer(), CFG)
-    assert "set default=local" in text
+    assert "set default=imagectl" in text
+    assert "--id local {" in text
     assert "chain_local" in text
     assert "bootmgfw.efi" in text
 

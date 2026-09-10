@@ -65,6 +65,19 @@ _write_linux_files() {
     fi
 }
 
+_umount_checked() {
+    # $1 = mount point. Flushes and unmounts, returning umount's exit code.
+    # A disk left mounted after a successful write is NOT success -- the next
+    # stage would run against a live mount, and "wrote the name" is a
+    # different state from "wrote it and released the disk" (עיקרון 5). Any
+    # non-zero umount is a real failure; there is no "1 is an answer" case.
+    sync
+    umount "$1" >> "$LOG_FILE" 2>&1
+    _umrc=$?
+    [ "$_umrc" -eq 0 ] || log "umount of $1 failed (rc=$_umrc) -- disk left mounted"
+    return "$_umrc"
+}
+
 _write_hostname_linux() {
     # $1 = disk, $2 = manifest, $3 = name. Emits the section 5 result.
     _mnt=$(_mount_linux "$1" "$2") || {
@@ -74,10 +87,14 @@ _write_hostname_linux() {
     log "writing hostname $3 into $_mnt/etc/hostname"
     _write_linux_files "$_mnt/etc" "$3"
     _rc=$?
-    sync
-    umount "$_mnt" 2>/dev/null
+    _umount_checked "$_mnt"
+    _umrc=$?
     if [ "$_rc" -ne 0 ]; then
         printf '{"ok":false,"error":"could not write /etc/hostname","code":"hostname_write_failed"}\n'
+        return 1
+    fi
+    if [ "$_umrc" -ne 0 ]; then
+        printf '{"ok":false,"error":"could not unmount after writing /etc/hostname","code":"umount_failed"}\n'
         return 1
     fi
     printf '{"ok":true,"hostname":"%s","method":"%s"}\n' "$3" "$HOSTNAME_METHOD_LINUX"
@@ -151,13 +168,17 @@ write_hostname() {
                 Hostname 2>> "$LOG_FILE")
     _back_nv=$(hivewrite -g "$_hive" "$_cs\\Services\\Tcpip\\Parameters" \
                 "NV Hostname" 2>> "$LOG_FILE")
-    sync
-    umount "$_mnt" 2>/dev/null
+    _umount_checked "$_mnt"
+    _umrc=$?
 
     if [ "$_rc" -ne 0 ] || [ "$_rc2" -ne 0 ] || [ "$_back" != "$_name" ] \
         || [ "$_back_host" != "$_name" ] || [ "$_back_nv" != "$_name" ]; then
         log "hostname verify failed: wrote '$_name', read back computer='$_back' hostname='$_back_host' nv='$_back_nv' (rc=$_rc/$_rc2)"
         printf '{"ok":false,"error":"registry edit failed","code":"hive_write_failed"}\n'
+        return 1
+    fi
+    if [ "$_umrc" -ne 0 ]; then
+        printf '{"ok":false,"error":"could not unmount after the registry edit","code":"umount_failed"}\n'
         return 1
     fi
     printf '{"ok":true,"hostname":"%s","method":"%s"}\n' "$_name" "$HOSTNAME_METHOD"
@@ -167,4 +188,29 @@ compose_hostname() {
     # $1 = prefix, $2 = suffix. INS is always uppercase (section 10).
     printf '%s-%s' "$(printf '%s' "$1" | tr 'a-z' 'A-Z')" \
                    "$(printf '%s' "$2" | tr 'a-z' 'A-Z')"
+}
+
+# --- שלב השם במשימה --------------------------------------------------------
+
+# ‏#539: הפונקציה ישבה ב-`imagectl-agent` עד שהקובץ נגע בקיר 300 של
+# `sizelimit`, ותוספת האסימון של #530 חצתה אותו. הקיר הזה בנוי
+# בדיוק נגד הפתרון הקל — ‏#478 "נפתר" בכך שהחציה הועברה לקובץ אחר —
+# ולכן הפיצול כאן ולא דחיסת שורות. המקום נבחר כי `compose_hostname`
+# ו-`write_hostname` כבר כאן, ו-`RESP` כבר נקרא ב-libs אחרים
+# (`classround.sh`, `ui.sh`). האתר שקורא לה נשאר במסלול השחזור.
+name_this_machine() {
+    # $1 = disk, $2 = session id. Never fatal: an image that boots with the
+    # wrong name is fixable in a minute; one that does not boot is not.
+    _prefix=$(json_get "$RESP" ".session.prefix")
+    _suffix=$(json_get "$RESP" ".group.suffix")
+    if [ "$_prefix" = "null" ] || [ "$_suffix" = "null" ]; then
+        log "no prefix/suffix in the server answer -- skipping the hostname"
+        return 0
+    fi
+    echo "naming" > "$RUN_DIR/state"
+    _name=$(compose_hostname "$_prefix" "$_suffix")
+    _result=$(write_hostname "$1" "$RUN_DIR/manifest.json" "$_name")
+    echo "$_result" > "$RUN_DIR/hostname.json"
+    log "hostname: $_result"
+    echo "done" > "$RUN_DIR/state"
 }

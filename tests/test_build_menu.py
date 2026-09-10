@@ -168,8 +168,8 @@ NEW_LIBS = ("buildmenu.sh", "buildcapture.sh", "roomflow.sh")
 
 
 def sourced_libs() -> str:
-    names = ["common.sh", "jsonq.sh", "ui.sh", "classround.sh", "hold.sh",
-             *NEW_LIBS]
+    names = ["common.sh", "jsonq.sh", "ui.sh", "recovery.sh", "classround.sh",
+             "hold.sh", *NEW_LIBS]
     return "".join(f". {posix(AGENT)}/lib/{n}; "
                    for n in names if (AGENT / "lib" / n).exists())
 
@@ -297,7 +297,7 @@ def test_a_capture_into_an_existing_folder_carries_that_folder(
     captures = posted(console, "/api/console/tasks/capture")
     assert len(captures) == 1, f"לא נשלחה בקשת קליטה אחת: {console.requests}"
     assert captures[0] == {"mac": MAC, "name": "Win11 lab", "disk": "sda",
-                           "folder": "Classrooms"}
+                           "folder": "Classrooms", "description": ""}
     # לא נוצרה תיקייה — נבחרה קיימת.
     assert posted(console, "/api/console/folders") == []
 
@@ -336,12 +336,16 @@ def test_a_hebrew_folder_name_never_reaches_the_server(tmp_path, console):
 
 @native_tools
 def test_the_capture_body_is_the_one_the_console_sends(tmp_path, console):
-    """‏`{mac,name,disk,folder}` — בדיוק השדות של `POST /tasks/capture`."""
+    """‏`{mac,name,disk,folder,description}` — שדות `POST /tasks/capture`.
+
+    ‏`description` נוסף עם הגואי הנייטיב (#327): הקונסולה שולחת אותו
+    (library.js), והשרת מקבל אותו (capture.py). זרימת הטקסט שולחת ריק.
+    """
     run_screen(tmp_path, url_of(console),
                ["admin", "pw", "1", "1", "Base", "y"])
 
     body = posted(console, "/api/console/tasks/capture")[0]
-    assert sorted(body) == ["disk", "folder", "mac", "name"]
+    assert sorted(body) == ["description", "disk", "folder", "mac", "name"]
     assert body["folder"] == "Lab"
 
 
