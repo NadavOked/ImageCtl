@@ -257,7 +257,8 @@ def test_a_failed_pull_stays_on_the_screen(server):
     assert pulls[0]["members"][0]["state"] == "failed"
     # ומפעיל יכול לפנות אותו מהקונסולה, באותו endpoint של כל סבב.
     assert server["deploy"].post(
-        f"/api/console/sessions/{pull_id}/close").status_code == 200
+        f"/api/console/sessions/{pull_id}/close",
+        json={"confirm_name": "Office 2024 Standard"}).status_code == 200
     assert overview(server)["pulls"] == []
 
 
@@ -299,7 +300,8 @@ def test_closing_a_pull_does_not_stop_the_broadcast(server_with_sender):
 
     pull_id = pull(server, lab2["mac1"]).json()["id"]
     assert server["deploy"].post(
-        f"/api/console/sessions/{pull_id}/close").status_code == 200
+        f"/api/console/sessions/{pull_id}/close",
+        json={"confirm_name": "Office 2024 Standard"}).status_code == 200
 
     assert recorder.processes[0].terminated is False
     assert server["admin"].get(

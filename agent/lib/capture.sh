@@ -166,6 +166,7 @@ capture_disk() {
             curl -sfS --max-time 0 \
                 --speed-limit 1 --speed-time "$HTTP_STALL_TIMEOUT" \
                 -H "Content-Type: application/octet-stream" \
+                -H "X-Imagectl-Task-Token: ${TASK_TOKEN:-}" \
                 -T "$_out" \
                 "$SERVER/api/v1/capture/$_task/files/$_file" > "$RUN_DIR/up.$_idx.out" 2>> "$LOG_FILE"
             echo "$?" > "$RUN_DIR/up.$_idx.rc"
@@ -251,6 +252,7 @@ capture_disk() {
 upload_manifest() {
     # $1 = task id, $2 = manifest path.
     curl -sfS -X PUT -H "Content-Type: application/json" \
+        -H "X-Imagectl-Task-Token: ${TASK_TOKEN:-}" \
         --data-binary "@$2" \
         "$SERVER/api/v1/capture/$1/manifest" >> "$LOG_FILE" 2>&1
 }

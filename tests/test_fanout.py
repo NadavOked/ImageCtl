@@ -30,7 +30,7 @@ def fanout(tmp_path_factory):
     binary = tmp_path_factory.mktemp("build") / "fanout"
     subprocess.run(
         ["gcc", "-O2", "-Wall", "-Wextra", "-Werror", "-o", str(binary), str(SOURCE)],
-        check=True,
+        check=True, stdin=subprocess.DEVNULL,
     )
     return binary
 
@@ -308,7 +308,7 @@ def test_a_target_that_cannot_be_opened_is_reported_not_crashed(fanout, tmp_path
 
 @pytest.mark.parametrize("args", [[], ["1048576"], ["10", "/tmp/x"]])
 def test_bad_usage_exits_with_a_message(fanout, args):
-    result = subprocess.run([str(fanout), *args], capture_output=True, timeout=30)
+    result = subprocess.run([str(fanout), *args], capture_output=True, timeout=30, stdin=subprocess.DEVNULL)
     assert result.returncode == 2
     assert result.stderr
 

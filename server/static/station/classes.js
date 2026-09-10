@@ -210,7 +210,8 @@ const Classes = (() => {
         <p class="sub" id="cls-hint"></p>
         <div class="room-machines" id="cls-machines"></div>
         <div id="cls-confirm" class="hidden">
-          <label>עצירת הסבב באמצע היא פעולת חירום. הקלידו <b>עצור</b> לאישור:
+          <label>עצירת הסבב באמצע היא פעולת חירום. הקלידו את שם האימג'
+            המשודר <b>${esc(session.image_name)}</b> לאישור:
             <input type="text" id="cls-confirm-text"></label>
         </div>
         <p class="error" id="cls-error"></p>`;
@@ -242,13 +243,12 @@ const Classes = (() => {
          בעוד ${Math.floor(session.starts_in_seconds / 60)}:${String(session.starts_in_seconds % 60).padStart(2, "0")} דקות, או בלחיצה.`
       : "השידור רץ. עומדים בכיתה ורואים מי תקוע — בלי לעבור בין מסכים.";
     $("#cls-machines").innerHTML = session.members.map((m) => {
-      const pct = m.bytes_total
-        ? Math.round((100 * m.bytes_written) / m.bytes_total) : 0;
+      const progress = Progress.view(m);
       const status = m.state === "failed"
         ? `<span class="room-bad">נכשל · ${esc(m.error || "")}</span>`
         : m.done || m.state === "done" ? `<span class="room-ok">הסתיים</span>`
         : m.state === "waiting" ? `<span class="sub">ממתין לשידור</span>`
-        : `<span>${pct}%</span>`;
+        : `<span>${progress.label}</span>`;
       return `<div class="room-row">
         <span class="led on"></span>
         <b>${esc(m.hostname || m.name || m.mac)}</b>
@@ -258,21 +258,29 @@ const Classes = (() => {
   }
 
   async function closeSession(id) {
+    /* עצירה מאחורי הקלדת שם האימג' המשודר (עיקרון 7). ההכרעה עברה
+       לשרת ב-#581: המסך שולח את מה שהוקלד ומציג את מה שהשרת ענה,
+       במקום לאכוף לבדו — בדיוק כמו `room.js` אחרי #533. */
     const box = $("#cls-confirm");
     if (box.classList.contains("hidden")) {
       box.classList.remove("hidden");
       $("#cls-confirm-text").focus();
       return;
     }
-    if ($("#cls-confirm-text").value.trim() !== "עצור") {
-      $("#cls-error").textContent = "הטקסט שהוקלד אינו זהה.";
-      return;
-    }
     let response;
     try {
-      response = await authed(`/api/console/sessions/${id}/close`, { method: "POST" });
+      response = await authed(`/api/console/sessions/${id}/close`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm_name: $("#cls-confirm-text").value.trim() }),
+      });
     } catch (error) { return; }
-    if (!response.ok) { $("#cls-error").textContent = "העצירה נכשלה — ראו את הקונסולה."; return; }
+    if (!response.ok) {
+      let detail = "העצירה נכשלה — ראו את הקונסולה.";
+      try { detail = (await response.json()).detail || detail; } catch (e) {}
+      $("#cls-error").textContent = detail;
+      return;
+    }
     toast("הסבב נעצר.");
     reset(); refresh();
   }

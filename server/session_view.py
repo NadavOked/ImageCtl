@@ -14,6 +14,20 @@ from . import bootguard
 from .sessions import MULTICAST
 
 
+def label(session: sqlite3.Row, library) -> str:
+    """שם הסבב כפי שהמפעיל רואה אותו — שם האימג' שהוא משדר.
+
+    לסבב אין שם משלו: יש `id` אקראי שאינו מופיע על שום מסך. מה שהמפעיל
+    **קורא** בכותרת (`image_name` למטה, ובמסך התחנה "משדר: ...") הוא שם
+    האימג', וזה מה שהוא מקליד כדי לעצור (עיקרון 7, ‏#581). הנפילה חזרה
+    ל-`image_id` היא אותה נפילה שב-`round_label` של חדר השיכפולים,
+    ומאותה סיבה: **מקום אחד**, אחרת סבב שהאימג' שלו נמחק באמצע היה
+    בלתי-ניתן לעצירה — תיקון שגרוע מהבאג.
+    """
+    manifest = library.get(session["image_id"])
+    return manifest["name"] if manifest else session["image_id"]
+
+
 def build(store, session: sqlite3.Row, library) -> dict:
     """מחשב מזוהה בשם המחשב שייכתב לו (קידומת-סיומת), לא ב-MAC: זה מה
     שמופיע על המסך בכיתה, וזה מה שמחפשים כשמשהו נכשל. ה-MAC נשאר
@@ -34,7 +48,6 @@ def build(store, session: sqlite3.Row, library) -> dict:
     # אחרי שחזור כזה השם נקבע מתוך Windows (ראו ui.sh בסוכן).
     classroom = (group is not None and group["role"] == "classroom"
                  and session["kind"] == MULTICAST)
-    manifest = library.get(session["image_id"])
 
     members = []
     for m in store.members(session["id"]):
@@ -65,7 +78,7 @@ def build(store, session: sqlite3.Row, library) -> dict:
         "group_label": group["label"] if group else session["group_id"],
         "group_role": group["role"] if group else "unknown",
         "image_id": session["image_id"],
-        "image_name": manifest["name"] if manifest else session["image_id"],
+        "image_name": label(session, library),
         "prefix": session["prefix"],
         "expected_clients": session["expected_clients"],
         # סבב של מכונה אחת אינו הפצה לכיתה — הקונסולה מסמנת אותו אחרת.

@@ -63,8 +63,7 @@ const Room = (() => {
     return machines.map((m) => {
       let status;
       if (withProgress && m.joined) {
-        const pct = m.bytes_total
-          ? Math.round((100 * m.bytes_written) / m.bytes_total) : 0;
+        const progress = Progress.view(m);
         /* שלושה סופים, לא שניים (#67): מחשב שאיבד מגירה אחת מתוך שלוש
            אינו "הסתיים". שורת המגירות שמתחת אומרת איזו — כאן נאמר
            שהמחשב הזה עוד לא סיים את העבודה, ושאסור לשלוח אותו הלאה. */
@@ -76,8 +75,8 @@ const Room = (() => {
           : m.state === "done" ? `<span class="room-ok">הסתיים</span>`
           : m.state === "waiting" || !m.state ? `<span class="sub">מחכה לשידור</span>`
           : m.error
-          ? `<span>${pct}% · <span class="room-bad">${esc(m.error)}</span></span>`
-          : `<span>${pct}%</span>`;
+          ? `<span>${progress.label} · <span class="room-bad">${esc(m.error)}</span></span>`
+          : `<span>${progress.label}</span>`;
       } else {
         status = m.awake
           ? `<span class="room-ok">ער · ${m.fresh_drawers} מגירות מוכנות</span>`
@@ -172,7 +171,8 @@ const Room = (() => {
         <p class="sub" id="room-hint"></p>
         <div class="room-machines" id="room-machines"></div>
         <div id="room-confirm" class="hidden">
-          <label>עצירת הסבב באמצע היא פעולת חירום. הקלידו <b>עצור</b> לאישור:
+          <label>עצירת הסבב באמצע היא פעולת חירום. הקלידו את שם האימג'
+            המשודר — <b id="room-confirm-name"></b> — לאישור:
             <input type="text" id="room-confirm-text"></label>
         </div>
         <p class="error" id="room-error"></p>`;
@@ -193,6 +193,7 @@ const Room = (() => {
 
     $("#st-room-sub").textContent =
       `משדר: ${round.image_name} · גל ${round.wave_number}`;
+    $("#room-confirm-name").textContent = round.image_name;
     $("#room-count").textContent =
       `${round.written_drives} / ${round.target_drives}`;
     $("#room-bar").style.width =
@@ -222,29 +223,36 @@ const Room = (() => {
          ב-BIOS של 12 מכונות, כשהכבל בשרת מנותק (#74). */
       const reason = (result.reasons || [])[0];
       if (result.failed) {
-        toast(`נשלחה הערה ל-${result.woken} מחשבים · ${result.failed} נכשלו`
+        toast(`נשלחה בקשת הערה ל-${result.sent} מחשבים · ${result.failed} נכשלו`
               + (reason ? ` — ${reason}` : "."));
       } else {
-        toast(`נשלחה הערה ל-${result.woken} מחשבים.`);
+        toast(`נשלחה בקשת הערה ל-${result.sent} מחשבים.`);
       }
     }
   }
 
   async function closeRound() {
-    /* עצירה מאחורי הקלדה (אפיון סעיף 15) — בלי confirm() שחסום בקיוסק. */
+    /* עצירה מאחורי הקלדת שם האימג' המשודר (עיקרון 7) — בלי confirm()
+       שחסום בקיוסק. ההכרעה עברה לשרת ב-#533: המסך שולח את מה שהוקלד
+       ומציג את מה שהשרת ענה, במקום לאכוף לבדו. */
     const box = $("#room-confirm");
     if (box.classList.contains("hidden")) {
       box.classList.remove("hidden");
       $("#room-confirm-text").focus();
       return;
     }
-    if ($("#room-confirm-text").value.trim() !== "עצור") {
-      $("#room-error").textContent = "הטקסט שהוקלד אינו זהה.";
+    const response = await fetch("/api/console/room/close", {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm_name: $("#room-confirm-text").value.trim() }),
+    });
+    if (!response.ok) {
+      let detail = "שגיאה " + response.status;
+      try { detail = (await response.json()).detail || detail; } catch (e) {}
+      $("#room-error").textContent = detail;
       return;
     }
-    const response = await fetch("/api/console/room/close",
-      { method: "POST", credentials: "same-origin" });
-    if (response.ok) toast("הסבב נעצר.");
+    toast("הסבב נעצר.");
     reset();
     refresh();
   }

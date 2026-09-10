@@ -37,7 +37,7 @@ def hivewrite(tmp_path_factory):
     subprocess.run(
         ["gcc", "-O2", "-Wall", "-Wextra", "-Werror",
          "-o", str(binary), str(SOURCE), "-lhivex"],
-        check=True,
+        check=True, stdin=subprocess.DEVNULL,
     )
     return binary
 
@@ -51,13 +51,13 @@ def hive(tmp_path):
 
 def run(binary, *args):
     return subprocess.run(
-        [str(binary), *map(str, args)], capture_output=True, text=True
+        [str(binary), *map(str, args)], capture_output=True, text=True, stdin=subprocess.DEVNULL
     )
 
 
 def hivexget(hive, path, name):
     result = subprocess.run(
-        ["hivexget", str(hive), path, name], capture_output=True, text=True
+        ["hivexget", str(hive), path, name], capture_output=True, text=True, stdin=subprocess.DEVNULL
     )
     assert result.returncode == 0, result.stderr
     return result.stdout.strip()
@@ -66,7 +66,7 @@ def hivexget(hive, path, name):
 def value_listing(hive, path):
     """כל ערכי המפתח, שורה לערך — הבסיס להשוואת 'מי שרד'."""
     result = subprocess.run(
-        ["hivexget", str(hive), path], capture_output=True, text=True
+        ["hivexget", str(hive), path], capture_output=True, text=True, stdin=subprocess.DEVNULL
     )
     assert result.returncode == 0, result.stderr
     return sorted(result.stdout.splitlines())

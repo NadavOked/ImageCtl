@@ -24,6 +24,10 @@ KVER="$(uname -r)"
 SKIP_APT=0
 WITH_GUI=0
 SSH_KEY_FILE=""
+#: `auto` (ברירת המחדל — `finish_and_stop` גוזר מהתפקיד: כיתה=reboot,
+#: בנייה/שיכפול=poweroff), `poweroff` או `reboot`. `reboot` הוא ההגדרה
+#: שכלי המעבדה כותב (tools/lab/after-task-reboot.sh).
+AFTER_TASK=auto
 FIRMWARE_DIRS=("rtl_nic")
 
 while [ $# -gt 0 ]; do
@@ -32,6 +36,7 @@ while [ $# -gt 0 ]; do
         --kernel-version) KVER="$2"; shift 2 ;;
         --firmware)       FIRMWARE_DIRS+=("$2"); shift 2 ;;
         --ssh-key)        SSH_KEY_FILE="$2"; shift 2 ;;
+        --after-task)     AFTER_TASK="$2"; shift 2 ;;
         --with-gui)       WITH_GUI=1; shift ;;
         --skip-apt)       SKIP_APT=1; shift ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
@@ -60,8 +65,10 @@ fi
 # שתי רשימות ולא אחת, כי הן נכשלות בשתי נקודות שונות בזמן: חבילה שאין
 # ממנה מועמד ב-apt נתפסת **לפני** ש-apt רץ, ונתיב שלא הופיע על הדיסק
 # נתפס אחרי ההתקנה. עד כאן לא נבדקה אף אחת מהן.
-GUI_PACKAGES=(cage chromium seatd libgl1-mesa-dri
-              fonts-ibm-plex fontconfig-config libinput-bin xkb-data)
+GUI_PACKAGES=(fonts-ibm-plex fontconfig-config
+              libpango-1.0-0 libpangocairo-1.0-0 libpangoft2-1.0-0
+              libcairo2 libpixman-1-0 libharfbuzz0b libfribidi0
+              libfreetype6 libfontconfig1 libglib2.0-0t64 libdrm2)
 
 # ‏`truetype` ולא `opentype`: ‏fonts-ibm-plex בדביאן מתקינה
 # ל-`/usr/share/fonts/truetype/ibm-plex`, והנתיב שהיה כאן מעולם לא היה
@@ -71,13 +78,10 @@ GUI_PACKAGES=(cage chromium seatd libgl1-mesa-dri
 #
 # ‏/etc/fonts ו-/usr/share/fontconfig הם הזוג ולא אחד מהם: קובצי
 # ‏conf.d הם קישורים סימבוליים אל conf.avail, וקישור יתום בתוך
-# ה-initramfs שקול לקובץ חסר. בלי תצורת fontconfig כרומיום אינו מוצא
+# ה-initramfs שקול לקובץ חסר. בלי תצורת fontconfig הממשק אינו מוצא
 # **שום** גופן — גם כשהקובץ ארוז לידו — והעברית יוצאת ריבועים.
-GUI_PATHS=(/usr/lib/chromium
-           /usr/share/fonts/truetype/ibm-plex
-           /etc/fonts                  /usr/share/fontconfig
-           /usr/lib/x86_64-linux-gnu/dri
-           /usr/share/libinput         /usr/share/X11/xkb)
+GUI_PATHS=(/usr/share/fonts/truetype/ibm-plex
+           /etc/fonts                  /usr/share/fontconfig)
 
 # החבילות נבדקות כאן, לפני apt ולפני הקומפילציות, מאותו טעם כמו מפתח
 # ה-SSH למעלה. ‏`apt-get install` על חבילה שאינה בקומפוננטות המופעלות
@@ -111,7 +115,7 @@ fi
 # Binaries the agent scripts call. tests/test_agent.py cross-checks this
 # list against the actual commands in agent/ -- update both together.
 BINARIES=(curl jq zstd pv sgdisk blockdev sha256sum od hdparm ntfsresize openssl
-          ntfs-3g umount blkid df mount stty
+          ntfs-3g umount blkid df mount stty ethtool
           e2fsck resize2fs btrfs
           udp-receiver partclone.ntfs partclone.fat partclone.ext4
           partclone.btrfs partclone.dd
@@ -122,7 +126,7 @@ if [ "$SKIP_APT" -eq 0 ]; then
     apt-get install -y --no-install-recommends \
         busybox-static zstd partclone udpcast gdisk curl jq pv \
         ntfs-3g libhivex-dev hdparm coreutils util-linux openssl \
-        e2fsprogs btrfs-progs cpio gzip gcc libc6-dev dropbear-bin
+        e2fsprogs btrfs-progs cpio gzip gcc libc6-dev dropbear-bin ethtool
 fi
 
 # ‏`$TMPDIR` ולא `/tmp` קשיח: עץ הבנייה הוא מאות MB לפני הדחיסה, ועל
@@ -274,6 +278,18 @@ chmod 0600 "$ROOT/etc/shadow"
 mkdir -p "$ROOT/root"
 chmod 0700 "$ROOT/root"
 
+# מה עושים כשמשימה נגמרה. ברירת המחדל היא `auto`: `finish_and_stop`
+# גוזר מהתפקיד — תחנת כיתה מאתחלת, בנייה/שיכפול מתכבים (מגירות
+# מוחלפות במכונה כבויה, נספח א׳). ‏`reboot` מפורש נועד למעבדה מרוחקת,
+# שבה מכונה שכבתה היא מכונה שאיש אינו יכול להדליק — הצי מתאתחל לבד
+# (tools/lab/after-task-reboot.sh). נקרא ב-`finish_and_stop`.
+case "$AFTER_TASK" in
+    auto|poweroff|reboot) ;;
+    *) echo "build_initramfs: --after-task must be auto, poweroff or reboot, got '$AFTER_TASK'" >&2; exit 2 ;;
+esac
+echo "$AFTER_TASK" > "$ROOT/etc/imagectl/after-task"
+echo "after-task: $AFTER_TASK"
+
 if [ -n "$SSH_KEY_FILE" ]; then
     install -m 0600 "$SSH_KEY_FILE" "$ROOT/etc/imagectl/authorized_keys"
     echo "ssh: authorized_keys packed from $SSH_KEY_FILE"
@@ -286,20 +302,38 @@ fi
 # agent makes one in the tmpfs on every boot instead (agent/lib/sshd.sh).
 
 # --- the kiosk (optional): the build machine's graphical face ----------------
-# The station page carries the console's design, Hebrew and RTL included --
-# things the Linux text console cannot render. cage is a bare Wayland
-# compositor that runs exactly one fullscreen app; Chromium in kiosk mode
-# is that app. Adds roughly 350MB to the image, so it is opt-in: classroom
-# stations do not need it, the one build machine does.
+# Native Pango/Cairo rendering onto DRM/KMS, with evdev input. Apt installs
+# transitive runtime dependencies; ldd selects the actual shared-library
+# closure, including any X11 libraries linked by Debian's Cairo build.
 
 if [ "$WITH_GUI" -eq 1 ]; then
     if [ "$SKIP_APT" -eq 0 ]; then
         apt-get install -y --no-install-recommends "${GUI_PACKAGES[@]}"
+        # Build-host tools/headers only; none are copied into the image.
+        apt-get install -y --no-install-recommends make pkg-config \
+            libpango1.0-dev libcairo2-dev libdrm-dev
     fi
-    echo "packing the kiosk (cage + chromium)..."
-    copy_bin cage
-    copy_bin chromium
-    copy_bin seatd
+    echo "compiling the native station GUI..."
+    GUI_DIR="$SCRIPT_DIR/../native-gui"
+    # Force a fresh host build rather than reuse a binary from another host.
+    make -B -C "$GUI_DIR" imagectl-station-gui
+    GUI_BIN="$GUI_DIR/imagectl-station-gui"
+    [ -s "$GUI_BIN" ] && [ -x "$GUI_BIN" ] \
+        || { echo "--with-gui: native GUI binary missing or not executable: $GUI_BIN" >&2; exit 1; }
+    install -m 0755 "$GUI_BIN" "$ROOT/usr/bin/imagectl-station-gui"
+    # Same closure as measure-size.sh/copy_libs(), but this is a known ELF:
+    # unresolved libraries or a failed copy must stop the GUI build.
+    _gui_ldd=$(ldd "$GUI_BIN")
+    if [[ "$_gui_ldd" == *"not found"* ]]; then
+        printf '%s\n' "--with-gui: unresolved native GUI libraries:" "$_gui_ldd" >&2
+        exit 1
+    fi
+    while read -r lib; do
+        [ -f "$lib" ] \
+            || { echo "--with-gui: native GUI library missing: $lib" >&2; exit 1; }
+        mkdir -p "$ROOT$(dirname "$lib")"
+        cp -L "$lib" "$ROOT$lib"
+    done < <(printf '%s\n' "$_gui_ldd" | awk '/=>/ { print $3 } /^[[:space:]]*\// { print $1 }')
     # רכיבי רינדור וגופנים — נתיבים שלמים, לא בינארי בודד. נתיב מוצהר
     # שאינו כאן עוצר את הבנייה; ‏`if [ -d "$dir" ]` דילג עליו בשקט,
     # וזה מה שהסתיר את נתיב הגופן השגוי (#120). כולם נאספים לפני
@@ -316,20 +350,26 @@ if [ "$WITH_GUI" -eq 1 ]; then
     fi
     for _p in "${GUI_PATHS[@]}"; do
         mkdir -p "$ROOT$_p"
+        # The package carries every Plex family; copy only the six faces
+        # named by native-gui/tools/measure-size.sh below.
+        [ "$_p" = /usr/share/fonts/truetype/ibm-plex ] && continue
         cp -a "$_p/." "$ROOT$_p/"
+    done
+    fontdir=/usr/share/fonts/truetype/ibm-plex
+    for face in IBMPlexSansHebrew-Regular IBMPlexSansHebrew-Medium IBMPlexSansHebrew-SemiBold \
+                IBMPlexSansHebrew-Bold IBMPlexMono-Regular IBMPlexMono-Medium; do
+        src=$(find "$fontdir" -iname "$face.ttf" -print -quit)
+        [ -n "$src" ] && [ -s "$src" ] \
+            || { echo "--with-gui: font face missing or empty: $fontdir/$face.ttf" >&2; exit 1; }
+        cp -L "$src" "$ROOT$fontdir/"
     done
 
     cat > "$ROOT/usr/bin/imagectl-kiosk" << 'EOF'
 #!/bin/sh
-# imagectl-kiosk <url> -- one fullscreen browser, nothing else.
-# seatd gives the compositor access to the display and input devices.
-export XDG_RUNTIME_DIR=/run/kiosk
-mkdir -p "$XDG_RUNTIME_DIR"
-seatd -n 2>/dev/null &
-exec cage -- chromium \
-    --kiosk --no-first-run --disable-translate --noerrdialogs \
-    --no-sandbox --disable-gpu-shader-disk-cache \
-    --user-data-dir=/run/kiosk/chromium "$1"
+LIB_DIR=${LIB_DIR:-/usr/lib/imagectl}
+export LIB_DIR
+. "$LIB_DIR/guibridge.sh"
+gui_main "$@"
 EOF
     chmod 0755 "$ROOT/usr/bin/imagectl-kiosk"
 fi
@@ -433,6 +473,19 @@ done
 # חומרה ולא בבנייה, וב-#121 זה קרה שוב למערכות הקבצים.
 # כולם נאספים לפני ההודעה, כדי שלא יתגלו אחד-אחד בשש בנייות.
 _missing=""
+# Intel watchdogs are optional (software recovery remains available). The
+# LPC bridge registers the TCO device on older HP boards; it is not a
+# module dependency of iTCO_wdt, so copy it explicitly as well.
+for _mod in iTCO_wdt lpc_ich; do
+    _hit=$(find "$MODSRC" -name "$_mod.ko*" | head -1)
+    if [ -n "$_hit" ]; then
+        _rel=${_hit#"$MODSRC"/}
+        mkdir -p "$ROOT/lib/modules/$KVER/$(dirname "$_rel")"
+        cp -a "$_hit" "$ROOT/lib/modules/$KVER/$_rel"
+    else
+        echo "optional watchdog module $_mod absent (may be built-in); software fallback available" >&2
+    fi
+done
 for _mod in "${REQUIRED_MODULES[@]}" "${REQUIRED_FS_MODULES[@]}"; do
     _hit=$(find "$MODSRC" -name "$_mod.ko*" | head -1)
     if [ -z "$_hit" ]; then
@@ -503,6 +556,8 @@ _phy_mods=$(find "$ROOT/lib/modules/$KVER/kernel/drivers/net/phy" \
     printf '%s\n' usbcore xhci_hcd xhci_pci ehci_hcd ehci_pci
     printf '%s\n' ohci_hcd ohci_pci uhci_hcd
     printf '%s\n' ahci nvme sd_mod uas usb-storage hv_vmbus hv_storvsc
+    # Optional Intel TCO hardware recovery; dependencies follow modules.dep.
+    printf '%s\n' lpc_ich iTCO_wdt
     # בקרי הדיסק של ESXi, ‏KVM ו-Xen. ‏`virtio_pci` הוא built-in, ולכן
     # האפיק כבר שם כשאלה נטענים (#78).
     printf '%s\n' vmw_pvscsi virtio_scsi virtio_blk xen-blkfront
