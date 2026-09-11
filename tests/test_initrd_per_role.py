@@ -67,8 +67,9 @@ def initrd_lines(text: str) -> list[str]:
 
 
 #: כל מסלול שבו נוצר ערך `menuentry "ImageCtl"` — כלומר כל מסלול שבו
-#: יש בכלל שורת initrd בקובץ. שלושת הראשונים מגיעים ל-AGENT, האחרון
-#: הוא התפריט הגלוי של #140 שגם בו יש ערך ImageCtl.
+#: יש בכלל שורת initrd בקובץ. מ-#641 כל ארבעת המסלולים (כולל no-task)
+#: מגיעים ל-AGENT עבור build/classroom, ובכולם ערך ה-ImageCtl נטען
+#: מה-initramfs של התפקיד.
 AGENT_ROUTES = [
     pytest.param({}, id="no-task"),
     pytest.param({"task": {"id": "tsk_0091"}}, id="task-assigned"),
@@ -180,12 +181,14 @@ def test_the_default_config_has_no_gui_path():
 
 
 @pytest.mark.parametrize("role", ["build", "classroom"])
-def test_the_gui_roles_keep_everything_else_from_140(role):
-    """‏#140 ו-#144 לא זזו: תפריט גלוי בלי טיימר, הדיסק המקומי לצדו,
-    ובדיוק שני ערכים. ‏#32 נוגע בשורת ה-initrd ובה בלבד."""
+def test_the_gui_roles_keep_everything_else_around_the_initrd(role):
+    """‏#641 שינה את האתחול לאוטומטי (`default=imagectl`, `timeout=0`),
+    אבל #144 לא זז — שני ערכים, הדיסק המקומי לצד ImageCtl — ו-#32 נוגע
+    בשורת ה-initrd ובה בלבד."""
     text = render(answer(role=role), CFG)
-    assert "set timeout=-1" in text
-    assert "set timeout_style=menu" in text
+    assert "set timeout=0" in text
+    assert "set timeout_style=hidden" in text
+    assert "set default=imagectl" in text
     assert text.count("menuentry ") == 2
     assert "--id local {" in text
     assert "chainloader" in text

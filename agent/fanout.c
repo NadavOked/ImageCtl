@@ -7,11 +7,13 @@
  * round that is not a rare case, it is a nightly one.
  *
  * So each target gets its own bounded queue and is written non-blocking.
- * A target that cannot keep up *while the others do* fills its queue and is
- * dropped -- reported as failed, by name, while the others carry on at full
- * speed. When every queue is full the stream itself is too fast for the
- * drives, and fanout blocks instead: that backpressure is what slows the
- * multicast sender down (#23).
+ * When any live target's queue is full the stream is too fast for that drive,
+ * and fanout blocks the reader until it drains: the stream is paced by the
+ * slowest live drawer, and that backpressure is what slows the multicast
+ * sender down (#23, #660). A slow drawer is never dropped -- the whole
+ * machine follows it, the way udp-sender waits for a slow receiver rather
+ * than evicting it (#657). Only a write error -- a reader that has gone,
+ * EPIPE -- fails a single target, while the others carry on.
  *
  * The rule that shapes the whole program: never discard a block and let the
  * target continue. Multicast cannot resend, so a target that missed bytes can
@@ -48,25 +50,23 @@
  *
  *   open()ing a fifo        -> OPEN_RETRY_MS   (and O_NONBLOCK, so the call
  *                                               itself never blocks)
- *   room for the next block -> ROOM_GRACE_MS   (charged only to the drawer
- *                                               that is actually the holdup)
- *   nothing drains at all   -> DRAIN_STALL_MS  (both in make_room and in the
- *                                               final drain loop)
- *   poll() for writability  -> ROOM_POLL_MS / 200ms, never infinite
+ *   poll() for writability  -> ROOM_POLL_MS, never infinite
  *
- * The one wait without a ceiling of its own is read(stdin): a stream that
- * stops arriving is not something this program can distinguish from a stream
- * that is merely slow. Its ceiling lives one process up, in the shell --
- * wait_progress() in agent/lib/waits.sh watches the pv counter that feeds
- * this stdin and kills the pipeline when it stops moving. Named here so the
- * next reader does not have to go looking for it.
+ * What has no ceiling of its own, by design (#660): make_room() blocks the
+ * reader for as long as a live drawer needs to drain. A slow drawer is not
+ * dropped -- it sets the pace, and the stream follows it. "Too slow" cannot
+ * be told from "broken" by elapsed time in this file, and trying to cost
+ * healthy-but-slow drives on metal (2026-09-11); a genuinely dead drawer is
+ * caught one process up instead -- wait_progress() in agent/lib/waits.sh
+ * watches the pv counter feeding this stdin and kills the pipeline when it
+ * stops moving, and partclone's own exit status fails a drawer whose fsync
+ * dies (drawers.sh, verdict.sh). Named here so the next reader knows the
+ * ceiling is there, just not in this file.
  */
 #define MAX_TARGETS 8
 #define READ_CHUNK (1024 * 1024)
 #define OPEN_RETRY_MS 5000      /* how long to wait for a reader on a fifo */
-#define ROOM_GRACE_MS 500       /* how long a full target may take to make room */
 #define ROOM_POLL_MS 20
-#define DRAIN_STALL_MS 30000    /* a target that takes nothing for this long is dead */
 #define COUNTER_SUFFIX ".bytes" /* the per-target progress counter, next to the fifo */
 #define COUNTER_MS 1000         /* how often it is refreshed (the report goes out every 2s) */
 
@@ -81,7 +81,6 @@ struct target {
     size_t len;         /* bytes queued */
     int alive;
     const char *reason;
-    long long held_ms;  /* accumulated ms it held the stream back while others were ready */
     long long taken;    /* bytes handed to this target's pipeline, for the counter */
     int cfd;            /* the counter file, or -1 when it could not be opened */
 };
@@ -123,14 +122,15 @@ static void fail_target(struct target *t, const char *reason)
     t->buf = NULL;
 }
 
-/* Queue a block for one target. Returns 0 on success, -1 if it no longer
- * fits -- which is the moment the target is declared failed. */
+/* Queue a block for one target. make_room() has already guaranteed the room,
+ * so a target that still does not fit is an internal invariant break, not a
+ * slow drive -- said plainly rather than blamed on the disk (#660). */
 static int enqueue(struct target *t, const char *data, size_t n)
 {
     if (!t->alive)
         return 0;
     if (t->len + n > t->cap) {
-        fail_target(t, "buffer overrun (drive too slow)");
+        fail_target(t, "internal error (queue capacity invariant)");
         return -1;
     }
     size_t tail = (t->head + t->len) % t->cap;
@@ -245,88 +245,32 @@ static void write_counters(int force)
     }
 }
 
-/* Make sure every living target has room for the next block.
+/* Block the reader until every live target has room for the next n bytes.
  *
- * The queue is there to absorb jitter, not to make a slow drive look fast.
- * But "too slow" is only meaningful *relative to the other drawers*, and the
- * measure is how long the stream waits *because of this target* -- not
- * whether its next block happens to fit. The stream waits because of one
- * target only when every other drawer is already ready: then it alone is
- * what the next block is missing. While two or more are short the stream is
- * simply faster than the drives -- a fast network, or a VM lab where the
- * wire is memory -- and the right move is to block: that backpressure
- * reaches udp-receiver and udpcast's flow control slows the sender (#23).
+ * This is the whole back-pressure policy (#660): the stream advances only as
+ * fast as the slowest live drawer drains, the way tee paces to its slowest
+ * output -- but per-drawer and non-blocking, so a drawer that has already
+ * write-errored is out and never waited on. Called with n == cap at EOF, it
+ * drains every live ring to empty before the counts are finalised.
  *
- * And the debt is paid back at the rate it was charged. Equally slow drawers
- * take turns being the last one ready, a few milliseconds at a time; without
- * repayment that jitter integrates and every drawer but one is eventually
- * failed for being briefly out of phase with its neighbours (#45). A drawer
- * that really is the slow one is short far more often than not, so it still
- * reaches the grace and still fails, by name and in the open.
- *
- * A machine whose drives all stopped is still caught: nothing drains for
- * DRAIN_STALL_MS and it is failed, never waited on for ever. */
+ * No drawer is failed here for being slow. "Too slow" cannot be told from
+ * "broken" by a clock in this loop, and trying cost healthy drives on metal
+ * (2026-09-11); the ceilings that catch a genuinely dead drawer live one
+ * process up (waits.sh) and in partclone's exit status, not here. */
 static void make_room(size_t n)
 {
-    long long now = now_ms();
-    long long prev = now;
-    long long last_drain = now;
-    size_t prev_queued = (size_t)-1;
     for (;;) {
-        int short_count = 0;              /* living targets the block does not fit */
-        int living = 0;
-        size_t queued = 0;
-        for (int i = 0; i < target_count; i++) {
-            struct target *t = &targets[i];
-            flush_target(t);
-            if (t->alive) {
-                living++;
-                queued += t->len;
-                if (t->len + n > t->cap)
-                    short_count++;
-            }
-        }
-        if (queued < prev_queued)
-            last_drain = now;             /* somebody took bytes */
-        prev_queued = queued;
-
-        long long delta = now - prev;
         int blocked = 0;
         for (int i = 0; i < target_count; i++) {
             struct target *t = &targets[i];
-            if (!t->alive)
-                continue;
-            int too_full = t->len + n > t->cap;
-            /* The stream is waiting on this drawer alone only if every other
-             * living drawer is already ready. A lone survivor is never "the
-             * holdup" -- there is nobody it could be holding up. */
-            int holding_up = too_full && short_count == 1 && living > 1;
-            if (holding_up) {
-                t->held_ms += delta;
-                if (t->held_ms >= ROOM_GRACE_MS) {
-                    fail_target(t, "buffer overrun (drive too slow)");
-                    continue;
-                }
-            } else if (t->held_ms > 0) {
-                t->held_ms -= delta;      /* not the holdup: work the debt off */
-                if (t->held_ms < 0)
-                    t->held_ms = 0;
-            }
-            if (!too_full)
-                continue;
-            /* Not being charged for the wait must never mean waiting for
-             * ever: a drawer nothing drains out of is failed regardless. */
-            if (!holding_up && now - last_drain >= DRAIN_STALL_MS) {
-                fail_target(t, "drawer stalled");
-                continue;
-            }
-            blocked = 1;
+            flush_target(t);
+            if (t->alive && t->len > t->cap - n)
+                blocked = 1;
         }
+        write_counters(0);
         if (!blocked)
             return;
-        prev = now;
         wait_writable(ROOM_POLL_MS);
-        now = now_ms();
     }
 }
 
@@ -361,7 +305,6 @@ int main(int argc, char **argv)
         t->head = t->len = 0;
         t->alive = 1;
         t->reason = NULL;
-        t->held_ms = 0;
         t->taken = 0;
         t->cfd = open_counter(t->path);
         if (!t->buf) {
@@ -407,35 +350,11 @@ int main(int argc, char **argv)
     }
     free(chunk);
 
-    /* Drain what is still queued for the targets that survived. A slow drive
-     * may take its time here -- nothing waits on it any more -- but one that
-     * stops taking bytes altogether is failed rather than waited on forever. */
-    size_t last_len[MAX_TARGETS];
-    long long last_progress[MAX_TARGETS];
-    for (int i = 0; i < target_count; i++) {
-        last_len[i] = targets[i].len;
-        last_progress[i] = now_ms();
-    }
-    while (alive_count() > 0) {
-        int pending = 0;
-        for (int i = 0; i < target_count; i++) {
-            struct target *t = &targets[i];
-            flush_target(t);
-            if (!t->alive || t->len == 0)
-                continue;
-            pending = 1;
-            if (t->len != last_len[i]) {
-                last_len[i] = t->len;
-                last_progress[i] = now_ms();
-            } else if (now_ms() - last_progress[i] > DRAIN_STALL_MS) {
-                fail_target(t, "stalled (no progress)");
-            }
-        }
-        write_counters(0);
-        if (!pending)
-            break;
-        wait_writable(200);
-    }
+    /* EOF: drain every byte still queued, on a slow drawer too. Nothing is
+     * failed here for taking its time -- the shell watchdog (waits.sh) and
+     * partclone's exit status are the ceilings on a drawer that is broken
+     * rather than slow (#660). */
+    make_room((size_t)cap);
 
     /* The last word on every counter is the exact total, not whatever the
      * one-second tick happened to catch. */

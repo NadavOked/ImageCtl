@@ -457,7 +457,7 @@ def test_the_console_wake_button_wakes_the_room_and_nothing_else(server):
     קבוצה אחרת, השרת מעיר את מחשבי השיכפול בלבד."""
     result = server["deploy"].post("/api/console/room/wake",
                                    json={"group_id": "grp_LAB1"})
-    assert result.status_code == 200 and result.json()["woken"] == 1
+    assert result.status_code == 200 and result.json()["sent"] == 1
     assert macs_of(server["woken"]) == {CLONER}      # לא הכיתה
 
 
@@ -541,5 +541,15 @@ def test_the_wake_endpoint_hands_the_reason_to_the_console(server):
     ב-`room.js` אינו מכוסה — אין JS test runner בריפו.
     """
     body = server["deploy"].post("/api/console/room/wake").json()
-    assert set(body) >= {"woken", "failed", "reasons"}
+    assert set(body) >= {"sent", "failed", "reasons"}
     assert body["failed"] == 0 and body["reasons"] == []
+
+
+def test_the_wake_endpoint_reports_sent_not_woken(server):
+    """‏#528 — המודול מונה `sent` (חבילות שיצאו), וה-API החזיר `woken`
+    (מכונות שהתעוררו). חבילת WoL היא UDP broadcast בלי ACK: `sendto`
+    שהצליח פירושו שהקרנל קיבל 102 בייט, ולא שמכונה קמה. השם `woken`
+    טען טענה שלא נמדדה (עיקרון 5), ולכן החזרתו חייבת להפיל את הטסט."""
+    body = server["deploy"].post("/api/console/room/wake").json()
+    assert "sent" in body            # השם שהמודול באמת מדד
+    assert "woken" not in body       # השם שטען התעוררות שלא נמדדה

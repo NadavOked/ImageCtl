@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -121,7 +122,7 @@ def run_path_check(tmp_path: Path, present: list[str]):
     root = tmp_path / "root"
     root.mkdir()
     paths = []
-    for rel in ("usr/lib/chromium", "usr/share/fonts/truetype/ibm-plex", "etc/fonts"):
+    for rel in ("usr/share/fontconfig", "usr/share/fonts/truetype/ibm-plex", "etc/fonts"):
         target = fake / rel
         if rel in present:
             target.mkdir(parents=True)
@@ -170,7 +171,7 @@ def test_a_package_apt_knows_but_cannot_install_counts_as_missing():
 
 def test_the_preflight_names_every_unavailable_package_at_once():
     """שלוש חסרות = הודעה אחת, לא שלוש בנייות של דקות כל אחת."""
-    absent = ("cage", CONTRIB_ONLY, "libgl1-mesa-dri")
+    absent = ("libpango-1.0-0", CONTRIB_ONLY, "libdrm2")
     done = run_preflight(unavailable=absent)
     assert done.returncode != 0
     for pkg in absent:
@@ -203,7 +204,7 @@ def test_the_build_stops_when_a_declared_path_is_missing_after_install(tmp_path:
     ככה נתיב גופן שגוי — ‏`opentype` במקום `truetype` — ייצר קיוסק
     בלי גופן עברי, מבנייה שנראתה נקייה לחלוטין.
     """
-    done, _ = run_path_check(tmp_path, present=["usr/lib/chromium", "etc/fonts"])
+    done, _ = run_path_check(tmp_path, present=["usr/share/fontconfig", "etc/fonts"])
     assert done.returncode != 0, "נתיב חסר דולג — בדיוק הבאג"
     assert "ibm-plex" in done.stderr, done.stderr
 
@@ -211,13 +212,13 @@ def test_the_build_stops_when_a_declared_path_is_missing_after_install(tmp_path:
 def test_the_missing_path_report_names_all_of_them_at_once(tmp_path: Path):
     done, _ = run_path_check(tmp_path, present=["etc/fonts"])
     assert done.returncode != 0
-    assert "chromium" in done.stderr, done.stderr
+    assert "fontconfig" in done.stderr, done.stderr
     assert "ibm-plex" in done.stderr, done.stderr
 
 
 def test_every_declared_path_is_copied_when_they_are_all_there(tmp_path: Path):
     """הצד החיובי: מה שהוצהר גם נארז, ולא רק נספר."""
-    everything = ["usr/lib/chromium", "usr/share/fonts/truetype/ibm-plex", "etc/fonts"]
+    everything = ["usr/share/fontconfig", "usr/share/fonts/truetype/ibm-plex", "etc/fonts"]
     done, root = run_path_check(tmp_path, present=everything)
     assert done.returncode == 0, done.stderr
     copied = [p.name for p in root.rglob("a-file")]
@@ -265,7 +266,98 @@ def test_the_packages_apt_installs_are_the_packages_that_were_checked():
     assert 'apt-get install -y --no-install-recommends "${GUI_PACKAGES[@]}"' in text
 
 
-@pytest.mark.parametrize("package", ["cage", "chromium", "seatd", "libgl1-mesa-dri"])
-def test_the_kiosk_binaries_still_have_their_packages_declared(package: str):
-    """‏`copy_bin cage` בלי `cage` ברשימה הוא כישלון שלוש דקות לתוך הבנייה."""
+@pytest.mark.parametrize("package", [
+    "fonts-ibm-plex", "fontconfig-config", "libpango-1.0-0",
+    "libpangocairo-1.0-0", "libpangoft2-1.0-0", "libcairo2", "libpixman-1-0",
+    "libharfbuzz0b", "libfribidi0", "libfreetype6", "libfontconfig1",
+    "libglib2.0-0t64", "libdrm2",
+])
+def test_native_runtime_packages_are_declared(package: str):
     assert package in declared_array("GUI_PACKAGES")
+
+
+def test_browser_packages_and_data_directories_are_not_packed():
+    assert not {"cage", "chromium", "seatd", "libgl1-mesa-dri", "libinput-bin",
+                "xkb-data"} & set(declared_array("GUI_PACKAGES"))
+    assert set(declared_array("GUI_PATHS")) == {
+        "/usr/share/fonts/truetype/ibm-plex", "/etc/fonts", "/usr/share/fontconfig",
+    }
+
+
+def run_native_pack(tmp_path: Path, fault: str = ""):
+    """Run the real optional GUI block with fake make/ldd, no compiler or apt."""
+    checkout = tmp_path / "checkout"
+    gui = checkout / "native-gui"
+    gui.mkdir(parents=True)
+    root = tmp_path / "root"
+    (root / "usr/bin").mkdir(parents=True)
+    fonts = tmp_path / "fonts"
+    fonts.mkdir()
+    faces = ["IBMPlexSansHebrew-Regular", "IBMPlexSansHebrew-Medium",
+             "IBMPlexSansHebrew-SemiBold", "IBMPlexSansHebrew-Bold",
+             "IBMPlexMono-Regular", "IBMPlexMono-Medium"]
+    for face in faces:
+        if fault != "font" or face != faces[-1]:
+            (fonts / f"{face}.ttf").write_text("font", encoding="utf-8")
+    (fonts / "unneeded.ttf").write_text("not packed", encoding="utf-8")
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / "fonts.conf").write_text("config", encoding="utf-8")
+    lib = tmp_path / "libnative.so.1"
+    lib.write_text("library", encoding="utf-8")
+    loader = tmp_path / "ld-linux.so.2"
+    loader.write_text("loader", encoding="utf-8")
+    text = BUILDER.read_text(encoding="utf-8")
+    block = text.split("# --- the kiosk (optional):", 1)[1]
+    block = block.split("# --- kernel modules and firmware", 1)[0]
+    block = block[block.index('if [ "$WITH_GUI" -eq 1 ]; then'):]
+    block = block.replace("/usr/share/fonts/truetype/ibm-plex", bash_path(fonts))
+    ldd_output = ("libmissing.so => not found" if fault == "library" else
+                  f"libnative.so.1 => {bash_path(lib)} (0x123)\n\t{bash_path(loader)} (0x456)")
+    make_body = ("return 9" if fault == "make" else "return 0" if fault == "binary" else
+                 'printf "#!/bin/sh\\nexit 0\\n" > "$GUI_DIR/imagectl-station-gui"; '
+                 'chmod +x "$GUI_DIR/imagectl-station-gui"')
+    script = f"""set -euo pipefail
+WITH_GUI=1
+SKIP_APT=1
+SCRIPT_DIR={bash_path(checkout / 'tools')!r}
+ROOT={bash_path(root)!r}
+GUI_PATHS=({bash_path(fonts)!r} {bash_path(config)!r})
+make() {{ {make_body}; }}
+ldd() {{ printf '%s\\n' {shlex.quote(ldd_output)}; }}
+{block}
+"""
+    # SCRIPT_DIR/../native-gui must resolve through an existing directory.
+    (checkout / "tools").mkdir()
+    done = subprocess.run([BASH, "-c", script], stdin=subprocess.DEVNULL,
+                          capture_output=True, encoding="utf-8", timeout=90)
+    return done, root, fonts, lib, loader
+
+
+def test_native_pack_includes_binary_closure_fonts_and_placeholder(tmp_path):
+    done, root, fonts, lib, loader = run_native_pack(tmp_path)
+    assert done.returncode == 0, done.stderr
+    assert (root / "usr/bin/imagectl-station-gui").is_file()
+    for source in (lib, loader):
+        assert (root / bash_path(source).lstrip("/")).read_bytes() == source.read_bytes()
+    packed_fonts = root / bash_path(fonts).lstrip("/")
+    assert len(list(packed_fonts.glob("*.ttf"))) == 6
+    assert not (packed_fonts / "unneeded.ttf").exists()
+    wrapper = (root / "usr/bin/imagectl-kiosk").read_text()
+    # The kiosk is now the native-GUI bridge (feat/native-gui): it sources
+    # guibridge.sh and enters gui_main, which owns --auth-cmd/--state/stdout.
+    assert '. "$LIB_DIR/guibridge.sh"' in wrapper
+    assert 'gui_main "$@"' in wrapper
+    assert "exec /usr/bin/imagectl-station-gui\n" not in wrapper
+    assert "--demo" not in wrapper
+
+
+@pytest.mark.parametrize("fault, message", [
+    ("make", ""), ("binary", "native GUI binary missing"),
+    ("library", "unresolved native GUI libraries"), ("font", "font face missing"),
+])
+def test_native_pack_stops_on_build_or_missing_runtime_files(tmp_path, fault, message):
+    done, root, *_ = run_native_pack(tmp_path, fault)
+    assert done.returncode != 0
+    assert message in done.stderr
+    assert not (root / "usr/bin/imagectl-kiosk").exists()

@@ -181,7 +181,7 @@ def create_agent_router(ctx: ServerContext,
         except ValueError:
             return _error(400, "body is not JSON", "bad_json")
         result = reports.ingest(ctx.conn, body if isinstance(body, dict) else {})
-        return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+        return JSONResponse(result, status_code=200 if (result.get("ok") or result.get("code") == "not_open") else 400)
 
     @router.get("/images/{image_id}/manifest")
     def image_manifest(image_id: str):

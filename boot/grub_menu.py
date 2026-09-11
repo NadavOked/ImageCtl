@@ -280,6 +280,33 @@ def decide(answer: object) -> Decision:
     # ידוע לשרת; ראו ROLES_WITH_NORMAL_ENTRY. בדיוק אחד מהדגלים דלוק.
     normal = role in ROLES_WITH_NORMAL_ENTRY
     code = "boot-loop-guard" if guarded else "no-task"
+
+    # ‏#641 (הכרעת נדב, 2026-09-10): היפוך #140. מחשב build/classroom רשום
+    # שאין לו משימה עולה **ישר ל-ImageCtl, אוטומטי לגמרי** — בלי מסך בחירה,
+    # בלי ESC, בלי טיימר. בחירת הדיסק המקומי עברה אל תוך מסך ה-ImageCtl
+    # עצמו. זה בדיוק המסלול שבו משימה/סבב פעיל מעלים את הסוכן (AGENT,
+    # ‏timeout=0, hidden, default=imagectl); ההבדל היחיד הוא הערך המתאים
+    # לתפקיד — ‏build מקבל את הערך הרגיל (build_console, #29), ו-classroom
+    # את ה-recovery (מסך הכניסה/בחירה, כי "רגיל" ב-classroom מחזיר local
+    # ומאתחל — #144). ‏offer_local נשאר דלוק כמו במסלול המשימה: הערך המקומי
+    # קיים בקובץ אך חבוי (timeout=0), והבחירה שאדם רואה היא של מסך ImageCtl.
+    #
+    # ‏`not guarded` בכוונה: כששומר לולאת האתחול (#75) ירה, המכונה **לא**
+    # תעלה אוטומטית אל מה שכבר לולא אותה — היא מקבלת את התפריט הגלוי כדי
+    # שטכנאי ייכנס לשחזור (ראו ROLES_WITH_NORMAL_ENTRY והטסטים של #75).
+    # תפקיד שאינו ב-ROLES_WITH_GUI (teacher/unknown וכו') אינו משתנה גם
+    # הוא ונשאר בתפריט הגלוי של #140.
+    if gui and not guarded:
+        return Decision(
+            AGENT,
+            code,
+            f"no task, auto-boot imagectl "
+            f"(role={role}, entry={'normal' if normal else 'recovery'})",
+            offer_local=True,
+            gui_screen=gui,
+            recovery_mode=not normal,
+        )
+
     return Decision(
         LOCAL,
         code,

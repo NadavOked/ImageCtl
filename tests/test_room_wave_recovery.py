@@ -44,6 +44,8 @@ from test_server_room import (          # noqa: F401 — ‏room_server הוא f
 pytest.importorskip("fastapi")
 
 IMAGE = "img_7f3a91"
+#: האישור בהקלדה שסגירת סבב דורשת (#581) — שם האימג' שהגל משדר.
+CONFIRM = {"confirm_name": "Office 2024 Standard"}
 
 
 # --- עזרים -------------------------------------------------------------------
@@ -124,7 +126,7 @@ def test_a_wave_closed_from_the_console_does_not_strand_the_round(room_server):
     _open_round(room_server, target=6)
     wave1 = cloner_hello(anon, CLONER1, ["S1", "S2"])["session"]["id"]
 
-    closed = room_server["deploy"].post(f"/api/console/sessions/{wave1}/close")
+    closed = room_server["deploy"].post(f"/api/console/sessions/{wave1}/close", json=CONFIRM)
     assert closed.status_code == 200, closed.text
     assert not _actives(ctx), "הגל לא נסגר — הטסט אינו בודק את מה שהוא מתאר"
 
@@ -219,7 +221,7 @@ def test_a_taken_slot_leaves_the_round_waiting_without_flooding_the_journal(
     anon, ctx, deploy = room_server["anon"], room_server["ctx"], room_server["deploy"]
     _open_round(room_server, target=6)
     wave1 = cloner_hello(anon, CLONER1, ["S1", "S2"])["session"]["id"]
-    closed = deploy.post(f"/api/console/sessions/{wave1}/close")
+    closed = deploy.post(f"/api/console/sessions/{wave1}/close", json=CONFIRM)
     assert closed.status_code == 200, closed.text
 
     # מישהו אחר תפס את חריץ המולטיקאסט היחיד בין לבין.
@@ -279,7 +281,7 @@ def test_a_wave_adopted_by_the_winner_is_not_closed_by_the_loser(
     anon, ctx, deploy = room_server["anon"], room_server["ctx"], room_server["deploy"]
     _open_round(room_server, target=6)
     wave1 = cloner_hello(anon, CLONER1, ["S1", "S2"])["session"]["id"]
-    closed = deploy.post(f"/api/console/sessions/{wave1}/close")
+    closed = deploy.post(f"/api/console/sessions/{wave1}/close", json=CONFIRM)
     assert closed.status_code == 200, closed.text
 
     def adopt(conn, wave_id, round_id):
@@ -307,7 +309,7 @@ def test_a_wave_nobody_points_at_is_not_left_holding_the_slot(
     anon, ctx, deploy = room_server["anon"], room_server["ctx"], room_server["deploy"]
     _open_round(room_server, target=6)
     wave1 = cloner_hello(anon, CLONER1, ["S1", "S2"])["session"]["id"]
-    closed = deploy.post(f"/api/console/sessions/{wave1}/close")
+    closed = deploy.post(f"/api/console/sessions/{wave1}/close", json=CONFIRM)
     assert closed.status_code == 200, closed.text
 
     def close_the_round(conn, _wave_id, round_id):

@@ -166,6 +166,7 @@ capture_disk() {
             curl -sfS --max-time 0 \
                 --speed-limit 1 --speed-time "$HTTP_STALL_TIMEOUT" \
                 -H "Content-Type: application/octet-stream" \
+                -H "X-Imagectl-Task-Token: ${TASK_TOKEN:-}" \
                 -T "$_out" \
                 "$SERVER/api/v1/capture/$_task/files/$_file" > "$RUN_DIR/up.$_idx.out" 2>> "$LOG_FILE"
             echo "$?" > "$RUN_DIR/up.$_idx.rc"
@@ -174,6 +175,17 @@ capture_disk() {
 
         rm -f "$RUN_DIR/sha.$_idx" "$RUN_DIR/pcl.$_idx.rc"
         _pcl=$(partclone_for_fs "$_fs")
+        # NTFS שכובה לא-נקי (fast-startup/hibernate של Windows) נושא דגל
+        # dirty, ו-partclone.ntfs מסרב לו ("scheduled for a check ... shutdown
+        # uncleanly"). זו הזרימה הרגילה: גלופת עבודה שהודלקה כדי לבדוק אותה.
+        # ‏-I/--ignore_fschk מורה ל-partclone לדלג על בדיקת העקביות ולקרוא
+        # את הווליום — עדיין בלוקים-בשימוש (קורא את ה-bitmap), לא raw כמו dd —
+        # בדיוק כפי ש-FOG/Clonezilla עושים, ו**קריאה בלבד**: הדיסק המקור לא
+        # נגע (#448, דרישת נדב "אל תיגע בגלופה"). ‏ntfsfix, לעומת זאת, *כותב*
+        # למקור כדי לנקות את הדגל — ולכן נפסל. הראיה הקובעת נשארת ה-rc של
+        # partclone עצמו (עיקרון 5); בלוק שאבד = כישלון גלוי (עיקרון 4).
+        _ignore=""
+        [ "$_fs" = ntfs ] && _ignore="-I"
         # ה-rc של partclone נלכד במפורש: ב-busybox ash אין pipefail, ו-$? של
         # הצינור הוא של sha256sum — שמצליח גם על קלט ריק, וככה כשל קריאה הפך
         # פעם לקובץ ריק "מוצלח" (נתפס במעבדה, #12). ברקע, עם עין על מונה ה-pv:
@@ -182,7 +194,7 @@ capture_disk() {
         # מתקדם לאט — ולכן המדד הוא חוסר התקדמות, לא משך.
         (
             # shellcheck disable=SC2046 # דגלי partclone_mode הם רשימת מילים
-            { "$_pcl" $(partclone_mode "$_pcl" -c) -s "$_node" \
+            { "$_pcl" $(partclone_mode "$_pcl" -c) $_ignore -s "$_node" \
                   -L "$RUN_DIR/targets/$_disk/partclone.log" 2>> "$LOG_FILE"
               echo "$?" > "$RUN_DIR/pcl.$_idx.rc"; } \
                 | zstd -"$CAPTURE_LEVEL" -T"$CAPTURE_THREADS" -c 2>> "$LOG_FILE" \
@@ -251,6 +263,7 @@ capture_disk() {
 upload_manifest() {
     # $1 = task id, $2 = manifest path.
     curl -sfS -X PUT -H "Content-Type: application/json" \
+        -H "X-Imagectl-Task-Token: ${TASK_TOKEN:-}" \
         --data-binary "@$2" \
         "$SERVER/api/v1/capture/$1/manifest" >> "$LOG_FILE" 2>&1
 }

@@ -172,7 +172,8 @@ def sourced_libs() -> str:
     """ספריות הסוכן שהמסלולים צריכים. ‏`hold.sh` נטענת **רק אם היא
     קיימת**: בקרה שלילית ש-`git stash` הוריד בה את קוד הסוכן חייבת
     ליפול על ההתנהגות ולא על קובץ חסר."""
-    names = ["common.sh", "jsonq.sh", "progress.sh", "ui.sh", "hold.sh"]
+    names = ["common.sh", "jsonq.sh", "progress.sh", "pull.sh",
+             "ui.sh", "hold.sh"]
     return "".join(f". {posix(AGENT)}/lib/{n}; "
                    for n in names if (AGENT / "lib" / n).exists())
 
@@ -443,21 +444,20 @@ def test_no_restore_path_sleeps_instead_of_reading_the_answer():
         assert "report_final" in body, f"‏{name} אינה קוראת את התשובה"
 
 
-@native_tools
 def test_the_answer_is_read_before_the_machine_leaves():
     """הסדר הוא כל העניין: קודם אישור, ורק אחריו אתחול או כיבוי."""
     station = agent_functions("do_restore")
     assert station.index("report_final") < station.index("reboot -f")
     room = agent_functions("do_restore_drawers")
-    assert room.index("report_final") < room.index("poweroff -f")
+    assert room.index("report_final") < room.index("finish_and_stop")
 
 
 @native_tools
 def test_all_three_closing_reports_go_through_one_mechanism():
     """הכלל הנכון היה מיושם במקום אחד מתוך שלושה, וכך הוא נשחק.
     ‏`pull_close` עובר עכשיו דרך אותה פונקציה בדיוק."""
-    progress = (AGENT / "lib" / "progress.sh").read_text(encoding="utf-8")
-    close = progress[progress.index("pull_close() {"):]
+    pull = (AGENT / "lib" / "pull.sh").read_text(encoding="utf-8")
+    close = pull[pull.index("pull_close() {"):]
     assert "report_final" in close
     agent = agent_functions("do_restore", "do_restore_drawers")
     assert agent.count("report_final") == 2
