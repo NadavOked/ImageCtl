@@ -30,7 +30,7 @@ def fanout(tmp_path_factory):
     binary = tmp_path_factory.mktemp("build") / "fanout"
     subprocess.run(
         ["gcc", "-O2", "-Wall", "-Wextra", "-Werror", "-o", str(binary), str(SOURCE)],
-        check=True,
+        check=True, stdin=subprocess.DEVNULL,
     )
     return binary
 
@@ -177,10 +177,14 @@ def test_a_counter_that_cannot_be_opened_does_not_fail_the_drive(fanout, tmp_pat
 # --- הלב: בידוד --------------------------------------------------------------
 
 
-def test_a_slow_drive_fails_alone_and_the_fast_ones_finish_intact(fanout, tmp_path):
-    """הדרישה מנספח ב': כונן איטי לא עוצר את המכונה.
+def test_a_slow_drive_slows_the_stream_and_keeps_every_byte(fanout, tmp_path):
+    """הכלל מ-#660 (וכמו #657 בצד השולח): מגירה איטית אינה נזרקת — היא
+    מאטה את כל הזרם, וכל מגירה חיה מקבלת כל בייט.
 
-    הכונן האיטי כאן איטי בסדרי גודל, כמו SSD זול שמיצה את מטמון ה-SLC.
+    זו גם הבקרה השלילית של #660: הקוד הישן היה מפיל את האיטית ב-buffer
+    overrun תוך גרייס אחד (ROOM_GRACE_MS), ואז report["sdc"] היה "failed"
+    וה-hash של האיטית היה חסר — בדיוק הכשל בריצת הברזל 11/09. האיטי כאן
+    קורא 64KiB כל 250ms (~256KB/s), הרבה מתחת לשני המהירים שלצדו.
     """
     data = os.urandom(8 * 1024 * 1024)
     fast_a, fast_b, slow = [], [], []
@@ -191,23 +195,16 @@ def test_a_slow_drive_fails_alone_and_the_fast_ones_finish_intact(fanout, tmp_pa
         reader(fifos[2], slow, delay=0.25),          # ~256KB/שנייה
     ]
 
-    started = time.monotonic()
     code, report, _ = run_fanout(fanout, fifos, data, buffer=str(1024 * 1024))
-    elapsed = time.monotonic() - started
     for t in threads:
-        t.join(timeout=30)
+        t.join(timeout=60)
 
-    assert code == 1                                  # משהו נכשל, לא הכל
-    assert report["sda"] == "ok" and report["sdb"] == "ok"
-    assert report["sdc"].startswith("failed")
-    assert "slow" in report["sdc"] or "buffer" in report["sdc"]
+    assert code == 0, report                          # אף אחד לא נפסל
+    assert report == {"sda": "ok", "sdb": "ok", "sdc": "ok"}, report
 
     digest = hashlib.sha256(data).hexdigest()
-    assert hashlib.sha256(b"".join(fast_a)).hexdigest() == digest
-    assert hashlib.sha256(b"".join(fast_b)).hexdigest() == digest
-
-    # והמדד שבגללו כל זה נכתב: המהירים לא חיכו לאיטי.
-    assert elapsed < 8, f"the fast drives were held back ({elapsed:.1f}s)"
+    for sink in (fast_a, fast_b, slow):
+        assert hashlib.sha256(b"".join(sink)).hexdigest() == digest
 
 
 def test_when_every_drive_is_slower_than_the_stream_nobody_is_failed(fanout, tmp_path):
@@ -232,13 +229,11 @@ def test_when_every_drive_is_slower_than_the_stream_nobody_is_failed(fanout, tmp
         assert hashlib.sha256(b"".join(sink)).hexdigest() == digest
 
 
-def test_a_drawer_slower_than_its_equally_slow_neighbours_still_fails_alone(fanout, tmp_path):
-    """הצד השני של המדיניות היחסית — עיקרון 4 (#45).
-
-    גם כאן *כל* השלושה איטיים מהזרם, ולכן הטסט הקודם לבדו היה מסתפק
-    ב"אף אחד לא נכשל". אבל אחד מהם איטי פי חמישה משכניו, והוא זה
-    שמעכב את הזרם בפועל — הוא חייב להיפסל בגלוי ולבד, ושני שכניו
-    חייבים לסיים עם כל בייט. "יחסי" הוא לא "סלחני".
+def test_a_laggard_among_slow_peers_is_not_dropped_either(fanout, tmp_path):
+    """הצד השני של #660: גם כשכל השלושה איטיים מהזרם ואחד מהם איטי פי
+    חמישה משכניו, האיטי אינו נפסל. הקוד הישן הפיל אותו לבד (#45); היום
+    כל השלושה מקבלים כל בייט, והזרם מתקדם בקצב האיטי ביותר. זו בקרה
+    שלילית נוספת: על הקוד הישן report["sdc"] היה "failed".
     """
     data = os.urandom(4 * 1024 * 1024)
     peer_a, peer_b, laggard = [], [], []
@@ -251,16 +246,14 @@ def test_a_drawer_slower_than_its_equally_slow_neighbours_still_fails_alone(fano
 
     code, report, _ = run_fanout(fanout, fifos, data, buffer=str(1024 * 1024))
     for t in threads:
-        t.join(timeout=30)
+        t.join(timeout=60)
 
-    assert code == 1, report
-    assert report["sda"] == "ok" and report["sdb"] == "ok", report
-    assert report["sdc"].startswith("failed"), report
-    assert "slow" in report["sdc"] or "buffer" in report["sdc"], report
+    assert code == 0, report
+    assert report == {"sda": "ok", "sdb": "ok", "sdc": "ok"}, report
 
     digest = hashlib.sha256(data).hexdigest()
-    assert hashlib.sha256(b"".join(peer_a)).hexdigest() == digest
-    assert hashlib.sha256(b"".join(peer_b)).hexdigest() == digest
+    for sink in (peer_a, peer_b, laggard):
+        assert hashlib.sha256(b"".join(sink)).hexdigest() == digest
 
 
 def test_a_drive_that_dies_mid_write_does_not_take_the_others_with_it(fanout, tmp_path):
@@ -308,7 +301,7 @@ def test_a_target_that_cannot_be_opened_is_reported_not_crashed(fanout, tmp_path
 
 @pytest.mark.parametrize("args", [[], ["1048576"], ["10", "/tmp/x"]])
 def test_bad_usage_exits_with_a_message(fanout, args):
-    result = subprocess.run([str(fanout), *args], capture_output=True, timeout=30)
+    result = subprocess.run([str(fanout), *args], capture_output=True, timeout=30, stdin=subprocess.DEVNULL)
     assert result.returncode == 2
     assert result.stderr
 

@@ -95,10 +95,21 @@ def build_answer(
     joining: bool = False,
     reported_ip: str | None = None,
     off_vlan: bool = False,
+    record_seen: bool = True,
 ) -> dict:
-    # כל מגע נרשם ברשימת ההתקנים, גם של מכונה שאינה רשומה בטבלה.
-    net_seen(conn, mac, reported_ip or client_ip,
-             disks_json=json.dumps(disks) if disks else None)
+    # כל מגע של המכונה נרשם ברשימת ההתקנים, גם של מכונה שאינה רשומה
+    # בטבלה — ככה מתגלה MAC לא מוכר, וזה חלק מעיקרון 1. ‏hello הוא POST
+    # שבו המכונה מדווחת על עצמה, ולכן הוא תמיד רושם (ברירת המחדל).
+    #
+    # ‏#585: ‏`record_seen=False` בא ממסלול **התפריט** מחוץ לווילן ההפצה.
+    # ‏`GET /boot/menu?mac=<MAC>` הוא בקשה בלי גוף ובלי עוגייה שכל פונה
+    # שולח; מחוץ לווילן ההפצה אין ראיה שהפונה הוא המכונה, ולכן אסור שהוא
+    # יקבע את ה-`ip`/`last_seen` שהשרת "מכיר" עבור אותו MAC — אחרת מכונה
+    # כבויה נראית חיה, וכל בינוי זהות עתידי שיסתמך על הכתובת הזו מעגלי.
+    # הרישום **אינו מופסק** — הוא רק מותנה בדיוק כמו ספירת האתחול (#536).
+    if record_seen:
+        net_seen(conn, mac, reported_ip or client_ip,
+                 disks_json=json.dumps(disks) if disks else None)
 
     machine = registry.lookup(conn, mac)
     if machine is None:
@@ -173,16 +184,47 @@ def build_answer(
     return answer
 
 
-def make_resolver(conn: sqlite3.Connection, library: ImageLibrary, store: SessionStore):
+def make_resolver(conn: sqlite3.Connection, library: ImageLibrary,
+                  store: SessionStore, server_base: str | None = None):
     """ה-Resolver ש-boot/http.py מצפה לו: (mac, client_ip) → ממשק 3.
 
     בלי הצטרפות ובלי דיסקים — תפריט אתחול רק שואל, לא מחייב.
+
+    ‏`scope` הוא של הבקשה הנוכחית, והוא כאן בשביל שאלה אחת בלבד: על
+    **איזו** מכתובות השרת היא התקבלה (‏#536). מי שמעביר אותו הוא
+    `server/app.py`, שקושר את ה-resolver מחדש בכל בקשה.
     """
 
-    def resolve(mac: str, client_ip: str | None) -> dict:
+    def resolve(mac: str, client_ip: str | None,
+                scope: dict | None = None) -> dict:
+        off_vlan = off_deploy_vlan(scope, server_base)
         answer = build_answer(
-            conn, library, store, mac, client_ip=client_ip, joining=False
+            conn, library, store, mac, client_ip=client_ip, joining=False,
+            # ‏#585: בקשת תפריט מחוץ לווילן ההפצה אינה כותבת `net_seen` —
+            # אותה הכרעה בדיוק כמו הספירה למטה, ומאותו טעם (‏MAC בשאילתה
+            # אינו זהות). על וילן ההפצה התפריט כן רושם, כמו היום.
+            record_seen=not off_vlan,
         )
+        if off_vlan:
+            # ‏#536: ‏MAC מהשאילתה אינו זהות. ‏`ATTEMPT_LIMIT` הוא 3,
+            # ולכן ארבע בקשות `GET /boot/menu?mac=<תחנה>` — בלי גוף,
+            # בלי עוגייה, בלי להיות המכונה — גמרו את תקציב האתחולים של
+            # תחנת כיתה חיה, והשומר שנועד להציל אותה מלולאה הוא זה
+            # שהוציא אותה מהסבב. מה שכן ניתן לאמת הוא על איזו כתובת
+            # מקומית הבקשה התקבלה, וזו בדיוק העמדה של #42: מחוץ לווילן
+            # ההפצה השרת אינו מגיש את שרשרת האתחול, ולכן בקשה כזו אינה
+            # ראיה שהוא שלח את המכונה הזו לסוכן.
+            #
+            # התשובה עצמה אינה משתנה — התראה ולא שער (‏#137), והתחנה
+            # שמושכת תפריט מרשת אחרת (תרחיש 3, ‏#39) ממשיכה לקבל את
+            # הסבב שלה. רק **הספירה** אינה מתרחשת.
+            #
+            # ‏`off_deploy_vlan` עונה False בכל ספק, ולכן ספק נספר כמו
+            # היום. זה **אינו** "לא הצלחנו לבדוק ולכן בסדר": כאן הכיוון
+            # הבטוח הוא לספור — שומר שאינו סופר אינו שומר (‏#75).
+            log.warning("boot menu for %s (from %s) did not arrive on the "
+                        "deployment vlan — served, not counted", mac, client_ip)
+            return answer
         # רק כאן, ולא ב-hello: בקשת התפריט היא האתחול, והיא גם הרגע
         # היחיד שבו אפשר להבטיח לאן ילך האתחול הבא (‏#75).
         return bootguard.guard(conn, mac, answer)

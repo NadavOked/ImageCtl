@@ -1,0 +1,191 @@
+/* Application state for every card of server/static/station/index.html
+ * and the hit-test table that drawing fills in. Layout lives in the
+ * screens_*.c files and registers where it put each clickable thing, so
+ * the event loop never re-derives geometry.
+ *
+ * Two kinds of state live here: what the operator did (typed, chose,
+ * opened) and what the agent said through the --state file (disks,
+ * machines, the running task). The second kind is the State struct and is
+ * replaced wholesale on every re-read; the first survives it. */
+#ifndef IMAGECTL_UI_H
+#define IMAGECTL_UI_H
+
+#include <cairo.h>
+#include "draw.h"
+#include "theme.h"
+
+#define MAX_HITS     96
+#define MAX_DISKS     8
+#define MAX_FOLDERS  32
+#define MAX_IMAGES   64
+#define MAX_MACHINES 32
+#define MAX_CLASSES  16
+
+enum {
+    HIT_NONE = 0,
+    HIT_THEME,          /* #st-theme */
+    HIT_USER,           /* #st-user */
+    HIT_PASS,           /* #st-pass */
+    HIT_EYE,            /* #st-eye */
+    HIT_SUBMIT,         /* .btn.primary "כניסה" */
+    HIT_CAPTURE,        /* #st-menu-capture */
+    HIT_RESTORE,        /* restore to this machine's disk (#382; no HTML id yet) */
+    HIT_ROOM,           /* #st-menu-room */
+    HIT_CLASSES,        /* #st-menu-classes */
+    /* #st-pick */
+    HIT_NAME,           /* #st-name */
+    HIT_DESC,           /* #st-desc */
+    HIT_FOLDER,         /* #st-folder (select) */
+    HIT_NEWFOLDER,      /* #st-newfolder "+ חדשה" */
+    HIT_FOLDER_NEW,     /* #st-folder-new */
+    HIT_START,          /* #st-start "התחל קליטה" */
+    HIT_BACK,           /* #st-back-capture / #room-back / #cls-back "חזרה" */
+    /* #st-done */
+    HIT_AGAIN,          /* #st-again "קליטה נוספת" */
+    /* #st-room (room.js) */
+    HIT_ROOM_IMAGE,     /* #room-image (select) */
+    HIT_ROOM_TARGET,    /* #room-target */
+    HIT_ROOM_OPEN,      /* #room-open */
+    HIT_ROOM_WAKE,      /* #room-wake */
+    HIT_ROOM_START,     /* #room-start */
+    HIT_ROOM_CLOSE,     /* #room-close */
+    HIT_ROOM_CONFIRM,   /* #room-confirm-text */
+    /* #st-class (classes.js) */
+    HIT_CLASS_START,    /* #cls-start */
+    HIT_CLASS_CLOSE,    /* #cls-close */
+    HIT_CLASS_CONFIRM,  /* #cls-confirm-text */
+    /* ranges: base + index */
+    HIT_DISK_BASE   = 100,   /* .disk-card[data-dev] */
+    HIT_CLASS_BASE  = 200,   /* .menu-card[data-class] */
+    HIT_OPTION_BASE = 300,   /* a row of the open <select> list */
+};
+
+typedef struct { Rect r; int id; } Hit;
+
+typedef enum {
+    SCREEN_LOGIN, SCREEN_MENU, SCREEN_PICK, SCREEN_PROGRESS, SCREEN_DONE,
+    SCREEN_ROOM, SCREEN_CLASS, SCREEN_MESSAGE
+} Screen;
+
+/* station.js MODE: null (menu) / "capture" / "room" / "classes" */
+typedef enum { MODE_MENU, MODE_CAPTURE, MODE_ROOM, MODE_CLASSES } Mode;
+
+typedef enum { TASK_NONE, TASK_PENDING, TASK_RUNNING, TASK_DONE, TASK_FAILED } TaskState;
+
+typedef struct { char dev[32], model[80]; unsigned long long size_bytes; int has_data, removable; } Disk;
+typedef struct { char id[64], name[96], folder[64]; } Image;
+typedef struct {
+    char name[64], mac[24], state[24], error[120];
+    int awake, joined, fresh_drawers;
+    int pct;            /* 0..100, or -1 when the total is unknown (Progress.view) */
+    int moving;         /* bytes_written > 0 -- distinguishes the two unknown states */
+} Machine;
+typedef struct { char id[64], label[80]; int machines; } ClassGroup;
+
+/* Everything the --state file can say. See README "The --state file". */
+typedef struct State {
+    Disk disks[MAX_DISKS];              int ndisks;
+    char folders[MAX_FOLDERS][64];      int nfolders;
+    Image images[MAX_IMAGES];           int nimages;
+    Machine machines[MAX_MACHINES];     int nmachines;
+    ClassGroup classes[MAX_CLASSES];    int nclasses;
+
+    /* the build machine's own task (station.js drawProgress / drawDone) */
+    TaskState task;
+    char task_name[96], task_disk[32], task_error[200];
+    int pct, moving, partition;         /* pct -1 = unknown total */
+    unsigned long long bytes;           /* bytes_written */
+    char title[128], sub[200];          /* overrides for #st-prog-title / #st-prog-sub */
+
+    /* message=title|sub forces #st-message (like !state.known) */
+    char msg_title[96], msg_sub[200];
+
+    /* room.js round */
+    int has_round; char round_image[96];
+    int wave_number, wave_open, written, target, ready, remaining;
+    /* classes.js live session */
+    int has_session; char sess_image[96], sess_prefix[32], sess_group[80];
+    int sess_open, joined, expected, starts_in;
+
+    char form_error[160], room_error[160], class_error[160], toast[160];
+} State;
+
+typedef struct App {
+    Screen screen;              /* derived by app_route() from the rest */
+    const Theme *theme;
+
+    char title[128];            /* #st-title */
+    char mac[40];               /* #st-mac  (dir=ltr, mono) */
+    char ip[48];                /* #st-ip */
+
+    /* login */
+    char user[64];
+    char pass[128];
+    int show_pw;                /* #st-eye toggled */
+    int focus;                  /* HIT id of the focused text field */
+    char error[200];            /* #st-login-error */
+
+    /* session */
+    int signed_in;              /* station.js SIGNED_IN */
+    char signed_user[64];       /* "מחוברים כ־<user>" */
+    int admin;                  /* station.js: capture card only for role admin */
+    int menu_focus;             /* keyboard focus among visible cards, -1 = none */
+    Mode mode;
+    int force_progress;         /* --screen progress: show it even with no task */
+    int watching;               /* #st-progress was on screen (drawDone trigger) */
+    int showing_done;           /* stay on #st-done until "קליטה נוספת" */
+    char done_title[64], done_sub[240];
+
+    /* #st-pick */
+    int chosen_disk;            /* index into st.disks, -1 = none (CHOSEN_DISK) */
+    char name[96], desc[160];
+    int folder_sel;             /* 0 = "ללא תיקייה", i = st.folders[i-1] */
+    int newfolder_shown;        /* #st-folder-new visible */
+    char folder_new[64];
+
+    /* #st-room */
+    int image_sel;              /* 0 = "בחרו אימג'…", i = st.images[i-1] */
+    char room_target[8];        /* #room-target, digits */
+    int room_target_set;        /* value seeded once per setup skeleton */
+    int room_confirming;        /* #room-confirm shown */
+    char room_confirm[96];
+
+    /* #st-class */
+    int class_confirming;
+    char class_confirm[96];
+
+    int dd_open;                /* HIT_FOLDER | HIT_ROOM_IMAGE, or 0 */
+
+    char toast[160];            /* #toast; empty = hidden */
+    double toast_until;         /* monotonic seconds */
+
+    State st;
+
+    /* pointer */
+    double ptr_x, ptr_y;
+    int ptr_visible;            /* a mouse moved; touch leaves no cursor */
+
+    Hit hits[MAX_HITS];
+    int nhits;
+    Rect clip; int clip_on;     /* .sbody overflow: hits outside are dropped */
+} App;
+
+/* Draw the whole screen into <cr> (W x H pixels) and rebuild the hit table. */
+void app_draw(App *a, cairo_t *cr, int W, int H);
+/* Which registered element is under (x, y); topmost wins. */
+int app_hit(const App *a, double x, double y);
+/* Decide a->screen from the task, the message, the session and the mode --
+ * the order of station.js poll(). Called before every draw. */
+void app_route(App *a);
+
+/* The screens (one file each group); called by app_draw. */
+void screen_login(App *a, cairo_t *cr, double W, double H, double head_h);
+void screen_menu(App *a, cairo_t *cr, double W, double H, double head_h);
+void screen_pick(App *a, cairo_t *cr, double W, double H, double head_h);
+void screen_progress(App *a, cairo_t *cr, double W, double H, double head_h);
+void screen_done(App *a, cairo_t *cr, double W, double H, double head_h);
+void screen_message(App *a, cairo_t *cr, double W, double H, double head_h);
+void screen_room(App *a, cairo_t *cr, double W, double H, double head_h);
+void screen_class(App *a, cairo_t *cr, double W, double H, double head_h);
+
+#endif

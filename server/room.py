@@ -112,11 +112,47 @@ def drawer_list(conn: sqlite3.Connection, mac: str, written: set[str],
             "dev": disk.get("dev"),
             "port": port if isinstance(port, int) and not isinstance(port, bool)
             else None,
+            # ‏#553: הסריאל והדגם הם מה שמזהה כונן **ביד**. ‏`port` אומר
+            # לאיזו מגירה ללכת; הסריאל אומר איזה כונן זה כשמחזיקים
+            # אותו — וכשאין `port` (‏NVMe, ‏VM, בקר לא-ATA) הוא כל מה
+            # שנשאר. שורת כשל בלי אחד מהם שולחת אדם לחפש.
+            "serial": disk.get("serial") or None,
+            "model": disk.get("model") or None,
             "fresh": bool(disk.get("serial")) and disk["serial"] not in written,
             "state": target.get("state"),
             "error": target.get("error"),
+            # ‏#552: המפעיל ראה ‏"0 of 5 written" במשך 75 דקות. המונה
+            # הזה סופר מגירות ש**סיימו**, ולכן הוא 0 גם כשהכול רץ מצוין
+            # וגם כשהכול תקוע — ואי-אפשר להבחין. הבייטים הם ההבחנה.
+            "bytes_written": _int(target.get("bytes_written")),
+            "bytes_total": _int(target.get("bytes_total")),
+            "stalled_s": _stalled_s(target.get("moved_at")),
         })
     return drawers
+
+
+def _int(value) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _stalled_s(moved_at: str | None) -> int | None:
+    """כמה שניות עברו מאז שהבייטים של המגירה הזאת גדלו — ‏`None` כשלא ידוע.
+
+    ⚠️ **‏`None` ו-`0` הם שני מצבים שונים ואסור לקפל אותם.** ‏`0` הוא
+    "נמדד, והמגירה זזה עכשיו"; ‏`None` הוא "אין חותמת" — מגירה שטרם
+    דיווחה, או שרת שהתחיל לפני שהשדה הזה קיים. מסך שמצייר `None`
+    כאפס מציג "הכול זז" על מגירה שלא נמדדה כלל (עיקרון 5).
+    """
+    if not moved_at:
+        return None
+    try:
+        moved = datetime.fromisoformat(moved_at)
+    except (TypeError, ValueError):
+        return None
+    return max(0, int((datetime.now(timezone.utc) - moved).total_seconds()))
 
 
 def ready_drives(conn: sqlite3.Connection, store: SessionStore,
@@ -168,16 +204,42 @@ def open_round(ctx, image_id: str, target_drives: int, user: str) -> dict:
     return {"id": round_id, "wave_session_id": wave_id}
 
 
-def close_round(ctx, user: str) -> None:
+def round_label(ctx, round_row: sqlite3.Row) -> str:
+    """שם הסבב כפי שהמפעיל רואה אותו — שם האימג' שהוא משדר.
+
+    לסבב אין שם משלו: יש `id` אקראי שאינו מופיע על שום מסך, ומספר גל
+    שהוא ספרה. מה שהמפעיל **קורא** בכותרת הוא שם האימג', וזה מה שהוא
+    מקליד כדי לעצור (עיקרון 7). הנפילה חזרה ל-`image_id` היא אותה
+    נפילה בדיוק כמו ב-`status_view` — **מקום אחד**, אחרת סבב שהאימג'
+    שלו נמחק באמצע היה בלתי-ניתן לעצירה.
+    """
+    manifest = ctx.library.get(round_row["image_id"])
+    return manifest["name"] if manifest else round_row["image_id"]
+
+
+def close_round(ctx, user: str, confirm_name: str) -> None:
     round_row = active_round(ctx.conn)
     if round_row is None:
         raise SessionError("אין סבב חדר פעיל")
+    # פעולה הרסנית מאחורי הקלדת שם — אותו דפוס כמו מחיקת אימג'
+    # (`console_library.delete_image`), ובאותה שורה באפיון. לפני #533
+    # ‏POST ריק עם עוגייה תקפה הרג משדר חי, וההקלדה נאכפה במסך בלבד.
+    if confirm_name != round_label(ctx, round_row):
+        raise ValueError("השם שהוקלד אינו זהה לשם האימג' שהסבב משדר")
     wave = ctx.conn.execute(
         "SELECT id, state FROM sessions WHERE id = ?",
         (round_row["wave_session_id"],),
     ).fetchone()
     if wave is not None and wave["state"] in ("open", "running"):
         ctx.store.close(wave["id"], user)
+    # store.close קורא on_closed → sender.stop רק כשהגל עוד open/running.
+    # גל שכבר סגור (או חסר) היה מחזיר ok והמשדר נשאר חי (#439).
+    left = ctx.sender.stop()
+    if left is not None:
+        who = f"PID {left}" if left > 0 else "לא הצלחנו לוודא שהוא מת"
+        raise SessionError(
+            f"udp-sender עדיין רץ ({who}) אחרי ניסיון העצירה — הסבב לא נסגר"
+        )
     ctx.conn.execute(
         "UPDATE room_rounds SET state = 'closed', closed_at = ? WHERE id = ?",
         (now_iso(), round_row["id"]),
@@ -189,8 +251,10 @@ def close_round(ctx, user: str) -> None:
 
 
 def tick(conn: sqlite3.Connection, store: SessionStore) -> None:
-    """מקדם את מכונת המצבים של הסבב. נקרא מכל hello של מחשב שיכפול
-    ומכל משיכת מצב של המסך — אין לו תהליכון משלו."""
+    """Advance on cloner hellos, never on screen reads.
+
+    With no hello, an idle room waits. No timer or additional SQLite writer.
+    """
     round_row = active_round(conn)
     if round_row is None:
         return
@@ -461,6 +525,39 @@ def _is_awake(last_seen: str | None) -> bool:
     return datetime.now(timezone.utc) - seen <= timedelta(seconds=AWAKE_SECONDS)
 
 
+#: מעל כמה שניות בלי תנועה מגירה נחשבת עצורה. נגזר מ-1,896 דגימות
+#: של סבב 08/09: מגירה בריאה עצרה עד 120 שניות. אותו מספר כמו
+#: ‏`ROOM_STALL_S` בסוכן, וכאן הוא משמש רק להכרעה שלמטה.
+STALL_SECONDS = 180
+
+
+def _stream_stalled(machines: list[dict]) -> bool:
+    """האם **כל** המגירות הכותבות עצרו יחד — כלומר הזרם, לא הכונן.
+
+    ⚠️ **זו ההבחנה ש-`fanout` אינו יכול לעשות, והשרת כן.** ‏`fanout`
+    רואה מגירה אחת, ולכן כשהיא נעצרת הוא מסיק `drive too slow`
+    ומאשים אותה. בסבב 08/09 זה היה שגוי: נמדד ש**ארבע המגירות
+    הבריאות קפאו באותן דגימות בדיוק** — ‏81%–100% חפיפה — ‏**כולל
+    שתי מגירות במכונה פיזית אחרת.** ‏26 דגימות שבהן כל החמש עצרו.
+
+    ‏Garbage collection של כונן אינו מסתנכרן עם כונן במארז אחר.
+    מקור משותף פירושו סיבה משותפת, ותווית "כונן תקוע" על עצירת זרם
+    שולחת אדם להחליף חומרה תקינה — בדיוק הבאג שהמסך הזה בא לתקן.
+
+    פחות משתי מגירות כותבות = אין רוב, ואין מה להסיק (עיקרון 5):
+    מגירה בודדת שעצרה היא **המגירה**, ואין ראיה לזרם.
+    """
+    writing = [d for m in machines for d in m.get("drawer_list", [])
+               if d.get("state") == "writing"]
+    if len(writing) < 2:
+        return False
+    # ‏`None` אינו "לא עצורה" — הוא "לא נמדד". מגירה שלא נמדדה אינה
+    # יכולה להשתתף בהכרעה שכולן עצרו.
+    if any(d.get("stalled_s") is None for d in writing):
+        return False
+    return all(d["stalled_s"] >= STALL_SECONDS for d in writing)
+
+
 def status_view(ctx) -> dict:
     """מה שמסך החדר מציג: המכונות, המגירות, והסבב אם יש."""
     round_row = active_round(ctx.conn)
@@ -493,17 +590,17 @@ def status_view(ctx) -> dict:
             "error": member["error"] if member else None,
         })
 
-    view = {"round": None, "machines": machines}
+    view = {"round": None, "machines": machines,
+            "stream_stalled": _stream_stalled(machines)}
     if round_row is not None:
         wave = ctx.conn.execute(
             "SELECT state FROM sessions WHERE id = ?",
             (round_row["wave_session_id"],),
         ).fetchone()
-        manifest = ctx.library.get(round_row["image_id"])
         view["round"] = {
             "id": round_row["id"],
             "image_id": round_row["image_id"],
-            "image_name": manifest["name"] if manifest else round_row["image_id"],
+            "image_name": round_label(ctx, round_row),
             "target_drives": round_row["target_drives"],
             "written_drives": round_row["written_drives"],
             "remaining_drives": round_row["target_drives"] - round_row["written_drives"],
@@ -533,7 +630,7 @@ def create_room_router(ctx, wake=None) -> APIRouter:
 
     @router.get("")
     def status(user=Depends(current_user)):
-        tick(ctx.conn, ctx.store)
+        # Observation is never a room state-machine event (#446).
         return status_view(ctx)
 
     @router.post("")
@@ -564,21 +661,35 @@ def create_room_router(ctx, wake=None) -> APIRouter:
     def wake_room(user=Depends(room_operator)):
         if wake is None:
             raise HTTPException(503, "WoL אינו מחובר בשרת הזה")
-        woken = wake()
-        journal(ctx.conn, "wol_sent", f"{CLONERS_GROUP} count={woken}", user[0])
+        sent = wake()
+        journal(ctx.conn, "wol_sent", f"{CLONERS_GROUP} count={sent}", user[0])
+        # ‏`sent` ולא `woken`: חבילת WoL היא UDP broadcast בלי ACK —
+        # ‏`sendto` שהצליח פירושו שהקרנל קיבל 102 בייט, ותו לא. אין
+        # ראיה שהמכונה קמה, והשם `woken` טען טענה שלא נמדדה (#528;
+        # המודול עצמו מונה `sent`). הראיה החיובית להתעוררות היא hello
+        # שמגיע בחלון — וזו הכרעה נפרדת.
         # הסיבה עולה למסך ולא רק ליומן: "0 מחשבים" בלי הסבר שולח את
         # הטכנאי לחפש WoL ב-BIOS של 12 מכונות, כשהסיבה היא כבל אחד
         # בשרת (#74). ‏getattr — שולח מוזרק בטסטים עשוי להחזיר int רגיל.
-        return {"woken": int(woken),
-                "failed": len(getattr(woken, "failed", ())),
-                "reasons": list(getattr(woken, "reasons", ()))}
+        return {"sent": int(sent),
+                "failed": len(getattr(sent, "failed", ())),
+                "reasons": list(getattr(sent, "reasons", ()))}
 
     @router.post("/close")
-    def close_(user=Depends(room_operator)):
+    async def close_(request: Request, user=Depends(room_operator)):
+        # גוף ריק או לא-JSON הוא בדיוק המקרה שההקלדה נועדה לתפוס, ולכן
+        # הוא נופל לאישור ריק — 400 עם ההסבר, ולא 500 שנראה כתקלת שרת.
         try:
-            close_round(ctx, user[0])
-        except SessionError as exc:
+            body = await request.json()
+        except Exception:                              # noqa: BLE001
+            body = {}
+        typed = body.get("confirm_name", "") if isinstance(body, dict) else ""
+        try:
+            close_round(ctx, user[0], typed)
+        except SessionError as exc:       # לפני ValueError — הוא יורש ממנו
             raise HTTPException(409, str(exc))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
         return {"ok": True}
 
     return router

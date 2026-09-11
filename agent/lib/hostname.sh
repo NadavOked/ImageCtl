@@ -168,3 +168,28 @@ compose_hostname() {
     printf '%s-%s' "$(printf '%s' "$1" | tr 'a-z' 'A-Z')" \
                    "$(printf '%s' "$2" | tr 'a-z' 'A-Z')"
 }
+
+# --- שלב השם במשימה --------------------------------------------------------
+
+# ‏#539: הפונקציה ישבה ב-`imagectl-agent` עד שהקובץ נגע בקיר 300 של
+# `sizelimit`, ותוספת האסימון של #530 חצתה אותו. הקיר הזה בנוי
+# בדיוק נגד הפתרון הקל — ‏#478 "נפתר" בכך שהחציה הועברה לקובץ אחר —
+# ולכן הפיצול כאן ולא דחיסת שורות. המקום נבחר כי `compose_hostname`
+# ו-`write_hostname` כבר כאן, ו-`RESP` כבר נקרא ב-libs אחרים
+# (`classround.sh`, `ui.sh`). האתר שקורא לה נשאר במסלול השחזור.
+name_this_machine() {
+    # $1 = disk, $2 = session id. Never fatal: an image that boots with the
+    # wrong name is fixable in a minute; one that does not boot is not.
+    _prefix=$(json_get "$RESP" ".session.prefix")
+    _suffix=$(json_get "$RESP" ".group.suffix")
+    if [ "$_prefix" = "null" ] || [ "$_suffix" = "null" ]; then
+        log "no prefix/suffix in the server answer -- skipping the hostname"
+        return 0
+    fi
+    echo "naming" > "$RUN_DIR/state"
+    _name=$(compose_hostname "$_prefix" "$_suffix")
+    _result=$(write_hostname "$1" "$RUN_DIR/manifest.json" "$_name")
+    echo "$_result" > "$RUN_DIR/hostname.json"
+    log "hostname: $_result"
+    echo "done" > "$RUN_DIR/state"
+}

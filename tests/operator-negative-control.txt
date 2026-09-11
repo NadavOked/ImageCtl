@@ -1,0 +1,601 @@
+✖ capture reports absent compressed total, never a measured zero (541.5985ms)
+✖ partclone block progress is a separate, partition-scoped denominator (441.7896ms)
+✖ unreadable partclone progress is explicitly absent (437.0897ms)
+✖ a new partition never inherits the previous block counter (433.4198ms)
+✖ zero and contradictory block totals remain unknown (455.5333ms)
+✔ restore preserves a known compressed total (438.9359ms)
+✖ capture pipeline reports block counts and keeps compressed bytes cumulative (2688.9013ms)
+✖ library.js: unknown undefined differs from zero progress (24.9856ms)
+✖ library.js: unknown null differs from zero progress (2.2886ms)
+✖ library.js: unknown 0 differs from zero progress (2.6621ms)
+✔ library.js: known zero, halfway, and complete stay determinate (3.1439ms)
+✖ library.js: source blocks name the partition and do not use compressed bytes (1.1843ms)
+✖ library.js: invalid denominator stays unknown (1.1174ms)
+✖ console.js: unknown undefined differs from zero progress (23.0339ms)
+✖ console.js: unknown null differs from zero progress (2.1834ms)
+✖ console.js: unknown 0 differs from zero progress (2.2137ms)
+✔ console.js: known zero, halfway, and complete stay determinate (3.4298ms)
+✖ console.js: source blocks name the partition and do not use compressed bytes (1.2399ms)
+✖ console.js: invalid denominator stays unknown (1.2353ms)
+✖ station/station.js: unknown undefined differs from zero progress (12.7988ms)
+✖ station/station.js: unknown null differs from zero progress (1.8967ms)
+✖ station/station.js: unknown 0 differs from zero progress (1.6986ms)
+✔ station/station.js: known zero, halfway, and complete stay determinate (3.399ms)
+✖ station/station.js: source blocks name the partition and do not use compressed bytes (1.0763ms)
+✖ station/station.js: invalid denominator stays unknown (0.9001ms)
+✖ station/room.js: unknown undefined differs from zero progress (40.6732ms)
+✖ station/room.js: unknown null differs from zero progress (1.6614ms)
+✖ station/room.js: unknown 0 differs from zero progress (1.5459ms)
+✔ station/room.js: known zero, halfway, and complete stay determinate (2.3551ms)
+✖ station/room.js: source blocks name the partition and do not use compressed bytes (0.9532ms)
+✖ station/room.js: invalid denominator stays unknown (0.8695ms)
+✖ station/classes.js: unknown undefined differs from zero progress (39.0539ms)
+✖ station/classes.js: unknown null differs from zero progress (2.4127ms)
+✖ station/classes.js: unknown 0 differs from zero progress (1.6983ms)
+✔ station/classes.js: known zero, halfway, and complete stay determinate (2.6416ms)
+✖ station/classes.js: source blocks name the partition and do not use compressed bytes (1.261ms)
+✖ station/classes.js: invalid denominator stays unknown (1.2316ms)
+ℹ tests 37
+ℹ suites 0
+ℹ pass 6
+ℹ fail 31
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 5535.49
+
+✖ failing tests:
+
+test at tests\capture_progress.test.cjs:27:1
+✖ capture reports absent compressed total, never a measured zero (541.5985ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  0 !== null
+  
+      at TestContext.<anonymous> (C:\ImageCtl-wt-operator\tests\capture_progress.test.cjs:33:10)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1382:25)
+      at Test.start (node:internal/test_runner/test:1242:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:387:17) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 0,
+    expected: null,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at tests\capture_progress.test.cjs:36:1
+✖ partclone block progress is a separate, partition-scoped denominator (441.7896ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+  + undefined
+  - {
+  -   blocks_read: 118,
+  -   blocks_total: 1000,
+  -   partition: 3
+  - }
+  
+      at TestContext.<anonymous> (C:\ImageCtl-wt-operator\tests\capture_progress.test.cjs:41:10)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1382:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:960:18)
+      at Test.postRun (node:internal/test_runner/test:1522:19)
+      at Test.run (node:internal/test_runner/test:1447:12)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: { partition: 3, blocks_read: 118, blocks_total: 1000 },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at tests\capture_progress.test.cjs:46:1
+✖ unreadable partclone progress is explicitly absent (437.0897ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  
+  + undefined
+  - null
+  
+      at TestContext.<anonymous> (C:\ImageCtl-wt-operator\tests\capture_progress.test.cjs:50:10)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1382:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:960:18)
+      at Test.postRun (node:internal/test_runner/test:1522:19)
+      at Test.run (node:internal/test_runner/test:1447:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: null,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at tests\capture_progress.test.cjs:53:1
+✖ a new partition never inherits the previous block counter (433.4198ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  
+  + undefined
+  - null
+  
+      at TestContext.<anonymous> (C:\ImageCtl-wt-operator\tests\capture_progress.test.cjs:57:10)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1382:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:960:18)
+      at Test.postRun (node:internal/test_runner/test:1522:19)
+      at Test.run (node:internal/test_runner/test:1447:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: null,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at tests\capture_progress.test.cjs:60:1
+✖ zero and contradictory block totals remain unknown (455.5333ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  
+  + undefined
+  - null
+  
+      at TestContext.<anonymous> (C:\ImageCtl-wt-operator\tests\capture_progress.test.cjs:65:12)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1382:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:960:18)
+      at Test.postRun (node:internal/test_runner/test:1522:19)
+      at Test.run (node:internal/test_runner/test:1447:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: null,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at tests\capture_progress.test.cjs:76:1
+✖ capture pipeline reports block counts and keeps compressed bytes cumulative (2688.9013ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  0 !== null
+  
+      at TestContext.<anonymous> (C:\ImageCtl-wt-operator\tests\capture_progress.test.cjs:120:10)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1382:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:960:18)
+      at Test.postRun (node:internal/test_runner/test:1522:19)
+      at Test.run (node:internal/test_runner/test:1447:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 0,
+    expected: null,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at tests\operator_progress.test.cjs:46:45
+✖ library.js: unknown undefined differs from zero progress (24.9856ms)
+  AssertionError [ERR_ASSERTION]: unknown moving progress was rendered as zero
+      at TestContext.<anonymous> (C:\ImageCtl-wt-operator\tests\operator_progress.test.cjs:50:12)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: '<div class="bar"><i style="width:0%"></i></div>',
+    expected: '<div class="bar"><i style="width:0%"></i></div>',
+    operator: 'notStrictEqual',
+    diff: 'simple'
+  }
+
+test at tests\operator_progress.test.cjs:46:45
+✖ library.js: unknown null differs from zero progress (2.2886ms)
+  AssertionError [ERR_ASSERTION]: unknown moving progress was rendered as zero
+      at TestContext.<anonymous> (C:\ImageCtl-wt-operator\tests\operator_progress.test.cjs:50:12)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: '<div class="bar"><i style="width:0%"></i></div>',
+    expected: '<div class="bar"><i style="width:0%"></i></div>',
+    operator: 'notStrictEqual',
+    diff: 'simple'
+  }
+
+test at tests\operator_progress.test.cjs:46:45
+✖ library.js: unknown 0 differs from zero progress (2.6621ms)
+  AssertionError [ERR_ASSERTION]: unknown moving progress was rendered as zero
+      at TestContext.<anonymous> (C:\ImageCtl-wt-operator\tests\operator_progress.test.cjs:50:12)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: '<div class="bar"><i style="width:0%"></i></div>',
+    expected: '<div class="bar"><i style="width:0%"></i></div>',
+    operator: 'notStrictEqual',
+    diff: 'simple'
+  }
+
+test at tests\operator_progress.test.cjs:60:3
+✖ library.js: source blocks name the partition and do not use compressed bytes (1.1843ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /12%/. Input:
+  
+  '<div class="bar"><i style="width:0%"></i></div>'
+  
+      at TestContext.<anonymous> (C:\ImageCtl-wt-operator\tests\operator_progress.test.cjs:63:12)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '<div class="bar"><i style="width:0%"></i></div>',
+    expected: /12%/,
+    operator: 'match',
+    diff: 'simple'
+  }
+
+test at tests\operator_progress.test.cjs:66:3
+✖ library.js: invalid denominator stays unknown (1.1174ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /indeterminate|לא ידוע/. Input:
+  
+  '<div class="bar"><i style="width:-819200%"></i></div>'
+  
+      at TestContext.<anonymous> (C:\ImageCtl-wt-operator\tests\operator_progress.test.cjs:69:14)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '<div class="bar"><i style="width:-819200%"></i></div>',
+    expected: /indeterminate|לא ידוע/,
+    operator: 'match',
+    diff: 'simple'
+  }
+
+test at tests\operator_progress.test.cjs:46:45
+✖ console.js: unknown undefined differs from zero progress (23.0339ms)
+  AssertionError [ERR_ASSERTION]: unknown moving progress was rendered as zero
+      at TestContext.<anonymous> (C:\ImageCtl-wt-operator\tests\operator_progress.test.cjs:50:12)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: '<div class="member ">\n    <div class="who-line" title="mac">\n      <b>test</b>\n      <span class="mono sub-mac">mac</span>\n    </div>\n    <div class="bar"><i style="width:0%"></i></div>\n    <span class="pct">0%</span>\n    \n    \n  </div>',
+    expected: '<div class="member ">\n    <div class="who-line" title="mac">\n      <b>test</b>\n      <span class="mono sub-mac">mac</span>\n    </div>\n    <div class="bar"><i style="width:0%"></i></div>\n    <span class="pct">0%</span>\n    \n    \n  </div>',
+    operator: 'notStrictEqual',
+    diff: 'simple'
+  }
+
+test at tests\operator_progress.test.cjs:46:45
+✖ console.js: unknown null differs from zero progress (2.1834ms)
+  AssertionError [ERR_ASSERTION]: unknown moving progress was rendered as zero
+      at TestContext.<anonymous> (C:\ImageCtl-wt-operator\tests\operator_progress.test.cjs:50:12)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: '<div class="member ">\n    <div class="who-line" title="mac">\n      <b>test</b>\n      <span class="mono sub-mac">mac</span>\n    </div>\n    <div class="bar"><i style="width:0%"></i></div>\n    <span class="pct">0%</span>\n    \n    \n  </div>',
+    expected: '<div class="member ">\n    <div class="who-line" title="mac">\n      <b>test</b>\n      <span class="mono sub-mac">mac</span>\n    </div>\n    <div class="bar"><i style="width:0%"></i></div>\n    <span class="pct">0%</span>\n    \n    \n  </div>',
+    operator: 'notStrictEqual',
+    diff: 'simple'
+  }
+
+test at tests\operator_progress.test.cjs:46:45
+✖ console.js: unknown 0 differs from zero progress (2.2137ms)
+  AssertionError [ERR_ASSERTION]: unknown moving progress was rendered as zero
+      at TestContext.<anonymous> (C:\ImageCtl-wt-operator\tests\operator_progress.test.cjs:50:12)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: '<div class="member ">\n    <div class="who-line" title="mac">\n      <b>test</b>\n      <span class="mono sub-mac">mac</span>\n    </div>\n    <div class="bar"><i style="width:0%"></i></div>\n    <span class="pct">0%</span>\n    \n    \n  </div>',
+    expected: '<div class="member ">\n    <div class="who-line" title="mac">\n      <b>test</b>\n      <span class="mono sub-mac">mac</span>\n    </div>\n    <div class="bar"><i style="width:0%"></i></div>\n    <span class="pct">0%</span>\n    \n    \n  </div>',
+    operator: 'notStrictEqual',
+    diff: 'simple'
+  }
+
+test at tests\operator_progress.test.cjs:60:3
+✖ console.js: source blocks name the partition and do not use compressed bytes (1.2399ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /12%/. Input:
+  
+  '<div class="member ">\n' +
+    '    <div class="who-line" title="mac">\n' +
+    '      <b>test</b>\n' +
+    '      <span class="mono sub-mac">mac</span>\n' +
+    '    </div>\n' +
+    '    <div class="bar"><i style="width:0%"></i></div>\n' +
+    '    <span class="pct">0%</span>\n' +
+    '    \n' +
+    '    \n' +
+    '  </div>'
+  
+      at TestContext.<anonymous> (C:\ImageCtl-wt-operator\tests\operator_progress.test.cjs:63:12)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '<div class="member ">\n    <div class="who-line" title="mac">\n      <b>test</b>\n      <span class="mono sub-mac">mac</span>\n    </div>\n    <div class="bar"><i style="width:0%"></i></div>\n    <span class="pct">0%</span>\n    \n    \n  </div>',
+    expected: /12%/,
+    operator: 'match',
+    diff: 'simple'
+  }
+
+test at tests\operator_progress.test.cjs:66:3
+✖ console.js: invalid denominator stays unknown (1.2353ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /indeterminate|לא ידוע/. Input:
+  
+  '<div class="member ">\n' +
+    '    <div class="who-line" title="mac">\n' +
+    '      <b>test</b>\n' +
+    '      <span class="mono sub-mac">mac</span>\n' +
+    '    </div>\n' +
+    '    <div class="bar"><i style="width:-819200%"></i></div>\n' +
+    '    <span class="pct">-819200%</span>\n' +
+    '    \n' +
+    '    \n' +
+    '  </div>'
+  
+      at TestContext.<anonymous> (C:\ImageCtl-wt-operator\tests\operator_progress.test.cjs:69:14)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '<div class="member ">\n    <div class="who-line" title="mac">\n      <b>test</b>\n      <span class="mono sub-mac">mac</span>\n    </div>\n    <div class="bar"><i style="width:-819200%"></i></div>\n    <span class="pct">-819200%</span>\n    \n    \n  </div>',
+    expected: /indeterminate|לא ידוע/,
+    operator: 'match',
+    diff: 'simple'
+  }
+
+test at tests\operator_progress.test.cjs:46:45
+✖ station/station.js: unknown undefined differs from zero progress (12.7988ms)
+  AssertionError [ERR_ASSERTION]: unknown moving progress was rendered as zero
+      at TestContext.<anonymous> (C:\ImageCtl-wt-operator\tests\operator_progress.test.cjs:50:12)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: '[{"width":"0%"},null,"0%"]',
+    expected: '[{"width":"0%"},null,"0%"]',
+    operator: 'notStrictEqual',
+    diff: 'simple'
+  }
+
+test at tests\operator_progress.test.cjs:46:45
+✖ station/station.js: unknown null differs from zero progress (1.8967ms)
+  AssertionError [ERR_ASSERTION]: unknown moving progress was rendered as zero
+      at TestContext.<anonymous> (C:\ImageCtl-wt-operator\tests\operator_progress.test.cjs:50:12)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: '[{"width":"0%"},null,"0%"]',
+    expected: '[{"width":"0%"},null,"0%"]',
+    operator: 'notStrictEqual',
+    diff: 'simple'
+  }
+
+test at tests\operator_progress.test.cjs:46:45
+✖ station/station.js: unknown 0 differs from zero progress (1.6986ms)
+  AssertionError [ERR_ASSERTION]: unknown moving progress was rendered as zero
+      at TestContext.<anonymous> (C:\ImageCtl-wt-operator\tests\operator_progress.test.cjs:50:12)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: '[{"width":"0%"},null,"0%"]',
+    expected: '[{"width":"0%"},null,"0%"]',
+    operator: 'notStrictEqual',
+    diff: 'simple'
+  }
+
+test at tests\operator_progress.test.cjs:60:3
+✖ station/station.js: source blocks name the partition and do not use compressed bytes (1.0763ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /12%/. Input:
+  
+  '[{"width":"0%"},null,"0%"]'
+  
+      at TestContext.<anonymous> (C:\ImageCtl-wt-operator\tests\operator_progress.test.cjs:63:12)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '[{"width":"0%"},null,"0%"]',
+    expected: /12%/,
+    operator: 'match',
+    diff: 'simple'
+  }
+
+test at tests\operator_progress.test.cjs:66:3
+✖ station/station.js: invalid denominator stays unknown (0.9001ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /indeterminate|לא ידוע/. Input:
+  
+  '[{"width":"-819200%"},null,"-819200%"]'
+  
+      at TestContext.<anonymous> (C:\ImageCtl-wt-operator\tests\operator_progress.test.cjs:69:14)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '[{"width":"-819200%"},null,"-819200%"]',
+    expected: /indeterminate|לא ידוע/,
+    operator: 'match',
+    diff: 'simple'
+  }
+
+test at tests\operator_progress.test.cjs:46:45
+✖ station/room.js: unknown undefined differs from zero progress (40.6732ms)
+  AssertionError [ERR_ASSERTION]: unknown moving progress was rendered as zero
+      at TestContext.<anonymous> (C:\ImageCtl-wt-operator\tests\operator_progress.test.cjs:50:12)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: '<div class="room-row ">\n        <span class="led on"></span>\n        <b>test</b>\n        <span class="mono dev" dir="ltr">mac</span>\n        <span class="state"><span>0%</span></span>\n        \n      </div>',
+    expected: '<div class="room-row ">\n        <span class="led on"></span>\n        <b>test</b>\n        <span class="mono dev" dir="ltr">mac</span>\n        <span class="state"><span>0%</span></span>\n        \n      </div>',
+    operator: 'notStrictEqual',
+    diff: 'simple'
+  }
+
+test at tests\operator_progress.test.cjs:46:45
+✖ station/room.js: unknown null differs from zero progress (1.6614ms)
+  AssertionError [ERR_ASSERTION]: unknown moving progress was rendered as zero
+      at TestContext.<anonymous> (C:\ImageCtl-wt-operator\tests\operator_progress.test.cjs:50:12)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: '<div class="room-row ">\n        <span class="led on"></span>\n        <b>test</b>\n        <span class="mono dev" dir="ltr">mac</span>\n        <span class="state"><span>0%</span></span>\n        \n      </div>',
+    expected: '<div class="room-row ">\n        <span class="led on"></span>\n        <b>test</b>\n        <span class="mono dev" dir="ltr">mac</span>\n        <span class="state"><span>0%</span></span>\n        \n      </div>',
+    operator: 'notStrictEqual',
+    diff: 'simple'
+  }
+
+test at tests\operator_progress.test.cjs:46:45
+✖ station/room.js: unknown 0 differs from zero progress (1.5459ms)
+  AssertionError [ERR_ASSERTION]: unknown moving progress was rendered as zero
+      at TestContext.<anonymous> (C:\ImageCtl-wt-operator\tests\operator_progress.test.cjs:50:12)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: '<div class="room-row ">\n        <span class="led on"></span>\n        <b>test</b>\n        <span class="mono dev" dir="ltr">mac</span>\n        <span class="state"><span>0%</span></span>\n        \n      </div>',
+    expected: '<div class="room-row ">\n        <span class="led on"></span>\n        <b>test</b>\n        <span class="mono dev" dir="ltr">mac</span>\n        <span class="state"><span>0%</span></span>\n        \n      </div>',
+    operator: 'notStrictEqual',
+    diff: 'simple'
+  }
+
+test at tests\operator_progress.test.cjs:60:3
+✖ station/room.js: source blocks name the partition and do not use compressed bytes (0.9532ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /12%/. Input:
+  
+  '<div class="room-row ">\n' +
+    '        <span class="led on"></span>\n' +
+    '        <b>test</b>\n' +
+    '        <span class="mono dev" dir="ltr">mac</span>\n' +
+    '        <span class="state"><span>0%</span></span>\n' +
+    '        \n' +
+    '      </div>'
+  
+      at TestContext.<anonymous> (C:\ImageCtl-wt-operator\tests\operator_progress.test.cjs:63:12)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '<div class="room-row ">\n        <span class="led on"></span>\n        <b>test</b>\n        <span class="mono dev" dir="ltr">mac</span>\n        <span class="state"><span>0%</span></span>\n        \n      </div>',
+    expected: /12%/,
+    operator: 'match',
+    diff: 'simple'
+  }
+
+test at tests\operator_progress.test.cjs:66:3
+✖ station/room.js: invalid denominator stays unknown (0.8695ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /indeterminate|לא ידוע/. Input:
+  
+  '<div class="room-row ">\n' +
+    '        <span class="led on"></span>\n' +
+    '        <b>test</b>\n' +
+    '        <span class="mono dev" dir="ltr">mac</span>\n' +
+    '        <span class="state"><span>-819200%</span></span>\n' +
+    '        \n' +
+    '      </div>'
+  
+      at TestContext.<anonymous> (C:\ImageCtl-wt-operator\tests\operator_progress.test.cjs:69:14)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '<div class="room-row ">\n        <span class="led on"></span>\n        <b>test</b>\n        <span class="mono dev" dir="ltr">mac</span>\n        <span class="state"><span>-819200%</span></span>\n        \n      </div>',
+    expected: /indeterminate|לא ידוע/,
+    operator: 'match',
+    diff: 'simple'
+  }
+
+test at tests\operator_progress.test.cjs:46:45
+✖ station/classes.js: unknown undefined differs from zero progress (39.0539ms)
+  AssertionError [ERR_ASSERTION]: unknown moving progress was rendered as zero
+      at TestContext.<anonymous> (C:\ImageCtl-wt-operator\tests\operator_progress.test.cjs:50:12)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: '<div class="room-row">\n        <span class="led on"></span>\n        <b>test</b>\n        <span class="mono dev" dir="ltr">mac</span>\n        <span>0%</span></div>',
+    expected: '<div class="room-row">\n        <span class="led on"></span>\n        <b>test</b>\n        <span class="mono dev" dir="ltr">mac</span>\n        <span>0%</span></div>',
+    operator: 'notStrictEqual',
+    diff: 'simple'
+  }
+
+test at tests\operator_progress.test.cjs:46:45
+✖ station/classes.js: unknown null differs from zero progress (2.4127ms)
+  AssertionError [ERR_ASSERTION]: unknown moving progress was rendered as zero
+      at TestContext.<anonymous> (C:\ImageCtl-wt-operator\tests\operator_progress.test.cjs:50:12)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: '<div class="room-row">\n        <span class="led on"></span>\n        <b>test</b>\n        <span class="mono dev" dir="ltr">mac</span>\n        <span>0%</span></div>',
+    expected: '<div class="room-row">\n        <span class="led on"></span>\n        <b>test</b>\n        <span class="mono dev" dir="ltr">mac</span>\n        <span>0%</span></div>',
+    operator: 'notStrictEqual',
+    diff: 'simple'
+  }
+
+test at tests\operator_progress.test.cjs:46:45
+✖ station/classes.js: unknown 0 differs from zero progress (1.6983ms)
+  AssertionError [ERR_ASSERTION]: unknown moving progress was rendered as zero
+      at TestContext.<anonymous> (C:\ImageCtl-wt-operator\tests\operator_progress.test.cjs:50:12)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: '<div class="room-row">\n        <span class="led on"></span>\n        <b>test</b>\n        <span class="mono dev" dir="ltr">mac</span>\n        <span>0%</span></div>',
+    expected: '<div class="room-row">\n        <span class="led on"></span>\n        <b>test</b>\n        <span class="mono dev" dir="ltr">mac</span>\n        <span>0%</span></div>',
+    operator: 'notStrictEqual',
+    diff: 'simple'
+  }
+
+test at tests\operator_progress.test.cjs:60:3
+✖ station/classes.js: source blocks name the partition and do not use compressed bytes (1.261ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /12%/. Input:
+  
+  '<div class="room-row">\n' +
+    '        <span class="led on"></span>\n' +
+    '        <b>test</b>\n' +
+    '        <span class="mono dev" dir="ltr">mac</span>\n' +
+    '        <span>0%</span></div>'
+  
+      at TestContext.<anonymous> (C:\ImageCtl-wt-operator\tests\operator_progress.test.cjs:63:12)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '<div class="room-row">\n        <span class="led on"></span>\n        <b>test</b>\n        <span class="mono dev" dir="ltr">mac</span>\n        <span>0%</span></div>',
+    expected: /12%/,
+    operator: 'match',
+    diff: 'simple'
+  }
+
+test at tests\operator_progress.test.cjs:66:3
+✖ station/classes.js: invalid denominator stays unknown (1.2316ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /indeterminate|לא ידוע/. Input:
+  
+  '<div class="room-row">\n' +
+    '        <span class="led on"></span>\n' +
+    '        <b>test</b>\n' +
+    '        <span class="mono dev" dir="ltr">mac</span>\n' +
+    '        <span>-819200%</span></div>'
+  
+      at TestContext.<anonymous> (C:\ImageCtl-wt-operator\tests\operator_progress.test.cjs:69:14)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '<div class="room-row">\n        <span class="led on"></span>\n        <b>test</b>\n        <span class="mono dev" dir="ltr">mac</span>\n        <span>-819200%</span></div>',
+    expected: /indeterminate|לא ידוע/,
+    operator: 'match',
+    diff: 'simple'
+  }
