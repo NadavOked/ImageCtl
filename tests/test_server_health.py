@@ -59,7 +59,10 @@ def health_server(tmp_path: Path, images_root: Path, clock):
             # וגודל, כי 404 של ‎/boot הוא גוף בן תשעה בייטים (#332).
             "assets": {"vmlinuz": (200, 9_000_000),
                        "initrd.img": (200, 31_000_000)},
-            "menu": "linux /boot/vmlinuz ip=dhcp imagectl.server=x console=tty0"}
+            "menu": "linux /boot/vmlinuz ip=dhcp imagectl.server=x console=tty0",
+            # ריק = לא רץ. ‏None = הבדיקה לא רצה. לא סורקים /proc של
+            # המכונה שהטסט רץ עליה (#439).
+            "udp_sender_pids": []}
     hooks = {
         "ss": lambda: fake["ss"],
         "unit_active": lambda name: fake["active"],
@@ -72,6 +75,7 @@ def health_server(tmp_path: Path, images_root: Path, clock):
         "listeners": lambda: fake["listeners"],
         "apply_sshd": lambda text: pytest.fail("בדיקה נגעה ב-sshd אמיתי"),
         "settle": lambda: None,
+        "udp_sender_pids": lambda: fake["udp_sender_pids"],
     }
     app = create_app(tmp_path / "data", images_root, "http://10.44.12.10:8080",
                      now_fn=clock, health_hooks=hooks)
@@ -101,6 +105,7 @@ def test_a_healthy_server_is_all_green(health_server):
     # שתי דלתות ה-SSH סגורות, וזה נאמר לפי ראיה ולא לפי ההגדרה.
     assert rows["ssh_stations"]["state"] == "ok"
     assert rows["ssh_server"]["state"] == "ok"
+    assert rows["udp_sender"]["state"] == "ok"
 
 
 def test_a_stranger_on_port_67_is_red(health_server):
@@ -265,3 +270,42 @@ def test_a_shim_that_cannot_be_read_is_unknown_and_not_ok(health_server, tmp_pat
     r = _shim(health_server, tmp_path, None, b"whatever")
     assert r["state"] == "unknown"
     assert r["state"] != "ok"
+
+
+# --- #439: udp-sender חי בלי סבב הוא יתום, לא הצלחה שקטה ---------------
+#
+# הבדיקה מזהה ומראה. היא אינה הורגת — ההריגה שייכת לנתיב הסגירה.
+
+def test_udp_sender_not_running_is_ok(health_server):
+    health_server["fake"]["udp_sender_pids"] = []
+    rows = health_server["admin"].get("/api/console/health").json()
+    assert any(r["id"] == "udp_sender" and r["state"] == "ok"
+               and "לא רץ" in r["detail"] for r in rows)
+
+
+def test_udp_sender_during_a_round_is_a_warning(health_server):
+    from server.sender import SendState
+    ctx = health_server["admin"].app.state.ctx
+    ctx.sender._state = SendState("ses_1", "img_7f3a91")
+    ctx.sender._state.state = "sending"
+    health_server["fake"]["udp_sender_pids"] = [4321]
+    rows = health_server["admin"].get("/api/console/health").json()
+    assert any(r["id"] == "udp_sender" and r["state"] == "warn"
+               and "4321" in r["detail"] and "סבב" in r["detail"]
+               for r in rows)
+
+
+def test_an_orphan_udp_sender_is_red(health_server):
+    health_server["fake"]["udp_sender_pids"] = [4321]
+    rows = health_server["admin"].get("/api/console/health").json()
+    assert any(r["id"] == "udp_sender" and r["state"] == "bad"
+               and "4321" in r["detail"] and "יתום" in r["detail"]
+               for r in rows)
+
+
+def test_a_udp_sender_check_that_could_not_run_is_not_ok(health_server):
+    """‏"לא הצלחנו לבדוק" אינו "לא רץ" — ו"לא רץ" הוא הירוק (#439)."""
+    health_server["fake"]["udp_sender_pids"] = None
+    rows = health_server["admin"].get("/api/console/health").json()
+    assert any(r["id"] == "udp_sender" and r["state"] != "ok"
+               and "לא הצלחנו לבדוק" in r["detail"] for r in rows)

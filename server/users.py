@@ -199,8 +199,35 @@ def admin_count(conn: sqlite3.Connection) -> int:
 
 
 def delete(conn: sqlite3.Connection, username: str, by: str) -> None:
+    """מחיקה שתובעת את השארית באותה כתיבה.
+
+    השומר על "יישאר מי שינהל" ישב עד ‏#521 ב-``console_api.del_user``
+    כ**קריאה לפני הכתיבה**: ‏``active_admin_count`` נקרא, ואז המחיקה
+    רצה. בין השניים אין נעילה, ולכן שני מנהלים שנמחקים בו-זמנית ראו
+    שניהם "יש שניים", שניהם דילגו על השומר, ושניהם נמחקו.
+
+    כאן התנאי הוא **חלק מה-DELETE**: השורה נמחקת רק אם היא אינה מנהל
+    פעיל, או אם יישאר עוד אחד. ‏``rowcount == 0`` הוא **התשובה** — לא
+    כישלון — והקורא מבחין בין "לא היה" ל"היה, ולא מוחקים אותו".
+    """
     with _write_lock, writing(conn):
-        conn.execute("DELETE FROM users WHERE username = ?", (username,))
+        cur = conn.execute(
+            "DELETE FROM users WHERE username = ?"
+            "  AND (role != 'admin' OR disabled_at IS NOT NULL"
+            "       OR (SELECT COUNT(*) FROM users"
+            "           WHERE role = 'admin' AND disabled_at IS NULL) > 1)",
+            (username,),
+        )
+        removed = cur.rowcount == 1
+    if not removed:
+        # שני מצבים שונים, ואסור לקפל אותם: משתמש שאינו קיים, מול
+        # המנהל הפעיל האחרון שהשומר עצר. הקורא שואל, ולא מנחש.
+        row = conn.execute(
+            "SELECT role, disabled_at FROM users WHERE username = ?", (username,)
+        ).fetchone()
+        if row is None:
+            raise ValueError("משתמש לא קיים")
+        raise ValueError("זה המנהל האחרון — מחיקתו תנעל את הקונסולה")
     journal(conn, "user_delete", username, by)
 
 

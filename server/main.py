@@ -9,8 +9,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import subprocess
 import urllib.parse
+
+
+class InterfaceDetectionError(RuntimeError):
+    """‏`ip` קיים ורץ, אבל אף כרטיס אינו נושא את כתובת ה-server-url — או
+    שהבדיקה עצמה נשברה. זהו שרת לינוקס אמיתי שהשידור שלו ייצא לכרטיס הלא
+    נכון, ולכן עדיף להיכשל בגלוי מלשדר לרשת הרגילה (#514, #19)."""
 
 
 def _interface_for(server_url: str) -> str | None:
@@ -19,6 +26,11 @@ def _interface_for(server_url: str) -> str | None:
     השידור (udp-sender) חייב לצאת דווקא ממנו: בלי ‎--interface‏ udpcast
     בוחר את ברירת המחדל של הניתוב, וברשת עם שני כרטיסים זה ה-LAN —
     השידור לא פוגש אף מקבל ונכשל, וגרוע מזה, הוא מדבר ברשת הרגילה (#19).
+
+    מחזיר `None` **רק** כשאין `ip` כלל — תחנת פיתוח (לא לינוקס), שם
+    השידור ממילא מזויף. ‏`ip` שקיים ונכשל, או שרץ ולא מצא התאמה, הם שרת
+    אמיתי במצב שגוי — ומעלים `InterfaceDetectionError` במקום `None` שקט
+    (עיקרון 5: פעולה שלא הצליחה לבדוק נכשלת, לא מוותרת) (#514).
     """
     host = urllib.parse.urlsplit(server_url).hostname
     try:
@@ -26,13 +38,31 @@ def _interface_for(server_url: str) -> str | None:
             ["ip", "-json", "addr"], capture_output=True, text=True,
             check=True, stdin=subprocess.DEVNULL,
         ).stdout
-    except (OSError, subprocess.CalledProcessError):
-        return None            # לא לינוקס (שרת פיתוח) — השידור ממילא מזויף
-    for nic in json.loads(out):
+    except FileNotFoundError:
+        return None            # אין `ip` — לא לינוקס (תחנת פיתוח), השידור מזויף
+    except (OSError, subprocess.CalledProcessError) as exc:
+        # ‏`ip` קיים אבל נכשל — שרת לינוקס אמיתי שהבדיקה עליו נשברה.
+        raise InterfaceDetectionError(f"'ip -json addr' נכשל: {exc}") from exc
+    # ‏--server-url עם שם מארח (ולא IP) לא יתאים ל-addr.local לעולם —
+    # פותרים אותו לכתובותיו לפני ההשוואה.
+    candidates = {host}
+    try:
+        candidates |= {info[4][0] for info in socket.getaddrinfo(host, None)}
+    except (socket.gaierror, OSError):
+        pass
+    try:
+        nics = json.loads(out)
+    except json.JSONDecodeError as exc:
+        # ‏`ip` יצא 0 אבל הפלט אינו JSON תקין — שרת אמיתי שהבדיקה נשברה
+        # עליו, לא None שקט (עיקרון 5; Codex #2 על #514).
+        raise InterfaceDetectionError(f"פלט 'ip -json addr' אינו JSON: {exc}") from exc
+    for nic in nics:
         for addr in nic.get("addr_info") or []:
-            if addr.get("local") == host:
+            if addr.get("local") in candidates:
                 return nic.get("ifname")
-    return None
+    raise InterfaceDetectionError(
+        f"אף כרטיס אינו נושא את {host} — udp-sender היה משדר לכרטיס הלא "
+        f"נכון. העבר ‎--interface‏ במפורש.")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -74,12 +104,20 @@ def main() -> None:
         # אותו כלל כמו במתקין: ה-GRUB החתום נבנה בלי TLS.
         parser.error("--server-url חייב להתחיל ב-http://")
 
-    interface = args.interface or _interface_for(args.server_url)
+    if args.interface:
+        interface = args.interface
+    else:
+        try:
+            interface = _interface_for(args.server_url)
+        except InterfaceDetectionError as exc:
+            # שרת אמיתי שלא ניתן לזהות לו ממשק שידור לא עולה בשקט על
+            # הכרטיס הלא נכון — הוא עוצר ומבקש ‎--interface‏ (#514).
+            parser.error(str(exc))
     if interface:
         print(f"broadcast interface: {interface}")
     else:
-        print("broadcast interface: not found -- udp-sender will use the "
-              "routing default; on a two-NIC server pass --interface")
+        print("broadcast interface: none (no `ip` — dev station, "
+              "broadcast is simulated)")
 
     import uvicorn
 

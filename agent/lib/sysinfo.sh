@@ -175,9 +175,19 @@ build_disk_entry() {
     _port_json="null"
     [ -n "$_port" ] && _port_json="$_port"
 
-    printf '{"dev":"%s","size_bytes":%s,"model":"%s","serial":%s,"removable":%s,"scheme":"%s","has_data":%s,"port":%s}' \
+    # בריאות SMART (#652), **ממטמון בלבד** — smart.sh מריץ probe בצד
+    # השחזור ובהמתנת מחשב השיכפול, לא כאן: אחרת כל אתחול של תחנת כיתה
+    # שעולה לדיסק מקומי היה משלם שנייה על smartctl מיותר. בלי smart.sh
+    # (או בלי ריצת probe) הערך `unchecked` — לא-נבדק, לא נכשל (עיקרון 5).
+    if command -v smart_hello_field >/dev/null 2>&1; then
+        _smart=$(smart_hello_field "$_name")
+    else
+        _smart="unchecked"
+    fi
+
+    printf '{"dev":"%s","size_bytes":%s,"model":"%s","serial":%s,"removable":%s,"scheme":"%s","has_data":%s,"port":%s,"smart":"%s"}' \
         "$_name" "$_size" "$(json_escape "$_model")" "$_serial_json" \
-        "$_removable" "$_scheme" "$_has" "$_port_json"
+        "$_removable" "$_scheme" "$_has" "$_port_json" "$_smart"
 }
 
 list_disks() {

@@ -179,7 +179,8 @@ def test_manual_start_and_close(server):
     ).status_code == 200
     assert hello(server, ids["mac1"])["session"]["state"] == "running"
     assert server["deploy"].post(
-        f"/api/console/sessions/{ids['session']}/close"
+        f"/api/console/sessions/{ids['session']}/close",
+        json={"confirm_name": "Office 2024 Standard"},
     ).status_code == 200
     assert hello(server, ids["mac1"])["session"] is None
 
@@ -406,3 +407,89 @@ def test_journal_filters_require_admin(server):
         "/api/console/journal", params={"event": "login"}
     ).status_code == 403
     assert server["deploy"].get("/api/console/journal/events").status_code == 403
+
+
+# --- עצירת סבב כיתה: תפקיד והקלדת שם (עיקרון 7, #581) ------------------------
+
+
+def test_close_without_typing_the_image_name_does_not_stop_the_class_round(server):
+    """‏#581: ‏POST ריק עצר סבב כיתה חי — בלי גוף ובלי שום אימות בשרת.
+
+    זו אותה חולשה שנסגרה לחדר השיכפולים ב-#533, שנשארה פתוחה לסבב
+    הכיתה. עיקרון 7 נוקב ב"עצירת סבב" במפורש, והאכיפה היחידה ישבה
+    ב-`classes.js` — טקסט קבוע ("עצור") במסך, כלומר בדיוק השכבה שאסור
+    לסמוך עליה.
+
+    מה שמוקלד הוא **שם האימג' שהסבב משדר** — הכותרת שהמסך כבר מציג
+    ("משדר: ...").
+    """
+    ids = open_session(server, expected=30)
+    hello(server, ids["mac1"])
+    deploy = server["deploy"]
+    path = f"/api/console/sessions/{ids['session']}/close"
+
+    # ‏1. גוף ריק — זו בדיוק הקריאה שסגרה סבב לפני #581.
+    assert deploy.post(path).status_code == 400
+    assert hello(server, ids["mac1"])["session"] is not None, "סבב נסגר בלי אישור"
+
+    # ‏2. הטקסט שהמסך אכף לבדו אינו האישור
+    assert deploy.post(path, json={"confirm_name": "עצור"}).status_code == 400
+    assert hello(server, ids["mac1"])["session"] is not None, "סבב נסגר על שם שגוי"
+
+    # ‏3. השם המדויק — וזה עוצר
+    stopped = deploy.post(path, json={"confirm_name": "Office 2024 Standard"})
+    assert stopped.status_code == 200 and stopped.json()["ok"] is True
+    assert hello(server, ids["mac1"])["session"] is None
+
+
+def test_a_class_round_whose_image_was_deleted_can_still_be_stopped(server):
+    """מה שמוקלד הוא מה שהמסך מציג — גם כשהמניפסט כבר איננו.
+
+    ‏`session_view` נופל חזרה ל-`image_id` כשהאימג' נמחק מהספרייה תוך
+    כדי סבב, ולכן גם האימות חייב ליפול לשם — מאותה פונקציה. בלי זה
+    עצירת חירום של שידור חי הייתה בלתי אפשרית, כלומר תיקון שגרוע
+    מהבאג.
+    """
+    ids = open_session(server, expected=30)
+    hello(server, ids["mac1"])
+    admin, deploy = server["admin"], server["deploy"]
+    assert admin.post("/api/console/images/img_7f3a91/delete",
+                      json={"confirm_name": "Office 2024 Standard"},
+                      ).status_code == 200
+
+    view = admin.get("/api/console/overview").json()["session"]
+    assert view["image_name"] == "img_7f3a91"
+    path = f"/api/console/sessions/{ids['session']}/close"
+    assert deploy.post(
+        path, json={"confirm_name": "Office 2024 Standard"}).status_code == 400
+    assert deploy.post(path, json={"confirm_name": "img_7f3a91"}).status_code == 200
+    assert hello(server, ids["mac1"])["session"] is None
+
+
+def test_a_role_that_is_not_on_the_list_cannot_drive_a_class_round(server):
+    """הבקרה השלילית של #581 — אותה בדיקה שנעשתה לחדר ב-#152 ולתחנה ב-#94.
+
+    לפני התיקון ``start`` ו-``close`` היו ``Depends(current_user)``
+    בלבד: הסבב **נפתח** מאחורי ``ROUND_OPENER_ROLES`` ונסגר בלעדיה.
+    התפקיד ``auditor`` אינו קיים היום, ולכן זו סכימה של מחר: השאלה
+    אינה מי מורשה עכשיו אלא האם הקוד **שואל**.
+    """
+    from fastapi.testclient import TestClient                  # noqa: PLC0415
+    from test_station import add_user_with_role                # noqa: PLC0415
+
+    ids = open_session(server, expected=30)
+    hello(server, ids["mac1"])
+    add_user_with_role(server, "auditor", "audit-pass-12", "auditor")
+    client = TestClient(server["app"])
+    assert client.post("/api/console/login", json={
+        "username": "auditor", "password": "audit-pass-12"}).status_code == 200
+
+    # קריאה מותרת — היא אינה הרסנית
+    assert client.get("/api/console/overview").status_code == 200
+
+    assert client.post(
+        f"/api/console/sessions/{ids['session']}/start").status_code == 403
+    assert client.post(
+        f"/api/console/sessions/{ids['session']}/close",
+        json={"confirm_name": "Office 2024 Standard"}).status_code == 403
+    assert hello(server, ids["mac1"])["session"]["state"] == "open"

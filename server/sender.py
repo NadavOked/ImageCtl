@@ -47,15 +47,79 @@ DEFAULT_MAX_WAIT = 120
 #: התקרה על ההמתנה הזאת. שלוש דקות: מכונה שכבר אמרה hello צריכה פחות מזה
 #: כדי להתייצב כמקבל, והמפעיל אינו נשאר מול מסך קפוא יותר מזה.
 DEFAULT_START_TIMEOUT = 180
-#: כמה מעבר לתקרה עדיין נחשב "יצא **בגלל** התקרה". ‏udp-sender שמוותר על
-#: ההמתנה יוצא בתקרה עצמה; מחיצה שכן התחילה להשתדר ונכשלה בסופה רצה הרבה
-#: מעבר לה. בלי החסם העליון הזה כל כישלון בשידור ארוך היה מקבל את האבחון
-#: "אף מחשב לא הצטרף" — אבחון מומצא, בדיוק מה שעיקרון 5 אוסר.
-START_TIMEOUT_GRACE = 10
+#: אחרי כמה בקשות ACK ללא מענה udpcast מוותר על מקבל וממשיך בלעדיו.
+#: **בלי הדגל הזה udpcast מגדיר 200**.
+#:
+#: ‏11/09/2026 (הכרעת נדב): מאמצים את הגישה של FOG/Clonezilla —
+#: **"dynamic bitrate": להאט למקבל האיטי ולא להפיל אותו.** אימג' גדול
+#: (win-build 67GB דחוס) נפל ב-~90% בשידור, ואימג' קטן (20GB) הצליח:
+#: ‏back-pressure בזנב גרם ל-udp-sender להפיל מקבלים איטיים-אך-חיים אחרי
+#: ‏15 בקשות ACK, המקבל שהופל המתין לנצח, ‏`--receive-timeout` שלו נורה
+#: והזרם נקטע. הפתרון הוא לא להפיל את המקבל האיטי — כלומר תקרת נטישה
+#: גבוהה, שמשאירה אותו בקבוצה ומאיטה את כל הזרם אליו.
+#:
+#: **מחיר מודע (#437):** מקבל שבאמת *מת* (שותק) מקפיא כעת את החדר בערך
+#: ‏190 שניות לפני שהוא נזרק, במקום כ-15 קודם — כי אין דרך ל-udpcast
+#: להבחין בין "איטי-אך-חי" ל"מת". ההכרעה של נדב היא שכשל *מלא* של
+#: אימג' הדגל עדיף שלא יקרה, גם במחיר קפיאה של דקות כשמכונה קורסת.
+#: ‏**הערך ניתן לכוונון דרך `IMAGECTL_RETRIES_UNTIL_DROP`** כדי שהמפעיל
+#: יוכל להחזיר אותו אם הקפיאה הזו תתברר כגרועה מהתקלה שהיא מונעת.
+#: **לא `--async`** — ויתור על ACK פירושו דאטגרם אבוד שהופך לדיסק פגום,
+#: וזה בדיוק מה שהפרוטוקול הזה קיים כדי למנוע (עיקרון 4).
+DEFAULT_RETRIES_UNTIL_DROP = 200
 
 
-#: הפלט של udp-sender מהשידור האחרון — הזנב שלו נכנס להודעת שגיאה.
+def _env_retries_until_drop() -> int:
+    """התקרה מ-`IMAGECTL_RETRIES_UNTIL_DROP`, או ברירת המחדל.
+
+    ערך env לא-מספרי נופל אחורה עם אזהרה ולא מפיל את הפעלת השרת: מספר
+    שגוי בהגדרה אינו סיבה שהשידור כולו לא יעלה.
+    """
+    raw = os.environ.get("IMAGECTL_RETRIES_UNTIL_DROP")
+    if raw is None:
+        return DEFAULT_RETRIES_UNTIL_DROP
+    try:
+        value = int(raw)
+    except ValueError:
+        log.warning("IMAGECTL_RETRIES_UNTIL_DROP=%r אינו מספר — נופלים ל-%d",
+                    raw, DEFAULT_RETRIES_UNTIL_DROP)
+        return DEFAULT_RETRIES_UNTIL_DROP
+    # ‏udp-sender סופר את הערך כ-int חתום: `0`/שלילי אינם "אל תזרוק" אלא
+    # **זריקה כמעט מיידית** של המקבל הראשון שמפספס ACK — כלומר בדיוק כשל
+    # ה-90% שהערך הזה קיים כדי למנוע, מוסווה כ"כוונון". מספר קטן מ-1 הוא
+    # הגדרה שגויה, לא בקשה — נופלים לברירת המחדל עם אזהרה (עיקרון 5).
+    if value < 1:
+        log.warning("IMAGECTL_RETRIES_UNTIL_DROP=%r < 1 — זורק מקבל מיד; נופלים ל-%d",
+                    value, DEFAULT_RETRIES_UNTIL_DROP)
+        return DEFAULT_RETRIES_UNTIL_DROP
+    return value
+#: udpcast חוסם SIGTERM לכל אורך doTransfer — המתנה ארוכה ל-TERM אינה
+#: ראיה שהוא ימות, היא זמן שמתבזבז לפני SIGKILL (#439).
+STOP_TERM_WAIT = 0.5
+STOP_KILL_WAIT = 1.0
+
+
+#: הפלט של udp-sender — הבסיס לשם הלוג. ‏Starting transfer: בכל הקובץ
+#: היא הראיה שהשידור באמת התחיל (#438); הזנב נכנס להודעת שגיאה אחרת.
+#: **לוג נפרד לכל מחיצה** (`partition_log`) ולא קובץ יחיד: עד כאן
+#: ‏run_process פתח את הקובץ הזה ב-"wb" לכל מחיצה, וכל מחיצה מחקה את לוג
+#: קודמתה — כשל במחיצה השנייה בלע את ה-Starting transfer של הראשונה,
+#: והראיה מדוע נפל השידור הגדול נמחקה במחיצה שאחריה (באג ראיות).
 SENDER_LOG = Path(tempfile.gettempdir()) / "imagectl-sender.log"
+#: נמדד מול udpcast 20120424: בנתיב start-timeout השורה אינה נכתבת,
+#: והתהליך יוצא 0 בכל זאת (#438).
+TRANSFER_STARTED = "Starting transfer:"
+
+
+def partition_log(part_file: str) -> Path:
+    """הלוג של מחיצה בודדת, נגזר משם קובץ המחיצה, ליד `SENDER_LOG`.
+
+    כל מחיצה כותבת לקובץ משלה, ולכן הראיה של מחיצה קודמת שורדת את
+    השידור של הבאה. השם נגזר מ-`SENDER_LOG` כדי שבדיקה שמנתבת אותו
+    מחדש (למשל ל-tmp) תנתב גם את הלוגים הפר-מחיצתיים איתו.
+    """
+    name = Path(part_file).name
+    return SENDER_LOG.with_name(f"{SENDER_LOG.stem}-{name}{SENDER_LOG.suffix}")
 
 
 def run_process(cmd: list[str]) -> subprocess.Popen:
@@ -63,7 +127,8 @@ def run_process(cmd: list[str]) -> subprocess.Popen:
     # בלי הפסקה, וכשהחוצץ (~64KB) מתמלא — באמצע המחיצה הגדולה — התהליך
     # נחסם על הפלט של עצמו והשידור קופא, והמקבלים מתים בזה אחר זה (#22).
     # אותו לקח בדיוק כמו שרת הסימולציה ב-#12: פלט של תהליך ארוך → קובץ.
-    with SENDER_LOG.open("wb") as handle:
+    # לוג פר-מחיצה נגזר מ---file, כדי שראיית מחיצה קודמת לא תימחק.
+    with partition_log(cmd[cmd.index("--file") + 1]).open("wb") as handle:
         return subprocess.Popen(cmd, stdout=handle, stderr=subprocess.STDOUT)
 
 
@@ -180,12 +245,43 @@ def holder_names(pids: list[int]) -> str:
     return ", ".join(names)
 
 
-def sender_log_tail(limit: int = 400) -> str:
+def sender_log_tail(log_path: Path, limit: int = 400) -> str:
     try:
-        text = SENDER_LOG.read_text(errors="replace")
+        text = log_path.read_text(errors="replace")
     except OSError:
         return ""
     return text[-limit:].strip()
+
+
+def transfer_started_in_log(log_path: Path) -> bool | None:
+    """True התחיל · False נקרא ואין · None לא ניתן לקרוא.
+
+    כל הקובץ, לא הזנב: Progress דוחף את השורה מחוץ ל-400 תווים.
+    קובץ חסר אינו "איש לא הצטרף" (#438, עיקרון 5).
+    """
+    try:
+        text = log_path.read_text(errors="replace")
+    except OSError:
+        return None
+    return TRANSFER_STARTED in text
+
+
+def _reaped(process, seconds: float) -> bool:
+    """True רק כשיש ראיה שהילד מת. היעדר בדיקה אינו ראיה (#439)."""
+    deadline = time.monotonic() + seconds
+    while True:
+        if process.poll() is not None:
+            pid = getattr(process, "pid", None)
+            root = Path("/proc")
+            if pid is None or not root.is_dir():
+                return True
+            try:
+                return not (root / str(pid)).is_dir()
+            except OSError:
+                return False
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
 
 
 @dataclass
@@ -211,6 +307,7 @@ class SenderEngine:
         interface: str | None = None,
         max_wait: int = DEFAULT_MAX_WAIT,
         start_timeout: float = DEFAULT_START_TIMEOUT,
+        retries_until_drop: int | None = None,
         max_bitrate: str | None = None,
         on_event: Callable[[str, str], None] | None = None,
     ):
@@ -222,6 +319,12 @@ class SenderEngine:
         self.interface = interface
         self.max_wait = max_wait
         self.start_timeout = start_timeout
+        # ‏None ולא הקבוע בחתימה: כך `IMAGECTL_RETRIES_UNTIL_DROP` נקרא
+        # בזמן ההרצה (כמו max_bitrate), ומי שמעביר ערך מפורש עוקף אותו.
+        self.retries_until_drop = (
+            retries_until_drop if retries_until_drop is not None
+            else _env_retries_until_drop()
+        )
         # ריסון קצב: מקבל חסום על כתיבה לדיסק גם שותק בפרוטוקול, וה-sender
         # זורק אותו ("Dropped by server"). ברשת 1G הכבל מרסן מעצמו; ברשת
         # מהירה (מעבדת VM, ‏10G) חייבים רסן מפורש בקצב שהדיסקים מעכלים (#24).
@@ -251,15 +354,32 @@ class SenderEngine:
             )
             self._thread.start()
 
-    def stop(self, session_id: str | None = None) -> None:
-        """עצירה מיידית — סגירת סבב, או כיבוי השרת."""
+    def stop(self, session_id: str | None = None) -> int | None:
+        """הורג את udp-sender וקורא בחזרה שהוא מת (#439).
+
+        ‏None = יש ראיה שהתהליך איננו. מספר = עדיין חי, ואינו הצלחה
+        — גם כשלא הצלחנו לבדוק. TERM לבד משאיר יתום: udpcast חוסם
+        אותו ב-doTransfer. SIGKILL ואז קריאה בחזרה.
+        """
         self._stop.set()
         with self._lock:
             process = self._process
             if self._state is not None and self._state.state in ("starting", "sending"):
                 self._state.state = "stopped"
-        if process is not None and process.poll() is None:
-            process.terminate()
+        if process is None or process.poll() is not None:
+            return None
+        process.terminate()
+        if _reaped(process, STOP_TERM_WAIT):
+            return None
+        try:
+            process.kill()
+        except OSError:
+            pass
+        if _reaped(process, STOP_KILL_WAIT):
+            return None
+        pid = getattr(process, "pid", None)
+        log.error("sender: udp-sender still alive after SIGKILL (PID %s)", pid)
+        return pid if pid is not None else -1
 
     def status(self) -> dict | None:
         with self._lock:
@@ -282,6 +402,9 @@ class SenderEngine:
             "--max-wait", str(self.max_wait),
             # בלי זה udpcast ממתין למקבל הראשון בלי גבול (#341).
             "--start-timeout", str(self.start_timeout),
+            # מקבל שמת אינו שולח CMD_DISCONNECT — הוא פשוט מפסיק לענות,
+            # וכל שאר החדר ממתין לו. זו התקרה על ההמתנה הזאת (#437).
+            "--retries-until-drop", str(self.retries_until_drop),
             "--nokbd",
             "--file", str(path),
         ]
@@ -395,6 +518,7 @@ class SenderEngine:
                 self._state.file = part["file"]
                 self._state.state = "sending"
             cmd = self.command_for(path, receivers)
+            log_path = partition_log(part["file"])
             log.info("sending partition %s/%s: %s", number, len(partitions), part["file"])
             try:
                 process = self.runner(cmd)
@@ -404,34 +528,35 @@ class SenderEngine:
             with self._lock:
                 self._process = process
                 self._state.commands.append(cmd)
-            spawned_at = time.monotonic()
             code = process.wait()
-            waited = time.monotonic() - spawned_at
             with self._lock:
                 self._process = None
             if self._stop.is_set():
                 self.on_event("send_stopped", session["id"])
                 return
             if code != 0:
-                _tail = sender_log_tail()
-                if (self.start_timeout <= waited
-                        <= self.start_timeout + START_TIMEOUT_GRACE):
-                    # ‏udp-sender קיבל `--start-timeout`, ולכן כישלון **בדיוק
-                    # בתקרה** הוא המצב שהתקרה נועדה לו: איש לא התייצב כמקבל.
-                    # החלון סגור משני הצדדים — כישלון מהיר וכישלון בסוף שידור
-                    # ארוך אינם זה, ואסור לתלות בהם אבחון שלא נבדק. אומרים את
-                    # המנגנון ואת הזמן שנמדד, כדי שהמפעיל ישפוט בעצמו.
-                    self._fail(
-                        f"אף מחשב לא הצטרף לשידור תוך {self.start_timeout}"
-                        f" שניות — udp-sender ויתר על {part['file']}"
-                        f" (קוד {code}, המתנה {waited:.0f} שניות)."
-                        " יש לבדוק כבל רשת, אתחול PXE ורישום MAC"
-                        + (f": {_tail}" if _tail else "")
-                    )
-                    return
+                _tail = sender_log_tail(log_path)
                 self._fail(f"udp-sender נכשל על {part['file']} (קוד {code})"
                            + (f": {_tail}" if _tail else "")
                            + f" · {self._port_verdict()}")
+                return
+            # קוד 0 אינו "השידור הצליח": udp-sender בנתיב start-timeout
+            # יוצא 0 בלי Starting transfer ובלי מקבל אחד (#438). הראיה
+            # החיובית היא השורה בלוג. בלי קובץ אין ראיה — וזה לא הצלחה.
+            started = transfer_started_in_log(log_path)
+            if started is None:
+                self._fail(
+                    f"לא הצלחנו לקרוא את יומן השידור אחרי {part['file']},"
+                    " ולכן אין לדעת אם מישהו הצטרף — השידור לא נחשב תקין"
+                )
+                return
+            if not started:
+                self._fail(
+                    f"אף מחשב לא הצטרף לשידור תוך {self.start_timeout}"
+                    f" שניות — udp-sender סיים בלי לשדר את {part['file']}"
+                    " (הלוג בלי Starting transfer). זה אינו אימג' פגום:"
+                    " יש לבדוק כבל רשת, אתחול PXE ורישום MAC"
+                )
                 return
 
         with self._lock:
