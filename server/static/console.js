@@ -338,8 +338,28 @@ function stuckNote(stuck, mac) {
     : `אתחל ${s.attempts} פעמים ולא הצטרף`;
 }
 
+/* בריאות SMART וההכרעה על דיסק פגום (#652), לצפייה בלבד. הכותרת היא
+   "דיסק N" לפי החריץ (port) ולא שם ההתקן — אותה מוסכמה של הסוכן. רק
+   דיסק שאיננו תקין או שנעשתה עליו הכרעה מוצג, כדי לא להציף. */
+const SMART_HE = {ok: "תקין", warn: "SMART אזהרה", fail: "SMART תקלה",
+                  unchecked: "לא נבדק"};
+const DECISION_HE = {replace: "להחלפה", rescue: "נכתב בכוח", skip: "דולג"};
+function disksHtml(disks) {
+  if (!Array.isArray(disks) || !disks.length) return "";
+  const chips = disks
+    .filter((d) => d.verdict !== "ok" || d.decision)
+    .map((d) => {
+      const name = d.disk_number != null ? `דיסק ${d.disk_number}` : esc(d.disk);
+      const health = SMART_HE[d.verdict] || esc(d.verdict);
+      const hint = d.reason === "crc" ? " (בדוק כבל)" : "";
+      const dec = d.decision ? ` · ${DECISION_HE[d.decision] || esc(d.decision)}` : "";
+      return `<span class="disk-smart ${esc(d.verdict)}">${name}: ${health}${hint}${dec}</span>`;
+    });
+  return chips.length ? `<div class="disks">${chips.join("")}</div>` : "";
+}
+
 function memberRow(m, session, note = "") {
-  const pct = m.bytes_total ? Math.round((100 * m.bytes_written) / m.bytes_total) : 0;
+  const progress = Progress.view(m);
   const cls = m.done || m.state === "done" ? "done" : m.state === "failed" ? "failed" : "";
   const err = m.error ? `<div class="err">${esc(m.error)}</div>` : "";
   // מזוהה בשם המחשב שייכתב לו; מכונה שאינה רשומה נופלת חזרה ל-MAC.
@@ -352,8 +372,9 @@ function memberRow(m, session, note = "") {
       <b>${esc(label)}</b>${single}
       ${m.hostname ? "" : `<span class="mono sub-mac">${esc(m.mac)}</span>`}
     </div>
-    <div class="bar"><i style="width:${pct}%"></i></div>
-    <span class="pct">${m.state === "waiting" ? "ממתין" : pct + "%"}</span>
+    ${Progress.bar(m)}
+    <span class="pct">${m.state === "waiting" ? "ממתין" : progress.label}</span>
+    ${disksHtml(m.disks)}
     ${err}
     ${note && !m.done ? `<div class="err">${esc(note)}</div>` : ""}
   </div>`;
@@ -625,7 +646,9 @@ async function loadSettings() {
   $("#set-idle").value = Number(s.console_idle_seconds);
   await loadLogoSettings();
 
-  // עצירת החירום מופיעה רק כשיש מה לעצור, ורק אחרי הקלדת שם הכיתה.
+  // עצירת החירום מופיעה רק כשיש מה לעצור, ורק אחרי הקלדת שם האימג'
+  // המשודר. ההכרעה עברה לשרת ב-#581: המסך שולח את מה שהוקלד, והשרת
+  // הוא זה שמשווה — בדיוק כמו בעצירת סבב החדר (#533).
   const session = (await api("/overview")).session;
   $("#stop-panel").classList.toggle("hidden", !session);
   if (!session) return;
@@ -635,10 +658,12 @@ async function loadSettings() {
   $("#stop-round").onclick = () => sheet({
     title: "עצירת הסבב",
     sub: `${what} · הצטרפו ${session.joined} מתוך ${session.expected_clients}`,
-    verify: { label: "להמשך, הקלידו את שם הכיתה", mustEqual: what },
+    verify: { label: "להמשך, הקלידו את שם האימג' המשודר",
+              mustEqual: session.image_name },
     submitLabel: "עצור את הסבב", danger: true,
     onSubmit: async () => {
-      await post(`/sessions/${session.id}/close`);
+      await post(`/sessions/${session.id}/close`,
+                 { confirm_name: session.image_name });
       await loadSettings();
       await refreshStatus();
       toast("הסבב נעצר.");

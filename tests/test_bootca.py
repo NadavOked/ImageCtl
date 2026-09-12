@@ -256,11 +256,14 @@ def run_leaf_issuer(tmp_path: Path, text: str) -> str:
         + SOURCE_CHAIN
         + "_leaf_issuer"
     )
-    proc = subprocess.run([BASH, "-c", script], input=text, capture_output=True,
-                          text=True, encoding="utf-8", errors="replace",
-                          stdin=None, cwd=str(REPO))
-    assert proc.returncode == 0, proc.stderr
-    return proc.stdout.strip()
+    # ‏input בבייטים ולא ב-text: עם `text=True` ווינדוס מתרגם כל `\n` שנכתב
+    # לצינור ל-`\r\n`, וה-`awk` של `_leaf_issuer` מוציא `CN=` משורה שנושאת
+    # ‏`\r` בסופה — כלומר שם CA עם תו נסתר (#491, אותו כשל כמו #479). הפלט
+    # מפוענח כאן, כדי שלא יעבור universal-newlines ויסתיר את מה שהתקבל.
+    proc = subprocess.run([BASH, "-c", script], input=text.encode("utf-8"),
+                          capture_output=True, cwd=str(REPO))
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+    return proc.stdout.decode("utf-8", "replace").strip()
 
 
 # --- הממצא המרכזי: קובץ אחד, שתי חתימות -------------------------------------

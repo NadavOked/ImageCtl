@@ -1,0 +1,83 @@
+# guistate.sh -- one writer, atomic GUI snapshots. POSIX sh.
+gui_get() {
+    _sc=$(console_get "$1" "$2") || return 1
+    [ "$_sc" = 200 ] || { printf 'GUI GET %s: HTTP %s\n' "$1" "$_sc" >&2; return 1; }
+}
+
+gui_state() {
+    http_get "$SERVER/api/v1/agent/state?mac=$MAC" > "$GUI_DIR/station.json" || return 1
+    # Delimiters cannot be represented by the GUI's record format.
+    # Replace them for display only; action identifiers are validated separately.
+    jq -er '
+      def clean: tostring | gsub("[\\r\\n|]"; " ");
+      if (.known | type) != "boolean" or (.disks | type) != "array" then error("bad station state") else . end |
+      if .known == false then "message=Machine is not registered|Contact IT"
+      else
+        (.disks[] | select(.removable == false) |
+          "disk=" + ([.dev,.model,.size_bytes,(if .has_data then 1 else 0 end),0] | map(clean) | join("|"))),
+        (if .task == null then "task=none" else .task | .state as $ts |
+          (if .state == "cancelled" then "task=failed"
+           elif (["pending","running","done","failed"]|index($ts)) != null then "task=\(.state)"
+           else error("unknown task state") end), "task_name=\(.name|clean)", "task_disk=\(.disk|clean)",
+          "task_error=\((.error // "")|clean)", "bytes=\(.bytes_written // 0)",
+          (if .source_progress != null then
+             "pct=\((100 * .source_progress.blocks_read / .source_progress.blocks_total)|floor)",
+             "partition=\(.source_progress.partition)"
+           elif (.bytes_total // 0) > 0 then "pct=\((100 * .bytes_written / .bytes_total)|floor)"
+           else "pct=-1" end) end)
+      end' "$GUI_DIR/station.json" > "$GUI_DIR/state.next" || return 1
+    _sm=$(cat "$GUI_DIR/mode") || return 1
+    case "$_sm" in
+        capture)
+            gui_get folders "$GUI_DIR/folders.json" || return 1
+            jq -r 'if type != "array" then error("bad folders") else .[] |
+                if (.name|test("[\\r\\n|]")) then error("unrepresentable folder") else "folder=\(.name)" end end' \
+                "$GUI_DIR/folders.json" >> "$GUI_DIR/state.next" || return 1 ;;
+        room)
+            gui_get room "$GUI_DIR/room.json" && gui_get images "$GUI_DIR/images.json" || return 1
+            jq -r 'if type != "array" then error("bad images") else .[] |
+                "image=" + ([.id,.name,.folder] | map(tostring | gsub("[\\r\\n|]"; " ")) | join("|")) end' \
+                "$GUI_DIR/images.json" >> "$GUI_DIR/state.next" || return 1
+            jq -r '
+              def row: "machine=" + ([.name,.mac,(if .awake then 1 else 0 end),
+                (if .joined then 1 else 0 end),.fresh_drawers,.state,
+                (if (.bytes_total // 0)>0 then (100*.bytes_written/.bytes_total|floor) else -1 end),0,
+                (.error // "")] | map((. // "")|tostring|gsub("[\\r\\n|]";" ")) | join("|"));
+              if (.machines|type) != "array" then error("bad room") else
+              (if .round == null then empty else .round |
+                "round=" + ([.image_name,.wave_number,(if .wave_state == "open" then 1 else 0 end),
+                  .written_drives,.target_drives,.ready_drives,.remaining_drives] |
+                  map(tostring|gsub("[\\r\\n|]";" "))|join("|")) end), (.machines[]|row) end' \
+                "$GUI_DIR/room.json" >> "$GUI_DIR/state.next" || return 1 ;;
+        classes)
+            http_get "$SERVER/api/v1/agent/groups" > "$GUI_DIR/classes.json" || return 1
+            http_get "$SERVER/api/v1/agent/sessions/active" > "$GUI_DIR/session.json" || return 1
+            jq -r 'if type != "array" then error("bad classes") else .[] |
+                "class=" + ([.id,.label,.machines]|map(tostring|gsub("[\\r\\n|]";" "))|join("|")) end' \
+                "$GUI_DIR/classes.json" >> "$GUI_DIR/state.next" || return 1
+            jq -r 'if has("session")|not then error("bad active session") else .session |
+                select(. != null and .group_role == "classroom") |
+                "session=" + ([.image_name,.prefix,.group_label,(if .state == "open" then 1 else 0 end),
+                .joined,.expected_clients,.starts_in_seconds] |
+                map(tostring|gsub("[\\r\\n|]";" "))|join("|")),
+                (.members[] | "machine=" + ([.name,.mac,1,1,0,.state,
+                  (if (.bytes_total // 0)>0 then (100*.bytes_written/.bytes_total|floor) else -1 end),0,
+                  (.error // "")] | map((. // "")|tostring|gsub("[\\r\\n|]";" "))|join("|"))) end' \
+                "$GUI_DIR/session.json" >> "$GUI_DIR/state.next" || return 1
+            cp "$GUI_DIR/session.json" "$GUI_DIR/session-shown.next" &&
+                mv "$GUI_DIR/session-shown.next" "$GUI_DIR/session-shown.json" || return 1 ;;
+    esac
+    if [ -f "$GUI_DIR/error" ]; then cat "$GUI_DIR/error" >> "$GUI_DIR/state.next" || return 1; fi
+    mv "$GUI_DIR/state.next" "$GUI_DIR/state"
+}
+
+gui_state_loop() {
+    while :; do
+        if ! gui_state; then
+            printf 'native-gui: state could not be verified\n' >&2
+            printf 'message=State could not be verified|Check connection; see agent log\n' > "$GUI_DIR/state.next" &&
+                mv "$GUI_DIR/state.next" "$GUI_DIR/state" || return 1
+        fi
+        sleep 2
+    done
+}

@@ -17,21 +17,29 @@ LIB_DIR="${LIB_DIR:-/usr/lib/imagectl}"
 . "$LIB_DIR/sysinfo.sh"
 . "$LIB_DIR/decide.sh"
 . "$LIB_DIR/progress.sh"
+. "$LIB_DIR/pull.sh"   # אחרי progress.sh: pull_close קורא ל-report_final (#562)
 . "$LIB_DIR/restore.sh"
-. "$LIB_DIR/expand.sh"
-. "$LIB_DIR/drawers.sh"
+. "$LIB_DIR/expand.sh"; . "$LIB_DIR/grow.sh"   # ההרחבה: לפני הזרם ואחריו (#478)
+. "$LIB_DIR/drawers.sh"; . "$LIB_DIR/verdict.sh"   # הזרם, ואז הפסק עליו (#520)
 . "$LIB_DIR/manifest.sh"
 . "$LIB_DIR/bootca.sh"   # לפני capture.sh: capture_disk קורא לו (#85)
 . "$LIB_DIR/capture.sh"
 . "$LIB_DIR/classround.sh"
 . "$LIB_DIR/hostname.sh"
 . "$LIB_DIR/sshd.sh"
+. "$LIB_DIR/watchdog.sh"
 . "$LIB_DIR/ui.sh"
+. "$LIB_DIR/smart.sh"   # שער SMART בצד השחזור (#652); אחרי ui.sh/progress.sh
+. "$LIB_DIR/recovery.sh"   # אחרי ui.sh, classround.sh ו-pull.sh: הפיצול מ-ui.sh (#564)
 . "$LIB_DIR/buildmenu.sh"
 . "$LIB_DIR/buildcapture.sh"
 . "$LIB_DIR/roomflow.sh"
 . "$LIB_DIR/hold.sh"
 . "$LIB_DIR/poll.sh"
+. "$LIB_DIR/guiparent.sh"
+. "$LIB_DIR/clonergui.sh"
+. "$LIB_DIR/guibridge.sh"   # run in imagectl-kiosk; sourced here for the load gate
+. "$LIB_DIR/guistate.sh"
 
 mkdir -p "$RUN_DIR/targets"
 parse_cmdline
@@ -85,29 +93,18 @@ read_answer() {
 }
 
 build_console_screen() {
-    # The build machine's face. With the GUI in the image, this is still the
-    # kiosk browser showing the station page; without it -- which is every
-    # build since #32 was closed -- the text menu of #135: sign in, then the
-    # two or three things this server can be told to do from here.
-    #
-    # Blocking on `read` inside the poll loop is deliberate and safe: the
-    # server is passive, so nothing is pushed at a machine whose operator is
-    # reading a menu. Standby hands it back to the loop (#135).
-    if [ -x /usr/bin/imagectl-kiosk ] && [ "$_kiosk_started" != "1" ]; then
-        _kiosk_started=1
-        log "starting the kiosk browser"
-        /usr/bin/imagectl-kiosk "$SERVER/console/station/?mac=$MAC" \
-            >> "$LOG_FILE" 2>&1 &
-        return 0
-    fi
-    [ "$_kiosk_started" = "1" ] && return 0
+    gui_parent && return 0
     [ "$_build_standby" = "1" ] && return 0
     build_menu_flow
 }
-
 do_task() {
     _type=$(json_get "$RESP" ".task.type")
     _tid=$(json_get "$RESP" ".task.id")
+    # ‏#530: האסימון מגיע בתשובת ה-hello, ורק למכונה שה-MAC שלה תואם,
+    # וכל כתיבה על המשימה דורשת אותו בחזרה. **בלי `export`**: שני
+    # אתרי השימוש ב-`capture.sh` הם הרחבת מעטפת בקובץ שנטען ב-`.`,
+    # ותת-מעטפת יורשת משתנה גם בלי ייצוא. אין שם `sh -c`.
+    TASK_TOKEN=$(json_get "$RESP" ".task.token")
     if [ "$_type" != "capture" ]; then
         # A task type this build does not know is not a reason to guess.
         log "unknown task type '$_type' -- ignoring it"
@@ -140,7 +137,7 @@ do_task() {
             echo "  You can power off and remove the drive."
             [ "${IMAGECTL_TEST:-0}" = "1" ] && exit 0
             sleep 20
-            sync; poweroff -f
+            finish_and_stop
         fi
         log "manifest upload failed"
     fi
@@ -166,6 +163,12 @@ do_restore_drawers() {
 
     progress_loop "$2" "$MAC" "$SERVER" &
     _ppid=$!
+
+    # שער SMART לפני כתיבה (#652); rc=2 = "החלף" -> כיבוי לפני שנכתב בייט.
+    # shellcheck disable=SC2086 # the disk list is a word list on purpose
+    _disks=$(smart_gate "$2" $_disks); _gr=$?
+    [ "$_gr" = 2 ] && { smart_replace_screen; [ "${IMAGECTL_TEST:-0}" = "1" ] && exit 0; finish_and_stop; }
+    [ "$_gr" = 0 ] || { ui_error_hold "all drawers skipped" hold_beat; return 1; }
     log "writing $(echo "$_disks" | wc -w) drawers: $_disks"
 
     # shellcheck disable=SC2086 # the disk list is a word list on purpose
@@ -179,28 +182,11 @@ do_restore_drawers() {
         # powering down IS the next step of the round, not a failure.
         log "drawers complete -- powering off for the swap"
         [ "${IMAGECTL_TEST:-0}" = "1" ] && exit 0
-        sync; poweroff -f
+        finish_and_stop
     fi
     # ‏progress_loop ממשיך לרוץ, בדיוק כמו במסלול התחנה: הקונסולה חייבת
     # להוסיף לראות 'failed'. הריגתו כאן היא שהשתיקה את המכונה (#64).
     ui_error_hold "no drawer completed" hold_beat
-}
-
-name_this_machine() {
-    # $1 = disk, $2 = session id. Never fatal: an image that boots with the
-    # wrong name is fixable in a minute; one that does not boot is not.
-    _prefix=$(json_get "$RESP" ".session.prefix")
-    _suffix=$(json_get "$RESP" ".group.suffix")
-    if [ "$_prefix" = "null" ] || [ "$_suffix" = "null" ]; then
-        log "no prefix/suffix in the server answer -- skipping the hostname"
-        return 0
-    fi
-    echo "naming" > "$RUN_DIR/state"
-    _name=$(compose_hostname "$_prefix" "$_suffix")
-    _result=$(write_hostname "$1" "$RUN_DIR/manifest.json" "$_name")
-    echo "$_result" > "$RUN_DIR/hostname.json"
-    log "hostname: $_result"
-    echo "done" > "$RUN_DIR/state"
 }
 
 do_restore() {
@@ -222,6 +208,11 @@ do_restore() {
     target_init "$_disk" "$_total"
     progress_loop "$_ses" "$MAC" "$SERVER" &
     _ppid=$!
+
+    # שער SMART לפני כתיבה (#652), אותו שער כמו בחדר השיכפולים.
+    _disk=$(smart_gate "$_ses" "$_disk"); _gr=$?
+    [ "$_gr" = 2 ] && { smart_replace_screen; [ "${IMAGECTL_TEST:-0}" = "1" ] && exit 0; finish_and_stop; }
+    [ "$_gr" = 0 ] || { ui_error_hold "the disk was skipped -- nothing written" hold_beat; return 1; }
 
     ui_clear; ui_header
     echo "  Receiving $(json_get "$RUN_DIR/manifest.json" ".name")"
@@ -245,6 +236,7 @@ do_restore() {
 _fails=0
 _logged_wait=0
 while :; do
+    watchdog_beat
     if ! send_hello; then
         _fails=$((_fails + 1))
         [ "$_fails" -ge 30 ] && die_local "server unreachable"
@@ -253,6 +245,7 @@ while :; do
     fi
     _fails=0
     read_answer
+    watchdog_start
 
     case "$(decide)" in
         local)
@@ -267,31 +260,37 @@ while :; do
             do_task
             ;;
         recovery)
-            recovery_flow
+            if gui_parent; then poll_sleep; else recovery_flow; fi
             ;;
         wait_open)
             # A station on the class network waits for nothing -- the stream
             # never reaches its vlan. One hello is enough, no loop (#136).
             poll_off_deploy_vlan && die_local "the round is on another vlan"
-            ui_waiting_draw \
+            if ! gui_parent; then ui_waiting_draw \
                 "$(json_get "$RESP" ".session.prefix")" \
                 "$(json_get "$RESP" ".session.joined")" \
                 "$(json_get "$RESP" ".session.expected_clients")" \
                 "$(json_get "$RESP" ".session.starts_in_seconds")"
+            fi
             poll_sleep
             ;;
         wait_poll)
             if [ "$_logged_wait" = "0" ]; then
                 log "cloner: reporting drawers, waiting for work"
+                # ‏probe חד-פעמי כדי שה-hello יישא בריאות SMART והקונסולה
+                # תראה אותה *לפני* שהמפעיל משגר סבב (דרישת נדב #652).
+                # shellcheck disable=SC2046 # the drawer list is a word list
+                smart_probe_idle $(list_drawers)
                 _logged_wait=1
             fi
-            poll_sleep
+            gui_cloner_parent; poll_sleep   # מסך "ממתין לסבב" + התקדמות; 0 גם בלי מסך
             ;;
         build_console)
             build_console_screen
             poll_sleep
             ;;
         restore)
+            gui_restore_parent
             do_restore
             ;;
     esac

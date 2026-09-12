@@ -84,11 +84,15 @@ def create_net_router(ctx: ServerContext) -> APIRouter:
     @router.delete("/net/{mac}")
     def forget_device(mac: str, user=Depends(admin_only)):
         """הסרה מהרשימה בלבד. אם המכונה תדבר שוב — היא תחזור."""
-        ctx.conn.execute(
-            "DELETE FROM net_devices WHERE mac = ?", (registry.normalize_mac(mac),)
-        )
+        canonical = registry.normalize_mac(mac)
+        if canonical is None:
+            raise HTTPException(400, "MAC לא תקין")
+        if not update_one(
+            ctx.conn, "DELETE FROM net_devices WHERE mac = ?", (canonical,)
+        ):
+            raise HTTPException(404, "התקן לא ברשימה")
         ctx.conn.commit()
-        journal(ctx.conn, "net_forget", mac, user[0])
+        journal(ctx.conn, "net_forget", canonical, user[0])
         return {"ok": True}
 
     return router

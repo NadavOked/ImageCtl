@@ -70,13 +70,15 @@ ROLES_WITH_NORMAL_ENTRY = frozenset({"build"})
 #:
 #:   build      → מסך הקליטה/ההפצה של מחשב הבנייה.
 #:   classroom  → מסך התחנה מול התלמיד.
-#:   cloner     → **בכוונה בחוץ.** למחשב שיכפול לא יחובר מסך כלל, ולכן
-#:                אין סיבה למשוך אליו 212MB במקום 37MB.
+#:   cloner     → התקדמות גרפית פר-מגירה והכרעות SMART מקומיות (הכרעת
+#:                הבעלים, הופכת את "cloner בלי מסך"). הוא **נשאר diskless**
+#:                ועולה ישר לסוכן בלי ערך מקומי — #17 לא זז: ההרחבה כאן
+#:                נוגעת ב-initramfs שנבחר בלבד, לא בערכי התפריט.
 #:
 #: הבחירה תלויה ב**תפקיד** ולא במסלול ההחלטה, מאותה סיבה שבה `diskless`
 #: תלוי בתפקיד: ‏cloner מגיע ל-AGENT בשלושה מסלולים שונים, ובחירה לפי
 #: `code` הייתה מחזירה את ההתנהגות הישנה ברגע שנפתח סבב (#320).
-ROLES_WITH_GUI = frozenset({"build", "classroom"})
+ROLES_WITH_GUI = frozenset({"build", "classroom", "cloner"})
 
 _MAC_CANONICAL = re.compile(r"^[0-9a-f]{2}(:[0-9a-f]{2}){5}$")
 _MAC_STRIP = re.compile(r"[^0-9a-fA-F]")
@@ -280,6 +282,33 @@ def decide(answer: object) -> Decision:
     # ידוע לשרת; ראו ROLES_WITH_NORMAL_ENTRY. בדיוק אחד מהדגלים דלוק.
     normal = role in ROLES_WITH_NORMAL_ENTRY
     code = "boot-loop-guard" if guarded else "no-task"
+
+    # ‏#641 (הכרעת נדב, 2026-09-10): היפוך #140. מחשב build/classroom רשום
+    # שאין לו משימה עולה **ישר ל-ImageCtl, אוטומטי לגמרי** — בלי מסך בחירה,
+    # בלי ESC, בלי טיימר. בחירת הדיסק המקומי עברה אל תוך מסך ה-ImageCtl
+    # עצמו. זה בדיוק המסלול שבו משימה/סבב פעיל מעלים את הסוכן (AGENT,
+    # ‏timeout=0, hidden, default=imagectl); ההבדל היחיד הוא הערך המתאים
+    # לתפקיד — ‏build מקבל את הערך הרגיל (build_console, #29), ו-classroom
+    # את ה-recovery (מסך הכניסה/בחירה, כי "רגיל" ב-classroom מחזיר local
+    # ומאתחל — #144). ‏offer_local נשאר דלוק כמו במסלול המשימה: הערך המקומי
+    # קיים בקובץ אך חבוי (timeout=0), והבחירה שאדם רואה היא של מסך ImageCtl.
+    #
+    # ‏`not guarded` בכוונה: כששומר לולאת האתחול (#75) ירה, המכונה **לא**
+    # תעלה אוטומטית אל מה שכבר לולא אותה — היא מקבלת את התפריט הגלוי כדי
+    # שטכנאי ייכנס לשחזור (ראו ROLES_WITH_NORMAL_ENTRY והטסטים של #75).
+    # תפקיד שאינו ב-ROLES_WITH_GUI (teacher/unknown וכו') אינו משתנה גם
+    # הוא ונשאר בתפריט הגלוי של #140.
+    if gui and not guarded:
+        return Decision(
+            AGENT,
+            code,
+            f"no task, auto-boot imagectl "
+            f"(role={role}, entry={'normal' if normal else 'recovery'})",
+            offer_local=True,
+            gui_screen=gui,
+            recovery_mode=not normal,
+        )
+
     return Decision(
         LOCAL,
         code,

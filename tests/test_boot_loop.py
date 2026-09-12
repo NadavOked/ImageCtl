@@ -168,7 +168,8 @@ def test_a_new_session_is_a_new_budget(server):
     ids = open_session(server)
     boot_until_local(server, ids["mac1"])
     assert server["deploy"].post(
-        f"/api/console/sessions/{ids['session']}/close").status_code == 200
+        f"/api/console/sessions/{ids['session']}/close",
+        json={"confirm_name": "Office 2024 Standard"}).status_code == 200
     assert server["deploy"].post(
         "/api/console/sessions",
         json={"group_id": ids["group"], "image_id": "img_7f3a91",
@@ -242,9 +243,16 @@ def test_hello_still_joins_and_resets_the_timer(server):
         "/api/console/overview").json()["session"]["joined"] == 2
 
 
-def test_a_machine_that_finished_is_not_counted_and_not_offered_again(server):
-    """‏done לא מקבל את הסבב שוב — וגם לא נספר, כי הוא ממילא יורד
-    לדיסק המקומי בכל אתחול."""
+def test_a_machine_that_finished_is_not_counted_and_not_offered_the_session(server):
+    """‏done לא מקבל את הסבב שוב (session:null), ואינו נספר בשומר הלולאה:
+    אין לו הקשר תחום בזמן (task/session), בדיוק כמו cloner-wait.
+
+    ⚠️ מ-#641 (היפוך #140) תחנת כיתה בלי משימה עולה ישר ל-ImageCtl,
+    ולכן גם מכונה שסיימה שחזור מקבלת `default=imagectl` ולא
+    `default=local` — השרת אינו מבדיל "סיימה" מ"מעולם לא קיבלה משימה"
+    (שתיהן session:null). מה שנשמר כאן הוא **השומר**: הלולאה אינה סופרת
+    אותה (`context is None`), ולכן `stuck` ריק ואין `boot_loop_local`.
+    """
     ids = open_session(server, expected=1)
     server["anon"].post("/api/v1/agent/hello", json=hello_body(ids["mac1"]))
     assert server["anon"].post("/api/v1/agent/progress", json={
@@ -254,7 +262,7 @@ def test_a_machine_that_finished_is_not_counted_and_not_offered_again(server):
     }).json()["ok"]
 
     for _ in range(ATTEMPT_LIMIT + 3):
-        assert "set default=local" in menu(server, ids["mac1"])
+        assert "set default=imagectl" in menu(server, ids["mac1"])
     view = server["admin"].get("/api/console/overview").json()["session"]
     assert view["stuck"] == {}
     events = [row["event"] for row in
@@ -268,3 +276,130 @@ def test_the_menu_still_does_not_join_anyone(server):
         menu(server, ids["mac1"])
     assert server["admin"].get(
         "/api/console/overview").json()["session"]["joined"] == 0
+
+
+# --- מי רשאי להגדיל את המונה (‏#536) ------------------------------------------
+#
+# ‏`GET /boot/menu?mac=<MAC>` מקבל את ה-MAC **מהשאילתה**, ‏`ATTEMPT_LIMIT`
+# הוא 3, וארבע בקשות בלי גוף ובלי עוגייה גמרו את התקציב של תחנת כיתה
+# חיה — השומר שנועד להציל אותה מלולאה הוא זה שהוציא אותה מהסבב. ‏MAC
+# בשאילתה אינו זהות; מה שכן אפשר לאמת הוא על **איזו** מכתובות השרת
+# הבקשה התקבלה, וזו בדיוק העמדה של #42: מחוץ לווילן ההפצה השרת אינו
+# מגיש את שרשרת האתחול, ולכן אין לו ראיה שהמכונה עברה בתפריט שלו.
+
+#: כתובת וילן ההפצה — זו שאיתה נוצר השרת ב-conftest.
+VLAN = "http://10.44.12.10:8080"
+#: כתובת מקומית אחרת של אותו שרת: הרגל שלו ברשת המכללה.
+OFF_VLAN = "http://10.10.10.8:8080"
+
+
+def menu_at(server, base: str, mac: str) -> str:
+    """בקשת תפריט שהתקבלה על כתובת מקומית מסוימת של השרת."""
+    response = server["anon"].get(f"{base}/boot/menu?mac={mac}")
+    assert response.status_code == 200
+    return response.text
+
+
+def counted(server, mac: str) -> int:
+    """כמה אתחולים נספרו על ה-MAC הזה — **המצב עצמו**, לא קוד התשובה."""
+    row = server["ctx"].conn.execute(
+        "SELECT attempts FROM boot_attempts WHERE mac = ?", (mac,)).fetchone()
+    return int(row["attempts"]) if row else 0
+
+
+def test_menu_requests_from_another_network_are_not_counted_as_boots(server):
+    """הבאג עצמו: ארבע בקשות GET מרשת שאינה וילן ההפצה."""
+    ids = open_session(server)
+
+    bodies = [menu_at(server, OFF_VLAN, ids["mac1"])
+              for _ in range(ATTEMPT_LIMIT + 1)]
+
+    assert counted(server, ids["mac1"]) == 0
+    # והתשובה עצמה לא השתנתה: זו התראה ולא שער (#137), והתחנה שבאמת
+    # מושכת תפריט מרשת אחרת (תרחיש 3, ‏#39) ממשיכה לקבל את הסבב שלה.
+    assert all("set default=imagectl" in body for body in bodies)
+    events = [row["event"] for row in
+              server["admin"].get("/api/console/journal").json()]
+    assert "boot_loop_local" not in events
+
+
+def test_the_station_keeps_its_whole_budget_after_the_forged_requests(server):
+    """הנזק שנמנע: אחרי אותן ארבע בקשות התחנה עדיין מקבלת שלושה
+    אתחולים מלאים על וילן ההפצה, ורק הרביעי שלה יורד לדיסק."""
+    ids = open_session(server)
+    for _ in range(ATTEMPT_LIMIT + 1):
+        menu_at(server, OFF_VLAN, ids["mac1"])
+
+    for attempt in range(1, ATTEMPT_LIMIT + 1):
+        assert "set default=imagectl" in menu_at(server, VLAN, ids["mac1"])
+        assert counted(server, ids["mac1"]) == attempt
+    assert "set default=local" in menu_at(server, VLAN, ids["mac1"])
+
+
+def test_the_deployment_vlan_is_still_counted(server):
+    """הבקרה לכיוון השני: השער אינו "לעולם לא לספור". על וילן ההפצה
+    השומר של #75 עובד בדיוק כמו קודם, אחרת התיקון הוא ביטול השומר."""
+    ids = open_session(server)
+
+    for _ in range(ATTEMPT_LIMIT):
+        assert "set default=imagectl" in menu_at(server, VLAN, ids["mac1"])
+    assert "set default=local" in menu_at(server, VLAN, ids["mac1"])
+    assert counted(server, ids["mac1"]) == ATTEMPT_LIMIT + 1
+
+
+# --- מי רשאי לכתוב את ה-IP של מכונה (‏#585) -----------------------------------
+#
+# ‏`build_answer` פותח ב-`net_seen`, ומסלול התפריט קורא לו. לכן
+# ‏`GET /boot/menu?mac=<MAC>` — בקשה בלי גוף, בלי עוגייה, מכל פונה —
+# כותב את ה-`ip` ואת ה-`last_seen` של אותה מכונה בטבלת `net_devices`.
+# מכונה כבויה נראית חיה, הכתובת המוצגת אינה שלה, וכל בינוי זהות עתידי
+# על "הכתובת שהשרת מכיר עבור ה-MAC" מעגלי — התוקף כותב אותה בעצמו.
+# אותה משפחה כמו #536: ‏MAC בשאילתה אינו זהות, והרישום מותנה ב**כתובת
+# שעליה הבקשה התקבלה**, לא ב-MAC מהשאילתה.
+
+
+def net_row(server, mac: str):
+    """שורת `net_devices` של ה-MAC — **המצב עצמו**. ‏None = לא נכתבה."""
+    return server["ctx"].conn.execute(
+        "SELECT ip, last_seen FROM net_devices WHERE mac = ?", (mac,)).fetchone()
+
+
+def test_a_menu_from_another_network_does_not_record_the_machine(server):
+    """הבאג עצמו: בקשות תפריט מרשת שאינה וילן ההפצה, למכונה שמעולם
+    לא דיברה — אסור שיכתבו לה שורה בטבלת ההתקנים."""
+    ids = open_session(server)
+    assert net_row(server, ids["mac1"]) is None        # עוד לא דיברה
+
+    bodies = [menu_at(server, OFF_VLAN, ids["mac1"]) for _ in range(3)]
+
+    assert net_row(server, ids["mac1"]) is None
+    # והתשובה עצמה לא השתנתה — התחנה שמושכת תפריט מרשת אחרת (תרחיש 3,
+    # ‏#39) ממשיכה לקבל את הסבב שלה (עיקרון 1, התראה ולא שער).
+    assert all("set default=imagectl" in body for body in bodies)
+
+
+def test_a_menu_on_the_deployment_vlan_still_records(server):
+    """הבקרה לכיוון השני: הרישום אינו מבוטל. תפריט שהתקבל על וילן
+    ההפצה כותב את המכונה כמו היום, אחרת התיקון שבר את רשימת ההתקנים."""
+    ids = open_session(server)
+    assert net_row(server, ids["mac1"]) is None
+
+    menu_at(server, VLAN, ids["mac1"])
+
+    row = net_row(server, ids["mac1"])
+    assert row is not None and row["last_seen"]
+
+
+def test_hello_records_the_machine_even_from_another_network(server):
+    """‏hello הוא POST שבו המכונה מדווחת על עצמה, ולכן הוא רושם תמיד —
+    גם מחוץ לווילן ההפצה (שם `foreign_vlan` מתריע בנפרד). ‏#585 מפריד
+    בין hello לתפריט, לא מפסיק את הרישום."""
+    ids = open_session(server)
+    assert net_row(server, ids["mac1"]) is None
+
+    response = server["anon"].post(f"{OFF_VLAN}/api/v1/agent/hello",
+                                   json=hello_body(ids["mac1"]))
+    assert response.status_code == 200
+
+    row = net_row(server, ids["mac1"])
+    assert row is not None and row["ip"] == "10.44.12.187"   # ה-ip מגוף ה-hello
