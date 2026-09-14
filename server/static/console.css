@@ -1,118 +1,143 @@
-﻿/* ImageCtl — הקונסולה. שפת העיצוב מהסקיצה: porcelain, RTL.
+﻿/* ImageCtl — הקונסולה. שפת העיצוב: Clarity/vSphere, RTL.
 
-   ערכת הצבעים כולה עוברת דרך המשתנים כאן. כלל: אין צבע קשיח בגוף
-   הקובץ — אחרת המצב הכהה נשבר בדיוק במקום אחד ששכחו.
-
-   שלושה מצבים: בהיר, כהה, ו"לפי המערכת" (ברירת המחדל). הבחירה נשמרת
-   בדפדפן של המשתמש, ולכן כל אחד רואה את מה שנוח לו על אותו שרת. */
-:root{
-  --porcelain:#EEF1F4; --surface:#FFFFFF; --ink:#15202B; --muted:#6B7B8A;
-  --hair:#DCE2E8; --indigo:#2B3FA0; --indigo-soft:#EAECF8;
-  --led-write:#E39A2B; --led-ok:#2E9E6B; --led-idle:#B7C1CA; --danger:#C0453B;
-
-  --hover:#F3F6F8;            /* רקע ריחוף על שורות */
-  --field:#FBFCFD;            /* רקע שדות קלט */
-  --field-line:#EDF1F4;       /* קו מפריד עדין בטבלאות */
-  --track:#E9EDF1;            /* מסילת פס ההתקדמות */
-  --sunken:#FAFBFC;           /* אזורים שקועים: מגירת פרטים, סרגל מודאל */
-  --btn-hover:#F5F7F9; --btn-hover-line:#C8D2DA;
-  --ink-hover:#22303F;        /* כפתור כהה בריחוף */
-  --on-ink:#fff;              /* טקסט על כפתור כהה */
-  --danger-line:#E7C6C3;
-  --warn-soft:#FBF1E2; --warn-ink:#9A6714;
-  --mark-line:#5C6C7C;        /* הפסים בלוגו */
-  --login-a:#1B2735; --login-b:#111A24; --login-glow:#FFFFFF;
-  --shadow-strong:rgba(8,16,26,.55); --shadow-soft:rgba(8,16,26,.45);
-  --scrim:rgba(17,26,36,.42);
-
-  --r:14px; --r-sm:9px;
-  color-scheme:light;
-}
-
-/* מצב כהה — נבחר מפורשות, או לפי העדפת המערכת כשלא נבחר דבר. */
-:root[data-theme="dark"]{
-  --porcelain:#0F1620; --surface:#18202B; --ink:#E7EDF3; --muted:#95A5B5;
-  --hair:#2A3644; --indigo:#93A6F5; --indigo-soft:#232D46;
-  --led-write:#E7A94A; --led-ok:#46B784; --led-idle:#4A5867; --danger:#E4756B;
-
-  --hover:#1F2937;
-  --field:#131B25;
-  --field-line:#222D3A;
-  --track:#2A3644;
-  --sunken:#141C26;
-  --btn-hover:#222C39; --btn-hover-line:#3A4757;
-  --ink-hover:#D3DCE6;
-  --on-ink:#0F1620;
-  --danger-line:#5E3733;
-  --warn-soft:#33291A; --warn-ink:#E7BE7A;
-  --mark-line:#8FA0B2;
-  --login-a:#141C26; --login-b:#0B1119; --login-glow:#26313F;
-  --shadow-strong:rgba(0,0,0,.65); --shadow-soft:rgba(0,0,0,.55);
-  --scrim:rgba(5,9,14,.62);
-
-  color-scheme:dark;
-}
-
-@media (prefers-color-scheme: dark){
-  :root:not([data-theme="light"]){
-    --porcelain:#0F1620; --surface:#18202B; --ink:#E7EDF3; --muted:#95A5B5;
-    --hair:#2A3644; --indigo:#93A6F5; --indigo-soft:#232D46;
-    --led-write:#E7A94A; --led-ok:#46B784; --led-idle:#4A5867; --danger:#E4756B;
-
-    --hover:#1F2937;
-    --field:#131B25;
-    --field-line:#222D3A;
-    --track:#2A3644;
-    --sunken:#141C26;
-    --btn-hover:#222C39; --btn-hover-line:#3A4757;
-    --ink-hover:#D3DCE6;
-    --on-ink:#0F1620;
-    --danger-line:#5E3733;
-    --warn-soft:#33291A; --warn-ink:#E7BE7A;
-    --mark-line:#8FA0B2;
-    --login-a:#141C26; --login-b:#0B1119; --login-glow:#26313F;
-    --shadow-strong:rgba(0,0,0,.65); --shadow-soft:rgba(0,0,0,.55);
-    --scrim:rgba(5,9,14,.62);
-
-    color-scheme:dark;
-  }
-}
+   הטוקנים (צבעים, גופנים, רדיוסים) ב-design-tokens.css, שנטען לפני
+   הקובץ הזה. אין :root צבעים כאן — ה-shell משתמש ב-var() לטוקנים
+   כדי ש-theme toggle יעבוד. מצב בהיר הוא ברירת המחדל.
+   סיידבר מימין: .main{direction:rtl}, קו מפריד ב-border-inline-start. */
 *{box-sizing:border-box;margin:0;padding:0}
+
 html,body{height:100%}
-body{
-  font-family:"IBM Plex Sans Hebrew",system-ui,sans-serif;
-  background:var(--porcelain); color:var(--ink); font-size:14px;
-  -webkit-font-smoothing:antialiased;
-}
-.mono{font-family:"IBM Plex Mono",monospace;direction:ltr}
+body{margin:0;background:var(--porcelain);color:var(--ink);font-family:var(--font-ui);font-size:13px;overflow:hidden}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer}
+.app{height:100vh;display:grid;grid-template-rows:48px 1fr}
+.topbar{background:var(--clr-header);border-bottom:1px solid var(--clr-header-hover);display:flex;align-items:center;gap:14px;padding:0 12px;box-shadow:0 2px 8px var(--shadow-soft);z-index:10;color:var(--clr-header-text)}
+.brand{display:flex;align-items:center;gap:9px;min-width:190px;font-weight:600;letter-spacing:.1px}
+.brand-mark{width:26px;height:26px;border:1px solid var(--header-mark-border,var(--clr-action-hover));border-radius:var(--r-sm);display:grid;place-items:center;background:var(--header-mark-bg,var(--clr-header-hover))}
+.brand-mark svg{width:17px;height:17px}
+.brand-name{font-size:14px}
+.top-actions{display:flex;align-items:center;gap:8px;margin-inline-start:auto}
+.icon-btn,.tool-btn{height:30px;min-width:30px;border:1px solid transparent;background:transparent;border-radius:var(--r-sm);color:var(--clr-header-text);padding:0 8px}
+.icon-btn:hover,.tool-btn:hover{background:var(--clr-header-hover);border-color:var(--clr-header-hover)}
+.search{width:300px;height:31px;background:var(--clr-header-hover);border:1px solid var(--clr-header-hover);border-radius:var(--r-sm);display:flex;align-items:center;padding:0 9px;gap:7px;color:var(--clr-header-text)}
+.search input{flex:1;background:none;border:0;outline:0;color:var(--clr-header-text);min-width:0}
+/* vCenter-style workspace additions */
+.inventory-node{display:flex;align-items:center;gap:7px;padding:6px 8px;border-radius:var(--r-sm);color:var(--ink);cursor:pointer;font-size:11px}.inventory-node:hover{background:var(--hover)}.inventory-node.active{background:var(--indigo-soft);color:var(--indigo)}.inventory-node .tree-arrow{width:12px;color:var(--muted)}.inventory-children{margin-inline-start:19px;border-inline-start:1px solid var(--hair);padding-inline-start:7px}.object-strip{display:flex;align-items:center;justify-content:space-between;padding:9px 16px;background:var(--hover);border-bottom:1px solid var(--hair);gap:12px}.object-id{display:flex;align-items:center;gap:9px;min-width:0}.object-icon{width:25px;height:25px;border:1px solid var(--hair);border-radius:var(--r-sm);display:grid;place-items:center;color:var(--indigo);background:var(--surface)}.object-id strong{font-size:12px}.object-id small{display:block;color:var(--muted);font-size:10px;margin-top:2px}.object-actions{display:flex;gap:5px;flex-wrap:wrap}.alert-strip{display:flex;align-items:center;gap:10px;margin:0 16px 12px;padding:8px 10px;border:1px solid var(--warn-ink);background:var(--warn-soft);color:var(--warn-ink);font-size:10px;border-radius:var(--r-sm)}.alert-strip .alert-dot{width:7px;height:7px;border-radius:50%;background:var(--led-write);flex:0 0 auto}.vcenter-tabs{display:flex;align-items:end;padding:0 16px;background:var(--porcelain);border-bottom:1px solid var(--hair)}.vcenter-tab{padding:9px 14px;color:var(--muted);border-bottom:2px solid transparent;cursor:pointer;font-size:11px}.vcenter-tab:hover{color:var(--ink)}.vcenter-tab.active{color:var(--indigo);border-bottom-color:var(--ink-hover)}.task-dock{position:fixed;inset-inline-start:0;inset-inline-end:0;bottom:0;height:34px;background:var(--clr-nav);border-top:1px solid var(--hair);z-index:110;display:flex;align-items:center;box-shadow:0 -5px 18px var(--shadow-soft);direction:rtl}.task-dock-head{height:100%;display:flex;align-items:center;gap:8px;padding:0 12px;border-inline-end:1px solid var(--hair);cursor:pointer;color:var(--ink);font-size:11px}.task-count{min-width:18px;height:18px;border-radius:var(--r-sm);background:var(--indigo);display:grid;place-items:center;font-size:9px}.task-summary{padding:0 12px;color:var(--muted);font-size:10px;flex:1}.task-summary .task-progress{display:inline-block;width:120px;height:4px;background:var(--track);border-radius:var(--r-sm);vertical-align:middle;margin:0 7px;overflow:hidden}.task-summary i{display:block;height:100%;width:72%;background:var(--ink-hover)}.task-panel{position:fixed;inset-inline-start:0;inset-inline-end:0;bottom:34px;height:250px;background:var(--surface);border:1px solid var(--hair);box-shadow:0 -12px 34px var(--shadow-strong);z-index:109;display:none;direction:rtl}.task-panel.open{display:block}.task-panel-head{height:38px;border-bottom:1px solid var(--hair);display:flex;align-items:center;justify-content:space-between;padding:0 12px}.task-table{width:100%;border-collapse:collapse}.task-table th,.task-table td{padding:7px 10px;border-bottom:1px solid var(--field-line);text-align:start;font-size:10px;white-space:nowrap}.task-table th{color:var(--muted);background:var(--porcelain);font-weight:600}.task-table td{color:var(--ink)}.task-table tr:hover td{background:var(--hover)}.perf-chart{height:122px;background:var(--surface);border:1px solid var(--hair);overflow:hidden}.perf-chart svg{width:100%;height:100%;display:block}.perf-legend{display:flex;gap:14px;margin-top:7px;font-size:9px;color:var(--muted)}.legend-line{display:inline-flex;align-items:center;gap:5px}.legend-line i{display:block;width:16px;height:2px;background:currentColor}.statusbar{height:22px;background:var(--clr-nav);border-top:1px solid var(--hair);color:var(--muted);display:flex;align-items:center;padding:0 12px;font-size:9px;justify-content:space-between}.statusbar-right{display:flex;gap:14px}.statusbar-item{display:inline-flex;align-items:center;gap:5px}.statusbar-item i{width:6px;height:6px;border-radius:50%;background:var(--led-ok)}@media(max-width:740px){.task-panel{height:45vh}.task-summary{display:none}.statusbar{display:none}.object-strip{align-items:flex-start;flex-direction:column}.object-actions{width:100%}}
+
+.user{display:flex;align-items:center;gap:8px;padding:0 6px;border-inline-start:1px solid var(--clr-header-hover);height:28px}
+.avatar{width:26px;height:26px;border-radius:50%;background:var(--clr-header-hover);display:grid;place-items:center;font-size:12px;font-weight:700}
+.main{min-height:0;display:grid;grid-template-columns:292px minmax(0,1fr);direction:rtl}
+.sidebar{direction:rtl;background:var(--clr-nav,var(--surface));border-inline-end:1px solid var(--hair);min-width:0;display:flex;flex-direction:column}
+.sidebar-head{height:48px;padding:0 12px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--hair)}
+.sidebar-title{font-size:12px;font-weight:600;color:var(--ink)}
+.tree{padding:8px 6px;overflow:auto;flex:1}
+.tree-section{margin-bottom:10px}
+.tree-label{display:flex;align-items:center;gap:7px;padding:7px 8px;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+.tree-item{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:var(--r-sm);color:var(--ink);margin:1px 0;white-space:nowrap;cursor:pointer}
+.tree-item:hover{background:var(--hover)}
+.tree-item.active{background:var(--indigo-soft);color:var(--indigo);box-shadow:inset -2px 0 0 var(--ink-hover)}
+.tree-item .chev{font-size:10px;width:10px;color:var(--muted)}
+.tree-item .ico{width:18px;height:18px;display:grid;place-items:center;color:var(--indigo)}
+.tree-sub{margin-inline-start:18px}
+.tree-foot{border-top:1px solid var(--hair);padding:10px 12px;color:var(--muted);font-size:11px}
+.content{direction:rtl;min-width:0;min-height:0;background:var(--porcelain);display:flex;flex-direction:column}
+.breadcrumbs{height:42px;border-bottom:1px solid var(--hair);display:flex;align-items:center;padding:0 16px;gap:8px;color:var(--muted);font-size:12px}
+.breadcrumbs strong{color:var(--ink);font-weight:600}.sep{color:var(--muted)}
+.toolbar{padding:12px 16px 8px;display:flex;align-items:flex-start;gap:10px;justify-content:space-between}
+.title-block h1{font-size:20px;line-height:1.2;margin:0 0 5px;font-weight:500}.title-block p{margin:0;color:var(--muted);font-size:11px}
+.toolbar-actions{display:flex;gap:6px;align-items:center}
+.btn{height:31px;border-radius:var(--r-sm);border:1px solid var(--field-line);background:var(--field);padding:0 12px;color:var(--ink)}
+.btn:hover{background:var(--btn-hover)}.btn.primary{background:var(--indigo);border-color:var(--indigo);color:var(--on-ink)}.btn.primary:hover{background:var(--ink-hover)}.btn.danger{border-color:var(--danger-line);color:var(--danger)}.btn .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:currentColor;margin-inline-end:6px}
+.tabs{display:flex;align-items:flex-end;padding:0 16px;border-bottom:1px solid var(--hair);gap:2px}.tab{padding:10px 15px;color:var(--muted);border-bottom:2px solid transparent;cursor:pointer}.tab:hover{color:var(--ink)}.tab.active{color:var(--ink);border-bottom-color:var(--ink-hover)}
+.scroll{min-height:0;overflow:auto;padding:14px 16px 28px}
+.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:12px}.span-12{grid-column:span 12}.span-8{grid-column:span 8}.span-6{grid-column:span 6}.span-4{grid-column:span 4}.span-3{grid-column:span 3}
+.card{background:var(--surface);border:1px solid var(--hair);border-radius:var(--r);box-shadow:var(--shadow-card)}.card.sel{outline:2px solid var(--indigo);outline-offset:-1px}.btn:disabled{opacity:.55;cursor:not-allowed}
+.card-h{min-height:40px;padding:0 12px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--hair);font-weight:600;color:var(--ink)}.card-h small{font-weight:400;color:var(--muted);font-size:11px}.card-b{padding:12px}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.kpi{background:var(--hover);border:1px solid var(--hair);padding:11px 12px;border-radius:var(--r-sm)}.kpi .label{color:var(--muted);font-size:11px}.kpi .val{font-size:21px;margin-top:5px;letter-spacing:.2px}.kpi .sub{font-size:10px;color:var(--muted);margin-top:2px}
+.progress{height:5px;background:var(--track);border-radius:var(--r-sm);overflow:hidden}.progress > i{display:block;height:100%;background:var(--indigo)}.progress.green > i{background:var(--led-ok)}.progress.yellow > i{background:var(--led-write)}
+.metric{display:grid;grid-template-columns:1fr 86px;gap:14px;align-items:center;margin-bottom:12px}.metric:last-child{margin-bottom:0}.metric strong{display:block;font-size:12px;margin-bottom:5px}.metric span{font-size:10px;color:var(--muted)}.metric-side{text-align:end;font-size:16px;color:var(--ink)}
+.statrow{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}.statbox{border:1px solid var(--hair);background:var(--hover);padding:10px}.statbox .n{font-size:18px}.statbox .l{color:var(--muted);font-size:10px;margin-top:2px}
+.table-wrap{overflow:auto}.table{width:100%;border-collapse:collapse;min-width:740px}.table th,.table td{padding:9px 10px;border-bottom:1px solid var(--field-line);text-align:start;white-space:nowrap}.table th{background:var(--porcelain);color:var(--muted);font-size:10px;font-weight:600;position:sticky;top:0}.table td{color:var(--ink);font-size:11px}.table tr:hover td{background:var(--hover)}.namecell{display:flex;align-items:center;gap:8px}.status{display:inline-flex;align-items:center;gap:6px}.status i{width:7px;height:7px;border-radius:50%;background:var(--muted)}.status.ok i{background:var(--led-ok)}.status.warn i{background:var(--led-write)}.status.err i{background:var(--danger)}
+.tag{display:inline-flex;padding:3px 7px;border:1px solid var(--hair);background:var(--hover);border-radius:var(--r);color:var(--muted);font-size:10px}.tag.blue{background:var(--indigo-soft);border-color:var(--indigo);color:var(--indigo)}.tag.green{background:color-mix(in srgb,var(--led-ok) 12%,var(--surface));border-color:var(--led-ok);color:var(--led-ok)}
+.split{display:grid;grid-template-columns:1fr 1fr;gap:12px}.list{display:flex;flex-direction:column}.list-row{display:grid;grid-template-columns:1fr auto;gap:12px;padding:10px 2px;border-bottom:1px solid var(--field-line)}.list-row:last-child{border-bottom:0}.list-main strong{font-size:11px;font-weight:600;display:block}.list-main small{color:var(--muted);font-size:10px}.list-side{text-align:end;font-size:10px;color:var(--muted)}
+.event{display:grid;grid-template-columns:92px 1fr auto;gap:9px;align-items:center;padding:9px 0;border-bottom:1px solid var(--field-line)}.event:last-child{border-bottom:0}.event-time{font-size:10px;color:var(--muted)}.event-text{font-size:11px}.event-meta{color:var(--muted);font-size:10px}
+.footer-note{color:var(--muted);font-size:10px;text-align:center;padding:10px}
+.empty{padding:24px;text-align:center;color:var(--muted);border:1px dashed var(--hair)}
+.modal-backdrop{position:fixed;inset:0;background:var(--scrim);display:none;align-items:center;justify-content:center;z-index:100}.modal{width:min(660px,calc(100vw - 30px));background:var(--surface);border:1px solid var(--hair);box-shadow:var(--shadow-overlay);border-radius:var(--r-sm)}.modal-h{padding:13px 15px;border-bottom:1px solid var(--hair);display:flex;justify-content:space-between;align-items:center}.modal-b{padding:15px}.form{display:grid;grid-template-columns:1fr 1fr;gap:12px}.field label{display:block;font-size:10px;color:var(--muted);margin-bottom:5px}.field input,.field select{width:100%;height:32px;background:var(--field);border:1px solid var(--field-line);border-radius:var(--r-sm);padding:0 9px;outline:0}.field.full{grid-column:1/-1}.modal-f{display:flex;justify-content:flex-start;gap:7px;padding:12px 15px;border-top:1px solid var(--hair)}
+.toast{position:fixed;inset-inline-end:18px;bottom:18px;background:var(--surface);border:1px solid var(--hair);color:var(--ink);padding:10px 13px;border-radius:var(--r-sm);box-shadow:0 8px 28px var(--shadow-soft);display:none;z-index:120}
+.toast.show{display:block}
+@media (max-width:1000px){.main{grid-template-columns:238px minmax(0,1fr)}.search{width:220px}.span-8,.span-6{grid-column:span 12}.span-4,.span-3{grid-column:span 6}.kpis{grid-template-columns:repeat(2,1fr)}}
+@media (max-width:740px){body{overflow:auto}.app{height:auto;min-height:100vh}.topbar{position:sticky;top:0}.main{grid-template-columns:1fr;direction:rtl}.sidebar{display:none}.search{display:none}.toolbar{flex-direction:column}.toolbar-actions{width:100%;overflow:auto}.tabs{overflow:auto}.tab{white-space:nowrap}.span-4,.span-3{grid-column:span 12}.kpis{grid-template-columns:1fr 1fr}.scroll{overflow:visible}.form{grid-template-columns:1fr}}
+
+/* Interactive UI additions */
+.clickable{cursor:pointer}.clickable:hover{background:var(--hover)}.row-selected td{background:var(--indigo-soft)!important}.muted{color:var(--muted)}.danger-text{color:var(--danger)}.success-text{color:var(--led-ok)}.action-strip{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}.detail-backdrop{position:fixed;inset:0;background:var(--scrim);display:none;z-index:95}.drawer{position:fixed;top:48px;bottom:0;inset-inline-end:0;width:min(440px,92vw);background:var(--surface);border-inline-start:1px solid var(--hair);box-shadow:20px 0 50px var(--shadow-strong);transform:translateX(-105%);transition:transform .18s ease;z-index:96;display:flex;flex-direction:column;direction:rtl}.drawer.open{transform:none}.drawer-head{min-height:52px;padding:0 14px;border-bottom:1px solid var(--hair);display:flex;align-items:center;justify-content:space-between}.drawer-body{overflow:auto;padding:14px;flex:1}.detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.detail-box{background:var(--hover);border:1px solid var(--hair);padding:9px}.detail-box .k{display:block;color:var(--muted);font-size:10px;margin-bottom:4px}.detail-box .v{font-size:12px}.section-title{font-size:11px;font-weight:600;color:var(--ink);margin:16px 0 8px}.notice{padding:9px 10px;border:1px solid var(--hair);background:var(--hover);color:var(--muted);font-size:10px;border-radius:var(--r-sm)}.notice.warn{border-color:var(--warn-ink);background:var(--warn-soft);color:var(--warn-ink)}.notice.err{border-color:var(--danger-line);background:color-mix(in srgb,var(--danger) 12%,var(--surface));color:var(--danger)}.action-menu{position:absolute;top:44px;inset-inline-start:0;min-width:190px;background:var(--surface);border:1px solid var(--hair);box-shadow:0 10px 28px var(--shadow-strong);z-index:80;padding:5px;border-radius:var(--r-sm);display:none}.action-menu button{display:block;width:100%;border:0;background:transparent;text-align:start;padding:8px 10px;color:var(--ink);border-radius:var(--r-sm)}.action-menu button:hover{background:var(--hover)}.rel{position:relative}.selectable-file{display:none}.form-note{font-size:10px;color:var(--muted);margin-top:4px}.toast strong{font-weight:600}.modal-wide{width:min(760px,calc(100vw - 30px))}.confirm-box{line-height:1.6;color:var(--ink);font-size:11px}.danger-confirm{border:1px solid var(--danger-line);background:color-mix(in srgb,var(--danger) 12%,var(--surface));padding:10px;margin:10px 0;color:var(--danger);border-radius:var(--r-sm)}@media(max-width:740px){.drawer{width:100%;top:48px}.detail-grid{grid-template-columns:1fr}}
+
+.user{border:0;background:transparent;display:flex;align-items:center;gap:7px;color:var(--clr-header-text);padding:4px 7px;border-radius:var(--r-sm)}.user:hover{background:var(--clr-header-hover)}.user-menu{position:fixed;top:43px;inset-inline-start:10px;z-index:120;width:210px;background:var(--surface);border:1px solid var(--hair);box-shadow:0 14px 35px var(--shadow-strong);display:none;padding:5px}.user-menu.open{display:block}.user-menu-head{padding:9px 10px;border-bottom:1px solid var(--hair);margin-bottom:4px}.user-menu-head strong{display:block}.user-menu-head small{color:var(--muted)}.user-menu button{display:block;width:100%;text-align:start;border:0;background:transparent;color:var(--ink);padding:8px 10px;border-radius:var(--r-sm)}.user-menu button:hover{background:var(--hover)}.user-menu .danger-item{color:var(--danger)}
+/* Login screen — vCenter-inspired. צבעים רק מטוקנים (בהיר/כהה). */
+.login-screen{position:fixed;inset:0;z-index:300;background:var(--porcelain);display:flex;align-items:center;justify-content:center;padding:24px;overflow:auto;direction:rtl}
+.login-bg{position:absolute;inset:0;background:radial-gradient(circle at 50% 35%,var(--indigo-soft),transparent 36%),linear-gradient(180deg,var(--porcelain) 0%,var(--clr-bg) 100%)}
+.login-grid{position:absolute;inset:0;opacity:.09;background-image:linear-gradient(var(--hair) 1px,transparent 1px),linear-gradient(90deg,var(--hair) 1px,transparent 1px);background-size:40px 40px;mask-image:linear-gradient(to bottom,transparent,var(--ink) 20%,var(--ink) 80%,transparent)}
+.login-panel{position:relative;width:min(440px,100%);background:var(--surface);border:1px solid var(--hair);box-shadow:0 24px 70px var(--shadow-strong);border-radius:var(--r-sm);overflow:hidden}
+.login-brand{padding:30px 34px 20px;background:var(--surface);text-align:center;border:0;display:block}
+.login-brand-top{display:flex;align-items:center;justify-content:center;gap:10px;color:var(--ink)}
+.login-brand .brand-mark{width:34px;height:34px;border:0;background:transparent}
+.login-brand .brandmark{height:34px;border:0;background:transparent;display:inline-flex;align-items:center;justify-content:center}
+.login-brand .brandmark img{height:34px;width:auto;max-width:150px;object-fit:contain}
+.login-brand h1{font-size:18px;margin:18px 0 6px;letter-spacing:0;color:var(--ink)}
+.login-brand p{max-width:none;color:var(--muted);line-height:1.55;margin:0;font-size:11px}
+.login-features,.login-footer{display:none}
+.login-card{background:var(--surface);padding:28px 34px 30px;display:flex;flex-direction:column;justify-content:center;border-top:1px solid var(--hair)}
+.login-card h2{font-size:17px;margin:0 0 7px;text-align:start;color:var(--ink)}
+.login-card .login-sub{margin:0 0 21px;color:var(--muted);font-size:10px;line-height:1.6}
+.login-form{display:grid;gap:13px}
+.login-field label{display:block;color:var(--muted);font-size:10px;margin-bottom:6px}
+#login input.login-input,.login-input{width:100%;height:38px;background:var(--field);border:1px solid var(--field-line);color:var(--ink);padding:0 11px;margin-bottom:0;border-radius:var(--r-sm);outline:none;box-sizing:border-box}
+#login input.login-input:focus,.login-input:focus{outline:none;border-color:var(--indigo);box-shadow:0 0 0 1px var(--indigo-soft)}
+.login-row{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.login-check{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:10px;margin:0;font-weight:400}
+.login-check input{accent-color:var(--indigo)}
+.login-link{color:var(--indigo);text-decoration:none;font-size:10px}
+.login-btn{height:39px;width:100%;border:1px solid var(--indigo);background:var(--indigo);color:var(--on-ink);border-radius:var(--r-sm);font-weight:600;margin-top:2px;cursor:pointer}
+.login-btn:hover{background:var(--ink-hover)}
+.login-btn:disabled{opacity:.65;cursor:wait}
+.login-server{font-size:9px;color:var(--muted);margin-top:13px;text-align:center}
+.login-error{display:none;padding:8px 10px;border:1px solid var(--danger-line);background:color-mix(in srgb,var(--danger) 12%,var(--surface));color:var(--danger);font-size:10px;border-radius:var(--r-sm)}
+.login-demo{display:none}
+.login-meta{padding:0 34px 22px;text-align:center;color:var(--muted);font-size:9px;background:var(--surface)}
+.login-help-link{color:var(--indigo);text-decoration:none;cursor:pointer}
+/* כפתור "הצג" — ימין של שדה הסיסמה (RTL: inline-start) */
+#login .pw-wrap{position:relative}
+#login .pw-wrap .login-input{padding-inline-start:62px;padding-inline-end:11px}
+#login .pw-eye{position:absolute;inset-inline-start:8px;inset-inline-end:auto;top:50%;transform:translateY(-50%);padding:4px 9px;font-family:inherit;font-size:11.5px;cursor:pointer;color:var(--muted);background:var(--surface);border:1px solid var(--hair);border-radius:var(--r-sm);margin:0}
+#login .pw-eye:hover{color:var(--ink);border-color:var(--btn-hover-line)}
+#login #login-error{padding:8px 10px;border:1px solid var(--danger-line);background:color-mix(in srgb,var(--danger) 12%,var(--surface));color:var(--danger);font-size:10px;border-radius:var(--r-sm);min-height:0;margin:0}
+#login #login-error:empty{display:none;padding:0;border:0;background:transparent}
+@media(max-width:520px){.login-screen{padding:14px}.login-panel{width:100%;max-width:420px}.login-brand{padding:26px 24px 18px}.login-card{padding:24px}.login-meta{padding:0 24px 20px}}
+
+/* ---------- מחלקות המודולים הקיימים (לא חלק מ-shell ה-reference) ----------
+   library.js machines.js net.js netcfg.js monitor.js progress.js + index.html
+   הנוכחי. היכן ששם חופף ל-shell (.btn .card .table .modal .field .tree
+   .metric .tag .tab .progress .toast .brand .avatar .status) — גרסת
+   ה-reference למעלה מנצחת. כאן רק מה שאין ב-reference, וסלקטורים
+   ספציפיים יותר (section.tab, #login, #modal, #toast, .btn.flat). */
+
+.mono{font-family:var(--font-mono);direction:ltr}
 .hidden{display:none !important}
 
-/* ---------- login ---------- */
-#login{
-  position:fixed; inset:0; z-index:60;
-  display:flex; align-items:center; justify-content:center;
-  background:
-    radial-gradient(1100px 600px at 78% -10%, var(--login-glow) 0%, transparent 60%),
-    linear-gradient(160deg,var(--login-a) 0%,var(--login-b) 100%);
+/* ---------- login (#login.login-screen) — חיווט console.js נשאר על ה-id ---------- */
+#login-form{
+  width:auto; padding:0; border-radius:0; box-shadow:none;
 }
-.card{
-  width:min(400px,90vw); background:var(--surface);
-  border-radius:20px; padding:38px 34px 30px;
-  box-shadow:0 30px 70px -20px var(--shadow-strong);
-}
-.brand{display:flex; align-items:center; gap:11px; margin-bottom:26px}
 .mark{
-  width:34px; height:34px; border-radius:10px; flex:none;
+  width:34px; height:34px; border-radius:var(--r); flex:none;
   background:var(--ink); position:relative;
 }
 .mark::before,.mark::after{
-  content:""; position:absolute; left:8px; right:8px; height:3px;
-  border-radius:2px; background:var(--mark-line);
+  content:""; position:absolute; inset-inline-end:8px; inset-inline-start:8px; height:3px;
+  border-radius:var(--r-sm); background:var(--mark-line);
 }
 .mark::before{top:11px}
-.mark::after{top:19px; background:var(--led-write); width:9px; right:8px; left:auto}
-.brand h1{font-size:16px; font-weight:600}
-.brand p{font-size:11.5px; color:var(--muted); margin-top:1px}
+.mark::after{top:19px; background:var(--led-write); width:9px; inset-inline-start:8px; inset-inline-end:auto}
 
 label{display:block; font-size:12px; color:var(--muted); margin-bottom:6px; font-weight:500}
 input[type=text],input[type=password],input[type=number],select,textarea{
@@ -120,23 +145,11 @@ input[type=text],input[type=password],input[type=number],select,textarea{
   font-family:inherit; font-size:14px; background:var(--field); color:var(--ink); margin-bottom:14px;
 }
 input:focus,select:focus,textarea:focus{outline:2px solid var(--indigo); outline-offset:1px; border-color:transparent}
-.btn{
-  font-family:inherit; font-size:13.5px; font-weight:500; cursor:pointer;
-  border:1px solid var(--hair); background:var(--surface); color:var(--ink);
-  padding:9px 15px; border-radius:var(--r-sm); transition:.14s;
-  display:inline-flex; align-items:center; gap:7px; text-decoration:none;
-}
-.btn:hover{background:var(--btn-hover); border-color:var(--btn-hover-line)}
-.btn.primary{background:var(--ink); color:var(--on-ink); border-color:var(--ink); justify-content:center}
-.btn.primary:hover{background:var(--ink-hover)}
-.btn.danger{color:var(--danger); border-color:var(--danger-line)}
+
+.btn.flat{background:transparent; border-color:transparent; color:var(--ink)}
 .btn.icon{padding:7px 11px; font-size:15px; line-height:1}
 
-/* לוגו: תמונה שהועלתה מחליפה את הסמל, ומוגבלת לגובה השורה כדי
-   שקובץ ענק לא ידחוף את הכותרת. */
 .brandmark{display:inline-flex; align-items:center; flex:none}
-/* גובה מפורש ולא רק max-height: ל-SVG עם viewBox בלבד אין מידות
-   פנימיות, ותחת max-* הוא מתמוטט ל-0 במקום להתאים את עצמו. */
 .brandmark img{height:34px; width:auto; max-width:150px; object-fit:contain; display:block}
 .hbrand .brandmark img{height:30px; max-width:130px}
 .logo-row{display:flex; align-items:center; gap:16px}
@@ -146,29 +159,70 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--indigo); outline
 .error{color:var(--danger); font-size:12.5px; min-height:18px; margin-top:6px}
 .ok{color:var(--led-ok); font-size:12.5px; min-height:18px; margin-top:6px}
 
-/* ---------- shell ---------- */
-#app{display:flex; flex-direction:column; height:100%}
+/* ---------- מעטפת קיימת (index.html עד שלב 2) ---------- */
+#app{display:grid; grid-template-rows:var(--header-height) minmax(0,1fr); height:100%}
 header{
-  background:var(--surface); border-bottom:1px solid var(--hair);
-  padding:0 20px; display:flex; align-items:center; gap:18px; height:62px; flex:none;
+  height:var(--header-height); background:var(--clr-header); border:0;
+  border-bottom:1px solid var(--shadow-soft);
+  box-shadow:0 2px 8px var(--shadow-soft);
+  padding:0 20px; display:flex; align-items:center; gap:18px; flex:none;
+  color:var(--clr-header-text); min-width:0; z-index:10;
 }
-.hbrand{display:flex; align-items:center; gap:10px; padding-left:18px;
-  border-left:1px solid var(--hair); height:100%}
-.hbrand .mark{width:28px; height:28px; border-radius:8px}
-#tabs{display:flex; gap:4px}
+.hbrand{display:flex; align-items:center; gap:10px; padding-inline-end:18px;
+  border-inline-end:1px solid var(--clr-header-hover); height:100%; color:inherit; flex:none}
+.hbrand .mark{width:28px; height:28px; border-radius:var(--r-sm,6px);
+  background:var(--header-mark-bg,var(--clr-header-hover));
+  border:1px solid var(--header-mark-border,transparent)}
+.hbrand .brandmark img{background:transparent}
+#tabs{display:flex; gap:2px; direction:rtl; align-self:stretch; align-items:center;
+  flex:1 1 auto; min-width:0; overflow-x:auto; scrollbar-width:none}
+#tabs::-webkit-scrollbar{display:none}
 #tabs button{
-  font-family:inherit; font-size:13.5px; padding:8px 14px; cursor:pointer;
-  border:0; background:none; color:var(--muted); border-radius:var(--r-sm);
+  font-family:inherit; font-size:13.5px; padding:8px 11px; cursor:pointer;
+  border:0; border-block-end:3px solid transparent; background:none;
+  color:var(--clr-header-text); border-radius:0; flex:none; white-space:nowrap;
+  display:inline-flex; align-items:center; gap:6px;
 }
-#tabs button.on{background:var(--indigo-soft); color:var(--indigo); font-weight:600}
+#tabs button .ico{width:14px; height:14px; opacity:.85}
+#tabs button.on .ico{opacity:1}
+#tabs button:hover{color:var(--on-ink); background:var(--clr-header-hover)}
+#tabs button.on{background:transparent; color:var(--on-ink); font-weight:600;
+  border-block-end-color:var(--clr-action-hover, var(--ink-hover))}
 .who{margin-inline-start:auto; display:flex; align-items:center; gap:10px;
-  font-size:12.5px; color:var(--muted)}
-.avatar{width:28px; height:28px; border-radius:50%; background:var(--indigo-soft);
-  color:var(--indigo); display:grid; place-items:center; font-weight:600; font-size:12px}
+  font-size:12.5px; color:var(--clr-header-text); flex:none}
+.who .btn{border-color:transparent; background:transparent; color:var(--clr-header-text);
+  border-radius:var(--r-sm,3px)}
+.who .btn:hover{background:var(--clr-header-hover); border-color:var(--clr-header-hover); color:var(--on-ink)}
 
-main{flex:1; overflow:auto; padding:14px}
-.tab{display:grid; grid-template-columns:1fr 1fr; gap:14px; align-items:start}
-.tab .wide{grid-column:1 / -1}
+.app-workspace{min-height:0; display:grid;
+  grid-template-columns:var(--inventory-width) minmax(0,1fr);
+  grid-template-areas:"inventory content"; direction:rtl}
+.inventory{grid-area:inventory; overflow:auto; background:var(--clr-nav);
+  border-inline-start:1px solid var(--hair)}
+.inventory-title{padding:12px 16px; border-block-end:1px solid var(--hair); font-weight:600;
+  background:var(--clr-nav)}
+.inventory-tree{padding-block:8px}
+.inventory-tree details,.inventory-tree summary{list-style:none}
+.inventory-tree summary::-webkit-details-marker{display:none}
+.inventory-tree details details{padding-inline-start:16px}
+.inventory-item,.inventory-tree summary{display:flex; align-items:center; gap:8px;
+  padding:7px 12px; color:var(--ink);
+  text-decoration:none; cursor:pointer; border-inline-end:3px solid transparent}
+.inventory-item .ico{color:var(--muted)}
+.inventory-item.selected .ico{color:var(--indigo)}
+.inventory-item:hover,.inventory-tree summary:hover{background:var(--hover)}
+.inventory-item.selected{background:var(--indigo-soft); border-inline-end-color:var(--indigo);
+  font-weight:600; box-shadow:inset -2px 0 0 var(--ink-hover)}
+.content-region{grid-area:content; min-width:0; min-height:0; overflow:auto; background:var(--porcelain)}
+.site-switcher{flex:none}
+.site-switcher select{width:auto; min-width:150px; margin:0; color:var(--on-ink);
+  background:var(--clr-header-hover); border-color:var(--clr-header-hover)}
+
+main{flex:1; overflow:auto; padding:14px; min-height:0}
+/* תוכן לשונית קיים — לא כפתור .tab של ה-shell */
+section.tab{display:grid; grid-template-columns:1fr 1fr; gap:14px; align-items:start;
+  padding:0; color:inherit; border-bottom:0; cursor:default}
+section.tab .wide{grid-column:1 / -1}
 .lib-grid{grid-template-columns:268px 1fr 246px; align-items:stretch; min-height:calc(100vh - 104px)}
 .wide-one{grid-template-columns:1fr}
 
@@ -186,29 +240,32 @@ main{flex:1; overflow:auto; padding:14px}
 .group-head h3{font-size:15px; font-weight:600}
 .group-head .spacer{margin-inline-start:auto; display:flex; gap:6px}
 .group-head .caret{color:var(--muted); font-size:10px; transition:.15s; flex:none}
-/* גרירה: הידית היא כל השורה, ולכן חייבים לבטל את מחוות הגלילה במגע. */
 .can-reorder .group-head{touch-action:none}
 .reordering{cursor:grabbing}
 .reordering .group-head{cursor:grabbing}
-.group-block.dragging{background:var(--indigo-soft); border-radius:10px;
+.group-block.dragging{background:var(--indigo-soft); border-radius:var(--r);
   box-shadow:0 12px 28px -12px var(--shadow-soft); position:relative; z-index:5}
 .group-block.dragging .group-head{background:transparent}
 .group-block[open] > .group-head .caret{transform:rotate(-90deg)}
 .group-block[open] > .group-head{border-bottom:1px solid var(--hair)}
-.pill{font-size:11px; color:var(--muted); font-family:"IBM Plex Mono",monospace}
-.panel{background:var(--surface); border:1px solid var(--hair); border-radius:var(--r); overflow:hidden}
+.pill{font-size:11px; color:var(--muted); font-family:var(--font-mono)}
+.panel{background:var(--surface); border:1px solid var(--hair); border-radius:var(--r);
+  overflow:hidden; box-shadow:var(--shadow-card)}
+
+.ico{width:15px; height:15px; flex:none; stroke:currentColor; fill:none;
+  stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round}
 .ptitle{font-size:11px; font-weight:600; letter-spacing:.7px; color:var(--muted);
-  padding:14px 16px 10px; text-transform:uppercase}
+  padding:14px 16px 10px; text-transform:uppercase;
+  display:flex; align-items:center; gap:6px}
+.ptitle .ico{width:13px; height:13px}
 .pad{padding:4px 16px 16px}
 .divide{height:1px; background:var(--hair); margin:2px 16px}
 .form-grid label{margin-bottom:2px}
 .form-grid .row{display:flex; gap:8px; margin-bottom:10px; align-items:center}
-/* בתוך שורה, השדות נמתחים והכפתור שומר על גודלו — אחרת הוא נדחס,
-   הטקסט נשבר לשתי שורות, והכפתור נראה ענק ביחס לשדות שלצדו. */
 .form-grid .row input,
 .form-grid .row select{margin-bottom:0; min-width:0}
 .form-grid .row .btn{flex:none; white-space:nowrap}
-.form-grid .row .a-mac{flex:0 0 230px}   /* מספיק ל-MAC מלא, בלי להתכווץ */
+.form-grid .row .a-mac{flex:0 0 230px}
 .form-grid .row .a-name{flex:1 1 auto}
 .check{display:flex; align-items:center; gap:9px; font-size:13.5px; color:var(--ink)}
 .check input{width:auto; margin:0}
@@ -216,18 +273,39 @@ main{flex:1; overflow:auto; padding:14px}
 .metric .big{font-size:30px; font-weight:600; line-height:1.2}
 .metric .sub{font-size:12px; color:var(--muted); margin-top:3px}
 
-/* ---------- tables ---------- */
-table{width:100%; border-collapse:collapse; font-size:13px}
-/* ממורכז, כי בטבלאות האלה יש עמודות LTR (MAC, IP) לצד עמודות עברית.
-   יישור לקצה היה מצמיד כל עמודה לצד אחר מהכותרת שלה. */
-th{font-size:11px; color:var(--muted); text-align:center; font-weight:600;
-  padding:7px 16px; border-bottom:1px solid var(--hair)}
-td{padding:8px 16px; border-bottom:1px solid var(--field-line);
-  vertical-align:middle; text-align:center}
-/* פירוט היומן הוא משפט, לא ערך — משפט ממורכז קשה לסריקה. */
-#journal-table td:last-child, #journal-table th:last-child{text-align:right}
+.vc-head{font-size:12px; font-weight:600; color:var(--ink); padding:11px 14px;
+  border-bottom:1px solid var(--hair); background:var(--porcelain);
+  display:flex; align-items:center; gap:8px}
+.vc-head .ico{color:var(--muted)}
+.vc-head-sub{margin-top:2px}
+.vc-kv{display:flex; flex-direction:column}
+.vc-kv-row{display:flex; align-items:center; gap:10px; padding:7px 14px;
+  font-size:12.5px; border-bottom:1px solid var(--field-line)}
+.vc-kv-row:nth-child(even){background:var(--sunken)}
+.vc-kv-row .ico{color:var(--muted)}
+.vc-kv-row .vc-label{color:var(--muted)}
+.vc-kv-row .vc-val{margin-inline-start:auto; font-size:13px}
+.vc-cap-block{padding:10px 14px 12px; border-bottom:1px solid var(--hair)}
+.vc-cap-label{display:flex; justify-content:space-between; align-items:baseline;
+  font-size:12px; color:var(--muted); margin-bottom:6px}
+.vc-cap-label b{color:var(--ink); font-size:13px; font-weight:600}
+.vc-cap-bar{height:6px; border-radius:var(--r-sm); background:var(--track); overflow:hidden}
+.vc-cap-bar i{display:block; height:100%; width:0; background:var(--indigo);
+  border-radius:var(--r-sm); transition:width .5s}
+.vc-cap-sub{font-size:11px; color:var(--muted); margin-top:5px}
 
-/* --- סינון וחיפוש ביומן (#115) ------------------------------------------- */
+table{width:100%; border-collapse:collapse; font-size:12.5px; background:var(--surface)}
+th{font-size:11.5px; color:var(--ink); background:var(--porcelain); font-weight:600;
+  padding:7px 14px; border-bottom:1px solid var(--hair); text-align:start}
+td{padding:6px 14px; border-bottom:1px solid var(--field-line);
+  vertical-align:middle; text-align:start}
+tbody tr:nth-child(even){background:var(--sunken)}
+tbody tr:hover{background:var(--btn-hover)}
+
+.vc-tasks td:first-child{color:var(--muted); white-space:nowrap; width:1%}
+.vc-tasks .bar{width:120px}
+.vc-empty{text-align:center; color:var(--muted); padding:16px}
+
 #journal-filters .row:last-child{margin-bottom:12px}
 #journal-filters select,
 #journal-filters input[type=text]{flex:1 1 0; min-width:0}
@@ -238,40 +316,37 @@ td{padding:8px 16px; border-bottom:1px solid var(--field-line);
 tr:last-child td{border-bottom:0}
 td .btn{padding:4px 10px; font-size:12px}
 
-/* ---------- library: tree / rows / detail (לפי הסקיצה) ---------- */
 .stat{display:flex; justify-content:space-between; padding:7px 16px; font-size:12.5px}
 .stat span{color:var(--muted)}
-.metric{padding:0 16px 10px}
 
-.tree{padding:0 8px 8px}
-.node{display:flex; align-items:center; gap:9px; padding:8px 10px; border-radius:8px;
+.node{display:flex; align-items:center; gap:9px; padding:8px 10px; border-radius:var(--r);
   cursor:pointer; font-size:13.5px; user-select:none}
 .node:hover{background:var(--hover)}
 .node.sel{background:var(--indigo-soft); color:var(--indigo); font-weight:600}
 .node .cnt{margin-inline-start:auto; font-size:11px; color:var(--muted);
-  font-family:"IBM Plex Mono",monospace}
+  font-family:var(--font-mono)}
 .node.sel .cnt{color:var(--indigo)}
 
-.chead{padding:16px 20px 12px; display:flex; align-items:flex-end; gap:12px;
-  border-bottom:1px solid var(--hair)}
-.chead h2{font-size:19px; font-weight:600; letter-spacing:-.4px}
+.chead{padding:12px 16px 10px; display:flex; align-items:flex-end; gap:12px;
+  border-bottom:1px solid var(--hair); background:var(--porcelain)}
+.chead h2{font-size:19px; font-weight:600; letter-spacing:-.4px;
+  display:flex; align-items:center; gap:9px}
+.chead h2 .ico{width:18px; height:18px; color:var(--indigo)}
 .chead p{font-size:12.5px; color:var(--muted); margin-top:3px}
-/* הפעולות נצמדות יחד לקצה. margin אוטומטי על כל כפתור בנפרד היה
-   מפזר אותם לשני קצוות הכותרת. */
 .chead-actions{margin-inline-start:auto; display:flex; gap:8px; flex:none}
 .chead > .btn{margin-inline-start:auto}
 .rows{padding:8px}
 .irow{display:grid; grid-template-columns:auto 1fr auto auto; align-items:center;
-  gap:14px; padding:13px 12px; border-radius:10px; cursor:pointer}
+  gap:14px; padding:13px 12px; border-radius:var(--r); cursor:pointer}
 .irow:hover{background:var(--hover)}
 .irow.sel{background:var(--indigo-soft)}
-.chip{width:38px; height:38px; border-radius:9px; background:var(--ink); flex:none; position:relative}
-.chip::after{content:""; position:absolute; bottom:6px; left:6px; width:4px; height:4px;
+.chip{width:38px; height:38px; border-radius:var(--r); background:var(--ink); flex:none; position:relative}
+.chip::after{content:""; position:absolute; bottom:6px; inset-inline-end:6px; width:4px; height:4px;
   border-radius:50%; background:var(--led-ok); box-shadow:0 0 6px var(--led-ok)}
 .irow b{font-size:14px; font-weight:600; display:block}
 .irow small{font-size:12px; color:var(--muted)}
-.size{font-family:"IBM Plex Mono",monospace; font-size:12.5px; color:var(--muted)}
-.date{font-size:12px; color:var(--muted); width:76px; text-align:left}
+.size{font-family:var(--font-mono); font-size:12.5px; color:var(--muted)}
+.date{font-size:12px; color:var(--muted); width:76px; text-align:end}
 .lib-empty{padding:60px 20px; text-align:center; color:var(--muted); font-size:13.5px}
 .upload{padding:12px 20px; border-bottom:1px solid var(--hair); background:var(--sunken)}
 .upload-line{display:flex; justify-content:space-between; align-items:baseline;
@@ -283,80 +358,75 @@ td .btn{padding:4px 10px; font-size:12px}
 .detail .desc{font-size:13px; color:var(--muted); line-height:1.55; margin-bottom:14px}
 .meta{display:flex; gap:26px; margin-bottom:15px}
 .meta div small{font-size:11px; color:var(--muted); display:block; margin-bottom:2px}
-.meta div b{font-size:13px; font-weight:500; font-family:"IBM Plex Mono",monospace}
+.meta div b{font-size:13px; font-weight:500; font-family:var(--font-mono)}
 .dbtns{display:flex; gap:7px; flex-wrap:wrap}
 
-/* ---------- machines tab ---------- */
 .type-head{font-size:12px; font-weight:600; color:var(--muted); padding:12px 16px 4px}
 .gline{display:flex; align-items:center; gap:8px; padding:8px 16px; cursor:pointer;
-  font-size:13.5px; border-radius:8px; margin:0 8px}
+  font-size:13.5px; border-radius:var(--r); margin:0 8px}
 .gline:hover{background:var(--hover)}
 .gline.sel{background:var(--indigo-soft); color:var(--indigo); font-weight:600}
 .gline .cnt{margin-inline-start:auto; font-size:11px; color:var(--muted);
-  font-family:"IBM Plex Mono",monospace}
+  font-family:var(--font-mono)}
 .addline{padding:4px 16px 10px}
 details.paste{margin:0 16px 16px; border:1px solid var(--hair); border-radius:var(--r-sm)}
 details.paste summary{padding:10px 13px; cursor:pointer; font-size:13px; color:var(--muted)}
 details.paste .inner{padding:0 13px 13px}
 
-/* ---------- session view ---------- */
 .session-head{display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:10px}
-.session-line{cursor:pointer; border-radius:9px; padding:6px 8px; margin:-6px -8px}
+.session-line{cursor:pointer; border-radius:var(--r); padding:6px 8px; margin:-6px -8px}
 .session-line:hover{background:var(--sunken)}
 .session-members{max-height:55vh; overflow-y:auto}
 .session-head .state{font-size:11px; font-weight:600; padding:3px 9px; border-radius:20px}
 .state.open{background:var(--indigo-soft); color:var(--indigo)}
 .state.running{background:var(--warn-soft); color:var(--warn-ink)}
-/* שורת מחשב בסבב: שם למעלה, פס והתקדמות מתחתיו. הפאנל צר, ולכן
-   שורה אחת הייתה דוחסת את השם ושוברת את השגיאה למילה בשורה. */
 .member{padding:8px 0; border-bottom:1px solid var(--field-line)}
 .member:last-of-type{border-bottom:0}
 .member .who-line{display:flex; align-items:center; gap:6px; margin-bottom:5px}
 .member .who-line b{font-size:13.5px}
 .member .sub-mac{font-size:11px; color:var(--muted)}
 .member .bar{display:inline-block; width:calc(100% - 52px); vertical-align:middle}
-.member .pct{display:inline-block; width:44px; text-align:left; font-size:12px;
+.member .pct{display:inline-block; width:56px; text-align:end; font-size:12px;
   color:var(--muted); vertical-align:middle}
-.member .err{color:var(--danger); font-size:11.5px; margin-top:4px; line-height:1.45}
-.tag{font-size:10.5px; font-weight:600; padding:2px 7px; border-radius:20px;
-  background:var(--indigo-soft); color:var(--indigo); white-space:nowrap}
+.member .err{color:var(--danger); font-size:12px; margin-top:4px; line-height:1.45}
+.member .disks{display:flex; flex-wrap:wrap; gap:5px; margin-top:5px}
+.disk-smart{font-size:11px; padding:2px 7px; border-radius:20px; white-space:nowrap;
+  background:var(--warn-soft); color:var(--warn-ink)}
+.disk-smart.fail{background:var(--danger-line); color:var(--danger)}
+.disk-smart.unchecked{background:var(--field-line); color:var(--muted)}
 .tag.warn{background:var(--warn-soft); color:var(--warn-ink)}
-.bar{flex:1; height:8px; background:var(--track); border-radius:5px; overflow:hidden}
-.bar i{display:block; height:100%; background:var(--led-write); border-radius:5px; transition:width .5s}
+.bar{flex:1; height:8px; background:var(--track); border-radius:var(--r-sm); overflow:hidden}
+.bar i{display:block; height:100%; background:var(--led-write); border-radius:var(--r-sm); transition:width .5s}
 .member.done .bar i{background:var(--led-ok)}
 .member.failed .bar i{background:var(--danger)}
-.member .pct{width:56px; text-align:left; font-size:12px; color:var(--muted)}
-.member .err{color:var(--danger); font-size:12px}
 .badline{color:var(--danger)}
 .goodline{color:var(--led-ok)}
 
-/* ---------- modal sheet (מהסקיצה) ---------- */
 #modal{position:fixed; inset:0; z-index:50; display:none; align-items:center;
   justify-content:center; background:var(--scrim); backdrop-filter:blur(3px)}
 #modal.show{display:flex}
+#modal.sheet-mode #modalBox{display:none}
+#modal.sheet-mode #sheet.sheet{display:flex}
 .sheet{width:min(480px,92vw); max-height:92vh; display:flex; flex-direction:column;
-  background:var(--surface); border-radius:18px;
-  overflow:hidden; box-shadow:0 34px 80px -24px var(--shadow-strong)}
+  background:var(--surface); border-radius:var(--r); border:1px solid var(--hair);
+  overflow:hidden; box-shadow:var(--shadow-overlay)}
 .sheet .shead{padding:18px 22px 14px; border-bottom:1px solid var(--hair)}
 .sheet .shead h3{font-size:17px; font-weight:600; letter-spacing:-.3px}
 .sheet .shead p{font-size:12.5px; color:var(--muted); margin-top:3px}
 .sheet .sbody{padding:22px; overflow-y:auto; min-height:0}
 .sheet .sfoot{padding:14px 22px; border-top:1px solid var(--hair); display:flex;
   gap:8px; background:var(--sunken)}
-/* מתג הצגת הסיסמה יושב בקצה הנגרר של השדה (שמאל ב-RTL). */
 .pw-wrap{position:relative}
 .pw-wrap input{padding-inline-end:62px}
 .pw-eye{position:absolute; inset-inline-end:8px; top:9px; padding:4px 9px;
   font-family:inherit; font-size:11.5px; cursor:pointer; color:var(--muted);
-  background:var(--surface); border:1px solid var(--hair); border-radius:6px}
+  background:var(--surface); border:1px solid var(--hair); border-radius:var(--r-sm)}
 .pw-eye:hover{color:var(--ink); border-color:var(--btn-hover-line)}
 
-/* ---------- toast ---------- */
-#toast{position:fixed; bottom:22px; right:50%; transform:translateX(50%);
-  background:var(--ink); color:var(--on-ink); padding:10px 18px; border-radius:10px;
+#toast{position:fixed; bottom:22px; inset-inline-start:50%; transform:translateX(-50%);
+  background:var(--ink); color:var(--on-ink); padding:10px 18px; border-radius:var(--r);
   font-size:13px; z-index:70; box-shadow:0 10px 30px -8px var(--shadow-strong)}
 
-/* --- לשונית הרשת: טבלה אחת — כרטיסי השרת (עם DHCP) ואז ההתקנים -------------- */
 #net-table{table-layout:fixed}
 #net-table th:nth-child(1){width:16%}
 #net-table th:nth-child(2){width:16%}
@@ -365,21 +435,20 @@ details.paste .inner{padding:0 13px 13px}
 #net-table th:nth-child(5){width:16%}
 #net-table td b{font-size:13.5px}
 #net-table .nic-on{color:var(--warn-ink); font-weight:600}
+#net-table .dhcp-ok{color:var(--led-ok)}
+#net-table .dhcp-warn{color:var(--warn-ink)}
+#net-table .dhcp-off{color:var(--muted)}
 
-/* --- כתובת השרת עצמו ונתיבים סטטיים (‏#55–#57) ------------------------------ */
-/* עמודת הרמזור צרה בכוונה: הנורה היא הדבר הראשון שקוראים בשורה, כי
-   היא מה ש-ip addr אומר — ולא מה שההגדרה אומרת. */
 #netcfg-table th:first-child, #netroutes-body th:first-child{width:22px}
 #netcfg-body .danger-text{color:var(--danger); font-size:12px; margin-top:3px}
-/* הבאנר של ההחזרה: ההודעה החשובה ביותר במסך, והכפתור שמסיים אותה. */
 #netcfg-pending{display:flex; align-items:center; gap:10px; flex-wrap:wrap}
 #netcfg-pending .btn{margin-inline-start:auto}
 #netcfg-count{font-variant-numeric:tabular-nums}
 
-/* --- בריאות המערכת: שורת בדיקה עם רמזור ------------------------------------ */
-.health-row{display:flex; align-items:center; gap:12px; padding:13px 4px;
-  border-bottom:1px solid var(--field-line); font-size:13.5px}
+.health-row{display:flex; align-items:center; gap:12px; padding:9px 14px;
+  border-bottom:1px solid var(--field-line); font-size:13px}
 .health-row:last-of-type{border-bottom:0}
+.health-row:nth-of-type(even){background:var(--sunken)}
 .health-row b{min-width:170px}
 .hlight{width:12px; height:12px; border-radius:50%; flex:none;
   background:var(--led-idle)}
@@ -388,16 +457,90 @@ details.paste .inner{padding:0 13px 13px}
 .hlight.bad{background:var(--danger); box-shadow:0 0 8px var(--danger)}
 .switch{position:relative; width:44px; height:24px; border-radius:20px; background:var(--track);
   border:1px solid var(--hair); cursor:pointer; flex:none; transition:background .2s}
-.switch::after{content:""; position:absolute; top:2px; right:2px; width:18px; height:18px;
-  border-radius:50%; background:var(--surface); box-shadow:0 1px 2px rgba(0,0,0,.2); transition:right .2s}
+.switch::after{content:""; position:absolute; top:2px; inset-inline-end:2px; width:18px; height:18px;
+  border-radius:50%; background:var(--surface); box-shadow:0 1px 2px var(--shadow-soft);
+  transition:inset-inline-end .2s}
 .switch.on{background:var(--led-write); border-color:transparent}
-.switch.on::after{right:22px}
+.switch.on::after{inset-inline-end:22px}
 .switch.proxy{background:var(--indigo)}
 .sheet-note{background:var(--warn-soft); color:var(--warn-ink); border-radius:var(--r-sm);
   padding:9px 11px; font-size:12.5px; line-height:1.5; margin-bottom:10px}
 .sheet-note.danger{background:transparent; color:var(--danger); border:1px solid var(--danger-line)}
-pre.conf{direction:ltr; text-align:left; font-size:12px; background:var(--sunken);
+pre.conf{direction:ltr; text-align:start; font-size:12px; background:var(--sunken);
   border:1px solid var(--field-line); border-radius:var(--r-sm); padding:10px; white-space:pre-wrap;
   max-height:50vh; overflow:auto}
 label.check{display:flex; align-items:center; gap:8px; flex-direction:row}
 label.check input{width:auto; margin:0}
+
+fieldset.radio-group{border:0; padding:0; margin:0 0 14px}
+fieldset.radio-group legend{font-size:12px; color:var(--muted); margin-bottom:6px; font-weight:500}
+fieldset.radio-group .check{margin-bottom:6px}
+fieldset.radio-group .check input{margin:0}
+
+.live-readback{font-size:12.5px; color:var(--muted); background:var(--sunken);
+  border:1px solid var(--field-line); border-radius:var(--r-sm); padding:8px 11px;
+  margin-bottom:12px; direction:ltr; text-align:start}
+.live-readback b{color:var(--ink)}
+
+.tree-arrow-sp{width:12px;display:inline-block}  /* מרווח במקום חץ לצמתים ללא ילדים — יישור */
+.tag.has-alerts{background:var(--danger);color:var(--on-ink);border-color:var(--danger)}
+
+/* Shared rhythm for the rewritten pages and restored module content. */
+.content{padding:0;overflow:hidden}
+.grid{grid-template-columns:repeat(12,minmax(0,1fr));align-items:stretch}
+.grid > div,.card,.card-b,.list-main,.metric > div{min-width:0}
+.grid > div{display:flex;flex-direction:column;gap:12px}
+.grid > div > .card:only-child{flex:1}
+.card-h{padding:10px 12px;gap:12px;flex-wrap:wrap}
+.card-h > div,.toolbar-actions,.list-side,.object-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.card-b,.drawer-body,.modal-b,.sheet .sbody{padding:16px}
+.stack{display:grid;gap:12px}
+.list-row{align-items:center;padding:10px 0}
+.list-main small,.detail-box .v,.metric strong{overflow-wrap:anywhere}
+.split,.statrow,.detail-grid{gap:12px;grid-template-columns:repeat(auto-fit,minmax(120px,1fr))}
+.statbox,.detail-box,.empty{border-radius:var(--r-sm)}
+.btn,.icon-btn,.tool-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;vertical-align:middle;text-decoration:none;flex-shrink:0;white-space:nowrap}
+.icon-btn,.tool-btn{color:var(--ink)}
+.icon-btn:hover,.tool-btn:hover{background:var(--hover);border-color:var(--hair)}
+.topbar .icon-btn{color:var(--clr-header-text)}
+.topbar .icon-btn:hover{background:var(--clr-header-hover);border-color:var(--clr-header-hover)}
+.ui-icon{display:inline-block;width:16px;height:16px;flex:none;vertical-align:middle;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.tree-arrow,.tree-arrow-sp{flex:0 0 12px;text-align:center}
+.tree-arrow{font-size:0!important}
+.tree-arrow::before{content:"";display:inline-block;width:6px;height:6px;border-inline-start:1.5px solid currentColor;border-block-end:1.5px solid currentColor;transform:rotate(45deg)}
+.tree-arrow[data-open="true"]::before{transform:rotate(-45deg)}
+:dir(ltr) .tree-arrow::before{transform:rotate(225deg)}
+:dir(ltr) .tree-arrow[data-open="true"]::before{transform:rotate(-45deg)}
+.flow-arrow{display:inline-block;transform:scaleX(-1)}
+:dir(ltr) .flow-arrow{transform:none}
+.tree-item.active,.inventory-item.selected{box-shadow:none;border-inline-start:2px solid var(--indigo)}
+.field input,.field select,.field textarea,.search input{margin:0}
+.field textarea{width:100%;min-height:96px}
+.search{align-self:center}
+.search input{padding:0;box-shadow:none}
+.modal{max-height:90vh;display:flex;flex-direction:column;overflow:hidden}
+.modal-b{overflow:auto}
+#modal{z-index:200}
+#toast{z-index:400;inset-inline-start:auto;inset-inline-end:18px;transform:none;max-width:calc(100vw - 36px);bottom:46px}
+.task-count{color:var(--on-ink)}
+.task-panel .table-wrap{max-height:calc(100% - 38px);overflow:auto}
+.scroll{padding-block-end:64px}
+.health-row,.group-head,.chead,.form-grid .row{flex-wrap:wrap}
+.health-row b{min-width:120px}
+.sheet .shead,.sheet .sfoot{padding:12px 16px}
+.pw-eye{top:5px}
+.member .who-line{flex-wrap:wrap}
+.member .pct{display:block;width:auto;text-align:start}
+.member .bar{width:100%}
+.member .progress{margin-block:6px}
+.table-wrap .table{min-width:640px}
+.vcenter-tabs{overflow:auto;flex:none}
+.vcenter-tab{white-space:nowrap}
+.breadcrumbs,.toolbar,.object-strip{flex:none}
+.inventory-node{min-height:30px}
+.inventory-node > span:last-child,.server-name{min-width:0;overflow-wrap:anywhere}
+.tag.danger{color:var(--danger);background:color-mix(in srgb,var(--danger) 12%,var(--surface))}
+.form-grid{padding:16px}
+#branches-body .panel{overflow:auto}
+button:focus-visible,[role="button"]:focus-visible,.inventory-node:focus-visible{outline:2px solid var(--indigo);outline-offset:2px}
+@media(max-width:740px){.content{overflow:visible}.topbar{gap:8px;padding-inline:8px}.brand{min-width:0}.brand-name{display:none}.top-actions{gap:4px}.card-h{align-items:flex-start}.split,.detail-grid{grid-template-columns:1fr}.form-grid .row .a-mac{flex:1 1 160px}.task-panel{overflow:auto}}

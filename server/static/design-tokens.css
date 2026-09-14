@@ -1,0 +1,90 @@
+/* ImageCtl — שכבת טוקנים משותפת (Stage 2, vCenter/Clarity). נטענת לפני
+   console.css, שממשיך להשתמש בשמות המשתנים הישנים (--porcelain, --surface
+   וכו') כאליאסים לתאימות — כדי שלא נדרש שינוי מסיבי בכל סלקטור קיים.
+
+   הבדל מרכזי מ-Stage 1: כותרת ה-app-shell (‏--clr-header) כהה תמיד,
+   בלי קשר למצב האור/כהה של שאר הדף — בדיוק כמו ב-vSphere Host Client. */
+:root{
+  color-scheme:light;
+
+  --clr-header:#25333D; --clr-header-hover:#31434F; --clr-header-text:#FFFFFF;
+
+  --clr-bg:#EEF1F5; --clr-surface:#FFFFFF; --clr-nav:#FFFFFF;
+  --clr-text:#313131; --clr-muted:#565656; --clr-border:#CDCDCD;
+  --clr-row-border:#E8E8E8; --clr-hover:#F2F2F2; --clr-row-hover:#F3F9FC;
+  --clr-field:#FFFFFF;
+
+  --clr-action:#0079B8; --clr-action-hover:#006394; --clr-action-active:#004B70;
+  --clr-action-soft:#E8F4FA;
+
+  --clr-success:#318700; --clr-danger:#E12200; --clr-warning:#C25400; --clr-info:#0079B8;
+  --clr-success-soft:#EAF4E5; --clr-danger-soft:#FCEDEA; --clr-warning-soft:#FFF2E3;
+  --clr-info-soft:#E8F4FA;
+
+  --font-ui:"Segoe UI","Assistant",system-ui,-apple-system,BlinkMacSystemFont,
+            "Helvetica Neue",Arial,sans-serif;
+  --font-mono:ui-monospace,"Cascadia Mono","Segoe UI Mono",Consolas,monospace;
+
+  --header-height:48px; --inventory-width:264px;
+  /* צל רך למראה עכשווי — לא Clarity השטוח של 2020, אבל אותה משפחת צבעים */
+  --shadow-card:0 1px 2px rgb(20 30 38 / 5%), 0 4px 14px -8px rgb(20 30 38 / 12%);
+  --shadow-overlay:0 8px 24px rgb(0 0 0 / 18%);
+
+  /* --- אליאסים לתאימות: השמות שכל console.css הקיים כבר משתמש בהם --- */
+  --porcelain:var(--clr-bg); --surface:var(--clr-surface); --ink:var(--clr-text);
+  --muted:var(--clr-muted); --hair:var(--clr-border); --field-line:var(--clr-row-border);
+  --field:var(--clr-field); --hover:var(--clr-hover); --sunken:var(--clr-bg);
+  --track:var(--clr-row-border);
+
+  --indigo:var(--clr-action); --indigo-soft:var(--clr-action-soft);
+  --led-ok:var(--clr-success); --led-write:var(--clr-warning); --led-idle:#737373;
+  --danger:var(--clr-danger); --danger-line:#F0B8AE;
+  --warn-soft:var(--clr-warning-soft); --warn-ink:var(--clr-warning);
+
+  --btn-hover:var(--clr-row-hover); --btn-hover-line:var(--clr-action);
+  --ink-hover:var(--clr-action-hover); --on-ink:#FFFFFF; --mark-line:#9AADB8;
+  --login-a:#25333D; --login-b:#17242D; --login-glow:rgb(255 255 255 / 8%);
+  --shadow-strong:rgb(0 0 0 / 28%); --shadow-soft:rgb(0 0 0 / 10%);
+  --scrim:rgb(37 51 61 / 45%);
+  /* פינות עדינות — מראה enterprise עכשווי, לא הזוויתיות של Clarity/2020 */
+  --r:9px; --r-sm:6px;
+}
+
+/* מצב כהה — נבחר מפורשות בלבד. ה-header נשאר כהה בשני המצבים; רק
+   השטח שמסביבו הופך.
+
+   הצבעים כאן הם התאמה מדויקת לרפרנס של הבעלים (ImageCtl-vCenter-RTL.html):
+   ‏--bg:#151a1f, panels #1c232a/#202930, קווים #35414b, טקסט #e7edf2,
+   כחול הפעולה #4c8fbd/#64a6d2, ורדיוס 3px בכל מקום — לא 9px/6px של מצב
+   בהיר. מצב בהיר לא נגע — הרפרנס הוא כהה בלבד. */
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --clr-bg:#151a1f; --clr-surface:#1c232a; --clr-nav:#182028;
+  --clr-text:#e7edf2; --clr-muted:#a9b4bd; --clr-border:#35414b;
+  --clr-row-border:#303a42; --clr-hover:#25313a; --clr-row-hover:#202a31;
+  --clr-field:#11181d;
+  --clr-action:#4c8fbd; --clr-action-hover:#64a6d2; --clr-action-active:#8dc3e6;
+  --clr-action-soft:#223e50;
+  --clr-header:#26343f; --clr-header-hover:#30424e;
+
+  --clr-success:#5fbd7a; --clr-warning:#e1b34f; --clr-danger:#dc6b6b; --clr-info:#61b5b8;
+  --danger-line:#5e3733; --warn-soft:#33291a; --warn-ink:#e1b34f;
+  --shadow-strong:rgba(0,0,0,.65); --shadow-soft:rgba(0,0,0,.55);
+  --shadow-card:0 10px 28px rgba(0,0,0,.28); --shadow-overlay:0 20px 60px rgba(0,0,0,.45);
+  --scrim:rgba(5,9,14,.62);
+
+  /* התאמה ל-vSphere/הרפרנס: פינות חדות, לא הרכות של מצב בהיר */
+  --r:3px; --r-sm:3px;
+
+  /* התיבה השמורה ל-brandmark כשאין לוגו מותאם-אישית (ראו console.css) */
+  --header-mark-bg:#20303b; --header-mark-border:#70a9cd;
+}
+
+*,*::before,*::after{box-sizing:border-box}
+html,body{min-height:100%;margin:0}
+body{font:400 14px/1.5 var(--font-ui);color:var(--clr-text);background:var(--clr-bg);
+  -webkit-font-smoothing:antialiased}
+
+.numeric,td.mono,th.numeric{direction:ltr;text-align:end;font-variant-numeric:tabular-nums}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+  clip:rect(0,0,0,0);white-space:nowrap;border:0}

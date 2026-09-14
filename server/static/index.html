@@ -1,12 +1,12 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="he" dir="rtl">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ImageCtl — קונסולה</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Hebrew:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="console.css?v=3.13">
+<link rel="stylesheet" href="design-tokens.css?v=4.1">
+<link rel="stylesheet" href="console.css?v=4.1">
+<link rel="stylesheet" href="progress.css?v=4.1">
 <script>
   /* לפני הציור הראשון, אחרת המסך מהבהב בלבן לפני שהכהה נטען. */
   (function () {
@@ -18,279 +18,127 @@
 </head>
 <body>
 
-<div id="login">
-  <form class="card" id="login-form">
-    <div class="brand">
-      <span class="brandmark"><span class="mark"></span></span>
-      <div><h1>שרת אימג'ים</h1><p>מרכז שיכפול והפצה</p></div>
+<div id="login" class="login-screen">
+  <div class="login-bg"></div>
+  <div class="login-grid"></div>
+  <section class="login-panel" aria-label="כניסה ל-ImageCtl">
+    <div class="login-brand">
+      <div class="login-brand-top">
+        <span class="brandmark"><span class="mark"></span></span>
+        <strong>ImageCtl</strong>
+        <span class="tag blue">v0.9</span>
+      </div>
+      <h1>קונסולת ניהול ImageCtl</h1>
+      <p>כניסה לקונסולת הניהול המרכזית של מערכת הדמיה והפצה.</p>
     </div>
-    <label for="login-user">שם משתמש</label>
-    <input type="text" id="login-user" autocomplete="username" required>
-    <label for="login-pass">סיסמה</label>
-    <div class="pw-wrap">
-      <input type="password" id="login-pass" autocomplete="current-password" required>
-      <button type="button" class="pw-eye" data-pw="login-pass">הצג</button>
+    <div class="login-card">
+      <h2>התחברות</h2>
+      <p class="login-sub">הזן את פרטי החשבון שלך כדי להמשיך.</p>
+      <form class="login-form" id="login-form">
+        <div class="login-field">
+          <label for="login-user">שם משתמש</label>
+          <input class="login-input" type="text" id="login-user" autocomplete="username" required autofocus>
+        </div>
+        <div class="login-field">
+          <label for="login-pass">סיסמה</label>
+          <div class="pw-wrap">
+            <input class="login-input" type="password" id="login-pass" autocomplete="current-password" required>
+            <button type="button" class="pw-eye" data-pw="login-pass">הצג</button>
+          </div>
+        </div>
+        <p class="error" id="login-error"></p>
+        <div class="login-row">
+          <label class="login-check"><input type="checkbox"> זכור אותי</label>
+        </div>
+        <button class="login-btn" type="submit">כניסה</button>
+      </form>
+      <div class="login-server">גישה מאובטחת לקונסולה</div>
     </div>
-    <button class="btn primary" type="submit">כניסה</button>
-    <p class="error" id="login-error"></p>
-  </form>
+    <div class="login-meta"><span>ImageCtl Server Console</span></div>
+  </section>
 </div>
 
-<div id="app" class="hidden">
-  <header>
-    <div class="hbrand"><span class="brandmark"><span class="mark"></span></span><strong>שרת אימג'ים</strong></div>
-    <nav id="tabs">
-      <button data-tab="library" class="on">אימג'ים</button>
-      <button data-tab="machines" data-admin>מחשבים</button>
-      <button data-tab="net" data-admin>רשת</button>
-      <button data-tab="health" data-admin>בריאות</button>
-      <button data-tab="users" data-admin>משתמשים</button>
-      <button data-tab="journal" data-admin>יומן</button>
-      <button data-tab="settings" data-admin>הגדרות</button>
-    </nav>
-    <div class="who">
-      <button class="btn icon" id="theme-toggle" title="ערכת צבעים"></button>
-      <span id="who-name"></span>
-      <span class="avatar" id="who-avatar"></span>
-      <button class="btn" id="logout">יציאה</button>
+<div id="app" class="app hidden">
+<header class="topbar">
+  <div class="brand"><span class="brandmark"><span class="mark"></span></span><span class="brand-name">שרת אימג'ים</span></div>
+  <div class="search"><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="7"/><path d="m15 15 6 6"/></svg></span><input id="globalSearch" placeholder="חיפוש באימג'ים, מחשבים ומשימות" /></div>
+  <div class="top-actions">
+    <button class="icon-btn" title="רענן" onclick="refreshPage()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7a9 9 0 1 0 1 7M20 2v6h-6"/></svg></button>
+    <button class="icon-btn" title="התראות" onclick="topNotifications()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17h16l-2-3V8a6 6 0 0 0-12 0v6ZM9 21h6"/></svg> <span id="alertBadge" class="tag" style="margin-inline-start:3px" hidden></span></button>
+    <button class="icon-btn" title="עזרה" onclick="help()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9 8a3 3 0 0 1 6 0c0 2-3 2-3 5M12 17h.01"/></svg></button>
+    <button class="icon-btn" id="theme-toggle" type="button" title="ערכת צבעים"></button>
+    <button class="user" type="button" onclick="openUserMenu()"><div class="avatar">מ</div><span>מנהל</span><span style="color:var(--clr-header-text)">▾</span></button>
+  </div>
+</header>
+<div class="main">
+  <aside class="sidebar">
+  <div class="sidebar-head"><span class="sidebar-title">ניווט</span><button class="icon-btn" onclick="toggleSidebarInfo()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5h13M8 12h13M8 19h13M3 5h.01M3 12h.01M3 19h.01"/></svg></button></div>
+  <div class="tree">
+    <div class="inventory-node server-node active"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'srvTA')" data-open="true">▾</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/><path d="M7 7h.01M7 17h.01M11 7h6M11 17h6"/></svg></span><strong class="server-name" ondblclick="renameServer(this)">שרת אימג'ים — תל אביב</strong></div>
+    <div id="srvTA" class="inventory-children">
+      <div class="inventory-node" onclick="selectPageById('home')"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m3 11 9-8 9 8M5 9v12h5v-7h4v7h5V9"/></svg></span><span>סקירה כללית</span></div>
+      <div class="inventory-node" onclick="selectPageById('deploy')"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h15l-4-4M20 18H5l4 4M20 6v6M4 18v-6"/></svg></span><span>סבב הפצה</span></div>
+      <div class="inventory-node" onclick="event.stopPropagation();toggleInventoryGroup(this,'invTA')"><span class="tree-arrow" data-open="true">▾</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5h13M8 12h13M8 19h13M3 5h.01M3 12h.01M3 19h.01"/></svg></span><span>מלאי</span></div>
+      <div id="invTA" class="inventory-children">
+        <div class="inventory-node" onclick="event.stopPropagation();toggleInventoryGroup(this,'imagesTree');selectPageById('images')"><span class="tree-arrow">▸</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="m3 17 6-6 4 4 3-3 5 5"/><circle cx="16" cy="8" r="1"/></svg></span><span>אימג'ים</span></div>
+        <div id="imagesTree" class="inventory-children" hidden></div>
+        <div class="inventory-node"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'machineTree')">▸</span><span data-admin onclick="selectPageById('machines')" style="display:contents"><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5h13M8 12h13M8 19h13M3 5h.01M3 12h.01M3 19h.01"/></svg></span><span>מחשבים</span></span></div>
+        <div id="machineTree" class="inventory-children" data-admin hidden>
+          <div class="inventory-node" onclick="event.stopPropagation();toggleInventoryGroup(this,'classesTree')"><span class="tree-arrow">▸</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="1"/><path d="M3 10h18M9 4v16M15 4v16"/></svg></span><span>כיתות</span></div>
+          <div id="classesTree" class="inventory-children" hidden></div>
+          <div class="inventory-node" onclick="event.stopPropagation();toggleInventoryGroup(this,'buildTree')"><span class="tree-arrow">▸</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m14 5 5 5M3 21l8-8M9 3l12 12-6 6L3 9Z"/></svg></span><span>מחשבי בנייה</span></div>
+          <div id="buildTree" class="inventory-children" hidden></div>
+          <div class="inventory-node" onclick="event.stopPropagation();toggleInventoryGroup(this,'clonerTree')"><span class="tree-arrow">▸</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="13" height="13" rx="1"/><path d="M16 8V3H3v13h5"/></svg></span><span>מחשבי שיכפול</span></div>
+          <div id="clonerTree" class="inventory-children" hidden></div>
+        </div>
+      </div>
+      <div class="inventory-node" onclick="event.stopPropagation();toggleInventoryGroup(this,'infraTA')"><span class="tree-arrow">▸</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg></span><span>תשתית</span></div>
+        <div id="infraTA" class="inventory-children" data-admin hidden>
+          <div class="inventory-node" onclick="selectPageById('health')"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg></span><span>בריאות ושירותים</span></div>
+          <div class="inventory-node" onclick="event.stopPropagation();toggleInventoryGroup(this,'netTA')"><span class="tree-arrow">▸</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 7v6M5 17v-4h14v4"/><rect x="9" y="2" width="6" height="5" rx="1"/><rect x="2" y="17" width="6" height="5" rx="1"/><rect x="16" y="17" width="6" height="5" rx="1"/></svg></span><span>רשת</span></div>
+          <div id="netTA" class="inventory-children" hidden>
+            <div class="inventory-node" id="nicNode"><span class="tree-arrow-sp" id="nicTreeArrow"></span><span onclick="NIC_HIGHLIGHT=null;selectPageById('nic')" style="display:contents"><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 7v6M5 17v-4h14v4"/><rect x="9" y="2" width="6" height="5" rx="1"/><rect x="2" y="17" width="6" height="5" rx="1"/><rect x="16" y="17" width="6" height="5" rx="1"/></svg></span><span>חיבורים פיזיים</span></span></div>
+            <div id="nicTree" class="inventory-children" hidden></div>
+            <div class="inventory-node" onclick="selectPageById('netdeploy')"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h15l-4-4M20 18H5l4 4M20 6v6M4 18v-6"/></svg></span><span>רשת הפצה</span></div>
+            <div class="inventory-node" onclick="selectPageById('ports')"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 7v6M5 17v-4h14v4"/><rect x="9" y="2" width="6" height="5" rx="1"/><rect x="2" y="17" width="6" height="5" rx="1"/><rect x="16" y="17" width="6" height="5" rx="1"/></svg></span><span>פורטים</span></div>
+          </div>
+          <div class="inventory-node" onclick="selectPageById('monitor')"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="7" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg></span><span>מוניטור</span></div>
+          <div class="inventory-node" onclick="selectPageById('drivers')"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg></span><span>דרייברים</span></div>
+        </div>
+        <div class="inventory-node" onclick="event.stopPropagation();toggleInventoryGroup(this,'adminTA')"><span class="tree-arrow">▸</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="7" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg></span><span>ניהול</span></div>
+        <div id="adminTA" class="inventory-children" data-admin hidden>
+          <div class="inventory-node" data-admin onclick="selectPageById('settings')"><span class="tree-arrow-sp"></span><span>Settings</span></div>
+          <div class="inventory-node hidden" data-cap="interbranch_transfer" onclick="selectPageById('branches')"><span class="tree-arrow-sp"></span><span>Branches</span></div>
+          <div class="inventory-node" onclick="selectPageById('permissions')"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="7" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg></span><span>הרשאות</span></div>
+          <div class="inventory-node" onclick="selectPageById('logs')"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5h13M8 12h13M8 19h13M3 5h.01M3 12h.01M3 19h.01"/></svg></span><span>יומן / Audit</span></div>
+        </div>
     </div>
-  </header>
+    <div class="inventory-node server-node"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'srvHaifa')">▸</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/><path d="M7 7h.01M7 17h.01M11 7h6M11 17h6"/></svg></span><strong class="server-name" ondblclick="renameServer(this)">שרת משנה — חיפה</strong></div>
+    <div id="srvHaifa" class="inventory-children" hidden>
+      <div class="inventory-node" onclick="selectPageById('home')"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m3 11 9-8 9 8M5 9v12h5v-7h4v7h5V9"/></svg></span><span>סקירה כללית</span></div>
+      <div class="inventory-node" onclick="selectPageById('deploy')"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h15l-4-4M20 18H5l4 4M20 6v6M4 18v-6"/></svg></span><span>סבב הפצה</span></div>
+      <div class="inventory-node muted" style="padding:6px 8px;font-size:10px">— שרת משני (יוגדר בהמשך) —</div>
+    </div>
+  </div>
+  <div class="tree-foot">שרת אימג'ים · מחובר<br><span class="status ok"><i></i>כל השירותים פעילים</span></div>
+</aside>
 
-  <main>
-    <!-- הספרייה — מסך הבית, לפי הסקיצה: מדדים | תוכן תיקייה | עץ תיקיות -->
-    <section id="tab-library" class="tab lib-grid">
-      <div class="panel">
-        <div class="ptitle">מצב</div>
-        <div class="metric">
-          <div class="big" id="m-storage">–</div>
-          <div class="sub" id="m-storage-sub"></div>
-        </div>
-        <div class="stat"><span>אימג'ים בספרייה</span><b class="mono" id="m-images">–</b></div>
-        <div class="stat"><span>מחשבים רשומים</span><b class="mono" id="m-machines">–</b></div>
-        <div class="divide"></div>
-        <div class="ptitle">סבב פעיל</div>
-        <div id="session-body" class="pad">אין סבב פעיל.</div>
-      </div>
-
-      <div class="panel">
-        <div class="chead">
-          <div>
-            <h2 id="folder-name">הכל</h2>
-            <p id="folder-desc"></p>
-          </div>
-          <div class="chead-actions">
-            <button class="btn primary" id="capture-image" data-admin>קליטת אימג' חדש</button>
-            <button class="btn" id="upload-image" data-admin>↑ העלאת אימג'</button>
-            <button class="btn hidden" id="edit-folder" data-admin>עריכת תיקייה</button>
-          </div>
-        </div>
-        <div id="capture-bar"></div>
-        <div id="upload-bar" class="hidden"></div>
-        <div class="rows" id="image-rows"></div>
-        <div id="image-detail"></div>
-        <input type="file" id="upload-input" accept=".tar" class="hidden">
-      </div>
-
-      <div class="panel">
-        <div class="ptitle">תיקיות</div>
-        <div class="tree" id="folder-tree"></div>
-        <div class="pad" data-admin>
-          <button class="btn" id="add-folder">+ תיקייה חדשה</button>
-        </div>
-      </div>
-    </section>
-
-    <!-- מחשבים — שלוש תתי-לשוניות, לפי שלושת סוגי המחשבים באפיון -->
-    <section id="tab-machines" class="tab wide-one hidden">
-      <div class="panel wide">
-        <nav id="subtabs">
-          <button data-role="classroom" class="on">מחשבי כיתות</button>
-          <button data-role="cloner">מחשבי שיכפול</button>
-          <button data-role="build">מחשב בניית אימג'ים</button>
-          <button data-role="seen">נראו ברשת</button>
-        </nav>
-        <div id="role-body"></div>
-      </div>
-    </section>
-
-    <!-- רשת — כרטיסי הרשת של השרת בלבד: כל שורה היא כרטיס, שיכול להיות
-         DHCP או לא (אפיון סעיף 24). מכונות שנראו ברשת — בלשונית המחשבים. -->
-    <section id="tab-net" class="tab wide-one hidden">
-      <div class="panel wide">
-        <div class="chead">
-          <div>
-            <h2>כרטיסי רשת</h2>
-            <p>מה מחובר לשרת — כרטיס לכל רשת או וילן. DHCP כבוי כברירת מחדל; הדלקה דורשת הקלדת שם הכרטיס.</p>
-          </div>
-          <div class="chead-actions">
-            <button class="btn" id="nic-add">+ הוספת כרטיס</button>
-            <button class="btn" id="dhcp-preview">קובץ dnsmasq</button>
-          </div>
-        </div>
-        <table id="net-table">
-          <thead><tr><th>שם</th><th>MAC</th><th>כתובת IP</th><th>תיאור</th><th>DHCP</th><th></th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-
-      <!-- הצד השני של אותו כרטיס: איך השרת עצמו מחובר (#55–#57).
-           הנורה בכל שורה נקראת מ-ip addr, ולא מההגדרה ששמרנו. -->
-      <div class="panel wide">
-        <div class="chead">
-          <div>
-            <h2>כתובת השרת עצמו</h2>
-            <p>כתובת, שער ו-DNS לכל כרטיס — נכתבים ל-interfaces.d ושורדים
-              אתחול. הנורה משמאל אומרת מה <b>ip addr</b> מראה עכשיו, לא מה
-              שהוגדר. שינוי שיכול לנתק את הקונסולה מוחזר תוך דקה אם לא אושר.</p>
-          </div>
-          <button class="btn" id="netcfg-refresh">רענון</button>
-        </div>
-        <div id="netcfg-body"></div>
-      </div>
-
-      <div class="panel wide">
-        <div class="chead">
-          <div>
-            <h2>נתיבים סטטיים</h2>
-            <p>נתיב שנוסף כאן נכתב לקובץ הכרטיס ונשאר אחרי אתחול — בניגוד
-              ל-<b>ip route add</b>, שנעלם.</p>
-          </div>
-          <button class="btn" id="netroute-add">+ הוספת נתיב</button>
-        </div>
-        <div id="netroutes-body"></div>
-      </div>
-    </section>
-
-    <!-- בריאות — רמזור לכל בדיקה; בטרמינל נוגעים רק בהתקנה -->
-    <section id="tab-health" class="tab wide-one hidden">
-      <div class="panel wide">
-        <div class="chead">
-          <div>
-            <h2>בריאות המערכת</h2>
-            <p>מה שהיה דורש ss ו-journalctl בטרמינל — פורטים, dnsmasq, TFTP, השרת והכרטיסים.</p>
-          </div>
-          <button class="btn" id="health-refresh">רענון</button>
-        </div>
-        <div id="health-list"></div>
-      </div>
-
-      <!-- שתי דלתות SSH, מתג לכל אחת, וחיווי לפי מה שבאמת מאזין (#83) -->
-      <div class="panel wide">
-        <div class="chead">
-          <div>
-            <h2>‏SSH — מי יכול להיכנס, ומאיפה</h2>
-            <p>המתג אומר מה ביקשנו. הנורה שלידו אומרת מה מאזין עכשיו, לפי
-              טבלת הסוקטים של הקרנל ולפי התפריט שהשרת מגיש בפועל. כשהשניים
-              נבדלים — מה שמאזין הוא הנכון.</p>
-          </div>
-          <button class="btn" id="ssh-refresh">רענון</button>
-        </div>
-        <div id="ssh-body"></div>
-      </div>
-    </section>
-
-    <section id="tab-users" class="tab wide-one hidden">
-      <div class="panel wide">
-        <div class="chead">
-          <div>
-            <h2>משתמשים</h2>
-            <p>מנהל רואה הכל; משתמש הפצה בוחר אימג' ומפיץ, ותו לא.</p>
-          </div>
-          <button class="btn" id="add-user">+ משתמש חדש</button>
-        </div>
-        <table id="users-table">
-          <thead><tr><th>שם</th><th>תפקיד</th><th>נוצר</th><th></th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </section>
-
-    <section id="tab-journal" class="tab hidden">
-      <div class="panel wide">
-        <div class="ptitle">יומן פעולות — מי עשה מה ומתי</div>
-        <div class="pad form-grid" id="journal-filters">
-          <div class="row">
-            <select id="jf-event" aria-label="סוג אירוע"><option value="">כל סוגי האירועים</option></select>
-            <input type="text" id="jf-machine" placeholder="מכונה או MAC" aria-label="סינון לפי מכונה או MAC">
-            <input type="text" id="jf-q" placeholder="חיפוש חופשי" aria-label="חיפוש חופשי ביומן">
-          </div>
-          <div class="row">
-            <label class="jf-date">מ-תאריך
-              <input type="datetime-local" id="jf-from">
-            </label>
-            <label class="jf-date">עד תאריך
-              <input type="datetime-local" id="jf-to">
-            </label>
-            <button class="btn" id="jf-clear" type="button">איפוס סינון</button>
-          </div>
-        </div>
-        <table id="journal-table">
-          <thead><tr><th>זמן</th><th>מי</th><th>מה קרה</th><th>פירוט</th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </section>
-
-    <section id="tab-settings" class="tab hidden">
-      <div class="panel">
-        <div class="ptitle">הגדרות</div>
-        <form id="settings-form" class="pad form-grid">
-          <label class="check">
-            <input type="checkbox" id="set-login">
-            שחזור תחנה בודדת דורש כניסה (מומלץ; כבו רק להדגמה)
-          </label>
-          <label>המתנה מהמצטרף האחרון (שניות)
-            <input type="number" id="set-wait" min="30" step="30">
-          </label>
-          <label>ניתוק אוטומטי בחוסר פעילות (שניות)
-            <input type="number" id="set-idle" min="60" step="30">
-          </label>
-          <button class="btn primary" type="submit">שמור</button>
-          <p id="settings-saved" class="ok"></p>
-        </form>
-      </div>
-      <div class="panel">
-        <div class="ptitle">לוגו</div>
-        <div class="pad">
-          <div class="logo-row">
-            <div class="logo-preview" id="logo-preview"></div>
-            <div>
-              <p class="sub">מחליף את הסמל בכותרת ובמסך הכניסה.</p>
-              <p class="sub">PNG, JPG, WEBP או SVG · עד 2MB.</p>
-            </div>
-          </div>
-          <div class="row" style="margin-top:12px">
-            <button class="btn" id="logo-pick">בחירת קובץ</button>
-            <button class="btn danger hidden" id="logo-clear">הסרה</button>
-          </div>
-          <p class="error" id="logo-error"></p>
-          <input type="file" id="logo-input" class="hidden"
-                 accept="image/png,image/jpeg,image/webp,image/svg+xml">
-        </div>
-      </div>
-      <div class="panel hidden" id="stop-panel">
-        <div class="ptitle">עצירת חירום</div>
-        <div class="pad">
-          <p id="stop-what"></p>
-          <p class="sub" style="margin:8px 0 14px">
-            עצירה מפסיקה את השידור לכל המחשבים בכיתה. מי שכבר סיים לכתוב לא
-            נפגע; מי שבאמצע יישאר עם דיסק לא שלם ויצטרך סבב נוסף.
-          </p>
-          <button class="btn danger" id="stop-round">עצור את הסבב</button>
-        </div>
-      </div>
-    </section>
-  </main>
+  <main class="content" id="content"></main>
+</div>
+<div class="task-panel" id="taskPanel"><div class="task-panel-head"><strong>משימות אחרונות</strong><button class="icon-btn" onclick="toggleTaskPanel()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><div class="table-wrap"><table class="task-table"><thead><tr><th>משימה</th><th>יעד</th><th>התחלה</th><th>משך</th><th>מצב</th><th>יוזם</th></tr></thead><tbody><tr class="clickable" onclick="openLogDetail('פריסת Ubuntu הושלמה','LAB1','admin')"><td>פריסת אימג׳</td><td>LAB1</td><td>14:12</td><td>2:12:01</td><td><span class="status ok"><i></i>הושלם</span></td><td>מנהל</td></tr><tr class="clickable" onclick="openImageDetail('Ubuntu 24.04-Lab')"><td>אימות SHA-256</td><td>Ubuntu 24.04-Lab</td><td>14:00</td><td>00:00:43</td><td><span class="status ok"><i></i>הושלם</span></td><td>מערכת</td></tr><tr class="clickable" onclick="openMachineDetail('LAB1-06')"><td>כתיבה לתחנה</td><td>LAB1-06</td><td>15:49</td><td>00:03:18</td><td><span class="status err"><i></i>נכשל</span></td><td>Agent</td></tr></tbody></table></div></div><div class="task-dock"><div class="task-dock-head" onclick="toggleTaskPanel()"><span>משימות</span><span class="task-count">3</span><span>⌃</span></div><div class="task-summary">פעילות אחרונה <span class="task-progress"><i></i></span> סבב LAB1 74% <span style="float:left">הודעות: 2</span></div></div><div class="statusbar"><span>ImageCtl Console · Session פעיל</span><span class="statusbar-right"><span class="statusbar-item"><i></i>API</span><span class="statusbar-item"><i></i>PXE</span><span class="statusbar-item"><i></i>Multicast</span><span>v0.9</span></span></div><div class="user-menu" id="userMenu"><div class="user-menu-head"><strong>מנהל</strong><small>Administrator</small></div><button onclick="openAccount()">החשבון שלי</button><button onclick="openSessionInfo()">פרטי session</button><button id="logout" class="danger-item" type="button">התנתקות</button></div>
+<input class="selectable-file" id="csvFile" type="file" accept=".csv" aria-hidden="true">
+<div class="detail-backdrop" id="detailBackdrop"></div><aside class="drawer" id="drawer" aria-label="פרטים"><div class="drawer-head"><strong id="drawerTitle">פרטים</strong><button class="icon-btn" onclick="closeDrawer()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><div class="drawer-body" id="drawerBody"></div></aside>
+<div class="modal-backdrop" id="modal"><div class="modal" id="modalBox"><div class="modal-h"><strong id="modalTitle">פעולה</strong><button class="icon-btn" onclick="closeModal()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><div class="modal-b" id="modalBody"></div><div class="modal-f"><button class="btn primary" id="modalOk">אישור</button><button class="btn" onclick="closeModal()">ביטול</button></div></div><form id="sheet" class="sheet hidden"></form></div>
+<div class="toast" id="toast"></div>
 </div>
 
-<div id="modal"><form class="sheet" id="sheet"></form></div>
-<div id="toast" class="hidden"></div>
-
-<script src="console.js?v=3.13"></script>
-<script src="reorder.js?v=3.13"></script>
-<script src="library.js?v=3.13"></script>
-<script src="machines.js?v=3.13"></script>
-<script src="net.js?v=3.13"></script>
-<script src="netcfg.js?v=3.13"></script>
+<script src="progress.js?v=4.1"></script>
+<script src="console.js?v=4.1"></script>
+<script src="reorder.js?v=4.1"></script>
+<!-- <script src="library.js?v=4.1"></script> -->
+<script src="machines.js?v=4.1"></script>
+<script src="net.js?v=4.1"></script>
+<script src="netcfg.js?v=4.1"></script>
+<script src="storage_nodes.js?v=4.1"></script>
 </body>
 </html>

@@ -218,6 +218,8 @@ def test_a_carrier_that_says_one_is_the_positive_evidence_we_send_on(tmp_path):
 # --- והבאג ההפוך: "לא הצלחנו לבדוק" אינו "אין carrier" -----------------------
 
 
+@pytest.mark.skipif(not hasattr(socket, "SO_BINDTODEVICE"),
+                    reason="SO_BINDTODEVICE is Linux-only")  # issue-312-windows-env
 def test_no_sysfs_at_all_is_unknown_and_still_sends(sockets, tmp_path):
     """מכונה שאינה Linux / קונטיינר בלי ‏/sys: הבדיקה לא זמינה. חסימת
     WoL כאן הייתה הופכת תקלה באבחון לכיתה שלמה שלא מתעוררת."""
@@ -229,6 +231,8 @@ def test_no_sysfs_at_all_is_unknown_and_still_sends(sockets, tmp_path):
     assert made[0].sent                          # החבילה כן יצאה
 
 
+@pytest.mark.skipif(not hasattr(socket, "SO_BINDTODEVICE"),
+                    reason="SO_BINDTODEVICE is Linux-only")  # issue-312-windows-env
 def test_an_unreadable_link_state_is_unknown_and_still_sends(sockets, tmp_path):
     """ממשק וירטואלי / קבצים שלא נקראים: ‏operstate=unknown ו-carrier
     שאינו נקרא. לא ראינו קישור — אבל גם לא ראינו את היעדרו."""
@@ -386,6 +390,8 @@ def test_a_fully_failed_wake_is_still_visible_in_the_journal(conn):
     assert row is not None and "failed=2" in row["detail"]
 
 
+@pytest.mark.skipif(not hasattr(socket, "SO_BINDTODEVICE"),
+                    reason="SO_BINDTODEVICE is Linux-only")  # issue-312-windows-env
 def test_the_journal_carries_the_reason_and_not_only_the_count(conn, tmp_path):
     """‏#74 מקצה לקצה ביחידה: כבל אחד מנותק → אפס נספרות, והיומן אומר
     *למה*. בלי המשפט הזה השורה אומרת "12 נכשלו" ושולחת את הטכנאי
@@ -457,7 +463,7 @@ def test_the_console_wake_button_wakes_the_room_and_nothing_else(server):
     קבוצה אחרת, השרת מעיר את מחשבי השיכפול בלבד."""
     result = server["deploy"].post("/api/console/room/wake",
                                    json={"group_id": "grp_LAB1"})
-    assert result.status_code == 200 and result.json()["woken"] == 1
+    assert result.status_code == 200 and result.json()["sent"] == 1
     assert macs_of(server["woken"]) == {CLONER}      # לא הכיתה
 
 
@@ -541,5 +547,15 @@ def test_the_wake_endpoint_hands_the_reason_to_the_console(server):
     ב-`room.js` אינו מכוסה — אין JS test runner בריפו.
     """
     body = server["deploy"].post("/api/console/room/wake").json()
-    assert set(body) >= {"woken", "failed", "reasons"}
+    assert set(body) >= {"sent", "failed", "reasons"}
     assert body["failed"] == 0 and body["reasons"] == []
+
+
+def test_the_wake_endpoint_reports_sent_not_woken(server):
+    """‏#528 — המודול מונה `sent` (חבילות שיצאו), וה-API החזיר `woken`
+    (מכונות שהתעוררו). חבילת WoL היא UDP broadcast בלי ACK: `sendto`
+    שהצליח פירושו שהקרנל קיבל 102 בייט, ולא שמכונה קמה. השם `woken`
+    טען טענה שלא נמדדה (עיקרון 5), ולכן החזרתו חייבת להפיל את הטסט."""
+    body = server["deploy"].post("/api/console/room/wake").json()
+    assert "sent" in body            # השם שהמודול באמת מדד
+    assert "woken" not in body       # השם שטען התעוררות שלא נמדדה

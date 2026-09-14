@@ -125,6 +125,10 @@ body.station{
   border-radius:999px; color:var(--muted)}
 .room-drawers .drawer.ok{border-color:var(--led-ok); color:var(--led-ok)}
 .room-drawers .drawer.bad{border-color:#E5484D; color:#E5484D}
+/* בריאות SMART לפני start (#652) */
+.room-drawers .drawer .smart{font-size:11px; font-weight:600; padding:1px 6px;
+  border-radius:999px; background:var(--warn-soft, #FBF1E2); color:var(--warn-ink, #9A6714)}
+.room-drawers .drawer .smart.fail{background:transparent; color:#E5484D}
 .room-row .led{width:8px; height:8px; border-radius:50%; background:var(--hair);
   flex:none}
 .room-row .led.on{background:var(--led-ok); box-shadow:0 0 8px var(--led-ok)}

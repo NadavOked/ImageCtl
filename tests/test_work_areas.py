@@ -7,9 +7,12 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
+
+from native import DECLARED_PREFIX
 
 pytest.importorskip("fastapi")
 
@@ -191,8 +194,15 @@ def test_a_symlink_named_like_a_work_area_is_not_followed(conn, tmp_path):
     root = tmp_path / "images"
     write_image(root, MANIFEST_256)
     add_task(conn, "tsk_0930", "failed")
-    (root / ".capture-tsk_0930").symlink_to(root / "img_7f3a91",
-                                            target_is_directory=True)
+    try:
+        (root / ".capture-tsk_0930").symlink_to(root / "img_7f3a91",
+                                                target_is_directory=True)
+    except OSError as exc:
+        if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+            pytest.skip(
+                f"{DECLARED_PREFIX}: אין הרשאת SeCreateSymbolicLinkPrivilege"
+            )
+        raise
 
     result = sweep(conn, root)
 

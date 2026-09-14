@@ -147,12 +147,32 @@ def test_no_python_file_under_tests_asks_for_a_production_port():
     assert not offenders, "טסטים שנוקבים בפורט ההפצה (#156):\n" + "\n".join(offenders)
 
 
+def test_the_precheck_documents_that_udp_sender_binds_only_portbase_plus_one():
+    """‏#342: מי שתופס את portbase כדי לשחזר התנגשות לא יראה אחת.
+
+    נמדד ב-`ss -ulnp` במעבדה: udp-sender נקשר רק ל-portbase+1, לא
+    ל-portbase. הבדיקה על שני הפורטים נשארת — הגנה מפני שינוי עתידי
+    ב-udpcast. מה שנבדק כאן הוא שההתנהגות כתובה ליד הבדיקה, כדי
+    שהבא לא יבזבז סיבוב.
+    """
+    text = Path(sender.__file__).read_text(encoding="utf-8")
+    start = text.index("def _ports_are_free")
+    end = text.index("def _port_verdict")
+    precheck = text[start:end]
+    assert "#342" in precheck, "ההערה על הקשירה בפועל חסרה ליד הבדיקה"
+    assert "נקשר רק" in precheck, precheck
+    assert "portbase+1" in precheck
+    # הבדיקה עצמה עדיין על שני הפורטים — לא מצמצמים אותה למדידה.
+    assert "self.portbase, self.portbase + 1" in precheck
+
+
 # --- פורט תפוס: סירוב, ושם המחזיק --------------------------------------------
 
 
+@requires_native(paths=("/proc/net/udp",), why="זיהוי פורט תפוס קורא ב-/proc")  # issue-312-windows-env
 @pytest.mark.parametrize("offset", [0, 1])
 def test_a_busy_udpcast_port_refuses_the_broadcast(library, offset):
-    """שני הפורטים נבדקים — ‏udpcast משתמש ב-`portbase` **וגם** ב-+1."""
+    """שני הפורטים נבדקים — גם אם udp-sender נקשר בפועל רק ל-+1 (#342)."""
     with busy_pair(offset) as (base, held):
         recorder = Recorder()
         engine = SenderEngine(library, runner=recorder, portbase=base)
@@ -326,6 +346,9 @@ def test_a_failure_after_the_precheck_still_names_who_holds_the_port(
         def racing(cmd):
             # תפיסת הפורט **אחרי** הבדיקה המקדימה ולפני "השידור": זה
             # החלון, והוא נפתח כאן במכוון ולא במרוץ תלוי-תזמון.
+            # ‏#342: udp-sender נקשר בפועל רק ל-portbase+1. תפיסת
+            # portbase כאן לא הייתה יוצרת התנגשות בכלל — זה קרה
+            # בניסיון השחזור הראשון. לשחזור: לתפוס את +1, לא את הבסיס.
             if not recorder.commands:
                 holder.bind(("0.0.0.0", base + 1))
             return recorder(cmd)
