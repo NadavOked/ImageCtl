@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 pytest.importorskip("fastapi")
@@ -289,6 +291,22 @@ def test_only_a_classroom_can_be_a_target(station):
     assert response.json()["code"] == "bad_group"
 
 
+def test_only_a_classroom_can_be_a_target_from_the_console(station):
+    """אותה בדיקה גם במסלול הקונסולה (#534) — זה המסלול שהמסך הגרפי
+    קורא לו בפועל. סבב כיתה על מחשב הבנייה או על חדר השיכפולים → 400."""
+    setup_classroom(station)
+    station["admin"].post("/api/console/groups",
+                          json={"id": "grp_BUILD", "label": "בנייה", "role": "build"})
+    station["admin"].post("/api/console/groups",
+                          json={"id": "grp_CLONE", "label": "שיכפול", "role": "cloner"})
+    for gid in ("grp_BUILD", "grp_CLONE"):
+        response = station["deploy"].post(
+            "/api/console/sessions",
+            json={"group_id": gid, "image_id": "img_7f3a91"})
+        assert response.status_code == 400, gid
+        assert "כיתה" in response.json()["detail"], gid
+
+
 def test_an_empty_class_cannot_be_opened(station):
     setup_classroom(station)
     station["admin"].post("/api/console/groups",
@@ -344,6 +362,45 @@ def test_the_station_state_feeds_the_build_screen(station):
         "/api/v1/agent/state?mac=aa:bb:cc:00:00:10").json()["task"]
     assert task["state"] == "running"
     assert task["bytes_written"] == 512
+
+
+def test_reported_empty_disks_clear_the_build_screen(station):
+    mac = "aa:bb:cc:00:00:10"
+    assert station["admin"].post("/api/console/machines", json={
+        "mac": mac, "name": "מחשב בנייה", "group_id": "grp_BUILD",
+    }).status_code == 200
+    disks = [
+        {"dev": dev, "size_bytes": 256060514304, "model": f"Disk {dev}",
+         "serial": f"S{index}", "removable": False, "scheme": "gpt",
+         "has_data": True}
+        for index, dev in enumerate(("sda", "sdb", "sdc"), start=1)
+    ]
+    body = hello_body(mac)
+    body["disks"] = disks
+    assert station["anon"].post(
+        "/api/v1/agent/hello", json=body
+    ).status_code == 200
+
+    without_disks = hello_body(mac)
+    without_disks.pop("disks")
+    assert station["anon"].post(
+        "/api/v1/agent/hello", json=without_disks
+    ).status_code == 200
+    stored = station["ctx"].conn.execute(
+        "SELECT disks_json FROM net_devices WHERE mac = ?", (mac,)
+    ).fetchone()["disks_json"]
+    assert stored == json.dumps(disks)
+
+    body["disks"] = []
+    assert station["anon"].post(
+        "/api/v1/agent/hello", json=body
+    ).status_code == 200
+    stored = station["ctx"].conn.execute(
+        "SELECT disks_json FROM net_devices WHERE mac = ?", (mac,)
+    ).fetchone()["disks_json"]
+    assert stored == "[]"
+    state = station["anon"].get(f"/api/v1/agent/state?mac={mac}").json()
+    assert state["disks"] == []
 
 
 def test_station_state_for_a_stranger_is_polite(station):

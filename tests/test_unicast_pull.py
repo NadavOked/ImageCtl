@@ -121,7 +121,7 @@ def open_pull(tmp_path: Path, server: str, *, user: str = "labtech",
         f"export RUN_DIR={shlex.quote(posix(run))} HTTP_RETRIES=0 "
         f"HTTP_TIMEOUT=4 IMAGECTL_TEST=1; "
         f". {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/jsonq.sh; "
-        f". {posix(AGENT)}/lib/progress.sh; "
+        f". {posix(AGENT)}/lib/progress.sh; . {posix(AGENT)}/lib/pull.sh; "
         f"if pull_open {args}; "
         f'then echo "OPENED=[$PULL_SESSION]"; '
         f'else echo "NOT-OPENED=[$PULL_SESSION]"; fi'
@@ -261,10 +261,15 @@ def run_flow(script: str, keys: tuple[str, ...], out_file: Path) -> None:
     """
     with out_file.open("w", encoding="utf-8") as sink:
         try:
+            # ‏input בבייטים ולא ב-text: עם `text=True` ווינדוס מתרגם כל `\n`
+            # שנכתב לצינור ל-`\r\n`, ו-`read -r _c` ב-`single_station_flow`
+            # מקבל `1\r` — ‏`*[!0-9]*` מתאים, והאשף מת ב-`invalid choice`
+            # (#491, אותו כשל כמו #479). הפלט ממילא הולך ל-`sink` ולא לצינור.
             subprocess.run(
                 [BASH, "-c", 'export PATH="/usr/bin:$PATH"; ' + script],
-                stdout=sink, stderr=subprocess.STDOUT, text=True, cwd=str(REPO),
-                input="".join(f"{k}\n" for k in keys), timeout=RUN_TIMEOUT_S,
+                stdout=sink, stderr=subprocess.STDOUT, cwd=str(REPO),
+                input="".join(f"{k}\n" for k in keys).encode("utf-8"),
+                timeout=RUN_TIMEOUT_S,
             )
         except subprocess.TimeoutExpired:
             raise AssertionError(
@@ -350,7 +355,9 @@ def station(tmp_path, *, pull_code: str = "200",
         f"AWAIT_FILE={shlex.quote(await_file)} "
         f"AWAIT_TEXT={shlex.quote(await_text)}; "
         f". {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/jsonq.sh; "
-        f". {posix(AGENT)}/lib/progress.sh; . {posix(AGENT)}/lib/ui.sh; "
+        f". {posix(AGENT)}/lib/progress.sh; . {posix(AGENT)}/lib/pull.sh; "
+        f". {posix(AGENT)}/lib/ui.sh; . {posix(AGENT)}/lib/recovery.sh; "
+        f". {posix(AGENT)}/lib/single_restore.sh; "   # #706: the shared write path
         'pick_internal_disk() { echo sda; }; '
         'http_get() { cat "$RUN_DIR/manifest.src.json"; }; '
         'pull_post() { cp "$2" "$RUN_DIR/sent.json"; '
@@ -474,7 +481,7 @@ def test_the_closing_report_that_did_not_arrive_is_not_silence(tmp_path):
     script = (
         f"export RUN_DIR={shlex.quote(posix(run))} IMAGECTL_TEST=1; "
         f". {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/jsonq.sh; "
-        f". {posix(AGENT)}/lib/progress.sh; "
+        f". {posix(AGENT)}/lib/progress.sh; . {posix(AGENT)}/lib/pull.sh; "
         'http_post_json() { return 7; }; '
         'sleep 30 > /dev/null 2>&1 & '
         'pull_close "$!" ses_pull01 aa:bb "http://x"'

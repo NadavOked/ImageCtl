@@ -18,10 +18,15 @@ Wants=network-online.target
 Type=simple
 # נקבע ב-systemctl edit: Environment=IMAGECTL_URL=http://10.44.12.10:8080
 Environment=IMAGECTL_URL=
+# תצורת ה-Storage Node (#655/#723) — נכתב על ידי המתקין ל-override.conf.
+# ריק = ברירת המחדל של server.main (standalone), ולכן שרת ותיק בלי
+# override עולה בדיוק כמו קודם. ‏$IMAGECTL_STORAGE_ARGS (בלי סוגריים)
+# מתפצל למילים על ידי systemd; ריק מתרחב ללא ארגומנטים.
+Environment=IMAGECTL_STORAGE_ARGS=
 WorkingDirectory=/opt/imagectl
 ExecStartPre=/bin/sh -c 'test -n "$IMAGECTL_URL" || { echo "set IMAGECTL_URL via systemctl edit imagectl-server"; exit 1; }'
 ExecStart=/usr/bin/python3 -m server.main --server-url ${IMAGECTL_URL} \
-    --data-dir /var/lib/imagectl --images /srv/imagectl/images
+    --data-dir /var/lib/imagectl --images /srv/imagectl/images $IMAGECTL_STORAGE_ARGS
 Restart=on-failure
 RestartSec=3
 

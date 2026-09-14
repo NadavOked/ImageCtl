@@ -100,6 +100,53 @@ def test_nonempty_folder_cannot_be_deleted(server):
     assert admin.post("/api/console/folders/Temp/delete").status_code == 200
 
 
+# --- #526: ארבע דרכים ליצור תיקייה — כולן עוברות דרך אותה בדיקה ---------------
+# כל טסט כאן הוא בקרה שלילית לשורה אחת בטבלת ה-Issue: הוא נופל אם הבדיקה
+# שהוסרה בתיקון מוחזרת.
+
+
+def test_put_folder_validates_the_url_name(server):
+    """‏PUT /folders/{name} יצר תיקייה משם ה-URL בלי `_checked_name`
+    (שורה 178). שם לא תקין חייב להידחות כמו ב-POST, לא להיווצר בשקט."""
+    admin = server["admin"]
+    r = admin.put("/api/console/folders/a@b", json={"description": "x"})
+    assert r.status_code == 400
+    names = [f["name"] for f in admin.get("/api/console/folders").json()]
+    assert "a@b" not in names
+
+
+def test_folder_order_rejects_an_unknown_name(server):
+    """‏POST /folders/order יצר תיקייה משם ברשימה (שורה 153). שם שאינו
+    קיים חייב לחזור 400, כמו groups/order — ולא להיווצר."""
+    admin = server["admin"]
+    r = admin.post("/api/console/folders/order", json={"names": ["no_such_folder"]})
+    assert r.status_code == 400
+    names = [f["name"] for f in admin.get("/api/console/folders").json()]
+    assert "no_such_folder" not in names
+
+
+def test_creating_a_folder_that_exists_does_not_overwrite(server):
+    """‏POST /folders דרס תיקייה קיימת ודיווח יצירה (שורה 191). שם קיים
+    חייב לחזור 409, והתיאור שהיה חייב להישאר."""
+    admin = server["admin"]
+    assert admin.post("/api/console/folders",
+                      json={"name": "Cyber", "description": "מעבדות אבטחה"}).status_code == 200
+    r = admin.post("/api/console/folders", json={"name": "Cyber"})
+    assert r.status_code == 409
+    folders = {f["name"]: f for f in admin.get("/api/console/folders").json()}
+    assert folders["Cyber"]["description"] == "מעבדות אבטחה"
+
+
+def test_deleting_a_missing_folder_is_404_and_not_journaled(server):
+    """מחיקת תיקייה שאינה קיימת החזירה 200 ורשמה ביומן (שורה 202).
+    חייב 404, והיומן רק אחרי מחיקה שקרתה."""
+    admin = server["admin"]
+    r = admin.post("/api/console/folders/NoSuch/delete")
+    assert r.status_code == 404
+    events = [row["event"] for row in admin.get("/api/console/journal").json()]
+    assert "folder_delete" not in events
+
+
 # --- מכונות — הוספה ידנית ועריכה מפורשת --------------------------------------
 
 

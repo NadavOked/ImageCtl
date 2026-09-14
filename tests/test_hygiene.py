@@ -15,6 +15,7 @@ import os
 import shutil
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
 
@@ -209,6 +210,32 @@ def test_a_ripened_round_records_the_command_instead_of_broadcasting(server):
     recorder = server["recorder"]
     assert recorder.spawned.wait(timeout=5), "השידור לא יצא לדרך בכלל"
     assert recorder.commands[0][0] == "udp-sender"
+
+
+def test_windows_allowed_failures_stay_empty():
+    """#312: כשל בווינדוס הוא skipif מוצהר או תיקון. הרשימה הריקה היא השער.
+
+    הוספה ל-`WINDOWS_ALLOWED_FAILURES` הייתה ממירה רעש לרשימה מתוחזקת
+    ביד — בדיוק מה שה-Issue אוסר ("29 שנקרא 28"). ‏28 המקוריים, הכרעה:
+
+    רצים (תיקון בטסט, לא בקוד הייצור):
+    * ‏9 ב-`test_sender` — `free_ports` מחליף את `port_holders`
+    * ‏5 ב-`test_agent` (wizard) — `input` בבייטים, לא `\\r\\n` (#479)
+    * ‏5 ב-`test_restore_evidence` — `posix()` ב-`build_box`
+    * ‏1 ב-`test_hygiene` + 1 ב-`test_server_streams` — אותה הזרקה ב-fixture
+    * ‏1 ב-`test_server_netcfg` — `Path.as_posix()` מול מפריד ווינדוס
+
+    דילוג מוצהר (התלות אינה קיימת כאן; במעבדה הם רצים):
+    * ‏`test_a_busy_udpcast_port_refuses_the_broadcast` — אין `/proc/net/udp`
+    * שלושה טסטי wol שכופים ממשק — אין `SO_BINDTODEVICE` (כמו האח שכבר מדלג)
+    * ‏`test_a_symlink_named_like_a_work_area_is_not_followed` — WinError 1314
+    """
+    from conftest import WINDOWS_ALLOWED_FAILURES
+
+    assert WINDOWS_ALLOWED_FAILURES == frozenset(), (
+        "#312: נוספו כשלים מותרים בווינדוס. skipif עם נימוק או תיקון, "
+        f"לא allowlist: {sorted(WINDOWS_ALLOWED_FAILURES)}"
+    )
 
 
 def test_the_guard_blocks_a_real_spawn_and_records_it(tmp_path, monkeypatch):
