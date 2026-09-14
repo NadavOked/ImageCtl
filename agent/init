@@ -21,21 +21,38 @@ mount -t devpts   devpts   /dev/pts 2>/dev/null
 mount -t tmpfs    tmpfs    /run   2>/dev/null
 mkdir -p /run/imagectl
 
-# Storage and NIC drivers. The list is generated at build time from the
-# modules that were copied into the image; missing ones are not fatal --
-# the built-ins may cover the hardware.
+# Storage and NIC drivers. The list is generated at build time. A module that
+# does not load has two opposite meanings, and folding them into one line taught
+# the operator to ignore the message (#407, principle 5): a *platform* driver
+# not loading is the expected case -- 8 virtualization drivers on bare metal,
+# plus whatever NIC/disk hardware this machine simply does not have -- while a
+# *required* module (the filesystem set in /etc/imagectl/modules.required) not
+# loading is a broken initramfs that will let restore corrupt data silently
+# (#84, #107, #121). Both are reported BY NAME, never as a bare count: `9
+# modules did not load` is the same digit whether all nine were superfluous or
+# one was the network driver a headless machine needed to stay reachable.
 #
 # ‏`2>/dev/null` לבדו הפך כל כישלון טעינה לבלתי-נראה, ומודול שלא נטען
 # נראה בדיוק כמו מודול שנטען. ‏`sungem: Unknown symbol` נמצא ככה רק
-# כשהודפס dmesg ידנית במעבדה. סופרים ומדווחים (#76).
-_modfail=0
-if [ -f /etc/imagectl/modules ]; then
+# כשהודפס dmesg ידנית במעבדה. סופרים, מסווגים ומדווחים בשם (#76, #407).
+MOD_DIR="${MOD_DIR:-/etc/imagectl}"
+_required=" $(tr '\n' ' ' < "$MOD_DIR/modules.required" 2>/dev/null) "
+_req_fail=""
+_opt_fail=""
+if [ -f "$MOD_DIR/modules" ]; then
     while read -r _m; do
         [ -n "$_m" ] || continue
-        modprobe "$_m" 2>/dev/null || _modfail=$((_modfail + 1))
-    done < /etc/imagectl/modules
+        modprobe "$_m" 2>/dev/null && continue
+        case "$_required" in
+            *" $_m "*) _req_fail="$_req_fail$_m " ;;
+            *)         _opt_fail="$_opt_fail$_m " ;;
+        esac
+    done < "$MOD_DIR/modules"
 fi
-[ "$_modfail" -gt 0 ] && echo "imagectl init: $_modfail modules did not load"
+[ -n "$_opt_fail" ] && \
+    echo "imagectl init: platform modules absent, expected on this hardware: $_opt_fail"
+[ -n "$_req_fail" ] && \
+    echo "imagectl init: ERROR required modules did not load, restore may corrupt: $_req_fail"
 
 # efivars for the SecureBoot bit in hello -- after the module load, because
 # efivarfs is itself one of them (CONFIG_EFIVAR_FS=m).

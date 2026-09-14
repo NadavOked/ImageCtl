@@ -4,7 +4,8 @@
 
     build      → מסך גרפי
     classroom  → מסך גרפי
-    cloner     → סוכן בלבד, לא יחובר אליו מסך כלל
+    cloner     → מסך גרפי (הכרעת הבעלים החדשה: למחשב השיכפול יש מסך,
+                 והוא מציג התקדמות פר-מגירה ותפריט SMART גרפי)
 
 מה שחסם: ‏`GrubConfig.initrd_path` היה **ערך יחיד**, ולכן כל מכונה קיבלה
 את אותו initramfs — הטקסטואלי בן 37MB או הגרפי בן 212MB, לפי מה שהיה
@@ -67,8 +68,9 @@ def initrd_lines(text: str) -> list[str]:
 
 
 #: כל מסלול שבו נוצר ערך `menuentry "ImageCtl"` — כלומר כל מסלול שבו
-#: יש בכלל שורת initrd בקובץ. שלושת הראשונים מגיעים ל-AGENT, האחרון
-#: הוא התפריט הגלוי של #140 שגם בו יש ערך ImageCtl.
+#: יש בכלל שורת initrd בקובץ. מ-#641 כל ארבעת המסלולים (כולל no-task)
+#: מגיעים ל-AGENT עבור build/classroom, ובכולם ערך ה-ImageCtl נטען
+#: מה-initramfs של התפקיד.
 AGENT_ROUTES = [
     pytest.param({}, id="no-task"),
     pytest.param({"task": {"id": "tsk_0091"}}, id="task-assigned"),
@@ -81,36 +83,30 @@ AGENT_ROUTES = [
 
 
 @pytest.mark.parametrize("route", AGENT_ROUTES)
-@pytest.mark.parametrize("role", ["build", "classroom"])
-def test_build_and_classroom_get_the_gui_initramfs_on_every_route(role, route):
-    """שני התפקידים שיש להם מסך, בכל מסלול שמייצר ערך ImageCtl."""
+@pytest.mark.parametrize("role", ["build", "classroom", "cloner"])
+def test_gui_roles_get_the_gui_initramfs_on_every_route(role, route):
+    """שלושת התפקידים שיש להם מסך, בכל מסלול שמייצר ערך ImageCtl.
+
+    ‏cloner נוסף בהכרעת הבעלים: למחשב השיכפול יש מסך, והוא מציג
+    התקדמות פר-מגירה ותפריט SMART גרפי. הפרמטריזציה על המסלולים אינה
+    קישוט — ‏cloner מגיע לסוכן ב-`cloner-wait`, ב-`session-joinable`
+    וב-`task-assigned`, ומחשבי השיכפול מתחילים כל בוקר בהמתנה ועוברים
+    לסבב. אילו הבחירה הייתה לפי `code` ולא לפי תפקיד, המסך היה נעלם
+    ברגע שנפתח סבב — אותו באג של #320.
+    """
     text = render(answer(role=role, **route), CFG)
     assert initrd_lines(text) == [GUI_INITRD]
 
 
-@pytest.mark.parametrize("route", AGENT_ROUTES)
-def test_the_cloner_gets_the_text_initramfs_on_every_route(route):
-    """‏**זו הבקרה השלילית המרכזית של #32.** למחשב שיכפול לא יחובר מסך,
-    ולכן אין שום סיבה למשוך אליו 212MB של chromium ו-cage.
+def test_the_gui_role_set_includes_the_cloner():
+    """אותה דרישה על הקבוע עצמו, כדי שהכוונה תהיה קריאה ולא רק נגזרת.
 
-    הפרמטריזציה כאן אינה קישוט: ‏cloner מגיע לסוכן ב-`cloner-wait`,
-    ב-`session-joinable` וב-`task-assigned`, ומכונות השיכפול מתחילות
-    כל בוקר בהמתנה ועוברות לסבב. קובץ שמצמיח initramfs גרפי ברגע
-    שנפתח סבב הוא אותו באג של #320 בדיוק, בשכבה אחרת.
-
-    הכשל כשמסירים את החריג — כלומר כשמוסיפים "cloner" ל-ROLES_WITH_GUI:
-
-        AssertionError: assert ['initrd (http,10.44.12.10:8080)/boot/initrd.img.gui']
-                            == ['initrd (http,10.44.12.10:8080)/boot/initrd.img']
+    **זו הבקרה השלילית של השינוי:** מחזירים את `ROLES_WITH_GUI`
+    לקבוצה הישנה `{"build", "classroom"}`, והטסטים כאן ובמסלול
+    ה-cloner נופלים — כי אז ה-cloner מקבל שוב את ה-initramfs הטקסטואלי.
     """
-    text = render(answer(role="cloner", **route), CFG)
-    assert initrd_lines(text) == [TEXT_INITRD]
-
-
-def test_the_cloner_is_not_in_the_gui_role_set():
-    """אותה דרישה על הקבוע עצמו, כדי שהכוונה תהיה קריאה ולא רק נגזרת."""
-    assert "cloner" not in ROLES_WITH_GUI
-    assert ROLES_WITH_GUI == frozenset({"build", "classroom"})
+    assert "cloner" in ROLES_WITH_GUI
+    assert ROLES_WITH_GUI == frozenset({"build", "classroom", "cloner"})
 
 
 # --- ברירת מחדל בטוחה --------------------------------------------------------
@@ -180,12 +176,14 @@ def test_the_default_config_has_no_gui_path():
 
 
 @pytest.mark.parametrize("role", ["build", "classroom"])
-def test_the_gui_roles_keep_everything_else_from_140(role):
-    """‏#140 ו-#144 לא זזו: תפריט גלוי בלי טיימר, הדיסק המקומי לצדו,
-    ובדיוק שני ערכים. ‏#32 נוגע בשורת ה-initrd ובה בלבד."""
+def test_the_gui_roles_keep_everything_else_around_the_initrd(role):
+    """‏#641 שינה את האתחול לאוטומטי (`default=imagectl`, `timeout=0`),
+    אבל #144 לא זז — שני ערכים, הדיסק המקומי לצד ImageCtl — ו-#32 נוגע
+    בשורת ה-initrd ובה בלבד."""
     text = render(answer(role=role), CFG)
-    assert "set timeout=-1" in text
-    assert "set timeout_style=menu" in text
+    assert "set timeout=0" in text
+    assert "set timeout_style=hidden" in text
+    assert "set default=imagectl" in text
     assert text.count("menuentry ") == 2
     assert "--id local {" in text
     assert "chainloader" in text

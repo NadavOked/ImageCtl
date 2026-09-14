@@ -15,6 +15,7 @@ import json
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from .progress_view import capture_progress
 from . import users
 from .api import ServerContext, _error
 from .db import journal
@@ -102,19 +103,29 @@ def create_station_router(ctx: ServerContext) -> APIRouter:
             (canonical,),
         ).fetchone()
 
+        disks = (json.loads(device["disks_json"])
+                 if device and device["disks_json"] else [])
+        # #706: images allowed for THIS machine's disks, so the graphical
+        # restore screen offers a picker instead of the crashing text flow.
+        # {id,name,folder} per image; the server filters (interface rule 3).
+        allowed_images = []
+        for _iid in ctx.library.allowed_for_disks(disks):
+            _m = ctx.library.get(_iid)
+            if _m:
+                allowed_images.append({"id": _iid, "name": _m["name"],
+                                       "folder": _m.get("folder", "")})
         return {
             "mac": canonical,
             "known": machine is not None,
             "role": machine["role"] if machine else "unknown",
             "name": machine["suffix"] if machine else None,
             "group_label": machine["label"] if machine else None,
-            "disks": json.loads(device["disks_json"])
-            if device and device["disks_json"] else [],
+            "disks": disks,
+            "allowed_images": allowed_images,
             "task": {
                 "id": task["id"], "type": task["type"], "state": task["state"],
                 "disk": task["disk"], "name": task["name"], "error": task["error"],
-                "bytes_written": task["bytes_written"],
-                "bytes_total": task["bytes_total"],
+                **capture_progress(task),
             } if task else None,
         }
 

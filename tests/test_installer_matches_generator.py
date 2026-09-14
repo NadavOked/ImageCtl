@@ -102,3 +102,12 @@ def test_the_installer_never_enables_dhcp():
     assert "dhcp-range=" not in text
     assert "pxe-service" not in text
     assert re.search(r"^port=0$", text, re.M)
+
+
+def test_the_storage_args_environment_is_quoted():
+    """‏STORAGE_ARGS מכיל רווחים (--storage-role X --primary-url Y). ‏Environment=
+    בלי גרשיים = systemd מפצל למילים וקולט רק ``IMAGECTL_STORAGE_ARGS=--storage-role``
+    → כל התקנת secondary קורסת "expected one argument". חייב גרשיים סביב הערך."""
+    text = INSTALLER.read_text(encoding="utf-8")
+    assert 'Environment="IMAGECTL_STORAGE_ARGS=$STORAGE_ARGS"' in text
+    assert "Environment=IMAGECTL_STORAGE_ARGS=$STORAGE_ARGS" not in text

@@ -13,43 +13,34 @@
    ההסבר שה-API יסרב בו, ולפי הגרסה שבאמת מותקנת על המכונה — לא לפי
    מחרוזת קבועה שתשקר ביום שבו dnsmasq יעודכן. */
 let PROXY_SUPPORT = null;
+//: כרטיסי הרשת האחרונים שנקראו (‏/net/interfaces), לצריכת renderNetTable
+// ב-netcfg.js ולפעולות ה-DHCP בטבלה המאוחדת (‏#761).
+let NICS = [];
 
-function nicMode(n) {
-  // הטווח עטוף ב-LTR — בלעדיו ה-bidi הופך את סדר הכתובות בתא עברי.
-  if (n.enabled) {
-    return { html: `פעיל · <span dir="ltr">${esc(n.range_start)}–${esc(n.range_end)}</span>`,
-             on: true };
-  }
-  if (n.proxy) {
-    const tag = PROXY_SUPPORT && PROXY_SUPPORT.verified ? ""
-      : ` <span class="tag warn">${esc(
-          PROXY_SUPPORT && PROXY_SUPPORT.version
-            ? `dnsmasq ${PROXY_SUPPORT.version} — לא נבדק`
-            : "גרסת dnsmasq לא נקראה")}</span>`;
-    return { html: `פעיל · proxy, PXE בלבד${tag}`, on: true };
-  }
-  return { html: "כבוי", on: false };
+/* ‏#762: תווית מצב DHCP חי — ‏dhcp_live_label מגיע מהשרת (אמת נקראת, לא
+   ניחוש). ‏dhcp_diverged מסמן פער בין מה שנשמר לבין מה שבאמת רץ. */
+function dhcpLiveClass(state) {
+  if (state === "serving") return "ok";
+  if (state === "configured_not_running") return "warn";
+  if (state === "off") return "off";
+  return "warn";
 }
 
-function nicRow(n, admin) {
-  // כרטיס של השרת עצמו — שורה רגילה לכל דבר; רק עמודת ה-DHCP מבדילה.
-  const trunk = n.trunk ? ` <span class="tag warn">רשת המכללה</span>` : "";
-  const missing = n.present ? "" : ` <span class="tag warn">לא נמצא במכונה</span>`;
-  const mode = nicMode(n);
-  // כשהמערכת לא מדווחת כתובות, הכתובת שהוגדרה ל-DHCP היא כתובת הכרטיס.
-  const ip = n.addresses.join(" · ") || ((n.enabled || n.proxy) && n.server_ip) || "";
-  return `<tr>
-    <td><b dir="ltr">${esc(n.name)}</b>${trunk}${missing}</td>
-    <td class="mono" dir="ltr">${esc(n.mac) || "—"}</td>
-    <td class="mono" dir="ltr">${esc(ip) || "—"}</td>
-    <td>${esc(n.description) || `<span style="color:var(--muted)">—</span>`}</td>
-    <td class="${mode.on ? "nic-on" : ""}">${mode.html}</td>
-    <td>${admin ? `
-      <button class="btn" data-nic-desc="${esc(n.name)}">תיאור</button>
-      <button class="btn" data-nic-edit="${esc(n.name)}">
-        ${mode.on ? "הגדרות DHCP" : "הגדרת DHCP"}</button>
-      <button class="btn danger" data-nic-forget="${esc(n.name)}">הסר</button>` : ""}
-    </td></tr>`;
+function nicMode(n) {
+  const cls = dhcpLiveClass(n.dhcp_live.state);
+  const proxyTag = n.proxy && !(PROXY_SUPPORT && PROXY_SUPPORT.verified)
+    ? ` <span class="tag warn">${esc(
+        PROXY_SUPPORT && PROXY_SUPPORT.version
+          ? `dnsmasq ${PROXY_SUPPORT.version} — לא נבדק` : "גרסת dnsmasq לא נקראה")}</span>`
+    : "";
+  const diverged = n.dhcp_diverged
+    ? `<br><span class="tag warn">המוגדר אינו תואם למצב הפעיל</span>` : "";
+  const stored = `שמורה בקונסולה: ${n.enabled ? "מופעל" : n.proxy ? "proxy" : "כבוי"}`;
+  return {
+    html: `<b class="dhcp-${cls}">${esc(n.dhcp_live_label)}</b>${proxyTag}
+      <br><small style="color:var(--muted)">${esc(stored)}</small>${diverged}`,
+    on: n.enabled || n.proxy,
+  };
 }
 
 function editNic(nic) {
@@ -100,6 +91,7 @@ function editNic(nic) {
         confirm_proxy_broken: v.confirm_proxy_broken === true,
       });
       await loadNet();
+      if (typeof refreshNetPages === "function") refreshNetPages();
     },
   });
   // האזהרה והאישור נדלקים רק כשבוחרים proxy. ‏sheet() בונה את ה-DOM
@@ -127,10 +119,13 @@ async function saveNic(name, body) {
 }
 
 /* --- בריאות המערכת — רמזור לכל בדיקה (health.py) ------------------------- */
+/* השם loadHealthPanel כדי לא לדרוס את loadHealth של console.js. */
 
-async function loadHealth() {
+async function loadHealthPanel() {
+  const list = $("#health-list");
+  if (!list) return;
   const checks = await api("/health");
-  $("#health-list").innerHTML = checks.map((c) => `
+  list.innerHTML = checks.map((c) => `
     <div class="health-row">
       <span class="hlight ${c.state}"></span>
       <b>${esc(c.label)}</b>
@@ -138,10 +133,11 @@ async function loadHealth() {
     </div>`).join("");
 }
 
-$("#health-refresh").addEventListener("click", () =>
-  loadHealth().catch((error) => toast("רענון נכשל: " + error.message)));
+const healthRefresh = $("#health-refresh");
+if (healthRefresh) healthRefresh.addEventListener("click", () =>
+  loadHealthPanel().catch((error) => toast("רענון נכשל: " + error.message)));
 
-$("#dhcp-preview").addEventListener("click", async () => {
+async function previewDnsmasq() {
   // שני קבצים, כי ה-proxy רץ בתהליך dnsmasq משלו (#36).
   const conf = await api("/net/dnsmasq");
   sheet({
@@ -153,7 +149,11 @@ $("#dhcp-preview").addEventListener("click", async () => {
            <pre class="conf">${esc(conf.proxy_text)}</pre>`,
     submitLabel: "סגור", onSubmit: async () => {},
   });
-});
+}
+
+const dhcpPreview = $("#dhcp-preview");
+if (dhcpPreview) dhcpPreview.addEventListener("click", () =>
+  previewDnsmasq().catch((error) => toast(error.message)));
 
 async function loadNet() {
   // הלשונית כולה היא הכרטיסים: כל שורה היא כרטיס רשת של השרת,
@@ -166,41 +166,56 @@ async function loadNet() {
     try { PROXY_SUPPORT = await api("/net/proxy-support"); }
     catch (error) { PROXY_SUPPORT = null; }
   }
-  const nics = await api("/net/interfaces");
-  $("#net-table tbody").innerHTML = nics.map((n) => nicRow(n, admin)).join("")
-    || `<tr><td colspan="6">לא נמצאו כרטיסי רשת.</td></tr>`;
+  // ‏#761: הטבלה המאוחדת נבנית ב-netcfg.js (renderNetTable), אחרי שגם
+  // הכתובות המוגדרות (loadNetcfg) נטענו — כדי שלא יהיה join שביר של שתי
+  // תשובות שמגיעות בזמנים שונים. כאן רק שולפים ושומרים.
+  NICS = await api("/net/interfaces");
+  const addBtn = $("#nic-add");
+  if (addBtn) addBtn.onclick = addNic;
+  if (typeof populateSidebarNics === "function") populateSidebarNics();
+}
 
-  $("#nic-add").onclick = () => {
-    // המערכת מזהה לבד מה מחובר ועוד לא הוגדר — בוחרים מרשימה, לא מקלידים.
-    const fresh = nics.filter((n) =>
-      n.present && !n.enabled && !n.proxy && !n.description);
-    if (!fresh.length) {
-      toast("כל הכרטיסים שמחוברים כבר מוגדרים.");
-      return;
-    }
-    sheet({
-      title: "הוספת כרטיס",
-      sub: "אלה הכרטיסים שמחוברים ועוד לא הוגדרו — בוחרים ונותנים תיאור.",
-      fields: [
-        { id: "name", label: "כרטיס שזוהה", type: "select",
-          value: fresh[0].name,
-          options: fresh.map((n) => ({
-            value: n.name,
-            label: `${n.name}${n.mac ? " · " + n.mac : ""}`,
-          })) },
-        { id: "description", label: "תיאור", placeholder: "למשל: וילן 700" },
-      ],
-      submitLabel: "הוסף",
-      onSubmit: async (v) => {
-        await post("/net/interfaces", { name: v.name, description: v.description });
-        await loadNet();
-      },
-    });
-  };
-  document.querySelectorAll("[data-nic-edit]").forEach((b) => b.onclick = () =>
-    editNic(nics.find((n) => n.name === b.dataset.nicEdit)));
+function addNic() {
+  // המערכת מזהה לבד מה מחובר ועוד לא הוגדר — בוחרים מרשימה, לא מקלידים.
+  const fresh = NICS.filter((n) =>
+    n.present && !n.enabled && !n.proxy && !n.description);
+  if (!fresh.length) {
+    toast("כל הכרטיסים שמחוברים כבר מוגדרים.");
+    return;
+  }
+  sheet({
+    title: "הוספת כרטיס",
+    sub: "אלה הכרטיסים שמחוברים ועוד לא הוגדרו — בוחרים ונותנים תיאור.",
+    fields: [
+      { id: "name", label: "כרטיס שזוהה", type: "select",
+        value: fresh[0].name,
+        options: fresh.map((n) => ({
+          value: n.name,
+          label: `${n.name}${n.mac ? " · " + n.mac : ""}`,
+        })) },
+      { id: "description", label: "תיאור", placeholder: "למשל: וילן 700" },
+    ],
+    submitLabel: "הוסף",
+    onSubmit: async (v) => {
+      await post("/net/interfaces", { name: v.name, description: v.description });
+      await loadNet();
+      await loadNetcfg();
+      renderNetTable();
+    },
+  });
+}
+
+/* מחוברים לטבלה המאוחדת מ-netcfg.js, אחרי שהיא נבנתה — שלוש הפעולות
+   שנשארות ספציפיות לצד ה-DHCP (הגדרת DHCP / תיאור / הסרה). */
+function wireNicActions(nics) {
+  document.querySelectorAll("[data-nic-edit]").forEach((b) => b.onclick = () => {
+    const nic = nics.find((n) => n.name === b.dataset.nicEdit);
+    if (!nic) { toast("כרטיס לא נמצא"); return; }
+    editNic(nic);
+  });
   document.querySelectorAll("[data-nic-desc]").forEach((b) => b.onclick = () => {
     const nic = nics.find((n) => n.name === b.dataset.nicDesc);
+    if (!nic) { toast("כרטיס לא נמצא"); return; }
     sheet({
       title: "תיאור הכרטיס", sub: nic.name,
       fields: [{ id: "description", label: "תיאור חופשי",
@@ -209,6 +224,7 @@ async function loadNet() {
         await put(`/net/interfaces/${encodeURIComponent(nic.name)}/description`,
                   { description: v.description });
         await loadNet();
+        renderNetTable();
       },
     });
   });
@@ -218,8 +234,8 @@ async function loadNet() {
     "הסר", async () => {
       await del(`/net/interfaces/${encodeURIComponent(b.dataset.nicForget)}`);
       await loadNet();
+      renderNetTable();
     }));
-
 }
 
 // --- "נראו ברשת" — מוצג בלשונית המחשבים (machines.js קורא לזה) -------------
