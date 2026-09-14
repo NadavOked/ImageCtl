@@ -137,7 +137,11 @@ open_round_post() {
 
 class_round_flow() {
     rm -f "$RUN_DIR/class_ids.txt" "$RUN_DIR/image_ids.txt"
-    _group=$(class_menu) || return 1
+    if [ -n "${1:-}" ]; then
+        _group=$1
+    else
+        _group=$(class_menu) || return 1
+    fi
     _machines=$(machine_menu "$_group") || return 1
     _image=$(image_menu) || return 1
 

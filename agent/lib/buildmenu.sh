@@ -53,7 +53,11 @@ console_signin() {
     | curl -sS --max-time "$HTTP_TIMEOUT" --retry "$HTTP_RETRIES" \
         -c "$CONSOLE_JAR" -o "$RUN_DIR/console_login.json" -w '%{http_code}' \
         -H "Content-Type: application/json" --data-binary @- \
-        "$SERVER/api/console/login" 2>/dev/null)
+        "$SERVER/api/console/login") || {
+        log "console sign-in: transport failed" >&2
+        rm -f "$CONSOLE_JAR"
+        return 1
+    }
     if [ "$_code" = "401" ]; then
         # Not "your session expired": the agent login accepted this account
         # a moment ago, so a refusal here means the account changed under us.
@@ -70,7 +74,8 @@ console_signin() {
         return 1
     fi
     # Fails closed: a jar that cannot be read is not a session we hold.
-    if ! grep -q "$CONSOLE_COOKIE" "$CONSOLE_JAR" 2>/dev/null; then
+    if ! awk -F '\t' -v cookie="$CONSOLE_COOKIE" \
+        '$6 == cookie && length($7) > 0 { found=1 } END { exit !found }' "$CONSOLE_JAR"; then
         rm -f "$CONSOLE_JAR"
         log "console sign-in: 200 without a session cookie"
         echo "  The server accepted the password but issued no session."
@@ -84,7 +89,7 @@ console_get() {
     # $1 = path under /api/console, $2 = output file. Prints the HTTP code.
     curl -sS --max-time "$HTTP_TIMEOUT" --retry "$HTTP_RETRIES" \
         -b "$CONSOLE_JAR" -o "$2" -w '%{http_code}' \
-        "$SERVER/api/console/$1" 2>/dev/null
+        "$SERVER/api/console/$1"
 }
 
 console_post() {
@@ -94,7 +99,7 @@ console_post() {
     curl -sS --max-time "$HTTP_TIMEOUT" --retry "$HTTP_RETRIES" \
         -b "$CONSOLE_JAR" -o "$3" -w '%{http_code}' \
         -H "Content-Type: application/json" --data-binary "@$2" \
-        "$SERVER/api/console/$1" 2>/dev/null
+        "$SERVER/api/console/$1"
 }
 
 console_say() {

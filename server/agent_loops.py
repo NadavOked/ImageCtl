@@ -24,12 +24,22 @@ import logging
 import sqlite3
 from datetime import datetime, timedelta
 
-from boot.grub_menu import LOCAL, decide
+from boot.grub_menu import decide
 
 from .db import _write_lock, journal, now_iso, writing
 from .sessions import SessionStore
 
 log = logging.getLogger("imagectl.agent_loops")
+
+#: ‏#661: ההחלטות שבהן ההגעה לסוכן מוסברת בסיבה אמיתית — משימה, סבב
+#: פתוח, או מחשב שיכפול שברירת המחדל שלו היא מסך ההמתנה. לפני #641 מכונת
+#: build/classroom חסרת-משימה קיבלה LOCAL, וכל הגעה לסוכן היתה הראיה של
+#: #112; #641 העלתה אותה ל-AGENT (אוטו-בוט ל-ImageCtl) עם code="no-task",
+#: אבל זו בדיוק ה"אין סיבה" — לא סיבה. לכן נבדק ה-code (האסימון מהרשימה
+#: הסגורה, ראו Decision) ולא action: רק שלוש אלה מסבירות. זו רשימת
+#: ה**מסבירים** ולא ה"חשודים" — code חדש שאינו כאן נספר, כי שומר שאינו
+#: סופר אינו שומר (עיקרון 5).
+_EXPLAINED_CODES = frozenset({"task-assigned", "session-joinable", "cloner-wait"})
 
 #: כמה שתיקה סוגרת את הלולאה הנוכחית. המחזור שנמדד על החומרה ב-#75
 #: היה ‏14:05:51 → 14:07:54 → 14:08:4x, כלומר ~2 דקות; עשר דקות הן
@@ -83,9 +93,10 @@ def unexplained(conn: sqlite3.Connection, store: SessionStore, answer: dict,
         return False
     if answer.get("role") == "build":
         return False
-    if decide(answer).action != LOCAL:
-        # השרת שלח אותה לסוכן: משימה, סבב, או מחשב שיכפול שברירת
-        # המחדל שלו היא מסך ההמתנה (`cloner-wait`). ההגעה מוסברת.
+    if decide(answer).code in _EXPLAINED_CODES:
+        # השרת שלח אותה לסוכן מסיבה אמיתית: משימה, סבב, או מחשב שיכפול
+        # שברירת המחדל שלו היא מסך ההמתנה (`cloner-wait`). ההגעה מוסברת.
+        # ‏#661: ‏#641 גם מעלה no-task ל-AGENT — וזו אינה סיבה, ולכן נספרת.
         return False
     group = answer.get("group") or {}
     if not group.get("id"):

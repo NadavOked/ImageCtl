@@ -11,6 +11,7 @@ import json
 import re
 import tarfile
 import types
+from pathlib import Path
 
 import pytest
 
@@ -97,6 +98,32 @@ def test_a_corrupted_partition_is_caught_on_import(tmp_path):
     assert list(target.iterdir()) == []               # שום דבר לא נשאר
 
 
+def test_an_image_the_library_would_reject_is_refused_on_import(tmp_path):
+    raw = tar_with_manifest(tmp_path, {"family": 999})
+    target = tmp_path / "target"
+    target.mkdir()
+
+    with pytest.raises(ArchiveError, match="family must be 256 or 500"):
+        import_bytes(raw, target)
+
+    assert not (target / MANIFEST_256["id"]).exists()
+    assert list(target.iterdir()) == []
+
+
+@pytest.mark.parametrize("field", ["start_sector", "size_bytes"])
+def test_zero_partition_geometry_is_refused_on_import(tmp_path, field):
+    parts = json.loads(json.dumps(MANIFEST_256["partitions"]))
+    parts[0][field] = 0
+    raw = tar_with_manifest(tmp_path, {"partitions": parts})
+    target = tmp_path / "target"
+    target.mkdir()
+
+    with pytest.raises(ArchiveError, match="malformed geometry"):
+        import_bytes(raw, target)
+
+    assert list(target.iterdir()) == []
+
+
 def test_a_missing_partition_file_is_caught(tmp_path):
     source = tmp_path / "source"
     write_image(source, MANIFEST_256)
@@ -140,6 +167,41 @@ def test_the_image_is_invisible_until_every_sha256_matched(tmp_path, monkeypatch
 
     assert seen and all(ids == set() for ids in seen)
     assert set(ImageLibrary(target).scan()) == {"img_7f3a91"}   # ורק אחריו
+
+
+def test_import_hashes_the_bytes_at_their_final_placement(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    write_image(source, MANIFEST_256)
+    raw = build_tar(source / MANIFEST_256["id"])
+
+    library = tmp_path / "target"
+    library.mkdir()
+
+    real_rename = Path.rename
+    race_happened = False
+
+    def overwrite_immediately_before_placement(self, destination):
+        nonlocal race_happened
+        destination = Path(destination)
+
+        if (
+            destination == library / MANIFEST_256["id"]
+            and self.parent.name.startswith(archive.STAGING_PREFIX)
+        ):
+            # Simulate an overlapping writer after the old hash check.
+            (self / "p3.win.pcl.zst").write_bytes(b"changed-after-verification")
+            race_happened = True
+
+        return real_rename(self, destination)
+
+    monkeypatch.setattr(Path, "rename", overwrite_immediately_before_placement)
+
+    with pytest.raises(ArchiveError, match="sha256"):
+        import_bytes(raw, library)
+
+    assert race_happened
+    assert ImageLibrary(library).scan() == {}
+    assert not (library / MANIFEST_256["id"]).exists()
 
 
 def test_an_import_never_displaces_a_verified_image_with_the_same_id(tmp_path):

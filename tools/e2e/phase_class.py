@@ -38,8 +38,13 @@ def _open_from_station(ctx, opener_mac: str, macs=None) -> dict:
 
 
 def _close_active(ctx) -> None:
+    # שם האימג' המשודר הוא האישור בהקלדה (#581) — בדיוק מה שהמסך מציג
+    # בכותרת, ולכן זה גם מה שהסימולציה מקלידה.
     view = _view(ctx)
-    status, _ = ctx.deploy.json("POST", f"/api/console/sessions/{view['id']}/close")
+    status, _ = ctx.deploy.json(
+        "POST", f"/api/console/sessions/{view['id']}/close",
+        {"confirm_name": view["image_name"]},
+    )
     check("משתמש ההפצה סגר את הסבב", status == 200, str(status))
 
 
