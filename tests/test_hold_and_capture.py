@@ -187,7 +187,12 @@ def test_the_capture_path_no_longer_bets_on_the_clock():
     body = code_only(raw)
     assert "sleep 4" not in body, "מסלול הקליטה עדיין מהמר על שעון"
     assert body.count("report_final") == 2, "אחד משני המסלולים אינו קורא תשובה"
-    assert body.index("report_final") < body.index("poweroff -f")
+    # ⚠️ ‏`finish_and_stop` ולא `poweroff -f`. המחרוזת עברה
+    # ל-`common.sh` כשנוסף מתג `after-task`, והשומר הזה נשאר טוען
+    # עליה — כלומר **נכשל על קוד תקין**. הוא `@native_tools`, ולכן
+    # מדולג בווינדוס ולא רץ מעולם; נתפס בהרצה על מכונת הלינוקס
+    # (#573/#588), בדיוק כמו התאום שלו ב-`test_final_report.py` (#587).
+    assert body.index("report_final") < body.index("finish_and_stop")
 
 
 @native_tools

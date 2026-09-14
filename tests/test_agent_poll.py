@@ -265,14 +265,18 @@ def test_a_station_on_the_deployment_vlan_keeps_waiting():
 
 
 def test_no_idle_branch_sleeps_a_flat_two_seconds():
-    """שלושת המסלולים עברו ל-`poll_sleep`. ‏`sleep 2` היחיד שנשאר הוא
-    בנתיב הכישלון של send_hello — ניסיון חוזר, לא סקירת סרק."""
+    """המסלולים עברו ל-`poll_sleep`. ‏`sleep 2` היחיד שנשאר הוא
+    בנתיב הכישלון של send_hello — ניסיון חוזר, לא סקירת סרק.
+
+    ארבעה `poll_sleep`: wait_open, wait_poll, build_console, ומסלול
+    ה-recovery כשהגואי הנייטיב פעיל — אז לולאת ה-hello ממשיכה לרוץ
+    במקום להיחסם ב-recovery_flow הטקסטואלי (feat/native-gui)."""
     source = (AGENT / "imagectl-agent").read_text(encoding="utf-8")
     flat = [ln.strip() for ln in source.splitlines() if ln.strip() == "sleep 2"]
     assert len(flat) == 1, f"נשארו {len(flat)} השהיות קבועות של שתי שניות"
 
     loop = source[source.index("# --- main loop"):]
-    assert loop.count("poll_sleep") == 3
+    assert loop.count("poll_sleep") == 4
 
 
 def test_the_agent_loads_the_poll_library():

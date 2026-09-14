@@ -7,6 +7,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,12 @@ except ImportError:  # pragma: no cover
 _skips = native.SkipAudit()
 _run: dict[str, str | None] = {"basetemp": None}
 
+#: #312 — כשלי ווינדוס שמותר להם להישאר אדומים. ריק בכוונה: כל מקרה
+#: סביבתי הוא skipif מוצהר או תיקון. הוספה לכאן היא בדיוק הגידול
+#: שה-Issue אוסר — הטסט ב-test_hygiene נופל אם הקבוצה חדלה להיות ריקה.
+WINDOWS_ALLOWED_FAILURES: frozenset[str] = frozenset()
+_win_failed: list[str] = []
+
 
 def pytest_configure(config) -> None:
     config.addinivalue_line(
@@ -42,12 +49,34 @@ def pytest_configure(config) -> None:
     hostguard.block_real_host_reads()
 
 
+#: קובץ עקבות אופציונלי — ‏`IMAGECTL_TEST_TRACE=<נתיב>`.
+#:
+#: ‏07/09: ריצה מלאה נגמרה ב-87% **בלי שורת סיכום כלל**, כלומר לא היה
+#: ממה לקרוא תוצאה. מוות כזה הוא תהליך-בן שהרג את הריצה לפני
+#: ‏`pytest_sessionfinish`, ו-`faulthandler_timeout` — מסלול האבחון
+#: הרגיל — **אינו זמין בווינדוס**. לכן הקובץ הזה: הוא כתוב ומסונכרן
+#: לדיסק **לפני** כל טסט, ולכן מוות שקט משאיר את שם הטסט האחרון.
+#:
+#: כבוי כברירת מחדל: כתיבה מסונכרנת לכל טסט היא תקורה אמיתית, והיא
+#: נחוצה רק כשמחפשים את הכשל הזה.
+_trace = os.environ.get("IMAGECTL_TEST_TRACE")
+
+
 def pytest_runtest_setup(item) -> None:
+    if _trace:
+        # ‏`flush` **ו-**`fsync`: חוצץ שנשאר בזיכרון נעלם עם התהליך,
+        # וזה בדיוק המקרה שהקובץ הזה אמור לתעד.
+        with open(_trace, "a", encoding="utf-8") as fh:
+            fh.write(f"{item.nodeid}\n")
+            fh.flush()
+            os.fsync(fh.fileno())
     native.fail_on_missing_native(item)
 
 
 def pytest_runtest_logreport(report) -> None:
     _skips.record(report)
+    if os.name == "nt" and report.failed and report.nodeid not in _win_failed:
+        _win_failed.append(report.nodeid)
 
 
 def _say(lines: list[str]) -> None:
@@ -68,6 +97,14 @@ def pytest_sessionfinish(session, exitstatus) -> None:
     if hygiene.blocked_spawns:
         problems.append(f"{len(hygiene.blocked_spawns)} ניסיונות להפעיל שולח אמיתי:")
         problems += [f"    {' '.join(cmd)}" for cmd in hygiene.blocked_spawns]
+    if os.name == "nt":
+        extra = [n for n in _win_failed if n not in WINDOWS_ALLOWED_FAILURES]
+        if extra:
+            problems.append(
+                f"#312: {len(extra)} כשלים בווינדוס שאינם ברשימה המוכרת "
+                "(גידול; skipif עם נימוק או תיקון, לא allowlist):"
+            )
+            problems += [f"    {n}" for n in extra]
     if not problems:
         return
     _say(problems)
@@ -240,17 +277,23 @@ def _build_server(tmp_path: Path, images_root: Path, clock: Clock, recorder) -> 
 
 
 @pytest.fixture()
-def server(tmp_path: Path, images_root: Path, clock: Clock):
+def server(tmp_path: Path, images_root: Path, clock: Clock, monkeypatch):
     """האפליקציה המלאה + לקוחות מחוברים כ-admin וכ-deploy.
 
     השולח מזויף **גם כאן**, ולא רק ב-`server_with_sender`: סבב מבשיל
     בכמה מסלולים — hello, מבט-על, תחנה — וכל אחד מהם הפעיל `udp-sender`
     אמיתי, על פורט השידור של השרת, שנשאר לרוץ אחרי סוף הריצה (#79).
+
+    ‏`port_holders` מוזרק לריק: בלי `/proc/net/udp` (ווינדוס) המנוע נכשל
+    *לפני* השידור המזויף, והטסט מת על כשל סביבתי במקום על ההתנהגות
+    שהוא בודק (#312). זה אותו מקור-אמת ש-`free_ports` מחליף ב-test_sender.
     """
     if TestClient is None:
         pytest.skip("fastapi is required")
+    from server import sender as sender_module             # noqa: PLC0415
     from test_sender import Recorder                       # noqa: PLC0415
 
+    monkeypatch.setattr(sender_module, "port_holders", lambda port: [])
     bundle = _build_server(tmp_path, images_root, clock, Recorder(block=True))
     yield bundle
     bundle["ctx"].sender.stop()

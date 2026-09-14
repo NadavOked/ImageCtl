@@ -179,7 +179,8 @@ def read_listeners(proc_net: str | Path = "/proc/net",
             continue
         checked = True
         addresses.extend(found)
-    if not checked:
+    # A partial read cannot establish that SSH is closed on every interface.
+    if problems or not checked:
         return Listeners(False, reason=" · ".join(problems) or "אין /proc/net")
     return Listeners(True, tuple(sorted(set(addresses))),
                      any(a in _WILDCARD for a in addresses))

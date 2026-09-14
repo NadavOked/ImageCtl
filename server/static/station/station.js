@@ -20,11 +20,16 @@ function esc(text) {
 }
 
 function fmtBytes(n) {
-  if (!n) return "0";
+  // ‏null / undefined / לא-מספר / אינסוף = לא נמדד, ומוצג "–". אפס אמיתי
+  // הוא מדידה ולא כשל קריאה, ולכן הוא נבדל ומוצג "0 B" (‏#752, עיקרון 5):
+  // אותו fmtBytes כמו ב-console.js אחרי #517.
+  if (n == null) return "–";
+  let v = Number(n);
+  if (!Number.isFinite(v) || v < 0) return "–";
   const units = ["B", "KB", "MB", "GB", "TB"];
   let i = 0;
-  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
-  return n.toFixed(n >= 100 ? 0 : 1) + " " + units[i];
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return v.toFixed(v >= 100 || i === 0 ? 0 : 1) + " " + units[i];
 }
 
 let toastTimer = null;
@@ -114,13 +119,10 @@ async function poll() {
 }
 
 function drawProgress(task) {
-  const pct = task.bytes_total
-    ? Math.round((100 * task.bytes_written) / task.bytes_total) : 0;
   $("#st-prog-title").textContent = `קולט: ${task.name}`;
   $("#st-prog-sub").textContent = task.state === "pending"
     ? "ממתין לסוכן — ודאו שהמחשב עלה ב-PXE" : `כונן המקור: ${task.disk}`;
-  $("#st-bar").style.width = pct + "%";
-  $("#st-pct").textContent = pct + "%";
+  Progress.apply($("#st-bar"), $("#st-pct"), task);
   $("#st-bytes").textContent = task.bytes_written
     ? `${fmtBytes(task.bytes_written)} נקראו` : "";
   show("st-progress");

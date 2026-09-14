@@ -58,13 +58,17 @@ case "$*" in
         ;;
     *.sector_size*)  echo 512 ;;
     *.scheme*)       echo gpt ;;
-    *.disk_guid*)    echo null ;;
+    *.disk_guid*)    cat "$B/disk_guid" ;;
     *)               echo null ;;
 esac
 """
 
 #: ‏sgdisk מזויף שמתעד כל קריאה, ונכשל על תבנית ארגומנטים שהבדיקה בחרה
 #: (למשל `-e *` — הזזת עותק הגיבוי, לב בדיקה 2.5 של דף ההרצה).
+#:
+#: ‏`-U` יוצא 0 כברירת מחדל — וזה **אינו** ראיה שה-GUID נכתב (#572).
+#: ‏`-p` מדווח מה שעל הדיסק: מה ש-`-U` ביקשה, או את השקר ב-`disk_guid.lie`
+#: כשרוצים את המצב שבו קוד היציאה 0 והערך לא נתפס.
 SGDISK_STUB = """#!/bin/sh
 B="{box}"
 printf '%s\\n' "$*" >> "$B/sgdisk.calls"
@@ -74,6 +78,18 @@ if [ -f "$B/sgdisk.fail" ]; then
         case "$*" in $pat) exit 2 ;; esac
     done < "$B/sgdisk.fail"
 fi
+case "$1" in
+    -U)
+        printf '%s\\n' "$2" > "$B/disk_guid.requested"
+        ;;
+    -p)
+        if [ -f "$B/disk_guid.lie" ]; then
+            echo "Disk identifier (GUID): $(cat "$B/disk_guid.lie")"
+        elif [ -f "$B/disk_guid.requested" ]; then
+            echo "Disk identifier (GUID): $(cat "$B/disk_guid.requested")"
+        fi
+        ;;
+esac
 exit 0
 """
 
@@ -92,12 +108,17 @@ exit 0
 
 
 def build_box(tmp_path, *, plan=PLAN, count=None, plan_cut=None, nodes=None,
-              sgdisk_fail=None, rereadpt_fails=False, settle=1):
+              sgdisk_fail=None, rereadpt_fails=False, settle=1, disk_guid=None,
+              guid_lie=None):
     """קופסה עם הזיופים, ומחרוזת prelude שטוענת את הסוכן מולה.
 
     ‏`nodes` = אילו אינדקסים "חזרו" מהדיסק כהתקני בלוקים; ברירת המחדל
     היא כולם. ‏`count` = מה שהמניפסט מצהיר עליו (`.partitions | length`),
     ‏`plan_cut` = כמה שורות jq הספיק לפלוט לפני שמת.
+    ‏`disk_guid` = מה ש-jq מחזיר ל-`.disk_guid`; ברירת המחדל `null`,
+    ואז `apply_gpt` מדלגת על `sgdisk -U` לגמרי.
+    ‏`guid_lie` = מה ש-`sgdisk -p` מדווח אחרי `-U` שיצא 0. כשהוא שונה
+    מ-`disk_guid`, קוד היציאה אינו ראיה שה-GUID נכתב (#572).
     """
     box = tmp_path / "box"
     stubs = box / "stubs"
@@ -112,16 +133,23 @@ def build_box(tmp_path, *, plan=PLAN, count=None, plan_cut=None, nodes=None,
     (box / "count").write_text(f"{len(plan) if count is None else count}\n")
     (box / "needs").write_text("1048576\n")
     (box / "disksize").write_text("500000000000\n")
+    (box / "disk_guid").write_text(
+        ("null" if disk_guid is None else disk_guid) + "\n", newline="\n")
     if plan_cut is not None:
         (box / "plan_cut").write_text(f"{plan_cut}\n")
     if sgdisk_fail:
-        (box / "sgdisk.fail").write_text("\n".join(sgdisk_fail) + "\n")
+        (box / "sgdisk.fail").write_text("\n".join(sgdisk_fail) + "\n", newline="\n")
     if rereadpt_fails:
-        (box / "rereadpt_fails").write_text("y\n")
+        (box / "rereadpt_fails").write_text("y\n", newline="\n")
+    if guid_lie is not None:
+        (box / "disk_guid.lie").write_text(guid_lie + "\n", newline="\n")
 
-    live = [f"{box}/dev/sda{i}" for i in
+    # ‏posix(box) ולא box: ‏DEVROOT למטה עובר דרך posix(), וכאן הנתיב
+    # נכתב כמו שהוא. בווינדוס זה \\ מול /, ולכן node_is_block החזיר שקר **תמיד** —
+    # וחמישה טסטים נפלו על סיבה שאינה מה שהם בודקים.
+    live = [f"{posix(box)}/dev/sda{i}" for i in
             (nodes if nodes is not None else [int(line[0]) for line in plan])]
-    (box / "nodes").write_text("\n".join(live) + "\n" if live else "")
+    (box / "nodes").write_text("\n".join(live) + "\n" if live else "", newline="\n")
 
     # ‏chmod חובה: ‏cat > יוצר קובץ בלי סיבית הרצה, וזיוף שלא ניתן להרצה
     # עובר בווינדוס (שם כל קובץ "בר-הרצה") ונופל ב-CI בלבד.
@@ -140,7 +168,7 @@ def build_box(tmp_path, *, plan=PLAN, count=None, plan_cut=None, nodes=None,
         f'SYSROOT={posix(box)} TABLE_SETTLE_S={settle} WAIT_POLL_S=1; '
         f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/waits.sh; '
         f'. {posix(AGENT)}/lib/jsonq.sh; . {posix(AGENT)}/lib/progress.sh; '
-        f'. {posix(AGENT)}/lib/restore.sh; . {posix(AGENT)}/lib/expand.sh; '
+        f'. {posix(AGENT)}/lib/restore.sh; . {posix(AGENT)}/lib/expand.sh; . {posix(AGENT)}/lib/grow.sh; '
         # הבדיקה היחידה שאי אפשר לזייף בלי root: התקן בלוקים אמיתי.
         # רשימת הצמתים ה"חיים" יושבת בקופסה, ולכן "הקרנל לא בנה את
         # /dev/sda3" הוא מצב שאפשר להעמיד בו את הקוד.
@@ -324,6 +352,98 @@ def test_a_restore_that_wrote_everything_still_reaches_done(tmp_path):
     assert state_of(run) == "done"
     assert (run / "targets" / "sda" / "state").read_text().strip() == "done"
     assert wrote(run) == ["1", "2", "3"]
+
+
+#: GUID דיסק אמיתי מהמעבדה (מ.17, 06/09) — הצורה, לא הזהות, היא מה שנבדק.
+DISK_GUID = "047B3400-0000-0000-0000-0000003AEE00"
+#: GUID אחר לגמרי — מה שהדיסק מדווח כש-`-U` יצא 0 והערך לא נתפס (#572).
+LIE_GUID = "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF"
+
+
+def _sgdisk_called_with_U(box) -> str:
+    path = box / "sgdisk.calls"
+    return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+def test_a_failing_disk_guid_no_longer_looks_like_a_written_table(tmp_path):
+    """#537: ‏`sgdisk -U` היה היחיד ב-`apply_gpt` שלא הסתיים ב-`|| return 1`.
+    כשהוא נכשל נרשמה WARNING והפונקציה החזירה 0 — טבלה בלי GUID הדיסק
+    נראתה כמו טבלה שנכתבה."""
+    box, run, prelude = build_box(
+        tmp_path, disk_guid=DISK_GUID, sgdisk_fail=["-U *"])
+    out = sh(prelude + 'apply_gpt sda m.json; echo "rc=$?"')
+    assert f"-U {DISK_GUID}" in _sgdisk_called_with_U(box), (
+        "‏-U לא רץ — הטסט לא בודק את מסלול ה-GUID")
+    assert rc_of(out) == "rc=1", out
+    assert "could not set the disk GUID" in log_of(run)
+
+
+def test_a_disk_guid_that_could_not_be_set_does_not_reach_done(tmp_path):
+    """#537 מקצה לקצה. Windows קושר את ה-BCD ל-GUID של הדיסק; שחזור
+    עם GUID אחר הוא ‏`winload.efi 0xc000000e` — בדיוק #26. עד כאן
+    ‏`apply_gpt` החזירה 0, הזרם נכתב, והמגירה הגיעה ל-`done`.
+
+    הכישלון שנבדק הוא ההתנהגות — rc של השחזור ו-`done` — לא ייבוא
+    ולא קובץ חסר. ‏`-U` חייב להופיע בקריאות, אחרת זה דילוג ולא כשל."""
+    box, run, prelude = build_box(
+        tmp_path, disk_guid=DISK_GUID, sgdisk_fail=["-U *"])
+    out = sh(restore_run(prelude))
+    assert f"-U {DISK_GUID}" in _sgdisk_called_with_U(box), (
+        "‏-U לא רץ — הטסט לא בודק את מסלול ה-GUID")
+    assert rc_of(out) == "rc=1", out
+    assert state_of(run) == "failed"
+    assert (run / "targets" / "sda" / "state").read_text().strip() == "failed"
+    assert wrote(run) == [], "הזרם רץ אחרי GUID שלא נקבע"
+    assert "could not set the disk GUID" in log_of(run)
+
+
+def test_a_disk_guid_that_sgdisk_accepted_still_reaches_done(tmp_path):
+    """הצד השני: GUID במניפסט ש-`sgdisk -U` קיבלה, **ושנקרא בחזרה
+    מהדיסק**, אינו חוסם שחזור. בלי זה 'הכול נחסם' היה עובר כהצלחה."""
+    box, run, prelude = build_box(tmp_path, disk_guid=DISK_GUID)
+    out = sh(restore_run(prelude))
+    assert f"-U {DISK_GUID}" in _sgdisk_called_with_U(box), (
+        "‏-U לא רץ — אין ראיה שהמסלול בכלל נלקח")
+    assert rc_of(out) == "rc=0", out
+    assert state_of(run) == "done"
+    assert (run / "targets" / "sda" / "state").read_text().strip() == "done"
+    assert wrote(run) == ["1", "2", "3"]
+    assert f"disk GUID {DISK_GUID} came back from the disk" in log_of(run), (
+        "ה-GUID נכתב — אבל לא נקרא בחזרה מהדיסק")
+
+
+def test_a_zero_from_sgdisk_U_is_not_proof_the_guid_landed(tmp_path):
+    """#572: ‏`sgdisk -U` יוצא 0, וה-GUID על הדיסק אינו מה שהוצהר.
+    קוד היציאה אינו ראיה — אותה משפחה כמו `ethtool -s` ב-R17.
+    ‏`-U` חייב להופיע בקריאות, אחרת זה דילוג ולא כשל (השומר של #537)."""
+    box, run, prelude = build_box(
+        tmp_path, disk_guid=DISK_GUID, guid_lie=LIE_GUID)
+    out = sh(prelude + 'apply_gpt sda m.json; echo "rc=$?"')
+    assert f"-U {DISK_GUID}" in _sgdisk_called_with_U(box), (
+        "‏-U לא רץ — הטסט לא בודק את מסלול ה-GUID")
+    assert rc_of(out) == "rc=1", out
+    log = log_of(run)
+    assert f"disk GUID on the disk is {LIE_GUID}, not {DISK_GUID}" in log
+    assert "could not set the disk GUID" not in log, (
+        "זה אינו כשל של קוד היציאה — -U יצא 0")
+
+
+def test_a_guid_that_did_not_land_does_not_reach_done(tmp_path):
+    """#572 מקצה לקצה. ‏`-U` יצא 0, ה-GUID על הדיסק אחר, והשחזור
+    עדיין הגיע ל-`done` — ‏winload.efi 0xc000000e על כל כיתה (#26).
+
+    הכישלון שנבדק הוא ההתנהגות — rc של השחזור ו-`done` — לא ייבוא.
+    ‏`-U` חייב להופיע בקריאות, אחרת זה דילוג ולא כשל."""
+    box, run, prelude = build_box(
+        tmp_path, disk_guid=DISK_GUID, guid_lie=LIE_GUID)
+    out = sh(restore_run(prelude))
+    assert f"-U {DISK_GUID}" in _sgdisk_called_with_U(box), (
+        "‏-U לא רץ — הטסט לא בודק את מסלול ה-GUID")
+    assert rc_of(out) == "rc=1", out
+    assert state_of(run) == "failed"
+    assert (run / "targets" / "sda" / "state").read_text().strip() == "failed"
+    assert wrote(run) == [], "הזרם רץ אחרי GUID שלא נכתב"
+    assert f"disk GUID on the disk is {LIE_GUID}, not {DISK_GUID}" in log_of(run)
 
 
 def test_the_settle_window_is_bounded_and_not_a_bare_sleep(tmp_path):

@@ -12,6 +12,7 @@ Lenovo עם RTL8168 לא קיבל ממשק רשת בכלל בגלל זה, ורק
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -21,6 +22,7 @@ import pytest
 from native import requires_native
 
 BUILDER = Path(__file__).resolve().parent.parent / "tools" / "build_initramfs.sh"
+INIT = Path(__file__).resolve().parent.parent / "agent" / "init"
 BASH = shutil.which("bash")
 KVER = "9.9.9-test"
 
@@ -220,11 +222,12 @@ def test_the_builder_packs_the_filesystem_trees(tmp_path: Path):
         "kernel/fs/nls": ["nls_cp437", "nls_ascii"],
         "kernel/fs/ext4": ["ext4"],
         "kernel/fs/btrfs": ["btrfs"],
+        "kernel/fs/xfs": ["xfs"],
         "kernel/fs/efivarfs": ["efivarfs"],
         "kernel/fs/ceph": ["ceph"],          # לא נדרש — ולא אמור להיארז
         "kernel/drivers/net/ethernet": ["e1000e"],
     })
-    for rel in ("fat/vfat", "ext4/ext4", "btrfs/btrfs", "efivarfs/efivarfs"):
+    for rel in ("fat/vfat", "ext4/ext4", "btrfs/btrfs", "xfs/xfs", "efivarfs/efivarfs"):
         assert (packed / "kernel/fs" / f"{rel}.ko.xz").is_file(), f"{rel} לא נארז"
 
 
@@ -294,7 +297,7 @@ def test_the_filesystem_modules_are_loaded_and_not_left_to_autoload(tmp_path: Pa
     ומדווח כ-`N modules did not load`.
     """
     mods = generate(tmp_path, phy=["realtek"], ethernet=["r8169"])
-    for name in ("efivarfs", "fat", "vfat", "nls_cp437", "nls_ascii", "ext4", "btrfs"):
+    for name in ("efivarfs", "fat", "vfat", "nls_cp437", "nls_ascii", "ext4", "btrfs", "xfs"):
         assert name in mods, f"{name} אינו ברשימת הטעינה"
     # ‏efivarfs נטען לפני שה-init מנסה לעגן אותו — ראו agent/init.
     assert len(mods) == len(set(mods))
@@ -321,6 +324,7 @@ PLATFORM_LAYOUT = {
 FS_LAYOUT = {
     "ext4": "kernel/fs/ext4",
     "btrfs": "kernel/fs/btrfs",
+    "xfs": "kernel/fs/xfs",
     "vfat": "kernel/fs/fat",
     "fat": "kernel/fs/fat",
     "nls_cp437": "kernel/fs/nls",
@@ -490,3 +494,131 @@ def test_the_paravirtual_disk_controllers_are_in_the_load_list(tmp_path: Path):
     for name in ("vmw_pvscsi", "virtio_scsi", "virtio_blk", "xen-blkfront"):
         assert name in mods, f"{name} אינו ברשימת הטעינה"
     assert len(mods) == len(set(mods))
+
+
+# --- הבנייה מוסרת ל-agent/init איזה מודול הוא חובה (#407) ---------------------
+
+
+def modules_region_snippet() -> str:
+    """הקטע שמייצר את modules ואת modules.required, כפי שהוא בסקריפט."""
+    lines = BUILDER.read_text(encoding="utf-8").split("\n")
+    start = next(i for i, l in enumerate(lines) if l.startswith("_phy_mods=$(find"))
+    end = next(i for i, l in enumerate(lines)
+               if l.startswith('for fw in "${FIRMWARE_DIRS'))
+    return "\n".join(lines[start:end])
+
+
+@requires_native("bash", why="REQUIRED_FS_MODULES הוא מערך bash")
+def test_the_build_emits_the_required_module_set_for_the_runtime(tmp_path: Path):
+    """מודולי החובה נכתבים לקובץ נפרד ש-`agent/init` יקרא (#407).
+
+    בלי הקובץ הזה, ‏`agent/init` אינו יכול להבחין בין מודול פלטפורמה
+    שלא נטען (צפוי על ברזל) לבין מודול חובה שלא נטען (‏initramfs שבור),
+    ושניהם מתקפלים ל-`N modules did not load` — בדיוק עיקרון 5.
+    הקובץ חייב לשקף את ההצהרה, ולא רשימה שנכתבה כאן בידיים.
+    """
+    root = tmp_path / "root"
+    (root / "etc" / "imagectl").mkdir(parents=True)
+    (root / "lib" / "modules" / KVER).mkdir(parents=True)
+    decl = declared("REQUIRED_FS_MODULES")
+    script = (f"ROOT={root.as_posix()!r}\nKVER={KVER!r}\nWITH_GUI=0\n"
+              f"REQUIRED_FS_MODULES=({' '.join(decl)})\n" + modules_region_snippet())
+    subprocess.run([BASH, "-c", script], check=True, stdin=subprocess.DEVNULL,
+                   capture_output=True, timeout=90)
+    out = root / "etc" / "imagectl" / "modules.required"
+    assert out.is_file(), (
+        "הבנייה לא הפיקה modules.required — agent/init לא יבחין חובה מרשות (#407)")
+    assert out.read_text(encoding="utf-8").split() == decl
+
+
+# --- agent/init: 'לא נדרש כאן' ו'חסר קריטי' הן שתי הודעות שונות (#407) --------
+
+
+def init_module_block() -> str:
+    """קטע טעינת המודולים מתוך agent/init, בין שני עוגנים יציבים.
+
+    לא בודקים את הטקסט אלא מריצים אותו: הסיווג נמדד לפי הפלט, כך
+    שניסוח אחר שיאבד את ההבחנה ייכשל כאן.
+    """
+    lines = INIT.read_text(encoding="utf-8").split("\n")
+    start = next(i for i, l in enumerate(lines) if l.strip() == "mkdir -p /run/imagectl")
+    end = next(i for i, l in enumerate(lines) if l.startswith("# efivars"))
+    return "\n".join(lines[start + 1:end])
+
+
+def run_init_block(tmp_path: Path, modules: list[str], required: list[str],
+                   fail: list[str]) -> str:
+    """מריץ את קטע הטעינה עם `modprobe` מזויף שנכשל על `fail`."""
+    moddir = tmp_path / "etc" / "imagectl"
+    moddir.mkdir(parents=True)
+    # ‏LF בלבד — הבנייה כותבת את הקבצים על דביאן, ו-`read -r` בסוכן משאיר
+    # ‏`\r` שווינדוס היה מוסיף, כך שכל שם היה נראה שונה מהמצופה.
+    (moddir / "modules").write_text(
+        "\n".join(modules) + "\n", encoding="utf-8", newline="\n")
+    (moddir / "modules.required").write_text(
+        "\n".join(required) + "\n", encoding="utf-8", newline="\n")
+    block = init_module_block().replace("/etc/imagectl", moddir.as_posix())
+    stub = ('modprobe() { for _f in $FAIL; do '
+            '[ "$_f" = "$1" ] && return 1; done; return 0; }\n')
+    # ‏`:` בסוף — הקטע יושב באמצע `agent/init`, אחריו יש עוד קוד ואין
+    # ‏`set -e`, ולכן קוד היציאה של השורה האחרונה בו אינו משמעותי שם.
+    # בלעדיו, ריצה שבה רק מודול רשות נכשל הייתה יוצאת 1 על `[ -n "" ]`.
+    script = f'FAIL="{" ".join(fail)}"\n' + stub + block + "\n:\n"
+    done = subprocess.run(["sh", "-c", script], stdin=subprocess.DEVNULL,
+                          capture_output=True, encoding="utf-8", errors="replace",
+                          timeout=30)
+    assert done.returncode == 0, done.stderr
+    return done.stdout
+
+
+FS_REQUIRED = ["ext4", "btrfs", "xfs", "vfat", "fat", "nls_cp437", "nls_ascii", "efivarfs"]
+
+
+def test_init_names_required_and_platform_failures_on_separate_lines(tmp_path: Path):
+    """מודול חובה שנכשל = ERROR נקוב בשם; מודול פלטפורמה = מצב צפוי, נקוב בשם."""
+    out = run_init_block(
+        tmp_path,
+        modules=["hv_netvsc", "vmxnet3", "ext4", "vfat", "r8169"],
+        required=FS_REQUIRED,
+        fail=["hv_netvsc", "vmxnet3", "ext4"],
+    )
+    err = [l for l in out.splitlines() if "ERROR required modules" in l]
+    opt = [l for l in out.splitlines() if "expected on this hardware" in l]
+    assert err, f"אין שורת ERROR למודול חובה שנכשל; הפלט: {out!r}"
+    assert opt, f"אין שורת פלטפורמה מסווגת; הפלט: {out!r}"
+    assert "ext4" in err[0] and "ext4" not in opt[0]
+    assert "hv_netvsc" in opt[0] and "vmxnet3" in opt[0]
+    assert "hv_netvsc" not in err[0] and "vmxnet3" not in err[0]
+    # ההודעה השטוחה הישנה — שלא הבחינה בין השניים — נעלמה
+    assert not re.search(r"\d+ modules did not load", out), (
+        f"ההודעה השטוחה הישנה חזרה: {out!r}")
+
+
+def test_a_required_module_failure_is_named_not_a_silent_count(tmp_path: Path):
+    """הבקרה השלילית של הבאג: מודול נדרש חסר → נאמר בשם, לא ממשיך בשקט."""
+    out = run_init_block(tmp_path, modules=["ext4", "hv_netvsc"],
+                         required=FS_REQUIRED, fail=["ext4"])
+    err = [l for l in out.splitlines() if "ERROR required modules" in l]
+    assert err, f"מודול חובה נכשל ולא נאמר בשם; הפלט: {out!r}"
+    assert "ext4" in err[0]
+    assert "hv_netvsc" not in out  # לא נכשל — לא מדובר עליו כלל
+    assert not re.search(r"\d+ modules did not load", out), (
+        f"ההודעה השטוחה הישנה חזרה: {out!r}")
+
+
+def test_platform_drivers_absent_on_bare_metal_are_not_an_error(tmp_path: Path):
+    """התרחיש של #407 עצמו: 8 דרייברי וירטואליזציה על ברזל = מצב תקין.
+
+    הם נקובים בשם כמידע, אף אחד אינו ERROR, ואין את המספר השטוח הישן.
+    זו גם השמירה מפני 'תיקון' רחב מדי שהיה מכריז על הכול ככשל.
+    """
+    platform = ["hv_netvsc", "hv_storvsc", "vmxnet3", "vmw_pvscsi",
+                "virtio_net", "virtio_blk", "xen-netfront", "xen-blkfront"]
+    out = run_init_block(tmp_path, modules=platform + ["ext4"],
+                         required=FS_REQUIRED, fail=platform)
+    assert "ERROR" not in out, f"מודול פלטפורמה סווג בטעות ככשל: {out!r}"
+    for mod in platform:
+        assert mod in out, f"{mod} לא נקוב בשם: {out!r}"
+    assert "expected on this hardware" in out
+    assert not re.search(r"\d+ modules did not load", out), (
+        f"ההודעה השטוחה הישנה חזרה: {out!r}")

@@ -32,7 +32,8 @@ _uuid_of() {
 
 _used_bytes() {
     # $1 = node, $2 = fs. Mounted read-only just to measure; a partition that
-    # will not mount is reported as 0 with a warning rather than guessed.
+    # will not mount is reported as null (not measured) rather than guessed --
+    # null and a measured 0 are two states, and the manifest keeps them apart.
     _m="$RUN_DIR/probe"
     mkdir -p "$_m"
     # ‏-t מפורש, ולא זיהוי אוטומטי: ‏mount בלי סוג בוחר רק מבין מערכות הקבצים
@@ -53,7 +54,9 @@ _used_bytes() {
     # difference between a puzzling number and a known cause. ‏>&2: הפונקציה
     # נקראת בתוך $( ) ו-log מדבר גם ל-stdout — אחרת האזהרה שוברת מניפסט (#12).
     log "WARNING: $1 would not mount -- used_bytes unknown (hibernation? run powercfg /h off)" >&2
-    echo 0
+    # ‏null ולא 0: "לא הצלחנו למדוד" אינו "מדדנו, ריק" (עיקרון 5, #298). זהו
+    # ערך JSON חוקי בשדה קיים — schema נשאר 1, וקורא ישן שמצפה למספר רואה null.
+    echo null
 }
 
 _image_os() {

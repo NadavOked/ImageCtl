@@ -172,7 +172,8 @@ def sourced_libs() -> str:
     """ספריות הסוכן שהמסלולים צריכים. ‏`hold.sh` נטענת **רק אם היא
     קיימת**: בקרה שלילית ש-`git stash` הוריד בה את קוד הסוכן חייבת
     ליפול על ההתנהגות ולא על קובץ חסר."""
-    names = ["common.sh", "jsonq.sh", "progress.sh", "ui.sh", "hold.sh"]
+    names = ["common.sh", "jsonq.sh", "progress.sh", "pull.sh",
+             "ui.sh", "hold.sh", "clonergui.sh"]   # #708: resolve_target_drawers (#701) lives here
     return "".join(f". {posix(AGENT)}/lib/{n}; "
                    for n in names if (AGENT / "lib" / n).exists())
 
@@ -191,6 +192,11 @@ def journal(run: Path) -> str:
 LOOP_STUB = 'progress_loop() { echo "LOOP $1$4" >> "$RUN_DIR/trace"; }; '
 
 STUBS = (
+    # ‏#652: הסוכן האמיתי טוען את smart.sh (imagectl-agent), ולכן `smart_gate`
+    # מוגדר שם. כאן, כמו `run_restore` ו-`progress_loop`, הוא מזויף כדי
+    # לבודד את מסלול הדיווח מבדיקת ה-SMART: מעביר את כל הדיסקים הלאה
+    # (בריאים) ומחזיר 0. ה-SMART עצמו נבדק ב-test_smart.py.
+    'smart_gate() { shift; echo "$@"; }; '
     'pick_internal_disk() { echo sda; }; '
     'list_drawers() { echo "sdb sdc"; }; '
     'http_get() { cat "$RUN_DIR/manifest.src.json"; }; '
@@ -443,21 +449,23 @@ def test_no_restore_path_sleeps_instead_of_reading_the_answer():
         assert "report_final" in body, f"‏{name} אינה קוראת את התשובה"
 
 
-@native_tools
 def test_the_answer_is_read_before_the_machine_leaves():
     """הסדר הוא כל העניין: קודם אישור, ורק אחריו אתחול או כיבוי."""
     station = agent_functions("do_restore")
     assert station.index("report_final") < station.index("reboot -f")
     room = agent_functions("do_restore_drawers")
-    assert room.index("report_final") < room.index("poweroff -f")
+    # ‏rindex ולא index: שער ה-SMART (#652) מוסיף `finish_and_stop` *מוקדם*
+    # במסלול "החלף דיסק" — כיבוי לפני שנכתב בייט, שאין עליו דיווח סיום.
+    # הכלל של #101 הוא על הכיבוי שאחרי שחזור שהושלם — האחרון.
+    assert room.index("report_final") < room.rindex("finish_and_stop")
 
 
 @native_tools
 def test_all_three_closing_reports_go_through_one_mechanism():
     """הכלל הנכון היה מיושם במקום אחד מתוך שלושה, וכך הוא נשחק.
     ‏`pull_close` עובר עכשיו דרך אותה פונקציה בדיוק."""
-    progress = (AGENT / "lib" / "progress.sh").read_text(encoding="utf-8")
-    close = progress[progress.index("pull_close() {"):]
+    pull = (AGENT / "lib" / "pull.sh").read_text(encoding="utf-8")
+    close = pull[pull.index("pull_close() {"):]
     assert "report_final" in close
     agent = agent_functions("do_restore", "do_restore_drawers")
     assert agent.count("report_final") == 2
