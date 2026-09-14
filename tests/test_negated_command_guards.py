@@ -74,9 +74,34 @@ def _shell_scripts() -> list[Path]:
     return found
 
 
+def _logical_lines(text: str) -> list[tuple[int, str]]:
+    r"""מאחה שורות שמסתיימות ב-`\` לשורה לוגית אחת (#600).
+
+    ‏`if` פורש על פני **השורה הלוגית**, לא הפיזית. הסורק שסרק שורות
+    פיזיות פסל את `inbox-scan.sh:55` — ‏`&& ! awk` שהוא המשך של
+    ‏`if ! grep ... \` שמעליו, כלומר כתיב תקין לחלוטין.
+
+    מספר השורה המדווח הוא זה שבו השורה הלוגית **מתחילה**.
+    """
+    out: list[tuple[int, str]] = []
+    start = 0
+    buf = ""
+    for number, line in enumerate(text.splitlines(), start=1):
+        if not buf:
+            start = number
+        if line.endswith("\\"):
+            buf += line[:-1]
+            continue
+        out.append((start, buf + line))
+        buf = ""
+    if buf:
+        out.append((start, buf))
+    return out
+
+
 def _hits(text: str) -> list[tuple[int, str]]:
     out = []
-    for number, line in enumerate(text.splitlines(), start=1):
+    for number, line in _logical_lines(text):
         stripped = line.lstrip()
         if stripped.startswith("#"):
             continue
@@ -158,3 +183,42 @@ def test_the_scanner_does_not_flag_a_condition(tmp_path):
         encoding="utf-8",
     )
     assert _hits(good.read_text(encoding="utf-8")) == []
+
+
+def test_a_condition_that_spans_a_backslash_is_still_a_condition(tmp_path):
+    r"""‏#600: ‏`if` שנמשך ב-`\` — ההמשך שלו אינו פקודה עצמאית.
+
+    זה הכתיב שהפיל את `main` ב-08/09. הסורק סרק שורות פיזיות, ראה
+    ‏`&& ! awk` בשורה שאינה פותחת ב-`if`, ופסל כתיב תקין.
+    """
+    good = tmp_path / "cont.sh"
+    good.write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "if ! grep -qxF x list \\\n"
+        "   && ! awk -v p=y 'END { exit 1 }' list; then\n"
+        "    echo missing\n"
+        "fi\n",
+        encoding="utf-8",
+    )
+    assert _hits(good.read_text(encoding="utf-8")) == []
+
+
+def test_a_bare_negation_that_spans_a_backslash_is_still_caught(tmp_path):
+    """הכיוון השני — בלעדיו התיקון ל-#600 הוא רק החלשה של השער.
+
+    אותה שורה בדיוק, **בלי** `if`: כאן `set -e` באמת בולע את הסטטוס,
+    וזה חייב להיתפס. בקרה שלילית לשני הכיוונים.
+    """
+    bad = tmp_path / "cont-bad.sh"
+    bad.write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "grep -qxF x list \\\n"
+        "   && ! awk -v p=y 'END { exit 1 }' list\n"
+        "echo 'guard: PASS'\n",
+        encoding="utf-8",
+    )
+    hits = _hits(bad.read_text(encoding="utf-8"))
+    assert hits, "‏`! cmd` בהמשך שורה חמק מהסורק"
+    assert hits[0][0] == 3, f"השורה הלוגית מתחילה ב-3, דווח {hits[0][0]}"

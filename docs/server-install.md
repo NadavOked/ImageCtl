@@ -55,6 +55,11 @@ sudo ./install/setup-boot-server.sh
 רוצים רק לראות מה יקרה? `sudo ./setup-boot-server.sh --dry-run`.
 לאוטומציה יש דגלים שמדלגים על השאלות — `--help` מפרט.
 
+`--http-root PATH` קובע איפה יונחו הקרנל וה-initrd, **ומאיפה השרת מגיש
+אותם** (`--boot-dir` ב-drop-in של systemd, #395). ברירת המחדל בשני
+הצדדים היא `/srv/imagectl/boot`. אם מעבירים נתיב אחר — שלב שני למטה
+חייב לכתוב לאותו נתיב, לא ל-`/srv/imagectl/boot`.
+
 **הביאו את הריפו אל השרת והריצו את המתקין מתוכו.** קובץ ה-GRUB הקבוע
 אמנם מוטמע בסקריפט, אבל **העתקת הסקריפט לבדו כבר אינה מסלול עובד**:
 כשהריפו אינו לצידו הוא מנסה `git clone` מ-`ImageCtl-archive`, וזה ריפו
@@ -89,6 +94,9 @@ sudo bash tools/build_initramfs.sh --kernel-version "$KVER" \
      --output /srv/imagectl/boot/initrd.img
 sudo cp "/boot/vmlinuz-$KVER" /srv/imagectl/boot/vmlinuz
 ```
+
+אם הרצתם את המתקין עם `--http-root PATH`, החליפו את `/srv/imagectl/boot`
+בנתיב שהעברתם — זה הנתיב שהשרת מגיש.
 
 **אימות — ראיה חיובית, לא `is-active`:**
 
