@@ -42,7 +42,12 @@ from .dhcp_host import (  # noqa: F401  — ה-API של המודול נשאר `d
     list_interfaces,
     probe_existing_dhcp,
     proxy_support,
+    read_active_conf,
+    service_active,
 )
+
+#: שורת conf פעילה שמשרתת ממשק, לעומת `except-interface=` (שוללת) או הערה.
+_INTERFACE_LINE = re.compile(r"^\s*interface\s*=\s*(\S+)\s*$")
 
 SETTING_PREFIX = "dhcp:"
 DEFAULT_LEASE = "12h"
@@ -154,6 +159,26 @@ def validate(cfg: InterfaceConfig) -> None:
     lease = cfg.lease.strip().lower()
     if not lease or lease[-1] not in "mhd" or not lease[:-1].isdigit():
         raise ValueError("זמן חכירה: מספר ואחריו m/h/d, למשל 12h")
+
+
+# --- אמת חיה ל-DHCP (‏#762) --------------------------------------------------
+
+
+def parse_served_interfaces(text: str) -> set[str]:
+    """אילו ממשקים קובץ ה-conf **הפעיל** מצהיר עליהם `interface=`.
+
+    פרסר טהור: מקבל טקסט, מחזיר קבוצת שמות. קורא רק שורות `interface=`
+    פעילות — מתעלם מהערות (`#`), שורות ריקות ומ-`except-interface=` (זו
+    שלילה, לא הגשה). אין להסיק מ-`dhcp-range=` בלבד: טווח בלי `interface`
+    אינו מגיש דבר על ממשק ספציפי.
+    """
+    served: set[str] = set()
+    for raw_line in (text or "").splitlines():
+        line = raw_line.split("#", 1)[0]
+        match = _INTERFACE_LINE.match(line)
+        if match:
+            served.add(match.group(1))
+    return served
 
 
 # --- רינדור dnsmasq ---------------------------------------------------------

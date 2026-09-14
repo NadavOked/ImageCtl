@@ -27,7 +27,7 @@ import sqlite3
 from datetime import datetime, timedelta
 
 from .agent_loops import SILENCE_SECONDS
-from .db import journal, now_iso
+from .db import _write_lock, journal, now_iso, writing
 
 log = logging.getLogger("imagectl.foreign_vlan")
 
@@ -88,19 +88,28 @@ def _count(conn: sqlite3.Connection, mac: str, address: str,
 
     שתיקה ארוכה מ-`SILENCE_SECONDS` מתחילה ספירה חדשה באותה שורה.
     הכתובת נדרסת תמיד: מה שמוצג הוא מהיכן היא פונה **עכשיו**.
+
+    ‏`_write_lock` ו-`writing` הם אותם שני מנגנונים שתוקנו ב-#272 על
+    ‏`net_seen` ובמסלול ה-hello ב-#356, וזה **אותו מסלול hello בדיוק**
+    (#518). התור מונע הרעבה בין תהליכוני uvicorn, ו-`writing` מבטיח
+    שכתיבה שנכשלה לא תשאיר ``BEGIN`` פתוח על החיבור — ה-`except` שב-`note`
+    בולע כדי שניטור לא יפיל hello, וחיבור מורעל היה הופך את הבליעה הזו
+    למה ש**מפיל** את ה-hello הבא. הנעילה עוטפת את הכתיבה **בלבד**:
+    קריאת האימות ורישום היומן שאחריה יושבים מחוצה לה, כי `journal` נוטל
+    את אותה נעילה בעצמו והיא ``Lock`` ולא ``RLock``.
     """
     cutoff = _cutoff(ts)
-    conn.execute(
-        "INSERT INTO off_vlan_contacts (mac, address, hits, first_at, last_at)"
-        " VALUES (?, ?, 1, ?, ?)"
-        " ON CONFLICT (mac) DO UPDATE SET"
-        "   address  = excluded.address,"
-        "   hits     = CASE WHEN last_at >= ? THEN hits + 1 ELSE 1 END,"
-        "   first_at = CASE WHEN last_at >= ? THEN first_at ELSE excluded.first_at END,"
-        "   last_at  = excluded.last_at",
-        (mac, address, ts, ts, cutoff, cutoff),
-    )
-    conn.commit()
+    with _write_lock, writing(conn):
+        conn.execute(
+            "INSERT INTO off_vlan_contacts (mac, address, hits, first_at, last_at)"
+            " VALUES (?, ?, 1, ?, ?)"
+            " ON CONFLICT (mac) DO UPDATE SET"
+            "   address  = excluded.address,"
+            "   hits     = CASE WHEN last_at >= ? THEN hits + 1 ELSE 1 END,"
+            "   first_at = CASE WHEN last_at >= ? THEN first_at ELSE excluded.first_at END,"
+            "   last_at  = excluded.last_at",
+            (mac, address, ts, ts, cutoff, cutoff),
+        )
     # ראיה חיובית: הערך נקרא בחזרה. שורה שאינה שם, או שהחותמת בה אינה
     # זו שנכתבה, פירושה שהרישום לא קרה — ולא שהוא יצא אחד (עיקרון 5).
     row = conn.execute(

@@ -25,6 +25,11 @@ SERVER_URL=""
 IFACE=""
 ADMIN_USER=""
 ADMIN_PASS=""
+# Storage Nodes (#655/#723): תפקיד ההתקנה. standalone (ברירת מחדל) או
+# secondary. משני מחייב כתובת שרת ראשי. **תצורת שרת בלבד** — לא נכנס
+# לשורת הפקודה של הקרנל (עיקרון 2). מועבר ל-server.main דרך היחידה.
+STORAGE_ROLE="standalone"
+PRIMARY_URL=""
 TFTP_ROOT="/srv/tftp"
 HTTP_ROOT="/srv/imagectl/boot"
 APP_DIR="/opt/imagectl"
@@ -224,7 +229,9 @@ ImageCtl — התקנה מלאה על שרת דביאן: שרשרת אתחול, 
   --admin-user NAME    מדלג על שאלת המשתמש
   --admin-pass PASS    מדלג על שאלות הסיסמה (נשאר בהיסטוריית השלל — לדיבאג)
   --tftp-root PATH     ברירת מחדל /srv/tftp
-  --http-root PATH     ברירת מחדל /srv/imagectl/boot
+  --http-root PATH     ברירת מחדל /srv/imagectl/boot; מועבר לשרת כ---boot-dir
+  --storage-role ROLE  standalone (ברירת מחדל) או secondary (#655/#723)
+  --primary-url URL    כתובת השרת הראשי — חובה ל-secondary
   --dry-run            מראה מה יקרה בלי לשנות כלום
   -h, --help           המסך הזה
 EOF
@@ -242,6 +249,8 @@ while [[ $# -gt 0 ]]; do
         --admin-pass)  ADMIN_PASS="${2:?}"; shift 2 ;;
         --tftp-root)   TFTP_ROOT="${2:?}"; shift 2 ;;
         --http-root)   HTTP_ROOT="${2:?}"; shift 2 ;;
+        --storage-role) STORAGE_ROLE="${2:?}"; shift 2 ;;
+        --primary-url) PRIMARY_URL="${2:?}"; shift 2 ;;
         --dry-run)     DRY_RUN=1; shift ;;
         -h|--help)     usage; exit 0 ;;
         --mode|--dhcp-range)
@@ -287,6 +296,16 @@ case "$SERVER_URL" in
     https://*) die "https לא נתמך: ה-GRUB החתום של דביאן נבנה בלי TLS. השתמש ב-http." ;;
     *)         die "--server-url חייב להתחיל ב-http:// (התקבל: $SERVER_URL)" ;;
 esac
+# תצורת ה-Storage Node (#655/#723): משני מחייב כתובת שרת ראשי לא-ריקה,
+# ותצורה סותרת נכשלת בקול ולא מתגלגלת ל-standalone בשקט (עיקרון 5).
+# standalone מתעלם מ---primary-url. השרת מאמת שוב (server.main) — כאן זה
+# רק כדי לעצור מוקדם, לפני שמתקינים חצי שירות.
+case "$STORAGE_ROLE" in
+    standalone) PRIMARY_URL="" ;;
+    secondary)  [[ -n "$PRIMARY_URL" ]] || die "שרת משני מחייב --primary-url" ;;
+    *)          die "--storage-role חייב להיות standalone או secondary (התקבל: $STORAGE_ROLE)" ;;
+esac
+
 GRUB_HOST="${SERVER_URL#http://}"; GRUB_HOST="${GRUB_HOST%%/*}"
 # הפורט לבדו — קובץ ה-GRUB מרכיב איתו את הכתובת שה-DHCP/proxy ענה בפועל.
 # ‏if מלא ולא "&&": תחת set -e תנאי שנכשל בשורה עליונה מפיל את הסקריפט.
@@ -318,7 +337,8 @@ say "כרטיס: $IFACE · כתובת: $SERVER_URL · מנהל: $ADMIN_USER"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 PKGS=(shim-signed grub-efi-amd64-signed grub-pc-bin dnsmasq
-      python3-fastapi python3-uvicorn)
+      python3-fastapi python3-uvicorn
+      python3-cryptography python3-openssl)   # #740: mTLS enrollment בין-שרתי
 [[ -f "$SCRIPT_DIR/../server/main.py" ]] || PKGS+=(git)
 
 say "מתקין חבילות: ${PKGS[*]}"
@@ -447,17 +467,25 @@ run install -d "$DATA_DIR"
 if (( ! DRY_RUN )); then
     ADMIN_USER="$ADMIN_USER" ADMIN_PASS="$ADMIN_PASS" \
     python3 - <<PYEOF
-import os, sys
+import os, sys, sqlite3
 sys.path.insert(0, "$APP_DIR")
 from server.db import connect
 from server import users
 conn = connect("$DATA_DIR/imagectl.db")
+username = os.environ["ADMIN_USER"]
+password = os.environ["ADMIN_PASS"]
 try:
-    users.create(conn, os.environ["ADMIN_USER"], os.environ["ADMIN_PASS"],
-                 "admin", by="installer")
-except Exception:
-    users.update(conn, os.environ["ADMIN_USER"], by="installer",
-                 password=os.environ["ADMIN_PASS"])
+    users.create(conn, username, password, "admin", by="installer")
+except sqlite3.IntegrityError:
+    # שם תפוס בלבד. כל כשל אחר — דיסק, נעילה — עולה החוצה (#504).
+    users.update(conn, username, by="installer",
+                 password=password, role="admin")
+row = conn.execute(
+    "SELECT role FROM users WHERE username = ?", (username,)
+).fetchone()
+if row is None or row["role"] != "admin":
+    sys.exit("המתקין לא הבטיח מנהל: %s הוא %s" % (
+        username, "חסר" if row is None else row["role"]))
 PYEOF
 fi
 
@@ -474,10 +502,24 @@ run install -m 0644 "$APP_DIR/install/imagectl-netrollback.service" \
 run install -m 0644 "$APP_DIR/install/imagectl-netrollback.timer" \
     /etc/systemd/system/imagectl-netrollback.timer
 run install -d -m 0755 "$DATA_DIR/netcfg"
+# תצורת ה-Storage Node שעוברת ל-server.main דרך היחידה, וגם
+# `--boot-dir` מ-`--http-root` (#395): בלי זה המתקין כותב לתיקייה
+# שהשרת אינו מגיש. ‏ExecStart משתמש ב-$IMAGECTL_STORAGE_ARGS (בלי
+# סוגריים) — systemd מפצל אותו למילים.
+if [[ "$STORAGE_ROLE" == "secondary" ]]; then
+    STORAGE_ARGS="--storage-role secondary --primary-url $PRIMARY_URL --boot-dir $HTTP_ROOT"
+else
+    STORAGE_ARGS="--storage-role standalone --boot-dir $HTTP_ROOT"
+fi
 write_file /etc/systemd/system/imagectl-server.service.d/override.conf <<EOF
 # ImageCtl — נכתב על ידי המתקין: הכתובת שנגזרה מהכרטיס שנבחר.
 [Service]
 Environment=IMAGECTL_URL=$SERVER_URL
+# ‏בגרשיים: הערך מכיל רווחים (--storage-role X --primary-url Y), ובלי
+# גרשיים systemd מפצל את שורת ה-Environment למילים וקולט רק
+# IMAGECTL_STORAGE_ARGS=--storage-role → השרת קורס "expected one argument".
+# ‏ExecStart מרחיב $IMAGECTL_STORAGE_ARGS בלי גרשיים כדי לפצל שוב לארגומנטים.
+Environment="IMAGECTL_STORAGE_ARGS=$STORAGE_ARGS"
 EOF
 run systemctl daemon-reload
 run systemctl enable --now imagectl-netrollback.timer

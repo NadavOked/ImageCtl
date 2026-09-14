@@ -246,6 +246,7 @@ def test_capture_sizes_the_layout_and_not_the_source_disk(tmp_path, case):
         f"{p['index']}|g|u|{p['start_sector']}|{p['size_bytes'] // 512}\n"
         for p in case["partitions"]), encoding="utf-8")
     out = sh(f'_disk_bytes={case["source_disk_bytes"]}; _parts={posix(parts)!r}; '
+             f'_sector_size=512; '
              f'log() {{ :; }}; ' + capture_awk() + '; printf "%s" "$_min_target"')
     assert int(out.strip()) == required_bytes(case)
 

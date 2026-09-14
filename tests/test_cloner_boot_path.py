@@ -23,6 +23,14 @@ from boot.grub_menu import GrubConfig, render, render_local_only
 
 CFG = GrubConfig(server_base="http://10.44.12.10:8080")
 
+#: אותו שרת, אבל עם ה-initramfs הגרפי זמין על הדיסק. מאז שה-cloner
+#: קיבל מסך (הכרעת הבעלים) הוא ב-ROLES_WITH_GUI, וזה המצב שבו נבדק
+#: שהמסך לא שבר את #17: עדיין ערך יחיד, חבוי, ובלי דיסק מקומי.
+CFG_GUI = GrubConfig(
+    server_base="http://10.44.12.10:8080",
+    gui_initrd_path="/boot/initrd.img.gui",
+)
+
 
 def answer(**overrides) -> dict:
     base = {
@@ -118,14 +126,53 @@ def test_the_cloner_file_is_pure_ascii(a):
     render(a, CFG).encode("ascii")
 
 
-# --- מה שאסור לשבור: ‏#140 לשאר התפקידים -------------------------------------
+# --- #17 לא זז כשל-cloner יש מסך --------------------------------------------
 
 
-@pytest.mark.parametrize("role", ["classroom", "build", "unknown"])
-def test_every_other_role_keeps_its_visible_menu_with_the_local_disk(role):
-    """‏#140 לא זז: תחנת כיתה ומחשב בנייה בלי משימה מקבלים תפריט **גלוי**
-    בלי טיימר, ובו הדיסק המקומי לצד ImageCtl. הצמצום הוא ל-cloner בלבד."""
+@pytest.mark.parametrize("a", CLONER_ANSWERS)
+def test_gui_cloner_still_has_one_hidden_agent_entry(a):
+    """מאז שהתווסף ה-cloner ל-ROLES_WITH_GUI (מסך למחשב השיכפול), הקובץ
+    מושך את ה-initramfs הגרפי — אבל שום דבר אחר לא זז. עדיין ערך יחיד,
+    חבוי, בלי דיסק מקומי ובלי `chainloader`, בכל שלושת המסלולים.
+
+    זו בדיוק הבדיקה ש-#320 לימד שצריך: החלטה נכונה אינה מוכיחה קובץ
+    נכון, וכאן נבדק שהמסך התבטא ב**שורת ה-initrd בלבד**."""
+    text = render(a, CFG_GUI)
+    conf = settings(text)
+    assert conf["set timeout"] == "0"
+    assert conf["set timeout_style"] == "hidden"
+    assert conf["set default"] == "imagectl"
+    assert text.count("menuentry ") == 1
+    assert "--id local {" not in text
+    assert "chainloader" not in text
+    # הראיה החיובית שהמסך אכן נבחר: זה ה-initramfs הגרפי, לא הטקסטואלי.
+    assert "initrd.img.gui" in text
+
+
+# --- מה שאסור לשבור: הצמצום הוא ל-cloner בלבד --------------------------------
+
+
+@pytest.mark.parametrize("role", ["classroom", "build"])
+def test_a_gui_role_auto_boots_imagectl_with_a_hidden_local_entry(role):
+    """‏#641: תחנת כיתה ומחשב בנייה בלי משימה עולים ישר ל-ImageCtl
+    (‏`default=imagectl`, ‏`timeout=0`), אבל הדיסק המקומי **נשאר בקובץ**
+    (חבוי) — בשונה מ-cloner, שאין לו דיסק כלל. שני ערכים, ו-chain_local
+    מאחורי הערך המקומי."""
     text = render(answer(role=role), CFG)
+    conf = settings(text)
+    assert conf["set timeout"] == "0"
+    assert conf["set timeout_style"] == "hidden"
+    assert conf["set default"] == "imagectl"
+    assert text.count("menuentry ") == 2
+    assert "--id local {" in text
+    assert "chainloader" in text
+
+
+def test_a_menu_role_outside_the_gui_set_keeps_its_visible_menu():
+    """תפקיד רשום שאינו ב-ROLES_WITH_GUI (למשל unknown) לא השתנה ב-#641:
+    הוא עדיין מקבל את התפריט הגלוי של #140, בלי טיימר, עם הדיסק לצד
+    ImageCtl."""
+    text = render(answer(role="unknown"), CFG)
     conf = settings(text)
     assert conf["set timeout"] == "-1"
     assert conf["set timeout_style"] == "menu"

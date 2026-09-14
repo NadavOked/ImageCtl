@@ -43,6 +43,30 @@ def test_known_machine_without_a_session_boots_locally(server):
     assert answer["task"] is None and answer["session"] is None
 
 
+def test_hello_identifies_a_machine_by_any_reported_mac(server):
+    """#524: מכונה רשומה תחת X שעולה על כרטיס Y עדיין מזוהה.
+
+    ה-MAC הראשי הוא כרטיס האתחול, והוא אינו הרשום; `all_macs` מכיל
+    את הרשום. לפני התיקון התשובה הייתה `known: false`.
+    """
+    ids = setup_classroom(server)
+    registered = ids["mac1"]
+    boot = "de:ad:be:ef:00:01"
+    body = hello_body(boot)
+    body["all_macs"] = [boot, registered]
+    answer = server["anon"].post("/api/v1/agent/hello", json=body).json()
+    assert answer["known"] is True
+
+
+def test_hello_with_only_unregistered_macs_stays_unknown(server):
+    """בקרה שלילית: `all_macs` של זרים אינו הופך מכונה למוכרת."""
+    setup_classroom(server)
+    body = hello_body("de:ad:be:ef:00:01")
+    body["all_macs"] = ["de:ad:be:ef:00:01", "de:ad:be:ef:00:02"]
+    answer = server["anon"].post("/api/v1/agent/hello", json=body).json()
+    assert answer["known"] is False
+
+
 def test_allowed_images_respect_the_reported_disk(server):
     setup_classroom(server)
     small = hello(server, "b4:2e:99:07:1a:c4", disk_bytes=256060514304)
@@ -162,6 +186,22 @@ def test_an_unregistered_member_falls_back_to_its_mac(server):
     assert member["mac"] == ids["mac1"]
 
 
+def test_edit_machine_rejects_an_unknown_field(server):
+    """#406: PUT עם שדה לא מוכר (suffix במקום name) חייב 400 — ולא
+    {"ok": true} קבוע שלא שינה כלום. עיקרון 5: הצלחה לפי ראיה חיובית."""
+    admin = server["admin"]
+    ids = setup_classroom(server)
+    before = {m["mac"]: m["suffix"]
+              for m in admin.get("/api/console/machines").json()}
+    resp = admin.put(
+        f"/api/console/machines/{ids['mac1']}", json={"suffix": "HP1"}
+    )
+    assert resp.status_code == 400, resp.text
+    after = {m["mac"]: m["suffix"]
+             for m in admin.get("/api/console/machines").json()}
+    assert after == before
+
+
 def test_progress_from_a_nonmember_is_rejected(server):
     ids = open_session(server)
     report = {"session_id": ids["session"], "mac": "aa:aa:aa:aa:aa:aa",
@@ -179,7 +219,8 @@ def test_manual_start_and_close(server):
     ).status_code == 200
     assert hello(server, ids["mac1"])["session"]["state"] == "running"
     assert server["deploy"].post(
-        f"/api/console/sessions/{ids['session']}/close"
+        f"/api/console/sessions/{ids['session']}/close",
+        json={"confirm_name": "Office 2024 Standard"},
     ).status_code == 200
     assert hello(server, ids["mac1"])["session"] is None
 
@@ -406,3 +447,117 @@ def test_journal_filters_require_admin(server):
         "/api/console/journal", params={"event": "login"}
     ).status_code == 403
     assert server["deploy"].get("/api/console/journal/events").status_code == 403
+
+
+# --- עצירת סבב כיתה: תפקיד והקלדת שם (עיקרון 7, #581) ------------------------
+
+
+def test_close_without_typing_the_image_name_does_not_stop_the_class_round(server):
+    """‏#581: ‏POST ריק עצר סבב כיתה חי — בלי גוף ובלי שום אימות בשרת.
+
+    זו אותה חולשה שנסגרה לחדר השיכפולים ב-#533, שנשארה פתוחה לסבב
+    הכיתה. עיקרון 7 נוקב ב"עצירת סבב" במפורש, והאכיפה היחידה ישבה
+    ב-`classes.js` — טקסט קבוע ("עצור") במסך, כלומר בדיוק השכבה שאסור
+    לסמוך עליה.
+
+    מה שמוקלד הוא **שם האימג' שהסבב משדר** — הכותרת שהמסך כבר מציג
+    ("משדר: ...").
+    """
+    ids = open_session(server, expected=30)
+    hello(server, ids["mac1"])
+    deploy = server["deploy"]
+    path = f"/api/console/sessions/{ids['session']}/close"
+
+    # ‏1. גוף ריק — זו בדיוק הקריאה שסגרה סבב לפני #581.
+    assert deploy.post(path).status_code == 400
+    assert hello(server, ids["mac1"])["session"] is not None, "סבב נסגר בלי אישור"
+
+    # ‏2. הטקסט שהמסך אכף לבדו אינו האישור
+    assert deploy.post(path, json={"confirm_name": "עצור"}).status_code == 400
+    assert hello(server, ids["mac1"])["session"] is not None, "סבב נסגר על שם שגוי"
+
+    # ‏3. השם המדויק — וזה עוצר
+    stopped = deploy.post(path, json={"confirm_name": "Office 2024 Standard"})
+    assert stopped.status_code == 200 and stopped.json()["ok"] is True
+    assert hello(server, ids["mac1"])["session"] is None
+
+
+def test_a_class_round_whose_image_was_deleted_can_still_be_stopped(server):
+    """מה שמוקלד הוא מה שהמסך מציג — גם כשהמניפסט כבר איננו.
+
+    ‏`session_view` נופל חזרה ל-`image_id` כשהאימג' נמחק מהספרייה תוך
+    כדי סבב, ולכן גם האימות חייב ליפול לשם — מאותה פונקציה. בלי זה
+    עצירת חירום של שידור חי הייתה בלתי אפשרית, כלומר תיקון שגרוע
+    מהבאג.
+    """
+    ids = open_session(server, expected=30)
+    hello(server, ids["mac1"])
+    admin, deploy = server["admin"], server["deploy"]
+    assert admin.post("/api/console/images/img_7f3a91/delete",
+                      json={"confirm_name": "Office 2024 Standard"},
+                      ).status_code == 200
+
+    view = admin.get("/api/console/overview").json()["session"]
+    assert view["image_name"] == "img_7f3a91"
+    path = f"/api/console/sessions/{ids['session']}/close"
+    assert deploy.post(
+        path, json={"confirm_name": "Office 2024 Standard"}).status_code == 400
+    assert deploy.post(path, json={"confirm_name": "img_7f3a91"}).status_code == 200
+    assert hello(server, ids["mac1"])["session"] is None
+
+
+def test_a_role_that_is_not_on_the_list_cannot_drive_a_class_round(server):
+    """הבקרה השלילית של #581 — אותה בדיקה שנעשתה לחדר ב-#152 ולתחנה ב-#94.
+
+    לפני התיקון ``start`` ו-``close`` היו ``Depends(current_user)``
+    בלבד: הסבב **נפתח** מאחורי ``ROUND_OPENER_ROLES`` ונסגר בלעדיה.
+    התפקיד ``auditor`` אינו קיים היום, ולכן זו סכימה של מחר: השאלה
+    אינה מי מורשה עכשיו אלא האם הקוד **שואל**.
+    """
+    from fastapi.testclient import TestClient                  # noqa: PLC0415
+    from test_station import add_user_with_role                # noqa: PLC0415
+
+    ids = open_session(server, expected=30)
+    hello(server, ids["mac1"])
+    add_user_with_role(server, "auditor", "audit-pass-12", "auditor")
+    client = TestClient(server["app"])
+    assert client.post("/api/console/login", json={
+        "username": "auditor", "password": "audit-pass-12"}).status_code == 200
+
+    # קריאה מותרת — היא אינה הרסנית
+    assert client.get("/api/console/overview").status_code == 200
+
+    assert client.post(
+        f"/api/console/sessions/{ids['session']}/start").status_code == 403
+    assert client.post(
+        f"/api/console/sessions/{ids['session']}/close",
+        json={"confirm_name": "Office 2024 Standard"}).status_code == 403
+    assert hello(server, ids["mac1"])["session"]["state"] == "open"
+
+
+def test_a_role_that_is_not_on_the_list_cannot_open_a_class_round(server):
+    """הבקרה השלילית של #592 — פתיחת הסבב עצמה, לא רק start/close.
+
+    ‏#581 סגר את ``start``/``close`` מאחורי ``round_operator``, אבל
+    ‏``POST /api/console/sessions`` — **פתיחת** הסבב מהקונסולה — נשארה
+    ‏``current_user`` בלבד: כל חשבון מחובר יכול היה לפתוח שידור חי
+    לכיתה. אותה סכימת-מחר כמו #581: ``auditor`` אינו ברשימה, והשאלה
+    אינה מי מורשה עכשיו אלא האם הקוד **שואל** על התפקיד.
+    """
+    from fastapi.testclient import TestClient                  # noqa: PLC0415
+    from test_station import add_user_with_role                # noqa: PLC0415
+
+    ids = setup_classroom(server, expected=30)
+    add_user_with_role(server, "auditor", "audit-pass-12", "auditor")
+    client = TestClient(server["app"])
+    assert client.post("/api/console/login", json={
+        "username": "auditor", "password": "audit-pass-12"}).status_code == 200
+
+    # קריאה מותרת — היא אינה הרסנית
+    assert client.get("/api/console/overview").status_code == 200
+
+    # פתיחת סבב היא פעולת מפעיל — auditor חייב לקבל 403, לא 200
+    assert client.post(
+        "/api/console/sessions",
+        json={"group_id": ids["group"], "image_id": "img_7f3a91",
+              "prefix": "LAB1", "expected_clients": 30}).status_code == 403
