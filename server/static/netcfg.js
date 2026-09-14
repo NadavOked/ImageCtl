@@ -14,7 +14,8 @@
       המפעיל פשוט לא הצליח להגיע כדי לומר זאת. */
 "use strict";
 
-let NETCFG = null;
+/* NETCFG מוצהר ב-console.js — כאן רק ממלאים אותו. redeclaration של let
+   בין סקריפטים קלאסיים מפילה את הקובץ ב-SyntaxError. */
 let NETCFG_TICK = null;
 
 const MASKS = ["255.255.255.0", "255.255.255.128", "255.255.254.0",
@@ -28,27 +29,67 @@ function netLight(row) {
   return row.mismatches.length ? "bad" : "ok";
 }
 
-function netRow(row) {
-  const wanted = row.mode === "static"
-    ? `<span dir="ltr">${esc(row.address)}/${esc(row.netmask)}</span>`
-    : esc(row.mode_he);
-  const live = (row.live_addresses || []).join(" · ");
-  const gaps = row.mismatches.length
-    ? `<div class="sub danger-text">${esc(row.mismatches.join(" · "))}</div>` : "";
-  const routes = row.routes.length
-    ? ` · ${row.routes.length} נתיבים` : "";
+/* ‏#761: הטבלה המאוחדת — שורה אחת לכל כרטיס פיזי, ולא שני פאנלים
+   נפרדים. עמודות: התקן · MAC · מצב/מהירות · כתובת IP בפועל · DHCP
+   בפועל · פעולות. הכתובת/שער/DNS שהוגדרו (configured) אינם מוצגים
+   בטבלה — הם live-only כאן, ומוצגים רק בדיאלוג העריכה. */
+function speedLabel(n) {
+  const state = n.state === "up" ? "מחובר" : n.state === "down" ? "מנותק" : "לא ידוע";
+  const speed = typeof n.speed_mbps === "number" && n.speed_mbps > 0
+    ? ` · ${n.speed_mbps} Mbps` : "";
+  return `${state}${speed}`;
+}
+
+function unifiedRow(n, cfgRow, admin) {
+  const trunk = n.trunk ? ` <span class="tag warn">רשת המכללה</span>` : "";
+  const missing = n.present ? "" : ` <span class="tag warn">לא קיים במערכת</span>`;
+  const desc = n.description ? `<br><small style="color:var(--muted)">${esc(n.description)}</small>` : "";
+  const live = (cfgRow ? cfgRow.live_addresses : n.addresses) || [];
+  const gaps = cfgRow && cfgRow.mismatches && cfgRow.mismatches.length
+    ? `<br><span class="tag warn">${esc(cfgRow.mismatches.join(" · "))}</span>` : "";
+  const dhcp = nicMode(n);
   return `<tr>
-    <td><span class="hlight ${netLight(row)}"></span></td>
-    <td><b dir="ltr">${esc(row.name)}</b>${row.present ? ""
-      : ` <span class="tag warn">לא נמצא במכונה</span>`}</td>
-    <td>${wanted}${routes}</td>
-    <td class="mono" dir="ltr">${esc(row.gateway) || "—"}</td>
-    <td class="mono" dir="ltr">${esc((row.dns || []).join(", ")) || "—"}</td>
-    <td class="mono" dir="ltr">${esc(live) || "—"}${gaps}</td>
-    <td>
-      <button class="btn" data-net-edit="${esc(row.name)}">הגדרת כתובת</button>
-      <button class="btn" data-net-preview="${esc(row.name)}">הקובץ</button>
+    <td><b dir="ltr">${esc(n.name)}</b>${trunk}${missing}${desc}</td>
+    <td class="mono" dir="ltr">${esc(n.mac) || "—"}</td>
+    <td>${esc(speedLabel(n))}</td>
+    <td class="mono" dir="ltr">${esc(live.join(" · ")) || "—"}${gaps}</td>
+    <td>${dhcp.html}</td>
+    <td>${admin ? `
+      <button class="btn" data-net-edit="${esc(n.name)}">עריכת הגדרות</button>
+      <button class="btn" data-nic-edit="${esc(n.name)}">DHCP</button>
+      <button class="btn flat" data-nic-desc="${esc(n.name)}">תיאור</button>
+      <button class="btn flat" data-net-preview="${esc(n.name)}">הקובץ</button>
+      <button class="btn danger flat" data-nic-forget="${esc(n.name)}">שכחה</button>` : ""}
     </td></tr>`;
+}
+
+function renderNetTable() {
+  if (!NETCFG) return;         // עוד לא נטען — Promise.all עדיין רץ.
+  const admin = ME.role === "admin";
+  const byName = new Map(NETCFG.interfaces.map((r) => [r.name, r]));
+  const names = [...new Set([...NICS.map((n) => n.name), ...byName.keys()])].sort();
+  const rows = names.map((name) => {
+    const n = NICS.find((x) => x.name === name)
+      || { name, mac: "", state: "unknown", addresses: [], present: byName.has(name),
+           trunk: false, description: "", enabled: false, proxy: false,
+           dhcp_live: { state: "unknown" }, dhcp_live_label: "לא ידוע",
+           dhcp_diverged: false, speed_mbps: null };
+    return unifiedRow(n, byName.get(name), admin);
+  }).join("");
+  const tbody = $("#net-table tbody");
+  if (tbody) tbody.innerHTML = rows
+    || `<tr><td colspan="6">לא נמצאו כרטיסי רשת.</td></tr>`;
+
+  document.querySelectorAll("[data-net-edit]").forEach((b) => b.onclick = () =>
+    editAddress(byName.get(b.dataset.netEdit)
+      || bodyOf({ name: b.dataset.netEdit, mode: "manual", address: "", netmask: MASKS[0],
+                  gateway: "", dns: [], routes: [] }, {})));
+  document.querySelectorAll("[data-net-preview]").forEach((b) => b.onclick = () =>
+    showFile(byName.get(b.dataset.netPreview)
+      || { name: b.dataset.netPreview, mode: "manual", address: "", netmask: MASKS[0],
+           gateway: "", dns: [], routes: [] }));
+  wireNicActions(NICS);
+  if (typeof refreshNetPages === "function") refreshNetPages();
 }
 
 /* --- הבאנר של ההחזרה: הדבר היחיד שחשוב יותר מהטבלה ------------------------ */
@@ -64,7 +105,7 @@ function rollbackBanner(rb) {
       אם לא תאשרו שהקונסולה עדיין נגישה, ההגדרה הקודמת תחזור בעוד
       <b id="netcfg-count">${rb.seconds_left}</b> שניות — גם אם השרת ייפול,
       וגם אם המכונה תאותחל.
-      <button class="btn primary" id="netcfg-confirm">אשר שהחיבור עובד</button>
+      <button class="btn primary" id="netcfg-confirm" type="button" onclick="confirmNetRollback()">אשר שהחיבור עובד</button>
       </div>`;
   }
   if (!rb.armed) {
@@ -84,7 +125,16 @@ function startCountdown() {
     el.textContent = left;
     // כשהזמן נגמר טוענים מחדש: הזרוע כבר החזירה, והמסך חייב להראות
     // את מה שיש עכשיו ולא את מה שביקשנו.
-    if (left === 0) { clearInterval(NETCFG_TICK); loadNetcfg().catch(() => {}); }
+    // כשהזמן נגמר טוענים מחדש. כשל טעינה כאן אינו "הרענון הצליח" —
+    // הבאנר "ממתין לאישור" תקוע ב-0 שניות ייראה כאילו הכל תקין. מודיעים
+    // שלא הצלחנו לקרוא את המצב, ולא בולעים בשקט (#517, עיקרון 5).
+    if (left === 0) {
+      clearInterval(NETCFG_TICK);
+      loadNetcfg()
+        .then(() => { if (typeof renderNetTable === "function") renderNetTable(); })
+        .catch((error) =>
+          toast("לא הצלחנו לרענן את מצב הרשת אחרי ההחזרה: " + error.message));
+    }
   }, 1000);
 }
 
@@ -92,39 +142,32 @@ function startCountdown() {
 
 async function loadNetcfg() {
   NETCFG = await api("/net/config");
-  const rows = NETCFG.interfaces.map(netRow).join("");
   const live = NETCFG.live;
   const foot = live.checked
     ? `נתיבים כרגע: ${live.routes.join(" · ") || "אין"} · ‏DNS: `
       + `${live.nameservers.join(", ") || "אין"}`
-    : `המצב בפועל לא נקרא (${live.reason}) — אף שורה כאן אינה מאומתת`;
+    : `המצב בפועל לא נקרא (${live.reason}) — אף שורה בטבלה אינה מאומתת`;
   const notSourced = NETCFG.sourced === false
     ? `<div class="sheet-note danger">‏/etc/network/interfaces אינו טוען את
        interfaces.d — כל מה שנכתב שם לא ייקרא באתחול.</div>` : "";
 
-  $("#netcfg-body").innerHTML = rollbackBanner(NETCFG.rollback) + notSourced + `
-    <table id="netcfg-table">
-      <thead><tr><th></th><th>כרטיס</th><th>מה הוגדר</th><th>שער</th>
-        <th>DNS</th><th>מה יש בפועל</th><th></th></tr></thead>
-      <tbody>${rows || `<tr><td colspan="7">לא נמצאו כרטיסים.</td></tr>`}</tbody>
-    </table>
-    <p class="pad sub" dir="ltr">${esc(foot)}</p>`;
+  // ‏#761: אין יותר פאנל/טבלה נפרדים לכתובת השרת — רק הבאנר החשוב (ההחזרה)
+  // וההודעה על interfaces.d, מעל הטבלה המאוחדת (#net-table).
+  const banner = $("#net-banner");
+  if (banner) banner.innerHTML = rollbackBanner(NETCFG.rollback) + notSourced
+    + `<p class="pad sub" dir="ltr">${esc(foot)}</p>`;
   renderRoutes();
   startCountdown();
+}
 
-  const confirmButton = document.getElementById("netcfg-confirm");
-  if (confirmButton) confirmButton.onclick = async () => {
-    try {
-      await post("/net/config/confirm",
-                 { interface: NETCFG.rollback.interface });
-      toast("אושר — ההגדרה נשארת");
-    } catch (error) { toast(error.message); }
-    await loadNetcfg();
-  };
-  document.querySelectorAll("[data-net-edit]").forEach((b) => b.onclick = () =>
-    editAddress(NETCFG.interfaces.find((n) => n.name === b.dataset.netEdit)));
-  document.querySelectorAll("[data-net-preview]").forEach((b) => b.onclick = () =>
-    showFile(NETCFG.interfaces.find((n) => n.name === b.dataset.netPreview)));
+async function confirmNetRollback() {
+  try {
+    await post("/net/config/confirm",
+               { interface: NETCFG.rollback.interface });
+    toast("אושר — ההגדרה נשארת");
+  } catch (error) { toast(error.message); }
+  await loadNetcfg();
+  renderNetTable();
 }
 
 /* --- עריכת הכתובת --------------------------------------------------------- */
@@ -144,27 +187,54 @@ async function saveAddress(name, body) {
     toast("הוחל. אשרו תוך דקה שהקונסולה עדיין נגישה, אחרת יוחזר.");
   else toast("הוחל, ואומת מול ip addr");
   await loadNetcfg();
+  renderNetTable();
+}
+
+/* ‏CIDR (‏"10.44.9.10/24") ↔ כתובת+מסכה. פונקציית עזר יחידה, כדי שהצד
+   שמפרק וזה שמרכיב לא ייסחפו לשני מימושים (‏#761). */
+function bitsToMask(bits) {
+  const n = Math.max(0, Math.min(32, Number(bits) || 0));
+  const full = 0xffffffff << (32 - n) >>> 0;
+  return [24, 16, 8, 0].map((s) => (full >>> s) & 255).join(".");
+}
+
+function splitCidr(text) {
+  const [address, bits] = String(text || "").trim().split("/");
+  return { address: address || "", netmask: bits ? bitsToMask(bits) : MASKS[0] };
+}
+
+function joinCidr(address, netmask) {
+  return address ? `${address}/${maskBits(netmask)}` : "";
+}
+
+function liveReadback(row) {
+  const live = NETCFG && NETCFG.live;
+  if (!live || !live.checked) {
+    return `<div class="live-readback">בפועל כעת: <b>לא ידוע — קריאת מצב הרשת נכשלה</b></div>`;
+  }
+  const addr = (row.live_addresses || []).join(" · ");
+  return `<div class="live-readback">בפועל כעת: <b>${esc(addr) || "אין כתובת"}</b></div>`;
 }
 
 function editAddress(row) {
+  const gaps = (row.mismatches || []).length
+    ? `<div class="sheet-note">מוגדר ≠ בפועל: ${esc(row.mismatches.join(" · "))}</div>` : "";
   sheet({
-    title: `כתובת השרת על ${row.name}`,
+    title: `עריכת הגדרות — ${row.name}`,
     sub: "נכתב ל-/etc/network/interfaces.d, ולכן שורד אתחול.",
     danger: true,
-    note: `<div class="sheet-note danger">שינוי כתובת מנתק את מי שמחובר
-      דרך הכרטיס הזה. אם זה הכרטיס שהקונסולה מגיעה דרכו, ההגדרה תוחזר
-      אוטומטית תוך דקה אלא אם תאשרו שהחיבור עדיין חי.</div>`,
+    note: liveReadback(row) + gaps + `<div class="sheet-note danger">שינוי כתובת
+      מנתק את מי שמחובר דרך הכרטיס הזה. אם זה הכרטיס שהקונסולה מגיעה
+      דרכו, ההגדרה תוחזר אוטומטית תוך דקה אלא אם תאשרו שהחיבור עדיין חי.</div>`,
     fields: [
-      { id: "mode", label: "מצב", type: "select", value: row.mode,
-        options: [{ value: "manual", label: "לא מנוהל מהקונסולה (ברירת מחדל)" },
+      { id: "mode", label: "", type: "radio", value: row.mode,
+        options: [{ value: "dhcp", label: "קבלת כתובת אוטומטית (DHCP)" },
                   { value: "static", label: "כתובת סטטית" },
-                  { value: "dhcp", label: "לקוח DHCP" }] },
-      { id: "address", label: "כתובת", value: row.address, dir: "ltr",
-        placeholder: "10.44.9.10" },
-      { id: "netmask", label: "מסכת רשת", type: "select",
-        value: row.netmask || MASKS[0],
-        options: MASKS.map((m) => ({ value: m, label: m })) },
-      { id: "gateway", label: "שער (לא חובה)", value: row.gateway, dir: "ltr" },
+                  { value: "manual", label: "לא מנוהל מהקונסולה (ברירת מחדל)" }] },
+      { id: "cidr", label: "כתובת / CIDR", dir: "ltr",
+        value: joinCidr(row.address, row.netmask || MASKS[0]),
+        placeholder: "10.44.9.10/24" },
+      { id: "gateway", label: "שער ברירת מחדל (לא חובה)", value: row.gateway, dir: "ltr" },
       { id: "dns", label: "שרתי DNS (מופרדים בפסיק, לא חובה)",
         value: (row.dns || []).join(", "), dir: "ltr" },
     ],
@@ -175,9 +245,10 @@ function editAddress(row) {
       // תצוגה מקדימה לפני החלה: מי שרואה את הטקסט תופס טעות כשהיא
       // עדיין טקסט. ‏השרת מסרב שוב על אותן בעיות — זה לא מסך שמחליף
       // את הבדיקה, אלא שמראה אותה מוקדם.
-      const body = bodyOf(row, { mode: v.mode, address: v.address,
-                                 netmask: v.netmask, gateway: v.gateway,
-                                 dns: v.dns.split(",").map((s) => s.trim()) });
+      const parts = v.mode === "static" ? splitCidr(v.cidr) : { address: "", netmask: MASKS[0] };
+      const body = bodyOf(row, { mode: v.mode, address: parts.address,
+                                 netmask: parts.netmask, gateway: v.gateway,
+                                 dns: v.dns.split(",").map((s) => s.trim()).filter(Boolean) });
       const preview = await post(
         `/net/config/${encodeURIComponent(row.name)}/preview`, body);
       if (preview.problems.length) throw new Error(preview.problems.join(" · "));
@@ -203,11 +274,13 @@ async function showFile(row) {
 /* --- נתיבים סטטיים (‏#57): רשימה, הוספה, ומחיקה לכל שורה ------------------ */
 
 function renderRoutes() {
+  const mount = $("#netroutes-body");
+  if (!mount || !NETCFG) return;
   const all = [];
   NETCFG.interfaces.forEach((nic) =>
     (nic.routes || []).forEach((r, index) => all.push({ nic, r, index })));
   const live = new Set(NETCFG.live.routes || []);
-  $("#netroutes-body").innerHTML = `
+  mount.innerHTML = `
     <table>
       <thead><tr><th></th><th>יעד</th><th>מסכה</th><th>שער</th><th>כרטיס</th>
         <th></th></tr></thead>
@@ -282,6 +355,10 @@ function addRoute() {
   });
 }
 
-$("#netroute-add").addEventListener("click", () => addRoute());
-$("#netcfg-refresh").addEventListener("click", () =>
-  loadNetcfg().catch((error) => toast("רענון נכשל: " + error.message)));
+const netrouteAdd = $("#netroute-add");
+if (netrouteAdd) netrouteAdd.addEventListener("click", () => addRoute());
+const netRefresh = $("#net-refresh");
+if (netRefresh) netRefresh.addEventListener("click", () =>
+  Promise.all([loadNet(), loadNetcfg()])
+    .then(renderNetTable)
+    .catch((error) => toast("רענון נכשל: " + error.message)));
