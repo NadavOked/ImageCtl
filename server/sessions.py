@@ -35,6 +35,17 @@ HOSTNAME_MAX = 15
 #: כשהקבוצה עדיין ריקה ואי אפשר למדוד את הסיומת הארוכה בפועל.
 SUFFIX_MIN = 2
 
+#: הקידומת של גל חדר השיכפולים — היחיד מסלולי הסבב שאינם כיתה, וגם
+#: הקידומת הארוכה ביותר האפשרית לשם לא-כיתתי. ‏room.py פותח תמיד עם
+#: המחרוזת הזו; היא כאן כדי שהגבול למטה ייגזר ממנה ולא ייכתב כמספר קסם.
+ROOM_PREFIX = "ROOM"
+
+#: אורך השם המרבי למכונה שאינה כיתתית: מה שנשאר תחת HOSTNAME_MAX אחרי
+#: הקידומת הארוכה ביותר והמקף. ‏`registry.normalize_name` אוכף אותו
+#: **ברישום**, כדי ששם שאינו יכול להפוך לשם מחשב יידחה מיד — ולא
+#: בפתיחת הסבב, מאוחר ועל כל הקבוצה (#405).
+NONCLASSROOM_NAME_MAX = HOSTNAME_MAX - len(ROOM_PREFIX) - 1
+
 #: מה ששם מחשב מורכב ממנו. ‏`_` **אינו** כאן, והוא בדיוק התו שנולד
 #: מ-`label.replace(" ", "_")` ב-`console_api.py` ושורד לתוך מזהה הקבוצה.
 _PREFIX_OK = re.compile(r"[A-Z0-9-]+")
@@ -162,15 +173,24 @@ class SessionStore:
             raise SessionError(
                 f"קידומת {prefix!r} אינה יכולה להיות שם מחשב — "
                 "מותרים אותיות אנגליות, ספרות ומקף בלבד")
-        longest = self.conn.execute(
-            "SELECT MAX(LENGTH(suffix)) AS n FROM machines WHERE group_id = ?",
+        # המכונה עם השם הארוך ביותר בקבוצה, לא רק אורכו: משם התיקון של
+        # #405 — כשהשם כבר במרשם (נרשם לפני שהאכיפה עברה לרישום) ההודעה
+        # נוקבת ב**מכונה** ולא רק במספר, כדי שמי שפותח את הסבב ידע איזו
+        # מכונה בקבוצה חוסמת את כולה.
+        worst = self.conn.execute(
+            "SELECT suffix FROM machines WHERE group_id = ?"
+            " ORDER BY LENGTH(suffix) DESC, suffix LIMIT 1",
             (group_id,),
-        ).fetchone()["n"]
+        ).fetchone()
         # קבוצה ריקה: אין מה למדוד, ולכן נמדדת הרצפה. זה אינו "לא בדקנו
         # ולכן עבר" — קידומת שאינה מותירה מקום גם לסיומת הקצרה ביותר
         # פסולה בכל מקרה, וארוכה יותר תיתפס כשהמכונה תירשם.
-        room = longest if longest else SUFFIX_MIN
+        room = len(worst["suffix"]) if worst else SUFFIX_MIN
         if len(prefix) + 1 + room > HOSTNAME_MAX:
+            if worst:
+                raise SessionError(
+                    f"שם המכונה {worst['suffix']!r} ({room} תווים) עם הקידומת "
+                    f"{prefix!r} חורג מ-{HOSTNAME_MAX} התווים של שם מחשב")
             raise SessionError(
                 f"קידומת {prefix!r} ארוכה מדי: עם מקף וסיומת בת {room} תווים "
                 f"היא חורגת מ-{HOSTNAME_MAX} התווים של שם מחשב")

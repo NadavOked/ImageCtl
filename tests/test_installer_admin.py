@@ -1,0 +1,74 @@
+"""‏#504 — המתקין מבטיח מנהל גם כששם המשתמש כבר קיים כ-deploy.
+
+הבאג: `except Exception` בלע את `IntegrityError` של PRIMARY KEY, ואז
+`users.update` רץ בלי `role=` — שדה שלא נשלח אינו משתנה. הסיסמה
+התעדכנה, התפקיד נשאר deploy, והמתקין הדפיס את השם כמנהל. בכניסה
+הראשונה כל פעולת ניהול קיבלה 403.
+
+הטסט מריץ את בלוק ה-Python שמוטמע ב-`install/setup-boot-server.sh`,
+לא העתק שלו: סטייה בין הסקריפט לבדיקה הייתה בדיוק החור.
+"""
+
+from __future__ import annotations
+
+import re
+import sqlite3
+from pathlib import Path
+
+import pytest
+
+from server import users
+from server.db import connect
+
+REPO = Path(__file__).resolve().parent.parent
+INSTALLER = REPO / "install" / "setup-boot-server.sh"
+
+
+def installer_admin_python() -> str:
+    """שולף את בלוק יצירת המנהל מתוך ה-heredoc. אין עותק שני."""
+    text = INSTALLER.read_text(encoding="utf-8")
+    match = re.search(r"<<PYEOF\n(.*?)\nPYEOF\b", text, flags=re.DOTALL)
+    assert match, "לא נמצא heredoc PYEOF בסקריפט ההתקנה"
+    return match.group(1)
+
+
+def run_installer_admin(data_dir: Path, username: str, password: str,
+                        monkeypatch: pytest.MonkeyPatch) -> None:
+    """מריץ את בלוק המתקין מול DB אמיתי, עם החלפת נתיבי ה-bash."""
+    code = installer_admin_python()
+    code = code.replace("$APP_DIR", REPO.resolve().as_posix())
+    code = code.replace("$DATA_DIR", data_dir.resolve().as_posix())
+    monkeypatch.setenv("ADMIN_USER", username)
+    monkeypatch.setenv("ADMIN_PASS", password)
+    exec(compile(code, "install/setup-boot-server.sh", "exec"), {})
+
+
+def _role(data_dir: Path, username: str, password: str) -> str | None:
+    return users.verify(connect(data_dir / "imagectl.db"), username, password)
+
+
+def test_existing_deploy_user_becomes_admin(tmp_path, monkeypatch):
+    """התרחיש של #504: labtech כבר deploy, המתקין רץ עם אותו שם."""
+    conn = connect(tmp_path / "imagectl.db")
+    users.create(conn, "labtech", "deploy-pass-1", "deploy", by="seed")
+    run_installer_admin(tmp_path, "labtech", "new-admin-9", monkeypatch)
+    assert _role(tmp_path, "labtech", "new-admin-9") == "admin"
+
+
+def test_installer_creates_admin_on_empty_db(tmp_path, monkeypatch):
+    """המסלול הרגיל — יצירה ראשונה — לא נשבר על ידי שומר השם התפוס."""
+    run_installer_admin(tmp_path, "admin", "admin-pass-1", monkeypatch)
+    assert _role(tmp_path, "admin", "admin-pass-1") == "admin"
+
+
+def test_operational_error_is_not_swallowed(tmp_path, monkeypatch):
+    """‏`except Exception` היה הופך דיסק נעול ל-«משתמש לא קיים».
+
+    תופסים IntegrityError בשמו, ולכן OperationalError עולה כמו שהוא.
+    """
+    def boom(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(users, "create", boom)
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        run_installer_admin(tmp_path, "admin", "admin-pass-1", monkeypatch)

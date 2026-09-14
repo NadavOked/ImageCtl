@@ -77,6 +77,47 @@ def test_conflicting_suffix_is_an_error_not_a_note(tmp_path):
     assert saved == 1 and not rejected
 
 
+# --- #405: שם לא-כיתתי ארוך מדי נדחה ברישום, לא בפתיחת הסבב -------------------
+
+#: הגבול נגזר בטסט בדיוק כמו בקוד — מ-HOSTNAME_MAX (קיים גם על ה-base)
+#: ומהקידומת הארוכה ביותר ("ROOM") — ולא כמספר קסם, כדי שהבקרה השלילית
+#: תיכשל **התנהגותית** ולא ב-ImportError על הסמל החדש.
+from server.sessions import HOSTNAME_MAX          # noqa: E402
+_NAME_MAX = HOSTNAME_MAX - len("ROOM") - 1        # = 10
+
+
+@pytest.mark.parametrize("role", ["cloner", "build"])
+def test_a_nonclassroom_name_too_long_for_a_hostname_is_rejected(role):
+    """שם לא-כיתתי נכנס לשם המחשב אחרי קידומת ומקף. שם שאורכו חורג
+    מ-HOSTNAME_MAX נדחה בנרמול עצמו, ולכן ברישום — לא בפתיחת הסבב."""
+    ok = "x" * _NAME_MAX
+    assert registry.normalize_name(role, ok) == ok
+    assert registry.normalize_name(role, "x" * (_NAME_MAX + 1)) is None
+    # הדוגמה מ-#405: HP-cloner-1 הוא 11 תווים.
+    assert registry.normalize_name(role, "HP-cloner-1") is None
+
+
+def test_a_too_long_cloner_name_is_rejected_at_import_with_both_numbers(tmp_path):
+    """זה המסלול שבו נדב רשם בפועל — parse_paste/import_lines. הדחייה
+    מגיעה ברישום, וההודעה נוקבת בשני המספרים: התקרה ותקרת שם המחשב."""
+    conn = connect(tmp_path / "t.db")
+    conn.execute("INSERT INTO groups (id, label, role) VALUES ('c', 'c', 'cloner')")
+    lines = registry.parse_paste("aa:bb:cc:dd:ee:01 HP-cloner-1", "cloner")
+    assert lines[0].error is not None
+    assert str(_NAME_MAX) in lines[0].error and str(HOSTNAME_MAX) in lines[0].error
+    saved, rejected = registry.import_lines(conn, "c", lines, "t")
+    assert saved == 0 and len(rejected) == 1
+
+
+def test_add_machine_rejects_a_name_too_long_for_a_hostname(tmp_path):
+    """המסלול הידני (add_machine) דוחה באותה תקרה, ובאותם שני מספרים."""
+    conn = connect(tmp_path / "t.db")
+    conn.execute("INSERT INTO groups (id, label, role) VALUES ('c', 'c', 'cloner')")
+    with pytest.raises(ValueError) as exc:
+        registry.add_machine(conn, "aa:bb:cc:dd:ee:01", "HP-cloner-1", "c", "t")
+    assert str(_NAME_MAX) in str(exc.value) and str(HOSTNAME_MAX) in str(exc.value)
+
+
 # --- ספריית האימג'ים ---------------------------------------------------------
 
 
@@ -132,6 +173,40 @@ def test_file_serving_is_a_whitelist(tmp_path):
     assert library.file_path("img_7f3a91", "secret.txt") is None
     assert library.file_path("img_7f3a91", "../secret.txt") is None
     assert library.file_path("img_7f3a91", "manifest.json") is None
+
+
+@pytest.mark.parametrize("bad_sha256", [
+    "abc",
+    "A" * 64,
+    "a" * 63,
+])
+def test_an_image_without_a_canonical_sha256_is_not_served(tmp_path, bad_sha256):
+    write_image(tmp_path, MANIFEST_256)
+    manifest_path = tmp_path / MANIFEST_256["id"] / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["partitions"][0]["sha256"] = bad_sha256
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    library = ImageLibrary(tmp_path)
+    visible = library.get(MANIFEST_256["id"]) is not None
+    served = library.file_path(
+        MANIFEST_256["id"], manifest["partitions"][0]["file"]
+    ) is not None
+
+    assert (visible, served) == (False, False)
+
+
+@pytest.mark.parametrize("field", ["start_sector", "size_bytes"])
+def test_zero_partition_geometry_is_not_served(tmp_path, field):
+    write_image(tmp_path, MANIFEST_256)
+    manifest_path = tmp_path / MANIFEST_256["id"] / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["partitions"][0][field] = 0
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    library = ImageLibrary(tmp_path)
+
+    assert library.get(MANIFEST_256["id"]) is None
 
 
 def test_size_filtering_matches_the_family_rule(tmp_path, images_root):
@@ -268,6 +343,19 @@ def test_a_spent_cloner_wave_is_left_to_the_room(store):
     _finish_member(sessions, sid, "aa:aa:aa:aa:aa:01")
     with pytest.raises(SessionError):
         sessions.open("g", "img_2", "LAB2", 2, "noc")
+
+
+def test_open_round_error_names_the_offending_machine(store):
+    """‏#405: שם ארוך שכבר במרשם (נרשם לפני שהאכיפה עברה לרישום) עדיין
+    חוסם את פתיחת הסבב — אבל ההודעה נוקבת ב**מכונה**, לא רק במספר, כדי
+    שמי שפותח את הסבב על כל הקבוצה ידע מי חוסם אותו."""
+    sessions, _ = store
+    sessions.conn.execute(
+        "INSERT INTO machines (mac, suffix, group_id, added_at)"
+        " VALUES ('aa:aa:aa:aa:aa:aa', 'HP-cloner-1', 'g', '2026-01-01')")
+    with pytest.raises(SessionError) as exc:
+        sessions.open("g", "img_1", "ROOM", 2, "noc")
+    assert "HP-cloner-1" in str(exc.value) and "11" in str(exc.value)
 
 
 # --- משתמשים -----------------------------------------------------------------

@@ -88,20 +88,32 @@ def test_server_main_parses_the_harness_argv(tmp_path: Path, monkeypatch) -> Non
     assert args.sender_portbase == harness.SENDER_PORTBASE
 
 
-def test_main_wires_the_flag_into_create_app(tmp_path: Path, monkeypatch) -> None:
+def test_main_wires_the_flag_into_the_runtime(tmp_path: Path, monkeypatch) -> None:
     """‏`main` הוא החוליה שאין לה טסט אחר: דגל שמתפרס ואינו מועבר הלאה
     נראה בדיוק כמו דגל שעובד — השרת עולה, ומשדר על 9000 (פורט-הפצה-מכוון:
-    תיעוד ברירת המחדל, לא בקשה) — עיקרון 5."""
+    תיעוד ברירת המחדל, לא בקשה) — עיקרון 5.
+
+    ‏#731/#738: מאז פיצול המאזינים `main` מעביר את הדגל ל-`create_runtime`
+    (בעל המצב המשותף), ולא ל-`create_app`. שאר החוליות (יצירת שלוש
+    האפליקציות וההרצה בפועל דרך `serve_all`) מנוטרלות — נבדק רק שהערך
+    הגיע ל-runtime."""
+    import asyncio
     import uvicorn
 
     seen: dict = {}
 
-    def fake_create_app(*args, **kwargs):
+    def fake_create_runtime(*args, **kwargs):
         seen.update(kwargs)
-        return "app"
+        return "rt"
 
-    monkeypatch.setattr(server.app, "create_app", fake_create_app)
-    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: None)
+    monkeypatch.setattr(server.app, "create_runtime", fake_create_runtime)
+    monkeypatch.setattr(server.app, "create_agent_app", lambda rt: "agent")
+    monkeypatch.setattr(server.app, "create_console_app", lambda rt: "console")
+    monkeypatch.setattr(server.app, "create_kiosk_app", lambda rt: "kiosk")
+    monkeypatch.setattr(uvicorn, "Config", lambda *a, **k: None)
+    monkeypatch.setattr(uvicorn, "Server", lambda config: object())
+    monkeypatch.setattr(server.main, "serve_all", lambda servers: None)
+    monkeypatch.setattr(asyncio, "run", lambda coro=None: None)
     monkeypatch.setattr(server.main, "_interface_for", lambda url: None)
     monkeypatch.setattr("sys.argv", [
         "server.main", "--server-url", "http://127.0.0.1:8199",

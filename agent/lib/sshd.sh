@@ -32,7 +32,15 @@ SSH_VERIFY_TRIES="${SSH_VERIFY_TRIES:-3}"
 _ssh_spawn() {
     # The launch, on its own, so the tests can read the command line
     # without leaving a daemon behind.
-    setsid "$@" >> "$LOG_FILE" 2>&1 &
+    setsid sh -c '
+        trap "" HUP
+        while :; do
+            "$@" </dev/null
+            rc=$?
+            echo "ssh: dropbear exited (rc=$rc); restarting in 5s" >&2
+            sleep 5 || echo "ssh: respawn sleep interrupted" >&2
+        done
+    ' sh "$@" </dev/null >> "$LOG_FILE" 2>&1 &
 }
 
 ssh_listen_state() {
@@ -128,7 +136,7 @@ ssh_start() {
     if [ "$_state" = "unknown" ]; then
         log "ssh: cannot read $SSH_PROC_NET -- reporting NOT listening"
     else
-        log "ssh: dropbear did not bind port $SSH_PORT -- no ssh on this station"
+        log "ssh: dropbear did not bind port $SSH_PORT -- supervisor will retry"
     fi
     unset _try _state
     return 1

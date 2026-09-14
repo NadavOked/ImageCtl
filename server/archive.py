@@ -19,7 +19,9 @@ import tarfile
 from pathlib import Path
 from typing import Iterator
 
-from .images import ImageLibrary, inside, streamed_partitions, valid_image_id
+from .images import (
+    ImageLibrary, inside, streamed_partitions, valid_image_id,
+)
 
 log = logging.getLogger("imagectl.archive")
 
@@ -171,8 +173,9 @@ def import_tar(archive: Path, images_root: Path, existing_ids: set[str]) -> dict
         unverified = folder / UNVERIFIED
         manifest_path.replace(unverified)
         manifest = json.loads(unverified.read_text(encoding="utf-8"))
-        if manifest.get("schema") != 1 or "id" not in manifest:
-            raise ArchiveError("מניפסט לא תקין")
+        problem = ImageLibrary._validate(manifest)
+        if problem:
+            raise ArchiveError(f"מניפסט לא תקין: {_shown(problem)}")
         # המזהה שבמניפסט הוא שם התיקייה שהאימג' ייכנס אליה, והמניפסט הזה
         # הגיע מקובץ שמישהו העלה: `../evil` בשדה הזה הוא כתיבה אל מחוץ
         # לספרייה (‏#110). מזהה שאינו בצורת המזהים הוא מניפסט לא תקין,
@@ -180,19 +183,6 @@ def import_tar(archive: Path, images_root: Path, existing_ids: set[str]) -> dict
         if not valid_image_id(manifest["id"]):
             raise ArchiveError(f"מזהה אימג' לא תקין במניפסט: {_shown(manifest['id'])}")
         _refuse_taken(manifest["id"], existing_ids)
-
-        for part in streamed_partitions(manifest):
-            # ‏`_safe_members` שמר על מה שנכתב לדיסק, אבל השם הזה נקרא
-            # מהמניפסט ולא מחברי ה-tar. הבדיקה קודמת לכל נגיעה בקובץ:
-            # ‏`is_file` על נתיב שהתוקף בחר הוא כבר תשובה על מה קיים בשרת.
-            name = part["file"]
-            path = inside(folder / name, folder) if isinstance(name, str) else None
-            if path is None:
-                raise ArchiveError(f"נתיב קובץ מחיצה לא בטוח במניפסט: {_shown(name)}")
-            if not path.is_file():
-                raise ArchiveError(f"חסר קובץ מחיצה בארכיון: {_shown(name)}")
-            if _sha256(path) != part["sha256"]:
-                raise ArchiveError(f"אימות נכשל: {_shown(name)} אינו תואם ל-sha256")
 
         # קריאה טרייה, אחרי האימות: אימג' מאומת בעל אותו מזהה אינו נדחק
         # ואינו נדרס — הייבוא נדחה, והקיים נשאר כפי שהוא. תיקיית האימג'
@@ -208,8 +198,36 @@ def import_tar(archive: Path, images_root: Path, existing_ids: set[str]) -> dict
                 f"יעד האימג' יוצא משורש הספרייה: {_shown(manifest['id'])}")
         if target.exists():
             raise ArchiveError(f"התיקייה {manifest['id']} כבר קיימת")
-        unverified.replace(manifest_path)
-        folder.rename(target)
+
+        try:
+            folder.rename(target)
+        except OSError as exc:
+            if target.exists():
+                raise ArchiveError(
+                    f"התיקייה {manifest['id']} כבר קיימת") from exc
+            raise
+
+        verified = False
+        try:
+            for part in streamed_partitions(manifest):
+                # ‏`_safe_members` שמר על מה שנכתב לדיסק, אבל השם הזה נקרא
+                # מהמניפסט ולא מחברי ה-tar. הבדיקה קודמת לכל נגיעה בקובץ:
+                # ‏`is_file` על נתיב שהתוקף בחר הוא כבר תשובה על מה קיים בשרת.
+                name = part["file"]
+                path = inside(target / name, target) if isinstance(name, str) else None
+                if path is None:
+                    raise ArchiveError(f"נתיב קובץ מחיצה לא בטוח במניפסט: {_shown(name)}")
+                if not path.is_file():
+                    raise ArchiveError(f"חסר קובץ מחיצה בארכיון: {_shown(name)}")
+                if _sha256(path) != part["sha256"]:
+                    raise ArchiveError(f"אימות נכשל: {_shown(name)} אינו תואם ל-sha256")
+
+            (target / UNVERIFIED).replace(target / "manifest.json")
+            verified = True
+        finally:
+            if not verified:
+                _clear(target)
+
         return manifest
     finally:
         _clear(staging)

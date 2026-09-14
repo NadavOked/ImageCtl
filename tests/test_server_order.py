@@ -112,5 +112,7 @@ def test_closing_a_round_still_works_from_its_new_home(server):
     ).json()["id"]
     server["anon"].post("/api/v1/agent/hello", json=hello_body(ids["mac1"]))
 
-    assert server["admin"].post(f"/api/console/sessions/{session}/close").status_code == 200
+    assert server["admin"].post(
+        f"/api/console/sessions/{session}/close",
+        json={"confirm_name": "Office 2024 Standard"}).status_code == 200
     assert server["admin"].get("/api/console/overview").json()["session"] is None

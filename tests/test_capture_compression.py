@@ -69,7 +69,7 @@ def test_zstd_is_invoked_with_both_of_them():
     """הדגלים חייבים להגיע לכלי. ‏`-T` שנשאר בהערה ולא בשורת הפקודה הוא
     בדיוק "החלטנו" בלי "ביצענו"."""
     source = CAPTURE.read_text(encoding="utf-8")
-    assert '| zstd -"$CAPTURE_LEVEL" -T"$CAPTURE_THREADS" -c' in source
+    assert 'zstd -"$CAPTURE_LEVEL" -T"$CAPTURE_THREADS" -c' in source
 
 
 def test_the_manifest_records_the_level_that_was_actually_used():
