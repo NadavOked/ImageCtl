@@ -42,11 +42,91 @@ die_local() {
 # of the interfaces). Any other imagectl.* key is a bug elsewhere: ignore it
 # loudly so it cannot become a second, undocumented interface.
 
+#: מה עושים כשמשימה הסתיימה בהצלחה. **בלי override מפורש הברירה נגזרת
+#: מהתפקיד**: תחנת כיתה מאתחלת, בנייה/שיכפול מתכבים — מגירה מוחלפת
+#: במכונה כבויה (נספח א׳), ולכן כיבוי הוא השלב הבא של הסבב ולא כשל.
+#: אבל במעבדה מרוחקת אין מי שידליק, ולכן כלי התכנאי כותב `reboot`
+#: מפורש. הערך נכתב בזמן בניית ה-initramfs (`--after-task`) ואינו מגיע
+#: משורת הפקודה של הקרנל — שם מותר רק `imagectl.server`
+#: ו-`imagectl.mode` (עיקרון 2).
+arm_wol() {
+    # Read back the NIC state: a successful set alone is not evidence (#587).
+    command -v ethtool >/dev/null 2>&1 || {
+        log "wol: ethtool unavailable -- no interface armed"
+        return 1
+    }
+    _wol_armed=0
+    for _wol_path in "${SYSROOT:-}/sys/class/net/"*; do
+        [ -e "$_wol_path" ] || continue
+        _wol_n=${_wol_path##*/}
+        [ "$_wol_n" = lo ] && continue
+        if ! _wol_info=$(ethtool "$_wol_n" 2>/dev/null); then
+            log "wol: $_wol_n -- cannot read capabilities"
+            continue
+        fi
+        case "$(printf '%s\n' "$_wol_info" | awk '/Supports Wake-on:/ {print $3}')" in
+            *g*) ;;
+            *) log "wol: $_wol_n -- MagicPacket unsupported"; continue ;;
+        esac
+        if ! ethtool -s "$_wol_n" wol g >/dev/null 2>&1; then
+            log "wol: $_wol_n -- arming command failed"
+            continue
+        fi
+        if ! _wol_info=$(ethtool "$_wol_n" 2>/dev/null); then
+            log "wol: $_wol_n -- cannot read back arming"
+            continue
+        fi
+        case "$(printf '%s\n' "$_wol_info" | awk '/^[[:space:]]*Wake-on:/ {print $2}')" in
+            *g*) log "wol: $_wol_n armed"; _wol_armed=$((_wol_armed + 1)) ;;
+            *) log "wol: $_wol_n -- arming did not take" ;;
+        esac
+    done
+    [ "$_wol_armed" -gt 0 ]
+}
+
+finish_and_stop() {
+    # הנתיב ניתן להזרקה כדי שטסט יריץ את הפונקציה **הזאת** ולא עותק
+    # שלה. טסט שמשכפל את הלוגיקה עובר גם כשהמימוש נסחף.
+    _f="${AFTER_TASK_FILE:-/etc/imagectl/after-task}"
+    _after=""
+    [ -r "$_f" ] && _after=$(cat "$_f")
+    # ערך מפורש (poweroff/reboot) גובר תמיד — זה מה שכלי התכנאי כותב
+    # לצי המעבדה (tools/lab/after-task-reboot.sh). בלי ערך מפורש
+    # (auto/ריק/חסר) הברירה נגזרת מהתפקיד: תחנת כיתה מאתחלת כי אדם
+    # ממתין לידה, ומכונת בנייה/שיכפול מתכבה כי מגירה מוחלפת במכונה
+    # כבויה (נספח א׳). כל שאר המצבים — כולל role ריק או לא-מוכר —
+    # נופלים לכיבוי, הברירה הבטוחה (עיקרון 1). ה-role הוא D_ROLE,
+    # שנקבע ב-read_answer מתשובת ה-hello והוא גלובלי לתהליך.
+    case "$_after" in
+        reboot|poweroff) ;;
+        *)
+            case "${D_ROLE:-}" in
+                classroom|student) _after=reboot ;;
+                *)                  _after=poweroff ;;
+            esac
+            ;;
+    esac
+    case "$_after" in
+        reboot)
+            log "task complete -- rebooting (after-task=reboot)"
+            sync; reboot -f
+            ;;
+        *)
+            # Only poweroff needs wake arming. Failure must never block it.
+            arm_wol || log "wol: no interface armed -- continuing shutdown"
+            log "task complete -- powering off"
+            sync; poweroff -f
+            ;;
+    esac
+}
+
+
 parse_cmdline() {
     _file="${CMDLINE_FILE:-/proc/cmdline}"
     IMAGECTL_SERVER=""
     IMAGECTL_MODE="normal"
     IMAGECTL_DEBUG="0"
+    IMAGECTL_MONITOR="0"
     for _word in $(cat "$_file" 2>/dev/null); do
         case "$_word" in
             imagectl.server=*)
@@ -60,13 +140,19 @@ parse_cmdline() {
                 # המכונות עומדות בכיתות.
                 IMAGECTL_DEBUG="1"
                 ;;
+            imagectl.monitor=1)
+                # מוניטור מרחוק (#690): שירות RFB על /dev/fb0, מגודר מ-SSH
+                # בדיוק כמו imagectl.debug. השרת מוסיף אותו לשורת הקרנל רק
+                # כשהמתג בקונסולה דלוק (monitor.py:station_cmdline).
+                IMAGECTL_MONITOR="1"
+                ;;
             imagectl.*)
                 log "WARNING: ignoring unknown kernel parameter: $_word"
                 ;;
         esac
     done
     unset _word _file
-    export IMAGECTL_SERVER IMAGECTL_MODE IMAGECTL_DEBUG
+    export IMAGECTL_SERVER IMAGECTL_MODE IMAGECTL_DEBUG IMAGECTL_MONITOR
 }
 
 # --- HTTP --------------------------------------------------------------------

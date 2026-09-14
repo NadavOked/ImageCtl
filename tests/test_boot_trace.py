@@ -159,14 +159,109 @@ def test_each_breadcrumb_sits_between_the_commands_it_dates():
     assert linux < where["pre-initrd"] < initrd < where["pre-boot"]
 
 
+def play_entry(lines: list[str], *, fail: frozenset[str] = frozenset()
+               ) -> tuple[list[str], list[str]]:
+    """הרצה מדומה של ערך ImageCtl לפי סמנטיקת menuentry של GRUB.
+
+    פקודה שנכשלה מדפיסה שגיאה וההרצה ממשיכה — אלא אם היא תנאי של `if`.
+    מחזיר (פקודות שרצו, צעדי imagectl_trace שנשלחו).
+    """
+    ran: list[str] = []
+    steps: list[str] = []
+    last_ok = True
+    env = {"grub_platform": "pc"}
+    skip = 0
+    i = 0
+
+    def test_bracket(expr: str) -> bool:
+        inner = expr.strip()
+        if inner.startswith("[") and inner.endswith("]"):
+            inner = inner[1:-1].strip()
+        if re.fullmatch(r'"?\$\?"?\s*=\s*"?0"?', inner):
+            return last_ok
+        m = re.fullmatch(r'"\$(\w+)"\s*=\s*"([^"]*)"', inner)
+        return bool(m) and env.get(m.group(1), "") == m.group(2)
+
+    def run_cmd(cmd: str) -> bool:
+        nonlocal last_ok
+        cmd = cmd.strip().rstrip(";")
+        if not cmd:
+            return True
+        name = cmd.split()[0]
+        ran.append(name)
+        if name == trace.GRUB_FUNCTION_NAME:
+            steps.append(cmd.split()[1])
+            last_ok = name not in fail
+            return last_ok
+        last_ok = name not in fail
+        return last_ok
+
+    while i < len(lines):
+        line = lines[i]
+        oneline = re.fullmatch(r"if (.+); then (.+); fi", line)
+        block = re.fullmatch(r"if (.+); then", line)
+        if oneline:
+            if skip == 0 and test_bracket(oneline.group(1)):
+                run_cmd(oneline.group(2))
+            i += 1
+            continue
+        if block:
+            if skip:
+                skip += 1
+            elif not test_bracket(block.group(1)):
+                skip = 1
+            i += 1
+            continue
+        if line == "fi":
+            if skip:
+                skip -= 1
+            i += 1
+            continue
+        if skip == 0:
+            run_cmd(line)
+        i += 1
+    return ran, steps
+
+
+def test_a_failed_linux_does_not_claim_the_kernel_loaded():
+    """#503: GET /boot/vmlinuz 404 → linux נכשל → pre-initrd אסור להירשם.
+
+    GRUB ממשיך לפקודה הבאה אחרי כישלון, ולכן פירור שעומד לבד אחרי
+    `linux` מדווח «הקרנל נטען» בזמן שהקרנל לא נטען. עיקרון 5 בתוך
+    כלי האבחון עצמו. החזרת הצורה הישנה (פירור בלי `if [ "$?" = "0" ]`)
+    חייבת להפיל את הטסט הזה.
+    """
+    lines = agent_entry(render(CLONER, CONFIG))
+    _, happy = play_entry(lines)
+    assert happy == list(trace.GRUB_STEPS)
+
+    ran, seen = play_entry(lines, fail=frozenset({"linux"}))
+    assert "pre-linux" in seen
+    assert "pre-initrd" not in seen
+    assert "initrd" in ran
+
+
+def test_a_failed_initrd_does_not_claim_the_initramfs_loaded():
+    """אותו מסלול ל-pre-boot אחרי initrd שנכשל."""
+    lines = agent_entry(render(CLONER, CONFIG))
+    ran, seen = play_entry(lines, fail=frozenset({"initrd"}))
+    assert "pre-initrd" in seen
+    assert "pre-boot" not in seen
+    assert "linux" in ran
+
+
 def test_a_breadcrumb_never_guards_a_boot_command():
     """הבקרה השלילית של "האתחול ממשיך", בצד ה-GRUB.
 
     פקודה שנכשלה בתוך menuentry מדפיסה שגיאה וההרצה עוברת לבאה אחריה;
     מה שמפיל ערך הוא `linux`/`initrd` שנכשלים. לכן כל קריאת פירור
-    חייבת לעמוד **לבדה** בשורה — לא בתוך `if`, לא לפני `&&`, ולא על
-    אותה שורה עם פקודת אתחול. שרת שאינו עונה על ‎/boot/step מייצר
-    שגיאה על המסך, לא מכונה שאינה עולה.
+    חייבת לעמוד **לבדה** בשורה — לא לפני `&&`, ולא על אותה שורה עם
+    פקודת אתחול. שרת שאינו עונה על ‎/boot/step מייצר שגיאה על המסך,
+    לא מכונה שאינה עולה.
+
+    ‏#503 מתיר `if [ "$?" = "0" ]` סביב הפירור (הפקודה שומרת על הפירור,
+    לא להפך). השורה של הקריאה עצמה נשארת לבדה — אחרת הפירור היה יכול
+    לשבת לפני `&& linux` ולמנוע אתחול.
     """
     for line in agent_entry(render(CLONER, CONFIG)):
         if trace.GRUB_FUNCTION_NAME not in line:
@@ -355,6 +450,73 @@ def test_a_machine_that_never_left_a_breadcrumb_shows_no_trail(server):
 def _hello(mac: str) -> dict:
     from conftest import hello_body                        # noqa: PLC0415
     return hello_body(mac)
+
+
+# --- מי רשאי לכתוב פירור אתחול (‏#584) ----------------------------------------
+#
+# ‏`GET /boot/step?mac=<MAC>&s=<צעד>` רשם פירור לפי ה-MAC שבשאילתה, בלי
+# אימות הפונה. אותה משפחה בדיוק כמו #536: ‏MAC בשאילתה אינו זהות, ומחוץ
+# לווילן ההפצה אין ראיה שהפונה הוא המכונה. פירור מזויף הופך "לא ידוע"
+# ל"בדקנו, הגיע" (עיקרון 5) ומאפס את `first_at` של שביל אמיתי. ההכרעה
+# המודעת (#584): פירור מחוץ לווילן **אינו נרשם** — כמו שבקשת תפריט מחוץ
+# לווילן אינה נספרת — והמחיר הוא ששביל תחנת תרחיש-3 (#39) אינו נרשם.
+
+#: כתובת וילן ההפצה — זו שאיתה נוצר השרת ב-conftest.
+VLAN = "http://10.44.12.10:8080"
+#: כתובת מקומית אחרת של אותו שרת — תרחיש 3 (#39).
+OFF_VLAN = "http://10.10.10.8:8080"
+
+
+def step_row(server, mac: str):
+    """שורת `boot_steps` של ה-MAC — **המצב עצמו**. ‏None = לא נרשם פירור."""
+    return server["ctx"].conn.execute(
+        "SELECT step, first_at FROM boot_steps WHERE mac = ?", (mac,)).fetchone()
+
+
+def test_a_step_from_off_vlan_is_not_recorded(server):
+    """הבאג עצמו: ‏`GET /boot/step?mac=&s=` מרשת שאינה וילן ההפצה, למכונה
+    שמעולם לא אתחלה — אסור שישאיר לה פירור."""
+    anon = server["anon"]
+    assert step_row(server, MAC) is None
+
+    resp = anon.get(f"{OFF_VLAN}/boot/step?mac={MAC}&s=agent-start")
+    assert resp.status_code == 200              # ‏GRUB מקבל 200 בכל מקרה
+    assert resp.content == trace.TINY_BODY
+
+    assert step_row(server, MAC) is None
+
+
+def test_a_menu_breadcrumb_from_off_vlan_is_not_recorded(server):
+    """גם פירור ה-"menu" של מסלול התפריט מותנה באותו אופן: תפריט מחוץ
+    לווילן מוגש (תרחיש 3) אך אינו משאיר פירור."""
+    anon = server["anon"]
+    assert anon.get(f"{OFF_VLAN}/boot/menu?mac={MAC}").status_code == 200
+    assert step_row(server, MAC) is None
+
+
+def test_a_step_on_the_deployment_vlan_is_still_recorded(server):
+    """הבקרה לכיוון השני: הרישום אינו מבוטל. פירור שהתקבל על וילן
+    ההפצה נרשם כמו היום, אחרת התיקון מוחק את כל האבחון של #400."""
+    anon = server["anon"]
+    assert anon.get(f"{VLAN}/boot/step?mac={MAC}&s=agent-start").status_code == 200
+    row = step_row(server, MAC)
+    assert row is not None and row["step"] == "agent-start"
+
+
+def test_a_forged_step_from_off_vlan_does_not_reset_a_real_trail(server):
+    """הנזק שנמנע (#584, סעיף 2): שביל אמיתי נרשם על הווילן, ואז פירור
+    זר מרשת אחרת מנסה להחזיר אותו אחורה ("אתחול חדש") ולאפס את
+    `first_at`. מחוץ לווילן הוא נדחה, והשביל האמיתי נשאר כפי שהיה."""
+    anon = server["anon"]
+    assert anon.get(f"{VLAN}/boot/step?mac={MAC}&s=agent-start").status_code == 200
+    real = step_row(server, MAC)
+
+    # פירור זר, צעד מוקדם יותר — לפני התיקון היה מאפס את `first_at`.
+    assert anon.get(f"{OFF_VLAN}/boot/step?mac={MAC}&s=menu").status_code == 200
+
+    after = step_row(server, MAC)
+    assert after["step"] == "agent-start"          # לא נסוג ל-menu
+    assert after["first_at"] == real["first_at"]   # ולא אופס
 
 
 # --- הצד של הסוכן ------------------------------------------------------------

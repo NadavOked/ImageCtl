@@ -1,23 +1,25 @@
-"""שמות תיקיות ואימג'ים — רשימת-היתר ASCII, בשרת, ביצירה (#138).
+"""שמות תיקיות ואימג'ים — אותיות אנגלית/עברית + ספרות, בשרת, ביצירה (#138, #623).
 
-**ההכרעה של נדב (30/08):** *"את השמות שלהם יהיו באנגלית או מספרים.
-כנ"ל שמות האימג'ים"* — ובשאלה מי אוכף: *"ובשרת צריך לקרות שלא נותן לי
-לכתוב בעברית"*.
+**ההכרעה המקורית (נדב, 30/08):** *"השמות שלהם יהיו באנגלית או מספרים"* —
+כי מסך התחנה היה קונסולת טקסט של Linux בלי תמיכת RTL, ועברית התגלתה
+שם כמסך של ריבועים (#111).
 
-**הראיה, לא הדעה.** מסך התחנה הוא קונסולת טקסט של Linux, ועברית אינה
-ניתנת להצגה שם משתי סיבות בלתי תלויות: ב-initrd אין `setfont` ואין
-קובץ פונט, **ולקונסולת Linux אין תמיכת RTL בכלל**. היפוך המחרוזת
-מראש עובד על עברית טהורה ונשבר על מעורב — וכל שמות האימג'ים במעבדה
-מעורבים (`tiny11 v2 — עם GUIDים`).
+**ההכרעה החדשה (נדב, 09/09, #623):** מסך התחנה הוא עכשיו גואי נייטיב
+(Pango/HarfBuzz/FriBidi) שמרנדר עברית RTL — מוכח על ה-VM. הסיבה
+היחידה ל-ASCII נעלמה, ולכן **עברית מותרת עכשיו בשמות** (#327).
 
-**ולמה בשרת ולא במסך:** הקונסולה היא דפדפן ומציגה עברית מצוין. בלי
-אכיפה השם ייכתב **בהצלחה**, והכשל יתגלה חודשים אחר כך מול מכונה
-בכיתה, כמסך של ריבועים. זה בדיוק #111 — שם משתמש בעברית עבר את היצירה
-ואת בדיקת הסיסמה, והפיל את `set_cookie` ב-500 **על הסיסמה הנכונה**.
+⚠️ **תזמון (#111 עדיין תקף):** שם עברי מוצג נכון רק על תחנה שכבר
+מריצה את הגואי. השרת מתיר; ההפעלה בפועל של שמות עבריים אחרי פריסת
+הגואי. האכיפה כאן היא **ביצירה בלבד** (שם קיים לא נחסם רטרואקטיבית).
+
+**מה שעדיין נדחה:** פיסוק שאינו `. _ -`, רווח מוביל/עוקב, התחלה
+שאינה אות/ספרה, מעל 48 תווים, שורה חדשה, ריק. הקלדה במסך התחנה
+נשארת אנגלית בלבד (שם משתמש/סיסמה) — עברית בשמות היא לתצוגה, לא
+להקלדה שם.
 
 שש נקודות כניסה, ובדיקה אחת:
 
-    [A-Za-z0-9][A-Za-z0-9 ._-]{0,47}
+    [A-Za-z0-9א-ת][A-Za-z0-9א-ת ._-]{0,47}
 """
 
 from __future__ import annotations
@@ -27,8 +29,10 @@ import json
 import pytest
 pytest.importorskip("fastapi")
 
-BAD = ["בדיקות", "Office — מעודכן", " leading", "-dash-first", "x" * 49, "a\nb", ""]
-GOOD = ["LAB1", "Office 2024", "tiny11 v2", "linux_base", "a.b-c", "X"]
+#: עברית עדיין יכולה להיות פסולה — מסיבה אחרת (פיסוק, רווח, אורך).
+#: `בדיקות!` בודק בדיוק את זה: אותיות עבריות מותרות, סימן קריאה לא.
+BAD = ["Office — מעודכן", "בדיקות!", " leading", "-dash-first", "x" * 49, "a\nb", ""]
+GOOD = ["LAB1", "Office 2024", "אופיס 2024", "כיתה יב", "tiny11 v2", "linux_base", "a.b-c", "X"]
 
 
 # --- 1+2: תיקיות ---------------------------------------------------------------
@@ -49,8 +53,15 @@ def test_a_new_folder_with_a_good_name_is_accepted(server, name):
 def test_renaming_a_folder_to_a_bad_name_is_refused(server):
     admin = server["admin"]
     assert admin.post("/api/console/folders", json={"name": "LAB1"}).status_code == 200
-    r = admin.put("/api/console/folders/LAB1", json={"name": "בדיקות"})
+    r = admin.put("/api/console/folders/LAB1", json={"name": "בדיקות!"})
     assert r.status_code == 400
+
+
+def test_renaming_a_folder_to_a_hebrew_name_is_accepted(server):
+    # ההכרעה החדשה: עברית תקינה עוברת (#623).
+    admin = server["admin"]
+    assert admin.post("/api/console/folders", json={"name": "LAB2"}).status_code == 200
+    assert admin.put("/api/console/folders/LAB2", json={"name": "כיתה יב"}).status_code == 200
 
 
 # --- 3: עריכת אימג' ------------------------------------------------------------
@@ -60,7 +71,7 @@ def test_renaming_a_folder_to_a_bad_name_is_refused(server):
 def test_editing_an_image_to_a_bad_name_is_refused(server, images_root, field):
     before = json.loads(
         (images_root / "img_7f3a91" / "manifest.json").read_text(encoding="utf-8"))
-    r = server["admin"].put("/api/console/images/img_7f3a91", json={field: "בדיקות"})
+    r = server["admin"].put("/api/console/images/img_7f3a91", json={field: "בדיקות!"})
     assert r.status_code == 400
     after = json.loads(
         (images_root / "img_7f3a91" / "manifest.json").read_text(encoding="utf-8"))
@@ -70,7 +81,7 @@ def test_editing_an_image_to_a_bad_name_is_refused(server, images_root, field):
 def test_editing_an_image_to_a_good_name_still_works(server, images_root):
     assert server["admin"].put(
         "/api/console/images/img_7f3a91",
-        json={"name": "Office 2024", "folder": "Teaching"}).status_code == 200
+        json={"name": "אופיס 2024", "folder": "Teaching"}).status_code == 200
 
 
 # --- 5+6: קליטה ----------------------------------------------------------------
@@ -89,8 +100,13 @@ def capture(server, **fields):
 
 @pytest.mark.parametrize("field", ["name", "folder"])
 def test_a_capture_with_a_bad_name_is_refused(server, field):
-    assert capture(server, **{field: "בדיקות"}).status_code == 400, field
+    assert capture(server, **{field: "בדיקות!"}).status_code == 400, field
 
 
 def test_a_capture_with_good_names_is_accepted(server):
     assert capture(server, name="Base 2024", folder="Lab").status_code == 200
+
+
+def test_a_capture_with_hebrew_names_is_accepted(server):
+    # ההכרעה החדשה: שם אימג' ותיקייה בעברית מתקבלים (#623).
+    assert capture(server, name="בסיס 2024", folder="כיתה").status_code == 200

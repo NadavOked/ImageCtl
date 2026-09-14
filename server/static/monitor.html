@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ImageCtl — מוניטור</title>
+<link rel="stylesheet" href="design-tokens.css?v=3.26">
+<link rel="stylesheet" href="console.css?v=3.26">
+<script>
+  (function () {
+    var choice = localStorage.getItem("imagectl-theme");
+    if (choice === "dark" || choice === "light")
+      document.documentElement.setAttribute("data-theme", choice);
+  })();
+</script>
+<style>
+  .mon-wrap { display: flex; flex-direction: column; height: 100vh; }
+  /* אותה כותרת כהה כמו שאר האפליקציה (Stage 2) — לא פאנל בהיר נפרד. */
+  .mon-bar {
+    display: flex; align-items: center; gap: 12px;
+    padding: 0 14px; height: var(--header-height); flex: none;
+    background: var(--clr-header); color: var(--clr-header-text);
+  }
+  .mon-bar h1 { font-size: 15px; margin: 0; font-weight: 600; color: inherit; }
+  .mon-bar .spacer { flex: 1; }
+  .status { font-size: 13px; padding: 3px 10px; border-radius: var(--r); }
+  .status.ok { color: #8FE39B; }
+  .status.bad { color: #F3A79C; }
+  .mon-screen {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    background: #101014; overflow: auto;
+  }
+  /* ‏canvas עם רקע שחור עד הפריים הראשון; ממוקד כדי ללכוד מקלדת.
+     ‏cursor:none — הסמן המרוחק כבר מצויר לתוך ה-framebuffer (native-gui
+     מרנדר את הסמן שלו ל-fb0), אז מסתירים את הסמן המקומי של הדפדפן כדי
+     שלא יופיעו שני סמנים ("double cursor"). */
+  #screen { max-width: 100%; max-height: 100%; outline: none; background: #000; cursor: none; }
+</style>
+</head>
+<body>
+<div class="mon-wrap">
+  <div class="mon-bar">
+    <h1 id="title">מוניטור</h1>
+    <span id="status" class="status">מתחבר…</span>
+    <div class="spacer"></div>
+    <button class="btn" id="reboot-btn" title="מפעיל מחדש את המחשב המנוטר">הפעלה מחדש</button>
+    <button class="btn danger" id="poweroff-btn" title="מכבה את המחשב המנוטר">כיבוי</button>
+    <button class="btn" id="reconnect">התחבר מחדש</button>
+  </div>
+  <div class="mon-screen">
+    <canvas id="screen" width="1024" height="768" tabindex="0"></canvas>
+  </div>
+</div>
+<!-- מודאל אישור לפעולה הרסנית על מכונה חיה (עיקרון 7): הקלדת שם.
+     prompt()/confirm() חסומים בדפדפן מוטמע, ולכן מודאל של הדף. משתמש
+     במחלקות של console.css שכבר נטענו כאן. -->
+<div class="modal-backdrop" id="pmodal">
+  <div class="modal" id="pmodal-box">
+    <div class="modal-h"><strong id="pmodal-title">פעולה</strong></div>
+    <div class="modal-b">
+      <div class="confirm-box" id="pmodal-msg"></div>
+      <div class="danger-confirm">הקלידו את שם המחשב <b id="pmodal-name"></b> לאישור.</div>
+      <div class="form"><div class="field full">
+        <label>שם המחשב</label>
+        <input id="pmodal-input" autocomplete="off" dir="ltr">
+      </div></div>
+      <p class="danger-text" id="pmodal-error"></p>
+    </div>
+    <div class="modal-f">
+      <button class="btn danger" id="pmodal-ok">אישור</button>
+      <button class="btn" id="pmodal-cancel">ביטול</button>
+    </div>
+  </div>
+</div>
+<script src="monitor.js?v=3.26"></script>
+</body>
+</html>

@@ -33,6 +33,6 @@ else
   echo "ci: install it (apt-get install shellcheck) and run again" >&2
   exit 1
 fi
-./tests/overlay-static.sh
-./tests/no-host-block-passthrough.sh
-./tools/lint-ipxe.sh
+"$ROOT/tests/overlay-static.sh"
+"$ROOT/tests/no-host-block-passthrough.sh"
+"$ROOT/tools/lint-ipxe.sh"

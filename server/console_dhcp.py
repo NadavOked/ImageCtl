@@ -37,6 +37,19 @@ def _checked_name(name: str) -> str:
     return name
 
 
+#: יחידת ה-systemd של האינסטנס הראשי — ‏#762, לצד PROXY_UNIT הקיים.
+DNSMASQ_UNIT = "dnsmasq"
+
+#: ניסוח עברי לארבעת מצבי ה-DHCP החי (‏#762). ‏"unknown" הוא ברירת המחדל
+#: הבטוחה — לעולם לא "כבוי" כשלא הצלחנו לבדוק (עיקרון 5, הרחבה 5א).
+DHCP_LIVE_LABELS = {
+    "serving": "משרת",
+    "configured_not_running": "מוגדר, השירות אינו פועל",
+    "off": "כבוי",
+    "unknown": "לא ידוע",
+}
+
+
 def default_hooks() -> Hooks:
     return {
         "interfaces": dhcp.list_interfaces,
@@ -44,6 +57,8 @@ def default_hooks() -> Hooks:
         "apply": dhcp.apply,
         "apply_proxy": dhcp.apply_proxy,
         "dnsmasq_version": dhcp.dnsmasq_version,
+        "read_active_conf": dhcp.read_active_conf,
+        "service_active": dhcp.service_active,
     }
 
 
@@ -86,7 +101,36 @@ def create_dhcp_router(ctx: ServerContext, hooks: Hooks | None = None) -> APIRou
             journal(ctx.conn, "dhcp_apply_failed", f"{what} {error}", user_id)
         return error
 
-    def view(cfg: dhcp.InterfaceConfig, live: dict | None) -> dict:
+    def dhcp_live_state(name: str, cfg: dhcp.InterfaceConfig,
+                        conf_text: str | None, svc_active: bool | None) -> dict:
+        """‏#762: מה **באמת** מוגש על הממשק, לא מה שה-DB אומר שרצינו.
+
+        ארבעה מצבים בלבד, ואף אחד מהם אינו ניחוש: קריאת הקובץ או בירור
+        השירות שנכשלו מחזירים `unknown` — לעולם לא `off`, כי `off` הוא
+        טענה חיובית שבדקנו ולא מצאנו (עיקרון 5, הרחבה 5א).
+        """
+        if conf_text is None or svc_active is None:
+            return {"state": "unknown", "interface_in_conf": False,
+                    "service_active": svc_active, "checked": False,
+                    "detail": "לא ניתן לקרוא את מצב ה-DHCP הפעיל"
+                    if conf_text is None else "לא ניתן לברר את מצב השירות"}
+        served = dhcp.parse_served_interfaces(conf_text)
+        in_conf = name in served
+        if in_conf and svc_active:
+            state = "serving"
+        elif in_conf and not svc_active:
+            state = "configured_not_running"
+        else:
+            state = "off"
+        return {"state": state, "interface_in_conf": in_conf,
+                "service_active": svc_active, "checked": True, "detail": ""}
+
+    def view(cfg: dhcp.InterfaceConfig, live: dict | None,
+             conf_text: str | None = None, svc_active: bool | None = None) -> dict:
+        dhcp_live = dhcp_live_state(cfg.name, cfg, conf_text, svc_active)
+        diverged = (dhcp_live["checked"]
+                    and (cfg.enabled != dhcp_live["interface_in_conf"]
+                         or (cfg.enabled and dhcp_live["state"] != "serving")))
         data = {
             "name": cfg.name, "enabled": cfg.enabled, "proxy": cfg.proxy,
             "trunk": cfg.trunk, "range_start": cfg.range_start,
@@ -99,6 +143,12 @@ def create_dhcp_router(ctx: ServerContext, hooks: Hooks | None = None) -> APIRou
             "mac": (live or {}).get("mac", ""),
             "addresses": (live or {}).get("addresses", []),
             "present": live is not None,
+            # מהירות הכרטיס — ‏None כשלא נקרא; לעולם לא ניחוש לפי השם (‏#762).
+            "speed_mbps": (live or {}).get("speed_mbps"),
+            "dhcp_configured": cfg.enabled,
+            "dhcp_live": dhcp_live,
+            "dhcp_live_label": DHCP_LIVE_LABELS[dhcp_live["state"]],
+            "dhcp_diverged": diverged,
         }
         return data
 
@@ -107,7 +157,11 @@ def create_dhcp_router(ctx: ServerContext, hooks: Hooks | None = None) -> APIRou
         """כל כרטיס רשת במכונה + ההגדרה שלו. כרטיס בלי הגדרה = כבוי."""
         live = {i["name"]: i for i in hooks["interfaces"]()}
         names = sorted(set(live) | {c.name for c in all_configs()})
-        return [view(load(n), live.get(n)) for n in names]
+        # קובץ ה-conf ומצב השירות נקראים פעם אחת לכל הבקשה — לא פעם
+        # לכל ממשק — כדי שכל השורות בטבלה יסכימו על אותה תמונה.
+        conf_text = hooks["read_active_conf"]()
+        svc_active = hooks["service_active"](DNSMASQ_UNIT)
+        return [view(load(n), live.get(n), conf_text, svc_active) for n in names]
 
     @router.get("/interfaces/{name}/probe")
     def probe(name: str, user=Depends(admin_only)):
@@ -221,7 +275,10 @@ def create_dhcp_router(ctx: ServerContext, hooks: Hooks | None = None) -> APIRou
                     f"{name} dnsmasq={risky_proxy}", user[0])
 
         error = apply_all(name, user[0])
-        return {"ok": error is None, "interface": view(cfg, live.get(name)),
+        return {"ok": error is None,
+                "interface": view(cfg, live.get(name),
+                                  hooks["read_active_conf"](),
+                                  hooks["service_active"](DNSMASQ_UNIT)),
                 "apply_error": error}
 
     @router.post("/interfaces")

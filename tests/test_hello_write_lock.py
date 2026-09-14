@@ -31,11 +31,16 @@ import time
 
 import pytest
 
+from server import foreign_vlan
 from server.agent_loops import note
 from server.bootguard import guard
 from server.db import _open, connect
 
 MAC = "aa:bb:cc:dd:ee:ff"
+
+#: כתובת מקומית של השרת שאינה וילן ההפצה — כך `foreign_vlan.note` מגיע
+#: אל הכתיבה (#518). ה-scope הוא ה-sockname של החיבור, לא כותרת לקוח.
+OFF_VLAN_SCOPE = {"server": ("10.10.10.8", 8080)}
 
 #: תשובת שרת שמסתיימת בדיסק מקומי, למכונה שאינה רשומה לקבוצה —
 #: ‏`unexplained` מחזיר עליה True בלי לגעת ב-`store` בכלל.
@@ -140,6 +145,44 @@ def test_a_failed_bootguard_write_leaves_the_connection_usable(tmp_path):
     victim.close()
 
 
+def test_a_failed_foreign_vlan_note_leaves_the_connection_usable(tmp_path):
+    """‏hello מרשת זרה שלא נספר אינו רשאי להשתיק את השורה האדומה לתמיד.
+
+    ‏`foreign_vlan._count` היה הכותב היחיד במסלול ה-hello שלא עבר ב-
+    ``writing`` (#518): ``conn.execute`` + ``conn.commit`` עירומים, וה-
+    ``except`` שב-`note` בולע **בלי** ``rollback``. הכתיבה שנכשלה השאירה
+    את החיבור בטרנזאקציה, sqlite הפסיק להפעיל את ה-busy handler, וכל
+    hello נוסף מאותו תהליכון נכשל מיד — וכשהאימות של `net_seen` שאחריו
+    זרק, ה-hello עצמו החזיר 500. הבליעה "כדי לא להפיל hello" היא שהפילה
+    אותו. הראיה חיובית: אחרי כשל אחד, **אותו חיבור** סופר מרשת זרה שוב
+    תחת עומס חולף, והערך נקרא בחזרה.
+    """
+    path = tmp_path / "t.db"
+    connect(path)                                  # סכימה
+    victim, holder = _poison(path)
+
+    assert foreign_vlan.note(
+        victim, MAC, OFF_VLAN_SCOPE, off_vlan=True) is None    # הכתיבה נכשלה
+    assert victim.in_transaction is False, (
+        "נשארה טרנזאקציה פתוחה — מכאן כל כתיבה על החיבור תיכשל מיד")
+
+    holder.rollback()
+    holder.close()
+
+    victim.execute("PRAGMA busy_timeout = 5000")
+    brief = _hold_briefly(path, 0.5)
+    try:
+        assert foreign_vlan.note(
+            victim, MAC, OFF_VLAN_SCOPE, off_vlan=True) == 1
+    finally:
+        brief.join(timeout=30)
+
+    row = victim.execute(
+        "SELECT hits FROM off_vlan_contacts WHERE mac = ?", (MAC,)).fetchone()
+    assert row is not None and row["hits"] == 1
+    victim.close()
+
+
 def _starve(db, work) -> list[Exception]:
     """שלושה תהליכונים כותבים יחד בזמן שכל ``commit`` לוקח 200ms.
 
@@ -202,4 +245,21 @@ def test_bootguard_guard_does_not_starve_its_own_writers(tmp_path):
                                      AGENT_ANSWER))
     assert not failures, f"{len(failures)} כשלים, הראשון: {failures[0]!r}"
     written = db.execute("SELECT COUNT(*) AS n FROM boot_attempts").fetchone()["n"]
+    assert written == 9
+
+
+def test_foreign_vlan_note_does_not_starve_its_own_writers(tmp_path):
+    """כמה מחשבים מרשת זרה פונים יחד — וכל פנייה שנספרה באמת נכתבה.
+
+    הראיה חיובית: כל תשע השורות נמצאות. ‏`note` בולע חריגות במכוון
+    (ניטור לא מפיל hello), ולכן "לא נזרקה חריגה" אינו אומר כלום כאן —
+    מה שנספר הוא מה שנכתב.
+    """
+    db = connect(tmp_path / "t.db")
+    failures = _starve(
+        db, lambda conn, i, n: foreign_vlan.note(
+            conn, f"aa:bb:cc:{i:02x}:00:{n:02x}", OFF_VLAN_SCOPE, off_vlan=True))
+    assert not failures, f"{len(failures)} כשלים, הראשון: {failures[0]!r}"
+    written = db.execute(
+        "SELECT COUNT(*) AS n FROM off_vlan_contacts").fetchone()["n"]
     assert written == 9

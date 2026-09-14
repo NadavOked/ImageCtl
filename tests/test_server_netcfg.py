@@ -451,7 +451,10 @@ def test_a_static_address_goes_from_the_console_to_a_file(net_server):
     assert fake["applied"] == ["eth1"]
     # הקובץ הוא ב-interfaces.d, ולכן הוא נטען שוב בכל אתחול.
     assert netcfg_host.conf_path("eth1").name == "imagectl-eth1"
-    assert str(netcfg_host.conf_path("eth1")).startswith("/etc/network/interfaces.d")
+    # as_posix: בווינדוס str(Path("/etc/...")) הוא \etc\... וההשוואה
+    # ל-"/etc/..." נכשלת על רינדור הנתיב, לא על המיקום (#312).
+    assert netcfg_host.conf_path("eth1").as_posix().startswith(
+        "/etc/network/interfaces.d")
 
 
 def test_the_file_is_written_but_nothing_moved(net_server):
@@ -622,3 +625,57 @@ def test_the_server_unit_may_write_where_the_code_writes():
     assert netcfg_host.INTERFACES_DIR in paths
     # ‏resolv.conf הוא קובץ בשורש /etc, ואי אפשר לפתוח אותו לבדו.
     assert " /etc" in paths and netcfg_host.RESOLV_CONF.startswith("/etc/")
+
+
+# --- #761: פאנל אחד בסגנון vCenter, לא שני פאנלים לאותו כרטיס ---------------
+
+
+def _nic_card_source():
+    """מקור renderNicCard — כרטיס ה-NIC המאוחד של 'חיבורים פיזיים'. העיצוב
+    החדש (הכרעת הבעלים) מרנדר את כרטיסי הרשת דינמית ב-console.js במקום טבלה
+    סטטית ב-index.html; הדרישה של #761 (פאנל אחד, לא שניים) נשמרת בכרטיס."""
+    js = (REPO / "server" / "static" / "console.js").read_text(encoding="utf-8")
+    start = js.index("function renderNicCard")
+    return js[start:js.index("\nfunction ", start + 1)]
+
+
+def test_the_network_tab_has_one_nic_panel_not_two():
+    """הפאנל הכפול ('כרטיסי רשת' + 'כתובת השרת עצמו') התמזג לאחד. כתובת
+    השרת יושבת בתוך כרטיס ה-NIC, ואין פאנל נפרד 'כתובת השרת עצמו' ולא
+    ה-id-ים הישנים netcfg-body/netcfg-table."""
+    for name in ("index.html", "console.js", "netcfg.js", "net.js"):
+        text = (REPO / "server" / "static" / name).read_text(encoding="utf-8")
+        assert "כתובת השרת עצמו" not in text, name
+        assert "netcfg-body" not in text, name
+        assert "netcfg-table" not in text, name
+    assert "כתובת השרת" in _nic_card_source()   # מאוחד לתוך כרטיס ה-NIC
+
+
+def test_the_unified_nic_card_shows_the_operator_data_points():
+    """כרטיס ה-NIC המאוחד מציג את נקודות הנתונים התפעוליות: התקן ו-MAC
+    בכותרת, כתובת בפועל מול מוגדר, כתובת השרת, ומצב DHCP שנגזר מהמצב החי
+    (nicMode -> dhcpLiveClass) ולכן לעולם אינו 'כבוי' כשלא אומת (עיקרון 5)."""
+    card = _nic_card_source()
+    assert "n.mac" in card                        # כתובת MAC (בכותרת)
+    assert "בפועל" in card                        # כתובת IP בפועל
+    assert "מוגדר" in card                        # מול המוגדר
+    assert "כתובת השרת" in card                   # כתובת השרת המאוחדת
+    assert "DHCP" in card and "nicMode" in card   # מצב DHCP מהמצב החי
+    net = (REPO / "server" / "static" / "net.js").read_text(encoding="utf-8")
+    assert "dhcpLiveClass" in net                 # DHCP מדויק
+
+
+def test_the_edit_dialog_uses_a_real_radio_group_not_prompt_or_confirm():
+    """‏#761 אוסר `prompt()`/`confirm()` (חסומים בדפדפן המוטמע) ודורש
+    קבוצת radio אמיתית לבחירת המצב, לא `<select>`."""
+    js = (REPO / "server" / "static" / "netcfg.js").read_text(encoding="utf-8")
+    assert "prompt(" not in js and "confirm(window" not in js
+    assert '"radio"' in js
+    assert "לא מנוהל מהקונסולה" in js       # המצב הקיים לא אבד בשדרוג
+
+
+def test_sheet_supports_a_radio_field_type():
+    """התוספת ל-sheet() ב-console.js (‏#761) — בלי זה netcfg.js קורא
+    ל-API שלא קיים, וזה נכשל בשקט בזמן ריצה, לא בבדיקה."""
+    js = (REPO / "server" / "static" / "console.js").read_text(encoding="utf-8")
+    assert 'f.type === "radio"' in js

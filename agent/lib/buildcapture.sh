@@ -65,7 +65,7 @@ build_new_folder() {
     printf '{"name":"%s"}' "$(json_escape "$_nm")" \
         > "$RUN_DIR/folder_new.json"
     _code=$(console_post "folders" "$RUN_DIR/folder_new.json" \
-        "$RUN_DIR/folder_resp.json")
+        "$RUN_DIR/folder_resp.json") || return 1
     if [ "$_code" != "200" ]; then
         console_say "$_code" "Could not create the folder" >&2
         return 1
@@ -75,12 +75,12 @@ build_new_folder() {
 }
 
 build_capture_post() {
-    # $1 name, $2 disk, $3 folder. The same body the console sends.
-    printf '{"mac":"%s","name":"%s","disk":"%s","folder":"%s"}' \
+    # $1 name, $2 disk, $3 folder, $4 optional description.
+    printf '{"mac":"%s","name":"%s","disk":"%s","folder":"%s","description":"%s"}' \
         "$MAC" "$(json_escape "$1")" "$(json_escape "$2")" \
-        "$(json_escape "$3")" > "$RUN_DIR/capture_req.json"
+        "$(json_escape "$3")" "$(json_escape "${4:-}")" > "$RUN_DIR/capture_req.json"
     _code=$(console_post "tasks/capture" "$RUN_DIR/capture_req.json" \
-        "$RUN_DIR/capture_resp.json")
+        "$RUN_DIR/capture_resp.json") || return 1
     if [ "$_code" != "200" ]; then
         console_say "$_code" "The capture was not created"
         return 1
