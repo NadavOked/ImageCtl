@@ -13,7 +13,7 @@ import sqlite3
 
 from boot.grub_menu import normalize_mac as lenient_mac
 
-from .db import journal, now_iso
+from .db import journal, now_iso, update_one
 
 log = logging.getLogger("imagectl.reports")
 
@@ -29,6 +29,27 @@ _RAW_SHOWN = 32
 #: החיובית להצלחה מלאה ומכאן הלאה נספר ככזו (עיקרון 5).
 TERMINAL = ("done", "failed", "partial")
 
+#: כל מצב שהסוכן מדווח בו על עצמו (`build_progress` ב-`progress.sh`,
+#: השדה `state` העליון). מקורם: ‏`waiting` (ברירת המחדל), ‏`writing`,
+#: ‏`verifying`, ‏`naming`, ‏`done`, ‏`failed`, ‏`partial` במסלול הסבב/
+#: המגירות, ו-`capturing`/`failed` במסלול הקליטה. ‏#772: מצב שאינו כאן
+#: נדחה במקום להיכתב בשקט — דיווח בלי `state` (שהופך ל-`""`) או עם ערך
+#: שרירותי היה מציב מצב לא-טרמינלי לנצח ותוקע את הגל (עיקרון 5).
+VALID_STATES = frozenset(
+    {"waiting", "writing", "verifying", "naming", "capturing"} | set(TERMINAL)
+)
+
+#: ‏`lost` — השרת קבע שחבר לא דיווח כלל מעל הספָּף. ‏**לא** `done` (אין
+#: ראיה שכתב) ו**לא** `failed` (הוא מעולם לא דיווח כישלון): פשוט לא ידוע
+#: מה קרה לו (#450). זהו מצב ש**השרת** קובע ב-`room.tick`, ולכן הוא
+#: **אינו** ב-VALID_STATES — סוכן אינו יכול לטעון אותו על עצמו (#772).
+LOST = "lost"
+
+#: החברים שהגל אינו ממתין להם עוד: הטרמינליים שהסוכן מדווח, ועוד `lost`
+#: שהשרת קובע. ‏`tick` בודק מול זה, לא מול `TERMINAL` — מכונה שנעלמה
+#: לעולם אינה מדווחת מצב סופי, ובלי `lost` הגל היה תקוע לנצח (#450).
+FINAL = frozenset({*TERMINAL, LOST})
+
 
 def ingest(conn: sqlite3.Connection, payload: dict) -> dict:
     session_id = payload.get("session_id")
@@ -39,6 +60,13 @@ def ingest(conn: sqlite3.Connection, payload: dict) -> dict:
     if not raw_mac or not isinstance(targets, list) or not (session_id or task_id):
         return {"ok": False, "error": "missing session_id/task_id, mac or targets",
                 "code": "bad_report"}
+
+    # ‏#772: המצב מאומת מול הקבוצה המוכרת לפני כל כתיבה. ערך ריק או לא
+    # מוכר אינו "התקדמות שלא זיהינו" אלא קלט פגום — הוא נדחה בשמו ואינו
+    # נכתב, אחרת מצב החבר נהיה `""`, לעולם אינו טרמינלי, ו-tick נתקע.
+    if state not in VALID_STATES:
+        return {"ok": False, "error": f"unknown state: {state!r}",
+                "code": "bad_state"}
 
     # ‏MAC מנורמל לפני כל נגיעה ב-DB — אותה פונקציה שבה משתמשים hello
     # ו-pulls, כי הן אלה שיצרו את השורה שאנחנו מחפשים. הצד השני של
@@ -57,8 +85,24 @@ def ingest(conn: sqlite3.Connection, payload: dict) -> dict:
     if task_id:
         return _ingest_task(conn, task_id, mac, state, targets, sent_as)
 
+    # ‏#557: סבב שנסגר אינו מקבל דיווחים. עד כאן הוא קיבל — והחזיר
+    # `200 OK` — ולכן `progress_loop` בסוכן, שלולאתו אינסופית ובולעת
+    # את התשובה ב-`|| true`, המשיך לדווח עליו **לנצח**. נמדד 08/09:
+    # שתי מכונות דיווחו על `ses_277091d3` במשך 50 דקות אחרי שנסגר,
+    # אלפי בקשות — **ולכן לא הצטרפו לגל הבא.**
+    #
+    # זה בדיוק מה ש-#535 תיקן למשימות; מסלול הסבב לא קיבל את אותו
+    # טיפול. אותה תשובה בשם, ואותו רישום ביומן.
+    session = conn.execute(
+        "SELECT state FROM sessions WHERE id = ?", (session_id,)).fetchone()
+    if session is None or session["state"] == "closed":
+        journal(conn, "report_on_closed_session", f"{mac} for {session_id}{sent_as}")
+        return {"ok": False, "error": "this session is no longer open",
+                "code": "not_open"}
+
     row = conn.execute(
-        "SELECT state, done FROM session_members WHERE session_id = ? AND mac = ?",
+        "SELECT state, done, targets_json FROM session_members"
+        " WHERE session_id = ? AND mac = ?",
         (session_id, mac),
     ).fetchone()
     if row is None:
@@ -68,6 +112,16 @@ def ingest(conn: sqlite3.Connection, payload: dict) -> dict:
         journal(conn, "report_from_nonmember", f"{mac} for {session_id}{sent_as}")
         return {"ok": False, "error": "not a member of this session", "code": "not_member"}
 
+    # ‏#771: מצב טרמינלי הוא בלתי-משתנה. חבר שכבר `done`/`failed`/`partial`
+    # סיים את חלקו — יש לו ראיה חיובית להשלמה — ודיווח נוסף idempotent:
+    # לא דורסים state ולא targets_json. בלי השומר הזה `done` כפול עם
+    # `targets=[]` היה מוחק את targets_json → `_tally` סופר 0 מגירות
+    # שהושלמו → גל שיכפול נוסף (re-image!); ו-`writing` מאוחר היה מרגרס
+    # את `done` ל-לא-טרמינלי → תוקע את הגל. מחזירים ok בלי לסגת (עיקרון 5).
+    if row["state"] in TERMINAL:
+        return {"ok": True}
+
+    targets = stamp_movement(row["targets_json"], targets)
     bytes_written = sum(_int(t.get("bytes_written")) for t in targets)
     bytes_total = sum(_int(t.get("bytes_total")) for t in targets)
     errors = "; ".join(
@@ -90,6 +144,44 @@ def ingest(conn: sqlite3.Connection, payload: dict) -> dict:
     if state != previous and state in TERMINAL:
         journal(conn, f"client_{state}", f"{mac} in {session_id}" + (f" — {errors}" if errors else ""))
     return {"ok": True}
+
+
+def stamp_movement(previous_json: str | None, targets: list) -> list:
+    """מוסיף לכל יעד `moved_at` — הפעם האחרונה ש**הבייטים שלו גדלו**.
+
+    ⚠️ **‏`updated_at` אינו התקדמות, וזה נמדד ולא הונח.** בסבב 08/09
+    המגירה שמתה הוסיפה לרענן את החותמת שלה כל 5 שניות במשך 32 דקות
+    בזמן שהמונה שלה קפא — כלומר סימון "תקוע" שנשען על זמן הדיווח
+    **לעולם לא היה נדלק על המגירה היחידה שבאמת הייתה תקועה.**
+
+    לכן החותמת כאן זזה על ראיה חיובית אחת בלבד: מספר שגדל. יעד חדש,
+    יעד שהמספר שלו **ירד** (דיווח שחזר אחורה — אין לו פרשנות אחרת
+    חוץ מ"התחלנו מחדש"), ויעד שאין לו מספר קודם — כולם מקבלים `now`,
+    כי אף אחד מהם אינו ראיה לקיפאון.
+    """
+    was = {}
+    try:
+        for t in json.loads(previous_json or "[]"):
+            if isinstance(t, dict) and t.get("dev"):
+                was[t["dev"]] = t
+    except (TypeError, ValueError):
+        # ‏`targets_json` פגום אינו "אין תנועה" — הוא "לא ידענו".
+        # עיקרון 5: החותמת נדחפת קדימה ולא נשארת ישנה, אחרת שדה שבור
+        # במסד היה מדליק אזעקת קיפאון על כל המגירות.
+        was = {}
+    stamped = []
+    for t in targets:
+        if not isinstance(t, dict):
+            continue
+        before = was.get(t.get("dev"))
+        if (before is not None
+                and _int(t.get("bytes_written")) == _int(before.get("bytes_written"))
+                and before.get("moved_at")):
+            t = {**t, "moved_at": before["moved_at"]}
+        else:
+            t = {**t, "moved_at": now_iso()}
+        stamped.append(t)
+    return stamped
 
 
 def _ingest_task(conn: sqlite3.Connection, task_id: str, mac: str,
@@ -115,13 +207,23 @@ def _ingest_task(conn: sqlite3.Connection, task_id: str, mac: str,
     new_state = "failed" if state == "failed" else (
         "running" if row["state"] == "pending" else row["state"]
     )
-    conn.execute(
+    # ‏#535: תביעת מצב ב-`WHERE`. עד כאן דיווח `failed` הפך משימה
+    # ל-`failed` **בלי קשר למצבה** — גם `done`, גם `cancelled` —
+    # ובלי אימות מי הדווח. מכאן, משימה שאינה פתוחה אינה משתנה,
+    # והדיווח מקבל תשובה שאומרת את זה בשמה.
+    if not update_one(
+        conn,
         # COALESCE: דיווח failed של הסוכן בלי שגיאות-יעד לא דורס סיבה
         # שהשרת כבר רשם (דחיית מניפסט, למשל) — error נשאר עם ההסבר.
         "UPDATE tasks SET state = ?, bytes_written = ?, bytes_total = ?,"
-        " error = COALESCE(?, error), updated_at = ? WHERE id = ?",
-        (new_state, written, total, errors or None, now_iso(), task_id),
-    )
+        " error = COALESCE(?, error), targets_json = ?, updated_at = ?"
+        " WHERE id = ? AND state IN ('pending', 'running')",
+        (new_state, written, total, errors or None, json.dumps(targets),
+         now_iso(), task_id),
+    ):
+        journal(conn, "report_on_closed_task", f"{mac} for {task_id}{sent_as}")
+        return {"ok": False, "error": "the task is no longer open",
+                "code": "not_open"}
     conn.commit()
     if state == "failed" and row["state"] != "failed":
         journal(conn, "capture_failed", f"{task_id} {errors or 'agent reported failure'}")

@@ -22,6 +22,32 @@ PORT = 8199
 BASE = f"http://127.0.0.1:{PORT}"
 #: אף אחד לא מאזין שם — זה "השרת השקט" של תרחיש ברירת המחדל.
 DEAD_BASE = f"http://127.0.0.1:{PORT + 1}"
+#: ‏#731 (tracer 1 של #703): הקונסולה עברה לפורט נפרד. הסימולציה מריצה
+#: שרת אמיתי, ומאז הפיצול `server.main` מרים שני מאזינים — סוכן על PORT,
+#: קונסולה על CONSOLE_PORT. לא PORT+1 (זה DEAD_BASE, ה"שרת השקט").
+CONSOLE_PORT = PORT + 2
+CONSOLE_BASE = f"http://127.0.0.1:{CONSOLE_PORT}"
+#: ‏#738 (tracer 2 של #703): הקיוסק חולץ מהקונסולה למאזין שלישי משלו.
+#: ‏server.main מרים שלושה מאזינים — סוכן/קונסולה/קיוסק. לא PORT+1
+#: (זה DEAD_BASE, ה"שרת השקט").
+KIOSK_PORT = PORT + 3
+KIOSK_BASE = f"http://127.0.0.1:{KIOSK_PORT}"
+
+#: הקידומות שחיות על אפליקציית הקונסולה (‏CONSOLE_BASE), לא על הסוכן:
+#: הדף הסטטי ונתיבי הניהול `/api/console/*`.
+_CONSOLE_PREFIXES = (
+    "/console",
+    "/api/console",
+)
+#: ‏#738: נתיבי מסך התחנה (`create_station_router`, ‏prefix `/api/v1/agent/
+#: {groups,state,sessions}`) חולצו לאפליקציית הקיוסק — ולכן מנותבים ל-
+#: `KIOSK_BASE`, בעוד `hello`/`login`/`pulls`/`progress`/`disk-event`
+#: (‏`create_agent_router`, אותו prefix `/api/v1/agent`) נשארים על הסוכן.
+_KIOSK_PREFIXES = (
+    "/api/v1/agent/groups",
+    "/api/v1/agent/state",
+    "/api/v1/agent/sessions",
+)
 
 #: הפורט שהשרת של הסימולציה משדר עליו — ‏30199 ו-30200, ולא 9000/9001.
 #: זה **לא** נוחות: השרת שהסימולציה מרימה הוא שרת אמיתי, ובמעבדה מותקן
@@ -100,19 +126,39 @@ def disk(dev: str, size_bytes: int, serial: str, port: int | None = None) -> dic
 
 
 class Client:
-    """לקוח HTTP קטן ששומר cookie — כמו דפדפן, בלי דפדפן."""
+    """לקוח HTTP קטן ששומר cookie — כמו דפדפן, בלי דפדפן.
 
-    def __init__(self, base: str = BASE):
+    ‏#731: אחרי פיצול המאזינים יש שני פורטים. הלקוח מנתב לפי הנתיב —
+    נתיבי קונסולה/קיוסק אל `console_base`, כל השאר (סוכן, ‎/boot, images)
+    אל `base`. אותו cookie נשלח לשניהם, בדיוק כמו דפדפן שמדבר עם שני
+    פורטים על אותו host. מי שמעביר `base` מפורש (למשל DEAD_BASE) מנתב
+    את צד הסוכן לשם — נתיבי הקונסולה עדיין הולכים ל-console_base."""
+
+    def __init__(self, base: str = BASE, console_base: str = CONSOLE_BASE,
+                 kiosk_base: str = KIOSK_BASE):
         self.base = base
+        self.console_base = console_base
+        self.kiosk_base = kiosk_base
         self.cookie = None
+        # ‏#737: כותרות שהסוכן האמיתי שולח בכל בקשה (אסימון משימה).
+        self.headers = {}
+
+    def _base_for(self, path: str) -> str:
+        if any(path.startswith(p) for p in _KIOSK_PREFIXES):
+            return self.kiosk_base
+        if any(path.startswith(p) for p in _CONSOLE_PREFIXES):
+            return self.console_base
+        return self.base
 
     def request(self, method, path, body=None, ctype="application/json", raw=False):
         data = body if raw else (json.dumps(body).encode() if body is not None else None)
-        req = urllib.request.Request(self.base + path, data=data, method=method)
+        req = urllib.request.Request(self._base_for(path) + path, data=data, method=method)
         if data is not None:
             req.add_header("Content-Type", ctype)
         if self.cookie:
             req.add_header("Cookie", self.cookie)
+        for key, value in self.headers.items():
+            req.add_header(key, value)
         try:
             with urllib.request.urlopen(req, timeout=10) as response:
                 set_cookie = response.headers.get("Set-Cookie")
@@ -147,6 +193,7 @@ def make_manifest(source_bytes: int, files: dict[str, bytes]) -> dict:
         "schema": 1, "family": 256 if source_bytes == GB256 else 500,
         "source_disk_bytes": source_bytes, "min_target_bytes": source_bytes,
         "scheme": "gpt", "sector_size": 512,
+        "disk_guid": "b8a3c1d2-4e5f-6a7b-8c9d-0e1f2a3b4c5d",
         "partitions": [
             {"index": 1, "type_guid": ESP_GUID, "role": "esp", "fs": "vfat",
              "start_sector": 2048, "size_bytes": 104857600,
@@ -172,6 +219,10 @@ def start_server(workdir: Path) -> tuple[subprocess.Popen, Path, Path]:
         [sys.executable, "-m", "server.main", "--server-url", BASE,
          "--data-dir", str(data_dir), "--images", str(images),
          "--host", "127.0.0.1", "--port", str(PORT),
+         # ‏#731: פורט נפרד לקונסולה, כמו בייצור.
+         "--console-port", str(CONSOLE_PORT),
+         # ‏#738: פורט נפרד לקיוסק (מסך התחנה), כמו בייצור.
+         "--kiosk-port", str(KIOSK_PORT),
          # ‏#201: השרת הזה אמיתי ומגיע ל-udp-sender אמיתי. בלי הדגל הזה
          # הוא משדר על פורטי ההפצה של הייצור.
          "--sender-portbase", str(SENDER_PORTBASE)],
@@ -227,12 +278,27 @@ def server_log_tail(workdir: Path, lines: int = 40) -> str:
     return "\n".join(parts)
 
 
+def _responded(url: str) -> bool:
+    """השרת מאזין אם הגיעה **תשובת HTTP** כלשהי — גם 404/405. רק סירוב
+    חיבור/URLError אומר שהוא עוד לא עלה (#731: בודקים כל מאזין בנפרד)."""
+    try:
+        urllib.request.urlopen(url, timeout=2)
+        return True
+    except urllib.error.HTTPError:
+        return True
+    except Exception:
+        return False
+
+
 def wait_for_server(timeout: float = 25.0) -> bool:
+    # ‏#731/#738: שלושה מאזינים — קונסולה (‎/console/), סוכן (GET על נתיב-
+    # POST מחזיר 405, וזו ראיה שהאפליקציה עלתה) וקיוסק (‎/console/station/).
+    # שלושתם חייבים לענות לפני שהסימולציה מתחילה.
     deadline = time.time() + timeout
     while time.time() < deadline:
-        try:
-            urllib.request.urlopen(BASE + "/console/", timeout=2)
+        if (_responded(CONSOLE_BASE + "/console/")
+                and _responded(BASE + "/api/v1/agent/hello")
+                and _responded(KIOSK_BASE + "/console/station/")):
             return True
-        except Exception:
-            time.sleep(0.4)
+        time.sleep(0.4)
     return False
