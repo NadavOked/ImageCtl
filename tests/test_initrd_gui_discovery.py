@@ -196,14 +196,19 @@ def test_a_registered_classroom_station_really_gets_the_gui_from_the_server(tmp_
     assert f"initrd (http,10.44.12.10:8080)/boot/{GUI_INITRD_NAME}" in text
 
 
-def test_a_registered_cloner_really_gets_the_text_initramfs_from_the_server(tmp_path):
-    """אותו שרת, אותו רגע, אותו initramfs גרפי מותקן — ומחשב השיכפול
-    בכל זאת מקבל את הטקסטואלי."""
+def test_a_registered_cloner_really_gets_the_gui_initramfs_from_the_server(tmp_path):
+    """מאז שמחשב השיכפול קיבל מסך (#679, הכרעת הבעלים), הוא ב-
+    ‏ROLES_WITH_GUI — ולכן אותו שרת, אותו רגע, מחזיר לו את ה-initramfs
+    הגרפי, בדיוק כמו לתחנת כיתה. זה הטסט שקידד את ההחלטה **הישנה**
+    שהופכה: קודם הוא אימת שהקלונר מקבל טקסט.
+
+    ‏#17 אינו נפגע — הבחירה כאן היא בשורת ה-initrd בלבד; הקלונר נשאר
+    diskless (נבדק ב-test_cloner_boot_path.py)."""
     client = registered_server(tmp_path, with_gui=True)
     text = client.get(f"/boot/menu?mac={CLONER_MAC}").text
     assert "--id imagectl" in text
-    assert "initrd (http,10.44.12.10:8080)/boot/initrd.img\n" in text
-    assert GUI_INITRD_NAME not in text
+    assert f"initrd (http,10.44.12.10:8080)/boot/{GUI_INITRD_NAME}" in text
+    assert "initrd (http,10.44.12.10:8080)/boot/initrd.img\n" not in text
 
 
 def test_without_the_gui_file_the_classroom_station_falls_back(tmp_path):

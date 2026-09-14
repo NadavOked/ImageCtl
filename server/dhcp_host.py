@@ -265,3 +265,42 @@ def _systemctl(action: str, unit: str) -> str | None:
         return (f"{unit} לא הגיב ל-{action}: "
                 f"{(result.stderr or result.stdout).strip()[:300]}")
     return None
+
+
+# --- אמת חיה ל-DHCP (‏#762) --------------------------------------------------
+#
+# מה שמוצג בקונסולה כ-"DHCP בפועל" חייב לבוא מכאן, לא מ-InterfaceConfig.enabled
+# (שהוא כוונה שנשמרה, לא מציאות). שתי הפונקציות למטה הן הצד המלוכלך היחיד:
+# קריאת קובץ וקריאת מצב שירות. כשל בכל אחת מהן = None, ולעולם לא "כבוי" —
+# זו בדיוק ההרחבה 5א בעיקרון 5: "לא הצלחנו לבדוק" ו"בדקנו, זה כבוי" הם שני
+# מצבים שונים.
+
+
+def read_active_conf(conf_path: str | Path = DEFAULT_CONF) -> str | None:
+    """תוכן קובץ ה-dnsmasq הפעיל, או None אם לא ניתן לקרוא אותו."""
+    try:
+        return Path(conf_path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def service_active(unit: str = "dnsmasq") -> bool | None:
+    """‏tri-state: `True`/`False` פעיל/לא, או `None` כשהבדיקה עצמה נכשלה.
+
+    ‏`systemctl is-active` מחזיר קוד יציאה שאינו 0 גם על "inactive" —
+    ‏`is-active` הוא בדיוק המשפחה שבה `1` הוא תשובה תקנית ולא כישלון של
+    הפקודה, ולכן קוד היציאה לבדו אינו מספיק: קוראים את stdout בשם.
+    """
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", unit],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out = (result.stdout or "").strip()
+    if out == "active":
+        return True
+    if out in ("inactive", "failed", "unknown", "activating", "deactivating"):
+        return False
+    return None

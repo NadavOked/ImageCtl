@@ -1,0 +1,26 @@
+# Debian 13 (trixie) packages for native-gui. Versions and .deb sizes from
+# packages.debian.org/trixie/amd64, read 2026-09-09; installed sizes are
+# measured on the VM by tools/measure-size.sh, not copied from memory.
+#
+# --- build (on the build host only; nothing here goes into the initramfs)
+gcc make pkg-config
+libpango1.0-dev libcairo2-dev libdrm-dev libfribidi-dev libharfbuzz-dev
+#
+# --- runtime (what ldd pulls into the initramfs; the closure is measured)
+libpango-1.0-0        1.56.3-1          .deb 221.0 kB  (Depends: libfribidi0, libharfbuzz0b, libthai0, libglib2.0-0t64, fontconfig)
+libpangocairo-1.0-0   1.56.3-1          .deb  34.9 kB
+libpangoft2-1.0-0     1.56.3-1          (pulled by libpangocairo)
+libharfbuzz0b         10.2.0-1+deb13u1  .deb 467.7 kB  -- shaping
+libfribidi0           1.0.16-1          .deb  25.9 kB  -- UAX#9 bidi
+libcairo2             1.18.4-1+b1       .deb 525.0 kB
+libpixman-1-0         0.44.0-3          .deb 242.1 kB
+libfreetype6          2.13.3+dfsg-1+deb13u1 .deb 441.7 kB
+libfontconfig1        2.15.0-2.3        .deb 382.4 kB
+libglib2.0-0t64       2.84.4-3~deb13u3  .deb   1.5 MB  -- the largest single item
+libdrm2               2.4.124-2         .deb  38.1 kB
+#
+# --- fonts: index.html loads IBM Plex Sans Hebrew 400/500/600/700 and
+#     IBM Plex Mono 400/500. The Debian package is in *contrib* (already
+#     handled by tools/build_initramfs.sh, #120) and installs 41.8 MB of
+#     every Plex family; only the faces below are copied (see README).
+fonts-ibm-plex        6.1.1-1           installed 41,800 kB (whole package; we take ~6 files)

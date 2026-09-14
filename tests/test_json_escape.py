@@ -75,7 +75,8 @@ json_escape_pre_fix() {
 json_escape_pre_fix "$1"
 """
 
-LIBS = ("common.sh", "jsonq.sh", "sysinfo.sh", "restore.sh", "progress.sh", "ui.sh")
+LIBS = ("common.sh", "jsonq.sh", "sysinfo.sh", "restore.sh", "progress.sh", "ui.sh",
+        "recovery.sh")
 
 
 def source_line(*names: str) -> str:

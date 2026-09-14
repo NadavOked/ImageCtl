@@ -27,6 +27,8 @@ from test_agent import BASH, SH_FILES, posix
 REPO = Path(__file__).resolve().parent.parent
 AGENT = REPO / "agent"
 WAITS = AGENT / "lib" / "waits.sh"
+WATCHDOG = AGENT / "lib" / "watchdog.sh"
+RESTORE = AGENT / "lib" / "restore.sh"
 
 pytestmark = requires_native(("bash", BASH))
 
@@ -252,7 +254,7 @@ def test_a_drawer_that_is_never_fed_fails_by_name_and_its_neighbour_finishes(tmp
         "WAIT_STREAM_START_S=20 WAIT_STREAM_STALL_S=20; "
         f". {posix(AGENT)}/lib/common.sh; . {posix(WAITS)}; "
         f". {posix(AGENT)}/lib/progress.sh; . {posix(AGENT)}/lib/restore.sh; "
-        f". {posix(AGENT)}/lib/drawers.sh; "
+        f". {posix(AGENT)}/lib/drawers.sh; . {posix(AGENT)}/lib/verdict.sh; "
         f'stream_source() {{ cat {posix(payload)!r}; }}; '
         "restore_partition_drawers unicast http://s img 3 dd part.zst "
         f"{sha} '' sda sdb > {posix(box)}/pipe.out 2>&1; echo \"rc=$?\""
@@ -367,6 +369,34 @@ def test_the_long_transfers_carry_their_own_ceiling(path, needles):
         assert needle in source, f"{path} מזרים בלי {needle}"
 
 
+def _sh_default(path: Path, var: str) -> int:
+    """הערך שאחרי `:-` בהשמה `VAR="${VAR:-N}"` — ברירת המחדל כשה-env ריק."""
+    m = re.search(rf'{var}="\$\{{{var}:-(\d+)\}}"', path.read_text(encoding="utf-8"))
+    assert m, f"{var} אינו מוגדר עם ברירת מחדל מספרית ב-{path.name}"
+    return int(m.group(1))
+
+
+def test_the_stream_stall_ceiling_is_300_and_stays_under_the_watchdog_lease():
+    """‏11/09/2026 (הכרעת נדב): תקרת השקט באמצע הזרם הועלתה מ-120 ל-300ש'
+    — השולח מאט למקבל איטי בזנב אימג' גדול (גישת FOG/Clonezilla) במקום
+    להפילו, ותקרת 120 חתכה אותו דווקא אז (כשל ~90%). ‏udp-receiver
+    (‏`--receive-timeout` ב-restore.sh) נגזר מאותו ערך, ולכן הם נעים יחד.
+
+    **הקישור ל-watchdog:** התקרה חייבת להישאר מתחת ל-lease של ה-watchdog
+    (watchdog.sh, 600ש'), שמוזן בכל דגימה של wait_progress/wait_pid — אחרת
+    ה-watchdog יאתחל את המכונה לפני שהשקט מדווח ככישלון גלוי. ‏300 < 600.
+
+    **בקרה שלילית:** החזרת ברירת המחדל ל-120 מפילה את `== 300`; העלאתה
+    מעל ה-lease מפילה את בדיקת `< lease`."""
+    stall = _sh_default(WAITS, "WAIT_STREAM_STALL_S")
+    assert stall == 300
+    # הנפילה-אחורה של udp-receiver ב-restore.sh נעה יחד עם waits.sh.
+    m = re.search(r'WAIT_STREAM_STALL_S:-(\d+)', RESTORE.read_text(encoding="utf-8"))
+    assert m and int(m.group(1)) == 300, "ה---receive-timeout ב-restore.sh לא תואם"
+    lease = int(re.search(r'-ge (\d+)', WATCHDOG.read_text(encoding="utf-8")).group(1))
+    assert stall < lease, f"תקרת השקט {stall} חייבת להיות מתחת ל-lease {lease}"
+
+
 def test_fanout_bounds_the_fifo_open_itself():
     """‏open() על fifo לכתיבה נחסם עד שיש קורא. ‏fanout פותח ב-O_NONBLOCK
     ומוותר אחרי OPEN_RETRY_MS — ומדווח על כך כפקיעה, לא כ"לא ניתן לפתוח":
@@ -375,5 +405,9 @@ def test_fanout_bounds_the_fifo_open_itself():
     assert "O_WRONLY | O_NONBLOCK" in source
     assert "OPEN_NO_READER" in source
     assert "timed out waiting for the writer pipeline" in source
-    for ceiling in ("OPEN_RETRY_MS", "ROOM_GRACE_MS", "DRAIN_STALL_MS"):
+    for ceiling in ("OPEN_RETRY_MS", "ROOM_POLL_MS"):
         assert re.search(rf"#define {ceiling}\s+\d+", source), f"{ceiling} אינו קבוע"
+    # #427: EOF בלי אורך אינו ok. הסימנים רצים גם בלי gcc (ווינדוס).
+    assert "FANOUT_EXPECTED_BYTES" in source
+    assert "empty stream" in source
+    assert "fsync" in source

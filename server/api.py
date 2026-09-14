@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from boot.grub_menu import normalize_mac as lenient_mac
 
-from . import agent_loops, foreign_vlan, pulls, registry, reports, users
+from . import agent_loops, disk_events, foreign_vlan, pulls, registry, reports, users
 from .db import journal
 from .hello import build_answer, login_required, off_deploy_vlan
 from .images import ImageLibrary, restore_refusal
@@ -60,6 +60,16 @@ def create_agent_router(ctx: ServerContext,
         if mac is None:
             return _error(400, "missing or malformed mac", "bad_mac")
 
+        # ‏#524: זיהוי לפי כל כרטיס שהמכונה דיווחה, לא רק כרטיס האתחול.
+        # ערך פגום מתעלמים ממנו — כמו שדה לא ידוע, לא כמו MAC ראשי חסר.
+        all_macs: list[str] = []
+        raw_all = body.get("all_macs")
+        if isinstance(raw_all, list):
+            for item in raw_all:
+                extra = lenient_mac(item)
+                if extra is not None and extra not in all_macs:
+                    all_macs.append(extra)
+
         client_ip = request.client.host if request.client else None
         disks = body.get("disks") if isinstance(body.get("disks"), list) else None
         reported_ip = body.get("ip") if isinstance(body.get("ip"), str) else None
@@ -75,6 +85,7 @@ def create_agent_router(ctx: ServerContext,
             ctx.conn, ctx.library, ctx.store, mac,
             disks=disks, client_ip=client_ip, joining=joining,
             reported_ip=reported_ip, off_vlan=off_vlan,
+            all_macs=all_macs,
         )
         log.info("hello from %s (%s): known=%s off_vlan=%s",
                  mac, client_ip, answer["known"], off_vlan)
@@ -181,6 +192,20 @@ def create_agent_router(ctx: ServerContext,
         except ValueError:
             return _error(400, "body is not JSON", "bad_json")
         result = reports.ingest(ctx.conn, body if isinstance(body, dict) else {})
+        return JSONResponse(result, status_code=200 if (result.get("ok") or result.get("code") == "not_open") else 400)
+
+    @router.post("/agent/disk-event")
+    async def agent_disk_event(request: Request) -> JSONResponse:
+        """בריאות SMART וההכרעה על דיסק יעד (#652), לצפייה ולריבוט-החלפה.
+
+        best-effort מצד הסוכן: כשל כאן אינו מפיל שחזור. השרת שומר את
+        התמונה החיה ואינו מכריע ממנה — ההכרעה נעשתה בסוכן, ליד המכונה.
+        """
+        try:
+            body = await request.json()
+        except ValueError:
+            return _error(400, "body is not JSON", "bad_json")
+        result = disk_events.ingest(ctx.conn, body if isinstance(body, dict) else {})
         return JSONResponse(result, status_code=200 if result.get("ok") else 400)
 
     @router.get("/images/{image_id}/manifest")

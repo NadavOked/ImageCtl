@@ -12,9 +12,18 @@ import sqlite3
 from dataclasses import dataclass
 
 from .db import _write_lock, journal, now_iso, writing
+from .sessions import HOSTNAME_MAX, NONCLASSROOM_NAME_MAX
 
 _MAC_CLEAN = re.compile(r"[^0-9a-f]")
 _SUFFIX_NUM = re.compile(r"^\d{1,2}$")
+
+#: הדחייה לשם לא-כיתתי ארוך מדי — נגזרת מ-`HOSTNAME_MAX` ומהקידומת
+#: הארוכה ביותר, ונוקבת בשני המספרים כדי שמי שרושם יבין מה התקרה ומאין
+#: היא באה. אותה מחרוזת בכל שלושת מסלולי הרישום (ייבוא/הוספה/עריכה) (#405).
+_NAME_TOO_LONG = (
+    f"שם באורך 1-{NONCLASSROOM_NAME_MAX} תווים — הקידומת והמקף חייבים "
+    f"להיכנס יחד לתקרת {HOSTNAME_MAX} התווים של שם מחשב"
+)
 
 #: כל כתיבה כאן עוברת ב-``with _write_lock, writing(conn)`` — שני
 #: המנגנונים של `db.py`, מאותה סיבה שבגללה `net_seen` קיבל אותם (#272,
@@ -58,15 +67,16 @@ def normalize_name(role: str, text: str) -> str | None:
     """השם שניתן למכונה, לפי תפקיד הקבוצה.
 
     בכיתה השם הוא הסיומת שתיכנס לשם המחשב — ולכן החוקים נוקשים
-    (01-99 או INS). מחשב בנייה ומחשבי שיכפול לא מקבלים שם מחשב,
-    אז שם חופשי קצר ("עמדה 3") מותר.
+    (01-99 או INS). מחשב בנייה ומחשבי שיכפול מקבלים שם חופשי קצר
+    ("עמדה 3"), אך גם הוא נכנס לשם המחשב אחרי הקידומת והמקף בפתיחת
+    הסבב, ולכן אורכו חסום כאן — ברישום — ולא מאוחר על כל הקבוצה (#405).
     """
     if role == "classroom":
         return normalize_suffix(text)
     if not isinstance(text, str):
         return None
     s = text.strip()
-    return s if 0 < len(s) <= 32 else None
+    return s if 0 < len(s) <= NONCLASSROOM_NAME_MAX else None
 
 
 @dataclass
@@ -103,7 +113,7 @@ def parse_paste(text: str, role: str = "classroom") -> list[ImportLine]:
                 item.error = (
                     "סיומת חייבת להיות 01-99 או INS"
                     if role == "classroom"
-                    else "שם באורך 1-32 תווים"
+                    else _NAME_TOO_LONG
                 )
             elif item.mac in seen:
                 item.error = f"כפילות בהדבקה — כבר הופיע בשורה {seen[item.mac]}"
@@ -170,7 +180,7 @@ def add_machine(
     name = normalize_name(role, name_raw)
     if name is None:
         raise ValueError(
-            "סיומת חייבת להיות 01-99 או INS" if role == "classroom" else "שם באורך 1-32 תווים"
+            "סיומת חייבת להיות 01-99 או INS" if role == "classroom" else _NAME_TOO_LONG
         )
     if conn.execute("SELECT 1 FROM machines WHERE mac = ?", (mac,)).fetchone():
         raise ValueError("ה-MAC כבר רשום — ערכו אותו במקום להוסיף שוב")
@@ -202,7 +212,7 @@ def update_machine(
     name = row["suffix"] if name_raw is None else normalize_name(role, name_raw)
     if name is None:
         raise ValueError(
-            "סיומת חייבת להיות 01-99 או INS" if role == "classroom" else "שם באורך 1-32 תווים"
+            "סיומת חייבת להיות 01-99 או INS" if role == "classroom" else _NAME_TOO_LONG
         )
     with _write_lock, writing(conn):
         conn.execute(
@@ -212,13 +222,30 @@ def update_machine(
     journal(conn, "machine_edit", f"{mac} name={name} group={target_group}", user)
 
 
-def lookup(conn: sqlite3.Connection, mac: str) -> sqlite3.Row | None:
-    """המכונה + הקבוצה + התפקיד, בשורה אחת. התפקיד נגזר מהחברות בקבוצה."""
-    return conn.execute(
+def lookup(
+    conn: sqlite3.Connection,
+    mac: str,
+    all_macs: list[str] | None = None,
+) -> sqlite3.Row | None:
+    """המכונה + הקבוצה + התפקיד, בשורה אחת. התפקיד נגזר מהחברות בקבוצה.
+
+    ‏`mac` הוא המפתח המועדף (כרטיס האתחול). אם הוא אינו רשום, כל MAC
+    ב-`all_macs` נבדק אחריו — מכונה עם שני כרטיסים שעולה על השני
+    עדיין מזוהה (#524).
+    """
+    sql = (
         "SELECT m.mac, m.suffix, m.note, g.id AS group_id, g.label, g.role "
-        "FROM machines m JOIN groups g ON g.id = m.group_id WHERE m.mac = ?",
-        (mac,),
-    ).fetchone()
+        "FROM machines m JOIN groups g ON g.id = m.group_id WHERE m.mac = ?"
+    )
+    candidates = [mac]
+    for extra in all_macs or ():
+        if extra not in candidates:
+            candidates.append(extra)
+    for candidate in candidates:
+        row = conn.execute(sql, (candidate,)).fetchone()
+        if row is not None:
+            return row
+    return None
 
 
 def export_csv(conn: sqlite3.Connection) -> str:
