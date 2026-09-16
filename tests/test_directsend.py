@@ -165,7 +165,7 @@ def direct_run(tmp_path, *, answer=None, env=None, udp_silent=False):
         stubs["jq"] = JQ_STUB
     libs = " ".join(f". {posix(AGENT)}/lib/{n}.sh;" for n in (
         "common", "sysinfo", "waits", "jsonq", "progress", "restore", "manifest",
-        "bootca", "hibernation", "capture", "directsend", "ui"))
+        "bootca", "hibernation", "shrink", "capture", "directsend", "ui"))   # ‏#87: shrink.sh לפני capture.sh, כמו בסוכן
     out = run_sh(
         make_stubs(box / "stubs", stubs) + exports + libs
         + f' node_is_block() {{ grep -qxF "$1" {posix(nodes)!r} 2>/dev/null; }}; '

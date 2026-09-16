@@ -22,7 +22,7 @@ LIB_DIR="${LIB_DIR:-/usr/lib/imagectl}"
 . "$LIB_DIR/expand.sh"; . "$LIB_DIR/grow.sh"   # ההרחבה: לפני הזרם ואחריו (#478)
 . "$LIB_DIR/drawers.sh"; . "$LIB_DIR/verdict.sh"; . "$LIB_DIR/failmark.sh"   # הזרם, הפסק עליו (#520), והראיה על כשל (#874)
 . "$LIB_DIR/manifest.sh"
-. "$LIB_DIR/bootca.sh"; . "$LIB_DIR/hibernation.sh"   # לפני capture.sh: capture_disk קורא להם (#85, #651)
+. "$LIB_DIR/bootca.sh"; . "$LIB_DIR/hibernation.sh"; . "$LIB_DIR/shrink.sh"   # לפני capture.sh: capture_disk קורא להם (#85, #651, #87)
 . "$LIB_DIR/capture.sh"; . "$LIB_DIR/directsend.sh"   # #715: pass 1 is capture_disk with the sink discarded
 . "$LIB_DIR/classround.sh"
 . "$LIB_DIR/hostname.sh"; . "$LIB_DIR/postdeploy.sh"   # #720: driver staging, after the name

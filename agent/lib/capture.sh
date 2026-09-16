@@ -10,7 +10,8 @@
 #
 # תיאור הדיסק במניפסט — ‏role, ‏fs, ‏uuid, ‏used_bytes, ‏os ו-expandable — יושב
 # ב-manifest.sh; שני הקבצים נטענים יחד. כאן נשאר מה שמזרים את הבייטים עצמם.
-# שערי הקריאה-בלבד (מהובר #651, BitLocker #671) יושבים ב-hibernation.sh.
+# שערי הקריאה-בלבד (מהובר #651, BitLocker #671) יושבים ב-hibernation.sh;
+# כיווץ מחיצת המקור לפני הזרם והחזרתה אחריו (#87) — ב-shrink.sh.
 
 # ‏#72, נמדד ולא נאמד (‏4GiB מראש `p3` של tiny11, שרת המעבדה): רמה 9 עולה
 # פי 3.1 בזמן ומחזירה 1.1% — ‏~80MB על 7.3GB, ‏4 שניות בשידור שאורך 5:54.
@@ -29,7 +30,11 @@ _capture_failed() {
     # $1 = disk, $2 = הסיבה. היומן לבדו נעלם (‏tmpfs, ו-ui_clear מוחק את המסך),
     # ולכן הסיבה נכתבת גם לשדה `error` של היעד — אותו מסלול ככשל מחיצה (#106).
     log "capture failed on $1: $2"
-    target_set "$1" "failed" "$2"
+    # ‏#87: המקור חוזר לגודלו קודם. החזרה שנכשלה מצטרפת לסיבה — היומן
+    # לבדו נעלם, והמפעיל חייב לדעת אם דיסק הבנייה נשאר מכווץ.
+    _cf_why="$2"
+    shrink_restore_source "$1" || _cf_why="$2 | $(cat "$RUN_DIR/targets/$1/error")"
+    target_set "$1" "failed" "$_cf_why"
     echo "failed" > "$RUN_DIR/state"
 }
 
@@ -101,6 +106,15 @@ capture_disk() {
     # כותרת GPT תקינה וטבלה ריקה — מצב אחר לגמרי מ"אינו GPT" (עיקרון 5).
     [ -s "$_parts" ] || { _capture_failed "$_disk" "לא נמצאו מחיצות על /dev/$_disk"; return 1; }
 
+    while IFS='|' read -r _idx _guid _uguid _first _sizesec; do
+        _node=$(partition_node "$_disk" "$_idx"); _fs=$(_fs_of "$_node")
+        case "$_fs" in ntfs|ntfs-3g) _why=$(capture_ntfs_hibernation_reason "$_node" "$RUN_DIR/ntfs-check.$_idx"); [ -z "$_why" ] || { _capture_failed "$_disk" "$_why"; return 1; } ;; esac
+    done < "$_parts"
+    # ‏#87: אחרי שער המהובר ולפני חישוב הפריסה — הכיווץ משכתב את $_parts,
+    # וכל מה שלמטה (הרצפה, השער החמישי, המניפסט) רואה את הפריסה המצומצמת.
+    shrink_before_capture "$_disk" "$_parts" "$_sector_size" \
+        || { _capture_failed "$_disk" "${SHRINK_ERROR:-הכיווץ נכשל בלי סיבה (shrink.sh לא נטען?)}"; return 1; }
+
     # ‏min_target_bytes הוא מה שהאימג' באמת צריך — סוף המחיצה האחרונה שבטבלה
     # ועוד מגה לגיבוי ה-GPT וליישור — ולא גודל דיסק המקור (#82): דיסק VM
     # ‏"256GB" הוא 256 GiB, שבעה אחוזים יותר מכל כונן פיזי מאותה מחלקה, וכל עוד
@@ -121,7 +135,7 @@ capture_disk() {
     # ‏VM ‏"256GB" שהוא 256 GiB — מייצר אימג' תקין לגמרי שאין לאן לכתוב
     # אותו, ובדיקה 2.7 בשחזור תחסום אותו בצדק על כל תחנה בנפרד. הסירוב
     # נושא את שלושת המספרים שהופכים אותו לפעולה: מה צריך, מה יש, וכמה
-    # לכווץ. הכיווץ עצמו אינו כאן — הוא נוגע בדיסק המקור (‏#87 פתוח).
+    # לכווץ. הכיווץ עצמו כבר רץ למעלה (shrink.sh) — מה שנשאר גדול מדי, נשאר.
     _floor_json="null"
     if [ -n "$CAPTURE_TARGET_BYTES" ]; then
         # רצפה שאינה מספר אינה "אין רצפה": ערך שגוי שמדלג על הבדיקה הוא
@@ -146,10 +160,6 @@ capture_disk() {
         _floor_json="$CAPTURE_TARGET_BYTES"
     fi
 
-    while IFS='|' read -r _idx _guid _uguid _first _sizesec; do
-        _node=$(partition_node "$_disk" "$_idx"); _fs=$(_fs_of "$_node")
-        case "$_fs" in ntfs|ntfs-3g) _why=$(capture_ntfs_hibernation_reason "$_node" "$RUN_DIR/ntfs-check.$_idx"); [ -z "$_why" ] || { _capture_failed "$_disk" "$_why"; return 1; } ;; esac
-    done < "$_parts"
     _json_parts=""
     _total=0
     # ‏#85: ה-ESP נקרא שוב אחרי הלולאה, לגזירת החותם של מטעני האתחול.
@@ -171,7 +181,7 @@ capture_disk() {
             _uuid=$(_uuid_of "$_node")
             if [ -n "$_uuid" ]; then _ujson="\"$_uuid\""; else _ujson="null"; fi
             log "partition $_idx (swap): recorded, not read"
-            _json_parts="$_json_parts{\"index\":$_idx,\"type_guid\":\"$_guid\",\"unique_guid\":\"$_uguid\",\"uuid\":$_ujson,\"role\":\"swap\",\"fs\":\"swap\",\"start_sector\":$_first,\"size_bytes\":$((_sizesec * _sector_size)),\"used_bytes\":0,\"file\":null,\"sha256\":null,\"expandable\":false},"
+            _json_parts="$_json_parts{\"index\":$_idx,\"type_guid\":\"$_guid\",\"unique_guid\":\"$_uguid\",\"uuid\":$_ujson,\"role\":\"swap\",\"fs\":\"swap\",\"start_sector\":$_first,\"size_bytes\":$((_sizesec * _sector_size)),\"used_bytes\":0,\"file\":null,\"sha256\":null,\"expandable\":false$(shrink_json_extra "$_idx" "$_first" "$_sizesec" "$_sector_size")},"
             continue
         fi
         _file="p$_idx.$_role.pcl.zst"
@@ -253,8 +263,10 @@ capture_disk() {
 
         # Every partition is written not expandable; _mark_expandable picks
         # the one candidate once the whole list is known.
-        _json_parts="$_json_parts{\"index\":$_idx,\"type_guid\":\"$_guid\",\"unique_guid\":\"$_uguid\",\"role\":\"$_role\",\"fs\":\"$_fs\",\"start_sector\":$_first,\"size_bytes\":$((_sizesec * _sector_size)),\"used_bytes\":$_used,\"file\":\"$_file\",\"sha256\":\"$_sha\",\"expandable\":false},"
+        _json_parts="$_json_parts{\"index\":$_idx,\"type_guid\":\"$_guid\",\"unique_guid\":\"$_uguid\",\"role\":\"$_role\",\"fs\":\"$_fs\",\"start_sector\":$_first,\"size_bytes\":$((_sizesec * _sector_size)),\"used_bytes\":$_used,\"file\":\"$_file\",\"sha256\":\"$_sha\",\"expandable\":false$(shrink_json_extra "$_idx" "$_first" "$_sizesec" "$_sector_size")},"
     done < "$_parts"
+    # ‏#87: הבייטים עברו; מחשב הבנייה מקבל את מחיצתו בחזרה. כשל = אזהרה בלבד.
+    shrink_restore_source "$_disk"
 
     _json_parts=${_json_parts%,}
     _json_parts=$(_mark_expandable "$_json_parts")

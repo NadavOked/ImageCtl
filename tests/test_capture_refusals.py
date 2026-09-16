@@ -143,6 +143,10 @@ def capture_run(tmp_path, *, present=True, image=GPT_DISK, stubs=None,
         # ופונקציה שאינה טעונה היא מניפסט פגום — לא שגיאה.
         f". {posix(AGENT)}/lib/restore.sh; . {posix(AGENT)}/lib/manifest.sh; "
         f". {posix(AGENT)}/lib/bootca.sh; . {posix(AGENT)}/lib/hibernation.sh; "
+        # ‏#87: shrink.sh לפני capture.sh כמו בסוכן; הוא עצמו קורא ל-attended
+        # (‏#906) ול-ui.sh, ולכן גם הם כאן — פונקציה שאינה טעונה היא כשל שקט.
+        f". {posix(AGENT)}/lib/ui.sh; . {posix(AGENT)}/lib/attended.sh; "
+        f". {posix(AGENT)}/lib/shrink.sh; "
         f". {posix(AGENT)}/lib/capture.sh; "
         f'node_is_block() {{ grep -qxF "$1" {posix(nodes)!r} 2>/dev/null; }}; '
         # ‏shell_pre רץ **אחרי** שרשרת הטעינה, ולכן הוא יכול להחליף

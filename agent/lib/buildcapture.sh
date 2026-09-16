@@ -115,7 +115,7 @@ build_capture_flow() {
     echo
     echo "    Image:   $_name"
     echo "    Folder:  $_folder"
-    echo "    Source:  /dev/$_disk  (read only -- nothing is written to it)"
+    echo "    Source:  /dev/$_disk  (an NTFS system partition is shrunk first, and grown back after -- you will be asked)"
     echo
     printf "  Start the capture? [y/N]: "
     read -r _yes

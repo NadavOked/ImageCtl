@@ -23,13 +23,18 @@
 </div>
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/architecture-current-dark.svg">
-  <img alt="ארכיטקטורת ImageCtl — המצב הקיים" src="docs/architecture-current.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/architecture-v1-dark.svg">
+  <img alt="ImageCtl v1 — מהדורת שיכפול: ארכיטקטורה" src="docs/architecture-v1.svg">
 </picture>
 
-_התרשים משקף את היקף מהדורת שיכפול (v1) — מחשב בנייה, מחשבי שיכפול
-ושרת (ראשי ומשני, [#655](https://github.com/NadavOked/ImageCtl-archive/issues/655)).
-תחנות כיתה/PXE לתלמידים אינן בתרשים — הן v2._
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/flow-v1-dark.svg">
+  <img alt="ImageCtl v1 — זרימה בזמן: מדיסק המקור ועד דיסקים משוכפלים" src="docs/flow-v1.svg">
+</picture>
+
+_שני התרשימים משקפים את היקף מהדורת שיכפול (v1) — קונסולה, שרת ראשי ומשני
+([#655](https://github.com/NadavOked/ImageCtl-archive/issues/655)), מחשב בנייה
+ומחשבי שיכפול. תחנות כיתה/PXE לתלמידים אינן בתרשימים — הן v2._
 
 <div dir="rtl">
 

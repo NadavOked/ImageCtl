@@ -1,0 +1,157 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1760" height="1110" viewBox="0 0 1760 1110">
+<defs>
+ <marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#334155"/></marker>
+ <style>
+ text{font-family:"Segoe UI",Arial,sans-serif;fill:#172033}.title{font-size:32px;font-weight:700}.sub{font-size:16px;fill:#475569}
+ .h{font-size:19px;font-weight:700}.b{font-size:14px}.s{font-size:12px}.step{fill:#fff;stroke:#64748b;stroke-width:2}
+ .good{fill:#dcfce7;stroke:#16a34a;stroke-width:2}.warn{fill:#fff7ed;stroke:#ea580c;stroke-width:2}.bad{fill:#fee2e2;stroke:#dc2626;stroke-width:2}
+ .blue{fill:#eff6ff;stroke:#2563eb;stroke-width:2}.purple{fill:#f5f3ff;stroke:#7c3aed;stroke-width:2}.gray{fill:#f1f5f9;stroke:#64748b;stroke-width:2}
+ .arrow{fill:none;stroke:#334155;stroke-width:2.5;marker-end:url(#a)}
+ .gate{fill:#fffbeb;stroke:#d97706;stroke-width:2.5}.pill{fill:#fff;stroke:#94a3b8;stroke-width:1.5}
+ </style>
+</defs>
+<rect width="1760" height="1110" fill="#fff"/>
+<text x="880" y="50" text-anchor="middle" class="title" direction="rtl" unicode-bidi="plaintext">ImageCtl v1 — מהדורת שיכפול</text>
+<text x="880" y="79" text-anchor="middle" class="sub" direction="rtl" unicode-bidi="plaintext">תרשים זרימה בזמן: מדיסק המקור ועד דיסקים משוכפלים</text>
+
+<!-- timeline line -->
+<path d="M115 180 L1645 180" stroke="#94a3b8" stroke-width="4"/>
+<g>
+ <circle cx="160" cy="180" r="14" fill="#2563eb"/><text x="160" y="145" text-anchor="middle" class="b">1</text>
+ <circle cx="470" cy="180" r="14" fill="#2563eb"/><text x="470" y="145" text-anchor="middle" class="b">2</text>
+ <circle cx="780" cy="180" r="14" fill="#2563eb"/><text x="780" y="145" text-anchor="middle" class="b">3</text>
+ <circle cx="1090" cy="180" r="14" fill="#2563eb"/><text x="1090" y="145" text-anchor="middle" class="b">4</text>
+ <circle cx="1400" cy="180" r="14" fill="#2563eb"/><text x="1400" y="145" text-anchor="middle" class="b">5</text>
+ <circle cx="1600" cy="180" r="14" fill="#16a34a"/><text x="1600" y="145" text-anchor="middle" class="b">✓</text>
+</g>
+
+<!-- 1 -->
+<rect x="70" y="220" width="250" height="220" rx="18" class="blue"/>
+<text x="195" y="255" text-anchor="middle" class="h" direction="rtl" unicode-bidi="plaintext">דיסק מקור + PXE</text>
+<text x="195" y="288" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">מחשב בנייה</text>
+<text x="195" y="318" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">PXE → סוכן ב-initramfs</text>
+<text x="195" y="348" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">GUI גרפי → כניסה</text>
+<text x="195" y="390" text-anchor="middle" class="s" direction="rtl" unicode-bidi="plaintext">הסוכן רץ ב-RAM</text>
+
+<!-- 2 gates -->
+<rect x="350" y="220" width="390" height="300" rx="18" class="gate"/>
+<text x="545" y="255" text-anchor="middle" class="h" direction="rtl" unicode-bidi="plaintext">שערים לפני שנוגעים בדיסק</text>
+<rect x="375" y="278" width="340" height="55" rx="12" class="step"/>
+<text x="545" y="312" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">Fast Startup / הובר? → סירוב</text>
+<rect x="375" y="344" width="340" height="55" rx="12" class="step"/>
+<text x="545" y="378" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">BitLocker? → סירוב</text>
+<rect x="375" y="410" width="340" height="55" rx="12" class="step"/>
+<text x="545" y="444" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">NTFS לא עקבי? → סירוב</text>
+<text x="545" y="492" text-anchor="middle" class="s" direction="rtl" unicode-bidi="plaintext">הסיבה מוצגת: "כבה Windows בכיבוי מלא" / "הרץ chkdsk"</text>
+
+<!-- 3 shrink -->
+<rect x="770" y="220" width="320" height="300" rx="18" class="purple"/>
+<text x="930" y="255" text-anchor="middle" class="h" direction="rtl" unicode-bidi="plaintext">כיווץ בקליטה</text>
+<text x="930" y="288" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">מדידת אפשרות הכיווץ</text>
+<text x="930" y="322" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">שאלה לאדם ליד המכונה:</text>
+<rect x="800" y="342" width="260" height="42" rx="10" class="pill"/><text x="930" y="369" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">[1] כווץ</text>
+<rect x="800" y="392" width="260" height="42" rx="10" class="pill"/><text x="930" y="419" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">[2] קלוט בלי לכווץ</text>
+<rect x="800" y="442" width="260" height="42" rx="10" class="pill"/><text x="930" y="469" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">[3] בטל</text>
+<text x="930" y="508" text-anchor="middle" class="s" direction="rtl" unicode-bidi="plaintext">ntfsresize + GPT קטן יותר → המחיצה חוזרת לגודל</text>
+
+<!-- 4 capture -->
+<rect x="1120" y="220" width="300" height="300" rx="18" class="blue"/>
+<text x="1270" y="255" text-anchor="middle" class="h" direction="rtl" unicode-bidi="plaintext">קליטה לשרת</text>
+<text x="1270" y="296" text-anchor="middle" class="b">partclone</text>
+<text x="1270" y="325" text-anchor="middle" class="b">↓ zstd</text>
+<text x="1270" y="354" text-anchor="middle" class="b">↓ sha256</text>
+<text x="1270" y="383" text-anchor="middle" class="b">↓ HTTP</text>
+<rect x="1150" y="410" width="240" height="75" rx="12" class="good"/>
+<text x="1270" y="438" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">אימות sha256 לפני</text>
+<text x="1270" y="462" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">כניסה לספרייה</text>
+
+<!-- 5 manifest -->
+<rect x="1450" y="220" width="270" height="300" rx="18" class="gray"/>
+<text x="1585" y="255" text-anchor="middle" class="h" direction="rtl" unicode-bidi="plaintext">אימג' מוכן</text>
+<text x="1585" y="294" text-anchor="middle" class="b">manifest.json</text>
+<text x="1585" y="325" text-anchor="middle" class="s" direction="rtl" unicode-bidi="plaintext">מחיצות · גדלים · בייטים בשימוש</text>
+<text x="1585" y="350" text-anchor="middle" class="s">shrunk_from_bytes</text>
+<text x="1585" y="375" text-anchor="middle" class="s" direction="rtl" unicode-bidi="plaintext">Secure Boot של המקור</text>
+<rect x="1480" y="410" width="210" height="75" rx="12" class="good"/>
+<text x="1585" y="439" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">🟢 נשמר בספרייה</text>
+<text x="1585" y="463" text-anchor="middle" class="s" direction="rtl" unicode-bidi="plaintext">המחיצה הוחזרה לגודלה</text>
+
+<!-- transition -->
+<path d="M1600 540 L1600 580 L150 580 L150 630" class="arrow"/>
+<text x="880" y="570" text-anchor="middle" class="h" direction="rtl" unicode-bidi="plaintext">ב. סבב הפצה — שרת → מחשבי שיכפול</text>
+
+<!-- deployment start -->
+<rect x="70" y="630" width="230" height="185" rx="18" class="blue"/>
+<text x="185" y="665" text-anchor="middle" class="h" direction="rtl" unicode-bidi="plaintext">התחלת סבב</text>
+<text x="185" y="700" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">קונסולה:</text>
+<text x="185" y="728" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">אימג' + קבוצת משכפלים</text>
+<text x="185" y="760" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">→ התחל</text>
+
+<!-- disk check -->
+<rect x="330" y="630" width="430" height="330" rx="18" class="gray"/>
+<text x="545" y="665" text-anchor="middle" class="h" direction="rtl" unicode-bidi="plaintext">בדיקת דיסקים לפני הכתיבה</text>
+<rect x="355" y="690" width="380" height="65" rx="12" class="good"/>
+<text x="545" y="718" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">🟢 ירוק — SMART תקין, אין היסטוריה</text>
+<text x="545" y="741" text-anchor="middle" class="s" direction="rtl" unicode-bidi="plaintext">כותבים</text>
+<rect x="355" y="765" width="380" height="75" rx="12" class="warn"/>
+<text x="545" y="793" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">🟠 כתום — SMART מזהיר</text>
+<text x="545" y="817" text-anchor="middle" class="s" direction="rtl" unicode-bidi="plaintext">"להחליף או להמשיך?" · בלי תשובה = ממשיכים</text>
+<rect x="355" y="850" width="380" height="82" rx="12" class="bad"/>
+<text x="545" y="878" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">🔴 אדום — נכשל בכתיבה בסבב קודם</text>
+<text x="545" y="902" text-anchor="middle" class="s" direction="rtl" unicode-bidi="plaintext">"להחליף או להמשיך?" · בלי תשובה = מדלגים</text>
+<text x="545" y="950" text-anchor="middle" class="s" direction="rtl" unicode-bidi="plaintext">S/N + פורט · "נקה" אחרי החלפת דיסק/כבל</text>
+
+<!-- multicast -->
+<rect x="790" y="630" width="380" height="330" rx="18" class="blue"/>
+<text x="980" y="665" text-anchor="middle" class="h" direction="rtl" unicode-bidi="plaintext">מולטיקאסט + fanout</text>
+<text x="980" y="710" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">udp-sender בשרת</text>
+<text x="980" y="745" text-anchor="middle" class="b">↓</text>
+<text x="980" y="775" text-anchor="middle" class="b">udp-receiver → zstd → partclone</text>
+<text x="980" y="810" text-anchor="middle" class="b">↓</text>
+<text x="980" y="840" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">דיסק 1 · דיסק 2 · דיסק 3</text>
+<rect x="825" y="865" width="310" height="65" rx="12" class="good"/>
+<text x="980" y="893" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">בקרת קצב + sha256 קצה-לקצה</text>
+<text x="980" y="916" text-anchor="middle" class="s" direction="rtl" unicode-bidi="plaintext">מגירה שנכשלה אינה עוצרת אחרות</text>
+
+<!-- post write -->
+<rect x="1200" y="630" width="270" height="330" rx="18" class="purple"/>
+<text x="1335" y="665" text-anchor="middle" class="h" direction="rtl" unicode-bidi="plaintext">אחרי הכתיבה</text>
+<text x="1335" y="705" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">מתיחת NTFS</text>
+<text x="1335" y="733" text-anchor="middle" class="s">256 / 512GB</text>
+<text x="1335" y="770" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">שם מחשב</text>
+<text x="1335" y="798" text-anchor="middle" class="s">Windows registry offline</text>
+<text x="1335" y="823" text-anchor="middle" class="s">Linux hostname</text>
+<text x="1335" y="860" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">אימות partition table</text>
+<text x="1335" y="900" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">Secure Boot מנובא מראש</text>
+
+<!-- finish -->
+<rect x="1500" y="630" width="220" height="330" rx="18" class="good"/>
+<text x="1610" y="665" text-anchor="middle" class="h" direction="rtl" unicode-bidi="plaintext">סיום</text>
+<text x="1610" y="715" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">🟢 הצלחה</text>
+<text x="1610" y="750" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">כיבוי</text>
+<text x="1610" y="785" text-anchor="middle" class="s" direction="rtl" unicode-bidi="plaintext">WoL דרוך</text>
+<text x="1610" y="830" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">המפעיל מוציא</text>
+<text x="1610" y="854" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">דיסקים ומכניס חדשים</text>
+<text x="1610" y="905" text-anchor="middle" class="s" direction="rtl" unicode-bidi="plaintext">תמיד אדם ליד המכונות</text>
+<text x="1610" y="930" text-anchor="middle" class="s" direction="rtl" unicode-bidi="plaintext">לא אוטומטי</text>
+
+<!-- side paths -->
+<rect x="70" y="850" width="230" height="180" rx="18" class="purple"/>
+<text x="185" y="884" text-anchor="middle" class="h" direction="rtl" unicode-bidi="plaintext">הפצה ישירה</text>
+<text x="185" y="915" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">מחשב הבנייה = udp-sender</text>
+<text x="185" y="943" text-anchor="middle" class="s" direction="rtl" unicode-bidi="plaintext">שני מעברים: manifest + sha256</text>
+<text x="185" y="970" text-anchor="middle" class="s" direction="rtl" unicode-bidi="plaintext">ואז שידור · קריאה בלבד</text>
+<text x="185" y="1000" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">לא נשמר אימג' בשרת</text>
+
+<rect x="330" y="985" width="430" height="45" rx="12" class="warn"/>
+<text x="545" y="1013" text-anchor="middle" class="s" direction="rtl" unicode-bidi="plaintext">כבל SATA מזוהה מ-dmesg → מסווג "כבל", לא "דיסק"</text>
+
+<rect x="790" y="985" width="930" height="45" rx="12" class="bad"/>
+<text x="1255" y="1013" text-anchor="middle" class="b" direction="rtl" unicode-bidi="plaintext">🔴 כל מצב לא ברור → דיסק מקומי · אין כתיבה בלי משימה מפורשת · בדיקה שנכשלה = כישלון גלוי</text>
+
+<!-- arrows between columns -->
+<path d="M300 725 L330 725" class="arrow"/>
+<path d="M760 795 L790 795" class="arrow"/>
+<path d="M1170 795 L1200 795" class="arrow"/>
+<path d="M1470 795 L1500 795" class="arrow"/>
+</svg>

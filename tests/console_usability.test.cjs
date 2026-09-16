@@ -309,3 +309,102 @@ test('S6: .user-menu is fixed at inline-end, the same side as .user (margin-inli
   assert.equal(lastDecl(css, '.user-menu', 'inset-inline-end'), '10px');
   assert.equal(lastDecl(css, '.user-menu', 'inset-inline-start'), 'auto', 'the original inset-inline-start:10px (the far side in RTL) is neutralised');
 });
+
+// ---- S7 (#931): הסרגל נגלל, וקליק/דאבל-קליק על צומת עובד כמצופה -----------
+
+/* #931: `.main` הוא grid item עם גובה קבוע מ-.app (48px + 1fr), אבל
+   `.sidebar` עצמו לא היה חתוך אליו — התוכן פשוט גדל מעבר לגבול (overflow
+   גלוי כברירת מחדל) ודחף את הגוף כולו, בלי scrollbar ובלי שה-wheel יגיע
+   לאף אלמנט שבאמת גולל. נמדד בדפדפן אמיתי (127.0.0.1:8081, 1366×768):
+   .sidebar.clientHeight גדל יחד עם .scrollHeight (937 שניהם) לפני התיקון,
+   ואחריו .clientHeight נשאר 698 (קבוע) בעוד .scrollHeight גדל ל-847 —
+   בדיוק ההפרש שמאפשר ל-`.tree{overflow-y:auto}` הקיים לעבוד.
+   התיקון עצמו: overflow:hidden על .sidebar (לא height — ראו למטה). */
+test('S7: .sidebar clips to its grid row (overflow:hidden), so .tree\'s own vertical scroll can bound it', () => {
+  const css = read('console.css');
+  assert.equal(lastDecl(css, '.sidebar', 'overflow'), 'hidden',
+    'without this the sidebar grows past .main\'s fixed height instead of scrolling internally');
+  assert.equal(lastDecl(css, '.tree', 'overflow-y'), 'auto');
+  assert.equal(lastDecl(css, '.tree', 'overflow-x'), 'hidden', 'no horizontal scroll (גמור #931)');
+  // height:100% on .sidebar was tried and rejected: it over-constrains the
+  // <=740px overlay (.sidebar.open{position:fixed;top:48px;bottom:0}),
+  // which would push the overlay 48px past the viewport bottom.
+  const narrow = narrowCss();
+  assert.match(narrow, /\.sidebar\.open\{[^}]*bottom:0/, 'precondition: the mobile overlay still pins to the viewport bottom');
+});
+
+/* #931 — תיקון ספק מנדב אחרי בדיקה במעבדה (16/09 21:30): הסמנטיקה
+   ההפוכה ממה שבנתי קודם. "קליק אחד מראה את מה שלחצתי — נגיד לחצתי
+   'מחשבים' אז את המחשבים; שני קליקים פותח וסוגר". כלומר קליק בודד על
+   שורת צומת אף פעם לא מטגל (רק בורר/מנווט אם יש לו יעד — אחרת לא עושה
+   כלום); דאבל-קליק על השורה מטגל בדיוק פעם אחת; החץ הקטן ממשיך לטגל
+   בקליק בודד כמו קודם. toggleInventoryGroup עצמה חזרה לחתימה הפשוטה
+   (nodeEl, childId) בלי שמירת event.detail — אין יותר צורך בה: קליק
+   בודד על שורה כבר לא קורא לפונקציה בכלל, ודאבל-קליק native קורא לה
+   פעם אחת בדיוק (הדפדפן מבטיח את זה, לא הקוד). */
+test('S7 (follow-up): the tree scrolls without a visible scrollbar, and a double-click on a row does not select the word', () => {
+  // נדב 16/09 22:22: "אני רוצה גלילה בלי שיהיה את זה בתצוגה" — פס הגלילה
+  // הנייטיבי נראה כמו רכיב UI; והדאבל-קליק שפותח/סוגר סימן את שם התיקייה.
+  const css = read('console.css');
+  assert.equal(lastDecl(css, '.tree', 'scrollbar-width'), 'none', 'Firefox: hidden scrollbar, still scrollable');
+  assert.match(css, /\.tree::-webkit-scrollbar\{[^}]*display:none/, 'Chromium: hidden scrollbar, still scrollable');
+  assert.equal(lastDecl(css, '.inventory-node', 'user-select'), 'none', 'dblclick toggles the node, it must not select its label');
+});
+
+test('S7: a single click on a group row never toggles — only navigates (or does nothing); the arrow and the row\'s dblclick still toggle', () => {
+  const html = read('index.html');
+  // כל onclick על .inventory-node (רמת השורה, לא על .tree-arrow הפנימי)
+  // אסור שיקרא ל-toggleInventoryGroup — מותר לו לנווט/לבחור, או להיעדר.
+  const rowOnclicks = [...html.matchAll(/<div class="inventory-node[^>]*\bonclick="([^"]*)"/g)].map((m) => m[1]);
+  assert.ok(rowOnclicks.length >= 10, 'expected several row-level onclick handlers, got ' + rowOnclicks.length);
+  for (const onclick of rowOnclicks) {
+    assert.doesNotMatch(onclick, /toggleInventoryGroup/, `row onclick "${onclick}" must not toggle — single click only navigates/selects`);
+  }
+  // כל שורה שיש לה חץ (כלומר יש לה ילדים לטגל) חייבת ondblclick שמטגל אותה
+  const arrowRows = [...html.matchAll(/<div class="inventory-node[^>]*>(?:(?!<\/div>).)*?<span class="tree-arrow"[^>]*>/g)];
+  assert.ok(arrowRows.length >= 10, 'expected group rows with an arrow, got ' + arrowRows.length);
+  for (const [rowHtml] of arrowRows) {
+    assert.match(rowHtml, /ondblclick="toggleInventoryGroup\(this,'\w+'\)"/, `row must toggle on dblclick: ${rowHtml.slice(0, 90)}`);
+  }
+  // והחץ עצמו עדיין מטגל בקליק בודד, כמו לפני התיקון הזה
+  assert.doesNotMatch(html, /<span class="tree-arrow"(?![^>]*onclick=)[^>]*>/,
+    'every .tree-arrow keeps its own single-click toggle');
+});
+
+/* #931: toggleInventoryGroup חזרה לחתימה הפשוטה — קריאה בודדת = טוגל
+   בודד, תמיד (בלי dedup פנימי). זה נכון כי עכשיו רק שני מקומות קוראים
+   לה: החץ (קליק בודד, קורה פעם אחת) והשורה (dblclick, שהדפדפן מבטיח
+   שיורה פעם אחת לכל מחווה) — אין יותר "שני click לפני דאבל-קליק" שצריך
+   סינון, כי קליק בודד על שורה כבר לא קורא לפונקציה כלל. */
+test('S7: toggleInventoryGroup has no built-in de-dup — each call toggles once, matching "arrow-click or row-dblclick, called exactly once per gesture"', () => {
+  const {run, tree} = setup();
+  const box = tree.querySelector('#invTA');
+  assert.ok(!box.hasAttribute('hidden'), 'precondition: invTA starts open');
+  run('toggleInventoryGroup(document.getElementById("invTA").previousElementSibling, "invTA")');
+  assert.ok(box.hasAttribute('hidden'), 'one call (the dblclick, or the arrow click) closes it');
+  run('toggleInventoryGroup(document.getElementById("invTA").previousElementSibling, "invTA")');
+  assert.ok(!box.hasAttribute('hidden'), 'a second call re-opens it — no hidden guard eating it');
+});
+
+/* #931 גמור: "renameServer נשאר על שם השרת בלבד" — דאבל-קליק על שאר
+   השורה מטגל; דאבל-קליק מדויק על הטקסט קורא ל-renameServer בלבד
+   (עוצר propagation כדי שלא יגיע גם ל-ondblclick של השורה). קליק בודד
+   בשום מקום בשורה הזו לא עושה כלום (לשורת שרת אין יעד ניווט).
+   נבדק חי בדפדפן (127.0.0.1:8081): דאבל-קליק על אזור האייקון טגל את
+   srvTA; דאבל-קליק מדויק על הטקסט קרא ל-renameServer פעם אחת ו-srvTA
+   נשאר פתוח (renameCalls:1, srvTAHidden:false). */
+test('S7: both server-node rows have no click-to-toggle/no click-to-anything; dblclick toggles the row, and .server-name\'s own dblclick stops it from also reaching the row', () => {
+  const html = read('index.html');
+  const rows = [...html.matchAll(/<div class="inventory-node server-node[^>]*>/g)];
+  assert.ok(rows.length >= 2, 'expected both server rows (main + secondary), got ' + rows.length);
+  for (const [rowTag] of rows) {
+    assert.doesNotMatch(rowTag, /\bonclick=/, 'a server row has no navigate target — single click must do nothing');
+    assert.match(rowTag, /ondblclick="toggleInventoryGroup\(this,'\w+'\)"/, 'dblclick on the row toggles it');
+  }
+  const nameHandlers = [...html.matchAll(/<strong class="server-name" ondblclick="([^"]*)">/g)].map((m) => m[1]);
+  assert.equal(nameHandlers.length, 2, 'renameServer is wired on .server-name only, once per server row');
+  for (const handler of nameHandlers) {
+    assert.match(handler, /event\.stopPropagation\(\)/, 'must stop the dblclick from also reaching the row\'s toggle');
+    assert.match(handler, /renameServer\(this\)/);
+  }
+});

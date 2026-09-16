@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1760" height="1110" viewBox="0 0 1760 1110">
+<defs>
+  <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#cbd5e1"/></marker>
+  <marker id="arrowBlue" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#60a5fa"/></marker>
+  <style>
+    text{font-family:"Segoe UI",Arial,sans-serif;fill:#e5e7eb}
+    .title{font-size:32px;font-weight:700}.subtitle{font-size:16px;fill:#aab4c3}
+    .h{font-size:20px;font-weight:700}.body{font-size:14px}.small{font-size:12px}
+    .box{stroke-width:2}.server{fill:#12324a;stroke:#38bdf8}.net{fill:#2b2148;stroke:#a78bfa}
+    .img{fill:#123522;stroke:#4ade80}.safe{fill:#3a2414;stroke:#fb923c}.chain{fill:#3f3212;stroke:#fbbf24}
+    .secondary{fill:#202b3a;stroke:#718096}.port{fill:#0b1220;stroke:#cbd5e1;stroke-width:1.5}
+    .line{stroke:#cbd5e1;stroke-width:2.5;fill:none;marker-end:url(#arrow)}
+    .blue{stroke:#60a5fa;stroke-width:3;fill:none;marker-end:url(#arrowBlue)}
+    .dash{stroke-dasharray:8 7}
+  </style>
+</defs>
+<rect width="1760" height="1110" fill="#0b1220"/>
+<text x="880" y="55" text-anchor="middle" class="title" direction="rtl" unicode-bidi="plaintext">ImageCtl v1 — מהדורת שיכפול</text>
+<text x="880" y="84" text-anchor="middle" class="subtitle" direction="rtl" unicode-bidi="plaintext">כל מה שבתרשים רץ היום; תחנות כיתה/PXE לתלמידים, ISO ודרייברים ב-DISM — בגרסה הבאה.</text>
+
+<!-- legend -->
+<g transform="translate(90 115)">
+ <text x="0" y="0" class="h" direction="rtl" unicode-bidi="plaintext">מקרא</text>
+ <rect x="85" y="-18" width="18" height="18" rx="5" class="server box"/><text x="112" y="-3" class="small" text-anchor="end" direction="rtl" unicode-bidi="plaintext">שרת</text>
+ <rect x="175" y="-18" width="18" height="18" rx="5" class="net box"/><text x="202" y="-3" class="small" text-anchor="end" direction="rtl" unicode-bidi="plaintext">רשת / אתחול</text>
+ <rect x="305" y="-18" width="18" height="18" rx="5" class="img box"/><text x="332" y="-3" class="small" text-anchor="end" direction="rtl" unicode-bidi="plaintext">אימג'ים ואחסון</text>
+ <rect x="450" y="-18" width="18" height="18" rx="5" class="safe box"/><text x="477" y="-3" class="small" text-anchor="end" direction="rtl" unicode-bidi="plaintext">בטיחות</text>
+ <rect x="555" y="-18" width="18" height="18" rx="5" class="chain box"/><text x="582" y="-3" class="small" text-anchor="end" direction="rtl" unicode-bidi="plaintext">שרשרת אתחול</text>
+ <rect x="700" y="-18" width="18" height="18" rx="5" class="secondary box"/><text x="727" y="-3" class="small" text-anchor="end" direction="rtl" unicode-bidi="plaintext">משני</text>
+</g>
+
+<!-- console -->
+<rect x="90" y="180" width="410" height="290" rx="22" class="server box"/>
+<text x="295" y="218" text-anchor="middle" class="h" direction="rtl" unicode-bidi="plaintext">קונסולת ניהול (דפדפן)</text>
+<text x="475" y="252" class="body" direction="rtl" unicode-bidi="plaintext">משתמשים: admin / deploy</text>
+<text x="475" y="278" class="body" direction="rtl" unicode-bidi="plaintext">מלאי מחשבים · אימג'ים · סבבי הפצה</text>
+<text x="475" y="304" class="body" direction="rtl" unicode-bidi="plaintext">מוניטור: מסך + מקלדת + הפעלה/כיבוי</text>
+<text x="475" y="330" class="body" direction="rtl" unicode-bidi="plaintext">דף פורטים · עדכון מהריפו הציבורי</text>
+<text x="475" y="356" class="body" direction="rtl" unicode-bidi="plaintext">רשת/DHCP · ניהול סניפים</text>
+<rect x="125" y="385" width="145" height="48" rx="12" class="port"/>
+<text x="197" y="405" text-anchor="middle" class="small">8080</text><text x="197" y="421" text-anchor="middle" class="small" direction="rtl" unicode-bidi="plaintext">אתחול + סוכנים</text>
+<rect x="315" y="385" width="145" height="48" rx="12" class="port"/>
+<text x="387" y="405" text-anchor="middle" class="small">8081</text><text x="387" y="421" text-anchor="middle" class="small" direction="rtl" unicode-bidi="plaintext">קונסולה / ניהול</text>
+
+<!-- server -->
+<rect x="650" y="180" width="500" height="400" rx="22" class="server box"/>
+<text x="900" y="218" text-anchor="middle" class="h" direction="rtl" unicode-bidi="plaintext">שרת ראשי</text>
+<text x="900" y="246" text-anchor="middle" class="body">Debian 13 · FastAPI + uvicorn</text>
+<rect x="680" y="270" width="440" height="76" rx="14" class="img box"/>
+<text x="900" y="296" text-anchor="middle" class="body" direction="rtl" unicode-bidi="plaintext">ספריית אימג'ים · תיקייה + manifest.json</text>
+<text x="900" y="319" text-anchor="middle" class="small" direction="rtl" unicode-bidi="plaintext">הדיסק = מקור האמת · SQLite רק למידע שאינו קובץ</text>
+<rect x="680" y="365" width="210" height="76" rx="14" class="net box"/>
+<text x="785" y="391" text-anchor="middle" class="body">DHCP/PXE · dnsmasq</text>
+<text x="785" y="414" text-anchor="middle" class="small" direction="rtl" unicode-bidi="plaintext">GRUB לפי MAC</text>
+<rect x="910" y="365" width="210" height="76" rx="14" class="net box"/>
+<text x="1015" y="391" text-anchor="middle" class="body">initramfs + agent</text>
+<text x="1015" y="414" text-anchor="middle" class="small">udp-sender multicast</text>
+<rect x="680" y="460" width="440" height="76" rx="14" class="server box"/>
+<text x="900" y="486" text-anchor="middle" class="body">SQLite</text>
+<text x="900" y="510" text-anchor="middle" class="small" direction="rtl" unicode-bidi="plaintext">יומן · משתמשים · סבבים · זיכרון דיסקים אדומים</text>
+
+<!-- builder -->
+<rect x="90" y="650" width="420" height="250" rx="22" class="net box"/>
+<text x="300" y="688" text-anchor="middle" class="h" direction="rtl" unicode-bidi="plaintext">מחשב בנייה</text>
+<text x="300" y="718" text-anchor="middle" class="body" direction="rtl" unicode-bidi="plaintext">דיסק מקור → PXE → סוכן ב-initramfs (RAM)</text>
+<rect x="125" y="745" width="350" height="105" rx="15" class="server box"/>
+<text x="300" y="775" text-anchor="middle" class="body" direction="rtl" unicode-bidi="plaintext">GUI גרפי · כניסה עם משתמש הקונסולה</text>
+<text x="300" y="802" text-anchor="middle" class="body" direction="rtl" unicode-bidi="plaintext">[ קליטה לשרת ]  [ הפצה ישירה ]</text>
+<text x="300" y="827" text-anchor="middle" class="small" direction="rtl" unicode-bidi="plaintext">אין "דיסק מקומי" בתפריט</text>
+
+<!-- cloners -->
+<rect x="650" y="650" width="500" height="310" rx="22" class="net box"/>
+<text x="900" y="688" text-anchor="middle" class="h" direction="rtl" unicode-bidi="plaintext">מחשבי שיכפול (cloners)</text>
+<text x="900" y="716" text-anchor="middle" class="body" direction="rtl" unicode-bidi="plaintext">PXE ישר לסוכן + GUI · בדיקת דיסקים לפני הכתיבה</text>
+<g>
+ <rect x="690" y="750" width="130" height="145" rx="15" class="safe box"/>
+ <text x="755" y="780" text-anchor="middle" class="body" direction="rtl" unicode-bidi="plaintext">דיסק 1</text><text x="755" y="805" text-anchor="middle" class="small">SMART</text><text x="755" y="830" text-anchor="middle" class="small">🟢 / 🟠 / 🔴</text><text x="755" y="855" text-anchor="middle" class="small" direction="rtl" unicode-bidi="plaintext">התקדמות</text>
+ <rect x="835" y="750" width="130" height="145" rx="15" class="safe box"/>
+ <text x="900" y="780" text-anchor="middle" class="body" direction="rtl" unicode-bidi="plaintext">דיסק 2</text><text x="900" y="805" text-anchor="middle" class="small">SMART</text><text x="900" y="830" text-anchor="middle" class="small">🟢 / 🟠 / 🔴</text><text x="900" y="855" text-anchor="middle" class="small" direction="rtl" unicode-bidi="plaintext">התקדמות</text>
+ <rect x="980" y="750" width="130" height="145" rx="15" class="safe box"/>
+ <text x="1045" y="780" text-anchor="middle" class="body" direction="rtl" unicode-bidi="plaintext">דיסק 3</text><text x="1045" y="805" text-anchor="middle" class="small">SMART</text><text x="1045" y="830" text-anchor="middle" class="small">🟢 / 🟠 / 🔴</text><text x="1045" y="855" text-anchor="middle" class="small" direction="rtl" unicode-bidi="plaintext">התקדמות</text>
+</g>
+<text x="900" y="925" text-anchor="middle" class="small" direction="rtl" unicode-bidi="plaintext">udp-receiver → zstd → partclone · fanout במקביל · כשל במגירה אינו עוצר אחרות</text>
+
+<!-- secondary -->
+<rect x="1300" y="180" width="360" height="380" rx="22" class="secondary box"/>
+<text x="1480" y="218" text-anchor="middle" class="h" direction="rtl" unicode-bidi="plaintext">שרת משני (סניף)</text>
+<text x="1480" y="250" text-anchor="middle" class="body">imagectl-install --secondary</text>
+<rect x="1330" y="280" width="300" height="92" rx="14" class="secondary box"/>
+<text x="1480" y="307" text-anchor="middle" class="body">mTLS 8443</text>
+<text x="1480" y="332" text-anchor="middle" class="small" direction="rtl" unicode-bidi="plaintext">pairing חד-פעמי · SPKI pinning</text>
+<text x="1480" y="355" text-anchor="middle" class="small" direction="rtl" unicode-bidi="plaintext">אימות טביעת מפתח</text>
+<rect x="1330" y="392" width="300" height="120" rx="14" class="img box"/>
+<text x="1480" y="420" text-anchor="middle" class="body" direction="rtl" unicode-bidi="plaintext">אימג'ים מהראשי</text>
+<text x="1480" y="445" text-anchor="middle" class="small" direction="rtl" unicode-bidi="plaintext">sha256 מאומת</text>
+<text x="1480" y="469" text-anchor="middle" class="small" direction="rtl" unicode-bidi="plaintext">מכונות + מוניטור → ראשי</text>
+<text x="1480" y="493" text-anchor="middle" class="small" direction="rtl" unicode-bidi="plaintext">הפצה מקומית לכיתה</text>
+
+<!-- arrows -->
+<path d="M500 325 L650 325" class="line"/>
+<path d="M500 415 C560 415 590 500 680 500" class="line"/>
+<path d="M300 650 L300 470" class="blue"/>
+<path d="M510 775 L650 775" class="blue"/>
+<path d="M900 580 L900 650" class="blue"/>
+<path d="M1150 330 L1300 330" class="line"/>
+<path d="M1300 470 L1150 470" class="line"/>
+<text x="1220" y="314" class="small" text-anchor="end" direction="rtl" unicode-bidi="plaintext">אימג'ים →</text>
+<text x="1170" y="455" class="small" text-anchor="end" direction="rtl" unicode-bidi="plaintext">← מכונות + מוניטור</text>
+
+<!-- boot chain -->
+<rect x="1210" y="650" width="450" height="160" rx="22" class="chain box"/>
+<text x="1435" y="686" text-anchor="middle" class="h" direction="rtl" unicode-bidi="plaintext">שרשרת אתחול Secure Boot</text>
+<text x="1435" y="723" text-anchor="middle" class="body">Firmware (UEFI) → shim → GRUB → kernel</text>
+<text x="1435" y="750" text-anchor="middle" class="body" direction="rtl" unicode-bidi="plaintext">→ initramfs (RAM, הסוכן)</text>
+<text x="1435" y="778" text-anchor="middle" class="small" direction="rtl" unicode-bidi="plaintext">הכול חתום · שורת הקרנל מכילה רק כתובת שרת</text>
+
+<!-- fallback -->
+<rect x="1210" y="850" width="450" height="175" rx="22" class="safe box"/>
+<text x="1435" y="886" text-anchor="middle" class="h" direction="rtl" unicode-bidi="plaintext">Fallback — ברירות מחדל בטוחות</text>
+<text x="1435" y="918" text-anchor="middle" class="body" direction="rtl" unicode-bidi="plaintext">MAC לא מוכר / schema זר → דיסק מקומי מיד</text>
+<text x="1435" y="945" text-anchor="middle" class="body" direction="rtl" unicode-bidi="plaintext">שרת כבוי → PXE נכשל בקושחה → דיסק מקומי</text>
+<text x="1435" y="972" text-anchor="middle" class="body" direction="rtl" unicode-bidi="plaintext">כל מצב לא ברור → דיסק מקומי</text>
+<text x="1435" y="999" text-anchor="middle" class="small" direction="rtl" unicode-bidi="plaintext">אין כתיבה לדיסק בלי משימה מפורשת · בדיקה שנכשלה = כישלון גלוי</text>
+
+<text x="880" y="1075" text-anchor="middle" class="small" direction="rtl" unicode-bidi="plaintext">v1 · תרשים ארכיטקטורה · טקסטים טכניים נשמרו באנגלית לפי הבריף</text>
+</svg>

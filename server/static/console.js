@@ -609,7 +609,7 @@ function populateSidebarImages() {
       const idEnc = encodeId(im.id || "");
       return `<div class="inventory-node" role="treeitem" tabindex="0" onclick="openImageDetail('${idEnc}')"><span class="tree-arrow-sp"></span><span>${uiIcon("image")}</span><span>${esc(im.name)}</span></div>`;
     }).join("");
-    return `<div class="inventory-node" role="treeitem" tabindex="0" aria-expanded="${open}" onclick="event.stopPropagation();toggleInventoryGroup(this,'${fid}')"><span class="tree-arrow" data-open="${open}">${open ? "▾" : "▸"}</span><span>${uiIcon("image")}</span><span>${esc(f.name)}</span></div><div id="${fid}" class="inventory-children"${open ? "" : " hidden"}>${rows}</div>`;
+    return `<div class="inventory-node" role="treeitem" tabindex="0" aria-expanded="${open}" ondblclick="toggleInventoryGroup(this,'${fid}')"><span class="tree-arrow" data-open="${open}" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'${fid}')">${open ? "▾" : "▸"}</span><span>${uiIcon("image")}</span><span>${esc(f.name)}</span></div><div id="${fid}" class="inventory-children"${open ? "" : " hidden"}>${rows}</div>`;
   }).join("");
 }
 
@@ -630,7 +630,7 @@ function fillSidebarTree(treeId, groups, machines, icon) {
       const label = machineName(m) || m.mac;
       return `<div class="inventory-node" role="treeitem" tabindex="0" onclick="openMachineDetail('${macEnc}')"><span class="tree-arrow-sp"></span><span>${uiIcon("machine")}</span><span>${esc(label)}</span></div>`;
     }).join("");
-    return `<div class="inventory-node" role="treeitem" tabindex="0" aria-expanded="${open}"><span class="tree-arrow" data-open="${open}" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'${esc(boxId)}')">${open ? "▾" : "▸"}</span><span onclick="selectMachinesGroup('${gidEnc}')" style="display:contents"><span>${uiIcon(icon)}</span><span>${esc(g.label)}</span></span></div><div id="${esc(boxId)}" class="inventory-children"${open ? "" : " hidden"}>${childHtml}</div>`;
+    return `<div class="inventory-node" role="treeitem" tabindex="0" aria-expanded="${open}" onclick="selectMachinesGroup('${gidEnc}')" ondblclick="toggleInventoryGroup(this,'${esc(boxId)}')"><span class="tree-arrow" data-open="${open}" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'${esc(boxId)}')">${open ? "▾" : "▸"}</span><span style="display:contents"><span>${uiIcon(icon)}</span><span>${esc(g.label)}</span></span></div><div id="${esc(boxId)}" class="inventory-children"${open ? "" : " hidden"}>${childHtml}</div>`;
   }).join("");
 }
 
