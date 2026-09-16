@@ -27,7 +27,9 @@ async function api(path, options = {}) {
   if (!response.ok) {
     let detail = "שגיאה " + response.status;
     try { detail = (await response.json()).detail || detail; } catch (e) {}
-    throw new Error(detail);
+    const error = new Error(detail);
+    error.status = response.status;   // ‏#936: הקורא מבחין בין 403/409 לכשל אמיתי
+    throw error;
   }
   return response.json();
 }
@@ -296,13 +298,14 @@ async function showApp() {
   document.querySelectorAll("[data-cap]").forEach(
     (el) => el.classList.toggle("hidden", !caps[el.dataset.cap]));
   await loadLogo();
-  applyStoredServerNames();
+  applyServerName();
   renderActivity();
   selectPageById("home");
   if (isAdmin()) { loadMachines(); loadHealth(); }
   loadImages();
   populateSidebarImages();
   populateSidebarGroups();
+  populateSidebarSecondaries().catch((e) => toast("טעינת השרתים המשניים נכשלה: " + e.message));
   if (isAdmin() && typeof loadNet === "function") {
     loadNet().catch((e) => toast("טעינת כרטיסי הרשת נכשלה: " + e.message));
   }
@@ -668,39 +671,94 @@ function updateAlertBadge() {
   }
 }
 
-function applyStoredServerNames() {
-  let stored = {};
-  try { stored = JSON.parse(localStorage.getItem("imagectl-server-names") || "{}"); }
-  catch (e) { stored = {}; }
-  document.querySelectorAll(".server-name").forEach((el, i) => {
-    if (stored[i]) el.textContent = stored[i];
-  });
+/* ‏#936: שם השרת הראשי בצומת העליון מגיע מ-/me (‏`server_name`: ההגדרה
+   אם המנהל קבע, אחרת שם המארח) — לא מחרוזת דמו ב-HTML ולא localStorage. */
+function applyServerName() {
+  const el = document.getElementById("primaryServerName");
+  if (el && ME && ME.server_name) el.textContent = ME.server_name;
 }
 
 function renameServer(el) {
-  if (!el) return;
+  if (!el || !isAdmin()) return;
   const currentName = el.textContent || "";
   openModalContent(
     "שינוי שם שרת",
     `<div class="form"><div class="field full"><label>שם השרת</label><input id="serverNameInput" autocomplete="off"></div></div>`,
     "שמור",
-    () => {
+    async () => {
       const input = document.getElementById("serverNameInput");
       const name = input ? input.value.trim() : "";
       if (!name) { toast("שם לא יכול להיות ריק"); return; }
+      try {
+        await post("/settings", { server_name: name });
+      } catch (e) { toast("שמירת השם נכשלה: " + e.message); return; }
       el.textContent = name;
-      const nodes = [...document.querySelectorAll(".server-name")];
-      const idx = nodes.indexOf(el);
-      let stored = {};
-      try { stored = JSON.parse(localStorage.getItem("imagectl-server-names") || "{}"); }
-      catch (e) { stored = {}; }
-      stored[idx] = name;
-      localStorage.setItem("imagectl-server-names", JSON.stringify(stored));
+      if (ME) ME.server_name = name;
       closeModal();
     }
   );
   const input = document.getElementById("serverNameInput");
   if (input) { input.value = currentName; input.focus(); }
+}
+
+/* ‏#936: צומת שרת לכל משני מ-GET /storage-nodes, כמו vCenter. הנתיב הוא
+   admin+standalone (deploy → 403, משני → 409): במקרים האלה אין צמתים —
+   לא שגיאה אדומה. מצב החיבור נמדד מול המשני (‏/machines, ‏connected) אחרי
+   שהצמתים כבר על המסך; משני שלא ענה נשאר בעץ עם נקודה אדומה. */
+const BRANCH_VIEWS = [
+  ["overview", "סקירה", "home"], ["machines", "מחשבים", "machine"],
+  ["images", "אימג'ים", "image"], ["transfers", "העברות", "deploy"],
+];
+let BRANCH_NODE = null;
+
+function secondaryDotClass(n, connected) {
+  if (n.disabled_at) return "status";
+  if (connected === true) return "status ok";
+  if (connected === false) return "status err";
+  return "status";
+}
+
+async function populateSidebarSecondaries() {
+  const host = document.getElementById("secondaryServers");
+  if (!host) return;
+  const caps = (ME && ME.capabilities) || {};
+  if (!caps.enroll_secondary) { host.innerHTML = ""; return; }
+  let nodes = [];
+  try { nodes = await api("/storage-nodes"); }
+  catch (e) {
+    if (e.status === 403 || e.status === 409) { host.innerHTML = ""; return; }
+    throw e;
+  }
+  const wasOpen = sidebarChildOpen(host);
+  host.innerHTML = nodes.map((n) => {
+    const boxId = "srv-" + n.id;
+    const open = !!wasOpen[boxId];
+    const idEnc = encodeId(n.id);
+    const kids = BRANCH_VIEWS.map(([view, label, icon], i) =>
+      `<div class="inventory-node" data-branch-view="${esc(view)}" role="treeitem" tabindex="0" onclick="openBranchView('${idEnc}',${i},this)"><span class="tree-arrow-sp"></span><span>${uiIcon(icon)}</span><span>${esc(label)}</span></div>`).join("");
+    const title = n.disabled_at ? "מושבת" : "מצב החיבור נבדק…";
+    return `<div class="inventory-node server-node" data-secondary="${esc(n.id)}" role="treeitem" tabindex="0" aria-expanded="${open}" onclick="openBranchView('${idEnc}',0,this)" ondblclick="toggleInventoryGroup(this,'${esc(boxId)}')"><span class="tree-arrow" data-open="${open}" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'${esc(boxId)}')">${open ? "▾" : "▸"}</span><span>${uiIcon("server")}</span><strong class="server-name">${esc(n.label)}</strong><span class="${secondaryDotClass(n, null)}" data-secondary-status="${esc(n.id)}" title="${esc(title)}" aria-label="${esc(title)}"><i></i></span></div><div id="${esc(boxId)}" class="inventory-children" role="group"${open ? "" : " hidden"}>${kids}</div>`;
+  }).join("");
+  await Promise.all(nodes.filter((n) => !n.disabled_at).map((n) =>
+    api(`/storage-nodes/${encodeId(n.id)}/machines`)
+      .then((a) => markSecondaryStatus(n, !!a.connected, a.error))
+      .catch((e) => markSecondaryStatus(n, false, e.message))));
+}
+
+function markSecondaryStatus(n, connected, error) {
+  const dot = document.querySelector(`[data-secondary-status="${CSS.escape(n.id)}"]`);
+  if (!dot) return;
+  dot.className = secondaryDotClass(n, connected);
+  const title = connected ? "מחובר" : ("לא מחובר" + (error ? ": " + error : ""));
+  dot.setAttribute("title", title);
+  dot.setAttribute("aria-label", title);
+}
+
+function openBranchView(nid, tabIndex, el) {
+  try { nid = decodeURIComponent(nid); } catch (e) {}
+  BRANCH_NODE = nid;
+  selectPage(el || null, "branch");
+  if (tabIndex) activateTab(tabIndex);
 }
 
 function renderCurrent() {
@@ -1719,6 +1777,9 @@ function monitorPage() {
 const pages = {
   settings: {crumb:"Settings", title:"Settings", desc:"Console policy and branding", tabs:["Settings"], render:settingsPage},
   branches: {crumb:"סניפים", title:"סניפים", desc:"השרתים המשניים של הראשי הזה: מצב חיבור, המחשבים שלהם, העברת אימג'ים ומוניטור", tabs:["סניפים", "מרשם"], render:pagePlaceholder},
+  // ‏#936: הדף של משני אחד (נבחר בעץ, BRANCH_NODE) — אותם נתונים ואותן
+  // פונקציות של "סניפים" (branches.js), לפי לשונית.
+  branch: {crumb:"שרת משני", title:"שרת משני", desc:"מצב חיבור, המחשבים שלו, האימג'ים שהועברו אליו וההעברות — כפי שהראשי מדד מולו", tabs: BRANCH_VIEWS.map((v) => v[1]), render:pagePlaceholder},
   home: { crumb: "סקירה כללית", title: "סקירה כללית", desc: "מצב שרת, ספריית האימג׳ים ופעילות ההפצה בזמן אמת", tabs: ["סיכום", "משימות אחרונות", "אירועים"], render: home, load: refreshStatus },
   images: { crumb: "ספריית אימג׳ים", title: "ספריית אימג׳ים", desc: "ניהול גרסאות, העלאה, הורדה ושמירה של אימג׳ים מוכנים להפצה", tabs: ["אימג׳ים", "מטא־נתונים"], render: images, load: loadImages },
   deploy: { crumb: "סבבי הפצה", title: "סבבי הפצה", desc: "פתיחת סבב, צירוף תחנות ומעקב אחר כתיבה לכל מחשב", tabs: ["סבבים", "הצטרפות חיה"], render: deploy, load: refreshStatus },
@@ -1749,6 +1810,7 @@ function tabRender(pageId, index) {
     logs: [journalPage, logs],
     settings: [settingsPage],
     branches: [() => `<div id="branch-cards" class="stack"></div>`, () => `<div id="branches-body" class="stack"></div>`],
+    branch: BRANCH_VIEWS.map(([view]) => () => `<div id="branch-view" class="stack" data-view="${view}">${pagePlaceholder()}</div>`),
     monitor: [monitorPage],
     drivers: [() => driversPage()],   // #720 — drivers.js
     netdeploy: [netdeploy],
@@ -2959,6 +3021,7 @@ function isAdmin() { return !!ME && ME.role === "admin"; }
 function pageAllowed(id) {
   if (!ME) return false;
   if (id === "branches") return isAdmin() && !!ME.capabilities?.interbranch_transfer;
+  if (id === "branch") return isAdmin() && !!ME.capabilities?.enroll_secondary;
   return ["home", "images", "deploy"].includes(id) || isAdmin();
 }
 function wireRestoredPage() {
@@ -2967,6 +3030,7 @@ function wireRestoredPage() {
   if (current === "health" && currentTab === 1) loadSsh().catch(e => toast(e.message));
   if (current === "settings") loadSettings().catch(e => toast(e.message));
   if (current === "branches") (currentTab === 0 ? loadBranchCards() : loadBranches()).catch(e => toast(e.message));
+  if (current === "branch") loadBranchView(BRANCH_VIEWS[currentTab][0]).catch(e => toast(e.message));
   if (current === "permissions" && currentTab === 0) loadUsersAdmin().catch(e => toast(e.message));
   if (current === "logs" && currentTab === 0) {
     JOURNAL_EVENTS_LOADED = false;

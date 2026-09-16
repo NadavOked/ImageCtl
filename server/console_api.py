@@ -11,6 +11,7 @@ import json
 import re
 import sqlite3
 import shutil
+import socket
 from typing import Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -30,7 +31,9 @@ from .station import ROUND_OPENER_ROLES
 WRITE_SETTINGS = {"recovery_require_login", "session_wait_seconds",
                   "console_idle_seconds", "class_deploy_enabled",
                   # ‏#748: כפתור "עדכן" — כבוי כברירת מחדל (נדב, 16/09).
-                  "update_enabled"}
+                  "update_enabled",
+                  # ‏#936: שם השרת הראשי בעץ הניווט — נשמר בשרת, לא ב-DOM.
+                  "server_name"}
 
 #: #406: השדות שעריכת מכונה מכירה. שדה מחוץ לרשימה = טעות של הקורא,
 #: והוא נדחה ב-400 במקום להיבלע ולהחזיר ``{"ok": True}`` שלא שינה כלום.
@@ -134,6 +137,10 @@ def create_console_router(
             # הסטטוס — לכל משתמש מחובר, לא רק admin. ‏None = אין תג על
             # העץ, והקונסולה לא מציגה מספר שאין לו מקור.
             "version": version() if version else None,
+            # ‏#936: שם השרת הראשי לצומת העליון בעץ — מההגדרה `server_name`
+            # אם המנהל קבע אחת, אחרת שם המארח כפי שהמערכת מדווחת אותו.
+            # לכל משתמש מחובר: גם deploy רואה את העץ.
+            "server_name": get_setting(ctx.conn, "server_name") or socket.gethostname(),
             "capabilities": {
                 "interbranch_transfer":
                     storage_nodes.can_interbranch_transfer(ctx.conn, user[1]),

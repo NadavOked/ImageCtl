@@ -219,7 +219,7 @@ test('S4: static tree nodes in index.html carry role="treeitem" tabindex="0"; gr
   const html = read('index.html');
   assert.match(html, /<div class="tree" role="tree"/);
   const nodes = [...html.matchAll(/<div class="inventory-node[^"]*"[^>]*>/g)].map((m) => m[0]).filter((t) => !t.includes('muted'));
-  assert.ok(nodes.length >= 25, 'got ' + nodes.length);
+  assert.ok(nodes.length >= 22, 'got ' + nodes.length);   // 25 עד #936: הצומת הסטטי של המשני ושני ילדיו נמחקו
   for (const t of nodes) assert.match(t, /role="treeitem" tabindex="0"/, t.slice(0, 80));
   const arrows = html.match(/<span class="tree-arrow"/g).length;
   const expanded = nodes.filter((t) => /aria-expanded="(true|false)"/.test(t)).length;
@@ -393,16 +393,16 @@ test('S7: toggleInventoryGroup has no built-in de-dup — each call toggles once
    נבדק חי בדפדפן (127.0.0.1:8081): דאבל-קליק על אזור האייקון טגל את
    srvTA; דאבל-קליק מדויק על הטקסט קרא ל-renameServer פעם אחת ו-srvTA
    נשאר פתוח (renameCalls:1, srvTAHidden:false). */
-test('S7: both server-node rows have no click-to-toggle/no click-to-anything; dblclick toggles the row, and .server-name\'s own dblclick stops it from also reaching the row', () => {
+test('S7: the primary server row (the only static one since #936) has no click-to-anything; dblclick toggles the row, and .server-name\'s own dblclick stops it from also reaching the row', () => {
   const html = read('index.html');
   const rows = [...html.matchAll(/<div class="inventory-node server-node[^>]*>/g)];
-  assert.ok(rows.length >= 2, 'expected both server rows (main + secondary), got ' + rows.length);
+  assert.equal(rows.length, 1, '#936: only the primary is static; secondaries come from /storage-nodes');
   for (const [rowTag] of rows) {
-    assert.doesNotMatch(rowTag, /\bonclick=/, 'a server row has no navigate target — single click must do nothing');
+    assert.doesNotMatch(rowTag, /\bonclick=/, 'the primary row has no navigate target — single click must do nothing');
     assert.match(rowTag, /ondblclick="toggleInventoryGroup\(this,'\w+'\)"/, 'dblclick on the row toggles it');
   }
-  const nameHandlers = [...html.matchAll(/<strong class="server-name" ondblclick="([^"]*)">/g)].map((m) => m[1]);
-  assert.equal(nameHandlers.length, 2, 'renameServer is wired on .server-name only, once per server row');
+  const nameHandlers = [...html.matchAll(/<strong class="server-name"[^>]* ondblclick="([^"]*)">/g)].map((m) => m[1]);
+  assert.equal(nameHandlers.length, 1, 'renameServer is wired on the primary .server-name only');
   for (const handler of nameHandlers) {
     assert.match(handler, /event\.stopPropagation\(\)/, 'must stop the dblclick from also reaching the row\'s toggle');
     assert.match(handler, /renameServer\(this\)/);
