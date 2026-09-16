@@ -80,6 +80,17 @@ def _whole(value: object) -> int | None:
     return value
 
 
+def has_partition_geometry(part: object) -> bool:
+    """Whether a partition has meaningful GPT geometry."""
+    if not isinstance(part, dict):
+        return False
+    start = _whole(part.get("start_sector"))
+    size = _whole(part.get("size_bytes"))
+    # A real GPT data partition cannot start at LBA 0, and an empty
+    # partition cannot be recreated or receive a filesystem image.
+    return start is not None and start > 0 and size is not None and size > 0
+
+
 def layout_end_bytes(manifest: dict) -> int | None:
     """הבייט שאחרי המחיצה האחרונה בפריסה, או None אם הגיאומטריה חסרה.
 
@@ -180,6 +191,29 @@ def streamed_partitions(manifest: dict) -> list[dict]:
     return [p for p in manifest["partitions"] if p.get("file")]
 
 
+def carries_a_stream_file(part: dict) -> bool:
+    """האם למחיצה הזו יש קובץ בזרם — ולא "משהו שאפשר לקרוא לו קובץ".
+
+    שלוש הצורות שאינן קובץ נבדקות יחד בכוונה: `null`, מחרוזת ריקה,
+    והמחרוזת `"null"`. השלישית אינה תיאורטית — הסוכן קורא את המניפסט
+    ב-`jq -r`, שמרנדר JSON null **כמחרוזת** `null`, ולכן שם אי אפשר
+    להבחין בין השתיים. מחיצה שבאמת נקראת `null` תיפסל כאן, וזה הכיוון
+    הנכון של השגיאה: להיכשל בקול על שם מוזר, ולא לתת לו להתפרש כ-swap
+    ולהגיע ל-`mkswap` (#424).
+    """
+    name = part.get("file")
+    return isinstance(name, str) and name.strip() not in ("", "null")
+
+
+def has_sha256(part: dict) -> bool:
+    """Whether a streamed partition declares a canonical SHA-256 digest."""
+    value = part.get("sha256")
+    return (
+        isinstance(value, str)
+        and re.fullmatch(r"^[0-9a-f]{64}$", value) is not None
+    )
+
+
 def image_os(manifest: dict) -> str:
     """`os` מהמניפסט, ולאימג'ים שנקלטו לפני שהשדה נוסף — מתפקידי המחיצות."""
     declared = manifest.get("os")
@@ -191,6 +225,33 @@ def image_os(manifest: dict) -> str:
     if "linux" in roles:
         return "linux"
     return "unknown"
+
+
+def has_disk_guid(manifest: dict) -> bool:
+    """האם למניפסט יש `disk_guid` אמיתי — ולא חוסר שמתחזה לערך.
+
+    ארבע הצורות שאינן GUID נבדקות יחד, כמו ב-`carries_a_stream_file`:
+    מפתח חסר או `None`, מחרוזת ריקה, המחרוזת `"null"`, וה-GUID
+    האפס-מוחלט (nil UUID, `00000000-0000-...`). הסוכן גוזר את
+    ה-GUID מ-`sgdisk -p` בקליטה (`capture.sh`), וכשהקריאה **נכשלת**
+    השדה יוצא מחרוזת ריקה — לא `null`. ‏`disk_guid` חסר אינו "אין צורך
+    ב-GUID" אלא "לא ידענו מה ה-GUID", ושני המצבים שונים (עיקרון 5).
+
+    האפס-המוחלט הוא ערך שנקרא כזבל — GPT פגום, דיסק שאופס עם חתימה
+    ששרדה, או כלי partition לא-תקני. הוא "לא הצלחנו לקרוא GUID אמיתי",
+    לא זהות, ולכן נכשל-סגור בדיוק כמו ריק ואינו מתחזה לערך.
+    """
+    value = manifest.get("disk_guid")
+    if not isinstance(value, str):
+        return False
+    v = value.strip()
+    if v in ("", "null"):
+        return False
+    # פורמט GUID תקין בלבד — מחרוזת לא-GUID כמו "unknown" אינה זהות, ותיפול
+    # ב-sgdisk -U מול הכיתה. מרחיב את #443/#760 (פורמט, לא רק ריק/אפס-מוחלט).
+    if not re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", v):
+        return False
+    return set(v.replace("-", "")) - {"0"} != set()
 
 
 #: מה ששם תיקייה או שם אימג' יכולים להיות. **‏ASCII בלבד, ובכוונה.**
@@ -211,7 +272,7 @@ def image_os(manifest: dict) -> str:
 #: מתחיל **וגם מסתיים** באות או בספרה. רווח בסוף בלתי נראה על המסך,
 #: ו-`nicdesc:eth0 ` מ-#130 הוא בדיוק מה שהוא עושה: מפתח אחר לגמרי
 #: מזה שהמפעיל התכוון לו, בלי שום סימן.
-DISPLAY_NAME_RE = re.compile(r"[A-Za-z0-9]([A-Za-z0-9 ._-]{0,46}[A-Za-z0-9])?")
+DISPLAY_NAME_RE = re.compile(r"[A-Za-z0-9א-ת]([A-Za-z0-9א-ת ._-]{0,46}[A-Za-z0-9א-ת])?")
 
 
 def validate_display_name(value: str, what: str = "השם") -> str:
@@ -230,7 +291,7 @@ def validate_display_name(value: str, what: str = "השם") -> str:
     text = value or ""
     if not DISPLAY_NAME_RE.fullmatch(text):
         raise ValueError(
-            f"{what} {text!r} אינו תקין — מותרים אותיות אנגליות, ספרות, "
+            f"{what} {text!r} אינו תקין — מותרים אותיות אנגליות או עבריות, ספרות, "
             "רווח, נקודה, מקף וקו תחתון; מתחיל באות או בספרה, עד 48 תווים")
     return text
 
@@ -309,8 +370,19 @@ class ImageLibrary:
             for field in REQUIRED_PARTITION_FIELDS:
                 if not isinstance(part, dict) or field not in part:
                     return f"partition missing field: {field}"
-            if part["file"] is None and part.get("role") != "swap":
-                return f"partition {part['index']} has no file"
+            if carries_a_stream_file(part) and not has_sha256(part):
+                return f"partition {part['index']} has malformed sha256"
+            if not has_partition_geometry(part):
+                return (f"partition {part.get('index')!r} has malformed geometry:"
+                        " start_sector and size_bytes must both be positive")
+            # מי שפטור מקובץ הוא **`fs == "swap"`**, ולא `role == "swap"`:
+            # הסוכן מחליט לפי `fs` בלבד, ורשומה ששני השדות אינם מסכימים
+            # בה עברה כאן בשלמותה והגיעה שם ל-`mkswap` (#424). מחיצה
+            # שאינה swap ובלי קובץ היא מניפסט פגום, ונפסלת בשמה —
+            # עיקרון 6: פגום נתפס כאן, לא מול כיתה.
+            if not carries_a_stream_file(part) and part.get("fs") != "swap":
+                return (f"partition {part['index']} ({part.get('fs')}) has no file,"
+                        " and only a swap partition may have none")
         if not streamed_partitions(manifest):
             return "no partition carries data"
         return None
@@ -382,6 +454,7 @@ class ImageLibrary:
                     "family": manifest["family"],
                     "os": image_os(manifest),
                     "created": manifest.get("created", ""),
+                    "source_disk_bytes": manifest.get("source_disk_bytes"),
                     "total_compressed_bytes": manifest.get("total_compressed_bytes", 0),
                     "partitions": len(manifest["partitions"]),
                 }

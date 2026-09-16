@@ -1,3 +1,4 @@
+(() => {
 /* ImageCtl — לשונית המחשבים: תת-לשונית לכל אחד משלושת סוגי המחשבים.
    כיתות = הרבה קבוצות. שיכפול ובנייה = קבוצה קבועה אחת, בלי ניהול קבוצות. */
 "use strict";
@@ -9,12 +10,12 @@ const TYPES = {
     hint: "כל כיתה היא קבוצה. הסיומת נכנסת לשם המחשב: קידומת-סיומת.",
   },
   cloner: {
-    title: "מחשבי שיכפול", grouped: false, fixed: "grp_CLONERS",
+    title: "מחשבי שיכפול", grouped: false, fixed: "grp_CLONERS", monitor: true,
     nameLabel: "שם, למשל: עמדה 3",
     hint: "12 מחשבי חדר השיכפולים. אין להם שם מחשב — השם כאן הוא לזיהוי בקונסולה.",
   },
   build: {
-    title: "מחשב בניית אימג'ים", grouped: false, fixed: "grp_BUILD",
+    title: "מחשב בניית אימג'ים", grouped: false, fixed: "grp_BUILD", monitor: true,
     nameLabel: "שם, למשל: מחשב בנייה",
     hint: "המחשב שקולט אימג'ים חדשים. בדרך כלל אחד.",
   },
@@ -26,13 +27,16 @@ const TYPES = {
    הייתה מקפלת את הקבוצה שעובדים עליה. */
 let MACHINES = { role: "classroom", groups: [], open: new Set() };
 
+function wireMachineSubtabs() {
 document.querySelectorAll("#subtabs button").forEach((button) =>
-  button.addEventListener("click", () => {
+  button.onclick = () => {
     document.querySelectorAll("#subtabs button").forEach(
       (b) => b.classList.toggle("on", b === button));
     MACHINES.role = button.dataset.role;
     loadMachinesTab();
-  }));
+  });
+
+}
 
 function drawSubtabCounts() {
   /* מונה מכונות לכל סוג — כדי שלשונית ריקה תיקרא כ"אין כאן", ולא
@@ -47,7 +51,13 @@ function drawSubtabCounts() {
 }
 
 async function loadMachinesTab() {
+  if (!ME || ME.role !== "admin") return;
+  const host = $("#role-body");
+  if (!host) return;
+  wireMachineSubtabs();
   MACHINES.groups = await api("/groups");
+  if (host !== $("#role-body")) return;
+  document.querySelectorAll("#subtabs button").forEach(b => b.classList.toggle("on", b.dataset.role === MACHINES.role));
   drawSubtabCounts();
   const type = TYPES[MACHINES.role];
   if (type.seen) {
@@ -69,12 +79,15 @@ async function loadMachinesTab() {
          כל כיתה היא קבוצה — צרו את הראשונה מהכפתור למעלה.</div>`
     : `<div class="lib-empty">הקבוצה הקבועה חסרה. הפעילו את השרת מחדש כדי ליצור אותה.</div>`;
 
+  const typeIcon = `<svg class="ico" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="12" rx="1.5"/><path d="M8.5 20h7M12 16.5V20"/></svg>`;
+  if (host !== $("#role-body")) return;
   $("#role-body").innerHTML = `
-    <div class="chead"><div><h2>${esc(type.title)}</h2><p>${esc(type.hint)}</p></div>
+    <div class="chead"><div><h2>${typeIcon}${esc(type.title)}</h2><p>${esc(type.hint)}</p></div>
       ${type.grouped ? `<button class="btn" id="add-group">+ קבוצה חדשה</button>` : ""}
     </div>
     ${blocks.join("") || empty}`;
 
+  if (host !== $("#role-body")) return;
   if (type.grouped) $("#add-group").onclick = () => addGroupSheet();
   groups.forEach((g) => wireGroup(g, type));
 
@@ -98,10 +111,15 @@ async function loadMachinesTab() {
 
 async function groupBlock(group, type) {
   const machines = await api("/machines?group=" + encodeURIComponent(group.id));
+  // כפתור המוניטור (#690) רק לבנייה/שיכפול, ורק ל-admin — השרת סוגר
+  // ‏non-admin ב-WS ‏(4403), וגם הקונסולה לא מציגה מה שאסור לו.
+  const canMonitor = type.monitor && typeof ME !== "undefined" && ME && ME.role === "admin";
   const rows = machines.map((m) => `<tr>
     <td class="mono" dir="ltr">${esc(m.mac)}</td>
     <td><b>${esc(m.suffix)}</b></td>
     <td>
+      ${canMonitor ? `<button class="btn" data-monitor="${esc(m.mac)}"
+        data-mname="${esc(m.suffix)}">מוניטור</button>` : ""}
       <button class="btn" data-edit="${esc(m.mac)}">עריכה</button>
       <button class="btn danger" data-remove="${esc(m.mac)}">מחק</button>
     </td></tr>`).join("");
@@ -170,7 +188,12 @@ function wireGroup(group, type) {
   }));
   block.querySelectorAll("[data-remove]").forEach((b) => b.onclick = () => confirmSheet(
     "מחיקת מכונה", `${b.dataset.remove} תוסר מהטבלה. באתחול הבא היא תדווח כלא רשומה.`,
-    "מחק", async () => { await del(`/machines/${b.dataset.remove}`); await loadMachinesTab(); }));
+    "מחק", async () => { dhcpNotice(await del(`/machines/${b.dataset.remove}`)); await loadMachinesTab(); }));
+  // #690: פותח את צפיית ה-noVNC בחלון נפרד; מפתח לכל MAC כדי שלא יידרס.
+  block.querySelectorAll("[data-monitor]").forEach((b) => b.onclick = () => window.open(
+    `monitor.html?mac=${encodeURIComponent(b.dataset.monitor)}`
+    + `&name=${encodeURIComponent(b.dataset.mname || b.dataset.monitor)}`,
+    "imagectl-monitor-" + b.dataset.monitor));
 
   const renameButton = block.querySelector("[data-rename-group]");
   if (renameButton) renameButton.onclick = () => sheet({
@@ -188,11 +211,11 @@ function wireGroup(group, type) {
     event.preventDefault();
     const form = event.currentTarget;
     try {
-      await post("/machines", {
+      dhcpNotice(await post("/machines", {
         mac: form.querySelector(".a-mac").value,
         name: form.querySelector(".a-name").value,
         group_id: group.id,
-      });
+      }));    // #857: נשמרה, אבל ה-DHCP לא עודכן — המפעיל רואה
       await loadMachinesTab();
     } catch (error) { form.querySelector(".error").textContent = error.message; }
   });
@@ -210,6 +233,7 @@ function wireGroup(group, type) {
   block.querySelector("[data-save]").onclick = async () => {
     const r = await post("/machines/import", { group_id: group.id, text: text() });
     result.innerHTML = `<div>נשמרו ${r.saved}. נדחו ${r.rejected.length}.</div>` + resultHtml(r.rejected);
+    dhcpNotice(r);
     await loadMachinesTab();
   };
 }
@@ -233,3 +257,6 @@ function addGroupSheet() {
     },
   });
 }
+
+window.loadMachinesTab = loadMachinesTab;
+})();

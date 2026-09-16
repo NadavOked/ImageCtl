@@ -7,11 +7,13 @@
  * round that is not a rare case, it is a nightly one.
  *
  * So each target gets its own bounded queue and is written non-blocking.
- * A target that cannot keep up *while the others do* fills its queue and is
- * dropped -- reported as failed, by name, while the others carry on at full
- * speed. When every queue is full the stream itself is too fast for the
- * drives, and fanout blocks instead: that backpressure is what slows the
- * multicast sender down (#23).
+ * When any live target's queue is full the stream is too fast for that drive,
+ * and fanout blocks the reader until it drains: the stream is paced by the
+ * slowest live drawer, and that backpressure is what slows the multicast
+ * sender down (#23, #660). A slow drawer is never dropped -- the whole
+ * machine follows it, the way udp-sender waits for a slow receiver rather
+ * than evicting it (#657). Only a write error -- a reader that has gone,
+ * EPIPE -- fails a single target, while the others carry on.
  *
  * The rule that shapes the whole program: never discard a block and let the
  * target continue. Multicast cannot resend, so a target that missed bytes can
@@ -23,6 +25,12 @@
  * Output: one line per finished target on stdout: "<path> ok" | "<path> failed <reason>"
  *         plus, for each target, a running byte count appended to "<path>.bytes".
  * Exit:   0 if every target finished, 1 if any failed, 2 on usage/fatal errors.
+ *
+ * "ok" means the stream length was accepted -- empty stdin is never ok, and
+ * FANOUT_EXPECTED_BYTES if set must match byte-for-byte -- and close() (and
+ * fsync on a non-FIFO) succeeded. It is not a disk write confirmation: the
+ * counter is bytes handed to the fd, and the shell's pipeline.rc is the
+ * evidence that partclone exited 0 (#427).
  *
  * The byte count is here, and not in the shell, because this program is the
  * only place that knows how much of the stream each drawer actually took.
@@ -41,6 +49,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -48,25 +57,25 @@
  *
  *   open()ing a fifo        -> OPEN_RETRY_MS   (and O_NONBLOCK, so the call
  *                                               itself never blocks)
- *   room for the next block -> ROOM_GRACE_MS   (charged only to the drawer
- *                                               that is actually the holdup)
- *   nothing drains at all   -> DRAIN_STALL_MS  (both in make_room and in the
- *                                               final drain loop)
- *   poll() for writability  -> ROOM_POLL_MS / 200ms, never infinite
+ *   poll() for writability  -> ROOM_POLL_MS, never infinite
  *
- * The one wait without a ceiling of its own is read(stdin): a stream that
- * stops arriving is not something this program can distinguish from a stream
- * that is merely slow. Its ceiling lives one process up, in the shell --
- * wait_progress() in agent/lib/waits.sh watches the pv counter that feeds
- * this stdin and kills the pipeline when it stops moving. Named here so the
- * next reader does not have to go looking for it.
+ * What has no ceiling in the ordinary case, by design (#660): make_room()
+ * blocks the reader for as long as a live drawer keeps draining, so a slow
+ * drawer sets the pace and the stream follows it rather than being dropped.
+ * The one exception (#674): make_room() evicts a drawer that is full AND has
+ * made no write progress for STALL_EVICT_MS. A drawer that accepts any bytes
+ * at all keeps resetting that clock, so healthy-but-slow drives are never
+ * evicted -- only a consumer that has stopped taking bytes entirely, which a
+ * hung disk (I/O timeout, not immediate EIO) is and a slow one is not. The
+ * shell watchdog (wait_progress() in agent/lib/waits.sh) and partclone's exit
+ * status remain the machine-level ceilings; this one isolates the responsible
+ * drawer before they fire, so its healthy siblings are not taken down with it.
  */
 #define MAX_TARGETS 8
 #define READ_CHUNK (1024 * 1024)
 #define OPEN_RETRY_MS 5000      /* how long to wait for a reader on a fifo */
-#define ROOM_GRACE_MS 500       /* how long a full target may take to make room */
 #define ROOM_POLL_MS 20
-#define DRAIN_STALL_MS 30000    /* a target that takes nothing for this long is dead */
+#define STALL_EVICT_MS 150000   /* full drawer, no FIFO write progress; override for tests */
 #define COUNTER_SUFFIX ".bytes" /* the per-target progress counter, next to the fifo */
 #define COUNTER_MS 1000         /* how often it is refreshed (the report goes out every 2s) */
 
@@ -81,13 +90,18 @@ struct target {
     size_t len;         /* bytes queued */
     int alive;
     const char *reason;
-    long long held_ms;  /* accumulated ms it held the stream back while others were ready */
     long long taken;    /* bytes handed to this target's pipeline, for the counter */
+    long long last_progress_ms; /* monotonic ms of the last accepted FIFO write (#674) */
     int cfd;            /* the counter file, or -1 when it could not be opened */
 };
 
 static struct target targets[MAX_TARGETS];
 static int target_count;
+static long long stall_evict_ms = STALL_EVICT_MS;
+static long long expected_bytes;          /* 0 = unknown; FANOUT_EXPECTED_BYTES */
+static char stream_reason[96];            /* short/long stream, one string for all */
+
+static long long now_ms(void);
 
 /* Opening a fifo for writing fails with ENXIO until a reader arrives, and
  * the per-drawer pipelines are started moments earlier by the shell. Rather
@@ -123,14 +137,15 @@ static void fail_target(struct target *t, const char *reason)
     t->buf = NULL;
 }
 
-/* Queue a block for one target. Returns 0 on success, -1 if it no longer
- * fits -- which is the moment the target is declared failed. */
+/* Queue a block for one target. make_room() has already guaranteed the room,
+ * so a target that still does not fit is an internal invariant break, not a
+ * slow drive -- said plainly rather than blamed on the disk (#660). */
 static int enqueue(struct target *t, const char *data, size_t n)
 {
     if (!t->alive)
         return 0;
     if (t->len + n > t->cap) {
-        fail_target(t, "buffer overrun (drive too slow)");
+        fail_target(t, "internal error (queue capacity invariant)");
         return -1;
     }
     size_t tail = (t->head + t->len) % t->cap;
@@ -156,6 +171,7 @@ static void flush_target(struct target *t)
             t->head = (t->head + (size_t)written) % t->cap;
             t->len -= (size_t)written;
             t->taken += written;
+            t->last_progress_ms = now_ms();
             continue;
         }
         if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
@@ -198,6 +214,24 @@ static long long now_ms(void)
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+/* Positive integer from the environment, or fallback. Junk, zero, and
+ * overflow (strtoll saturates to LLONG_MAX, ERANGE) are refused out loud
+ * and the fallback kept -- never taken on (principle 5, #674, #427). */
+static long long env_ll(const char *name, long long fallback)
+{
+    const char *s = getenv(name);
+    char *end;
+    long long v;
+    if (!s)
+        return fallback;
+    errno = 0;
+    v = strtoll(s, &end, 10);
+    if (end != s && *end == '\0' && v > 0 && errno != ERANGE)
+        return v;
+    fprintf(stderr, "fanout: ignoring invalid %s\n", name);
+    return fallback;
 }
 
 /* Open "<path>.bytes" for the running count of one target. Truncated on
@@ -245,88 +279,42 @@ static void write_counters(int force)
     }
 }
 
-/* Make sure every living target has room for the next block.
+/* Block the reader until every live target has room for the next n bytes.
  *
- * The queue is there to absorb jitter, not to make a slow drive look fast.
- * But "too slow" is only meaningful *relative to the other drawers*, and the
- * measure is how long the stream waits *because of this target* -- not
- * whether its next block happens to fit. The stream waits because of one
- * target only when every other drawer is already ready: then it alone is
- * what the next block is missing. While two or more are short the stream is
- * simply faster than the drives -- a fast network, or a VM lab where the
- * wire is memory -- and the right move is to block: that backpressure
- * reaches udp-receiver and udpcast's flow control slows the sender (#23).
+ * This is the whole back-pressure policy (#660): the stream advances only as
+ * fast as the slowest live drawer that is still making progress, the way tee
+ * paces to its slowest output -- but per-drawer and non-blocking, so a drawer
+ * that has already write-errored is out and never waited on. Called with
+ * n == cap at EOF, it drains every live ring to empty before the counts are
+ * finalised.
  *
- * And the debt is paid back at the rate it was charged. Equally slow drawers
- * take turns being the last one ready, a few milliseconds at a time; without
- * repayment that jitter integrates and every drawer but one is eventually
- * failed for being briefly out of phase with its neighbours (#45). A drawer
- * that really is the slow one is short far more often than not, so it still
- * reaches the grace and still fails, by name and in the open.
- *
- * A machine whose drives all stopped is still caught: nothing drains for
- * DRAIN_STALL_MS and it is failed, never waited on for ever. */
+ * A drawer that is full AND has taken no bytes for stall_evict_ms is a hung
+ * consumer, not a slow one, and is failed here so its siblings are not held
+ * behind it forever (#674). Any accepted write in flush_target() refreshes
+ * last_progress_ms, so a slow-but-draining drawer never trips this. */
 static void make_room(size_t n)
 {
-    long long now = now_ms();
-    long long prev = now;
-    long long last_drain = now;
-    size_t prev_queued = (size_t)-1;
     for (;;) {
-        int short_count = 0;              /* living targets the block does not fit */
-        int living = 0;
-        size_t queued = 0;
-        for (int i = 0; i < target_count; i++) {
-            struct target *t = &targets[i];
-            flush_target(t);
-            if (t->alive) {
-                living++;
-                queued += t->len;
-                if (t->len + n > t->cap)
-                    short_count++;
-            }
-        }
-        if (queued < prev_queued)
-            last_drain = now;             /* somebody took bytes */
-        prev_queued = queued;
-
-        long long delta = now - prev;
         int blocked = 0;
         for (int i = 0; i < target_count; i++) {
             struct target *t = &targets[i];
-            if (!t->alive)
-                continue;
-            int too_full = t->len + n > t->cap;
-            /* The stream is waiting on this drawer alone only if every other
-             * living drawer is already ready. A lone survivor is never "the
-             * holdup" -- there is nobody it could be holding up. */
-            int holding_up = too_full && short_count == 1 && living > 1;
-            if (holding_up) {
-                t->held_ms += delta;
-                if (t->held_ms >= ROOM_GRACE_MS) {
-                    fail_target(t, "buffer overrun (drive too slow)");
-                    continue;
-                }
-            } else if (t->held_ms > 0) {
-                t->held_ms -= delta;      /* not the holdup: work the debt off */
-                if (t->held_ms < 0)
-                    t->held_ms = 0;
-            }
-            if (!too_full)
-                continue;
-            /* Not being charged for the wait must never mean waiting for
-             * ever: a drawer nothing drains out of is failed regardless. */
-            if (!holding_up && now - last_drain >= DRAIN_STALL_MS) {
-                fail_target(t, "drawer stalled");
-                continue;
+            flush_target(t);
+            if (!(t->alive && t->len > t->cap - n))
+                continue;                 /* not live, or has room */
+            long long idle = now_ms() - t->last_progress_ms;
+            if (idle >= stall_evict_ms) {
+                fprintf(stderr,
+                        "fanout: %s stalled, no write progress for %lld ms -- evicting\n",
+                        t->path, idle);
+                fail_target(t, "stalled with no write progress");
+                continue;                 /* out; do not wait on it */
             }
             blocked = 1;
         }
+        write_counters(0);
         if (!blocked)
             return;
-        prev = now;
         wait_writable(ROOM_POLL_MS);
-        now = now_ms();
     }
 }
 
@@ -337,6 +325,14 @@ int main(int argc, char **argv)
      * drawer because one drive died. Ignoring it turns that into the EPIPE
      * that the write path already reports as a single failed target. */
     signal(SIGPIPE, SIG_IGN);
+
+    /* The stall ceiling is a production constant; the env var exists so the
+     * negative-control tests can trip eviction in milliseconds instead of
+     * minutes. FANOUT_EXPECTED_BYTES is the length check that separates an
+     * empty stdin, a producer that died mid-stream, and a complete image --
+     * without it those three share one EOF path and all look like ok (#427). */
+    stall_evict_ms = env_ll("FANOUT_STALL_EVICT_MS", STALL_EVICT_MS);
+    expected_bytes = env_ll("FANOUT_EXPECTED_BYTES", 0);
 
     if (argc < 3) {
         fprintf(stderr, "usage: fanout <buffer-bytes> <out> [out...]\n");
@@ -361,7 +357,6 @@ int main(int argc, char **argv)
         t->head = t->len = 0;
         t->alive = 1;
         t->reason = NULL;
-        t->held_ms = 0;
         t->taken = 0;
         t->cfd = open_counter(t->path);
         if (!t->buf) {
@@ -377,6 +372,7 @@ int main(int argc, char **argv)
             continue;
         }
         t->fd = fd;
+        t->last_progress_ms = now_ms();   /* stall clock starts at open (#674) */
     }
 
     char *chunk = malloc(READ_CHUNK);
@@ -385,6 +381,7 @@ int main(int argc, char **argv)
         return 2;
     }
 
+    long long stdin_got = 0;
     for (;;) {
         if (alive_count() == 0)
             break;                        /* nobody left to write to */
@@ -398,6 +395,7 @@ int main(int argc, char **argv)
             free(chunk);
             return 2;
         }
+        stdin_got += (long long)got;
         make_room((size_t)got);
         for (int i = 0; i < target_count; i++) {
             enqueue(&targets[i], chunk, (size_t)got);
@@ -407,34 +405,28 @@ int main(int argc, char **argv)
     }
     free(chunk);
 
-    /* Drain what is still queued for the targets that survived. A slow drive
-     * may take its time here -- nothing waits on it any more -- but one that
-     * stops taking bytes altogether is failed rather than waited on forever. */
-    size_t last_len[MAX_TARGETS];
-    long long last_progress[MAX_TARGETS];
-    for (int i = 0; i < target_count; i++) {
-        last_len[i] = targets[i].len;
-        last_progress[i] = now_ms();
-    }
-    while (alive_count() > 0) {
-        int pending = 0;
-        for (int i = 0; i < target_count; i++) {
-            struct target *t = &targets[i];
-            flush_target(t);
-            if (!t->alive || t->len == 0)
-                continue;
-            pending = 1;
-            if (t->len != last_len[i]) {
-                last_len[i] = t->len;
-                last_progress[i] = now_ms();
-            } else if (now_ms() - last_progress[i] > DRAIN_STALL_MS) {
-                fail_target(t, "stalled (no progress)");
-            }
+    /* EOF: drain every byte still queued, on a slow drawer too. A drawer that
+     * has stopped taking bytes entirely for stall_evict_ms is failed by the
+     * same health rule rather than blocking every sibling from finishing
+     * (#674); a merely slow one keeps draining and is waited on to the end. */
+    make_room((size_t)cap);
+
+    /* Length before "ok": empty, short, and complete must not share a path.
+     * Expected length from FANOUT_EXPECTED_BYTES (tests, and a future
+     * per-file compressed size); without it, empty stdin is still failed
+     * because that is one of the three states and needs no number (#427). */
+    if (alive_count() > 0) {
+        if (expected_bytes > 0 && stdin_got != expected_bytes) {
+            snprintf(stream_reason, sizeof stream_reason,
+                     "%s stream (got %lld of %lld)",
+                     stdin_got < expected_bytes ? "short" : "long",
+                     stdin_got, expected_bytes);
+            for (int i = 0; i < target_count; i++)
+                fail_target(&targets[i], stream_reason);
+        } else if (expected_bytes == 0 && stdin_got == 0) {
+            for (int i = 0; i < target_count; i++)
+                fail_target(&targets[i], "empty stream");
         }
-        write_counters(0);
-        if (!pending)
-            break;
-        wait_writable(200);
     }
 
     /* The last word on every counter is the exact total, not whatever the
@@ -447,8 +439,30 @@ int main(int argc, char **argv)
         if (t->cfd >= 0)
             close(t->cfd);
         if (t->alive) {
-            close(t->fd);
-            free(t->buf);
+            /* fsync is for a real file; a FIFO returns EINVAL and is skipped.
+             * close() errors were swallowed -- a target that lost its last
+             * bytes at close still printed ok (#427). */
+            struct stat st;
+            if (t->fd >= 0 && fstat(t->fd, &st) == 0 && !S_ISFIFO(st.st_mode)) {
+                if (fsync(t->fd) != 0) {
+                    fail_target(t, "fsync failed");
+                }
+            }
+        }
+        if (t->alive && t->fd >= 0) {
+            int fd = t->fd;
+            t->fd = -1;
+            if (close(fd) != 0) {
+                t->alive = 0;
+                t->reason = "close failed";
+                free(t->buf);
+                t->buf = NULL;
+            } else {
+                free(t->buf);
+                t->buf = NULL;
+            }
+        }
+        if (t->alive) {
             printf("%s ok\n", t->path);
         } else {
             failed = 1;

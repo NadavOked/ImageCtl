@@ -246,6 +246,7 @@ def test_capture_sizes_the_layout_and_not_the_source_disk(tmp_path, case):
         f"{p['index']}|g|u|{p['start_sector']}|{p['size_bytes'] // 512}\n"
         for p in case["partitions"]), encoding="utf-8")
     out = sh(f'_disk_bytes={case["source_disk_bytes"]}; _parts={posix(parts)!r}; '
+             f'_sector_size=512; '
              f'log() {{ :; }}; ' + capture_awk() + '; printf "%s" "$_min_target"')
     assert int(out.strip()) == required_bytes(case)
 
@@ -276,7 +277,7 @@ def fits_box(tmp_path, blockdev_body: str, image=TINY11):
     prelude = (
         f"chmod 0755 {posix(stubs)}/blockdev; "
         f'export PATH="$(cd {posix(stubs)!r} && pwd):$PATH"; '
-        f'export RUN_DIR={posix(run)!r} DEVROOT=/dev LOG_FILE={posix(run)!r}/log; '
+        f'export RUN_DIR={posix(run)!r} DEVROOT={posix(run)!r}/dev LOG_FILE={posix(run)!r}/log; '
         f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/progress.sh; '
         f'. {posix(AGENT)}/lib/restore.sh; '
     )

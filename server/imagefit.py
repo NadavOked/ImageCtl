@@ -47,6 +47,41 @@ def expandable_candidate(manifest: dict) -> dict | None:
     return max(system, key=lambda p: p["start_sector"]) if system else None
 
 
+#: מה שפותח סבב שלא עודכן בשביל #59 ממשיך לכתוב (pulls.py, station.py):
+#: לא ידוע = הבחירה האוטומטית, בדיוק ההתנהגות מלפני ה-Issue הזה.
+EXPAND_AUTO = "auto"
+#: כיבוי מפורש של ההרחבה — לשחזר בגודל המקורי בלי לגעת בטבלה.
+EXPAND_NONE = "none"
+
+
+def validate_expand_choice(manifest: dict, raw: object) -> str:
+    """מנרמלת ומאמתת את בחירת ההרחבה שהגיעה מהקונסולה בפתיחת סבב (#59).
+
+    ‏`None` (השדה לא נשלח בכלל) הוא בדיוק `EXPAND_AUTO` — כדי ש-`pulls.py`
+    ו-`station.py`, ששניהם עדיין לא שולחים את השדה, ימשיכו לקבל את
+    הבחירה האוטומטית בלי לדעת שהיא קיימת (עיקרון 1). ‏`EXPAND_NONE`
+    מכבה. מספר (כמחרוזת או `int`) חייב להצביע על מחיצת windows/linux
+    שקיימת **במניפסט הזה** — בדיוק המחיצות שהבחירה האוטומטית עצמה
+    שוקלת (`expandable_candidate` למעלה) — אחרת נדחה בשמו, לפני שהסבב
+    נפתח ולא אחרי שהוא כבר משדר לכיתה.
+    """
+    if raw is None or raw == EXPAND_AUTO:
+        return EXPAND_AUTO
+    if raw == EXPAND_NONE:
+        return EXPAND_NONE
+    try:
+        index = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"בחירת הרחבה לא מוכרת: {raw!r}")
+    parts = [p for p in manifest.get("partitions") or [] if isinstance(p, dict)]
+    match = next((p for p in parts if p.get("index") == index), None)
+    if match is None or match.get("role") not in ("windows", "linux"):
+        raise ValueError(
+            f"מחיצה {index} אינה מחיצת windows/linux באימג' הזה — "
+            "אי אפשר לבחור אותה להרחבה")
+    return str(index)
+
+
 def shrink_bytes(manifest: dict, floor_bytes: object) -> int | None:
     """כמה בייטים הפריסה חייבת לאבד כדי להיכנס לכונן בגודל `floor_bytes`.
 

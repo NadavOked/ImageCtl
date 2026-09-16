@@ -27,11 +27,11 @@ import sqlite3
 from datetime import datetime, timedelta
 
 from .agent_loops import SILENCE_SECONDS
-from .db import journal, now_iso
+from .db import _write_lock, journal, now_iso, writing
 
 log = logging.getLogger("imagectl.foreign_vlan")
 
-__all__ = ["SILENCE_SECONDS", "current", "note", "where"]
+__all__ = ["SILENCE_SECONDS", "current", "note", "vlan_checks", "where"]
 
 
 def _cutoff(now: str) -> str:
@@ -88,19 +88,28 @@ def _count(conn: sqlite3.Connection, mac: str, address: str,
 
     שתיקה ארוכה מ-`SILENCE_SECONDS` מתחילה ספירה חדשה באותה שורה.
     הכתובת נדרסת תמיד: מה שמוצג הוא מהיכן היא פונה **עכשיו**.
+
+    ‏`_write_lock` ו-`writing` הם אותם שני מנגנונים שתוקנו ב-#272 על
+    ‏`net_seen` ובמסלול ה-hello ב-#356, וזה **אותו מסלול hello בדיוק**
+    (#518). התור מונע הרעבה בין תהליכוני uvicorn, ו-`writing` מבטיח
+    שכתיבה שנכשלה לא תשאיר ``BEGIN`` פתוח על החיבור — ה-`except` שב-`note`
+    בולע כדי שניטור לא יפיל hello, וחיבור מורעל היה הופך את הבליעה הזו
+    למה ש**מפיל** את ה-hello הבא. הנעילה עוטפת את הכתיבה **בלבד**:
+    קריאת האימות ורישום היומן שאחריה יושבים מחוצה לה, כי `journal` נוטל
+    את אותה נעילה בעצמו והיא ``Lock`` ולא ``RLock``.
     """
     cutoff = _cutoff(ts)
-    conn.execute(
-        "INSERT INTO off_vlan_contacts (mac, address, hits, first_at, last_at)"
-        " VALUES (?, ?, 1, ?, ?)"
-        " ON CONFLICT (mac) DO UPDATE SET"
-        "   address  = excluded.address,"
-        "   hits     = CASE WHEN last_at >= ? THEN hits + 1 ELSE 1 END,"
-        "   first_at = CASE WHEN last_at >= ? THEN first_at ELSE excluded.first_at END,"
-        "   last_at  = excluded.last_at",
-        (mac, address, ts, ts, cutoff, cutoff),
-    )
-    conn.commit()
+    with _write_lock, writing(conn):
+        conn.execute(
+            "INSERT INTO off_vlan_contacts (mac, address, hits, first_at, last_at)"
+            " VALUES (?, ?, 1, ?, ?)"
+            " ON CONFLICT (mac) DO UPDATE SET"
+            "   address  = excluded.address,"
+            "   hits     = CASE WHEN last_at >= ? THEN hits + 1 ELSE 1 END,"
+            "   first_at = CASE WHEN last_at >= ? THEN first_at ELSE excluded.first_at END,"
+            "   last_at  = excluded.last_at",
+            (mac, address, ts, ts, cutoff, cutoff),
+        )
     # ראיה חיובית: הערך נקרא בחזרה. שורה שאינה שם, או שהחותמת בה אינה
     # זו שנכתבה, פירושה שהרישום לא קרה — ולא שהוא יצא אחד (עיקרון 5).
     row = conn.execute(
@@ -150,3 +159,46 @@ def current(conn: sqlite3.Connection, now: str | None = None) -> list[dict]:
             (_cutoff(moment),),
         )
     ]
+
+
+def vlan_checks(contacts: list[dict] | None, deploy_vlan: str) -> list[dict]:
+    """מי מדבר עם השרת מרשת שאינה וילן ההפצה — שורה לכל מחשב (#137).
+
+    **רק אדום.** אין כאן דירוג בין "לגיטימי" ל"תקלה", כי לשרת אין ממה
+    להסיק אותו: אותה פנייה בדיוק היא נדב שעומד ליד מחשב ומושך אימג'
+    ביד, ומחשב שיכפול שחובר לשקע הלא נכון וייראה תקין עד שיתברר שאינו
+    עובד. ההכרעה היא שהאירוע נראה בשני המקרים.
+
+    השורה אומרת **מאיזו רשת** נפתחה הפנייה ומה מצופה — כי בלי זה
+    "משהו לא בסדר ברשת" הוא בדיוק המשפט ששולח לחפש במקום הלא נכון.
+
+    ‏None פירושו שהרשימה לא נקראה, וזו שורה **אדומה** ולא ריקה. וגם
+    הירוקה נזהרת בלשונה: היא אומרת מה נמדד — לא הגיעה פנייה כזאת
+    בעשר הדקות האחרונות — ולא "כל המחשבים בשקע הנכון". מחשב כבוי
+    שותק בדיוק כמו מחשב שהועבר, ואין אירוע שאומר "נרפא".
+
+    ‏(#354) עברה הנה מ-`server/health.py` — זה המודול שהיא באמת שייכת
+    אליו. `check` ו-`_last_seen` נשארים ב-health.py כי הוא כבר מייבא
+    את המודול הזה; ייבוא בכיוון ההפוך בראש הקובץ היה יוצר מעגל.
+    """
+    from .health import check, _last_seen  # noqa: PLC0415 — נמנע ממעגל ייבוא
+    label = "מחשבים שפונים מרשת אחרת"
+    if contacts is None:
+        return [check("off_vlan", label, "bad",
+                      "רשימת הפניות מרשת אחרת לא נקראה — אין לדעת אם מחשב "
+                      "מדבר עם השרת מחוץ לווילן ההפצה")]
+    if not contacts:
+        return [check("off_vlan", label, "ok",
+                      f"אף מחשב לא פנה לשרת מחוץ לווילן ההפצה ב-"
+                      f"{SILENCE_SECONDS // 60} הדקות האחרונות. "
+                      "מחשב כבוי שותק גם הוא — ירידה מהרשימה אינה \"תוקן\"")]
+    rows = [check("off_vlan", label, "bad",
+                  f"{len(contacts)} מחשבים פונים לשרת מרשת שאינה וילן ההפצה — "
+                  "בדקו לאיזה שקע הם מחוברים")]
+    rows += [
+        check(f"off_vlan:{one['mac']}", one["name"] or one["mac"], "bad",
+              f"פנתה מ-{one['address']} · וילן ההפצה הוא {deploy_vlan} · "
+              f"{one['hits']} פניות · {_last_seen(one['silent_seconds'])}")
+        for one in contacts
+    ]
+    return rows

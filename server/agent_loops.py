@@ -24,12 +24,22 @@ import logging
 import sqlite3
 from datetime import datetime, timedelta
 
-from boot.grub_menu import LOCAL, decide
+from boot.grub_menu import decide
 
 from .db import _write_lock, journal, now_iso, writing
 from .sessions import SessionStore
 
 log = logging.getLogger("imagectl.agent_loops")
+
+#: ‏#661: ההחלטות שבהן ההגעה לסוכן מוסברת בסיבה אמיתית — משימה, סבב
+#: פתוח, או מחשב שיכפול שברירת המחדל שלו היא מסך ההמתנה. לפני #641 מכונת
+#: build/classroom חסרת-משימה קיבלה LOCAL, וכל הגעה לסוכן היתה הראיה של
+#: #112; #641 העלתה אותה ל-AGENT (אוטו-בוט ל-ImageCtl) עם code="no-task",
+#: אבל זו בדיוק ה"אין סיבה" — לא סיבה. לכן נבדק ה-code (האסימון מהרשימה
+#: הסגורה, ראו Decision) ולא action: רק שלוש אלה מסבירות. זו רשימת
+#: ה**מסבירים** ולא ה"חשודים" — code חדש שאינו כאן נספר, כי שומר שאינו
+#: סופר אינו שומר (עיקרון 5).
+_EXPLAINED_CODES = frozenset({"task-assigned", "session-joinable", "cloner-wait"})
 
 #: כמה שתיקה סוגרת את הלולאה הנוכחית. המחזור שנמדד על החומרה ב-#75
 #: היה ‏14:05:51 → 14:07:54 → 14:08:4x, כלומר ~2 דקות; עשר דקות הן
@@ -83,9 +93,10 @@ def unexplained(conn: sqlite3.Connection, store: SessionStore, answer: dict,
         return False
     if answer.get("role") == "build":
         return False
-    if decide(answer).action != LOCAL:
-        # השרת שלח אותה לסוכן: משימה, סבב, או מחשב שיכפול שברירת
-        # המחדל שלו היא מסך ההמתנה (`cloner-wait`). ההגעה מוסברת.
+    if decide(answer).code in _EXPLAINED_CODES:
+        # השרת שלח אותה לסוכן מסיבה אמיתית: משימה, סבב, או מחשב שיכפול
+        # שברירת המחדל שלו היא מסך ההמתנה (`cloner-wait`). ההגעה מוסברת.
+        # ‏#661: ‏#641 גם מעלה no-task ל-AGENT — וזו אינה סיבה, ולכן נספרת.
         return False
     group = answer.get("group") or {}
     if not group.get("id"):
@@ -196,4 +207,40 @@ def current(conn: sqlite3.Connection, now: str | None = None) -> list[dict]:
     ]
 
 
-__all__ = ["SILENCE_SECONDS", "current", "note", "unexplained"]
+def loop_checks(loops: list[dict] | None) -> list[dict]:
+    """מחשבים שהגיעו לסוכן אף שנשלחו לדיסק המקומי — שורה לכל מחשב.
+
+    ‏None פירושו שהרשימה לא נקראה, וזו שורה **אדומה** ולא ריקה: מסך
+    ריק מפני שהשאילתה נפלה נראה בדיוק כמו מסך ריק מפני שהכול תקין,
+    וזו בדיוק ההנחה שעיקרון 5 אוסר.
+
+    גם השורה הירוקה נזהרת בלשונה. היא אומרת מה **נמדד** — לא הגיע
+    hello כזה בעשר הדקות האחרונות — ולא "אין מחשבים תקועים": מחשב
+    כבוי שותק בדיוק כמו מחשב שתוקן, ואין אירוע שאומר "נרפא".
+
+    ‏(#354) עברה הנה מ-`server/health.py` — זה המודול שהיא באמת שייכת
+    אליו. `check` ו-`_last_seen` נשארים ב-health.py כי הוא כבר מייבא
+    את המודול הזה; ייבוא בכיוון ההפוך בראש הקובץ היה יוצר מעגל.
+    """
+    from .health import check, _last_seen  # noqa: PLC0415 — נמנע ממעגל ייבוא
+    label = "מחשבים שנופלים לסוכן"
+    if loops is None:
+        return [check("agent_loops", label, "bad",
+                      "רשימת הלולאות לא נקראה — אין לדעת אם יש מחשבים תקועים")]
+    if not loops:
+        return [check("agent_loops", label, "ok",
+                      f"אף מחשב לא הגיע לסוכן בלי משימה ובלי סבב ב-"
+                      f"{SILENCE_SECONDS // 60} הדקות האחרונות. "
+                      "מחשב כבוי שותק גם הוא — ירידה מהרשימה אינה \"תוקן\"")]
+    rows = [check("agent_loops", label, "bad",
+                  f"{len(loops)} מחשבים הגיעו לסוכן אף שנשלחו לדיסק המקומי — "
+                  "השרשור לדיסק נכשל אצלם")]
+    rows += [
+        check(f"agent_loop:{loop['mac']}", loop["name"] or loop["mac"], "bad",
+              f"{loop['hits']} פעמים בלולאה הנוכחית · {_last_seen(loop['silent_seconds'])}")
+        for loop in loops
+    ]
+    return rows
+
+
+__all__ = ["SILENCE_SECONDS", "current", "loop_checks", "note", "unexplained"]

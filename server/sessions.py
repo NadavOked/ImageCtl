@@ -35,6 +35,17 @@ HOSTNAME_MAX = 15
 #: כשהקבוצה עדיין ריקה ואי אפשר למדוד את הסיומת הארוכה בפועל.
 SUFFIX_MIN = 2
 
+#: הקידומת של גל חדר השיכפולים — היחיד מסלולי הסבב שאינם כיתה, וגם
+#: הקידומת הארוכה ביותר האפשרית לשם לא-כיתתי. ‏room.py פותח תמיד עם
+#: המחרוזת הזו; היא כאן כדי שהגבול למטה ייגזר ממנה ולא ייכתב כמספר קסם.
+ROOM_PREFIX = "ROOM"
+
+#: אורך השם המרבי למכונה שאינה כיתתית: מה שנשאר תחת HOSTNAME_MAX אחרי
+#: הקידומת הארוכה ביותר והמקף. ‏`registry.normalize_name` אוכף אותו
+#: **ברישום**, כדי ששם שאינו יכול להפוך לשם מחשב יידחה מיד — ולא
+#: בפתיחת הסבב, מאוחר ועל כל הקבוצה (#405).
+NONCLASSROOM_NAME_MAX = HOSTNAME_MAX - len(ROOM_PREFIX) - 1
+
 #: מה ששם מחשב מורכב ממנו. ‏`_` **אינו** כאן, והוא בדיוק התו שנולד
 #: מ-`label.replace(" ", "_")` ב-`console_api.py` ושורד לתוך מזהה הקבוצה.
 _PREFIX_OK = re.compile(r"[A-Z0-9-]+")
@@ -109,9 +120,15 @@ class SessionStore:
         roster: list[str] | None = None,
         kind: str = MULTICAST,
         replaces: str | None = None,
+        expand_partition: str | None = None,
     ) -> str:
         """`roster` — בחירת מחשבים מתוך הקבוצה. None = כל הקבוצה.
         רק מי שברשימה מוער ומצטרף; השאר עולים מהדיסק (עיקרון 1).
+
+        `expand_partition` — בחירת ההרחבה מהקונסולה (#59), כבר מנורמלת
+        על ידי `imagefit.validate_expand_choice`. ‏`None` פירושו שהקורא
+        לא עודכן בשביל #59 (pulls.py, station.py) — נשמר כ-`NULL`,
+        וה-hello עצמו נופל בו חזרה ל-"auto" (עיקרון 1).
 
         `kind` — הזרם. מולטיקאסט תופס את החריץ היחיד; יוניקאסט לא (#60),
         והוא נפתח כבר רץ: אין למי לחכות, התחנה מושכת בעצמה.
@@ -162,15 +179,24 @@ class SessionStore:
             raise SessionError(
                 f"קידומת {prefix!r} אינה יכולה להיות שם מחשב — "
                 "מותרים אותיות אנגליות, ספרות ומקף בלבד")
-        longest = self.conn.execute(
-            "SELECT MAX(LENGTH(suffix)) AS n FROM machines WHERE group_id = ?",
+        # המכונה עם השם הארוך ביותר בקבוצה, לא רק אורכו: משם התיקון של
+        # #405 — כשהשם כבר במרשם (נרשם לפני שהאכיפה עברה לרישום) ההודעה
+        # נוקבת ב**מכונה** ולא רק במספר, כדי שמי שפותח את הסבב ידע איזו
+        # מכונה בקבוצה חוסמת את כולה.
+        worst = self.conn.execute(
+            "SELECT suffix FROM machines WHERE group_id = ?"
+            " ORDER BY LENGTH(suffix) DESC, suffix LIMIT 1",
             (group_id,),
-        ).fetchone()["n"]
+        ).fetchone()
         # קבוצה ריקה: אין מה למדוד, ולכן נמדדת הרצפה. זה אינו "לא בדקנו
         # ולכן עבר" — קידומת שאינה מותירה מקום גם לסיומת הקצרה ביותר
         # פסולה בכל מקרה, וארוכה יותר תיתפס כשהמכונה תירשם.
-        room = longest if longest else SUFFIX_MIN
+        room = len(worst["suffix"]) if worst else SUFFIX_MIN
         if len(prefix) + 1 + room > HOSTNAME_MAX:
+            if worst:
+                raise SessionError(
+                    f"שם המכונה {worst['suffix']!r} ({room} תווים) עם הקידומת "
+                    f"{prefix!r} חורג מ-{HOSTNAME_MAX} התווים של שם מחשב")
             raise SessionError(
                 f"קידומת {prefix!r} ארוכה מדי: עם מקף וסיומת בת {room} תווים "
                 f"היא חורגת מ-{HOSTNAME_MAX} התווים של שם מחשב")
@@ -198,12 +224,13 @@ class SessionStore:
             self.conn.execute(
                 "INSERT INTO sessions (id, group_id, image_id, prefix,"
                 " expected_clients, wait_seconds, state, opened_by, created_at,"
-                " last_join_at, roster_json, kind, started_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " last_join_at, roster_json, kind, started_at, expand_partition)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     session_id, group_id, image_id, prefix, expected_clients,
                     wait_seconds, state, opened_by, now_iso(), self.now(),
                     json.dumps(roster) if roster is not None else None, kind, started,
+                    expand_partition,
                 ),
             )
             self.conn.commit()
@@ -234,7 +261,14 @@ class SessionStore:
             return session_id
         journal(self.conn, "session_open",
                 f"{session_id} {group_id} {image_id} prefix={prefix}"
-                + (f" machines={len(roster)}" if roster is not None else ""), opened_by)
+                + (f" machines={len(roster)}" if roster is not None else "")
+                # ‏#59: כיבוי ההרחבה או בחירה ידנית נרשמים ביומן —
+                # "auto" הוא ברירת המחדל השקטה מלפני ה-Issue, ולכן אינו
+                # נרשם (אחרת כל סבב, כולל אלה שלא נגעו בהרחבה, היה
+                # נראה כמו החלטה שמישהו קיבל).
+                + (f" expand={expand_partition}"
+                   if expand_partition and expand_partition != "auto" else ""),
+                opened_by)
         # ההערה נשלחת בפתיחה ולא בהתחלה: המחשבים צריכים לעלות ולהצטרף
         # לפני שהשידור מתחיל, לא אחריו. משיכה בודדת מעירה רק את עצמה,
         # והיא כבר ערה — היא זו שביקשה.
@@ -267,6 +301,17 @@ class SessionStore:
 
     def start_now(self, session_id: str, user: str,
                   event: str = "session_start_manual") -> None:
+        """התחלה ידנית מהקונסולה. נדחית כשאיש עוד לא הצטרף (#843).
+
+        ‏`record_hello` מצרף רק לסבב `open`, ולכן סבב שהותחל ריק הוא גל
+        שאיש אינו יכול להצטרף אליו: udp-sender ממתין `start_timeout`,
+        רושם `send_failed`, והסבב נשאר `running` בלי חברים — מצב שנמדד
+        במעבדה 15/09. הבדיקה כאן ולא בקונסולה: ה-API הוא הגבול.
+        ההתחלה האוטומטית (`maybe_start`, ‏`room.tick`) אינה עוברת כאן —
+        שם התנאי כבר דורש מצטרף.
+        """
+        if self.joined_count(session_id) == 0:
+            raise SessionError("אין מכונות בסבב — המתן שיצטרפו")
         self._transition(session_id, "open", "running", user, event)
 
     def start_auto(self, session_id: str) -> None:

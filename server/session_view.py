@@ -10,8 +10,22 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from . import bootguard
+from . import bootguard, disk_events
 from .sessions import MULTICAST
+
+
+def label(session: sqlite3.Row, library) -> str:
+    """שם הסבב כפי שהמפעיל רואה אותו — שם האימג' שהוא משדר.
+
+    לסבב אין שם משלו: יש `id` אקראי שאינו מופיע על שום מסך. מה שהמפעיל
+    **קורא** בכותרת (`image_name` למטה, ובמסך התחנה "משדר: ...") הוא שם
+    האימג', וזה מה שהוא מקליד כדי לעצור (עיקרון 7, ‏#581). הנפילה חזרה
+    ל-`image_id` היא אותה נפילה שב-`round_label` של חדר השיכפולים,
+    ומאותה סיבה: **מקום אחד**, אחרת סבב שהאימג' שלו נמחק באמצע היה
+    בלתי-ניתן לעצירה — תיקון שגרוע מהבאג.
+    """
+    manifest = library.get(session["image_id"])
+    return manifest["name"] if manifest else session["image_id"]
 
 
 def build(store, session: sqlite3.Row, library) -> dict:
@@ -34,7 +48,13 @@ def build(store, session: sqlite3.Row, library) -> dict:
     # אחרי שחזור כזה השם נקבע מתוך Windows (ראו ui.sh בסוכן).
     classroom = (group is not None and group["role"] == "classroom"
                  and session["kind"] == MULTICAST)
-    manifest = library.get(session["image_id"])
+
+    # בריאות SMART וההכרעות של הסבב (#652), מקובצות לפי מכונה, כדי
+    # שהקונסולה תראה "דיסק N: אזהרה -> rescue" ליד כל מחשב (צפייה בלבד
+    # ב-v1; ההכרעה נעשתה בסוכן).
+    disks_by_mac: dict[str, list] = {}
+    for ev in disk_events.for_session(conn, session["id"]):
+        disks_by_mac.setdefault(ev["mac"], []).append(ev)
 
     members = []
     for m in store.members(session["id"]):
@@ -50,6 +70,9 @@ def build(store, session: sqlite3.Row, library) -> dict:
             "bytes_total": m["bytes_total"],
             "error": m["error"],
             "updated_at": m["updated_at"],
+            "disks": disks_by_mac.get(m["mac"], []),
+            # ‏#720: תוצאת ה-staging של הדרייברים; null = השלב לא דיווח.
+            "drivers": json.loads(m["drivers_json"]) if m["drivers_json"] else None,
         })
 
     return {
@@ -65,7 +88,7 @@ def build(store, session: sqlite3.Row, library) -> dict:
         "group_label": group["label"] if group else session["group_id"],
         "group_role": group["role"] if group else "unknown",
         "image_id": session["image_id"],
-        "image_name": manifest["name"] if manifest else session["image_id"],
+        "image_name": label(session, library),
         "prefix": session["prefix"],
         "expected_clients": session["expected_clients"],
         # סבב של מכונה אחת אינו הפצה לכיתה — הקונסולה מסמנת אותו אחרת.

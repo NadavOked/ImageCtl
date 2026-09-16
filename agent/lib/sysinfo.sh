@@ -175,9 +175,19 @@ build_disk_entry() {
     _port_json="null"
     [ -n "$_port" ] && _port_json="$_port"
 
-    printf '{"dev":"%s","size_bytes":%s,"model":"%s","serial":%s,"removable":%s,"scheme":"%s","has_data":%s,"port":%s}' \
+    # בריאות SMART (#652), **ממטמון בלבד** — smart.sh מריץ probe בצד
+    # השחזור ובהמתנת מחשב השיכפול, לא כאן: אחרת כל אתחול של תחנת כיתה
+    # שעולה לדיסק מקומי היה משלם שנייה על smartctl מיותר. בלי smart.sh
+    # (או בלי ריצת probe) הערך `unchecked` — לא-נבדק, לא נכשל (עיקרון 5).
+    if command -v smart_hello_field >/dev/null 2>&1; then
+        _smart=$(smart_hello_field "$_name")
+    else
+        _smart="unchecked"
+    fi
+
+    printf '{"dev":"%s","size_bytes":%s,"model":"%s","serial":%s,"removable":%s,"scheme":"%s","has_data":%s,"port":%s,"smart":"%s"}' \
         "$_name" "$_size" "$(json_escape "$_model")" "$_serial_json" \
-        "$_removable" "$_scheme" "$_has" "$_port_json"
+        "$_removable" "$_scheme" "$_has" "$_port_json" "$_smart"
 }
 
 list_disks() {
@@ -190,6 +200,34 @@ list_disks() {
         esac
         echo "$_n"
     done
+}
+
+sata_ports_implemented() {
+    # סוכם את מספר הפורטים ש**מופעלים** לפי כל בקר ahci שהקרנל רשם
+    # ‏(‏"N/M ports implemented"). מדפיס ריק — לא `0` — כשאין שורה כזו
+    # כלל: "לא הצלחנו לספור" אינו "אפס פורטים" (עיקרון 5). ה-N (מספר
+    # המופעלים) הוא מה שנדרש; ה-M (הקיבולת) נספר ולא משמש.
+    dmesg 2>/dev/null | awk '
+        match($0, /[0-9]+\/[0-9]+ ports implemented/) {
+            split(substr($0, RSTART, RLENGTH), _a, "/"); _sum += _a[1]; _seen = 1
+        }
+        END { if (_seen) print _sum }
+    '
+}
+
+disk_probe() {
+    # ‏#402: `מגירות=0` אסור שיאמר שני דברים הפוכים. מכונה בלי דיסקים
+    # היא או "חברו כונן" או "אף פורט SATA אינו מופעל בקושחה — כבל לא
+    # יעזור", וההבחנה קיימת בקרנל (‏dmesg) — היא פשוט נזרקה. ההבחנה
+    # מחושבת רק כשאין דיסק: מכונה עם כונן היא הנתיב החם, ואינה משלמת
+    # קריאת dmesg על כל hello.
+    [ -n "$(list_disks)" ] && { echo drives; return; }
+    _impl=$(sata_ports_implemented)
+    case "$_impl" in
+        '') echo unchecked ;;   # אין שורת ahci — לא נספר
+        0)  echo no_ports ;;    # בקר קיים, אפס פורטים מופעלים (קושחה)
+        *)  echo no_disks ;;    # יש פורטים, אין כונן מחובר
+    esac
 }
 
 build_hello() {
@@ -218,8 +256,24 @@ build_hello() {
     _joining=true
     [ "$1" = "false" ] && _joining=false
 
-    printf '{"schema":1,"mac":"%s","all_macs":[%s],"ip":"%s","hostname_current":null,"uuid":"%s","firmware":"%s","secure_boot":%s,"agent_version":"%s","memory_bytes":%s,"joining":%s,"disks":[%s]}' \
-        "$_mac" "$_all" "$IP" "$(json_escape "$(detect_uuid)")" \
+    # UUID חסר ב-DMI הוא `null`, לא `""` — כמו serial/port (#524).
+    _uuid=$(detect_uuid)
+    _uuid_json="null"
+    [ -n "$_uuid" ] && _uuid_json="\"$(json_escape "$_uuid")\""
+
+    # #839: the boot secret for the RFB monitor (monitor.sh). Absent when
+    # nobody can draw it -- absent, not empty: the server keeps the previous
+    # secret on a missing field and ignores a malformed one.
+    _msecret=""
+    if command -v monitor_secret >/dev/null 2>&1; then
+        _ms=$(monitor_secret) && [ -n "$_ms" ] &&
+            _msecret=",\"monitor_secret\":\"$_ms\""
+    fi
+
+    # #720 (schema 2): the inventory fragment (with its own leading comma) when inventory.sh is loaded.
+    printf '{"schema":2,"mac":"%s","all_macs":[%s],"ip":"%s","hostname_current":null,"uuid":%s,"firmware":"%s","secure_boot":%s,"agent_version":"%s","memory_bytes":%s,"joining":%s,"disks":[%s],"disk_probe":"%s"%s%s}' \
+        "$_mac" "$_all" "$IP" "$_uuid_json" \
         "$(detect_firmware)" "$(detect_secure_boot)" "$AGENT_VERSION" \
-        "$(detect_memory_bytes)" "$_joining" "$_disks"
+        "$(detect_memory_bytes)" "$_joining" "$_disks" "$(disk_probe)" \
+        "$_msecret" "$(command -v inventory_json >/dev/null 2>&1 && inventory_json)"
 }

@@ -2,10 +2,17 @@
 
 ImageCtl מריץ שרת אתחול רשת: הוא מגיש שרשרת אתחול חתומה, יכול לחלק
 כתובות DHCP, וכותב לכוננים של כיתות שלמות. חולשה כאן אינה "באג באתר" —
-היא גישה לכתיבה על מחשבים של אנשים אחרים. הריפו **ציבורי**, ולכן חולשה
-שנפתחת כ-Issue מתפרסמת באותו רגע גם למי שיפעיל אותה.
+היא גישה לכתיבה על מחשבים של אנשים אחרים.
 
-לכן: **דיווח על חולשה אינו Issue.**
+שני ריפואים, שני משטחי חשיפה:
+
+| ריפו | נראות | מה Issue שם עושה |
+|---|---|---|
+| `NadavOked/ImageCtl-archive` | **פרטי** | Issue אינו מפרסם דבר. זה מקום הדיווח. |
+| `NadavOked/ImageCtl` | ציבורי | ענף, PR או Issue שם מפרסמים את החולשה לפני שיש תיקון. |
+
+**דיווח על חולשה בארכיון הפרטי הוא Issue, והוא מותר ורצוי.** מה שאסור
+הוא לפרסם אותה לציבורי לפני שיש תיקון.
 
 ---
 
@@ -29,18 +36,36 @@ ImageCtl מריץ שרת אתחול רשת: הוא מגיש שרשרת אתחו�
 
 ## לאן מדווחים
 
-דרך **GitHub Security Advisories**, שהוא ערוץ פרטי בין המדווח לבעל
-הריפו:
+**אם יש גישה ל-`NadavOked/ImageCtl-archive` (הריפו הפרטי):** Issue שם,
+עם תווית `security`. הוא אינו מפרסם דבר. זה המסלול הרגיל.
 
-1. לשונית **Security** בריפו ← **Report a vulnerability**, או ישירות:
-   <https://github.com/NadavOked/ImageCtl-archive/security/advisories/new>
-2. הדיווח נשאר פרטי עד שיוחלט לפרסמו.
+**אם נראה רק `NadavOked/ImageCtl` (הציבורי):** אין גישה לארכיון. דיווח
+דרך GitHub Security Advisories בלבד — לשונית **Security** ← **Report a
+vulnerability**, או
+<https://github.com/NadavOked/ImageCtl-archive/security/advisories/new>.
+Issue או PR בציבורי מפרסם את החולשה לפני שיש תיקון.
 
 **אין כתובת דוא"ל לאבטחה, ואין תוכנית תגמול.** הפרויקט מתוחזק על ידי
 אדם אחד; ערוץ שאין מי שיאייש אותו לא היה מוסיף דבר.
 
-**מה שאסור:** לא לפתוח Issue פומבי, לא PR שמתקן ומתאר את החולשה, ולא
-פוסט פומבי — כל אחד מהם מפרסם את החולשה לפני שיש תיקון.
+**מה שאסור לכולם:** לפרסם לציבורי — ענף, PR, Issue או פוסט — לפני שיש
+תיקון. `tools/git/publish-to-public.sh` מסרב ל-Issue/PR עם תווית
+`security`; זה השומר האמיתי, לא איסור על Issue בפרטי.
+
+## מתי Advisory בנוסף ל-Issue
+
+Advisory נדרש כשהחולשה נוגעת **למי שאינו נדב**:
+
+- תלמיד שכוננו נכתב.
+- מפעיל במכללה אחרת שפורס את המוצר הציבורי.
+- כל מי שיכול להגיע לשרת בלי להיות בעל הריפו.
+
+חולשה שחיה רק בכלי פנימי שאינו יוצא לציבורי (סוכנים, CI, סקילים,
+מעבדה) — Issue פרטי עם תווית `security` מספיק. אין משטח חשיפה חיצוני,
+ואין למי לחשוף בתיאום.
+
+בשני המקרים התווית `security` נשארת על ה-Issue, כדי שהפרסום לציבורי
+ייעצר.
 
 ---
 
@@ -95,12 +120,28 @@ ImageCtl מריץ שרת אתחול רשת: הוא מגיש שרשרת אתחו�
 
 ## Reporting a vulnerability (English)
 
-ImageCtl is a network boot and disk-imaging server for a college lab. This
-repository is public, so **please do not open an issue for a security
-problem** — that publishes it before there is a fix.
+ImageCtl is a network boot and disk-imaging server for a college lab.
 
-Report privately through GitHub Security Advisories:
+Two repositories, two disclosure surfaces:
+
+- `NadavOked/ImageCtl-archive` is **private**. An issue there does not
+  publish anything. That is the working repo — file the issue there, with
+  the `security` label.
+- `NadavOked/ImageCtl` is public. A branch, PR, or issue there discloses
+  the weakness before a fix exists. Do not file there.
+
+If you can only see the public repo, report through GitHub Security
+Advisories:
 <https://github.com/NadavOked/ImageCtl-archive/security/advisories/new>
+
+A Security Advisory is **also** required when the weakness affects someone
+other than the maintainer (a student whose disk is written, another college
+deploying the public product). A weakness only in private-only tooling
+(agents, CI, lab) that never ships publicly needs the private issue and
+label, not an Advisory.
+
+`publish-to-public.sh` refuses any issue or PR labelled `security`. That is
+the real guard — publishing is what discloses, not the private issue.
 
 Only the latest tag is supported; fixes land on `main` and get a new tag.
 There is no security email address and no bounty — this project has a single

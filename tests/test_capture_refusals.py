@@ -125,7 +125,8 @@ def capture_run(tmp_path, *, present=True, image=GPT_DISK, stubs=None,
     queue.mkdir(parents=True)
     (queue / "logical_block_size").write_text("512\n", encoding="utf-8")
     nodes = box / "nodes"
-    nodes.write_text(f"{posix(dev)}/{disk}\n" if present else "", encoding="utf-8")
+    nodes.write_text(f"{posix(dev)}/{disk}\n" if present else "",
+                     encoding="utf-8", newline="\n")
 
     # ‏env נכתב **לפני** ה-`.` של capture.sh: כל ה-`${X:-ברירת מחדל}` שבו
     # נגזרים בטעינה, וייצוא שמגיע אחריה אינו משנה דבר.
@@ -141,7 +142,7 @@ def capture_run(tmp_path, *, present=True, image=GPT_DISK, stubs=None,
         # `imagectl-agent`: ‏`capture_disk` קורא לשניהם בשורת המניפסט,
         # ופונקציה שאינה טעונה היא מניפסט פגום — לא שגיאה.
         f". {posix(AGENT)}/lib/restore.sh; . {posix(AGENT)}/lib/manifest.sh; "
-        f". {posix(AGENT)}/lib/bootca.sh; "
+        f". {posix(AGENT)}/lib/bootca.sh; . {posix(AGENT)}/lib/hibernation.sh; "
         f". {posix(AGENT)}/lib/capture.sh; "
         f'node_is_block() {{ grep -qxF "$1" {posix(nodes)!r} 2>/dev/null; }}; '
         # ‏shell_pre רץ **אחרי** שרשרת הטעינה, ולכן הוא יכול להחליף
@@ -379,3 +380,104 @@ def test_a_successful_capture_produces_a_whole_manifest(tmp_path):
     # התפקיד מגיע מ-`_partition_role` על ה-GUID של `ONE_PARTITION`. מחרוזת
     # ריקה הייתה עוברת כל טענה שמסתפקת בקיום המפתח.
     assert written["partitions"][0]["role"] == "esp", written["partitions"]
+
+
+# --- #776: כשל אמצע-צנרת אינו נבלע ------------------------------------------
+
+PIPE_INPUT = "#!/bin/sh\nhead -c 4096 /dev/zero\nexit 0\n"
+
+MIDPIPE_FAILURES = [
+    ("zstd", "#!/bin/sh\ncat\nexit 7\n", 7),
+    ("pv", "#!/bin/sh\necho 0 >&2\ncat\necho 4096 >&2\nexit 8\n", 8),
+    (
+        "tee",
+        "#!/bin/sh\n"
+        "real=$(PATH=/usr/bin:/bin command -v tee)\n"
+        '"$real" "$@"\n'
+        "exit 9\n",
+        9,
+    ),
+]
+
+
+@pytest.mark.parametrize(("stage", "stub", "expected_rc"), MIDPIPE_FAILURES)
+def test_a_mid_pipeline_capture_failure_is_not_ingested(
+        tmp_path, stage, stub, expected_rc):
+    """zstd/pv/tee שנפל אחרי שהזרים את כל הקלט היה נבלע: ב-ash אין
+    pipefail, ו-sha256sum יוצא 0 על קלט חלקי. האימג' הקטוע נרשם תקין."""
+    box, run, out = capture_run(
+        tmp_path,
+        stubs={
+            "sgdisk": ONE_PARTITION,
+            "curl": CURL_SINK,
+            "partclone.dd": PIPE_INPUT,
+            stage: stub,
+        },
+    )
+
+    reason = refusal_reason(box, run, out)
+    assert f"stage={stage}" in reason, reason
+    assert f"rc={expected_rc}" in reason, reason
+    assert (run / f"{stage}.1.rc").read_text().strip() == str(expected_rc)
+    assert not (run / "new-manifest.json").exists()
+
+
+def test_capture_manifest_uses_source_logical_sector_size(tmp_path):
+    sector_size = 4096
+    source = bytes(sector_size) + b"EFI PART" + bytes(sector_size - 8)
+    logical_size = (
+        tmp_path / "box/sys/block/sda/queue/logical_block_size"
+    )
+
+    box, run, out = capture_run(
+        tmp_path,
+        image=source,
+        stubs={"sgdisk": ONE_PARTITION, "curl": CURL_SINK},
+        shell_pre=(
+            f"printf '4096\\n' > {posix(logical_size)!r}; "
+        ),
+    )
+
+    assert out.strip().endswith("rc=0"), (
+        out + (box / "capture.out").read_text(
+            encoding="utf-8", errors="replace"
+        )
+    )
+    written = json.loads(
+        (run / "new-manifest.json").read_text(encoding="utf-8")
+    )
+    part = written["partitions"][0]
+    expected_end = (2048 + 204800) * sector_size
+    expected_need = ((expected_end + 2097151) // 1048576) * 1048576
+
+    assert written["sector_size"] == sector_size
+    assert part["size_bytes"] == 204800 * sector_size
+    assert written["min_target_bytes"] == expected_need
+
+
+# --- #671: כרך BitLocker אינו נקלט כ-ciphertext ------------------------------
+
+#: util-linux probe_bitlocker.c / FOG isBitlockedPartition: ‎-FVE-FS-‎
+#: ב-offset 3 של הסקטור הראשון. בלי המגן, `_fs_of` מחזיר unknown/BitLocker
+#: ו-`partclone_for_fs` נופל ל-`partclone.dd` — קליטת ההצפנה בשקט.
+FVE_SECTOR = b"\xeb\x52\x90-FVE-FS-" + bytes(501)
+
+
+def test_a_bitlocker_signature_is_refused_not_captured_as_ciphertext(tmp_path):
+    """חתימת BitLocker על צומת המחיצה — סירוב עם סיבה, לא partclone.dd.
+
+    הבקרה השלילית: החזרת `capture.sh` לייצור בלי `_bitlocker_reason`
+    מחזירה rc=0 ומניפסט, כי CURL_SINK + partclone.dd בולעים את הכרך.
+    """
+    fve = tmp_path / "fve.bin"
+    fve.write_bytes(FVE_SECTOR)
+    part = tmp_path / "box" / "dev" / "sda1"
+    box, run, out = capture_run(
+        tmp_path,
+        stubs={"sgdisk": ONE_PARTITION, "curl": CURL_SINK},
+        shell_pre=f"cp {posix(fve)!r} {posix(part)!r}; ",
+    )
+    reason = refusal_reason(box, run, out)
+    assert "BitLocker" in reason, reason
+    assert "1" in reason, reason
+    assert not (run / "new-manifest.json").exists()

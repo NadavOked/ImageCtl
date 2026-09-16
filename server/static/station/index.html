@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ImageCtl — מחשב בנייה</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Hebrew:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../console.css?v=3.8">
-<link rel="stylesheet" href="station.css?v=3.8">
+<link rel="stylesheet" href="../design-tokens.css?v=3.30">
+<link rel="stylesheet" href="../console.css?v=3.30">
+<link rel="stylesheet" href="../progress.css?v=3.30">
+<link rel="stylesheet" href="station.css?v=3.30">
 <script>
   /* לפני הציור הראשון, אחרת הכרטיס מהבהב בבהיר לפני שהכהה נטען. */
   (function () {
@@ -110,6 +110,7 @@
   <!-- הפצה לחדר — room.js מצייר לתוך הגוף -->
   <section class="sheet st-card hidden" id="st-room">
     <div class="shead"><h3>הפצה למחשבי שיכפול</h3><p id="st-room-sub"></p></div>
+    <div class="sheet-note danger hidden" id="room-stale"></div>
     <div class="sbody" id="st-room-body"></div>
     <div class="sfoot" id="st-room-foot"></div>
   </section>
@@ -139,8 +140,9 @@
 </main>
 
 <div id="toast" class="hidden"></div>
-<script src="station.js?v=3.8"></script>
-<script src="room.js?v=3.8"></script>
-<script src="classes.js?v=3.8"></script>
+<script src="../progress.js?v=3.30"></script>
+<script src="station.js?v=3.30"></script>
+<script src="room.js?v=3.30"></script>
+<script src="classes.js?v=3.30"></script>
 </body>
 </html>

@@ -6,13 +6,18 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 pytest.importorskip("fastapi")
 
+from server.db import set_setting
 from server.wol import magic_packet
 
 from conftest import Clock, hello_body, setup_classroom, write_image
+from server.tasks import TOKEN_HEADER
+from test_capture import task_token
 from conftest import MANIFEST_256, MANIFEST_500
 
 
@@ -183,6 +188,44 @@ def test_the_build_machine_opens_a_class_round_for_chosen_machines(station):
     assert session["expected_clients"] == 1 and session["prefix"] == "LAB1"
 
 
+# --- #880: v1 מהדורת שיכפול — סבב כיתה מהסוכן מסורב כשהמתג כבוי -----------
+
+
+def test_a_class_round_from_the_agent_is_refused_while_the_switch_is_off(station):
+    """‏`setup_classroom` מדליק את המתג (הבדיקות של זרימה 13.3 הן v2);
+    כאן מכבים אותו חזרה — ברירת המחדל של v1 — ופתיחה מהסוכן נדחית
+    ב-409 עם קוד וסיבה, נרשמת ביומן בעברית, ואינה מעירה איש. **בקרה
+    שלילית:** על main הסבב נפתח (200) והכיתה מוערת — אומת 16/09."""
+    ids = setup_classroom(station)
+    # ישירות ב-DB ולא דרך ה-API: כך הבקרה השלילית נופלת על **הפתיחה**
+    # (200 במקום 409) ולא על "הגדרה לא מוכרת" בשלב ההכנה.
+    set_setting(station["ctx"].conn, "class_deploy_enabled", "false")
+
+    response = station["anon"].post("/api/v1/agent/sessions",
+                                    json=open_body(ids["mac1"]))
+
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == "class_deploy_disabled"
+    assert response.json()["error"] == "הפצה לכיתות כבויה (v1 מהדורת שיכפול)"
+    assert station["woken"] == []
+    assert station["ctx"].conn.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()["n"] == 0
+    rows = station["admin"].get("/api/console/journal").json()
+    refused = next(r for r in rows if r["event"] == "class_deploy_refused")
+    assert refused["label"] == "פתיחת סבב כיתה נדחתה — הפצה לכיתות כבויה"
+    assert "labtech" in refused["text"]
+
+
+def test_a_wrong_password_is_still_401_while_the_switch_is_off(station):
+    """המתג נבדק **אחרי** הכניסה: סיסמה שגויה נשארת 401 ולא נראית כמו
+    מתג כבוי — שני מצבים שונים, שני קודים."""
+    ids = setup_classroom(station)
+    set_setting(station["ctx"].conn, "class_deploy_enabled", "false")
+    response = station["anon"].post(
+        "/api/v1/agent/sessions", json=open_body(ids["mac1"], password="wrong"))
+    assert response.status_code == 401
+    assert response.json()["code"] == "bad_login"
+
+
 # --- מי רשאי לפתוח סבב, ולא רק מי שהסיסמה שלו נכונה (#94) --------------------
 
 
@@ -289,6 +332,22 @@ def test_only_a_classroom_can_be_a_target(station):
     assert response.json()["code"] == "bad_group"
 
 
+def test_only_a_classroom_can_be_a_target_from_the_console(station):
+    """אותה בדיקה גם במסלול הקונסולה (#534) — זה המסלול שהמסך הגרפי
+    קורא לו בפועל. סבב כיתה על מחשב הבנייה או על חדר השיכפולים → 400."""
+    setup_classroom(station)
+    station["admin"].post("/api/console/groups",
+                          json={"id": "grp_BUILD", "label": "בנייה", "role": "build"})
+    station["admin"].post("/api/console/groups",
+                          json={"id": "grp_CLONE", "label": "שיכפול", "role": "cloner"})
+    for gid in ("grp_BUILD", "grp_CLONE"):
+        response = station["deploy"].post(
+            "/api/console/sessions",
+            json={"group_id": gid, "image_id": "img_7f3a91"})
+        assert response.status_code == 400, gid
+        assert "כיתה" in response.json()["detail"], gid
+
+
 def test_an_empty_class_cannot_be_opened(station):
     setup_classroom(station)
     station["admin"].post("/api/console/groups",
@@ -339,11 +398,51 @@ def test_the_station_state_feeds_the_build_screen(station):
         "task_id": created["id"], "mac": "aa:bb:cc:00:00:10",
         "state": "capturing",
         "targets": [{"dev": "sda", "bytes_written": 512, "bytes_total": 2048,
-                     "state": "capturing"}]})
+                     "state": "capturing"}]},
+        headers={TOKEN_HEADER: task_token(station, created["id"])})
     task = station["anon"].get(
         "/api/v1/agent/state?mac=aa:bb:cc:00:00:10").json()["task"]
     assert task["state"] == "running"
     assert task["bytes_written"] == 512
+
+
+def test_reported_empty_disks_clear_the_build_screen(station):
+    mac = "aa:bb:cc:00:00:10"
+    assert station["admin"].post("/api/console/machines", json={
+        "mac": mac, "name": "מחשב בנייה", "group_id": "grp_BUILD",
+    }).status_code == 200
+    disks = [
+        {"dev": dev, "size_bytes": 256060514304, "model": f"Disk {dev}",
+         "serial": f"S{index}", "removable": False, "scheme": "gpt",
+         "has_data": True}
+        for index, dev in enumerate(("sda", "sdb", "sdc"), start=1)
+    ]
+    body = hello_body(mac)
+    body["disks"] = disks
+    assert station["anon"].post(
+        "/api/v1/agent/hello", json=body
+    ).status_code == 200
+
+    without_disks = hello_body(mac)
+    without_disks.pop("disks")
+    assert station["anon"].post(
+        "/api/v1/agent/hello", json=without_disks
+    ).status_code == 200
+    stored = station["ctx"].conn.execute(
+        "SELECT disks_json FROM net_devices WHERE mac = ?", (mac,)
+    ).fetchone()["disks_json"]
+    assert stored == json.dumps(disks)
+
+    body["disks"] = []
+    assert station["anon"].post(
+        "/api/v1/agent/hello", json=body
+    ).status_code == 200
+    stored = station["ctx"].conn.execute(
+        "SELECT disks_json FROM net_devices WHERE mac = ?", (mac,)
+    ).fetchone()["disks_json"]
+    assert stored == "[]"
+    state = station["anon"].get(f"/api/v1/agent/state?mac={mac}").json()
+    assert state["disks"] == []
 
 
 def test_station_state_for_a_stranger_is_polite(station):

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 import pytest
 from conftest import Clock, hello_body, write_image, MANIFEST_256
@@ -112,6 +113,19 @@ def room(client) -> dict:
     return response.json()
 
 
+def heartbeat(room_server):
+    """Explicit agent event for tests that used GET as their clock (#446)."""
+    ctx = room_server["ctx"]
+    row = ctx.conn.execute("SELECT disks_json FROM net_devices WHERE mac = ?",
+                           (CLONER1,)).fetchone()
+    if row is None:
+        return
+    body = hello_body(CLONER1)
+    body.update(disks=json.loads(row["disks_json"]), joining=False)
+    response = room_server["anon"].post("/api/v1/agent/hello", json=body)
+    assert response.status_code == 200, response.text
+
+
 def test_round_wakes_room_and_autostarts_when_drives_cover_target(room_server):
     deploy, anon = room_server["deploy"], room_server["anon"]
 
@@ -126,8 +140,36 @@ def test_round_wakes_room_and_autostarts_when_drives_cover_target(room_server):
     assert answer["session"]["state"] == "open"
     cloner_hello(anon, CLONER2, ["S3", "S4"])
 
+    heartbeat(room_server)
     view = room(deploy)["round"]
     assert view["ready_drives"] in (0, 4)          # לפני/אחרי tick של ה-GET
+    heartbeat(room_server)
+    assert room(deploy)["round"]["wave_state"] == "running"
+
+
+def test_room_start_with_no_members_is_refused_and_wave_stays_open(room_server):
+    """‏#843: "התחל עכשיו" על גל שאיש עוד לא הצטרף אליו — 409, לא 200.
+
+    זה בדיוק מה שקרה במעבדה 15/09: `room_open` ו-`session_start_manual`
+    באותה שנייה, ‏180ש' אחר כך `send_failed` ("אף מחשב לא הצטרף"), והגל
+    נשאר `running` בלי חברים — המשכפלים קיבלו `session: null` לנצח.
+    הגל חייב להישאר `open` כדי שה-hello הבא יצטרף, ו-udp-sender אסור
+    שיצא לדרך.
+    """
+    deploy, anon, ctx = room_server["deploy"], room_server["anon"], room_server["ctx"]
+    assert deploy.post("/api/console/room",
+                       json={"image_id": "img_7f3a91", "target_drives": 4},
+                       ).status_code == 200
+    refused = deploy.post("/api/console/room/start")
+    assert refused.status_code == 409, refused.text
+    assert "אין מכונות בסבב" in refused.json()["detail"]
+    assert room(deploy)["round"]["wave_state"] == "open"
+    assert ctx.sender.status() is None            # השידור לא יצא לדרך
+
+    # המכונה שמגיעה אחרי הלחיצה השגויה עדיין מצטרפת — ואז ההתחלה מתקבלת.
+    joined = cloner_hello(anon, CLONER1, ["S1", "S2"])["session"]
+    assert joined["state"] == "open"
+    assert deploy.post("/api/console/room/start").status_code == 200
     assert room(deploy)["round"]["wave_state"] == "running"
 
 
@@ -141,6 +183,7 @@ def test_waves_accumulate_by_serial_until_target(room_server):
     cloner_hello(anon, CLONER2, ["S3", "S4"])
 
     # 4 מוכנות מול יתרה 6 — הגל לא יוצא לבד; "התחל עכשיו" כן.
+    heartbeat(room_server)
     assert room(deploy)["round"]["wave_state"] == "open"
     assert deploy.post("/api/console/room/start").status_code == 200
 
@@ -148,6 +191,7 @@ def test_waves_accumulate_by_serial_until_target(room_server):
     report(anon, wave1, CLONER2, {"sda": "done", "sdb": "done"})
 
     # הגל הסתיים: 4 נכתבו, גל שני נפתח מעצמו וממתין למגירות מוחלפות.
+    heartbeat(room_server)
     view = room(deploy)["round"]
     assert view["written_drives"] == 4
     assert view["wave_number"] == 2
@@ -160,9 +204,11 @@ def test_waves_accumulate_by_serial_until_target(room_server):
     answer = cloner_hello(anon, CLONER1, ["S5", "S6"])
     wave2 = answer["session"]["id"]
     assert wave2 != wave1
+    heartbeat(room_server)
     assert room(deploy)["round"]["wave_state"] == "running"
 
     report(anon, wave2, CLONER1, {"sda": "done", "sdb": "done"})
+    heartbeat(room_server)
     assert room(deploy)["round"] is None           # היעד הושג — הסבב נסגר
 
     events = [r["event"] for r in ctx.conn.execute("SELECT event FROM journal")]
@@ -175,17 +221,21 @@ def test_failed_drawer_is_not_counted_and_retries_next_wave(room_server):
     deploy.post("/api/console/room",
                 json={"image_id": "img_7f3a91", "target_drives": 2})
     wave1 = cloner_hello(anon, CLONER1, ["S1", "S2"])["session"]["id"]
+    heartbeat(room_server)
     assert room(deploy)["round"]["wave_state"] == "running"
 
     # מגירה אחת נכשלה — נספרת רק המוצלחת, בגלוי (עיקרון 4).
     report(anon, wave1, CLONER1, {"sda": "done", "sdb": "failed"})
+    heartbeat(room_server)
     view = room(deploy)["round"]
     assert view["written_drives"] == 1 and view["wave_state"] == "open"
 
     # אותה מכונה, אותן מגירות: S2 הכושלת עדיין טרייה — מצטרפים וכותבים שוב.
     wave2 = cloner_hello(anon, CLONER1, ["S1", "S2"])["session"]["id"]
+    heartbeat(room_server)
     assert room(deploy)["round"]["wave_state"] == "running"
     report(anon, wave2, CLONER1, {"sdb": "done"})
+    heartbeat(room_server)
     assert room(deploy)["round"] is None
 
 
@@ -208,6 +258,7 @@ def test_a_machine_that_lost_one_drawer_is_partial_and_not_done(room_server):
     report(anon, wave1, CLONER1,
            {"sda": "done", "sdb": "failed", "sdc": "done"}, top="partial")
 
+    heartbeat(room_server)
     machine = next(m for m in room(deploy)["machines"] if m["mac"] == CLONER1)
     assert machine["state"] == "partial", "המסך לא קיבל את המצב השלישי"
     assert "sdb" in (machine["error"] or "")
@@ -225,6 +276,7 @@ def test_a_machine_that_lost_one_drawer_is_partial_and_not_done(room_server):
     # וכשהשנייה מסיימת, הגל נסגר: `partial` הוא סיום, לא המתנה. בלי זה
     # מכונה שאיבדה מגירה הייתה תולה את החדר כולו.
     report(anon, wave1, CLONER2, {"sda": "done", "sdb": "done"})
+    heartbeat(room_server)
     view = room(deploy)["round"]
     assert view["written_drives"] == 4              # ‏S2 הכושלת לא נספרה
     assert view["wave_number"] == 2
@@ -248,6 +300,7 @@ def test_an_old_agent_that_still_says_done_keeps_working(room_server):
 
     report(anon, wave1, CLONER1, {"sda": "done", "sdb": "failed"})   # top=done
 
+    heartbeat(room_server)
     view = room(deploy)["round"]
     assert view["written_drives"] == 1 and view["wave_number"] == 2
     member = ctx.conn.execute(
@@ -269,6 +322,7 @@ def test_the_drawer_slot_travels_from_hello_to_the_console(room_server):
                 json={"image_id": "img_7f3a91", "target_drives": 3})
     wave = cloner_hello(anon, CLONER1, ["S1", "S2", "S3"])["session"]["id"]
 
+    heartbeat(room_server)
     machine = next(m for m in room(deploy)["machines"] if m["mac"] == CLONER1)
     assert [(d["port"], d["dev"]) for d in machine["drawer_list"]] == [
         (1, "sda"), (2, "sdb"), (3, "sdc")]
@@ -294,9 +348,34 @@ def test_the_drawer_slot_travels_from_hello_to_the_console(room_server):
 
     # ואחרי שהגל נסגר: המגירה שנכשלה נשארת הטרייה היחידה — לפי חריץ.
     report(anon, wave, CLONER1, {"sda": "done", "sdb": "done", "sdc": "failed"})
+    heartbeat(room_server)
     machine = next(m for m in room(deploy)["machines"] if m["mac"] == CLONER1)
     fresh = [d["port"] for d in machine["drawer_list"] if d["fresh"]]
     assert fresh == [3] and machine["fresh_drawers"] == 1
+
+
+def test_the_crc_rise_of_the_round_reaches_the_drawer_and_absence_is_not_zero(room_server):
+    """‏#872: הסוכן מדווח `crc_delta` ליעד שנמדד (199 לפני ואחרי הכתיבה),
+    ומשמיט אותו ליעד שלא נמדד. במסך החדר: 5 על מגירה 1, ‏None על מגירה 2 —
+    לא 0, כי "לא נמדד" ו"לא עלה" הם שני מצבים (עיקרון 5). בקרה שלילית: על
+    main השדה אינו קיים ב-`drawer_list` כלל."""
+    deploy, anon = room_server["deploy"], room_server["anon"]
+    deploy.post("/api/console/room",
+                json={"image_id": "img_7f3a91", "target_drives": 2})
+    wave = cloner_hello(anon, CLONER1, ["S1", "S2"])["session"]["id"]
+    assert anon.post("/api/v1/agent/progress", json={
+        "session_id": wave, "mac": CLONER1, "state": "done",
+        "targets": [
+            {"dev": "sda", "bytes_written": 100, "bytes_total": 100, "state": "done",
+             "crc_delta": 5},
+            {"dev": "sdb", "bytes_written": 100, "bytes_total": 100, "state": "done"},
+        ],
+    }).status_code == 200
+    by_port = {d["port"]: d for d in
+               next(m for m in room(deploy)["machines"]
+                    if m["mac"] == CLONER1)["drawer_list"]}
+    assert by_port[1]["crc_delta"] == 5
+    assert by_port[2]["crc_delta"] is None
 
 
 def test_an_agent_without_the_port_field_still_works(room_server):
@@ -308,6 +387,7 @@ def test_an_agent_without_the_port_field_still_works(room_server):
     assert cloner_hello(anon, CLONER1, ["S1", "S2"],
                         ports=False)["session"]["state"] in ("open", "running")
 
+    heartbeat(room_server)
     machine = next(m for m in room(deploy)["machines"] if m["mac"] == CLONER1)
     assert [d["port"] for d in machine["drawer_list"]] == [None, None]
     assert [d["dev"] for d in machine["drawer_list"]] == ["sda", "sdb"]
@@ -348,7 +428,10 @@ def test_close_round_mid_wave_and_bad_requests(room_server):
     deploy.post("/api/console/room",
                 json={"image_id": "img_7f3a91", "target_drives": 8})
     cloner_hello(anon, CLONER1, ["S1", "S2"])
-    assert deploy.post("/api/console/room/close").json()["ok"] is True
+    assert deploy.post("/api/console/room/close",
+                       json={"confirm_name": "Office 2024 Standard"},
+                       ).json()["ok"] is True
+    heartbeat(room_server)
     assert room(deploy)["round"] is None
     # החריץ התפנה — אפשר לפתוח סבב חדש.
     assert deploy.post("/api/console/room",
@@ -360,7 +443,7 @@ def test_wake_endpoint_sends_wol_to_the_whole_room(room_server):
     deploy, woken = room_server["deploy"], room_server["woken"]
     result = deploy.post("/api/console/room/wake")
     assert result.status_code == 200
-    assert result.json()["woken"] == 2 and len(woken) == 2
+    assert result.json()["sent"] == 2 and len(woken) == 2
 
 
 def test_anonymous_cannot_touch_the_room(room_server):
@@ -388,6 +471,7 @@ def test_a_held_machine_beats_without_joining_the_wave(room_server):
     cloner_hello(anon, CLONER1, ["S1", "S2"], joining=False)
     cloner_hello(anon, CLONER2, ["S3", "S4"], joining=False)
 
+    heartbeat(room_server)
     view = room(deploy)
     assert view["round"]["wave_state"] == "open"     # לא יצא לדרך
     assert view["round"]["ready_drives"] == 0        # ולא נספרו כמוכנות
@@ -399,6 +483,7 @@ def test_a_held_machine_beats_without_joining_the_wave(room_server):
     # אותן מכונות ב-hello רגיל — עכשיו הגל כן יוצא.
     cloner_hello(anon, CLONER1, ["S1", "S2"])
     cloner_hello(anon, CLONER2, ["S3", "S4"])
+    heartbeat(room_server)
     assert room(deploy)["round"]["wave_state"] == "running"
 
 
@@ -410,6 +495,7 @@ def test_an_agent_that_omits_joining_still_joins(room_server):
                              "target_drives": 2}).status_code == 200
 
     cloner_hello(anon, CLONER1, ["S1", "S2"], joining=None)
+    heartbeat(room_server)
     assert room(deploy)["round"]["wave_state"] == "running"
 
 
@@ -434,6 +520,7 @@ def test_a_wave_closes_when_the_reports_come_in_another_mac_form(room_server):
            {"sda": "done", "sdb": "done"})
     report(anon, wave1, CLONER2.replace(":", ""), {"sda": "done", "sdb": "done"})
 
+    heartbeat(room_server)
     view = room(deploy)["round"]
     assert view["written_drives"] == 4        # ארבע מגירות נספרו
     assert view["wave_number"] == 2           # והגל הבא נפתח
@@ -476,3 +563,234 @@ def test_a_role_that_is_not_on_the_list_cannot_drive_the_room(room_server):
 
     # ולא נשלח WoL לאף מכונה בדרך
     assert room_server["woken"] == []
+
+
+# --- עצירת סבב מאחורי הקלדת שם (עיקרון 7, #533) ------------------------------
+
+
+def test_close_without_typing_the_image_name_does_not_stop_the_round(room_server):
+    """‏#533: ‏POST ריק עצר סבב פעיל — בלי גוף, בלי אישור, בלי בדיקה.
+
+    עצירת סבב היא פעולה הרסנית לכל דבר: היא הורגת את המשדר באמצע
+    כתיבה, וכל מגירה שהייתה תחת הזרם נשארת חצי-כתובה. עיקרון 7 מציב
+    אותה באותה שורה עם מחיקת אימג' — "מאחורי הקלדת שם" — ומחיקת אימג'
+    באמת מאמתת (`console_library.delete_image`). כאן לא היה בשרת שום
+    אימות: האכיפה היחידה ישבה ב-`room.js`, והמסך הוא בדיוק השכבה
+    שאסור לסמוך עליה.
+
+    מה שמוקלד הוא **שם האימג' שהסבב משדר** — הכותרת שהמסך כבר מציג.
+    """
+    deploy, anon = room_server["deploy"], room_server["anon"]
+
+    assert deploy.post("/api/console/room",
+                       json={"image_id": "img_7f3a91",
+                             "target_drives": 8}).status_code == 200
+    cloner_hello(anon, CLONER1, ["S1", "S2"])
+
+    # ‏1. גוף ריק — זו בדיוק הקריאה שסגרה סבב לפני #533.
+    assert deploy.post("/api/console/room/close").status_code == 400
+    assert room(deploy)["round"] is not None, "סבב נסגר בלי שום אישור"
+
+    # ‏2. גוף עם טקסט שאינו שם האימג'
+    assert deploy.post("/api/console/room/close",
+                       json={"confirm_name": "עצור"}).status_code == 400
+    assert room(deploy)["round"] is not None, "סבב נסגר על שם שגוי"
+
+    # ‏3. השם המדויק — וזה עוצר
+    stopped = deploy.post("/api/console/room/close",
+                          json={"confirm_name": "Office 2024 Standard"})
+    assert stopped.status_code == 200 and stopped.json()["ok"] is True
+    heartbeat(room_server)
+    assert room(deploy)["round"] is None
+
+
+def test_a_round_whose_image_was_deleted_can_still_be_stopped(room_server):
+    """מה שמוקלד הוא מה שהמסך מציג — גם כשהמניפסט כבר איננו.
+
+    ‏`status_view` נופל חזרה ל-`image_id` כשהאימג' נמחק מהספרייה תוך
+    כדי סבב, ולכן גם האימות חייב ליפול לשם. אחרת עצירת חירום של
+    שידור חי הייתה בלתי אפשרית — כלומר תיקון שגרוע מהבאג.
+    """
+    admin, deploy, anon = (room_server["admin"], room_server["deploy"],
+                           room_server["anon"])
+
+    assert deploy.post("/api/console/room",
+                       json={"image_id": "img_7f3a91",
+                             "target_drives": 8}).status_code == 200
+    cloner_hello(anon, CLONER1, ["S1", "S2"])
+    assert admin.post("/api/console/images/img_7f3a91/delete",
+                      json={"confirm_name": "Office 2024 Standard"},
+                      ).status_code == 200
+
+    assert room(deploy)["round"]["image_name"] == "img_7f3a91"
+    assert deploy.post("/api/console/room/close",
+                       json={"confirm_name": "Office 2024 Standard"},
+                       ).status_code == 400
+    assert deploy.post("/api/console/room/close",
+                       json={"confirm_name": "img_7f3a91"}).status_code == 200
+    assert room(deploy)["round"] is None
+
+
+# --- #695: בחירת דיסק יעד — נתיב הכתיבה הבטוח -------------------------------
+
+def _open_with_slots(client, slots, target=4, image="img_7f3a91"):
+    return client.post("/api/console/room", json={
+        "image_id": image, "target_drives": target, "target_slots": slots})
+
+
+def test_target_slots_rejects_a_disconnected_port(room_server):
+    """בחירת פורט שאינו מחובר כרגע נדחית — לעולם לא פותחים סבב שיכתוב
+    לדיסק שאינו שם (עיקרון 4/5)."""
+    admin, anon = room_server["admin"], room_server["anon"]
+    cloner_hello(anon, CLONER1, ["S1", "S2"])      # פורטים 1,2 מחוברים
+    r = _open_with_slots(admin, [{"mac": CLONER1, "ports": [3]}])
+    assert r.status_code == 400
+    assert "מחובר" in r.json()["detail"]
+
+
+def test_target_slots_rejects_out_of_range_duplicate_and_unknown(room_server):
+    admin, anon = room_server["admin"], room_server["anon"]
+    cloner_hello(anon, CLONER1, ["S1", "S2"])
+    assert _open_with_slots(admin, [{"mac": CLONER1, "ports": [9]}]).status_code == 400
+    assert _open_with_slots(admin, [{"mac": CLONER1, "ports": [1, 1]}]).status_code == 400
+    assert _open_with_slots(
+        admin, [{"mac": "aa:bb:cc:00:00:99", "ports": [1]}]).status_code == 400
+    assert _open_with_slots(admin, []).status_code == 400   # אין fallback לכל-הדיסקים
+
+
+def test_target_slots_stored_and_hello_returns_only_this_machines_ports(room_server):
+    admin, anon = room_server["admin"], room_server["anon"]
+    cloner_hello(anon, CLONER1, ["S1", "S2"])
+    cloner_hello(anon, CLONER2, ["S3", "S4"])
+    assert _open_with_slots(admin, [
+        {"mac": CLONER1, "ports": [1]}, {"mac": CLONER2, "ports": [2]},
+    ]).status_code == 200
+    # כל מכונה מקבלת רק את הפורטים שלה.
+    assert cloner_hello(anon, CLONER1, ["S1", "S2"])["session"]["target_ports"] == [1]
+    assert cloner_hello(anon, CLONER2, ["S3", "S4"])["session"]["target_ports"] == [2]
+
+
+def test_legacy_round_without_selection_reports_null_target_ports(room_server):
+    """סבב שנפתח בלי בחירה (סוכן/קוד ישן) — target_ports=null, התנהגות
+    'כל הדיסקים' נשמרת (backward-compat)."""
+    deploy, anon = room_server["deploy"], room_server["anon"]
+    assert deploy.post("/api/console/room",
+                       json={"image_id": "img_7f3a91", "target_drives": 4}
+                       ).status_code == 200
+    assert cloner_hello(anon, CLONER1, ["S1", "S2"])["session"]["target_ports"] is None
+
+
+def test_drawer_list_marks_selected_and_filters_fresh(room_server):
+    admin, anon = room_server["admin"], room_server["anon"]
+    cloner_hello(anon, CLONER1, ["S1", "S2", "S3"])   # 3 פורטים (מאכלס דיסקים)
+    assert _open_with_slots(admin, [{"mac": CLONER1, "ports": [2]}]).status_code == 200
+    cloner_hello(anon, CLONER1, ["S1", "S2", "S3"])   # מצטרף לגל הפעיל
+    machine = next(m for m in room(admin)["machines"] if m["mac"] == CLONER1)
+    sel = {d["port"]: d["selected"] for d in machine["drawer_list"]}
+    assert sel == {1: False, 2: True, 3: False}       # רק פורט 2 נבחר
+    assert sum(1 for d in machine["drawer_list"] if d["selected"]) == 1
+    # ‏fresh = נוכח פיזית (3); הבחירה נפרדת ומשפיעה על הספירה לגל.
+    assert machine["fresh_drawers"] == 3
+    assert room(admin)["round"]["ready_drives"] == 1  # רק הנבחר נספר ליעד
+
+
+def test_drawer_count_setting_persists_and_bounds(room_server):
+    admin = room_server["admin"]
+    assert admin.put(f"/api/console/machines/{CLONER1}",
+                     json={"drawer_count": 5}).status_code == 200
+    row = next(m for m in admin.get("/api/console/machines").json()
+               if m["mac"] == CLONER1)
+    assert row["drawer_count"] == 5
+    assert admin.put(f"/api/console/machines/{CLONER1}",
+                     json={"drawer_count": 9}).status_code == 400
+    assert admin.put(f"/api/console/machines/{CLONER1}",
+                     json={"drawer_count": 0}).status_code == 400
+
+
+# --- #774: חותמת last_seen עתידית אינה "ער" ---------------------------------
+
+
+def test_a_future_last_seen_is_not_awake():
+    """**#774.** `last_seen` בעתיד (סטיית שעון / DB מיובא) נותן גיל
+    שלילי, שבלי חסם תחתון מקיים `<= AWAKE_SECONDS` — והמכונה נראתה
+    "ערה" לכל משך הסטייה. חותמת עתידית אינה ראיה שהמכונה חיה עכשיו."""
+    from datetime import datetime, timedelta, timezone         # noqa: PLC0415
+
+    from server.room import AWAKE_SECONDS, _is_awake            # noqa: PLC0415
+
+    future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    assert _is_awake(future) is False
+
+    # גם סטייה קטנה מעבר לעכשיו — החסם התחתון הוא 0, לא "קרוב מספיק".
+    slightly_future = (
+        datetime.now(timezone.utc) + timedelta(seconds=AWAKE_SECONDS + 5)
+    ).isoformat()
+    assert _is_awake(slightly_future) is False
+
+
+def test_a_recent_last_seen_is_still_awake():
+    """רדיוס הפגיעה: חותמת עדכנית בעבר הקרוב עדיין "ערה"."""
+    from datetime import datetime, timedelta, timezone         # noqa: PLC0415
+
+    from server.room import _is_awake                          # noqa: PLC0415
+
+    recent = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+    assert _is_awake(recent) is True
+
+
+# --- #449: מכונה שכותבת בפועל אינה "ישנה" ------------------------------------
+
+
+def test_fresh_progress_keeps_a_machine_awake_without_hello():
+    """**#449.** ``last_seen`` (hello) ישן, אבל דיווח progress טרי.
+
+    בזמן שחזור הסוכן חדל לפעום ומדווח progress בלבד. ‏`_is_awake` חייב
+    לקבל את שתי הראיות: חותמת progress עדכנית לצד hello ישן = ערה."""
+    from datetime import datetime, timedelta, timezone         # noqa: PLC0415
+
+    from server.room import _is_awake                          # noqa: PLC0415
+
+    stale = (datetime.now(timezone.utc) - timedelta(minutes=3)).isoformat()
+    fresh = (datetime.now(timezone.utc) - timedelta(seconds=4)).isoformat()
+    assert _is_awake(stale, fresh) is True
+    # שתיהן ישנות — עדיין ישנה.
+    assert _is_awake(stale, stale) is False
+
+
+def test_a_writing_machine_reporting_progress_is_not_shown_asleep(room_server):
+    """**#449.** מכונה כותבת ששולחת progress ולא hello נראתה ``awake=False``.
+
+    ‏`awake` נשען על `net_devices.last_seen` (hello) בחלון 30 שניות, אבל
+    השחזור רץ סינכרונית והסוכן מדווח **progress** בלבד. אחרי 30 שניות
+    של כתיבה מכונה בריאה לחלוטין קיבלה את אותו סימון כמו מכונה שנפלה או
+    איבדה רשת (עיקרון 5). הטסט נופל אם כותבת נראית זהה לנעלמת."""
+    from datetime import datetime, timedelta, timezone         # noqa: PLC0415
+
+    deploy, anon, ctx = (room_server["deploy"], room_server["anon"],
+                         room_server["ctx"])
+
+    deploy.post("/api/console/room",
+                json={"image_id": "img_7f3a91", "target_drives": 2})
+    wave = cloner_hello(anon, CLONER1, ["S1", "S2"])["session"]["id"]
+
+    # המכונה כותבת ומדווחת progress — updated_at של החבר נדחף לעכשיו.
+    assert anon.post("/api/v1/agent/progress", json={
+        "session_id": wave, "mac": CLONER1, "state": "writing",
+        "targets": [
+            {"dev": "sda", "bytes_written": 50, "bytes_total": 100,
+             "state": "writing"},
+            {"dev": "sdb", "bytes_written": 30, "bytes_total": 100,
+             "state": "writing"},
+        ],
+    }).status_code == 200
+
+    # ...אבל ה-hello האחרון ישן: הסוכן חדל לפעום כל משך הכתיבה.
+    stale = (datetime.now(timezone.utc) - timedelta(minutes=3)
+             ).isoformat(timespec="seconds")
+    ctx.conn.execute("UPDATE net_devices SET last_seen = ? WHERE mac = ?",
+                     (stale, CLONER1))
+    ctx.conn.commit()
+
+    machine = next(m for m in room(deploy)["machines"] if m["mac"] == CLONER1)
+    assert machine["state"] == "writing"          # אכן כותבת
+    assert machine["awake"] is True               # #449: כותבת ⇒ ערה

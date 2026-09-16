@@ -47,8 +47,11 @@ REPO = Path(__file__).resolve().parent.parent
 native_tools = requires_native(("bash", BASH), "curl", "jq")
 
 MAC = "b4:2e:99:07:1a:c4"
+#: ‏#880: ‏`class_deploy_enabled` דלוק כאן במפורש — הבדיקות של התפריט
+#: המלא הן בדיקות של v2. ברירת המחדל של השרת היא כבוי, ושדה חסר = כבוי.
 ANSWER = {"schema": 1, "known": True, "role": "build", "task": None,
-          "session": None, "allowed_images": [], "ui": {"require_login": True}}
+          "session": None, "allowed_images": [], "ui": {"require_login": True},
+          "class_deploy_enabled": True}
 
 FOLDERS = [
     {"name": "Lab", "description": "", "images": 2},
@@ -164,12 +167,12 @@ def url_of(httpd: HTTPServer) -> str:
 # הגרסאות, לפני התיקון ואחריו, ולכן הבקרה השלילית נופלת על מה שהמסך עשה.
 # הספריות של #135 נטענות רק אם הן קיימות, מאותה סיבה בדיוק.
 
-NEW_LIBS = ("buildmenu.sh", "buildcapture.sh", "roomflow.sh")
+NEW_LIBS = ("buildmenu.sh", "buildcapture.sh", "roomdraw.sh", "roomflow.sh")
 
 
 def sourced_libs() -> str:
-    names = ["common.sh", "jsonq.sh", "ui.sh", "classround.sh", "hold.sh",
-             *NEW_LIBS]
+    names = ["common.sh", "jsonq.sh", "ui.sh", "recovery.sh", "classround.sh",
+             "hold.sh", *NEW_LIBS]
     return "".join(f". {posix(AGENT)}/lib/{n}; "
                    for n in names if (AGENT / "lib" / n).exists())
 
@@ -183,10 +186,11 @@ STUBS = (
 )
 
 
-def run_screen(tmp_path: Path, server: str, answers, *, stubs: str = "") -> dict:
+def run_screen(tmp_path: Path, server: str, answers, *, stubs: str = "",
+               answer: dict = ANSWER) -> dict:
     run = tmp_path / "run"
     run.mkdir(parents=True, exist_ok=True)
-    (run / "resp.json").write_text(json.dumps(ANSWER), encoding="utf-8")
+    (run / "resp.json").write_text(json.dumps(answer), encoding="utf-8")
 
     body = cut_function("build_console_screen")
     assert body is not None, "‏build_console_screen אינה מוגדרת ב-imagectl-agent"
@@ -269,6 +273,44 @@ def test_a_deploy_user_is_offered_two_actions_without_the_capture(
     assert "Choose [1-2]" in result["out"]
 
 
+# --- #880: "הפצה לכיתות" רק כשה-hello אמר שהמתג דלוק -----------------------
+
+
+@native_tools
+def test_the_class_option_is_hidden_when_the_server_switched_it_off(
+        tmp_path, console):
+    """‏v1 מהדורת שיכפול: ‏`class_deploy_enabled: false` ב-hello → בלי
+    "Deploy to a classroom", והמספור מתכווץ ל-[1-2]. השרת מסרב ממילא
+    (409) — תפריט שמציע מה שהשרת יסרב לו הוא תפריט שמשקר. **בקרה
+    שלילית:** על main האפשרות מוצגת תמיד (`echo "class"` ללא תנאי)."""
+    console.role = "admin"
+    answer = {**ANSWER, "class_deploy_enabled": False}
+
+    result = run_screen(tmp_path, url_of(console), ["admin", "pw", "0"],
+                        answer=answer)
+
+    assert CLASS_LABEL not in result["out"], "הכיתה הוצעה כשהמתג כבוי"
+    assert f"1) {CAPTURE_LABEL}" in result["out"]
+    assert f"2) {ROOM_LABEL}" in result["out"]
+    assert "Choose [1-2]" in result["out"]
+
+
+@native_tools
+def test_a_hello_without_the_switch_field_hides_the_class_option(
+        tmp_path, console):
+    """שדה חסר = כבוי (שרת ישן, או תשובה שלא נקראה). הסוכן החדש תמיד
+    מקבל את השדה ממחשב הבנייה; היעדרו אינו "דלוק" (עיקרון 1)."""
+    console.role = "deploy"
+    answer = {k: v for k, v in ANSWER.items() if k != "class_deploy_enabled"}
+
+    result = run_screen(tmp_path, url_of(console), ["deployer", "pw", "0"],
+                        answer=answer)
+
+    assert CLASS_LABEL not in result["out"], "שדה חסר נקרא כדלוק"
+    assert f"1) {ROOM_LABEL}" in result["out"]
+    assert "Choose [1-1]" in result["out"]
+
+
 @native_tools
 def test_the_role_comes_from_the_answer_the_login_already_stored(
         tmp_path, console):
@@ -297,7 +339,7 @@ def test_a_capture_into_an_existing_folder_carries_that_folder(
     captures = posted(console, "/api/console/tasks/capture")
     assert len(captures) == 1, f"לא נשלחה בקשת קליטה אחת: {console.requests}"
     assert captures[0] == {"mac": MAC, "name": "Win11 lab", "disk": "sda",
-                           "folder": "Classrooms"}
+                           "folder": "Classrooms", "description": ""}
     # לא נוצרה תיקייה — נבחרה קיימת.
     assert posted(console, "/api/console/folders") == []
 
@@ -336,12 +378,16 @@ def test_a_hebrew_folder_name_never_reaches_the_server(tmp_path, console):
 
 @native_tools
 def test_the_capture_body_is_the_one_the_console_sends(tmp_path, console):
-    """‏`{mac,name,disk,folder}` — בדיוק השדות של `POST /tasks/capture`."""
+    """‏`{mac,name,disk,folder,description}` — שדות `POST /tasks/capture`.
+
+    ‏`description` נוסף עם הגואי הנייטיב (#327): הקונסולה שולחת אותו
+    (library.js), והשרת מקבל אותו (capture.py). זרימת הטקסט שולחת ריק.
+    """
     run_screen(tmp_path, url_of(console),
                ["admin", "pw", "1", "1", "Base", "y"])
 
     body = posted(console, "/api/console/tasks/capture")[0]
-    assert sorted(body) == ["disk", "folder", "mac", "name"]
+    assert sorted(body) == ["description", "disk", "folder", "mac", "name"]
     assert body["folder"] == "Lab"
 
 

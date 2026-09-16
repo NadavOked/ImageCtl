@@ -67,7 +67,7 @@ def test_render_puts_each_interface_under_its_own_tag():
     assert "interface=eth2" not in text
     assert "dhcp-range=set:if-eth0,10.44.9.50,10.44.9.200,255.255.255.0,12h" in text
     assert "option:router,10.44.9.1" in text
-    assert "dhcp-boot=tag:if-eth0,tag:efi-x86_64,bootx64.efi,,10.44.9.10" in text
+    assert "dhcp-boot=tag:if-eth0,tag:efi-x86_64,tag:known,bootx64.efi,,10.44.9.10" in text
     assert "bind-interfaces" in text
 
 
@@ -141,11 +141,21 @@ def test_render_splits_the_boot_loader_by_client_arch():
     text = render([InterfaceConfig("eth0", **GOOD)])
     assert "dhcp-match=set:bios,option:client-arch,0" in text
     assert "dhcp-match=set:efi-x86_64,option:client-arch,7" in text
-    assert "dhcp-boot=tag:if-eth0,tag:bios,grub/i386-pc/core.0,,10.44.9.10" in text
-    assert "dhcp-boot=tag:if-eth0,tag:efi-x86_64,bootx64.efi,,10.44.9.10" in text
+    assert "dhcp-boot=tag:if-eth0,tag:bios,tag:known,grub/i386-pc/core.0,,10.44.9.10" in text
+    assert "dhcp-boot=tag:if-eth0,tag:efi-x86_64,tag:known,bootx64.efi,,10.44.9.10" in text
     # אין שורת boot חסרת-תג שתתפוס קושחות לא מזוהות — ברירת המחדל
     # למי שאינו מוכר היא כלום, לא טוען שגוי.
     assert "dhcp-boot=tag:if-eth0,bootx64.efi" not in text
+
+
+def test_dhcp_boot_requires_the_known_tag():
+    """‏#141: מכונה שאינה ב-KNOWN_MACS_CONF לא מקבלת dhcp-boot בכלל —
+    לא רק ערך GRUB בלי ImageCtl. ‏tag:known חייב להופיע על **כל** שורת
+    boot, לא רק חלק מהן (כשל חלקי כאן משאיר מסלול פתוח ל-arch אחד)."""
+    text = render([InterfaceConfig("eth0", **GOOD)])
+    boot_lines = [ln for ln in text.splitlines() if ln.startswith("dhcp-boot=")]
+    assert boot_lines, "לא נמצאה אף שורת dhcp-boot לבדוק"
+    assert all(",tag:known," in ln for ln in boot_lines)
 
 
 def test_render_with_nothing_enabled_is_an_empty_comment():
@@ -197,6 +207,55 @@ def test_the_proxy_conf_lives_outside_the_directory_dnsmasq_reads():
     assert dhcp.DEFAULT_CONF.startswith("/etc/dnsmasq.d")
 
 
+# --- #141: רשימת המכונות הרשומות (dhcp-hostsfile) ----------------------------
+
+
+def test_known_macs_conf_is_not_auto_loaded_from_dnsmasq_d():
+    """כמו PROXY_CONF (#36): הקובץ נטען במפורש דרך dhcp-hostsfile
+    ב-imagectl.conf, לא דרך הסריקה האוטומטית של /etc/dnsmasq.d."""
+    assert "/etc/dnsmasq.d" not in dhcp.KNOWN_MACS_CONF
+
+
+def test_render_known_macs_lists_one_line_per_registered_mac():
+    text = dhcp.render_known_macs(["aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:02"])
+    assert "aa:bb:cc:dd:ee:01,set:known" in text
+    assert "aa:bb:cc:dd:ee:02,set:known" in text
+    assert text.count(",set:known") == 2
+
+
+def test_render_known_macs_on_an_empty_registry_is_a_valid_empty_file():
+    """אף מכונה רשומה = קובץ תקין בלי אף שורת MAC — dnsmasq טוען אותו
+    בלי להתלונן, ואף tag:known לא נדלק (עיקרון 1: מצב לא ברור/ריק = כלום)."""
+    text = dhcp.render_known_macs([])
+    assert ",set:known" not in text
+    assert text.strip() != ""            # עדיין קובץ עם כותרת, לא ריק לגמרי
+
+
+def test_render_known_macs_refuses_a_non_canonical_mac():
+    """שורה שאינה MAC קנוני נכתבת בלי בריחה לקובץ ש-dnsmasq קורא כ-root
+    (אותה סכנה בדיוק כמו שם כרטיס, #102) — השער חוסם לפני הכתיבה."""
+    with pytest.raises(ValueError) as err:
+        dhcp.render_known_macs(["aa:bb:cc:dd:ee:01\ndhcp-range=10.0.0.1,10.0.0.9"])
+    assert "MAC לא קנוני" in str(err.value)
+
+
+def test_apply_known_macs_writes_then_reloads_not_restarts(tmp_path, monkeypatch):
+    """‏#141: reload (SIGHUP) ולא restart — #36 הוא התקדים למה restart על
+    הגדרה הזו אסור. הבדיקה מוודאת גם את הכתיבה בפועל וגם את שם הפעולה."""
+    from server import dhcp_host
+
+    calls = []
+    monkeypatch.setattr(
+        dhcp_host, "_systemctl",
+        lambda action, unit: calls.append((action, unit)) or None,
+    )
+    conf = tmp_path / "known-macs"
+    error = dhcp.apply_known_macs("aa:bb:cc:dd:ee:01,set:known\n", conf)
+    assert error is None
+    assert conf.read_text(encoding="utf-8") == "aa:bb:cc:dd:ee:01,set:known\n"
+    assert calls == [("reload", "dnsmasq")]
+
+
 # --- דרך הקונסולה ------------------------------------------------------------
 
 
@@ -222,6 +281,13 @@ def dhcp_server(tmp_path: Path, images_root: Path, clock):
         # ‏#36: הגרסה שה-API "רואה". אף בדיקה לא מריצה dnsmasq אמיתי,
         # ובברירת המחדל זו הגרסה של המעבדה — זו שהקפיאה שוחזרה בה.
         "dnsmasq_version": "Dnsmasq version 2.91  Copyright (c) 2000-2024\n",
+        # ‏#762: אמת חיה ל-DHCP. ‏conf_readable/service_readable שולטים אם
+        # הקריאה "מצליחה" בכלל — ברירת המחדל היא הצלחה, כדי שהבדיקות
+        # הקיימות (שלא עוסקות ב-#762) לא ייפגעו.
+        "active_conf": "",
+        "service_active": True,
+        "conf_readable": True,
+        "service_readable": True,
     }
     hooks = {
         "interfaces": lambda: fake["interfaces"],
@@ -233,6 +299,10 @@ def dhcp_server(tmp_path: Path, images_root: Path, clock):
         "apply": lambda text: (fake["applied"].append(text), fake["apply_error"])[1],
         "apply_proxy": lambda text, active: (
             fake["proxy_applied"].append((text, active)), fake["proxy_error"])[1],
+        "read_active_conf": lambda: (
+            fake["active_conf"] if fake["conf_readable"] else None),
+        "service_active": lambda unit: (
+            fake["service_active"] if fake["service_readable"] else None),
     }
     app = create_app(tmp_path / "data", images_root, "http://10.44.12.10:8080",
                      now_fn=clock, dhcp_hooks=hooks)
@@ -483,3 +553,131 @@ def test_dhcp_is_admin_only(dhcp_server):
 def test_an_unknown_interface_is_refused(dhcp_server):
     r = dhcp_server["admin"].put("/api/console/net/interfaces/wlan9", json={"trunk": True})
     assert r.status_code == 404
+
+
+# --- #762: אמת חיה ל-DHCP — parse_served_interfaces (טהור, בלי שרת) ---------
+
+
+def test_parse_served_interfaces_reads_only_active_directives():
+    text = (
+        "# comment: interface=eth9\n"
+        "interface=br0\n"
+        "\n"
+        "except-interface=eth2\n"
+        "interface=eth0  \n"
+        "dhcp-range=10.44.9.50,10.44.9.200\n"
+    )
+    assert dhcp.parse_served_interfaces(text) == {"br0", "eth0"}
+
+
+def test_parse_served_interfaces_ignores_a_range_with_no_interface_line():
+    assert dhcp.parse_served_interfaces(
+        "dhcp-range=10.44.9.50,10.44.9.200\n") == set()
+
+
+def test_parse_served_interfaces_on_empty_text():
+    assert dhcp.parse_served_interfaces("") == set()
+    assert dhcp.parse_served_interfaces(None) == set()
+
+
+# --- #762: אמת חיה ל-DHCP — דרך הקונסולה, hooks מוזרקים בלבד ----------------
+
+
+def _row(rows: list[dict], name: str) -> dict:
+    return {r["name"]: r for r in rows}[name]
+
+
+def test_dhcp_live_serving_when_conf_lists_it_and_service_is_active(dhcp_server):
+    fake = dhcp_server["fake"]
+    fake["active_conf"] = "interface=eth0\ndhcp-range=10.44.9.50,10.44.9.200\n"
+    fake["service_active"] = True
+    row = _row(dhcp_server["admin"].get("/api/console/net/interfaces").json(), "eth0")
+    assert row["dhcp_live"]["state"] == "serving"
+    assert row["dhcp_live"]["checked"] is True
+    assert row["dhcp_live_label"] == "משרת"
+
+
+def test_dhcp_live_configured_not_running_when_service_is_down(dhcp_server):
+    fake = dhcp_server["fake"]
+    fake["active_conf"] = "interface=eth0\n"
+    fake["service_active"] = False
+    row = _row(dhcp_server["admin"].get("/api/console/net/interfaces").json(), "eth0")
+    assert row["dhcp_live"]["state"] == "configured_not_running"
+    assert row["dhcp_live_label"] == "מוגדר, השירות אינו פועל"
+
+
+def test_dhcp_live_off_when_conf_and_service_read_but_interface_absent(dhcp_server):
+    fake = dhcp_server["fake"]
+    fake["active_conf"] = "interface=eth1\n"
+    fake["service_active"] = True
+    row = _row(dhcp_server["admin"].get("/api/console/net/interfaces").json(), "eth0")
+    assert row["dhcp_live"]["state"] == "off"
+    assert row["dhcp_live_label"] == "כבוי"
+
+
+def test_dhcp_live_is_unknown_never_off_when_conf_read_fails(dhcp_server):
+    """הליבה של #762: קריאה שנכשלה אינה 'כבוי'. חסימה זו היא הבדיקה שהכי
+    חשוב שלא תיפול לצד השקט — אחרת מפעיל שרואה 'כבוי' עשוי לחשוב שהוא
+    בטוח לפעולה מסוכנת, כשבפועל פשוט לא בדקנו כלום (עיקרון 5, הרחבה 5א)."""
+    fake = dhcp_server["fake"]
+    fake["conf_readable"] = False
+    fake["service_active"] = True
+    row = _row(dhcp_server["admin"].get("/api/console/net/interfaces").json(), "eth0")
+    assert row["dhcp_live"]["state"] == "unknown"
+    assert row["dhcp_live"]["checked"] is False
+    assert row["dhcp_live_label"] == "לא ידוע"
+    assert row["dhcp_live"]["state"] != "off"
+
+
+def test_dhcp_live_is_unknown_when_service_check_fails(dhcp_server):
+    fake = dhcp_server["fake"]
+    fake["active_conf"] = "interface=eth0\n"
+    fake["service_readable"] = False
+    row = _row(dhcp_server["admin"].get("/api/console/net/interfaces").json(), "eth0")
+    assert row["dhcp_live"]["state"] == "unknown"
+    assert row["dhcp_live"]["checked"] is False
+
+
+def test_a_comment_and_except_interface_never_count_as_serving(dhcp_server):
+    fake = dhcp_server["fake"]
+    fake["active_conf"] = "# interface=eth0\nexcept-interface=eth0\n"
+    fake["service_active"] = True
+    row = _row(dhcp_server["admin"].get("/api/console/net/interfaces").json(), "eth0")
+    assert row["dhcp_live"]["state"] == "off"
+
+
+def test_dhcp_diverged_when_stored_disabled_but_live_serving(dhcp_server):
+    fake = dhcp_server["fake"]
+    fake["active_conf"] = "interface=eth0\n"
+    fake["service_active"] = True
+    row = _row(dhcp_server["admin"].get("/api/console/net/interfaces").json(), "eth0")
+    assert row["enabled"] is False
+    assert row["dhcp_diverged"] is True
+
+
+def test_dhcp_diverged_when_stored_enabled_but_live_off(dhcp_server):
+    admin, fake = dhcp_server["admin"], dhcp_server["fake"]
+    assert admin.put("/api/console/net/interfaces/eth0",
+                     json={**GOOD, "confirm": "eth0"}).status_code == 200
+    fake["active_conf"] = ""       # השירות פעיל, אבל הממשק לא בקובץ
+    fake["service_active"] = True
+    row = _row(admin.get("/api/console/net/interfaces").json(), "eth0")
+    assert row["enabled"] is True
+    assert row["dhcp_diverged"] is True
+
+
+def test_dhcp_not_diverged_when_stored_matches_live(dhcp_server):
+    admin, fake = dhcp_server["admin"], dhcp_server["fake"]
+    assert admin.put("/api/console/net/interfaces/eth0",
+                     json={**GOOD, "confirm": "eth0"}).status_code == 200
+    fake["active_conf"] = "interface=eth0\n"
+    fake["service_active"] = True
+    row = _row(admin.get("/api/console/net/interfaces").json(), "eth0")
+    assert row["dhcp_diverged"] is False
+
+
+def test_dhcp_live_endpoint_stays_read_only_for_deploy_user(dhcp_server):
+    """#762 לא פותח שום דבר חדש להרשאות — עדיין GET רגיל לכל משתמש מחובר."""
+    r = dhcp_server["deploy"].get("/api/console/net/interfaces")
+    assert r.status_code == 200
+    assert "dhcp_live" in r.json()[0]

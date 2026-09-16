@@ -30,6 +30,7 @@
 
 from __future__ import annotations
 
+import os
 import importlib
 import pkgutil
 
@@ -125,3 +126,19 @@ def unguarded_sites() -> list[str]:
             if value is _original:
                 found.append(f"{module.__name__}.{name}")
     return sorted(found)
+
+
+#: ‏`DEVROOT` שכל תהליך-בן של הריצה יורש כשאיש לא הגדיר אותו: תיקייה
+#: שאינה קיימת. הסוכן נופל ל-`/dev` (‏sysinfo.sh) — וב-15/09 טסט
+#: שהריץ את נתיב הכישלון של #845 בלי DEVROOT משלו סימן את דיסק המערכת
+#: של שרת המעבדה (#870). ‏`test_tests_never_touch_host_dev.py` תופס
+#: הגדרה מפורשת של ‏`/dev` של המארח; זה תופס את ה**היעדר**.
+NO_HOST_DEV = "/nonexistent/imagectl-tests-never-touch-host-dev"
+
+
+def detach_host_dev() -> str:
+    """מייצא ‏`DEVROOT` לתיקייה שאינה קיימת לכל הריצה, ומחזיר אותה.
+    טסט שצריך התקן מצביע על תיקייה משלו — לעולם לא על ‏`/dev`."""
+    os.environ["DEVROOT"] = NO_HOST_DEV
+    return NO_HOST_DEV
+

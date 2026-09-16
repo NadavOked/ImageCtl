@@ -82,7 +82,7 @@ def drawer_run(tmp_path, script_tail: str, stubs: dict, disks=("sda", "sdb"),
         "WAIT_STREAM_START_S=20 WAIT_STREAM_STALL_S=20; "
         f". {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/waits.sh; "
         f". {posix(AGENT)}/lib/progress.sh; . {posix(AGENT)}/lib/restore.sh; "
-        f". {posix(AGENT)}/lib/drawers.sh; "
+        f". {posix(AGENT)}/lib/drawers.sh; . {posix(AGENT)}/lib/verdict.sh; . {posix(AGENT)}/lib/failmark.sh; "
         + "".join(f"target_init {d} {len(PAYLOAD)}; " for d in disks)
         + source + script_tail
     )

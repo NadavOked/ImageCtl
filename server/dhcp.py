@@ -32,17 +32,24 @@ from dataclasses import asdict, dataclass, field
 
 from .dhcp_host import (  # noqa: F401  — ה-API של המודול נשאר `dhcp.<שם>`
     DEFAULT_CONF,
+    KNOWN_MACS_CONF,
     PROXY_CONF,
     PROXY_UNIT,
     ProbeResult,
     ProxySupport,
     apply,
+    apply_known_macs,
     apply_proxy,
     dnsmasq_version,
     list_interfaces,
     probe_existing_dhcp,
     proxy_support,
+    read_active_conf,
+    service_active,
 )
+
+#: שורת conf פעילה שמשרתת ממשק, לעומת `except-interface=` (שוללת) או הערה.
+_INTERFACE_LINE = re.compile(r"^\s*interface\s*=\s*(\S+)\s*$")
 
 SETTING_PREFIX = "dhcp:"
 DEFAULT_LEASE = "12h"
@@ -156,6 +163,26 @@ def validate(cfg: InterfaceConfig) -> None:
         raise ValueError("זמן חכירה: מספר ואחריו m/h/d, למשל 12h")
 
 
+# --- אמת חיה ל-DHCP (‏#762) --------------------------------------------------
+
+
+def parse_served_interfaces(text: str) -> set[str]:
+    """אילו ממשקים קובץ ה-conf **הפעיל** מצהיר עליהם `interface=`.
+
+    פרסר טהור: מקבל טקסט, מחזיר קבוצת שמות. קורא רק שורות `interface=`
+    פעילות — מתעלם מהערות (`#`), שורות ריקות ומ-`except-interface=` (זו
+    שלילה, לא הגשה). אין להסיק מ-`dhcp-range=` בלבד: טווח בלי `interface`
+    אינו מגיש דבר על ממשק ספציפי.
+    """
+    served: set[str] = set()
+    for raw_line in (text or "").splitlines():
+        line = raw_line.split("#", 1)[0]
+        match = _INTERFACE_LINE.match(line)
+        if match:
+            served.add(match.group(1))
+    return served
+
+
 # --- רינדור dnsmasq ---------------------------------------------------------
 
 
@@ -238,8 +265,20 @@ def render(configs: list[InterfaceConfig], tftp_root: str | None = None) -> str:
         if cfg.dns:
             lines.append(f"dhcp-option=tag:{tag},option:dns-server,{','.join(cfg.dns)}")
         lines.append(f"dhcp-option=tag:{tag},option:tftp-server,{cfg.server_ip}")
-        lines.append(f"dhcp-boot=tag:{tag},tag:bios,grub/i386-pc/core.0,,{cfg.server_ip}")
-        lines.append(f"dhcp-boot=tag:{tag},tag:efi-x86_64,bootx64.efi,,{cfg.server_ip}")
+        # ‏#141: `tag:known` נוסף לשתי שורות ה-boot — מכונה שאינה ברשימת
+        # ה-MAC הרשומים (KNOWN_MACS_CONF, נטענת דרך dhcp-hostsfile
+        # ב-imagectl.conf) לא מקבלת את התג, ולכן dnsmasq אינו עונה לה
+        # עם dhcp-boot בכלל. הקושחה נכשלת ב-PXE ונופלת לדיסק המקומי —
+        # לפני שהיא בכלל שולחת בקשת TFTP, ולא רק בתוך grub.cfg
+        # (‏decide() ב-boot/grub_menu.py, שנשאר כרשת ביטחון שנייה: תחנה
+        # שמגיעה בכל זאת, למשל מרשת זרה שמפעילה proxy, עדיין נופלת שם
+        # ל-unregistered).
+        lines.append(
+            f"dhcp-boot=tag:{tag},tag:bios,tag:known,grub/i386-pc/core.0,,{cfg.server_ip}"
+        )
+        lines.append(
+            f"dhcp-boot=tag:{tag},tag:efi-x86_64,tag:known,bootx64.efi,,{cfg.server_ip}"
+        )
         lines.append("")
     return "\n".join(lines) + "\n"
 
@@ -295,4 +334,49 @@ def render_proxy(configs: list[InterfaceConfig],
             f'pxe-service=tag:{tag},tag:efi-x86_64,x86-64_EFI,"ImageCtl",bootx64.efi'
         )
         lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+# --- מכונות רשומות — dhcp-hostsfile (#141) -----------------------------------
+#
+# מכונה שאינה ברשימה הזו לא מגיעה לגרסת GRUB בכלל — לא רק שהיא אינה
+# מקבלת ערך ImageCtl בקובץ (זה כבר קיים: decide() ב-boot/grub_menu.py
+# מחזיר Decision(LOCAL, "unregistered")). ‏dhcp-boot בקובץ הראשי (render()
+# למעלה) דורש tag:known, וכאן זה מודלק — לכל MAC רשום, ורק לו. הקובץ הזה
+# נגזר מטבלת המכונות ולא מקור: הוא נכתב מחדש בכל שינוי ובכל עליית שרת
+# (dhcp_host.apply_known_macs, נקרא מ-console_api ומ-main.py). קובץ שנמחק
+# או לא נכתב מעולם משאיר **כל** מכונה בלי dhcp-boot, לא רק את זו
+# שהשתנתה — עיקרון 5, ההרחבה על "נגזרת ולא מקור" ב-#141.
+
+#: MAC קנוני — אותה תבנית בדיוק כמו הקנוני של registry.py. השורה הזו
+#: נכתבת לקובץ ש-dnsmasq קורא כ-root, בלי בריחה ובלי מרכאות (בדיוק כמו
+#: שם הכרטיס, #102) — לכן היא מאומתת כאן שוב ולא רק בכניסה ל-DB.
+_MAC_HOSTLINE = re.compile(r"^[0-9a-f]{2}(:[0-9a-f]{2}){5}$")
+
+
+def _guard_macs(macs: list[str]) -> None:
+    """השער האחרון לפני קובץ ה-host שדמון root קורא — אותה רוח כמו
+    ‏_guard_names (#102): רשומה שאינה MAC קנוני לא הופכת לשורת dnsmasq
+    שבורה בשקט. ‏render_known_macs נכשלת במקום לכתוב אותה."""
+    for mac in macs:
+        if not isinstance(mac, str) or not _MAC_HOSTLINE.match(mac):
+            raise ValueError(f"MAC לא קנוני בטבלת המכונות: {mac!r}")
+
+
+def render_known_macs(macs: list[str]) -> str:
+    """הקובץ של KNOWN_MACS_CONF — שורה אחת לכל מכונה רשומה.
+
+    כל שורה מדליקה את tag:known בדיוק כמו ``dhcp-host=<mac>,set:known``
+    בקובץ הראשי (זה בדיוק התחביר ש-dhcp-hostsfile מצפה לו לשורה, בלי
+    התחילית). ‏macs ריק מייצר קובץ תקין וריק — dnsmasq טוען אותו, ואף
+    tag:known לא נדלק, כלומר אף מכונה לא מקבלת dhcp-boot (בטוח: זו בדיוק
+    ברירת המחדל של "מצב לא ברור" — עיקרון 1).
+    """
+    _guard_macs(macs)
+    lines = [
+        "# ImageCtl -- registered MAC addresses, generated from the console (#141).",
+        "# Do not edit by hand: the next machine add/edit/delete rewrites it.",
+        "",
+    ]
+    lines += [f"{mac},set:known" for mac in macs]
     return "\n".join(lines) + "\n"

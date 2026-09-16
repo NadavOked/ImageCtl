@@ -26,7 +26,22 @@ from pathlib import Path
 #: לכן כתיבה חמה שרצה מכמה תהליכונים עוברת כאן: התור בפייתון הוגן,
 #: ו-sqlite אינו רואה תחרות בין התהליכונים שלנו. הנעילה נלקחת סביב
 #: **הטרנזאקציה כולה** ולא סביב execute בודד — אחרת אין לה משמעות.
+#:
+#: **סדר הנעילות, ואין ממנו חריג (#457):** קודם ``_write_lock`` ורק
+#: אחריו נעילת הכתיבה של sqlite. מי שכבר מחזיק בנעילת הכתיבה — כלומר
+#: יש לו טרנזאקציה פתוחה — ‏**אינו רשאי להמתין כאן**, אחרת שני הכיוונים
+#: נפגשים בנעילה משולבת. ‏`_settle` הוא האכיפה, והוא נקרא לפני **כל**
+#: נטילה כאן.
 _write_lock = threading.Lock()
+
+
+class SchemaError(RuntimeError):
+    """סכימה קיימת שאינה תואמת ואי אפשר למגר בשקט (#732).
+
+    ‏``CREATE TABLE IF NOT EXISTS`` הוא no-op על טבלה קיימת גם כשהיא
+    חסרה עמודות — ואז הכשל מתגלה רק מאוחר, מול כיתה, כ-``no such
+    column``. עדיף להיכשל בקול באתחול, ליד ההתקנה (עיקרון 5)."""
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS groups (
@@ -41,6 +56,8 @@ CREATE TABLE IF NOT EXISTS machines (
     suffix   TEXT NOT NULL,             -- "01".."99" או "INS"
     group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
     note     TEXT NOT NULL DEFAULT '',
+    drawer_count INTEGER NOT NULL DEFAULT 3    -- מספר המגירות/פורטים שהוגדר במסוף
+                 CHECK (drawer_count BETWEEN 1 AND 8),
     added_at TEXT NOT NULL
 );
 
@@ -61,7 +78,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- הזרם: 'multicast' הוא udp-sender, ולכן אחד בכל המערכת. 'unicast'
     -- הוא משיכת HTTP של תחנה בודדת — לא נוגעת בשידור, וכמה כאלה יחד.
     kind             TEXT NOT NULL DEFAULT 'multicast'
-                     CHECK (kind IN ('multicast', 'unicast'))
+                     CHECK (kind IN ('multicast', 'unicast')),
+    -- בחירת המחיצה להרחבה, מהקונסולה בפתיחת הסבב (#59). NULL = לא
+    -- נבחר במפורש, כלומר הבחירה האוטומטית — בדיוק ההתנהגות מלפני #59,
+    -- וזה מה שכל פותח סבב שלא עודכן (pulls.py, station.py) עדיין כותב.
+    -- 'none' מכבה את ההרחבה; מחרוזת ספרות היא אינדקס מחיצה שנבחר ביד.
+    expand_partition TEXT
 );
 
 CREATE TABLE IF NOT EXISTS session_members (
@@ -82,6 +104,8 @@ CREATE TABLE IF NOT EXISTS room_rounds (
     target_drives   INTEGER NOT NULL,      -- כמה כוננים צריך הפעם, סה"כ
     written_drives  INTEGER NOT NULL DEFAULT 0,
     written_serials TEXT NOT NULL DEFAULT '[]',  -- JSON; מגירה נספרת פעם אחת
+    target_slots_json TEXT,                -- בחירת דיסקי יעד לכל מכונה; NULL=סבב ישן
+    expand_partition TEXT,                 -- בחירת ההרחבה לכל גלי הסבב (#59); NULL=אוטומטי
     state           TEXT NOT NULL CHECK (state IN ('active', 'closed')),
     wave_session_id TEXT,                  -- הגל הנוכחי הוא session רגיל
     wave_number     INTEGER NOT NULL DEFAULT 1,
@@ -190,6 +214,136 @@ CREATE TABLE IF NOT EXISTS net_devices (
     last_seen   TEXT,
     disks_json  TEXT                    -- הדיסקים מה-hello האחרון, כפי שדווחו
 );
+
+-- בריאות ה-SMART וההכרעה על כל דיסק יעד בסבב שחזור (#652). שורה אחת
+-- לכל (סבב, מכונה, דיסק), נדרסת בכל disk_event — התמונה החיה של
+-- הבחירות שהמפעיל עשה ליד המכונה. השרת **אינו** מכריע ממנה: ההכרעה
+-- על דיסק פגום נעשית בסוכן (ליד המכונה, ASCII), וכאן נשמרת לצפייה
+-- (‏#380) ולריבוט-החלפה (זיהוי מחדש לפי port+serial). לכן `verdict`
+-- כולל `unchecked` — לא-נבדק, לא כשל (עיקרון 5).
+CREATE TABLE IF NOT EXISTS disk_events (
+    session_id    TEXT NOT NULL,
+    mac           TEXT NOT NULL,        -- קנוני: lowercase עם נקודתיים
+    disk          TEXT NOT NULL,        -- שם ההתקן שהסוכן דיווח (sda)
+    port          INTEGER,              -- החריץ הפיזי; ממנו הקונסולה גוזרת "דיסק N"
+    serial        TEXT,
+    verdict       TEXT NOT NULL,        -- ok|warn|fail|unchecked
+    reason        TEXT,
+    realloc       INTEGER NOT NULL DEFAULT 0,
+    pending       INTEGER NOT NULL DEFAULT 0,
+    uncorrectable INTEGER NOT NULL DEFAULT 0,
+    crc           INTEGER NOT NULL DEFAULT 0,
+    write_state   TEXT,                 -- pending|rescue|skipped|replacing|...
+    decision      TEXT,                 -- NULL|replace|rescue|skip
+    updated_at    TEXT NOT NULL,
+    PRIMARY KEY (session_id, mac, disk)
+);
+
+-- זיכרון כשלי כתיבה (#874): במקום סימון על הדיסק (#845, נפסל) השרת זוכר
+-- **איזה דיסק (סידורי) ואיזה חריץ (מכונה+פורט)** נכשלו, ומה הקרנל אמר.
+-- הסוכן שולח את שורות ה-ATA; הסיווג (cable/disk/unclassified) נעשה כאן
+-- (`ata_cause.py`). ‏`cleared_at` הוא "נקה" מהקונסולה — הדיסק הוחלף או
+-- הכבל תוקן; רשומה מנוקה אינה צובעת עוד. שורה אחת לכל (סבב, מכונה, יעד):
+-- הדיווח חוזר כל 2 שניות, והכשל נרשם פעם אחת.
+CREATE TABLE IF NOT EXISTS disk_failures (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    mac        TEXT NOT NULL,        -- קנוני: lowercase עם נקודתיים
+    dev        TEXT NOT NULL,        -- שם ההתקן באותו אתחול (sda) -- מתחלף, לא זהות
+    serial     TEXT,                 -- זהות הדיסק
+    port       INTEGER,              -- החריץ (SATA N, כמו ב-hello) -- זהות המקום
+    ata_port   INTEGER,              -- ata<N> של הקרנל, לקריאה מול dmesg
+    at         TEXT NOT NULL,
+    cause      TEXT NOT NULL,        -- cable|disk|unclassified
+    error      TEXT,
+    ata_log    TEXT,                 -- JSON: שורות הקרנל, הראיה
+    cleared_at TEXT,
+    UNIQUE (session_id, mac, dev)
+);
+
+-- המלאי החומרתי מה-hello (#720, schema 2): DMI, PCI של רשת+אחסון, TPM.
+-- **מגורסת**: שורה חדשה רק כשה-JSON הקנוני השתנה (server/inventory.py);
+-- seen_at = מתי הגרסה הזו נראתה לראשונה. השורה האחרונה לכל MAC היא
+-- המלאי הנוכחי, ולפיו מותאמות חבילות הדרייברים (server/drivers.py).
+CREATE TABLE IF NOT EXISTS machine_inventory (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    mac            TEXT NOT NULL,        -- קנוני: lowercase עם נקודתיים
+    seen_at        TEXT NOT NULL,
+    inventory_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS machine_inventory_mac ON machine_inventory (mac, id);
+
+-- Storage Nodes (#655, tracer 1.1 / #723): רישום המשניים שהראשי מחזיק,
+-- וקבוצות האחסון שמשייכות אותם. קיים על **כל** בסיס לצורך עקביות
+-- הסכימה — גם על משני, ששם הוא נשאר ריק (מוטציה מסורבת בשכבת ה-service,
+-- שלב הבא בשרשרת). מזהים הם TEXT (UUID/מזהה יציב), כמו שאר הטבלאות כאן.
+CREATE TABLE IF NOT EXISTS storage_node_groups (
+    id       TEXT PRIMARY KEY,
+    label    TEXT NOT NULL,
+    sort     INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS storage_nodes (
+    id              TEXT PRIMARY KEY,
+    label           TEXT NOT NULL,
+    base_url        TEXT NOT NULL UNIQUE,
+    group_id        TEXT REFERENCES storage_node_groups(id) ON DELETE SET NULL,
+    -- ‏#740: ``tls_fingerprint`` יורד מלהיות חומר אמון — הוא תצוגה/ביקורת
+    -- בלבד. חומר האמון הוא ``pinned_spki`` (טביעת ה-SubjectPublicKeyInfo
+    -- של המשני, שאליה הראשי נצמד) ו-``client_cert_ref`` (הפניית sha256
+    -- לתעודת-הלקוח של הראשי, שאותה המשני קושר לטוקן — RFC 8705).
+    tls_fingerprint TEXT,
+    -- ‏#740: מזהה המשני היציב, נגזר מ-SPKI התעודה שלו (לא UUID מקומי).
+    node_id         TEXT,
+    protocol_version TEXT,
+    pinned_spki     TEXT,
+    client_cert_ref TEXT,
+    -- מזהה קובץ-אישורים קריא-ל-root מתחת ל-data-dir, לא האישור עצמו.
+    credential_ref  TEXT NOT NULL,
+    enrolled_at     TEXT NOT NULL,
+    -- חותמת ולא דגל: משני מושבת אינו נמחק, ו-NULL הוא "פעיל" (כמו
+    -- users.disabled_at). ``enabled_node_count`` סופר NULL בלבד.
+    disabled_at     TEXT
+);
+
+-- Storage Nodes — enrollment מוקשח (#740, tracer 2.1). שתי טבלאות
+-- singleton על **המשני**: רשומת אישור-האב היחיד, וחלון ה-pairing
+-- המקומי. ה-PK הקבוע (=1) הוא אכיפת אב-יחיד ברמת ה-DB — "בדוק ואז
+-- הכנס" לבדו אינו מספיק תחת מקביליות (עיקרון 5). ריקות על ראשי/עצמאי.
+--
+-- ‏storage_identity (node_id/SPKI/cert/key) ורשומת המשני-הרשום על
+-- הראשי (node_id/pinned_spki/client_cert_ref) ממתינות לשכבת ה-TLS
+-- של #740 — הן נגזרות מהתעודה שאותה שכבה מפיקה, ואין להן ערך בלעדיה.
+CREATE TABLE IF NOT EXISTS parent_credentials (
+    singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
+    parent_id          TEXT NOT NULL,
+    token_hash         BLOB NOT NULL,
+    bound_cert_ref     TEXT NOT NULL,
+    pinned_parent_spki TEXT NOT NULL,
+    protocol_version   TEXT NOT NULL,
+    enrolled_at        TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS pairing_windows (
+    singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
+    code_hash          BLOB NOT NULL,
+    code_salt          BLOB NOT NULL,
+    opened_at          TEXT NOT NULL,
+    expires_at         TEXT NOT NULL,
+    attempts_remaining INTEGER NOT NULL
+);
+
+-- ‏#740 (tracer 2.1): זהות ה-TLS של השרת עצמו — singleton על **כל** בסיס.
+-- ‏node_id נגזר מ-SPKI התעודה; ``server_cert_ref``/``server_key_ref`` הן
+-- הפניות קובץ (לא החומר עצמו — המפתח הפרטי לעולם אינו ב-DB, עיקרון 6/7
+-- של הדגם הנעול). ריקה עד שנוצרת זהות (‏interserver_auth.ensure_identity).
+CREATE TABLE IF NOT EXISTS storage_identity (
+    singleton       INTEGER PRIMARY KEY CHECK (singleton = 1),
+    node_id         TEXT NOT NULL UNIQUE,
+    server_spki     TEXT NOT NULL,
+    server_cert_ref TEXT NOT NULL,
+    server_key_ref  TEXT NOT NULL
+);
 """
 
 #: הקבוצות הקבועות: חדר שיכפולים ומחשב הבנייה הם יחידים במערכת —
@@ -207,6 +361,9 @@ DEFAULT_SETTINGS = {
     # ניתוק אוטומטי של הקונסולה בחוסר פעילות. המסך עומד בכיתה או במשרד
     # פתוח — מי שקם והלך לא משאיר אחריו קונסולת ניהול פתוחה.
     "console_idle_seconds": "300",
+    # ‏#880: v1 "מהדורת שיכפול" — הפצה לכיתות ממחשב הבנייה כבויה כברירת
+    # מחדל. הקוד נשאר (v2); המתג בקונסולה, מסך ההגדרות.
+    "class_deploy_enabled": "false",
 }
 
 
@@ -220,9 +377,23 @@ def now_iso() -> str:
 ADDED_COLUMNS = [
     ("groups", "sort", "INTEGER NOT NULL DEFAULT 0"),
     ("net_devices", "disks_json", "TEXT"),
+    # ‏#839: סוד המוניטור שהמכונה הגרילה באתחול ודיווחה ב-hello. הפרוקסי
+    # (server/monitor.py) מזדהה איתו מול 5900 של אותה מכונה, ושום תשובת
+    # קונסולה אינה מחזירה אותו.
+    ("net_devices", "monitor_secret", "TEXT"),
+    # מספר המגירות שהוגדר לכל מחשב שכפול במסוף (#695).
+    ("machines", "drawer_count",
+     "INTEGER NOT NULL DEFAULT 3 CHECK (drawer_count BETWEEN 1 AND 8)"),
+    # בחירת דיסקי היעד לסבב, לכל מכונה. NULL = סבב ישן (התנהגות "כל הדיסקים").
+    # '[]' הוא בחירה ריקה מפורשת ואינו חוקי לסבב חדש (#695).
+    ("room_rounds", "target_slots_json", "TEXT"),
     # הדיווח האחרון כפי שהגיע, יעד-יעד. סבב החדר סופר ממנו אילו
     # מגירות (לפי serial) נכתבו בהצלחה.
     ("session_members", "targets_json", "TEXT"),
+    # ‏#720: תוצאת ה-staging של הדרייברים כפי שהסוכן דיווח בדיווח הסיום
+    # (‏staged / no_match / skipped / failed + סיבה). NULL = השלב לא רץ
+    # (סוכן ישן, או שהדיווח הסופי הגיע בלי השדה) — לא "אין התאמה".
+    ("session_members", "drivers_json", "TEXT"),
     # סבב לחלק מהכיתה: רשימת ה-MAC שנבחרו. NULL = כל הקבוצה.
     # רק הנבחרים מוערים ב-WoL ורק הם מצטרפים — השאר עולים מהדיסק.
     ("sessions", "roster_json", "TEXT"),
@@ -235,6 +406,27 @@ ADDED_COLUMNS = [
     # שהמפעיל צריך, ו-NULL הוא "פעיל". התקנה קיימת מקבלת NULL בכל
     # שורה, כלומר אף משתמש קיים לא נחסם על ידי המיגרציה.
     ("users", "disabled_at", "TEXT"),
+    # ‏#530: האסימון שמוכיח שהפונה הוא בעל המשימה. ‏NULL בהתקנה קיימת,
+    # כלומר משימות שנוצרו לפני המיגרציה **אינן ניתנות לכתיבה** —
+    # ‏`claim` מסרב על `token` ריק. זו הכרעה: משימה ישנה שתיתקע עדיפה
+    # על משימה ישנה שכל אחד יכול לכתוב עליה.
+    ("tasks", "token", "TEXT"),
+    # ‏#435: הדיווח האחרון של הקליטה כפי שהגיע, יעד-יעד. משם
+    # ‏`capture_progress` שולף את `source_progress` — מכנה ההתקדמות בציר
+    # הלא-דחוס (בלוקי partclone), שאין לו ייצוג בעמודות bytes_* הדחוסות.
+    # ‏NULL בשורות שקדמו למיגרציה, כלומר "אין דיווח מפורט", לא "אפס".
+    ("tasks", "targets_json", "TEXT"),
+    # ‏#740: חומר האמון הבין-שרתי על הראשי. NULL בשורות משני שקדמו ל-#740
+    # (נרשמו לפני שכבת ה-mTLS) — הן תצוגה בלבד עד שנרשמות מחדש. שורה
+    # חדשה מ-``enroll_node`` ממלאת את כולן.
+    ("storage_nodes", "node_id", "TEXT"),
+    ("storage_nodes", "protocol_version", "TEXT"),
+    ("storage_nodes", "pinned_spki", "TEXT"),
+    ("storage_nodes", "client_cert_ref", "TEXT"),
+    # ‏#59: בחירת המחיצה להרחבה מהקונסולה בפתיחת הסבב. NULL בכל שורה
+    # קיימת — התקנה שמוגרת רואה בדיוק את הבחירה האוטומטית שהייתה לה.
+    ("sessions", "expand_partition", "TEXT"),
+    ("room_rounds", "expand_partition", "TEXT"),
 ]
 
 
@@ -243,6 +435,46 @@ def _add_missing_columns(conn: sqlite3.Connection) -> None:
         existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
         if column not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+#: העמודות שכל טבלת אחסון (#655/#723/#727) חייבת. טבלה חלקית שנוצרה
+#: לפני שהסכימה התייצבה אינה ממוגרת ע"י ``CREATE TABLE IF NOT EXISTS``,
+#: וגם ``ADDED_COLUMNS`` אינו מכסה אותה (חלק מעמודותיה ``NOT NULL`` בלי
+#: ברירת מחדל, ו-``ALTER TABLE ADD COLUMN`` פשוט אינו יכול להוסיף כאלה).
+#: לכן במקום מיגרציה שקטה — בדיקה שנכשלת בקול (#732).
+_STORAGE_SCHEMA_COLUMNS = {
+    "storage_node_groups": {"id", "label", "sort"},
+    "storage_nodes": {"id", "label", "base_url", "group_id", "tls_fingerprint",
+                      "node_id", "protocol_version", "pinned_spki",
+                      "client_cert_ref", "credential_ref", "enrolled_at",
+                      "disabled_at"},
+    "parent_credentials": {"singleton", "parent_id", "token_hash",
+                           "bound_cert_ref", "pinned_parent_spki",
+                           "protocol_version", "enrolled_at"},
+    "pairing_windows": {"singleton", "code_hash", "code_salt", "opened_at",
+                        "expires_at", "attempts_remaining"},
+    "storage_identity": {"singleton", "node_id", "server_spki",
+                         "server_cert_ref", "server_key_ref"},
+}
+
+
+def _verify_storage_schema(conn: sqlite3.Connection) -> None:
+    """נכשל בקול אם טבלת אחסון קיימת חסרה עמודות (#732).
+
+    רץ **אחרי** ``executescript``: אם הטבלה נוצרה זה עתה היא מלאה
+    ותעבור; אם קדמה לה טבלה חלקית, ``CREATE TABLE IF NOT EXISTS`` לא
+    נגע בה, וכאן זה נתפס — לא בשאילתה הראשונה שמפילה 500 מול כיתה."""
+    for table, expected in _STORAGE_SCHEMA_COLUMNS.items():
+        columns = {row["name"]
+                   for row in conn.execute(f"PRAGMA table_info({table})")}
+        if not columns:
+            continue                 # לא קיימת — executescript נכשל קודם אם צריך
+        missing = expected - columns
+        if missing:
+            raise SchemaError(
+                f"טבלת '{table}' קיימת אך חסרה עמודות: "
+                f"{', '.join(sorted(missing))}. שחזרו את קובץ הנתונים מגיבוי "
+                f"או מחקו את הטבלה החלקית — אתחול לא ממגר אותה בשקט.")
 
 
 #: מה ש"בדיקה ואז כתיבה" בקוד לא יכולה לאכוף. שני תהליכונים, שני
@@ -313,6 +545,7 @@ def _initialize(conn: sqlite3.Connection) -> None:
     """הסכימה וברירות המחדל — פעם אחת לקובץ, לא פעם אחת לחיבור."""
     conn.executescript(SCHEMA)
     _add_missing_columns(conn)
+    _verify_storage_schema(conn)
     _close_duplicate_actives(conn)
     _create_unique_indexes(conn)
     for key, value in DEFAULT_SETTINGS.items():
@@ -385,6 +618,15 @@ class Database:
 
     def rollback(self) -> None:
         self.connection.rollback()
+
+    @property
+    def in_transaction(self) -> bool:
+        """האם לתהליכון הזה יש טרנזאקציה פתוחה — כלומר נעילת כתיבה בידו.
+
+        ‏``sqlite3.Connection`` מפרסם את זה, וכל מי שמקבל ``conn`` צריך
+        לשאול בלי לדעת אם קיבל חיבור גולמי או את העטיפה (‏`_settle`).
+        """
+        return self.connection.in_transaction
 
     def close(self) -> None:
         """סוגר את החיבור של התהליכון הקורא בלבד — לשאר יש משלהם."""
@@ -464,6 +706,34 @@ def writing(conn):
         raise
 
 
+def _settle(conn) -> None:
+    """סוגר טרנזאקציה שהקורא עוד מחזיק, **לפני** ההמתנה ל-``_write_lock``.
+
+    זהו סדר הנעילות של #457 באכיפה. כתיבה שהצליחה משאירה את הטרנזאקציה
+    פתוחה — ‏`update_one` עושה ``rollback`` רק כשלא תאם שורה — ולכן
+    הקורא ממשיך ל-`journal` כשנעילת הכתיבה של sqlite עדיין בידו. שם הוא
+    ממתין ל-`_write_lock`, ובאותו רגע כותב אחר יכול להחזיק את
+    ‏`_write_lock` ולהמתין לנעילת sqlite שלו. שניהם ממתינים זה לזה עד
+    ש-``busy_timeout`` שובר, והצד שנשבר מדווח ``database is locked``.
+    הכשל **מתחזה לעומס** — בדיוק כמו ב-#54.
+
+    ‏``commit`` ולא ``rollback``: הקורא כתב בכוונה, וכל אתר קריאה כאן
+    ממילא עושה ``commit`` בשורה הבאה. גם ``writing`` שבתוך הבלוק היה
+    מקמט את הטרנזאקציה הזו — ההבדל היחיד הוא **מתי**, ו"מתי" הוא כל
+    הבאג: אחרי הנעילה זו נעילה משולבת, לפניה זו לא.
+
+    לכן זה יושב כאן, במקום אחד, ולא כשורה שצריך לזכור בכל אתר קריאה —
+    אותה צורה שנבחרה ב-#54 עבור `update_one`.
+
+    **מה זה לא עושה:** אטומיות של "כתיבה + שורת יומן" אינה קיימת כאן
+    ממילא. ‏`_write_lock` אינו ``RLock`` (‏`test_the_write_lock_is_not_reentrant`),
+    ולכן קריאה ל-`journal` **בתוך** בלוק כתיבה נתקעת לנצח. שתי
+    הטרנזאקציות היו נפרדות בכל מקרה; ‏`_settle` רק מפריד אותן במפורש.
+    """
+    if conn.in_transaction:
+        conn.commit()
+
+
 #: מתחת לגיל הזה של ``last_seen``, ‏hello חוזר אינו מצדיק כתיבה (#136).
 #:
 #: כל hello היה טרנזאקציית כתיבה מלאה: 30 כתיבות בדקה לכל מכונה, 600
@@ -477,7 +747,8 @@ NET_SEEN_MIN_INTERVAL_SECONDS = 15
 
 
 def _net_seen_unchanged(row: sqlite3.Row, ip: str | None,
-                        disks_json: str | None, now: datetime) -> bool:
+                        disks_json: str | None, now: datetime,
+                        monitor_secret: str | None = None) -> bool:
     """האם השורה כבר אומרת בדיוק את מה שהכתיבה הזו הייתה כותבת.
 
     ראיה חיובית בלבד (עיקרון 5): חותמת שאי אפשר לפענח, חותמת בלי אזור
@@ -488,6 +759,8 @@ def _net_seen_unchanged(row: sqlite3.Row, ip: str | None,
     if ip is not None and ip != row["ip"]:
         return False
     if disks_json is not None and disks_json != row["disks_json"]:
+        return False
+    if monitor_secret is not None and monitor_secret != row["monitor_secret"]:
         return False
     try:
         last = datetime.fromisoformat(row["last_seen"])
@@ -502,6 +775,7 @@ def _net_seen_unchanged(row: sqlite3.Row, ip: str | None,
 def net_seen(
     conn: sqlite3.Connection, mac: str, ip: str | None,
     disks_json: str | None = None,
+    monitor_secret: str | None = None,
 ) -> None:
     """כל מגע של מכונה עם השרת — hello או תפריט אתחול — נרשם כאן.
 
@@ -519,22 +793,27 @@ def net_seen(
     """
     now = datetime.now(timezone.utc)
     row = conn.execute(
-        "SELECT ip, last_seen, disks_json FROM net_devices WHERE mac = ?", (mac,)
+        "SELECT ip, last_seen, disks_json, monitor_secret"
+        " FROM net_devices WHERE mac = ?", (mac,)
     ).fetchone()
-    if row is not None and _net_seen_unchanged(row, ip, disks_json, now):
+    if row is not None and _net_seen_unchanged(row, ip, disks_json, now,
+                                               monitor_secret):
         return
 
     ts = now.isoformat(timespec="seconds")
     # ‏`_write_lock` — זו הכתיבה שכיתה שלמה דורכת עליה בו-זמנית, והיא
     # חייבת תור הוגן ולא מרוץ על נעילת sqlite (#272). ‏`writing` —
-    # כתיבה שנכשלה חייבת להשאיר חיבור נקי; ראו שם.
+    # כתיבה שנכשלה חייבת להשאיר חיבור נקי; ראו שם. ‏`_settle` — סדר
+    # הנעילות (#457): לא ממתינים כאן עם נעילת כתיבה ביד.
+    _settle(conn)
     with _write_lock, writing(conn):
         conn.execute(
-            "INSERT INTO net_devices (mac, ip, first_seen, last_seen, disks_json)"
-            " VALUES (?, ?, ?, ?, ?) "
+            "INSERT INTO net_devices (mac, ip, first_seen, last_seen, disks_json,"
+            " monitor_secret) VALUES (?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (mac) DO UPDATE SET ip = COALESCE(excluded.ip, ip),"
-            " last_seen = ?, disks_json = COALESCE(excluded.disks_json, disks_json)",
-            (mac, ip, ts, ts, disks_json, ts),
+            " last_seen = ?, disks_json = COALESCE(excluded.disks_json, disks_json),"
+            " monitor_secret = COALESCE(excluded.monitor_secret, monitor_secret)",
+            (mac, ip, ts, ts, disks_json, monitor_secret, ts),
         )
 
 
@@ -547,13 +826,31 @@ def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
     """מסלול הכתיבה של **כל** מסכי ההגדרות — DHCP, כתובות, מתג SSH,
     רשימת התיקיות. ‏`_write_lock` ו-`writing` מאותה סיבה כמו ב-`net_seen`
     (#313): כתיבה שנכשלה כאן משאירה את החיבור בטרנזאקציה, ומשם הקונסולה
-    מפסיקה לשמור עד אתחול השרת."""
+    מפסיקה לשמור עד אתחול השרת. ‏`_settle` — סדר הנעילות של #457."""
+    _settle(conn)
     with _write_lock, writing(conn):
         conn.execute(
             "INSERT INTO settings (key, value) VALUES (?, ?) "
             "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
             (key, value),
         )
+
+
+def set_settings(conn: sqlite3.Connection, pairs: dict[str, str]) -> None:
+    """כותב כמה הגדרות ב**טרנזאקציה אחת** — הכל-או-כלום (#732).
+
+    כמה קריאות ל-`set_setting` הן כמה טרנזאקציות: אם השנייה נכשלת
+    (דיסק מלא, נעילה) הראשונה כבר נכתבה, והתוצאה היא מצב מעורב שנקרא
+    כתצורה תקינה (עיקרון 5). כאן שתי הכתיבות באותו בלוק ``writing``,
+    וכישלון מגלגל את שתיהן. אותו מסלול נעילות של `set_setting`."""
+    _settle(conn)
+    with _write_lock, writing(conn):
+        for key, value in pairs.items():
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?, ?) "
+                "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
 
 
 def journal(conn: sqlite3.Connection, event: str, detail: str = "", user: str = "") -> None:
@@ -569,7 +866,13 @@ def journal(conn: sqlite3.Connection, event: str, detail: str = "", user: str = 
     השרת (#272). ‏`journal` נקרא כמעט מכל מסלול בשרת, ולכן חיבור
     שהורעל כאן נודד לכל מי שיקבל את התהליכון אחריו — ‏uvicorn ממחזר
     אותם.
+
+    ‏`_settle` הוא סדר הנעילות של #457, וכאן הוא נדרש יותר מבכל אתר
+    אחר: ‏`journal` הוא מה שנקרא **מיד אחרי** כתיבה מותנית שהצליחה, וגם
+    מה שתהליכון הרקע של השידור כותב — כלומר שני הצדדים של הנעילה
+    המשולבת נפגשים כאן.
     """
+    _settle(conn)
     with _write_lock, writing(conn):
         conn.execute(
             "INSERT INTO journal (ts, user, event, detail) VALUES (?, ?, ?, ?)",

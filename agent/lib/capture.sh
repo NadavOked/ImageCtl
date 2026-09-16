@@ -17,7 +17,6 @@ CAPTURE_LEVEL="${CAPTURE_LEVEL:-3}"
 # מספר מפורש ולא `-T0` שנגזר מליבות היעד (‏OOM על 512MB, ‏#21): שתי ליבות
 # נמדדו מהירות כמו `-T0` ובשיא 72MB — פחות מ-112MB של רמה 9 שהייתה כאן.
 CAPTURE_THREADS="${CAPTURE_THREADS:-2}"
-
 # ‏#87: הכונן ה**קטן ביותר** שהאימג' הזה חייב להיכנס אליו, בבייטים.
 # ריק = לא נבדק — וזה נרשם במניפסט כ-`null` ולא כמספר, כי "לא בדקנו"
 # ו"בדקנו, נכנס" הם שני מצבים שונים (עיקרון 5). הערך אינו נגזר מהמשפחה:
@@ -33,6 +32,21 @@ _capture_failed() {
     echo "failed" > "$RUN_DIR/state"
 }
 
+_bitlocker_reason() {
+    # $1=idx $2=fs $3=node. FOG -FVE-FS-; empty=ok, text=refuse (#671).
+    case "$2" in *[Bb]it[Ll]ocker*) echo "מחיצה $1 מוצפנת ב-BitLocker — כבו את BitLocker לפני הקליטה"; return ;; esac
+    command -v dd >/dev/null && command -v grep >/dev/null && command -v tr >/dev/null \
+        || { echo "לא הצלחנו לבדוק BitLocker במחיצה $1"; return; }
+    # ‏LC_ALL=C ו-F: החתימה בייטים קבועים, לא טקסט מקומי. בלי -i — היא
+    # תמיד באותיות גדולות, ו-`grep -i` על קלט בינרי תחת locale של UTF-8
+    # קורס (SIGABRT) ב-MSYS, מה שהיה הופך "לא נמצא" ל"לא הצלחנו לבדוק".
+    dd if="$3" bs=512 count=1 2>/dev/null | tr -d '\0' | LC_ALL=C grep -qF -- '-FVE-FS-'
+    _blrc=$?
+    [ "$_blrc" -eq 1 ] && return
+    [ "$_blrc" -eq 0 ] && echo "מחיצה $1 מוצפנת ב-BitLocker — כבו את BitLocker לפני הקליטה" \
+        || echo "לא הצלחנו לבדוק BitLocker במחיצה $1"
+}
+
 capture_disk() {
     # $1 = task id, $2 = disk name. Emits the manifest path on success.
     _task="$1"; _disk="$2"
@@ -45,6 +59,9 @@ capture_disk() {
     # (‏node_is_block ולא `[ -b ]` ישיר, מאותה סיבה שב-restore.sh.)
     target_init "$_disk" 0
     node_is_block "$_node_base" || { _capture_failed "$_disk" "אין דיסק כזה: /dev/$_disk"; return 1; }
+    _sector_size=$(logical_block_size "$_node_base")
+    [ -n "$_sector_size" ] \
+        || { _capture_failed "$_disk" "logical sector size unavailable: /dev/$_disk"; return 1; }
     _scheme=$(disk_scheme "$_node_base")
     [ "$_scheme" = "gpt" ] || { _capture_failed "$_disk" "הכונן אינו GPT (נמצא: $_scheme)"; return 1; }
 
@@ -89,8 +106,8 @@ capture_disk() {
     # היא הגודל שבו נקלטה כל מחיצה ולא כמה תפוס בה — partclone מסרב לשחזר לתוך
     # מחיצה קטנה ממנה — ולכן אין כאן used_bytes; אותו כלל בשרת
     # (server/images.py). השדות: $4 סקטור התחלה, $5 גודל בסקטורים.
-    _min_target=$(awk -F'|' -v disk="$_disk_bytes" '
-        { e = ($4 + $5) * 512; if (e > end) end = e }
+    _min_target=$(awk -F'|' -v disk="$_disk_bytes" -v sector="$_sector_size" '
+        { e = ($4 + $5) * sector; if (e > end) end = e }
         END { need = int((end + 2097151) / 1048576) * 1048576
               if (disk >= end && disk < need) need = disk
               printf "%.0f\n", need }' "$_parts")
@@ -127,6 +144,10 @@ capture_disk() {
         _floor_json="$CAPTURE_TARGET_BYTES"
     fi
 
+    while IFS='|' read -r _idx _guid _uguid _first _sizesec; do
+        _node=$(partition_node "$_disk" "$_idx"); _fs=$(_fs_of "$_node")
+        case "$_fs" in ntfs|ntfs-3g) _why=$(capture_ntfs_hibernation_reason "$_node" "$RUN_DIR/ntfs-check.$_idx"); [ -z "$_why" ] || { _capture_failed "$_disk" "$_why"; return 1; } ;; esac
+    done < "$_parts"
     _json_parts=""
     _total=0
     # ‏#85: ה-ESP נקרא שוב אחרי הלולאה, לגזירת החותם של מטעני האתחול.
@@ -134,6 +155,8 @@ capture_disk() {
     while IFS='|' read -r _idx _guid _uguid _first _sizesec; do
         _node=$(partition_node "$_disk" "$_idx")
         _fs=$(_fs_of "$_node")
+        _why=$(_bitlocker_reason "$_idx" "$_fs" "$_node")
+        [ -n "$_why" ] && { _capture_failed "$_disk" "$_why"; return 1; }
         _role=$(_partition_role "$_guid")
         # A generic linux-data GUID holding swap is still swap; a swap GUID
         # is swap regardless of what blkid says.
@@ -146,7 +169,7 @@ capture_disk() {
             _uuid=$(_uuid_of "$_node")
             if [ -n "$_uuid" ]; then _ujson="\"$_uuid\""; else _ujson="null"; fi
             log "partition $_idx (swap): recorded, not read"
-            _json_parts="$_json_parts{\"index\":$_idx,\"type_guid\":\"$_guid\",\"unique_guid\":\"$_uguid\",\"uuid\":$_ujson,\"role\":\"swap\",\"fs\":\"swap\",\"start_sector\":$_first,\"size_bytes\":$((_sizesec * 512)),\"used_bytes\":0,\"file\":null,\"sha256\":null,\"expandable\":false},"
+            _json_parts="$_json_parts{\"index\":$_idx,\"type_guid\":\"$_guid\",\"unique_guid\":\"$_uguid\",\"uuid\":$_ujson,\"role\":\"swap\",\"fs\":\"swap\",\"start_sector\":$_first,\"size_bytes\":$((_sizesec * _sector_size)),\"used_bytes\":0,\"file\":null,\"sha256\":null,\"expandable\":false},"
             continue
         fi
         _file="p$_idx.$_role.pcl.zst"
@@ -166,35 +189,49 @@ capture_disk() {
             curl -sfS --max-time 0 \
                 --speed-limit 1 --speed-time "$HTTP_STALL_TIMEOUT" \
                 -H "Content-Type: application/octet-stream" \
+                -H "X-Imagectl-Task-Token: ${TASK_TOKEN:-}" \
                 -T "$_out" \
                 "$SERVER/api/v1/capture/$_task/files/$_file" > "$RUN_DIR/up.$_idx.out" 2>> "$LOG_FILE"
             echo "$?" > "$RUN_DIR/up.$_idx.rc"
         ) &
         _uppid=$!
 
-        rm -f "$RUN_DIR/sha.$_idx" "$RUN_DIR/pcl.$_idx.rc"
+        rm -f "$RUN_DIR/sha.$_idx" "$RUN_DIR/pcl.$_idx.rc" \
+            "$RUN_DIR/zstd.$_idx.rc" "$RUN_DIR/pv.$_idx.rc" "$RUN_DIR/tee.$_idx.rc"
         _pcl=$(partclone_for_fs "$_fs")
-        # ה-rc של partclone נלכד במפורש: ב-busybox ash אין pipefail, ו-$? של
-        # הצינור הוא של sha256sum — שמצליח גם על קלט ריק, וככה כשל קריאה הפך
-        # פעם לקובץ ריק "מוצלח" (נתפס במעבדה, #12). ברקע, עם עין על מונה ה-pv:
+        # The read-only preflight above has already refused dirty/hibernated
+        # NTFS. -I remains read-only and partclone's rc still decides success.
+        _ignore=""
+        [ "$_fs" = ntfs ] && _ignore="-I"
+        # ה-rc של כל שלב נלכד במפורש: ב-busybox ash אין pipefail, ו-$? של
+        # הצינור הוא של sha256sum — שמצליח גם על קלט ריק, וככה כשל אמצע
+        # הפך לקובץ "מוצלח" (מעבדה #12, קליטה קטועה #776). ברקע, עם עין על מונה ה-pv:
         # ‏`tee "$_out"` נחסם ב-open() עד שה-curl יפתח את ה-fifo לקריאה, ו-curl
         # שנפל מיד (שרת שסירב) משאיר אותו חסום לנצח. כונן איטי לעומת זאת פשוט
         # מתקדם לאט — ולכן המדד הוא חוסר התקדמות, לא משך.
         (
             # shellcheck disable=SC2046 # דגלי partclone_mode הם רשימת מילים
-            { "$_pcl" $(partclone_mode "$_pcl" -c) -s "$_node" \
+            { "$_pcl" $(partclone_mode "$_pcl" -c) $_ignore -s "$_node" \
                   -L "$RUN_DIR/targets/$_disk/partclone.log" 2>> "$LOG_FILE"
               echo "$?" > "$RUN_DIR/pcl.$_idx.rc"; } \
-                | zstd -"$CAPTURE_LEVEL" -T"$CAPTURE_THREADS" -c 2>> "$LOG_FILE" \
-                | pv -n -b -i 2 2>> "$RUN_DIR/targets/$_disk/bytes.raw" \
-                | tee "$_out" \
+                | { zstd -"$CAPTURE_LEVEL" -T"$CAPTURE_THREADS" -c 2>> "$LOG_FILE"
+                    echo "$?" > "$RUN_DIR/zstd.$_idx.rc"; } \
+                | { pv -n -b -i 2 2>> "$RUN_DIR/targets/$_disk/bytes.raw"
+                    echo "$?" > "$RUN_DIR/pv.$_idx.rc"; } \
+                | { tee "$_out"
+                    echo "$?" > "$RUN_DIR/tee.$_idx.rc"; } \
                 | sha256sum > "$RUN_DIR/sha.$_idx"
         ) &
         _readpid=$!
+        _stage=pipeline
         if wait_progress "$_readpid" "$RUN_DIR/targets/$_disk/bytes.raw" \
                 "$WAIT_STREAM_START_S" "$WAIT_STREAM_STALL_S" \
                 "קריאת מחיצה $_idx מ-$_disk"; then
-            _rc=$(cat "$RUN_DIR/pcl.$_idx.rc" 2>/dev/null || echo 1)
+            for _stage in tee pv zstd pcl; do
+                _rc=$(cat "$RUN_DIR/$_stage.$_idx.rc" 2>/dev/null || echo 1)
+                [ "$_rc" -eq 0 ] || break
+            done
+            [ "$_rc" -eq 0 ] && _stage=none
         else
             _rc="$WAIT_TIMED_OUT"
         fi
@@ -210,7 +247,7 @@ capture_disk() {
             # הסיבה מהכלי עצמו — זה מה שהקונסולה תציג ליד failed.
             _why=$(tail -n 1 "$RUN_DIR/targets/$_disk/partclone.log" 2>/dev/null | tr -d '\r')
             _capture_failed "$_disk" \
-                "partition $_idx: ${_why:-capture failed} (read=$_rc upload=$_uprc)"
+                "partition $_idx: ${_why:-capture failed} (stage=$_stage rc=$_rc upload=$_uprc)"
             return 1
         fi
 
@@ -225,7 +262,7 @@ capture_disk() {
 
         # Every partition is written not expandable; _mark_expandable picks
         # the one candidate once the whole list is known.
-        _json_parts="$_json_parts{\"index\":$_idx,\"type_guid\":\"$_guid\",\"unique_guid\":\"$_uguid\",\"role\":\"$_role\",\"fs\":\"$_fs\",\"start_sector\":$_first,\"size_bytes\":$((_sizesec * 512)),\"used_bytes\":$_used,\"file\":\"$_file\",\"sha256\":\"$_sha\",\"expandable\":false},"
+        _json_parts="$_json_parts{\"index\":$_idx,\"type_guid\":\"$_guid\",\"unique_guid\":\"$_uguid\",\"role\":\"$_role\",\"fs\":\"$_fs\",\"start_sector\":$_first,\"size_bytes\":$((_sizesec * _sector_size)),\"used_bytes\":$_used,\"file\":\"$_file\",\"sha256\":\"$_sha\",\"expandable\":false},"
     done < "$_parts"
 
     _json_parts=${_json_parts%,}
@@ -243,14 +280,14 @@ capture_disk() {
     # הנתיב קבוע והקורא מכיר אותו. בלי echo של הנתיב ל-stdout: log()
     # מדבר גם הוא ל-stdout, ולכידת $(capture_disk) החזירה פעם בליל
     # שורות לוג במקום נתיב — וה-curl של המניפסט נכשל בשקט (מעבדה, #12).
-    printf '{"schema":1,"family":%s,"os":"%s",%s,"source_disk_bytes":%s,"min_target_bytes":%s,"target_floor_bytes":%s,"scheme":"gpt","sector_size":512,"disk_guid":"%s","partitions":[%s],"total_compressed_bytes":%s,"compression":"zstd-%s"}\n' \
-        "$_family" "$_os" "$_bootca" "$_disk_bytes" "$_min_target" "$_floor_json" "$_disk_guid" "$_json_parts" "$_total" "$CAPTURE_LEVEL" \
+    printf '{"schema":1,"family":%s,"os":"%s",%s,"source_disk_bytes":%s,"min_target_bytes":%s,"target_floor_bytes":%s,"scheme":"gpt","sector_size":%s,"disk_guid":"%s","partitions":[%s],"total_compressed_bytes":%s,"compression":"zstd-%s"}\n' \
+        "$_family" "$_os" "$_bootca" "$_disk_bytes" "$_min_target" "$_floor_json" "$_sector_size" "$_disk_guid" "$_json_parts" "$_total" "$CAPTURE_LEVEL" \
         > "$RUN_DIR/new-manifest.json"
 }
-
 upload_manifest() {
     # $1 = task id, $2 = manifest path.
     curl -sfS -X PUT -H "Content-Type: application/json" \
+        -H "X-Imagectl-Task-Token: ${TASK_TOKEN:-}" \
         --data-binary "@$2" \
         "$SERVER/api/v1/capture/$1/manifest" >> "$LOG_FILE" 2>&1
 }

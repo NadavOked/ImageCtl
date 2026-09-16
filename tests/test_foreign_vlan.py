@@ -24,7 +24,7 @@ pytest.importorskip("fastapi")
 from conftest import hello_body, setup_classroom              # noqa: E402
 
 from server import agent_loops, foreign_vlan                  # noqa: E402
-from server.health import vlan_checks                         # noqa: E402
+from server.foreign_vlan import vlan_checks                   # noqa: E402
 from server.ssh_switch import Listeners                       # noqa: E402
 
 try:

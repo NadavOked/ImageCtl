@@ -16,6 +16,10 @@ function imagesIn(folder) {
   return LIB.images.filter((m) => folder === null || m.folder === folder);
 }
 
+function librarySize(bytes) {
+  return bytes == null ? "לא ידוע" : fmtBytes(bytes);
+}
+
 /* ---------- עץ התיקיות ---------- */
 
 function drawTree() {
@@ -58,14 +62,13 @@ async function loadCaptures() {
   const bar = $("#capture-bar");
   if (!tasks.length) { bar.innerHTML = ""; return; }
   bar.innerHTML = tasks.map((t) => {
-    const pct = t.bytes_total ? Math.round((100 * t.bytes_written) / t.bytes_total) : 0;
     const waiting = t.state === "pending";
     return `<div class="upload">
       <div class="upload-line">
         <b>קולט: ${esc(t.name)}</b>
         <span>${waiting ? "ממתין שמחשב הבנייה יעלה ב-PXE" : fmtBytes(t.bytes_written) + " נקראו"}</span>
       </div>
-      <div class="bar"><i style="width:${waiting ? 0 : pct}%"></i></div>
+      ${Progress.bar(t)}<span class="sub">${Progress.view(t).label}</span>
       <div class="row" style="margin-top:8px">
         <button class="btn danger" data-cancel-task="${esc(t.id)}">ביטול</button>
       </div>
@@ -213,7 +216,7 @@ function drawRows() {
     <div class="irow ${LIB.selected === m.id ? "sel" : ""}" data-image="${esc(m.id)}">
       <div class="chip"></div>
       <div><b>${esc(m.name)}</b><small>${esc(m.description)}</small></div>
-      <div class="size">${fmtBytes(m.total_compressed_bytes)}</div>
+      <div class="size">דיסק יעד: ${librarySize(m.source_disk_bytes)} · אחסון בשרת: ${librarySize(m.total_compressed_bytes)}</div>
       <div class="date">${(m.created || "").slice(0, 10)}</div>
     </div>`).join("")
     : `<div class="lib-empty">אין אימג'ים בתיקייה הזו.<br>קליטת אימג' נעשית ממחשב הבנייה בחדר השיכפולים.</div>`;
@@ -235,7 +238,8 @@ function drawDetail() {
   box.innerHTML = `<div class="detail">
     <h3>${esc(m.name)}</h3><p class="desc">${esc(m.description) || "בלי תיאור."}</p>
     <div class="meta">
-      <div><small>גודל דחוס</small><b>${fmtBytes(m.total_compressed_bytes)}</b></div>
+      <div><small>דיסק יעד</small><b>${librarySize(m.source_disk_bytes)}</b></div>
+      <div><small>אחסון בשרת</small><b>${librarySize(m.total_compressed_bytes)}</b></div>
       <div><small>משפחה</small><b>${m.family} GB</b></div>
       <div><small>מערכת</small><b>${{windows: "Windows", linux: "לינוקס"}[m.os] || "—"}</b></div>
       <div><small>מחיצות</small><b>${m.partitions}</b></div>

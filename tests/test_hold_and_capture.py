@@ -47,13 +47,15 @@ from test_final_report import (  # noqa: F401 — ‏`reports` הוא fixture
 )
 
 TASK = "tsk_5c20a1"
+#: האסימון שה-hello מוסר למכונה (#530) — ‏48 תווים כמו `tasks.new_token`.
+TOKEN = "5c" * 24
 
 #: תשובת השרת למחשב בנייה עם משימת קליטה (ממשק 3). ‏`do_task` קורא
 #: מכאן `.task.*` ולא `.session.*` — ולכן גם הדיווח שלו נושא `task_id`.
 TASK_ANSWER = {
     "schema": 1, "known": True, "role": "build",
     "task": {"id": TASK, "type": "capture", "disk": "sdb",
-             "name": "Windows 11 Lab"},
+             "name": "Windows 11 Lab", "token": TOKEN},
 }
 
 #: הקליטה עצמה אינה מה שנבדק כאן — היא דורשת דיסק — ולכן היא מזויפת
@@ -187,7 +189,12 @@ def test_the_capture_path_no_longer_bets_on_the_clock():
     body = code_only(raw)
     assert "sleep 4" not in body, "מסלול הקליטה עדיין מהמר על שעון"
     assert body.count("report_final") == 2, "אחד משני המסלולים אינו קורא תשובה"
-    assert body.index("report_final") < body.index("poweroff -f")
+    # ⚠️ ‏`finish_and_stop` ולא `poweroff -f`. המחרוזת עברה
+    # ל-`common.sh` כשנוסף מתג `after-task`, והשומר הזה נשאר טוען
+    # עליה — כלומר **נכשל על קוד תקין**. הוא `@native_tools`, ולכן
+    # מדולג בווינדוס ולא רץ מעולם; נתפס בהרצה על מכונת הלינוקס
+    # (#573/#588), בדיוק כמו התאום שלו ב-`test_final_report.py` (#587).
+    assert body.index("report_final") < body.index("finish_and_stop")
 
 
 @native_tools
@@ -412,3 +419,20 @@ def test_every_error_hold_in_the_agent_carries_a_heartbeat():
         "עצירת שגיאה בלי דופק:\n"
         + "\n".join(f"  {f}:{n}  {line}" for f, n, line in without)
     )
+
+
+# --- ‏#855: הדיווח על משימה נושא את אסימון המשימה --------------------------
+
+
+@native_tools
+def test_the_capture_report_carries_the_task_token(tmp_path, reports):
+    """השרת דורש מ-#855 את `X-Imagectl-Task-Token` גם על `/progress` של
+    משימה — אותה כותרת שההעלאה כבר שולחת (`capture.sh`). בלי זה השרת
+    עונה 403, ‏`report_final` רואה כישלון, ומחשב הבנייה נעצר על
+    "השרת לא אישר" אחרי קליטה שהצליחה. הבקרה השלילית: על `progress.sh`
+    שלפני התיקון הכותרת חסרה והטסט נופל כאן."""
+    run_capture(tmp_path, url_of(reports))
+
+    assert reports.received and reports.received[-1]["task_id"] == TASK
+    sent = reports.headers[-1].get("x-imagectl-task-token")
+    assert sent == TOKEN, f"הדיווח נשלח בלי אסימון המשימה: {reports.headers[-1]}"

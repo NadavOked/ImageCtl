@@ -18,6 +18,8 @@ import pytest
 pytest.importorskip("fastapi")
 
 from conftest import hello_body, setup_classroom
+from server.tasks import TOKEN_HEADER
+from test_capture import task_token
 
 CANONICAL = "b4:2e:99:07:1a:c4"
 #: שלוש הווריאציות שסעיף 6 והתיעוד של `normalize_mac` מבטיחים.
@@ -116,7 +118,7 @@ def test_a_capture_task_report_in_dashes_updates_the_task(server):
         "state": "capturing",
         "targets": [{"dev": "sda", "bytes_written": 4096,
                      "bytes_total": 100000, "state": "capturing"}],
-    })
+    }, headers={TOKEN_HEADER: task_token(server, created["id"])})
     assert response.status_code == 200 and response.json() == {"ok": True}
 
     task = server["admin"].get("/api/console/tasks").json()[0]

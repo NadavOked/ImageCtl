@@ -13,6 +13,10 @@
 # /wake are `current_user` only. Any signed-in account -- admin or deploy --
 # may open a room round, unlike the class round, whose opener role IS
 # checked on the server (station.py:ROUND_OPENER_ROLES).
+#
+# room_draw() and everything it prints live in roomdraw.sh (#418) -- split
+# out to stay under the 300-line ceiling (tests/sizelimit.py). Sourced
+# alongside this file wherever it is loaded.
 
 room_status_get() {
     _code=$(console_get "room" "$RUN_DIR/room.json")
@@ -71,7 +75,7 @@ room_open() {
     printf '{"image_id":"%s","target_drives":%s}' "$_img" "$_target" \
         > "$RUN_DIR/room_open.json"
     _code=$(console_post "room" "$RUN_DIR/room_open.json" \
-        "$RUN_DIR/room_open_resp.json")
+        "$RUN_DIR/room_open_resp.json") || return 1
     if [ "$_code" != "200" ]; then
         console_say "$_code" "The round was not opened"
         return 1
@@ -85,7 +89,7 @@ room_action() {
     # "no answer" is not "it worked".
     echo '{}' > "$RUN_DIR/room_empty.json"
     _code=$(console_post "room/$1" "$RUN_DIR/room_empty.json" \
-        "$RUN_DIR/room_action.json")
+        "$RUN_DIR/room_action.json") || return 1
     if [ "$_code" != "200" ]; then
         console_say "$_code" "The room did not accept '$1'"
         return 1
@@ -95,42 +99,10 @@ room_action() {
     # The counts are the point: "0 machines" with no reason sends a
     # technician to check WoL in twelve BIOSes, when the fault is one
     # cable in the server (#74).
-    _woken=$(json_get "$RUN_DIR/room_action.json" ".woken")
+    _sent=$(json_get "$RUN_DIR/room_action.json" ".sent")
     _failed=$(json_get "$RUN_DIR/room_action.json" ".failed")
-    echo "  Wake-on-LAN sent: $_woken machines, $_failed failed."
+    echo "  Wake-on-LAN sent: $_sent machines, $_failed failed."
     sleep 4
-}
-
-room_draw() {
-    _wave=$(json_get "$RUN_DIR/room.json" ".round.wave_number")
-    _state=$(json_get "$RUN_DIR/room.json" ".round.wave_state")
-    _image=$(json_get "$RUN_DIR/room.json" ".round.image_name")
-    _written=$(json_get "$RUN_DIR/room.json" ".round.written_drives")
-    _target=$(json_get "$RUN_DIR/room.json" ".round.target_drives")
-    _left=$(json_get "$RUN_DIR/room.json" ".round.remaining_drives")
-    _ready=$(json_get "$RUN_DIR/room.json" ".round.ready_drives")
-
-    ui_clear; ui_header
-    echo "  Cloning room -- wave $_wave ($_state)"
-    echo "  Image:      $_image"
-    echo "  Drives:     $_written of $_target written, $_left to go"
-    echo "  Ready now:  $_ready fresh drawers in machines that joined"
-    echo
-    echo "  Machines:"
-    # No 2>/dev/null: a machine list we failed to read is not an empty room,
-    # and an empty room is exactly what somebody would act on (rule 5).
-    if jq -r '.machines[] | [.name, (if .awake then "on" else "off" end),
-            "\(.fresh_drawers)/\(.drawers)", (.state // "-")] | @tsv' \
-            "$RUN_DIR/room.json" > "$RUN_DIR/room_rows.txt"; then
-        while IFS="$(printf '\t')" read -r _nm _on _dr _st; do
-            printf '    %-12s %-3s  %-6s fresh  %s\n' \
-                "$_nm" "$_on" "$_dr" "$_st"
-        done < "$RUN_DIR/room_rows.txt"
-    else
-        echo "    (the machine list could not be read -- see the journal)"
-        log "cloning room: the machine list did not parse"
-    fi
-    echo
 }
 
 room_flow() {

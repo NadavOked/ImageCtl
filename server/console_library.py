@@ -17,6 +17,7 @@ from fastapi.responses import StreamingResponse
 from . import auth
 from .api import ServerContext
 from .images import validate_display_name
+from .library_scrub import scrub_library
 from .archive import ArchiveError, import_tar, tar_stream
 from .db import get_setting, journal, set_setting
 
@@ -40,6 +41,19 @@ def create_library_router(ctx: ServerContext) -> APIRouter:
     @router.get("/images")
     def images(user=Depends(current_user)):
         return ctx.library.public_list()
+
+    @router.post("/images/scrub")
+    def scrub_images(user=Depends(admin_only)):
+        return scrub_library(ctx.library.root)
+
+    @router.post("/images/{image_id}/scrub")
+    def scrub_image(image_id: str, user=Depends(admin_only)):
+        try:
+            return scrub_library(ctx.library.root, image_id)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        except KeyError:
+            raise HTTPException(404, "image does not exist")
 
     @router.put("/images/{image_id}")
     async def edit_image(image_id: str, request: Request, user=Depends(admin_only)):
@@ -126,6 +140,13 @@ def create_library_router(ctx: ServerContext) -> APIRouter:
     def stored_folders() -> dict:
         return json.loads(get_setting(ctx.conn, FOLDERS_KEY) or "{}")
 
+    def existing_folders() -> set[str]:
+        """כל שם תיקייה שהמפעיל רואה ב-GET /folders — שמור בקונסולה או
+        נגזר ממניפסט קיים. זו ההגדרה של "קיימת" ל-order ול-POST (#526)."""
+        known = set(stored_folders())
+        known.update(i["folder"] for i in ctx.library.public_list() if i["folder"])
+        return known
+
     @router.get("/folders")
     def folders(user=Depends(current_user)):
         """תיקיות = מה שנוצר בקונסולה + מה שקיים במניפסטים בפועל.
@@ -149,6 +170,10 @@ def create_library_router(ctx: ServerContext) -> APIRouter:
         names = (await request.json()).get("names")
         if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
             raise HTTPException(400, "צריך רשימת שמות")
+        # סדר אינו יוצר — שם שאינו קיים נדחה, כמו groups/order (#526).
+        unknown = [n for n in names if n not in existing_folders()]
+        if unknown:
+            raise HTTPException(400, f"תיקייה לא קיימת: {unknown[0]}")
         known = stored_folders()
         ordered = {n: known.get(n, "") for n in names}
         for name, description in known.items():        # מי שלא נשלח — נשאר בסוף
@@ -176,7 +201,7 @@ def create_library_router(ctx: ServerContext) -> APIRouter:
                     ctx.library.write_meta(image["id"], {"folder": new_name})
             known[new_name] = known.pop(name, "")
         elif name not in known:
-            known[name] = ""
+            known[_checked_name(name, "שם התיקייה")] = ""
         target = new_name or name
         if description is not None:
             known[target] = description.strip()
@@ -188,6 +213,9 @@ def create_library_router(ctx: ServerContext) -> APIRouter:
     async def add_folder(request: Request, user=Depends(admin_only)):
         body = await request.json()
         name = _checked_name(body.get("name") or "", "שם התיקייה")
+        # יצירה אינה דריסה — שם קיים נדחה, כמו rename_folder (#526).
+        if name in existing_folders():
+            raise HTTPException(409, "כבר יש תיקייה בשם הזה")
         known = stored_folders()
         known[name] = (body.get("description") or "").strip()
         set_setting(ctx.conn, FOLDERS_KEY, json.dumps(known, ensure_ascii=False))
@@ -199,7 +227,11 @@ def create_library_router(ctx: ServerContext) -> APIRouter:
         if any(i["folder"] == name for i in ctx.library.public_list()):
             raise HTTPException(409, "התיקייה אינה ריקה — העבירו קודם את האימג'ים")
         known = stored_folders()
-        known.pop(name, None)
+        # 200 על תיקייה שלא הייתה הוא "מחקנו" בלי שנמחק דבר — היומן רק
+        # אחרי מחיקה שקרתה באמת (#526, משפחת #522).
+        if name not in known:
+            raise HTTPException(404, "תיקייה לא קיימת")
+        known.pop(name)
         set_setting(ctx.conn, FOLDERS_KEY, json.dumps(known, ensure_ascii=False))
         journal(ctx.conn, "folder_delete", name, user[0])
         return {"ok": True}

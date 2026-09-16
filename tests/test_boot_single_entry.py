@@ -4,8 +4,9 @@
 ו-`imagectl-recovery` — **ואין על המסך שום דבר שמסביר את ההבדל**. ב-30/08
 נדב אתחל את הלנובו (`role=classroom`), בחר `ImageCtl`, והמכונה אתחלה בלי
 לעשות דבר: `agent/lib/decide.sh` על `classroom` בלי משימה מחזיר `local`
-ו-`die_local` מאתחל. הערך שהיה שימושי לו הוא דווקא השחזור. ומאז #140
-התפריט אינו נעלם אחרי טיימר, ולכן המכונה חוזרת לאותו תפריט ונשארת שם.
+ו-`die_local` מאתחל. הערך שהיה שימושי לו הוא דווקא השחזור. ומאז #641
+המכונה עולה אל ערך ה-ImageCtl הזה **אוטומטית** (היפוך #140), ולכן חשוב
+כפליים שזה יהיה הערך השימושי — recovery, ולא הרגיל שמאתחל בלי לעשות דבר.
 
 המיפוי כאן הוא טבלת ההחלטה של הסוכן קרואה מהצד השני, לא העדפה:
 
@@ -72,21 +73,22 @@ def test_a_registered_machine_gets_exactly_one_imagectl_entry(role):
 
 def test_the_classroom_entry_is_the_one_that_actually_does_something():
     """‏`decide.sh` על classroom בלי משימה: מצב רגיל מחזיר `local`
-    ומאתחל, ‏recovery מגיע למסך הכניסה והשחזור. זה הבאג של #144."""
+    ומאתחל, ‏recovery מגיע למסך הכניסה והשחזור. מ-#641 המכונה עולה אליו
+    אוטומטית, ולכן הערך שנבחר חייב להיות recovery — לא הרגיל (#144)."""
     decision = decide(answer(role="classroom"))
-    assert decision.action == LOCAL and decision.show_menu is True
-    assert decision.offer_recovery is True
-    assert decision.offer_agent is False, "ערך שמאתחל בלי לעשות דבר"
+    assert decision.action == AGENT
+    assert decision.recovery_mode is True, "הערך הרגיל מאתחל בלי לעשות דבר"
 
     assert "imagectl.mode=recovery" in agent_entry(render(answer(), CFG))
 
 
 def test_the_build_machine_entry_reaches_the_build_console():
     """מחשב הבנייה הוא ההפך הגמור: ‏`decide.sh` מחזיר `build_console`
-    במצב רגיל, ו-recovery היה מסתיר את מסך הקליטה/ההפצה (#29)."""
+    במצב רגיל, ו-recovery היה מסתיר את מסך הקליטה/ההפצה (#29). מ-#641
+    הוא עולה אליו אוטומטית, במצב הרגיל."""
     decision = decide(answer(role="build"))
-    assert decision.offer_agent is True
-    assert decision.offer_recovery is False
+    assert decision.action == AGENT
+    assert decision.recovery_mode is False
 
     assert "imagectl.mode=recovery" not in agent_entry(
         render(answer(role="build"), CFG))
@@ -100,11 +102,20 @@ def test_a_role_we_do_not_recognise_is_treated_like_a_classroom_station(role):
     assert "imagectl.mode=recovery" in agent_entry(render(answer(role=role), CFG))
 
 
-def test_exactly_one_of_the_two_offers_is_lit_for_every_role():
-    """השומר מפני חזרה לשניים: לא "שניהם" ולא "אף אחד"."""
-    for role in ["classroom", "build", "unknown", "teacher", "", "guest"]:
+def test_exactly_one_of_the_two_offers_is_lit_for_every_menu_role():
+    """השומר מפני חזרה לשניים, לתפקידים שעדיין מקבלים את התפריט הגלוי
+    (שאינם ב-ROLES_WITH_GUI): לא "שניהם" ולא "אף אחד"."""
+    for role in ["unknown", "teacher", "", "guest"]:
         decision = decide(answer(role=role))
         assert decision.offer_agent != decision.offer_recovery, role
+
+
+def test_a_gui_role_auto_boots_with_the_mode_its_role_needs():
+    """מ-#641 build/classroom אינם בתפריט אלא עולים ישר לסוכן, והערך
+    שלהם נקבע ב-recovery_mode: ‏build רגיל (build_console), ‏classroom
+    recovery — אותה טבלת החלטה, צד אחר."""
+    assert decide(answer(role="build")).recovery_mode is False
+    assert decide(answer(role="classroom")).recovery_mode is True
 
 
 def test_the_single_entry_is_called_plainly_imagectl():
@@ -117,13 +128,14 @@ def test_the_single_entry_is_called_plainly_imagectl():
         text.encode("ascii")                    # פלט GRUB תמיד ASCII
 
 
-def test_the_menu_still_waits_for_a_human_with_no_time_limit():
-    """‏#140 לא זז: מה שהשתנה הוא כמה ערכים, לא אם יש תפריט."""
+def test_the_gui_roles_auto_boot_without_a_menu():
+    """‏#641 הפך את #140: build/classroom בלי משימה עולים ישר ל-ImageCtl,
+    בלי תפריט ובלי טיימר. מה שלא זז הוא #144 — ערך ImageCtl אחד."""
     for role in ["classroom", "build"]:
         conf = settings(render(answer(role=role), CFG))
-        assert conf["set timeout_style"] == "menu"
-        assert conf["set timeout"] == "-1"
-        assert conf["set default"] == "local"
+        assert conf["set timeout_style"] == "hidden"
+        assert conf["set timeout"] == "0"
+        assert conf["set default"] == "imagectl"
 
 
 def test_the_entry_carries_nothing_but_the_server_and_the_mode():

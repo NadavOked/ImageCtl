@@ -23,7 +23,7 @@ pytest.importorskip("fastapi")
 from conftest import hello_body, setup_classroom              # noqa: E402
 
 from server import agent_loops                                # noqa: E402
-from server.health import loop_checks                         # noqa: E402
+from server.agent_loops import loop_checks                    # noqa: E402
 from server.ssh_switch import Listeners                       # noqa: E402
 
 try:

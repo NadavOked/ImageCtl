@@ -43,6 +43,30 @@ def test_known_machine_without_a_session_boots_locally(server):
     assert answer["task"] is None and answer["session"] is None
 
 
+def test_hello_identifies_a_machine_by_any_reported_mac(server):
+    """#524: מכונה רשומה תחת X שעולה על כרטיס Y עדיין מזוהה.
+
+    ה-MAC הראשי הוא כרטיס האתחול, והוא אינו הרשום; `all_macs` מכיל
+    את הרשום. לפני התיקון התשובה הייתה `known: false`.
+    """
+    ids = setup_classroom(server)
+    registered = ids["mac1"]
+    boot = "de:ad:be:ef:00:01"
+    body = hello_body(boot)
+    body["all_macs"] = [boot, registered]
+    answer = server["anon"].post("/api/v1/agent/hello", json=body).json()
+    assert answer["known"] is True
+
+
+def test_hello_with_only_unregistered_macs_stays_unknown(server):
+    """בקרה שלילית: `all_macs` של זרים אינו הופך מכונה למוכרת."""
+    setup_classroom(server)
+    body = hello_body("de:ad:be:ef:00:01")
+    body["all_macs"] = ["de:ad:be:ef:00:01", "de:ad:be:ef:00:02"]
+    answer = server["anon"].post("/api/v1/agent/hello", json=body).json()
+    assert answer["known"] is False
+
+
 def test_allowed_images_respect_the_reported_disk(server):
     setup_classroom(server)
     small = hello(server, "b4:2e:99:07:1a:c4", disk_bytes=256060514304)
@@ -162,6 +186,61 @@ def test_an_unregistered_member_falls_back_to_its_mac(server):
     assert member["mac"] == ids["mac1"]
 
 
+def test_edit_machine_rejects_an_unknown_field(server):
+    """#406: PUT עם שדה לא מוכר (suffix במקום name) חייב 400 — ולא
+    {"ok": true} קבוע שלא שינה כלום. עיקרון 5: הצלחה לפי ראיה חיובית."""
+    admin = server["admin"]
+    ids = setup_classroom(server)
+    before = {m["mac"]: m["suffix"]
+              for m in admin.get("/api/console/machines").json()}
+    resp = admin.put(
+        f"/api/console/machines/{ids['mac1']}", json={"suffix": "HP1"}
+    )
+    assert resp.status_code == 400, resp.text
+    after = {m["mac"]: m["suffix"]
+             for m in admin.get("/api/console/machines").json()}
+    assert after == before
+
+
+def _disks_of(server, mac):
+    rows = server["admin"].get("/api/console/machines").json()
+    return next(m for m in rows if m["mac"] == mac)["disks"]
+
+
+def test_console_machine_list_distinguishes_never_reported_from_empty(server):
+    """#417: null (מעולם לא דיווחה) ≠ [] (דיווחה אפס כוננים) — שני
+    ממצאים שונים, ומסך המכונה בקונסולה חייב להבחין ביניהם ולא לקפל."""
+    ids = setup_classroom(server)
+    mac1, mac2 = ids["mac1"], ids["mac2"]
+
+    # לפני כל hello — המכונה מעולם לא דיברה עם השרת.
+    assert _disks_of(server, mac1) is None
+
+    # דיווחה בפועל אפס כוננים.
+    body = hello_body(mac2)
+    body["disks"] = []
+    assert server["anon"].post("/api/v1/agent/hello", json=body).status_code == 200
+    assert _disks_of(server, mac2) == []
+
+    # ומכונה שדיווחה כונן אמיתי מקבלת את הרשימה.
+    hello(server, mac1)
+    disks = _disks_of(server, mac1)
+    assert disks and disks[0]["dev"] == "sda"
+
+
+def test_malformed_disks_do_not_crash_and_do_not_record_empty_inventory(server):
+    """בקרה שלילית מתוך הגדרת הגמור של #417: hello עם `disks` פגום
+    (לא רשימה) לא מפיל את הבקשה, ואסור שהוא ירשום מלאי ריק בשקט —
+    ‏`[]` הוא ממצא ("דיווחה אפס"), לא "לא ידענו מה היא דיווחה"."""
+    ids = setup_classroom(server)
+    mac = ids["mac1"]
+    body = hello_body(mac)
+    body["disks"] = "not-a-list"
+    response = server["anon"].post("/api/v1/agent/hello", json=body)
+    assert response.status_code == 200
+    assert _disks_of(server, mac) is None
+
+
 def test_progress_from_a_nonmember_is_rejected(server):
     ids = open_session(server)
     report = {"session_id": ids["session"], "mac": "aa:aa:aa:aa:aa:aa",
@@ -179,9 +258,35 @@ def test_manual_start_and_close(server):
     ).status_code == 200
     assert hello(server, ids["mac1"])["session"]["state"] == "running"
     assert server["deploy"].post(
-        f"/api/console/sessions/{ids['session']}/close"
+        f"/api/console/sessions/{ids['session']}/close",
+        json={"confirm_name": "Office 2024 Standard"},
     ).status_code == 200
     assert hello(server, ids["mac1"])["session"] is None
+
+
+def test_manual_start_with_no_members_is_refused_and_round_stays_open(server):
+    """‏#843: "התחל" לפני שמישהו הצטרף אינו מתקבל בשקט.
+
+    ‏`record_hello` מצרף רק לסבב `open`, ולכן סבב שהותחל עם 0 חברים
+    הוא גל שאיש אינו יכול להצטרף אליו: ה-sender ממתין 180ש', רושם
+    `send_failed`, והסבב נשאר `running` ריק. נמדד במעבדה 15/09
+    (`room_e6951214`/`ses_58f96d6d`). הגבול הוא ה-API — 409, הסבב
+    נשאר `open`, ו-hello שמגיע אחר כך עדיין מצטרף.
+    """
+    ids = open_session(server, expected=30)
+    response = server["deploy"].post(
+        f"/api/console/sessions/{ids['session']}/start"
+    )
+    assert response.status_code == 409, response.text
+    assert "אין מכונות בסבב" in response.json()["detail"]
+    answer = hello(server, ids["mac1"])
+    assert answer["session"]["id"] == ids["session"]
+    assert answer["session"]["state"] == "open"
+    # עכשיו יש חבר — אותה לחיצה מתקבלת.
+    assert server["deploy"].post(
+        f"/api/console/sessions/{ids['session']}/start"
+    ).status_code == 200
+    assert hello(server, ids["mac1"])["session"]["state"] == "running"
 
 
 # --- מניפסטים וקבצים ---------------------------------------------------------
@@ -323,6 +428,68 @@ def test_agent_login_checks_the_console_users(server):
     assert "agent_login" in events and "agent_login_failed" in events
 
 
+# --- #880: מתג "הפצה לכיתות ממחשב הבנייה" — v1 מהדורת שיכפול --------------
+
+
+def register_build_machine(server, mac="b4:2e:99:07:1a:aa") -> str:
+    """מחשב בנייה בקבוצה הקבועה `grp_BUILD` — היחיד שמקבל את התפריט."""
+    assert server["admin"].post(
+        "/api/console/machines",
+        json={"mac": mac, "name": "מחשב בנייה", "group_id": "grp_BUILD"},
+    ).status_code == 200
+    return mac
+
+
+def test_class_deploy_is_off_by_default_and_the_console_can_switch_it(server):
+    """ברירת המחדל של v1 היא כבוי — במכוון, גם על שרת שכבר פרוס. ‏GET
+    מחזיר אותה, ‏POST (מחרוזת או JSON bool) הופך אותה. **בקרה שלילית:**
+    על main ההגדרה אינה ב-`WRITE_SETTINGS` — ‏GET לא מחזיר אותה ו-POST
+    נופל ב-400 "הגדרה לא מוכרת"."""
+    admin = server["admin"]
+    assert admin.get("/api/console/settings").json()["class_deploy_enabled"] == "false"
+    assert admin.post("/api/console/settings",
+                      json={"class_deploy_enabled": "true"}).status_code == 200
+    assert admin.get("/api/console/settings").json()["class_deploy_enabled"] == "true"
+    # ‏JSON bool אינו נשמר כ-"True" שנקרא ככבוי — עיקרון 5.
+    assert admin.post("/api/console/settings",
+                      json={"class_deploy_enabled": False}).status_code == 200
+    assert admin.get("/api/console/settings").json()["class_deploy_enabled"] == "false"
+    assert admin.post("/api/console/settings",
+                      json={"class_deploy_enabled": True}).status_code == 200
+    assert admin.get("/api/console/settings").json()["class_deploy_enabled"] == "true"
+    rows = admin.get("/api/console/journal", params={"event": "setting_change"}).json()
+    assert any(r["text"] == "הפצה לכיתות ממחשב הבנייה: פעיל" for r in rows), rows
+
+
+def test_the_build_machine_hello_carries_the_class_deploy_switch(server):
+    """‏hello למחשב הבנייה נושא `class_deploy_enabled` (bool) — הסוכן
+    מסיר לפיו את "הפצה לכיתות" מהתפריט. מכונת כיתה אינה מקבלת את השדה
+    (אין לה תפריט). **בקרה שלילית:** על main השדה אינו קיים."""
+    mac = register_build_machine(server)
+    assert hello(server, mac)["class_deploy_enabled"] is False
+    assert server["admin"].post("/api/console/settings",
+                                json={"class_deploy_enabled": "true"}).status_code == 200
+    assert hello(server, mac)["class_deploy_enabled"] is True
+    setup_classroom(server)
+    assert "class_deploy_enabled" not in hello(server, "b4:2e:99:07:1a:c4")
+
+
+def test_the_console_settings_screen_wires_the_class_deploy_switch():
+    """המתג במסך ההגדרות: נקרא מ-GET, נשלח ב-POST כמחרוזת "true"/"false"
+    כמו שאר ההגדרות, וה-`?v=` הוקפץ (JS ישן מול API חדש — gotcha ידוע).
+    בדיקת תוכן — אין דפדפן בחבילה."""
+    import re   # noqa: PLC0415
+    from pathlib import Path   # noqa: PLC0415
+    static = Path(__file__).resolve().parent.parent / "server" / "static"
+    js = (static / "console.js").read_text(encoding="utf-8")
+    assert 'id="set-class-deploy"' in js
+    assert 's.class_deploy_enabled === "true"' in js
+    assert 'class_deploy_enabled: $("#set-class-deploy").checked ? "true" : "false"' in js
+    page = (static / "index.html").read_text(encoding="utf-8")
+    versions = {tuple(int(x) for x in v.split(".")) for v in re.findall(r"\?v=([0-9.]+)", page)}
+    assert versions and min(versions) >= (4, 9), versions
+
+
 def test_recovery_login_toggle(server):
     """ברירת המחדל הבטוחה: recovery דורש כניסה. הדגמה יכולה לכבות."""
     setup_classroom(server)
@@ -406,3 +573,117 @@ def test_journal_filters_require_admin(server):
         "/api/console/journal", params={"event": "login"}
     ).status_code == 403
     assert server["deploy"].get("/api/console/journal/events").status_code == 403
+
+
+# --- עצירת סבב כיתה: תפקיד והקלדת שם (עיקרון 7, #581) ------------------------
+
+
+def test_close_without_typing_the_image_name_does_not_stop_the_class_round(server):
+    """‏#581: ‏POST ריק עצר סבב כיתה חי — בלי גוף ובלי שום אימות בשרת.
+
+    זו אותה חולשה שנסגרה לחדר השיכפולים ב-#533, שנשארה פתוחה לסבב
+    הכיתה. עיקרון 7 נוקב ב"עצירת סבב" במפורש, והאכיפה היחידה ישבה
+    ב-`classes.js` — טקסט קבוע ("עצור") במסך, כלומר בדיוק השכבה שאסור
+    לסמוך עליה.
+
+    מה שמוקלד הוא **שם האימג' שהסבב משדר** — הכותרת שהמסך כבר מציג
+    ("משדר: ...").
+    """
+    ids = open_session(server, expected=30)
+    hello(server, ids["mac1"])
+    deploy = server["deploy"]
+    path = f"/api/console/sessions/{ids['session']}/close"
+
+    # ‏1. גוף ריק — זו בדיוק הקריאה שסגרה סבב לפני #581.
+    assert deploy.post(path).status_code == 400
+    assert hello(server, ids["mac1"])["session"] is not None, "סבב נסגר בלי אישור"
+
+    # ‏2. הטקסט שהמסך אכף לבדו אינו האישור
+    assert deploy.post(path, json={"confirm_name": "עצור"}).status_code == 400
+    assert hello(server, ids["mac1"])["session"] is not None, "סבב נסגר על שם שגוי"
+
+    # ‏3. השם המדויק — וזה עוצר
+    stopped = deploy.post(path, json={"confirm_name": "Office 2024 Standard"})
+    assert stopped.status_code == 200 and stopped.json()["ok"] is True
+    assert hello(server, ids["mac1"])["session"] is None
+
+
+def test_a_class_round_whose_image_was_deleted_can_still_be_stopped(server):
+    """מה שמוקלד הוא מה שהמסך מציג — גם כשהמניפסט כבר איננו.
+
+    ‏`session_view` נופל חזרה ל-`image_id` כשהאימג' נמחק מהספרייה תוך
+    כדי סבב, ולכן גם האימות חייב ליפול לשם — מאותה פונקציה. בלי זה
+    עצירת חירום של שידור חי הייתה בלתי אפשרית, כלומר תיקון שגרוע
+    מהבאג.
+    """
+    ids = open_session(server, expected=30)
+    hello(server, ids["mac1"])
+    admin, deploy = server["admin"], server["deploy"]
+    assert admin.post("/api/console/images/img_7f3a91/delete",
+                      json={"confirm_name": "Office 2024 Standard"},
+                      ).status_code == 200
+
+    view = admin.get("/api/console/overview").json()["session"]
+    assert view["image_name"] == "img_7f3a91"
+    path = f"/api/console/sessions/{ids['session']}/close"
+    assert deploy.post(
+        path, json={"confirm_name": "Office 2024 Standard"}).status_code == 400
+    assert deploy.post(path, json={"confirm_name": "img_7f3a91"}).status_code == 200
+    assert hello(server, ids["mac1"])["session"] is None
+
+
+def test_a_role_that_is_not_on_the_list_cannot_drive_a_class_round(server):
+    """הבקרה השלילית של #581 — אותה בדיקה שנעשתה לחדר ב-#152 ולתחנה ב-#94.
+
+    לפני התיקון ``start`` ו-``close`` היו ``Depends(current_user)``
+    בלבד: הסבב **נפתח** מאחורי ``ROUND_OPENER_ROLES`` ונסגר בלעדיה.
+    התפקיד ``auditor`` אינו קיים היום, ולכן זו סכימה של מחר: השאלה
+    אינה מי מורשה עכשיו אלא האם הקוד **שואל**.
+    """
+    from fastapi.testclient import TestClient                  # noqa: PLC0415
+    from test_station import add_user_with_role                # noqa: PLC0415
+
+    ids = open_session(server, expected=30)
+    hello(server, ids["mac1"])
+    add_user_with_role(server, "auditor", "audit-pass-12", "auditor")
+    client = TestClient(server["app"])
+    assert client.post("/api/console/login", json={
+        "username": "auditor", "password": "audit-pass-12"}).status_code == 200
+
+    # קריאה מותרת — היא אינה הרסנית
+    assert client.get("/api/console/overview").status_code == 200
+
+    assert client.post(
+        f"/api/console/sessions/{ids['session']}/start").status_code == 403
+    assert client.post(
+        f"/api/console/sessions/{ids['session']}/close",
+        json={"confirm_name": "Office 2024 Standard"}).status_code == 403
+    assert hello(server, ids["mac1"])["session"]["state"] == "open"
+
+
+def test_a_role_that_is_not_on_the_list_cannot_open_a_class_round(server):
+    """הבקרה השלילית של #592 — פתיחת הסבב עצמה, לא רק start/close.
+
+    ‏#581 סגר את ``start``/``close`` מאחורי ``round_operator``, אבל
+    ‏``POST /api/console/sessions`` — **פתיחת** הסבב מהקונסולה — נשארה
+    ‏``current_user`` בלבד: כל חשבון מחובר יכול היה לפתוח שידור חי
+    לכיתה. אותה סכימת-מחר כמו #581: ``auditor`` אינו ברשימה, והשאלה
+    אינה מי מורשה עכשיו אלא האם הקוד **שואל** על התפקיד.
+    """
+    from fastapi.testclient import TestClient                  # noqa: PLC0415
+    from test_station import add_user_with_role                # noqa: PLC0415
+
+    ids = setup_classroom(server, expected=30)
+    add_user_with_role(server, "auditor", "audit-pass-12", "auditor")
+    client = TestClient(server["app"])
+    assert client.post("/api/console/login", json={
+        "username": "auditor", "password": "audit-pass-12"}).status_code == 200
+
+    # קריאה מותרת — היא אינה הרסנית
+    assert client.get("/api/console/overview").status_code == 200
+
+    # פתיחת סבב היא פעולת מפעיל — auditor חייב לקבל 403, לא 200
+    assert client.post(
+        "/api/console/sessions",
+        json={"group_id": ids["group"], "image_id": "img_7f3a91",
+              "prefix": "LAB1", "expected_clients": 30}).status_code == 403

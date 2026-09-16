@@ -1,0 +1,155 @@
+// Local renderer/adapter checks. No browser or server dependencies.
+const {test}=require('node:test');
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const path=require('node:path');
+const vm=require('node:vm');
+const root=process.env.CONSOLE_STATIC_ROOT || path.resolve(__dirname,'../server/static');
+function setup() {
+  const nodes=new Map(), requests=[], intervals=new Map(); let intervalId=0;
+  function node(key) {
+    if(!nodes.has(key)) nodes.set(key,{value:'',innerHTML:'',textContent:'',dataset:{},style:{removeProperty(){}},
+      classList:{add(){},remove(){},toggle(){}},addEventListener(){},removeEventListener(){},
+      querySelector(){return null;},querySelectorAll(){return [];},insertAdjacentHTML(_position,html){this.innerHTML+=html;},setAttribute(){},removeAttribute(){},focus(){}});
+    return nodes.get(key);
+  }
+  const fixtures={
+    '/overview':{images:1,machines:1,storage:{total_bytes:1024,free_bytes:512},session:{id:'session',group_id:'grp_class',prefix:'LAB',image_name:'Image',state:'open',joined:1,expected_clients:2,roster:['aa','bb'],members:[{mac:'aa',hostname:'LAB-01',state:'running',bytes_written:50,bytes_total:100}]},pulls:[]},
+    '/images':[{id:'image',name:'Image',folder:'Folder',description:'Description',total_compressed_bytes:1024,partitions:2}],
+    '/folders':[{name:'Folder',description:'Test',images:1}],
+    '/groups':[{id:'grp_class',label:'Class',role:'classroom',machines:1},{id:'grp_BUILD',role:'build',label:'Build',machines:1}],
+    '/machines':[{mac:'aa',suffix:'01',group_id:'grp_class'},{mac:'cc',suffix:'Builder',group_id:'grp_BUILD'}],
+    '/net':[], '/tasks':[], '/journal/events':[{event:'capture',label:'Capture'}], '/journal':[],
+    '/ssh':{stations:{enabled:false,evidence:'closed',detail:'Closed'},interfaces:[],listeners:{checked:true,port:22,addresses:[]}},
+    '/settings':{recovery_require_login:'true',session_wait_seconds:'60',console_idle_seconds:'300'},
+    '/users':[{username:'admin',role:'admin',created_at:'2026-09-13'}],
+  };
+  const ctx=vm.createContext({console,URLSearchParams,URL,Date,Set,Map,Number,Math,JSON,Promise,encodeURIComponent,decodeURIComponent,
+    document:{hidden:false,querySelector:node,querySelectorAll:()=>[],getElementById:id=>node('#'+id),
+      createElement:()=>{let text='';return {set textContent(v){text=String(v)},get innerHTML(){return text.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;')}}},
+      documentElement:{setAttribute(){}},addEventListener(){},removeEventListener(){}},
+    window:{addEventListener(){},matchMedia:()=>({matches:false}),open:(...args)=>requests.push({open:args})},
+    localStorage:{getItem:()=>null,setItem(){}},CSS:{escape:x=>x},
+    setInterval:fn=>{intervals.set(++intervalId,fn);return intervalId},clearInterval:id=>intervals.delete(id),setTimeout:()=>1,clearTimeout(){},
+    fetch:async(url,options={})=>{
+      const key=url.replace('/api/console','').split('?')[0]; requests.push({url,options});
+      if(fixtures[key] instanceof Error) throw fixtures[key];
+      return {status:200,ok:true,headers:{get:()=>key==='/journal'?'true':null},json:async()=>fixtures[key] || {}};
+    }});
+  vm.runInContext(fs.readFileSync(path.resolve(__dirname,'../server/static/progress.js'),'utf8'),ctx);
+  vm.runInContext(fs.readFileSync(path.join(root,'console.js'),'utf8'),ctx);
+  const run=s=>vm.runInContext(s,ctx);
+  run('ME={username:"admin",role:"admin",idle_seconds:300,capabilities:{interbranch_transfer:true}};');
+  for(const [name,key] of [['OVERVIEW','/overview'],['IMAGES','/images'],['FOLDERS','/folders'],['MACHINES','/machines'],['GROUPS','/groups']]) run(name+'='+JSON.stringify(fixtures[key]));
+  return {ctx,run,node,requests,fixtures,intervals};
+}
+function balanced(html) {
+  const stack=[]; const voids=new Set(['input','br','hr','img','meta','link','source','wbr']);
+  for(const m of html.matchAll(/<\/?([a-z][\w-]*)\b[^>]*>/gi)) {
+    const tag=m[1].toLowerCase();
+    if(m[0].endsWith('/>') || voids.has(tag)) continue;
+    if(m[0].startsWith('</')) assert.equal(stack.pop(),tag,'Unbalanced '+m[0]); else stack.push(tag);
+  }
+  assert.deepEqual(stack,[],'Unclosed tags');
+}
+test('all populated page renderers produce balanced fragments',()=>{
+  const {run}=setup();
+  for(const name of ['home','images','deploy','machines','settingsPage','machineAdminPage','journalPage','usersAdminPage']) {
+    const html=run(name+'()'); assert.ok(html.length>50,name); balanced(html);
+    assert.doesNotMatch(html,/<script|<\/html|id="modal"/,name+' must be a fragment');
+  }
+});
+test('capture sheet submits the existing endpoint and selected folder',async()=>{
+  const {run,requests}=setup(); run('sheet = options => { globalThis.formOptions=options; }; IMAGES_FOLDER="Folder";');
+  await run('openCapture()');
+  assert.equal(run('formOptions.fields.find(f=>f.id==="folder").value'),'Folder');
+  await run('formOptions.onSubmit({mac:"cc",disk:"sda",name:"Capture",folder:"Folder"})');
+  assert.ok(requests.some(r=>r.url==='/api/console/tasks/capture' && JSON.parse(r.options.body).disk==='sda'));
+});
+test('folder creation and editing call existing endpoints',async()=>{
+  const {run,requests}=setup(); run('sheet = options => { globalThis.formOptions=options; }; loadImages=async()=>{};');
+  run('addFolderSheet()'); await run('formOptions.onSubmit({name:"New",description:"Text"})');
+  run('editFolderSheet(FOLDERS[0])'); await run('formOptions.onSubmit({name:"Renamed",description:"Text"})');
+  assert.ok(requests.some(r=>r.url==='/api/console/folders' && r.options.method==='POST'));
+  assert.ok(requests.some(r=>r.url==='/api/console/folders/Folder' && r.options.method==='PUT'));
+});
+test('journal filters reach server, inclusive end minute, truncated warning',async()=>{
+  const {run,node,requests}=setup();
+  node('#jf-event').value='capture';node('#jf-machine').value='aa';node('#jf-q').value='needle';node('#jf-from').value='2026-09-01T10:00';node('#jf-to').value='2026-09-13T12:00';
+  await run('loadJournal()'); const r=requests.find(r=>r.url.startsWith('/api/console/journal?'));
+  assert.ok(r);const q=new URL(r.url,'http://localhost').searchParams;
+  assert.equal(q.get('event'),'capture');assert.equal(q.get('machine'),'aa');assert.equal(q.get('q'),'needle');assert.equal(q.get('to'),'2026-09-13T12:00:59');
+  assert.match(node('#toast').textContent,/./);
+});
+test('polling refreshes status, marks failed reads, and stops on logout',async()=>{
+  const {run,intervals,fixtures,node}=setup(); run('renderCurrent=()=>{};startStatusWatch();');
+  assert.equal(intervals.size,1); await run('refreshStatus()'); assert.equal(run('overviewError'),'');
+  fixtures['/overview']=new Error('offline'); await run('refreshStatus()');
+  assert.match(run('overviewError'),/could not be read/);assert.match(node('.task-summary').textContent,/could not be read/);
+  run('showLogin()');assert.equal(intervals.size,0);assert.equal(run('ME'),null);
+});
+test('session detail includes absent roster members, errors and SMART',async()=>{
+  const {run,node,fixtures}=setup();
+  fixtures['/machines']=[{mac:'aa',suffix:'01'},{mac:'bb',suffix:'02'},{mac:'dd',suffix:'03'}];
+  run('OVERVIEW.session.members[0].error="disk error";OVERVIEW.session.members[0].disks=[{disk_number:1,verdict:"fail",decision:"replace"}];');
+  await run('openRoundDetail()');const html=node('#drawerBody').innerHTML;
+  assert.match(html,/LAB-02/);assert.match(html,/disk error/);assert.match(html,/disk-smart fail/);assert.match(html,/Next round: 03/);balanced(html);
+});
+test('deploy role cannot reach admin or capability pages',()=>{
+  const {run}=setup();run('ME.role="deploy"');
+  for(const id of ['machines','health','settings','branches','permissions','logs','nic']) assert.equal(run(`pageAllowed("${id}")`),false,id);
+  for(const id of ['home','images','deploy'])assert.equal(run(`pageAllowed("${id}")`),true,id);
+  assert.doesNotMatch(run('images()'),/onclick="openCapture/);
+  run('ME.role="admin";ME.capabilities.interbranch_transfer=false');assert.equal(run('pageAllowed("branches")'),false);
+});
+test('machine monitor is MAC-specific and restricted to build/cloner',()=>{
+  const {run,requests}=setup();run('monitorMachine("aa");monitorMachine("cc")');
+  assert.equal(requests.length,1);assert.match(requests[0].open[0],/monitor.html\?mac=cc&name=Builder/);
+});
+test('machine module loads without conflicting with console globals',()=>{
+  const {run,ctx}=setup();vm.runInContext(fs.readFileSync(path.join(root,'machines.js'),'utf8'),ctx);
+  assert.equal(run('typeof window.loadMachinesTab'),'function');assert.equal(run('Array.isArray(MACHINES)'),true);
+});
+test('unknown storage never displays zero',()=>{
+  const {run}=setup();assert.notEqual(run('fmtBytes(null)'),run('fmtBytes(0)'));
+  run('OVERVIEW.storage.free_bytes=null');assert.doesNotMatch(run('home()'),/100%|0\.0 GB/);
+});
+test('toast treats endpoint errors as text',()=>{
+  const {run,node}=setup();run('toast("<img src=x onerror=alert(1)>")');assert.equal(node('#toast').innerHTML,'');assert.match(node('#toast').textContent,/<img/);
+});
+test('existing upload posts tar bytes and reports progress',()=>{
+  const {run,ctx,node}=setup();let request;
+  ctx.XMLHttpRequest=class {constructor(){request=this;this.upload={};}open(method,url){this.method=method;this.url=url;}setRequestHeader(k,v){this.header=[k,v];}send(file){this.file=file;}};
+  run('uploadImage({name:"sample.tar"})');
+  assert.equal(request.url,'/api/console/images/upload');assert.equal(request.method,'POST');assert.deepEqual(request.header,['Content-Type','application/x-tar']);
+  request.upload.onprogress({lengthComputable:true,loaded:50,total:100});assert.match(node('#modalBody').innerHTML,/50%/);
+});
+test('existing start and stop retain endpoint payloads',async()=>{
+  const {run,node,requests}=setup();run('refreshStatus=async()=>{}');
+  await run('startRound()');node('#confirmName').value='Image';await run('confirmStopRound("session")');
+  assert.ok(requests.some(r=>r.url==='/api/console/sessions/session/start'));
+  assert.ok(requests.some(r=>r.url==='/api/console/sessions/session/close' && JSON.parse(r.options.body).confirm_name==='Image'));
+});
+test('every enabled script compiles together without global collisions',()=>{
+  const {ctx}=setup();
+  const html=fs.readFileSync(path.join(root,'index.html'),'utf8').replace(/<!--[\s\S]*?-->/g,'');
+  for(const m of html.matchAll(/<script src="([^?]+)\?v=/g)) {
+    if(['console.js','progress.js'].includes(m[1]))continue;
+    const file=path.join(root,m[1]);
+    vm.runInContext(fs.readFileSync(fs.existsSync(file)?file:path.resolve(__dirname,'../server/static',m[1]),'utf8'),ctx);
+  }
+});
+test('all static includes carry the same ?v= and color literals stay in tokens',()=>{
+  // #826: a fixed version number fails on every justified bump; the invariant is
+  // "one cache-bust version for every include", not "the version is X".
+  const html=fs.readFileSync(path.join(root,'index.html'),'utf8').replace(/<!--[\s\S]*?-->/g,'');
+  const versions=[...html.matchAll(/(?:src|href)="[^"?]+\?v=([^"&]+)/g)].map(m=>m[1]);
+  assert.ok(versions.length>=5,'expected the static includes to carry ?v=');
+  assert.deepEqual([...new Set(versions)],[versions[0]],'includes disagree on ?v=: '+versions.join(','));
+  for(const file of ['console.css','console.js','index.html']) {
+    // Comments are not colors: "// #822:" is an Issue reference, not #822.
+    const s=fs.readFileSync(path.join(root,file),'utf8').replace(/\/\*[\s\S]*?\*\//g,'').replace(/(^|\s)\/\/.*$/gm,'$1').replace(/<!--[\s\S]*?-->/g,'');
+    const literals=s.match(/(?:[: ,]\s*#[a-f\d]{3,8}\b|rgba?\(\s*\d)/gi) || [];
+    assert.deepEqual(literals,[],file+' contains literal colors');
+  }
+});

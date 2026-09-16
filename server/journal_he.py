@@ -18,6 +18,7 @@ EVENTS_HE = {
     "agent_login": "כניסה ממסך תחנה",
     "agent_login_failed": "ניסיון כניסה כושל במסך תחנה",
     "agent_role_refused": "פתיחת סבב נדחתה — התפקיד אינו רשאי",
+    "class_deploy_refused": "פתיחת סבב כיתה נדחתה — הפצה לכיתות כבויה",
     "user_create": "משתמש נוצר",
     "user_edit": "משתמש עודכן",
     "user_delete": "משתמש נמחק",
@@ -51,12 +52,22 @@ EVENTS_HE = {
     "send_failed": "השידור נכשל",
     "send_stopped": "השידור נעצר",
     "unknown_mac": "מחשב לא רשום ניסה לעלות",
+    "disk_failure": "דיסק נכשל בכתיבה — נרשם לזיכרון הכשלים",
+    "disk_failure_cleared": "רשומת כשל דיסק נוקתה",
     "boot_loop_local": "מחשב אתחל שוב ושוב — נשלח לדיסק המקומי",
     "boot_loop_unverified": "ספירת האתחולים נכשלה — המחשב נשלח לדיסק המקומי",
     "agent_loop": "מחשב הגיע לסוכן בלי משימה ובלי סבב",
     "agent_loop_unverified": "ספירת ההגעות לסוכן נכשלה",
     "report_from_nonmember": "דיווח ממחשב שאינו בסבב",
     "setting_change": "הגדרה שונתה",
+    "storage_group_create": "קבוצת סניפים נוצרה",
+    "storage_group_edit": "שם קבוצת סניפים שונה",
+    "storage_group_reorder": "סדר קבוצות הסניפים שונה",
+    "storage_group_delete": "קבוצת סניפים נמחקה",
+    "storage_node_edit": "שרת סניף עודכן",
+    "storage_node_disable": "שרת סניף הושבת",
+    "storage_node_enable": "שרת סניף הופעל מחדש",
+    "storage_node_delete": "שרת סניף הוסר",
     "logo_set": "לוגו הוחלף",
     "logo_refused": "העלאת לוגו נדחתה",
     "logo_clear": "הלוגו הוסר",
@@ -70,6 +81,10 @@ EVENTS_HE = {
     "work_area_kept": "אזורי עבודה נשארו — לא הוכח שהם יתומים",
     "image_download": "אימג' הורד למחשב",
     "image_upload": "אימג' הועלה מהמחשב",
+    "driver_upload": "חבילת דרייברים יובאה",
+    "driver_delete": "חבילת דרייברים נמחקה",
+    "drivers_staged": "דרייברים הונחו על הדיסק המשוחזר",
+    "drivers_failed": "השחזור הושלם, דרייברים לא הונחו",
     "folder_create": "תיקייה נוצרה",
     "folder_reorder": "סדר התיקיות שונה",
     "folder_edit": "תיקייה עודכנה",
@@ -82,6 +97,7 @@ EVENTS_HE = {
     "nic_add": "כרטיס רשת נוסף",
     "nic_forget": "הגדרות כרטיס רשת הוסרו",
     "dhcp_apply_failed": "החלת הגדרת DHCP נכשלה",
+    "known_macs_apply_failed": "עדכון רשימת המכונות הרשומות ל-dnsmasq נכשל",
     "net_config": "הגדרת הרשת של כרטיס בשרת שונתה",
     "net_config_unverified": "שינוי הרשת לא אומת מול המצב בפועל",
     "net_rollback_armed": "שינוי רשת ממתין לאישור — בלעדיו יוחזר",
@@ -97,6 +113,7 @@ SETTINGS_HE = {
     "recovery_require_login": "שחזור בודד דורש כניסה",
     "session_wait_seconds": "המתנה מהמצטרף האחרון (שניות)",
     "console_idle_seconds": "ניתוק אוטומטי בחוסר פעילות (שניות)",
+    "class_deploy_enabled": "הפצה לכיתות ממחשב הבנייה",
 }
 
 ROLES_HE = {"classroom": "כיתה", "cloner": "חדר שיכפולים", "build": "מחשב בנייה"}
@@ -114,6 +131,20 @@ _MAC = re.compile(r"\b([0-9a-f]{2}(?::[0-9a-f]{2}){5})\b")
 _IMG = re.compile(r"\b(img_[0-9a-f]+)\b")
 _SES = re.compile(r"\b(ses_[0-9a-f]+)\b")
 _GRP = re.compile(r"\b(grp_\w+)\b")
+_EXPAND = re.compile(r"expand=(\S+)")
+
+
+def _expand_note(detail: str) -> str:
+    """#59: מה שנכתב ל-`session_open`/`room_open` כשההרחבה לא הייתה
+    "auto" — כיבוי או בחירה ידנית. "auto" עצמו אינו מגיע לכאן כלל
+    (הוא לא נכתב לפרטים מלכתחילה), ולכן שקט הוא ברירת המחדל."""
+    m = _EXPAND.search(detail)
+    if not m:
+        return ""
+    value = m.group(1)
+    if value == "none":
+        return " · הרחבה כבויה"
+    return f" · הרחבת מחיצה {value} (בחירה ידנית)"
 
 
 class JournalTranslator:
@@ -162,7 +193,10 @@ class JournalTranslator:
             if m:
                 group = self._groups.get(m.group(2), m.group(2))
                 image = self._images.get(m.group(3), m.group(3))
-                text = f'{group} — "{image}", קידומת {m.group(4)}'
+                text = (f'{group} — "{image}", קידומת {m.group(4)}'
+                        f'{_expand_note(detail)}')
+        elif event == "room_open":
+            text = detail + _expand_note(detail)
         elif event == "pull_open":
             m = re.search(r"(ses_\w+) (\S+) (\S+) mac=(\S+)", detail)
             if m:

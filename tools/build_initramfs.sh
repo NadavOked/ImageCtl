@@ -24,6 +24,10 @@ KVER="$(uname -r)"
 SKIP_APT=0
 WITH_GUI=0
 SSH_KEY_FILE=""
+#: `auto` (ברירת המחדל — `finish_and_stop` גוזר מהתפקיד: כיתה=reboot,
+#: בנייה/שיכפול=poweroff), `poweroff` או `reboot`. `reboot` הוא ההגדרה
+#: שכלי המעבדה כותב (tools/lab/after-task-reboot.sh).
+AFTER_TASK=auto
 FIRMWARE_DIRS=("rtl_nic")
 
 while [ $# -gt 0 ]; do
@@ -32,6 +36,7 @@ while [ $# -gt 0 ]; do
         --kernel-version) KVER="$2"; shift 2 ;;
         --firmware)       FIRMWARE_DIRS+=("$2"); shift 2 ;;
         --ssh-key)        SSH_KEY_FILE="$2"; shift 2 ;;
+        --after-task)     AFTER_TASK="$2"; shift 2 ;;
         --with-gui)       WITH_GUI=1; shift ;;
         --skip-apt)       SKIP_APT=1; shift ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
@@ -60,8 +65,13 @@ fi
 # שתי רשימות ולא אחת, כי הן נכשלות בשתי נקודות שונות בזמן: חבילה שאין
 # ממנה מועמד ב-apt נתפסת **לפני** ש-apt רץ, ונתיב שלא הופיע על הדיסק
 # נתפס אחרי ההתקנה. עד כאן לא נבדקה אף אחת מהן.
-GUI_PACKAGES=(cage chromium seatd libgl1-mesa-dri
-              fonts-ibm-plex fontconfig-config libinput-bin xkb-data)
+GUI_PACKAGES=(fonts-ibm-plex fontconfig-config
+              libpango-1.0-0 libpangocairo-1.0-0 libpangoft2-1.0-0
+              libcairo2 libpixman-1-0 libharfbuzz0b libfribidi0
+              libfreetype6 libfontconfig1 libglib2.0-0t64 libdrm2
+              # #690: LibVNCServer runtime for imagectl-monitor. Its .so
+              # closure rides along via ldd like any packed binary's.
+              libvncserver1)
 
 # ‏`truetype` ולא `opentype`: ‏fonts-ibm-plex בדביאן מתקינה
 # ל-`/usr/share/fonts/truetype/ibm-plex`, והנתיב שהיה כאן מעולם לא היה
@@ -71,13 +81,10 @@ GUI_PACKAGES=(cage chromium seatd libgl1-mesa-dri
 #
 # ‏/etc/fonts ו-/usr/share/fontconfig הם הזוג ולא אחד מהם: קובצי
 # ‏conf.d הם קישורים סימבוליים אל conf.avail, וקישור יתום בתוך
-# ה-initramfs שקול לקובץ חסר. בלי תצורת fontconfig כרומיום אינו מוצא
+# ה-initramfs שקול לקובץ חסר. בלי תצורת fontconfig הממשק אינו מוצא
 # **שום** גופן — גם כשהקובץ ארוז לידו — והעברית יוצאת ריבועים.
-GUI_PATHS=(/usr/lib/chromium
-           /usr/share/fonts/truetype/ibm-plex
-           /etc/fonts                  /usr/share/fontconfig
-           /usr/lib/x86_64-linux-gnu/dri
-           /usr/share/libinput         /usr/share/X11/xkb)
+GUI_PATHS=(/usr/share/fonts/truetype/ibm-plex
+           /etc/fonts                  /usr/share/fontconfig)
 
 # החבילות נבדקות כאן, לפני apt ולפני הקומפילציות, מאותו טעם כמו מפתח
 # ה-SSH למעלה. ‏`apt-get install` על חבילה שאינה בקומפוננטות המופעלות
@@ -111,8 +118,8 @@ fi
 # Binaries the agent scripts call. tests/test_agent.py cross-checks this
 # list against the actual commands in agent/ -- update both together.
 BINARIES=(curl jq zstd pv sgdisk blockdev sha256sum od hdparm ntfsresize openssl
-          ntfs-3g umount blkid df mount stty
-          e2fsck resize2fs btrfs
+          ntfs-3g ntfs-3g.probe ntfsfix umount blkid df mount stty ethtool smartctl
+          e2fsck resize2fs btrfs xfs_growfs
           udp-receiver partclone.ntfs partclone.fat partclone.ext4
           partclone.btrfs partclone.dd
           dropbear dropbearkey)
@@ -122,7 +129,8 @@ if [ "$SKIP_APT" -eq 0 ]; then
     apt-get install -y --no-install-recommends \
         busybox-static zstd partclone udpcast gdisk curl jq pv \
         ntfs-3g libhivex-dev hdparm coreutils util-linux openssl \
-        e2fsprogs btrfs-progs cpio gzip gcc libc6-dev dropbear-bin
+        e2fsprogs btrfs-progs xfsprogs cpio gzip gcc libc6-dev dropbear-bin ethtool \
+        smartmontools
 fi
 
 # ‏`$TMPDIR` ולא `/tmp` קשיח: עץ הבנייה הוא מאות MB לפני הדחיסה, ועל
@@ -149,16 +157,23 @@ done
 
 copy_libs() {
     # Pull in every shared library the binary needs, keeping paths.
-    # `|| true`: some "binaries" are shell wrappers (hivexget on Debian 13)
-    # and ldd exits nonzero on them -- under pipefail that killed the whole
-    # build, silently. Found by the VM lab (issue #12).
-    { ldd "$1" 2>/dev/null || true; } \
-    | awk '/=>/ { print $3 } /^\s*\// { print $1 }' \
-    | while read -r lib; do
+    # ldd on a shell wrapper (hivexget on Debian 13) exits nonzero —
+    # that is fine and must not kill the build (#12). A real ELF whose
+    # ldd prints "not found", or a cp that fails, must (#507).
+    _ldd_out=$(ldd "$1" 2>/dev/null) || true
+    case "$_ldd_out" in
+        *"not found"*)
+            echo "missing shared library for $1:" >&2
+            printf '%s\n' "$_ldd_out" >&2
+            exit 1
+            ;;
+    esac
+    [ -n "$_ldd_out" ] || return 0
+    while read -r lib; do
         [ -f "$lib" ] || continue
         mkdir -p "$ROOT$(dirname "$lib")"
-        cp -Ln "$lib" "$ROOT$lib" 2>/dev/null || true
-    done
+        cp -Ln "$lib" "$ROOT$lib"
+    done < <(printf '%s\n' "$_ldd_out" | awk '/=>/ { print $3 } /^\s*\// { print $1 }')
 }
 
 copy_bin() {
@@ -274,6 +289,18 @@ chmod 0600 "$ROOT/etc/shadow"
 mkdir -p "$ROOT/root"
 chmod 0700 "$ROOT/root"
 
+# מה עושים כשמשימה נגמרה. ברירת המחדל היא `auto`: `finish_and_stop`
+# גוזר מהתפקיד — תחנת כיתה מאתחלת, בנייה/שיכפול מתכבים (מגירות
+# מוחלפות במכונה כבויה, נספח א׳). ‏`reboot` מפורש נועד למעבדה מרוחקת,
+# שבה מכונה שכבתה היא מכונה שאיש אינו יכול להדליק — הצי מתאתחל לבד
+# (tools/lab/after-task-reboot.sh). נקרא ב-`finish_and_stop`.
+case "$AFTER_TASK" in
+    auto|poweroff|reboot) ;;
+    *) echo "build_initramfs: --after-task must be auto, poweroff or reboot, got '$AFTER_TASK'" >&2; exit 2 ;;
+esac
+echo "$AFTER_TASK" > "$ROOT/etc/imagectl/after-task"
+echo "after-task: $AFTER_TASK"
+
 if [ -n "$SSH_KEY_FILE" ]; then
     install -m 0600 "$SSH_KEY_FILE" "$ROOT/etc/imagectl/authorized_keys"
     echo "ssh: authorized_keys packed from $SSH_KEY_FILE"
@@ -286,20 +313,38 @@ fi
 # agent makes one in the tmpfs on every boot instead (agent/lib/sshd.sh).
 
 # --- the kiosk (optional): the build machine's graphical face ----------------
-# The station page carries the console's design, Hebrew and RTL included --
-# things the Linux text console cannot render. cage is a bare Wayland
-# compositor that runs exactly one fullscreen app; Chromium in kiosk mode
-# is that app. Adds roughly 350MB to the image, so it is opt-in: classroom
-# stations do not need it, the one build machine does.
+# Native Pango/Cairo rendering onto DRM/KMS, with evdev input. Apt installs
+# transitive runtime dependencies; ldd selects the actual shared-library
+# closure, including any X11 libraries linked by Debian's Cairo build.
 
 if [ "$WITH_GUI" -eq 1 ]; then
     if [ "$SKIP_APT" -eq 0 ]; then
         apt-get install -y --no-install-recommends "${GUI_PACKAGES[@]}"
+        # Build-host tools/headers only; none are copied into the image.
+        apt-get install -y --no-install-recommends make pkg-config \
+            libpango1.0-dev libcairo2-dev libdrm-dev libvncserver-dev
     fi
-    echo "packing the kiosk (cage + chromium)..."
-    copy_bin cage
-    copy_bin chromium
-    copy_bin seatd
+    echo "compiling the native station GUI..."
+    GUI_DIR="$SCRIPT_DIR/../native-gui"
+    # Force a fresh host build rather than reuse a binary from another host.
+    make -B -C "$GUI_DIR" imagectl-station-gui
+    GUI_BIN="$GUI_DIR/imagectl-station-gui"
+    [ -s "$GUI_BIN" ] && [ -x "$GUI_BIN" ] \
+        || { echo "--with-gui: native GUI binary missing or not executable: $GUI_BIN" >&2; exit 1; }
+    install -m 0755 "$GUI_BIN" "$ROOT/usr/bin/imagectl-station-gui"
+    # Same closure as measure-size.sh/copy_libs(), but this is a known ELF:
+    # unresolved libraries or a failed copy must stop the GUI build.
+    _gui_ldd=$(ldd "$GUI_BIN")
+    if [[ "$_gui_ldd" == *"not found"* ]]; then
+        printf '%s\n' "--with-gui: unresolved native GUI libraries:" "$_gui_ldd" >&2
+        exit 1
+    fi
+    while read -r lib; do
+        [ -f "$lib" ] \
+            || { echo "--with-gui: native GUI library missing: $lib" >&2; exit 1; }
+        mkdir -p "$ROOT$(dirname "$lib")"
+        cp -L "$lib" "$ROOT$lib"
+    done < <(printf '%s\n' "$_gui_ldd" | awk '/=>/ { print $3 } /^[[:space:]]*\// { print $1 }')
     # רכיבי רינדור וגופנים — נתיבים שלמים, לא בינארי בודד. נתיב מוצהר
     # שאינו כאן עוצר את הבנייה; ‏`if [ -d "$dir" ]` דילג עליו בשקט,
     # וזה מה שהסתיר את נתיב הגופן השגוי (#120). כולם נאספים לפני
@@ -316,22 +361,55 @@ if [ "$WITH_GUI" -eq 1 ]; then
     fi
     for _p in "${GUI_PATHS[@]}"; do
         mkdir -p "$ROOT$_p"
+        # The package carries every Plex family; copy only the six faces
+        # named by native-gui/tools/measure-size.sh below.
+        [ "$_p" = /usr/share/fonts/truetype/ibm-plex ] && continue
         cp -a "$_p/." "$ROOT$_p/"
+    done
+    fontdir=/usr/share/fonts/truetype/ibm-plex
+    for face in IBMPlexSansHebrew-Regular IBMPlexSansHebrew-Medium IBMPlexSansHebrew-SemiBold \
+                IBMPlexSansHebrew-Bold IBMPlexMono-Regular IBMPlexMono-Medium; do
+        src=$(find "$fontdir" -iname "$face.ttf" -print -quit)
+        [ -n "$src" ] && [ -s "$src" ] \
+            || { echo "--with-gui: font face missing or empty: $fontdir/$face.ttf" >&2; exit 1; }
+        cp -L "$src" "$ROOT$fontdir/"
     done
 
     cat > "$ROOT/usr/bin/imagectl-kiosk" << 'EOF'
 #!/bin/sh
-# imagectl-kiosk <url> -- one fullscreen browser, nothing else.
-# seatd gives the compositor access to the display and input devices.
-export XDG_RUNTIME_DIR=/run/kiosk
-mkdir -p "$XDG_RUNTIME_DIR"
-seatd -n 2>/dev/null &
-exec cage -- chromium \
-    --kiosk --no-first-run --disable-translate --noerrdialogs \
-    --no-sandbox --disable-gpu-shader-disk-cache \
-    --user-data-dir=/run/kiosk/chromium "$1"
+LIB_DIR=${LIB_DIR:-/usr/lib/imagectl}
+export LIB_DIR
+. "$LIB_DIR/guibridge.sh"
+gui_main "$@"
 EOF
     chmod 0755 "$ROOT/usr/bin/imagectl-kiosk"
+
+    # --- the remote monitor (#690) -------------------------------------------
+    # An RFB server exposing /dev/fb0 over TCP 5900, packed only in the GUI
+    # image: build and cloner have a framebuffer, and a classroom station
+    # never starts it (agent/lib/monitor.sh gates by role). Input mode needs
+    # the uinput module, declared in REQUIRED_MODULES below.
+    echo "compiling the remote monitor..."
+    gcc -O2 -Wall -Wextra -o "$ROOT/usr/bin/imagectl-monitor" \
+        "$AGENT_DIR/monitor.c" -lvncserver
+    [ -s "$ROOT/usr/bin/imagectl-monitor" ] && [ -x "$ROOT/usr/bin/imagectl-monitor" ] \
+        || { echo "--with-gui: imagectl-monitor missing or not executable" >&2; exit 1; }
+    # Same closure gate as the native GUI binary: an unresolved .so or a
+    # failed copy is a build that looks clean and a monitor that never
+    # listens -- the #78 failure mode, caught here instead of on the metal.
+    _mon_ldd=$(ldd "$ROOT/usr/bin/imagectl-monitor")
+    if [[ "$_mon_ldd" == *"not found"* ]]; then
+        printf '%s\n' "--with-gui: unresolved imagectl-monitor libraries:" "$_mon_ldd" >&2
+        exit 1
+    fi
+    echo "imagectl-monitor ldd closure:"
+    printf '%s\n' "$_mon_ldd"
+    while read -r lib; do
+        [ -f "$lib" ] \
+            || { echo "--with-gui: imagectl-monitor library missing: $lib" >&2; exit 1; }
+        mkdir -p "$ROOT$(dirname "$lib")"
+        cp -L "$lib" "$ROOT$lib"
+    done < <(printf '%s\n' "$_mon_ldd" | awk '/=>/ { print $3 } /^[[:space:]]*\// { print $1 }')
 fi
 
 # --- kernel modules and firmware ---------------------------------------------
@@ -373,7 +451,7 @@ MODULE_SUBDIRS=(kernel/drivers/net/ethernet kernel/drivers/net/phy
                 # נגררים מ-modules.dep — לכן הם אינם ברשימה הזו.
                 kernel/fs/fat               kernel/fs/nls
                 kernel/fs/ext4              kernel/fs/btrfs
-                kernel/fs/efivarfs)
+                kernel/fs/xfs               kernel/fs/efivarfs)
 # פלטפורמות היעד המוצהרות, וזוג המודולים שכל אחת מהן לא עולה בלעדיו:
 # כרטיס הרשת ובקר הדיסק. עד כאן ה-initramfs כיסה הייפרווייזר אחד —
 # זה שעליו הוא נבנה — ומכונה על ESXi, ‏KVM או Xen עלתה בלי רשת,
@@ -399,8 +477,9 @@ REQUIRED_MODULES=(hv_netvsc   hv_storvsc      # Hyper-V
 # כאן הן הגיעו כתוצר לוואי של `MODULE_SUBDIRS` וסגירת התלויות, ולכן
 # נשירה של אחת מהן מסתיימת ב-exit 0 ומתגלה רק מול מכונה: ‏`exfat`
 # ו-`isofs` נשרו בין שתי גרסאות, ‏kernel/fs ירד מ-73 ל-69 קבצים, ואיש
-# לא ידע עד שהשוו רשימות בידיים (#121). מה תלוי במה: ‏ext4/btrfs —
-# שחזור לינוקס וכתיבת `/etc/hostname` (#107, ‏#62); ‏vfat/fat — מחיצת
+# לא ידע עד שהשוו רשימות בידיים (#121). מה תלוי במה: ‏ext4/btrfs/xfs —
+# שחזור לינוקס, כתיבת `/etc/hostname` (#107, ‏#62) והרחבת XFS (#667);
+# ‏vfat/fat — מחיצת
 # ה-ESP; ‏nls_cp437/nls_ascii — הקידודים ש-vfat דורש (#84);
 # ‏efivarfs — ‏`secure_boot` במניפסט (#84).
 #
@@ -412,11 +491,20 @@ REQUIRED_MODULES=(hv_netvsc   hv_storvsc      # Hyper-V
 # אמיתי למחיצה כזאת, ובלעדיו `_used_bytes` מדווח 0 **עם אזהרה ביומן**
 # ולא בשקט. אם יתברר שכן צריך אותם — הוספת שם לרשימה הזאת היא כל
 # השינוי, והבנייה תאכוף אותו מיד.
-REQUIRED_FS_MODULES=(ext4 btrfs vfat fat nls_cp437 nls_ascii efivarfs)
+REQUIRED_FS_MODULES=(ext4 btrfs xfs vfat fat nls_cp437 nls_ascii efivarfs)
 
 if [ "$WITH_GUI" -eq 1 ]; then
-    # מסך וקלט מלא לקיוסק: דרייברי GPU, עכבר, evdev.
-    MODULE_SUBDIRS+=(kernel/drivers/gpu kernel/drivers/input)
+    # רק מודולי התצוגה/קלט של חומרת הקיוסק; modules.dep מוסיף תלויות
+    # (#641: אריזת כל drivers/gpu+input ניפחה וקרסה על הברזל). את הדרייבר
+    # הגנרי של HID מספק `hid.ko` עצמו — אין `hid_generic.ko` נפרד בקרנל
+    # דביאן 13, ולכן הוא **אינו** נכנס לרשימה כאן (הלולאה מחפשת קובץ ותיכשל);
+    # ה-modules-load עדיין קורא ל-hid-generic כ-no-op לא-מזיק.
+    # ‏uinput (#690): המוניטור במצב input יוצר מקלדת/עכבר וירטואליים דרכו.
+    # מודול מוצהר חסר עוצר את הבנייה, כמו כל השאר.
+    REQUIRED_MODULES+=(i915 evdev usbhid hid uinput)
+    # ‏i915 דורש firmware; modules.dep לא מעתיק firmware, ורק rtl_nic ברירת
+    # מחדל — בלעדיו התצוגה עלולה לצאת מנוונת/שחורה.
+    FIRMWARE_DIRS+=(i915)
 fi
 
 for sub in "${MODULE_SUBDIRS[@]}"; do
@@ -433,6 +521,19 @@ done
 # חומרה ולא בבנייה, וב-#121 זה קרה שוב למערכות הקבצים.
 # כולם נאספים לפני ההודעה, כדי שלא יתגלו אחד-אחד בשש בנייות.
 _missing=""
+# Intel watchdogs are optional (software recovery remains available). The
+# LPC bridge registers the TCO device on older HP boards; it is not a
+# module dependency of iTCO_wdt, so copy it explicitly as well.
+for _mod in iTCO_wdt lpc_ich; do
+    _hit=$(find "$MODSRC" -name "$_mod.ko*" | head -1)
+    if [ -n "$_hit" ]; then
+        _rel=${_hit#"$MODSRC"/}
+        mkdir -p "$ROOT/lib/modules/$KVER/$(dirname "$_rel")"
+        cp -a "$_hit" "$ROOT/lib/modules/$KVER/$_rel"
+    else
+        echo "optional watchdog module $_mod absent (may be built-in); software fallback available" >&2
+    fi
+done
 for _mod in "${REQUIRED_MODULES[@]}" "${REQUIRED_FS_MODULES[@]}"; do
     _hit=$(find "$MODSRC" -name "$_mod.ko*" | head -1)
     if [ -z "$_hit" ]; then
@@ -503,24 +604,34 @@ _phy_mods=$(find "$ROOT/lib/modules/$KVER/kernel/drivers/net/phy" \
     printf '%s\n' usbcore xhci_hcd xhci_pci ehci_hcd ehci_pci
     printf '%s\n' ohci_hcd ohci_pci uhci_hcd
     printf '%s\n' ahci nvme sd_mod uas usb-storage hv_vmbus hv_storvsc
+    # Optional Intel TCO hardware recovery; dependencies follow modules.dep.
+    printf '%s\n' lpc_ich iTCO_wdt
     # בקרי הדיסק של ESXi, ‏KVM ו-Xen. ‏`virtio_pci` הוא built-in, ולכן
     # האפיק כבר שם כשאלה נטענים (#78).
     printf '%s\n' vmw_pvscsi virtio_scsi virtio_blk xen-blkfront
     # ‏מקלדת לאשף השחזור — מודול חסר אינו פטאלי (issue #43).
-    printf '%s\n' hid hid_generic usbhid atkbd hyperv_keyboard
+    printf '%s\n' hid hid-generic usbhid atkbd hyperv_keyboard
     # מערכות קבצים במפורש, ולא בהסתמך על טעינה-לפי-דרישה של הקרנל.
     # ‏`mount -t ext4` אמנם מבקש `fs-ext4` דרך modules.alias, אבל זו
     # שרשרת הנחות (‏depmod, ‏busybox modprobe, ‏/proc/sys/kernel/modprobe)
     # שכל חוליה בה נכשלת בשקט. כאן כישלון נספר ומדווח (#84).
-    printf '%s\n' efivarfs fat vfat nls_cp437 nls_ascii ext4 btrfs
+    printf '%s\n' efivarfs fat vfat nls_cp437 nls_ascii ext4 btrfs xfs
     [ -n "$_phy_mods" ] && printf '%s\n' "$_phy_mods"
     find "$ROOT/lib/modules/$KVER/kernel/drivers/net" -name '*.ko*' 2>/dev/null \
         | sed 's|.*/||; s|\.ko.*||' | sort
     if [ "$WITH_GUI" -eq 1 ]; then
-        # ‏GPU של אחד משלושת היצרנים, ועכבר/evdev לקיוסק.
-        printf '%s\n' i915 amdgpu nouveau simpledrm evdev
+        # ‏GPU של אחד משלושת היצרנים, ועכבר/evdev לקיוסק, ו-uinput למוניטור.
+        printf '%s\n' i915 amdgpu nouveau simpledrm evdev uinput
     fi
 } | awk '!seen[$0]++' > "$ROOT/etc/imagectl/modules"
+
+# ‏מודולי החובה, בנפרד: מערכות הקבצים שהמערכת נשענת עליהן בכל מכונה. אלה
+# מודולי תוכנה טהורים שנטענים בכל פלטפורמה, ולכן כישלון טעינה שלהם הוא
+# ‏initramfs שבור — לא חומרה נעדרת כמו דרייבר וירטואליזציה על ברזל.
+# ‏agent/init מפריד לפי הרשימה הזאת: מודול חובה שנכשל נקרא בשם וכ-ERROR,
+# ומודול פלטפורמה שנכשל מדווח כמצב הצפוי. בלעדיה `N modules did not load`
+# קיפל את שניהם למספר אחד (#407).
+printf '%s\n' "${REQUIRED_FS_MODULES[@]}" > "$ROOT/etc/imagectl/modules.required"
 
 for fw in "${FIRMWARE_DIRS[@]}"; do
     if [ -d "/lib/firmware/$fw" ]; then

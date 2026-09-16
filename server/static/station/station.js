@@ -20,11 +20,69 @@ function esc(text) {
 }
 
 function fmtBytes(n) {
-  if (!n) return "0";
+  // ‏null / undefined / לא-מספר / אינסוף = לא נמדד, ומוצג "–". אפס אמיתי
+  // הוא מדידה ולא כשל קריאה, ולכן הוא נבדל ומוצג "0 B" (‏#752, עיקרון 5):
+  // אותו fmtBytes כמו ב-console.js אחרי #517.
+  if (n == null) return "–";
+  let v = Number(n);
+  if (!Number.isFinite(v) || v < 0) return "–";
   const units = ["B", "KB", "MB", "GB", "TB"];
   let i = 0;
-  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
-  return n.toFixed(n >= 100 ? 0 : 1) + " " + units[i];
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return v.toFixed(v >= 100 || i === 0 ? 0 : 1) + " " + units[i];
+}
+
+/* ---------- בחירת המחיצה להרחבה, בפתיחת סבב (#59) ---------- */
+/* משותף ל-classes.js (סבב כיתה) ול-room.js (סבב חדר): שניהם פותחים
+   סבב מאותו מסך, ושניהם צריכים להראות את אותה בחירה לפני האישור. */
+
+const EXPAND_ROLE_HE = { windows: "Windows", linux: "לינוקס" };
+
+function expandCandidate(manifest) {
+  // אותו כלל בדיוק כמו `imagefit.expandable_candidate` בשרת: מחיצה
+  // מסומנת יחידה גוברת, אחרת האחרונה **פיזית** (start_sector) שתפקידה
+  // windows/linux — לא לפי סדר הרשימה, שהוא סדר אינדקסים.
+  const parts = (manifest.partitions || []).filter((p) => p && typeof p === "object");
+  const marked = parts.filter((p) => p.expandable === true);
+  if (marked.length === 1) return marked[0];
+  const system = parts.filter((p) => (p.role === "windows" || p.role === "linux")
+    && Number.isFinite(p.start_sector));
+  if (!system.length) return null;
+  return system.reduce((a, b) => (b.start_sector > a.start_sector ? b : a));
+}
+
+function expandBlockHtml(idPrefix, manifest, current) {
+  const parts = (manifest.partitions || []).filter((p) => p && typeof p === "object");
+  const candidate = expandCandidate(manifest);
+  const system = parts.filter((p) => p.role === "windows" || p.role === "linux");
+  const autoLabel = candidate
+    ? `מחיצת המערכת (${EXPAND_ROLE_HE[candidate.role] || candidate.role}, `
+      + `${fmtBytes(candidate.size_bytes)}) תורחב לכל הכונן`
+    : "אין באימג' הזה מחיצת מערכת להרחבה";
+  const manual = current !== "auto" && current !== "none" ? current : "";
+  return `
+    <fieldset class="expand-pick" data-prefix="${idPrefix}">
+      <legend class="sub">הרחבת מחיצה, אם היעד גדול מהאימג'</legend>
+      <label><input type="radio" name="${idPrefix}-expand" value="auto"
+        ${current === "auto" ? "checked" : ""} ${candidate ? "" : "disabled"}>
+        ${esc(autoLabel)}</label>
+      <label><input type="radio" name="${idPrefix}-expand" value="none"
+        ${current === "none" ? "checked" : ""}> בלי הרחבה — בגודל המקורי</label>
+      ${system.length > 1 ? `<label><input type="radio" name="${idPrefix}-expand"
+        value="manual" ${manual ? "checked" : ""}> מחיצה אחרת:
+        <select id="${idPrefix}-expand-manual">${system.map((p) => `<option
+          value="${p.index}" ${String(p.index) === manual ? "selected" : ""}>
+          ${esc(EXPAND_ROLE_HE[p.role] || p.role)} (מחיצה ${p.index}, ${fmtBytes(p.size_bytes)})
+          </option>`).join("")}</select></label>` : ""}
+    </fieldset>`;
+}
+
+function expandBlockValue(idPrefix) {
+  const checked = document.querySelector(`input[name="${idPrefix}-expand"]:checked`);
+  if (!checked) return "auto";
+  if (checked.value !== "manual") return checked.value;
+  const select = $("#" + idPrefix + "-expand-manual");
+  return select ? select.value : "auto";
 }
 
 let toastTimer = null;
@@ -114,13 +172,10 @@ async function poll() {
 }
 
 function drawProgress(task) {
-  const pct = task.bytes_total
-    ? Math.round((100 * task.bytes_written) / task.bytes_total) : 0;
   $("#st-prog-title").textContent = `קולט: ${task.name}`;
   $("#st-prog-sub").textContent = task.state === "pending"
     ? "ממתין לסוכן — ודאו שהמחשב עלה ב-PXE" : `כונן המקור: ${task.disk}`;
-  $("#st-bar").style.width = pct + "%";
-  $("#st-pct").textContent = pct + "%";
+  Progress.apply($("#st-bar"), $("#st-pct"), task);
   $("#st-bytes").textContent = task.bytes_written
     ? `${fmtBytes(task.bytes_written)} נקראו` : "";
   show("st-progress");

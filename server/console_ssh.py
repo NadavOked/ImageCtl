@@ -123,6 +123,69 @@ def snapshot(ctx, hooks: dict, server_base: str) -> dict:
     }
 
 
+def ssh_checks(state: dict) -> list[dict]:
+    """שתי שורות, ובשתיהן **הראיה** היא מה שנצבע.
+
+    ‏"אי אפשר לבדוק" אינו אפור כאן אלא אדום, בניגוד לשאר המסך: פורט 67
+    שלא נבדק משאיר PXE שלא עובד ורואים את זה מיד, אבל דלת SSH שלא
+    נבדקה נראית בדיוק כמו דלת סגורה — וזו ההנחה שהמשימה הזאת קיימת
+    כדי לשבור. דלת פתוחה שיודעים עליה היא צהוב; דלת שאי אפשר לראות
+    היא אדום.
+
+    ‏(#354) עברה הנה מ-`server/health.py` — זה המודול שהיא באמת שייכת
+    אליו. `check` נשאר ב-health.py כי הוא כבר מייבא את המודול הזה;
+    ייבוא בכיוון ההפוך בראש הקובץ היה יוצר מעגל.
+    """
+    from .health import check  # noqa: PLC0415 — נמנע ממעגל ייבוא
+    rows = []
+    st = state["stations"]
+    if st["evidence"] == "unknown":
+        rows.append(check("ssh_stations", "SSH בתחנות", "bad",
+                          f"{st['detail']} — הבדיקה עצמה לא רצה, ואי אפשר "
+                          "להסיק מכך שסגור"))
+    elif st["evidence"] == "open":
+        rows.append(check("ssh_stations", "SSH בתחנות", "warn",
+                          "פתוח — כל תחנה שעולה מריצה dropbear ומעטפת טכנאי. "
+                          + st["detail"]))
+    elif st["enabled"]:
+        # המתג דלוק והתפריט נקי: מישהו או משהו לא הגיע ליעד.
+        rows.append(check("ssh_stations", "SSH בתחנות", "bad",
+                          "המתג דלוק אבל הדגל אינו בתפריט שמוגש — המתג לא תפס"))
+    else:
+        rows.append(check("ssh_stations", "SSH בתחנות", "ok", st["detail"]))
+
+    live = state["listeners"]
+    open_nics = [n for n in state["interfaces"] if n["listening"]]
+    unwanted = [n["name"] for n in state["interfaces"]
+                if bool(n["listening"]) != n["enabled"]]
+    port = live["port"]
+    if not live["checked"]:
+        rows.append(check("ssh_server", "SSH לשרת", "bad",
+                          f"טבלת הסוקטים לא נקראה ({live['reason']}) — לא "
+                          f"ידוע מי מאזין בפורט {port}"))
+    elif live["wildcard"]:
+        rows.append(check("ssh_server", "SSH לשרת", "bad",
+                          f"‏sshd מאזין על כל הממשקים (0.0.0.0/::) בפורט "
+                          f"{port} — כולל וילן הכיתות"))
+    elif unwanted:
+        rows.append(check("ssh_server", "SSH לשרת", "bad",
+                          "מה שמאזין אינו מה שהמתג אומר: " + ", ".join(unwanted)))
+    elif open_nics:
+        rows.append(check("ssh_server", "SSH לשרת", "warn",
+                          "פתוח על: " + ", ".join(
+                              f"{n['name']} ({', '.join(n['addresses']) or 'ללא כתובת'})"
+                              for n in open_nics)))
+    elif state["stray"]:
+        rows.append(check("ssh_server", "SSH לשרת", "warn",
+                          "מאזין על כתובת שאינה של אף כרטיס מוכר: "
+                          + ", ".join(state["stray"])))
+    else:
+        rows.append(check("ssh_server", "SSH לשרת", "ok",
+                          f"אף כרטיס לא מאזין בפורט {port} (נבדק בטבלת "
+                          "הסוקטים של הקרנל)"))
+    return rows
+
+
 def _matches(state: dict) -> bool:
     """האם מה שמאזין תואם למה שביקשנו — על **כל** ממשק."""
     if not state["listeners"]["checked"]:

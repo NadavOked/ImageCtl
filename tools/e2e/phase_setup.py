@@ -38,6 +38,11 @@ def run(data_dir, images_dir) -> SimpleNamespace:
     status, _ = console.json("POST", "/api/console/groups",
                              {"id": "grp_LAB1", "label": "כיתה LAB1", "role": "classroom"})
     check("קבוצת כיתה נוצרה", status == 200)
+    # ‏#880: v1 מדליק "הפצה לכיתות" רק מהקונסולה — הסימולציה מדליקה
+    # אותה כמו המפעיל, אחרת שלב 6 (סבב מהתחנה) היה נדחה ב-409.
+    status, _ = console.json("POST", "/api/console/settings",
+                             {"class_deploy_enabled": "true"})
+    check("הפצה לכיתות הודלקה (#880)", status == 200, str(status))
     status, imported = console.json("POST", "/api/console/machines/import", {
         "group_id": "grp_LAB1",
         "text": "\n".join(f"{m} {i:02d}" for i, m in enumerate(CLASS_MACS, start=5)),

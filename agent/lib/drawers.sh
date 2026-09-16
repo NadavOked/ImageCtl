@@ -38,8 +38,16 @@ _drawer_pipeline() {
     _node=$(partition_node "$1" "$3")
     _pcl=$(partclone_for_fs "$2")
     (
+        # ה-rc של zstd נלכד לחוד, כמו `source.rc` מטה וכמו `capture.sh:177`:
+        # ב-busybox ash אין `pipefail`, ו-`$?` של צינור הוא של האחרון בלבד.
+        # ‏zstd שנפל באמצע ו-partclone שקיבל EOF ויצא 0 הגיעו לכאן
+        # כ-`pipeline.rc=0`, והמגירה נחתמה `done` על כתיבה קצרה (#527).
+        #
+        # ⚠️ **לא `set -o pipefail`** — הוא אינו קיים ב-busybox ash. הוא
+        # היה עובר בטסט (Git Bash) ומשאיר את הבאג על המכונה.
         # shellcheck disable=SC2046,SC2094 # fifo opened once; partclone_mode flags are a word list
-        zstd -dc < "$_tdir/feed" 2>> "$LOG_FILE" \
+        { zstd -dc < "$_tdir/feed" 2>> "$LOG_FILE"
+          echo "$?" > "$_tdir/zstd.rc"; } \
             | "$_pcl" $(partclone_mode "$_pcl" -r) -s - -O "$_node" \
                 -L "$_tdir/partclone.log" 2>> "$LOG_FILE"
         echo "$?" > "$_tdir/pipeline.rc"
@@ -60,13 +68,13 @@ restore_partition_drawers() {
     # אי-התאמת sha256 (#49). כל מגירה בוראת אותה בעצמה, פעם אחת, על
     # המיקום שההרחבה כבר קבעה בזנב (#46). מגירה שנכשלה בה לא עוצרת את
     # השאר — כמו כל כשל אחר של מגירה בודדת.
-    if is_swap_partition "$_fs" "$_file"; then
+    if is_swap_partition "$_fs"; then
         for _d in $_disks; do
             [ "$(cat "$RUN_DIR/targets/$_d/state")" = "failed" ] && continue
             if make_swap "$(partition_node "$_d" "$_idx")" "$_uuid"; then
                 target_partition_done "$_d"
             else
-                target_set "$_d" "failed" "partition $_idx: mkswap failed"
+                fail_written_target "$_d" "partition $_idx: mkswap failed"
             fi
         done
         _any_alive "$_disks"
@@ -77,7 +85,8 @@ restore_partition_drawers() {
     for _d in $_disks; do
         _t="$RUN_DIR/targets/$_d"
         [ "$(cat "$_t/state")" = "failed" ] && continue
-        rm -f "$_t/feed" "$_t/feed.bytes" "$_t/pipeline.rc" "$_t/pipeline.pid"
+        rm -f "$_t/feed" "$_t/feed.bytes" "$_t/pipeline.rc" "$_t/pipeline.pid" \
+              "$_t/zstd.rc"
         mkfifo "$_t/feed"
         # ההתקדמות של המגירה הזו נמדדת אצל fanout, לא אצל ה-pv שלפניו:
         # ‏pv אחד מודד את הזרם של המכונה — אותו מספר לשלוש המגירות, ולכן
@@ -119,15 +128,9 @@ restore_partition_drawers() {
         _fanout_rc="$WAIT_TIMED_OUT"
     fi
 
-    # fanout סיים להזרים, אבל כל מגירה עוד מרוקנת את החוצץ שלה (עד 256MB).
-    # בלי להמתין לצינורות עצמם, pipeline.rc עוד לא קיים כשקוראים את הדוח —
-    # ומגירה שנכתבה בהצלחה נספרת ככישלון (#20). לפי PID, לא wait ריק —
-    # ריק היה תופס גם את דמון ההתקדמות ונתקע לנצח (הלקח מ-#12).
-    #
-    # ועם תקרה: אם fanout מת לפני שפתח את ה-fifo, הצינור של המגירה תקוע
-    # ב-open() ולא ייגמר לעולם — ‏#49 נראה בדיוק ככה, כקפיאה בלי סיבה.
-    # אחרי פקיעה של הזרם אין למגירות מה לקבל, ולכן הן מקבלות את התקרה
-    # הקצרה: אין טעם לחכות דקות לכל אחת בתור.
+    # ממתינים לצינור לפי PID: בלי זה pipeline.rc עוד לא קיים (#20),
+    # ו-wait ריק תופס גם את דמון ההתקדמות (#12). תקרה: fifo שלא נפתח
+    # (#49) לא ייגמר מעצמו; אחרי פקיעת הזרם התקרה הקצרה.
     _dwait="$WAIT_DRAWER_S"
     [ "$_fanout_rc" = "$WAIT_TIMED_OUT" ] && _dwait="$WAIT_HELPER_S"
     for _d in $_disks; do
@@ -136,7 +139,7 @@ restore_partition_drawers() {
         wait_pid "$(cat "$_pidf")" "$_dwait" "המגירה $_d (מחיצה $_idx)" && continue
         # בידוד: המגירה הזו לבדה נכשלת, הלולאה ממשיכה לשכנות.
         unblock_fifo "$RUN_DIR/targets/$_d/feed"
-        target_set "$_d" "failed" \
+        fail_written_target "$_d" \
             "partition $_idx: פג הזמן -- המגירה לא סיימה לכתוב"
     done
     wait_pid "$_shapid" "$WAIT_HELPER_S" "חישוב ה-sha256 של מחיצה $_idx"
@@ -156,14 +159,35 @@ restore_partition_drawers() {
     elif [ "$_fanout_rc" = "$WAIT_TIMED_OUT" ]; then
         _why="פג הזמן -- הזרם לא הגיע"
     elif [ "$_fanout_rc" != "0" ] && [ "$_fanout_rc" != "1" ]; then
-        # ‏1 = מגירה נכשלה בשמה, והזרם עצמו הגיע עד סופו. כל rc אחר
-        # (‏2 של fanout, ‏137 של ה-OOM killer) = ההפצה עצמה נפלה.
+        # ‏2 של fanout, ‏137 של OOM (#21) = ההפצה עצמה נפלה.
         _why="הפצת הזרם למגירות נכשלה (fanout rc=${_fanout_rc:-לא נרשם})"
-    elif [ "$_src" != "0" ]; then
-        _why="הזרם נקטע לפני סופו (מקור rc=${_src:-לא נרשם})"
     elif ! is_sha256 "$_got"; then
         # אין ערך שנקרא בחזרה, ולכן אין ראיה גם לכך שהבייטים שגויים.
         _why="ה-sha256 לא חושב -- אין ראיה שהזרם הגיע שלם"
+    elif [ "$_fanout_rc" = "1" ]; then
+        # מגירה נפלה, וה-sha אינו תואם. שאלת ה**ייחוס** (#440) ושאלת
+        # ה**שלמות** (#520) נפרדות, וההבחנה ביניהן היא **האם מישהו שרד**:
+        #
+        #   אין שורת ok  -- כל המגירות מתו, ‏fanout הפסיק לקרוא, המקור
+        #                   קיבל 141 **בגללנו**, וה-sha חלקי כתוצאה.
+        #                   זו תקלת דיסק, ואין להאשים את הרשת (#440).
+        #   יש שורת ok   -- הזרם נקרא עד סופו, והבייטים נמדדו ונמצאו
+        #                   שגויים. המגירה ההיא עומדת להיחתם ‏done,
+        #                   ואסור בלי ראיה (#520).
+        #
+        # ‏grep: ‏0 = נמצא, ‏1 = לא נמצא (תשובה!), ‏2 = הבדיקה נשברה.
+        grep -q ' ok$' "$RUN_DIR/fanout.out" 2>/dev/null
+        _ok_rc=$?
+        if [ "$_ok_rc" = "0" ]; then
+            _why="אי-התאמת sha256 בקובץ $_file"
+        elif [ "$_ok_rc" = "1" ]; then
+            _why=""
+        else
+            _why="דוח fanout לא נקרא -- אין ראיה מי מהמגירות שרדה"
+        fi
+    elif [ "$_src" != "0" ] && [ "$_src" != "141" ]; then
+        # fanout ראה EOF. ‏141 = אנחנו סגרנו את stdout, לא הרשת.
+        _why="הזרם נקטע לפני סופו (מקור rc=${_src:-לא נרשם})"
     else
         # The bytes themselves were wrong: every drawer got the same bad data.
         _why="אי-התאמת sha256 בקובץ $_file"
@@ -171,66 +195,13 @@ restore_partition_drawers() {
     if [ -n "$_why" ]; then
         log "partition $_idx ($_file): $_why -- failing all drawers"
         for _d in $_disks; do
-            target_set "$_d" "failed" "partition $_idx: $_why"
+            fail_written_target "$_d" "partition $_idx: $_why"
         done
         return 1
     fi
 
     _read_fanout_report "$_idx" $_disks
     _any_alive "$_disks"
-}
-
-_read_fanout_report() {
-    # Turns the per-target lines from fanout, plus each pipeline's exit code,
-    # into interface 4 states. A drawer is done only if both agreed.
-    _idx="$1"; shift
-    for _d in "$@"; do
-        _t="$RUN_DIR/targets/$_d"
-        [ "$(cat "$_t/state")" = "failed" ] && continue
-        _line=$(grep -F "$_t/feed " "$RUN_DIR/fanout.out" 2>/dev/null)
-        case "$_line" in
-            *" ok")
-                _rc=$(cat "$_t/pipeline.rc" 2>/dev/null || echo 1)
-                if [ "$_rc" = "0" ]; then
-                    target_partition_done "$_d"
-                else
-                    target_set "$_d" "failed" "write failed on partition $_idx"
-                fi
-                ;;
-            *" failed "*)
-                target_set "$_d" "failed" "${_line#* failed }"
-                ;;
-            *)
-                target_set "$_d" "failed" "no report from the writer"
-                ;;
-        esac
-    done
-}
-
-_any_alive() {
-    for _d in $1; do
-        [ "$(cat "$RUN_DIR/targets/$_d/state")" != "failed" ] && return 0
-    done
-    return 1
-}
-
-_machine_state() {
-    # $1 = disks. המצב של המחשב כולו לפי המגירות: הכול נכתב, חלק נכתב,
-    # או כלום. עד #67 היו כאן שני מצבים בלבד — `_any_alive` אמת גם על
-    # מגירה אחת ששרדה מתוך שלוש, ומחשב שאיבד מגירה דיווח "done" בדיוק
-    # כמו מחשב שכל מגירותיו נכתבו. ברמת המגירה הכשל היה גלוי כל הזמן
-    # (‏targets_json), וברמת המחשב הוא נבלע — וזה מה שהמפעיל רואה.
-    _alive=0; _dead=0
-    for _d in $1; do
-        if [ "$(cat "$RUN_DIR/targets/$_d/state" 2>/dev/null)" = "failed" ]; then
-            _dead=$((_dead + 1))
-        else
-            _alive=$((_alive + 1))
-        fi
-    done
-    if [ "$_alive" -eq 0 ]; then echo "failed"
-    elif [ "$_dead" -eq 0 ]; then echo "done"
-    else echo "partial"; fi
 }
 
 run_restore_drawers() {
@@ -251,7 +222,7 @@ run_restore_drawers() {
             continue
         fi
         if ! apply_gpt "$_d" "$_manifest"; then
-            target_set "$_d" "failed" "could not write the partition table"
+            fail_written_target "$_d" "${PLAN_ERROR:-could not write the partition table}"
             continue
         fi
         # ההרחבה קורית לפני הזרם, בדיוק כמו בתחנה בודדת: מחיצת swap
@@ -260,26 +231,42 @@ run_restore_drawers() {
         if ! expand_last "$_d" "$_manifest"; then
             log "WARNING: expansion failed on $_d -- writing at the image's own size"
             apply_gpt "$_d" "$_manifest" \
-                || target_set "$_d" "failed" "could not write the partition table"
+                || fail_written_target "$_d" "${PLAN_ERROR:-could not write the partition table}"
         fi
     done
     _any_alive "$_disks" || { echo "failed" > "$RUN_DIR/state"; return 1; }
 
-    manifest_plan "$_manifest" | while IFS='|' read -r _i _g _role _fs _s _sz _f _sha _exp _ug _uuid; do
-        if is_swap_partition "$_fs" "$_f"; then
+    # תוכנית לקובץ, לא לצינור: בלי pipefail קוד היציאה של manifest_plan
+    # נבלע, לולאה על אפס שורות נראית כמו סיום, והמגירות → done (#426).
+    # אותו דפוס כמו run_restore: מספר מול מספר, לא היעדר כישלון.
+    _plan="$RUN_DIR/restore.plan"
+    if ! manifest_plan "$_manifest" > "$_plan"; then
+        _fail_alive "$_disks" "could not read the partition plan from the manifest"
+        echo "failed" > "$RUN_DIR/state"
+        return 1
+    fi
+    _expected=$(awk 'END { print NR }' "$_plan")
+    _written=0
+    while IFS='|' read -r _i _g _role _fs _s _sz _f _sha _exp _ug _uuid <&3; do
+        if is_swap_partition "$_fs"; then
             log "partition $_i (swap): recreated on each drawer, not fed"
         else
             log "partition $_i ($_role): feeding $(echo "$_disks" | wc -w) drawers"
         fi
         restore_partition_drawers "$_mode" "$_server" "$_image" \
-            "$_i" "$_fs" "$_f" "$_sha" "$_uuid" $_disks || exit 1
-    done
+            "$_i" "$_fs" "$_f" "$_sha" "$_uuid" $_disks || break
+        _written=$((_written + 1))
+    done 3< "$_plan"
+    if [ "$_expected" -lt 1 ] || [ "$_written" -ne "$_expected" ]; then
+        _fail_alive "$_disks" "wrote $_written of $_expected partitions"
+        echo "failed" > "$RUN_DIR/state"
+        return 1
+    fi
 
     echo "verifying" > "$RUN_DIR/state"
     for _d in $_disks; do
         [ "$(cat "$RUN_DIR/targets/$_d/state")" = "failed" ] && continue
-        grow_expanded "$_d" || log "WARNING: expansion failed on $_d"
-        target_set "$_d" "done"
+        finish_grow "$_d"
     done
 
     # שלושה מצבים, לא שניים (#67). ‏`partial` מסיים את הגל כמו `done`

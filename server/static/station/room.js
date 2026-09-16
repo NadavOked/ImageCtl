@@ -12,12 +12,33 @@ const Room = (() => {
   let images = null;               // נטען פעם אחת אחרי הכניסה
   let shown = null;                // "setup" / "open" / "running" — השלד הנוכחי
 
+  /* כרטיס החדר מתרענן כל 2 שניות. כשל קריאה אינו "אין סבב" ואינו נתונים
+     עדכניים — לכן במקום return שקט שמשאיר כרטיס קפוא שנראה חי, מסמנים את
+     הכרטיס כלא-מעודכן, עם השעה של הקריאה המוצלחת האחרונה (‏#752, עיקרון 5). */
+  let lastRoomOk = null;
+
+  function markRoomStale() {
+    const el = $("#room-stale");
+    if (!el) return;
+    el.textContent = "לא הצלחנו לקרוא את מצב החדר — הנתונים שמוצגים אולי אינם "
+      + "עדכניים (" + (lastRoomOk ? "עודכן לאחרונה " + lastRoomOk
+                                  : "טרם נקרא מהשרת") + ").";
+    el.classList.remove("hidden");
+  }
+
+  function markRoomFresh() {
+    lastRoomOk = new Date().toLocaleTimeString("he-IL");
+    const el = $("#room-stale");
+    if (el) el.classList.add("hidden");
+  }
+
   async function refresh() {
     let data;
     try {
       data = await fetch("/api/console/room", { credentials: "same-origin" })
         .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); });
-    } catch (error) { return; }
+    } catch (error) { markRoomStale(); return; }
+    markRoomFresh();
     if (data.round) renderLive(data);
     else await renderSetup(data);
   }
@@ -34,6 +55,10 @@ const Room = (() => {
     done: "נכתבה", failed: "נכשלה", writing: "כותבת",
     verifying: "מאמתת", waiting: "ממתינה",
   };
+  /* #872: fail (בריאות FAILED) כתום; failed_last (נכשל בשיכפול הקודם) אדום;
+     ‏ok/unchecked ירוק ואינם מוצגים. warn מסוכן ישן — כתום. */
+  const SMART_HE = {warn: "SMART אזהרה", fail: "SMART תקלה",
+                    failed_last: "נכשל בשיכפול הקודם"};
   const SLOTS_TITLE = "מספור לפי החריץ: 1 עליונה, 2 אמצעית, 3 תחתונה";
 
   function drawerLine(m, withProgress) {
@@ -48,9 +73,22 @@ const Room = (() => {
       const tone = d.state === "failed" ? " bad"
         : d.state === "done" || (!live && !d.fresh) ? " ok" : "";
       const slot = typeof d.port === "number" ? `מגירה ${d.port}` : "מגירה נוספת";
+      /* בריאות SMART לפני start (#652): רק ממצא שאיננו תקין מוצג, כדי
+         לא להציף. ‏unchecked (אין SMART / VM) אינו כשל — לא מוצג. */
+      const smart = SMART_HE[d.smart]
+        ? ` <span class="smart ${esc(d.smart)}">${SMART_HE[d.smart]}</span>` : "";
+      /* #418: הפורט אומר לאן ללכת; הסריאל אומר איזה כונן זה כשמחזיקים
+         אותו ביד — בדיוק כמו ברשימת הכשלים (#553). בלעדיו "מגירה 2 ·
+         נכתבה" הוא עדיין ניחוש כשיש כמה מגירות שהצליחו ורק אחת נדרשת. */
+      const serial = d.serial
+        ? ` <span class="mono serial" dir="ltr">${esc(d.serial)}</span>` : "";
+      /* #872: CRC שעלה בסבב הזה (הפרש, לא המונה המצטבר) — מידע לטכנאי על
+         הכבל, לא צבע של הדיסק. חסר/0 = לא מוצג. */
+      const crc = typeof d.crc_delta === "number" && d.crc_delta > 0
+        ? ` <span class="crc">CRC +${d.crc_delta} · לבדוק כבל</span>` : "";
       return `<span class="drawer${tone}">${slot}
-        <span class="mono dev" dir="ltr">${esc(d.dev || "")}</span>
-        · ${esc(word)}</span>`;
+        <span class="mono dev" dir="ltr">${esc(d.dev || "")}</span>${serial}
+        · ${esc(word)}${smart}${crc}</span>`;
     }).join("");
     return `<div class="room-drawers" title="${SLOTS_TITLE}">${chips}</div>`;
   }
@@ -63,8 +101,7 @@ const Room = (() => {
     return machines.map((m) => {
       let status;
       if (withProgress && m.joined) {
-        const pct = m.bytes_total
-          ? Math.round((100 * m.bytes_written) / m.bytes_total) : 0;
+        const progress = Progress.view(m);
         /* שלושה סופים, לא שניים (#67): מחשב שאיבד מגירה אחת מתוך שלוש
            אינו "הסתיים". שורת המגירות שמתחת אומרת איזו — כאן נאמר
            שהמחשב הזה עוד לא סיים את העבודה, ושאסור לשלוח אותו הלאה. */
@@ -76,8 +113,8 @@ const Room = (() => {
           : m.state === "done" ? `<span class="room-ok">הסתיים</span>`
           : m.state === "waiting" || !m.state ? `<span class="sub">מחכה לשידור</span>`
           : m.error
-          ? `<span>${pct}% · <span class="room-bad">${esc(m.error)}</span></span>`
-          : `<span>${pct}%</span>`;
+          ? `<span>${progress.label} · <span class="room-bad">${esc(m.error)}</span></span>`
+          : `<span>${progress.label}</span>`;
       } else {
         status = m.awake
           ? `<span class="room-ok">ער · ${m.fresh_drawers} מגירות מוכנות</span>`
@@ -102,6 +139,26 @@ const Room = (() => {
     images.sort((a, b) => (a.folder + a.name).localeCompare(b.folder + b.name, "he"));
   }
 
+  /* #59: אותו רעיון כמו classes.js — המניפסט של האימג' הנבחר, כדי
+     להציג את מועמד ההרחבה לפני שהסבב נפתח. הבחירה חלה על **כל** הגלים
+     של הסבב הזה, לא רק על הראשון. */
+  async function loadRoomExpand(imageId) {
+    const box = $("#room-expand");
+    if (!box) return;
+    if (!imageId) { box.innerHTML = ""; return; }
+    let manifest;
+    try {
+      manifest = await fetch(`/api/v1/images/${encodeURIComponent(imageId)}/manifest`)
+        .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); });
+    } catch (error) {
+      box.innerHTML = `<p class="sub">לא הצלחנו לקרוא את פרטי המחיצות — ` +
+        `ברירת המחדל האוטומטית תופעל.</p>`;
+      return;
+    }
+    if ($("#room-image").value !== imageId) return;   // נבחר אימג' אחר בינתיים
+    box.innerHTML = expandBlockHtml("room", manifest, "auto");
+  }
+
   async function renderSetup(data) {
     await loadImages();
     const ready = data.machines.reduce((n, m) => n + (m.awake ? m.fresh_drawers : 0), 0);
@@ -117,6 +174,7 @@ const Room = (() => {
             ${images.map((i) => `<option value="${esc(i.id)}">
               ${esc(i.folder ? i.folder + " / " : "")}${esc(i.name)}</option>`).join("")}
           </select></label>
+        <div id="room-expand"></div>
         <label>כמה כוננים צריך הפעם, סך הכל
           <input type="number" id="room-target" min="1" value="${ready || 24}"></label>
         <p class="sub" id="room-ready"></p>
@@ -126,6 +184,8 @@ const Room = (() => {
         <button class="btn primary" id="room-open">פתח סבב והער את החדר</button>
         <button class="btn" id="room-wake">העֵר את מחשבי השיכפול</button>
         <button class="btn" id="room-back">חזרה</button>`;
+      $("#room-image").addEventListener("change", (event) =>
+        loadRoomExpand(event.target.value));
       $("#room-open").addEventListener("click", openRound);
       $("#room-wake").addEventListener("click", wake);
       $("#room-back").addEventListener("click", () => { reset(); MODE = null; poll(); });
@@ -144,7 +204,8 @@ const Room = (() => {
     const response = await fetch("/api/console/room", {
       method: "POST", credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image_id: image, target_drives: target }),
+      body: JSON.stringify({ image_id: image, target_drives: target,
+                             expand_partition: expandBlockValue("room") }),
     });
     if (!response.ok) {
       let detail = "שגיאה " + response.status;
@@ -172,7 +233,8 @@ const Room = (() => {
         <p class="sub" id="room-hint"></p>
         <div class="room-machines" id="room-machines"></div>
         <div id="room-confirm" class="hidden">
-          <label>עצירת הסבב באמצע היא פעולת חירום. הקלידו <b>עצור</b> לאישור:
+          <label>עצירת הסבב באמצע היא פעולת חירום. הקלידו את שם האימג'
+            המשודר — <b id="room-confirm-name"></b> — לאישור:
             <input type="text" id="room-confirm-text"></label>
         </div>
         <p class="error" id="room-error"></p>`;
@@ -193,6 +255,7 @@ const Room = (() => {
 
     $("#st-room-sub").textContent =
       `משדר: ${round.image_name} · גל ${round.wave_number}`;
+    $("#room-confirm-name").textContent = round.image_name;
     $("#room-count").textContent =
       `${round.written_drives} / ${round.target_drives}`;
     $("#room-bar").style.width =
@@ -209,7 +272,15 @@ const Room = (() => {
   async function startNow() {
     const response = await fetch("/api/console/room/start",
       { method: "POST", credentials: "same-origin" });
-    if (response.ok) toast("השידור יוצא לדרך.");
+    if (response.ok) {
+      toast("השידור יוצא לדרך.");
+    } else {
+      /* ‏#843: 409 "אין מכונות בסבב" — לחיצה שנדחתה בשקט נראית כמו
+         כפתור שבור, והמפעיל לוחץ שוב במקום להמתין שיצטרפו. */
+      let detail = "שגיאה " + response.status;
+      try { detail = (await response.json()).detail || detail; } catch (e) {}
+      toast(detail);
+    }
     refresh();
   }
 
@@ -222,29 +293,36 @@ const Room = (() => {
          ב-BIOS של 12 מכונות, כשהכבל בשרת מנותק (#74). */
       const reason = (result.reasons || [])[0];
       if (result.failed) {
-        toast(`נשלחה הערה ל-${result.woken} מחשבים · ${result.failed} נכשלו`
+        toast(`נשלחה בקשת הערה ל-${result.sent} מחשבים · ${result.failed} נכשלו`
               + (reason ? ` — ${reason}` : "."));
       } else {
-        toast(`נשלחה הערה ל-${result.woken} מחשבים.`);
+        toast(`נשלחה בקשת הערה ל-${result.sent} מחשבים.`);
       }
     }
   }
 
   async function closeRound() {
-    /* עצירה מאחורי הקלדה (אפיון סעיף 15) — בלי confirm() שחסום בקיוסק. */
+    /* עצירה מאחורי הקלדת שם האימג' המשודר (עיקרון 7) — בלי confirm()
+       שחסום בקיוסק. ההכרעה עברה לשרת ב-#533: המסך שולח את מה שהוקלד
+       ומציג את מה שהשרת ענה, במקום לאכוף לבדו. */
     const box = $("#room-confirm");
     if (box.classList.contains("hidden")) {
       box.classList.remove("hidden");
       $("#room-confirm-text").focus();
       return;
     }
-    if ($("#room-confirm-text").value.trim() !== "עצור") {
-      $("#room-error").textContent = "הטקסט שהוקלד אינו זהה.";
+    const response = await fetch("/api/console/room/close", {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm_name: $("#room-confirm-text").value.trim() }),
+    });
+    if (!response.ok) {
+      let detail = "שגיאה " + response.status;
+      try { detail = (await response.json()).detail || detail; } catch (e) {}
+      $("#room-error").textContent = detail;
       return;
     }
-    const response = await fetch("/api/console/room/close",
-      { method: "POST", credentials: "same-origin" });
-    if (response.ok) toast("הסבב נעצר.");
+    toast("הסבב נעצר.");
     reset();
     refresh();
   }

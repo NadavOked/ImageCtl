@@ -37,7 +37,7 @@ def hivewrite(tmp_path_factory):
     subprocess.run(
         ["gcc", "-O2", "-Wall", "-Wextra", "-Werror",
          "-o", str(binary), str(SOURCE), "-lhivex"],
-        check=True,
+        check=True, stdin=subprocess.DEVNULL,
     )
     return binary
 
@@ -51,13 +51,13 @@ def hive(tmp_path):
 
 def run(binary, *args):
     return subprocess.run(
-        [str(binary), *map(str, args)], capture_output=True, text=True
+        [str(binary), *map(str, args)], capture_output=True, text=True, stdin=subprocess.DEVNULL
     )
 
 
 def hivexget(hive, path, name):
     result = subprocess.run(
-        ["hivexget", str(hive), path, name], capture_output=True, text=True
+        ["hivexget", str(hive), path, name], capture_output=True, text=True, stdin=subprocess.DEVNULL
     )
     assert result.returncode == 0, result.stderr
     return result.stdout.strip()
@@ -66,7 +66,7 @@ def hivexget(hive, path, name):
 def value_listing(hive, path):
     """כל ערכי המפתח, שורה לערך — הבסיס להשוואת 'מי שרד'."""
     result = subprocess.run(
-        ["hivexget", str(hive), path], capture_output=True, text=True
+        ["hivexget", str(hive), path], capture_output=True, text=True, stdin=subprocess.DEVNULL
     )
     assert result.returncode == 0, result.stderr
     return sorted(result.stdout.splitlines())
@@ -147,3 +147,41 @@ def test_get_missing_value_fails(hivewrite, hive):
     result = run(hivewrite, "-g", hive, PARAMS, "NoSuchValue")
     assert result.returncode != 0
     assert "not found" in result.stderr
+
+# --- #720: -x כותב REG_EXPAND_SZ — DevicePath מכיל %SystemRoot% ---------------
+
+
+def lsval(hive, path) -> str:
+    """הפלט של `lsval` ב-hivexsh — פורמט regedit, שבו הסוג נראה:
+    ‏`"Name"="text"` הוא REG_SZ ו-`"Name"=str(2):"…"` הוא REG_EXPAND_SZ (כך
+    ‏hivexsh מדפיס אותו — נמדד במעבדה 16/09; `hex(2):` היה ניחוש בלי libhivex).
+    ‏hivexget הוא wrapper ל-hivexsh, ולכן hivexsh קיים בכל מקום שהטסט רץ."""
+    script = f"cd {path}\nlsval\n"
+    result = subprocess.run(
+        ["hivexsh", str(hive)], input=script, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+def test_x_writes_an_expand_string_and_plain_writes_a_plain_one(hivewrite, hive):
+    """בלי -x הערך הוא REG_SZ (כמו תמיד); עם -x הוא REG_EXPAND_SZ, ו-`-g`
+    קורא את שניהם. זה מה שמאפשר ל-postdeploy.sh להוסיף ל-DevicePath
+    בלי לשבור את `%SystemRoot%\inf` שכבר בו."""
+    value = r"%SystemRoot%\inf;%SystemRoot%\..\ImageCtl\Drivers"
+    assert run(hivewrite, "-x", hive, PARAMS, "DevicePath", value).returncode == 0
+    assert run(hivewrite, hive, PARAMS, "PlainPath", value).returncode == 0
+    listing = lsval(hive, PARAMS)
+    assert '"DevicePath"=str(2):' in listing, listing
+    assert f'"PlainPath"="{value}"' in listing.replace("\\\\", "\\"), listing
+    for name in ("DevicePath", "PlainPath"):
+        result = run(hivewrite, "-g", hive, PARAMS, name)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == value
+
+
+def test_x_alone_is_a_usage_error(hivewrite, hive):
+    result = run(hivewrite, "-x", hive, PARAMS, "DevicePath")
+    assert result.returncode != 0 and "usage" in result.stderr
+    result = run(hivewrite, "-x", "-g", hive, PARAMS, "DevicePath")
+    assert result.returncode != 0 and "usage" in result.stderr

@@ -256,11 +256,14 @@ def run_leaf_issuer(tmp_path: Path, text: str) -> str:
         + SOURCE_CHAIN
         + "_leaf_issuer"
     )
-    proc = subprocess.run([BASH, "-c", script], input=text, capture_output=True,
-                          text=True, encoding="utf-8", errors="replace",
-                          stdin=None, cwd=str(REPO))
-    assert proc.returncode == 0, proc.stderr
-    return proc.stdout.strip()
+    # ‏input בבייטים ולא ב-text: עם `text=True` ווינדוס מתרגם כל `\n` שנכתב
+    # לצינור ל-`\r\n`, וה-`awk` של `_leaf_issuer` מוציא `CN=` משורה שנושאת
+    # ‏`\r` בסופה — כלומר שם CA עם תו נסתר (#491, אותו כשל כמו #479). הפלט
+    # מפוענח כאן, כדי שלא יעבור universal-newlines ויסתיר את מה שהתקבל.
+    proc = subprocess.run([BASH, "-c", script], input=text.encode("utf-8"),
+                          capture_output=True, cwd=str(REPO))
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+    return proc.stdout.decode("utf-8", "replace").strip()
 
 
 # --- הממצא המרכזי: קובץ אחד, שתי חתימות -------------------------------------
@@ -407,6 +410,55 @@ def test_fewer_than_five_data_directories_carries_no_table(tmp_path):
     esp = tmp_path / "esp"
     put(esp, "/EFI/BOOT/bootx64.efi", make_pe([blob(b"CA2011")], dirs=4))
     _both_fields_present(run_boot_ca_json(tmp_path, esp), "/EFI/BOOT/bootx64.efi")
+
+
+def run_with_broken_dedup_awk(tmp_path: Path, esp: Path) -> dict:
+    """כמו `run_boot_ca_json`, אבל ה-`awk` שכותב את רשימת החותמים המנוכה
+    (‏bootca.sh:213) נכשל — בדיוק תרחיש ה-tmpfs המלא של #506.
+
+    העטיפה נופלת **רק** כשמגיע אליה קובץ `.raw` (הארגומנט של קריאת
+    ה-dedup), ולכן ה-`awk` של `_leaf_issuer` (קורא stdin, בלי ארגומנט
+    קובץ) ו-`json_escape` ממשיכים לעבוד. משתנה אחד בכל בדיקה: אותו ESP
+    בדיוק נגזר כשהכתיבה מצליחה, ומה שהשתנה הוא כישלון הכתיבה בלבד.
+    """
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(exist_ok=True)
+    box = toolbox(tmp_path, FAKE_OPENSSL)
+    real_awk = shutil.which("awk")
+    assert real_awk, "awk אינו זמין להרצת הבקרה"
+    (box / "awk").write_text(
+        "#!/bin/sh\n"
+        'for a in "$@"; do\n'
+        "  case \"$a\" in\n"
+        "    *.raw) echo 'awk: write error: No space left on device' >&2; exit 2 ;;\n"
+        "  esac\n"
+        "done\n"
+        f"exec {posix(real_awk)!r} \"$@\"\n",
+        encoding="utf-8", newline="\n")
+    (box / "awk").chmod(0o755)
+    script = (
+        f"export PATH={path_entry(box)!r}; "
+        f"export RUN_DIR={posix(run_dir)!r}; "
+        f"export ESPROOT={posix(esp)!r}; "
+        + SOURCE_CHAIN
+        + "boot_ca_json '/dev/fakeesp'"
+    )
+    proc = subprocess.run([BASH, "-c", script], capture_output=True, text=True,
+                          encoding="utf-8", errors="replace",
+                          stdin=subprocess.DEVNULL, cwd=str(REPO))
+    assert proc.returncode == 0, f"boot_ca_json יצא {proc.returncode}\n{proc.stderr}"
+    return json.loads("{" + proc.stdout.strip() + "}")
+
+
+def test_a_failed_signer_list_write_is_not_an_unsigned_image(tmp_path):
+    """‏#506 — ה-`awk` שכותב את רשימת החותמים נכשל (tmpfs מלא). קובץ ריק
+    שיוצא 0 נקרא כ-`[]` + `error:null` — "נקרא, המטען אינו חתום" — במקום
+    "לא הצלחנו לקרוא". על אימג' ווינדוס זו מסקנה הפוכה מהאמת (עיקרון 5)."""
+    esp = tmp_path / "esp"
+    put(esp, "/EFI/debian/shimx64.efi", make_pe([blob(b"CA2011"), blob(b"CA2023")]))
+    # ראיה חיובית שהקלט עצמו נגזר כשהכתיבה מצליחה — כך שמה שהשתנה הוא הכתיבה.
+    assert run_boot_ca_json(tmp_path, esp)["boot_ca"] == [NAME_2011, NAME_2023]
+    _both_fields_present(run_with_broken_dedup_awk(tmp_path, esp), "רשימת החותמים")
 
 
 def test_a_table_of_a_type_we_do_not_read_is_not_unsigned(tmp_path):

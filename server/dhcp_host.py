@@ -28,6 +28,14 @@ DEFAULT_CONF = "/etc/dnsmasq.d/imagectl-dhcp.conf"
 PROXY_CONF = "/etc/imagectl/dnsmasq-proxy.conf"
 PROXY_UNIT = "imagectl-proxy"
 
+#: ‏#141: רשימת המכונות הרשומות, שממנה dhcp-boot (render() הראשי) מדליק
+#: tag:known. **מחוץ** ל-/etc/dnsmasq.d בכוונה — הוא נטען כ-dhcp-hostsfile
+#: מפורש מתוך imagectl.conf (setup-boot-server.sh), לא דרך הסריקה
+#: האוטומטית של dnsmasq לתיקייה, כדי ששינוי בו לא ידרוש לגעת בקובץ
+#: הממשקים שהקונסולה כותבת. כבר ב-ReadWritePaths של imagectl-server
+#: (‏-/etc/imagectl, אופציונלי) — אין שינוי ביחידה.
+KNOWN_MACS_CONF = "/etc/imagectl/known-macs"
+
 
 # --- מה יש במכונה -----------------------------------------------------------
 
@@ -243,6 +251,17 @@ def apply_proxy(text: str, active: bool,
         "restart" if active else "stop", PROXY_UNIT)
 
 
+def apply_known_macs(text: str, conf_path: str | Path = KNOWN_MACS_CONF) -> str | None:
+    """‏#141: כותב את קובץ ה-known-macs ומבקש מ-dnsmasq לקרוא אותו מחדש.
+
+    ‏reload ולא restart, בכוונה: `--dhcp-hostsfile` נטען מחדש ב-SIGHUP
+    בלי לאבד חכירות ובלי להפיל את הסוקטים (נבדק במדריך dnsmasq ובמעבדה,
+    ‏#36 הוא התקדים למה restart על ההגדרה הזו אסור). מחזיר הודעת שגיאה
+    או None, באותו דפוס כמו apply/apply_proxy.
+    """
+    return _write(text, conf_path) or _systemctl("reload", "dnsmasq")
+
+
 def _write(text: str, conf_path: str | Path) -> str | None:
     path = Path(conf_path)
     try:
@@ -264,4 +283,43 @@ def _systemctl(action: str, unit: str) -> str | None:
     if result.returncode != 0:
         return (f"{unit} לא הגיב ל-{action}: "
                 f"{(result.stderr or result.stdout).strip()[:300]}")
+    return None
+
+
+# --- אמת חיה ל-DHCP (‏#762) --------------------------------------------------
+#
+# מה שמוצג בקונסולה כ-"DHCP בפועל" חייב לבוא מכאן, לא מ-InterfaceConfig.enabled
+# (שהוא כוונה שנשמרה, לא מציאות). שתי הפונקציות למטה הן הצד המלוכלך היחיד:
+# קריאת קובץ וקריאת מצב שירות. כשל בכל אחת מהן = None, ולעולם לא "כבוי" —
+# זו בדיוק ההרחבה 5א בעיקרון 5: "לא הצלחנו לבדוק" ו"בדקנו, זה כבוי" הם שני
+# מצבים שונים.
+
+
+def read_active_conf(conf_path: str | Path = DEFAULT_CONF) -> str | None:
+    """תוכן קובץ ה-dnsmasq הפעיל, או None אם לא ניתן לקרוא אותו."""
+    try:
+        return Path(conf_path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def service_active(unit: str = "dnsmasq") -> bool | None:
+    """‏tri-state: `True`/`False` פעיל/לא, או `None` כשהבדיקה עצמה נכשלה.
+
+    ‏`systemctl is-active` מחזיר קוד יציאה שאינו 0 גם על "inactive" —
+    ‏`is-active` הוא בדיוק המשפחה שבה `1` הוא תשובה תקנית ולא כישלון של
+    הפקודה, ולכן קוד היציאה לבדו אינו מספיק: קוראים את stdout בשם.
+    """
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", unit],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out = (result.stdout or "").strip()
+    if out == "active":
+        return True
+    if out in ("inactive", "failed", "unknown", "activating", "deactivating"):
+        return False
     return None

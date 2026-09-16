@@ -7,6 +7,7 @@ RBAC לפי סעיף 11: משתמש deploy יכול לראות אימג'ים ו�
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 import shutil
@@ -14,16 +15,37 @@ import shutil
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import PlainTextResponse
 
-from . import auth, registry, users
+from . import auth, dhcp, disk_failures, inventory, registry, storage_nodes, users
 from .api import ServerContext
 from .db import (_write_lock, get_setting, journal, now_iso, set_setting,
                  update_one, writing)
 from .images import restore_refusal
+from .imagefit import validate_expand_choice
 from .journal_he import EVENTS_HE, JournalTranslator
+from .session_view import label as session_label
 from .sessions import SessionError
+from .station import ROUND_OPENER_ROLES
 
 WRITE_SETTINGS = {"recovery_require_login", "session_wait_seconds",
-                  "console_idle_seconds"}
+                  "console_idle_seconds", "class_deploy_enabled"}
+
+#: #406: השדות שעריכת מכונה מכירה. שדה מחוץ לרשימה = טעות של הקורא,
+#: והוא נדחה ב-400 במקום להיבלע ולהחזיר ``{"ok": True}`` שלא שינה כלום.
+EDIT_MACHINE_FIELDS = {"name", "group_id", "drawer_count"}
+
+
+def _drawer_count(raw):
+    """#695: מאמת את מספר המגירות שהוגדר למחשב שכפול (1..8). ‏None = לא
+    נשלח (משאירים את ברירת המחדל בסכמה)."""
+    if raw is None:
+        return None
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "מספר המגירות חייב להיות מספר")
+    if not 1 <= n <= 8:
+        raise HTTPException(400, "מספר המגירות חייב להיות בין 1 ל־8")
+    return n
 
 #: כל כתיבה כאן עוברת ב-``with _write_lock, writing(ctx.conn)`` — שני
 #: המנגנונים של `db.py`, מאותה סיבה שבגללה `net_seen` קיבל אותם (#272,
@@ -34,9 +56,38 @@ WRITE_SETTINGS = {"recovery_require_login", "session_wait_seconds",
 #: ולכן הרישום ביומן נשאר **מחוץ** לבלוק.
 
 
-def create_console_router(ctx: ServerContext) -> APIRouter:
+def create_console_router(
+    ctx: ServerContext, known_macs_hooks: dict | None = None
+) -> APIRouter:
     router = APIRouter(prefix="/api/console")
     current_user, admin_only = auth.dependencies(ctx.conn)
+
+    def _sync_known_macs(user_id) -> dict | None:
+        """‏#141: מי שנכנס/יוצא מטבלת המכונות משנה מי מקבל dhcp-boot בכלל —
+        הקובץ נכתב מחדש **מיד**, לא ממתין לעריכת DHCP הבאה בלשונית הרשת.
+
+        מחזיר את שדה `network` של התשובה (#857): ‏`None` כשלא הופעל
+        (אין hooks), ‏`{"applied": True, "error": None}` בהצלחה,
+        ‏`{"applied": False, "error": "<סיבה>"}` בכשל. עד #857 הכשל
+        נרשם ביומן בלבד והתשובה הייתה 200 נקי — ה-DB עודכן, הרשת לא,
+        והמכונה החדשה לא קיבלה GRUB בשקט. ה-DB **אינו** מגולגל אחורה
+        (המפעיל ביקש את המכונה) — התשובה פשוט מבחינה.
+
+        ‏`known_macs_hooks` הוא `None` כברירת מחדל בכוונה (בדיוק כמו
+        `dhcp_hooks` ב-console_dhcp.py, אבל כאן ה-None הוא גם ברירת
+        המחדל הבטוחה לבדיקות): הוספה/מחיקה/ייבוא של מכונה קורים כמעט
+        בכל בדיקה בחבילה, ובלי hook מוזרק זה היה אומר כתיבה אמיתית
+        ל-/etc/imagectl/known-macs ו-`systemctl reload dnsmasq` על כל
+        אחת מהן. הייצור מדליק אותו במפורש דרך `main.py` — לא ברירת מחדל
+        שקטה, כדי שהיא לא תיעלם באותה שקט שבו הייתה נדלקת."""
+        if known_macs_hooks is None:
+            return None
+        text = dhcp.render_known_macs(registry.all_macs(ctx.conn))
+        error = known_macs_hooks["apply"](text)
+        if error:
+            journal(ctx.conn, "known_macs_apply_failed", error, user_id)
+            return {"applied": False, "error": str(error)}
+        return {"applied": True, "error": None}
 
     @router.post("/login")
     async def login(request: Request, response: Response):
@@ -66,10 +117,25 @@ def create_console_router(ctx: ServerContext) -> APIRouter:
     def me(user=Depends(current_user)):
         # זמן הניתוק מוחזר לכל משתמש מחובר — גם deploy, שאין לו גישה
         # למסך ההגדרות אבל הניתוק חל גם עליו.
+        #
+        # ‏capabilities: דגלים נגזרי-שרת שהקונסולה חושפת מהם רכיבים
+        # מותנים. ‏`interbranch_transfer` (#723) — רק ל-admin, רק על
+        # standalone, ורק כשיש משני פעיל אחד לפחות. הדגל הוא הנראות;
+        # האכיפה עצמה יושבת בשכבת ה-route (שלבים הבאים ב-#655).
         return {
             "username": user[0],
             "role": user[1],
             "idle_seconds": int(get_setting(ctx.conn, "console_idle_seconds") or 300),
+            "capabilities": {
+                "interbranch_transfer":
+                    storage_nodes.can_interbranch_transfer(ctx.conn, user[1]),
+                # ‏#740: הוספת משני זמינה על ראשי גם בלי משניים קיימים (זו
+                # הפעולה שיוצרת את הראשון); פאנל ה-pairing המקומי — על משני.
+                "enroll_secondary":
+                    storage_nodes.can_enroll_secondary(ctx.conn, user[1]),
+                "open_local_pairing":
+                    storage_nodes.can_open_local_pairing(ctx.conn, user[1]),
+            },
         }
 
     # --- מבט-על --------------------------------------------------------------
@@ -212,19 +278,36 @@ def create_console_router(ctx: ServerContext) -> APIRouter:
             # ניהול קבוצות, ולכן גם אי אפשר למחוק אותם.
             raise HTTPException(400, "קבוצה קבועה — אפשר להסיר ממנה מכונות, לא למחוק אותה")
         with _write_lock, writing(ctx.conn):
-            ctx.conn.execute("DELETE FROM groups WHERE id = ?", (gid,))
+            if not update_one(ctx.conn, "DELETE FROM groups WHERE id = ?", (gid,)):
+                raise HTTPException(404, "קבוצה לא קיימת")
         journal(ctx.conn, "group_delete", gid, user[0])
         return {"ok": True}
 
     @router.get("/machines")
     def machines(group: str | None = None, user=Depends(current_user)):
+        # #417: המלאי האחרון שהמכונה דיווחה ב-hello, ליד מסך המכונה.
+        # ‏null = מעולם לא דיווחה (או שהדיווח האחרון היה פגום); [] = דיווחה
+        # בפועל אפס כוננים — שני ממצאים שונים, ואסור לקפל (עיקרון 5).
         query = (
-            "SELECT mac, suffix, group_id, note, added_at FROM machines"
-            + (" WHERE group_id = ?" if group else "")
-            + " ORDER BY group_id, suffix"
+            "SELECT m.mac, m.suffix, m.group_id, m.note, m.drawer_count,"
+            " m.added_at, d.disks_json, d.last_seen AS disks_reported_at"
+            " FROM machines m LEFT JOIN net_devices d ON d.mac = m.mac"
+            + (" WHERE m.group_id = ?" if group else "")
+            + " ORDER BY m.group_id, m.suffix"
         )
         rows = ctx.conn.execute(query, (group,) if group else ()).fetchall()
-        return [dict(r) for r in rows]
+        # ‏#720: המלאי החומרתי האחרון (schema 2). null = מעולם לא דיווחה.
+        inventories = inventory.latest_all(ctx.conn)
+        result = []
+        for r in rows:
+            row = dict(r)
+            disks_json = row.pop("disks_json")
+            row["disks"] = json.loads(disks_json) if disks_json is not None else None
+            seen = inventories.get(row["mac"])
+            row["inventory"] = seen["inventory"] if seen else None
+            row["inventory_seen_at"] = seen["seen_at"] if seen else None
+            result.append(row)
+        return result
 
     @router.post("/machines/import")
     async def import_machines(request: Request, user=Depends(admin_only)):
@@ -237,11 +320,14 @@ def create_console_router(ctx: ServerContext) -> APIRouter:
         if body.get("dry_run"):
             return {"preview": [vars(l) for l in lines]}
         saved, rejected = registry.import_lines(ctx.conn, group_id, lines, user[0])
-        return {"saved": saved, "rejected": [vars(l) for l in rejected]}
+        network = _sync_known_macs(user[0]) if saved else None
+        return {"saved": saved, "rejected": [vars(l) for l in rejected],
+                "network": network}
 
     @router.post("/machines")
     async def add_machine(request: Request, user=Depends(admin_only)):
         body = await request.json()
+        drawer_count = _drawer_count(body.get("drawer_count"))   # #695
         try:
             mac = registry.add_machine(
                 ctx.conn, body.get("mac", ""), body.get("name", ""),
@@ -249,38 +335,94 @@ def create_console_router(ctx: ServerContext) -> APIRouter:
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc))
-        return {"mac": mac}
+        if drawer_count is not None:
+            with _write_lock, writing(ctx.conn):
+                ctx.conn.execute(
+                    "UPDATE machines SET drawer_count = ? WHERE mac = ?",
+                    (drawer_count, mac),
+                )
+            journal(ctx.conn, "machine_drawer_count",
+                    f"{mac} count={drawer_count}", user[0])
+        return {"mac": mac, "network": _sync_known_macs(user[0])}
 
     @router.put("/machines/{mac}")
     async def edit_machine(mac: str, request: Request, user=Depends(admin_only)):
         body = await request.json()
+        if not isinstance(body, dict):
+            raise HTTPException(400, "גוף הבקשה חייב להיות אובייקט")
+        unknown = set(body) - EDIT_MACHINE_FIELDS
+        if unknown:
+            raise HTTPException(400, "שדות לא מוכרים: " + ", ".join(sorted(unknown)))
+        drawer_count = _drawer_count(body.get("drawer_count"))   # #695
         try:
             registry.update_machine(
                 ctx.conn, mac, body.get("name"), body.get("group_id"), user[0]
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc))
+        if drawer_count is not None:
+            with _write_lock, writing(ctx.conn):
+                if not update_one(
+                    ctx.conn,
+                    "UPDATE machines SET drawer_count = ? WHERE mac = ?",
+                    (drawer_count, registry.normalize_mac(mac)),
+                ):
+                    raise HTTPException(404, "מכונה לא קיימת")
+            journal(ctx.conn, "machine_drawer_count",
+                    f"{registry.normalize_mac(mac)} count={drawer_count}", user[0])
         return {"ok": True}
-
-    def registry_group_exists(gid: str) -> bool:
-        return ctx.conn.execute("SELECT 1 FROM groups WHERE id = ?", (gid,)).fetchone() is not None
 
     @router.delete("/machines/{mac}")
     def del_machine(mac: str, user=Depends(admin_only)):
         canonical = registry.normalize_mac(mac)
+        if canonical is None:
+            raise HTTPException(400, "MAC לא תקין")
         with _write_lock, writing(ctx.conn):
-            ctx.conn.execute("DELETE FROM machines WHERE mac = ?", (canonical,))
-        journal(ctx.conn, "machine_delete", canonical or mac, user[0])
-        return {"ok": True}
+            if not update_one(ctx.conn, "DELETE FROM machines WHERE mac = ?", (canonical,)):
+                raise HTTPException(404, "מכונה לא קיימת")
+        journal(ctx.conn, "machine_delete", canonical, user[0])
+        return {"ok": True, "network": _sync_known_macs(user[0])}
 
     @router.get("/machines.csv")
     def machines_csv(user=Depends(admin_only)):
         return PlainTextResponse(registry.export_csv(ctx.conn), media_type="text/csv")
 
+    # --- #874: דיסקים אדומים — זיכרון כשלי הכתיבה בשרת ---------------------------
+
+    @router.get("/disk-failures")
+    def read_disk_failures(user=Depends(current_user)):
+        return disk_failures.list_open(ctx.conn)
+
+    @router.post("/disk-failures/{failure_id}/clear")
+    def clear_disk_failure(failure_id: int, user=Depends(admin_only)):
+        # "נקה" — הדיסק הוחלף / הכבל תוקן. רשומה שכבר נוקתה או שאינה
+        # קיימת אינה "נוקתה" (עיקרון 5): 404, לא ok.
+        if not disk_failures.clear(ctx.conn, failure_id, by=user[0]):
+            raise HTTPException(404, "רשומה לא קיימת או שכבר נוקתה")
+        return {"ok": True}
+
     # --- סבבים (גם deploy) ---------------------------------------------------
 
+    def round_operator(user=Depends(current_user)) -> tuple[str, str]:
+        """מחובר **וגם** בתפקיד שרשאי להפעיל סבב כיתה.
+
+        אותה רשימת-היתר שבה נפתח הסבב מהתחנה — ``ROUND_OPENER_ROLES``
+        (#94) — ולא עותק שלה: מדובר באותו אובייקט בדיוק, וכשיתווסף
+        תפקיד שלישי אסור ששתי הרשימות ייפרדו. חדר השיכפולים עשה את
+        אותה הכרעה ב-#152 (``room.ROOM_OPERATOR_ROLES``).
+
+        ‏#581 סגר את ``start``/``close`` מאחורי הבדיקה הזו, אך **פתיחת**
+        הסבב מהקונסולה נשארה ``current_user`` בלבד — #592 סגר גם אותה.
+        וכך כל חשבון מחובר — תפקיד שיתווסף מחר בכלל — כבר אינו יכול
+        לפתוח או לעצור שידור חי לכיתה שלמה.
+        """
+        if user[1] not in ROUND_OPENER_ROLES:
+            journal(ctx.conn, "session_role_denied", f"{user[0]} ({user[1]})")
+            raise HTTPException(403, "פעולה למפעיל סבבים בלבד")
+        return user
+
     @router.post("/sessions")
-    async def open_session(request: Request, user=Depends(current_user)):
+    async def open_session(request: Request, user=Depends(round_operator)):
         """פתיחת סבב כיתה — מהקונסולה או ממסך מחשב הבנייה (אותו cookie).
 
         `macs` (רשות) — בחירת מחשבים: רק הם מוערים ומצטרפים. קידומת
@@ -292,8 +434,10 @@ def create_console_router(ctx: ServerContext) -> APIRouter:
         manifest = ctx.library.get(image_id)
         if manifest is None:
             raise HTTPException(400, "אימג' לא קיים בספרייה")
-        if not registry_group_exists(group_id):
-            raise HTTPException(400, "קבוצה לא קיימת")
+        # #534: יעד סבב הוא כיתה בלבד — לא מחשב הבנייה ולא חדר השיכפולים.
+        # אותה בדיקה של station.py, דרך registry.group_role המשותפת.
+        if registry.group_role(ctx.conn, group_id) != "classroom":
+            raise HTTPException(400, "יעד הסבב חייב להיות קבוצת כיתה")
 
         roster = None
         if body.get("macs") is not None:
@@ -311,6 +455,14 @@ def create_console_router(ctx: ServerContext) -> APIRouter:
                     user[0])
             raise HTTPException(400, refusal)
 
+        # ‏#59: בחירת ההרחבה — ברירת המחדל האוטומטית, כיבוי, או מחיצה
+        # שנבחרה ביד. מאומתת מול המניפסט הזה לפני שהסבב נפתח.
+        try:
+            expand_choice = validate_expand_choice(
+                manifest, body.get("expand_partition"))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
         machines = ctx.conn.execute(
             "SELECT COUNT(*) AS n FROM machines WHERE group_id = ?", (group_id,)
         ).fetchone()["n"]
@@ -320,14 +472,17 @@ def create_console_router(ctx: ServerContext) -> APIRouter:
         try:
             session_id = ctx.store.open(
                 group_id, image_id, prefix, expected,
-                opened_by=user[0], roster=roster,
+                opened_by=user[0], roster=roster, expand_partition=expand_choice,
             )
         except (SessionError, ValueError) as exc:
             raise HTTPException(409, str(exc))
         return {"id": session_id}
 
     @router.post("/sessions/{session_id}/start")
-    def start_session(session_id: str, user=Depends(current_user)):
+    def start_session(session_id: str, user=Depends(round_operator)):
+        # תפקיד בלבד, בלי הקלדת שם — אותה הכרעה כמו ``/room/start``:
+        # עיקרון 7 נוקב ב"עצירת סבב", וההתחלה רק מקדימה את מה שהטיימר
+        # עומד לעשות ממילא.
         try:
             ctx.store.start_now(session_id, user[0])
         except SessionError as exc:
@@ -335,7 +490,25 @@ def create_console_router(ctx: ServerContext) -> APIRouter:
         return {"ok": True}
 
     @router.post("/sessions/{session_id}/close")
-    def close_session(session_id: str, user=Depends(current_user)):
+    async def close_session(session_id: str, request: Request,
+                            user=Depends(round_operator)):
+        # גוף ריק או לא-JSON הוא בדיוק המקרה שההקלדה נועדה לתפוס, ולכן
+        # הוא נופל לאישור ריק — 400 עם ההסבר, ולא 500 שנראה כתקלת שרת.
+        try:
+            body = await request.json()
+        except Exception:                              # noqa: BLE001
+            body = {}
+        typed = body.get("confirm_name", "") if isinstance(body, dict) else ""
+        row = ctx.conn.execute(
+            "SELECT image_id FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(409, "סבב לא קיים")
+        # פעולה הרסנית מאחורי הקלדת שם — אותו דפוס כמו מחיקת אימג'
+        # ועצירת סבב החדר (#533). מה שמוקלד הוא מה שהמסך כבר מציג,
+        # כולל הנפילה חזרה ל-`image_id` כשהמניפסט נמחק באמצע הסבב.
+        if typed != session_label(row, ctx.library):
+            raise HTTPException(400, "השם שהוקלד אינו זהה לשם האימג' שהסבב משדר")
         try:
             ctx.store.close(session_id, user[0])
         except SessionError as exc:
@@ -358,7 +531,10 @@ def create_console_router(ctx: ServerContext) -> APIRouter:
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc))
-        except Exception:
+        except sqlite3.IntegrityError:
+            # רק התנגשות UNIQUE היא "שם תפוס". כל חריגה אחרת — דיסק מלא,
+            # DB נעול — עולה כ-500 עם הסיבה האמיתית, ולא מתחפשת לשם תפוס
+            # ששולח את המפעיל לחפש חשבון שלא נוצר (עיקרון 5).
             raise HTTPException(409, "משתמש בשם הזה כבר קיים")
         return {"ok": True}
 
@@ -386,13 +562,13 @@ def create_console_router(ctx: ServerContext) -> APIRouter:
     def del_user(username: str, user=Depends(admin_only)):
         if username == user[0]:
             raise HTTPException(400, "אי אפשר למחוק את המשתמש המחובר")
-        if users.admin_count(ctx.conn) <= 1:
-            row = ctx.conn.execute(
-                "SELECT role FROM users WHERE username = ?", (username,)
-            ).fetchone()
-            if row and row["role"] == "admin":
-                raise HTTPException(400, "זה המנהל האחרון — מחיקתו תנעל את הקונסולה")
-        users.delete(ctx.conn, username, by=user[0])
+        # השומר על "יישאר מי שינהל" ירד ל-``users.delete`` ב-#521: שם הוא
+        # תנאי **בתוך** ה-DELETE ולא קריאה שלפניו, ולכן שני מנהלים שנמחקים
+        # בו-זמנית אינם רואים שניהם "יש שניים". כאן נשאר רק התרגום ל-HTTP.
+        try:
+            users.delete(ctx.conn, username, by=user[0])
+        except ValueError as exc:
+            raise HTTPException(404 if "לא קיים" in str(exc) else 400, str(exc))
         return {"ok": True}
 
     @router.get("/journal/events")
@@ -483,6 +659,10 @@ def create_console_router(ctx: ServerContext) -> APIRouter:
         for key, value in body.items():
             if key not in WRITE_SETTINGS:
                 raise HTTPException(400, f"הגדרה לא מוכרת: {key}")
+            if isinstance(value, bool):
+                # ‏JSON true → "True", שנקרא ככבוי (עיקרון 5): מנרמלים
+                # למה שהקוראים משווים אליו — "true"/"false".
+                value = "true" if value else "false"
             set_setting(ctx.conn, key, str(value))
             journal(ctx.conn, "setting_change", f"{key}={value}", user[0])
         return {"ok": True}

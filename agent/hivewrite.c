@@ -10,6 +10,7 @@
  *
  * Usage:
  *   hivewrite HIVE KEY\PATH NAME VALUE [NAME VALUE]...   write values
+ *   hivewrite -x HIVE KEY\PATH NAME VALUE [NAME VALUE]...   as REG_EXPAND_SZ
  *   hivewrite -g HIVE KEY\PATH NAME                      print one value
  *
  * All pairs are written into the same key and committed atomically at
@@ -18,6 +19,13 @@
  * ([A-Za-z0-9-]), and widening ASCII to UTF-16LE needs no conversion
  * tables. Exit is nonzero on any failure, with the reason on stderr;
  * the caller still verifies by reading back (no silent failure).
+ *
+ * -x (#720) writes REG_EXPAND_SZ instead: DevicePath under
+ * SOFTWARE\Microsoft\Windows\CurrentVersion is "%SystemRoot%\inf;..."
+ * and Windows expands %SystemRoot% only for that type. Rewriting it as
+ * REG_SZ would keep the text and silently break every entry in it,
+ * including the stock one -- so the type is an explicit flag, and the
+ * caller that stages drivers (agent/lib/postdeploy.sh) always passes it.
  *
  * -g exists because the packaged readers cannot run in the initramfs:
  * hivexget is a shell wrapper around hivexsh, and both broke there for
@@ -51,7 +59,7 @@ static hive_node_h walk(hive_h *h, const char *path)
 }
 
 static int set_ascii_sz(hive_h *h, hive_node_h node,
-                        const char *name, const char *ascii)
+                        const char *name, const char *ascii, hive_type type)
 {
     size_t chars = strlen(ascii);
     hive_set_value val;
@@ -73,7 +81,7 @@ static int set_ascii_sz(hive_h *h, hive_node_h node,
         val.value[i * 2] = ascii[i];
     }
     val.key = (char *)name;
-    val.t = hive_t_REG_SZ;
+    val.t = type;
 
     if (hivex_node_set_value(h, node, &val, 0) == -1) {
         fprintf(stderr, "hivewrite: setting '%s' failed: %s\n",
@@ -135,9 +143,15 @@ int main(int argc, char **argv)
 {
     if (argc == 5 && strcmp(argv[1], "-g") == 0)
         return get_value(argv[2], argv[3], argv[4]);
-    if (argc < 5 || (argc - 3) % 2 != 0 || strcmp(argv[1], "-g") == 0) {
+    hive_type type = hive_t_REG_SZ;
+    if (argc > 1 && strcmp(argv[1], "-x") == 0) {
+        type = hive_t_REG_EXPAND_SZ;
+        argv++;
+        argc--;
+    }
+    if (argc < 5 || (argc - 3) % 2 != 0 || argv[1][0] == '-') {
         fprintf(stderr,
-                "usage: hivewrite HIVE KEY\\PATH NAME VALUE [NAME VALUE]...\n"
+                "usage: hivewrite [-x] HIVE KEY\\PATH NAME VALUE [NAME VALUE]...\n"
                 "       hivewrite -g HIVE KEY\\PATH NAME\n");
         return 1;
     }
@@ -157,7 +171,7 @@ int main(int argc, char **argv)
     }
 
     for (int i = 3; i < argc; i += 2) {
-        if (set_ascii_sz(h, node, argv[i], argv[i + 1]) != 0) {
+        if (set_ascii_sz(h, node, argv[i], argv[i + 1], type) != 0) {
             hivex_close(h);   /* no commit -- the file is untouched */
             return 4;
         }

@@ -79,7 +79,7 @@ def test_each_drawer_reports_the_bytes_that_were_written_to_it(tmp_path):
         "WAIT_STREAM_START_S=20 WAIT_STREAM_STALL_S=20; "
         f". {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/waits.sh; "
         f". {posix(AGENT)}/lib/progress.sh; . {posix(AGENT)}/lib/restore.sh; "
-        f". {posix(AGENT)}/lib/drawers.sh; "
+        f". {posix(AGENT)}/lib/drawers.sh; . {posix(AGENT)}/lib/verdict.sh; . {posix(AGENT)}/lib/failmark.sh; "
         "target_init sda 131072; target_init sdb 131072; "
         f'stream_source() {{ cat {posix(payload)!r}; }}; '
         "restore_partition_drawers unicast http://s img 3 dd part.zst "
@@ -110,7 +110,7 @@ def test_the_compiled_fanout_writes_the_counter_the_agent_reads(tmp_path):
     payload.write_bytes(b"imagectl" * 8192)          # 64KB
     sha = hashlib.sha256(payload.read_bytes()).hexdigest()
     subprocess.run(["gcc", "-O2", "-o", str(stubs / "fanout"),
-                    str(AGENT / "fanout.c")], check=True)
+                    str(AGENT / "fanout.c")], check=True, stdin=subprocess.DEVNULL)
     for dev in ("sda", "sdb"):
         (run / "targets" / dev).mkdir(parents=True)
 
@@ -122,7 +122,7 @@ def test_the_compiled_fanout_writes_the_counter_the_agent_reads(tmp_path):
         "WAIT_STREAM_START_S=20 WAIT_STREAM_STALL_S=20; "
         f". {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/waits.sh; "
         f". {posix(AGENT)}/lib/progress.sh; . {posix(AGENT)}/lib/restore.sh; "
-        f". {posix(AGENT)}/lib/drawers.sh; "
+        f". {posix(AGENT)}/lib/drawers.sh; . {posix(AGENT)}/lib/verdict.sh; . {posix(AGENT)}/lib/failmark.sh; "
         "target_init sda 131072; target_init sdb 131072; "
         f'stream_source() {{ cat {posix(payload)!r}; }}; '
         "restore_partition_drawers unicast http://s img 3 dd part.zst "
@@ -145,10 +145,10 @@ def drawer_box(tmp_path, disks=("sda", "sdb", "sdc"), failed=()) -> tuple[Path, 
     run = tmp_path / "run"
     run.mkdir()
     prelude = (
-        f"export RUN_DIR={posix(run)!r} DEVROOT=/dev; "
+        f"export RUN_DIR={posix(run)!r} DEVROOT={posix(run)!r}/dev; "
         f". {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/waits.sh; "
         f". {posix(AGENT)}/lib/progress.sh; . {posix(AGENT)}/lib/restore.sh; "
-        f". {posix(AGENT)}/lib/drawers.sh; "
+        f". {posix(AGENT)}/lib/expand.sh; . {posix(AGENT)}/lib/grow.sh; . {posix(AGENT)}/lib/drawers.sh; . {posix(AGENT)}/lib/verdict.sh; . {posix(AGENT)}/lib/failmark.sh; "
         "log() { :; }; disk_fits() { return 0; }; apply_gpt() { return 0; }; "
         "expand_last() { return 0; }; grow_expanded() { return 0; }; "
         "manifest_plan() { echo '1|G|win|ntfs|2048|1024|p1.zst|sha|false|UG|'; }; "

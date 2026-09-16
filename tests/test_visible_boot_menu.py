@@ -1,14 +1,15 @@
-"""‏#140 — תפריט בחירה גלוי, בלי ESC ובלי טיימר.
+"""‏#641 — היפוך #140: build/classroom בלי משימה עולה ישר ל-ImageCtl.
 
-הכרעת נדב מ-2026-08-30: תחנת תלמיד ומחשב בנייה מגיעים ישר למסך בחירה בין
-הדיסק המקומי ל-ImageCtl. המחיר הוצג ואושרר — "מחשב בלי משימה עולה מהדיסק
-תוך שניות" כבר אינו נכון למכונה רשומה.
+הכרעת נדב מ-2026-09-10: תחנת תלמיד ומחשב בנייה רשומים שאין להם משימה
+עולים **ישר ל-ImageCtl, אוטומטי לגמרי** — בלי מסך בחירה, בלי ESC ובלי
+טיימר. בחירת "דיסק מקומי" עברה אל תוך מסך ה-ImageCtl עצמו. זה הופך את
+#140 (תפריט בחירה גלוי שהמתין לאדם, `timeout=-1`).
 
 הקובץ הזה נפרד מ-test_grub_menu.py בכוונה: חציו הראשון מקבע את ההתנהגות
-החדשה, וחציו השני הוא בקרה שלילית על שלושת המסלולים ש**לא** השתנו. שלושתם
-שומרי עיקרון 1, והם הסיבה היחידה שהשינוי הזה בטוח: מכונה זרה, ‏schema לא
-מוכר ומחשב שיכפול אינם מקבלים מסך בחירה, ובדיקה שתעבור עליהם בשקט תסתיר
-בדיוק את מה שחשוב.
+החדשה, וחציו השני הוא בקרה שלילית על המסלולים ש**לא** השתנו. הם שומרי
+עיקרון 1, והם הסיבה היחידה שהשינוי הזה בטוח: מכונה זרה, ‏schema לא מוכר
+ומחשב שיכפול אינם משתנים, ובדיקה שתעבור עליהם בשקט תסתיר בדיוק את מה
+שחשוב.
 
 הבדיקות כאן מייבאות רק שמות שהיו קיימים לפני השינוי, כדי שהרצה מול הקוד
 הישן תיפול על **התנהגות** ולא על ImportError.
@@ -50,44 +51,59 @@ def settings(text: str) -> dict[str, str]:
 # --- ההתנהגות החדשה ---------------------------------------------------------
 
 
-def test_a_classroom_station_with_no_task_gets_a_visible_menu():
-    """זה השינוי עצמו: עד היום show_menu=False וצוהר חבוי של שתי שניות.
-
-    ‏#144 צמצם את התפריט לערך ImageCtl **אחד** — בתחנת כיתה זהו השחזור,
-    כי הערך הרגיל שם מחזיר `local` ומאתחל. מה ש-#140 קבע נשאר: יש
-    תפריט, הוא גלוי, והוא ממתין לאדם. הבחירה בין הערכים היא
-    ‏test_boot_single_entry.py.
-    """
+def test_a_classroom_station_with_no_task_auto_boots_imagectl():
+    """זה השינוי עצמו: עד #641 היה כאן תפריט גלוי שהמתין לאדם
+    (`show_menu=True`, `timeout=-1`). עכשיו תחנת כיתה בלי משימה עולה ישר
+    ל-ImageCtl, אוטומטי — בלי תפריט. הערך נשאר recovery (#144): הערך
+    הרגיל בתחנת כיתה מחזיר `local` ומאתחל."""
     decision = decide(answer())
-    assert decision.action == LOCAL
-    assert decision.show_menu is True
-    assert decision.offer_recovery is True
+    assert decision.action == AGENT
+    assert decision.show_menu is False
+    assert decision.recovery_mode is True
 
 
-def test_the_classroom_menu_waits_for_a_human_with_no_time_limit():
+def test_the_classroom_station_boots_without_a_menu_and_without_a_timer():
     text = render(answer(), CFG)
     conf = settings(text)
-    assert conf["set timeout_style"] == "menu", "המסך עדיין חבוי"
-    assert conf["set timeout"] == "-1", "‏GRUB: שלילי = ללא הגבלת זמן"
-    assert conf["set default"] == "local"
+    assert conf["set timeout_style"] == "hidden", "נשאר תפריט גלוי"
+    assert conf["set timeout"] == "0", "נשאר טיימר המתנה"
+    assert conf["set default"] == "imagectl"
 
 
-def test_the_classroom_menu_offers_imagectl_beside_the_local_disk():
-    """"בחירה בין דיסק מקומי ל-ImageCtl" — בדיוק שני הערכים האלה, ולא
-    יותר (#144)."""
+def test_the_classroom_file_still_carries_a_hidden_local_entry():
+    """"בחירת דיסק מקומי מתוך מסך ImageCtl" — הערך המקומי נשאר בקובץ
+    (חבוי, לעולם לא נבחר תחת timeout=0), בדיוק כמו במסלול המשימה. שני
+    ערכים: ImageCtl וה-disk."""
     text = render(answer(), CFG)
     assert "--id local {" in text
     assert "--id imagectl {" in text
     assert text.count("menuentry ") == 2
 
 
-def test_the_build_machine_menu_never_times_out():
-    """מחשב הבנייה כבר קיבל תפריט גלוי (#29) — מה שהוסר הוא הטיימר."""
+def test_the_build_machine_also_auto_boots_without_a_menu():
+    """מחשב הבנייה — אותה התנהגות, אבל הערך הרגיל (build_console, #29)
+    ולא recovery: אין `imagectl.mode=recovery` בשורת הקרנל."""
     text = render(answer(role="build"), CFG)
     conf = settings(text)
-    assert conf["set timeout_style"] == "menu"
-    assert conf["set timeout"] == "-1"
+    assert conf["set timeout_style"] == "hidden"
+    assert conf["set timeout"] == "0"
+    assert conf["set default"] == "imagectl"
     assert "--id imagectl {" in text
+    assert "imagectl.mode=recovery" not in text
+
+
+@pytest.mark.parametrize("role", ["classroom", "build"])
+def test_a_gui_role_with_no_task_auto_boots_imagectl_hidden(role):
+    """הטסט החדש של #641, על שני התפקידים: בלי משימה → `default=imagectl`,
+    `timeout=0`, `show_menu=False`. זה הקיבוע הישיר של הכרעת נדב."""
+    decision = decide(answer(role=role))
+    assert decision.action == AGENT
+    assert decision.show_menu is False
+
+    conf = settings(render(answer(role=role), CFG))
+    assert conf["set default"] == "imagectl"
+    assert conf["set timeout"] == "0"
+    assert conf["set timeout_style"] == "hidden"
 
 
 @pytest.mark.parametrize("role", ["classroom", "build"])

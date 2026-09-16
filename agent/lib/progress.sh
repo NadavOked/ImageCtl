@@ -1,13 +1,12 @@
 # progress.sh -- how the server learns what this machine is doing: the
-# progress report (interfaces.md section 4), and -- for a single-station
-# restore -- the registration of the stream those reports are addressed to.
+# progress report (interfaces.md section 4).
 # Pure sh assembly so it is testable without jq.
 # POSIX sh (busybox ash).
 #
-# The two belong together: a report needs a session id, and for a class round
-# the id arrives in the hello answer, while for a unicast pull nothing hands
-# it over -- the station asks for one. That request lives here rather than in
-# ui.sh because it is a reporting concern, not a screen (#63).
+# A report needs a session id. For a class round it arrives in the hello
+# answer; for a unicast pull nothing hands it over and the station asks for
+# one -- that request is pull.sh, split out in #562 and sourced right after
+# this file, because pull_close ends a job through report_final below.
 #
 # State lives in files, so the reporter can run as a background process:
 #   $RUN_DIR/state                 top-level state word
@@ -17,6 +16,11 @@
 #   $RUN_DIR/targets/<dev>/counter the file the live counter is read from
 #   $RUN_DIR/targets/<dev>/total   total compressed bytes for the whole image
 #   $RUN_DIR/targets/<dev>/error   error text (only when failed)
+#   $RUN_DIR/targets/<dev>/crc_delta  CRC(199) rise over this round (#872; absent = not measured)
+#   $RUN_DIR/targets/<dev>/since   uptime at target_init -- the dmesg window of a failure (#874)
+#   $RUN_DIR/targets/<dev>/ata_log.json, ident   the kernel lines and serial|port|ata_port
+#                                  of a failed target (failmark.sh; absent = no evidence)
+#   $RUN_DIR/drivers.json          driver staging outcome (postdeploy.sh, #720; absent = did not run)
 #
 # The live counter is a *pointer*, not a fixed name, because the two restore
 # paths measure in different places. A classroom station has one pv per
@@ -35,7 +39,9 @@ target_init() {
     : > "$_t/bytes.raw"
     echo "$_t/bytes.raw" > "$_t/counter"
     echo "$2" > "$_t/total"
-    rm -f "$_t/error"
+    rm -f "$_t/error" "$_t/crc_delta" "$_t/ata_log" "$_t/ata_log.json" "$_t/ident"
+    # ‏#874: מאיפה dmesg נספר בכשל -- ריק (אין /proc/uptime) = מההתחלה.
+    cut -d' ' -f1 "$SYSROOT/proc/uptime" > "$_t/since" 2>/dev/null
 }
 
 target_counter() {
@@ -91,6 +97,40 @@ target_partition_done() {
     : > "$(_counter_of "$1")"
 }
 
+_source_progress_json() {
+    # $1 = dev. Prints ,"source_progress":{...} for the partition partclone is
+    # reading now, or nothing at all when the denominator or the percent is
+    # unknown (#435). The axis is the *uncompressed* one -- partclone's own
+    # block count -- because the pv counter measures compressed bytes and their
+    # total cannot be known before the stream ends. "Unknown" prints nothing on
+    # purpose: the console then draws an indeterminate bar, never a measured 0%
+    # (עיקרון 5). Only the capture path calls this (build_progress gates on the
+    # task id); a round measures compressed bytes and a block axis would wrongly
+    # win over them in guistate.sh.
+    #
+    # ‏Starting to clone (/dev/sdaN) פותח מחיצה ומאפס: פסקת הלוג האחרונה
+    # לבדה נספרת, ולכן `Completed:` של מחיצה קודמת אינו נמשך אל החדשה. כל
+    # השוואה מספרית עם `+0` — תחת busybox awk השוואת מחרוזת-למספר מכריעה
+    # לפי תווים, ו-"754688" > "1665979" יצא אמת.
+    _sp_log="$RUN_DIR/targets/$1/partclone.log"
+    [ -f "$_sp_log" ] || return 0
+    tr -d '\r' < "$_sp_log" 2>/dev/null | awk '
+        /Starting to clone/ { part=""; total=""; pct="";
+            if (match($0, /\/dev\/[A-Za-z0-9]+/)) {
+                d = substr($0, RSTART, RLENGTH)
+                if (match(d, /[0-9]+$/)) part = substr(d, RSTART) } }
+        /Space in use/ { if (match($0, /[0-9]+[ ]*Blocks/)) {
+            b = substr($0, RSTART, RLENGTH); gsub(/[^0-9]/, "", b); total = b } }
+        /Completed:/ { c = $0; sub(/.*Completed:[ \t]*/, "", c); sub(/%.*/, "", c);
+            if (c ~ /^[0-9]+(\.[0-9]+)?$/) pct = c }
+        END {
+            if (part == "" || total == "" || total + 0 <= 0 || pct == "") exit
+            r = int(pct / 100.0 * total)
+            if (r + 0 > total + 0) r = total; if (r + 0 < 0) r = 0
+            printf ",\"source_progress\":{\"partition\":%d,\"blocks_read\":%d,\"blocks_total\":%d}", \
+                part, r, total }'
+}
+
 build_progress() {
     # $1 = session id, $2 = mac, $3 = task id (capture instead of a round).
     # Exactly one of session/task identifies the work -- see interface 4.
@@ -103,9 +143,15 @@ build_progress() {
         _total=$(cat "$_d/total" 2>/dev/null || echo 0)
         _entry=$(printf '{"dev":"%s","bytes_written":%s,"bytes_total":%s,"state":"%s"' \
             "$_dev" "$(target_bytes "$_dev")" "$_total" "$_tstate")
+        # ‏#435: רק בקליטה (task id). המכנה בציר הבלוקים, לצד bytes_* הדחוסים.
+        [ -n "${3:-}" ] && _entry="$_entry$(_source_progress_json "$_dev")"
         if [ -f "$_d/error" ]; then
             _entry="$_entry,\"error\":\"$(json_escape "$(cat "$_d/error")")\""
         fi
+        # ‏#872: הפרש ה-CRC של הסבב -- רק כשנמדד; חסר = לא נקרא, לא 0 (עיקרון 5).
+        [ -f "$_d/crc_delta" ] && _entry="$_entry,\"crc_delta\":$(cat "$_d/crc_delta")"
+        # ‏#874: יעד שנכשל נושא סידורי, חריץ ושורות ה-ATA (failmark.sh) -- הראיה, לא סיווג.
+        [ -f "$_d/ata_log.json" ] && _entry="$_entry$(failure_json "$_dev")"
         _entry="$_entry}"
         [ -n "$_targets" ] && _targets="$_targets,"
         _targets="$_targets$_entry"
@@ -115,8 +161,12 @@ build_progress() {
     else
         _who=$(printf '"session_id":"%s"' "$1")
     fi
-    printf '{%s,"mac":"%s","state":"%s","targets":[%s]}' \
-        "$_who" "$2" "$_state" "$_targets"
+    # #720: the driver staging outcome (postdeploy.sh) -- only once it exists;
+    # absent = the stage did not run, which is not the same as no_match.
+    _drivers=""
+    [ -s "$RUN_DIR/drivers.json" ] && _drivers=",\"drivers\":$(tr -d '\n' < "$RUN_DIR/drivers.json")"
+    printf '{%s,"mac":"%s","state":"%s","targets":[%s]%s}' \
+        "$_who" "$2" "$_state" "$_targets" "$_drivers"
 }
 
 progress_send() {
@@ -127,8 +177,29 @@ progress_send() {
     # be repeated in two seconds. The *last* report of a job is not repeated:
     # it is what tells the server the work ended. That one gets an answer read.
     build_progress "$1" "$2" "${4:-}" > "$RUN_DIR/progress.json"
+    # ‏#557: התשובה נשמרת במקום להיזרק. הקוד היוצא נשאר הקוד היוצא —
+    # מי שקורא לזה בלולאה ממשיך להתעלם ממנו — אבל **גוף התשובה זמין
+    # למי שכן צריך לדעת**, וזה מה שעוצר לולאה על סבב שנסגר.
+    # ‏#855: דיווח על משימה נושא את אסימון המשימה (‏`TASK_TOKEN` מה-hello,
+    # ‏#530) — אותה כותרת שההעלאה שולחת. לסבב (session) אין אסימון.
     http_post_json "$3/api/v1/agent/progress" "$RUN_DIR/progress.json" \
-        > /dev/null 2>&1
+        "${4:+X-Imagectl-Task-Token: ${TASK_TOKEN:-}}" \
+        > "$RUN_DIR/progress.reply" 2>/dev/null
+}
+
+progress_refused_for_good() {
+    # האם התשובה האחרונה אומרת שאין טעם לנסות שוב.
+    #
+    # ⚠️ **רק `not_open`, ורק הוא.** שגיאת רשת, ‏500, או תשובה ריקה
+    # הן "לא ידענו" — ולולאה שנעצרת עליהן היא מכונה שמפסיקה לדווח
+    # כי השרת אותחל לרגע. **"לא הצלחנו לשאול" אינו "נענינו בלא".**
+    # ‏`json_get` מקבל **נתיב קובץ**, לא מחרוזת — העברת התוכן עצמו
+    # מחזירה `null` בשקט, וזה נראה בדיוק כמו "אין קוד".
+    [ -s "$RUN_DIR/progress.reply" ] || return 1
+    case "$(json_get "$RUN_DIR/progress.reply" ".code")" in
+        not_open) return 0 ;;
+        *)        return 1 ;;
+    esac
 }
 
 progress_loop() {
@@ -139,6 +210,14 @@ progress_loop() {
     # through this loop is the *last* report -- see report_final.
     while :; do
         progress_send "$1" "$2" "$3" "${4:-}" || true
+        # ‏#557: `|| true` נשאר — דיווח שיחזור בעוד שתי שניות אינו חייב
+        # תשובה. אבל **סבב שנסגר לא יפתח את עצמו מחדש**, ולולאה
+        # שממשיכה עליו היא מכונה שלא תצטרף לגל הבא. נמדד 08/09:
+        # שתי מכונות דיווחו 50 דקות על סבב סגור, ולכן נשארו בחוץ.
+        if progress_refused_for_good; then
+            log "progress: the server says this session is closed -- stopping"
+            return 0
+        fi
         sleep "${PROGRESS_INTERVAL_S:-2}"
     done
 }
@@ -186,105 +265,5 @@ report_final() {
     done
     log "WARNING: the server did not acknowledge the final report after" \
         "$FINAL_REPORT_TRIES tries"
-    return 1
-}
-
-# --- the unicast pull (interfaces.md, "משיכת יוניקאסט לתחנה בודדת") ---------
-#
-# A single-station restore pulls the image over HTTP. The bytes move whether
-# or not the server was told -- /api/v1/images/... serves them to any machine
-# in the registry -- so opening a pull is not asking permission. It is how the
-# work becomes *visible*: a session id to address the reports above to, a line
-# in the journal, and a row on the console. Until the agent called it, a
-# station pulled for twenty minutes while the operator watched an idle
-# server (#60 built the server side, #63 is this side).
-
-pull_body() {
-    # $1 = mac, $2 = image id, $3 = username, $4 = password.
-    # Assembled by hand like hello and login -- nothing writes JSON with jq.
-    printf '{"mac":"%s","image_id":"%s","username":"%s","password":"%s"}' \
-        "$(json_escape "$1")" "$(json_escape "$2")" \
-        "$(json_escape "$3")" "$(json_escape "$4")"
-}
-
-pull_post() {
-    # $1 = server, $2 = body file, $3 = response file. Prints the HTTP code.
-    #
-    # Deliberately not http_post_json, for the reason login_post gives: `curl
-    # -f` collapses every answer from 400 up into exit 22, and the two answers
-    # that matter most here are opposite diagnoses. 404 means this server is
-    # older than the endpoint and the restore should simply go on unwatched;
-    # 503 means the server that the restore is about to pull 40GB *from* is
-    # falling over. Folding them into "the pull failed" sends a technician
-    # after the wrong fault.
-    curl -sS --max-time "$HTTP_TIMEOUT" --retry "$HTTP_RETRIES" \
-        -o "$3" -w '%{http_code}' \
-        -H "Content-Type: application/json" \
-        --data-binary "@$2" "$1/api/v1/agent/pulls" 2>/dev/null
-}
-
-pull_open() {
-    # $1 = server, $2 = mac, $3 = image id, $4 = username, $5 = password.
-    #
-    # Sets PULL_SESSION and returns 0 on positive evidence only: a 200 that
-    # carried an id back. "No error" is not an open stream -- a 200 with an
-    # empty body would report progress into a session that does not exist.
-    #
-    # Every other road returns 1 *and writes a line*. Rule 1 decides what the
-    # caller does with that (the restore goes on; a person is standing there
-    # and the disk is already being erased), but a pull that failed to open
-    # silently would be the same blindness #60 set out to end.
-    PULL_SESSION=""
-    _resp="$RUN_DIR/pull_resp.json"
-    : > "$_resp"
-    pull_body "$2" "$3" "$4" "$5" > "$RUN_DIR/pull.json"
-    _code=$(pull_post "$1" "$RUN_DIR/pull.json" "$_resp")
-    rm -f "$RUN_DIR/pull.json"
-
-    if [ "$_code" = "200" ]; then
-        _sid=$(json_get "$_resp" ".id")
-        if [ -n "$_sid" ] && [ "$_sid" != "null" ]; then
-            PULL_SESSION="$_sid"
-            log "unicast pull registered as $_sid"
-            return 0
-        fi
-        log "pull not opened: the server answered 200 without a session id"
-        return 1
-    fi
-
-    _why=$(json_get "$_resp" ".code")
-    if [ "$_code" = "000" ]; then
-        log "pull not opened: no answer from the server -- restoring unwatched"
-    elif [ "$_code" = "404" ] && [ "$_why" = "null" ]; then
-        # Our own refusals carry {"ok":false,"code":...}. A 404 without one is
-        # the router saying the path does not exist: a server older than #60.
-        log "pull not opened: this server has no /api/v1/agent/pulls" \
-            "(older than the pull view) -- restoring unwatched"
-    else
-        log "pull not opened: the server refused it (http $_code, $_why)" \
-            "-- restoring unwatched"
-    fi
-    return 1
-}
-
-pull_close() {
-    # $1 = reporter pid ("" when no stream was opened), $2 = session id,
-    # $3 = mac, $4 = server URL.
-    #
-    # The server closes a pull on positive evidence: a report that says
-    # `done`. So the closing report *is* the close, and it goes through
-    # report_final like every other closing report -- one mechanism, not
-    # three, which is what let the other two paths drift into `sleep 6`.
-    #
-    # Nothing to close when no stream was ever opened (an older server, a
-    # server that refused): the restore went on unwatched and pull_open has
-    # already said so.
-    [ -n "${1:-}" ] || return 0
-    if report_final "$1" "$2" "$3" "$4"; then
-        log "unicast pull $2 closed"
-        return 0
-    fi
-    log "WARNING: the closing report for pull $2 did not get through --" \
-        "it may stay 'running' on the console until an operator clears it"
     return 1
 }

@@ -10,6 +10,8 @@ from __future__ import annotations
 import hashlib
 import json
 
+from server.tasks import TOKEN_HEADER
+
 import pytest
 
 pytest.importorskip("fastapi")
@@ -20,6 +22,10 @@ from conftest import (
 
 PART_A = b"partition-one-bytes"
 PART_B = b"partition-three-bytes"
+
+#: ‏GUID דיסק אמיתי מהמעבדה — הצורה, לא הזהות, היא מה שנבדק. אימג'
+#: ‏Windows אמיתי נושא אותו תמיד; הסוכן גוזר אותו מ-`sgdisk -p` בקליטה.
+DISK_GUID = "047B3400-0000-0000-0000-0000003AEE00"
 
 
 def sha(data: bytes) -> str:
@@ -44,7 +50,7 @@ def manifest_for(parts=None):
     return {
         "schema": 1, "family": 256,
         "source_disk_bytes": 256060514304, "min_target_bytes": 256060514304,
-        "scheme": "gpt", "sector_size": 512,
+        "scheme": "gpt", "sector_size": 512, "disk_guid": DISK_GUID,
         "partitions": parts if parts is not None else [
             {"index": 1, "type_guid": ESP_GUID, "role": "esp", "fs": "vfat",
              "start_sector": 2048, "size_bytes": 104857600, "used_bytes": 31457280,
@@ -59,13 +65,28 @@ def manifest_for(parts=None):
     }
 
 
-def do_capture(server, task_id, manifest=None, files=None):
+def task_token(server, task_id: str) -> str:
+    """האסימון של המשימה, כפי שהמכונה מקבלת אותו ב-hello (#530).
+
+    נקרא מה-DB ולא מהתשובה של יצירת המשימה, **כי הוא אינו מוחזר
+    שם** — הקונסולה אינה אמורה לראות אותו. מכונה אמיתית מקבלת
+    אותו בשדה ``task.token`` של ה-hello.
+    """
+    row = server["ctx"].conn.execute(
+        "SELECT token FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    return row["token"] if row else ""
+
+
+def do_capture(server, task_id, manifest=None, files=None, token=None):
     anon = server["anon"]
+    head = {TOKEN_HEADER: task_token(server, task_id) if token is None else token}
     for name, data in (files or {"p1.esp.pcl.zst": PART_A,
                                  "p3.windows.pcl.zst": PART_B}).items():
-        anon.put(f"/api/v1/capture/{task_id}/files/{name}", content=data)
+        anon.put(f"/api/v1/capture/{task_id}/files/{name}",
+                 content=data, headers=head)
     return anon.put(f"/api/v1/capture/{task_id}/manifest",
-                    content=json.dumps(manifest or manifest_for()).encode())
+                    content=json.dumps(manifest or manifest_for()).encode(),
+                    headers=head)
 
 
 # --- יצירת המשימה -----------------------------------------------------------
@@ -199,7 +220,102 @@ def test_a_manifest_whose_size_requirement_is_unknowable_is_refused(server):
 
     response = do_capture(server, created["id"], manifest=bad)
     assert response.status_code == 400
-    assert "how much room" in response.json()["detail"]
+    # ‏#780: בדיקת הגיאומטריה תופסת size_bytes חסר קודם ("malformed geometry");
+    # ‏size_bytes קיים אך min_target שאינו ניתן לחישוב עדיין נדחה ב-"how much room".
+    detail = response.json()["detail"]
+    assert "how much room" in detail or "malformed geometry" in detail
+
+
+@pytest.mark.parametrize("field", ["start_sector", "size_bytes"])
+def test_zero_partition_geometry_is_refused_at_capture(server, field):
+    mac = setup_build_machine(server)
+    created = make_task(server, mac).json()
+    malformed = manifest_for()
+    malformed["partitions"][0][field] = 0
+
+    response = do_capture(server, created["id"], manifest=malformed)
+
+    assert response.status_code == 400
+    assert "malformed geometry" in response.json()["detail"]
+
+
+def test_a_windows_image_without_disk_guid_is_refused(server, images_root):
+    """‏#571: ‏Windows קושר את ה-BCD ל-GUID של הדיסק, ואימג' בלי `disk_guid`
+    עולה ל-`winload.efi 0xc000000e` על כל מחשב משוחזר (#26). ‏disk_guid
+    ריק אינו "אין צורך ב-GUID" אלא "הקליטה לא הצליחה לקרוא אותו", ושני
+    המצבים שונים (עיקרון 5).
+
+    עד כאן האימג' הפגום נכנס לספרייה והשחזור דילג על ה-GUID **בשקט** —
+    בלי אפילו ה-WARNING של #537 — והמגירה הגיעה ל-`done`. ההכרעה של
+    ה-Issue: אם אינו תקין לשחזור, הקליטה מסרבת לו, לא השחזור (עיקרון 6 —
+    פגום נתפס כאן, לא מול כיתה).
+    """
+    mac = setup_build_machine(server)
+    created = make_task(server, mac).json()
+    bad = manifest_for()
+    bad.pop("disk_guid")
+
+    response = do_capture(server, created["id"], manifest=bad)
+    assert response.status_code == 400, response.text
+    assert "disk_guid" in response.json()["detail"], response.json()["detail"]
+    assert not (images_root / created["image_id"]).exists()
+    assert server["admin"].get("/api/console/tasks").json()[0]["state"] == "failed"
+
+
+def test_a_windows_image_with_a_nil_disk_guid_is_refused(server, images_root):
+    """‏GUID אפס-מוחלט (nil UUID) הוא ערך שנקרא כזבל — GPT פגום, דיסק שאופס
+    עם חתימה ששרדה, או כלי partition לא-תקני. בלעדי ההבחנה הוא **מתחזה**
+    לערך תקין ועוקף את שער #571 (שדחה רק ריק/null), נכנס לספרייה, ומשוחזר
+    ל-GUID אפס → אותו `winload.efi 0xc000000e`. "לא הצלחנו לקרוא GUID" חייב
+    להיכשל-סגור כמו ריק (עיקרון 5)."""
+    mac = setup_build_machine(server)
+    created = make_task(server, mac).json()
+    bad = manifest_for()
+    bad["disk_guid"] = "00000000-0000-0000-0000-000000000000"
+
+    response = do_capture(server, created["id"], manifest=bad)
+    assert response.status_code == 400, response.text
+    assert "disk_guid" in response.json()["detail"], response.json()["detail"]
+    assert not (images_root / created["image_id"]).exists()
+    assert server["admin"].get("/api/console/tasks").json()[0]["state"] == "failed"
+
+
+def test_a_windows_image_with_a_malformed_disk_guid_is_refused(server, images_root):
+    """‏GUID שאינו בפורמט (למשל "unknown") אינו זהות — נדחה בקליטה כמו nil,
+    לא מגיע ל-sgdisk -U מול הכיתה. מרחיב #443/#760: פורמט, לא רק ריק/אפס."""
+    mac = setup_build_machine(server)
+    created = make_task(server, mac).json()
+    bad = manifest_for()
+    bad["disk_guid"] = "unknown"
+    response = do_capture(server, created["id"], manifest=bad)
+    assert response.status_code == 400, response.text
+    assert "disk_guid" in response.json()["detail"], response.json()["detail"]
+    assert not (images_root / created["image_id"]).exists()
+    assert server["admin"].get("/api/console/tasks").json()[0]["state"] == "failed"
+
+
+def test_a_linux_image_without_disk_guid_is_accepted(server):
+    """הצד השני של ההבחנה: לינוקס אינו קשור ל-`disk_guid` — ‏GRUB מאתר
+    לפי UUID של מערכת הקבצים (`docs/interfaces.md`). אימג' לינוקס בלי
+    ‏disk_guid תקין, והשער של #571 חל על Windows בלבד. בלי ההבחנה הזאת
+    היינו חוסמים בקליטה אימג' תקין לגמרי — ‏#571 מהצד השני."""
+    mac = setup_build_machine(server)
+    created = make_task(server, mac).json()
+    parts = [
+        {"index": 1, "type_guid": ESP_GUID, "role": "esp", "fs": "vfat",
+         "start_sector": 2048, "size_bytes": 104857600, "used_bytes": 31457280,
+         "file": "p1.esp.pcl.zst", "sha256": sha(PART_A), "expandable": False},
+        {"index": 2, "type_guid": LINUX_GUID, "role": "linux", "fs": "ext4",
+         "start_sector": 206848, "size_bytes": 254803968000, "used_bytes": 1,
+         "file": "p2.linux.pcl.zst", "sha256": sha(PART_B), "expandable": True},
+    ]
+    linux = manifest_for(parts)
+    linux.pop("disk_guid")
+
+    response = do_capture(
+        server, created["id"], manifest=linux,
+        files={"p1.esp.pcl.zst": PART_A, "p2.linux.pcl.zst": PART_B})
+    assert response.status_code == 200, response.text
 
 
 def test_a_tampered_partition_never_enters_the_library(server, images_root):
@@ -259,7 +375,8 @@ def test_partition_file_names_are_whitelisted(server, name):
     mac = setup_build_machine(server)
     created = make_task(server, mac).json()
     r = server["anon"].put(f"/api/v1/capture/{created['id']}/files/{name}",
-                           content=b"x")
+                           content=b"x",
+                           headers={TOKEN_HEADER: task_token(server, created["id"])})
     assert r.status_code in (400, 404)
 
 
@@ -366,7 +483,8 @@ def test_uploading_to_a_finished_task_is_refused(server):
     created = make_task(server, mac).json()
     do_capture(server, created["id"])
     r = server["anon"].put(f"/api/v1/capture/{created['id']}/files/p1.esp.pcl.zst",
-                           content=PART_A)
+                           content=PART_A,
+                           headers={TOKEN_HEADER: task_token(server, created["id"])})
     assert r.status_code == 404
 
 
@@ -381,7 +499,9 @@ def test_capture_progress_uses_task_id(server):
         "targets": [{"dev": "sda", "bytes_written": 4096,
                      "bytes_total": 100000, "state": "capturing"}],
     }
-    assert server["anon"].post("/api/v1/agent/progress", json=report).json()["ok"]
+    assert server["anon"].post(
+        "/api/v1/agent/progress", json=report,
+        headers={TOKEN_HEADER: task_token(server, created["id"])}).json()["ok"]
     task = server["admin"].get("/api/console/tasks").json()[0]
     assert task["state"] == "running"
     assert task["bytes_written"] == 4096
@@ -392,7 +512,8 @@ def test_progress_from_the_wrong_machine_is_rejected(server):
     created = make_task(server, mac).json()
     r = server["anon"].post("/api/v1/agent/progress", json={
         "task_id": created["id"], "mac": "ff:ff:ff:ff:ff:ff",
-        "state": "capturing", "targets": []})
+        "state": "capturing", "targets": []},
+        headers={TOKEN_HEADER: task_token(server, created["id"])})
     assert r.status_code == 400
     assert r.json()["code"] == "not_member"
 
@@ -401,7 +522,8 @@ def test_cancelling_clears_the_staging_area(server, images_root):
     mac = setup_build_machine(server)
     created = make_task(server, mac).json()
     server["anon"].put(f"/api/v1/capture/{created['id']}/files/p1.esp.pcl.zst",
-                       content=PART_A)
+                       content=PART_A,
+                       headers={TOKEN_HEADER: task_token(server, created["id"])})
     assert list(images_root.glob(".capture-*"))
     assert server["admin"].post(
         f"/api/console/tasks/{created['id']}/cancel").status_code == 200

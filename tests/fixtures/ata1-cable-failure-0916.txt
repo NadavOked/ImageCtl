@@ -1,0 +1,121 @@
+[20471.392760] ata1.00: exception Emask 0x50 SAct 0x78c081ff SErr 0x4c0900 action 0x6 frozen
+[20471.392772] ata1.00: irq_stat 0x08000000, interface fatal error
+[20471.392776] ata1: SError: { UnrecovData HostInt CommWake 10B8B Handshk }
+[20471.392782] ata1.00: failed command: WRITE FPDMA QUEUED
+[20471.392785] ata1.00: cmd 61/40:00:f0:54:00/05:00:00:00:00/40 tag 0 ncq dma 688128 out
+[20471.392796] ata1.00: status: { DRDY }
+[20471.392800] ata1.00: failed command: WRITE FPDMA QUEUED
+[20471.392802] ata1.00: cmd 61/60:08:30:5a:00/01:00:00:00:00/40 tag 1 ncq dma 180224 out
+[20471.392812] ata1.00: status: { DRDY }
+[20471.392816] ata1.00: failed command: WRITE FPDMA QUEUED
+[20471.392818] ata1.00: cmd 61/78:10:40:5c:00/02:00:00:00:00/40 tag 2 ncq dma 323584 out
+[20471.392829] ata1.00: status: { DRDY }
+[20471.392831] ata1.00: failed command: WRITE FPDMA QUEUED
+[20471.392832] ata1.00: cmd 61/20:18:68:5f:00/01:00:00:00:00/40 tag 3 ncq dma 147456 out
+[20471.392836] ata1.00: status: { DRDY }
+[20471.392838] ata1.00: failed command: WRITE FPDMA QUEUED
+[20471.392839] ata1.00: cmd 61/88:20:30:61:00/02:00:00:00:00/40 tag 4 ncq dma 331776 out
+[20471.392843] ata1.00: status: { DRDY }
+[20471.392845] ata1.00: failed command: WRITE FPDMA QUEUED
+[20471.392846] ata1.00: cmd 61/40:28:68:64:00/05:00:00:00:00/40 tag 5 ncq dma 688128 out
+[20471.392851] ata1.00: status: { DRDY }
+[20471.392852] ata1.00: failed command: WRITE FPDMA QUEUED
+[20471.392853] ata1.00: cmd 61/88:30:a8:69:00/00:00:00:00:00/40 tag 6 ncq dma 69632 out
+[20471.392858] ata1.00: status: { DRDY }
+[20471.392859] ata1.00: failed command: WRITE FPDMA QUEUED
+[20471.392860] ata1.00: cmd 61/d8:38:e0:6a:00/01:00:00:00:00/40 tag 7 ncq dma 241664 out
+[20471.392865] ata1.00: status: { DRDY }
+[20471.392866] ata1.00: failed command: WRITE FPDMA QUEUED
+[20471.392867] ata1.00: cmd 61/68:40:68:6d:00/04:00:00:00:00/40 tag 8 ncq dma 577536 out
+[20471.392872] ata1.00: status: { DRDY }
+[20471.392874] ata1.00: failed command: WRITE FPDMA QUEUED
+[20471.392875] ata1.00: cmd 61/40:78:00:08:00/05:00:00:00:00/40 tag 15 ncq dma 688128 out
+[20471.392879] ata1.00: status: { DRDY }
+[20471.392881] ata1.00: failed command: WRITE FPDMA QUEUED
+[20471.392882] ata1.00: cmd 61/40:b0:40:0d:00/05:00:00:00:00/40 tag 22 ncq dma 688128 out
+[20471.392886] ata1.00: status: { DRDY }
+[20471.392888] ata1.00: failed command: WRITE FPDMA QUEUED
+[20471.392889] ata1.00: cmd 61/40:b8:80:12:00/05:00:00:00:00/40 tag 23 ncq dma 688128 out
+[20471.392893] ata1.00: status: { DRDY }
+[20471.392895] ata1.00: failed command: WRITE FPDMA QUEUED
+[20471.392896] ata1.00: cmd 61/40:d8:c0:17:00/05:00:00:00:00/40 tag 27 ncq dma 688128 out
+[20471.392900] ata1.00: status: { DRDY }
+[20471.392902] ata1.00: failed command: WRITE FPDMA QUEUED
+[20471.392903] ata1.00: cmd 61/40:e0:00:1d:00/05:00:00:00:00/40 tag 28 ncq dma 688128 out
+[20471.392907] ata1.00: status: { DRDY }
+[20471.392909] ata1.00: failed command: WRITE FPDMA QUEUED
+[20471.392910] ata1.00: cmd 61/40:e8:40:22:00/05:00:00:00:00/40 tag 29 ncq dma 688128 out
+[20471.392914] ata1.00: status: { DRDY }
+[20471.392916] ata1.00: failed command: WRITE FPDMA QUEUED
+[20471.392917] ata1.00: cmd 61/20:f0:80:27:00/02:00:00:00:00/40 tag 30 ncq dma 278528 out
+[20471.392921] ata1.00: status: { DRDY }
+[20471.392925] ata1: hard resetting link
+[20471.704173] ata1: SATA link up 3.0 Gbps (SStatus 123 SControl 300)
+[20471.705988] ata1.00: ACPI cmd ef/03:0c:00:00:00:a0(SET FEATURES) filtered out
+[20471.705992] ata1.00: ACPI cmd ef/03:45:00:00:00:a0(SET FEATURES) filtered out
+[20471.706310] ata1.00: ACPI cmd b1/c1:00:00:00:00:a0(DEVICE CONFIGURATION OVERLAY) filtered out
+[20471.706320] ata1.00: ACPI cmd f5/00:00:00:00:00:a0(SECURITY FREEZE LOCK) filtered out
+[20471.706325] ata1.00: ACPI cmd ef/10:03:00:00:00:a0(SET FEATURES) filtered out
+[20471.709174] ata1.00: ACPI cmd ef/03:0c:00:00:00:a0(SET FEATURES) filtered out
+[20471.709184] ata1.00: ACPI cmd ef/03:45:00:00:00:a0(SET FEATURES) filtered out
+[20471.709398] ata1.00: ACPI cmd b1/c1:00:00:00:00:a0(DEVICE CONFIGURATION OVERLAY) filtered out
+[20471.709408] ata1.00: ACPI cmd f5/00:00:00:00:00:a0(SECURITY FREEZE LOCK) filtered out
+[20471.709413] ata1.00: ACPI cmd ef/10:03:00:00:00:a0(SET FEATURES) filtered out
+[20471.712398] ata1.00: configured for UDMA/133
+[20471.722779] ata1: EH complete
+[20471.800748] ata1.00: exception Emask 0x10 SAct 0x7c0001ff SErr 0x480100 action 0x6 frozen
+[20471.800761] ata1.00: irq_stat 0x08000000, interface fatal error
+[20471.800764] ata1: SError: { UnrecovData 10B8B Handshk }
+[20471.800771] ata1.00: failed command: WRITE FPDMA QUEUED
+[20471.800774] ata1.00: cmd 61/40:00:40:22:00/05:00:00:00:00/40 tag 0 ncq dma 688128 out
+[20471.800784] ata1.00: status: { DRDY }
+[20471.800788] ata1.00: failed command: WRITE FPDMA QUEUED
+[20471.800791] ata1.00: cmd 61/20:08:80:27:00/02:00:00:00:00/40 tag 1 ncq dma 278528 out
+[20471.800801] ata1.00: status: { DRDY }
+[20471.800804] ata1.00: failed command: WRITE FPDMA QUEUED
+[20471.800807] ata1.00: cmd 61/40:10:b0:7a:00/05:00:00:00:00/40 tag 2 ncq dma 688128 out
+[20471.800816] ata1.00: status: { DRDY }
+[20471.800820] ata1.00: failed command: WRITE FPDMA QUEUED
+[20471.800825] ata1.00: cmd 61/90:18:f0:7f:00/03:00:00:00:00/40 tag 3 ncq dma 466944 out
+[20471.800829] ata1.00: status: { DRDY }
+[20471.800831] ata1.00: failed command: WRITE FPDMA QUEUED
+[20471.800832] ata1.00: cmd 61/88:20:48:97:00/02:00:00:00:00/40 tag 4 ncq dma 331776 out
+[20471.800837] ata1.00: status: { DRDY }
+[20471.800838] ata1.00: failed command: WRITE FPDMA QUEUED
+[20471.800839] ata1.00: cmd 61/40:28:80:9a:00/05:00:00:00:00/40 tag 5 ncq dma 688128 out
+[20471.800844] ata1.00: status: { DRDY }
+[20471.800845] ata1.00: failed command: WRITE FPDMA QUEUED
+[20471.800846] ata1.00: cmd 61/90:30:c0:9f:00/04:00:00:00:00/40 tag 6 ncq dma 598016 out
+[20471.800851] ata1.00: status: { DRDY }
+[20471.800853] ata1.00: failed command: WRITE FPDMA QUEUED
+[20471.800854] ata1.00: cmd 61/08:38:90:a5:00/00:00:00:00:00/40 tag 7 ncq dma 4096 out
+[20471.800858] ata1.00: status: { DRDY }
+[20471.800860] ata1.00: failed command: WRITE FPDMA QUEUED
+[20471.800861] ata1.00: cmd 61/70:40:48:a6:00/01:00:00:00:00/40 tag 8 ncq dma 188416 out
+[20471.800865] ata1.00: status: { DRDY }
+[20471.800868] ata1.00: failed command: WRITE FPDMA QUEUED
+[20471.800869] ata1.00: cmd 61/40:d0:00:08:00/05:00:00:00:00/40 tag 26 ncq dma 688128 out
+[20471.800873] ata1.00: status: { DRDY }
+[20471.800875] ata1.00: failed command: WRITE FPDMA QUEUED
+[20471.800876] ata1.00: cmd 61/40:d8:40:0d:00/05:00:00:00:00/40 tag 27 ncq dma 688128 out
+[20471.800880] ata1.00: status: { DRDY }
+[20471.800882] ata1.00: failed command: WRITE FPDMA QUEUED
+[20471.800883] ata1.00: cmd 61/40:e0:80:12:00/05:00:00:00:00/40 tag 28 ncq dma 688128 out
+[20471.800887] ata1.00: status: { DRDY }
+[20471.800889] ata1.00: failed command: WRITE FPDMA QUEUED
+[20471.800890] ata1.00: cmd 61/40:e8:c0:17:00/05:00:00:00:00/40 tag 29 ncq dma 688128 out
+[20471.800894] ata1.00: status: { DRDY }
+[20471.800896] ata1.00: failed command: WRITE FPDMA QUEUED
+[20471.800897] ata1.00: cmd 61/40:f0:00:1d:00/05:00:00:00:00/40 tag 30 ncq dma 688128 out
+[20471.800901] ata1.00: status: { DRDY }
+[20471.800905] ata1: hard resetting link
+[20472.112113] ata1: SATA link up 3.0 Gbps (SStatus 123 SControl 300)
+[20472.113880] ata1.00: ACPI cmd ef/03:0c:00:00:00:a0(SET FEATURES) filtered out
+[20472.113892] ata1.00: ACPI cmd ef/03:45:00:00:00:a0(SET FEATURES) filtered out
+[20472.114245] ata1.00: ACPI cmd b1/c1:00:00:00:00:a0(DEVICE CONFIGURATION OVERLAY) filtered out
+[20472.114254] ata1.00: ACPI cmd f5/00:00:00:00:00:a0(SECURITY FREEZE LOCK) filtered out
+[20472.114259] ata1.00: ACPI cmd ef/10:03:00:00:00:a0(SET FEATURES) filtered out
+[20472.117189] ata1.00: ACPI cmd ef/03:0c:00:00:00:a0(SET FEATURES) filtered out
+[20472.117198] ata1.00: ACPI cmd ef/03:45:00:00:00:a0(SET FEATURES) filtered out
+[20472.117422] ata1.00: ACPI cmd b1/c1:00:00:00:00:a0(DEVICE CONFIGURATION OVERLAY) filtered out
+[20472.117431] ata1.00: ACPI cmd f5/00:00:00:00:00:a0(SECURITY FREEZE LOCK) filtered out

@@ -94,6 +94,15 @@ body.station{
 .img-row .sz{margin-inline-start:auto; font-size:12px; color:var(--muted)}
 .namewrap{border-top:1px solid var(--hair); margin-top:18px; padding-top:16px}
 
+/* #59: בחירת המחיצה להרחבה, בפתיחת סבב כיתה/חדר */
+.expand-pick{border:1px solid var(--hair); border-radius:12px; padding:12px 14px;
+  margin-top:14px}
+.expand-pick legend{padding:0 6px; font-size:12px}
+.expand-pick label{display:block; font-size:13.5px; margin-top:8px; font-weight:400}
+.expand-pick label:first-of-type{margin-top:0}
+.expand-pick input[type="radio"]{margin-inline-end:6px}
+.expand-pick select{margin-inline-start:6px}
+
 /* בחירת מחשבים לכיתה — רשת שמות, כמו בסקיצה */
 .machgrid{display:grid; grid-template-columns:repeat(7,1fr); gap:8px}
 .mach{border:1.5px solid var(--hair); border-radius:9px; padding:9px 0;
@@ -125,6 +134,13 @@ body.station{
   border-radius:999px; color:var(--muted)}
 .room-drawers .drawer.ok{border-color:var(--led-ok); color:var(--led-ok)}
 .room-drawers .drawer.bad{border-color:#E5484D; color:#E5484D}
+/* בריאות SMART לפני start (#652) */
+.room-drawers .drawer .smart{font-size:11px; font-weight:600; padding:1px 6px;
+  border-radius:999px; background:var(--warn-soft, #FBF1E2); color:var(--warn-ink, #9A6714)}
+/* #872: fail כתום (ברירת המחדל למעלה); אדום רק ל-failed_last */
+.room-drawers .drawer .smart.failed_last{background:transparent; color:#E5484D}
+/* #872: CRC שעלה בסבב — הערה על הכבל, לא צבע של הדיסק */
+.room-drawers .drawer .crc{font-size:11px; color:var(--warn-ink, #9A6714)}
 .room-row .led{width:8px; height:8px; border-radius:50%; background:var(--hair);
   flex:none}
 .room-row .led.on{background:var(--led-ok); box-shadow:0 0 8px var(--led-ok)}
