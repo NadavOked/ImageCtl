@@ -284,6 +284,10 @@ async function showApp() {
   const menuSub = document.querySelector("#userMenu .user-menu-head small");
   if (menuHead) menuHead.textContent = ME.username;
   if (menuSub) menuSub.textContent = ME.role === "admin" ? "מנהל" : "הפצה";
+  // ‏#915: הגרסה מגיעה מ-/me (תג git של עץ השרת) — לא מחרוזת ב-HTML.
+  // ‏null = אין תג על העץ, ואז לא מציגים מספר שאין לו מקור.
+  const versionEl = document.getElementById("serverVersion");
+  if (versionEl) versionEl.textContent = ME.version || "";
   document.querySelectorAll("[data-admin]").forEach(
     (el) => el.classList.toggle("hidden", ME.role !== "admin"));
   // רכיבים מותנים ביכולת נגזרת-שרת (#655/#723): מוצגים רק כשהדגל
@@ -1062,9 +1066,17 @@ function machines() {
   const list = MACHINES_FILTER
     ? MACHINES.filter((m) => machineGroupId(m) === MACHINES_FILTER)
     : MACHINES;
+  // ‏#916: הסינון (לחיצה על קבוצה בעץ) נשאר בין מעברים — בלי חיווי
+  // הוא נראה כמו "אין מחשבים רשומים" מול עץ מאויש. הסינון תמיד גלוי
+  // וניתן לביטול, והריק מבחין בין "אין בכלל" ל"אין בקבוצה הזו".
+  const filterStrip = MACHINES_FILTER
+    ? `<div class="notice" role="status">מוצגת קבוצה: <strong>${esc(groupLabel(MACHINES_FILTER))}</strong> <button class="btn" onclick="clearMachinesFilter()">הצג את כל המחשבים</button></div>`
+    : "";
   let tableBody;
   if (!list.length) {
-    tableBody = `<div class="empty">אין מחשבים רשומים</div>`;
+    tableBody = MACHINES_FILTER
+      ? `<div class="empty">אין מחשבים בקבוצה ${esc(groupLabel(MACHINES_FILTER))} (${MACHINES.length} רשומים בסך הכול)</div>`
+      : `<div class="empty">אין מחשבים רשומים</div>`;
   } else {
     const rows = list.map((m) => {
       const macEnc = encodeId(m.mac);
@@ -1074,10 +1086,15 @@ function machines() {
     }).join("");
     tableBody = `<table class="table"><thead><tr><th>שם</th><th>כיתה</th><th>MAC</th><th>סטטוס</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
   }
-  return `<div class="grid"><div class="span-12"><div class="card"><div class="card-h"><span>מלאי תחנות</span><div><button class="btn" onclick="importCSV()">ייבוא CSV</button> <button class="btn" onclick="exportMachines()">ייצוא CSV</button> <button class="btn primary" onclick="openNewMachine()">+ מחשב</button></div></div><div class="card-b table-wrap">${tableBody}</div></div></div>
+  return `<div class="grid"><div class="span-12"><div class="card"><div class="card-h"><span>מלאי תחנות</span><div><button class="btn" onclick="importCSV()">ייבוא CSV</button> <button class="btn" onclick="exportMachines()">ייצוא CSV</button> <button class="btn primary" onclick="openNewMachine()">+ מחשב</button></div></div><div class="card-b table-wrap">${filterStrip}${tableBody}</div></div></div>
 ${diskFailuresCard()}
-<div class="span-4"><div class="card"><div class="card-h">כיתות</div><div class="card-b"><div class="statrow"><div class="statbox"><div class="n">${classCount}</div><div class="l">כיתות</div></div><div class="statbox"><div class="n">${list.length}</div><div class="l">תחנות</div></div></div></div></div>
-</div><div class="span-8"><div class="card"><div class="card-h">כללי naming</div><div class="card-b"><p style="margin:0;color:var(--muted);font-size:11px">שם תחנה נכתב אוטומטית לפני האתחול הראשון, לפי MAC: <b>LAB1-05</b>. Windows מקבל את השם offline ברג׳יסטרי ולינוקס ב־hostname/hosts.</p></div></div></div></div>`;
+<div class="span-12"><div class="card"><div class="card-h">כיתות</div><div class="card-b"><div class="statrow"><div class="statbox"><div class="n">${classCount}</div><div class="l">כיתות</div></div><div class="statbox"><div class="n">${list.length}</div><div class="l">תחנות</div></div></div></div></div>
+</div></div>`;
+}
+
+function clearMachinesFilter() {
+  MACHINES_FILTER = null;
+  if (current === "machines") renderCurrent();
 }
 
 /* #874: דיסקים אדומים — זיכרון כשלי הכתיבה בשרת, במקום הסימון על הדיסק
@@ -1705,7 +1722,7 @@ const pages = {
   home: { crumb: "סקירה כללית", title: "סקירה כללית", desc: "מצב שרת, ספריית האימג׳ים ופעילות ההפצה בזמן אמת", tabs: ["סיכום", "משימות אחרונות", "אירועים"], render: home, load: refreshStatus },
   images: { crumb: "ספריית אימג׳ים", title: "ספריית אימג׳ים", desc: "ניהול גרסאות, העלאה, הורדה ושמירה של אימג׳ים מוכנים להפצה", tabs: ["אימג׳ים", "מטא־נתונים"], render: images, load: loadImages },
   deploy: { crumb: "סבבי הפצה", title: "סבבי הפצה", desc: "פתיחת סבב, צירוף תחנות ומעקב אחר כתיבה לכל מחשב", tabs: ["סבבים", "הצטרפות חיה"], render: deploy, load: refreshStatus },
-  machines: { crumb: "מחשבים", title: "מחשבים", desc: "מלאי תחנות, כיתות, כתובות MAC וסטטוס PXE", tabs: ["כל התחנות", "כיתות", "ייבוא/ייצוא"], render: machines, load: loadMachines },
+  machines: { crumb: "מחשבים", title: "מחשבים", desc: "מלאי תחנות, כיתות, כתובות MAC וסטטוס PXE", tabs: ["כל התחנות", "ניהול לפי סוג"], render: machines, load: loadMachines },
   health: { crumb: "בריאות שרת", title: "בריאות שרת", desc: "שירותים, מאזינים ותהליכים המשרתים את תהליך הפריסה", tabs: ["סקירה", "שירותים", "בדיקות"], render: health, load: loadHealth },
   network: { crumb: "רשת", title: "רשת", desc: "הגדרות כתובת, gateway, DNS וממשק שידור", tabs: ["הגדרות", "פורטיים", "מולטיקאסט"], render: network, load: loadNetcfgData },
   permissions: { crumb: "הרשאות", title: "הרשאות", desc: "ניהול משתמשים ותפקידי גישה לקונסולה", tabs: ["משתמשים", "תפקידים"], render: permissions, load: loadUsersData },
@@ -1725,7 +1742,7 @@ function tabRender(pageId, index) {
     home: [home, () => `<div class="card card-b">${pullsHtml(OVERVIEW?.pulls || [], false) || "No active pulls"}</div>`, emptyDataCard],
     images: [images, emptyDataCard],
     deploy: [deploy, emptyDataCard],
-    machines: [machines, machineAdminPage, machineAdminPage],
+    machines: [machines, machineAdminPage],
     health: [health, () => `<div class="card"><div id="ssh-body"></div></div>`, health],
     network: [network, emptyDataCard, emptyDataCard],
     permissions: [usersAdminPage, permissions],
@@ -2058,8 +2075,23 @@ function toggleSidebarInfo() {
   openDrawer("ניווט ImageCtl", `<div class="notice">הניווט מחולק לפי משימות תפעוליות: ספרייה → הפצה → מחשבים → בריאות → רשת → הרשאות → יומן.</div>`);
 }
 
+/* ‏#915: המגירה מציגה בדיוק את מה שהתג בסרגל סופר (updateAlertBadge):
+   מכונות שנכשלו ובדיקות בריאות במצב אזהרה/תקלה. תג בלי רשימה שמסבירה
+   אותו הוא מספר שאי אפשר לאמת. */
 function topNotifications() {
-  openDrawer("התראות", `<div class="card-b">טוען נתונים…</div>`);
+  const rows = [];
+  for (const m of MACHINES || []) {
+    if (!machineIsFailed(m)) continue;
+    rows.push(`<div class="list-row"><div class="list-main"><strong>${esc(machineName(m) || m.mac)}</strong><small>מכונה במצב כשל</small></div><span class="status err"><i></i>נכשל</span></div>`);
+  }
+  for (const c of (Array.isArray(HEALTH) ? HEALTH : [])) {
+    if (c.state !== "warn" && c.state !== "bad") continue;
+    rows.push(`<div class="list-row"><div class="list-main"><strong>${esc(c.label)}</strong><small>${esc(c.detail || "")}</small></div><span class="status ${healthStatusClass(c.state)}"><i></i>${esc(healthStatusLabel(c.state))}</span></div>`);
+  }
+  const body = rows.length
+    ? `<div class="list">${rows.join("")}</div>`
+    : `<div class="empty">אין התראות</div>`;
+  openDrawer("התראות", body);
 }
 
 function help() {
@@ -2087,9 +2119,14 @@ function logout() {
 function soon() { toast("בקרוב"); }
 
 /* #906: המכונה עומדת על שאלה לאדם (SMART/אדום, מסך FAILED) — ה-hello
-   ממשיך עם `prompt`, והשאלה מוצגת כאן במקום "לא נראתה". null = לא ממתינה. */
+   ממשיך עם `prompt`, והשאלה מוצגת כאן במקום "לא נראתה". null = לא ממתינה.
+   #908/#912: המסכים של מחשב הבנייה שולחים מילה קבועה (הסוכן מדפיס ASCII
+   בלבד) — כאן היא מתורגמת; כל טקסט אחר הוא השורה שעל המסך, ומוצג כמו שהוא. */
+const PROMPT_HE = { menu: "תפריט", signin: "כניסה" };
 function waitingHtml(m) {
-  return m.prompt ? `ממתין למפעיל: <span dir="ltr">${esc(m.prompt)}</span>` : "—";
+  if (!m.prompt) return "—";
+  const he = PROMPT_HE[m.prompt];
+  return he ? `ממתין למפעיל: ${he}` : `ממתין למפעיל: <span dir="ltr">${esc(m.prompt)}</span>`;
 }
 
 /* #417: "מה ראינו בפעם האחרונה שהמכונה דיברה" — מלאי הכוננים מה-hello
@@ -2966,9 +3003,9 @@ function renderActivity() {
   for (const p of OVERVIEW?.pulls || []) for (const m of p.members || []) rows.push([p.image_name, m.hostname || m.name || m.mac, Progress.view(m).label]);
   if (isAdmin()) for (const t of CAPTURE_TASKS) rows.push([t.name, "Capture", Progress.view(t).label]);
   const body = document.querySelector("#taskPanel tbody");
-  if (body) body.innerHTML = rows.length ? rows.map(r => '<tr>'+[r[0],r[1],"-","-",r[2],"-"].map(x => '<td>'+esc(x)+'</td>').join('')+'</tr>').join('') : '<tr><td colspan="6">No active transfers</td></tr>';
+  if (body) body.innerHTML = rows.length ? rows.map(r => '<tr>'+[r[0],r[1],"-","-",r[2],"-"].map(x => '<td>'+esc(x)+'</td>').join('')+'</tr>').join('') : '<tr><td colspan="6">אין העברות פעילות</td></tr>';
   const count = $(".task-count"); if (count) count.textContent = String(rows.length);
-  const summary = $(".task-summary"); if (summary) summary.textContent = overviewError || (rows.length + " active transfers");
+  const summary = $(".task-summary"); if (summary) summary.textContent = overviewError || (rows.length ? rows.length + " העברות פעילות" : "אין העברות פעילות");
 }
 function editImageDescription(id) {
   const img = findImage(id); if (!img || !isAdmin()) return;

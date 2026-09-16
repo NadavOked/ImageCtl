@@ -218,14 +218,19 @@ def test_console_app_monitor_websocket_denied_outside_allowed_networks(runtime):
     app = create_console_app(runtime)
     path = "/api/console/monitor/aa:bb:cc:dd:ee:ff"
 
+    # ‏`pass` בכוונה: ה-TestClient זורק כבר בכניסה ל-with כשהסגירה קדמה
+    # ל-accept — הראיה שהשומר דוחה את ה-handshake עצמו (HTTP 403 ב-uvicorn),
+    # ולא מקבל 101 ואז סוגר. זה נשאר כך גם אחרי #904: מקור אסור לא
+    # מקבל 101, בדיוק כמו שהוא לא מקבל 200 ב-HTTP.
     with pytest.raises(WebSocketDisconnect) as denied:
         with TestClient(app, client=("10.99.0.1", 12345)).websocket_connect(path):
             pass
     assert denied.value.code == 4403
 
+    # השער של המוניטור עצמו מקבל ואז סוגר (‏#904) — הקוד מגיע ב-receive.
     with pytest.raises(WebSocketDisconnect) as allowed:
-        with TestClient(app, client=("10.10.10.1", 12345)).websocket_connect(path):
-            pass
+        with TestClient(app, client=("10.10.10.1", 12345)).websocket_connect(path) as ws:
+            ws.receive_bytes()
     assert allowed.value.code == 4401
 
 

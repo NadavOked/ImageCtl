@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ImageCtl — קונסולה</title>
-<link rel="stylesheet" href="design-tokens.css?v=6.0">
-<link rel="stylesheet" href="console.css?v=6.0">
-<link rel="stylesheet" href="progress.css?v=6.0">
+<link rel="stylesheet" href="design-tokens.css?v=6.1">
+<link rel="stylesheet" href="console.css?v=6.1">
+<link rel="stylesheet" href="progress.css?v=6.1">
 <script>
   /* לפני הציור הראשון, אחרת המסך מהבהב בלבן לפני שהכהה נטען. */
   (function () {
@@ -26,7 +26,6 @@
       <div class="login-brand-top">
         <span class="brandmark"><span class="mark"></span></span>
         <strong>ImageCtl</strong>
-        <span class="tag blue">v0.9</span>
       </div>
       <h1>קונסולת ניהול ImageCtl</h1>
       <p>כניסה לקונסולת הניהול המרכזית של מערכת הדמיה והפצה.</p>
@@ -83,7 +82,7 @@
       <div id="invTA" class="inventory-children" role="group">
         <div class="inventory-node" data-page="images" onclick="event.stopPropagation();toggleInventoryGroup(this,'imagesTree');selectPageById('images')" role="treeitem" tabindex="0" aria-expanded="false"><span class="tree-arrow">▸</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="m3 17 6-6 4 4 3-3 5 5"/><circle cx="16" cy="8" r="1"/></svg></span><span>אימג'ים</span></div>
         <div id="imagesTree" class="inventory-children" role="group" hidden></div>
-        <div class="inventory-node" data-page="machines" role="treeitem" tabindex="0" aria-expanded="false"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'machineTree')">▸</span><span data-admin onclick="selectPageById('machines')" style="display:contents"><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5h13M8 12h13M8 19h13M3 5h.01M3 12h.01M3 19h.01"/></svg></span><span>מחשבים</span></span></div>
+        <div class="inventory-node" data-page="machines" role="treeitem" tabindex="0" aria-expanded="false"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'machineTree')">▸</span><span data-admin onclick="MACHINES_FILTER=null;selectPageById('machines')" style="display:contents"><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5h13M8 12h13M8 19h13M3 5h.01M3 12h.01M3 19h.01"/></svg></span><span>מחשבים</span></span></div>
         <div id="machineTree" class="inventory-children" role="group" data-admin hidden>
           <div class="inventory-node" onclick="event.stopPropagation();toggleInventoryGroup(this,'classesTree')" role="treeitem" tabindex="0" aria-expanded="false"><span class="tree-arrow">▸</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="1"/><path d="M3 10h18M9 4v16M15 4v16"/></svg></span><span>כיתות</span></div>
           <div id="classesTree" class="inventory-children" role="group" hidden></div>
@@ -127,22 +126,22 @@
 
   <main class="content" id="content"></main>
 </div>
-<div class="task-panel" id="taskPanel"><div class="task-panel-head"><strong>משימות אחרונות</strong><button class="icon-btn" onclick="toggleTaskPanel()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><div class="table-wrap"><table class="task-table"><thead><tr><th>משימה</th><th>יעד</th><th>התחלה</th><th>משך</th><th>מצב</th><th>יוזם</th></tr></thead><tbody><tr class="clickable" onclick="openLogDetail('פריסת Ubuntu הושלמה','LAB1','admin')"><td>פריסת אימג׳</td><td>LAB1</td><td>14:12</td><td>2:12:01</td><td><span class="status ok"><i></i>הושלם</span></td><td>מנהל</td></tr><tr class="clickable" onclick="openImageDetail('Ubuntu 24.04-Lab')"><td>אימות SHA-256</td><td>Ubuntu 24.04-Lab</td><td>14:00</td><td>00:00:43</td><td><span class="status ok"><i></i>הושלם</span></td><td>מערכת</td></tr><tr class="clickable" onclick="openMachineDetail('LAB1-06')"><td>כתיבה לתחנה</td><td>LAB1-06</td><td>15:49</td><td>00:03:18</td><td><span class="status err"><i></i>נכשל</span></td><td>Agent</td></tr></tbody></table></div></div><div class="task-dock"><div class="task-dock-head" onclick="toggleTaskPanel()"><span>משימות</span><span class="task-count">3</span><span>⌃</span></div><div class="task-summary">פעילות אחרונה <span class="task-progress"><i></i></span> סבב LAB1 74% <span style="float:left">הודעות: 2</span></div></div><div class="statusbar"><span>ImageCtl Console · Session פעיל</span><span class="statusbar-right"><span class="statusbar-item"><i></i>API</span><span class="statusbar-item"><i></i>PXE</span><span class="statusbar-item"><i></i>Multicast</span><span>v0.9</span></span></div><div class="user-menu" id="userMenu"><div class="user-menu-head"><strong>מנהל</strong><small>Administrator</small></div><button onclick="openAccount()">החשבון שלי</button><button onclick="openSessionInfo()">פרטי session</button><button id="logout" class="danger-item" type="button">התנתקות</button></div>
+<div class="task-panel" id="taskPanel"><div class="task-panel-head"><strong>משימות אחרונות</strong><button class="icon-btn" onclick="toggleTaskPanel()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><div class="table-wrap"><table class="task-table"><thead><tr><th>משימה</th><th>יעד</th><th>התחלה</th><th>משך</th><th>מצב</th><th>יוזם</th></tr></thead><tbody><tr><td colspan="6">אין העברות פעילות</td></tr></tbody></table></div></div><div class="task-dock"><div class="task-dock-head" onclick="toggleTaskPanel()"><span>משימות</span><span class="task-count">0</span><span>⌃</span></div><div class="task-summary">אין העברות פעילות</div></div><div class="statusbar"><span>ImageCtl Console · Session פעיל</span><span class="statusbar-right"><span class="statusbar-item"><i></i>API</span><span class="statusbar-item"><i></i>PXE</span><span class="statusbar-item"><i></i>Multicast</span><span id="serverVersion"></span></span></div><div class="user-menu" id="userMenu"><div class="user-menu-head"><strong>מנהל</strong><small>Administrator</small></div><button onclick="openAccount()">החשבון שלי</button><button onclick="openSessionInfo()">פרטי session</button><button id="logout" class="danger-item" type="button">התנתקות</button></div>
 <input class="selectable-file" id="csvFile" type="file" accept=".csv" aria-hidden="true">
 <div class="detail-backdrop" id="detailBackdrop"></div><aside class="drawer" id="drawer" aria-label="פרטים"><div class="drawer-head"><strong id="drawerTitle">פרטים</strong><button class="icon-btn" onclick="closeDrawer()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><div class="drawer-body" id="drawerBody"></div></aside>
 <div class="modal-backdrop" id="modal"><div class="modal" id="modalBox"><div class="modal-h"><strong id="modalTitle">פעולה</strong><button class="icon-btn" onclick="closeModal()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><div class="modal-b" id="modalBody"></div><div class="modal-f"><button class="btn primary" id="modalOk">אישור</button><button class="btn" onclick="closeModal()">ביטול</button></div></div><form id="sheet" class="sheet hidden"></form></div>
 <div class="toast" id="toast"></div>
 </div>
 
-<script src="progress.js?v=6.0"></script>
-<script src="console.js?v=6.0"></script>
-<script src="reorder.js?v=6.0"></script>
-<!-- <script src="library.js?v=6.0"></script> -->
-<script src="machines.js?v=6.0"></script>
-<script src="net.js?v=6.0"></script>
-<script src="netcfg.js?v=6.0"></script>
-<script src="storage_nodes.js?v=6.0"></script>
-<script src="drivers.js?v=6.0"></script>
-<script src="branches.js?v=6.0"></script>
+<script src="progress.js?v=6.1"></script>
+<script src="console.js?v=6.1"></script>
+<script src="reorder.js?v=6.1"></script>
+<!-- <script src="library.js?v=6.1"></script> -->
+<script src="machines.js?v=6.1"></script>
+<script src="net.js?v=6.1"></script>
+<script src="netcfg.js?v=6.1"></script>
+<script src="storage_nodes.js?v=6.1"></script>
+<script src="drivers.js?v=6.1"></script>
+<script src="branches.js?v=6.1"></script>
 </body>
 </html>

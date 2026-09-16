@@ -27,8 +27,9 @@
   <img alt="ארכיטקטורת ImageCtl — המצב הקיים" src="docs/architecture-current.svg">
 </picture>
 
-_כל מה שמופיע בתרשים רץ היום. מסך הקיוסק הגרפי אינו כאן — הוא
-נבנה (`--with-gui`) אך טרם הורץ על חומרה._
+_התרשים משקף את היקף מהדורת שיכפול (v1) — מחשב בנייה, מחשבי שיכפול
+ושרת (ראשי ומשני, [#655](https://github.com/NadavOked/ImageCtl-archive/issues/655)).
+תחנות כיתה/PXE לתלמידים אינן בתרשים — הן v2._
 
 <div dir="rtl">
 

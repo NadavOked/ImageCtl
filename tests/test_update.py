@@ -126,6 +126,23 @@ def _enable(client):
     assert r.status_code == 200
 
 
+def test_me_reports_the_server_version_from_the_same_source_as_update(update_server):
+    """‏#915: שורת הסטטוס בקונסולה מציגה את תג ה-git של העץ — מאותו hook
+    ‏`describe` כמו `/update` — ולא `v0.9` קשיח ב-HTML. לכל משתמש מחובר,
+    לא רק admin (גם deploy רואה את שורת הסטטוס)."""
+    from server import users
+    admin, app, state = update_server["admin"], update_server["app"], update_server["state"]
+    assert admin.get("/api/console/me").json()["version"] == "v0.24.0"
+    state["current"] = "v0.25.0-2-gabc123"          # העץ זז — נקרא מחדש, לא מונח
+    assert admin.get("/api/console/me").json()["version"] == "v0.25.0-2-gabc123"
+    users.create(app.state.ctx.conn, "dep", "deploy-pass-123", "deploy", by="test")
+    deploy = TestClient(app)
+    deploy.post("/api/console/login", json={"username": "dep", "password": "deploy-pass-123"})
+    assert deploy.get("/api/console/me").json()["version"] == "v0.25.0-2-gabc123"
+    state["current"] = None                          # אין תג על העץ = null, לא מספר מומצא
+    assert admin.get("/api/console/me").json()["version"] is None
+
+
 def test_update_disabled_by_default(update_server):
     """סעיף 3 בהאצלה: המתג כבוי כברירת מחדל, בלי שנגענו בו."""
     settings = update_server["admin"].get("/api/console/settings").json()

@@ -37,6 +37,36 @@ WS_FORBIDDEN = 4403
 #: אינו admin) ומ-4502 (אין מי שיענה על 5900).
 WS_MACHINE_AUTH = 4512
 
+#: ‏RFC 6455 §5.5.1: מסגרת close נושאת עד 125 בייט — 2 לקוד ו-123 לסיבה.
+CLOSE_REASON_MAX_BYTES = 123
+
+
+def close_reason(text: str) -> str:
+    """סיבת סגירה שנכנסת במסגרת close. עברית היא 2 בייט לתו, ו-`websockets`
+    זורק ProtocolError על סיבה ארוכה מ-123 בייט — מה שלפני #904 לא קרה
+    מעולם, כי הסיבה נזרקה לפח יחד עם ה-handshake."""
+    data = text.encode("utf-8")
+    if len(data) <= CLOSE_REASON_MAX_BYTES:
+        return text
+    return data[:CLOSE_REASON_MAX_BYTES].decode("utf-8", "ignore")
+
+
+async def accept_browser(websocket: WebSocket) -> None:
+    """מקבל את ה-WebSocket **לפני** כל בדיקה, כדי שדחייה תגיע לדפדפן כקוד
+    וסיבה (‏#904 סעיף 4). לפי מפרט ASGI, ‏`websocket.close` לפני accept הוא
+    דחיית ה-handshake — uvicorn מגיש אותה כ-HTTP 403 בשני המימושים
+    (‏wsproto/websockets), והדפדפן רואה 1006 בלי קוד ובלי סיבה: 4401,
+    ‏4403, ‏4404, ‏4409, ‏4502 ו-4512 כולם נראו "החיבור נסגר". ה-accept אינו
+    שולח בייט אחד של RFB ואינו נוגע במכונה — השער (cookie/admin) עדיין
+    סוגר לפני TCP, וזו הבקרה השלילית של #859. **החריג:** ‏`ConsoleSourceGuard`
+    (‏#859, כתובת מקור) ממשיך לסגור לפני accept — peer מרשת אסורה לא
+    מקבל 101 כלל, בדיוק כמו שהוא לא מקבל 200 ב-HTTP."""
+    offered = websocket.headers.get("sec-websocket-protocol", "")
+    protocol = "binary" if "binary" in {
+        item.strip() for item in offered.split(",")
+    } else None
+    await websocket.accept(subprotocol=protocol)
+
 #: ‏RFB security type 2 — מסגור VNC Authentication (challenge של 16
 #: בייטים, תשובה של 16 בייטים). התשובה **אינה** DES של ה-challenge אלא
 #: 16 בייטי הסוד עצמם; ראו הערת התכנון ב-agent/monitor.c.
@@ -206,19 +236,14 @@ async def authenticate_machine(reader, writer, secret: str) -> None:
 
 
 async def bridge_browser(websocket: WebSocket, reader, writer) -> None:
-    """מקבל את ה-WebSocket ומגשר אותו לזרם RFB שכבר עבר אימות מול המכונה.
+    """מגשר WebSocket שכבר התקבל (‏`accept_browser`) לזרם RFB שכבר עבר
+    אימות מול המכונה.
 
     הדפדפן רואה בדיוק את מה שראה תמיד (‏#839): גרסה, סוג-אבטחה None יחיד,
     ‏SecurityResult OK — ואז הבייטים עוברים גולמיים לשני הכיוונים. משמש
     את המוניטור המקומי **וגם** את המוניטור דרך המשני (#655 v1), ששם
     ``reader``/``writer`` הם המנהרה מהמשני ולא TCP למכונה. חוזר כשאחד
     הצדדים נסגר; ביטול/ניתוק מטופלים אצל הקורא."""
-    offered = websocket.headers.get("sec-websocket-protocol", "")
-    protocol = "binary" if "binary" in {
-        item.strip() for item in offered.split(",")
-    } else None
-    await websocket.accept(subprotocol=protocol)
-
     pending = bytearray()
 
     async def from_browser() -> bytes | None:
@@ -352,6 +377,9 @@ def create_monitor_router(
         websocket: WebSocket,
         mac: str,
     ):
+        # ‏#904: accept לפני השער, אחרת כל סגירה למטה מגיעה לדפדפן כ-403
+        # אילם (ראו `accept_browser`). ה-accept אינו פותח דבר מול המכונה.
+        await accept_browser(websocket)
         # ‏השער נבדק כאן ידנית, ולא דרך `Depends(admin_only)`. ‏Depends
         # על websocket מפיל את החיבור בקוד גנרי, וה-RFB proxy הוא נתיב
         # שאסור שאי-הרשאה תיגע בו בכלל: הסגירה חייבת לקרות **לפני**
@@ -379,7 +407,7 @@ def create_monitor_router(
                                         now_fn() if now_fn else None)
         except HTTPException as exc:
             await websocket.close(code=4000 + exc.status_code,
-                                  reason=str(exc.detail))
+                                  reason=close_reason(str(exc.detail)))
             return
         if secret is None:
             # ‏#839: בלי סוד אין עם מה להזדהות — ולכן גם אין TCP. מוניטור
@@ -408,7 +436,8 @@ def create_monitor_router(
                 await asyncio.wait_for(
                     authenticate_machine(reader, writer, secret), timeout=5.0)
             except MachineAuthError as exc:
-                await websocket.close(code=WS_MACHINE_AUTH, reason=str(exc))
+                await websocket.close(code=WS_MACHINE_AUTH,
+                                      reason=close_reason(str(exc)))
                 return
             except asyncio.TimeoutError:
                 await websocket.close(

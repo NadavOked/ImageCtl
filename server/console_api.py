@@ -11,6 +11,7 @@ import json
 import re
 import sqlite3
 import shutil
+from typing import Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import PlainTextResponse
@@ -59,7 +60,8 @@ def _drawer_count(raw):
 
 
 def create_console_router(
-    ctx: ServerContext, known_macs_hooks: dict | None = None
+    ctx: ServerContext, known_macs_hooks: dict | None = None,
+    version: Callable[[], str | None] | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/console")
     current_user, admin_only = auth.dependencies(ctx.conn)
@@ -128,6 +130,10 @@ def create_console_router(
             "username": user[0],
             "role": user[1],
             "idle_seconds": int(get_setting(ctx.conn, "console_idle_seconds") or 300),
+            # ‏#915: גרסת השרת (תג git, ‏`update.current_version`) לשורת
+            # הסטטוס — לכל משתמש מחובר, לא רק admin. ‏None = אין תג על
+            # העץ, והקונסולה לא מציגה מספר שאין לו מקור.
+            "version": version() if version else None,
             "capabilities": {
                 "interbranch_transfer":
                     storage_nodes.can_interbranch_transfer(ctx.conn, user[1]),

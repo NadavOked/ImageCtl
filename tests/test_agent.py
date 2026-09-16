@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -676,8 +677,12 @@ def test_the_builder_packs_the_account_dropbear_hands_the_session_to():
 # --- אשף השחזור: כניסה לפני התפריט (#80) ------------------------------------
 
 
-def wizard(tmp_path, keys, require_login="true", codes=("200",)):
+def wizard(tmp_path, keys, require_login="true", codes=("200",), delay=0.0):
     """מריץ את `recovery_flow` עם קלט מוקלד ומחזיר (פלט, קוד יציאה).
+    ‏`delay` > 0 = האדם מקליד רק אחרי כל כך הרבה שניות (#912) — הקלט מגיע
+    אז מצינור בתוך bash ולא מ-`input=`; ‏`build_hello`/`http_post_json`
+    מזויפים ופעימת ה-hello נרשמת ל-`hellos`. ‏attended.sh נטען רק אם הוא
+    קיים, כדי שהבקרה השלילית תיפול על ההתנהגות ולא על `.` של קובץ חסר.
 
     שלושה זיופים, כולם על תפרים שהקוד כבר מגדיר:
 
@@ -694,13 +699,21 @@ def wizard(tmp_path, keys, require_login="true", codes=("200",)):
     run.mkdir(exist_ok=True)
     (run / "codes.txt").write_text("\n".join(codes) + "\n", encoding="utf-8")
     (run / "code_n").write_text("0\n", encoding="utf-8")
+    attended = AGENT / "lib" / "attended.sh"
+    feed = ""
+    if delay:
+        feed = ("{ command sleep " + str(delay) + "; printf '"
+                + "".join(f"{k}\\n" for k in keys) + "'; } | ")
     script = (
         f'export RUN_DIR={posix(run)!r} MAC="b4:2e:99:07:1a:c4" '
         f'SERVER="http://127.0.0.1:1" RESP={posix(run / "resp.json")!r} '
-        f'IMAGECTL_TEST=1 HTTP_RETRIES=0 HTTP_TIMEOUT=1 '
+        f'IMAGECTL_TEST=1 HTTP_RETRIES=0 HTTP_TIMEOUT=1 ATTENDED_BEAT_S=0.3 '
         f'REQUIRE_LOGIN={require_login!r}; '
         f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/jsonq.sh; '
         f'. {posix(AGENT)}/lib/classround.sh; . {posix(AGENT)}/lib/ui.sh; . {posix(AGENT)}/lib/recovery.sh; '
+        + (f'. {posix(attended)}; ' if attended.exists() else "")
+        + 'build_hello() { printf %s "{\\"mac\\":\\"$MAC\\",\\"joining\\":$1}"; }; '
+        'http_post_json() { cat "$2" >> "$RUN_DIR/hellos"; echo >> "$RUN_DIR/hellos"; }; '
         'json_get() { case "$2" in .ui.require_login) echo "$REQUIRE_LOGIN" ;; '
         '*) echo null ;; esac; }; '
         'login_post() { _n=$(cat "$RUN_DIR/code_n"); _n=$((_n + 1)); '
@@ -708,7 +721,7 @@ def wizard(tmp_path, keys, require_login="true", codes=("200",)):
         'sed -n "${_n}p" "$RUN_DIR/codes.txt"; }; '
         'single_station_flow() { echo "STUB-SINGLE user=${RECOVERY_USER:-}"; }; '
         'class_round_flow() { echo "STUB-CLASS user=${RECOVERY_USER:-}"; }; '
-        'recovery_flow'
+        + feed + 'recovery_flow'
     )
     # ‏input בבייטים ולא ב-text: עם `text=True` ווינדוס מתרגם כל `\n`
     # שנכתב לצינור ל-`\r\n`, ‏`read -r` במעטפת מקבל `0\r`, וה-`case`
@@ -717,9 +730,16 @@ def wizard(tmp_path, keys, require_login="true", codes=("200",)):
     proc = subprocess.run(
         [BASH, "-c", 'export PATH="/usr/bin:$PATH"; ' + script],
         capture_output=True, cwd=str(REPO),
-        input="".join(f"{k}\n" for k in keys).encode("utf-8"),
+        input=b"" if delay else "".join(f"{k}\n" for k in keys).encode("utf-8"),
     )
     return proc.stdout.decode("utf-8", "replace"), proc.returncode
+
+
+def wizard_hellos(tmp_path) -> list[dict]:
+    path = tmp_path / "run" / "hellos"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line]
 
 
 MENU = "Deployment type:"
@@ -754,6 +774,37 @@ def test_a_class_round_no_longer_asks_a_second_time(tmp_path):
     out, _ = wizard(tmp_path, ["labtech", "pass", "2"])
     assert out.count(PROMPT) == 1
     assert "STUB-CLASS user=labtech" in out
+
+
+# --- #912: hello ממשיך בזמן שמסך הכניסה ממתין למפעיל --------------------------
+
+
+def test_hello_keeps_going_while_the_recovery_sign_in_waits(tmp_path):
+    """אותו דפוס כמו #906/#908, על אשף השחזור: תחנה שעומדת על "Username:"
+    נראית בקונסולה "לא נראתה" אחרי ONLINE_SECONDS. כאן האדם מקליד רק אחרי
+    ~3 פעימות (‏ATTENDED_BEAT_S=0.3), ולכן ≥2 hello עם `prompt: signin`,
+    ‏`waiting_for: operator` ו-`joining: false`. בקרה שלילית: `recovery.sh`
+    של main → 0."""
+    out, _ = wizard(tmp_path, ["labtech", "pass", "1"], delay=0.9)
+    assert "STUB-SINGLE user=labtech" in out, out
+    beats = wizard_hellos(tmp_path)
+    assert len(beats) >= 2, (beats, out)
+    for h in beats:
+        assert h["waiting_for"] == "operator" and h["prompt"] == "signin"
+        assert h["joining"] is False and h["mac"] == "b4:2e:99:07:1a:c4"
+
+
+def test_a_refused_recovery_sign_in_leaves_no_beat_behind(tmp_path):
+    """‏`recovery_gate` מסתיים ב-`die_local` כשהכניסה נדחתה (#80). הפעימה
+    נעצרת לפני כן — אחרי TEST-REBOOT מספר ה-hello אינו גדל, אחרת נשאר
+    תהליך יתום שכותב `signin` על תחנה שכבר אתחלה."""
+    out, code = wizard(tmp_path, ["a", "b"] * 3, codes=("401",) * 3, delay=0.4)
+    assert "TEST-REBOOT: login failed" in out and code == 86
+    beats = wizard_hellos(tmp_path)
+    assert beats and all(h["prompt"] == "signin" for h in beats), (beats, out)
+    before = len(beats)
+    time.sleep(1.0)
+    assert len(wizard_hellos(tmp_path)) == before
 
 
 # --- שלושת המצבים: נדרשת / מוותרים / לא נאמר --------------------------------

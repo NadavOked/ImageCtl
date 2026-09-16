@@ -613,6 +613,33 @@ def test_the_beat_stops_with_the_answer(tmp_path):
     assert "grew=0" in out.stdout, out.stdout
 
 
+def test_a_question_inside_a_question_beats_once_and_hands_back(tmp_path):
+    """‏#912: ‏`attended` בתוך `attended` — למשל שאלה שנשאלת בזמן שמסך אחר
+    כבר ממתין. נמדד 16/09 על הקוד של #906: שתי פעימות במקביל (ה-prompt
+    מתחלף על השרת בכל פעימה), והחיצונית נשארת יתומה אחרי שתי העצירות.
+    הנדרש: בזמן הפנימית נשלחת **רק** השאלה הפנימית; כשהיא נענתה, פעימת
+    החיצונית חוזרת; ובסוף — אף hello נוסף. בקרה שלילית: `attended.sh` של
+    main → `outer` בין הפעימות הפנימיות, ו-`grew` > 0."""
+    run = tmp_path / "run"; run.mkdir()
+    dev = tmp_path / "dev"; dev.mkdir()
+    out = sh(env(run, dev) + PRELUDE + FAKE_HELLO
+             + 'export ATTENDED_BEAT_S=0.2; '
+             + 'http_post_json() { cat "$2" >> "$RUN_DIR/hellos"; echo >> "$RUN_DIR/hellos"; }; '
+             + 'inner() { sleep 0.7; echo INNER-END >> "$RUN_DIR/hellos"; }; '
+             + 'outer() { attended inner inner; sleep 0.7; echo OUTER-END >> "$RUN_DIR/hellos"; }; '
+             + 'attended outer outer; _n=$(wc -l < "$RUN_DIR/hellos"); sleep 0.8; '
+             + 'echo "grew=$(( $(wc -l < "$RUN_DIR/hellos") - _n ))"')
+    assert out.returncode == 0, out.stderr
+    assert "grew=0" in out.stdout, out.stdout
+    lines = [ln for ln in (run / "hellos").read_text().splitlines() if ln]
+    tags = [ln if ln.endswith("-END") else json.loads(ln)["prompt"] for ln in lines]
+    inner_end, outer_end = tags.index("INNER-END"), tags.index("OUTER-END")
+    during_inner = tags[:inner_end]
+    after_inner = tags[inner_end + 1:outer_end]
+    assert during_inner.count("inner") >= 2 and "outer" not in during_inner, tags
+    assert after_inner.count("outer") >= 2 and "inner" not in after_inner, tags
+
+
 def test_a_plain_beat_carries_no_prompt(tmp_path):
     """‏attended_hello בלי שאלה = דופק רגיל (hold_beat בלי HOLD_PROMPT): בלי
     `waiting_for` ובלי `prompt`, כך שהשרת מנקה שאלה קודמת. עם שאלה —

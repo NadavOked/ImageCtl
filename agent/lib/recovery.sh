@@ -37,6 +37,17 @@ login_post() {
 }
 
 recovery_login() {
+    # The sign-in screen is a wait for a person, and hello keeps going
+    # through it (#912, the pattern of #906/#908): the beat says "signin"
+    # and stops when the screen is done -- before login_failed's die_local,
+    # so a refused sign-in leaves no beat behind. Wrapped here and not at
+    # the callers, because every sign-in (the build menu gate, the
+    # recovery gate, a class round from the deployment vlan, the GUI
+    # handoffs) is this one function.
+    attended "signin" recovery_login_ask
+}
+
+recovery_login_ask() {
     # Three attempts against the console users (spec 15: the password
     # lives on the server, never on a machine students control).
     # The credentials are kept for the wizard: opening a class round

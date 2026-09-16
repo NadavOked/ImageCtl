@@ -279,8 +279,8 @@ build_menu() {
 build_menu_flow() {
     # Entry point from the main loop. The menu is a wait for a person, and
     # hello keeps going through it (#908, the pattern of #906): the beat
-    # says "menu" and stops when the menu hands back. Not around the gate:
-    # a refused sign-in ends in die_local, past attended_stop.
+    # says "menu" and stops when the menu hands back. The gate's own wait
+    # -- the sign-in -- carries its beat inside recovery_login (#912).
     build_menu_gate || return 0
     attended "menu" build_menu
 }

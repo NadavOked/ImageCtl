@@ -47,7 +47,8 @@ from .console_dhcp import create_dhcp_router
 from .console_netcfg import create_netcfg_router, drain_crumbs
 from .db import connect
 from .health import create_health_router
-from .update import PUBLIC_UPDATE_URL, create_update_router
+from .update import (PUBLIC_UPDATE_URL, create_update_router, current_version,
+                     default_hooks as default_update_hooks)
 from .hello import make_resolver, off_deploy_vlan
 from .images import ImageLibrary
 from .kiosk import create_kiosk_router
@@ -455,7 +456,16 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
     מכאן כקובץ סטטי (חלק מעץ `/console`), אבל ה-API `/api/v1/agent/*` שלו
     כבר לא — הוא חי על הקיוסק ועל הסוכן (#824)."""
     ctx = rt.ctx
-    app.include_router(create_console_router(ctx, rt.known_macs_hooks))
+    # ‏#748: תיקיית העץ נופלת לתיקיית הקוד עצמה כשאין ``--repo-dir``
+    # מפורש (בדיקות/הרצה ישירה) — ראו ``main.py``.
+    repo_dir = rt.repo_dir or Path(__file__).resolve().parents[1]
+    # ‏#915: הגרסה שמוצגת בקונסולה נקראת מאותו מקור כמו כפתור "עדכן"
+    # (‏`git describe`, לא מחרוזת קשיחה ב-HTML) — ונקראת מחדש בכל
+    # ‏`/me`, כי אחרי ``apply`` העץ כבר על תג אחר.
+    update_hooks = {**default_update_hooks(), **(rt.update_hooks or {})}
+    app.include_router(create_console_router(
+        ctx, rt.known_macs_hooks,
+        version=lambda: current_version(update_hooks, repo_dir)))
     app.include_router(create_storage_router(ctx, rt.data_dir))   # #727/#740
     app.include_router(create_library_router(ctx))
     app.include_router(create_drivers_router(ctx))   # #720
@@ -463,11 +473,9 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
     app.include_router(create_dhcp_router(ctx, rt.dhcp_hooks))
     app.include_router(create_netcfg_router(ctx, rt.netcfg_dir, rt.netcfg_hooks))
     app.include_router(create_health_router(ctx, rt.server_base, rt.health_hooks))
-    # ‏#748: תיקיית העץ נופלת לתיקיית הקוד עצמה כשאין ``--repo-dir``
-    # מפורש (בדיקות/הרצה ישירה) — ראו ``main.py``.
     app.include_router(create_update_router(
-        ctx, rt.repo_dir or Path(__file__).resolve().parents[1],
-        rt.server_base, rt.update_hooks, public_url=PUBLIC_UPDATE_URL))
+        ctx, repo_dir, rt.server_base, rt.update_hooks,
+        public_url=PUBLIC_UPDATE_URL))
     app.include_router(create_branding_router(ctx, rt.data_dir))
     app.include_router(create_monitor_router(ctx))   # #690: admin RFB proxy + settings
     app.include_router(create_console_capture_router(ctx))

@@ -13,8 +13,8 @@
 
   <g id="title">
     <text x="880" y="31" text-anchor="middle" class="title rtl">ארכיטקטורת ImageCtl — המצב הקיים</text>
-    <text x="880" y="53" text-anchor="middle" class="subtitle rtl">כל מה שמופיע כאן רץ היום. מסך הקיוסק הגרפי אינו כאן — הוא נבנה אך טרם הורץ על חומרה.</text>
-  <text x="880" y="75" text-anchor="middle" class="subtitle" fill="#344054" font-weight="700">‏מחשב בנייה ← קליטה לשרת  ·  השרת ← הפצה למחשבי שיכפול או לתחנות כיתה</text>
+    <text x="880" y="53" text-anchor="middle" class="subtitle rtl">כל מה שמופיע כאן רץ היום — מהדורת שיכפול (v1). תחנות כיתה/PXE לתלמידים אינן בתרשים זה (v2).</text>
+  <text x="880" y="75" text-anchor="middle" class="subtitle" fill="#344054" font-weight="700">‏מחשב בנייה ← קליטה לשרת  ·  השרת ← הפצה למחשבי שיכפול</text>
   </g>
 
   <g id="safety-default">
@@ -85,36 +85,42 @@
     <rect x="121" y="421" width="183" height="27" class="box server pill"/><text x="212" y="440" text-anchor="middle" class="body">iPXE / PXE Boot</text><path d="M212 448v27" class="flow server" marker-end="url(#arrow-blue)"/>
     <rect x="88" y="475" width="261" height="27" class="box server pill"/><text x="218" y="494" text-anchor="middle" class="body">Linux / initramfs (רץ מ־RAM)</text><path d="M218 502v31" class="flow green" marker-end="url(#arrow-green)"/>
     <rect x="56" y="535" width="323" height="96" rx="10" class="box boot" fill="#fafafa"/>
-    <text x="217" y="572" text-anchor="middle" class="h1 rtl">מסך טקסט</text>
-    <text x="217" y="603" text-anchor="middle" class="body rtl">מפנה לקונסולה בדפדפן</text>
+    <text x="217" y="572" text-anchor="middle" class="h1 rtl">מסך GUI גרפי</text>
+    <text x="217" y="603" text-anchor="middle" class="body rtl">תפריט: קליטה / הפצה ישירה למשכפלים</text>
     <path d="M218 631v118" class="flow server" marker-end="url(#arrow-blue)"/>
     <rect x="56" y="750" width="319" height="97" rx="10" class="box storage" fill="#fffaf1"/><text x="215" y="775" text-anchor="middle" class="h2">Capture / Build (שכבת עיבוד)</text><text x="91" y="803" class="body">• partclone</text><text x="203" y="803" class="body">• zstd</text><text x="273" y="803" class="body">• sha256</text><text x="215" y="829" text-anchor="middle" class="body">• משלוח לשרת דרך HTTP</text>
   </g>
 
   <g id="cloner-machine" transform="translate(0 35)">
     <rect x="451" y="372" width="335" height="490" rx="12" class="box gui dash" fill="#f7fff7"/>
-    <rect x="461" y="370" width="304" height="36" rx="5" fill="#267a31"/><text x="613" y="394" text-anchor="middle" class="h2 rtl" fill="#fff">2. מחשב שיכפול (ללא GUI)</text>
+    <rect x="461" y="370" width="304" height="36" rx="5" fill="#267a31"/><text x="613" y="394" text-anchor="middle" class="h2 rtl" fill="#fff">2. מחשב שיכפול (GUI גרפי)</text>
     <rect x="510" y="457" width="200" height="26" class="box gui pill"/><text x="610" y="475" text-anchor="middle" class="body">iPXE / PXE Boot</text><rect x="492" y="504" width="232" height="26" class="box gui pill"/><text x="608" y="522" text-anchor="middle" class="body">Linux / initramfs (רץ מ־RAM)</text>
-    <rect x="480" y="550" width="242" height="45" rx="7" class="box boot" fill="#fafafa"/><text x="601" y="570" text-anchor="middle" class="body">Agent (ללא GUI)</text><text x="601" y="588" text-anchor="middle" class="small rtl">זיהוי חומרה ודיסקים</text>
+    <rect x="480" y="550" width="242" height="45" rx="7" class="box boot" fill="#fafafa"/><text x="601" y="570" text-anchor="middle" class="body">Agent + GUI גרפי</text><text x="601" y="588" text-anchor="middle" class="small rtl">התקדמות דיסק 1/2/3 + SMART</text>
     <rect x="473" y="614" width="282" height="85" rx="9" class="box storage" fill="#fffaf1"/><text x="614" y="640" text-anchor="middle" class="h2 rtl">מגירות דיסק</text><text x="502" y="676" class="small">Drive 1</text><text x="583" y="676" class="small">Drive 2</text><text x="664" y="676" class="small">Drive 3</text><text x="730" y="676" class="small">…</text>
-    <rect x="461" y="721" width="304" height="105" rx="9" class="box gui" fill="#f8fcf3"/><text x="613" y="746" text-anchor="middle" class="h2">Writing Engine (ללא GUI)</text><text x="477" y="770" class="body">• partclone (write)</text><text x="477" y="793" class="body">• zstd (decompress)</text><text x="477" y="816" class="body">• כתיבה מקבילית מבוקרת</text><text x="681" y="770" class="small">Drive 1 ✓</text><text x="681" y="793" class="small">Drive 2 ✓</text><text x="681" y="816" class="small">Drive 3 !</text>
+    <rect x="461" y="721" width="304" height="105" rx="9" class="box gui" fill="#f8fcf3"/><text x="613" y="746" text-anchor="middle" class="h2">Writing Engine (GUI גרפי)</text><text x="477" y="770" class="body">• partclone (write)</text><text x="477" y="793" class="body">• zstd (decompress)</text><text x="477" y="816" class="body">• כתיבה מקבילית מבוקרת</text><text x="681" y="770" class="small">Drive 1 ✓</text><text x="681" y="793" class="small">Drive 2 ✓</text><text x="681" y="816" class="small">Drive 3 !</text>
     <text x="613" y="849" text-anchor="middle" class="h2 rtl" fill="#267a31">כשל במגירה אחת לא עוצר את האחרות</text>
   </g>
 
-  <g id="student-machine" transform="translate(0 35)">
+  <g id="secondary-server-machine" transform="translate(0 35)">
     <rect x="807" y="372" width="375" height="490" rx="12" class="box purple dash" fill="#fcfaff"/>
-    <rect x="817" y="370" width="344" height="36" rx="5" fill="#6730aa"/><text x="989" y="394" text-anchor="middle" class="h2 rtl" fill="#fff">3. מחשב תלמיד / תחנת כיתה</text>
-    <rect x="892" y="457" width="208" height="27" class="box purple pill"/><text x="996" y="476" text-anchor="middle" class="body">iPXE / PXE Boot</text><rect x="880" y="504" width="232" height="27" class="box purple pill"/><text x="996" y="523" text-anchor="middle" class="body">Linux / initramfs (רץ מ־RAM)</text>
-    <rect x="817" y="548" width="334" height="96" rx="10" class="box boot" fill="#fafafa"/>
-    <text x="984" y="585" text-anchor="middle" class="h1 rtl">מסך טקסט</text>
-    <text x="984" y="616" text-anchor="middle" class="body rtl">מפנה לקונסולה בדפדפן</text>
-    <path d="M996 644v109" class="flow purple" marker-end="url(#arrow-purple)"/>
-    <rect x="818" y="755" width="344" height="96" rx="10" class="box storage" fill="#fffaf1"/><text x="990" y="780" text-anchor="middle" class="h2">Data Path (שחזור / פריסה)</text><rect x="822" y="798" width="100" height="35" class="box storage pill"/><text x="872" y="820" text-anchor="middle" class="small">udp-receiver</text><rect x="929" y="798" width="57" height="35" class="box storage pill"/><text x="957" y="820" text-anchor="middle" class="small">zstd</text><rect x="994" y="791" width="89" height="48" class="box storage pill"/><text x="1038" y="811" text-anchor="middle" class="small">partclone</text><text x="1038" y="828" text-anchor="middle" class="small">(write)</text><path d="M922 815h5M986 815h6M1083 815h10" class="flow network" marker-end="url(#arrow-orange)"/><text x="1127" y="820" text-anchor="middle" class="tiny rtl">דיסק מקומי</text>
+    <rect x="817" y="370" width="344" height="36" rx="5" fill="#6730aa"/><text x="989" y="394" text-anchor="middle" class="h2 rtl" fill="#fff">3. שרת משני (סניף)</text>
+    <rect x="822" y="440" width="334" height="48" class="box purple pill"/><text x="989" y="469" text-anchor="middle" class="small rtl">התקנה: imagectl-install --secondary</text>
+    <path d="M989 488v32" class="flow purple" marker-end="url(#arrow-purple)"/>
+    <rect x="822" y="520" width="334" height="48" class="box purple pill"/><text x="989" y="549" text-anchor="middle" class="small">Pairing mTLS 8443 — SPKI pinning</text>
+    <path d="M989 568v32" class="flow purple" marker-end="url(#arrow-purple)"/>
+    <rect x="822" y="600" width="334" height="48" class="box purple pill"/><text x="989" y="629" text-anchor="middle" class="small rtl">העברת אימג'ים מהראשי (sha256)</text>
+    <path d="M989 648v32" class="flow purple" marker-end="url(#arrow-purple)"/>
+    <rect x="822" y="680" width="334" height="48" class="box purple pill"/><text x="989" y="709" text-anchor="middle" class="small rtl">מכונות + מוניטור דרך הראשי</text>
+  </g>
+
+  <g id="secondary-server-flow">
+    <path d="M1390 238v20h-185v142h-55" class="flow purple dash" marker-end="url(#arrow-purple)"/>
+    <text x="1210" y="330" class="tiny rtl" fill="#32125d">ראשי → משני</text>
   </g>
 
   <g id="secure-boot-chain" transform="translate(0 35)">
     <rect x="1218" y="261" width="297" height="289" rx="12" class="box boot" fill="#fff"/>
-    <rect x="1218" y="261" width="297" height="70" rx="12" fill="#eeeeee"/><text x="1366" y="286" text-anchor="middle" class="h2 rtl">שרשרת אתחול נוכחית</text><text x="1366" y="313" text-anchor="middle" class="small rtl">Secure Boot בתחנות כיתה</text>
+    <rect x="1218" y="261" width="297" height="70" rx="12" fill="#eeeeee"/><text x="1366" y="286" text-anchor="middle" class="h2 rtl">שרשרת אתחול נוכחית</text><text x="1366" y="313" text-anchor="middle" class="small rtl">Secure Boot במחשבים שעולים ב-PXE</text>
     <text x="1282" y="361" class="body">♢</text><text x="1315" y="361" class="body">Firmware (UEFI)</text><text x="1282" y="400" class="body">♢</text><text x="1315" y="400" class="body">shim (חתום)</text><text x="1282" y="439" class="body">♢</text><text x="1315" y="439" class="body">GRUB (חתום)</text><text x="1282" y="478" class="body">♢</text><text x="1315" y="478" class="body">distro kernel (חתום)</text><text x="1282" y="517" class="body">♢</text><text x="1315" y="517" class="body">initramfs (רץ מ־RAM)</text>
   </g>
 

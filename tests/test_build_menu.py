@@ -576,15 +576,16 @@ def test_hello_keeps_going_while_the_menu_waits_for_a_choice(tmp_path, console):
     והמוניטור אליו נחסם. כאן המפעיל עונה על הבחירה רק אחרי ~4 פעימות
     (‏ATTENDED_BEAT_S=0.3 לבדיקה בלבד), ולכן חייבים להיספר ≥2 hello בזמן
     ההמתנה — כל אחד דופק (`joining: false`), ‏`waiting_for: operator`
-    ו-`prompt: menu`. בקרה שלילית: `buildmenu.sh` של main → 0."""
+    ו-`prompt: menu`. בקרה שלילית: `buildmenu.sh` של main → 0.
+    (‏#912: הכניסה שלפני התפריט שולחת `prompt: signin` — נספרים כאן רק
+    ה-`menu`.)"""
     result = run_screen(tmp_path, url_of(console), ["admin", "pw", 1.3, "0"])
 
     assert "Standing by" in result["out"], result["out"]
-    beats = hellos(console)
-    assert len(beats) >= 2, (beats, result["out"])
+    beats = [h for h in hellos(console) if h["prompt"] == "menu"]
+    assert len(beats) >= 2, (hellos(console), result["out"])
     for h in beats:
         assert h["waiting_for"] == "operator"
-        assert h["prompt"] == "menu"
         assert h["joining"] is False
         assert h["mac"] == MAC
 
@@ -599,6 +600,46 @@ def test_the_beat_stops_when_the_menu_hands_back(tmp_path, console):
     assert "RETURNED rc=0" in result["out"], result["out"]
     before = len(hellos(console))
     assert before >= 1, result["out"]
+    time.sleep(1.0)
+    assert len(hellos(console)) == before
+
+
+# --- #912: וגם מסך הכניסה שלפני התפריט ----------------------------------------
+
+
+@native_tools
+def test_hello_keeps_going_while_the_sign_in_waits(tmp_path, console):
+    """ממצא צדדי מ-#908: התפריט נעטף, שער הכניסה לא — מחשב בנייה שעומד על
+    "Username:" שעות נראה בקונסולה "לא נראתה". כאן המפעיל מקליד את שם
+    המשתמש רק אחרי ~3 פעימות (‏ATTENDED_BEAT_S=0.3), ולכן חייבים להיספר ≥2
+    hello עם `prompt: signin` **לפני** הראשון עם `prompt: menu` — פעימה
+    אחת בכל רגע, לא שתיים במקביל. בקרה שלילית: `recovery.sh` של main → 0."""
+    result = run_screen(tmp_path, url_of(console), [0.9, "admin", "pw", "0"])
+
+    assert "Standing by" in result["out"], result["out"]
+    prompts = [h["prompt"] for h in hellos(console)]
+    assert prompts.count("signin") >= 2, prompts
+    assert "menu" in prompts, prompts
+    assert prompts.index("menu") > max(i for i, p in enumerate(prompts) if p == "signin"),         "פעימת signin אחרי שהתפריט כבר עלה — שתי פעימות במקביל"
+    for h in hellos(console):
+        assert h["waiting_for"] == "operator" and h["joining"] is False
+        assert h["mac"] == MAC
+
+
+@native_tools
+def test_a_refused_sign_in_leaves_no_beat_behind(tmp_path, console):
+    """הסיבה ש-#908 לא עטף את השער: כניסה שנדחתה מסתיימת ב-`die_local`.
+    הפעימה חייבת להיעצר **לפני** — אחרת נשאר תהליך יתום שכותב `signin` על
+    מכונה שכבר אתחלה. הראיה: אחרי TEST-REBOOT מספר ה-hello אינו גדל."""
+    console.agent_login_status = 401
+
+    result = run_screen(tmp_path, url_of(console),
+                        [0.4, "admin", "no", "admin", "no", "admin", "no"])
+
+    assert "TEST-REBOOT: login failed" in result["out"], result["out"]
+    beats = hellos(console)
+    assert beats and all(h["prompt"] == "signin" for h in beats), beats
+    before = len(beats)
     time.sleep(1.0)
     assert len(hellos(console)) == before
 

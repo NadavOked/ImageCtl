@@ -195,6 +195,7 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
     @router.websocket("/storage-nodes/{nid}/monitor/{mac}")
     async def remote_monitor(websocket: WebSocket, nid: str, mac: str):
         import asyncio
+        await monitor.accept_browser(websocket)             # ‏#904: קוד וסיבה, לא 403
         found = auth.check(ctx.conn, websocket.cookies.get(auth.COOKIE_NAME))
         if found is None:
             await websocket.close(code=monitor.WS_UNAUTHENTICATED, reason="נדרשת התחברות")
@@ -221,7 +222,8 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
             ident = storage_nodes.identity(ctx.conn, data_dir=data_dir)
             host, port, _ = interserver_auth.parse_interserver_url(node["base_url"])
         except Exception as exc:                             # noqa: BLE001
-            await websocket.close(code=4500, reason=interserver_auth.redact_secrets(str(exc))[:120])
+            await websocket.close(code=4500, reason=monitor.close_reason(
+                interserver_auth.redact_secrets(str(exc))))
             return
         writer = None
         try:
@@ -231,12 +233,14 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
                     cert_path=ident["server_cert_ref"], key_path=ident["server_key_ref"],
                     path=f"/monitor/{canonical}", token=token), timeout=15.0)
             except storage_client.InterserverTunnelRefused as exc:
-                await websocket.close(code=4000 + exc.status, reason=exc.detail[:120])
+                await websocket.close(code=4000 + exc.status,
+                                      reason=monitor.close_reason(exc.detail))
                 return
             except (OSError, asyncio.TimeoutError, storage_client.InterserverClientError) as exc:
                 await websocket.close(
                     code=4502,
-                    reason=f"השרת המשני אינו זמין: {interserver_auth.redact_secrets(str(exc))}"[:120])
+                    reason=monitor.close_reason(
+                        f"השרת המשני אינו זמין: {interserver_auth.redact_secrets(str(exc))}"))
                 return
             await monitor.bridge_browser(websocket, reader, writer)
         except (WebSocketDisconnect, asyncio.CancelledError):

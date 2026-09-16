@@ -227,6 +227,17 @@ def test_remote_monitor_gate_closes_before_any_tunnel(server, secondary, paired,
     ).fetchone()["n"] == 0
 
 
+def test_remote_monitor_rejection_arrives_after_accept(server, secondary, paired, machine):
+    """‏#904 סעיף 4: גם דרך המשני — הכניסה ל-with מצליחה (101), והקוד עם
+    הסיבה העברית מגיע ב-receive, לא כ-HTTP 403 אילם. ‏`_close_code` סובלני
+    לשני המצבים, ולכן הבדיקה כאן היא שהכניסה **אינה** זורקת."""
+    with server["admin"].websocket_connect(_ws_path("nope")) as ws:
+        with pytest.raises(WebSocketDisconnect) as e:
+            ws.receive_bytes()
+    assert (e.value.code, e.value.reason) == (4404, "שרת משני לא קיים")
+    assert not machine.connected.is_set()
+
+
 def test_remote_monitor_unknown_node_and_mac(server, secondary, paired, machine):
     assert _close_code(server["admin"], _ws_path("nope"))[0] == 4404
     assert _close_code(server["admin"], _ws_path(paired, "not-a-mac"))[0] == 4404

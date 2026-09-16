@@ -61,6 +61,9 @@ class ConsoleSourceGuard:
     ‏close לפני accept הוא דחיית ה-handshake, ו-uvicorn ממיר אותו ל-HTTP
     403 על ה-handshake בשני המימושים (``wsproto_impl`` ו-``websockets_impl``);
     ה-TestClient של Starlette מציג אותו כ-``WebSocketDisconnect(4403)``.
+    זה נשאר כך **בכוונה** גם אחרי #904 (המוניטור עצמו מקבל ואז סוגר, כדי
+    שהקוד והסיבה יגיעו לדפדפן): peer מרשת אסורה אינו מקבל 101, כשם
+    שאינו מקבל 200 ב-HTTP — שומר לפי כתובת מקור אינו מסביר את עצמו.
     """
 
     def __init__(self, inner, networks: Iterable[Network]):

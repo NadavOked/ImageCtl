@@ -1,6 +1,8 @@
 """המוניטור מרחוק (#690): שער ההגדרות (admin בלבד, הדלקה בהקלדה),
 ושער ה-WebSocket שסוגר אנונימי (4401) ו-deploy (4403) **לפני** שהוא
 פותח חיבור TCP למכונה — ואז מעביר בייטים גולמיים של RFB ל-admin.
+הסגירה קורית **אחרי** accept (‏#904 סעיף 4), כדי שהקוד והסיבה יגיעו
+לדפדפן ולא ייבלעו ב-HTTP 403 של דחיית handshake.
 
 מה שנבדק כאן הוא לא "האם ההגדרה נשמרה" אלא **מי מגיע לשירות ה-RFB**.
 שער שנכשל ומחבר את מי שאסור לו הוא בדיוק המצב המסוכן: לכן הבדיקה
@@ -139,8 +141,8 @@ def test_websocket_behaviorally_rejects_non_admin_before_tcp(
     client = monitor_client(server, role, connector)
 
     with pytest.raises(WebSocketDisconnect) as caught:
-        with client.websocket_connect(f"/api/console/monitor/{MAC}"):
-            pass
+        with client.websocket_connect(f"/api/console/monitor/{MAC}") as ws:
+            ws.receive_bytes()      # ‏#904: הסגירה מגיעה אחרי accept
 
     assert caught.value.code == expected_code
     assert called is False
@@ -165,11 +167,63 @@ def test_websocket_rejects_anonymous_before_tcp(server):
     with pytest.raises(WebSocketDisconnect) as caught:
         with TestClient(app).websocket_connect(
             f"/api/console/monitor/{MAC}"
-        ):
-            pass
+        ) as ws:
+            ws.receive_bytes()      # ‏#904: הסגירה מגיעה אחרי accept
 
     assert caught.value.code == 4401
     assert called is False
+
+
+def test_rejection_reaches_the_browser_as_a_close_code_not_http_403(server):
+    """‏#904 סעיף 4: ‏`websocket.close` **לפני** accept הוא דחיית handshake לפי
+    מפרט ASGI — uvicorn מגיש אותה כ-HTTP 403, והדפדפן רואה 1006 בלי קוד
+    ובלי סיבה ("החיבור נסגר"). ה-TestClient מדמה את זה במדויק: סגירה לפני
+    accept זורקת כבר ב-`websocket_connect` (הכניסה ל-with, ‏`_raise_on_close`);
+    סגירה אחרי accept — הכניסה מצליחה (101) והקוד והסיבה מגיעים ב-receive.
+    הבקרה השלילית (monitor.py של main) מפילה את זה בכניסה, לא ב-assert."""
+    called = False
+
+    async def connector(_host, _port):
+        nonlocal called
+        called = True
+        return FakeReader(), FakeWriter()
+
+    client = monitor_client(server, "admin", connector)
+    with client.websocket_connect("/api/console/monitor/not-a-mac") as websocket:
+        with pytest.raises(WebSocketDisconnect) as caught:
+            websocket.receive_bytes()
+
+    assert caught.value.code == 4404
+    assert caught.value.reason == "מכונה לא מוכרת"
+    assert called is False
+
+
+@pytest.mark.parametrize("role, code, reason", [
+    ("deploy", 4403, "פעולה למנהל בלבד"),
+    (None, 4401, "נדרשת התחברות"),
+])
+def test_gate_rejection_also_arrives_after_accept_with_its_reason(
+        server, role, code, reason):
+    """‏#859 נשמר: השער עדיין סוגר 4401/4403 לפני TCP — רק שעכשיו הקוד
+    והסיבה מגיעים לדפדפן במקום 403 אילם."""
+    client = monitor_client(server, role or "admin", None)
+    if role is None:
+        client.cookies.clear()
+    with client.websocket_connect(f"/api/console/monitor/{MAC}") as websocket:
+        with pytest.raises(WebSocketDisconnect) as caught:
+            websocket.receive_bytes()
+    assert (caught.value.code, caught.value.reason) == (code, reason)
+
+
+def test_close_reason_fits_a_close_frame():
+    """‏RFC 6455: סיבת סגירה היא ≤123 בייט UTF-8 — עברית היא 2 בייט לתו,
+    ו-`websockets` זורק ProtocolError על סיבה ארוכה **אחרי** accept (לפני
+    ‏#904 היא נזרקה לפח יחד עם ה-403, ולכן האורך לא נבדק מעולם)."""
+    assert monitor.close_reason("מכונה לא מוכרת") == "מכונה לא מוכרת"
+    long = "המוניטור דחה את סוד השרת: " + "א" * 200
+    cut = monitor.close_reason(long)
+    assert len(cut.encode("utf-8")) <= 123
+    assert long.startswith(cut) and cut.endswith("א")
 
 
 def test_admin_proxy_carries_raw_rfb_bytes(server):
@@ -219,6 +273,22 @@ def test_monitor_client_does_not_require_a_subprotocol():
     assert not re.search(r"new WebSocket\s*\(\s*[\w.]+\([^)]*\)\s*,", text), (
         "monitor.js מבקש subprotocol מ-new WebSocket — wsproto לא מהדהד "
         "אותו ו-Chrome סוגר את החיבור (1006)")
+
+
+def test_monitor_client_shows_the_servers_close_reason():
+    """‏#904 סעיף 4: הסיבה העברית שהשרת שולח ב-close היא מה שהמפעיל רואה —
+    הטבלה הקשיחה בלקוח היא גיבוי לסיבה ריקה בלבד. ו-`monitor.html` הוקפץ
+    (‏JS ישן מול שרת חדש — gotcha ידוע; ‏monitor.js נטען משם, לא מ-index)."""
+    import re
+    from pathlib import Path
+
+    static = Path(__file__).resolve().parent.parent / "server" / "static"
+    js = (static / "monitor.js").read_text(encoding="utf-8")
+    assert "event.reason ||" in js
+    page = (static / "monitor.html").read_text(encoding="utf-8")
+    versions = {tuple(int(x) for x in v.split("."))
+                for v in re.findall(r"\?v=([0-9.]+)", page)}
+    assert versions and min(versions) >= (3, 28), versions
 
 
 def test_monitor_machines_list_is_admin_only_and_server_decides_online(server):
@@ -410,8 +480,8 @@ def test_proxy_never_falls_back_to_none_security(server):
 
     client = monitor_client(server, "admin", connector)
     with pytest.raises(WebSocketDisconnect) as caught:
-        with client.websocket_connect(f"/api/console/monitor/{MAC}"):
-            pass
+        with client.websocket_connect(f"/api/console/monitor/{MAC}") as ws:
+            ws.receive_bytes()      # ‏#904: הסגירה מגיעה אחרי accept
 
     assert caught.value.code == monitor.WS_MACHINE_AUTH
     assert b"\x01" not in machine.writes
@@ -427,8 +497,8 @@ def test_proxy_closes_when_the_machine_rejects_the_secret(server):
 
     client = monitor_client(server, "admin", connector)
     with pytest.raises(WebSocketDisconnect) as caught:
-        with client.websocket_connect(f"/api/console/monitor/{MAC}"):
-            pass
+        with client.websocket_connect(f"/api/console/monitor/{MAC}") as ws:
+            ws.receive_bytes()      # ‏#904: הסגירה מגיעה אחרי accept
 
     assert caught.value.code == monitor.WS_MACHINE_AUTH
     assert "secret mismatch" in caught.value.reason
@@ -447,8 +517,8 @@ def test_proxy_refuses_before_tcp_when_the_machine_reported_no_secret(server):
 
     client = monitor_client(server, "admin", connector)
     with pytest.raises(WebSocketDisconnect) as caught:
-        with client.websocket_connect(f"/api/console/monitor/{MAC}"):
-            pass
+        with client.websocket_connect(f"/api/console/monitor/{MAC}") as ws:
+            ws.receive_bytes()      # ‏#904: הסגירה מגיעה אחרי accept
 
     assert caught.value.code == monitor.WS_MACHINE_AUTH
     assert called is False
@@ -564,6 +634,22 @@ def test_a_malformed_waiting_hello_stores_no_question(server, prompt, waiting_fo
     prepare_build_machine(server)
     hello_waiting(server, prompt, waiting_for)
     assert console_prompt(server) is None
+
+
+def test_the_console_translates_only_the_agent_fixed_prompts():
+    """‏#908/#912: התפריט ומסך הכניסה של הסוכן שולחים מילה קבועה ב-ASCII
+    (‏`menu`, ‏`signin`) — הקונסולה מתרגמת אותה לעברית; כל שאלה אחרת היא
+    השורה שעל המסך ומוצגת כמו שהיא. בדיקת תוכן — אין דפדפן בחבילה; וה-`?v=`
+    הוקפץ (JS ישן מול API חדש — gotcha ידוע)."""
+    import re   # noqa: PLC0415
+    from pathlib import Path   # noqa: PLC0415
+    static = Path(__file__).resolve().parent.parent / "server" / "static"
+    js = (static / "console.js").read_text(encoding="utf-8")
+    assert 'menu: "תפריט"' in js and 'signin: "כניסה"' in js
+    assert "PROMPT_HE[m.prompt]" in js
+    page = (static / "index.html").read_text(encoding="utf-8")
+    versions = {tuple(int(x) for x in v.split(".")) for v in re.findall(r"\?v=([0-9.]+)", page)}
+    assert len(versions) == 1 and min(versions) >= (6, 1), versions
 
 
 def test_a_long_question_is_cut_not_refused(server):

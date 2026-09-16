@@ -35,9 +35,21 @@ attended_hello() {
     http_post_json "$SERVER/api/v1/agent/hello" "$RUN_DIR/attended.json" > /dev/null
 }
 
+#: The questions being waited on, innermost first, one per line -- a
+#: prompt is one screen line. `attended` keeps it; nobody else reads it.
+ATTENDED_NL='
+'
+
 attended_start() {
     # $1 = the question. A failed beat is not retried faster and not logged
     # per beat: the screen the person is reading must not scroll.
+    #
+    # One beat at a time (#912): a question asked inside another one -- the
+    # sign-in inside a menu, say -- replaces the running beat instead of
+    # joining it. Two beats would alternate their prompts on the server, and
+    # the one that started first would outlive both stops as an orphan
+    # (measured 16/09: 6 hellos for 0.7 s of waiting, 3 more after the end).
+    attended_stop
     (
         while :; do
             attended_hello "$1" || :
@@ -55,9 +67,14 @@ attended_stop() {
 
 attended() {
     # $1 = the question; $2.. = the command that waits for the answer.
-    # Its stdout and exit code pass through untouched.
+    # Its stdout and exit code pass through untouched. When the command
+    # returns, the beat of the question this one was asked inside -- if
+    # any -- resumes: the person is back at that screen.
+    ATTENDED_STACK="$1$ATTENDED_NL${ATTENDED_STACK:-}"
     attended_start "$1"; shift
     "$@"; _at_rc=$?
     attended_stop
+    ATTENDED_STACK="${ATTENDED_STACK#*"$ATTENDED_NL"}"
+    [ -z "$ATTENDED_STACK" ] || attended_start "${ATTENDED_STACK%%"$ATTENDED_NL"*}"
     return "$_at_rc"
 }
