@@ -49,3 +49,19 @@ for record in 'capture-start\nname=a\nname=b\n\n' 'capture-start\nname=a\n'; do
 done
 [ "$(wc -l < "$RUN_DIR/dispatch" | tr -d ' ')" = 1 ]
 echo 'PASS record boundaries, duplicate/partial rejection, literal shell text'
+# #715 direct-open: ticked drawers -> the same POST directflow.sh sends; the
+# source disk comes from the server inventory; a malformed value posts nothing.
+. "$ROOT/agent/lib/guibridge.sh"   # the real gui_dispatch again (stubbed above)
+gui_role() { GUI_ROLE=admin; }
+http_get() { printf '{"disks":[{"dev":"sdz","removable":true},{"dev":"sda","removable":false}]}'; }
+jq() { printf 'sda\n'; }
+console_post() { cp "$2" "$RUN_DIR/posted.json"; printf 200; }
+MAC=b4:2e:99:07:1a:c4
+printf 'direct-open\nslots=aa:bb:cc:00:00:21@1,2/aa:bb:cc:00:00:22@3\n\n' | gui_records
+[ "$(cat "$RUN_DIR/posted.json")" = '{"source":{"kind":"build_disk","mac":"b4:2e:99:07:1a:c4","disk":"sda"},"target_slots":[{"mac":"aa:bb:cc:00:00:21","ports":[1,2]},{"mac":"aa:bb:cc:00:00:22","ports":[3]}]}' ]
+rm -f "$RUN_DIR/posted.json"
+for bad in 'direct-open\nslots=aa:bb:cc:00:00:21@1;rm -rf x\n\n' 'direct-open\nslots=\n\n' 'direct-open\nslots=junk\n\n'; do
+    printf '%b' "$bad" | gui_records || true
+    [ ! -e "$RUN_DIR/posted.json" ] || { echo 'FAIL malformed slots posted'; exit 1; }
+done
+echo 'PASS direct-open body and malformed-slots refusal'

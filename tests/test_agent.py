@@ -1889,6 +1889,9 @@ REAL_BINARIES_USED = {
     "curl", "jq", "zstd", "pv", "sgdisk", "blockdev", "sha256sum", "od",
     "hdparm", "ntfsresize", "ntfs-3g", "ntfs-3g.probe", "ntfsfix", "umount",
     "blkid", "df", "mount", "stty", "udp-receiver",
+    # ‏#715 — מחשב הבנייה משדר מהדיסק שלו ישירות למחשבי השיכפול
+    # (‏directsend.sh); אותה חבילה (udpcast) כמו udp-receiver.
+    "udp-sender",
     "e2fsck", "resize2fs", "btrfs",
     # #667 — XFS grow on RHEL/Fedora golden images (mounted, xfs_growfs).
     "xfs_growfs",

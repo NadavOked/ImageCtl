@@ -27,7 +27,9 @@ from .sessions import SessionError
 from .station import ROUND_OPENER_ROLES
 
 WRITE_SETTINGS = {"recovery_require_login", "session_wait_seconds",
-                  "console_idle_seconds", "class_deploy_enabled"}
+                  "console_idle_seconds", "class_deploy_enabled",
+                  # ‏#748: כפתור "עדכן" — כבוי כברירת מחדל (נדב, 16/09).
+                  "update_enabled"}
 
 #: #406: השדות שעריכת מכונה מכירה. שדה מחוץ לרשימה = טעות של הקורא,
 #: והוא נדחה ב-400 במקום להיבלע ולהחזיר ``{"ok": True}`` שלא שינה כלום.

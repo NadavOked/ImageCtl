@@ -173,7 +173,7 @@ static int fields_on(const App *a, int *out) {
         }
         break;
     case SCREEN_ROOM:
-        if (!a->st.has_round) out[n++] = HIT_ROOM_TARGET;
+        if (!a->st.has_round) { if (a->mode != MODE_DIRECT) out[n++] = HIT_ROOM_TARGET; }   /* #715: no count field */
         else if (a->room_confirming) out[n++] = HIT_ROOM_CONFIRM;
         break;
     case SCREEN_CLASS:
@@ -214,12 +214,14 @@ static int class_gate(App *a) {
 /* ---- events --------------------------------------------------------------------- */
 
 /* Same visibility rule as screens.c, in MENU order: capture is admin-only,
- * the class card follows the server's switch (#880). Returns how many. */
-static int visible_card_ids(const App *a, int ids[4]) {
+ * direct (#715) is always there like room, the class card follows the
+ * server's switch (#880). Returns how many. */
+static int visible_card_ids(const App *a, int ids[5]) {
     int n = 0;
     if (a->admin) ids[n++] = HIT_CAPTURE;
     ids[n++] = HIT_RESTORE;
     ids[n++] = HIT_ROOM;
+    ids[n++] = HIT_DIRECT;
     if (a->st.menu_class) ids[n++] = HIT_CLASSES;
     return n;
 }
@@ -230,6 +232,7 @@ static int choose_card(App *a, int id) {
     case HIT_CAPTURE: a->mode = MODE_CAPTURE; a->chosen_disk = -1; a->newfolder_shown = 0; emit1("capture"); break;
     case HIT_RESTORE: a->mode = MODE_RESTORE; a->restore_image_sel = 0; a->restore_confirm[0] = 0; emit1("restore"); break;
     case HIT_ROOM:    a->mode = MODE_ROOM; a->room_confirming = 0; a->room_target_set = 0; a->image_sel = 0; emit1("room"); break;
+    case HIT_DIRECT:  a->mode = MODE_DIRECT; a->room_confirming = 0; a->room_target_set = 0; a->nroom_selection = 0; emit1("direct"); break;   /* #715 */
     case HIT_CLASSES: a->mode = MODE_CLASSES; a->class_confirming = 0; emit1("classes"); break;
     }
     return 0;
@@ -271,7 +274,47 @@ static void start_restore(App *a) {
     emit_end();
 }
 
+static int room_effective_selected(const App *a, const Machine *m, const RoomDrawer *d);
+
+/* #715: the chosen drawers, as the bridge's record value:
+ * "<mac>@<port>,<port>/<mac>@<port>". Only present, fresh, awake drawers can
+ * be selected (room_toggle_selected), so what is here is what the server
+ * validates as target_slots. Returns the number of drawers, 0 when none. */
+static int room_selection_encode(const App *a, char *out, size_t n) {
+    size_t used = 0; int drawers = 0;
+    out[0] = 0;
+    for (int mi = 0; mi < a->st.nmachines; mi++) {
+        const Machine *m = &a->st.machines[mi];
+        int first = 1;
+        for (int i = 0; i < m->nroom_drawers; i++) {
+            const RoomDrawer *d = &m->room_drawers[i];
+            if (!d->present || d->port < 1) continue;
+            if (!room_effective_selected(a, m, d)) continue;
+            int k = snprintf(out + used, n - used, "%s%s%s%d",
+                             first ? (drawers ? "/" : "") : ",",
+                             first ? m->mac : "", first ? "@" : "", d->port);
+            if (k < 0 || (size_t)k >= n - used) return 0;   /* truncated = no order */
+            used += (size_t)k; first = 0; drawers++;
+        }
+    }
+    return drawers;
+}
+
+static void open_direct(App *a) {
+    char slots[MAX_ROOM_SELECTIONS * 8 + MAX_MACHINES * 24];
+    int drawers = room_selection_encode(a, slots, sizeof slots);
+    if (!drawers) {
+        snprintf(a->st.room_error, sizeof a->st.room_error, "בחרו לפחות מגירה אחת במחשב ער");
+        return;
+    }
+    a->st.room_error[0] = 0;
+    emit("direct-open");
+    emit_kv("slots", slots);
+    emit_end();
+}
+
 static void open_round(App *a) {
+    if (a->mode == MODE_DIRECT) { open_direct(a); return; }   /* #715: no image, the disk */
     int target = atoi(a->room_target);
     if (a->image_sel <= 0 || a->image_sel > a->st.nimages || target <= 0) {
         snprintf(a->st.room_error, sizeof a->st.room_error, "בחרו אימג' וקבעו יעד כוננים");
@@ -434,7 +477,7 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
             a->focus = id; break;
         case HIT_EYE:    a->show_pw = !a->show_pw; break;
         case HIT_SUBMIT: do_login(a, auth_cmd, demo); break;
-        case HIT_CAPTURE: case HIT_RESTORE: case HIT_ROOM: case HIT_CLASSES: return choose_card(a, id);
+        case HIT_CAPTURE: case HIT_RESTORE: case HIT_ROOM: case HIT_DIRECT: case HIT_CLASSES: return choose_card(a, id);
         case HIT_FOLDER: case HIT_ROOM_IMAGE: case HIT_RESTORE_IMAGE: a->dd_open = id; break;
         case HIT_NEWFOLDER:
             a->newfolder_shown = !a->newfolder_shown;
@@ -467,7 +510,7 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
     case UIEV_KEY: {
         if (e->key == KEYSYM_ESC) { a->dd_open = 0; break; }
         if (a->screen == SCREEN_MENU) {
-            int ids[4], n = visible_card_ids(a, ids);
+            int ids[5], n = visible_card_ids(a, ids);
             if (e->key == KEYSYM_TAB)        a->menu_focus = (a->menu_focus + 1) % n;
             else if (e->key == KEYSYM_ENTER && a->menu_focus >= 0 && a->menu_focus < n)
                 return choose_card(a, ids[a->menu_focus]);
@@ -573,7 +616,7 @@ static void sample_state(State *s) {
 }
 
 static const char *PNG_CARDS[] = { "login", "menu", "pick", "progress", "done", "room", "room-live",
-                                   "class", "class-live", "cloner", "message", "restore" };
+                                   "class", "class-live", "cloner", "message", "restore", "direct" };
 
 /* Put the App in the state that routes to <card>; the flags that override
  * the route (message, task, round, session, done) are cleared first so a
@@ -592,6 +635,7 @@ static void png_setup(App *a, const State *base, const char *card) {
     else if (!strcmp(card, "done"))     { a->st.task = TASK_DONE; a->watching = 1; }
     else if (!strcmp(card, "room"))     { a->mode = MODE_ROOM; a->room_target_set = 0; a->nroom_selection = 0; }
     else if (!strcmp(card, "room-live")){ a->mode = MODE_ROOM; a->st.has_round = 1; }
+    else if (!strcmp(card, "direct"))   { a->mode = MODE_DIRECT; a->room_target_set = 0; a->nroom_selection = 0; }   /* #715 */
     else if (!strcmp(card, "class"))    { a->mode = MODE_CLASSES; }
     else if (!strcmp(card, "class-live")){ a->mode = MODE_CLASSES; a->st.has_session = 1; }
     else if (!strcmp(card, "cloner"))   { a->force_cloner = 1; }
@@ -618,7 +662,12 @@ static int render_png(App *a, const State *base, const char *prefix, int w, int 
         /* the route must have landed on the card we asked for -- positive evidence */
         static const Screen want[] = { SCREEN_LOGIN, SCREEN_MENU, SCREEN_PICK, SCREEN_PROGRESS, SCREEN_DONE,
                                        SCREEN_ROOM, SCREEN_ROOM, SCREEN_CLASS, SCREEN_CLASS, SCREEN_CLONER, SCREEN_MESSAGE,
-                                       SCREEN_RESTORE };
+                                       SCREEN_RESTORE,
+                                       SCREEN_ROOM /* "direct" (#715): the room screen in MODE_DIRECT */ };
+        /* One entry per card, or want[c] reads past the table -- that is exactly
+         * what the lab saw when "direct" was added to PNG_CARDS alone. */
+        _Static_assert(sizeof want / sizeof want[0] == sizeof PNG_CARDS / sizeof PNG_CARDS[0],
+                       "want[] must have one Screen per PNG_CARDS entry");
         if (a->screen != want[c]) { fprintf(stderr, "native-gui: %s routed to screen %d, not %d\n", path, a->screen, want[c]); return 1; }
         printf("wrote %s\n", path);
     }

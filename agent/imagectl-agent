@@ -23,7 +23,7 @@ LIB_DIR="${LIB_DIR:-/usr/lib/imagectl}"
 . "$LIB_DIR/drawers.sh"; . "$LIB_DIR/verdict.sh"; . "$LIB_DIR/failmark.sh"   # הזרם, הפסק עליו (#520), והראיה על כשל (#874)
 . "$LIB_DIR/manifest.sh"
 . "$LIB_DIR/bootca.sh"; . "$LIB_DIR/hibernation.sh"   # לפני capture.sh: capture_disk קורא להם (#85, #651)
-. "$LIB_DIR/capture.sh"
+. "$LIB_DIR/capture.sh"; . "$LIB_DIR/directsend.sh"   # #715: pass 1 is capture_disk with the sink discarded
 . "$LIB_DIR/classround.sh"
 . "$LIB_DIR/hostname.sh"; . "$LIB_DIR/postdeploy.sh"   # #720: driver staging, after the name
 . "$LIB_DIR/sshd.sh"
@@ -34,7 +34,7 @@ LIB_DIR="${LIB_DIR:-/usr/lib/imagectl}"
 . "$LIB_DIR/single_restore.sh"   # #706: נתיב הכתיבה המשותף לטקסט ולמסך השחזור הגרפי
 . "$LIB_DIR/buildmenu.sh"
 . "$LIB_DIR/buildcapture.sh"
-. "$LIB_DIR/roomdraw.sh"; . "$LIB_DIR/roomflow.sh"   # #418: draw split from flow
+. "$LIB_DIR/roomdraw.sh"; . "$LIB_DIR/roomflow.sh"; . "$LIB_DIR/directflow.sh"   # #418 draw/flow; #715 direct
 . "$LIB_DIR/hold.sh"
 . "$LIB_DIR/poll.sh"
 . "$LIB_DIR/guiparent.sh"
@@ -106,12 +106,12 @@ do_task() {
     # אתרי השימוש ב-`capture.sh` הם הרחבת מעטפת בקובץ שנטען ב-`.`,
     # ותת-מעטפת יורשת משתנה גם בלי ייצוא. אין שם `sh -c`.
     TASK_TOKEN=$(json_get "$RESP" ".task.token")
-    if [ "$_type" != "capture" ]; then
+    case "$_type" in
+        capture) ;;
+        direct_send) direct_send_task "$_tid"; return $? ;;   # #715
         # A task type this build does not know is not a reason to guess.
-        log "unknown task type '$_type' -- ignoring it"
-        sleep 5
-        return 0
-    fi
+        *) log "unknown task type '$_type' -- ignoring it"; sleep 5; return 0 ;;
+    esac
 
     _disk=$(json_get "$RESP" ".task.disk")
     ui_clear; ui_header

@@ -76,6 +76,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="הכתובת שהלקוחות רואים, http בלבד (כמו במתקין)")
     parser.add_argument("--data-dir", default="/var/lib/imagectl")
     parser.add_argument("--images", default="/srv/imagectl/images")
+    # ‏#748: עץ הקוד עצמו — משם ``git describe``/``fetch``/``checkout``
+    # של כפתור העדכון. ברירת המחדל היא תיקיית הקוד (ImageStore ->
+    # server/main.py -> parents[1]), שזהה ל-``WorkingDirectory`` ביחידת
+    # systemd (‏/opt/imagectl) בלי לצטט אותה כאן כברירת מחדל שנייה.
+    parser.add_argument("--repo-dir", default=None,
+                        help="עץ הגיט של השרת; ברירת מחדל: תיקיית הקוד")
     parser.add_argument("--boot-dir", default="/srv/imagectl/boot",
                         help="הקרנל וה-initramfs שהמתקין הניח; מוגש תחת ‎/boot")
     parser.add_argument("--interface", default=None,
@@ -253,7 +259,8 @@ def main() -> None:
                              primary_url=args.primary_url,
                              known_macs_hooks={"apply": dhcp_host.apply_known_macs},
                              extra_cmdline=tuple(args.extra_cmdline.split()),
-                             console_allowed_networks=console_allowed_networks)
+                             console_allowed_networks=console_allowed_networks,
+                             repo_dir=args.repo_dir)
     agent_app = create_agent_app(runtime)
     console_app = create_console_app(runtime)
     kiosk_app = create_kiosk_app(runtime)

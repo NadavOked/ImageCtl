@@ -8,6 +8,7 @@
                  שנכשלת, פותחת שנופלת, מאחר שנכנס לסבב הבא
 - תחנת תלמיד   — עולה, בוחרת אימג', משוחזרת ומקבלת שם
 - מחשב שיכפול  — שלוש מגירות, מגירה נכשלת, הגל הבא משלים
+- הפצה ישירה   — מחשב הבנייה משדר מהדיסק שלו לשתי מגירות נבחרות (#715)
 
 וסביבם הקצוות: ברירת המחדל של דיסק מקומי, סינון לפי גודל, והרשאות.
 
@@ -26,8 +27,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # הפלט בעברית; בלי זה ההרצה נופלת במסופים שאינם UTF-8 (ווינדוס, צינורות).
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from tools.e2e import (harness, phase_capture, phase_class, phase_edges,  # noqa: E402
-                       phase_journal, phase_room, phase_setup)
+from tools.e2e import (harness, phase_capture, phase_class, phase_direct,  # noqa: E402
+                       phase_edges, phase_journal, phase_room, phase_setup)
 
 #: כמה בדיקות חייבות לרוץ כדי שהריצה תיחשב ריצה.
 #:
@@ -35,7 +36,7 @@ from tools.e2e import (harness, phase_capture, phase_class, phase_edges,  # noqa
 #: שלב שדולג, לולאה שהתרוקנה או פאזה שהוחזרה מוקדם היו מדפיסים "הלולאה
 #: נסגרה" ויוצאים ירוק, כי בדיקה שלא רצה גם לא נכשלת. הרף הופך את זה
 #: לכישלון גלוי. כשמוסיפים בדיקות — מעדכנים כלפי מעלה.
-MIN_CHECKS = 94
+MIN_CHECKS = 125
 
 
 def main() -> int:
@@ -53,6 +54,7 @@ def main() -> int:
         phase_edges.run(ctx)
         phase_class.run(ctx)
         phase_room.run(ctx)
+        phase_direct.run(ctx)       # #715: אותו חדר, המקור הוא דיסק מחשב הבנייה
         phase_journal.run(ctx)
 
         for machine in [ctx.builder, ctx.cloner, *ctx.stations.values()]:

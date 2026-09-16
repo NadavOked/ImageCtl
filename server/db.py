@@ -106,6 +106,14 @@ CREATE TABLE IF NOT EXISTS room_rounds (
     written_serials TEXT NOT NULL DEFAULT '[]',  -- JSON; מגירה נספרת פעם אחת
     target_slots_json TEXT,                -- בחירת דיסקי יעד לכל מכונה; NULL=סבב ישן
     expand_partition TEXT,                 -- בחירת ההרחבה לכל גלי הסבב (#59); NULL=אוטומטי
+    -- ‏#715: המקור. 'library' = udp-sender של השרת על אימג' מהספרייה;
+    -- 'build_disk' = מחשב הבנייה משדר מהדיסק שלו, ו-image_id הוא מזהה
+    -- חי (live_…) שהמניפסט שלו הוא live_manifest_json. סבב יחיד, בלי גלים.
+    source_kind     TEXT NOT NULL DEFAULT 'library',
+    source_mac      TEXT,                  -- מחשב הבנייה (build_disk בלבד)
+    source_disk     TEXT,                  -- הדיסק שלו, כפי שדווח ב-hello
+    source_task_id  TEXT,                  -- משימת direct_send שנפתחה לו
+    live_manifest_json TEXT,               -- המניפסט שמחשב הבנייה דיווח; NULL = טרם
     state           TEXT NOT NULL CHECK (state IN ('active', 'closed')),
     wave_session_id TEXT,                  -- הגל הנוכחי הוא session רגיל
     wave_number     INTEGER NOT NULL DEFAULT 1,
@@ -344,6 +352,26 @@ CREATE TABLE IF NOT EXISTS storage_identity (
     server_cert_ref TEXT NOT NULL,
     server_key_ref  TEXT NOT NULL
 );
+
+-- ‏#655 v1: העברת אימג' ראשי→משני. **תיאום זמני בלבד** — לא מלאי: "האם
+-- למשני יש אימג' X" נענה מהספרייה שעל הדיסק של המשני (עיקרון 3), וכאן
+-- רק ההתקדמות והתוצאה של ניסיון אחד, כדי שהקונסולה תציג אותם ושכשל
+-- יהיה גלוי (עיקרון 4/5: ניתוק = ``failed`` עם סיבה, לא "נתקע").
+CREATE TABLE IF NOT EXISTS storage_transfers (
+    id          TEXT PRIMARY KEY,
+    node_id     TEXT NOT NULL REFERENCES storage_nodes(id) ON DELETE CASCADE,
+    image_id    TEXT NOT NULL,
+    image_name  TEXT NOT NULL,
+    state       TEXT NOT NULL CHECK (
+                    state IN ('queued', 'sending', 'verifying', 'done', 'failed')
+                ),
+    bytes_sent  INTEGER NOT NULL DEFAULT 0,
+    bytes_total INTEGER NOT NULL DEFAULT 0,
+    error       TEXT,
+    started_by  TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
 """
 
 #: הקבוצות הקבועות: חדר שיכפולים ומחשב הבנייה הם יחידים במערכת —
@@ -427,6 +455,13 @@ ADDED_COLUMNS = [
     # קיימת — התקנה שמוגרת רואה בדיוק את הבחירה האוטומטית שהייתה לה.
     ("sessions", "expand_partition", "TEXT"),
     ("room_rounds", "expand_partition", "TEXT"),
+    # ‏#715: המקור של סבב החדר. כל שורה קיימת היא סבב מספרייה — ברירת
+    # המחדל אומרת בדיוק את זה, ואף סבב ישן אינו משנה משמעות.
+    ("room_rounds", "source_kind", "TEXT NOT NULL DEFAULT 'library'"),
+    ("room_rounds", "source_mac", "TEXT"),
+    ("room_rounds", "source_disk", "TEXT"),
+    ("room_rounds", "source_task_id", "TEXT"),
+    ("room_rounds", "live_manifest_json", "TEXT"),
 ]
 
 
@@ -455,6 +490,9 @@ _STORAGE_SCHEMA_COLUMNS = {
                         "expires_at", "attempts_remaining"},
     "storage_identity": {"singleton", "node_id", "server_spki",
                          "server_cert_ref", "server_key_ref"},
+    "storage_transfers": {"id", "node_id", "image_id", "image_name", "state",
+                          "bytes_sent", "bytes_total", "error", "started_by",
+                          "created_at", "updated_at"},
 }
 
 

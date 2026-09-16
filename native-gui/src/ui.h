@@ -33,6 +33,7 @@ enum {
     HIT_CAPTURE,        /* #st-menu-capture */
     HIT_RESTORE,        /* restore to this machine's disk (#382; no HTML id yet) */
     HIT_ROOM,           /* #st-menu-room */
+    HIT_DIRECT,         /* #715: deploy THIS disk directly to the room (native-only) */
     HIT_CLASSES,        /* #st-menu-classes */
     /* #st-pick */
     HIT_NAME,           /* #st-name */
@@ -83,7 +84,9 @@ typedef enum {
 } Screen;
 
 /* station.js MODE: null (menu) / "capture" / "room" / "classes"; #706 adds restore */
-typedef enum { MODE_MENU, MODE_CAPTURE, MODE_ROOM, MODE_CLASSES, MODE_RESTORE } Mode;
+/* #715: MODE_DIRECT is the room screen without an image picker -- the source
+ * is this machine's disk; open emits the chosen drawers as target_slots. */
+typedef enum { MODE_MENU, MODE_CAPTURE, MODE_ROOM, MODE_CLASSES, MODE_RESTORE, MODE_DIRECT } Mode;
 
 typedef enum { TASK_NONE, TASK_PENDING, TASK_RUNNING, TASK_DONE, TASK_FAILED } TaskState;
 
@@ -130,6 +133,7 @@ typedef struct State {
 
     /* the build machine's own task (station.js drawProgress / drawDone) */
     TaskState task;
+    int task_direct;                    /* #715: task.type == direct_send (sending, not capturing) */
     char task_name[96], task_disk[32], task_error[200];
     int pct, moving, partition;         /* pct -1 = unknown total */
     unsigned long long bytes;           /* bytes_written */

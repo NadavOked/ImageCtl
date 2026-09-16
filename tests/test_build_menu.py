@@ -58,10 +58,23 @@ FOLDERS = [
     {"name": "Classrooms", "description": "", "images": 5},
 ]
 
-#: שלוש התוויות של התפריט, כפי שהן על המסך.
+#: ארבע התוויות של התפריט, כפי שהן על המסך (‏#715 הוסיף את השלישית).
 CAPTURE_LABEL = "Upload an image to the server"
 ROOM_LABEL = "Deploy to the cloning machines"
+DIRECT_LABEL = "Deploy THIS disk directly to the cloning machines"
 CLASS_LABEL = "Deploy to a classroom"
+
+#: חדר עם משכפל ער ושתי מגירות טריות — מה שהזרימה הישירה צריכה כדי להציע יעד.
+ROOM_AWAKE = {"round": None, "machines": [
+    {"mac": "aa:bb:cc:00:00:21", "name": "shich-1", "awake": True, "joined": False,
+     "drawers": 2, "fresh_drawers": 2, "drawer_count": 3,
+     "drawer_list": [{"dev": "sda", "port": 1, "fresh": True, "state": None},
+                     {"dev": "sdb", "port": 2, "fresh": True, "state": None},
+                     {"dev": "sdc", "port": None, "fresh": True, "state": None}]},
+    {"mac": "aa:bb:cc:00:00:22", "name": "shich-2", "awake": False, "joined": False,
+     "drawers": 1, "fresh_drawers": 1, "drawer_count": 3,
+     "drawer_list": [{"dev": "sda", "port": 1, "fresh": True, "state": None}]},
+]}
 
 RUN_TIMEOUT_S = 90
 
@@ -104,7 +117,7 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/console/images":
             self._send(200, [{"id": "img_1", "name": "Win11", "family": 256}])
         elif self.path == "/api/console/room":
-            self._send(200, {"round": None, "machines": []})
+            self._send(200, self.server.room)
         else:
             self._send(404, {"detail": "no such path"})
 
@@ -132,6 +145,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"ok": True})
         elif self.path == "/api/console/tasks/capture":
             self._send(200, {"id": "tsk_01", "image_id": "img_01"})
+        elif self.path == "/api/console/room":
+            self._send(200, {"id": "room_01", "wave_session_id": "ses_01",
+                             "task_id": "tsk_02", "image_id": "live_00000001"})
         else:
             self._send(404, {"detail": "no such path"})
 
@@ -146,6 +162,7 @@ def console():
     httpd.folders = [dict(f) for f in FOLDERS]
     httpd.role = "admin"
     httpd.agent_login_status = 200
+    httpd.room = {"round": None, "machines": []}
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     try:
@@ -167,7 +184,8 @@ def url_of(httpd: HTTPServer) -> str:
 # הגרסאות, לפני התיקון ואחריו, ולכן הבקרה השלילית נופלת על מה שהמסך עשה.
 # הספריות של #135 נטענות רק אם הן קיימות, מאותה סיבה בדיוק.
 
-NEW_LIBS = ("buildmenu.sh", "buildcapture.sh", "roomdraw.sh", "roomflow.sh")
+NEW_LIBS = ("buildmenu.sh", "buildcapture.sh", "roomdraw.sh", "roomflow.sh",
+            "directflow.sh")
 
 
 def sourced_libs() -> str:
@@ -241,8 +259,9 @@ def posted(console: Console, path: str) -> list[dict]:
 
 
 @native_tools
-def test_an_admin_is_offered_all_three_actions(tmp_path, console):
-    """מנהל: קליטה, חדר שיכפול, כיתה. שלוש, ממוספרות 1-3."""
+def test_an_admin_is_offered_all_four_actions(tmp_path, console):
+    """מנהל: קליטה, חדר שיכפול, הפצה ישירה מהדיסק הזה (#715), כיתה.
+    ארבע, ממוספרות 1-4 — הישירה בין החדר לכיתה, כמו בכרטיסי ה-GUI."""
     console.role = "admin"
 
     result = run_screen(tmp_path, url_of(console), ["admin", "pw", "0"])
@@ -250,14 +269,15 @@ def test_an_admin_is_offered_all_three_actions(tmp_path, console):
     assert "Username:" in result["out"], "המסך לא ביקש כניסה בכלל"
     assert f"1) {CAPTURE_LABEL}" in result["out"]
     assert f"2) {ROOM_LABEL}" in result["out"]
-    assert f"3) {CLASS_LABEL}" in result["out"]
-    assert "Choose [1-3]" in result["out"]
+    assert f"3) {DIRECT_LABEL}" in result["out"]
+    assert f"4) {CLASS_LABEL}" in result["out"]
+    assert "Choose [1-4]" in result["out"]
 
 
 @native_tools
 def test_a_deploy_user_is_offered_two_actions_without_the_capture(
         tmp_path, console):
-    """משתמש deploy: שתיים בלבד.
+    """משתמש deploy: שלוש בלבד.
 
     הקליטה היא `admin_only` בשרת (`capture.py`), והתפריט לא מציע מה
     שיחזור 403 — הסתרה אינה הרשאה, אבל תפריט שמציע מה שהוא לא יכול
@@ -269,8 +289,9 @@ def test_a_deploy_user_is_offered_two_actions_without_the_capture(
 
     assert CAPTURE_LABEL not in result["out"], "משתמש deploy קיבל קליטה"
     assert f"1) {ROOM_LABEL}" in result["out"]
-    assert f"2) {CLASS_LABEL}" in result["out"]
-    assert "Choose [1-2]" in result["out"]
+    assert f"2) {DIRECT_LABEL}" in result["out"]
+    assert f"3) {CLASS_LABEL}" in result["out"]
+    assert "Choose [1-3]" in result["out"]
 
 
 # --- #880: "הפצה לכיתות" רק כשה-hello אמר שהמתג דלוק -----------------------
@@ -280,7 +301,8 @@ def test_a_deploy_user_is_offered_two_actions_without_the_capture(
 def test_the_class_option_is_hidden_when_the_server_switched_it_off(
         tmp_path, console):
     """‏v1 מהדורת שיכפול: ‏`class_deploy_enabled: false` ב-hello → בלי
-    "Deploy to a classroom", והמספור מתכווץ ל-[1-2]. השרת מסרב ממילא
+    "Deploy to a classroom", והמספור מתכווץ ל-[1-3] (קליטה, חדר, ישירה
+    של #715 — שתמיד מוצגת כמו החדר). השרת מסרב ממילא
     (409) — תפריט שמציע מה שהשרת יסרב לו הוא תפריט שמשקר. **בקרה
     שלילית:** על main האפשרות מוצגת תמיד (`echo "class"` ללא תנאי)."""
     console.role = "admin"
@@ -292,7 +314,8 @@ def test_the_class_option_is_hidden_when_the_server_switched_it_off(
     assert CLASS_LABEL not in result["out"], "הכיתה הוצעה כשהמתג כבוי"
     assert f"1) {CAPTURE_LABEL}" in result["out"]
     assert f"2) {ROOM_LABEL}" in result["out"]
-    assert "Choose [1-2]" in result["out"]
+    assert f"3) {DIRECT_LABEL}" in result["out"]
+    assert "Choose [1-3]" in result["out"]
 
 
 @native_tools
@@ -308,7 +331,8 @@ def test_a_hello_without_the_switch_field_hides_the_class_option(
 
     assert CLASS_LABEL not in result["out"], "שדה חסר נקרא כדלוק"
     assert f"1) {ROOM_LABEL}" in result["out"]
-    assert "Choose [1-1]" in result["out"]
+    assert f"2) {DIRECT_LABEL}" in result["out"]
+    assert "Choose [1-2]" in result["out"]
 
 
 @native_tools
@@ -462,7 +486,7 @@ def test_a_role_the_menu_does_not_know_gets_nothing(tmp_path, console):
 def test_the_class_option_uses_the_existing_class_round_flow(
         tmp_path, console):
     """הפצה לכיתה אינה נכתבת מחדש — `classround.sh` כבר עושה את זה."""
-    result = run_screen(tmp_path, url_of(console), ["admin", "pw", "3"])
+    result = run_screen(tmp_path, url_of(console), ["admin", "pw", "4"])
 
     assert "CLASS-ROUND-OPENED" in result["out"]
     assert "not part of the class" in result["out"], \
@@ -477,6 +501,34 @@ def test_the_room_option_reads_the_room_before_it_offers_anything(
 
     assert any(r["method"] == "GET" and r["path"] == "/api/console/room"
                for r in console.requests), console.requests
+
+
+@native_tools
+def test_the_direct_option_posts_this_disk_as_the_source_with_chosen_targets(
+        tmp_path, console):
+    """‏#715: בלי בורר אימג' — המקור הוא הדיסק של המכונה; היעדים הם המכונות
+    שנבחרו, וכל מגירה טרייה **עם חריץ** בהן. המכונה הישנה (2) אינה מוצעת;
+    המגירה בלי `port` אינה נשלחת."""
+    console.room = ROOM_AWAKE
+    result = run_screen(tmp_path, url_of(console), ["admin", "pw", "3", "1", "y"])
+
+    assert "1) shich-1  drawers 1,2" in result["out"], result["out"]
+    assert "shich-2" not in result["out"]
+    assert "read only" in result["out"]
+    bodies = posted(console, "/api/console/room")
+    assert bodies == [{
+        "source": {"kind": "build_disk", "mac": MAC, "disk": "sda"},
+        "target_slots": [{"mac": "aa:bb:cc:00:00:21", "ports": [1, 2]}],
+    }], bodies
+    assert "Direct deployment ordered" in result["out"]
+    assert "RETURNED rc=0" in result["out"]
+
+
+@native_tools
+def test_the_direct_option_with_no_awake_machine_posts_nothing(tmp_path, console):
+    result = run_screen(tmp_path, url_of(console), ["admin", "pw", "3", "0"])
+    assert "No awake cloning machine" in result["out"], result["out"]
+    assert posted(console, "/api/console/room") == []
 
 
 @native_tools

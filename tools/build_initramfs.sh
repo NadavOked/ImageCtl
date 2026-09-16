@@ -117,10 +117,12 @@ fi
 
 # Binaries the agent scripts call. tests/test_agent.py cross-checks this
 # list against the actual commands in agent/ -- update both together.
+# udp-sender (#715): the build machine streams its own disk to the cloning
+# machines; the udpcast package ships both halves, so nothing new to install.
 BINARIES=(curl jq zstd pv sgdisk blockdev sha256sum od hdparm ntfsresize openssl
           ntfs-3g ntfs-3g.probe ntfsfix umount blkid df mount stty ethtool smartctl
           e2fsck resize2fs btrfs xfs_growfs
-          udp-receiver partclone.ntfs partclone.fat partclone.ext4
+          udp-receiver udp-sender partclone.ntfs partclone.fat partclone.ext4
           partclone.btrfs partclone.dd
           dropbear dropbearkey)
 

@@ -68,6 +68,16 @@ def _header(name: str, size: int, mtime: int) -> bytes:
     return bytes(header)
 
 
+def tar_size(directory: Path) -> int:
+    """אורך ה-tar ש-``tar_stream`` ינפיק — לכותרת ``Content-Length`` של
+    העברה בין שרתים (#655). אותם קבצים, אותו סדר, אותו ריפוד."""
+    total = 0
+    for path in sorted(p for p in directory.iterdir() if p.is_file()):
+        size = path.stat().st_size
+        total += BLOCK + size + (-size % BLOCK)
+    return total + BLOCK * 2
+
+
 def tar_stream(directory: Path, arcname: str) -> Iterator[bytes]:
     """מזרים את תוכן התיקייה כ-tar. קבצים רגילים בלבד, ללא רקורסיה."""
     for path in sorted(p for p in directory.iterdir() if p.is_file()):

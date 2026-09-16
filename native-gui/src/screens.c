@@ -154,11 +154,13 @@ typedef struct { const char *b, *s; int id, multi; } MenuItem;
 /* Order: the two cards that touch THIS machine's disk first (read it, write
  * it -- single tray), then the two that broadcast (multi tray). The restore
  * card is #382 and is not in index.html yet; its text is the issue's. */
-#define MENU_N 4
+#define MENU_N 5
 static const MenuItem MENU[MENU_N] = {
     { "קליטת אימג' חדש",            "קוראים את הכונן שבמכונה ומעלים לספרייה",                       HIT_CAPTURE, 0 },
     { "משיכת אימג' לכונן המחשב הזה", "כתוב אימג' מהספרייה על הדיסק של המחשב הזה — כמו שכפול בודד",   HIT_RESTORE, 0 },
     { "הפצה למחשבי שיכפול",        "משדרים אימג' לכל המגירות בחדר, בגלים, עד היעד",                  HIT_ROOM,    1 },
+    /* #715: between the room and the classes, as the issue orders it. */
+    { "הפצה מהדיסק הזה למחשבי השיכפול", "הדיסק של המחשב הזה משודר ישירות למגירות שנבחרו — בלי לשמור אימג' בשרת", HIT_DIRECT, 1 },
     { "הפצה לכיתות",               "בוחרים כיתה, מחשבים ואימג' — הסבב מעיר את הכיתה ורץ בשרת",       HIT_CLASSES, 1 },
 };
 
@@ -175,9 +177,10 @@ void screen_menu(App *a, cairo_t *cr, double W, double H, double head_h) {
     double card_h[MENU_N], body_h = 22 + 22;
     /* Only capture is admin-only (station.js); restore is shown to the
      * deploy role like room/classes -- #382 leaves that permission to Nadav,
-     * and this is the one place to flip it. The class card follows the
-     * server's switch (#880, menu_class= in the state file; absent = off). */
-    int show[MENU_N] = { a->admin, 1, 1, a->st.menu_class };
+     * and this is the one place to flip it. The direct card (#715) is always
+     * shown, like room; the class card follows the server's switch (#880,
+     * menu_class= in the state file; absent = off). */
+    int show[MENU_N] = { a->admin, 1, 1, 1, a->st.menu_class };
     for (int i = 0; i < MENU_N; i++) {
         if (!show[i]) continue;
         bt[i] = rtl_block_make(cr, 15, 700, MENU[i].b, text_w);      /* right-aligned like labels */
@@ -242,12 +245,17 @@ void app_route(App *a) {
     if (a->watching && (s->task == TASK_DONE || s->task == TASK_FAILED)) {
         /* it finished while we were watching -> drawDone */
         a->watching = 0; a->showing_done = 1;
-        if (s->task == TASK_DONE) {
+        if (s->task == TASK_DONE && s->task_direct) {           /* #715 */
+            snprintf(a->done_title, sizeof a->done_title, "ההפצה הישירה הושלמה");
+            snprintf(a->done_sub, sizeof a->done_sub,
+                     "הדיסק %s שודר למגירות שנבחרו. שום דבר לא נשמר בשרת.", s->task_disk);
+        } else if (s->task == TASK_DONE) {
             snprintf(a->done_title, sizeof a->done_title, "הקליטה הושלמה");
             snprintf(a->done_sub, sizeof a->done_sub,
                      "\"%s\" נכנס לספרייה. אפשר לכבות ולשלוף את הכונן.", s->task_name);
         } else {
-            snprintf(a->done_title, sizeof a->done_title, "הקליטה נכשלה");
+            snprintf(a->done_title, sizeof a->done_title,
+                     s->task_direct ? "ההפצה הישירה נכשלה" : "הקליטה נכשלה");
             snprintf(a->done_sub, sizeof a->done_sub, "%s",
                      s->task_error[0] ? s->task_error : "ראו את היומן בקונסולה.");
         }
@@ -259,6 +267,7 @@ void app_route(App *a) {
     if (!a->signed_in) { a->screen = SCREEN_LOGIN; return; }
     switch (a->mode) {
     case MODE_ROOM:    a->screen = SCREEN_ROOM; break;
+    case MODE_DIRECT:  a->screen = SCREEN_ROOM; break;   /* #715: same screen, no image picker */
     case MODE_CAPTURE: a->screen = SCREEN_PICK; break;
     case MODE_RESTORE: a->screen = SCREEN_RESTORE; break;
     default:           a->screen = SCREEN_MENU; break;

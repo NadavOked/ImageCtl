@@ -18,6 +18,7 @@ from boot.grub_menu import normalize_mac as lenient_mac
 from . import (agent_loops, disk_events, foreign_vlan, inventory, pulls,
                registry, reports, users)
 from .db import journal
+from . import direct
 from .hello import (build_answer, login_required, off_deploy_vlan,
                     well_formed_monitor_secret)
 from .images import ImageLibrary, restore_refusal
@@ -101,6 +102,8 @@ def create_agent_router(ctx: ServerContext,
             reported_ip=reported_ip, off_vlan=off_vlan,
             all_macs=all_macs, monitor_secret=monitor_secret,
             hw_inventory=hw_inventory,
+            # ‏#715: פרמטרי השידור למקור שהוא מחשב בנייה — של המנוע, אם יש.
+            multicast=ctx.sender.multicast_params() if ctx.sender is not None else None,
         )
         log.info("hello from %s (%s): known=%s off_vlan=%s",
                  mac, client_ip, answer["known"], off_vlan)
@@ -229,6 +232,10 @@ def create_agent_router(ctx: ServerContext,
     @router.get("/images/{image_id}/manifest")
     def image_manifest(image_id: str):
         manifest = ctx.library.get(image_id)
+        if manifest is None:
+            # ‏#715: מזהה חי (`live_…`) — המניפסט שמחשב הבנייה דיווח. אותו
+            # נתיב בדיוק, כדי שהמקבלים לא ידעו מי משדר. לפני שהגיע: 404.
+            manifest = direct.live_manifest(ctx.conn, image_id)
         if manifest is None:
             return _error(404, "unknown image", "no_image")
         public = {k: v for k, v in manifest.items() if not k.startswith("_")}

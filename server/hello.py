@@ -17,7 +17,7 @@ import re
 import sqlite3
 from urllib.parse import urlsplit
 
-from . import bootguard, disk_failures, inventory, registry, room
+from . import bootguard, direct, disk_failures, inventory, registry, room
 from .db import get_setting, journal, net_seen
 from .images import ImageLibrary
 from .sessions import SessionStore
@@ -122,6 +122,7 @@ def build_answer(
     all_macs: list[str] | None = None,
     monitor_secret: str | None = None,
     hw_inventory: dict | None = None,
+    multicast: dict | None = None,
 ) -> dict:
     # כל מגע של המכונה נרשם ברשימת ההתקנים, גם של מכונה שאינה רשומה
     # בטבלה — ככה מתגלה MAC לא מוכר, וזה חלק מעיקרון 1. ‏hello הוא POST
@@ -172,6 +173,12 @@ def build_answer(
 
     # משימה גוברת על סבב: היא מופנית למכונה הזו, לא לקבוצה.
     if answer["task"] is not None:
+        # ‏#715: מחשב הבנייה שהוא המקור מקבל גם את מצב הגל ופרמטרי
+        # השידור (‏`task.direct`, ממשק 3). ‏`multicast` הוא של `SenderEngine`
+        # (‏api.py); בלעדיו — ברירות המחדל של המנוע.
+        if answer["task"]["type"] == direct.DIRECT_SEND:
+            answer["task"]["direct"] = direct.task_block(
+                conn, store, answer["task"], multicast)
         return answer
 
     if machine["role"] == "cloner":

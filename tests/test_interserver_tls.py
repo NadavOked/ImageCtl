@@ -151,3 +151,36 @@ def test_live_downgrade_below_tls13_rejected(secondary, primary_certs):
     with pytest.raises(SSL.Error):
         conn.do_handshake()
     raw.close()
+
+
+def test_live_fetch_server_spki_survives_a_slow_server_hello(secondary, monkeypatch):
+    """‏#902: ה-preview של ה-SPKI נפל במעבדה (דרך חומת האש של חיפה) עם
+    ‏``WantReadError`` — ה-socket נוצר עם timeout ולכן non-blocking ל-pyOpenSSL,
+    ו-``do_handshake`` נזרק ברגע שה-ServerHello לא מוכן מיד. ב-``open`` זה כבר
+    טופל; ‏``fetch_server_spki`` שכח. כאן מכריחים את המצב: ה-socket מוחזר
+    במצב timeout **ומאולץ להיראות "לא מוכן"** בקריאה הראשונה, כמו ברשת
+    אמיתית — בלי התיקון נופל ב-``WantReadError``, איתו מחזיר את ה-SPKI."""
+    import socket as _socket
+    real_create = _socket.create_connection
+
+    class _Slow:
+        """עוטף socket אמיתי: הקריאה הראשונה מחזירה EAGAIN כאילו הרשת איטית."""
+        def __init__(self, sock):
+            self._s = sock
+            self._first = True
+
+        def recv(self, *a, **k):
+            if self._first and self._s.gettimeout() is not None:
+                self._first = False
+                raise BlockingIOError()
+            return self._s.recv(*a, **k)
+
+        def __getattr__(self, name):
+            return getattr(self._s, name)
+
+    def slow_create(addr, timeout=None):
+        return _Slow(real_create(addr, timeout=timeout))
+
+    monkeypatch.setattr(storage_client.socket, "create_connection", slow_create)
+    spki = storage_client.fetch_server_spki("127.0.0.1", secondary["port"])
+    assert spki == secondary["ident"]["server_spki"]

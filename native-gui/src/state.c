@@ -180,7 +180,8 @@ void state_parse(State *s, FILE *fp) {
         } else if (KEY("task")) {
             s->task = !strcmp(val, "pending") ? TASK_PENDING : !strcmp(val, "running") ? TASK_RUNNING
                     : !strcmp(val, "done")    ? TASK_DONE    : !strcmp(val, "failed")  ? TASK_FAILED : TASK_NONE;
-        } else if (KEY("task_name"))  cp(s->task_name, sizeof s->task_name, val);
+        } else if (KEY("task_direct")) s->task_direct = num(val, 0);   /* #715 */
+        else if (KEY("task_name"))  cp(s->task_name, sizeof s->task_name, val);
         else if (KEY("task_disk"))    cp(s->task_disk, sizeof s->task_disk, val);
         else if (KEY("task_error"))   cp(s->task_error, sizeof s->task_error, val);
         else if (KEY("pct"))          s->pct = num(val, -1);

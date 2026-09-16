@@ -150,7 +150,7 @@ _stage_drivers() {
     _dr_mnt=$(_mount_windows "$1" "$2") || { _dr_mnt=""; _drivers_fail "could not mount the windows partition"; return 0; }
     _hive="$_dr_mnt/Windows/System32/config/SOFTWARE"
     [ -f "$_hive" ] || { _drivers_fail "SOFTWARE hive not found"; return 0; }
-    for _n in $_names; do rm -rf "$_dr_mnt/$DRIVERS_WIN_DIR/$_n"; done
+    for _n in $_names; do rm -rf "${_dr_mnt:?}/${DRIVERS_WIN_DIR:?}/$_n"; done   # SC2115: לעולם לא "/"
     _drivers_copy "$_dr_mnt" "$_rows" || { _drivers_fail "$_dr_why"; return 0; }
     _device_path_add "$_hive" || { _drivers_fail "$_dr_why"; return 0; }
     _umount_checked "$_dr_mnt"

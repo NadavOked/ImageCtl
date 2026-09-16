@@ -10,6 +10,7 @@
 #
 # תיאור הדיסק במניפסט — ‏role, ‏fs, ‏uuid, ‏used_bytes, ‏os ו-expandable — יושב
 # ב-manifest.sh; שני הקבצים נטענים יחד. כאן נשאר מה שמזרים את הבייטים עצמם.
+# שערי הקריאה-בלבד (מהובר #651, BitLocker #671) יושבים ב-hibernation.sh.
 
 # ‏#72, נמדד ולא נאמד (‏4GiB מראש `p3` של tiny11, שרת המעבדה): רמה 9 עולה
 # פי 3.1 בזמן ומחזירה 1.1% — ‏~80MB על 7.3GB, ‏4 שניות בשידור שאורך 5:54.
@@ -32,19 +33,20 @@ _capture_failed() {
     echo "failed" > "$RUN_DIR/state"
 }
 
-_bitlocker_reason() {
-    # $1=idx $2=fs $3=node. FOG -FVE-FS-; empty=ok, text=refuse (#671).
-    case "$2" in *[Bb]it[Ll]ocker*) echo "מחיצה $1 מוצפנת ב-BitLocker — כבו את BitLocker לפני הקליטה"; return ;; esac
-    command -v dd >/dev/null && command -v grep >/dev/null && command -v tr >/dev/null \
-        || { echo "לא הצלחנו לבדוק BitLocker במחיצה $1"; return; }
-    # ‏LC_ALL=C ו-F: החתימה בייטים קבועים, לא טקסט מקומי. בלי -i — היא
-    # תמיד באותיות גדולות, ו-`grep -i` על קלט בינרי תחת locale של UTF-8
-    # קורס (SIGABRT) ב-MSYS, מה שהיה הופך "לא נמצא" ל"לא הצלחנו לבדוק".
-    dd if="$3" bs=512 count=1 2>/dev/null | tr -d '\0' | LC_ALL=C grep -qF -- '-FVE-FS-'
-    _blrc=$?
-    [ "$_blrc" -eq 1 ] && return
-    [ "$_blrc" -eq 0 ] && echo "מחיצה $1 מוצפנת ב-BitLocker — כבו את BitLocker לפני הקליטה" \
-        || echo "לא הצלחנו לבדוק BitLocker במחיצה $1"
+capture_sink() {
+    # $1 = fifo, $2 = task id, $3 = file. Consumes one compressed partition.
+    # ‏CAPTURE_SINK=discard (#715): הדיסק נקרא ומגובב בדיוק כמו בקליטה —
+    # אותם שערים, אותו מניפסט — אבל אף בייט לא יוצא מהמכונה; מחשב הבנייה
+    # משדר אותם בעצמו בקריאה השנייה (directsend.sh).
+    [ "${CAPTURE_SINK:-upload}" = discard ] && { cat "$1" > /dev/null; return; }
+    # ‏-T ולא --data-binary: ‏--data-binary קורא את כל ה-FIFO לזיכרון כדי
+    # לחשב Content-Length — מחיצה גדולה מה-RAM נהרגת ב-OOM (‏#15). ‏-T
+    # מזרים ב-chunked. ‏--max-time 0 = בלי תקרת משך (100GB לוקחים זמן),
+    # אבל עם תקרת חוסר-התקדמות: חיבור שנפל באמצע יוצא, לא נתלה.
+    curl -sfS --max-time 0 --speed-limit 1 --speed-time "$HTTP_STALL_TIMEOUT" \
+        -H "Content-Type: application/octet-stream" \
+        -H "X-Imagectl-Task-Token: ${TASK_TOKEN:-}" \
+        -T "$1" "$SERVER/api/v1/capture/$2/files/$3"
 }
 
 capture_disk() {
@@ -180,20 +182,9 @@ capture_disk() {
         rm -f "$_out"
         mkfifo "$_out"
         # The upload runs while partclone is still reading: nothing is
-        # staged on this machine.
-        (
-            # ‏-T ולא --data-binary: ‏--data-binary קורא את כל ה-FIFO לזיכרון כדי
-            # לחשב Content-Length — מחיצה גדולה מה-RAM נהרגת ב-OOM (‏#15). ‏-T
-            # מזרים ב-chunked. ‏--max-time 0 = בלי תקרת משך (100GB לוקחים זמן),
-            # אבל עם תקרת חוסר-התקדמות: חיבור שנפל באמצע יוצא, לא נתלה.
-            curl -sfS --max-time 0 \
-                --speed-limit 1 --speed-time "$HTTP_STALL_TIMEOUT" \
-                -H "Content-Type: application/octet-stream" \
-                -H "X-Imagectl-Task-Token: ${TASK_TOKEN:-}" \
-                -T "$_out" \
-                "$SERVER/api/v1/capture/$_task/files/$_file" > "$RUN_DIR/up.$_idx.out" 2>> "$LOG_FILE"
-            echo "$?" > "$RUN_DIR/up.$_idx.rc"
-        ) &
+        # staged on this machine. (capture_sink: the consumer of the fifo.)
+        ( capture_sink "$_out" "$_task" "$_file" > "$RUN_DIR/up.$_idx.out" 2>> "$LOG_FILE"
+          echo "$?" > "$RUN_DIR/up.$_idx.rc" ) &
         _uppid=$!
 
         rm -f "$RUN_DIR/sha.$_idx" "$RUN_DIR/pcl.$_idx.rc" \

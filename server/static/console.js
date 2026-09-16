@@ -310,7 +310,10 @@ async function showApp() {
 $("#login-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
-    ME = await post("/login", { username: $("#login-user").value, password: $("#login-pass").value });
+    await post("/login", { username: $("#login-user").value, password: $("#login-pass").value });
+    // ‏#655 v1: תשובת ה-login אינה נושאת capabilities — רק /me. בלי זה
+    // רכיבי [data-cap] (לשונית "סניפים") נשארו נסתרים עד רענון הדף.
+    ME = await api("/me");
     $("#login-error").textContent = "";
     await showApp();
   } catch (error) { $("#login-error").textContent = error.message; }
@@ -766,7 +769,13 @@ function deploy() {
   if (!round) {
     tableBody = `<div class="empty">אין סבבים פעילים</div>`;
   } else {
-    const img = sessionImage(round);
+    // #715: a room round fed from the build machine's own disk has no library
+    // image — the console says where the bytes come from instead. The active
+    // session here IS the room's wave, so the source is read off the round.
+    const direct = room && room.source && room.source.kind === "build_disk";
+    const img = direct
+      ? `מקור: מחשב הבנייה (${room.source.name || room.source.mac}:${room.source.disk})`
+      : sessionImage(round);
     const group = session ? sessionGroup(session) : (room.group_label || "—");
     const joined = session ? (session.joined || 0) : (room.written_drives || 0);
     const expected = session ? sessionExpected(session) : (room.target_drives || 0);
@@ -1691,7 +1700,7 @@ function monitorPage() {
 
 const pages = {
   settings: {crumb:"Settings", title:"Settings", desc:"Console policy and branding", tabs:["Settings"], render:settingsPage},
-  branches: {crumb:"Branches", title:"Branches", desc:"Registered storage nodes and groups", tabs:["Registry"], render:pagePlaceholder},
+  branches: {crumb:"סניפים", title:"סניפים", desc:"השרתים המשניים של הראשי הזה: מצב חיבור, המחשבים שלהם, העברת אימג'ים ומוניטור", tabs:["סניפים", "מרשם"], render:pagePlaceholder},
   home: { crumb: "סקירה כללית", title: "סקירה כללית", desc: "מצב שרת, ספריית האימג׳ים ופעילות ההפצה בזמן אמת", tabs: ["סיכום", "משימות אחרונות", "אירועים"], render: home, load: refreshStatus },
   images: { crumb: "ספריית אימג׳ים", title: "ספריית אימג׳ים", desc: "ניהול גרסאות, העלאה, הורדה ושמירה של אימג׳ים מוכנים להפצה", tabs: ["אימג׳ים", "מטא־נתונים"], render: images, load: loadImages },
   deploy: { crumb: "סבבי הפצה", title: "סבבי הפצה", desc: "פתיחת סבב, צירוף תחנות ומעקב אחר כתיבה לכל מחשב", tabs: ["סבבים", "הצטרפות חיה"], render: deploy, load: refreshStatus },
@@ -1721,7 +1730,7 @@ function tabRender(pageId, index) {
     permissions: [usersAdminPage, permissions],
     logs: [journalPage, logs],
     settings: [settingsPage],
-    branches: [() => `<div id="branches-body" class="stack"></div>`],
+    branches: [() => `<div id="branch-cards" class="stack"></div>`, () => `<div id="branches-body" class="stack"></div>`],
     monitor: [monitorPage],
     drivers: [() => driversPage()],   // #720 — drivers.js
     netdeploy: [netdeploy],
@@ -2550,9 +2559,29 @@ function settingsPage() { return `<div class="grid"><div class="span-6"><div cla
             <input type="checkbox" id="set-class-deploy">
             הפצה לכיתות ממחשב הבנייה (כבוי במהדורת השיכפול; הכרטיס יורד מהתפריט והשרת מסרב לסבב)
           </label>
+          <label class="check">
+            <input type="checkbox" id="set-update-enabled">
+            אפשר עדכון השרת מול הריפו הציבורי (כבוי כברירת מחדל; החיבור היוצא נפתח רק בזמן בדיקה/עדכון)
+          </label>
           <button class="btn primary" type="submit">שמור</button>
           <p id="settings-saved" class="ok"></p>
         </form>
+      </div></div><div class="span-6"><div class="card">
+        <div class="ptitle">עדכון שרת</div>
+        <div class="pad">
+          <p class="sub">גרסה נוכחית: <b id="update-current">—</b></p>
+          <p class="sub hidden" id="update-previous-row">גרסה קודמת (לחזרה): <b id="update-previous"></b></p>
+          <div id="update-disabled-note" class="sub">העדכון כבוי. הדליקו את המתג משמאל כדי לבדוק ולעדכן.</div>
+          <div id="update-active-block" class="hidden">
+            <div class="row" style="margin-top:8px">
+              <button class="btn" id="update-check-btn">בדוק עדכון</button>
+              <button class="btn primary hidden" id="update-apply-btn">עדכן</button>
+              <button class="btn danger hidden" id="update-revert-btn">חזור לגרסה הקודמת</button>
+            </div>
+            <p id="update-check-result" class="sub"></p>
+            <p id="update-status-line" class="sub"></p>
+          </div>
+        </div>
       </div></div><div class="span-6"><div class="card">
         <div class="ptitle">לוגו</div>
         <div class="pad">
@@ -2580,7 +2609,9 @@ async function loadSettings() {
   $("#set-wait").value = Number(s.session_wait_seconds);
   $("#set-idle").value = Number(s.console_idle_seconds);
   $("#set-class-deploy").checked = s.class_deploy_enabled === "true";
+  $("#set-update-enabled").checked = s.update_enabled === "true";
   await loadLogoSettings();
+  await loadUpdateInfo();
 
   if (host === $("#settings-form")) wireSettings();
 }
@@ -2593,9 +2624,11 @@ $("#settings-form").onsubmit = async (event) => {
     session_wait_seconds: String($("#set-wait").value),
     console_idle_seconds: String($("#set-idle").value),
     class_deploy_enabled: $("#set-class-deploy").checked ? "true" : "false",
+    update_enabled: $("#set-update-enabled").checked ? "true" : "false",
   });
   ME.idle_seconds = Number($("#set-idle").value);   // תקף מיידית, בלי כניסה מחדש
   startIdleWatch();
+  await loadUpdateInfo();   // המתג יכול היה להידלק/לכבות כרגע
   $("#settings-saved").textContent = "נשמר.";
   setTimeout(() => { if ($("#settings-saved")) $("#settings-saved").textContent = ""; }, 2000);
 } catch (error) { toast(error.message); }
@@ -2625,7 +2658,89 @@ $("#logo-clear").addEventListener("click", () => confirmSheet(
   "הסרת הלוגו", "הקונסולה תחזור לסמל ברירת המחדל.", "הסר",
   async () => { await del("/branding/logo"); await loadLogoSettings(); }));
 
+$("#update-check-btn").onclick = checkForUpdate;
+$("#update-apply-btn").onclick = () => confirmUpdateAction(
+  "עדכון שרת", UPDATE_INFO.latest, "apply", UPDATE_INFO.latest);
+$("#update-revert-btn").onclick = () => confirmUpdateAction(
+  "חזרה לגרסה הקודמת", UPDATE_INFO.previous, "revert", UPDATE_INFO.previous);
+}
 
+let UPDATE_INFO = {};
+
+async function loadUpdateInfo() {
+  if (!$("#update-current")) return;
+  const info = await api("/update");
+  UPDATE_INFO = info;
+  $("#update-current").textContent = info.current || "לא ידועה (אין תגית git על העץ)";
+  if (info.previous) {
+    $("#update-previous-row").classList.remove("hidden");
+    $("#update-previous").textContent = info.previous;
+  } else {
+    $("#update-previous-row").classList.add("hidden");
+  }
+  $("#update-disabled-note").classList.toggle("hidden", info.enabled);
+  $("#update-active-block").classList.toggle("hidden", !info.enabled);
+  $("#update-apply-btn").classList.add("hidden");
+  $("#update-revert-btn").classList.toggle("hidden", !info.previous);
+  $("#update-check-result").textContent = "";
+  if (info.enabled) await loadUpdateStatus();
+}
+
+async function loadUpdateStatus() {
+  const status = await api("/update/status");
+  const line = $("#update-status-line");
+  if (!line) return;
+  if (status.state === "idle" || !status.state) { line.textContent = ""; return; }
+  if (status.state === "failed") {
+    line.textContent = `העדכון ל-${status.tag} נכשל: ${status.error || ""}`;
+    line.className = "sub error";
+  } else if (status.state === "applying" && !status.verified) {
+    line.textContent = `העדכון ל-${status.tag} הופעל — ממתין לאתחול השרת. `
+      + "הראיה החיובית: גרסת השרת אחרי האתחול תואמת את התג.";
+    line.className = "sub";
+  } else if (status.state === "done" && status.verified) {
+    line.textContent = `אומת: השרת רץ על ${status.tag}.`;
+    line.className = "sub ok";
+  } else {
+    line.textContent = "";
+  }
+}
+
+async function checkForUpdate() {
+  try {
+    const result = await post("/update/check", {});
+    UPDATE_INFO.latest = result.latest;
+    if (!result.latest) {
+      $("#update-check-result").textContent = result.reason || "לא נמצאה גרסה חדשה יותר.";
+      $("#update-apply-btn").classList.add("hidden");
+    } else if (result.available) {
+      $("#update-check-result").textContent = `יש עדכון: ${result.current || "?"} → ${result.latest}`;
+      $("#update-apply-btn").textContent = `עדכן ל-${result.latest}`;
+      $("#update-apply-btn").classList.remove("hidden");
+    } else {
+      $("#update-check-result").textContent = `כבר על הגרסה העדכנית (${result.current}).`;
+      $("#update-apply-btn").classList.add("hidden");
+    }
+  } catch (e) { toast(e.message); }
+}
+
+function confirmUpdateAction(title, tag, path, applyTag) {
+  if (!tag) return;
+  sheet({
+    title,
+    sub: path === "apply"
+      ? `השרת יעבור ל-${tag} ויופעל מחדש. הפעולה אינה הפיכה בקלות.`
+      : `השרת יחזור ל-${tag} ויופעל מחדש.`,
+    danger: true, submitLabel: "אישור",
+    verify: { label: "להמשך יש להקליד את שם השרת:", mustEqual: UPDATE_INFO.server_name },
+    onSubmit: async () => {
+      const body = { confirm_name: UPDATE_INFO.server_name };
+      if (path === "apply") body.tag = applyTag;
+      await post("/update/" + path, body);
+      toast("העדכון הופעל — עוקבים אחרי סטטוס.");
+      await loadUpdateInfo();
+    },
+  });
 }
 async function loadUsersAdmin() {
   const host = $("#users-table tbody");
@@ -2807,7 +2922,7 @@ function wireRestoredPage() {
   if (current === "machines" && currentTab > 0) window.loadMachinesTab().catch(e => toast(e.message));
   if (current === "health" && currentTab === 1) loadSsh().catch(e => toast(e.message));
   if (current === "settings") loadSettings().catch(e => toast(e.message));
-  if (current === "branches") loadBranches().catch(e => toast(e.message));
+  if (current === "branches") (currentTab === 0 ? loadBranchCards() : loadBranches()).catch(e => toast(e.message));
   if (current === "permissions" && currentTab === 0) loadUsersAdmin().catch(e => toast(e.message));
   if (current === "logs" && currentTab === 0) {
     JOURNAL_EVENTS_LOADED = false;

@@ -82,7 +82,7 @@ gui_dispatch() {
     esac
     gui_role || { gui_error 'Session/role could not be verified; restart and sign in'; return 1; }
     case "$token" in
-        capture|room|classes|restore) printf '%s\n' "$token" > "$GUI_DIR/mode" ;;
+        capture|room|classes|restore|direct) printf '%s\n' "$token" > "$GUI_DIR/mode" ;;
         back|again) printf 'menu\n' > "$GUI_DIR/mode" ;;
         capture-start) gui_capture ;;
         room-open)
@@ -91,6 +91,26 @@ gui_dispatch() {
             # room_open owns validation/body/POST; adapt only its prompts.
             (room_pick_image() { printf '%s\n' "$image"; }
              printf '%s\n' "$target" | room_open)
+            ;;
+        direct-open)
+            # #715: the source is this machine's first non-removable disk,
+            # from the server's fresh inventory (as gui_capture checks it);
+            # the targets are the ticked drawers, "<mac>@<port>,<port>/<mac>@
+            # <port>" (a MAC has colons of its own). Same POST as directflow.sh;
+            # the server validates every slot again (#695/#701).
+            case "$slots" in ''|*[!0-9a-f:/,@]*) return 1 ;; esac
+            http_get "$SERVER/api/v1/agent/state?mac=$MAC" > "$RUN_DIR/gui-inventory.json" || return 1
+            _gd=$(jq -er '.disks | map(select(.removable == false)) | .[0].dev' \
+                "$RUN_DIR/gui-inventory.json") || { gui_error 'No internal disk to send from'; return 1; }
+            _gslots=$(printf '%s' "$slots" | awk -v RS='/' -F@ 'NF == 2 {
+                gsub(/\n/, "", $2); if ($1 == "" || $2 == "") exit 1
+                printf "%s{\"mac\":\"%s\",\"ports\":[%s]}", (n++ ? "," : ""), $1, $2 }
+                END { if (!n) exit 1 }') || return 1
+            printf '{"source":{"kind":"build_disk","mac":"%s","disk":"%s"},"target_slots":[%s]}' \
+                "$MAC" "$_gd" "$_gslots" > "$RUN_DIR/room_open.json" || return 1
+            _gc=$(console_post room "$RUN_DIR/room_open.json" "$RUN_DIR/room_open_resp.json") || return 1
+            [ "$_gc" = 200 ] || { gui_error "The direct round was not opened (http $_gc)"; return 1; }
+            log "direct round opened from the GUI: /dev/$_gd -> $slots"
             ;;
         room-wake) room_action wake ;;
         room-start) room_action start ;;
@@ -131,7 +151,7 @@ gui_dispatch() {
 
 gui_records() {
     while IFS= read -r token; do
-        dev='' name='' desc='' folder='' folder_new='' image='' target='' confirm='' group=''
+        dev='' name='' desc='' folder='' folder_new='' image='' target='' confirm='' group='' slots=''
         _complete=0; _bad=0; _seen='|'
         while IFS= read -r line; do
             [ -n "$line" ] || { _complete=1; break; }
@@ -143,6 +163,7 @@ gui_records() {
                 folder=*) folder=$_value ;; folder_new=*) folder_new=$_value ;;
                 image=*) image=$_value ;; target=*) target=$_value ;;
                 confirm=*) confirm=$_value ;; group=*) group=$_value ;;
+                slots=*) slots=$_value ;;
                 *) _bad=1 ;;
             esac
         done

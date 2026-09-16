@@ -360,13 +360,20 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
 
     if (!s->has_round) {
         /* ---- renderSetup ---- */
+        /* #715: MODE_DIRECT is this screen without the image select and the
+         * drive-count field -- the source is this machine's disk, and the
+         * target is exactly the drawers ticked in the grid (a single round). */
+        int direct = a->mode == MODE_DIRECT;
         if (!a->room_target_set) {                        /* value="${ready || 24}", once per skeleton */
             snprintf(a->room_target, sizeof a->room_target, "%d", ready ? ready : 24);
             a->room_target_set = 1;
         }
-        Head hd = head_make(cr, "הפצה למחשבי שיכפול",
-                            "בוחרים אימג' ויעד כוננים; החדר מתעורר, וכל גל כותב למגירות שמוכנות.", inner);
-        Text l1 = label_make(cr, "אימג' לשידור", inner);
+        Head hd = direct
+            ? head_make(cr, "הפצה מהדיסק הזה למחשבי השיכפול",
+                        "הדיסק של המחשב הזה נקרא פעם אחת (קריאה בלבד) ומשודר ישירות למגירות שמסומנות למטה — בלי לשמור אימג' בשרת. סבב יחיד.", inner)
+            : head_make(cr, "הפצה למחשבי שיכפול",
+                        "בוחרים אימג' ויעד כוננים; החדר מתעורר, וכל גל כותב למגירות שמוכנות.", inner);
+        Text l1 = label_make(cr, direct ? "המקור: הדיסק הפנימי של המחשב הזה" : "אימג' לשידור", inner);
         Text l2 = label_make(cr, "כמה כוננים צריך הפעם, סך הכל", inner);
         char rd[96]; snprintf(rd, sizeof rd, "כרגע ערים: %d מגירות מוכנות.", ready);
         Text ready_t = sub_make(cr, rd, inner);
@@ -379,8 +386,9 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
         double grid_h = s->nmachines ? grid.total_h : text_line_height(cr, FONT_SANS, 14);
         double sel_all_h = s->nmachines ? btn_h : 0;
         double ready_line_h = dmax(ready_t.h, sel_all_h);
-        double body_h = 22 + l1.h + 2 + in_h + 20 + l2.h + 2 + in_h + 20 + ready_line_h + 10 + grid_h + 6 + err_h + 22;
-        Text labels[3] = { btn_label(cr, "פתח סבב והער את החדר"), btn_label(cr, "העֵר את מחשבי השיכפול"), btn_label(cr, "חזרה") };
+        double fields_h = direct ? l1.h + 20 : l1.h + 2 + in_h + 20 + l2.h + 2 + in_h + 20;
+        double body_h = 22 + fields_h + ready_line_h + 10 + grid_h + 6 + err_h + 22;
+        Text labels[3] = { btn_label(cr, direct ? "פתח סבב והער את המחשבים שנבחרו" : "פתח סבב והער את החדר"), btn_label(cr, "העֵר את מחשבי השיכפול"), btn_label(cr, "חזרה") };
         static const int kinds[3] = { BTN_PRIMARY, BTN_PLAIN, BTN_PLAIN };
         static const int ids[3] = { HIT_ROOM_OPEN, HIT_ROOM_WAKE, HIT_BACK };
 
@@ -390,13 +398,17 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
         double x = body.x + 22, y = body.y + 22;
         const char *opts[MAX_IMAGES + 1]; char obuf[MAX_IMAGES][168];
         int nopt = image_options(a, opts, obuf, MAX_IMAGES + 1);
-        text_draw(cr, &l1, x, y, t->muted);              y += l1.h + 2;
-        Rect sel_r = { x, y, inner, in_h };
-        draw_select(a, cr, sel_r, opts[a->image_sel < nopt ? a->image_sel : 0], HIT_ROOM_IMAGE);
-        y += in_h + 20;
-        text_draw(cr, &l2, x, y, t->muted);              y += l2.h + 2;
-        draw_field(a, cr, (Rect){ x, y, inner, in_h }, a->room_target, 0, NULL, HIT_ROOM_TARGET);
-        y += in_h + 20;
+        Rect sel_r = { x, y + l1.h + 2, inner, in_h };
+        if (direct) {
+            text_draw_r(cr, &l1, x + inner, y, t->ink);  y += l1.h + 20;
+        } else {
+            text_draw(cr, &l1, x, y, t->muted);              y += l1.h + 2;
+            draw_select(a, cr, sel_r, opts[a->image_sel < nopt ? a->image_sel : 0], HIT_ROOM_IMAGE);
+            y += in_h + 20;
+            text_draw(cr, &l2, x, y, t->muted);              y += l2.h + 2;
+            draw_field(a, cr, (Rect){ x, y, inner, in_h }, a->room_target, 0, NULL, HIT_ROOM_TARGET);
+            y += in_h + 20;
+        }
         /* ready count on the right; a select/clear-all button on the left (#714) */
         if (s->nmachines) {
             Text sa = btn_label(cr, "בחר / נקה הכל");
@@ -412,7 +424,7 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
         foot_draw_bg(cr, t, foot);
         foot_buttons(a, cr, foot, labels, kinds, ids, 3);
         card_end(a, cr);
-        if (a->dd_open == HIT_ROOM_IMAGE) draw_popup(a, cr, sel_r, opts, nopt, a->image_sel);   /* outside the card's clip, topmost */
+        if (!direct && a->dd_open == HIT_ROOM_IMAGE) draw_popup(a, cr, sel_r, opts, nopt, a->image_sel);   /* outside the card's clip, topmost */
         text_free(&l1); text_free(&l2); text_free(&ready_t); text_free(&err);
         return;
     }

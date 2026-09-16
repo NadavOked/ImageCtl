@@ -17,6 +17,11 @@ room_draw() {
     ui_clear; ui_header
     echo "  Cloning room -- wave $_wave ($_state)"
     echo "  Image:      $_image"
+    # #715: a round fed from the build machine's own disk says so, and says
+    # whether that machine has finished reading it (the wave waits for that).
+    if [ "$(json_get "$RUN_DIR/room.json" ".round.source.kind")" = "build_disk" ]; then
+        echo "  Source:     build machine $(json_get "$RUN_DIR/room.json" ".round.source.name") disk $(json_get "$RUN_DIR/room.json" ".round.source.disk") -- manifest ready: $(json_get "$RUN_DIR/room.json" ".round.source.manifest_ready")"
+    fi
     echo "  Drives:     $_written of $_target written, $_left to go"
     echo "  Ready now:  $_ready fresh drawers in machines that joined"
     echo

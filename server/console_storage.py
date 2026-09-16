@@ -18,9 +18,11 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
+from starlette.websockets import WebSocketDisconnect
 
-from . import auth, interserver_auth, storage_client, storage_nodes
+from . import (auth, interserver_auth, monitor, registry, storage_client,
+               storage_nodes, storage_transfer)
 from .api import ServerContext
 
 
@@ -127,6 +129,126 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
             raise HTTPException(404, str(exc))
         return {"ok": True}
 
+    # --- העברת אימג' ראשי→משני (#655 v1) ------------------------------------
+    #
+    # ‏admin+standalone. ההעברה היא משימת רקע; כאן רק פתיחה ותצוגה. הכניסה
+    # לספריית המשני עוברת אימות sha256 **שם** (import_tar) — הראשי מדווח
+    # ``done`` רק אחרי 200 שהמשני החזיר אחרי האימות.
+
+    @router.post("/storage-nodes/{nid}/transfer")
+    async def start_transfer(nid: str, request: Request,
+                             user=Depends(require_standalone)):
+        image_id = str((await request.json()).get("image_id") or "")
+        try:
+            tid = storage_transfer.start_transfer(ctx, data_dir, nid, image_id, user)
+        except storage_transfer.TransferError as exc:
+            raise HTTPException(exc.status, exc.detail)
+        return {"id": tid}
+
+    @router.get("/storage-nodes/{nid}/transfers")
+    def node_transfers(nid: str, user=Depends(require_standalone)):
+        if ctx.conn.execute("SELECT 1 FROM storage_nodes WHERE id = ?",
+                            (nid,)).fetchone() is None:
+            raise HTTPException(404, "שרת משני לא קיים")
+        return storage_transfer.list_transfers(ctx.conn, user, node_id=nid)
+
+    @router.get("/storage-transfers")
+    def all_transfers(user=Depends(require_standalone)):
+        return storage_transfer.list_transfers(ctx.conn, user)
+
+    # --- צפייה במשני: המכונות שלו (#655 v1) ----------------------------------
+    #
+    # הראשי שואל את המשני בערוץ המאומת ומחזיר את התשובה כפי שהיא. כשל
+    # חיבור אינו 5xx אלא ``connected:false`` עם הסיבה — כרטיס הסניף מציג
+    # "לא מחובר" במקום להיעלם (עיקרון 5: לא-הצלחנו-לשאול ≠ אין מכונות).
+
+    @router.get("/storage-nodes/{nid}/machines")
+    def node_machines(nid: str, user=Depends(require_standalone)):
+        node = storage_nodes.node_row(ctx.conn, nid)
+        if node is None:
+            raise HTTPException(404, "שרת משני לא קיים")
+        if node["disabled_at"]:
+            return {"connected": False, "error": "השרת המשני מושבת", "machines": []}
+        try:
+            client, token = storage_nodes.node_client(ctx.conn, data_dir, node)
+            with client:
+                answer = client.get_json("/machines", token)
+        except Exception as exc:                             # noqa: BLE001
+            return {"connected": False,
+                    "error": interserver_auth.redact_secrets(str(exc)),
+                    "machines": []}
+        machines = answer.get("machines")
+        if not isinstance(machines, list):
+            return {"connected": False, "error": "תשובה לא צפויה מהמשני",
+                    "machines": []}
+        return {"connected": True, "error": None, "machines": machines,
+                "node_id": answer.get("node_id")}
+
+    # --- מוניטור למכונה של המשני, דרך המשני (#655 v1) ------------------------
+    #
+    # פרוקסי-של-פרוקסי: הדפדפן ↔ הראשי (WebSocket) ↔ המשני (מנהרה בערוץ
+    # המאומת) ↔ המכונה (RFB). הראשי לעולם אינו רואה סוד של מכונה — המשני
+    # מזדהה מולה בסוד שלו (#846) ומעביר לראשי זרם שכבר עבר SecurityResult.
+    # קודי הסגירה כמו במוניטור המקומי (סעיף 14 ב-interfaces.md); כשל שהגיע
+    # מהמשני חוזר כ-4000+הקוד שלו עם ה-detail שלו כסיבה.
+
+    @router.websocket("/storage-nodes/{nid}/monitor/{mac}")
+    async def remote_monitor(websocket: WebSocket, nid: str, mac: str):
+        import asyncio
+        found = auth.check(ctx.conn, websocket.cookies.get(auth.COOKIE_NAME))
+        if found is None:
+            await websocket.close(code=monitor.WS_UNAUTHENTICATED, reason="נדרשת התחברות")
+            return
+        if found[1] != "admin":
+            await websocket.close(code=monitor.WS_FORBIDDEN, reason="פעולה למנהל בלבד")
+            return
+        if storage_nodes.role(ctx.conn) != storage_nodes.ROLE_STANDALONE:
+            await websocket.close(code=4409, reason="צפייה במשני אפשרית רק משרת ראשי")
+            return
+        node = storage_nodes.node_row(ctx.conn, nid)
+        if node is None:
+            await websocket.close(code=4404, reason="שרת משני לא קיים")
+            return
+        if node["disabled_at"]:
+            await websocket.close(code=4409, reason="השרת המשני מושבת")
+            return
+        canonical = registry.normalize_mac(mac)
+        if canonical is None:
+            await websocket.close(code=4404, reason="מכונה לא מוכרת")
+            return
+        try:
+            token = interserver_auth.load_credential(node["credential_ref"])
+            ident = storage_nodes.identity(ctx.conn, data_dir=data_dir)
+            host, port, _ = interserver_auth.parse_interserver_url(node["base_url"])
+        except Exception as exc:                             # noqa: BLE001
+            await websocket.close(code=4500, reason=interserver_auth.redact_secrets(str(exc))[:120])
+            return
+        writer = None
+        try:
+            try:
+                reader, writer = await asyncio.wait_for(storage_client.open_tunnel(
+                    host, port, expected_secondary_spki=node["pinned_spki"],
+                    cert_path=ident["server_cert_ref"], key_path=ident["server_key_ref"],
+                    path=f"/monitor/{canonical}", token=token), timeout=15.0)
+            except storage_client.InterserverTunnelRefused as exc:
+                await websocket.close(code=4000 + exc.status, reason=exc.detail[:120])
+                return
+            except (OSError, asyncio.TimeoutError, storage_client.InterserverClientError) as exc:
+                await websocket.close(
+                    code=4502,
+                    reason=f"השרת המשני אינו זמין: {interserver_auth.redact_secrets(str(exc))}"[:120])
+                return
+            await monitor.bridge_browser(websocket, reader, writer)
+        except (WebSocketDisconnect, asyncio.CancelledError):
+            pass
+        finally:
+            if writer is not None:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:                            # noqa: BLE001
+                    pass
+
     # --- הצד המקומי של המשני: חלון pairing ו-break-glass (#740) --------------
     #
     # פעולות שמנהל מפעיל **מקומית** על המשני. שלושה שומרים, וכולם
@@ -225,11 +347,19 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
                 expected_secondary_spki=expected_spki,
                 cert_pem=ident["cert_pem"], key_pem=ident["key_pem"],
                 primary_id=ident["node_id"])
+        except storage_client.InterserverIdentityMismatch as exc:
+            # ‏#883: ההצהרה סותרת את המפתח — כשל בקול, לפני שהקוד נשלח.
+            raise HTTPException(400, interserver_auth.redact_secrets(str(exc)))
         except storage_client.InterserverClientError as exc:
             # הודעת ה-detail עלולה לשאת חומר — מסתירים לפני שהיא עוזבת.
             raise HTTPException(502, interserver_auth.redact_secrets(str(exc)))
 
-        secondary_id = result.get("secondary_id") or interserver_auth.node_id_from_spki(expected_spki)
+        # ‏#883: המזהה — וממנו שם קובץ הטוקן — נגזר מה-SPKI שהמפעיל הצמיד
+        # וה-handshake אימת, לא מהצהרת ה-JSON של המשני. חגורה שנייה על
+        # שם הקובץ: רק ``sn_<hex>`` נכנס ל-``secondaries/``.
+        secondary_id = interserver_auth.node_id_from_spki(expected_spki)
+        if not storage_nodes.valid_node_id(secondary_id):
+            raise HTTPException(400, f"מזהה משני לא תקין: {secondary_id!r}")
         cred_dir = Path(data_dir) / "secondaries"
         cred_dir.mkdir(parents=True, exist_ok=True)
         cred_path = cred_dir / f"{secondary_id}.token"

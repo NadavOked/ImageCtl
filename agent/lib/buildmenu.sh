@@ -5,8 +5,9 @@
 # the two or three things this server can be told to do from here:
 #
 #   admin   capture this disk into the library, deploy to the cloning room,
-#           deploy to a classroom
-#   deploy  the two deployment flows -- capture is admin_only on the server
+#           deploy this disk directly to the cloning room (#715), deploy
+#           to a classroom
+#   deploy  the three deployment flows -- capture is admin_only on the server
 #
 # Text only. #32 (the kiosk) was closed "not planned": there is no graphical
 # stack on an edge machine, and the Linux console has neither a Hebrew font
@@ -184,6 +185,7 @@ build_menu_options() {
     rm -f "$RUN_DIR/build_menu.txt"
     [ "$BUILD_ROLE" = "admin" ] && echo "capture" >> "$RUN_DIR/build_menu.txt"
     echo "room" >> "$RUN_DIR/build_menu.txt"
+    echo "direct" >> "$RUN_DIR/build_menu.txt"   # #715: always, like room -- before class
     # #880: v1 is the cloning edition -- the class option is offered only
     # when the last hello said the server has it switched on. The server
     # refuses the round either way (409); a missing field reads as off.
@@ -201,6 +203,7 @@ build_menu_label() {
     case "$1" in
         capture) echo "Upload an image to the server (capture this disk)" ;;
         room)    echo "Deploy to the cloning machines" ;;
+        direct)  echo "Deploy THIS disk directly to the cloning machines" ;;
         class)   echo "Deploy to a classroom" ;;
     esac
 }
@@ -250,6 +253,11 @@ build_menu() {
                 }
                 ;;
             room) room_flow ;;
+            direct)
+                # #715: the source is this disk; the task lands with the
+                # next hello, so the menu steps aside like after a capture.
+                direct_flow && return 0
+                ;;
             class)
                 class_round_flow || continue
                 # classround.sh tells a station "you will join automatically".

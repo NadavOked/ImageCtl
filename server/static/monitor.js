@@ -15,6 +15,9 @@
 const params = new URLSearchParams(location.search);
 const MAC = params.get("mac") || "";
 const NAME = params.get("name") || MAC;
+/* ‏#655 v1: ``node`` = מזהה שרת משני — המוניטור עובר דרך הראשי אל המשני
+   ומשם למכונה. אותו זרם RFB, אותה לחיצת-יד מול הדפדפן; רק הנתיב שונה. */
+const NODE = params.get("node") || "";
 
 const canvas = document.getElementById("screen");
 const gctx = canvas.getContext("2d", { alpha: false });
@@ -86,6 +89,9 @@ let viewOnly = false;
 
 function wsUrl() {
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+  if (NODE) {
+    return `${scheme}//${location.host}/api/console/storage-nodes/${encodeURIComponent(NODE)}/monitor/${encodeURIComponent(MAC)}`;
+  }
   return `${scheme}//${location.host}/api/console/monitor/${encodeURIComponent(MAC)}`;
 }
 

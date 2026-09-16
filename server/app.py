@@ -34,6 +34,7 @@ from .console_source_guard import ConsoleSourceGuard, Network
 from .console_storage import create_storage_router
 from .db import journal
 from . import wol
+from . import direct
 from .sender import SenderEngine
 from .station import create_station_router
 from .console_library import create_library_router
@@ -46,6 +47,7 @@ from .console_dhcp import create_dhcp_router
 from .console_netcfg import create_netcfg_router, drain_crumbs
 from .db import connect
 from .health import create_health_router
+from .update import PUBLIC_UPDATE_URL, create_update_router
 from .hello import make_resolver, off_deploy_vlan
 from .images import ImageLibrary
 from .kiosk import create_kiosk_router
@@ -134,6 +136,10 @@ class ServerRuntime:
     health_hooks: dict | None = None
     netcfg_hooks: dict | None = None
     known_macs_hooks: dict | None = None
+    #: #748: תיקיית עץ השרת (ל-``git describe``/``fetch``/``checkout``)
+    #: וה-hooks של בדיקת/הרצת העדכון. ברירת המחדל בפועל נקבעת ב-main.py.
+    repo_dir: str | Path | None = None
+    update_hooks: dict | None = None
     #: הקצב של שעון-הרקע של החדר (#456). ברירת המחדל היא הייצור; בדיקות
     #: מעבירות ערך קצר כדי שהלולאה תדגום מהר בלי להמתין 5ש'.
     room_clock_interval: float = ROOM_CLOCK_SECONDS
@@ -205,6 +211,10 @@ def create_runtime(
     health_hooks: dict | None = None,
     netcfg_hooks: dict | None = None,
     known_macs_hooks: dict | None = None,
+    # ‏#748: ברירת המחדל None משאירה את ``repo_dir`` כתיקיית העבודה של
+    # ``server/update.py`` בזמן הריצה (main.py הוא היחיד שמעביר ערך אמיתי).
+    repo_dir: str | Path | None = None,
+    update_hooks: dict | None = None,
     netcfg_state_dir: str | Path | None = None,
     boot_dir: str | Path | None = None,
     extra_cmdline: tuple[str, ...] = (),
@@ -302,9 +312,18 @@ def create_runtime(
         if woken:
             journal(conn, "wol_sent", f"{group_id} count={woken}")
 
+    def on_running(session: dict) -> None:
+        # ‏#715: גל שהמקור שלו הוא מחשב בנייה — המנוע של השרת **אינו**
+        # משדר; מחשב הבנייה רואה `running` ב-hello הבא ומשדר בעצמו.
+        # ביומן, כדי שגל שלא יצא ייראה כמה שהוא ולא כ"המנוע לא התחיל".
+        if direct.is_direct_wave(conn, session["id"]):
+            journal(conn, "send_delegated", f'{session["id"]} {session["image_id"]}')
+            return
+        sender.start(session)
+
     store = SessionStore(
         conn,
-        on_running=sender.start,
+        on_running=on_running,
         on_closed=lambda session_id: sender.stop(session_id),
         on_opened=wake_class,
         **({"now_fn": now_fn} if now_fn else {}),
@@ -337,6 +356,7 @@ def create_runtime(
         dhcp_hooks=dhcp_hooks, health_hooks=health_hooks, netcfg_hooks=netcfg_hooks,
         console_allowed_networks=console_allowed_networks,
         known_macs_hooks=known_macs_hooks,
+        repo_dir=repo_dir, update_hooks=update_hooks,
         room_clock_interval=room_clock_interval,
     )
 
@@ -414,6 +434,7 @@ def _add_agent_routes(app: FastAPI, rt: ServerRuntime) -> None:
     app.include_router(create_agent_router(rt.ctx, rt.server_base))
     app.include_router(create_agent_drivers_router(rt.ctx))   # #720
     app.include_router(create_agent_capture_router(rt.ctx))
+    app.include_router(direct.create_direct_router(rt.ctx))   # #715
     app.include_router(create_station_router(rt.ctx))
     app.mount("/boot", _boot_asgi(rt))
 
@@ -442,6 +463,11 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
     app.include_router(create_dhcp_router(ctx, rt.dhcp_hooks))
     app.include_router(create_netcfg_router(ctx, rt.netcfg_dir, rt.netcfg_hooks))
     app.include_router(create_health_router(ctx, rt.server_base, rt.health_hooks))
+    # ‏#748: תיקיית העץ נופלת לתיקיית הקוד עצמה כשאין ``--repo-dir``
+    # מפורש (בדיקות/הרצה ישירה) — ראו ``main.py``.
+    app.include_router(create_update_router(
+        ctx, rt.repo_dir or Path(__file__).resolve().parents[1],
+        rt.server_base, rt.update_hooks, public_url=PUBLIC_UPDATE_URL))
     app.include_router(create_branding_router(ctx, rt.data_dir))
     app.include_router(create_monitor_router(ctx))   # #690: admin RFB proxy + settings
     app.include_router(create_console_capture_router(ctx))

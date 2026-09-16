@@ -37,8 +37,9 @@ TERMINAL = ("done", "failed", "partial")
 #: המגירות, ו-`capturing`/`failed` במסלול הקליטה. ‏#772: מצב שאינו כאן
 #: נדחה במקום להיכתב בשקט — דיווח בלי `state` (שהופך ל-`""`) או עם ערך
 #: שרירותי היה מציב מצב לא-טרמינלי לנצח ותוקע את הגל (עיקרון 5).
+#: ‏`sending` (‏#715) — מחשב הבנייה שמשדר מהדיסק שלו (משימת `direct_send`).
 VALID_STATES = frozenset(
-    {"waiting", "writing", "verifying", "naming", "staging", "capturing"} | set(TERMINAL)
+    {"waiting", "writing", "verifying", "naming", "staging", "capturing", "sending"} | set(TERMINAL)
 )
 
 #: ‏#720: מצבי ה-staging של הדרייברים בדיווח הסיום (`drivers.state`).
@@ -237,7 +238,7 @@ def _ingest_task(conn: sqlite3.Connection, task_id: str, mac: str,
     בדיוק כמו ב-`session_members` (#108).
     """
     row = conn.execute(
-        "SELECT state FROM tasks WHERE id = ? AND mac = ?", (task_id, mac)
+        "SELECT state, type FROM tasks WHERE id = ? AND mac = ?", (task_id, mac)
     ).fetchone()
     if row is None:
         journal(conn, "report_from_nonmember", f"{mac} for {task_id}{sent_as}")
@@ -257,7 +258,11 @@ def _ingest_task(conn: sqlite3.Connection, task_id: str, mac: str,
     errors = "; ".join(f"{t.get('dev', '?')}: {t['error']}"
                        for t in targets if t.get("error"))
     # מצב 'done' נקבע בשרת כשהמניפסט מתקבל ומאומת, לא לפי הצהרת הסוכן.
+    # ‏#715: במשימת `direct_send` אין מניפסט שסוגר — הבייטים לא עברו בשרת
+    # — והדיווח הסופי של המקור (‏`done`, אחרי שכל מחיצה שודרה ונחתמה שווה
+    # למניפסט) הוא הראיה החיובית היחידה שיש, ולכן הוא מה שסוגר.
     new_state = "failed" if state == "failed" else (
+        "done" if state == "done" and row["type"] == "direct_send" else
         "running" if row["state"] == "pending" else row["state"]
     )
     # ‏#535: תביעת מצב ב-`WHERE`. עד כאן דיווח `failed` הפך משימה
@@ -280,6 +285,8 @@ def _ingest_task(conn: sqlite3.Connection, task_id: str, mac: str,
     conn.commit()
     if state == "failed" and row["state"] != "failed":
         journal(conn, "capture_failed", f"{task_id} {errors or 'agent reported failure'}")
+    if new_state == "done":
+        journal(conn, "direct_done", task_id)
     return {"ok": True}
 
 

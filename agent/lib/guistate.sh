@@ -19,6 +19,7 @@ gui_state() {
           (if .state == "cancelled" then "task=failed"
            elif (["pending","running","done","failed"]|index($ts)) != null then "task=\(.state)"
            else error("unknown task state") end), "task_name=\(.name|clean)", "task_disk=\(.disk|clean)",
+          "task_direct=\(if .type == "direct_send" then 1 else 0 end)",
           "task_error=\((.error // "")|clean)", "bytes=\(.bytes_written // 0)",
           (if .source_progress != null then
              "pct=\((100 * .source_progress.blocks_read / .source_progress.blocks_total)|floor)",
@@ -47,11 +48,16 @@ gui_state() {
             jq -r 'if type != "array" then error("bad folders") else .[] |
                 if (.name|test("[\\r\\n|]")) then error("unrepresentable folder") else "folder=\(.name)" end end' \
                 "$GUI_DIR/folders.json" >> "$GUI_DIR/state.next" || return 1 ;;
-        room)
-            gui_get room "$GUI_DIR/room.json" && gui_get images "$GUI_DIR/images.json" || return 1
-            jq -r 'if type != "array" then error("bad images") else .[] |
-                "image=" + ([.id,.name,.folder] | map(tostring | gsub("[\\r\\n|]"; " ")) | join("|")) end' \
-                "$GUI_DIR/images.json" >> "$GUI_DIR/state.next" || return 1
+        room|direct)
+            # #715: `direct` is the room screen without an image picker --
+            # the same room records, no image= records at all.
+            gui_get room "$GUI_DIR/room.json" || return 1
+            if [ "$_sm" = room ]; then
+                gui_get images "$GUI_DIR/images.json" || return 1
+                jq -r 'if type != "array" then error("bad images") else .[] |
+                    "image=" + ([.id,.name,.folder] | map(tostring | gsub("[\\r\\n|]"; " ")) | join("|")) end' \
+                    "$GUI_DIR/images.json" >> "$GUI_DIR/state.next" || return 1
+            fi
             jq -r '
               def clean: ((. // "") | tostring | gsub("[\\r\\n|]"; " "));
               def row: "machine=" + ([.name,.mac,(if .awake then 1 else 0 end),

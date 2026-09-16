@@ -1,5 +1,6 @@
 #!/bin/sh
-# Read-only capture guard for NTFS fast-startup/hibernation (#651).
+# Read-only capture guards: NTFS fast-startup/hibernation (#651) and
+# BitLocker (#671). Both run before a byte moves; capture.sh calls them.
 
 CAPTURE_HIBERNATED_MESSAGE="הדיסק מהובר — כבה את Windows כיבוי מלא (fast-startup כבוי) וקלוט מחדש"
 
@@ -39,4 +40,19 @@ capture_ntfs_hibernation_reason() {
     }
     [ "$_hn_found" -eq 0 ] || { echo "$CAPTURE_HIBERNATED_MESSAGE"; return 1; }
     return 0
+}
+
+_bitlocker_reason() {
+    # $1=idx $2=fs $3=node. FOG -FVE-FS-; empty=ok, text=refuse (#671).
+    case "$2" in *[Bb]it[Ll]ocker*) echo "מחיצה $1 מוצפנת ב-BitLocker — כבו את BitLocker לפני הקליטה"; return ;; esac
+    command -v dd >/dev/null && command -v grep >/dev/null && command -v tr >/dev/null \
+        || { echo "לא הצלחנו לבדוק BitLocker במחיצה $1"; return; }
+    # ‏LC_ALL=C ו-F: החתימה בייטים קבועים, לא טקסט מקומי. בלי -i — היא
+    # תמיד באותיות גדולות, ו-`grep -i` על קלט בינרי תחת locale של UTF-8
+    # קורס (SIGABRT) ב-MSYS, מה שהיה הופך "לא נמצא" ל"לא הצלחנו לבדוק".
+    dd if="$3" bs=512 count=1 2>/dev/null | tr -d '\0' | LC_ALL=C grep -qF -- '-FVE-FS-'
+    _blrc=$?
+    [ "$_blrc" -eq 1 ] && return
+    [ "$_blrc" -eq 0 ] && echo "מחיצה $1 מוצפנת ב-BitLocker — כבו את BitLocker לפני הקליטה" \
+        || echo "לא הצלחנו לבדוק BitLocker במחיצה $1"
 }

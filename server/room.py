@@ -316,6 +316,11 @@ def round_label(ctx, round_row: sqlite3.Row) -> str:
     נפילה בדיוק כמו ב-`status_view` — **מקום אחד**, אחרת סבב שהאימג'
     שלו נמחק באמצע היה בלתי-ניתן לעצירה.
     """
+    # ‏#715: לסבב מדיסק חי אין אימג' בספרייה — השם הוא `<מכונה>:<דיסק>`,
+    # וזה מה שהמפעיל מקליד כדי לעצור אותו.
+    from . import direct                 # noqa: PLC0415 — direct מייבא את room
+    if direct.is_build_disk(round_row):
+        return direct.source_label(ctx.conn, round_row)
     manifest = ctx.library.get(round_row["image_id"])
     return manifest["name"] if manifest else round_row["image_id"]
 
@@ -351,6 +356,10 @@ def close_round(ctx, user: str, confirm_name: str) -> None:
     journal(ctx.conn, "room_close",
             f'{round_row["id"]} written={round_row["written_drives"]}'
             f'/{round_row["target_drives"]}', user)
+    # ‏#715: המקור מפסיק עם הסבב — המשימה נסגרת, ומחשב הבנייה רואה זאת
+    # ב-hello הבא ואינו משדר.
+    from . import direct                 # noqa: PLC0415
+    direct.cancel_source_task(ctx.conn, round_row, user)
 
 
 def _iso_or_none(ts: str | None) -> datetime | None:
@@ -426,7 +435,10 @@ def tick(conn: sqlite3.Connection, store: SessionStore) -> None:
     elif wave["state"] == "open":
         remaining = round_row["target_drives"] - round_row["written_drives"]
         ready = ready_drives(conn, store, round_row)
-        if 0 < remaining <= ready:
+        # ‏#715: מדיסק חי הגל ממתין גם למניפסט — מקבל שיוצא לדרך לפניו אין
+        # לו מול מה לאמת, ו-`GET …/manifest` שלו היה נענה 404.
+        from . import direct             # noqa: PLC0415
+        if 0 < remaining <= ready and direct.source_ready(round_row):
             store.start_auto(wave["id"])
     elif wave["state"] == "running":
         members = store.members(wave["id"])
@@ -581,13 +593,17 @@ def _resume(conn: sqlite3.Connection, store: SessionStore,
         conn.commit()
 
     target = round_row["target_drives"]
-    if total >= target:
+    # ‏#715: סבב מדיסק חי הוא סבב **יחיד** — הגל שנגמר הוא הסבב, גם כשמגירה
+    # נכשלה; אין גל נוסף לפתוח בלי שמחשב הבנייה ישדר שוב, וזו החלטה של אדם.
+    from . import direct                 # noqa: PLC0415
+    if total >= target or direct.is_build_disk(round_row):
         conn.execute(
             "UPDATE room_rounds SET state = 'closed', closed_at = ? WHERE id = ?",
             (now_iso(), round_row["id"]),
         )
         conn.commit()
         journal(conn, "room_done", f'{round_row["id"]} written={total}/{target}')
+        direct.cancel_source_task(conn, round_row, "")
         return
     if wave is not None:
         # לא בשקט (עיקרון 5): גל שנעלם מתחת לסבב הוא בדיוק מה שהמפעיל
@@ -658,7 +674,9 @@ def _finish_wave(conn: sqlite3.Connection, store: SessionStore,
     """הגל הסתיים: סופרים לפי serial אילו מגירות נכתבו, וממשיכים."""
     total, written = _tally(conn, round_row, members)
 
-    if total >= round_row["target_drives"]:
+    # ‏#715: מדיסק חי הגל היחיד הוא הסבב כולו (ראו `_resume`).
+    from . import direct                 # noqa: PLC0415
+    if total >= round_row["target_drives"] or direct.is_build_disk(round_row):
         # הסגירה היא התביעה: שני תהליכונים שהגיעו לכאן עם אותו גל —
         # רק זה שסגר אותו בפועל כותב את השורה התחתונה של הסבב (#177).
         if not store.close(round_row["wave_session_id"], ""):
@@ -823,8 +841,17 @@ def status_view(ctx) -> dict:
             "wave_state": wave["state"] if wave else "closed",
             "ready_drives": ready_drives(ctx.conn, ctx.store, round_row),
             "opened_by": round_row["opened_by"],
+            # ‏#715: מאיפה הבייטים — ספרייה (השרת משדר) או מחשב בנייה.
+            "source": _direct().source_view(ctx.conn, round_row),
         }
     return view
+
+
+def _direct():
+    """‏`direct` מייבא את `room` (ולידציית היעדים, הסבב הפעיל) — ולכן כאן
+    הייבוא מאוחר, באותה צורה כמו `session_view` ב-`sessions.py`."""
+    from . import direct                 # noqa: PLC0415
+    return direct
 
 
 # --- ה-API -------------------------------------------------------------------
@@ -851,7 +878,14 @@ def create_room_router(ctx, wake=None) -> APIRouter:
     @router.post("")
     async def open_(request: Request, user=Depends(room_operator)):
         body = await request.json()
+        source = body.get("source")
         try:
+            # ‏#715: `source: {kind: build_disk, mac, disk}` — המקור הוא דיסק
+            # במחשב הבנייה, אין `image_id`, והיעדים הם בחירה מפורשת.
+            if isinstance(source, dict) and source.get("kind") == _direct().BUILD_DISK:
+                return _direct().open_direct_round(
+                    ctx, source, body.get("target_slots"),
+                    body.get("target_drives"), user[0])
             return open_round(
                 ctx, body.get("image_id", ""),
                 int(body.get("target_drives", 0)), user[0],
@@ -868,6 +902,9 @@ def create_room_router(ctx, wake=None) -> APIRouter:
         round_row = active_round(ctx.conn)
         if round_row is None:
             raise HTTPException(409, "אין סבב חדר פעיל")
+        if not _direct().source_ready(round_row):
+            raise HTTPException(
+                409, "מחשב הבנייה עדיין קורא את הדיסק — המניפסט טרם הגיע")
         try:
             ctx.store.start_now(round_row["wave_session_id"], user[0])
         except SessionError as exc:

@@ -86,6 +86,30 @@ def seen_within(last_seen: str | None,
     return current - seen <= timedelta(seconds=ONLINE_SECONDS)
 
 
+def machine_rows(conn, now: datetime | None = None) -> list[dict]:
+    """רשימת המכונות של דף המוניטור (#822): רק build/cloner, ‏``online``
+    נקבע **בשרת** באותו חלון-נוכחות של ``_target``. משמש גם את הראשי
+    שצופה במשני (#655 v1) — אותה רשימה, אותו חישוב."""
+    rows = conn.execute(
+        "SELECT m.mac, m.suffix, g.role, d.ip, d.last_seen "
+        "FROM machines m "
+        "JOIN groups g ON g.id = m.group_id "
+        "LEFT JOIN net_devices d ON d.mac = m.mac "
+        "WHERE g.role IN ('build', 'cloner') "
+        "ORDER BY g.role, m.suffix"
+    ).fetchall()
+    return [
+        {
+            "mac": r["mac"],
+            "name": r["suffix"],
+            "role": r["role"],
+            "ip": r["ip"],
+            "online": bool(r["ip"]) and seen_within(r["last_seen"], now),
+        }
+        for r in rows
+    ]
+
+
 def _target(ctx: ServerContext, mac: str,
             now: datetime | None = None) -> tuple[str, str, str | None]:
     """‏(ip, role, monitor_secret) של מכונה שמותר לפתוח אליה מוניטור.
@@ -180,6 +204,96 @@ async def authenticate_machine(reader, writer, secret: str) -> None:
         raise MachineAuthError(f"המוניטור דחה את סוד השרת: {await _reason(reader)}")
 
 
+async def bridge_browser(websocket: WebSocket, reader, writer) -> None:
+    """מקבל את ה-WebSocket ומגשר אותו לזרם RFB שכבר עבר אימות מול המכונה.
+
+    הדפדפן רואה בדיוק את מה שראה תמיד (‏#839): גרסה, סוג-אבטחה None יחיד,
+    ‏SecurityResult OK — ואז הבייטים עוברים גולמיים לשני הכיוונים. משמש
+    את המוניטור המקומי **וגם** את המוניטור דרך המשני (#655 v1), ששם
+    ``reader``/``writer`` הם המנהרה מהמשני ולא TCP למכונה. חוזר כשאחד
+    הצדדים נסגר; ביטול/ניתוק מטופלים אצל הקורא."""
+    offered = websocket.headers.get("sec-websocket-protocol", "")
+    protocol = "binary" if "binary" in {
+        item.strip() for item in offered.split(",")
+    } else None
+    await websocket.accept(subprotocol=protocol)
+
+    pending = bytearray()
+
+    async def from_browser() -> bytes | None:
+        """מסגרת בינארית אחת; ‏None = הדפדפן התנתק."""
+        message = await websocket.receive()
+        if message["type"] == "websocket.disconnect":
+            return None
+        payload = message.get("bytes")
+        if payload is None:
+            # RFB is binary. Reject accidental text frames.
+            await websocket.close(code=1003)
+            return None
+        return payload
+
+    async def browser_exact(n: int) -> bytes | None:
+        while len(pending) < n:
+            payload = await from_browser()
+            if payload is None:
+                return None
+            pending.extend(payload)
+        taken = bytes(pending[:n])
+        del pending[:n]
+        return taken
+
+    # ‏#839: לחיצת-היד מול הדפדפן היא של הפרוקסי, לא של המכונה —
+    # המכונה כבר עברה אימות למעלה. הדפדפן רואה בדיוק את מה שראה
+    # לפני: גרסה, סוג-אבטחה None יחיד, ‏SecurityResult OK. מכאן
+    # והלאה הבייטים עוברים כמו שהם (ClientInit → ServerInit …).
+    await websocket.send_bytes(RFB_VERSION)
+    if await browser_exact(12) is None:
+        return
+    await websocket.send_bytes(b"\x01\x01")
+    choice = await browser_exact(1)
+    if choice is None:
+        return
+    if choice != b"\x01":
+        await websocket.close(code=1002, reason="סוג אבטחה לא צפוי")
+        return
+    await websocket.send_bytes(b"\x00\x00\x00\x00")
+
+    async def browser_to_machine() -> None:
+        if pending:
+            writer.write(bytes(pending))
+            await writer.drain()
+            pending.clear()
+        while True:
+            payload = await from_browser()
+            if payload is None:
+                return
+            writer.write(payload)
+            await writer.drain()
+
+    async def machine_to_browser() -> None:
+        while True:
+            payload = await reader.read(65536)
+            if not payload:
+                return
+            await websocket.send_bytes(payload)
+
+    upstream = asyncio.create_task(browser_to_machine())
+    downstream = asyncio.create_task(machine_to_browser())
+    try:
+        done, pending = await asyncio.wait(
+            {upstream, downstream},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*done, *pending, return_exceptions=True)
+    finally:
+        # ביטול של ה-endpoint עצמו (‏#725) לא משאיר משימת ממסר יתומה.
+        for task in (upstream, downstream):
+            if not task.done():
+                task.cancel()
+
+
 def create_monitor_router(
     ctx: ServerContext,
     *,
@@ -204,25 +318,7 @@ def create_monitor_router(
         ואותו חלון-נוכחות של ``_target``, כדי ש"מחובר" בדף יהיה מה
         שהשרת יסכים לחבר אליו, ולא חישוב בדפדפן."""
         del user
-        rows = ctx.conn.execute(
-            "SELECT m.mac, m.suffix, g.role, d.ip, d.last_seen "
-            "FROM machines m "
-            "JOIN groups g ON g.id = m.group_id "
-            "LEFT JOIN net_devices d ON d.mac = m.mac "
-            "WHERE g.role IN ('build', 'cloner') "
-            "ORDER BY g.role, m.suffix"
-        ).fetchall()
-        now = now_fn() if now_fn else None
-        return [
-            {
-                "mac": r["mac"],
-                "name": r["suffix"],
-                "role": r["role"],
-                "ip": r["ip"],
-                "online": bool(r["ip"]) and seen_within(r["last_seen"], now),
-            }
-            for r in rows
-        ]
+        return machine_rows(ctx.conn, now_fn() if now_fn else None)
 
     @router.put("/monitor/settings")
     def set_settings(body: dict, user=Depends(admin_only)):
@@ -296,8 +392,6 @@ def create_monitor_router(
             return
 
         writer: asyncio.StreamWriter | None = None
-        upstream: asyncio.Task | None = None
-        downstream: asyncio.Task | None = None
         try:
             try:
                 reader, writer = await asyncio.wait_for(
@@ -321,80 +415,7 @@ def create_monitor_router(
                     reason="המוניטור לא השלים את לחיצת-היד תוך 5 שניות")
                 return
 
-            offered = websocket.headers.get("sec-websocket-protocol", "")
-            protocol = "binary" if "binary" in {
-                item.strip() for item in offered.split(",")
-            } else None
-            await websocket.accept(subprotocol=protocol)
-
-            pending = bytearray()
-
-            async def from_browser() -> bytes | None:
-                """מסגרת בינארית אחת; ‏None = הדפדפן התנתק."""
-                message = await websocket.receive()
-                if message["type"] == "websocket.disconnect":
-                    return None
-                payload = message.get("bytes")
-                if payload is None:
-                    # RFB is binary. Reject accidental text frames.
-                    await websocket.close(code=1003)
-                    return None
-                return payload
-
-            async def browser_exact(n: int) -> bytes | None:
-                while len(pending) < n:
-                    payload = await from_browser()
-                    if payload is None:
-                        return None
-                    pending.extend(payload)
-                taken = bytes(pending[:n])
-                del pending[:n]
-                return taken
-
-            # ‏#839: לחיצת-היד מול הדפדפן היא של הפרוקסי, לא של המכונה —
-            # המכונה כבר עברה אימות למעלה. הדפדפן רואה בדיוק את מה שראה
-            # לפני: גרסה, סוג-אבטחה None יחיד, ‏SecurityResult OK. מכאן
-            # והלאה הבייטים עוברים כמו שהם (ClientInit → ServerInit …).
-            await websocket.send_bytes(RFB_VERSION)
-            if await browser_exact(12) is None:
-                return
-            await websocket.send_bytes(b"\x01\x01")
-            choice = await browser_exact(1)
-            if choice is None:
-                return
-            if choice != b"\x01":
-                await websocket.close(code=1002, reason="סוג אבטחה לא צפוי")
-                return
-            await websocket.send_bytes(b"\x00\x00\x00\x00")
-
-            async def browser_to_machine() -> None:
-                if pending:
-                    writer.write(bytes(pending))
-                    await writer.drain()
-                    pending.clear()
-                while True:
-                    payload = await from_browser()
-                    if payload is None:
-                        return
-                    writer.write(payload)
-                    await writer.drain()
-
-            async def machine_to_browser() -> None:
-                while True:
-                    payload = await reader.read(65536)
-                    if not payload:
-                        return
-                    await websocket.send_bytes(payload)
-
-            upstream = asyncio.create_task(browser_to_machine())
-            downstream = asyncio.create_task(machine_to_browser())
-            done, pending = await asyncio.wait(
-                {upstream, downstream},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*done, *pending, return_exceptions=True)
+            await bridge_browser(websocket, reader, writer)
         except (WebSocketDisconnect, asyncio.CancelledError):
             # ‏WebSocketDisconnect: הלקוח סגר בצורה מסודרת. ‏CancelledError:
             # ה-ASGI runner מבטל את משימת ה-endpoint בזמן פירוק החיבור —
@@ -406,9 +427,6 @@ def create_monitor_router(
             # יציאה כזו מסמנת את ה-future של ה-runner כמבוטל ו-result() זורק.
             pass
         finally:
-            for task in (upstream, downstream):
-                if task and not task.done():
-                    task.cancel()
             if writer is not None:
                 writer.close()
                 await writer.wait_closed()

@@ -168,11 +168,13 @@ stdout is line-buffered so a record arrives as it happens.
 | `capture` | menu | — | the capture card was chosen; `#st-pick` is now showing (feed `disk=`/`folder=`) |
 | `restore` | menu | — | the #382 card; **the process exits 0** — the agent runs the restore path |
 | `room` | menu | — | `#st-room` is showing (feed `machine=`/`image=`, then `round=`) |
+| `direct` | menu | — | #715: the room screen **without** the image picker — the source is this machine's disk (feed `machine=`/`machine_drawers=`/`room_drawer=`, no `image=`) |
 | `classes` | menu | — | `#st-class` is showing (feed `class=`, or `session=` for a live round) |
 | `back` | חזרה on pick / room / class | — | back at the menu; stop feeding that screen |
 | `again` | קליטה נוספת | — | back at the menu after `#st-done` |
 | `capture-start` | התחל קליטה | `dev=`, `name=`, `desc=`, `folder=`, `folder_new=yes\|no` | POST `/api/console/tasks/capture` (`resolveFolder`: with `folder_new=yes` create the folder first). The screen stays on `#st-pick` until the file says `task=pending`/`running`; a failure goes back as `form_error=` |
 | `room-open` | פתח סבב והער את החדר | `image=<id>`, `target=<n>` | POST `/api/console/room`; answer with `round=` or `room_error=` |
+| `direct-open` | פתח סבב והער את המחשבים שנבחרו | `slots=<mac>@<port>,<port>/<mac>@<port>` | #715: POST `/api/console/room` with `source: {kind: build_disk, mac, disk}` + `target_slots`; the disk is the first non-removable one in the server inventory. Only ticked, present, fresh drawers are listed; none → `room_error=` locally |
 | `room-wake` | העֵר … | — | POST `/api/console/room/wake`; answer with `toast=` |
 | `room-start` | התחל עכשיו | — | POST `/api/console/room/start` |
 | `room-close` | עצור סבב, second press | `confirm=<typed>` | POST `/api/console/room/close {confirm_name}`; the server decides (#533), answer with `room_error=` or drop `round=` |
@@ -199,6 +201,7 @@ folder=<name>                       # /api/console/folders, one per line
 # #st-progress / #st-done (state.task)
 task=pending|running|done|failed
 task_name=<name>  task_disk=<dev>  task_error=<text>
+task_direct=<0/1>                   # #715: 1 = a direct_send task (titles say "משדר", not "קולט")
 pct=<0..100 | -1 unknown>  moving=<0/1>  bytes=<bytes_written>  partition=<n>
 title=<text>  sub=<text>            # override the head texts (cloner / receiver display)
 
@@ -268,7 +271,7 @@ make png STATE=/tmp/state.txt # the same cards from a real state file
 ```
 
 Cards: `login menu pick progress done room room-live class class-live
-message`. The renderer puts the App into the state that *routes* to each
+cloner message restore direct`. The renderer puts the App into the state that *routes* to each
 card and fails if the route landed elsewhere — so `make png` also exercises
 the routing rule. The sample data has two disks (one chosen, the form open
 with a name typed), two folders, two images, three cloner machines (one

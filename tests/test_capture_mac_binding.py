@@ -273,7 +273,9 @@ def test_the_refusal_is_journalled_in_hebrew(server, images_root):
 #: המודולים שפותחים שחזור, ולכן חייבים לשאול את `restore_refusal`.
 #: ‏`pulls.py` פותח את ה-session, אבל השער יושב במי שקורא לו (`api.py`)
 #: — שם המניפסט כבר בידיים, ושם התשובה חוזרת למי שביקש.
-RESTORE_OPENERS = {"api.py", "console_api.py", "room.py", "station.py"}
+#: ‏`direct.py` (‏#715) פותח גל מדיסק חי — הקשירה נבדקת כשהמניפסט מגיע
+#: (‏`put_manifest`), מול המכונות שנבחרו כיעד.
+RESTORE_OPENERS = {"api.py", "console_api.py", "direct.py", "room.py", "station.py"}
 
 
 def test_every_module_that_opens_a_restore_consults_the_binding():

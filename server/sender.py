@@ -427,6 +427,21 @@ class SenderEngine:
             cmd[1:1] = ["--max-bitrate", self.max_bitrate]
         return cmd
 
+    def multicast_params(self) -> dict:
+        """הפרמטרים שמחשב בנייה משדר בהם כשהוא המקור (‏#715, ממשק 3).
+
+        אותם ערכים בדיוק שהמנוע הזה היה נותן ל-`udp-sender` — כדי שזרם
+        מדיסק חי יתנהג כמו זרם מהספרייה (‏#437, ‏#438). ‏`min_receivers`
+        אינו כאן: הוא נגזר מהגל ברגע התשובה (‏`direct.task_block`).
+        """
+        return {
+            "portbase": self.portbase,
+            "max_wait": self.max_wait,
+            "start_timeout": int(self.start_timeout),
+            "retries_until_drop": self.retries_until_drop,
+            "max_bitrate": self.max_bitrate or None,
+        }
+
     def _fail(self, message: str) -> None:
         with self._lock:
             if self._state is not None:

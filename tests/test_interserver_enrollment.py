@@ -16,6 +16,7 @@ import os
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -717,10 +718,10 @@ def test_enroll_node_inserts_trust_material(server):
     user = ("noc", "admin")
     rid = storage_nodes.enroll_node(
         conn, user, label="סניף ב'", base_url="https://sec.example:8443/api",
-        node_id="sn_abc", pinned_spki="aa" * 32, client_cert_ref="bb" * 32,
-        credential_ref="/data/secondaries/sn_abc.token", protocol_version="2.1")
+        node_id="sn_aaaaaaaaaaaaaaaa", pinned_spki="aa" * 32, client_cert_ref="bb" * 32,
+        credential_ref="/data/secondaries/sn_aaaaaaaaaaaaaaaa.token", protocol_version="2.1")
     row = conn.execute("SELECT * FROM storage_nodes WHERE id = ?", (rid,)).fetchone()
-    assert row["node_id"] == "sn_abc" and row["pinned_spki"] == "aa" * 32
+    assert row["node_id"] == "sn_aaaaaaaaaaaaaaaa" and row["pinned_spki"] == "aa" * 32
     assert row["protocol_version"] == "2.1"
 
 
@@ -730,8 +731,10 @@ def test_enroll_route_writes_0600_token_and_row(server, monkeypatch, tmp_path):
     admin = _local_client(server)                           # הראשי standalone; admin
     # מזייפים את השיחה הבין-שרתית — הצד הזה נבדק אמיתי ב-test_interserver_tls.
     fake_token = interserver_auth.generate_token()
+    # ‏#883: המזהה נגזר מה-SPKI המוצמד (``sn_`` + 16 הקסה), לא מההצהרה.
+    derived = interserver_auth.node_id_from_spki("cc" * 32)
     monkeypatch.setattr(storage_client, "pair_secondary", lambda *a, **k: {
-        "token": fake_token, "parent_id": "p", "secondary_id": "sn_xyz",
+        "token": fake_token, "parent_id": "p", "secondary_id": derived,
         "secondary_spki": "cc" * 32})
     resp = admin.post("/api/console/storage-nodes/enroll", json={
         "url": "https://10.20.0.30:8443/api/interserver/v1",
@@ -739,11 +742,11 @@ def test_enroll_route_writes_0600_token_and_row(server, monkeypatch, tmp_path):
         "expected_secondary_spki": "cc" * 32, "protocol_version": "2.1"})
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["node_id"] == "sn_xyz"
+    assert body["node_id"] == derived
     assert fake_token not in resp.text                      # הטוקן לא חוזר
     row = server["ctx"].conn.execute(
-        "SELECT credential_ref, pinned_spki FROM storage_nodes WHERE node_id = 'sn_xyz'"
-    ).fetchone()
+        "SELECT credential_ref, pinned_spki FROM storage_nodes WHERE node_id = ?",
+        (derived,)).fetchone()
     assert row["pinned_spki"] == "cc" * 32
     # הקובץ נכתב, ומכיל את הטוקן (רק שם — לא ב-DB/תשובה).
     from pathlib import Path
@@ -764,3 +767,102 @@ def test_enroll_route_wrong_protocol_version_rejected(server):
         "url": "https://10.20.0.30:8443/api", "label": "x", "code": "A",
         "expected_secondary_spki": "cc" * 32, "protocol_version": "1.0"})
     assert resp.status_code == 426
+
+
+# --- (י) ‏#883: זהות המשני נגזרת מה-SPKI המוצמד, לא מהצהרת ה-JSON ---------
+#
+# ‏begin מחזיר ``secondary_id`` — הצהרה עצמית של המשני. עד #883 היא הפכה
+# ל-``node_id`` ברשומה **ולשם קובץ הטוקן** (``secondaries/{id}.token``):
+# משני מאומת-אך-עוין (או מפעיל שטעה בכתובת) יכול היה לכתוב קובץ 0600
+# **מחוץ** לתיקייה, כמשתמש השרת. הבקרה השלילית: על הקוד הישן
+# ``secondary_id="../x"`` יצר ``<data>/x.token`` — מחוץ ל-``secondaries/``.
+
+def _fake_pair_begin(monkeypatch, *, secondary_id, spki, token=None):
+    """מזייף רק את שיחת ה-TLS (begin+complete) של ``PinnedMTLSClient`` —
+    כדי שהשוואת הזהות ב-``pair()`` עצמו תרוץ אמיתית."""
+    from server import storage_client
+    token = token or interserver_auth.generate_token()
+    calls = []
+
+    def fake_request(self, method, path, *, body=None, headers=None):
+        calls.append(path)
+        if path == "/pair-begin":
+            return 200, {}, {"handle": "h1", "secondary_id": secondary_id,
+                             "secondary_spki": spki, "server_nonce": "n",
+                             "protocol_version": "2.1"}
+        return 200, {}, {"token": token, "parent_id": "p", "protocol_version": "2.1"}
+
+    monkeypatch.setattr(storage_client.PinnedMTLSClient, "_request", fake_request)
+    monkeypatch.setattr(storage_client.PinnedMTLSClient, "open", lambda self: None)
+    monkeypatch.setattr(storage_client.PinnedMTLSClient, "close", lambda self: None)
+    return calls, token
+
+
+def test_enroll_traversal_secondary_id_rejected_before_code_and_no_file(
+        server, monkeypatch, tmp_path):
+    """‏secondary_id="../x" → 400, לא נוצר שום קובץ, והקוד לא נשלח (אין
+    pair-complete) — המשני לא נקשר לאב על סמך הצהרה שסותרת את המפתח."""
+    admin = _local_client(server)
+    spki = "cc" * 32
+    calls, token = _fake_pair_begin(monkeypatch, secondary_id="../x", spki=spki)
+    data_dir = tmp_path / "data"
+    resp = admin.post("/api/console/storage-nodes/enroll", json={
+        "url": "https://10.20.0.30:8443/api/interserver/v1",
+        "label": "סניף ג'", "code": "ABC-DEF-GHJ",
+        "expected_secondary_spki": spki, "protocol_version": "2.1"})
+    assert resp.status_code == 400, resp.text
+    assert calls == ["/pair-begin"]                  # הקוד לא נשלח
+    # שום קובץ טוקן — לא בתיקייה ולא מחוצה לה (הבקרה השלילית: main כתב
+    # ``<data>/x.token``).
+    written = [p for p in data_dir.rglob("*") if p.is_file()
+               and p.read_text(errors="replace").strip() == token]
+    assert written == []
+    assert not (data_dir / "x.token").exists()
+    assert server["ctx"].conn.execute(
+        "SELECT COUNT(*) AS n FROM storage_nodes").fetchone()["n"] == 0
+
+
+def test_enroll_node_id_is_derived_from_pinned_spki(server, monkeypatch, tmp_path):
+    """המזהה ברשומה ובשם הקובץ הוא ``node_id_from_spki(expected_spki)`` —
+    גם כשהמשני מצהיר על אותו ערך (המקרה התקין, כמו ImageCtl-Server2)."""
+    admin = _local_client(server)
+    spki = "dd" * 32
+    derived = interserver_auth.node_id_from_spki(spki)
+    _calls, token = _fake_pair_begin(monkeypatch, secondary_id=derived, spki=spki)
+    resp = admin.post("/api/console/storage-nodes/enroll", json={
+        "url": "https://10.20.0.31:8443/api/interserver/v1",
+        "label": "סניף ד'", "code": "ABC-DEF-GHJ",
+        "expected_secondary_spki": spki, "protocol_version": "2.1"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["node_id"] == derived
+    row = server["ctx"].conn.execute(
+        "SELECT node_id, credential_ref FROM storage_nodes").fetchone()
+    assert row["node_id"] == derived
+    cred = Path(row["credential_ref"])
+    assert cred.name == f"{derived}.token" and cred.parent.name == "secondaries"
+    assert cred.read_text().strip() == token
+
+
+def test_enroll_declared_id_differing_from_key_is_a_loud_mismatch(
+        server, monkeypatch, tmp_path):
+    """הצהרה שונה מהנגזרת — גם בפורמט תקין — היא סתירה בין המפתח לזהות,
+    ונכשלת בקול (400) לפני שליחת הקוד; לא מתוקנת בשקט."""
+    admin = _local_client(server)
+    calls, _token = _fake_pair_begin(monkeypatch, secondary_id="sn_0000000000000000",
+                                     spki="ee" * 32)
+    resp = admin.post("/api/console/storage-nodes/enroll", json={
+        "url": "https://10.20.0.32:8443/api/interserver/v1",
+        "label": "x", "code": "A", "expected_secondary_spki": "ee" * 32,
+        "protocol_version": "2.1"})
+    assert resp.status_code == 400
+    assert calls == ["/pair-begin"]
+
+
+@pytest.mark.parametrize("bad", ["../x", "sn_", "sn_ZZZZ", "", "sn_ab/cd", "x" * 40])
+def test_enroll_node_rejects_malformed_node_id(server, bad):
+    """שכבת ה-service: ``enroll_node`` דוחה מזהה שאינו ``^sn_[0-9a-f]{16}$``."""
+    with pytest.raises(ValueError):
+        storage_nodes.enroll_node(
+            server["ctx"].conn, ("noc", "admin"), label="x",
+            base_url="https://s:8443/api", node_id=bad, pinned_spki="aa" * 32,
+            client_cert_ref="bb" * 32, credential_ref="/x", protocol_version="2.1")

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sqlite3
 import uuid
 from pathlib import Path
@@ -574,6 +575,28 @@ def identity(conn, *, data_dir=None) -> dict:
         "אין זהות TLS בין-שרתית — הפעל את השרת עם --interserver-* ליצירתה")
 
 
+# --- לקוח יוצא למשני רשום (הצד של הראשי) -----------------------------------
+
+def node_row(conn, node_id: str):
+    """רשומת משני לפי מזהה-שורה, עם חומר האמון — או ``None``."""
+    return conn.execute(
+        "SELECT id, label, base_url, node_id, pinned_spki, credential_ref,"
+        " disabled_at FROM storage_nodes WHERE id = ?", (node_id,)).fetchone()
+
+
+def node_client(conn, data_dir, node) -> tuple:
+    """‏``(PinnedMTLSClient לא-פתוח, token)`` למשני רשום: הטוקן מקובץ ה-0600,
+    תעודת-הלקוח מזהות השרת, וה-SPKI המוצמד מהרשומה. הקורא פותח ב-``with``."""
+    from . import storage_client
+    token = interserver_auth.load_credential(node["credential_ref"])
+    ident = identity(conn, data_dir=data_dir)
+    host, port, _ = interserver_auth.parse_interserver_url(node["base_url"])
+    client = storage_client.PinnedMTLSClient(
+        host, port, expected_secondary_spki=node["pinned_spki"],
+        cert_pem=ident["cert_pem"], key_pem=ident["key_pem"])
+    return client, token
+
+
 # --- רישום אב על המשני, ורישום משני על הראשי -------------------------------
 
 def record_parent(conn, *, parent_id: str, token_hash: bytes, bound_cert_ref: str,
@@ -599,6 +622,16 @@ def record_parent(conn, *, parent_id: str, token_hash: bytes, bound_cert_ref: st
             raise ParentAlreadyEnrolledError("כבר קיים אב רשום") from exc
 
 
+#: ‏#883: צורת מזהה המשני — ``sn_`` + 16 הקסה (``node_id_from_spki``). זה
+#: גם שם קובץ הטוקן ב-``secondaries/``, ולכן הצורה נאכפת כאן ולא רק
+#: בנקודת הגזירה.
+_NODE_ID_RE = re.compile(r"^sn_[0-9a-f]{16}$")
+
+
+def valid_node_id(value: object) -> bool:
+    return isinstance(value, str) and _NODE_ID_RE.fullmatch(value) is not None
+
+
 def enroll_node(conn, user: tuple[str, str], *, label: str, base_url: str,
                 node_id: str, pinned_spki: str, client_cert_ref: str,
                 credential_ref: str, protocol_version: str,
@@ -607,11 +640,14 @@ def enroll_node(conn, user: tuple[str, str], *, label: str, base_url: str,
 
     ‏admin+standalone נאכף (כמו כל ניהול). ה-SPKI המוצמד וההפניה
     לתעודת-הלקוח נשמרים כחומר האמון; הטוקן עצמו **אינו** ב-DB — רק
-    ``credential_ref`` לקובץ ה-0600 שכבר נכתב."""
+    ``credential_ref`` לקובץ ה-0600 שכבר נכתב. ‏#883: ``node_id`` חייב
+    להיות בצורת ``sn_<16 hex>`` — הוא נגזר מ-SPKI, לא מהצהרה."""
     assert_can_manage_nodes(conn, user)
     label = (label or "").strip()
     if not label:
         raise ValueError("שם המשני ריק")
+    if not valid_node_id(node_id):
+        raise ValueError(f"מזהה משני לא תקין: {node_id!r}")
     if group_id and conn.execute(
         "SELECT 1 FROM storage_node_groups WHERE id = ?", (group_id,)
     ).fetchone() is None:
