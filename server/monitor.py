@@ -91,7 +91,7 @@ def machine_rows(conn, now: datetime | None = None) -> list[dict]:
     נקבע **בשרת** באותו חלון-נוכחות של ``_target``. משמש גם את הראשי
     שצופה במשני (#655 v1) — אותה רשימה, אותו חישוב."""
     rows = conn.execute(
-        "SELECT m.mac, m.suffix, g.role, d.ip, d.last_seen "
+        "SELECT m.mac, m.suffix, g.role, d.ip, d.last_seen, d.prompt "
         "FROM machines m "
         "JOIN groups g ON g.id = m.group_id "
         "LEFT JOIN net_devices d ON d.mac = m.mac "
@@ -105,6 +105,7 @@ def machine_rows(conn, now: datetime | None = None) -> list[dict]:
             "role": r["role"],
             "ip": r["ip"],
             "online": bool(r["ip"]) and seen_within(r["last_seen"], now),
+            "prompt": r["prompt"],   # #906: השאלה שממתינה לאדם, או None
         }
         for r in rows
     ]

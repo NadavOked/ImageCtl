@@ -54,6 +54,7 @@ ui_error_hold() {
     # The loop itself is hold_watch in hold.sh: this screen was drawn once and
     # then ran the heartbeat as `"$2" > /dev/null 2>&1 || true`, which threw
     # away the very evidence the heartbeat exists to produce (#109).
+    HOLD_PROMPT="FAILED: $1"   # #906: rides on every hold beat (hold.sh)
     ui_clear
     ui_header
     echo "  FAILED: $1"

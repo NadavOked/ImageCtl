@@ -552,6 +552,18 @@ if [ -n "$_missing" ]; then
     echo "missing required modules:$_missing" >&2
     echo "kernel $KVER cannot serve every platform and filesystem ImageCtl" >&2
     echo "claims to support." >&2
+    # ‏#904: על קרנל cloud (linux-image-cloud-amd64 — אימג' הענן של
+    # דביאן) זה צפוי: הוא נבנה בלי חלק מהדרייברים ומערכות הקבצים.
+    # המסלול שעבד לשרת המשני במעבדה (16/09) הוא העתקת שלושת הקבצים
+    # מהשרת הראשי — לא בנייה מקומית. ההודעה אומרת זאת בשמה.
+    case "$KVER" in
+        *cloud*)
+            echo "kernel $KVER is a cloud kernel: do not build here." >&2
+            echo "Copy vmlinuz, initrd.img and initrd.img.gui from the primary" >&2
+            echo "server's boot dir (/srv/imagectl/boot) instead, or install" >&2
+            echo "linux-image-amd64 and build against it (docs/server-install.md)." >&2
+            ;;
+    esac
     exit 1
 fi
 

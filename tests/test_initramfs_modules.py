@@ -354,22 +354,22 @@ def required_snippet() -> str:
     return "\n".join(lines[start:end + 1])
 
 
-def run_required(tmp_path: Path, present):
+def run_required(tmp_path: Path, present, kver: str = KVER):
     """מריץ את ההעתקה-לפי-שם האמיתית על עץ שבו קיימים רק `present`."""
     src, root = tmp_path / "src", tmp_path / "root"
     for mod in present:
         directory = src / LAYOUT[mod]
         directory.mkdir(parents=True, exist_ok=True)
         (directory / f"{mod}.ko.xz").write_bytes(b"")
-    (root / "lib" / "modules" / KVER).mkdir(parents=True)
+    (root / "lib" / "modules" / kver).mkdir(parents=True)
 
-    script = (f"ROOT={root.as_posix()!r}\nKVER={KVER!r}\n"
+    script = (f"ROOT={root.as_posix()!r}\nKVER={kver!r}\n"
               f"MODSRC={src.as_posix()!r}\nWITH_GUI=0\nMODULE_SUBDIRS=()\n"
               + required_snippet())
     done = subprocess.run([BASH, "-c", script], stdin=subprocess.DEVNULL,
                           capture_output=True, encoding="utf-8", errors="replace",
                           timeout=90)
-    return done, root / "lib" / "modules" / KVER
+    return done, root / "lib" / "modules" / kver
 
 
 @requires_native("bash", why="REQUIRED_MODULES הוא מערך bash")
@@ -424,6 +424,39 @@ def test_the_missing_report_names_all_of_them_at_once(tmp_path: Path):
     assert done.returncode != 0
     for mod in absent:
         assert mod in done.stderr, f"{mod} לא הוזכר: {done.stderr}"
+
+
+CLOUD_KVER = "9.9.9-cloud-amd64"
+#: שלושת הקבצים שמעתיקים מהראשי במקום לבנות על קרנל cloud (#904).
+BOOT_FILES = ("vmlinuz", "initrd.img", "initrd.img.gui")
+
+
+@requires_native("bash", why="REQUIRED_MODULES הוא מערך bash")
+def test_a_cloud_kernel_refusal_says_to_copy_the_boot_files_from_the_primary(
+    tmp_path: Path
+):
+    """‏#904: השרת המשני במעבדה (16/09) עלה על linux-image-cloud-amd64,
+    והבנאי סירב — נכון (#78). אבל ההודעה אמרה רק אילו מודולים חסרים,
+    והמסלול שעבד — העתקת vmlinuz + initrd.img + initrd.img.gui מהראשי —
+    לא נאמר בשום מקום. עכשיו הסירוב על קרנל cloud נוקב בו בשמו. הלוגיקה
+    לא השתנתה: עדיין יציאה שאינה 0, ועדיין שמות החסרים."""
+    done, _ = run_required(tmp_path, [m for m in LAYOUT if m != "vmxnet3"],
+                           kver=CLOUD_KVER)
+    assert done.returncode != 0
+    assert "vmxnet3" in done.stderr, done.stderr
+    assert "cloud kernel" in done.stderr, done.stderr
+    for name in BOOT_FILES:
+        assert name in done.stderr, f"{name} לא הוזכר: {done.stderr}"
+    assert "primary" in done.stderr, done.stderr
+
+
+@requires_native("bash", why="REQUIRED_MODULES הוא מערך bash")
+def test_a_regular_kernel_refusal_does_not_blame_a_cloud_kernel(tmp_path: Path):
+    """על קרנל רגיל מודול חסר הוא תקלה אמיתית (#76/#77/#84), לא "קרנל
+    cloud" — עצה להעתיק מהראשי הייתה מסתירה אותה."""
+    done, _ = run_required(tmp_path, [m for m in LAYOUT if m != "vmxnet3"])
+    assert done.returncode != 0
+    assert "cloud kernel" not in done.stderr, done.stderr
 
 
 # --- מערכות הקבצים מוצהרות, ולא נוכחות במקרה (#121) ---------------------------

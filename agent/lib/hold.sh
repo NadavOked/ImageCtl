@@ -23,8 +23,11 @@ hold_beat() {
     # machine does not act on anything any more -- but the exit code is not.
     # It is the only evidence that anyone heard, and it is what hold_watch
     # below is built to read.
-    build_hello false > "$RUN_DIR/beat.json" || return 1
-    http_post_json "$SERVER/api/v1/agent/hello" "$RUN_DIR/beat.json" > /dev/null
+    #
+    # #906: the beat also carries the FAILED line (HOLD_PROMPT, set by
+    # ui_error_hold) as `prompt`, so the console names what the machine is
+    # waiting on instead of only that it is alive. attended.sh builds it.
+    attended_hello "${HOLD_PROMPT:-}"
 }
 
 hold_unheard() {

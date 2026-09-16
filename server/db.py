@@ -409,6 +409,9 @@ ADDED_COLUMNS = [
     # (server/monitor.py) מזדהה איתו מול 5900 של אותה מכונה, ושום תשובת
     # קונסולה אינה מחזירה אותו.
     ("net_devices", "monitor_secret", "TEXT"),
+    # ‏#906: השאלה שהמכונה ממתינה עליה לאדם (‏hello עם `waiting_for`).
+    # NULL = לא ממתינה; כל hello בלי השדה מנקה אותה.
+    ("net_devices", "prompt", "TEXT"),
     # מספר המגירות שהוגדר לכל מחשב שכפול במסוף (#695).
     ("machines", "drawer_count",
      "INTEGER NOT NULL DEFAULT 3 CHECK (drawer_count BETWEEN 1 AND 8)"),
@@ -786,7 +789,8 @@ NET_SEEN_MIN_INTERVAL_SECONDS = 15
 
 def _net_seen_unchanged(row: sqlite3.Row, ip: str | None,
                         disks_json: str | None, now: datetime,
-                        monitor_secret: str | None = None) -> bool:
+                        monitor_secret: str | None = None,
+                        prompt: str | None = None) -> bool:
     """האם השורה כבר אומרת בדיוק את מה שהכתיבה הזו הייתה כותבת.
 
     ראיה חיובית בלבד (עיקרון 5): חותמת שאי אפשר לפענח, חותמת בלי אזור
@@ -799,6 +803,8 @@ def _net_seen_unchanged(row: sqlite3.Row, ip: str | None,
     if disks_json is not None and disks_json != row["disks_json"]:
         return False
     if monitor_secret is not None and monitor_secret != row["monitor_secret"]:
+        return False
+    if prompt != row["prompt"]:   # #906: גם המעבר שאלה→אין-שאלה נכתב
         return False
     try:
         last = datetime.fromisoformat(row["last_seen"])
@@ -814,6 +820,7 @@ def net_seen(
     conn: sqlite3.Connection, mac: str, ip: str | None,
     disks_json: str | None = None,
     monitor_secret: str | None = None,
+    prompt: str | None = None,
 ) -> None:
     """כל מגע של מכונה עם השרת — hello או תפריט אתחול — נרשם כאן.
 
@@ -828,14 +835,18 @@ def net_seen(
     ב-WAL הוא אינו נוגע בנעילת הכתיבה בכלל; רק כשיש מה לכתוב נפתחת
     טרנזאקציה. ‏`agent_loops.note` סופר את **הגעת** ה-hello ולא את
     הכתיבה כאן, ולכן החניקה אינה משנה את הספירה שלו.
+
+    ‏#906: ``prompt`` הוא השאלה שהמכונה ממתינה עליה לאדם — ובניגוד
+    לשאר השדות הוא **נכתב תמיד**, גם כ-NULL: ‏hello בלי השדה אומר
+    "כבר לא ממתינה", ו-COALESCE היה משאיר שאלה שכבר נענתה על המסך.
     """
     now = datetime.now(timezone.utc)
     row = conn.execute(
-        "SELECT ip, last_seen, disks_json, monitor_secret"
+        "SELECT ip, last_seen, disks_json, monitor_secret, prompt"
         " FROM net_devices WHERE mac = ?", (mac,)
     ).fetchone()
     if row is not None and _net_seen_unchanged(row, ip, disks_json, now,
-                                               monitor_secret):
+                                               monitor_secret, prompt):
         return
 
     ts = now.isoformat(timespec="seconds")
@@ -847,11 +858,12 @@ def net_seen(
     with _write_lock, writing(conn):
         conn.execute(
             "INSERT INTO net_devices (mac, ip, first_seen, last_seen, disks_json,"
-            " monitor_secret) VALUES (?, ?, ?, ?, ?, ?) "
+            " monitor_secret, prompt) VALUES (?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (mac) DO UPDATE SET ip = COALESCE(excluded.ip, ip),"
             " last_seen = ?, disks_json = COALESCE(excluded.disks_json, disks_json),"
-            " monitor_secret = COALESCE(excluded.monitor_secret, monitor_secret)",
-            (mac, ip, ts, ts, disks_json, monitor_secret, ts),
+            " monitor_secret = COALESCE(excluded.monitor_secret, monitor_secret),"
+            " prompt = excluded.prompt",
+            (mac, ip, ts, ts, disks_json, monitor_secret, prompt, ts),
         )
 
 

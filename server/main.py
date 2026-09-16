@@ -271,10 +271,26 @@ def main() -> None:
     console_server = uvicorn.Server(uvicorn.Config(
         console_app, host=args.console_host, port=args.console_port,
         log_level="info"))
+    console_servers = [console_server]
+    console_binds = f"{args.console_host}:{args.console_port}"
+    # ‏#904: כשכרטיס הניהול אינו loopback, הקונסולה מאזינה **גם** על
+    # ‏127.0.0.1 — חלון ה-pairing והפינוי של המשני (`require_local`,
+    # ‏#740) נאכפים על כתובת ה-peer, ומחיבור לכרטיס הניהול ה-peer לעולם
+    # אינו loopback: במעבדה `POST /storage-pairing-window` החזיר 403 תמיד,
+    # והמפעיל נאלץ ל-`ssh -L`. ‏uvicorn 0.32 (דביאן 13) קושר `host` יחיד,
+    # ולכן זה `Server` שני על אותו loop — כמו 8080/8081. loopback אינו
+    # מרחיב את החשיפה (אותה מכונה בלבד), ולכן אינו שובר את fail-closed
+    # של #770.
+    from .interserver_auth import is_loopback
+    if not is_loopback(args.console_host):
+        console_servers.append(uvicorn.Server(uvicorn.Config(
+            console_app, host="127.0.0.1", port=args.console_port,
+            log_level="info")))
+        console_binds += f" + 127.0.0.1:{args.console_port}"
     kiosk_server = uvicorn.Server(uvicorn.Config(
         kiosk_app, host=args.host, port=args.kiosk_port, log_level="info"))
     print(f"agent on {args.host}:{args.port}"
-          f"  console on {args.console_host}:{args.console_port}"
+          f"  console on {console_binds}"
           f"  kiosk on {args.host}:{args.kiosk_port}")
 
     # ‏#740: מאזין ה-enrollment הבין-שרתי (mTLS 1.3) עולה רק על משני, וכשניתן
@@ -296,7 +312,7 @@ def main() -> None:
               f"  node_id {ident['node_id']}  spki {ident['server_spki'][:16]}…")
 
     try:
-        asyncio.run(serve_all([agent_server, console_server, kiosk_server]))
+        asyncio.run(serve_all([agent_server, *console_servers, kiosk_server]))
     finally:
         if interserver is not None:
             interserver.stop()

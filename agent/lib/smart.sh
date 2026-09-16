@@ -139,7 +139,8 @@ smart_probe_idle() {
     for _pi_d in "$@"; do smart_probe "$_pi_d" >/dev/null; done
 }
 
-smart_choice() {
+smart_choice() { attended "$1: $2" smart_ask "$@"; }   # #906: hello keeps going while a person is asked (attended.sh)
+smart_ask() {
     # $1 = label (Disk N), $2 = context line, $3 = disk, $4 = verdict,
     # $5 = reason, $6 = ברירת המחדל בלי תשובה. מצייר תפריט ASCII (כמו
     # buildmenu.sh) ומחזיר את ההכרעה: replace / rescue / skip. הקלט נקרא

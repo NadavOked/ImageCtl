@@ -29,7 +29,7 @@ LIB_DIR="${LIB_DIR:-/usr/lib/imagectl}"
 . "$LIB_DIR/sshd.sh"
 . "$LIB_DIR/watchdog.sh"; . "$LIB_DIR/monitor.sh"   # #690: RFB, role+flag gated
 . "$LIB_DIR/ui.sh"
-. "$LIB_DIR/smart.sh"; . "$LIB_DIR/crcdelta.sh"   # שער SMART בצד השחזור (#652) והפרש CRC בסבב (#872); אחרי ui.sh/progress.sh
+. "$LIB_DIR/attended.sh"; . "$LIB_DIR/smart.sh"; . "$LIB_DIR/crcdelta.sh"   # hello בזמן המתנה לאדם (#906); שער SMART בצד השחזור (#652) והפרש CRC בסבב (#872); אחרי ui.sh/progress.sh
 . "$LIB_DIR/recovery.sh"   # אחרי ui.sh, classround.sh ו-pull.sh: הפיצול מ-ui.sh (#564)
 . "$LIB_DIR/single_restore.sh"   # #706: נתיב הכתיבה המשותף לטקסט ולמסך השחזור הגרפי
 . "$LIB_DIR/buildmenu.sh"

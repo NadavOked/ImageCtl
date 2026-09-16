@@ -258,7 +258,7 @@ def test_monitor_machines_list_is_admin_only_and_server_decides_online(server):
     by_mac = {m["mac"]: m for m in fresh}
     assert set(by_mac) == {MAC, "aa:bb:cc:dd:ee:01"}, "רק build/cloner"
     assert by_mac[MAC] == {"mac": MAC, "name": "Monitor", "role": "build",
-                           "ip": IP, "online": True}
+                           "ip": IP, "online": True, "prompt": None}   # #906
     assert by_mac["aa:bb:cc:dd:ee:01"]["online"] is False
     assert by_mac["aa:bb:cc:dd:ee:01"]["ip"] is None
 
@@ -504,3 +504,70 @@ def test_monitor_secret_never_leaves_the_server(server):
         assert response.status_code == 200, path
         assert "monitor_secret" not in response.text, path
         assert SECRET not in response.text, path
+
+
+# --- #906: hello בזמן המתנה לאדם — `waiting_for` + `prompt` -------------------
+
+def hello_waiting(server, prompt, waiting_for="operator", **extra):
+    body = {**hello_body(MAC), "joining": False, "prompt": prompt, **extra}
+    if waiting_for is not None:
+        body["waiting_for"] = waiting_for
+    response = server["anon"].post("/api/v1/agent/hello", json=body)
+    assert response.status_code == 200
+    return response.json()
+
+
+def console_prompt(server) -> str | None:
+    rows = server["admin"].get("/api/console/machines").json()
+    (row,) = [r for r in rows if r["mac"] == MAC]
+    return row["prompt"]
+
+
+def monitor_row(server) -> dict:
+    rows = server["admin"].get("/api/console/monitor/machines").json()
+    (row,) = [r for r in rows if r["mac"] == MAC]
+    return row
+
+
+def test_a_waiting_hello_keeps_the_machine_seen_and_names_the_question(server):
+    """נמדד 16/09: בזמן השאלה האדומה `last_seen` קפא והמוניטור נחסם. ‏hello
+    עם `waiting_for: operator` מעדכן `last_seen` כרגיל (המכונה מחוברת,
+    המוניטור נפתח) והשאלה מוצגת ב-`/api/console/machines` וב-`/monitor/machines`.
+    בקרה שלילית: על main ‏`prompt` אינו קיים בתשובה (KeyError)."""
+    prepare_build_machine(server)
+    hello_waiting(server, "Disk 1: failed the previous clone")
+    assert console_prompt(server) == "Disk 1: failed the previous clone"
+    row = monitor_row(server)
+    assert row["online"] is True
+    assert row["prompt"] == "Disk 1: failed the previous clone"
+
+
+def test_a_hello_without_the_field_clears_the_question(server):
+    """המפעיל ענה והסוכן חזר ללולאה הרגילה: ה-hello הבא מגיע **בתוך** חלון
+    החניקה של net_seen (#136) ובכל זאת מנקה — שאלה שנענתה ונשארת על
+    המסך שולחת את המפעיל למכונה שאין בה כלום."""
+    prepare_build_machine(server)
+    hello_waiting(server, "Disk 1: SMART fail (pending)")
+    assert console_prompt(server) == "Disk 1: SMART fail (pending)"
+    server["anon"].post("/api/v1/agent/hello", json=hello_body(MAC))
+    assert console_prompt(server) is None
+    assert monitor_row(server)["prompt"] is None
+
+
+@pytest.mark.parametrize("prompt, waiting_for", [
+    ("Disk 1: x", None),            # prompt בלי waiting_for
+    ("Disk 1: x", "server"),        # לא ממתינה לאדם
+    (42, "operator"),               # לא מחרוזת
+    ("   ", "operator"),            # ריק
+])
+def test_a_malformed_waiting_hello_stores_no_question(server, prompt, waiting_for):
+    prepare_build_machine(server)
+    hello_waiting(server, prompt, waiting_for)
+    assert console_prompt(server) is None
+
+
+def test_a_long_question_is_cut_not_refused(server):
+    from server.api import PROMPT_MAX_CHARS
+    prepare_build_machine(server)
+    hello_waiting(server, "x" * (PROMPT_MAX_CHARS + 50))
+    assert console_prompt(server) == "x" * PROMPT_MAX_CHARS

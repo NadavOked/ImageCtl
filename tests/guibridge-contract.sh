@@ -1,7 +1,9 @@
 #!/bin/sh
 # Local bridge contract tests: no server, GUI, disks, or root required.
+# shellcheck disable=SC2034,SC2154  # SERVER/RECOVERY_*/GUI_ROLE are read by the
+# sourced agent libs; token/name/desc are set by gui_records before gui_dispatch.
 set -eu
-ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+ROOT=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
 RUN_DIR=$(mktemp -d)
 trap 'rm -rf "$RUN_DIR"' EXIT
 GUI_DIR=$RUN_DIR/gui
@@ -32,8 +34,8 @@ for scenario in no_cookie empty_cookie refused transport; do
 done
 echo 'PASS HTTP/cookie rejection, including transport failure with HTTP 200'
 # Auth must return just a role, and must reject role lookup failure.
-gui_role() { [ "$role_ok" = yes ] || return 1; GUI_ROLE=admin; }
-scenario=good role_ok=yes
+gui_role() { [ "$role_ok" = yes ] || return 1; GUI_ROLE='admin'; }
+scenario='good' role_ok='yes'
 printf 'operator\nsecret\n' | gui_auth > "$RUN_DIR/auth"
 [ "$(cat "$RUN_DIR/auth")" = admin ]
 role_ok=no
@@ -52,7 +54,7 @@ echo 'PASS record boundaries, duplicate/partial rejection, literal shell text'
 # #715 direct-open: ticked drawers -> the same POST directflow.sh sends; the
 # source disk comes from the server inventory; a malformed value posts nothing.
 . "$ROOT/agent/lib/guibridge.sh"   # the real gui_dispatch again (stubbed above)
-gui_role() { GUI_ROLE=admin; }
+gui_role() { GUI_ROLE='admin'; }
 http_get() { printf '{"disks":[{"dev":"sdz","removable":true},{"dev":"sda","removable":false}]}'; }
 jq() { printf 'sda\n'; }
 console_post() { cp "$2" "$RUN_DIR/posted.json"; printf 200; }

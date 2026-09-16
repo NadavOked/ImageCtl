@@ -18,6 +18,11 @@
 # חבילת ה-apt שהשרת יקבל, ומריצים את החבילה על שתי גרסאות הפייתון שב-CI.
 fastapi==0.115.11
 uvicorn==0.32.0
+# ‏#904: uvicorn אינו מדבר WebSocket בעצמו — בלי ``websockets`` (או wsproto)
+# כל חיבור WebSocket (המוניטור, #690) נענה ב-500. הראשי במעבדה הותקן ידנית
+# ולכן זה לא נראה; המשני שהותקן מהמתקין נפל עליו. מוצמד לגרסת דביאן 13
+# (trixie) — ‏python3-websockets 15.0.1-1 מותקן ב-apt במתקין.
+websockets==15.0.1
 # ‏#740 (tracer 2.1): שכבת ה-enrollment הבין-שרתי — mTLS 1.3 עם channel-
 # binding לפי RFC 9266 ו-SPKI-pin. ``cryptography`` מנתח SubjectPublicKeyInfo
 # (טביעת ה-SPKI) ומייצר תעודות; ``pyOpenSSL`` נותן את מאזין ה-TLS עם callback

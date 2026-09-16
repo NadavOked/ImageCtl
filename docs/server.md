@@ -30,8 +30,10 @@ python -m server.main --server-url http://10.44.12.10:8080
 פורט 8080. בהרצה ראשונה נוצר משתמש `admin` עם סיסמה חד-פעמית שמודפסת
 לטרמינל בלבד — לכן ההרצה הראשונה נעשית מול מסך, לא כשירות.
 
-תלויות: `python3-fastapi` + `python3-uvicorn` (או
-`pip install -r server/requirements.txt`). זה הרכיב היחיד בפרויקט עם
+תלויות: `python3-fastapi` + `python3-uvicorn` + `python3-websockets`
+(‏WebSocket למוניטור — בלעדיו 500, #904) + `python3-cryptography` +
+`python3-openssl` (הערוץ הבין-שרתי, #740), או
+`pip install -r server/requirements.txt`. זה הרכיב היחיד בפרויקט עם
 תלות מעבר לספריית התקן.
 
 ### כשירות קבוע
@@ -42,7 +44,7 @@ python -m server.main --server-url http://10.44.12.10:8080
 
 ```bash
 sudo git clone https://github.com/NadavOked/ImageCtl-archive /opt/imagectl
-sudo apt-get install -y python3-fastapi python3-uvicorn
+sudo apt-get install -y python3-fastapi python3-uvicorn python3-websockets python3-cryptography python3-openssl
 cd /opt/imagectl && sudo python3 -m server.main --server-url http://10.44.12.10:8080
 # ^ הרצה ראשונה מול מסך: רושמים את סיסמת ה-admin, ואז Ctrl+C
 sudo cp install/imagectl-server.service /etc/systemd/system/

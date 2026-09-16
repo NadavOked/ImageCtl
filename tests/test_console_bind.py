@@ -36,23 +36,18 @@ def test_console_host_defaults_to_loopback_not_all_interfaces() -> None:
     assert console_host != "0.0.0.0"
 
 
-def test_main_binds_console_to_console_host_not_agent_host(
-        tmp_path: Path, monkeypatch) -> None:
-    """‏main היא החוליה שאין לה טסט אחר: המאזין של הקונסולה חייב להיקשר
-    ל-``--console-host`` (כרטיס הניהול), ולא ל-``--host`` (ההפצה). דגל
-    שמתפרס ואינו מגיע דווקא למאזין הנכון נראה כמו תיקון שעובד.
-
-    שאר החוליות (runtime, הרצת uvicorn בפועל) מנוטרלות — נבדק רק לאיזה
-    ``host`` נבנה כל ``uvicorn.Config``. הקונסולה על כרטיס ניהול נפרד,
-    הסוכן על 0.0.0.0 של ההפצה — ושני הערכים **שונים**."""
+def run_main(tmp_path: Path, monkeypatch, *extra_argv: str) -> dict[str, list[dict]]:
+    """מריץ את ``main`` עם כל החוליות מסביב מנוטרלות (runtime, uvicorn,
+    asyncio) ומחזיר, לכל אפליקציה, את רשימת ה-``uvicorn.Config`` שנבנו
+    לה — **רשימה**, כי הקונסולה יכולה להיות קשורה ליותר ממאזין אחד (#904)."""
     import asyncio
 
     import uvicorn
 
-    configs: dict = {}
+    configs: dict[str, list[dict]] = {}
 
     def fake_config(app, **kwargs):
-        configs[app] = kwargs
+        configs.setdefault(app, []).append(kwargs)
         return object()
 
     monkeypatch.setattr(server.app, "create_runtime", lambda *a, **k: "rt")
@@ -64,17 +59,58 @@ def test_main_binds_console_to_console_host_not_agent_host(
     monkeypatch.setattr(server.main, "serve_all", lambda servers: None)
     monkeypatch.setattr(asyncio, "run", lambda coro=None: None)
     monkeypatch.setattr(server.main, "_interface_for", lambda url: None)
-    # ‏--host 0.0.0.0 (ההפצה) לצד ``--console-host`` מפורש (כרטיס הניהול):
-    # הערך של ``--console-host`` חייב להגיע דווקא למאזין הקונסולה, והסוכן
-    # נשאר על ``--host``.
     monkeypatch.setattr("sys.argv", [
         "server.main", "--server-url", "http://10.44.12.10:8080",
         "--data-dir", str(tmp_path / "data"), "--images", str(tmp_path / "img"),
-        "--host", "0.0.0.0", "--console-host", "10.44.12.10",
+        *extra_argv,
     ])
-
     server.main.main()
+    return configs
 
-    assert configs["console"]["host"] == "10.44.12.10"
-    assert configs["agent"]["host"] == "0.0.0.0"
-    assert configs["console"]["host"] != configs["agent"]["host"]
+
+def test_main_binds_console_to_console_host_not_agent_host(
+        tmp_path: Path, monkeypatch) -> None:
+    """‏main היא החוליה שאין לה טסט אחר: המאזין של הקונסולה חייב להיקשר
+    ל-``--console-host`` (כרטיס הניהול), ולא ל-``--host`` (ההפצה). דגל
+    שמתפרס ואינו מגיע דווקא למאזין הנכון נראה כמו תיקון שעובד.
+
+    שאר החוליות (runtime, הרצת uvicorn בפועל) מנוטרלות — נבדק רק לאיזה
+    ``host`` נבנה כל ``uvicorn.Config``. הקונסולה על כרטיס ניהול נפרד,
+    הסוכן על 0.0.0.0 של ההפצה — ו-``--host`` **אינו** בין מאזיני הקונסולה."""
+    # ‏--host 0.0.0.0 (ההפצה) לצד ``--console-host`` מפורש (כרטיס הניהול):
+    # הערך של ``--console-host`` חייב להגיע דווקא למאזין הקונסולה, והסוכן
+    # נשאר על ``--host``.
+    configs = run_main(tmp_path, monkeypatch,
+                       "--host", "0.0.0.0", "--console-host", "10.44.12.10")
+
+    console_hosts = [c["host"] for c in configs["console"]]
+    assert "10.44.12.10" in console_hosts
+    assert [c["host"] for c in configs["agent"]] == ["0.0.0.0"]
+    assert "0.0.0.0" not in console_hosts
+
+
+def test_console_on_a_management_nic_also_listens_on_loopback(
+        tmp_path: Path, monkeypatch) -> None:
+    """‏#904: חלון ה-pairing של המשני (``require_local``, #740) נאכף על
+    כתובת ה-peer — loopback בלבד. במעבדה הקונסולה של המשני נקשרה ל-
+    ‏10.30.0.8 בלבד, ומשם ה-peer לעולם אינו loopback: ‏403 תמיד, וה-ssh -L
+    היה המוצא היחיד. לכן כשכרטיס הניהול אינו loopback הקונסולה מקבלת
+    מאזין **שני** על 127.0.0.1, על אותו פורט — ורק היא: לסוכן ולקיוסק
+    אין מה לחפש על loopback."""
+    configs = run_main(tmp_path, monkeypatch,
+                       "--console-host", "10.30.0.8", "--console-port", "8081")
+
+    console = configs["console"]
+    assert sorted(c["host"] for c in console) == ["10.30.0.8", "127.0.0.1"]
+    assert {c["port"] for c in console} == {8081}
+    assert len(configs["agent"]) == 1 and len(configs["kiosk"]) == 1
+
+
+def test_console_on_loopback_gets_a_single_listener(
+        tmp_path: Path, monkeypatch) -> None:
+    """ברירת המחדל (loopback, #770) אינה מקבלת מאזין כפול — ‏127.0.0.1
+    פעמיים על אותו פורט הוא כשל bind, ו-``serve_all`` היה מפיל את
+    כל השרת בגללו."""
+    configs = run_main(tmp_path, monkeypatch)
+
+    assert [c["host"] for c in configs["console"]] == ["127.0.0.1"]

@@ -292,7 +292,8 @@ def create_console_router(
         # בפועל אפס כוננים — שני ממצאים שונים, ואסור לקפל (עיקרון 5).
         query = (
             "SELECT m.mac, m.suffix, m.group_id, m.note, m.drawer_count,"
-            " m.added_at, d.disks_json, d.last_seen AS disks_reported_at"
+            " m.added_at, d.disks_json, d.last_seen AS disks_reported_at,"
+            " d.prompt"   # #906: מה המכונה ממתינה עליו לאדם (NULL = לא ממתינה)
             " FROM machines m LEFT JOIN net_devices d ON d.mac = m.mac"
             + (" WHERE m.group_id = ?" if group else "")
             + " ORDER BY m.group_id, m.suffix"

@@ -62,7 +62,10 @@ PRELUDE = (
     f'. {posix(AGENT)}/lib/failmark.sh; '   # disk_failure_cause — זיכרון השרת בשער (#872/#874)
     f'. {posix(AGENT)}/lib/smart.sh; '
     f'. {posix(AGENT)}/lib/clonergui.sh; '   # gui_smart_choice — כמו בסוכן האמיתי
-    'http_post_json() { return 0; }; '   # אין רשת בבדיקה
+    # ‏#906: hello בזמן ההמתנה לאדם. **רק אם הקובץ קיים**: הבקרה השלילית
+    # מחזירה את main, ושם הטסט חייב ליפול על ההתנהגות ולא על `.` של קובץ חסר.
+    + (f'. {posix(AGENT)}/lib/attended.sh; ' if (AGENT / "lib" / "attended.sh").exists() else "")
+    + 'http_post_json() { return 0; }; '   # אין רשת בבדיקה
 )
 
 
@@ -556,3 +559,72 @@ def test_event_json_is_valid_and_carries_the_contract(tmp_path):
     assert ev["smart"]["realloc"] == 3
     assert ev["write_state"] == "rescue"
     assert ev["decision"] == "rescue"
+
+
+
+# --- #906: hello ממשיך בזמן שהשאלה ממתינה למפעיל -------------------------------
+
+#: ‏build_hello מזויף: הבדיקה היא על *מה שנוסף* לגוף ועל הקצב, לא על sysfs.
+#: ‏joining מועבר כפי ש-attended_hello מבקש (false), כדי שייבדק בגוף.
+FAKE_HELLO = (
+    'build_hello() { printf %s "{\\"schema\\":2,\\"mac\\":\\"$MAC\\",\\"joining\\":$1}"; }; '
+)
+
+
+def test_hello_keeps_going_while_the_operator_is_asked(tmp_path):
+    """נמדד 16/09 על מחשב 2: בזמן `smart_choice` אף hello לא יצא, ‏`last_seen`
+    קפא והמוניטור נחסם (403) בדיוק כשהמפעיל צריך לראות את השאלה. כאן
+    ‏`http_post_json` מזויף רושם כל גוף שנשלח; התשובה מגיעה אחרי ~4 פעימות
+    (‏ATTENDED_BEAT_S קצר לבדיקה בלבד), ולכן חייבים להיספר ≥2 hello — כל
+    אחד עם `waiting_for: operator`, השאלה ב-`prompt`, ו-`joining: false`
+    (ממתין אינו מצטרף לגל). בקרה שלילית: על main נספרים 0."""
+    run = tmp_path / "run"; run.mkdir()
+    dev = tmp_path / "dev"; dev.mkdir(); (dev / "sda").write_bytes(bytes(1))
+    out = sh(env(run, dev) + PRELUDE + FAKE_HELLO
+             + 'export ATTENDED_BEAT_S=0.3; '
+             + 'http_post_json() { cat "$2" >> "$RUN_DIR/hellos"; echo >> "$RUN_DIR/hellos"; }; '
+             + "(sleep 1.3; printf '3\n') | smart_choice 'Disk 1' 'SMART fail (x)' sda fail x rescue")
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "skip", out.stdout          # ההכרעה עצמה לא נפגעה
+    lines = (run / "hellos").read_text().splitlines() if (run / "hellos").exists() else []
+    hellos = [json.loads(line) for line in lines if line]
+    assert len(hellos) >= 2, hellos
+    for h in hellos:
+        assert h["waiting_for"] == "operator"
+        assert h["prompt"] == "Disk 1: SMART fail (x)"
+        assert h["joining"] is False
+        assert h["mac"] == "aa:bb:cc:dd:ee:ff"
+
+
+def test_the_beat_stops_with_the_answer(tmp_path):
+    """אחרי שהמפעיל ענה, הפעימה מפסיקה: ‏`$( )` של הקורא (‏smart_preflight)
+    אינו נתקע על תת-מעטפת שעוד מחזיקה את stdout, ואף hello נוסף אינו
+    נשלח אחרי ההכרעה."""
+    run = tmp_path / "run"; run.mkdir()
+    dev = tmp_path / "dev"; dev.mkdir(); (dev / "sda").write_bytes(bytes(1))
+    out = sh(env(run, dev) + PRELUDE + FAKE_HELLO
+             + 'export ATTENDED_BEAT_S=0.2; '
+             + 'http_post_json() { echo hello >> "$RUN_DIR/hellos"; }; '
+             + "_dec=$(printf '1\n' | smart_choice 'Disk 1' 'ctx' sda fail x rescue); "
+             + 'sleep 0.8; echo "dec=$_dec"; _n=$(wc -l < "$RUN_DIR/hellos"); '
+             + 'sleep 0.8; echo "grew=$(( $(wc -l < "$RUN_DIR/hellos") - _n ))"')
+    assert out.returncode == 0, out.stderr
+    assert "dec=replace" in out.stdout, out.stdout
+    assert "grew=0" in out.stdout, out.stdout
+
+
+def test_a_plain_beat_carries_no_prompt(tmp_path):
+    """‏attended_hello בלי שאלה = דופק רגיל (hold_beat בלי HOLD_PROMPT): בלי
+    `waiting_for` ובלי `prompt`, כך שהשרת מנקה שאלה קודמת. עם שאלה —
+    שני השדות, והשאלה עוברת json_escape."""
+    run = tmp_path / "run"; run.mkdir()
+    dev = tmp_path / "dev"; dev.mkdir()
+    out = sh(env(run, dev) + PRELUDE + FAKE_HELLO
+             + 'http_post_json() { cat "$2" >> "$RUN_DIR/hellos"; echo >> "$RUN_DIR/hellos"; }; '
+             + "attended_hello ''; attended_hello 'FAILED: \"restore\" did not complete'")
+    assert out.returncode == 0, out.stderr
+    plain, with_prompt = (json.loads(line) for line in (run / "hellos").read_text().splitlines())
+    assert "waiting_for" not in plain and "prompt" not in plain
+    assert with_prompt == {"schema": 2, "mac": "aa:bb:cc:dd:ee:ff", "joining": False,
+                           "waiting_for": "operator",
+                           "prompt": 'FAILED: "restore" did not complete'}

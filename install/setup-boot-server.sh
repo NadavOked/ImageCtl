@@ -338,6 +338,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 PKGS=(shim-signed grub-efi-amd64-signed grub-pc-bin dnsmasq
       python3-fastapi python3-uvicorn
+      python3-websockets                      # #904: uvicorn WebSocket — בלעדיו המוניטור (#690) מחזיר 500
       python3-cryptography python3-openssl)   # #740: mTLS enrollment בין-שרתי
 [[ -f "$SCRIPT_DIR/../server/main.py" ]] || PKGS+=(git)
 

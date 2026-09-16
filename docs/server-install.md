@@ -41,7 +41,10 @@ sudo ./install/setup-boot-server.sh
 4. **אישור סיסמה**
 
 זהו. כתובת המערכת נגזרת מהכרטיס שנבחר. המתקין מתקין את החבילות
-(dnsmasq, ‏shim ו-GRUB חתומים, FastAPI), מעתיק את הקוד ל-`/opt/imagectl`
+(dnsmasq, ‏shim ו-GRUB חתומים, ‏`python3-fastapi python3-uvicorn
+python3-websockets python3-cryptography python3-openssl` — ‏websockets
+למוניטור, cryptography/openssl לערוץ הבין-שרתי 8443; שרת שהותקן בלי
+`python3-websockets` מחזיר 500 על כל WebSocket, #904), מעתיק את הקוד ל-`/opt/imagectl`
 (או מושך אותו מ-git כשהסקריפט רץ לבדו), פורס את שרשרת האתחול על
 שורש ה-TFTP, יוצר את משתמש המנהל, ומרים את השרת כשירות systemd.
 
@@ -97,6 +100,15 @@ sudo cp "/boot/vmlinuz-$KVER" /srv/imagectl/boot/vmlinuz
 
 אם הרצתם את המתקין עם `--http-root PATH`, החליפו את `/srv/imagectl/boot`
 בנתיב שהעברתם — זה הנתיב שהשרת מגיש.
+
+**שרת משני על kernel cloud — מעתיקים, לא בונים (#904).** שרת שעלה
+מאימג' ענן (`linux-image-cloud-amd64`) מקבל מ-`build_initramfs.sh` סירוב
+מפורש ("cloud kernel: do not build here"). במקום להתקין קרנל ולבנות,
+המסלול התקני למשני הוא להעתיק **שלושה** קבצים מהשרת הראשי אל
+`/srv/imagectl/boot/` שלו: `vmlinuz`, ‏`initrd.img` ו-`initrd.img.gui`
+(האחרון — מוניטור על מכונה בלי מסך, #835), ואז להריץ את
+`verify-boot-payload.sh` למטה. הפקודות המדויקות ב-`docs/lab-site2-runbook.md`
+(שלב 4ב).
 
 **אימות — ראיה חיובית, לא `is-active`:**
 

@@ -27,6 +27,10 @@ from .tasks import TOKEN_HEADER
 
 log = logging.getLogger("imagectl.api")
 
+#: ‏#906: אורך השאלה שנשמרת מ-hello (`prompt`). שורת מסך אחת של הסוכן
+#: היא ~60 תווים; מעבר לזה נקצץ, לא נדחה.
+PROMPT_MAX_CHARS = 200
+
 
 @dataclass
 class ServerContext:
@@ -96,12 +100,22 @@ def create_agent_router(ctx: ServerContext,
         # פגום נזנח כמו שדה לא ידוע; סוכן ישן אינו שולח אותו, והגרסה
         # השמורה (אם יש) נשארת.
         hw_inventory = inventory.well_formed(body.get("inventory"))
+        # ‏#906: המכונה ממתינה לאדם (שאלת SMART/אדום, מסך FAILED) ואומרת
+        # על מה. רק `waiting_for: "operator"` עם `prompt` מחרוזת לא-ריקה
+        # נשמר (קצוץ ל-PROMPT_MAX_CHARS); כל צורה אחרת — וגם היעדר השדה,
+        # שהוא "כבר לא ממתינה" — מנקה. ‏net_seen כותב אותו תמיד, בלי COALESCE.
+        prompt = body.get("prompt")
+        if (body.get("waiting_for") != "operator" or not isinstance(prompt, str)
+                or not prompt.strip()):
+            prompt = None
+        else:
+            prompt = prompt.strip()[:PROMPT_MAX_CHARS]
         answer = build_answer(
             ctx.conn, ctx.library, ctx.store, mac,
             disks=disks, client_ip=client_ip, joining=joining,
             reported_ip=reported_ip, off_vlan=off_vlan,
             all_macs=all_macs, monitor_secret=monitor_secret,
-            hw_inventory=hw_inventory,
+            hw_inventory=hw_inventory, prompt=prompt,
             # ‏#715: פרמטרי השידור למקור שהוא מחשב בנייה — של המנוע, אם יש.
             multicast=ctx.sender.multicast_params() if ctx.sender is not None else None,
         )

@@ -1070,7 +1070,7 @@ function machines() {
       const macEnc = encodeId(m.mac);
       const name = machineName(m) || m.mac;
       const klass = groupLabel(machineGroupId(m));
-      return `<tr class="clickable" onclick="openMachineDetail('${macEnc}')"><td><strong>${esc(name)}</strong></td><td>${esc(klass)}</td><td>${esc(m.mac)}</td><td>—</td><td><button class="tool-btn" onclick="event.stopPropagation();openMachineDetail('${macEnc}')">פרטים</button></td></tr>`;
+      return `<tr class="clickable" onclick="openMachineDetail('${macEnc}')"><td><strong>${esc(name)}</strong></td><td>${esc(klass)}</td><td>${esc(m.mac)}</td><td>${waitingHtml(m)}</td><td><button class="tool-btn" onclick="event.stopPropagation();openMachineDetail('${macEnc}')">פרטים</button></td></tr>`;
     }).join("");
     tableBody = `<table class="table"><thead><tr><th>שם</th><th>כיתה</th><th>MAC</th><th>סטטוס</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
   }
@@ -1691,6 +1691,7 @@ function monitorPage() {
     return `<div class="span-6"><div class="card">
       <div class="card-h"><span>${esc(m.name || m.mac)} <small class="muted">${esc(roleLabel[m.role] || m.role)}</small></span>${status}</div>
       <div class="card-b">
+        ${m.prompt ? `<div class="notice warn" role="status">${waitingHtml(m)}</div>` : ""}
         <div class="detail-grid"><div class="detail-box"><span class="k">MAC</span><span class="v mono" dir="ltr">${esc(m.mac)}</span></div><div class="detail-box"><span class="k">כתובת IP</span><span class="v mono" dir="ltr">${m.ip ? esc(m.ip) : "—"}</span></div></div>
         <div class="action-strip"><button class="btn primary" onclick="monitorMachine('${macEnc}')" ${m.online ? "" : `disabled title="המכונה אינה מחוברת"`}>מוניטור</button></div>
       </div></div></div>`;
@@ -2084,6 +2085,12 @@ function logout() {
 }
 
 function soon() { toast("בקרוב"); }
+
+/* #906: המכונה עומדת על שאלה לאדם (SMART/אדום, מסך FAILED) — ה-hello
+   ממשיך עם `prompt`, והשאלה מוצגת כאן במקום "לא נראתה". null = לא ממתינה. */
+function waitingHtml(m) {
+  return m.prompt ? `ממתין למפעיל: <span dir="ltr">${esc(m.prompt)}</span>` : "—";
+}
 
 /* #417: "מה ראינו בפעם האחרונה שהמכונה דיברה" — מלאי הכוננים מה-hello
    האחרון, כפי שנשמר ב-net_devices. ‏`disks` הוא null/[]/רשימה משלושה

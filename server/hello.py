@@ -123,6 +123,7 @@ def build_answer(
     monitor_secret: str | None = None,
     hw_inventory: dict | None = None,
     multicast: dict | None = None,
+    prompt: str | None = None,
 ) -> dict:
     # כל מגע של המכונה נרשם ברשימת ההתקנים, גם של מכונה שאינה רשומה
     # בטבלה — ככה מתגלה MAC לא מוכר, וזה חלק מעיקרון 1. ‏hello הוא POST
@@ -137,7 +138,7 @@ def build_answer(
     if record_seen:
         net_seen(conn, mac, reported_ip or client_ip,
                  disks_json=json.dumps(disks) if disks is not None else None,
-                 monitor_secret=monitor_secret)
+                 monitor_secret=monitor_secret, prompt=prompt)
         # ‏#720: המלאי החומרתי (schema 2) נשמר מגורסת — שורה חדשה רק כשהשתנה.
         # ‏None = הסוכן לא שלח (schema 1) או שלח פגום: הגרסה הקודמת נשארת.
         if hw_inventory is not None:
