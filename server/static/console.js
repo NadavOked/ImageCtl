@@ -2230,6 +2230,15 @@ function hwInventoryHtml(m) {
   </div>`;
 }
 
+/* #927: אותה אזהרת shrink-restore שב-captureWarningHtml, הפעם ליד
+   המחשב עצמו — זה מי שהדיסק שלו נשאר מכווץ. המשימה האחרונה של ה-MAC
+   הזה בלבד (CAPTURE_TASKS ממוין created_at DESC מהשרת). */
+function machineCaptureWarningHtml(mac) {
+  const t = (CAPTURE_TASKS || []).find((x) => x.mac === mac && x.state === "done" && x.error);
+  if (!t) return "";
+  return `<div class="section-title">אזהרת קליטה אחרונה</div><div class="notice warn">${esc(t.error)}</div>`;
+}
+
 function openMachineDetail(mac) {
   if (!isAdmin()) return;
   const m = findMachine(mac);
@@ -2237,7 +2246,7 @@ function openMachineDetail(mac) {
   const macEnc = encodeId(m.mac);
   const name = machineName(m) || m.mac;
   const klass = groupLabel(machineGroupId(m));
-  openDrawer("תחנה — " + name, `<div class="detail-grid"><div class="detail-box"><span class="k">שם</span><span class="v">${esc(name)}</span></div><div class="detail-box"><span class="k">כיתה</span><span class="v">${esc(klass)}</span></div><div class="detail-box"><span class="k">MAC</span><span class="v">${esc(m.mac)}</span></div></div>${diskInventoryHtml(m)}${hwInventoryHtml(m)}<div class="section-title">פעולות</div><div class="action-strip"><button class="btn" onclick="renameMachine('${macEnc}')">שינוי שם</button><button class="btn" disabled title="דורש endpoint — בקרוב">עריכת MAC</button><button class="btn" disabled title="בקרוב">Wake-on-LAN</button><button class="btn" disabled title="בקרוב">בדוק PXE</button><button class="btn danger" disabled title="בקרוב">אתחול</button></div>`);
+  openDrawer("תחנה — " + name, `<div class="detail-grid"><div class="detail-box"><span class="k">שם</span><span class="v">${esc(name)}</span></div><div class="detail-box"><span class="k">כיתה</span><span class="v">${esc(klass)}</span></div><div class="detail-box"><span class="k">MAC</span><span class="v">${esc(m.mac)}</span></div></div>${diskInventoryHtml(m)}${hwInventoryHtml(m)}${machineCaptureWarningHtml(m.mac)}<div class="section-title">פעולות</div><div class="action-strip"><button class="btn" onclick="renameMachine('${macEnc}')">שינוי שם</button><button class="btn" disabled title="דורש endpoint — בקרוב">עריכת MAC</button><button class="btn" disabled title="בקרוב">Wake-on-LAN</button><button class="btn" disabled title="בקרוב">בדוק PXE</button><button class="btn danger" disabled title="בקרוב">אתחול</button></div>`);
 }
 
 function renameMachine(mac) {
@@ -2458,14 +2467,29 @@ async function sessionClassMachines(groupId) {
   return SESSION_MACHINES.list;
 }
 
+/* #927: קליטה שהצליחה אבל שההחזרה של דיסק המקור לגודלו נכשלה (#87,
+   ‏agent/lib/shrink.sh) מגיעה לשרת כמשימה `done` עם `error` לא-ריק
+   (‏reports.py: ה-COALESCE שומר את אזהרת ה-shrink גם אחרי שהמניפסט
+   סגר את המשימה). עד כאן `loadCaptures` סינן רק pending/running, אז
+   ברגע שהמשימה עברה ל-done האזהרה נעלמה בלי שהמפעיל ראה שדיסק הבנייה
+   נשאר מכווץ. כתום ולא אדום (#874: אזהרה, לא כשל קליטה) — אותם
+   ‏var(--warn-*) של `.notice.warn` הקיים, בלי CSS חדש. */
+function captureWarningHtml(t) {
+  if (t.state !== "done" || !t.error) return "";
+  return `<div class="notice warn"><b>${esc(t.name)}</b>: ${esc(t.error)}</div>`;
+}
+
 async function loadCaptures() {
-  const tasks = (await api("/tasks")).filter(
-    (t) => t.state === "pending" || t.state === "running");
-  CAPTURE_TASKS = tasks;
+  // ‏CAPTURE_TASKS מחזיק את כל 20 המשימות האחרונות (לא רק הפעילות) —
+  // openMachineDetail ו-renderActivity מסננים כל אחד לפי מה שהוא צריך.
+  const all = await api("/tasks");
+  CAPTURE_TASKS = all;
   renderActivity();
   const bar = $("#capture-bar");
   if (!bar) return;
-  if (!tasks.length) { bar.innerHTML = ""; return; }
+  const tasks = all.filter((t) => t.state === "pending" || t.state === "running");
+  const warned = all.filter((t) => t.state === "done" && t.error);
+  if (!tasks.length && !warned.length) { bar.innerHTML = ""; return; }
   bar.innerHTML = tasks.map((t) => {
     const waiting = t.state === "pending";
     return `<div class="upload">
@@ -2478,7 +2502,7 @@ async function loadCaptures() {
         <button class="btn danger" data-cancel-task="${esc(t.id)}">ביטול</button>
       </div>
     </div>`;
-  }).join("");
+  }).join("") + warned.map(captureWarningHtml).join("");
   document.querySelectorAll("[data-cancel-task]").forEach((b) => b.onclick = () => confirmSheet(
     "ביטול הקליטה", "המשימה תבוטל והקבצים שהתקבלו יימחקו.", "בטל את הקליטה",
     async () => { await post(`/tasks/${b.dataset.cancelTask}/cancel`); await loadCaptures(); }));
@@ -3065,7 +3089,11 @@ function renderActivity() {
   const s = OVERVIEW?.session;
   if (s) rows.push([sessionImage(s), sessionGroup(s), s.state]);
   for (const p of OVERVIEW?.pulls || []) for (const m of p.members || []) rows.push([p.image_name, m.hostname || m.name || m.mac, Progress.view(m).label]);
-  if (isAdmin()) for (const t of CAPTURE_TASKS) rows.push([t.name, "Capture", Progress.view(t).label]);
+  // ‏#927: CAPTURE_TASKS מחזיק גם משימות שהסתיימו (לאזהרת ה-shrink) —
+  // כאן, כמו קודם, רק הפעילות באמת נחשבות "העברה".
+  if (isAdmin()) for (const t of CAPTURE_TASKS) {
+    if (t.state === "pending" || t.state === "running") rows.push([t.name, "Capture", Progress.view(t).label]);
+  }
   const body = document.querySelector("#taskPanel tbody");
   if (body) body.innerHTML = rows.length ? rows.map(r => '<tr>'+[r[0],r[1],"-","-",r[2],"-"].map(x => '<td>'+esc(x)+'</td>').join('')+'</tr>').join('') : '<tr><td colspan="6">אין העברות פעילות</td></tr>';
   const count = $(".task-count"); if (count) count.textContent = String(rows.length);

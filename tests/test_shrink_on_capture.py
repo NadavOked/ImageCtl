@@ -487,6 +487,84 @@ def test_a_hibernated_disk_is_refused_before_the_shrink_is_even_measured(tmp_pat
     assert order(run) == []
 
 
+# --- ‏#929: הסירוב מסביר למה הכיווץ לא עזר ------------------------------------
+
+DATA_START = WIN_START + WIN_SECTORS
+DATA_SECTORS = 104_857_600            # ‏D: של 50 GiB אחרי C:
+DATA_UGUID = "4C7B1E00-0000-4000-8000-000000000005"
+
+#: דיסק בנייה עם D: **אחרי** C: (‏ESP, ‏MSR, ‏C: ענקית, ‏D:). המועמדת לכיווץ
+#: לפי הכלל של #87 היא D: (האחרונה על הדיסק), ו-C: הגדולה נשארת כפי שהיא.
+SGDISK_C_THEN_D = f'''#!/bin/sh
+echo "$*" >> "$RUN_DIR/sgdisk.calls"
+[ "$1" = "-a" ] && shift 2
+if [ "$1" = "-i" ]; then
+  case "$2" in
+    1) echo "Partition GUID code: C12A7328-F81F-11D2-BA4B-00A0C93EC93B (EFI system partition)"
+       echo "Partition unique GUID: 4C7B1E00-0000-4000-8000-000000000001"
+       echo "First sector: 2048 (at 1024.0 KiB)"
+       echo "Partition size: 204800 sectors (100.0 MiB)"
+       echo "Attribute flags: 0000000000000000"
+       echo "Partition name: 'EFI system partition'" ;;
+    2) echo "Partition GUID code: E3C9E316-0B5C-4DB8-817D-F92DF00215AE (Microsoft reserved)"
+       echo "Partition unique GUID: 4C7B1E00-0000-4000-8000-000000000002"
+       echo "First sector: 206848 (at 101.0 MiB)"
+       echo "Partition size: 32768 sectors (16.0 MiB)"
+       echo "Attribute flags: 0000000000000000"
+       echo "Partition name: 'Microsoft reserved partition'" ;;
+    3) echo "Partition GUID code: {WIN_GUID} (Microsoft basic data)"
+       echo "Partition unique GUID: {WIN_UGUID}"
+       echo "First sector: {WIN_START} (at 530.0 MiB)"
+       echo "Partition size: {WIN_SECTORS} sectors (huge)"
+       echo "Attribute flags: 0000000000000000"
+       echo "Partition name: 'Basic data partition'" ;;
+    4) echo "Partition GUID code: {WIN_GUID} (Microsoft basic data)"
+       echo "Partition unique GUID: {DATA_UGUID}"
+       echo "First sector: {DATA_START} (at the end)"
+       echo "Partition size: {DATA_SECTORS} sectors (50.0 GiB)"
+       echo "Attribute flags: 0000000000000000"
+       echo "Partition name: 'Basic data partition'" ;;
+  esac
+  exit 0
+fi
+echo "Disk identifier (GUID): 4C7B1E00-0000-4000-8000-000000000001"
+echo "Number  Start (sector)    End (sector)  Size       Code  Name"
+echo "   1            2048          206847   100.0 MiB   EF00  EFI system partition"
+echo "   2          206848          239615   16.0 MiB    0C01  Microsoft reserved partition"
+echo "   3         {WIN_START}      {WIN_START + WIN_SECTORS - 1}   476.0 GiB   0700  Basic data partition"
+echo "   4       {DATA_START}       {DATA_START + DATA_SECTORS - 1}   50.0 GiB    0700  Basic data partition"
+'''
+
+SSD_256 = "256060514304"
+
+
+def test_a_big_c_before_d_is_named_when_the_image_does_not_fit(tmp_path):
+    """‏D: היא המועמדת (האחרונה), והמינימום של ntfsresize גדול ממנה — אין מה
+    לכווץ בה. ‏C: של 476GiB לא נכנסת ל-256, והסירוב חייב לומר **למה** הכיווץ
+    לא עזר: מספר המחיצה, גודלה, ושהכיווץ פועל רק על האחרונה — לא מספרים בלבד."""
+    box, run, out = capture_run(tmp_path, stubs=stubs(sgdisk=SGDISK_C_THEN_D), shell_pre=FS_MAP + SAY_YES,
+                                env={"CAPTURE_TARGET_BYTES": SSD_256})
+    reason = refusal_reason(box, run, out)
+    assert "הפריסה גדולה מכונן היעד" in reason and SSD_256 in reason, reason
+    assert "מחיצה 3" in reason and "אינה האחרונה על הדיסק" in reason, reason
+    assert "מחיצה 4" in reason, reason
+    assert f"{WIN_SECTORS * 512 / 1e9:.1f} GB" in reason, reason
+    assert f"{DATA_SECTORS * 512 / 1e9:.1f} GB" in reason, reason
+    assert "Windows" in reason, "מה לעשות — למחוק/למזג את D: — חייב להיות בהודעה"
+    assert not (run / "new-manifest.json").exists()
+
+
+def test_the_old_refusal_is_unchanged_when_the_last_partition_is_the_big_one(tmp_path):
+    """‏ESP/C:/recovery, בלי כיווץ: אין מחיצת data גדולה יותר לפני המועמדת,
+    וההודעה היא זו של #87 — בלי תוספת."""
+    box, run, out = capture_run(tmp_path, stubs=stubs(), shell_pre=FS_MAP + SAY_PLAIN,
+                                env={"CAPTURE_TARGET_BYTES": SSD_256})
+    reason = refusal_reason(box, run, out)
+    assert "הפריסה גדולה מכונן היעד" in reason, reason
+    assert "אינה האחרונה" not in reason, reason
+    assert reason.endswith("בייט לפני הקליטה"), reason
+
+
 # --- הנעילות המבניות ------------------------------------------------------------
 
 

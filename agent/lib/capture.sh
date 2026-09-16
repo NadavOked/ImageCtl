@@ -154,7 +154,7 @@ capture_disk() {
         esac
         if [ "$_min_target" -gt "$CAPTURE_TARGET_BYTES" ]; then
             _capture_failed "$_disk" \
-                "הפריסה גדולה מכונן היעד: האימג' צריך $_min_target בייט, הקטן שביעדים מחזיק $CAPTURE_TARGET_BYTES — יש לכווץ $((_min_target - CAPTURE_TARGET_BYTES)) בייט לפני הקליטה"
+                "הפריסה גדולה מכונן היעד: האימג' צריך $_min_target בייט, הקטן שביעדים מחזיק $CAPTURE_TARGET_BYTES — יש לכווץ $((_min_target - CAPTURE_TARGET_BYTES)) בייט לפני הקליטה$(shrink_not_last_hint "$_parts" "$_sector_size")"
             return 1
         fi
         _floor_json="$CAPTURE_TARGET_BYTES"

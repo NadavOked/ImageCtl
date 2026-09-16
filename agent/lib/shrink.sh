@@ -56,6 +56,23 @@ _shrink_candidate() {
     [ -n "$_cd_best" ] && printf '%s\n' "$_cd_best"
 }
 
+shrink_not_last_hint() {
+    # $1 = parts file, $2 = sector size. ‏#929: הסירוב על הרצפה (capture.sh)
+    # אומר גם **למה** הכיווץ לא עזר — כשמחיצת windows/linux גדולה מהמועמדת
+    # יושבת לפניה (‏C: ואחריה D:), הכיווץ נגע רק ב-D:. הגדלים הם של המקור
+    # (parts.orig.txt כשכווץ) — מה שהמפעיל רואה ב-Windows. ריק = אין מה להוסיף.
+    _nl_src="$1"; [ -f "$RUN_DIR/parts.orig.txt" ] && _nl_src="$RUN_DIR/parts.orig.txt"
+    _nl_c=$(_shrink_candidate "$_nl_src"); [ -n "$_nl_c" ] || return 0
+    _nl_cidx=${_nl_c%%|*}; _nl_csize=${_nl_c##*|}
+    while IFS='|' read -r _nl_idx _nl_guid _nl_uguid _nl_first _nl_size; do
+        [ -n "$_nl_idx" ] && [ "$_nl_idx" != "$_nl_cidx" ] || continue
+        case "$(_partition_role "$_nl_guid")" in windows|linux) ;; *) continue ;; esac
+        [ "$_nl_size" -gt "$_nl_csize" ] || continue
+        printf ' — מחיצה %s (%s) אינה האחרונה על הדיסק, והכיווץ פועל רק על המחיצה האחרונה (מחיצה %s, %s): מחקו/מזגו את המחיצה שאחריה ב-Windows וקלטו מחדש'             "$_nl_idx" "$(_shrink_gb $((_nl_size * $2)))" "$_nl_cidx" "$(_shrink_gb $((_nl_csize * $2)))"
+        return 0
+    done < "$_nl_src"
+}
+
 _shrink_target() {
     # $1 = המינימום של ntfsresize, $2 = הגודל הנוכחי. היעד: מינימום ועוד
     # מרווח (10% או 2GiB, הגדול מביניהם), מעוגל למעלה ל-MiB — וההפרש מהנוכחי
