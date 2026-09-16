@@ -30,6 +30,7 @@ import json
 import shlex
 import subprocess
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -130,7 +131,10 @@ class Handler(BaseHTTPRequestHandler):
             body = {"unparsable": raw.decode("utf-8", "replace")}
         self._record(body)
 
-        if self.path == "/api/v1/agent/login":
+        if self.path == "/api/v1/agent/hello":
+            # #908: the attended beat while the menu waits. Recorded like any request.
+            self._send(200, ANSWER)
+        elif self.path == "/api/v1/agent/login":
             status = self.server.agent_login_status
             if status != 200:
                 self._send(status, {"error": "no"})
@@ -189,16 +193,22 @@ NEW_LIBS = ("buildmenu.sh", "buildcapture.sh", "roomdraw.sh", "roomflow.sh",
 
 
 def sourced_libs() -> str:
+    # ‏attended.sh (#906/#908) רק אם קיים: הבקרה השלילית מחזירה קובץ ל-main,
+    # והכישלון חייב להיות על ההתנהגות ולא על `.` של קובץ חסר.
     names = ["common.sh", "jsonq.sh", "ui.sh", "recovery.sh", "classround.sh",
-             "hold.sh", *NEW_LIBS]
+             "hold.sh", "attended.sh", *NEW_LIBS]
     return "".join(f". {posix(AGENT)}/lib/{n}; "
                    for n in names if (AGENT / "lib" / n).exists())
 
 
-#: ‏`sleep` הוא המתנה לאדם, לא תזמון שנבדק — בלעדיו הבדיקה מחכה דקות
-#: על מסכי הודעה. ‏`pick_internal_disk` קורא את /sys של המכונה המריצה.
+#: ‏`sleep` בשניות שלמות הוא המתנה לאדם, לא תזמון שנבדק — בלעדיו הבדיקה
+#: מחכה דקות על מסכי הודעה. ‏`sleep` שברי הוא **הפעימה** (‏ATTENDED_BEAT_S,
+#: ‏#908) והוא אמיתי — אחרת הפעימה הייתה לולאה צפופה. ‏`pick_internal_disk`
+#: קורא את /sys של המכונה המריצה. ‏`build_hello` מזויף כמו ב-test_smart.py:
+#: ‏sysinfo.sh אינו נטען כאן, והבדיקה היא על *מה שנוסף* לגוף ועל הקצב.
 STUBS = (
-    'sleep() { :; }; '
+    'sleep() { case "$1" in *.*) command sleep "$1" ;; esac; }; '
+    'build_hello() { printf %s "{\\"schema\\":2,\\"mac\\":\\"$MAC\\",\\"joining\\":$1}"; }; '
     'pick_internal_disk() { echo sda; }; '
     'class_round_flow() { echo "CLASS-ROUND-OPENED"; return 0; }; '
 )
@@ -215,20 +225,31 @@ def run_screen(tmp_path: Path, server: str, answers, *, stubs: str = "",
     funcs = tmp_path / "screen.sh"
     funcs.write_text(body, encoding="utf-8")
 
-    stdin_file = tmp_path / "answers.txt"
-    stdin_file.write_text("".join(f"{a}\n" for a in answers), encoding="utf-8")
+    # מספר בין התשובות הוא השהיה בשניות — האדם שעדיין לא ענה (#908). בלי
+    # השהיה ה-stdin הוא קובץ; איתה — צינור בתוך bash, שבו `command sleep`
+    # עוקף את ה-stub.
+    if any(not isinstance(a, str) for a in answers):
+        feed = "{ " + "; ".join(
+            f"command sleep {a}" if not isinstance(a, str)
+            else f"printf '%s\\n' {shlex.quote(a)}" for a in answers) + "; } | "
+        stdin = ""
+    else:
+        stdin_file = tmp_path / "answers.txt"
+        stdin_file.write_text("".join(f"{a}\n" for a in answers), encoding="utf-8",
+                              newline="\n")   # לא CRLF בווינדוס: "4\r" אינה בחירה
+        feed, stdin = "", f" < {shlex.quote(posix(stdin_file))}"
     out_file = tmp_path / "out.txt"
 
     script = (
         f"export RUN_DIR={shlex.quote(posix(run))} MAC={MAC!r} "
         f"SERVER={shlex.quote(server)} "
         f'RESP={shlex.quote(posix(run / "resp.json"))} '
-        f"IMAGECTL_TEST=1 HTTP_RETRIES=0 HTTP_TIMEOUT=4; "
+        f"IMAGECTL_TEST=1 HTTP_RETRIES=0 HTTP_TIMEOUT=4 ATTENDED_BEAT_S=0.3; "
         + sourced_libs()
         + STUBS
         + stubs
         + f". {posix(funcs)}; "
-        + f"build_console_screen < {shlex.quote(posix(stdin_file))}; "
+        + f"{feed}build_console_screen{stdin}; "
         + 'echo "RETURNED rc=$?"'
     )
     with out_file.open("w", encoding="utf-8") as sink:
@@ -539,6 +560,47 @@ def test_standby_hands_the_machine_back_to_the_poll_loop(tmp_path, console):
     assert "Standing by" in result["out"]
     assert "RETURNED rc=0" in result["out"], "המסך לא חזר ללולאה"
     assert "TEST-REBOOT" not in result["out"]
+
+
+# --- #908: hello ממשיך בזמן שהתפריט ממתין למפעיל ------------------------------
+
+
+def hellos(console: Console) -> list[dict]:
+    return posted(console, "/api/v1/agent/hello")
+
+
+@native_tools
+def test_hello_keeps_going_while_the_menu_waits_for_a_choice(tmp_path, console):
+    """ממצא צדדי מ-#906: `build_menu` עומד על `read` ואף hello לא יוצא —
+    מחשב בנייה שעומד בתפריט נראה בקונסולה "לא נראתה" אחרי ONLINE_SECONDS,
+    והמוניטור אליו נחסם. כאן המפעיל עונה על הבחירה רק אחרי ~4 פעימות
+    (‏ATTENDED_BEAT_S=0.3 לבדיקה בלבד), ולכן חייבים להיספר ≥2 hello בזמן
+    ההמתנה — כל אחד דופק (`joining: false`), ‏`waiting_for: operator`
+    ו-`prompt: menu`. בקרה שלילית: `buildmenu.sh` של main → 0."""
+    result = run_screen(tmp_path, url_of(console), ["admin", "pw", 1.3, "0"])
+
+    assert "Standing by" in result["out"], result["out"]
+    beats = hellos(console)
+    assert len(beats) >= 2, (beats, result["out"])
+    for h in beats:
+        assert h["waiting_for"] == "operator"
+        assert h["prompt"] == "menu"
+        assert h["joining"] is False
+        assert h["mac"] == MAC
+
+
+@native_tools
+def test_the_beat_stops_when_the_menu_hands_back(tmp_path, console):
+    """אחרי 0 (standby) הפעימה נעצרת: המכונה חוזרת ללולאה ששולחת hello
+    בעצמה, ופעימה שנשארת מאחור הייתה כותבת `prompt: menu` על מכונה שכבר
+    אינה בתפריט. הראיה: מספר ה-hello אינו גדל אחרי שהמסך חזר."""
+    result = run_screen(tmp_path, url_of(console), ["admin", "pw", 0.7, "0"])
+
+    assert "RETURNED rc=0" in result["out"], result["out"]
+    before = len(hellos(console))
+    assert before >= 1, result["out"]
+    time.sleep(1.0)
+    assert len(hellos(console)) == before
 
 
 # --- הכלל הסטטי: אין עברית על המסך של הסוכן ---------------------------------

@@ -15,8 +15,10 @@
 #
 # There is no race with the poll loop. The server is passive -- it answers
 # hello, it never pushes -- so while somebody is reading a menu this machine
-# simply is not asking. Standby (0) hands it back to the loop, so a capture
-# ordered from the console still lands here.
+# is not asking for work: the only hello it sends is the attended beat (#908,
+# attended.sh -- non-joining, its answer discarded), so the console keeps
+# seeing it instead of "not seen" after ONLINE_SECONDS. Standby (0) hands it
+# back to the loop, so a capture ordered from the console still lands here.
 
 #: The console session cookie. The console API (folders, capture, room) is
 #: cookie-authenticated; /api/v1/agent/login proves the password but issues
@@ -275,7 +277,10 @@ build_menu() {
 }
 
 build_menu_flow() {
-    # Entry point from the main loop.
+    # Entry point from the main loop. The menu is a wait for a person, and
+    # hello keeps going through it (#908, the pattern of #906): the beat
+    # says "menu" and stops when the menu hands back. Not around the gate:
+    # a refused sign-in ends in die_local, past attended_stop.
     build_menu_gate || return 0
-    build_menu
+    attended "menu" build_menu
 }
