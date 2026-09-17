@@ -74,7 +74,21 @@ apply_gpt() {
     # The partition table never travels in the stream -- it is derived
     # from the manifest alone, then the GPT backup is pushed to the real
     # end of the disk (matters when restoring onto a bigger drive).
+    PLAN_ERROR=""   # מאופס לפני השער הראשון: מגירה קודמת לא מדברת בשם הנוכחית
+    # כל מספר בטבלה הוא סקטורים: אימג' 512n על יעד 4Kn = הכול פי 8 שגוי (#958).
+    # לכן היעד נמדד (`blockdev --getss`) ומושווה לסקטור שהאימג' נקלט ממנו,
+    # לפני ה---zap-all. מניפסט בלי השדה = 512: כל קליטה לפני #670 כתבה 512 קשיח.
     _ss=$(json_get "$2" ".sector_size")
+    case "$_ss" in ''|null) _ss=512 ;; esac
+    _ts=$(blockdev --getss "$DEVROOT/$1" 2>> "$LOG_FILE")
+    case "$_ts" in ''|*[!0-9]*)   # "לא הצלחנו לבדוק" אינו "תואם" (עיקרון 5)
+        PLAN_ERROR="לא ניתן לקרוא את גודל הסקטור של הדיסק — לא נכתב בייט"
+        log "$1: $PLAN_ERROR"; return 1 ;;
+    esac
+    if [ "$_ts" != "$_ss" ]; then
+        PLAN_ERROR="האימג' נקלט מדיסק $_ss בייט/סקטור; הדיסק הזה $_ts — לא ניתן לשחזר בלי המרה"
+        log "$1: $PLAN_ERROR"; return 1
+    fi
     [ "$_ss" = "512" ] || { log "unsupported sector size: $_ss"; return 1; }
     _scheme=$(json_get "$2" ".scheme")
     [ "$_scheme" = "gpt" ] || { log "unsupported scheme: $_scheme"; return 1; }
@@ -85,7 +99,6 @@ apply_gpt() {
     # מרנדר JSON null כמחרוזת `null`, ולכן שתי הצורות נבדקות. ‏PLAN_ERROR
     # נושא את הסיבה אל `targets/<dev>/error`, כי "לא הצלחנו לכתוב טבלה"
     # אינו אומר לטכנאי איזו מחיצה ולמה (עיקרון 4).
-    PLAN_ERROR=""
     manifest_plan "$2" > "$RUN_DIR/gate.plan" || return 1
     _bad=$(awk -F'|' '$4 != "swap" && ($7 == "" || $7 == "null") {
         printf "%s%s (%s)", (n++ ? ", " : ""), $1, $4 }' "$RUN_DIR/gate.plan")

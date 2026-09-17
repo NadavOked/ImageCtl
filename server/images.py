@@ -139,6 +139,25 @@ def required_bytes(manifest: dict) -> int | None:
     return need
 
 
+def used_bytes_total(manifest: dict) -> int | None:
+    """כמה תפוס בכל מערכות הקבצים של האימג' יחד — מה שהקונסולה מציגה
+    כ"בשימוש" (‏#953).
+
+    ‏`None` = לפחות מחיצה אחת **לא נמדדה** (‏`used_bytes: null`, סעיף 1
+    בממשקים — "would not mount", משפחת #84). סכום חלקי היה מספר שנראה
+    אמיתי ואינו: אימג' שמחיצת ה-Windows שלו לא נמדדה היה מוצג "בשימוש
+    30 MB" — ה-ESP בלבד — ואיש לא היה רואה שהמדידה חסרה (עיקרון 5).
+    לכן חסר אחד = "לא ידוע" כולו, לא 0 ולא סכום של מה שכן נמדד.
+    """
+    total = 0
+    for part in manifest.get("partitions") or []:
+        used = _whole(part.get("used_bytes")) if isinstance(part, dict) else None
+        if used is None:
+            return None
+        total += used
+    return total
+
+
 #: ה-MAC שהאימג' קשור אליו — ‏#381, הצד הכותב של #69. אימג' שנקלט
 #: ממחשב כיתה שייך למכונה שנקלט ממנה, ומשוחזר **רק אליה**: "אני רוצה
 #: שאותו מחשב יקבל בשיעור הבא את הדיסק שלו".
@@ -455,6 +474,10 @@ class ImageLibrary:
                     "os": image_os(manifest),
                     "created": manifest.get("created", ""),
                     "source_disk_bytes": manifest.get("source_disk_bytes"),
+                    # ‏#953: "נכנס לדיסק מ-X" — הדרישה **הנגזרת** (`required_bytes`,
+                    # מה שבדיקה 2.7 אוכפת), לא השדה הגולמי; ‏None = לא ניתן לקבוע.
+                    "min_target_bytes": required_bytes(manifest),
+                    "used_bytes": used_bytes_total(manifest),
                     "total_compressed_bytes": manifest.get("total_compressed_bytes", 0),
                     "partitions": len(manifest["partitions"]),
                 }

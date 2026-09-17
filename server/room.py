@@ -27,7 +27,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from . import auth, registry, reports
 from .db import journal, now_iso, update_one
-from .images import restore_refusal
+from .images import required_bytes, restore_refusal
 from .imagefit import validate_expand_choice
 from .sessions import SessionError, SessionStore, SessionSuperseded
 
@@ -207,6 +207,62 @@ def ready_drives(conn: sqlite3.Connection, store: SessionStore,
     )
 
 
+#: ‏#953: "‏256GB" על מדבקת כונן הוא 256×10⁹ — הקונסולה מדברת באותן יחידות.
+GB = 10 ** 9
+
+
+def disk_floor(conn: sqlite3.Connection, selected: list[dict] | None = None
+               ) -> dict | None:
+    """המגירה **הקטנה ביותר** שמחשבי השיכפול דיווחו ב-hello האחרון — הרצפה
+    שאימג' חייב להיכנס אליה כדי שסבב ייכתב על כל המגירות (‏#953).
+
+    ‏`selected` (‏#695) מצמצם לפורטים שנבחרו: מגירה שלא תיכתב אינה רצפה.
+    בלי בחירה — כל המגירות של כל מחשבי החדר, כפי שהסבב אכן יכתוב אליהן.
+
+    ‏`None` = **אין דיווח** (מכונות שטרם דיברו, או סוכן ישן בלי
+    ‏`size_bytes`) — לא "הכול נכנס". הקורא מציג הערה, ובדיקה 2.7 במכונה
+    היא הקו האחרון (עיקרון 5). גודל 0/חסר הוא "לא נמדד" ומדולג, לא רצפה.
+    """
+    chosen = ({item["mac"]: set(item["ports"]) for item in selected}
+              if selected is not None else None)
+    floor = None
+    for row in conn.execute(
+        "SELECT mac, suffix FROM machines WHERE group_id = ? ORDER BY suffix",
+        (CLONERS_GROUP,),
+    ):
+        if chosen is not None and row["mac"] not in chosen:
+            continue
+        for disk in _disks(conn, row["mac"]):
+            if not isinstance(disk, dict):
+                continue
+            port = disk.get("port")
+            port = port if isinstance(port, int) and not isinstance(port, bool) else None
+            if chosen is not None and port not in chosen[row["mac"]]:
+                continue
+            size = _int(disk.get("size_bytes"))
+            if size <= 0:
+                continue
+            if floor is None or size < floor["size_bytes"]:
+                floor = {"mac": row["mac"], "name": row["suffix"], "port": port,
+                         "dev": disk.get("dev"), "size_bytes": size}
+    return floor
+
+
+def fit_refusal(manifest: dict, floor: dict | None) -> str | None:
+    """הסיבה שהאימג' אינו נכנס לרצפה — או `None` כשהוא נכנס, או כשאין
+    רצפה ידועה. **אותה מחרוזת בדיוק** שמסך החדר מציג על האימג' המושבת
+    (‏`imageFitReason` ב-`station/room.js`), כדי שהמפעיל יראה סיבה אחת
+    משני הצדדים: "דיסק 2 במחשב 2 הוא 256GB, האימג' צריך 300GB".
+    """
+    need = required_bytes(manifest)
+    if floor is None or need is None or need <= floor["size_bytes"]:
+        return None
+    slot = (f"דיסק {floor['port']}" if floor["port"] is not None
+            else f"דיסק {floor['dev'] or '?'}")
+    return (f"{slot} במחשב {floor['name']} הוא {round(floor['size_bytes'] / GB)}GB, "
+            f"האימג' צריך {-(-need // GB)}GB")
+
+
 # --- מחזור החיים -------------------------------------------------------------
 
 
@@ -282,6 +338,12 @@ def open_round(ctx, image_id: str, target_drives: int, user: str,
         if target_drives < selected_count:
             raise ValueError(
                 "מספר היעדים בסבב קטן ממספר הדיסקים שנבחרו לגל הראשון")
+    # ‏#953: אימג' שאינו נכנס למגירה הקטנה ביותר שדווחה אינו נפתח — לא רק
+    # מושבת במסך. הסירוב נוקב במגירה ובמספרים; ‏409 כמו כל התנגשות עם מצב
+    # החדר. בלי דיווח (`None`) אין סירוב — בדיקה 2.7 במכונה תסרב לה לבדה.
+    refusal = fit_refusal(manifest, disk_floor(ctx.conn, selected))
+    if refusal is not None:
+        raise SessionError(refusal)
 
     # פתיחת הגל תופסת את חריץ הסבב היחיד במערכת ומעירה את החדר (WoL).
     wave_id = ctx.store.open(
@@ -824,7 +886,10 @@ def status_view(ctx) -> dict:
         })
 
     view = {"round": None, "machines": machines,
-            "stream_stalled": _stream_stalled(machines)}
+            "stream_stalled": _stream_stalled(machines),
+            # ‏#953: הרצפה שהמסך משווה אליה כל אימג' לפני פתיחת סבב — אותה
+            # רצפה בדיוק שהשרת מסרב לפיה, ממקום אחד. ‏null = אין דיווח.
+            "disk_floor": disk_floor(ctx.conn)}
     if round_row is not None:
         wave = ctx.conn.execute(
             "SELECT state FROM sessions WHERE id = ?",

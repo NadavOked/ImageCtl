@@ -12,7 +12,11 @@
 עדיין מסרב ל-`sector_size != 512` (`apply_gpt`), ולכן הנזק המקורי —
 מחיצות שמינית מהאמת — אינו יכול לקרות על אימג' שנקלט אחרי #670.
 
-אין תיקון ייצור כאן. הטסט מאשר שההתנהגות הנכונה כבר על main.
+‏#958 הוא הצד השני של אותו מטבע: אימג' 512n (כל הספרייה) על **יעד**
+‏4Kn. ‏`apply_gpt` השווה את המניפסט ל-512 קשיח ולא ל**דיסק שנכתב**, ולכן
+המספרים — סקטורים — היו נכתבים פי 8 שגויים. מכאן והלאה היעד נמדד
+ב-`blockdev --getss` ומושווה ל-`sector_size`, ושוני = סירוב בקול לפני
+‏`--zap-all`, עם שני המספרים בשדה `error` של היעד.
 """
 
 from __future__ import annotations
@@ -22,7 +26,9 @@ import json
 from native import requires_native
 from test_agent import BASH, posix, sh
 from test_capture_refusals import CURL_SINK, capture_run
-from test_restore_evidence import build_box, log_of, rc_of
+from test_restore_evidence import (
+    build_box, log_of, rc_of, restore_run, state_of, target_error, wrote,
+)
 
 pytestmark = requires_native(("bash", BASH))
 
@@ -114,9 +120,10 @@ def test_apply_gpt_refuses_4kn_instead_of_carving_by_512(tmp_path):
     """הנזק המקורי היה בשחזור. apply_gpt מסרב ל-4096 לפני sgdisk -n.
 
     בלי הסירוב, `_end=$((start + size_bytes / 512 - 1))` היה בורא מחיצה
-    פי 8 מהפריסה הלוגית של אימג' 4Kn שנקלט אחרי #670.
+    פי 8 מהפריסה הלוגית של אימג' 4Kn שנקלט אחרי #670. היעד כאן 4Kn גם
+    הוא — הסקטורים **תואמים**, והסירוב הוא של הקוד שעדיין סופר ב-512.
     """
-    box, run, prelude = build_box(tmp_path)
+    box, run, prelude = build_box(tmp_path, target_ss="4096")
     out = sh(
         prelude
         + "json_get() { "
@@ -131,3 +138,88 @@ def test_apply_gpt_refuses_4kn_instead_of_carving_by_512(tmp_path):
     recorded = calls.read_text(encoding="utf-8") if calls.exists() else ""
     assert "--zap-all" not in recorded
     assert " -n " not in f" {recorded} "
+
+
+# --- ‏#958: הסקטור של היעד מול זה שהאימג' נקלט ממנו -------------------------
+
+
+def sgdisk_calls(box) -> str:
+    calls = box / "sgdisk.calls"
+    return calls.read_text(encoding="utf-8") if calls.exists() else ""
+
+
+def blockdev_calls(box) -> str:
+    calls = box / "blockdev.calls"
+    return calls.read_text(encoding="utf-8") if calls.exists() else ""
+
+
+def test_a_512_image_on_a_4kn_target_is_refused_before_zap_all(tmp_path):
+    """הבאג של #958: מניפסט 512 (כל הספרייה) על NVMe 4Kn. עד כאן
+    ‏`apply_gpt` השוותה את המניפסט ל-512 קשיח — לא לדיסק — והייתה
+    ממשיכה ל---zap-all ולטבלה שכל מספר בה פי 8 שגוי. ההודעה נושאת את
+    **שני** המספרים: "512" לבד אינו אבחנה."""
+    box, run, prelude = build_box(tmp_path, target_ss="4096")
+    out = sh(prelude + 'apply_gpt sda m.json; _rc=$?; echo "err=$PLAN_ERROR"; echo "rc=$_rc"')
+    assert rc_of(out) == "rc=1", out
+    assert "err=" in out and "512" in out and "4096" in out, out
+    assert "לא ניתן לשחזר בלי המרה" in out, out
+    log = log_of(run)
+    assert "512" in log and "4096" in log, log
+    recorded = sgdisk_calls(box)
+    assert "--zap-all" not in recorded, recorded
+    assert " -n " not in f" {recorded} ", recorded
+
+
+def test_the_target_error_names_both_sector_sizes_end_to_end(tmp_path):
+    """מקצה לקצה דרך `run_restore`: הסירוב נוחת בשדה `error` של היעד
+    (מסלול הכשל של #106), המצב `failed`, ואף מחיצה לא נכתבה."""
+    _box, run, prelude = build_box(tmp_path, target_ss="4096")
+    out = sh(restore_run(prelude))
+    assert rc_of(out) == "rc=1", out
+    assert state_of(run) == "failed"
+    err = target_error(run)
+    assert "512" in err and "4096" in err, err
+    assert "לא ניתן לשחזר בלי המרה" in err, err
+    assert wrote(run) == [], "מחיצה נכתבה על דיסק בגודל סקטור אחר"
+
+
+def test_a_matching_sector_size_is_measured_and_then_written(tmp_path):
+    """‏512 מול 512 ממשיך לכתוב — והראיה ש**נמדד** ולא נמנע היא הקריאה
+    ל-`blockdev --getss` עצמה, לפני ה---zap-all."""
+    box, run, prelude = build_box(tmp_path, target_ss="512")
+    out = sh(prelude + 'apply_gpt sda m.json; echo "rc=$?"')
+    assert rc_of(out) == "rc=0", out + log_of(run)
+    assert "--getss" in blockdev_calls(box), blockdev_calls(box)
+    assert "--zap-all" in sgdisk_calls(box)
+
+
+def test_an_unreadable_target_sector_size_is_a_refusal_not_a_pass(tmp_path):
+    """עיקרון 5: ‏blockdev שנכשל אינו "הסקטור תואם". "לא הצלחנו לבדוק"
+    הוא מצב משלו, והוא נעצר לפני בייט בדיוק כמו אי-התאמה."""
+    box, run, prelude = build_box(tmp_path, target_ss=None)
+    out = sh(prelude + 'apply_gpt sda m.json; echo "rc=$?"')
+    assert rc_of(out) == "rc=1", out
+    assert "לא ניתן לקרוא את גודל הסקטור" in log_of(run), log_of(run)
+    assert "--zap-all" not in sgdisk_calls(box)
+
+
+NO_SECTOR_SIZE = (
+    "json_get() { "
+    "case \"$2\" in .sector_size) echo null ;; .scheme) echo gpt ;;"
+    " *) echo null ;; esac; }; "
+)
+
+
+def test_an_old_manifest_without_sector_size_is_read_as_512(tmp_path):
+    """מניפסט בלי `sector_size` = 512: כל קליטה לפני #670 כתבה 512
+    קשיח, ולכן זו לא הנחה אלא מה שהשדה החסר אמר בפועל. על יעד 512
+    ממשיכים; על 4Kn מסרבים, וההודעה אומרת 512 ולא "null"."""
+    box, run, prelude = build_box(tmp_path, target_ss="512")
+    out = sh(prelude + NO_SECTOR_SIZE + 'apply_gpt sda m.json; echo "rc=$?"')
+    assert rc_of(out) == "rc=0", out + log_of(run)
+    assert "--zap-all" in sgdisk_calls(box)
+
+    box, run, prelude = build_box(tmp_path / "4kn", target_ss="4096")
+    out = sh(prelude + NO_SECTOR_SIZE + 'apply_gpt sda m.json; echo "err=$PLAN_ERROR"')
+    assert "512" in out and "4096" in out and "null" not in out, out
+    assert "--zap-all" not in sgdisk_calls(box)

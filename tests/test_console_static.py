@@ -107,3 +107,28 @@ def test_the_machines_page_lists_shrunk_source_disks_in_orange_with_clear():
     assert "/shrink-records/${id}/clear" in js
     machines = js[js.index("function machines()"):js.index("function clearMachinesFilter")]
     assert "${shrinkRecordsCard()}" in machines and "${diskFailuresCard()}" in machines
+
+
+def test_image_fit_is_rendered_from_one_helper_and_the_room_applies_the_floor():
+    """‏#953: "נכנס לדיסק מ-X GB" מגיע מ-`imageSizeCells` (פונקציית רינדור
+    אחת, שתעבור כמו שהיא למסך של #954) גם בטבלה וגם במגירת האימג';
+    מסך החדר משווה כל אימג' ל-`disk_floor` מהשרת ב**כל** רענון; וה-`?v=`
+    הוקפץ בשני הדפים — JS ישן מול API חדש הוא gotcha ידוע."""
+    js = _console_js()
+    table = js[js.index("function images()"):js.index("function filterImagesFolder")]
+    assert "imageSizeCells(r)" in table
+    assert "דיסק יעד:" not in table            # הנוסח הישן, בלי הרצפה
+    detail = js[js.index("function openImageDetail"):js.index("function renameImage")]
+    assert "נכנס לדיסק מ-" in detail and "librarySize(img.used_bytes)" in detail
+
+    room = (STATIC / "station" / "room.js").read_text(encoding="utf-8")
+    setup = room[room.index("async function renderSetup"):room.index("async function openRound")]
+    assert "applyImageFit(data.disk_floor || null)" in setup
+    assert "גודל הדיסקים לא ידוע" in room
+
+    for page in (_index(), (STATIC / "station" / "index.html").read_text(encoding="utf-8")):
+        versions = {tuple(int(x) for x in v.split("."))
+                    for v in re.findall(r"\?v=([0-9.]+)", page)}
+        assert len(versions) == 1, versions
+    assert "?v=6.8" in _index()
+    assert "?v=3.31" in (STATIC / "station" / "index.html").read_text(encoding="utf-8")

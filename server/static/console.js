@@ -360,6 +360,26 @@ function librarySize(bytes) {
   return bytes == null ? "לא ידוע" : fmtBytes(bytes);
 }
 
+/* #953: "נכנס לדיסק מ-X GB" — GB עשרוני (כמו על מדבקת הכונן: 256GB =
+   256×10⁹), מעוגל כלפי **מעלה** — הרצפה, לא קירוב. null = לא ניתן לקבוע. */
+function fitGB(bytes) {
+  const n = Number(bytes);
+  if (bytes == null || !Number.isFinite(n) || n < 0) return null;
+  return Math.ceil(n / 1e9) + " GB";
+}
+
+/* #953: שלושת המספרים של אימג' — לאיזה דיסק הוא נכנס (מ-`min_target_bytes`
+   הנגזר, tooltip בבייטים), כמה תפוס בו (`used_bytes`; null = "לא ידוע",
+   לא 0 — מחיצה שלא נעגנה, #84), וכמה הוא שוקל בשרת. פונקציית רינדור
+   קטנה כדי שתעבור כמו שהיא למסך של #954. */
+function imageSizeCells(img) {
+  const fit = fitGB(img.min_target_bytes);
+  const fitHtml = fit
+    ? `<span title="${esc(String(img.min_target_bytes))} בייט">${esc(fit)}</span>`
+    : "לא ידוע";
+  return `נכנס לדיסק מ-${fitHtml} · בשימוש ${esc(librarySize(img.used_bytes))} · בשרת ${esc(librarySize(img.total_compressed_bytes))}`;
+}
+
 function imageOsLabel(os) {
   if (os === "windows") return "Windows";
   if (os === "linux") return "לינוקס";
@@ -883,13 +903,13 @@ function images() {
   } else {
     const rows = list.map((r) => {
       const idEnc = encodeId(r.id);
-      const size = `דיסק יעד: ${librarySize(r.source_disk_bytes)} · אחסון בשרת: ${librarySize(r.total_compressed_bytes)}`;
+      const size = imageSizeCells(r);
       const version = r.version || "—";
       const sha = r.sha || "—";
       const updated = r.updated || (r.created || "").slice(0, 10) || "—";
       const status = r.status || "—";
       const stClass = status === "מאומת" ? "ok" : (status === "ישן" ? "warn" : "");
-      return `<tr class="clickable" onclick="openImageDetail('${idEnc}')"><td><div class="namecell">${uiIcon("image")} <strong>${esc(r.name)}</strong></div></td><td>${esc(imageOsLabel(r.os))}</td><td>${esc(size)}</td><td>${esc(version)}</td><td>${esc(sha)}</td><td>${esc(updated)}</td><td><span class="status ${stClass}"><i></i>${esc(status)}</span></td><td><button class="tool-btn" onclick="event.stopPropagation();openImageDetail('${idEnc}')">פרטים</button></td></tr>`;
+      return `<tr class="clickable" onclick="openImageDetail('${idEnc}')"><td><div class="namecell">${uiIcon("image")} <strong>${esc(r.name)}</strong></div></td><td>${esc(imageOsLabel(r.os))}</td><td>${size}</td><td>${esc(version)}</td><td>${esc(sha)}</td><td>${esc(updated)}</td><td><span class="status ${stClass}"><i></i>${esc(status)}</span></td><td><button class="tool-btn" onclick="event.stopPropagation();openImageDetail('${idEnc}')">פרטים</button></td></tr>`;
     }).join("");
     tableBody = `<table class="table"><thead><tr><th>שם</th><th>מערכת</th><th>גדלים</th><th>גרסה</th><th>SHA-256</th><th>עודכן</th><th>סטטוס</th><th>פעולות</th></tr></thead><tbody>${rows}</tbody></table>`;
   }
@@ -931,7 +951,7 @@ function openImageDetail(id) {
   const adminBtns = admin
     ? `<button class="btn" onclick="renameImage('${idEnc}')">שינוי שם</button><button class="btn" onclick="moveImage('${idEnc}')">העברה לתיקייה</button><button class="btn" onclick="editImageDescription('${idEnc}')">Description</button><button class="btn" onclick="reorderImage('${idEnc}',-1)">Up</button><button class="btn" onclick="reorderImage('${idEnc}',1)">Down</button><button class="btn danger" onclick="deleteImage('${idEnc}')">מחיקה</button>`
     : "";
-  openDrawer("פרטי אימג׳ — " + img.name, `<div class="detail-grid"><div class="detail-box"><span class="k">מערכת</span><span class="v">${esc(imageOsLabel(img.os))}</span></div><div class="detail-box"><span class="k">דיסק יעד</span><span class="v">${esc(targetSize)}</span></div><div class="detail-box"><span class="k">אחסון בשרת</span><span class="v">${esc(serverSize)}</span></div><div class="detail-box"><span class="k">גרסה</span><span class="v">${esc(version)}</span></div><div class="detail-box"><span class="k">סטטוס</span><span class="v">${esc(status)}</span></div><div class="detail-box"><span class="k">SHA-256</span><span class="v">${esc(sha)}</span></div><div class="detail-box"><span class="k">עודכן</span><span class="v">${esc(updated)}</span></div><div class="detail-box"><span class="k">תיקייה</span><span class="v">${esc(folder)}</span></div><div class="detail-box"><span class="k">מחיצות</span><span class="v">${esc(img.partitions)}</span></div><div class="detail-box"><span class="k">Disk family</span><span class="v">${img.family == null ? "-" : esc(img.family) + " GB"}</span></div></div><div class="section-title">תיאור</div><div class="notice">${esc(desc)}</div><div class="section-title">פעולות</div><div class="action-strip"><a class="btn" href="/api/console/images/${idEnc}/download">הורדה</a><button class="btn" disabled title="בקרוב">אמת</button>${adminBtns}</div>`);
+  openDrawer("פרטי אימג׳ — " + img.name, `<div class="detail-grid"><div class="detail-box"><span class="k">מערכת</span><span class="v">${esc(imageOsLabel(img.os))}</span></div><div class="detail-box"><span class="k">נכנס לדיסק מ-</span><span class="v" title="${esc(img.min_target_bytes == null ? "" : String(img.min_target_bytes) + " בייט")}">${esc(fitGB(img.min_target_bytes) || "לא ידוע")}</span></div><div class="detail-box"><span class="k">בשימוש</span><span class="v">${esc(librarySize(img.used_bytes))}</span></div><div class="detail-box"><span class="k">דיסק המקור</span><span class="v">${esc(targetSize)}</span></div><div class="detail-box"><span class="k">בשרת</span><span class="v">${esc(serverSize)}</span></div><div class="detail-box"><span class="k">גרסה</span><span class="v">${esc(version)}</span></div><div class="detail-box"><span class="k">סטטוס</span><span class="v">${esc(status)}</span></div><div class="detail-box"><span class="k">SHA-256</span><span class="v">${esc(sha)}</span></div><div class="detail-box"><span class="k">עודכן</span><span class="v">${esc(updated)}</span></div><div class="detail-box"><span class="k">תיקייה</span><span class="v">${esc(folder)}</span></div><div class="detail-box"><span class="k">מחיצות</span><span class="v">${esc(img.partitions)}</span></div><div class="detail-box"><span class="k">Disk family</span><span class="v">${img.family == null ? "-" : esc(img.family) + " GB"}</span></div></div><div class="section-title">תיאור</div><div class="notice">${esc(desc)}</div><div class="section-title">פעולות</div><div class="action-strip"><a class="btn" href="/api/console/images/${idEnc}/download">הורדה</a><button class="btn" disabled title="בקרוב">אמת</button>${adminBtns}</div>`);
 }
 
 function renameImage(id) {

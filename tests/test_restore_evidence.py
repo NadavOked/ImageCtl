@@ -97,6 +97,12 @@ BLOCKDEV_STUB = """#!/bin/sh
 B="{box}"
 case "$1" in
     --getsize64) cat "$B/disksize"; exit 0 ;;
+    --getss)
+        printf '%s\\n' "$*" >> "$B/blockdev.calls"
+        if [ -f "$B/getss" ]; then cat "$B/getss"; exit 0; fi
+        echo "blockdev: cannot open $2" >&2
+        exit 1
+        ;;
     --rereadpt)
         printf '%s\\n' "$*" >> "$B/blockdev.calls"
         if [ -f "$B/rereadpt_fails" ]; then exit 1; fi
@@ -109,7 +115,7 @@ exit 0
 
 def build_box(tmp_path, *, plan=PLAN, count=None, plan_cut=None, nodes=None,
               sgdisk_fail=None, rereadpt_fails=False, settle=1, disk_guid=None,
-              guid_lie=None):
+              guid_lie=None, target_ss="512"):
     """קופסה עם הזיופים, ומחרוזת prelude שטוענת את הסוכן מולה.
 
     ‏`nodes` = אילו אינדקסים "חזרו" מהדיסק כהתקני בלוקים; ברירת המחדל
@@ -119,6 +125,8 @@ def build_box(tmp_path, *, plan=PLAN, count=None, plan_cut=None, nodes=None,
     ואז `apply_gpt` מדלגת על `sgdisk -U` לגמרי.
     ‏`guid_lie` = מה ש-`sgdisk -p` מדווח אחרי `-U` שיצא 0. כשהוא שונה
     מ-`disk_guid`, קוד היציאה אינו ראיה שה-GUID נכתב (#572).
+    ‏`target_ss` = מה ש-`blockdev --getss` מדווח על היעד (#958); ‏`None` =
+    ‏blockdev שנכשל, כלומר גודל סקטור שלא ניתן לקרוא.
     """
     box = tmp_path / "box"
     stubs = box / "stubs"
@@ -133,6 +141,8 @@ def build_box(tmp_path, *, plan=PLAN, count=None, plan_cut=None, nodes=None,
     (box / "count").write_text(f"{len(plan) if count is None else count}\n")
     (box / "needs").write_text("1048576\n")
     (box / "disksize").write_text("500000000000\n")
+    if target_ss is not None:
+        (box / "getss").write_text(f"{target_ss}\n", newline="\n")
     (box / "disk_guid").write_text(
         ("null" if disk_guid is None else disk_guid) + "\n", newline="\n")
     if plan_cut is not None:

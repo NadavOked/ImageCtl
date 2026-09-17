@@ -139,6 +139,62 @@ const Room = (() => {
     images.sort((a, b) => (a.folder + a.name).localeCompare(b.folder + b.name, "he"));
   }
 
+  /* ---------- #953: האם האימג' נכנס למגירה הקטנה ביותר בחדר ---------- */
+
+  /* null = לא ניתן לקבוע (מניפסט בלי גיאומטריה). `Number(null)` הוא 0 —
+     ולכן הבדיקה מפורשת, אחרת "לא ידוע" היה מוצג "מ-0GB" (עיקרון 5). */
+  function requirementBytes(image) {
+    const need = Number(image.min_target_bytes);
+    return image.min_target_bytes == null || !Number.isFinite(need) || need < 0
+      ? null : need;
+  }
+
+  /* הסיבה שאימג' אינו נכנס לרצפה (`disk_floor` מ-GET /room — המגירה הקטנה
+     ביותר שדווחה ב-hello האחרון), או null כשהוא נכנס / כשאין דיווח.
+     **אותה מחרוזת בדיוק** ש-`room.fit_refusal` בשרת מחזיר ב-409 — המסך
+     מציג אותה על האפשרות המושבתת, והשרת אוכף אותה (עיקרון 5). GB עשרוני
+     כמו על מדבקת הכונן; האימג' מעוגל כלפי מעלה, הדיסק לקרוב. */
+  function imageFitReason(image, floor) {
+    const need = requirementBytes(image);
+    if (!floor || need === null || need <= floor.size_bytes) return null;
+    const slot = floor.port != null ? `דיסק ${floor.port}` : `דיסק ${floor.dev || "?"}`;
+    return `${slot} במחשב ${floor.name} הוא ${Math.round(floor.size_bytes / 1e9)}GB, ` +
+      `האימג' צריך ${Math.ceil(need / 1e9)}GB`;
+  }
+
+  /* הטקסט של אפשרות אחת ברשימה, ואם היא מושבתת. הרצפה מוצגת לכל אימג'
+     ("מ-230GB") גם כשהוא נכנס — זו המגבלה שנדב ביקש לראות. */
+  function imageOption(image, floor) {
+    const reason = imageFitReason(image, floor);
+    const need = requirementBytes(image);
+    const from = need === null ? "" : ` · מ-${Math.ceil(need / 1e9)}GB`;
+    const name = `${image.folder ? image.folder + " / " : ""}${image.name}${from}`;
+    return { disabled: reason !== null,
+             text: reason ? `${name} — לא נכנס: ${reason}` : name };
+  }
+
+  /* מעדכן את הרשימה הקיימת במקום לבנות אותה מחדש — הטופס מתרענן כל
+     2 שניות, ובנייה מחדש הייתה מוחקת את הבחירה באמצע. */
+  function applyImageFit(floor) {
+    const select = $("#room-image");
+    if (!select || !images) return;
+    const byId = new Map(images.map((i) => [i.id, i]));
+    let selectedLost = false;
+    for (const option of select.options) {
+      const image = byId.get(option.value);
+      if (!image) continue;
+      const view = imageOption(image, floor);
+      option.disabled = view.disabled;
+      option.textContent = view.text;
+      if (view.disabled && option.selected) selectedLost = true;
+    }
+    if (selectedLost) { select.value = ""; loadRoomExpand(""); }
+    $("#room-fit").textContent = floor
+      ? `המגירה הקטנה ביותר בחדר: ${Math.round(floor.size_bytes / 1e9)}GB ` +
+        `(דיסק ${floor.port != null ? floor.port : floor.dev} במחשב ${floor.name}).`
+      : "גודל הדיסקים לא ידוע — יסורב במכונה אם לא ייכנס.";
+  }
+
   /* #59: אותו רעיון כמו classes.js — המניפסט של האימג' הנבחר, כדי
      להציג את מועמד ההרחבה לפני שהסבב נפתח. הבחירה חלה על **כל** הגלים
      של הסבב הזה, לא רק על הראשון. */
@@ -174,6 +230,7 @@ const Room = (() => {
             ${images.map((i) => `<option value="${esc(i.id)}">
               ${esc(i.folder ? i.folder + " / " : "")}${esc(i.name)}</option>`).join("")}
           </select></label>
+        <p class="sub" id="room-fit"></p>
         <div id="room-expand"></div>
         <label>כמה כוננים צריך הפעם, סך הכל
           <input type="number" id="room-target" min="1" value="${ready || 24}"></label>
@@ -191,6 +248,7 @@ const Room = (() => {
       $("#room-back").addEventListener("click", () => { reset(); MODE = null; poll(); });
     }
     $("#room-ready").textContent = `כרגע ערים: ${ready} מגירות מוכנות.`;
+    applyImageFit(data.disk_floor || null);
     $("#room-machines").innerHTML = machineRows(data.machines, false);
   }
 
