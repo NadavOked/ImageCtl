@@ -71,6 +71,7 @@ def probing_server(tmp_path: Path, images_root: Path, clock):
 
     hooks = {
         "ss": lambda: "",
+        "ss_tcp": lambda: "",      # ‏#996: /ports קורא גם את טבלת ה-TCP
         "unit_active": lambda name: "active",
         "http_get": http_get,
         "http_text": http_text,

@@ -167,6 +167,19 @@ def test_node_delete(server):
     assert admin.get("/api/console/storage-nodes").json() == []
 
 
+def test_list_nodes_exposes_node_id(server):
+    """‏#954 גל 7: ``node_id`` (המזהה הנגזר מ-SPKI, ``sn_<hex>``) קיים
+    בעמודה מאז ה-enrollment (#883) — טבלת "סניפים" בקונסולה מציגה אותו
+    ליד השם, ולכן ``list_nodes`` חייב לחשוף אותו."""
+    admin, conn = server["admin"], server["ctx"].conn
+    _add_node(conn)
+    conn.execute("UPDATE storage_nodes SET node_id = ? WHERE id = ?",
+                 ("sn_0123456789abcdef", "node1"))
+    conn.commit()
+    body = admin.get("/api/console/storage-nodes").json()
+    assert body[0]["node_id"] == "sn_0123456789abcdef"
+
+
 def test_node_delete_missing_is_404(server):
     assert server["admin"].delete(
         "/api/console/storage-nodes/ghost").status_code == 404

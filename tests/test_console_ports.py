@@ -42,9 +42,14 @@ def ports_server(tmp_path: Path, images_root: Path, clock):
             "interfaces": [{"name": "eth0", "state": "up", "mac": "aa", "addresses": []}],
             "listeners": Listeners(True),
             "menu": "linux /boot/vmlinuz ip=dhcp imagectl.server=x console=tty0",
-            "udp_sender_pids": []}
+            "udp_sender_pids": [],
+            # ‏#996: טבלת ה-TCP "לא נקראה" כאן — כמו בתחנה בלי ss. בלי
+            # ההזרקה הבדיקה הייתה מריצה ss אמיתי (ובמעבדה — רואה מאזינים
+            # אמיתיים). המתג עצמו נבדק ב-test_port_toggles.py.
+            "ss_tcp": ""}
     hooks = {
         "ss": lambda: fake["ss"],
+        "ss_tcp": lambda: fake["ss_tcp"],
         "unit_active": lambda name: "active",
         "http_get": lambda url: fake["http"],
         "http_size": lambda url: (200, 31_000_000),
@@ -117,11 +122,17 @@ def test_monitor_switch_on_shows_a_warning_not_green(ports_server):
 
 
 def test_unverified_ports_say_so_and_are_not_painted_green(ports_server):
-    """8081/4011/8082: אין עדיין hook שקורא את ההאזנה בפועל — "לא
-    אומת" הוא off, ולעולם לא ok (עיקרון 5)."""
+    """8081/8082: טבלת הסוקטים של TCP לא נקראה — "לא נקרא" הוא `unknown`
+    (אדום, כמו דלת SSH שאי אפשר לראות), ולעולם לא ok (עיקרון 5). ‏#996
+    החליף את "אין hook" הישן בקריאה אמיתית מ-`ss -ltnp`; ‏4011 נקרא
+    מטבלת ה-UDP, שכאן קיימת ואין בה מאזין — ובלי proxy דלוק זה off."""
     rows = by_id(ports_server["admin"].get("/api/console/ports").json())
+    for pid in ("http_console", "kiosk"):
+        assert rows[pid]["state"] == "unknown"
+        assert rows[pid]["listening"] is None
+    assert rows["pxe_proxy"]["state"] == "off"
+    assert rows["pxe_proxy"]["listening"] is False
     for pid in ("http_console", "pxe_proxy", "kiosk"):
-        assert rows[pid]["state"] == "off"
         assert rows[pid]["state"] != "ok"
 
 

@@ -30,12 +30,19 @@ from test_agent import AGENT, BASH, REPO, posix
 from test_capture_refusals import CURL_SHRINK_SERVER, JQ_STUB, capture_run, refusal_reason
 from test_shrink_on_capture import (
     BLOCKDEV_OK,
+    DATA_SECTORS,
+    DATA_START,
+    DATA_UGUID,
     FS_MAP,
+    FS_MAP_C_D,
     MIN_BYTES,
+    MIN_D,
     NTFSFIX_OK,
     NTFSRESIZE_GROW_FAILS,
     NTFSRESIZE_OK,
+    NTFSRESIZE_TWO,
     SAY_YES,
+    SGDISK_C_THEN_D,
     SGDISK_WIN_REC,
     WIN_GUID,
     WIN_SECTORS,
@@ -89,10 +96,12 @@ def test_the_record_is_opened_before_the_first_write_and_closed_after_the_grow_b
 
     (body,) = sent(run, "shrink_open")
     assert body["serial"] == SERIAL and body["port"] == 1 and body["dev"] == "sda"
-    assert body["idx"] == 3 and body["start_sector"] == WIN_START and body["size_sectors"] == WIN_SECTORS
-    assert body["type_guid"] == WIN_GUID and body["unique_guid"] == WIN_UGUID
-    assert body["attrs"] == "0000000000000000" and body["name"] == "Basic data partition"
-    assert body["ntfs_bytes"] == WIN_SECTORS * 512
+    # ‏#929: רשומה אחת לדיסק, עם רשימת המחיצות — לא שדות של מחיצה אחת בראש הגוף.
+    assert "idx" not in body, body
+    assert body["partitions"] == [{
+        "idx": 3, "start_sector": WIN_START, "size_sectors": WIN_SECTORS,
+        "type_guid": WIN_GUID, "unique_guid": WIN_UGUID,
+        "attrs": "0000000000000000", "name": "Basic data partition", "ntfs_bytes": WIN_SECTORS * 512}]
     (close,) = sent(run, "shrink_close")
     assert close["serial"] == SERIAL and close["id"] == 7
     assert not (run / "targets" / "sda" / "shrink_id").exists()
@@ -115,6 +124,7 @@ def test_the_serial_and_the_task_come_from_sysfs_and_the_hello_answer(tmp_path):
     assert out.strip().endswith("rc=0"), out
     (body,) = sent(run, "shrink_open")
     assert body["serial"] == "WD-REAL-1" and body["model"] == "WDC WDS500"
+    assert [p["idx"] for p in body["partitions"]] == [3]
     assert body["image_name"] == "win11-office" and body["task_id"] == "tsk_106"
     assert body["port"] is None, "בקופסה אין ata<N> — פורט לא ידוע הוא null, לא 0"
 
@@ -207,24 +217,48 @@ def record(**over) -> dict:
     return rec
 
 
-def record_line(rec: dict) -> str:
-    keys = ("id", "serial", "idx", "start_sector", "size_sectors", "type_guid", "unique_guid",
-            "name", "attrs", "ntfs_bytes", "opened_at")
-    return "|".join(str(rec[k]) for k in keys)
+PART_KEYS = ("idx", "start_sector", "size_sectors", "type_guid", "unique_guid", "name", "attrs", "ntfs_bytes")
+
+
+def two_part_record(**over) -> dict:
+    """‏#929: רשומה אחת לדיסק עם **שתי** מחיצות — ‏C: (3) ו-D: (4) — כפי שהשרת
+    עונה ב-hello: השדות העליונים הם של הראשונה (תאימות), `partitions` את כולן."""
+    rec = record(**over)
+    d = {"idx": 4, "start_sector": DATA_START, "size_sectors": DATA_SECTORS, "type_guid": WIN_GUID,
+         "unique_guid": DATA_UGUID, "name": "Data", "attrs": "0000000000000000", "ntfs_bytes": DATA_SECTORS * 512}
+    rec["partitions"] = [{k: rec[k] for k in PART_KEYS}, d]
+    return rec
+
+
+def record_line(rec: dict, part: dict | None = None) -> str:
+    part = part or rec
+    return "|".join(str(rec[k]) for k in ("id", "serial")) + "|" \
+        + "|".join(str(part[k]) for k in ("idx", "start_sector", "size_sectors", "type_guid", "unique_guid",
+                                           "name", "attrs", "ntfs_bytes")) + f"|{rec['opened_at']}"
+
+
+def record_lines(rec: dict) -> list[str]:
+    """מה ש-shrink_records_refresh מפיק: שורה ל**מחיצה** (‏#929), עם ה-id
+    והסידורי של הרשומה בראשה; רשומה בלי `partitions` (שרת ישן) — שורה אחת."""
+    return [record_line(rec, p) for p in rec.get("partitions") or [rec]]
 
 
 def fake_jq(*records: dict) -> str:
     """‏json_get_join מזויף: מה ש-jq היה מדפיס על התשובה — "ok" ואז שורה
-    לרשומה (הביטוי האמיתי נבדק ב-test_the_real_jq_expression…)."""
-    body = " ".join(f"echo {line!r};" for line in ("ok", *(record_line(r) for r in records)))
+    למחיצה (הביטוי האמיתי נבדק ב-test_the_real_jq_expression…)."""
+    lines = ["ok"]
+    for r in records:
+        lines.extend(record_lines(r))
+    body = " ".join(f"echo {line!r};" for line in lines)
     return 'json_get_join() { [ -s "$1" ] || return 1; ' + body + ' }; '
 
 
 def offer_run(tmp_path, *, answer_records: list[dict] | None, keys: str = "",
               disk_sectors: int = SHRUNK_SECTORS, prelude: str = "", calls: int = 1,
-              extra_stubs: dict | None = None):
+              extra_stubs: dict | None = None, sizes: str | None = None):
     """מריץ `shrink_offer_pending` (מה שלולאת מחשב הבנייה מריצה לפני
-    התפריט) מול דיסק מזויף שהכניסה 3 שלו היא `disk_sectors` סקטורים."""
+    התפריט) מול דיסק מזויף שהכניסה 3 שלו היא `disk_sectors` סקטורים
+    (או `sizes` — תוכן sgdisk.sizes המלא, לדיסק עם יותר ממחיצה מכווצת אחת)."""
     box = tmp_path / "box"
     run = box / "run"
     run.mkdir(parents=True)
@@ -236,7 +270,8 @@ def offer_run(tmp_path, *, answer_records: list[dict] | None, keys: str = "",
     (sysd / "device" / "serial").write_text(SERIAL + "\n", encoding="utf-8")
     (sysd / "queue" / "logical_block_size").write_text("512\n", encoding="utf-8")
     (sysd / "removable").write_text("0\n", encoding="utf-8")
-    (run / "sgdisk.sizes").write_text(f"3={disk_sectors}\n4=2048000\n", encoding="utf-8", newline="\n")
+    (run / "sgdisk.sizes").write_text(sizes if sizes is not None else f"3={disk_sectors}\n4=2048000\n",
+                                      encoding="utf-8", newline="\n")
     if answer_records is not None:
         (run / "response.json").write_text(json.dumps({"schema": 1, "known": True, "role": "build",
                                                        "shrink_open": answer_records}),
@@ -247,7 +282,8 @@ def offer_run(tmp_path, *, answer_records: list[dict] | None, keys: str = "",
     if JQ is None:
         stub["jq"] = JQ_STUB
     libs = " ".join(f". {posix(AGENT)}/lib/{n}.sh;" for n in (
-        "common", "sysinfo", "waits", "jsonq", "restore", "ui", "attended", "shrink", "shrinkmem"))
+        "common", "sysinfo", "waits", "jsonq", "restore", "ui", "attended",
+        "shrinkplan", "shrink", "shrinkmem", "shrinkoffer"))   # ‏#929: ההצעה באתחול ב-shrinkoffer.sh
     # קלט מקובץ ולא מצינור: פונקציה בצינור רצה בתת-מעטפת, ו-`_shrink_offered`
     # (פעם אחת לאתחול) לא היה שורד — בסוכן הקריאה ישירה, כמו כאן.
     (run / "keys.txt").write_text(keys, encoding="utf-8", newline="\n")
@@ -472,15 +508,133 @@ def test_two_disks_with_the_same_serial_are_ambiguous_and_neither_is_touched(tmp
 @requires_jq
 def test_the_real_jq_expression_reads_the_hello_answer(tmp_path):
     """הביטוי האמיתי של shrink_records_refresh מול jq אמיתי: "ok" ואז
-    שורה לרשומה בסדר השדות ש-shrink_offer_disk קורא."""
-    box, run, out = offer_run(tmp_path, answer_records=[record(), record(id=9, serial="Z", unique_guid=None, name=None)],
-                              keys="2\n")
+    שורה **למחיצה** (‏#929) בסדר השדות ש-shrink_offer_disk קורא — רשומה עם
+    שתי מחיצות היא שתי שורות עם אותו id; רשומה ישנה בלי `partitions` (שרת
+    שקדם ל-#929) עדיין שורה אחת מהשדות העליונים."""
+    old = record(id=9, serial="Z", unique_guid=None, name=None)
+    box, run, out = offer_run(tmp_path, answer_records=[two_part_record(), old], keys="2\n",
+                              sizes=f"3={SHRUNK_SECTORS}\n4={DATA_SECTORS}\n", extra_stubs={"sgdisk": SGDISK_C_THEN_D})
     assert "rc=0" in out, out
     lines = (run / "shrink_open").read_text(encoding="utf-8").splitlines()
     assert lines[0] == "ok"
-    assert lines[1] == record_line(record())
-    assert lines[2] == "9|Z|3|1085440|998244352|" + WIN_GUID + "|||0000000000000000|" + str(WIN_SECTORS * 512) + "|2026-09-16T20:00:00+00:00"
+    assert lines[1:3] == record_lines(two_part_record())
+    assert lines[3] == "9|Z|3|1085440|998244352|" + WIN_GUID + "|||0000000000000000|" + str(WIN_SECTORS * 512) + "|2026-09-16T20:00:00+00:00"
+    assert len(lines) == 4
     assert "[1] Grow it back" in out, "והרשומה של S926 אכן זוהתה מהשורה שנקראה"
+
+
+# --- ‏#929: רשומה אחת לדיסק עם כמה מחיצות — ההצעה מחזירה את כולן ------------------
+
+#: ‏ntfsresize לפי מחיצה, לצד השחזור באתחול: ‏--info על sda3 מדווח ווליום מלא
+#: (‏C: כבר בגודלה) או קטן (NTFSRESIZE_SMALL_3=1), על sda4 — מלא; ‏-f -f נופל
+#: על המחיצה ב-NTFSRESIZE_GROW_FAIL_ON בלבד.
+NTFSRESIZE_BY_NODE = f'''#!/bin/sh
+echo "ntfsresize $*" >> "$RUN_DIR/order.log"
+case "$*" in
+  *--info*) echo "Cluster size       : 4096 bytes"
+            case "$*" in
+              *3) [ "${{NTFSRESIZE_SMALL_3:-0}}" = 1 ] && echo "Current volume size: {SHRUNK_SECTORS * 512 - 512} bytes" \\
+                  || echo "Current volume size: {WIN_SECTORS * 512 - 512} bytes" ;;
+              *) echo "Current volume size: {DATA_SECTORS * 512 - 512} bytes" ;;
+            esac
+            exit 0 ;;
+  *"-f -f"*) [ -n "${{NTFSRESIZE_GROW_FAIL_ON:-}}" ] && case "$*" in *"$NTFSRESIZE_GROW_FAIL_ON") exit 5 ;; esac ;;
+esac
+exit 0
+'''
+SHRUNK_D_SECTORS = shrink_target(MIN_D, DATA_SECTORS * 512) // 512
+
+
+def two_part_run(tmp_path, *, sizes: str, keys: str = "1\n", prelude: str = "", ntfsresize: str = NTFSRESIZE_BY_NODE):
+    return offer_run(tmp_path, answer_records=[two_part_record()], keys=keys, sizes=sizes,
+                     prelude=fake_jq(two_part_record()) + prelude,
+                     extra_stubs={"sgdisk": SGDISK_C_THEN_D, "ntfsresize": ntfsresize})
+
+
+def test_a_two_partition_record_asks_once_and_grows_both_back_in_reverse(tmp_path):
+    """שתי המחיצות עומדות על גודלן המכווץ, שתי הכניסות תואמות: שאלה **אחת**
+    שמציגה את שתיהן, "1" מחזיר — ‏D: ואז C: (סדר הפוך לכיווץ), כל אחת
+    טבלה → מתיחה → fix — ו-shrink-close אחד, אחרי ששתיהן חזרו."""
+    box, run, out = two_part_run(tmp_path, sizes=f"3={SHRUNK_SECTORS}\n4={SHRUNK_D_SECTORS}\n")
+    assert "rc=0" in out, out
+    assert out.count("[1] Grow it back") == 1, out
+    assert "partition 3: now" in out and "partition 4: now" in out, out
+    calls = rewrites(run)
+    assert [c.split(" -d ")[1].split(" ")[0] for c in calls] == ["4", "3"], calls
+    assert f"-n 4:{DATA_START}:{DATA_START + DATA_SECTORS - 1} -t 4:{WIN_GUID} -u 4:{DATA_UGUID} -c 4:Data -A 4:=:0x0000000000000000" in calls[0], calls[0]
+    assert f"-n 3:{WIN_START}:{WIN_START + WIN_SECTORS - 1} -t 3:{WIN_GUID} -u 3:{WIN_UGUID}" in calls[1], calls[1]
+    steps = order(run)
+    dev = posix(box / "dev")
+    grow4 = step(steps, f"ntfsresize -f -f --no-progress-bar {dev}/sda4")
+    grow3 = step(steps, f"ntfsresize -f -f --no-progress-bar {dev}/sda3")
+    close = step(steps, "shrink-close")
+    assert grow4 < steps.index(f"ntfsfix -d {dev}/sda4", grow4) < grow3 < steps.index(f"ntfsfix -d {dev}/sda3", grow3) < close, steps
+    assert steps.count("shrink-close") == 1
+    (body,) = sent(run, "shrink_close")
+    assert body["id"] == 5 and body["serial"] == SERIAL
+
+
+def test_a_partition_that_is_already_back_is_skipped_and_the_other_is_offered(tmp_path):
+    """‏C: כבר בגודלה ומערכת הקבצים ממלאת אותה (החזרה שנקטעה אחרי C:);
+    ‏D: עדיין מכווצת. השאלה על D: בלבד, הטבלה של C: אינה נכתבת שוב, והרשומה
+    נסגרת אחרי ש-D: חזרה."""
+    box, run, out = two_part_run(tmp_path, sizes=f"3={WIN_SECTORS}\n4={SHRUNK_D_SECTORS}\n")
+    assert "rc=0" in out, out
+    assert "partition 4: now" in out and "partition 3:" not in out, out
+    assert [c.split(" -d ")[1].split(" ")[0] for c in rewrites(run)] == ["4"], rewrites(run)
+    assert "partition 3 is already" in log_of(run)
+    (body,) = sent(run, "shrink_close")
+    assert body["id"] == 5
+
+
+def test_one_entry_that_does_not_match_stops_the_whole_offer(tmp_path):
+    """הכניסה של C: תואמת, זו של D: לא (GUID ייחודי אחר): לא שואלים על אף
+    אחת, לא כותבים, לא סוגרים — הרשומה היא לדיסק, וחצי-החזרה אינה החזרה."""
+    rec = two_part_record()
+    rec["partitions"][1]["unique_guid"] = "4C7B1E00-0000-4000-8000-00000000BEEF"
+    box, run, out = offer_run(tmp_path, answer_records=[rec], keys="1\n", sizes=f"3={SHRUNK_SECTORS}\n4={SHRUNK_D_SECTORS}\n",
+                              prelude=fake_jq(rec) + 'shrink_restore_ask() { echo asked >> "$RUN_DIR/order.log"; echo restore; }; ',
+                              extra_stubs={"sgdisk": SGDISK_C_THEN_D, "ntfsresize": NTFSRESIZE_BY_NODE})
+    assert "rc=0" in out, out
+    assert "asked" not in order(run) and rewrites(run) == [] and sent(run, "shrink_close") == []
+    assert "partition 4" in log_of(run) and "does not match the disk" in log_of(run) and "nothing changed" in log_of(run)
+
+
+def test_the_record_closes_only_when_every_partition_is_back(tmp_path):
+    """‏C: בטבלה בגודלה אך מערכת הקבצים קטנה (מתיחה שנפלה בפעם הקודמת);
+    ‏D: מכווצת בטבלה. "1" מותח את C: (בלי טבלה) ומחזיר את D: (טבלה+מתיחה);
+    כשהמתיחה של D: נופלת — אין shrink-close, המסך אומר FAILED, והסיבה
+    (shrink-note) נוקבת במחיצה 4 — למרות ש-C: הצליחה."""
+    box, run, out = two_part_run(tmp_path, sizes=f"3={WIN_SECTORS}\n4={SHRUNK_D_SECTORS}\n",
+                                 prelude="export NTFSRESIZE_SMALL_3=1 NTFSRESIZE_GROW_FAIL_ON=4; ")
+    assert "rc=0" in out, out
+    assert "partition 3:" in out and "smaller than its partition" in out and "partition 4: now" in out, out
+    assert out.count("[1]") == 1, out
+    dev = posix(box / "dev")
+    steps = order(run)
+    assert [c.split(" -d ")[1].split(" ")[0] for c in rewrites(run)] == ["4"], "הטבלה של C: כבר נכונה — לא נכתבת"
+    grow3 = step(steps, f"ntfsresize -f -f --no-progress-bar {dev}/sda3")
+    assert steps.index(f"ntfsfix -d {dev}/sda3", grow3), "‏C: נמתחה ונוקתה"
+    assert [s for s in steps if s.startswith(f"ntfsresize -f -f --no-progress-bar {dev}/sda4")]
+    assert not [s for s in steps if s == f"ntfsfix -d {dev}/sda4"], "בלי ntfsfix אחרי מתיחה שנפלה"
+    assert sent(run, "shrink_close") == [] and "FAILED:" in out and "The record stays in the console" in out
+    (note,) = sent(run, "shrink_note")
+    assert note["id"] == 5 and "מחיצה 4" in note["note"], note
+    assert "מחיצה 3" not in note["note"], "‏C: הצליחה — היא אינה הסיבה"
+
+
+def test_a_pending_two_partition_record_in_the_hello_refuses_the_capture_naming_both(tmp_path):
+    """הצד של הקליטה: ה-hello מביא רשומה פתוחה על שתי מחיצות — הקליטה
+    נעצרת לפני השאלה, וההודעה נוקבת בשתיהן וברשומה."""
+    # בלי `[ -s "$1" ]` של fake_jq: בקופסת הקליטה אין response.json, והזיוף חייב
+    # לענות בכל זאת — כמו ב-test_a_pending_record_in_the_hello_answer_refuses_before_the_question.
+    pending = ('json_get_join() { ' + " ".join(f"echo {line!r};" for line in ("ok", *record_lines(two_part_record())))
+               + ' }; shrink_ask() { echo asked >> "$RUN_DIR/order.log"; echo continue; }; ')
+    box, run, out = capture_run(tmp_path, stubs=stubs(sgdisk=SGDISK_C_THEN_D, ntfsresize=NTFSRESIZE_TWO),
+                                shell_pre=FS_MAP_C_D + pending)
+    reason = refusal_reason(box, run, out)
+    assert "כבר כווצה" in reason and "#5" in reason and "מחיצה 3, 4" in reason, reason
+    assert "asked" not in order(run) and sent(run, "shrink_open") == [] and not rewrites(run)
 
 
 # --- הנעילות המבניות ------------------------------------------------------------
@@ -498,13 +652,15 @@ def test_the_open_runs_after_the_operator_said_yes_and_before_the_resize():
 
 def test_the_agent_loads_shrinkmem_after_shrink_and_offers_before_the_gui():
     src = (AGENT / "imagectl-agent").read_text(encoding="utf-8")
-    assert src.index('"$LIB_DIR/shrink.sh"') < src.index('"$LIB_DIR/shrinkmem.sh"') < src.index('"$LIB_DIR/capture.sh"')
+    assert src.index('"$LIB_DIR/shrinkplan.sh"') < src.index('"$LIB_DIR/shrink.sh"') < src.index('"$LIB_DIR/shrinkmem.sh"') \
+        < src.index('"$LIB_DIR/shrinkoffer.sh"') < src.index('"$LIB_DIR/capture.sh"')
     body = src[src.index("build_console_screen()"):src.index("do_task()")]
     assert body.index("shrink_offer_pending") < body.index("gui_parent")
 
 
-def test_no_destructive_step_in_shrinkmem_hides_its_exit_code():
-    src = (AGENT / "lib" / "shrinkmem.sh").read_text(encoding="utf-8")
+@pytest.mark.parametrize("name", ["shrinkmem.sh", "shrinkoffer.sh"])
+def test_no_destructive_step_in_shrinkmem_hides_its_exit_code(name):
+    src = (AGENT / "lib" / name).read_text(encoding="utf-8")
     assert "|| true" not in src
     for line in src.splitlines():
         if "sgdisk -i" in line and not line.strip().startswith("#"):

@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends
 import hashlib
 
 from . import (agent_loops, auth, console_ssh, dhcp, foreign_vlan, hello,
-               identity, monitor, ssh_switch)
+               identity, monitor, ports, ssh_switch)
 
 BOOT_FILES = ("bootx64.efi", "grubx64.efi", "grub/grub.cfg")
 
@@ -57,6 +57,11 @@ def _run(cmd: list[str]) -> str:
 def default_hooks() -> dict:
     return {
         "ss": lambda: _run(["ss", "-ulnp"]),
+        # ‏#996: גם TCP — המאזינים של השרת עצמו (8080/8081/8082/8443) נקראים
+        # מטבלת הסוקטים, לא מההגדרה. ‏`port_listeners` (מנהל המאזינים,
+        # ‏`ports.Listeners`) מוזרק מ-main.py; ‏None = אין מנהל בתהליך הזה.
+        "ss_tcp": lambda: _run(["ss", "-ltnp"]),
+        "port_listeners": None,
         "shim_src": lambda: "/usr/lib/shim/shimx64.efi.signed",
         "unit_active": lambda name: _run(["systemctl", "is-active", name]).strip(),
         "http_get": _http_probe,
@@ -293,8 +298,17 @@ def collect(ctx, hooks: dict, server_base: str) -> list[dict]:
 
     # השרת עצמו, בכתובת שהלקוחות רואים. הקונסולה שקוראת את זה כבר מדברת
     # איתנו — הבדיקה היא שהכתובת הציבורית (זו שב-GRUB) אכן עונה.
-    status = hooks["http_get"](server_base.rstrip("/") + "/boot/menu?mac=00:00:00:00:00:00")
-    if status == 200:
+    # ‏#996: פורט שהמפעיל כיבה בדף הפורטים הוא "כבוי", לא "לא עונה" —
+    # שני מצבים שונים, ורק השני הוא תקלה.
+    if not ports.enabled(ctx.conn, "http_boot"):
+        status = "disabled"
+    else:
+        status = hooks["http_get"](server_base.rstrip("/") + "/boot/menu?mac=00:00:00:00:00:00")
+    if status == "disabled":
+        results.append(check("server", "השרת בכתובת ההפצה", "off",
+                             "פורט הסוכן (8080) כבוי על ידי המפעיל בדף הפורטים — "
+                             "תחנות לא יגיעו לתפריט עד שיודלק"))
+    elif status == 200:
         results.append(check("server", "השרת בכתובת ההפצה", "ok",
                              f"{server_base} עונה על תפריט האתחול"))
     elif status is None:
@@ -366,74 +380,172 @@ def _last_seen(seconds: int) -> str:
     return f"נראה לאחרונה לפני {seconds // 60} דק'"
 
 
-#: פורט הקיוסק (`--kiosk-port` ב-main.py). אין hook שמזריק אותו לכאן
-#: (בניגוד ל-server_base) — כמו 8081/4011 למטה, השורה נשארת "לא אומת"
-#: עד שיתווסף hook אמיתי, ולא נצבעת ירוק בלי בדיקה (עיקרון 5).
-KIOSK_PORT = 8082
+#: הפורטים של השרת עצמו כשאין מנהל מאזינים בתהליך (‏create_app של
+#: הבדיקות): מה ש-main.py קושר כברירת מחדל. עם מנהל (‏#996) הפורט
+#: והכתובות נקראים ממנו, ומה שבאמת מאזין — מטבלת הסוקטים.
+DEFAULT_OWN_PORTS = {"http_boot": 8080, "http_console": 8081, "kiosk": 8082,
+                     "interserver": 8443}
+KIOSK_PORT = DEFAULT_OWN_PORTS["kiosk"]
 
 
 def _port(port_id: str, name: str, port: str, proto: str, desc: str,
-         target: str, state: str, detail: str, note: str) -> dict:
+          target: str, state: str, detail: str, note: str, *,
+          enabled: bool | None = None, listening: bool | None = None,
+          bind: list[str] | None = None, toggle: str = "none",
+          toggle_url: str | None = None, confirm_word: str | None = None,
+          confirm_when: str | None = None, off_means: str = "",
+          **extra) -> dict:
+    """שורה ב-/ports. ‏#996 הוסיף את המתג: ‏`enabled` (המתג השמור; None =
+    אין מתג), ‏`listening` (נמדד: True/False, ‏None = לא נקרא כאן),
+    ‏`bind` (כתובות ההאזנה מטבלת הסוקטים), ‏`toggle` (`api`/`confirm`/
+    ‏`none`), ‏`toggle_url` (איפה המתג חי), ‏`confirm_word`/`confirm_when`
+    (מה מקלידים ומתי: `on`/`off`/`on_or_last_off`), ‏`off_means`."""
     return {"id": port_id, "name": name, "port": port, "proto": proto,
-           "desc": desc, "target": target, "state": state, "detail": detail,
-           "note": note}
+            "desc": desc, "target": target, "state": state, "detail": detail,
+            "note": note, "enabled": enabled, "listening": listening,
+            "bind": bind if bind is not None else [], "toggle": toggle,
+            "toggle_url": toggle_url, "confirm_word": confirm_word,
+            "confirm_when": confirm_when, "off_means": off_means, **extra}
+
+
+def _dhcp_flags(ctx) -> list[dict]:
+    """‏(שם, enabled, proxy) לכל כרטיס עם הגדרת DHCP שמורה — אותה קריאה
+    כמו `collect`, כדי ששני המסכים יסכימו מי משרת."""
+    rows = []
+    for row in ctx.conn.execute(
+            "SELECT key, value FROM settings WHERE key LIKE ?",
+            (dhcp.SETTING_PREFIX + "%",)):
+        cfg = dhcp.InterfaceConfig.from_json(
+            row["key"].removeprefix(dhcp.SETTING_PREFIX), row["value"])
+        rows.append({"name": cfg.name, "enabled": cfg.enabled, "proxy": cfg.proxy})
+    return rows
+
+
+def _own_row(ctx, hooks: dict, port_id: str, ss_tcp: str, *,
+             name: str, desc: str, target: str, note: str) -> dict:
+    """שורה של מאזין של השרת עצמו (‏#996): הפורט מהמנהל (או ברירת המחדל),
+    ההאזנה מטבלת הסוקטים, המתג מה-DB — ושלושת המצבים נצבעים בנפרד."""
+    listeners = hooks.get("port_listeners")
+    registered = listeners is not None and port_id in listeners.ids()
+    port = listeners.spec(port_id)["port"] if registered else DEFAULT_OWN_PORTS[port_id]
+    bind = ports.bind_addresses(ss_tcp, port)
+    listening = None if bind is None else bool(bind)
+    toggle, off_means = ports.OWN[port_id]
+    if port_id == "interserver" and not registered:
+        # ‏8443 עולה רק על משני עם --interserver-host; בלעדיו אין מה לכבות.
+        state, detail = ports.measured_state(None, listening)
+        return _port(port_id, name, str(port), "tcp", desc, target, state,
+                     detail + " · לא מוגדר בשרת הזה (עולה רק על משני עם "
+                     "--interserver-host)", note,
+                     listening=listening, bind=bind, off_means=off_means)
+    flag = ports.enabled(ctx.conn, port_id)
+    state, detail = ports.measured_state(flag, listening)
+    return _port(port_id, name, str(port), "tcp", desc, target, state, detail,
+                 note, enabled=flag, listening=listening, bind=bind,
+                 toggle=toggle, toggle_url=f"/api/console/ports/{port_id}",
+                 confirm_word=ports.server_name(ctx.conn) if toggle == "confirm" else None,
+                 confirm_when="off" if toggle == "confirm" else None,
+                 off_means=off_means)
 
 
 def ports_snapshot(ctx, hooks: dict, server_base: str) -> list[dict]:
     """‏#822: מסך "פורטים" בקונסולה. כל שורה נקראת מהשרת — לא רשימה
-    קבועה ב-JS — ומצב "לא אומת" נאמר בפירוש כשאין עדיין hook שבודק
-    (עיקרון 5: לא לצייר ירוק על מה שלא נבדק)."""
-    ss_out = hooks["ss"]()
-    entries = []
+    קבועה ב-JS — ומצב "לא נקרא" נאמר בפירוש כשטבלת הסוקטים לא נקראה
+    (עיקרון 5: לא לצייר ירוק על מה שלא נבדק).
 
+    ‏#996: לכל שורה מתג — ‏`enabled`/`bind`/`toggle`/`toggle_url`/
+    ‏`off_means` (ראה `_port`) — והשורות שחסרו: DHCP 67, בין-שרתים
+    8443, ‏SSH לשרת × כרטיס. ‏`listening` ו-`bind` באים מ-`ss` (‏udp
+    ו-tcp), לא מההגדרה."""
+    ss_out = hooks["ss"]()
+    ss_tcp = hooks["ss_tcp"]()
+    entries = []
+    dhcp_flags = _dhcp_flags(ctx)
+
+    tftp_bind = ports.bind_addresses(ss_out, 69)
     owner = port_owner(ss_out, 69) if ss_out else None
+    tftp_note = "לפתוח ב-FW: UDP 69 מוילן ההפצה לשרת"
+    tftp_off = ("אין מתג: enable-tftp יושב בקובץ המתקין (/etc/dnsmasq.d/"
+                "imagectl.conf) ואין ל-dnsmasq דרך לבטלו מקובץ אחר; כיבוי = "
+                "אין shim/GRUB, מחשבים לא יעלו ב-PXE")
     if not ss_out:
         entries.append(_port("tftp", "TFTP", "69", "udp",
-            "bootloader — shim/GRUB והתפריט", "תחנות (PXE)", "off",
-            "אי אפשר לבדוק כאן (ss לא זמין)",
-            "לפתוח ב-FW: UDP 69 מוילן ההפצה לשרת"))
+            "bootloader — shim/GRUB והתפריט", "תחנות (PXE)", "unknown",
+            "טבלת הסוקטים לא נקראה (ss לא זמין) — לא ידוע אם מאזין", tftp_note,
+            off_means=tftp_off))
     elif owner is None:
         entries.append(_port("tftp", "TFTP", "69", "udp",
             "bootloader — shim/GRUB והתפריט", "תחנות (PXE)", "bad",
-            "אף אחד לא מגיש TFTP — מחשבים לא יעלו ב-PXE",
-            "לפתוח ב-FW: UDP 69 מוילן ההפצה לשרת"))
+            "אף אחד לא מגיש TFTP — מחשבים לא יעלו ב-PXE", tftp_note,
+            listening=False, bind=tftp_bind, off_means=tftp_off))
     elif owner == "dnsmasq":
         entries.append(_port("tftp", "TFTP", "69", "udp",
             "bootloader — shim/GRUB והתפריט", "תחנות (PXE)", "ok",
-            "dnsmasq מגיש", "לפתוח ב-FW: UDP 69 מוילן ההפצה לשרת"))
+            "dnsmasq מגיש", tftp_note, listening=True, bind=tftp_bind,
+            off_means=tftp_off))
     else:
         entries.append(_port("tftp", "TFTP", "69", "udp",
             "bootloader — shim/GRUB והתפריט", "תחנות (PXE)", "warn",
-            f"מוגש על ידי {owner}, לא על ידי dnsmasq",
-            "לפתוח ב-FW: UDP 69 מוילן ההפצה לשרת"))
+            f"מוגש על ידי {owner}, לא על ידי dnsmasq", tftp_note,
+            listening=True, bind=tftp_bind, off_means=tftp_off))
 
-    status = hooks["http_get"](
-        server_base.rstrip("/") + "/boot/menu?mac=00:00:00:00:00:00")
-    if status == 200:
-        http_state, http_detail = "ok", f"{server_base} עונה על תפריט האתחול"
-    elif status is None:
-        http_state, http_detail = "bad", f"{server_base} לא עונה"
+    # ‏DHCP 67 — המתג חי ב-PUT /net/interfaces/{n} (enabled, +confirm = שם
+    # הכרטיס); כאן רק החיווי וההפניה. proxy גם הוא מאזין על 67.
+    dhcp_bind = ports.bind_addresses(ss_out, 67)
+    dhcp_on = any(f["enabled"] or f["proxy"] for f in dhcp_flags)
+    owner = port_owner(ss_out, 67) if ss_out else None
+    if not ss_out:
+        d_state, d_detail = "unknown", "טבלת הסוקטים לא נקראה (ss לא זמין) — לא ידוע אם מאזין"
+    elif owner is not None and owner != "dnsmasq":
+        d_state, d_detail = "bad", f"תפוס על ידי {owner} — יתנגש עם dnsmasq"
     else:
-        http_state, http_detail = "warn", f"{server_base} החזיר {status}"
-    entries.append(_port("http_boot", "HTTP", "8080", "tcp",
-        "אתחול (boot/vmlinuz/initrd) ו-API הסוכן", "תחנות, סוכן",
-        http_state, http_detail,
-        "לפתוח ב-FW: TCP 8080 מוילן ההפצה לשרת"))
+        d_state, d_detail = ports.measured_state(dhcp_on, owner is not None)
+    entries.append(_port("dhcp", "DHCP", "67", "udp",
+        "חלוקת כתובות ו-dhcp-boot לתחנות (dnsmasq)", "תחנות (PXE)",
+        d_state, d_detail, "לפתוח ב-FW: UDP 67/68 בתוך וילן ההפצה בלבד — ברודקאסט",
+        enabled=dhcp_on, listening=None if not ss_out else owner is not None,
+        bind=dhcp_bind, toggle="confirm", toggle_url=ports.ELSEWHERE["dhcp"],
+        confirm_when="on",
+        off_means="תחנות לא יקבלו כתובת ולא dhcp-boot — אין PXE מהשרת הזה",
+        interfaces=dhcp_flags))
+
+    http = _own_row(ctx, hooks, "http_boot", ss_tcp, name="HTTP",
+        desc="אתחול (boot/vmlinuz/initrd) ו-API הסוכן", target="תחנות, סוכן",
+        note="לפתוח ב-FW: TCP 8080 מוילן ההפצה לשרת")
+    if http["state"] == "ok":
+        # מאזין ודלוק — ועכשיו גם עונה? הראיה של #822 נשארת.
+        status = hooks["http_get"](
+            server_base.rstrip("/") + "/boot/menu?mac=00:00:00:00:00:00")
+        if status == 200:
+            http["detail"] = f"{server_base} עונה על תפריט האתחול"
+        elif status is None:
+            http["state"], http["detail"] = "bad", f"{server_base} לא עונה"
+        else:
+            http["state"], http["detail"] = "warn", f"{server_base} החזיר {status}"
+    entries.append(http)
 
     # ‏#703 (tracer 5): הקונסולה מוגשת ב-HTTPS בלבד (תעודה חתומה-עצמית).
-    entries.append(_port("http_console", "HTTPS", "8081", "tcp",
-        "קונסולת הניהול (TLS, תעודה עצמית)", "דפדפן (מנהל)", "off",
-        "אין hook שקורא את ההאזנה על הפורט הזה — לא אומת",
-        "לפתוח ב-FW: TCP 8081 (HTTPS) מתחנת הניהול בלבד — לא לוילן הכיתות"))
+    entries.append(_own_row(ctx, hooks, "http_console", ss_tcp, name="HTTPS",
+        desc="קונסולת הניהול (TLS, תעודה עצמית)", target="דפדפן (מנהל)",
+        note="לפתוח ב-FW: TCP 8081 (HTTPS) מתחנת הניהול בלבד — לא לוילן הכיתות"))
 
+    proxy_bind = ports.bind_addresses(ss_out, 4011)
+    proxy_on = any(f["proxy"] for f in dhcp_flags)
+    p_state, p_detail = ports.measured_state(
+        proxy_on, None if proxy_bind is None else bool(proxy_bind))
     entries.append(_port("pxe_proxy", "PXE", "4011", "udp", "PXE proxy",
-        "תחנות", "off", "אין hook שקורא את ההאזנה על הפורט הזה — לא אומת",
-        "לפתוח ב-FW: UDP 4011 מוילן ההפצה לשרת"))
+        "תחנות", p_state, p_detail, "לפתוח ב-FW: UDP 4011 מוילן ההפצה לשרת",
+        enabled=proxy_on, listening=None if proxy_bind is None else bool(proxy_bind),
+        bind=proxy_bind, toggle="api", toggle_url=ports.ELSEWHERE["pxe_proxy"],
+        off_means="ברשת עם DHCP זר תחנות לא יקבלו הפניית PXE מהשרת הזה",
+        interfaces=dhcp_flags))
 
     sender = sender_check(_hook_pids(hooks), _send_in_progress(ctx))
     entries.append(_port("multicast", "Multicast", "9000–9001", "udp",
         "שידור אימג׳ (fanout)", "תחנות", sender["state"], sender["detail"],
-        "לפתוח ב-FW: UDP 9000–9001 בתוך וילן ההפצה בלבד"))
+        "לפתוח ב-FW: UDP 9000–9001 בתוך וילן ההפצה בלבד",
+        off_means="אין מתג: זה udp-sender של סבב פתוח, לא מאזין קבוע — "
+                  "עצירת סבב היא הכיבוי (מאחורי הקלדת שם)"))
 
     monitor_on = monitor.stations_enabled(ctx.conn)
     entries.append(_port("monitor", "Monitor (RFB)", str(monitor.MONITOR_PORT),
@@ -443,12 +555,19 @@ def ports_snapshot(ctx, hooks: dict, server_base: str) -> list[dict]:
          if monitor_on else
          "המתג monitor:stations כבוי — אף תחנה לא מפעילה שירות צפייה"),
         f"לפתוח ב-FW: TCP {monitor.MONITOR_PORT} מהשרת לוילן ההפצה — "
-        "רק כשהמתג דלוק"))
+        "רק כשהמתג דלוק",
+        enabled=monitor_on, toggle="confirm", toggle_url=ports.ELSEWHERE["monitor"],
+        confirm_word=monitor.MONITOR_CONFIRM, confirm_when="on",
+        off_means="אין צפייה/שליטה מרחוק במחשבי בנייה ושיכפול; אף תחנה לא "
+                  "מפעילה שירות RFB"))
 
-    entries.append(_port("kiosk", "HTTP", str(KIOSK_PORT), "tcp",
-        "אפליקציית הקיוסק (מחשבי שיכפול)", "דפדפן (קלונרים)", "off",
-        "אין hook שקורא את ההאזנה על הפורט הזה — לא אומת",
-        f"לפתוח ב-FW: TCP {KIOSK_PORT} מהקלונרים לשרת"))
+    entries.append(_own_row(ctx, hooks, "kiosk", ss_tcp, name="HTTP",
+        desc="אפליקציית הקיוסק (מחשבי שיכפול)", target="דפדפן (קלונרים)",
+        note=f"לפתוח ב-FW: TCP {KIOSK_PORT} מהקלונרים לשרת"))
+
+    entries.append(_own_row(ctx, hooks, "interserver", ss_tcp, name="HTTPS (mTLS)",
+        desc="רישום וסנכרון של שרתים משניים (#740)", target="שרת ראשי/משני",
+        note="לפתוח ב-FW: TCP 8443 בין השרתים בלבד"))
 
     ssh_state = console_ssh.snapshot(ctx, hooks, server_base)
     stations_check = next(
@@ -457,7 +576,34 @@ def ports_snapshot(ctx, hooks: dict, server_base: str) -> list[dict]:
         "מעטפת טכנאי + dropbear בתחנות שעולות עם imagectl.debug",
         "תחנות", stations_check["state"], stations_check["detail"],
         f"לפתוח ב-FW: TCP {ssh_switch.SSH_PORT} מתחנת הטכנאי לתחנות — רק "
-        "בזמן איתור תקלה, לא כברירת מחדל"))
+        "בזמן איתור תקלה, לא כברירת מחדל",
+        enabled=ssh_state["stations"]["enabled"], toggle="confirm",
+        toggle_url=ports.ELSEWHERE["ssh_stations"],
+        confirm_word=ssh_state["stations"]["confirm_word"], confirm_when="on",
+        off_means="תחנות עולות בלי dropbear ובלי מעטפת טכנאי — אין SSH אליהן"))
+
+    # ‏SSH לשרת — שורה לכל כרטיס: וילן ההפצה ווילן הכיתות אינם אותו סיכון.
+    for nic in ssh_state["interfaces"]:
+        listening = nic["listening"]
+        if not ssh_state["listeners"]["checked"]:
+            s_state, s_detail = "unknown", (
+                f"טבלת הסוקטים לא נקראה ({ssh_state['listeners']['reason']})")
+        elif ssh_state["listeners"]["wildcard"]:
+            s_state, s_detail = "bad", "sshd מאזין על כל הממשקים (0.0.0.0/::) — כולל כאן"
+        else:
+            s_state, s_detail = ports.measured_state(nic["enabled"], bool(listening))
+        entries.append(_port(f"ssh_server:{nic['name']}", "SSH", str(ssh_switch.SSH_PORT),
+            "tcp", f"sshd של השרת על {nic['name']}", "טכנאי (למכונת השרת)",
+            s_state, s_detail,
+            f"לפתוח ב-FW: TCP {ssh_switch.SSH_PORT} מתחנת הניהול לשרת — לא מוילן הכיתות",
+            enabled=nic["enabled"],
+            listening=None if listening is None else bool(listening),
+            bind=[f"{a}:{ssh_switch.SSH_PORT}" for a in nic["addresses"]] if listening else [],
+            toggle="confirm", toggle_url=f"/api/console/ssh/interfaces/{nic['name']}",
+            confirm_word=nic["name"], confirm_when="on_or_last_off",
+            off_means=f"אין SSH לשרת מהכרטיס {nic['name']}; סגירת הכרטיס האחרון "
+                      "= אין SSH לשרת מאף רשת (הדלת האחרונה)",
+            interface=nic["name"], addresses=nic["addresses"]))
 
     return entries
 
@@ -474,11 +620,15 @@ def create_health_router(ctx, server_base: str, hooks: dict | None = None) -> AP
         return collect(ctx, hooks, server_base)
 
     @router.get("/ports")
-    def ports(user=Depends(current_user)):
+    def list_ports(user=Depends(current_user)):
         """‏#822: מסך הפורטים. מחובר בלבד — בניגוד ל-/health, admin
         אינו נדרש: אלה פורטי תשתית ולא רשימת דלתות פתוחות למנהל בלבד."""
         del user
         return ports_snapshot(ctx, hooks, server_base)
 
     router.include_router(console_ssh.create_ssh_router(ctx, hooks, server_base))
+    # ‏#996: המתג לכל פורט — אותם hooks (ss/ss_tcp/port_listeners) כמו החיווי.
+    router.include_router(ports.create_ports_router(
+        ctx, lambda: ports_snapshot(ctx, hooks, server_base),
+        hooks.get("port_listeners")))
     return router

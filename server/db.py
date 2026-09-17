@@ -293,6 +293,7 @@ CREATE TABLE IF NOT EXISTS shrink_records (
     ntfs_bytes   INTEGER,              -- גודל מערכת הקבצים לפני הכיווץ
     opened_at    TEXT NOT NULL,
     note         TEXT,                 -- למה הרשומה עדיין פתוחה (הטבלה הוחזרה, המתיחה נפלה)
+    partitions   TEXT,                 -- #929: JSON, **כל** המחיצות שכווצו; העמודות למעלה = הראשונה
     closed_at    TEXT,
     closed_by    TEXT                  -- agent | console | <user>
 );
@@ -494,6 +495,9 @@ ADDED_COLUMNS = [
     ("room_rounds", "source_disk", "TEXT"),
     ("room_rounds", "source_task_id", "TEXT"),
     ("room_rounds", "live_manifest_json", "TEXT"),
+    # ‏#929: רשומת כיווץ לדיסק עם כמה מחיצות. NULL בשורה שנפתחה לפני —
+    # רשומה של מחיצה אחת, והעמודות idx/start_sector/… הן היא.
+    ("shrink_records", "partitions", "TEXT"),
 ]
 
 

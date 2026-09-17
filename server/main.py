@@ -269,9 +269,14 @@ def main() -> None:
 
     import uvicorn
 
-    from . import dhcp_host
+    from . import dhcp_host, ports
     from .app import (create_agent_app, create_console_app, create_kiosk_app,
                       create_runtime)
+
+    # ‏#996: מנהל המאזינים — נבנה לפני ה-runtime כי הוא מוזרק אליו
+    # (‏health_hooks["port_listeners"], כמו כל hook אחר), ומאוכלס אחרי
+    # שהאפליקציות קיימות.
+    listeners = ports.Listeners()
 
     # ‏#731/#738: runtime **אחד** — ‏DB, ספרייה, שולח, ה-sweep החד-פעמי —
     # ושלוש אפליקציות מעליו. תהליך אחד, שלושה מאזינים; לא שלושה תהליכים
@@ -296,22 +301,25 @@ def main() -> None:
                              extra_cmdline=tuple(args.extra_cmdline.split()),
                              console_allowed_networks=console_allowed_networks,
                              repo_dir=args.repo_dir,
-                             console_tls=console_tls)
+                             console_tls=console_tls,
+                             health_hooks={"port_listeners": listeners})
     agent_app = create_agent_app(runtime)
     console_app = create_console_app(runtime)
     kiosk_app = create_kiosk_app(runtime)
 
-    agent_server = uvicorn.Server(uvicorn.Config(
-        agent_app, host=args.host, port=args.port, log_level="info"))
+    # ‏#996: ה-`Config` נבנה פעם אחת; ה-`Server` נבנה מחדש בכל פתיחה
+    # (‏uvicorn.Server אינו רב-פעמי), ולכן המנהל מקבל **יצרנים**.
+    agent_config = uvicorn.Config(
+        agent_app, host=args.host, port=args.port, log_level="info")
     # ‏#770: הקונסולה על כרטיס הניהול (`--console-host`) בלבד — לא `--host`.
     # ‏#703 (tracer 5): ‏`ssl_certfile`/`ssl_keyfile` של uvicorn (stdlib ssl)
     # על **כל** מאזין קונסולה — ורק עליהם; הסוכן והקיוסק נשארים http.
     console_ssl = console_tls.uvicorn_kwargs() if console_tls else {}
     console_scheme = "https" if console_tls else "http"
-    console_server = uvicorn.Server(uvicorn.Config(
+    console_configs = [uvicorn.Config(
         console_app, host=args.console_host, port=args.console_port,
-        log_level="info", **console_ssl))
-    console_servers = [console_server]
+        log_level="info", **console_ssl)]
+    console_hosts = [args.console_host]
     console_binds = f"{console_scheme}://{args.console_host}:{args.console_port}"
     # ‏#904: כשכרטיס הניהול אינו loopback, הקונסולה מאזינה **גם** על
     # ‏127.0.0.1 — חלון ה-pairing והפינוי של המשני (`require_local`,
@@ -323,12 +331,20 @@ def main() -> None:
     # של #770.
     from .interserver_auth import is_loopback
     if not is_loopback(args.console_host):
-        console_servers.append(uvicorn.Server(uvicorn.Config(
+        console_configs.append(uvicorn.Config(
             console_app, host="127.0.0.1", port=args.console_port,
-            log_level="info", **console_ssl)))
+            log_level="info", **console_ssl))
+        console_hosts.append("127.0.0.1")
         console_binds += f" + {console_scheme}://127.0.0.1:{args.console_port}"
-    kiosk_server = uvicorn.Server(uvicorn.Config(
-        kiosk_app, host=args.host, port=args.kiosk_port, log_level="info"))
+    kiosk_config = uvicorn.Config(
+        kiosk_app, host=args.host, port=args.kiosk_port, log_level="info")
+    listeners.add("http_boot", [lambda: uvicorn.Server(agent_config)],
+                  port=args.port, hosts=[args.host])
+    listeners.add("http_console",
+                  [(lambda cfg=cfg: uvicorn.Server(cfg)) for cfg in console_configs],
+                  port=args.console_port, hosts=console_hosts)
+    listeners.add("kiosk", [lambda: uvicorn.Server(kiosk_config)],
+                  port=args.kiosk_port, hosts=[args.host])
     print(f"agent on {args.host}:{args.port}"
           f"  console on {console_binds}"
           f"  kiosk on {args.host}:{args.kiosk_port}")
@@ -341,8 +357,8 @@ def main() -> None:
         print("console TLS: off (loopback only)")
 
     # ‏#740: מאזין ה-enrollment הבין-שרתי (mTLS 1.3) עולה רק על משני, וכשניתן
-    # ‏--interserver-host. הוא threaded (pyOpenSSL terminator) לצד ה-uvicorn.
-    interserver = None
+    # ‏--interserver-host. הוא threaded (pyOpenSSL terminator) לצד ה-uvicorn —
+    # ‏#996: גם הוא במנהל המאזינים, כמתג `interserver` (start/stop של ה-thread).
     from . import storage_nodes
     if args.interserver_host and storage_nodes.role(runtime.conn) == "secondary":
         from . import interserver_api
@@ -352,41 +368,41 @@ def main() -> None:
             host_sans.append(parse_interserver_url(args.interserver_url)[0])
         ident = storage_nodes.ensure_identity(runtime.conn, args.data_dir,
                                               host_sans=host_sans)
-        interserver = interserver_api.InterserverTLSServer(
-            runtime.ctx, args.interserver_host, args.interserver_port,
-            ident["cert_pem"], ident["key_pem"], data_dir=args.data_dir).start()
-        print(f"interserver (mTLS) on {args.interserver_host}:{interserver.port}"
-              f"  node_id {ident['node_id']}  spki {ident['server_spki'][:16]}…")
 
-    try:
-        asyncio.run(serve_all([agent_server, *console_servers, kiosk_server]))
-    finally:
-        if interserver is not None:
-            interserver.stop()
+        def start_interserver():
+            server = interserver_api.InterserverTLSServer(
+                runtime.ctx, args.interserver_host, args.interserver_port,
+                ident["cert_pem"], ident["key_pem"], data_dir=args.data_dir).start()
+            print(f"interserver (mTLS) on {args.interserver_host}:{server.port}"
+                  f"  node_id {ident['node_id']}  spki {ident['server_spki'][:16]}…")
+            return server
+
+        listeners.add_threaded("interserver", start=start_interserver,
+                               stop=lambda server: server.stop(),
+                               port=args.interserver_port,
+                               hosts=[args.interserver_host])
+
+    # המצב השמור (‏`port:<id>` ב-DB) קובע מה נקשר בעלייה.
+    listeners.want_open = lambda port_id: ports.enabled(runtime.conn, port_id)
+    asyncio.run(serve_all(listeners))
 
 
-async def serve_all(servers) -> None:
-    """מריץ כמה `uvicorn.Server` במקביל בתהליך אחד, עם כיבוי מתואם.
+async def serve_all(listeners) -> None:
+    """מריץ את כל המאזינים בתהליך אחד, עם כיבוי מתואם — ‏#996: דרך
+    `ports.Listeners`, שגם סוגר ופותח אותם בזמן ריצה.
 
-    ברגע שאחד יצא — נורמלית (Ctrl-C) או בחריגה — כל השאר מתבקשים לצאת
-    (`should_exit`), ואז אנחנו ממתינים להם לפני החזרה. חריגה מכל שרת
-    (כשל bind הוא הנפוץ — uvicorn עושה `sys.exit` ל-SystemExit) מתגלגלת
-    החוצה **אחרי** שכולם נעצרו: שרת ניהול שלא הצליח לתפוס את הפורט אינו
-    'עלה בהצלחה', ואסור שיֵרָאה כך בזמן שהסוכן ממשיך לבדו (עיקרון 5)."""
-    tasks = [asyncio.ensure_future(s.serve()) for s in servers]
-    try:
-        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-    finally:
-        # מספיק שאחד יצא כדי להוריד את כולם — אין מצב חצי-שרת.
-        for server in servers:
-            server.should_exit = True
-    pending = [t for t in tasks if not t.done()]
-    if pending:
-        await asyncio.wait(pending)
-    # מגלגלים החוצה את החריגה הראשונה שנפלה (bind וכו'), אם הייתה.
-    for task in tasks:
-        if not task.cancelled() and task.exception() is not None:
-            raise task.exception()
+    ‏`listeners.want_open(port_id)` הוא המצב השמור ב-DB: פורט שהמפעיל כיבה אינו
+    מופעל כלל בעלייה. ברגע שמאזין יצא **שלא כי ביקשנו** — Ctrl-C או
+    חריגה — כל השאר מתבקשים לצאת, ואז ממתינים להם לפני החזרה. חריגה
+    (כשל bind בעלייה הוא הנפוץ) מתגלגלת החוצה **אחרי** שכולם נעצרו: שרת
+    ניהול שלא הצליח לתפוס את הפורט אינו 'עלה בהצלחה', ואסור שיֵרָאה כך
+    בזמן שהסוכן ממשיך לבדו (עיקרון 5). נבדק ב-tests/test_port_listeners.py."""
+    # מה שהמפעיל כיבה בדף הפורטים לא עולה — ונאמר, כדי שהשורה
+    # "agent on … kiosk on …" למעלה לא תיקרא כאילו הכול מאזין.
+    disabled = [p for p in listeners.ids() if not listeners.want_open(p)]
+    if disabled:
+        print(f"ports disabled by operator (not bound): {', '.join(disabled)}")
+    await listeners.serve()
 
 
 if __name__ == "__main__":

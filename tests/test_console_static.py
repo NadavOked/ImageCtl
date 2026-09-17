@@ -180,14 +180,16 @@ def test_images_tree_node_uses_the_folder_icon():
 
 # ---------- #954 גל 2: ספריית האימג'ים ----------
 
-def test_static_includes_are_at_7_7():
+def test_static_includes_are_at_7_9():
     """גל 2 = ‏7.0; גל 3 (מחשבים) = ‏7.1; גל 3א = ‏7.3; השער (מוניטור רק בדף
     המוניטור) = ‏7.4; גל 5 (בריאות + פורטים) = ‏7.5; גל 6 (מוניטור, דרייברים,
-    הגדרות, הרשאות, יומן + WoL למחשב) מחליף שוב JS+CSS+HTML — `?v=` עולה
-    ל-7.6 (מטמון הדפדפן). שוויון על כל ה-includes — bump חלקי הוא הבאג."""
+    הגדרות, הרשאות, יומן + WoL למחשב) = ‏7.6; #703 (TLS) = ‏7.7; דף הפורטים
+    לחוזה #996/#1015 וגל 7 (סניפים ושרת משני) נכנסו יחד בשער — `?v=` עולה
+    ל-7.9 (מטמון הדפדפן). שוויון על כל ה-includes — bump חלקי הוא הבאג."""
+
     page = _index()
     versions = {float(v) for v in re.findall(r'\?v=(\d+\.\d+)"', page)}
-    assert versions == {7.7}, versions
+    assert versions == {7.9}, versions
 
 
 def test_old_images_page_code_is_gone():
@@ -294,22 +296,25 @@ def test_health_and_ports_pages_are_tables_from_the_api_with_a_switch_per_row():
     עם מתג בכל שורה (נדב 17/09 06:25): המתגים של היום (DHCP, proxy, מוניטור,
     SSH לתחנות, SSH לשרת × כרטיס) קוראים לאותם endpoints; לשאר — החוזה של
     #996 (enabled/bind/toggle/off_means, PUT /ports/{id}), ובלעדיו המתג
-    מוסבר ולא מנוטרל. הכרטיסים עם "פתיחה/סגירה/שינוי" המנוטרלים — נמחקו."""
+    מוסבר ולא מנוטרל. הכרטיסים עם "פתיחה/סגירה/שינוי" המנוטרלים — נמחקו.
+    ‏#1015 (מקור אחד לכל שורה): portServerToggle משתמש ב-portToggleUrl(p)
+    (toggle_url של השורה, ואם חסר — /ports/{id} כמו קודם) ומכבד confirm_when."""
     js = _console_js()
     for needed in ("function health()", "function healthRows(", "function healthUpdateCard(", "async function loadHealthUpdate(",
                    'unknown: ["unk", "לא נבדק"]', 'off: ["", "כבוי"]', '["agent_loop:", "לולאות אתחול", "agent_loops"]',
                    "function ports()", "function portRows(", "function portSwitchHtml(", "function portServerToggle(",
-                   'put(`/ports/${encodeId(p.id)}`, { enabled: enabling, ...extra })', 'mustEqual: ME.server_name',
+                   "function portConfirmDirection(", "function portToggleUrl(",
+                   "await put(portToggleUrl(p), { enabled: enabling, ...extra })", "const word = p.confirm_word || ME.server_name", 'mustEqual: word',
                    "nicBody(n, { enabled: false, proxy: false })",
                    '"/ssh/stations"', "`/ssh/interfaces/${encodeId(nic.name)}`", 'mustEqual: "imagectl.monitor"',
-                   'role="switch"', "דורש API (#996)",
+                   'role="switch"', "דורש API (#996)", "havePortsDhcp", "havePortsSshServer",
                    'health: { crumb: "בריאות ושירותים", title: "בריאות ושירותים", tabs: [], render: health, load: loadHealth, own: true }',
                    'render: ports, load: loadPorts, own: true }'):
         assert needed in js, needed
     for gone in ('id="ssh-body"', "function loadSsh(", "function sshLight(", "SSH_LIGHT", 'title="בקרוב (נדרש endpoint)"',
                  'tabs: ["סקירה", "שירותים", "בדיקות"]', "health: [health,", "ports: [ports]"):
         assert gone not in js, gone
-    block = js[js.index("/* ---------- #954 גל 5: רשת › פורטים"):js.index("/* ---------- #954 גל 6: מוניטור — הרשימה")]   # גל 6: המוניטור אחרי הפורטים
+    block = js[js.index("/* ---------- #954 גל 5/#996: רשת › פורטים"):js.index("/* ---------- #954 גל 6: מוניטור — הרשימה")]   # גל 6: המוניטור אחרי הפורטים
     assert "disabled" not in block, "כפתור מנוטרל במקום 'דורש API' (README §8)"
     assert "prompt(" not in block and "confirm(" not in block.replace("confirmSheet(", ""), "prompt/confirm חסומים — רק sheet()"
     css = (STATIC / "console.css").read_text(encoding="utf-8")

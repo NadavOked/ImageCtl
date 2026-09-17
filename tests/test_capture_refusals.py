@@ -201,7 +201,9 @@ def capture_run(tmp_path, *, present=True, image=GPT_DISK, stubs=None,
         # (‏#906) ול-ui.sh, ולכן גם הם כאן — פונקציה שאינה טעונה היא כשל שקט.
         f". {posix(AGENT)}/lib/ui.sh; . {posix(AGENT)}/lib/attended.sh; "
         # ‏#926: shrinkmem.sh — הרשומה בשרת לפני הכיווץ; נטען אחרי shrink.sh כמו בסוכן.
-        f". {posix(AGENT)}/lib/shrink.sh; . {posix(AGENT)}/lib/shrinkmem.sh; "
+        # ‏#929: shrinkplan.sh (המדידה והשאלה) לפניו, shrinkoffer.sh (ההצעה באתחול) אחריו.
+        f". {posix(AGENT)}/lib/shrinkplan.sh; . {posix(AGENT)}/lib/shrink.sh; "
+        f". {posix(AGENT)}/lib/shrinkmem.sh; . {posix(AGENT)}/lib/shrinkoffer.sh; "
         f". {posix(AGENT)}/lib/capture.sh; "
         f'node_is_block() {{ grep -qxF "$1" {posix(nodes)!r} 2>/dev/null; }}; '
         # ‏shell_pre רץ **אחרי** שרשרת הטעינה, ולכן הוא יכול להחליף

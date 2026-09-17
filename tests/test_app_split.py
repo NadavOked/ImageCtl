@@ -6,7 +6,8 @@
   ‏DB (‏CLAUDE.md gotcha: שני חיבורי sqlite = "cannot commit").
 - **אתחול חד-פעמי**: ה-sweep רץ **פעם אחת** לכל runtime, לא לכל אפליקציה.
 - **כיבוי מתואם / כשל bind**: ‏`serve_all` מוריד את כל השרתים כשאחד יצא,
-  ומגלגל החוצה חריגת bind במקום להיראות כאילו עלה (עיקרון 5).
+  ומגלגל החוצה חריגת bind במקום להיראות כאילו עלה (עיקרון 5) — ‏#996
+  העביר את זה ל-`ports.Listeners`, ונבדק ב-`test_port_listeners.py`.
 
 הבקרה השלילית (בגוף ה-PR): מוטציה שבה כל אפליקציה בונה runtime משלה —
 זהות הופכת שקרית וה-sweep רץ פעמיים, ובדיוק שני הטסטים האלה נופלים.
@@ -27,7 +28,6 @@ except ImportError:  # pragma: no cover
 from server import app as app_module
 from server.app import (create_agent_app, create_console_app, create_kiosk_app,
                         create_runtime)
-from server.main import serve_all
 
 
 def _runtime(tmp_path: Path, images_root: Path):
@@ -193,43 +193,3 @@ def test_startup_sweep_runs_once_per_runtime(tmp_path, images_root, monkeypatch)
         assert len(calls) == 1
     finally:
         rt.ctx.sender.stop()
-
-
-# --- כיבוי מתואם וכשל bind (serve_all) -------------------------------------
-
-class _FakeServer:
-    """‏uvicorn.Server מזויף: אותו חוזה מינימלי ש-`serve_all` נשען עליו —
-    ‏`serve()` קורוטינה ו-`should_exit` שמסמן לו לצאת."""
-
-    def __init__(self, mode: str):
-        self.mode = mode
-        self.should_exit = False
-        self.served = False
-
-    async def serve(self):
-        import asyncio
-        self.served = True
-        if self.mode == "quick":
-            return                       # יצא מיד (Ctrl-C על שרת אחד)
-        if self.mode == "raise":
-            raise OSError("address already in use")   # כשל bind
-        while not self.should_exit:      # "wait": חי עד שמבקשים ממנו לצאת
-            await asyncio.sleep(0.005)
-
-
-def test_serve_all_coordinated_shutdown():
-    import asyncio
-    quick, waiter = _FakeServer("quick"), _FakeServer("wait")
-    asyncio.run(serve_all([quick, waiter]))
-    # השרת שיצא מיד הוריד גם את זה שהיה ממתין.
-    assert waiter.served and waiter.should_exit
-    assert quick.should_exit
-
-
-def test_serve_all_bind_failure_propagates_and_stops_others():
-    import asyncio
-    failing, waiter = _FakeServer("raise"), _FakeServer("wait")
-    with pytest.raises(OSError):
-        asyncio.run(serve_all([failing, waiter]))
-    # כשל bind מגלגל חריגה **וגם** מוריד את השרת השני — אין חצי-שרת.
-    assert waiter.should_exit

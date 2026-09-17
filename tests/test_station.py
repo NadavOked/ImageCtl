@@ -479,8 +479,9 @@ def test_a_wake_failure_does_not_stop_the_rest(tmp_path, images_root, clock):
     server = {"admin": client, "deploy": client, "anon": TestClient(app)}
     setup_classroom(server)
 
+    # ‏#997: `mac` חובה (זהות הפותח). פותח שאינו בכיתה — שתי המכונות מוערות.
     response = server["anon"].post("/api/v1/agent/sessions", json={
-        "username": "noc", "password": "admin-pass-123", "mac": None,
+        "username": "noc", "password": "admin-pass-123", "mac": "aa:bb:cc:00:00:10",
         "group_id": "grp_LAB1", "image_id": "img_7f3a91"})
     assert response.status_code == 200
     assert calls["n"] == 2                      # שתיהן נוסו למרות שהראשונה נפלה

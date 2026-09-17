@@ -345,6 +345,90 @@ test('what could not be read is "לא נקרא", never "כבוי": /ssh, /monito
   assert.doesNotMatch(html,/<table/);
 });
 
+/* ---------- #1015: החוזה האמיתי — dhcp מרוכז, ssh_server:<nic> מוכן,
+   interserver, bind כרשימה — מול PR #1015 / docs/interfaces.md §16 ---------- */
+const p1015=(id,name,p,proto,state,detail,extra={})=>({id,name,port:p,proto,desc:'desc '+id,target:'target '+id,state,detail,
+  note:'לפתוח ב-FW: '+p,enabled:null,listening:null,bind:[],toggle:'none',toggle_url:null,confirm_word:null,confirm_when:null,off_means:'',...extra});
+const PORTS_1015=[
+  p1015('tftp','TFTP','69','udp','ok','dnsmasq מגיש',{enabled:true,listening:true,bind:['0.0.0.0:69'],off_means:'אין shim/GRUB — מחשבים לא יעלו ב-PXE'}),
+  p1015('dhcp','DHCP','67','udp','ok','dnsmasq מאזין',{enabled:true,listening:true,bind:['0.0.0.0:67'],toggle:'confirm',
+    toggle_url:'/api/console/net/interfaces/{name}',confirm_when:'on',off_means:'תחנות לא יקבלו כתובת ולא dhcp-boot — אין PXE מהשרת הזה',
+    interfaces:[{name:'ens19',enabled:true,proxy:false}]}),
+  p1015('http_boot','HTTP','8080','tcp','ok','uvicorn',{enabled:true,listening:true,bind:['0.0.0.0:8080'],toggle:'confirm',
+    toggle_url:'/api/console/ports/http_boot',confirm_when:'off',off_means:'אין PXE ואין hello — כל סבב פעיל נכשל בגלוי'}),
+  p1015('http_console','HTTPS','8081','tcp','ok','uvicorn',{enabled:true,listening:true,bind:['10.44.10.1:8081'],toggle:'confirm',
+    toggle_url:'/api/console/ports/http_console',confirm_when:'off',off_means:'אתה ננעל בחוץ'}),
+  p1015('pxe_proxy','PXE','4011','udp','ok','proxy פעיל',{enabled:true,listening:true,bind:['0.0.0.0:4011'],toggle:'api',
+    toggle_url:'/api/console/net/interfaces/{name}',interfaces:[{name:'ens20',enabled:false,proxy:true}]}),
+  p1015('multicast','Multicast','9000–9001','udp','off','אין סבב רץ'),
+  p1015('monitor','Monitor (RFB)','5900','tcp','off','המתג monitor:stations כבוי',{enabled:false,toggle:'confirm',
+    toggle_url:'/api/console/monitor/settings',confirm_word:'imagectl.monitor',confirm_when:'on',off_means:'אין צפייה מרחוק'}),
+  p1015('kiosk','HTTP','8082','tcp','ok','uvicorn',{enabled:true,listening:true,bind:['0.0.0.0:8082'],toggle:'api',
+    toggle_url:'/api/console/ports/kiosk',off_means:'מסך התחנה לא נטען; הסוכן ממשיך לעבוד'}),
+  p1015('interserver','HTTPS (mTLS)','8443','tcp','ok','uvicorn',{enabled:true,listening:true,bind:['10.44.10.1:8443'],toggle:'api',
+    toggle_url:'/api/console/ports/interserver',off_means:'משני לא יכול להירשם או לסנכרן'}),
+  p1015('ssh_stations','SSH','22','tcp','off','imagectl.debug לא בשורת הקרנל',{enabled:false,toggle:'confirm',
+    toggle_url:'/api/console/ssh/stations',confirm_word:'imagectl.debug',confirm_when:'on',off_means:'תחנות עולות בלי dropbear'}),
+  p1015('ssh_server:ens18','SSH','22','tcp','ok','מאזין 10.44.10.1:22 · אומת',{enabled:true,listening:true,bind:['10.44.10.1:22'],
+    toggle:'confirm',toggle_url:'/api/console/ssh/interfaces/ens18',confirm_word:'ens18',confirm_when:'on_or_last_off',
+    off_means:'אין SSH לשרת דרך הכרטיס הזה',interface:'ens18',addresses:['10.44.10.1/24']}),
+  p1015('ssh_server:ens19','SSH','22','tcp','off','סגור · אומת',{enabled:false,listening:false,bind:[],
+    toggle:'confirm',toggle_url:'/api/console/ssh/interfaces/ens19',confirm_word:'ens19',confirm_when:'on_or_last_off',
+    off_means:'אין SSH לשרת דרך הכרטיס הזה',interface:'ens19',addresses:['10.44.9.10/24']}),
+  p1015('ssh_server:ens20','SSH','22','tcp','unknown','טבלת הסוקטים לא נקראה',{enabled:false,listening:null,bind:[],
+    toggle:'confirm',toggle_url:'/api/console/ssh/interfaces/ens20',confirm_word:'ens20',confirm_when:'on_or_last_off',
+    off_means:'אין SSH לשרת דרך הכרטיס הזה',interface:'ens20',addresses:['10.44.11.1/24']}),
+];
+
+test('ports page (#1015 contract): rows come only from /ports — no duplicate dhcp/ssh_server rows, bind is a list, confirm follows confirm_when',async()=>{
+  const {run,requests}=setup({'/ports':PORTS_1015}); run('current="ports"');
+  await run('loadPorts()');
+  const html=run('ports()'); balanced(html);
+  // מקור אחד לכל שורה: אין עוד שורות DHCP/SSH-לשרת שהדף בונה בעצמו מ-/net/interfaces או /ssh
+  assert.equal((html.match(/desc dhcp</g)||[]).length,1,'exactly one DHCP row — no duplicate built from /net/interfaces');
+  for (const nic of ['ens18','ens19','ens20'])
+    assert.equal((html.match(new RegExp('desc ssh_server:'+nic+'<','g'))||[]).length,1,'exactly one SSH-to-server row per NIC — no duplicate built from /ssh');
+  assert.equal((html.match(/<tr><td>/g)||[]).length,PORTS_1015.length,'one row per /ports entry, nothing added, nothing dropped');
+  // bind הוא רשימה — כל הכתובות, mono, ולא "a,b" משרשור מחרוזות
+  const kiosk=row(html,'>desc kiosk<');
+  assert.match(kiosk,/<span class="mono">0\.0\.0\.0:8082<\/span>/);
+  // kiosk (8082) — toggle:"api" → PUT /ports/kiosk, בלי הקלדה
+  run("portSwitch('kiosk')");
+  let s=run('sheets.at(-1)'); assert.ok(!s.verify);
+  await s.onSubmit();
+  assert.deepEqual(requests.filter((r)=>r.method==='PUT').at(-1),{url:'/ports/kiosk',method:'PUT',body:{enabled:false}});
+  // DHCP — המתג ממשיך לפנות ל-PUT /net/interfaces/{n} (toggle_url מצביע לשם), לא ל-/ports/dhcp (409 בשרת האמיתי)
+  run("portSwitch('dhcp')");
+  s=run('sheets.at(-1)'); assert.equal(s.verify.mustEqual,'ens19');
+  await s.onSubmit();
+  const dhcpPut=requests.find((r)=>r.method==='PUT' && r.url==='/net/interfaces/ens19');
+  assert.ok(dhcpPut,'DHCP switch must PUT /net/interfaces/ens19'); assert.equal(dhcpPut.body.enabled,false);
+  assert.ok(!requests.some((r)=>r.url==='/ports/dhcp'),'PUT /ports/dhcp must never be sent — the row is not a /ports/{id} switch');
+  // confirm_when="off" (8080/8081): הדלקה אינה דורשת הקלדה, רק כיבוי
+  let s2=setup({'/ports':PORTS_1015.map((p)=>p.id==='http_boot'?{...p,enabled:false}:p)}); s2.run('current="ports"');
+  await s2.run('loadPorts()'); s2.run('ports()');
+  s2.run("portSwitch('http_boot')");
+  const sb=s2.run('sheets.at(-1)');
+  assert.ok(!sb.verify,'turning ON http_boot (confirm_when=off) must not ask for typed confirmation');
+  await sb.onSubmit();
+  assert.deepEqual(s2.requests.filter((r)=>r.method==='PUT').at(-1),{url:'/ports/http_boot',method:'PUT',body:{enabled:true}});
+  // confirm_when="on" (מוניטור): הדלקה דורשת את confirm_word מהשרת, לא ניחוש בלקוח
+  run("portSwitch('monitor')");
+  s=run('sheets.at(-1)'); assert.equal(s.verify.mustEqual,'imagectl.monitor');
+  await s.onSubmit();
+  assert.ok(requests.some((r)=>r.method==='PUT' && r.url==='/monitor/settings' && r.body.confirm==='imagectl.monitor'));
+  // ssh_server:<nic> — confirm_when="on_or_last_off": פתיחת ens19 (סגור) דורשת הקלדה, ישירות מ-toggle_url של השורה, בלי fetch נוסף ל-/ssh
+  run("portSwitch('ssh_server:ens19')");
+  s=run('sheets.at(-1)'); assert.equal(s.verify.mustEqual,'ens19'); assert.match(s.title,/פתיחת SSH לשרת על ens19/);
+  await s.onSubmit();
+  assert.ok(requests.some((r)=>r.method==='PUT' && r.url==='/ssh/interfaces/ens19' && r.body.enabled===true && r.body.confirm==='ens19'));
+  // סגירת ens18 — הדלת האחרונה הפתוחה (מחושב מתוך שורות ה-/ports עצמן) — עדיין הקלדה, עם אזהרה
+  run("portSwitch('ssh_server:ens18')");
+  s=run('sheets.at(-1)'); assert.equal(s.verify.mustEqual,'ens18'); assert.match(s.sub,/הדלת האחרונה/);
+  await s.onSubmit();
+  assert.ok(requests.some((r)=>r.method==='PUT' && r.url==='/ssh/interfaces/ens18' && r.body.enabled===false && r.body.confirm==='ens18'));
+});
+
 test('deploy role: the pages stay admin-only and no admin endpoint is requested',async()=>{
   const {run,requests}=setup({'/health':403,'/ssh':403,'/monitor/settings':403,'/update':403});
   run('ME={username:"mafitz",role:"deploy",server_name:"srv",capabilities:{}}; current="ports"');

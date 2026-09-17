@@ -2750,7 +2750,8 @@ function shrinkRecordsCard() {
     const m = findMachine(r.mac);
     const where = (m ? machineName(m) : r.mac) + (r.port != null ? ` · דיסק ${r.port} · SATA ${r.port - 1}` : "");
     const gb = (sectors) => sectors != null ? (sectors * 512 / 1e9).toFixed(1) + " GB" : "—";
-    const text = `מחיצה ${r.idx} כווצה לקליטה ולא הוחזרה לגודלה המקורי (${gb(r.size_sectors)})`;
+    // ‏#929: רשומה אחת לדיסק עם `partitions`; רשומה מלפני — המחיצה שבשדות העליונים.
+    const text = (r.partitions || [r]).map((p) => `מחיצה ${p.idx} כווצה לקליטה ולא הוחזרה לגודלה המקורי (${gb(p.size_sectors)})`).join("; ");
     // הסיבה מהסוכן (shrink-note): "הטבלה הוחזרה, מערכת הקבצים לא נמתחה" — למה עדיין פתוח.
     const note = r.note ? `<span class="sub">${esc(r.note)}</span>` : "";
     return [UI.name(r.serial || "—", r.model || ""), esc(where), esc(fmtWhen(r.opened_at)), `<span class="disk-smart">${esc(text)}</span>${note}`, esc(r.image_name || ""),
@@ -3671,15 +3672,20 @@ function healthCheckById(id) {
   return (Array.isArray(HEALTH) ? HEALTH : []).find((c) => c.id === id) || null;
 }
 
-/* ---------- #954 גל 5: רשת › פורטים — טבלה אחת, מתג בכל שורה ----------
-   docs/design/console-redesign/network-ports.md + הכרעות נדב 17/09 (06:12
-   המתגים כאן ולא בבריאות; 06:25 מתג לכל פורט). מחובר היום: DHCP 67
-   (PUT /net/interfaces/{n}), PXE proxy 4011 (אותו sheet של net.js), מוניטור
-   5900 (PUT /monitor/settings), SSH לתחנות ו-SSH לשרת × כרטיס (PUT /ssh/…).
-   לשאר — החוזה של #996: /ports מחזיר enabled / bind / toggle
-   ("api" | "confirm" | "none") / off_means, ו-PUT /ports/{id} {enabled, confirm?}.
-   כשהשדות חסרים (שרת ישן) המתג מוצג במצב "לא ידוע" ולחיצה מסבירה — לא
-   כפתור אפור (README §8). 🔒 = הקלדת שם (עיקרון 7) + "מה קורה אם מכבים". */
+/* ---------- #954 גל 5/#996: רשת › פורטים — טבלה אחת, מתג בכל שורה ----------
+   docs/design/console-redesign/network-ports.md + docs/interfaces.md §16.
+   מקור אחד לכל שורה: הכול מגיע מ-/ports (id, state/detail/bind, ו-#996:
+   enabled/listening/toggle/toggle_url/confirm_word/confirm_when/off_means).
+   DHCP 67, PXE proxy 4011, מוניטור 5900 ו-SSH לתחנות ממשיכים לפנות לאותם
+   endpoints כמו קודם (net.js / monitorToggle / sshToggle) — toggle_url של
+   השורה מצביע לשם ואינו /ports/{id}, ו-PUT /ports/{id} עליהן היה מקבל 409.
+   ‏SSH לשרת × כרטיס בא היום כשורה מוכנה לכל כרטיס (id `ssh_server:<nic>`)
+   עם toggle_url אמיתי (לא תבנית) — בלי fetch נוסף. שרת ישן שלא שולח שורת
+   ‏`dhcp`/`ssh_server:*` בכלל נופל לבנייה מקומית מ-/net/interfaces ו-/ssh,
+   כמו בגל 5 (`havePortsDhcp`/`havePortsSshServer` למטה). כשהשדות חסרים
+   המתג מוצג במצב "לא ידוע" ולחיצה מסבירה — לא כפתור אפור (README §8).
+   🔒 = הקלדת שם (עיקרון 7); ‏confirm_when קובע כיוון ההקלדה — לא ניחוש
+   בלקוח (#1015). "מה קורה אם מכבים" מהשרת (`off_means`) כשקיים. */
 let SSH_STATE = null, sshError = "";
 let PORTS_MONITOR = null, portsMonitorError = "";
 let PORTS_NICS = null, portsNicsError = "";
@@ -3754,21 +3760,35 @@ function portSshStations() {
 }
 
 /* #996: מתג פר-פורט בשרת. "confirm" = הקלדת שם השרת; "api" = אישור בלחיצה;
-   "none" = אין מתג, הלחיצה מסבירה למה. */
+   "none" = אין מתג, הלחיצה מסבירה למה. `confirm_when` קובע את הכיוון
+   שדורש הקלדה (השרת, לא ניחוש כאן): "off"/"on"/"on_or_last_off"; שרת ישן
+   בלי השדה — נשמר הכיוון הישן (הקלדה בכל כיוון, כמו לפני #1015). */
+function portConfirmDirection(p, enabling) {
+  if (p.toggle !== "confirm") return false;
+  if (p.confirm_when === "on") return enabling;
+  if (p.confirm_when === "off") return !enabling;
+  return true;   // "on_or_last_off" מטופל ייעודית ב-ssh_server:<nic>; שדה חסר = ברירת המחדל הישנה
+}
+
+function portToggleUrl(p) {
+  return p.toggle_url ? p.toggle_url.replace(/^\/api\/console/, "") : `/ports/${encodeId(p.id)}`;
+}
+
 function portServerToggle(p) {
   const enabling = !p.enabled;
+  const word = p.confirm_word || ME.server_name;
   const send = async (extra) => {
-    await put(`/ports/${encodeId(p.id)}`, { enabled: enabling, ...extra });
+    await put(portToggleUrl(p), { enabled: enabling, ...extra });
     toast(enabling ? `${p.name} ${p.port} — הודלק` : `${p.name} ${p.port} — כובה`);
     await loadPorts();
   };
   const title = `${enabling ? "הדלקת" : "כיבוי"} ${p.name} ${p.port}/${p.proto}`;
   if (p.toggle === "none") { toast(`אין מתג לפורט הזה: ${p.off_means || p.detail || ""}`); return; }
-  if (p.toggle === "confirm") {
+  if (p.toggle === "confirm" && portConfirmDirection(p, enabling)) {
     sheet({ title, sub: p.desc || "", danger: true, submitLabel: enabling ? "הדלק" : "כבה",
       note: enabling ? "" : offMeansNote(p.off_means || ""),
-      verify: { label: "להמשך יש להקליד את שם השרת:", mustEqual: ME.server_name },
-      onSubmit: () => send({ confirm: ME.server_name }) });
+      verify: { label: "להמשך יש להקליד את שם השרת:", mustEqual: word },
+      onSubmit: () => send({ confirm: word }) });
     return;
   }
   confirmSheet(title, enabling ? (p.desc || "") : (p.off_means || ""), enabling ? "הדלק" : "כבה", () => send({}));
@@ -3776,47 +3796,92 @@ function portServerToggle(p) {
 
 function portRows() {
   const rows = [];
-  const dhcpBase = { name: "DHCP הפצה", desc: "dnsmasq · כתובות לוילן ההפצה", port: "67", proto: "udp",
-    who: "תחנות · משכפלים · בנייה", off: PORT_OFF_MEANS.dhcp, api: ["ok", "קיים", "PUT /net/interfaces/{n}"] };
-  const serving = (PORTS_NICS || []).filter((n) => n.enabled);
-  if (PORTS_NICS === null) {
-    rows.push({ ...dhcpBase, key: "dhcp", nic: "", state: "unknown", detail: `‏/net/interfaces לא נקרא: ${portsNicsError}`,
-      on: null, lock: true, cap: "לא נקרא", act: () => toast("רשימת הכרטיסים לא נקראה — אין על מה להפעיל את המתג: " + portsNicsError) });
-  } else if (!serving.length) {
-    rows.push({ ...dhcpBase, key: "dhcp", nic: "", state: "off", detail: "לא הודלק על אף כרטיס",
-      on: false, lock: true, cap: "כבוי · הדלקה = הקלדת שם הכרטיס", act: portDhcpOn });
-  } else {
-    for (const n of serving) {
-      const live = n.dhcp_live ? dhcpLiveClass(n.dhcp_live.state) : "unknown";
-      rows.push({ ...dhcpBase, key: `dhcp:${n.name}`, name: `DHCP הפצה — ${n.name}`, nic: n.name,
-        state: { ok: "ok", warn: "warn", off: "off" }[live] || "unknown",
-        detail: `${n.dhcp_live_label || ""}${n.range_start ? ` · ${n.range_start}–${n.range_end}` : ""}`,
-        on: true, lock: true, cap: `דלוק · כיבוי = הקלדת ${n.name}`, act: () => portDhcpOff(n) });
+  const havePortsDhcp = PORTS.some((p) => p.id === "dhcp");
+  const havePortsSshServer = PORTS.some((p) => p.id && p.id.startsWith("ssh_server:"));
+
+  // שרת ישן (לפני #996/#1015): /ports אינו שולח שורת dhcp כלל — נבנה
+  // מ-/net/interfaces כמו בגל 5, שורה לכל כרטיס שמשרת בפועל.
+  if (!havePortsDhcp) {
+    const dhcpBase = { name: "DHCP הפצה", desc: "dnsmasq · כתובות לוילן ההפצה", port: "67", proto: "udp",
+      who: "תחנות · משכפלים · בנייה", off: PORT_OFF_MEANS.dhcp, api: ["ok", "קיים", "PUT /net/interfaces/{n}"] };
+    const serving = (PORTS_NICS || []).filter((n) => n.enabled);
+    if (PORTS_NICS === null) {
+      rows.push({ ...dhcpBase, key: "dhcp", nic: "", state: "unknown", detail: `‏/net/interfaces לא נקרא: ${portsNicsError}`,
+        on: null, lock: true, cap: "לא נקרא", act: () => toast("רשימת הכרטיסים לא נקראה — אין על מה להפעיל את המתג: " + portsNicsError) });
+    } else if (!serving.length) {
+      rows.push({ ...dhcpBase, key: "dhcp", nic: "", state: "off", detail: "לא הודלק על אף כרטיס",
+        on: false, lock: true, cap: "כבוי · הדלקה = הקלדת שם הכרטיס", act: portDhcpOn });
+    } else {
+      for (const n of serving) {
+        const live = n.dhcp_live ? dhcpLiveClass(n.dhcp_live.state) : "unknown";
+        rows.push({ ...dhcpBase, key: `dhcp:${n.name}`, name: `DHCP הפצה — ${n.name}`, nic: n.name,
+          state: { ok: "ok", warn: "warn", off: "off" }[live] || "unknown",
+          detail: `${n.dhcp_live_label || ""}${n.range_start ? ` · ${n.range_start}–${n.range_end}` : ""}`,
+          on: true, lock: true, cap: `דלוק · כיבוי = הקלדת ${n.name}`, act: () => portDhcpOff(n) });
+      }
     }
   }
+
   for (const p of PORTS) {
-    const r = { key: p.id, name: p.name, desc: p.desc, port: p.port, proto: p.proto, who: p.target, nic: p.bind || "",
+    // #1015: bind הוא מערך כתובות (גם ריק כשקוראים ולא מוצאים). שרת ישן
+    // בלי השדה כלל (undefined) — "" כמו קודם, שמראה "דורש API".
+    const r = { key: p.id, name: p.name, desc: p.desc, port: p.port, proto: p.proto, who: p.target,
+      nic: Array.isArray(p.bind) ? p.bind : (p.bind || ""),
       state: p.state, detail: p.detail, note: p.note, off: p.off_means || "", api: null, on: null, lock: false, cap: "", act: null };
     if (p.id === "monitor") {
       const m = PORTS_MONITOR;
-      Object.assign(r, { nic: "בתחנה, לא בשרת", off: PORT_OFF_MEANS.monitor, api: ["ok", "קיים", "PUT /monitor/settings"],
+      Object.assign(r, { nic: "בתחנה, לא בשרת", off: r.off || PORT_OFF_MEANS.monitor, api: ["ok", "קיים", "PUT /monitor/settings"],
         on: m ? !!m.enabled : null, lock: !(m && m.enabled),
         cap: !m ? `לא נקרא: ${portsMonitorError}` : m.enabled ? "דלוק · כיבוי בלחיצה" : "כבוי · הדלקה = הקלדת imagectl.monitor",
         act: m ? () => monitorToggle(!m.enabled) : () => toast("‏/monitor/settings לא נקרא: " + portsMonitorError) });
     } else if (p.id === "ssh_stations") {
       const st = SSH_STATE && SSH_STATE.stations;
-      Object.assign(r, { nic: "בתחנה, לא בשרת", off: PORT_OFF_MEANS.ssh_stations, api: ["ok", "קיים", "PUT /ssh/stations"],
+      Object.assign(r, { nic: "בתחנה, לא בשרת", off: r.off || PORT_OFF_MEANS.ssh_stations, api: ["ok", "קיים", "PUT /ssh/stations"],
         on: st ? !!st.enabled : null, lock: !(st && st.enabled),
         cap: !st ? `לא נקרא: ${sshError}` : st.enabled ? "דלוק · כיבוי בלחיצה" : `כבוי · הדלקה = הקלדת ${st.confirm_word}`,
         act: st ? portSshStations : () => toast("‏/ssh לא נקרא: " + sshError) });
     } else if (p.id === "pxe_proxy") {
       const nic = PORTS_NICS ? PORTS_NICS.find((n) => n.proxy) : undefined;
-      Object.assign(r, { nic: nic ? nic.name : r.nic, off: PORT_OFF_MEANS.pxe_proxy, api: ["ok", "קיים", "PUT /net/interfaces/{n} proxy"],
+      Object.assign(r, { nic: nic ? nic.name : r.nic, off: r.off || PORT_OFF_MEANS.pxe_proxy, api: ["ok", "קיים", "PUT /net/interfaces/{n} proxy"],
         on: PORTS_NICS === null ? null : !!nic,
         cap: PORTS_NICS === null ? `לא נקרא: ${portsNicsError}` : nic ? `דלוק על ${nic.name}` : "כבוי · הדלקה = בחירת proxy בטופס ה-DHCP של הכרטיס",
         act: PORTS_NICS === null ? () => toast("‏/net/interfaces לא נקרא: " + portsNicsError) : nic ? () => portProxyOff(nic) : portDhcpOn });
+    } else if (p.id === "dhcp") {
+      // #1015: שורה אחת מרוכזת מ-/ports; המתג עדיין פונה ל-/net/interfaces/{n},
+      // ולכן צריך לדעת על איזה כרטיס — מ-/net/interfaces (כמו קודם).
+      const serving = PORTS_NICS === null ? null : PORTS_NICS.filter((n) => n.enabled);
+      Object.assign(r, { off: r.off || PORT_OFF_MEANS.dhcp, api: ["ok", "קיים", "PUT /net/interfaces/{n}"],
+        nic: serving && serving.length === 1 ? serving[0].name : r.nic,
+        on: serving === null ? null : !!p.enabled, lock: true,
+        cap: serving === null ? `לא נקרא: ${portsNicsError}`
+          : !p.enabled ? "כבוי · הדלקה = הקלדת שם הכרטיס"
+          : serving.length === 1 ? `דלוק · כיבוי = הקלדת ${serving[0].name}`
+          : "דלוק · כיבוי דרך חיבורים פיזיים (כמה כרטיסים משרתים)",
+        act: serving === null ? () => toast("‏/net/interfaces לא נקרא: " + portsNicsError)
+          : !p.enabled ? portDhcpOn
+          : serving.length === 1 ? () => portDhcpOff(serving[0])
+          : () => selectPageById("nic") });
+    } else if (p.id && p.id.startsWith("ssh_server:")) {
+      // #1015: שורה מוכנה לכל כרטיס — toggle_url אמיתי (לא תבנית), בלי fetch נוסף.
+      const name = p.interface || p.id.slice("ssh_server:".length);
+      const open = PORTS.filter((x) => x.id && x.id.startsWith("ssh_server:") && x.enabled)
+        .map((x) => x.interface || x.id.slice("ssh_server:".length));
+      const last = !!p.enabled && open.length === 1 && open[0] === name;
+      const needsConfirm = !p.enabled || last;
+      Object.assign(r, { who: "טכנאי → השרת", off: r.off || (last ? "אין SSH לשרת מאף רשת — פתיחה מחדש רק ממסך השרת" : "אין SSH לשרת דרך הכרטיס הזה"),
+        api: ["ok", "קיים", `PUT ${portToggleUrl(p)}`], on: !!p.enabled, lock: needsConfirm,
+        cap: p.enabled ? (last ? `הדלת האחרונה · סגירה = הקלדת ${name}` : "פתוח · סגירה בלחיצה") : `סגור · פתיחה = הקלדת ${name}`,
+        act: () => sshToggle(portToggleUrl(p), !p.enabled, p.confirm_word || name, needsConfirm,
+          p.enabled ? `סגירת SSH לשרת על ${name}` : `פתיחת SSH לשרת על ${name}`,
+          p.enabled ? (last ? "זו הדלת האחרונה שפתוחה — אחריה אין SSH לשרת מאף רשת." : "")
+            : "‏sshd יאזין בוילן הזה. אם זה וילן הכיתות — הוא ייפתח לסטודנטים.",
+          p.enabled && last ? "אין SSH לשרת מאף רשת — פתיחה מחדש רק ממסך השרת" : "") });
     } else if (p.toggle) {
-      Object.assign(r, { api: ["ok", "קיים", `PUT /ports/${p.id}`], on: !!p.enabled, lock: p.toggle === "confirm",
+      // שאר שורות /ports עם toggle ("api"/"confirm"/"none") — http_boot/
+      // http_console/kiosk/interserver: portToggleUrl(p) הולך ל-toggle_url
+      // כשהוא קיים (#1015, /api/console/ports/{id}) ואחרת ל-/ports/{id}
+      // (המסלול היחיד לפני #1015).
+      Object.assign(r, { api: ["ok", "קיים", `PUT ${portToggleUrl(p)}`], on: !!p.enabled, lock: p.toggle === "confirm",
         cap: p.toggle === "none" ? "אין מתג — לחיצה מסבירה" : p.enabled ? (p.toggle === "confirm" ? "דלוק · כיבוי = הקלדת שם השרת" : "דלוק") : "כבוי",
         act: () => portServerToggle(p) });
     } else {
@@ -3825,37 +3890,50 @@ function portRows() {
     }
     rows.push(r);
   }
-  const sshBase = { port: "22", proto: "tcp", who: "טכנאי → השרת" };
-  if (!SSH_STATE) {
-    rows.push({ ...sshBase, key: "ssh_server", name: "SSH לשרת", desc: "sshd", nic: "", state: "unknown", detail: `‏/ssh לא נקרא: ${sshError}`,
-      on: null, lock: true, cap: "לא נקרא", off: "אין SSH לשרת מאף רשת", api: ["ok", "קיים", "PUT /ssh/interfaces/{n}"],
-      act: () => toast("‏/ssh לא נקרא: " + sshError) });
-  } else {
-    const open = SSH_STATE.interfaces.filter((n) => n.enabled).map((n) => n.name);
-    for (const n of SSH_STATE.interfaces) {
-      const last = n.enabled && open.length === 1 && open[0] === n.name;
-      const addr = (n.addresses || []).map((a) => String(a).split("/")[0]).join(", ");
-      let state, detail;
-      if (n.listening === null) { state = "unknown"; detail = "טבלת הסוקטים לא נקראה"; }
-      else if (n.enabled && n.listening) { state = "ok"; detail = `מאזין ${addr || "ללא כתובת IPv4"}:22 · אומת`; }
-      else if (n.enabled) { state = "bad"; detail = "נשמר כפתוח אבל sshd לא מאזין"; }
-      else if (n.listening) { state = "warn"; detail = "מאזין למרות שהמתג כבוי"; }
-      else { state = "off"; detail = "סגור · אומת"; }
-      rows.push({ ...sshBase, key: `ssh_nic:${n.name}`, name: `SSH לשרת — ${n.name}`, desc: `sshd · ${addr || "ללא כתובת IPv4"}`, nic: n.name,
-        state, detail, on: !!n.enabled, lock: !n.enabled || last,
-        cap: n.enabled ? (last ? `הדלת האחרונה · סגירה = הקלדת ${n.name}` : "פתוח · סגירה בלחיצה") : `סגור · פתיחה = הקלדת ${n.name}`,
-        off: last ? "אין SSH לשרת מאף רשת — פתיחה מחדש רק ממסך השרת" : "אין SSH לשרת דרך הכרטיס הזה",
-        api: ["ok", "קיים", `PUT /ssh/interfaces/${n.name}`], act: () => portSshNic(n.name) });
+
+  // שרת ישן: /ports אינו שולח שורת ssh_server:<nic> כלל — נבנה מ-/ssh, כמו בגל 5.
+  if (!havePortsSshServer) {
+    const sshBase = { port: "22", proto: "tcp", who: "טכנאי → השרת" };
+    if (!SSH_STATE) {
+      rows.push({ ...sshBase, key: "ssh_server", name: "SSH לשרת", desc: "sshd", nic: "", state: "unknown", detail: `‏/ssh לא נקרא: ${sshError}`,
+        on: null, lock: true, cap: "לא נקרא", off: "אין SSH לשרת מאף רשת", api: ["ok", "קיים", "PUT /ssh/interfaces/{n}"],
+        act: () => toast("‏/ssh לא נקרא: " + sshError) });
+    } else {
+      const open = SSH_STATE.interfaces.filter((n) => n.enabled).map((n) => n.name);
+      for (const n of SSH_STATE.interfaces) {
+        const last = n.enabled && open.length === 1 && open[0] === n.name;
+        const addr = (n.addresses || []).map((a) => String(a).split("/")[0]).join(", ");
+        let state, detail;
+        if (n.listening === null) { state = "unknown"; detail = "טבלת הסוקטים לא נקראה"; }
+        else if (n.enabled && n.listening) { state = "ok"; detail = `מאזין ${addr || "ללא כתובת IPv4"}:22 · אומת`; }
+        else if (n.enabled) { state = "bad"; detail = "נשמר כפתוח אבל sshd לא מאזין"; }
+        else if (n.listening) { state = "warn"; detail = "מאזין למרות שהמתג כבוי"; }
+        else { state = "off"; detail = "סגור · אומת"; }
+        rows.push({ ...sshBase, key: `ssh_nic:${n.name}`, name: `SSH לשרת — ${n.name}`, desc: `sshd · ${addr || "ללא כתובת IPv4"}`, nic: n.name,
+          state, detail, on: !!n.enabled, lock: !n.enabled || last,
+          cap: n.enabled ? (last ? `הדלת האחרונה · סגירה = הקלדת ${n.name}` : "פתוח · סגירה בלחיצה") : `סגור · פתיחה = הקלדת ${n.name}`,
+          off: last ? "אין SSH לשרת מאף רשת — פתיחה מחדש רק ממסך השרת" : "אין SSH לשרת דרך הכרטיס הזה",
+          api: ["ok", "קיים", `PUT /ssh/interfaces/${n.name}`], act: () => portSshNic(n.name) });
+      }
     }
   }
   return rows;
 }
 
+// שם כרטיס/כתובת בודדת (מחרוזת) — mono LTR; טקסט עברי ("בתחנה, לא בשרת") —
+// רגיל. רשימת bind מהשרת (#1015, תמיד מערך) — כל הכתובות, mono LTR; ריק = "—".
+function portNicHtml(nic) {
+  if (Array.isArray(nic)) {
+    if (!nic.length) return `<span class="muted">—</span>`;
+    return `<span class="mono">${nic.map((a) => esc(a)).join(", ")}</span>`;
+  }
+  if (!nic) return `<span class="muted" title="${PORT_API_NEEDED}: כתובת ההאזנה">—</span>`;
+  return /^[ -~]+$/.test(nic) ? `<span class="mono">${esc(nic)}</span>` : esc(nic);
+}
+
 function portRow(r) {
   PORT_ACTIONS.set(r.key, r.act);
-  // שם כרטיס / כתובת — mono LTR; טקסט עברי ("בתחנה, לא בשרת") — רגיל.
-  const nic = !r.nic ? `<span class="muted" title="${PORT_API_NEEDED}: כתובת ההאזנה">—</span>`
-    : /^[ -~]+$/.test(r.nic) ? `<span class="mono">${esc(r.nic)}</span>` : esc(r.nic);
+  const nic = portNicHtml(r.nic);
   const api = r.api ? `${UI.pill(r.api[0], r.api[1])}${r.api[2] ? ` <span class="cap mono">${esc(r.api[2])}</span>` : ""}` : "";
   // ה-note של השרת ("לפתוח ב-FW: …") — tooltip על שם השירות, לא שורה שלישית בכל תא.
   return [`<span${r.note ? ` title="${esc(r.note)}"` : ""}>${UI.nameHtml(r.name, esc(r.desc || ""))}</span>`,
@@ -4076,7 +4154,8 @@ function settingsLogoClear() {
 
 const pages = {
   settings: { crumb: "הגדרות", title: "הגדרות", tabs: [], render: settings, load: loadSettingsData, own: true },   // ‏#954 גל 6
-  branches: {crumb:"סניפים", title:"סניפים", desc:"השרתים המשניים של הראשי הזה: מצב חיבור, המחשבים שלהם, העברת אימג'ים ומוניטור", tabs:["סניפים", "מרשם"], render:pagePlaceholder},
+  // ‏#954 גל 7: כותרת אובייקט + datagrid (UI.*, כמו drivers.js) — שרתים/העברות/קבוצות.
+  branches: { crumb: "סניפים", title: "סניפים", tabs: ["שרתים", "העברות", "קבוצות"], render: (i) => branchesPage(i), load: () => loadBranchesData(), own: true },
   // ‏#936: הדף של משני אחד (נבחר בעץ, BRANCH_NODE) — אותם נתונים ואותן
   // פונקציות של "סניפים" (branches.js), לפי לשונית.
   branch: {crumb:"שרת משני", title:"שרת משני", desc:"מצב חיבור, המחשבים שלו, האימג'ים שהועברו אליו וההעברות — כפי שהראשי מדד מולו", tabs: BRANCH_VIEWS.map((v) => v[1]), render:pagePlaceholder},
@@ -4102,7 +4181,6 @@ let searchQuery = "";
 function tabRender(pageId, index) {
   const renderers = {
     network: [network, emptyDataCard, emptyDataCard],
-    branches: [() => `<div id="branch-cards" class="stack"></div>`, () => `<div id="branches-body" class="stack"></div>`],
     branch: BRANCH_VIEWS.map(([view]) => () => `<div id="branch-view" class="stack" data-view="${view}">${pagePlaceholder()}</div>`),
     netdeploy: [netdeploy],
     nic: [nic],
@@ -4836,7 +4914,7 @@ function pageAllowed(id) {
 }
 function wireRestoredPage() {
   if (current === "images") loadCaptures().catch(e => toast(e.message));
-  if (current === "branches") (currentTab === 0 ? loadBranchCards() : loadBranches()).catch(e => toast(e.message));
+  if (current === "branches") wireBranchesGroupsTab();   // ‏own page: הטעינה עצמה דרך page.load (loadBranchesData)
   if (current === "branch") loadBranchView(BRANCH_VIEWS[currentTab][0]).catch(e => toast(e.message));
 }
 let pollTimer = null, overviewBusy = false, overviewError = "", overviewLastOk = null;

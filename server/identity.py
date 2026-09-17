@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import ipaddress
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -60,6 +61,15 @@ class Lookup:
 
     read: bool
     ip: str | None = None
+
+
+@dataclass(frozen=True)
+class Holders:
+    """‏#997: הכיוון ההפוך — מי חכור לכתובת. ‏`read=False` — הקובץ לא נקרא;
+    ‏`macs=()` — נקרא ואין חכירה על הכתובת."""
+
+    read: bool
+    macs: tuple[str, ...] = ()
 
 
 def parse_leases(text: str) -> dict[str, str]:
@@ -105,6 +115,16 @@ class LeaseFile:
         if leases is None:
             return Lookup(read=False)
         return Lookup(read=True, ip=leases.get(mac))
+
+    def holders(self, client_ip: str) -> Holders:
+        """אילו MAC-ים חכורים לכתובת הזאת. ‏dnsmasq אינו מחזיק שתי חכירות
+        חיות על כתובת אחת — אבל הסימולציה שמה את כל המכונות המדומות על
+        loopback, ולכן רשימה ולא ערך יחיד."""
+        leases = self._read()
+        if leases is None:
+            return Holders(read=False)
+        return Holders(read=True, macs=tuple(
+            mac for mac, ip in leases.items() if _same_address(ip, client_ip)))
 
     def count(self) -> int | None:
         """כמה חכירות בקובץ, או ``None`` כשאינו נקרא — למסך הבריאות."""
@@ -154,6 +174,36 @@ def verify(conn: sqlite3.Connection, leases: LeaseFile,
         return Verdict(ok=False, event=REFUSED,
                        detail=f"{mac} from {client_ip}, lease says {lookup.ip}",
                        message="source address does not match this mac's DHCP lease")
+    return Verdict(ok=True)
+
+
+def verify_source(conn: sqlite3.Connection, leases: LeaseFile, client_ip: str | None,
+                  is_registered: Callable[[str], bool]) -> Verdict:
+    """‏#997: זהות **בלי MAC מוצהר** — ל-`GET /images/…/manifest|files`, שבהם
+    הסוכן שולח רק את הכתובת (‏`http_get` ב-`common.sh`, בלי `?mac=` ובלי
+    כותרת). הכיוון הפוך: כתובת המקור → החכירה שיושבת עליה → ה-MAC של
+    החכירה רשום ב-`machines`. "יש חכירה" לבדו אינו ראיה — ‏`dhcp-range`
+    מחלק לכל מי שמבקש בוילן, גם למחשב נייד של תלמיד; "המכונה שחכורה
+    לכתובת הזאת היא אחת משלנו" כן. אותם שלושה מצבים ואותו מתג."""
+    if not enabled(conn):
+        return Verdict(ok=True)
+    if not client_ip:
+        return Verdict(ok=False, event=UNVERIFIABLE,
+                       detail="no source address on the connection",
+                       message="machine identity could not be verified: no source address")
+    holders = leases.holders(client_ip)
+    if not holders.read:
+        return Verdict(ok=False, event=UNVERIFIABLE,
+                       detail=f"{client_ip}: leases file {leases.path} not readable",
+                       message="machine identity could not be verified: leases file not readable")
+    if not holders.macs:
+        return Verdict(ok=False, event=UNVERIFIABLE,
+                       detail=f"{client_ip}: no DHCP lease on this address",
+                       message="machine identity could not be verified: no DHCP lease on this address")
+    if not any(is_registered(mac) for mac in holders.macs):
+        return Verdict(ok=False, event=REFUSED,
+                       detail=f"{client_ip}: lease holder {', '.join(holders.macs)} is not a registered machine",
+                       message="the machine leased on this address is not registered")
     return Verdict(ok=True)
 
 

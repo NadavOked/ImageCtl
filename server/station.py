@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 
 from .progress_view import capture_progress
 from . import users
-from .api import ServerContext, _error
+from .api import ServerContext, _error, identity_gate
 from .db import journal
 from .hello import class_deploy_enabled
 from .images import restore_refusal
@@ -141,6 +141,15 @@ def create_station_router(ctx: ServerContext) -> APIRouter:
         if not isinstance(body, dict):
             return _error(400, "body is not an object", "bad_json")
 
+        # ‏#997: המכונה שפותחת — לפני הסיסמה. זר בוילן אינו פותח סבב על
+        # כיתה שלמה בשם תחנה, גם עם סיסמה שדלפה (ו-`bad_mac` קודם לזהות).
+        opener = normalize_mac(body.get("mac"))
+        if opener is None:
+            return _error(400, "missing or malformed mac", "bad_mac")
+        refused = identity_gate(ctx, opener, request, "sessions")
+        if refused is not None:
+            return refused
+
         role = users.verify(ctx.conn, body.get("username", ""), body.get("password", ""))
         if role is None:
             journal(ctx.conn, "agent_login_failed",
@@ -193,7 +202,6 @@ def create_station_router(ctx: ServerContext) -> APIRouter:
                     f'{body.get("image_id", "")} — {refusal}')
             return _error(400, refusal, "image_bound_to_another_machine")
 
-        opener = normalize_mac(body.get("mac"))
         try:
             session_id = ctx.store.open(
                 group_id, body["image_id"],

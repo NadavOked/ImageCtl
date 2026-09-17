@@ -353,6 +353,13 @@ def create_direct_router(ctx) -> APIRouter:
     @router.put("/{task_id}/manifest")
     async def put_manifest(task_id: str, request: Request):
         row = task_for(task_id, request)
+        # ‏#997: שומר שני לצד האסימון — כתובת המקור מול חכירת ה-MAC של
+        # המשימה. לפני קריאת הגוף, כדי שזר עם אסימון לא יכשיל את המשימה
+        # (`_fail`) במניפסט פגום. ייבוא מקומי: `api` מייבא את המודול הזה.
+        from .api import identity_gate
+        refused = identity_gate(ctx, row["mac"], request, "direct-manifest")
+        if refused is not None:
+            return refused
         raw = await request.body()
         try:
             manifest = json.loads(raw.decode("utf-8"))

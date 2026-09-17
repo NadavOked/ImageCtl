@@ -292,11 +292,14 @@ def list_nodes(conn, user: tuple[str, str]) -> list[dict]:
     """כל המשניים הרשומים עם שם הקבוצה ומצב ההשבתה.
 
     ‏#732: אוכף admin+standalone בשכבת ה-service כמו כל פעולת ניהול.
+    ‏#954 גל 7: ``node_id`` (המזהה הנגזר מ-SPKI, ``sn_<hex>``) נוסף
+    לתשובה — קיים בעמודה מאז ה-enrollment (#883) אך לא נחשף; טבלת
+    "סניפים" מציגה אותו ליד השם.
     """
     assert_can_manage_nodes(conn, user)
     rows = conn.execute(
         "SELECT n.id, n.label, n.base_url, n.group_id, n.tls_fingerprint,"
-        " n.enrolled_at, n.disabled_at, g.label AS group_label"
+        " n.node_id, n.enrolled_at, n.disabled_at, g.label AS group_label"
         " FROM storage_nodes n"
         " LEFT JOIN storage_node_groups g ON g.id = n.group_id"
         " ORDER BY n.label, n.id"

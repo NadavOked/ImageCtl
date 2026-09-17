@@ -216,3 +216,80 @@ def test_a_note_explains_an_open_record_and_reaches_the_console(server):
     assert agent.post("/api/v1/agent/shrink-close", json={"mac": ids["mac1"], "serial": SERIAL}).json() == {"ok": True}
     gone = agent.post("/api/v1/agent/shrink-note", json={"mac": ids["mac1"], "serial": SERIAL, "note": why})
     assert gone.status_code == 404 and gone.json()["code"] == "not_open"
+
+
+# --- ‏#929: רשומה אחת לדיסק, עם רשימת מחיצות ------------------------------------
+
+
+def two_layout(**over) -> dict:
+    """הגוף שהסוכן שולח מ-#929: השדות של הדיסק, ו-`partitions` — ‏C: ואז D:."""
+    body = {k: v for k, v in layout().items()
+            if k in ("mac", "dev", "serial", "port", "model", "image_name", "task_id")}
+    body["partitions"] = [
+        {"idx": 3, "start_sector": 1085440, "size_sectors": 998244352,
+         "type_guid": "EBD0A0A2-B9E5-4433-87C0-68B6B72699C7",
+         "unique_guid": "4C7B1E00-0000-4000-8000-000000000003",
+         "attrs": "0000000000000000", "name": "Basic data partition", "ntfs_bytes": 511101108224},
+        {"idx": 4, "start_sector": 999329792, "size_sectors": 104857600,
+         "type_guid": "EBD0A0A2-B9E5-4433-87C0-68B6B72699C7",
+         "unique_guid": "4C7B1E00-0000-4000-8000-000000000005",
+         "attrs": "0000000000000000", "name": "Data", "ntfs_bytes": 53687091200},
+    ]
+    body.update(over)
+    return body
+
+
+def test_open_keeps_every_partition_and_the_first_in_the_legacy_columns(conn):
+    """‏`partitions` נשמרת בשלמותה וחוזרת כרשימה; השדות העליונים (‏idx,
+    ‏start_sector, …) הם של המחיצה הראשונה — לקורא ישן (הכרטיס בקונסולה)."""
+    row = shrink_records.open_record(conn, two_layout())
+    assert [p["idx"] for p in row["partitions"]] == [3, 4]
+    (rec,) = shrink_records.list_open(conn)
+    assert rec["partitions"] == two_layout()["partitions"]
+    assert rec["idx"] == 3 and rec["size_sectors"] == 998244352 and rec["unique_guid"].endswith("0003")
+    (via_hello,) = shrink_records.open_for(conn, [{"serial": SERIAL}])
+    assert via_hello["partitions"] == two_layout()["partitions"]
+
+
+def test_a_legacy_single_partition_body_is_a_list_of_one(conn):
+    """סוכן שקדם ל-#929 שולח מחיצה אחת בראש הגוף — נקראת כרשימה של אחת."""
+    row = shrink_records.open_record(conn, layout())
+    assert [p["idx"] for p in row["partitions"]] == [3]
+    (rec,) = shrink_records.list_open(conn)
+    assert rec["partitions"] == [{k: layout()[k] for k in
+                                  ("idx", "start_sector", "size_sectors", "type_guid",
+                                   "unique_guid", "attrs", "name", "ntfs_bytes")}]
+
+
+@pytest.mark.parametrize("partitions", [[], "x", [{"idx": 3}], [{"idx": 0, "start_sector": 1, "size_sectors": 1, "type_guid": "g"}]])
+def test_partitions_must_be_a_non_empty_list_of_whole_entries(conn, partitions):
+    """רשימה ריקה, לא-רשימה, מחיצה חסרה או מחיצה 0 — ‏bad_layout, ושום דבר לא נרשם:
+    רשומה שאי-אפשר להחזיר ממנה את **כל** המחיצות היא רשומה שאין לפתוח."""
+    with pytest.raises(shrink_records.BadRecord) as exc:
+        shrink_records.open_record(conn, two_layout(partitions=partitions))
+    assert exc.value.code == "bad_layout"
+    assert shrink_records.list_open(conn) == []
+
+
+def test_a_duplicate_index_is_not_a_layout(conn):
+    parts = two_layout()["partitions"]
+    parts[1]["idx"] = 3
+    with pytest.raises(shrink_records.BadRecord):
+        shrink_records.open_record(conn, two_layout(partitions=parts))
+    assert shrink_records.list_open(conn) == []
+
+
+def test_the_hello_and_the_console_carry_the_partitions(server):
+    ids = open_session(server, expected=2)
+    agent = server["anon"]
+    opened = agent.post("/api/v1/agent/shrink-open", json=two_layout(mac=ids["mac1"]))
+    assert opened.status_code == 200 and opened.json()["ok"] is True, opened.text
+    from conftest import hello_body
+    body = hello_body(ids["mac1"])
+    body["disks"][0]["serial"] = SERIAL
+    (rec,) = agent.post("/api/v1/agent/hello", json=body).json()["shrink_open"]
+    assert [p["idx"] for p in rec["partitions"]] == [3, 4] and rec["idx"] == 3
+    (row,) = server["deploy"].get("/api/console/shrink-records").json()
+    assert [p["idx"] for p in row["partitions"]] == [3, 4]
+    r = agent.post("/api/v1/agent/shrink-open", json=two_layout(mac=ids["mac1"], serial="OTHER", partitions=[]))
+    assert r.status_code == 400 and r.json()["code"] == "bad_layout"

@@ -164,7 +164,7 @@ def part(m: dict, idx: int) -> dict:
 
 def shrink_target(min_bytes: int, current: int) -> int:
     """הפונקציה עצמה, מהקובץ: המרווח והעיגול נבדקים על הקוד ולא על עותק."""
-    out = sh(f". {posix(AGENT)}/lib/shrink.sh; _shrink_target {min_bytes} {current}")
+    out = sh(f". {posix(AGENT)}/lib/shrinkplan.sh; _shrink_target {min_bytes} {current}")
     return int(out.strip())
 
 
@@ -319,15 +319,25 @@ def test_capture_without_shrinking_is_still_offered(tmp_path):
 
 def test_the_text_menu_maps_keys_and_eof(tmp_path):
     """‏shrink_ask עצמו: 1/2/3 → continue/plain/cancel, EOF → cancel, קלט
-    לא-חוקי מצייר שוב ולא בוחר בשקט."""
-    def ask(keys: str) -> str:
-        return sh(f"export IMAGECTL_TEST=1; . {posix(AGENT)}/lib/ui.sh; . {posix(AGENT)}/lib/shrink.sh; "
-                  f"printf '{keys}' | shrink_ask 3 512000000000 110000000000 2>/dev/null").strip()
-    assert ask("1\\n") == "continue"
-    assert ask("2\\n") == "plain"
-    assert ask("3\\n") == "cancel"
-    assert ask("") == "cancel"
-    assert ask("x\\n9\\n1\\n") == "continue"
+    לא-חוקי מצייר שוב ולא בוחר בשקט. ‏#929: שאלה **אחת** על קובץ תוכנית —
+    שורה למחיצה — והמסך מציג את כולן."""
+    plan = tmp_path / "shrink.plan"
+    plan.write_text(f"3|{WIN_GUID}|{WIN_UGUID}|{WIN_START}|{WIN_SECTORS}|512000000000|110000000000\n"
+                    f"4|{WIN_GUID}|{DATA_UGUID}|{DATA_START}|{DATA_SECTORS}|53687091200|22548578304\n",
+                    encoding="utf-8", newline="\n")
+
+    def ask(keys: str) -> tuple[str, str]:
+        out = sh(f"export IMAGECTL_TEST=1; . {posix(AGENT)}/lib/ui.sh; . {posix(AGENT)}/lib/shrinkplan.sh; "
+                 f"printf '{keys}' | shrink_ask {posix(plan)!r} 2> {posix(tmp_path / 'screen')!r}").strip()
+        return out, (tmp_path / "screen").read_text(encoding="utf-8", errors="replace")
+    assert ask("1\\n")[0] == "continue"
+    assert ask("2\\n")[0] == "plain"
+    assert ask("3\\n")[0] == "cancel"
+    assert ask("")[0] == "cancel"
+    decision, screen = ask("x\\n9\\n1\\n")
+    assert decision == "continue"
+    assert "partition 3: 512.0 GB -> 110.0 GB" in screen and "partition 4: 53.7 GB -> 22.5 GB" in screen, screen
+    assert screen.count("[1] Shrink and capture") == 3, "מסך אחד לשלושת הניסיונות, לא שאלה למחיצה"
 
 
 # --- כשל בכל צעד = הקליטה נכשלת בגלוי, והמקור מוחזר -----------------------------
@@ -490,18 +500,30 @@ def test_a_hibernated_disk_is_refused_before_the_shrink_is_even_measured(tmp_pat
     assert order(run) == []
 
 
-# --- ‏#929: הסירוב מסביר למה הכיווץ לא עזר ------------------------------------
+# --- ‏#929: כל מחיצות ה-NTFS מכווצות, כל אחת במקומה ---------------------------
 
 DATA_START = WIN_START + WIN_SECTORS
 DATA_SECTORS = 104_857_600            # ‏D: של 50 GiB אחרי C:
 DATA_UGUID = "4C7B1E00-0000-4000-8000-000000000005"
+MIN_D = 20_000_000_000                # מה ש-ntfsresize --info "מודד" ב-D:
 
-#: דיסק בנייה עם D: **אחרי** C: (‏ESP, ‏MSR, ‏C: ענקית, ‏D:). המועמדת לכיווץ
-#: לפי הכלל של #87 היא D: (האחרונה על הדיסק), ו-C: הגדולה נשארת כפי שהיא.
+#: דיסק בנייה עם D: **אחרי** C: (‏ESP, ‏MSR, ‏C: ענקית, ‏D:). עם מצב כמו
+#: SGDISK_WIN_REC: הגדלים של 3 ו-4 נזכרים אחרי `-d N -n N:start:end` ונקראים
+#: בחזרה ב-`-i`; ה**תחילות** קבועות — D: אינה זזה על המקור (הכרעת נדב 17/09).
 SGDISK_C_THEN_D = f'''#!/bin/sh
 echo "$*" >> "$RUN_DIR/sgdisk.calls"
+sizes="$RUN_DIR/sgdisk.sizes"
+[ -f "$sizes" ] || printf '3={WIN_SECTORS}\\n4={DATA_SECTORS}\\n' > "$sizes"
 [ "$1" = "-a" ] && shift 2
+if [ "$1" = "-d" ]; then
+  idx="$2"; spec="$4"
+  start=${{spec#*:}}; start=${{start%%:*}}; end=${{spec##*:}}
+  n=$((end - start + 1))
+  sed -i "s/^$idx=.*/$idx=$n/" "$sizes"
+  exit 0
+fi
 if [ "$1" = "-i" ]; then
+  n=$(sed -n "s/^$2=//p" "$sizes")
   case "$2" in
     1) echo "Partition GUID code: C12A7328-F81F-11D2-BA4B-00A0C93EC93B (EFI system partition)"
        echo "Partition unique GUID: 4C7B1E00-0000-4000-8000-000000000001"
@@ -518,15 +540,15 @@ if [ "$1" = "-i" ]; then
     3) echo "Partition GUID code: {WIN_GUID} (Microsoft basic data)"
        echo "Partition unique GUID: {WIN_UGUID}"
        echo "First sector: {WIN_START} (at 530.0 MiB)"
-       echo "Partition size: {WIN_SECTORS} sectors (huge)"
+       echo "Partition size: $n sectors (huge)"
        echo "Attribute flags: 0000000000000000"
        echo "Partition name: 'Basic data partition'" ;;
     4) echo "Partition GUID code: {WIN_GUID} (Microsoft basic data)"
        echo "Partition unique GUID: {DATA_UGUID}"
        echo "First sector: {DATA_START} (at the end)"
-       echo "Partition size: {DATA_SECTORS} sectors (50.0 GiB)"
+       echo "Partition size: $n sectors (50.0 GiB)"
        echo "Attribute flags: 0000000000000000"
-       echo "Partition name: 'Basic data partition'" ;;
+       echo "Partition name: 'Data'" ;;
   esac
   exit 0
 fi
@@ -535,37 +557,277 @@ echo "Number  Start (sector)    End (sector)  Size       Code  Name"
 echo "   1            2048          206847   100.0 MiB   EF00  EFI system partition"
 echo "   2          206848          239615   16.0 MiB    0C01  Microsoft reserved partition"
 echo "   3         {WIN_START}      {WIN_START + WIN_SECTORS - 1}   476.0 GiB   0700  Basic data partition"
-echo "   4       {DATA_START}       {DATA_START + DATA_SECTORS - 1}   50.0 GiB    0700  Basic data partition"
+echo "   4       {DATA_START}       {DATA_START + DATA_SECTORS - 1}   50.0 GiB    0700  Data"
 '''
+
+#: ‏ntfsresize שמודד לפי המחיצה: ‏sda3 → MIN_BYTES, ‏sda4 → MIN_D. ‏NTFSRESIZE_FAIL_ON
+#: מפיל את `-s` על מחיצה אחת בלבד; ‏NTFSRESIZE_INFO_FAIL_ON — את `--info` שלה;
+#: ‏NTFSRESIZE_GROW_FAIL_ON — את המתיחה בחזרה (`-f -f`) שלה.
+NTFSRESIZE_TWO = f'''#!/bin/sh
+echo "ntfsresize $*" >> "$RUN_DIR/order.log"
+case "$*" in
+  *--info*)
+    [ -n "${{NTFSRESIZE_INFO_FAIL_ON:-}}" ] && case "$*" in *"$NTFSRESIZE_INFO_FAIL_ON") echo "ERROR: NTFS is inconsistent. Run chkdsk /f"; exit 1 ;; esac
+    case "$*" in *3) min={MIN_BYTES}; cur=$(({WIN_SECTORS} * 512 - 512)) ;; *) min={MIN_D}; cur=$(({DATA_SECTORS} * 512 - 512)) ;; esac
+    echo "Cluster size       : 4096 bytes"
+    echo "Current volume size: $cur bytes"
+    echo "You might resize at $min bytes or $((min / 1000000)) MB (freeing some MB)."
+    exit 0 ;;
+  *"-f -f"*)
+    [ -n "${{NTFSRESIZE_GROW_FAIL_ON:-}}" ] && case "$*" in *"$NTFSRESIZE_GROW_FAIL_ON") exit 5 ;; esac ;;
+  "-s "*|*" -s "*)
+    IFS= read -r ans; echo "ntfsresize stdin=${{ans:-EOF}}" >> "$RUN_DIR/order.log"
+    [ -n "${{NTFSRESIZE_FAIL_ON:-}}" ] && case "$*" in *"$NTFSRESIZE_FAIL_ON") echo "ERROR: resize failed"; exit 3 ;; esac ;;
+esac
+exit 0
+'''
+
+#: ‏partclone שנופל על מחיצה 4 בלבד — כשל באמצע הזרם, אחרי ששתיהן כווצו.
+PARTCLONE_FAILS_ON_4 = ('#!/bin/sh\necho "partclone $*" >> "$RUN_DIR/order.log"\n'
+                        'case " $* " in *"/sda4 "*) echo "read error on sda4" >&2; exit 1 ;; esac\n'
+                        'head -c 4096 /dev/zero\nexit 0\n')
+
+FS_MAP_C_D = ('_fs_of() { case "$1" in *3|*4) echo ntfs ;; *) echo vfat ;; esac; }; '
+              'capture_ntfs_hibernation_reason() { return 0; }; '
+              'disk_serial() { printf S926; }; disk_port() { printf 1; }; ')
+FS_MAP_C_EXT4 = FS_MAP_C_D.replace("*3|*4) echo ntfs", "*3) echo ntfs ;; *4) echo ext4")
 
 SSD_256 = "256060514304"
 
 
-def test_a_big_c_before_d_is_named_when_the_image_does_not_fit(tmp_path):
-    """‏D: היא המועמדת (האחרונה), והמינימום של ntfsresize גדול ממנה — אין מה
-    לכווץ בה. ‏C: של 476GiB לא נכנסת ל-256, והסירוב חייב לומר **למה** הכיווץ
-    לא עזר: מספר המחיצה, גודלה, ושהכיווץ פועל רק על האחרונה — לא מספרים בלבד."""
-    box, run, out = capture_run(tmp_path, stubs=stubs(sgdisk=SGDISK_C_THEN_D), shell_pre=FS_MAP + SAY_YES,
+def two_stubs(**extra: str) -> dict[str, str]:
+    return stubs(sgdisk=SGDISK_C_THEN_D, ntfsresize=NTFSRESIZE_TWO, **extra)
+
+
+def two_targets() -> tuple[int, int, int, int]:
+    """(C: חדש, D: חדש, ההפרש של C: בסקטורים, ההפרש של D: בסקטורים)."""
+    new_c = shrink_target(MIN_BYTES, WIN_SECTORS * 512)
+    new_d = shrink_target(MIN_D, DATA_SECTORS * 512)
+    return new_c, new_d, (WIN_SECTORS * 512 - new_c) // 512, (DATA_SECTORS * 512 - new_d) // 512
+
+
+def positions(steps: list[str], *prefixes: str) -> list[int]:
+    """המקום של כל קידומת ב-order.log, בסדר שנתבקש — נופל בשם על מה שחסר."""
+    found = []
+    after = 0
+    for prefix in prefixes:
+        for i, line in enumerate(steps):
+            if i >= after and line.startswith(prefix):
+                found.append(i)
+                after = i + 1
+                break
+        else:
+            raise AssertionError(f"{prefix!r} לא נמצא אחרי {after} ב-{steps}")
+    return found
+
+
+def rewritten_indexes(run: Path) -> list[str]:
+    return [c.split(" -d ")[1].split(" ")[0] for c in rewrites(run)]
+
+
+def test_c_and_d_are_both_shrunk_in_place_and_grown_back_in_reverse(tmp_path):
+    """הכרעת נדב 17/09: **כל** מחיצת NTFS-data מכווצת **במקומה** — ‏D: נשארת
+    בתחילתה על המקור, רק הגודל משתנה — ובסדר: מדידה של שתיהן לפני כתיבה
+    ראשונה, רשומה אחת בשרת, ‏C: ואז D:, הזרם, ואז ההחזרה בסדר הפוך —
+    ‏D: ואז C: — והרשומה נסגרת רק אחרי ששתיהן חזרו."""
+    box, run, out = capture_run(tmp_path, stubs=two_stubs(), shell_pre=FS_MAP_C_D + SAY_YES)
+    assert out.strip().endswith("rc=0"), out + (box / "capture.out").read_text(encoding="utf-8", errors="replace")
+    new_c, new_d, _, _ = two_targets()
+    dev = posix(box / "dev")
+    steps = order(run)
+    positions(steps,
+              f"ntfsresize --info --no-progress-bar {dev}/sda3",
+              f"ntfsresize --info --no-progress-bar {dev}/sda4",
+              "shrink-open",
+              f"ntfsresize -s {new_c} --no-progress-bar {dev}/sda3", "blockdev --rereadpt", f"ntfsfix -d {dev}/sda3",
+              f"ntfsresize -s {new_d} --no-progress-bar {dev}/sda4", "blockdev --rereadpt", f"ntfsfix -d {dev}/sda4",
+              "partclone",
+              f"ntfsresize -f -f --no-progress-bar {dev}/sda4", f"ntfsfix -d {dev}/sda4",
+              f"ntfsresize -f -f --no-progress-bar {dev}/sda3", f"ntfsfix -d {dev}/sda3",
+              "shrink-close")
+    assert steps.count("shrink-open") == 1 and steps.count("shrink-close") == 1, steps
+    assert steps.index("shrink-open") > max(i for i, s in enumerate(steps) if s.startswith("ntfsresize --info")), \
+        "שתי המדידות לפני הרשומה — לא נרשם כיווץ שלא נמדד"
+
+    calls = rewrites(run)
+    assert len(calls) == 4, calls
+    assert f"-a 1 -d 3 -n 3:{WIN_START}:{WIN_START + new_c // 512 - 1} -t 3:{WIN_GUID} -u 3:{WIN_UGUID} -c 3:Basic data partition -A 3:=:0x0000000000000000" in calls[0], calls[0]
+    assert f"-a 1 -d 4 -n 4:{DATA_START}:{DATA_START + new_d // 512 - 1} -t 4:{WIN_GUID} -u 4:{DATA_UGUID} -c 4:Data -A 4:=:0x0000000000000000" in calls[1], \
+        "D: מכווצת **במקומה** — אותה תחילה על המקור"
+    assert f"-d 4 -n 4:{DATA_START}:{DATA_START + DATA_SECTORS - 1}" in calls[2], "ההחזרה בסדר הפוך: D: ראשונה"
+    assert f"-d 3 -n 3:{WIN_START}:{WIN_START + WIN_SECTORS - 1}" in calls[3], calls[3]
+    assert not (run / "targets" / "sda" / "shrunk").exists()
+
+
+def test_the_source_gpt_reads_back_exactly_what_it_was(tmp_path):
+    """הטבלה על המקור אחרי הקליטה זהה לזו שלפניה — הגדלים (מה שהזיוף
+    זוכר) והתחילות (מה שההחזרה כותבת) — לכל מחיצה שכווצה."""
+    box, run, out = capture_run(tmp_path, stubs=two_stubs(), shell_pre=FS_MAP_C_D + SAY_YES)
+    assert out.strip().endswith("rc=0"), out
+    assert (run / "sgdisk.sizes").read_text(encoding="utf-8") == f"3={WIN_SECTORS}\n4={DATA_SECTORS}\n"
+    restores = rewrites(run)[2:]
+    assert [c.split(" -n ")[1].split(" ")[0] for c in restores] == \
+        [f"4:{DATA_START}:{DATA_START + DATA_SECTORS - 1}", f"3:{WIN_START}:{WIN_START + WIN_SECTORS - 1}"]
+
+
+def test_the_manifest_compacts_both_and_marks_only_the_last_expandable(tmp_path):
+    """היעד מקבל את הפריסה הצפופה: ‏C: בגודלה החדש במקומה; ‏D: זזה אחורה
+    בהפרש של C: (‏source_start_sector זוכר את מקומה האמיתי) ובגודלה החדש;
+    ‏expandable על D: בלבד; והרצפה היא סכום המינימומים ומחיצות המערכת."""
+    box, run, out = capture_run(tmp_path, stubs=two_stubs(), shell_pre=FS_MAP_C_D + SAY_YES)
+    assert out.strip().endswith("rc=0"), out
+    m = manifest(run)
+    new_c, new_d, delta_c, _ = two_targets()
+
+    win = part(m, 3)
+    assert win["size_bytes"] == new_c and win["shrunk_from_bytes"] == WIN_SECTORS * 512
+    assert win["start_sector"] == WIN_START and "source_start_sector" not in win
+    assert win["expandable"] is False, "רק האחרונה נמתחת על היעד (expand_last)"
+
+    data = part(m, 4)
+    assert data["size_bytes"] == new_d and data["shrunk_from_bytes"] == DATA_SECTORS * 512
+    assert data["start_sector"] == DATA_START - delta_c
+    assert data["source_start_sector"] == DATA_START
+    assert data["start_sector"] % 2048 == 0
+    assert data["expandable"] is True
+
+    for idx in (1, 2):
+        assert "shrunk_from_bytes" not in part(m, idx) and "source_start_sector" not in part(m, idx)
+
+    end = data["start_sector"] * 512 + data["size_bytes"]
+    assert m["min_target_bytes"] == (end + 2 * MIB - 1) // MIB * MIB
+    assert m["min_target_bytes"] < 140 * 10**9
+    from server.images import required_bytes
+    assert required_bytes(m) == m["min_target_bytes"]
+
+
+def test_c_before_d_now_fits_a_256_drive(tmp_path):
+    """הסירוב הישן של #929 ("‏C: אינה האחרונה — מחקו את D:") נעלם: שתיהן
+    מכווצות, והאימג' נכנס ל-SSD של 256 — ‏target_floor_bytes נרשם."""
+    box, run, out = capture_run(tmp_path, stubs=two_stubs(), shell_pre=FS_MAP_C_D + SAY_YES,
                                 env={"CAPTURE_TARGET_BYTES": SSD_256})
+    assert out.strip().endswith("rc=0"), out + (box / "capture.out").read_text(encoding="utf-8", errors="replace")
+    m = manifest(run)
+    assert m["target_floor_bytes"] == int(SSD_256)
+    assert m["min_target_bytes"] < int(SSD_256)
+
+
+def test_one_question_lists_every_partition(tmp_path):
+    """שאלה **אחת** למפעיל, עם הטבלה של כולן — לא שאלה למחיצה. ובביטול
+    המספרים של שתיהן מגיעים לקונסולה (שדה error)."""
+    asked = ('shrink_ask() { echo asked >> "$RUN_DIR/order.log"; cat "$1" > "$RUN_DIR/asked.plan"; echo cancel; }; ')
+    box, run, out = capture_run(tmp_path, stubs=two_stubs(), shell_pre=FS_MAP_C_D + asked)
     reason = refusal_reason(box, run, out)
-    assert "הפריסה גדולה מכונן היעד" in reason and SSD_256 in reason, reason
-    assert "מחיצה 3" in reason and "אינה האחרונה על הדיסק" in reason, reason
-    assert "מחיצה 4" in reason, reason
-    assert f"{WIN_SECTORS * 512 / 1e9:.1f} GB" in reason, reason
-    assert f"{DATA_SECTORS * 512 / 1e9:.1f} GB" in reason, reason
-    assert "Windows" in reason, "מה לעשות — למחוק/למזג את D: — חייב להיות בהודעה"
+    assert order(run).count("asked") == 1
+    plan = (run / "asked.plan").read_text(encoding="utf-8").splitlines()
+    assert [ln.split("|")[0] for ln in plan] == ["3", "4"], plan
+    new_c, new_d, _, _ = two_targets()
+    assert "מחיצה 3" in reason and "מחיצה 4" in reason, reason
+    assert f"{new_c / 1e9:.1f} GB" in reason and f"{new_d / 1e9:.1f} GB" in reason, reason
+    assert not rewrites(run) and not [s for s in order(run) if s.startswith("ntfsresize -s")]
+
+
+def test_a_failure_in_the_second_stream_grows_both_back_and_closes_after_both(tmp_path):
+    """‏partclone נופל על D: אחרי ששתיהן כווצו: ‏C: ו-D: חוזרות לגודלן —
+    ‏D: ואז C: — והרשומה בשרת (#926) נסגרת רק אחרי ש**שתיהן** חזרו."""
+    box, run, out = capture_run(tmp_path, stubs=two_stubs(**{"partclone.ntfs": PARTCLONE_FAILS_ON_4}),
+                                shell_pre=FS_MAP_C_D + SAY_YES)
+    reason = refusal_reason(box, run, out)
+    assert "partition 4" in reason, reason
+    dev = posix(box / "dev")
+    steps = order(run)
+    positions(steps, f"ntfsresize -f -f --no-progress-bar {dev}/sda4", f"ntfsfix -d {dev}/sda4",
+              f"ntfsresize -f -f --no-progress-bar {dev}/sda3", f"ntfsfix -d {dev}/sda3", "shrink-close")
+    assert steps.count("shrink-close") == 1
+    calls = rewrites(run)
+    assert len(calls) == 4, calls
+    assert f"-d 4 -n 4:{DATA_START}:{DATA_START + DATA_SECTORS - 1}" in calls[2]
+    assert f"-d 3 -n 3:{WIN_START}:{WIN_START + WIN_SECTORS - 1}" in calls[3]
+    assert (run / "sgdisk.sizes").read_text(encoding="utf-8") == f"3={WIN_SECTORS}\n4={DATA_SECTORS}\n"
     assert not (run / "new-manifest.json").exists()
 
 
+def test_a_grow_back_that_fails_on_one_partition_keeps_the_record_open_and_names_it(tmp_path):
+    """‏D: חזרה, ‏C: לא (ntfsresize -f -f על sda3 נפל): אין shrink-close,
+    האזהרה נוקבת במחיצה 3 בלבד, והשרת מקבל את הסיבה (shrink-note)."""
+    box, run, out = capture_run(tmp_path, stubs=two_stubs(), shell_pre=FS_MAP_C_D + SAY_YES,
+                                env={"NTFSRESIZE_GROW_FAIL_ON": "3"})
+    assert out.strip().endswith("rc=0"), out
+    warning = (run / "targets" / "sda" / "error").read_text(encoding="utf-8")
+    assert "המקור לא הוחזר לגודלו" in warning and "מחיצה 3" in warning, warning
+    assert "מחיצה 4" not in warning, "‏D: חזרה — היא אינה חלק מהאזהרה"
+    assert "shrink-close" not in order(run)
+    assert [s for s in order(run) if s.startswith("shrink-note")]
+    # ‏D: כן הוחזרה במלואה — הטבלה, המתיחה והניקוי — למרות הכשל ב-C:.
+    dev = posix(box / "dev")
+    positions(order(run), f"ntfsresize -f -f --no-progress-bar {dev}/sda4", f"ntfsfix -d {dev}/sda4")
+
+
+def test_a_failed_shrink_of_the_second_partition_grows_the_first_back(tmp_path):
+    """‏ntfsresize -s נופל על D: אחרי ש-C: כבר כווצה: הקליטה נכשלת בשם
+    (מחיצה 4, chkdsk), ‏C: חוזרת לגודלה, וטבלת D: לא נגעה."""
+    box, run, out = capture_run(tmp_path, stubs=two_stubs(), shell_pre=FS_MAP_C_D + SAY_YES,
+                                env={"NTFSRESIZE_FAIL_ON": "4"})
+    reason = refusal_reason(box, run, out)
+    assert "מחיצה 4" in reason and "rc=3" in reason and "chkdsk" in reason, reason
+    assert rewritten_indexes(run) == ["3", "3"], rewrites(run)
+    assert f"-n 3:{WIN_START}:{WIN_START + WIN_SECTORS - 1}" in rewrites(run)[1]
+    assert (run / "sgdisk.sizes").read_text(encoding="utf-8") == f"3={WIN_SECTORS}\n4={DATA_SECTORS}\n"
+
+
+def test_a_partition_that_cannot_be_measured_refuses_the_whole_capture(tmp_path):
+    """‏--info נופל על D: (מלוכלכת): לא "מכווצים חלקית" — **כל** הקליטה
+    מסורבת בשם, לפני שאלה, לפני רשומה, לפני בייט."""
+    box, run, out = capture_run(tmp_path, stubs=two_stubs(), shell_pre=FS_MAP_C_D + SAY_YES,
+                                env={"NTFSRESIZE_INFO_FAIL_ON": "4"})
+    reason = refusal_reason(box, run, out)
+    assert "מחיצה 4" in reason and "לא הצלחנו לבדוק" in reason and "chkdsk" in reason, reason
+    steps = order(run)
+    assert steps == [s for s in steps if s.startswith("ntfsresize --info")], steps
+    assert not rewrites(run) and not (run / "new-manifest.json").exists()
+
+
+def test_a_non_ntfs_data_partition_is_named_when_the_image_still_does_not_fit(tmp_path):
+    """‏C: (NTFS) כווצה, ‏D: היא ext4 — לא מכווצת כאן (מסלול e2fsck נפרד) —
+    והאימג' עדיין גדול מהיעד: הסירוב אומר איזו מחיצה, למה, ומה לעשות."""
+    box, run, out = capture_run(tmp_path, stubs=two_stubs(), shell_pre=FS_MAP_C_EXT4 + SAY_YES,
+                                env={"CAPTURE_TARGET_BYTES": "128000000000"})
+    reason = refusal_reason(box, run, out)
+    assert "הפריסה גדולה מכונן היעד" in reason, reason
+    assert "מחיצה 4" in reason and "ext4" in reason and "NTFS בלבד" in reason, reason
+    assert f"{DATA_SECTORS * 512 / 1e9:.1f} GB" in reason, reason
+    assert "אינה האחרונה" not in reason, "ההודעה הישנה של #929 — הכיווץ כבר אינו מוגבל לאחרונה"
+    # ‏C: כן כווצה והוחזרה; ‏D: לא נמדדה אפילו.
+    assert rewritten_indexes(run) == ["3", "3"]
+    assert not [s for s in order(run) if s.startswith("ntfsresize --info") and s.endswith("sda4")]
+
+
 def test_the_old_refusal_is_unchanged_when_the_last_partition_is_the_big_one(tmp_path):
-    """‏ESP/C:/recovery, בלי כיווץ: אין מחיצת data גדולה יותר לפני המועמדת,
-    וההודעה היא זו של #87 — בלי תוספת."""
+    """‏ESP/C:/recovery, בלי כיווץ: אין מחיצת data שאינה NTFS, וההודעה היא זו
+    של #87 — בלי תוספת."""
     box, run, out = capture_run(tmp_path, stubs=stubs(), shell_pre=FS_MAP + SAY_PLAIN,
                                 env={"CAPTURE_TARGET_BYTES": SSD_256})
     reason = refusal_reason(box, run, out)
     assert "הפריסה גדולה מכונן היעד" in reason, reason
-    assert "אינה האחרונה" not in reason, reason
+    assert "אינה האחרונה" not in reason and "NTFS בלבד" not in reason, reason
     assert reason.endswith("בייט לפני הקליטה"), reason
+
+
+def test_on_the_target_only_the_last_partition_is_stretched(tmp_path):
+    """הצד השני, על היעד: ‏apply_gpt/expand_last על המניפסט המצומצם —
+    ‏D: (האחרונה) נמתחת עד סוף הכונן, ‏C: נשארת בגודלה המכווץ, במקומה."""
+    from test_agent import run_expand
+    box, run, out = capture_run(tmp_path, stubs=two_stubs(), shell_pre=FS_MAP_C_D + SAY_YES)
+    assert out.strip().endswith("rc=0"), out
+    m = manifest(run)
+    plan = ["|".join(str(p.get(k, "")) for k in ("index", "type_guid", "role", "fs", "start_sector", "size_bytes",
+                                                   "file", "sha256")) + f"|{str(p['expandable']).lower()}|{p['unique_guid']}"
+            for p in m["partitions"]]
+    rc, calls, marker = run_expand(tmp_path / "target", plan, disk_sectors=976773168)
+    assert rc == "rc=0", (rc, calls)
+    assert marker == "4|ntfs", marker
+    assert len(calls) == 1 and calls[0].startswith(f"-d 4 -n 4:{part(m, 4)['start_sector']}:0 "), calls
+    assert not [c for c in calls if c.startswith("-d 3")], "‏C: אינה נמתחת ואינה זזה"
 
 
 # --- הנעילות המבניות ------------------------------------------------------------

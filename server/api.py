@@ -52,6 +52,49 @@ def _error(status: int, message: str, code: str) -> JSONResponse:
     )
 
 
+def _identity_refusal(ctx: ServerContext, verdict: identity.Verdict,
+                      where: str) -> JSONResponse | None:
+    """‏`None` = ממשיכים. סירוב = 403 בשם (`identity_refused` /
+    `identity_unverifiable`) ושורת יומן שנוקבת בנתיב — **לפני** כל רישום:
+    ‏`net_seen`, ספירת הלולאות, ההצטרפות לסבב, רשומת הכיווץ ואירוע הדיסק
+    לא מתרחשים, כי הפונה אינו המכונה (‏#585)."""
+    if verdict.ok:
+        return None
+    journal(ctx.conn, verdict.event, f"{verdict.detail} ({where})")
+    log.warning("%s: %s (%s)", verdict.event, verdict.detail, where)
+    return _error(403, verdict.message, verdict.event)
+
+
+def identity_gate(ctx: ServerContext, mac: str, request: Request,
+                  where: str) -> JSONResponse | None:
+    """‏#855/#997: ‏MAC מוצהר + כתובת המקור תואמת את חכירת ה-DHCP של אותו MAC.
+
+    שומר **אחד** לכל נתיב שמזהה מכונה לפי MAC מהגוף — ‏hello, ‏progress,
+    ‏login, ‏pulls, ‏disk-event, ‏shrink-*, וגם `station.py` (‏sessions)
+    ו-`direct.py` (המניפסט החי, לפי ה-MAC של המשימה). ‏`ctx.leases is None`
+    = השומר אינו מותקן (הרצת בדיקות בלי מקור; ‏`server.main` מתקין תמיד).
+    """
+    if ctx.leases is None:
+        return None
+    client_ip = request.client.host if request.client else None
+    return _identity_refusal(
+        ctx, identity.verify(ctx.conn, ctx.leases, mac, client_ip), where)
+
+
+def source_gate(ctx: ServerContext, request: Request, where: str) -> JSONResponse | None:
+    """‏#997: זהות בלי MAC מוצהר — `GET /images/…/manifest|files`. הסוכן
+    מושך אותם ב-`http_get` בלי MAC ובלי כותרת (‏`agent/lib/common.sh`), ולכן
+    הכיוון הפוך: כתובת המקור → החכירה שיושבת עליה → MAC רשום ב-`machines`.
+    אותו מתג, אותם קודים. הסוכן אינו משתנה ואין initrd חדש."""
+    if ctx.leases is None:
+        return None
+    client_ip = request.client.host if request.client else None
+    verdict = identity.verify_source(
+        ctx.conn, ctx.leases, client_ip,
+        lambda mac: registry.lookup(ctx.conn, mac) is not None)
+    return _identity_refusal(ctx, verdict, where)
+
+
 def create_agent_router(ctx: ServerContext,
                         server_base: str | None = None) -> APIRouter:
     """‏server_base — כתובת וילן ההפצה (מ---server-url). ‏hello שהתקבל על
@@ -59,24 +102,6 @@ def create_agent_router(ctx: ServerContext,
     וההתנהגות היא הישנה.
     """
     router = APIRouter(prefix="/api/v1")
-
-    def identity_gate(mac: str, request: Request, where: str) -> JSONResponse | None:
-        """‏#855: ‏MAC מוצהר + כתובת המקור תואמת את חכירת ה-DHCP של אותו MAC.
-
-        ‏`None` = ממשיכים. סירוב = 403 בשם (`identity_refused` /
-        `identity_unverifiable`), שורת יומן עם ה-MAC המוצהר, כתובת המקור
-        וכתובת החכירה — **ולפני** כל רישום: ‏`net_seen`, ספירת הלולאות
-        וההצטרפות לסבב לא מתרחשים, כי הפונה אינו המכונה (‏#585).
-        """
-        if ctx.leases is None:
-            return None
-        client_ip = request.client.host if request.client else None
-        verdict = identity.verify(ctx.conn, ctx.leases, mac, client_ip)
-        if verdict.ok:
-            return None
-        journal(ctx.conn, verdict.event, f"{verdict.detail} ({where})")
-        log.warning("%s: %s (%s)", verdict.event, verdict.detail, where)
-        return _error(403, verdict.message, verdict.event)
 
     @router.post("/agent/hello")
     async def agent_hello(request: Request) -> JSONResponse:
@@ -90,7 +115,7 @@ def create_agent_router(ctx: ServerContext,
         mac = lenient_mac(body.get("mac"))
         if mac is None:
             return _error(400, "missing or malformed mac", "bad_mac")
-        refused = identity_gate(mac, request, "hello")
+        refused = identity_gate(ctx, mac, request, "hello")
         if refused is not None:
             return refused
 
@@ -172,7 +197,14 @@ def create_agent_router(ctx: ServerContext,
         if not isinstance(body, dict):
             return _error(400, "body is not an object", "bad_json")
         username = body.get("username", "")
-        mac = lenient_mac(body.get("mac")) or "?"
+        mac = lenient_mac(body.get("mac"))
+        if mac is None:
+            return _error(400, "missing or malformed mac", "bad_mac")
+        # ‏#997: הזהות לפני הסיסמה — זר אינו מנסה סיסמאות בשם מכונה, ואינו
+        # מייצר `agent_login_failed` על מכונה שאינה שלו.
+        refused = identity_gate(ctx, mac, request, "login")
+        if refused is not None:
+            return refused
         role = users.verify(ctx.conn, username, body.get("password", ""))
         if role is None:
             journal(ctx.conn, "agent_login_failed", f"{username} at {mac}")
@@ -203,6 +235,9 @@ def create_agent_router(ctx: ServerContext,
         mac = lenient_mac(body.get("mac"))
         if mac is None:
             return _error(400, "missing or malformed mac", "bad_mac")
+        refused = identity_gate(ctx, mac, request, "pulls")      # #997
+        if refused is not None:
+            return refused
         machine = registry.lookup(ctx.conn, mac)
         if machine is None:
             # עיקרון 1: מכונה שאיננה מכירים לא מקבלת עבודה, גם לא משלה.
@@ -255,7 +290,7 @@ def create_agent_router(ctx: ServerContext,
         # "לא הצלחנו לקרוא את המזהה" קודם ל"המזהה אינו תואם" (עיקרון 5).
         mac = lenient_mac(body.get("mac"))
         if mac is not None:
-            refused = identity_gate(mac, request, "progress")
+            refused = identity_gate(ctx, mac, request, "progress")
             if refused is not None:
                 return refused
         result = reports.ingest(ctx.conn, body,
@@ -275,7 +310,16 @@ def create_agent_router(ctx: ServerContext,
             body = await request.json()
         except ValueError:
             return _error(400, "body is not JSON", "bad_json")
-        result = disk_events.ingest(ctx.conn, body if isinstance(body, dict) else {})
+        if not isinstance(body, dict):
+            body = {}
+        # ‏#997: כמו progress — הזהות נבדקת כשיש MAC לבדוק; MAC שאינו נקרא
+        # נשאר `bad_mac`/`bad_event` של `disk_events.ingest`.
+        mac = lenient_mac(body.get("mac"))
+        if mac is not None:
+            refused = identity_gate(ctx, mac, request, "disk-event")
+            if refused is not None:
+                return refused
+        result = disk_events.ingest(ctx.conn, body)
         return JSONResponse(result, status_code=200 if result.get("ok") else 400)
 
     @router.post("/agent/shrink-open")
@@ -289,8 +333,15 @@ def create_agent_router(ctx: ServerContext,
             body = await request.json()
         except ValueError:
             return _error(400, "body is not JSON", "bad_json")
+        if not isinstance(body, dict):
+            body = {}
+        mac = lenient_mac(body.get("mac"))
+        if mac is not None:                       # #997; None → bad_mac של open_record
+            refused = identity_gate(ctx, mac, request, "shrink-open")
+            if refused is not None:
+                return refused
         try:
-            row = shrink_records.open_record(ctx.conn, body if isinstance(body, dict) else {})
+            row = shrink_records.open_record(ctx.conn, body)
         except shrink_records.BadRecord as exc:
             return _error(400, str(exc), exc.code)
         except shrink_records.AlreadyOpen as exc:
@@ -298,6 +349,14 @@ def create_agent_router(ctx: ServerContext,
                                  "code": "already_open", "id": exc.record_id,
                                  "opened_at": exc.opened_at}, status_code=409)
         return JSONResponse({"ok": True, "id": row["id"]})
+
+    def _shrink_identity(body: dict, request: Request, where: str) -> JSONResponse | None:
+        # ‏#997: הסידורי הוא הזהות של הרשומה, אבל ה-MAC — שהסוכן שולח תמיד
+        # (‏`shrinkmem.sh`) — הוא הזהות של **הפונה**. בלעדיו אין מה להשוות לחכירה.
+        mac = lenient_mac(body.get("mac"))
+        if mac is None:
+            return _error(400, "missing or malformed mac", "bad_mac")
+        return identity_gate(ctx, mac, request, where)
 
     @router.post("/agent/shrink-close")
     async def agent_shrink_close(request: Request) -> JSONResponse:
@@ -308,6 +367,9 @@ def create_agent_router(ctx: ServerContext,
             return _error(400, "body is not JSON", "bad_json")
         if not isinstance(body, dict):
             return _error(400, "body is not an object", "bad_json")
+        refused = _shrink_identity(body, request, "shrink-close")
+        if refused is not None:
+            return refused
         record_id = body.get("id") if isinstance(body.get("id"), int) else None
         if not shrink_records.close_record(ctx.conn, body.get("serial"), record_id):
             return _error(404, "no open shrink record for this serial", "not_open")
@@ -323,6 +385,9 @@ def create_agent_router(ctx: ServerContext,
             return _error(400, "body is not JSON", "bad_json")
         if not isinstance(body, dict):
             return _error(400, "body is not an object", "bad_json")
+        refused = _shrink_identity(body, request, "shrink-note")
+        if refused is not None:
+            return refused
         note = body.get("note")
         if not isinstance(note, str) or not note.strip():
             return _error(400, "note must be a non-empty string", "bad_note")
@@ -332,7 +397,10 @@ def create_agent_router(ctx: ServerContext,
         return JSONResponse({"ok": True})
 
     @router.get("/images/{image_id}/manifest")
-    def image_manifest(image_id: str):
+    def image_manifest(image_id: str, request: Request):
+        refused = source_gate(ctx, request, "manifest")      # #997
+        if refused is not None:
+            return refused
         manifest = ctx.library.get(image_id)
         if manifest is None:
             # ‏#715: מזהה חי (`live_…`) — המניפסט שמחשב הבנייה דיווח. אותו
@@ -344,7 +412,10 @@ def create_agent_router(ctx: ServerContext,
         return JSONResponse(public)
 
     @router.get("/images/{image_id}/files/{filename}")
-    def image_file(image_id: str, filename: str):
+    def image_file(image_id: str, filename: str, request: Request):
+        refused = source_gate(ctx, request, "files")         # #997
+        if refused is not None:
+            return refused
         # רשימה לבנה: מוגש רק קובץ שהמניפסט מכריז עליו בשמו המדויק.
         path = ctx.library.file_path(image_id, filename)
         if path is None:
