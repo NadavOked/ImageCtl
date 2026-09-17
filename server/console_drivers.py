@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from boot.grub_menu import normalize_mac as lenient_mac
 
 from . import auth, inventory
-from .api import ServerContext
+from .api import ServerContext, identity_gate
 from .db import journal
 from .drivers import DriverError, DriverLibrary, match
 
@@ -92,7 +92,7 @@ def create_agent_drivers_router(ctx: ServerContext) -> APIRouter:
     library: DriverLibrary = ctx.drivers
 
     @router.get("/agent/drivers")
-    def agent_drivers(mac: str = "") -> JSONResponse:
+    def agent_drivers(request: Request, mac: str = "") -> JSONResponse:
         """מה מתאים למכונה הזו. שלושה מצבים, לא שניים (עיקרון 5):
         ‏`inventory: false` = המכונה מעולם לא דיווחה מלאי (סוכן ישן /
         schema 1) — הסוכן מדווח `failed`, לא `no_match`; ‏`inventory:
@@ -101,6 +101,9 @@ def create_agent_drivers_router(ctx: ServerContext) -> APIRouter:
         if canonical is None:
             return JSONResponse({"ok": False, "error": "missing or malformed mac",
                                  "code": "bad_mac"}, status_code=400)
+        refused = identity_gate(ctx, canonical, request, "drivers")
+        if refused is not None:
+            return refused
         seen = inventory.latest(ctx.conn, canonical)
         if seen is None:
             return JSONResponse({"ok": True, "inventory": False, "packages": []})

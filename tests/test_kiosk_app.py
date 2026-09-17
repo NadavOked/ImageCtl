@@ -172,6 +172,15 @@ def test_forbidden_admin_apis_are_not_reachable_on_kiosk(kiosk_env):
             f"{method} {path} נגיש על הקיוסק — הוא אמור להיות ניהול בלבד"
 
 
+def test_image_manifests_are_not_exposed_on_the_kiosk_socket(kiosk_env):
+    """המסך מקבל פרטי הרחבה מ-/api/console/images אחרי כניסה; ה-manifest
+    המלא אינו נוסף ל-allowlist ולכן גם משתמש מחובר מקבל 404."""
+    admin = _login_kiosk(kiosk_env)
+    images = admin.get("/api/console/images").json()
+    assert images and images[0]["expand_partitions"]
+    assert admin.get(f"/api/v1/images/{images[0]['id']}/manifest").status_code == 404
+
+
 def test_agent_and_boot_are_not_on_kiosk(kiosk_env):
     # הסוכן והאתחול חיים על אפליקציית הסוכן, לא על הקיוסק.
     kiosk = kiosk_env["anon"]

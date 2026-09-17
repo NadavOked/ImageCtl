@@ -144,6 +144,24 @@ def test_health_does_not_invent_the_all_zero_device(probing_server):
     assert ZERO_MAC not in devices(probing_server)
 
 
+def test_health_does_not_journal_the_all_zero_probe(probing_server):
+    setup_classroom(probing_server)
+    rows = probing_server["admin"].get("/api/console/health").json()
+    assert {r["id"]: r["state"] for r in rows}["server"] == "ok"
+    events = [row["event"] for row in
+              probing_server["admin"].get("/api/console/journal").json()]
+    assert "unknown_mac" not in events
+
+
+def test_a_real_foreign_zero_mac_is_still_journaled(probing_server):
+    setup_classroom(probing_server)
+    assert probing_server["station"].get(
+        f"{BASE}/boot/menu?mac={ZERO_MAC}").status_code == 200
+    events = [row["event"] for row in
+              probing_server["admin"].get("/api/console/journal").json()]
+    assert "unknown_mac" in events
+
+
 def test_health_leaves_the_probed_machine_evidence_alone(probing_server):
     """‏`_probe_macs` מבקש תפריט עבור המכונה הרשומה הראשונה — וה-IP,
     "נראה לאחרונה" ושביל הפירורים שלה נשארים מה שהיא עצמה דיווחה."""

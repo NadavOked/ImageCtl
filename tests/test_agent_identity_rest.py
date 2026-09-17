@@ -21,8 +21,9 @@ import pytest
 pytest.importorskip("fastapi")
 
 from conftest import hello_body, setup_classroom
-from server.tasks import TOKEN_HEADER
-from test_capture import make_task, setup_build_machine
+from server.tasks import TOKEN_HEADER, staging_dir
+from test_capture import (PART_A, PART_B, make_task, manifest_for,
+                          setup_build_machine, task_token)
 from test_direct_server import _live_manifest, _open_direct
 from test_machine_identity import (BUILD, IMAGE, MAC1, STATION_IP, STRANGER_IP,  # noqa: F401
                                    hello, identity_server, journal_details,
@@ -214,6 +215,90 @@ def test_an_unreadable_leases_file_closes_manifest_by_name(identity_server):
     identity_server["leases"].unlink()
     refused_by_name(identity_server["station"].get(f"/api/v1/images/{IMAGE}/manifest"),
                     "identity_unverifiable")
+
+
+# --- GET state/drivers: הסוכן שולח ?mac= אחרי שקיבל חכירה -------------------
+
+
+@pytest.mark.parametrize("path,where", [
+    (f"/api/v1/agent/state?mac={MAC1}", "state"),
+    (f"/api/v1/agent/drivers?mac={MAC1}", "drivers"),
+])
+def test_agent_reads_are_gated_by_the_declared_mac(identity_server, path, where):
+    setup_classroom(identity_server)
+    refused_by_name(identity_server["stranger"].get(path))
+    assert any(f"({where})" in d for d in journal_where(identity_server,
+                                                         "identity_refused"))
+    assert identity_server["station"].get(path).status_code == 200
+
+
+@pytest.mark.parametrize("path", [
+    f"/api/v1/agent/state?mac={MAC1}",
+    f"/api/v1/agent/drivers?mac={MAC1}",
+])
+def test_agent_reads_are_unverifiable_without_a_lease(identity_server, path):
+    setup_classroom(identity_server)
+    write_leases(identity_server["leases"], {})
+    refused_by_name(identity_server["station"].get(path), "identity_unverifiable")
+
+
+@pytest.mark.parametrize("path", [
+    f"/api/v1/agent/state?mac={MAC1}",
+    f"/api/v1/agent/drivers?mac={MAC1}",
+])
+def test_switching_identity_off_opens_agent_reads(identity_server, path):
+    setup_classroom(identity_server)
+    assert identity_server["admin"].post(
+        "/api/console/settings", json={"identity_check": False}).status_code == 200
+    assert identity_server["stranger"].get(path).status_code == 200
+
+
+# --- capture: האסימון וגם זהות הרשת, לפני קריאת הגוף -------------------------
+
+
+def _capture_request(server, client, task_id, kind):
+    headers = {TOKEN_HEADER: task_token(server, task_id)}
+    if kind == "files":
+        return client.put(f"/api/v1/capture/{task_id}/files/p1.esp.pcl.zst",
+                          content=PART_A, headers=headers)
+    folder = staging_dir(server["ctx"].library.root, task_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "p1.esp.pcl.zst").write_bytes(PART_A)
+    (folder / "p3.windows.pcl.zst").write_bytes(PART_B)
+    return client.put(f"/api/v1/capture/{task_id}/manifest",
+                      content=json.dumps(manifest_for()).encode(), headers=headers)
+
+
+@pytest.mark.parametrize("kind,where", [
+    ("files", "capture-files"), ("manifest", "capture-manifest")])
+def test_capture_with_the_task_token_still_needs_the_task_macs_lease(
+        identity_server, kind, where):
+    setup_build_machine(identity_server, BUILD)
+    created = make_task(identity_server, BUILD).json()
+    refused_by_name(_capture_request(identity_server, identity_server["stranger"],
+                                     created["id"], kind))
+    assert any(f"({where})" in d for d in journal_where(identity_server,
+                                                         "identity_refused"))
+    assert _capture_request(identity_server, identity_server["station"],
+                            created["id"], kind).status_code == 200
+
+
+@pytest.mark.parametrize("kind", ["files", "manifest"])
+def test_capture_is_unverifiable_when_the_task_mac_has_no_lease(identity_server, kind):
+    ids = setup_classroom(identity_server)
+    created = make_task(identity_server, ids["mac2"]).json()
+    refused_by_name(_capture_request(identity_server, identity_server["station"],
+                                     created["id"], kind), "identity_unverifiable")
+
+
+@pytest.mark.parametrize("kind", ["files", "manifest"])
+def test_switching_identity_off_opens_capture_with_a_valid_token(identity_server, kind):
+    setup_build_machine(identity_server, BUILD)
+    created = make_task(identity_server, BUILD).json()
+    assert identity_server["admin"].post(
+        "/api/console/settings", json={"identity_check": False}).status_code == 200
+    assert _capture_request(identity_server, identity_server["stranger"],
+                            created["id"], kind).status_code == 200
 
 
 # --- direct.py: המניפסט החי --------------------------------------------------

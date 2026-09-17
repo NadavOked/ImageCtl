@@ -24,7 +24,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from . import auth, registry
-from .api import ServerContext
+from .api import ServerContext, identity_gate
 from .images import validate_display_name
 from .db import journal, now_iso, update_one
 from .progress_view import capture_progress
@@ -150,6 +150,9 @@ def create_agent_capture_router(ctx: ServerContext) -> APIRouter:
     @router.put("/{task_id}/files/{filename}")
     async def upload_partition(task_id: str, filename: str, request: Request):
         row = task_for(task_id, request)
+        refused = identity_gate(ctx, row["mac"], request, "capture-files")
+        if refused is not None:
+            return refused
         # רשימה לבנה על שם הקובץ: הוא מגיע ממכונה ברשת הלימודית.
         if not SAFE_FILE.match(filename):
             raise HTTPException(400, "unexpected partition file name")
@@ -193,6 +196,9 @@ def create_agent_capture_router(ctx: ServerContext) -> APIRouter:
     @router.put("/{task_id}/manifest")
     async def finish_capture(task_id: str, request: Request):
         row = task_for(task_id, request)
+        refused = identity_gate(ctx, row["mac"], request, "capture-manifest")
+        if refused is not None:
+            return refused
         # המזהה נוצר כאן בשרת, ולכן הבדיקה הזאת אינה אמורה להיכשל לעולם —
         # וזו הסיבה שהיא כתובה: המזהה הופך לשם תיקייה, והכלל הזה נאכף
         # בשני המסלולים שמכניסים אימג' לספרייה, לא רק בזה שקלט מבחוץ

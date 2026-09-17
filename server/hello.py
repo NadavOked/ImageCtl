@@ -125,8 +125,9 @@ def class_deploy_enabled(conn: sqlite3.Connection) -> bool:
 
 
 def _unknown(conn: sqlite3.Connection, mac: str, client_ip: str | None,
-             off_vlan: bool = False) -> dict:
-    journal(conn, "unknown_mac", f"{mac} from {client_ip or '?'}")
+             off_vlan: bool = False, record_journal: bool = True) -> dict:
+    if record_journal:
+        journal(conn, "unknown_mac", f"{mac} from {client_ip or '?'}")
     return {
         "schema": 1,
         "known": False,
@@ -156,6 +157,7 @@ def build_answer(
     hw_inventory: dict | None = None,
     multicast: dict | None = None,
     prompt: str | None = None,
+    record_journal: bool = True,
 ) -> dict:
     # כל מגע של המכונה נרשם ברשימת ההתקנים, גם של מכונה שאינה רשומה
     # בטבלה — ככה מתגלה MAC לא מוכר, וזה חלק מעיקרון 1. ‏hello הוא POST
@@ -178,7 +180,7 @@ def build_answer(
 
     machine = registry.lookup(conn, mac, all_macs)
     if machine is None:
-        return _unknown(conn, mac, client_ip, off_vlan)
+        return _unknown(conn, mac, client_ip, off_vlan, record_journal)
 
     # ‏#880: רק מחשב הבנייה מקבל את השדה — הוא היחיד עם התפריט. סוכן ישן
     # מתעלם משדה שאינו מכיר; סוכן חדש שלא קיבל אותו מתנהג ככבוי.
@@ -299,6 +301,7 @@ def make_resolver(conn: sqlite3.Connection, library: ImageLibrary,
             # אינו זהות). על וילן ההפצה התפריט כן רושם, כמו היום.
             # ‏#976: וגם לא הבדיקה העצמית של השרת — היא אינה המכונה.
             record_seen=not (off_vlan or probe),
+            record_journal=not probe,
         )
         if probe:
             # ‏#976: הבדיקה העצמית מקבלת את התפריט האמיתי — זו הראיה

@@ -136,23 +136,19 @@ const Classes = (() => {
 
   let chosenImage = "";
 
-  /* #59: המניפסט של האימג' הנבחר, כדי לחשב את מועמד ההרחבה ולהציג
-     אותו לפני שהסבב נפתח — אותו endpoint שהתפריט הטקסטואלי בסוכן
-     כבר קורא (image_menu, classround.sh). */
-  async function loadExpandBlock(imageId) {
+  /* #59/#1012: פרטי ההרחבה מגיעים בתוך רשימת האימג'ים המאומתת שכבר
+     נקראה. הקיוסק אינו פותח את manifest endpoint לכל מי שבוילן. */
+  function loadExpandBlock(imageId) {
     const box = $("#cls-expand");
     if (!box) return;
-    let manifest;
-    try {
-      manifest = await fetch(`/api/v1/images/${encodeURIComponent(imageId)}/manifest`)
-        .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); });
-    } catch (error) {
+    const image = (images || []).find((item) => item.id === imageId);
+    if (!image || !Array.isArray(image.expand_partitions)) {
       box.innerHTML = `<p class="sub">לא הצלחנו לקרוא את פרטי המחיצות — ` +
         `ברירת המחדל האוטומטית תופעל.</p>`;
       return;
     }
     if (chosenImage !== imageId) return;   // המשתמש כבר בחר אימג' אחר
-    box.innerHTML = expandBlockHtml("cls", manifest, "auto");
+    box.innerHTML = expandBlockHtml("cls", { partitions: image.expand_partitions }, "auto");
   }
 
   async function renderImagePick() {

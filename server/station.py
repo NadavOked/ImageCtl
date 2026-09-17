@@ -82,7 +82,7 @@ def create_station_router(ctx: ServerContext) -> APIRouter:
         return {"session": ctx.store.view(ctx.store.maybe_start(session), ctx.library)}
 
     @router.get("/state")
-    def station_state(mac: str = ""):
+    def station_state(request: Request, mac: str = ""):
         """מה שמסך התחנה הגרפי מציג: זהות, דיסקים, והמשימה הרצה.
 
         בלי כניסה — זה אותו מידע שהמכונה עצמה מקבלת ב-hello, והדף רץ
@@ -91,6 +91,9 @@ def create_station_router(ctx: ServerContext) -> APIRouter:
         canonical = normalize_mac(mac)
         if canonical is None:
             return _error(400, "missing or malformed mac", "bad_mac")
+        refused = identity_gate(ctx, canonical, request, "state")
+        if refused is not None:
+            return refused
 
         machine = ctx.conn.execute(
             "SELECT m.suffix, g.label, g.role FROM machines m"

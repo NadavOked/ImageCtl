@@ -480,6 +480,15 @@ class ImageLibrary:
                     "used_bytes": used_bytes_total(manifest),
                     "total_compressed_bytes": manifest.get("total_compressed_bytes", 0),
                     "partitions": len(manifest["partitions"]),
+                    # ‏#1012: מסך התחנה צריך להציג את בחירת ההרחבה, אבל
+                    # הקיוסק אינו חושף את manifest endpoint בוילן. רק השדות
+                    # הדרושים לתצוגה נוסעים בתשובת הקונסולה המאומתת.
+                    "expand_partitions": [
+                        {key: part.get(key) for key in
+                         ("index", "role", "size_bytes", "expandable")}
+                        for part in manifest["partitions"]
+                        if part.get("role") in ("windows", "linux")
+                    ],
                 }
             )
         return sorted(result, key=lambda m: (m["folder"], m["sort"], m["name"]))

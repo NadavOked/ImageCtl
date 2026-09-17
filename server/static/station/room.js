@@ -195,24 +195,20 @@ const Room = (() => {
       : "גודל הדיסקים לא ידוע — יסורב במכונה אם לא ייכנס.";
   }
 
-  /* #59: אותו רעיון כמו classes.js — המניפסט של האימג' הנבחר, כדי
-     להציג את מועמד ההרחבה לפני שהסבב נפתח. הבחירה חלה על **כל** הגלים
-     של הסבב הזה, לא רק על הראשון. */
-  async function loadRoomExpand(imageId) {
+  /* #59/#1012: פרטי ההרחבה מגיעים מרשימת האימג'ים המאומתת; אין בקשת
+     manifest ציבורית מן הקיוסק. הבחירה חלה על **כל** הגלים בסבב. */
+  function loadRoomExpand(imageId) {
     const box = $("#room-expand");
     if (!box) return;
     if (!imageId) { box.innerHTML = ""; return; }
-    let manifest;
-    try {
-      manifest = await fetch(`/api/v1/images/${encodeURIComponent(imageId)}/manifest`)
-        .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); });
-    } catch (error) {
+    const image = (images || []).find((item) => item.id === imageId);
+    if (!image || !Array.isArray(image.expand_partitions)) {
       box.innerHTML = `<p class="sub">לא הצלחנו לקרוא את פרטי המחיצות — ` +
         `ברירת המחדל האוטומטית תופעל.</p>`;
       return;
     }
     if ($("#room-image").value !== imageId) return;   // נבחר אימג' אחר בינתיים
-    box.innerHTML = expandBlockHtml("room", manifest, "auto");
+    box.innerHTML = expandBlockHtml("room", { partitions: image.expand_partitions }, "auto");
   }
 
   async function renderSetup(data) {
