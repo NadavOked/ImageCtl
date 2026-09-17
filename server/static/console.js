@@ -4399,6 +4399,169 @@ function settingsLogoClear() {
     async () => { await del("/branding/logo"); toast("הלוגו הוסר"); await loadSettingsData(); });
 }
 
+/* ---------- #649 שלב 1: ארגז כלים ----------
+   הקטלוג (server/tools_catalog.json ← docs/tools/TOOLS-CHOICE.md + CATALOG.md)
+   כקבוצה = כרטיס, טבלה אחת לכל קבוצה: ☐ בנייה/שיכפול | ☐ תלמיד | כלי | בינארי |
+   סיכון | גודל. שתי בחירות נפרדות (הכרעת נדב 17/09 — תלמיד = v2, הבחירה
+   נשמרת כבר עכשיו); מה שמסומן ייארז ל-initrd בשלב 2. הסימון חי ב-TOOLS_DRAFT
+   (Set לכל יעד) עד "שמור" (PUT /tools/selection); הכותרת, כפתור השמירה ומוני
+   הקבוצות מתעדכנים במקום — בלי לצבוע את הדף מחדש בכל ☐ (הסינון לא מאבד פוקוס). */
+let TOOLS = null, toolsError = "", TOOLS_DRAFT = null;
+const TOOLS_FILTER = { q: "", risk: "", rec: false, packed: false, scope: "build" };
+const TOOLS_TARGETS = ["build", "student"];
+const TOOLS_RISK = { ro: ["", "קריאה", "ro — קריאה בלבד: מציג מידע ולא משנה כלום במחשב"],
+                     rw: ["warn", "משנה", "rw — משנה משהו הפיך (סדר אתחול, איפוס USB, הערת מחשב)"],
+                     destroy: ["err", "מוחק", "destroy — מוחק נתונים: דורש הקלדת שם המחשב לפני ההרצה"] };
+
+async function loadTools() {
+  try {
+    TOOLS = await api("/tools/catalog");
+    toolsError = "";
+    TOOLS_DRAFT = { build: new Set(TOOLS.selection.build), student: new Set(TOOLS.selection.student) };
+  } catch (e) {
+    TOOLS = null; TOOLS_DRAFT = null;   // לא נקרא ≠ קטלוג ריק (עיקרון 5)
+    toolsError = e.message;
+    toast("טעינת ארגז הכלים נכשלה: " + e.message);
+  }
+  if (current === "tools") renderCurrent();
+}
+
+function toolsDirty() {
+  if (!TOOLS || !TOOLS_DRAFT) return false;
+  return TOOLS_TARGETS.some((t) => {
+    const saved = TOOLS.selection[t] || [];
+    return saved.length !== TOOLS_DRAFT[t].size || saved.some((id) => !TOOLS_DRAFT[t].has(id));
+  });
+}
+/* ספירה וגודל משוער של הסימון — כמו summarize() בשרת: ארוז = 0, בלי מספר = "לא נמדד" (נספר, לא נסכם). */
+function toolsSummary(target) {
+  const chosen = (TOOLS.tools || []).filter((t) => TOOLS_DRAFT[target].has(t.id));
+  const known = chosen.reduce((s, t) => s + (!t.packed && t.size_kb != null ? t.size_kb : 0), 0);
+  return { count: chosen.length, size_kb_known: known, size_unknown: chosen.filter((t) => !t.packed && t.size_kb == null).length };
+}
+function toolsSizeText(kb) { return kb >= 1024 ? `${(kb / 1024).toFixed(1)} MB` : `${kb} kB`; }
+function toolsPillText() {
+  const b = toolsSummary("build"), s = toolsSummary("student");
+  const kb = b.size_kb_known + s.size_kb_known, unknown = b.size_unknown + s.size_unknown;
+  return `${b.count} לבנייה · ${s.count} לתלמיד · תוספת משוערת ~${toolsSizeText(kb)}${unknown ? ` (+${unknown} לא נמדדו)` : ""}`;
+}
+function toolsVisible(t) {
+  const f = TOOLS_FILTER, q = f.q.trim().toLowerCase();
+  if (q && !`${t.title_he} ${t.what} ${t.binary} ${t.id}`.toLowerCase().includes(q)) return false;
+  if (f.risk && t.risk !== f.risk) return false;
+  if (f.rec && !t.recommended) return false;
+  if (f.packed && !t.packed) return false;
+  return true;
+}
+function toolsFilter(key, value) {
+  TOOLS_FILTER[key] = value;
+  if (key === "scope") return;
+  const box = document.getElementById("tools-groups");
+  if (box) box.innerHTML = toolsGroupsHtml();
+  const n = document.getElementById("tools-count");
+  if (n) n.textContent = toolsCountText();
+}
+function toolsCountText() {
+  const all = TOOLS.tools.length, shown = TOOLS.tools.filter(toolsVisible).length;
+  return shown === all ? `${all} כלים` : `${shown} מתוך ${all} כלים`;
+}
+/* ☐ אחד: מעדכן את הטיוטה ואת מה שתלוי בה — בלי לצבוע מחדש. */
+function toolsToggle(id, target, on) {
+  if (!TOOLS_DRAFT) return;
+  if (on) TOOLS_DRAFT[target].add(id); else TOOLS_DRAFT[target].delete(id);
+  toolsRefreshHeader();
+}
+function toolsRefreshHeader() {
+  const pill = document.getElementById("tools-pill"); if (pill) pill.textContent = toolsPillText();
+  const dirty = toolsDirty();
+  const save = document.getElementById("tools-save"); if (save) save.disabled = !dirty;
+  const cancel = document.getElementById("tools-cancel"); if (cancel) cancel.hidden = !dirty;
+  const state = document.getElementById("tools-state"); if (state) state.innerHTML = dirty ? UI.pill("warn", "שינויים לא נשמרו") : "";
+  (TOOLS.groups || []).forEach((g, i) => { const el = document.getElementById(`tools-grp-${i}`); if (el) el.textContent = toolsGroupCaption(g); });
+}
+function toolsGroupCaption(group) {
+  const list = TOOLS.tools.filter((t) => t.group === group);
+  const n = (target) => list.filter((t) => TOOLS_DRAFT[target].has(t.id)).length;
+  return `${list.length} כלים · ${n("build")} לבנייה · ${n("student")} לתלמיד`;
+}
+/* "סמן את המומלצים" / "נקה" לקבוצה — על היעד שנבחר בשורת הסינון (בנייה/תלמיד/שניהם).
+   "סמן את המומלצים" מוסיף ואינו מוריד סימון קיים; "נקה" מוריד את כל הקבוצה. */
+function toolsGroupMark(groupIndex, mode) {
+  const group = TOOLS.groups[groupIndex];
+  const targets = TOOLS_FILTER.scope === "both" ? TOOLS_TARGETS : [TOOLS_FILTER.scope];
+  for (const t of TOOLS.tools.filter((x) => x.group === group)) {
+    for (const target of targets) {
+      if (mode === "clear") TOOLS_DRAFT[target].delete(t.id);
+      else if (t.recommended) TOOLS_DRAFT[target].add(t.id);
+      const box = document.getElementById(`tool-${target}-${t.id}`);
+      if (box) box.checked = TOOLS_DRAFT[target].has(t.id);
+    }
+  }
+  toolsRefreshHeader();
+}
+function toolsCancel() {
+  TOOLS_DRAFT = { build: new Set(TOOLS.selection.build), student: new Set(TOOLS.selection.student) };
+  renderCurrent();
+}
+async function toolsSave() {
+  if (!TOOLS_DRAFT || !toolsDirty()) return;
+  const body = { build: [...TOOLS_DRAFT.build], student: [...TOOLS_DRAFT.student] };
+  try {
+    const r = await put("/tools/selection", body);
+    toast(`הבחירה נשמרה: ${r.summary.build.count} לבנייה · ${r.summary.student.count} לתלמיד`);
+  } catch (e) { toast("השמירה נכשלה: " + e.message); return; }
+  await loadTools();
+}
+
+function toolRowHtml(t) {
+  const box = (target, label) => `<input type="checkbox" id="tool-${target}-${esc(t.id)}" aria-label="${esc(label)}: ${esc(t.title_he)}"${TOOLS_DRAFT[target].has(t.id) ? " checked" : ""} onchange="toolsToggle('${esc(t.id)}','${target}',this.checked)">`;
+  const [cls, label, title] = TOOLS_RISK[t.risk] || ["", t.risk, ""];
+  const risk = `<span title="${esc(title)}">${UI.pill(cls, label)}</span>`;
+  let size;
+  if (t.packed) size = `<span title="${esc(t.size_source)}">${UI.status("ok", "ארוז")}</span>`;
+  else if (t.size_kb != null) size = `<span title="${esc(t.size_source)}">${esc(toolsSizeText(t.size_kb))}</span>`;
+  else size = `<span class="muted" title="${esc(t.size_source)}">לא נמדד</span>`;
+  const rec = t.recommended ? ` <span class="pill info" title="בשורת 'ההמלצה שלי' של הקבוצה">מומלץ</span>` : "";
+  const moved = t.moved_from ? `<span class="sub">מקבוצת "${esc(t.moved_from)}" במסמך (הכרעת נדב 17/09)</span>` : "";
+  return { attrs: `data-tool="${esc(t.id)}"`, cells: [
+    box("build", "בנייה/שיכפול"), box("student", "תלמיד"),
+    `<span class="name">${esc(t.title_he)}${rec}</span><span class="sub">${esc(t.what)}</span>${moved}`,
+    `<span class="mono">${esc(t.binary)}</span>`, risk, size] };
+}
+function toolsGroupsHtml() {
+  const cols = [{ html: `<span title="ייארז ל-initrd של מחשבי הבנייה והשיכפול">בנייה/שיכפול</span>` },
+                { html: `<span title="מחשב תלמיד = v2; הבחירה נשמרת כבר עכשיו">תלמיד</span>` }, "כלי", "בינארי", "סיכון", "גודל"];
+  return TOOLS.groups.map((g, i) => {
+    const rows = TOOLS.tools.filter((t) => t.group === g && toolsVisible(t)).map(toolRowHtml);
+    const table = UI.datagrid({ cls: "tools", columns: cols, rows, empty: "אין כלים בקבוצה הזו שמתאימים לסינון" });
+    const acts = `<button class="btn sm" onclick="toolsGroupMark(${i},'recommended')">סמן את המומלצים</button><button class="btn sm" onclick="toolsGroupMark(${i},'clear')">נקה</button>`;
+    return `<div class="c12 card"><div class="card-h"><span>${esc(g)} <small id="tools-grp-${i}">${esc(toolsGroupCaption(g))}</small></span><div class="acts">${acts}</div></div><div class="card-b${rows.length ? " flush" : ""}">${table}</div></div>`;
+  }).join("");
+}
+function toolsBarHtml() {
+  const f = TOOLS_FILTER, opt = (v, l, cur) => `<option value="${v}"${v === cur ? " selected" : ""}>${esc(l)}</option>`;
+  const risks = [["", "כל הסיכונים"], ["ro", "קריאה בלבד (ro)"], ["rw", "משנה (rw)"], ["destroy", "מוחק (destroy)"]];
+  const scopes = [["build", "בנייה/שיכפול"], ["student", "תלמיד"], ["both", "שניהם"]];
+  return `<div class="dg-bar"><input type="search" value="${esc(f.q)}" placeholder="חיפוש: שם, מה זה עושה, בינארי…" aria-label="חיפוש כלי" oninput="toolsFilter('q',this.value)" style="width:240px"><select aria-label="סיכון" onchange="toolsFilter('risk',this.value)">${risks.map(([v, l]) => opt(v, l, f.risk)).join("")}</select><label class="chk"><input type="checkbox"${f.rec ? " checked" : ""} onchange="toolsFilter('rec',this.checked)"> רק מומלצים</label><label class="chk"><input type="checkbox"${f.packed ? " checked" : ""} onchange="toolsFilter('packed',this.checked)"> רק ארוזים</label><span class="sp"></span><label class="chk">סמן/נקה קבוצה עבור: <select aria-label="היעד של פעולות הקבוצה" onchange="toolsFilter('scope',this.value)">${scopes.map(([v, l]) => opt(v, l, f.scope)).join("")}</select></label><span class="n" id="tools-count">${esc(toolsCountText())}</span></div>`;
+}
+function toolsPage() {
+  if (!TOOLS && !toolsError) return pagePlaceholder();
+  const dirty = toolsDirty();
+  const sub = TOOLS
+    ? esc(`${TOOLS.tools.length} כלים ב-${TOOLS.groups.length} קבוצות לפי מצב שימוש · מה שמסומן ייארז ל-initrd (שלב 2) · תלמיד = v2, הבחירה נשמרת כבר עכשיו`)
+    : `‏/tools/catalog לא נקרא: ${esc(toolsError)}`;
+  const pill = TOOLS ? `<span class="pill info" id="tools-pill">${esc(toolsPillText())}</span><span id="tools-state">${dirty ? UI.pill("warn", "שינויים לא נשמרו") : ""}</span>` : UI.pill("err", "לא נקרא");
+  const actions = (TOOLS ? `<button class="btn primary" id="tools-save" onclick="toolsSave()"${dirty ? "" : " disabled"}>שמור</button><button class="btn" id="tools-cancel" onclick="toolsCancel()"${dirty ? "" : " hidden"}>בטל שינויים</button>` : "")
+    + `<button class="btn" onclick="loadTools()">${uiIcon("refresh")} רענון</button>`;
+  const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "תשתית" }, { label: "ארגז כלים" }],
+    icon: "tools", name: "ארגז כלים", sub, pill, actions });
+  let body;
+  if (!TOOLS) body = UI.note("err", `לא הצלחתי לקרוא את קטלוג הכלים: ${esc(toolsError)}`);
+  else body = `<div class="c12 card">${toolsBarHtml()}</div><div id="tools-groups" style="display:contents">${toolsGroupsHtml()}</div>`
+    + `<div class="c12">${UI.note("info", `${UI.pill("", "קריאה")} מציג ולא משנה · ${UI.pill("warn", "משנה")} שינוי הפיך · ${UI.pill("err", "מוחק")} מוחק נתונים — יופעל רק אחרי הקלדת שם המחשב (עיקרון 7). ${UI.status("ok", "ארוז")} = הבינארי כבר ב-initrd היום (תוספת 0). הגדלים הם גודל חבילה מותקנת <b>עם המקור ב-tooltip</b> — לא תוספת נמדדת ל-initrd הדחוס; "לא נמדד" נספר בנפרד ואינו מקופל ל-0.`)}</div>`;
+  return `<div class="page">${header}<div class="body">${body}</div></div>`;
+}
+
 const pages = {
   settings: { crumb: "הגדרות", title: "הגדרות", tabs: [], render: settings, load: loadSettingsData, own: true },   // ‏#954 גל 6
   // ‏#954 גל 7: כותרת אובייקט + datagrid (UI.*, כמו drivers.js) — שרתים/העברות/קבוצות.
@@ -4418,6 +4581,7 @@ const pages = {
   logs: { crumb: "יומן", title: "יומן", tabs: [], render: logs, load: loadJournalData, own: true },   // ‏#954 גל 6: יומן אחד עם סינון בדף
   monitor: { crumb: "מוניטור", title: "מוניטור", tabs: [], render: monitorPage, load: loadMonitor, own: true },   // ‏#954 גל 6: הרשימה כטבלה
   drivers: { crumb: "דרייברים", title: "דרייברים", tabs: ["חבילות", "כיסוי לפי מכונה"], render: (i) => driversPage(i), load: () => loadDrivers(), own: true },   // ‏#954 גל 6; lazily: drivers.js loads after this file
+  tools: { crumb: "ארגז כלים", title: "ארגז כלים", tabs: [], render: toolsPage, load: loadTools, own: true },   // ‏#649 שלב 1: קבוצה = כרטיס, ☐ בנייה/שיכפול | ☐ תלמיד
   ports: { crumb: "פורטים", title: "פורטים", tabs: ["חיבורים פיזיים", "רשת הפצה", "פורטים"], render: ports, load: loadPorts, own: true },   // ‏#954 גל 5: מתג בכל שורה
 };
 let current = "home";
@@ -5226,6 +5390,7 @@ function monitorToggle(enabling) {
 function openRoundDetail() { selectPageById("deploy"); activateTab(1); }
 
 const UI_ICON_PATHS = {
+  tools: '<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 0 0 5.4-5.4l-2.4 2.4-2.1-.6-.6-2.1Z"/>',
   "server": "<rect x=\"3\" y=\"4\" width=\"18\" height=\"6\" rx=\"1\"/><rect x=\"3\" y=\"14\" width=\"18\" height=\"6\" rx=\"1\"/><path d=\"M7 7h.01M7 17h.01M11 7h6M11 17h6\"/>",
   "home": "<path d=\"m3 11 9-8 9 8M5 9v12h5v-7h4v7h5V9\"/>",
   "image": "<rect x=\"3\" y=\"3\" width=\"18\" height=\"18\" rx=\"2\"/><path d=\"m3 17 6-6 4 4 3-3 5 5\"/><circle cx=\"16\" cy=\"8\" r=\"1\"/>",

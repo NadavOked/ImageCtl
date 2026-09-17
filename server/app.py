@@ -40,6 +40,7 @@ from .sender import SenderEngine
 from .station import create_station_router
 from .console_library import create_library_router
 from .console_drivers import create_agent_drivers_router, create_drivers_router   # #720
+from .console_tools import create_tools_router   # #649 שלב 1
 from .drivers import DriverLibrary
 from .branding import create_branding_router
 from .capture import create_agent_capture_router, create_console_capture_router
@@ -508,6 +509,7 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
     app.include_router(create_storage_router(ctx, rt.data_dir))   # #727/#740
     app.include_router(create_library_router(ctx))
     app.include_router(create_drivers_router(ctx))   # #720
+    app.include_router(create_tools_router(ctx, rt.data_dir))   # #649: ארגז הכלים — קטלוג + בחירה
     app.include_router(create_net_router(ctx))
     app.include_router(create_dhcp_router(ctx, rt.dhcp_hooks))
     app.include_router(create_netcfg_router(ctx, rt.netcfg_dir, rt.netcfg_hooks))

@@ -869,3 +869,14 @@ button:focus-visible,[role="button"]:focus-visible,.inventory-node:focus-visible
 .page .netdiag + .note{margin-top:10px}
 @media(max-width:1000px){.page .kv3{grid-template-columns:1fr}}
 @media(max-width:740px){.page .kv2,.page .kv3{grid-template-columns:1fr}.page .dg.stable td .acts{visibility:visible}.page .netdiag-svg{min-width:900px}}
+/* ---------- #649 שלב 1: ארגז כלים — קבוצה = כרטיס, ☐ בנייה/שיכפול | ☐ תלמיד ---------- */
+/* השורות לא זזות ולא גדלות ב-hover (#1032): אין .acts בתאים, רק רקע. הטבלה שומרת רוחב מינימלי וגוללת בתוך הכרטיס ב-375px. */
+.page table.dg.tools{min-width:720px}
+.page .dg.tools th:nth-child(-n+2),.page .dg.tools td:nth-child(-n+2){text-align:center;width:96px}
+.page .dg.tools td .name .pill{margin-inline-start:6px;vertical-align:middle}
+.page .dg.tools td .sub{max-width:520px}
+.page .dg-bar label.chk{display:inline-flex;align-items:center;gap:6px;height:30px;white-space:nowrap;cursor:pointer}
+.page .dg-bar label.chk input[type="checkbox"]{width:15px;height:15px;margin:0}
+.page .obj-row .pill.info{white-space:normal}
+.page .btn[hidden]{display:none}   /* "בטל שינויים" מוסתר עד שיש שינוי; .btn הוא flex ו-hidden לבדו לא מנצח */
+@media(max-width:740px){.page .dg.tools th:nth-child(-n+2),.page .dg.tools td:nth-child(-n+2){width:72px}.page .dg-bar label.chk{height:auto}}

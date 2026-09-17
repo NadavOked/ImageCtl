@@ -99,6 +99,7 @@ EVENTS_HE = {
     "image_upload": "אימג' הועלה מהמחשב",
     "driver_upload": "חבילת דרייברים יובאה",
     "driver_delete": "חבילת דרייברים נמחקה",
+    "tools_selection": "בחירת ארגז הכלים נשמרה",   # #649
     "drivers_staged": "דרייברים הונחו על הדיסק המשוחזר",
     "drivers_failed": "השחזור הושלם, דרייברים לא הונחו",
     "folder_create": "תיקייה נוצרה",

@@ -180,17 +180,18 @@ def test_images_tree_node_uses_the_folder_icon():
 
 # ---------- #954 גל 2: ספריית האימג'ים ----------
 
-def test_static_includes_are_at_8_2():
+def test_static_includes_are_at_8_3():
     """גל 2 = ‏7.0; גל 3 (מחשבים) = ‏7.1; גל 3א = ‏7.3; השער (מוניטור רק בדף
     המוניטור) = ‏7.4; גל 5 (בריאות + פורטים) = ‏7.5; גל 6 (מוניטור, דרייברים,
     הגדרות, הרשאות, יומן + WoL למחשב) = ‏7.6; #703 (TLS) = ‏7.7; דף הפורטים
     לחוזה #996/#1015 וגל 7 (סניפים ושרת משני) נכנסו יחד בשער = ‏7.9; #1032
     (סבב ליטוש — hover, שורת סינון, כפתורים כפולים) = ‏8.1 (גל 8, הרשת,
-    לקח את 8.0 במקביל); בשער be שניהם יחד = ‏8.2. שוויון על כל ה-includes — bump חלקי הוא הבאג."""
+    לקח את 8.0 במקביל); בשער be שניהם יחד = ‏8.2; #649 שלב 1 (ארגז כלים) = ‏8.3.
+    שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
     versions = {float(v) for v in re.findall(r'\?v=(\d+\.\d+)"', page)}
-    assert versions == {8.2}, versions
+    assert versions == {8.3}, versions
 
 
 def test_old_images_page_code_is_gone():
@@ -408,4 +409,35 @@ def test_network_is_one_object_page_with_the_diagram_nics_and_deploy_tabs():
     # ‏#1032: תא הפעולות שומר מקום (visibility), לא display:none
     assert ".page .dg.stable td .acts{display:flex;visibility:hidden" in css
     for sel in (".page .netdiag-svg{", ".page .netdiag .ln.off{stroke-dasharray:4 4}", ".page .netdiag .led.err{", ".page .kv3{"):
+        assert sel in css, sel
+
+
+# ---------- #649 שלב 1: ארגז כלים ----------
+
+def test_tools_page_is_an_admin_tree_node_with_two_selections_per_tool():
+    """‏#649 שלב 1 (הכרעת נדב 17/09): צומת "ארגז כלים" תחת "תשתית" (admin בלבד,
+    אחרי "דרייברים"), עמוד `own` שבו קבוצה = כרטיס וטבלה עם ☐ בנייה/שיכפול
+    **ו-☐ תלמיד** לכל כלי (תלמיד = v2, הבחירה נשמרת כבר עכשיו); סיכון = pill
+    (ro אפור / rw כתום / destroy אדום עם "הקלדת שם"); גודל = ארוז ירוק / מספר /
+    "לא נמדד" (לא 0 — עיקרון 5); שמירה ב-`PUT /tools/selection` נדלקת רק כשיש
+    שינוי; בלי .acts בשורות (#1032: שום דבר לא זז ב-hover)."""
+    page, js = _index(), _console_js()
+    infra = page[page.index('id="infraTA"'):page.index('id="adminTA"')]
+    node = infra[infra.index('data-page="tools"') - 40:infra.index('data-page="tools"') + 200]
+    assert 'data-admin' in node and "selectPageById('tools')" in node
+    assert infra.index('data-page="drivers"') < infra.index('data-page="tools"'), "אחרי דרייברים"
+    assert "<span>ארגז כלים</span>" in infra
+    for needed in ("function toolsPage()", "async function loadTools()", "function toolRowHtml(", "function toolsGroupsHtml(", "function toolsBarHtml(",
+                   "function toolsToggle(", "function toolsGroupMark(", "async function toolsSave()", "function toolsDirty()", "function toolsSummary(",
+                   'await api("/tools/catalog")', 'await put("/tools/selection", body)', 'const body = { build: [...TOOLS_DRAFT.build], student: [...TOOLS_DRAFT.student] };',
+                   'box("build", "בנייה/שיכפול"), box("student", "תלמיד")', 'id="tools-save"', "סמן את המומלצים", "לא נמדד", 'UI.status("ok", "ארוז")',
+                   "דורש הקלדת שם המחשב", 'destroy: ["err"', 'rw: ["warn"', 'ro: [""',
+                   'tools: { crumb: "ארגז כלים", title: "ארגז כלים", tabs: [], render: toolsPage, load: loadTools, own: true }'):
+        assert needed in js, needed
+    block = js[js.index("/* ---------- #649 שלב 1: ארגז כלים"):js.index("const pages = {")]
+    assert 'class="acts"' not in block.split("function toolRowHtml(")[1].split("function toolsGroupsHtml(")[0], "#1032: בלי .acts בשורה"
+    assert "prompt(" not in block and "confirm(" not in block.replace("confirmSheet(", ""), "prompt/confirm חסומים — רק sheet()"
+    assert "disabled" not in block.replace('${dirty ? "" : " disabled"}', "").replace("save.disabled = !dirty", ""), "כפתור מנוטרל רק לשמירה בלי שינוי"
+    css = (STATIC / "console.css").read_text(encoding="utf-8")
+    for sel in (".page table.dg.tools{", ".page .dg-bar label.chk{"):
         assert sel in css, sel
