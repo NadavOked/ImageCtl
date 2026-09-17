@@ -101,6 +101,38 @@ def test_safe_relative(raw, expected):
     assert safe_relative(raw) == expected
 
 
+
+# --- #959: מזהה בלי class, וכלל "אחד מ-" ------------------------------------
+# ‏INF של דרייבר נוקב ב-`PCI\VEN_8086&DEV_15BC` בלבד — אין בו קוד class,
+# וחבילת דגם מתאימה כשאחד מבקריה נמצא במכונה, לא כשכולם נמצאים.
+
+
+def test_a_pci_id_may_omit_the_class_and_pci_any_needs_one_hit():
+    assert validate_manifest(manifest_for(match=[{"pci": ["8086:15bc"]}])) is None
+    assert validate_manifest(manifest_for(
+        match=[{"pci_any": ["8086:15bc", "10ec:8168:020000"]}])) is None
+    pkgs = [{"name": "any-of", "match": [{"pci_any": ["8086:15bc", "10ec:8168:020000"]}]},
+            {"name": "all-of-short", "match": [{"pci": ["8086:15bc", "8086:a352"]}]}]
+    assert match(INVENTORY, pkgs) == [{"name": "all-of-short", "by": "pci"},
+                                      {"name": "any-of", "by": "pci"}]
+    # ‏`8086:15bc` תואם רק בקר שה-vendor:device שלו זהים — לא כל מוצר של Intel.
+    assert match({**INVENTORY, "pci": ["8086:15bd:020000"]}, pkgs) == []
+    assert match({**INVENTORY, "pci": ["10ec:8168:020000"]}, pkgs) == [
+        {"name": "any-of", "by": "pci"}]
+
+
+@pytest.mark.parametrize("rule, fragment", [
+    ({"pci_any": []}, "pci_any"),
+    ({"pci_any": ["8086:15BC"]}, "PCI"),
+    ({"pci_any": ["8086"]}, "PCI"),
+    ({"pci_any": ["8086:15bc"] * 513}, "pci_any"),
+    ({"pci_any": ["8086:15bc"], "pci": ["8086:15bc"]}, "לא שניהם"),
+    ({"pci_any": ["8086:15bc"], "vendor": "x", "model": "y"}, "לא שניהם"),
+], ids=lambda v: str(v)[:40])
+def test_a_bad_pci_any_rule_is_refused_by_name(rule, fragment):
+    problem = validate_manifest(manifest_for(match=[rule]))
+    assert problem and fragment in problem, problem
+
 # --- ההתאמה — טהורה ודטרמיניסטית --------------------------------------------
 
 PKGS = [

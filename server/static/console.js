@@ -44,6 +44,80 @@ function esc(text) {
   return div.innerHTML;
 }
 
+/* ---------- #954: שפת העיצוב המשותפת — רכיבי רינדור לכל עמוד חדש ----------
+   המקור: docs/design/console-redesign (README §"שפת העיצוב", המוקאפים
+   שנדב אישר 17/09). ה-CSS: החלק ".page" בסוף console.css. כל עמוד שנבנה
+   מחדש מרכיב את עצמו מכאן — כותרת אובייקט, לשוניות, KPI, כרטיס, datagrid,
+   פס מצב, מפתח-ערך, ציר-זמן, הודעה וריק-מצב. הפונקציות מחזירות HTML;
+   טקסט חופשי עובר esc() אצל הקורא כשהוא HTML, וכאן כשהוא מחרוזת. */
+const UI = {
+  /* כותרת אובייקט: breadcrumb, אייקון, שם, שורת-משנה, תג מצב, פעולות, לשוניות. */
+  objHeader({ crumbs = [], icon = "server", name = "", sub = "", pill = "", actions = "", tabs = [], tab = 0 }) {
+    const crumbHtml = crumbs.map((c, i) => {
+      const last = i === crumbs.length - 1;
+      const item = c.onclick && !last
+        ? `<a role="link" tabindex="0" onclick="${c.onclick}">${esc(c.label)}</a>` : `<span>${esc(c.label)}</span>`;
+      return (i ? `<span>/</span>` : "") + item;
+    }).join("");
+    const tabHtml = tabs.length > 1 ? `<div class="tabs" role="tablist">${tabs.map((t, i) =>
+      `<button type="button" class="tab${i === tab ? " on" : ""}" role="tab" aria-selected="${i === tab}" tabindex="${i === tab ? 0 : -1}" onclick="activateTab(${i})">${esc(t)}</button>`).join("")}</div>` : "";
+    return `<div class="obj"><div class="crumbs">${crumbHtml}</div><div class="obj-row"><div class="obj-icon">${uiIcon(icon)}</div><div><div class="obj-name">${esc(name)}</div>${sub ? `<div class="obj-sub">${sub}</div>` : ""}</div>${pill}<div class="obj-actions">${actions}</div></div>${tabHtml}</div>`;
+  },
+  /* KPI: מספר גדול + תווית + שורת משמעות. cls: ok/warn/err/info/"" (אפור = אין/לא נבדק). */
+  kpi({ cls = "", label, value, unit = "", sub = "", bar = null }) {
+    const barHtml = bar == null ? "" : `<div class="bar" style="margin-top:6px" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${bar}"><i style="--w:${bar}%"></i></div>`;
+    return `<div class="kpi ${cls}"><div class="l">${esc(label)}</div><div class="v"><bdi dir="auto">${esc(value)}</bdi>${unit ? ` <small>${esc(unit)}</small>` : ""}</div>${barHtml}${sub ? `<div class="s">${sub}</div>` : ""}</div>`;
+  },
+  card({ title, small = "", acts = "", body, cls = "c12", flush = false }) {
+    return `<div class="${cls} card"><div class="card-h"><span>${esc(title)}${small ? ` <small>${esc(small)}</small>` : ""}</span>${acts ? `<div class="acts">${acts}</div>` : ""}</div><div class="card-b${flush ? " flush" : ""}">${body}</div></div>`;
+  },
+  /* מצב עם נקודה: ok/warn/err/run/"" (אפור = כבוי/לא נבדק). */
+  status(cls, text) { return `<span class="st ${cls}">${esc(text)}</span>`; },
+  pill(cls, text) { return `<span class="pill ${cls}">${esc(text)}</span>`; },
+  /* datagrid: columns = תוויות; rows = מערכי HTML לתאים (מוברחים ע"י הקורא). */
+  datagrid({ columns, rows, empty = "אין נתונים" }) {
+    if (!rows.length) return `<div class="empty">${esc(empty)}</div>`;
+    return `<table class="dg"><thead><tr>${columns.map((c) => `<th>${esc(c)}</th>`).join("")}</tr></thead><tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+  },
+  name(main, sub = "") { return `<span class="name">${esc(main)}</span>${sub ? `<span class="sub">${esc(sub)}</span>` : ""}`; },
+  nameHtml(main, subHtml) { return `<span class="name">${esc(main)}</span>${subHtml ? `<span class="sub">${subHtml}</span>` : ""}`; },
+  acts(buttons) { return `<div class="acts">${buttons.map(([label, onclick]) => `<button class="btn sm" onclick="${onclick}">${esc(label)}</button>`).join("")}</div>`; },
+  /* פס התקדמות + אחוז. pct=null → פס ריק ו"—" (לא 0%: עיקרון 5). */
+  barRow(pct, cls = "", text = null) {
+    const known = typeof pct === "number" && Number.isFinite(pct);
+    const w = known ? Math.max(0, Math.min(100, Math.round(pct))) : 0;
+    const label = text != null ? text : (known ? w + "%" : "—");
+    return `<div class="bar-row"><div class="bar ${cls}"><i style="--w:${w}%"></i></div><span class="pct">${esc(label)}</span></div>`;
+  },
+  kv(pairs) { return `<div class="kv">${pairs.map(([k, v]) => `<span class="k">${esc(k)}</span><span class="v">${v}</span>`).join("")}</div>`; },
+  note(cls, html) { return `<div class="note ${cls}"><span aria-hidden="true">●</span><span>${html}</span></div>`; },
+  empty(text, action = "") { return `<div class="empty">${esc(text)}${action ? `<div>${action}</div>` : ""}</div>`; },
+  /* ציר-זמן: [{t, cls, text(html), who}] */
+  timeline(events) {
+    return `<div class="timeline">${events.map((e) => `<div class="ev"><span class="t">${esc(e.t)}</span><span class="d ${e.cls || ""}"></span><span>${e.text}</span><span class="who">${esc(e.who || "")}</span></div>`).join("")}</div>`;
+  },
+  /* מה שאין לו API: הודעה ולא כפתור מנוטרל (README §8). */
+  soon(label) { return `<span class="muted" title="דורש API">${esc(label)} — בקרוב</span>`; },
+  link(label, onclick) { return `<a role="link" tabindex="0" onclick="${onclick}">${esc(label)}</a>`; },
+};
+
+/* תאריך dd/mm/yyyy ושעה hh:mm מחותמת ISO (#829 M11). */
+/* רצף מספר+יחידה או תאריך+שעה בתוך משפט עברי: הרווח שביניהם נפתר RTL
+   (UBA N1 — מספר נחשב R) והרצף מתהפך ("GB 38.4"). מבודדים אותו כ-LTR. */
+function ltr(text) { return `<bdi dir="ltr">${esc(text)}</bdi>`; }
+function fmtDate(ts) {
+  const m = String(ts || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : "—";
+}
+function fmtClock(ts) {
+  const m = String(ts || "").match(/T(\d{2}:\d{2})/);
+  return m ? m[1] : "—";
+}
+/* "היום" = אותו יום UTC כמו חותמות השרת (now_iso). */
+function isToday(ts) {
+  return String(ts || "").slice(0, 10) === new Date().toISOString().slice(0, 10);
+}
+
 /* מודאל אחיד במקום prompt/confirm — net.js/netcfg.js קוראים ל-sheet(). */
 function sheet({ title, sub = "", fields = [], submitLabel = "שמירה",
                  danger = false, verify = null, note = "", onSubmit }) {
@@ -627,13 +701,13 @@ function populateSidebarImages() {
     const imgs = (IMAGES || []).filter((im) => im.folder === f.name);
     const open = !!wasOpen[fid];
     if (!imgs.length) {
-      return `<div class="inventory-node" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span>${uiIcon("image")}</span><span>${esc(f.name)}</span></div>`;
+      return `<div class="inventory-node" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span>${uiIcon("folder")}</span><span>${esc(f.name)}</span></div>`;
     }
     const rows = imgs.map((im) => {
       const idEnc = encodeId(im.id || "");
       return `<div class="inventory-node" role="treeitem" tabindex="0" onclick="openImageDetail('${idEnc}')"><span class="tree-arrow-sp"></span><span>${uiIcon("image")}</span><span>${esc(im.name)}</span></div>`;
     }).join("");
-    return `<div class="inventory-node" role="treeitem" tabindex="0" aria-expanded="${open}" ondblclick="toggleInventoryGroup(this,'${fid}')"><span class="tree-arrow" data-open="${open}" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'${fid}')">${open ? "▾" : "▸"}</span><span>${uiIcon("image")}</span><span>${esc(f.name)}</span></div><div id="${fid}" class="inventory-children"${open ? "" : " hidden"}>${rows}</div>`;
+    return `<div class="inventory-node" role="treeitem" tabindex="0" aria-expanded="${open}" ondblclick="toggleInventoryGroup(this,'${fid}')"><span class="tree-arrow" data-open="${open}" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'${fid}')">${open ? "▾" : "▸"}</span><span>${uiIcon("folder")}</span><span>${esc(f.name)}</span></div><div id="${fid}" class="inventory-children"${open ? "" : " hidden"}>${rows}</div>`;
   }).join("");
 }
 
@@ -767,6 +841,7 @@ async function populateSidebarSecondaries() {
 }
 
 function markSecondaryStatus(n, connected, error) {
+  SECONDARY_STATUS[n.id] = { connected, error };   // ‏#954: "דורש טיפול" בסקירה קורא מכאן
   const dot = document.querySelector(`[data-secondary-status="${CSS.escape(n.id)}"]`);
   if (!dot) return;
   dot.className = secondaryDotClass(n, connected);
@@ -785,58 +860,271 @@ function openBranchView(nid, tabIndex, el) {
 function renderCurrent() {
   const page = pages[current];
   if (!page || !pageAllowed(current)) return;
+  // ‏#954: הסקירה נצבעת מחדש כל 2 שניות (refreshStatus) — בלי זה הגלילה
+  // קופצת לראש הדף בכל דגימה. הגולל הוא .page (עמוד חדש) או .scroll (ישן).
+  const scroller = document.querySelector("#content .page, #content .scroll");
+  const scrollTop = scroller ? scroller.scrollTop : 0;
   document.getElementById("content").innerHTML = layout(page, currentTab);
+  if (scrollTop) {
+    const again = document.querySelector("#content .page, #content .scroll");
+    if (again) again.scrollTop = scrollTop;
+  }
   const search = document.getElementById("globalSearch");
   if (search) search.value = searchQuery || "";
   if (current === "nic" || current === "netdeploy") wireNetPage();
   wireRestoredPage();
 }
 
-function home() {
-  if (!OVERVIEW) return overviewError ? `<div class="empty">Status unavailable</div>` : pagePlaceholder();
-  const serverCheck = healthCheckById("server");
-  const serverHealth = serverCheck ? healthStatusLabel(serverCheck.state) : "Not checked";
-  const images = OVERVIEW.images || 0;
-  const machines = OVERVIEW.machines || 0;
-  const session = OVERVIEW.session;
-  const active = session ? 1 : 0;
-  const joined = session ? (session.joined || 0) : 0;
-  const expected = sessionExpected(session);
-  const pct = sessionProgressPct(session);
-  const storage = OVERVIEW.storage;
-  const roundSub = session ? `${joined} מחוברים עכשיו` : "אין סבב פעיל";
-  const roundTag = session
-    ? `<span class="tag green">${esc(stateLabel(session.state))}</span>`
-    : `<span class="tag">אין סבב</span>`;
+/* ---------- סקירה כללית (#954 גל 1) ----------
+   נבנה לפי docs/design/console-redesign/home.md: שלוש שאלות — השרת בסדר?
+   מה רץ עכשיו? מה דורש אותי? — מה-API הקיים בלבד. מה שאין לו API (זמן
+   פעילות) מוצג כ"בקרוב", לא כנתון מומצא. הנתונים המתחלפים (‏/overview,
+   ‏/tasks) מגיעים מה-polling הקיים; השאר נקרא בכניסה לדף וברענון.
+   כל קריאה שנכשלה נשמרת בשם (HOME.err) ומוצגת — לא נקראה ≠ ריקה. */
+let HOME = { net: null, journal: null, nodes: null, transfers: null, ports: null,
+             ssh: null, update: null, err: {} };
+let SECONDARY_STATUS = {};   // ‏id → {connected, error}, נמדד ב-markSecondaryStatus
 
-  let capacity = `<div class="empty">אין נתוני אחסון</div>`;
-  let freeLabel = "";
-  if (storage && storage.free_bytes != null && Number(storage.total_bytes) > 0) {
-    const total = storage.total_bytes;
-    const used = Math.max(0, total - (storage.free_bytes || 0));
-    const usedPct = Math.round(100 * used / total);
-    freeLabel = formatGB(storage.free_bytes) + " פנוי";
-    capacity = `<div class="metric"><div><strong>אחסון אימג׳ים</strong><span>${esc(formatGB(used))} מתוך ${esc(formatGB(total))}</span><div class="progress" style="margin-top:7px"><i style="width:${usedPct}%"></i></div></div><div class="metric-side">${usedPct}%</div></div>`;
+function homeTabs() { return isAdmin() ? ["סיכום", "משימות", "אירועים"] : ["סיכום", "משימות"]; }
+
+async function loadHome() {
+  const jobs = [];
+  const grab = (key, path) => jobs.push(api(path)
+    .then((v) => { HOME[key] = v; delete HOME.err[key]; })
+    .catch((e) => { HOME[key] = null; HOME.err[key] = e.message; }));
+  jobs.push(refreshStatus());
+  jobs.push(loadCaptures().catch((e) => { HOME.err.tasks = e.message; }));
+  grab("net", "/net");
+  grab("ports", "/ports");
+  if (isAdmin()) {
+    jobs.push(loadHealth());
+    grab("journal", "/journal?limit=50");
+    grab("ssh", "/ssh");
+    grab("update", "/update");
   }
-
-  let roundBody;
-  if (!session) {
-    roundBody = `<div class="empty">אין סבב פעיל</div>`;
-  } else {
-    const members = session.members || [];
-    const done = members.filter((m) => m.done || m.state === "done").length;
-    const failed = members.filter((m) => m.state === "failed").length;
-    const working = members.length - done - failed;
-    const bar = pct == null ? "" : `<div class="progress" style="margin-top:7px"><i style="width:${pct}%"></i></div>`;
-    const side = pct == null ? "—" : (pct + "%");
-    const list = `<div class="list">${memberRows(members)}</div>${pullsHtml(OVERVIEW.pulls || [], false)}`;
-    roundBody = `<div class="split"><div><div class="metric"><div><strong>${esc(sessionImage(session))}</strong><span>${joined} תחנות מחוברות מתוך ${expected}</span>${bar}</div><div class="metric-side">${side}</div></div><div class="statrow"><div class="statbox"><div class="n">${done}</div><div class="l">הושלמו</div></div><div class="statbox"><div class="n">${working}</div><div class="l">בתהליך</div></div><div class="statbox"><div class="n">${failed}</div><div class="l">נכשלו</div></div></div></div><div>${list}</div></div>`;
+  if (ME && ME.capabilities && ME.capabilities.enroll_secondary) {
+    grab("nodes", "/storage-nodes");
+    grab("transfers", "/storage-transfers");
   }
+  await Promise.all(jobs);
+  if (current === "home") renderCurrent();
+}
 
-  return `<div class="object-strip"><div class="object-id"><div class="object-icon">${uiIcon("server")}</div><div><strong>שרת אימג'ים</strong><small>אובייקט שרת · מחובר</small></div></div><div class="object-actions"><button class="btn" onclick="refreshPage()">רענן</button></div></div><div class="grid"><div class="span-12"><div class="kpis"><div class="kpi"><div class="label">אימג׳ים זמינים</div><div class="val">${images}</div></div><div class="kpi"><div class="label">מחשבים רשומים</div><div class="val">${machines}</div></div><div class="kpi"><div class="label">סבב פעיל</div><div class="val">${active}</div><div class="sub">${esc(roundSub)}</div></div><div class="kpi"><div class="label">בריאות שרת</div><div class="val">${esc(serverHealth)}</div></div></div></div>
-<div class="span-8"><div class="card"><div class="card-h"><span>סבב הפצה פעיל</span><button class="btn" onclick="openRoundDetail()">Details</button>${roundTag}</div><div class="card-b">${roundBody}</div></div></div>
-<div class="span-4"><div class="card"><div class="card-h"><span>קיבולת שרת</span><small>${esc(freeLabel)}</small></div><div class="card-b">${capacity}</div></div></div>
-<div class="span-12"><div class="card"><div class="card-b"><div class="empty">אין נתונים להצגה</div></div></div></div></div>`;
+function homeHealth() {
+  // ‏null = לא נקרא (deploy: 403; admin: עוד לא/נכשל) — אפור, לא ירוק.
+  if (!Array.isArray(HEALTH)) return { cls: "", label: "לא נבדק", failing: [], total: 0 };
+  const failing = HEALTH.filter((c) => c.state === "bad" || c.state === "warn");
+  const bad = failing.some((c) => c.state === "bad");
+  return { cls: bad ? "err" : (failing.length ? "warn" : "ok"),
+           label: bad ? "תקלה" : (failing.length ? "אזהרה" : "תקין"), failing, total: HEALTH.length };
+}
+
+function homeSessionKpi(session, room) {
+  if (session) {
+    const wait = session.state === "open" && session.starts_in_seconds != null
+      ? ` · מתחיל בעוד ${Math.floor(session.starts_in_seconds / 60)}:${String(session.starts_in_seconds % 60).padStart(2, "0")}` : "";
+    return UI.kpi({ cls: "info", label: "סבב הפצה פעיל", value: 1,
+      sub: esc(`${sessionGroup(session)} · ${sessionImage(session)} — ${session.joined || 0}/${sessionExpected(session)} מחוברים${wait}`) });
+  }
+  if (room) {
+    return UI.kpi({ cls: "info", label: "סבב שיכפול פעיל", value: 1,
+      sub: esc(`${room.image_name || ""} — ${room.written_drives || 0}/${room.target_drives || 0} דיסקים נכתבו · גל ${room.wave_number || 1}`) });
+  }
+  return UI.kpi({ cls: "", label: "סבב הפצה פעיל", value: "אין", sub: UI.link("פתח סבב מדף ההפצה", "selectPageById('deploy')") });
+}
+
+function homeKpis() {
+  const o = OVERVIEW || {};
+  const net = Array.isArray(HOME.net) ? HOME.net : null;
+  const seen = net ? net.filter((d) => isToday(d.last_seen)).length : null;
+  const unknown = net ? net.filter((d) => !d.registered).length : null;
+  const folders = Array.isArray(FOLDERS) ? FOLDERS.length : null;
+  const latest = (IMAGES || []).slice().sort((a, b) => String(b.created || "").localeCompare(String(a.created || "")))[0];
+  const st = o.storage;
+  const hasStorage = st && st.free_bytes != null && Number(st.total_bytes) > 0;
+  const used = hasStorage ? Math.max(0, st.total_bytes - st.free_bytes) : 0;
+  const first = isAdmin()
+    ? (() => { const h = homeHealth();
+        const sub = !Array.isArray(HEALTH) ? esc(HOME.err.health || "‏/health לא נקרא עדיין")
+          : h.failing.length ? `${h.failing.length} מתוך ${h.total} בדיקות: ${esc(h.failing.map((c) => c.label).join(", "))} — ${UI.link("לבריאות", "selectPageById('health')")}`
+          : esc(`${h.total} בדיקות עברו`);
+        return UI.kpi({ cls: h.cls, label: "בריאות השרת", value: h.label, sub }); })()
+    : UI.kpi({ cls: o.session ? "info" : "", label: "מצב הסבב",
+        value: o.session ? stateLabel(o.session.state) : "אין",
+        sub: o.session ? esc(`${o.session.joined || 0} מתוך ${sessionExpected(o.session)} מחוברים`) : "אין סבב פתוח" });
+  return `<div class="c12 kpis">${first}${homeSessionKpi(o.session, o.room)}
+${UI.kpi({ cls: o.machines == null ? "" : "ok", label: "מחשבים רשומים", value: o.machines == null ? "—" : o.machines,
+    sub: net ? esc(`${seen} נראו ברשת היום · ${unknown} לא רשומים`) : esc(HOME.err.net ? "רשת לא נקראה: " + HOME.err.net : "רשת לא נקראה עדיין") })}
+${UI.kpi({ cls: o.images == null ? "" : "ok", label: "אימג'ים בספרייה", value: o.images == null ? "—" : o.images,
+    unit: folders == null ? "" : `ב-${folders} תיקיות`,
+    sub: latest ? `אחרון: ${esc(latest.name)} — ${ltr(fmtDate(latest.created))}` : "אין אימג'ים — קלוט ממחשב בנייה או העלה tar" })}
+${hasStorage
+    ? UI.kpi({ cls: st.free_bytes / st.total_bytes < 0.1 ? "warn" : "ok", label: "אחסון אימג'ים", value: fmtBytes(st.free_bytes), unit: "פנוי",
+        bar: Math.round(100 * used / st.total_bytes), sub: `${ltr(fmtBytes(used))} מתוך ${ltr(fmtBytes(st.total_bytes))} בשימוש` })
+    : UI.kpi({ cls: "", label: "אחסון אימג'ים", value: "לא ידוע", sub: "השרת לא החזיר נתוני אחסון" })}</div>`;
+}
+
+/* שורות "מה קורה עכשיו": סבב, סבב שיכפול, משיכות, קליטות, העברות לסניפים. */
+function homeNowRows(all = false) {
+  const rows = [];
+  const o = OVERVIEW || {};
+  const s = o.session;
+  if (s) {
+    const open = s.state === "open";
+    rows.push([UI.name(`סבב הפצה — ${sessionImage(s)}`, `${sessionGroup(s)} · ${stateLabel(s.state)}`),
+      esc(`${sessionExpected(s)} תחנות`), UI.barRow(sessionProgressPct(s), "", open ? `${s.joined || 0}/${sessionExpected(s)}` : null),
+      UI.status(open ? "run" : "ok", open ? "ממתין להצטרפות" : "משדר"),
+      UI.acts(open ? [["התחל עכשיו", "startRound()"], ["פרטים", "openRoundDetail()"]] : [["פרטים", "openRoundDetail()"]])]);
+  }
+  if (o.room) {
+    const r = o.room;
+    const pct = r.target_drives ? Math.round(100 * (r.written_drives || 0) / r.target_drives) : null;
+    rows.push([UI.name(`סבב שיכפול — ${r.image_name || ""}`, `גל ${r.wave_number || 1} · פתח ${r.opened_by || ""}`),
+      esc(`${r.target_drives || 0} דיסקים`), UI.barRow(pct, "", `${r.written_drives || 0}/${r.target_drives || 0}`),
+      UI.status(r.wave_state === "running" ? "run" : "warn", stateLabel(r.wave_state)),
+      UI.acts([["לחדר המשכפלים", "selectPageById('deploy')"]])]);
+  }
+  for (const p of o.pulls || []) for (const m of p.members || []) {
+    const v = Progress.view(m);
+    rows.push([UI.name(`משיכה — ${p.image_name || ""}`, m.hostname || m.name || m.mac || ""), "יוניקאסט",
+      UI.barRow(v.percent, "", v.label), UI.status("run", "מושכת"), ""]);
+  }
+  for (const t of CAPTURE_TASKS || []) {
+    const active = t.state === "pending" || t.state === "running";
+    if (!all && !active) continue;
+    const v = Progress.view(t);
+    const cls = t.state === "failed" ? "err" : t.state === "done" ? (t.error ? "warn" : "ok") : t.state === "pending" ? "warn" : "run";
+    const label = t.state === "pending" ? "ממתין שהמחשב יעלה ב-PXE" : t.state === "running" ? "קולט"
+      : t.state === "done" ? (t.error ? "הושלם עם אזהרה" : "הושלם") : t.state === "failed" ? "נכשל" : t.state;
+    rows.push([UI.nameHtml(`קליטת אימג' — ${t.name || ""}`, `${esc(t.machine || t.mac || "")}${t.disk ? " · " + ltr(t.disk) : ""} · ${ltr(fmtDate(t.created_at) + " " + fmtClock(t.created_at))}`),
+      "ספריית האימג'ים", UI.barRow(v.percent, cls === "err" ? "err" : ""),
+      UI.status(cls, label + (t.error ? " — " + t.error : "")), UI.acts([["לספרייה", "selectPageById('images')"]])]);
+  }
+  for (const t of HOME.transfers || []) {
+    const active = ["queued", "sending", "verifying"].includes(t.state);
+    if (!all && !active && t.state !== "failed") continue;
+    const pct = t.bytes_total ? Math.round(100 * (t.bytes_sent || 0) / t.bytes_total) : null;
+    const cls = t.state === "failed" ? "err" : t.state === "done" ? "ok" : t.state === "queued" ? "warn" : "run";
+    const label = { queued: "ממתין בתור", sending: "שולח", verifying: "מאמת", done: "הושלם", failed: "נכשל" }[t.state] || t.state;
+    rows.push([UI.nameHtml(`העברה לסניף ${t.node_label || t.node_id} — ${t.image_name || t.image_id}`, `${ltr(fmtDate(t.created_at) + " " + fmtClock(t.created_at))} · ${esc(t.started_by || "")}`),
+      esc(t.node_label || t.node_id || ""), UI.barRow(pct, cls === "err" ? "err" : ""),
+      UI.status(cls, label + (t.error ? " — " + t.error : "")), UI.acts([["לסניפים", "selectPageById('branches')"]])]);
+  }
+  return rows;
+}
+
+function homeNowCard(all = false) {
+  const unread = [HOME.err.tasks && "משימות", HOME.err.transfers && "העברות"].filter(Boolean);
+  const warn = unread.length ? UI.note("warn", esc(`לא נקראו: ${unread.join(", ")} — ${HOME.err.tasks || HOME.err.transfers}`)) : "";
+  const grid = UI.datagrid({ columns: ["פעילות", "יעד", "התקדמות", "מצב", ""], rows: homeNowRows(all),
+    empty: all ? "אין משימות עדיין" : "אין פעילות עכשיו — פתח סבב הפצה או קלוט אימג'" });
+  return UI.card({ title: all ? "משימות" : "מה קורה עכשיו", small: all ? "20 הקליטות האחרונות וכל ההעברות" : "מתעדכן כל 2 שניות",
+    cls: all || !isAdmin() ? "c12" : "c8", flush: true, body: warn + grid });   // ‏deploy: בלי "דורש טיפול" לצידו
+}
+
+/* "דורש טיפול": דיסקים אדומים, דיסקים מכווצים, מכונות לא רשומות, סניפים
+   שלא מגיבים, בדיקות בריאות warn/bad. ריק אמיתי ≠ "לא נקרא" (עיקרון 5). */
+function homeAttention() {
+  const items = [];
+  for (const f of DISK_FAILURES || []) {
+    const m = findMachine(f.mac);
+    items.push(UI.note("err", `<b>דיסק אדום</b> — ${esc(machineName(m) || f.mac)} · דיסק ${esc(f.disk_number ?? "?")}${f.serial ? ` (<span class="mono">${esc(f.serial)}</span>)` : ""} נכשל בכתיבה${f.cause ? ", סיבה: " + esc(f.cause) : ""}. ${UI.link("נקה אחרי החלפה", "selectPageById('machines')")}`));
+  }
+  for (const r of SHRINK_RECORDS || []) {
+    const m = findMachine(r.mac);
+    items.push(UI.note("warn", `<b>דיסק מכווץ</b> — ${esc(machineName(m) || r.mac)} · דיסק ${esc(r.port ?? "?")} כווץ לקליטה ולא הוחזר לגודלו. ${UI.link("למחשבים", "selectPageById('machines')")}`));
+  }
+  for (const d of HOME.net || []) {
+    if (d.registered) continue;
+    items.push(UI.note("warn", `<b>מכונה לא רשומה</b> ברשת ההפצה — <span class="mono">${esc(d.mac)}</span>${d.ip ? ` קיבלה ${ltr(d.ip)}` : ""} · ${ltr(fmtDate(d.last_seen) + " " + fmtClock(d.last_seen))}. ${UI.link("רשום", "openNewMachine()")}`));
+  }
+  for (const n of HOME.nodes || []) {
+    const st = SECONDARY_STATUS[n.id];
+    if (n.disabled_at || !st || st.connected) continue;
+    items.push(UI.note("err", `<b>סניף ${esc(n.label)} לא מגיב</b>${st.error ? " — " + esc(st.error) : ""}. ${UI.link("פרטי הסניף", "selectPageById('branches')")}`));
+  }
+  for (const c of Array.isArray(HEALTH) ? HEALTH : []) {
+    if (c.state !== "warn" && c.state !== "bad") continue;
+    items.push(UI.note(c.state === "bad" ? "err" : "warn", `<b>${esc(c.label)}</b> — ${esc(c.detail || "")}. ${UI.link("לבריאות", "selectPageById('health')")}`));
+  }
+  const unread = [!Array.isArray(HEALTH) && "בריאות", HOME.err.net && "רשת", HOME.err.nodes && "סניפים"].filter(Boolean);
+  let body;
+  if (items.length) body = `<div class="stack">${items.join("")}</div>`;
+  else if (unread.length) body = UI.note("warn", esc(`לא נקראו: ${unread.join(", ")} — לא ניתן לומר שאין מה לטפל`));
+  else body = UI.empty("אין פריטים לטיפול");
+  const pill = items.length ? UI.pill("err", String(items.length)) : "";
+  return UI.card({ title: "דורש טיפול", acts: pill, cls: "c4", body });
+}
+
+/* ל-/journal אין שדה חומרה (Issue פערי ה-API של הסקירה) — עד אז לפי שם
+   ה-event (journal_he.py): כשל/סירוב → אדום; לא-מוכר/לא-מאומת/ביטול/סיכון
+   → כתום; הושלם/אושר → ירוק; השאר מידע. */
+function journalSeverity(row) {
+  const e = String(row.event || "").toLowerCase();
+  if (/_done$|_confirmed$|_cleared$|^login$|_staged$|_received$|_sent$/.test(e)) return "ok";   // לפני "fail": disk_failure_cleared
+  if (/fail|refused|denied|error|abort|lost|disk_failure$/.test(e)) return "err";
+  if (/unknown|unverified|unreadable|nonmember|cancel|risk|stopped|loop_local/.test(e)) return "warn";
+  return "info";
+}
+
+function homeEvents(limit) {
+  const journal = Array.isArray(HOME.journal) ? HOME.journal : null;
+  const acts = `<button class="btn sm flat" onclick="selectPageById('logs')">ליומן המלא ←</button>`;
+  let body;
+  if (!journal) body = UI.note("warn", esc("היומן לא נקרא" + (HOME.err.journal ? ": " + HOME.err.journal : " עדיין")));
+  else if (!journal.length) body = UI.empty("אין אירועים עדיין");
+  else body = UI.timeline(journal.slice(0, limit).map((r) => ({
+    t: isToday(r.ts) ? fmtClock(r.ts) : fmtDate(r.ts), cls: journalSeverity(r),
+    text: esc(r.label || r.text || r.event || ""), who: r.user || "" })));
+  return UI.card({ title: limit >= 50 ? "אירועים" : "אירועים אחרונים", small: limit >= 50 ? "50 האחרונים" : "", acts, cls: limit >= 50 ? "c12" : "c8", body });
+}
+
+function homeServerCard() {
+  const ports = Array.isArray(HOME.ports) ? HOME.ports : null;
+  const port = (id) => {
+    if (!ports) return UI.status("", HOME.err.ports ? "לא נקרא: " + HOME.err.ports : "לא נקרא עדיין");
+    const p = ports.find((x) => x.id === id);
+    return p ? UI.status(healthStatusClass(p.state), `${healthStatusLabel(p.state)} · ${p.port}`) : UI.status("", "לא מדווח");
+  };
+  const nic = (typeof NICS !== "undefined" && Array.isArray(NICS)) ? NICS.find((n) => n.enabled) : undefined;
+  const dcls = nic ? dhcpLiveClass(nic.dhcp_live && nic.dhcp_live.state) : "";
+  const dhcp = nic ? UI.status(dcls === "ok" ? "ok" : dcls === "warn" ? "warn" : "", `${nic.name} · ${nic.dhcp_live_label || ""}`)
+    : (nic === undefined ? UI.status("", "לא נקרא") : UI.status("", "לא מוגדר"));
+  const ssh = HOME.ssh && HOME.ssh.stations
+    ? UI.status(HOME.ssh.stations.enabled ? "warn" : "", HOME.ssh.stations.enabled ? "דלוק" : "כבוי")
+    : UI.status("", HOME.err.ssh ? "לא נקרא" : "לא נקרא עדיין");
+  const pairs = [["API / קונסולה", port("http_console")], ["PXE / TFTP", port("tftp")], ["DHCP הפצה", dhcp],
+    ["מולטיקאסט", port("multicast")], ["SSH לתחנות", ssh]];
+  if (HOME.nodes) {
+    const live = HOME.nodes.filter((n) => !n.disabled_at);
+    const down = live.filter((n) => SECONDARY_STATUS[n.id] && !SECONDARY_STATUS[n.id].connected).length;
+    pairs.push(["סניפים", live.length ? UI.status(down ? "err" : "ok", down ? `${down} מתוך ${live.length} לא מגיב` : `${live.length} מחוברים`) : UI.status("", "אין סניפים")]);
+  }
+  pairs.push(["עדכון", HOME.update ? `${esc(HOME.update.current || "ללא תג")} · ${UI.link("בדוק", "selectPageById('health')")}` : UI.status("", "לא נקרא")]);
+  const acts = `<button class="btn sm flat" onclick="selectPageById('health')">בריאות ←</button>`;
+  return UI.card({ title: "השרת", acts, cls: "c4", body: UI.kv(pairs) });
+}
+
+function home(tab = 0) {
+  const tabs = homeTabs();
+  const o = OVERVIEW;
+  const h = homeHealth();
+  const pill = isAdmin()
+    ? (Array.isArray(HEALTH) ? UI.pill(h.cls, !h.failing.length ? "תקין" : h.cls === "err" ? `${h.failing.length} ${h.failing.length === 1 ? "תקלה" : "תקלות"}` : `${h.failing.length} ${h.failing.length === 1 ? "אזהרה" : "אזהרות"}`) : UI.pill("", "לא נבדק"))
+    : (o && o.session ? UI.pill("info", stateLabel(o.session.state)) : UI.pill("", "אין סבב"));
+  const actions = `<button class="btn primary" onclick="selectPageById('deploy')">+ סבב הפצה</button>`
+    + (isAdmin() ? `<button class="btn" onclick="openCapture().catch(e => toast(e.message))">+ קליטת אימג'</button>` : "")
+    + `<button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>`;
+  const sub = [esc(ME && ME.server_name || ""), ME && ME.version ? esc(ME.version) : "", UI.soon("זמן פעילות")].filter(Boolean).join(" · ");
+  const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים" }, { label: "סקירה כללית" }], icon: "server",
+    name: "שרת אימג'ים", sub, pill, actions, tabs, tab });
+  const stale = overviewError ? `<div class="c12">${UI.note("warn", esc(overviewError))}</div>` : "";
+  let body;
+  if (tab === 1) body = homeNowCard(true);
+  else if (tab === 2 && isAdmin()) body = homeEvents(50);
+  else if (!o && !overviewError) body = `<div class="c12">${pagePlaceholder()}</div>`;
+  else body = homeKpis() + homeNowCard(false) + (isAdmin() ? homeAttention() + homeEvents(6) + homeServerCard() : "");
+  return `<div class="page">${header}<div class="body">${stale}${body}</div></div>`;
 }
 
 function deploy() {
@@ -1834,7 +2122,8 @@ const pages = {
   // ‏#936: הדף של משני אחד (נבחר בעץ, BRANCH_NODE) — אותם נתונים ואותן
   // פונקציות של "סניפים" (branches.js), לפי לשונית.
   branch: {crumb:"שרת משני", title:"שרת משני", desc:"מצב חיבור, המחשבים שלו, האימג'ים שהועברו אליו וההעברות — כפי שהראשי מדד מולו", tabs: BRANCH_VIEWS.map((v) => v[1]), render:pagePlaceholder},
-  home: { crumb: "סקירה כללית", title: "סקירה כללית", desc: "מצב שרת, ספריית האימג׳ים ופעילות ההפצה בזמן אמת", tabs: ["סיכום", "משימות אחרונות", "אירועים"], render: home, load: refreshStatus },
+  // ‏#954: הדף מצייר את הכותרת והלשוניות שלו (own) לפי שפת העיצוב החדשה; הלשוניות בפועל לפי תפקיד (homeTabs).
+  home: { crumb: "סקירה כללית", title: "סקירה כללית", tabs: ["סיכום", "משימות", "אירועים"], render: home, load: loadHome, own: true },
   images: { crumb: "ספריית אימג׳ים", title: "ספריית אימג׳ים", desc: "ניהול גרסאות, העלאה, הורדה ושמירה של אימג׳ים מוכנים להפצה", tabs: ["אימג׳ים", "מטא־נתונים"], render: images, load: loadImages },
   deploy: { crumb: "סבבי הפצה", title: "סבבי הפצה", desc: "פתיחת סבב, צירוף תחנות ומעקב אחר כתיבה לכל מחשב", tabs: ["סבבים", "הצטרפות חיה"], render: deploy, load: refreshStatus },
   machines: { crumb: "מחשבים", title: "מחשבים", desc: "מלאי תחנות, כיתות, כתובות MAC וסטטוס PXE", tabs: ["כל התחנות", "ניהול לפי סוג"], render: machines, load: loadMachines },
@@ -1854,7 +2143,6 @@ let searchQuery = "";
 
 function tabRender(pageId, index) {
   const renderers = {
-    home: [home, () => `<div class="card card-b">${pullsHtml(OVERVIEW?.pulls || [], false) || "No active pulls"}</div>`, emptyDataCard],
     images: [images, emptyDataCard],
     deploy: [deploy, emptyDataCard],
     machines: [machines, machineAdminPage],
@@ -1876,6 +2164,7 @@ function tabRender(pageId, index) {
 }
 
 function layout(page, index = 0) {
+  if (page.own) return page.render(index);   // ‏#954: עמוד שנבנה מחדש מצייר כותרת+לשוניות בעצמו
   const stale = overviewError && ["home","deploy"].includes(current) ? `<div class="notice warn" role="status">${esc(overviewError)}</div>` : "";
   return `<div class="breadcrumbs"><span>שרת אימג'ים</span><span class="sep">/</span><strong>${page.crumb}</strong></div><div class="toolbar"><div class="title-block"><h1>${page.title}</h1><p>${page.desc}</p></div><div class="toolbar-actions"><button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button><div class="rel"><button class="btn primary" id="pageActionBtn" aria-haspopup="menu" aria-expanded="false" onclick="openAction()">+ פעולה</button><div id="pageActionMenu" class="action-menu" role="menu"></div></div></div></div><div class="vcenter-tabs" role="tablist">${page.tabs.map((t, i) => `<button type="button" class="vcenter-tab ${i === index ? "active" : ""}" role="tab" aria-selected="${i === index}" tabindex="${i === index ? 0 : -1}" onclick="activateTab(${i})">${t}</button>`).join("")}</div><div class="scroll">${stale}${tabRender(current, index)}<div class="footer-note">ImageCtl Console</div></div>`;
 }
@@ -2063,7 +2352,6 @@ function openAction() {
   const menu = document.getElementById("pageActionMenu");
   if (!menu) return;
   const actions = {
-    home: [["בדיקת בריאות", "soon()"], ["פתח סבב חדש", "soon()"], ["פתח התראות", "topNotifications()"]],
     images: [["אימג׳ חדש", "openCapture().catch(e => toast(e.message))"], ["קליטת אימג׳", "openImageIngest()"], ["אימות ספרייה", "soon()"]],
     deploy: [["סבב הפצה חדש", "soon()"], ["התחל סבב", "startSelectedRound()"], ["ייצוא סבבים", "soon()"]],
     machines: [["הוספת מחשב", "openNewMachine()"], ["ייבוא CSV", "importCSV()"], ["ייצוא CSV", "exportMachines()"]],
@@ -3238,6 +3526,7 @@ const UI_ICON_PATHS = {
   "server": "<rect x=\"3\" y=\"4\" width=\"18\" height=\"6\" rx=\"1\"/><rect x=\"3\" y=\"14\" width=\"18\" height=\"6\" rx=\"1\"/><path d=\"M7 7h.01M7 17h.01M11 7h6M11 17h6\"/>",
   "home": "<path d=\"m3 11 9-8 9 8M5 9v12h5v-7h4v7h5V9\"/>",
   "image": "<rect x=\"3\" y=\"3\" width=\"18\" height=\"18\" rx=\"2\"/><path d=\"m3 17 6-6 4 4 3-3 5 5\"/><circle cx=\"16\" cy=\"8\" r=\"1\"/>",
+  "folder": "<path d=\"M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z\"/>",
   "group": "<rect x=\"3\" y=\"4\" width=\"18\" height=\"16\" rx=\"1\"/><path d=\"M3 10h18M9 4v16M15 4v16\"/>",
   "build": "<path d=\"m14 5 5 5M3 21l8-8M9 3l12 12-6 6L3 9Z\"/>",
   "copy": "<rect x=\"8\" y=\"8\" width=\"13\" height=\"13\" rx=\"1\"/><path d=\"M16 8V3H3v13h5\"/>",

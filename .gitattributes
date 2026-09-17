@@ -2,3 +2,4 @@
 * text=auto eol=lf
 *.png binary
 *.efi binary
+*.cab binary

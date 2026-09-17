@@ -18,6 +18,11 @@ async function loadDrivers() {
 
 function driverRuleLabel(rule) {
   if (rule.pci) return `PCI ${rule.pci.join(" + ")}`;
+  if (rule.pci_any) {
+    // חבילת דגם (#959): מאות מזהים — מציגים כמה, ואת המספר המלא.
+    const shown = rule.pci_any.slice(0, 3).join(" | ");
+    return `PCI אחד מ-${rule.pci_any.length}: ${shown}${rule.pci_any.length > 3 ? " …" : ""}`;
+  }
   return `${rule.vendor} · ${rule.model}`;
 }
 

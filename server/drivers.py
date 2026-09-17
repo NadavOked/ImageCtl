@@ -30,7 +30,6 @@ from pathlib import Path, PurePosixPath
 
 from .archive import _clear, _safe_members, _sha256, _shown
 from .images import inside
-from .inventory import PCI_RE
 
 log = logging.getLogger("imagectl.drivers")
 
@@ -44,6 +43,14 @@ UNVERIFIED = "manifest.unverified"
 #: תקרת קבצים לחבילה — חבילת דרייבר אמיתית היא עשרות קבצים, לא אלפים.
 FILES_LIMIT = 2000
 MATCH_LIMIT = 64
+#: ‏`vendor:device[:class]` — ה-class אופציונלי (#959): ‏INF של דרייבר נוקב
+#: ב-`PCI\VEN_8086&DEV_15BC` בלבד, ואין ממנו דרך לגזור את קוד ה-class
+#: ש-`inventory.PCI_RE` דורש. מזהה בלי class תואם כל בקר עם אותו
+#: vendor:device, בכל class.
+PCI_ID_RE = re.compile(r"^[0-9a-f]{4}:[0-9a-f]{4}(:[0-9a-f]{6})?$")
+#: תקרה לכלל `pci_any` — חבילת דגם של HP/Lenovo מונה מאות מזהי רשת
+#: ואחסון (‏INF אחד של Intel מונה עשרות דורות), וכולם בכלל אחד.
+PCI_ANY_LIMIT = 512
 
 
 class DriverError(ValueError):
@@ -109,16 +116,20 @@ def validate_manifest(manifest: object) -> str | None:
 def _rule_problem(rule: object) -> str | None:
     if not isinstance(rule, dict):
         return "כלל התאמה אינו אובייקט"
-    has_pci, has_model = "pci" in rule, ("vendor" in rule or "model" in rule)
-    if has_pci == has_model:
-        return "כלל התאמה הוא או {vendor, model} או {pci: [...]} — לא שניהם ולא אף אחד"
-    if has_pci:
-        ids = rule["pci"]
-        if not isinstance(ids, list) or not ids or len(ids) > MATCH_LIMIT:
-            return "pci חייב להיות רשימה לא ריקה"
+    kinds = [k for k, present in (("pci", "pci" in rule), ("pci_any", "pci_any" in rule),
+                                  ("model", "vendor" in rule or "model" in rule)) if present]
+    if len(kinds) != 1:
+        return ("כלל התאמה הוא או {vendor, model} או {pci: [...]} או {pci_any: [...]}"
+                " — לא שניהם ולא אף אחד")
+    if kinds[0] in ("pci", "pci_any"):
+        key = kinds[0]
+        ids = rule[key]
+        limit = MATCH_LIMIT if key == "pci" else PCI_ANY_LIMIT
+        if not isinstance(ids, list) or not ids or len(ids) > limit:
+            return f"{key} חייב להיות רשימה לא ריקה (עד {limit})"
         for pci in ids:
-            if not isinstance(pci, str) or not PCI_RE.match(pci):
-                return f"מזהה PCI לא תקין: {_shown(pci)} (vendor:device:class, hex קטן)"
+            if not isinstance(pci, str) or not PCI_ID_RE.match(pci):
+                return f"מזהה PCI לא תקין: {_shown(pci)} (vendor:device[:class], hex קטן)"
         return None
     vendor, model = rule.get("vendor"), rule.get("model")
     if not isinstance(vendor, str) or not vendor.strip():
@@ -135,11 +146,18 @@ def _norm(text: object) -> str:
     return text.strip().casefold() if isinstance(text, str) else ""
 
 
+def _id_present(pci: str, have: list[str]) -> bool:
+    """מזהה עם class = זהות מלאה; בלי class = אותו vendor:device בכל class."""
+    return pci in have if pci.count(":") == 2 else any(h.startswith(pci + ":") for h in have)
+
+
 def _rule_matches(rule: dict, inventory: dict) -> str | None:
     """‏`"pci"` / `"model"` כשהכלל תואם, אחרת ``None``."""
+    have = list(inventory.get("pci") or [])
     if "pci" in rule:
-        have = set(inventory.get("pci") or [])
-        return "pci" if all(p in have for p in rule["pci"]) else None
+        return "pci" if all(_id_present(p, have) for p in rule["pci"]) else None
+    if "pci_any" in rule:
+        return "pci" if any(_id_present(p, have) for p in rule["pci_any"]) else None
     dmi = inventory.get("dmi") or {}
     if _norm(rule.get("vendor")) != _norm(dmi.get("sys_vendor")):
         return None
@@ -154,9 +172,11 @@ def _rule_matches(rule: dict, inventory: dict) -> str | None:
 def match(inventory: dict | None, packages: list[dict]) -> list[dict]:
     """אילו חבילות מתאימות למלאי — ``[{"name": …, "by": "pci"|"model"}]``.
 
-    - כלל PCI תואם כש**כל** המזהים שבו קיימים במלאי; כלל דגם תואם כשה-
-      vendor שווה ל-`sys_vendor` וה-model ל-`product_name` **או**
-      `product_version` (בלי רגישות לרישיות ולרווחים בקצוות).
+    - כלל `pci` תואם כש**כל** המזהים שבו קיימים במלאי, וכלל `pci_any`
+      כש**אחד** מהם קיים (#959); מזהה בלי class תואם כל בקר עם אותו
+      vendor:device. כלל דגם תואם כשה-vendor שווה ל-`sys_vendor` וה-model
+      ל-`product_name` **או** `product_version` (בלי רגישות לרישיות
+      ולרווחים בקצוות).
     - חבילה מתאימה כשאחד מכלליה תואם. ‏**PCI גובר על דגם**: חבילה
       שתאמה ב-PCI מסומנת `pci` גם אם תאמה גם בדגם, וההתאמות לפי PCI
       קודמות ברשימה — הן הראיה מהחומרה עצמה, ושם הדגם הוא נפילה אחורה.

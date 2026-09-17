@@ -109,26 +109,63 @@ def test_the_machines_page_lists_shrunk_source_disks_in_orange_with_clear():
     assert "${shrinkRecordsCard()}" in machines and "${diskFailuresCard()}" in machines
 
 
-def test_image_fit_is_rendered_from_one_helper_and_the_room_applies_the_floor():
-    """‏#953: "נכנס לדיסק מ-X GB" מגיע מ-`imageSizeCells` (פונקציית רינדור
-    אחת, שתעבור כמו שהיא למסך של #954) גם בטבלה וגם במגירת האימג';
-    מסך החדר משווה כל אימג' ל-`disk_floor` מהשרת ב**כל** רענון; וה-`?v=`
-    הוקפץ בשני הדפים — JS ישן מול API חדש הוא gotcha ידוע."""
+# --- #954 גל 1: הסקירה הכללית נבנתה מחדש, הקוד הישן נמחק ---------------------
+
+
+def test_static_includes_are_at_least_6_9():
+    """‏#954 גל 1 = ‏`?v=6.9`. הבדיקה מונוטונית (≥) ולא שוויון — bump מוצדק
+    הבא לא אמור להפיל אותה; שוויון בין כל ה-includes נבדק ב-console_rewrite."""
+    versions = {float(v) for v in re.findall(r'\?v=([\d.]+)"', _index())}
+    assert versions, "אין ?v= ב-index.html"
+    assert min(versions) >= 6.9, versions
+
+
+def test_old_home_page_code_is_gone():
+    """הדף הישן נמחק, לא הוסתר: בלי `object-strip`, בלי "Details", בלי כרטיס
+    "אין נתונים להצגה" בתחתית, בלי "+ פעולה" לסקירה, ובלי הלשונית הישנה
+    "משימות אחרונות". הסקירה מציירת כותרת ולשוניות בעצמה (`own: true`)."""
     js = _console_js()
-    table = js[js.index("function images()"):js.index("function filterImagesFolder")]
-    assert "imageSizeCells(r)" in table
-    assert "דיסק יעד:" not in table            # הנוסח הישן, בלי הרצפה
-    detail = js[js.index("function openImageDetail"):js.index("function renameImage")]
-    assert "נכנס לדיסק מ-" in detail and "librarySize(img.used_bytes)" in detail
+    fn = js[js.index("function home("):js.index("function deploy() {")]
+    for gone in ("object-strip", ">Details<", "אין נתונים להצגה", "emptyDataCard", "footer-note"):
+        assert gone not in fn, gone
+    assert 'render: home, load: loadHome, own: true' in js
+    assert "משימות אחרונות" not in js[js.index("const pages = {"):js.index("let current = ")]
+    actions = js[js.index("function openAction()"):js.index("function openDrawer")]
+    assert "home:" not in actions, "לסקירה אין תפריט '+ פעולה' גנרי (README §מה שנשבר)"
+    assert "if (page.own) return page.render(index);" in js
 
-    room = (STATIC / "station" / "room.js").read_text(encoding="utf-8")
-    setup = room[room.index("async function renderSetup"):room.index("async function openRound")]
-    assert "applyImageFit(data.disk_floor || null)" in setup
-    assert "גודל הדיסקים לא ידוע" in room
 
-    for page in (_index(), (STATIC / "station" / "index.html").read_text(encoding="utf-8")):
-        versions = {tuple(int(x) for x in v.split("."))
-                    for v in re.findall(r"\?v=([0-9.]+)", page)}
-        assert len(versions) == 1, versions
-    assert "?v=6.8" in _index()
-    assert "?v=3.31" in (STATIC / "station" / "index.html").read_text(encoding="utf-8")
+def test_shared_ui_renderers_exist_for_the_next_pages():
+    """שפת העיצוב המשותפת (README §"שפת העיצוב") יושבת ב-`UI` בראש
+    console.js — כותרת אובייקט, KPI, כרטיס, datagrid, מצב, מפתח-ערך,
+    ציר-זמן, הודעה, ריק-מצב, ו"בקרוב" למה שדורש API."""
+    js = _console_js()
+    block = js[js.index("const UI = {"):js.index("function fmtDate(")]
+    for name in ("objHeader(", "kpi(", "card(", "datagrid(", "status(", "pill(", "barRow(",
+                 "kv(", "note(", "empty(", "timeline(", "soon("):
+        assert name in block, name
+    css = (STATIC / "console.css").read_text(encoding="utf-8")
+    for sel in (".page .obj{", ".page .kpi{", ".page table.dg{", ".page .st{", ".page .kv{",
+                ".page .ev{", ".page .note{", ".page .empty{"):
+        assert sel in css, sel
+
+
+def test_uptime_is_a_placeholder_not_a_number():
+    """‏home.md "דורש API": זמן הפעילות מוצג כ"בקרוב", לא כמספר מומצא."""
+    js = _console_js()
+    fn = js[js.index("function home("):js.index("function deploy() {")]
+    assert 'UI.soon("זמן פעילות")' in fn
+    assert "uptime" not in fn.lower()
+
+
+def test_images_tree_node_uses_the_folder_icon():
+    """הכרעת נדב (17/09 06:50): אייקון "אימג'ים" בעץ → תיקייה, גם לתיקיות
+    מתחתיו. האימג' עצמו נשאר עם אייקון תמונה."""
+    page, js = _index(), _console_js()
+    start = page.index('data-page="images"')
+    node = page[start:page.index("אימג'ים</span>", start)]
+    assert 'M3 7a2 2 0 0 1 2-2h4l2 2h8' in node
+    assert 'circle cx="16"' not in node
+    fn = js[js.index("function populateSidebarImages"):js.index("function fillSidebarTree")]
+    assert fn.count('uiIcon("folder")') == 2
+    assert fn.count('uiIcon("image")') == 1
