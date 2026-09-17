@@ -137,19 +137,46 @@ def _answer(session_state="running", task=TASK, receivers=2, bitrate=None):
                    "receivers": receivers,
                    "multicast": {"portbase": 31200, "min_receivers": receivers,
                                  "max_wait": 120, "start_timeout": 180,
+                                 "max_wait_later": 600, "start_timeout_later": 780,
                                  "retries_until_drop": 200, "max_bitrate": bitrate}}}}
 
 
-def direct_run(tmp_path, *, answer=None, env=None, udp_silent=False):
+#: ‏sgdisk עם שתי מחיצות — ESP ואחריה מחיצת נתונים — לשידור של שני זרמים.
+TWO_PARTITIONS = (
+    '#!/bin/sh\n'
+    'if [ "$1" = "-i" ]; then\n'
+    '  case "$2" in\n'
+    '    1) echo "Partition GUID code: C12A7328-F81F-11D2-BA4B-00A0C93EC93B (EFI)"\n'
+    '       echo "Partition unique GUID: 4C7B1E00-0000-4000-8000-000000000002"\n'
+    '       echo "First sector: 2048 (at 1024 KiB)"\n'
+    '       echo "Partition size: 204800 sectors (100.0 MiB)" ;;\n'
+    '    2) echo "Partition GUID code: EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 (Microsoft basic data)"\n'
+    '       echo "Partition unique GUID: 4C7B1E00-0000-4000-8000-000000000003"\n'
+    '       echo "First sector: 206848 (at 101.0 MiB)"\n'
+    '       echo "Partition size: 204800 sectors (100.0 MiB)" ;;\n'
+    '  esac\n'
+    '  exit 0\n'
+    'fi\n'
+    'echo "Disk identifier (GUID): 4C7B1E00-0000-4000-8000-000000000001"\n'
+    'echo "Number  Start (sector)    End (sector)  Size       Code  Name"\n'
+    'echo "   1            2048          206847   100.0 MiB   EF00  EFI system"\n'
+    'echo "   2          206848          411647   100.0 MiB   0700  data"\n'
+)
+
+
+def direct_run(tmp_path, *, answer=None, env=None, udp_silent=False, partitions=1,
+               timeout=45):
     box = tmp_path / "box"
     dev, run = box / "dev", box / "run"
     dev.mkdir(parents=True); run.mkdir(parents=True)
     (dev / "sda").write_bytes(GPT_DISK)
-    (dev / "sda1").write_bytes(bytes(512))
+    for n in range(1, partitions + 1):
+        (dev / f"sda{n}").write_bytes(bytes(512))
     queue = box / "sys/block/sda/queue"; queue.mkdir(parents=True)
     (queue / "logical_block_size").write_text("512\n")
     nodes = box / "nodes"
-    nodes.write_text(f"{posix(dev)}/sda\n{posix(dev)}/sda1\n", newline="\n")
+    nodes.write_text("".join(f"{posix(dev)}/sda{s}\n" for s in ["", *range(1, partitions + 1)]),
+                     newline="\n")
     (box / "answer.json").write_text(json.dumps(answer or _answer()), encoding="utf-8")
     envs = {"RUN_DIR": posix(run), "DEVROOT": posix(dev), "SYSROOT": posix(box),
             "SERVER": "http://s", "IFACE": "eth0", "MAC": MAC, "TASK_TOKEN": "t" * 48,
@@ -159,8 +186,8 @@ def direct_run(tmp_path, *, answer=None, env=None, udp_silent=False):
             "UDP_SILENT": "1" if udp_silent else "", "DIRECT_POLL_S": "0",
             **(env or {})}
     exports = "".join(f"export {k}={v!r}; " for k, v in envs.items())
-    stubs = {"sgdisk": ONE_PARTITION, "partclone.dd": PARTCLONE,
-             "udp-sender": UDP_SENDER, "curl": CURL_RECORD}
+    stubs = {"sgdisk": TWO_PARTITIONS if partitions == 2 else ONE_PARTITION,
+             "partclone.dd": PARTCLONE, "udp-sender": UDP_SENDER, "curl": CURL_RECORD}
     if shutil.which("jq") is None:
         stubs["jq"] = JQ_STUB
     libs = " ".join(f". {posix(AGENT)}/lib/{n}.sh;" for n in (
@@ -172,7 +199,8 @@ def direct_run(tmp_path, *, answer=None, env=None, udp_silent=False):
         f'send_hello() {{ cp {posix(box / "answer.json")!r} "$RESP"; }}; '
         f"direct_send_run {TASK} sda > {posix(box)}/direct.out 2>&1; "
         'echo "rc=$?"; '
-        f"build_progress '' {MAC} {TASK} > {posix(box)}/progress.json"
+        f"build_progress '' {MAC} {TASK} > {posix(box)}/progress.json",
+        timeout=timeout,
     )
     return box, run, out
 
@@ -201,6 +229,29 @@ def test_the_disk_is_read_twice_hashed_once_on_the_wire_and_nothing_is_uploaded(
     report = _progress(box)
     assert report["state"] == "sending" and report["targets"][0]["state"] != "failed"
     assert report["targets"][0]["bytes_total"] == manifest["total_compressed_bytes"]
+
+
+def test_the_second_partition_waits_for_the_drawers_not_for_the_operator(tmp_path):
+    """‏#957 בהפצה ישירה: אותו כלל כמו `SenderEngine` — המחיצה הראשונה
+    יוצאת עם `max_wait`/`start_timeout` של השרת, ומהשנייה עם
+    ‏`max_wait_later`/`start_timeout_later` שלו (ממשק 3), כי שם ההמתנה
+    היא למגירה שעוד כותבת את הקודמת ולא למפעיל. הסוכן אינו ממציא את
+    המספרים — הוא מעביר את מה שהשרת נתן, לפי מספר הזרם.
+
+    **בקרה שלילית:** על directsend.sh הישן שני ה-udp-sender מקבלים
+    ‏120/180, וההשוואה של השני נופלת."""
+    # שתי מחיצות = שני ניסיונות עיגון בקריאה הראשונה (~8ש' כל אחד בווינדוס)
+    # ועוד שני זרמים; 45 השניות של מחיצה אחת אינן מספיקות, וזה איטיות
+    # של הקופסה, לא תקיעה — הרצה שנתקעת עדיין נופלת, רק מאוחר יותר.
+    box, run, out = direct_run(tmp_path, partitions=2, timeout=120)
+    assert out.strip().endswith("rc=0"), out + (run / "agent.log").read_text("utf-8", "replace")
+    argv = (box / "udp.argv").read_text("utf-8").splitlines()
+    starts = [i for i, w in enumerate(argv) if w == "--interface"]
+    assert len(starts) == 2, argv
+    first, second = argv[starts[0]:starts[1]], argv[starts[1]:]
+    assert _flags(first)["--max-wait"] == "120" and _flags(first)["--start-timeout"] == "180"
+    assert _flags(second)["--max-wait"] == "600" and _flags(second)["--start-timeout"] == "780"
+    assert _flags(first)["--min-receivers"] == _flags(second)["--min-receivers"] == "2"
 
 
 def test_a_sender_that_exits_zero_without_transferring_is_a_failure(tmp_path):

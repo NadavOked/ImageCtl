@@ -311,6 +311,54 @@ def test_the_command_caps_the_wait_for_the_first_receiver(library, free_ports):
     assert cmd[cmd.index("--start-timeout") + 1] == str(DEFAULT_START_TIMEOUT)
 
 
+def test_later_partitions_wait_longer_for_the_room_than_the_first(library, free_ports):
+    """‏#957 (FOG GH-536): למחיצה הראשונה כל המכונות מגיעות יחד מהרשת,
+    וההמתנה שם היא "המפעיל לא התחיל" — 120 מהמקבל הראשון, 180 בסך הכול.
+    מהשנייה כל מכונה מגיעה כשסיימה **לכתוב** את הקודמת, ומגירה איטית
+    מאחרת ביותר מ-120 שניות אחרי המהירה; השולח היה מתחיל את ה-ESP
+    בלעדיה. לכן `--max-wait` למחיצות 2+ הוא `max(600, max_wait)`,
+    ו-`--start-timeout` — שב-udpcast מגביל את **כל** שלב ההמתנה, לא רק
+    את המקבל הראשון — מכיל אותו: 600 + 180.
+
+    **בקרה שלילית:** על `command_for` הישן שתי הפקודות זהות (120/180),
+    וההשוואה של הפקודה השנייה נופלת."""
+    recorder = Recorder()
+    engine = SenderEngine(library, runner=recorder)
+    engine.start({"id": "ses_1", "image_id": "img_7f3a91", "joined": 3})
+    assert wait_for(lambda: engine.status()["state"] == "done")
+
+    first, second = recorder.commands
+    assert first[first.index("--max-wait") + 1] == "120"
+    assert first[first.index("--start-timeout") + 1] == "180"
+    assert second[second.index("--max-wait") + 1] == "600"
+    assert second[second.index("--start-timeout") + 1] == "780"
+    # שאר הדגלים לא זזים בין המחיצות — רק שתי ההמתנות (והקובץ).
+    def without(cmd, flags=("--max-wait", "--start-timeout", "--file")):
+        out, skip = [], False
+        for word in cmd:
+            if skip or word in flags:
+                skip = word in flags
+                continue
+            out.append(word)
+        return out
+    assert without(first) == without(second)
+
+
+def test_a_first_wait_longer_than_ten_minutes_is_not_shortened_for_later_partitions():
+    """‏`max(600, max_wait)`: מפעיל שהגדיר המתנה ארוכה מעשר דקות לראשונה
+    מקבל לפחות אותה גם לבאות — הבאות לעולם אינן קצרות מהראשונה."""
+    engine = SenderEngine(library=None, max_wait=900, start_timeout=180)
+    later = engine.command_for(Path("p2.pcl.zst"), 2, number=2)
+    assert later[later.index("--max-wait") + 1] == "900"
+    assert later[later.index("--start-timeout") + 1] == "1080"
+    first = engine.command_for(Path("p1.pcl.zst"), 2, number=1)
+    assert first[first.index("--max-wait") + 1] == "900"
+    assert first[first.index("--start-timeout") + 1] == "180"
+    # ומה שמחשב הבנייה מקבל (ממשק 3) הוא אותם מספרים בדיוק.
+    params = engine.multicast_params()
+    assert (params["max_wait_later"], params["start_timeout_later"]) == (900, 1080)
+
+
 def test_nobody_joining_fails_and_says_that_nobody_joined(library, free_ports):
     """‏#438: udp-sender יוצא 0 בלי Starting transfer כשאיש לא הצטרף.
 

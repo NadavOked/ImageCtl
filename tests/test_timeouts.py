@@ -317,6 +317,133 @@ def test_a_station_whose_stream_never_arrives_fails_instead_of_freezing(tmp_path
     assert "מחיצה 2" in log, "הלוג לא אומר איזו מחיצה נתקעה"
 
 
+# --- ‏#957: המחיצה הראשונה ממתינה למפעיל, הבאות ממתינות לחדר ----------------
+
+#: ‏udp-receiver מזויף: רושם את ה-argv שלו ומוציא את התוכן — כמו האמיתי,
+#: רק בלי רשת. הזרם עצמו כאן אינו הנבדק; הדגלים שהוא קיבל הם הנבדק.
+RECORDING_RECEIVER = (
+    '#!/bin/sh\n'
+    'printf "%s\n" "$@" >> "$UDP_ARGV"\n'
+    'echo "---" >> "$UDP_ARGV"\n'
+    'cat "$UDP_PAYLOAD"\n'
+)
+
+
+#: ‏fanout מזויף למגירה אחת: מזין את ה-fifo שלה ומדווח עליה `ok`.
+FEED_ONE = (
+    '#!/bin/sh\n'
+    'shift\n'
+    'cat > "$1"\n'
+    'echo "$1 ok"\n'
+)
+
+
+def _argv_blocks(path: Path) -> list[list[str]]:
+    text = path.read_text(encoding="utf-8")
+    return [b.splitlines() for b in text.split("---\n") if b.strip()]
+
+
+def _flag(argv: list[str], flag: str) -> str:
+    return argv[argv.index(flag) + 1]
+
+
+def _two_streams(tmp_path, harness: str, call: str) -> tuple[list[list[str]], list[str]]:
+    """מריץ שתי מחיצות מוזרמות בשחזור אחד, ומחזיר את ה-argv של כל
+    ‏udp-receiver ואת התקרה ש-wait_progress קיבל לכל זרם."""
+    box = tmp_path / "box"
+    run = box / "run"
+    payload = box / "part.bin"
+    box.mkdir(parents=True)
+    payload.write_bytes(b"imagectl" * 512)
+    sha = hashlib.sha256(payload.read_bytes()).hexdigest()
+    for dev in ("sda",):
+        target = run / "targets" / dev
+        target.mkdir(parents=True)
+        (target / "state").write_text("writing\n")
+        (target / "base").write_text("0\n")
+        (target / "bytes.raw").write_text("")
+    argv, ceilings = box / "udp.argv", box / "ceilings"
+    out = run_sh(
+        make_stubs(box / "stubs", {"udp-receiver": RECORDING_RECEIVER, "fanout": FEED_ONE})
+        + f"export RUN_DIR={posix(run)!r} DEVROOT={posix(box)!r} "
+        f"UDP_ARGV={posix(argv)!r} UDP_PAYLOAD={posix(payload)!r} "
+        "WAIT_POLL_S=1 WAIT_DRAWER_S=10 WAIT_HELPER_S=10 WAIT_STREAM_STALL_S=20; "
+        f". {posix(AGENT)}/lib/common.sh; . {posix(WAITS)}; "
+        f". {posix(AGENT)}/lib/progress.sh; . {posix(AGENT)}/lib/restore.sh; "
+        f". {posix(AGENT)}/lib/drawers.sh; . {posix(AGENT)}/lib/verdict.sh; . {posix(AGENT)}/lib/failmark.sh; "
+        # ‏wait_progress האמיתי — רק רושם את התקרה שקיבל לפני שהוא ממתין.
+        "eval \"orig_$(declare -f wait_progress)\"; "
+        f'wait_progress() {{ echo "$3" >> {posix(ceilings)!r}; orig_wait_progress "$@"; }}; '
+        "node_is_block() { true; }; "
+        + harness
+        + f"{call} 2 dd p2.zst {sha} '' sda > {posix(box)}/pipe.out 2>&1; r1=$?; "
+        f"{call} 3 dd p3.zst {sha} '' sda >> {posix(box)}/pipe.out 2>&1; r2=$?; "
+        'echo "rc=$r1$r2"'
+    )
+    assert out.strip().endswith("rc=00"), out + (box / "pipe.out").read_text("utf-8", "replace")
+    return _argv_blocks(argv), ceilings.read_text(encoding="utf-8").split()
+
+
+@pytest.mark.parametrize(
+    ("harness", "call"),
+    [
+        pytest.param("STREAMED_PARTITIONS=0; ",
+                     "restore_partition multicast http://s img sda", id="station"),
+        pytest.param("target_init sda 4096; STREAMED_PARTITIONS=0; ",
+                     "restore_partition_drawers multicast http://s img", id="drawers"),
+    ],
+)
+def test_the_second_stream_waits_longer_for_its_first_byte_than_the_first(tmp_path, harness, call):
+    """‏#957 (FOG GH-536): למחיצה הראשונה ההמתנה היא "המפעיל לא התחיל"
+    — 600ש'. מהשנייה השולח ממתין עד 600ש' למגירה האיטית שעוד כותבת
+    את הקודמת, ו-udp-receiver מודד את ההמתנה הזאת ב-`--start-timeout`
+    שלו: תקרה של 600 שם הייתה מפילה דווקא את המקבל שהגיע ראשון, בדיוק
+    כשהשולח מתחיל. לכן הזרם השני מקבל תקרה גדולה יותר (900), ואותה
+    תקרה בדיוק מקבל wait_progress שמסתכל על המונה — בשני מסלולי
+    השחזור (תחנה בודדת, חדר שיכפולים).
+
+    **בקרה שלילית:** על הקוד הישן (‏`--start-timeout $UDPCAST_START_TIMEOUT`
+    אחיד) שני הזרמים מקבלים 600, וההשוואה של הזרם השני נופלת."""
+    blocks, ceilings = _two_streams(tmp_path, harness, call)
+    assert len(blocks) == 2, blocks
+    # ההתנהגות קודם, בלי להישען על הקבוע החדש: הזרם השני ממתין יותר.
+    got = [int(_flag(b, "--start-timeout")) for b in blocks]
+    assert got[1] > got[0], f"--start-timeout לכל זרם: {got}"
+    assert [int(c) for c in ceilings] == got, (ceilings, got)
+    first = _sh_default(WAITS, "WAIT_STREAM_START_S")
+    later = _sh_default(WAITS, "WAIT_STREAM_START_LATER_S")
+    assert _flag(blocks[0], "--start-timeout") == str(first)
+    assert _flag(blocks[1], "--start-timeout") == str(later)
+    assert ceilings == [str(first), str(later)], ceilings
+    # תקרת השקט אינה חלק מזה — היא על זרם שכבר התחיל, ונשארת אחידה.
+    assert {_flag(b, "--receive-timeout") for b in blocks} == {"20"}
+
+
+def test_the_later_ceiling_outlasts_the_senders_later_wait():
+    """המספרים משני צידי הרשת חייבים להיות מסודרים, וזה נבדק כאן ולא
+    מונח: השולח (‏`server/sender.py`) ממתין למחיצות 2+ עד
+    ‏`max_wait_later` מהמקבל הראשון, ומוגבל ב-`start_timeout_later`
+    שמכיל אותו; המקבל שהצטרף ראשון ממתין את כל ה-`max_wait_later`
+    בעצמו, ולכן תקרת הבייט הראשון שלו חייבת להיות **גדולה** ממנו —
+    ומחשב הבנייה בהפצה ישירה ממתין ל-udp-sender שלו עד
+    ‏`start_timeout_later`, ולכן היא חייבת להיות גדולה גם ממנו.
+    והמחיצה הראשונה — לא השתנתה: הראשונה עדיין 600, ואינה ארוכה
+    יותר מהשנייה."""
+    from server import sender as sender_module
+
+    first = _sh_default(WAITS, "WAIT_STREAM_START_S")
+    later = _sh_default(WAITS, "WAIT_STREAM_START_LATER_S")
+    max_wait_later = sender_module.later_max_wait(sender_module.DEFAULT_MAX_WAIT)
+    start_later = sender_module.later_start_timeout(
+        sender_module.DEFAULT_MAX_WAIT, sender_module.DEFAULT_START_TIMEOUT)
+    assert max_wait_later == 600 and start_later == 780
+    assert later > start_later > max_wait_later, (later, start_later, max_wait_later)
+    assert first == 600 and first < later
+    # השולח למחיצה הראשונה — כפי שהיה: 120 מהמקבל הראשון, 180 בסך הכול.
+    assert sender_module.DEFAULT_MAX_WAIT == 120
+    assert sender_module.DEFAULT_START_TIMEOUT == 180
+
+
 # --- שמירה על הכלל: אין המתנה בלי תקרה ---------------------------------------
 
 

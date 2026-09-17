@@ -47,6 +47,28 @@ DEFAULT_MAX_WAIT = 120
 #: התקרה על ההמתנה הזאת. שלוש דקות: מכונה שכבר אמרה hello צריכה פחות מזה
 #: כדי להתייצב כמקבל, והמפעיל אינו נשאר מול מסך קפוא יותר מזה.
 DEFAULT_START_TIMEOUT = 180
+#: ההמתנה למקבלים **מהמחיצה השנייה והלאה** (#957, כמו FOG GH-536). למחיצה
+#: הראשונה כל המכונות מגיעות יחד מהרשת, וההמתנה שם היא "המפעיל לא
+#: התחיל". לבאות כל מכונה מגיעה כשסיימה **לכתוב** את הקודמת — ומגירה
+#: איטית עם חוצץ fanout של עד 256MB מסיימת אימג' של 60GB יותר מ-120
+#: שניות אחרי המהירה. עם `--max-wait 120` השולח היה מתחיל את ה-ESP
+#: בלעדיה, וה-`udp-receiver` שלה נופל על מחיצה שאיש לא שידר לה.
+#: הערך הוא `max(600, max_wait)` — לא פחות מעשר דקות, ולא פחות מהראשונה.
+#:
+#: ‏`--start-timeout` נע איתו: ב-udpcast הוא תקרה על **כל** שלב ההמתנה
+#: (‏`udps-negotiate.c`: ‏`time(0) - loopStart >= startTimeout` → יציאה
+#: בלי שידור), לא רק על המקבל הראשון — ‏max-wait של 600 מאחורי
+#: ‏start-timeout של 180 היה מת. לכן למחיצות 2+ הוא `max_wait_later +
+#: start_timeout`: עד 180 שניות למקבל הראשון, ואז עד 600 לשאר.
+LATER_MAX_WAIT = 600
+
+
+def later_max_wait(max_wait: int) -> int:
+    return max(LATER_MAX_WAIT, max_wait)
+
+
+def later_start_timeout(max_wait: int, start_timeout: float) -> int:
+    return later_max_wait(max_wait) + int(start_timeout)
 #: אחרי כמה בקשות ACK ללא מענה udpcast מוותר על מקבל וממשיך בלעדיו.
 #: **בלי הדגל הזה udpcast מגדיר 200**.
 #:
@@ -407,14 +429,28 @@ class SenderEngine:
 
     # --- הלולאה ---------------------------------------------------------------
 
-    def command_for(self, path: Path, receivers: int) -> list[str]:
+    @property
+    def max_wait_later(self) -> int:
+        """‏`--max-wait` למחיצות 2+ (#957): ההמתנה שם היא לכתיבה של הקודמת."""
+        return later_max_wait(self.max_wait)
+
+    @property
+    def start_timeout_later(self) -> int:
+        """‏`--start-timeout` למחיצות 2+ — חייב להכיל את `max_wait_later`."""
+        return later_start_timeout(self.max_wait, self.start_timeout)
+
+    def command_for(self, path: Path, receivers: int, number: int = 1) -> list[str]:
+        # ‏number = מספר המחיצה בסדר השידור (1 = הראשונה). מהשנייה והלאה
+        # ההמתנה ארוכה יותר — ראו LATER_MAX_WAIT.
+        later = number > 1
         cmd = [
             "udp-sender",
             "--portbase", str(self.portbase),
             "--min-receivers", str(max(1, receivers)),
-            "--max-wait", str(self.max_wait),
+            "--max-wait", str(self.max_wait_later if later else self.max_wait),
             # בלי זה udpcast ממתין למקבל הראשון בלי גבול (#341).
-            "--start-timeout", str(self.start_timeout),
+            "--start-timeout",
+            str(self.start_timeout_later if later else self.start_timeout),
             # מקבל שמת אינו שולח CMD_DISCONNECT — הוא פשוט מפסיק לענות,
             # וכל שאר החדר ממתין לו. זו התקרה על ההמתנה הזאת (#437).
             "--retries-until-drop", str(self.retries_until_drop),
@@ -438,6 +474,9 @@ class SenderEngine:
             "portbase": self.portbase,
             "max_wait": self.max_wait,
             "start_timeout": int(self.start_timeout),
+            # למחיצות 2+ (#957) — מחשב הבנייה בוחר לפי מספר המחיצה, כמונו.
+            "max_wait_later": self.max_wait_later,
+            "start_timeout_later": self.start_timeout_later,
             "retries_until_drop": self.retries_until_drop,
             "max_bitrate": self.max_bitrate or None,
         }
@@ -552,7 +591,7 @@ class SenderEngine:
                 self._state.index = number
                 self._state.file = part["file"]
                 self._state.state = "sending"
-            cmd = self.command_for(path, receivers)
+            cmd = self.command_for(path, receivers, number)
             log_path = partition_log(path)
             log.info("sending partition %s/%s: %s", number, len(partitions), part["file"])
             try:

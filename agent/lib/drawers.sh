@@ -107,11 +107,12 @@ restore_partition_drawers() {
     # ברקע, עם עין על מונה ה-pv: זרם שלא הזיז בייט חייב להסתיים בדיווח.
     # shellcheck disable=SC2086 # word splitting of the fifo list is wanted
     rm -f "$RUN_DIR/fanout.rc" "$RUN_DIR/source.rc"
+    next_stream_ceiling   # #957: המחיצה הראשונה ממתינה למפעיל, הבאות לחדר
     (
         # ה-rc של המקור נלכד לחוד: ב-POSIX sh ‏$? של צינור הוא של האחרון
         # בלבד, ולכן זרם שנקטע באמצע (‏udp-receiver שפקע, ‏curl שנפל)
         # הגיע לכאן כ-fanout שיצא 0 על בייטים חלקיים (#73).
-        { stream_source "$_mode" "$_server" "$_image" "$_file"
+        { stream_source "$_mode" "$_server" "$_image" "$_file" "$STREAM_START_CEILING"
           echo "$?" > "$RUN_DIR/source.rc"; } \
             | pv -n -b -i 2 2>> "$RUN_DIR/bytes.raw" \
             | tee "$RUN_DIR/shafifo" \
@@ -121,7 +122,7 @@ restore_partition_drawers() {
     ) &
     _streampid=$!
     if wait_progress "$_streampid" "$RUN_DIR/bytes.raw" \
-            "$WAIT_STREAM_START_S" "$WAIT_STREAM_STALL_S" \
+            "$STREAM_START_CEILING" "$WAIT_STREAM_STALL_S" \
             "הזרם של מחיצה $_idx ($_file)"; then
         _fanout_rc=$(cat "$RUN_DIR/fanout.rc" 2>/dev/null || echo 1)
     else
@@ -246,7 +247,7 @@ run_restore_drawers() {
         return 1
     fi
     _expected=$(awk 'END { print NR }' "$_plan")
-    _written=0
+    _written=0; STREAMED_PARTITIONS=0   # #957: הזרם הראשון של השחזור הזה
     while IFS='|' read -r _i _g _role _fs _s _sz _f _sha _exp _ug _uuid <&3; do
         if is_swap_partition "$_fs"; then
             log "partition $_i (swap): recreated on each drawer, not fed"

@@ -62,6 +62,9 @@ def default_multicast() -> dict:
         "portbase": sender_module.DEFAULT_PORTBASE,
         "max_wait": sender_module.DEFAULT_MAX_WAIT,
         "start_timeout": sender_module.DEFAULT_START_TIMEOUT,
+        "max_wait_later": sender_module.later_max_wait(sender_module.DEFAULT_MAX_WAIT),
+        "start_timeout_later": sender_module.later_start_timeout(
+            sender_module.DEFAULT_MAX_WAIT, sender_module.DEFAULT_START_TIMEOUT),
         "retries_until_drop": sender_module.DEFAULT_RETRIES_UNTIL_DROP,
         "max_bitrate": None,
     }

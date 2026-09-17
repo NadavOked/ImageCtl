@@ -46,7 +46,8 @@ def _path(doc, expr: str):
 
 PLAN_KEYS = ("index", "type_guid", "role", "fs", "start_sector", "size_bytes",
              "file", "sha256", "expandable")
-MC_KEYS = ("portbase", "min_receivers", "max_wait", "start_timeout", "retries_until_drop")
+MC_KEYS = ("portbase", "min_receivers", "max_wait", "start_timeout",
+           "max_wait_later", "start_timeout_later", "retries_until_drop")
 
 
 def main(argv: list[str]) -> int:

@@ -15,7 +15,7 @@ UDPCAST_PORTBASE="${UDPCAST_PORTBASE:-9000}"
 # (מקום אחד); ההשמה כאן היא רק נפילה אחורה לקובץ שנטען לבדו (בדיקות).
 # ‏STALL=300 (11/09/2026): עד כאן 120, והיא נורתה כשהשולח האט למקבל איטי
 # בזנב אימג' גדול וקטע את הזרם ב-~90% (FOG/Clonezilla: לא להפיל את האיטי).
-UDPCAST_START_TIMEOUT="${UDPCAST_START_TIMEOUT:-${WAIT_STREAM_START_S:-600}}"
+# תקרת ההתחלה מגיעה לכל זרם בנפרד מ-next_stream_ceiling (waits.sh, #957).
 UDPCAST_STALL_TIMEOUT="${UDPCAST_STALL_TIMEOUT:-${WAIT_STREAM_STALL_S:-300}}"
 
 manifest_plan() {
@@ -132,10 +132,10 @@ node_is_block() {
 }
 
 stream_source() {
-    # $1 = mode (multicast/unicast), $2 = server URL, $3 = image id, $4 = file.
+    # $1 = mode, $2 = server URL, $3 = image id, $4 = file, $5 = תקרה עד הבייט הראשון.
     if [ "$1" = "multicast" ]; then
         udp-receiver --nokbd --portbase "$UDPCAST_PORTBASE" \
-            --start-timeout "$UDPCAST_START_TIMEOUT" \
+            --start-timeout "${5:-${WAIT_STREAM_START_S:-600}}" \
             --receive-timeout "$UDPCAST_STALL_TIMEOUT" 2>> "$LOG_FILE"
     else
         http_get_stream "$2/api/v1/images/$3/files/$4"
@@ -185,6 +185,7 @@ restore_partition() {
         return 0
     fi
 
+    next_stream_ceiling   # #957: אחרי ה-swap — נספרים רק זרמים
     rm -f "$_tdir/shafifo" "$_tdir/sha.out" "$_tdir/pipe.rc"
     mkfifo "$_tdir/shafifo"
     sha256sum < "$_tdir/shafifo" > "$_tdir/sha.out" &
@@ -195,7 +196,7 @@ restore_partition() {
     # ומותר לו, זרם שנעצר חייב להיגמר בדיווח ולא בקפיאה.
     # shellcheck disable=SC2046 # דגלי partclone_mode הם רשימת מילים
     (
-        stream_source "$1" "$2" "$3" "$7" \
+        stream_source "$1" "$2" "$3" "$7" "$STREAM_START_CEILING" \
             | pv -n -b -i 2 2>> "$_tdir/bytes.raw" \
             | tee "$_tdir/shafifo" \
             | zstd -dc 2>> "$LOG_FILE" \
@@ -206,7 +207,7 @@ restore_partition() {
     _pipepid=$!
 
     if wait_progress "$_pipepid" "$_tdir/bytes.raw" \
-            "$WAIT_STREAM_START_S" "$WAIT_STREAM_STALL_S" \
+            "$STREAM_START_CEILING" "$WAIT_STREAM_STALL_S" \
             "מחיצה $5 ($7) על $4"; then
         _rc=$(cat "$_tdir/pipe.rc" 2>/dev/null || echo 1)
     else
@@ -276,7 +277,7 @@ run_restore() {
         return 1
     fi
     _expected=$(awk 'END { print NR }' "$_plan")
-    _written=0
+    _written=0; STREAMED_PARTITIONS=0   # #957: הזרם הראשון של השחזור הזה
     while IFS='|' read -r _idx _guid _role _fs _start _size _f _sha _exp _uguid _uuid <&3; do
         log "partition $_idx ($_role, $_fs): receiving $_f"
         restore_partition "$1" "$3" "$4" "$2" "$_idx" "$_fs" "$_f" "$_sha" "$_uuid" \

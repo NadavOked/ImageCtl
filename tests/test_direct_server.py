@@ -108,8 +108,11 @@ def test_open_wakes_only_the_selected_and_hands_the_build_machine_a_task(room_se
     assert task["direct"]["session_state"] == "open"
     mc = task["direct"]["multicast"]
     assert set(mc) == {"portbase", "min_receivers", "max_wait", "start_timeout",
+                       "max_wait_later", "start_timeout_later",   # ‏#957
                        "retries_until_drop", "max_bitrate"}
     assert mc["portbase"] == room_server["ctx"].sender.portbase
+    assert mc["max_wait_later"] == room_server["ctx"].sender.max_wait_later
+    assert mc["start_timeout_later"] == room_server["ctx"].sender.start_timeout_later
 
     # המשכפל שנבחר מצטרף ורואה את הפורטים שלו; זה שלא נבחר — אין לו סבב.
     joined = cloner_hello(anon, CLONER1, ["S1", "S2"])

@@ -95,6 +95,11 @@ direct_send_one() {
     _do_node=$(partition_node "$1" "$2"); _do_pcl=$(partclone_for_fs "$3")
     _do_ignore=""; [ "$3" = ntfs ] && _do_ignore="-I"
     _do_log="$RUN_DIR/dsend.$2.log"; _do_fifo="$RUN_DIR/dsha.$2.fifo"
+    # #957: the first partition waits for the wave to start; the later ones
+    # wait for the slowest drawer in the room, and their udp-sender carries
+    # the server's later max-wait/start-timeout (up to 780s) -- so the
+    # progress ceiling here must outlast it (900, waits.sh).
+    next_stream_ceiling
     rm -f "$_do_log" "$_do_fifo" "$RUN_DIR/dsha.$2" "$RUN_DIR/dsend.$2.rc" \
         "$RUN_DIR/dpcl.$2.rc" "$RUN_DIR/dzstd.$2.rc" "$RUN_DIR/dtee.$2.rc"
     mkfifo "$_do_fifo"
@@ -119,7 +124,7 @@ direct_send_one() {
     ) &
     _do_pid=$!
     if wait_progress "$_do_pid" "$RUN_DIR/targets/$1/bytes.raw" \
-            "$WAIT_STREAM_START_S" "$WAIT_STREAM_STALL_S" "שידור מחיצה $2 מ-$1"; then
+            "$STREAM_START_CEILING" "$WAIT_STREAM_STALL_S" "שידור מחיצה $2 מ-$1"; then
         _do_stage=none
         for _do_s in dsend dtee dzstd dpcl; do
             _do_rc=$(cat "$RUN_DIR/$_do_s.$2.rc" 2>/dev/null || echo 1)
@@ -162,15 +167,21 @@ direct_send_run() {
 
     # The multicast parameters come from the hello that said "running" --
     # the server's, so the stream behaves like a library round (#437/#438).
+    # max_wait_later/start_timeout_later (#957): partitions 2+ wait for the
+    # slowest drawer, not for the operator -- the server's rule, not ours.
     _dr_mc=$(jq -r '.task.direct.multicast | [.portbase, .min_receivers, .max_wait,
-        .start_timeout, .retries_until_drop, (.max_bitrate // "")] | map(tostring) | join("|")' \
+        .start_timeout, .max_wait_later, .start_timeout_later, .retries_until_drop,
+        (.max_bitrate // "")] | map(tostring) | join("|")' \
         "$RESP" 2>/dev/null)
     _dr_pb=${_dr_mc%%|*}; _dr_rest=${_dr_mc#*|}
     _dr_minr=${_dr_rest%%|*}; _dr_rest=${_dr_rest#*|}
     _dr_maxw=${_dr_rest%%|*}; _dr_rest=${_dr_rest#*|}
     _dr_startt=${_dr_rest%%|*}; _dr_rest=${_dr_rest#*|}
+    _dr_maxw_l=${_dr_rest%%|*}; _dr_rest=${_dr_rest#*|}
+    _dr_startt_l=${_dr_rest%%|*}; _dr_rest=${_dr_rest#*|}
     _dr_retries=${_dr_rest%%|*}; _dr_bitrate=${_dr_rest#*|}
-    for _dr_v in "$_dr_pb" "$_dr_minr" "$_dr_maxw" "$_dr_startt" "$_dr_retries"; do
+    for _dr_v in "$_dr_pb" "$_dr_minr" "$_dr_maxw" "$_dr_startt" \
+                 "$_dr_maxw_l" "$_dr_startt_l" "$_dr_retries"; do
         case "$_dr_v" in ''|*[!0-9]*)
             _direct_failed "$2" "multicast parameters unreadable: '$_dr_mc'"; return 1 ;;
         esac
@@ -185,11 +196,15 @@ direct_send_run() {
     # swap is described in the manifest and recreated by the receiver; it
     # is never streamed (spec 14) -- exactly streamed_partitions() on the server.
     _dr_expected=$(awk -F'|' '$7 != "" && $7 != "null" { n++ } END { print n + 0 }' "$_dr_plan")
-    _dr_sent=0
+    _dr_sent=0; STREAMED_PARTITIONS=0
     while IFS='|' read -r _dr_idx _dr_g _dr_role _dr_fs _dr_st _dr_sz _dr_f _dr_sha _dr_e _dr_ug _dr_uu <&3; do
         case "$_dr_f" in ''|null) continue ;; esac
+        # The first stream waits for the operator; every later one waits for
+        # the drawers still writing the previous partition (#957).
+        _dr_w="$_dr_maxw"; _dr_t="$_dr_startt"
+        [ "$_dr_sent" -gt 0 ] && { _dr_w="$_dr_maxw_l"; _dr_t="$_dr_startt_l"; }
         direct_send_one "$2" "$_dr_idx" "$_dr_fs" "$_dr_sha" \
-            "$_dr_pb" "$_dr_minr" "$_dr_maxw" "$_dr_startt" "$_dr_retries" "$_dr_bitrate" || return 1
+            "$_dr_pb" "$_dr_minr" "$_dr_w" "$_dr_t" "$_dr_retries" "$_dr_bitrate" || return 1
         _dr_sent=$((_dr_sent + 1))
     done 3< "$_dr_plan"
     # done is a count against the manifest, never "nothing failed" (#51).
