@@ -270,10 +270,10 @@ build_hello() {
             _msecret=",\"monitor_secret\":\"$_ms\""
     fi
 
-    # #720 (schema 2): the inventory fragment (with its own leading comma) when inventory.sh is loaded.
+    # #720+#1049: inventory and probe fragments (each with its own leading comma).
     printf '{"schema":2,"mac":"%s","all_macs":[%s],"ip":"%s","hostname_current":null,"uuid":%s,"firmware":"%s","secure_boot":%s,"agent_version":"%s","memory_bytes":%s,"joining":%s,"disks":[%s],"disk_probe":"%s"%s%s}' \
         "$_mac" "$_all" "$IP" "$_uuid_json" \
         "$(detect_firmware)" "$(detect_secure_boot)" "$AGENT_VERSION" \
         "$(detect_memory_bytes)" "$_joining" "$_disks" "$(disk_probe)" \
-        "$_msecret" "$(command -v inventory_json >/dev/null 2>&1 && inventory_json)"
+        "$_msecret" "$(command -v inventory_json >/dev/null 2>&1 && inventory_json)$(command -v probe_json >/dev/null 2>&1 && probe_json)"
 }

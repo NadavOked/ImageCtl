@@ -14,7 +14,7 @@ LIB_DIR="${LIB_DIR:-/usr/lib/imagectl}"
 # waits.sh לפני כל מי שמזרים: התקרות שלו נקראות כבר בטעינה של restore.sh.
 . "$LIB_DIR/waits.sh"
 . "$LIB_DIR/jsonq.sh"
-. "$LIB_DIR/sysinfo.sh"; . "$LIB_DIR/inventory.sh"   # #720: hello schema 2 carries the inventory
+. "$LIB_DIR/sysinfo.sh"; . "$LIB_DIR/inventory.sh"; . "$LIB_DIR/probe.sh"   # #720+#1049: inventory+probe
 . "$LIB_DIR/decide.sh"
 . "$LIB_DIR/progress.sh"
 . "$LIB_DIR/pull.sh"   # אחרי progress.sh: pull_close קורא ל-report_final (#562)

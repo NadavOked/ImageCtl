@@ -171,15 +171,33 @@
              "product_version": "ThinkCentre M720q", "board_name": "3132" },
     "pci": ["8086:15bc:020000", "8086:a352:010601"],
     "tpm": { "present": true, "version": "2.0" }
+  },
+  "probe": {
+    "power": { "on_battery": false, "supply": "AC" },
+    "rtc": { "hwclock_epoch": 1758124800, "system_epoch": 1758124812, "skew_seconds": -12 },
+    "cpu": { "model": "Intel Core i5-8500", "cores": 6, "microcode": "0xf4",
+             "vulnerabilities": { "meltdown": "Mitigation: PTI" } },
+    "memory": { "total_bytes": 8589934592, "dimms": null, "ecc": null },
+    "thermal": [ { "type": "x86_pkg_temp", "temp_c": 42 } ],
+    "nic": [ { "name": "eth0", "speed_mbps": 1000, "duplex": "full",
+               "stats": { "rx_crc_errors": 0, "rx_dropped": 0, "tx_errors": 0, "collisions": 0 },
+               "ip_conflict": { "checked": true, "duplicate": false } } ],
+    "pci_without_driver": [],
+    "kernel": { "lockdown": "[none] integrity confidentiality", "taint": 0 },
+    "pstore": { "crashed": false, "files": [], "excerpt": null },
+    "oem_key": "XXXXX-XXXXX-XXXXX-XXXXX-XXXXX",
+    "disks": [ { "name": "sda", "nvme_smart": null, "smart_errors": { "count": 0 } } ],
+    "encryption": [],
+    "probe_seconds": 0
   }
 }
 ```
 
 ### כללים
 
-- **`schema`** — ‏`2` מאז #720: ה-hello נושא את `inventory`. השרת אינו
-  מסרב ל-`1` (סוכן ישן, בלי השדה) — הוא פשוט אינו כותב מלאי, והגרסה
-  השמורה (אם יש) נשארת.
+- **`schema`** — ‏`2` מאז #720: ה-hello נושא את `inventory` (ומאז #1049
+  גם את `probe`). השרת אינו מסרב ל-`1` (סוכן ישן, בלי השדות) — הוא פשוט
+  אינו כותב מלאי/בדיקה, והגרסה השמורה (אם יש) נשארת.
 - **`mac`** בתבנית lowercase עם נקודתיים — זו התבנית הקנונית בכל המערכת.
 - **`inventory`** (‏#720, schema 2) — המלאי החומרתי שלפיו מותאמות
   חבילות דרייברים (סעיף 16). ‏`agent/lib/inventory.sh` קורא אותו
@@ -208,6 +226,53 @@
     תקינה קודמת. **נחשף** ב-`GET /api/console/machines` כ-`inventory`
     (‏`null` = מעולם לא דיווחה — סוכן ישן) ו-`inventory_seen_at`, ומוצג
     בכרטיס המכונה.
+- **`probe`** (‏#1049 שלב א', schema נשאר 2) — בדיקת מכונה קריאה-בלבד
+  שהסוכן אוסף ב-hello. שדה חדש נזנח על ידי שרת ישן. ‏`agent/lib/probe.sh`
+  קורא sysfs/proc (וכלים ארוזים כשהם שם); כל שדה הוא אחד משלושה מצבים
+  (עיקרון 5): **ערך נמדד** · **`null`** = לא בדקנו (הכלי/הקובץ אינו
+  ב-initramfs) · **`{"error": "<למה>"}`** = ניסינו ונכשל. **אסור** לקפל
+  "לא בדקנו" ל"תקין". הכל ro ומהיר (≤3 שניות; בלי cable-test, badblocks,
+  memtester, ethtool). פירוט:
+  - **`power`** — `{"on_battery": bool, "supply": "<name>"}` מ-
+    `/sys/class/power_supply/*/type` + `online`/`status`. אין המחלקה →
+    `null`.
+  - **`rtc`** — `{"hwclock_epoch","system_epoch","skew_seconds"}` מ-
+    `/sys/class/rtc/rtc0/since_epoch` או `hwclock -r`. אין אף אחד → `null`.
+  - **`cpu`** — `model`/`cores`/`microcode` מ-`/proc/cpuinfo`;
+    `vulnerabilities` אובייקט `{name: "<תוכן>"}` מ-
+    `/sys/devices/system/cpu/vulnerabilities/*` או `null` אם אין את
+    התיקייה.
+  - **`memory`** — `total_bytes` מ-`MemTotal`; `dimms` מ-`dmidecode -t 17`
+    **רק אם ארוז** (אחרת `null` — אינו ב-`BINARIES` בשלב א'); `ecc` מ-
+    `/sys/devices/system/edac/mc/mc*/{ce_count,ue_count}` או `null`.
+  - **`thermal`** — `[{"type","temp_c"}]` מ-`/sys/class/thermal/thermal_zone*`
+    (`temp` במילי-מעלות / 1000). אין המחלקה → `null`.
+  - **`nic`** — לכל כרטיס עם `carrier=1` (לא lo): `name`, `speed_mbps`,
+    `duplex`, `stats` מ-sysfs `statistics/{rx_crc_errors,rx_dropped,tx_errors,collisions}`
+    (בלי ethtool — #1048 נפרד). `ip_conflict`: `arping -D -c 2 -I <nic> <ip>`
+    אם busybox arping ארוז ו-$IP ידוע → `{"checked": true, "duplicate": bool}`
+    או `{"error"}`; אחרת `null`.
+  - **`pci_without_driver`** — רשימת `vendor:device:class` (hex קטן, אותו
+    פורמט כמו `inventory.pci`) של התקני PCI ש-`/sys/bus/pci/devices/*/driver`
+    אינו קיים אצלם. אין `/sys/bus/pci/devices` → `null`.
+  - **`kernel`** — `lockdown` מ-`/sys/kernel/security/lockdown`, `taint` מ-
+    `/proc/sys/kernel/tainted`. שניהם חסרים → `null`.
+  - **`pstore`** — `{"crashed": bool, "files": [names], "excerpt": "<עד 400
+    תווים מהקובץ הראשון>"}` מ-`/sys/fs/pstore`. אין התיקייה → `null`.
+  - **`oem_key`** — מפתח Windows מטבלת ACPI MSDM
+    (`/sys/firmware/acpi/tables/MSDM`: header 36 + version/reserved/data_type/
+    data_reserved/data_length (4×5) ואז 29 בתים ASCII). אין טבלה → `null`.
+  - **`disks`** — לכל `/sys/block/{sd*,nvme*n*,mmcblk*}`: `name`;
+    `nvme_smart` מ-`nvme smart-log -o json` **רק אם nvme ארוז** (critical_warning,
+    percentage_used, media_errors, unsafe_shutdowns) אחרת `null`; `smart_errors`
+    מ-`smartctl -l error -j` **רק אם ארוז** → `{"count": N}` או `null`. לא
+    f3probe, לא badblocks.
+  - **`encryption`** — לכל מחיצה ש-`blkid` מדווח `TYPE` ב-`crypto_LUKS` או
+    `BitLocker`: `[{"node","type"}]`. אין blkid → `null`.
+  - **`probe_seconds`** — כמה לקח האיסוף (שניות שלמות).
+  - **מה השרת עושה** (שלב ב', לא כאן): שומר בטבלת `machine_probe` מגורסת,
+    מציג בכרטיס המכונה; שערי סוללה/CMOS/NVMe — #1049 שלב ב'. שדה חסר או
+    פגום נזנח כמו `inventory` ואינו דורס גרסה תקינה קודמת.
 - **`monitor_secret`** (‏#839) — סוד המוניטור של **האתחול הזה**: 16
   בייטים שהסוכן הגריל מ-`/dev/urandom` פעם אחת ל-`$RUN_DIR`
   (`agent/lib/monitor.sh`), כ-32 ספרות hex קטנות. השרת שומר אותו
