@@ -180,16 +180,17 @@ def test_images_tree_node_uses_the_folder_icon():
 
 # ---------- #954 גל 2: ספריית האימג'ים ----------
 
-def test_static_includes_are_at_7_9():
+def test_static_includes_are_at_8_2():
     """גל 2 = ‏7.0; גל 3 (מחשבים) = ‏7.1; גל 3א = ‏7.3; השער (מוניטור רק בדף
     המוניטור) = ‏7.4; גל 5 (בריאות + פורטים) = ‏7.5; גל 6 (מוניטור, דרייברים,
     הגדרות, הרשאות, יומן + WoL למחשב) = ‏7.6; #703 (TLS) = ‏7.7; דף הפורטים
-    לחוזה #996/#1015 וגל 7 (סניפים ושרת משני) נכנסו יחד בשער — `?v=` עולה
-    ל-7.9 (מטמון הדפדפן). שוויון על כל ה-includes — bump חלקי הוא הבאג."""
+    לחוזה #996/#1015 וגל 7 (סניפים ושרת משני) נכנסו יחד בשער = ‏7.9; #1032
+    (סבב ליטוש — hover, שורת סינון, כפתורים כפולים) = ‏8.1 (גל 8, הרשת,
+    לקח את 8.0 במקביל); בשער be שניהם יחד = ‏8.2. שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
     versions = {float(v) for v in re.findall(r'\?v=(\d+\.\d+)"', page)}
-    assert versions == {7.9}, versions
+    assert versions == {8.2}, versions
 
 
 def test_old_images_page_code_is_gone():
@@ -352,8 +353,59 @@ def test_small_pages_are_own_tables_from_the_api_and_wol_is_per_machine():
     assert 'class="table"' not in drivers, "הטבלה הישנה"
     assert "<span>הגדרות</span>" in page and "<span>Settings</span>" not in page
     assert "<span>יומן</span>" in page and "יומן / Audit" not in page
-    block = js[js.index("/* ---------- #954 גל 6: הרשאות"):js.index("/* ---------- כרטיסי רשת / רשת הפצה / פורטים")]
+    block = js[js.index("/* ---------- #954 גל 6: הרשאות"):js.index("/* ---------- #954 גל 8: רשת כאובייקט")]   # גל 8 החליף את "כרטיסי רשת / רשת הפצה"
     assert "prompt(" not in block and "confirm(" not in block.replace("confirmSheet(", ""), "prompt/confirm חסומים — רק sheet()"
     css = (STATIC / "console.css").read_text(encoding="utf-8")
     for sel in (".page .srow{", ".page .srow.changed{", ".page .logo-box{"):
+        assert sel in css, sel
+
+
+def test_the_class_build_and_cloner_tree_nodes_open_a_role_focused_machines_page():
+    """נדב 17/09 (עם צילום): לשלושת צומתי האב בעץ — כיתות / מחשבי בנייה / מחשבי
+    שיכפול — "אמור להיות חלון כמו של המחשבים, אבל רק של כיתות / שיכפול / בנייה,
+    בלי לשונית נראו ברשת". קליק = הדף הממוקד (selectMachinesRole), דאבל =
+    פותח/סוגר את הענף. הקבוצות שמתחתיהם (grp_BUILD וכו') נשארות אובייקטים."""
+    page = _index()
+    for role, box in (("classroom", "classesTree"), ("build", "buildTree"), ("cloner", "clonerTree")):
+        assert (f"onclick=\"selectMachinesRole('{role}')\" "
+                f"ondblclick=\"toggleInventoryGroup(this,'{box}')\"") in page, role
+    js = (STATIC / "console.js").read_text(encoding="utf-8")
+    assert "function selectMachinesRole(role)" in js
+    assert 'if (MACHINES_ROLE) return [ROLE_PAGE_HE[MACHINES_ROLE], red];' in js
+def test_network_is_one_object_page_with_the_diagram_nics_and_deploy_tabs():
+    """‏#954 גל 8: "רשת" בעץ הוא דף (קליק = הדף, דאבל = פותח/סוגר), ושלוש
+    הלשוניות שנבנו לפי `network.md` / `network-nics.md` / `network-deploy.md`
+    (תרשים SVG inline, טבלת כרטיסים בפועל/מוגדר/פער, רשת הפצה — מה מחולק בפועל
+    מול השמור) + "פורטים" = הדף הקיים של גל 5, שלא נגעו בו מלבד רצועת הלשוניות.
+    הדפים הישנים `nic`/`netdeploy`/`network` (כרטיס-לכל-NIC, `object-strip`,
+    "פורטיים" קבועים, 10.44.12.0/24 קשיח) נמחקו. ‏#53: כל שינוי DHCP/כתובת
+    עובר בטפסים הקיימים של net.js/netcfg.js. ‏#1032: תא הפעולות שומר מקום."""
+    js, page, css = _console_js(), _index(), (STATIC / "console.css").read_text(encoding="utf-8")
+    # העץ: הצומת "רשת" מנווט לדף; הילדים פותחים את האובייקט בלשונית; "פורטים" כמו שהיה
+    assert ("""<div class="inventory-node" data-page="network" onclick="selectPageById('network')\""""
+            """ ondblclick="toggleInventoryGroup(this,'netTA')\"""") in page
+    assert 'id="nicNode"' in page and "openNetwork(1,null,this.parentElement)" in page
+    assert 'data-net-tab="2" onclick="openNetwork(2,null,this)"' in page
+    assert """<div class="inventory-node" data-page="ports" onclick="selectPageById('ports')\"""" in page
+    for gone in ('data-page="nic"', 'data-page="netdeploy"', "NIC_HIGHLIGHT"):
+        assert gone not in page, gone
+    for needed in ("function networkPage(", "function loadNetwork(", "function netDiagramModel(", "function netDiagramSvg(", "function networkDiagramTab(",
+                   "function networkNicsTab(", "function networkDeployTab(", "function netServicesOn(", "function netGapStatus(", "function netProbe(", "function openNetwork(",
+                   'network: { crumb: "רשת", title: "רשת", tabs: NET_TABS, render: (i) => networkPage(i), load: loadNetwork, own: true }',
+                   'const NET_TABS = ["תרשים", "חיבורים פיזיים", "רשת הפצה", "פורטים"];',
+                   'width="${ND.W}" height="${H}" viewBox="0 0 ${ND.W} ${H}"',   # gotcha: SVG עם height מפורש
+                   "מה מותר — דורש API (#705)", 'title: "כיתות — v2"', "`/net/interfaces/${encodeId(name)}/probe`",
+                   "editNic(n)", "editAddress(netCfgRow(n.name)", "routeDeleteSheet(", 'cls: "stable",'):
+        assert needed in js, needed
+    for gone in ("function renderNicCard(", "function netBannerHtml(", "function nic()", "function netdeploy()", "function network()", "function saveNetwork(",
+                 "function loadNetcfgData(", "function loadNetPages(", "function editDeployNic(", "function nicUnion(", "10.44.12.0/24", "פורטיים",
+                 'netdeploy: [netdeploy]', 'nic: [nic]', "selectPageById('nic')", "selectPageById('netdeploy')"):
+        assert gone not in js, gone
+    block = js[js.index("/* ---------- #954 גל 8: רשת כאובייקט"):js.index("function healthCheckById(id) {")]
+    assert "prompt(" not in block and "confirm(" not in block.replace("confirmSheet(", ""), "prompt/confirm חסומים — רק sheet()"
+    assert "disabled" not in block.replace("disabled_at", ""), "כפתור מנוטרל במקום 'דורש API' (README §8)"
+    assert "function routeDeleteSheet(" in (STATIC / "netcfg.js").read_text(encoding="utf-8")
+    # ‏#1032: תא הפעולות שומר מקום (visibility), לא display:none
+    assert ".page .dg.stable td .acts{display:flex;visibility:hidden" in css
+    for sel in (".page .netdiag-svg{", ".page .netdiag .ln.off{stroke-dasharray:4 4}", ".page .netdiag .led.err{", ".page .kv3{"):
         assert sel in css, sel

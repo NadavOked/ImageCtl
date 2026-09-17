@@ -99,7 +99,7 @@ test('the class tab of the deploy page (#954 גל 4 — no round drawer) include
 });
 test('deploy role cannot reach admin or capability pages',()=>{
   const {run}=setup();run('ME.role="deploy"');
-  for(const id of ['machines','health','settings','branches','permissions','logs','nic']) assert.equal(run(`pageAllowed("${id}")`),false,id);
+  for(const id of ['machines','health','settings','branches','permissions','logs','network']) assert.equal(run(`pageAllowed("${id}")`),false,id);
   for(const id of ['home','images','deploy'])assert.equal(run(`pageAllowed("${id}")`),true,id);
   assert.doesNotMatch(run('images()'),/onclick="openCapture/);
   run('ME.role="admin";ME.capabilities.interbranch_transfer=false');assert.equal(run('pageAllowed("branches")'),false);

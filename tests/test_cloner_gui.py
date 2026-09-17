@@ -502,7 +502,7 @@ def test_native_gui_builds_and_routes_the_cloner_screen(tmp_path):
          'set -e; cd "$1"; '
          'cc -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE '
          '$(pkg-config --cflags pangocairo cairo libdrm) '
-         '-o "$2" src/main.c src/screens.c src/screens_capture.c src/screens_rounds.c '
+         '-o "$2" src/main.c src/screens.c src/screens_capture.c src/screens_rounds.c src/screens_room.c src/screens_class.c src/screens_cloner.c src/screens_restore.c '
          'src/widgets.c src/state.c src/text.c src/draw.c src/theme.c src/backend.c src/input.c '
          '$(pkg-config --libs pangocairo cairo libdrm) -lm',
          "_", posix(GUI), posix(binary)],
@@ -545,7 +545,7 @@ def _build_gui(tmp_path: Path) -> Path:
          'set -e; cd "$1"; '
          'cc -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE '
          '$(pkg-config --cflags pangocairo cairo libdrm) '
-         '-o "$2" src/main.c src/screens.c src/screens_capture.c src/screens_rounds.c '
+         '-o "$2" src/main.c src/screens.c src/screens_capture.c src/screens_rounds.c src/screens_room.c src/screens_class.c src/screens_cloner.c src/screens_restore.c '
          'src/widgets.c src/state.c src/text.c src/draw.c src/theme.c src/backend.c src/input.c '
          '$(pkg-config --libs pangocairo cairo libdrm) -lm',
          "_", posix(GUI), posix(binary)],
@@ -795,20 +795,21 @@ def _render_all(binary: Path, tmp_path: Path, size: str):
     why="native-gui נבנה על המעבדה בלבד",
 )
 @pytest.mark.parametrize("size", ["1920x1080", "1024x768"])
-def test_native_gui_fills_the_framebuffer(tmp_path, size):
-    """‏#765 מטרה 2: הכרטיס ממלא את כל ה-framebuffer במקום ריבוע לבן ממורכז,
-    ומסתגל גם ל-16:9 (1920×1080) וגם ל-4:3 (1024×768). מרנדר את מסך התפריט
-    ודורש שצבע ה-surface (‏#FFFFFF) יכסה רוב גדול מהמסך בשתי יחסי-הגובה.
+def test_native_gui_centers_the_mockup_panel(tmp_path, size):
+    """#828: a centered panel replaces the old full-frame console surface.
 
-    **בקרה שלילית:** החזרת `card_width`/`card_frame` לקופסה הממורכזת
-    (‏`fmin(680,0.94W)` + מרכוז אנכי + תקרת 92vh) מורידה את הכיסוי הרבה
-    מתחת ל-55% ומפילה את הסף — נמדד בטבלת ה-PR."""
+    This is a Linux rendering guard, not a claim of pixel-perfect fidelity.
+    The old full-width frame fails the bounded-width assertion.
+    """
     binary = _build_gui(tmp_path)
     _render_all(binary, tmp_path, size)
     w, h, ch, px = _png_rgb(tmp_path / "card-menu-light.png")
-    surface = _count_color(px, ch, (0xFF, 0xFF, 0xFF), tol=6)   # theme.light.surface
-    frac = surface / float(w * h)
-    assert frac > 0.55, f"surface fills only {frac:.0%} of {size} (centred box left dark margins?)"
+    points = [(i // ch) % w for i in range(0, len(px), ch)
+              if all(abs(px[i+j]-255) <= 2 for j in range(3))]
+    assert len(points) > w*h*.01, "panel surface missing"
+    left, right = min(points), max(points)
+    assert 700 <= right-left+1 <= 762, (left, right, w)
+    assert abs((left+right)/2 - (w-1)/2) <= 2, "panel is not centered"
 
 
 @requires_native(
@@ -816,30 +817,27 @@ def test_native_gui_fills_the_framebuffer(tmp_path, size):
     ("pango/cairo/libdrm", _pkgconfig("pangocairo", "cairo", "libdrm")),
     why="native-gui נבנה על המעבדה בלבד",
 )
-def test_native_gui_uses_the_clarity_action_blue(tmp_path):
-    """‏#765 מטרה 1: הכחול של Clarity (‏#0079B8) נוכח בגואי — טבעת הפוקוס של
-    שדה שם-המשתמש במסך הכניסה — והכחול-סגול הישן (‏#2B3FA0) נעלם.
-
-    **בקרה שלילית:** החזרת `theme.c` ל-`indigo` הישן (‏#2B3FA0) מעלימה את
-    ‏#0079B8 ומפילה את הבדיקה — נמדד בטבלת ה-PR."""
+def test_native_gui_uses_the_mockup_action_blue(tmp_path):
+    """#828: the login action uses the mockup's #2d668a primary colour."""
     binary = _build_gui(tmp_path)
     _render_all(binary, tmp_path, "1280x800")
     w, h, ch, px = _png_rgb(tmp_path / "card-login-light.png")
-    new_blue = _count_color(px, ch, (0x00, 0x79, 0xB8), tol=12)   # theme.light.indigo (Clarity)
-    old_blue = _count_color(px, ch, (0x2B, 0x3F, 0xA0), tol=12)   # the pre-#765 indigo
-    assert new_blue > 200, f"Clarity action blue absent ({new_blue}px)"
-    assert old_blue < 40, f"old indigo still painted ({old_blue}px)"
+    blue = _count_color(px, ch, (0x2D, 0x66, 0x8A), tol=6)
+    assert blue > 200, f"mockup action blue absent ({blue}px)"
 
 
 # --- #872: שלושה צבעים — אדום/כתום/ירוק — במסך הגרפי ובקונסולה ------------------
 #
 # ‏native-gui מתקמפל על המעבדה בלבד (אין cc בווינדוס), ולכן זה שומר על
-# **המקור**: המיפוי יושב בפונקציה אחת (`smart_color`), והקובץ אינו מקפל
-# ‏fail ל-ROOM_BAD בשום מקום אחר. הקונסולה נבדקת באותה צורה — המיפוי
-# ב-CSS/JS הוא טקסט. בקרה שלילית: על main ‏idle_smart_color/room_disk_healthy
+# **המקור**: הכלל יושב במקום אחד (`smart_level` + `smart_color` ב-
+# ‏screens_rounds.c, מוצהרים ב-screens_rounds.h), והקבצים המפוצלים — הגריד
+# ב-screens_room.c והרשימה הממתינה ב-screens_cloner.c — קוראים לו ואינם
+# מקפלים fail ל-ROOM_BAD בשום מקום אחר. הקונסולה נבדקת באותה צורה — המיפוי
+# ב-CSS/JS הוא טקסט. בקרה שלילית: לפני המיזוג ‏idle_smart_color/room_disk_healthy
 # מקפלים warn/fail/failed_last לאדום, ואין failed_last בקונסולה.
 
 STATIC = REPO / "server" / "static"
+GUI_SRC = REPO / "native-gui" / "src"
 
 
 def _c_function(src: str, name: str) -> str:
@@ -848,26 +846,34 @@ def _c_function(src: str, name: str) -> str:
 
 
 def test_the_gui_maps_the_three_colours_in_one_place():
-    src = (REPO / "native-gui" / "src" / "screens_rounds.c").read_text(encoding="utf-8")
+    src = (GUI_SRC / "screens_rounds.c").read_text(encoding="utf-8")
+    level = _c_function(src, "smart_level")
+    assert '"failed_last")) return 2' in level
+    assert '"fail") || !strcmp(smart, "warn")) return 1' in level
+    assert "return 0;" in level                             # ok/unchecked/כל השאר
     body = _c_function(src, "smart_color")
-    assert '"failed_last")) return ROOM_BAD' in body
-    assert '"fail") || !strcmp(smart, "warn")) return ROOM_WARN' in body
-    assert "return t->led_ok" in body                       # ok/unchecked/כל השאר
-    # אין מיפוי שני: הגריד והרשימה הממתינה קוראים לאותה פונקציה.
-    assert "room_disk_healthy" not in src and "idle_smart_color" not in src
-    assert src.count("smart_color(t,") == 2
+    assert "lvl == 2 ? ROOM_BAD : lvl == 1 ? ROOM_WARN : t->led_ok" in body
+    # אין מיפוי שני: הגריד (screens_room.c) והרשימה הממתינה (screens_cloner.c)
+    # קוראים לאותה פונקציה, ואף קובץ אינו מחזיק עותק של הכלל.
+    room = (GUI_SRC / "screens_room.c").read_text(encoding="utf-8")
+    cloner = (GUI_SRC / "screens_cloner.c").read_text(encoding="utf-8")
+    for text in (src, room, cloner):
+        assert "room_disk_healthy" not in text and "idle_smart_color" not in text
+    assert room.count("smart_color(t,") == 1
+    assert cloner.count("smart_color(t,") == 1
+    assert "smart_level(m->room_drawers[i].smart)" in room   # נקודת המכונה: לא-ירוק = אזהרה
 
 
 def test_the_gui_says_unchecked_in_words_next_to_a_green_dot():
-    src = (REPO / "native-gui" / "src" / "screens_rounds.c").read_text(encoding="utf-8")
-    assert '!strcmp(id->smart, "unchecked")   ? " · לא נבדק"' in src
+    src = (GUI_SRC / "screens_cloner.c").read_text(encoding="utf-8")
+    assert '!strcmp(d->smart, "unchecked")   ? " · לא נבדק"' in src
 
 
 def test_the_gui_panel_offers_replace_or_continue_only_on_a_red_disk():
     """אדום = החלף / המשך (שני כפתורים, "המשך" שולח skip); כתום נשאר עם
     שלושה. הסוכן ממילא אינו מקבל rescue על אדום (test_smart) — אבל המסך
     לא מציע מה שלא יתקבל."""
-    src = (REPO / "native-gui" / "src" / "screens_rounds.c").read_text(encoding="utf-8")
+    src = (GUI_SRC / "screens_cloner.c").read_text(encoding="utf-8")
     assert 'int red = panel && !strcmp(s->smart_verdict, "failed_last");' in src
     assert "int nbtn = red ? 2 : 3;" in src
     assert 'if (red) sp_btn[1] = btn_label(cr, "המשך");' in src

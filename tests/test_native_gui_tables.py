@@ -44,7 +44,8 @@ def test_the_menu_table_and_its_visibility_row_match_menu_n():
     menu = re.search(r"MENU\[MENU_N\]\s*=\s*\{(.*?)\n\};", text, flags=re.S).group(1)
     rows = re.findall(r"^\s*\{ \"", menu, flags=re.M)
     assert len(rows) == n, f"MENU_N={n} אבל בטבלה {len(rows)} כרטיסים"
-    show = re.search(r"int show\[MENU_N\] = \{(.*?)\};", text).group(1)
+    # ‏`{...};` או `{...}, count = 0;` — הענף המעוצב מכריז את המונה באותה שורה.
+    show = re.search(r"int show\[MENU_N\] = \{(.*?)\}", text).group(1)
     assert len([x for x in show.split(",") if x.strip()]) == n
     ids = re.search(r"visible_card_ids\(const App \*a, int ids\[(\d+)\]\)",
                     MAIN.read_text(encoding="utf-8")).group(1)

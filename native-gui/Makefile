@@ -10,9 +10,9 @@ CFLAGS  += -D_GNU_SOURCE
 GUI_PKGS   = pangocairo cairo libdrm
 SMOKE_PKGS = pangocairo cairo harfbuzz fribidi
 
-GUI_SRC = src/main.c src/screens.c src/screens_capture.c src/screens_rounds.c src/widgets.c \
+GUI_SRC = src/main.c src/screens.c src/screens_capture.c src/screens_rounds.c src/screens_room.c src/screens_class.c src/screens_cloner.c src/screens_restore.c src/widgets.c \
           src/state.c src/text.c src/draw.c src/theme.c src/backend.c src/input.c
-GUI_HDR = src/ui.h src/widgets.h src/state.h src/text.h src/draw.h src/theme.h src/backend.h src/input.h
+GUI_HDR = src/screens_rounds.h src/ui.h src/widgets.h src/state.h src/text.h src/draw.h src/theme.h src/backend.h src/input.h
 
 all: imagectl-station-gui hebrew-bidi-smoke
 
@@ -33,4 +33,9 @@ clean:
 	rm -f imagectl-station-gui hebrew-bidi-smoke hebrew-bidi.png
 	rm -rf out
 
-.PHONY: all smoke png clean
+.PHONY: all smoke png clean print-gui-src
+
+# tests/test_headless_framebuffer.py builds the GUI from this list, so a new
+# screens_*.c is added in one place (#828 added four and the test went red).
+print-gui-src:
+	@echo $(GUI_SRC)

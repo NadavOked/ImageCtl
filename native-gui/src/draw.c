@@ -51,40 +51,12 @@ void draw_box_shadow(cairo_t *cr, Rect r, double rad, double dy,
 }
 
 void draw_station_background(cairo_t *cr, const Theme *t, double w, double h) {
-    /* linear-gradient(160deg, login-a 0%, login-b 100%).
-     * CSS angle: 0deg = to top, clockwise. Direction vector in screen
-     * coordinates (y down) is (sin a, -cos a); the gradient line length is
-     * |w sin a| + |h cos a| and it is centred on the box. */
-    double ang = 160.0 * M_PI / 180.0;
-    double dx = sin(ang), dy = -cos(ang);
-    double len = fabs(w * dx) + fabs(h * dy);
-    double cx = w / 2, cy = h / 2;
-    cairo_pattern_t *lin = cairo_pattern_create_linear(
-        cx - dx * len / 2, cy - dy * len / 2, cx + dx * len / 2, cy + dy * len / 2);
-    cairo_pattern_add_color_stop_rgb(lin, 0, t->login_a.r, t->login_a.g, t->login_a.b);
-    cairo_pattern_add_color_stop_rgb(lin, 1, t->login_b.r, t->login_b.g, t->login_b.b);
+    /* .native-screen linear-gradient(180deg). */
+    cairo_pattern_t *p = cairo_pattern_create_linear(0, 0, 0, h);
+    cairo_pattern_add_color_stop_rgb(p, 0, t->login_a.r, t->login_a.g, t->login_a.b);
+    cairo_pattern_add_color_stop_rgb(p, 1, t->login_b.r, t->login_b.g, t->login_b.b);
     cairo_rectangle(cr, 0, 0, w, h);
-    cairo_set_source(cr, lin);
-    cairo_fill(cr);
-    cairo_pattern_destroy(lin);
-
-    /* radial-gradient(1100px 600px at 78% -10%, login-glow 0%, transparent 60%)
-     * Cairo radials are circles; an ellipse is a unit circle under a
-     * pattern matrix that maps user (x,y) -> ((x-cx)/rx, (y-cy)/ry). */
-    double rx = 1100, ry = 600, gx = 0.78 * w, gy = -0.10 * h;
-    cairo_pattern_t *rad = cairo_pattern_create_radial(0, 0, 0, 0, 0, 1);
-    cairo_matrix_t m;
-    cairo_matrix_init_scale(&m, 1 / rx, 1 / ry);
-    cairo_matrix_translate(&m, -gx, -gy);     /* prepended: translate first, then scale */
-    cairo_pattern_set_matrix(rad, &m);
-    Rgb g = t->login_glow;
-    cairo_pattern_add_color_stop_rgba(rad, 0.0, g.r, g.g, g.b, 1);
-    cairo_pattern_add_color_stop_rgba(rad, 0.6, g.r, g.g, g.b, 0);
-    cairo_pattern_add_color_stop_rgba(rad, 1.0, g.r, g.g, g.b, 0);
-    cairo_rectangle(cr, 0, 0, w, h);
-    cairo_set_source(cr, rad);
-    cairo_fill(cr);
-    cairo_pattern_destroy(rad);
+    cairo_set_source(cr, p); cairo_fill(cr); cairo_pattern_destroy(p);
 }
 
 void draw_led(cairo_t *cr, double cx, double cy, double d, Rgb c) {

@@ -107,7 +107,7 @@ function setup() {
 test('S1: every navigating tree node in index.html carries data-page', () => {
   const html = read('index.html');
   const lines = html.split('\n').filter((l) => l.includes('class="inventory-node') && /selectPageById\('([a-z]+)'\)/.test(l));
-  assert.ok(lines.length >= 14, 'expected the tree nodes, got ' + lines.length);
+  assert.ok(lines.length >= 13, 'expected the tree nodes, got ' + lines.length);   // ‏#954 גל 8: nic+netdeploy → network (אחד במקום שניים)
   for (const line of lines) {
     const page = line.match(/selectPageById\('([a-z]+)'\)/)[1];
     assert.match(line, new RegExp(`<div class="inventory-node[^"]*" data-page="${page}"`), `node for '${page}' lacks data-page on the .inventory-node div`);
@@ -205,12 +205,12 @@ test('S3: at <=740px, where the statusbar is hidden, the dock returns to the bot
 
 test('S4: tabs render as <button role="tab"> inside role="tablist" with aria-selected and roving tabindex', () => {
   const {run} = setup();
-  // ‏#954: העמודים החדשים (page.own) מציירים לשוניות משלהן — הבדיקה על המסגרת הגנרית עוברת לרשת (3 לשוניות, עוד לא נבנתה)
-  const html = run('layout(pages.network, 1)');
+  // ‏#954: העמודים החדשים (page.own) מציירים לשוניות משלהן — הבדיקה על המסגרת הגנרית עוברת לשרת המשני (גל 8: גם הרשת own; branch = 4 לשוניות)
+  const html = run('layout(pages.branch, 1)');
   assert.match(html, /<div class="vcenter-tabs" role="tablist">/);
   const tabs = [...html.matchAll(/<button type="button" class="vcenter-tab ?(active)?" role="tab" aria-selected="(true|false)" tabindex="(0|-1)"/g)];
-  assert.equal(tabs.length, 3, 'three network tabs as buttons');
-  assert.deepEqual(tabs.map((m) => [m[1] || '', m[2], m[3]]), [['', 'false', '-1'], ['active', 'true', '0'], ['', 'false', '-1']]);
+  assert.equal(tabs.length, 4, 'four branch tabs as buttons');
+  assert.deepEqual(tabs.map((m) => [m[1] || '', m[2], m[3]]), [['', 'false', '-1'], ['active', 'true', '0'], ['', 'false', '-1'], ['', 'false', '-1']]);
   assert.doesNotMatch(html, /<div class="vcenter-tab[ "]/, 'no div tabs left');
   assert.match(html, /id="pageActionBtn" aria-haspopup="menu" aria-expanded="false"/);
   assert.match(html, /id="pageActionMenu" class="action-menu" role="menu"/);

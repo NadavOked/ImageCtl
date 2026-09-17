@@ -130,3 +130,17 @@ def test_monitor_c_maps_tokens_to_reboot_and_poweroff():
     assert POWEROFF_TOKEN in c
     assert "reboot" in c
     assert "poweroff" in c
+
+
+def test_monitor_c_arms_wol_only_before_poweroff():
+    """Remote poweroff sources the installed shared helper and never lets arming failure block shutdown."""
+    c = _c()
+    reboot_branch, poweroff_branch = c.split(
+        "} else if (len == (int)strlen(POWER_POWEROFF)", maxsplit=1)
+    poweroff_branch = poweroff_branch.split("\n    }\n", maxsplit=1)[0]
+
+    assert "/usr/lib/imagectl/common.sh" in poweroff_branch
+    assert "arm_wol" in poweroff_branch
+    assert "Wake-on-LAN arming failed" in poweroff_branch
+    assert "sync; poweroff -f" in poweroff_branch
+    assert "arm_wol" not in reboot_branch

@@ -1,138 +1,178 @@
-"""‏#765: הפלטה של הגואי הנייטיב חייבת לשקף אחד-לאחד את console.css.
+"""#828: tokens follow the owner's HTML desktop cascade, including final overrides.
 
-חוזה `native-gui/src/theme.c` הוא "אף צבע אינו מומצא כאן; אם token משתנה
-ב-CSS הוא משתנה כאן, באותו שם". שלב א' של עיצוב ה-Clarity שינה את
-console.css אך לא את theme.c — הפער הזה הוא בדיוק מה ש-#765 סוגר. הבדיקות
-כאן קוראות את שני הקבצים ומאמתות שכל token תואם, וכך הן היו תופסות את
-theme.c המיושן. אין להן תלות נייטיב (‏cc/pango) — הן רצות על כל סביבה.
-
-**בקרה שלילית:** ‏`git checkout <base> -- native-gui/src/theme.c
-native-gui/src/theme.h` מחזיר את הערכים הישנים, וכל אחת מהבדיקות נופלת
-עם ה-hex בפועל מול הצפוי.
+Media layout and light-theme appearance require Linux PNG comparison. The
+mockup only supplies dark colours; light is derived with readable contrast.
 """
-
-from __future__ import annotations
-
-import re
 from pathlib import Path
+import re
+import unittest
 
-import pytest
-
-REPO = Path(__file__).resolve().parent.parent
-# הטוקנים חיים ב-design-tokens.css (מאז מעטפת ה-vCenter), עם console.css
-# כגיבוי לגרסאות שבהן ה-:root עדיין שם. קוראים את שניהם כך שהבדיקה
-# תמצא את הבלוק בכל מקום (עיקרון 5 — לא להיכשל collection על מיקום).
-CONSOLE_CSS = (REPO / "server" / "static" / "console.css").read_text(encoding="utf-8")
-_TOKENS_CSS = REPO / "server" / "static" / "design-tokens.css"
-if _TOKENS_CSS.exists():
-    CONSOLE_CSS = _TOKENS_CSS.read_text(encoding="utf-8") + "\n" + CONSOLE_CSS
-THEME_C = (REPO / "native-gui" / "src" / "theme.c").read_text(encoding="utf-8")
-THEME_H = (REPO / "native-gui" / "src" / "theme.h").read_text(encoding="utf-8")
-
-# ‏token של console.css -> שם השדה ב-struct Theme (מקף -> קו-תחתון).
-TOKENS = [
-    "porcelain", "surface", "ink", "muted", "hair", "indigo", "indigo-soft",
-    "led-write", "led-ok", "led-idle", "danger", "hover", "field", "field-line",
-    "track", "sunken", "btn-hover", "btn-hover-line", "ink-hover", "on-ink",
-    "danger-line", "mark-line", "login-a", "login-b", "login-glow",
-]
+ROOT = Path(__file__).resolve().parents[1]
+HTML = (ROOT / "docs/design/native-gui-mockup-2026-09-13.html").read_text(encoding="utf-8")
+C = (ROOT / "native-gui/src/theme.c").read_text(encoding="utf-8")
+H = (ROOT / "native-gui/src/theme.h").read_text(encoding="utf-8")
 
 
-def _to_hex(v: str) -> str:
-    """צבע CSS -> 'rrggbb'. תומך ב-#RGB, ‏#RRGGBB ו-rgb()/rgba().
-
-    ‏design-tokens.css מבטא חלק מהטוקנים כ-rgb(... / א%) (למשל login-glow);
-    theme.c מחזיק את שלישיית ה-RGB בלבד (אין שדה אלפא ל-glow), ולכן משווים
-    את שלישיית ה-RGB. ערך שאינו צבע מוכר נכשל בקול (עיקרון 5), לא מוחזר ריק.
-    """
-    v = v.strip()
-    if v.startswith("#"):
-        h = v.lstrip("#").lower()
-        if len(h) == 3:
-            h = "".join(c * 2 for c in h)
-        assert re.fullmatch(r"[0-9a-f]{6}", h), f"not a hex colour: {v!r}"
-        return h
-    m = re.fullmatch(r"rgba?\(\s*(\d{1,3})[ ,]+(\d{1,3})[ ,]+(\d{1,3})\s*(?:[/,][^)]*)?\)", v)
-    assert m, f"unsupported colour: {v!r}"
-    return "".join(f"{int(m.group(i)):02x}" for i in (1, 2, 3))
-
-
-def _css_tokens(header: str) -> dict[str, str]:
-    """קורא בלוק CSS שטוח (`header{ ... }`) למילון token->value גולמי."""
-    m = re.search(re.escape(header) + r"\s*\{([^}]*)\}", CONSOLE_CSS)
-    assert m, f"CSS block {header!r} not found"
-    return {n.strip(): val.strip()
-            for n, val in re.findall(r"--([\w-]+)\s*:\s*([^;]+);", m.group(1))}
+def desktop_rules(css):
+    """Balanced blocks keep media declarations out of the desktop cascade."""
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    pos = 0
+    while pos < len(css):
+        start = css.find("{", pos)
+        if start < 0:
+            return
+        selector = css[pos:start].strip()
+        end, depth = start + 1, 1
+        while end < len(css) and depth:
+            depth += (css[end] == "{") - (css[end] == "}")
+            end += 1
+        assert depth == 0, "unbalanced mockup CSS"
+        if not selector.startswith("@"):
+            yield selector, css[start + 1:end - 1]
+        pos = end
 
 
-def _resolve(name: str, variables: dict[str, str]) -> str:
-    """מרחיב שרשרת `var(--x)` לערך הסופי לפי מפת המשתנים של המצב.
-
-    זה מה שהדפדפן עושה בפועל: אליאס תאימות כמו `--hover:var(--clr-hover)`
-    מוגדר פעם אחת ב-:root, וב-dark רק `--clr-hover` נדרס — כך שהערך האפקטיבי
-    של `--hover` בכהה הוא ערך ה-dark של `--clr-hover`. טוקן שה-target שלו אינו
-    נדרס בכהה נשאר עם ערך האור. בלי ההרחבה הזאת ההשוואה משווה `var(...)`
-    כמחרוזת, וזה בדיוק מה שהסתיר את היעדר ערכי ה-dark של האליאסים (#765).
-    """
-    value = variables[name]
-    seen = set()
-    while True:
-        m = re.fullmatch(r"var\(\s*--([\w-]+)\s*(?:,[^)]*)?\)", value.strip())
-        if not m:
-            return value.strip()
-        target = m.group(1)
-        assert target not in seen, f"var() cycle via --{target}"
-        seen.add(target)
-        assert target in variables, f"--{target} (from --{name}) not defined"
-        value = variables[target]
+CSS = {}
+for block in re.findall(r"<style\b[^>]*>(.*?)</style>", HTML, re.S):
+    for selectors, body in desktop_rules(block):
+        declarations = dict(part.split(":", 1) for part in body.split(";") if ":" in part)
+        declarations = {k.strip(): v.strip() for k, v in declarations.items()}
+        for selector in selectors.split(","):
+            CSS.setdefault(selector.strip(), {}).update(declarations)
 
 
-def _theme_c_fields(struct: str) -> dict[str, str]:
-    m = re.search(r"const Theme " + struct + r"\s*=\s*\{(.*?)\};", THEME_C, re.S)
-    assert m, f"{struct} not found in theme.c"
-    return {f: h.lower()
-            for f, h in re.findall(r"\.(\w+)\s*=\s*HEX\(0x([0-9A-Fa-f]{6})\)", m.group(1))}
+def css_value(selector, prop):
+    value = CSS[selector][prop]
+    return re.sub(r"var\((--[\w-]+)\)", lambda m: CSS[":root"][m[1]], value)
 
 
-# מפת המשתנים לכל מצב: dark יורש מ-light ודורס רק את מה שהבלוק הכהה מגדיר,
-# בדיוק כמו ה-cascade של CSS.
-LIGHT_VARS = _css_tokens(":root")
-DARK_VARS = {**LIGHT_VARS, **_css_tokens(':root[data-theme="dark"]')}
-
-# הערכים האפקטיביים (resolved) שהקונסולה מרנדרת בפועל בכל מצב.
-CSS_LIGHT = {t: _to_hex(_resolve(t, LIGHT_VARS)) for t in TOKENS}
-CSS_DARK = {t: _to_hex(_resolve(t, DARK_VARS)) for t in TOKENS}
-C_LIGHT = _theme_c_fields("THEME_LIGHT")
-C_DARK = _theme_c_fields("THEME_DARK")
-
-
-@pytest.mark.parametrize("token", TOKENS)
-def test_theme_light_mirrors_console_css(token):
-    field = token.replace("-", "_")
-    want = CSS_LIGHT[token]
-    got = C_LIGHT[field]
-    assert got == want, f"THEME_LIGHT.{field}: theme.c #{got} != console.css #{want}"
+dark = re.search(r"const Theme THEME_DARK\s*=\s*\{(.*?)\};", C, re.S)[1]
+COLOR_BINDINGS = re.findall(
+    r"\.(\w+)\s*=\s*HEX\(0x([\dA-Fa-f]+)\),\s*/\* css: (.*?) \| (.*?) \| (\d+) \*/", dark)
+NUMBER_BINDINGS = re.findall(
+    r"const double (\w+) = ([\d.]+); /\* css: (.*?) \| (.*?) \| (\d+) \*/", C)
+# Sizes the mockup sets inline on one screen's own line (style="font-size:23px")
+# rather than in the stylesheet: cited as "html: <function> | prop | index".
+HTML_BINDINGS = re.findall(
+    r"const double (\w+) = ([\d.]+); /\* html: (\w+) \| (.*?) \| (\d+) \*/", C)
 
 
-@pytest.mark.parametrize("token", TOKENS)
-def test_theme_dark_mirrors_console_css(token):
-    field = token.replace("-", "_")
-    want = CSS_DARK[token]
-    got = C_DARK[field]
-    assert got == want, f"THEME_DARK.{field}: theme.c #{got} != console.css #{want}"
+def check_theme_dark_matches_mockup(name, actual, selector, prop, index):
+    colors = re.findall(r"#([\da-fA-F]{6}|[\da-fA-F]{3})\b", css_value(selector, prop))
+    expected = colors[int(index)].lower()
+    if len(expected) == 3:
+        expected = "".join(c * 2 for c in expected)
+    assert actual.lower() == expected, f"{name}: #{actual} != {selector} {prop} #{expected}"
 
 
-def _css_px(header_tokens: dict[str, str], name: str) -> float:
-    return float(header_tokens[name].strip().rstrip("px"))
+def check_theme_dimension_matches_mockup(name, actual, selector, prop, index):
+    value = css_value(selector, prop)
+    if prop in ("margin", "padding", "inset"):
+        component = value.split()[int(index)]
+    else:
+        component = re.findall(r"(?:\d*\.)?\d+(?:px|%)?", value)[int(index)]
+    expected = float(component.removesuffix("px").removesuffix("%"))
+    if component.endswith("%"):
+        expected /= 100
+    assert float(actual) == expected, f"{name}: {actual} != {selector} {prop} {component}"
 
 
-def _radius(name: str) -> float:
-    m = re.search(r"#define\s+" + name + r"\s+([\d.]+)", THEME_H)
-    assert m, f"{name} not defined in theme.h"
-    return float(m.group(1))
+def check_theme_inline_dimension_matches_mockup(name, actual, function, prop, index):
+    line = re.search(r"function %s\(\)\{.*" % function, HTML)
+    assert line, function
+    values = re.findall(r"%s:(\d+)px" % prop, line[0])
+    assert float(actual) == float(values[int(index)]), (name, actual, values)
 
 
-def test_theme_radii_match_console_css():
-    """פינות חדשות (Clarity): --r/--r-sm ב-design-tokens.css מול RADIUS_R/RADIUS_SM."""
-    assert _radius("RADIUS_R") == _css_px(LIGHT_VARS, "r")
-    assert _radius("RADIUS_SM") == _css_px(LIGHT_VARS, "r-sm")
+def check_every_exported_dimension_has_a_mockup_binding():
+    exported = set(re.findall(r"extern const double (\w+);", H))
+    bound = {v[0] for v in NUMBER_BINDINGS} | {v[0] for v in HTML_BINDINGS}
+    assert exported == bound | {"N_DIM_ALPHA"}
+    assert len(exported) >= 40
+
+
+def check_every_theme_color_has_a_mockup_binding():
+    fields = set(re.findall(r"\.(\w+)\s*=\s*HEX", dark)) - {"shadow_strong"}
+    assert fields == {v[0] for v in COLOR_BINDINGS}
+    assert len(fields) >= 25
+
+
+def check_mockup_final_override_is_applied():
+    assert CSS[".native-topline"]["height"] == "40px"
+    assert CSS[".native-panel"]["padding"] == "20px"
+    assert CSS[".native-title"]["font-size"] == "26px"
+
+
+def check_light_theme_preserves_readable_surface_contrast():
+    light = re.search(r"const Theme THEME_LIGHT\s*=\s*\{(.*?)\};", C, re.S)[1]
+    colors = dict(re.findall(r"\.(\w+)\s*=\s*HEX\(0x([\dA-Fa-f]+)\)", light))
+    def luminance(name):
+        rgb = [int(colors[name][i:i+2], 16)/255 for i in (0, 2, 4)]
+        rgb = [v/12.92 if v <= .04045 else ((v+.055)/1.055)**2.4 for v in rgb]
+        return sum(v*w for v, w in zip(rgb, (.2126, .7152, .0722)))
+    for fg, bg in [("ink", "surface"), ("muted", "surface"), ("on_ink", "indigo"),
+                   ("alert_ink", "alert_bg"), ("on_ink", "success_btn")]:
+        pair = sorted((luminance(fg), luminance(bg)))
+        assert (pair[1]+.05)/(pair[0]+.05) >= 4.5, (fg, bg)
+
+
+def check_retained_extension_tokens():
+    """Non-mockup states use explicit, pinned extensions rather than new CSS."""
+    assert re.search(r"const double N_DIM_ALPHA = 0\.55;", C)
+    expected = {"HEAD_TITLE": "E7EDF1", "HEAD_SUB": "90A0AA",
+                "ROOM_BAD": "E5484D", "ROOM_WARN": "B36B00",
+                "STRIPE_A": "64A6D2", "STRIPE_B": "A2CFE5", "STRIPE_IDLE": "7E8C95"}
+    actual = dict(re.findall(r"const Rgb (\w+) = HEX\(0x([\dA-Fa-f]+)\);", C))
+    assert actual == expected
+
+
+def check_shadow_matches_mockup():
+    rgba = re.search(r"rgba\(0,0,0,([\d.]+)\)", CSS[".native-panel"]["box-shadow"])
+    assert rgba
+    values = re.findall(r"\.shadow_strong = HEX\(0x000000\), .shadow_strong_a = ([\d.]+)", C)
+    assert len(values) == 2
+    assert all(float(v) == float(rgba[1]) for v in values)
+
+
+# The mockup has no light rules. These are the reviewed derivation choices;
+# changing one is a deliberate design change, not an unnoticed token drift.
+EXPECTED_LIGHT = {'porcelain': 'EEF1F5', 'surface': 'FFFFFF', 'ink': '243540', 'muted': '536975', 'hair': 'BFCBD3', 'indigo': '2D668A', 'indigo_soft': 'DFEDF5', 'led_write': '397EA9', 'led_ok': '318700', 'led_idle': '737373', 'danger': 'A52F39', 'hover': 'EAF2F7', 'field': 'F5F8FA', 'field_line': 'A7BAC7', 'track': 'DCE5EB', 'sunken': 'F4F7F9', 'btn_hover': 'E5EFF5', 'btn_hover_line': '4B86AC', 'ink_hover': '245572', 'on_ink': 'FFFFFF', 'danger_line': 'B75A62', 'mark_line': '4E7186', 'login_a': 'EEF3F7', 'login_b': 'DCE6EC', 'login_glow': 'FFFFFF', 'choice': 'F5F8FA', 'choice_line': 'B8CAD5', 'selected_line': '5E97BA', 'button': 'EDF3F7', 'button_line': 'A8BCC9', 'danger_bg': 'F9E9EA', 'warning_bg': 'FFF6DD', 'warning_line': 'B49A57', 'warning_ink': '826117', 'success_bg': 'E8F4EB', 'success_line': '4D8A63', 'success_ink': '2E7342', 'metric': 'F0F5F8', 'metric_line': 'C0CDD5', 'status_bg': 'E6EEF3'}
+
+EXPECTED_LIGHT.update({'disk_bg': 'F1F6F9', 'disk_line': 'B7C8D3', 'disk_selected': 'E1EEF5', 'disk_selected_line': '5C95B8', 'clone_line': 'B6C8D2', 'round_line': 'B7C8D2', 'image_bg': 'F1F6F9', 'image_line': 'B5C9D5', 'image_selected': 'DFEDF5', 'image_selected_line': '5F9BC0'})
+# #828 completion: .native-alert, .native-btn.success, .room-node borders,
+# --yellow, .native-brand span.
+EXPECTED_LIGHT.update({'alert_bg': 'FBF3DC', 'alert_line': 'B49A57', 'alert_ink': '6E5312', 'success_btn': '2D6F4D', 'success_btn_line': '55A879', 'node_active_line': '4D89AD', 'node_warn_line': 'B49A57', 'warn': 'C48A0A', 'brand_accent': '2F6F97'})
+
+def check_derived_light_palette_is_pinned():
+    light = re.search(r"const Theme THEME_LIGHT\s*=\s*\{(.*?)\};", C, re.S)[1]
+    actual = dict(re.findall(r"\.(\w+)\s*=\s*HEX\(0x([\dA-Fa-f]+)\)", light))
+    actual.pop("shadow_strong")
+    assert actual == EXPECTED_LIGHT
+
+
+class TestNativeTheme(unittest.TestCase):
+    """Collected by pytest; also runnable with the standard library alone."""
+
+
+def bind(check, args=()):
+    def test(self):
+        check(*args)
+    return test
+
+
+for check, bindings in [(check_theme_dark_matches_mockup, COLOR_BINDINGS),
+                        (check_theme_dimension_matches_mockup, NUMBER_BINDINGS),
+                        (check_theme_inline_dimension_matches_mockup, HTML_BINDINGS)]:
+    for binding in bindings:
+        setattr(TestNativeTheme, check.__name__.replace("check_", "test_") + "_" + binding[0],
+                bind(check, binding))
+for check in [check_every_exported_dimension_has_a_mockup_binding,
+              check_every_theme_color_has_a_mockup_binding,
+              check_mockup_final_override_is_applied,
+              check_light_theme_preserves_readable_surface_contrast,
+              check_retained_extension_tokens, check_shadow_matches_mockup,
+              check_derived_light_palette_is_pinned]:
+    setattr(TestNativeTheme, check.__name__.replace("check_", "test_"), bind(check))
+
+if __name__ == "__main__":
+    unittest.main()

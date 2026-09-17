@@ -99,7 +99,16 @@ Text text_make_field(cairo_t *cr, const char *utf8, int width_px, int ltr) {
 }
 
 void text_draw_r(cairo_t *cr, Text *t, double x_right, double y, Rgb c) {
-    text_draw(cr, t, x_right - t->w, y, c);
+    /* t->w is the text's span, not the box: for a block with a set width
+     * whose lines are right-aligned (every RTL block here), Pango's logical
+     * rect starts at x = width - span (pango_layout_get_extents_internal,
+     * "the union of the horizontal extents of all the lines"), and the
+     * glyphs are drawn at that offset from the current point. So the right
+     * edge of the drawn text is x + logical.x + logical.width -- use that,
+     * else a wrapped block overflows the box by (width - span). */
+    PangoRectangle lg;
+    pango_layout_get_pixel_extents(t->layout, NULL, &lg);
+    text_draw(cr, t, x_right - (lg.x + lg.width), y, c);
 }
 
 void text_free(Text *t) {

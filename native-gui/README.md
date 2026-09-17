@@ -278,6 +278,21 @@ with a name typed), two folders, two images, three cloner machines (one
 writing at 42%, one done, one off), three classes (one with no machines,
 drawn dim), a wave-2 round 7/24 and a class round 3/14 opening in 4:32.
 
+### #828: the mockup is the design source now
+
+Since #828 the look is `docs/design/native-gui-mockup-2026-09-13.html`
+(the owner's 11 native screens), not the console CSS: every colour and
+size in `theme.c` cites a `.native-*` rule (`css: selector | prop | index`)
+or an inline style of one screen function (`html: nativeProgress |
+font-size | 0`), and `tests/test_native_gui_theme.py` reads the mockup and
+fails on any drift. Light is a derived palette pinned in the same test. What
+the mockup shows that the state file cannot feed (SMART attributes per
+disk, rate/ETA, image size/UEFI/SHA status, "דלג"/"בדוק שוב"/"אתחל
+עכשיו"/"עצור כתיבה" buttons with no stdout record) is **not drawn** -- the
+per-screen gap map is `docs/design/native-gui-redesign-status.md`. The
+status bar's word ("ממתין לאימות", "כותב 3 דיסקים במקביל") is derived from
+the screen itself, not a new state key. 1 CSS px = 1 pixel, as before.
+
 ### What matches the HTML, and where it does not
 
 Every dimension, colour, radius, padding and text is taken from

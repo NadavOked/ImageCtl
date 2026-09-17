@@ -315,7 +315,7 @@ test('WoL: builder card, cloner card (object and room), capture card, drawer, bu
   assert.match(bv.actions,/onclick="wakeGroup\('grp_BUILD'\)">הער את כולם \(WoL\)</); assert.doesNotMatch(bv.actions,/בקרוב/);
   const dB=run(`machineDrawerHtml(findMachine('${MAC_B}'))`), dC=run(`machineDrawerHtml(findMachine('${MAC_C}'))`), dS=run(`machineDrawerHtml(findMachine('${MAC_S}'))`);
   assert.match(dB,/wakeMachine\(/); assert.match(dC,/wakeMachine\(/); assert.doesNotMatch(dC,/wakeRoom/);
-  assert.match(dS,/title="v2">Wake-on-LAN — לתחנות כיתה ב-v2</); assert.doesNotMatch(dS,/wakeMachine|בקרוב">Wake/);
+  assert.match(dS,/title="v2">WoL — לתחנות כיתה ב-v2</); assert.doesNotMatch(dS,/wakeMachine|בקרוב">Wake/);
   run("MCH.history={}; MCH.sel=new Set()");
   const g=run("groupRowHtml(GROUPS[0], [findMachine('"+MAC_B+"')]).html");
   assert.match(g,/wakeGroup\('grp_BUILD'\)">WoL לבנייה</);

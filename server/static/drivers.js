@@ -113,7 +113,7 @@ function driversCoverageCard() {
   const rows = sortMachinesBySuffix(v1).map(driverCoverageRow);
   const table = MACHINES == null
     ? UI.note("err", "רשימת המחשבים לא נקראה — אין מה לחשב.")
-    : UI.datagrid({ cls: "acts-on", columns: ["מכונה", "בקרי PCI (רשת/אחסון)", "חבילות שיונחו", "כיסוי", ""], rows, empty: "אין מחשבי בנייה או שיכפול רשומים" });
+    : UI.datagrid({ cls: "acts-on", columns: ["מכונה", "בקרי PCI (רשת/אחסון)", "חבילות שיונחו", "כיסוי", ""], rows, empty: "אין מחשבי בנייה או שיכפול רשומים — הוסיפו אותם בדף המחשבים" });
   const classroom = (MACHINES || []).filter((m) => machineRole(m) === "classroom").length;
   return UI.card({ title: "כיסוי לפי מכונה", small: `${reported.length} מתוך ${v1.length} דיווחו חומרה · חושב בקונסולה לפי אותם כללים של השרת`, cls: "c12", body: table, flush: !!MACHINES && rows.length > 0 })
     + `<div class="c12">${UI.note("info", `"הונח" אינו "הותקן": בקר אחסון שבלעדיו Windows לא עולה אינו מכוסה (v2). חבילת דגם מכסה לפי דגם ולא לפי בקר — ולכן בקר שרק היא מכסה מוצג כ"לא אומת לפי PCI".${classroom ? ` תחנות כיתה (${classroom}) — v2, לא מוצגות.` : ""}`)}</div>`;

@@ -299,18 +299,24 @@ function renderRoutes() {
         נתיב שנוסף כאן נשאר גם אחרי אתחול.</td></tr>`}</tbody>
     </table>`;
 
-  document.querySelectorAll("[data-route-del]").forEach((b) => b.onclick = () => {
-    const nic = NETCFG.interfaces.find((n) => n.name === b.dataset.routeDel);
-    const gone = nic.routes.filter((_, i) => i !== Number(b.dataset.routeIndex));
-    sheet({
-      title: "מחיקת נתיב סטטי",
-      sub: `${nic.routes[Number(b.dataset.routeIndex)].destination} · ${nic.name}`,
-      danger: true, submitLabel: "מחק",
-      note: `<div class="sheet-note">הנתיב יוסר מהקובץ ומטבלת הניתוב.</div>`,
-      verify: { label: `להמשך הקלד את שם הכרטיס: ${nic.name}`,
-                mustEqual: nic.name },
-      onSubmit: () => saveAddress(nic.name, bodyOf(nic, { routes: gone })),
-    });
+  document.querySelectorAll("[data-route-del]").forEach((b) => b.onclick = () =>
+    routeDeleteSheet(b.dataset.routeDel, Number(b.dataset.routeIndex)));
+}
+
+/* ‏#954 גל 8: גם דף הרשת (console.js, כרטיס "נתיבים סטטיים") קורא לזה בשם. */
+function routeDeleteSheet(nameEnc, index) {
+  let name = nameEnc; try { name = decodeURIComponent(nameEnc); } catch (e) {}
+  const nic = NETCFG.interfaces.find((n) => n.name === name);
+  if (!nic || !nic.routes[index]) { toast("הנתיב לא נמצא"); return; }
+  const gone = nic.routes.filter((_, i) => i !== index);
+  sheet({
+    title: "מחיקת נתיב סטטי",
+    sub: `${nic.routes[index].destination} · ${nic.name}`,
+    danger: true, submitLabel: "מחק",
+    note: `<div class="sheet-note">הנתיב יוסר מהקובץ ומטבלת הניתוב.</div>`,
+    verify: { label: `להמשך הקלד את שם הכרטיס: ${nic.name}`,
+              mustEqual: nic.name },
+    onSubmit: () => saveAddress(nic.name, bodyOf(nic, { routes: gone })),
   });
 }
 

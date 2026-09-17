@@ -13,7 +13,7 @@ int hovered(const App *a, Rect r);
 double dmax(double x, double y);
 
 /* ---- console.css .btn / .btn.primary / .btn.danger ---------------------- */
-enum { BTN_PLAIN, BTN_PRIMARY, BTN_DANGER };
+enum { BTN_PLAIN, BTN_PRIMARY, BTN_DANGER, BTN_SUCCESS };   /* .native-btn{,.primary,.danger,.success} */
 Text btn_label(cairo_t *cr, const char *s);            /* 13.5px 500 */
 double btn_height(cairo_t *cr);                        /* 9 + line + 9 + 2 */
 double btn_width(const Text *label);                   /* 15 + w + 15 + 2 */
@@ -39,8 +39,9 @@ Text error_make(cairo_t *cr, const char *s, double w);   /* .error: 12.5px dange
 #define ERROR_MIN_H 18.0                                 /* .error min-height */
 
 /* ---- the card (console.css .sheet / .shead / .sbody / .sfoot) ------------ */
-typedef struct { Text h3, p; double h; } Head;
+typedef struct { Text h3, p; double h; int logo; } Head;
 Head head_make(cairo_t *cr, const char *h3, const char *p, double inner_w);
+void head_logo(Head *hd);                                /* .native-logo above the title */
 double card_width(double W);                             /* #765: W minus a proportional 12..28px inset */
 /* #765: surface + head, clipped to a card that fills the framebuffer below the
  * header (no 92vh cap, no centring). *body is the content box (overflow is
@@ -55,9 +56,21 @@ void foot_draw_bg(cairo_t *cr, const Theme *t, Rect foot);
 
 /* ---- station.css pieces ------------------------------------------------- */
 void draw_tray(cairo_t *cr, const Theme *t, double x, double y, int multi);
+enum { ICON_DISK, ICON_NETWORK, ICON_WARNING, ICON_SUCCESS };
+void draw_native_icon(cairo_t *cr, const Theme *t, Rect box, int kind);
+double metric_height(cairo_t *cr);
+void draw_metric(cairo_t *cr, const Theme *t, Rect box, const char *label, const char *value);
 /* .bar.big-bar with a Progress.view state: pct 0..100, or -1 unknown
  * (moving = indeterminate stripes at 40%, else unknown-idle at 25%). */
 void draw_big_bar(cairo_t *cr, const Theme *t, Rect r, int pct, int moving);
+/* .native-bar: the 5px bar of a round card / room node (.native-bar i). */
+void draw_thin_bar(cairo_t *cr, const Theme *t, Rect r, int pct, Rgb fill);
+/* .native-alert: one paragraph in a warning-tinted box, full width. */
+Text alert_make(cairo_t *cr, const char *s, double w);
+double alert_height(const Text *body);
+void draw_alert(cairo_t *cr, const Theme *t, Rect r, Text *body);
+/* .native-status: the green dot + the screen's own word in the status bar. */
+void draw_status_word(cairo_t *cr, const Theme *t, double x, double cy, const char *s, Rgb dot);
 void draw_cls_bars(cairo_t *cr, const Theme *t, double x, double y, double w, int current);
 void draw_toast(App *a, cairo_t *cr, double W, double H);
 

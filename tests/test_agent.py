@@ -1917,6 +1917,18 @@ def test_every_lib_file_is_loaded_and_packed():
         "הבנאי אינו אורז את agent/lib/*.sh — כל הסוכן חסר ב-initramfs"
 
 
+def test_arm_wol_is_callable_after_sourcing_common_in_fresh_shell(tmp_path):
+    """The monitor's fresh ``sh -c`` gets a self-contained arm_wol function from common.sh."""
+    sysroot = tmp_path / "root"
+    (sysroot / "sys" / "class" / "net").mkdir(parents=True)
+    out = sh(
+        f'export SYSROOT={posix(sysroot)!r} RUN_DIR={posix(tmp_path)!r}; '
+        f'. {posix(AGENT)}/lib/common.sh; command -V arm_wol; '
+        'arm_wol || printf "%s\\n" expected-no-interface')
+    assert "arm_wol is a function" in out
+    assert out.rstrip().endswith("expected-no-interface")
+
+
 def test_only_common_touches_proc_cmdline():
     offenders = [
         p.name for p in SH_FILES

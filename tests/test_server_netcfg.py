@@ -630,37 +630,44 @@ def test_the_server_unit_may_write_where_the_code_writes():
 # --- #761: פאנל אחד בסגנון vCenter, לא שני פאנלים לאותו כרטיס ---------------
 
 
-def _nic_card_source():
-    """מקור renderNicCard — כרטיס ה-NIC המאוחד של 'חיבורים פיזיים'. העיצוב
-    החדש (הכרעת הבעלים) מרנדר את כרטיסי הרשת דינמית ב-console.js במקום טבלה
-    סטטית ב-index.html; הדרישה של #761 (פאנל אחד, לא שניים) נשמרת בכרטיס."""
+def _js_function(name):
+    """מקור פונקציה אחת מ-console.js, עד ה-`function` הבא בתחילת שורה."""
     js = (REPO / "server" / "static" / "console.js").read_text(encoding="utf-8")
-    start = js.index("function renderNicCard")
+    start = js.index(f"function {name}")
     return js[start:js.index("\nfunction ", start + 1)]
+
+
+def _nic_card_source():
+    """הכרטיס המאוחד של הכרטיס הנבחר בלשונית "כרטיסים" (גל 8 של #954:
+    `netNicSelectedCard` + שורת הטבלה `netNicRow`, במקום `renderNicCard`).
+    הדרישה של #761 (פאנל אחד, לא שניים) נשמרת: כתובת בפועל מול מוגדר, DHCP
+    מהמצב החי — בכרטיס אחד, וכתובת השרת בכרטיס ההפצה (`networkDeployTab`)."""
+    return _js_function("netNicRow") + _js_function("netNicSelectedCard")
 
 
 def test_the_network_tab_has_one_nic_panel_not_two():
     """הפאנל הכפול ('כרטיסי רשת' + 'כתובת השרת עצמו') התמזג לאחד. כתובת
-    השרת יושבת בתוך כרטיס ה-NIC, ואין פאנל נפרד 'כתובת השרת עצמו' ולא
+    השרת יושבת בכרטיס רשת ההפצה, ואין פאנל נפרד 'כתובת השרת עצמו' ולא
     ה-id-ים הישנים netcfg-body/netcfg-table."""
     for name in ("index.html", "console.js", "netcfg.js", "net.js"):
         text = (REPO / "server" / "static" / name).read_text(encoding="utf-8")
         assert "כתובת השרת עצמו" not in text, name
         assert "netcfg-body" not in text, name
         assert "netcfg-table" not in text, name
-    assert "כתובת השרת" in _nic_card_source()   # מאוחד לתוך כרטיס ה-NIC
+    assert "כתובת השרת" in _js_function("networkDeployTab")   # מאוחד לתוך כרטיס ההפצה
+    assert "renderNicCard" not in _js_function("networkNicsTab")  # אין כרטיס שני לאותו NIC
 
 
 def test_the_unified_nic_card_shows_the_operator_data_points():
     """כרטיס ה-NIC המאוחד מציג את נקודות הנתונים התפעוליות: התקן ו-MAC
-    בכותרת, כתובת בפועל מול מוגדר, כתובת השרת, ומצב DHCP שנגזר מהמצב החי
-    (nicMode -> dhcpLiveClass) ולכן לעולם אינו 'כבוי' כשלא אומת (עיקרון 5)."""
+    בכותרת, כתובת בפועל מול מוגדר, ומצב DHCP שנגזר מהמצב החי
+    (netDhcpCell -> dhcpLiveClass) ולכן לעולם אינו 'כבוי' כשלא אומת (עיקרון 5)."""
     card = _nic_card_source()
-    assert "n.mac" in card                        # כתובת MAC (בכותרת)
+    assert "n.mac" in card                        # כתובת MAC (בכותרת השורה)
     assert "בפועל" in card                        # כתובת IP בפועל
     assert "מוגדר" in card                        # מול המוגדר
-    assert "כתובת השרת" in card                   # כתובת השרת המאוחדת
-    assert "DHCP" in card and "nicMode" in card   # מצב DHCP מהמצב החי
+    assert "DHCP" in card and "netDhcpCell" in card   # מצב DHCP מהמצב החי
+    assert "dhcpLiveClass" in _js_function("netDhcpCell")
     net = (REPO / "server" / "static" / "net.js").read_text(encoding="utf-8")
     assert "dhcpLiveClass" in net                 # DHCP מדויק
 

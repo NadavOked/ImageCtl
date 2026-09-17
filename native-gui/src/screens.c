@@ -10,15 +10,6 @@
 #include <string.h>
 #include "widgets.h"
 
-/* console.css .mark (+ station.css: 40x40, radius 11):
- * ::before top 11 left 8 right 8 height 3 radius 2 mark-line
- * ::after  top 19 right 8 width 9 height 3 led-write */
-static void draw_mark(cairo_t *cr, const Theme *t, double x, double y) {
-    draw_fill_rrect(cr, (Rect){ x, y, 40, 40 }, 11, t->ink);
-    draw_fill_rrect(cr, (Rect){ x + 8, y + 11, 40 - 16, 3 }, 2, t->mark_line);
-    draw_fill_rrect(cr, (Rect){ x + 40 - 8 - 9, y + 19, 9, 3 }, 2, t->led_write);
-}
-
 /* station.js sets the button text to "☾" (light) / "☀" (dark). Those code
  * points are not in IBM Plex, and the initramfs carries no other font, so a
  * glyph would be a tofu box. Drawn as vectors instead -- same meaning. */
@@ -43,108 +34,127 @@ static void draw_theme_glyph(cairo_t *cr, Rgb ink, Rgb bg, double cx, double cy,
 
 /* ---- header (station.css .st-head) ----------------------------------------- */
 
-#define HEAD_PX 34.0     /* padding: 26px 34px */
-#define HEAD_PY 26.0
-
 static double draw_header(App *a, cairo_t *cr, double W) {
     const Theme *t = a->theme;
-
-    /* .st-brand, at the right: mark, gap 12, then h1 over p (centre-aligned
-     * against the 40px mark). */
-    double mx = W - HEAD_PX - 40, my = HEAD_PY;
-    draw_mark(cr, t, mx, my);
-    Text h1 = text_make(cr, FONT_SANS, 18, 600, a->title, 0, DIR_RTL);
-    Text p  = text_make(cr, FONT_SANS, 12, 400, "שרת אימג'ים — מכללה", 0, DIR_RTL);
-    double bh = h1.h + 2 + p.h, by = my + (40 - bh) / 2;
-    text_draw_r(cr, &h1, mx - 12, by, HEAD_TITLE);
-    text_draw_r(cr, &p,  mx - 12, by + h1.h + 2, HEAD_SUB);
-    text_free(&h1); text_free(&p);
-
-    /* .st-tools at the left. In an RTL flex row the first child (#st-theme)
-     * is the rightmost of the group, so the id block is at the far left and
-     * the button sits 14px to its right. .st-id: mono 13px, line-height 1.7,
-     * text-align:left, dir=ltr. */
-    double lh = 13 * 1.7;
-    Text mac = text_make(cr, FONT_MONO, 13, 400, a->mac[0] ? a->mac : "–", 0, DIR_LTR);
-    Text ip  = text_make(cr, FONT_MONO, 13, 400, a->ip, 0, DIR_LTR);
-    double idw = dmax(mac.w, a->ip[0] ? ip.w : 0);
-    text_draw(cr, &mac, HEAD_PX, my + (lh - mac.h) / 2, HEAD_SUB);
-    if (a->ip[0]) text_draw(cr, &ip, HEAD_PX, my + lh + (lh - ip.h) / 2, HEAD_SUB);
-    text_free(&mac); text_free(&ip);
-
-    /* .btn.icon: padding 7px 11px, font 15px, line-height 1 -> 39x31.
-     * The cloner is light-only (owner decision): no theme toggle there -- it
-     * is unattended and a dark screen was never wanted. */
-    double tools_bh = 7 + 15 + 7 + 2;
+    /* .native-brand: "ImageCtl" 700 ink, then <span> 500 in the accent blue
+     * with margin-right 6 -- the span is this station's role (--title). */
+    Text brand = text_make(cr, FONT_SANS, N_BRAND_FONT, 700, "ImageCtl", 0, DIR_LTR);
+    Text role = text_make(cr, FONT_SANS, N_BRAND_FONT, 500, a->title, 0, DIR_RTL);
+    double bx = W - N_HEADER_PAD;
+    text_draw_r(cr, &brand, bx, (N_HEADER_H - brand.h) / 2, t->ink);
+    bx -= brand.w + N_BRAND_GAP;
+    text_draw_r(cr, &role, bx, (N_HEADER_H - role.h) / 2, t->brand_accent);
+    text_free(&brand); text_free(&role);
+    char identity[128];
+    snprintf(identity, sizeof identity, "%s  %s", a->mac, a->ip);
+    Text id = text_make(cr, FONT_MONO, N_HEADER_FONT, 400, identity, 0, DIR_LTR);
+    text_draw(cr, &id, N_HEADER_PAD, (N_HEADER_H - id.h) / 2, t->muted);
     if (!a->force_cloner) {
-        Rect b = { HEAD_PX + idw + 14, my, 11 + 15 + 11 + 2, tools_bh };
-        int hov = hovered(a, b);
-        Rgb bg = hov ? t->btn_hover : t->surface;
-        draw_fill_rrect(cr, b, RADIUS_SM, bg);
-        draw_border_rrect(cr, b, RADIUS_SM, hov ? t->btn_hover_line : t->hair, 1);
-        draw_theme_glyph(cr, t->ink, bg, b.x + b.w / 2, b.y + b.h / 2, a->theme == &THEME_DARK);
+        Rect b = { N_HEADER_PAD + id.w + N_ACTION_GAP,
+                   (N_HEADER_H - N_CHOICE_ICON) / 2, N_CHOICE_ICON, N_CHOICE_ICON };
+        draw_fill_rrect(cr, b, RADIUS_SM, t->button);
+        draw_theme_glyph(cr, t->ink, t->button, b.x + b.w / 2, b.y + b.h / 2,
+                         a->theme == &THEME_DARK);
         hit_add(a, b, HIT_THEME);
     }
+    text_free(&id);
+    cairo_rectangle(cr, 0, N_HEADER_H - N_BORDER, W, N_BORDER);
+    draw_set(cr, t->hair); cairo_fill(cr);
+    return N_HEADER_H;
+}
 
-    double tools_h = dmax(2 * lh, tools_bh);
-    return HEAD_PY + dmax(40, tools_h) + HEAD_PY;
+/* The mockup's status word is the screen's own state ("ממתין לאימות",
+ * "בחירת דיסק", "כותב 3 דיסקים במקביל"), not server health -- so it is
+ * derived from what is already on the screen, nothing new from the agent. */
+static const char *status_word(const App *a, char *buf, size_t n, Rgb *dot) {
+    const State *s = &a->st;
+    *dot = a->theme->led_ok;                                   /* .native-status i: --green */
+    switch (a->screen) {
+    case SCREEN_LOGIN:    return "ממתין לאימות";
+    case SCREEN_MENU:     return "בחירת פעולה";
+    case SCREEN_MESSAGE:  return s->msg_title;
+    case SCREEN_PICK:     return "בחירת דיסק";
+    case SCREEN_PROGRESS:
+        if (s->task_disk[0]) {
+            if (s->task_direct) snprintf(buf, n, "משדר מ־%s", s->task_disk);   /* #715 */
+            else                snprintf(buf, n, "קולט מ־%s", s->task_disk);
+            return buf;
+        }
+        return s->task == TASK_PENDING ? "ממתין לסוכן" : "משימה פעילה";
+    case SCREEN_DONE:
+        if (s->task == TASK_FAILED) { *dot = a->theme->danger; return "נכשל"; }
+        return "הושלם";
+    case SCREEN_CLASS:
+        if (!s->has_session) return "בחירת כיתה";
+        return s->sess_open ? "ממתין להצטרפות" : "משדר";
+    case SCREEN_ROOM:
+        if (s->has_round) {
+            if (s->wave_open) snprintf(buf, n, "גל %d ממתין", s->wave_number);
+            else              snprintf(buf, n, "גל %d משדר", s->wave_number);
+            return buf;
+        }
+        else { int awake = 0; for (int i = 0; i < s->nmachines; i++) awake += s->machines[i].awake;
+               snprintf(buf, n, "%d יעדים מחוברים", awake); return buf; }
+    case SCREEN_CLONER:
+        if (s->smart_pending) { *dot = a->theme->warn; return "ממתין להכרעת SMART"; }
+        if (s->ndrawers) { int w = 0; for (int i = 0; i < s->ndrawers; i++) w += !strcmp(s->drawers[i].state, "writing");
+                           snprintf(buf, n, "כותב %d דיסקים במקביל", w); return buf; }
+        return "ממתין לסבב";
+    case SCREEN_RESTORE:  return "בחירת אימג' לשחזור";
+    }
+    return "מוכן";
+}
+
+static void draw_status(App *a, cairo_t *cr, double W, double H) {
+    const Theme *t = a->theme;
+    Rect bar = {0, H - N_STATUS_H, W, N_STATUS_H};
+    draw_fill_rrect(cr, bar, 0, t->status_bg);
+    cairo_rectangle(cr, 0, bar.y, W, N_BORDER);                /* border-top */
+    draw_set(cr, t->hair); cairo_fill(cr);
+    Text label = text_make(cr, FONT_SANS, N_HEADER_FONT, 400, "ImageCtl · תחנת קצה", 0, DIR_RTL);
+    text_draw_r(cr, &label, W - N_STATUS_PAD, bar.y + (bar.h - label.h) / 2, t->muted);
+    text_free(&label);
+    char buf[96]; Rgb dot;
+    const char *word = status_word(a, buf, sizeof buf, &dot);
+    draw_status_word(cr, t, N_STATUS_PAD, bar.y + bar.h / 2, word, dot);
 }
 
 /* ---- #st-login ------------------------------------------------------------- */
 
 void screen_login(App *a, cairo_t *cr, double W, double H, double head_h) {
     const Theme *t = a->theme;
-    double inner = card_width(W) - 44;                          /* .sbody padding 22 */
-
-    Head hd = head_make(cr, "כניסה", "הפעולות במסך הזה דורשות חשבון קונסולה.", inner);
-    Text l1  = label_make(cr, "שם משתמש", inner);
-    Text l2  = label_make(cr, "סיסמה", inner);
-    Text err = error_make(cr, a->error, inner);
-    Text bt  = btn_label(cr, "כניסה");
-    Text eye = text_make(cr, FONT_SANS, 11.5, 400, a->show_pw ? "הסתר" : "הצג", 0, DIR_RTL);
-
-    double in_h  = field_height(cr);
-    double err_h = dmax(err.h, ERROR_MIN_H);
-    /* Vertical rhythm, from the CSS margins (station.css: label margin-top 6;
-     * console.css: label margin-bottom 6, input margin-bottom 14, .error
-     * margin-top 6; sibling margins collapse, parent/child ones do not). */
-    double body_h = 22 + 6 + l1.h + 2 + in_h + 20 + l2.h + 6 + in_h + 20 + err_h + 22;
-    double btn_h  = btn_height(cr);
-    double foot_h = foot_height(cr, btn_h);
-
-    Rect body, foot;
-    card_frame(a, cr, W, H, head_h, &hd, body_h, foot_h, &body, &foot);
-    body_clip_begin(a, cr, body);
-    double x = body.x + 22, y = body.y + 22 + 6;
-    text_draw(cr, &l1, x, y, t->muted);              y += l1.h + 2;
-    draw_field(a, cr, (Rect){ x, y, inner, in_h }, a->user, 0, NULL, HIT_USER);
-    y += in_h + 20;
-    text_draw(cr, &l2, x, y, t->muted);              y += l2.h + 6;
-    Rect f2 = { x, y, inner, in_h };
-    draw_field(a, cr, f2, a->pass, !a->show_pw, NULL, HIT_PASS);
-    /* .pw-eye at the RIGHT: the password field is LTR (ASCII), so its 62px
-     * clear space is on the right; the eye sits there. top 9, padding 4px 9px. */
-    double ew = 9 + eye.w + 9 + 2;
-    Rect e = { f2.x + f2.w - 8 - ew, f2.y + 9, ew, 4 + eye.h + 4 + 2 };
-    {
-        int hov = hovered(a, e);
-        draw_fill_rrect(cr, e, 6, t->surface);
-        draw_border_rrect(cr, e, 6, hov ? t->btn_hover_line : t->hair, 1);
-        text_draw(cr, &eye, e.x + (e.w - eye.w) / 2, e.y + (e.h - eye.h) / 2,
-                  hov ? t->ink : t->muted);
-        hit_add(a, e, HIT_EYE);
-    }
-    y += in_h + 20;
-    text_draw(cr, &err, x, y, t->danger);
-    body_clip_end(a, cr);
-
-    /* the primary button is the first flex child -> at the right. */
-    foot_draw_bg(cr, t, foot);
-    double bw = btn_width(&bt);
-    draw_btn(a, cr, (Rect){ foot.x + foot.w - 22 - bw, foot.y + 1 + 14, bw, btn_h }, &bt, BTN_PRIMARY, HIT_SUBMIT);
-    card_end(a, cr);
-
-    text_free(&l1); text_free(&l2); text_free(&err); text_free(&bt); text_free(&eye);
+    double cw = fmin(N_NARROW_W, card_width(W)), inner = cw - 2 * N_PAD;
+    Text title = rtl_block_make(cr, N_TITLE, 500, "התחברות ל־ImageCtl", inner);
+    Text sub = rtl_block_make(cr, N_SUB, 400, "אימות נדרש לפני גישה למסך התחנה.", inner);
+    Text user = label_make(cr, "שם משתמש", inner), pass = label_make(cr, "סיסמה", inner);
+    Text err = error_make(cr, a->error, inner), button = btn_label(cr, "התחבר");
+    Text eye = btn_label(cr, a->show_pw ? "הסתר" : "הצג");
+    double ch = 2 * N_PAD + N_LOGO + N_LOGO_GAP + title.h + N_TITLE_GAP + sub.h
+              + N_FORM_TOP + user.h + pass.h + 2 * N_LABEL_GAP + 2 * N_FIELD_H
+              + N_FORM_GAP + N_ACTION_TOP + N_BUTTON_H + (a->error[0] ? err.h + N_FORM_GAP : 0);
+    Rect panel = {(W-cw)/2, head_h + (H-head_h-N_STATUS_H-ch)/2, cw, ch};
+    draw_box_shadow(cr, panel, RADIUS_R, N_SHADOW_Y, N_SHADOW_BLUR, 0, t->shadow_strong, t->shadow_strong_a);
+    draw_fill_rrect(cr, panel, RADIUS_R, t->surface);
+    draw_border_rrect(cr, panel, RADIUS_R, t->hair, N_BORDER);
+    double x = panel.x + N_PAD, y = panel.y + N_PAD;
+    draw_native_icon(cr, t, (Rect){x+inner-N_LOGO,y,N_LOGO,N_LOGO}, ICON_DISK);
+    y += N_LOGO + N_LOGO_GAP;
+    text_draw(cr, &title, x, y, t->ink); y += title.h + N_TITLE_GAP;
+    text_draw(cr, &sub, x, y, t->muted); y += sub.h + N_FORM_TOP;
+    text_draw(cr, &user, x, y, t->muted); y += user.h + N_LABEL_GAP;
+    draw_field(a, cr, (Rect){x,y,inner,N_FIELD_H}, a->user, 0, NULL, HIT_USER);
+    y += N_FIELD_H + N_FORM_GAP;
+    text_draw(cr, &pass, x, y, t->muted); y += pass.h + N_LABEL_GAP;
+    draw_field(a, cr, (Rect){x,y,inner,N_FIELD_H}, a->pass, !a->show_pw, "סיסמה", HIT_PASS);   /* placeholder="סיסמה" */
+    double ew = eye.w + 2 * N_ACTION_GAP;
+    draw_btn(a, cr, (Rect){x+inner-ew-N_BORDER,y+N_BORDER,ew,N_FIELD_H-2*N_BORDER}, &eye, BTN_PLAIN, HIT_EYE);
+    y += N_FIELD_H;
+    if (a->error[0]) { y += N_FORM_GAP; text_draw(cr, &err, x, y, t->danger); y += err.h; }
+    y += N_ACTION_TOP;
+    double bw = btn_width(&button);
+    draw_btn(a, cr, (Rect){x+inner-bw,y,bw,N_BUTTON_H}, &button, BTN_PRIMARY, HIT_SUBMIT);
+    text_free(&title); text_free(&sub); text_free(&user); text_free(&pass);
+    text_free(&err); text_free(&button); text_free(&eye);
 }
 
 /* ---- #st-menu -------------------------------------------------------------- */
@@ -166,54 +176,53 @@ static const MenuItem MENU[MENU_N] = {
 
 void screen_menu(App *a, cairo_t *cr, double W, double H, double head_h) {
     const Theme *t = a->theme;
-    double inner = card_width(W) - 44;
-    char sub[128];
-    snprintf(sub, sizeof sub, "מחוברים כ־%s", a->signed_user);      /* station.js afterLogin */
-    Head hd = head_make(cr, "מה עושים?", sub, inner);
-
-    /* .menu-card: padding 18px 16px, gap 14, tray 52 wide; <b> is 700 */
-    double text_w = inner - 16 - 52 - 14 - 16;
-    Text bt[MENU_N], st[MENU_N];
-    double card_h[MENU_N], body_h = 22 + 22;
+    double inner = card_width(W) - 2 * N_PAD;
+    char sub[128]; snprintf(sub, sizeof sub, "מחוברים כ־%s", a->signed_user);
+    Head hd = head_make(cr, "מה תרצה להפעיל?", sub, inner);
+    head_logo(&hd);                                        /* nativeMenu: .native-logo first */
     /* Only capture is admin-only (station.js); restore is shown to the
      * deploy role like room/classes -- #382 leaves that permission to Nadav,
      * and this is the one place to flip it. The direct card (#715) is always
      * shown, like room; the class card follows the server's switch (#880,
      * menu_class= in the state file; absent = off). */
-    int show[MENU_N] = { a->admin, 1, 1, 1, a->st.menu_class };
-    for (int i = 0; i < MENU_N; i++) {
-        if (!show[i]) continue;
-        bt[i] = rtl_block_make(cr, 15, 700, MENU[i].b, text_w);      /* right-aligned like labels */
-        st[i] = rtl_block_make(cr, 12.5, 400, MENU[i].s, text_w);
-        card_h[i] = 18 + dmax(34, bt[i].h + st[i].h) + 18 + 2;
-        body_h += card_h[i] + 10;                                   /* margin-bottom 10 */
+    int show[MENU_N] = {a->admin, 1, 1, 1, a->st.menu_class}, count = 0;
+    for (int i = 0; i < MENU_N; i++) count += show[i] ? 1 : 0;
+    /* The mockup's grid is two columns. Five cards (#715, admin with the
+     * class switch on) would be three rows of min-height 160, which is
+     * ~698px with the head -- past the 696 a 1280x800 screen leaves --
+     * so five go three across, two rows, and nothing is clipped. */
+    int cols = inner < N_NARROW_W ? 1 : count > 4 ? 3 : 2;
+    int rows = (count + cols - 1) / cols;
+    double cw = (inner - (cols - 1) * N_CHOICE_GAP) / cols;
+    double tw = cw - 2 * N_CHOICE_PAD;
+    Text title[MENU_N], desc[MENU_N];
+    double ch = N_CHOICE_H;
+    for (int i = 0; i < MENU_N; i++) if (show[i]) {
+        title[i] = rtl_block_make(cr, N_CHOICE_TITLE, 700, MENU[i].b, tw);
+        desc[i] = rtl_block_make(cr, N_CHOICE_SUB, 400, MENU[i].s, tw);
+        ch = dmax(ch, 2*N_CHOICE_PAD + N_CHOICE_ICON + N_ACTION_GAP + title[i].h + desc[i].h);
     }
-
     Rect body, foot;
-    card_frame(a, cr, W, H, head_h, &hd, body_h, 0, &body, &foot);
+    card_frame(a, cr, W, H, head_h, &hd,
+               N_PAD + rows * ch + (rows - 1)*N_CHOICE_GAP, 0, &body, &foot);
     body_clip_begin(a, cr, body);
-    double y = body.y + 22;
-    int visible_index = 0;
-    for (int i = 0; i < MENU_N; i++) {
-        if (!show[i]) continue;
-        Rect c = { body.x + 22, y, inner, card_h[i] };
-        int hov = hovered(a, c) || a->menu_focus == visible_index;
-        draw_fill_rrect(cr, c, 12, hov ? t->indigo_soft : t->field);
-        draw_border_rrect(cr, c, 12, hov ? t->indigo : t->hair, 1);
-        /* RTL: the Hebrew text leads on the right, the tray icon on the left. */
-        double tx = c.x + 16, ty = c.y + (c.h - 34) / 2;
-        draw_tray(cr, t, tx, ty, MENU[i].multi);
-        double block = bt[i].h + st[i].h, by = c.y + (c.h - block) / 2;
-        double text_x = c.x + c.w - 16 - text_w;
-        text_draw(cr, &bt[i], text_x, by, t->ink);
-        text_draw(cr, &st[i], text_x, by + bt[i].h, t->muted);
-        hit_add(a, c, MENU[i].id);
-        text_free(&bt[i]); text_free(&st[i]);
-        y += card_h[i] + 10;
-        visible_index++;
+    int visible = 0;
+    for (int i = 0; i < MENU_N; i++) if (show[i]) {
+        Rect c = {body.x + N_PAD + inner - cw - (visible % cols)*(cw+N_CHOICE_GAP),
+                  body.y + N_PAD + (visible / cols)*(ch+N_CHOICE_GAP), cw, ch};
+        int selected = hovered(a,c) || a->menu_focus == visible;
+        draw_fill_rrect(cr,c,RADIUS_R,selected ? t->indigo_soft : t->choice);
+        draw_border_rrect(cr,c,RADIUS_R,selected ? t->selected_line : t->choice_line,N_BORDER);
+        double x = c.x + N_CHOICE_PAD, y = c.y + N_CHOICE_PAD;
+        draw_native_icon(cr,t,(Rect){x+tw-N_CHOICE_ICON,y,N_CHOICE_ICON,N_CHOICE_ICON},
+                         MENU[i].multi ? ICON_NETWORK : ICON_DISK);
+        y += N_CHOICE_ICON + N_ACTION_GAP;
+        text_draw(cr,&title[i],x,y,t->ink); y += title[i].h;
+        text_draw(cr,&desc[i],x,y,t->muted);
+        hit_add(a,c,MENU[i].id);
+        text_free(&title[i]); text_free(&desc[i]); visible++;
     }
-    body_clip_end(a, cr);
-    card_end(a, cr);
+    body_clip_end(a,cr); card_end(a,cr);
 }
 
 /* ---- pointer ----------------------------------------------------------------- */
@@ -293,6 +302,7 @@ void app_draw(App *a, cairo_t *cr, int W, int H) {
     case SCREEN_MESSAGE:  screen_message(a, cr, W, H, head_h); break;
     case SCREEN_RESTORE:  screen_restore(a, cr, W, H, head_h); break;
     }
+    draw_status(a, cr, W, H);
     draw_toast(a, cr, W, H);
     /* The cursor is NOT drawn here: the render loop caches this scene and
      * overlays the pointer separately, so a pointer-only move need not re-run

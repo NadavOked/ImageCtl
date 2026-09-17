@@ -186,7 +186,7 @@ test('the machine drawer: header line, actions (monitor, WoL for the room, "requ
   assert.equal(node('#drawerTitle').textContent,'מחשב 2');
   let html=node('#drawerBody').innerHTML; balanced(html);
   assert.match(html,/class="page drw"/); assert.match(html,/מחשב שיכפול · מחשבי שיכפול · <span class="mono">78:ac:c0:9b:11:c2<\/span> · <span class="mono">10.44.12.59<\/span> · נראה לפני 9 דק'/);
-  assert.doesNotMatch(html,/monitorMachine\(/,'no monitor in the drawer — only on the monitor page'); assert.match(html,/wakeMachine\('78%3Aac%3Ac0%3A9b%3A11%3Ac2'\)">Wake-on-LAN</,'#984: per-machine WoL in the cloner drawer'); assert.doesNotMatch(html,/wakeRoom/);
+  assert.doesNotMatch(html,/monitorMachine\(/,'no monitor in the drawer — only on the monitor page'); assert.match(html,/wakeMachine\('78%3Aac%3Ac0%3A9b%3A11%3Ac2'\)">WoL</,'#984: per-machine WoL in the cloner drawer'); assert.doesNotMatch(html,/wakeRoom/);
   assert.match(html,/renameMachine\(/); assert.match(html,/title="דורש API">אתחול מרחוק — בקרוב</); assert.match(html,/title="דורש API">עריכת MAC — בקרוב</);
   assert.match(html,/note err"[^]*<b>דיסק 3 אדום<\/b> — <span class="mono">S5Y2NX0R12345<\/span> נכשל בכתיבה .*סיבה: כבל\/חריץ SATA 2 \(ATA timeout\)/);
   assert.match(html,/clearDiskFailure\(7\)">נקה אחרי החלפה</); assert.match(html,/<summary>3 שורות קרנל<\/summary><pre class="ata-log">ata3.00: exception Emask/);
@@ -214,7 +214,7 @@ test('the machine drawer: header line, actions (monitor, WoL for the room, "requ
   run("openMachineDetail('a0:48:1c:8a:18:40')"); html=node('#drawerBody').innerHTML;
   assert.match(html,/המכונה דיווחה — ואין בה אף כונן/); assert.match(html,/2 חריצים מוגדרים/);
   run("openMachineDetail('b4:2e:99:07:1a:c3')"); html=node('#drawerBody').innerHTML;
-  assert.match(html,/title="v2">Wake-on-LAN — לתחנות כיתה ב-v2</,'classroom: WoL is v2 (#984), not a button'); assert.doesNotMatch(html,/monitorMachine/); assert.match(html,/st warn">חסר בסבב</);
+  assert.match(html,/title="v2">WoL — לתחנות כיתה ב-v2</,'classroom: WoL is v2 (#984), not a button'); assert.doesNotMatch(html,/monitorMachine/); assert.match(html,/st warn">חסר בסבב</);
 });
 
 test('the class as an object: crumbs, header, KPIs with meaning only, the same table filtered, rounds tab says "requires API"', () => {
@@ -318,4 +318,26 @@ test('deploy role: the page is not allowed at all, and the tree node is admin-on
   const page=fs.readFileSync(path.join(root,'index.html'),'utf8');
   assert.match(page,/data-page="machines"[^>]*>[^]*?<span data-admin/);
   assert.match(page,/id="machineTree" class="inventory-children" role="group" data-admin hidden/);
+});
+
+// --- נדב 17/09: צומת-אב בעץ = דף המחשבים ממוקד לתפקיד, בלי "נראו ברשת" ---------
+test('a parent tree node opens the machines page focused on one role, without the seen-on-network tab', () => {
+  const {run}=setup();
+  run("selectMachinesRole('build')");
+  assert.equal(run('MACHINES_ROLE'),'build'); assert.equal(run('MACHINES_CLASS'),null); assert.equal(run('MACHINES_FILTER'),null);
+  let html=run('machines(0)'); balanced(html);
+  assert.match(html,/obj-name">מחשבי בנייה</,'the page is named after the role');
+  assert.match(html,/2 רשומים/); assert.doesNotMatch(html,/2 כיתות · 2 מחשבי בנייה/,'counters are for this role only');
+  assert.doesNotMatch(html,/role="tab"[^>]*>נראו ברשת/,'no seen-on-network tab');
+  assert.match(html,/role="tab"[^>]*>מחשבי בנייה</); assert.match(html,/role="tab"[^>]*>דיסקים אדומים \(1\)</);
+  assert.doesNotMatch(html,/data-mac="78:ac:c0:9b:11:c2"/,'cloners are not in the build page');
+  assert.match(html,/data-mac="c8:d9:d2:0b:fe:32"/,'the build machine is');
+  // הלשונית השנייה של הדף הממוקד היא דיסקים אדומים (לא "נראו ברשת")
+  html=run('machines(1)'); assert.match(html,/clearDiskFailure|דיסקים אדומים/); assert.doesNotMatch(html,/renderSeenDevices|לא רשום — רשום/);
+  run("selectMachinesRole('classroom')"); html=run('machines(0)');
+  assert.match(html,/obj-name">כיתות</); assert.match(html,/2 כיתות/);
+  assert.doesNotMatch(html,/data-mac="c8:d9:d2:0b:fe:32"/);
+  // חזרה ל"מחשבים" מנקה את המיקוד
+  run('openMachinesPage()'); assert.equal(run('MACHINES_ROLE'),null);
+  assert.match(run('machines(0)'),/obj-name">מחשבים</);
 });

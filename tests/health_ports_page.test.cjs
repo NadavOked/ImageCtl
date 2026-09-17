@@ -242,7 +242,10 @@ test('ports page (old /ports contract): one table, a switch in every row, wired 
   // סיכום בכותרת
   assert.match(html,/12 שורות · מצב האזנה כפי שנקרא מהשרת ב-\d\d:\d\d/);
   assert.match(html,/מאזינים בפורט 22: 10\.44\.10\.1/);
-  assert.match(html,/role="tab" aria-selected="false" tabindex="-1" onclick="selectPageById\('nic'\)">חיבורים פיזיים/);
+  // ‏#954 גל 8: הלשוניות הן של אובייקט הרשת — תרשים · חיבורים פיזיים · רשת הפצה · פורטים (הדף הזה, tab 3)
+  assert.match(html,/role="tab" aria-selected="false" tabindex="-1" onclick="openNetwork\(0\)">תרשים/);
+  assert.match(html,/role="tab" aria-selected="false" tabindex="-1" onclick="openNetwork\(1\)">חיבורים פיזיים/);
+  assert.match(html,/role="tab" aria-selected="true" tabindex="0" onclick="activateTab\(3\)">פורטים/);
 });
 
 test('SSH to the server: a row per interface with three measured states (listening / closed / not read) and the last-door lock',async()=>{
@@ -391,7 +394,7 @@ test('ports page (#1015 contract): rows come only from /ports — no duplicate d
   assert.equal((html.match(/<tr><td>/g)||[]).length,PORTS_1015.length,'one row per /ports entry, nothing added, nothing dropped');
   // bind הוא רשימה — כל הכתובות, mono, ולא "a,b" משרשור מחרוזות
   const kiosk=row(html,'>desc kiosk<');
-  assert.match(kiosk,/<span class="mono">0\.0\.0\.0:8082<\/span>/);
+  assert.match(kiosk,/<span class="mono bindlist" dir="ltr">0\.0\.0\.0:8082<\/span>/);
   // kiosk (8082) — toggle:"api" → PUT /ports/kiosk, בלי הקלדה
   run("portSwitch('kiosk')");
   let s=run('sheets.at(-1)'); assert.ok(!s.verify);
@@ -435,4 +438,17 @@ test('deploy role: the pages stay admin-only and no admin endpoint is requested'
   assert.equal(run('pageAllowed("health")'),false); assert.equal(run('pageAllowed("ports")'),false);
   await run('loadPorts()');
   for(const u of ['/ssh','/monitor/settings','/net/interfaces']) assert.ok(!requests.some((r)=>r.url===u),u+' must not be requested by deploy');
+});
+
+// --- נדב 17/09: שורת TFTP עם 8 כתובות האזנה מתחה את הטבלה מעבר למסך ---------------
+test('a long bind list renders one address per line, IPv6 link-local folded into +N, never one long inline string', () => {
+  const {run}=setup();
+  const html=run(`portNicHtml(${JSON.stringify(['127.0.0.1:69','10.10.10.8:69','10.44.3.1:69','10.44.0.1:69','[fe80::215:5dff:fe44:3c07]%eth3:69','[fe80::215:5dff:fe10:1]%br0:69','[fe80::215:5dff:fe10:2]%eth1:69','[::1]:69'])})`);
+  assert.match(html,/class="mono bindlist" dir="ltr"/);
+  assert.match(html,/10\.10\.10\.8:69<br>10\.44\.3\.1:69/,'one per line');
+  assert.doesNotMatch(html,/fe80[^<]*<br>/,'link-local is not in the visible list');
+  assert.match(html,/title="[^"]*fe80[^"]*">\+4</,'the rest is folded into +N with a tooltip');
+  assert.doesNotMatch(html,/, \[fe80/,'no comma-joined inline string');
+  assert.match(run(`portNicHtml(['0.0.0.0:8080'])`),/0\.0\.0\.0:8080/);
+  assert.match(run(`portNicHtml([])`),/—/);
 });

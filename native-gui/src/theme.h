@@ -1,43 +1,161 @@
-/* Colour tokens -- copied one-to-one from server/static/console.css
- * (:root and :root[data-theme="dark"]) and the two fixed header colours
- * in server/static/station/station.css (.st-brand h1 / .st-brand p).
- * No colour is invented here; if a token changes in the CSS it changes
- * here, in the same place, under the same name. */
+/* Native mockup tokens: definitions and citations in theme.c. */
 #ifndef IMAGECTL_THEME_H
 #define IMAGECTL_THEME_H
-
 typedef struct { double r, g, b; } Rgb;
-
 typedef struct {
-    const char *id;                 /* "light" | "dark" -- like data-theme */
-    Rgb porcelain, surface, ink, muted, hair, indigo, indigo_soft;
-    Rgb led_write, led_ok, led_idle, danger;
-    Rgb hover, field, field_line, track, sunken;
-    Rgb btn_hover, btn_hover_line, ink_hover, on_ink;
-    Rgb danger_line, mark_line;
-    Rgb login_a, login_b, login_glow;
-    Rgb shadow_strong; double shadow_strong_a;
+ const char *id;
+ Rgb porcelain;
+ Rgb surface;
+ Rgb ink;
+ Rgb muted;
+ Rgb hair;
+ Rgb indigo;
+ Rgb indigo_soft;
+ Rgb led_write;
+ Rgb led_ok;
+ Rgb led_idle;
+ Rgb danger;
+ Rgb hover;
+ Rgb field;
+ Rgb field_line;
+ Rgb track;
+ Rgb sunken;
+ Rgb btn_hover;
+ Rgb btn_hover_line;
+ Rgb ink_hover;
+ Rgb on_ink;
+ Rgb danger_line;
+ Rgb mark_line;
+ Rgb login_a;
+ Rgb login_b;
+ Rgb login_glow;
+ Rgb choice;
+ Rgb choice_line;
+ Rgb selected_line;
+ Rgb button;
+ Rgb button_line;
+ Rgb danger_bg;
+ Rgb warning_bg;
+ Rgb warning_line;
+ Rgb warning_ink;
+ Rgb success_bg;
+ Rgb success_line;
+ Rgb success_ink;
+ Rgb metric;
+ Rgb metric_line;
+ Rgb status_bg;
+ Rgb disk_bg;
+ Rgb disk_line;
+ Rgb disk_selected;
+ Rgb disk_selected_line;
+ Rgb clone_line;
+ Rgb round_line;
+ Rgb image_bg;
+ Rgb image_line;
+ Rgb image_selected;
+ Rgb image_selected_line;
+ Rgb alert_bg;
+ Rgb alert_line;
+ Rgb alert_ink;
+ Rgb success_btn;
+ Rgb success_btn_line;
+ Rgb node_active_line;
+ Rgb node_warn_line;
+ Rgb warn;
+ Rgb brand_accent;
+ Rgb shadow_strong; double shadow_strong_a;
 } Theme;
-
-extern const Theme THEME_LIGHT;
-extern const Theme THEME_DARK;
-
-/* station.css: .st-brand h1{color:#fff} / .st-brand p, .st-id{color:#8FA0B2}
- * -- fixed in both themes because the header sits on the dark gradient. */
-extern const Rgb HEAD_TITLE;
-extern const Rgb HEAD_SUB;
-
-/* The few colours the CSS hard-codes outside the token table:
- * station.css .room-bad{color:#E5484D} / .room-warn{color:#B36B00};
- * progress.css indeterminate stripes #4188af/#a2cfe5, unknown-idle #82939d. */
-extern const Rgb ROOM_BAD;
-extern const Rgb ROOM_WARN;
-extern const Rgb STRIPE_A;
-extern const Rgb STRIPE_B;
-extern const Rgb STRIPE_IDLE;
-
-/* design-tokens.css (פוליש vCenter מודרני): --r:9px; --r-sm:6px */
-#define RADIUS_R     9.0
-#define RADIUS_SM    6.0
-
+extern const Theme THEME_LIGHT, THEME_DARK;
+extern const Rgb HEAD_TITLE, HEAD_SUB, ROOM_BAD, ROOM_WARN, STRIPE_A, STRIPE_B, STRIPE_IDLE;
+extern const double RADIUS_R;
+extern const double RADIUS_SM;
+extern const double N_PANEL_W;
+extern const double N_PANEL_RATIO;
+extern const double N_NARROW_W;
+extern const double N_PAD;
+extern const double N_CENTER_PAD;
+extern const double N_HEADER_H;
+extern const double N_HEADER_PAD;
+extern const double N_STATUS_H;
+extern const double N_STATUS_PAD;
+extern const double N_TITLE;
+extern const double N_TITLE_GAP;
+extern const double N_SUB;
+extern const double N_LABEL;
+extern const double N_LABEL_GAP;
+extern const double N_FORM_GAP;
+extern const double N_FORM_TOP;
+extern const double N_FIELD_H;
+extern const double N_FIELD_PAD;
+extern const double N_BUTTON_H;
+extern const double N_BUTTON_PAD;
+extern const double N_ACTION_GAP;
+extern const double N_ACTION_TOP;
+extern const double N_CHOICE_GAP;
+extern const double N_CHOICE_H;
+extern const double N_CHOICE_PAD;
+extern const double N_CHOICE_TITLE;
+extern const double N_CHOICE_SUB;
+extern const double N_CHOICE_ICON;
+extern const double N_LOGO;
+extern const double N_LOGO_GAP;
+extern const double N_MESSAGE_ICON;
+extern const double N_MESSAGE_GAP;
+extern const double N_DONE_ICON;
+extern const double N_DONE_GAP;
+extern const double N_PROGRESS_PCT;
+extern const double N_BAR_H;
+extern const double N_METRIC_PAD;
+extern const double N_METRIC_LABEL;
+extern const double N_METRIC_VALUE;
+extern const double N_METRIC_GAP;
+extern const double N_SHADOW_Y;
+extern const double N_SHADOW_BLUR;
+extern const double N_BORDER;
+extern const double N_HEADER_FONT;
+extern const double N_BRAND_FONT;
+extern const double N_IMAGE_PAD;
+extern const double N_IMAGE_GAP;
+extern const double N_IMAGE_TITLE;
+extern const double N_IMAGE_SUB;
+extern const double N_CLONE_GAP;
+extern const double N_CLONE_PAD;
+extern const double N_CLONE_PCT;
+extern const double N_CLONE_TITLE;
+extern const double N_ROOM_GAP;
+extern const double N_ROOM_PAD;
+extern const double N_ROOM_MIN_H;
+extern const double N_CLASS_PRIMARY;
+extern const double N_CLASS_SECONDARY;
+extern const double N_ROUND_PAD;
+extern const double N_DIM_ALPHA;
+extern const double N_BAR_SM;
+extern const double N_ROUND_ID;
+extern const double N_ROUND_META;
+extern const double N_ALERT_PAD_Y;
+extern const double N_ALERT_PAD_X;
+extern const double N_ALERT_FONT;
+extern const double N_STATUS_DOT;
+extern const double N_STATUS_GAP;
+extern const double N_BRAND_GAP;
+extern const double N_NODE_TITLE;
+extern const double N_NODE_SUB;
+extern const double N_NODE_DOT;
+extern const double N_DISK_ICON_COL;
+extern const double N_DISK_PAD;
+extern const double N_DISK_GAP;
+extern const double N_DISK_COL_GAP;
+extern const double N_DISK_TITLE;
+extern const double N_DISK_SUB;
+extern const double N_DISK_SIDE;
+extern const double N_CLONE_SUB;
+extern const double N_CLONE_STATUS;
+extern const double N_CLONE_STAT_PAD;
+extern const double N_CLONE_STAT_LABEL;
+extern const double N_CLONE_STAT_VALUE;
+extern const double N_CLONE_SOURCE_TITLE;
+extern const double N_PROGRESS_TITLE;
+extern const double N_ROOM_TITLE;
+extern const double N_CLONER_TITLE;
+extern const double N_RESTORE_NAME;
 #endif

@@ -26,9 +26,9 @@ double dmax(double x, double y) { return x > y ? x : y; }
 
 /* ---- buttons -------------------------------------------------------------- */
 
-Text btn_label(cairo_t *cr, const char *s) { return text_make(cr, FONT_SANS, 13.5, 500, s, 0, DIR_RTL); }
-double btn_height(cairo_t *cr) { return 9 + text_line_height(cr, FONT_SANS, 13.5) + 9 + 2; }
-double btn_width(const Text *label) { return 15 + label->w + 15 + 2; }
+Text btn_label(cairo_t *cr, const char *s) { return text_make(cr, FONT_SANS, N_SUB, 500, s, 0, DIR_RTL); }
+double btn_height(cairo_t *cr) { (void)cr; return N_BUTTON_H; }
+double btn_width(const Text *label) { return 2 * N_BUTTON_PAD + label->w + 2 * N_BORDER; }
 
 /* console.css .btn (border hair, surface, ink), .primary (ink/on-ink),
  * .danger (danger text, danger-line border), each with :hover */
@@ -37,10 +37,13 @@ void draw_btn(App *a, cairo_t *cr, Rect b, Text *label, int kind, int id) {
     int hov = hovered(a, b);
     Rgb bg, line, fg;
     if (kind == BTN_PRIMARY) {
-        bg = hov ? t->ink_hover : t->ink; line = bg; fg = t->on_ink;
+        bg = hov ? t->ink_hover : t->indigo; line = t->btn_hover_line; fg = t->on_ink;
+    } else if (kind == BTN_SUCCESS) {
+        /* .native-btn.success: no :hover rule of its own in the mockup */
+        bg = t->success_btn; line = t->success_btn_line; fg = t->on_ink;
     } else {
-        bg = hov ? t->btn_hover : t->surface;
-        line = hov ? t->btn_hover_line : (kind == BTN_DANGER ? t->danger_line : t->hair);
+        bg = kind == BTN_DANGER ? t->danger_bg : (hov ? t->btn_hover : t->button);
+        line = hov ? t->btn_hover_line : (kind == BTN_DANGER ? t->danger_line : t->button_line);
         fg = kind == BTN_DANGER ? t->danger : t->ink;
     }
     draw_fill_rrect(cr, b, RADIUS_SM, bg);
@@ -51,7 +54,7 @@ void draw_btn(App *a, cairo_t *cr, Rect b, Text *label, int kind, int id) {
 
 /* ---- inputs --------------------------------------------------------------- */
 
-double field_height(cairo_t *cr) { return 10 + text_line_height(cr, FONT_SANS, 14) + 10 + 2; }
+double field_height(cairo_t *cr) { (void)cr; return N_FIELD_H; }
 
 static void field_box(App *a, cairo_t *cr, Rect r, int focus) {
     const Theme *t = a->theme;
@@ -75,7 +78,7 @@ void draw_field(App *a, cairo_t *cr, Rect r, const char *value, int mask,
 
     char shown[512];
     int empty = value[0] == 0;
-    if (mask) {                                 /* one U+2022 per character */
+    if (mask && !empty) {                       /* one U+2022 per character */
         size_t n = 0;
         for (const char *p = value; *p && n + 4 < sizeof shown; p++) {
             if ((*p & 0xC0) == 0x80) continue;  /* UTF-8 continuation byte */
@@ -138,6 +141,30 @@ void draw_select(App *a, cairo_t *cr, Rect r, const char *shown, int id) {
  * drawn here in the page's language (surface, hair, r-sm, 14px rows). */
 void draw_popup(App *a, cairo_t *cr, Rect anchor, const char *const *opts, int n, int sel) {
     const Theme *t = a->theme;
+    if (a->dd_open == HIT_ROOM_IMAGE || a->dd_open == HIT_RESTORE_IMAGE) {
+        /* Image selection stays an existing dropdown action: no new route,
+         * state key or stdout record. Only names/folders are available. */
+        int cols = anchor.w >= N_NARROW_W ? 2 : 1;
+        double cw = (anchor.w - (cols - 1) * N_IMAGE_GAP) / cols;
+        double row_h = N_FIELD_H + 2 * N_IMAGE_PAD;
+        Rect box = {anchor.x, anchor.y, anchor.w,
+                    ((n + cols - 1) / cols) * (row_h + N_IMAGE_GAP)};
+        draw_box_shadow(cr, box, RADIUS_R, N_SHADOW_Y, N_SHADOW_BLUR, 0,
+                        t->shadow_strong, t->shadow_strong_a);
+        draw_fill_rrect(cr, box, RADIUS_R, t->surface);
+        for (int i = 0; i < n; i++) {
+            Rect cell = {box.x + box.w - cw - (i % cols) * (cw + N_IMAGE_GAP),
+                         box.y + (i / cols) * (row_h + N_IMAGE_GAP), cw, row_h};
+            int active = i == sel || hovered(a, cell);
+            draw_fill_rrect(cr, cell, RADIUS_SM, active ? t->image_selected : t->image_bg);
+            draw_border_rrect(cr, cell, RADIUS_SM, active ? t->image_selected_line : t->image_line, N_BORDER);
+            Text name = rtl_block_make(cr, N_IMAGE_TITLE, 600, opts[i], cw - 2*N_IMAGE_PAD);
+            text_draw(cr, &name, cell.x + N_IMAGE_PAD, cell.y + (cell.h-name.h)/2, t->ink);
+            text_free(&name);
+            hit_add(a, cell, HIT_OPTION_BASE + i);
+        }
+        return;
+    }
     double row_h = 8 + text_line_height(cr, FONT_SANS, 14) + 8;
     Rect box = { anchor.x, anchor.y + anchor.h + 2, anchor.w, n * row_h + 2 };
     draw_box_shadow(cr, box, RADIUS_SM, 10, 30, -8, t->shadow_strong, t->shadow_strong_a);
@@ -167,55 +194,56 @@ Text rtl_block_make(cairo_t *cr, double px, int weight,
     return text;
 }
 
-Text label_make(cairo_t *cr, const char *s, double w) { return rtl_block_make(cr, 12, 500, s, w); }
-Text sub_make(cairo_t *cr, const char *s, double w)   { return text_make(cr, FONT_SANS, 14, 400, s, (int)w, DIR_RTL); }
+Text label_make(cairo_t *cr, const char *s, double w) { return rtl_block_make(cr, N_LABEL, 500, s, w); }
+Text sub_make(cairo_t *cr, const char *s, double w)   { return text_make(cr, FONT_SANS, N_SUB, 400, s, (int)w, DIR_RTL); }
 Text error_make(cairo_t *cr, const char *s, double w) { return text_make(cr, FONT_SANS, 12.5, 400, s, (int)w, DIR_RTL); }
 
 /* ---- the card ---------------------------------------------------------------- */
 
 Head head_make(cairo_t *cr, const char *h3, const char *p, double inner_w) {
     Head hd;
-    hd.h3 = rtl_block_make(cr, 17, 600, h3, inner_w);
-    hd.p  = rtl_block_make(cr, 12.5, 400, p, inner_w);
-    hd.h  = 18 + hd.h3.h + 3 + hd.p.h + 14 + 1;     /* padding 18/14 + border 1 */
+    hd.h3 = rtl_block_make(cr, N_TITLE, 500, h3, inner_w);
+    hd.p = rtl_block_make(cr, N_SUB, 400, p, inner_w);
+    hd.logo = 0;
+    hd.h = N_PAD + hd.h3.h + N_TITLE_GAP + hd.p.h;
     return hd;
 }
 
-/* #765: the surface fills the framebuffer instead of a 680px modal box. The
- * horizontal margin is a small proportional inset (clamped 12..28px), so the
- * same layout reads well on a 4:3 monitor and a 16:9 projector. */
+/* .native-logo above the title (login, menu): 56px box + margin-bottom 16 */
+void head_logo(Head *hd) { hd->logo = 1; hd->h += N_LOGO + N_LOGO_GAP; }
+
 double card_width(double W) {
-    double m = W * 0.018;
-    if (m < 12) m = 12; else if (m > 28) m = 28;
-    return W - 2 * m;
+    return fmin(N_PANEL_W, (W - 2 * N_CENTER_PAD) * N_PANEL_RATIO);
 }
 
 static void head_draw(cairo_t *cr, const Theme *t, Head *hd, Rect card) {
-    double x = card.x + 22, y = card.y + 18;
-    text_draw(cr, &hd->h3, x, y, t->ink);
-    text_draw(cr, &hd->p,  x, y + hd->h3.h + 3, t->muted);
-    cairo_rectangle(cr, card.x, card.y + hd->h - 1, card.w, 1);
-    draw_set(cr, t->hair); cairo_fill(cr);
+    double y = card.y + N_PAD;
+    if (hd->logo) {
+        draw_native_icon(cr, t, (Rect){ card.x + card.w - N_PAD - N_LOGO, y, N_LOGO, N_LOGO }, ICON_NETWORK);
+        y += N_LOGO + N_LOGO_GAP;
+    }
+    if (!hd->h3.layout) return;                 /* a screen that draws its own head (progress) */
+    text_draw(cr, &hd->h3, card.x + N_PAD, y, t->ink);
+    text_draw(cr, &hd->p, card.x + N_PAD, y + hd->h3.h + N_TITLE_GAP, t->muted);
     text_free(&hd->h3); text_free(&hd->p);
 }
 
 Rect card_frame(App *a, cairo_t *cr, double W, double H, double head_h, Head *hd,
                 double body_h, double foot_h, Rect *body, Rect *foot) {
     const Theme *t = a->theme;
-    (void)body_h;                                   /* #765: the card fills the viewport, not its content */
-    double cw = card_width(W), m = (W - cw) / 2;    /* same inset top/bottom as left/right */
-    double top = head_h + m;
-    double ch = H - top - m;                         /* fill to the bottom: no 92vh cap, no centring */
-    Rect card = { m, top, cw, ch };
-    /* crisp corners (RADIUS_R), a filled surface, and no floating modal shadow --
-     * the surface is the page now, not a sheet hovering over a dark backdrop. */
+    double cw = card_width(W);
+    double available = H - head_h - N_STATUS_H - 2 * N_CENTER_PAD;
+    double ch = fmin(available, hd->h + body_h + foot_h + N_PAD);
+    Rect card = { (W - cw) / 2, head_h + N_CENTER_PAD + (available - ch) / 2, cw, ch };
+    draw_box_shadow(cr, card, RADIUS_R, N_SHADOW_Y, N_SHADOW_BLUR, 0,
+                    t->shadow_strong, t->shadow_strong_a);
     draw_fill_rrect(cr, card, RADIUS_R, t->surface);
+    draw_border_rrect(cr, card, RADIUS_R, t->hair, N_BORDER);
     cairo_save(cr);
-    draw_rrect_path(cr, card, RADIUS_R);
-    cairo_clip(cr);
+    draw_rrect_path(cr, card, RADIUS_R); cairo_clip(cr);
     head_draw(cr, t, hd, card);
-    *body = (Rect){ card.x, card.y + hd->h, cw, ch - hd->h - foot_h };
-    *foot = (Rect){ card.x, card.y + ch - foot_h, cw, foot_h };   /* pinned to the bottom */
+    *body = (Rect){card.x, card.y + hd->h, cw, fmax(0, ch - hd->h - foot_h - N_PAD)};
+    *foot = (Rect){card.x, card.y + ch - foot_h - N_PAD, cw, foot_h};
     return card;
 }
 
@@ -230,14 +258,11 @@ void body_clip_begin(App *a, cairo_t *cr, Rect body) {
 
 void body_clip_end(App *a, cairo_t *cr) { a->clip_on = 0; cairo_restore(cr); }
 
-double foot_height(cairo_t *cr, double content_h) { (void)cr; return 1 + 14 + content_h + 14; }
+double foot_height(cairo_t *cr, double content_h) { (void)cr; return N_ACTION_TOP + content_h; }
 
 /* .sfoot: border-top hair, background sunken, padding 14px 22px */
 void foot_draw_bg(cairo_t *cr, const Theme *t, Rect foot) {
-    cairo_rectangle(cr, foot.x, foot.y, foot.w, foot.h);
-    draw_set(cr, t->sunken); cairo_fill(cr);
-    cairo_rectangle(cr, foot.x, foot.y, foot.w, 1);
-    draw_set(cr, t->hair); cairo_fill(cr);
+    (void)cr; (void)t; (void)foot; /* .native-actions shares the panel background. */
 }
 
 /* ---- station.css pieces ---------------------------------------------------------- */
@@ -251,6 +276,34 @@ void draw_tray(cairo_t *cr, const Theme *t, double x, double y, int multi) {
     }
     draw_fill_rrect(cr, (Rect){ x, y, 52, 34 }, 6, t->ink);
     draw_led(cr, x + 7 + 2.5, y + 34 - 6 - 2.5, 5, t->led_ok);
+}
+
+/* .native-logo / .native-message-icon / .native-done-icon. Unit coordinates
+ * describe vector paths, not font glyphs; IBM Plex remains the only font. */
+void draw_native_icon(cairo_t *cr, const Theme *t, Rect box, int kind) {
+    Rgb bg = kind == ICON_WARNING ? t->warning_bg : kind == ICON_SUCCESS ? t->success_bg : t->field;
+    Rgb line = kind == ICON_WARNING ? t->warning_line : kind == ICON_SUCCESS ? t->success_line : t->mark_line;
+    Rgb ink = kind == ICON_WARNING ? t->warning_ink : kind == ICON_SUCCESS ? t->success_ink : t->mark_line;
+    double radius = kind >= ICON_WARNING ? box.w / 2 : RADIUS_SM;
+    draw_fill_rrect(cr, box, radius, bg);
+    draw_border_rrect(cr, box, radius, line, N_BORDER);
+    cairo_save(cr);
+    cairo_translate(cr, box.x, box.y); cairo_scale(cr, box.w, box.h);
+    draw_set(cr, ink); cairo_set_line_width(cr, .045);
+    if (kind == ICON_SUCCESS) {
+        cairo_move_to(cr,.27,.50); cairo_line_to(cr,.44,.66); cairo_line_to(cr,.75,.33);
+    } else if (kind == ICON_WARNING) {
+        cairo_move_to(cr,.50,.25); cairo_line_to(cr,.50,.57); cairo_stroke(cr);
+        cairo_arc(cr,.50,.72,.027,0,2*M_PI); cairo_fill(cr);
+    } else if (kind == ICON_NETWORK) {
+        cairo_move_to(cr,.5,.2); cairo_line_to(cr,.8,.5); cairo_line_to(cr,.5,.8);
+        cairo_line_to(cr,.2,.5); cairo_close_path(cr);
+    } else {
+        cairo_rectangle(cr,.25,.25,.5,.5);
+        cairo_move_to(cr,.34,.43); cairo_line_to(cr,.66,.43);
+        cairo_move_to(cr,.34,.60); cairo_line_to(cr,.49,.60);
+    }
+    cairo_stroke(cr); cairo_restore(cr);
 }
 
 /* repeating-linear-gradient(110deg, a 0 <p1>, b <p1> <period>) as a cairo
@@ -277,18 +330,54 @@ static void stripes(cairo_t *cr, Rect clip_r, Rgb a, double a_alpha, double p1,
  * unknown states. The indeterminate stripe is animated in the browser; here
  * it stands at its starting position. */
 void draw_big_bar(cairo_t *cr, const Theme *t, Rect r, int pct, int moving) {
-    draw_fill_rrect(cr, r, 8, t->track);
+    draw_fill_rrect(cr, r, RADIUS_SM, t->track);
     cairo_save(cr);
-    draw_rrect_path(cr, r, 8); cairo_clip(cr);
+    draw_rrect_path(cr, r, RADIUS_SM); cairo_clip(cr);
     if (pct >= 0) {
         double w = r.w * (pct > 100 ? 100 : pct) / 100.0;
-        if (w > 0) draw_fill_rrect(cr, (Rect){ r.x, r.y, w, r.h }, 5, t->led_write);
+        if (w > 0) draw_fill_rrect(cr, (Rect){ r.x, r.y, w, r.h }, RADIUS_SM, t->led_write);
     } else if (moving) {
         stripes(cr, (Rect){ r.x, r.y, r.w * 0.40, r.h }, STRIPE_A, 1, 8, STRIPE_B, 1, 16);
     } else {
         stripes(cr, r, STRIPE_IDLE, 0.25, 2, STRIPE_IDLE, 0, 8);
     }
     cairo_restore(cr);
+}
+
+/* .native-bar{height:5px;background:#0b1115;border-radius:2px;overflow:hidden}
+ * .native-bar i{background:var(--blue2)} -- the track is the same near-black
+ * as .native-progressbar (track); the fill colour is the caller's (blue2 or
+ * --yellow for a warn node). Radius 2 = RADIUS_SM - 1, the CSS value. */
+void draw_thin_bar(cairo_t *cr, const Theme *t, Rect r, int pct, Rgb fill) {
+    draw_fill_rrect(cr, r, 2, t->track);
+    if (pct > 0) {
+        cairo_save(cr);
+        draw_rrect_path(cr, r, 2); cairo_clip(cr);
+        draw_fill_rrect(cr, (Rect){ r.x, r.y, r.w * (pct > 100 ? 100 : pct) / 100.0, r.h }, 2, fill);
+        cairo_restore(cr);
+    }
+}
+
+/* .native-alert{padding:9px 11px;border:1px solid;border-radius:3px;font-size:10px} */
+Text alert_make(cairo_t *cr, const char *s, double w) {
+    return rtl_block_make(cr, N_ALERT_FONT, 400, s, w - 2 * N_ALERT_PAD_X);
+}
+double alert_height(const Text *body) { return 2 * N_ALERT_PAD_Y + body->h; }
+void draw_alert(cairo_t *cr, const Theme *t, Rect r, Text *body) {
+    draw_fill_rrect(cr, r, RADIUS_SM, t->alert_bg);
+    draw_border_rrect(cr, r, RADIUS_SM, t->alert_line, N_BORDER);
+    text_draw(cr, body, r.x + N_ALERT_PAD_X, r.y + N_ALERT_PAD_Y, t->alert_ink);
+}
+
+/* .native-status{display:flex;gap:6px} .native-status i{7px round, --green}.
+ * In RTL the dot is the first item, so it sits at the right of the word;
+ * <x> is the left edge the pair grows from (the status bar's inline end). */
+void draw_status_word(cairo_t *cr, const Theme *t, double x, double cy, const char *s, Rgb dot) {
+    Text w = text_make(cr, FONT_SANS, N_HEADER_FONT, 400, s, 0, DIR_RTL);
+    text_draw(cr, &w, x, cy - w.h / 2, t->muted);
+    cairo_arc(cr, x + w.w + N_STATUS_GAP + N_STATUS_DOT / 2, cy, N_STATUS_DOT / 2, 0, 2 * M_PI);
+    draw_set(cr, dot); cairo_fill(cr);
+    text_free(&w);
 }
 
 /* .cls-bars: 4 x (height 3, radius 2, hair; .on ink), gap 5, flex:1 */
@@ -312,6 +401,21 @@ void draw_toast(App *a, cairo_t *cr, double W, double H) {
 }
 
 /* ---- ports of the JS helpers --------------------------------------------------------- */
+double metric_height(cairo_t *cr) {
+    return 2*N_METRIC_PAD + text_line_height(cr,FONT_SANS,N_METRIC_LABEL)
+           + N_LABEL_GAP + text_line_height(cr,FONT_SANS,N_METRIC_VALUE);
+}
+
+void draw_metric(cairo_t *cr, const Theme *t, Rect box, const char *label, const char *value) {
+    draw_fill_rrect(cr,box,0,t->metric);
+    draw_border_rrect(cr,box,0,t->metric_line,N_BORDER);
+    Text l = rtl_block_make(cr,N_METRIC_LABEL,400,label,box.w-2*N_METRIC_PAD);
+    Text v = rtl_block_make(cr,N_METRIC_VALUE,600,value,box.w-2*N_METRIC_PAD);
+    text_draw(cr,&l,box.x+N_METRIC_PAD,box.y+N_METRIC_PAD,t->muted);
+    text_draw(cr,&v,box.x+N_METRIC_PAD,box.y+N_METRIC_PAD+l.h+N_LABEL_GAP,t->ink);
+    text_free(&l); text_free(&v);
+}
+
 
 void fmt_bytes(char *out, size_t n, double v) {
     static const char *U[] = { "B", "KB", "MB", "GB", "TB" };

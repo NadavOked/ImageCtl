@@ -11,11 +11,14 @@ let MACHINES = null, GROUPS = null;
 let DISK_FAILURES = null;   // #874: זיכרון כשלי הכתיבה (דיסקים אדומים)
 let SHRINK_RECORDS = null;  // #926: דיסקי מקור שכווצו בקליטה ולא הוחזרו לגודלם (כתום)
 let MACHINES_FILTER = null;
+/* צומת-אב בעץ (כיתות / מחשבי בנייה / מחשבי שיכפול) — דף המחשבים ממוקד לתפקיד
+   אחד, בלי לשונית "נראו ברשת" (נדב 17/09). */
+let MACHINES_ROLE = null;
+const ROLE_PAGE_HE = { classroom: "כיתות", build: "מחשבי בנייה", cloner: "מחשבי שיכפול" };
 let HEALTH = null, NETCFG = null;
 let MONITOR = null, monitorError = "";
 let PORTS = null, portsError = "";
 let USERS = null, JOURNAL = null;   // ‏#954 גל 6: JOURNAL = השורות שנטענו (LOG.rows), USERS = /users
-let NIC_HIGHLIGHT = null;
 
 async function api(path, options = {}) {
   const response = await fetch("/api/console" + path, {
@@ -584,7 +587,7 @@ async function loadMachines() {
     if (isAdmin()) await loadCaptures().catch(() => {});   // כשל = CAPTURE_TASKS_READ נשאר כפי שהיה
     populateSidebarGroups();
     updateAlertBadge();
-    if (current === "machines") renderCurrent();
+    if (current === "machines" || current === "network") renderCurrent();   // ‏#954 גל 8: "רשום"/"הסר" ברשת ההפצה
   } catch (e) {
     toast("טעינת המחשבים נכשלה: " + e.message);
   }
@@ -644,6 +647,7 @@ async function loadPorts() {
     portsNicsError = net.status === "fulfilled" ? "" : net.reason.message;
   }
   if (current === "ports") renderCurrent();
+  if (current === "network") renderCurrent();   // ‏#954 גל 8: מתג SSH לשרת גם בחיבורים פיזיים
 }
 
 async function loadMonitor() {
@@ -660,15 +664,6 @@ async function loadMonitor() {
     toast("טעינת המוניטור נכשלה: " + e.message);
   }
   if (current === "monitor") renderCurrent();
-}
-
-async function loadNetcfgData() {
-  try {
-    NETCFG = await api("/net/config");
-    if (current === "network") renderCurrent();
-  } catch (e) {
-    toast("טעינת הרשת נכשלה: " + e.message);
-  }
 }
 
 async function loadUsersData() {
@@ -908,7 +903,7 @@ function renderCurrent() {
   }
   const search = document.getElementById("globalSearch");
   if (search) search.value = searchQuery || "";
-  if (current === "nic" || current === "netdeploy") wireNetPage();
+  if (current === "network") wireNetPage();
   wireRestoredPage();
 }
 
@@ -2149,7 +2144,9 @@ function machineMatches(m) {
 }
 function machinesScope() {
   const gid = MACHINES_CLASS || MACHINES_FILTER;
-  return gid ? (MACHINES || []).filter((m) => machineGroupId(m) === gid) : (MACHINES || []);
+  if (gid) return (MACHINES || []).filter((m) => machineGroupId(m) === gid);
+  if (MACHINES_ROLE) return (MACHINES || []).filter((m) => machineRole(m) === MACHINES_ROLE);
+  return MACHINES || [];
 }
 function machinesVisible() { return machinesScope().filter(machineMatches); }
 function groupOpen(gid) {
@@ -2274,8 +2271,9 @@ function machinesTableCard(g = null, cls = "c12") {
 }
 function machinesTabs() {
   const unreg = NET ? NET.filter((d) => !d.registered).length : null;
-  return ["כל המחשבים", unreg == null ? "נראו ברשת" : `נראו ברשת (${unreg})`,
-    DISK_FAILURES ? `דיסקים אדומים (${DISK_FAILURES.length})` : "דיסקים אדומים"];
+  const red = DISK_FAILURES ? `דיסקים אדומים (${DISK_FAILURES.length})` : "דיסקים אדומים";
+  if (MACHINES_ROLE) return [ROLE_PAGE_HE[MACHINES_ROLE], red];   // בלי "נראו ברשת"
+  return ["כל המחשבים", unreg == null ? "נראו ברשת" : `נראו ברשת (${unreg})`, red];
 }
 function machines(tab = 0) {
   const crumbs = [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "מלאי" }, { label: "מחשבים" }];
@@ -2287,30 +2285,45 @@ function machines(tab = 0) {
     if (g) return groupPage(g, tab);
     MACHINES_CLASS = null;
   }
-  const all = MACHINES, count = (role) => all.filter((m) => machineRole(m) === role).length;
-  const sub = [`${all.length} רשומים`, `${GROUPS.filter((g) => g.role === "classroom").length} כיתות`, `${count("build")} מחשבי בנייה`, `${count("cloner")} משכפלים`];
-  if (NET) sub.push(`${NET.filter((d) => d.registered && isToday(d.last_seen)).length} נראו ברשת היום`);
+  const all = MACHINES_ROLE ? machinesScope() : MACHINES, count = (role) => all.filter((m) => machineRole(m) === role).length;
+  const sub = MACHINES_ROLE
+    ? [`${all.length} רשומים`, MACHINES_ROLE === "classroom" ? `${GROUPS.filter((g) => g.role === "classroom").length} כיתות` : ""].filter(Boolean)
+    : [`${all.length} רשומים`, `${GROUPS.filter((g) => g.role === "classroom").length} כיתות`, `${count("build")} מחשבי בנייה`, `${count("cloner")} משכפלים`];
+  if (NET) {
+    const macs = new Set(all.map((m) => m.mac));
+    sub.push(`${NET.filter((d) => d.registered && isToday(d.last_seen) && (!MACHINES_ROLE || macs.has(d.mac))).length} נראו ברשת היום`);
+  }
   const red = (DISK_FAILURES || []).length, unreg = NET ? NET.filter((d) => !d.registered).length : 0;
   const pill = (red ? UI.pill("err", `${red} ${red === 1 ? "דיסק אדום" : "דיסקים אדומים"}`) : "")
     + (unreg ? UI.pill("warn", `${unreg} ${unreg === 1 ? "לא רשום" : "לא רשומים"}`) : "");
   const actions = (isAdmin()
     ? `<button class="btn primary" onclick="openAddMachine({})">+ מחשב</button><button class="btn" onclick="addGroupSheet()">+ כיתה</button><button class="btn" onclick="openAddMachine({tab:1})">ייבוא בהדבקה</button><a class="btn" href="/api/console/machines.csv" download>ייצוא CSV</a>`
     : "") + `<button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>`;
-  const header = UI.objHeader({ crumbs, icon: "machine", name: "מחשבים", sub: esc(sub.join(" · ")), pill, actions, tabs: machinesTabs(), tab });
-  const body = tab === 1 ? seenDevicesCard() : tab === 2 ? diskFailuresCard() + shrinkRecordsCard() : machinesTableCard();
+  const name = MACHINES_ROLE ? ROLE_PAGE_HE[MACHINES_ROLE] : "מחשבים";
+  const header = UI.objHeader({ crumbs, icon: "machine", name, sub: esc(sub.join(" · ")), pill, actions, tabs: machinesTabs(), tab });
+  const redTab = MACHINES_ROLE ? 1 : 2;
+  const body = (!MACHINES_ROLE && tab === 1) ? seenDevicesCard() : tab === redTab ? diskFailuresCard() + shrinkRecordsCard() : machinesTableCard();
   return `<div class="page">${header}<div class="body">${body}</div></div>`;
 }
 function clearMachinesFilter() {
   MACHINES_FILTER = null;
   MACHINES_CLASS = null;
+  MACHINES_ROLE = null;
   if (current === "machines") renderCurrent();
 }
-function openMachinesPage() { MACHINES_FILTER = null; MACHINES_CLASS = null; selectPageById("machines"); }
+function openMachinesPage() { MACHINES_FILTER = null; MACHINES_CLASS = null; MACHINES_ROLE = null; selectPageById("machines"); }
+/* צומת-אב בעץ: אותו דף מחשבים, ממוקד לתפקיד אחד (נדב 17/09: "חלון כמו של המחשבים
+   אבל רק של כיתות / שיכפול / בנייה, בלי לשונית נראו ברשת"). */
+function selectMachinesRole(role) {
+  MACHINES_ROLE = role; MACHINES_FILTER = null; MACHINES_CLASS = null; MCH.sel.clear();
+  selectPageById("machines");
+}
 /* לחיצה על קבוצה בעץ: כל קבוצה → האובייקט שלה (כיתה — גל 3; בנייה/שיכפול — גל 3א). קבוצה
    שאינה רשומה ב-/groups → הטבלה מסוננת (#916). */
 function selectMachinesGroup(groupId) {
   try { groupId = decodeURIComponent(groupId); } catch (e) {}
   const g = (GROUPS || []).find((x) => x.id === groupId);
+  MACHINES_ROLE = null;
   if (g) { MACHINES_CLASS = groupId; MACHINES_FILTER = null; }
   else { MACHINES_FILTER = groupId; MACHINES_CLASS = null; }
   MCH.sel.clear();
@@ -2318,7 +2331,7 @@ function selectMachinesGroup(groupId) {
 }
 function openClass(gidEnc) {
   let gid = gidEnc; try { gid = decodeURIComponent(gidEnc); } catch (e) {}
-  MACHINES_CLASS = gid; MACHINES_FILTER = null; MCH.sel.clear();
+  MACHINES_CLASS = gid; MACHINES_FILTER = null; MACHINES_ROLE = null; MCH.sel.clear();
   selectPageById("machines");
 }
 
@@ -2790,7 +2803,7 @@ function machineDrawerHtml(m) {
   const sub = [esc(ROLE_HE[role] || role), g ? esc(g.label) : "", `<span class="mono">${esc(m.mac)}</span>`, net && net.ip ? `<span class="mono">${esc(net.ip)}</span>` : "",
     `נראה ${esc(NET ? seenAgo(net && net.last_seen) : "לא נקרא")}`].filter(Boolean).join(" · ");
   const actions = `<div class="acts" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">`
-    + (admin && ["build", "cloner"].includes(role) ? `<button class="btn" onclick="wakeMachine('${macEnc}')">Wake-on-LAN</button>` : `<span class="muted" title="v2">Wake-on-LAN — לתחנות כיתה ב-v2</span>`)
+    + (admin && ["build", "cloner"].includes(role) ? `<button class="btn" onclick="wakeMachine('${macEnc}')">WoL</button>` : `<span class="muted" title="v2">WoL — לתחנות כיתה ב-v2</span>`)
     + (admin ? `<button class="btn" onclick="renameMachine('${macEnc}')">שינוי שם</button>` : "")
     + UI.soon("אתחול מרחוק") + `</div>`;
   const red = machineDiskFailures(m).map((f) => {
@@ -2972,8 +2985,8 @@ function healthStatusLabel(state) { return HEALTH_STATES[state] ? HEALTH_STATES[
 const HEALTH_GROUPS = [["agent_loop:", "לולאות אתחול", "agent_loops"], ["off_vlan:", "מכונות בוילן זר", "off_vlan"]];
 /* עמודת "פעולה": לאן הולכים לטפל — הדף שבו יושב מה שנבדק. אין ב-/health שדה
    "איך מתקנים"; ה-detail של השרת כבר נושא את ההוראה ("הריצו את המתקין"). */
-const HEALTH_GOTO = { dhcp_port: ["רשת הפצה", "netdeploy"], tftp_port: ["פורטים", "ports"], dnsmasq: ["רשת הפצה", "netdeploy"],
-  server: ["פורטים", "ports"], udp_sender: ["פורטים", "ports"], nics: ["חיבורים פיזיים", "nic"],
+const HEALTH_GOTO = { dhcp_port: ["רשת הפצה", "openNetwork(2)"], tftp_port: ["פורטים", "selectPageById('ports')"], dnsmasq: ["רשת הפצה", "openNetwork(2)"],
+  server: ["פורטים", "selectPageById('ports')"], udp_sender: ["פורטים", "selectPageById('ports')"], nics: ["חיבורים פיזיים", "openNetwork(1)"],
   ssh_stations: ["פורטים", "ports"], ssh_server: ["פורטים", "ports"], agent_loops: ["מחשבים", "machines"], off_vlan: ["מחשבים", "machines"] };
 let healthError = "", HEALTH_AT = "";
 let HEALTH_UPDATE = null, UPDATE_STATUS = null, UPDATE_CHECK = null, updateError = "";
@@ -2985,7 +2998,7 @@ function healthRow(c, grouped = false) {
     const mac = String(c.id).slice(String(c.id).indexOf(":") + 1);
     if (findMachine(mac)) act = UI.acts([["פרטים", `openMachineDetail('${encodeId(mac)}')`]]);
   } else if (HEALTH_GOTO[c.id]) {
-    act = UI.acts([[HEALTH_GOTO[c.id][0] + " ←", `selectPageById('${HEALTH_GOTO[c.id][1]}')`]]);
+    act = UI.acts([[HEALTH_GOTO[c.id][0] + " ←", HEALTH_GOTO[c.id][1]]]);
   }
   return [`<span class="name${grouped ? " grp-kid" : ""}">${esc(c.label)}</span>`,
     UI.status(healthStatusClass(c.state), healthStatusLabel(c.state)),
@@ -3088,74 +3101,6 @@ function health() {
     : UI.datagrid({ columns: ["בדיקה", "מצב", "מה נמצא", ""], rows: healthRows(checks), empty: "אין בדיקות — השרת החזיר רשימה ריקה" });
   const checksCard = UI.card({ title: "בדיקות חיוניות", small: "מה שנמדד, לא מה שמוגדר — \"לא נבדק\" הוא מצב משלו", body, flush: !!HEALTH && checks.length > 0 });
   return `<div class="page">${header}<div class="body">${checksCard}${healthUpdateCard()}</div></div>`;
-}
-
-function netIface() {
-  const list = NETCFG && NETCFG.interfaces;
-  return (list && list[0]) || null;
-}
-
-function network() {
-  if (!NETCFG) return pagePlaceholder();
-  const iface = netIface();
-  let formBody;
-  if (!iface) {
-    formBody = `<div class="empty">אין נתונים להצגה</div>`;
-  } else {
-    const dns = (iface.dns || []).join(", ");
-    const gaps = iface.mismatches || [];
-    const gapNote = gaps.length
-      ? `<div class="field full"><div class="notice warn">${esc(gaps.join(" · "))}</div></div>`
-      : "";
-    const modeBit = iface.mode_he ? " — " + iface.mode_he : "";
-    formBody = `<div class="form"><div class="field"><label>כתובת IP</label><input id="net-address" dir="ltr" value="${esc(iface.address || "")}"></div><div class="field"><label>מסכת רשת</label><input id="net-netmask" dir="ltr" value="${esc(iface.netmask || "")}"></div><div class="field"><label>Gateway</label><input id="net-gateway" dir="ltr" value="${esc(iface.gateway || "")}"></div><div class="field"><label>DNS</label><input id="net-dns" dir="ltr" value="${esc(dns)}"></div><div class="field full"><label>ממשק</label><input value="${esc(iface.name + modeBit)}" disabled></div>${gapNote}<div class="field full"><button class="btn" disabled title="בקרוב">בדיקת קישוריות לפני החלה</button> <button class="btn" disabled title="בקרוב">Rollback</button></div></div>`;
-  }
-
-  return `<div class="grid"><div class="span-8"><div class="card"><div class="card-h">הגדרות ממשק <button class="btn primary" onclick="saveNetwork()">שמור</button></div><div class="card-b">${formBody}</div></div></div><div class="span-4"><div class="card"><div class="card-h">פורטיים</div><div class="card-b"><div class="list"><div class="list-row"><div class="list-main"><strong>HTTP</strong><small>קונסולה + boot + API</small></div><span class="tag">8080</span></div><div class="list-row"><div class="list-main"><strong>TFTP</strong><small>bootloader</small></div><span class="tag">69/udp</span></div><div class="list-row"><div class="list-main"><strong>PXE Proxy</strong><small>DHCP שאינו שלנו</small></div><span class="tag">4011</span></div><div class="list-row"><div class="list-main"><strong>Multicast</strong><small>שידור אימג׳</small></div><span class="tag">9000–9001</span></div></div></div></div></div><div class="span-12"><div class="card"><div class="card-h">רשת השידור <button class="tool-btn" disabled title="בקרוב">בדוק →</button></div><div class="card-b"><div class="statrow"><div class="statbox"><div class="n">10.44.12.0/24</div><div class="l">רשת שרת</div></div><div class="statbox"><div class="n">UDP</div><div class="l">פרוטוקול שידור</div></div><div class="statbox"><div class="n">TTL 1</div><div class="l">תחום מקומי</div></div></div></div></div></div></div>`;
-}
-
-function saveNetwork() {
-  if (!(ME && ME.role === "admin")) { toast("אין הרשאה"); return; }
-  const iface = netIface();
-  if (!iface) { toast("אין ממשק לשמירה"); return; }
-  openModalContent(
-    "שמירת הגדרות רשת",
-    `<div class="confirm-box">שינוי כתובת, שער או DNS עלול לנתק את הקונסולה.</div><div class="danger-confirm">אם זה הכרטיס שהקונסולה מגיעה דרכו, החיבור ייפול. ההגדרה תוחזר אוטומטית תוך דקה אלא אם תאשרו שהחיבור עדיין חי.</div>`,
-    "שמור",
-    confirmSaveNetwork
-  );
-}
-
-async function confirmSaveNetwork() {
-  const iface = netIface();
-  if (!iface) { closeModal(); return; }
-  const addressEl = $("#net-address");
-  const maskEl = $("#net-netmask");
-  const gwEl = $("#net-gateway");
-  const dnsEl = $("#net-dns");
-  const dns = ((dnsEl && dnsEl.value) || "").split(/[,;]/).map((s) => s.trim()).filter(Boolean);
-  // confirm = שם הכרטיס: ה-API דורש אותו תמיד (409 בלעדיו).
-  // mode/routes נשלחים כפי שהם כדי שלא יימחקו בשמירת הכתובת.
-  const body = {
-    address: ((addressEl && addressEl.value) || "").trim(),
-    netmask: ((maskEl && maskEl.value) || "").trim(),
-    gateway: ((gwEl && gwEl.value) || "").trim(),
-    dns,
-    mode: iface.mode,
-    routes: iface.routes || [],
-    confirm: iface.name,
-  };
-  try {
-    const result = await put("/net/config/" + encodeId(iface.name), body);
-    closeModal();
-    if (result.apply_error) toast("ההחלה נכשלה: " + result.apply_error);
-    else if (!result.verified) toast("נכתב — אבל המצב בפועל לא תואם: " + (result.mismatches || []).join(" · "));
-    else if (result.rollback && result.rollback.pending) toast("הוחל. אשרו תוך דקה שהקונסולה עדיין נגישה, אחרת יוחזר.");
-    else toast("הוחל, ואומת מול ip addr");
-    loadNetcfgData();
-  } catch (e) {
-    toast(e.message);
-  }
 }
 
 function roleLabel(role) {
@@ -3372,7 +3317,7 @@ function logs() {
   const pill = !LOG.rows ? UI.pill("err", "לא נקרא") : LOG.truncated ? UI.pill("warn", "חיפוש חלקי") : "";
   const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "ניהול" }, { label: "יומן" }],
     icon: "list", name: "יומן", sub, pill,
-    actions: `<button class="btn" onclick="loadJournalData()">רענון</button>${UI.soon("ייצוא CSV")}` });
+    actions: `<button class="btn" onclick="loadJournalData()">${uiIcon("refresh")} רענון</button>${UI.soon("ייצוא CSV")}` });
   let body;
   if (!LOG.rows) body = UI.note("err", `לא הצלחתי לקרוא את היומן: ${esc(LOG.err)}`);
   else {
@@ -3400,272 +3345,566 @@ function openLogDetail(i) {
     ["מי", esc(row.user || "המערכת")]])}</div>`);
 }
 
-/* ---------- כרטיסי רשת / רשת הפצה / פורטים ---------- */
+/* ---------- #954 גל 8: רשת כאובייקט — תרשים · חיבורים פיזיים · רשת הפצה · פורטים ----------
+   docs/design/console-redesign/network.md, network-nics.md, network-deploy.md.
+   "רשת" בעץ הוא דף (הכרעת נדב על העץ: קליק = הדף, דאבל = פותח/סוגר), והצמתים
+   "חיבורים פיזיים / רשת הפצה" פותחים את אותו אובייקט בלשונית. "פורטים" =
+   הדף הקיים של גל 5 (pages.ports) — לא נגענו, רק מקושר כלשונית.
+   מקורות (docs/interfaces.md, לא ממציאים שדות): /net/interfaces (net.js:
+   loadNet → NICS), /net/config (NETCFG), /net (NET — מי נראה ברשת), /ports
+   (bind — "מה מותר על כל וילן" עד מודל וילן, #705), /ssh (SSH_STATE — SSH
+   לשרת × כרטיס), /monitor/machines (משכפלים/בנייה, online), /storage-nodes
+   (+ …/machines.connected — סניפים), /net/interfaces/{n}/probe (מי עוד עונה).
+   כל מקור נכשל בנפרד (NETW.err) ומוצג "לא נקרא" — לא "אין" (עיקרון 5).
+   וילן = הכרטיס (1:1, "לפי הגדרה") — מודל וילן אמיתי דורש API (#705).
+   כיתות = תיבה סטטית "v2" — לא נבנה מעבר לזה (v1 = בנייה/שיכפול/שרתים).
+   כל שינוי DHCP/כתובת עובר בטפסים הקיימים של net.js/netcfg.js (editNic,
+   editAddress, הקלדת שם הכרטיס, rollback) — לא נבנתה זרימת שמירה חדשה (#53). */
+let NETW = { nics: null, cfg: null, ports: null, mon: null, nodes: null, probe: {}, sel: null, at: "", err: {} };
+const NET_ONLINE_SECONDS = 90;   // כמו monitor.py: "מחובר" = נראה ב-90 השניות האחרונות
 
-function nicUnion() {
-  const byName = new Map(((NETCFG && NETCFG.interfaces) || []).map((r) => [r.name, r]));
-  const nics = typeof NICS !== "undefined" && NICS ? NICS : [];
-  const names = [...new Set([...nics.map((n) => n.name), ...byName.keys()])].sort();
-  return names.map((name) => {
-    const found = nics.find((x) => x.name === name);
-    let n = found || {
-      name, mac: "", state: "unknown", addresses: [], present: byName.has(name),
-      trunk: false, description: "", enabled: false, proxy: false,
-      dhcp_live: { state: "unknown" }, dhcp_live_label: "לא ידוע",
-      dhcp_diverged: false, speed_mbps: null, server_ip: "",
-    };
-    if (!n.dhcp_live || !n.dhcp_live.state) {
-      n = Object.assign({}, n, {
-        dhcp_live: { state: "unknown" },
-        dhcp_live_label: n.dhcp_live_label || "לא ידוע",
-      });
-    }
-    return { n, cfgRow: byName.get(name) };
+async function loadNetwork() {
+  if (!isAdmin()) return;
+  const err = {};
+  const grab = async (key, fn) => { try { return await fn(); } catch (e) { err[key] = e.message; return null; } };
+  const [nics, cfg, net, ports, ssh, mon, nodes] = await Promise.all([
+    grab("interfaces", async () => { await loadNet(); return Array.isArray(NICS) ? NICS : null; }),
+    grab("config", () => api("/net/config")),
+    grab("net", () => api("/net")),
+    grab("ports", () => api("/ports")),
+    grab("ssh", () => api("/ssh")),
+    grab("monitor", () => api("/monitor/machines")),
+    grab("nodes", loadNetworkNodes),
+  ]);
+  NETW = { ...NETW, nics, cfg, ports: Array.isArray(ports) ? ports : null, mon: Array.isArray(mon) ? mon : null,
+           nodes, at: clockNow(), err };
+  if (cfg) NETCFG = cfg;                                   // netcfg.js (editAddress, נתיבים, rollback) קורא מכאן
+  if (Array.isArray(net)) { NET = net; NET_ERR = ""; } else { NET = null; NET_ERR = err.net || "תשובה שאינה רשימה"; }
+  SSH_STATE = ssh; sshError = err.ssh || "";               // portSshNic/sshToggle (גל 5) קוראים מכאן
+  PORTS_NICS = nics; portsNicsError = err.interfaces || "";
+  if (!NETW.sel || !(nics || []).some((n) => n.name === NETW.sel)) NETW.sel = (netDeployNic() || (nics || [])[0] || {}).name || null;
+  populateSidebarNics();
+  if (current === "network") renderCurrent();
+}
+
+/* סניפים: /storage-nodes (403/409 = אין סניפים, לא שגיאה — כמו העץ) + מצב חיבור נמדד לכל אחד. */
+async function loadNetworkNodes() {
+  if (!(ME && ME.capabilities && ME.capabilities.enroll_secondary)) return [];
+  let nodes;
+  try { nodes = await api("/storage-nodes"); }
+  catch (e) { if (e.status === 403 || e.status === 409) return []; throw e; }
+  return Promise.all(nodes.map(async (n) => {
+    if (n.disabled_at) return { ...n, connected: null, error: "" };
+    try { const a = await api(`/storage-nodes/${encodeId(n.id)}/machines`); return { ...n, connected: !!a.connected, error: a.error || "" }; }
+    catch (e) { return { ...n, connected: false, error: e.message }; }
+  }));
+}
+
+/* --- עזרי נתונים (טהורים — נבדקים ב-node) --- */
+function netCfgRow(name) { return ((NETCFG && NETCFG.interfaces) || []).find((r) => r.name === name) || null; }
+function netLiveChecked() { return !!(NETCFG && NETCFG.live && NETCFG.live.checked); }
+function netLiveAddrs(n) { const cfg = netCfgRow(n.name); return ((cfg && netLiveChecked()) ? cfg.live_addresses : n.addresses) || []; }
+function ipInt(ip) { const m = String(ip || "").match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/); return m ? (((+m[1] << 24) | (+m[2] << 16) | (+m[3] << 8) | +m[4]) >>> 0) : null; }
+function cidrParts(cidr) {
+  const m = String(cidr || "").match(/^(\d+\.\d+\.\d+\.\d+)\/(\d+)$/);
+  if (!m) return null;
+  const bits = Math.min(32, +m[2]), mask = bits ? (0xffffffff << (32 - bits)) >>> 0 : 0;
+  return { net: (ipInt(m[1]) & mask) >>> 0, mask, bits };
+}
+function nicHasIp(n, ip) { const x = ipInt(ip); return x !== null && netLiveAddrs(n).some((c) => { const p = cidrParts(c); return !!p && ((x & p.mask) >>> 0) === p.net; }); }
+function netNicFor(ip) { return (NETW.nics || []).find((n) => nicHasIp(n, ip)) || null; }
+function netDeployNic() { const l = NETW.nics || []; return l.find((n) => n.enabled) || l.find((n) => (n.dhcp_live || {}).state === "serving") || null; }
+function netNetworkOf(n) { const c = netLiveAddrs(n)[0]; const p = cidrParts(c); if (!p) return c || ""; return `${[24, 16, 8, 0].map((s) => (p.net >>> s) & 255).join(".")}/${p.bits}`; }
+function urlHost(u) { const m = String(u || "").match(/^[a-z]+:\/\/\[?([^\]/:]+)/i); return m ? m[1] : ""; }
+function secondsSince(iso) { const t = iso ? new Date(iso).getTime() : NaN; return Number.isFinite(t) ? Math.max(0, (Date.now() - t) / 1000) : null; }
+
+/* "מה מותר על כל וילן" — רק מה ש-/ports.bind אומר (#996); בלי bind בכלל = דורש API (#705). null = לא ידוע. */
+function netServicesOn(n) {
+  const ports = NETW.ports;
+  // ‏bind בשרת: רשימת "כתובת[/bits][:port]" (ריקה = לא נקרא / לא מאזין), או מחרוזת. בלי אף bind — לא ידוע.
+  const bindsOf = (p) => (Array.isArray(p.bind) ? p.bind : p.bind ? [p.bind] : []).map((b) => String(b).replace(/:\d+$/, "").replace(/\/\d+$/, ""));
+  if (!Array.isArray(ports) || !ports.some((p) => bindsOf(p).length)) return null;
+  const ips = netLiveAddrs(n).map((c) => c.split("/")[0]);
+  const out = [];
+  for (const p of ports) {
+    const binds = bindsOf(p);
+    if (binds.some((b) => b === "0.0.0.0" || b === "::" || b === "[::]" || b === "*" || ips.includes(b))) out.push(`${p.name} ${p.port}`);
+  }
+  return out;
+}
+/* סוג הוילן "לפי הגדרה" (1:1 עם הכרטיס; מודל וילן = #705): הפצה / proxy / רשת המכללה / ניהול / בין-שרתים / לא מוגדר. */
+function netVlanOf(n) {
+  const svc = netServicesOn(n) || [];
+  if (n.enabled) return { kind: "deploy", label: "וילן ההפצה" };
+  if (n.proxy) return { kind: "proxy", label: "PXE proxy — DHCP של רשת אחרת" };
+  if (n.trunk) return { kind: "trunk", label: "רשת המכללה (trunk)" };
+  if (svc.some((s) => /8081/.test(s))) return { kind: "mgmt", label: "ניהול — קונסולה" };
+  if (svc.some((s) => /8443/.test(s))) return { kind: "inter", label: "בין-שרתים" };
+  return { kind: "none", label: "לא מוגדר" };
+}
+function netRoleLabel(n) {
+  const parts = [];
+  if (n.enabled) parts.push("הפצה · DHCP");
+  if (n.proxy) parts.push("PXE proxy");
+  if (n.trunk) parts.push("רשת המכללה");
+  const svc = netServicesOn(n);
+  if (svc && svc.length) parts.push(svc.join(" · "));
+  if (parts.length) return esc(parts.join(" · "));
+  return svc === null ? `<span class="muted" title="דורש API (#705): מודל וילן / bind">— דורש API</span>` : `<span class="muted">—</span>`;
+}
+function netLinkStatus(n) {
+  if (!n.present || n.state === "missing") return UI.status("", "לא קיים במערכת");
+  if (n.state === "up") return UI.status("ok", `מחובר${typeof n.speed_mbps === "number" && n.speed_mbps > 0 ? ` · ${n.speed_mbps} Mbps` : ""}`);
+  if (n.state === "down") return UI.status("", "מנותק");
+  return UI.status("unk", "לא נקרא");
+}
+/* פער = מצב, לא הערה: לא נקרא (unk) ≠ לא מנוהל (אפור) ≠ תואם (ירוק) ≠ לא תואם (אדום). */
+function netGapStatus(n) {
+  if (!NETCFG) return UI.status("unk", "לא נקרא");
+  const cfg = netCfgRow(n.name);
+  if (!netLiveChecked()) return UI.status("unk", "לא נקרא");
+  if (!cfg || cfg.mode === "manual") return UI.status("", "לא מנוהל");
+  return (cfg.mismatches || []).length ? UI.status("err", cfg.mismatches.join(" · ")) : UI.status("ok", "תואם");
+}
+function netConfiguredText(n) {
+  if (!NETCFG) return "לא נקרא";
+  const cfg = netCfgRow(n.name);
+  if (!cfg || cfg.mode === "manual") return "לא מנוהל";
+  if (cfg.mode === "dhcp") return "DHCP";
+  const bits = typeof maskBits === "function" && cfg.netmask ? `/${maskBits(cfg.netmask)}` : "";
+  return `static ${cfg.address || "—"}${bits}${cfg.gateway ? ` · gw ${cfg.gateway}` : ""}`;   // mono LTR — בלי מילה עברית שתהפוך את הסדר
+}
+function netDhcpCell(n, withRange = true) {
+  const live = n.dhcp_live || { state: "unknown" };
+  const cls = dhcpLiveClass(live.state);
+  const st = UI.status(cls === "ok" ? "ok" : cls === "warn" ? (live.state === "unknown" ? "unk" : "warn") : "", n.dhcp_live_label || "לא ידוע");
+  const stored = `שמור: ${n.enabled ? "מופעל" : n.proxy ? "proxy" : "כבוי"}`;
+  const range = withRange && n.enabled && n.range_start ? ` · ${n.range_start}–${n.range_end}` : "";
+  const div = n.dhcp_diverged ? ` ${UI.pill("warn", "לא תואם למצב הפעיל")}` : "";
+  return `${st}<span class="sub">${esc(stored)}${range ? ` · ${ltr(range.slice(3))}` : ""}${div}</span>`;   // הטווח LTR מבודד — אחרת "200–100"
+}
+/* SSH לשרת לכרטיס — שלושה מצבים נמדדים (כמו גל 5) + מתג לאותו endpoint (portSshNic). */
+function netSshOf(name) {
+  if (!SSH_STATE) return { on: null, cls: "unk", text: `לא נקרא${sshError ? `: ${sshError}` : ""}` };
+  const s = (SSH_STATE.interfaces || []).find((i) => i.name === name);
+  if (!s) return { on: null, cls: "unk", text: "לא ברשימת /ssh" };
+  if (s.listening === null || s.listening === undefined) return { on: null, cls: "unk", text: s.enabled ? "נשמר פתוח · לא נקרא" : "סגור · לא נקרא" };
+  if (s.enabled && s.listening) return { on: true, cls: "ok", text: "פתוח · מאזין" };
+  if (s.enabled) return { on: true, cls: "err", text: "נשמר פתוח — לא מאזין" };
+  if (s.listening) return { on: false, cls: "warn", text: "מאזין למרות שסגור" };
+  return { on: false, cls: "", text: "סגור" };
+}
+function netSshSwitch(name) {
+  const s = netSshOf(name);
+  PORT_ACTIONS.set(`ssh_nic:${name}`, () => SSH_STATE ? portSshNic(name) : toast(`‏/ssh לא נקרא${sshError ? `: ${sshError}` : ""}`));
+  const open = SSH_STATE ? (SSH_STATE.interfaces || []).filter((i) => i.enabled).length : 0;
+  const lock = s.on === null ? false : (!s.on || open <= 1);   // פתיחה = הקלדת שם הכרטיס; סגירת הדלת האחרונה = הקלדה (גל 5)
+  return portSwitchHtml(`ssh_nic:${name}`, s.on, lock, s.text, `SSH לשרת ${name}`);
+}
+function netProbeStatus(name) {
+  const p = NETW.probe[name];
+  if (!p) return { cls: "", text: "לא נבדק" };
+  if (p.running) return { cls: "run", text: "בודק…" };
+  if (p.error) return { cls: "unk", text: `הבדיקה נכשלה (${p.at}): ${p.error}` };
+  if (!p.checked) return { cls: "unk", text: `הבדיקה לא רצה (${p.at}) — לא ידוע מי עונה` };
+  return p.servers.length ? { cls: "err", text: `עונים: ${p.servers.join(", ")} (נבדק ${p.at})` } : { cls: "ok", text: `אף שרת אחר לא עונה (נבדק ${p.at})` };
+}
+async function netProbe(nameEnc) {
+  let name = nameEnc; try { name = decodeURIComponent(nameEnc); } catch (e) {}
+  NETW.probe[name] = { running: true };
+  if (current === "network") renderCurrent();
+  try {
+    const r = await api(`/net/interfaces/${encodeId(name)}/probe`);
+    NETW.probe[name] = { checked: r.checked === true, servers: Array.isArray(r.servers) ? r.servers : [], at: clockNow() };
+  } catch (e) { NETW.probe[name] = { error: e.message, at: clockNow() }; toast("בדיקת DHCP נכשלה: " + e.message); }
+  if (current === "network") renderCurrent();
+}
+function netSelect(nameEnc) { let name = nameEnc; try { name = decodeURIComponent(nameEnc); } catch (e) {} NETW.sel = name; populateSidebarNics(); if (current === "network") renderCurrent(); }
+function netNic(nameEnc) { let name = nameEnc; try { name = decodeURIComponent(nameEnc); } catch (e) {} return (NETW.nics || []).find((n) => n.name === name) || null; }
+function netEditAddress(nameEnc) {
+  const n = netNic(nameEnc); if (!n) return;
+  editAddress(netCfgRow(n.name) || bodyOf({ name: n.name, mode: "manual", address: "", netmask: MASKS[0], gateway: "", dns: [], routes: [] }, {}));
+}
+function netEditDhcp(nameEnc) { const n = netNic(nameEnc); if (n) editNic(n); else toast("כרטיס לא נמצא"); }
+function netShowFile(nameEnc) {
+  const n = netNic(nameEnc); if (!n) return;
+  showFile(netCfgRow(n.name) || { name: n.name, mode: "manual", address: "", netmask: MASKS[0], gateway: "", dns: [], routes: [] }).catch((e) => toast(e.message));
+}
+function netDescribe(nameEnc) {
+  const n = netNic(nameEnc); if (!n) return;
+  sheet({ title: "תיאור הכרטיס", sub: n.name, fields: [{ id: "description", label: "תיאור חופשי", value: n.description, placeholder: "למשל: וילן 700" }],
+    onSubmit: async (v) => { await put(`/net/interfaces/${encodeId(n.name)}/description`, { description: v.description }); await loadNetwork(); } });
+}
+function netForget(nameEnc) {
+  const n = netNic(nameEnc); if (!n) return;
+  confirmSheet("הסרת הגדרות הכרטיס", `ההגדרות והתיאור של ${n.name} יימחקו. אם רץ עליו DHCP — הוא ייכבה.`, "הסר",
+    async () => { await del(`/net/interfaces/${encodeId(n.name)}`); await loadNetwork(); });
+}
+function netRegister(macEnc) { let mac = macEnc; try { mac = decodeURIComponent(macEnc); } catch (e) {} openAddMachine({ mac }); }
+
+/* --- מודל התרשים (טהור): מסלולים = כרטיס → וילן (לפי הגדרה) → מי מחובר --- */
+function netDiagramModel() {
+  const nics = NETW.nics || [];
+  const lanes = nics.map((n) => {
+    const led = !n.present ? "off" : n.state === "up" ? "ok" : n.state === "down" ? "off" : "warn";
+    return { nic: n, vlan: netVlanOf(n), allowed: netServicesOn(n), led, clients: [] };
   });
-}
-
-function netBannerHtml(actions) {
-  const actionsHtml = actions || "";
-  if (!NETCFG) {
-    if (!actionsHtml) return "";
-    return `<div class="span-12"><div class="card"><div class="card-h"><span>כרטיסי רשת</span><div>${actionsHtml}</div></div></div></div>`;
-  }
-  const live = NETCFG.live || {};
-  const foot = live.checked
-    ? `נתיבים כרגע: ${(live.routes || []).join(" · ") || "אין"} · ‏DNS: `
-      + `${(live.nameservers || []).join(", ") || "אין"}`
-    : `המצב בפועל לא נקרא (${live.reason || ""}) — אף שורה אינה מאומתת`;
-  const notSourced = NETCFG.sourced === false
-    ? `<div class="sheet-note danger">‏/etc/network/interfaces אינו טוען את
-       interfaces.d — כל מה שנכתב שם לא ייקרא באתחול.</div>` : "";
-  const rb = (typeof rollbackBanner === "function" && NETCFG.rollback)
-    ? rollbackBanner(NETCFG.rollback) : "";
-  return `<div class="span-12"><div class="card"><div class="card-h"><span>מצב הרשת</span><div>${actionsHtml}</div></div><div class="card-b">${rb}${notSourced}<p style="margin:0;color:var(--muted);font-size:11px" dir="ltr">${esc(foot)}</p></div></div></div>`;
-}
-
-function renderNicCard(n, cfgRow, admin) {
-  const trunk = n.trunk ? ` <span class="tag warn">רשת המכללה</span>` : "";
-  const missing = n.present ? "" : ` <span class="tag warn">לא קיים במערכת</span>`;
-  const desc = n.description
-    ? `<p style="margin:0 0 8px;color:var(--muted);font-size:11px">${esc(n.description)}</p>` : "";
-  const live = (cfgRow ? cfgRow.live_addresses : n.addresses) || [];
-  const gaps = cfgRow && cfgRow.mismatches && cfgRow.mismatches.length
-    ? `<div class="notice warn">${esc(cfgRow.mismatches.join(" · "))}</div>` : "";
-  const dhcp = typeof nicMode === "function" ? nicMode(n) : { html: "—" };
-  const hl = NIC_HIGHLIGHT === n.name ? " sel" : "";
-  let cfgText = "—";
-  if (cfgRow) {
-    if (cfgRow.mode === "static") {
-      cfgText = [cfgRow.address, cfgRow.netmask].filter(Boolean).join(" / ") || "—";
-      if (cfgRow.gateway) cfgText += " · שער " + cfgRow.gateway;
-      if ((cfgRow.dns || []).length) cfgText += " · DNS " + cfgRow.dns.join(", ");
-    } else {
-      cfgText = cfgRow.mode_he || cfgRow.mode || "—";
+  const orphans = [];
+  const laneOf = (kinds) => kinds.map((k) => lanes.find((l) => l.vlan.kind === k)).find(Boolean) || null;
+  const place = (client, ip, fallback) => {
+    const nic = ip ? netNicFor(ip) : null;
+    const lane = (nic && lanes.find((l) => l.nic === nic)) || (fallback ? fallback() : null);
+    if (lane) lane.clients.push(client); else orphans.push(client);
+  };
+  // משכפלים ובנייה — /monitor/machines (online נקבע בשרת); בלי כתובת → וילן ההפצה (שם הם יופיעו כשיעלו)
+  const roles = [["cloner", "משכפלים"], ["build", "מחשבי בנייה"]];
+  for (const [role, title] of roles) {
+    const list = (NETW.mon || []).filter((m) => m.role === role);
+    const byLane = new Map();
+    for (const m of list) {
+      const nic = m.ip ? netNicFor(m.ip) : null;
+      const lane = (nic && lanes.find((l) => l.nic === nic)) || laneOf(["deploy"]) || null;
+      if (!lane) { orphans.push({ title: `${title} — ${m.name || m.mac}`, sub: m.ip || "ללא כתובת", led: "", dashed: true }); continue; }
+      if (!byLane.has(lane)) byLane.set(lane, []);
+      byLane.get(lane).push(m);
+    }
+    for (const [lane, ms] of byLane) {
+      const on = ms.filter((m) => m.online).length;
+      lane.clients.push({ kind: role, title: `${title} — ${ms.map((m) => m.name || m.mac).join(", ")}`,
+        sub: `${bidi(ms.map((m) => m.ip).filter(Boolean).join(" · ") || "ללא כתובת")} · ${on} מתוך ${ms.length} מחוברים`,
+        led: on === ms.length ? "ok" : on ? "warn" : "", dashed: on === 0 });
     }
   }
-  const light = (cfgRow && typeof netLight === "function") ? netLight(cfgRow) : "bad";
-  const serverIp = n.server_ip || (cfgRow && cfgRow.address) || (live[0] || "").split("/")[0] || "—";
-  const speed = typeof speedLabel === "function" ? speedLabel(n) : (n.state || "");
-  const actions = admin ? `<div class="action-strip">
-      <button class="btn" data-net-edit="${esc(n.name)}">עריכת כתובת</button>
-      <button class="btn" data-nic-edit="${esc(n.name)}">DHCP</button>
-      <button class="btn flat" data-nic-desc="${esc(n.name)}">תיאור</button>
-      <button class="btn flat" data-net-preview="${esc(n.name)}">הקובץ</button>
-      <button class="btn danger flat" data-nic-forget="${esc(n.name)}">שכחה</button>
-    </div>` : "";
-  return `<div class="span-6"><div class="card${hl}" data-nic="${esc(n.name)}">
-    <div class="card-h"><span dir="ltr">${esc(n.name)}${trunk}${missing}</span><small>${esc(speed)}${n.mac ? " · " + esc(n.mac) : ""}</small></div>
-    <div class="card-b">${desc}
-      <div class="list">
-        <div class="list-row"><div class="list-main"><strong>בפועל</strong><small class="mono" dir="ltr">${esc(live.join(" · ")) || "—"}</small></div><span class="hlight ${light}"></span></div>
-        <div class="list-row"><div class="list-main"><strong>מוגדר</strong><small class="mono" dir="ltr">${esc(cfgText)}</small></div></div>
-        <div class="list-row"><div class="list-main"><strong>כתובת השרת</strong><small class="mono" dir="ltr">${esc(serverIp)}</small></div></div>
-        <div class="list-row"><div class="list-main"><strong>DHCP</strong><small>${dhcp.html}</small></div></div>
-      </div>
-      ${gaps}${actions}
-    </div></div></div>`;
+  // הקונסולה — אנחנו (הדף הזה נטען = ראיה); מי עוד מחובר דורש API (sessions)
+  place({ kind: "console", title: `קונסולה — ${ME ? ME.username : ""}`, sub: "session פעיל · מי עוד מחובר — דורש API", led: "ok" }, null,
+    () => laneOf(["mgmt", "trunk", "inter", "none", "proxy", "deploy"]));
+  // סניפים — /storage-nodes + connected נמדד
+  for (const n of NETW.nodes || []) {
+    const off = !!n.disabled_at;
+    place({ kind: "branch", title: `${n.label} — שרת משני`, led: off ? "" : n.connected ? "ok" : "err", dashed: off,
+      sub: `${bidi(n.base_url || "")} · ${off ? "מושבת" : n.connected ? "מחובר" : `לא ענה${n.error ? `: ${n.error}` : ""}`}` },
+      urlHost(n.base_url), () => laneOf(["inter", "mgmt", "trunk", "none"]));
+  }
+  // לא רשומים — /net registered=false, לפי הכתובת שקיבלו
+  const unreg = (NET || []).filter((d) => d.registered === false);
+  const unregByLane = new Map();
+  for (const d of unreg) {
+    const nic = d.ip ? netNicFor(d.ip) : null;
+    const lane = (nic && lanes.find((l) => l.nic === nic)) || laneOf(["deploy"]);
+    if (!lane) { orphans.push({ title: `לא רשום — ${d.mac}`, sub: d.ip || "ללא כתובת", led: "warn" }); continue; }
+    if (!unregByLane.has(lane)) unregByLane.set(lane, []);
+    unregByLane.get(lane).push(d);
+  }
+  for (const [lane, ds] of unregByLane) {
+    lane.unreg = ds.length;
+    const last = ds[0];
+    lane.clients.push({ kind: "unreg", led: "warn",
+      title: ds.length === 1 ? `לא רשום — ${bidi(last.mac)}` : `לא רשומים — ${ds.length} (${bidi(ds.slice(0, 2).map((d) => d.mac).join(", "))}…)`,
+      sub: `${bidi(ds.map((d) => d.ip).filter(Boolean).slice(0, 3).join(" · ") || "ללא כתובת")}${last.boot && last.boot.label ? ` · ${last.boot.label}` : ""} · ${ago(last.last_seen)}` });
+  }
+  // כיתות — v2: תיבה סטטית בלבד
+  const classLane = laneOf(["proxy", "trunk", "none", "mgmt"]);
+  if (classLane) classLane.clients.push({ kind: "class", title: "כיתות — v2", sub: "מחשבי כיתה אינם במהדורה זו", led: "", dashed: true });
+  return { lanes, orphans };
 }
 
-function nic() {
-  const nics = typeof NICS !== "undefined" ? NICS : null;
-  if (!NETCFG && (!nics || !nics.length)) return pagePlaceholder();
-  const admin = ME && ME.role === "admin";
-  const rows = nicUnion();
-  const cards = rows.length
-    ? rows.map(({ n, cfgRow }) => renderNicCard(n, cfgRow, admin)).join("")
-    : `<div class="span-12"><div class="card"><div class="card-b"><div class="empty">לא נמצאו כרטיסי רשת.</div></div></div>`;
-  const addBtn = admin
-    ? `<button class="btn primary" id="nic-add" onclick="addNic()">+ כרטיס</button>` : "";
-  const routes = NETCFG
-    ? `<div class="span-12"><div class="card"><div class="card-h"><span>נתיבים סטטיים</span>${admin ? `<button class="btn" onclick="addRoute()">+ נתיב</button>` : ""}</div><div class="card-b" id="netroutes-body"></div></div></div>`
-    : "";
-  return `<div class="grid">${netBannerHtml(addBtn)}${cards}${routes}</div>`;
+/* --- ציור ה-SVG: ימין השרת → אמצע וילנים → שמאל מחוברים; RTL בתרשים = טקסט מיושר לימין (text-anchor=end) --- */
+const ND = { W: 1100, srvX: 820, srvW: 250, nicX: 840, nicW: 210, nicH: 72, vlX: 470, vlW: 250, vlH: 92, clX: 60, clW: 330, clH: 46, gap: 8, top: 100 };
+/* פסקה RTL: direction=rtl + text-anchor=start = הקצה הימני ב-x, ומונחים לטיניים (DHCP, SSH, ens19) נשארים במקומם במשפט העברי. */
+/* רצף ASCII (כתובת, MAC, מהירות) בתוך משפט עברי מתהפך ב-RTL ("Mb/s 1000") — מבודדים אותו ב-LRI…PDI (כמו ltr() ב-HTML). */
+function bidi(text) { const t = String(text); return /^[\x20-\x7e]+$/.test(t) ? `⁦${t}⁩` : t; }
+function svgText(x, y, cls, text) { return `<text class="${cls}" x="${x}" y="${y}" direction="rtl" text-anchor="start">${esc(text)}</text>`; }
+function netDiagramSvg(model) {
+  const { lanes, orphans } = model;
+  let y = ND.top;
+  const parts = [];
+  for (const lane of lanes) {
+    const n = lane.nic, enc = encodeId(n.name), sel = NETW.sel === n.name;
+    const bodyH = Math.max(ND.nicH, ND.vlH, lane.clients.length * (ND.clH + ND.gap) - ND.gap);
+    const mid = y + bodyH / 2;
+    const addr = bidi(netLiveAddrs(n).join(" · ") || "אין כתובת");
+    const link = !n.present ? "לא קיים במערכת" : n.state === "up" ? bidi(n.speed_mbps ? n.speed_mbps + " Mb/s" : "מחובר") : n.state === "down" ? "אין קישור" : "קישור לא נקרא";
+    const ssh = netSshOf(n.name).text;
+    parts.push(`<g class="hit" role="button" tabindex="0" aria-label="${esc(n.name)}" onclick="netSelect('${enc}')" onkeydown="if(event.key==='Enter'||event.key===' ')netSelect('${enc}')">`
+      + `<rect class="box${sel ? " sel" : ""}" x="${ND.nicX}" y="${mid - ND.nicH / 2}" width="${ND.nicW}" height="${ND.nicH}" rx="4"${lane.led === "off" ? ' stroke-dasharray="4 4"' : ""}/>`
+      + svgText(ND.nicX + ND.nicW - 10, mid - 14, "t", `${n.name} — ${n.description || "ללא תיאור"}`)
+      + svgText(ND.nicX + ND.nicW - 10, mid + 4, "m", `${addr} · ${link}`)
+      + svgText(ND.nicX + ND.nicW - 10, mid + 22, "m", `DHCP: ${n.dhcp_live_label || "לא ידוע"} · SSH לשרת: ${ssh}`)
+      + `<circle class="led ${lane.led}" cx="${ND.nicX + 12}" cy="${mid - ND.nicH / 2 + 12}" r="6"/></g>`);
+    const allowed = lane.allowed === null ? "מה מותר — דורש API (#705)" : `מותר (לפי bind): ${lane.allowed.length ? lane.allowed.join(" · ") : "אף שירות לא מאזין כאן"}`;
+    parts.push(`<rect class="vlan" x="${ND.vlX}" y="${mid - ND.vlH / 2}" width="${ND.vlW}" height="${ND.vlH}" rx="6"/>`
+      + svgText(ND.vlX + ND.vlW - 15, mid - 22, "t", `${lane.vlan.label} — לפי הגדרה`)
+      + svgText(ND.vlX + ND.vlW - 15, mid - 2, "m", allowed)
+      + svgText(ND.vlX + ND.vlW - 15, mid + 16, "m", `רשת ${bidi(netNetworkOf(n) || "—")}`)
+      + svgText(ND.vlX + ND.vlW - 15, mid + 34, "m", `${lane.clients.filter((c) => c.kind !== "class").length} מחוברים · ${lane.unreg || 0} לא רשומים`));
+    const lnCls = lane.led === "ok" ? "ok" : lane.led === "off" ? "off" : "warn";
+    parts.push(`<path class="ln ${lnCls}" d="M${ND.nicX} ${mid} H${ND.vlX + ND.vlW}"/><circle class="led ${lane.led}" cx="${(ND.nicX + ND.vlX + ND.vlW) / 2}" cy="${mid}" r="5"/>`);
+    let cy = y + (bodyH - (lane.clients.length * (ND.clH + ND.gap) - ND.gap)) / 2;
+    for (const c of lane.clients) {
+      const cmid = cy + ND.clH / 2, lc = c.led || "off";   // אדום/כתום גם כשהתיבה מקווקוה; "off" = אין ראיה
+      parts.push(`<rect class="box ${c.led || ""}" x="${ND.clX}" y="${cy}" width="${ND.clW}" height="${ND.clH}" rx="4"${c.dashed ? ' stroke-dasharray="4 4"' : ""}/>`
+        + svgText(ND.clX + ND.clW - 15, cy + 18, "t", c.title) + svgText(ND.clX + ND.clW - 15, cy + 36, "m", c.sub)
+        + `<path class="ln ${lc}" d="M${ND.vlX} ${mid} H430 V${cmid} H${ND.clX + ND.clW}"/>`
+        + (c.led ? `<circle class="led ${c.led}" cx="430" cy="${(mid + cmid) / 2}" r="5"/>` : ""));
+      cy += ND.clH + ND.gap;
+    }
+    y += bodyH + 24;
+  }
+  const H = y + 30;
+  const srv = `<rect class="server" x="${ND.srvX}" y="40" width="${ND.srvW}" height="${H - 70}" rx="6"/>`
+    + svgText(ND.srvX + ND.srvW - 20, 68, "t", ME && ME.server_name ? ME.server_name : "שרת אימג'ים")
+    + svgText(ND.srvX + ND.srvW - 20, 86, "m", `${ME && ME.version ? ME.version + " · " : ""}${lanes.length} כרטיסים · נקרא ${NETW.at}`);
+  // ‏gotcha (CLAUDE.md): SVG עם viewBox בלבד קורס ל-0 תחת max-height — width/height מפורשים.
+  return `<svg class="netdiag-svg" xmlns="http://www.w3.org/2000/svg" width="${ND.W}" height="${H}" viewBox="0 0 ${ND.W} ${H}" role="img" aria-label="תרשים הרשת: ${lanes.length} כרטיסים">${srv}${parts.join("")}</svg>`
+    + (orphans.length ? UI.note("warn", `${orphans.length} מחוברים עם כתובת מחוץ לרשתות הכרטיסים: ${esc(orphans.map((o) => o.title).join(" · "))}`) : "");
 }
 
+function netLegend() {
+  return `<div class="legend"><span><i class="sw-ok"></i>תקין / מחובר</span><span><i class="sw-warn"></i>אזהרה / לא רשום</span><span><i class="sw-err"></i>כשל / לא עונה</span><span><i class="sw-empty"></i>לא מחובר / כבוי</span></div>`;
+}
+function netUnreadNotes() {
+  const e = NETW.err, out = [];
+  if (e.config) out.push(UI.note("warn", `‏/net/config לא נקרא: ${esc(e.config)} — "מוגדר" ו"פער" אינם ידועים`));
+  else if (NETCFG && NETCFG.live && !NETCFG.live.checked) out.push(UI.note("warn", `המצב בפועל לא נקרא (${esc(NETCFG.live.reason || "")}) — אף כתובת אינה מאומתת`));
+  if (NETCFG && NETCFG.sourced === false) out.push(UI.note("err", "‏/etc/network/interfaces אינו טוען את interfaces.d — כל מה שנכתב שם לא ייקרא באתחול"));
+  if (e.net) out.push(UI.note("warn", `‏/net לא נקרא: ${esc(e.net)} — "מי נראה ברשת" ו"לא רשומים" אינם ידועים`));
+  if (e.ports) out.push(UI.note("warn", `‏/ports לא נקרא: ${esc(e.ports)} — "מה מותר על כל וילן" אינו ידוע`));
+  if (e.ssh) out.push(UI.note("warn", `‏/ssh לא נקרא: ${esc(e.ssh)}`));
+  if (e.monitor) out.push(UI.note("warn", `‏/monitor/machines לא נקרא: ${esc(e.monitor)} — משכפלים ובנייה אינם בתרשים`));
+  if (e.nodes) out.push(UI.note("warn", `‏/storage-nodes לא נקרא: ${esc(e.nodes)} — סניפים אינם בתרשים`));
+  const rb = NETCFG && NETCFG.rollback && typeof rollbackBanner === "function" ? rollbackBanner(NETCFG.rollback) : "";
+  return (rb ? `<div class="c12">${rb}</div>` : "") + out.map((h) => `<div class="c12">${h}</div>`).join("");
+}
+function netWarnCount() {
+  const nics = NETW.nics || [];
+  let k = Object.keys(NETW.err).length;
+  k += (NET || []).filter((d) => d.registered === false).length;
+  k += (NETW.nodes || []).filter((n) => !n.disabled_at && n.connected === false).length;
+  k += nics.filter((n) => n.dhcp_diverged || (netCfgRow(n.name) && (netCfgRow(n.name).mismatches || []).length)).length;
+  if (NETCFG && NETCFG.sourced === false) k += 1;
+  return k;
+}
+const NET_TABS = ["תרשים", "חיבורים פיזיים", "רשת הפצה", "פורטים"];
+function netTabClick(i) { return i === 3 ? "selectPageById('ports')" : `openNetwork(${i})`; }
+function netHeader(tab, { name, sub, pill, actions, icon = "network" }) {
+  const crumbs = [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "תשתית" }, { label: "רשת", onclick: "openNetwork(0)" }];
+  if (tab) crumbs.push({ label: NET_TABS[tab] });
+  return UI.objHeader({ crumbs, icon, name, sub, pill, actions: actions + `<button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>`, tabs: NET_TABS, tab, tabClick: netTabClick });
+}
+
+/* --- לשונית 0: התרשים --- */
+function netSelectedCard() {
+  const n = (NETW.nics || []).find((x) => x.name === NETW.sel);
+  if (!n) return "";
+  const enc = encodeId(n.name), cfg = netCfgRow(n.name), svc = netServicesOn(n), pr = netProbeStatus(n.name), ssh = netSshOf(n.name);
+  const live = netLiveAddrs(n);
+  const kv1 = UI.kv([["בפועל", netLiveChecked() || !cfg ? `<span class="mono">${esc(live.join(" · ") || "—")}</span> · ${netLinkStatus(n)}` : UI.status("unk", "לא נקרא")],
+    ["מוגדר", `<span class="mono">${esc(netConfiguredText(n))}</span>`], ["פער", netGapStatus(n)]]);
+  const kv2 = UI.kv([["DHCP", netDhcpCell(n)],
+    ["חכירה", esc(n.enabled || n.proxy ? `${n.lease || "—"} · שער ${n.gateway || "—"} · DNS ${(n.dns || []).join(", ") || "—"}` : "—")],
+    ["מי עוד עונה", UI.status(pr.cls, pr.text)]]);
+  const kv3 = UI.kv([["שירותים כאן", svc === null ? `<span class="muted" title="דורש API (#705)">דורש API (#705)</span>` : esc(svc.join(" · ") || "אף שירות לא מאזין כאן")],
+    ["SSH לשרת", UI.status(ssh.cls, ssh.text)],
+    ["פעולות", `<div class="acts on"><button class="btn sm" onclick="netEditAddress('${enc}')">עריכת כתובת</button><button class="btn sm" onclick="netEditDhcp('${enc}')">עריכת DHCP</button><button class="btn sm" onclick="netProbe('${enc}')">בדוק מי עונה</button></div>`]]);
+  return UI.card({ title: `${n.name} — ${n.description || "ללא תיאור"}`, small: "לחיצה על כרטיס בתרשים מחליפה", body: `<div class="kv3">${kv1}${kv2}${kv3}</div>` });
+}
+function networkDiagramTab() {
+  const nics = NETW.nics;
+  const deploy = netDeployNic();
+  const unreg = NET ? (NET || []).filter((d) => d.registered === false).length : null;
+  const nodes = NETW.nodes || [], down = nodes.filter((n) => !n.disabled_at && n.connected === false).length;
+  const sub = nics === null ? `‏/net/interfaces לא נקרא: ${esc(NETW.err.interfaces || "")}`
+    : esc([`${nics.length} כרטיסים`, `${nics.length} וילנים (לפי הגדרה — מודל וילן דורש API (#705))`, `DHCP הפצה: ${deploy ? `${deploy.name} · ${deploy.dhcp_live_label}` : "כבוי"}`,
+      unreg === null ? "לא רשומים: לא נקרא" : `${unreg} לא רשומים`, nodes.length ? `${nodes.length} סניפים${down ? ` · ${down} לא מגיבים` : ""}` : "אין סניפים"].join(" · "));
+  const warn = netWarnCount();
+  const pill = nics === null ? UI.pill("err", "לא נקרא") : warn ? UI.pill("warn", `${warn} אזהרות`) : UI.pill("ok", "אין אזהרות");
+  const actions = `<button class="btn" onclick="addNic()">+ כרטיס</button><button class="btn" onclick="previewDnsmasq().catch(e=>toast(e.message))">קבצי dnsmasq</button>`;
+  const header = netHeader(0, { name: "רשת", sub, pill, actions });
+  let body;
+  if (nics === null) body = `<div class="c12">${UI.note("err", `לא הצלחתי לקרוא את כרטיסי הרשת: ${esc(NETW.err.interfaces || "")} — אין מה לצייר`)}</div>`;
+  else if (!nics.length) body = `<div class="c12">${UI.empty("לא נמצאו כרטיסי רשת — השרת לא רואה אף כרטיס ב-/sys/class/net, ואין הגדרה שמורה", `<button class="btn" onclick="refreshPage()">רענון</button>`)}</div>`;
+  else {
+    const model = netDiagramModel();
+    body = netUnreadNotes()
+      + `<div class="c12 card"><div class="card-h"><span>מה מחובר לאן</span>${netLegend()}</div><div class="card-b netdiag">${netDiagramSvg(model)}</div></div>`
+      + netSelectedCard()
+      + `<div class="c12 cap">נמדד: כתובות ופער — /net/config · DHCP חי — /net/interfaces · מחוברים — /monitor/machines, /net, /storage-nodes · "מה מותר" — bind של /ports בלבד. וילנים ומדיניות — דורש API (#705). כיתות — v2.</div>`;
+  }
+  return `<div class="page">${header}<div class="body">${body}</div></div>`;
+}
+
+/* --- לשונית 1: חיבורים פיזיים --- */
+function netNicRow(n) {
+  const enc = encodeId(n.name), sel = NETW.sel === n.name;
+  const tags = (n.trunk ? ` ${UI.pill("warn", "רשת המכללה")}` : "") + (!n.present ? ` ${UI.pill("warn", "לא קיים במערכת")}` : "");
+  const name = `${UI.nameHtml(n.name, `${esc(n.description || "ללא תיאור")} · <span class="mono">${esc(n.mac || "—")}</span>`)}${tags}`;
+  const live = netLiveAddrs(n);
+  const actual = (NETCFG && !netLiveChecked()) ? UI.status("unk", "לא נקרא") : `<span class="mono">${esc(live.join(" · ") || "—")}</span>`;
+  const stop = "event.stopPropagation();";
+  // תוויות קצרות: 9 עמודות ב-1100px; "עריכת כתובת" המלא — בכרטיס הנבחר
+  const acts = `<div class="acts"><button class="btn sm" onclick="${stop}netEditAddress('${enc}')">כתובת</button><button class="btn sm" onclick="${stop}netEditDhcp('${enc}')">DHCP</button></div>`;
+  return { attrs: `data-nic="${esc(n.name)}"${sel ? ' class="sel"' : ""} onclick="netSelect('${enc}')" tabindex="0" aria-selected="${sel}"`,
+    cells: [name, netLinkStatus(n), actual, `<span class="mono">${esc(netConfiguredText(n))}</span>`, netGapStatus(n), netDhcpCell(n, false), netRoleLabel(n), netSshSwitch(n.name), acts] };
+}
+function netRoutesCard() {
+  if (!NETCFG) return UI.card({ title: "נתיבים סטטיים", cls: "c4", body: UI.note("warn", `‏/net/config לא נקרא${NETW.err.config ? `: ${esc(NETW.err.config)}` : ""}`) });
+  const live = new Set((NETCFG.live && NETCFG.live.routes) || []), checked = netLiveChecked();
+  const rows = [];
+  for (const nic of NETCFG.interfaces || []) (nic.routes || []).forEach((r, i) => {
+    const seen = live.has(`${r.destination}/${maskBits(r.netmask)} via ${r.gateway}`);
+    rows.push([`${UI.status(!checked ? "unk" : seen ? "ok" : "err", "")}<span class="mono">${esc(r.destination)}/${maskBits(r.netmask)}</span>`, `<span class="mono">${esc(r.gateway)}</span>`, `<span class="mono">${esc(nic.name)}</span>`,
+      `<div class="acts"><button class="btn sm danger" onclick="routeDeleteSheet('${encodeId(nic.name)}',${i})">מחק</button></div>`]);
+  });
+  const body = UI.datagrid({ columns: ["יעד", "דרך", "כרטיס", ""], rows, cls: "stable", empty: "אין נתיבים סטטיים — נתיב שנוסף כאן נשאר גם אחרי אתחול" });
+  return UI.card({ title: "נתיבים סטטיים", small: checked ? "נקודה ירוקה = בטבלת הניתוב" : "המצב בפועל לא נקרא", cls: "c4", acts: `<button class="btn sm" onclick="addRoute()">+ נתיב</button>`, body, flush: rows.length > 0 });
+}
+function netNicSelectedCard() {
+  const n = (NETW.nics || []).find((x) => x.name === NETW.sel);
+  if (!n) return UI.card({ title: "כרטיס", cls: "c8", body: UI.empty("בחר כרטיס בטבלה — הפרטים, הקובץ וההסבר על החזרה יופיעו כאן") });
+  const enc = encodeId(n.name), cfg = netCfgRow(n.name), rb = NETCFG && NETCFG.rollback;
+  const live = netLiveAddrs(n);
+  const kv = UI.kv([
+    ["כתובת בפועל", NETCFG && !netLiveChecked() ? UI.status("unk", "לא נקרא") : `<span class="mono">${esc(live.join(" · ") || "אין כתובת")}</span> <span class="cap">(נקרא ${esc(NETW.at)})</span>`],
+    ["מוגדר בקובץ", `<span class="mono">${esc(netConfiguredText(n))}</span>${cfg && cfg.mode_he ? ` <span class="cap">${esc(cfg.mode_he)}</span>` : ""}`],
+    ["שער", `<span class="mono">${esc((cfg && cfg.gateway) || "—")}</span>`],
+    ["DNS", `<span class="mono">${esc((cfg && (cfg.dns || []).join(", ")) || "—")}</span>`],
+    ["תיאור", `${esc(n.description || "ללא תיאור")} ${UI.link("עריכה", `netDescribe('${enc}')`)}`],
+    ["DHCP", netDhcpCell(n)],
+    ["SSH לשרת", UI.status(netSshOf(n.name).cls, netSshOf(n.name).text)],
+  ]);
+  const rbNote = !rb ? UI.note("warn", "‏/net/config לא נקרא — לא ידוע אם ההחזרה האוטומטית פעילה")
+    : rb.armed ? UI.note("info", `שינוי כתובת מוחל עם חלון חזרה של ${esc(rb.window_seconds)} שניות: אם הקונסולה לא מאשרת "אני עדיין רואה", ההגדרה הקודמת חוזרת לבד (${esc(rb.unit)}).`)
+    : UI.note("err", `ההחזרה האוטומטית (${esc(rb.unit)}) אינה פעילה: ${esc(rb.armed_detail)} — שינוי שיכול לנתק את הקונסולה ייחסם`);
+  const btns = `<div class="acts on" style="margin-top:10px"><button class="btn sm" onclick="netShowFile('${enc}')">תצוגה מקדימה של הקובץ</button><button class="btn sm primary" onclick="netEditAddress('${enc}')">עריכת כתובת</button><button class="btn sm" onclick="netEditDhcp('${enc}')">DHCP</button><button class="btn sm danger" onclick="netForget('${enc}')">שכחה</button></div>`;
+  return UI.card({ title: `${n.name} — ${n.description || "ללא תיאור"}`, small: "נבחר", cls: "c8", body: `<div class="kv2">${kv}<div>${rbNote}${btns}</div></div>` });
+}
+function networkNicsTab() {
+  const nics = NETW.nics;
+  const live = NETCFG && NETCFG.live;
+  const configured = (NETCFG ? NETCFG.interfaces || [] : []).filter((r) => r.mode !== "manual").length;
+  const sub = nics === null ? `‏/net/interfaces לא נקרא: ${esc(NETW.err.interfaces || "")}`
+    : esc([`${nics.length} כרטיסים`, NETCFG ? `${configured} מוגדרים` : "מוגדרים: לא נקרא",
+      !live ? "מצב בפועל: לא נקרא" : live.checked ? `מצב בפועל נקרא ${NETW.at}` : `מצב בפועל לא נקרא (${live.reason || ""})`,
+      live && live.checked ? `נתיבים: ${(live.routes || []).join(" · ") || "אין"} · DNS ${(live.nameservers || []).join(", ") || "אין"}` : ""].filter(Boolean).join(" · "));
+  const gaps = (nics || []).filter((n) => { const c = netCfgRow(n.name); return c && (c.mismatches || []).length; }).length;
+  const pill = nics === null ? UI.pill("err", "לא נקרא") : !NETCFG || !netLiveChecked() ? UI.pill("warn", "לא מאומת") : gaps ? UI.pill("err", `${gaps} לא תואמים`) : UI.pill("ok", "מוגדר = בפועל");
+  const header = netHeader(1, { name: "חיבורים פיזיים", sub, pill, actions: `<button class="btn primary" onclick="addNic()">+ כרטיס</button><button class="btn" onclick="addRoute()">+ נתיב סטטי</button>` });
+  let body;
+  if (nics === null) body = `<div class="c12">${UI.note("err", `לא הצלחתי לקרוא את כרטיסי הרשת: ${esc(NETW.err.interfaces || "")}`)}</div>`;
+  else {
+    const table = UI.datagrid({ columns: ["כרטיס", "קישור", "בפועל", "מוגדר", "פער", "DHCP", "תפקיד", "SSH לשרת", ""], rows: nics.map(netNicRow), cls: "stable",
+      empty: "לא נמצאו כרטיסי רשת — השרת לא רואה אף כרטיס, ואין הגדרה שמורה" });
+    body = netUnreadNotes() + `<div class="c12 card"><div class="card-b${nics.length ? " flush" : ""}">${table}</div></div>` + netNicSelectedCard() + netRoutesCard();
+  }
+  return `<div class="page">${header}<div class="body">${body}</div></div>`;
+}
+
+/* --- לשונית 2: רשת הפצה (DHCP) — קודם מה מחולק בפועל ומי עוד עונה, ורק אז עריכה --- */
+function netSeenRow(d) {
+  const macEnc = encodeId(d.mac), reg = d.registered !== false;
+  const secs = secondsSince(d.last_seen);
+  const seen = secs === null ? UI.status("unk", "זמן לא נקרא") : UI.status(secs < NET_ONLINE_SECONDS ? "ok" : "", secs < NET_ONLINE_SECONDS ? "מחובר" : ago(d.last_seen));
+  const who = reg ? UI.nameHtml(d.name || d.mac, esc([ROLE_HE[d.role] || d.role || "", d.group_label || ""].filter(Boolean).join(" · ")))
+    : `${UI.pill("warn", "לא רשום")}${d.description ? `<span class="sub">${esc(d.description)}</span>` : ""}`;
+  const acts = reg ? `<div class="acts"><button class="btn sm" onclick="openMachineDetail('${macEnc}')">פרטים</button></div>`
+    : `<div class="acts on"><button class="btn sm primary" onclick="netRegister('${macEnc}')">רשום</button><button class="btn sm" onclick="netDeviceDescribe('${macEnc}')">תיאור</button><button class="btn sm danger" onclick="netDeviceForget('${macEnc}')">הסר</button></div>`;
+  return { attrs: `data-mac="${esc(d.mac)}"${reg ? "" : ' class="unreg"'}`, cells: [who, `<span class="mono">${esc(d.mac)}</span>`, d.ip ? `<span class="mono">${esc(d.ip)}</span>` : `<span class="muted">—</span>`, seen, bootWhere(d.boot), acts] };
+}
+function netOtherNicRow(n) {
+  const enc = encodeId(n.name), pr = netProbeStatus(n.name);
+  return [`${UI.nameHtml(n.name, esc(n.description || "ללא תיאור"))}${n.trunk ? ` ${UI.pill("warn", "רשת המכללה")}` : ""}`, netDhcpCell(n), esc(n.enabled ? "מופעל" : n.proxy ? "proxy" : "כבוי"),
+    `${UI.status(pr.cls, pr.text)}`, `<div class="acts on"><button class="btn sm" onclick="netProbe('${enc}')">בדוק</button><button class="btn sm" onclick="netEditDhcp('${enc}')">${n.proxy ? "עריכה" : "הגדר כרשת הפצה"}</button></div>`];
+}
+function networkDeployTab() {
+  const nics = NETW.nics, focus = netDeployNic();
+  const pr = focus ? netProbeStatus(focus.name) : null;
+  const inNet = focus && NET ? NET.filter((d) => d.ip && nicHasIp(focus, d.ip)).length : null;
+  const liveState = focus ? (focus.dhcp_live || {}).state : "";
+  const sub = nics === null ? `‏/net/interfaces לא נקרא: ${esc(NETW.err.interfaces || "")}`
+    : !focus ? "אין כרטיס מוגדר כרשת הפצה, ואין כרטיס שמשרת DHCP כרגע — בחר כרטיס למטה"
+    : esc([focus.name, netNetworkOf(focus) || "ללא כתובת", `dnsmasq: ${focus.dhcp_live_label}`, NET === null ? "נראו ברשת: לא נקרא" : `${inNet} נראו ברשת ההפצה`, `מי עוד עונה: ${pr.text}`].join(" · "));
+  const pill = nics === null ? UI.pill("err", "לא נקרא") : !focus ? UI.pill("", "כבוי")
+    : focus.dhcp_diverged ? UI.pill("warn", "לא תואם למצב הפעיל") : liveState === "serving" ? UI.pill("ok", "משרת") : liveState === "unknown" ? UI.pill("err", "לא נקרא") : UI.pill("warn", focus.dhcp_live_label);
+  const editTarget = focus || (nics || []).find((n) => n.present && !n.trunk) || (nics || [])[0];
+  const actions = (editTarget ? `<button class="btn primary" onclick="netEditDhcp('${encodeId(editTarget.name)}')">${focus ? "עריכת DHCP" : "הגדר כרשת הפצה"}</button>` : "")
+    + (focus ? `<button class="btn" onclick="netProbe('${encodeId(focus.name)}')">בדוק מי עונה</button>` : "")
+    + `<button class="btn" onclick="previewDnsmasq().catch(e=>toast(e.message))">קבצי dnsmasq</button>`;
+  const header = netHeader(2, { name: "רשת הפצה — DHCP", sub, pill, actions, icon: "deploy" });
+  let body;
+  if (nics === null) body = `<div class="c12">${UI.note("err", `לא הצלחתי לקרוא את כרטיסי הרשת: ${esc(NETW.err.interfaces || "")}`)}</div>`;
+  else {
+    const stored = focus ? `${focus.enabled ? "מופעל" : focus.proxy ? "proxy" : "כבוי"} — ` : "";
+    const match = !focus ? UI.status("", "אין") : !(focus.dhcp_live || {}).checked ? UI.status("unk", `${stored}המצב הפעיל לא נקרא`)
+      : focus.dhcp_diverged ? UI.status("warn", `${stored}לא תואם למצב הפעיל`) : UI.status("ok", `${stored}תואם למצב הפעיל`);
+    const serves = !focus ? UI.empty("אין כרטיס מוגדר כרשת הפצה — \"הגדר כרשת הפצה\" על אחד הכרטיסים למטה. DHCP הוא ההגדרה המסוכנת ביותר במערכת (#53): השרת בודק לפני ההדלקה מי כבר עונה.")
+      : UI.kv([["כרטיס", `<span class="mono">${esc(focus.name)}</span> ${esc(focus.description ? `— ${focus.description}` : "")}`], ["כתובת השרת", `<span class="mono">${esc(focus.server_ip || "—")}</span>`],
+        ["טווח", `<span class="mono">${esc(focus.range_start && focus.range_end ? `${focus.range_start} – ${focus.range_end}` : "—")}</span>`], ["מסכה", `<span class="mono">${esc(focus.netmask || "—")}</span>`],
+        ["שער", `<span class="mono">${esc(focus.gateway || "—")}</span>`], ["DNS", `<span class="mono">${esc((focus.dns || []).join(", ") || "—")}</span>`], ["חכירה", esc(focus.lease || "—")],
+        ["בפועל", netDhcpCell(focus)], ["שמור בקונסולה", match], ["מי עוד עונה", UI.status(pr.cls, pr.text)]]);
+    const seenRows = (NET || []).map(netSeenRow);
+    const seenBody = NET === null ? UI.note("err", `‏/net לא נקרא: ${esc(NET_ERR || NETW.err.net || "")} — אין לדעת מי קיבל כתובת`)
+      : UI.datagrid({ columns: ["מכונה", "MAC", "IP", "נראה", "שלב אתחול", ""], rows: seenRows, cls: "stable", empty: "אף מכונה עוד לא דיברה עם השרת — כשמחשב יעלה ב-PXE הוא יופיע כאן" });
+    const others = (nics || []).filter((n) => n !== focus);
+    const othersTable = UI.datagrid({ columns: ["כרטיס", "מצב DHCP חי", "שמור בקונסולה", "מי עוד עונה", ""], rows: others.map(netOtherNicRow), cls: "stable", empty: "אין כרטיסים נוספים" });
+    body = netUnreadNotes()
+      + UI.card({ title: "מה השרת מחלק", small: focus ? "כפי שנקרא מקובץ dnsmasq ומהשירות" : "", cls: "c4", body: serves })
+      + UI.card({ title: "מי קיבל כתובת", small: `מה-hello ומ-net_devices · ${NET_ONLINE_SECONDS} שניות = "מחובר" · חכירות dnsmasq עצמן — דורש API`, cls: "c8", body: seenBody, flush: NET !== null && seenRows.length > 0 })
+      + UI.card({ title: "כרטיסים אחרים", small: "DHCP הוא בדיוק על כרטיס אחד — ההפצה", cls: "c12", body: othersTable, flush: others.length > 0 });
+  }
+  return `<div class="page">${header}<div class="body">${body}</div></div>`;
+}
+
+function networkPage(tab = 0) {
+  if (NETW.nics === null && !Object.keys(NETW.err).length) return pagePlaceholder();
+  PORT_ACTIONS.clear();
+  if (tab === 1) return networkNicsTab();
+  if (tab === 2) return networkDeployTab();
+  return networkDiagramTab();
+}
+
+/* ניווט: מהעץ (הצומת "רשת" = הדף; הילדים = לשונית; כרטיס בעץ = לשונית 1 עם הכרטיס נבחר), ומדף הפורטים. */
+function openNetwork(tab = 0, nicEnc = null, el = null) {
+  if (nicEnc) { let name = nicEnc; try { name = decodeURIComponent(nicEnc); } catch (e) {} NETW.sel = name; }
+  if (!pageAllowed("network")) return;
+  const t = Number(tab) || 0;
+  if (current !== "network") selectPage(el || document.querySelector('.inventory-node[data-page="network"]'), "network");
+  else if (el) markTreeSelection(el, "network");
+  if (t !== currentTab) activateTab(t); else renderCurrent();
+}
 function populateSidebarNics() {
   const tree = document.getElementById("nicTree");
   if (!tree) return;
-  const nics = (typeof NICS !== "undefined" && NICS) ? NICS : [];
+  const nics = NETW.nics || [];
   const parent = document.getElementById("nicNode") || tree.previousElementSibling;
-  const arrow = document.getElementById("nicTreeArrow")
-    || (parent && parent.querySelector(".tree-arrow, .tree-arrow-sp"));
+  const arrow = document.getElementById("nicTreeArrow") || (parent && parent.querySelector(".tree-arrow, .tree-arrow-sp"));
   if (!nics.length) {
-    tree.innerHTML = "";
-    tree.setAttribute("hidden", "");
-    if (arrow) {
-      arrow.className = "tree-arrow-sp";
-      arrow.textContent = "";
-      arrow.onclick = null;
-    }
+    tree.innerHTML = ""; tree.setAttribute("hidden", "");
+    if (arrow) { arrow.className = "tree-arrow-sp"; arrow.textContent = ""; arrow.onclick = null; }
     return;
   }
   if (arrow) {
     const open = !tree.hasAttribute("hidden");
-    arrow.className = "tree-arrow";
-    arrow.dataset.open = String(open);
-    arrow.textContent = open ? "▾" : "▸";
-    arrow.onclick = (event) => {
-      event.stopPropagation();
-      toggleInventoryGroup(parent, "nicTree");
-    };
+    arrow.className = "tree-arrow"; arrow.dataset.open = String(open); arrow.textContent = open ? "▾" : "▸";
+    arrow.onclick = (event) => { event.stopPropagation(); toggleInventoryGroup(parent, "nicTree"); };
   }
   tree.innerHTML = nics.map((n) => {
-    const on = (current === "nic" && NIC_HIGHLIGHT === n.name) ? " active" : "";
-    return `<div class="inventory-node${on}" role="treeitem" tabindex="0" onclick="selectSidebarNic('${esc(n.name)}')"><span class="tree-arrow-sp"></span><span>${uiIcon("network")}</span><span dir="ltr">${esc(n.name)}</span></div>`;
+    const on = (current === "network" && currentTab === 1 && NETW.sel === n.name) ? " active" : "";
+    return `<div class="inventory-node${on}" role="treeitem" tabindex="0" onclick="openNetwork(1,'${encodeId(n.name)}',this)"><span class="tree-arrow-sp"></span><span>${uiIcon("network")}</span><span dir="ltr">${esc(n.name)}</span></div>`;
   }).join("");
 }
-
-function selectSidebarNic(name) {
-  NIC_HIGHLIGHT = name;
-  if (current !== "nic") {
-    selectPageById("nic");
-    return;
-  }
-  renderCurrent();
-  const card = document.querySelector(`#content .card[data-nic="${CSS.escape(name)}"]`);
-  if (card) card.scrollIntoView({ block: "nearest" });
-}
-
-async function loadNetPages() {
-  try {
-    await loadNet();
-  } catch (e) {
-    toast("טעינת כרטיסי הרשת נכשלה: " + e.message);
-    return;
-  }
-  try {
-    await loadNetcfg();
-  } catch (e) {
-    if (ME && ME.role === "admin") toast("טעינת הגדרות הרשת נכשלה: " + e.message);
-  }
-  populateSidebarNics();
-  if (current === "nic" || current === "netdeploy") renderCurrent();
-  if (NIC_HIGHLIGHT) {
-    const card = document.querySelector(`#content .card[data-nic="${CSS.escape(NIC_HIGHLIGHT)}"]`);
-    if (card) card.scrollIntoView({ block: "nearest" });
-  }
-}
-
+/* net.js (אחרי שמירת DHCP) ו-netcfg.js (אחרי כתובת/נתיב/אישור החזרה) קוראים לזה. */
 function refreshNetPages() {
   populateSidebarNics();
-  if (current !== "nic" && current !== "netdeploy") return;
+  if (current !== "network") return;
   if (refreshNetPages._busy) return;
   refreshNetPages._busy = true;
-  try { renderCurrent(); }
+  try { loadNetwork().catch((e) => toast("רענון הרשת נכשל: " + e.message)); }
   finally { refreshNetPages._busy = false; }
 }
-
+/* אחרי כל ציור של דף הרשת: הספירה לאחור של ההחזרה (netcfg.js) — היא חיה ב-DOM. */
 function wireNetPage() {
-  const list = (NETCFG && NETCFG.interfaces) || [];
-  const byName = new Map(list.map((r) => [r.name, r]));
-  const fallback = (name) => (typeof bodyOf === "function"
-    ? bodyOf({ name, mode: "manual", address: "", netmask: (typeof MASKS !== "undefined" && MASKS[0]) || "255.255.255.0",
-               gateway: "", dns: [], routes: [] }, {})
-    : { name, mode: "manual", address: "", netmask: "255.255.255.0", gateway: "", dns: [], routes: [] });
-  document.querySelectorAll("[data-net-edit]").forEach((b) => {
-    b.onclick = () => editAddress(byName.get(b.dataset.netEdit) || fallback(b.dataset.netEdit));
-  });
-  document.querySelectorAll("[data-net-preview]").forEach((b) => {
-    b.onclick = () => showFile(byName.get(b.dataset.netPreview)
-      || { name: b.dataset.netPreview, mode: "manual", address: "",
-           netmask: (typeof MASKS !== "undefined" && MASKS[0]) || "255.255.255.0",
-           gateway: "", dns: [], routes: [] });
-  });
-  if (typeof wireNicActions === "function") wireNicActions(typeof NICS !== "undefined" ? NICS : []);
+  if (current !== "network") return;
   if (typeof startCountdown === "function") startCountdown();
-  if (typeof renderRoutes === "function") renderRoutes();
-  populateSidebarNics();
-}
-
-function editDeployNic() {
-  const rows = nicUnion();
-  const enabled = rows.filter(({ n }) => n.enabled);
-  const serving = rows.filter(({ n }) => (n.dhcp_live || {}).state === "serving");
-  const focus = enabled[0] || serving[0] || rows[0];
-  if (!focus) { toast("אין כרטיס לעריכה"); return; }
-  editNic(focus.n);
-}
-
-function dhcpStateLine(n) {
-  const live = (n && n.dhcp_live) || { state: "unknown" };
-  const state = live.state || "unknown";
-  const cls = dhcpLiveClass(state);
-  const statusCls = cls === "ok" ? "ok" : cls === "warn" ? "warn" : "";
-  const label = n.dhcp_live_label
-    || (state === "serving" ? "משרת"
-      : state === "configured_not_running" ? "מוגדר, השירות אינו פועל"
-      : state === "off" ? "כבוי" : "לא ידוע");
-  const detail = live.detail ? ` — ${esc(live.detail)}` : "";
-  const stored = `שמורה בקונסולה: ${n.enabled ? "מופעל" : n.proxy ? "proxy" : "כבוי"}`;
-  const diverged = n.dhcp_diverged
-    ? `<div class="notice warn">המוגדר אינו תואם למצב הפעיל</div>` : "";
-  return `<div class="metric"><div><strong>מצב DHCP</strong><span>${esc(stored)}</span></div><div class="status ${statusCls}"><i></i>${esc(label)}${detail}</div></div>${diverged}`;
-}
-
-function netdeploy() {
-  const nics = typeof NICS !== "undefined" ? NICS : null;
-  if (nics == null || (!nics.length && !NETCFG)) return pagePlaceholder();
-  const admin = ME && ME.role === "admin";
-  const rows = nicUnion();
-  const enabled = rows.filter(({ n }) => n.enabled);
-  const serving = rows.filter(({ n }) => (n.dhcp_live || {}).state === "serving");
-  const focus = enabled[0] || serving[0] || null;
-  const picker = rows.map(({ n }) => {
-    const live = n.dhcp_live || { state: "unknown" };
-    const cls = dhcpLiveClass(live.state);
-    const statusCls = cls === "ok" ? "ok" : cls === "warn" ? "warn" : "";
-    const mark = n.enabled ? " <span class=\"tag green\">רשת הפצה</span>" : "";
-    const btn = admin
-      ? `<button class="btn" data-nic-edit="${esc(n.name)}">${n.enabled ? "עריכת DHCP" : "הגדר כרשת הפצה"}</button>`
-      : "";
-    return `<div class="list-row"><div class="list-main"><strong dir="ltr">${esc(n.name)}</strong><small>${esc(n.dhcp_live_label || live.state)}${mark}</small></div><div class="list-side"><span class="status ${statusCls}"><i></i>${esc(n.dhcp_live_label || "לא ידוע")}</span> ${btn}</div></div>`;
-  }).join("") || `<div class="empty">לא נמצאו כרטיסי רשת.</div>`;
-
-  let detail;
-  if (!focus) {
-    detail = `<div class="empty">אין כרטיס מוגדר כרשת הפצה, ואין כרטיס שמשרת DHCP כרגע.</div>`;
-  } else {
-    const n = focus.n;
-    const range = (n.range_start && n.range_end)
-      ? `${n.range_start}–${n.range_end}` : "—";
-    detail = `${dhcpStateLine(n)}
-      <div class="statrow">
-        <div class="statbox"><div class="n mono" dir="ltr">${esc(n.name)}</div><div class="l">כרטיס</div></div>
-        <div class="statbox"><div class="n mono" dir="ltr">${esc(n.server_ip || "—")}</div><div class="l">כתובת השרת</div></div>
-        <div class="statbox"><div class="n mono" dir="ltr">${esc(range)}</div><div class="l">טווח DHCP</div></div>
-      </div>
-      <div class="list" style="margin-top:12px">
-        <div class="list-row"><div class="list-main"><strong>מסכה</strong></div><div class="list-side mono" dir="ltr">${esc(n.netmask || "—")}</div></div>
-        <div class="list-row"><div class="list-main"><strong>שער</strong></div><div class="list-side mono" dir="ltr">${esc(n.gateway || "—")}</div></div>
-        <div class="list-row"><div class="list-main"><strong>DNS</strong></div><div class="list-side mono" dir="ltr">${esc((n.dns || []).join(", ") || "—")}</div></div>
-        <div class="list-row"><div class="list-main"><strong>חכירה</strong></div><div class="list-side mono" dir="ltr">${esc(n.lease || "—")}</div></div>
-      </div>
-      ${admin ? `<div class="action-strip"><button class="btn primary" data-nic-edit="${esc(n.name)}">עריכת DHCP</button><button class="btn" onclick="previewDnsmasq()">קבצי dnsmasq</button></div>` : ""}`;
-  }
-
-  return `<div class="grid">${netBannerHtml()}
-<div class="span-8"><div class="card"><div class="card-h">רשת הפצה</div><div class="card-b">${detail}</div></div></div>
-<div class="span-4"><div class="card"><div class="card-h">כרטיסים</div><div class="card-b"><div class="list">${picker}</div></div></div></div>`;
 }
 
 function healthCheckById(id) {
@@ -3860,7 +4099,7 @@ function portRows() {
         act: serving === null ? () => toast("‏/net/interfaces לא נקרא: " + portsNicsError)
           : !p.enabled ? portDhcpOn
           : serving.length === 1 ? () => portDhcpOff(serving[0])
-          : () => selectPageById("nic") });
+          : () => openNetwork(1) });
     } else if (p.id && p.id.startsWith("ssh_server:")) {
       // #1015: שורה מוכנה לכל כרטיס — toggle_url אמיתי (לא תבנית), בלי fetch נוסף.
       const name = p.interface || p.id.slice("ssh_server:".length);
@@ -3922,10 +4161,19 @@ function portRows() {
 
 // שם כרטיס/כתובת בודדת (מחרוזת) — mono LTR; טקסט עברי ("בתחנה, לא בשרת") —
 // רגיל. רשימת bind מהשרת (#1015, תמיד מערך) — כל הכתובות, mono LTR; ריק = "—".
+/* רשימת כתובות ההאזנה (#1015 `bind`): שורה לכתובת, IPv4 קודם, link-local של IPv6
+   מקופל ל-"+N" עם tooltip — אחרת שורת TFTP (8 כתובות) מתחה את הטבלה מעבר למסך
+   והמתגים נעלמו מימין (נדב 17/09). */
 function portNicHtml(nic) {
   if (Array.isArray(nic)) {
     if (!nic.length) return `<span class="muted">—</span>`;
-    return `<span class="mono">${nic.map((a) => esc(a)).join(", ")}</span>`;
+    const main = nic.filter((a) => !a.startsWith("[fe80") && !a.startsWith("[::1]"));
+    const rest = nic.filter((a) => !main.includes(a));
+    const shown = (main.length ? main : nic).slice(0, 4);
+    const hidden = nic.filter((a) => !shown.includes(a));
+    const more = hidden.length
+      ? ` <span class="muted" title="${esc(hidden.join(" · "))}">+${hidden.length}</span>` : "";
+    return `<span class="mono bindlist" dir="ltr">${shown.map((a) => esc(a)).join("<br>")}</span>${more}`;
   }
   if (!nic) return `<span class="muted" title="${PORT_API_NEEDED}: כתובת ההאזנה">—</span>`;
   return /^[ -~]+$/.test(nic) ? `<span class="mono">${esc(nic)}</span>` : esc(nic);
@@ -3959,8 +4207,7 @@ function ports() {
   const header = UI.objHeader({
     crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "תשתית" }, { label: "רשת" }, { label: "פורטים" }],
     icon: "network", name: "פורטים", sub, pill, actions: `<button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>`,
-    tabs: ["חיבורים פיזיים", "רשת הפצה", "פורטים"], tab: 2,
-    tabClick: (i) => ["selectPageById('nic')", "selectPageById('netdeploy')", "activateTab(2)"][i] });
+    tabs: NET_TABS, tab: 3, tabClick: (i) => i === 3 ? "activateTab(3)" : `openNetwork(${i})` });   // ‏#954 גל 8: לשונית של אובייקט הרשת
   const body = !PORTS
     ? UI.note("err", `לא הצלחתי לקרוא את רשימת הפורטים: ${esc(portsError)}`)
     : UI.datagrid({ columns: ["שירות", "פורט", "מי מתחבר", "על איזה כרטיס", "מצב נמדד", "מתג", "מה קורה אם מכבים", "API"], rows: rows.map(portRow), cls: "dense" });
@@ -4011,7 +4258,7 @@ function monitorPage() {
   const pill = !MONITOR ? UI.pill("err", "לא נקרא") : enabled ? UI.pill("ok", "המתג דלוק") : UI.pill("warn", "המתג כבוי");
   const sw = !MONITOR ? "" : `<span class="swrow"><button type="button" class="sw${enabled ? " on" : ""}" role="switch" aria-checked="${enabled ? "true" : "false"}" aria-label="מוניטור לתחנות" onclick="monitorToggle(${enabled ? "false" : "true"})"></button><span class="cap">מוניטור לתחנות${enabled ? "" : " · 🔒 הדלקה = הקלדת imagectl.monitor"}</span></span>`;
   const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "תשתית" }, { label: "מוניטור" }],
-    icon: "machine", name: "מוניטור", sub, pill, actions: sw + `<button class="btn" onclick="loadMonitor()">רענון</button>` });
+    icon: "machine", name: "מוניטור", sub, pill, actions: sw + `<button class="btn" onclick="loadMonitor()">${uiIcon("refresh")} רענון</button>` });
   let body;
   if (!MONITOR) body = UI.note("err", `לא הצלחתי לקרוא את רשימת המוניטור: ${esc(monitorError)}`);
   else {
@@ -4165,14 +4412,13 @@ const pages = {
   deploy: { crumb: "סבב הפצה", title: "סבב הפצה", tabs: deployTabs(), render: deploy, load: loadDeploy, own: true },
   machines: { crumb: "מחשבים", title: "מחשבים", tabs: ["כל המחשבים", "נראו ברשת", "דיסקים אדומים"], render: machines, load: loadMachines, own: true },
   health: { crumb: "בריאות ושירותים", title: "בריאות ושירותים", tabs: [], render: health, load: loadHealth, own: true },   // ‏#954 גל 5: בלי לשוניות — בדיקות + עדכון
-  network: { crumb: "רשת", title: "רשת", desc: "הגדרות כתובת, gateway, DNS וממשק שידור", tabs: ["הגדרות", "פורטיים", "מולטיקאסט"], render: network, load: loadNetcfgData },
+  // ‏#954 גל 8: רשת כאובייקט — תרשים · חיבורים פיזיים · רשת הפצה · פורטים (=pages.ports). deploy: לא מוצג (pageAllowed).
+  network: { crumb: "רשת", title: "רשת", tabs: NET_TABS, render: (i) => networkPage(i), load: loadNetwork, own: true },
   permissions: { crumb: "הרשאות", title: "הרשאות", tabs: [], render: permissions, load: loadUsersData, own: true },   // ‏#954 גל 6: טבלה אחת + מטריצה
   logs: { crumb: "יומן", title: "יומן", tabs: [], render: logs, load: loadJournalData, own: true },   // ‏#954 גל 6: יומן אחד עם סינון בדף
   monitor: { crumb: "מוניטור", title: "מוניטור", tabs: [], render: monitorPage, load: loadMonitor, own: true },   // ‏#954 גל 6: הרשימה כטבלה
   drivers: { crumb: "דרייברים", title: "דרייברים", tabs: ["חבילות", "כיסוי לפי מכונה"], render: (i) => driversPage(i), load: () => loadDrivers(), own: true },   // ‏#954 גל 6; lazily: drivers.js loads after this file
-  netdeploy: { crumb: "רשת הפצה", title: "רשת הפצה", desc: "איזה כרטיס משרת את וילן ההפצה, ומצב ה-DHCP כפי שנקרא בפועל", tabs: ["סקירה"], render: netdeploy, load: loadNetPages },
   ports: { crumb: "פורטים", title: "פורטים", tabs: ["חיבורים פיזיים", "רשת הפצה", "פורטים"], render: ports, load: loadPorts, own: true },   // ‏#954 גל 5: מתג בכל שורה
-  nic: { crumb: "חיבורים פיזיים", title: "חיבורים פיזיים", desc: "כרטיסים, כתובות חיות מול מוגדרות, וכתובת השרת בכל כרטיס", tabs: ["סקירה"], render: nic, load: loadNetPages },
 };
 let current = "home";
 let currentTab = 0;
@@ -4180,10 +4426,7 @@ let searchQuery = "";
 
 function tabRender(pageId, index) {
   const renderers = {
-    network: [network, emptyDataCard, emptyDataCard],
     branch: BRANCH_VIEWS.map(([view]) => () => `<div id="branch-view" class="stack" data-view="${view}">${pagePlaceholder()}</div>`),
-    netdeploy: [netdeploy],
-    nic: [nic],
   };
   const fn = renderers[pageId]?.[index];
   return fn ? fn() : `<div class="card"><div class="card-b">אין תוכן עבור הכרטיס הזה.</div></div>`;
@@ -4225,7 +4468,7 @@ function selectPage(el, id) {
   document.getElementById("content").innerHTML = layout(page, 0);
   const search = document.getElementById("globalSearch");
   if (search) search.value = searchQuery || "";
-  if (id === "nic" || id === "netdeploy") wireNetPage();
+  if (id === "network") wireNetPage();
   wireRestoredPage();
   if (page.load) page.load();
   closeSidebar();
@@ -4244,7 +4487,7 @@ function selectInventory(el, id) {
   document.getElementById("content").innerHTML = layout(page, 0);
   const search = document.getElementById("globalSearch");
   if (search) search.value = searchQuery || "";
-  if (id === "nic" || id === "netdeploy") wireNetPage();
+  if (id === "network") wireNetPage();
   wireRestoredPage();
   if (page.load) page.load();
 }
@@ -4359,7 +4602,7 @@ function activateTab(index) {
   document.getElementById("content").innerHTML = layout(page, currentTab);
   const search = document.getElementById("globalSearch");
   if (search) search.value = searchQuery || "";
-  if (current === "nic" || current === "netdeploy") wireNetPage();
+  if (current === "network") wireNetPage();
   wireRestoredPage();
 }
 
@@ -4379,9 +4622,6 @@ function openAction() {
   if (!menu) return;
   const actions = {
     images: [["אימג׳ חדש", "openCapture().catch(e => toast(e.message))"], ["קליטת אימג׳", "openImageIngest()"], ["אימות ספרייה", "soon()"]],
-    network: [["בדיקת קישוריות", "soon()"], ["שמור הגדרות", "saveNetwork()"], ["Rollback", "soon()"]],
-    nic: [["הוספת כרטיס", "addNic()"], ["רענון", "refreshPage()"]],
-    netdeploy: [["עריכת DHCP", "editDeployNic()"], ["קבצי dnsmasq", "previewDnsmasq()"]],
   };
   menu.innerHTML = (actions[current] || []).map(([label, fn]) =>
     `<button type="button" role="menuitem" onclick="${fn};closeActionMenu()">${label}</button>`).join("");
