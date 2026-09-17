@@ -49,7 +49,7 @@ from .db import connect
 from .health import create_health_router
 from .update import (PUBLIC_UPDATE_URL, create_update_router, current_version,
                      default_hooks as default_update_hooks)
-from .hello import make_resolver, off_deploy_vlan
+from .hello import make_resolver, off_deploy_vlan, self_probe
 from .images import ImageLibrary
 from .kiosk import create_kiosk_router
 from . import room
@@ -83,6 +83,18 @@ def _off_vlan_decline(mac: str, step: str) -> bool:
     האתחול, רועש ביומן), ולכן האבחון נשאר אמין בלי להפיל אתחול."""
     log.warning("boot step %s for %s not recorded — off deployment vlan (#584)",
                 step, mac)
+    return False
+
+
+def _probe_decline(mac: str, step: str) -> bool:
+    """רושם שאינו רושם: הפירור `menu` של הבדיקה העצמית של השרת (‏#976).
+
+    אותה צורה כמו `_off_vlan_decline`, ומאותו טעם: הפונה אינו המכונה.
+    בלי זה כל כניסה לקונסולה איפסה את שביל הפירורים של מכונה רשומה
+    ל-"תפריט האתחול נמסר (1/9)" — גם כשהיא הייתה ב-`agent-hello` רגע
+    קודם. ‏info ולא warning: זה המצב הרגיל, פעם בכל מסך בריאות."""
+    log.info("boot step %s for %s not recorded — server's own probe (#976)",
+             step, mac)
     return False
 
 
@@ -388,6 +400,10 @@ def _boot_asgi(rt: ServerRuntime):
         # שמאתחלת מחוץ לווילן מאבדת את שביל האבחון שלה. ‏boot/ אינו מכיר
         # טופולוגיית רשת, ולכן ההחלטה יושבת כאן, בדיוק כמו ה-resolver.
         off_vlan = off_deploy_vlan(scope, rt.server_base)
+        # ‏#976: הבדיקה העצמית של השרת מסומנת, ומכובדת רק כשהפונה הוא
+        # השרת עצמו (‏`self_probe`). היא מקבלת את התפריט האמיתי ואינה
+        # רושמת דבר — לא `net_seen`, לא פירור ולא ספירת אתחול.
+        probe = self_probe(scope)
         await create_boot_asgi(
             # ‏#536: הסקופ של **הבקשה הזו** נכנס ל-resolver, שרק ממנו
             # אפשר לדעת על איזו מכתובות השרת היא התקבלה. הספירה של
@@ -412,7 +428,8 @@ def _boot_asgi(rt: ServerRuntime):
             # ‏#400: שביל הפירורים. מוזרק כמו ה-resolver — ‏`boot/` אינו
             # מכיר DB, והשרת אינו מכיר את תחביר ה-GRUB. ‏#584: מחוץ לווילן
             # ההפצה הרושם דוחה את הפירור בגלוי במקום לכתוב אותו.
-            record=(_off_vlan_decline if off_vlan
+            record=(_probe_decline if probe
+                    else _off_vlan_decline if off_vlan
                     else lambda mac, step: boottrace.record(conn, mac, step)),
         )(scope, receive, send)
 

@@ -180,12 +180,13 @@ def test_images_tree_node_uses_the_folder_icon():
 
 # ---------- #954 גל 2: ספריית האימג'ים ----------
 
-def test_static_includes_are_at_7_1():
-    """גל 2 = ‏7.0; גל 3 (מחשבים) מחליף שוב JS+CSS+HTML — `?v=` עולה ל-7.1
-    (מטמון הדפדפן). שוויון על כל ה-includes — bump חלקי הוא הבאג."""
+def test_static_includes_are_at_7_2():
+    """גל 2 = ‏7.0; גל 3 (מחשבים) = ‏7.1; גל 3א (משכפלים + מחשבי בנייה) מחליף
+    שוב JS+CSS+HTML — `?v=` עולה ל-7.2 (מטמון הדפדפן). שוויון על כל
+    ה-includes — bump חלקי הוא הבאג."""
     page = _index()
     versions = {float(v) for v in re.findall(r'\?v=(\d+\.\d+)"', page)}
-    assert versions == {7.1}, versions
+    assert versions == {7.2}, versions
 
 
 def test_old_images_page_code_is_gone():
@@ -230,4 +231,29 @@ def test_machines_page_is_one_grouped_table_from_the_api_only():
     assert "sda" not in block and "sdb" not in block, "שם sd* בדף המחשבים"
     css = (STATIC / "console.css").read_text(encoding="utf-8")
     for sel in (".page .dg tr.group td .grp{", ".page .disks{", ".page .disk.err{", ".page .dg-bar select{"):
+        assert sel in css, sel
+
+
+# ---------- #954 גל 3א: מחשבי שיכפול ומחשבי בנייה כאובייקטים ----------
+
+def test_cloners_and_builders_objects_are_built_on_group_page_from_the_api_only():
+    """הקבוצות הקבועות כאובייקטים על `groupPage` של גל 3 (לא מערכת חדשה):
+    גריד חריצים "דיסק N · SATA N-1" (לעולם לא sd*), צבע SMART ירוק רק על
+    `ok`, אדום מזיכרון הכשלים עם "נקה", מגירות מ-`/room` בסבב ומ-`/machines`
+    בלעדיו; מחשבי בנייה — קליטה בתהליך מ-`/tasks` עם ביטול מאחורי הקלדת שם.
+    מה שאין לו API — כיבוי כולם, WoL למחשב יחיד, שלבי הקליטה, תיקייה,
+    היסטוריה — "דורש API" בטקסט, לא כפתור מנוטרל ולא נתון מומצא."""
+    js = _console_js()
+    for needed in ("function clonersView(", "function buildersView(", "function machineSlots(", "function slotClass(",
+                   "function slotHtml(", "function captureNowCard(", "function capturesTableCard(", "function cancelCaptureVerified(",
+                   "function refreshGroupLive(", 'api("/room")', "drawer_list", 'UI.soon("כיבוי כולם")', "verify: { label: \"הקלד את שם האימג'\"",
+                   'return "SMART לא נבדק"', "SATA ${s.n - 1}", "דורש API"):
+        assert needed in js, needed
+    block = js[js.index("/* ---------- #954 גל 3א"):js.index("/* ---------- לשונית \"נראו ברשת\"")]
+    assert "disabled" not in block, "כפתור מנוטרל במקום 'דורש API' (README §8)"
+    assert "sda" not in block and "sdb" not in block, "שם sd* בקוד המשכפלים/הבנייה"
+    assert 'd.smart === "ok"' in block and 'return ""' in block, "'לא נבדק' חייב להישאר אפור"
+    assert "function groupPage(g, tab = 0)" in js and js.count("function groupPage(") == 1, "אובייקט אחד לכל הקבוצות"
+    css = (STATIC / "console.css").read_text(encoding="utf-8")
+    for sel in (".page .mgrid{", ".page .mgrid.big{", ".page .slots{", ".page .disk.run{", ".page .disk.empty{", ".page .legend i.sw-err{", ".page .cap-now{"):
         assert sel in css, sel

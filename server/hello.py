@@ -61,6 +61,38 @@ def off_deploy_vlan(scope: dict | None, server_base: str | None) -> bool:
         return False
 
 
+#: ‏#976: הכותרת שבה הבדיקה העצמית של השרת (‏`health.default_hooks`) מסמנת
+#: את בקשות `/boot/*` של עצמה. שם הכותרת כפי ש-ASGI מוסר אותו: bytes,
+#: אותיות קטנות. ‏GRUB אינו שולח כותרות מותאמות, וגם אם ישלח — ראה
+#: `self_probe`: מבחוץ הכותרת אינה שווה דבר.
+PROBE_HEADER = b"x-imagectl-probe"
+
+
+def self_probe(scope: dict | None) -> bool:
+    """האם בקשת `/boot/*` הזו היא הבדיקה העצמית של השרת (‏#976).
+
+    שני תנאים, ושניהם חובה: הכותרת `X-ImageCtl-Probe: 1` נמצאת, **והפונה
+    הוא השרת עצמו** — ‏`scope["client"]` הוא loopback, או שווה לכתובת
+    המקומית שעליה החיבור התקבל (‏`scope["server"]`). השני נחוץ כי
+    בייצור הבדיקה פונה ל-`http://<כתובת ההפצה>:8080`, וחיבור מקומי
+    לכתובת כזו יוצא **ממנה** ולא מ-`127.0.0.1`. מכונה ברשת אינה יכולה
+    להשלים לחיצת יד TCP מכתובת השרת, ולכן הכותרת אינה דלת אחורית:
+    מבחוץ היא מתעלמת, והבקשה נרשמת כמו כל GRUB.
+
+    לעולם לא זורקת, ובכל ספק עונה False — כלומר "כמו היום": הבקשה
+    נרשמת. הכיוון הבטוח כאן הוא לרשום, כי בדיקה עצמית שנרשמה בטעות
+    היא לכלוך על המסך, ואילו GRUB שלא נרשם הוא מכונה שנעלמה.
+    """
+    try:
+        if dict(scope.get("headers") or ()).get(PROBE_HEADER) != b"1":
+            return False
+        client = ipaddress.ip_address(scope.get("client")[0])
+        return client.is_loopback or client == ipaddress.ip_address(
+            scope.get("server")[0])
+    except Exception:  # noqa: BLE001 — כאן זו בדיוק הכוונה
+        return False
+
+
 def login_required(conn: sqlite3.Connection, has_open_session: bool,
                    off_vlan: bool = False) -> bool:
     """הכלל של אשף השחזור, במקום אחד.
@@ -250,21 +282,32 @@ def make_resolver(conn: sqlite3.Connection, library: ImageLibrary,
 
     בלי הצטרפות ובלי דיסקים — תפריט אתחול רק שואל, לא מחייב.
 
-    ‏`scope` הוא של הבקשה הנוכחית, והוא כאן בשביל שאלה אחת בלבד: על
-    **איזו** מכתובות השרת היא התקבלה (‏#536). מי שמעביר אותו הוא
-    `server/app.py`, שקושר את ה-resolver מחדש בכל בקשה.
+    ‏`scope` הוא של הבקשה הנוכחית, והוא כאן בשביל שתי שאלות בלבד: על
+    **איזו** מכתובות השרת היא התקבלה (‏#536), והאם היא הבדיקה העצמית של
+    השרת (‏#976, ‏`self_probe`). מי שמעביר אותו הוא `server/app.py`,
+    שקושר את ה-resolver מחדש בכל בקשה.
     """
 
     def resolve(mac: str, client_ip: str | None,
                 scope: dict | None = None) -> dict:
         off_vlan = off_deploy_vlan(scope, server_base)
+        probe = self_probe(scope)
         answer = build_answer(
             conn, library, store, mac, client_ip=client_ip, joining=False,
             # ‏#585: בקשת תפריט מחוץ לווילן ההפצה אינה כותבת `net_seen` —
             # אותה הכרעה בדיוק כמו הספירה למטה, ומאותו טעם (‏MAC בשאילתה
             # אינו זהות). על וילן ההפצה התפריט כן רושם, כמו היום.
-            record_seen=not off_vlan,
+            # ‏#976: וגם לא הבדיקה העצמית של השרת — היא אינה המכונה.
+            record_seen=not (off_vlan or probe),
         )
+        if probe:
+            # ‏#976: הבדיקה העצמית מקבלת את התפריט האמיתי — זו הראיה
+            # החיובית שהיא באה בשבילו — אבל אינה אתחול: לא `net_seen`,
+            # ולא ספירה בתקציב הלולאה (‏#75). ארבע כניסות לקונסולה במהלך
+            # סבב פתוח שלחו את המכונה הרשומה הראשונה לדיסק המקומי.
+            log.info("boot menu for %s is the server's own probe — served, "
+                     "not recorded (#976)", mac)
+            return answer
         if off_vlan:
             # ‏#536: ‏MAC מהשאילתה אינו זהות. ‏`ATTEMPT_LIMIT` הוא 3,
             # ולכן ארבע בקשות `GET /boot/menu?mac=<תחנה>` — בלי גוף,

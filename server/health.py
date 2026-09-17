@@ -20,9 +20,14 @@ from fastapi import APIRouter, Depends
 
 import hashlib
 
-from . import agent_loops, auth, console_ssh, dhcp, foreign_vlan, monitor, ssh_switch
+from . import (agent_loops, auth, console_ssh, dhcp, foreign_vlan, hello,
+               monitor, ssh_switch)
 
 BOOT_FILES = ("bootx64.efi", "grubx64.efi", "grub/grub.cfg")
+
+#: ‏#976: הסימון של הבדיקה העצמית על בקשות `/boot/*` — הצד השולח של
+#: `hello.PROBE_HEADER`, מאותו מקור אמת (שמות כותרות אינם תלויי-רישיות).
+PROBE_HEADER = hello.PROBE_HEADER.decode("ascii")
 
 #: מה שהתחנה מושכת ב-HTTP אחרי התפריט, מתוך תיקיית האתחול (#333).
 #: ה-initramfs הגרפי (#32) אינו כאן: היעדרו נופל לטקסטואלי, ואינו חוסם.
@@ -63,9 +68,20 @@ def default_hooks() -> dict:
     }
 
 
+def _probe_request(url: str) -> urllib.request.Request:
+    """הבקשה של הבדיקה העצמית — מסומנת (‏#976).
+
+    בלי הסימון השרת רשם את הבדיקה של עצמו כמכונה: ‏`net_seen` עם
+    `127.0.0.1`, פירור `menu` שאיפס שביל אמיתי, והתקן "לא רשום"
+    `00:00:00:00:00:00`. הסימון מכובד רק כשהפונה הוא השרת עצמו
+    (‏`hello.self_probe`), ולכן הוא אינו דרך לאתחל בלי להירשם.
+    """
+    return urllib.request.Request(url, headers={PROBE_HEADER: "1"})
+
+
 def _http_probe(url: str) -> int | None:
     try:
-        with urllib.request.urlopen(url, timeout=3) as response:
+        with urllib.request.urlopen(_probe_request(url), timeout=3) as response:
             return response.status
     except urllib.error.HTTPError as exc:
         return exc.code
@@ -77,7 +93,7 @@ def _http_body(url: str) -> tuple[int | None, str]:
     """קוד *וגם* גוף. חיווי ה-SSH של התחנות נשען על מה שבאמת נכתב
     בתפריט שהשרת מגיש, ולכן קוד תשובה לבדו אינו מספיק לו."""
     try:
-        with urllib.request.urlopen(url, timeout=3) as response:
+        with urllib.request.urlopen(_probe_request(url), timeout=3) as response:
             return response.status, response.read(65536).decode("ascii", "replace")
     except urllib.error.HTTPError as exc:
         return exc.code, ""
@@ -90,7 +106,7 @@ def _http_size(url: str) -> tuple[int | None, int | None]:
     מגהבייט, ומסך בריאות אינו מושך אותם. גודל שלא הוצהר חוזר `None`,
     שאינו 0 ואינו "בסדר"."""
     try:
-        with urllib.request.urlopen(url, timeout=5) as response:
+        with urllib.request.urlopen(_probe_request(url), timeout=5) as response:
             length = response.headers.get("Content-Length")
             return response.status, int(length) if str(length).isdigit() else None
     except urllib.error.HTTPError as exc:

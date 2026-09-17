@@ -241,14 +241,15 @@ test('the class as an object: crumbs, header, KPIs with meaning only, the same t
   assert.doesNotMatch(html,/קידומת/,'prefix comes only from a session'); assert.match(html,/<div class="kpi "><div class="l">סבב פעיל<\/div><div class="v"><bdi dir="auto">אין/);
   assert.match(html,/<div class="kpi "><div class="l">דיסקים<\/div><div class="v"><bdi dir="auto">לא נקרא/,'failures unread ≠ none');
   run("openClass('grp_CLONERS')"); html=run('machines(0)');
-  assert.match(html,/wakeRoom\(\)">הער את כולם \(WoL\)</); assert.doesNotMatch(html,/הפץ לכיתה|renameGroup/); assert.doesNotMatch(html,/role="tab"[^>]*>סבבים</);
+  assert.match(html,/wakeRoom\(\)">הער את כולם \(WoL\)</); assert.doesNotMatch(html,/הפץ לכיתה|renameGroup/); assert.match(html,/role="tab"[^>]*>מגירות</,'wave 3a: the cloners object');
   assert.match(html,/crumbs">[^]*<span>מחשבי שיכפול<\/span><span>\/<\/span><span>מחשבי שיכפול<\/span>/,'same pattern serves the fixed groups (wave 3a)');
 });
 
-test('tree clicks: a class opens its object, build/cloner filters the table with a visible, clearable strip', () => {
+test('tree clicks: every group opens its object (wave 3a: build/cloner too); an unknown group id filters the table with a visible, clearable strip', () => {
   const {run}=setup();
   run("selectMachinesGroup('grp_LAB305')"); assert.equal(run('MACHINES_CLASS'),'grp_LAB305'); assert.equal(run('MACHINES_FILTER'),null);
-  run("selectMachinesGroup('grp_BUILD')"); assert.equal(run('MACHINES_CLASS'),null); assert.equal(run('MACHINES_FILTER'),'grp_BUILD');
+  run("selectMachinesGroup('grp_BUILD')"); assert.equal(run('MACHINES_CLASS'),'grp_BUILD'); assert.equal(run('MACHINES_FILTER'),null);
+  run("MACHINES_CLASS=null; MACHINES_FILTER='grp_BUILD'");
   let html=run('machines(0)');
   assert.match(html,/role="status"><div class="note info">[^]*מוצגת קבוצה: <b>מחשבי בנייה<\/b> · <a[^>]*clearMachinesFilter\(\)">הצג את כל המחשבים/);
   assert.equal((html.match(/<tr data-mac=/g)||[]).length,2); assert.equal((html.match(/<tr class="group"/g)||[]).length,0);
