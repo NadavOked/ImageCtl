@@ -225,14 +225,15 @@ WARNING = "המכונה נשמרה, אבל ה-DHCP לא עודכן"
 
 
 def test_both_console_screens_warn_when_the_dhcp_update_failed():
-    """שני המסכים שמוסיפים/מוחקים מכונות — `console.js` (מלאי תחנות)
-    ו-`machines.js` (לשונית המכונות) — קוראים את `network.error` ומציגים
-    את האזהרה. בדיקת תוכן: אין דפדפן בחבילה, וה-JS הוא vanilla."""
+    """כל זרימה שמוסיפה/מוחקת מכונה — הוספה, הדבקה, הסרה מהמגירה, הסרה
+    מרובה — קוראת את `network.error` ומציגה את האזהרה. מאז #954 גל 3 כולן
+    ב-`console.js` (‏`machines.js` נמחק). בדיקת תוכן: אין דפדפן בחבילה,
+    וה-JS הוא vanilla."""
     console_js = (STATIC / "console.js").read_text(encoding="utf-8")
     assert "r.network" in console_js and WARNING in console_js
-    for name in ("console.js", "machines.js"):
-        js = (STATIC / name).read_text(encoding="utf-8")
-        assert js.count("dhcpNotice(") >= 2, f"{name} בולע את כשל ה-DHCP"
+    assert not (STATIC / "machines.js").exists(), "machines.js חזר — מי קורא לו?"
+    calls = console_js.count("dhcpNotice(") - console_js.count("function dhcpNotice(")
+    assert calls >= 4, f"console.js בולע את כשל ה-DHCP ({calls} קריאות)"
 
 
 def test_the_console_assets_were_bumped_together():

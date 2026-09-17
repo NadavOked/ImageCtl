@@ -272,60 +272,32 @@ function sinceSeconds(seconds) {
   return `לפני ${Math.round(seconds / 86400)} ימים`;
 }
 
-async function renderSeenDevices(container, reload) {
-  const devices = await api("/net");
-  const rows = devices.map((d) => {
-    // שמות ידידותיים קודמים לכל (אפיון סעיף 22): מי שרשום מופיע בשמו
-    // ובקבוצתו; מי שלא — מסומן מיד, כי זה מה שמחפשים כאן.
-    const who = d.registered
-      ? `<b>${esc(d.name)}</b> <small style="color:var(--muted)">· ${esc(d.group_label)}</small>`
-      : `<span class="tag warn">לא רשום</span>`;
-    return `<tr>
-      <td>${who}</td>
-      <td class="mono" dir="ltr">${esc(d.mac)}</td>
-      <td class="mono" dir="ltr">${esc(d.ip) || "—"}</td>
-      <td>${esc(d.description) || `<span style="color:var(--muted)">—</span>`}</td>
-      <td>${ago(d.last_seen)}</td>
-      <td>${bootWhere(d.boot)}</td>
-      <td>
-        <button class="btn" data-net-desc="${esc(d.mac)}">תיאור</button>
-        <button class="btn danger" data-net-forget="${esc(d.mac)}">הסר</button>
-      </td></tr>`;
-  }).join("");
-
-  container.innerHTML = `
-    <div class="chead">
-      <div><h2>נראו ברשת</h2>
-        <p>כל מכונה שדיברה עם השרת נרשמת כאן אוטומטית, עם הכתובת שקיבלה.
-           מכונה שאינה רשומה בטבלאות מסומנת — זה מה שתופס החלפת כרטיס או מחשב חדש.
-           עמודת "שלב האתחול" מראה עד לאן הגיעה כל מכונה בין תפריט ה-GRUB
-           ל-hello — לחסרות מסך זו הדרך היחידה לדעת איפה הן נעצרו.</p></div>
-      <button class="btn" id="net-add">+ הוספה ידנית</button>
-    </div>
-    <table>
-      <thead><tr><th>שם</th><th>MAC</th><th>כתובת IP</th><th>תיאור</th>
-        <th>נראה לאחרונה</th><th>שלב האתחול</th><th></th></tr></thead>
-      <tbody>${rows
-        || `<tr><td colspan="7">עוד לא נראו התקנים. מכונה שתעלה ב-PXE תופיע כאן.</td></tr>`}</tbody>
-    </table>`;
-
-  container.querySelectorAll("[data-net-desc]").forEach((b) => b.onclick = () => {
-    const device = devices.find((d) => d.mac === b.dataset.netDesc);
-    sheet({
-      title: "תיאור ההתקן", sub: device.mac,
-      fields: [{ id: "description", label: "תיאור חופשי",
-                 value: device.description, placeholder: "למשל: מדפסת מעבדה 2" }],
-      onSubmit: async (v) => {
-        await put(`/net/${device.mac}`, { description: v.description });
-        await reload();
-      },
-    });
+/* ‏#954 גל 3: הרשימה עצמה מצוירת ב-console.js (seenDevicesCard, מ-NET); כאן
+   נשארו שלושת הטפסים — תיאור, הסרה, הוספה ידנית — וכולם טוענים מחדש דרך
+   loadMachines (שקורא גם /net). */
+function netDeviceDescribe(macEnc) {
+  let mac = macEnc; try { mac = decodeURIComponent(macEnc); } catch (e) {}
+  const device = (NET || []).find((d) => d.mac === mac);
+  if (!device) return;
+  sheet({
+    title: "תיאור ההתקן", sub: device.mac,
+    fields: [{ id: "description", label: "תיאור חופשי",
+               value: device.description, placeholder: "למשל: מדפסת מעבדה 2" }],
+    onSubmit: async (v) => {
+      await put(`/net/${encodeId(device.mac)}`, { description: v.description });
+      await loadMachines();
+    },
   });
-  container.querySelectorAll("[data-net-forget]").forEach((b) => b.onclick = () => confirmSheet(
+}
+function netDeviceForget(macEnc) {
+  let mac = macEnc; try { mac = decodeURIComponent(macEnc); } catch (e) {}
+  confirmSheet(
     "הסרה מהרשימה",
-    `${b.dataset.netForget} יוסר. אם המכונה תדבר עם השרת שוב — היא תחזור לרשימה.`,
-    "הסר", async () => { await del(`/net/${b.dataset.netForget}`); await reload(); }));
-  container.querySelector("#net-add").onclick = () => sheet({
+    `${mac} יוסר. אם המכונה תדבר עם השרת שוב — היא תחזור לרשימה.`,
+    "הסר", async () => { await del(`/net/${encodeId(mac)}`); await loadMachines(); });
+}
+function netDeviceAdd() {
+  sheet({
     title: "הוספת התקן ידנית",
     sub: "למכונה שעוד לא דיברה עם השרת.",
     fields: [
@@ -334,7 +306,6 @@ async function renderSeenDevices(container, reload) {
       { id: "description", label: "תיאור", placeholder: "למשל: עמדת מרצה חדשה" },
     ],
     submitLabel: "הוסף",
-    onSubmit: async (v) => { await post("/net", v); await reload(); },
+    onSubmit: async (v) => { await post("/net", v); await loadMachines(); },
   });
-  return devices.length;
 }

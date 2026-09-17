@@ -54,7 +54,7 @@ function balanced(html) {
 }
 test('all populated page renderers produce balanced fragments',()=>{
   const {run}=setup();
-  for(const name of ['home','images','deploy','machines','settingsPage','machineAdminPage','journalPage','usersAdminPage']) {
+  for(const name of ['home','images','deploy','machines','settingsPage','journalPage','usersAdminPage']) {
     const html=run(name+'()'); assert.ok(html.length>50,name); balanced(html);
     assert.doesNotMatch(html,/<script|<\/html|id="modal"/,name+' must be a fragment');
   }
@@ -106,9 +106,9 @@ test('machine monitor is MAC-specific and restricted to build/cloner',()=>{
   const {run,requests}=setup();run('monitorMachine("aa");monitorMachine("cc")');
   assert.equal(requests.length,1);assert.match(requests[0].open[0],/monitor.html\?mac=cc&name=Builder/);
 });
-test('machine module loads without conflicting with console globals',()=>{
-  const {run,ctx}=setup();vm.runInContext(fs.readFileSync(path.join(root,'machines.js'),'utf8'),ctx);
-  assert.equal(run('typeof window.loadMachinesTab'),'function');assert.equal(run('Array.isArray(MACHINES)'),true);
+test('#954 wave 3: machines.js is gone — the machines page lives in console.js and owns its header',()=>{
+  const {run}=setup();assert.ok(!fs.existsSync(path.join(root,'machines.js')));
+  assert.equal(run('typeof machines'),'function');assert.equal(run('pages.machines.own'),true);assert.equal(run('typeof machineAdminPage'),'undefined');
 });
 test('unknown storage never displays zero',()=>{
   const {run}=setup();assert.notEqual(run('fmtBytes(null)'),run('fmtBytes(0)'));

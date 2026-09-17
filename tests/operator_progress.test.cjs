@@ -36,11 +36,11 @@ async function render(file, name, written, total, extra = {}) {
     : name === 'memberRow' ? `${name}(item, session)` : `${name}(item)`, context);
   // Compare the progress markup itself, excluding the already-present byte label.
   if (name === 'drawProgress') return JSON.stringify([$('#st-bar').style, $('#st-bar').className, $('#st-pct').textContent]);
-  const html = result || (name === 'renderLive' ? $('#cls-machines').innerHTML : $('#capture-bar').innerHTML);
-  return name === 'loadCaptures' ? html.match(/<div class="bar[\s\S]*?<\/div>/)?.[0] : html;
+  const html = result || $('#cls-machines').innerHTML;
+  return html;
 }
 
-for (const [file, name] of [['library.js', 'loadCaptures'], ['console.js', 'memberRow'],
+for (const [file, name] of [['console.js', 'captureProgressCell'], ['console.js', 'memberRow'],
   ['station/station.js', 'drawProgress'], ['station/room.js', 'machineRows'],
   ['station/classes.js', 'renderLive']]) {
   for (const total of [undefined, null, 0]) test(`${file}: unknown ${total} differs from zero progress`, async () => {

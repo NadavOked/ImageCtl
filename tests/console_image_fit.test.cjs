@@ -65,9 +65,13 @@ test('an unknown requirement is "לא ידוע" and never a number', () => {
 test('the library table and the image drawer both use it', () => {
   const run = setup();
   run(`IMAGES=[${JSON.stringify(IMAGE)}]; IMAGES_FOLDER=null; FOLDERS=[];`);
-  assert.match(run('images()'), /נכנס לדיסק מ-<span title="229556000000 בייט">230 GB<\/span>/);
-  const src = fs.readFileSync(path.join(root, 'console.js'), 'utf8');
-  const detail = src.slice(src.indexOf('function openImageDetail'), src.indexOf('function renameImage'));
-  assert.match(detail, /נכנס לדיסק מ-/);
-  assert.match(detail, /librarySize\(img\.used_bytes\)/);
+  // ‏#954 גל 2: הטבלה החדשה — העמודה "נכנס לדיסק מ-", הבייטים ב-title, הערך LTR.
+  const table = run('images()');
+  assert.match(table, /<th>נכנס לדיסק מ-<\/th>/);
+  assert.match(table, /<span title="229556000000 bytes"><bdi dir="ltr">230 GB<\/bdi><\/span>/);
+  const drawer = run(`imageDrawerHtml(${JSON.stringify(IMAGE)})`);
+  assert.match(drawer, /נכנס לדיסק מ-/);
+  assert.match(drawer, /230 GB/);
+  assert.match(drawer, /בשימוש במקור/);
+  assert.match(run(`imageDrawerHtml(${JSON.stringify({...IMAGE, used_bytes: null})})`), /בשימוש במקור<\/[^>]+><[^>]+><span class="muted">לא ידוע/);
 });

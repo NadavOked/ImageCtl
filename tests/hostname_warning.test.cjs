@@ -77,7 +77,7 @@ test('the machine drawer shows the last restore warning of this MAC', () => {
   assert.equal(run(`machineRestoreWarningHtml(${JSON.stringify(MAC)})`), '', 'a failure is not a warning');
   run('OVERVIEW = {session: null}');
   assert.equal(run(`machineRestoreWarningHtml(${JSON.stringify(MAC)})`), '', 'no session: nothing');
-  assert.match(run('openMachineDetail.toString()'), /machineRestoreWarningHtml/, 'wired into the drawer');
+  assert.match(run('machineDrawerHtml.toString()'), /machineRestoreWarningHtml/, 'wired into the drawer (#954 wave 3)');
 });
 
 test('index.html was bumped so the browser does not run the old console.js', () => {

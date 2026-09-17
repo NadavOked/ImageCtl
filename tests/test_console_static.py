@@ -70,43 +70,50 @@ def test_the_notifications_drawer_lists_what_the_badge_counts():
 
 
 def test_the_machines_page_has_no_demo_text_and_no_dead_tabs():
-    """‏#916: בלי כרטיס "כללי naming" (‏`LAB1-05`), ושתי לשוניות חיות בלבד —
-    'ייבוא/ייצוא' הייתה עותק שלישי של אותו `machineAdminPage`."""
+    """‏#916 → ‏#954 גל 3: בלי כרטיס "כללי naming" (‏`LAB1-05`), ובלי הלשוניות
+    הישנות "כל התחנות / ניהול לפי סוג" — הדף הוא `machines(tab)` שמצייר את
+    הכותרת והלשוניות בעצמו (`own: true`), ו-`machines.js` נמחק."""
     js = _console_js()
     assert "LAB1-05" not in js
     assert "כללי naming" not in js
-    assert 'tabs: ["כל התחנות", "ניהול לפי סוג"], render: machines' in js
-    assert "machines: [machines, machineAdminPage]," in js
+    assert '"כל התחנות"' not in js and "ניהול לפי סוג" not in js
+    assert "machineAdminPage" not in js and "loadMachinesTab" not in js
+    assert 'tabs: ["כל המחשבים", "נראו ברשת", "דיסקים אדומים"], render: machines, load: loadMachines, own: true' in js
+    assert "machines.js" not in _index()
+    assert not (STATIC / "machines.js").exists()
 
 
 def test_the_machines_filter_is_visible_and_clearable():
     """‏#916: הסינון מלחיצה על קבוצה בעץ נשאר בין מעברים; בלי חיווי הוא
-    נראה כמו "אין מחשבים רשומים" מול עץ מאויש. הצומת "מחשבים" מאפס אותו,
-    והדף מציג את הקבוצה המסוננת עם כפתור ביטול וריק שמבחין בין המצבים."""
+    נראה כמו "אין מחשבים רשומים" מול עץ מאויש. הצומת "מחשבים" מאפס אותו
+    (וגם את הכיתה הפתוחה כאובייקט, גל 3), והדף מציג את הקבוצה המסוננת עם
+    ביטול וריק שמבחין בין המצבים."""
     js, page = _console_js(), _index()
-    assert "MACHINES_FILTER=null;selectPageById('machines')" in page
-    fn = js[js.index("function machines()"):js.index("function clearMachinesFilter")]
+    assert "MACHINES_FILTER=null;MACHINES_CLASS=null;selectPageById('machines')" in page
+    fn = js[js.index("function machinesTableCard("):js.index("function machinesTabs()")]
     assert "clearMachinesFilter()" in fn
-    assert "אין מחשבים בקבוצה" in fn
-    assert "אין מחשבים רשומים" in fn        # המצב האמיתי של "אין בכלל" נשאר
+    assert "מוצגת קבוצה" in fn
+    table = js[js.index("function machinesTableHtml()"):js.index("function mchSelBar(")]
+    assert "אין מחשבים בקבוצה" in table
+    assert "אין מחשבים רשומים" in table        # המצב האמיתי של "אין בכלל" נשאר
     assert "function clearMachinesFilter() {\n  MACHINES_FILTER = null;" in js
 
 
 def test_the_machines_page_lists_shrunk_source_disks_in_orange_with_clear():
     """‏#926: דיסק מקור שכווץ לקליטה ולא הוחזר לגודלו (הרשומה בשרת) מוצג
-    בדף המחשבים ככרטיס משלו — כתום (`disk-smart` בלי `failed_last`: ווינדוס
-    עולה ממנו), עם המחיצה והגודל המקורי במילים וכפתור "נקה" — לצד הדיסקים
-    האדומים של #874, ומאותו `loadMachines`."""
+    בלשונית "דיסקים אדומים" ככרטיס משלו — כתום (`disk-smart` בלי
+    `failed_last`: ווינדוס עולה ממנו), עם המחיצה והגודל המקורי במילים וכפתור
+    "נקה" — לצד הדיסקים האדומים של #874, ומאותו `loadMachines`."""
     js = _console_js()
     assert 'api("/shrink-records")' in js
     fn = js[js.index("function shrinkRecordsCard"):]
     fn = fn[:fn.index("\nasync function clearShrinkRecord")]
     assert '<span class="disk-smart">' in fn and "failed_last" not in fn
     assert "כווצה לקליטה ולא הוחזרה לגודלה המקורי" in fn
-    assert "clearShrinkRecord(" in fn and ">נקה<" in fn
+    assert '["נקה", `clearShrinkRecord(' in fn
     assert "/shrink-records/${id}/clear" in js
-    machines = js[js.index("function machines()"):js.index("function clearMachinesFilter")]
-    assert "${shrinkRecordsCard()}" in machines and "${diskFailuresCard()}" in machines
+    machines = js[js.index("function machines(tab = 0)"):js.index("function clearMachinesFilter")]
+    assert "shrinkRecordsCard()" in machines and "diskFailuresCard()" in machines
 
 
 # --- #954 גל 1: הסקירה הכללית נבנתה מחדש, הקוד הישן נמחק ---------------------
@@ -169,3 +176,58 @@ def test_images_tree_node_uses_the_folder_icon():
     fn = js[js.index("function populateSidebarImages"):js.index("function fillSidebarTree")]
     assert fn.count('uiIcon("folder")') == 2
     assert fn.count('uiIcon("image")') == 1
+
+
+# ---------- #954 גל 2: ספריית האימג'ים ----------
+
+def test_static_includes_are_at_7_1():
+    """גל 2 = ‏7.0; גל 3 (מחשבים) מחליף שוב JS+CSS+HTML — `?v=` עולה ל-7.1
+    (מטמון הדפדפן). שוויון על כל ה-includes — bump חלקי הוא הבאג."""
+    page = _index()
+    versions = {float(v) for v in re.findall(r'\?v=(\d+\.\d+)"', page)}
+    assert versions == {7.1}, versions
+
+
+def test_old_images_page_code_is_gone():
+    """הדף הישן נמחק, לא הוסתר: כרטיסי "כללי בטיחות"/"פעולות מהירות" עם
+    אפסים קבועים, עמודות גרסה/SHA-256/סטטוס שאין להן שדה ב-`/images`,
+    כפתורי Up/Down/Edit באנגלית, ו-`library.js` המת שהיה מוער ב-index.html."""
+    js = _console_js()
+    for gone in ("כללי בטיחות", "פעולות מהירות", "מטא־נתונים", "checksum שגוי",
+                 "function filterImagesFolder", "function reorderImage(", "function reorderFolder(",
+                 'aria-label="Move folder up"', "<th>SHA-256</th>", "<th>גרסה</th>"):
+        assert gone not in js, gone
+    assert "library.js" not in _index()
+    assert not (STATIC / "library.js").exists()
+
+
+def test_images_page_is_the_datastore_browser_from_the_api_only():
+    """עץ תיקיות + טבלה אחת + מגירה, מה-API הקיים: "נכנס לדיסק מ-" מ-`min_target_bytes`
+    (‏#953, ‏null = לא ידוע), "בשימוש" מ-`/overview`, קליטה כשורה בטבלה, ומה שאין
+    לו API ("טבלת המחיצות") מוצג כ"דורש API" — לא מומצא."""
+    js = _console_js()
+    for needed in ("function images(tab = 0)", "own: true", "function imagesTree()", "role=\"tree\"",
+                   "min_target_bytes", "לא ידוע", "function captureRowHtml(", "function imageDrawerHtml(",
+                   "דורש API", "function bulkDelete()", "confirm_name", "function imgDrop(", "/folders/order"):
+        assert needed in js, needed
+    assert "images: [images, emptyDataCard]" not in js
+
+
+# ---------- #954 גל 3: מחשבים ----------
+
+def test_machines_page_is_one_grouped_table_from_the_api_only():
+    """טבלה אחת מקובצת (בנייה, שיכפול, ואז קבוצה לכל כיתה — תיקון נדב 17/09),
+    מגירה, הכיתה כאובייקט; מה-API הקיים בלבד. "דיסק N · SATA N-1" ולעולם לא
+    sd*; מה שאין לו API ("אתחול מרחוק", "עריכת MAC", היסטוריית סבבים לכיתה)
+    מוצג כ"דורש API" — לא כפתור מנוטרל ולא נתון מומצא."""
+    js = _console_js()
+    for needed in ("function machines(tab = 0)", "function groupRowHtml(", "function machineRowHtml(", "function groupPage(",
+                   "function machineDrawerHtml(", "function seenDevicesCard()", "function openAddMachine(", "dry_run: true",
+                   'UI.soon("אתחול מרחוק")', 'UI.soon("עריכת MAC")', "דורש API", "SATA ${n - 1}", 'verify: { label: "הקלד את שם המחשב"'):
+        assert needed in js, needed
+    block = js[js.index("/* ---------- #954 גל 3"):js.index("function healthStatusClass(")]
+    assert "disabled" not in block, "כפתור מנוטרל במקום 'דורש API' (README §8)"
+    assert "sda" not in block and "sdb" not in block, "שם sd* בדף המחשבים"
+    css = (STATIC / "console.css").read_text(encoding="utf-8")
+    for sel in (".page .dg tr.group td .grp{", ".page .disks{", ".page .disk.err{", ".page .dg-bar select{"):
+        assert sel in css, sel

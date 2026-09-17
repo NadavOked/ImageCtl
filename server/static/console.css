@@ -675,3 +675,69 @@ button:focus-visible,[role="button"]:focus-visible,.inventory-node:focus-visible
 .page .stack{display:grid;gap:8px}
 @media(max-width:1000px){.page .c8,.page .c6{grid-column:span 12}.page .c4,.page .c3{grid-column:span 6}}
 @media(max-width:740px){.page{overflow:visible;padding-bottom:48px}.page .obj{padding:10px 16px 0}.page .body{padding:12px 16px;gap:12px}.page .c4,.page .c3{grid-column:span 12}.page .kpis{grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}.page .obj-actions{margin-inline-start:0;width:100%}.page .ev{grid-template-columns:48px 10px 1fr;gap:8px}.page .ev .who{grid-column:3}.page .dg td .acts{display:flex}}
+/* ---------- #954 גל 2: ספריית אימג'ים — עץ תיקיות, datagrid עם בחירה וגרירה, מגירה ---------- */
+.page .split{display:grid;grid-template-columns:220px minmax(0,1fr)}
+.page .split > .side{border-inline-end:1px solid var(--hair);padding:10px 8px}
+.page .split > :last-child{min-width:0;overflow:auto}
+.page .ftree{font-size:13px}
+.page .ftree .f{display:flex;align-items:center;gap:7px;padding:6px 10px;border-radius:var(--rp);border-inline-start:2px solid transparent;cursor:pointer;color:var(--ink)}
+.page .ftree .f:hover{background:var(--hover)}
+.page .ftree .f.on{background:var(--indigo-soft);color:var(--indigo);border-inline-start-color:var(--indigo);font-weight:600}
+.page .ftree .f.muted{color:var(--muted)}
+.page .ftree .f.over{outline:2px dashed var(--indigo);outline-offset:-2px;background:var(--indigo-soft)}
+.page .ftree .f .ui-icon{width:16px;height:16px;flex:none}
+.page .ftree .f .cnt{margin-inline-start:auto;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.page .ftree .kids{margin-inline-start:14px}
+.page .dg-bar{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--hair);flex-wrap:wrap;font-size:13px}
+.page #capture-bar:not(:empty){padding:12px 12px 0;display:grid;gap:8px}
+.page .dg-bar.foot{border-bottom:0;border-top:1px solid var(--hair)}
+.page .dg-bar .crumbs{margin:0}
+.page .dg-bar input{height:28px;border:1px solid var(--hair);border-radius:var(--rp);padding:0 8px;background:var(--surface);color:var(--ink);font:inherit;font-size:13px}
+.page .dg-bar .sp{flex:1}
+.page .dg-bar .n{color:var(--muted)}
+.page .dg a.name{color:var(--ink);text-decoration:none;cursor:pointer}
+.page .dg a.name:hover{text-decoration:underline;color:var(--indigo)}
+.page .dg tr.sel td{background:var(--indigo-soft)}
+.page .dg tr.sel td .acts{display:flex}
+.page .dg tr.over td{box-shadow:inset 0 2px 0 var(--indigo)}
+.page .dg td bdi{white-space:nowrap}
+.page .dg tr.task td{opacity:.75}
+.page .dg tr.task .bar{min-width:60px;max-width:120px}
+.page .dg tr[draggable="true"]{cursor:grab}
+.page .dg td input[type="checkbox"],.page .dg th input[type="checkbox"]{width:15px;height:15px;margin:0;vertical-align:middle}
+.page .sec{font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}
+/* המגירה: אותם רכיבים בתוך .drawer-body — בלי הגלילה/הריפוד של עמוד */
+.page.drw{padding:0;overflow:visible;display:grid;gap:14px;flex:none;min-height:0;align-content:start}
+.page.drw .dg th{position:static}
+.page.drw .note.ok{border-color:color-mix(in srgb,var(--led-ok) 40%,var(--surface));background:color-mix(in srgb,var(--led-ok) 10%,var(--surface));color:var(--led-ok)}
+.page.drw a.btn{display:inline-flex;align-items:center;text-decoration:none}
+@media(max-width:740px){.page .split{grid-template-columns:1fr}.page .split > .side{border-inline-end:0;border-bottom:1px solid var(--hair)}.page .ftree .kids{margin-inline-start:0;display:flex;flex-wrap:wrap;gap:4px}.page .ftree{display:flex;flex-wrap:wrap;gap:4px;align-items:center}.page .ftree .f{border:1px solid var(--hair);padding:4px 8px}.page .dg-bar input{width:100%!important}.page .split table.dg{min-width:760px}.page .split .dg td:nth-child(2){min-width:200px}}
+/* ---------- #954 גל 3: מחשבים — שורות קבוצה, דיסקים לפי חריץ, מודאל "+ מחשב" ---------- */
+.page .dg tr.group td .grp{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-weight:600}
+.page .dg tr.group td .grp .muted,.page .dg tr.group td .grp .st{font-weight:400}
+.page .dg tr.group td .grp a{color:var(--indigo);text-decoration:none;cursor:pointer}
+.page .dg tr.group td .grp .sp{flex:1}
+.page .dg tr.group td .acts{display:flex}
+.page .dg tr.group td .btn.flat{width:26px;padding:0;color:var(--muted)}
+.page .dg tr.group:hover td{background:var(--porcelain)}
+.page .dg-bar select{height:28px;width:auto;flex:none;border:1px solid var(--hair);border-radius:var(--rp);padding:0 8px;background:var(--surface);color:var(--ink);font:inherit;font-size:13px}
+.page .dg-bar input[type="search"]{flex:none}
+.page a.btn{display:inline-flex;align-items:center;text-decoration:none}
+.page .disks{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:6px}
+.page .disk{border:1px solid var(--hair);border-radius:var(--rp);padding:6px;font-size:12px;text-align:center;background:var(--porcelain);min-height:58px;display:flex;flex-direction:column;justify-content:center;gap:3px;min-width:0}
+.page .disk b{font-size:12px}
+.page .disk .cap{font-size:11px;color:var(--muted);overflow-wrap:anywhere}
+.page .disk.ok{border-color:var(--led-ok);background:color-mix(in srgb,var(--led-ok) 10%,var(--surface))}
+.page .disk.warn{border-color:var(--warn-ink);background:color-mix(in srgb,var(--warn-ink) 10%,var(--surface))}
+.page .disk.err{border-color:var(--danger);background:color-mix(in srgb,var(--danger) 10%,var(--surface))}
+.page .disk.err .cap{color:var(--danger)}
+.page .cap{font-size:12px;color:var(--muted)}
+.page .note details.inline{display:inline}
+.page .note summary,.page .dg summary{cursor:pointer;color:var(--indigo)}
+.page .note pre.ata-log,.page .dg pre.ata-log{direction:ltr;text-align:left;font-size:11px;white-space:pre-wrap;margin:6px 0 0;color:var(--ink)}
+.page.drw .obj-sub .mono{font-size:12px}
+.page.am{gap:10px}
+.page.am .tabs{margin-top:0}
+.page.am .form[hidden]{display:none}
+.page.am .stack .st{display:flex}
+@media(max-width:740px){.page .dg tr.group td .grp{gap:6px}.page .dg tr.group td .acts{flex-wrap:wrap}.page #mch-table table.dg{min-width:760px}.page .dg-bar select,.page .dg-bar input[type="search"]{width:100%!important}}

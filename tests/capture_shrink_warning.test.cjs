@@ -70,14 +70,14 @@ async function runLoadCaptures(tasks) {
 test('a done capture task with a restore warning is not silently dropped', async () => {
   const html = await runLoadCaptures([warnedTask()]);
   assert.match(html, /המקור לא הוחזר לגודלו/, 'the full warning text reaches the DOM');
-  assert.match(html, /class="notice warn"/, 'rendered with the orange notice style, not swallowed');
+  assert.match(html, /class="note warn"/, 'rendered with the orange note style (#954 .page), not swallowed');
 });
 
 test('a done capture task with a restore warning is not shown as green success', async () => {
   const html = await runLoadCaptures([warnedTask()]);
   // #829: reuse the existing warn styling -- never the plain "done" bar markup
   // used for a capture that finished with no error.
-  assert.doesNotMatch(html, /class="notice ok"|class="notice success"/);
+  assert.doesNotMatch(html, /class="note ok"|class="notice ok"|class="notice success"/);
 });
 
 test('a done capture task with no error still renders nothing (unchanged behaviour)', async () => {
@@ -85,10 +85,12 @@ test('a done capture task with no error still renders nothing (unchanged behavio
   assert.equal(html, '');
 });
 
-test('an in-progress capture task is still shown in the active bar', async () => {
+test('an in-progress capture task is not a warning: it is a row in the library table (#954 gal 2)', async () => {
+  // The running capture is rendered by captureRowHtml inside the datagrid
+  // (tests/images_library.test.cjs); the bar above the table carries only
+  // done+error warnings, so it stays empty here.
   const html = await runLoadCaptures([warnedTask({id: 't2', state: 'running', error: null})]);
-  assert.match(html, /קולט: office365/);
-  assert.match(html, /data-cancel-task="t2"/);
+  assert.equal(html, '');
 });
 
 test('captureWarningHtml ignores a still-open task even if error is set', () => {
