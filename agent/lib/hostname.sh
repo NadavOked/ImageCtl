@@ -226,7 +226,20 @@ name_this_machine() {
     echo "naming" > "$RUN_DIR/state"
     _name=$(compose_hostname "$_prefix" "$_suffix")
     _result=$(write_hostname "$1" "$RUN_DIR/manifest.json" "$_name")
+    _hrc=$?
     echo "$_result" > "$RUN_DIR/hostname.json"
     log "hostname: $_result"
+    # ‏#856: "לא הצלחנו לכתוב שם" אינו "הכול תקין" (עיקרון 5). היעד נשאר
+    # done -- השחזור הושלם -- אבל נושא את הסיבה בשדה `error`, כמו
+    # "done (grow deferred)" של finish_grow: זה מה שמגיע לשרת ולקונסולה;
+    # ‏hostname.json ב-tmpfs נמחק באתחול (#106). אחרי אזהרה קודמת, לא במקומה.
+    if [ "$_hrc" -ne 0 ]; then
+        _why=$(json_get "$RUN_DIR/hostname.json" ".error")
+        { [ -n "$_why" ] && [ "$_why" != "null" ]; } || _why="unknown reason (rc=$_hrc)"
+        _why="שם המחשב לא נכתב: $_why"
+        _errf="$RUN_DIR/targets/$1/error"
+        [ -s "$_errf" ] && _why="$(cat "$_errf") | $_why"
+        target_set "$1" "done" "$_why"
+    fi
     echo "done" > "$RUN_DIR/state"
 }

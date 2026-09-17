@@ -90,3 +90,20 @@ def test_the_machines_filter_is_visible_and_clearable():
     assert "אין מחשבים בקבוצה" in fn
     assert "אין מחשבים רשומים" in fn        # המצב האמיתי של "אין בכלל" נשאר
     assert "function clearMachinesFilter() {\n  MACHINES_FILTER = null;" in js
+
+
+def test_the_machines_page_lists_shrunk_source_disks_in_orange_with_clear():
+    """‏#926: דיסק מקור שכווץ לקליטה ולא הוחזר לגודלו (הרשומה בשרת) מוצג
+    בדף המחשבים ככרטיס משלו — כתום (`disk-smart` בלי `failed_last`: ווינדוס
+    עולה ממנו), עם המחיצה והגודל המקורי במילים וכפתור "נקה" — לצד הדיסקים
+    האדומים של #874, ומאותו `loadMachines`."""
+    js = _console_js()
+    assert 'api("/shrink-records")' in js
+    fn = js[js.index("function shrinkRecordsCard"):]
+    fn = fn[:fn.index("\nasync function clearShrinkRecord")]
+    assert '<span class="disk-smart">' in fn and "failed_last" not in fn
+    assert "כווצה לקליטה ולא הוחזרה לגודלה המקורי" in fn
+    assert "clearShrinkRecord(" in fn and ">נקה<" in fn
+    assert "/shrink-records/${id}/clear" in js
+    machines = js[js.index("function machines()"):js.index("function clearMachinesFilter")]
+    assert "${shrinkRecordsCard()}" in machines and "${diskFailuresCard()}" in machines

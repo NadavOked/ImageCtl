@@ -53,15 +53,22 @@ def run_sh(script: str, timeout: int = TEST_TIMEOUT) -> str:
 
     ‏stdin=DEVNULL: בריצה רב-קבצית של pytest בווינדוס ה-handle של stdin
     נשבר תחת capture, וכל subprocess שיורש אותו נופל ב-WinError 50 (#14).
+
+    הסקריפט נכתב **לקובץ** ולא עובר ב-`bash -c`: בווינדוס ארגומנט שעובר
+    ~8191 תווים נקטע בשקט, ו-bash מדווח "unexpected end of file" על שורה
+    שאינה סוף הסקריפט — כשל שנראה כמו באג בקוד שנבדק (נמדד ב-#926: נתיב
+    ‏tmp_path של pytest ×20 זיופים + זיוף curl של 1.1KB עברו את הסף).
     """
     out_file = Path(tempfile.mkdtemp(prefix="imagectl-wait-")) / "out"
     wrapped = (
         'export PATH="/usr/bin:$PATH"\n'
         f"{{\n{script}\n}} > {posix(out_file)!r} 2>&1\n"
     )
+    script_file = out_file.with_name("script.sh")
+    script_file.write_text(wrapped, encoding="utf-8", newline="\n")
     try:
         subprocess.run(
-            [BASH, "-c", wrapped],
+            [BASH, posix(script_file)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             cwd=str(REPO), stdin=subprocess.DEVNULL, timeout=timeout,
         )

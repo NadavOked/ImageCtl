@@ -17,7 +17,7 @@ import re
 import sqlite3
 from urllib.parse import urlsplit
 
-from . import bootguard, direct, disk_failures, inventory, registry, room
+from . import bootguard, direct, disk_failures, inventory, registry, room, shrink_records
 from .db import get_setting, journal, net_seen
 from .images import ImageLibrary
 from .sessions import SessionStore
@@ -170,6 +170,9 @@ def build_answer(
         # לסידוריים שהמכונה שלחה או לחריץ באותה מכונה. הסוכן צובע מהן אדום
         # לפני הסבב; סוכן ישן מתעלם משדה שאינו מכיר (schema נשאר 1).
         "disk_failures": disk_failures.open_for(conn, mac, disks),
+        # ‏#926: דיסק שכווץ בקליטה ולא הוחזר לגודלו — לפי הסידורי שהמכונה
+        # שלחה. מחשב הבנייה מציע להחזיר (‏shrinkmem.sh); סוכן ישן מתעלם.
+        "shrink_open": shrink_records.open_for(conn, disks),
     }
 
     # משימה גוברת על סבב: היא מופנית למכונה הזו, לא לקבוצה.

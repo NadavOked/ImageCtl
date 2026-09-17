@@ -86,9 +86,13 @@ def test_console_routes_only_on_console_app(split):
     rt, agent_app, console_app = split
     agent, console = TestClient(agent_app), TestClient(console_app)
 
-    # קונסולה + סטטי ‎/console — כאן, לא בסוכן.
+    # קונסולה + סטטי ‎/console — כאן, לא בסוכן. ‏login עצמו הוא allowlist
+    # הקיוסק ולכן חי גם על הסוכן (ראו test_build_flow_console_calls_on_agent_app);
+    # מה שאסור על הסוכן הוא נתיב ניהול.
     assert _present(console, "POST", "/api/console/login")
-    assert _absent(agent, "POST", "/api/console/login")
+    assert _absent(agent, "GET", "/api/console/users")
+    assert _absent(agent, "GET", "/api/console/machines")
+    assert _absent(agent, "GET", "/api/console/net")
     assert TestClient(console_app).get("/console/").status_code == 200
     assert _absent(agent, "GET", "/console/")
     assert "/console" in _mounts(console_app)
@@ -134,6 +138,27 @@ def test_agent_app_alone_serves_station_state(split):
 
 
 # --- זהות משותפת -----------------------------------------------------------
+
+def test_build_flow_console_calls_on_agent_app(split):
+    """17/09 01:06, מדוד על השרת החי: מחשב הבנייה (10.44.0.88) שלח
+    `POST /api/console/login` ל-`$SERVER` = פורט הסוכן וקיבל **404** — הכניסה
+    במסך הבנייה נכשלה עם סיסמה נכונה. ‏#738 העביר את allowlist הקיוסק ל-‎:8082
+    בלבד, והסוכן (`buildmenu.sh:59,95,105`, ‏`roomflow.sh`) קורא את אותם
+    נתיבים דרך `$SERVER` — אותה משפחה כמו #824. ה-allowlist של הקיוסק (login,
+    folders, images, tasks/capture, room) חי גם על הסוכן; נתיבי ניהול — לא."""
+    rt, agent_app, _console_app = split
+    agent = TestClient(agent_app)
+    assert _present(agent, "POST", "/api/console/login")
+    r = agent.post("/api/console/login", json={"username": "nobody", "password": "x"})
+    assert r.status_code == 401, r.text          # הנתיב חי ועונה, לא 404
+    assert _present(agent, "GET", "/api/console/folders")
+    assert _present(agent, "GET", "/api/console/images")
+    assert _present(agent, "GET", "/api/console/room")
+    assert _absent(agent, "GET", "/api/console/users")
+    assert _absent(agent, "POST", "/api/console/users")
+    assert _absent(agent, "GET", "/api/console/settings")
+    assert _absent(agent, "GET", "/api/console/storage-nodes")
+
 
 def test_both_apps_share_one_runtime(split):
     rt, agent_app, console_app = split

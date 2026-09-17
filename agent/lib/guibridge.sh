@@ -10,10 +10,12 @@ gui_error() {
 }
 
 gui_role() {
-    _gc=$(console_get me "$RUN_DIR/gui-me.json") || return 1
-    [ "$_gc" = 200 ] || return 1
+    # 17/09 (#947): the role comes from the login answer console_signin just
+    # saved -- `/api/console/me` is a management route and stays off the
+    # agent/kiosk ports (Astra's list); login already returns {username,role}.
+    [ -s "$RUN_DIR/console_login.json" ] || return 1
     GUI_ROLE=$(jq -er '.role | select(. == "admin" or . == "deploy")' \
-        "$RUN_DIR/gui-me.json") || return 1
+        "$RUN_DIR/console_login.json") || return 1
 }
 
 gui_auth() {

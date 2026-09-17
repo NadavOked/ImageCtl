@@ -436,7 +436,12 @@ def _add_agent_routes(app: FastAPI, rt: ServerRuntime) -> None:
     app.include_router(create_agent_drivers_router(rt.ctx))   # #720
     app.include_router(create_agent_capture_router(rt.ctx))
     app.include_router(direct.create_direct_router(rt.ctx))   # #715
-    app.include_router(create_station_router(rt.ctx))
+    # ‏17/09 (מדוד על השרת החי): הכניסה במסך מחשב הבנייה קיבלה 404 —
+    # ‏buildmenu.sh/roomflow.sh קוראים `$SERVER/api/console/{login,folders,
+    # images,tasks/capture,room…}` על פורט הסוכן, ו-#738 השאיר את ה-allowlist
+    # הזה על הקיוסק (‎:8082) בלבד. אותה משפחה כמו #824, ואותו כלל: allowlist
+    # הקיוסק (בלי שום נתיב ניהול) חי גם כאן; `create_station_router` כלול בו.
+    app.include_router(create_kiosk_router(rt.ctx, room_wake=_kiosk_room_wake(rt)))
     app.mount("/boot", _boot_asgi(rt))
 
 

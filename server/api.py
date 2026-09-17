@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from boot.grub_menu import normalize_mac as lenient_mac
 
 from . import (agent_loops, disk_events, foreign_vlan, inventory, pulls,
-               registry, reports, users)
+               registry, reports, shrink_records, users)
 from .db import journal
 from . import direct
 from .hello import (build_answer, login_required, off_deploy_vlan,
@@ -242,6 +242,59 @@ def create_agent_router(ctx: ServerContext,
             return _error(400, "body is not JSON", "bad_json")
         result = disk_events.ingest(ctx.conn, body if isinstance(body, dict) else {})
         return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+
+    @router.post("/agent/shrink-open")
+    async def agent_shrink_open(request: Request) -> JSONResponse:
+        """‏#926: הפריסה המקורית של מחיצת המקור, **לפני** `ntfsresize -s`.
+
+        ההפך מ-disk-event: **לא** best-effort. הסוכן מכווץ רק אחרי 2xx
+        עם `ok` — בלי רשומה בשרת אין כתיבה למקור (עיקרון 5).
+        """
+        try:
+            body = await request.json()
+        except ValueError:
+            return _error(400, "body is not JSON", "bad_json")
+        try:
+            row = shrink_records.open_record(ctx.conn, body if isinstance(body, dict) else {})
+        except shrink_records.BadRecord as exc:
+            return _error(400, str(exc), exc.code)
+        except shrink_records.AlreadyOpen as exc:
+            return JSONResponse({"ok": False, "error": "this disk already has an open shrink record",
+                                 "code": "already_open", "id": exc.record_id,
+                                 "opened_at": exc.opened_at}, status_code=409)
+        return JSONResponse({"ok": True, "id": row["id"]})
+
+    @router.post("/agent/shrink-close")
+    async def agent_shrink_close(request: Request) -> JSONResponse:
+        """‏#926: המקור הוחזר לגודלו. סגירה של מה שאינו פתוח היא 404."""
+        try:
+            body = await request.json()
+        except ValueError:
+            return _error(400, "body is not JSON", "bad_json")
+        if not isinstance(body, dict):
+            return _error(400, "body is not an object", "bad_json")
+        record_id = body.get("id") if isinstance(body.get("id"), int) else None
+        if not shrink_records.close_record(ctx.conn, body.get("serial"), record_id):
+            return _error(404, "no open shrink record for this serial", "not_open")
+        return JSONResponse({"ok": True})
+
+    @router.post("/agent/shrink-note")
+    async def agent_shrink_note(request: Request) -> JSONResponse:
+        """‏#926 (סקירת Fable): למה הרשומה עדיין פתוחה — הטבלה הוחזרה אך
+        מערכת הקבצים לא נמתחה. best-effort מצד הסוכן; 404 על מה שאינו פתוח."""
+        try:
+            body = await request.json()
+        except ValueError:
+            return _error(400, "body is not JSON", "bad_json")
+        if not isinstance(body, dict):
+            return _error(400, "body is not an object", "bad_json")
+        note = body.get("note")
+        if not isinstance(note, str) or not note.strip():
+            return _error(400, "note must be a non-empty string", "bad_note")
+        record_id = body.get("id") if isinstance(body.get("id"), int) else None
+        if not shrink_records.note_record(ctx.conn, body.get("serial"), record_id, note):
+            return _error(404, "no open shrink record for this serial", "not_open")
+        return JSONResponse({"ok": True})
 
     @router.get("/images/{image_id}/manifest")
     def image_manifest(image_id: str):

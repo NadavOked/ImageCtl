@@ -25,6 +25,7 @@ from __future__ import annotations
 import inspect
 import json
 import re
+import shutil
 from pathlib import Path
 
 import pytest
@@ -97,6 +98,55 @@ CURL_SINK = (
 )
 
 
+#: ‏#926: curl שמשחק גם את השרת של זיכרון הכיווץ — עונה ל-`shrink-open` /
+#: ‏`shrink-close` כמו `-o <קובץ>` + `-w '%{http_code}'` של הסוכן, רושם כל
+#: גוף שנשלח (`shrink_open.sent` / `shrink_close.sent`) ואת הצעד ב-order.log,
+#: ומרוקן `-T` כמו CURL_SINK. ‏SHRINK_OPEN_HTTP / SHRINK_CLOSE_HTTP קובעים
+#: את התשובה; ‏000 = השרת לא נענה כלל (curl יוצא 7, בלי קוד).
+CURL_SHRINK_SERVER = (
+    '#!/bin/sh\n'
+    'f=""; o=""; d=""; url=""\n'
+    'while [ $# -gt 0 ]; do\n'
+    '  case "$1" in\n'
+    '    -T) f="$2"; shift ;;\n'
+    '    -o) o="$2"; shift ;;\n'
+    '    --data-binary) d="${2#@}"; shift ;;\n'
+    '    http://*|https://*) url="$1" ;;\n'
+    '  esac\n'
+    '  shift\n'
+    'done\n'
+    'case "$url" in\n'
+    '  */agent/shrink-open)\n'
+    '    cat "$d" >> "$RUN_DIR/shrink_open.sent"; echo >> "$RUN_DIR/shrink_open.sent"\n'
+    '    echo "shrink-open" >> "$RUN_DIR/order.log"\n'
+    '    code="${SHRINK_OPEN_HTTP:-200}"\n'
+    '    case "$code" in\n'
+    "      200) printf '{\"ok\":true,\"id\":7}' > \"$o\" ;;\n"
+    "      409) printf '{\"ok\":false,\"code\":\"already_open\",\"id\":3,\"opened_at\":\"2026-09-16T20:00:00+00:00\",\"error\":\"already open\"}' > \"$o\" ;;\n"
+    '      000) exit 7 ;;\n'
+    "      *) printf '{\"ok\":false,\"error\":\"database is locked\",\"code\":\"db\"}' > \"$o\" ;;\n"
+    '    esac\n'
+    '    printf "%s" "$code"; exit 0 ;;\n'
+    '  */agent/shrink-close)\n'
+    '    cat "$d" >> "$RUN_DIR/shrink_close.sent"; echo >> "$RUN_DIR/shrink_close.sent"\n'
+    '    echo "shrink-close" >> "$RUN_DIR/order.log"\n'
+    '    code="${SHRINK_CLOSE_HTTP:-200}"\n'
+    "    if [ \"$code\" = 200 ]; then printf '{\"ok\":true}' > \"$o\"; else printf '{\"ok\":false,\"code\":\"not_open\"}' > \"$o\"; fi\n"
+    '    printf "%s" "$code"; exit 0 ;;\n'
+    '  */agent/shrink-note)\n'
+    '    cat "$d" >> "$RUN_DIR/shrink_note.sent"; echo >> "$RUN_DIR/shrink_note.sent"\n'
+    '    echo "shrink-note" >> "$RUN_DIR/order.log"\n'
+    "    printf '{\"ok\":true}' > \"$o\"; printf 200; exit 0 ;;\n"
+    'esac\n'
+    '[ -n "$f" ] && cat "$f" > /dev/null\n'
+    'exit 0\n'
+)
+
+#: ‏jq אינו מותקן בווינדוס; ‏`json_get` על תשובת `shrink-open` (ok/id) עובר
+#: דרך התחליף הצר של test_directsend — במעבדה וב-CI רץ jq אמיתי.
+JQ_STUB = '#!/bin/sh\nexec python "' + posix(Path(__file__).parent / "jq_shim.py") + '" "$@"\n'
+
+
 def capture_run(tmp_path, *, present=True, image=GPT_DISK, stubs=None,
                 disk="sda", env=None, shell_pre="") -> tuple[Path, Path, str]:
     """מריץ את `capture_disk` האמיתי מול דיסק מזויף, ומחזיר (box, run, out).
@@ -132,11 +182,15 @@ def capture_run(tmp_path, *, present=True, image=GPT_DISK, stubs=None,
     # נגזרים בטעינה, וייצוא שמגיע אחריה אינו משנה דבר.
     extra_env = "".join(f"export {name}={value!r}; "
                         for name, value in (env or {}).items())
+    stubs = dict(stubs or {})
+    if shutil.which("jq") is None and "jq" not in stubs:
+        stubs["jq"] = JQ_STUB
     out = run_sh(
-        make_stubs(box / "stubs", stubs or {})
+        make_stubs(box / "stubs", stubs)
         + f"export RUN_DIR={posix(run)!r} DEVROOT={posix(dev)!r} "
         f"SYSROOT={posix(box)!r} SERVER=http://s; " + extra_env
-        + f". {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/sysinfo.sh; "
+        # ‏#926: jsonq.sh — shrink_open_record קורא את תשובת השרת (ok/id) ב-json_get.
+        + f". {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/sysinfo.sh; . {posix(AGENT)}/lib/jsonq.sh; "
         f". {posix(AGENT)}/lib/waits.sh; . {posix(AGENT)}/lib/progress.sh; "
         # ‏manifest.sh (#338) ואז bootca.sh, בדיוק כסדר של
         # `imagectl-agent`: ‏`capture_disk` קורא לשניהם בשורת המניפסט,
@@ -146,7 +200,8 @@ def capture_run(tmp_path, *, present=True, image=GPT_DISK, stubs=None,
         # ‏#87: shrink.sh לפני capture.sh כמו בסוכן; הוא עצמו קורא ל-attended
         # (‏#906) ול-ui.sh, ולכן גם הם כאן — פונקציה שאינה טעונה היא כשל שקט.
         f". {posix(AGENT)}/lib/ui.sh; . {posix(AGENT)}/lib/attended.sh; "
-        f". {posix(AGENT)}/lib/shrink.sh; "
+        # ‏#926: shrinkmem.sh — הרשומה בשרת לפני הכיווץ; נטען אחרי shrink.sh כמו בסוכן.
+        f". {posix(AGENT)}/lib/shrink.sh; . {posix(AGENT)}/lib/shrinkmem.sh; "
         f". {posix(AGENT)}/lib/capture.sh; "
         f'node_is_block() {{ grep -qxF "$1" {posix(nodes)!r} 2>/dev/null; }}; '
         # ‏shell_pre רץ **אחרי** שרשרת הטעינה, ולכן הוא יכול להחליף

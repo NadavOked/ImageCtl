@@ -25,7 +25,7 @@ import pytest
 from native import requires_native
 from test_agent import AGENT, BASH, REPO, posix, sh
 from test_capture_refusals import (
-    CURL_SINK,
+    CURL_SHRINK_SERVER,
     PIPE_INPUT,
     capture_body,
     capture_run,
@@ -120,7 +120,9 @@ PARTCLONE_LOGGED = ('#!/bin/sh\necho "partclone $*" >> "$RUN_DIR/order.log"\n'
 #: ‏3 הוא NTFS (ווינדוס), 4 הוא NTFS (‏recovery), ‏1 vfat. השער של #651
 #: מאושר — הוא נבדק ב-test_capture_hibernation.py; כאן הוא לא הנושא.
 FS_MAP = ('_fs_of() { case "$1" in *3|*4) echo ntfs ;; *) echo vfat ;; esac; }; '
-          'capture_ntfs_hibernation_reason() { return 0; }; ')
+          'capture_ntfs_hibernation_reason() { return 0; }; '
+          # ‏#926: לדיסק יש סידורי — בלעדיו הרשומה בשרת מסורבת והכיווץ לא מתחיל.
+          'disk_serial() { printf S926; }; disk_port() { printf 1; }; ')
 SAY_YES = 'shrink_ask() { echo continue; }; '
 SAY_PLAIN = 'shrink_ask() { echo plain; }; '
 SAY_CANCEL = 'shrink_ask() { echo cancel; }; '
@@ -128,7 +130,8 @@ SAY_CANCEL = 'shrink_ask() { echo cancel; }; '
 
 def stubs(**extra: str) -> dict[str, str]:
     base = {
-        "sgdisk": SGDISK_WIN_REC, "curl": CURL_SINK,
+        # ‏#926: curl שעונה גם ל-shrink-open/close — בלי רשומה בשרת אין כיווץ.
+        "sgdisk": SGDISK_WIN_REC, "curl": CURL_SHRINK_SERVER,
         "partclone.ntfs": PARTCLONE_LOGGED, "partclone.dd": PIPE_INPUT, "partclone.fat": PIPE_INPUT,
         "ntfsresize": NTFSRESIZE_OK, "ntfsfix": NTFSFIX_OK, "blockdev": BLOCKDEV_OK,
     }

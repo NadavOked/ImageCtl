@@ -164,6 +164,13 @@ shrink_before_capture() {
     esac
     _sb_new=$(_shrink_target "$_sb_min" "$_sb_cur")
     [ "$_sb_new" -lt "$_sb_cur" ] || { log "partition $_sb_idx: $_sb_cur bytes, minimum $_sb_min -- nothing to shrink"; return 0; }
+    # ‏#926: לפי זיכרון השרת (ה-hello שהביא את המשימה) הדיסק כבר מכווץ מקליטה
+    # קודמת שלא הוחזרה — לא מכווצים פעמיים, ולא שואלים סתם.
+    shrink_records_refresh || :
+    if _sb_pend=$(shrink_pending_for "$1"); then
+        SHRINK_ERROR="לפי זיכרון השרת מחיצה $(echo "$_sb_pend" | cut -d'|' -f3) בדיסק הזה כבר כווצה לקליטה קודמת (רשומה #${_sb_pend%%|*}) ולא הוחזרה לגודלה — אתחלו את מחשב הבנייה ובחרו החזרה, או נקו את הרשומה בקונסולה; הקליטה בוטלה"
+        return 1
+    fi
     _sb_q="הקליטה תכווץ את מחיצת ווינדוס במחשב הזה מ-$(_shrink_gb "$_sb_cur") ל-$(_shrink_gb "$_sb_new") — המשך/ביטול"
     shrink_gui_release
     # ‏#906: hello ממשיך בזמן ההמתנה לאדם, והשאלה מגיעה לקונסולה.
@@ -181,6 +188,9 @@ shrink_before_capture() {
     case "$_sb_attr" in ????????????????) ;; *)
         SHRINK_ERROR="לא הצלחנו לקרוא את כניסת מחיצה $_sb_idx בטבלה (sgdisk -i: דגלים '$_sb_attr') — הדיסק לא שונה"; return 1 ;;
     esac
+    # ‏#926: הפריסה המקורית נרשמת **בשרת** לפני הכתיבה הראשונה — tmpfs מת
+    # עם אובדן חשמל. בלי רשומה (סידורי חסר, שרת שלא ענה 2xx) אין כיווץ.
+    shrink_open_record "$1" "$_sb_idx" "$_sb_start" "$_sb_size" "$_sb_guid" "$_sb_uguid" "$_sb_name" "$_sb_attr" "$_sb_cur"         || { SHRINK_ERROR="$SHRINKMEM_ERROR"; return 1; }
     log "shrinking partition $_sb_idx on $1: $_sb_cur -> $_sb_new bytes (minimum $_sb_min)"
     # בלי -f ועם "y" מפורש — ראו למעלה: ווליום מלוכלך מסורב על ידי ntfsresize
     # עצמו, ו-EOF על השאלה שלו היה המשך. ‏$? של הצינור הוא של ntfsresize.
@@ -236,9 +246,10 @@ shrink_restore_source() {
             ntfsfix -d "$_sr_node" >> "$LOG_FILE" 2>&1 || _sr_why="dirty flag not cleared after the grow (ntfsfix -d)"
         else _sr_why="ntfsresize could not grow the filesystem back"; fi
     else _sr_why="the partition table was not restored (step $?)"; fi
-    [ -n "$_sr_why" ] || { log "partition $_sr_idx restored to $_sr_old sectors"; return 0; }
+    [ -n "$_sr_why" ] || { log "partition $_sr_idx restored to $_sr_old sectors"; shrink_close_record "$1" || :; return 0; }   # #926
     _sr_msg="המקור לא הוחזר לגודלו אחרי הקליטה: $_sr_why — ווינדוס יעלה; מחיצה $_sr_idx נשארה $_sr_new סקטורים במקום $_sr_old"
     log "WARNING: $1: $_sr_msg"
     echo "$_sr_msg" > "$RUN_DIR/targets/$1/error"
+    shrink_note_record "$1" "$_sr_msg"   # #926: הרשומה נשארת פתוחה, והקונסולה רואה למה
     return 1
 }

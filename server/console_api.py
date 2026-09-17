@@ -17,7 +17,7 @@ from typing import Callable
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import PlainTextResponse
 
-from . import auth, dhcp, disk_failures, inventory, registry, storage_nodes, users
+from . import auth, dhcp, disk_failures, inventory, registry, shrink_records, storage_nodes, users
 from .api import ServerContext
 from .db import (_write_lock, get_setting, journal, now_iso, set_setting,
                  update_one, writing)
@@ -415,6 +415,20 @@ def create_console_router(
         # קיימת אינה "נוקתה" (עיקרון 5): 404, לא ok.
         if not disk_failures.clear(ctx.conn, failure_id, by=user[0]):
             raise HTTPException(404, "רשומה לא קיימת או שכבר נוקתה")
+        return {"ok": True}
+
+    # --- #926: דיסקים מכווצים — המקור שלא הוחזר לגודלו אחרי קליטה -------------
+
+    @router.get("/shrink-records")
+    def read_shrink_records(user=Depends(current_user)):
+        return shrink_records.list_open(ctx.conn)
+
+    @router.post("/shrink-records/{record_id}/clear")
+    def clear_shrink_record(record_id: int, user=Depends(admin_only)):
+        # "נקה" — המפעיל הרחיב את המחיצה בעצמו / הדיסק הוחלף. רשומה שכבר
+        # נסגרה או שאינה קיימת אינה "נוקתה" (עיקרון 5): 404, לא ok.
+        if not shrink_records.clear(ctx.conn, record_id, by=user[0]):
+            raise HTTPException(404, "רשומה לא קיימת או שכבר נסגרה")
         return {"ok": True}
 
     # --- סבבים (גם deploy) ---------------------------------------------------

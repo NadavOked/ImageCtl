@@ -269,6 +269,35 @@ CREATE TABLE IF NOT EXISTS disk_failures (
     UNIQUE (session_id, mac, dev)
 );
 
+-- זיכרון הכיווץ של דיסק המקור (#926): הפריסה המקורית של מחיצת ה-NTFS
+-- שכווצה בקליטה (#87), נרשמת **לפני** הכתיבה הראשונה למקור. עד כאן היא
+-- ישבה ב-tmpfs של הסוכן, ואובדן חשמל בין הכיווץ להחזרה השאיר את דיסק
+-- הבנייה מכווץ בלי שאיש יודע. הסידורי הוא הזהות (הדיסק נודד); mac/dev/
+-- port הם המקום, לתצוגה. `closed_at` = הוחזר (הסוכן) או "נקה" מהקונסולה.
+CREATE TABLE IF NOT EXISTS shrink_records (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    mac          TEXT NOT NULL,        -- קנוני: lowercase עם נקודתיים
+    dev          TEXT,                 -- שם ההתקן באותו אתחול (sda) -- מתחלף, לא זהות
+    serial       TEXT NOT NULL,        -- זהות הדיסק
+    port         INTEGER,              -- החריץ (SATA N, כמו ב-hello)
+    model        TEXT,
+    image_name   TEXT,                 -- הקליטה שבמהלכה כווץ
+    task_id      TEXT,
+    idx          INTEGER NOT NULL,     -- הכניסה ב-GPT
+    start_sector INTEGER NOT NULL,
+    size_sectors INTEGER NOT NULL,     -- הגודל **המקורי**, לפני הכיווץ
+    type_guid    TEXT NOT NULL,
+    unique_guid  TEXT,
+    attrs        TEXT,                 -- 16 ספרות הקס, כמו sgdisk -i
+    name         TEXT,                 -- שם המחיצה
+    ntfs_bytes   INTEGER,              -- גודל מערכת הקבצים לפני הכיווץ
+    opened_at    TEXT NOT NULL,
+    note         TEXT,                 -- למה הרשומה עדיין פתוחה (הטבלה הוחזרה, המתיחה נפלה)
+    closed_at    TEXT,
+    closed_by    TEXT                  -- agent | console | <user>
+);
+CREATE INDEX IF NOT EXISTS shrink_records_serial ON shrink_records (serial, closed_at);
+
 -- המלאי החומרתי מה-hello (#720, schema 2): DMI, PCI של רשת+אחסון, TPM.
 -- **מגורסת**: שורה חדשה רק כשה-JSON הקנוני השתנה (server/inventory.py);
 -- seen_at = מתי הגרסה הזו נראתה לראשונה. השורה האחרונה לכל MAC היא

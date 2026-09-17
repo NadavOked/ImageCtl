@@ -9,6 +9,7 @@ let IMAGES = null, FOLDERS = null;
 let IMAGES_FOLDER = null;
 let MACHINES = null, GROUPS = null;
 let DISK_FAILURES = null;   // #874: זיכרון כשלי הכתיבה (דיסקים אדומים)
+let SHRINK_RECORDS = null;  // #926: דיסקי מקור שכווצו בקליטה ולא הוחזרו לגודלם (כתום)
 let MACHINES_FILTER = null;
 let HEALTH = null, NETCFG = null;
 let MONITOR = null, monitorError = "";
@@ -464,8 +465,8 @@ async function loadImages() {
 
 async function loadMachines() {
   try {
-    [MACHINES, GROUPS, DISK_FAILURES] = await Promise.all([
-      api("/machines"), api("/groups"), api("/disk-failures")]);
+    [MACHINES, GROUPS, DISK_FAILURES, SHRINK_RECORDS] = await Promise.all([
+      api("/machines"), api("/groups"), api("/disk-failures"), api("/shrink-records")]);
     populateSidebarGroups();
     updateAlertBadge();
     if (current === "machines") renderCurrent();
@@ -1146,6 +1147,7 @@ function machines() {
   }
   return `<div class="grid"><div class="span-12"><div class="card"><div class="card-h"><span>מלאי תחנות</span><div><button class="btn" onclick="importCSV()">ייבוא CSV</button> <button class="btn" onclick="exportMachines()">ייצוא CSV</button> <button class="btn primary" onclick="openNewMachine()">+ מחשב</button></div></div><div class="card-b table-wrap">${filterStrip}${tableBody}</div></div></div>
 ${diskFailuresCard()}
+${shrinkRecordsCard()}
 <div class="span-12"><div class="card"><div class="card-h">כיתות</div><div class="card-b"><div class="statrow"><div class="statbox"><div class="n">${classCount}</div><div class="l">כיתות</div></div><div class="statbox"><div class="n">${list.length}</div><div class="l">תחנות</div></div></div></div></div>
 </div></div>`;
 }
@@ -1185,6 +1187,38 @@ function diskFailuresCard() {
 async function clearDiskFailure(id) {
   try {
     await post(`/disk-failures/${id}/clear`);
+    toast("הרשומה נוקתה");
+    await loadMachines();
+  } catch (e) {
+    toast("הניקוי נכשל: " + e.message);
+  }
+}
+
+/* #926: דיסקים מכווצים — מחיצת המקור כווצה לקליטה (#87) ולא הוחזרה לגודלה
+   (אובדן חשמל / אתחול לפני סוף הקליטה). הרשומה נפתחת בשרת **לפני** הכיווץ
+   ונסגרת אחרי ההחזרה; מה שנשאר פתוח הוא דיסק שעדיין מכווץ. כתום, לא אדום:
+   ווינדוס עולה ממנו. ההחזרה נעשית ליד המחשב (מחשב הבנייה מציע באתחול);
+   "נקה" = המפעיל הרחיב בעצמו / הדיסק הוחלף. */
+function shrinkRecordsCard() {
+  const rows = (SHRINK_RECORDS || []).map((r) => {
+    const m = findMachine(r.mac);
+    const where = (m ? machineName(m) : r.mac) + (r.port != null ? ` · דיסק ${r.port}` : "");
+    const gb = (sectors) => sectors != null ? (sectors * 512 / 1e9).toFixed(1) + " GB" : "—";
+    const text = `מחיצה ${r.idx} כווצה לקליטה ולא הוחזרה לגודלה המקורי (${gb(r.size_sectors)})`;
+    // הסיבה מהסוכן (shrink-note): "הטבלה הוחזרה, מערכת הקבצים לא נמתחה" — למה עדיין פתוח.
+    const note = r.note ? `<div class="form-note">${esc(r.note)}</div>` : "";
+    return `<tr><td><strong>${esc(r.serial || "—")}</strong>${r.model ? `<br><small>${esc(r.model)}</small>` : ""}</td><td>${esc(where)}</td><td>${esc(fmtWhen(r.opened_at))}</td><td><span class="disk-smart">${esc(text)}</span>${note}</td><td>${esc(r.image_name || "")}</td><td><button class="tool-btn" onclick="clearShrinkRecord(${Number(r.id)})">נקה</button></td></tr>`;
+  }).join("");
+  const body = SHRINK_RECORDS == null
+    ? `<div class="empty">רשימת הדיסקים המכווצים לא נטענה</div>`
+    : (rows ? `<table class="table"><thead><tr><th>מספר סידורי</th><th>מכונה · חריץ</th><th>מתי</th><th>מצב</th><th>אימג'</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
+            : `<div class="empty">אין דיסקים מכווצים</div>`);
+  return `<div class="span-12"><div class="card"><div class="card-h"><span>דיסקים מכווצים — מחיצת המקור לא הוחזרה לגודלה</span><small>מחשב הבנייה מציע להחזיר באתחול; "נקה" אחרי הרחבה ידנית או החלפת דיסק</small></div><div class="card-b table-wrap">${body}</div></div></div>`;
+}
+
+async function clearShrinkRecord(id) {
+  try {
+    await post(`/shrink-records/${id}/clear`);
     toast("הרשומה נוקתה");
     await loadMachines();
   } catch (e) {
@@ -2246,7 +2280,7 @@ function openMachineDetail(mac) {
   const macEnc = encodeId(m.mac);
   const name = machineName(m) || m.mac;
   const klass = groupLabel(machineGroupId(m));
-  openDrawer("תחנה — " + name, `<div class="detail-grid"><div class="detail-box"><span class="k">שם</span><span class="v">${esc(name)}</span></div><div class="detail-box"><span class="k">כיתה</span><span class="v">${esc(klass)}</span></div><div class="detail-box"><span class="k">MAC</span><span class="v">${esc(m.mac)}</span></div></div>${diskInventoryHtml(m)}${hwInventoryHtml(m)}${machineCaptureWarningHtml(m.mac)}<div class="section-title">פעולות</div><div class="action-strip"><button class="btn" onclick="renameMachine('${macEnc}')">שינוי שם</button><button class="btn" disabled title="דורש endpoint — בקרוב">עריכת MAC</button><button class="btn" disabled title="בקרוב">Wake-on-LAN</button><button class="btn" disabled title="בקרוב">בדוק PXE</button><button class="btn danger" disabled title="בקרוב">אתחול</button></div>`);
+  openDrawer("תחנה — " + name, `<div class="detail-grid"><div class="detail-box"><span class="k">שם</span><span class="v">${esc(name)}</span></div><div class="detail-box"><span class="k">כיתה</span><span class="v">${esc(klass)}</span></div><div class="detail-box"><span class="k">MAC</span><span class="v">${esc(m.mac)}</span></div></div>${diskInventoryHtml(m)}${hwInventoryHtml(m)}${machineCaptureWarningHtml(m.mac)}${machineRestoreWarningHtml(m.mac)}<div class="section-title">פעולות</div><div class="action-strip"><button class="btn" onclick="renameMachine('${macEnc}')">שינוי שם</button><button class="btn" disabled title="דורש endpoint — בקרוב">עריכת MAC</button><button class="btn" disabled title="בקרוב">Wake-on-LAN</button><button class="btn" disabled title="בקרוב">בדוק PXE</button><button class="btn danger" disabled title="בקרוב">אתחול</button></div>`);
 }
 
 function renameMachine(mac) {
@@ -2415,10 +2449,23 @@ function driversHtml(d) {
   return `<div class="err">דרייברים לא הונחו: ${esc(d.error || d.state)}</div>`;
 }
 
+/* #856: החבר של ה-MAC הזה בסבב המוצג שהסתיים `done` ועדיין נושא `error`
+   — "הושלם, עם אזהרה" — במגירת התחנה. אותו .notice.warn כמו בכרטיס. */
+function machineRestoreWarningHtml(mac) {
+  const m = (OVERVIEW?.session?.members || []).find((x) => x.mac === mac && (x.done || x.state === "done") && x.error);
+  if (!m) return "";
+  return `<div class="section-title">אזהרת שחזור אחרונה</div><div class="notice warn">${esc(m.error)}</div>`;
+}
+
 function memberRow(m, session, note = "") {
   const progress = Progress.view(m);
   const cls = m.done || m.state === "done" ? "done" : m.state === "failed" ? "failed" : "";
-  const err = m.error ? `<div class="err">${esc(m.error)}</div>` : "";
+  // ‏#856: `done` שעדיין נושא `error` הוא "הושלם, עם אזהרה" — שם המחשב לא
+  // נכתב (hostname.sh), ההרחבה נדחתה (#648) — לא כשל. עד כאן כל `error`
+  // נצבע אדום (.err) גם מתחת לכרטיס ירוק, כמו כונן שנכשל. כתום — אותו
+  // .notice.warn של captureWarningHtml (#927); אדום נשאר לכשל בלבד.
+  const err = !m.error ? "" : cls === "done"
+    ? `<div class="notice warn">${esc(m.error)}</div>` : `<div class="err">${esc(m.error)}</div>`;
   // מזוהה בשם המחשב שייכתב לו; מכונה שאינה רשומה נופלת חזרה ל-MAC.
   const label = m.hostname || m.name || m.mac;
   const single = session.kind === "unicast"

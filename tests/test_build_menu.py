@@ -655,3 +655,33 @@ def test_the_new_agent_screens_print_no_hebrew(name):
     hebrew = [line for line in path.read_text(encoding="utf-8").splitlines()
               if any("֐" <= ch <= "ת" for ch in line)]
     assert hebrew == []
+
+@native_tools
+def test_gui_role_comes_from_the_login_answer_not_from_me(tmp_path):
+    """‏17/09 (#947): הכניסה במסך הבנייה נדחתה גם אחרי login=200 — `gui_role`
+    קרא `/api/console/me`, שאינו ב-allowlist הקיוסק (רשימת אסטרה) ולכן 404
+    על פורט הסוכן. התשובה של login כבר נושאת את התפקיד; ממנה קוראים.
+    בקרה שלילית: על הקוד הישן הטסט נופל — אין `console_get`/רשת כאן, ורק
+    `console_login.json` קיים."""
+    lib = posix(REPO / "agent" / "lib" / "guibridge.sh")
+    run = tmp_path / "run"; run.mkdir()
+    runp = posix(run)
+    (run / "console_login.json").write_text('{"username":"nadav","role":"admin","idle_seconds":300}', encoding="utf-8")
+    script = f"""
+        RUN_DIR={runp}; SERVER=http://127.0.0.1:9; HTTP_TIMEOUT=1; HTTP_RETRIES=0
+        console_get() {{ echo 'console_get must not be called' >&2; exit 97; }}
+        . {lib}
+        gui_role || exit 1
+        printf '%s
+' "$GUI_ROLE"
+        rm -f {runp}/console_login.json
+        gui_role && exit 2
+        printf '{{"username":"x","role":"viewer"}}' > {runp}/console_login.json
+        gui_role && exit 3
+        echo ok
+    """
+    sf = tmp_path / "t.sh"; sf.write_text(script, encoding="utf-8")
+    r = subprocess.run([BASH, str(sf)], capture_output=True, text=True, cwd=str(REPO),
+                       stdin=subprocess.DEVNULL, timeout=60)
+    assert r.returncode == 0, r.stderr + r.stdout
+    assert r.stdout.split() == ["admin", "ok"], r.stdout

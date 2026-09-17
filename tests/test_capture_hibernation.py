@@ -33,12 +33,15 @@ def _reason(tmp_path, *, hiberfil=False, probe_rc=0):
     return int(rc.strip()), body.strip()
 
 
-def test_hiberfil_is_reported_but_a_clean_volume_is_not(tmp_path):
-    """Mutation caught: always returning clean makes the hiberfil half fail."""
-    dirty = _reason(tmp_path / "dirty", hiberfil=True)
+def test_hiberfil_presence_alone_is_not_hibernation(tmp_path):
+    """17/09, נמדד על מחשב הבנייה במעבדה: hiberfil.sys של 3.36GB קיים על כל
+    ווינדוס שה-hibernation/fast-startup מופעל בו, גם אחרי כיבוי מלא
+    (`ntfs-3g.probe` rc=0, `ntfsresize --info` נקי) — והקליטה סורבה "הדיסק
+    מהובר" על דיסק נקי. המצב המהובר הוא בכותרת הקובץ, וזה בדיוק מה
+    ש-probe rc=14 בודק. קובץ קיים + probe 0 = נקי."""
+    with_file = _reason(tmp_path / "file", hiberfil=True)
     clean = _reason(tmp_path / "clean")
-    assert dirty[0] == 1
-    assert "הדיסק מהובר" in dirty[1]
+    assert with_file == (0, "")
     assert clean == (0, "")
 
 
@@ -60,7 +63,7 @@ def test_probe_failure_is_not_clean(tmp_path):
 def test_detection_commands_are_read_only():
     source = (AGENT / "lib" / "hibernation.sh").read_text(encoding="utf-8")
     assert "ntfs-3g.probe --readwrite" in source
-    assert 'ntfs-3g -o ro' in source
+    assert 'ntfs-3g -o rw' not in source          # 17/09: no mount at all any more
     assert "remove_hiberfile" not in source
     assert "ntfsfix" not in source
 
