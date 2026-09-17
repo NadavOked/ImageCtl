@@ -141,7 +141,7 @@ test('grid without a round: slots from /machines[].disks[] by drawer_count — d
   assert.match(c2,/<div class="disk " data-slot="2"><b>דיסק 2<\/b><span>SATA 1<\/span>[^]*?<span class="cap">SMART לא נבדק<\/span><\/div>/,'unchecked is grey, not green');
   assert.match(c2,/<div class="disk err" data-slot="3"><b>דיסק 3<\/b><span>SATA 2<\/span>[^]*?<span class="cap">אדום 15\/09\/2026 · כבל\/חריץ SATA 2<\/span><button class="btn sm" onclick="clearDiskFailure\(7\)">נקה<\/button><\/div>/);
   assert.doesNotMatch(c2,/data-slot="3"[^]*?SMART תקין[^]*?data-slot="3"/,'a red slot never shows its SMART as green');
-  assert.doesNotMatch(c2,/monitorMachine\(/,'monitor only on the monitor page'); assert.match(c2,/openMachineDetail\(/); assert.match(c2,/wakeRoom\(\)"[^>]*>WoL \(כל החדר\)</);
+  assert.doesNotMatch(c2,/monitorMachine\(/,'monitor only on the monitor page'); assert.match(c2,/openMachineDetail\(/); assert.match(c2,new RegExp("wakeMachine\\('"+encodeURIComponent(C2)+"'\\)\"[^>]*>WoL<"),'#984: per-machine WoL on the cloner card');
   assert.match(c3,/מספר החריצים לא הוגדר והמכונה מעולם לא דיווחה על דיסקים/); assert.match(c3,/editDrawerCount\(/);
   assert.match(c3,/<span class="st "><b>מחשב 3<\/b>/,'not connected → grey dot');
   const red=between(html,'<div class="c8 card">','<div class="c4 card">');
@@ -207,7 +207,7 @@ test('builders object: header, capture pill, actions (capture, direct #715 → d
   assert.match(html,/קבוצה קבועה · 2 מחשבים · 1 מחוברים · קליטה אחת ממתינה · קליטה אחת רצה · אימג' אחרון שנקלט: Office 2024 — מרצה \(10\/09\/2026\)/);
   assert.match(html,/pill info">2 קליטות בתהליך</);
   assert.match(html,/openCapture\(\)\.catch\(e => toast\(e\.message\)\)">\+ קליטת אימג'…</); assert.match(html,/openDirectRound\(\)">הפצה ישירה למשכפלים…</);
-  assert.match(html,/openAddMachine\(\{group:'grp_BUILD'\}\)">\+ מחשב בנייה</); assert.match(html,/title="דורש API">הער את כולם \(WoL\) — בקרוב</);
+  assert.match(html,/openAddMachine\(\{group:'grp_BUILD'\}\)">\+ מחשב בנייה</); assert.match(html,/wakeGroup\('grp_BUILD'\)">הער את כולם \(WoL\)</,'#984: POST /groups/grp_BUILD/wake');
   for(const t of ['סיכום','קליטות']) assert.match(html,new RegExp('role="tab"[^>]*>'+t+'<'));
   assert.doesNotMatch(html,/role="tab"[^>]*>מחשבים</); assert.doesNotMatch(html,/disabled/);
   run('openDirectRound()'); assert.equal(run('selected'),'deploy'); assert.match(run('toasted'),/#715/);
@@ -226,7 +226,7 @@ test('builders: "capture in progress" lists both active captures with progress, 
   assert.match(b,/<span class="k">מחשב · דיסק<\/span><span class="v">בנייה 2 · <span class="mono">sda<\/span><\/span>/,'machine never reported disks → the chosen device as-is, not an invented slot');
   assert.match(b,/role="progressbar"[^>]*aria-valuenow="40"/); assert.match(b,/<span class="k">נקראו<\/span><span class="v"><bdi dir="ltr">18.6 GB<\/bdi>/); assert.match(b,/<span class="k">משך<\/span><span class="v">8:00<\/span>/);
   assert.match(b,/בדיקת NTFS → כיווץ → זרם \+ sha256 → החזרת הגודל → אימות — <b[^>]*>דורש API<\/b>/);
-  assert.match(b,/cancelCaptureVerified\('tsk_b2'\)">בטל קליטה \(הקלדת שם\)</); assert.match(b,/title="דורש API">WoL לבנייה 2 — בקרוב</);
+  assert.match(b,/cancelCaptureVerified\('tsk_b2'\)">בטל קליטה \(הקלדת שם\)</); assert.match(b,/wakeMachine\('[^']+'\)">WoL ל-בנייה 2</,'#984');
   run("cancelCaptureVerified('tsk_b2')"); assert.equal(run('formOptions.verify.mustEqual'),'Kali 2026.2 — סייבר'); assert.equal(run('formOptions.danger'),true);
   return run('formOptions.onSubmit({})').then(()=>{
     assert.ok(requests.some(r=>r.url.endsWith('/tasks/tsk_b2/cancel')&&r.options.method==='POST'),'cancel is POST /tasks/{id}/cancel');
@@ -246,7 +246,7 @@ test('builders: machine cards from /machines + /monitor + /net (model/TPM, disk 
   assert.match(b1,/<span class="k">מצב<\/span><span class="v"><span class="st warn">ממתין למפעיל: תפריט<\/span> <span class="pill warn">קליטה ממתינה<\/span>/);
   assert.match(b1,/לפני קליטה<\/span><span class="v"><span class="muted">NTFS \/ בשימוש — נבדקים בקליטה \(<b[^>]*>דורש API<\/b>\)/);
   assert.doesNotMatch(b1,/קלוט מכאן/,'a machine with an open capture gets no second one (server would 409)');
-  assert.doesNotMatch(b1,/monitorMachine\(/,'monitor only on the monitor page'); assert.match(b1,/openMachineDetail\(/); assert.match(b1,/title="דורש API">WoL — בקרוב</);
+  assert.doesNotMatch(b1,/monitorMachine\(/,'monitor only on the monitor page'); assert.match(b1,/openMachineDetail\(/); assert.match(b1,/wakeMachine\('[^']+'\)">WoL</,'#984: per-machine WoL on the builder card');
   assert.match(b2,/<span class="st ok"><b>בנייה 2<\/b>/); assert.match(b2,/<span class="k">דגם<\/span><span class="v"><span class="muted">לא דיווח/); assert.match(b2,/<span class="k">דיסק<\/span><span class="v"><span class="muted">לא דיווח/);
   assert.match(b2,/<span class="pill info">קליטה רצה<\/span>/);
   run("CAPTURE_TASKS=[]"); html=run('machines(0)'); balanced(html);

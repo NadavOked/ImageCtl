@@ -14,9 +14,8 @@ let MACHINES_FILTER = null;
 let HEALTH = null, NETCFG = null;
 let MONITOR = null, monitorError = "";
 let PORTS = null, portsError = "";
-let USERS = null, JOURNAL = null;
+let USERS = null, JOURNAL = null;   // ‏#954 גל 6: JOURNAL = השורות שנטענו (LOG.rows), USERS = /users
 let NIC_HIGHLIGHT = null;
-let JOURNAL_FILTER = "";
 
 async function api(path, options = {}) {
   const response = await fetch("/api/console" + path, {
@@ -338,7 +337,7 @@ function startIdleWatch() {
 
 function showLogin() {
   ME = null;
-  OVERVIEW = IMAGES = FOLDERS = MACHINES = GROUPS = HEALTH = NETCFG = USERS = JOURNAL = null;
+  OVERVIEW = IMAGES = FOLDERS = MACHINES = GROUPS = HEALTH = NETCFG = USERS = JOURNAL = SETTINGS = null; SETTINGS_DRAFT = {}; LOG.rows = null;
   SESSION_MACHINES = {group:null,list:[]};
   CAPTURE_TASKS = [];
   clearInterval(pollTimer);
@@ -369,6 +368,15 @@ async function showApp() {
   // ‏null = אין תג על העץ, ואז לא מציגים מספר שאין לו מקור.
   const versionEl = document.getElementById("serverVersion");
   if (versionEl) versionEl.textContent = ME.version || "";
+  // ‏#703 (tracer 5): מצב ה-TLS של הקונסולה מ-/me. טביעת האצבע (SHA-256
+  // של התעודה, כמו בדפדפן) — מקוצרת בשורת הסטטוס, מלאה ב-title
+  // וב"פרטי Session" — כדי שהאישור החד-פעמי של התעודה יהיה השוואה.
+  const tlsEl = document.getElementById("serverTls");
+  if (tlsEl) {
+    const fp = ME.tls && ME.tls.fingerprint_sha256;
+    tlsEl.innerHTML = fp ? `TLS תעודה עצמית · <span dir="ltr">${esc(fp.slice(0, 23))}…</span>` : "";
+    tlsEl.title = fp ? `SHA-256 ${fp}` : "";
+  }
   document.querySelectorAll("[data-admin]").forEach(
     (el) => el.classList.toggle("hidden", ME.role !== "admin"));
   // רכיבים מותנים ביכולת נגזרת-שרת (#655/#723): מוצגים רק כשהדגל
@@ -664,21 +672,10 @@ async function loadNetcfgData() {
 }
 
 async function loadUsersData() {
-  try {
-    USERS = await api("/users");
-    if (current === "permissions") renderCurrent();
-  } catch (e) {
-    toast("טעינת המשתמשים נכשלה: " + e.message);
-  }
-}
-
-async function loadJournalData() {
-  try {
-    JOURNAL = await api("/journal");
-    if (current === "logs") renderCurrent();
-  } catch (e) {
-    toast("טעינת היומן נכשלה: " + e.message);
-  }
+  // ‏#954 גל 6: כשל קריאה הוא מצב משלו (usersError), לא "אין משתמשים" (עיקרון 5).
+  try { USERS = await api("/users"); usersError = ""; }
+  catch (e) { USERS = null; usersError = e.message; toast("טעינת המשתמשים נכשלה: " + e.message); }
+  if (current === "permissions") renderCurrent();
 }
 
 function machineName(m) {
@@ -2207,6 +2204,7 @@ function groupRowHtml(g, kids) {
     ? [["פתח", `openClass('${gidEnc}')`], ["+ מחשב", `openAddMachine({group:'${gidEnc}'})`]]
     : [["פתח כיתה", `openClass('${gidEnc}')`], ["+ מחשב לכיתה", `openAddMachine({group:'${gidEnc}'})`]];
   if (g.role === "cloner") acts.push(["WoL לחדר", "wakeRoom()"]);
+  if (g.role === "build") acts.push(["WoL לבנייה", `wakeGroup('${gidEnc}')`]);   // ‏#984
   return { html: `<tr class="group" data-group="${esc(g.id)}"><td colspan="8"><div class="grp">${arrow}${title}<span class="muted">${esc(meta.join(" · "))}</span>${live}<span class="sp"></span>${UI.acts(acts)}</div></td></tr>` };
 }
 function machinesTableHtml() {
@@ -2498,7 +2496,7 @@ function clonerCardHtml(m, admin, room = false) {
     net && net.ip ? `<span class="mono">${esc(net.ip)}</span>` : "", esc(NET ? seenAgo(net && net.last_seen) : "לא נקרא")].filter(Boolean).join(" · ");
   const body = slots.length ? `<div class="slots">${slots.map((s) => slotHtml(m, s, admin)).join("")}</div>`
     : UI.note("", `מספר החריצים לא הוגדר והמכונה ${m.disks == null ? "מעולם לא דיווחה על דיסקים" : "דיווחה 0 דיסקים"}.${admin ? ` ${UI.link("הגדר חריצים", `editDrawerCount('${macEnc}')`)}` : ""}`);
-  const wol = `<button class="btn sm" onclick="wakeRoom()" title="WoL נשלח לכל החדר — אין WoL למחשב יחיד">WoL (כל החדר)</button>`;
+  const wol = `<button class="btn sm" onclick="wakeMachine('${macEnc}')" title="WoL למכונה הזו בלבד (#984); לכל החדר — בכותרת">WoL</button>`;
   const acts = room
     ? (st.off && roomOperator() ? wol : "")
     : admin ? `<button class="btn sm" onclick="openMachineDetail('${macEnc}')">פרטים</button>${wol}` : "";
@@ -2634,7 +2632,7 @@ function captureNowCard(kids) {
       ["נוצרה", `${ltr(fmtWhen(t.created_at))} (${esc(ago(t.created_at))})`],
       ["שלבים", `<span class="muted">בדיקת NTFS → כיווץ → זרם + sha256 → החזרת הגודל → אימות — <b title="‏/tasks מחזיר state ו-source_progress בלבד">דורש API</b></span>`],
     ]);
-    const acts = admin ? `<div class="acts"><button class="btn danger" onclick="cancelCaptureVerified('${encodeId(t.id)}')">בטל קליטה (הקלדת שם)</button>${UI.soon(`WoL ל${who}`)}</div>` : "";
+    const acts = admin ? `<div class="acts"><button class="btn danger" onclick="cancelCaptureVerified('${encodeId(t.id)}')">בטל קליטה (הקלדת שם)</button><button class="btn" onclick="wakeMachine('${encodeId(t.mac)}')">WoL ל-${esc(who)}</button></div>` : "";
     return `<div class="cap-now" data-task="${esc(t.id)}"><div class="mcard-h"><b>${esc(t.name || "")}</b>${head}</div>${kv}${acts}</div>`;
   });
   return UI.card({ title: active.length === 1 ? "קליטה בתהליך" : `${active.length} קליטות בתהליך`, cls: "c12", body: items.join("") });
@@ -2653,7 +2651,7 @@ function builderCardHtml(m, admin) {
     ["לפני קליטה", `<span class="muted">NTFS / בשימוש — נבדקים בקליטה (<b title="לא מדווח ב-hello">דורש API</b>)</span>`],
     ["מצב", state],
   ]);
-  const acts = admin ? `<div class="acts">${task ? "" : `<button class="btn sm primary" onclick="openCapture('${macEnc}').catch(e => toast(e.message))">קלוט מכאן</button>`}<button class="btn sm" onclick="openMachineDetail('${macEnc}')">פרטים</button>${UI.soon("WoL")}</div>` : "";
+  const acts = admin ? `<div class="acts">${task ? "" : `<button class="btn sm primary" onclick="openCapture('${macEnc}').catch(e => toast(e.message))">קלוט מכאן</button>`}<button class="btn sm" onclick="openMachineDetail('${macEnc}')">פרטים</button><button class="btn sm" onclick="wakeMachine('${macEnc}')">WoL</button></div>` : "";
   const meta = [net && net.ip ? `<span class="mono">${esc(net.ip)}</span>` : "", esc(NET ? seenAgo(net && net.last_seen) : "לא נקרא")].filter(Boolean).join(" · ");
   return `<div class="mcard${st.cls ? "" : " off"}" data-mac="${esc(m.mac)}"><div class="mcard-h"><span class="st ${st.cls}"><b>${esc(machineName(m) || m.mac)}</b></span><span class="muted">${meta}</span></div>${kv}${acts}</div>`;
 }
@@ -2682,7 +2680,7 @@ function buildersView(g, kids, tab) {
     !CAPTURE_TASKS_READ ? "קליטות: לא נקרא" : active.length ? [pending ? `${pending === 1 ? "קליטה אחת ממתינה" : `${pending} קליטות ממתינות`}` : "", running ? `${running === 1 ? "קליטה אחת רצה" : `${running} קליטות רצות`}` : ""].filter(Boolean).join(" · ") : "אין קליטה בתהליך",
     last ? `אימג' אחרון שנקלט: ${last.name} (${fmtDate(last.updated_at)})` : ""].filter(Boolean).join(" · ");
   const pill = !active.length ? "" : active.length > 1 ? UI.pill("info", `${active.length} קליטות בתהליך`) : UI.pill(pending ? "warn" : "info", pending ? "קליטה ממתינה" : "קליטה רצה");
-  const actions = admin ? `<button class="btn primary" onclick="openCapture().catch(e => toast(e.message))">+ קליטת אימג'…</button><button class="btn" onclick="openDirectRound()">הפצה ישירה למשכפלים…</button><button class="btn" onclick="openAddMachine({group:'${gidEnc}'})">+ מחשב בנייה</button>${UI.soon("הער את כולם (WoL)")}` : "";
+  const actions = admin ? `<button class="btn primary" onclick="openCapture().catch(e => toast(e.message))">+ קליטת אימג'…</button><button class="btn" onclick="openDirectRound()">הפצה ישירה למשכפלים…</button><button class="btn" onclick="openAddMachine({group:'${gidEnc}'})">+ מחשב בנייה</button><button class="btn" onclick="wakeGroup('${gidEnc}')">הער את כולם (WoL)</button>` : "";
   const body = tab === 1 ? capturesTableCard(kids, "c12") : captureNowCard(kids) + buildersCard(g, kids) + capturesTableCard(kids, "c12");
   return { sub, pill, actions, body };
 }
@@ -2791,7 +2789,7 @@ function machineDrawerHtml(m) {
   const sub = [esc(ROLE_HE[role] || role), g ? esc(g.label) : "", `<span class="mono">${esc(m.mac)}</span>`, net && net.ip ? `<span class="mono">${esc(net.ip)}</span>` : "",
     `נראה ${esc(NET ? seenAgo(net && net.last_seen) : "לא נקרא")}`].filter(Boolean).join(" · ");
   const actions = `<div class="acts" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">`
-    + (admin && role === "cloner" ? `<button class="btn" onclick="wakeRoom()" title="WoL נשלח לכל חדר השיכפולים — אין WoL למחשב יחיד">Wake-on-LAN (כל החדר)</button>` : UI.soon("Wake-on-LAN"))
+    + (admin && ["build", "cloner"].includes(role) ? `<button class="btn" onclick="wakeMachine('${macEnc}')">Wake-on-LAN</button>` : `<span class="muted" title="v2">Wake-on-LAN — לתחנות כיתה ב-v2</span>`)
     + (admin ? `<button class="btn" onclick="renameMachine('${macEnc}')">שינוי שם</button>` : "")
     + UI.soon("אתחול מרחוק") + `</div>`;
   const red = machineDiskFailures(m).map((f) => {
@@ -3177,124 +3175,228 @@ function fmtHour(ts) {
   return m ? m[1] : (s || "—");
 }
 
-function permissions() {
-  if (!USERS) return pagePlaceholder();
-  const list = USERS;
-  let tableBody;
-  if (!list.length) {
-    tableBody = `<div class="empty">אין משתמשים</div>`;
-  } else {
-    const rows = list.map((u) => {
-      const enc = encodeId(u.username);
-      const disabled = !!u.disabled;
-      const stClass = disabled ? "warn" : "ok";
-      const stLabel = disabled ? "מושבת" : "פעיל";
-      return `<tr><td><strong>${esc(u.username)}</strong></td><td>${esc(roleLabel(u.role))}</td><td><span class="status ${stClass}"><i></i>${stLabel}</span></td><td>${esc(fmtWhen(u.created_at))}</td><td><button class="tool-btn" onclick="editUser('${enc}')">עריכה</button></td></tr>`;
-    }).join("");
-    tableBody = `<table class="table"><thead><tr><th>משתמש</th><th>תפקיד</th><th>מצב</th><th>נוצר</th><th>פעולה</th></tr></thead><tbody>${rows}</tbody></table>`;
-  }
-  return `<div class="grid"><div class="span-12"><div class="card"><div class="card-h"><span>משתמשים</span><button class="btn primary" onclick="openNewUser()">+ משתמש</button></div><div class="card-b table-wrap">${tableBody}</div></div></div>
-<div class="span-4"><div class="card"><div class="card-h">מנהל <button class="tool-btn" onclick="openRolesDrawer()">פרטים</button></div><div class="card-b">גישה מלאה לספרייה, סבבים, מחשבים, רשת והרשאות.</div></div></div>
-<div class="span-4"><div class="card"><div class="card-h">מפעיל הפצה <button class="tool-btn" onclick="openRolesDrawer()">פרטים</button></div><div class="card-b">בחירת אימג׳ והפצה בלבד — ללא שינוי רשת או הרשאות.</div></div></div>
-<div class="span-4"><div class="card"><div class="card-h">עקרון ברירת מחדל</div><div class="card-b">כל פעולה מופרדת לפי הרשאה מפורשת; אין הרשאה שקטה.</div></div></div></div>`;
-}
+/* ---------- #954 גל 6: הרשאות ----------
+   נבנה לפי docs/design/console-redesign/permissions.md: טבלת משתמשים אחת
+   (‏/users) במקום שתיים, ומטריצת "מה כל תפקיד רואה" שנגזרת מהקוד — מה
+   מחזיר 403 בשרת (‏auth.dependencies: current_user / admin_only, ו-round_operator
+   / room_operator = admin+deploy). "כניסה אחרונה" אין ב-/users — לא מומצא.
+   המנהל הפעיל האחרון: בלי "תפקיד/השבת/מחיקה" (השרת מסרב; users.py). */
+let usersError = "";
 
-
-
-async function createUser() {
-  const username = ((document.getElementById("userName") || {}).value || "").trim();
-  const password = (document.getElementById("userPass") || {}).value || "";
-  const role = (document.getElementById("userRole") || {}).value || "deploy";
-  if (!username || !password) { toast("נדרשים שם משתמש וסיסמה"); return; }
-  try {
-    await post("/users", { username, password, role });
-    closeModal();
-    toast("המשתמש " + username + " נוצר");
-    await loadUsersData();
-  } catch (e) {
-    toast(e.message);
-  }
-}
+/* שורה = אזור; [מנהל], [הפצה] כ-[cls, טקסט]; המקור = ה-Depends של ה-endpoint
+   (server/*.py, 17/09). מה שמסומן "צפייה בלבד" פתוח ב-API ל-deploy אך אינו
+   מוצג לו בקונסולה (pageAllowed: סקירה, אימג'ים, סבב הפצה). */
+const ROLE_MATRIX = [
+  ["סקירה, אימג'ים, תיקיות, קבוצות — צפייה", ["ok", "כן"], ["ok", "כן"], "GET /overview, /images, /folders, /groups, /net — current_user"],
+  ["סבב לכיתה: פתיחה, התחלה, סגירה", ["ok", "כן"], ["ok", "כן"], "POST /sessions, /sessions/{id}/start|close — round_operator (admin+deploy)"],
+  ["חדר המשכפלים: סבב, גל, WoL (חדר ומחשב)", ["ok", "כן"], ["ok", "כן"], "POST /room, /room/start|wake|close, /machines/{mac}/wake, /groups/{gid}/wake — room_operator"],
+  ["קליטה, העלאה, מחיקה ועריכה של אימג'ים ותיקיות", ["ok", "כן"], ["", "לא"], "POST /tasks/capture, /images/upload, /images/{id}/delete, PUT /images/{id}, /folders — admin_only"],
+  ["מחשבים: הוספה, עריכה, הסרה, ניקוי דיסק אדום", ["ok", "כן"], ["", "צפייה בלבד"], "GET /machines, /disk-failures — current_user; POST/PUT/DELETE — admin_only"],
+  ["מוניטור", ["ok", "כן"], ["", "לא"], "GET/PUT /monitor/settings, GET /monitor/machines — admin_only"],
+  ["דרייברים: ייבוא ומחיקה", ["ok", "כן"], ["", "צפייה בלבד"], "GET /drivers — current_user; POST /drivers/upload, /drivers/{name}/delete — admin_only"],
+  ["רשת, פורטים, DHCP, SSH, בריאות, עדכון", ["ok", "כן"], ["", "לא"], "/net/config, PUT /net/interfaces/{n}, /ssh, /health, /update — admin_only"],
+  ["הרשאות, הגדרות, יומן, לוגו", ["ok", "כן"], ["", "לא"], "/users, /settings, /journal, POST/DELETE /branding/logo — admin_only"],
+  ["סניפים (שרתים משניים)", ["ok", "כן"], ["", "לא"], "/storage-nodes… — require_standalone (admin_only)"],
+];
 
 function findUser(name) {
+  try { name = decodeURIComponent(name); } catch (e) {}
   return (USERS || []).find((u) => u.username === name) || null;
 }
+function activeAdminCount() { return (USERS || []).filter((u) => u.role === "admin" && !u.disabled).length; }
 
-function editUser(name) {
-  try { name = decodeURIComponent(name); } catch (e) {}
-  const u = findUser(name); if (!u || !isAdmin()) return;
-  sheet({title:"Edit user", fields:[
-    {id:"role",label:"Role",type:"select",value:u.role,options:(u.username===ME.username ? [u.role] : ["deploy","admin"]).map(value=>({value,label:value}))},
-    {id:"password",label:"New password (optional)",type:"password",confirm:"Confirm new password"},
-    ...(u.username===ME.username ? [] : [{id:"disabled",label:"Disabled",type:"checkbox",value:!!u.disabled}])
-  ],onSubmit:async v=>{await put("/users/"+encodeId(u.username),v);await loadUsersData();}});
-}
-
-async function saveUser(name) {
-  try { name = decodeURIComponent(name); } catch (e) {}
-  const role = (document.getElementById("editUserRole") || {}).value || "";
-  const disabledRaw = (document.getElementById("editUserDisabled") || {}).value;
-  const password = (document.getElementById("editUserPass") || {}).value || "";
-  const body = { role, disabled: disabledRaw === "true" };
-  if (password) body.password = password;
-  try {
-    await put("/users/" + encodeId(name), body);
-    closeModal();
-    toast("פרטי המשתמש נשמרו");
-    await loadUsersData();
-  } catch (e) {
-    toast(e.message);
+function userRowHtml(u) {
+  const enc = encodeId(u.username), self = !!ME && u.username === ME.username;
+  const lastAdmin = u.role === "admin" && !u.disabled && activeAdminCount() <= 1;
+  const btn = (label, onclick, cls = "") => `<button class="btn sm${cls ? " " + cls : ""}" onclick="${onclick}">${esc(label)}</button>`;
+  let acts = btn("סיסמה", `userPasswordSheet('${enc}')`);
+  if (!self && !lastAdmin) {
+    acts += btn("תפקיד", `userRoleSheet('${enc}')`)
+      + btn(u.disabled ? "הפעל" : "השבת", `userDisable('${enc}', ${u.disabled ? "false" : "true"})`)
+      + btn("מחיקה", `userDeleteSheet('${enc}')`, "danger");
   }
+  const note = self ? "זה אתה" : lastAdmin ? "המנהל הפעיל האחרון — לא ניתן למחיקה, להורדה או להשבתה" : "";
+  return { attrs: `data-user="${esc(u.username)}"`, cells: [
+    UI.name(u.username, note),
+    u.role === "admin" ? UI.pill("info", "מנהל") : UI.pill("", "הפצה"),
+    u.disabled ? UI.status("warn", "מושבת") : UI.status("ok", "פעיל"),
+    `<span class="mono">${esc(fmtDate(u.created_at))}</span>`,
+    `<div class="acts">${acts}</div>`] };
 }
 
-function openRolesDrawer() {
-  openDrawer("תפקידים והרשאות", `<div class="detail-box"><strong>מנהל</strong><div class="muted">גישה מלאה לספרייה, סבבים, מחשבים, רשת והרשאות.</div></div><div style="height:8px"></div><div class="detail-box"><strong>מפעיל הפצה</strong><div class="muted">בחירת אימג׳ והפצה בלבד — ללא שינוי רשת או הרשאות.</div></div>`);
+function permissions() {
+  if (!USERS && !usersError) return pagePlaceholder();
+  const list = USERS || [];
+  const admins = activeAdminCount(), deployers = list.filter((u) => u.role === "deploy").length;
+  const sub = USERS
+    ? [`${list.length} משתמשים`, `${admins} מנהלים פעילים`, `${deployers} מפעילי הפצה`, "המנהל האחרון אינו ניתן למחיקה או להורדה"].map(esc).join(" · ")
+    : `‏/users לא נקרא: ${esc(usersError)}`;
+  const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "ניהול" }, { label: "הרשאות" }],
+    icon: "user", name: "הרשאות", sub, pill: USERS ? "" : UI.pill("err", "לא נקרא"),
+    actions: `<button class="btn primary" onclick="openNewUser()">+ משתמש</button>` });
+  const table = !USERS
+    ? UI.note("err", `לא הצלחתי לקרוא את המשתמשים: ${esc(usersError)}`)
+    : UI.datagrid({ cls: "acts-on", columns: ["משתמש", "תפקיד", "מצב", "נוצר", ""], rows: list.map(userRowHtml), empty: "אין משתמשים — השרת החזיר רשימה ריקה" });
+  const usersCard = UI.card({ title: "משתמשים", small: "כניסה אחרונה ומאיפה — דורש API (אין ב-/users)", cls: "c8", body: table, flush: !!USERS && list.length > 0 });
+  const matrix = UI.datagrid({ columns: ["", "מנהל", "הפצה"],
+    rows: ROLE_MATRIX.map(([area, a, d, src]) => [`<span title="${esc(src)}">${esc(area)}</span>`, UI.status(a[0], a[1]), UI.status(d[0], d[1])]) })
+    + `<div class="cap" style="padding:10px 14px">אין הרשאה שקטה: מה שאינו "כן" מחזיר 403 בשרת, לא רק מוסתר בממשק. למפעיל הפצה העץ מציג סקירה, אימג'ים וסבב הפצה בלבד. ריחוף על אזור מציג את ה-endpoint.</div>`;
+  const matrixCard = UI.card({ title: "מה כל תפקיד רואה", small: "נגזר מהקוד — Depends של כל endpoint", cls: "c4", body: matrix, flush: true });
+  return `<div class="page">${header}<div class="body">${usersCard}${matrixCard}</div></div>`;
+}
+
+function userPasswordSheet(name) {
+  const u = findUser(name); if (!u || !isAdmin()) return;
+  sheet({ title: "שינוי סיסמה", sub: u.username,
+    fields: [{ id: "password", label: "סיסמה חדשה (8 תווים לפחות)", type: "password", confirm: "אימות הסיסמה החדשה" }],
+    onSubmit: async (v) => { await put(`/users/${encodeId(u.username)}`, { password: v.password }); toast("הסיסמה שונתה — נרשם ביומן"); await loadUsersData(); } });
+}
+function userRoleSheet(name) {
+  const u = findUser(name); if (!u || !isAdmin()) return;
+  sheet({ title: "שינוי תפקיד", sub: u.username,
+    fields: [{ id: "role", label: "תפקיד", type: "select", value: u.role,
+      options: [{ value: "deploy", label: "הפצה בלבד" }, { value: "admin", label: "מנהל" }] }],
+    onSubmit: async (v) => { await put(`/users/${encodeId(u.username)}`, { role: v.role }); toast("התפקיד שונה — נרשם ביומן"); await loadUsersData(); } });
+}
+/* חסימה אינה מחיקה: הפיכה, ושורות היומן נשארות מצביעות על מישהו. */
+function userDisable(name, disable) {
+  const u = findUser(name); if (!u || !isAdmin()) return;
+  confirmSheet(disable ? "השבתת משתמש" : "הפעלת משתמש",
+    disable ? `${u.username} לא יוכל להיכנס, וסשן פתוח שלו נסגר מיד.` : `${u.username} יוכל להיכנס שוב.`,
+    disable ? "השבת" : "הפעל",
+    async () => { await put(`/users/${encodeId(u.username)}`, { disabled: !!disable }); toast(disable ? "המשתמש הושבת" : "המשתמש הופעל"); await loadUsersData(); });
+}
+function userDeleteSheet(name) {
+  const u = findUser(name); if (!u || !isAdmin()) return;
+  sheet({ title: "מחיקת משתמש", sub: `${u.username} יאבד גישה מיידית. שורות היומן שלו נשארות.`,
+    danger: true, submitLabel: "מחק",
+    verify: { label: "להמשך יש להקליד את שם המשתמש:", mustEqual: u.username },
+    onSubmit: async () => { await del(`/users/${encodeId(u.username)}`); toast(`המשתמש ${u.username} נמחק`); await loadUsersData(); } });
+}
+
+/* ---------- #954 גל 6: יומן ----------
+   נבנה לפי docs/design/console-redesign/logs.md: יומן אחד (לא "אירועים/Audit"),
+   שורת סינון בדף (q · סוג · משתמש · טווח) — לא במודאל — מול
+   ‏/journal?q&event&user&from&to&limit; "עוד" מגדיל limit (השרת: עד 1,000;
+   אין offset — דורש API). חומרה = journalSeverity (event → ok/info/warn/err);
+   "יעד" כעמודה מבנית — דורש API, ולכן text מוצג מתחת למשפט. */
+let LOG = { q: "", event: "", user: "", range: "", since: "", until: "", limit: 200,
+            rows: null, err: "", truncated: false, events: null };
+const LOG_RANGES = [["", "כל הזמן"], ["today", "היום"], ["7d", "7 ימים"], ["30d", "30 יום"], ["custom", "טווח…"]];
+const LOG_SEV_HE = { ok: "הושלם / אושר", info: "מידע", warn: "דורש תשומת לב", err: "כשל / סירוב" };
+
+/* חותמות השרת הן UTC ISO (now_iso) — הטווח מחושב באותו ציר. */
+function logSince(range) {
+  if (range === "today") return new Date().toISOString().slice(0, 10);
+  const days = range === "7d" ? 7 : range === "30d" ? 30 : 0;
+  return days ? new Date(Date.now() - days * 86400000).toISOString().slice(0, 19) : "";
+}
+function logQuery() {
+  const p = new URLSearchParams();
+  if (LOG.q) p.set("q", LOG.q);
+  if (LOG.event) p.set("event", LOG.event);
+  if (LOG.user) p.set("user", LOG.user);
+  const since = LOG.range === "custom" ? LOG.since : logSince(LOG.range);
+  if (since) p.set("from", since);
+  // "עד" הוא דקה שלמה (datetime-local): בלי :59, "10:00" כמחרוזת פוסל 10:00:15.
+  if (LOG.range === "custom" && LOG.until) p.set("to", LOG.until + ":59");
+  p.set("limit", String(LOG.limit));
+  return "?" + p.toString();
+}
+async function loadJournalData() {
+  try {
+    if (!LOG.events) LOG.events = await api("/journal/events");
+  } catch (e) { LOG.events = null; }   // הסינון לפי סוג לא זמין — הרשימה עצמה עדיין נקראת
+  try {
+    // fetch ישיר ולא api(): הכותרת X-Journal-Search-Truncated — "לא בדקנו
+    // הכל" אינו "אין תוצאות" (עיקרון 5).
+    const response = await fetch("/api/console/journal" + logQuery(), { credentials: "same-origin" });
+    if (response.status === 401) { showLogin(); return; }
+    if (!response.ok) {
+      let detail = "שגיאה " + response.status;
+      try { detail = (await response.json()).detail || detail; } catch (e) {}
+      throw new Error(detail);
+    }
+    LOG.truncated = response.headers.get("X-Journal-Search-Truncated") === "true";
+    LOG.rows = await response.json();
+    JOURNAL = LOG.rows;
+    LOG.err = "";
+  } catch (e) {
+    LOG.rows = null; LOG.err = e.message;
+    toast("טעינת היומן נכשלה: " + e.message);
+  }
+  if (current === "logs") renderCurrent();
+}
+function logFilter(key, value) {
+  LOG[key] = value;
+  if (key !== "limit") LOG.limit = 200;
+  if (key === "range" && value === "custom" && !LOG.since && !LOG.until) { renderCurrent(); return; }   // קודם התאריכים
+  loadJournalData();
+}
+function logMore() { LOG.limit = Math.min(1000, LOG.limit + 200); loadJournalData(); }
+function logEventLabel(ev) { const e = (LOG.events || []).find((x) => x.event === ev); return e ? e.label : ev; }
+
+function logRowHtml(r, i) {
+  const cls = journalSeverity(r);
+  const t = isToday(r.ts) ? fmtHour(r.ts) : `${fmtDate(r.ts)} ${fmtHour(r.ts)}`;
+  return { attrs: `onclick="openLogDetail(${i})" tabindex="0"`, cells: [
+    `<span class="mono">${esc(t)}</span>`,
+    `<span class="st ${cls}" title="${esc(LOG_SEV_HE[cls] || "")}" aria-label="${esc(LOG_SEV_HE[cls] || "")}"></span>`,
+    `<span class="name">${esc(r.label || r.event || "")}</span>${r.text ? `<span class="sub">${esc(r.text)}</span>` : ""}`,
+    esc(r.user || "המערכת"),
+    `<div class="acts"><button class="btn sm" onclick="event.stopPropagation();openLogDetail(${i})">פרטים</button></div>`] };
+}
+function logBarHtml(rows) {
+  const users = new Set((USERS || []).map((u) => u.username));
+  for (const r of rows) if (r.user) users.add(r.user);
+  if (LOG.user) users.add(LOG.user);
+  const opt = (v, label, cur) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(label)}</option>`;
+  const events = LOG.events
+    ? `<select aria-label="סוג אירוע" onchange="logFilter('event', this.value)">${opt("", "כל סוגי האירועים", LOG.event)}${LOG.events.map((e) => opt(e.event, e.label, LOG.event)).join("")}</select>`
+    : `<span class="cap" title="‏/journal/events לא נקרא">סוג: לא נקרא</span>`;
+  const custom = LOG.range === "custom"
+    ? `<input type="datetime-local" aria-label="מתאריך" value="${esc(LOG.since)}" onchange="logFilter('since', this.value)"><input type="datetime-local" aria-label="עד תאריך" value="${esc(LOG.until)}" onchange="logFilter('until', this.value)">`
+    : "";
+  return `<div class="dg-bar"><input type="search" value="${esc(LOG.q)}" placeholder="חיפוש בטקסט (מחשב, כיתה, אימג')…" aria-label="חיפוש ביומן" onchange="logFilter('q', this.value.trim())" style="width:240px">${events}<select aria-label="משתמש" onchange="logFilter('user', this.value)">${opt("", "כל המשתמשים", LOG.user)}${[...users].sort().map((u) => opt(u, u, LOG.user)).join("")}</select><select aria-label="טווח זמן" onchange="logFilter('range', this.value)">${LOG_RANGES.map(([v, l]) => opt(v, l, LOG.range)).join("")}</select>${custom}<span class="sp"></span><span class="n">${rows.length} אירועים</span></div>`;
 }
 
 function logs() {
-  if (!JOURNAL) return pagePlaceholder();
-  const q = (JOURNAL_FILTER || "").trim().toLowerCase();
-  const visible = (JOURNAL || []).map((row, i) => ({ row, i })).filter(({ row }) => {
-    if (!q) return true;
-    return String(row.label || "").toLowerCase().includes(q)
-        || String(row.text || "").toLowerCase().includes(q);
-  });
-  let tableBody;
-  if (!visible.length) {
-    tableBody = `<div class="empty">אין אירועים להצגה</div>`;
-  } else {
-    const rows = visible.map(({ row, i }) => {
-      const label = row.label || row.text || row.event || "";
-      return `<tr class="clickable" onclick="openLogDetail(${i})"><td>${esc(fmtHour(row.ts))}</td><td>${esc(label)}</td><td>${esc(row.user || "")}</td><td>${esc(row.event || "")}</td></tr>`;
-    }).join("");
-    tableBody = `<table class="table"><thead><tr><th>זמן</th><th>אירוע</th><th>יעד/מקור</th><th>event</th></tr></thead><tbody>${rows}</tbody></table>`;
+  if (!LOG.rows && !LOG.err) return pagePlaceholder();
+  const rows = LOG.rows || [];
+  const filters = [LOG.q ? `"${LOG.q}"` : "", LOG.event ? logEventLabel(LOG.event) : "", LOG.user,
+    LOG.range ? (LOG.range === "custom" ? `${LOG.since || "…"} – ${LOG.until || "…"}` : LOG_RANGES.find(([v]) => v === LOG.range)[1]) : ""].filter(Boolean);
+  const sub = LOG.rows
+    ? [`${rows.length} אירועים מוצגים (מגבלה ${LOG.limit})`, filters.length ? "מסונן: " + filters.join(" · ") : "בלי סינון — האחרונים"].map(esc).join(" · ")
+    : `‏/journal לא נקרא: ${esc(LOG.err)}`;
+  const pill = !LOG.rows ? UI.pill("err", "לא נקרא") : LOG.truncated ? UI.pill("warn", "חיפוש חלקי") : "";
+  const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "ניהול" }, { label: "יומן" }],
+    icon: "list", name: "יומן", sub, pill,
+    actions: `<button class="btn" onclick="loadJournalData()">רענון</button>${UI.soon("ייצוא CSV")}` });
+  let body;
+  if (!LOG.rows) body = UI.note("err", `לא הצלחתי לקרוא את היומן: ${esc(LOG.err)}`);
+  else {
+    const truncated = LOG.truncated ? UI.note("warn", "החיפוש כיסה רק את השורות האחרונות ביומן — צמצמו עם טווח תאריכים או סוג אירוע.") : "";
+    const table = UI.datagrid({ cls: "acts-on", columns: ["זמן", "", "מה קרה", "מי", ""], rows: rows.map(logRowHtml),
+      empty: filters.length ? "אין אירועים שתואמים לסינון" : "היומן ריק — עדיין לא נרשם אירוע" });
+    const more = rows.length >= LOG.limit && LOG.limit < 1000
+      ? `<button class="btn sm" onclick="logMore()">עוד (${LOG.limit + 200 > 1000 ? 1000 : LOG.limit + 200})</button>`
+      : `<span class="cap">${rows.length >= 1000 ? "מגבלת השרת: 1,000 שורות — צמצמו את הסינון" : "זה הכול לסינון הזה"}</span>`;
+    body = `<div class="c12 card">${logBarHtml(rows)}${truncated ? `<div style="padding:10px 12px 0">${truncated}</div>` : ""}<div class="card-b flush">${table}</div><div class="dg-bar foot"><span class="n">מוצגים ${rows.length}</span><span class="sp"></span>${more}</div></div>`;
   }
-  return `<div class="grid"><div class="span-12"><div class="card"><div class="card-h"><span>אירועים</span><div><button class="btn" onclick="openLogFilter()">סינון</button> <button class="btn" disabled title="בקרוב">ייצוא CSV</button></div></div><div class="card-b table-wrap">${tableBody}</div></div></div>
-<div class="span-12"><div class="card"><div class="card-h">עקרון התצוגה</div><div class="card-b"><p style="margin:0;color:var(--muted);font-size:11px">היומן מיועד למפעיל: משפט בעברית, יעד ברור, וקונטקסט תפעולי. לחיצה על אירוע מציגה את המשמעות והפרטים הטכניים.</p></div></div></div></div>`;
+  const cap = `<div class="c12 cap">לחיצה על שורה פותחת את הפרטים הטכניים (event, המזהים). הצבע = מיפוי event → חומרה בקונסולה (journalSeverity). ייצוא CSV ועמודת "יעד" מבנית — דורש API.</div>`;
+  return `<div class="page">${header}<div class="body">${body}${cap}</div></div>`;
 }
-
-function openLogFilter() {
-  openModalContent(
-    "סינון יומן",
-    `<div class="form"><div class="field full"><label>חיפוש בטקסט</label><input id="logQuery" placeholder="מחשב, כיתה, אימג׳…"></div></div>`,
-    "החל סינון",
-    applyLogFilter
-  );
-  const input = document.getElementById("logQuery");
-  if (input) { input.value = JOURNAL_FILTER || ""; input.focus(); }
-}
-
-function applyLogFilter() {
-  const input = document.getElementById("logQuery");
-  JOURNAL_FILTER = input ? input.value.trim() : "";
-  closeModal();
-  if (current === "logs") renderCurrent();
-}
-
 function openLogDetail(i) {
-  const row = (JOURNAL || [])[i];
+  const row = (LOG.rows || [])[i];
   if (!row) { toast("אירוע לא נמצא"); return; }
-  openDrawer("פרטי אירוע", `<div class="detail-grid"><div class="detail-box"><span class="k">אירוע</span><span class="v">${esc(row.label || "")}</span></div><div class="detail-box"><span class="k">פירוט</span><span class="v">${esc(row.text || "")}</span></div><div class="detail-box"><span class="k">משתמש</span><span class="v">${esc(row.user || "")}</span></div><div class="detail-box"><span class="k">זמן</span><span class="v">${esc(row.ts || "")}</span></div></div>`);
+  const cls = journalSeverity(row);
+  openDrawer("פרטי אירוע", `<div class="page drw">${UI.kv([
+    ["זמן", `<span class="mono">${esc(fmtDate(row.ts))} ${esc(fmtHour(row.ts))}</span>`],
+    ["חומרה", UI.status(cls, LOG_SEV_HE[cls] || cls)],
+    ["מה קרה", esc(row.label || "")],
+    ["פירוט", esc(row.text || "") || `<span class="muted">—</span>`],
+    ["event", `<span class="mono">${esc(row.event || "")}</span>`],
+    ["מי", esc(row.user || "המערכת")]])}</div>`);
 }
 
 /* ---------- כרטיסי רשת / רשת הפצה / פורטים ---------- */
@@ -3796,44 +3898,184 @@ function ports() {
   return `<div class="page">${header}<div class="body">${table}${foot}${legend}</div></div>`;
 }
 
+/* ---------- #954 גל 6: מוניטור — הרשימה ----------
+   נבנה לפי docs/design/console-redesign/monitor.md: טבלה אחת (בלי לשוניות),
+   מתג "מוניטור לתחנות" (#827) בכותרת, "מחובר" כפי שהשרת קבע (‏/monitor/machines,
+   חלון 90ש'), "נראה" מ-/net (loadMachines), "מה על המסך" מ-prompt.
+   זה המקום היחיד לכפתור המוניטור (נדב 17/09); monitor.html/.js — לא נגענו. */
+function monitorRowHtml(m) {
+  const macEnc = encodeId(m.mac), net = netFor(m.mac);
+  let state;
+  if (m.online) state = UI.status("ok", "מחובר");
+  else if (NET == null) state = UI.status("", "לא מחובר · נראה: לא נקרא");
+  else if (net && net.last_seen) state = UI.status("", `לא מחובר · נראה ${ago(net.last_seen)}`);
+  else state = UI.status("", "מעולם לא נראה");
+  const screen = m.prompt ? UI.status("warn", waitingText(m)) : `<span class="muted">—</span>`;
+  const open = m.online
+    ? `<button class="btn sm primary" onclick="monitorMachine('${macEnc}')">פתח מוניטור</button>`
+    : `<button class="btn sm" disabled title="המכונה אינה מחוברת — אין למה להתחבר">פתח מוניטור</button>`;
+  const wol = m.online ? "" : `<button class="btn sm" onclick="wakeMachine('${macEnc}')">WoL</button>`;
+  return { attrs: `data-mac="${esc(m.mac)}"`, cells: [
+    UI.nameHtml(m.name || m.mac, `<span class="mono">${esc(m.mac)}</span>`),
+    esc(ROLE_HE[m.role] || m.role),
+    m.ip ? `<span class="mono">${esc(m.ip)}</span>` : `<span class="muted">—</span>`,
+    state, screen, `<div class="acts">${open}${wol}</div>`] };
+}
+
 function monitorPage() {
-  if (!MONITOR) {
-    return monitorError
-      ? `<div class="grid"><div class="span-12"><div class="notice err" role="alert">לא הצלחתי לקרוא את רשימת המוניטור: ${esc(monitorError)}</div></div></div>`
-      : pagePlaceholder();
+  if (!MONITOR && !monitorError) return pagePlaceholder();
+  const list = MONITOR ? MONITOR.machines || [] : [];
+  const enabled = MONITOR && MONITOR.settings ? MONITOR.settings.enabled === true : null;
+  const online = list.filter((m) => m.online).length;
+  const sub = MONITOR
+    ? ["צפייה ושליטה במסך של מחשבי הבנייה והשיכפול", `${list.length} מכונות`, `${online} מחוברות עכשיו`].map(esc).join(" · ")
+    : `‏/monitor לא נקרא: ${esc(monitorError)}`;
+  const pill = !MONITOR ? UI.pill("err", "לא נקרא") : enabled ? UI.pill("ok", "המתג דלוק") : UI.pill("warn", "המתג כבוי");
+  const sw = !MONITOR ? "" : `<span class="swrow"><button type="button" class="sw${enabled ? " on" : ""}" role="switch" aria-checked="${enabled ? "true" : "false"}" aria-label="מוניטור לתחנות" onclick="monitorToggle(${enabled ? "false" : "true"})"></button><span class="cap">מוניטור לתחנות${enabled ? "" : " · 🔒 הדלקה = הקלדת imagectl.monitor"}</span></span>`;
+  const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "תשתית" }, { label: "מוניטור" }],
+    icon: "machine", name: "מוניטור", sub, pill, actions: sw + `<button class="btn" onclick="loadMonitor()">רענון</button>` });
+  let body;
+  if (!MONITOR) body = UI.note("err", `לא הצלחתי לקרוא את רשימת המוניטור: ${esc(monitorError)}`);
+  else {
+    const off = enabled ? "" : UI.note("warn", `מתג המוניטור לתחנות כבוי — מכונה שעולה עכשיו אינה מפעילה שירות צפייה, ו"פתח מוניטור" ייכשל. הדלקה תופסת באתחול הבא של כל מכונה, לא במכונות שכבר רצות.`);
+    const table = UI.datagrid({ cls: "acts-on", columns: ["מכונה", "תפקיד", "IP", "מצב", "מה על המסך", ""], rows: list.map(monitorRowHtml),
+      empty: "אין מחשבי בנייה או שיכפול רשומים — הוסיפו אותם בדף המחשבים" });
+    body = (off ? `<div class="c12">${off}</div>` : "") + `<div class="c12 card"><div class="card-b${list.length ? " flush" : ""}">${table}</div></div>`
+      + `<div class="c12 cap">"מחובר" = השרת ראה את המכונה ב-90 השניות האחרונות עם כתובת; "מה על המסך" נגזר מ-prompt של המכונה, לא מצילום. המוניטור נפתח בחלון נפרד (monitor.html).</div>`;
   }
-  const enabled = MONITOR.settings && MONITOR.settings.enabled === true;
-  const toggle = `<div class="span-12"><div class="card"><div class="health-row">
-      <b>מוניטור לתחנות</b>
-      <span class="switch ${enabled ? "on" : ""}" onclick="monitorToggle(${!enabled})"></span>
-      <span class="sub">${enabled ? "דלוק" : "כבוי"} — שינוי תופס באתחול הבא של כל תחנה, לא במכונות שכבר רצות</span>
-    </div></div></div>`;
-  const off = enabled
-    ? ""
-    : `<div class="span-12"><div class="notice warn" role="status">מתג המוניטור לתחנות כבוי — מכונה שעולה עכשיו אינה מפעילה שירות צפייה, וחיבור אליה ייכשל.</div></div>`;
-  const list = MONITOR.machines || [];
-  if (!list.length) {
-    return `<div class="grid">${toggle}${off}<div class="span-12"><div class="card"><div class="card-b"><div class="empty">אין מחשבי בנייה או שיכפול רשומים</div></div></div></div></div>`;
+  return `<div class="page">${header}<div class="body">${body}</div></div>`;
+}
+
+/* ---------- #954 גל 6: הגדרות ----------
+   נבנה לפי docs/design/console-redesign/settings.md: עברית, שורה לכל הגדרה
+   (שם + מה זה אומר | שליטה), שמור/בטל בכותרת — מנוטרלים עד שינוי, שורה
+   שהשתנתה מסומנת. ‏POST /settings עם המפתחות ששונו בלבד. כרטיס העדכון
+   עצמו — בבריאות (גל 5); כאן המתג וקישור. מתג זהות המכונה (#855) נשאר. */
+let SETTINGS = null, settingsError = "", SETTINGS_DRAFT = {}, LOGO_EXISTS = null;
+const SETTING_ROWS = [
+  { key: "server_name", label: "שם השרת", cap: "מופיע בעץ הניווט, בכותרת ובמסכי התחנה", type: "text" },
+  { key: "console_idle_seconds", label: "ניתוק אוטומטי בחוסר פעילות", cap: "קונסולה פתוחה בלי מגע (עכבר/מקלדת) — מתנתקת; תקף מיד לסשן הזה", type: "number", min: 60, unit: "שניות (מינימום 60)" },
+  { key: "recovery_require_login", label: "שחזור תחנה בודדת דורש כניסה", cap: "מומלץ דלוק; כיבוי רק להדגמה", type: "switch" },
+  { key: "class_deploy_enabled", label: "הפצה לכיתה ממסך התחנה", cap: "כבוי במהדורת השיכפול — הכרטיס יורד מהתפריט והשרת מסרב לסבב כיתה", type: "switch" },
+  { key: "session_wait_seconds", label: "המתנה מהמצטרף האחרון", cap: "סבב מתחיל לבד כשעברו כך וכך שניות בלי מצטרף חדש", type: "number", min: 30, unit: "שניות (מינימום 30)" },
+  { key: "update_enabled", label: "עדכון גרסה מהקונסולה", cap: "כבוי כברירת מחדל; החיבור היוצא לריפו הציבורי נפתח רק בזמן בדיקה/עדכון", type: "switch", link: ["כרטיס העדכון — בבריאות ושירותים", "selectPageById('health')"] },
+  { key: "identity_check", label: "בדיקת זהות מכונה", cap: "כתובת המקור של hello/דיווח חייבת להתאים לחכירת ה-DHCP של ה-MAC. דלוק כברירת מחדל; לכבות רק כשה-DHCP של וילן ההפצה אינו השרת הזה — הכיבוי נרשם ביומן", type: "switch", defaultOn: true },
+];
+function settingRow(key) { return SETTING_ROWS.find((r) => r.key === key); }
+/* הערך כפי שהשרת החזיר, מנורמל: מתג → boolean (#855: חסר = דלוק), השאר מחרוזת. */
+function settingCurrent(key) {
+  const r = settingRow(key), v = SETTINGS ? SETTINGS[key] : undefined;
+  if (r.type === "switch") return r.defaultOn ? v !== "false" : v === "true";
+  return v == null ? "" : String(v);
+}
+function settingValue(key) { return key in SETTINGS_DRAFT ? SETTINGS_DRAFT[key] : settingCurrent(key); }
+function settingsDirty() { return Object.keys(SETTINGS_DRAFT).length > 0; }
+function settingsSet(key, value) {
+  if (value === settingCurrent(key)) delete SETTINGS_DRAFT[key]; else SETTINGS_DRAFT[key] = value;
+  settingsMarkDirty();
+}
+/* מתג: הופך את הערך ומצייר את הכפתור עצמו — בלי לצבוע את הדף מחדש (השדות
+   האחרים לא מאבדים פוקוס). */
+function settingsToggle(key, btn) {
+  const on = !settingValue(key);
+  settingsSet(key, on);
+  if (!btn) return;
+  btn.classList.toggle("on", on);
+  btn.setAttribute("aria-checked", String(on));
+  if (btn.nextElementSibling) btn.nextElementSibling.textContent = on ? "דלוק" : "כבוי";
+}
+function settingsMarkDirty() {
+  const dirty = settingsDirty();
+  for (const id of ["set-save", "set-cancel"]) { const b = document.getElementById(id); if (b) b.disabled = !dirty; }
+  for (const r of SETTING_ROWS) { const el = document.getElementById("srow-" + r.key); if (el) el.classList.toggle("changed", r.key in SETTINGS_DRAFT); }
+  const pill = document.getElementById("set-pill"); if (pill) pill.innerHTML = dirty ? UI.pill("warn", "שינויים לא נשמרו") : "";
+}
+function settingRowHtml(r) {
+  const v = settingValue(r.key), changed = r.key in SETTINGS_DRAFT;
+  let ctl;
+  if (r.type === "switch") ctl = `<span class="swrow"><button type="button" class="sw${v ? " on" : ""}" role="switch" aria-checked="${v ? "true" : "false"}" aria-label="${esc(r.label)}" onclick="settingsToggle('${r.key}', this)"></button><span class="cap">${v ? "דלוק" : "כבוי"}</span></span>`;
+  else if (r.type === "number") ctl = `<span class="swrow"><input type="number" id="set-${r.key}" value="${esc(v)}" min="${r.min}" step="1" aria-label="${esc(r.label)}" oninput="settingsSet('${r.key}', this.value)"><span class="cap">${esc(r.unit)}</span></span>`;
+  else ctl = `<input type="text" id="set-${r.key}" value="${esc(v)}" aria-label="${esc(r.label)}" oninput="settingsSet('${r.key}', this.value)">`;
+  const cap = esc(r.cap) + (r.link ? ` · ${UI.link(r.link[0], r.link[1])}` : "");
+  return `<div class="srow${changed ? " changed" : ""}" id="srow-${r.key}"><div><b>${esc(r.label)}</b><div class="cap">${cap}</div></div><div class="ctl">${ctl}</div></div>`;
+}
+function brandingCardHtml() {
+  const img = LOGO_EXISTS ? `<img src="/api/console/branding/logo?t=${Date.now()}" alt="לוגו">` : `<img src="logo.svg?v=4.0" alt="ImageCtl">`;
+  const state = LOGO_EXISTS == null ? UI.status("unk", "לא נקרא") : LOGO_EXISTS ? UI.status("ok", "לוגו מותאם") : UI.status("", "ברירת המחדל");
+  const btns = `<button class="btn sm" onclick="document.getElementById('logo-input').click()">העלאה</button>`
+    + (LOGO_EXISTS ? `<button class="btn sm danger" onclick="settingsLogoClear()">הסרה</button>` : "")
+    + `<input type="file" id="logo-input" class="hidden" accept="image/png,image/jpeg,image/webp,image/svg+xml" aria-label="קובץ לוגו" onchange="settingsLogoUpload(this)">`;
+  const body = `<div class="brand-row"><div class="logo-box">${img}</div><div><b>לוגו</b> ${state}<div class="cap">PNG / JPG / WEBP / SVG עד 2MB · מוצג בכותרת ובמסך הכניסה · SVG נבדק לפני הקבלה</div><div class="acts" style="margin-top:6px">${btns}</div></div></div>`
+    + `<div style="margin-top:12px">${UI.note("", "ערכת הצבעים (בהיר/כהה) היא בחירה של כל משתמש בכפתור שבכותרת — לא הגדרת שרת.")}</div>`;
+  return UI.card({ title: "מיתוג", cls: "c4", body });
+}
+function settings() {
+  if (!SETTINGS && !settingsError) return pagePlaceholder();
+  const dirty = settingsDirty();
+  const actions = `<button class="btn primary" id="set-save" onclick="saveSettings()"${dirty ? "" : " disabled"}>שמור</button><button class="btn" id="set-cancel" onclick="cancelSettings()"${dirty ? "" : " disabled"}>בטל שינויים</button>`;
+  const sub = SETTINGS ? "מדיניות הקונסולה ומיתוג · נשמר ב-DB של השרת · כל שינוי נרשם ביומן" : `‏/settings לא נקרא: ${esc(settingsError)}`;
+  const pill = `<span id="set-pill">${!SETTINGS ? UI.pill("err", "לא נקרא") : dirty ? UI.pill("warn", "שינויים לא נשמרו") : ""}</span>`;
+  const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "ניהול" }, { label: "הגדרות" }],
+    icon: "settings", name: "הגדרות", sub, pill, actions: SETTINGS ? actions : "" });
+  const body = !SETTINGS
+    ? UI.note("err", `לא הצלחתי לקרוא את ההגדרות: ${esc(settingsError)}`)
+    : UI.card({ title: "כללי", small: "שורה שהשתנתה מסומנת עד השמירה", cls: "c8", body: `<div class="srows">${SETTING_ROWS.map(settingRowHtml).join("")}</div>` }) + brandingCardHtml();
+  return `<div class="page">${header}<div class="body">${body}</div></div>`;
+}
+async function saveSettings() {
+  const body = {};
+  for (const r of SETTING_ROWS) {
+    if (!(r.key in SETTINGS_DRAFT)) continue;
+    const v = SETTINGS_DRAFT[r.key];
+    if (r.type === "number") {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < r.min) { toast(`${r.label}: מספר שלם, ${r.min} לפחות`); return; }
+      body[r.key] = String(n);
+    } else if (r.type === "switch") body[r.key] = v ? "true" : "false";
+    else {
+      const s = String(v).trim();
+      if (!s) { toast(`${r.label}: לא יכול להיות ריק`); return; }
+      body[r.key] = s;
+    }
   }
-  const roleLabel = { build: "מחשב בנייה", cloner: "מחשב שיכפול" };
-  const cards = list.map((m) => {
-    const macEnc = encodeId(m.mac);
-    const status = m.online
-      ? `<span class="status ok"><i></i>מחובר</span>`
-      : `<span class="status"><i></i>לא מחובר</span>`;
-    return `<div class="span-6"><div class="card">
-      <div class="card-h"><span>${esc(m.name || m.mac)} <small class="muted">${esc(roleLabel[m.role] || m.role)}</small></span>${status}</div>
-      <div class="card-b">
-        ${m.prompt ? `<div class="notice warn" role="status">${waitingHtml(m)}</div>` : ""}
-        <div class="detail-grid"><div class="detail-box"><span class="k">MAC</span><span class="v mono" dir="ltr">${esc(m.mac)}</span></div><div class="detail-box"><span class="k">כתובת IP</span><span class="v mono" dir="ltr">${m.ip ? esc(m.ip) : "—"}</span></div></div>
-        <div class="action-strip"><button class="btn primary" onclick="monitorMachine('${macEnc}')" ${m.online ? "" : `disabled title="המכונה אינה מחוברת"`}>מוניטור</button></div>
-      </div></div></div>`;
-  }).join("");
-  return `<div class="grid">${toggle}${off}${cards}</div>`;
+  if (!Object.keys(body).length) return;
+  try {
+    await post("/settings", body);
+    if (body.console_idle_seconds) { ME.idle_seconds = Number(body.console_idle_seconds); startIdleWatch(); }   // תקף מיד, בלי כניסה מחדש
+    if (body.server_name) { ME.server_name = body.server_name; applyServerName(); }
+    SETTINGS_DRAFT = {};
+    toast(`נשמר — ${Object.keys(body).length} ${Object.keys(body).length === 1 ? "הגדרה" : "הגדרות"}, נרשם ביומן`);
+    await loadSettingsData();
+  } catch (e) { toast(e.message); }
+}
+function cancelSettings() { SETTINGS_DRAFT = {}; renderCurrent(); }
+async function loadSettingsData() {
+  try { SETTINGS = await api("/settings"); settingsError = ""; }
+  catch (e) { SETTINGS = null; settingsError = e.message; toast("טעינת ההגדרות נכשלה: " + e.message); }
+  try { LOGO_EXISTS = await loadLogo(); } catch (e) { LOGO_EXISTS = null; }   // לא נקרא ≠ אין לוגו
+  if (current === "settings") renderCurrent();
+}
+async function settingsLogoUpload(input) {
+  const file = input.files && input.files[0];
+  input.value = "";
+  if (!file) return;
+  const response = await fetch("/api/console/branding/logo", { method: "POST", credentials: "same-origin", headers: { "Content-Type": file.type }, body: file });
+  if (!response.ok) {
+    let message = "שגיאה " + response.status;
+    try { message = (await response.json()).detail || message; } catch (e) {}
+    toast("הלוגו נדחה: " + message, 6000);
+    return;
+  }
+  toast("הלוגו הוחלף — נרשם ביומן");
+  await loadSettingsData();
+}
+function settingsLogoClear() {
+  confirmSheet("הסרת הלוגו", "הקונסולה תחזור לסמל ברירת המחדל.", "הסר",
+    async () => { await del("/branding/logo"); toast("הלוגו הוסר"); await loadSettingsData(); });
 }
 
 const pages = {
-  settings: {crumb:"Settings", title:"Settings", desc:"Console policy and branding", tabs:["Settings"], render:settingsPage},
+  settings: { crumb: "הגדרות", title: "הגדרות", tabs: [], render: settings, load: loadSettingsData, own: true },   // ‏#954 גל 6
   branches: {crumb:"סניפים", title:"סניפים", desc:"השרתים המשניים של הראשי הזה: מצב חיבור, המחשבים שלהם, העברת אימג'ים ומוניטור", tabs:["סניפים", "מרשם"], render:pagePlaceholder},
   // ‏#936: הדף של משני אחד (נבחר בעץ, BRANCH_NODE) — אותם נתונים ואותן
   // פונקציות של "סניפים" (branches.js), לפי לשונית.
@@ -3845,10 +4087,10 @@ const pages = {
   machines: { crumb: "מחשבים", title: "מחשבים", tabs: ["כל המחשבים", "נראו ברשת", "דיסקים אדומים"], render: machines, load: loadMachines, own: true },
   health: { crumb: "בריאות ושירותים", title: "בריאות ושירותים", tabs: [], render: health, load: loadHealth, own: true },   // ‏#954 גל 5: בלי לשוניות — בדיקות + עדכון
   network: { crumb: "רשת", title: "רשת", desc: "הגדרות כתובת, gateway, DNS וממשק שידור", tabs: ["הגדרות", "פורטיים", "מולטיקאסט"], render: network, load: loadNetcfgData },
-  permissions: { crumb: "הרשאות", title: "הרשאות", desc: "ניהול משתמשים ותפקידי גישה לקונסולה", tabs: ["משתמשים", "תפקידים"], render: permissions, load: loadUsersData },
-  logs: { crumb: "יומן", title: "יומן מערכת", desc: "אירועים תפעוליים בשפה טבעית עם הקשר של מחשב וכיתה", tabs: ["אירועים", "Audit"], render: logs, load: loadJournalData },
-  monitor: { crumb: "מוניטור", title: "מוניטור", desc: "צפייה ושליטה מרחוק במחשבי הבנייה והשיכפול", tabs: ["מכונות"], render: monitorPage, load: loadMonitor },
-  drivers: { crumb: "דרייברים", title: "דרייברים", desc: "חבילות דרייברים לפי חומרה (PCI/דגם) — מונחות על הדיסק אחרי השחזור, מותקנות בעלייה הראשונה", tabs: ["חבילות"], render: () => driversPage(), load: () => loadDrivers() },   // lazily: drivers.js loads after this file
+  permissions: { crumb: "הרשאות", title: "הרשאות", tabs: [], render: permissions, load: loadUsersData, own: true },   // ‏#954 גל 6: טבלה אחת + מטריצה
+  logs: { crumb: "יומן", title: "יומן", tabs: [], render: logs, load: loadJournalData, own: true },   // ‏#954 גל 6: יומן אחד עם סינון בדף
+  monitor: { crumb: "מוניטור", title: "מוניטור", tabs: [], render: monitorPage, load: loadMonitor, own: true },   // ‏#954 גל 6: הרשימה כטבלה
+  drivers: { crumb: "דרייברים", title: "דרייברים", tabs: ["חבילות", "כיסוי לפי מכונה"], render: (i) => driversPage(i), load: () => loadDrivers(), own: true },   // ‏#954 גל 6; lazily: drivers.js loads after this file
   netdeploy: { crumb: "רשת הפצה", title: "רשת הפצה", desc: "איזה כרטיס משרת את וילן ההפצה, ומצב ה-DHCP כפי שנקרא בפועל", tabs: ["סקירה"], render: netdeploy, load: loadNetPages },
   ports: { crumb: "פורטים", title: "פורטים", tabs: ["חיבורים פיזיים", "רשת הפצה", "פורטים"], render: ports, load: loadPorts, own: true },   // ‏#954 גל 5: מתג בכל שורה
   nic: { crumb: "חיבורים פיזיים", title: "חיבורים פיזיים", desc: "כרטיסים, כתובות חיות מול מוגדרות, וכתובת השרת בכל כרטיס", tabs: ["סקירה"], render: nic, load: loadNetPages },
@@ -3860,13 +4102,8 @@ let searchQuery = "";
 function tabRender(pageId, index) {
   const renderers = {
     network: [network, emptyDataCard, emptyDataCard],
-    permissions: [usersAdminPage, permissions],
-    logs: [journalPage, logs],
-    settings: [settingsPage],
     branches: [() => `<div id="branch-cards" class="stack"></div>`, () => `<div id="branches-body" class="stack"></div>`],
     branch: BRANCH_VIEWS.map(([view]) => () => `<div id="branch-view" class="stack" data-view="${view}">${pagePlaceholder()}</div>`),
-    monitor: [monitorPage],
-    drivers: [() => driversPage()],   // #720 — drivers.js
     netdeploy: [netdeploy],
     nic: [nic],
   };
@@ -4065,10 +4302,6 @@ function openAction() {
   const actions = {
     images: [["אימג׳ חדש", "openCapture().catch(e => toast(e.message))"], ["קליטת אימג׳", "openImageIngest()"], ["אימות ספרייה", "soon()"]],
     network: [["בדיקת קישוריות", "soon()"], ["שמור הגדרות", "saveNetwork()"], ["Rollback", "soon()"]],
-    permissions: [["משתמש חדש", "openNewUser()"], ["תפקידי מערכת", "openRolesDrawer()"]],
-    logs: [["סינון יומן", "openLogFilter()"], ["ייצוא CSV", "soon()"]],
-    monitor: [["רענון", "refreshPage()"]],
-    drivers: [["ייבוא חבילה", "openDriverImport()"], ["רענון", "refreshPage()"]],
     nic: [["הוספת כרטיס", "addNic()"], ["רענון", "refreshPage()"]],
     netdeploy: [["עריכת DHCP", "editDeployNic()"], ["קבצי dnsmasq", "previewDnsmasq()"]],
   };
@@ -4217,7 +4450,12 @@ function openAccount() {
 function openSessionInfo() {
   closeUserMenu();
   const name = esc(ME && ME.username || "");
-  openDrawer("פרטי Session", `<div class="detail-grid"><div class="detail-box"><span class="k">משתמש</span><span class="v">${name}</span></div><div class="detail-box"><span class="k">Session</span><span class="v">Authenticated</span></div></div>`);
+  // ‏#703: טביעת האצבע המלאה של תעודת הקונסולה — להשוואה מול "פרטי תעודה" בדפדפן.
+  const fp = ME && ME.tls && ME.tls.fingerprint_sha256;
+  const tls = fp
+    ? `<div class="detail-box"><span class="k">TLS</span><span class="v">תעודה עצמית · SHA-256 <span dir="ltr" style="word-break:break-all">${esc(fp)}</span></span></div>`
+    : `<div class="detail-box"><span class="k">TLS</span><span class="v">כבוי (loopback)</span></div>`;
+  openDrawer("פרטי Session", `<div class="detail-grid"><div class="detail-box"><span class="k">משתמש</span><span class="v">${name}</span></div><div class="detail-box"><span class="k">Session</span><span class="v">Authenticated</span></div>${tls}</div>`);
 }
 
 function logout() {
@@ -4250,7 +4488,6 @@ function machineCaptureWarningHtml(mac) {
 
 
 function createImage() { soon(); }
-function wakeMachine() { soon(); }
 function openNewImage() { soon(); }
 function verifyLibrary() { soon(); }
 function exportRounds() { soon(); }
@@ -4520,191 +4757,7 @@ function sshToggle(path, enabled, word, needsConfirm, title, sub, offMeans = "")
 }
 
 
-function settingsPage() { return `<div class="grid"><div class="span-6"><div class="card">        <form id="settings-form" class="pad form-grid">
-          <label class="check">
-            <input type="checkbox" id="set-login">
-            שחזור תחנה בודדת דורש כניסה (מומלץ; כבו רק להדגמה)
-          </label>
-          <label>המתנה מהמצטרף האחרון (שניות)
-            <input type="number" id="set-wait" min="30" step="30">
-          </label>
-          <label>ניתוק אוטומטי בחוסר פעילות (שניות)
-            <input type="number" id="set-idle" min="60" step="30">
-          </label>
-          <label class="check">
-            <input type="checkbox" id="set-class-deploy">
-            הפצה לכיתות ממחשב הבנייה (כבוי במהדורת השיכפול; הכרטיס יורד מהתפריט והשרת מסרב לסבב)
-          </label>
-          <label class="check">
-            <input type="checkbox" id="set-update-enabled">
-            אפשר עדכון השרת מול הריפו הציבורי (כבוי כברירת מחדל; החיבור היוצא נפתח רק בזמן בדיקה/עדכון)
-          </label>
-          <label class="check">
-            <input type="checkbox" id="set-identity-check">
-            בדיקת זהות מכונה — כתובת המקור של hello/דיווח חייבת להתאים לחכירת ה-DHCP של ה-MAC (דלוק כברירת מחדל; לכבות רק כשה-DHCP של וילן ההפצה אינו השרת הזה — הכיבוי נרשם ביומן)
-          </label>
-          <button class="btn primary" type="submit">שמור</button>
-          <p id="settings-saved" class="ok"></p>
-        </form>
-      </div></div><div class="span-6"><div class="card">
-        <div class="ptitle">עדכון שרת</div>
-        <div class="pad">
-          <p class="sub">גרסה נוכחית: <b id="update-current">—</b></p>
-          <p class="sub hidden" id="update-previous-row">גרסה קודמת (לחזרה): <b id="update-previous"></b></p>
-          <div id="update-disabled-note" class="sub">העדכון כבוי. הדליקו את המתג משמאל כדי לבדוק ולעדכן.</div>
-          <div id="update-active-block" class="hidden">
-            <div class="row" style="margin-top:8px">
-              <button class="btn" id="update-check-btn">בדוק עדכון</button>
-              <button class="btn primary hidden" id="update-apply-btn">עדכן</button>
-              <button class="btn danger hidden" id="update-revert-btn">חזור לגרסה הקודמת</button>
-            </div>
-            <p id="update-check-result" class="sub"></p>
-            <p id="update-status-line" class="sub"></p>
-          </div>
-        </div>
-      </div></div><div class="span-6"><div class="card">
-        <div class="ptitle">לוגו</div>
-        <div class="pad">
-          <div class="logo-row">
-            <div class="logo-preview" id="logo-preview"></div>
-            <div>
-              <p class="sub">מחליף את הסמל בכותרת ובמסך הכניסה.</p>
-              <p class="sub">PNG, JPG, WEBP או SVG · עד 2MB.</p>
-            </div>
-          </div>
-          <div class="row" style="margin-top:12px">
-            <button class="btn" id="logo-pick">בחירת קובץ</button>
-            <button class="btn danger hidden" id="logo-clear">הסרה</button>
-          </div>
-          <p class="error" id="logo-error"></p>
-          <input type="file" id="logo-input" class="hidden"
-                 accept="image/png,image/jpeg,image/webp,image/svg+xml">
-        </div>
-      </div></div></div>`; }
-async function loadSettings() {
-  const host = $("#settings-form");
-  const s = await api("/settings");
-  if (!host || host !== $("#settings-form")) return;
-  $("#set-login").checked = s.recovery_require_login === "true";
-  $("#set-wait").value = Number(s.session_wait_seconds);
-  $("#set-idle").value = Number(s.console_idle_seconds);
-  $("#set-class-deploy").checked = s.class_deploy_enabled === "true";
-  $("#set-update-enabled").checked = s.update_enabled === "true";
-  $("#set-identity-check").checked = s.identity_check !== "false";   // #855: חסר = דלוק
-  await loadLogoSettings();
-  await loadUpdateInfo();
-
-  if (host === $("#settings-form")) wireSettings();
-}
-function wireSettings() {
-$("#settings-form").onsubmit = async (event) => {
-  try {
-  event.preventDefault();
-  await post("/settings", {
-    recovery_require_login: $("#set-login").checked ? "true" : "false",
-    session_wait_seconds: String($("#set-wait").value),
-    console_idle_seconds: String($("#set-idle").value),
-    class_deploy_enabled: $("#set-class-deploy").checked ? "true" : "false",
-    update_enabled: $("#set-update-enabled").checked ? "true" : "false",
-    identity_check: $("#set-identity-check").checked ? "true" : "false",
-  });
-  ME.idle_seconds = Number($("#set-idle").value);   // תקף מיידית, בלי כניסה מחדש
-  startIdleWatch();
-  await loadUpdateInfo();   // המתג יכול היה להידלק/לכבות כרגע
-  $("#settings-saved").textContent = "נשמר.";
-  setTimeout(() => { if ($("#settings-saved")) $("#settings-saved").textContent = ""; }, 2000);
-} catch (error) { toast(error.message); }
-};
-$("#logo-pick").addEventListener("click", () => $("#logo-input").click());
-
-$("#logo-input").addEventListener("change", async (event) => {
-  const file = event.target.files[0];
-  event.target.value = "";
-  if (!file) return;
-  const response = await fetch("/api/console/branding/logo", {
-    method: "POST", credentials: "same-origin",
-    headers: { "Content-Type": file.type }, body: file,
-  });
-  if (!response.ok) {
-    let message = "שגיאה " + response.status;
-    try { message = (await response.json()).detail || message; } catch (e) {}
-    $("#logo-error").textContent = message;
-    return;
-  }
-  $("#logo-error").textContent = "";
-  await loadLogoSettings();
-  toast("הלוגו הוחלף.");
-});
-
-$("#logo-clear").addEventListener("click", () => confirmSheet(
-  "הסרת הלוגו", "הקונסולה תחזור לסמל ברירת המחדל.", "הסר",
-  async () => { await del("/branding/logo"); await loadLogoSettings(); }));
-
-$("#update-check-btn").onclick = checkForUpdate;
-$("#update-apply-btn").onclick = () => confirmUpdateAction(
-  "עדכון שרת", UPDATE_INFO.latest, "apply", UPDATE_INFO.latest);
-$("#update-revert-btn").onclick = () => confirmUpdateAction(
-  "חזרה לגרסה הקודמת", UPDATE_INFO.previous, "revert", UPDATE_INFO.previous);
-}
-
 let UPDATE_INFO = {};
-
-async function loadUpdateInfo() {
-  if (!$("#update-current")) return;
-  const info = await api("/update");
-  UPDATE_INFO = info;
-  $("#update-current").textContent = info.current || "לא ידועה (אין תגית git על העץ)";
-  if (info.previous) {
-    $("#update-previous-row").classList.remove("hidden");
-    $("#update-previous").textContent = info.previous;
-  } else {
-    $("#update-previous-row").classList.add("hidden");
-  }
-  $("#update-disabled-note").classList.toggle("hidden", info.enabled);
-  $("#update-active-block").classList.toggle("hidden", !info.enabled);
-  $("#update-apply-btn").classList.add("hidden");
-  $("#update-revert-btn").classList.toggle("hidden", !info.previous);
-  $("#update-check-result").textContent = "";
-  if (info.enabled) await loadUpdateStatus();
-}
-
-async function loadUpdateStatus() {
-  const status = await api("/update/status");
-  const line = $("#update-status-line");
-  if (!line) return;
-  if (status.state === "idle" || !status.state) { line.textContent = ""; return; }
-  if (status.state === "failed") {
-    line.textContent = `העדכון ל-${status.tag} נכשל: ${status.error || ""}`;
-    line.className = "sub error";
-  } else if (status.state === "applying" && !status.verified) {
-    line.textContent = `העדכון ל-${status.tag} הופעל — ממתין לאתחול השרת. `
-      + "הראיה החיובית: גרסת השרת אחרי האתחול תואמת את התג.";
-    line.className = "sub";
-  } else if (status.state === "done" && status.verified) {
-    line.textContent = `אומת: השרת רץ על ${status.tag}.`;
-    line.className = "sub ok";
-  } else {
-    line.textContent = "";
-  }
-}
-
-async function checkForUpdate() {
-  try {
-    const result = await post("/update/check", {});
-    UPDATE_INFO.latest = result.latest;
-    if (!result.latest) {
-      $("#update-check-result").textContent = result.reason || "לא נמצאה גרסה חדשה יותר.";
-      $("#update-apply-btn").classList.add("hidden");
-    } else if (result.available) {
-      $("#update-check-result").textContent = `יש עדכון: ${result.current || "?"} → ${result.latest}`;
-      $("#update-apply-btn").textContent = `עדכן ל-${result.latest}`;
-      $("#update-apply-btn").classList.remove("hidden");
-    } else {
-      $("#update-check-result").textContent = `כבר על הגרסה העדכנית (${result.current}).`;
-      $("#update-apply-btn").classList.add("hidden");
-    }
-  } catch (e) { toast(e.message); }
-}
 
 function confirmUpdateAction(title, tag, path, applyTag) {
   if (!tag) return;
@@ -4720,67 +4773,10 @@ function confirmUpdateAction(title, tag, path, applyTag) {
       if (path === "apply") body.tag = applyTag;
       await post("/update/" + path, body);
       toast("העדכון הופעל — עוקבים אחרי סטטוס.");
-      await loadUpdateInfo();
       if (current === "health") { await loadHealthUpdate(); renderCurrent(); }
     },
   });
 }
-async function loadUsersAdmin() {
-  const host = $("#users-table tbody");
-  const list = await api("/users");
-  if (!host || host !== $("#users-table tbody")) return;
-  USERS = list;
-  $("#users-table tbody").innerHTML = list.map((u) => `<tr>
-    <td>${esc(u.username)}${u.username === ME.username ? ' <span class="tag">אתם</span>' : ""}${u.disabled ? ' <span class="tag danger">חסום</span>' : ""}</td>
-    <td>${u.role === "admin" ? "מנהל" : "הפצה"}</td>
-    <td>${u.created_at.slice(0, 10)}</td>
-    <td>
-      <button class="btn" data-edit-user="${esc(u.username)}">עריכה</button>
-      <button class="btn danger" data-del-user="${esc(u.username)}">מחק</button>
-    </td>
-  </tr>`).join("");
-
-  document.querySelectorAll("[data-edit-user]").forEach((b) => b.onclick = () => {
-    const u = list.find((x) => x.username === b.dataset.editUser);
-    const self = u.username === ME.username;
-    sheet({
-      title: "עריכת משתמש", sub: u.username,
-      fields: [
-        {
-          id: "role", label: self ? "תפקיד (אי אפשר לשנות את שלכם)" : "תפקיד",
-          type: "select", value: u.role,
-          options: self
-            ? [{ value: u.role, label: u.role === "admin" ? "מנהל" : "הפצה בלבד" }]
-            : [{ value: "deploy", label: "הפצה בלבד" }, { value: "admin", label: "מנהל" }],
-        },
-        {
-          id: "password", label: "סיסמה חדשה (ריק = בלי שינוי)", type: "password",
-          confirm: "אימות הסיסמה החדשה",
-        },
-        // חסימה אינה מחיקה: היא הפיכה, והיא משאירה את שורות היומן
-        // מצביעות על מישהו. המתג מוסתר למשתמש המחובר — חסימה עצמית
-        // היא נעילה מיידית מחוץ למסך, כי `auth.check` קורא אותה בכל
-        // בקשה, כולל בזו שתשחרר אותה.
-        ...(self ? [] : [{
-          id: "disabled", label: "חסום — לא יוכל להיכנס, וסשן פתוח נסגר מיד",
-          type: "checkbox", value: !!u.disabled,
-        }]),
-      ],
-      onSubmit: async (v) => {
-        const body = { role: v.role, password: v.password };
-        if (!self) body.disabled = !!v.disabled;
-        await put(`/users/${encodeId(u.username)}`, body);
-        await loadUsersAdmin();
-        toast("נשמר.");
-      },
-    });
-  });
-
-  document.querySelectorAll("[data-del-user]").forEach((b) => b.onclick = () => confirmSheet(
-    "מחיקת משתמש", `המשתמש ${b.dataset.delUser} יאבד גישה מיידית.`, "מחק",
-    async () => { await del(`/users/${encodeId(b.dataset.delUser)}`); await loadUsersAdmin(); }));
-}
-
 function openNewUser() { sheet({
   title: "משתמש חדש",
   fields: [
@@ -4798,93 +4794,38 @@ function openNewUser() { sheet({
     },
   ],
   submitLabel: "צור משתמש",
-  onSubmit: async (v) => { await post("/users", v); await loadUsersAdmin(); },
+  onSubmit: async (v) => { await post("/users", v); toast(`המשתמש ${v.username} נוצר`); await loadUsersData(); },
 }); }
 
-function usersAdminPage() { return `<div class="card"><div class="card-h"><button class="btn primary" onclick="openNewUser()">Add user</button></div><div class="card-b table-wrap"><table id="users-table"><thead><tr><th>User</th><th>Role</th><th>Created</th><th>Actions</th></tr></thead><tbody></tbody></table></div></div>`; }
-
-let JOURNAL_EVENTS_LOADED = false;
-
-// המפתחות שהשרת מצפה להם ב-query string, כל אחד מקושר לשדה שלו במסך.
-const JOURNAL_FILTER_FIELDS = {
-  event: "#jf-event", machine: "#jf-machine", q: "#jf-q",
-  from: "#jf-from", to: "#jf-to",
-};
-
-async function loadJournalEvents() {
-  if (JOURNAL_EVENTS_LOADED) return;
-  const select = $("#jf-event");
-  const events = await api("/journal/events");
-  if (!select || select !== $("#jf-event")) return;
-  select.insertAdjacentHTML("beforeend", events.map((e) =>
-    `<option value="${esc(e.event)}">${esc(e.label)}</option>`).join(""));
-  JOURNAL_EVENTS_LOADED = true;
+/* ---------- #984: WoL למחשב בודד ולקבוצת הבנייה (#954 גל 6) ----------
+   POST /machines/{mac}/wake · POST /groups/{gid}/wake → {sent, failed, reasons},
+   כמו /room/wake (החדר נשאר wakeRoom). ‏build/cloner בלבד — תחנות כיתה = v2
+   (השרת מחזיר 403). **"נשלח" ≠ "התעוררה":** חבילת WoL היא UDP בלי ACK (#528),
+   ולכן הטקסט אומר נשלח. שרת ישן (אין את המסלול) = 404 "Not Found". */
+function wolResultText(r, who) {
+  const reasons = (r.reasons || []).length ? " — " + r.reasons.join("; ") : "";
+  return `WoL נשלח ל-${who} (${r.sent})${r.failed ? `, ${r.failed} נכשלו` : ""}${reasons}`;
 }
-
-function journalFilterQuery() {
-  const params = new URLSearchParams();
-  for (const [key, sel] of Object.entries(JOURNAL_FILTER_FIELDS)) {
-    let value = $(sel).value.trim();
-    if (!value) continue;
-    // "עד תאריך" הוא דקה שלמה (datetime-local); בלי שניות, "10:00"
-    // כהשוואת מחרוזות היה פוסל אירוע ב-"10:00:15" — לפני הדקה הבאה
-    // אבל אחרי המחרוזת עצמה.
-    if (key === "to") value += ":59";
-    params.set(key, value);
-  }
-  const qs = params.toString();
-  return qs ? "?" + qs : "";
+function wolErrorText(e) {
+  if (e.status === 404 && /not found/i.test(e.message)) return "WoL למחשב יחיד דורש שרת חדש יותר (#984) — השרת הזה מכיר רק את WoL לחדר";
+  return "WoL נכשל: " + e.message;
 }
-
-async function loadJournal() {
-  const host = $("#journal-table tbody");
-  if (!host) return;
-  await loadJournalEvents();
-  if (host !== $("#journal-table tbody")) return;
-  // fetch ישיר, לא api(): צריך את כותרת האזהרה על סינון חלקי, לא רק
-  // את הגוף (עיקרון 5 — "לא בדקנו הכל" אינו "אין תוצאות").
-  const response = await fetch("/api/console/journal" + journalFilterQuery(), { credentials: "same-origin" });
-  if (response.status === 401) { showLogin(); throw new Error("לא מחובר"); }
-  if (!response.ok) throw new Error("שגיאה " + response.status);
-  if (host !== $("#journal-table tbody")) return;
-  const truncated = response.headers.get("X-Journal-Search-Truncated") === "true";
-  $("#journal-truncated").classList.toggle("hidden", !truncated);
-  if (truncated) {
-    toast("החיפוש מכסה רק את השורות האחרונות ביומן — נסו לצמצם עם טווח תאריכים");
-  }
-  const rows = await response.json();
-  if (host !== $("#journal-table tbody")) return;
-  JOURNAL = rows;
-  $("#journal-table tbody").innerHTML = rows.length
-    ? rows.map((r) => `<tr>
-        <td class="mono" dir="ltr">${r.ts.replace("T", " ").slice(0, 19)}</td>
-        <td>${esc(r.user) || "המערכת"}</td><td><b>${esc(r.label)}</b></td>
-        <td>${esc(r.text)}</td>
-      </tr>`).join("")
-    : `<tr><td colspan="4" class="lib-empty">אין רשומות שתואמות לסינון.</td></tr>`;
+async function wakeMachine(macEnc) {
+  const m = findMachine(macEnc);
+  if (!m) { toast("מכונה לא נמצאה"); return; }
+  if (!["build", "cloner"].includes(machineRole(m))) { toast("WoL לתחנות כיתה — v2"); return; }
+  try {
+    const r = await post(`/machines/${encodeId(m.mac)}/wake`);
+    toast(wolResultText(r, machineName(m) || m.mac), 6000);
+  } catch (e) { toast(wolErrorText(e), 6000); }
 }
-
-
-function journalPage() { return `<div class="card"><p id="journal-truncated" class="notice warn hidden">Search covers only recent journal rows. Narrow the date range.</p><div class="pad form-grid" id="journal-filters">
-          <div class="row">
-            <select id="jf-event" aria-label="סוג אירוע"><option value="">כל סוגי האירועים</option></select>
-            <input type="text" id="jf-machine" placeholder="מכונה או MAC" aria-label="סינון לפי מכונה או MAC">
-            <input type="text" id="jf-q" placeholder="חיפוש חופשי" aria-label="חיפוש חופשי ביומן">
-          </div>
-          <div class="row">
-            <label class="jf-date">מ-תאריך
-              <input type="datetime-local" id="jf-from">
-            </label>
-            <label class="jf-date">עד תאריך
-              <input type="datetime-local" id="jf-to">
-            </label>
-            <button class="btn" id="jf-clear" type="button">איפוס סינון</button>
-          </div>
-        </div>
-        <table id="journal-table">
-          <thead><tr><th>זמן</th><th>מי</th><th>מה קרה</th><th>פירוט</th></tr></thead>
-          <tbody></tbody>
-        </table></div>`; }
+async function wakeGroup(gidEnc) {
+  let gid = gidEnc; try { gid = decodeURIComponent(gidEnc); } catch (e) {}
+  try {
+    const r = await post(`/groups/${encodeId(gid)}/wake`);
+    toast(wolResultText(r, groupLabel(gid)), 6000);
+  } catch (e) { toast(wolErrorText(e), 6000); }
+}
 
 function isAdmin() { return !!ME && ME.role === "admin"; }
 function pageAllowed(id) {
@@ -4895,26 +4836,9 @@ function pageAllowed(id) {
 }
 function wireRestoredPage() {
   if (current === "images") loadCaptures().catch(e => toast(e.message));
-  if (current === "settings") loadSettings().catch(e => toast(e.message));
   if (current === "branches") (currentTab === 0 ? loadBranchCards() : loadBranches()).catch(e => toast(e.message));
   if (current === "branch") loadBranchView(BRANCH_VIEWS[currentTab][0]).catch(e => toast(e.message));
-  if (current === "permissions" && currentTab === 0) loadUsersAdmin().catch(e => toast(e.message));
-  if (current === "logs" && currentTab === 0) {
-    JOURNAL_EVENTS_LOADED = false;
-    const reload = () => loadJournal().catch(e => toast(e.message));
-    for (const [key, sel] of Object.entries(JOURNAL_FILTER_FIELDS)) {
-      $(sel).value = journalFilters[key] || "";
-      $(sel).onchange = () => { journalFilters[key] = $(sel).value; reload(); };
-    }
-    $("#jf-clear").onclick = () => {
-      journalFilters = {};
-      for (const sel of Object.values(JOURNAL_FILTER_FIELDS)) $(sel).value = "";
-      reload();
-    };
-    reload().then(() => { if ($("#jf-event")) $("#jf-event").value = journalFilters.event || ""; });
-  }
 }
-let journalFilters = {};
 let pollTimer = null, overviewBusy = false, overviewError = "", overviewLastOk = null;
 let CAPTURE_TASKS = [];
 let drawerGeneration = 0;

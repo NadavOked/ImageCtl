@@ -31,6 +31,7 @@ from . import boottrace, dhcp, registry
 from .api import ServerContext, create_agent_router
 from .console_api import create_console_router
 from .console_source_guard import ConsoleSourceGuard, Network
+from .console_tls import ConsoleTLS
 from .console_storage import create_storage_router
 from .db import journal
 from . import wol
@@ -162,6 +163,10 @@ class ServerRuntime:
     # אינו פעיל (התנהגות היום — ‎--console-host בלבד), בדיוק כמו
     # ‏`storage_role`: לא לשבור פריסה קיימת שלא ביקשה את השכבה הזו.
     console_allowed_networks: tuple[Network, ...] | None = None
+    # ‏#703 (tracer 5): זהות ה-TLS של הקונסולה, כשהיא מוגשת ב-HTTPS. ``None``
+    # = ‏``--console-tls off`` (loopback) או בדיקות — ואז העוגייה בלי
+    # ``Secure`` ו-``/me`` מדווח ``tls: null``. ‏main מעביר ערך אמיתי.
+    console_tls: ConsoleTLS | None = None
 
 
 async def _room_clock(rt: ServerRuntime, interval: float) -> None:
@@ -250,6 +255,8 @@ def create_runtime(
     # ‏#456: הקצב של שעון-הרקע של החדר. ברירת המחדל היא הייצור; בדיקות
     # מעבירות ערך קצר כדי שהלולאה תדגום מהר.
     room_clock_interval: float = ROOM_CLOCK_SECONDS,
+    # ‏#703 (tracer 5): ``None`` = הקונסולה בלי TLS (loopback/בדיקות).
+    console_tls: ConsoleTLS | None = None,
 ) -> ServerRuntime:
     """בונה את המצב המשותף פעם אחת ומריץ את האתחול החד-פעמי.
 
@@ -379,6 +386,7 @@ def create_runtime(
         known_macs_hooks=known_macs_hooks,
         repo_dir=repo_dir, update_hooks=update_hooks,
         room_clock_interval=room_clock_interval,
+        console_tls=console_tls,
     )
 
 
@@ -495,7 +503,8 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
     update_hooks = {**default_update_hooks(), **(rt.update_hooks or {})}
     app.include_router(create_console_router(
         ctx, rt.known_macs_hooks,
-        version=lambda: current_version(update_hooks, repo_dir)))
+        version=lambda: current_version(update_hooks, repo_dir),
+        tls=rt.console_tls))
     app.include_router(create_storage_router(ctx, rt.data_dir))   # #727/#740
     app.include_router(create_library_router(ctx))
     app.include_router(create_drivers_router(ctx))   # #720

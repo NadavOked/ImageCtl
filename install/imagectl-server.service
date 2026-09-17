@@ -22,6 +22,9 @@ Environment=IMAGECTL_URL=
 # ריק = ברירת המחדל של server.main (standalone), ולכן שרת ותיק בלי
 # override עולה בדיוק כמו קודם. ‏$IMAGECTL_STORAGE_ARGS (בלי סוגריים)
 # מתפצל למילים על ידי systemd; ריק מתרחב ללא ארגומנטים.
+# ‏#703 (tracer 5): גם `--console-host <כרטיס-הניהול>` נכנס לכאן (המתקין
+# עם --console-host, או systemctl edit). הקונסולה על 8081 היא HTTPS
+# בלבד; התעודה ב-/var/lib/imagectl/console-tls/ (בתוך ReadWritePaths).
 Environment=IMAGECTL_STORAGE_ARGS=
 WorkingDirectory=/opt/imagectl
 ExecStartPre=/bin/sh -c 'test -n "$IMAGECTL_URL" || { echo "set IMAGECTL_URL via systemctl edit imagectl-server"; exit 1; }'

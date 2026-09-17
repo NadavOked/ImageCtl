@@ -482,9 +482,13 @@ def test_the_console_settings_screen_wires_the_class_deploy_switch():
     from pathlib import Path   # noqa: PLC0415
     static = Path(__file__).resolve().parent.parent / "server" / "static"
     js = (static / "console.js").read_text(encoding="utf-8")
-    assert 'id="set-class-deploy"' in js
-    assert 's.class_deploy_enabled === "true"' in js
-    assert 'class_deploy_enabled: $("#set-class-deploy").checked ? "true" : "false"' in js
+    # ‏#954 גל 6: מסך ההגדרות הוא טבלת שורות (`SETTING_ROWS`); המתג הוא שורה
+    # מסוג switch, הקריאה/כתיבה משותפות לכל המתגים ("true"/"false" כמחרוזת).
+    assert '{ key: "class_deploy_enabled", label:' in js
+    rows = js[js.index("const SETTING_ROWS"):js.index("];", js.index("const SETTING_ROWS"))]
+    assert 'key: "class_deploy_enabled"' in rows and 'type: "switch"' in rows
+    assert 'if (r.type === "switch") return r.defaultOn ? v !== "false" : v === "true";' in js
+    assert 'else if (r.type === "switch") body[r.key] = v ? "true" : "false";' in js
     page = (static / "index.html").read_text(encoding="utf-8")
     versions = {tuple(int(x) for x in v.split(".")) for v in re.findall(r"\?v=([0-9.]+)", page)}
     assert versions and min(versions) >= (4, 9), versions

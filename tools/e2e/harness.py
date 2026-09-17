@@ -242,6 +242,10 @@ def start_server(workdir: Path) -> tuple[subprocess.Popen, Path, Path]:
          "--host", "127.0.0.1", "--port", str(PORT),
          # ‏#731: פורט נפרד לקונסולה, כמו בייצור.
          "--console-port", str(CONSOLE_PORT),
+         # ‏#703 (tracer 5): הקונסולה כאן על 127.0.0.1 (ברירת המחדל של
+         # ‎--console-host), ולכן ``off`` מותר — הלקוח למעלה מדבר http פשוט.
+         # לחיצת-היד האמיתית עם התעודה נבדקת ב-tests/test_console_tls.py.
+         "--console-tls", "off",
          # ‏#738: פורט נפרד לקיוסק (מסך התחנה), כמו בייצור.
          "--kiosk-port", str(KIOSK_PORT),
          # ‏#201: השרת הזה אמיתי ומגיע ל-udp-sender אמיתי. בלי הדגל הזה

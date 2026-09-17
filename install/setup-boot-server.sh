@@ -30,6 +30,10 @@ ADMIN_PASS=""
 # לשורת הפקודה של הקרנל (עיקרון 2). מועבר ל-server.main דרך היחידה.
 STORAGE_ROLE="standalone"
 PRIMARY_URL=""
+# ‏#703 (tracer 5): כתובת כרטיס הניהול שעליה הקונסולה (8081, HTTPS) מאזינה.
+# ריק = loopback בלבד (ברירת המחדל fail-closed של #770) — המפעיל מוסיף
+# ‏--console-host ליחידה כשירצה. התעודה נוצרת כאן בכל מקרה, לפני ההרמה.
+CONSOLE_HOST=""
 TFTP_ROOT="/srv/tftp"
 HTTP_ROOT="/srv/imagectl/boot"
 APP_DIR="/opt/imagectl"
@@ -232,6 +236,7 @@ ImageCtl — התקנה מלאה על שרת דביאן: שרשרת אתחול, 
   --http-root PATH     ברירת מחדל /srv/imagectl/boot; מועבר לשרת כ---boot-dir
   --storage-role ROLE  standalone (ברירת מחדל) או secondary (#655/#723)
   --primary-url URL    כתובת השרת הראשי — חובה ל-secondary
+  --console-host ADDR  כתובת כרטיס הניהול לקונסולה (8081, HTTPS); ריק = loopback
   --dry-run            מראה מה יקרה בלי לשנות כלום
   -h, --help           המסך הזה
 EOF
@@ -251,6 +256,7 @@ while [[ $# -gt 0 ]]; do
         --http-root)   HTTP_ROOT="${2:?}"; shift 2 ;;
         --storage-role) STORAGE_ROLE="${2:?}"; shift 2 ;;
         --primary-url) PRIMARY_URL="${2:?}"; shift 2 ;;
+        --console-host) CONSOLE_HOST="${2:?}"; shift 2 ;;
         --dry-run)     DRY_RUN=1; shift ;;
         -h|--help)     usage; exit 0 ;;
         --mode|--dhcp-range)
@@ -526,6 +532,11 @@ if [[ "$STORAGE_ROLE" == "secondary" ]]; then
 else
     STORAGE_ARGS="--storage-role standalone --boot-dir $HTTP_ROOT"
 fi
+# ‏#703 (tracer 5): הקונסולה על כרטיס הניהול — רק כשנתבקש; בלי הדגל היא
+# נשארת על loopback (#770). מצורף לאותו משתנה שהיחידה מרחיבה.
+if [[ -n "$CONSOLE_HOST" ]]; then
+    STORAGE_ARGS+=" --console-host $CONSOLE_HOST"
+fi
 write_file /etc/systemd/system/imagectl-server.service.d/override.conf <<EOF
 # ImageCtl — נכתב על ידי המתקין: הכתובת שנגזרה מהכרטיס שנבחר.
 [Service]
@@ -536,6 +547,26 @@ Environment=IMAGECTL_URL=$SERVER_URL
 # ‏ExecStart מרחיב $IMAGECTL_STORAGE_ARGS בלי גרשיים כדי לפצל שוב לארגומנטים.
 Environment="IMAGECTL_STORAGE_ARGS=$STORAGE_ARGS"
 EOF
+# ‏#703 (tracer 5): תעודת ה-TLS של הקונסולה נוצרת (או נטענת — התקנה
+# חוזרת אינה מחליפה תעודה שהדפדפן כבר אישר) **לפני** שהשרת עולה, כדי
+# שטביעת האצבע תודפס כאן ותושווה למה שהדפדפן מציג בכניסה הראשונה.
+# השרת עצמו היה יוצר אותה בהפעלה הראשונה; כאן היא נוצרת במקום שהמפעיל
+# רואה. ‏SAN = כרטיס הניהול (או 127.0.0.1) + שם המארח.
+say "מייצר/מוודא את תעודת ה-TLS של הקונסולה"
+CONSOLE_FP="(dry-run)"
+if (( ! DRY_RUN )); then
+    CONSOLE_FP="$(CONSOLE_HOST="${CONSOLE_HOST:-127.0.0.1}" python3 - <<TLSEOF
+import os, sys
+sys.path.insert(0, "$APP_DIR")
+from server.console_tls import ensure_console_cert
+tls = ensure_console_cert("$DATA_DIR", os.environ["CONSOLE_HOST"])
+print(tls.fingerprint_sha256)
+TLSEOF
+)" || die "יצירת תעודת הקונסולה נכשלה"
+    if [[ ! "$CONSOLE_FP" =~ ^([0-9A-F]{2}:){31}[0-9A-F]{2}$ ]]; then
+        die "טביעת האצבע של תעודת הקונסולה אינה בצורה הצפויה: $CONSOLE_FP"
+    fi
+fi
 run systemctl daemon-reload
 run systemctl enable --now imagectl-netrollback.timer
 run systemctl enable --now imagectl-server
@@ -546,7 +577,9 @@ run systemctl enable --now imagectl-server
 
 cat <<EOF
 
-  קונסולה        $SERVER_URL  (משתמש: $ADMIN_USER)
+  קונסולה        https://${CONSOLE_HOST:-127.0.0.1}:8081  (משתמש: $ADMIN_USER)
+                 תעודה עצמית — הדפדפן יבקש אישור פעם אחת; להשוות:
+                 SHA-256 $CONSOLE_FP
   TFTP root      $TFTP_ROOT  (bootx64.efi -> grubx64.efi -> grub/grub.cfg)
   נתונים         $DATA_DIR · אימג'ים: $IMAGES_DIR
 EOF

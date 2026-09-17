@@ -205,12 +205,12 @@ test('S3: at <=740px, where the statusbar is hidden, the dock returns to the bot
 
 test('S4: tabs render as <button role="tab"> inside role="tablist" with aria-selected and roving tabindex', () => {
   const {run} = setup();
-  // ‏#954: הסקירה (גל 1) והבריאות (גל 5) מציירות לשוניות משלהן (page.own) — הבדיקה על המסגרת הגנרית עוברת להרשאות (2 לשוניות)
-  const html = run('layout(pages.permissions, 1)');
+  // ‏#954: העמודים החדשים (page.own) מציירים לשוניות משלהן — הבדיקה על המסגרת הגנרית עוברת לרשת (3 לשוניות, עוד לא נבנתה)
+  const html = run('layout(pages.network, 1)');
   assert.match(html, /<div class="vcenter-tabs" role="tablist">/);
   const tabs = [...html.matchAll(/<button type="button" class="vcenter-tab ?(active)?" role="tab" aria-selected="(true|false)" tabindex="(0|-1)"/g)];
-  assert.equal(tabs.length, 2, 'two permissions tabs as buttons');
-  assert.deepEqual(tabs.map((m) => [m[1] || '', m[2], m[3]]), [['', 'false', '-1'], ['active', 'true', '0']]);
+  assert.equal(tabs.length, 3, 'three network tabs as buttons');
+  assert.deepEqual(tabs.map((m) => [m[1] || '', m[2], m[3]]), [['', 'false', '-1'], ['active', 'true', '0'], ['', 'false', '-1']]);
   assert.doesNotMatch(html, /<div class="vcenter-tab[ "]/, 'no div tabs left');
   assert.match(html, /id="pageActionBtn" aria-haspopup="menu" aria-expanded="false"/);
   assert.match(html, /id="pageActionMenu" class="action-menu" role="menu"/);

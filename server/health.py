@@ -420,10 +420,11 @@ def ports_snapshot(ctx, hooks: dict, server_base: str) -> list[dict]:
         http_state, http_detail,
         "לפתוח ב-FW: TCP 8080 מוילן ההפצה לשרת"))
 
-    entries.append(_port("http_console", "HTTP", "8081", "tcp",
-        "קונסולת הניהול", "דפדפן (מנהל)", "off",
+    # ‏#703 (tracer 5): הקונסולה מוגשת ב-HTTPS בלבד (תעודה חתומה-עצמית).
+    entries.append(_port("http_console", "HTTPS", "8081", "tcp",
+        "קונסולת הניהול (TLS, תעודה עצמית)", "דפדפן (מנהל)", "off",
         "אין hook שקורא את ההאזנה על הפורט הזה — לא אומת",
-        "לפתוח ב-FW: TCP 8081 מתחנת הניהול בלבד — לא לוילן הכיתות"))
+        "לפתוח ב-FW: TCP 8081 (HTTPS) מתחנת הניהול בלבד — לא לוילן הכיתות"))
 
     entries.append(_port("pxe_proxy", "PXE", "4011", "udp", "PXE proxy",
         "תחנות", "off", "אין hook שקורא את ההאזנה על הפורט הזה — לא אומת",

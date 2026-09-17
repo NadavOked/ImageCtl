@@ -69,7 +69,12 @@ def _drawer_count(raw):
 def create_console_router(
     ctx: ServerContext, known_macs_hooks: dict | None = None,
     version: Callable[[], str | None] | None = None,
+    tls=None,
 ) -> APIRouter:
+    """‏``tls`` (#703, tracer 5): ‏``console_tls.ConsoleTLS`` כשהקונסולה מוגשת
+    ב-HTTPS — העוגייה מקבלת ``Secure`` ו-``/me`` מדווח את טביעת האצבע.
+    ‏``None`` = בלי TLS (loopback/בדיקות): עוגיית ``Secure`` על http הייתה
+    נזרקת על ידי הדפדפן, ואיש לא היה מצליח להיכנס בפיתוח."""
     router = APIRouter(prefix="/api/console")
     current_user, admin_only = auth.dependencies(ctx.conn)
 
@@ -111,6 +116,7 @@ def create_console_router(
         response.set_cookie(
             auth.COOKIE_NAME, auth.issue(ctx.conn, username, role),
             httponly=True, samesite="lax", max_age=auth.TTL_SECONDS,
+            secure=tls is not None,        # #703: רק מעל TLS
         )
         journal(ctx.conn, "login", "", username)
         return {
@@ -141,6 +147,10 @@ def create_console_router(
             # הסטטוס — לכל משתמש מחובר, לא רק admin. ‏None = אין תג על
             # העץ, והקונסולה לא מציגה מספר שאין לו מקור.
             "version": version() if version else None,
+            # ‏#703 (tracer 5): מצב ה-TLS של הקונסולה וטביעת האצבע (SHA-256
+            # של התעודה, כמו בדפדפן) לשורת הסטטוס — כדי שהאישור החד-פעמי
+            # של התעודה יהיה השוואה, לא לחיצה. ‏null = בלי TLS (loopback).
+            "tls": tls.public_info() if tls is not None else None,
             # ‏#936: שם השרת הראשי לצומת העליון בעץ — מההגדרה `server_name`
             # אם המנהל קבע אחת, אחרת שם המארח כפי שהמערכת מדווחת אותו.
             # לכל משתמש מחובר: גם deploy רואה את העץ.

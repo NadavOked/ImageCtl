@@ -802,3 +802,27 @@ button:focus-visible,[role="button"]:focus-visible,.inventory-node:focus-visible
 .page .dg.dense .sw{width:34px;height:18px}.page .dg.dense .sw::after{width:14px;height:14px}.page .dg.dense .sw.on::after{inset-inline-end:18px}.page .dg.dense .sw.unk::after{inset-inline-end:10px}
 .page .dg.dense td .cap.mono{display:block;white-space:normal;overflow-wrap:anywhere;margin-top:3px;font-size:11px}
 @media(max-width:740px){.page .swrow{white-space:normal}.page .dg.dense td:nth-child(3),.page .dg.dense td:nth-child(4){white-space:normal}}
+/* ---------- #954 גל 6: מוניטור, דרייברים, הגדרות, הרשאות, יומן ---------- */
+/* הגדרות: שורה = שם + מה זה אומר | שליטה; שורה שהשתנתה מסומנת עד השמירה */
+.page .srows{display:grid}
+.page .srow{display:grid;grid-template-columns:minmax(180px,260px) minmax(0,1fr);gap:16px;align-items:start;padding:10px 0;border-bottom:1px solid var(--field-line);border-inline-start:3px solid transparent;padding-inline-start:10px;margin-inline-start:-10px}
+.page .srow:last-child{border-bottom:0}
+.page .srow.changed{border-inline-start-color:var(--warn-ink);background:color-mix(in srgb,var(--warn-ink) 6%,transparent)}
+.page .srow b{font-size:14px}
+.page .srow .ctl{min-width:0}
+.page .srow input[type="text"],.page .srow input[type="number"]{height:30px;border:1px solid var(--hair);border-radius:var(--rp);padding:0 8px;background:var(--surface);color:var(--ink);font:inherit;font-size:13px}
+.page .srow input[type="text"]{width:min(320px,100%)}
+.page .srow input[type="number"]{width:100px}
+.page .brand-row{display:flex;gap:12px;align-items:center;min-width:0}
+.page .brand-row > div:last-child{min-width:0}
+.page .logo-box{width:64px;height:64px;border:1px solid var(--hair);border-radius:var(--rp);display:grid;place-items:center;overflow:hidden;flex:none;background:var(--porcelain)}
+.page .logo-box img{max-width:56px;max-height:56px;display:block}
+/* יומן: נקודת חומרה בלי טקסט, שורה לחיצה, סינון בשורה */
+.page .dg td .st:empty{gap:0;vertical-align:middle}
+.page .dg tr[onclick]{cursor:pointer}
+.page .dg tr[onclick]:focus-visible td{outline:2px solid var(--indigo);outline-offset:-2px}
+.page .dg-bar input[type="datetime-local"]{height:28px;border:1px solid var(--hair);border-radius:var(--rp);padding:0 6px;background:var(--surface);color:var(--ink);font:inherit;font-size:12px}
+/* טבלאות קצרות (מוניטור, דרייברים, הרשאות, יומן): הפעולה הראשית גלויה תמיד, לא רק ב-hover */
+.page .dg.acts-on td .acts{display:flex}
+.page .dg td .name + .sub{white-space:normal}
+@media(max-width:740px){.page .srow{grid-template-columns:1fr;gap:8px}.page .srow input[type="text"]{width:100%}.page .dg-bar input[type="datetime-local"]{width:100%}}

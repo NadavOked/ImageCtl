@@ -186,7 +186,7 @@ test('the machine drawer: header line, actions (monitor, WoL for the room, "requ
   assert.equal(node('#drawerTitle').textContent,'מחשב 2');
   let html=node('#drawerBody').innerHTML; balanced(html);
   assert.match(html,/class="page drw"/); assert.match(html,/מחשב שיכפול · מחשבי שיכפול · <span class="mono">78:ac:c0:9b:11:c2<\/span> · <span class="mono">10.44.12.59<\/span> · נראה לפני 9 דק'/);
-  assert.doesNotMatch(html,/monitorMachine\(/,'no monitor in the drawer — only on the monitor page'); assert.match(html,/wakeRoom\(\)"[^>]*>Wake-on-LAN \(כל החדר\)</);
+  assert.doesNotMatch(html,/monitorMachine\(/,'no monitor in the drawer — only on the monitor page'); assert.match(html,/wakeMachine\('78%3Aac%3Ac0%3A9b%3A11%3Ac2'\)">Wake-on-LAN</,'#984: per-machine WoL in the cloner drawer'); assert.doesNotMatch(html,/wakeRoom/);
   assert.match(html,/renameMachine\(/); assert.match(html,/title="דורש API">אתחול מרחוק — בקרוב</); assert.match(html,/title="דורש API">עריכת MAC — בקרוב</);
   assert.match(html,/note err"[^]*<b>דיסק 3 אדום<\/b> — <span class="mono">S5Y2NX0R12345<\/span> נכשל בכתיבה .*סיבה: כבל\/חריץ SATA 2 \(ATA timeout\)/);
   assert.match(html,/clearDiskFailure\(7\)">נקה אחרי החלפה</); assert.match(html,/<summary>3 שורות קרנל<\/summary><pre class="ata-log">ata3.00: exception Emask/);
@@ -214,7 +214,7 @@ test('the machine drawer: header line, actions (monitor, WoL for the room, "requ
   run("openMachineDetail('a0:48:1c:8a:18:40')"); html=node('#drawerBody').innerHTML;
   assert.match(html,/המכונה דיווחה — ואין בה אף כונן/); assert.match(html,/2 חריצים מוגדרים/);
   run("openMachineDetail('b4:2e:99:07:1a:c3')"); html=node('#drawerBody').innerHTML;
-  assert.match(html,/title="דורש API">Wake-on-LAN — בקרוב</,'no per-machine WoL'); assert.doesNotMatch(html,/monitorMachine/); assert.match(html,/st warn">חסר בסבב</);
+  assert.match(html,/title="v2">Wake-on-LAN — לתחנות כיתה ב-v2</,'classroom: WoL is v2 (#984), not a button'); assert.doesNotMatch(html,/monitorMachine/); assert.match(html,/st warn">חסר בסבב</);
 });
 
 test('the class as an object: crumbs, header, KPIs with meaning only, the same table filtered, rounds tab says "requires API"', () => {

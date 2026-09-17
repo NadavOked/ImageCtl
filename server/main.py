@@ -114,6 +114,14 @@ def build_parser() -> argparse.ArgumentParser:
                         help="כתובת ה-bind של הקונסולה — כרטיס הניהול/"
                              "המשרדים בלבד. ברירת מחדל loopback (fail-closed); "
                              "לעולם לא 0.0.0.0 בלי בקשה מפורשת")
+    # ‏#703 (tracer 5): הקונסולה מוגשת ב-HTTPS בלבד — תעודה חתומה-עצמית
+    # שנוצרת פעם אחת ל-`<data_dir>/console-tls/` ונשארת. ‏HTTP על 8081
+    # אינו מוגש (fail-closed, בלי הפניה). ‏`off` מותר **רק** על loopback —
+    # הרצת פיתוח ו-`tools/e2e`; על כרטיס ניהול הסיסמה הייתה עוברת גלויה.
+    parser.add_argument("--console-tls", choices=("on", "off"), default="on",
+                        help="TLS לקונסולה (8081). off מותר רק עם "
+                             "--console-host על loopback (127.0.0.1) — "
+                             "פיתוח/e2e; ברירת מחדל on")
     # ‏#738 (tracer 2 של #703): הקיוסק (מסך התחנה על וילן ההפצה) מאזין
     # על פורט **נפרד** מהקונסולה — allowlist קשיח, בלי נתיבי ניהול.
     # כאן עדיין `0.0.0.0` וללא TLS (משמר-התנהגות); ‏bind פר-ממשק הוא
@@ -226,6 +234,24 @@ def main() -> None:
         except ValueError as exc:
             parser.error(f"--console-allow-from: {exc}")
 
+    # ‏#703 (tracer 5): TLS לקונסולה — הדגל מאומת כאן (off רק על loopback),
+    # והתעודה נוצרת/נטענת **לפני** הרמת השרת: חצי זהות או תיקייה שאי
+    # אפשר לכתוב אליה עוצרים בקול, לא קונסולה שעלתה בלי TLS (עיקרון 5).
+    from .console_tls import (ConsoleTLSError, check_tls_flag,
+                              ensure_console_cert)
+    console_tls = None
+    try:
+        check_tls_flag(args.console_tls, args.console_host)
+        if args.console_tls == "on":
+            console_tls = ensure_console_cert(args.data_dir, args.console_host)
+    except ConsoleTLSError as exc:
+        parser.error(str(exc))
+    if console_tls is not None and args.console_host not in console_tls.sans:
+        # התעודה נשארת (הדפדפן כבר אישר אותה); הפער נאמר, לא מתוקן בשקט.
+        print(f"warning: console TLS certificate SANs {list(console_tls.sans)} "
+              f"do not include --console-host {args.console_host}; remove "
+              f"{console_tls.cert_path.parent} to issue a new one")
+
     if args.interface:
         interface = args.interface
     else:
@@ -269,7 +295,8 @@ def main() -> None:
                              identity_hooks={"leases": identity.LeaseFile(args.dhcp_leases)},
                              extra_cmdline=tuple(args.extra_cmdline.split()),
                              console_allowed_networks=console_allowed_networks,
-                             repo_dir=args.repo_dir)
+                             repo_dir=args.repo_dir,
+                             console_tls=console_tls)
     agent_app = create_agent_app(runtime)
     console_app = create_console_app(runtime)
     kiosk_app = create_kiosk_app(runtime)
@@ -277,11 +304,15 @@ def main() -> None:
     agent_server = uvicorn.Server(uvicorn.Config(
         agent_app, host=args.host, port=args.port, log_level="info"))
     # ‏#770: הקונסולה על כרטיס הניהול (`--console-host`) בלבד — לא `--host`.
+    # ‏#703 (tracer 5): ‏`ssl_certfile`/`ssl_keyfile` של uvicorn (stdlib ssl)
+    # על **כל** מאזין קונסולה — ורק עליהם; הסוכן והקיוסק נשארים http.
+    console_ssl = console_tls.uvicorn_kwargs() if console_tls else {}
+    console_scheme = "https" if console_tls else "http"
     console_server = uvicorn.Server(uvicorn.Config(
         console_app, host=args.console_host, port=args.console_port,
-        log_level="info"))
+        log_level="info", **console_ssl))
     console_servers = [console_server]
-    console_binds = f"{args.console_host}:{args.console_port}"
+    console_binds = f"{console_scheme}://{args.console_host}:{args.console_port}"
     # ‏#904: כשכרטיס הניהול אינו loopback, הקונסולה מאזינה **גם** על
     # ‏127.0.0.1 — חלון ה-pairing והפינוי של המשני (`require_local`,
     # ‏#740) נאכפים על כתובת ה-peer, ומחיבור לכרטיס הניהול ה-peer לעולם
@@ -294,13 +325,20 @@ def main() -> None:
     if not is_loopback(args.console_host):
         console_servers.append(uvicorn.Server(uvicorn.Config(
             console_app, host="127.0.0.1", port=args.console_port,
-            log_level="info")))
-        console_binds += f" + 127.0.0.1:{args.console_port}"
+            log_level="info", **console_ssl)))
+        console_binds += f" + {console_scheme}://127.0.0.1:{args.console_port}"
     kiosk_server = uvicorn.Server(uvicorn.Config(
         kiosk_app, host=args.host, port=args.kiosk_port, log_level="info"))
     print(f"agent on {args.host}:{args.port}"
           f"  console on {console_binds}"
           f"  kiosk on {args.host}:{args.kiosk_port}")
+    if console_tls is not None:
+        # טביעת האצבע מודפסת כדי שהמפעיל ישווה אותה למה שהדפדפן מציג
+        # באישור החד-פעמי — ולא יאשר סתם (#703).
+        print(f"console TLS: self-signed certificate {console_tls.cert_path}"
+              f"  SHA-256 {console_tls.fingerprint_sha256}")
+    else:
+        print("console TLS: off (loopback only)")
 
     # ‏#740: מאזין ה-enrollment הבין-שרתי (mTLS 1.3) עולה רק על משני, וכשניתן
     # ‏--interserver-host. הוא threaded (pyOpenSSL terminator) לצד ה-uvicorn.

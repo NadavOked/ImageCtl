@@ -180,13 +180,14 @@ def test_images_tree_node_uses_the_folder_icon():
 
 # ---------- #954 גל 2: ספריית האימג'ים ----------
 
-def test_static_includes_are_at_7_5():
+def test_static_includes_are_at_7_7():
     """גל 2 = ‏7.0; גל 3 (מחשבים) = ‏7.1; גל 3א = ‏7.3; השער (מוניטור רק בדף
-    המוניטור) = ‏7.4; גל 5 (בריאות + פורטים) מחליף שוב JS+CSS+HTML — `?v=`
-    עולה ל-7.5 (מטמון הדפדפן). שוויון על כל ה-includes — bump חלקי הוא הבאג."""
+    המוניטור) = ‏7.4; גל 5 (בריאות + פורטים) = ‏7.5; גל 6 (מוניטור, דרייברים,
+    הגדרות, הרשאות, יומן + WoL למחשב) מחליף שוב JS+CSS+HTML — `?v=` עולה
+    ל-7.6 (מטמון הדפדפן). שוויון על כל ה-includes — bump חלקי הוא הבאג."""
     page = _index()
     versions = {float(v) for v in re.findall(r'\?v=(\d+\.\d+)"', page)}
-    assert versions == {7.5}, versions
+    assert versions == {7.7}, versions
 
 
 def test_old_images_page_code_is_gone():
@@ -308,9 +309,46 @@ def test_health_and_ports_pages_are_tables_from_the_api_with_a_switch_per_row():
     for gone in ('id="ssh-body"', "function loadSsh(", "function sshLight(", "SSH_LIGHT", 'title="בקרוב (נדרש endpoint)"',
                  'tabs: ["סקירה", "שירותים", "בדיקות"]', "health: [health,", "ports: [ports]"):
         assert gone not in js, gone
-    block = js[js.index("/* ---------- #954 גל 5: רשת › פורטים"):js.index("function monitorPage() {")]
+    block = js[js.index("/* ---------- #954 גל 5: רשת › פורטים"):js.index("/* ---------- #954 גל 6: מוניטור — הרשימה")]   # גל 6: המוניטור אחרי הפורטים
     assert "disabled" not in block, "כפתור מנוטרל במקום 'דורש API' (README §8)"
     assert "prompt(" not in block and "confirm(" not in block.replace("confirmSheet(", ""), "prompt/confirm חסומים — רק sheet()"
     css = (STATIC / "console.css").read_text(encoding="utf-8")
     for sel in (".page .st.unk::before{", ".page .sw{", ".page .sw.unk{", ".page .upd{"):
+        assert sel in css, sel
+
+
+def test_small_pages_are_own_tables_from_the_api_and_wol_is_per_machine():
+    """‏#954 גל 6: מוניטור (רשימה), דרייברים, הגדרות, הרשאות ויומן נבנו מחדש
+    כעמודי `own` — טבלה אחת (datagrid) לכל אחד, מתגים `role="switch"`, הקלדת
+    שם למחיקת משתמש/חבילה, "לא נקרא" כמצב משלו — והדפים הישנים (‏"Settings"
+    באנגלית, `usersAdminPage` + `permissions` כפולים, "אירועים / Audit",
+    כרטיס-לכל-מכונה במוניטור) נמחקו. ‏#984: WoL למחשב בודד — `UI.soon("WoL")`
+    ו"אין WoL למחשב יחיד" הוחלפו ב-`wakeMachine` / `wakeGroup`; "נשלח" ≠
+    "התעוררה". מתג זהות המכונה (#855) נשאר בהגדרות."""
+    js, drivers, page = _console_js(), (STATIC / "drivers.js").read_text(encoding="utf-8"), _index()
+    for needed in ("function monitorPage()", "function monitorRowHtml(", "function settings()", "function settingRowHtml(", "async function saveSettings()",
+                   "function permissions()", "const ROLE_MATRIX = [", "function userDeleteSheet(", "function logs()", "function logBarHtml(", "function logMore()",
+                   "async function wakeMachine(", "async function wakeGroup(", "function wolResultText(",
+                   'key: "identity_check"', "WoL נשלח ל-", '"/api/console/journal" + logQuery()', 'X-Journal-Search-Truncated',
+                   'settings: { crumb: "הגדרות", title: "הגדרות", tabs: [], render: settings, load: loadSettingsData, own: true }',
+                   'permissions: { crumb: "הרשאות", title: "הרשאות", tabs: [], render: permissions, load: loadUsersData, own: true }',
+                   'logs: { crumb: "יומן", title: "יומן", tabs: [], render: logs, load: loadJournalData, own: true }',
+                   'monitor: { crumb: "מוניטור", title: "מוניטור", tabs: [], render: monitorPage, load: loadMonitor, own: true }',
+                   'tabs: ["חבילות", "כיסוי לפי מכונה"], render: (i) => driversPage(i), load: () => loadDrivers(), own: true'):
+        assert needed in js, needed
+    for gone in ("function usersAdminPage(", "function journalPage(", "function settingsPage(", "function loadUsersAdmin(", "function openRolesDrawer(",
+                 "function openLogFilter(", "JOURNAL_FILTER_FIELDS", "function loadUpdateInfo(", "function checkForUpdate(", 'title:"Settings"',
+                 'tabs: ["אירועים", "Audit"]', 'tabs: ["משתמשים", "תפקידים"]', 'tabs: ["מכונות"]', "detail-grid\"><div class=\"detail-box\"><span class=\"k\">MAC",
+                 "function wakeMachine() { soon(); }", 'UI.soon("WoL")', "אין WoL למחשב יחיד", 'UI.soon("Wake-on-LAN")', 'UI.soon("הער את כולם (WoL)")',
+                 "permissions: [usersAdminPage, permissions]", "logs: [journalPage, logs]", "settings: [settingsPage]", "monitor: [monitorPage]"):
+        assert gone not in js, gone
+    for needed in ("function driversPage(tab = 0)", "function driversCoverageCard()", "function driverRuleHits(", "function openDriverDetail(", "tools/drivers/build-package.py"):
+        assert needed in drivers, needed
+    assert 'class="table"' not in drivers, "הטבלה הישנה"
+    assert "<span>הגדרות</span>" in page and "<span>Settings</span>" not in page
+    assert "<span>יומן</span>" in page and "יומן / Audit" not in page
+    block = js[js.index("/* ---------- #954 גל 6: הרשאות"):js.index("/* ---------- כרטיסי רשת / רשת הפצה / פורטים")]
+    assert "prompt(" not in block and "confirm(" not in block.replace("confirmSheet(", ""), "prompt/confirm חסומים — רק sheet()"
+    css = (STATIC / "console.css").read_text(encoding="utf-8")
+    for sel in (".page .srow{", ".page .srow.changed{", ".page .logo-box{"):
         assert sel in css, sel

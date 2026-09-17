@@ -54,7 +54,8 @@ function balanced(html) {
 }
 test('all populated page renderers produce balanced fragments',()=>{
   const {run}=setup();
-  for(const name of ['home','images','deploy','machines','settingsPage','journalPage','usersAdminPage']) {
+  run('USERS=[{username:"admin",role:"admin",created_at:"2026-09-13"}]; SETTINGS={recovery_require_login:"true",session_wait_seconds:"60",console_idle_seconds:"300"}; LOG.rows=[{ts:"2026-09-13T10:00:00",user:"admin",event:"login",label:"L",text:"T"}];');
+  for(const name of ['home','images','deploy','machines','settings','logs','permissions']) {
     const html=run(name+'()'); assert.ok(html.length>50,name); balanced(html);
     assert.doesNotMatch(html,/<script|<\/html|id="modal"/,name+' must be a fragment');
   }
@@ -73,13 +74,14 @@ test('folder creation and editing call existing endpoints',async()=>{
   assert.ok(requests.some(r=>r.url==='/api/console/folders' && r.options.method==='POST'));
   assert.ok(requests.some(r=>r.url==='/api/console/folders/Folder' && r.options.method==='PUT'));
 });
-test('journal filters reach server, inclusive end minute, truncated warning',async()=>{
-  const {run,node,requests}=setup();
-  node('#jf-event').value='capture';node('#jf-machine').value='aa';node('#jf-q').value='needle';node('#jf-from').value='2026-09-01T10:00';node('#jf-to').value='2026-09-13T12:00';
-  await run('loadJournal()'); const r=requests.find(r=>r.url.startsWith('/api/console/journal?'));
+test('journal filters reach server, inclusive end minute, truncated warning (#954 גל 6: LOG state instead of #jf-* fields)',async()=>{
+  const {run,requests}=setup(); run('toast=(m)=>{ globalThis.toasted=(globalThis.toasted||"")+m; }; renderCurrent=()=>{};');
+  run("LOG.event='capture';LOG.q='needle';LOG.user='admin';LOG.range='custom';LOG.since='2026-09-01T10:00';LOG.until='2026-09-13T12:00';");
+  await run('loadJournalData()'); const r=requests.find(r=>r.url.startsWith('/api/console/journal?'));
   assert.ok(r);const q=new URL(r.url,'http://localhost').searchParams;
-  assert.equal(q.get('event'),'capture');assert.equal(q.get('machine'),'aa');assert.equal(q.get('q'),'needle');assert.equal(q.get('to'),'2026-09-13T12:00:59');
-  assert.match(node('#toast').textContent,/./);
+  assert.equal(q.get('event'),'capture');assert.equal(q.get('user'),'admin');assert.equal(q.get('q'),'needle');assert.equal(q.get('from'),'2026-09-01T10:00');assert.equal(q.get('to'),'2026-09-13T12:00:59');assert.equal(q.get('limit'),'200');
+  assert.equal(run('LOG.truncated'),true,'the X-Journal-Search-Truncated header is read');
+  assert.match(run('logs()'),/חיפוש חלקי/);
 });
 test('polling refreshes status, marks failed reads, and stops on logout',async()=>{
   const {run,intervals,fixtures,node}=setup(); run('renderCurrent=()=>{};startStatusWatch();');

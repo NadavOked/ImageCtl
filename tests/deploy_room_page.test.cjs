@@ -136,7 +136,7 @@ test('no round: header counters, "no round" pill, WoL + big-view actions, the in
   assert.match(c2,/<div class="disk warn" data-slot="2"><b>דיסק 2<\/b><span>SATA 1<\/span>[^]*?SMART אזהרה/);
   assert.match(grid,/<div class="mcard off" data-mac="78:ac:c0:9b:11:c3"><div class="mcard-h"><span class="st "><b>מחשב 3<\/b><\/span><span class="muted">לא מחובר · 3 חריצים · מעולם לא</);
   assert.equal((c3.match(/<div class="disk empty" data-slot="\d"><b>דיסק \d<\/b><span>SATA \d<\/span><span class="cap">ריק<\/span>/g)||[]).length,3);
-  assert.match(c3,/wakeRoom\(\)"[^>]*>WoL \(כל החדר\)</,'not connected → WoL on the card');
+  assert.match(c3,/wakeMachine\('[^']+'\)"[^>]*>WoL</,'not connected → per-machine WoL on the card (#984); the room stays wakeRoom in the header');
   assert.doesNotMatch(c1,/WoL/,'connected → no WoL');
   assert.doesNotMatch(html,/openMachineDetail/,'no machine drawer from the room');
 });
