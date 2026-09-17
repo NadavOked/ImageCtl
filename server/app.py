@@ -54,6 +54,7 @@ from .images import ImageLibrary
 from .kiosk import create_kiosk_router
 from . import room
 from .room import CLONERS_GROUP, create_room_router
+from .wake_api import create_wake_router
 from .sessions import SessionStore
 from .users import ensure_admin
 from . import ssh_switch
@@ -224,6 +225,12 @@ def create_runtime(
     health_hooks: dict | None = None,
     netcfg_hooks: dict | None = None,
     known_macs_hooks: dict | None = None,
+    # ‏#855: ‏`{"leases": identity.LeaseFile(...)}` — מקור חכירות ה-DHCP
+    # לשומר הזהות של hello/progress. ‏`None` = השומר אינו מותקן (בדיקות
+    # יחידה, כמו `dhcp_hooks`); ‏`server.main` מעביר תמיד, ו-e2e מעביר
+    # קובץ משלו. אין ברירת מחדל אמיתית כאן בכוונה: קובץ dnsmasq של המכונה
+    # שהטסטים רצים עליה אינו ראיה על מכונות מדומות.
+    identity_hooks: dict | None = None,
     # ‏#748: ברירת המחדל None משאירה את ``repo_dir`` כתיקיית העבודה של
     # ``server/update.py`` בזמן הריצה (main.py הוא היחיד שמעביר ערך אמיתי).
     repo_dir: str | Path | None = None,
@@ -343,7 +350,8 @@ def create_runtime(
     )
     # ‏#720: ספריית חבילות הדרייברים — תיקייה ליד ה-DB, לא בספריית האימג'ים.
     ctx = ServerContext(conn=conn, library=library, store=store, sender=sender,
-                        drivers=DriverLibrary(data_dir / "drivers"))
+                        drivers=DriverLibrary(data_dir / "drivers"),
+                        leases=(identity_hooks or {}).get("leases"))
     drain_crumbs(ctx, netcfg_dir)
 
     # בהתקנה טרייה: משתמש admin עם סיסמה חד-פעמית, מודפסת לטרמינל בלבד.
@@ -502,6 +510,8 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
     app.include_router(create_monitor_router(ctx))   # #690: admin RFB proxy + settings
     app.include_router(create_console_capture_router(ctx))
     app.include_router(create_room_router(ctx, wake=_kiosk_room_wake(rt)))
+    # ‏#984: מכונה בודדת / grp_BUILD — אותו שולח מוזרק כמו בחדר.
+    app.include_router(create_wake_router(ctx, rt.wol_send))
     app.mount("/console", StaticFiles(directory=STATIC_DIR, html=True), name="console")
     # ‏#151: השומר לפי כתובת מקור, כשמוגדר — נרשם **לפני** ConsoleNoStaleCache
     # (‏add_middleware ראשון = השכבה החיצונית ביותר, נבדקת ראשונה, כדי

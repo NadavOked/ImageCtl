@@ -15,6 +15,8 @@ import socket
 import subprocess
 import urllib.parse
 
+from . import identity
+
 
 class InterfaceDetectionError(RuntimeError):
     """‏`ip` קיים ורץ, אבל אף כרטיס אינו נושא את כתובת ה-server-url — או
@@ -84,6 +86,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="עץ הגיט של השרת; ברירת מחדל: תיקיית הקוד")
     parser.add_argument("--boot-dir", default="/srv/imagectl/boot",
                         help="הקרנל וה-initramfs שהמתקין הניח; מוגש תחת ‎/boot")
+    parser.add_argument("--dhcp-leases", default=identity.DEFAULT_LEASES,
+                        help="קובץ החכירות של dnsmasq — שומר הזהות (#855) "
+                             "משווה אליו את כתובת המקור של hello/progress")
     parser.add_argument("--interface", default=None,
                         help="ממשק השידור; ברירת מחדל: הכרטיס של --server-url")
     parser.add_argument("--extra-cmdline",
@@ -258,6 +263,10 @@ def main() -> None:
                              storage_role=args.storage_role,
                              primary_url=args.primary_url,
                              known_macs_hooks={"apply": dhcp_host.apply_known_macs},
+                             # ‏#855: מותקן כאן תמיד — כמו known_macs_hooks,
+                             # ומאותו טעם: ברירת מחדל ב-create_runtime הייתה
+                             # קוראת את קובץ המכונה בכל הרצת pytest.
+                             identity_hooks={"leases": identity.LeaseFile(args.dhcp_leases)},
                              extra_cmdline=tuple(args.extra_cmdline.split()),
                              console_allowed_networks=console_allowed_networks,
                              repo_dir=args.repo_dir)

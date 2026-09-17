@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import urllib.error
 
-from .harness import (CLASS_MACS, DEAD_BASE, GB256, GB500, UNKNOWN_MAC,
-                      Client, check, disk, hello)
+from .harness import (CLASS_MACS, DEAD_BASE, GB256, GB500, NO_LEASE_MAC,
+                      UNKNOWN_MAC, Client, check, disk, hello)
 
 
 def local_boot(answer: dict) -> bool:
@@ -29,6 +29,14 @@ def run(ctx) -> None:
     check("MAC לא מוכר: לא מציעים דבר → דיסק מקומי",
           answer["known"] is False and answer["allowed_images"] == []
           and local_boot(answer), str(answer))
+
+    # ‏#855: שומר הזהות פעיל בשרת הזה — MAC בלי חכירה מסורב **בשם**, לא
+    # מתקבל ולא נבלע כ"לא מוכר". וזו הראיה שהחכירות של המכונות האחרות
+    # הן מה שמכניס אותן, לא היעדר בדיקה.
+    status, answer = hello(probe, NO_LEASE_MAC, [disk("sda", GB256, "XXX-2")])
+    check("MAC בלי חכירת DHCP: הזהות לא ניתנת לבדיקה → 403 בשם",
+          status == 403 and answer.get("code") == "identity_unverifiable",
+          f"{status} {answer}")
 
     try:
         hello(Client(DEAD_BASE), CLASS_MACS[1], [disk("sda", GB256, "STN-1")])

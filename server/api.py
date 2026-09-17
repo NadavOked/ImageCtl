@@ -15,8 +15,8 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from boot.grub_menu import normalize_mac as lenient_mac
 
-from . import (agent_loops, disk_events, foreign_vlan, inventory, pulls,
-               registry, reports, shrink_records, users)
+from . import (agent_loops, disk_events, foreign_vlan, identity, inventory,
+               pulls, registry, reports, shrink_records, users)
 from .db import journal
 from . import direct
 from .hello import (build_answer, login_required, off_deploy_vlan,
@@ -39,6 +39,10 @@ class ServerContext:
     store: SessionStore
     sender: object | None = None      # SenderEngine; None בבדיקות יחידה
     drivers: object | None = None     # DriverLibrary (#720); None בבדיקות ישנות
+    #: ‏#855: מקור חכירות ה-DHCP (`identity.LeaseFile`) — הצד שנוגע בקובץ,
+    #: מוזרק כמו `dhcp_hooks`. ‏`server.main` מתקין אותו תמיד; ‏None =
+    #: הרצת בדיקות בלי מקור, ואז שומר הזהות אינו מותקן (וה-/health אומר).
+    leases: object | None = None
 
 
 def _error(status: int, message: str, code: str) -> JSONResponse:
@@ -56,6 +60,24 @@ def create_agent_router(ctx: ServerContext,
     """
     router = APIRouter(prefix="/api/v1")
 
+    def identity_gate(mac: str, request: Request, where: str) -> JSONResponse | None:
+        """‏#855: ‏MAC מוצהר + כתובת המקור תואמת את חכירת ה-DHCP של אותו MAC.
+
+        ‏`None` = ממשיכים. סירוב = 403 בשם (`identity_refused` /
+        `identity_unverifiable`), שורת יומן עם ה-MAC המוצהר, כתובת המקור
+        וכתובת החכירה — **ולפני** כל רישום: ‏`net_seen`, ספירת הלולאות
+        וההצטרפות לסבב לא מתרחשים, כי הפונה אינו המכונה (‏#585).
+        """
+        if ctx.leases is None:
+            return None
+        client_ip = request.client.host if request.client else None
+        verdict = identity.verify(ctx.conn, ctx.leases, mac, client_ip)
+        if verdict.ok:
+            return None
+        journal(ctx.conn, verdict.event, f"{verdict.detail} ({where})")
+        log.warning("%s: %s (%s)", verdict.event, verdict.detail, where)
+        return _error(403, verdict.message, verdict.event)
+
     @router.post("/agent/hello")
     async def agent_hello(request: Request) -> JSONResponse:
         try:
@@ -68,6 +90,9 @@ def create_agent_router(ctx: ServerContext,
         mac = lenient_mac(body.get("mac"))
         if mac is None:
             return _error(400, "missing or malformed mac", "bad_mac")
+        refused = identity_gate(mac, request, "hello")
+        if refused is not None:
+            return refused
 
         # ‏#524: זיהוי לפי כל כרטיס שהמכונה דיווחה, לא רק כרטיס האתחול.
         # ערך פגום מתעלמים ממנו — כמו שדה לא ידוע, לא כמו MAC ראשי חסר.
@@ -223,7 +248,17 @@ def create_agent_router(ctx: ServerContext,
             body = await request.json()
         except ValueError:
             return _error(400, "body is not JSON", "bad_json")
-        result = reports.ingest(ctx.conn, body if isinstance(body, dict) else {},
+        if not isinstance(body, dict):
+            body = {}
+        # ‏#855: הזהות נבדקת לפני הדיווח, בסבב ובמשימה כאחד — ורק כשיש MAC
+        # לבדוק; ‏MAC שאינו נקרא נשאר `bad_mac` של `reports.ingest`, כי
+        # "לא הצלחנו לקרוא את המזהה" קודם ל"המזהה אינו תואם" (עיקרון 5).
+        mac = lenient_mac(body.get("mac"))
+        if mac is not None:
+            refused = identity_gate(mac, request, "progress")
+            if refused is not None:
+                return refused
+        result = reports.ingest(ctx.conn, body,
                                 token=request.headers.get(TOKEN_HEADER, ""))
         if result.get("code") == "bad_token":     # #855: כמו ההעלאה — 403
             return JSONResponse(result, status_code=403)

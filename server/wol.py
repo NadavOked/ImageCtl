@@ -192,6 +192,40 @@ def broadcast_sender(
 _send_broadcast = broadcast_sender()
 
 
+def _try_send(mac: str, send: Callable[[bytes], None]) -> str | None:
+    """חבילה אחת ל-MAC אחד. מחזיר ‏None בהצלחה, או **הסיבה** לכשל.
+
+    הסיבה חוזרת כערך ולא נבלעת ולא נזרקת: מי שקורא (מכונה בודדת או
+    קבוצה) מחליט איך לאגד אותה ליומן, אבל בשני המסלולים היא מגיעה
+    למסך — "נכשל" בלי סיבה שולח את הטכנאי ל-BIOS (#74).
+    """
+    try:
+        send(magic_packet(mac))
+        return None
+    except (OSError, ValueError) as exc:
+        log.error("wol to %s failed: %s", mac, exc)
+        return str(exc)
+
+
+def wake_machine(
+    conn, mac: str, send: Callable[[bytes], None] = _send_broadcast,
+) -> WakeResult:
+    """‏#984: מעיר מכונה **אחת** — מחשב בנייה או משכפל בודד.
+
+    מי רשאי להתעורר כך (‏role) נבדק ב-API, לא כאן: המודול שולח למה
+    שנאמר לו. כשל נרשם ביומן (`wol_failed`) עם הסיבה, כמו בקבוצה.
+    """
+    canonical = normalize_mac(mac) or mac
+    reason = _try_send(canonical, send)
+    if reason is None:
+        return WakeResult(1)
+    detail = f"{canonical} failed=1"
+    if reason:
+        detail += " | " + reason
+    journal(conn, "wol_failed", detail)
+    return WakeResult(0, [canonical], [reason] if reason else [])
+
+
 def wake_group(
     conn,
     group_id: str,
@@ -231,14 +265,13 @@ def wake_group(
             continue
         if chosen is not None and mac not in chosen:
             continue
-        try:
-            send(magic_packet(mac))
+        reason = _try_send(mac, send)
+        if reason is None:
             sent += 1
-        except (OSError, ValueError) as exc:
-            failed.append(mac)
-            if str(exc) and str(exc) not in reasons:
-                reasons.append(str(exc))
-            log.error("wol to %s failed: %s", mac, exc)
+            continue
+        failed.append(mac)
+        if reason and reason not in reasons:
+            reasons.append(reason)
 
     if failed:
         detail = f"{group_id} failed={len(failed)} {' '.join(failed)}"

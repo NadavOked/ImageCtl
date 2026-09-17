@@ -17,7 +17,8 @@ from typing import Callable
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import PlainTextResponse
 
-from . import auth, dhcp, disk_failures, inventory, registry, shrink_records, storage_nodes, users
+from . import (auth, dhcp, disk_failures, identity, inventory, registry,
+               shrink_records, storage_nodes, users)
 from .api import ServerContext
 from .db import (_write_lock, get_setting, journal, now_iso, set_setting,
                  update_one, writing)
@@ -33,7 +34,10 @@ WRITE_SETTINGS = {"recovery_require_login", "session_wait_seconds",
                   # ‏#748: כפתור "עדכן" — כבוי כברירת מחדל (נדב, 16/09).
                   "update_enabled",
                   # ‏#936: שם השרת הראשי בעץ הניווט — נשמר בשרת, לא ב-DOM.
-                  "server_name"}
+                  "server_name",
+                  # ‏#855: שומר הזהות (MAC + חכירת DHCP). חסר = דלוק; "false"
+                  # מפורש בלבד מכבה, ו-`setting_change` רושם מי.
+                  identity.SETTING}
 
 #: #406: השדות שעריכת מכונה מכירה. שדה מחוץ לרשימה = טעות של הקורא,
 #: והוא נדחה ב-400 במקום להיבלע ולהחזיר ``{"ok": True}`` שלא שינה כלום.

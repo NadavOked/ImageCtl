@@ -783,3 +783,22 @@ button:focus-visible,[role="button"]:focus-visible,.inventory-node:focus-visible
 .page .rnotes{display:grid;gap:8px}
 .page .note [dir="ltr"]{unicode-bidi:isolate;font-family:var(--font-mono);font-size:12px}
 @media(max-width:740px){.page .rnew{grid-template-columns:1fr}}
+/* ---------- #954 גל 5: בריאות + פורטים — "לא נבדק" כמצב חמישי, מתג בכל שורה ---------- */
+.page .st.unk::before{background:color-mix(in srgb,var(--warn-ink) 55%,var(--led-idle))}
+.page .dg .name.grp-kid{padding-inline-start:18px;font-weight:500}
+.page .dg td .wrap{white-space:normal;font-size:12px}
+.page .dg td .st + .sub{margin-top:2px}
+.page .sw{width:40px;height:22px;border-radius:11px;background:var(--track);border:0;padding:0;position:relative;display:inline-block;vertical-align:middle;flex:none;cursor:pointer}
+.page .sw::after{content:"";position:absolute;top:2px;inset-inline-end:2px;width:18px;height:18px;border-radius:50%;background:var(--surface);box-shadow:0 1px 2px var(--shadow-strong)}
+.page .sw.on{background:var(--led-ok)}.page .sw.on::after{inset-inline-end:20px}
+.page .sw.unk{background:repeating-linear-gradient(45deg,var(--track) 0 4px,var(--hair) 4px 8px)}.page .sw.unk::after{inset-inline-end:11px;opacity:.75}
+.page .sw:focus-visible{outline:2px solid var(--indigo);outline-offset:2px}
+.page .swrow{display:inline-flex;align-items:center;gap:8px;white-space:nowrap}
+.page .cap{font-size:12px;color:var(--muted)}
+.page .upd{display:flex;gap:24px;align-items:center;flex-wrap:wrap}.page .upd .kv{flex:1;min-width:240px}.page .upd .acts{display:flex;gap:6px;flex-wrap:wrap}
+/* טבלת הפורטים — צפופה (network-ports.md): 12px, עמודות קצרות בלי שבירה, מתג קטן, endpoint בשורה משלו */
+.page .dg.dense td{padding:5px 10px;font-size:12px}.page .dg.dense .sub,.page .dg.dense .cap{font-size:11px}
+.page .dg.dense td:nth-child(2),.page .dg.dense td:nth-child(3),.page .dg.dense td:nth-child(4){white-space:nowrap}
+.page .dg.dense .sw{width:34px;height:18px}.page .dg.dense .sw::after{width:14px;height:14px}.page .dg.dense .sw.on::after{inset-inline-end:18px}.page .dg.dense .sw.unk::after{inset-inline-end:10px}
+.page .dg.dense td .cap.mono{display:block;white-space:normal;overflow-wrap:anywhere;margin-top:3px;font-size:11px}
+@media(max-width:740px){.page .swrow{white-space:normal}.page .dg.dense td:nth-child(3),.page .dg.dense td:nth-child(4){white-space:normal}}

@@ -52,7 +52,7 @@ function esc(text) {
    טקסט חופשי עובר esc() אצל הקורא כשהוא HTML, וכאן כשהוא מחרוזת. */
 const UI = {
   /* כותרת אובייקט: breadcrumb, אייקון, שם, שורת-משנה, תג מצב, פעולות, לשוניות. */
-  objHeader({ crumbs = [], icon = "server", name = "", sub = "", pill = "", actions = "", tabs = [], tab = 0 }) {
+  objHeader({ crumbs = [], icon = "server", name = "", sub = "", pill = "", actions = "", tabs = [], tab = 0, tabClick = (i) => `activateTab(${i})` }) {
     const crumbHtml = crumbs.map((c, i) => {
       const last = i === crumbs.length - 1;
       const item = c.onclick && !last
@@ -60,7 +60,7 @@ const UI = {
       return (i ? `<span>/</span>` : "") + item;
     }).join("");
     const tabHtml = tabs.length > 1 ? `<div class="tabs" role="tablist">${tabs.map((t, i) =>
-      `<button type="button" class="tab${i === tab ? " on" : ""}" role="tab" aria-selected="${i === tab}" tabindex="${i === tab ? 0 : -1}" onclick="activateTab(${i})">${esc(t)}</button>`).join("")}</div>` : "";
+      `<button type="button" class="tab${i === tab ? " on" : ""}" role="tab" aria-selected="${i === tab}" tabindex="${i === tab ? 0 : -1}" onclick="${tabClick(i)}">${esc(t)}</button>`).join("")}</div>` : "";
     return `<div class="obj"><div class="crumbs">${crumbHtml}</div><div class="obj-row"><div class="obj-icon">${uiIcon(icon)}</div><div><div class="obj-name">${esc(name)}</div>${sub ? `<div class="obj-sub">${sub}</div>` : ""}</div>${pill}<div class="obj-actions">${actions}</div></div>${tabHtml}</div>`;
   },
   /* KPI: מספר גדול + תווית + שורת משמעות. cls: ok/warn/err/info/"" (אפור = אין/לא נבדק). */
@@ -77,11 +77,11 @@ const UI = {
   /* datagrid: columns = תוויות; rows = מערכי HTML לתאים (מוברחים ע"י הקורא). */
   /* שורה: מערך תאים, או {cells, attrs} (תכונות ל-<tr>), או {html} (שורה מוכנה).
      עמודה: מחרוזת (מוברחת) או {html}. */
-  datagrid({ columns, rows, empty = "אין נתונים" }) {
+  datagrid({ columns, rows, empty = "אין נתונים", cls = "" }) {
     if (!rows.length) return `<div class="empty">${esc(empty)}</div>`;
     const tr = (r) => Array.isArray(r) ? `<tr>${r.map((c) => `<td>${c}</td>`).join("")}</tr>`
       : r.html != null ? r.html : `<tr ${r.attrs || ""}>${r.cells.map((c) => `<td>${c}</td>`).join("")}</tr>`;
-    return `<table class="dg"><thead><tr>${columns.map((c) => `<th>${typeof c === "string" ? esc(c) : c.html}</th>`).join("")}</tr></thead><tbody>${rows.map(tr).join("")}</tbody></table>`;
+    return `<table class="dg${cls ? " " + cls : ""}"><thead><tr>${columns.map((c) => `<th>${typeof c === "string" ? esc(c) : c.html}</th>`).join("")}</tr></thead><tbody>${rows.map(tr).join("")}</tbody></table>`;
   },
   name(main, sub = "") { return `<span class="name">${esc(main)}</span>${sub ? `<span class="sub">${esc(sub)}</span>` : ""}`; },
   nameHtml(main, subHtml) { return `<span class="name">${esc(main)}</span>${subHtml ? `<span class="sub">${subHtml}</span>` : ""}`; },
@@ -585,10 +585,30 @@ async function loadMachines() {
 async function loadHealth() {
   try {
     HEALTH = await api("/health");
+    healthError = "";
+    HEALTH_AT = clockNow();
     updateAlertBadge();
-    if (current === "home" || current === "health") renderCurrent();
   } catch (e) {
+    HEALTH = null;
+    healthError = e.message;
     toast("טעינת הבריאות נכשלה: " + e.message);
+  }
+  if (current === "health") await loadHealthUpdate();
+  if (current === "home" || current === "health") renderCurrent();
+}
+
+/* ‏#954 גל 5: כרטיס "גרסה ועדכון" בדף הבריאות — /update ו-/update/status
+   (admin). ‏UPDATE_INFO משותף עם confirmUpdateAction (שם השרת להקלדה). */
+async function loadHealthUpdate() {
+  try {
+    const info = await api("/update");
+    HEALTH_UPDATE = info;
+    UPDATE_INFO = info;
+    UPDATE_STATUS = info.enabled ? await api("/update/status") : null;
+    updateError = "";
+  } catch (e) {
+    HEALTH_UPDATE = null;
+    updateError = e.message;
   }
 }
 
@@ -597,10 +617,23 @@ async function loadPorts() {
   try {
     PORTS = await api("/ports");
     portsError = "";
+    PORTS_AT = clockNow();
   } catch (e) {
     PORTS = null;
     portsError = e.message;
     toast("טעינת הפורטים נכשלה: " + e.message);
+  }
+  // ‏#954 גל 5: המתגים — SSH (/ssh), מוניטור (/monitor/settings) ו-DHCP
+  // (/net/interfaces דרך loadNet של net.js). שלוש קריאות, שלושה כשלים
+  // נפרדים: מה שלא נקרא מוצג "לא נקרא", לא "כבוי" (עיקרון 5).
+  if (isAdmin()) {
+    const [ssh, mon, net] = await Promise.allSettled([api("/ssh"), api("/monitor/settings"), loadNet()]);
+    SSH_STATE = ssh.status === "fulfilled" ? ssh.value : null;
+    sshError = ssh.status === "fulfilled" ? "" : ssh.reason.message;
+    PORTS_MONITOR = mon.status === "fulfilled" ? mon.value : null;
+    portsMonitorError = mon.status === "fulfilled" ? "" : mon.reason.message;
+    PORTS_NICS = net.status === "fulfilled" ? NICS : null;
+    portsNicsError = net.status === "fulfilled" ? "" : net.reason.message;
   }
   if (current === "ports") renderCurrent();
 }
@@ -2928,44 +2961,134 @@ function deleteGroup(gidEnc) {
     onSubmit: async () => { await del(`/groups/${encodeId(g.id)}`); MACHINES_CLASS = null; await loadMachines(); } });
 }
 
-function healthStatusClass(state) {
-  if (state === "ok") return "ok";
-  if (state === "warn") return "warn";
-  if (state === "off") return "";
-  return "err";
+/* ---------- #954 גל 5: בריאות ושירותים — טבלת בדיקות + גרסה ועדכון ----------
+   docs/design/console-redesign/health.md. בדיקות ועדכון בלבד: המתגים (SSH,
+   מוניטור, DHCP) עברו לדף הפורטים (הכרעת נדב 17/09 06:12). חמישה מצבים,
+   חמישה צבעים — "לא נבדק" לעולם לא ירוק (עיקרון 5). */
+const HEALTH_STATES = { ok: ["ok", "תקין"], warn: ["warn", "אזהרה"], bad: ["err", "תקלה"], off: ["", "כבוי"], unknown: ["unk", "לא נבדק"] };
+function healthStatusClass(state) { return (HEALTH_STATES[state] || HEALTH_STATES.unknown)[0]; }
+function healthStatusLabel(state) { return HEALTH_STATES[state] ? HEALTH_STATES[state][1] : (state || "—"); }
+/* שורות דינמיות למכונה (agent_loop:<mac>, off_vlan:<mac>) מקובצות תחת שורת-קבוצה
+   מיד אחרי שורת הסיכום שלהן (interfaces.md §10–11). */
+const HEALTH_GROUPS = [["agent_loop:", "לולאות אתחול", "agent_loops"], ["off_vlan:", "מכונות בוילן זר", "off_vlan"]];
+/* עמודת "פעולה": לאן הולכים לטפל — הדף שבו יושב מה שנבדק. אין ב-/health שדה
+   "איך מתקנים"; ה-detail של השרת כבר נושא את ההוראה ("הריצו את המתקין"). */
+const HEALTH_GOTO = { dhcp_port: ["רשת הפצה", "netdeploy"], tftp_port: ["פורטים", "ports"], dnsmasq: ["רשת הפצה", "netdeploy"],
+  server: ["פורטים", "ports"], udp_sender: ["פורטים", "ports"], nics: ["חיבורים פיזיים", "nic"],
+  ssh_stations: ["פורטים", "ports"], ssh_server: ["פורטים", "ports"], agent_loops: ["מחשבים", "machines"], off_vlan: ["מחשבים", "machines"] };
+let healthError = "", HEALTH_AT = "";
+let HEALTH_UPDATE = null, UPDATE_STATUS = null, UPDATE_CHECK = null, updateError = "";
+function clockNow() { const d = new Date(); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; }
+
+function healthRow(c, grouped = false) {
+  let act = "";
+  if (grouped) {
+    const mac = String(c.id).slice(String(c.id).indexOf(":") + 1);
+    if (findMachine(mac)) act = UI.acts([["פרטים", `openMachineDetail('${encodeId(mac)}')`]]);
+  } else if (HEALTH_GOTO[c.id]) {
+    act = UI.acts([[HEALTH_GOTO[c.id][0] + " ←", `selectPageById('${HEALTH_GOTO[c.id][1]}')`]]);
+  }
+  return [`<span class="name${grouped ? " grp-kid" : ""}">${esc(c.label)}</span>`,
+    UI.status(healthStatusClass(c.state), healthStatusLabel(c.state)),
+    `<span class="wrap">${esc(c.detail || "")}</span>`, act];
 }
 
-function healthStatusLabel(state) {
-  if (state === "ok") return "תקין";
-  if (state === "warn") return "אזהרה";
-  if (state === "off") return "כבוי";
-  if (state === "bad") return "תקלה";
-  return state || "—";
+function healthRows(checks) {
+  const kids = new Map(HEALTH_GROUPS.map(([p]) => [p, []]));
+  const prefixOf = (c) => (HEALTH_GROUPS.find(([p]) => String(c.id).startsWith(p)) || [null])[0];
+  for (const c of checks) if (prefixOf(c)) kids.get(prefixOf(c)).push(c);
+  const rows = [];
+  const groupBlock = ([p, label]) => {
+    const list = kids.get(p);
+    if (!list.length) return;
+    rows.push({ html: `<tr class="group"><td colspan="4">${esc(label)} · ${list.length}</td></tr>` });
+    list.forEach((c) => rows.push(healthRow(c, true)));
+    kids.set(p, []);
+  };
+  for (const c of checks) {
+    if (prefixOf(c)) continue;
+    rows.push(healthRow(c));
+    const g = HEALTH_GROUPS.find(([, , summary]) => summary === c.id);
+    if (g) groupBlock(g);
+  }
+  HEALTH_GROUPS.forEach(groupBlock);   // ילדים בלי שורת סיכום — בסוף, עדיין מקובצים
+  return rows;
+}
+
+function updateStatusHtml(status) {
+  if (!status || !status.state || status.state === "idle") return "";
+  if (status.state === "failed") return UI.status("err", `העדכון ל-${status.tag} נכשל: ${status.error || ""}`);
+  if (status.state === "applying" && !status.verified) return UI.status("run", `העדכון ל-${status.tag} הופעל — ממתין לאתחול השרת. הראיה החיובית: גרסת השרת אחרי האתחול תואמת את התג.`);
+  if (status.state === "done" && status.verified) return UI.status("ok", `אומת: השרת רץ על ${status.tag}.`);
+  return "";
+}
+
+function healthUpdateCard() {
+  let body;
+  if (updateError) body = UI.note("err", `‏/update לא נקרא: ${esc(updateError)}`);
+  else if (!HEALTH_UPDATE) body = UI.empty("‏/update לא נקרא עדיין");
+  else {
+    const u = HEALTH_UPDATE;
+    let last = "לא נבדק בסשן הזה";
+    if (UPDATE_CHECK) {
+      last = `${UPDATE_CHECK.at} — ` + (UPDATE_CHECK.available ? `יש עדכון: ${UPDATE_CHECK.current || "?"} → ${UPDATE_CHECK.latest}`
+        : UPDATE_CHECK.latest ? `כבר על הגרסה העדכנית (${UPDATE_CHECK.current})` : (UPDATE_CHECK.reason || "לא נמצאה גרסה חדשה יותר"));
+    }
+    const pairs = [["מותקן", u.current ? `<span class="mono">${esc(u.current)}</span>` : "לא ידועה (אין תגית git על העץ)"],
+      ["קודם", u.previous ? `<span class="mono">${esc(u.previous)}</span> (חזרה זמינה)` : "—"],
+      ["בדיקה אחרונה", esc(last)]];
+    const st = updateStatusHtml(UPDATE_STATUS);
+    if (st) pairs.push(["מצב", st]);
+    const canApply = UPDATE_CHECK && UPDATE_CHECK.available && UPDATE_CHECK.latest;
+    const btns = !u.enabled ? "" : [
+      `<button class="btn" onclick="healthUpdateCheck()">בדוק עדכון</button>`,
+      canApply ? `<button class="btn primary" onclick="confirmUpdateAction('עדכון שרת', UPDATE_INFO.latest, 'apply', UPDATE_INFO.latest)">החל עדכון ${esc(UPDATE_CHECK.latest)} (הקלדת שם השרת)</button>` : "",
+      u.previous ? `<button class="btn danger" onclick="confirmUpdateAction('חזרה לגרסה הקודמת', UPDATE_INFO.previous, 'revert', UPDATE_INFO.previous)">חזור ל-${esc(u.previous)}</button>` : "",
+    ].join("");
+    const off = u.enabled ? "" : UI.note("warn", `העדכון כבוי (update_enabled) — ${UI.link("הדלקה בהגדרות", "selectPageById('settings')")}`);
+    body = `<div class="upd">${UI.kv(pairs)}${btns ? `<div class="acts">${btns}</div>` : ""}</div>${off}`;
+  }
+  return UI.card({ title: "גרסה ועדכון", small: "מהתג של עץ השרת (git describe)", body });
+}
+
+async function healthUpdateCheck() {
+  try {
+    const r = await post("/update/check", {});
+    UPDATE_CHECK = { ...r, at: clockNow() };
+    UPDATE_INFO.latest = r.latest;
+  } catch (e) {
+    // "הבדיקה נכשלה" ≠ "אין חדש" (עיקרון 5)
+    UPDATE_CHECK = { at: clockNow(), available: false, latest: null, reason: "הבדיקה נכשלה: " + e.message };
+    toast(e.message);
+  }
+  if (current === "health") renderCurrent();
 }
 
 function health() {
-  if (!HEALTH) return pagePlaceholder();
+  if (!HEALTH && !healthError) return pagePlaceholder();
   const checks = Array.isArray(HEALTH) ? HEALTH : [];
-  const hasBad = checks.some((c) => c.state === "bad");
-  const hasWarn = checks.some((c) => c.state === "warn");
-  const hasOff = checks.some((c) => c.state === "off");
-  let overallClass = "ok", overallLabel = "הכל תקין";
-  if (!checks.length) { overallClass = ""; overallLabel = "אין בדיקות"; }
-  else if (hasBad) { overallClass = "err"; overallLabel = "תקלה"; }
-  else if (hasWarn) { overallClass = "warn"; overallLabel = "אזהרה"; }
-  else if (hasOff) { overallClass = ""; overallLabel = "חלק כבוי"; }
-
-  let body;
-  if (!checks.length) {
-    body = `<div class="empty">אין נתונים להצגה</div>`;
-  } else {
-    body = checks.map((c) => {
-      const cls = healthStatusClass(c.state);
-      return `<div class="metric"><div><strong>${esc(c.label)}</strong><span>${esc(c.detail)}</span></div><div class="status ${cls}"><i></i>${esc(healthStatusLabel(c.state))}</div></div>`;
-    }).join("");
-  }
-
-  return `<div class="grid"><div class="span-12"><div class="card"><div class="card-h"><span>בדיקות חיוניות</span><div><span class="status ${overallClass}"><i></i>${esc(overallLabel)}</span> <button class="btn" onclick="loadHealth()">בדוק עכשיו</button></div></div><div class="card-b">${body}</div></div></div></div>`;
+  const n = (s) => checks.filter((c) => c.state === s).length;
+  const counts = [["ok", "תקינות"], ["warn", "אזהרות"], ["bad", "תקלות"], ["off", "כבויות"], ["unknown", "לא נבדקו"]]
+    .filter(([s]) => n(s)).map(([s, l]) => `${n(s)} ${l}`);
+  let pill;
+  if (!HEALTH) pill = UI.pill("err", "לא נקרא");
+  else if (!checks.length) pill = UI.pill("", "אין בדיקות");
+  else if (n("bad")) pill = UI.pill("err", "תקלה");
+  else if (n("warn")) pill = UI.pill("warn", "אזהרה");
+  else if (n("unknown")) pill = UI.pill("warn", "לא נבדק");
+  else if (n("off")) pill = UI.pill("", "חלק כבוי");
+  else pill = UI.pill("ok", "הכל תקין");
+  const sub = HEALTH
+    ? [`${checks.length} בדיקות`, `נקרא ${HEALTH_AT}`, ...counts, "המתגים (SSH, מוניטור, DHCP) — בעמוד הפורטים"].map(esc).join(" · ")
+    : `‏/health לא נקרא: ${esc(healthError)}`;
+  const actions = `<button class="btn primary" onclick="loadHealth()">בדוק עכשיו</button>`;
+  const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "תשתית" }, { label: "בריאות ושירותים" }],
+    icon: "health", name: "בריאות ושירותים", sub, pill, actions });
+  const body = !HEALTH
+    ? UI.note("err", `לא הצלחתי לקרוא את הבדיקות: ${esc(healthError)}`)
+    : UI.datagrid({ columns: ["בדיקה", "מצב", "מה נמצא", ""], rows: healthRows(checks), empty: "אין בדיקות — השרת החזיר רשימה ריקה" });
+  const checksCard = UI.card({ title: "בדיקות חיוניות", small: "מה שנמדד, לא מה שמוגדר — \"לא נבדק\" הוא מצב משלו", body, flush: !!HEALTH && checks.length > 0 });
+  return `<div class="page">${header}<div class="body">${checksCard}${healthUpdateCard()}</div></div>`;
 }
 
 function netIface() {
@@ -3446,32 +3569,231 @@ function healthCheckById(id) {
   return (Array.isArray(HEALTH) ? HEALTH : []).find((c) => c.id === id) || null;
 }
 
-function ports() {
-  // #822: הרשימה עצמה מגיעה מהשרת (`/api/console/ports`) — לא defs
-  // קבוע ב-JS — כדי שפורט חדש (5900) או מצב אמיתי (5900 סגור על מכונה
-  // ספציפית) לא ייעלמו מאחורי רשימה שכוחה מ-2026-09-13.
-  if (portsError) {
-    return `<div class="grid"><div class="span-12"><div class="notice err" role="alert">לא הצלחתי לקרוא את רשימת הפורטים: ${esc(portsError)}</div></div></div>`;
+/* ---------- #954 גל 5: רשת › פורטים — טבלה אחת, מתג בכל שורה ----------
+   docs/design/console-redesign/network-ports.md + הכרעות נדב 17/09 (06:12
+   המתגים כאן ולא בבריאות; 06:25 מתג לכל פורט). מחובר היום: DHCP 67
+   (PUT /net/interfaces/{n}), PXE proxy 4011 (אותו sheet של net.js), מוניטור
+   5900 (PUT /monitor/settings), SSH לתחנות ו-SSH לשרת × כרטיס (PUT /ssh/…).
+   לשאר — החוזה של #996: /ports מחזיר enabled / bind / toggle
+   ("api" | "confirm" | "none") / off_means, ו-PUT /ports/{id} {enabled, confirm?}.
+   כשהשדות חסרים (שרת ישן) המתג מוצג במצב "לא ידוע" ולחיצה מסבירה — לא
+   כפתור אפור (README §8). 🔒 = הקלדת שם (עיקרון 7) + "מה קורה אם מכבים". */
+let SSH_STATE = null, sshError = "";
+let PORTS_MONITOR = null, portsMonitorError = "";
+let PORTS_NICS = null, portsNicsError = "";
+let PORTS_AT = "";
+const PORT_ACTIONS = new Map();
+const PORT_OFF_MEANS = {
+  dhcp: "אף מכונה בוילן ההפצה לא מקבלת כתובת — אין PXE, אין סבב",
+  pxe_proxy: "תחנות בוילן שה-DHCP בו אינו שלנו לא רואות את התפריט — עולות מהדיסק",
+  monitor: "תופס באתחול הבא של כל תחנה — מכונה שעולה לא מפעילה שירות צפייה",
+  ssh_stations: "תופס באתחול הבא — תחנות עולות בלי dropbear ובלי מעטפת טכנאי",
+};
+const PORT_API_NEEDED = "דורש API (#996)";
+const offMeansNote = (text) => `<div class="sheet-note danger">מה קורה אם מכבים: ${esc(text)}</div>`;
+
+function nicBody(n, over) {
+  return { enabled: n.enabled, proxy: n.proxy, trunk: n.trunk, range_start: n.range_start, range_end: n.range_end,
+    netmask: n.netmask, gateway: n.gateway, dns: n.dns, lease: n.lease, server_ip: n.server_ip, confirm: n.name, ...over };
+}
+
+function portSwitch(key) { const fn = PORT_ACTIONS.get(key); if (fn) fn(); }
+
+function portSwitchHtml(key, on, lock, cap, label) {
+  const cls = on === null ? "unk" : on ? "on" : "";
+  return `<span class="swrow"><button type="button" class="sw ${cls}" role="switch" aria-checked="${on === null ? "mixed" : String(!!on)}" aria-label="${esc(label)}" onclick="portSwitch('${esc(key)}')"></button><span class="cap">${lock ? "🔒 " : ""}${esc(cap)}</span></span>`;
+}
+
+/* DHCP: הדלקה = הטופס הקיים של net.js (מצב/טווח/הקלדת שם הכרטיס); אחרי
+   שמירה מרעננים את הטבלה הזו (ה-sheet של net.js מרענן רק את דפי הרשת). */
+function portDhcpOn() {
+  const list = PORTS_NICS || [];
+  const nic = list.find((n) => n.present && !n.trunk) || list[0];
+  if (!nic) { toast("אין כרטיס רשת להדליק עליו DHCP — ראו חיבורים פיזיים"); return; }
+  editNic(nic);
+  const form = $("#sheet");
+  const orig = form && form.onsubmit;
+  if (typeof orig === "function") form.onsubmit = async (event) => { await orig(event); await loadPorts(); };
+}
+
+function portDhcpOff(n) {
+  sheet({ title: `כיבוי DHCP על ${n.name}`, sub: "הכרטיס מפסיק לחלק כתובות ולענות ל-PXE.", danger: true, submitLabel: "כבה",
+    note: offMeansNote(PORT_OFF_MEANS.dhcp),
+    verify: { label: `להמשך הקלד את שם הכרטיס: ${n.name}`, mustEqual: n.name },
+    onSubmit: async () => { await saveNic(n.name, nicBody(n, { enabled: false, proxy: false })); await loadPorts(); } });
+}
+
+function portProxyOff(n) {
+  confirmSheet(`כיבוי PXE proxy על ${n.name}`, PORT_OFF_MEANS.pxe_proxy, "כבה",
+    async () => { await saveNic(n.name, nicBody(n, { enabled: false, proxy: false })); await loadPorts(); });
+}
+
+function portSshNic(name) {
+  const nic = (SSH_STATE && SSH_STATE.interfaces || []).find((n) => n.name === name);
+  if (!nic) return;
+  const open = SSH_STATE.interfaces.filter((n) => n.enabled).map((n) => n.name);
+  // סגירה היא הכיוון הבטוח ולכן לחיצה אחת — חוץ מהדלת האחרונה,
+  // שאחריה אין SSH לשרת בכלל.
+  const last = nic.enabled && open.length === 1 && open[0] === nic.name;
+  sshToggle(`/ssh/interfaces/${encodeId(nic.name)}`, !nic.enabled, nic.name, !nic.enabled || last,
+    nic.enabled ? `סגירת SSH לשרת על ${nic.name}` : `פתיחת SSH לשרת על ${nic.name}`,
+    nic.enabled ? "זו הדלת האחרונה שפתוחה — אחריה אין SSH לשרת מאף רשת."
+      : "‏sshd יאזין בוילן הזה. אם זה וילן הכיתות — הוא ייפתח לסטודנטים.",
+    nic.enabled ? "אין SSH לשרת מאף רשת — פתיחה מחדש רק ממסך השרת" : "");
+}
+
+function portSshStations() {
+  const st = SSH_STATE && SSH_STATE.stations;
+  if (!st) return;
+  sshToggle("/ssh/stations", !st.enabled, st.confirm_word, !st.enabled,
+    "פתיחת SSH ומעטפת טכנאי בכל התחנות",
+    "כל מחשב שיעלה יריץ dropbear. המפתח הציבורי ארוז ב-initramfs, שנמשך ב-HTTP פתוח מווילן ההפצה.",
+    "");
+}
+
+/* #996: מתג פר-פורט בשרת. "confirm" = הקלדת שם השרת; "api" = אישור בלחיצה;
+   "none" = אין מתג, הלחיצה מסבירה למה. */
+function portServerToggle(p) {
+  const enabling = !p.enabled;
+  const send = async (extra) => {
+    await put(`/ports/${encodeId(p.id)}`, { enabled: enabling, ...extra });
+    toast(enabling ? `${p.name} ${p.port} — הודלק` : `${p.name} ${p.port} — כובה`);
+    await loadPorts();
+  };
+  const title = `${enabling ? "הדלקת" : "כיבוי"} ${p.name} ${p.port}/${p.proto}`;
+  if (p.toggle === "none") { toast(`אין מתג לפורט הזה: ${p.off_means || p.detail || ""}`); return; }
+  if (p.toggle === "confirm") {
+    sheet({ title, sub: p.desc || "", danger: true, submitLabel: enabling ? "הדלק" : "כבה",
+      note: enabling ? "" : offMeansNote(p.off_means || ""),
+      verify: { label: "להמשך יש להקליד את שם השרת:", mustEqual: ME.server_name },
+      onSubmit: () => send({ confirm: ME.server_name }) });
+    return;
   }
-  if (!PORTS) return pagePlaceholder();
-  const soon = `title="בקרוב (נדרש endpoint)"`;
-  const cards = PORTS.map((p) => {
-    const cls = healthStatusClass(p.state);
-    const label = healthStatusLabel(p.state);
-    return `<div class="span-6"><div class="card">
-      <div class="card-h"><span>${esc(p.name)} <small class="mono" dir="ltr">${esc(p.port)}/${esc(p.proto)}</small></span><span class="status ${cls}"><i></i>${esc(label)}</span></div>
-      <div class="card-b">
-        <p style="margin:0 0 6px;color:var(--muted);font-size:11px">${esc(p.desc)} — יעד: ${esc(p.target)}</p>
-        <p style="margin:0 0 10px;font-size:11px">${esc(p.detail)}</p>
-        <p style="margin:0 0 10px;color:var(--muted);font-size:11px">${esc(p.note)}</p>
-        <div class="action-strip">
-          <button class="btn" disabled ${soon}>פתיחה</button>
-          <button class="btn" disabled ${soon}>סגירה</button>
-          <button class="btn" disabled ${soon}>שינוי</button>
-        </div>
-      </div></div></div>`;
-  }).join("");
-  return `<div class="grid">${cards}</div>`;
+  confirmSheet(title, enabling ? (p.desc || "") : (p.off_means || ""), enabling ? "הדלק" : "כבה", () => send({}));
+}
+
+function portRows() {
+  const rows = [];
+  const dhcpBase = { name: "DHCP הפצה", desc: "dnsmasq · כתובות לוילן ההפצה", port: "67", proto: "udp",
+    who: "תחנות · משכפלים · בנייה", off: PORT_OFF_MEANS.dhcp, api: ["ok", "קיים", "PUT /net/interfaces/{n}"] };
+  const serving = (PORTS_NICS || []).filter((n) => n.enabled);
+  if (PORTS_NICS === null) {
+    rows.push({ ...dhcpBase, key: "dhcp", nic: "", state: "unknown", detail: `‏/net/interfaces לא נקרא: ${portsNicsError}`,
+      on: null, lock: true, cap: "לא נקרא", act: () => toast("רשימת הכרטיסים לא נקראה — אין על מה להפעיל את המתג: " + portsNicsError) });
+  } else if (!serving.length) {
+    rows.push({ ...dhcpBase, key: "dhcp", nic: "", state: "off", detail: "לא הודלק על אף כרטיס",
+      on: false, lock: true, cap: "כבוי · הדלקה = הקלדת שם הכרטיס", act: portDhcpOn });
+  } else {
+    for (const n of serving) {
+      const live = n.dhcp_live ? dhcpLiveClass(n.dhcp_live.state) : "unknown";
+      rows.push({ ...dhcpBase, key: `dhcp:${n.name}`, name: `DHCP הפצה — ${n.name}`, nic: n.name,
+        state: { ok: "ok", warn: "warn", off: "off" }[live] || "unknown",
+        detail: `${n.dhcp_live_label || ""}${n.range_start ? ` · ${n.range_start}–${n.range_end}` : ""}`,
+        on: true, lock: true, cap: `דלוק · כיבוי = הקלדת ${n.name}`, act: () => portDhcpOff(n) });
+    }
+  }
+  for (const p of PORTS) {
+    const r = { key: p.id, name: p.name, desc: p.desc, port: p.port, proto: p.proto, who: p.target, nic: p.bind || "",
+      state: p.state, detail: p.detail, note: p.note, off: p.off_means || "", api: null, on: null, lock: false, cap: "", act: null };
+    if (p.id === "monitor") {
+      const m = PORTS_MONITOR;
+      Object.assign(r, { nic: "בתחנה, לא בשרת", off: PORT_OFF_MEANS.monitor, api: ["ok", "קיים", "PUT /monitor/settings"],
+        on: m ? !!m.enabled : null, lock: !(m && m.enabled),
+        cap: !m ? `לא נקרא: ${portsMonitorError}` : m.enabled ? "דלוק · כיבוי בלחיצה" : "כבוי · הדלקה = הקלדת imagectl.monitor",
+        act: m ? () => monitorToggle(!m.enabled) : () => toast("‏/monitor/settings לא נקרא: " + portsMonitorError) });
+    } else if (p.id === "ssh_stations") {
+      const st = SSH_STATE && SSH_STATE.stations;
+      Object.assign(r, { nic: "בתחנה, לא בשרת", off: PORT_OFF_MEANS.ssh_stations, api: ["ok", "קיים", "PUT /ssh/stations"],
+        on: st ? !!st.enabled : null, lock: !(st && st.enabled),
+        cap: !st ? `לא נקרא: ${sshError}` : st.enabled ? "דלוק · כיבוי בלחיצה" : `כבוי · הדלקה = הקלדת ${st.confirm_word}`,
+        act: st ? portSshStations : () => toast("‏/ssh לא נקרא: " + sshError) });
+    } else if (p.id === "pxe_proxy") {
+      const nic = PORTS_NICS ? PORTS_NICS.find((n) => n.proxy) : undefined;
+      Object.assign(r, { nic: nic ? nic.name : r.nic, off: PORT_OFF_MEANS.pxe_proxy, api: ["ok", "קיים", "PUT /net/interfaces/{n} proxy"],
+        on: PORTS_NICS === null ? null : !!nic,
+        cap: PORTS_NICS === null ? `לא נקרא: ${portsNicsError}` : nic ? `דלוק על ${nic.name}` : "כבוי · הדלקה = בחירת proxy בטופס ה-DHCP של הכרטיס",
+        act: PORTS_NICS === null ? () => toast("‏/net/interfaces לא נקרא: " + portsNicsError) : nic ? () => portProxyOff(nic) : portDhcpOn });
+    } else if (p.toggle) {
+      Object.assign(r, { api: ["ok", "קיים", `PUT /ports/${p.id}`], on: !!p.enabled, lock: p.toggle === "confirm",
+        cap: p.toggle === "none" ? "אין מתג — לחיצה מסבירה" : p.enabled ? (p.toggle === "confirm" ? "דלוק · כיבוי = הקלדת שם השרת" : "דלוק") : "כבוי",
+        act: () => portServerToggle(p) });
+    } else {
+      Object.assign(r, { api: ["warn", "דורש API", "#996"], on: null, lock: false, cap: PORT_API_NEEDED, off: r.off || PORT_API_NEEDED,
+        act: () => toast(`מתג לפורט ${p.port} ${PORT_API_NEEDED} — השרת הזה עדיין לא מחזיר toggle ב-/ports`) });
+    }
+    rows.push(r);
+  }
+  const sshBase = { port: "22", proto: "tcp", who: "טכנאי → השרת" };
+  if (!SSH_STATE) {
+    rows.push({ ...sshBase, key: "ssh_server", name: "SSH לשרת", desc: "sshd", nic: "", state: "unknown", detail: `‏/ssh לא נקרא: ${sshError}`,
+      on: null, lock: true, cap: "לא נקרא", off: "אין SSH לשרת מאף רשת", api: ["ok", "קיים", "PUT /ssh/interfaces/{n}"],
+      act: () => toast("‏/ssh לא נקרא: " + sshError) });
+  } else {
+    const open = SSH_STATE.interfaces.filter((n) => n.enabled).map((n) => n.name);
+    for (const n of SSH_STATE.interfaces) {
+      const last = n.enabled && open.length === 1 && open[0] === n.name;
+      const addr = (n.addresses || []).map((a) => String(a).split("/")[0]).join(", ");
+      let state, detail;
+      if (n.listening === null) { state = "unknown"; detail = "טבלת הסוקטים לא נקראה"; }
+      else if (n.enabled && n.listening) { state = "ok"; detail = `מאזין ${addr || "ללא כתובת IPv4"}:22 · אומת`; }
+      else if (n.enabled) { state = "bad"; detail = "נשמר כפתוח אבל sshd לא מאזין"; }
+      else if (n.listening) { state = "warn"; detail = "מאזין למרות שהמתג כבוי"; }
+      else { state = "off"; detail = "סגור · אומת"; }
+      rows.push({ ...sshBase, key: `ssh_nic:${n.name}`, name: `SSH לשרת — ${n.name}`, desc: `sshd · ${addr || "ללא כתובת IPv4"}`, nic: n.name,
+        state, detail, on: !!n.enabled, lock: !n.enabled || last,
+        cap: n.enabled ? (last ? `הדלת האחרונה · סגירה = הקלדת ${n.name}` : "פתוח · סגירה בלחיצה") : `סגור · פתיחה = הקלדת ${n.name}`,
+        off: last ? "אין SSH לשרת מאף רשת — פתיחה מחדש רק ממסך השרת" : "אין SSH לשרת דרך הכרטיס הזה",
+        api: ["ok", "קיים", `PUT /ssh/interfaces/${n.name}`], act: () => portSshNic(n.name) });
+    }
+  }
+  return rows;
+}
+
+function portRow(r) {
+  PORT_ACTIONS.set(r.key, r.act);
+  // שם כרטיס / כתובת — mono LTR; טקסט עברי ("בתחנה, לא בשרת") — רגיל.
+  const nic = !r.nic ? `<span class="muted" title="${PORT_API_NEEDED}: כתובת ההאזנה">—</span>`
+    : /^[ -~]+$/.test(r.nic) ? `<span class="mono">${esc(r.nic)}</span>` : esc(r.nic);
+  const api = r.api ? `${UI.pill(r.api[0], r.api[1])}${r.api[2] ? ` <span class="cap mono">${esc(r.api[2])}</span>` : ""}` : "";
+  // ה-note של השרת ("לפתוח ב-FW: …") — tooltip על שם השירות, לא שורה שלישית בכל תא.
+  return [`<span${r.note ? ` title="${esc(r.note)}"` : ""}>${UI.nameHtml(r.name, esc(r.desc || ""))}</span>`,
+    `<span class="mono">${esc(r.port)}/${esc(r.proto)}</span>`, esc(r.who || "—"), nic,
+    `${UI.status(healthStatusClass(r.state), healthStatusLabel(r.state))}<span class="sub">${esc(r.detail || "")}</span>`,
+    portSwitchHtml(r.key, r.on, r.lock, r.cap, `${r.name} ${r.port}`),
+    `<span class="wrap">${esc(r.off || "")}</span>`, api];
+}
+
+function ports() {
+  if (!PORTS && !portsError) return pagePlaceholder();
+  PORT_ACTIONS.clear();
+  const rows = PORTS ? portRows() : [];
+  const n = (s) => rows.filter((r) => r.state === s).length;
+  let pill;
+  if (!PORTS) pill = UI.pill("err", "לא נקרא");
+  else if (n("bad")) pill = UI.pill("err", `${n("bad")} לא מאזין`);
+  else if (n("unknown")) pill = UI.pill("warn", `${n("unknown")} לא נקרא`);
+  else pill = UI.pill("ok", "כל השורות נמדדו");
+  const sub = PORTS
+    ? esc(`${rows.length} שורות · מצב האזנה כפי שנקרא מהשרת ב-${PORTS_AT} · מתג הדלקה/כיבוי לכל פורט · 🔒 = כיבוי ששובר את המערכת, מאחורי הקלדת שם`)
+    : `‏/ports לא נקרא: ${esc(portsError)}`;
+  const header = UI.objHeader({
+    crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "תשתית" }, { label: "רשת" }, { label: "פורטים" }],
+    icon: "network", name: "פורטים", sub, pill, actions: `<button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>`,
+    tabs: ["חיבורים פיזיים", "רשת הפצה", "פורטים"], tab: 2,
+    tabClick: (i) => ["selectPageById('nic')", "selectPageById('netdeploy')", "activateTab(2)"][i] });
+  const body = !PORTS
+    ? UI.note("err", `לא הצלחתי לקרוא את רשימת הפורטים: ${esc(portsError)}`)
+    : UI.datagrid({ columns: ["שירות", "פורט", "מי מתחבר", "על איזה כרטיס", "מצב נמדד", "מתג", "מה קורה אם מכבים", "API"], rows: rows.map(portRow), cls: "dense" });
+  const table = UI.card({ title: "שירותים ופורטים", small: "מצב נמדד — \"כבוי\" ≠ \"לא מאזין\" ≠ \"לא נקרא\"", body, flush: !!PORTS });
+  let foot = "";
+  if (PORTS && SSH_STATE && SSH_STATE.listeners) {
+    const l = SSH_STATE.listeners;
+    foot = l.checked
+      ? `<div class="c12">${UI.note("", esc(`מאזינים בפורט ${l.port}: ${(l.addresses || []).join(", ") || "אף אחד"}`))}</div>`
+      : `<div class="c12">${UI.note("warn", esc(`טבלת הסוקטים לא נקראה (${l.reason}) — אין לדעת מה פתוח`))}</div>`;
+  }
+  const legend = `<div class="c12">${UI.note("info", `<b>כל מתג</b> = מודאל עם מה יקרה, ו-🔒 = הקלדת שם (עיקרון 7) לפני שהוא זז. ${UI.pill("ok", "קיים")} — מחובר ל-API של היום; ${UI.pill("warn", "דורש API")} — הדלקה/כיבוי פר-פורט בשרת (#996): המתג מוצג, לחיצה עליו מסבירה — לא כפתור אפור.`)}</div>`;
+  return `<div class="page">${header}<div class="body">${table}${foot}${legend}</div></div>`;
 }
 
 function monitorPage() {
@@ -3521,14 +3843,14 @@ const pages = {
   images: { crumb: "אימג'ים", title: "ספריית אימג'ים", tabs: imagesTabs(), render: images, load: loadImages, own: true },
   deploy: { crumb: "סבב הפצה", title: "סבב הפצה", tabs: deployTabs(), render: deploy, load: loadDeploy, own: true },
   machines: { crumb: "מחשבים", title: "מחשבים", tabs: ["כל המחשבים", "נראו ברשת", "דיסקים אדומים"], render: machines, load: loadMachines, own: true },
-  health: { crumb: "בריאות שרת", title: "בריאות שרת", desc: "שירותים, מאזינים ותהליכים המשרתים את תהליך הפריסה", tabs: ["סקירה", "שירותים", "בדיקות"], render: health, load: loadHealth },
+  health: { crumb: "בריאות ושירותים", title: "בריאות ושירותים", tabs: [], render: health, load: loadHealth, own: true },   // ‏#954 גל 5: בלי לשוניות — בדיקות + עדכון
   network: { crumb: "רשת", title: "רשת", desc: "הגדרות כתובת, gateway, DNS וממשק שידור", tabs: ["הגדרות", "פורטיים", "מולטיקאסט"], render: network, load: loadNetcfgData },
   permissions: { crumb: "הרשאות", title: "הרשאות", desc: "ניהול משתמשים ותפקידי גישה לקונסולה", tabs: ["משתמשים", "תפקידים"], render: permissions, load: loadUsersData },
   logs: { crumb: "יומן", title: "יומן מערכת", desc: "אירועים תפעוליים בשפה טבעית עם הקשר של מחשב וכיתה", tabs: ["אירועים", "Audit"], render: logs, load: loadJournalData },
   monitor: { crumb: "מוניטור", title: "מוניטור", desc: "צפייה ושליטה מרחוק במחשבי הבנייה והשיכפול", tabs: ["מכונות"], render: monitorPage, load: loadMonitor },
   drivers: { crumb: "דרייברים", title: "דרייברים", desc: "חבילות דרייברים לפי חומרה (PCI/דגם) — מונחות על הדיסק אחרי השחזור, מותקנות בעלייה הראשונה", tabs: ["חבילות"], render: () => driversPage(), load: () => loadDrivers() },   // lazily: drivers.js loads after this file
   netdeploy: { crumb: "רשת הפצה", title: "רשת הפצה", desc: "איזה כרטיס משרת את וילן ההפצה, ומצב ה-DHCP כפי שנקרא בפועל", tabs: ["סקירה"], render: netdeploy, load: loadNetPages },
-  ports: { crumb: "פורטים", title: "פורטים", desc: "פורטי HTTP, TFTP, PXE, מולטיקאסט, מוניטור, קיוסק ו-SSH — מצב האזנה כפי שנקרא מהשרת", tabs: ["סקירה"], render: ports, load: loadPorts },
+  ports: { crumb: "פורטים", title: "פורטים", tabs: ["חיבורים פיזיים", "רשת הפצה", "פורטים"], render: ports, load: loadPorts, own: true },   // ‏#954 גל 5: מתג בכל שורה
   nic: { crumb: "חיבורים פיזיים", title: "חיבורים פיזיים", desc: "כרטיסים, כתובות חיות מול מוגדרות, וכתובת השרת בכל כרטיס", tabs: ["סקירה"], render: nic, load: loadNetPages },
 };
 let current = "home";
@@ -3537,7 +3859,6 @@ let searchQuery = "";
 
 function tabRender(pageId, index) {
   const renderers = {
-    health: [health, () => `<div class="card"><div id="ssh-body"></div></div>`, health],
     network: [network, emptyDataCard, emptyDataCard],
     permissions: [usersAdminPage, permissions],
     logs: [journalPage, logs],
@@ -3547,7 +3868,6 @@ function tabRender(pageId, index) {
     monitor: [monitorPage],
     drivers: [() => driversPage()],   // #720 — drivers.js
     netdeploy: [netdeploy],
-    ports: [ports],
     nic: [nic],
   };
   const fn = renderers[pageId]?.[index];
@@ -3744,7 +4064,6 @@ function openAction() {
   if (!menu) return;
   const actions = {
     images: [["אימג׳ חדש", "openCapture().catch(e => toast(e.message))"], ["קליטת אימג׳", "openImageIngest()"], ["אימות ספרייה", "soon()"]],
-    health: [["בדיקת בריאות", "loadHealth()"], ["פרטי שירותים", "soon()"]],
     network: [["בדיקת קישוריות", "soon()"], ["שמור הגדרות", "saveNetwork()"], ["Rollback", "soon()"]],
     permissions: [["משתמש חדש", "openNewUser()"], ["תפקידי מערכת", "openRolesDrawer()"]],
     logs: [["סינון יומן", "openLogFilter()"], ["ייצוא CSV", "soon()"]],
@@ -3752,7 +4071,6 @@ function openAction() {
     drivers: [["ייבוא חבילה", "openDriverImport()"], ["רענון", "refreshPage()"]],
     nic: [["הוספת כרטיס", "addNic()"], ["רענון", "refreshPage()"]],
     netdeploy: [["עריכת DHCP", "editDeployNic()"], ["קבצי dnsmasq", "previewDnsmasq()"]],
-    ports: [["רענון", "refreshPage()"]],
   };
   menu.innerHTML = (actions[current] || []).map(([label, fn]) =>
     `<button type="button" role="menuitem" onclick="${fn};closeActionMenu()">${label}</button>`).join("");
@@ -4178,84 +4496,16 @@ function addFolderSheet() {
   },
 });
 }
-const SSH_LIGHT = {
-  open: { cls: "warn", text: "פתוח בפועל" },
-  closed: { cls: "ok", text: "סגור בפועל" },
-  unknown: { cls: "bad", text: "לא ניתן לאמת" },
-};
-
-function sshLight(kind) {
-  const light = SSH_LIGHT[kind] || SSH_LIGHT.unknown;
-  return `<span class="hlight ${light.cls}" title="${esc(light.text)}"></span>
-    <span class="sub">${esc(light.text)}</span>`;
-}
-
-/* שלושה מצבים: null = לא נבדק, ואסור שייראה כמו "סגור". */
-const nicLight = (nic) =>
-  nic.listening === null ? "unknown" : nic.listening ? "open" : "closed";
-
-let SSH_STATE = null;
-
-async function loadSsh() {
-  const host = $("#ssh-body");
-  if (!host || !isAdmin()) return;
-  SSH_STATE = await api("/ssh");
-  if (host !== $("#ssh-body")) return;
-  const stations = SSH_STATE.stations;
-  const rows = SSH_STATE.interfaces.map((nic) => `
-    <div class="health-row">
-      <b>${esc(nic.name)}</b>
-      <span class="switch ${nic.enabled ? "on" : ""}" data-ssh-nic="${esc(nic.name)}"></span>
-      ${sshLight(nicLight(nic))}
-      <span class="sub">${esc((nic.addresses || []).join(", ") || "ללא כתובת IPv4")}</span>
-    </div>`).join("");
-  const listeners = SSH_STATE.listeners;
-  const foot = listeners.checked
-    ? `מאזינים בפורט ${listeners.port}: ${listeners.addresses.join(", ") || "אף אחד"}`
-    : `טבלת הסוקטים לא נקראה (${listeners.reason}) — אין לדעת מה פתוח`;
-  $("#ssh-body").innerHTML = `
-    <div class="health-row">
-      <b>תחנות (imagectl.debug)</b>
-      <span class="switch ${stations.enabled ? "on" : ""}" data-ssh-stations="1"></span>
-      ${sshLight(stations.evidence)}
-      <span class="sub">${esc(stations.detail)}</span>
-    </div>
-    ${rows || `<div class="health-row"><span class="sub">אין כרטיסי רשת</span></div>`}
-    <p class="pad sub">${esc(foot)}</p>`;
-
-  $("#ssh-body").querySelectorAll("[data-ssh-stations]").forEach((el) =>
-    el.onclick = () => sshToggle(
-      "/ssh/stations", !stations.enabled, stations.confirm_word,
-      !stations.enabled,
-      "פתיחת SSH ומעטפת טכנאי בכל התחנות",
-      "כל מחשב שיעלה יריץ dropbear. המפתח הציבורי ארוז ב-initramfs, "
-      + "שנמשך ב-HTTP פתוח מווילן ההפצה."));
-
-  $("#ssh-body").querySelectorAll("[data-ssh-nic]").forEach((el) => {
-    const nic = SSH_STATE.interfaces.find((n) => n.name === el.dataset.sshNic);
-    const open = SSH_STATE.interfaces.filter((n) => n.enabled).map((n) => n.name);
-    // סגירה היא הכיוון הבטוח ולכן לחיצה אחת — חוץ מהדלת האחרונה,
-    // שאחריה אין SSH לשרת בכלל.
-    const last = !nic.enabled ? false : open.length === 1 && open[0] === nic.name;
-    el.onclick = () => sshToggle(
-      `/ssh/interfaces/${encodeId(nic.name)}`, !nic.enabled, nic.name,
-      !nic.enabled || last,
-      nic.enabled ? `סגירת SSH לשרת על ${nic.name}`
-        : `פתיחת SSH לשרת על ${nic.name}`,
-      nic.enabled
-        ? "זו הדלת האחרונה שפתוחה — אחריה אין SSH לשרת מאף רשת."
-        : "‏sshd יאזין בוילן הזה. אם זה וילן הכיתות — הוא ייפתח לסטודנטים.");
-  });
-}
-
-function sshToggle(path, enabled, word, needsConfirm, title, sub) {
+/* ‏#954 גל 5: מתגי ה-SSH יושבים בדף הפורטים (portSshStations / portSshNic);
+   הלוגיקה — confirm בפתיחה ובדלת האחרונה, ראיה חיובית (verified) — לא השתנתה. */
+function sshToggle(path, enabled, word, needsConfirm, title, sub, offMeans = "") {
   const send = async (extra) => {
     const result = await put(path, { enabled, ...extra });
     if (result.apply_error) toast("ההחלה נכשלה: " + result.apply_error);
     else if (!result.verified)
-      toast("נשמר — אבל מה שמאזין לא תואם. ראו את שורות ה-SSH בבריאות.");
+      toast("נשמר — אבל מה שמאזין לא תואם. ראו את שורות ה-SSH בטבלת הפורטים.");
     else toast(enabled ? "נפתח, ואומת מול המצב בפועל" : "נסגר, ואומת מול המצב בפועל");
-    await loadSsh();
+    await loadPorts();
   };
   if (!needsConfirm) {
     send({}).catch((error) => toast(error.message));
@@ -4263,6 +4513,7 @@ function sshToggle(path, enabled, word, needsConfirm, title, sub) {
   }
   sheet({
     title, sub, danger: true, submitLabel: enabled ? "פתח" : "סגור",
+    note: offMeans ? offMeansNote(offMeans) : "",
     verify: { label: "להמשך יש להקליד בדיוק:", mustEqual: word },
     onSubmit: () => send({ confirm: word }),
   });
@@ -4287,6 +4538,10 @@ function settingsPage() { return `<div class="grid"><div class="span-6"><div cla
           <label class="check">
             <input type="checkbox" id="set-update-enabled">
             אפשר עדכון השרת מול הריפו הציבורי (כבוי כברירת מחדל; החיבור היוצא נפתח רק בזמן בדיקה/עדכון)
+          </label>
+          <label class="check">
+            <input type="checkbox" id="set-identity-check">
+            בדיקת זהות מכונה — כתובת המקור של hello/דיווח חייבת להתאים לחכירת ה-DHCP של ה-MAC (דלוק כברירת מחדל; לכבות רק כשה-DHCP של וילן ההפצה אינו השרת הזה — הכיבוי נרשם ביומן)
           </label>
           <button class="btn primary" type="submit">שמור</button>
           <p id="settings-saved" class="ok"></p>
@@ -4335,6 +4590,7 @@ async function loadSettings() {
   $("#set-idle").value = Number(s.console_idle_seconds);
   $("#set-class-deploy").checked = s.class_deploy_enabled === "true";
   $("#set-update-enabled").checked = s.update_enabled === "true";
+  $("#set-identity-check").checked = s.identity_check !== "false";   // #855: חסר = דלוק
   await loadLogoSettings();
   await loadUpdateInfo();
 
@@ -4350,6 +4606,7 @@ $("#settings-form").onsubmit = async (event) => {
     console_idle_seconds: String($("#set-idle").value),
     class_deploy_enabled: $("#set-class-deploy").checked ? "true" : "false",
     update_enabled: $("#set-update-enabled").checked ? "true" : "false",
+    identity_check: $("#set-identity-check").checked ? "true" : "false",
   });
   ME.idle_seconds = Number($("#set-idle").value);   // תקף מיידית, בלי כניסה מחדש
   startIdleWatch();
@@ -4464,6 +4721,7 @@ function confirmUpdateAction(title, tag, path, applyTag) {
       await post("/update/" + path, body);
       toast("העדכון הופעל — עוקבים אחרי סטטוס.");
       await loadUpdateInfo();
+      if (current === "health") { await loadHealthUpdate(); renderCurrent(); }
     },
   });
 }
@@ -4637,7 +4895,6 @@ function pageAllowed(id) {
 }
 function wireRestoredPage() {
   if (current === "images") loadCaptures().catch(e => toast(e.message));
-  if (current === "health" && currentTab === 1) loadSsh().catch(e => toast(e.message));
   if (current === "settings") loadSettings().catch(e => toast(e.message));
   if (current === "branches") (currentTab === 0 ? loadBranchCards() : loadBranches()).catch(e => toast(e.message));
   if (current === "branch") loadBranchView(BRANCH_VIEWS[currentTab][0]).catch(e => toast(e.message));
@@ -4707,7 +4964,7 @@ function monitorToggle(enabling) {
     toast(enabling
       ? "המוניטור הודלק — תופס באתחול הבא של כל תחנה"
       : "המוניטור כובה — תופס באתחול הבא של כל תחנה");
-    await loadMonitor();
+    if (current === "ports") await loadPorts(); else await loadMonitor();
   };
   if (!enabling) {
     send({}).catch((error) => toast(error.message));
@@ -4718,6 +4975,7 @@ function monitorToggle(enabling) {
     sub: "כל מחשב בנייה/שיכפול שיעלה מעכשיו יריץ שירות צפייה מרחוק (RFB, בלי סיסמה). "
       + "תופס באתחול הבא של כל תחנה — לא במכונות שכבר רצות.",
     danger: true, submitLabel: "הדלק",
+    note: offMeansNote(PORT_OFF_MEANS.monitor),
     verify: { label: "להמשך יש להקליד בדיוק:", mustEqual: "imagectl.monitor" },
     onSubmit: () => send({ confirm: "imagectl.monitor" }),
   });

@@ -66,6 +66,9 @@ EVENTS_HE = {
     "agent_loop": "מחשב הגיע לסוכן בלי משימה ובלי סבב",
     "agent_loop_unverified": "ספירת ההגעות לסוכן נכשלה",
     "report_from_nonmember": "דיווח ממחשב שאינו בסבב",
+    # ‏#855: שומר הזהות — MAC מוצהר מול חכירת ה-DHCP.
+    "identity_refused": "פנייה בשם מחשב מכתובת שאינה שלו — סורבה",
+    "identity_unverifiable": "זהות מחשב לא ניתנת לבדיקה — סורבה",
     "setting_change": "הגדרה שונתה",
     "storage_group_create": "קבוצת סניפים נוצרה",
     "storage_group_edit": "שם קבוצת סניפים שונה",

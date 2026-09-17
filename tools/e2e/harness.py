@@ -68,6 +68,13 @@ CLONER_MAC = "aa:bb:cc:00:00:20"
 CLASS_MACS = ["b4:2e:99:07:1a:c4", "b4:2e:99:07:1a:c5",
               "b4:2e:99:07:1a:c6", "b4:2e:99:07:1a:c7"]
 UNKNOWN_MAC = "de:ad:be:ef:00:01"
+#: ‏#855: MAC שהסימולציה **אינה** כותבת לו חכירה — הראיה ששומר הזהות
+#: פעיל בשרת האמיתי, ולא רק ש"כולם עוברים כי כולם על loopback".
+NO_LEASE_MAC = "de:ad:be:ef:00:02"
+#: כל מכונה שהסימולציה מפעילה, כולל ה-MAC "הלא מוכר" של שלב הקצוות:
+#: בייצור גם מכונה לא רשומה מקבלת חכירה מ-dnsmasq (‏dhcp-range מחלק לכולם;
+#: ‏tag:known של #141 מגביל רק את dhcp-boot), ו-hello שלה עונה known=false.
+SIM_MACS = (BUILD_MAC, CLONER_MAC, UNKNOWN_MAC, *CLASS_MACS)
 
 ADMIN = {"username": "noc", "password": "sim-pass-1234"}
 DEPLOY = {"username": "madrich", "password": "sim-deploy-99"}
@@ -209,9 +216,23 @@ def make_manifest(source_bytes: int, files: dict[str, bytes]) -> dict:
     }
 
 
+def write_leases(workdir: Path) -> Path:
+    """‏#855: קובץ חכירות בתבנית dnsmasq לכל מכונה מדומה — כולן על loopback.
+
+    השרת שהסימולציה מרימה הוא אמיתי, ושומר הזהות שלו **אינו מכובה**: הוא
+    מקבל את הקובץ הזה ב---dhcp-leases במקום את קובץ המכונה, בדיוק כמו
+    שהמעבדה מקבלת את הקובץ של dnsmasq על br0."""
+    path = workdir / "dnsmasq.leases"
+    lines = [f"1789000000 {mac} 127.0.0.1 sim-{i} 01:{mac}"
+             for i, mac in enumerate(SIM_MACS)]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
 def start_server(workdir: Path) -> tuple[subprocess.Popen, Path, Path]:
     data_dir, images = workdir / "data", workdir / "images"
     images.mkdir(parents=True)
+    leases = write_leases(workdir)
     # הפלט לקובץ ולא ל-PIPE: המכונות המדומות מייצרות אלפי שורות לוג,
     # ו-PIPE שאיש לא קורא מתמלא — והשרת נחסם על הכתיבה ומפסיק לענות.
     log = (workdir / "server.log").open("wb")
@@ -225,7 +246,9 @@ def start_server(workdir: Path) -> tuple[subprocess.Popen, Path, Path]:
          "--kiosk-port", str(KIOSK_PORT),
          # ‏#201: השרת הזה אמיתי ומגיע ל-udp-sender אמיתי. בלי הדגל הזה
          # הוא משדר על פורטי ההפצה של הייצור.
-         "--sender-portbase", str(SENDER_PORTBASE)],
+         "--sender-portbase", str(SENDER_PORTBASE),
+         # ‏#855: חכירות לכל מכונה מדומה — השומר פעיל, הקובץ הוא של הסימולציה.
+         "--dhcp-leases", str(leases)],
         cwd=str(REPO), stdout=log, stderr=subprocess.STDOUT,
     )
     return server, data_dir, images

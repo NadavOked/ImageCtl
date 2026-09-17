@@ -123,7 +123,14 @@ def station_boots_and_reports(server, mac: str) -> dict:
 
 
 def evidence(row: dict) -> tuple:
-    return row["ip"], row["last_seen"], row["boot"]
+    # ‏`seconds`/`stalled` בפירורי האתחול נגזרים משעון הקיר בזמן הקריאה —
+    # שנייה שמתחלפת בין "לפני" ל"אחרי" אינה "השרת כתב" (נפל פעם אחת בשער
+    # המעבדה, 17/09). הראיה היא הצעד, האינדקס והחותמת — לא הגיל.
+    boot = row["boot"]
+    if isinstance(boot, list):
+        boot = [{k: v for k, v in step.items() if k not in ("seconds", "stalled")}
+                for step in boot]
+    return row["ip"], row["last_seen"], boot
 
 
 # --- הבאג עצמו, דרך /api/console/health ------------------------------------

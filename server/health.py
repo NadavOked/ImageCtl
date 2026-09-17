@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends
 import hashlib
 
 from . import (agent_loops, auth, console_ssh, dhcp, foreign_vlan, hello,
-               monitor, ssh_switch)
+               identity, monitor, ssh_switch)
 
 BOOT_FILES = ("bootx64.efi", "grubx64.efi", "grub/grub.cfg")
 
@@ -332,6 +332,11 @@ def collect(ctx, hooks: dict, server_base: str) -> list[dict]:
 
     # שתי דלתות ה-SSH (#83) — לפי מה שנקרא בחזרה, לא לפי ההגדרה.
     results.extend(console_ssh.ssh_checks(console_ssh.snapshot(ctx, hooks, server_base)))
+
+    # ‏#855: שומר הזהות — מתג כבוי הוא מצב מוצהר שנאמר כאן, וקובץ חכירות
+    # שאינו נקרא הוא "כל hello מסורב", לא שקט.
+    results.append(check("identity", "זהות מכונה",
+                         *identity.health_status(ctx.conn, getattr(ctx, "leases", None))))
 
     # ואחרונות, כי אורכן משתנה: מי נופל לסוכן בלולאה עכשיו (#112), ומי
     # מדבר עם השרת מרשת שאינה וילן ההפצה (#137). שתי רשימות נפרדות —
