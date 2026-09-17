@@ -8,12 +8,10 @@ capture_ntfs_hibernation_reason() {
     # $1=partition node, $2=private mount point. Empty output means clean.
     # Non-empty output always means capture must stop; rc 1=hibernated, rc 2=not checked.
     _hn_node="$1"; _hn_mnt="$2"
-    for _hn_tool in ntfs-3g.probe; do
-        command -v "$_hn_tool" >/dev/null 2>&1 || {
-            echo "לא הצלחנו לבדוק מצב שינה ב-$_hn_node: הכלי $_hn_tool חסר"
-            return 2
-        }
-    done
+    command -v ntfs-3g.probe >/dev/null 2>&1 || {
+        echo "לא הצלחנו לבדוק מצב שינה ב-$_hn_node: הכלי ntfs-3g.probe חסר"
+        return 2
+    }
 
     # Probing read-write mountability is itself read-only; it exposes dirty (15)
     # and hibernated (14), both of which remain mountable read-only.
