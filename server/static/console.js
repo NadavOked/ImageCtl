@@ -544,7 +544,6 @@ async function refreshStatus() {
   if (!ME) return;
   OVERVIEW = data; markStatusFresh();
   if (current === "home" || current === "deploy") renderCurrent();
-  if (roundDrawerOpen) await openRoundDetail();
   if (typeof renderActivity === "function") renderActivity();
 }
 
@@ -1135,51 +1134,276 @@ function home(tab = 0) {
   return `<div class="page">${header}<div class="body">${stale}${body}</div></div>`;
 }
 
-function deploy() {
-  if (!OVERVIEW) return pagePlaceholder();
-  const session = OVERVIEW.session;
-  const room = OVERVIEW.room;
-  const round = session || room;
-  const tag = round
-    ? `<span class="tag green">1 פעיל</span>`
-    : `<span class="tag">0 פעיל</span>`;
+/* ---------- #954 גל 4: סבב הפצה — חדר המשכפלים (#695) ----------
+   נבנה לפי docs/design/console-redesign/deploy.md (§"המבנה — חדר המשכפלים", מוקאפ
+   deploy-room.png שנדב אישר 17/09). v1 = משכפלים בלבד (הכרעת נדב 17/09 10:20): הלשונית
+   הראשונה היא החדר; "כיתה" = קוד ה-session הקיים כמו שהוא, עטוף בכרטיס; "היסטוריה" =
+   דורש API. הגריד הוא **אותו גריד** של clonersView (גל 3א) — machineSlots / slotHtml /
+   clonerCardHtml במצב חדר — לא עותק. מקורות: /room (round, machines[].drawer_list,
+   stream_stalled, disk_floor #953), /images (min_target_bytes #953), /machines (prompt —
+   השאלה למפעיל #906), /disk-failures (אדום), /net (IP). כתיבה — רק ה-endpoints הקיימים:
+   POST /room, /room/start, /room/wake, /room/close (הקלדת שם, עיקרון 7); בלי שינוי שרת.
+   ההכרעה על SMART (נדב 16/09): כתום = בלי תשובה ממשיך לכתוב, אדום = בלי תשובה מדלג —
+   לעולם לא דילוג בשני המקרים; היא נענית ליד המכונה (או במוניטור), ותשובה מהקונסולה — דורש
+   API. מה שאין לו API — קצב/איבוד, מספר הגלים הכולל, היסטוריה, דילוג מרחוק — טקסט,
+   לא נתון מומצא (README §8, עיקרון 5). */
+const DEPLOY = { big: false, err: "", roomErr: "", busy: false, form: { image: "", src: "library", builder: "", disk: "", target: "" } };
+const WAVE_HE = { open: "ממתין להצטרפות", running: "משדר", closed: "הגל נסגר" };
 
-  let tableBody;
-  if (!round) {
-    tableBody = `<div class="empty">אין סבבים פעילים</div>`;
+function deployTabs() { return ["חדר המשכפלים", "כיתה", "היסטוריה"]; }
+function roomOperator() { return !!ME && ["admin", "deploy"].includes(ME.role); }   // ‏room.ROOM_OPERATOR_ROLES
+/* רשומות המחשבים לגריד: המגירות תמיד מ-/room (‏drawer_list נושא port/serial/model/size/smart
+   גם בלי סבב) — כך גם deploy, שאינו מגיע לדף המחשבים, רואה את החדר במלואו; prompt
+   ו-drawer_count המוגדר מ-/machines כשנקרא. */
+function roomMachines() {
+  return sortMachinesBySuffix((ROOM && ROOM.machines || []).map((rm) => {
+    const m = findMachine(rm.mac) || {};
+    return { ...m, mac: rm.mac, suffix: machineName(m) || rm.name || rm.mac, group_id: m.group_id || "grp_CLONERS",
+      drawer_count: rm.drawer_count != null ? rm.drawer_count : (m.drawer_count ?? null),
+      disks: Array.isArray(rm.drawer_list) ? rm.drawer_list : (m.disks ?? null), prompt: m.prompt || null };
+  }));
+}
+/* אחוז הגל: ממוצע המגירות שהצטרפו ומדווחות (‏done = 100). ‏null = אין דיווח, לא 0 (עיקרון 5). */
+function wavePct() {
+  const ds = (ROOM && ROOM.machines || []).filter((rm) => rm.joined).flatMap((rm) => rm.drawer_list || [])
+    .filter((d) => d.state === "done" || (d.state && d.bytes_total > 0));
+  if (!ds.length) return null;
+  return Math.round(ds.reduce((s, d) => s + (d.state === "done" ? 100 : 100 * (d.bytes_written || 0) / d.bytes_total), 0) / ds.length);
+}
+function roomStats(kids) {
+  const all = kids.map((m) => ({ m, slots: machineSlots(m).slots }));
+  const pick = (fn) => all.flatMap(({ m, slots }) => slots.filter((s) => fn(s, m)).map((s) => ({ m, s })));
+  return {
+    slots: all.reduce((n, x) => n + x.slots.length, 0), filled: pick((s) => s.disk).length,
+    writing: pick((s) => s.live && (s.live.state === "writing" || s.live.state === "verifying")),
+    red: pick((s) => s.disk && slotClass(s) === "err"), warn: pick((s) => s.disk && slotClass(s) === "warn"),
+    empty: pick((s, m) => !s.disk && !!(roomMachine(m.mac) || {}).awake),   // חריץ פנוי = במכונה מחוברת; מכונה כבויה נספרת פעם אחת
+    off: kids.filter((m) => { const rm = roomMachine(m.mac); return rm && !rm.awake; }),
+    awake: kids.filter((m) => { const rm = roomMachine(m.mac); return rm && rm.awake; }).length,
+    prompts: kids.filter((m) => m.prompt),
+  };
+}
+/* "מחשב 1 · דיסק 1,2 — מחשב 2 · דיסק 1" */
+function whereList(items) {
+  const by = new Map();
+  items.forEach(({ m, s }) => { const k = machineName(m); if (!by.has(k)) by.set(k, []); by.get(k).push(s.n); });
+  return [...by].map(([k, ns]) => `${k} · דיסק ${ns.join(",")}`).join(" — ");
+}
+/* מצב כרטיס בחדר: ‏awake מ-/room (דיברה עם השרת ב-30 השניות האחרונות — ראיה חיובית),
+   "בסבב · N%" כשהצטרפה, השאלה למפעיל כשיש. */
+function roomCardState(m) {
+  const rm = roomMachine(m.mac);
+  if (!rm) return { cls: "", text: "לא בחדר" };
+  if (roomRound() && rm.joined) return clonerState(m);
+  if (!rm.awake) return { cls: "", text: "לא מחובר", off: true };
+  if (m.prompt) return { cls: "warn", text: waitingText(m) };
+  return { cls: "ok", text: "מחובר" };
+}
+/* ‏#953: הסיבה שאימג' אינו נכנס למגירה הקטנה ביותר (‏disk_floor מ-GET /room) — **אותה
+   מחרוזת בדיוק** ש-`room.fit_refusal` בשרת מחזיר ב-409, כדי שהמפעיל יראה סיבה אחת משני
+   הצדדים. null = נכנס, או אין רצפה/דרישה ידועה. GB עשרוני כמו על מדבקת הכונן. */
+function imageFitReason(img, floor) {
+  const need = Number(img.min_target_bytes);
+  if (!floor || img.min_target_bytes == null || !Number.isFinite(need) || need < 0 || need <= floor.size_bytes) return null;
+  const slot = floor.port != null ? `דיסק ${floor.port}` : `דיסק ${floor.dev || "?"}`;
+  return `${slot} במחשב ${floor.name} הוא ${Math.round(floor.size_bytes / 1e9)}GB, האימג' צריך ${Math.ceil(need / 1e9)}GB`;
+}
+function roomImageLabel(r) {
+  const direct = r.source && r.source.kind === "build_disk";
+  if (direct) return esc(`מקור: מחשב הבנייה (${r.source.name || r.source.mac}:${r.source.disk})`);
+  const img = (IMAGES || []).find((x) => x.id === r.image_id);
+  return esc(r.image_name || r.image_id || "—") + (img && img.total_compressed_bytes ? ` · ${ltr(fmtBytes(img.total_compressed_bytes))} בשרת` : "");
+}
+
+function deploy(tab = 0) {
+  const tabs = deployTabs(), r = roomRound(), kids = roomMachines(), st = roomStats(kids), pct = wavePct();
+  const stalled = !!(ROOM && ROOM.stream_stalled), op = roomOperator();
+  let name, sub, pill;
+  if (r) {
+    name = `חדר המשכפלים — גל ${r.wave_number || 1}`;
+    sub = [roomImageLabel(r), `יעד: ${r.target_drives || 0} דיסקים`, `נכתבו ${r.written_drives || 0}`, `נשארו ${r.remaining_drives != null ? r.remaining_drives : "?"}`, r.opened_by ? `פתח ${esc(r.opened_by)}` : ""].filter(Boolean).join(" · ");
+    pill = stalled ? UI.pill("warn", "הזרם עצר") : r.wave_state === "running" ? UI.pill("info", `משדר${pct != null ? ` — ${pct}%` : ""}`)
+      : r.wave_state === "open" ? UI.pill("info", `ממתין להצטרפות · ${r.ready_drives || 0} מוכנים`) : UI.pill("", WAVE_HE[r.wave_state] || r.wave_state || "—");
   } else {
-    // #715: a room round fed from the build machine's own disk has no library
-    // image — the console says where the bytes come from instead. The active
-    // session here IS the room's wave, so the source is read off the round.
-    const direct = room && room.source && room.source.kind === "build_disk";
-    const img = direct
-      ? `מקור: מחשב הבנייה (${room.source.name || room.source.mac}:${room.source.disk})`
-      : sessionImage(round);
-    const group = session ? sessionGroup(session) : (room.group_label || "—");
-    const joined = session ? (session.joined || 0) : (room.written_drives || 0);
-    const expected = session ? sessionExpected(session) : (room.target_drives || 0);
-    const pct = session
-      ? sessionProgressPct(session)
-      : (room.target_drives ? Math.round(100 * (room.written_drives || 0) / room.target_drives) : null);
-    const state = session ? session.state : (room.wave_state || "");
-    const bar = pct == null ? "—" : `<div class="progress" style="width:150px"><i style="width:${pct}%"></i></div>`;
-    const idLabel = session
-      ? (session.group_label || session.prefix || img)
-      : (room.image_name || "—");
-    tableBody = `<table class="table"><thead><tr><th>סבב</th><th>אימג׳</th><th>כיתה</th><th>מחוברים</th><th>התקדמות</th><th>סטטוס</th><th>פעולות</th></tr></thead><tbody><tr><td><strong>${esc(idLabel)}</strong></td><td>${esc(img)}</td><td>${esc(group)}</td><td>${joined} / ${expected}</td><td>${bar}</td><td><span class="status ${stateClass(state)}"><i></i>${esc(stateLabel(state))}</span></td><td><button class="tool-btn" onclick="openRoundDetail()">פרטים</button></td></tr></tbody></table>`;
+    name = "חדר המשכפלים";
+    sub = ROOM == null ? "החדר לא נקרא" : [`${kids.length} ${kids.length === 1 ? "משכפל" : "משכפלים"}`, `${st.slots} חריצים`, `${st.awake} מחוברים`, `${st.filled} דיסקים בחריצים`].join(" · ");
+    pill = ROOM == null ? UI.pill("", "החדר לא נקרא") : UI.pill("", "אין סבב");
   }
+  const actions = (tab === 0 && ROOM ? (op && r && r.wave_state === "open" ? `<button class="btn primary" onclick="startWave()">התחל גל (${r.ready_drives || 0} מוכנים)</button>` : "")
+    + (op ? `<button class="btn" onclick="wakeRoom()">הער משכפלים (WoL)</button>` : "")
+    + (op && r ? `<button class="btn danger" onclick="stopRoom()">עצור סבב (הקלדת שם)</button>` : "")
+    + `<button class="btn" onclick="toggleRoomBig()">${DEPLOY.big ? "חזרה לתצוגה המלאה" : "תצוגה גדולה"}</button>` : "")
+    + `<button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>`;
+  const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "סבב הפצה" }], icon: "copy",
+    name: tab === 0 ? name : tab === 1 ? "סבב כיתה" : "היסטוריית סבבים", sub: tab === 0 ? sub : tab === 1 ? "מחשבי כיתה — v2 (הכרעת נדב 17/09); מוצג כפי שקיים היום" : "סבבים קודמים", pill: tab === 0 ? pill : "", actions, tabs, tab });
+  const stale = overviewError ? `<div class="c12">${UI.note("warn", esc(overviewError))}</div>` : "";
+  let body;
+  if (tab === 1) body = deployClassView();
+  else if (tab === 2) body = UI.card({ title: "היסטוריית סבבים", cls: "c12", body: UI.note("info", `סבבים קודמים בחדר ובכיתות — <b title="אין endpoint לסבבים סגורים (#980 §3)">דורש API</b>. היום רק ${isAdmin() ? UI.link("ביומן", "selectPageById('logs')") : "ביומן (מנהל)"}.`) });
+  else if (ROOM == null) body = `<div class="c12">${UI.note("warn", `החדר לא נקרא${DEPLOY.roomErr ? ": " + esc(DEPLOY.roomErr) : ""} — הגריד והסבב לא ידועים.`)}</div>`;
+  else if (DEPLOY.big) body = roomGridCard(kids, st, true);
+  else if (r) body = `<div class="c12 kpis">${roomKpis(r, st, pct)}</div>` + roomGridCard(kids, st, false) + roomNotes(kids, st);
+  else body = roomNewCard(kids, st) + roomGridCard(kids, st, false) + roomNotes(kids, st);
+  return `<div class="page">${header}<div class="body">${stale}${body}</div></div>`;
+}
 
-  const sid = session && session.id;
-  const startAttr = sid && ME && session.state === "open" ? ` onclick="startRound()"` : " disabled";
-  const stopAttr = sid && ME ? ` onclick="stopRound()"` : " disabled";
-  const members = (session && session.members) || [];
-  const membersHtml = members.length
-    ? `<div class="list">${memberRows(members)}</div>`
-    : `<div class="empty">אין תחנות מצורפות</div>`;
-
-  return `<div class="grid"><div class="span-12"><div class="card"><div class="card-h"><span>סבבים</span>${tag}</div><div class="card-b table-wrap">${tableBody}</div></div></div>
-<div class="span-8"><div class="card"><div class="card-h">תחנות בסבב</div><div class="card-b">${membersHtml}</div></div></div>
-<div class="span-4"><div class="card"><div class="card-h">בקרת סבב</div><div class="card-b"><div class="list"><div class="list-row"><div class="list-main"><strong>התחלה ידנית</strong><small>מקדים את הטיימר אם הסבב פתוח</small></div><button class="btn"${startAttr}>התחל</button></div><div class="list-row"><div class="list-main"><strong>עצירת סבב</strong><small>מונע הצטרפות חדשה</small></div><button class="btn danger"${stopAttr}>עצור</button></div></div></div></div></div></div>`;
+function roomKpis(r, st, pct) {
+  const stalled = !!ROOM.stream_stalled, open = r.wave_state === "open";
+  const k1 = UI.kpi({ cls: stalled ? "warn" : "info", label: "הגל הנוכחי", value: `גל ${r.wave_number || 1}`, bar: pct,
+    sub: (open ? `${r.ready_drives || 0} מגירות מוכנות · הגל טרם התחיל` : pct == null ? "עוד אין דיווח כתיבה" : `${pct}% בממוצע על המגירות שהצטרפו`)
+      + (stalled ? " · <b>הזרם עצר</b>" : "") + ` · קצב ואיבוד — <b title="‏/room אינו מחזיר קצב או איבוד חבילות">דורש API</b>` });
+  const k2 = UI.kpi({ cls: r.written_drives ? "ok" : "", label: "נכתבו ואומתו", value: r.written_drives || 0, unit: `/ ${r.target_drives || 0}`,
+    sub: r.remaining_drives === 0 ? "היעד לסבב הושלם" : `${r.remaining_drives != null ? r.remaining_drives : "?"} נשארו · מכל הגלים` });
+  const k3 = UI.kpi({ cls: st.writing.length ? "info" : "", label: "כותבים עכשיו", value: st.writing.length,
+    sub: st.writing.length ? esc(whereList(st.writing)) : open ? "הגל טרם התחיל" : "אף מגירה לא כותבת כרגע" });
+  const care = st.prompts.length + st.red.length + (stalled ? 1 : 0);
+  const careSub = [...st.prompts.map((m) => `${esc(machineName(m))} ממתין לתשובה`), st.red.length ? `${esc(whereList(st.red))} אדום — מדלג` : "", stalled ? "הזרם עצר" : ""].filter(Boolean).join(" · ");
+  const k4 = UI.kpi({ cls: st.red.length ? "err" : care ? "warn" : "", label: "דורש מפעיל", value: care, sub: careSub || "אין שאלות פתוחות ואין אדומים" });
+  const k5 = UI.kpi({ cls: "", label: "ריקים / לא מחוברים", value: st.empty.length + st.off.length,
+    sub: [st.off.length ? `${esc(st.off.map(machineName).join(", "))} ${st.off.length === 1 ? "לא מחובר" : "לא מחוברים"}` : "כל המשכפלים מחוברים", `${st.empty.length} חריצים פנויים`].join(" · ") });
+  return k1 + k2 + k3 + k4 + k5;
+}
+function roomGridCard(kids, st, big) {
+  const r = roomRound(), admin = isAdmin();
+  const small = r ? "בסבב — מצב כל מגירה מ-/room" : "אין סבב — הדיסקים לפי הדיווח האחרון ב-hello";
+  const body = kids.length ? `<div class="mgrid${big ? " big" : ""}">${kids.map((m) => clonerCardHtml(m, admin, true)).join("")}</div>`
+    : UI.empty("אין מחשבי שיכפול רשומים — הוסיפו אותם במחשבים (MAC + שם) לפני שפותחים סבב.", admin ? `<button class="btn primary" onclick="openClass('grp_CLONERS')">למחשבי השיכפול</button>` : "");
+  return UI.card({ title: "המחשבים והדיסקים", small, acts: clonerLegend(), cls: "c12", body });
+}
+/* השאלה הפתוחה למפעיל — בדף, לא במודאל. הצבע = מה קורה בלי תשובה (הכרעת נדב 16/09):
+   כתום ממשיך לכתוב, אדום מדלג. הפעולות: מוניטור (לענות ליד המסך), "נקה" על רשומת אדום
+   (אחרי החלפת דיסק/כבל); תשובה מהקונסולה — דורש API. */
+function roomNotes(kids, st) {
+  const admin = isAdmin(), out = [], asked = new Set(st.prompts.map((m) => m.mac));
+  const clears = (items) => admin ? items.filter((x) => x.s.fail).map((x) => UI.link(`נקה אדום — ${machineName(x.m)} · דיסק ${x.s.n}`, `clearDiskFailure(${Number(x.s.fail.id)})`)) : [];
+  for (const m of st.prompts) {
+    const red = st.red.filter((x) => x.m.mac === m.mac), warn = st.warn.filter((x) => x.m.mac === m.mac);
+    const fate = red.length ? `<b>אדום — בלי תשובה הסוכן מדלג</b> על ${esc(whereList(red))}` : warn.length ? `<b>כתום — בלי תשובה הסוכן ממשיך לכתוב</b> על ${esc(whereList(warn))}` : "<b>ממתין לתשובה ליד המכונה</b>";
+    const acts = [admin ? UI.link("לענות ליד המסך — דף המוניטור", `selectPageById('monitor')`) : "", ...clears(red),
+      `תשובה מהקונסולה — <b title="אין endpoint לתשובת מפעיל (#906: השאלה נענית ליד המכונה)">דורש API</b>`].filter(Boolean).join(" · ");
+    out.push(UI.note(red.length ? "err" : "warn", `<b>${esc(machineName(m))}</b> ממתין למפעיל: <span dir="ltr">${esc(PROMPT_HE[m.prompt] || m.prompt)}</span>. ${fate}. ${acts}. השאלה חייבת תשובה מאדם — שיכפול תמיד עם מישהו ליד המחשבים.`));
+  }
+  if (roomRound()) {
+    const warn = st.warn.filter((x) => !asked.has(x.m.mac)), red = st.red.filter((x) => !asked.has(x.m.mac));
+    if (warn.length) out.push(UI.note("warn", `<b>${esc(whereList(warn))}</b> — SMART אזהרה / CRC: <b>הסוכן ממשיך לכתוב</b> (כתום = כותב), והדיסק ייבדק שוב באימות. דילוג מרחוק — <b title="אין endpoint לדילוג על מגירה">דורש API</b>.`));
+    if (red.length) out.push(UI.note("err", `<b>${esc(whereList(red))}</b> — אדום: <b>הסוכן מדלג</b> (אדום = מדלג). ${[...clears(red), "החלפת דיסק או כבל — ליד המכונה"].join(" · ")}.`));
+  }
+  return out.length ? `<div class="c12 rnotes">${out.join("")}</div>` : "";
+}
+/* סבב חדר חדש — inline, לא מודאל: אימג' ("נכנס לדיסק מ-X GB"; #953: מה שלא נכנס למגירה
+   הקטנה מושבת עם הסיבה — לא מוסתר) → מקור (ספרייה / דיסק מחשב בנייה, #715) → פתח סבב
+   (‏POST /room) → ואז "התחל גל". הערכים נשמרים ב-DEPLOY.form כי הדף מצטייר מחדש כל 2 ש'. */
+function roomNewCard(kids, st) {
+  const f = DEPLOY.form, floor = ROOM.disk_floor || null, op = roomOperator();
+  const images = (IMAGES || []).slice().sort((a, b) => String(a.folder || "").localeCompare(String(b.folder || "")) || String(a.name).localeCompare(String(b.name)));
+  const opts = `<option value="">— בחר אימג' —</option>` + images.map((img) => {
+    const reason = imageFitReason(img, floor), g = gbCeil(img.min_target_bytes);
+    return `<option value="${esc(img.id)}"${reason ? " disabled" : ""}${img.id === f.image ? " selected" : ""}>${esc((img.folder ? img.folder + " / " : "") + img.name)}${g != null ? ` · נכנס לדיסק מ-${g} GB` : " · גודל נדרש לא ידוע"}${reason ? " — לא נכנס: " + esc(reason) : ""}</option>`;
+  }).join("");
+  const floorNote = floor ? `המגירה הקטנה ביותר בחדר: ${Math.round(floor.size_bytes / 1e9)}GB (דיסק ${floor.port != null ? floor.port : floor.dev} במחשב ${esc(floor.name)}).` : "גודל הדיסקים לא ידוע — יסורב במכונה אם לא ייכנס.";
+  const builders = (MACHINES || []).filter((m) => machineRole(m) === "build" && Array.isArray(m.disks) && m.disks.length);
+  const builder = builders.find((m) => m.mac === f.builder) || builders[0] || null;
+  const direct = f.src === "build_disk";
+  const declared = kids.reduce((n, m) => n + (Number(m.drawer_count) || 0), 0);
+  const target = f.target !== "" ? f.target : String(Math.max(1, declared));
+  const live = kids.flatMap((m) => (m.disks || []).filter((d) => d.serial && d.port != null)).length;
+  const source = `<div class="radios" role="radiogroup" aria-label="מקור"><label><input type="radio" name="rn-src" value="library"${direct ? "" : " checked"} onchange="roomFormSet('src',this.value)">מהשרת (הספרייה)</label>`
+    + (builders.length ? `<label><input type="radio" name="rn-src" value="build_disk"${direct ? " checked" : ""} onchange="roomFormSet('src',this.value)">מדיסק מחשב בנייה (הפצה ישירה)</label>` : `<span class="muted">מדיסק מחשב בנייה — אין מחשב בנייה שדיווח על דיסקים</span>`) + `</div>`;
+  const fields = direct && builder
+    ? `<label>מחשב בנייה<select id="rn-builder" onchange="roomFormSet('builder',this.value)">${builders.map((m) => `<option value="${esc(m.mac)}"${m.mac === builder.mac ? " selected" : ""}>${esc(machineName(m))}</option>`).join("")}</select></label>
+       <label>דיסק המקור<select id="rn-disk" onchange="roomFormSet('disk',this.value)">${builder.disks.map((d, i) => `<option value="${esc(d.dev)}"${(f.disk || builder.disks[0].dev) === d.dev ? " selected" : ""}>דיסק ${diskSlot(d, i)} · ${fmtBytes(d.size_bytes)} · ${esc(d.model || "")}</option>`).join("")}</select></label>
+       <div class="full muted">היעד: כל המגירות המחוברות כרגע (${live}) — הפצה ישירה דורשת בחירה מפורשת, ונשלחות כולן. סבב יחיד, לא מצטבר.</div>`
+    : `<label>אימג'<select id="rn-image" onchange="roomFormSet('image',this.value)">${opts}</select></label>
+       <label>יעד — כמה דיסקים בסך הכול (בכל הגלים)<input type="number" id="rn-target" min="1" value="${esc(target)}" oninput="roomFormSet('target',this.value)"></label>
+       <div class="full muted">${floorNote}${declared ? ` ברירת המחדל = ${declared} חריצים שהוגדרו בחדר.` : ""}</div>`;
+  const err = DEPLOY.err ? UI.note("err", `הסבב לא נפתח: ${esc(DEPLOY.err)}`) : "";
+  const submit = op ? `<div class="full"><button class="btn primary" onclick="openRoomRoundSubmit()"${DEPLOY.busy ? " aria-busy=\"true\"" : ""}>פתח סבב</button> <span class="muted">הפתיחה מעירה את החדר ב-WoL; "התחל גל" אחרי שהמשכפלים הצטרפו.</span></div>` : `<div class="full muted">פתיחת סבב — למנהל או למפעיל הפצה.</div>`;
+  return UI.card({ title: "סבב חדר חדש", small: "אין סבב פעיל", cls: "c12", body: `<div class="rnew">${err ? `<div class="full">${err}</div>` : ""}<div class="full">${source}</div>${fields}${submit}</div>` });
+}
+function roomFormSet(key, value) { DEPLOY.form[key] = value; if (key === "src" || key === "builder") renderCurrent(); }
+function toggleRoomBig() { DEPLOY.big = !DEPLOY.big; renderCurrent(); }
+async function openRoomRoundSubmit() {
+  if (!roomOperator() || DEPLOY.busy) return;
+  const f = DEPLOY.form; DEPLOY.err = "";
+  let body;
+  if (f.src === "build_disk") {
+    const builders = (MACHINES || []).filter((m) => machineRole(m) === "build" && Array.isArray(m.disks) && m.disks.length);
+    const builder = builders.find((m) => m.mac === f.builder) || builders[0];
+    const by = new Map();
+    roomMachines().forEach((m) => (m.disks || []).forEach((d) => { if (d.serial && d.port != null) { if (!by.has(m.mac)) by.set(m.mac, []); by.get(m.mac).push(d.port); } }));
+    const target_slots = [...by].map(([mac, ports]) => ({ mac, ports }));
+    if (!builder) DEPLOY.err = "אין מחשב בנייה שדיווח על דיסקים";
+    else if (!target_slots.length) DEPLOY.err = "אין מגירה מחוברת שאפשר לבחור כיעד";
+    body = { source: { kind: "build_disk", mac: builder ? builder.mac : "", disk: f.disk || (builder ? builder.disks[0].dev : "") }, target_slots };
+  } else {
+    if (!f.image) DEPLOY.err = "בחר אימג'";
+    body = { image_id: f.image, target_drives: Number(f.target) || 0 };
+  }
+  if (DEPLOY.err) { renderCurrent(); return; }
+  DEPLOY.busy = true;
+  try {
+    await post("/room", body);
+    toast("הסבב נפתח — החדר הוער ב-WoL");
+    DEPLOY.form.image = ""; DEPLOY.form.target = "";
+    await loadDeploy();
+  } catch (e) {
+    DEPLOY.err = e.message;   // ‏409: "כבר יש סבב" / fit_refusal (#953) — אותה מחרוזת שהאפשרות המושבתת מציגה
+  } finally { DEPLOY.busy = false; }
+  if (current === "deploy") renderCurrent();
+}
+async function startWave() {
+  if (!roomOperator()) return;
+  try { await post("/room/start"); toast("הגל התחיל"); await loadDeploy(); }
+  catch (e) { toast("הגל לא התחיל: " + e.message, 6000); }   // ‏409 — אף משכפל לא הצטרף / המניפסט טרם הגיע
+}
+function stopRoom() {
+  const r = roomRound();
+  if (!roomOperator() || !r) return;
+  const name = r.image_name || r.image_id || "";
+  sheet({ title: "עצירת סבב החדר", sub: `הסבב על "${name}" ייעצר: השידור נפסק, הגל נסגר ומגירות שלא נכתבו נשארות טריות. פעולה הרסנית — הקלדת שם.`,
+    danger: true, submitLabel: "עצור סבב", verify: { label: "הקלד את שם האימג'", mustEqual: name },
+    onSubmit: async () => { await post("/room/close", { confirm_name: name }); toast("הסבב נעצר"); await loadDeploy(); } });
+}
+/* לשונית "כיתה": קוד ה-session הקיים כמו שהוא (סבב כיתה = v2) — שורת הסבב, התחלה/עצירה,
+   התחנות (memberRow + stuckNote), החסרות מרשימת הכיתה (נקראה בכניסה לדף), משיכות unicast. */
+function deployClassView() {
+  if (!OVERVIEW) return UI.card({ title: "סבב כיתה", cls: "c12", body: UI.note("warn", "‏/overview לא נקרא — הסבב לא ידוע.") });
+  const s = OVERVIEW.session, pulls = OVERVIEW.pulls || [];
+  // הגל של חדר המשכפלים הוא session על grp_CLONERS (‏/overview.session) — הוא שייך ללשונית החדר, לא לכיתה.
+  const wave = s && (s.group_id === "grp_CLONERS" || (OVERVIEW.room && s.prefix === "ROOM"));
+  if (!s || wave) return UI.card({ title: "סבב כיתה", small: "v2", cls: "c12", body: UI.empty(wave ? "אין סבב כיתה — הסבב הפעיל הוא גל בחדר המשכפלים (הלשונית הראשונה)." : "אין סבב כיתה פתוח. סבב כיתה נפתח ממסך התחנה; מחשבי כיתה בקונסולה — v2.") + (pulls.length ? `<div style="margin-top:12px">${pullsHtml(pulls, false)}</div>` : "") });
+  const img = sessionImage(s), pct = sessionProgressPct(s);
+  const bar = pct == null ? "—" : `<div class="progress" style="width:150px"><i style="width:${pct}%"></i></div>`;
+  const table = `<table class="table"><thead><tr><th>סבב</th><th>אימג׳</th><th>כיתה</th><th>מחוברים</th><th>התקדמות</th><th>סטטוס</th></tr></thead><tbody><tr><td><strong>${esc(s.group_label || s.prefix || img)}</strong></td><td>${esc(img)}</td><td>${esc(sessionGroup(s))}</td><td>${s.joined || 0} / ${sessionExpected(s)}</td><td>${bar}</td><td><span class="status ${stateClass(s.state)}"><i></i>${esc(stateLabel(s.state))}${s.state === "open" && s.starts_in_seconds != null ? ` · מתחיל בעוד ${s.starts_in_seconds} ש'` : ""}</span></td></tr></tbody></table>`;
+  const op = roomOperator();
+  const acts = op ? `<div class="acts">${s.state === "open" ? `<button class="btn primary" onclick="startRound()">התחל עכשיו</button>` : ""}<button class="btn danger" onclick="stopRound()">עצור סבב (הקלדת שם)</button></div>` : "";
+  const roster = s.roster ? new Set(s.roster) : null, byMac = new Map((s.members || []).map((m) => [m.mac, m]));
+  let rows = (s.members || []).map((m) => memberRow(m, s, stuckNote(s.stuck, m.mac))).join("");
+  const machines = s.single ? [] : (SESSION_MACHINES.group === s.group_id ? SESSION_MACHINES.list : null);
+  for (const m of machines || []) if ((!roster || roster.has(m.mac)) && !byMac.has(m.mac)) rows += `<div class="member"><b>${esc((s.prefix || "") + "-" + m.suffix)}</b><div class="sub">${esc(stuckNote(s.stuck, m.mac) || "טרם הצטרפה")}</div></div>`;
+  const next = (machines || []).filter((m) => roster && !roster.has(m.mac)).map((m) => m.suffix);
+  const note = machines === null && !s.single ? UI.note("warn", "רשימת הכיתה לא נקראה — תחנות חסרות אינן מוצגות.") : "";
+  return UI.card({ title: "סבב כיתה", small: "v2 — כפי שקיים היום", cls: "c12", body: `<div class="table-wrap">${table}</div>${acts}` })
+    + UI.card({ title: "תחנות בסבב", cls: "c12", body: note + (rows ? `<div class="list">${rows}</div>` : `<div class="empty">אין תחנות מצורפות</div>`) + (next.length ? `<div class="notice">הסבב הבא: ${esc(next.join(", "))}</div>` : "") + pullsHtml(pulls, true) });
+}
+/* טעינת הדף: /overview (הפולינג הקיים), /room, /images, ורשומות המחשבים (שם/prompt/דיסקים
+   אדומים/IP) — deploy קורא את כולם (GET בלבד; הכתיבה היא של room_operator). */
+async function loadDeploy() {
+  const jobs = [refreshStatus()];
+  jobs.push(api("/room").then((v) => { ROOM = v && Array.isArray(v.machines) ? v : null; DEPLOY.roomErr = ROOM ? "" : "תשובה שאינה חדר"; })
+    .catch((e) => { ROOM = null; DEPLOY.roomErr = e.message; }));
+  jobs.push(api("/images").then((v) => { if (Array.isArray(v)) IMAGES = v; }).catch(() => {}));
+  jobs.push(Promise.allSettled([api("/machines"), api("/groups"), api("/disk-failures"), api("/net")]).then(([m, g, f, n]) => {
+    if (m.status === "fulfilled" && Array.isArray(m.value)) MACHINES = m.value;
+    if (g.status === "fulfilled" && Array.isArray(g.value)) GROUPS = g.value;
+    if (f.status === "fulfilled" && Array.isArray(f.value)) DISK_FAILURES = f.value;
+    if (n.status === "fulfilled" && Array.isArray(n.value)) NET = n.value;
+  }));
+  await Promise.all(jobs);
+  const s = OVERVIEW && OVERVIEW.session;
+  if (s && !s.single && s.group_id) await sessionClassMachines(s.group_id);
+  ROOM_KEY = JSON.stringify([ROOM, (MACHINES || []).map((m) => [m.mac, m.prompt])]);
+  if (current === "deploy") renderCurrent();
 }
 
 /* ---------- ספריית אימג'ים (#954 גל 2) ----------
@@ -1923,7 +2147,6 @@ function machineRowHtml(m) {
   const macEnc = encodeId(m.mac), net = netFor(m.mac), st = machineState(m), role = machineRole(m);
   const name = machineName(m) || m.mac, sub = machineSub(m), sel = MCH.sel.has(m.mac);
   const acts = [];
-  if (role === "build" || role === "cloner") acts.push(["מוניטור", `monitorMachine('${macEnc}')`]);
   acts.push(["פרטים", `openMachineDetail('${macEnc}')`]);
   return { attrs: `data-mac="${esc(m.mac)}"${sel ? ' class="sel"' : ""}`, cells: [
     `<input type="checkbox" aria-label="בחר ${esc(name)}"${sel ? " checked" : ""} onchange="toggleMchSel('${macEnc}',this.checked)">`,
@@ -2235,14 +2458,18 @@ function clonerState(m) {
   }
   return machineState(m);
 }
-function clonerCardHtml(m, admin) {
-  const macEnc = encodeId(m.mac), net = netFor(m.mac), st = clonerState(m), { slots, declared } = machineSlots(m);
+/* ‏`room` (גל 4): אותו כרטיס בדף ההפצה — המצב מ-`awake` של /room, WoL כשהמכונה לא מחוברת. */
+function clonerCardHtml(m, admin, room = false) {
+  const macEnc = encodeId(m.mac), net = netFor(m.mac), st = room ? roomCardState(m) : clonerState(m), { slots, declared } = machineSlots(m);
   const meta = [esc(st.text), `${slots.length} ${slots.length === 1 ? "חריץ" : "חריצים"}${declared || !slots.length ? "" : " (לפי הדיווח)"}`,
     net && net.ip ? `<span class="mono">${esc(net.ip)}</span>` : "", esc(NET ? seenAgo(net && net.last_seen) : "לא נקרא")].filter(Boolean).join(" · ");
   const body = slots.length ? `<div class="slots">${slots.map((s) => slotHtml(m, s, admin)).join("")}</div>`
     : UI.note("", `מספר החריצים לא הוגדר והמכונה ${m.disks == null ? "מעולם לא דיווחה על דיסקים" : "דיווחה 0 דיסקים"}.${admin ? ` ${UI.link("הגדר חריצים", `editDrawerCount('${macEnc}')`)}` : ""}`);
-  const acts = admin ? `<div class="acts"><button class="btn sm" onclick="monitorMachine('${macEnc}')">מוניטור</button><button class="btn sm" onclick="openMachineDetail('${macEnc}')">פרטים</button><button class="btn sm" onclick="wakeRoom()" title="WoL נשלח לכל החדר — אין WoL למחשב יחיד">WoL (כל החדר)</button></div>` : "";
-  return `<div class="mcard${st.cls ? "" : " off"}" data-mac="${esc(m.mac)}"><div class="mcard-h"><span class="st ${st.cls}"><b>${esc(machineName(m) || m.mac)}</b></span><span class="muted">${meta}</span></div>${body}${acts}</div>`;
+  const wol = `<button class="btn sm" onclick="wakeRoom()" title="WoL נשלח לכל החדר — אין WoL למחשב יחיד">WoL (כל החדר)</button>`;
+  const acts = room
+    ? (st.off && roomOperator() ? wol : "")
+    : admin ? `<button class="btn sm" onclick="openMachineDetail('${macEnc}')">פרטים</button>${wol}` : "";
+  return `<div class="mcard${st.cls ? "" : " off"}" data-mac="${esc(m.mac)}"><div class="mcard-h"><span class="st ${st.cls}"><b>${esc(machineName(m) || m.mac)}</b></span><span class="muted">${meta}</span></div>${body}${acts ? `<div class="acts">${acts}</div>` : ""}</div>`;
 }
 function clonerLegend() {
   return `<div class="legend"><span><i class="sw-ok"></i>SMART תקין / נכתב</span><span><i class="sw-run"></i>כותב</span><span><i class="sw-warn"></i>אזהרה — כותב</span><span><i class="sw-err"></i>אדום — נכשל, מדלג</span><span><i class="sw-empty"></i>חריץ ריק</span></div>`;
@@ -2301,11 +2528,13 @@ function openRoomRound() {
 }
 /* רענון חי: /room כל 2 שניות כשאובייקט המשכפלים פתוח (כמו /overview בדף ההפצה); רינדור רק על שינוי. */
 async function refreshGroupLive() {
-  const g = (GROUPS || []).find((x) => x.id === MACHINES_CLASS);
-  if (!g || g.role !== "cloner" || current !== "machines") return;
-  const view = await api("/room");
+  const g = (GROUPS || []).find((x) => x.id === MACHINES_CLASS), room = current === "deploy";
+  if (!room && (!g || g.role !== "cloner" || current !== "machines")) return;
+  // ‏גל 4: בחדר גם /machines — השאלה למפעיל (prompt, #906) משתנה בין דגימות.
+  const [view, machines] = await Promise.all([api("/room"), room ? api("/machines").catch(() => null) : null]);
   ROOM = view && Array.isArray(view.machines) ? view : null;
-  const key = JSON.stringify(ROOM);
+  if (Array.isArray(machines)) MACHINES = machines;
+  const key = room ? JSON.stringify([ROOM, (MACHINES || []).map((m) => [m.mac, m.prompt])]) : JSON.stringify(ROOM);
   if (key === ROOM_KEY) return;
   ROOM_KEY = key;
   renderCurrent();
@@ -2391,7 +2620,7 @@ function builderCardHtml(m, admin) {
     ["לפני קליטה", `<span class="muted">NTFS / בשימוש — נבדקים בקליטה (<b title="לא מדווח ב-hello">דורש API</b>)</span>`],
     ["מצב", state],
   ]);
-  const acts = admin ? `<div class="acts">${task ? "" : `<button class="btn sm primary" onclick="openCapture('${macEnc}').catch(e => toast(e.message))">קלוט מכאן</button>`}<button class="btn sm" onclick="monitorMachine('${macEnc}')">מוניטור</button><button class="btn sm" onclick="openMachineDetail('${macEnc}')">פרטים</button>${UI.soon("WoL")}</div>` : "";
+  const acts = admin ? `<div class="acts">${task ? "" : `<button class="btn sm primary" onclick="openCapture('${macEnc}').catch(e => toast(e.message))">קלוט מכאן</button>`}<button class="btn sm" onclick="openMachineDetail('${macEnc}')">פרטים</button>${UI.soon("WoL")}</div>` : "";
   const meta = [net && net.ip ? `<span class="mono">${esc(net.ip)}</span>` : "", esc(NET ? seenAgo(net && net.last_seen) : "לא נקרא")].filter(Boolean).join(" · ");
   return `<div class="mcard${st.cls ? "" : " off"}" data-mac="${esc(m.mac)}"><div class="mcard-h"><span class="st ${st.cls}"><b>${esc(machineName(m) || m.mac)}</b></span><span class="muted">${meta}</span></div>${kv}${acts}</div>`;
 }
@@ -2529,7 +2758,6 @@ function machineDrawerHtml(m) {
   const sub = [esc(ROLE_HE[role] || role), g ? esc(g.label) : "", `<span class="mono">${esc(m.mac)}</span>`, net && net.ip ? `<span class="mono">${esc(net.ip)}</span>` : "",
     `נראה ${esc(NET ? seenAgo(net && net.last_seen) : "לא נקרא")}`].filter(Boolean).join(" · ");
   const actions = `<div class="acts" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">`
-    + (admin && (role === "build" || role === "cloner") ? `<button class="btn primary" onclick="monitorMachine('${macEnc}')">מוניטור</button>` : "")
     + (admin && role === "cloner" ? `<button class="btn" onclick="wakeRoom()" title="WoL נשלח לכל חדר השיכפולים — אין WoL למחשב יחיד">Wake-on-LAN (כל החדר)</button>` : UI.soon("Wake-on-LAN"))
     + (admin ? `<button class="btn" onclick="renameMachine('${macEnc}')">שינוי שם</button>` : "")
     + UI.soon("אתחול מרחוק") + `</div>`;
@@ -3291,7 +3519,7 @@ const pages = {
   // ‏#954: הדף מצייר את הכותרת והלשוניות שלו (own) לפי שפת העיצוב החדשה; הלשוניות בפועל לפי תפקיד (homeTabs).
   home: { crumb: "סקירה כללית", title: "סקירה כללית", tabs: ["סיכום", "משימות", "אירועים"], render: home, load: loadHome, own: true },
   images: { crumb: "אימג'ים", title: "ספריית אימג'ים", tabs: imagesTabs(), render: images, load: loadImages, own: true },
-  deploy: { crumb: "סבבי הפצה", title: "סבבי הפצה", desc: "פתיחת סבב, צירוף תחנות ומעקב אחר כתיבה לכל מחשב", tabs: ["סבבים", "הצטרפות חיה"], render: deploy, load: refreshStatus },
+  deploy: { crumb: "סבב הפצה", title: "סבב הפצה", tabs: deployTabs(), render: deploy, load: loadDeploy, own: true },
   machines: { crumb: "מחשבים", title: "מחשבים", tabs: ["כל המחשבים", "נראו ברשת", "דיסקים אדומים"], render: machines, load: loadMachines, own: true },
   health: { crumb: "בריאות שרת", title: "בריאות שרת", desc: "שירותים, מאזינים ותהליכים המשרתים את תהליך הפריסה", tabs: ["סקירה", "שירותים", "בדיקות"], render: health, load: loadHealth },
   network: { crumb: "רשת", title: "רשת", desc: "הגדרות כתובת, gateway, DNS וממשק שידור", tabs: ["הגדרות", "פורטיים", "מולטיקאסט"], render: network, load: loadNetcfgData },
@@ -3309,7 +3537,6 @@ let searchQuery = "";
 
 function tabRender(pageId, index) {
   const renderers = {
-    deploy: [deploy, emptyDataCard],
     health: [health, () => `<div class="card"><div id="ssh-body"></div></div>`, health],
     network: [network, emptyDataCard, emptyDataCard],
     permissions: [usersAdminPage, permissions],
@@ -3517,7 +3744,6 @@ function openAction() {
   if (!menu) return;
   const actions = {
     images: [["אימג׳ חדש", "openCapture().catch(e => toast(e.message))"], ["קליטת אימג׳", "openImageIngest()"], ["אימות ספרייה", "soon()"]],
-    deploy: [["סבב הפצה חדש", "soon()"], ["התחל סבב", "startSelectedRound()"], ["ייצוא סבבים", "soon()"]],
     health: [["בדיקת בריאות", "loadHealth()"], ["פרטי שירותים", "soon()"]],
     network: [["בדיקת קישוריות", "soon()"], ["שמור הגדרות", "saveNetwork()"], ["Rollback", "soon()"]],
     permissions: [["משתמש חדש", "openNewUser()"], ["תפקידי מערכת", "openRolesDrawer()"]],
@@ -3546,7 +3772,6 @@ function closeActionMenu() {
 
 function openDrawer(title, body) {
   drawerGeneration++;
-  roundDrawerOpen = false;
   document.getElementById("drawerTitle").textContent = title;
   document.getElementById("drawerBody").innerHTML = body;
   document.getElementById("drawer").classList.add("open");
@@ -3555,7 +3780,6 @@ function openDrawer(title, body) {
 
 function closeDrawer() {
   drawerGeneration++;
-  roundDrawerOpen = false;
   document.getElementById("drawer").classList.remove("open");
   document.getElementById("detailBackdrop").style.display = "none";
 }
@@ -3711,8 +3935,6 @@ function createImage() { soon(); }
 function wakeMachine() { soon(); }
 function openNewImage() { soon(); }
 function verifyLibrary() { soon(); }
-function openNewDeployment() { soon(); }
-function startSelectedRound() { startRound(); }
 function exportRounds() { soon(); }
 function runHealthCheck() { soon(); }
 function openServicesDrawer() { soon(); }
@@ -4438,7 +4660,6 @@ function wireRestoredPage() {
 let journalFilters = {};
 let pollTimer = null, overviewBusy = false, overviewError = "", overviewLastOk = null;
 let CAPTURE_TASKS = [];
-let roundDrawerOpen = false;
 let drawerGeneration = 0;
 function startStatusWatch() {
   clearInterval(pollTimer);
@@ -4446,7 +4667,7 @@ function startStatusWatch() {
     if (!ME || document.hidden) return;
     refreshStatus();
     if (isAdmin() || current === "images") loadCaptures().catch(e => toast(e.message));
-    if (current === "machines" && MACHINES_CLASS) refreshGroupLive().catch(() => {});   // ‏גל 3א: /room חי באובייקט המשכפלים
+    if ((current === "machines" && MACHINES_CLASS) || current === "deploy") refreshGroupLive().catch(() => {});   // ‏גל 3א/4: /room חי באובייקט המשכפלים ובחדר
   }, 2000);
 }
 function renderActivity() {
@@ -4501,21 +4722,8 @@ function monitorToggle(enabling) {
     onSubmit: () => send({ confirm: "imagectl.monitor" }),
   });
 }
-async function openRoundDetail() {
-  const generation=drawerGeneration;
-  const s=OVERVIEW?.session;
-  if(!s) { openDrawer("Active transfers", pullsHtml(OVERVIEW?.pulls || [], false) || '<div class="empty">No active session</div>'); roundDrawerOpen=true; return; }
-  const machines=s.single ? [] : await sessionClassMachines(s.group_id);
-  if(!ME || generation !== drawerGeneration) return;
-  const roster=s.roster ? new Set(s.roster) : null;
-  const byMac=new Map((s.members || []).map(m=>[m.mac,m]));
-  let rows=(s.members || []).map(m=>memberRow(m,s,stuckNote(s.stuck,m.mac))).join("");
-  for(const m of machines || []) if((!roster || roster.has(m.mac)) && !byMac.has(m.mac)) rows+='<div class="member"><b>'+esc(s.prefix+"-"+m.suffix)+'</b><div class="sub">'+esc(stuckNote(s.stuck,m.mac)||"Not joined yet")+'</div></div>';
-  const next=(machines || []).filter(m=>roster && !roster.has(m.mac)).map(m=>m.suffix);
-  const note=machines===null ? '<div class="notice warn">Class roster could not be read; machines may be missing.</div>' : '';
-  openDrawer(sessionImage(s), '<div class="notice">'+esc(stateLabel(s.state))+' | '+(s.joined || 0)+' / '+sessionExpected(s)+(s.state==='open' && s.starts_in_seconds!=null ? ' | Starts in '+s.starts_in_seconds+'s' : '')+'</div>'+note+rows+(next.length ? '<div class="notice">Next round: '+esc(next.join(', '))+'</div>' : '')+pullsHtml(OVERVIEW?.pulls || [],true));
-  roundDrawerOpen=true;
-}
+/* ‏#954 גל 4: אין עוד מגירת סבב — "פרטים" מוביל ללשונית "כיתה" בדף ההפצה. */
+function openRoundDetail() { selectPageById("deploy"); activateTab(1); }
 
 const UI_ICON_PATHS = {
   "server": "<rect x=\"3\" y=\"4\" width=\"18\" height=\"6\" rx=\"1\"/><rect x=\"3\" y=\"14\" width=\"18\" height=\"6\" rx=\"1\"/><path d=\"M7 7h.01M7 17h.01M11 7h6M11 17h6\"/>",

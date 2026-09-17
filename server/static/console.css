@@ -772,3 +772,14 @@ button:focus-visible,[role="button"]:focus-visible,.inventory-node:focus-visible
 .page .cap-now:last-child{padding-bottom:0;margin-bottom:0;border-bottom:0}
 .page .cap-now .bar{display:inline-block;width:min(260px,100%);height:6px;vertical-align:middle;margin-inline-end:8px}
 @media(max-width:740px){.page .mgrid,.page .mgrid.big{grid-template-columns:1fr}.page .slots{grid-template-columns:repeat(auto-fill,minmax(100px,1fr))}.page .legend{gap:6px}}
+/* ---------- #954 גל 4: סבב הפצה — חדר המשכפלים: טופס סבב חדש inline, הערות למפעיל ---------- */
+.page .rnew{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;align-items:end}
+.page .rnew label{display:grid;gap:4px;font-size:13px;color:var(--ink)}
+.page .rnew select,.page .rnew input[type="number"]{height:30px;border:1px solid var(--hair);border-radius:var(--rp);padding:0 8px;background:var(--surface);color:var(--ink);font:inherit;font-size:13px;min-width:0;width:100%}
+.page .rnew .radios{display:flex;gap:14px;flex-wrap:wrap;font-size:13px}
+.page .rnew .radios label{display:inline-flex;gap:6px;align-items:center;flex-direction:row}
+.page .rnew .radios input{width:15px;height:15px;margin:0}
+.page .rnew .full{grid-column:1/-1}
+.page .rnotes{display:grid;gap:8px}
+.page .note [dir="ltr"]{unicode-bidi:isolate;font-family:var(--font-mono);font-size:12px}
+@media(max-width:740px){.page .rnew{grid-template-columns:1fr}}

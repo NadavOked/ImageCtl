@@ -132,7 +132,7 @@ def test_old_home_page_code_is_gone():
     "אין נתונים להצגה" בתחתית, בלי "+ פעולה" לסקירה, ובלי הלשונית הישנה
     "משימות אחרונות". הסקירה מציירת כותרת ולשוניות בעצמה (`own: true`)."""
     js = _console_js()
-    fn = js[js.index("function home("):js.index("function deploy() {")]
+    fn = js[js.index("function home("):js.index("function deploy(")]
     for gone in ("object-strip", ">Details<", "אין נתונים להצגה", "emptyDataCard", "footer-note"):
         assert gone not in fn, gone
     assert 'render: home, load: loadHome, own: true' in js
@@ -160,7 +160,7 @@ def test_shared_ui_renderers_exist_for_the_next_pages():
 def test_uptime_is_a_placeholder_not_a_number():
     """‏home.md "דורש API": זמן הפעילות מוצג כ"בקרוב", לא כמספר מומצא."""
     js = _console_js()
-    fn = js[js.index("function home("):js.index("function deploy() {")]
+    fn = js[js.index("function home("):js.index("function deploy(")]
     assert 'UI.soon("זמן פעילות")' in fn
     assert "uptime" not in fn.lower()
 
@@ -180,13 +180,13 @@ def test_images_tree_node_uses_the_folder_icon():
 
 # ---------- #954 גל 2: ספריית האימג'ים ----------
 
-def test_static_includes_are_at_7_2():
+def test_static_includes_are_at_7_3():
     """גל 2 = ‏7.0; גל 3 (מחשבים) = ‏7.1; גל 3א (משכפלים + מחשבי בנייה) מחליף
-    שוב JS+CSS+HTML — `?v=` עולה ל-7.2 (מטמון הדפדפן). שוויון על כל
+    שוב JS+CSS+HTML — `?v=` עולה ל-7.4 (7.3 של גל 4 + הסרת המוניטור בשער) (מטמון הדפדפן). שוויון על כל
     ה-includes — bump חלקי הוא הבאג."""
     page = _index()
     versions = {float(v) for v in re.findall(r'\?v=(\d+\.\d+)"', page)}
-    assert versions == {7.2}, versions
+    assert versions == {7.4}, versions
 
 
 def test_old_images_page_code_is_gone():
@@ -256,4 +256,31 @@ def test_cloners_and_builders_objects_are_built_on_group_page_from_the_api_only(
     assert "function groupPage(g, tab = 0)" in js and js.count("function groupPage(") == 1, "אובייקט אחד לכל הקבוצות"
     css = (STATIC / "console.css").read_text(encoding="utf-8")
     for sel in (".page .mgrid{", ".page .mgrid.big{", ".page .slots{", ".page .disk.run{", ".page .disk.empty{", ".page .legend i.sw-err{", ".page .cap-now{"):
+        assert sel in css, sel
+
+
+def test_deploy_page_is_the_cloners_room_from_the_api_only():
+    """‏#954 גל 4: דף ההפצה הוא חדר המשכפלים (deploy.md) — על אותו גריד של
+    גל 3א (`clonerCardHtml` במצב חדר, `machineSlots`, `slotHtml`), לא עותק.
+    כתיבה רק ל-endpoints הקיימים (`POST /room`, `/room/start`, `/room/wake`,
+    `/room/close` מאחורי הקלדת שם); סבב חדש inline (לא sheet); ההכרעה על
+    SMART (כתום ממשיך, אדום מדלג) גלויה בדף; מה שאין לו API — קצב/איבוד,
+    היסטוריה, דילוג מרחוק, תשובה מהקונסולה — "דורש API" בטקסט. הדף הישן
+    (סבבים / הצטרפות חיה, בקרת סבב, המגירה) איננו."""
+    js = _console_js()
+    for needed in ("function deploy(tab = 0)", "function loadDeploy(", "function roomKpis(", "function roomGridCard(", "function roomNotes(",
+                   "function roomNewCard(", "function stopRoom(", "function startWave(", "function imageFitReason(", "function deployClassView(",
+                   'post("/room", body)', 'post("/room/start")', 'post("/room/close", { confirm_name: name })', "verify: { label: \"הקלד את שם האימג'\", mustEqual: name }",
+                   "clonerCardHtml(m, admin, true)", "בלי תשובה הסוכן ממשיך לכתוב", "בלי תשובה הסוכן מדלג", "קצב ואיבוד — <b", "דורש API",
+                   'deploy: { crumb: "סבב הפצה", title: "סבב הפצה", tabs: deployTabs(), render: deploy, load: loadDeploy, own: true }'):
+        assert needed in js, needed
+    block = js[js.index("/* ---------- #954 גל 4"):js.index("/* ---------- ספריית אימג'ים (#954 גל 2)")]
+    assert "sda" not in block and "sdb" not in block, "שם sd* בקוד החדר"
+    assert 'disabled>' not in block.replace('${reason ? " disabled" : ""}', ""), "כפתור מנוטרל במקום 'דורש API' (README §8) — רק אפשרות אימג' שלא נכנסת (#953) מושבתת"
+    assert "דלג בשניהם" not in block
+    assert "prompt()" not in block and "confirm(" not in block, "prompt/confirm חסומים — רק sheet()"
+    for gone in ("הצטרפות חיה", "בקרת סבב", "async function openRoundDetail", "startSelectedRound", "openNewDeployment", "roundDrawerOpen", "deploy: [deploy, emptyDataCard]"):
+        assert gone not in js, gone
+    css = (STATIC / "console.css").read_text(encoding="utf-8")
+    for sel in (".page .rnew{", ".page .rnotes{", ".page .rnew .radios{"):
         assert sel in css, sel

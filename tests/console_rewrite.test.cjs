@@ -88,12 +88,12 @@ test('polling refreshes status, marks failed reads, and stops on logout',async()
   assert.match(run('overviewError'),/could not be read/);assert.match(node('.task-summary').textContent,/could not be read/);
   run('showLogin()');assert.equal(intervals.size,0);assert.equal(run('ME'),null);
 });
-test('session detail includes absent roster members, errors and SMART',async()=>{
-  const {run,node,fixtures}=setup();
+test('the class tab of the deploy page (#954 גל 4 — no round drawer) includes absent roster members, errors and SMART',async()=>{
+  const {run,fixtures}=setup();
   fixtures['/machines']=[{mac:'aa',suffix:'01'},{mac:'bb',suffix:'02'},{mac:'dd',suffix:'03'}];
   run('OVERVIEW.session.members[0].error="disk error";OVERVIEW.session.members[0].disks=[{disk_number:1,verdict:"fail",decision:"replace"}];');
-  await run('openRoundDetail()');const html=node('#drawerBody').innerHTML;
-  assert.match(html,/LAB-02/);assert.match(html,/disk error/);assert.match(html,/disk-smart fail/);assert.match(html,/Next round: 03/);balanced(html);
+  await run('sessionClassMachines(OVERVIEW.session.group_id)');const html=run('deploy(1)');
+  assert.match(html,/LAB-02/);assert.match(html,/disk error/);assert.match(html,/disk-smart fail/);assert.match(html,/הסבב הבא: 03/);balanced(html);
 });
 test('deploy role cannot reach admin or capability pages',()=>{
   const {run}=setup();run('ME.role="deploy"');

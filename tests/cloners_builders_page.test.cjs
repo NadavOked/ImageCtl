@@ -141,7 +141,7 @@ test('grid without a round: slots from /machines[].disks[] by drawer_count — d
   assert.match(c2,/<div class="disk " data-slot="2"><b>דיסק 2<\/b><span>SATA 1<\/span>[^]*?<span class="cap">SMART לא נבדק<\/span><\/div>/,'unchecked is grey, not green');
   assert.match(c2,/<div class="disk err" data-slot="3"><b>דיסק 3<\/b><span>SATA 2<\/span>[^]*?<span class="cap">אדום 15\/09\/2026 · כבל\/חריץ SATA 2<\/span><button class="btn sm" onclick="clearDiskFailure\(7\)">נקה<\/button><\/div>/);
   assert.doesNotMatch(c2,/data-slot="3"[^]*?SMART תקין[^]*?data-slot="3"/,'a red slot never shows its SMART as green');
-  assert.match(c2,/monitorMachine\('78%3Aac%3Ac0%3A9b%3A11%3Ac2'\)">מוניטור</); assert.match(c2,/openMachineDetail\(/); assert.match(c2,/wakeRoom\(\)"[^>]*>WoL \(כל החדר\)</);
+  assert.doesNotMatch(c2,/monitorMachine\(/,'monitor only on the monitor page'); assert.match(c2,/openMachineDetail\(/); assert.match(c2,/wakeRoom\(\)"[^>]*>WoL \(כל החדר\)</);
   assert.match(c3,/מספר החריצים לא הוגדר והמכונה מעולם לא דיווחה על דיסקים/); assert.match(c3,/editDrawerCount\(/);
   assert.match(c3,/<span class="st "><b>מחשב 3<\/b>/,'not connected → grey dot');
   const red=between(html,'<div class="c8 card">','<div class="c4 card">');
@@ -246,7 +246,7 @@ test('builders: machine cards from /machines + /monitor + /net (model/TPM, disk 
   assert.match(b1,/<span class="k">מצב<\/span><span class="v"><span class="st warn">ממתין למפעיל: תפריט<\/span> <span class="pill warn">קליטה ממתינה<\/span>/);
   assert.match(b1,/לפני קליטה<\/span><span class="v"><span class="muted">NTFS \/ בשימוש — נבדקים בקליטה \(<b[^>]*>דורש API<\/b>\)/);
   assert.doesNotMatch(b1,/קלוט מכאן/,'a machine with an open capture gets no second one (server would 409)');
-  assert.match(b1,/monitorMachine\(/); assert.match(b1,/openMachineDetail\(/); assert.match(b1,/title="דורש API">WoL — בקרוב</);
+  assert.doesNotMatch(b1,/monitorMachine\(/,'monitor only on the monitor page'); assert.match(b1,/openMachineDetail\(/); assert.match(b1,/title="דורש API">WoL — בקרוב</);
   assert.match(b2,/<span class="st ok"><b>בנייה 2<\/b>/); assert.match(b2,/<span class="k">דגם<\/span><span class="v"><span class="muted">לא דיווח/); assert.match(b2,/<span class="k">דיסק<\/span><span class="v"><span class="muted">לא דיווח/);
   assert.match(b2,/<span class="pill info">קליטה רצה<\/span>/);
   run("CAPTURE_TASKS=[]"); html=run('machines(0)'); balanced(html);

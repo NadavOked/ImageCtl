@@ -110,7 +110,7 @@ test('one grouped table: header counters + pills, three tabs, build → cloners 
   assert.match(b1,/openMachineDetail\('c8%3Ad9%3Ad2%3A0b%3Afe%3A32'\)">בנייה 1<\/a><span class="sub">LENOVO ThinkCentre M720q · TPM 2.0</,'model from inventory.dmi');
   assert.match(b1,/<span class="mono">c8:d9:d2:0b:fe:32<\/span>/); assert.match(b1,/<span class="mono">10.44.12.20<\/span>/); assert.match(b1,/לפני 3 שע'/);
   assert.match(b1,/st warn">ממתין למפעיל: תפריט</,'prompt beats everything');
-  assert.match(b1,/monitorMachine\(/,'build/cloner rows get a monitor action');
+  assert.doesNotMatch(b1,/monitorMachine\(/,'monitor lives only on the monitor page (Nadav 17/09: "במקום החדש שביקשתי ורק שם")');
   const c2=between(html,'data-mac="78:ac:c0:9b:11:c2"','data-mac="b4:2e:99:07:1a:c1"');
   assert.match(c2,/3 חריצי SATA/); assert.match(c2,/3 · <bdi dir="ltr">238 GB<\/bdi> <span class="pill err">דיסק 3 אדום</);
   assert.doesNotMatch(c2,/sd[abc]/,'never sd*'); assert.match(c2,/st ok">מחובר</);
@@ -186,7 +186,7 @@ test('the machine drawer: header line, actions (monitor, WoL for the room, "requ
   assert.equal(node('#drawerTitle').textContent,'מחשב 2');
   let html=node('#drawerBody').innerHTML; balanced(html);
   assert.match(html,/class="page drw"/); assert.match(html,/מחשב שיכפול · מחשבי שיכפול · <span class="mono">78:ac:c0:9b:11:c2<\/span> · <span class="mono">10.44.12.59<\/span> · נראה לפני 9 דק'/);
-  assert.match(html,/monitorMachine\('78%3Aac%3Ac0%3A9b%3A11%3Ac2'\)">מוניטור</); assert.match(html,/wakeRoom\(\)"[^>]*>Wake-on-LAN \(כל החדר\)</);
+  assert.doesNotMatch(html,/monitorMachine\(/,'no monitor in the drawer — only on the monitor page'); assert.match(html,/wakeRoom\(\)"[^>]*>Wake-on-LAN \(כל החדר\)</);
   assert.match(html,/renameMachine\(/); assert.match(html,/title="דורש API">אתחול מרחוק — בקרוב</); assert.match(html,/title="דורש API">עריכת MAC — בקרוב</);
   assert.match(html,/note err"[^]*<b>דיסק 3 אדום<\/b> — <span class="mono">S5Y2NX0R12345<\/span> נכשל בכתיבה .*סיבה: כבל\/חריץ SATA 2 \(ATA timeout\)/);
   assert.match(html,/clearDiskFailure\(7\)">נקה אחרי החלפה</); assert.match(html,/<summary>3 שורות קרנל<\/summary><pre class="ata-log">ata3.00: exception Emask/);

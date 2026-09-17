@@ -144,7 +144,7 @@ test('read failure is a distinct error state, not an empty list (principle 5)', 
   assert.equal(toasts.length, 1);
 });
 
-test('machine drawer carries a monitor button for build/cloner (#954 wave 3 — the approved mockup of 17/09 supersedes 14/09)', async () => {
+test('machine drawer has NO monitor button — monitor lives only on the monitor page (Nadav 14/09, reaffirmed 17/09 after wave 3)', async () => {
   const {run, ctx} = setup(base);
   await run('loadMonitor()');
   run('DISK_FAILURES=[]; SHRINK_RECORDS=[]');   // the stub fetch answers {} for endpoints this file does not model
@@ -152,7 +152,7 @@ test('machine drawer carries a monitor button for build/cloner (#954 wave 3 — 
   ctx.openDrawer = (_title, body) => { drawer = body; };
   run("openMachineDetail('aa%3Abb%3Acc%3Add%3Aee%3A01')");
   assert.ok(drawer.length > 50, 'the drawer rendered');
-  assert.match(drawer, /monitorMachine\('aa%3Abb%3Acc%3Add%3Aee%3A01'\)/, 'build machine: monitor in the drawer');
+  assert.doesNotMatch(drawer, /monitorMachine\(/, 'build machine: no monitor in the drawer');
   // ועדיין — בדף המוניטור הכפתור קיים
   assert.match(run('monitorPage()'), /monitorMachine\(/);
 });
