@@ -190,12 +190,14 @@ def test_static_includes_are_at_8_5():
     #1049 שלב ב' (בריאות המכונה בכרטיס) = ‏8.4; #1048 (כבל ו-LLDP) ותרשים
     הרשת — טקסט התיבות ב-foreignObject במקום <text> שגלש על הקווים = ‏8.6;
     מודל האתרים (וילן השרתים במקום "ניהול", משני דרך FW · 8443 בקו מקווקו) = ‏8.7;
-    #1073 (הפצה בלי וובי — `message_he` בכניסה, מטריצת ההרשאות) = ‏8.8.
+    #1073 (הפצה בלי וובי — `message_he` בכניסה, מטריצת ההרשאות) = ‏8.8;
+    #1066 שלב ב' (דף "אחסון", storage.js) = ‏8.9;
+    #1093 (ערכת נושא לפי משתמש, נשמרת בשרת) = ‏8.9.
     שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
     versions = {float(v) for v in re.findall(r'\?v=(\d+\.\d+)"', page)}
-    assert versions == {8.8}, versions
+    assert versions == {8.9}, versions
 
 
 def test_old_images_page_code_is_gone():
@@ -469,3 +471,48 @@ def test_the_machine_drawer_has_a_health_group_with_three_states_per_field():
     assert "selectPageById('drivers')" in health, "PCI בלי דרייבר מקשר לדף הדרייברים"
     home = js[js.index("function homeAttention"):js.index("function journalSeverity")]
     assert "m.probe_verdicts" in home and "openMachineDetail(" in home
+
+
+def test_storage_page_is_an_admin_tree_node_with_all_eight_mockup_screens():
+    """‏#1066 שלב ב': צומת "אחסון" תחת "תשתית" (admin בלבד, בין "בריאות
+    ושירותים" ל"רשת"), עמוד `own` ב-`storage.js` שכל שמונת מסכי המוקאפ
+    (`docs/design/console-redesign/storage-mockup-2026-09-18.html`) הם מצבים
+    שלו: רשימה · הוסף→סוג · NFS · SMB · iSCSI א' · iSCSI ב' (שלושה מצבי דיסק) ·
+    מגירה · שורות הבריאות מקובצות. "שמור ועגן" נדלק רק אחרי `POST /test` מוצלח
+    (עיקרון 5); פירמוט והסרה מאחורי הקלדת IQN / שם (עיקרון 7); ב-`unknown` אין
+    כפתור פירמוט כלל. הרינדור עצמו נבדק ב-`storage_page.test.cjs`."""
+    page, js = _index(), _console_js()
+    storage = (STATIC / "storage.js").read_text(encoding="utf-8")
+    infra = page[page.index('id="infraTA"'):page.index('id="adminTA"')]
+    node = infra[infra.index('data-page="storage"') - 40:infra.index('data-page="storage"') + 420]
+    assert 'data-admin' in node and "selectPageById('storage')" in node
+    assert "<span>אחסון</span>" in node
+    assert infra.index('data-page="health"') < infra.index('data-page="storage"') < infra.index('data-page="network"'), "בין בריאות לרשת"
+    assert '<script src="storage.js?v=' in page
+    assert page.index('src="console.js?v=') < page.index('src="storage.js?v='), "storage.js אחרי console.js (UI/api/sheet)"
+    assert 'storage: { crumb: "אחסון", title: "אחסון", tabs: [], render: () => storagePage(), load: () => loadStorage(), own: true }' in js
+    for icon in ('"storage": "<ellipse', '"plus": "<path'):
+        assert icon in js, icon
+    assert '["storage_", "אחסון — מיקומים", "storage_summary"]' in js, "שורות storage_<id> בבריאות מקובצות"
+    assert 'act = UI.acts([["פתח באחסון", "selectPageById(\'storage\')"]]);' in js
+    assert 'r.available === false ? ` ${UI.pill("err", "לא זמין")}`' in js, "אימג' על מיקום לא נגיש — pill בספרייה"
+    for needed in ("function storagePage()", "async function loadStorage()", "function startStorageTimer()", "function storageListView()",
+                   "function storageAddView()", "function storageLocalView()", "function storageNfsView()", "function storageSmbView()",
+                   "function storageIscsiAView()", "function storageIscsiBView()", "function storageDrawerHtml(loc)",
+                   "async function storageScan()", "async function storageTest()", "async function storageSave()",
+                   "async function storageIscsiLogin()", "async function storageIscsiDisk()", "async function storageMount(id)",
+                   "function storageFormatSheet(id)", "function storageDelete(id)", "function storageDisconnect(id)",
+                   'post(SL + "/scan", body)', 'post(SL + "/test", { type: storageType(), params: storageParams() })',
+                   "tested: true", "/iscsi-login`", "/disk`", "/mount`", "/format`", "/check`", "/disconnect`", "/connect`", 'method: "DELETE"',
+                   'disabled title="נדלק רק אחרי בדיקה מוצלחת"', "ה-IQN שהוקלד אינו זהה ליעד", "השם שהוקלד אינו זהה לשם המיקום",
+                   'unknown: אין כפתור פירמוט כלל', "}, 30000);", "legend-states", "show-acts storage"):
+        assert needed in storage, needed
+    assert "prompt(" not in storage and "confirm(" not in storage.replace("confirmSheet(", ""), "prompt/confirm חסומים — רק sheet()"
+    css = (STATIC / "console.css").read_text(encoding="utf-8")
+    for sel in (".page .dg.show-acts td .acts{visibility:visible}", ".page .types{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))",
+                ".page .picklist{", ".page .steps{", ".page .disk-state{display:grid;grid-template-columns:minmax(0,1fr) 250px",
+                ".page .big-choice{", ".page .legend-states{", ".page .btn:disabled{"):
+        assert sel in css, sel
+    narrow = css[css.index("#1066 שלב ב'"):]
+    assert "grid-template-columns:1fr" not in narrow, "1fr לבדו = minmax(auto,1fr) וגולש ב-375 (הלקח מהמוקאפ)"
+    assert ".page table.dg.storage{min-width:760px}" in narrow

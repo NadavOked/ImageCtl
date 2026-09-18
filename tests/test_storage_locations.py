@@ -230,6 +230,29 @@ def test_deploy_gets_403(env):
     }).status_code == 403
 
 
+def test_deploy_gets_403_on_every_endpoint_the_console_page_calls(env):
+    """‏#1066 שלב ב': הדף הוא admin בלבד (`data-admin` בעץ), וכל נתיב שהוא
+    קורא — לא רק list/test/create — מסרב ל-deploy ב-403 (לא 404/409: ההרשאה
+    נבדקת לפני קיום השורה)."""
+    base = "/api/console/storage-locations"
+    calls = [
+        ("POST", base + "/scan", {"type": "nfs", "server": "10.44.10.20"}),
+        ("POST", base + "/loc_local/check", {}),
+        ("POST", base + "/loc_local/connect", {}),
+        ("POST", base + "/loc_local/disconnect", {}),
+        ("POST", base + "/loc_local/iscsi-login", {}),
+        ("GET", base + "/loc_local/disk", None),
+        ("POST", base + "/loc_local/mount", {"format": False}),
+        ("POST", base + "/loc_local/format", {"confirm": "x"}),
+        ("DELETE", base + "/loc_local", {"confirm": "מקומי"}),
+        ("POST", base + "/loc_missing/check", {}),
+    ]
+    for method, url, body in calls:
+        r = env["deploy"].request(method, url, json=body)
+        assert r.status_code == 403, (method, url, r.status_code)
+    assert env["admin"].post(base + "/loc_missing/check").status_code == 404, "admin רואה 404 — ההבדל הוא ההרשאה"
+
+
 def test_create_without_test_is_422(env):
     r = env["admin"].post("/api/console/storage-locations", json={
         "name": "nas-images", "type": "nfs", "params": _nfs_params(),

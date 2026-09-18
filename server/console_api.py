@@ -180,7 +180,21 @@ def create_console_router(
                 "open_local_pairing":
                     storage_nodes.can_open_local_pairing(ctx.conn, user[1]),
             },
+            # ‏#1093: ערכת הנושא של המשתמש — auto/light/dark. ברירת מחדל
+            # auto (לפי מערכת ההפעלה). לא הגדרת שרת: זה של המשתמש.
+            "theme": users.get_theme(ctx.conn, user[0]),
         }
+
+    @router.put("/me/theme")
+    async def set_my_theme(request: Request, user=Depends(current_user)):
+        """המשתמש על עצמו. ערך זר → 422. בלי יומן."""
+        body = await request.json()
+        theme = body.get("theme") if isinstance(body, dict) else None
+        try:
+            users.set_theme(ctx.conn, user[0], theme)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
+        return {"ok": True}
 
     # --- מבט-על --------------------------------------------------------------
 

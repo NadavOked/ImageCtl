@@ -127,7 +127,10 @@ CREATE TABLE IF NOT EXISTS users (
     pw_hash  TEXT NOT NULL,
     role     TEXT NOT NULL CHECK (role IN ('admin', 'deploy')),
     created_at TEXT NOT NULL,
-    disabled_at TEXT
+    disabled_at TEXT,
+    -- #1093: ערכת הנושא של המשתמש. auto = לפי מערכת ההפעלה.
+    theme    TEXT NOT NULL DEFAULT 'auto'
+             CHECK (theme IN ('auto', 'light', 'dark'))
 );
 
 CREATE TABLE IF NOT EXISTS journal (
@@ -502,6 +505,9 @@ ADDED_COLUMNS = [
     # שהמפעיל צריך, ו-NULL הוא "פעיל". התקנה קיימת מקבלת NULL בכל
     # שורה, כלומר אף משתמש קיים לא נחסם על ידי המיגרציה.
     ("users", "disabled_at", "TEXT"),
+    # ‏#1093: ערכת נושא לפי משתמש. התקנה קיימת מקבלת auto — לפי המערכת,
+    # כמו לפני שהבחירה עברה מהדפדפן לשרת.
+    ("users", "theme", "TEXT NOT NULL DEFAULT 'auto'"),
     # ‏#530: האסימון שמוכיח שהפונה הוא בעל המשימה. ‏NULL בהתקנה קיימת,
     # כלומר משימות שנוצרו לפני המיגרציה **אינן ניתנות לכתיבה** —
     # ‏`claim` מסרב על `token` ריק. זו הכרעה: משימה ישנה שתיתקע עדיפה

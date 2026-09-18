@@ -29,7 +29,7 @@ function setup() {
       createElement:()=>{let text='';return {set textContent(v){text=String(v)},get innerHTML(){return text.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;')}}},
       documentElement:{setAttribute(){}},addEventListener(){},removeEventListener(){}},
     window:{addEventListener(){},matchMedia:()=>({matches:false}),open:(...args)=>requests.push({open:args})},
-    localStorage:{getItem:()=>null,setItem(){}},CSS:{escape:x=>x},
+    localStorage:{getItem:()=>null,setItem(){},removeItem(){}},CSS:{escape:x=>x},
     setInterval:fn=>{intervals.set(++intervalId,fn);return intervalId},clearInterval:id=>intervals.delete(id),setTimeout:()=>1,clearTimeout(){},
     fetch:async(url,options={})=>{
       const key=url.replace('/api/console','').split('?')[0]; requests.push({url,options});

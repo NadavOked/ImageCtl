@@ -30,6 +30,9 @@ _FORBIDDEN_IN_USERNAME = "|"
 #: ניהול משתמשים שהפסיק לעבוד. ‏`journal` נוטל את אותה נעילה בעצמו,
 #: והיא ``Lock`` ולא ``RLock``, ולכן הרישום ביומן נשאר **מחוץ** לבלוק.
 
+#: #1093: ערכת הנושא היא של המשתמש, לא של הדפדפן ולא של השרת.
+THEMES = frozenset({"auto", "light", "dark"})
+
 
 def _derive(password: str, salt: str, iterations: int) -> str:
     return hashlib.pbkdf2_hmac(
@@ -237,6 +240,26 @@ def list_users(conn: sqlite3.Connection) -> list[dict]:
         " FROM users ORDER BY username"
     ).fetchall()
     return [{**dict(r), "disabled": bool(r["disabled_at"])} for r in rows]
+
+
+def get_theme(conn: sqlite3.Connection, username: str) -> str:
+    """ערכת הנושא של המשתמש. ערך זר או שורה חסרה → ``auto`` — לא קריסה."""
+    row = conn.execute(
+        "SELECT theme FROM users WHERE username = ?", (username,)
+    ).fetchone()
+    theme = row["theme"] if row is not None else None
+    return theme if theme in THEMES else "auto"
+
+
+def set_theme(conn: sqlite3.Connection, username: str, theme: str) -> None:
+    """המשתמש על עצמו. בלי יומן — זו העדפה, לא פעולת ניהול."""
+    if theme not in THEMES:
+        raise ValueError("theme חייב להיות auto, light או dark")
+    with _write_lock, writing(conn):
+        conn.execute(
+            "UPDATE users SET theme = ? WHERE username = ?",
+            (theme, username),
+        )
 
 
 def ensure_admin(conn: sqlite3.Connection) -> str | None:

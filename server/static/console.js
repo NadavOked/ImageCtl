@@ -230,32 +230,87 @@ function confirmSheet(title, sub, submitLabel, onConfirm) {
 }
 
 /* ---------- ערכת צבעים ---------- */
-/* מתג של שני מצבים: בהיר וכהה. בכניסה הראשונה מתיישרים לפי הגדרת
-   המערכת, וברגע שנוגעים במתג זו בחירה מפורשת שנשמרת. אין מצב שלישי —
-   "לפי המערכת" הוא התנהגות, לא אפשרות שצריך לבחור בה.
-   הבחירה בדפדפן ולא בשרת: אותו אדם על מסך כיתה מואר ועל לפטופ בערב
-   רוצה תשובות שונות. */
+/* #1093: שלושה מצבים שנשמרים בשרת (users.theme): auto / light / dark.
+   auto עוקב אחרי prefers-color-scheme בחי (כולל שינוי). light/dark
+   מנצחים את המערכת. localStorage הוא מטמון בלבד — מונע הבהוב בטעינה
+   כשהבחירה אינה auto, ונמחק ב-logout וב-auto. */
+const THEME_KEY = "imagectl-theme";
+const THEME_CYCLE = ["auto", "light", "dark"];
+const THEME_TITLE = { auto: "לפי המערכת", light: "בהיר", dark: "כהה" };
+let themePref = "auto";
+let themeMql = null;
+let themeMqlHandler = null;
+
 function systemPrefersDark() {
   return window.matchMedia("(prefers-color-scheme: dark)").matches;
 }
 
 function currentTheme() {
-  const saved = localStorage.getItem("imagectl-theme");
-  if (saved === "dark" || saved === "light") return saved;
+  if (themePref === "dark" || themePref === "light") return themePref;
   return systemPrefersDark() ? "dark" : "light";
 }
 
-function applyTheme(id, remember = true) {
-  document.documentElement.setAttribute("data-theme", id);
-  if (remember) localStorage.setItem("imagectl-theme", id);
-  const button = $("#theme-toggle");
-  const dark = id === "dark";
-  button.innerHTML = uiIcon(dark ? "sun" : "moon");
-  button.title = dark ? "מעבר למצב בהיר" : "מעבר למצב כהה";
+function unfollowSystemTheme() {
+  if (!themeMql || !themeMqlHandler) {
+    themeMql = null;
+    themeMqlHandler = null;
+    return;
+  }
+  if (typeof themeMql.removeEventListener === "function")
+    themeMql.removeEventListener("change", themeMqlHandler);
+  else if (typeof themeMql.removeListener === "function")
+    themeMql.removeListener(themeMqlHandler);
+  themeMql = null;
+  themeMqlHandler = null;
 }
 
-$("#theme-toggle").addEventListener("click", () =>
-  applyTheme(currentTheme() === "dark" ? "light" : "dark"));
+function followSystemTheme() {
+  unfollowSystemTheme();
+  const mql = window.matchMedia("(prefers-color-scheme: dark)");
+  themeMql = mql;
+  themeMqlHandler = () => { if (themePref === "auto") paintTheme(); };
+  if (mql && typeof mql.addEventListener === "function")
+    mql.addEventListener("change", themeMqlHandler);
+  else if (mql && typeof mql.addListener === "function")
+    mql.addListener(themeMqlHandler);
+}
+
+function paintTheme() {
+  const id = currentTheme();
+  document.documentElement.setAttribute("data-theme", id);
+  const button = $("#theme-toggle");
+  if (!button) return;
+  button.innerHTML = uiIcon(id === "dark" ? "sun" : "moon");
+  button.title = THEME_TITLE[themePref] || THEME_TITLE.auto;
+}
+
+function applyTheme(pref) {
+  themePref = pref === "dark" || pref === "light" ? pref : "auto";
+  if (themePref === "auto") {
+    if (typeof localStorage.removeItem === "function") localStorage.removeItem(THEME_KEY);
+    followSystemTheme();
+  } else {
+    localStorage.setItem(THEME_KEY, themePref);
+    unfollowSystemTheme();
+  }
+  paintTheme();
+}
+
+function applyServerTheme(me) {
+  const t = me && me.theme;
+  applyTheme(t === "light" || t === "dark" ? t : "auto");
+}
+
+function toggleTheme() {
+  const i = Math.max(0, THEME_CYCLE.indexOf(themePref));
+  const next = THEME_CYCLE[(i + 1) % THEME_CYCLE.length];
+  applyTheme(next);
+  if (!ME) return;
+  ME.theme = next;
+  return put("/me/theme", { theme: next }).catch((e) => toast(e.message));
+}
+
+$("#theme-toggle").addEventListener("click", toggleTheme);
 
 /* מתגי הצגת סיסמה שמחוץ למודאל (מסך הכניסה). */
 document.querySelectorAll("body > #login .pw-eye").forEach((eye) =>
@@ -350,9 +405,11 @@ function showLogin() {
   clearInterval(idleTimer);
   $("#login").classList.remove("hidden");
   $("#app").classList.add("hidden");
+  applyTheme("auto");   // #1093: מסך הכניסה לפי המערכת; המטמון נמחק
 }
 
 async function showApp() {
+  applyServerTheme(ME);
   $("#login").classList.add("hidden");
   $("#app").classList.remove("hidden");
   closeUserMenu();
@@ -1521,7 +1578,7 @@ function imageRow(r) {
     attrs: `class="${sel ? "sel" : ""}" data-id="${esc(r.id)}"${drag}`,
     cells: [
       `<input type="checkbox" aria-label="בחירת ${esc(r.name)}" ${sel ? "checked" : ""} onchange="toggleImgSel('${idEnc}',this.checked)">`,
-      `<a role="link" tabindex="0" class="name" onclick="openImageDetail('${idEnc}')">${esc(r.name)}</a>${r.description ? `<span class="sub">${esc(r.description)}</span>` : ""}`,
+      `<a role="link" tabindex="0" class="name" onclick="openImageDetail('${idEnc}')">${esc(r.name)}</a>${r.available === false ? ` ${UI.pill("err", "לא זמין")}` : ""}${r.description ? `<span class="sub">${esc(r.description)}</span>` : ""}`,   // ‏#1066: המיקום לא נגיש — רשום, לא נמחק
       esc(imageOsLabel(r.os)), imgFits(r), ltr(fmtBytes(r.total_compressed_bytes)), ltr(fmtDate(r.created)), imgVerify(r),
       use.length ? esc(use.join(" · ")) : `<span class="muted">—</span>`,
       UI.acts([["הפץ", `deployImage('${idEnc}')`], ["פרטים", `openImageDetail('${idEnc}')`]]),
@@ -3084,7 +3141,8 @@ function healthStatusClass(state) { return (HEALTH_STATES[state] || HEALTH_STATE
 function healthStatusLabel(state) { return HEALTH_STATES[state] ? HEALTH_STATES[state][1] : (state || "—"); }
 /* שורות דינמיות למכונה (agent_loop:<mac>, off_vlan:<mac>) מקובצות תחת שורת-קבוצה
    מיד אחרי שורת הסיכום שלהן (interfaces.md §10–11). */
-const HEALTH_GROUPS = [["agent_loop:", "לולאות אתחול", "agent_loops"], ["off_vlan:", "מכונות בוילן זר", "off_vlan"]];
+const HEALTH_GROUPS = [["agent_loop:", "לולאות אתחול", "agent_loops"], ["off_vlan:", "מכונות בוילן זר", "off_vlan"],
+  ["storage_", "אחסון — מיקומים", "storage_summary"]];   // ‏#1066: שורה לכל מיקום (storage_<id>), בלי שורת סיכום → קבוצה בסוף
 /* עמודת "פעולה": לאן הולכים לטפל — הדף שבו יושב מה שנבדק. אין ב-/health שדה
    "איך מתקנים"; ה-detail של השרת כבר נושא את ההוראה ("הריצו את המתקין"). */
 const HEALTH_GOTO = { dhcp_port: ["רשת הפצה", "openNetwork(2)"], tftp_port: ["פורטים", "selectPageById('ports')"], dnsmasq: ["רשת הפצה", "openNetwork(2)"],
@@ -3096,7 +3154,9 @@ function clockNow() { const d = new Date(); return `${String(d.getHours()).padSt
 
 function healthRow(c, grouped = false) {
   let act = "";
-  if (grouped) {
+  if (grouped && String(c.id).startsWith("storage_")) {
+    act = UI.acts([["פתח באחסון", "selectPageById('storage')"]]);
+  } else if (grouped) {
     const mac = String(c.id).slice(String(c.id).indexOf(":") + 1);
     if (findMachine(mac)) act = UI.acts([["פרטים", `openMachineDetail('${encodeId(mac)}')`]]);
   } else if (HEALTH_GOTO[c.id]) {
@@ -4713,6 +4773,7 @@ const pages = {
   monitor: { crumb: "מוניטור", title: "מוניטור", tabs: [], render: monitorPage, load: loadMonitor, own: true },   // ‏#954 גל 6: הרשימה כטבלה
   drivers: { crumb: "דרייברים", title: "דרייברים", tabs: ["חבילות", "כיסוי לפי מכונה"], render: (i) => driversPage(i), load: () => loadDrivers(), own: true },   // ‏#954 גל 6; lazily: drivers.js loads after this file
   tools: { crumb: "ארגז כלים", title: "ארגז כלים", tabs: [], render: toolsPage, load: loadTools, own: true },   // ‏#649 שלב 1: קבוצה = כרטיס, ☐ בנייה/שיכפול | ☐ תלמיד
+  storage: { crumb: "אחסון", title: "אחסון", tabs: [], render: () => storagePage(), load: () => loadStorage(), own: true },   // ‏#1066 שלב ב': מיקומי הספרייה (storage.js, נטען אחרי הקובץ הזה)
   ports: { crumb: "פורטים", title: "פורטים", tabs: ["חיבורים פיזיים", "רשת הפצה", "פורטים"], render: ports, load: loadPorts, own: true },   // ‏#954 גל 5: מתג בכל שורה
 };
 let current = "home";
@@ -5127,8 +5188,10 @@ function init() {
 }
 
 window.addEventListener("DOMContentLoaded", () => {
-  // בכניסה הראשונה לא "זוכרים" את מה שהמערכת הכתיבה — רק אם נגעו במתג.
-  applyTheme(currentTheme(), localStorage.getItem("imagectl-theme") !== null);
+  // המטמון (אם יש) כבר הוחל ב-inline שב-index.html. כאן מעדכנים את
+  // הכפתור, ואחרי /me — את העדפת השרת (auto מוחק את המטמון).
+  const cached = localStorage.getItem(THEME_KEY);
+  applyTheme(cached === "dark" || cached === "light" ? cached : "auto");
   loadLogo();
   init();
   api("/me").then((me) => { ME = me; return showApp(); }).catch(() => showLogin());
@@ -5542,7 +5605,9 @@ const UI_ICON_PATHS = {
   "close": "<path d=\"m6 6 12 12M18 6 6 18\"/>",
   "help": "<circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M9 8a3 3 0 0 1 6 0c0 2-3 2-3 5M12 17h.01\"/>",
   "sun": "<circle cx=\"12\" cy=\"12\" r=\"4\"/><path d=\"M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1 1M18 18l1 1M5 19l1-1M18 6l1-1\"/>",
-  "moon": "<path d=\"M20 15A9 9 0 0 1 9 4a9 9 0 1 0 11 11Z\"/>"
+  "moon": "<path d=\"M20 15A9 9 0 0 1 9 4a9 9 0 1 0 11 11Z\"/>",
+  "storage": "<ellipse cx=\"12\" cy=\"5\" rx=\"8\" ry=\"3\"/><path d=\"M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3\"/>",
+  "plus": "<path d=\"M12 5v14M5 12h14\"/>"
 };
 function uiIcon(name) { return '<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">'+(UI_ICON_PATHS[name] || UI_ICON_PATHS.list)+'</svg>'; }
 

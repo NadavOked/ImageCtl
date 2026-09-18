@@ -4,15 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ImageCtl — קונסולה</title>
-<link rel="stylesheet" href="design-tokens.css?v=8.8">
-<link rel="stylesheet" href="console.css?v=8.8">
-<link rel="stylesheet" href="progress.css?v=8.8">
+<link rel="stylesheet" href="design-tokens.css?v=8.9">
+<link rel="stylesheet" href="console.css?v=8.9">
+<link rel="stylesheet" href="progress.css?v=8.9">
 <script>
-  /* לפני הציור הראשון, אחרת המסך מהבהב בלבן לפני שהכהה נטען. */
+  /* לפני הציור הראשון, אחרת המסך מהבהב בלבן לפני שהכהה נטען.
+     המטמון הוא בחירה מפורשת (light/dark) בלבד; בלי מטמון — לפי המערכת. */
   (function () {
     var choice = localStorage.getItem("imagectl-theme");
-    if (choice === "dark" || choice === "light")
-      document.documentElement.setAttribute("data-theme", choice);
+    if (choice !== "dark" && choice !== "light")
+      choice = (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches)
+        ? "dark" : "light";
+    document.documentElement.setAttribute("data-theme", choice);
   })();
 </script>
 </head>
@@ -66,7 +69,7 @@
     <button class="icon-btn" title="רענן" onclick="refreshPage()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7a9 9 0 1 0 1 7M20 2v6h-6"/></svg></button>
     <button class="icon-btn" title="התראות" onclick="topNotifications()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17h16l-2-3V8a6 6 0 0 0-12 0v6ZM9 21h6"/></svg> <span id="alertBadge" class="tag" style="margin-inline-start:3px" hidden></span></button>
     <button class="icon-btn" title="עזרה" onclick="help()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9 8a3 3 0 0 1 6 0c0 2-3 2-3 5M12 17h.01"/></svg></button>
-    <button class="icon-btn" id="theme-toggle" type="button" title="ערכת צבעים"></button>
+    <button class="icon-btn" id="theme-toggle" type="button" title="לפי המערכת"></button>
     <button class="user" type="button" onclick="openUserMenu()"><div class="avatar">מ</div><span>מנהל</span><span style="color:var(--clr-header-text)">▾</span></button>
   </div>
 </header>
@@ -95,6 +98,8 @@
       <div class="inventory-node" ondblclick="toggleInventoryGroup(this,'infraTA')" role="treeitem" tabindex="0" aria-expanded="false"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'infraTA')">▸</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg></span><span>תשתית</span></div>
         <div id="infraTA" class="inventory-children" role="group" data-admin hidden>
           <div class="inventory-node" data-page="health" onclick="selectPageById('health')" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg></span><span>בריאות ושירותים</span></div>
+          <!-- #1066 שלב ב': מיקומי הספרייה — תיקייה / NFS / SMB / iSCSI (storage.js); admin בלבד -->
+          <div class="inventory-node" data-page="storage" data-admin onclick="selectPageById('storage')" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg></span><span>אחסון</span></div>
           <!-- #954 גל 8: "רשת" הוא דף (קליק = הדף, דאבל = פותח/סוגר); הילדים פותחים את אותו אובייקט בלשונית -->
           <div class="inventory-node" data-page="network" onclick="selectPageById('network')" ondblclick="toggleInventoryGroup(this,'netTA')" role="treeitem" tabindex="0" aria-expanded="false"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'netTA')">▸</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 7v6M5 17v-4h14v4"/><rect x="9" y="2" width="6" height="5" rx="1"/><rect x="2" y="17" width="6" height="5" rx="1"/><rect x="16" y="17" width="6" height="5" rx="1"/></svg></span><span>רשת</span></div>
           <div id="netTA" class="inventory-children" role="group" hidden>
@@ -132,13 +137,14 @@
 <div class="toast" id="toast"></div>
 </div>
 
-<script src="progress.js?v=8.8"></script>
-<script src="console.js?v=8.8"></script>
-<script src="reorder.js?v=8.8"></script>
-<script src="net.js?v=8.8"></script>
-<script src="netcfg.js?v=8.8"></script>
-<script src="storage_nodes.js?v=8.8"></script>
-<script src="drivers.js?v=8.8"></script>
-<script src="branches.js?v=8.8"></script>
+<script src="progress.js?v=8.9"></script>
+<script src="console.js?v=8.9"></script>
+<script src="reorder.js?v=8.9"></script>
+<script src="net.js?v=8.9"></script>
+<script src="netcfg.js?v=8.9"></script>
+<script src="storage_nodes.js?v=8.9"></script>
+<script src="drivers.js?v=8.9"></script>
+<script src="storage.js?v=8.9"></script>
+<script src="branches.js?v=8.9"></script>
 </body>
 </html>
