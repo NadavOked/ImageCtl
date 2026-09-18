@@ -231,7 +231,7 @@ test('ports page (old /ports contract): one table, a switch in every row, wired 
   assert.doesNotMatch(html,/disabled/,'no disabled buttons (README §8)');
   // מוניטור: מתג כבוי, הדלקה מאחורי הקלדה
   const mon=row(html,'Monitor (RFB)');
-  assert.match(mon,/class="sw " role="switch" aria-checked="false"/); assert.match(mon,/🔒 כבוי · הדלקה = הקלדת imagectl.monitor/);
+  assert.match(mon,/class="sw " role="switch" aria-checked="false"/); assert.match(mon,/🔒 מוניטור: כבוי \(ברירת מחדל\) — הדלקה חושפת 5900/);
   assert.match(mon,/class="pill ok">קיים<\/span> <span class="cap mono">PUT \/monitor\/settings/); assert.match(mon,/בתחנה, לא בשרת/);
   // DHCP מ-/net/interfaces: ens19 משרת → מתג דלוק, נעול, מצב נמדד ירוק עם הטווח
   const dhcp=row(html,'DHCP הפצה — ens19');

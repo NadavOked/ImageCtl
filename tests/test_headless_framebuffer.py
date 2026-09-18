@@ -45,6 +45,7 @@ REPO = Path(__file__).resolve().parent.parent
 AGENT = REPO / "agent"
 GUI = REPO / "native-gui"
 MONITOR_C = AGENT / "monitor.c"
+HMAC_C = AGENT / "hmac_sha256.c"
 BACKEND_C = GUI / "src" / "backend.c"
 MONITOR_SH = AGENT / "lib" / "monitor.sh"
 GUIBRIDGE_SH = AGENT / "lib" / "guibridge.sh"
@@ -163,7 +164,8 @@ def _monitor_start(tmp_path, fb_dev, role="cloner", mem_file=False):
         (run_dir / FILE_NAME).write_bytes(b"x" * 64)
     script = (
         'OUT=' + repr(posix(out)) + '; LOGF=' + repr(posix(logf)) + '; '
-        'export IMAGECTL_MONITOR=1; export IP=10.0.0.9; export MONITOR_BIN=/bin/sh; '
+        'export IMAGECTL_MONITOR=1 IMAGECTL_SERVER=http://10.0.0.1:8080; '
+        'export IP=10.0.0.9; export MONITOR_BIN=/bin/sh; '
         'export RUN_DIR=' + repr(posix(run_dir)) + '; '
         'export FB_DEV=' + repr(fb_dev) + '; '
         f'export D_ROLE={role}; '
@@ -315,7 +317,8 @@ def _free_port() -> int:
 def _build_monitor(tmp_path: Path) -> Path:
     binary = tmp_path / "imagectl-monitor"
     build = subprocess.run(
-        ["gcc", "-O2", "-Wall", "-Wextra", "-o", str(binary), str(MONITOR_C), "-lvncserver"],
+        ["gcc", "-O2", "-Wall", "-Wextra", "-o", str(binary),
+         str(MONITOR_C), str(HMAC_C), "-lvncserver"],
         capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
     assert build.returncode == 0, build.stderr
     return binary
@@ -349,7 +352,8 @@ def test_monitor_serves_a_memory_framebuffer_file_over_rfb(tmp_path):
     with err.open("wb") as errf:
         proc = subprocess.Popen(
             [str(binary), "--bind", "127.0.0.1", "--port", str(port),
-             "--fb", str(fb), "--secret-file", str(_secret_file(tmp_path))],
+             "--fb", str(fb), "--secret-file", str(_secret_file(tmp_path)),
+             "--allow-from", "127.0.0.1"],
             stdout=subprocess.DEVNULL, stderr=errf, stdin=subprocess.DEVNULL)
         try:
             size = None
@@ -383,7 +387,8 @@ def test_monitor_refuses_a_file_that_is_not_a_framebuffer(tmp_path):
     _write_memfb(fb, magic=b"NOTAFB!!")
     proc = subprocess.run(
         [str(binary), "--bind", "127.0.0.1", "--port", str(_free_port()),
-         "--fb", str(fb), "--secret-file", str(_secret_file(tmp_path))],
+         "--fb", str(fb), "--secret-file", str(_secret_file(tmp_path)),
+         "--allow-from", "127.0.0.1"],
         capture_output=True, text=True, timeout=20, stdin=subprocess.DEVNULL)
     assert proc.returncode != 0
     assert "memory framebuffer" in proc.stderr, proc.stderr

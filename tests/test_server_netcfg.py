@@ -405,8 +405,8 @@ def net_server(tmp_path: Path, images_root: Path, clock):
     app = create_app(tmp_path / "data", images_root, "http://10.10.10.8:8080",
                      now_fn=clock, netcfg_hooks=hooks, dhcp_hooks=dhcp_hooks,
                      netcfg_state_dir=state_dir)
-    users.create(app.state.ctx.conn, "noc", "admin-pass-123", "admin", by="test")
-    users.create(app.state.ctx.conn, "labtech", "deploy-pass-1", "deploy", by="test")
+    users.create(app.state.ctx.conn, "noc", "admin-pass-123", "admin", by="test", is_builtin=True, check_policy=False)
+    users.create(app.state.ctx.conn, "labtech", "deploy-pass-1", "deploy", by="test", check_policy=False)
     admin, deploy = TestClient(app), TestClient(app)
     admin.post("/api/console/login",
                json={"username": "noc", "password": "admin-pass-123"})

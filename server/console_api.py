@@ -15,10 +15,11 @@ import socket
 from typing import Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import PlainTextResponse
 
-from . import (auth, dhcp, disk_failures, identity, inventory, probe, registry,
-               shrink_records, storage_locations, storage_nodes, users)
+from . import (auth, capabilities, console_login, console_mfa, dhcp, disk_failures,
+               identity, inventory, probe, registry, shrink_records, storage_locations,
+               storage_nodes, users)
 from .api import ServerContext
 from .db import (_write_lock, get_setting, journal, now_iso, set_setting,
                  update_one, writing)
@@ -113,32 +114,11 @@ def create_console_router(
 
     @router.post("/login")
     async def login(request: Request, response: Response):
-        body = await request.json()
-        role = users.verify(ctx.conn, body.get("username", ""), body.get("password", ""))
-        if role is None:
-            journal(ctx.conn, "login_failed", body.get("username", ""))
-            raise HTTPException(401, "שם משתמש או סיסמה שגויים")
-        username = body["username"].strip()
-        if role == "deploy" and not kiosk:
-            # ‏#1073: הסיסמה נכונה — וזו בדיוק הסיבה שהתשובה אינה 401.
-            # "בדקנו, ואתה לא נכנס מכאן" הוא מצב משלו (עיקרון 5), עם
-            # הודעה שמסך הכניסה מציג כלשונה. ‏JSONResponse ולא HTTPException:
-            # הגוף הוא חוזה (`error` + `message_he`), לא `detail` חופשי.
-            journal(ctx.conn, "login_refused_console", "deploy", username)
-            return JSONResponse(
-                {"error": auth.DEPLOY_NO_CONSOLE,
-                 "message_he": auth.DEPLOY_NO_CONSOLE_HE}, status_code=403)
-        response.set_cookie(
-            auth.COOKIE_NAME, auth.issue(ctx.conn, username, role),
-            httponly=True, samesite="lax", max_age=auth.TTL_SECONDS,
-            secure=tls is not None,        # #703: רק מעל TLS
+        # הלוגיקה ב-console_login: #1073 (kiosk=, 403 ל-deploy) ו-#1085
+        # (MFA / כפייה / הגבלת ניסיונות) באותו סדר — ראו finish_login.
+        return await console_login.finish_login(
+            ctx.conn, request, response, tls=tls, kiosk=kiosk,
         )
-        journal(ctx.conn, "login", "", username)
-        return {
-            "username": username,
-            "role": role,
-            "idle_seconds": int(get_setting(ctx.conn, "console_idle_seconds") or 300),
-        }
 
     @router.post("/logout")
     def logout(response: Response, user=Depends(current_user)):
@@ -154,9 +134,13 @@ def create_console_router(
         # מותנים. ‏`interbranch_transfer` (#723) — רק ל-admin, רק על
         # standalone, ורק כשיש משני פעיל אחד לפחות. הדגל הוא הנראות;
         # האכיפה עצמה יושבת בשכבת ה-route (שלבים הבאים ב-#655).
+        info = users.flags(ctx.conn, user[0])
         return {
             "username": user[0],
             "role": user[1],
+            "mfa_enabled": info["mfa_enabled"],
+            "is_builtin": info["is_builtin"],
+            "must_change_password": info["must_change_password"],
             "idle_seconds": int(get_setting(ctx.conn, "console_idle_seconds") or 300),
             # ‏#915: גרסת השרת (תג git, ‏`update.current_version`) לשורת
             # הסטטוס — לכל משתמש מחובר, לא רק admin. ‏None = אין תג על
@@ -179,6 +163,8 @@ def create_console_router(
                     storage_nodes.can_enroll_secondary(ctx.conn, user[1]),
                 "open_local_pairing":
                     storage_nodes.can_open_local_pairing(ctx.conn, user[1]),
+                # ‏#1081: v1 מסתיר כיתות. קבוע בקוד, לא הגדרה למפעיל. v2 מדליק.
+                "classrooms": capabilities.classrooms(),
             },
             # ‏#1093: ערכת הנושא של המשתמש — auto/light/dark. ברירת מחדל
             # auto (לפי מערכת ההפעלה). לא הגדרת שרת: זה של המשתמש.
@@ -612,6 +598,8 @@ def create_console_router(
                 ctx.conn, body.get("username", ""), body.get("password", ""),
                 body.get("role", ""), by=user[0],
             )
+        except users.UsernameTaken as exc:
+            raise HTTPException(409, str(exc))
         except ValueError as exc:
             raise HTTPException(400, str(exc))
         except sqlite3.IntegrityError:
@@ -619,6 +607,36 @@ def create_console_router(
             # DB נעול — עולה כ-500 עם הסיבה האמיתית, ולא מתחפשת לשם תפוס
             # ששולח את המפעיל לחפש חשבון שלא נוצר (עיקרון 5).
             raise HTTPException(409, "משתמש בשם הזה כבר קיים")
+        return {"ok": True}
+
+    @router.post("/users/{username}/reset-password")
+    def reset_user_password(username: str, user=Depends(admin_only)):
+        if username.strip().lower() == user[0].lower():
+            raise HTTPException(400, "אי אפשר לאפס את הסיסמה של עצמך כאן")
+        try:
+            new = users.reset_password(ctx.conn, username, by=user[0])
+        except ValueError as exc:
+            raise HTTPException(404 if "לא קיים" in str(exc) else 400, str(exc))
+        return {"new_password": new}
+
+    @router.post("/me/password")
+    async def change_own_password(request: Request, response: Response,
+                                  user=Depends(current_user)):
+        body = await request.json()
+        try:
+            users.change_own_password(
+                ctx.conn, user[0],
+                body.get("current_password") or "",
+                body.get("new_password") or "",
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        info = users.flags(ctx.conn, user[0])
+        if user[1] == "admin" and not info["is_builtin"] and not info["mfa_enabled"]:
+            auth.attach_cookie(response, ctx.conn, user[0], user[1], tls,
+                               purpose=auth.PURPOSE_MFAENROLL)
+            return {"ok": True, "mfa_enrollment_required": True}
+        auth.attach_cookie(response, ctx.conn, user[0], user[1], tls)
         return {"ok": True}
 
     @router.put("/users/{username}")
@@ -750,4 +768,5 @@ def create_console_router(
             journal(ctx.conn, "setting_change", f"{key}={value}", user[0])
         return {"ok": True}
 
+    console_mfa.register(router, ctx, current_user, admin_only, tls)
     return router

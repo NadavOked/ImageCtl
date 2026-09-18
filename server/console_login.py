@@ -1,0 +1,98 @@
+"""כניסת קונסולה — #1085 + #1073. מנותק מ-console_api כדי ששני המיזוגים יישארו ממוקדים.
+
+הסדר אחרי סיסמה נכונה:
+  (1) deploy בקונסולה → 403 deploy_no_console, לפני MFA/כפייה (#1073)
+  (2) must_change_password / mfa_required / mfa_enrollment_required — או session מלאה
+הקיוסק (`kiosk=True`) מקבל גם deploy, מדלג על MFA; החלפה כפויה → 403.
+הגבלת ניסיונות (#1075) חלה על שלב הסיסמה לכל תפקיד.
+"""
+
+from __future__ import annotations
+
+from fastapi import HTTPException, Request, Response
+from fastapi.responses import JSONResponse
+
+from . import auth, console_mfa, login_guard, users
+from .db import get_setting, journal
+
+
+def _ip(request: Request) -> str:
+    return request.client.host if request.client else "?"
+
+
+def _idle(conn) -> int:
+    return int(get_setting(conn, "console_idle_seconds") or 300)
+
+
+def _raise_blocked(exc: login_guard.LoginBlocked) -> None:
+    headers = {}
+    if exc.retry_after is not None:
+        headers["Retry-After"] = str(exc.retry_after)
+    raise HTTPException(exc.status, exc.message, headers=headers)
+
+
+async def finish_login(conn, request: Request, response: Response, *,
+                       tls, kiosk: bool = False):
+    body = await request.json()
+    username = (body.get("username") or "").strip()
+    password = body.get("password") or ""
+    ip = _ip(request)
+    auth.assert_secret(conn)
+    try:
+        login_guard.check(conn, username, ip)
+    except login_guard.LoginBlocked as exc:
+        _raise_blocked(exc)
+
+    role = users.verify(conn, username, password)
+    if role is None:
+        login_guard.record_failure(conn, username, ip)
+        journal(conn, "login_failed", username)
+        raise HTTPException(401, "שם משתמש או סיסמה שגויים")
+
+    login_guard.clear(conn, username, ip)
+    stored = users.canonical_name(conn, username) or username
+    info = users.flags(conn, stored)
+
+    if role == "deploy" and not kiosk:
+        # ‏#1073: הסיסמה נכונה — וזו בדיוק הסיבה שהתשובה אינה 401.
+        # "בדקנו, ואתה לא נכנס מכאן" הוא מצב משלו (עיקרון 5), עם
+        # הודעה שמסך הכניסה מציג כלשונה. לפני MFA/כפייה: להפצה אין
+        # קונסולה בכלל. ‏JSONResponse ולא HTTPException: הגוף הוא חוזה
+        # (`error` + `message_he`), לא `detail` חופשי.
+        journal(conn, "login_refused_console", "deploy", stored)
+        return JSONResponse(
+            {"error": auth.DEPLOY_NO_CONSOLE,
+             "message_he": auth.DEPLOY_NO_CONSOLE_HE}, status_code=403)
+
+    if kiosk:
+        if info["must_change_password"]:
+            raise HTTPException(403, "החלף סיסמה בקונסולה קודם")
+        auth.attach_cookie(response, conn, stored, role, tls)
+        journal(conn, "login", "kiosk", stored)
+        return {"username": stored, "role": role, "idle_seconds": _idle(conn)}
+
+    if info["must_change_password"]:
+        auth.attach_cookie(response, conn, stored, role, tls,
+                           purpose=auth.PURPOSE_PWCHANGE)
+        journal(conn, "login", "must_change_password", stored)
+        return {"must_change_password": True}
+
+    if info["mfa_enabled"]:
+        trusted = request.cookies.get(console_mfa.TRUSTED_COOKIE)
+        if console_mfa.trusted_ok(conn, stored, trusted):
+            auth.attach_cookie(response, conn, stored, role, tls)
+            journal(conn, "login", "trusted_browser", stored)
+            return {"username": stored, "role": role, "idle_seconds": _idle(conn)}
+        challenge = console_mfa.make_challenge(conn, stored)
+        journal(conn, "login", "mfa_required", stored)
+        return {"mfa_required": True, "challenge": challenge}
+
+    if role == "admin" and not info["is_builtin"]:
+        auth.attach_cookie(response, conn, stored, role, tls,
+                           purpose=auth.PURPOSE_MFAENROLL)
+        journal(conn, "login", "mfa_enrollment_required", stored)
+        return {"mfa_enrollment_required": True}
+
+    auth.attach_cookie(response, conn, stored, role, tls)
+    journal(conn, "login", "", stored)
+    return {"username": stored, "role": role, "idle_seconds": _idle(conn)}

@@ -8,8 +8,8 @@
 * ‏`gui_state` (‏`agent/lib/guistate.sh`) כותב `menu_class=0|1` לקובץ
   המצב — **תמיד**, גם כשכבוי, כדי שהיעדר רשומה לא יקרא כ"דלוק".
   ‏#1073: ב-v1 הערך הוא 0 **גם כשהשרת אמר true** — כיתות = v2, והשער
-  `BUILD_MENU_CLASSROOMS` (‏`buildmenuitems.sh`) סגור; המסלול של v2 נבדק
-  עם השער פתוח, כדי שהדלקתו (#1081) תחזיר הכול.
+  `classrooms` (hello/state, #1081) כבוי; המסלול של v2 נבדק עם הדגל
+  דלוק ב-hello, כדי שהדלקתו תחזיר הכול.
 * ‏#1073: `gui_state` כותב גם `machine_name=` — השם הרשום של המכונה
   (‏`.name` מ-`/api/v1/agent/state`), האישור המוקלד של מסך השחזור.
 * ‏`state.c` מפרסר את הרשומה ו-`screens.c` מסתיר את הכרטיס — נמדד
@@ -69,20 +69,22 @@ def state_records(tmp_path: Path, hello: dict | None, *, env: str = "",
 
 @requires_native(("bash", BASH), "jq", why="gui_state בונה את המצב ב-jq")
 def test_gui_state_carries_the_switch_from_the_last_hello(tmp_path):
-    """‏(v2, השער פתוח) hello אמר true → `menu_class=1`; אמר false →
-    `menu_class=0`. זה המסלול ש-#1081 ידליק — נשמר עובד."""
-    v2 = "BUILD_MENU_CLASSROOMS=1"
-    on = state_records(tmp_path / "on", {"class_deploy_enabled": True}, env=v2)
+    """‏(v2, הדגל דלוק) hello אמר true → `menu_class=1`; אמר false →
+    `menu_class=0`. זה המסלול ש-v2 מדליק — נשמר עובד."""
+    on = state_records(tmp_path / "on",
+                       {"class_deploy_enabled": True, "classrooms": True})
     assert "menu_class=1" in on, on
-    off = state_records(tmp_path / "off", {"class_deploy_enabled": False}, env=v2)
+    off = state_records(tmp_path / "off",
+                        {"class_deploy_enabled": False, "classrooms": True})
     assert "menu_class=0" in off, off
 
 
 @requires_native(("bash", BASH), "jq", why="gui_state בונה את המצב ב-jq")
 def test_v1_pins_the_class_card_off_whatever_the_server_says(tmp_path):
-    """‏#1073: בלי השער (ברירת המחדל = v1) הכרטיס כבוי גם כשה-hello אמר
-    true — כיתות = v2. **בקרה שלילית:** בלי `BUILD_MENU_CLASSROOMS` ב-
-    `class_deploy_on` נכתב `menu_class=1` והטסט נופל."""
+    """‏#1081: בלי `classrooms: true` (ברירת המחדל = v1) הכרטיס כבוי גם
+    כשה-hello אמר `class_deploy_enabled` true — כיתות = v2. **בקרה
+    שלילית:** בלי בדיקת `.classrooms` ב-`class_deploy_on` נכתב
+    `menu_class=1` והטסט נופל."""
     on = state_records(tmp_path / "on", {"class_deploy_enabled": True})
     assert "menu_class=0" in on, on
     assert "menu_class=1" not in on

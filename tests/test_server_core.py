@@ -382,7 +382,7 @@ def test_open_round_error_names_the_offending_machine(store):
 
 def test_password_verification_round_trip(tmp_path):
     conn = connect(tmp_path / "u.db")
-    users.create(conn, "noc", "correct-horse-1", "admin", by="t")
+    users.create(conn, "noc", "correct-horse-1", "admin", by="t", is_builtin=True, check_policy=False)
     assert users.verify(conn, "noc", "correct-horse-1") == "admin"
     assert users.verify(conn, "noc", "wrong") is None
     assert users.verify(conn, "ghost", "whatever") is None
@@ -390,5 +390,5 @@ def test_password_verification_round_trip(tmp_path):
 
 def test_short_passwords_are_refused(tmp_path):
     conn = connect(tmp_path / "u.db")
-    with pytest.raises(ValueError):
-        users.create(conn, "x", "short", "deploy", by="t")
+    with pytest.raises(ValueError, match="8 תווים"):
+        users.create(conn, "xy", "short", "deploy", by="t")

@@ -122,7 +122,7 @@ test('renders build/cloner machines as one table: name+MAC, role, IP, server-dec
   assert.doesNotMatch(c, /monitorMachine\(/);
   assert.match(c, /wakeMachine\('aa%3Abb%3Acc%3Add%3Aee%3A02'\)">WoL</, '#984: WoL for a machine that is not connected');
   assert.match(html, /2 מכונות · 1 מחוברות עכשיו/); assert.match(html, /class="pill ok">המתג דלוק</);
-  assert.doesNotMatch(html, /המתג כבוי|מתג המוניטור לתחנות כבוי/, 'switch on: no warning');
+  assert.doesNotMatch(html, /המתג כבוי|מוניטור: כבוי \(ברירת מחדל\)/, 'switch on: no warning');
   assert.doesNotMatch(html, /role="tablist"|detail-grid|class="switch/, 'no tabs, no per-machine cards, no old switch');
 });
 
@@ -147,7 +147,7 @@ test('switch off shows the warning; empty list is an empty state, not an error',
   const {run} = setup({...base, '/monitor/settings': {port: 5900, enabled: false}, '/monitor/machines': []});
   await run('loadMonitor()');
   const html = run('monitorPage()');
-  assert.match(html, /note warn.*מתג המוניטור לתחנות כבוי/);
+  assert.match(html, /note warn.*מוניטור: כבוי \(ברירת מחדל\) — הדלקה חושפת 5900/);
   assert.match(html, /class="pill warn">המתג כבוי</);
   assert.match(html, /class="empty">אין מחשבי בנייה או שיכפול רשומים/);
   assert.doesNotMatch(html, /note err/);
@@ -191,7 +191,7 @@ test('the switch renders at the top of the page, reflecting server state', async
   await run2('loadMonitor()');
   const htmlOff = run2('monitorPage()');
   assert.match(htmlOff, /class="sw" role="switch" aria-checked="false"[^>]*onclick="monitorToggle\(true\)"/);
-  assert.match(htmlOff, /🔒 הדלקה = הקלדת imagectl.monitor/);
+  assert.match(htmlOff, /מוניטור לתחנות · כבוי \(ברירת מחדל\) — הדלקה חושפת 5900/);   // #1077: הכיתוב החדש, בלי 🔒 (אין הקלדה במתג הזה)
 });
 
 test('turning off sends PUT with no confirm word and no sheet() prompt', async () => {

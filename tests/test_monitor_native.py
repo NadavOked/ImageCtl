@@ -37,6 +37,8 @@ ClientCutText מיד אחרי התשובה השגויה. ההוכחה היא ס�
 
 from __future__ import annotations
 
+import hashlib
+import hmac as hmaclib
 import os
 import shutil
 import socket
@@ -49,9 +51,13 @@ from native import requires_native
 
 REPO = Path(__file__).resolve().parent.parent
 MONITOR_C = REPO / "agent" / "monitor.c"
+HMAC_C = REPO / "agent" / "hmac_sha256.c"
 
 WIDTH, HEIGHT = 64, 32
 SECRET = "00112233445566778899aabbccddeeff"
+CHALLENGE = bytes(range(16))                     # אותו וקטור כמו test_monitor.py
+KNOWN_HMAC = bytes.fromhex("a5ce9cbf7c63cbedf3403e594d04b0ef")
+
 SECRET_BYTES = bytes.fromhex(SECRET)
 WRONG_SECRET = bytes(16)
 POWER_REBOOT = b"imagectl-power:reboot"
@@ -72,13 +78,17 @@ NATIVE = requires_native(
 )
 
 
+def _hmac16(secret: bytes, challenge: bytes) -> bytes:
+    return hmaclib.new(secret, challenge, hashlib.sha256).digest()[:16]
+
+
 def _build(tmp_path: Path) -> Path:
     """אותה שורת הידור כמו ב-`tools/build_initramfs.sh`."""
     binary = tmp_path / "imagectl-monitor"
     cc = shutil.which("cc") or shutil.which("gcc")
     build = subprocess.run(
-        [cc, "-O2", "-Wall", "-Wextra", "-o", str(binary), str(MONITOR_C),
-         "-lvncserver"],
+        [cc, "-O2", "-Wall", "-Wextra", "-o", str(binary),
+         str(MONITOR_C), str(HMAC_C), "-lvncserver"],
         capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL,
     )
     assert build.returncode == 0, build.stderr
@@ -111,24 +121,27 @@ def _security_types(sock: socket.socket) -> bytes:
     return _recv_exact(sock, count)
 
 
-def _answer_challenge(sock: socket.socket, response: bytes,
-                      trailing: bytes = b"") -> int:
-    """בוחר סוג 2, עונה ל-challenge ב-`response` (ו-`trailing` באותה
-    כתיבה — מה שתוקף היה דוחף), ומחזיר את SecurityResult."""
+def _answer_challenge(sock: socket.socket, response: bytes | None = None,
+                      trailing: bytes = b"",
+                      secret: bytes = SECRET_BYTES) -> int:
+    """בוחר סוג 2, עונה ל-challenge ב-HMAC (או ב-`response` מפורש —
+    סוד גולמי לבקרה שלילית), ומחזיר את SecurityResult."""
     sock.sendall(b"\x02")
     challenge = _recv_exact(sock, 16)
     assert len(challenge) == 16
+    if response is None:
+        response = _hmac16(secret, challenge)
     sock.sendall(response + trailing)
     return struct.unpack(">I", _recv_exact(sock, 4))[0]
 
 
 def _handshake(sock: socket.socket) -> tuple[int, int]:
-    """‏RFB 3.8, סוג 2 עם סוד-האתחול, ‏ClientInit משותף. מחזיר את גודל
-    המסך. ‏None אסור שיוצע בכלל — זה השער של #839."""
+    """‏RFB 3.8, סוג 2 עם HMAC-SHA256(סוד, challenge), ‏ClientInit משותף.
+    מחזיר את גודל המסך. ‏None אסור שיוצע בכלל — זה השער של #839."""
     types = _security_types(sock)
     assert 1 not in types, f"None security offered: {list(types)}"
     assert 2 in types, f"no secret security in {list(types)}"
-    assert _answer_challenge(sock, SECRET_BYTES) == 0, "security failed"
+    assert _answer_challenge(sock) == 0, "security failed"
     sock.sendall(b"\x01")                      # ClientInit: shared
     width, height = struct.unpack(">HH", _recv_exact(sock, 4))
     _recv_exact(sock, 16)                      # pixel format
@@ -171,18 +184,21 @@ class Monitor:
     להחליף PATH — כך `reboot` הוא סטאב ולא המכונה."""
 
     def __init__(self, tmp_path: Path, binary: Path, *, secret: str | None = SECRET,
-                 env: dict | None = None, extra: tuple[str, ...] = ()):
+                 env: dict | None = None, extra: tuple[str, ...] = (),
+                 allow_from: str | None = "127.0.0.1"):
         fb = tmp_path / "fb0.raw"
         fb.write_bytes(bytes([0x10, 0x20, 0x30, 0x00]) * (WIDTH * HEIGHT))
         self.port = _free_port()
         self.log_path = tmp_path / "monitor.log"
         self.log = open(self.log_path, "wb")
+        self.secret_file = tmp_path / "monitor.secret"
         argv = [str(binary), "--bind", "127.0.0.1", "--port", str(self.port),
                 "--fps", "10", "--fb", str(fb), "--geometry", f"{WIDTH}x{HEIGHT}"]
         if secret is not None:
-            secret_file = tmp_path / "monitor.secret"
-            secret_file.write_text(secret + "\n")
-            argv += ["--secret-file", str(secret_file)]
+            self.secret_file.write_text(secret + "\n")
+            argv += ["--secret-file", str(self.secret_file)]
+        if allow_from is not None:
+            argv += ["--allow-from", allow_from]
         argv += list(extra)
         self.proc = subprocess.Popen(
             argv, stdin=subprocess.DEVNULL, stdout=self.log, stderr=self.log,
@@ -275,6 +291,13 @@ def test_monitor_offers_only_the_secret_type_and_rejects_a_wrong_secret(tmp_path
         with monitor.connect() as sock:
             types = _security_types(sock)
             assert 1 not in types and 2 in types, list(types)
+            assert _answer_challenge(sock, SECRET_BYTES) == 1   # גולמי ≠ HMAC
+            reason_len = struct.unpack(">I", _recv_exact(sock, 4))[0]
+            _recv_exact(sock, reason_len)
+        assert monitor.alive()
+
+        with monitor.connect() as sock:
+            types = _security_types(sock)
             assert _answer_challenge(sock, WRONG_SECRET) == 1
             reason_len = struct.unpack(">I", _recv_exact(sock, 4))[0]
             reason = _recv_exact(sock, reason_len)
@@ -349,7 +372,8 @@ def test_monitor_refuses_to_start_without_a_usable_secret(tmp_path):
     fb = tmp_path / "fb0.raw"
     fb.write_bytes(bytes(WIDTH * HEIGHT * 4))
     base = [str(binary), "--bind", "127.0.0.1", "--port", str(_free_port()),
-            "--fb", str(fb), "--geometry", f"{WIDTH}x{HEIGHT}"]
+            "--fb", str(fb), "--geometry", f"{WIDTH}x{HEIGHT}",
+            "--allow-from", "127.0.0.1"]
 
     without = subprocess.run(base, capture_output=True, text=True, timeout=10,
                              stdin=subprocess.DEVNULL)
@@ -393,6 +417,27 @@ def test_source_gates_rfb_on_the_secret_not_on_none():
     assert "screen->authPasswdData = secret;" in c
     assert "screen->passwordCheck = secret_check;" in c
     assert "--secret-file" in c
+    assert "--allow-from" in c
+    assert "hmac_sha256" in c
+    assert "RFB_CLIENT_REFUSE" in c
+    builder = (REPO / "tools" / "build_initramfs.sh").read_text(encoding="utf-8")
+    assert "hmac_sha256.c" in builder
+
+
+def test_source_uses_hmac_not_the_raw_secret():
+    """התשובה היא HMAC(secret, challenge), לא memcmp לסוד עצמו.
+    בקרה שלילית: החזרת ההשוואה הגולמית מפילה את test_hmac למטה."""
+    c = _source()
+    assert "hmac_sha256(secret, SECRET_LEN" in c
+    assert "authChallenge" in c
+    assert "response[i] ^ secret[i]" not in c
+
+
+def test_source_refuses_a_peer_that_is_not_the_server():
+    c = _source()
+    assert "peer_is_server" in c
+    assert "getpeername" in c
+    assert "not the server" in c
 
 
 def test_source_never_exits_from_a_client_callback():
@@ -411,3 +456,89 @@ def test_source_releases_keys_when_a_client_goes_and_reaps_power_children():
     c = _source()
     assert "clientGoneHook = client_gone" in c
     assert "signal(SIGCHLD, SIG_IGN)" in c
+
+
+CC_ONLY = requires_native(
+    ("cc", shutil.which("cc") or shutil.which("gcc")),
+    why="gcc for hmac_sha256.c unit test",
+)
+
+
+@CC_ONLY
+def test_hmac_sha256_c_matches_the_known_vector(tmp_path):
+    """ה-C והפייתון מסכימים על אותו וקטור. בלי libvncserver — רק hmac_sha256.c."""
+    known = "a5ce9cbf7c63cbedf3403e594d04b0ef"
+
+    driver = tmp_path / "hmac_drv.c"
+    driver.write_text(
+        '#include "hmac_sha256.h"\n'
+        "#include <stdio.h>\n"
+        "int main(void) {\n"
+        "    unsigned char key[16] = {"
+        + ",".join(str(b) for b in bytes.fromhex(SECRET))
+        + "};\n"
+        "    unsigned char msg[16] = {"
+        + ",".join(str(b) for b in CHALLENGE)
+        + "};\n"
+        "    unsigned char out[32];\n"
+        "    int i;\n"
+        "    hmac_sha256(key, 16, msg, 16, out);\n"
+        "    for (i = 0; i < 16; i++) printf(\"%02x\", out[i]);\n"
+        "    printf(\"\\n\");\n"
+        "    return 0;\n"
+        "}\n"
+    )
+    binary = tmp_path / "hmac_drv"
+    cc = shutil.which("cc") or shutil.which("gcc")
+    build = subprocess.run(
+        [cc, "-O2", "-Wall", "-Wextra", "-o", str(binary),
+         str(driver), str(HMAC_C), "-I", str(REPO / "agent")],
+        capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL,
+    )
+    assert build.returncode == 0, build.stderr
+    run = subprocess.run([str(binary)], capture_output=True, text=True,
+                         timeout=10, stdin=subprocess.DEVNULL)
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.strip() == known
+
+
+@NATIVE
+def test_wrong_peer_is_closed_before_the_handshake(tmp_path):
+    """peer שאינו --allow-from נסגר מיד. בקרה שלילית: מחיקת RFB_CLIENT_REFUSE
+    נותנת באנר RFB לזר."""
+    binary = _build(tmp_path)
+    monitor = Monitor(tmp_path, binary, allow_from="10.0.0.1")
+    try:
+        sock = monitor.connect()
+        sock.settimeout(3)
+        with sock:
+            try:
+                sock.recv(64)
+            except OSError:
+                pass
+        assert monitor.alive()
+    finally:
+        text = monitor.stop()
+    assert "not the server" in text, text
+
+
+@NATIVE
+def test_secret_file_rotates_after_an_authenticated_client_leaves(tmp_path):
+    binary = _build(tmp_path)
+    monitor = Monitor(tmp_path, binary)
+    before = monitor.secret_file.read_text().strip()
+    try:
+        with monitor.connect() as sock:
+            _handshake(sock)
+        deadline = time.monotonic() + 5
+        after = before
+        while time.monotonic() < deadline:
+            after = monitor.secret_file.read_text().strip()
+            if after != before:
+                break
+            time.sleep(0.05)
+        assert after != before, after
+        assert len(after) == 32
+    finally:
+        text = monitor.stop()
+    assert "rotated session secret" in text, text

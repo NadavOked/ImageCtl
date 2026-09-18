@@ -79,7 +79,7 @@ test('each group is a card with its own table; each tool row has a build checkbo
   assert.match(html, /id="tool-build-boot-order"/);
   assert.match(html, /id="tool-student-boot-order"/);
   assert.match(html, /aria-label="בנייה\/שיכפול: שינוי סדר האתחול"/);
-  assert.match(html, /aria-label="תלמיד: שינוי סדר האתחול"/);
+  assert.match(html, /aria-label="לתלמיד \(v2\): שינוי סדר האתחול"/);
   assert.match(html, /שחזור מחיצות &lt;b&gt;וסקטור&lt;\/b&gt;/, 'הכותרת מוברחת');
   assert.match(html, /<span class="mono">efibootmgr -o<\/span>/);
   assert.match(html, /<span class="pill warn">משנה<\/span>/);

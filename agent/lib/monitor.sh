@@ -6,16 +6,35 @@ MONITOR_BIN="${MONITOR_BIN:-/usr/bin/imagectl-monitor}"
 # The framebuffer device; guibridge.sh tests the same one (#835).
 FB_DEV="${FB_DEV:-/dev/fb0}"
 
-# #839: the boot secret. 5900 listens on the distribution address, so the
-# RFB handshake is the gate -- and the secret behind it is drawn HERE, on the
-# machine, once per boot, and reported to the server in hello. Direction
-# matters: hello is unauthenticated, so a secret the server handed out in
-# its answer could be fetched by anyone posting this machine's MAC. The
-# reverse flow only lets a rogue hello overwrite the row (monitor DoS until
-# the next real hello), never learn the secret. Only the server's proxy
-# answers the RFB challenge with it; the browser never sees it.
+# #839/#1077: the session secret. 5900 listens on the distribution address,
+# so the RFB handshake is the gate -- and the secret behind it is drawn
+# HERE, on the machine, reported in hello, and rewritten by imagectl-monitor
+# after every authenticated session. Direction matters: hello is
+# unauthenticated, so a secret the server handed out in its answer could be
+# fetched by anyone posting this machine's MAC. The reverse flow only lets
+# a rogue hello overwrite the row (monitor DoS until the next real hello),
+# never learn the secret. Only the server's proxy answers the RFB challenge
+# with HMAC(secret, challenge); the browser never sees it.
 _monitor_secret_file() {
     printf '%s' "${MONITOR_SECRET_FILE:-${RUN_DIR:-/run/imagectl}/monitor.secret}"
+}
+
+# imagectl.server is http://IP:port or IP:port. Peer-check is IPv4 only
+# (the monitor binds IPv4). Missing/unparseable = do not start (fail closed).
+_monitor_server_ip() {
+    _s=${IMAGECTL_SERVER:-}
+    case "$_s" in
+        http://*)  _s=${_s#http://} ;;
+        https://*) _s=${_s#https://} ;;
+    esac
+    _s=${_s%%/*}
+    case "$_s" in
+        *:*) _s=${_s%%:*} ;;
+    esac
+    case "$_s" in
+        *.*.*.*) printf '%s' "$_s" ;;
+        *) return 1 ;;
+    esac
 }
 
 monitor_secret() {
@@ -87,6 +106,10 @@ monitor_start() {
         log "monitor: no boot secret at $_msf; not starting"
         return 1
     }
+    _allow=$(_monitor_server_ip) || {
+        log "monitor: cannot parse server IP from IMAGECTL_SERVER=${IMAGECTL_SERVER:-}; not starting"
+        return 1
+    }
 
     # #835: no framebuffer device (no display attached -- cloner 2): the GUI
     # draws into $RUN_DIR/fb.mem and the monitor serves that file. Until the
@@ -105,7 +128,8 @@ monitor_start() {
 
     # shellcheck disable=SC2086 # optional --input/--fb are intentionally words.
     _monitor_spawn "$MONITOR_BIN" --bind "$IP" --port "$MONITOR_PORT" \
-        --fps 10 --secret-file "$_msf" $_monitor_input $_monitor_fb
+        --fps 10 --secret-file "$_msf" --allow-from "$_allow" \
+        $_monitor_input $_monitor_fb
     log "monitor: supervisor started on $IP:$MONITOR_PORT" \
         "$([ -n "$_monitor_input" ] && echo '(input enabled)' ||
             echo '(view only)')"

@@ -11,7 +11,7 @@
 #   admin   the same three, plus capture this disk into the library
 #
 # "Deploy to a classroom" exists in the code and is hidden in v1: classrooms
-# are v2 (BUILD_MENU_CLASSROOMS below; #1081 turns it into a server flag).
+# are v2 (hello/state `.classrooms`, #1081). Missing = off.
 # A deploy account has no web console at all -- the console refuses it at
 # sign-in -- so this menu and the GUI are the whole of what deploy can do.
 #

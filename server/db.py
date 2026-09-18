@@ -130,7 +130,46 @@ CREATE TABLE IF NOT EXISTS users (
     disabled_at TEXT,
     -- #1093: ערכת הנושא של המשתמש. auto = לפי מערכת ההפעלה.
     theme    TEXT NOT NULL DEFAULT 'auto'
-             CHECK (theme IN ('auto', 'light', 'dark'))
+             CHECK (theme IN ('auto', 'light', 'dark')),
+    must_change_password INTEGER NOT NULL DEFAULT 0,
+    mfa_secret TEXT,
+    mfa_enabled INTEGER NOT NULL DEFAULT 0,
+    mfa_enrolled_at TEXT,
+    is_builtin INTEGER NOT NULL DEFAULT 0,
+    auth_epoch INTEGER NOT NULL DEFAULT 0,
+    mfa_last_step INTEGER
+);
+
+-- ‏#1085: קודי גיבוי חד-פעמיים ל-TOTP. מוצגים פעם אחת בהפעלה, נשמרים כ-hash.
+CREATE TABLE IF NOT EXISTS mfa_backup_codes (
+    username  TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    code_hash TEXT NOT NULL,
+    used_at   TEXT,
+    PRIMARY KEY (username, code_hash)
+);
+
+-- ‏#1085/#1075: מונה כשלונות כניסה לפי משתמש+IP. 5 → השהיה 2^n, 10 → נעילה 15 דק'.
+CREATE TABLE IF NOT EXISTS login_attempts (
+    key          TEXT PRIMARY KEY,
+    failures     INTEGER NOT NULL DEFAULT 0,
+    locked_until REAL,
+    last_at      REAL NOT NULL
+);
+
+-- ‏#1085: דפדפן זכור — מדלג על שלב ה-TOTP ל-7 שעות.
+CREATE TABLE IF NOT EXISTS trusted_browsers (
+    token_hash TEXT PRIMARY KEY,
+    username   TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    expires_at REAL NOT NULL,
+    created_at TEXT NOT NULL,
+    ua         TEXT NOT NULL DEFAULT ''
+);
+
+-- ‏#1085: אתגר MFA חד-פעמי אחרי סיסמה נכונה, בלי session.
+CREATE TABLE IF NOT EXISTS mfa_challenges (
+    token_hash TEXT PRIMARY KEY,
+    username   TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    expires_at REAL NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS journal (
@@ -477,6 +516,9 @@ ADDED_COLUMNS = [
     # (server/monitor.py) מזדהה איתו מול 5900 של אותה מכונה, ושום תשובת
     # קונסולה אינה מחזירה אותו.
     ("net_devices", "monitor_secret", "TEXT"),
+    # ‏#1077: ``hmac`` כשהסוכן תומך באתגר-תגובה. NULL = סוכן ישן; הפרוקסי
+    # מסרב ולא נופל לשליחת הסוד הגולמי.
+    ("net_devices", "monitor_auth", "TEXT"),
     # ‏#906: השאלה שהמכונה ממתינה עליה לאדם (‏hello עם `waiting_for`).
     # NULL = לא ממתינה; כל hello בלי השדה מנקה אותה.
     ("net_devices", "prompt", "TEXT"),
@@ -508,6 +550,14 @@ ADDED_COLUMNS = [
     # ‏#1093: ערכת נושא לפי משתמש. התקנה קיימת מקבלת auto — לפי המערכת,
     # כמו לפני שהבחירה עברה מהדפדפן לשרת.
     ("users", "theme", "TEXT NOT NULL DEFAULT 'auto'"),
+    # ‏#1085: החלפת סיסמה כפויה, MFA, החשבון המקומי, וביטול sessions (#1075).
+    ("users", "must_change_password", "INTEGER NOT NULL DEFAULT 0"),
+    ("users", "mfa_secret", "TEXT"),
+    ("users", "mfa_enabled", "INTEGER NOT NULL DEFAULT 0"),
+    ("users", "mfa_enrolled_at", "TEXT"),
+    ("users", "is_builtin", "INTEGER NOT NULL DEFAULT 0"),
+    ("users", "auth_epoch", "INTEGER NOT NULL DEFAULT 0"),
+    ("users", "mfa_last_step", "INTEGER"),
     # ‏#530: האסימון שמוכיח שהפונה הוא בעל המשימה. ‏NULL בהתקנה קיימת,
     # כלומר משימות שנוצרו לפני המיגרציה **אינן ניתנות לכתיבה** —
     # ‏`claim` מסרב על `token` ריק. זו הכרעה: משימה ישנה שתיתקע עדיפה
@@ -663,6 +713,10 @@ def _initialize(conn: sqlite3.Connection) -> None:
     """הסכימה וברירות המחדל — פעם אחת לקובץ, לא פעם אחת לחיבור."""
     conn.executescript(SCHEMA)
     _add_missing_columns(conn)
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS users_username_nocase"
+        " ON users (username COLLATE NOCASE)"
+    )
     _verify_storage_schema(conn)
     _close_duplicate_actives(conn)
     _create_unique_indexes(conn)
@@ -727,6 +781,9 @@ class Database:
 
     def execute(self, sql: str, parameters=()) -> sqlite3.Cursor:
         return self.connection.execute(sql, parameters)
+
+    def executemany(self, sql: str, seq_of_parameters) -> sqlite3.Cursor:
+        return self.connection.executemany(sql, seq_of_parameters)
 
     def executescript(self, sql: str) -> sqlite3.Cursor:
         return self.connection.executescript(sql)
@@ -867,6 +924,7 @@ NET_SEEN_MIN_INTERVAL_SECONDS = 15
 def _net_seen_unchanged(row: sqlite3.Row, ip: str | None,
                         disks_json: str | None, now: datetime,
                         monitor_secret: str | None = None,
+                        monitor_auth: str | None = None,
                         prompt: str | None = None) -> bool:
     """האם השורה כבר אומרת בדיוק את מה שהכתיבה הזו הייתה כותבת.
 
@@ -880,6 +938,8 @@ def _net_seen_unchanged(row: sqlite3.Row, ip: str | None,
     if disks_json is not None and disks_json != row["disks_json"]:
         return False
     if monitor_secret is not None and monitor_secret != row["monitor_secret"]:
+        return False
+    if monitor_secret is not None and (row["monitor_auth"] or None) != (monitor_auth or None):
         return False
     if prompt != row["prompt"]:   # #906: גם המעבר שאלה→אין-שאלה נכתב
         return False
@@ -897,6 +957,7 @@ def net_seen(
     conn: sqlite3.Connection, mac: str, ip: str | None,
     disks_json: str | None = None,
     monitor_secret: str | None = None,
+    monitor_auth: str | None = None,
     prompt: str | None = None,
 ) -> None:
     """כל מגע של מכונה עם השרת — hello או תפריט אתחול — נרשם כאן.
@@ -919,11 +980,12 @@ def net_seen(
     """
     now = datetime.now(timezone.utc)
     row = conn.execute(
-        "SELECT ip, last_seen, disks_json, monitor_secret, prompt"
+        "SELECT ip, last_seen, disks_json, monitor_secret, monitor_auth, prompt"
         " FROM net_devices WHERE mac = ?", (mac,)
     ).fetchone()
     if row is not None and _net_seen_unchanged(row, ip, disks_json, now,
-                                               monitor_secret, prompt):
+                                               monitor_secret, monitor_auth,
+                                               prompt):
         return
 
     ts = now.isoformat(timespec="seconds")
@@ -935,12 +997,14 @@ def net_seen(
     with _write_lock, writing(conn):
         conn.execute(
             "INSERT INTO net_devices (mac, ip, first_seen, last_seen, disks_json,"
-            " monitor_secret, prompt) VALUES (?, ?, ?, ?, ?, ?, ?) "
+            " monitor_secret, monitor_auth, prompt) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (mac) DO UPDATE SET ip = COALESCE(excluded.ip, ip),"
             " last_seen = ?, disks_json = COALESCE(excluded.disks_json, disks_json),"
             " monitor_secret = COALESCE(excluded.monitor_secret, monitor_secret),"
+            " monitor_auth = CASE WHEN excluded.monitor_secret IS NOT NULL"
+            " THEN excluded.monitor_auth ELSE monitor_auth END,"
             " prompt = excluded.prompt",
-            (mac, ip, ts, ts, disks_json, monitor_secret, prompt, ts),
+            (mac, ip, ts, ts, disks_json, monitor_secret, monitor_auth, prompt, ts),
         )
 
 

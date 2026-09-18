@@ -126,8 +126,8 @@ def kiosk_env(tmp_path: Path, images_root: Path):
     )
     console_app = create_console_app(rt)
     kiosk_app = create_kiosk_app(rt)
-    users.create(rt.conn, "noc", "admin-pass-123", "admin", by="test")
-    users.create(rt.conn, "labtech", "deploy-pass-1", "deploy", by="test")
+    users.create(rt.conn, "noc", "admin-pass-123", "admin", by="test", is_builtin=True, check_policy=False)
+    users.create(rt.conn, "labtech", "deploy-pass-1", "deploy", by="test", check_policy=False)
 
     admin_console = TestClient(console_app)
     assert admin_console.post(

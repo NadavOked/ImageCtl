@@ -55,7 +55,8 @@ def test_me_reports_a_server_name_for_every_user(server):
     assert me["server_name"]
 
     # ‏#1073: "לכל משתמש" = לכל משתמש **קונסולה**; ל-deploy אין /me (403).
-    users.create(app.state.ctx.conn, "noc2", "admin-pass-456", "admin", by="test")
+    users.create(app.state.ctx.conn, "noc2", "admin-pass-456", "admin", by="test",
+                 is_builtin=True, check_policy=False)
     from fastapi.testclient import TestClient
 
     second = TestClient(app)

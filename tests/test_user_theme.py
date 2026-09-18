@@ -40,11 +40,11 @@ def test_a_foreign_theme_is_422_and_does_not_stick(server):
 def test_theme_is_per_user(server):
     admin = server["admin"]
     assert admin.post("/api/console/users", json={
-        "username": "other", "password": "other-pass-1", "role": "admin",
+        "username": "other", "password": "Other-pass-1!", "role": "admin",
     }).status_code == 200
     other = TestClient(server["app"])
     assert other.post("/api/console/login", json={
-        "username": "other", "password": "other-pass-1",
+        "username": "other", "password": "Other-pass-1!",
     }).status_code == 200
 
     assert admin.put("/api/console/me/theme", json={"theme": "light"}).status_code == 200

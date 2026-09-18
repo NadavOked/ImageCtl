@@ -163,7 +163,7 @@ def registered_server(tmp_path, *, with_gui: bool):
     images.mkdir()
     app = create_app(tmp_path / "data", images, "http://10.44.12.10:8080",
                      boot_dir=boot)
-    users.create(app.state.ctx.conn, "noc", "admin-pass-123", "admin", by="test")
+    users.create(app.state.ctx.conn, "noc", "admin-pass-123", "admin", by="test", is_builtin=True, check_policy=False)
     admin = TestClient(app)
     assert admin.post("/api/console/login",
                       json={"username": "noc",

@@ -109,8 +109,8 @@ def _build(tmp_path: Path, images_root: Path, clock, listeners, *, base_port=80)
     app = create_app(tmp_path / "data", images_root, "http://10.44.12.10:8080",
                      now_fn=clock, health_hooks=hooks)
     conn = app.state.ctx.conn
-    users.create(conn, "noc", "admin-pass-123", "admin", by="test")
-    users.create(conn, "labtech", "deploy-pass-1", "deploy", by="test")
+    users.create(conn, "noc", "admin-pass-123", "admin", by="test", is_builtin=True, check_policy=False)
+    users.create(conn, "labtech", "deploy-pass-1", "deploy", by="test", check_policy=False)
     base = f"http://testserver:{base_port}"
     admin, deploy = TestClient(app, base_url=base), TestClient(app, base_url=base)
     admin.post("/api/console/login", json={"username": "noc", "password": "admin-pass-123"})

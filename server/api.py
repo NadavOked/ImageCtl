@@ -16,11 +16,12 @@ from fastapi.responses import FileResponse, JSONResponse
 from boot.grub_menu import normalize_mac as lenient_mac
 
 from . import (agent_loops, disk_events, foreign_vlan, identity, inventory,
-               probe, pulls, registry, reports, shrink_records, users)
+               login_guard, probe, pulls, registry, reports, shrink_records,
+               users)
 from .db import journal
 from . import direct
 from .hello import (build_answer, login_required, off_deploy_vlan,
-                    well_formed_monitor_secret)
+                    well_formed_monitor_auth, well_formed_monitor_secret)
 from .images import ImageLibrary, restore_refusal
 from .sessions import SessionError, SessionStore
 from .tasks import TOKEN_HEADER
@@ -146,6 +147,11 @@ def create_agent_router(ctx: ServerContext,
         monitor_secret = body.get("monitor_secret")
         if not well_formed_monitor_secret(monitor_secret):
             monitor_secret = None
+        # ‏#1077: נרשם רק כשיש סוד תקין באותו hello — אחרת COALESCE היה
+        # משאיר hmac על סוכן שחזר אחורה.
+        monitor_auth = body.get("monitor_auth")
+        if monitor_secret is None or not well_formed_monitor_auth(monitor_auth):
+            monitor_auth = None
         # ‏#720 (schema 2): המלאי החומרתי — DMI, PCI, TPM — למיפוי דרייברים.
         # פגום נזנח כמו שדה לא ידוע; סוכן ישן אינו שולח אותו, והגרסה
         # השמורה (אם יש) נשארת.
@@ -174,6 +180,7 @@ def create_agent_router(ctx: ServerContext,
             disks=disks, client_ip=client_ip, joining=joining,
             reported_ip=reported_ip, off_vlan=off_vlan,
             all_macs=all_macs, monitor_secret=monitor_secret,
+            monitor_auth=monitor_auth,
             hw_inventory=hw_inventory, hw_probe=hw_probe, prompt=prompt,
             # ‏#715: פרמטרי השידור למקור שהוא מחשב בנייה — של המנוע, אם יש.
             multicast=ctx.sender.multicast_params() if ctx.sender is not None else None,
@@ -214,10 +221,21 @@ def create_agent_router(ctx: ServerContext,
         refused = identity_gate(ctx, mac, request, "login")
         if refused is not None:
             return refused
+        ip = request.client.host if request.client else "?"
+        try:
+            login_guard.check(ctx.conn, username, ip)
+        except login_guard.LoginBlocked as exc:
+            return _error(exc.status, exc.message,
+                          "login_locked" if exc.status == 403 else "login_delayed")
         role = users.verify(ctx.conn, username, body.get("password", ""))
         if role is None:
+            login_guard.record_failure(ctx.conn, username, ip)
             journal(ctx.conn, "agent_login_failed", f"{username} at {mac}")
             return _error(401, "wrong username or password", "bad_login")
+        login_guard.clear(ctx.conn, username, ip)
+        info = users.flags(ctx.conn, username)
+        if info["must_change_password"]:
+            return _error(403, "החלף סיסמה בקונסולה קודם", "password_change_required")
         journal(ctx.conn, "agent_login", f"{username} at {mac}")
         return JSONResponse({"ok": True, "role": role})
 

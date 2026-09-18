@@ -13,7 +13,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac as hmaclib
 import struct
+from pathlib import Path
 
 import pytest
 
@@ -104,6 +107,22 @@ def test_monitor_settings_are_admin_only(server):
     result = server["admin"].get("/api/console/monitor/settings")
     assert result.status_code == 200
     assert result.json()["port"] == monitor.MONITOR_PORT
+    assert result.json()["enabled"] is False
+
+
+def test_monitor_is_off_by_default_and_cmdline_flag_follows_the_switch():
+    """ברירת מחדל כבוי: imagectl.monitor=1 נכנס לקרנל רק כשהמתג דלוק.
+    station_cmdline גם מסיר דגל שהגיע ב-extra-cmdline כשהמתג כבוי."""
+    extra = ("console=ttyS0,115200", "imagectl.monitor=1")
+    assert monitor.station_cmdline(extra, False) == ("console=ttyS0,115200",)
+    assert monitor.station_cmdline((), True) == (monitor.CMDLINE_PARAM,)
+    assert monitor.station_cmdline(extra, True).count("imagectl.monitor=1") == 1
+
+
+def test_settings_page_warns_that_enabling_exposes_5900():
+    js = (Path(__file__).resolve().parent.parent
+          / "server" / "static" / "console.js").read_text(encoding="utf-8")
+    assert "מוניטור: כבוי (ברירת מחדל) — הדלקה חושפת 5900 על וילן ההפצה" in js
 
 
 def test_enabling_monitor_requires_explicit_confirmation(server):
@@ -338,18 +357,25 @@ def test_monitor_machines_list_is_admin_only_and_server_decides_online(server):
         MAC: False, "aa:bb:cc:dd:ee:01": False}, "אחרי 90ש' — לא מחובר"
 
 
-# --- #839: הפרוקסי מזדהה מול המוניטור בסוד-האתחול של המכונה ----------------
+# --- #839/#1077: הפרוקסי מזדהה מול המוניטור ב-HMAC, לא בסוד גולמי ---------
 #
 # ‏5900 קשוב לכל הווילן, ולכן "רק ה-WebSocket של ה-admin מגיע לשם" לא היה
-# נכון מעולם. מעכשיו המוניטור מציע רק את סוג-אבטחה 2 (מסגור VNC
-# Authentication), והתשובה ל-challenge היא 16 בייטי הסוד שהמכונה עצמה
-# הגרילה באתחול ודיווחה ב-hello. הפרוקסי הוא היחיד שמבצע את השלב הזה;
-# הדפדפן רואה את אותה לחיצת-יד None שראה עד היום — החוזה מולו לא זז.
+# נכון מעולם. המוניטור מציע רק את סוג-אבטחה 2 (מסגור VNC Authentication),
+# והתשובה ל-challenge היא HMAC-SHA256(סוד, challenge) הקטום ל-16 בייטים.
+# סוכן בלי monitor_auth: hmac מסורב לפני TCP. הדפדפן רואה את אותה
+# לחיצת-יד None שראה עד היום — החוזה מולו לא זז.
 
 SECRET = "00112233445566778899aabbccddeeff"
 SECRET_BYTES = bytes.fromhex(SECRET)
 CHALLENGE = bytes(range(16))
+#: HMAC-SHA256(SECRET, CHALLENGE)[:16] — וקטור ידוע, לא חישוב בזמן הטסט.
+KNOWN_HMAC = bytes.fromhex("a5ce9cbf7c63cbedf3403e594d04b0ef")
 SERVER_INIT = b"\x00\x40\x00\x20" + b"\x00" * 16 + b"\x00\x00\x00\x00"
+
+
+def hmac16(secret: str, challenge: bytes) -> bytes:
+    return hmaclib.new(bytes.fromhex(secret), challenge,
+                       hashlib.sha256).digest()[:16]
 
 
 class FakeMachine:
@@ -411,10 +437,12 @@ class FakeMachine:
         return None
 
 
-def prepare_secret_machine(server, secret: str | None = SECRET) -> FakeMachine:
+def prepare_secret_machine(server, secret: str | None = SECRET,
+                           auth: str | None = "hmac") -> FakeMachine:
     prepare_build_machine(server)
     if secret is not None:
-        net_seen(server["ctx"].conn, MAC, IP, monitor_secret=secret)
+        net_seen(server["ctx"].conn, MAC, IP, monitor_secret=secret,
+                 monitor_auth=auth)
     return FakeMachine()
 
 
@@ -428,9 +456,18 @@ def browser_handshake(websocket) -> None:
     websocket.send_bytes(b"\x01")                         # ClientInit: shared
 
 
-def test_proxy_authenticates_to_the_machine_with_the_boot_secret(server):
-    """הראיה החיובית: המוניטור המזויף קיבל בדיוק את 16 בייטי הסוד כתשובה
-    ל-challenge, והדפדפן — שלא ראה את הסוד — קיבל ServerInit אחריו."""
+def test_hmac_response_matches_the_known_vector():
+    """וקטור ידוע: HMAC-SHA256(secret, challenge) קטום ל-16. הסוד הגולמי
+    אינו התשובה — זו הבקרה השלילית של #1077 על צד השרת."""
+    assert monitor.hmac_response(SECRET, CHALLENGE) == KNOWN_HMAC
+    assert hmac16(SECRET, CHALLENGE) == KNOWN_HMAC
+    assert KNOWN_HMAC != SECRET_BYTES
+    assert len(KNOWN_HMAC) == 16
+
+
+def test_proxy_authenticates_to_the_machine_with_hmac_not_the_raw_secret(server):
+    """הראיה החיובית: המוניטור המזויף קיבל HMAC על ה-challenge, לא את
+    16 בייטי הסוד, והדפדפן — שלא ראה את הסוד — קיבל ServerInit אחריו."""
     machine = prepare_secret_machine(server)
 
     async def connector(_host, _port):
@@ -442,8 +479,9 @@ def test_proxy_authenticates_to_the_machine_with_the_boot_secret(server):
         assert websocket.receive_bytes() == SERVER_INIT
         websocket.send_bytes(b"client-rfb-data")
 
-    assert machine.writes[:3] == [b"RFB 003.008\n", b"\x02", SECRET_BYTES]
-    assert machine.response == SECRET_BYTES
+    assert machine.writes[:3] == [b"RFB 003.008\n", b"\x02", KNOWN_HMAC]
+    assert machine.response == KNOWN_HMAC
+    assert machine.response != SECRET_BYTES
     assert b"\x01" in machine.writes[3:]                  # ה-ClientInit של הדפדפן
     assert machine.writes[-1] == b"client-rfb-data"
     assert machine.closed is True
@@ -524,10 +562,33 @@ def test_proxy_refuses_before_tcp_when_the_machine_reported_no_secret(server):
     assert called is False
 
 
-def hello_with_secret(server, secret):
+def test_proxy_refuses_an_agent_without_hmac_auth_before_tcp(server):
+    """סוכן שדיווח סוד בלי monitor_auth: hmac — מסורב בקול, בלי TCP,
+    ובלי נפילה לשליחת הסוד הגולמי (עיקרון 5)."""
+    prepare_secret_machine(server, auth=None)
+    called = False
+
+    async def connector(_host, _port):
+        nonlocal called
+        called = True
+        return FakeReader(), FakeWriter()
+
+    client = monitor_client(server, "admin", connector)
+    with pytest.raises(WebSocketDisconnect) as caught:
+        with client.websocket_connect(f"/api/console/monitor/{MAC}") as ws:
+            ws.receive_bytes()
+
+    assert caught.value.code == monitor.WS_MACHINE_AUTH
+    assert "HMAC" in caught.value.reason
+    assert called is False
+
+
+def hello_with_secret(server, secret, auth=None):
     body = hello_body(MAC)
     if secret is not None:
         body["monitor_secret"] = secret
+    if auth is not None:
+        body["monitor_auth"] = auth
     response = server["anon"].post("/api/v1/agent/hello", json=body)
     assert response.status_code == 200
     return response.json()
@@ -538,6 +599,13 @@ def stored_secret(server):
         "SELECT monitor_secret FROM net_devices WHERE mac = ?", (MAC,)
     ).fetchone()
     return row["monitor_secret"] if row else None
+
+
+def stored_auth(server):
+    row = server["ctx"].conn.execute(
+        "SELECT monitor_auth FROM net_devices WHERE mac = ?", (MAC,)
+    ).fetchone()
+    return row["monitor_auth"] if row else None
 
 
 @pytest.mark.parametrize("bad", [
@@ -554,13 +622,23 @@ def test_hello_ignores_a_malformed_monitor_secret(server, bad):
 def test_hello_stores_and_rotates_the_monitor_secret(server):
     """אתחול = סוד חדש. ה-hello השני מגיע בתוך חלון החניקה של net_seen
     (#136) ובכל זאת חייב להיכתב — סוד ישן בשורה הוא מוניטור שלא ייפתח."""
-    hello_with_secret(server, SECRET)
+    hello_with_secret(server, SECRET, auth="hmac")
     assert stored_secret(server) == SECRET
+    assert stored_auth(server) == "hmac"
     rotated = "ffeeddccbbaa99887766554433221100"
-    hello_with_secret(server, rotated)
+    hello_with_secret(server, rotated, auth="hmac")
     assert stored_secret(server) == rotated
     hello_with_secret(server, None)                     # דופק בלי השדה
     assert stored_secret(server) == rotated             # נשמר, לא נמחק
+    assert stored_auth(server) == "hmac"
+
+
+def test_hello_without_monitor_auth_is_stored_as_legacy_not_hmac(server):
+    """סוכן ישן ששולח סוד בלי monitor_auth: הסוד נשמר, ה-auth לא — והפרוקסי
+    יסרב. לא ממציאים hmac בהיעדר השדה (עיקרון 5)."""
+    hello_with_secret(server, SECRET)
+    assert stored_secret(server) == SECRET
+    assert stored_auth(server) is None
 
 
 def test_monitor_secret_never_leaves_the_server(server):

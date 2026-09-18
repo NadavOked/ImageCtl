@@ -77,7 +77,7 @@ def vlan_server(tmp_path: Path, images_root: Path, clock):
                      now_fn=clock, health_hooks=hooks,
                      sender_runner=Recorder(block=True))
     ctx = app.state.ctx
-    users.create(ctx.conn, "noc", "admin-pass-123", "admin", by="test")
+    users.create(ctx.conn, "noc", "admin-pass-123", "admin", by="test", is_builtin=True, check_policy=False)
     admin = TestClient(app)
     assert admin.post("/api/console/login", json={
         "username": "noc", "password": "admin-pass-123"}).status_code == 200

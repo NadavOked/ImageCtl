@@ -16,7 +16,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from .progress_view import capture_progress
-from . import storage_locations, users
+from . import capabilities, storage_locations, users
 from .api import ServerContext, _error, identity_gate
 from .db import journal
 from .hello import class_deploy_enabled
@@ -126,6 +126,8 @@ def create_station_router(ctx: ServerContext) -> APIRouter:
             "group_label": machine["label"] if machine else None,
             "disks": disks,
             "allowed_images": allowed_images,
+            # #1081: edition flag, same as hello. Missing = off. v2 turns this on.
+            "classrooms": capabilities.classrooms(),
             "task": {
                 "id": task["id"], "type": task["type"], "state": task["state"],
                 "disk": task["disk"], "name": task["name"], "error": task["error"],

@@ -51,8 +51,8 @@ def station(tmp_path, images_root, clock):
     app = create_app(tmp_path / "data", images_root, "http://10.44.12.10:8080",
                      now_fn=clock, wol_send=woken.append)
     ctx = app.state.ctx
-    users.create(ctx.conn, "noc", "admin-pass-123", "admin", by="test")
-    users.create(ctx.conn, "labtech", "deploy-pass-1", "deploy", by="test")
+    users.create(ctx.conn, "noc", "admin-pass-123", "admin", by="test", is_builtin=True, check_policy=False)
+    users.create(ctx.conn, "labtech", "deploy-pass-1", "deploy", by="test", check_policy=False)
     admin = TestClient(app)
     admin.post("/api/console/login", json={"username": "noc", "password": "admin-pass-123"})
     deploy = TestClient(app)
@@ -473,7 +473,7 @@ def test_a_wake_failure_does_not_stop_the_rest(tmp_path, images_root, clock):
     app = create_app(tmp_path / "data", images_root, "http://10.44.12.10:8080",
                      now_fn=clock, wol_send=flaky)
     ctx = app.state.ctx
-    users.create(ctx.conn, "noc", "admin-pass-123", "admin", by="test")
+    users.create(ctx.conn, "noc", "admin-pass-123", "admin", by="test", is_builtin=True, check_policy=False)
     client = TestClient(app)
     client.post("/api/console/login", json={"username": "noc", "password": "admin-pass-123"})
     server = {"admin": client, "deploy": client, "anon": TestClient(app)}

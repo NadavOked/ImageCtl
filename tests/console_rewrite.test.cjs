@@ -39,7 +39,7 @@ function setup() {
   vm.runInContext(fs.readFileSync(path.resolve(__dirname,'../server/static/progress.js'),'utf8'),ctx);
   vm.runInContext(fs.readFileSync(path.join(root,'console.js'),'utf8'),ctx);
   const run=s=>vm.runInContext(s,ctx);
-  run('ME={username:"admin",role:"admin",idle_seconds:300,capabilities:{interbranch_transfer:true}};');
+  run('ME={username:"admin",role:"admin",idle_seconds:300,capabilities:{interbranch_transfer:true,classrooms:true}};');
   for(const [name,key] of [['OVERVIEW','/overview'],['IMAGES','/images'],['FOLDERS','/folders'],['MACHINES','/machines'],['GROUPS','/groups']]) run(name+'='+JSON.stringify(fixtures[key]));
   return {ctx,run,node,requests,fixtures,intervals};
 }

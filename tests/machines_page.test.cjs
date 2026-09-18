@@ -75,7 +75,7 @@ function setup() {
     }});
   for(const f of ['progress.js','console.js','net.js']) vm.runInContext(fs.readFileSync(path.join(root,f),'utf8'),ctx);
   const run=s=>vm.runInContext(s,ctx);
-  run('ME={username:"admin",role:"admin",server_name:"srv",version:"v0.31.1",capabilities:{}}; current="machines"; sheet = o => { globalThis.formOptions=o; }; confirmSheet=(t,s,l,fn)=>{ globalThis.confirmFn=fn; }; selectPageById=(id)=>{ globalThis.selected=id; current=id; };');
+  run('ME={username:"admin",role:"admin",server_name:"srv",version:"v0.31.1",capabilities:{classrooms:true}}; current="machines"; sheet = o => { globalThis.formOptions=o; }; confirmSheet=(t,s,l,fn)=>{ globalThis.confirmFn=fn; }; selectPageById=(id)=>{ globalThis.selected=id; current=id; };');
   for(const [name,key] of [['OVERVIEW','/overview'],['MACHINES','/machines'],['GROUPS','/groups'],['DISK_FAILURES','/disk-failures'],['SHRINK_RECORDS','/shrink-records'],['NET','/net'],['MONITOR_ROWS','/monitor/machines']]) run(name+'='+JSON.stringify(fixtures[key]));
   return {run,node,requests,fixtures,ctx,opened};
 }
@@ -342,4 +342,26 @@ test('a parent tree node opens the machines page focused on one role, without th
   // חזרה ל"מחשבים" מנקה את המיקוד
   run('openMachinesPage()'); assert.equal(run('MACHINES_ROLE'),null);
   assert.match(run('machines(0)'),/obj-name">מחשבים</);
+});
+
+// --- #1081: v1 hides classrooms; the tests above keep proving v2 with the flag on ---
+test('#1081 v1: classrooms flag off hides classes from the machines page', () => {
+  const {run}=setup();
+  run('ME.capabilities.classrooms=false');
+  const html=run('machines(0)'); balanced(html);
+  assert.match(html,/obj-name">מחשבים</);
+  assert.doesNotMatch(html,/כיתות/);
+  assert.doesNotMatch(html,/כיתה/);
+  assert.doesNotMatch(html,/classroom/i);
+  assert.doesNotMatch(html,/\+ כיתה/);
+  assert.doesNotMatch(html,/addGroupSheet/);
+  assert.doesNotMatch(html,/grp_LAB303|grp_LAB305/);
+  assert.match(html,/מחשבי בנייה/);
+  assert.match(html,/משכפלים/);
+  assert.match(html,/data-mac="c8:d9:d2:0b:fe:32"/);
+  assert.doesNotMatch(html,/data-mac="b4:2e:99:07:1a:c1"/);
+  run("selectMachinesRole('classroom')");
+  assert.equal(run('MACHINES_ROLE'),null,'selecting classroom is a no-op when the flag is off');
+  run('addGroupSheet()');
+  assert.equal(run('typeof formOptions'),'undefined','+ class sheet does not open');
 });

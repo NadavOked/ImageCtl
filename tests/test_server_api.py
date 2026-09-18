@@ -29,6 +29,7 @@ def test_unknown_mac_gets_nothing_and_raises_an_alert(server):
         "schema": 1, "known": False, "role": "unknown", "group": None,
         "task": None, "session": None, "allowed_images": [],
         "ui": {"language": "he", "require_login": True},
+        "classrooms": False,
     }
     events = [row["event"] for row in server["admin"].get("/api/console/journal").json()]
     assert "unknown_mac" in events
@@ -343,7 +344,7 @@ def test_extra_cmdline_reaches_the_boot_menu(tmp_path, images_root, clock):
         now_fn=clock,
         extra_cmdline=("console=ttyS0,115200", "imagectl.debug=1"),
     )
-    users.create(app.state.ctx.conn, "noc", "admin-pass-123", "admin", by="test")
+    users.create(app.state.ctx.conn, "noc", "admin-pass-123", "admin", by="test", is_builtin=True, check_policy=False)
     admin = TestClient(app)
     admin.post("/api/console/login",
                json={"username": "noc", "password": "admin-pass-123"})
@@ -402,7 +403,8 @@ def test_idle_timeout_reaches_every_signed_in_user(server):
     deploy; מאז אין לו `/me` — הקונסולה סגורה בפניו — ולכן על מנהל שני.)"""
     from fastapi.testclient import TestClient                  # noqa: PLC0415
     from server import users                                    # noqa: PLC0415
-    users.create(server["ctx"].conn, "noc2", "admin-pass-456", "admin", by="test")
+    users.create(server["ctx"].conn, "noc2", "admin-pass-456", "admin",
+                 by="test", is_builtin=True, check_policy=False)
     second = TestClient(server["app"])
     assert second.post("/api/console/login",
                        json={"username": "noc2", "password": "admin-pass-456"}
@@ -475,6 +477,7 @@ def test_the_build_machine_hello_carries_the_class_deploy_switch(server):
     מסיר לפיו את "הפצה לכיתות" מהתפריט. מכונת כיתה אינה מקבלת את השדה
     (אין לה תפריט). **בקרה שלילית:** על main השדה אינו קיים."""
     mac = register_build_machine(server)
+    assert hello(server, mac)["classrooms"] is False
     assert hello(server, mac)["class_deploy_enabled"] is False
     assert server["admin"].post("/api/console/settings",
                                 json={"class_deploy_enabled": "true"}).status_code == 200

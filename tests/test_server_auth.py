@@ -102,15 +102,13 @@ def test_a_demoted_admin_loses_the_admin_screens_at_once(server):
     לפני התיקון ה-cookie הישן נשא `role=admin` והמסכים נשארו פתוחים
     עד סוף ה-TTL — שתים-עשרה שעות אחרי שהתפקיד ירד.
     """
+    from conftest import complete_console_login
     admin, second = server["admin"], TestClient(server["app"])
     assert admin.post(
         "/api/console/users",
-        json={"username": "second", "password": "second-pass-1", "role": "admin"},
+        json={"username": "second", "password": "Second-pass-1!", "role": "admin"},
     ).status_code == 200
-    assert second.post(
-        "/api/console/login",
-        json={"username": "second", "password": "second-pass-1"},
-    ).status_code == 200
+    complete_console_login(second, server["ctx"].conn, "second", "Second-pass-1!")
     assert second.get("/api/console/users").status_code == 200
 
     assert admin.put("/api/console/users/second",
@@ -121,10 +119,10 @@ def test_a_demoted_admin_loses_the_admin_screens_at_once(server):
 def test_a_deleted_user_stops_being_anyone(server):
     """הצורה השנייה, החמורה: חשבון שאיננו — והטוקן שלו עדיין חתום."""
     admin, second = server["admin"], TestClient(server["app"])
+    from conftest import complete_console_login
     admin.post("/api/console/users",
-               json={"username": "second", "password": "second-pass-1", "role": "admin"})
-    second.post("/api/console/login",
-                json={"username": "second", "password": "second-pass-1"})
+               json={"username": "second", "password": "Second-pass-1!", "role": "admin"})
+    complete_console_login(second, server["ctx"].conn, "second", "Second-pass-1!")
     assert second.get("/api/console/me").status_code == 200
 
     assert admin.delete("/api/console/users/second").status_code == 200

@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac as hmaclib
 import socket
 import struct
 import threading
@@ -43,7 +45,8 @@ SERVER_INIT = b"\x00\x40\x00\x20" + b"\x00" * 16 + b"\x00\x00\x00\x00"
 
 def _register(conn, ip: str, *, secret: str | None = SECRET) -> None:
     registry.add_machine(conn, MAC, "Remote", "grp_BUILD", "test")
-    net_seen(conn, MAC, ip, monitor_secret=secret)
+    net_seen(conn, MAC, ip, monitor_secret=secret,
+             monitor_auth="hmac" if secret else None)
 
 
 # --- (א) רשימת המכונות של המשני, דרך הראשי -----------------------------------
@@ -205,7 +208,9 @@ def test_remote_monitor_reaches_the_machine_through_the_secondary(server, second
         ws.send_bytes(b"client-rfb-data")
         assert ws.receive_bytes() == b"echo:client-rfb-data"
     assert machine.closed.wait(5)
-    assert machine.response == SECRET_BYTES                  # הסוד יצא מהמשני
+    expected = hmaclib.new(SECRET_BYTES, CHALLENGE, hashlib.sha256).digest()[:16]
+    assert machine.response == expected                      # HMAC יצא מהמשני
+    assert machine.response != SECRET_BYTES
     assert machine.writes[0] == b"\x01"                      # ה-ClientInit של הדפדפן
     assert b"client-rfb-data" in machine.writes
     # הראשי לא ידע את הסוד: המכונה אינה רשומה בו ואין לו שום סוד מוניטור.

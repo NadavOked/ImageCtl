@@ -10,12 +10,6 @@
 #: do" is a refusal, not permission (rule 5).
 BUILD_MENU_ROLES="admin deploy"
 
-#: #1073: classrooms are v2. 0 hides "Deploy to a classroom" on the text menu
-#: AND on the GUI (guistate.sh writes menu_class from class_deploy_on), no
-#: matter what the server's class_deploy_enabled says. A constant in v1 --
-#: the env form exists only so the v2 tests can keep proving the path works.
-BUILD_MENU_CLASSROOMS="${BUILD_MENU_CLASSROOMS:-0}"
-
 build_menu_options() {
     # The menu is built from the role. Hiding is not permission -- the
     # server enforces admin_only on the capture either way -- but a menu
@@ -38,10 +32,15 @@ class_deploy_on() {
     # The hello answer is the one place the switch is read from, on both
     # the text menu and the GUI state (guistate.sh). $RESP is the agent's
     # name for it; the kiosk has only $RUN_DIR.
-    # #1073: and in v1 the answer is no before the hello is even read --
-    # classrooms are v2 (BUILD_MENU_CLASSROOMS), whatever the server says.
-    [ "$BUILD_MENU_CLASSROOMS" = 1 ] || return 1
-    [ "$(json_get "${RESP:-$RUN_DIR/response.json}" ".class_deploy_enabled")" = true ]
+    # #1081: classrooms is a server edition flag (hello /state). Missing =
+    # off (principle 1). v2 turns it on. The operator switch sits on top.
+    _hello="${RESP:-$RUN_DIR/response.json}"
+    _flag=$(json_get "$_hello" ".classrooms")
+    if [ "$_flag" != true ] && [ -n "${GUI_DIR:-}" ] && [ -f "$GUI_DIR/station.json" ]; then
+        _flag=$(json_get "$GUI_DIR/station.json" ".classrooms")
+    fi
+    [ "$_flag" = true ] || return 1
+    [ "$(json_get "$_hello" ".class_deploy_enabled")" = true ]
 }
 
 build_menu_label() {

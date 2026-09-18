@@ -382,10 +382,11 @@ def create_runtime(
                         leases=(identity_hooks or {}).get("leases"))
     drain_crumbs(ctx, netcfg_dir)
 
-    # בהתקנה טרייה: משתמש admin עם סיסמה חד-פעמית, מודפסת לטרמינל בלבד.
+    # בהתקנה טרייה: admin/admin עם החלפה כפויה (#1085). אם כבר יש מנהל — לא נוגעים.
     password = ensure_admin(conn)
     if password:
-        print(f"\n  first run: console user 'admin', password: {password}\n", flush=True)
+        print("\n  כניסה ראשונה: admin / admin — הקונסולה תדרוש החלפת סיסמה\n",
+              flush=True)
 
     # ‏#141: KNOWN_MACS_CONF הוא נגזרת של טבלת המכונות, לא מקור — קובץ
     # שנמחק או לא נכתב מעולם משאיר **כל** מכונה בלי dhcp-boot (עיקרון 5).
@@ -644,6 +645,10 @@ def create_app(
     app.state.ctx = rt.ctx
     app.state.runtime = rt
     app.state.data_dir = rt.data_dir
+    # הקיוסק לפני הקונסולה: שניהם מגדירים POST /api/console/login, והראשון
+    # מנצח. בבדיקות המשולבות (#1073) deploy נכנס דרך הקיוסק (allowlist)
+    # ומסורב על נתיבי ניהול (`console_only`). MFA והחלפה כפויה (#1085)
+    # נבדקים על `create_console_app`, לא כאן — בייצור הם על שני פורטים.
     _add_agent_routes(app, rt)
     _add_console_routes(app, rt)
     # ‏#824: נתיבי התחנה (`create_station_router`) מגיעים מ-`_add_agent_routes`

@@ -372,7 +372,7 @@ def test_a_crumb_left_while_the_server_was_down_is_read_at_startup(
 
     app = create_app(tmp_path / "data", images_root, "http://10.10.10.8:8080",
                      now_fn=clock, netcfg_state_dir=state_dir)
-    users.create(app.state.ctx.conn, "noc", "admin-pass-123", "admin", by="test")
+    users.create(app.state.ctx.conn, "noc", "admin-pass-123", "admin", by="test", is_builtin=True, check_policy=False)
     client = TestClient(app)
     client.post("/api/console/login",
                 json={"username": "noc", "password": "admin-pass-123"})

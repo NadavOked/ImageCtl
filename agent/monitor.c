@@ -16,6 +16,7 @@
 #include <linux/fb.h>
 #include <linux/input.h>
 #include <linux/uinput.h>
+#include <netinet/in.h>
 #include <rfb/keysym.h>
 #include <rfb/rfb.h>
 #include <signal.h>
@@ -27,11 +28,14 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
+
+#include "hmac_sha256.h"
 
 #define DEFAULT_PORT 5900
 #define DEFAULT_FPS 10
@@ -49,28 +53,22 @@ static int previous_buttons;
 static unsigned char key_down[KEY_MAX + 1];
 
 /*
- * The boot secret (#839). 5900 is bound to the distribution address and
- * every host on that VLAN can open it, so the RFB security handshake is the
- * gate -- for the screen, for --input, and for the power buttons alike. The
- * agent draws 16 random bytes per boot (agent/lib/monitor.sh), reports them
- * to the server in hello, and hands them here as a 32-hex file. Only the
- * server's proxy (server/monitor.py) answers the challenge with them; the
- * browser never sees the secret and keeps its old None handshake.
- *
- * Wire format: RFB security type 2 (VNC Authentication) framing -- 16-byte
- * challenge, 16-byte response -- because that is the one type LibVNCServer
- * offers *instead of* None once authPasswdData is set. The response is NOT
- * DES(challenge); it is the raw 16 secret bytes, and the challenge is
- * unused. Price, stated: a passive sniffer on the distribution VLAN can
- * replay the secret until the machine reboots. That attacker needs ARP
- * spoofing or a mirror port, and with either could also hijack the
- * authenticated TCP session; the answer to him is the network model (#702),
- * not a challenge-response. Upgrading the response to a keyed hash is a
- * one-function change on each side and needs no wire change.
+ * The session secret (#839, #1077). 5900 is bound to the distribution
+ * address, so two gates sit in front of the RFB loop: (1) after accept,
+ * only the ImageCtl server IP (--allow-from, from imagectl.server) is
+ * kept -- everyone else is closed before the handshake; (2) RFB security
+ * type 2 framing, 16-byte challenge, 16-byte response. The response is
+ * HMAC-SHA256(secret, challenge) truncated to 16 bytes, not the secret
+ * itself and not DES. The secret is drawn on the machine, reported in
+ * hello, and rewritten after every authenticated session ends so a
+ * captured response cannot be replayed. The browser never sees it.
  */
 #define SECRET_LEN 16
 static unsigned char secret[SECRET_LEN];
+static char secret_path[512];
+static struct in_addr allow_from;
 static unsigned long auth_failures;
+static unsigned long peer_rejects;
 
 static void stop_handler(int signo) {
     (void)signo;
@@ -274,58 +272,137 @@ static void keyboard_event(rfbBool down, rfbKeySym symbol,
  * Shift, proxy cut during a drag) must not leave the key or the button held
  * in the kernel: the next operator would inherit a stuck modifier (#839).
  */
+static int write_secret_file(const unsigned char *bytes) {
+    char tmp[sizeof(secret_path) + 4];
+    char hex[SECRET_LEN * 2 + 2];
+    int i, fd;
+    ssize_t wrote;
+
+    for (i = 0; i < SECRET_LEN; i++)
+        snprintf(hex + 2 * i, 3, "%02x", bytes[i]);
+    hex[SECRET_LEN * 2] = '\n';
+    hex[SECRET_LEN * 2 + 1] = '\0';
+    snprintf(tmp, sizeof(tmp), "%s.tmp", secret_path);
+    fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (fd < 0)
+        return -1;
+    wrote = write(fd, hex, SECRET_LEN * 2 + 1);
+    if (wrote == SECRET_LEN * 2 + 1 && fsync(fd) == 0) {
+        close(fd);
+        if (rename(tmp, secret_path) == 0)
+            return 0;
+    } else {
+        close(fd);
+    }
+    unlink(tmp);
+    return -1;
+}
+
+/* After an authenticated RFB session ends, a new 16-byte secret so a
+ * captured HMAC cannot be replayed. Failure keeps the old secret and
+ * says so -- wiping it would take the monitor down until the next hello. */
+static void rotate_secret(void) {
+    unsigned char fresh[SECRET_LEN];
+    int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+
+    if (fd < 0 || read(fd, fresh, SECRET_LEN) != SECRET_LEN) {
+        if (fd >= 0)
+            close(fd);
+        fprintf(stderr, "imagectl-monitor: could not rotate secret: %s\n",
+                strerror(errno));
+        return;
+    }
+    close(fd);
+    if (write_secret_file(fresh) < 0) {
+        fprintf(stderr, "imagectl-monitor: could not write rotated secret\n");
+        return;
+    }
+    memcpy(secret, fresh, SECRET_LEN);
+    fprintf(stderr, "imagectl-monitor: rotated session secret\n");
+}
+
 static void client_gone(rfbClientPtr client) {
     int code, released = 0;
+    int authed = client->clientData != NULL;
 
     fprintf(stderr, "imagectl-monitor: client %s gone\n",
             client->host ? client->host : "?");
-    if (input_fd < 0)
-        return;
-    for (code = 0; code <= KEY_MAX; code++) {
-        if (!key_down[code])
-            continue;
-        key_down[code] = 0;
-        emit_event(EV_KEY, (unsigned short)code, 0);
-        released++;
+    if (input_fd >= 0) {
+        for (code = 0; code <= KEY_MAX; code++) {
+            if (!key_down[code])
+                continue;
+            key_down[code] = 0;
+            emit_event(EV_KEY, (unsigned short)code, 0);
+            released++;
+        }
+        if (previous_buttons & 1) {
+            emit_event(EV_KEY, BTN_LEFT, 0);
+            released++;
+        }
+        previous_buttons = 0;
+        pointer_known = 0;
+        if (released)
+            sync_input();
     }
-    if (previous_buttons & 1) {
-        emit_event(EV_KEY, BTN_LEFT, 0);
-        released++;
-    }
-    previous_buttons = 0;
-    pointer_known = 0;
-    if (released)
-        sync_input();
+    if (authed)
+        rotate_secret();
+}
+
+static int peer_is_server(rfbClientPtr client) {
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+
+    if (getpeername(client->sock, (struct sockaddr *)&addr, &len) < 0)
+        return 0;
+    if (addr.sin_family != AF_INET)
+        return 0;
+    return addr.sin_addr.s_addr == allow_from.s_addr;
 }
 
 static enum rfbNewClientAction new_client(rfbClientPtr client) {
+    if (!peer_is_server(client)) {
+        peer_rejects++;
+        if (peer_rejects <= 10 || peer_rejects % 100 == 0)
+            fprintf(stderr, "imagectl-monitor: rejected peer %s "
+                    "(not the server, %lu so far)\n",
+                    client->host ? client->host : "?", peer_rejects);
+        return RFB_CLIENT_REFUSE;
+    }
+    client->clientData = NULL;
     client->clientGoneHook = client_gone;
     return RFB_CLIENT_ACCEPT;
 }
 
 /*
  * The passwordCheck of the VNC Authentication framing (see `secret` above):
- * `response` is what the client sent back for the 16-byte challenge, and it
- * must be the secret itself. Constant-time compare; a wrong length is a
- * plain reject. Failures are counted and logged sparsely -- a scanner on
- * the VLAN must not fill the agent log on tmpfs.
+ * `response` is HMAC-SHA256(secret, challenge) truncated to 16 bytes.
+ * Constant-time compare; a wrong length is a plain reject. Failures are
+ * counted and logged sparsely -- a scanner on the VLAN must not fill the
+ * agent log on tmpfs. The raw secret as a response is a reject.
  */
 static rfbBool secret_check(rfbClientPtr client, const char *response,
                             int len) {
+    unsigned char expected[32];
     unsigned char diff = 0;
     int i;
 
-    if (len == SECRET_LEN)
-        for (i = 0; i < SECRET_LEN; i++)
-            diff |= (unsigned char)response[i] ^ secret[i];
-    else
+    if (len != SECRET_LEN) {
         diff = 1;
-    if (!diff)
+    } else {
+        hmac_sha256(secret, SECRET_LEN,
+                    (const unsigned char *)client->authChallenge, SECRET_LEN,
+                    expected);
+        for (i = 0; i < SECRET_LEN; i++)
+            diff |= (unsigned char)response[i] ^ expected[i];
+    }
+    if (!diff) {
+        client->clientData = (void *)1;
         return TRUE;
+    }
     auth_failures++;
     if (auth_failures <= 10 || auth_failures % 100 == 0)
         fprintf(stderr, "imagectl-monitor: rejected client %s "
-                "(bad secret, %lu so far)\n",
+                "(bad HMAC, %lu so far)\n",
                 client->host ? client->host : "?", auth_failures);
     return FALSE;
 }
@@ -524,8 +601,8 @@ static void memfb_describe(int fd, off_t size, struct fb_var_screeninfo *var,
 
 static void usage(const char *program) {
     fprintf(stderr,
-            "usage: %s --bind ADDRESS --secret-file FILE [--port PORT]\n"
-            "          [--fps FPS] [--input]\n"
+            "usage: %s --bind ADDRESS --secret-file FILE --allow-from ADDRESS\n"
+            "          [--port PORT] [--fps FPS] [--input]\n"
             "          [--fb DEVICE | --fb MEMFB-FILE | --fb FILE --geometry WxH]\n",
             program);
     exit(EXIT_FAILURE);
@@ -533,7 +610,8 @@ static void usage(const char *program) {
 
 int main(int argc, char **argv) {
     const char *bind_address = NULL;
-    const char *secret_path = NULL;
+    const char *secret_arg = NULL;
+    const char *allow_arg = NULL;
     const char *fb_path = "/dev/fb0";
     const char *geometry = NULL;
     struct fb_var_screeninfo var;
@@ -565,12 +643,24 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--geometry") && i + 1 < argc)
             geometry = argv[++i];
         else if (!strcmp(argv[i], "--secret-file") && i + 1 < argc)
-            secret_path = argv[++i];
+            secret_arg = argv[++i];
+        else if (!strcmp(argv[i], "--allow-from") && i + 1 < argc)
+            allow_arg = argv[++i];
         else
             usage(argv[0]);
     }
-    if (!bind_address || !secret_path)
+    if (!bind_address || !secret_arg || !allow_arg)
         usage(argv[0]);
+    if (strlen(secret_arg) >= sizeof(secret_path)) {
+        fprintf(stderr, "imagectl-monitor: FATAL: secret path too long\n");
+        return EXIT_FAILURE;
+    }
+    memcpy(secret_path, secret_arg, strlen(secret_arg) + 1);
+    if (inet_pton(AF_INET, allow_arg, &allow_from) != 1) {
+        fprintf(stderr, "imagectl-monitor: invalid --allow-from: %s\n",
+                allow_arg);
+        return EXIT_FAILURE;
+    }
     load_secret(secret_path);
 
     fb_fd = open(fb_path, O_RDONLY | O_CLOEXEC);

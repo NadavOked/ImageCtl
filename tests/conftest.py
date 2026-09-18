@@ -253,6 +253,40 @@ def clock() -> Clock:
     return Clock()
 
 
+def complete_console_login(client, conn, username: str, password: str) -> dict:
+    """כניסה מלאה: מסיימת החלפת סיסמה / הרשמת MFA / TOTP לפי מה שהשרת דורש."""
+    from server import totp as totp_mod
+
+    r = client.post(
+        "/api/console/login", json={"username": username, "password": password},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    if body.get("must_change_password"):
+        raise AssertionError(f"{username} דורש החלפת סיסמה — לא זרע בדיקות")
+    if body.get("mfa_enrollment_required"):
+        setup = client.post("/api/console/me/mfa/setup")
+        assert setup.status_code == 200, setup.text
+        secret = setup.json()["secret"]
+        en = client.post(
+            "/api/console/me/mfa/enable", json={"code": totp_mod.totp_code(secret)},
+        )
+        assert en.status_code == 200, en.text
+        return en.json()
+    if body.get("mfa_required"):
+        secret = conn.execute(
+            "SELECT mfa_secret FROM users WHERE username = ? COLLATE NOCASE",
+            (username,),
+        ).fetchone()["mfa_secret"]
+        r2 = client.post(
+            "/api/console/login/mfa",
+            json={"challenge": body["challenge"], "code": totp_mod.totp_code(secret)},
+        )
+        assert r2.status_code == 200, r2.text
+        return r2.json()
+    return body
+
+
 def _build_server(tmp_path: Path, images_root: Path, clock: Clock, recorder) -> dict:
     """אפליקציה מלאה עם שולח מזויף, ולקוחות מחוברים בשני התפקידים."""
     from server import users
@@ -263,13 +297,14 @@ def _build_server(tmp_path: Path, images_root: Path, clock: Clock, recorder) -> 
         now_fn=clock, sender_runner=recorder,
     )
     ctx = app.state.ctx
-    users.create(ctx.conn, "noc", "admin-pass-123", "admin", by="test")
-    users.create(ctx.conn, "labtech", "deploy-pass-1", "deploy", by="test")
+    # סיסמאות הפיקסטורה קדמו לנוהל #1085; check_policy=False רק לזרע הבדיקות.
+    users.create(ctx.conn, "noc", "admin-pass-123", "admin", by="test",
+                 check_policy=False)
+    users.create(ctx.conn, "labtech", "deploy-pass-1", "deploy", by="test",
+                 check_policy=False)
 
     admin, deploy = TestClient(app), TestClient(app)
-    assert admin.post(
-        "/api/console/login", json={"username": "noc", "password": "admin-pass-123"}
-    ).status_code == 200
+    complete_console_login(admin, ctx.conn, "noc", "admin-pass-123")
     assert deploy.post(
         "/api/console/login", json={"username": "labtech", "password": "deploy-pass-1"}
     ).status_code == 200

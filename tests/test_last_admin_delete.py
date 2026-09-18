@@ -58,7 +58,7 @@ def test_a_disabled_admin_does_not_count_as_the_one_who_would_remain(server):
     conn = server["ctx"].conn
     _reduce_to_one_active_admin(conn, keep="noc")
 
-    users.create(conn, "sleeper", "sleeper-pass-1", "admin", by="test")
+    users.create(conn, "sleeper", "sleeper-pass-1", "admin", by="test", is_builtin=True, check_policy=False)
     users.set_disabled(conn, "sleeper", True, by="test")
 
     assert users.admin_count(conn) == 2          # noc + sleeper
@@ -81,8 +81,8 @@ def test_deleting_admins_one_after_another_always_leaves_one(server):
     """
     conn = server["ctx"].conn
     _reduce_to_one_active_admin(conn, keep="noc")
-    users.create(conn, "alpha", "alpha-pass-123", "admin", by="test")
-    users.create(conn, "beta", "beta-pass-1234", "admin", by="test")
+    users.create(conn, "alpha", "alpha-pass-123", "admin", by="test", is_builtin=True, check_policy=False)
+    users.create(conn, "beta", "beta-pass-1234", "admin", by="test", is_builtin=True, check_policy=False)
     assert users.active_admin_count(conn) == 3
 
     users.delete(conn, "alpha", by="test")
@@ -127,7 +127,7 @@ def test_the_last_active_admin_is_refused_through_the_console_route(server):
     _reduce_to_one_active_admin(conn, keep="noc")
 
     admin.post("/api/console/users", json={
-        "username": "solo", "password": "solo-pass-1234", "role": "admin"})
+        "username": "solo", "password": "Solo-pass-1234!", "role": "admin"})
     assert users.active_admin_count(conn) == 2
 
     # מוחקים את `noc` -- מותר, כי `solo` יישאר. עכשיו `solo` הוא היחיד.

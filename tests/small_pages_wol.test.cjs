@@ -56,7 +56,7 @@ function setup(over={}) {
     }});
   for(const f of ['progress.js','console.js','net.js']) vm.runInContext(fs.readFileSync(path.join(root,f),'utf8'),ctx);
   const run=s=>vm.runInContext(s,ctx);
-  run('ME={username:"admin",role:"admin",server_name:"srv",idle_seconds:600,version:"v0.35.0",capabilities:{}}; globalThis.sheets=[]; globalThis.toasts=[]; sheet = o => { sheets.push(o); }; toast=(m)=>{ toasts.push(m); }; renderCurrent=()=>{ globalThis.rendered=(globalThis.rendered||0)+1; }; globalThis.selected=[]; selectPageById=(id)=>{ selected.push(id); current=id; }; globalThis.drawer=""; openDrawer=(t,b)=>{ drawer=t+"|"+b; }; globalThis.idleRestarted=0; startIdleWatch=()=>{ idleRestarted++; };');
+  run('ME={username:"admin",role:"admin",server_name:"srv",idle_seconds:600,version:"v0.35.0",capabilities:{classrooms:true}}; globalThis.sheets=[]; globalThis.toasts=[]; sheet = o => { sheets.push(o); }; toast=(m)=>{ toasts.push(m); }; renderCurrent=()=>{ globalThis.rendered=(globalThis.rendered||0)+1; }; globalThis.selected=[]; selectPageById=(id)=>{ selected.push(id); current=id; }; globalThis.drawer=""; openDrawer=(t,b)=>{ drawer=t+"|"+b; }; globalThis.idleRestarted=0; startIdleWatch=()=>{ idleRestarted++; };');
   run('MACHINES='+JSON.stringify(fixtures['/machines'])+'; GROUPS='+JSON.stringify(fixtures['/groups'])+'; NET=[]; DISK_FAILURES=[]; SHRINK_RECORDS=[];');
   return {run,requests,fixtures,ctx,node};
 }

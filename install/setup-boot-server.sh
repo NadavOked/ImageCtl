@@ -5,9 +5,8 @@
 # הרצה אחת, כמה שאלות, וזהו:
 #   1. איזה כרטיס רשת להפצה (מרשימה של מה שקיים)
 #   1ב. איזה כרטיס לוילן השרתים (קונסולה/SSH; Enter = אותו כרטיס)
-#   2. שם משתמש למנהל
-#   3. סיסמה
-#   4. אישור סיסמה
+# המנהל כברירת מחדל הוא admin/admin עם החלפה כפויה בקונסולה (#1085).
+# `--admin-user` / `--admin-pass` נשארים לדיבאג — ואז בלי כפייה.
 #
 #   sudo ./setup-boot-server.sh
 #
@@ -227,10 +226,10 @@ ImageCtl — התקנה מלאה על שרת דביאן: שרשרת אתחול, 
 
   sudo ./setup-boot-server.sh
 
-ההתקנה שואלת על כרטיס ההפצה, כרטיס וילן השרתים (Enter = אותו כרטיס),
-משתמש מנהל, סיסמה ואישורה, ומרימה הכל — כולל חומת אש nftables לפי
-וילן (#1074). DHCP לא נדלק כאן בכלל — מגדירים אותו אחר כך מהקונסולה,
-לשונית הרשת, עם כל שכבות הבטיחות (אפיון סעיף 24).
+ההתקנה שואלת על כרטיס ההפצה וכרטיס וילן השרתים (Enter = אותו כרטיס),
+ומרימה הכל — כולל חומת אש nftables לפי וילן (#1074). המנהל הוא
+admin/admin עם החלפה כפויה בקונסולה (#1085); --admin-pass לדיבאג.
+DHCP לא נדלק כאן בכלל — מגדירים אותו אחר כך מהקונסולה, לשונית הרשת.
 
 דגלים (רשות — לאוטומציה ולדיבאג בלבד):
   --interface IFACE    מדלג על שאלת כרטיס ההפצה
@@ -358,17 +357,8 @@ if [[ "$GRUB_PORT" == "$GRUB_HOST" ]]; then GRUB_PORT=80; fi
 # שאלות 2–4 — משתמש המנהל
 # ---------------------------------------------------------------------------
 
-if [[ -z "$ADMIN_USER" ]]; then
-    read -r -p "שם משתמש למנהל [admin]: " ADMIN_USER
-    ADMIN_USER="${ADMIN_USER:-admin}"
-fi
-while [[ -z "$ADMIN_PASS" ]]; do
-    read -r -s -p "סיסמה (8 תווים לפחות): " p1; echo
-    read -r -s -p "אישור סיסמה: " p2; echo
-    if (( ${#p1} < 8 )); then warn "קצרה מדי — 8 תווים לפחות."
-    elif [[ "$p1" != "$p2" ]]; then warn "הסיסמאות אינן זהות. שוב."
-    else ADMIN_PASS="$p1"; fi
-done
+ADMIN_USER="${ADMIN_USER:-admin}"
+# בלי --admin-pass: admin/admin, והקונסולה תדרוש החלפה. לא שואלים סיסמה.
 
 say "כרטיס הפצה: $IFACE · כרטיס שרתים: $SERVERS_IF · כתובת: $SERVER_URL · מנהל: $ADMIN_USER"
 
@@ -596,19 +586,30 @@ from server.db import connect
 from server import users
 conn = connect("$DATA_DIR/imagectl.db")
 username = os.environ["ADMIN_USER"]
-password = os.environ["ADMIN_PASS"]
-try:
-    users.create(conn, username, password, "admin", by="installer")
-except sqlite3.IntegrityError:
-    # שם תפוס בלבד. כל כשל אחר — דיסק, נעילה — עולה החוצה (#504).
-    users.update(conn, username, by="installer",
-                 password=password, role="admin")
+password = os.environ.get("ADMIN_PASS") or ""
+if password:
+    try:
+        users.create(conn, username, password, "admin", by="installer",
+                     is_builtin=True, must_change_password=False,
+                     check_policy=False)
+    except (sqlite3.IntegrityError, users.UsernameTaken):
+        # שם תפוס בלבד. כל כשל אחר — דיסק, נעילה — עולה החוצה (#504).
+        users.update(conn, username, by="installer",
+                     password=password, role="admin", check_policy=False)
+else:
+    users.ensure_admin(conn)
 row = conn.execute(
-    "SELECT role FROM users WHERE username = ?", (username,)
+    "SELECT role FROM users WHERE username = ? COLLATE NOCASE", (username,)
 ).fetchone()
-if row is None or row["role"] != "admin":
+if password and (row is None or row["role"] != "admin"):
     sys.exit("המתקין לא הבטיח מנהל: %s הוא %s" % (
         username, "חסר" if row is None else row["role"]))
+if not password:
+    row = conn.execute(
+        "SELECT role FROM users WHERE role = 'admin' LIMIT 1"
+    ).fetchone()
+    if row is None:
+        sys.exit("המתקין לא הבטיח מנהל")
 PYEOF
 fi
 
@@ -680,6 +681,7 @@ run systemctl enable --now imagectl-server
 cat <<EOF
 
   קונסולה        https://${CONSOLE_HOST:-127.0.0.1}:8081  (משתמש: $ADMIN_USER)
+                 כניסה ראשונה: admin / admin — הקונסולה תדרוש החלפת סיסמה
                  תעודה עצמית — הדפדפן יבקש אישור פעם אחת; להשוות:
                  SHA-256 $CONSOLE_FP
   TFTP root      $TFTP_ROOT  (bootx64.efi -> grubx64.efi -> grub/grub.cfg)

@@ -4,6 +4,10 @@
 
 const $ = (sel) => document.querySelector(sel);
 let ME = null;
+/* #1081: v1 hides classrooms. v2 turns ME.capabilities.classrooms on. */
+function classroomsOn() {
+  return !!(ME && ME.capabilities && ME.capabilities.classrooms);
+}
 let OVERVIEW = null;
 let IMAGES = null, FOLDERS = null;
 let IMAGES_FOLDER = null;
@@ -446,6 +450,7 @@ async function showApp() {
   const caps = ME.capabilities || {};
   document.querySelectorAll("[data-cap]").forEach(
     (el) => el.classList.toggle("hidden", !caps[el.dataset.cap]));
+  pages.deploy.tabs = deployTabs();
   await loadLogo();
   applyServerName();
   renderActivity();
@@ -780,7 +785,7 @@ function sidebarChildOpen(tree) {
 function populateSidebarGroups() {
   const groups = GROUPS || [];
   const machines = MACHINES || [];
-  fillSidebarTree("classesTree", groups.filter((g) => g.role === "classroom"), machines, "group");
+  fillSidebarTree("classesTree", classroomsOn() ? groups.filter((g) => g.role === "classroom") : [], machines, "group");
   fillSidebarTree("buildTree", groups.filter((g) => g.role === "build"), machines, "build");
   fillSidebarTree("clonerTree", groups.filter((g) => g.role === "cloner"), machines, "copy");
 }
@@ -1241,7 +1246,9 @@ function home(tab = 0) {
 const DEPLOY = { big: false, err: "", roomErr: "", busy: false, form: { image: "", src: "library", builder: "", disk: "", target: "" } };
 const WAVE_HE = { open: "ממתין להצטרפות", running: "משדר", closed: "הגל נסגר" };
 
-function deployTabs() { return ["חדר המשכפלים", "כיתה", "היסטוריה"]; }
+function deployTabs() {
+  return classroomsOn() ? ["חדר המשכפלים", "כיתה", "היסטוריה"] : ["חדר המשכפלים", "היסטוריה"];
+}
 function roomOperator() { return !!ME && ["admin", "deploy"].includes(ME.role); }   // ‏room.ROOM_OPERATOR_ROLES
 /* רשומות המחשבים לגריד: המגירות תמיד מ-/room (‏drawer_list נושא port/serial/model/size/smart
    גם בלי סבב) — כך גם deploy, שאינו מגיע לדף המחשבים, רואה את החדר במלואו; prompt
@@ -1309,6 +1316,7 @@ function roomImageLabel(r) {
 function deploy(tab = 0) {
   const tabs = deployTabs(), r = roomRound(), kids = roomMachines(), st = roomStats(kids), pct = wavePct();
   const stalled = !!(ROOM && ROOM.stream_stalled), op = roomOperator();
+  const classTab = classroomsOn() ? 1 : -1, histTab = classroomsOn() ? 2 : 1;
   let name, sub, pill;
   if (r) {
     name = `חדר המשכפלים — גל ${r.wave_number || 1}`;
@@ -1326,11 +1334,11 @@ function deploy(tab = 0) {
     + `<button class="btn" onclick="toggleRoomBig()">${DEPLOY.big ? "חזרה לתצוגה המלאה" : "תצוגה גדולה"}</button>` : "")
     + `<button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>`;
   const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "סבב הפצה" }], icon: "copy",
-    name: tab === 0 ? name : tab === 1 ? "סבב כיתה" : "היסטוריית סבבים", sub: tab === 0 ? sub : tab === 1 ? "מחשבי כיתה — v2 (הכרעת נדב 17/09); מוצג כפי שקיים היום" : "סבבים קודמים", pill: tab === 0 ? pill : "", actions, tabs, tab });
+    name: tab === 0 ? name : tab === classTab ? "סבב כיתה" : "היסטוריית סבבים", sub: tab === 0 ? sub : tab === classTab ? "מחשבי כיתה — v2 (הכרעת נדב 17/09); מוצג כפי שקיים היום" : "סבבים קודמים", pill: tab === 0 ? pill : "", actions, tabs, tab });
   const stale = overviewError ? `<div class="c12">${UI.note("warn", esc(overviewError))}</div>` : "";
   let body;
-  if (tab === 1) body = deployClassView();
-  else if (tab === 2) body = UI.card({ title: "היסטוריית סבבים", cls: "c12", body: UI.note("info", `סבבים קודמים בחדר ובכיתות — <b title="אין endpoint לסבבים סגורים (#980 §3)">דורש API</b>. היום רק ${isAdmin() ? UI.link("ביומן", "selectPageById('logs')") : "ביומן (מנהל)"}.`) });
+  if (tab === classTab) body = deployClassView();
+  else if (tab === histTab) body = UI.card({ title: "היסטוריית סבבים", cls: "c12", body: UI.note("info", `סבבים קודמים בחדר${classroomsOn() ? " ובכיתות" : ""} — <b title="אין endpoint לסבבים סגורים (#980 §3)">דורש API</b>. היום רק ${isAdmin() ? UI.link("ביומן", "selectPageById('logs')") : "ביומן (מנהל)"}.`) });
   else if (ROOM == null) body = `<div class="c12">${UI.note("warn", `החדר לא נקרא${DEPLOY.roomErr ? ": " + esc(DEPLOY.roomErr) : ""} — הגריד והסבב לא ידועים.`)}</div>`;
   else if (DEPLOY.big) body = roomGridCard(kids, st, true);
   else if (r) body = `<div class="c12 kpis">${roomKpis(r, st, pct)}</div>` + roomGridCard(kids, st, false) + roomNotes(kids, st);
@@ -1878,7 +1886,7 @@ function imageDrawerHtml(img) {
   const admin = isAdmin(), idEnc = encodeId(img.id);
   const use = imgUsage(img.id);
   const s = IMG.scrub[img.id];
-  const actions = `<div class="acts" style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn primary" onclick="deployImage('${idEnc}')">הפץ לכיתה…</button><a class="btn" href="/api/console/images/${idEnc}/download">הורדה</a>${admin ? `<button class="btn" onclick="scrubImage('${idEnc}')">אימות חוזר</button>` : ""}</div>`;
+  const actions = `<div class="acts" style="display:flex;gap:6px;flex-wrap:wrap">${classroomsOn() ? `<button class="btn primary" onclick="deployImage('${idEnc}')">הפץ לכיתה…</button>` : ""}<a class="btn" href="/api/console/images/${idEnc}/download">הורדה</a>${admin ? `<button class="btn" onclick="scrubImage('${idEnc}')">אימות חוזר</button>` : ""}</div>`;
   const verify = s
     ? (s.state === "intact" ? UI.note("ok", "sha256 של כל קובץ מחיצה תואם למניפסט — אומת עכשיו.") : UI.note("err", "sha256 לא תואם: " + esc((s.files || []).filter((f) => f.state !== "ok").map((f) => `${f.file} (${f.state})`).join(", ")) + " — האימג' פגום, אין להפיץ אותו."))
     : UI.note("ok", `sha256 של כל מחיצה אומת בכניסה לספרייה.${admin ? ` אימות חוזר: ${UI.link("הרץ עכשיו", `scrubImage('${idEnc}')`)}` : ""}`);
@@ -2131,7 +2139,9 @@ function seenAgo(iso) { return iso ? ago(iso) : "מעולם לא"; }
 function groupSession(gid) { const s = OVERVIEW && OVERVIEW.session; return s && gid && s.group_id === gid ? s : null; }
 function sessionMember(m) { const s = groupSession(machineGroupId(m)); return s ? (s.members || []).find((x) => x.mac === m.mac) || null : null; }
 function machineGroupsInOrder() {
-  return (GROUPS || []).slice().sort((a, b) => (ROLE_ORDER[a.role] ?? 9) - (ROLE_ORDER[b.role] ?? 9));
+  return (GROUPS || []).slice()
+    .filter((g) => classroomsOn() || g.role !== "classroom")
+    .sort((a, b) => (ROLE_ORDER[a.role] ?? 9) - (ROLE_ORDER[b.role] ?? 9));
 }
 function machineModel(m) {
   const dmi = m.inventory && m.inventory.dmi;
@@ -2212,7 +2222,9 @@ function machinesScope() {
   const gid = MACHINES_CLASS || MACHINES_FILTER;
   if (gid) return (MACHINES || []).filter((m) => machineGroupId(m) === gid);
   if (MACHINES_ROLE) return (MACHINES || []).filter((m) => machineRole(m) === MACHINES_ROLE);
-  return MACHINES || [];
+  const all = MACHINES || [];
+  if (classroomsOn()) return all;
+  return all.filter((m) => machineRole(m) !== "classroom");
 }
 function machinesVisible() { return machinesScope().filter(machineMatches); }
 function groupOpen(gid) {
@@ -2318,7 +2330,7 @@ function mchSelClear() { MCH.sel.clear(); redrawMachinesTable(); }
 function machinesBar(scoped) {
   const opt = (value, label, cur) => `<option value="${esc(value)}"${value === cur ? " selected" : ""}>${esc(label)}</option>`;
   const scopeSelects = scoped ? "" :
-    `<select aria-label="תפקיד" onchange="mchFilter('role',this.value)">${opt("", "כל התפקידים", MCH.role)}${["classroom", "build", "cloner"].map((r) => opt(r, ROLE_GROUP_HE[r], MCH.role)).join("")}</select>`
+    `<select aria-label="תפקיד" onchange="mchFilter('role',this.value)">${opt("", "כל התפקידים", MCH.role)}${(classroomsOn() ? ["classroom", "build", "cloner"] : ["build", "cloner"]).map((r) => opt(r, ROLE_GROUP_HE[r], MCH.role)).join("")}</select>`
     + `<select aria-label="קבוצה" onchange="mchFilter('group',this.value)">${opt("", "כל הקבוצות", MCH.group)}${machineGroupsInOrder().map((g) => opt(g.id, g.label, MCH.group)).join("")}</select>`;
   const states = [["", "כל המצבים"], ["ok", "מחובר עכשיו"], ["warn", "ממתין למפעיל"], ["err", "דיסק אדום"], ["stale", "לא נראה 30 יום"]];
   return `<div class="dg-bar"><input type="search" aria-label="חיפוש מחשב" placeholder="חיפוש: שם, MAC, IP…" value="${esc(MCH.q)}" oninput="mchFilter('q',this.value)" style="width:220px">${scopeSelects}<select aria-label="מצב" onchange="mchFilter('state',this.value)">${states.map(([v, l]) => opt(v, l, MCH.state)).join("")}</select><span class="sp"></span><span class="n" id="mch-count">${esc(machinesCountText())}</span></div>`;
@@ -2332,7 +2344,7 @@ function machinesTableCard(g = null, cls = "c12") {
   const strip = !g && MACHINES_FILTER
     ? `<div class="c12" role="status">${UI.note("info", `מוצגת קבוצה: <b>${esc(groupLabel(MACHINES_FILTER))}</b> · ${UI.link("הצג את כל המחשבים", "clearMachinesFilter()")}`)}</div>` : "";
   const title = g ? (g.role === "classroom" ? "המחשבים בכיתה" : "המחשבים בקבוצה") : MACHINES_FILTER ? groupLabel(MACHINES_FILTER) : "כל המחשבים";
-  const small = g ? 'אותה טבלה כמו ב"מחשבים", מסוננת' : "בנייה ושיכפול = קבוצה קבועה · כל כיתה = קבוצה משלה";
+  const small = g ? 'אותה טבלה כמו ב"מחשבים", מסוננת' : (classroomsOn() ? "בנייה ושיכפול = קבוצה קבועה · כל כיתה = קבוצה משלה" : "בנייה ושיכפול = קבוצה קבועה");
   return strip + UI.card({ title, small, cls, flush: true, body: machinesBar(!!g || !!MACHINES_FILTER) + `<div id="mch-table">${machinesTableHtml()}</div>` + foot });
 }
 function machinesTabs() {
@@ -2342,6 +2354,13 @@ function machinesTabs() {
   return ["כל המחשבים", unreg == null ? "נראו ברשת" : `נראו ברשת (${unreg})`, red];
 }
 function machines(tab = 0) {
+  if (!classroomsOn()) {
+    if (MACHINES_ROLE === "classroom") MACHINES_ROLE = null;
+    if (MACHINES_CLASS) {
+      const cg = (GROUPS || []).find((x) => x.id === MACHINES_CLASS);
+      if (cg && cg.role === "classroom") MACHINES_CLASS = null;
+    }
+  }
   const crumbs = [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "מלאי" }, { label: "מחשבים" }];
   if (!MACHINES || !GROUPS) {
     return `<div class="page">${UI.objHeader({ crumbs, icon: "machine", name: "מחשבים", tabs: machinesTabs(), tab })}<div class="body"><div class="c12">${pagePlaceholder()}</div></div></div>`;
@@ -2351,10 +2370,11 @@ function machines(tab = 0) {
     if (g) return groupPage(g, tab);
     MACHINES_CLASS = null;
   }
-  const all = MACHINES_ROLE ? machinesScope() : MACHINES, count = (role) => all.filter((m) => machineRole(m) === role).length;
+  const all = machinesScope(), count = (role) => all.filter((m) => machineRole(m) === role).length;
+  const classN = classroomsOn() ? GROUPS.filter((g) => g.role === "classroom").length : 0;
   const sub = MACHINES_ROLE
-    ? [`${all.length} רשומים`, MACHINES_ROLE === "classroom" ? `${GROUPS.filter((g) => g.role === "classroom").length} כיתות` : ""].filter(Boolean)
-    : [`${all.length} רשומים`, `${GROUPS.filter((g) => g.role === "classroom").length} כיתות`, `${count("build")} מחשבי בנייה`, `${count("cloner")} משכפלים`];
+    ? [`${all.length} רשומים`, MACHINES_ROLE === "classroom" ? `${classN} כיתות` : ""].filter(Boolean)
+    : [`${all.length} רשומים`, classroomsOn() ? `${classN} כיתות` : "", `${count("build")} מחשבי בנייה`, `${count("cloner")} משכפלים`].filter(Boolean);
   if (NET) {
     const macs = new Set(all.map((m) => m.mac));
     sub.push(`${NET.filter((d) => d.registered && isToday(d.last_seen) && (!MACHINES_ROLE || macs.has(d.mac))).length} נראו ברשת היום`);
@@ -2363,7 +2383,7 @@ function machines(tab = 0) {
   const pill = (red ? UI.pill("err", `${red} ${red === 1 ? "דיסק אדום" : "דיסקים אדומים"}`) : "")
     + (unreg ? UI.pill("warn", `${unreg} ${unreg === 1 ? "לא רשום" : "לא רשומים"}`) : "");
   const actions = (isAdmin()
-    ? `<button class="btn primary" onclick="openAddMachine({})">+ מחשב</button><button class="btn" onclick="addGroupSheet()">+ כיתה</button><button class="btn" onclick="openAddMachine({tab:1})">ייבוא בהדבקה</button><a class="btn" href="/api/console/machines.csv" download>ייצוא CSV</a>`
+    ? `<button class="btn primary" onclick="openAddMachine({})">+ מחשב</button>${classroomsOn() ? `<button class="btn" onclick="addGroupSheet()">+ כיתה</button>` : ""}<button class="btn" onclick="openAddMachine({tab:1})">ייבוא בהדבקה</button><a class="btn" href="/api/console/machines.csv" download>ייצוא CSV</a>`
     : "") + `<button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>`;
   const name = MACHINES_ROLE ? ROLE_PAGE_HE[MACHINES_ROLE] : "מחשבים";
   const header = UI.objHeader({ crumbs, icon: "machine", name, sub: esc(sub.join(" · ")), pill, actions, tabs: machinesTabs(), tab });
@@ -2381,6 +2401,7 @@ function openMachinesPage() { MACHINES_FILTER = null; MACHINES_CLASS = null; MAC
 /* צומת-אב בעץ: אותו דף מחשבים, ממוקד לתפקיד אחד (נדב 17/09: "חלון כמו של המחשבים
    אבל רק של כיתות / שיכפול / בנייה, בלי לשונית נראו ברשת"). */
 function selectMachinesRole(role) {
+  if (role === "classroom" && !classroomsOn()) return;
   MACHINES_ROLE = role; MACHINES_FILTER = null; MACHINES_CLASS = null; MCH.sel.clear();
   selectPageById("machines");
 }
@@ -2779,7 +2800,7 @@ function bootCell(b) {
 function seenDevicesCard() {
   const acts = isAdmin() ? `<button class="btn sm" onclick="netDeviceAdd()">+ הוספה ידנית</button>` : "";
   if (!NET) return UI.card({ title: "נראו ברשת", acts, body: UI.note("warn", `רשימת ההתקנים לא נקראה${NET_ERR ? ": " + esc(NET_ERR) : ""}`) });
-  const rows = NET.map((d) => {
+  const rows = NET.filter((d) => classroomsOn() || d.role !== "classroom").map((d) => {
     const macEnc = encodeId(d.mac);
     const who = d.registered ? UI.name(d.name || "", d.group_label || "") : UI.pill("warn", "לא רשום");
     const primary = d.registered
@@ -3068,7 +3089,7 @@ function openAddMachine({ group = "", mac = "", tab = 0 } = {}) {
   MCH.amTab = tab;
   const tabBtn = (i, label) => `<button type="button" class="tab${tab === i ? " on" : ""}" role="tab" aria-selected="${tab === i}" onclick="amTab(${i})">${label}</button>`;
   const body = `<div class="page drw am"><div class="tabs" role="tablist">${tabBtn(0, "מחשב אחד")}${tabBtn(1, "הדבקה — הרבה בבת אחת")}</div>
-<div id="am-one" class="form"${tab === 1 ? " hidden" : ""}><div class="field"><label for="am-group">קבוצה</label><select id="am-group">${groupOptionsHtml(group)}</select></div><div class="field"><label for="am-name">שם / סיומת</label><input id="am-name" autocomplete="off" placeholder="01–99 או INS לכיתה; שם חופשי לבנייה ולשיכפול"></div><div class="field full"><label for="am-mac">MAC</label><input id="am-mac" dir="ltr" value="${esc(mac)}" placeholder="b4:2e:99:07:1a:c4" autocomplete="off"></div></div>
+<div id="am-one" class="form"${tab === 1 ? " hidden" : ""}><div class="field"><label for="am-group">קבוצה</label><select id="am-group">${groupOptionsHtml(group)}</select></div><div class="field"><label for="am-name">שם / סיומת</label><input id="am-name" autocomplete="off" placeholder="${classroomsOn() ? "01–99 או INS לכיתה; שם חופשי לבנייה ולשיכפול" : "שם חופשי לבנייה ולשיכפול"}"></div><div class="field full"><label for="am-mac">MAC</label><input id="am-mac" dir="ltr" value="${esc(mac)}" placeholder="b4:2e:99:07:1a:c4" autocomplete="off"></div></div>
 <div id="am-paste" class="form"${tab === 0 ? " hidden" : ""}><div class="field full"><label for="am-pgroup">קבוצה</label><select id="am-pgroup">${groupOptionsHtml(group)}</select></div><div class="field full"><label for="am-text">שורה לכל מחשב: MAC ואז סיומת/שם</label><textarea id="am-text" rows="7" dir="ltr" placeholder="b4:2e:99:07:1a:c4 01&#10;B4-2E-99-07-1A-C5 02"></textarea></div><div class="field full"><button type="button" class="btn sm" onclick="previewMachineImport()">תצוגה מקדימה</button></div><div id="am-preview" class="stack"></div></div></div>`;
   openModalContent("+ מחשב", body, "הוסף", submitAddMachine);
 }
@@ -3106,7 +3127,7 @@ async function submitAddMachine() {
 }
 function openNewMachine() { openAddMachine({}); }   // הסקירה (homeAttention) קוראת לזה
 function addGroupSheet() {
-  if (!isAdmin()) return;
+  if (!isAdmin() || !classroomsOn()) return;
   sheet({
     title: "כיתה חדשה", sub: "כל כיתה היא קבוצה. השם חופשי — עברית, אנגלית או מספרים.",
     fields: [
@@ -3576,7 +3597,10 @@ function cidrParts(cidr) {
 }
 function nicHasIp(n, ip) { const x = ipInt(ip); return x !== null && netLiveAddrs(n).some((c) => { const p = cidrParts(c); return !!p && ((x & p.mask) >>> 0) === p.net; }); }
 function netNicFor(ip) { return (NETW.nics || []).find((n) => nicHasIp(n, ip)) || null; }
-function netDeployNic() { const l = NETW.nics || []; return l.find((n) => n.enabled) || l.find((n) => (n.dhcp_live || {}).state === "serving") || null; }
+function netDeployNic() {
+  const l = (NETW.nics || []).filter((n) => classroomsOn() || !n.proxy);
+  return l.find((n) => n.enabled) || l.find((n) => (n.dhcp_live || {}).state === "serving") || null;
+}
 function netNetworkOf(n) { const c = netLiveAddrs(n)[0]; const p = cidrParts(c); if (!p) return c || ""; return `${[24, 16, 8, 0].map((s) => (p.net >>> s) & 255).join(".")}/${p.bits}`; }
 function urlHost(u) { const m = String(u || "").match(/^[a-z]+:\/\/\[?([^\]/:]+)/i); return m ? m[1] : ""; }
 function secondsSince(iso) { const t = iso ? new Date(iso).getTime() : NaN; return Number.isFinite(t) ? Math.max(0, (Date.now() - t) / 1000) : null; }
@@ -3788,9 +3812,11 @@ function netDiagramModel() {
       sub: `${netAddrList(ds.map((d) => d.ip).filter(Boolean))}${last.boot && last.boot.label ? ` · ${last.boot.label}` : ""} · ${ago(last.last_seen)}`,
       tip: `${ds.map((d) => d.ip).filter(Boolean).map(bidi).join(" · ") || "ללא כתובת"}${last.boot && last.boot.label ? ` · ${last.boot.label}` : ""} · ${ago(last.last_seen)}` });
   }
-  // כיתות — v2: תיבה סטטית בלבד
-  const classLane = laneOf(["proxy", "trunk", "none", "mgmt"]);
-  if (classLane) classLane.clients.push({ kind: "class", title: "כיתות — v2", sub: "מחשבי כיתה אינם במהדורה זו", led: "", dashed: true });
+  // כיתות — v2: תיבה סטטית בלבד. #1081: v1 לא מצייר אותה.
+  if (classroomsOn()) {
+    const classLane = laneOf(["proxy", "trunk", "none", "mgmt"]);
+    if (classLane) classLane.clients.push({ kind: "class", title: "כיתות — v2", sub: "מחשבי כיתה אינם במהדורה זו", led: "", dashed: true });
+  }
   return { lanes, orphans };
 }
 
@@ -3919,7 +3945,7 @@ function networkDiagramTab() {
     body = netUnreadNotes()
       + `<div class="c12 card"><div class="card-h"><span>מה מחובר לאן</span>${netLegend()}</div><div class="card-b netdiag">${netDiagramSvg(model)}</div></div>`
       + netSelectedCard()
-      + `<div class="c12 cap">נמדד: כתובות ופער — /net/config · DHCP חי — /net/interfaces · מחוברים — /monitor/machines, /net, /storage-nodes · "מה מותר" — bind של /ports בלבד. וילנים ומדיניות — דורש API (#705). כיתות — v2.</div>`;
+      + `<div class="c12 cap">נמדד: כתובות ופער — /net/config · DHCP חי — /net/interfaces · מחוברים — /monitor/machines, /net, /storage-nodes · "מה מותר" — bind של /ports בלבד. וילנים ומדיניות — דורש API (#705).${classroomsOn() ? " כיתות — v2." : ""}</div>`;
   }
   return `<div class="page">${header}<div class="body">${body}</div></div>`;
 }
@@ -4035,7 +4061,7 @@ function networkDeployTab() {
     const seenRows = (NET || []).map(netSeenRow);
     const seenBody = NET === null ? UI.note("err", `‏/net לא נקרא: ${esc(NET_ERR || NETW.err.net || "")} — אין לדעת מי קיבל כתובת`)
       : UI.datagrid({ columns: ["מכונה", "MAC", "IP", "נראה", "שלב אתחול", ""], rows: seenRows, cls: "stable", empty: "אף מכונה עוד לא דיברה עם השרת — כשמחשב יעלה ב-PXE הוא יופיע כאן" });
-    const others = (nics || []).filter((n) => n !== focus);
+    const others = (nics || []).filter((n) => n !== focus && (classroomsOn() || !n.proxy));
     const othersTable = UI.datagrid({ columns: ["כרטיס", "מצב DHCP חי", "שמור בקונסולה", "מי עוד עונה", ""], rows: others.map(netOtherNicRow), cls: "stable", empty: "אין כרטיסים נוספים" });
     body = netUnreadNotes()
       + UI.card({ title: "מה השרת מחלק", small: focus ? "כפי שנקרא מקובץ dnsmasq ומהשירות" : "", cls: "c4", body: serves })
@@ -4176,7 +4202,7 @@ function portSshNic(name) {
   sshToggle(`/ssh/interfaces/${encodeId(nic.name)}`, !nic.enabled, nic.name, !nic.enabled || last,
     nic.enabled ? `סגירת SSH לשרת על ${nic.name}` : `פתיחת SSH לשרת על ${nic.name}`,
     nic.enabled ? "זו הדלת האחרונה שפתוחה — אחריה אין SSH לשרת מאף רשת."
-      : "‏sshd יאזין בוילן הזה. אם זה וילן הכיתות — הוא ייפתח לסטודנטים.",
+      : (classroomsOn() ? "‏sshd יאזין בוילן הזה. אם זה וילן הכיתות — הוא ייפתח לסטודנטים." : "‏sshd יאזין בוילן הזה."),
     nic.enabled ? "אין SSH לשרת מאף רשת — פתיחה מחדש רק ממסך השרת" : "");
 }
 
@@ -4262,7 +4288,7 @@ function portRows() {
       const m = PORTS_MONITOR;
       Object.assign(r, { nic: "בתחנה, לא בשרת", off: r.off || PORT_OFF_MEANS.monitor, api: ["ok", "קיים", "PUT /monitor/settings"],
         on: m ? !!m.enabled : null, lock: !(m && m.enabled),
-        cap: !m ? `לא נקרא: ${portsMonitorError}` : m.enabled ? "דלוק · כיבוי בלחיצה" : "כבוי · הדלקה = הקלדת imagectl.monitor",
+        cap: !m ? `לא נקרא: ${portsMonitorError}` : m.enabled ? "דלוק · כיבוי בלחיצה" : "מוניטור: כבוי (ברירת מחדל) — הדלקה חושפת 5900 על וילן ההפצה",
         act: m ? () => monitorToggle(!m.enabled) : () => toast("‏/monitor/settings לא נקרא: " + portsMonitorError) });
     } else if (p.id === "ssh_stations") {
       const st = SSH_STATE && SSH_STATE.stations;
@@ -4304,7 +4330,7 @@ function portRows() {
         act: () => sshToggle(portToggleUrl(p), !p.enabled, p.confirm_word || name, needsConfirm,
           p.enabled ? `סגירת SSH לשרת על ${name}` : `פתיחת SSH לשרת על ${name}`,
           p.enabled ? (last ? "זו הדלת האחרונה שפתוחה — אחריה אין SSH לשרת מאף רשת." : "")
-            : "‏sshd יאזין בוילן הזה. אם זה וילן הכיתות — הוא ייפתח לסטודנטים.",
+            : (classroomsOn() ? "‏sshd יאזין בוילן הזה. אם זה וילן הכיתות — הוא ייפתח לסטודנטים." : "‏sshd יאזין בוילן הזה."),
           p.enabled && last ? "אין SSH לשרת מאף רשת — פתיחה מחדש רק ממסך השרת" : "") });
     } else if (p.toggle) {
       // שאר שורות /ports עם toggle ("api"/"confirm"/"none") — http_boot/
@@ -4447,13 +4473,13 @@ function monitorPage() {
     ? ["צפייה ושליטה במסך של מחשבי הבנייה והשיכפול", `${list.length} מכונות`, `${online} מחוברות עכשיו`].map(esc).join(" · ")
     : `‏/monitor לא נקרא: ${esc(monitorError)}`;
   const pill = !MONITOR ? UI.pill("err", "לא נקרא") : enabled ? UI.pill("ok", "המתג דלוק") : UI.pill("warn", "המתג כבוי");
-  const sw = !MONITOR ? "" : `<span class="swrow"><button type="button" class="sw${enabled ? " on" : ""}" role="switch" aria-checked="${enabled ? "true" : "false"}" aria-label="מוניטור לתחנות" onclick="monitorToggle(${enabled ? "false" : "true"})"></button><span class="cap">מוניטור לתחנות${enabled ? "" : " · 🔒 הדלקה = הקלדת imagectl.monitor"}</span></span>`;
+  const sw = !MONITOR ? "" : `<span class="swrow"><button type="button" class="sw${enabled ? " on" : ""}" role="switch" aria-checked="${enabled ? "true" : "false"}" aria-label="מוניטור לתחנות" onclick="monitorToggle(${enabled ? "false" : "true"})"></button><span class="cap">מוניטור לתחנות${enabled ? "" : " · כבוי (ברירת מחדל) — הדלקה חושפת 5900 על וילן ההפצה"}</span></span>`;
   const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "תשתית" }, { label: "מוניטור" }],
     icon: "machine", name: "מוניטור", sub, pill, actions: sw + `<button class="btn" onclick="loadMonitor()">${uiIcon("refresh")} רענון</button>` });
   let body;
   if (!MONITOR) body = UI.note("err", `לא הצלחתי לקרוא את רשימת המוניטור: ${esc(monitorError)}`);
   else {
-    const off = enabled ? "" : UI.note("warn", `מתג המוניטור לתחנות כבוי — מכונה שעולה עכשיו אינה מפעילה שירות צפייה, ו"פתח מוניטור" ייכשל. הדלקה תופסת באתחול הבא של כל מכונה, לא במכונות שכבר רצות.`);
+    const off = enabled ? "" : UI.note("warn", `מוניטור: כבוי (ברירת מחדל) — הדלקה חושפת 5900 על וילן ההפצה. מכונה שעולה עכשיו אינה מפעילה שירות צפייה, ו"פתח מוניטור" ייכשל. הדלקה תופסת באתחול הבא של כל מכונה, לא במכונות שכבר רצות.`);
     const table = UI.datagrid({ cls: "acts-on", columns: ["מכונה", "תפקיד", "IP", "מצב", "מה על המסך", ""], rows: list.map(monitorRowHtml),
       empty: "אין מחשבי בנייה או שיכפול רשומים — הוסיפו אותם בדף המחשבים" });
     body = (off ? `<div class="c12">${off}</div>` : "") + `<div class="c12 card"><div class="card-b${list.length ? " flush" : ""}">${table}</div></div>`
@@ -4535,7 +4561,7 @@ function settings() {
     icon: "settings", name: "הגדרות", sub, pill, actions: SETTINGS ? actions : "" });
   const body = !SETTINGS
     ? UI.note("err", `לא הצלחתי לקרוא את ההגדרות: ${esc(settingsError)}`)
-    : UI.card({ title: "כללי", small: "שורה שהשתנתה מסומנת עד השמירה", cls: "c8", body: `<div class="srows">${SETTING_ROWS.map(settingRowHtml).join("")}</div>` }) + brandingCardHtml();
+    : UI.card({ title: "כללי", small: "שורה שהשתנתה מסומנת עד השמירה", cls: "c8", body: `<div class="srows">${SETTING_ROWS.filter((r) => r.key !== "class_deploy_enabled" || classroomsOn()).map(settingRowHtml).join("")}</div>` }) + brandingCardHtml();
   return `<div class="page">${header}<div class="body">${body}</div></div>`;
 }
 async function saveSettings() {
@@ -4715,13 +4741,13 @@ function toolRowHtml(t) {
   const rec = t.recommended ? ` <span class="pill info" title="בשורת 'ההמלצה שלי' של הקבוצה">מומלץ</span>` : "";
   const moved = t.moved_from ? `<span class="sub">מקבוצת "${esc(t.moved_from)}" במסמך (הכרעת נדב 17/09)</span>` : "";
   return { attrs: `data-tool="${esc(t.id)}"`, cells: [
-    box("build", "בנייה/שיכפול"), box("student", "תלמיד"),
+    box("build", "בנייה/שיכפול"), box("student", "לתלמיד (v2)"),
     `<span class="name">${esc(t.title_he)}${rec}</span><span class="sub">${esc(t.what)}</span>${moved}`,
     `<span class="mono">${esc(t.binary)}</span>`, risk, size] };
 }
 function toolsGroupsHtml() {
   const cols = [{ html: `<span title="ייארז ל-initrd של מחשבי הבנייה והשיכפול">בנייה/שיכפול</span>` },
-                { html: `<span title="מחשב תלמיד = v2; הבחירה נשמרת כבר עכשיו">תלמיד</span>` }, "כלי", "בינארי", "סיכון", "גודל"];
+                { html: `<span title="מחשב תלמיד = v2; הבחירה נשמרת כבר עכשיו">לתלמיד (v2)</span>` }, "כלי", "בינארי", "סיכון", "גודל"];
   return TOOLS.groups.map((g, i) => {
     const rows = TOOLS.tools.filter((t) => t.group === g && toolsVisible(t)).map(toolRowHtml);
     const table = UI.datagrid({ cls: "tools", columns: cols, rows, empty: "אין כלים בקבוצה הזו שמתאימים לסינון" });
@@ -5581,7 +5607,7 @@ function monitorToggle(enabling) {
   });
 }
 /* ‏#954 גל 4: אין עוד מגירת סבב — "פרטים" מוביל ללשונית "כיתה" בדף ההפצה. */
-function openRoundDetail() { selectPageById("deploy"); activateTab(1); }
+function openRoundDetail() { selectPageById("deploy"); activateTab(classroomsOn() ? 1 : 0); }
 
 const UI_ICON_PATHS = {
   tools: '<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 0 0 5.4-5.4l-2.4 2.4-2.1-.6-.6-2.1Z"/>',

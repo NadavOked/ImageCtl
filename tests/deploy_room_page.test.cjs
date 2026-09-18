@@ -84,7 +84,7 @@ function setup({room=roomIdle(),role='admin',session=null,prompts={}}={}) {
     }});
   for(const f of ['progress.js','console.js','net.js']) vm.runInContext(fs.readFileSync(path.join(root,f),'utf8'),ctx);
   const run=s=>vm.runInContext(s,ctx);
-  run(`ME={username:"${role}",role:"${role}",server_name:"srv",version:"v0.32.1",capabilities:{}}; current="deploy"; sheet = o => { globalThis.formOptions=o; }; selectPageById=(id)=>{ globalThis.selected=id; current=id; }; toast=(m)=>{ globalThis.toasted=m; }; renderCurrent=()=>{ globalThis.rendered=(globalThis.rendered||0)+1; }; activateTab=(i)=>{ globalThis.activated=i; }; monitorMachine=(mac)=>{ globalThis.monitored=mac; };`);
+  run(`ME={username:"${role}",role:"${role}",server_name:"srv",version:"v0.32.1",capabilities:{classrooms:true}}; current="deploy"; sheet = o => { globalThis.formOptions=o; }; selectPageById=(id)=>{ globalThis.selected=id; current=id; }; toast=(m)=>{ globalThis.toasted=m; }; renderCurrent=()=>{ globalThis.rendered=(globalThis.rendered||0)+1; }; activateTab=(i)=>{ globalThis.activated=i; }; monitorMachine=(mac)=>{ globalThis.monitored=mac; };`);
   for(const [name,key] of [['OVERVIEW','/overview'],['MACHINES','/machines'],['GROUPS','/groups'],['DISK_FAILURES','/disk-failures'],['NET','/net'],['ROOM','/room'],['IMAGES','/images']]) run(name+'='+JSON.stringify(fixtures[key]));
   run('ROOM_KEY=JSON.stringify([ROOM,MACHINES.map(m=>[m.mac,m.prompt])]);');
   return {run,node,requests,fixtures,ctx,opened};
@@ -300,6 +300,18 @@ test('class tab: the existing session code as-is inside cards (row, start/stop, 
   run('OVERVIEW=null'); assert.match(run('deploy(1)'),/\/overview לא נקרא/);
   html=run('deploy(2)'); balanced(html); assert.match(html,/obj-name">היסטוריית סבבים</); assert.match(html,/דורש API/); assert.match(html,/selectPageById\('logs'\)">ביומן</); assert.doesNotMatch(html,/class="ev"|mgrid/);
   run('ME.role="deploy"'); assert.match(run('deploy(2)'),/ביומן \(מנהל\)/);
+});
+
+test('#1081 v1: classrooms flag off drops the class tab; history stays', () => {
+  const {run}=setup();
+  run('ME.capabilities.classrooms=false');
+  assert.deepEqual(JSON.parse(run('JSON.stringify(deployTabs())')),['חדר המשכפלים','היסטוריה']);
+  const room=run('deploy(0)'); balanced(room);
+  assert.match(room,/obj-name">חדר המשכפלים</);
+  assert.doesNotMatch(room,/>כיתה</);
+  const hist=run('deploy(1)');
+  assert.match(hist,/obj-name">היסטוריית סבבים</);
+  assert.doesNotMatch(hist,/ובכיתות/);
 });
 
 test('data: loadDeploy reads /overview, /room, /images, /machines, /groups, /disk-failures, /net and the class roster; the 2s poll re-reads /room + /machines on the deploy page and re-renders only on change (prompt included)', async () => {

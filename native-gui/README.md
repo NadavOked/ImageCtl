@@ -209,8 +209,9 @@ title=<text>  sub=<text>            # override the head texts (cloner / receiver
 # forces #st-message (the !state.known / wrong-role cases)
 message=<title>|<sub>
 
-# #st-menu: the "הפצה לכיתות" card only when the server's switch is on
-# (#880, class_deploy_enabled in the hello answer). Absent = 0.
+# #st-menu: the "הפצה לכיתות" card only when the edition flag AND the
+# operator switch are on (#1081 classrooms + #880 class_deploy_enabled
+# in hello /state). Missing = 0.
 menu_class=<0/1>
 
 # #1073: the machine's registered name (GET /api/v1/agent/state .name) -- the

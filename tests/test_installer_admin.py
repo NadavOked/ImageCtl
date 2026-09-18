@@ -50,7 +50,7 @@ def _role(data_dir: Path, username: str, password: str) -> str | None:
 def test_existing_deploy_user_becomes_admin(tmp_path, monkeypatch):
     """התרחיש של #504: labtech כבר deploy, המתקין רץ עם אותו שם."""
     conn = connect(tmp_path / "imagectl.db")
-    users.create(conn, "labtech", "deploy-pass-1", "deploy", by="seed")
+    users.create(conn, "labtech", "deploy-pass-1", "deploy", by="seed", check_policy=False)
     run_installer_admin(tmp_path, "labtech", "new-admin-9", monkeypatch)
     assert _role(tmp_path, "labtech", "new-admin-9") == "admin"
 

@@ -168,7 +168,7 @@ def _console(tmp_path: Path, images_root: Path, clock, tls):
                         now_fn=clock, health_hooks=hooks, console_tls=tls,
                         sender_runner=Recorder(block=True))
     app = create_console_app(rt)
-    users.create(app.state.ctx.conn, "noc", "admin-pass-123", "admin", by="test")
+    users.create(app.state.ctx.conn, "noc", "admin-pass-123", "admin", by="test", is_builtin=True, check_policy=False)
     base = "https://testserver" if tls else "http://testserver"
     client = TestClient(app, base_url=base)
     login = client.post("/api/console/login",

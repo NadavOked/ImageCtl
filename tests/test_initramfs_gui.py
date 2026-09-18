@@ -311,6 +311,7 @@ def run_native_pack(tmp_path: Path, fault: str = ""):
     agent = checkout / "agent"
     agent.mkdir()
     (agent / "monitor.c").write_text("int main(void){return 0;}", encoding="utf-8")
+    (agent / "hmac_sha256.c").write_text("void hmac_sha256(void){}\n", encoding="utf-8")
     text = BUILDER.read_text(encoding="utf-8")
     block = text.split("# --- the kiosk (optional):", 1)[1]
     block = block.split("# --- kernel modules and firmware", 1)[0]

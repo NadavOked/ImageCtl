@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import struct
 from datetime import datetime, timedelta, timezone
@@ -68,10 +70,12 @@ async def accept_browser(websocket: WebSocket) -> None:
     await websocket.accept(subprotocol=protocol)
 
 #: ‏RFB security type 2 — מסגור VNC Authentication (challenge של 16
-#: בייטים, תשובה של 16 בייטים). התשובה **אינה** DES של ה-challenge אלא
-#: 16 בייטי הסוד עצמם; ראו הערת התכנון ב-agent/monitor.c.
+#: בייטים, תשובה של 16 בייטים). התשובה היא HMAC-SHA256(סוד, challenge)
+#: קטום ל-16 בייטים (#1077); הסוד עצמו אינו עובר על 5900.
 RFB_SECURITY_SECRET = 2
 RFB_VERSION = b"RFB 003.008\n"
+MONITOR_AUTH_HMAC = "hmac"
+HMAC_RESPONSE_LEN = 16
 
 
 def flag_json(enabled: bool) -> str:
@@ -141,16 +145,24 @@ def machine_rows(conn, now: datetime | None = None) -> list[dict]:
     ]
 
 
+def hmac_response(secret: str, challenge: bytes) -> bytes:
+    """HMAC-SHA256(secret, challenge) truncated to the 16-byte RFB response."""
+    return hmac.new(bytes.fromhex(secret), challenge,
+                    hashlib.sha256).digest()[:HMAC_RESPONSE_LEN]
+
+
 def _target(ctx: ServerContext, mac: str,
-            now: datetime | None = None) -> tuple[str, str, str | None]:
-    """‏(ip, role, monitor_secret) של מכונה שמותר לפתוח אליה מוניטור.
-    הסוד (#839) חוזר כמו שהוא — ‏None כשהמכונה מעולם לא דיווחה אחד."""
+            now: datetime | None = None
+            ) -> tuple[str, str, str | None, str | None]:
+    """‏(ip, role, monitor_secret, monitor_auth) של מכונה שמותר לפתוח אליה
+    מוניטור. הסוד (#839) חוזר כמו שהוא — ‏None כשהמכונה מעולם לא דיווחה
+    אחד. ‏monitor_auth הוא ``hmac`` אחרי #1077, או None לסוכן ישן."""
     canonical = registry.normalize_mac(mac)
     if canonical is None:
         raise HTTPException(404, "מכונה לא מוכרת")
 
     row = ctx.conn.execute(
-        "SELECT d.ip, d.last_seen, d.monitor_secret, g.role "
+        "SELECT d.ip, d.last_seen, d.monitor_secret, d.monitor_auth, g.role "
         "FROM machines m "
         "JOIN groups g ON g.id = m.group_id "
         "LEFT JOIN net_devices d ON d.mac = m.mac "
@@ -174,7 +186,7 @@ def _target(ctx: ServerContext, mac: str,
     current = now or datetime.now(timezone.utc)
     if current - seen > timedelta(seconds=ONLINE_SECONDS):
         raise HTTPException(409, "המכונה אינה מחוברת")
-    return row["ip"], row["role"], row["monitor_secret"]
+    return row["ip"], row["role"], row["monitor_secret"], row["monitor_auth"]
 
 
 class MachineAuthError(Exception):
@@ -204,13 +216,14 @@ async def _reason(reader) -> str:
 
 
 async def authenticate_machine(reader, writer, secret: str) -> None:
-    """‏#839: לחיצת-יד RFB 3.8 מול imagectl-monitor, עד SecurityResult.
+    """‏#839/#1077: לחיצת-יד RFB 3.8 מול imagectl-monitor, עד SecurityResult.
 
     הפרוקסי — ולא הדפדפן — הוא הצד שמזדהה: הוא בוחר את סוג 2 בלבד, עונה
-    ל-challenge ב-16 בייטי הסוד, וקורא את התוצאה. ‏None (סוג 1) **לעולם
-    אינו נבחר** גם אם הוצע: מוניטור שמציע אותו הוא סוכן שלא שודרג או
-    מישהו שמתחזה למכונה, ושניהם אינם מסלול. אחרי ההצלחה המכונה ממתינה
-    ל-ClientInit — והוא מגיע מהדפדפן דרך הממסר הרגיל.
+    ל-challenge ב-HMAC-SHA256(סוד, challenge) הקטום ל-16 בייטים, וקורא
+    את התוצאה. הסוד עצמו אינו נשלח. ‏None (סוג 1) **לעולם אינו נבחר** גם
+    אם הוצע: מוניטור שמציע אותו הוא סוכן שלא שודרג או מישהו שמתחזה
+    למכונה, ושניהם אינם מסלול. אחרי ההצלחה המכונה ממתינה ל-ClientInit
+    — והוא מגיע מהדפדפן דרך הממסר הרגיל.
     """
     banner = await _read_exact(reader, 12)
     if not banner.startswith(b"RFB 003."):
@@ -227,8 +240,8 @@ async def authenticate_machine(reader, writer, secret: str) -> None:
             f"{sorted(offered)})")
     writer.write(bytes([RFB_SECURITY_SECRET]))
     await writer.drain()
-    await _read_exact(reader, 16)                     # ה-challenge; לא בשימוש
-    writer.write(bytes.fromhex(secret))
+    challenge = await _read_exact(reader, 16)
+    writer.write(hmac_response(secret, challenge))
     await writer.drain()
     result = struct.unpack(">I", await _read_exact(reader, 4))[0]
     if result != 0:
@@ -403,8 +416,8 @@ def create_monitor_router(
         # כ-HTTPException — חריגה בנתיב websocket אחרי השער היא כשל
         # לא מטופל, ולכן קוד הסטטוס מתורגם לקוד סגירה (4000+status).
         try:
-            ip, _role, secret = _target(ctx, canonical,
-                                        now_fn() if now_fn else None)
+            ip, _role, secret, machine_auth = _target(ctx, canonical,
+                                              now_fn() if now_fn else None)
         except HTTPException as exc:
             await websocket.close(code=4000 + exc.status_code,
                                   reason=close_reason(str(exc.detail)))
@@ -415,6 +428,13 @@ def create_monitor_router(
             await websocket.close(
                 code=WS_MACHINE_AUTH,
                 reason="המכונה לא דיווחה סוד מוניטור — סוכן ישן?")
+            return
+        if machine_auth != MONITOR_AUTH_HMAC:
+            # ‏#1077: סוכן ישן ששולח סוד גולמי. לא נופלים לגולמי בשקט —
+            # "לא הצלחנו לאמת" אינו "אימתנו" (עיקרון 5). אתחול מספיק.
+            await websocket.close(
+                code=WS_MACHINE_AUTH,
+                reason="המכונה אינה תומכת באתגר-תגובה (HMAC) — סוכן ישן? אתחל מחדש")
             return
         if not await reserve(canonical):
             await websocket.close(code=4409, reason="כבר פתוח מוניטור למכונה הזאת")

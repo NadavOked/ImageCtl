@@ -76,8 +76,8 @@ def loop_server(tmp_path: Path, images_root: Path, clock):
                      now_fn=clock, health_hooks=hooks,
                      sender_runner=Recorder(block=True))
     ctx = app.state.ctx
-    users.create(ctx.conn, "noc", "admin-pass-123", "admin", by="test")
-    users.create(ctx.conn, "labtech", "deploy-pass-1", "deploy", by="test")
+    users.create(ctx.conn, "noc", "admin-pass-123", "admin", by="test", is_builtin=True, check_policy=False)
+    users.create(ctx.conn, "labtech", "deploy-pass-1", "deploy", by="test", check_policy=False)
     admin, deploy, anon = TestClient(app), TestClient(app), TestClient(app)
     assert admin.post("/api/console/login", json={
         "username": "noc", "password": "admin-pass-123"}).status_code == 200

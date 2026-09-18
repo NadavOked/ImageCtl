@@ -192,7 +192,9 @@ def test_static_includes_are_at_8_5():
     מודל האתרים (וילן השרתים במקום "ניהול", משני דרך FW · 8443 בקו מקווקו) = ‏8.7;
     #1073 (הפצה בלי וובי — `message_he` בכניסה, מטריצת ההרשאות) = ‏8.8;
     #1066 שלב ב' (דף "אחסון", storage.js) = ‏8.9;
-    #1093 (ערכת נושא לפי משתמש, נשמרת בשרת) = ‏8.9.
+    #1093 (ערכת נושא לפי משתמש, נשמרת בשרת) = ‏8.9;
+    #1081 (v1 בלי כיתות — `capabilities.classrooms`) = ‏8.9;
+    #1077 (מוניטור כבוי בברירת מחדל — אזהרת 5900) = ‏8.9.
     שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
@@ -436,7 +438,7 @@ def test_tools_page_is_an_admin_tree_node_with_two_selections_per_tool():
     for needed in ("function toolsPage()", "async function loadTools()", "function toolRowHtml(", "function toolsGroupsHtml(", "function toolsBarHtml(",
                    "function toolsToggle(", "function toolsGroupMark(", "async function toolsSave()", "function toolsDirty()", "function toolsSummary(",
                    'await api("/tools/catalog")', 'await put("/tools/selection", body)', 'const body = { build: [...TOOLS_DRAFT.build], student: [...TOOLS_DRAFT.student] };',
-                   'box("build", "בנייה/שיכפול"), box("student", "תלמיד")', 'id="tools-save"', "סמן את המומלצים", "לא נמדד", 'UI.status("ok", "ארוז")',
+                   'box("build", "בנייה/שיכפול"), box("student", "לתלמיד (v2)")', 'id="tools-save"', "סמן את המומלצים", "לא נמדד", 'UI.status("ok", "ארוז")',
                    "דורש הקלדת שם המחשב", 'destroy: ["err"', 'rw: ["warn"', 'ro: [""',
                    'tools: { crumb: "ארגז כלים", title: "ארגז כלים", tabs: [], render: toolsPage, load: loadTools, own: true }'):
         assert needed in js, needed

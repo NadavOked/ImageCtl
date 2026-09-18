@@ -61,7 +61,7 @@ def fit_server(tmp_path: Path):
         now_fn=Clock(), sender_runner=Recorder(), wol_send=lambda _b: None,
     )
     ctx = app.state.ctx
-    users.create(ctx.conn, "noc", "admin-pass-123", "admin", by="test")
+    users.create(ctx.conn, "noc", "admin-pass-123", "admin", by="test", is_builtin=True, check_policy=False)
     admin = TestClient(app)
     admin.post("/api/console/login",
                json={"username": "noc", "password": "admin-pass-123"})

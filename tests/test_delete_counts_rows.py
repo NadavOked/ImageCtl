@@ -102,6 +102,6 @@ def test_create_user_operational_error_surfaces_not_409(server, monkeypatch):
 def test_create_duplicate_user_is_still_409(server):
     """הצורה הנכונה שנשמרה: התנגשות UNIQUE אמיתית עדיין 409."""
     admin = server["admin"]
-    body = {"username": "dupe", "password": "password123", "role": "deploy"}
+    body = {"username": "dupe", "password": "Password123!", "role": "deploy"}
     assert admin.post("/api/console/users", json=body).status_code == 200
     assert admin.post("/api/console/users", json=body).status_code == 409

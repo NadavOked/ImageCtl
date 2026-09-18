@@ -51,11 +51,11 @@ def clients(server):
         (NODE, "סניף א'", "https://node1.example:8443/api/interserver/v1",
          "cred:missing", now_iso()))
     conn.commit()
+    from conftest import complete_console_login
     out = {}
     for role, (user, pw) in LOGINS.items():
         client = TestClient(server["app"], client=("127.0.0.1", 40000))
-        assert client.post("/api/console/login",
-                           json={"username": user, "password": pw}).status_code == 200
+        complete_console_login(client, conn, user, pw)
         out[role] = client
     return out
 
@@ -128,11 +128,13 @@ def test_visibility_matrix(server, clients, row):
 
 @pytest.mark.parametrize(("server_role", "user_role", "caps"), [
     ("standalone", "admin",
-     {"interbranch_transfer": True, "enroll_secondary": True, "open_local_pairing": False}),
+     {"interbranch_transfer": True, "enroll_secondary": True, "open_local_pairing": False,
+      "classrooms": False}),
     # ‏#1073: ל-deploy אין `/me` בכלל — הקונסולה סגורה בפניו (403).
     ("standalone", "deploy", None),
     ("secondary", "admin",
-     {"interbranch_transfer": False, "enroll_secondary": False, "open_local_pairing": True}),
+     {"interbranch_transfer": False, "enroll_secondary": False, "open_local_pairing": True,
+      "classrooms": False}),
     ("secondary", "deploy", None),
 ])
 def test_me_capabilities_follow_the_same_table(server, clients, server_role, user_role, caps):

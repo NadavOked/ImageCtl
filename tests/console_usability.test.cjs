@@ -235,7 +235,7 @@ test('S4: dynamically rendered tree nodes (folders, groups, machines) are focusa
   assert.equal(nodes.length, 2, 'folder + image');
   for (const t of nodes) assert.match(t, /role="treeitem" tabindex="0"/, t);
   assert.match(nodes[0], /aria-expanded="false"/, 'folder group declares expansion');
-  run('GROUPS=[{id:"g1",label:"Class",role:"classroom"}]; MACHINES=[{mac:"aa",suffix:"01",group_id:"g1"}]; populateSidebarGroups()');
+  run('ME.capabilities.classrooms=true; GROUPS=[{id:"g1",label:"Class",role:"classroom"}]; MACHINES=[{mac:"aa",suffix:"01",group_id:"g1"}]; populateSidebarGroups()');
   const classes = document.getElementById('classesTree').innerHTML;
   for (const t of classes.match(/<div class="inventory-node[^>]*>/g)) assert.match(t, /role="treeitem" tabindex="0"/, t);
 });

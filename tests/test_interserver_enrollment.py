@@ -327,10 +327,9 @@ def test_credential_toctou_symlink_swap_not_followed(tmp_path, monkeypatch):
 
 def _local_client(server, host="127.0.0.1", user="noc", pw="admin-pass-123"):
     """‏TestClient עם כתובת peer מפורשת, מחובר. loopback כברירת מחדל."""
+    from conftest import complete_console_login
     client = TestClient(server["app"], client=(host, 40000))
-    assert client.post(
-        "/api/console/login", json={"username": user, "password": pw}
-    ).status_code == 200
+    complete_console_login(client, server["ctx"].conn, user, pw)
     return client
 
 

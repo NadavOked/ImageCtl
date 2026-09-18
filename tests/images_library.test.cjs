@@ -48,7 +48,7 @@ function setup() {
   vm.runInContext(fs.readFileSync(path.join(root,'progress.js'),'utf8'),ctx);
   vm.runInContext(fs.readFileSync(path.join(root,'console.js'),'utf8'),ctx);
   const run=s=>vm.runInContext(s,ctx);
-  run('ME={username:"admin",role:"admin",server_name:"srv",version:"v0.31.0",capabilities:{}}; current="images"; sheet = o => { globalThis.formOptions=o; }; confirmSheet=(t,s,l,fn)=>{ globalThis.confirmFn=fn; };');
+  run('ME={username:"admin",role:"admin",server_name:"srv",version:"v0.31.0",capabilities:{classrooms:true}}; current="images"; sheet = o => { globalThis.formOptions=o; }; confirmSheet=(t,s,l,fn)=>{ globalThis.confirmFn=fn; };');
   for(const [name,key] of [['OVERVIEW','/overview'],['IMAGES','/images'],['FOLDERS','/folders'],['CAPTURE_TASKS','/tasks']]) run(name+'='+JSON.stringify(fixtures[key]));
   return {run,node,requests,fixtures,ctx};
 }

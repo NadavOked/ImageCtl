@@ -42,8 +42,8 @@ def room_server(tmp_path: Path):
         wol_send=woken.append,
     )
     ctx = app.state.ctx
-    users.create(ctx.conn, "noc", "admin-pass-123", "admin", by="test")
-    users.create(ctx.conn, "labtech", "deploy-pass-1", "deploy", by="test")
+    users.create(ctx.conn, "noc", "admin-pass-123", "admin", by="test", is_builtin=True, check_policy=False)
+    users.create(ctx.conn, "labtech", "deploy-pass-1", "deploy", by="test", check_policy=False)
 
     admin, deploy = TestClient(app), TestClient(app)
     admin.post("/api/console/login",

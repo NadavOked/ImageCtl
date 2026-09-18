@@ -80,7 +80,7 @@ def test_a_failed_user_create_leaves_the_connection_usable(tmp_path):
     victim, holder = _poison(path)
 
     with pytest.raises(sqlite3.OperationalError, match="locked"):
-        users.create(victim, "first", "password-12", "admin", by="test")
+        users.create(victim, "first", "password-12", "admin", by="test", is_builtin=True, check_policy=False)
     assert victim.in_transaction is False, (
         "נשארה טרנזאקציה פתוחה — מכאן כל כתיבה על החיבור תיכשל מיד")
 
@@ -90,7 +90,7 @@ def test_a_failed_user_create_leaves_the_connection_usable(tmp_path):
     victim.execute("PRAGMA busy_timeout = 5000")
     brief = _hold_briefly(path, 0.5)
     try:
-        users.create(victim, "second", "password-12", "deploy", by="test")
+        users.create(victim, "second", "password-12", "deploy", by="test", check_policy=False)
     finally:
         brief.join(timeout=30)
 
@@ -109,7 +109,8 @@ def test_user_writes_do_not_starve_each_other(tmp_path):
     db = connect(tmp_path / "t.db")
     failures = _starve(
         db, lambda conn, i, n: users.create(
-            conn, f"u{i}{n}", "password-12", "deploy", by="test"))
+            conn, f"u{i}{n}", "password-12", "deploy", by="test",
+            check_policy=False))
     assert not failures, f"{len(failures)} כשלים, הראשון: {failures[0]!r}"
     written = db.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
     assert written == 9

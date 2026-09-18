@@ -12,6 +12,7 @@ import hmac
 import re
 import secrets
 import sqlite3
+import string
 
 from .db import _write_lock, journal, now_iso, writing
 
@@ -40,8 +41,44 @@ def _derive(password: str, salt: str, iterations: int) -> str:
     ).hex()
 
 
-#: אנגלית בלבד, לפי הכרעת נדב (#111). רשימת-היתר ולא רשימת-איסור.
-_USERNAME_RE = re.compile(r"[A-Za-z0-9._\- ]{1,32}")
+#: אנגלית בלבד, לפי הכרעת נדב (#111) ועדכון #1085: בלי רווח, 2–50.
+_USERNAME_RE = re.compile(r"[a-z0-9._-]{2,50}", re.IGNORECASE)
+
+#: תו מיוחד — אותם תווים ואותה הודעה כמו באלפון (`users_helpers.validate_password`).
+_PASSWORD_SPECIAL = re.compile(r'[!@#$%^&*(),.?":{}|<>]')
+
+
+class UsernameTaken(ValueError):
+    """שם תפוס, כולל כפילות case-insensitive. הקורא מתרגם ל-409."""
+
+
+def validate_password(password: str) -> None:
+    """נוהל אלפון: ≥8, אותיות, ספרות, תו מיוחד. הודעות בעברית כמו במקור."""
+    if len(password) < 8:
+        raise ValueError("הסיסמה חייבת להכיל לפחות 8 תווים")
+    if not re.search(r"[A-Za-z]", password):
+        raise ValueError("הסיסמה חייבת להכיל אותיות")
+    if not re.search(r"[0-9]", password):
+        raise ValueError("הסיסמה חייבת להכיל מספרים")
+    if not _PASSWORD_SPECIAL.search(password):
+        raise ValueError("הסיסמה חייבת להכיל תו מיוחד")
+
+
+def generate_password(length: int = 12) -> str:
+    """סיסמה אקראית שעומדת בנוהל — כמו `users_admin_ops.generate_password`."""
+    alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
+    pwd = "".join(secrets.choice(alphabet) for _ in range(length))
+    if (len(pwd) < 8 or not re.search(r"[A-Za-z]", pwd)
+            or not re.search(r"[0-9]", pwd)
+            or not _PASSWORD_SPECIAL.search(pwd)):
+        pwd = (
+            secrets.choice(string.ascii_letters)
+            + secrets.choice(string.digits)
+            + secrets.choice("!@#$%^&*")
+            + "".join(secrets.choice(alphabet) for _ in range(length - 3))
+        )
+    validate_password(pwd)
+    return pwd
 
 
 def _hash(password: str, salt: str, iterations: int = _ITERATIONS) -> str:
@@ -53,7 +90,7 @@ def _hash(password: str, salt: str, iterations: int = _ITERATIONS) -> str:
 def _check_username(username: str) -> None:
     """שם משתמש הוא אנגלית בלבד — החלטה, לא עקיפה.
 
-    רשימת-היתר ולא רשימת-איסור: ‏`[A-Za-z0-9._-]`, עד 32 תווים. שלושת
+    רשימת-היתר ולא רשימת-איסור: ‏`[A-Za-z0-9._-]`, 2 עד 50 תווים. שלושת
     האיסורים שקדמו לה כיסו כל אחד באג אחר, ורשימת איסורים תמיד מפספסת
     את הבא בתור.
 
@@ -76,22 +113,60 @@ def _check_username(username: str) -> None:
     """
     if not _USERNAME_RE.fullmatch(username):
         raise ValueError(
-            "שם משתמש באותיות אנגליות, ספרות, רווח, נקודה, מקף או קו "
-            "תחתון — עד 32 תווים"
+            "שם משתמש באותיות אנגליות, ספרות, נקודה, מקף או קו "
+            "תחתון — 2 עד 50 תווים"
         )
 
 
-def create(conn: sqlite3.Connection, username: str, password: str, role: str, by: str) -> None:
+def lookup(conn: sqlite3.Connection, username: str) -> sqlite3.Row | None:
+    """שורה לפי שם, בלי תלות ברישיות. None אם אין."""
+    return conn.execute(
+        "SELECT * FROM users WHERE username = ? COLLATE NOCASE",
+        (username.strip(),),
+    ).fetchone()
+
+
+def canonical_name(conn: sqlite3.Connection, username: str) -> str | None:
+    row = lookup(conn, username)
+    return None if row is None else row["username"]
+
+
+def flags(conn: sqlite3.Connection, username: str) -> dict:
+    row = lookup(conn, username)
+    if row is None:
+        return {"must_change_password": False, "mfa_enabled": False,
+                "is_builtin": False, "mfa_secret": None, "mfa_last_step": None}
+    return {
+        "must_change_password": bool(row["must_change_password"]),
+        "mfa_enabled": bool(row["mfa_enabled"]),
+        "is_builtin": bool(row["is_builtin"]),
+        "mfa_secret": row["mfa_secret"],
+        "mfa_last_step": row["mfa_last_step"],
+    }
+
+
+def create(conn: sqlite3.Connection, username: str, password: str, role: str, by: str,
+           *, is_builtin: bool = False, must_change_password: bool = False,
+           check_policy: bool = True) -> None:
     if role not in ("admin", "deploy"):
         raise ValueError("role must be admin or deploy")
     username = username.strip()
-    if not username or len(password) < 8:
-        raise ValueError("שם משתמש ריק או סיסמה קצרה משמונה תווים")
+    if not username:
+        raise ValueError("שם משתמש ריק")
     _check_username(username)
+    if check_policy:
+        validate_password(password)
+    elif not password:
+        raise ValueError("סיסמה ריקה")
+    if lookup(conn, username) is not None:
+        raise UsernameTaken("משתמש בשם הזה כבר קיים")
     with _write_lock, writing(conn):
         conn.execute(
-            "INSERT INTO users (username, pw_hash, role, created_at) VALUES (?, ?, ?, ?)",
-            (username, _hash(password, secrets.token_hex(16)), role, now_iso()),
+            "INSERT INTO users (username, pw_hash, role, created_at,"
+            " must_change_password, is_builtin)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (username, _hash(password, secrets.token_hex(16)), role, now_iso(),
+             1 if must_change_password else 0, 1 if is_builtin else 0),
         )
     journal(conn, "user_create", f"{username} ({role})", by)
 
@@ -111,9 +186,7 @@ def verify(conn: sqlite3.Connection, username: str, password: str) -> str | None
     """
     # ‏#186: חסום אינו נכנס. הבדיקה כאן **בנוסף** ל-`auth.check` ולא
     # במקומה — זו הכניסה, וזו הבקשה שאחריה.
-    row = conn.execute(
-        "SELECT pw_hash, role, disabled_at FROM users WHERE username = ?", (username.strip(),)
-    ).fetchone()
+    row = lookup(conn, username)
     if row is None or row["disabled_at"]:
         return None
     try:
@@ -132,17 +205,20 @@ def verify(conn: sqlite3.Connection, username: str, password: str) -> str | None
 def update(
     conn: sqlite3.Connection, username: str, by: str,
     password: str | None = None, role: str | None = None,
+    *, check_policy: bool = True,
 ) -> None:
     """שינוי תפקיד ו/או איפוס סיסמה. שדה שלא נשלח — לא נוגעים בו."""
-    row = conn.execute(
-        "SELECT role FROM users WHERE username = ?", (username,)
-    ).fetchone()
+    row = lookup(conn, username)
     if row is None:
         raise ValueError("משתמש לא קיים")
+    username = row["username"]
     if role is not None and role not in ("admin", "deploy"):
         raise ValueError("תפקיד לא חוקי")
-    if password is not None and len(password) < 8:
-        raise ValueError("סיסמה קצרה משמונה תווים")
+    if password is not None:
+        if check_policy:
+            validate_password(password)
+        elif not password:
+            raise ValueError("סיסמה ריקה")
     # הורדת המנהל האחרון מתפקידו נועלת את כולם מחוץ לניהול.
     if role == "deploy" and row["role"] == "admin" and admin_count(conn) <= 1:
         raise ValueError("זה המנהל האחרון — אי אפשר להוריד אותו מתפקידו")
@@ -173,11 +249,10 @@ def set_disabled(conn: sqlite3.Connection, username: str, disabled: bool,
     היומן שמזכירות את השם ממשיכות להצביע על מישהו. מחיקה הופכת אותן
     לשם שאין מאחוריו כלום.
     """
-    row = conn.execute(
-        "SELECT role, disabled_at FROM users WHERE username = ?", (username,)
-    ).fetchone()
+    row = lookup(conn, username)
     if row is None:
         raise ValueError("משתמש לא קיים")
+    username = row["username"]
     if disabled and row["role"] == "admin" and active_admin_count(conn) <= 1:
         raise ValueError("זה המנהל הפעיל האחרון — חסימתו תנעל את הקונסולה")
     with _write_lock, writing(conn):
@@ -236,10 +311,17 @@ def delete(conn: sqlite3.Connection, username: str, by: str) -> None:
 
 def list_users(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute(
-        "SELECT username, role, created_at, disabled_at"
+        "SELECT username, role, created_at, disabled_at,"
+        " must_change_password, mfa_enabled, is_builtin"
         " FROM users ORDER BY username"
     ).fetchall()
-    return [{**dict(r), "disabled": bool(r["disabled_at"])} for r in rows]
+    return [{
+        **dict(r),
+        "disabled": bool(r["disabled_at"]),
+        "must_change_password": bool(r["must_change_password"]),
+        "mfa_enabled": bool(r["mfa_enabled"]),
+        "is_builtin": bool(r["is_builtin"]),
+    } for r in rows]
 
 
 def get_theme(conn: sqlite3.Connection, username: str) -> str:
@@ -262,14 +344,66 @@ def set_theme(conn: sqlite3.Connection, username: str, theme: str) -> None:
         )
 
 
-def ensure_admin(conn: sqlite3.Connection) -> str | None:
-    """בהתקנה טרייה נוצר admin עם סיסמה אקראית שמודפסת פעם אחת.
+def change_own_password(conn: sqlite3.Connection, username: str,
+                        current: str, new: str) -> None:
+    """החלפת סיסמה עצמית. מאמתת את הנוכחית, אוכפת נוהל, מורידה כפייה."""
+    if verify(conn, username, current) is None:
+        raise ValueError("הסיסמה הנוכחית שגויה")
+    validate_password(new)
+    stored = canonical_name(conn, username)
+    with _write_lock, writing(conn):
+        conn.execute(
+            "UPDATE users SET pw_hash = ?, must_change_password = 0"
+            " WHERE username = ?",
+            (_hash(new, secrets.token_hex(16)), stored),
+        )
+    journal(conn, "password_changed", stored, stored)
 
-    מחזיר את הסיסמה אם נוצר משתמש, אחרת None.
+
+def reset_password(conn: sqlite3.Connection, username: str, by: str) -> str:
+    """איפוס על ידי admin: סיסמה אקראית חד-פעמית + החלפה כפויה בכניסה הבאה."""
+    row = lookup(conn, username)
+    if row is None:
+        raise ValueError("משתמש לא קיים")
+    stored = row["username"]
+    new = generate_password()
+    with _write_lock, writing(conn):
+        conn.execute(
+            "UPDATE users SET pw_hash = ?, must_change_password = 1"
+            " WHERE username = ?",
+            (_hash(new, secrets.token_hex(16)), stored),
+        )
+    journal(conn, "password_reset", stored, by)
+    return new
+
+
+def bump_auth_epoch(conn: sqlite3.Connection, username: str) -> None:
+    """מבטל את כל ה-sessions החתומות של המשתמש. העוגייה נושאת את ה-epoch."""
+    stored = canonical_name(conn, username)
+    if stored is None:
+        raise ValueError("משתמש לא קיים")
+    with _write_lock, writing(conn):
+        conn.execute(
+            "UPDATE users SET auth_epoch = auth_epoch + 1 WHERE username = ?",
+            (stored,),
+        )
+        conn.execute("DELETE FROM trusted_browsers WHERE username = ?", (stored,))
+        conn.execute("DELETE FROM mfa_challenges WHERE username = ?", (stored,))
+
+
+def ensure_admin(conn: sqlite3.Connection, password: str | None = None) -> str | None:
+    """בהתקנה טרייה נוצר admin/admin עם החלפה כפויה, is_builtin=1.
+
+    אם כבר יש מנהל — לא נוגעים. `password` (‏`--admin-pass`) מדלג על הכפייה.
+    מחזיר את הסיסמה המודפסת אם נוצר ברירת-המחדל, אחרת None.
     """
     row = conn.execute("SELECT 1 FROM users WHERE role = 'admin' LIMIT 1").fetchone()
     if row is not None:
         return None
-    password = secrets.token_urlsafe(12)
-    create(conn, "admin", password, "admin", by="")
-    return password
+    if password:
+        create(conn, "admin", password, "admin", by="",
+               is_builtin=True, must_change_password=False, check_policy=False)
+        return None
+    create(conn, "admin", "admin", "admin", by="",
+           is_builtin=True, must_change_password=True, check_policy=False)
+    return "admin"

@@ -89,7 +89,7 @@ function setup(over={},me={}) {
     }});
   for(const f of ['progress.js','console.js','net.js','netcfg.js']) vm.runInContext(fs.readFileSync(path.join(root,f),'utf8'),ctx);
   const run=s=>vm.runInContext(s,ctx);
-  run('ME='+JSON.stringify({username:'nadav',role:'admin',server_name:'שרת המכללה',version:'v0.38.1',capabilities:{enroll_secondary:true},...me})
+  run('ME='+JSON.stringify({username:'nadav',role:'admin',server_name:'שרת המכללה',version:'v0.38.1',capabilities:{enroll_secondary:true,classrooms:true},...me})
     +'; globalThis.sheets=[]; globalThis.toasts=[]; sheet = o => { sheets.push(o); }; toast=(m)=>{ toasts.push(m); }; renderCurrent=()=>{ globalThis.rendered=(globalThis.rendered||0)+1; };'
     +' globalThis.selected=[]; selectPageById=(id)=>{ selected.push(id); current=id; }; openMachineDetail=(m)=>{ globalThis.openedMac=m; }; openAddMachine=(o)=>{ globalThis.addMachine=o; };');
   run('MACHINES='+JSON.stringify(fixtures['/machines'])+'; GROUPS='+JSON.stringify(fixtures['/groups'])+';');
@@ -439,4 +439,16 @@ test('site model: the console/8443 VLAN is "שרתים", and a secondary is "ד�
   assert.deepEqual(lines.filter(l=>l[1]),[['err',true],['off',true]],'exactly the two secondaries are dashed lines: red (not answering) and grey (disabled)');
   assert.ok(lines.some(l=>l[0]==='ok'&&!l[1]),'the console line is solid');
   assert.match(html,/title="המשני מאחורי FW משלו; הראשי יוזם, רק 8443 · https:\/\/10\.44\.13\.5:8443 · לא ענה: timeout">דרך FW · 8443 בלבד · https:\/\/10\.44\.13\.5:8443 · לא ענה: timeout</);
+});
+
+test('#1081 v1: classrooms flag off does not draw the classrooms box and hides proxy DHCP from רשת הפצה', async () => {
+  const {run}=await loaded({}, {capabilities:{enroll_secondary:true,classrooms:false}});
+  const model=JSON.parse(plain(run('JSON.stringify(netDiagramModel())')));
+  const lane=(name)=>model.lanes.find(l=>l.nic.name===name);
+  assert.equal((lane('ens20').clients||[]).filter(c=>c.kind==='class').length,0);
+  const html=plain(run('networkPage(0)'));
+  assert.doesNotMatch(html,/כיתות — v2/);
+  assert.doesNotMatch(html,/מחשבי כיתה אינם במהדורה זו/);
+  const deploy=run('networkPage(2)');
+  assert.doesNotMatch(deploy,/class="name">ens20</,'proxy NIC is the classroom VLAN — hidden in v1');
 });

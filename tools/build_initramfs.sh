@@ -400,7 +400,7 @@ EOF
     # the uinput module, declared in REQUIRED_MODULES below.
     echo "compiling the remote monitor..."
     gcc -O2 -Wall -Wextra -o "$ROOT/usr/bin/imagectl-monitor" \
-        "$AGENT_DIR/monitor.c" -lvncserver
+        "$AGENT_DIR/monitor.c" "$AGENT_DIR/hmac_sha256.c" -lvncserver
     [ -s "$ROOT/usr/bin/imagectl-monitor" ] && [ -x "$ROOT/usr/bin/imagectl-monitor" ] \
         || { echo "--with-gui: imagectl-monitor missing or not executable" >&2; exit 1; }
     # Same closure gate as the native GUI binary: an unresolved .so or a

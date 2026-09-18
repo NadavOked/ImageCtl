@@ -416,18 +416,21 @@ def monitor_target(ctx, peer: TlsPeer, *, token: str, protocol_version: str,
                    mac: str, has_console_cookie: bool = False) -> tuple[str, str, str]:
     """‏``(mac קנוני, ip, secret)`` של מכונה שמותר לפתוח אליה מוניטור מהאב —
     אותם תנאים של המוניטור המקומי (``monitor._target``: רשומה, build/cloner,
-    נראתה ב-90 השניות האחרונות). בלי סוד = 512 (סוכן ישן), לפני TCP."""
+    נראתה ב-90 השניות האחרונות). בלי סוד או בלי ``monitor_auth: hmac`` =
+    512 (סוכן ישן), לפני TCP."""
     from fastapi import HTTPException
     from . import monitor as monitor_module
     from . import registry
     authenticate_parent(ctx.conn, peer, token=token, protocol_version=protocol_version,
                         has_console_cookie=has_console_cookie)
     try:
-        ip, _role, secret = monitor_module._target(ctx, mac)
+        ip, _role, secret, machine_auth = monitor_module._target(ctx, mac)
     except HTTPException as exc:
         raise PairError(exc.status_code, str(exc.detail))
     if secret is None:
         raise PairError(512, "המכונה לא דיווחה סוד מוניטור — סוכן ישן?")
+    if machine_auth != monitor_module.MONITOR_AUTH_HMAC:
+        raise PairError(512, "המכונה אינה תומכת באתגר-תגובה (HMAC) — סוכן ישן? אתחל מחדש")
     return registry.normalize_mac(mac), ip, secret
 
 
@@ -449,10 +452,10 @@ def _reason_sync(sock: socket.socket) -> str:
 
 
 def authenticate_machine_sync(sock: socket.socket, secret: str) -> None:
-    """‏#839 על socket חוסם — מראה של ``monitor.authenticate_machine``
-    (שהוא asyncio): גרסה, סוג 2 בלבד (None לעולם לא), 16 בייטי הסוד,
+    """‏#839/#1077 על socket חוסם — מראה של ``monitor.authenticate_machine``
+    (שהוא asyncio): גרסה, סוג 2 בלבד (None לעולם לא), HMAC על ה-challenge,
     ‏SecurityResult. אחרי ההצלחה המכונה ממתינה ל-ClientInit — מהאב."""
-    from .monitor import RFB_SECURITY_SECRET, RFB_VERSION
+    from .monitor import RFB_SECURITY_SECRET, RFB_VERSION, hmac_response
     banner = _recv_exact(sock, 12)
     if not banner.startswith(b"RFB 003."):
         raise MachineAuthError("על 5900 עונה משהו שאינו RFB")
@@ -466,8 +469,8 @@ def authenticate_machine_sync(sock: socket.socket, secret: str) -> None:
             "המוניטור במכונה אינו דורש סוד — סוכן ישן? (סוגי אבטחה "
             f"{sorted(offered)})")
     sock.sendall(bytes([RFB_SECURITY_SECRET]))
-    _recv_exact(sock, 16)                                 # ה-challenge; לא בשימוש
-    sock.sendall(bytes.fromhex(secret))
+    challenge = _recv_exact(sock, 16)
+    sock.sendall(hmac_response(secret, challenge))
     result = struct.unpack(">I", _recv_exact(sock, 4))[0]
     if result != 0:
         raise MachineAuthError(f"המוניטור דחה את סוד השרת: {_reason_sync(sock)}")

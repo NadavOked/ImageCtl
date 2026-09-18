@@ -267,7 +267,7 @@ build_hello() {
     _msecret=""
     if command -v monitor_secret >/dev/null 2>&1; then
         _ms=$(monitor_secret) && [ -n "$_ms" ] &&
-            _msecret=",\"monitor_secret\":\"$_ms\""
+            _msecret=",\"monitor_secret\":\"$_ms\",\"monitor_auth\":\"hmac\""
     fi
 
     # #720+#1049+#1048: inventory, probe, netprobe fragments (each with a leading comma).

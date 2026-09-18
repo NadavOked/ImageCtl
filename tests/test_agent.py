@@ -257,13 +257,27 @@ def _hello_with_monitor_lib(fake_machine) -> dict:
 def test_hello_carries_a_boot_monitor_secret_that_is_stable_per_boot(fake_machine):
     """‏32 ספרות hex, מוגרלות פעם אחת ל-RUN_DIR (= לאתחול): שני hello
     באותו אתחול נושאים את אותו סוד, והקובץ שהמוניטור יקרא מכיל בדיוק
-    אותו. זה הסוד שהפרוקסי יענה בו ל-challenge של 5900."""
+    אותו. זה הסוד שהפרוקסי יחשב ממנו HMAC ל-challenge של 5900."""
     first = _hello_with_monitor_lib(fake_machine)
     assert SECRET_HEX.match(first["monitor_secret"]), first["monitor_secret"]
+    assert first["monitor_auth"] == "hmac"
     second = _hello_with_monitor_lib(fake_machine)
     assert second["monitor_secret"] == first["monitor_secret"]
+    assert second["monitor_auth"] == "hmac"
     on_disk = (fake_machine["run"] / "monitor.secret").read_text().strip()
     assert on_disk == first["monitor_secret"]
+
+
+def test_hello_picks_up_a_secret_rotated_after_a_connection(fake_machine):
+    """סימולציה של מה ש-imagectl-monitor כותב אחרי חיבור שהסתיים: קובץ
+    סוד חדש. ה-hello הבא נושא אותו, לא את הישן."""
+    first = _hello_with_monitor_lib(fake_machine)
+    rotated = "ffeeddccbbaa99887766554433221100"
+    (fake_machine["run"] / "monitor.secret").write_bytes((rotated + "\n").encode())
+    second = _hello_with_monitor_lib(fake_machine)
+    assert second["monitor_secret"] == rotated
+    assert second["monitor_secret"] != first["monitor_secret"]
+    assert second["monitor_auth"] == "hmac"
 
 
 def test_hello_omits_the_secret_when_the_monitor_lib_is_absent(fake_machine):
@@ -276,7 +290,9 @@ def test_hello_omits_the_secret_when_the_monitor_lib_is_absent(fake_machine):
         f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/sysinfo.sh; '
         f'build_hello'
     )
-    assert "monitor_secret" not in json.loads(out)
+    body = json.loads(out)
+    assert "monitor_secret" not in body
+    assert "monitor_auth" not in body
 
 
 # --- החריץ הפיזי של המגירה (#27) ---------------------------------------------
@@ -2139,6 +2155,7 @@ def _monitor_spawn_args(tmp_path, role=None, flag="1", ip="10.0.0.9",
     script = (
         'OUT=' + repr(posix(out)) + '; '
         f'export IMAGECTL_MONITOR={flag}; '
+        'export IMAGECTL_SERVER=http://10.0.0.1:8080; '
         'export RUN_DIR=' + repr(posix(run)) + '; '
         'export IP=' + ip + '; export MONITOR_BIN=/bin/sh; export FB_DEV=/dev/null; '
         'log() { :; }; '
@@ -2187,10 +2204,38 @@ def test_monitor_gets_the_boot_secret_file(tmp_path):
     assert path.endswith("/run/monitor.secret"), path
 
 
+def test_monitor_gets_allow_from_the_server_ip(tmp_path):
+    """‏#1077: peer-check — רק IP השרת מ-imagectl.server. בלי זה 5900
+    היה פתוח לכל הווילן גם עם HMAC."""
+    args = _monitor_spawn_args(tmp_path, role="cloner").split()
+    assert "--allow-from" in args, args
+    assert args[args.index("--allow-from") + 1] == "10.0.0.1"
+
+
 def test_monitor_does_not_start_without_a_boot_secret(tmp_path):
     """הגרלה שנכשלה = אין קובץ = אין מוניטור. סגור-בכישלון: עדיף מכונה
     בלי מוניטור ממוניטור בלי אימות (עיקרון 5 — אי-ידיעה אינה 'תקין')."""
     assert _monitor_spawn_args(tmp_path, role="build", secret=False) is None
+
+
+def test_monitor_does_not_start_without_a_server_ip(tmp_path):
+    """בלי imagectl.server אין למי להגביל את 5900 — לא עולים."""
+    out = tmp_path / "spawn-args"
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "monitor.secret").write_text("00112233445566778899aabbccddeeff\n")
+    script = (
+        'OUT=' + repr(posix(out)) + '; '
+        'export IMAGECTL_MONITOR=1 IMAGECTL_SERVER=; '
+        'export RUN_DIR=' + repr(posix(run)) + '; '
+        'export D_ROLE=build IP=10.0.0.9 MONITOR_BIN=/bin/sh FB_DEV=/dev/null; '
+        'log() { :; }; '
+        '. ' + posix(AGENT) + '/lib/monitor.sh; '
+        '_monitor_spawn() { echo "$@" > "$OUT"; _monitor_pid=4242; }; '
+        'monitor_start')
+    subprocess.run([BASH, "-c", script], capture_output=True,
+                   cwd=str(REPO), stdin=subprocess.DEVNULL)
+    assert not out.exists()
 
 
 def test_the_build_refuses_an_after_task_it_does_not_know():

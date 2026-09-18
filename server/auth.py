@@ -11,6 +11,8 @@ dependencies() חייבת להיות אובייקט אמיתי בשביל FastAP
 שנתפס ב-boot/http.py).
 """
 
+from typing import NamedTuple
+
 import hashlib
 import hmac
 import sqlite3
@@ -20,6 +22,8 @@ from .db import get_setting
 
 COOKIE_NAME = "imagectl_session"
 TTL_SECONDS = 12 * 3600
+PURPOSE_PWCHANGE = "pwchange"
+PURPOSE_MFAENROLL = "mfaenroll"
 
 SECRET_KEY = "console_secret"
 #: ‏`db._initialize` זורע 32 בייטים. פחות מ-16 אינו סוד, הוא שריד.
@@ -41,15 +45,34 @@ class SecretUnusable(RuntimeError):
     """
 
 
+class Session(NamedTuple):
+    username: str
+    role: str
+    purpose: str  # "" = מלא; pwchange / mfaenroll = מוגבל
+
+
+def _enforce_purpose(request, session: Session) -> None:
+    from fastapi import HTTPException
+    path = request.url.path
+    method = request.method
+    if session.purpose == PURPOSE_PWCHANGE:
+        if not (method == "POST" and path.rstrip("/") == "/api/console/me/password"):
+            raise HTTPException(403, "password_change_required")
+    elif session.purpose == PURPOSE_MFAENROLL:
+        if not path.startswith("/api/console/me/mfa/"):
+            raise HTTPException(403, "mfa_enrollment_required")
+
+
 def dependencies(conn: sqlite3.Connection):
     """(current_user, admin_only) — ה-dependencies המשותפים לכל הראוטרים."""
     from fastapi import Depends, HTTPException, Request
 
     def current_user(request: Request) -> tuple[str, str]:
-        found = check(conn, request.cookies.get(COOKIE_NAME))
+        found = read_session(conn, request.cookies.get(COOKIE_NAME))
         if found is None:
             raise HTTPException(401, "לא מחובר")
-        return found
+        _enforce_purpose(request, found)
+        return found.username, found.role
 
     def admin_only(user: tuple[str, str] = Depends(current_user)) -> tuple[str, str]:
         if user[1] != "admin":
@@ -130,11 +153,73 @@ def assert_secret(conn: sqlite3.Connection) -> None:
     _secret(conn)
 
 
-def issue(conn: sqlite3.Connection, username: str, role: str) -> str:
+def _auth_epoch(conn: sqlite3.Connection, username: str) -> int:
+    row = conn.execute(
+        "SELECT auth_epoch FROM users WHERE username = ? COLLATE NOCASE",
+        (username,),
+    ).fetchone()
+    return int(row["auth_epoch"] or 0) if row is not None else 0
+
+
+def issue(conn: sqlite3.Connection, username: str, role: str,
+          purpose: str = "") -> str:
     expiry = int(time.time()) + TTL_SECONDS
-    payload = f"{username}|{role}|{expiry}"
+    epoch = _auth_epoch(conn, username)
+    payload = f"{username}|{role}|{expiry}|{purpose}:{epoch}"
     signature = hmac.new(_secret(conn), payload.encode(), hashlib.sha256).hexdigest()
     return f"{payload}|{signature}"
+
+
+def attach_cookie(response, conn: sqlite3.Connection, username: str, role: str,
+                  tls, purpose: str = "") -> None:
+    response.set_cookie(
+        COOKIE_NAME, issue(conn, username, role, purpose=purpose),
+        httponly=True, samesite="lax", max_age=TTL_SECONDS,
+        secure=tls is not None,
+    )
+
+
+def read_session(conn: sqlite3.Connection, token: str | None) -> Session | None:
+    """מפענח עוגייה: 3 מפרידים (ישן) או 4 (purpose:epoch). None אם פסול."""
+    if not token:
+        return None
+    n = token.count("|")
+    if n not in (3, 4):
+        return None
+    payload, _, signature = token.rpartition("|")
+    expected = hmac.new(_secret(conn), payload.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return None
+    parts = payload.split("|")
+    if n == 3:
+        username, _signed_role, expiry = parts
+        purpose, epoch = "", 0
+    else:
+        username, _signed_role, expiry, extra = parts
+        purpose, _, epoch_s = extra.partition(":")
+        try:
+            epoch = int(epoch_s or 0)
+        except ValueError:
+            return None
+        if purpose not in ("", PURPOSE_PWCHANGE, PURPOSE_MFAENROLL):
+            return None
+    try:
+        if int(expiry) < time.time():
+            return None
+    except ValueError:
+        return None
+    row = conn.execute(
+        "SELECT username, role, disabled_at, auth_epoch FROM users"
+        " WHERE username = ? COLLATE NOCASE",
+        (username,),
+    ).fetchone()
+    if row is None or not row["role"]:
+        return None
+    if row["disabled_at"]:
+        return None
+    if epoch < int(row["auth_epoch"] or 0):
+        return None
+    return Session(row["username"], row["role"], purpose)
 
 
 def check(conn: sqlite3.Connection, token: str | None) -> tuple[str, str] | None:
@@ -151,24 +236,11 @@ def check(conn: sqlite3.Connection, token: str | None) -> tuple[str, str] | None
     התהליכון שבו ‏uvicorn מריץ את ``current_user`` (#54).
 
     אין כאן מטמון: מטמון היה מחזיר בדיוק את החלון שהתיקון סוגר.
+
+    Session מוגבלת (החלפת סיסמה / הרשמת MFA) אינה session מלאה —
+    WebSocket והקוראים הישנים מקבלים None, לא הרשאה חלקית בשקט.
     """
-    if not token or token.count("|") != 3:
+    found = read_session(conn, token)
+    if found is None or found.purpose:
         return None
-    payload, _, signature = token.rpartition("|")
-    expected = hmac.new(_secret(conn), payload.encode(), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(signature, expected):
-        return None
-    username, _signed_role, expiry = payload.split("|")
-    if int(expiry) < time.time():
-        return None
-    row = conn.execute(
-        "SELECT role, disabled_at FROM users WHERE username = ?", (username,)
-    ).fetchone()
-    if row is None or not row["role"]:
-        return None                # נמחק, או שורה בלי תפקיד — אין הרשאה
-    if row["disabled_at"]:
-        # ‏#186: חסימה חלה **כאן** ולא רק בכניסה. חסימה שנבדקת בכניסה
-        # בלבד הייתה פותחת מחדש את החלון שסגר #91 — עד 12 שעות שבהן
-        # משתמש חסום ממשיך לעבוד עם הטוקן שכבר בידו.
-        return None
-    return username, row["role"]
+    return found.username, found.role

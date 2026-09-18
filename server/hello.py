@@ -17,7 +17,7 @@ import re
 import sqlite3
 from urllib.parse import urlsplit
 
-from . import bootguard, direct, disk_failures, inventory, probe, registry, room, shrink_records
+from . import bootguard, capabilities, direct, disk_failures, inventory, probe, registry, room, shrink_records
 from .db import get_setting, journal, net_seen
 from .images import ImageLibrary
 from .sessions import SessionStore
@@ -33,6 +33,12 @@ MONITOR_SECRET_RE = re.compile(r"^[0-9a-f]{32}$")
 
 def well_formed_monitor_secret(value: object) -> bool:
     return isinstance(value, str) and MONITOR_SECRET_RE.match(value) is not None
+
+
+def well_formed_monitor_auth(value: object) -> bool:
+    """‏#1077: הערך היחיד שמתקבל הוא ``hmac``. כל דבר אחר — כולל חסר —
+    הוא סוכן ישן, והפרוקסי יסרב."""
+    return value == "hmac"
 
 
 def off_deploy_vlan(scope: dict | None, server_base: str | None) -> bool:
@@ -137,6 +143,8 @@ def _unknown(conn: sqlite3.Connection, mac: str, client_ip: str | None,
         "session": None,
         "allowed_images": [],
         "ui": _ui(conn, has_open_session=False, off_vlan=off_vlan),
+        # #1081: v1 hides classrooms. Missing = off (principle 1). v2 turns this on.
+        "classrooms": capabilities.classrooms(),
     }
 
 
@@ -154,6 +162,7 @@ def build_answer(
     record_seen: bool = True,
     all_macs: list[str] | None = None,
     monitor_secret: str | None = None,
+    monitor_auth: str | None = None,
     hw_inventory: dict | None = None,
     hw_probe: dict | None = None,
     multicast: dict | None = None,
@@ -173,7 +182,8 @@ def build_answer(
     if record_seen:
         net_seen(conn, mac, reported_ip or client_ip,
                  disks_json=json.dumps(disks) if disks is not None else None,
-                 monitor_secret=monitor_secret, prompt=prompt)
+                 monitor_secret=monitor_secret, monitor_auth=monitor_auth,
+                 prompt=prompt)
         # ‏#720: המלאי החומרתי (schema 2) נשמר מגורסת — שורה חדשה רק כשהשתנה.
         # ‏None = הסוכן לא שלח (schema 1) או שלח פגום: הגרסה הקודמת נשארת.
         if hw_inventory is not None:
@@ -194,6 +204,9 @@ def build_answer(
              if machine["role"] == "build" else {})
     answer: dict = {
         **extra,
+        # #1081: edition flag. v1 = False (hardcoded). v2 turns this on.
+        # Missing = off. Not an operator setting.
+        "classrooms": capabilities.classrooms(),
         "schema": 1,
         "known": True,
         "role": machine["role"],

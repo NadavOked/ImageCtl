@@ -15,8 +15,8 @@
 1. מנהל רואה ארבע אפשרויות (#1073: חדר, ישירה, שחזור לדיסק הזה, קליטה —
    אותו סדר כמו ב-GUI).
 2. משתמש deploy רואה שלוש — בלי קליטה, שהיא `admin_only` בשרת. "כיתה"
-   מוסתרת ב-v1 (‏`BUILD_MENU_CLASSROOMS=0`, ‏`buildmenuitems.sh`) ונבדקת
-   כמסלול v2 עם השער פתוח.
+   מוסתרת ב-v1 (‏`classrooms` חסר/false ב-hello, ‏`buildmenuitems.sh`) ונבדקת
+   כמסלול v2 עם הדגל דלוק.
 3. הקליטה מגיעה ל-`POST /api/console/tasks/capture` עם ה-`folder` הנכון —
    גם לתיקייה קיימת וגם לתיקייה חדשה שנוצרה בדרך.
 4. ‏`unverified` (השרת לא ענה) אינו מתנהג כמו `rejected` (השרת בדק ואמר
@@ -70,8 +70,8 @@ DIRECT_LABEL = "Deploy THIS disk directly to the cloning machines"
 SELF_LABEL = "Restore an image from the server onto THIS disk"
 CLASS_LABEL = "Deploy to a classroom"
 
-#: ‏#1073: השער של v2 — פתוח רק בבדיקות שבודקות את מסלול הכיתה.
-V2 = "BUILD_MENU_CLASSROOMS=1"
+#: ‏#1081: hello של v2 — `classrooms: true` רק בבדיקות שבודקות את מסלול הכיתה.
+V2_ANSWER = {**ANSWER, "classrooms": True}
 
 #: מצב המכונה מ-`/api/v1/agent/state` (#706): השם הרשום והאימג'ים
 #: **מספריית השרת הזה** שמתאימים לדיסק — מהם בוחרים ב"שחזור לדיסק הזה".
@@ -350,7 +350,8 @@ def test_with_the_v2_gate_open_the_class_option_returns_as_the_fifth(
     אותה מחדש. ‏ANSWER אומר שהמתג בשרת דלוק."""
     console.role = "admin"
 
-    result = run_screen(tmp_path, url_of(console), ["admin", "pw", "0"], env=V2)
+    result = run_screen(tmp_path, url_of(console), ["admin", "pw", "0"],
+                        answer=V2_ANSWER)
 
     assert f"5) {CLASS_LABEL}" in result["out"], result["out"]
     assert "Choose [1-5]" in result["out"]
@@ -368,10 +369,10 @@ def test_the_class_option_is_hidden_when_the_server_switched_it_off(
     (409) — תפריט שמציע מה שהשרת יסרב לו הוא תפריט שמשקר. **בקרה
     שלילית:** על main האפשרות מוצגת תמיד (`echo "class"` ללא תנאי)."""
     console.role = "admin"
-    answer = {**ANSWER, "class_deploy_enabled": False}
+    answer = {**V2_ANSWER, "class_deploy_enabled": False}
 
     result = run_screen(tmp_path, url_of(console), ["admin", "pw", "0"],
-                        answer=answer, env=V2)
+                        answer=answer)
 
     assert CLASS_LABEL not in result["out"], "הכיתה הוצעה כשהמתג כבוי"
     assert f"1) {ROOM_LABEL}" in result["out"]
@@ -387,10 +388,10 @@ def test_a_hello_without_the_switch_field_hides_the_class_option(
     """שדה חסר = כבוי (שרת ישן, או תשובה שלא נקראה). הסוכן החדש תמיד
     מקבל את השדה ממחשב הבנייה; היעדרו אינו "דלוק" (עיקרון 1)."""
     console.role = "deploy"
-    answer = {k: v for k, v in ANSWER.items() if k != "class_deploy_enabled"}
+    answer = {k: v for k, v in V2_ANSWER.items() if k != "class_deploy_enabled"}
 
     result = run_screen(tmp_path, url_of(console), ["deployer", "pw", "0"],
-                        answer=answer, env=V2)
+                        answer=answer)
 
     assert CLASS_LABEL not in result["out"], "שדה חסר נקרא כדלוק"
     assert f"1) {ROOM_LABEL}" in result["out"]
@@ -551,7 +552,8 @@ def test_the_class_option_uses_the_existing_class_round_flow(
         tmp_path, console):
     """הפצה לכיתה אינה נכתבת מחדש — `classround.sh` כבר עושה את זה.
     (‏v2: השער פתוח; ב-v1 הפריט אינו קיים.)"""
-    result = run_screen(tmp_path, url_of(console), ["admin", "pw", "5"], env=V2)
+    result = run_screen(tmp_path, url_of(console), ["admin", "pw", "5"],
+                        answer=V2_ANSWER)
 
     assert "CLASS-ROUND-OPENED" in result["out"]
     assert "not part of the class" in result["out"], \

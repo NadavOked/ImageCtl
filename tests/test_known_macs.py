@@ -35,7 +35,7 @@ def known_macs_server(tmp_path, images_root, clock):
     hooks = {"apply": lambda text: (fake["applied"].append(text), fake["error"])[1]}
     app = create_app(tmp_path / "data", images_root, "http://10.44.12.10:8080",
                      now_fn=clock, known_macs_hooks=hooks)
-    users.create(app.state.ctx.conn, "noc", "admin-pass-123", "admin", by="test")
+    users.create(app.state.ctx.conn, "noc", "admin-pass-123", "admin", by="test", is_builtin=True, check_policy=False)
     admin = TestClient(app)
     admin.post("/api/console/login", json={"username": "noc", "password": "admin-pass-123"})
     return {"admin": admin, "fake": fake, "ctx": app.state.ctx}

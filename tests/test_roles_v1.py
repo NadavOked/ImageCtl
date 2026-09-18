@@ -52,6 +52,8 @@ HIERARCHY_ONLY = {
 
 #: דגלי `capabilities` שהקונסולה רשאית להסתיר לפיהם — היררכיה בלבד.
 HIERARCHY_CAPS = {"interbranch_transfer", "enroll_secondary", "open_local_pairing"}
+#: #1081: מהדורה (v1/v2), זהה בכל שרת. לא היררכיה — חיפה = ת"א.
+EDITION_CAPS = {"classrooms"}
 
 
 def _login(client: TestClient, who: tuple[str, str]):
@@ -97,8 +99,9 @@ def split_env(tmp_path: Path, images_root: Path):
 
     rt = create_runtime(tmp_path / "data", images_root, "http://10.44.12.10:8080",
                         sender_runner=Recorder(block=True), **_safe_hooks(tmp_path))
-    users.create(rt.conn, *ADMIN, "admin", by="test")
-    users.create(rt.conn, *DEPLOY, "deploy", by="test")
+    users.create(rt.conn, *ADMIN, "admin", by="test",
+                 is_builtin=True, check_policy=False)
+    users.create(rt.conn, *DEPLOY, "deploy", by="test", check_policy=False)
     env = {"rt": rt, "console_app": create_console_app(rt),
            "kiosk_app": create_kiosk_app(rt)}
     yield env
@@ -188,7 +191,8 @@ def test_the_refusal_is_deploy_only_admin_and_anonymous_are_untouched(split_env)
 def test_an_admin_demoted_to_deploy_loses_the_console_at_once(split_env):
     """‏#91 באותו כיוון: ההרשאה נקראת מהטבלה בכל בקשה, לא מהעוגייה."""
     console = TestClient(split_env["console_app"])
-    users.create(split_env["rt"].conn, "second", "admin-pass-456", "admin", by="test")
+    users.create(split_env["rt"].conn, "second", "admin-pass-456", "admin",
+                 by="test", is_builtin=True, check_policy=False)
     assert _login(console, ("second", "admin-pass-456")).status_code == 200
     assert console.get("/api/console/overview").status_code == 200
     users.update(split_env["rt"].conn, "second", by="test", role="deploy")
@@ -243,7 +247,8 @@ def _combined_app(tmp_path: Path, images_root: Path, role: str):
         kwargs["primary_url"] = "http://parent:8080"
     app = create_app(tmp_path / f"data-{role}", images_root, "http://10.44.12.10:8080",
                      sender_runner=Recorder(block=True), **kwargs)
-    users.create(app.state.ctx.conn, *ADMIN, "admin", by="test")
+    users.create(app.state.ctx.conn, *ADMIN, "admin", by="test",
+                 is_builtin=True, check_policy=False)
     # מ-loopback: חלון ה-pairing (#740) הוא loopback בלבד, ובלי זה שני
     # הצדדים עונים 403 על הכתובת ולא על התפקיד.
     client = TestClient(app, client=("127.0.0.1", 40000))
@@ -281,7 +286,7 @@ def test_a_secondary_answers_its_admin_exactly_like_a_standalone(tmp_path, image
         assert not drift, "המשני עונה אחרת מ-standalone:\n" + "\n".join(drift)
         me = se.get("/api/console/me").json()["capabilities"]
         assert me == {"interbranch_transfer": False, "enroll_secondary": False,
-                      "open_local_pairing": True}
+                      "open_local_pairing": True, "classrooms": False}
     finally:
         sa_app.state.ctx.sender.stop()
         se_app.state.ctx.sender.stop()
@@ -289,11 +294,15 @@ def test_a_secondary_answers_its_admin_exactly_like_a_standalone(tmp_path, image
 
 def test_the_console_hides_nothing_on_a_secondary_but_the_hierarchy():
     """‏index.html/console.js מסתירים לפי `data-cap`/`capabilities` — ורק
-    לפי דגלי ההיררכיה. דף שייתלה בדגל אחר יסתיר משהו בחיפה שרואים בת"א."""
+    לפי דגלי ההיררכיה **או** דגל המהדורה (`classrooms`, זהה בכל שרת).
+    דף שייתלה בדגל אחר יסתיר משהו בחיפה שרואים בת"א."""
     page = (STATIC / "index.html").read_text(encoding="utf-8")
     caps = set(re.findall(r'data-cap="([^"]+)"', page))
-    assert caps and caps <= HIERARCHY_CAPS, caps
+    allowed = HIERARCHY_CAPS | EDITION_CAPS
+    assert caps and caps <= allowed, caps
+    assert "classrooms" in caps
     js = (STATIC / "console.js").read_text(encoding="utf-8")
     used = set(re.findall(r"capabilities(?:\?\.|\.)(\w+)", js))
     used |= set(re.findall(r"\bcaps\.(\w+)", js))
-    assert used and used <= HIERARCHY_CAPS, used
+    assert used and used <= allowed, used
+    assert "classrooms" in used

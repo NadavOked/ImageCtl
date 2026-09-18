@@ -30,14 +30,14 @@ except ImportError:                                    # pragma: no cover
     TestClient = None
 
 
-def a_second_admin(server, username="tech2", password="tech-pass-123"):
+def a_second_admin(server, username="tech2", password="Tech-pass-123!"):
     """מנהל נוסף, כדי שחסימה לא תיחסם על "המנהל האחרון"."""
+    from conftest import complete_console_login
     assert server["admin"].post("/api/console/users", json={
         "username": username, "password": password, "role": "admin",
     }).status_code == 200
     client = TestClient(server["app"])
-    assert client.post("/api/console/login", json={
-        "username": username, "password": password}).status_code == 200
+    complete_console_login(client, server["ctx"].conn, username, password)
     return client, username, password
 
 

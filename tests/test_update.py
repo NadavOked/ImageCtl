@@ -115,7 +115,7 @@ def update_server(tmp_path: Path, images_root: Path, clock):
     }
     app = create_app(tmp_path / "data", images_root, "http://10.44.12.10:8080",
                      now_fn=clock, update_hooks=hooks, repo_dir="/repo")
-    users.create(app.state.ctx.conn, "noc", "admin-pass-123", "admin", by="test")
+    users.create(app.state.ctx.conn, "noc", "admin-pass-123", "admin", by="test", is_builtin=True, check_policy=False)
     admin = TestClient(app)
     admin.post("/api/console/login", json={"username": "noc", "password": "admin-pass-123"})
     return {"admin": admin, "app": app, "state": state, "calls": calls}
@@ -135,7 +135,7 @@ def test_me_reports_the_server_version_from_the_same_source_as_update(update_ser
     assert admin.get("/api/console/me").json()["version"] == "v0.24.0"
     state["current"] = "v0.25.0-2-gabc123"          # העץ זז — נקרא מחדש, לא מונח
     assert admin.get("/api/console/me").json()["version"] == "v0.25.0-2-gabc123"
-    users.create(app.state.ctx.conn, "dep", "deploy-pass-123", "deploy", by="test")
+    users.create(app.state.ctx.conn, "dep", "deploy-pass-123", "deploy", by="test", check_policy=False)
     deploy = TestClient(app)
     # ‏#1073 (18/09): למשתמש הפצה אין קונסולה — הכניסה מסורבת, ואין שורת סטטוס.
     # (ב-`create_app` המאוחד של הטסטים הכניסה של הקיוסק קודמת — ולכן הבדיקה
@@ -276,7 +276,7 @@ def test_deploy_user_cannot_reach_update_endpoints(update_server, images_root, c
     from server import users
     from server.app import create_app
     app = update_server["app"]
-    users.create(app.state.ctx.conn, "labtech", "deploy-pass-1", "deploy", by="test")
+    users.create(app.state.ctx.conn, "labtech", "deploy-pass-1", "deploy", by="test", check_policy=False)
     deploy = TestClient(app)
     deploy.post("/api/console/login",
                json={"username": "labtech", "password": "deploy-pass-1"})
