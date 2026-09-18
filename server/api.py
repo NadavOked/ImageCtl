@@ -150,8 +150,15 @@ def create_agent_router(ctx: ServerContext,
         # פגום נזנח כמו שדה לא ידוע; סוכן ישן אינו שולח אותו, והגרסה
         # השמורה (אם יש) נשארת.
         hw_inventory = inventory.well_formed(body.get("inventory"))
-        # ‏#1049 שלב ב': בדיקת המכונה (probe) — אובייקט קנוני או None (חסר/פגום).
-        hw_probe = probe.well_formed(body.get("probe"))
+        # ‏#1049 שלב ב' + #1048: בדיקת המכונה (probe) ו-netprobe (כבל/LLDP).
+        # netprobe מגיע ב-hello כשדה אח (מקביל ל-probe) ונשמר בתוך אותה
+        # שורת machine_probe. חסר/פגום → None, הגרסה הקודמת נשארת.
+        raw_probe = body.get("probe")
+        if isinstance(raw_probe, dict) and "netprobe" in body:
+            raw_probe = {**raw_probe, "netprobe": body.get("netprobe")}
+        elif raw_probe is None and "netprobe" in body:
+            raw_probe = {"netprobe": body.get("netprobe")}
+        hw_probe = probe.well_formed(raw_probe)
         # ‏#906: המכונה ממתינה לאדם (שאלת SMART/אדום, מסך FAILED) ואומרת
         # על מה. רק `waiting_for: "operator"` עם `prompt` מחרוזת לא-ריקה
         # נשמר (קצוץ ל-PROMPT_MAX_CHARS); כל צורה אחרת — וגם היעדר השדה,

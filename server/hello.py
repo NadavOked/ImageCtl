@@ -178,8 +178,9 @@ def build_answer(
         # ‏None = הסוכן לא שלח (schema 1) או שלח פגום: הגרסה הקודמת נשארת.
         if hw_inventory is not None:
             inventory.record(conn, mac, hw_inventory)
-        # ‏#1049 שלב ב': בדיקת המכונה — אותו כלל: None = לא נשלח/פגום, הגרסה
-        # הקודמת נשארת; רק תוכן יציב שהשתנה פותח גרסה.
+        # ‏#1049 שלב ב' + #1048: בדיקת המכונה (כולל netprobe בתוך אותו JSON)
+        # — None = לא נשלח/פגום, הגרסה הקודמת נשארת; רק תוכן יציב שהשתנה
+        # פותח גרסה.
         if hw_probe is not None:
             probe.record(conn, mac, hw_probe)
 

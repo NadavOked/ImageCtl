@@ -23,7 +23,9 @@ const PROBE_GOOD={
   oem_key:'XXXXX-XXXXX-XXXXX-XXXXX-XXXXX',
   disks:[{name:'sda',nvme_smart:null,smart_errors:{count:0}},{name:'nvme0n1',nvme_smart:{critical_warning:0,percentage_used:5,media_errors:0,unsafe_shutdowns:2},smart_errors:null}],
   encryption:[],
-  probe_seconds:1};
+  probe_seconds:1,
+  netprobe:{cable:{skipped:'link up'},
+            lldp:{switch:'sw-lab-1',chassis:'aa:bb:cc:dd:ee:ff',port:'Gi1/0/12',port_desc:'lab port',ttl:120}}};
 const PROBE_BAD={
   power:{on_battery:true,supply:'BAT0'},
   rtc:{hwclock_epoch:1,system_epoch:100000,skew_seconds:-7200},
@@ -106,6 +108,8 @@ test('a clean measured probe: the health group shows every field, green only whe
   assert.match(h,/<span class="k">זיכרון<\/span><span class="v"><bdi dir="ltr">8.0 GB<\/bdi> · 1 DIMMs · <span class="muted">ECC לא נבדק</,'ecc null = grey, not "ECC ok"');
   assert.match(h,/<span class="k">טמפ' מקס'<\/span><span class="v"><span class="st ok">42°C</,'max over zones');
   assert.match(h,/<span class="k">רשת<\/span><span class="v"><span class="mono">eth0<\/span> 1000Mb\/s full · CRC 0 · dropped 0 · IP ללא כפילות</);
+  assert.match(h,/<span class="k">מתג ופורט<\/span><span class="v"><span class="mono" dir="ltr" title="lab port · aa:bb:cc:dd:ee:ff">sw-lab-1 · Gi1\/0\/12/);
+  assert.match(h,/<span class="k">כבל<\/span><span class="v"><span class="muted">לא נבדק — יש קישור/);
   assert.match(h,/<span class="k">NVMe<\/span><span class="v"><span class="mono">nvme0n1<\/span>: <span class="st ok">5% בלאי · 0 שגיאות מדיה</,'sda (nvme_smart null) is left out; nvme0n1 shown');
   assert.match(h,/<span class="k">קריסה קודמת<\/span><span class="v"><span class="muted">לא</);
   assert.match(h,/<span class="k">מפתח OEM<\/span><span class="v"><span class="mono" dir="ltr">XXXXX-XXXXX-XXXXX-XXXXX-XXXXX</);
@@ -143,6 +147,21 @@ test('a machine that never reported a probe says so — not an empty green group
   assert.match(h,/<div class="sec">בריאות המכונה<\/div>/,'no "sampled" suffix without a sample');
   assert.match(h,/המכונה מעולם לא דיווחה בדיקת מכונה \(סוכן ישן\)/);
   assert.doesNotMatch(h,/class="kv"/); assert.doesNotMatch(h,/st ok/);
+});
+
+test('#1048 netprobe rows: unheard grey, pending, listen error orange, cable open red', () => {
+  const {run}=setup();
+  const health=(np)=>run('machineHealthHtml({probe:'+JSON.stringify({...PROBE_GOOD,netprobe:np})+'})');
+  assert.match(health({cable:{skipped:'link up'},lldp:{unheard:true,waited_s:35}}),
+    /<span class="k">מתג ופורט<\/span><span class="v"><span class="muted">לא נקלט \(35ש'\)/);
+  const pending=health({pending:true});
+  assert.match(pending,/<span class="k">מתג ופורט<\/span><span class="v"><span class="muted">ממתין/);
+  assert.match(pending,/<span class="k">כבל<\/span><span class="v"><span class="muted">ממתין/);
+  assert.match(health({cable:null,lldp:{error:'no such interface'}}),/<span class="st warn">לא הצלחנו להאזין/);
+  assert.match(health({cable:{status:'open',pairs:[{pair:'B',code:'Open',length_m:12}]},lldp:null}),
+    /<span class="k">כבל<\/span><span class="v"><span class="st err">זוג B פתוח ב-12 מ'/);
+  const notes=run('machineVerdictsHtml({probe_verdicts:[{key:"cable",level:"err",text_he:"כבל פגום: זוג B פתוח ב-12 מטר"}]})');
+  assert.match(notes,/class="note err"[^]*כבל פגום: זוג B פתוח ב-12 מטר/);
 });
 
 test('home "needs attention": every verdict is a note with the machine name and a link to its drawer; a clean machine adds nothing', () => {

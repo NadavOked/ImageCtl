@@ -2814,6 +2814,35 @@ function probeCell(value, render, unchecked = "לא נבדק") {
   if (typeof value === "object" && !Array.isArray(value) && value.error != null) return UI.status("warn", `לא הצלחנו לבדוק: ${value.error}`);
   return render(value);
 }
+/* #1048: מתג/פורט (LLDP) וכבל (ethtool) — שלושת המצבים, בלי לקפל unheard לתקין. */
+function netprobeLldpHtml(np) {
+  if (np == null) return `<span class="muted">לא נבדק</span>`;
+  if (np.pending) return `<span class="muted">ממתין</span>`;
+  const v = np.lldp;
+  if (v == null) return `<span class="muted">לא נבדק</span>`;
+  if (v.error != null) return UI.status("warn", "לא הצלחנו להאזין");
+  if (v.unheard) return `<span class="muted">לא נקלט (35ש')</span>`;
+  const sw = v.switch || "", port = v.port || "";
+  if (!sw && !port) return `<span class="muted">לא נבדק</span>`;
+  const tip = [v.port_desc, v.chassis].filter(Boolean).join(" · ");
+  return `<span class="mono" dir="ltr"${tip ? ` title="${esc(tip)}"` : ""}>${esc(sw)}${sw && port ? " · " : ""}${esc(port)}</span>`;
+}
+function netprobeCableHtml(np) {
+  if (np == null) return `<span class="muted">לא נבדק</span>`;
+  if (np.pending) return `<span class="muted">ממתין</span>`;
+  const v = np.cable;
+  if (v == null) return `<span class="muted">לא נבדק</span>`;
+  if (v.error != null) return UI.status("warn", `לא הצלחנו לבדוק: ${v.error}`);
+  if (v.skipped) return `<span class="muted">לא נבדק — יש קישור</span>`;
+  if (v.status === "ok") return UI.status("ok", "תקין");
+  if (v.status === "open" || v.status === "short") {
+    const he = v.status === "open" ? "פתוח" : "קצר";
+    const bad = (Array.isArray(v.pairs) ? v.pairs : []).find((p) => p && String(p.code || "").toLowerCase() === v.status);
+    const pair = (bad && bad.pair) || "?", n = bad && bad.length_m != null ? bad.length_m : null;
+    return UI.status("err", n != null ? `זוג ${pair} ${he} ב-${n} מ'` : `זוג ${pair} ${he}`);
+  }
+  return `<span class="muted">לא נבדק</span>`;
+}
 function probeSkewText(seconds) {
   const s = Math.abs(Number(seconds) || 0);
   return s >= 86400 ? `${Math.floor(s / 86400)} ימים` : s >= 3600 ? `${Math.floor(s / 3600)} שעות` : s >= 60 ? `${Math.floor(s / 60)} דק'` : `${s} שנ'`;
@@ -2850,6 +2879,8 @@ function machineHealthHtml(m) {
         return `${link} · ${cnt} · ${dup}`;
       }).join("<br>");
     })],
+    ["מתג ופורט", netprobeLldpHtml(p.netprobe)],
+    ["כבל", netprobeCableHtml(p.netprobe)],
     ["NVMe", p.disks == null ? `<span class="muted">לא נבדק</span>` : !nvme.length ? `<span class="muted">לא נבדק (אין NVMe, או nvme לא ארוז)</span>`
       : nvme.map((d) => `<span class="mono">${esc(d.name || "?")}</span>: ` + probeCell(d.nvme_smart, (x) => {
         const bad = (x.critical_warning != null && x.critical_warning !== 0) || x.media_errors > 0;
@@ -3612,6 +3643,22 @@ function netForget(nameEnc) {
 function netRegister(macEnc) { let mac = macEnc; try { mac = decodeURIComponent(macEnc); } catch (e) {} openAddMachine({ mac }); }
 
 /* --- מודל התרשים (טהור): מסלולים = כרטיס → וילן (לפי הגדרה) → מי מחובר --- */
+/* רשימת כתובות בתיבה: עד שתיים ו-"+N" — הרשימה המלאה ב-tip (title). תיבה ברוחב קבוע, והטקסט חייב להישאר בתוכה (18/09).
+   כל כתובת מבודדת לבדה (bidi): " · " אינו ASCII, ורצף של שתי כתובות סביבו היה מתהפך בשורה עברית. */
+function netAddrList(ips) {
+  if (!ips.length) return "ללא כתובת";
+  return ips.slice(0, 2).map(bidi).join(" · ") + (ips.length > 2 ? ` · ${bidi(`+${ips.length - 2}`)}` : "");
+}
+/* שורת "מותר" קצרה: שירותים באותו שם מתקפלים לפורט אחד — "HTTP 8080/8081". הרשימה הגולמית (netServicesOn) נשארת בכרטיס הנבחר. */
+function netAllowedShort(list) {
+  const byName = new Map();
+  for (const item of list) {
+    const i = item.lastIndexOf(" "), name = i > 0 ? item.slice(0, i) : item, port = i > 0 ? item.slice(i + 1) : "";
+    if (!byName.has(name)) byName.set(name, []);
+    if (port) byName.get(name).push(port);
+  }
+  return [...byName].map(([name, ports]) => (ports.length ? `${name} ${ports.join("/")}` : name)).join(" · ");
+}
 function netDiagramModel() {
   const nics = NETW.nics || [];
   const lanes = nics.map((n) => {
@@ -3639,8 +3686,9 @@ function netDiagramModel() {
     }
     for (const [lane, ms] of byLane) {
       const on = ms.filter((m) => m.online).length;
+      const ips = ms.map((m) => m.ip).filter(Boolean), tail = ` · ${on} מתוך ${ms.length} מחוברים`;
       lane.clients.push({ kind: role, title: `${title} — ${ms.map((m) => m.name || m.mac).join(", ")}`,
-        sub: `${bidi(ms.map((m) => m.ip).filter(Boolean).join(" · ") || "ללא כתובת")} · ${on} מתוך ${ms.length} מחוברים`,
+        sub: `${netAddrList(ips)}${tail}`, tip: `${ips.map(bidi).join(" · ") || "ללא כתובת"}${tail}`,
         led: on === ms.length ? "ok" : on ? "warn" : "", dashed: on === 0 });
     }
   }
@@ -3669,7 +3717,8 @@ function netDiagramModel() {
     const last = ds[0];
     lane.clients.push({ kind: "unreg", led: "warn",
       title: ds.length === 1 ? `לא רשום — ${bidi(last.mac)}` : `לא רשומים — ${ds.length} (${bidi(ds.slice(0, 2).map((d) => d.mac).join(", "))}…)`,
-      sub: `${bidi(ds.map((d) => d.ip).filter(Boolean).slice(0, 3).join(" · ") || "ללא כתובת")}${last.boot && last.boot.label ? ` · ${last.boot.label}` : ""} · ${ago(last.last_seen)}` });
+      sub: `${netAddrList(ds.map((d) => d.ip).filter(Boolean))}${last.boot && last.boot.label ? ` · ${last.boot.label}` : ""} · ${ago(last.last_seen)}`,
+      tip: `${ds.map((d) => d.ip).filter(Boolean).map(bidi).join(" · ") || "ללא כתובת"}${last.boot && last.boot.label ? ` · ${last.boot.label}` : ""} · ${ago(last.last_seen)}` });
   }
   // כיתות — v2: תיבה סטטית בלבד
   const classLane = laneOf(["proxy", "trunk", "none", "mgmt"]);
@@ -3678,11 +3727,17 @@ function netDiagramModel() {
 }
 
 /* --- ציור ה-SVG: ימין השרת → אמצע וילנים → שמאל מחוברים; RTL בתרשים = טקסט מיושר לימין (text-anchor=end) --- */
-const ND = { W: 1100, srvX: 820, srvW: 250, nicX: 840, nicW: 210, nicH: 72, vlX: 470, vlW: 250, vlH: 92, clX: 60, clW: 330, clH: 46, gap: 8, top: 100 };
+const ND = { W: 1100, srvX: 820, srvW: 250, nicX: 840, nicW: 210, nicH: 72, vlX: 470, vlW: 250, vlH: 100, clX: 60, clW: 330, clH: 46, gap: 8, top: 100 };
 /* פסקה RTL: direction=rtl + text-anchor=start = הקצה הימני ב-x, ומונחים לטיניים (DHCP, SSH, ens19) נשארים במקומם במשפט העברי. */
 /* רצף ASCII (כתובת, MAC, מהירות) בתוך משפט עברי מתהפך ב-RTL ("Mb/s 1000") — מבודדים אותו ב-LRI…PDI (כמו ltr() ב-HTML). */
 function bidi(text) { const t = String(text); return /^[\x20-\x7e]+$/.test(t) ? `⁦${t}⁩` : t; }
 function svgText(x, y, cls, text) { return `<text class="${cls}" x="${x}" y="${y}" direction="rtl" text-anchor="start">${esc(text)}</text>`; }
+/* טקסט התיבות: <foreignObject> עם div — ‏<text> ב-SVG אינו נשבר ואינו נחתך, ובמעבדה (v0.41.1) שורות ארוכות רכבו על הקווים.
+   כל שורה: nowrap + ellipsis (‏.w2 = עד שתי שורות), ו-title עם הטקסט המלא. הרוחב = רוחב התיבה פחות שוליים — הטסט בודק זאת סטטית. */
+function svgLines(x, y, w, h, lines, cls = "") {
+  const inner = lines.map((l) => `<div class="fl ${l.cls}" title="${esc(l.tip || l.text)}">${esc(l.text)}</div>`).join("");
+  return `<foreignObject x="${x}" y="${y}" width="${w}" height="${h}"><div xmlns="http://www.w3.org/1999/xhtml" class="fo${cls ? " " + cls : ""}" dir="rtl">${inner}</div></foreignObject>`;
+}
 function netDiagramSvg(model) {
   const { lanes, orphans } = model;
   let y = ND.top;
@@ -3696,23 +3751,22 @@ function netDiagramSvg(model) {
     const ssh = netSshOf(n.name).text;
     parts.push(`<g class="hit" role="button" tabindex="0" aria-label="${esc(n.name)}" onclick="netSelect('${enc}')" onkeydown="if(event.key==='Enter'||event.key===' ')netSelect('${enc}')">`
       + `<rect class="box${sel ? " sel" : ""}" x="${ND.nicX}" y="${mid - ND.nicH / 2}" width="${ND.nicW}" height="${ND.nicH}" rx="4"${lane.led === "off" ? ' stroke-dasharray="4 4"' : ""}/>`
-      + svgText(ND.nicX + ND.nicW - 10, mid - 14, "t", `${n.name} — ${n.description || "ללא תיאור"}`)
-      + svgText(ND.nicX + ND.nicW - 10, mid + 4, "m", `${addr} · ${link}`)
-      + svgText(ND.nicX + ND.nicW - 10, mid + 22, "m", `DHCP: ${n.dhcp_live_label || "לא ידוע"} · SSH לשרת: ${ssh}`)
+      + svgLines(ND.nicX + 8, mid - ND.nicH / 2 + 6, ND.nicW - 18, ND.nicH - 12, [{ cls: "t", text: `${n.name} — ${n.description || "ללא תיאור"}` },
+        { cls: "m", text: `${addr} · ${link}` }, { cls: "m", text: `DHCP: ${n.dhcp_live_label || "לא ידוע"} · SSH לשרת: ${ssh}` }], "nic")
       + `<circle class="led ${lane.led}" cx="${ND.nicX + 12}" cy="${mid - ND.nicH / 2 + 12}" r="6"/></g>`);
-    const allowed = lane.allowed === null ? "מה מותר — דורש API (#705)" : `מותר (לפי bind): ${lane.allowed.length ? lane.allowed.join(" · ") : "אף שירות לא מאזין כאן"}`;
+    const allowed = lane.allowed === null ? "מה מותר — דורש API (#705)" : `bind: ${lane.allowed.length ? netAllowedShort(lane.allowed) : "אף שירות לא מאזין כאן"}`;
     parts.push(`<rect class="vlan" x="${ND.vlX}" y="${mid - ND.vlH / 2}" width="${ND.vlW}" height="${ND.vlH}" rx="6"/>`
-      + svgText(ND.vlX + ND.vlW - 15, mid - 22, "t", `${lane.vlan.label} — לפי הגדרה`)
-      + svgText(ND.vlX + ND.vlW - 15, mid - 2, "m", allowed)
-      + svgText(ND.vlX + ND.vlW - 15, mid + 16, "m", `רשת ${bidi(netNetworkOf(n) || "—")}`)
-      + svgText(ND.vlX + ND.vlW - 15, mid + 34, "m", `${lane.clients.filter((c) => c.kind !== "class").length} מחוברים · ${lane.unreg || 0} לא רשומים`));
+      + svgLines(ND.vlX + 10, mid - ND.vlH / 2 + 6, ND.vlW - 20, ND.vlH - 12, [{ cls: "t", text: `${lane.vlan.label} — לפי הגדרה` },
+        { cls: "m w2", text: allowed, tip: lane.allowed === null ? allowed : `מותר (לפי bind): ${lane.allowed.join(" · ") || "אף שירות לא מאזין כאן"}` },
+        { cls: "m", text: `רשת ${bidi(netNetworkOf(n) || "—")}` },
+        { cls: "m", text: `${lane.clients.filter((c) => c.kind !== "class").length} מחוברים · ${lane.unreg || 0} לא רשומים` }]));
     const lnCls = lane.led === "ok" ? "ok" : lane.led === "off" ? "off" : "warn";
     parts.push(`<path class="ln ${lnCls}" d="M${ND.nicX} ${mid} H${ND.vlX + ND.vlW}"/><circle class="led ${lane.led}" cx="${(ND.nicX + ND.vlX + ND.vlW) / 2}" cy="${mid}" r="5"/>`);
     let cy = y + (bodyH - (lane.clients.length * (ND.clH + ND.gap) - ND.gap)) / 2;
     for (const c of lane.clients) {
       const cmid = cy + ND.clH / 2, lc = c.led || "off";   // אדום/כתום גם כשהתיבה מקווקוה; "off" = אין ראיה
       parts.push(`<rect class="box ${c.led || ""}" x="${ND.clX}" y="${cy}" width="${ND.clW}" height="${ND.clH}" rx="4"${c.dashed ? ' stroke-dasharray="4 4"' : ""}/>`
-        + svgText(ND.clX + ND.clW - 15, cy + 18, "t", c.title) + svgText(ND.clX + ND.clW - 15, cy + 36, "m", c.sub)
+        + svgLines(ND.clX + 10, cy + 6, ND.clW - 20, ND.clH - 12, [{ cls: "t", text: c.title }, { cls: "m", text: c.sub, tip: c.tip }])
         + `<path class="ln ${lc}" d="M${ND.vlX} ${mid} H430 V${cmid} H${ND.clX + ND.clW}"/>`
         + (c.led ? `<circle class="led ${c.led}" cx="430" cy="${(mid + cmid) / 2}" r="5"/>` : ""));
       cy += ND.clH + ND.gap;

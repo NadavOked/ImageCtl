@@ -192,7 +192,7 @@ test('diagram SVG: explicit width/height (gotcha), line classes per state, dashe
   assert.match(html,/class="ln ok" d="M840 [\d.]+ H720"/,'NIC up → VLAN: green'); assert.match(html,/class="ln off" d="M840 [\d.]+ H720"/,'NIC down: dashed');
   assert.match(html,/class="ln err"/,'branch not answering: red'); assert.match(html,/class="ln warn"/,'unregistered: orange');
   assert.match(html,/stroke-dasharray="4 4"/);
-  assert.match(html,/מותר \(לפי bind\): TFTP 69 · HTTP 8080 · Multicast 9000–9001/);
+  assert.match(html,/>bind: TFTP 69 · HTTP 8080 · Multicast 9000–9001</,'the visible line, not the tooltip');
   assert.match(html,/וילן ההפצה — לפי הגדרה/); assert.match(html,/רשת 10\.44\.9\.0\/24/);
   assert.doesNotMatch(html,/VLAN \d/,'no invented VLAN numbers'); assert.doesNotMatch(html,/10\.44\.12\./,'no mockup data');
   assert.match(html,/3 מחוברים · 1 לא רשומים/);
@@ -207,6 +207,54 @@ test('diagram SVG: explicit width/height (gotcha), line classes per state, dashe
   assert.match(sel,/class="st ok">תואם</); assert.match(sel,/class="st ok">משרת</); assert.match(sel,/12h · שער — · DNS 10\.44\.10\.2/); assert.match(sel,/class="st ">לא נבדק</);
   assert.match(sel,/TFTP 69 · HTTP 8080 · Multicast 9000–9001/); assert.match(sel,/class="st ">סגור</);
   assert.match(sel,/onclick="netEditAddress\('ens19'\)">עריכת כתובת/); assert.match(sel,/onclick="netEditDhcp\('ens19'\)">עריכת DHCP/); assert.match(sel,/onclick="netProbe\('ens19'\)">בדוק מי עונה/);
+});
+
+/* 18/09 (צילום מהמעבדה, v0.41.1): <text> ב-SVG אינו נשבר ואינו נחתך — "מותר (לפי bind): SSH 22 · HTTP 8082 · HTTP 8080 · DHCP 67"
+   ורשימת ארבע כתובות גלשו מהתיבה ורכבו על הקווים. התיקון: הטקסט ב-foreignObject בגבולות התיבה, ellipsis + title מלא, פורמט קצר. */
+const foBoxes=(svg)=>{
+  const num=(tag,k)=>Number(tag.match(new RegExp(' '+k+'="([^"]+)"'))[1]);
+  const out=[];
+  for(const m of svg.matchAll(/<foreignObject([^>]*)>(.*?)<\/foreignObject>/g)){
+    const rects=[...svg.slice(0,m.index).matchAll(/<rect class="(box[^"]*|vlan)"[^>]*>/g)]; const rect=rects[rects.length-1][0];
+    out.push({fo:{x:num(m[1],'x'),y:num(m[1],'y'),w:num(m[1],'width'),h:num(m[1],'height')},box:{x:num(rect,'x'),y:num(rect,'y'),w:num(rect,'width'),h:num(rect,'height')},
+      lines:[...m[2].matchAll(/<div class="fl ([^"]*)" title="([^"]*)">([^<]*)<\/div>/g)].map(l=>({cls:l[1],title:l[2],text:l[3]})),inner:m[2]});
+  }
+  return out;
+};
+test('diagram text stays inside its box: every box line is a foreignObject within the rect, ellipsis + full title, no free <text> but the server header',async()=>{
+  const {run}=await loaded();
+  const html=run('networkPage(0)'); const s0=html.indexOf('<svg class="netdiag-svg"'); const svg=html.slice(s0,html.indexOf('</svg>',s0));
+  const boxes=foBoxes(svg);
+  assert.equal(boxes.length,4+4+7,'NIC + VLAN per lane, and 7 client boxes (3 deploy, 3 mgmt, 1 class)');
+  for(const b of boxes){
+    assert.ok(b.fo.x>=b.box.x && b.fo.x+b.fo.w<=b.box.x+b.box.w,`horizontally inside: ${JSON.stringify(b)}`);
+    assert.ok(b.fo.y>=b.box.y && b.fo.y+b.fo.h<=b.box.y+b.box.h,`vertically inside: ${JSON.stringify(b)}`);
+    assert.ok(b.lines.length>=2,'title + at least one detail line'); assert.match(b.inner,/^<div xmlns="http:\/\/www\.w3\.org\/1999\/xhtml" class="fo(?: nic)?" dir="rtl">/);
+    for(const l of b.lines){ assert.ok(l.title.length>=l.text.length,'title carries at least the visible text: '+l.text); assert.ok(l.text,'no empty line'); }
+    assert.equal((b.inner.match(/<div class="fl /g)||[]).length,b.lines.length,'every line has a title');
+  }
+  assert.equal((svg.match(/<text /g)||[]).length,2,'only the two server header lines are free SVG text');
+  assert.equal((html.match(/<foreignObject/g)||[]).length,boxes.length);
+  // מה שמחזיק את הטקסט בפנים בדפדפן — ה-CSS, לא רק הגיאומטריה
+  const css=fs.readFileSync(path.join(root,'console.css'),'utf8');
+  assert.match(css,/\.page \.netdiag \.fl\{[^}]*white-space:nowrap;overflow:hidden;text-overflow:ellipsis/);
+  assert.match(css,/\.page \.netdiag \.fl\.w2\{[^}]*-webkit-line-clamp:2/);
+  assert.match(css,/\.page \.netdiag \.fo\{[^}]*overflow:hidden/);
+});
+
+test('diagram lines are short: "bind:" folds same-name services (HTTP 8080/8081) with the raw list in the tooltip; addresses are 2 + "+N" with all of them in the tooltip',async()=>{
+  const many=[...MON,{mac:'aa:bb:cc:dd:ee:01',name:'מחשב 3',role:'cloner',ip:'10.44.9.60',online:true},{mac:'aa:bb:cc:dd:ee:02',name:'מחשב 4',role:'cloner',ip:'10.44.9.61',online:false}];
+  const {run}=await loaded({'/monitor/machines':many});
+  const html=plain(run('networkPage(0)')); const boxes=foBoxes(html);
+  const line=(re)=>{ for(const b of boxes) for(const l of b.lines) if(re.test(l.text)) return l; assert.fail('no line matching '+re); };
+  const allowed=line(/^bind: TFTP 69 · HTTP 8080\/8081$/);
+  assert.equal(allowed.cls,'m w2','may wrap to two lines'); assert.equal(allowed.title,'מותר (לפי bind): TFTP 69 · HTTP 8080 · HTTP 8081');
+  assert.doesNotMatch(html,/>מותר \(לפי bind\)/,'the long prefix is tooltip-only');
+  assert.equal(run('netAllowedShort(["SSH 22","HTTP 8082","HTTP 8080","DHCP 67"])'),'SSH 22 · HTTP 8082/8080 · DHCP 67','the lab line from the screenshot');
+  const cl=line(/מתוך 4 מחוברים$/);
+  assert.equal(cl.text,'10.44.9.118 · 10.44.9.59 · +2 · 2 מתוך 4 מחוברים'); assert.match(run('netAddrList(["1.1.1.1","2.2.2.2","3.3.3.3"])'),/⁦\+1⁩$/,'"+1" isolated, not mirrored to "1+"'); assert.equal(cl.title,'10.44.9.118 · 10.44.9.59 · 10.44.9.60 · 10.44.9.61 · 2 מתוך 4 מחוברים');
+  assert.equal(line(/^משכפלים — /).text,'משכפלים — מחשב 1, מחשב 2, מחשב 3, מחשב 4','names stay (ellipsis + title when the box is narrower)');
+  assert.equal(run('netAddrList([])'),'ללא כתובת'); assert.equal(run('netAddrList(["10.0.0.1"])'),'⁦10.0.0.1⁩'); assert.equal(run('netAddrList(["1.1.1.1","2.2.2.2","3.3.3.3"])'),'⁦1.1.1.1⁩ · ⁦2.2.2.2⁩ · ⁦+1⁩','each address isolated on its own — " · " is not ASCII');
 });
 
 test('without bind on any /ports row the VLAN says "דורש API (#705)" — never a guessed policy',async()=>{

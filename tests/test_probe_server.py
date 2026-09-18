@@ -37,6 +37,7 @@ GOOD = {
     "disks": [{"name": "sda", "nvme_smart": None, "smart_errors": {"count": 0}}],
     "encryption": [],
     "probe_seconds": 0,
+    "netprobe": None,
 }
 
 
@@ -303,3 +304,63 @@ def test_verdicts_are_json_and_carry_key_level_text():
     out = json.loads(json.dumps(probe.verdicts(p), ensure_ascii=False))
     assert [v["key"] for v in out] == ["battery", "rtc", "pstore"]
     assert all(set(v) == {"key", "level", "text_he"} and v["level"] in ("warn", "err") for v in out)
+
+
+# --- #1048 netprobe (כבל + LLDP) --------------------------------------------
+
+
+def test_well_formed_keeps_netprobe_in_all_three_states():
+    measured = {"cable": {"status": "ok", "pairs": []},
+                "lldp": {"switch": "sw-lab-1", "chassis": "aa:bb:cc:dd:ee:ff",
+                         "port": "Gi1/0/12", "port_desc": "lab", "ttl": 120}}
+    p = probe.well_formed(_with(netprobe=measured))
+    assert p["netprobe"]["lldp"]["switch"] == "sw-lab-1"
+    assert probe.well_formed(_with(netprobe=None))["netprobe"] is None
+    assert probe.well_formed(_with(netprobe={"error": "no iface"}))["netprobe"] == {"error": "no iface"}
+
+
+def _np(cable=None, lldp=None) -> dict:
+    return _with(netprobe={"cable": cable, "lldp": lldp})
+
+
+@pytest.mark.parametrize("cable, expect", [
+    ({"status": "open", "pairs": [{"pair": "B", "code": "Open", "length_m": 12}]}, ["cable"]),
+    ({"status": "short", "pairs": [{"pair": "A", "code": "Short", "length_m": 3}]}, ["cable"]),
+    ({"status": "ok", "pairs": [{"pair": "A", "code": "OK", "length_m": None}]}, []),
+    ({"skipped": "link up"}, []),
+    (None, []),
+    ({"error": "ethtool --cable-test rc 1"}, []),
+], ids=["open", "short", "ok", "skipped", "null", "error"])
+def test_cable_gate_three_states(cable, expect):
+    p = _np(cable=cable, lldp={"unheard": True, "waited_s": 35})
+    assert _keys(p) == expect
+    if expect:
+        v = probe.verdicts(p)[0]
+        assert v["level"] == "err" and v["key"] == "cable" and "כבל פגום" in v["text_he"]
+
+
+def test_cable_verdict_names_the_pair_and_length():
+    p = _np(cable={"status": "open", "pairs": [{"pair": "B", "code": "Open", "length_m": 12}]})
+    assert "זוג B פתוח ב-12 מטר" in probe.verdicts(p)[0]["text_he"]
+    p = _np(cable={"status": "short", "pairs": [{"pair": "A", "code": "Short", "length_m": 3}]})
+    assert "זוג A קצר ב-3 מטר" in probe.verdicts(p)[0]["text_he"]
+
+
+def test_lldp_unheard_is_not_a_verdict():
+    assert probe.verdicts(_np(lldp={"unheard": True, "waited_s": 35})) == []
+    assert probe.verdicts(_np(lldp={"error": "no such interface"})) == []
+    assert probe.verdicts(_np(lldp=None)) == []
+
+
+def test_hello_sibling_netprobe_is_stored_inside_probe(server):
+    """netprobe מגיע ב-hello כשדה אח ונשמר בתוך אותה שורת machine_probe."""
+    setup_classroom(server)
+    np = {"cable": {"skipped": "link up"},
+          "lldp": {"switch": "sw-lab-1", "chassis": "aa:bb:cc:dd:ee:ff",
+                   "port": "Gi1/0/12", "port_desc": "lab", "ttl": 120}}
+    body = {k: v for k, v in GOOD.items() if k != "netprobe"}
+    assert _hello(server, probe=body, netprobe=np).status_code == 200
+    m = _machine(server)
+    assert m["probe"]["netprobe"]["lldp"]["switch"] == "sw-lab-1"
+    assert m["probe"]["netprobe"]["cable"]["skipped"] == "link up"
+    assert m["probe_verdicts"] == []

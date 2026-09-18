@@ -1970,7 +1970,7 @@ REAL_BINARIES_USED = {
 }
 
 #: מקומפל מהמקור בבנאי ולכן אינו ברשימת ה-BINARIES שנאספת מהמערכת.
-COMPILED_BINARIES = {"fanout", "hivewrite"}
+COMPILED_BINARIES = {"fanout", "hivewrite", "lldpsniff"}
 
 
 def test_builder_packs_every_binary_the_agent_uses():

@@ -855,6 +855,13 @@ button:focus-visible,[role="button"]:focus-visible,.inventory-node:focus-visible
 .page .netdiag text{font-family:inherit;font-size:12px;fill:var(--ink);direction:rtl;unicode-bidi:embed}
 .page .netdiag .t{font-weight:600;font-size:13px}
 .page .netdiag .m{fill:var(--muted);font-size:12px}
+/* טקסט התיבות ב-foreignObject (18/09): נשאר בתוך התיבה — ellipsis לשורה, עד שתי שורות ל-.w2; הטקסט המלא ב-title */
+.page .netdiag .fo{height:100%;display:flex;flex-direction:column;justify-content:center;direction:rtl;text-align:right;font-size:12px;line-height:15px;color:var(--ink);overflow:hidden}
+.page .netdiag .fl{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.page .netdiag .fl.t{font-weight:600;font-size:13px;line-height:16px}
+.page .netdiag .fo.nic .fl.t{padding-inline-end:14px}/* הכותרת לא נכנסת מתחת לנורית שבפינה השמאלית-עליונה */
+.page .netdiag .fl.m{color:var(--muted)}
+.page .netdiag .fl.w2{white-space:normal;overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2}
 .page .netdiag .box{fill:var(--surface);stroke:var(--hair)}
 .page .netdiag .box.sel{stroke:var(--indigo);stroke-width:2}
 .page .netdiag .box.warn{stroke:var(--warn-ink)}.page .netdiag .box.err{stroke:var(--danger)}

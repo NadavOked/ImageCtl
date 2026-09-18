@@ -189,6 +189,11 @@
     "disks": [ { "name": "sda", "nvme_smart": null, "smart_errors": { "count": 0 } } ],
     "encryption": [],
     "probe_seconds": 0
+  },
+  "netprobe": {
+    "cable": {"skipped": "link up"},
+    "lldp": {"switch": "sw-lab-1", "chassis": "aa:bb:cc:dd:ee:ff",
+             "port": "Gi1/0/12", "port_desc": "lab port", "ttl": 120}
   }
 }
 ```
@@ -196,8 +201,9 @@
 ### כללים
 
 - **`schema`** — ‏`2` מאז #720: ה-hello נושא את `inventory` (ומאז #1049
-  גם את `probe`). השרת אינו מסרב ל-`1` (סוכן ישן, בלי השדות) — הוא פשוט
-  אינו כותב מלאי/בדיקה, והגרסה השמורה (אם יש) נשארת.
+  גם את `probe`, ומאז #1048 גם את `netprobe`). השרת אינו מסרב ל-`1` (סוכן
+  ישן, בלי השדות) — הוא פשוט אינו כותב מלאי/בדיקה, והגרסה השמורה (אם יש)
+  נשארת.
 - **`mac`** בתבנית lowercase עם נקודתיים — זו התבנית הקנונית בכל המערכת.
 - **`inventory`** (‏#720, schema 2) — המלאי החומרתי שלפיו מותאמות
   חבילות דרייברים (סעיף 16). ‏`agent/lib/inventory.sh` קורא אותו
@@ -297,12 +303,40 @@
     | `pstore` | warn | `pstore.crashed == true` |
     | `ip_conflict:<nic>` | err | `nic[].ip_conflict.duplicate == true` |
     | `crc:<nic>` | warn | `nic[].stats.rx_crc_errors > 0` |
+    | `cable` | err | `netprobe.cable.status` הוא `open` או `short` — "כבל פגום: זוג X פתוח/קצר ב-N מטר". ‏`lldp.unheard` **אינו** שער (מתג שלא משדר אינו תקלה). |
   - **נחשף** ב-`GET /api/console/machines` (‏admin ו-deploy — מידע, לא
     פעולה) כ-`probe` (‏`null` = מעולם לא דיווחה — סוכן ישן),
     ‏`probe_seen_at` (= `sampled_at`, הדגימה האחרונה) ו-`probe_verdicts`
     (‏`[]` גם כשאין probe). מוצג בכרטיס המכונה בקבוצה "בריאות המכונה":
     ‏`null` = "לא נבדק" (אפור, לא "תקין"), ‏`{"error"}` = "לא הצלחנו
     לבדוק: …" (כתום), ערך = מוצג.
+- **`netprobe`** (‏#1048, schema נשאר 2) — בדיקת כבל ומתג+פורט שהסוכן
+  אוסף ב-hello **בשדה אח** של `probe` (שרת ישן זונח אותו). נשמר **בתוך**
+  אותה שורת `machine_probe` כמפתח `netprobe` ב-JSON, עם אותם כללי גרסה.
+  ‏`agent/lib/netprobe.sh` רץ רק על ממשק ההפצה (`$IFACE`). שלושת המצבים
+  (עיקרון 5) חלים על כל שדה. **אסור** `ethtool --cable-test` על קישור חי
+  (הבדיקה מנתקת לרגע). LLDP ממתין עד 35 שניות לפריים אחד, ולכן ההרצה
+  הראשונה היא ברקע: בלי מטמון ה-hello נושא `{"pending":true}` והפעם
+  הבאה מגישה מ-`$RUN_DIR/netprobe.json` (‏`NETPROBE_TTL`, ברירת מחדל
+  900 שניות). פירוט:
+  - **`cable`** — `{"status":"ok"|"open"|"short"|"unknown","pairs":[{"pair":"A","code":"Open","length_m":12}]}`
+    מ-`ethtool --cable-test` **רק כש-`carrier` אינו 1**. יש קישור →
+    `{"skipped":"link up"}` (מצב משלו, לא "תקין"). ‏ethtool אינו ארוז →
+    `null`. נכשל → `{"error":"…"}`.
+  - **`lldp`** — פלט `imagectl-lldpsniff` כפי שהוא: נקלט →
+    `{"switch","chassis","port","port_desc","ttl"}` (`switch` הוא System
+    Name, ואם חסר — Chassis ID); timeout בלי פריים →
+    `{"unheard":true,"waited_s":N}`; socket/bind נכשל → `{"error":"…"}`;
+    הבינארי אינו ארוז → `null`. ‏TLV חורג מהאורך אינו קורס — שדה חסר =
+    `null`.
+  - **מה השרת שומר**: המפתח `netprobe` בתוך `probe_json` (קנוני, מגורסת).
+    שדה נדיף אינו — שינוי בכבל או במתג פותח גרסה. ‏hello בלי השדה
+    (סוכן ישן) שומר `null` ואינו דורס דגימה קודמת כשה-probe כולו פגום.
+  - **בכרטיס המכונה** (קבוצת "בריאות המכונה"): שורה "מתג ופורט" —
+    `sw-lab-1 · Gi1/0/12` (mono, ltr; tooltip = port_desc/chassis) ·
+    "לא נקלט (35ש')" אפור · "ממתין" · "לא הצלחנו להאזין" כתום. שורה
+    "כבל": "תקין" / "זוג B פתוח ב-12 מ'" אדום / "לא נבדק — יש קישור"
+    אפור.
 - **`monitor_secret`** (‏#839) — סוד המוניטור של **האתחול הזה**: 16
   בייטים שהסוכן הגריל מ-`/dev/urandom` פעם אחת ל-`$RUN_DIR`
   (`agent/lib/monitor.sh`), כ-32 ספרות hex קטנות. השרת שומר אותו

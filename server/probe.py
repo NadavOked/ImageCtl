@@ -2,7 +2,8 @@
 
 שלב א' (‏`agent/lib/probe.sh`) אוסף: חשמל, שעון חומרה, מעבד, זיכרון,
 טמפרטורות, רשת, PCI בלי דרייבר, קרנל, pstore, מפתח OEM, NVMe/SMART,
-הצפנה. כל שדה הוא אחד משלושה מצבים (עיקרון 5): **נמדד** · **``None``** =
+הצפנה. ‏#1048 מוסיף ``netprobe`` (כבל + LLDP) מ-hello כשדה אח, נשמר
+באותה שורה. כל שדה הוא אחד משלושה מצבים (עיקרון 5): **נמדד** · **``None``** =
 לא בדקנו · **``{"error": …}``** = ניסינו ונכשל. השרת שומר את שלושתם כמו
 שהם — "לא נבדק" אינו "תקין", וגם לא "נכשל".
 
@@ -35,6 +36,7 @@ from .db import _settle, _write_lock, now_iso, writing
 KNOWN_KEYS = (
     "power", "rtc", "cpu", "memory", "thermal", "nic", "pci_without_driver",
     "kernel", "pstore", "oem_key", "disks", "encryption", "probe_seconds",
+    "netprobe",  # #1048: cable + LLDP, sibling in hello, stored in this row
 )
 #: תקרות — ‏hello אינו מאומת, ו-probe בן מגה-בייט אינו probe.
 STR_LIMIT = 200
@@ -247,4 +249,25 @@ def verdicts(probe: dict | None) -> list[dict]:
         if crc is not None and crc > 0:
             out.append({"key": f"crc:{name}", "level": "warn",
                         "text_he": f"{crc} שגיאות CRC על {name} — כבל או פורט חשודים"})
+
+    # #1048: כבל פגום הוא שער. מתג שלא משדר (lldp.unheard) אינו תקלה.
+    netprobe = _measured(probe.get("netprobe"))
+    cable = _measured(netprobe.get("cable")) if netprobe is not None else None
+    if cable is not None and cable.get("status") in ("open", "short"):
+        pair, he, length = "?", ("פתוח" if cable["status"] == "open" else "קצר"), None
+        for item in cable.get("pairs") or []:
+            if not isinstance(item, dict):
+                continue
+            code = str(item.get("code") or "").lower()
+            if code in ("open", "short"):
+                pair = str(item.get("pair") or "?")
+                he = "פתוח" if code == "open" else "קצר"
+                length = item.get("length_m")
+                break
+        text = f"כבל פגום: זוג {pair} {he}"
+        if isinstance(length, int) and not isinstance(length, bool):
+            text += f" ב-{length} מטר"
+        elif isinstance(length, float) and math.isfinite(length):
+            text += f" ב-{int(length)} מטר"
+        out.append({"key": "cable", "level": "err", "text_he": text})
     return out

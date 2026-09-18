@@ -230,6 +230,13 @@ echo "compiling hivewrite..."
 gcc -O2 -Wall -Wextra -o "$ROOT/usr/bin/hivewrite" "$AGENT_DIR/hivewrite.c" -lhivex
 copy_libs "$ROOT/usr/bin/hivewrite"
 
+# lldpsniff: one LLDP frame → JSON in hello (#1048). libc only; packed in
+# every image (classroom stations report switch/port too, not only GUI).
+echo "compiling lldpsniff..."
+gcc -O2 -Wall -Wextra -o "$ROOT/usr/bin/imagectl-lldpsniff" "$AGENT_DIR/lldpsniff.c"
+[ -s "$ROOT/usr/bin/imagectl-lldpsniff" ] && [ -x "$ROOT/usr/bin/imagectl-lldpsniff" ] \
+    || { echo "imagectl-lldpsniff missing or not executable" >&2; exit 1; }
+
 # libhivex converts registry key names with glibc's iconv, and iconv
 # loads its converters at runtime from the gconv directory. Without
 # these files every hivex key lookup fails as "key not found" -- which
