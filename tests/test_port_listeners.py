@@ -63,7 +63,9 @@ def _factory(port: int):
         _app, host="127.0.0.1", port=port, log_level="warning", lifespan="off"))
 
 
-async def _wait(predicate, timeout: float = 5.0) -> None:
+async def _wait(predicate, timeout: float = 15.0) -> None:
+    # 15 ולא 5: על runner עמוס של GitHub (3.12, אחרי 4,000 טסטים) uvicorn עלה
+    # ביותר מ-5 שניות ונפל "timed out waiting" — לא באג במאזין (v0.47.2).
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     while not predicate():
