@@ -1,7 +1,9 @@
 """שלב 0 — הקונסולה: משתמשים, קבוצות, וטבלת ה-MAC.
 
 משתמש ההתחלה נוצר ישירות ב-DB (כמו בהתקנה); כל השאר דרך ה-API
-של הקונסולה, בדיוק כפי שנדב היה עושה בדפדפן.
+של הקונסולה, בדיוק כפי שנדב היה עושה בדפדפן. הוא admin שאינו המקומי,
+ולכן הכניסה הראשונה שלו היא רישום MFA (#1085) — הסימולציה עוברת אותו
+ב-HTTP, כמו הדפדפן, ולא עוקפת אותו ב-DB.
 """
 
 from __future__ import annotations
@@ -10,7 +12,7 @@ import sys
 from types import SimpleNamespace
 
 from .harness import (ADMIN, BUILD_MAC, CLASS_MACS, CLONER_MAC, DEPLOY,
-                      GB256, REPO, Client, check, disk)
+                      GB256, KIOSK_BASE, REPO, Client, check, disk)
 from .machines import SimMachine
 
 
@@ -24,16 +26,30 @@ def run(data_dir, images_dir) -> SimpleNamespace:
     conn.close()
 
     console = Client()
-    status, _ = console.json("POST", "/api/console/login", ADMIN)
+    status, body = console.json("POST", "/api/console/login", ADMIN)
     check("כניסה לקונסולה", status == 200, str(status))
+    check("admin שאינו המקומי נדרש לרישום MFA בכניסה הראשונה",
+          body.get("mfa_enrollment_required") is True, str(body))
+    from server import totp as totp_mod       # noqa: PLC0415
+    status, setup = console.json("POST", "/api/console/me/mfa/setup")
+    check("הגדרת MFA מחזירה סוד", status == 200 and bool(setup.get("secret")), str(setup))
+    status, _ = console.json("POST", "/api/console/me/mfa/enable",
+                             {"code": totp_mod.totp_code(setup["secret"])})
+    check("MFA הופעל בקוד TOTP", status == 200, str(status))
     status, me = console.json("GET", "/api/console/me")
     check("ה-cookie נשמר בין בקשות", status == 200 and me["role"] == "admin", str(me))
 
     status, _ = console.json("POST", "/api/console/users", dict(DEPLOY, role="deploy"))
     check("משתמש הפצה נוצר", status == 200, str(status))
-    deploy = Client()
+    # ‏#1073: למשתמש הפצה אין קונסולה וובית — הכניסה בקונסולה נדחית בשם,
+    # והוא נכנס דרך הקיוסק (פני מחשב הבנייה), שנושא את allowlist הקיוסק.
+    web = Client()
+    status, body = web.json("POST", "/api/console/login", DEPLOY)
+    check("למשתמש ההפצה אין קונסולה וובית (#1073)",
+          status == 403 and body.get("error") == "deploy_no_console", f"{status} {body}")
+    deploy = Client(console_base=KIOSK_BASE)
     status, _ = deploy.json("POST", "/api/console/login", DEPLOY)
-    check("כניסת משתמש ההפצה", status == 200, str(status))
+    check("כניסת משתמש ההפצה דרך הקיוסק", status == 200, str(status))
 
     status, _ = console.json("POST", "/api/console/groups",
                              {"id": "grp_LAB1", "label": "כיתה LAB1", "role": "classroom"})

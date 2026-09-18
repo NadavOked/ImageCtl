@@ -76,8 +76,8 @@ NO_LEASE_MAC = "de:ad:be:ef:00:02"
 #: ‏tag:known של #141 מגביל רק את dhcp-boot), ו-hello שלה עונה known=false.
 SIM_MACS = (BUILD_MAC, CLONER_MAC, UNKNOWN_MAC, *CLASS_MACS)
 
-ADMIN = {"username": "noc", "password": "sim-pass-1234"}
-DEPLOY = {"username": "madrich", "password": "sim-deploy-99"}
+ADMIN = {"username": "noc", "password": "Sim-pass-1234!"}
+DEPLOY = {"username": "madrich", "password": "Sim-deploy-99!"}
 
 #: תוכן המחיצות של שני האימג'ים — קטן, אבל עובר את אותו מסלול בדיוק.
 FILES_A = {"p1.esp.pcl.zst": b"esp-a-payload" * 300,

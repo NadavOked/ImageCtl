@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import urllib.error
 
-from .harness import (CLASS_MACS, DEAD_BASE, GB256, GB500, NO_LEASE_MAC,
-                      UNKNOWN_MAC, Client, check, disk, hello)
+from .harness import (CLASS_MACS, CONSOLE_BASE, DEAD_BASE, GB256, GB500,
+                      NO_LEASE_MAC, UNKNOWN_MAC, Client, check, disk, hello)
 
 
 def local_boot(answer: dict) -> bool:
@@ -57,15 +57,20 @@ def run(ctx) -> None:
           str(answer["allowed_images"]))
 
     print("\n5. הרשאות — משתמש הפצה")
-    allowed = [("GET", "/api/console/images"), ("GET", "/api/console/overview")]
+    # ‏#1073: בקיוסק — רק ה-allowlist (אימג'ים, כיתות); בקונסולה — 403 על
+    # **כל** נתיב ניהול, גם עם העוגייה שהקיוסק הנפיק (אותו סוד).
+    allowed = [("GET", "/api/console/images"), ("GET", "/api/console/groups")]
     for method, path in allowed:
         status, _ = ctx.deploy.json(method, path)
-        check(f"deploy מורשה: {path}", status == 200, str(status))
-    denied = [("GET", "/api/console/users"), ("GET", "/api/console/journal"),
+        check(f"deploy מורשה בקיוסק: {path}", status == 200, str(status))
+    web = Client(console_base=CONSOLE_BASE)
+    web.cookie = ctx.deploy.cookie
+    denied = [("GET", "/api/console/images"), ("GET", "/api/console/overview"),
+              ("GET", "/api/console/users"), ("GET", "/api/console/journal"),
               ("GET", "/api/console/settings"), ("POST", "/api/console/groups")]
     for method, path in denied:
-        status, _ = ctx.deploy.json(method, path, {} if method == "POST" else None)
-        check(f"deploy נדחה: {path}", status == 403, str(status))
+        status, _ = web.json(method, path, {} if method == "POST" else None)
+        check(f"deploy נדחה בקונסולה: {path}", status == 403, str(status))
 
     status, _ = probe.json("POST", "/api/v1/agent/sessions", {
         "username": "madrich", "password": "wrong-pass",
