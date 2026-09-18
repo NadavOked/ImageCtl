@@ -154,14 +154,25 @@ def test_missing_servers_if_still_fails() -> None:
     assert "servers-if" in proc.stderr
 
 
+def _nft_check(path) -> subprocess.CompletedProcess:
+    # `nft -c` פותח netlink גם בבדיקה יבשה — דורש CAP_NET_ADMIN. במעבדה
+    # רצים כ-root; ב-GitHub Actions לא, אבל יש sudo בלי סיסמה. בלי אף אחד
+    # מהשניים — דילוג בשם, לא "עבר" (עיקרון 5).
+    cmd = ["nft", "-c", "-f", str(path)]
+    if getattr(os, "geteuid", lambda: 0)() != 0:
+        if subprocess.run(["sudo", "-n", "true"], capture_output=True,
+                          stdin=subprocess.DEVNULL).returncode != 0:
+            pytest.skip("nft -c דורש CAP_NET_ADMIN ואין root או sudo -n")
+        cmd = ["sudo", "-n", *cmd]
+    return subprocess.run(
+        cmd, capture_output=True, text=True, encoding="utf-8", stdin=subprocess.DEVNULL,
+    )
+
+
 @requires_native("nft", why="בדיקת תחביר nftables על דביאן — דילוג בווינדוס")
 def test_nft_accepts_the_three_snapshots() -> None:
     for name in ("primary.conf", "secondary.conf", "mcast-custom.conf"):
-        path = FIXTURES / name
-        proc = subprocess.run(
-            ["nft", "-c", "-f", str(path)],
-            capture_output=True, text=True, encoding="utf-8", stdin=subprocess.DEVNULL,
-        )
+        proc = _nft_check(FIXTURES / name)
         assert proc.returncode == 0, f"{name}: {proc.stderr}"
 
 

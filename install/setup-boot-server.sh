@@ -313,7 +313,7 @@ list_nics() {
     for i in "${!NICS[@]}"; do
         n="${NICS[$i]}"
         state="$(cat "/sys/class/net/$n/operstate" 2>/dev/null || echo '?')"
-        printf '  %d) %-12s %-6s %s%s\n' "$((i + 1))" "$n" "$state" "$(iface_ip "$n")" "${1:-}"
+        printf '  %d) %-12s %-6s %s\n' "$((i + 1))" "$n" "$state" "$(iface_ip "$n")"
     done
 }
 
