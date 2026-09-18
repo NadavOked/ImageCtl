@@ -225,7 +225,8 @@ def _head(what: str) -> list[str]:
             ""]
 
 
-def render(configs: list[InterfaceConfig], tftp_root: str | None = None) -> str:
+def render(configs: list[InterfaceConfig], tftp_root: str | None = None,
+           deploy_interface: str | None = None) -> str:
     """הקובץ של האינסטנס הראשי — ‏DEFAULT_CONF, בתוך /etc/dnsmasq.d.
 
     dnsmasq קורא את כל /etc/dnsmasq.d, וקובץ ההתקנה (imagectl.conf) כבר
@@ -235,14 +236,23 @@ def render(configs: list[InterfaceConfig], tftp_root: str | None = None) -> str:
     להגשת TFTP: הוא רץ בתהליך אחר, ושני תהליכים לא יכולים לתפוס את
     אותם פורטים על אותו כרטיס. `except-interface` מוציא אותו מפורשות,
     והוא גובר על כל השאר גם אם מישהו יוסיף `interface` בעתיד.
+
+    ‏`deploy_interface` (‏#1088): כרטיס ההפצה שהוגדר **מהקונסולה** — אז
+    ‏`imagectl.conf` של המתקין אינו נושא `interface=`, והשורה שמצמידה את
+    ה-TFTP לכרטיס ההפצה בלבד (R20-F1) נכתבת כאן, גם כשאף DHCP אינו דלוק.
     """
     lines = _head("DHCP per interface")
     full, proxied = full_dhcp(configs), proxy_only(configs)
     _guard_names(full + proxied)
+    if deploy_interface and deploy_interface not in {c.name for c in full + proxied}:
+        validate_name(deploy_interface)
+        lines += ["# Deploy interface, set from the console (#1088): TFTP on it only.",
+                  "bind-interfaces", f"interface={deploy_interface}", ""]
     if not full and not proxied:
         lines.append("# No interface has DHCP or proxy enabled.")
         return "\n".join(lines) + "\n"
-    lines += ["bind-interfaces", ""]
+    if "bind-interfaces" not in lines:
+        lines += ["bind-interfaces", ""]
     if proxied:
         lines.append("# Proxy interfaces belong to the imagectl-proxy instance (#36):")
         lines += [f"except-interface={c.name}" for c in proxied] + [""]

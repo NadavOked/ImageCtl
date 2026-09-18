@@ -40,7 +40,7 @@ LIB_DIR="${LIB_DIR:-/usr/lib/imagectl}"
 . "$LIB_DIR/guiparent.sh"
 . "$LIB_DIR/clonergui.sh"
 . "$LIB_DIR/guibridge.sh"   # run in imagectl-kiosk; sourced here for the load gate
-. "$LIB_DIR/guistate.sh"
+. "$LIB_DIR/guistate.sh"; . "$LIB_DIR/tools.sh"; . "$LIB_DIR/toolbins.sh"; . "$LIB_DIR/tools_disk.sh"; . "$LIB_DIR/tools_windows.sh"; . "$LIB_DIR/tools_boot.sh"; . "$LIB_DIR/tools_hw.sh"   # #649/#1050: toolbox framework, id→binaries table and the four modules (run in the kiosk; here for the load gate)
 
 mkdir -p "$RUN_DIR/targets"
 parse_cmdline

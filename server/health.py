@@ -73,6 +73,11 @@ def default_hooks() -> dict:
         # ‏#1074: חומת האש נקראת מ-nft, לא מההגדרה. ‏None מה-hook =
         # לא הצלחנו לבדוק; מחרוזת בלי טבלת imagectl = לא נטענה.
         "nft_ruleset": ports.read_nft_ruleset,
+        # ‏#1088: מצב רשת ההפצה (‏`deploy_net.DeployState`) ושורת "כתובת
+        # השרתים" (‏`(state, detail)` מ-`ifaddr.servers_nic_status`). ‏None =
+        # לא הוזרק — אין שורה, לא "הכול בסדר". ‏main מזריק את שניהם.
+        "deploy": None,
+        "servers_nic": None,
     }
 
 
@@ -233,6 +238,20 @@ def collect(ctx, hooks: dict, server_base: str) -> list[dict]:
     results = []
     ss_out = hooks["ss"]()
 
+    # ‏#1088: רשת ההפצה — טרם הוגדרה היא מצב **מוצהר** אחרי התקנה נקייה,
+    # לא כשל: השורה אומרת מה לעשות, ובדיקות ה-PXE שתלויות בה (TFTP,
+    # ‏dnsmasq, השרת בכתובת ההפצה) הופכות ל"לא רלוונטי עדיין" ולא לאדום
+    # שמכסה על הבעיה האמיתית. כשהיא מוגדרת — אין שורה, והבדיקות כרגיל.
+    deploy_state = hooks.get("deploy")() if hooks.get("deploy") else None
+    unconfigured = deploy_state is not None and not deploy_state.configured
+    if unconfigured:
+        results.append(check("deploy_net", "רשת ההפצה", "warn", deploy_state.public()["hint"]))
+
+    # ‏#1088: כתובת כרטיס השרתים — DHCP ומתי החכירה פגה, או סטטי.
+    servers_nic = hooks.get("servers_nic")() if hooks.get("servers_nic") else None
+    if servers_nic is not None:
+        results.append(check("servers_nic", "כתובת השרתים", *servers_nic))
+
     # פורט 67 — DHCP. פנוי זה מצב לגיטימי (עוד לא הוגדר מהקונסולה).
     owner = port_owner(ss_out, 67) if ss_out else None
     if not ss_out:
@@ -252,6 +271,9 @@ def collect(ctx, hooks: dict, server_base: str) -> list[dict]:
     if not ss_out:
         results.append(check("tftp_port", "פורט 69 (TFTP)", "off",
                              "אי אפשר לבדוק כאן (ss לא זמין)"))
+    elif owner is None and unconfigured:
+        results.append(check("tftp_port", "פורט 69 (TFTP)", "off",
+                             "רשת ההפצה לא הוגדרה — dnsmasq יעלה כשיודלק DHCP"))
     elif owner is None:
         results.append(check("tftp_port", "פורט 69 (TFTP)", "bad",
                              "אף אחד לא מגיש TFTP — מחשבים לא יעלו ב-PXE"))
@@ -267,12 +289,18 @@ def collect(ctx, hooks: dict, server_base: str) -> list[dict]:
         check("dnsmasq", "שירות dnsmasq", "ok", "רץ") if active == "active"
         else check("dnsmasq", "שירות dnsmasq", "off",
                    "אי אפשר לבדוק כאן (systemctl לא זמין)") if not active
+        else check("dnsmasq", "שירות dnsmasq", "off",
+                   f"מצב: {active} — רשת ההפצה לא הוגדרה") if unconfigured
         else check("dnsmasq", "שירות dnsmasq", "bad", f"מצב: {active}"))
 
     # שרשרת האתחול, משני קצותיה: הקבצים על שורש ה-TFTP, ומיד אחריהם
     # הקרנל וה-initramfs כפי שהתחנה מושכת אותם ב-HTTP (#333).
     root = hooks["tftp_root"]()
     missing = [name for name in BOOT_FILES if not (root / name).is_file()]
+    if unconfigured:
+        # ‏grub.cfg נושא את כתובת הנפילה — המתקין אינו כותב אותו בלי כרטיס
+        # הפצה; הקונסולה כותבת אותו בהדלקת DHCP (deploy_net.complete).
+        missing = [name for name in missing if name != "grub/grub.cfg"]
     problems = [f"חסרים ב-{root}: {', '.join(missing)}"] if missing else []
     problems += boot_asset_problems(hooks["http_size"], server_base)
     if not problems:
@@ -303,11 +331,17 @@ def collect(ctx, hooks: dict, server_base: str) -> list[dict]:
     # איתנו — הבדיקה היא שהכתובת הציבורית (זו שב-GRUB) אכן עונה.
     # ‏#996: פורט שהמפעיל כיבה בדף הפורטים הוא "כבוי", לא "לא עונה" —
     # שני מצבים שונים, ורק השני הוא תקלה.
-    if not ports.enabled(ctx.conn, "http_boot"):
+    if unconfigured:
+        status = "unconfigured"
+    elif not ports.enabled(ctx.conn, "http_boot"):
         status = "disabled"
     else:
         status = hooks["http_get"](server_base.rstrip("/") + "/boot/menu?mac=00:00:00:00:00:00")
-    if status == "disabled":
+    if status == "unconfigured":
+        results.append(check("server", "השרת בכתובת ההפצה", "off",
+                             "רשת ההפצה לא הוגדרה — הסוכן והקיוסק מאזינים על "
+                             "127.0.0.1 בלבד עד שיוגדר כרטיס הפצה"))
+    elif status == "disabled":
         results.append(check("server", "השרת בכתובת ההפצה", "off",
                              "פורט הסוכן (8080) כבוי על ידי המפעיל בדף הפורטים — "
                              "תחנות לא יגיעו לתפריט עד שיודלק"))

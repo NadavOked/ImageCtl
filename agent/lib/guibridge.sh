@@ -85,6 +85,8 @@ gui_dispatch() {
     gui_role || { gui_error 'Session/role could not be verified; restart and sign in'; return 1; }
     case "$token" in
         capture|room|classes|restore|direct) printf '%s\n' "$token" > "$GUI_DIR/mode" ;;
+        tool-list) tools_gui_list ;;                                    # #649: writes $GUI_DIR/tools
+        "tool-run|"*) tools_gui_run "$token" ;;                          # #649: guarded in tools.sh; result in $GUI_DIR/tool-result
         back|again) printf 'menu\n' > "$GUI_DIR/mode" ;;
         capture-start) gui_capture ;;
         room-open)
@@ -232,7 +234,7 @@ gui_libs() {
     . "$LIB_DIR/progress.sh"  # target_bytes, the per-drawer local truth
     . "$LIB_DIR/smart.sh"     # smart_hello_field: the cached verdict per cdisk (#834)
     . "$LIB_DIR/failmark.sh"  # disk_failure_cause: the server's memory per cdisk (#867/#874)
-    . "$LIB_DIR/clonergui.sh"
+    . "$LIB_DIR/clonergui.sh"; . "$LIB_DIR/tools.sh"   # #649: the toolbox (tool-list / tool-run); tools_load pulls toolbins.sh + tools_*.sh itself (#1050)
 }
 
 gui_main() {

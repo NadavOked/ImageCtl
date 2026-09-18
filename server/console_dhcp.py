@@ -17,7 +17,7 @@ from typing import Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from . import auth, dhcp
+from . import auth, deploy_net, dhcp
 from .api import ServerContext
 from .db import get_setting, journal, set_setting
 
@@ -62,10 +62,22 @@ def default_hooks() -> Hooks:
     }
 
 
-def create_dhcp_router(ctx: ServerContext, hooks: Hooks | None = None) -> APIRouter:
+def create_dhcp_router(ctx: ServerContext, hooks: Hooks | None = None,
+                       deploy: "deploy_net.DeployContext | None" = None) -> APIRouter:
+    """‏`deploy` (‏#1088): מצב רשת ההפצה בריצה הזו. ‏None = אין השלמת
+    התקנה מכאן (בדיקות/קוד ישן) — ההדלקה מתנהגת כמו לפני #1088."""
     router = APIRouter(prefix="/api/console/net")
     current_user, admin_only = auth.dependencies(ctx.conn)
     hooks = {**default_hooks(), **(hooks or {})}
+
+    def deploy_state() -> "deploy_net.DeployState | None":
+        return deploy.state if deploy is not None else None
+
+    def console_deploy_interface() -> str | None:
+        """כרטיס ההפצה **שהוגדר מהקונסולה** — ורק הוא נכנס לקובץ ה-dnsmasq
+        שהקונסולה כותבת (‏`imagectl.conf` של המתקין אינו נושא אותו)."""
+        state = deploy_state()
+        return state.interface if state is not None and state.source == "console" else None
 
     def load(name: str) -> dhcp.InterfaceConfig:
         return dhcp.InterfaceConfig.from_json(
@@ -88,7 +100,8 @@ def create_dhcp_router(ctx: ServerContext, hooks: Hooks | None = None) -> APIRou
         לא מסתיר את השני — שתי ההודעות חוזרות לקונסולה וליומן."""
         configs = all_configs()
         try:
-            texts = dhcp.render(configs), dhcp.render_proxy(configs)
+            texts = (dhcp.render(configs, deploy_interface=console_deploy_interface()),
+                     dhcp.render_proxy(configs))
         except ValueError as exc:      # רשומה פסולה שנשמרה לפני #102
             journal(ctx.conn, "dhcp_apply_failed", f"{what} {exc}", user_id)
             return str(exc)
@@ -265,6 +278,16 @@ def create_dhcp_router(ctx: ServerContext, hooks: Hooks | None = None) -> APIRou
                         + ". הדלקת DHCP שני תשבית את הרשת.",
                     )
 
+        # ‏#1088: הדלקת DHCP על כרטיס כשרשת ההפצה טרם הוגדרה **משלימה את
+        # ההתקנה** — grub.cfg, ‏dnsmasq באתחול, חומת אש, ואתחול השרת עם
+        # כתובת ההפצה. השומרים לפני הכתיבה ל-DB: הכרטיס באמת נושא את
+        # `server_ip` (אחרת השרת לא יעלה אחרי האתחול — "כתובת → DHCP" הוא
+        # הסדר של נדב), והכתובת אינה מוגדרת ביחידה (אז ההגדרה כאן לא
+        # הייתה משפיעה על דבר).
+        completion = None
+        if turning_on and cfg.enabled:
+            completion = _deploy_completion_or_409(name, cfg.server_ip, live.get(name))
+
         set_setting(ctx.conn, dhcp.SETTING_PREFIX + name, cfg.to_json())
         state = "on" if cfg.enabled else ("proxy" if cfg.proxy else "off")
         journal(ctx.conn, "dhcp_set", f"{name} {state}", user[0])
@@ -275,11 +298,51 @@ def create_dhcp_router(ctx: ServerContext, hooks: Hooks | None = None) -> APIRou
                     f"{name} dnsmasq={risky_proxy}", user[0])
 
         error = apply_all(name, user[0])
-        return {"ok": error is None,
-                "interface": view(cfg, live.get(name),
-                                  hooks["read_active_conf"](),
-                                  hooks["service_active"](DNSMASQ_UNIT)),
-                "apply_error": error}
+        out = {"ok": error is None,
+               "interface": view(cfg, live.get(name),
+                                 hooks["read_active_conf"](),
+                                 hooks["service_active"](DNSMASQ_UNIT)),
+               "apply_error": error}
+        if completion is not None:
+            result = deploy_net.complete(deploy, ctx.conn, interface=name,
+                                         server_ip=cfg.server_ip)
+            # מכאן הקובץ של הקונסולה נושא `interface=<הפצה>` גם כשה-DHCP
+            # עליו יכובה (dhcp.render עם deploy_interface); עכשיו הכרטיס
+            # ממילא בקובץ כמחלק כתובות, ואין מה לכתוב שוב.
+            deploy.state = deploy_net.DeployState("console", name, result["url"])
+            journal(ctx.conn, "deploy_net_set",
+                    f"{name} {result['url']} ok={result['ok']} "
+                    f"{' · '.join(result['errors'])}".strip(), user[0])
+            out["deploy"] = result
+            out["ok"] = out["ok"] and result["ok"]
+        return out
+
+    def _deploy_completion_or_409(name: str, server_ip: str, live_nic: dict | None):
+        """האם ההדלקה הזו היא גם הגדרת רשת ההפצה — ואם כן, האם מותר."""
+        state = deploy_state()
+        if state is None or state.configured:
+            return None
+        if live_nic is None:
+            raise HTTPException(
+                409, f"רשת ההפצה מוגדרת כאן בפעם הראשונה, ו-{name} אינו קיים "
+                     "במכונה — אי אפשר להפוך כרטיס שאינו שם לרשת ההפצה")
+        carried = {a.split("/")[0] for a in live_nic.get("addresses") or []}
+        if server_ip not in carried:
+            raise HTTPException(
+                409, f"רשת ההפצה מוגדרת כאן בפעם הראשונה: לכרטיס {name} אין את "
+                     f"הכתובת {server_ip} (יש לו: {', '.join(sorted(carried)) or 'כלום'}). "
+                     "קבע לו כתובת סטטית קודם (עריכת כתובת), ואז הדלק DHCP — "
+                     "אחרת השרת לא יעלה על הכתובת הזו")
+        return True
+
+    @router.get("/deploy")
+    def deploy_view(user=Depends(current_user)):
+        """‏#1088: מקור כתובת ההפצה — יחידה / קונסולה / לא הוגדרה."""
+        state = deploy_state()
+        if state is None:
+            return {"configured": True, "source": "cli", "interface": None,
+                    "url": None, "hint": None}
+        return state.public()
 
     @router.post("/interfaces")
     async def add_interface(request: Request, user=Depends(admin_only)):

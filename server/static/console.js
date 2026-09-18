@@ -3992,13 +3992,15 @@ function openLogDetail(i) {
    כל שינוי DHCP/כתובת עובר בטפסים הקיימים של net.js/netcfg.js (editNic,
    editAddress, הקלדת שם הכרטיס, rollback) — לא נבנתה זרימת שמירה חדשה (#53). */
 let NETW = { nics: null, cfg: null, ports: null, mon: null, nodes: null, probe: {}, sel: null, at: "", err: {} };
+// ‏#1088: מקור כתובת ההפצה — /net/deploy: {configured, source, interface, url, hint}. null = לא נקרא.
+let NET_DEPLOY = null;
 const NET_ONLINE_SECONDS = 90;   // כמו monitor.py: "מחובר" = נראה ב-90 השניות האחרונות
 
 async function loadNetwork() {
   if (!isAdmin()) return;
   const err = {};
   const grab = async (key, fn) => { try { return await fn(); } catch (e) { err[key] = e.message; return null; } };
-  const [nics, cfg, net, ports, ssh, mon, nodes] = await Promise.all([
+  const [nics, cfg, net, ports, ssh, mon, nodes, deploy] = await Promise.all([
     grab("interfaces", async () => { await loadNet(); return Array.isArray(NICS) ? NICS : null; }),
     grab("config", () => api("/net/config")),
     grab("net", () => api("/net")),
@@ -4006,9 +4008,11 @@ async function loadNetwork() {
     grab("ssh", () => api("/ssh")),
     grab("monitor", () => api("/monitor/machines")),
     grab("nodes", loadNetworkNodes),
+    grab("deploy", () => api("/net/deploy")),
   ]);
   NETW = { ...NETW, nics, cfg, ports: Array.isArray(ports) ? ports : null, mon: Array.isArray(mon) ? mon : null,
            nodes, at: clockNow(), err };
+  NET_DEPLOY = deploy && typeof deploy === "object" ? deploy : null;
   if (cfg) NETCFG = cfg;                                   // netcfg.js (editAddress, נתיבים, rollback) קורא מכאן
   if (Array.isArray(net)) { NET = net; NET_ERR = ""; } else { NET = null; NET_ERR = err.net || "תשובה שאינה רשימה"; }
   SSH_STATE = ssh; sshError = err.ssh || "";               // portSshNic/sshToggle (גל 5) קוראים מכאן
@@ -4328,6 +4332,9 @@ function netLegend() {
 }
 function netUnreadNotes() {
   const e = NETW.err, out = [];
+  // ‏#1088: אחרי התקנה נקייה — מה שהמנהל צריך לעשות, לפני כל אזהרה אחרת.
+  if (NET_DEPLOY && NET_DEPLOY.configured === false) out.push(UI.note("warn", `${esc(NET_DEPLOY.hint || "רשת ההפצה לא הוגדרה")} — <a href="#" onclick="openNetwork(2);return false;">לשונית רשת הפצה</a>`));
+  else if (e.deploy) out.push(UI.note("warn", `‏/net/deploy לא נקרא: ${esc(e.deploy)} — לא ידוע אם רשת ההפצה הוגדרה`));
   if (e.config) out.push(UI.note("warn", `‏/net/config לא נקרא: ${esc(e.config)} — "מוגדר" ו"פער" אינם ידועים`));
   else if (NETCFG && NETCFG.live && !NETCFG.live.checked) out.push(UI.note("warn", `המצב בפועל לא נקרא (${esc(NETCFG.live.reason || "")}) — אף כתובת אינה מאומתת`));
   if (NETCFG && NETCFG.sourced === false) out.push(UI.note("err", "‏/etc/network/interfaces אינו טוען את interfaces.d — כל מה שנכתב שם לא ייקרא באתחול"));
@@ -4485,7 +4492,7 @@ function networkDeployTab() {
   const inNet = focus && NET ? NET.filter((d) => d.ip && nicHasIp(focus, d.ip)).length : null;
   const liveState = focus ? (focus.dhcp_live || {}).state : "";
   const sub = nics === null ? `‏/net/interfaces לא נקרא: ${esc(NETW.err.interfaces || "")}`
-    : !focus ? "אין כרטיס מוגדר כרשת הפצה, ואין כרטיס שמשרת DHCP כרגע — בחר כרטיס למטה"
+    : !focus ? (NET_DEPLOY && NET_DEPLOY.configured === false ? "רשת ההפצה לא הוגדרה — בחר כרטיס למטה, קבע לו כתובת סטטית (עריכת כתובת) ואז \"הגדר כרשת הפצה\"" : "אין כרטיס מוגדר כרשת הפצה, ואין כרטיס שמשרת DHCP כרגע — בחר כרטיס למטה")
     : esc([focus.name, netNetworkOf(focus) || "ללא כתובת", `dnsmasq: ${focus.dhcp_live_label}`, NET === null ? "נראו ברשת: לא נקרא" : `${inNet} נראו ברשת ההפצה`, `מי עוד עונה: ${pr.text}`].join(" · "));
   const pill = nics === null ? UI.pill("err", "לא נקרא") : !focus ? UI.pill("", "כבוי")
     : focus.dhcp_diverged ? UI.pill("warn", "לא תואם למצב הפעיל") : liveState === "serving" ? UI.pill("ok", "משרת") : liveState === "unknown" ? UI.pill("err", "לא נקרא") : UI.pill("warn", focus.dhcp_live_label);

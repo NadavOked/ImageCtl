@@ -3,8 +3,11 @@
 # ImageCtl — התקנה מלאה על שרת דביאן: שרשרת האתחול, השרת והקונסולה.
 #
 # הרצה אחת, כמה שאלות, וזהו:
-#   1. איזה כרטיס רשת להפצה (מרשימה של מה שקיים)
-#   1ב. איזה כרטיס לוילן השרתים (קונסולה/SSH; Enter = אותו כרטיס)
+#   1. איזה כרטיס לוילן השרתים (קונסולה/SSH) — ברירת המחדל: לקוח DHCP
+#      של המכללה (#1088); סטטי = בחירה, אותן שאלות כמו בקונסולה
+#   2. איזה כרטיס להפצה — או "לא עכשיו" (ברירת המחדל במסירה, #1088):
+#      המנהל בוחר אותו מהקונסולה (דף הרשת: כתובת → DHCP), וזה משלים
+#      את מה שהמתקין היה כותב כאן
 # המנהל כברירת מחדל הוא admin/admin עם החלפה כפויה בקונסולה (#1085).
 # `--admin-user` / `--admin-pass` נשארים לדיבאג — ואז בלי כפייה.
 #
@@ -25,6 +28,13 @@ SERVER_URL=""
 IFACE=""
 IFACE_FROM_FLAG=0
 SERVERS_IF=""
+SERVERS_IF_FROM_FLAG=0
+# ‏#1088: כרטיס השרתים — לקוח DHCP (ברירת מחדל) או סטטי; ‏DNS מופרד בפסיקים.
+SERVERS_MODE="dhcp"
+SERVERS_ADDR=""
+SERVERS_MASK="255.255.255.0"
+SERVERS_GW=""
+SERVERS_DNS=""
 NO_FIREWALL=0
 ADMIN_USER=""
 ADMIN_PASS=""
@@ -34,8 +44,8 @@ ADMIN_PASS=""
 STORAGE_ROLE="standalone"
 PRIMARY_URL=""
 # ‏#703 (tracer 5): כתובת כרטיס הניהול שעליה הקונסולה (8081, HTTPS) מאזינה.
-# ריק = loopback בלבד (ברירת המחדל fail-closed של #770) — המפעיל מוסיף
-# ‏--console-host ליחידה כשירצה. התעודה נוצרת כאן בכל מקרה, לפני ההרמה.
+# ‏#1088: ריק = כרטיס השרתים שנבחר, **לפי שם** (השרת עוקב אחרי הכתובת
+# שה-DHCP נותן). התעודה נוצרת כאן בכל מקרה, לפני ההרמה.
 CONSOLE_HOST=""
 TFTP_ROOT="/srv/tftp"
 HTTP_ROOT="/srv/imagectl/boot"
@@ -226,14 +236,20 @@ ImageCtl — התקנה מלאה על שרת דביאן: שרשרת אתחול, 
 
   sudo ./setup-boot-server.sh
 
-ההתקנה שואלת על כרטיס ההפצה וכרטיס וילן השרתים (Enter = אותו כרטיס),
-ומרימה הכל — כולל חומת אש nftables לפי וילן (#1074). המנהל הוא
-admin/admin עם החלפה כפויה בקונסולה (#1085); --admin-pass לדיבאג.
-DHCP לא נדלק כאן בכלל — מגדירים אותו אחר כך מהקונסולה, לשונית הרשת.
+ההתקנה שואלת על כרטיס וילן השרתים (לקוח DHCP של המכללה כברירת מחדל,
+או סטטי — #1088), על כרטיס ההפצה (או "לא עכשיו" — המנהל יבחר אותו
+מהקונסולה), ומרימה הכל — כולל חומת אש nftables לפי וילן (#1074). המנהל
+הוא admin/admin עם החלפה כפויה בקונסולה (#1085); --admin-pass לדיבאג.
+DHCP לא נדלק כאן בכלל — מגדירים אותו אחר כך מהקונסולה, לשונית הרשת,
+עם כל שכבות הבטיחות (אפיון סעיף 24). בלי כרטיס הפצה dnsmasq אינו מופעל
+ו-grub.cfg אינו נכתב — ההדלקה מהקונסולה משלימה את שניהם.
 
 דגלים (רשות — לאוטומציה ולדיבאג בלבד):
-  --interface IFACE    מדלג על שאלת כרטיס ההפצה
+  --deploy-if IFACE    כרטיס ההפצה (מדלג על השאלה); --interface הוא שם ישן לאותו דגל
   --servers-if IFACE   כרטיס וילן השרתים (קונסולה 8081, SSH); בלי דגל — נשאל, או = כרטיס ההפצה באוטומציה
+  --servers-mode MODE  dhcp (ברירת מחדל) או static לכרטיס השרתים (#1088)
+  --servers-address A  --servers-netmask M  --servers-gateway G  --servers-dns D1,D2
+                       פרטי הכתובת הסטטית לכרטיס השרתים (עם --servers-mode static)
   --no-firewall        מדלג על nftables, עם אזהרה ביומן (R20-F1)
   --server-url URL     עוקף את הכתובת הנגזרת מהכרטיס (http בלבד)
   --admin-user NAME    מדלג על שאלת המשתמש
@@ -242,7 +258,7 @@ DHCP לא נדלק כאן בכלל — מגדירים אותו אחר כך מה�
   --http-root PATH     ברירת מחדל /srv/imagectl/boot; מועבר לשרת כ---boot-dir
   --storage-role ROLE  standalone (ברירת מחדל) או secondary (#655/#723)
   --primary-url URL    כתובת השרת הראשי — חובה ל-secondary
-  --console-host ADDR  כתובת כרטיס הניהול לקונסולה (8081, HTTPS); ריק = loopback
+  --console-host ADDR  כתובת/שם כרטיס הניהול לקונסולה (8081, HTTPS); ברירת מחדל: כרטיס השרתים לפי שם (#1088)
   --dry-run            מראה מה יקרה בלי לשנות כלום
   -h, --help           המסך הזה
 EOF
@@ -254,8 +270,13 @@ EOF
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --interface)   IFACE="${2:?}"; IFACE_FROM_FLAG=1; shift 2 ;;
-        --servers-if)  SERVERS_IF="${2:?}"; shift 2 ;;
+        --interface|--deploy-if) IFACE="${2:?}"; IFACE_FROM_FLAG=1; shift 2 ;;
+        --servers-if)  SERVERS_IF="${2:?}"; SERVERS_IF_FROM_FLAG=1; shift 2 ;;
+        --servers-mode) SERVERS_MODE="${2:?}"; shift 2 ;;
+        --servers-address) SERVERS_ADDR="${2:?}"; shift 2 ;;
+        --servers-netmask) SERVERS_MASK="${2:?}"; shift 2 ;;
+        --servers-gateway) SERVERS_GW="${2:?}"; shift 2 ;;
+        --servers-dns) SERVERS_DNS="${2:?}"; shift 2 ;;
         --no-firewall) NO_FIREWALL=1; shift ;;
         --server-url)  SERVER_URL="${2:?}"; shift 2 ;;
         --admin-user)  ADMIN_USER="${2:?}"; shift 2 ;;
@@ -276,63 +297,99 @@ done
 (( DRY_RUN )) || [[ $EUID -eq 0 ]] || die "צריך להריץ עם sudo (או --dry-run כדי רק לראות)."
 
 # ---------------------------------------------------------------------------
-# שאלה 1 — כרטיס הרשת, מתוך רשימה של מה שקיים
+# שאלה 1 — כרטיס וילן השרתים (קונסולה 8081, SSH 22), מתוך רשימה של מה שקיים
 # ---------------------------------------------------------------------------
+#
+# ‏#1088: הכרטיס הזה הוא לקוח DHCP של המכללה כברירת מחדל — הכתובת מגיעה
+# מה-DHCP של רשת השרתים, ו-`hostname` (אופציה 12) נשלח כדי שה-DNS שם
+# יפתור את שם השרת. הקונסולה נקשרת אליו **לפי שם** (--console-host <if>)
+# ומאזינה מחדש כשהכתובת משתנה. סטטי הוא בחירה, באותן שאלות כמו בקונסולה.
 
 iface_ip() { ip -4 -o addr show dev "$1" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1; }
 
-if [[ -z "$IFACE" ]]; then
+list_nics() {
     mapfile -t NICS < <(ip -br link | awk '$1 != "lo" {print $1}' | cut -d@ -f1)
     (( ${#NICS[@]} )) || die "לא נמצאו כרטיסי רשת."
-    say "כרטיסי הרשת במכונה:"
     for i in "${!NICS[@]}"; do
         n="${NICS[$i]}"
         state="$(cat "/sys/class/net/$n/operstate" 2>/dev/null || echo '?')"
-        printf '  %d) %-12s %-6s %s\n' "$((i + 1))" "$n" "$state" "$(iface_ip "$n")"
+        printf '  %d) %-12s %-6s %s%s\n' "$((i + 1))" "$n" "$state" "$(iface_ip "$n")" "${1:-}"
     done
-    read -r -p "על איזה כרטיס יאזין השרת? [1]: " pick
-    pick="${pick:-1}"
-    [[ "$pick" =~ ^[0-9]+$ ]] && (( pick >= 1 && pick <= ${#NICS[@]} )) \
-        || die "אין כרטיס מספר $pick ברשימה."
-    IFACE="${NICS[$((pick - 1))]}"
-fi
-ip link show "$IFACE" >/dev/null 2>&1 || die "לא קיים ממשק בשם $IFACE"
+}
 
-# שאלה 1ב — כרטיס וילן השרתים (קונסולה 8081, SSH 22). Enter = כרטיס ההפצה.
-# באוטומציה (--interface בלי --servers-if) אותו כרטיס, כדי לא לשבור סקריפטים.
 if [[ -z "$SERVERS_IF" ]]; then
     if (( IFACE_FROM_FLAG )); then
+        # אוטומציה (--deploy-if בלי --servers-if): אותו כרטיס, כדי לא לשבור סקריפטים.
         SERVERS_IF="$IFACE"
     else
-        mapfile -t NICS < <(ip -br link | awk '$1 != "lo" {print $1}' | cut -d@ -f1)
         say "כרטיס וילן השרתים (קונסולה HTTPS, SSH ניהול):"
-        for i in "${!NICS[@]}"; do
-            n="${NICS[$i]}"
-            state="$(cat "/sys/class/net/$n/operstate" 2>/dev/null || echo '?')"
-            mark=""
-            [[ "$n" == "$IFACE" ]] && mark=" (כרטיס ההפצה)"
-            printf '  %d) %-12s %-6s %s%s\n' "$((i + 1))" "$n" "$state" "$(iface_ip "$n")" "$mark"
-        done
-        read -r -p "על איזה כרטיס וילן השרתים? [אותו כרטיס הפצה: $IFACE]: " pick
-        if [[ -z "$pick" ]]; then
-            SERVERS_IF="$IFACE"
-        else
-            [[ "$pick" =~ ^[0-9]+$ ]] && (( pick >= 1 && pick <= ${#NICS[@]} )) \
-                || die "אין כרטיס מספר $pick ברשימה."
-            SERVERS_IF="${NICS[$((pick - 1))]}"
-        fi
+        list_nics
+        read -r -p "על איזה כרטיס וילן השרתים? [1]: " pick
+        pick="${pick:-1}"
+        [[ "$pick" =~ ^[0-9]+$ ]] && (( pick >= 1 && pick <= ${#NICS[@]} ))             || die "אין כרטיס מספר $pick ברשימה."
+        SERVERS_IF="${NICS[$((pick - 1))]}"
+        read -r -p "כתובת לכרטיס השרתים — DHCP מהמכללה (d) או סטטית (s)? [d]: " mode_pick
+        case "${mode_pick:-d}" in
+            d|D|dhcp)   SERVERS_MODE="dhcp" ;;
+            s|S|static) SERVERS_MODE="static"
+                        read -r -p "  כתובת: " SERVERS_ADDR
+                        read -r -p "  מסכה [255.255.255.0]: " SERVERS_MASK
+                        SERVERS_MASK="${SERVERS_MASK:-255.255.255.0}"
+                        read -r -p "  שער (ריק = בלי): " SERVERS_GW
+                        read -r -p "  DNS (מופרד בפסיקים, ריק = בלי): " SERVERS_DNS ;;
+            *)          die "תשובה לא מוכרת: $mode_pick (d או s)" ;;
+        esac
     fi
 fi
 ip link show "$SERVERS_IF" >/dev/null 2>&1 || die "לא קיים ממשק בשם $SERVERS_IF"
+case "$SERVERS_MODE" in
+    dhcp)   ;;
+    static) [[ -n "$SERVERS_ADDR" ]] || die "כרטיס שרתים סטטי מחייב כתובת (--servers-address)" ;;
+    *)      die "--servers-mode חייב להיות dhcp או static (התקבל: $SERVERS_MODE)" ;;
+esac
 
-# הכתובת נגזרת מהכרטיס — אין סיבה להקליד אותה.
-if [[ -z "$SERVER_URL" ]]; then
-    ADDR="$(iface_ip "$IFACE")"
-    [[ -n "$ADDR" ]] || die "לכרטיס $IFACE אין כתובת IP.
-    קבעו לו כתובת סטטית (זה שרת) והריצו שוב."
-    SERVER_URL="http://$ADDR:$PORT"
+# ---------------------------------------------------------------------------
+# שאלה 2 — כרטיס ההפצה, או "לא עכשיו" (#1088)
+# ---------------------------------------------------------------------------
+#
+# במסירה למכללה רשת ההפצה **אינה מוגדרת** כאן: המנהל בוחר את הכרטיס מדף
+# הרשת בקונסולה, קובע לו כתובת סטטית ומדליק DHCP — וההדלקה משלימה כל מה
+# שהמתקין היה כותב לכרטיס ההפצה (grub.cfg, dnsmasq באתחול, חומת אש,
+# והכתובת ליחידה). בלי כרטיס הפצה: dnsmasq לא מופעל, grub.cfg לא נכתב,
+# והשרת עולה במצב "רשת ההפצה לא הוגדרה" (הסוכן על loopback בלבד).
+
+# באוטומציה (--servers-if בלי --deploy-if) אין שאלה: "לא עכשיו".
+if [[ -z "$IFACE" && ! $SERVERS_IF_FROM_FLAG -eq 1 ]]; then
+    say "כרטיס ההפצה (DHCP/TFTP/מולטיקאסט למחשבי השיכפול והבנייה):"
+    printf '  0) לא עכשיו — המנהל יבחר אותו מהקונסולה (דף הרשת)\n'
+    list_nics
+    read -r -p "על איזה כרטיס תוגדר רשת ההפצה? [0]: " pick
+    pick="${pick:-0}"
+    if [[ "$pick" == "0" ]]; then
+        IFACE=""
+    else
+        [[ "$pick" =~ ^[0-9]+$ ]] && (( pick >= 1 && pick <= ${#NICS[@]} ))             || die "אין כרטיס מספר $pick ברשימה."
+        IFACE="${NICS[$((pick - 1))]}"
+    fi
 fi
+if [[ -n "$IFACE" ]]; then
+    ip link show "$IFACE" >/dev/null 2>&1 || die "לא קיים ממשק בשם $IFACE"
+    # הכתובת נגזרת מהכרטיס — אין סיבה להקליד אותה.
+    if [[ -z "$SERVER_URL" ]]; then
+        ADDR="$(iface_ip "$IFACE")"
+        [[ -n "$ADDR" ]] || die "לכרטיס $IFACE אין כתובת IP.
+    קבעו לו כתובת סטטית (זה שרת) והריצו שוב — או בחרו 'לא עכשיו' והגדירו מהקונסולה."
+        SERVER_URL="http://$ADDR:$PORT"
+    fi
+elif [[ -n "$SERVER_URL" ]]; then
+    die "--server-url בלי כרטיס הפצה (--deploy-if) — הכתובת חייבת לשבת על כרטיס"
+fi
+# ‏#1088: ‏--console-host ברירת מחדל = כרטיס השרתים **לפי שם** — השרת פותר
+# את הכתובת בעלייה ומאזין מחדש בהחלפתה. כתובת מפורשת (הדגל) גוברת.
+CONSOLE_HOST="${CONSOLE_HOST:-$SERVERS_IF}"
+
 case "$SERVER_URL" in
+    "")        ;;   # #1088: אין כרטיס הפצה עדיין — הכתובת תיקבע מהקונסולה
     http://*)  ;;
     https://*) die "https לא נתמך: ה-GRUB החתום של דביאן נבנה בלי TLS. השתמש ב-http." ;;
     *)         die "--server-url חייב להתחיל ב-http:// (התקבל: $SERVER_URL)" ;;
@@ -347,11 +404,14 @@ case "$STORAGE_ROLE" in
     *)          die "--storage-role חייב להיות standalone או secondary (התקבל: $STORAGE_ROLE)" ;;
 esac
 
-GRUB_HOST="${SERVER_URL#http://}"; GRUB_HOST="${GRUB_HOST%%/*}"
-# הפורט לבדו — קובץ ה-GRUB מרכיב איתו את הכתובת שה-DHCP/proxy ענה בפועל.
-# ‏if מלא ולא "&&": תחת set -e תנאי שנכשל בשורה עליונה מפיל את הסקריפט.
-GRUB_PORT="${GRUB_HOST##*:}"
-if [[ "$GRUB_PORT" == "$GRUB_HOST" ]]; then GRUB_PORT=80; fi
+GRUB_HOST=""; GRUB_PORT=80
+if [[ -n "$SERVER_URL" ]]; then
+    GRUB_HOST="${SERVER_URL#http://}"; GRUB_HOST="${GRUB_HOST%%/*}"
+    # הפורט לבדו — קובץ ה-GRUB מרכיב איתו את הכתובת שה-DHCP/proxy ענה בפועל.
+    # ‏if מלא ולא "&&": תחת set -e תנאי שנכשל בשורה עליונה מפיל את הסקריפט.
+    GRUB_PORT="${GRUB_HOST##*:}"
+    if [[ "$GRUB_PORT" == "$GRUB_HOST" ]]; then GRUB_PORT=80; fi
+fi
 
 # ---------------------------------------------------------------------------
 # שאלות 2–4 — משתמש המנהל
@@ -360,7 +420,7 @@ if [[ "$GRUB_PORT" == "$GRUB_HOST" ]]; then GRUB_PORT=80; fi
 ADMIN_USER="${ADMIN_USER:-admin}"
 # בלי --admin-pass: admin/admin, והקונסולה תדרוש החלפה. לא שואלים סיסמה.
 
-say "כרטיס הפצה: $IFACE · כרטיס שרתים: $SERVERS_IF · כתובת: $SERVER_URL · מנהל: $ADMIN_USER"
+say "כרטיס הפצה: ${IFACE:-לא עכשיו (מהקונסולה)} · כרטיס שרתים: $SERVERS_IF ($SERVERS_MODE) · כתובת הפצה: ${SERVER_URL:-תיקבע מהקונסולה} · מנהל: $ADMIN_USER"
 
 # ---------------------------------------------------------------------------
 # חבילות וקוד
@@ -454,14 +514,20 @@ run install -m 0644 "$GRUB_SRC" "$TFTP_ROOT/grubx64.efi"
 say "בונה GRUB i386-pc למחשבי ה-Legacy (grub-mknetdir)"
 run grub-mknetdir --net-directory="$TFTP_ROOT" --subdir=grub
 
-say "כותב את grub/grub.cfg עבור $GRUB_HOST"
-CFG_TEXT="${GRUB_BOOTSTRAP//@@GRUB_HOST@@/$GRUB_HOST}"
-CFG_TEXT="${CFG_TEXT//@@GRUB_PORT@@/$GRUB_PORT}"
-if (( DRY_RUN )); then
-    printf '%s    would write %s/grub/grub.cfg%s\n' "$DIM" "$TFTP_ROOT" "$OFF"
+if [[ -z "$IFACE" ]]; then
+    # ‏#1088: כתובת הנפילה ב-grub.cfg היא כתובת ההפצה — אין עדיין. הקונסולה
+    # כותבת את הקובץ (server/deploy_net.py, אותו מחולל) בהדלקת DHCP.
+    say "grub/grub.cfg לא נכתב — ייכתב מהקונסולה כשתוגדר רשת ההפצה"
 else
-    printf '%s\n' "$CFG_TEXT" > "$TFTP_ROOT/grub/grub.cfg"
-    chmod 0644 "$TFTP_ROOT/grub/grub.cfg"
+    say "כותב את grub/grub.cfg עבור $GRUB_HOST"
+    CFG_TEXT="${GRUB_BOOTSTRAP//@@GRUB_HOST@@/$GRUB_HOST}"
+    CFG_TEXT="${CFG_TEXT//@@GRUB_PORT@@/$GRUB_PORT}"
+    if (( DRY_RUN )); then
+        printf '%s    would write %s/grub/grub.cfg%s\n' "$DIM" "$TFTP_ROOT" "$OFF"
+    else
+        printf '%s\n' "$CFG_TEXT" > "$TFTP_ROOT/grub/grub.cfg"
+        chmod 0644 "$TFTP_ROOT/grub/grub.cfg"
+    fi
 fi
 
 # אין tftp-secure, בכוונה: הוא מגיש רק קבצים שבבעלות משתמש dnsmasq,
@@ -476,6 +542,17 @@ fi
 # ---------------------------------------------------------------------------
 
 say "מגדיר dnsmasq (TFTP בלבד; DHCP יוגדר מהקונסולה)"
+# ‏#1088: בלי כרטיס הפצה אין `interface=` לכתוב — השורה שמצמידה את ה-TFTP
+# לכרטיס ההפצה בלבד (R20-F1) נכתבת אז מהקונסולה ב-imagectl-dhcp.conf
+# (‏dhcp.render עם deploy_interface), ו-dnsmasq **אינו** מופעל כאן: בלי
+# ‏interface= ועם bind-interfaces הוא היה מאזין ל-69 על כל הכרטיסים.
+if [[ -n "$IFACE" ]]; then
+    DNSMASQ_IFACE_LINES="interface=$IFACE
+bind-interfaces"
+else
+    DNSMASQ_IFACE_LINES="# interface= is written by the console (imagectl-dhcp.conf) once the
+# deploy NIC is chosen there (#1088). Until then dnsmasq stays disabled."
+fi
 # #141: dhcp-hostsfile למטה מצביע על קובץ הזה — אם הוא לא קיים, dnsmasq
 # מסרב לעלות (וה-restart שאחרי ה-heredoc נכשל, לפני שהשרת עצמו רץ אפילו
 # פעם אחת ויכול לכתוב אותו). placeholder ריק זהה למה שהשרת כותב בעצמו
@@ -493,8 +570,7 @@ port=0
 # ‏#1074 / R20-F1: TFTP רק על כרטיס ההפצה. בלי interface= + bind-interfaces
 # dnsmasq מאזין ל-69 על כל הכרטיסים מההתקנה. הקונסולה תוסיף interface=
 # נוספים ב-imagectl-dhcp.conf אם יודלק DHCP על כרטיס אחר.
-interface=$IFACE
-bind-interfaces
+$DNSMASQ_IFACE_LINES
 
 enable-tftp
 tftp-root=$TFTP_ROOT
@@ -507,12 +583,18 @@ tftp-root=$TFTP_ROOT
 # נכתב ונקרא-מחדש (SIGHUP, לא restart) על ידי השרת עצמו — server/dhcp_host.py.
 dhcp-hostsfile=/etc/imagectl/known-macs
 EOF
-run systemctl enable dnsmasq
-if (( ! DRY_RUN )); then
-    systemctl restart dnsmasq || {
-        journalctl -u dnsmasq -n 20 --no-pager >&2 || true
-        die "dnsmasq לא עלה. תקן ונסה שוב."
-    }
+if [[ -n "$IFACE" ]]; then
+    run systemctl enable dnsmasq
+    if (( ! DRY_RUN )); then
+        systemctl restart dnsmasq || {
+            journalctl -u dnsmasq -n 20 --no-pager >&2 || true
+            die "dnsmasq לא עלה. תקן ונסה שוב."
+        }
+    fi
+else
+    # ‏#1088: הקונסולה מפעילה (enable + restart) כשמודלק DHCP על כרטיס ההפצה.
+    say "dnsmasq נשאר כבוי עד שתוגדר רשת ההפצה מהקונסולה"
+    run systemctl disable --now dnsmasq
 fi
 
 # ---------------------------------------------------------------------------
@@ -525,18 +607,30 @@ fi
 if (( NO_FIREWALL )); then
     warn "ללא חומת אש — R20-F1"
 else
-    say "מתקין ומפעיל חומת אש nftables (הפצה=$IFACE, שרתים=$SERVERS_IF)"
+    say "מתקין ומפעיל חומת אש nftables (הפצה=${IFACE:-טרם הוגדר}, שרתים=$SERVERS_IF)"
     run env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nftables
     NFT_GEN="$APP_DIR/install/nftables-rules.sh"
     [[ -f "$NFT_GEN" ]] || NFT_GEN="$SCRIPT_DIR/nftables-rules.sh"
     [[ -f "$NFT_GEN" ]] || die "חסר מחולל חומת האש: install/nftables-rules.sh"
-    NFT_ARGS=(--deploy-if "$IFACE" --servers-if "$SERVERS_IF")
+    # ‏#1088: בלי כרטיס הפצה המחולל כותב רק את כללי וילן השרתים; הקונסולה
+    # מריצה אותו שוב עם --deploy-if כשמודלק DHCP (server/deploy_net.py).
+    NFT_ARGS=(--servers-if "$SERVERS_IF")
+    [[ -n "$IFACE" ]] && NFT_ARGS+=(--deploy-if "$IFACE")
     if [[ "$STORAGE_ROLE" == "secondary" ]]; then
         PRIMARY_IP="${PRIMARY_URL#http://}"
         PRIMARY_IP="${PRIMARY_IP#https://}"
         PRIMARY_IP="${PRIMARY_IP%%/*}"
         PRIMARY_IP="${PRIMARY_IP%%:*}"
         [[ -n "$PRIMARY_IP" ]] || die "שרת משני: לא הצלחתי לגזור כתובת מ-$PRIMARY_URL"
+        # ‏#1088: כתובת הראשי יכולה להיות שם (pairing לפי FQDN). חומת האש
+        # מצמידה כתובת, לא שם — פותרים עכשיו ואומרים זאת: ראשי שמקבל DHCP
+        # בלי reservation יחליף כתובת והכלל יתיישן.
+        if [[ ! "$PRIMARY_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            RESOLVED="$(getent ahostsv4 "$PRIMARY_IP" 2>/dev/null | awk 'NR==1 {print $1}')"
+            [[ -n "$RESOLVED" ]] || die "שרת משני: השם $PRIMARY_IP לא נפתר לכתובת — חומת האש צריכה כתובת"
+            warn "חומת האש תפתח 8443 ל-$RESOLVED (מה ש-$PRIMARY_IP פותר אליו עכשיו); אם הראשי בלקוח DHCP — קבעו לו reservation"
+            PRIMARY_IP="$RESOLVED"
+        fi
         NFT_ARGS+=(--primary-ip "$PRIMARY_IP")
     fi
     if (( DRY_RUN )); then
@@ -613,6 +707,43 @@ if not password:
 PYEOF
 fi
 
+# ---------------------------------------------------------------------------
+# ‏#1088: כרטיס השרתים — לקוח DHCP (ברירת מחדל) או סטטי, בקובץ שהקונסולה
+# יודעת לקרוא ולשנות (`interfaces.d/imagectl-<if>`, server/netcfg.py),
+# ובהגדרה ב-DB שהקונסולה מציגה ("לקוח DHCP"/"כתובת סטטית"). ההגדרה של
+# מתקין דביאן באותו כרטיס ב-/etc/network/interfaces עוברת להערה (עם
+# גיבוי) — שתי הגדרות לאותו כרטיס הן שני ifup. **אין ifup כאן**: המתקין
+# עצמו מחובר דרך הכרטיס הזה; ההגדרה נכנסת באתחול הבא (או מהקונסולה).
+# ---------------------------------------------------------------------------
+
+say "כותב את הגדרת כרטיס השרתים $SERVERS_IF ($SERVERS_MODE)"
+if (( ! DRY_RUN )); then
+    SERVERS_IF="$SERVERS_IF" SERVERS_MODE="$SERVERS_MODE" SERVERS_ADDR="$SERVERS_ADDR" \
+    SERVERS_MASK="$SERVERS_MASK" SERVERS_GW="$SERVERS_GW" SERVERS_DNS="$SERVERS_DNS" \
+    python3 - <<NETEOF
+import os, socket, sys
+sys.path.insert(0, "$APP_DIR")
+from server import netcfg, netcfg_host
+from server.db import connect, set_setting
+cfg = netcfg.NetConfig(
+    name=os.environ["SERVERS_IF"], mode=os.environ["SERVERS_MODE"],
+    address=os.environ["SERVERS_ADDR"], netmask=os.environ["SERVERS_MASK"] or "255.255.255.0",
+    gateway=os.environ["SERVERS_GW"],
+    dns=[d.strip() for d in os.environ["SERVERS_DNS"].split(",") if d.strip()])
+problems = netcfg.problems(cfg, [cfg])
+if problems:
+    sys.exit("הגדרת כרטיס השרתים אינה תקינה: " + " · ".join(problems))
+notes, error = netcfg_host.adopt_interface(
+    cfg.name, netcfg.render(cfg, hostname=socket.gethostname()))
+for note in notes:
+    print("    " + note)
+if error:
+    sys.exit(error)
+conn = connect("$DATA_DIR/imagectl.db")
+set_setting(conn, netcfg.SETTING_PREFIX + cfg.name, cfg.to_json())
+NETEOF
+fi
+
 run install -m 0644 "$APP_DIR/install/imagectl-server.service" \
     /etc/systemd/system/imagectl-server.service
 
@@ -631,17 +762,29 @@ run install -d -m 0755 "$DATA_DIR/netcfg"
 # שהשרת אינו מגיש. ‏ExecStart משתמש ב-$IMAGECTL_STORAGE_ARGS (בלי
 # סוגריים) — systemd מפצל אותו למילים.
 if [[ "$STORAGE_ROLE" == "secondary" ]]; then
-    STORAGE_ARGS="--storage-role secondary --primary-url $PRIMARY_URL --boot-dir $HTTP_ROOT --interface $IFACE"
+    STORAGE_ARGS="--storage-role secondary --primary-url $PRIMARY_URL --boot-dir $HTTP_ROOT"
 else
-    STORAGE_ARGS="--storage-role standalone --boot-dir $HTTP_ROOT --interface $IFACE"
+    STORAGE_ARGS="--storage-role standalone --boot-dir $HTTP_ROOT"
 fi
-# ‏#703 (tracer 5): הקונסולה על כרטיס הניהול — רק כשנתבקש; בלי הדגל היא
-# נשארת על loopback (#770). מצורף לאותו משתנה שהיחידה מרחיבה.
+# ‏#1088: ‏--interface רק כשיש כרטיס הפצה; בלעדיו השרת קורא את הכרטיס
+# והכתובת ממה שהקונסולה רושמת (deploy:interface/deploy:url), ו-IMAGECTL_URL
+# נשאר ריק — היחידה מעבירה ${IMAGECTL_URL} כארגומנט ריק, וזה מה שאומר
+# ל-server.main "מהקונסולה".
+if [[ -n "$IFACE" ]]; then
+    STORAGE_ARGS+=" --interface $IFACE"
+fi
+if [[ "$TFTP_ROOT" != "/srv/tftp" ]]; then
+    STORAGE_ARGS+=" --tftp-root $TFTP_ROOT"
+fi
+# ‏#703 (tracer 5) / #1088: הקונסולה על כרטיס הניהול — ברירת המחדל היא
+# כרטיס השרתים **לפי שם**, כדי שהיא תעקוב אחרי הכתובת שה-DHCP נותן.
+# מצורף לאותו משתנה שהיחידה מרחיבה.
 if [[ -n "$CONSOLE_HOST" ]]; then
     STORAGE_ARGS+=" --console-host $CONSOLE_HOST"
 fi
 write_file /etc/systemd/system/imagectl-server.service.d/override.conf <<EOF
-# ImageCtl — נכתב על ידי המתקין: הכתובת שנגזרה מהכרטיס שנבחר.
+# ImageCtl — נכתב על ידי המתקין: הכתובת שנגזרה מהכרטיס שנבחר
+# (ריק = רשת ההפצה תוגדר מהקונסולה, #1088).
 [Service]
 Environment=IMAGECTL_URL=$SERVER_URL
 # ‏בגרשיים: הערך מכיל רווחים (--storage-role X --primary-url Y), ובלי
@@ -656,9 +799,16 @@ EOF
 # השרת עצמו היה יוצר אותה בהפעלה הראשונה; כאן היא נוצרת במקום שהמפעיל
 # רואה. ‏SAN = כרטיס הניהול (או 127.0.0.1) + שם המארח.
 say "מייצר/מוודא את תעודת ה-TLS של הקונסולה"
+# ‏#1088: כש---console-host הוא שם כרטיס, ה-SAN הוא הכתובת **הנוכחית** שלו
+# (+ שם המארח, שנוסף ממילא); בלי כתובת עדיין — loopback, והתעודה תקפה
+# לפי השם. שם כרטיס אינו נכנס כ-SAN: הדפדפן לעולם לא יפנה ל-"eth0".
+CONSOLE_TLS_HOST="$CONSOLE_HOST"
+if [[ -n "$CONSOLE_TLS_HOST" && ! "$CONSOLE_TLS_HOST" =~ ^[0-9a-fA-F.:]+$ ]]; then
+    CONSOLE_TLS_HOST="$(iface_ip "$CONSOLE_TLS_HOST")"
+fi
 CONSOLE_FP="(dry-run)"
 if (( ! DRY_RUN )); then
-    CONSOLE_FP="$(CONSOLE_HOST="${CONSOLE_HOST:-127.0.0.1}" python3 - <<TLSEOF
+    CONSOLE_FP="$(CONSOLE_HOST="${CONSOLE_TLS_HOST:-127.0.0.1}" python3 - <<TLSEOF
 import os, sys
 sys.path.insert(0, "$APP_DIR")
 from server.console_tls import ensure_console_cert
@@ -678,12 +828,18 @@ run systemctl enable --now imagectl-server
 # סיכום
 # ---------------------------------------------------------------------------
 
+# ‏#1088: הכתובת שמדפיסים היא זו של כרטיס השרתים **עכשיו**; בלקוח DHCP
+# היא יכולה להתחלף — ואז השם (hostname ב-DNS של המכללה) הוא הדרך היציבה.
+CONSOLE_SHOWN="${CONSOLE_TLS_HOST:-127.0.0.1}"
 cat <<EOF
 
-  קונסולה        https://${CONSOLE_HOST:-127.0.0.1}:8081  (משתמש: $ADMIN_USER)
+  קונסולה        https://${CONSOLE_SHOWN}:8081  (משתמש: $ADMIN_USER)
+                 גם https://$(hostname):8081 — כרטיס השרתים $SERVERS_IF ב-$SERVERS_MODE;
+                 בלקוח DHCP הכתובת יכולה להתחלף, הקונסולה עוקבת אחריה (#1088)
                  כניסה ראשונה: admin / admin — הקונסולה תדרוש החלפת סיסמה
                  תעודה עצמית — הדפדפן יבקש אישור פעם אחת; להשוות:
                  SHA-256 $CONSOLE_FP
+  רשת הפצה       ${IFACE:+$IFACE · $SERVER_URL}${IFACE:-לא הוגדרה — דף הרשת בקונסולה: בחר כרטיס → כתובת → DHCP}
   TFTP root      $TFTP_ROOT  (bootx64.efi -> grubx64.efi -> grub/grub.cfg)
   נתונים         $DATA_DIR · אימג'ים: $IMAGES_DIR
 EOF
@@ -701,13 +857,16 @@ EOF
 # ואם לא, הוא לא ייפרד מהמפעיל במילה "מוכן".
 
 READY=1
+# ‏#1088: בלי כרטיס הפצה הסוכן מאזין על loopback בלבד — הבדיקה שואלת אותו שם.
+# (אחרי READY=1: tests/test_boot_payload_gate.py מריץ את הקטע מכאן ועד הסוף.)
+VERIFY_URL="${SERVER_URL:-http://127.0.0.1:${PORT:-8080}}"
 if (( DRY_RUN )); then
     printf '%s    would run: install/verify-boot-payload.sh --server-url %s%s\n' \
-        "$DIM" "$SERVER_URL" "$OFF"
+        "$DIM" "$VERIFY_URL" "$OFF"
 else
     say "בודק שהשרת מגיש את הקרנל ואת ה-initrd"
     bash "$APP_DIR/install/verify-boot-payload.sh" \
-        --app-dir "$APP_DIR" --http-root "$HTTP_ROOT" --server-url "$SERVER_URL" \
+        --app-dir "$APP_DIR" --http-root "$HTTP_ROOT" --server-url "$VERIFY_URL" \
         || READY=0
 fi
 
@@ -720,7 +879,9 @@ $(printf '%s' "$GRN")מוכן.$(printf '%s' "$OFF")
 
 $(printf '%s' "$YEL")מה עושים עכשיו — הכל מהקונסולה:$(printf '%s' "$OFF")
 
-  1. לשונית הרשת: מדליקים DHCP או proxy על הכרטיס — עם כל שכבות הבטיחות.
+  1. דף הרשת: ${IFACE:+מדליקים DHCP או proxy על הכרטיס — עם כל שכבות הבטיחות.}${IFACE:-בוחרים את כרטיס ההפצה, קובעים לו כתובת סטטית (עריכת כתובת),
+     ואז מדליקים עליו DHCP — ההדלקה משלימה את ההתקנה (grub.cfg, dnsmasq,
+     חומת אש) ומאתחלת את השרת על כתובת ההפצה (#1088).}
   2. מסך הבריאות: רמזור לכל בדיקה — פורטים, dnsmasq, TFTP, השרת.
   3. מסך המחשבים: טבלאות ה-MAC.
 

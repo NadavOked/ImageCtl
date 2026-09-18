@@ -27,7 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from boot.grub_menu import GrubConfig
 from boot.http import create_boot_asgi, gui_initrd_path
 
-from . import auth, boottrace, dhcp, registry
+from . import auth, boottrace, deploy_net, dhcp, registry
 from .api import ServerContext, create_agent_router
 from .console_api import create_console_router
 from .console_source_guard import ConsoleSourceGuard, Network
@@ -172,6 +172,10 @@ class ServerRuntime:
     # = ‏``--console-tls off`` (loopback) או בדיקות — ואז העוגייה בלי
     # ``Secure`` ו-``/me`` מדווח ``tls: null``. ‏main מעביר ערך אמיתי.
     console_tls: ConsoleTLS | None = None
+    # ‏#1088: רשת ההפצה — מקורה (יחידה/קונסולה/לא הוגדרה) ומה שהקונסולה
+    # צריכה כדי להשלים את ההתקנה בהדלקת DHCP. ``None`` = בדיקות/קוד ישן:
+    # ההדלקה מתנהגת כמו קודם, בלי השלמה.
+    deploy: "deploy_net.DeployContext | None" = None
 
 
 async def _room_clock(rt: ServerRuntime, interval: float) -> None:
@@ -275,6 +279,8 @@ def create_runtime(
     room_clock_interval: float = ROOM_CLOCK_SECONDS,
     # ‏#703 (tracer 5): ``None`` = הקונסולה בלי TLS (loopback/בדיקות).
     console_tls: ConsoleTLS | None = None,
+    # ‏#1088: ראו ``ServerRuntime.deploy``.
+    deploy: "deploy_net.DeployContext | None" = None,
 ) -> ServerRuntime:
     """בונה את המצב המשותף פעם אחת ומריץ את האתחול החד-פעמי.
 
@@ -411,7 +417,7 @@ def create_runtime(
         known_macs_hooks=known_macs_hooks,
         repo_dir=repo_dir, update_hooks=update_hooks,
         room_clock_interval=room_clock_interval,
-        console_tls=console_tls,
+        console_tls=console_tls, deploy=deploy,
     )
 
 
@@ -548,7 +554,7 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
     include(create_drivers_router(ctx))   # #720
     include(create_tools_router(ctx, rt.data_dir))   # #649: ארגז הכלים — קטלוג + בחירה
     include(create_net_router(ctx))
-    include(create_dhcp_router(ctx, rt.dhcp_hooks))
+    include(create_dhcp_router(ctx, rt.dhcp_hooks, deploy=rt.deploy))
     include(create_netcfg_router(ctx, rt.netcfg_dir, rt.netcfg_hooks))
     include(create_health_router(ctx, rt.server_base, rt.health_hooks))
     include(create_update_router(

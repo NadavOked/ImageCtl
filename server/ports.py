@@ -245,6 +245,47 @@ class Listeners:
         future = asyncio.run_coroutine_threadsafe(self.set_open(port_id, want), self._loop)
         future.result(timeout or (OPEN_TIMEOUT + CLOSE_TIMEOUT))
 
+    async def rebind(self, port_id: str, *, hosts: list[str],
+                     factories: list[Callable[[], object]] | None = None,
+                     start: Callable[[], object] | None = None) -> None:
+        """‏#1088: אותו פורט, כתובת אחרת — הכרטיס קיבל lease חדש.
+
+        סוגר את המאזין הקיים (אם היה פתוח), מחליף את היצרנים/`start` ואת
+        הכתובות לתצוגה, ופותח מחדש **רק אם היה פתוח** — מתג שהמפעיל כיבה
+        אינו נדלק בגלל שינוי כתובת. הפתיחה מחכה ל-`started` כמו כל פתיחה
+        (ראיה חיובית), וכשל bind מגיע לקורא כ-`ListenerError` — לא נבלע.
+        """
+        if port_id not in self._specs:
+            raise KeyError(port_id)
+        assert self._lock is not None, "serve() לא רץ"
+        async with self._lock:
+            was_open = port_id in self._wanted
+            if was_open:
+                await self._close(port_id)
+            if port_id in self._threaded:
+                if start is None:
+                    raise ValueError(f"{port_id}: מאזין threaded דורש start חדש")
+                self._threaded[port_id] = (start, self._threaded[port_id][1])
+            else:
+                if factories is None:
+                    raise ValueError(f"{port_id}: מאזין uvicorn דורש factories חדשים")
+                self._factories[port_id] = list(factories)
+            self._specs[port_id]["hosts"] = list(hosts)
+            if was_open:
+                await self._open(port_id)
+
+    def request_rebind(self, port_id: str, *, hosts: list[str],
+                       factories: list[Callable[[], object]] | None = None,
+                       start: Callable[[], object] | None = None,
+                       timeout: float | None = None) -> None:
+        """‏`rebind` מתהליכון אחר (הדוגם של `ifaddr.AddressWatcher`)."""
+        if self._loop is None:
+            raise ListenerError("מנהל המאזינים אינו רץ")
+        future = asyncio.run_coroutine_threadsafe(
+            self.rebind(port_id, hosts=hosts, factories=factories, start=start),
+            self._loop)
+        future.result(timeout or (OPEN_TIMEOUT + CLOSE_TIMEOUT))
+
     # -- פנימי --
 
     async def _open(self, port_id: str) -> None:

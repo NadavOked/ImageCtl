@@ -53,6 +53,11 @@ function editNic(nic) {
     sub: "כתובות יחולקו רק על הכרטיס הזה. לרשת שיש בה DHCP קיים — בחר proxy.",
     note: (nic.trunk ? `<div class="sheet-note danger">הכרטיס מסומן כמחובר לרשת המכללה. DHCP מלא כאן ישבית את הרשת — אלא אם אתה בטוח לגמרי, השאר proxy.</div>`
       : `<div class="sheet-note">ההגדרה המסוכנת ביותר במערכת: DHCP על רשת שכבר יש בה שרת משבית אותה. השרת יבדוק לפני ההדלקה אם מישהו כבר עונה.</div>`)
+      // ‏#1088: אחרי התקנה נקייה ההדלקה הראשונה היא גם הגדרת רשת ההפצה —
+      // השרת משלים את ההתקנה ומאתחל את עצמו; הכרטיס חייב לשאת את הכתובת.
+      + (typeof NET_DEPLOY !== "undefined" && NET_DEPLOY && NET_DEPLOY.configured === false && !active
+        ? `<div class="sheet-note">רשת ההפצה מוגדרת כאן <b>בפעם הראשונה</b>: ההדלקה משלימה את ההתקנה (grub.cfg, dnsmasq, חומת אש) ומאתחלת את השרת על כתובת ההפצה — הקונסולה תחזור תוך כמה שניות. הכרטיס חייב כבר לשאת את "כתובת השרת בוילן" (עריכת כתובת → סטטית), אחרת השרת יסרב.</div>`
+        : "")
       + `<div class="sheet-note danger" id="proxy-warn" hidden>${
            esc((PROXY_SUPPORT && PROXY_SUPPORT.reason) || "")}</div>`,
     fields: [
@@ -116,6 +121,13 @@ async function saveNic(name, body) {
   const result = await put(`/net/interfaces/${encodeURIComponent(name)}`, body);
   if (result.apply_error) toast("נשמר, אבל dnsmasq לא עודכן: " + result.apply_error);
   else toast("הגדרת DHCP עודכנה");
+  // ‏#1088: ההדלקה הראשונה הגדירה את רשת ההפצה — מה הושלם, ומה לא.
+  const d = result.deploy;
+  if (d) {
+    if (d.ok) toast(`רשת ההפצה הוגדרה על ${name} (${d.url}) — השרת מתאתחל, הקונסולה תחזור תוך כמה שניות`);
+    else toast(`רשת ההפצה נרשמה על ${name}, אבל חלק מההשלמה נכשל: ${(d.errors || []).join(" · ")}${d.restarting ? " · השרת מתאתחל" : " · השרת לא אותחל — אתחלו ידנית"}`);
+    if (typeof NET_DEPLOY !== "undefined") NET_DEPLOY = { configured: true, source: "console", interface: name, url: d.url, hint: null };
+  }
 }
 
 /* --- בריאות המערכת — רמזור לכל בדיקה (health.py) ------------------------- */

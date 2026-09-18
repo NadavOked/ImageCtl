@@ -101,6 +101,9 @@ static const char *status_word(const App *a, char *buf, size_t n, Rgb *dot) {
                            snprintf(buf, n, "כותב %d דיסקים במקביל", w); return buf; }
         return "ממתין לסבב";
     case SCREEN_RESTORE:  return "בחירת אימג' לשחזור";
+    case SCREEN_TOOLS:                                              /* #649 */
+        if (a->tool_running) { *dot = a->theme->warn; return "מריץ כלי"; }
+        return a->tools_view == TOOLS_LIST ? "ארגז הכלים" : "כלי נבחר";
     }
     return "מוכן";
 }
@@ -205,8 +208,17 @@ void screen_menu(App *a, cairo_t *cr, double W, double H, double head_h) {
         ch = dmax(ch, 2*N_CHOICE_PAD + N_CHOICE_ICON + N_ACTION_GAP + title[i].h + desc[i].h);
     }
     Rect body, foot;
-    card_frame(a, cr, W, H, head_h, &hd,
+    Rect card = card_frame(a, cr, W, H, head_h, &hd,
                N_PAD + rows * ch + (rows - 1)*N_CHOICE_GAP, 0, &body, &foot);
+    /* #649: the toolbox entry -- a secondary button at the card's top-left
+     * (the RTL inline end), NOT one of the choice cards: it is the IT
+     * person's drawer, not an operator flow. This menu is the build
+     * machine's alone (cloner and class route before it), so the button
+     * never reaches those screens. Registered before the body clip. */
+    Text tools_l = btn_label(cr, "כלים");
+    double tools_w = btn_width(&tools_l);
+    draw_btn(a, cr, (Rect){ card.x + N_PAD, card.y + N_PAD, tools_w, N_BUTTON_H }, &tools_l, BTN_PLAIN, HIT_TOOLS);
+    text_free(&tools_l);
     body_clip_begin(a, cr, body);
     int visible = 0;
     for (int i = 0; i < MENU_N; i++) if (show[i]) {
@@ -281,6 +293,7 @@ void app_route(App *a) {
     case MODE_DIRECT:  a->screen = SCREEN_ROOM; break;   /* #715: same screen, no image picker */
     case MODE_CAPTURE: a->screen = SCREEN_PICK; break;
     case MODE_RESTORE: a->screen = SCREEN_RESTORE; break;
+    case MODE_TOOLS:   a->screen = SCREEN_TOOLS; break;     /* #649 */
     default:           a->screen = SCREEN_MENU; break;
     }
 }
@@ -303,6 +316,7 @@ void app_draw(App *a, cairo_t *cr, int W, int H) {
     case SCREEN_CLONER:   screen_cloner(a, cr, W, H, head_h); break;
     case SCREEN_MESSAGE:  screen_message(a, cr, W, H, head_h); break;
     case SCREEN_RESTORE:  screen_restore(a, cr, W, H, head_h); break;
+    case SCREEN_TOOLS:    screen_tools(a, cr, W, H, head_h); break;
     }
     draw_status(a, cr, W, H);
     draw_toast(a, cr, W, H);

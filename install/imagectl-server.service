@@ -7,7 +7,10 @@
 #   sudo systemctl enable --now imagectl-server
 #
 # הכתובת חייבת להיות זו שהלקוחות רואים — לא localhost. אותה כתובת
-# שהוזנה למתקין שרת האתחול.
+# שהוזנה למתקין שרת האתחול. ‏#1088: ריק = רשת ההפצה מוגדרת **מהקונסולה**
+# (המתקין במסירה אינו יודע מי כרטיס ההפצה): server.main קורא את
+# הכרטיס והכתובת ממה שהקונסולה רשמה, ובלעדיהם עולה במצב "רשת ההפצה לא
+# הוגדרה" — סוכן וקיוסק על loopback, והקונסולה אומרת מה לעשות.
 
 [Unit]
 Description=ImageCtl image server and console
@@ -17,6 +20,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 # נקבע ב-systemctl edit: Environment=IMAGECTL_URL=http://10.44.12.10:8080
+# ריק (#1088) = מהקונסולה; ${IMAGECTL_URL} מתרחב לארגומנט ריק אחד, וזה
+# מה שאומר ל-server.main לקרוא את הכתובת מה-DB.
 Environment=IMAGECTL_URL=
 # תצורת ה-Storage Node (#655/#723) — נכתב על ידי המתקין ל-override.conf.
 # ריק = ברירת המחדל של server.main (standalone), ולכן שרת ותיק בלי
@@ -27,7 +32,6 @@ Environment=IMAGECTL_URL=
 # בלבד; התעודה ב-/var/lib/imagectl/console-tls/ (בתוך ReadWritePaths).
 Environment=IMAGECTL_STORAGE_ARGS=
 WorkingDirectory=/opt/imagectl
-ExecStartPre=/bin/sh -c 'test -n "$IMAGECTL_URL" || { echo "set IMAGECTL_URL via systemctl edit imagectl-server"; exit 1; }'
 ExecStart=/usr/bin/python3 -m server.main --server-url ${IMAGECTL_URL} \
     --data-dir /var/lib/imagectl --images /srv/imagectl/images $IMAGECTL_STORAGE_ARGS
 Restart=on-failure
@@ -55,7 +59,11 @@ RestartSec=3
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/var/lib/imagectl /srv/imagectl/images /etc/dnsmasq.d -/etc/imagectl /etc/network/interfaces.d /etc
+#
+# ‏#1088: ‏/srv/tftp — הקונסולה כותבת grub/grub.cfg כשרשת ההפצה מוגדרת
+# ממנה (deploy_net.write_grub_cfg). אופציונלי (מקף): שרת עם --tftp-root
+# אחר אינו נופל על תיקייה שאינה קיימת.
+ReadWritePaths=/var/lib/imagectl /srv/imagectl/images /etc/dnsmasq.d -/etc/imagectl /etc/network/interfaces.d /etc -/srv/tftp
 PrivateTmp=yes
 
 [Install]

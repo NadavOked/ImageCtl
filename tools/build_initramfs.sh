@@ -7,10 +7,18 @@
 #   sudo ./tools/build_initramfs.sh [--output FILE] [--kernel-version VER]
 #                                   [--firmware DIR]... [--ssh-key FILE]
 #                                   [--with-gui] [--skip-apt]
+#                                   [--tools-selection FILE]
 #
 # --ssh-key packs a public key as the technician's authorized_keys. Without
 # it dropbear has nobody to let in and never listens; with it, it still
 # listens only when the kernel line carries imagectl.debug=1.
+#
+# --tools-selection packs the IT toolbox the operator chose in the console
+# (#1050): FILE is <data_dir>/tools-selection.json (interfaces.md §23). Its
+# "build" ids are mapped to binaries through agent/lib/toolbins.sh -- the
+# same table the station filters by -- and the file itself rides into the
+# initrd as /etc/imagectl/tools-selection.json. Without the flag no toolbox
+# binary beyond the base set is packed and the tools screen is empty.
 #
 # The agent scripts are taken from the agent/ directory next to this
 # repository checkout.
@@ -24,6 +32,7 @@ KVER="$(uname -r)"
 SKIP_APT=0
 WITH_GUI=0
 SSH_KEY_FILE=""
+TOOLS_SELECTION_FILE=""
 #: `auto` (ברירת המחדל — `finish_and_stop` גוזר מהתפקיד: כיתה=reboot,
 #: בנייה/שיכפול=poweroff), `poweroff` או `reboot`. `reboot` הוא ההגדרה
 #: שכלי המעבדה כותב (tools/lab/after-task-reboot.sh).
@@ -39,6 +48,7 @@ while [ $# -gt 0 ]; do
         --after-task)     AFTER_TASK="$2"; shift 2 ;;
         --with-gui)       WITH_GUI=1; shift ;;
         --skip-apt)       SKIP_APT=1; shift ;;
+        --tools-selection) TOOLS_SELECTION_FILE="$2"; shift 2 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
@@ -60,6 +70,45 @@ if [ -n "$SSH_KEY_FILE" ]; then
         exit 1
     fi
 fi
+
+# --- the toolbox selection (--tools-selection, #1050) ---------------------------
+# Resolved here, before apt and the compiles, for the same reason as the ssh
+# key: an id the table does not know should cost a second, not a build.
+# tools_bins_plan (agent/lib/toolbins.sh -- POSIX sh, bash sources it fine)
+# prints one binary per line and exits 1 naming every unknown id; an empty
+# "build" list is a valid answer and packs nothing.
+TOOL_BINS=()
+if [ -n "$TOOLS_SELECTION_FILE" ]; then
+    [ -f "$TOOLS_SELECTION_FILE" ] \
+        || { echo "tools selection file not found: $TOOLS_SELECTION_FILE" >&2; exit 1; }
+    . "$AGENT_DIR/lib/toolbins.sh"
+    _plan=$(tools_bins_plan "$TOOLS_SELECTION_FILE") \
+        || { echo "--tools-selection: the selection is not packable (see above)" >&2; exit 1; }
+    [ -z "$_plan" ] || mapfile -t TOOL_BINS <<< "$_plan"
+    echo "tools: packing ${#TOOL_BINS[@]} toolbox binaries: ${TOOL_BINS[*]:-(none)}"
+fi
+
+# The Debian 13 package for each toolbox binary the table can name. Only the
+# packages of the binaries actually planned are installed -- a selection of
+# two tools does not pull testdisk. A planned binary missing from this map
+# is a build error (it would fail in copy_bin anyway, but with a worse
+# message): add the binary to toolbins.sh and its package here together.
+declare -A TOOL_PKG=(
+    [blkdiscard]=util-linux  [wipefs]=util-linux   [hdparm]=hdparm
+    [sgdisk]=gdisk           [nvme]=nvme-cli       [nwipe]=nwipe
+    [tpm2_clear]=tpm2-tools  [chntpw]=chntpw       [ntfscat]=ntfs-3g
+    [ntfsundelete]=ntfs-3g   [photorec]=testdisk   [testdisk]=testdisk
+    [scalpel]=scalpel        [foremost]=foremost   [extundelete]=extundelete
+    [magicrescue]=magicrescue [recoverjpeg]=recoverjpeg
+    [unsquashfs]=squashfs-tools [bsdtar]=libarchive-tools
+    [ddrescue]=gddrescue     [safecopy]=safecopy   [fsck.vfat]=dosfstools
+)
+TOOL_PKGS=()
+for _tb in "${TOOL_BINS[@]}"; do
+    [ -n "${TOOL_PKG[$_tb]:-}" ] \
+        || { echo "tools: no apt package known for binary $_tb (toolbins.sh and TOOL_PKG drifted)" >&2; exit 1; }
+    case " ${TOOL_PKGS[*]:-} " in *" ${TOOL_PKG[$_tb]} "*) ;; *) TOOL_PKGS+=("${TOOL_PKG[$_tb]}") ;; esac
+done
 
 # --- הצהרת הקיוסק (--with-gui) ------------------------------------------------
 # שתי רשימות ולא אחת, כי הן נכשלות בשתי נקודות שונות בזמן: חבילה שאין
@@ -124,7 +173,8 @@ BINARIES=(curl jq zstd pv sgdisk blockdev sha256sum od hdparm ntfsresize openssl
           e2fsck resize2fs btrfs xfs_growfs
           udp-receiver udp-sender partclone.ntfs partclone.fat partclone.ext4
           partclone.btrfs partclone.dd
-          dropbear dropbearkey)
+          dropbear dropbearkey
+          dmidecode)
 
 if [ "$SKIP_APT" -eq 0 ]; then
     export DEBIAN_FRONTEND=noninteractive
@@ -132,7 +182,13 @@ if [ "$SKIP_APT" -eq 0 ]; then
         busybox-static zstd partclone udpcast gdisk curl jq pv \
         ntfs-3g libhivex-dev hdparm coreutils util-linux openssl \
         e2fsprogs btrfs-progs xfsprogs cpio gzip gcc libc6-dev dropbear-bin ethtool \
-        smartmontools
+        smartmontools dmidecode
+    # #1050: the toolbox delta -- only what the selection needs, or nothing.
+    if [ "${#TOOL_PKGS[@]}" -gt 0 ]; then
+        echo "tools: installing ${TOOL_PKGS[*]}"
+        apt-get install -y --no-install-recommends "${TOOL_PKGS[@]}" \
+            || { echo "tools: apt-get install of the toolbox packages failed" >&2; exit 1; }
+    fi
 fi
 
 # ‏`$TMPDIR` ולא `/tmp` קשיח: עץ הבנייה הוא מאות MB לפני הדחיסה, ועל
@@ -258,6 +314,44 @@ done
 # The cache is a genuine optimisation -- glibc falls back to gconv-modules.
 if [ -e "$GCONV_SRC/gconv-modules.cache" ]; then
     cp -L "$GCONV_SRC/gconv-modules.cache" "$ROOT$GCONV_SRC/gconv-modules.cache"
+fi
+
+# --- tools: framework (#649) -------------------------------------------------
+# The IT toolbox: agent/lib/tools.sh and every agent/lib/tools_<domain>.sh
+# ride with the lib/*.sh glob above, so a new domain module is packed by
+# existing -- this gate proves it landed. The framework's built-in tools need
+# dmidecode (in BINARIES and in the apt list, so tests/test_agent.py
+# cross-checks it) and smartctl (packed since #652).
+for _t in "$AGENT_DIR"/lib/tools_*.sh "$AGENT_DIR/lib/toolbins.sh"; do
+    [ -f "$_t" ] || continue
+    [ -s "$ROOT/usr/lib/imagectl/$(basename "$_t")" ] \
+        || { echo "tools: $(basename "$_t") was not packed" >&2; exit 1; }
+done
+[ -x "$ROOT/usr/bin/dmidecode" ] || copy_bin dmidecode
+
+# --- tools: the selection (#1050) ----------------------------------------------
+# The binaries TOOL_BINS planned above, each with its ldd closure (copy_bin
+# stops the build on a missing one -- a selected tool that is not on the
+# builder is a failed build, not an empty row on the station). The selection
+# file itself is what the station filters by: no file, no tools.
+for _tb in "${TOOL_BINS[@]}"; do
+    copy_bin "$_tb"
+    if [ "$_tb" = tpm2_clear ]; then
+        # libtss2-tctildr picks the kernel-device transport with dlopen, so
+        # ldd on tpm2_clear cannot see it; without it every tpm2_* call fails
+        # "no TCTI" on a machine whose TPM is right there.
+        _tcti=$(ldconfig -p | awk '/libtss2-tcti-device\.so/{print $NF; exit}')
+        [ -n "$_tcti" ] && [ -f "$_tcti" ] \
+            || { echo "tools: tpm2_clear packed but libtss2-tcti-device.so is missing" >&2; exit 1; }
+        mkdir -p "$ROOT$(dirname "$_tcti")"
+        cp -L "$_tcti" "$ROOT$_tcti"
+        copy_libs "$_tcti"
+    fi
+done
+if [ -n "$TOOLS_SELECTION_FILE" ]; then
+    install -m 0644 "$TOOLS_SELECTION_FILE" "$ROOT/etc/imagectl/tools-selection.json"
+    [ -s "$ROOT/etc/imagectl/tools-selection.json" ] \
+        || { echo "tools: tools-selection.json was not packed" >&2; exit 1; }
 fi
 
 cat > "$ROOT/etc/imagectl/udhcpc.script" << 'EOF'

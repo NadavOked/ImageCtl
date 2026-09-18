@@ -30,9 +30,10 @@ die() { printf '%s\n' "nftables-rules: $*" >&2; exit 2; }
 
 usage() {
     cat <<'EOF'
-Usage: nftables-rules.sh --deploy-if IF --servers-if IF [options]
+Usage: nftables-rules.sh --servers-if IF [--deploy-if IF] [options]
 
-  --deploy-if IF          כרטיס וילן ההפצה (חובה)
+  --deploy-if IF          כרטיס וילן ההפצה; בלעדיו (#1088: טרם הוגדר מהקונסולה)
+                          נכתבים כללי וילן השרתים בלבד, וההפצה סגורה
   --servers-if IF         כרטיס וילן השרתים (חובה)
   --primary-ip IP         כתובת הראשי — רק במשני; פותח 8443 ממנה בלבד
   --mcast-ports A-B       טווח UDP של udpcast (ברירת מחדל 9000-9001)
@@ -58,7 +59,6 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-[ -n "$DEPLOY_IF" ] || die "--deploy-if is required"
 [ -n "$SERVERS_IF" ] || die "--servers-if is required"
 
 # שמות כרטיסים נכנסים ל-nft כמחרוזת מצוטטת. תו שיכול לשבור את הציטוט
@@ -83,6 +83,26 @@ if [ -n "$PRIMARY_IP" ]; then
         [0-9]*.[0-9]*.[0-9]*.[0-9]*) ;;
         *) die "--primary-ip must be an IPv4 address (got: $PRIMARY_IP)" ;;
     esac
+fi
+
+# ‏#1088: כללי וילן ההפצה רק כשיש כרטיס הפצה. בלעדיו — הערה במקומם, וההפצה
+# סגורה עד שהקונסולה תריץ את המחולל שוב עם --deploy-if (server/deploy_net.py).
+if [ -n "$DEPLOY_IF" ]; then
+    DEPLOY_RULES="		# --- וילן ההפצה (${DEPLOY_IF}) ---
+		# DHCP: מקור ראשוני עשוי להיות 0.0.0.0 — לא דורשים כתובת קיימת.
+		iifname \"${DEPLOY_IF}\" udp dport 67 accept
+		# TFTP: קריאת shim/GRUB. העברת הנתונים היא related אם nf_conntrack_tftp טעון.
+		iifname \"${DEPLOY_IF}\" udp dport 69 accept
+		# סוכן (hello/boot/images) וקיוסק — HTTP על כרטיס ההפצה בלבד.
+		iifname \"${DEPLOY_IF}\" tcp dport ${AGENT_PORT} accept
+		iifname \"${DEPLOY_IF}\" tcp dport ${KIOSK_PORT} accept
+		# מולטיקאסט udpcast: portbase ו-portbase+1 (ברירת מחדל 9000-9001, server/sender.py).
+		iifname \"${DEPLOY_IF}\" udp dport ${MCAST_PORTS} accept
+		# WoL (UDP 9) הוא יוצא — chain output ב-accept, אין כלל כניסה."
+else
+    DEPLOY_RULES="		# --- וילן ההפצה: טרם הוגדר (#1088) ---
+		# אין כרטיס הפצה — DHCP/TFTP/סוכן/קיוסק/מולטיקאסט סגורים. הקונסולה
+		# כותבת את הקובץ הזה מחדש עם הכרטיס כשמודלק עליו DHCP."
 fi
 
 # כלל 8443 רק כשיש כתובת ראשי — אחרת הראשי יוזם החוצה, ואין מה לפתוח.
@@ -117,17 +137,7 @@ table inet imagectl {
 		icmp type { echo-request, echo-reply, destination-unreachable, time-exceeded } accept
 		icmpv6 type { echo-request, echo-reply, destination-unreachable, packet-too-big, time-exceeded, nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } accept
 
-		# --- וילן ההפצה (${DEPLOY_IF}) ---
-		# DHCP: מקור ראשוני עשוי להיות 0.0.0.0 — לא דורשים כתובת קיימת.
-		iifname "${DEPLOY_IF}" udp dport 67 accept
-		# TFTP: קריאת shim/GRUB. העברת הנתונים היא related אם nf_conntrack_tftp טעון.
-		iifname "${DEPLOY_IF}" udp dport 69 accept
-		# סוכן (hello/boot/images) וקיוסק — HTTP על כרטיס ההפצה בלבד.
-		iifname "${DEPLOY_IF}" tcp dport ${AGENT_PORT} accept
-		iifname "${DEPLOY_IF}" tcp dport ${KIOSK_PORT} accept
-		# מולטיקאסט udpcast: portbase ו-portbase+1 (ברירת מחדל 9000-9001, server/sender.py).
-		iifname "${DEPLOY_IF}" udp dport ${MCAST_PORTS} accept
-		# WoL (UDP 9) הוא יוצא — chain output ב-accept, אין כלל כניסה.
+${DEPLOY_RULES}
 
 		# --- וילן השרתים (${SERVERS_IF}) ---
 		# קונסולה HTTPS — לא על כרטיס ההפצה.

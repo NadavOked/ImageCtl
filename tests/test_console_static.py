@@ -228,12 +228,13 @@ def test_static_includes_are_at_8_5():
     #1033 (גריד הקלונרים — מלבן אנכי, דיסקים מוערמים לפי SATA, שתי שורות
     בתיבת דיסק) = ‏9.0;
     #1071 (pull אימג' מהמשני לראשי) = ‏9.0;
-    #1080 (fingerprint SSH בכרטיס המכונה) — הגייט bk איחד את #1085ב/#1033/#1071/#1080 ל-‏9.1.
+    #1080 (fingerprint SSH בכרטיס המכונה) — הגייט bk איחד את #1085ב/#1033/#1071/#1080 ל-‏9.1;
+    #1088 (רשת ההפצה מהקונסולה — הערה בדף הרשת, ההדלקה הראשונה) = ‏9.2.
     שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
     versions = {float(v) for v in re.findall(r'\?v=(\d+\.\d+)"', page)}
-    assert versions == {9.1}, versions
+    assert versions == {9.2}, versions
 
 
 def test_old_images_page_code_is_gone():

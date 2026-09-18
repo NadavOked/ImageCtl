@@ -452,3 +452,38 @@ test('#1081 v1: classrooms flag off does not draw the classrooms box and hides p
   const deploy=run('networkPage(2)');
   assert.doesNotMatch(deploy,/class="name">ens20</,'proxy NIC is the classroom VLAN — hidden in v1');
 });
+
+// ‏#1088: רשת ההפצה מוגדרת מהקונסולה — מה הדף אומר לפני, ומה אחרי ההדלקה הראשונה.
+test('#1088 deploy network not configured: /net/deploy configured=false → note + tab text; a shape without configured is not "not configured"; the first DHCP enable toasts the restart',async()=>{
+  const none=NICS.map(n=>({...n,enabled:false,proxy:false,dhcp_live:{state:'off',checked:true,detail:''},dhcp_live_label:'כבוי'}));
+  const hint='רשת ההפצה לא הוגדרה — בחר כרטיס בדף הרשת, קבע לו כתובת סטטית והדלק עליו DHCP';
+  let t=await loaded({'/net/interfaces':none,'/net/deploy':{configured:false,source:'none',interface:null,url:null,hint}});
+  assert.equal(t.run('NET_DEPLOY.source'),'none');
+  let html=t.run('networkPage(0)'); balanced(html);
+  assert.match(html,new RegExp(hint+' — <a href="#" onclick="openNetwork\\(2\\);return false;">לשונית רשת הפצה</a>'));
+  html=t.run('networkPage(2)');
+  assert.match(html,/רשת ההפצה לא הוגדרה — בחר כרטיס למטה, קבע לו כתובת סטטית \(עריכת כתובת\) ואז "הגדר כרשת הפצה"/);
+  // הטופס של ההדלקה הראשונה אומר שזו הגדרת רשת ההפצה, והשמירה מדווחת על האתחול
+  t.run('netEditDhcp("ens18")');
+  const sh=t.run('sheets[sheets.length-1]');
+  assert.match(sh.note,/רשת ההפצה מוגדרת כאן <b>בפעם הראשונה<\/b>/);
+  t.fixtures['/net/interfaces/ens18']={ok:true,apply_error:null,interface:{},deploy:{ok:true,url:'http://10.44.9.10:8080',interface:'ens18',errors:[],restarting:true}};
+  await t.run('saveNic("ens18",{enabled:true,confirm:"ens18"})');
+  assert.match(t.run('toasts[toasts.length-1]'),/רשת ההפצה הוגדרה על ens18 \(http:\/\/10\.44\.9\.10:8080\) — השרת מתאתחל/);
+  assert.equal(t.run('NET_DEPLOY.configured'),true);
+  // השלמה חלקית — השגיאות נאמרות, לא נבלעות
+  t.fixtures['/net/interfaces/ens18'].deploy={ok:false,url:'http://10.44.9.10:8080',interface:'ens18',errors:['חומת אש: nft נפל'],restarting:false};
+  await t.run('saveNic("ens18",{enabled:true,confirm:"ens18"})');
+  assert.match(t.run('toasts[toasts.length-1]'),/חלק מההשלמה נכשל: חומת אש: nft נפל · השרת לא אותחל/);
+  // תשובה בלי configured (שרת ישן / fixture גנרי) אינה "לא הוגדרה" — ראיה חיובית בלבד
+  t=await loaded({'/net/interfaces':none});
+  html=t.run('networkPage(0)'); assert.doesNotMatch(html,/רשת ההפצה לא הוגדרה/);
+  html=t.run('networkPage(2)'); assert.match(html,/אין כרטיס מוגדר כרשת הפצה, ואין כרטיס שמשרת DHCP כרגע/);
+  t.run('netEditDhcp("ens18")'); assert.doesNotMatch(t.run('sheets[sheets.length-1]').note,/בפעם הראשונה/);
+  // כשההפצה מוגדרת (cli) — אין הערה ואין "בפעם הראשונה"
+  t=await loaded({'/net/interfaces':none,'/net/deploy':{configured:true,source:'cli',interface:'ens19',url:'http://10.44.9.10:8080',hint:null}});
+  assert.doesNotMatch(t.run('networkPage(0)'),/רשת ההפצה לא הוגדרה/);
+  // ‏/net/deploy שלא נקרא — נאמר, לא "מוגדר"
+  t=await loaded({'/net/interfaces':none,'/net/deploy':new Error('boom')});
+  assert.match(t.run('networkPage(0)'),/\/net\/deploy לא נקרא: boom/);
+});

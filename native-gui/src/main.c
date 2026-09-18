@@ -13,7 +13,8 @@
  *                    (capture | restore | room | classes | back | again |
  *                    capture-start | room-open | room-wake | room-start |
  *                    room-close | class-pick | class-start | class-close |
- *                    smart-replace | smart-rescue | smart-skip),
+ *                    smart-replace | smart-rescue | smart-skip |
+ *                    tool-list | tool-run|<id>|<arg>|<confirm>  (#649)),
  *                    then key=value detail lines, then an empty line.
  *   exit 0           after "restore" (the agent takes the disk);
  *   exit 1           could not start / render, or stopped by a signal.
@@ -157,6 +158,8 @@ static char *field_buf(App *a, int id, size_t *n) {
     case HIT_ROOM_CONFIRM:  *n = sizeof a->room_confirm;  return a->room_confirm;
     case HIT_RESTORE_CONFIRM: *n = sizeof a->restore_confirm; return a->restore_confirm;
     case HIT_CLASS_CONFIRM: *n = sizeof a->class_confirm; return a->class_confirm;
+    case HIT_TOOL_ARG:      *n = sizeof a->tool_arg;      return a->tool_arg;        /* #649 */
+    case HIT_TOOL_CONFIRM:  *n = sizeof a->tool_confirm;  return a->tool_confirm;
     default: *n = 0; return NULL;
     }
 }
@@ -182,6 +185,13 @@ static int fields_on(const App *a, int *out) {
     case SCREEN_RESTORE:
         out[n++] = HIT_RESTORE_CONFIRM;
         break;
+    case SCREEN_TOOLS:                                   /* #649: the confirm view only */
+        if (a->tools_view == TOOLS_CONFIRM && a->tool_sel >= 0 && a->tool_sel < a->ntools) {
+            const Tool *t = &a->tools[a->tool_sel];
+            if (t->args[0] && strncmp(t->args, "disk:", 5)) out[n++] = HIT_TOOL_ARG;
+            if (tools_risk_level(t->risk)) out[n++] = HIT_TOOL_CONFIRM;
+        }
+        break;
     default: break;
     }
     return n;
@@ -201,6 +211,7 @@ static void go_menu(App *a) {
     a->room_confirming = 0; a->room_target_set = 0;
     a->class_confirming = 0;
     a->menu_focus = -1;
+    a->tools_view = TOOLS_LIST; a->tool_sel = -1;          /* #649 */
 }
 
 /* An action of a live classroom round without a session: classes.js
@@ -234,8 +245,61 @@ static int choose_card(App *a, int id) {
     case HIT_ROOM:    a->mode = MODE_ROOM; a->room_confirming = 0; a->room_target_set = 0; a->image_sel = 0; emit1("room"); break;
     case HIT_DIRECT:  a->mode = MODE_DIRECT; a->room_confirming = 0; a->room_target_set = 0; a->nroom_selection = 0; emit1("direct"); break;   /* #715 */
     case HIT_CLASSES: a->mode = MODE_CLASSES; a->class_confirming = 0; emit1("classes"); break;
+    case HIT_TOOLS:                                       /* #649: ask the bridge for the list */
+        a->mode = MODE_TOOLS; a->tools_view = TOOLS_LIST; a->tool_sel = -1;
+        a->tool_error[0] = 0; a->tool_list_scroll = 0;
+        emit1("tool-list");
+        break;
     }
     return 0;
+}
+
+/* ---- #649: the toolbox ---------------------------------------------------------- */
+
+/* Send tool-run|<id>|<arg>|<confirm>; the bridge (tools.sh) checks the name
+ * again before any module runs -- this local check only saves a round trip.
+ * '|' and newlines cannot travel in the record and are refused here. */
+static void tool_run(App *a) {
+    if (a->tool_sel < 0 || a->tool_sel >= a->ntools) return;
+    const Tool *t = &a->tools[a->tool_sel];
+    int level = tools_risk_level(t->risk), disk = !strncmp(t->args, "disk:", 5);
+    char arg[96] = "", confirm[96];
+    if (disk) {
+        if (a->tool_disk_sel < 0 || a->tool_disk_sel >= a->st.ndisks) {
+            snprintf(a->tool_error, sizeof a->tool_error, "בחרו דיסק"); return;
+        }
+        snprintf(arg, sizeof arg, "%s", a->st.disks[a->tool_disk_sel].dev);
+    } else if (t->args[0]) {
+        snprintf(arg, sizeof arg, "%s", a->tool_arg); trim(arg);
+        if (!arg[0] || strpbrk(arg, "|\r\n ")) {
+            snprintf(a->tool_error, sizeof a->tool_error, "מלאו את השדה: %s (בלי רווחים)", t->args); return;
+        }
+    }
+    snprintf(confirm, sizeof confirm, "%s", a->tool_confirm); trim(confirm);
+    if (level) {
+        if (strpbrk(confirm, "|\r\n") || !confirm[0] ||
+            (a->tools_machine[0] && strcmp(confirm, a->tools_machine))) {   /* principle 7 */
+            snprintf(a->tool_error, sizeof a->tool_error, "הקלידו את שם המחשב בדיוק כפי שהוא רשום"); return;
+        }
+    } else confirm[0] = 0;
+    a->tool_error[0] = 0;
+    char line[400];
+    snprintf(line, sizeof line, "tool-run|%s|%s|%s", t->id, arg, confirm);
+    emit1(line);
+    a->tool_running = 1; a->tool_rc = -1; a->tool_spin = 0;
+    tool_output_set(a, "");
+    a->tools_view = TOOLS_OUTPUT;
+}
+
+/* A row was clicked: ro without an argument runs at once; anything else
+ * goes through the confirm view (argument and/or the machine name). */
+static void tool_open(App *a, int i) {
+    if (i < 0 || i >= a->ntools) return;
+    a->tool_sel = i; a->tool_disk_sel = -1; a->tool_arg[0] = a->tool_confirm[0] = a->tool_error[0] = 0;
+    const Tool *t = &a->tools[i];
+    if (!tools_risk_level(t->risk) && !t->args[0]) { tool_run(a); return; }
+    a->tools_view = TOOLS_CONFIRM;
+    a->focus = t->args[0] && strncmp(t->args, "disk:", 5) ? HIT_TOOL_ARG : HIT_TOOL_CONFIRM;
 }
 
 static void start_capture(App *a) {
@@ -455,6 +519,9 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
             room_select_range(a, mi, mi + 1);
             break;
         }
+        /* #649: a tool row, or a disk row of the confirm view */
+        if (id >= HIT_TOOL_BASE && id < HIT_TOOL_BASE + MAX_TOOLS) { tool_open(a, id - HIT_TOOL_BASE); break; }
+        if (id >= HIT_TOOL_DISK_BASE && id < HIT_TOOL_DISK_BASE + MAX_DISKS) { a->tool_disk_sel = id - HIT_TOOL_DISK_BASE; break; }
         if (id >= HIT_OPTION_BASE && id < HIT_OPTION_BASE + MAX_IMAGES + 1) {
             int i = id - HIT_OPTION_BASE;
             if (a->dd_open == HIT_FOLDER) a->folder_sel = i;
@@ -480,11 +547,11 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
         case HIT_THEME:  a->theme = a->theme == &THEME_DARK ? &THEME_LIGHT : &THEME_DARK; break;
         case HIT_USER: case HIT_PASS: case HIT_NAME: case HIT_DESC: case HIT_FOLDER_NEW:
         case HIT_ROOM_TARGET: case HIT_ROOM_CONFIRM: case HIT_CLASS_CONFIRM:
-        case HIT_RESTORE_CONFIRM:
+        case HIT_RESTORE_CONFIRM: case HIT_TOOL_ARG: case HIT_TOOL_CONFIRM:
             a->focus = id; break;
         case HIT_EYE:    a->show_pw = !a->show_pw; break;
         case HIT_SUBMIT: do_login(a, auth_cmd, demo); break;
-        case HIT_CAPTURE: case HIT_RESTORE: case HIT_ROOM: case HIT_DIRECT: case HIT_CLASSES: return choose_card(a, id);
+        case HIT_CAPTURE: case HIT_RESTORE: case HIT_ROOM: case HIT_DIRECT: case HIT_CLASSES: case HIT_TOOLS: return choose_card(a, id);
         case HIT_FOLDER: case HIT_ROOM_IMAGE: case HIT_RESTORE_IMAGE: a->dd_open = id; break;
         case HIT_NEWFOLDER:
             a->newfolder_shown = !a->newfolder_shown;
@@ -504,6 +571,23 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
         case HIT_SMART_REPLACE: emit_smart(a, "smart-replace"); break;
         case HIT_SMART_RESCUE:  emit_smart(a, "smart-rescue");  break;
         case HIT_SMART_SKIP:    emit_smart(a, "smart-skip");    break;
+        /* #649 */
+        case HIT_TOOL_LIST:  if (!a->tool_running) { a->tools_view = TOOLS_LIST; a->tool_error[0] = 0; } break;
+        case HIT_TOOL_RUN:   tool_run(a); break;
+        case HIT_TOOL_AGAIN:
+            if (a->tool_running || a->tool_sel < 0) break;
+            /* an argument or a typed name is asked again -- never replayed */
+            if (tools_risk_level(a->tools[a->tool_sel].risk) || a->tools[a->tool_sel].args[0])
+                 { a->tool_confirm[0] = 0; a->tools_view = TOOLS_CONFIRM; }
+            else tool_run(a);
+            break;
+        case HIT_TOOL_DOWN:
+            if (a->tools_view == TOOLS_OUTPUT) a->tool_scroll += 8; else a->tool_list_scroll += 6;
+            break;
+        case HIT_TOOL_UP:
+            if (a->tools_view == TOOLS_OUTPUT) { a->tool_scroll -= 8; if (a->tool_scroll < 0) a->tool_scroll = 0; }
+            else { a->tool_list_scroll -= 6; if (a->tool_list_scroll < 0) a->tool_list_scroll = 0; }
+            break;
         }
         break;
     }
@@ -624,7 +708,8 @@ static void sample_state(State *s) {
 }
 
 static const char *PNG_CARDS[] = { "login", "menu", "pick", "progress", "done", "room", "room-live",
-                                   "class", "class-live", "cloner", "message", "restore", "direct" };
+                                   "class", "class-live", "cloner", "message", "restore", "direct",
+                                   "tools", "tools-confirm", "tools-output" };
 
 /* Put the App in the state that routes to <card>; the flags that override
  * the route (message, task, round, session, done) are cleared first so a
@@ -650,6 +735,24 @@ static void png_setup(App *a, const State *base, const char *card) {
     else if (!strcmp(card, "message"))  { snprintf(a->st.msg_title, sizeof a->st.msg_title, "%s", base->msg_title);
                                           snprintf(a->st.msg_sub, sizeof a->st.msg_sub, "%s", base->msg_sub); }
     else if (!strcmp(card, "restore"))  { a->mode = MODE_RESTORE; if (base->nimages) a->restore_image_sel = 1; }
+    else if (!strncmp(card, "tools", 5)) {                                       /* #649 */
+        a->mode = MODE_TOOLS; a->tools_view = TOOLS_LIST; a->tool_sel = -1; a->tool_running = 0;
+        if (!a->ntools) tools_sample(a);
+        int wipe = -1, smart = -1;
+        for (int i = 0; i < a->ntools; i++) {
+            if (!strcmp(a->tools[i].id, "wipe")) wipe = i;
+            if (!strcmp(a->tools[i].id, "smart-health")) smart = i;
+        }
+        if (!strcmp(card, "tools-confirm")) {
+            a->tool_sel = wipe >= 0 ? wipe : 0; a->tools_view = TOOLS_CONFIRM; a->tool_disk_sel = base->ndisks ? 0 : -1;
+            snprintf(a->tool_confirm, sizeof a->tool_confirm, "BUILD-0"); a->focus = HIT_TOOL_CONFIRM;
+        } else if (!strcmp(card, "tools-output")) {
+            a->tool_sel = smart >= 0 ? smart : 0; a->tools_view = TOOLS_OUTPUT; a->tool_rc = 2;
+            tool_output_set(a, "/dev/sda (Samsung SSD 870 EVO 500GB): תקין -- SMART overall-health PASSED\n"
+                                "/dev/nvme0n1 (WD Blue SN580 1TB): לא הצלחנו לבדוק -- smartctl לא הצליח לקרוא את הדיסק (rc 2). זה לא \"תקין\".\n"
+                                "\nמה זה אומר: PASSED הוא הדיווח של הדיסק על עצמו, לא ערובה; כשל ב-SMART הוא ראיה מספקת להחלפה.\n");
+        }
+    }
 }
 
 static int render_png(App *a, const State *base, const char *prefix, int w, int h) {
@@ -671,7 +774,8 @@ static int render_png(App *a, const State *base, const char *prefix, int w, int 
         static const Screen want[] = { SCREEN_LOGIN, SCREEN_MENU, SCREEN_PICK, SCREEN_PROGRESS, SCREEN_DONE,
                                        SCREEN_ROOM, SCREEN_ROOM, SCREEN_CLASS, SCREEN_CLASS, SCREEN_CLONER, SCREEN_MESSAGE,
                                        SCREEN_RESTORE,
-                                       SCREEN_ROOM /* "direct" (#715): the room screen in MODE_DIRECT */ };
+                                       SCREEN_ROOM, /* "direct" (#715): the room screen in MODE_DIRECT */
+                                       SCREEN_TOOLS, SCREEN_TOOLS, SCREEN_TOOLS /* #649: list, confirm, output */ };
         /* One entry per card, or want[c] reads past the table -- that is exactly
          * what the lab saw when "direct" was added to PNG_CARDS alone. */
         _Static_assert(sizeof want / sizeof want[0] == sizeof PNG_CARDS / sizeof PNG_CARDS[0],
@@ -748,9 +852,15 @@ int main(int argc, char **argv) {
         return render_png(&a, &base, png, pw, ph);
     }
 
+    a.tool_sel = -1; a.tool_disk_sel = -1; a.tool_rc = -1;
     if (sf_state.path[0]) {
         if (state_poll(&sf_state, &a.st) < 0) return 1;   /* a missing file at start is a wrong invocation, say so */
         after_reload(&a);
+        /* #649: the toolbox files live next to the state file ($GUI_DIR) */
+        snprintf(a.tools_dir, sizeof a.tools_dir, "%s", sf_state.path);
+        char *slash = strrchr(a.tools_dir, '/');
+        if (slash) *slash = 0; else snprintf(a.tools_dir, sizeof a.tools_dir, ".");
+        tools_poll(&a);
     } else {
         after_reload(&a);
     }
@@ -801,6 +911,7 @@ int main(int argc, char **argv) {
          * file, sooner to take a toast down. */
         int timeout = 2000;
         if (a.toast[0]) { int left = (int)((a.toast_until - now_s()) * 1000) + 1; if (left < timeout) timeout = left > 0 ? left : 1; }
+        if (a.tool_running) { timeout = 120; a.tool_spin += 0.4; scene_dirty = 1; }   /* #649: the spinner turns */
         if (in) input_rescan(in);               /* pick up a late/hot-plugged keyboard or mouse */
         int n = in ? input_fill_pollfds(in, fds, 32) : 0;
         int r = poll(n ? fds : NULL, n, timeout);
@@ -820,6 +931,7 @@ int main(int argc, char **argv) {
             }
         }
         if (sf_state.path[0] && state_poll(&sf_state, &a.st) > 0) { after_reload(&a); scene_dirty = 1; }
+        if (tools_poll(&a)) scene_dirty = 1;                                        /* #649 */
     }
     if (in) input_close(in);
     cairo_surface_destroy(scene);

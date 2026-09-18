@@ -10,7 +10,7 @@ CFLAGS  += -D_GNU_SOURCE
 GUI_PKGS   = pangocairo cairo libdrm
 SMOKE_PKGS = pangocairo cairo harfbuzz fribidi
 
-GUI_SRC = src/main.c src/screens.c src/screens_capture.c src/screens_rounds.c src/screens_room.c src/screens_class.c src/screens_cloner.c src/screens_restore.c src/widgets.c \
+GUI_SRC = src/main.c src/screens.c src/screens_capture.c src/screens_rounds.c src/screens_room.c src/screens_class.c src/screens_cloner.c src/screens_restore.c src/screens_tools.c src/widgets.c \
           src/state.c src/text.c src/draw.c src/theme.c src/backend.c src/input.c
 GUI_HDR = src/screens_rounds.h src/ui.h src/widgets.h src/state.h src/text.h src/draw.h src/theme.h src/backend.h src/input.h
 

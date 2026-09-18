@@ -118,6 +118,7 @@ native-gui/
   src/screens.c        header, #st-login, #st-menu, the poll() routing rule, draw entry
   src/screens_capture.c  #st-pick, #st-progress, #st-done, #st-message
   src/screens_rounds.c   #st-room, #st-class (room.js / classes.js bodies)
+  src/screens_tools.c    #649: the IT toolbox -- list / confirm / output views, and the tools + tool-result file pollers
   src/state.{h,c}      the --state file: key=value parser, mtime polling
   src/backend.{h,c}    DRM dumb buffer / fbdev / mem (a framebuffer file, #835), VT to graphics mode and back
   src/input.{h,c}      evdev keyboard (US map), mouse, touch; keyboards grabbed
@@ -182,6 +183,8 @@ stdout is line-buffered so a record arrives as it happens.
 | `class-start` | התחל עכשיו | — | POST `/api/console/sessions/<id>/start` |
 | `class-close` | עצור סבב, second press | `confirm=<typed>` | POST `/api/console/sessions/<id>/close {confirm_name}` (#581) |
 | `restore-start` | התחל שחזור | `image=<id>`, `confirm=<typed>` | #706/#1073: hand-off to the agent (`handoff` file) — the bridge re-reads the machine's registered name from `GET /api/v1/agent/state` and accepts only a `confirm` equal to it; the agent re-validates the image against fresh `allowed_images`, then `single_restore_run` erases the internal disk and reboots |
+| `tool-list` | the "כלים" button of the build menu (#649) | — | the bridge writes `$GUI_DIR/tools` (`tools_gui_list` in `agent/lib/tools.sh`) |
+| `tool-run\|<id>\|<arg>\|<confirm>` | הרץ on a tool's confirm view, or a `ro` row with no argument (#649) | — (the token carries the fields; `\|` and newlines never travel) | `tools_gui_run`: the framework refuses `rw`/`destroy` unless `confirm` equals the machine's registered name, runs the domain module, and writes `$GUI_DIR/tool-result` |
 
 Local validation stays local, as in the HTML: "בחרו כונן ותנו שם לאימג'" and
 "בחרו אימג' וקבעו יעד כוננים" are shown without a record.
@@ -238,6 +241,51 @@ failed` or a percentage). `pct` -1 with `moving` 1 is "נקראו בייטים �
 ידוע", -1 with 0 is "טרם נקראו בייטים · הסך לא ידוע" — `progress.js
 Progress.view`, ported in `widgets.c`.
 
+### #649: the toolbox files (`$GUI_DIR/tools`, `$GUI_DIR/tool-result`)
+
+The IT toolbox is a fourth screen of the **build machine only** -- the
+"כלים" button at the menu card's top-left (the RTL inline end), not one of
+the choice cards; the cloner and class screens route before the menu and
+never show it. Its data is not in the state file: two files **next to** it
+(the directory of `--state` is `$GUI_DIR`), polled by mtime/size/inode like
+the state file itself.
+
+```
+# $GUI_DIR/tools -- written by the bridge on tool-list
+machine=<the name the operator must type for rw/destroy>
+<id>|<domain>|<title>|<risk>|<args>      # one row per tool, tools_list order
+
+# $GUI_DIR/tool-result -- unlinked at the start of a run, written at its end
+<id>|<rc>|<path of the output text>|<seq>
+```
+
+* `domain` groups the list under דיסקים / רשת / Windows / אתחול / חומרה
+  (`disk` / `net` / `windows` / `boot` / `hw`; an unknown domain is its own
+  heading, named by the word). `risk` draws the tag: `ro` grey "קריאה
+  בלבד", `rw` orange "משנה דיסק", `destroy` red "הרסני" -- and any other
+  word is treated as `destroy`, as `tools.sh` does.
+* `args` is the argument's label. **`disk:<label>`** makes the confirm view a
+  disk picker over the `disk=` records (the chosen `dev` is sent); any other
+  non-empty text is a free field (no spaces, no `|`). Empty = no argument.
+* A `ro` tool with no argument runs on the click; everything else passes the
+  confirm view -- the argument, and for `rw`/`destroy` the typed machine
+  name (principle 7; the GUI compares locally to save a round trip, and the
+  bridge compares again before any module runs).
+* `rc` words: 0 הסתיים (success tokens) · 1 נמצאה בעיה · **2 לא הצלחנו
+  לבדוק (warning tokens, never green -- principle 5)** · 3 האישור לא תואם ·
+  4 כלי לא מוכר. `seq` increases per run so an identical result of a second
+  run is still seen as new; a record for another tool, or with a seq already
+  consumed, is ignored. While waiting, the output view shows "רץ…" with a
+  spinner (the loop wakes every 120 ms only then).
+* No wheel in `input.c`: the list and the output scroll with למעלה/למטה
+  buttons in the footer, shown only when something is clipped.
+* Empty list after the file was read: "לא נבחרו כלים בשרת (תשתית › ארגז כלים)" (#1050: the
+  station offers only the selection saved in the console); before
+  the bridge answered: "טוען את רשימת הכלים…" -- two states, not one.
+* `--png` cards `tools`, `tools-confirm`, `tools-output` use a built-in
+  sample list (`tools_sample`); a real `$GUI_DIR/tools` is read only when the
+  live process runs with `--state`.
+
 ### Routing (the state machine)
 
 `app_route()` in `screens.c` is `station.js poll()` in its order, run before
@@ -250,7 +298,8 @@ every draw:
    קליטה נוספת.
 4. Mode classes and (signed in or `session=`) → `#st-class`.
 5. Not signed in → `#st-login`.
-6. Mode room → `#st-room`; capture → `#st-pick`; else `#st-menu`.
+6. Mode room → `#st-room`; capture → `#st-pick`; tools → the toolbox (#649);
+   else `#st-menu`.
 
 The menu's four cards set the mode (capture → pick, room → room, classes →
 class) and emit their word; `restore` exits. Restore has no confirm or pick

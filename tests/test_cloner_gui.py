@@ -503,8 +503,7 @@ def test_native_gui_builds_and_routes_the_cloner_screen(tmp_path):
          'set -e; cd "$1"; '
          'cc -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE '
          '$(pkg-config --cflags pangocairo cairo libdrm) '
-         '-o "$2" src/main.c src/screens.c src/screens_capture.c src/screens_rounds.c src/screens_room.c src/screens_class.c src/screens_cloner.c src/screens_restore.c '
-         'src/widgets.c src/state.c src/text.c src/draw.c src/theme.c src/backend.c src/input.c '
+         '-o "$2" $(make -s -f Makefile print-gui-src) '
          '$(pkg-config --libs pangocairo cairo libdrm) -lm',
          "_", posix(GUI), posix(binary)],
         capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL,
@@ -546,8 +545,7 @@ def _build_gui(tmp_path: Path) -> Path:
          'set -e; cd "$1"; '
          'cc -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE '
          '$(pkg-config --cflags pangocairo cairo libdrm) '
-         '-o "$2" src/main.c src/screens.c src/screens_capture.c src/screens_rounds.c src/screens_room.c src/screens_class.c src/screens_cloner.c src/screens_restore.c '
-         'src/widgets.c src/state.c src/text.c src/draw.c src/theme.c src/backend.c src/input.c '
+         '-o "$2" $(make -s -f Makefile print-gui-src) '
          '$(pkg-config --libs pangocairo cairo libdrm) -lm',
          "_", posix(GUI), posix(binary)],
         capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL,

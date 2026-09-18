@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import socket
 import time
 from typing import Callable
 
@@ -39,6 +40,9 @@ def default_hooks() -> Hooks:
         "interfaces": dhcp.list_interfaces,
         "netcfg_now": time.time,
         "netcfg_boot_id": netcfg_rollback.boot_id,
+        # ‏#1088: השם שלקוח DHCP שולח (אופציה 12) — כדי שה-DNS של המכללה
+        # יפתור `imagectl` לכתובת שהתקבלה.
+        "hostname": socket.gethostname,
         # מאיזו כתובת של השרת הגיעה הבקשה. ‏uvicorn שם ב-scope את
         # ה-sockname של החיבור — כלומר הכתובת שהקונסולה באמת מדברת
         # אליה, ולא זו שהוגדרה בשורת הפקודה.
@@ -207,7 +211,7 @@ def create_netcfg_router(ctx: ServerContext, state_dir,
         return {
             "path": str(netcfg_host.conf_path(name)),
             "before": hooks["netcfg_read_conf"](name, netcfg_host.INTERFACES_DIR) or "",
-            "after": netcfg.render(cfg),
+            "after": netcfg.render(cfg, hostname=hooks["hostname"]()),
             "resolv_path": netcfg_host.RESOLV_CONF,
             "resolv_after": netcfg.render_resolv(sorted(after, key=lambda c: c.name)),
             "problems": check(cfg),
@@ -290,7 +294,8 @@ def create_netcfg_router(ctx: ServerContext, state_dir,
         """כותב, מחיל, ואז **קורא בחזרה**. ‏ok נקבע רק מהקריאה."""
         configs = sorted([c for c in all_configs() if c.name != name] + [cfg],
                          key=lambda c: c.name)
-        errors = [hooks["netcfg_write_conf"](name, netcfg.render(cfg),
+        errors = [hooks["netcfg_write_conf"](name,
+                                             netcfg.render(cfg, hostname=hooks["hostname"]()),
                                              netcfg_host.INTERFACES_DIR),
                   hooks["netcfg_write_resolv"](netcfg.render_resolv(configs),
                                                netcfg_host.RESOLV_CONF)]

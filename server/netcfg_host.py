@@ -96,6 +96,100 @@ def sourced(main: str | Path = INTERFACES_MAIN,
                for line in text.splitlines())
 
 
+# --- קליטת כרטיס מהקובץ הראשי (המתקין, #1088) ---------------------------------
+
+
+def comment_out_stanzas(main_text: str, name: str) -> tuple[str, bool]:
+    """מסיר (בהערה, לא במחיקה) את ההגדרות של `name` מ-`/etc/network/interfaces`.
+
+    שתי הגדרות לאותו כרטיס — של מתקין דביאן בקובץ הראשי ושלנו ב-
+    ‏`interfaces.d` — הן שני `ifup` על אותו כרטיס: ‏dhclient כפול, או
+    ‏`RTNETLINK: File exists` על כתובת סטטית שכבר שם. ההערה נשארת קריאה
+    (`# imagectl: ...`) כדי שמי שפותח את הקובץ ידע מה היה ולמה.
+
+    מחזיר ‏(הטקסט החדש, האם משהו השתנה). `auto`/`allow-hotplug` שמונים
+    כמה כרטיסים — רק השם שלנו מוסר מהם.
+    """
+    out: list[str] = []
+    changed = False
+    in_stanza = False
+    for line in main_text.splitlines():
+        stripped = line.strip()
+        words = stripped.split()
+        if in_stanza:
+            # גוף ה-iface נמשך בשורות מוזחות (או ריקות/הערות ביניהן).
+            if stripped and not line[:1].isspace() and not stripped.startswith("#"):
+                in_stanza = False
+            else:
+                if stripped:
+                    out.append(f"# imagectl: {line}")
+                    changed = True
+                else:
+                    out.append(line)
+                continue
+        if len(words) >= 2 and words[0] in ("auto", "allow-hotplug") and name in words[1:]:
+            rest = [w for w in words[1:] if w != name]
+            out.append(f"# imagectl: {line}")
+            if rest:
+                out.append(f"{words[0]} {' '.join(rest)}")
+            changed = True
+            continue
+        if len(words) >= 2 and words[0] == "iface" and words[1] == name:
+            out.append(f"# imagectl: {line}")
+            changed = True
+            in_stanza = True
+            continue
+        out.append(line)
+    return "\n".join(out) + ("\n" if main_text.endswith("\n") else ""), changed
+
+
+def adopt_interface(name: str, text: str, *, main: str | Path = INTERFACES_MAIN,
+                    root: str | Path = INTERFACES_DIR,
+                    backup_suffix: str | None = None) -> tuple[list[str], str | None]:
+    """המתקין (‏#1088) מעביר את כרטיס השרתים לניהול ImageCtl: הקובץ הראשי
+    מפסיק להגדיר אותו (בהערה, עם גיבוי), ‏`interfaces.d` נטען אם לא היה,
+    והקובץ שלנו נכתב. מחזיר ‏(מה נעשה, שגיאה או None). **לא** מריץ
+    ‏`ifup` — המתקין מחובר דרך הכרטיס הזה; ההגדרה נכנסת באתחול הבא, או
+    מהקונסולה.
+    """
+    notes: list[str] = []
+    main_path = Path(main)
+    try:
+        main_text = main_path.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        main_text = ""
+    except OSError as exc:
+        return notes, f"לא ניתן לקרוא את {main_path}: {exc.strerror or exc}"
+    new_text, stanza_changed = comment_out_stanzas(main_text, name)
+    changed = stanza_changed
+    marker = str(root).rstrip("/")
+    if not any(l.strip().startswith("source") and marker in l for l in new_text.splitlines()):
+        new_text = new_text.rstrip("\n") + f"\n\n# imagectl (#1088): interfaces.d was not sourced\nsource {marker}/*\n"
+        changed = True
+        notes.append(f"{main_path}: נוספה שורת source ל-{marker}")
+    if changed:
+        if main_text:
+            from datetime import datetime
+            suffix = backup_suffix or datetime.now().strftime("%Y%m%d%H%M%S")
+            backup = main_path.with_name(main_path.name + f".pre-imagectl.{suffix}")
+            try:
+                backup.write_text(main_text, encoding="utf-8")
+            except OSError as exc:
+                return notes, f"לא ניתן לגבות את {main_path}: {exc.strerror or exc}"
+            notes.append(f"{main_path}: גיבוי ב-{backup.name}")
+        try:
+            main_path.parent.mkdir(parents=True, exist_ok=True)
+            main_path.write_text(new_text, encoding="utf-8")
+        except OSError as exc:
+            return notes, f"לא ניתן לכתוב את {main_path}: {exc.strerror or exc}"
+        if stanza_changed:
+            notes.append(f"{main_path}: ההגדרה של {name} הועברה להערה")
+    error = write_conf(name, text, root)
+    if error is None:
+        notes.append(f"נכתב {conf_path(name, root)}")
+    return notes, error
+
+
 # --- החלה --------------------------------------------------------------------
 
 

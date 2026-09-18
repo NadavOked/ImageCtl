@@ -130,13 +130,28 @@ def test_deploy_opens_dhcp_tftp_and_not_ssh() -> None:
 
 
 @needs_bash
-def test_missing_deploy_if_fails() -> None:
+def test_without_deploy_if_only_the_servers_vlan_opens() -> None:
+    """‏#1088: במסירה רשת ההפצה טרם הוגדרה — המחולל רץ בלי --deploy-if,
+    פותח את וילן השרתים (קונסולה, SSH) ו**סוגר** את כל פורטי ההפצה.
+    הקונסולה מריצה אותו שוב עם הכרטיס כשמודלק DHCP (deploy_net)."""
+    text = generate("--servers-if", "eth-srv")
+    assert 'iifname "eth-srv" tcp dport 8081 accept' in text
+    assert 'iifname "eth-srv" tcp dport 22 accept' in text
+    for closed in ("udp dport 67", "udp dport 69", "tcp dport 8080",
+                   "tcp dport 8082", "udp dport 9000-9001"):   # פורט-הפצה-מכוון: סגור בלי כרטיס
+        assert closed not in text, closed
+    assert "1088" in text
+    assert "policy drop" in text
+
+
+@needs_bash
+def test_missing_servers_if_still_fails() -> None:
     proc = subprocess.run(
-        [BASH, str(GEN), "--servers-if", "eth-srv"],
+        [BASH, str(GEN), "--deploy-if", "eth-deploy"],
         capture_output=True, text=True, encoding="utf-8", stdin=subprocess.DEVNULL,
     )
     assert proc.returncode != 0
-    assert "deploy-if" in proc.stderr
+    assert "servers-if" in proc.stderr
 
 
 @requires_native("nft", why="בדיקת תחביר nftables על דביאן — דילוג בווינדוס")
@@ -162,10 +177,12 @@ def test_installer_installs_nftables_and_has_no_firewall_flag() -> None:
 
 def test_installer_binds_tftp_to_the_deploy_interface() -> None:
     """R20-F1: TFTP בלי interface= מאזין על כל הכרטיסים. המתקין כותב
-    את ההגבלה בקובץ הבסיס (imagectl.conf, שורה ~449)."""
+    את ההגבלה בקובץ הבסיס (imagectl.conf) כשיש כרטיס הפצה — ובלעדיו
+    (#1088) אינו מפעיל dnsmasq כלל, עד שהקונסולה תכתוב את השורה."""
     text = INSTALLER.read_text(encoding="utf-8")
     assert "interface=$IFACE" in text
     assert "bind-interfaces" in text
+    assert "systemctl disable --now dnsmasq" in text
 
 
 def test_upgrade_does_not_enable_nftables() -> None:

@@ -22,6 +22,10 @@
 #define MAX_CLASSES  16
 #define MAX_DRAWERS   8
 #define MAX_ROOM_SELECTIONS (MAX_MACHINES * MAX_DRAWERS)
+/* #649: the IT toolbox -- rows of $GUI_DIR/tools, and one tool's output. */
+#define MAX_TOOLS      64
+#define TOOL_OUT_MAX   32768
+#define TOOL_OUT_LINES 512
 
 enum {
     HIT_NONE = 0,
@@ -66,6 +70,15 @@ enum {
     HIT_SMART_REPLACE,
     HIT_SMART_RESCUE,
     HIT_SMART_SKIP,
+    /* #649: the toolbox (native-only; build machine's menu) */
+    HIT_TOOLS,          /* the "כלים" button at the menu's top-left */
+    HIT_TOOL_LIST,      /* back to the list from confirm / output */
+    HIT_TOOL_RUN,       /* confirm view: run */
+    HIT_TOOL_AGAIN,     /* output view: run again */
+    HIT_TOOL_ARG,       /* confirm view: the free-text argument field */
+    HIT_TOOL_CONFIRM,   /* confirm view: the typed machine name (principle 7) */
+    HIT_TOOL_UP,        /* list / output: scroll */
+    HIT_TOOL_DOWN,
     /* ranges: base + index */
     HIT_DISK_BASE   = 100,   /* .disk-card[data-dev] */
     HIT_CLASS_BASE  = 200,   /* .menu-card[data-class] */
@@ -74,19 +87,24 @@ enum {
     HIT_ROOM_DISK_BASE = 400,
     /* #714 machine name: +machine_index -- toggles all that machine's disks */
     HIT_ROOM_MACHINE_BASE = 700,
+    /* #649: a tool row (+index into a->tools) and a disk row of the
+     * confirm view (+index into st.disks) */
+    HIT_TOOL_BASE = 800,
+    HIT_TOOL_DISK_BASE = 900,
 };
 
 typedef struct { Rect r; int id; } Hit;
 
 typedef enum {
     SCREEN_LOGIN, SCREEN_MENU, SCREEN_PICK, SCREEN_PROGRESS, SCREEN_DONE,
-    SCREEN_ROOM, SCREEN_CLASS, SCREEN_CLONER, SCREEN_MESSAGE, SCREEN_RESTORE
+    SCREEN_ROOM, SCREEN_CLASS, SCREEN_CLONER, SCREEN_MESSAGE, SCREEN_RESTORE,
+    SCREEN_TOOLS        /* #649 */
 } Screen;
 
 /* station.js MODE: null (menu) / "capture" / "room" / "classes"; #706 adds restore */
 /* #715: MODE_DIRECT is the room screen without an image picker -- the source
  * is this machine's disk; open emits the chosen drawers as target_slots. */
-typedef enum { MODE_MENU, MODE_CAPTURE, MODE_ROOM, MODE_CLASSES, MODE_RESTORE, MODE_DIRECT } Mode;
+typedef enum { MODE_MENU, MODE_CAPTURE, MODE_ROOM, MODE_CLASSES, MODE_RESTORE, MODE_DIRECT, MODE_TOOLS } Mode;
 
 typedef enum { TASK_NONE, TASK_PENDING, TASK_RUNNING, TASK_DONE, TASK_FAILED } TaskState;
 
@@ -166,6 +184,14 @@ typedef struct State {
     char form_error[160], room_error[160], class_error[160], toast[160];
 } State;
 
+/* #649: one row of $GUI_DIR/tools (id|domain|title|risk|args). risk is
+ * ro / rw / destroy; anything else is treated as destroy, like tools.sh. */
+typedef struct { char id[48], domain[24], title[120], risk[12], args[96]; } Tool;
+typedef enum { TOOLS_LIST, TOOLS_CONFIRM, TOOLS_OUTPUT } ToolsView;
+/* A polled file's identity: mtime (with the nanoseconds tmpfs keeps), size
+ * and inode -- the bridge unlinks and recreates tool-result per run. */
+typedef struct { long sec, nsec, size, ino; int seen; } FileMark;
+
 typedef struct App {
     Screen screen;              /* derived by app_route() from the rest */
     const Theme *theme;
@@ -222,6 +248,24 @@ typedef struct App {
 
     int dd_open;                /* HIT_FOLDER | HIT_ROOM_IMAGE, or 0 */
 
+    /* #649: the toolbox. The list and the result are two files next to the
+     * state file ($GUI_DIR/tools, $GUI_DIR/tool-result), polled like it. */
+    char tools_dir[512];        /* dirname of --state; empty = no bridge */
+    Tool tools[MAX_TOOLS];      int ntools;
+    char tools_machine[64];     /* machine= header: the name to type */
+    int tools_loaded;           /* the tools file was read at least once */
+    FileMark tools_mark, result_mark;
+    ToolsView tools_view;
+    int tool_sel;               /* index into tools, -1 = none */
+    int tool_disk_sel;          /* confirm view disk picker: index into st.disks, -1 */
+    char tool_arg[96], tool_confirm[96], tool_error[160];
+    int tool_list_scroll, tool_scroll;
+    int tool_running, tool_rc;  /* rc -1 = no result yet */
+    long tool_seq;              /* seq of the last result consumed */
+    double tool_spin;           /* spinner angle while running */
+    char tool_out[TOOL_OUT_MAX];
+    int tool_line_off[TOOL_OUT_LINES]; int tool_nlines;
+
     char toast[160];            /* #toast; empty = hidden */
     double toast_until;         /* monotonic seconds */
 
@@ -256,5 +300,16 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h);
 void screen_class(App *a, cairo_t *cr, double W, double H, double head_h);
 void screen_cloner(App *a, cairo_t *cr, double W, double H, double head_h);
 void screen_restore(App *a, cairo_t *cr, double W, double H, double head_h);
+void screen_tools(App *a, cairo_t *cr, double W, double H, double head_h);
+
+/* #649 (screens_tools.c): the tools / tool-result files next to --state.
+ * tools_poll re-reads what changed; returns 1 when the scene must redraw.
+ * tools_parse fills a->tools from text (the same parser, testable by
+ * --png with a state file). tools_risk_level: 0 ro, 1 rw, 2 destroy. */
+int tools_poll(App *a);
+void tools_parse(App *a, const char *text);
+int tools_risk_level(const char *risk);
+void tools_sample(App *a);
+void tool_output_set(App *a, const char *text);
 
 #endif

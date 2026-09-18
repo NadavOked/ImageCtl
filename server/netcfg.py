@@ -294,11 +294,15 @@ _HEAD = [
 ]
 
 
-def render(cfg: NetConfig) -> str:
+def render(cfg: NetConfig, hostname: str = "") -> str:
     """הקובץ שנכתב ל-`/etc/network/interfaces.d/imagectl-<שם>`.
 
     ‏ifupdown, ולא netplan/NetworkManager/systemd-networkd — כך המכונה
     בנויה, ויש כבר תקדים בתיקייה הזו.
+
+    ‏`hostname` (‏#1088): בלקוח DHCP נכתב `hostname <שם>` — ifupdown מעביר
+    אותו ל-dhclient כאופציה 12, וכך ה-DNS של המכללה פותר `imagectl`
+    לכתובת שהתקבלה. ריק = לא נכתב (כרטיס סטטי, או קורא שלא מסר שם).
 
     שתי החלטות ששוות הסבר:
 
@@ -318,6 +322,8 @@ def render(cfg: NetConfig) -> str:
     lines += ["", f"auto {cfg.name}"]
     if cfg.mode == MODE_DHCP:
         lines.append(f"iface {cfg.name} inet dhcp")
+        if hostname.strip():
+            lines.append(f"    hostname {hostname.strip()}")
         return "\n".join(lines) + "\n"
     lines += [
         f"iface {cfg.name} inet static",
