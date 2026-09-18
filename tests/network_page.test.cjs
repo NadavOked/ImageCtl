@@ -416,3 +416,27 @@ test('probe ("מי עוד עונה"): checked=false is "the check did not run", 
   assert.equal(t.run('JSON.stringify(toasts)'),JSON.stringify(['בדיקת DHCP נכשלה: timeout'])); assert.match(t.run('networkPage(2)'),/class="st unk">הבדיקה נכשלה \(\d\d:\d\d\): timeout</);
   assert.match(t.run('networkPage(0)'),/הבדיקה נכשלה/,'the selected-NIC card in the diagram shows the same result');
 });
+
+/* 18/09 — מודל האתרים (הכרעת נדב, interfaces.md §18 "חוקי חומת האש בין האתרים"): לכל אתר שלושה וילנים — שרתים / הפצה / כיתות,
+   ואין וילן "ניהול" נפרד. המשני יושב מאחורי FW משלו, הראשי יוזם ורק 8443 פתוח ביניהם — ולכן הוא לא לקוח על הוילן אלא "מעבר ל-FW". */
+test('site model: the console/8443 VLAN is "שרתים", and a secondary is "דרך FW · 8443 בלבד" on a dashed line even when its box is red/green',async()=>{
+  const {run}=await loaded();
+  const model=JSON.parse(plain(run('JSON.stringify(netDiagramModel())')));
+  const lane=(name)=>model.lanes.find(l=>l.nic.name===name);
+  assert.equal(lane('ens18').vlan.label,'שרתים — קונסולה');
+  // כרטיס שנושא רק 8443 (bind של interserver על כתובתו) — עדיין וילן השרתים, לא וילן משלו
+  run('NETW.ports=NETW.ports.map(p=>p.id==="interserver"?{...p,bind:"10.44.13.1"}:p)');
+  assert.equal(run('JSON.stringify(netVlanOf({enabled:false,proxy:false,trunk:false,addresses:["10.44.13.1/24"],name:"ens22"}))'),JSON.stringify({kind:'inter',label:'שרתים — בין-שרתי'}));
+  const [console_,haifa,old]=lane('ens18').clients;
+  assert.equal(console_.kind,'console'); assert.ok(!console_.viaFw,'the console is a client on the VLAN, not behind a FW');
+  assert.equal(haifa.sub,'דרך FW · 8443 בלבד · https://10.44.13.5:8443 · לא ענה: timeout');
+  assert.equal(haifa.tip,'המשני מאחורי FW משלו; הראשי יוזם, רק 8443 · https://10.44.13.5:8443 · לא ענה: timeout');
+  assert.equal(old.sub,'דרך FW · 8443 בלבד · https://10.44.10.77:8443 · מושבת');
+  assert.equal(haifa.viaFw,true); assert.equal(old.viaFw,true); assert.equal(haifa.dashed,false,'the box stays solid — connected is measured; the line is what marks the FW');
+  const html=plain(run('networkPage(0)')); balanced(html);
+  assert.match(html,/שרתים — קונסולה — לפי הגדרה/); assert.doesNotMatch(html,/ניהול — קונסולה|>בין-שרתים —/);
+  const lines=[...html.matchAll(/<path class="ln ([a-z]*)" d="M470 [\d.]+ H430 V[\d.]+ H390"( stroke-dasharray="4 4")?\/>/g)].map(m=>[m[1],!!m[2]]);
+  assert.deepEqual(lines.filter(l=>l[1]),[['err',true],['off',true]],'exactly the two secondaries are dashed lines: red (not answering) and grey (disabled)');
+  assert.ok(lines.some(l=>l[0]==='ok'&&!l[1]),'the console line is solid');
+  assert.match(html,/title="המשני מאחורי FW משלו; הראשי יוזם, רק 8443 · https:\/\/10\.44\.13\.5:8443 · לא ענה: timeout">דרך FW · 8443 בלבד · https:\/\/10\.44\.13\.5:8443 · לא ענה: timeout</);
+});

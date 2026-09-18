@@ -3532,14 +3532,16 @@ function netServicesOn(n) {
   }
   return out;
 }
-/* סוג הוילן "לפי הגדרה" (1:1 עם הכרטיס; מודל וילן = #705): הפצה / proxy / רשת המכללה / ניהול / בין-שרתים / לא מוגדר. */
+/* סוג הוילן "לפי הגדרה" (1:1 עם הכרטיס; מודל וילן = #705): הפצה / proxy / רשת המכללה / שרתים / לא מוגדר.
+   מודל האתרים (נדב 18/09): לכל אתר שלושה וילנים — שרתים / הפצה / כיתות. אין וילן "ניהול" נפרד: הקונסולה, הערוץ
+   הבין-שרתי (8443) ו-DHCP המשרדים כולם על וילן השרתים; כרטיס שנושא רק 8443 הוא עדיין וילן השרתים. */
 function netVlanOf(n) {
   const svc = netServicesOn(n) || [];
   if (n.enabled) return { kind: "deploy", label: "וילן ההפצה" };
   if (n.proxy) return { kind: "proxy", label: "PXE proxy — DHCP של רשת אחרת" };
   if (n.trunk) return { kind: "trunk", label: "רשת המכללה (trunk)" };
-  if (svc.some((s) => /8081/.test(s))) return { kind: "mgmt", label: "ניהול — קונסולה" };
-  if (svc.some((s) => /8443/.test(s))) return { kind: "inter", label: "בין-שרתים" };
+  if (svc.some((s) => /8081/.test(s))) return { kind: "mgmt", label: "שרתים — קונסולה" };
+  if (svc.some((s) => /8443/.test(s))) return { kind: "inter", label: "שרתים — בין-שרתי" };
   return { kind: "none", label: "לא מוגדר" };
 }
 function netRoleLabel(n) {
@@ -3695,11 +3697,14 @@ function netDiagramModel() {
   // הקונסולה — אנחנו (הדף הזה נטען = ראיה); מי עוד מחובר דורש API (sessions)
   place({ kind: "console", title: `קונסולה — ${ME ? ME.username : ""}`, sub: "session פעיל · מי עוד מחובר — דורש API", led: "ok" }, null,
     () => laneOf(["mgmt", "trunk", "inter", "none", "proxy", "deploy"]));
-  // סניפים — /storage-nodes + connected נמדד
+  // סניפים — /storage-nodes + connected נמדד. המשני יושב מאחורי FW משלו (interfaces.md §18, נדב 18/09): הראשי יוזם,
+  // ורק 8443 פתוח ביניהם — ולכן הקו מקווקו (מעבר ל-FW, לא לקוח על הוילן), והתיבה נשארת לפי connected.
   for (const n of NETW.nodes || []) {
     const off = !!n.disabled_at;
-    place({ kind: "branch", title: `${n.label} — שרת משני`, led: off ? "" : n.connected ? "ok" : "err", dashed: off,
-      sub: `${bidi(n.base_url || "")} · ${off ? "מושבת" : n.connected ? "מחובר" : `לא ענה${n.error ? `: ${n.error}` : ""}`}` },
+    const state = off ? "מושבת" : n.connected ? "מחובר" : `לא ענה${n.error ? `: ${n.error}` : ""}`;
+    place({ kind: "branch", title: `${n.label} — שרת משני`, led: off ? "" : n.connected ? "ok" : "err", dashed: off, viaFw: true,
+      sub: `דרך FW · 8443 בלבד · ${bidi(n.base_url || "")} · ${state}`,
+      tip: `המשני מאחורי FW משלו; הראשי יוזם, רק 8443 · ${bidi(n.base_url || "")} · ${state}` },
       urlHost(n.base_url), () => laneOf(["inter", "mgmt", "trunk", "none"]));
   }
   // לא רשומים — /net registered=false, לפי הכתובת שקיבלו
@@ -3767,7 +3772,7 @@ function netDiagramSvg(model) {
       const cmid = cy + ND.clH / 2, lc = c.led || "off";   // אדום/כתום גם כשהתיבה מקווקוה; "off" = אין ראיה
       parts.push(`<rect class="box ${c.led || ""}" x="${ND.clX}" y="${cy}" width="${ND.clW}" height="${ND.clH}" rx="4"${c.dashed ? ' stroke-dasharray="4 4"' : ""}/>`
         + svgLines(ND.clX + 10, cy + 6, ND.clW - 20, ND.clH - 12, [{ cls: "t", text: c.title }, { cls: "m", text: c.sub, tip: c.tip }])
-        + `<path class="ln ${lc}" d="M${ND.vlX} ${mid} H430 V${cmid} H${ND.clX + ND.clW}"/>`
+        + `<path class="ln ${lc}" d="M${ND.vlX} ${mid} H430 V${cmid} H${ND.clX + ND.clW}"${c.viaFw ? ' stroke-dasharray="4 4"' : ""}/>`
         + (c.led ? `<circle class="led ${c.led}" cx="430" cy="${(mid + cmid) / 2}" r="5"/>` : ""));
       cy += ND.clH + ND.gap;
     }
