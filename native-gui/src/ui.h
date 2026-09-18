@@ -151,6 +151,10 @@ typedef struct State {
     /* #880: menu_class=0|1 from guistate.sh -- the "הפצה לכיתות" card is
      * offered only when the server's switch is on. Absent = 0 (v1 default). */
     int menu_class;
+    /* #1073: machine_name=<registered name> from guistate.sh -- the restore
+     * screen's typed confirmation (principle 7). Empty = the registry has
+     * none, and the screen refuses to start rather than match "" to "". */
+    char machine_name[64];
 
     /* the cloner screen (clonergui.sh): image name + a pending SMART choice.
      * smart_nonce is the request's identity, drawn with the prompt and echoed
@@ -203,9 +207,10 @@ typedef struct App {
     int room_confirming;        /* #room-confirm shown */
     char room_confirm[96];
     /* #706 restore-to-local-disk: own selection so a room reload never
-     * authorizes a local erase, and its own ERASE confirm field. */
+     * authorizes a local erase, and its own confirm field -- the machine's
+     * registered name since #1073 (was the word ERASE). */
     int restore_image_sel;      /* 0 = "בחרו אימג'…", i = st.images[i-1] */
-    char restore_confirm[16];
+    char restore_confirm[96];
     /* #695: per-disk target overrides, keyed by machine identity + physical
      * port -- outside State so a 2 s state reload does not erase clicks. */
     struct { char mac[24]; int port, selected; } room_selection[MAX_ROOM_SELECTIONS];

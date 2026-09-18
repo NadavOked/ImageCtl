@@ -9,7 +9,8 @@ import subprocess
 
 import pytest
 
-from server.main import InterfaceDetectionError, _interface_for
+from server.main import (InterfaceDetectionError, _address_for_interface,
+                         _interface_for)
 
 _IP_JSON = json.dumps([
     {"ifname": "lo", "addr_info": [{"local": "127.0.0.1"}]},
@@ -67,3 +68,21 @@ def test_ip_present_but_malformed_json_fails_loudly(monkeypatch):
     monkeypatch.setattr(subprocess, "run", _fake_run('{"truncated'))
     with pytest.raises(InterfaceDetectionError):
         _interface_for("http://10.44.0.1:8080")
+
+
+def test_address_for_interface_returns_ipv4(monkeypatch):
+    monkeypatch.setattr(subprocess, "run", _fake_run(_IP_JSON))
+    assert _address_for_interface("eth0") == "10.44.0.1"
+
+
+def test_address_for_missing_interface_fails_loudly(monkeypatch):
+    monkeypatch.setattr(subprocess, "run", _fake_run(_IP_JSON))
+    with pytest.raises(InterfaceDetectionError):
+        _address_for_interface("eth9")
+
+
+def test_address_for_interface_without_ip_cmd_is_none(monkeypatch):
+    def boom(*a, **k):
+        raise FileNotFoundError("ip")
+    monkeypatch.setattr(subprocess, "run", boom)
+    assert _address_for_interface("eth0") is None

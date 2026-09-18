@@ -189,12 +189,13 @@ def test_static_includes_are_at_8_5():
     לקח את 8.0 במקביל); בשער be שניהם יחד = ‏8.2; #649 שלב 1 (ארגז כלים) = ‏8.3;
     #1049 שלב ב' (בריאות המכונה בכרטיס) = ‏8.4; #1048 (כבל ו-LLDP) ותרשים
     הרשת — טקסט התיבות ב-foreignObject במקום <text> שגלש על הקווים = ‏8.6;
-    מודל האתרים (וילן השרתים במקום "ניהול", משני דרך FW · 8443 בקו מקווקו) = ‏8.7.
+    מודל האתרים (וילן השרתים במקום "ניהול", משני דרך FW · 8443 בקו מקווקו) = ‏8.7;
+    #1073 (הפצה בלי וובי — `message_he` בכניסה, מטריצת ההרשאות) = ‏8.8.
     שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
     versions = {float(v) for v in re.findall(r'\?v=(\d+\.\d+)"', page)}
-    assert versions == {8.7}, versions
+    assert versions == {8.8}, versions
 
 
 def test_old_images_page_code_is_gone():

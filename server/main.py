@@ -24,6 +24,23 @@ class InterfaceDetectionError(RuntimeError):
     נכון, ולכן עדיף להיכשל בגלוי מלשדר לרשת הרגילה (#514, #19)."""
 
 
+def _ip_nics() -> list | None:
+    """כרטיסים מ-`ip -json addr`. ‏None רק כשאין `ip` (תחנת פיתוח)."""
+    try:
+        out = subprocess.run(
+            ["ip", "-json", "addr"], capture_output=True, text=True,
+            check=True, stdin=subprocess.DEVNULL,
+        ).stdout
+    except FileNotFoundError:
+        return None            # אין `ip` — לא לינוקס (תחנת פיתוח)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise InterfaceDetectionError(f"'ip -json addr' נכשל: {exc}") from exc
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError as exc:
+        raise InterfaceDetectionError(f"פלט 'ip -json addr' אינו JSON: {exc}") from exc
+
+
 def _interface_for(server_url: str) -> str | None:
     """הכרטיס שנושא את כתובת ה-server-url — הוא ממשק וילן ההפצה.
 
@@ -37,16 +54,9 @@ def _interface_for(server_url: str) -> str | None:
     (עיקרון 5: פעולה שלא הצליחה לבדוק נכשלת, לא מוותרת) (#514).
     """
     host = urllib.parse.urlsplit(server_url).hostname
-    try:
-        out = subprocess.run(
-            ["ip", "-json", "addr"], capture_output=True, text=True,
-            check=True, stdin=subprocess.DEVNULL,
-        ).stdout
-    except FileNotFoundError:
-        return None            # אין `ip` — לא לינוקס (תחנת פיתוח), השידור מזויף
-    except (OSError, subprocess.CalledProcessError) as exc:
-        # ‏`ip` קיים אבל נכשל — שרת לינוקס אמיתי שהבדיקה עליו נשברה.
-        raise InterfaceDetectionError(f"'ip -json addr' נכשל: {exc}") from exc
+    nics = _ip_nics()
+    if nics is None:
+        return None
     # ‏--server-url עם שם מארח (ולא IP) לא יתאים ל-addr.local לעולם —
     # פותרים אותו לכתובותיו לפני ההשוואה.
     candidates = {host}
@@ -54,12 +64,6 @@ def _interface_for(server_url: str) -> str | None:
         candidates |= {info[4][0] for info in socket.getaddrinfo(host, None)}
     except (socket.gaierror, OSError):
         pass
-    try:
-        nics = json.loads(out)
-    except json.JSONDecodeError as exc:
-        # ‏`ip` יצא 0 אבל הפלט אינו JSON תקין — שרת אמיתי שהבדיקה נשברה
-        # עליו, לא None שקט (עיקרון 5; Codex #2 על #514).
-        raise InterfaceDetectionError(f"פלט 'ip -json addr' אינו JSON: {exc}") from exc
     for nic in nics:
         for addr in nic.get("addr_info") or []:
             if addr.get("local") in candidates:
@@ -67,6 +71,27 @@ def _interface_for(server_url: str) -> str | None:
     raise InterfaceDetectionError(
         f"אף כרטיס אינו נושא את {host} — udp-sender היה משדר לכרטיס הלא "
         f"נכון. העבר ‎--interface‏ במפורש.")
+
+
+def _address_for_interface(name: str) -> str | None:
+    """IPv4 של הכרטיס — כתובת ה-bind של הסוכן/קיוסק (#1074).
+
+    ‏None רק כשאין `ip` (תחנת פיתוח). כרטיס שקיים בלי IPv4, או `ip`
+    שנכשל — `InterfaceDetectionError`, לא נפילה ל-0.0.0.0 בשקט.
+    """
+    nics = _ip_nics()
+    if nics is None:
+        return None
+    for nic in nics:
+        if nic.get("ifname") != name:
+            continue
+        for addr in nic.get("addr_info") or []:
+            local = addr.get("local") or ""
+            if local.count(".") == 3:
+                return local
+        raise InterfaceDetectionError(
+            f"לכרטיס {name} אין כתובת IPv4 — הסוכן היה נקשר לכל הכרטיסים")
+    raise InterfaceDetectionError(f"לא נמצא כרטיס בשם {name}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -95,7 +120,13 @@ def build_parser() -> argparse.ArgumentParser:
                         default=os.environ.get("IMAGECTL_EXTRA_CMDLINE", ""),
                         help="תוספות לשורת הקרנל של הסוכן (למשל קונסולה "
                              "טורית ו-debug במעבדה); גם IMAGECTL_EXTRA_CMDLINE")
-    parser.add_argument("--host", default="0.0.0.0")
+    # ‏#1074 (R20-F1): ברירת המחדל היא כתובת כרטיס ההפצה, לא 0.0.0.0.
+    # ‏None כאן = "לא ביקשו"; ‏main ממלא מ-`--interface` (או מ-server-url
+    # כשאין `ip`). ‏0.0.0.0 רק בבקשה מפורשת, ועם אזהרה ביומן.
+    parser.add_argument("--host", default=None,
+                        help="כתובת ה-bind של הסוכן והקיוסק. ברירת מחדל: "
+                             "כתובת כרטיס ההפצה (--interface). 0.0.0.0 רק "
+                             "בבקשה מפורשת (R20-F1)")
     parser.add_argument("--port", type=int, default=8080,
                         help="פורט הסוכן: hello/pulls/progress/images ו-/boot")
     # ‏#731 (tracer 1 של #703): הקונסולה/הניהול מאזינים על פורט **נפרד**
@@ -124,8 +155,7 @@ def build_parser() -> argparse.ArgumentParser:
                              "פיתוח/e2e; ברירת מחדל on")
     # ‏#738 (tracer 2 של #703): הקיוסק (מסך התחנה על וילן ההפצה) מאזין
     # על פורט **נפרד** מהקונסולה — allowlist קשיח, בלי נתיבי ניהול.
-    # כאן עדיין `0.0.0.0` וללא TLS (משמר-התנהגות); ‏bind פר-ממשק הוא
-    # tracer 4.
+    # ‏#1074: אותו `--host` כמו הסוכן — כתובת כרטיס ההפצה, לא 0.0.0.0.
     parser.add_argument("--kiosk-port", type=int, default=8082,
                         help="פורט הקיוסק: מסך התחנה (capture/סבב/חדר) "
                              "ו-/console/station")
@@ -266,6 +296,20 @@ def main() -> None:
     else:
         print("broadcast interface: none (no `ip` — dev station, "
               "broadcast is simulated)")
+
+    # ‏#1074: סוכן 8080 וקיוסק 8082 נקשרים לכתובת כרטיס ההפצה. ‏0.0.0.0
+    # רק אם המפעיל ביקש במפורש — ואז נאמר, לא בשקט (R20-F1).
+    if args.host is None:
+        nic_addr = None
+        if interface:
+            try:
+                nic_addr = _address_for_interface(interface)
+            except InterfaceDetectionError as exc:
+                parser.error(str(exc))
+        args.host = nic_addr or host
+    if args.host == "0.0.0.0":
+        print("warning: --host 0.0.0.0 — הסוכן והקיוסק מאזינים על כל "
+              "הכרטיסים (R20-F1). ברירת המחדל היא כתובת כרטיס ההפצה.")
 
     import uvicorn
 

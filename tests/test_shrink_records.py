@@ -141,15 +141,15 @@ def test_the_agent_opens_before_the_shrink_and_closes_after_the_restore(server):
     assert rec["id"] == rid and rec["size_sectors"] == 998244352 and rec["idx"] == 3
     # מכונה עם סידורי אחר — כלום.
     assert hello(server, ids["mac2"])["shrink_open"] == []
-    # הקונסולה רואה את הרשומה (גם deploy — צפייה).
-    rows = server["deploy"].get("/api/console/shrink-records").json()
+    # הקונסולה רואה את הרשומה (admin; ‏#1073: ל-deploy אין קונסולה).
+    rows = server["admin"].get("/api/console/shrink-records").json()
     assert len(rows) == 1 and rows[0]["id"] == rid and rows[0]["serial"] == SERIAL
     assert rows[0]["mac"] == ids["mac1"] and rows[0]["port"] == 1
     # סגירה מהסוכן אחרי החזרה.
     closed = agent.post("/api/v1/agent/shrink-close", json={"mac": ids["mac1"], "serial": SERIAL, "id": rid})
     assert closed.status_code == 200 and closed.json() == {"ok": True}
     assert agent.post("/api/v1/agent/hello", json=body).json()["shrink_open"] == []
-    assert server["deploy"].get("/api/console/shrink-records").json() == []
+    assert server["admin"].get("/api/console/shrink-records").json() == []
     # סגירה של מה שכבר סגור: 404, לא ok.
     again = agent.post("/api/v1/agent/shrink-close", json={"mac": ids["mac1"], "serial": SERIAL})
     assert again.status_code == 404 and again.json()["code"] == "not_open"
@@ -206,7 +206,7 @@ def test_a_note_explains_an_open_record_and_reaches_the_console(server):
     why = "המקור לא הוחזר לגודלו: ntfsresize could not grow the filesystem back"
     r = agent.post("/api/v1/agent/shrink-note", json={"mac": ids["mac1"], "serial": SERIAL, "id": rid, "note": why})
     assert r.status_code == 200 and r.json() == {"ok": True}
-    (row,) = server["deploy"].get("/api/console/shrink-records").json()
+    (row,) = server["admin"].get("/api/console/shrink-records").json()
     assert row["note"] == why
     from conftest import hello_body
     body = hello_body(ids["mac1"]); body["disks"][0]["serial"] = SERIAL
@@ -289,7 +289,7 @@ def test_the_hello_and_the_console_carry_the_partitions(server):
     body["disks"][0]["serial"] = SERIAL
     (rec,) = agent.post("/api/v1/agent/hello", json=body).json()["shrink_open"]
     assert [p["idx"] for p in rec["partitions"]] == [3, 4] and rec["idx"] == 3
-    (row,) = server["deploy"].get("/api/console/shrink-records").json()
+    (row,) = server["admin"].get("/api/console/shrink-records").json()
     assert [p["idx"] for p in row["partitions"]] == [3, 4]
     r = agent.post("/api/v1/agent/shrink-open", json=two_layout(mac=ids["mac1"], serial="OTHER", partitions=[]))
     assert r.status_code == 400 and r.json()["code"] == "bad_layout"

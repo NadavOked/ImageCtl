@@ -295,7 +295,7 @@ def test_the_list_counts_registered_machines_that_match(server):
     assert by_name["intel-nic"]["matches"] == [MAC]
     assert by_name["dell-only"]["matches"] == []
     assert by_name["intel-nic"]["files"][0]["sha256"]
-    assert server["deploy"].get("/api/console/drivers").status_code == 200
+    assert server["deploy"].get("/api/console/drivers").status_code == 403   # #1073: אין קונסולה ל-deploy
 
 
 def test_delete_is_behind_typing_the_name(server):

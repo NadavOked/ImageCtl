@@ -29,7 +29,9 @@ async function api(path, options = {}) {
   if (response.status === 401) { showLogin(); throw new Error("לא מחובר"); }
   if (!response.ok) {
     let detail = "שגיאה " + response.status;
-    try { detail = (await response.json()).detail || detail; } catch (e) {}
+    // ‏#1073: `message_he` הוא החוזה של סירובים עם קוד (`deploy_no_console`
+    // בכניסה) — מוצג כלשונו; `detail` הוא הצורה של HTTPException.
+    try { const body = await response.json(); detail = body.message_he || body.detail || detail; } catch (e) {}
     const error = new Error(detail);
     error.status = response.status;   // ‏#936: הקורא מבחין בין 403/409 לכשל אמיתי
     throw error;
@@ -3230,16 +3232,17 @@ function fmtHour(ts) {
 let usersError = "";
 
 /* שורה = אזור; [מנהל], [הפצה] כ-[cls, טקסט]; המקור = ה-Depends של ה-endpoint
-   (server/*.py, 17/09). מה שמסומן "צפייה בלבד" פתוח ב-API ל-deploy אך אינו
-   מוצג לו בקונסולה (pageAllowed: סקירה, אימג'ים, סבב הפצה). */
+   (server/*.py). ‏#1073 (הכרעת נדב 18/09): למשתמש הפצה אין כניסה לקונסולה —
+   הכניסה מסרבת לו (deploy_no_console) וכל נתיב ניהול מחזיר לו 403. מה
+   שמסומן "ממחשב הבנייה" פתוח לו רק שם — דרך allowlist הקיוסק (kiosk.py). */
 const ROLE_MATRIX = [
-  ["סקירה, אימג'ים, תיקיות, קבוצות — צפייה", ["ok", "כן"], ["ok", "כן"], "GET /overview, /images, /folders, /groups, /net — current_user"],
-  ["סבב לכיתה: פתיחה, התחלה, סגירה", ["ok", "כן"], ["ok", "כן"], "POST /sessions, /sessions/{id}/start|close — round_operator (admin+deploy)"],
-  ["חדר המשכפלים: סבב, גל, WoL (חדר ומחשב)", ["ok", "כן"], ["ok", "כן"], "POST /room, /room/start|wake|close, /machines/{mac}/wake, /groups/{gid}/wake — room_operator"],
+  ["כניסה לקונסולה (ניהול וובי)", ["ok", "כן"], ["", "לא"], "POST /login — deploy → 403 deploy_no_console; כל /api/console/* — auth.console_only (#1073)"],
+  ["אימג'ים, תיקיות, קבוצות — צפייה", ["ok", "כן"], ["ok", "ממחשב הבנייה"], "GET /images, /folders, /groups — allowlist הקיוסק; /overview, /net — קונסולה בלבד"],
+  ["חדר המשכפלים: סבב, גל, WoL לחדר; שחזור לדיסק מחשב הבנייה", ["ok", "כן"], ["ok", "ממחשב הבנייה"], "POST /room, /room/start|wake|close — room_operator, allowlist הקיוסק; single_restore (#706/#1073)"],
   ["קליטה, העלאה, מחיקה ועריכה של אימג'ים ותיקיות", ["ok", "כן"], ["", "לא"], "POST /tasks/capture, /images/upload, /images/{id}/delete, PUT /images/{id}, /folders — admin_only"],
-  ["מחשבים: הוספה, עריכה, הסרה, ניקוי דיסק אדום", ["ok", "כן"], ["", "צפייה בלבד"], "GET /machines, /disk-failures — current_user; POST/PUT/DELETE — admin_only"],
+  ["מחשבים: צפייה, הוספה, עריכה, הסרה, WoL למחשב, ניקוי דיסק אדום", ["ok", "כן"], ["", "לא"], "GET/POST/PUT/DELETE /machines, /machines/{mac}/wake, /groups/{gid}/wake, /disk-failures — קונסולה בלבד"],
   ["מוניטור", ["ok", "כן"], ["", "לא"], "GET/PUT /monitor/settings, GET /monitor/machines — admin_only"],
-  ["דרייברים: ייבוא ומחיקה", ["ok", "כן"], ["", "צפייה בלבד"], "GET /drivers — current_user; POST /drivers/upload, /drivers/{name}/delete — admin_only"],
+  ["דרייברים: צפייה, ייבוא ומחיקה", ["ok", "כן"], ["", "לא"], "GET /drivers, POST /drivers/upload, /drivers/{name}/delete — קונסולה בלבד"],
   ["רשת, פורטים, DHCP, SSH, בריאות, עדכון", ["ok", "כן"], ["", "לא"], "/net/config, PUT /net/interfaces/{n}, /ssh, /health, /update — admin_only"],
   ["הרשאות, הגדרות, יומן, לוגו", ["ok", "כן"], ["", "לא"], "/users, /settings, /journal, POST/DELETE /branding/logo — admin_only"],
   ["סניפים (שרתים משניים)", ["ok", "כן"], ["", "לא"], "/storage-nodes… — require_standalone (admin_only)"],
@@ -3286,7 +3289,7 @@ function permissions() {
   const usersCard = UI.card({ title: "משתמשים", small: "כניסה אחרונה ומאיפה — דורש API (אין ב-/users)", cls: "c8", body: table, flush: !!USERS && list.length > 0 });
   const matrix = UI.datagrid({ columns: ["", "מנהל", "הפצה"],
     rows: ROLE_MATRIX.map(([area, a, d, src]) => [`<span title="${esc(src)}">${esc(area)}</span>`, UI.status(a[0], a[1]), UI.status(d[0], d[1])]) })
-    + `<div class="cap" style="padding:10px 14px">אין הרשאה שקטה: מה שאינו "כן" מחזיר 403 בשרת, לא רק מוסתר בממשק. למפעיל הפצה העץ מציג סקירה, אימג'ים וסבב הפצה בלבד. ריחוף על אזור מציג את ה-endpoint.</div>`;
+    + `<div class="cap" style="padding:10px 14px">אין הרשאה שקטה: מה שאינו "כן" מחזיר 403 בשרת, לא רק מוסתר בממשק. למשתמש הפצה אין כניסה לקונסולה (#1073) — הוא עובד ממחשב הבנייה: שיכפול מאימג' בשרת, שיכפול ישיר מהדיסק, ושחזור לדיסק שלו. ריחוף על אזור מציג את ה-endpoint.</div>`;
   const matrixCard = UI.card({ title: "מה כל תפקיד רואה", small: "נגזר מהקוד — Depends של כל endpoint", cls: "c4", body: matrix, flush: true });
   return `<div class="page">${header}<div class="body">${usersCard}${matrixCard}</div></div>`;
 }

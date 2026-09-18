@@ -155,9 +155,11 @@ def test_the_role_in_the_payload_is_ignored_even_when_signed(server):
     secret = bytes.fromhex(get_setting(server["ctx"].conn, "console_secret"))
     client = TestClient(server["app"])
     client.cookies.set("imagectl_session", forge(secret, "labtech", "admin"))
+    # ‏#1073: הטבלה אומרת deploy — ול-deploy אין קונסולה. הטוקן החתום "admin"
+    # לא פותח אפילו את /me, ובוודאי לא את /users.
     me = client.get("/api/console/me")
-    assert me.status_code == 200
-    assert me.json()["role"] == "deploy"
+    assert me.status_code == 403
+    assert "מחשב הבנייה" in me.json()["detail"]
     assert client.get("/api/console/users").status_code == 403
 
 

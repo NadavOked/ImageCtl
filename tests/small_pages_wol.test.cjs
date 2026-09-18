@@ -192,12 +192,15 @@ test('permissions: one users table (name, role pill, state, created, hover actio
   assert.match(y,/class="st warn">מושבת</); assert.match(y,/userDisable\('yossi', false\)">הפעל</); assert.match(y,/class="btn sm danger" onclick="userDeleteSheet\('yossi'\)">מחיקה</,'a disabled admin is deletable — the server counts active admins');
   assert.match(d,/class="pill ">הפצה</); assert.match(d,/userRoleSheet\('deployer'\)">תפקיד</); assert.match(d,/userDisable\('deployer', true\)">השבת</); assert.match(d,/userDeleteSheet\('deployer'\)">מחיקה</);
   assert.match(html,/כניסה אחרונה ומאיפה — דורש API/,'not invented');
-  // המטריצה: שורות מהקוד, deploy מקבל "כן" רק במה ש-current_user/round_operator/room_operator
+  // המטריצה: שורות מהקוד. ‏#1073: deploy — "לא" לכניסה לקונסולה, "ממחשב הבנייה" למה שהקיוסק מגיש
   assert.match(html,/<span>מה כל תפקיד רואה/); assert.match(html,/<th><\/th><th>מנהל<\/th><th>הפצה<\/th>/);
-  assert.match(row(html,'חדר המשכפלים: סבב, גל, WoL'),/class="st ok">כן<\/span><\/td><td><span class="st ok">כן</);
+  assert.match(row(html,'כניסה לקונסולה'),/class="st ok">כן<\/span><\/td><td><span class="st ">לא</);
+  assert.match(row(html,'חדר המשכפלים: סבב, גל, WoL'),/class="st ok">כן<\/span><\/td><td><span class="st ok">ממחשב הבנייה</);
   assert.match(row(html,'הרשאות, הגדרות, יומן, לוגו'),/class="st ok">כן<\/span><\/td><td><span class="st ">לא</);
-  assert.match(row(html,'דרייברים: ייבוא ומחיקה'),/class="st ">צפייה בלבד</);
+  assert.match(row(html,'דרייברים: צפייה, ייבוא ומחיקה'),/class="st ">לא</);
+  assert.doesNotMatch(html,/צפייה בלבד/,'#1073: no console at all for deploy — nothing is "view only"');
   assert.match(html,/title="[^"]*room_operator[^"]*"/,'the endpoint dependency is visible on hover');
+  assert.match(html,/deploy_no_console/,'the refusal code is on the login row');
   assert.equal(run('ROLE_MATRIX.length'),10);
   // עם מנהל פעיל נוסף — admin כבר לא "האחרון" אבל עדיין "זה אתה": רק סיסמה; yossi הפעיל מקבל הכול
   run('USERS[1].disabled=false');

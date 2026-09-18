@@ -2,11 +2,14 @@
 
 1. admin בראשי רואה גם את המשניים (סניפים, מכונות המשני, מוניטור דרך
    הראשי, העברות).
-2. deploy בראשי רואה רק מה שמותר לו (אימג'ים, סבבים) **מהראשי בלבד** —
-   לא סניפים, לא מכונות משני, לא העברות.
+2. ~~deploy בראשי רואה רק מה שמותר לו (אימג'ים, סבבים) מהראשי בלבד~~ —
+   **בוטל ב-#1073 (18/09): למשתמש הפצה אין קונסולה.** מה שנשאר לו הוא
+   allowlist הקיוסק (אימג'ים, סבבים, חדר) ממחשב הבנייה; כאן, על
+   `create_app` המשולב, הקיוסק קודם לקונסולה — ולכן `/images` 200 ו-
+   `/overview` 403 `deploy_no_console`. ‏`test_roles_v1.py` הוא הצד המלא.
 3. admin במשני רואה רק את השרת שלו — אין עץ סניפים, ואין "ראשי" מלבד
    מצב ה-pairing.
-4. deploy במשני — אותה הגבלה כמו deploy בראשי, על המשני.
+4. ~~deploy במשני — אותה הגבלה כמו deploy בראשי~~ — אותו ביטול (#1073).
 
 הטבלה היא **תפקיד-שרת × תפקיד-משתמש × מסלול**, וכל תא הוא קוד תשובה
 מהשרת — לא הסתרה בקונסולה. ההסתרה בעץ (#954 גל 7) נבנית לפי אותם
@@ -96,11 +99,12 @@ ROWS = [
      (4404, 4403, 4404, 4403)),
     (f"/api/console/storage-nodes/{NODE}/monitor/{MAC}", "ws", _ws,
      (4500, 4403, 4409, 4403)),
-    # מה ש-deploy **כן** רואה — אימג'ים וסבבים — מהשרת שהוא מחובר אליו.
+    # מה ש-deploy **כן** רואה — allowlist הקיוסק (ממחשב הבנייה) בלבד.
     ("/api/console/images", "get", _http,
      (200, 200, 200, 200)),
+    # ‏#1073: קונסולה בלבד → deploy 403 (deploy_no_console), בראשי ובמשני.
     ("/api/console/overview", "get", _http,
-     (200, 200, 200, 200)),
+     (200, 403, 200, 403)),
 ]
 
 COLUMNS = (("standalone", "admin"), ("standalone", "deploy"),
@@ -125,17 +129,20 @@ def test_visibility_matrix(server, clients, row):
 @pytest.mark.parametrize(("server_role", "user_role", "caps"), [
     ("standalone", "admin",
      {"interbranch_transfer": True, "enroll_secondary": True, "open_local_pairing": False}),
-    ("standalone", "deploy",
-     {"interbranch_transfer": False, "enroll_secondary": False, "open_local_pairing": False}),
+    # ‏#1073: ל-deploy אין `/me` בכלל — הקונסולה סגורה בפניו (403).
+    ("standalone", "deploy", None),
     ("secondary", "admin",
      {"interbranch_transfer": False, "enroll_secondary": False, "open_local_pairing": True}),
-    ("secondary", "deploy",
-     {"interbranch_transfer": False, "enroll_secondary": False, "open_local_pairing": False}),
+    ("secondary", "deploy", None),
 ])
 def test_me_capabilities_follow_the_same_table(server, clients, server_role, user_role, caps):
     """הדגלים שמהם הקונסולה בונה את העץ — אותה טבלה, מהצד של ``/me``.
     ‏admin בראשי מקבל ``interbranch_transfer`` כי יש משני פעיל אחד."""
     set_setting(server["ctx"].conn, storage_nodes.ROLE_KEY, server_role)
-    me = clients[user_role].get("/api/console/me").json()
+    resp = clients[user_role].get("/api/console/me")
+    if caps is None:
+        assert resp.status_code == 403, resp.text
+        return
+    me = resp.json()
     assert me["role"] == user_role
     assert me["capabilities"] == caps

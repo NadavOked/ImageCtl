@@ -25,7 +25,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from . import auth, registry, reports
+from . import auth, registry, reports, storage_locations
 from .db import journal, now_iso, update_one
 from .images import required_bytes, restore_refusal
 from .imagefit import validate_expand_choice
@@ -309,6 +309,9 @@ def open_round(ctx, image_id: str, target_drives: int, user: str,
     manifest = ctx.library.get(image_id)
     if manifest is None:
         raise ValueError("אימג' לא קיים בספרייה")
+    unavailable = storage_locations.unavailable_message(manifest)
+    if unavailable:
+        raise SessionError(unavailable)
     # ‏#381: אימג' הקשור למכונה אחת אינו נשפך על מגירות. אין כאן רשימת
     # יעדים בכלל — הכוננים יותקנו במכונות שאיש עוד אינו יודע מי הן —
     # ולכן `restore_refusal` מסרב אותו, וזה הכיוון הנכון (עיקרון 5).

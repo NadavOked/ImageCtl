@@ -2,16 +2,25 @@
 # POSIX sh (busybox ash). No bashisms, no job control.
 #
 # A person stands in front of this machine. They sign in, and then they get
-# the two or three things this server can be told to do from here:
+# the three or four things this server can be told to do from here (#1073,
+# Nadav's ruling of 2026-09-18 -- the v1 role model):
 #
-#   admin   capture this disk into the library, deploy to the cloning room,
-#           deploy this disk directly to the cloning room (#715), deploy
-#           to a classroom
-#   deploy  the three deployment flows -- capture is admin_only on the server
+#   deploy  deploy to the cloning room from an image on THIS server, deploy
+#           this disk directly to the cloning room (#715), restore an image
+#           from THIS server onto this machine's own disk (selfrestore.sh)
+#   admin   the same three, plus capture this disk into the library
+#
+# "Deploy to a classroom" exists in the code and is hidden in v1: classrooms
+# are v2 (BUILD_MENU_CLASSROOMS below; #1081 turns it into a server flag).
+# A deploy account has no web console at all -- the console refuses it at
+# sign-in -- so this menu and the GUI are the whole of what deploy can do.
 #
 # Text only. #32 (the kiosk) was closed "not planned": there is no graphical
 # stack on an edge machine, and the Linux console has neither a Hebrew font
 # nor RTL. Everything printed here is ASCII, exactly like ui.sh.
+#
+# What the menu offers (the items, their labels, the role and classroom
+# gates) lives in buildmenuitems.sh; this file is how the menu runs.
 #
 # There is no race with the poll loop. The server is passive -- it answers
 # hello, it never pushes -- so while somebody is reading a menu this machine
@@ -27,11 +36,6 @@ CONSOLE_JAR="${CONSOLE_JAR:-$RUN_DIR/console.jar}"
 
 #: The cookie the server sets (server/auth.py:COOKIE_NAME).
 CONSOLE_COOKIE="imagectl_session"
-
-#: Which roles may use this menu at all. An allow-list, like
-#: station.py:ROUND_OPENER_ROLES -- "we could not tell what this account may
-#: do" is a refusal, not permission (rule 5).
-BUILD_MENU_ROLES="admin deploy"
 
 console_signin() {
     # Exchanges the operator's console credentials for a session cookie.
@@ -180,36 +184,6 @@ build_menu_gate() {
     return 1
 }
 
-build_menu_options() {
-    # The menu is built from the role. Hiding is not permission -- the
-    # server enforces admin_only on the capture either way -- but a menu
-    # that offers what it would refuse is a menu that lies to the operator.
-    rm -f "$RUN_DIR/build_menu.txt"
-    [ "$BUILD_ROLE" = "admin" ] && echo "capture" >> "$RUN_DIR/build_menu.txt"
-    echo "room" >> "$RUN_DIR/build_menu.txt"
-    echo "direct" >> "$RUN_DIR/build_menu.txt"   # #715: always, like room -- before class
-    # #880: v1 is the cloning edition -- the class option is offered only
-    # when the last hello said the server has it switched on. The server
-    # refuses the round either way (409); a missing field reads as off.
-    if class_deploy_on; then echo "class" >> "$RUN_DIR/build_menu.txt"; fi
-}
-
-class_deploy_on() {
-    # The hello answer is the one place the switch is read from, on both
-    # the text menu and the GUI state (guistate.sh). $RESP is the agent's
-    # name for it; the kiosk has only $RUN_DIR.
-    [ "$(json_get "${RESP:-$RUN_DIR/response.json}" ".class_deploy_enabled")" = true ]
-}
-
-build_menu_label() {
-    case "$1" in
-        capture) echo "Upload an image to the server (capture this disk)" ;;
-        room)    echo "Deploy to the cloning machines" ;;
-        direct)  echo "Deploy THIS disk directly to the cloning machines" ;;
-        class)   echo "Deploy to a classroom" ;;
-    esac
-}
-
 build_standby() {
     # $1 = optional first line. The machine returns to the poll loop, so
     # work ordered from the console still reaches it; the menu is not
@@ -259,6 +233,12 @@ build_menu() {
                 # #715: the source is this disk; the task lands with the
                 # next hello, so the menu steps aside like after a capture.
                 direct_flow && return 0
+                ;;
+            self)
+                # #1073 (c): erases this machine's disk and reboots into the
+                # restored system; a refusal (name mismatch, no image, no
+                # answer) comes back to the menu with nothing written.
+                self_restore_flow && return 0
                 ;;
             class)
                 class_round_flow || continue

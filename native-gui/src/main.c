@@ -213,15 +213,15 @@ static int class_gate(App *a) {
 
 /* ---- events --------------------------------------------------------------------- */
 
-/* Same visibility rule as screens.c, in MENU order: capture is admin-only,
- * direct (#715) is always there like room, the class card follows the
- * server's switch (#880). Returns how many. */
+/* Same visibility rule as screens.c, in MENU order (#1073): room, direct,
+ * restore for everyone; capture admin-only, last; the class card follows
+ * the server's switch (#880, pinned off in v1). Returns how many. */
 static int visible_card_ids(const App *a, int ids[5]) {
     int n = 0;
-    if (a->admin) ids[n++] = HIT_CAPTURE;
-    ids[n++] = HIT_RESTORE;
     ids[n++] = HIT_ROOM;
     ids[n++] = HIT_DIRECT;
+    ids[n++] = HIT_RESTORE;
+    if (a->admin) ids[n++] = HIT_CAPTURE;
     if (a->st.menu_class) ids[n++] = HIT_CLASSES;
     return n;
 }
@@ -263,14 +263,21 @@ static void start_restore(App *a) {
         snprintf(a->st.form_error, sizeof a->st.form_error, "בחרו אימג' לשחזור");
         return;
     }
-    if (strcmp(a->restore_confirm, "ERASE") != 0) {          /* principle 7 */
-        snprintf(a->st.form_error, sizeof a->st.form_error, "הקלידו ERASE לאישור מחיקת הדיסק");
+    /* principle 7, #1073: the typed confirmation is this machine's registered
+     * name (state machine_name=). No name -> nothing to confirm against -> refuse;
+     * the bridge re-reads the name from the server before it hands off. */
+    if (!a->st.machine_name[0]) {
+        snprintf(a->st.form_error, sizeof a->st.form_error, "למחשב הזה אין שם במרשם השרת — לא ניתן לאשר");
+        return;
+    }
+    if (strcmp(a->restore_confirm, a->st.machine_name) != 0) {
+        snprintf(a->st.form_error, sizeof a->st.form_error, "הקלידו את שם המחשב (%s) לאישור מחיקת הדיסק", a->st.machine_name);
         return;
     }
     a->st.form_error[0] = 0;
     emit("restore-start");
     emit_kv("image", a->st.images[a->restore_image_sel - 1].id);
-    emit_kv("confirm", "ERASE");
+    emit_kv("confirm", a->restore_confirm);
     emit_end();
 }
 
@@ -613,6 +620,7 @@ static void sample_state(State *s) {
     snprintf(s->smart_reason, sizeof s->smart_reason, "pending");
     snprintf(s->msg_title, sizeof s->msg_title, "המחשב אינו רשום");
     snprintf(s->msg_sub, sizeof s->msg_sub, "רשמו אותו בקונסולה כמחשב בניית אימג'ים ורעננו.");
+    snprintf(s->machine_name, sizeof s->machine_name, "BUILD-01");   /* #1073: the restore card's confirm field */
 }
 
 static const char *PNG_CARDS[] = { "login", "menu", "pick", "progress", "done", "room", "room-live",

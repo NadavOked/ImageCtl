@@ -16,7 +16,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from .progress_view import capture_progress
-from . import users
+from . import storage_locations, users
 from .api import ServerContext, _error, identity_gate
 from .db import journal
 from .hello import class_deploy_enabled
@@ -180,6 +180,9 @@ def create_station_router(ctx: ServerContext) -> APIRouter:
         manifest = ctx.library.get(body.get("image_id", ""))
         if manifest is None:
             return _error(400, "unknown image", "no_image")
+        unavailable = storage_locations.unavailable_message(manifest)
+        if unavailable:
+            return _error(409, unavailable, "image_unavailable")
 
         machines = ctx.conn.execute(
             "SELECT COUNT(*) AS n FROM machines WHERE group_id = ?", (group_id,)

@@ -85,7 +85,8 @@ def _build(tmp_path: Path, images_root: Path, clock, listeners, *, base_port=80)
                             "addresses": ["10.44.0.1/24"]}],
             "listeners": SshListeners(True),
             "menu": "linux /boot/vmlinuz ip=dhcp imagectl.server=x console=tty0",
-            "udp_sender_pids": [], "ss_tcp": None}
+            "udp_sender_pids": [], "ss_tcp": None,
+            "nft_ruleset": None}
     hooks = {
         "ss": lambda: fake["ss"],
         "ss_tcp": lambda: (fake["ss_tcp"] if fake["ss_tcp"] is not None
@@ -103,6 +104,7 @@ def _build(tmp_path: Path, images_root: Path, clock, listeners, *, base_port=80)
         # ‏#996: מנהל המאזינים מוזרק כמו כל השאר — None = אין מנהל בתהליך
         # הזה (כמו ב-create_app של הבדיקות), והמתג חייב לומר זאת.
         "port_listeners": listeners,
+        "nft_ruleset": lambda: fake["nft_ruleset"],
     }
     app = create_app(tmp_path / "data", images_root, "http://10.44.12.10:8080",
                      now_fn=clock, health_hooks=hooks)

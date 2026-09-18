@@ -70,6 +70,9 @@ def default_hooks() -> dict:
         "interfaces": dhcp.list_interfaces,
         "tftp_root": lambda: Path("/srv/tftp"),
         "udp_sender_pids": live_udp_sender_pids,
+        # ‏#1074: חומת האש נקראת מ-nft, לא מההגדרה. ‏None מה-hook =
+        # לא הצלחנו לבדוק; מחרוזת בלי טבלת imagectl = לא נטענה.
+        "nft_ruleset": ports.read_nft_ruleset,
     }
 
 
@@ -344,6 +347,14 @@ def collect(ctx, hooks: dict, server_base: str) -> list[dict]:
             else " · DHCP לא הודלק על אף כרטיס"
         results.append(check("nics", "כרטיסי רשת", "ok", detail))
 
+    # ‏#1074: חומת האש שהמתקין כותב — שלושה מצבים, לא "חסר = כבוי".
+    fw_state, fw_detail = ports.firewall_status(hooks["nft_ruleset"]())
+    results.append(check("firewall", "חומת אש", fw_state, fw_detail))
+
+    # #1066: שורה לכל מיקום אחסון — מחובר / לא נגיש / מנותק / לא נבדק.
+    from . import storage_locations as _storage_locations
+    results.extend(_storage_locations.health_checks(ctx))
+
     # שתי דלתות ה-SSH (#83) — לפי מה שנקרא בחזרה, לא לפי ההגדרה.
     results.extend(console_ssh.ssh_checks(console_ssh.snapshot(ctx, hooks, server_base)))
 
@@ -604,6 +615,16 @@ def ports_snapshot(ctx, hooks: dict, server_base: str) -> list[dict]:
             off_means=f"אין SSH לשרת מהכרטיס {nic['name']}; סגירת הכרטיס האחרון "
                       "= אין SSH לשרת מאף רשת (הדלת האחרונה)",
             interface=nic["name"], addresses=nic["addresses"]))
+
+    fw_state, fw_detail = ports.firewall_status(hooks["nft_ruleset"]())
+    entries.append(_port("firewall", "חומת אש", "—", "nft",
+        "מדיניות nftables לפי וילן שהמתקין כותב (#1074)", "השרת (host)",
+        fw_state, fw_detail,
+        "נכתבת בהתקנה; שדרוג אינו מפעיל אותה. --no-firewall מדלג",
+        toggle="none",
+        off_means="אין מתג בזמן ריצה: הכללים נכתבים בהתקנה "
+                  "(install/nftables-rules.sh). כיבוי = nft flush / "
+                  "systemctl stop nftables — מחוץ לקונסולה"))
 
     return entries
 

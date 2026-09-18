@@ -39,7 +39,8 @@ void screen_restore(App *a, cairo_t *cr, double W, double H, double head_h) {
     const Disk *target = NULL;
     for (int i = 0; i < s->ndisks; i++)
         if (!s->disks[i].removable) { target = &s->disks[i]; break; }
-    int can_start = (s->nimages > 0) && target != NULL;
+    /* #1073: no registered name = nothing to type back = no start. */
+    int can_start = (s->nimages > 0) && target != NULL && s->machine_name[0];
 
     char tname[96], tinfo[120];
     if (target) {
@@ -57,7 +58,10 @@ void screen_restore(App *a, cairo_t *cr, double W, double H, double head_h) {
     Text l3 = { NULL, 0, 0 }, empty = { NULL, 0, 0 };
     double confirm_h = 0, empty_h = 0;
     if (s->nimages == 0) { empty = sub_make(cr, "אין אימג'ים מתאימים למחשב הזה.", inner); empty_h = empty.h + N_ACTION_GAP; }
-    if (can_start) { l3 = label_make(cr, "הקלידו ERASE לאישור מחיקת הדיסק:", inner); confirm_h = l3.h + 2 + in_h + N_FORM_GAP; }
+    else if (!s->machine_name[0]) { empty = sub_make(cr, "למחשב הזה אין שם במרשם השרת — האישור הוא הקלדת השם. רשמו שם בקונסולה.", inner); empty_h = empty.h + N_ACTION_GAP; }
+    char l3txt[160];
+    snprintf(l3txt, sizeof l3txt, "הקלידו את שם המחשב (%s) לאישור מחיקת הדיסק:", s->machine_name);   /* #1073 */
+    if (can_start) { l3 = label_make(cr, l3txt, inner); confirm_h = l3.h + 2 + in_h + N_FORM_GAP; }
     Text err = error_make(cr, s->form_error, inner);
     double err_h = dmax(err.h, ERROR_MIN_H);
 
@@ -94,7 +98,7 @@ void screen_restore(App *a, cairo_t *cr, double W, double H, double head_h) {
     y += box_h + N_CHOICE_GAP;
     draw_alert(cr, t, (Rect){ x, y, inner, alert_height(&warn) }, &warn);
     y += alert_height(&warn) + N_ACTION_TOP;
-    if (s->nimages == 0) { text_draw_r(cr, &empty, x + inner, y, t->muted); y += empty_h; text_free(&empty); }
+    if (empty.h > 0) { text_draw_r(cr, &empty, x + inner, y, t->muted); y += empty_h; text_free(&empty); }
     if (can_start) {
         text_draw(cr, &l3, x, y, t->muted);                     y += l3.h + 2;
         draw_field(a, cr, (Rect){ x, y, inner, in_h }, a->restore_confirm, 0, NULL, HIT_RESTORE_CONFIRM);

@@ -318,33 +318,35 @@ def validate_display_name(value: str, what: str = "השם") -> str:
 class ImageLibrary:
     def __init__(self, root: str | Path):
         self.root = Path(root)
+        # #1066: מיקומים נוספים (NFS/SMB/iSCSI). None = רק `--images`,
+        # כמו לפני המיקומים — בדיקות יחידה של הספרייה עצמה.
+        self._locations = None
+
+    def bind_locations(self, provider) -> None:
+        """מזרים את רשימת המיקומים מה-DB. נקרא פעם אחת ב-create_runtime."""
+        self._locations = provider
 
     #: תיקיות העבודה של השרת בתוך שורש הספרייה — קליטה (`.capture-<task>`)
     #: וייבוא (`.import-<token>`). מה שמונח בהן עדיין לא אומת, ולכן הן
     #: אינן חלק מהספרייה.
     WORK_AREA_PREFIX = "."
 
-    def _in_work_area(self, path: Path) -> bool:
-        return any(
-            part.startswith(self.WORK_AREA_PREFIX)
-            for part in path.relative_to(self.root).parts[:-1]
-        )
+    def _in_work_area(self, path: Path, root: Path | None = None) -> bool:
+        base = root if root is not None else self.root
+        try:
+            rel = path.relative_to(base)
+        except ValueError:
+            return False
+        return any(part.startswith(self.WORK_AREA_PREFIX) for part in rel.parts[:-1])
 
-    def scan(self) -> dict[str, dict]:
-        """כל המניפסטים התקינים, לפי id. פגום — מדולג עם אזהרה, לא מפיל.
-
-        שדה לא ידוע במניפסט — מתעלמים, לפי המוסכמות הרוחביות.
-
-        שני מצבים מדולגים בשלמותם, ומאותו טעם — אימג' שאיננו יודעים מה
-        הוא לא יוצע לכיתה (עיקרון 5): מניפסט שיושב באזור עבודה, ומזהה
-        שיותר מתיקייה אחת מצהירה עליו.
-        """
+    def _scan_root(self, root: Path, loc_id: str, loc_meta: dict) -> dict[str, dict]:
+        """מניפסטים תקינים תחת שורש אחד. פגום מדולג, כפילות — אף אחד."""
         found: dict[str, dict] = {}
         ambiguous: set[str] = set()
-        if not self.root.is_dir():
+        if not root.is_dir():
             return found
-        for path in sorted(self.root.rglob("manifest.json")):
-            if self._in_work_area(path):
+        for path in sorted(root.rglob("manifest.json")):
+            if self._in_work_area(path, root):
                 continue
             try:
                 manifest = json.loads(path.read_text(encoding="utf-8"))
@@ -357,16 +359,64 @@ class ImageLibrary:
                 continue
             image_id = manifest["id"]
             if image_id in found or image_id in ambiguous:
-                # "שומרים את הראשון" הוא הכרעה שקטה לפי מיון נתיבים בין שני
-                # אימג'ים שונים — וההכרעה הזאת נפרסת על כיתה שלמה. תיקייה
-                # שנוספה מאוחר יותר גם דחקה כך אימג' ותיק ומאומת.
                 log.warning("duplicate image id %s at %s -- serving neither", image_id, path)
                 ambiguous.add(image_id)
                 found.pop(image_id, None)
                 continue
             manifest["_dir"] = str(path.parent)
+            manifest["_location_id"] = loc_id
+            manifest["_location_name"] = loc_meta.get("name") or loc_id
+            manifest["_available"] = True
+            manifest["_state_since"] = loc_meta.get("state_since") or ""
             found[image_id] = manifest
         return found
+
+    def scan(self) -> dict[str, dict]:
+        """כל המניפסטים התקינים, לפי id. פגום — מדולג עם אזהרה, לא מפיל.
+
+        שדה לא ידוע במניפסט — מתעלמים, לפי המוסכמות הרוחביות.
+
+        שני מצבים מדולגים בשלמותם, ומאותו טעם — אימג' שאיננו יודעים מה
+        הוא לא יוצע לכיתה (עיקרון 5): מניפסט שיושב באזור עבודה, ומזהה
+        שיותר מתיקייה אחת מצהירה עליו.
+
+        #1066: מיקום `unreachable`/`disconnected` — האימג'ים האחרונים
+        שנראו עליו נשארים ברשימה עם `_available=False` ("לא זמין", לא
+        "חסר"). הדיסק הוא מקור האמת כשהוא נגיש; המטמון הוא מה שאין לו
+        ייצוג טבעי כשהוא לא.
+        """
+        found: dict[str, dict] = {}
+        ambiguous: set[str] = set()
+        roots = self._location_roots()
+        for loc in roots:
+            if loc["available"]:
+                chunk = self._scan_root(Path(loc["path"]), loc["id"], loc)
+            else:
+                chunk = {}
+                for cached in loc.get("cached") or []:
+                    if not isinstance(cached, dict) or "id" not in cached:
+                        continue
+                    item = dict(cached)
+                    item["_location_id"] = loc["id"]
+                    item["_location_name"] = loc.get("name") or loc["id"]
+                    item["_available"] = False
+                    item["_state_since"] = loc.get("state_since") or ""
+                    item["_dir"] = None
+                    chunk[item["id"]] = item
+            for image_id, manifest in chunk.items():
+                if image_id in found or image_id in ambiguous:
+                    log.warning("duplicate image id %s -- serving neither", image_id)
+                    ambiguous.add(image_id)
+                    found.pop(image_id, None)
+                    continue
+                found[image_id] = manifest
+        return found
+
+    def _location_roots(self) -> list[dict]:
+        if self._locations is None:
+            return [{"id": "loc_local", "name": "מקומי", "path": self.root,
+                     "available": True, "cached": [], "state_since": ""}]
+        return list(self._locations() or [])
 
     @staticmethod
     def _validate(manifest: object) -> str | None:
@@ -414,6 +464,8 @@ class ImageLibrary:
         manifest = self.get(image_id)
         if manifest is None:
             return None
+        if not manifest.get("_dir") or not manifest.get("_available", True):
+            return None
         declared = {part["file"] for part in streamed_partitions(manifest)}
         if filename not in declared:
             return None
@@ -433,7 +485,8 @@ class ImageLibrary:
 
         הסוכן רק מציג, הוא לא מסנן בעצמו (כלל ממשק 3).
         """
-        images = self.scan()
+        images = {iid: m for iid, m in self.scan().items()
+                  if m.get("_available", True)}
         if not disks:
             return sorted(images)
         internal = [
@@ -479,16 +532,19 @@ class ImageLibrary:
                     "min_target_bytes": required_bytes(manifest),
                     "used_bytes": used_bytes_total(manifest),
                     "total_compressed_bytes": manifest.get("total_compressed_bytes", 0),
-                    "partitions": len(manifest["partitions"]),
+                    "partitions": len(manifest.get("partitions") or []),
                     # ‏#1012: מסך התחנה צריך להציג את בחירת ההרחבה, אבל
                     # הקיוסק אינו חושף את manifest endpoint בוילן. רק השדות
                     # הדרושים לתצוגה נוסעים בתשובת הקונסולה המאומתת.
                     "expand_partitions": [
                         {key: part.get(key) for key in
                          ("index", "role", "size_bytes", "expandable")}
-                        for part in manifest["partitions"]
-                        if part.get("role") in ("windows", "linux")
+                        for part in (manifest.get("partitions") or [])
+                        if isinstance(part, dict) and part.get("role") in ("windows", "linux")
                     ],
+                    # #1066: באיזה מיקום האימג' יושב, והאם המיקום נגיש.
+                    "location_id": manifest.get("_location_id") or "loc_local",
+                    "available": manifest.get("_available", True),
                 }
             )
         return sorted(result, key=lambda m: (m["folder"], m["sort"], m["name"]))
@@ -504,6 +560,8 @@ class ImageLibrary:
         manifest = self.get(image_id)
         if manifest is None:
             return False
+        if not manifest.get("_dir") or not manifest.get("_available", True):
+            raise ValueError("האימג' לא זמין — המיקום אינו נגיש")
         path = Path(manifest["_dir"]) / "manifest.json"
         raw = json.loads(path.read_text(encoding="utf-8"))
         for key, value in changes.items():
@@ -527,6 +585,8 @@ class ImageLibrary:
         """מוחק את תיקיית האימג' כולה. האישור בהקלדת שם — אצל הקורא."""
         manifest = self.get(image_id)
         if manifest is None:
+            return False
+        if not manifest.get("_dir") or not manifest.get("_available", True):
             return False
         shutil.rmtree(manifest["_dir"])
         return True

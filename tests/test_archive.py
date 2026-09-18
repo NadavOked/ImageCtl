@@ -432,9 +432,13 @@ def test_uploading_over_an_existing_image_is_refused(server):
     assert "כבר קיים" in response.json()["detail"]
 
 
-def test_upload_is_admin_only_and_download_is_not(server):
-    assert server["deploy"].get(
+def test_upload_is_admin_only_and_download_is_console_only(server):
+    """ההורדה אינה admin_only — אבל היא קונסולה (#1073: deploy מקבל 403
+    `deploy_no_console`, לא 403 של admin_only). admin מוריד."""
+    assert server["admin"].get(
         "/api/console/images/img_7f3a91/download").status_code == 200
+    refused = server["deploy"].get("/api/console/images/img_7f3a91/download")
+    assert refused.status_code == 403 and "מחשב הבנייה" in refused.json()["detail"]
     assert server["deploy"].post(
         "/api/console/images/upload", content=b"x" * 1024).status_code == 403
 

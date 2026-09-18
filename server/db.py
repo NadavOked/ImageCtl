@@ -417,6 +417,26 @@ CREATE TABLE IF NOT EXISTS storage_transfers (
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
+
+-- מיקומי אחסון לספרייה (#1066 שלב א'): תיקייה / NFS / SMB / iSCSI.
+-- `--images` הוא loc_local. last_images_json הוא המטמון כשהדיסק לא נגיש
+-- (אין ייצוג טבעי כקבצים אז — עיקרון 3).
+CREATE TABLE IF NOT EXISTS storage_locations (
+    id               TEXT PRIMARY KEY,
+    name             TEXT NOT NULL,
+    type             TEXT NOT NULL CHECK (type IN ('local', 'nfs', 'smb', 'iscsi')),
+    params_json      TEXT NOT NULL DEFAULT '{}',
+    mount_point      TEXT NOT NULL,
+    state            TEXT NOT NULL CHECK (
+                         state IN ('connected', 'unreachable', 'disconnected', 'unchecked')
+                     ),
+    state_since      TEXT NOT NULL,
+    state_detail     TEXT NOT NULL DEFAULT '',
+    created_by       TEXT NOT NULL DEFAULT '',
+    created_at       TEXT NOT NULL,
+    last_images_json TEXT NOT NULL DEFAULT '[]',
+    last_df_json     TEXT
+);
 """
 
 #: הקבוצות הקבועות: חדר שיכפולים ומחשב הבנייה הם יחידים במערכת —
@@ -544,6 +564,9 @@ _STORAGE_SCHEMA_COLUMNS = {
     "storage_transfers": {"id", "node_id", "image_id", "image_name", "state",
                           "bytes_sent", "bytes_total", "error", "started_by",
                           "created_at", "updated_at"},
+    "storage_locations": {"id", "name", "type", "params_json", "mount_point",
+                          "state", "state_since", "state_detail", "created_by",
+                          "created_at", "last_images_json", "last_df_json"},
 }
 
 

@@ -77,6 +77,8 @@ FORBIDDEN_ON_KIOSK = (
     ("GET", "/api/console/journal"),
     ("GET", "/api/console/settings"),
     ("GET", "/api/console/storage-nodes"),
+    ("GET", "/api/console/storage-locations"),
+    ("POST", "/api/console/storage-locations"),
     ("POST", "/api/console/images/upload"),
     ("POST", "/api/console/folders/order"),
 )

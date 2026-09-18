@@ -7,6 +7,11 @@
 
 * ‏`gui_state` (‏`agent/lib/guistate.sh`) כותב `menu_class=0|1` לקובץ
   המצב — **תמיד**, גם כשכבוי, כדי שהיעדר רשומה לא יקרא כ"דלוק".
+  ‏#1073: ב-v1 הערך הוא 0 **גם כשהשרת אמר true** — כיתות = v2, והשער
+  `BUILD_MENU_CLASSROOMS` (‏`buildmenuitems.sh`) סגור; המסלול של v2 נבדק
+  עם השער פתוח, כדי שהדלקתו (#1081) תחזיר הכול.
+* ‏#1073: `gui_state` כותב גם `machine_name=` — השם הרשום של המכונה
+  (‏`.name` מ-`/api/v1/agent/state`), האישור המוקלד של מסך השחזור.
 * ‏`state.c` מפרסר את הרשומה ו-`screens.c` מסתיר את הכרטיס — נמדד
   בפיקסלים של `--png` (על המעבדה; בווינדוס אין מהדר).
 
@@ -37,21 +42,22 @@ STATION = {"known": True, "role": "build", "disks": [], "task": None,
 PRELUDE = (
     f'. {posix(AGENT)}/lib/common.sh; '
     f'. {posix(AGENT)}/lib/jsonq.sh; '
-    f'. {posix(AGENT)}/lib/buildmenu.sh; '
+    f'. {posix(AGENT)}/lib/buildmenuitems.sh; . {posix(AGENT)}/lib/buildmenu.sh; '
     f'. {posix(AGENT)}/lib/guistate.sh; '
 )
 
 
-def state_records(tmp_path: Path, hello: dict | None) -> list[str]:
+def state_records(tmp_path: Path, hello: dict | None, *, env: str = "",
+                  station: dict = STATION) -> list[str]:
     run = tmp_path / "run"; run.mkdir(parents=True)
     gui = tmp_path / "gui"; gui.mkdir(parents=True)
-    (run / "station.json").write_text(json.dumps(STATION), newline="\n")
+    (run / "station.json").write_text(json.dumps(station), newline="\n")
     if hello is not None:
         (run / "response.json").write_text(json.dumps(hello), newline="\n")
     (gui / "mode").write_text("menu\n", newline="\n")
     script = (
         f'export RUN_DIR={posix(run)!r} GUI_DIR={posix(gui)!r} '
-        f'SERVER=http://127.0.0.1:9 MAC=aa:bb:cc:dd:ee:ff IMAGECTL_TEST=1; '
+        f'SERVER=http://127.0.0.1:9 MAC=aa:bb:cc:dd:ee:ff IMAGECTL_TEST=1 {env}; '
         + PRELUDE
         + f'http_get() {{ cat {posix(run / "station.json")!r}; }}; '
         + 'gui_state'
@@ -63,11 +69,35 @@ def state_records(tmp_path: Path, hello: dict | None) -> list[str]:
 
 @requires_native(("bash", BASH), "jq", why="gui_state בונה את המצב ב-jq")
 def test_gui_state_carries_the_switch_from_the_last_hello(tmp_path):
-    """‏hello אמר true → `menu_class=1`; אמר false → `menu_class=0`."""
-    on = state_records(tmp_path / "on", {"class_deploy_enabled": True})
+    """‏(v2, השער פתוח) hello אמר true → `menu_class=1`; אמר false →
+    `menu_class=0`. זה המסלול ש-#1081 ידליק — נשמר עובד."""
+    v2 = "BUILD_MENU_CLASSROOMS=1"
+    on = state_records(tmp_path / "on", {"class_deploy_enabled": True}, env=v2)
     assert "menu_class=1" in on, on
-    off = state_records(tmp_path / "off", {"class_deploy_enabled": False})
+    off = state_records(tmp_path / "off", {"class_deploy_enabled": False}, env=v2)
     assert "menu_class=0" in off, off
+
+
+@requires_native(("bash", BASH), "jq", why="gui_state בונה את המצב ב-jq")
+def test_v1_pins_the_class_card_off_whatever_the_server_says(tmp_path):
+    """‏#1073: בלי השער (ברירת המחדל = v1) הכרטיס כבוי גם כשה-hello אמר
+    true — כיתות = v2. **בקרה שלילית:** בלי `BUILD_MENU_CLASSROOMS` ב-
+    `class_deploy_on` נכתב `menu_class=1` והטסט נופל."""
+    on = state_records(tmp_path / "on", {"class_deploy_enabled": True})
+    assert "menu_class=0" in on, on
+    assert "menu_class=1" not in on
+
+
+@requires_native(("bash", BASH), "jq", why="gui_state בונה את המצב ב-jq")
+def test_gui_state_writes_the_registered_machine_name(tmp_path):
+    """‏#1073: `machine_name=` הוא `.name` מהמצב — האישור המוקלד של מסך
+    השחזור. ‏null (מכונה בלי שם) → הרשומה נכתבת **ריקה**, לא מושמטת."""
+    named = state_records(tmp_path / "named", None,
+                          station={**STATION, "name": "BUILD-01"})
+    assert "machine_name=BUILD-01" in named, named
+    unnamed = state_records(tmp_path / "unnamed", None,
+                            station={**STATION, "name": None})
+    assert "machine_name=" in unnamed, unnamed
 
 
 @requires_native(("bash", BASH), "jq", why="gui_state בונה את המצב ב-jq")

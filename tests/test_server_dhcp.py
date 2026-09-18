@@ -676,8 +676,11 @@ def test_dhcp_not_diverged_when_stored_matches_live(dhcp_server):
     assert row["dhcp_diverged"] is False
 
 
-def test_dhcp_live_endpoint_stays_read_only_for_deploy_user(dhcp_server):
-    """#762 לא פותח שום דבר חדש להרשאות — עדיין GET רגיל לכל משתמש מחובר."""
+def test_dhcp_live_endpoint_is_console_only(dhcp_server):
+    """#762 לא פותח שום דבר חדש להרשאות — GET רגיל לכל משתמש מחובר **לקונסולה**;
+    ‏#1073: deploy אינו כזה (403 `deploy_no_console`)."""
     r = dhcp_server["deploy"].get("/api/console/net/interfaces")
+    assert r.status_code == 403 and "מחשב הבנייה" in r.json()["detail"]
+    r = dhcp_server["admin"].get("/api/console/net/interfaces")
     assert r.status_code == 200
     assert "dhcp_live" in r.json()[0]

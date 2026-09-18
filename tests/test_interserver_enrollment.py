@@ -444,7 +444,8 @@ def test_enroll_capability_standalone_admin_true_even_with_zero_nodes(server):
     caps = _caps(server["admin"])
     assert caps["enroll_secondary"] is True         # אין צורך במשני קיים
     assert caps["open_local_pairing"] is False       # לא משני
-    assert _caps(server["deploy"])["enroll_secondary"] is False
+    # ‏#1073: ל-deploy אין /me בכלל — הקונסולה סגורה בפניו.
+    assert server["deploy"].get("/api/console/me").status_code == 403
 
 
 def test_local_pairing_capability_only_on_secondary_admin(server):
@@ -452,7 +453,7 @@ def test_local_pairing_capability_only_on_secondary_admin(server):
     caps = _caps(server["admin"])
     assert caps["open_local_pairing"] is True
     assert caps["enroll_secondary"] is False         # משני אינו מוסיף ילדים
-    assert _caps(server["deploy"])["open_local_pairing"] is False
+    assert server["deploy"].get("/api/console/me").status_code == 403   # #1073
 
 
 # --- (ז) שומרי הכניסה הבין-שרתית בשכבת ה-service (#740) ----------------------

@@ -168,7 +168,7 @@ def test_the_progress_report_of_a_failed_drawer_lands_in_the_memory(server):
               "targets": [failed_target(), failed_target(dev="sdb", state="writing", serial="S9")]}
     for _ in range(3):   # הדיווח חוזר; הזיכרון לא
         assert server["anon"].post("/api/v1/agent/progress", json=report).json()["ok"]
-    rows = server["deploy"].get("/api/console/disk-failures").json()
+    rows = server["admin"].get("/api/console/disk-failures").json()   # #1073: קונסולה = admin
     assert len(rows) == 1
     assert rows[0]["mac"] == ids["mac1"] and rows[0]["cause"] == "cable"
     assert rows[0]["serial"] == "S3TWNE0JB04745" and rows[0]["port"] == 1

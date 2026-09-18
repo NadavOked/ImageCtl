@@ -129,7 +129,7 @@ def _enable(client):
 def test_me_reports_the_server_version_from_the_same_source_as_update(update_server):
     """‏#915: שורת הסטטוס בקונסולה מציגה את תג ה-git של העץ — מאותו hook
     ‏`describe` כמו `/update` — ולא `v0.9` קשיח ב-HTML. לכל משתמש מחובר,
-    לא רק admin (גם deploy רואה את שורת הסטטוס)."""
+    (הפצה — #1073 — לא נכנסת לקונסולה בכלל)."""
     from server import users
     admin, app, state = update_server["admin"], update_server["app"], update_server["state"]
     assert admin.get("/api/console/me").json()["version"] == "v0.24.0"
@@ -137,8 +137,11 @@ def test_me_reports_the_server_version_from_the_same_source_as_update(update_ser
     assert admin.get("/api/console/me").json()["version"] == "v0.25.0-2-gabc123"
     users.create(app.state.ctx.conn, "dep", "deploy-pass-123", "deploy", by="test")
     deploy = TestClient(app)
+    # ‏#1073 (18/09): למשתמש הפצה אין קונסולה — הכניסה מסורבת, ואין שורת סטטוס.
+    # (ב-`create_app` המאוחד של הטסטים הכניסה של הקיוסק קודמת — ולכן הבדיקה
+    # היא על הנתיב: `console_only` חוסם גם עם עוגייה. בייצור — `create_console_app`.)
     deploy.post("/api/console/login", json={"username": "dep", "password": "deploy-pass-123"})
-    assert deploy.get("/api/console/me").json()["version"] == "v0.25.0-2-gabc123"
+    assert deploy.get("/api/console/me").status_code == 403
     state["current"] = None                          # אין תג על העץ = null, לא מספר מומצא
     assert admin.get("/api/console/me").json()["version"] is None
 

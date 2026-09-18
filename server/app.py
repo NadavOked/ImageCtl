@@ -20,19 +20,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from sqlite3 import Connection
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from boot.grub_menu import GrubConfig
 from boot.http import create_boot_asgi, gui_initrd_path
 
-from . import boottrace, dhcp, registry
+from . import auth, boottrace, dhcp, registry
 from .api import ServerContext, create_agent_router
 from .console_api import create_console_router
 from .console_source_guard import ConsoleSourceGuard, Network
 from .console_tls import ConsoleTLS
 from .console_storage import create_storage_router
+from .console_storage_locations import create_storage_locations_router
+from . import storage_locations
 from .db import journal
 from . import wol
 from . import direct
@@ -150,6 +152,8 @@ class ServerRuntime:
     extra_cmdline: tuple[str, ...] = ()
     dhcp_hooks: dict | None = None
     health_hooks: dict | None = None
+    storage_hooks: dict | None = None
+    storage_check_interval: float = storage_locations.CHECK_INTERVAL
     netcfg_hooks: dict | None = None
     known_macs_hooks: dict | None = None
     #: #748: תיקיית עץ השרת (ל-``git describe``/``fetch``/``checkout``)
@@ -183,10 +187,21 @@ async def _room_clock(rt: ServerRuntime, interval: float) -> None:
     חיבור לכל תהליכון (WAL) — אותו מודל בדיוק כמו מסלול ה-hello של uvicorn,
     שגם הוא רץ בתהליכון מהמאגר. ‏`room.sweep` לעולם אינו זורק, ולכן דגימה
     שנכשלה נרשמת ביומן וממשיכה — הלולאה אינה מתה על תקלה חולפת.
+
+    #1066: באותו תהליכון, כל `storage_check_interval` (ברירת מחדל 60ש')
+    נבדקים מיקומי האחסון המחוברים/לא-נגישים. disconnected לא נבדק.
     """
+    elapsed = 0.0
+    storage_every = rt.storage_check_interval or storage_locations.CHECK_INTERVAL
     while True:
         await asyncio.sleep(interval)
         await asyncio.to_thread(room.sweep, rt.conn, rt.store)
+        elapsed += interval
+        if elapsed >= storage_every:
+            elapsed = 0.0
+            hooks = rt.storage_hooks or storage_locations.default_hooks()
+            await asyncio.to_thread(
+                storage_locations.poll, rt.conn, rt.library, hooks)
 
 
 def _install_room_clock(app: FastAPI, rt: ServerRuntime) -> None:
@@ -229,6 +244,8 @@ def create_runtime(
     interface: str | None = None,
     dhcp_hooks: dict | None = None,
     health_hooks: dict | None = None,
+    storage_hooks: dict | None = None,
+    storage_check_interval: float = storage_locations.CHECK_INTERVAL,
     netcfg_hooks: dict | None = None,
     known_macs_hooks: dict | None = None,
     # ‏#855: ‏`{"leases": identity.LeaseFile(...)}` — מקור חכירות ה-DHCP
@@ -275,6 +292,9 @@ def create_runtime(
         storage_nodes.persist_config(conn, storage_role, primary_url)
 
     library = ImageLibrary(images_root)
+    storage_locations.ensure_local(conn, library.root)
+    library.bind_locations(
+        lambda: storage_locations.library_roots(conn, library.root))
 
     # ‏#88: מה שקליטה שהשרת מת באמצעה השאירה בשורש הספרייה נסחף כאן —
     # אבל רק מה שטבלת המשימות מוכיחה שהוא יתום. ההנמקה המלאה, כולל למה
@@ -382,7 +402,10 @@ def create_runtime(
         ctx=ctx, conn=conn, library=library, store=store,
         server_base=server_base, data_dir=data_dir, netcfg_dir=netcfg_dir,
         wol_send=wol_send, boot_dir=boot_dir, extra_cmdline=extra_cmdline,
-        dhcp_hooks=dhcp_hooks, health_hooks=health_hooks, netcfg_hooks=netcfg_hooks,
+        dhcp_hooks=dhcp_hooks, health_hooks=health_hooks,
+        storage_hooks=storage_hooks,
+        storage_check_interval=storage_check_interval,
+        netcfg_hooks=netcfg_hooks,
         console_allowed_networks=console_allowed_networks,
         known_macs_hooks=known_macs_hooks,
         repo_dir=repo_dir, update_hooks=update_hooks,
@@ -502,27 +525,41 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
     # (‏`git describe`, לא מחרוזת קשיחה ב-HTML) — ונקראת מחדש בכל
     # ‏`/me`, כי אחרי ``apply`` העץ כבר על תג אחר.
     update_hooks = {**default_update_hooks(), **(rt.update_hooks or {})}
-    app.include_router(create_console_router(
+    # ‏#1073: למשתמש הפצה אין קונסולה — `deploy` מקבל 403 על **כל** נתיב
+    # ניהול, גם עם עוגייה שהקיוסק הנפיק (אותו סוד). ה-dependency נוסף
+    # כאן, בהרכבה, ולא בתוך הראוטרים: ‏`kiosk.py` בונה מהם עותקים משלו
+    # ל-‎:8082 ולפורט הסוכן, ושם deploy מותר — מחשב הבנייה נכנס משם.
+    # ‏HTTP בלבד (`Request`): ה-WebSocket של המוניטור סוגר deploy ב-4403
+    # **אחרי** accept (#904) כדי שהסיבה תגיע לדפדפן, ולכן נשאר מחוץ לזה.
+    no_deploy = [Depends(auth.console_only(ctx.conn))]
+
+    def include(router) -> None:
+        app.include_router(router, dependencies=no_deploy)
+
+    include(create_console_router(
         ctx, rt.known_macs_hooks,
         version=lambda: current_version(update_hooks, repo_dir),
         tls=rt.console_tls))
-    app.include_router(create_storage_router(ctx, rt.data_dir))   # #727/#740
-    app.include_router(create_library_router(ctx))
-    app.include_router(create_drivers_router(ctx))   # #720
-    app.include_router(create_tools_router(ctx, rt.data_dir))   # #649: ארגז הכלים — קטלוג + בחירה
-    app.include_router(create_net_router(ctx))
-    app.include_router(create_dhcp_router(ctx, rt.dhcp_hooks))
-    app.include_router(create_netcfg_router(ctx, rt.netcfg_dir, rt.netcfg_hooks))
-    app.include_router(create_health_router(ctx, rt.server_base, rt.health_hooks))
-    app.include_router(create_update_router(
+    include(create_storage_router(ctx, rt.data_dir))   # #727/#740
+    include(create_storage_locations_router(
+        ctx, rt.storage_hooks, rt.data_dir, rt.server_base))   # #1066
+    include(create_library_router(ctx))
+    include(create_drivers_router(ctx))   # #720
+    include(create_tools_router(ctx, rt.data_dir))   # #649: ארגז הכלים — קטלוג + בחירה
+    include(create_net_router(ctx))
+    include(create_dhcp_router(ctx, rt.dhcp_hooks))
+    include(create_netcfg_router(ctx, rt.netcfg_dir, rt.netcfg_hooks))
+    include(create_health_router(ctx, rt.server_base, rt.health_hooks))
+    include(create_update_router(
         ctx, repo_dir, rt.server_base, rt.update_hooks,
         public_url=PUBLIC_UPDATE_URL))
-    app.include_router(create_branding_router(ctx, rt.data_dir))
-    app.include_router(create_monitor_router(ctx))   # #690: admin RFB proxy + settings
-    app.include_router(create_console_capture_router(ctx))
-    app.include_router(create_room_router(ctx, wake=_kiosk_room_wake(rt)))
+    include(create_branding_router(ctx, rt.data_dir))
+    # ‏#690: admin RFB proxy + settings — ה-HTTP שלו admin_only ממילא.
+    app.include_router(create_monitor_router(ctx))
+    include(create_console_capture_router(ctx))
+    include(create_room_router(ctx, wake=_kiosk_room_wake(rt)))
     # ‏#984: מכונה בודדת / grp_BUILD — אותו שולח מוזרק כמו בחדר.
-    app.include_router(create_wake_router(ctx, rt.wol_send))
+    include(create_wake_router(ctx, rt.wol_send))
     app.mount("/console", StaticFiles(directory=STATIC_DIR, html=True), name="console")
     # ‏#151: השומר לפי כתובת מקור, כשמוגדר — נרשם **לפני** ConsoleNoStaleCache
     # (‏add_middleware ראשון = השכבה החיצונית ביותר, נבדקת ראשונה, כדי

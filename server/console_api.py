@@ -15,10 +15,10 @@ import socket
 from typing import Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from . import (auth, dhcp, disk_failures, identity, inventory, probe, registry,
-               shrink_records, storage_nodes, users)
+               shrink_records, storage_locations, storage_nodes, users)
 from .api import ServerContext
 from .db import (_write_lock, get_setting, journal, now_iso, set_setting,
                  update_one, writing)
@@ -70,11 +70,17 @@ def create_console_router(
     ctx: ServerContext, known_macs_hooks: dict | None = None,
     version: Callable[[], str | None] | None = None,
     tls=None,
+    kiosk: bool = False,
 ) -> APIRouter:
     """‏``tls`` (#703, tracer 5): ‏``console_tls.ConsoleTLS`` כשהקונסולה מוגשת
     ב-HTTPS — העוגייה מקבלת ``Secure`` ו-``/me`` מדווח את טביעת האצבע.
     ‏``None`` = בלי TLS (loopback/בדיקות): עוגיית ``Secure`` על http הייתה
-    נזרקת על ידי הדפדפן, ואיש לא היה מצליח להיכנס בפיתוח."""
+    נזרקת על ידי הדפדפן, ואיש לא היה מצליח להיכנס בפיתוח.
+
+    ‏``kiosk`` (#1073): ‏``True`` כשהראוטר נבנה בשביל ה-allowlist של הקיוסק
+    (`kiosk.py` — ‎:8082 ופורט הסוכן, שמהם מחשב הבנייה נכנס). שם הכניסה
+    מקבלת גם ``deploy``; בקונסולה (ברירת המחדל) deploy מסורב ב-403 עם
+    ``deploy_no_console`` — למשתמש הפצה אין ניהול וובי (הכרעת נדב 18/09)."""
     router = APIRouter(prefix="/api/console")
     current_user, admin_only = auth.dependencies(ctx.conn)
 
@@ -113,6 +119,15 @@ def create_console_router(
             journal(ctx.conn, "login_failed", body.get("username", ""))
             raise HTTPException(401, "שם משתמש או סיסמה שגויים")
         username = body["username"].strip()
+        if role == "deploy" and not kiosk:
+            # ‏#1073: הסיסמה נכונה — וזו בדיוק הסיבה שהתשובה אינה 401.
+            # "בדקנו, ואתה לא נכנס מכאן" הוא מצב משלו (עיקרון 5), עם
+            # הודעה שמסך הכניסה מציג כלשונה. ‏JSONResponse ולא HTTPException:
+            # הגוף הוא חוזה (`error` + `message_he`), לא `detail` חופשי.
+            journal(ctx.conn, "login_refused_console", "deploy", username)
+            return JSONResponse(
+                {"error": auth.DEPLOY_NO_CONSOLE,
+                 "message_he": auth.DEPLOY_NO_CONSOLE_HE}, status_code=403)
         response.set_cookie(
             auth.COOKIE_NAME, auth.issue(ctx.conn, username, role),
             httponly=True, samesite="lax", max_age=auth.TTL_SECONDS,
@@ -485,6 +500,9 @@ def create_console_router(
         manifest = ctx.library.get(image_id)
         if manifest is None:
             raise HTTPException(400, "אימג' לא קיים בספרייה")
+        unavailable = storage_locations.unavailable_message(manifest)
+        if unavailable:
+            raise HTTPException(409, unavailable)
         # #534: יעד סבב הוא כיתה בלבד — לא מחשב הבנייה ולא חדר השיכפולים.
         # אותה בדיקה של station.py, דרך registry.group_role המשותפת.
         if registry.group_role(ctx.conn, group_id) != "classroom":

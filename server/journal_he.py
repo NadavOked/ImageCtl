@@ -15,6 +15,7 @@ from .images import ImageLibrary
 EVENTS_HE = {
     "login": "כניסה לקונסולה",
     "login_failed": "ניסיון כניסה כושל",
+    "login_refused_console": "כניסה לקונסולה סורבה — משתמש הפצה (#1073)",
     "agent_login": "כניסה ממסך תחנה",
     "agent_login_failed": "ניסיון כניסה כושל במסך תחנה",
     "agent_role_refused": "פתיחת סבב נדחתה — התפקיד אינו רשאי",

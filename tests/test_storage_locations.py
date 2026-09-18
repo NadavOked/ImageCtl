@@ -1,0 +1,533 @@
+"""מיקומי אחסון (#1066 שלב א') — כל hook מזויף, אף כלי מערכת לא רץ."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+pytest.importorskip("fastapi")
+
+from fastapi.testclient import TestClient
+
+from conftest import MANIFEST_256, setup_classroom, write_image
+from server import storage_locations as sl
+from server.storage_locations import FAILED, OK, UNCHECKED, HookResult
+
+IQN = "iqn.2005-10.org.freenas.ctl:images"
+PORTAL = "10.44.3.75:3260"
+
+
+class FakeHooks:
+    """כל כלי המערכת — רשימות, מונים, ושלושה מצבים. לא subprocess."""
+
+    def __init__(self):
+        self.nfs_items = [{"export": "/mnt/pool/images", "clients": "10.44.10.0/24 · rw"}]
+        self.smb_items = [{"share": "images", "type": "Disk"}]
+        self.iscsi_items = [{"portal": PORTAL, "iqn": IQN}]
+        self.scan_status = OK
+        self.scan_reason = "showmount: command not found"
+        self.mount_status = OK
+        self.mount_reason = "access denied"
+        self.login_status = OK
+        self.login_reason = "login failed"
+        self.make_fs_status = OK
+        self.disk_status = "empty"
+        self.disk_reason = "Input/output error"
+        self.device = "/dev/sdb"
+        self.fs_type = "ext4"
+        self.fs_label = "images"
+        self.fs_size = 800_000_000_000
+        self.free = 1_800_000_000_000
+        self.total = 4_000_000_000_000
+        self.fail_targets: set[str] = set()
+        self.interfaces = [
+            {"name": "ens19", "state": "up", "addresses": ["10.44.12.10/24"]},
+        ]
+        self.mounts: list[tuple] = []
+        self.umounts: list[str] = []
+        self.fstab: list[list] = []
+        self.make_fs_calls: list[tuple] = []
+        self.logins: list[tuple] = []
+        self.logouts: list[tuple] = []
+        self.probes: list[str] = []
+
+    def nfs_scan(self, server):
+        if self.scan_status != OK:
+            return HookResult(self.scan_status, self.scan_reason)
+        return HookResult(OK, payload={"items": list(self.nfs_items)})
+
+    def smb_scan(self, server, creds=None):
+        del creds
+        if self.scan_status != OK:
+            return HookResult(self.scan_status, self.scan_reason)
+        return HookResult(OK, payload={"items": list(self.smb_items)})
+
+    def iscsi_discover(self, portal, chap=None):
+        del chap
+        if self.scan_status != OK:
+            return HookResult(self.scan_status, self.scan_reason)
+        return HookResult(OK, payload={"items": list(self.iscsi_items)})
+
+    def iscsi_login(self, iqn, portal, chap=None, auto=True):
+        self.logins.append((iqn, portal, chap, auto))
+        if self.login_status != OK:
+            return HookResult(self.login_status, self.login_reason)
+        return HookResult(OK, payload={"device_by_path": self.device, "iqn": iqn,
+                                       "portal": portal})
+
+    def iscsi_logout(self, iqn, portal, chap=None, auto=False):
+        self.logouts.append((iqn, portal))
+        return HookResult(OK)
+
+    def disk_probe(self, device):
+        self.probes.append(device)
+        if self.disk_status == "unknown":
+            return HookResult(UNCHECKED, self.disk_reason,
+                              {"device": device, "disk_status": "unknown",
+                               "fs_size": self.fs_size})
+        if self.disk_status == "fs":
+            return HookResult(OK, payload={
+                "device": device, "disk_status": "fs",
+                "fs_type": self.fs_type, "fs_label": self.fs_label,
+                "fs_size": self.fs_size,
+            })
+        return HookResult(OK, payload={
+            "device": device, "disk_status": "empty",
+            "fs_type": None, "fs_label": None, "fs_size": self.fs_size,
+        })
+
+    def make_fs(self, device, label=""):
+        self.make_fs_calls.append((device, label))
+        if self.make_fs_status != OK:
+            return HookResult(self.make_fs_status, "mkfs failed")
+        return HookResult(OK)
+
+    def mount(self, fstype, source, target, opts=""):
+        self.mounts.append((fstype, source, target, opts))
+        if self.mount_status != OK:
+            return HookResult(self.mount_status, self.mount_reason)
+        Path(target).mkdir(parents=True, exist_ok=True)
+        return HookResult(OK)
+
+    def umount(self, target):
+        self.umounts.append(target)
+        return HookResult(OK)
+
+    def fstab_write(self, entries):
+        self.fstab.append(list(entries))
+        return HookResult(OK, payload={"entries": len(entries)})
+
+    def df(self, target):
+        if target in self.fail_targets:
+            return HookResult(FAILED, "no route to 10.44.3.75:3260")
+        return HookResult(OK, payload={"free_bytes": self.free, "total_bytes": self.total})
+
+    def as_dict(self) -> dict:
+        return {
+            "nfs_scan": self.nfs_scan,
+            "smb_scan": self.smb_scan,
+            "iscsi_discover": self.iscsi_discover,
+            "iscsi_login": self.iscsi_login,
+            "iscsi_logout": self.iscsi_logout,
+            "disk_probe": self.disk_probe,
+            "make_fs": self.make_fs,
+            "mount": self.mount,
+            "umount": self.umount,
+            "fstab_write": self.fstab_write,
+            "df": self.df,
+            "interfaces": lambda: list(self.interfaces),
+        }
+
+
+@pytest.fixture()
+def env(tmp_path: Path, images_root: Path, clock, monkeypatch):
+    from server import sender as sender_module
+    from server import users
+    from server.app import create_app
+    from test_sender import Recorder
+
+    monkeypatch.setattr(sender_module, "port_holders", lambda port: [])
+    fake = FakeHooks()
+    tftp = tmp_path / "tftp"
+    (tftp / "grub").mkdir(parents=True)
+    for name in ("bootx64.efi", "grubx64.efi", "grub/grub.cfg"):
+        (tftp / name).write_bytes(b"x")
+    from server.ssh_switch import Listeners
+    health_hooks = {
+        "ss": lambda: "",
+        "unit_active": lambda name: "",
+        "http_get": lambda url: 200,
+        "http_size": lambda url: (200, 9_000_000),
+        "http_text": lambda url: (200, ""),
+        "interfaces": lambda: list(fake.interfaces),
+        "tftp_root": lambda: tftp,
+        "udp_sender_pids": lambda: [],
+        "listeners": lambda: Listeners(True),
+        "apply_sshd": lambda text: None,
+        "settle": lambda: None,
+    }
+    app = create_app(
+        tmp_path / "data", images_root, "http://10.44.12.10:8080",
+        now_fn=clock, sender_runner=Recorder(block=True),
+        storage_hooks=fake.as_dict(),
+        storage_check_interval=10**9,
+        health_hooks=health_hooks,
+    )
+    ctx = app.state.ctx
+    users.create(ctx.conn, "noc", "admin-pass-123", "admin", by="test")
+    users.create(ctx.conn, "labtech", "deploy-pass-1", "deploy", by="test")
+    admin, deploy = TestClient(app), TestClient(app)
+    assert admin.post("/api/console/login",
+                      json={"username": "noc", "password": "admin-pass-123"}).status_code == 200
+    assert deploy.post("/api/console/login",
+                       json={"username": "labtech", "password": "deploy-pass-1"}).status_code == 200
+    yield {"app": app, "ctx": ctx, "admin": admin, "deploy": deploy,
+           "fake": fake, "images_root": images_root, "data": tmp_path / "data"}
+    ctx.sender.stop()
+
+
+def _nfs_params():
+    return {"server": "10.44.10.20", "export": "/mnt/pool/images",
+            "version": "4.1", "readonly": False}
+
+
+def _iscsi_params():
+    return {"portal": PORTAL, "iqn": IQN, "auto": True}
+
+
+def _create_nfs(env, name="nas-images"):
+    return env["admin"].post("/api/console/storage-locations", json={
+        "name": name, "type": "nfs", "params": _nfs_params(), "tested": True,
+    })
+
+
+def _create_iscsi(env, name="san-lun1"):
+    return env["admin"].post("/api/console/storage-locations", json={
+        "name": name, "type": "iscsi", "params": _iscsi_params(), "tested": True,
+    })
+
+
+# --- רשימה מובנית -----------------------------------------------------------
+
+def test_local_location_exists_and_is_not_removable(env):
+    body = env["admin"].get("/api/console/storage-locations").json()
+    assert body["locations"][0]["id"] == "loc_local"
+    assert body["locations"][0]["name"] == "מקומי"
+    assert body["locations"][0]["type"] == "local"
+    assert body["locations"][0]["removable"] is False
+    assert body["locations"][0]["state"] in ("connected", "unchecked")
+    assert body["summary"]["locations"] >= 1
+
+
+def test_deploy_gets_403(env):
+    assert env["deploy"].get("/api/console/storage-locations").status_code == 403
+    assert env["deploy"].post("/api/console/storage-locations/test", json={
+        "type": "nfs", "params": _nfs_params(),
+    }).status_code == 403
+    assert env["deploy"].post("/api/console/storage-locations", json={
+        "name": "x", "type": "nfs", "params": _nfs_params(), "tested": True,
+    }).status_code == 403
+
+
+def test_create_without_test_is_422(env):
+    r = env["admin"].post("/api/console/storage-locations", json={
+        "name": "nas-images", "type": "nfs", "params": _nfs_params(),
+    })
+    assert r.status_code == 422
+    assert "בדיקת חיבור" in r.json()["detail"]
+
+
+def test_failed_test_rejects_create(env):
+    env["fake"].mount_status = FAILED
+    r = env["admin"].post("/api/console/storage-locations", json={
+        "name": "nas-images", "type": "nfs", "params": _nfs_params(), "tested": True,
+    })
+    assert r.status_code == 409
+    listed = env["admin"].get("/api/console/storage-locations").json()["locations"]
+    assert all(loc["name"] != "nas-images" for loc in listed)
+
+
+def test_nfs_scan_and_successful_create_mounts_and_writes_fstab(env):
+    scanned = env["admin"].post("/api/console/storage-locations/scan", json={
+        "type": "nfs", "server": "10.44.10.20",
+    }).json()
+    assert scanned["ok"] is True
+    assert scanned["items"][0]["export"] == "/mnt/pool/images"
+
+    tested = env["admin"].post("/api/console/storage-locations/test", json={
+        "type": "nfs", "params": _nfs_params(),
+    }).json()
+    assert tested["ok"] is True
+    assert tested["free_bytes"] == env["fake"].free
+    assert tested["warnings"] == []
+
+    created = _create_nfs(env)
+    assert created.status_code == 200, created.text
+    body = created.json()
+    assert body["type"] == "nfs" and body["state"] == "connected"
+    assert body["params"].get("secret") is None
+    assert any(m[0] == "nfs" for m in env["fake"].mounts)
+    assert env["fake"].fstab
+    assert any("_netdev" in (e.get("opts") or "") and "nofail" in (e.get("opts") or "")
+               for e in env["fake"].fstab[-1])
+
+
+def test_test_warns_when_storage_shares_the_deploy_nic_subnet(env):
+    env["fake"].interfaces = [
+        {"name": "ens19", "state": "up", "addresses": ["10.44.12.10/24"]},
+    ]
+    params = {"server": "10.44.12.50", "export": "/mnt/pool/images", "version": "4.1"}
+    tested = env["admin"].post("/api/console/storage-locations/test", json={
+        "type": "nfs", "params": params,
+    }).json()
+    assert tested["ok"] is True
+    assert tested["warnings"]
+    assert "הפצה" in tested["warnings"][0]
+
+
+def test_smb_secret_is_not_returned_on_get(env):
+    params = {"server": "fs01", "share": "images", "username": "imagectl",
+              "secret": "s3cret", "domain": "COLLEGE"}
+    created = env["admin"].post("/api/console/storage-locations", json={
+        "name": "fileserver-images", "type": "smb", "params": params, "tested": True,
+    })
+    assert created.status_code == 200, created.text
+    assert "s3cret" not in created.text
+    assert created.json()["params"].get("secret") is None
+    listed = env["admin"].get("/api/console/storage-locations").json()
+    row = next(r for r in listed["locations"] if r["name"] == "fileserver-images")
+    assert row["params"].get("secret") is None
+    assert row["params"]["username"] == "imagectl"
+
+
+# --- iSCSI: גילוי → login → דיסק → פירמוט/עיגון -----------------------------
+
+def test_iscsi_discover_login_unknown_disk_refuses_format(env):
+    created = _create_iscsi(env)
+    assert created.status_code == 200, created.text
+    loc_id = created.json()["id"]
+    login = env["admin"].post(f"/api/console/storage-locations/{loc_id}/iscsi-login")
+    assert login.status_code == 200
+    assert login.json()["device_by_path"] == "/dev/sdb"
+    env["fake"].disk_status = "unknown"
+    disk = env["admin"].get(f"/api/console/storage-locations/{loc_id}/disk").json()
+    assert disk["disk_status"] == "unknown"
+    fmt = env["admin"].post(f"/api/console/storage-locations/{loc_id}/format", json={
+        "confirm": IQN,
+    })
+    assert fmt.status_code == 409
+    assert "לא הצלחנו לקרוא" in fmt.json()["detail"]
+    assert env["fake"].make_fs_calls == []
+
+
+def test_empty_disk_format_requires_exact_iqn_then_makes_fs_mounts_fstab(env):
+    loc_id = _create_iscsi(env).json()["id"]
+    assert env["admin"].post(
+        f"/api/console/storage-locations/{loc_id}/iscsi-login").status_code == 200
+    env["fake"].disk_status = "empty"
+
+    missing = env["admin"].post(f"/api/console/storage-locations/{loc_id}/format", json={})
+    assert missing.status_code == 422
+
+    wrong = env["admin"].post(f"/api/console/storage-locations/{loc_id}/format", json={
+        "confirm": "iqn.wrong",
+    })
+    assert wrong.status_code == 403
+    assert env["fake"].make_fs_calls == []
+
+    ok = env["admin"].post(f"/api/console/storage-locations/{loc_id}/format", json={
+        "confirm": IQN,
+    })
+    assert ok.status_code == 200, ok.text
+    assert env["fake"].make_fs_calls == [("/dev/sdb", "san-lun1")]
+    assert any(m[1] == "/dev/sdb" for m in env["fake"].mounts)
+    assert env["fake"].fstab
+    assert ok.json()["state"] == "connected"
+
+
+def test_disk_with_fs_mounts_without_format(env):
+    loc_id = _create_iscsi(env).json()["id"]
+    assert env["admin"].post(
+        f"/api/console/storage-locations/{loc_id}/iscsi-login").status_code == 200
+    env["fake"].disk_status = "fs"
+    mounted = env["admin"].post(f"/api/console/storage-locations/{loc_id}/mount", json={
+        "format": False,
+    })
+    assert mounted.status_code == 200, mounted.text
+    assert env["fake"].make_fs_calls == []
+    assert any(m[1] == "/dev/sdb" for m in env["fake"].mounts)
+    assert mounted.json()["state"] == "connected"
+
+
+def test_format_with_fs_without_wipe_is_409(env):
+    loc_id = _create_iscsi(env).json()["id"]
+    assert env["admin"].post(
+        f"/api/console/storage-locations/{loc_id}/iscsi-login").status_code == 200
+    env["fake"].disk_status = "fs"
+    fmt = env["admin"].post(f"/api/console/storage-locations/{loc_id}/format", json={
+        "confirm": IQN,
+    })
+    assert fmt.status_code == 409
+    assert "wipe" in fmt.json()["detail"]
+    assert env["fake"].make_fs_calls == []
+
+
+def test_format_with_fs_and_wipe_and_confirm_formats(env):
+    loc_id = _create_iscsi(env).json()["id"]
+    assert env["admin"].post(
+        f"/api/console/storage-locations/{loc_id}/iscsi-login").status_code == 200
+    env["fake"].disk_status = "fs"
+    fmt = env["admin"].post(f"/api/console/storage-locations/{loc_id}/format", json={
+        "confirm": IQN, "wipe": True,
+    })
+    assert fmt.status_code == 200, fmt.text
+    assert env["fake"].make_fs_calls
+
+
+# --- מנטר 60ש' --------------------------------------------------------------
+
+def test_monitor_connected_to_unreachable_to_connected(env):
+    created = _create_nfs(env)
+    loc_id = created.json()["id"]
+    mount = created.json()["mount_point"]
+    sl.poll(env["ctx"].conn, env["ctx"].library, env["fake"].as_dict())
+    row = sl.get(env["ctx"].conn, loc_id)
+    assert row["state"] == "connected"
+
+    env["fake"].fail_targets.add(mount)
+    sl.poll(env["ctx"].conn, env["ctx"].library, env["fake"].as_dict())
+    row = sl.get(env["ctx"].conn, loc_id)
+    assert row["state"] == "unreachable"
+    assert "no route" in row["state_detail"]
+    since = row["state_since"]
+
+    sl.poll(env["ctx"].conn, env["ctx"].library, env["fake"].as_dict())
+    row = sl.get(env["ctx"].conn, loc_id)
+    assert row["state"] == "unreachable"
+    assert row["state_since"] == since
+
+    env["fake"].fail_targets.clear()
+    sl.poll(env["ctx"].conn, env["ctx"].library, env["fake"].as_dict())
+    row = sl.get(env["ctx"].conn, loc_id)
+    assert row["state"] == "connected"
+
+
+def test_disconnected_is_not_polled(env):
+    created = _create_nfs(env)
+    loc_id = created.json()["id"]
+    assert env["admin"].post(
+        f"/api/console/storage-locations/{loc_id}/disconnect").status_code == 200
+    env["fake"].fail_targets.add(created.json()["mount_point"])
+    sl.poll(env["ctx"].conn, env["ctx"].library, env["fake"].as_dict())
+    assert sl.get(env["ctx"].conn, loc_id)["state"] == "disconnected"
+
+
+# --- אימג' על מיקום לא נגיש -------------------------------------------------
+
+def test_image_on_unreachable_is_unavailable_and_round_is_409(env):
+    setup_classroom(env)
+    created = _create_nfs(env)
+    loc_id = created.json()["id"]
+    mount = Path(created.json()["mount_point"])
+    images_dir = mount / "images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+    remote = {**MANIFEST_256, "id": "img_aa11bb", "name": "win-build v4"}
+    write_image(images_dir, remote)
+
+    listed = env["admin"].get("/api/console/images").json()
+    found = next(i for i in listed if i["id"] == "img_aa11bb")
+    assert found["location_id"] == loc_id
+    assert found["available"] is True
+
+    sl.refresh_catalog(env["ctx"].conn, env["ctx"].library)
+    env["fake"].fail_targets.add(str(mount))
+    sl.poll(env["ctx"].conn, env["ctx"].library, env["fake"].as_dict())
+    assert sl.get(env["ctx"].conn, loc_id)["state"] == "unreachable"
+
+    listed = env["admin"].get("/api/console/images").json()
+    found = next(i for i in listed if i["id"] == "img_aa11bb")
+    assert found["available"] is False
+    local = next(i for i in listed if i["id"] == "img_7f3a91")
+    assert local["available"] is True
+
+    opened = env["admin"].post("/api/console/sessions", json={
+        "group_id": "grp_LAB1", "image_id": "img_aa11bb",
+    })
+    assert opened.status_code == 409
+    assert "לא זמין" in opened.json()["detail"]
+
+
+def test_capture_on_unavailable_local_is_409(env):
+    setup_classroom(env)
+    env["fake"].fail_targets.add(str(env["images_root"]))
+    env["admin"].post("/api/console/storage-locations/loc_local/check")
+    assert sl.get(env["ctx"].conn, "loc_local")["state"] == "unreachable"
+    r = env["admin"].post("/api/console/tasks/capture", json={
+        "mac": "b4:2e:99:07:1a:c4", "disk": "sda", "name": "שחזור",
+    })
+    assert r.status_code == 409
+    assert "זמין" in r.json()["detail"]
+
+
+# --- הסרה -------------------------------------------------------------------
+
+def test_delete_only_when_disconnected_and_no_images(env):
+    created = _create_nfs(env)
+    loc_id = created.json()["id"]
+    name = created.json()["name"]
+
+    still_up = env["admin"].request("DELETE", f"/api/console/storage-locations/{loc_id}",
+                                    json={"confirm": name})
+    assert still_up.status_code == 409
+
+    assert env["admin"].post(
+        f"/api/console/storage-locations/{loc_id}/disconnect").status_code == 200
+
+    wrong = env["admin"].request("DELETE", f"/api/console/storage-locations/{loc_id}",
+                                 json={"confirm": "wrong"})
+    assert wrong.status_code == 403
+
+    images_dir = Path(created.json()["mount_point"]) / "images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+    write_image(images_dir, {**MANIFEST_256, "id": "img_cc22dd", "name": "keep"})
+    # מנותק — הסריקה חיה לא רואה, אבל המטמון מהיצירה ריק. נזין מטמון.
+    sl.save_catalog(env["ctx"].conn, loc_id, [{"id": "img_cc22dd", "name": "keep"}])
+    has_images = env["admin"].request(
+        "DELETE", f"/api/console/storage-locations/{loc_id}", json={"confirm": name})
+    assert has_images.status_code == 409
+
+    sl.save_catalog(env["ctx"].conn, loc_id, [])
+    gone = env["admin"].request(
+        "DELETE", f"/api/console/storage-locations/{loc_id}", json={"confirm": name})
+    assert gone.status_code == 200, gone.text
+
+    local = env["admin"].request(
+        "DELETE", "/api/console/storage-locations/loc_local", json={"confirm": "מקומי"})
+    assert local.status_code == 409
+
+
+def test_health_has_a_row_per_location(env):
+    _create_nfs(env)
+    rows = {r["id"]: r for r in env["admin"].get("/api/console/health").json()}
+    assert "storage_loc_local" in rows
+    nas = next(r for r in rows.values() if r["label"] == "nas-images")
+    assert nas["state"] in ("ok", "bad", "off", "unknown")
+
+
+def test_installer_has_storage_packages_and_unique_initiator():
+    text = Path("install/setup-boot-server.sh").read_text(encoding="utf-8")
+    for pkg in ("open-iscsi", "nfs-common", "cifs-utils"):
+        assert pkg in text, pkg
+    assert "initiatorname.iscsi" in text
+    assert "iqn.2026-09.imagectl." in text
+    assert "machine-id" in text
+
+
+def test_shared_nic_warning_needs_positive_evidence():
+    """אין אזהרה בלי ראיה שה-IP ב-subnet של כרטיס ההפצה."""
+    assert sl.shared_nic_warning("10.44.10.20", [], "http://10.44.12.10:8080") is None
+    nics = [{"name": "ens19", "addresses": ["10.44.12.10/24"]}]
+    msg = sl.shared_nic_warning("10.44.12.50", nics, "http://10.44.12.10:8080")
+    assert msg and "10.44.12.50" in msg
+    assert sl.shared_nic_warning("10.44.10.20", nics, "http://10.44.12.10:8080") is None

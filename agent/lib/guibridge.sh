@@ -138,11 +138,17 @@ gui_dispatch() {
             ;;
         restore-start)
             # #706: erase+write one image onto THIS machine. The GUI already
-            # confirmed ERASE; re-check it here, and validate the id syntax.
-            # The image itself is re-validated against fresh allowed_images in
-            # single_restore_run before a byte is written (principle 5/7).
+            # confirmed; re-check it here, and validate the id syntax. The
+            # image itself is re-validated against fresh allowed_images in
+            # guiparent.sh before a byte is written (principle 5/7).
+            # #1073: the confirmation is the machine's registered name, read
+            # fresh from the server -- not the one the screen showed 2 s ago,
+            # and never an empty name matched by an empty field.
             case "$image" in ''|*[!A-Za-z0-9_.-]*) return 1 ;; esac
-            [ "$confirm" = "ERASE" ] || return 1
+            http_get "$SERVER/api/v1/agent/state?mac=$MAC" > "$RUN_DIR/gui-restore-name.json" || return 1
+            _gn=$(jq -er '.name | select(type == "string" and length > 0)' \
+                "$RUN_DIR/gui-restore-name.json") || return 1
+            [ "$confirm" = "$_gn" ] || return 1
             printf 'restore-start\n%s\n' "$image" > "$GUI_DIR/handoff.next" &&
                 mv "$GUI_DIR/handoff.next" "$GUI_DIR/handoff" || return 1
             return 2
@@ -218,7 +224,7 @@ gui_libs() {
     . "$LIB_DIR/common.sh"
     . "$LIB_DIR/jsonq.sh"
     . "$LIB_DIR/waits.sh"
-    . "$LIB_DIR/buildmenu.sh"
+    . "$LIB_DIR/buildmenuitems.sh"; . "$LIB_DIR/buildmenu.sh"   # #1073: items + gates, then the menu
     . "$LIB_DIR/buildcapture.sh"
     . "$LIB_DIR/roomdraw.sh"; . "$LIB_DIR/roomflow.sh"   # #418: draw split from flow
     . "$LIB_DIR/guistate.sh"

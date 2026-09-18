@@ -23,6 +23,14 @@ import server.app
 import server.main
 
 
+def test_agent_host_defaults_to_unset_not_all_interfaces() -> None:
+    """#1074: ברירת המחדל של ``--host`` אינה 0.0.0.0 — ‏None, ו-main
+    ממלא מכתובת כרטיס ההפצה."""
+    args = server.main.build_parser().parse_args(
+        ["--server-url", "http://10.44.12.10:8080"])
+    assert getattr(args, "host", "0.0.0.0") is None
+
+
 def test_console_host_defaults_to_loopback_not_all_interfaces() -> None:
     """הראיה הישירה: ברירת המחדל של ``--console-host`` היא loopback,
     ובוודאי לא ``0.0.0.0`` — הקונסולה לא עולה על כל הכרטיסים בלי שביקשו.
@@ -114,3 +122,34 @@ def test_console_on_loopback_gets_a_single_listener(
     configs = run_main(tmp_path, monkeypatch)
 
     assert [c["host"] for c in configs["console"]] == ["127.0.0.1"]
+
+
+def test_agent_and_kiosk_bind_to_interface_address_by_default(
+        tmp_path: Path, monkeypatch) -> None:
+    """#1074: ברירת המחדל של 8080/8082 היא כתובת ``--interface``, לא
+    0.0.0.0. ‏R20-F1 — bind לכל הכרטיסים היה החשיפה הרחבה."""
+    monkeypatch.setattr(server.main, "_address_for_interface",
+                        lambda name: "10.44.9.1")
+    configs = run_main(tmp_path, monkeypatch, "--interface", "eth-deploy")
+    assert [c["host"] for c in configs["agent"]] == ["10.44.9.1"]
+    assert [c["host"] for c in configs["kiosk"]] == ["10.44.9.1"]
+
+
+def test_without_host_flag_dev_station_binds_to_server_url_ip(
+        tmp_path: Path, monkeypatch) -> None:
+    """אין ``ip`` (תחנת פיתוח): ``_interface_for`` מחזיר None, וה-bind
+    נופל לכתובת ``--server-url`` — לא ל-0.0.0.0 בשקט."""
+    configs = run_main(tmp_path, monkeypatch)
+    assert [c["host"] for c in configs["agent"]] == ["10.44.12.10"]
+    assert [c["host"] for c in configs["kiosk"]] == ["10.44.12.10"]
+
+
+def test_host_all_interfaces_only_when_explicit_and_warns(
+        tmp_path: Path, monkeypatch, capsys) -> None:
+    """0.0.0.0 רק במפורש, ועם אזהרה שנוקבת ב-R20-F1."""
+    configs = run_main(tmp_path, monkeypatch, "--host", "0.0.0.0")
+    assert [c["host"] for c in configs["agent"]] == ["0.0.0.0"]
+    assert [c["host"] for c in configs["kiosk"]] == ["0.0.0.0"]
+    out = capsys.readouterr().out
+    assert "0.0.0.0" in out
+    assert "R20-F1" in out

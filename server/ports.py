@@ -43,6 +43,7 @@ import asyncio
 import json
 import signal
 import socket
+import subprocess
 import threading
 from typing import Callable
 
@@ -410,6 +411,80 @@ def measured_state(enabled_flag: bool | None, listening: bool | None) -> tuple[s
     if enabled_flag:
         return "bad", "המתג דלוק אבל אף אחד לא מאזין — המאזין לא עלה"
     return "bad", "המתג כבוי אבל עדיין מאזין — הכיבוי לא תפס"
+
+
+# --- חומת אש (nftables, #1074) ------------------------------------------------
+
+NFT_TIMEOUT = 5.0
+
+
+def read_nft_ruleset() -> str | None:
+    """פלט `nft list ruleset`. ‏None = לא הצלחנו לבדוק (חסר/נכשל/timeout).
+
+    יציאה 0 עם פלט ריק היא בדיקה שהצליחה — הטבלה פשוט אינה שם. יציאה
+    שאינה 0, או שאין בינארי, אינה "לא נטענה"."""
+    try:
+        proc = subprocess.run(
+            ["nft", "list", "ruleset"],
+            capture_output=True, text=True, timeout=NFT_TIMEOUT,
+            check=False, stdin=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        return None
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout
+
+
+def _imagectl_table_body(ruleset: str) -> str | None:
+    marker = "table inet imagectl"
+    start = ruleset.find(marker)
+    if start < 0:
+        return None
+    brace = ruleset.find("{", start)
+    if brace < 0:
+        return None
+    depth = 0
+    for i, ch in enumerate(ruleset[brace:], brace):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return ruleset[brace + 1:i]
+    return None
+
+
+def count_imagectl_rules(ruleset: str) -> int | None:
+    """מספר כללי הטבלה, או None כשהטבלה אינה שם."""
+    body = _imagectl_table_body(ruleset)
+    if body is None:
+        return None
+    n = 0
+    for raw in body.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line in "{}":
+            continue
+        if line.startswith("chain ") or line.startswith("type "):
+            continue
+        n += 1
+    return n
+
+
+def firewall_status(ruleset: str | None) -> tuple[str, str]:
+    """שלושה מצבים, שלושה משפטים (עיקרון 5 / #1074).
+
+    None → לא הצלחנו לבדוק; אין טבלת imagectl → לא נטענה;
+    טבלה קיימת → פעילה, N כללים.
+    """
+    if ruleset is None:
+        return "unknown", "לא הצלחנו לבדוק"
+    n = count_imagectl_rules(ruleset)
+    if n is None:
+        return "off", "לא נטענה"
+    return "ok", f"פעילה, {n} כללים לטבלת imagectl"
 
 
 # --- ה-endpoint ---------------------------------------------------------------

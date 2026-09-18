@@ -161,16 +161,17 @@ void screen_login(App *a, cairo_t *cr, double W, double H, double head_h) {
 
 typedef struct { const char *b, *s; int id, multi; } MenuItem;
 
-/* Order: the two cards that touch THIS machine's disk first (read it, write
- * it -- single tray), then the two that broadcast (multi tray). The restore
- * card is #382 and is not in index.html yet; its text is the issue's. */
+/* Order (#1073, Nadav 18/09 -- the same on the text menu, buildmenuitems.sh):
+ * deploy from an image on THIS server, deploy this disk directly, restore
+ * onto this disk, and for admin the capture last; the class card (v2) after
+ * all. The restore card is #382/#706 and is not in index.html. */
 #define MENU_N 5
 static const MenuItem MENU[MENU_N] = {
-    { "קליטת אימג' חדש",            "קוראים את הכונן שבמכונה ומעלים לספרייה",                       HIT_CAPTURE, 0 },
-    { "משיכת אימג' לכונן המחשב הזה", "כתוב אימג' מהספרייה על הדיסק של המחשב הזה — כמו שכפול בודד",   HIT_RESTORE, 0 },
-    { "הפצה למחשבי שיכפול",        "משדרים אימג' לכל המגירות בחדר, בגלים, עד היעד",                  HIT_ROOM,    1 },
-    /* #715: between the room and the classes, as the issue orders it. */
+    { "הפצה למחשבי שיכפול",        "משדרים אימג' מהשרת לכל המגירות בחדר, בגלים, עד היעד",            HIT_ROOM,    1 },
+    /* #715: the direct card right after the room, as the issue orders it. */
     { "הפצה מהדיסק הזה למחשבי השיכפול", "הדיסק של המחשב הזה משודר ישירות למגירות שנבחרו — בלי לשמור אימג' בשרת", HIT_DIRECT, 1 },
+    { "שחזור אימג' מהשרת לדיסק הזה", "אימג' מספריית השרת הזה נכתב על הדיסק של המחשב הזה — מוחק אותו; האישור בהקלדת שם המחשב", HIT_RESTORE, 0 },
+    { "קליטת אימג' חדש",            "קוראים את הכונן שבמכונה ומעלים לספרייה",                       HIT_CAPTURE, 0 },
     { "הפצה לכיתות",               "בוחרים כיתה, מחשבים ואימג' — הסבב מעיר את הכיתה ורץ בשרת",       HIT_CLASSES, 1 },
 };
 
@@ -181,11 +182,12 @@ void screen_menu(App *a, cairo_t *cr, double W, double H, double head_h) {
     Head hd = head_make(cr, "מה תרצה להפעיל?", sub, inner);
     head_logo(&hd);                                        /* nativeMenu: .native-logo first */
     /* Only capture is admin-only (station.js); restore is shown to the
-     * deploy role like room/classes -- #382 leaves that permission to Nadav,
-     * and this is the one place to flip it. The direct card (#715) is always
-     * shown, like room; the class card follows the server's switch (#880,
-     * menu_class= in the state file; absent = off). */
-    int show[MENU_N] = {a->admin, 1, 1, 1, a->st.menu_class}, count = 0;
+     * deploy role like room -- #1073 (Nadav, 18/09): deploy = exactly room,
+     * direct and restore-to-this-disk; admin = those plus capture. The
+     * direct card (#715) is always shown, like room; the class card follows
+     * menu_class= in the state file (absent = off), which buildmenuitems.sh
+     * pins to 0 in v1 -- classrooms are v2 (#1081). */
+    int show[MENU_N] = {1, 1, 1, a->admin, a->st.menu_class}, count = 0;
     for (int i = 0; i < MENU_N; i++) count += show[i] ? 1 : 0;
     /* The mockup's grid is two columns. Five cards (#715, admin with the
      * class switch on) would be three rows of min-height 160, which is

@@ -207,10 +207,11 @@ def test_a_hebrew_username_is_refused_cleanly_instead_of_500_on_login(server):
 
 
 def test_a_created_user_can_actually_sign_in(server):
-    """הצד החיובי של #93: שם תקין נוצר — ומתחבר. כולל רווח ונקודה."""
+    """הצד החיובי של #93: שם תקין נוצר — ומתחבר. כולל רווח ונקודה.
+    (‏admin: ‏#1073 — משתמש deploy אינו נכנס לקונסולה, ו-/me סגור בפניו.)"""
     assert server["admin"].post(
         "/api/console/users",
-        json={"username": "Rina C.", "password": "some-pass-123", "role": "deploy"},
+        json={"username": "Rina C.", "password": "some-pass-123", "role": "admin"},
     ).status_code == 200
     fresh = server["anon"]
     assert fresh.post(

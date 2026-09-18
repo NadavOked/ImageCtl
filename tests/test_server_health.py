@@ -62,9 +62,19 @@ def health_server(tmp_path: Path, images_root: Path, clock):
             "menu": "linux /boot/vmlinuz ip=dhcp imagectl.server=x console=tty0",
             # ריק = לא רץ. ‏None = הבדיקה לא רצה. לא סורקים /proc של
             # המכונה שהטסט רץ עליה (#439).
-            "udp_sender_pids": []}
+            "udp_sender_pids": [],
+            # ‏#1074: ברירת המחדל כאן — טבלה טעונה, כדי ש-all-green יישאר
+            # ירוק. שלושת המצבים נבדקים בנפרד עם subprocess מזויף.
+            "nft_ruleset": (
+                "table inet imagectl {\n"
+                "\tchain input {\n"
+                "\t\tiifname \"lo\" accept\n"
+                "\t\tct state established,related accept\n"
+                "\t}\n"
+                "}\n")}
     hooks = {
         "ss": lambda: fake["ss"],
+        "nft_ruleset": lambda: fake["nft_ruleset"],
         "unit_active": lambda name: fake["active"],
         "http_get": lambda url: fake["http"],
         "http_size": lambda url: fake["assets"].get(url.rsplit("/", 1)[-1],
@@ -106,6 +116,9 @@ def test_a_healthy_server_is_all_green(health_server):
     assert rows["ssh_stations"]["state"] == "ok"
     assert rows["ssh_server"]["state"] == "ok"
     assert rows["udp_sender"]["state"] == "ok"
+    assert rows["firewall"]["state"] == "ok"
+    assert "פעילה" in rows["firewall"]["detail"]
+    assert "כללים לטבלת imagectl" in rows["firewall"]["detail"]
 
 
 def test_a_stranger_on_port_67_is_red(health_server):
@@ -309,3 +322,58 @@ def test_a_udp_sender_check_that_could_not_run_is_not_ok(health_server):
     rows = health_server["admin"].get("/api/console/health").json()
     assert any(r["id"] == "udp_sender" and r["state"] != "ok"
                and "לא הצלחנו לבדוק" in r["detail"] for r in rows)
+
+
+def test_firewall_loaded_is_ok_with_rule_count(health_server):
+    rows = by_id(health_server["admin"].get("/api/console/health").json())
+    assert rows["firewall"]["state"] == "ok"
+    assert rows["firewall"]["detail"].startswith("פעילה, ")
+    assert "כללים לטבלת imagectl" in rows["firewall"]["detail"]
+
+
+def test_firewall_missing_table_is_not_loaded(health_server):
+    health_server["fake"]["nft_ruleset"] = "table inet filter {\n}\n"
+    rows = by_id(health_server["admin"].get("/api/console/health").json())
+    assert rows["firewall"]["state"] == "off"
+    assert rows["firewall"]["detail"] == "לא נטענה"
+
+
+def test_firewall_unread_is_unknown_not_ok(health_server):
+    """None מה-hook = nft נכשל/חסר — לא הצלחנו לבדוק, לא 'לא נטענה'."""
+    health_server["fake"]["nft_ruleset"] = None
+    rows = by_id(health_server["admin"].get("/api/console/health").json())
+    assert rows["firewall"]["state"] == "unknown"
+    assert rows["firewall"]["detail"] == "לא הצלחנו לבדוק"
+    assert rows["firewall"]["state"] != "ok"
+
+
+def test_read_nft_ruleset_subprocess_three_outcomes(monkeypatch):
+    """שלושת המצבים מול subprocess מזויף — לא מול nft אמיתי."""
+    import subprocess as sp
+    from server import ports
+
+    def missing(*a, **k):
+        raise FileNotFoundError("nft")
+    monkeypatch.setattr(ports.subprocess, "run", missing)
+    assert ports.read_nft_ruleset() is None
+    assert ports.firewall_status(None) == ("unknown", "לא הצלחנו לבדוק")
+
+    def failed(*a, **k):
+        return sp.CompletedProcess(["nft"], 1, stdout="", stderr="Permission denied")
+    monkeypatch.setattr(ports.subprocess, "run", failed)
+    assert ports.read_nft_ruleset() is None
+
+    def empty_ok(*a, **k):
+        return sp.CompletedProcess(["nft"], 0, stdout="", stderr="")
+    monkeypatch.setattr(ports.subprocess, "run", empty_ok)
+    assert ports.read_nft_ruleset() == ""
+    assert ports.firewall_status("") == ("off", "לא נטענה")
+
+    loaded = "table inet imagectl {\n\tchain input {\n\t\tiif lo accept\n\t}\n}\n"
+    def has_table(*a, **k):
+        return sp.CompletedProcess(["nft"], 0, stdout=loaded, stderr="")
+    monkeypatch.setattr(ports.subprocess, "run", has_table)
+    assert "table inet imagectl" in ports.read_nft_ruleset()
+    state, detail = ports.firewall_status(loaded)
+    assert state == "ok"
+    assert detail == "פעילה, 1 כללים לטבלת imagectl"

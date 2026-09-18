@@ -2,8 +2,9 @@
 #
 # ImageCtl — התקנה מלאה על שרת דביאן: שרשרת האתחול, השרת והקונסולה.
 #
-# הרצה אחת, ארבע שאלות, וזהו:
-#   1. איזה כרטיס רשת (מרשימה של מה שקיים)
+# הרצה אחת, כמה שאלות, וזהו:
+#   1. איזה כרטיס רשת להפצה (מרשימה של מה שקיים)
+#   1ב. איזה כרטיס לוילן השרתים (קונסולה/SSH; Enter = אותו כרטיס)
 #   2. שם משתמש למנהל
 #   3. סיסמה
 #   4. אישור סיסמה
@@ -23,6 +24,9 @@ set -euo pipefail
 
 SERVER_URL=""
 IFACE=""
+IFACE_FROM_FLAG=0
+SERVERS_IF=""
+NO_FIREWALL=0
 ADMIN_USER=""
 ADMIN_PASS=""
 # Storage Nodes (#655/#723): תפקיד ההתקנה. standalone (ברירת מחדל) או
@@ -223,12 +227,15 @@ ImageCtl — התקנה מלאה על שרת דביאן: שרשרת אתחול, 
 
   sudo ./setup-boot-server.sh
 
-ההתקנה שואלת ארבע שאלות (כרטיס רשת, משתמש מנהל, סיסמה ואישורה)
-ומרימה הכל. DHCP לא נדלק כאן בכלל — מגדירים אותו אחר כך מהקונסולה,
+ההתקנה שואלת על כרטיס ההפצה, כרטיס וילן השרתים (Enter = אותו כרטיס),
+משתמש מנהל, סיסמה ואישורה, ומרימה הכל — כולל חומת אש nftables לפי
+וילן (#1074). DHCP לא נדלק כאן בכלל — מגדירים אותו אחר כך מהקונסולה,
 לשונית הרשת, עם כל שכבות הבטיחות (אפיון סעיף 24).
 
 דגלים (רשות — לאוטומציה ולדיבאג בלבד):
-  --interface IFACE    מדלג על שאלת הכרטיס
+  --interface IFACE    מדלג על שאלת כרטיס ההפצה
+  --servers-if IFACE   כרטיס וילן השרתים (קונסולה 8081, SSH); בלי דגל — נשאל, או = כרטיס ההפצה באוטומציה
+  --no-firewall        מדלג על nftables, עם אזהרה ביומן (R20-F1)
   --server-url URL     עוקף את הכתובת הנגזרת מהכרטיס (http בלבד)
   --admin-user NAME    מדלג על שאלת המשתמש
   --admin-pass PASS    מדלג על שאלות הסיסמה (נשאר בהיסטוריית השלל — לדיבאג)
@@ -248,7 +255,9 @@ EOF
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --interface)   IFACE="${2:?}"; shift 2 ;;
+        --interface)   IFACE="${2:?}"; IFACE_FROM_FLAG=1; shift 2 ;;
+        --servers-if)  SERVERS_IF="${2:?}"; shift 2 ;;
+        --no-firewall) NO_FIREWALL=1; shift ;;
         --server-url)  SERVER_URL="${2:?}"; shift 2 ;;
         --admin-user)  ADMIN_USER="${2:?}"; shift 2 ;;
         --admin-pass)  ADMIN_PASS="${2:?}"; shift 2 ;;
@@ -289,6 +298,33 @@ if [[ -z "$IFACE" ]]; then
     IFACE="${NICS[$((pick - 1))]}"
 fi
 ip link show "$IFACE" >/dev/null 2>&1 || die "לא קיים ממשק בשם $IFACE"
+
+# שאלה 1ב — כרטיס וילן השרתים (קונסולה 8081, SSH 22). Enter = כרטיס ההפצה.
+# באוטומציה (--interface בלי --servers-if) אותו כרטיס, כדי לא לשבור סקריפטים.
+if [[ -z "$SERVERS_IF" ]]; then
+    if (( IFACE_FROM_FLAG )); then
+        SERVERS_IF="$IFACE"
+    else
+        mapfile -t NICS < <(ip -br link | awk '$1 != "lo" {print $1}' | cut -d@ -f1)
+        say "כרטיס וילן השרתים (קונסולה HTTPS, SSH ניהול):"
+        for i in "${!NICS[@]}"; do
+            n="${NICS[$i]}"
+            state="$(cat "/sys/class/net/$n/operstate" 2>/dev/null || echo '?')"
+            mark=""
+            [[ "$n" == "$IFACE" ]] && mark=" (כרטיס ההפצה)"
+            printf '  %d) %-12s %-6s %s%s\n' "$((i + 1))" "$n" "$state" "$(iface_ip "$n")" "$mark"
+        done
+        read -r -p "על איזה כרטיס וילן השרתים? [אותו כרטיס הפצה: $IFACE]: " pick
+        if [[ -z "$pick" ]]; then
+            SERVERS_IF="$IFACE"
+        else
+            [[ "$pick" =~ ^[0-9]+$ ]] && (( pick >= 1 && pick <= ${#NICS[@]} )) \
+                || die "אין כרטיס מספר $pick ברשימה."
+            SERVERS_IF="${NICS[$((pick - 1))]}"
+        fi
+    fi
+fi
+ip link show "$SERVERS_IF" >/dev/null 2>&1 || die "לא קיים ממשק בשם $SERVERS_IF"
 
 # הכתובת נגזרת מהכרטיס — אין סיבה להקליד אותה.
 if [[ -z "$SERVER_URL" ]]; then
@@ -334,7 +370,7 @@ while [[ -z "$ADMIN_PASS" ]]; do
     else ADMIN_PASS="$p1"; fi
 done
 
-say "כרטיס: $IFACE · כתובת: $SERVER_URL · מנהל: $ADMIN_USER"
+say "כרטיס הפצה: $IFACE · כרטיס שרתים: $SERVERS_IF · כתובת: $SERVER_URL · מנהל: $ADMIN_USER"
 
 # ---------------------------------------------------------------------------
 # חבילות וקוד
@@ -345,7 +381,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PKGS=(shim-signed grub-efi-amd64-signed grub-pc-bin dnsmasq
       python3-fastapi python3-uvicorn
       python3-websockets                      # #904: uvicorn WebSocket — בלעדיו המוניטור (#690) מחזיר 500
-      python3-cryptography python3-openssl)   # #740: mTLS enrollment בין-שרתי
+      python3-cryptography python3-openssl    # #740: mTLS enrollment בין-שרתי
+      open-iscsi nfs-common cifs-utils)       # #1066: יוזם iSCSI + לקוח NFS/SMB
 [[ -f "$SCRIPT_DIR/../server/main.py" ]] || PKGS+=(git)
 
 say "מתקין חבילות: ${PKGS[*]}"
@@ -406,7 +443,19 @@ say "מעתיק shim ו-GRUB חתומים אל $TFTP_ROOT"
 for src in "$SHIM_SRC" "$GRUB_SRC"; do
     [[ -f "$src" ]] || (( DRY_RUN )) || die "לא נמצא: $src — בדוק: dpkg -L shim-signed | grep efi"
 done
-run install -d -m 0755 "$TFTP_ROOT" "$TFTP_ROOT/grub" "$HTTP_ROOT" "$IMAGES_DIR"
+run install -d -m 0755 "$TFTP_ROOT" "$TFTP_ROOT/grub" "$HTTP_ROOT" "$IMAGES_DIR" \
+    "$DATA_DIR/storage"
+
+# #1066: initiator name ייחודי לשרת הזה — hostname + machine-id.
+# נכתב מחדש לאותו ערך בכל הרצת מתקין (יציב), כדי ש-ACL ב-NAS לא יזוז.
+if (( ! DRY_RUN )); then
+    run install -d -m 0755 /etc/iscsi
+    host=$(hostname -s 2>/dev/null || echo imagectl)
+    uuid=$(cat /etc/machine-id 2>/dev/null || cat /proc/sys/kernel/random/uuid)
+    printf 'InitiatorName=iqn.2026-09.imagectl.%s:%s\n' "$host" "$uuid" \
+        > /etc/iscsi/initiatorname.iscsi
+    chmod 0644 /etc/iscsi/initiatorname.iscsi
+fi
 run install -m 0644 "$SHIM_SRC" "$TFTP_ROOT/bootx64.efi"
 run install -m 0644 "$GRUB_SRC" "$TFTP_ROOT/grubx64.efi"
 
@@ -451,6 +500,12 @@ write_file /etc/dnsmasq.d/imagectl.conf <<EOF
 # DHCP מוגדר מהקונסולה (לשונית הרשת) ונכתב ל-imagectl-dhcp.conf.
 port=0
 
+# ‏#1074 / R20-F1: TFTP רק על כרטיס ההפצה. בלי interface= + bind-interfaces
+# dnsmasq מאזין ל-69 על כל הכרטיסים מההתקנה. הקונסולה תוסיף interface=
+# נוספים ב-imagectl-dhcp.conf אם יודלק DHCP על כרטיס אחר.
+interface=$IFACE
+bind-interfaces
+
 enable-tftp
 tftp-root=$TFTP_ROOT
 # אין צורך לקבוע גודל בלוק: ‏dnsmasq נענה אוטומטית ל-blksize שהלקוח
@@ -468,6 +523,53 @@ if (( ! DRY_RUN )); then
         journalctl -u dnsmasq -n 20 --no-pager >&2 || true
         die "dnsmasq לא עלה. תקן ונסה שוב."
     }
+fi
+
+# ---------------------------------------------------------------------------
+# חומת אש nftables לפי וילן (#1074 / R20-F1)
+# ---------------------------------------------------------------------------
+#
+# נכתבת כאן, בהתקנה, לא בשדרוג: tools/server-upgrade.sh אינו מפעיל
+# nftables — שרת קיים לא ינותק. --no-firewall מדלג עם אזהרה ביומן.
+
+if (( NO_FIREWALL )); then
+    warn "ללא חומת אש — R20-F1"
+else
+    say "מתקין ומפעיל חומת אש nftables (הפצה=$IFACE, שרתים=$SERVERS_IF)"
+    run env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nftables
+    NFT_GEN="$APP_DIR/install/nftables-rules.sh"
+    [[ -f "$NFT_GEN" ]] || NFT_GEN="$SCRIPT_DIR/nftables-rules.sh"
+    [[ -f "$NFT_GEN" ]] || die "חסר מחולל חומת האש: install/nftables-rules.sh"
+    NFT_ARGS=(--deploy-if "$IFACE" --servers-if "$SERVERS_IF")
+    if [[ "$STORAGE_ROLE" == "secondary" ]]; then
+        PRIMARY_IP="${PRIMARY_URL#http://}"
+        PRIMARY_IP="${PRIMARY_IP#https://}"
+        PRIMARY_IP="${PRIMARY_IP%%/*}"
+        PRIMARY_IP="${PRIMARY_IP%%:*}"
+        [[ -n "$PRIMARY_IP" ]] || die "שרת משני: לא הצלחתי לגזור כתובת מ-$PRIMARY_URL"
+        NFT_ARGS+=(--primary-ip "$PRIMARY_IP")
+    fi
+    if (( DRY_RUN )); then
+        printf '%s    would run: sh %s %s | nft -c -f -%s\n' \
+            "$DIM" "$NFT_GEN" "${NFT_ARGS[*]}" "$OFF"
+        printf '%s    would install /etc/nftables.conf and enable nftables%s\n' \
+            "$DIM" "$OFF"
+    else
+        tmp="$(mktemp)"
+        sh "$NFT_GEN" "${NFT_ARGS[@]}" > "$tmp" \
+            || { rm -f "$tmp"; die "מחולל חומת האש נכשל"; }
+        nft -c -f "$tmp" || {
+            cat "$tmp" >&2 || true
+            rm -f "$tmp"
+            die "תחביר חומת האש אינו תקין (nft -c). המתקין עוצר."
+        }
+        install -m 0644 "$tmp" /etc/nftables.conf
+        rm -f "$tmp"
+        systemctl enable --now nftables || {
+            journalctl -u nftables -n 20 --no-pager >&2 || true
+            die "nftables לא עלה. תקן ונסה שוב, או --no-firewall."
+        }
+    fi
 fi
 
 # מצב proxy רץ באינסטנס dnsmasq נפרד ‏(#36): ‏dnsmasq 2.91 קופא על בקשת
@@ -528,9 +630,9 @@ run install -d -m 0755 "$DATA_DIR/netcfg"
 # שהשרת אינו מגיש. ‏ExecStart משתמש ב-$IMAGECTL_STORAGE_ARGS (בלי
 # סוגריים) — systemd מפצל אותו למילים.
 if [[ "$STORAGE_ROLE" == "secondary" ]]; then
-    STORAGE_ARGS="--storage-role secondary --primary-url $PRIMARY_URL --boot-dir $HTTP_ROOT"
+    STORAGE_ARGS="--storage-role secondary --primary-url $PRIMARY_URL --boot-dir $HTTP_ROOT --interface $IFACE"
 else
-    STORAGE_ARGS="--storage-role standalone --boot-dir $HTTP_ROOT"
+    STORAGE_ARGS="--storage-role standalone --boot-dir $HTTP_ROOT --interface $IFACE"
 fi
 # ‏#703 (tracer 5): הקונסולה על כרטיס הניהול — רק כשנתבקש; בלי הדגל היא
 # נשארת על loopback (#770). מצורף לאותו משתנה שהיחידה מרחיבה.

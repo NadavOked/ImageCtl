@@ -187,6 +187,7 @@ void state_parse(State *s, FILE *fp) {
         else if (KEY("pct"))          s->pct = num(val, -1);
         else if (KEY("moving"))       s->moving = num(val, 0);
         else if (KEY("menu_class"))   s->menu_class = num(val, 0) != 0;
+        else if (KEY("machine_name")) cp(s->machine_name, sizeof s->machine_name, val);   /* #1073 */
         else if (KEY("partition"))    s->partition = num(val, 0);
         else if (KEY("bytes"))        s->bytes = strtoull(val, NULL, 10);
         else if (KEY("title"))        cp(s->title, sizeof s->title, val);

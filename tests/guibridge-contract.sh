@@ -9,6 +9,7 @@ trap 'rm -rf "$RUN_DIR"' EXIT
 GUI_DIR=$RUN_DIR/gui
 mkdir "$GUI_DIR"
 . "$ROOT/agent/lib/common.sh"
+. "$ROOT/agent/lib/buildmenuitems.sh"
 . "$ROOT/agent/lib/buildmenu.sh"
 . "$ROOT/agent/lib/guibridge.sh"
 CONSOLE_JAR=$GUI_DIR/console.jar
@@ -67,3 +68,23 @@ for bad in 'direct-open\nslots=aa:bb:cc:00:00:21@1;rm -rf x\n\n' 'direct-open\ns
     [ ! -e "$RUN_DIR/posted.json" ] || { echo 'FAIL malformed slots posted'; exit 1; }
 done
 echo 'PASS direct-open body and malformed-slots refusal'
+# #1073 restore-start: the typed confirmation is the machine's REGISTERED
+# name, read fresh from the server (never the one the screen showed); a
+# wrong name, ERASE, or an empty name on an unnamed machine hands nothing off.
+http_get() { printf '%s' "$state_json"; }
+jq() { case "$state_json" in *BUILD-01*) printf 'BUILD-01\n' ;; *) return 1 ;; esac; }
+state_json='{"name":"BUILD-01","allowed_images":[{"id":"img_1"}]}'
+rm -f "$GUI_DIR/handoff"
+# `|| true`: a hand-off is gui_dispatch returning 2, which set -e would read as a failure.
+printf 'restore-start\nimage=img_1\nconfirm=BUILD-01\n\n' | gui_records || true
+[ "$(cat "$GUI_DIR/handoff")" = 'restore-start
+img_1' ] || { echo 'FAIL restore-start with the right name did not hand off'; exit 1; }
+rm -f "$GUI_DIR/handoff"
+for bad in 'restore-start\nimage=img_1\nconfirm=ERASE\n\n' 'restore-start\nimage=img_1\nconfirm=build-01\n\n' 'restore-start\nimage=img_1\nconfirm=\n\n' 'restore-start\nimage=../x\nconfirm=BUILD-01\n\n'; do
+    printf '%b' "$bad" | gui_records || true
+    [ ! -e "$GUI_DIR/handoff" ] || { echo 'FAIL restore-start handed off on a wrong confirmation'; exit 1; }
+done
+state_json='{"name":null,"allowed_images":[{"id":"img_1"}]}'
+printf 'restore-start\nimage=img_1\nconfirm=\n\n' | gui_records || true
+[ ! -e "$GUI_DIR/handoff" ] || { echo 'FAIL restore-start handed off on an unnamed machine'; exit 1; }
+echo 'PASS restore-start hands off only on the registered machine name (#1073)'

@@ -370,10 +370,12 @@ def test_anonymous_gets_401_everywhere(server):
 
 
 def test_deploy_user_is_fenced_in(server):
-    """סעיף 11: לבחור אימג' ולהפיץ — כן. לנהל את המערכת — לא."""
+    """סעיף 11 + ‏#1073: לבחור אימג' ולהפיץ — כן, **ממחשב הבנייה** (allowlist
+    הקיוסק, שקודם לקונסולה ב-`create_app`). לנהל את המערכת — לא, וגם לא
+    לראות אותה: `/overview` הוא קונסולה בלבד → 403 `deploy_no_console`."""
     deploy = server["deploy"]
     assert deploy.get("/api/console/images").status_code == 200
-    assert deploy.get("/api/console/overview").status_code == 200
+    assert deploy.get("/api/console/overview").status_code == 403
     assert deploy.get("/api/console/users").status_code == 403
     assert deploy.get("/api/console/journal").status_code == 403
     assert deploy.get("/api/console/settings").status_code == 403
@@ -396,17 +398,24 @@ def test_wrong_password_fails_and_is_journaled(server):
 
 
 def test_idle_timeout_reaches_every_signed_in_user(server):
-    """זמן הניתוק מוחזר גם למשתמש deploy — ההגדרות חסומות בפניו, אבל
-    הניתוק חל עליו באותה מידה."""
-    assert server["deploy"].get("/api/console/me").json()["idle_seconds"] == 300
+    """זמן הניתוק מוחזר ב-`/me` ובתשובת הכניסה. (עד #1073 נבדק כאן על
+    deploy; מאז אין לו `/me` — הקונסולה סגורה בפניו — ולכן על מנהל שני.)"""
+    from fastapi.testclient import TestClient                  # noqa: PLC0415
+    from server import users                                    # noqa: PLC0415
+    users.create(server["ctx"].conn, "noc2", "admin-pass-456", "admin", by="test")
+    second = TestClient(server["app"])
+    assert second.post("/api/console/login",
+                       json={"username": "noc2", "password": "admin-pass-456"}
+                       ).json()["idle_seconds"] == 300
+    assert second.get("/api/console/me").json()["idle_seconds"] == 300
     assert server["admin"].post(
         "/api/console/settings", json={"console_idle_seconds": "600"}
     ).status_code == 200
-    assert server["deploy"].get("/api/console/me").json()["idle_seconds"] == 600
+    assert second.get("/api/console/me").json()["idle_seconds"] == 600
     # וגם בתשובת הכניסה עצמה, כדי שהשעון יתחיל נכון מהרגע הראשון.
     fresh = server["anon"].post(
         "/api/console/login",
-        json={"username": "labtech", "password": "deploy-pass-1"},
+        json={"username": "noc2", "password": "admin-pass-456"},
     ).json()
     assert fresh["idle_seconds"] == 600
 

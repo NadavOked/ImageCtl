@@ -59,6 +59,42 @@ def dependencies(conn: sqlite3.Connection):
     return current_user, admin_only
 
 
+#: ‏#1073 (הכרעת נדב 18/09): למשתמש הפצה אין קונסולה. הוא עובד ממחשב
+#: הבנייה (התפריט/ה-GUI, דרך הקיוסק ‎:8082 ופורט הסוכן); הניהול הוובי
+#: (‎:8081) הוא של admin בלבד.
+DEPLOY_NO_CONSOLE = "deploy_no_console"
+DEPLOY_NO_CONSOLE_HE = "משתמש הפצה עובד ממחשב הבנייה, לא מהקונסולה"
+
+
+def console_only(conn: sqlite3.Connection):
+    """‏dependency לאפליקציית הקונסולה (‎:8081): תפקיד ``deploy`` → 403 על
+    **כל** נתיב, לא רק בכניסה (#1073).
+
+    הכניסה עצמה מסרבת ל-deploy, אבל העוגייה שהקיוסק (‎:8082) מנפיק
+    חתומה באותו סוד ותקפה גם כאן — ולכן הסירוב יושב על הנתיבים ולא רק
+    על הדלת. ההרשאה נקראת מהטבלה (``check``), כמו ב-``current_user``:
+    מנהל שהורד ל-deploy מאבד את הקונסולה מיד, לא בסוף ה-TTL (#91).
+    בלי עוגייה — עוברים: ‏``current_user`` של הנתיב יחזיר 401 כרגיל,
+    וכניסה (שאין לה עוגייה עדיין) מכריעה לבד.
+
+    ‏HTTP בלבד: ראוטר שמצורף עם ה-dependency הזה יכול לשאת גם WebSocket
+    (המוניטור דרך המשני, ‏`console_storage`), ושם השער נסגר ב-4403
+    **אחרי** accept כדי שהסיבה תגיע לדפדפן (#904) — ‏`HTTPConnection`
+    ולא ``Request`` כדי ש-FastAPI ימלא את הפרמטר בשני הסוגים, והסירוב
+    עצמו נשאר של ה-HTTP."""
+    from fastapi import HTTPException
+    from starlette.requests import HTTPConnection
+
+    def no_deploy(connection: HTTPConnection) -> None:
+        if connection.scope.get("type") != "http":
+            return
+        found = check(conn, connection.cookies.get(COOKIE_NAME))
+        if found is not None and found[1] == "deploy":
+            raise HTTPException(403, DEPLOY_NO_CONSOLE_HE)
+
+    return no_deploy
+
+
 def _secret(conn: sqlite3.Connection) -> bytes:
     """הסוד שחותם את ה-cookies, או חריגה. אין ברירת מחדל.
 

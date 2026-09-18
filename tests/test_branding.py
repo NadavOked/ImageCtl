@@ -86,8 +86,9 @@ def test_only_admins_change_the_logo(server):
     assert deploy.post("/api/console/branding/logo", content=PNG,
                        headers={"Content-Type": "image/png"}).status_code == 403
     assert deploy.delete("/api/console/branding/logo").status_code == 403
-    # אבל לראות אותו — כן.
-    assert deploy.get("/api/console/branding/logo").status_code in (200, 204)
+    # ‏#1073: גם לראות אותו — לא; הלוגו הוא של הקונסולה, ולמשתמש הפצה אין קונסולה.
+    assert deploy.get("/api/console/branding/logo").status_code == 403
+    assert server["admin"].get("/api/console/branding/logo").status_code in (200, 204)
 
 
 # --- SVG הוא מסמך, לא רק תמונה (#97) ----------------------------------------

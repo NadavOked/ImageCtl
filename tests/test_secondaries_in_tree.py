@@ -54,12 +54,14 @@ def test_me_reports_a_server_name_for_every_user(server):
     assert me["server_name"] == socket.gethostname(), "בלי הגדרה — שם המארח"
     assert me["server_name"]
 
-    users.create(app.state.ctx.conn, "dep", "deploy-pass-123", "deploy", by="test")
+    # ‏#1073: "לכל משתמש" = לכל משתמש **קונסולה**; ל-deploy אין /me (403).
+    users.create(app.state.ctx.conn, "noc2", "admin-pass-456", "admin", by="test")
     from fastapi.testclient import TestClient
 
-    deploy = TestClient(app)
-    deploy.post("/api/console/login", json={"username": "dep", "password": "deploy-pass-123"})
-    assert deploy.get("/api/console/me").json()["server_name"] == socket.gethostname()
+    second = TestClient(app)
+    second.post("/api/console/login", json={"username": "noc2", "password": "admin-pass-456"})
+    assert second.get("/api/console/me").json()["server_name"] == socket.gethostname()
+    assert server["deploy"].get("/api/console/me").status_code == 403
 
 
 def test_server_name_is_saved_through_settings_and_read_back_from_me(server):
@@ -68,7 +70,7 @@ def test_server_name_is_saved_through_settings_and_read_back_from_me(server):
                       json={"server_name": "שרת ראשי — קמפוס"}).status_code == 200
     assert admin.get("/api/console/me").json()["server_name"] == "שרת ראשי — קמפוס"
     assert admin.get("/api/console/settings").json()["server_name"] == "שרת ראשי — קמפוס"
-    # deploy רואה את השם (העץ מוצג גם לו) אבל אינו משנה אותו.
-    assert deploy.get("/api/console/me").json()["server_name"] == "שרת ראשי — קמפוס"
+    # ‏#1073: deploy אינו רואה את העץ (אין לו קונסולה) ואינו משנה את השם.
+    assert deploy.get("/api/console/me").status_code == 403
     assert deploy.post("/api/console/settings",
                        json={"server_name": "x"}).status_code == 403

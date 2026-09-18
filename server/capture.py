@@ -23,7 +23,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from . import auth, registry
+from . import auth, registry, storage_locations
 from .api import ServerContext, identity_gate
 from .images import validate_display_name
 from .db import journal, now_iso, update_one
@@ -393,6 +393,9 @@ def create_console_capture_router(ctx: ServerContext) -> APIRouter:
             raise HTTPException(400, str(exc))
         if active_task(ctx.conn, mac) is not None:
             raise HTTPException(409, "כבר יש משימה פתוחה למכונה הזו")
+        loc_id = body.get("location_id") or storage_locations.LOCAL_ID
+        if not storage_locations.location_writable(ctx.conn, loc_id):
+            raise HTTPException(409, "המיקום אינו זמין לקליטה")
 
         task_id = "tsk_" + secrets.token_hex(2)
         image_id = "img_" + secrets.token_hex(3)

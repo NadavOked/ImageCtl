@@ -46,10 +46,17 @@ def ports_server(tmp_path: Path, images_root: Path, clock):
             # ‏#996: טבלת ה-TCP "לא נקראה" כאן — כמו בתחנה בלי ss. בלי
             # ההזרקה הבדיקה הייתה מריצה ss אמיתי (ובמעבדה — רואה מאזינים
             # אמיתיים). המתג עצמו נבדק ב-test_port_toggles.py.
-            "ss_tcp": ""}
+            "ss_tcp": "",
+            "nft_ruleset": (
+                "table inet imagectl {\n"
+                "\tchain input {\n"
+                "\t\tiifname \"lo\" accept\n"
+                "\t}\n"
+                "}\n")}
     hooks = {
         "ss": lambda: fake["ss"],
         "ss_tcp": lambda: fake["ss_tcp"],
+        "nft_ruleset": lambda: fake["nft_ruleset"],
         "unit_active": lambda name: "active",
         "http_get": lambda url: fake["http"],
         "http_size": lambda url: (200, 31_000_000),
@@ -78,9 +85,12 @@ def by_id(rows):
     return {r["id"]: r for r in rows}
 
 
-def test_ports_endpoint_does_not_require_admin(ports_server):
-    """הבדיקה הפוכה מ-/health: admin לא נדרש לקריאה כאן."""
+def test_ports_endpoint_is_console_only(ports_server):
+    """‏#1073: הדף הוא קונסולה — deploy מקבל 403 `deploy_no_console` (לא
+    admin_only: הנתיב עצמו נשאר current_user, והסירוב הוא של הקונסולה)."""
     resp = ports_server["deploy"].get("/api/console/ports")
+    assert resp.status_code == 403 and "מחשב הבנייה" in resp.json()["detail"]
+    resp = ports_server["admin"].get("/api/console/ports")
     assert resp.status_code == 200
     assert isinstance(resp.json(), list)
 
@@ -165,3 +175,28 @@ def test_every_row_carries_a_firewall_note(ports_server):
     assert rows
     for row in rows:
         assert row["note"], f"{row['id']} is missing a note"
+
+
+def test_ports_list_includes_firewall_row(ports_server):
+    rows = by_id(ports_server["admin"].get("/api/console/ports").json())
+    fw = rows["firewall"]
+    assert fw["name"] == "חומת אש"
+    assert fw["toggle"] == "none"
+    assert fw["state"] == "ok"
+    assert "פעילה" in fw["detail"]
+    assert fw["enabled"] is None
+
+
+def test_firewall_row_three_states(ports_server):
+    rows = by_id(ports_server["admin"].get("/api/console/ports").json())
+    assert rows["firewall"]["state"] == "ok"
+
+    ports_server["fake"]["nft_ruleset"] = ""
+    rows = by_id(ports_server["admin"].get("/api/console/ports").json())
+    assert rows["firewall"]["state"] == "off"
+    assert rows["firewall"]["detail"] == "לא נטענה"
+
+    ports_server["fake"]["nft_ruleset"] = None
+    rows = by_id(ports_server["admin"].get("/api/console/ports").json())
+    assert rows["firewall"]["state"] == "unknown"
+    assert rows["firewall"]["detail"] == "לא הצלחנו לבדוק"

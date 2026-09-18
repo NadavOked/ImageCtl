@@ -161,13 +161,16 @@ def test_a_machine_that_never_reported_shows_null_not_empty(server):
     assert m["probe_verdicts"] == []
 
 
-def test_deploy_sees_the_probe_and_the_verdicts_too(server):
-    """מידע, לא פעולה: משתמש deploy עומד ליד המכונות ורואה מה הסוכן מדד."""
+def test_deploy_has_no_console_so_the_probe_is_admin_only_on_the_web(server):
+    """‏#1073 (18/09): למשתמש הפצה אין קונסולה — הכניסה עצמה מסורבת (403), ולכן
+    ה-probe והחיוויים נראים בוובי רק ל-admin. (עד 18/09 הטסט הזה הוכיח ההפך.)"""
     setup_classroom(server)
     _hello(server, probe=_with(power={"on_battery": True, "supply": "BAT0"}))
-    m = _machine(server, "deploy")
+    m = _machine(server)
     assert m["probe"]["power"]["on_battery"] is True
     assert [v["key"] for v in m["probe_verdicts"]] == ["battery"]
+    r = server["deploy"].get("/api/console/machines")
+    assert r.status_code == 403, r.text   # console_only (#1073): גם עם עוגייה — אין קונסולה
 
 
 def test_the_verdicts_follow_the_latest_sample_not_the_first(server):

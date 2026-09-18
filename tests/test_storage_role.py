@@ -2,7 +2,8 @@
 
 שלוש קבוצות: (א) קריאת התפקיד fail-closed, (ב) מטריצת ה-capability
 של ‏``/me``, ו-(ג) מיגרציית הטבלאות (אידמפוטנטית). כולן על השרת המלא
-דרך פיקסצ'ר ``server`` — עם לקוחות מחוברים כ-admin וכ-deploy.
+דרך פיקסצ'ר ``server`` — עם לקוחות מחוברים כ-admin וכ-deploy
+(‏#1073: ל-deploy אין `/me` — הקונסולה סגורה בפניו, 403).
 """
 
 from __future__ import annotations
@@ -66,19 +67,19 @@ def test_forged_role_value_cannot_manage_nodes(server):
 
 def test_me_standalone_zero_nodes_is_false(server):
     assert _cap(server["admin"]) is False
-    assert _cap(server["deploy"]) is False
+    assert server["deploy"].get("/api/console/me").status_code == 403   # #1073: אין /me ל-deploy
 
 
 def test_me_standalone_one_enabled_node_admin_true_deploy_false(server):
     _add_node(server["ctx"].conn)
     assert _cap(server["admin"]) is True
-    assert _cap(server["deploy"]) is False
+    assert server["deploy"].get("/api/console/me").status_code == 403   # #1073: אין /me ל-deploy
 
 
 def test_me_standalone_one_disabled_node_is_false(server):
     _add_node(server["ctx"].conn, disabled_at=now_iso())
     assert _cap(server["admin"]) is False
-    assert _cap(server["deploy"]) is False
+    assert server["deploy"].get("/api/console/me").status_code == 403   # #1073: אין /me ל-deploy
 
 
 def test_me_secondary_with_enabled_node_is_false(server):
@@ -87,7 +88,7 @@ def test_me_secondary_with_enabled_node_is_false(server):
     set_setting(conn, storage_nodes.ROLE_KEY, "secondary")
     # משני אינו דוחף מעלה — גם עם משני "רשום" (מזויף) הדגל כבוי.
     assert _cap(server["admin"]) is False
-    assert _cap(server["deploy"]) is False
+    assert server["deploy"].get("/api/console/me").status_code == 403   # #1073: אין /me ל-deploy
 
 
 # --- (ג) מיגרציית הטבלאות ---------------------------------------------------

@@ -16,7 +16,7 @@ not been compiled yet** — see "What I could not verify".
 | card (`index.html` id) | native screen | login | what it shows |
 |---|---|---|---|
 | `#st-login` | `SCREEN_LOGIN` | — | כניסה: user, password + eye, error, כניסה |
-| `#st-menu` | `SCREEN_MENU` | gated | מה עושים? four cards (capture admin-only; restore is #382, not in the HTML) |
+| `#st-menu` | `SCREEN_MENU` | gated | מה עושים? four cards, #1073 order: room · direct · restore (#382/#706) · capture (admin-only, last); the class card only with `menu_class=1` (v2) |
 | `#st-pick` | `SCREEN_PICK` | gated | קליטת אימג' חדש: the internal disks, then name / description / folder + "+ חדשה", התחל קליטה, חזרה, the hint |
 | `#st-progress` | `SCREEN_PROGRESS` | **open** | קולט: … / big bar / percent + bytes / "אל תכבו את המחשב…". Also the cloner's and the class receiver's display |
 | `#st-done` | `SCREEN_DONE` | open | הקליטה הושלמה / נכשלה + קליטה נוספת |
@@ -166,7 +166,7 @@ stdout is line-buffered so a record arrives as it happens.
 | token | from | detail lines | meaning |
 |---|---|---|---|
 | `capture` | menu | — | the capture card was chosen; `#st-pick` is now showing (feed `disk=`/`folder=`) |
-| `restore` | menu | — | the #382 card; **the process exits 0** — the agent runs the restore path |
+| `restore` | menu | — | the #382/#706 card: `#st-restore` is showing (feed `image=` from `allowed_images`, `machine_name=`) |
 | `room` | menu | — | `#st-room` is showing (feed `machine=`/`image=`, then `round=`) |
 | `direct` | menu | — | #715: the room screen **without** the image picker — the source is this machine's disk (feed `machine=`/`machine_drawers=`/`room_drawer=`, no `image=`) |
 | `classes` | menu | — | `#st-class` is showing (feed `class=`, or `session=` for a live round) |
@@ -181,6 +181,7 @@ stdout is line-buffered so a record arrives as it happens.
 | `class-pick` | a class card | `group=<id>` | the operator chose a class. **Steps 2–3 of the wizard (machine grid, image list) are not built** — see "Not built" |
 | `class-start` | התחל עכשיו | — | POST `/api/console/sessions/<id>/start` |
 | `class-close` | עצור סבב, second press | `confirm=<typed>` | POST `/api/console/sessions/<id>/close {confirm_name}` (#581) |
+| `restore-start` | התחל שחזור | `image=<id>`, `confirm=<typed>` | #706/#1073: hand-off to the agent (`handoff` file) — the bridge re-reads the machine's registered name from `GET /api/v1/agent/state` and accepts only a `confirm` equal to it; the agent re-validates the image against fresh `allowed_images`, then `single_restore_run` erases the internal disk and reboots |
 
 Local validation stays local, as in the HTML: "בחרו כונן ותנו שם לאימג'" and
 "בחרו אימג' וקבעו יעד כוננים" are shown without a record.
@@ -211,6 +212,10 @@ message=<title>|<sub>
 # #st-menu: the "הפצה לכיתות" card only when the server's switch is on
 # (#880, class_deploy_enabled in the hello answer). Absent = 0.
 menu_class=<0/1>
+
+# #1073: the machine's registered name (GET /api/v1/agent/state .name) -- the
+# restore screen's typed confirmation. Always written; empty = no start.
+machine_name=<name>
 
 # #st-room (GET /api/console/room) and #st-class live rows
 image=<id>|<name>|<folder>          # /api/console/images

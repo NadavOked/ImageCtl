@@ -78,7 +78,10 @@ def create_kiosk_router(ctx: ServerContext, *, room_wake) -> APIRouter:
     ‏`room_wake` מוזרק (כמו ב-app.py) כדי ששליחת ה-WoL של החדר תהיה אותה
     פונקציה בכל המערכת וניתנת לזיוף בבדיקות."""
     router = APIRouter()
-    for source in (create_console_router(ctx), create_library_router(ctx),
+    # ‏#1073: ‏`kiosk=True` — הכניסה כאן מקבלת גם `deploy`. זו הדלת של
+    # מחשב הבנייה (buildmenu.sh/ה-GUI נכנסים דרך `/api/console/login` על
+    # פורט הסוכן, שנושא את אותו allowlist); הקונסולה (‎:8081) מסרבת לו.
+    for source in (create_console_router(ctx, kiosk=True), create_library_router(ctx),
                    create_console_capture_router(ctx)):
         router.routes.extend(_allowlisted(source, KIOSK_CONSOLE_ROUTES))
     router.include_router(create_room_router(ctx, wake=room_wake))
