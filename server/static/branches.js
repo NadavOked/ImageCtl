@@ -122,6 +122,13 @@ function branchesServersTab() {
   return `<div class="c12 card"><div class="card-b${BRANCH_NODES.length ? " flush" : ""}">${table}</div></div>`;
 }
 
+function transferDirectionHtml(t) {
+  const primary = (typeof ME !== "undefined" && ME.server_name) ? ME.server_name : "ראשי";
+  const node = t.node_label || t.node_id || "";
+  if (t.direction === "pull") return `${esc(node)} → ${esc(primary)}`;
+  return esc(node);
+}
+
 function branchTransferRow(t) {
   const [label, cls] = TRANSFER_STATE[t.state] || [t.state, ""];
   const active = ["sending", "verifying", "queued"].includes(t.state);
@@ -132,14 +139,16 @@ function branchTransferRow(t) {
   const state = UI.status(cls, label) + (t.error ? `<div class="sub">${esc(t.error)}</div>` : "");
   const retry = t.state === "failed"
     ? `<button class="btn sm" onclick="retryBranchTransfer('${encodeId(t.node_id)}','${encodeId(t.image_id)}')">נסה שוב</button>` : "";
+  const cancel = t.direction === "pull" && active
+    ? `<button class="btn sm" onclick="cancelBranchTransfer('${encodeId(t.id)}')">ביטול</button>` : "";
   return { cells: [
     UI.name(t.image_name, t.image_id),
-    esc(t.node_label || t.node_id),
+    transferDirectionHtml(t),
     progress,
     state,
     `<span class="mono" dir="ltr">${esc(fmtDate(t.created_at))} ${esc(fmtClock(t.created_at))}</span>`,
     esc(t.started_by || "—"),
-    retry,
+    retry + cancel,
   ] };
 }
 
@@ -169,11 +178,39 @@ async function retryBranchTransfer(nidEnc, imageIdEnc) {
   let nid = nidEnc, image_id = imageIdEnc;
   try { nid = decodeURIComponent(nid); image_id = decodeURIComponent(image_id); } catch (e) {}
   try {
-    await post(`/storage-nodes/${encodeId(nid)}/transfer`, { image_id });
+    const row = BRANCH_TRANSFERS.find((t) => t.node_id === nid && t.image_id === image_id);
+    const kind = row && row.direction === "pull" ? "pull" : "transfer";
+    await post(`/storage-nodes/${encodeId(nid)}/${kind}`, { image_id });
     toast("ההעברה הופעלה מחדש");
     BRANCH_TRANSFERS = await api("/storage-transfers");
     renderCurrent();
     maybeStartBranchesListPolling();
+  } catch (e) { toast(e.message); }
+}
+
+async function cancelBranchTransfer(tidEnc) {
+  let tid = tidEnc;
+  try { tid = decodeURIComponent(tid); } catch (e) {}
+  try {
+    await post(`/storage-transfers/${encodeId(tid)}/cancel`, {});
+    toast("ההעברה בוטלה");
+    BRANCH_TRANSFERS = await api("/storage-transfers");
+    renderCurrent();
+  } catch (e) { toast(e.message); }
+}
+
+async function startPullFromSecondary(nidEnc, imageIdEnc) {
+  let nid = nidEnc, image_id = imageIdEnc;
+  try { nid = decodeURIComponent(nid); image_id = decodeURIComponent(image_id); } catch (e) {}
+  try {
+    await post(`/storage-nodes/${encodeId(nid)}/pull`, { image_id });
+    toast("ההעברה לראשי התחילה");
+    if (current === "branch") activateTab(BRANCH_VIEWS.findIndex((v) => v[0] === "transfers"));
+    else {
+      BRANCH_TRANSFERS = await api("/storage-transfers");
+      renderCurrent();
+      maybeStartBranchesListPolling();
+    }
   } catch (e) { toast(e.message); }
 }
 
@@ -363,8 +400,12 @@ function renderBranchTransfers(nid, target = null, limit = 8) {
       ? `<div class="progress" style="margin-top:6px"><i style="width:${pct}%"></i></div><span class="sub">${esc(formatGB(t.bytes_sent))} מתוך ${esc(formatGB(t.bytes_total))} (${pct}%)</span>`
       : "";
     const err = t.error ? `<div class="notice warn" role="status">${esc(t.error)}</div>` : "";
+    const dir = t.direction === "pull" ? transferDirectionHtml(t) : "";
+    const cancel = t.direction === "pull" && ["sending", "verifying", "queued"].includes(t.state)
+      ? `<button class="btn sm" onclick="cancelBranchTransfer('${encodeId(t.id)}')">ביטול</button>` : "";
     return `<div class="member"><b>${esc(t.image_name)}</b> <span class="status ${cls}"><i></i>${esc(label)}</span>
-      <div class="sub mono" dir="ltr">${esc((t.created_at || "").replace("T", " ").slice(0, 19))}</div>${bar}${err}</div>`;
+      ${dir ? `<div class="sub">${dir}</div>` : ""}
+      <div class="sub mono" dir="ltr">${esc((t.created_at || "").replace("T", " ").slice(0, 19))}</div>${bar}${err}${cancel}</div>`;
   }).join("");
 }
 
@@ -475,29 +516,51 @@ async function loadBranchView(view) {
     if (!disabled) await load();
     return;
   }
-  const [transfers, images] = await Promise.all([api("/storage-transfers"), api("/images")]);
-  if (stale()) return;
-  BRANCH_TRANSFERS = transfers;
   if (view === "images") {
-    // מה שהראשי יודע שהעביר לשם — לא מלאי הספרייה של המשני (עיקרון 3; אין
-    // בערוץ הבין-שרתי רשימת אימג'ים, רק "האם X קיים" לפי מזהה).
+    const remoteP = disabled
+      ? Promise.resolve({ connected: false, error: "השרת המשני מושבת", images: [] })
+      : api(`/storage-nodes/${encodeId(n.id)}/images`).catch((e) => (
+        { connected: false, error: e.message, images: [] }));
+    const [transfers, images, remote] = await Promise.all([
+      api("/storage-transfers"), api("/images"), remoteP,
+    ]);
+    if (stale()) return;
+    BRANCH_TRANSFERS = transfers;
     const done = transfers.filter((t) => t.node_id === n.id && t.state === "done");
     const seen = new Set();
     const rows = done.filter((t) => !seen.has(t.image_id) && seen.add(t.image_id));
+    const localIds = new Set(images.map((m) => m.id));
+    const libRows = (remote.images || []).map((img) => {
+      const present = localIds.has(img.id);
+      const pullBtn = `<button class="btn sm primary" ${present || disabled ? "disabled" : ""} onclick="startPullFromSecondary('${encodeId(n.id)}','${encodeId(img.id)}')">העבר לראשי</button>`;
+      return `<tr>
+        <td><b>${esc(img.name)}</b> <span class="mono muted" dir="ltr">${esc(img.id)}</span></td>
+        <td>${esc(formatGB(img.size_bytes || 0))}</td>
+        <td class="mono" dir="ltr">${esc((img.created_at || "").replace("T", " ").slice(0, 19) || "—")}</td>
+        <td>${present ? "✓" : "—"}</td>
+        <td>${pullBtn}</td>
+      </tr>`;
+    }).join("");
+    const libBody = !remote.connected
+      ? `<div class="notice warn" role="status">לא ניתן לקרוא את ספריית המשני: ${esc(remote.error || "")}</div>`
+      : (libRows
+        ? `<table><thead><tr><th>שם</th><th>גודל</th><th>תאריך</th><th>קיים בראשי</th><th></th></tr></thead><tbody>${libRows}</tbody></table>`
+        : `<div class="empty">אין אימג'ים בספריית המשני.</div>`);
     host.innerHTML = `<div class="card">${head}<div class="card-b">
       <div class="action-strip"><button class="btn primary" id="branch-view-transfer" ${disabled ? "disabled" : ""}>העבר אימג'</button></div>
+      <h4>ספריית האימג'ים של המשני</h4>
+      ${libBody}
       <h4>אימג'ים שהועברו מכאן</h4>
       ${rows.length ? `<table><thead><tr><th>אימג'</th><th>הועבר</th></tr></thead><tbody>${rows.map((t) =>
         `<tr><td><b>${esc(t.image_name)}</b> <span class="mono muted" dir="ltr">${esc(t.image_id)}</span></td><td class="mono" dir="ltr">${esc((t.updated_at || t.created_at || "").replace("T", " ").slice(0, 19))}</td></tr>`).join("")}</tbody></table>`
         : `<div class="empty">עוד לא הועבר אימג' לשרת הזה.</div>`}
-      <p class="sub">הרשימה היא ההעברות שהושלמו מהשרת הזה; ספריית המשני עצמה אינה נשאלת.</p>
     </div></div>`;
-    // אחרי "התחל העברה" עוברים ללשונית "העברות": היא מתעדכנת כל 2 שניות
-    // כל עוד ההעברה פעילה. "אימג'ים" מציגה רק done, ורינדור מחדש שלה מיד
-    // אחרי ה-POST הראה "עוד לא הועבר" בזמן שההעברה רצה (נמדד בדפדפן).
     $("#branch-view-transfer").onclick = () => openTransferSheet(n, images, async () => activateTab(BRANCH_VIEWS.findIndex((v) => v[0] === "transfers")));
     return;
   }
+  const transfers = await api("/storage-transfers");
+  if (stale()) return;
+  BRANCH_TRANSFERS = transfers;
   host.innerHTML = `<div class="card">${head}<div class="card-b"><div id="branch-transfers-${esc(n.id)}"></div></div></div>`;
   renderBranchTransfers(n.id, null, 20);
   BRANCH_TIMER = setInterval(() => {

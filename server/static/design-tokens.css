@@ -48,6 +48,10 @@
   --scrim:rgb(37 51 61 / 45%);
   /* פינות עדינות — מראה enterprise עכשווי, לא הזוויתיות של Clarity/2020 */
   --r:9px; --r-sm:6px;
+
+  /* #1085: גרפיקת מסך הכניסה — שלוש דרגות של האפור-הכחלחל של ה-header */
+  --art-bg:#E4E9EF; --art-a:#CBD5DE; --art-b:#B4C3CF; --art-c:#9AADB8;
+  --art-line:#7E93A1; --art-server:#25333D;
 }
 
 /* מצב כהה — נבחר מפורשות בלבד. ה-header נשאר כהה בשני המצבים; רק
@@ -78,6 +82,9 @@
 
   /* התיבה השמורה ל-brandmark כשאין לוגו מותאם-אישית (ראו console.css) */
   --header-mark-bg:#20303b; --header-mark-border:#70a9cd;
+
+  --art-bg:#11181d; --art-a:#1c262e; --art-b:#26333d; --art-c:#33434f;
+  --art-line:#4a5d6b; --art-server:#70a9cd;
 }
 
 *,*::before,*::after{box-sizing:border-box}

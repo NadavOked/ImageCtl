@@ -26,7 +26,8 @@ function setup(fixtures, me = {}) {
     return registry.get(sel);
   };
   const listeners = {};
-  registry.set('login-form', {...stubNode(), addEventListener(type, fn) { listeners[type] = fn; }});
+  // #1085 שלב ב': הכניסה עברה מבינדינג ישיר על login-form לדלגציה על מיכל #login
+  registry.set('login', {...stubNode(), addEventListener(type, fn) { listeners[type] = fn; }});
   const ctx = vm.createContext({
     console, URLSearchParams, URL, Date, Set, Map, Number, Math, JSON, Promise,
     encodeURIComponent, decodeURIComponent,
@@ -213,7 +214,8 @@ test('after login the console holds the /me capabilities, so the branches tab is
     '/overview': {session: null, pulls: [], room: null, machines: 0, images: 0, storage: null}};
   const {run, listeners} = setup(fixtures);
   run('ME=null; showApp=async()=>{};');
-  await listeners.submit({preventDefault() {}});
+  // #1085 שלב ב': loginOnSubmit מדלג לפי event.target.id (דלגציה על #login)
+  await listeners.submit({preventDefault() {}, target: {id: 'login-form'}});
   assert.equal(run('ME && ME.capabilities && ME.capabilities.interbranch_transfer'), true);
   assert.equal(run('pageAllowed("branches")'), true);
 });

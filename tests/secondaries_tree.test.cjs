@@ -78,6 +78,10 @@ const base = {
     {id: 't3', node_id: NODE, image_id: 'img_2c8e04', image_name: 'Old', state: 'failed', bytes_sent: 0, bytes_total: 5, error: 'sha256 לא תואם', created_at: '2026-09-14T10:00:00+00:00'},
   ],
   '/images': [{id: 'img_7f3a91', name: 'Office 365', folder: 'Windows', total_compressed_bytes: 12 * 1024 ** 3}],
+  [`/storage-nodes/${NODE}/images`]: {connected: true, error: null, images: [
+    {id: 'img_c0ffee', name: 'Haifa Local', size_bytes: 40, created_at: '2026-09-18T08:00:00+00:00', sha256: {}},
+    {id: 'img_7f3a91', name: 'Office 365', size_bytes: 40, created_at: '2026-09-16T10:00:00+00:00', sha256: {}},
+  ]},
 };
 
 test('a server node per secondary from /storage-nodes, with four children; click shows, dblclick toggles', async () => {
@@ -161,7 +165,7 @@ test('openBranchView routes to the branch page with the chosen secondary and tab
   assert.match(run('tabRender("branch", 1)'), /id="branch-view" class="stack" data-view="machines"/);
 });
 
-test('the branch page tabs reuse branches.js: overview measures the connection, machines lists them with monitor, images = completed transfers + transfer button, transfers = the log', async () => {
+test('the branch page tabs reuse branches.js: overview measures the connection, machines lists them with monitor, images = secondary library + pull + completed transfers, transfers = the log', async () => {
   const {run, node} = setup(base);
   run('BRANCH_NODE="n0de"; current="branch"');
   await run('loadBranchView("overview")');
@@ -183,9 +187,12 @@ test('the branch page tabs reuse branches.js: overview measures the connection, 
   await run('loadBranchView("images")');
   html = node('#branch-view').innerHTML;
   assert.match(html, /id="branch-view-transfer"/);
-  assert.equal((html.match(/Office 365/g) || []).length, 1, 'a completed transfer is listed once per image');
+  assert.match(html, /ספריית האימג'ים של המשני/);
+  assert.match(html, /Haifa Local/);
+  assert.match(html, /העבר לראשי/);
+  assert.match(html, /קיים בראשי/);
+  assert.equal((html.match(/Office 365/g) || []).length, 2, 'push history once + library row once');
   assert.doesNotMatch(html, /\bOld\b/, 'a failed transfer is not an image the secondary has');
-  assert.match(html, /ספריית המשני עצמה אינה נשאלת/);
   assert.doesNotMatch(html, /בודק חיבור/, 'no unmeasured connection state on this tab');
 
   await run('loadBranchView("transfers")');
@@ -230,4 +237,16 @@ test('"התחל העברה" from the images tab lands on the transfers tab (whic
   assert.equal(run('currentTab'), 3, 'the transfers tab is now active');
   await new Promise((r) => setTimeout(r, 20));
   assert.match(node('#branch-view').innerHTML, /branch-transfers-n0de/, 'the transfers log is on screen, not the images list');
+});
+
+test('"העבר לראשי" from the secondary library starts a pull and lands on the transfers tab', async () => {
+  const {run, node, calls} = setup(base);
+  run('BRANCH_NODE="n0de"; current="branch"; currentTab=2; closeSidebar=()=>{};');
+  await run('loadBranchView("images")');
+  await run('startPullFromSecondary("n0de","img_c0ffee")');
+  const post = calls.find((c) => c.method === 'POST' && c.url.endsWith('/storage-nodes/n0de/pull'));
+  assert.ok(post && post.body.image_id === 'img_c0ffee', 'the pull was started');
+  assert.equal(run('currentTab'), 3, 'the transfers tab is now active');
+  await new Promise((r) => setTimeout(r, 20));
+  assert.match(node('#branch-view').innerHTML, /branch-transfers-n0de/);
 });

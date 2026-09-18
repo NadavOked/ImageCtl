@@ -136,10 +136,10 @@ test('grid without a round: slots from /machines[].disks[] by drawer_count — d
   assert.equal((grid.match(CARD)||[]).length,3);
   const c1=card(grid,C1), c2=card(grid,C2), c3=card(grid,C3);
   assert.match(c1,/<b>מחשב 1<\/b><\/span><span class="muted">מחובר · 2 חריצים · <span class="mono">10.44.12.118<\/span> · לפני 9 דק'/);
-  assert.equal((c1.match(/<div class="disk empty" data-slot="\d"><b>דיסק \d<\/b><span>SATA \d<\/span><span class="cap">ריק<\/span>/g)||[]).length,2,'drawer_count=2 with 0 disks reported → two dashed empty slots');
-  assert.match(c2,/<div class="disk ok" data-slot="1"><b>דיסק 1<\/b><span>SATA 0<\/span><span><bdi dir="ltr">238 GB<\/bdi> · 870 EVO<\/span><span class="cap mono">S5Y30<\/span><span class="cap">SMART תקין<\/span><\/div>/);
-  assert.match(c2,/<div class="disk " data-slot="2"><b>דיסק 2<\/b><span>SATA 1<\/span>[^]*?<span class="cap">SMART לא נבדק<\/span><\/div>/,'unchecked is grey, not green');
-  assert.match(c2,/<div class="disk err" data-slot="3"><b>דיסק 3<\/b><span>SATA 2<\/span>[^]*?<span class="cap">אדום 15\/09\/2026 · כבל\/חריץ SATA 2<\/span><button class="btn sm" onclick="clearDiskFailure\(7\)">נקה<\/button><\/div>/);
+  assert.equal((c1.match(/<div class="disk empty" data-slot="\d" title="דיסק \d · SATA \d · ריק"><b>דיסק \d<\/b><span class="cap">ריק<\/span><\/div>/g)||[]).length,2,'drawer_count=2 with 0 disks reported → two dashed empty slots, each exactly two text lines (label + ריק)');
+  assert.match(c2,/<div class="disk ok" data-slot="1" title="SATA 0 · 870 EVO · S5Y30 · SMART תקין"><b>דיסק 1<\/b><span class="cap mono"><bdi dir="ltr">238 GB<\/bdi><\/span><\/div>/,'#1033: exactly two lines — דיסק 1 / capacity; model+serial+SMART moved to the tooltip');
+  assert.match(c2,/<div class="disk " data-slot="2" title="SATA 1 · 870 EVO · S5Y31 · SMART לא נבדק"><b>דיסק 2<\/b><span class="cap mono"><bdi dir="ltr">238 GB<\/bdi><\/span><\/div>/,'unchecked is grey, not green; SMART detail in tooltip');
+  assert.match(c2,/<div class="disk err" data-slot="3" title="SATA 2 · 870 EVO · S5Y2NX0R12345 · אדום 15\/09\/2026 · כבל\/חריץ SATA 2"><b>דיסק 3<\/b><span class="cap mono"><bdi dir="ltr">238 GB<\/bdi><\/span><button class="btn sm" onclick="clearDiskFailure\(7\)">נקה<\/button><\/div>/);
   assert.doesNotMatch(c2,/data-slot="3"[^]*?SMART תקין[^]*?data-slot="3"/,'a red slot never shows its SMART as green');
   assert.doesNotMatch(c2,/monitorMachine\(/,'monitor only on the monitor page'); assert.match(c2,/openMachineDetail\(/); assert.match(c2,new RegExp("wakeMachine\\('"+encodeURIComponent(C2)+"'\\)\"[^>]*>WoL<"),'#984: per-machine WoL on the cloner card');
   assert.match(c3,/מספר החריצים לא הוגדר והמכונה מעולם לא דיווחה על דיסקים/); assert.match(c3,/editDrawerCount\(/);
@@ -163,9 +163,9 @@ test('grid during a round: slots from /room.machines[].drawer_list — write bar
   assert.doesNotMatch(grid,/sd[abc]/,'never sd*');
   const c2=card(grid,C2);
   assert.match(c2,/<span class="st run"><b>מחשב 2<\/b><\/span><span class="muted">בסבב · 38%/);
-  assert.match(c2,/<div class="disk run" data-slot="1">[^]*?<div class="bar-row"><div class="bar "><i style="--w:38%"><\/i><\/div><span class="pct">38%<\/span><\/div><span class="cap">כותב · SMART תקין<\/span>/);
-  assert.match(c2,/<div class="disk warn" data-slot="2">[^]*?<div class="bar warn">[^]*?<span class="cap">כותב · CRC \+3 · לבדוק כבל · ללא תזוזה 90 ש' · SMART לא נבדק<\/span>/,'CRC delta and stall are warnings, and never colour SMART green');
-  assert.match(c2,/<div class="disk err" data-slot="3">[^]*?<div class="bar err">[^]*?<span class="cap">אדום 15\/09\/2026 · כבל\/חריץ SATA 2<\/span><button[^>]*clearDiskFailure\(7\)/,'red from the failure memory wins over the live state');
+  assert.match(c2,/<div class="disk run" data-slot="1" title="SATA 0 · 870 EVO · S5Y30 · כותב · SMART תקין"><b>דיסק 1<\/b><span class="cap mono"><bdi dir="ltr">238 GB<\/bdi><\/span><div class="bar-row"><div class="bar "><i style="--w:38%"><\/i><\/div><span class="pct">38%<\/span><\/div><\/div>/);
+  assert.match(c2,/<div class="disk warn" data-slot="2" title="SATA 1 · 870 EVO · S5Y31 · כותב · CRC \+3 · לבדוק כבל · ללא תזוזה 90 ש' · SMART לא נבדק">[^]*?<div class="bar warn">/,'CRC delta and stall are warnings (in the tooltip), and never colour SMART green');
+  assert.match(c2,/<div class="disk err" data-slot="3" title="SATA 2 · 870 EVO · S5Y2NX0R12345 · אדום 15\/09\/2026 · כבל\/חריץ SATA 2">[^]*?<div class="bar err">[^]*?<button[^>]*clearDiskFailure\(7\)/,'red from the failure memory wins over the live state; tooltip carries model+serial+cause');
   const c1=card(grid,C1);
   assert.match(c1,/<b>מחשב 1<\/b><\/span><span class="muted">מחובר/,'not joined → the ordinary state');
   const rounds=between(html,'<div class="c4 card">');
@@ -183,7 +183,30 @@ test('cloners tabs: "drawers" is the grid alone and larger (4:3 screen next to t
   run('ROOM=null'); html=run('machines(0)');
   assert.match(html,/pill ">החדר לא נקרא</); assert.match(html,/<div class="kpi "><div class="l">סבב פעיל<\/div><div class="v"><bdi dir="auto">לא נקרא/);
   assert.match(html,/החדר לא נקרא — הדיסקים לפי הדיווח האחרון ב-hello/); assert.match(html,/החדר לא נקרא — הסבב הפעיל לא ידוע/);
-  assert.match(card(between(html,'<div class="mgrid">','<div class="c8 card">'),C2),/<div class="disk ok" data-slot="1">/,'unread room falls back to the hello report, not to "nothing"');
+  assert.match(card(between(html,'<div class="mgrid">','<div class="c8 card">'),C2),/<div class="disk ok" data-slot="1"/,'unread room falls back to the hello report, not to "nothing"');
+});
+
+test('#1033: disk box is exactly two text lines (label + rounded capacity), disks stack top-to-bottom by SATA, and a 12×3 fixture renders 36 boxes', () => {
+  const {run}=setup();
+  const macs=Array.from({length:12},(_,i)=>`aa:bb:cc:dd:ee:${String(i+10).padStart(2,'0')}`);
+  const machines12=macs.map((mac,i)=>({mac,suffix:'מחשב '+(i+1),group_id:'grp_CLONERS',note:null,drawer_count:3,prompt:null,
+    disks:[0,1,2].map(j=>({dev:'sd'+String.fromCharCode(97+j),size_bytes:GB256,model:'870 EVO',serial:'S'+i+'-'+j,port:j+1,smart:'ok'})),
+    disks_reported_at:new Date().toISOString(),inventory:null,inventory_seen_at:null}));
+  run(`GROUPS=[{id:'grp_CLONERS',label:'מחשבי שיכפול',role:'cloner',sort:1,machines:12}];`);
+  run(`MACHINES=${JSON.stringify(machines12)};`);
+  run("NET=[]; DISK_FAILURES=[]; MONITOR_ROWS=[]; ROOM=null;");
+  run("openClass('grp_CLONERS')"); const html=run('machines(0)'); balanced(html);
+  const grid=between(html,'<div class="mgrid">','<div class="c8 card">');
+  assert.equal((grid.match(CARD)||[]).length,12,'12 machine cards');
+  const boxes=grid.match(/<div class="disk [^"]*" data-slot="\d" title="[^"]*"><b>דיסק \d<\/b><span class="cap mono"><bdi dir="ltr">238 GB<\/bdi><\/span><\/div>/g)||[];
+  assert.equal(boxes.length,36,'12 machines × 3 disks = 36 disk boxes, each strictly two lines: דיסק N + capacity');
+  for(const mac of macs) {
+    const c=card(grid,mac);
+    const slots=[...c.matchAll(/data-slot="(\d)"/g)].map(m=>Number(m[1]));
+    assert.deepEqual(slots,[1,2,3],'stacked top-to-bottom in SATA order — disk 1 first');
+  }
+  const c0=card(grid,macs[0]);
+  assert.match(c0,/title="SATA 0 · 870 EVO · S0-0 · SMART תקין"/,'tooltip carries model + serial');
 });
 
 test('cloners: empty group, no failures read, and the deploy role', () => {

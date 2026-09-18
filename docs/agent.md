@@ -145,11 +145,14 @@ swap לא נקרא בקליטה ולא משודר — `mkswap` בשחזור לפ
 **מפתח ה-host נוצר בעלייה, לא בבנייה.** מפתח שנארז בבנאי היה אותו
 מפתח פרטי בכל תחנה במכללה, בתוך קובץ שכל אחד יכול להוריד, והיה הופך
 את הבנאי ללא-דטרמיניסטי. במקום זה `dropbearkey` יוצר אחד ב-tmpfs בכל
-אתחול. המחיר: הטביעה משתנה בכל עלייה, ולכן שורת החיבור לא בודקת אותה:
+אתחול. הטביעה משתנה בכל עלייה — והסוכן שולח אותה ב-hello (`ssh_hostkey`,
+#1080): השרת מצמיד אותה ב-`<data_dir>/ssh/known_hosts` ובודק
+`StrictHostKeyChecking=yes` בכל חיבור שהוא פותח, והקונסולה מציגה
+`SHA256:…` בכרטיס המכונה. מחשב טכנאי שעדיין מתחבר ידנית משווה לכרטיס:
 
 ```sh
-ssh -i ~/.ssh/imagectl-lab -o StrictHostKeyChecking=no \
-    -o UserKnownHostsFile=/dev/null root@<כתובת התחנה>
+ssh -i ~/.ssh/imagectl-lab -o StrictHostKeyChecking=accept-new \
+    root@<כתובת התחנה>
 ```
 
 ‏(‏`~/.ssh/imagectl-lab` הוא המפתח **הפרטי**, אצל הטכנאי בלבד; בריפו

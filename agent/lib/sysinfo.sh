@@ -275,5 +275,5 @@ build_hello() {
         "$_mac" "$_all" "$IP" "$_uuid_json" \
         "$(detect_firmware)" "$(detect_secure_boot)" "$AGENT_VERSION" \
         "$(detect_memory_bytes)" "$_joining" "$_disks" "$(disk_probe)" \
-        "$_msecret" "$(command -v inventory_json >/dev/null 2>&1 && inventory_json)$(command -v probe_json >/dev/null 2>&1 && probe_json)$(command -v netprobe_json >/dev/null 2>&1 && netprobe_json)"
+        "$_msecret" "$(command -v inventory_json >/dev/null 2>&1 && inventory_json)$(command -v probe_json >/dev/null 2>&1 && probe_json)$(command -v netprobe_json >/dev/null 2>&1 && netprobe_json)$(command -v sshd_json >/dev/null 2>&1 && sshd_json)"
 }

@@ -156,6 +156,49 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
     def all_transfers(user=Depends(require_standalone)):
         return storage_transfer.list_transfers(ctx.conn, user)
 
+    @router.post("/storage-transfers/{tid}/cancel")
+    def cancel_transfer(tid: str, user=Depends(require_standalone)):
+        try:
+            return storage_transfer.cancel_transfer(ctx.conn, tid, user)
+        except storage_transfer.TransferError as extra:
+            raise HTTPException(extra.status, extra.detail)
+
+    # --- משיכת אימג' משני→ראשי (#1071) ---------------------------------------
+    #
+    # היוזם תמיד הראשי. המשני רק עונה GET. ‏deploy → 403 (אין קונסולה, #1073);
+    # שרת שאינו standalone → 409. אימג' שכבר קיים בראשי → 409, לא דריסה.
+
+    @router.post("/storage-nodes/{nid}/pull")
+    async def start_pull(nid: str, request: Request,
+                         user=Depends(require_standalone)):
+        image_id = str((await request.json()).get("image_id") or "")
+        try:
+            tid = storage_transfer.start_pull(ctx, data_dir, nid, image_id, user)
+        except storage_transfer.TransferError as extra:
+            raise HTTPException(extra.status, extra.detail)
+        return {"id": tid}
+
+    @router.get("/storage-nodes/{nid}/images")
+    def node_images(nid: str, user=Depends(require_standalone)):
+        """פרוקסי ל-``GET /images`` של המשני. כשל חיבור = ``connected:false``."""
+        node = storage_nodes.node_row(ctx.conn, nid)
+        if node is None:
+            raise HTTPException(404, "שרת משני לא קיים")
+        if node["disabled_at"]:
+            return {"connected": False, "error": "השרת המשני מושבת", "images": []}
+        try:
+            client, token = storage_nodes.node_client(ctx.conn, data_dir, node)
+            with client:
+                answer = client.get_json("/images", token)
+        except Exception as extra:                           # noqa: BLE001
+            return {"connected": False,
+                    "error": interserver_auth.redact_secrets(str(extra)),
+                    "images": []}
+        if not isinstance(answer, list):
+            return {"connected": False, "error": "תשובה לא צפויה מהמשני",
+                    "images": []}
+        return {"connected": True, "error": None, "images": answer}
+
     # --- צפייה במשני: המכונות שלו (#655 v1) ----------------------------------
     #
     # הראשי שואל את המשני בערוץ המאומת ומחזיר את התשובה כפי שהיא. כשל

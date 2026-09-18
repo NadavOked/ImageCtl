@@ -45,10 +45,39 @@ def test_index_html_task_dock_has_no_demo_numbers():
 
 
 def test_the_login_screen_shows_no_version_tag():
-    """הגרסה מוצגת רק אחרי כניסה (‏`/me` דורש אימות); מסך הכניסה בלי תג."""
+    """אין תג גרסה קשיח. הגרסה בתחתית מתמלאת מ-`/me` כשיש session; לפני כן
+    רק hostname מהדפדפן (אין endpoint ציבורי לגרסה/fingerprint)."""
     page = _index()
     login = page[page.index('id="login"'):page.index('id="app"')]
     assert 'class="tag' not in login
+    assert "גישה מאובטחת" not in login
+    assert "זכור אותי" not in login
+    assert "קונסולת ניהול ImageCtl" not in login
+    assert 'id="login-body"' in login
+    assert 'class="art"' in login
+
+
+def test_login_screens_copy_is_in_console_js():
+    """#1085 שלב ב': חמשת המסכים וההודעות לפי המוקאפ — ב-loginHtml, לא ב-HTML קשיח."""
+    js = _console_js()
+    for s in (
+        'זכור את הדפדפן הזה ל-7 שעות',
+        "בחר סיסמה חדשה",
+        "הקוד מאפליקציית האימות",
+        "השתמש בקוד גיבוי",
+        "הגדרת אימות דו-שלבי",
+        "המשך לקונסולה",
+        "שמרתי את הקודים במקום בטוח",
+        "שם משתמש או סיסמה שגויים",
+        "החשבון נעול ל-",
+        "קוד שגוי",
+        "מקומי · ללא MFA",
+    ):
+        assert s in js, s
+    assert "function loginHtml(" in js
+    assert "function passwordCanSubmit(" in js
+    assert "function setupContinueEnabled(" in js
+    assert "function otpFromPaste(" in js
 
 
 def test_console_js_fills_the_version_from_me():
@@ -194,12 +223,17 @@ def test_static_includes_are_at_8_5():
     #1066 שלב ב' (דף "אחסון", storage.js) = ‏8.9;
     #1093 (ערכת נושא לפי משתמש, נשמרת בשרת) = ‏8.9;
     #1081 (v1 בלי כיתות — `capabilities.classrooms`) = ‏8.9;
-    #1077 (מוניטור כבוי בברירת מחדל — אזהרת 5900) = ‏8.9.
+    #1077 (מוניטור כבוי בברירת מחדל — אזהרת 5900) = ‏8.9;
+    #1085 שלב ב' (מסכי כניסה לפי המוקאפ) = ‏9.0;
+    #1033 (גריד הקלונרים — מלבן אנכי, דיסקים מוערמים לפי SATA, שתי שורות
+    בתיבת דיסק) = ‏9.0;
+    #1071 (pull אימג' מהמשני לראשי) = ‏9.0;
+    #1080 (fingerprint SSH בכרטיס המכונה) — הגייט bk איחד את #1085ב/#1033/#1071/#1080 ל-‏9.1.
     שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
     versions = {float(v) for v in re.findall(r'\?v=(\d+\.\d+)"', page)}
-    assert versions == {8.9}, versions
+    assert versions == {9.1}, versions
 
 
 def test_old_images_page_code_is_gone():
@@ -449,6 +483,21 @@ def test_tools_page_is_an_admin_tree_node_with_two_selections_per_tool():
     css = (STATIC / "console.css").read_text(encoding="utf-8")
     for sel in (".page table.dg.tools{", ".page .dg-bar label.chk{"):
         assert sel in css, sel
+
+
+def test_the_machine_drawer_shows_the_ssh_hostkey_fingerprint():
+    """‏#1080: שורת SSH בכרטיס המכונה — 12 תווים, tooltip מלא, כתום רק
+    כשהמפתח השתנה באותו אתחול; אתחול = אפור 'מפתח חדש מאתחול'."""
+    js = _console_js()
+    assert "function sshHostkeyHtml(" in js
+    fn = js[js.index("function sshHostkeyHtml"):js.index("function machineDrawerHtml")]
+    assert "SHA256:" in fn and "slice(0, 12)" in fn
+    assert 'title="${esc(fp)}"' in fn
+    assert 'UI.status("warn", "השתנה באתחול הזה")' in fn
+    assert "מפתח חדש מאתחול" in fn
+    assert "לא דווח" in fn
+    drawer = js[js.index("function machineDrawerHtml"):js.index("function openMachineDetail")]
+    assert '["SSH", sshHostkeyHtml(m)]' in drawer
 
 
 def test_the_machine_drawer_has_a_health_group_with_three_states_per_field():

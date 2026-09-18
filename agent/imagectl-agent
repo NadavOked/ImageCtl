@@ -55,9 +55,7 @@ if [ "$IMAGECTL_DEBUG" = "1" ]; then
         log "debug shell on ttyS0"
         setsid sh -c 'while :; do sh < /dev/ttyS0 > /dev/ttyS0 2>&1; done' &
     fi
-    # אותו שער, דרך הרשת: צינור סריאלי אחד עבד לשתי מכונות ולא
-    # יעבוד ל-20 (#44). מפתח ציבורי בלבד, ובלי מפתח ארוז אין האזנה.
-    ssh_start
+    # SSH starts after DHCP -- it binds $IP, not 0.0.0.0 (#1080).
 fi
 
 SERVER="$IMAGECTL_SERVER"
@@ -73,6 +71,7 @@ NET_FILE="${NET_FILE:-$RUN_DIR/net.conf}"
 . "$NET_FILE"
 [ -n "$IFACE" ] && [ -n "$IP" ] || die_local "incomplete network configuration"
 MAC=$(cat "$SYSROOT/sys/class/net/$IFACE/address" 2>/dev/null)
+[ "$IMAGECTL_DEBUG" = "1" ] && ssh_start   # #44/#1080: same gate, after $IP
 RESP="$RUN_DIR/response.json"; trace_step agent-start   # #400, see common.sh
 
 send_hello() {

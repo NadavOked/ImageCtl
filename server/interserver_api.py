@@ -274,6 +274,22 @@ class ReceivePlan:
     root: Path
 
 
+@dataclass
+class FilePlan:
+    """קובץ מחיצה להגשה לאב, אחרי אימות ורק אם השם במניפסט."""
+    path: Path
+    status: int
+    start: int
+    end: int
+    total: int
+
+    @property
+    def length(self) -> int:
+        if self.total <= 0:
+            return 0
+        return self.end - self.start + 1
+
+
 def _library(ctx):
     library = getattr(ctx, "library", None)
     if library is None:
@@ -292,6 +308,138 @@ def image_present(ctx, peer: TlsPeer, *, token: str, protocol_version: str,
     manifest = _library(ctx).get(image_id)
     return {"id": image_id, "present": manifest is not None,
             "name": manifest["name"] if manifest else None}
+
+
+def _public_manifest(manifest: dict) -> dict:
+    """מניפסט בלי שדות פנימיים (`_dir` וכו') — מה שעובר בערוץ."""
+    return {k: v for k, v in manifest.items() if not str(k).startswith("_")}
+
+
+def _decoded_filename(name: str) -> str | None:
+    """שם קובץ בטוח להגשה, או None — לא נתיב, לא `..`, לא ריק."""
+    from urllib.parse import unquote
+    decoded = unquote(name or "")
+    if not decoded or decoded in {".", ".."}:
+        return None
+    if "/" in decoded or "\\" in decoded or "\0" in decoded:
+        return None
+    return decoded
+
+
+def list_images(ctx, peer: TlsPeer, *, token: str, protocol_version: str,
+                has_console_cookie: bool = False) -> list:
+    """רשימת האימג'ים בספריית המשני — מהדיסק (עיקרון 3), לא מטבלה."""
+    from .images import image_os, streamed_partitions
+    authenticate_parent(ctx.conn, peer, token=token, protocol_version=protocol_version,
+                        has_console_cookie=has_console_cookie)
+    rows = []
+    for manifest in _library(ctx).scan().values():
+        if not manifest.get("_available", True) or not manifest.get("_dir"):
+            continue
+        directory = Path(manifest["_dir"])
+        sha = {}
+        size = 0
+        for part in streamed_partitions(manifest):
+            name = part["file"]
+            sha[name] = part.get("sha256") or ""
+            try:
+                size += (directory / name).stat().st_size
+            except OSError:
+                pass
+        rows.append({
+            "id": manifest["id"],
+            "name": manifest["name"],
+            "size_bytes": size,
+            "sha256": sha,
+            "created_at": manifest.get("created") or "",
+            "manifest_summary": {
+                "family": manifest["family"],
+                "os": image_os(manifest),
+                "partitions": len(manifest.get("partitions") or []),
+                "folder": manifest.get("folder") or "",
+            },
+        })
+    rows.sort(key=lambda r: (r["name"], r["id"]))
+    return rows
+
+
+def image_manifest(ctx, peer: TlsPeer, *, token: str, protocol_version: str,
+                   image_id: str, has_console_cookie: bool = False) -> dict:
+    """המניפסט המלא של אימג' במשני — מהדיסק. חסר → 404."""
+    from .images import valid_image_id
+    authenticate_parent(ctx.conn, peer, token=token, protocol_version=protocol_version,
+                        has_console_cookie=has_console_cookie)
+    if not valid_image_id(image_id):
+        raise PairError(400, f"מזהה אימג' לא תקין: {image_id!r}")
+    manifest = _library(ctx).get(image_id)
+    if manifest is None:
+        raise PairError(404, "אימג' לא קיים")
+    return _public_manifest(manifest)
+
+
+def parse_byte_range(header: str | None, size: int) -> tuple[int, int, int]:
+    """מפרק ``Range: bytes=`` ל-``(status, start, end_inclusive)``.
+
+    קובץ ריק: ``end == -1``. טווח לא ניתן לסיפוק → 416. כותרת חסרה או
+    לא-bytes → הקובץ כולו (200). רק הטווח הראשון נספר.
+    """
+    if size < 0:
+        size = 0
+    if not header or not str(header).strip():
+        return 200, 0, size - 1
+    raw = str(header).strip()
+    if not raw.lower().startswith("bytes="):
+        return 200, 0, size - 1
+    spec = raw.split("=", 1)[1].split(",")[0].strip()
+    if "-" not in spec:
+        return 200, 0, size - 1
+    start_s, end_s = spec.split("-", 1)
+    try:
+        if start_s == "":
+            n = int(end_s) if end_s else 0
+            if n <= 0 or size == 0:
+                return 200, 0, size - 1
+            start = max(size - n, 0)
+            return (206 if start > 0 else 200), start, size - 1
+        start = int(start_s)
+        end = int(end_s) if end_s else size - 1
+    except ValueError:
+        return 200, 0, size - 1
+    if start < 0 or start >= size:
+        raise PairError(416, f"טווח לא ניתן לסיפוק: {header}")
+    end = min(max(end, start), size - 1)
+    if start == 0 and end == size - 1:
+        return 200, 0, end
+    return 206, start, end
+
+
+def image_file_plan(ctx, peer: TlsPeer, *, token: str, protocol_version: str,
+                    image_id: str, filename: str, range_header: str | None = None,
+                    has_console_cookie: bool = False) -> FilePlan:
+    """קובץ מחיצה להגשה — רק שם שמופיע במניפסט (לא נתיב חופשי)."""
+    from .images import inside, valid_image_id
+    authenticate_parent(ctx.conn, peer, token=token, protocol_version=protocol_version,
+                        has_console_cookie=has_console_cookie)
+    if not valid_image_id(image_id):
+        raise PairError(400, f"מזהה אימג' לא תקין: {image_id!r}")
+    decoded = _decoded_filename(filename)
+    if decoded is None:
+        raise PairError(404, "קובץ לא קיים")
+    library = _library(ctx)
+    path = library.file_path(image_id, decoded)
+    if path is None:
+        raise PairError(404, "קובץ לא קיים")
+    manifest = library.get(image_id)
+    if manifest is None or not manifest.get("_dir"):
+        raise PairError(404, "קובץ לא קיים")
+    if inside(path, Path(manifest["_dir"])) is None:
+        raise PairError(404, "קובץ לא קיים")
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        raise PairError(404, f"לא ניתן לקרוא את הקובץ: {exc}")
+    status, start, end = parse_byte_range(range_header, size)
+    return FilePlan(path=path, status=status, start=start, end=end, total=size)
 
 
 def receive_image_precheck(ctx, peer: TlsPeer, *, token: str, protocol_version: str,
@@ -606,6 +754,13 @@ def create_interserver_app(ctx, tls_peer_provider):
         except PairError as exc:
             raise _http(exc)
 
+    @router.get("/images")
+    def list_images_route(request: Request, peer: TlsPeer = Depends(_peer)):
+        try:
+            return list_images(ctx, peer, **_creds(request))
+        except PairError as exc:
+            raise _http(exc)
+
     @router.get("/images/{image_id}")
     def image_present_route(image_id: str, request: Request,
                             peer: TlsPeer = Depends(_peer)):
@@ -613,6 +768,37 @@ def create_interserver_app(ctx, tls_peer_provider):
             return image_present(ctx, peer, image_id=image_id, **_creds(request))
         except PairError as exc:
             raise _http(exc)
+
+    @router.get("/images/{image_id}/manifest")
+    def image_manifest_route(image_id: str, request: Request,
+                             peer: TlsPeer = Depends(_peer)):
+        try:
+            return image_manifest(ctx, peer, image_id=image_id, **_creds(request))
+        except PairError as exc:
+            raise _http(exc)
+
+    @router.get("/images/{image_id}/files/{name}")
+    def image_file_route(image_id: str, name: str, request: Request,
+                         peer: TlsPeer = Depends(_peer)):
+        from fastapi.responses import StreamingResponse
+        try:
+            plan = image_file_plan(
+                ctx, peer, image_id=image_id, filename=name,
+                range_header=request.headers.get("range"), **_creds(request))
+        except PairError as exc:
+            raise _http(exc)
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(plan.length),
+        }
+        if plan.status == 206:
+            headers["Content-Range"] = (
+                f"bytes {plan.start}-{plan.end}/{plan.total}")
+        return StreamingResponse(
+            _iter_file_range(plan.path, plan.start, plan.length),
+            status_code=plan.status,
+            media_type="application/octet-stream",
+            headers=headers)
 
     @router.put("/images/{image_id}")
     async def receive_image_route(image_id: str, request: Request,
@@ -645,6 +831,22 @@ def create_interserver_app(ctx, tls_peer_provider):
 #
 # גוף של אימג' (``PUT /images/{id}``) **זורם** לקובץ ואינו נאסף בזיכרון;
 # כל שאר הגופים הם JSON קטן, ומוגבלים ב-``MAX_JSON_BODY``.
+
+def _iter_file_range(path: Path, start: int, length: int, chunk_size: int = 1024 * 1024):
+    """מזרים ``length`` בייטים מ-``start``. קובץ ריק = מחולל ריק."""
+    if length <= 0:
+        yield from ()
+        return
+    with path.open("rb") as handle:
+        handle.seek(start)
+        remaining = length
+        while remaining > 0:
+            chunk = handle.read(min(chunk_size, remaining))
+            if not chunk:
+                return
+            remaining -= len(chunk)
+            yield chunk
+
 
 _PREFIX = "/api/interserver/v1"
 
@@ -697,10 +899,10 @@ def _read_http_request(conn):
     return method, path, headers, body
 
 
-def _http_response(status: int, payload: dict, *, close: bool = False) -> bytes:
+def _http_response(status: int, payload: object, *, close: bool = False) -> bytes:
     import json
     body = json.dumps(payload).encode()
-    reason = {200: "OK", 100: "Continue"}.get(status, "ERROR")
+    reason = {200: "OK", 100: "Continue", 206: "Partial Content"}.get(status, "ERROR")
     connection = "close" if close else "keep-alive"
     return (f"HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\n"
             f"Content-Length: {len(body)}\r\nConnection: {connection}\r\n\r\n"
@@ -780,6 +982,8 @@ class InterserverTLSServer:
                 elif method == "GET" and _monitor_mac_of(path) is not None:
                     self._monitor_tunnel(conn, raw, peer, path, headers, rest)
                     keep = False
+                elif method == "GET" and _image_file_of(path) is not None:
+                    keep = self._send_file(conn, peer, path, headers)
                 else:
                     keep = self._small_request(conn, peer, method, path, headers, rest)
                 if not keep or headers.get("connection", "").lower() == "close":
@@ -828,6 +1032,36 @@ class InterserverTLSServer:
             conn.sendall(_http_response(exc.status, {"detail": exc.detail}, close=True))
             return False
         conn.sendall(_http_response(200, result))
+        return True
+
+    def _send_file(self, conn, peer, path, headers) -> bool:
+        """``GET /images/{id}/files/{name}``: אימות → Range → זרם. 404 על
+        שם שאינו במניפסט, בלי לקרוא את הדיסק כנתיב חופשי."""
+        image_id, name = _image_file_of(path)
+        try:
+            plan = image_file_plan(
+                self.ctx, peer, image_id=image_id, filename=name,
+                range_header=headers.get("range"),
+                token=_bearer(headers),
+                protocol_version=headers.get("imagectl-protocol-version", ""),
+                has_console_cookie="imagectl_session" in headers.get("cookie", ""))
+        except PairError as extra:
+            conn.sendall(_http_response(extra.status, {"detail": extra.detail},
+                                        close=True))
+            return False
+        reason = "Partial Content" if plan.status == 206 else "OK"
+        lines = [
+            f"HTTP/1.1 {plan.status} {reason}",
+            "Content-Type: application/octet-stream",
+            f"Content-Length: {plan.length}",
+            "Accept-Ranges: bytes",
+            "Connection: keep-alive",
+        ]
+        if plan.status == 206:
+            lines.append(f"Content-Range: bytes {plan.start}-{plan.end}/{plan.total}")
+        conn.sendall(("\r\n".join(lines) + "\r\n\r\n").encode())
+        for chunk in _iter_file_range(plan.path, plan.start, plan.length):
+            conn.sendall(chunk)
         return True
 
     def _monitor_tunnel(self, conn, raw, peer, path, headers, rest) -> None:
@@ -905,6 +1139,12 @@ class InterserverTLSServer:
                 return _http_response(200, ping(self.ctx.conn, peer, **creds))
             if method == "GET" and path == f"{_PREFIX}/machines":
                 return _http_response(200, list_machines(self.ctx, peer, **creds))
+            if method == "GET" and path == f"{_PREFIX}/images":
+                return _http_response(200, list_images(self.ctx, peer, **creds))
+            manifest_id = _image_manifest_of(path)
+            if method == "GET" and manifest_id is not None:
+                return _http_response(200, image_manifest(
+                    self.ctx, peer, image_id=manifest_id, **creds))
             if method == "GET" and image_id is not None:
                 return _http_response(200, image_present(
                     self.ctx, peer, image_id=image_id, **creds))
@@ -933,3 +1173,34 @@ def _image_id_of(path: str) -> str | None:
     if not rest or "/" in rest or "?" in rest:
         return None
     return rest
+
+
+def _image_manifest_of(path: str) -> str | None:
+    """המזהה מ-``/api/interserver/v1/images/{id}/manifest``, או ``None``."""
+    prefix = f"{_PREFIX}/images/"
+    suffix = "/manifest"
+    if not path.startswith(prefix) or not path.endswith(suffix):
+        return None
+    mid = path[len(prefix):-len(suffix)]
+    if not mid or "/" in mid or "?" in mid:
+        return None
+    return mid
+
+
+def _image_file_of(path: str) -> tuple[str, str] | None:
+    """``(id, name)`` מ-``/api/interserver/v1/images/{id}/files/{name}``."""
+    from urllib.parse import unquote
+    prefix = f"{_PREFIX}/images/"
+    marker = "/files/"
+    if not path.startswith(prefix) or marker not in path:
+        return None
+    rest = path[len(prefix):]
+    image_id, found, name = rest.partition(marker)
+    if found != marker or not image_id or "/" in image_id or not name:
+        return None
+    if "?" in image_id:
+        return None
+    decoded = unquote(name)
+    if not decoded or "/" in decoded or "\\" in decoded:
+        return None
+    return image_id, decoded

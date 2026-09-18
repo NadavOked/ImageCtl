@@ -100,9 +100,9 @@ ssh_start() {
     # packed. One baked at build time would be the same private key on
     # every station in the college, shipped inside a file served over
     # plain HTTP, and it would make the builder's output stop being a
-    # function of its inputs. The price is a fingerprint that changes on
-    # every boot, which is why the documented connect line does not check
-    # it (docs/agent.md).
+    # function of its inputs. There is no stable per-machine secret in
+    # initramfs, so the key is still random each boot; the fingerprint
+    # goes out in hello (sshd_json) and the server pins it (#1080).
     if [ ! -s "$SSH_HOSTKEY" ]; then
         mkdir -p "$(dirname "$SSH_HOSTKEY")"
         dropbearkey -t ed25519 -f "$SSH_HOSTKEY" >/dev/null 2>&1 || {
@@ -112,11 +112,20 @@ ssh_start() {
         chmod 0600 "$SSH_HOSTKEY"
     fi
 
+    # Bind the deployment address only (R20-F7). $IP is the agent's
+    # DHCP result; without it we would listen on 0.0.0.0 and that is
+    # a wider door than the debug gate asked for. ssh_start runs after
+    # net.conf is sourced for this reason.
+    [ -n "$IP" ] || {
+        log "ssh: no deployment IP -- not listening on 0.0.0.0"
+        return 1
+    }
+
     # -F stay in the foreground (we background it ourselves so the log
     # lands in the agent's file), -s no password logins, -g no password
     # logins for root either, -j -k no port forwarding in either
     # direction: this is a console, not a tunnel into the VLAN.
-    _ssh_spawn "$SSH_DROPBEAR" -F -s -g -j -k -p "$SSH_PORT" -r "$SSH_HOSTKEY"
+    _ssh_spawn "$SSH_DROPBEAR" -F -s -g -j -k -p "$IP:$SSH_PORT" -r "$SSH_HOSTKEY"
 
     # And now read it back. What gets logged is what the kernel says, not
     # what we asked for.
@@ -140,4 +149,42 @@ ssh_start() {
     fi
     unset _try _state
     return 1
+}
+
+_ssh_fingerprint() {
+    # OpenSSH SHA256 fingerprint of the wire-format blob (the base64
+    # field of the pubkey line). Piped so NULs in the blob never sit
+    # in a shell variable. SHA256:<base64 without padding>.
+    _b64=$(printf '%s' "$1" | base64 -d 2>/dev/null |
+        openssl dgst -sha256 -binary 2>/dev/null |
+        openssl enc -base64 -A 2>/dev/null) || return 1
+    [ -n "$_b64" ] || return 1
+    printf 'SHA256:%s' "$(printf '%s' "$_b64" | tr -d '=\r\n ')"
+    unset _b64
+}
+
+sshd_json() {
+    # Prints ,"ssh_hostkey":{...} -- the fragment build_hello appends.
+    # The leading comma is here so sysinfo.sh, at the 280-line lamp,
+    # adds no line of its own. No host key (SSH did not start) = the
+    # field is omitted, not null: the server keeps the previous row.
+    [ -s "$SSH_HOSTKEY" ] || return 0
+    command -v dropbearkey >/dev/null 2>&1 || return 0
+    _out=$(dropbearkey -y -f "$SSH_HOSTKEY" 2>/dev/null) || return 0
+    _pub=$(printf '%s\n' "$_out" | while IFS= read -r _ln; do
+        case "$_ln" in ssh-ed25519\ *) printf '%s' "$_ln"; break ;; esac
+    done | tr -d '\r')
+    [ -n "$_pub" ] || return 0
+    _type=${_pub%% *}
+    _rest=${_pub#* }
+    _b64=${_rest%% *}
+    [ "$_type" = "ssh-ed25519" ] && [ -n "$_b64" ] || return 0
+    _fp=$(_ssh_fingerprint "$_b64") || return 0
+    [ -n "$_fp" ] || return 0
+    _boot=$(tr -d ' \r\n' < "${SYSROOT:-}/proc/sys/kernel/random/boot_id" 2>/dev/null)
+    _boot_json=null
+    [ -n "$_boot" ] && _boot_json="\"$(json_escape "$_boot")\""
+    printf ',"ssh_hostkey":{"type":"ed25519","fingerprint":"%s","pubkey":"%s %s","boot_id":%s}' \
+        "$(json_escape "$_fp")" "$(json_escape "$_type")" "$(json_escape "$_b64")" "$_boot_json"
+    unset _out _pub _type _rest _b64 _fp _boot _boot_json
 }

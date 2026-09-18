@@ -490,7 +490,7 @@ def _add_agent_routes(app: FastAPI, rt: ServerRuntime) -> None:
     ‏`station_state`), ואין ביניהם נתיב ניהול — הפעולה היחידה, פתיחת סבב,
     דורשת שם וסיסמה. ולכן הם חיים כאן **וגם** על הקיוסק (הדפדפן קורא
     אותם יחסית מ-‎:8082), ולא על הקונסולה (#703: הגבול הוא ה-socket)."""
-    app.include_router(create_agent_router(rt.ctx, rt.server_base))
+    app.include_router(create_agent_router(rt.ctx, rt.server_base, rt.data_dir))
     app.include_router(create_agent_drivers_router(rt.ctx))   # #720
     app.include_router(create_agent_capture_router(rt.ctx))
     app.include_router(direct.create_direct_router(rt.ctx))   # #715

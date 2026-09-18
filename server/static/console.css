@@ -76,46 +76,74 @@ button{cursor:pointer}
 .clickable{cursor:pointer}.clickable:hover{background:var(--hover)}.row-selected td{background:var(--indigo-soft)!important}.muted{color:var(--muted)}.danger-text{color:var(--danger)}.success-text{color:var(--led-ok)}.action-strip{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}.detail-backdrop{position:fixed;inset:0;background:var(--scrim);display:none;z-index:95}.drawer{position:fixed;top:48px;bottom:0;inset-inline-end:0;width:min(440px,92vw);background:var(--surface);border-inline-start:1px solid var(--hair);box-shadow:20px 0 50px var(--shadow-strong);transform:translateX(-105%);transition:transform .18s ease;z-index:96;display:flex;flex-direction:column;direction:rtl}.drawer.open{transform:none}.drawer-head{min-height:52px;padding:0 14px;border-bottom:1px solid var(--hair);display:flex;align-items:center;justify-content:space-between}.drawer-body{overflow:auto;padding:14px;flex:1}.detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.detail-box{background:var(--hover);border:1px solid var(--hair);padding:9px}.detail-box .k{display:block;color:var(--muted);font-size:10px;margin-bottom:4px}.detail-box .v{font-size:12px}.section-title{font-size:11px;font-weight:600;color:var(--ink);margin:16px 0 8px}.notice{padding:9px 10px;border:1px solid var(--hair);background:var(--hover);color:var(--muted);font-size:10px;border-radius:var(--r-sm)}.notice.warn{border-color:var(--warn-ink);background:var(--warn-soft);color:var(--warn-ink)}.notice.err{border-color:var(--danger-line);background:color-mix(in srgb,var(--danger) 12%,var(--surface));color:var(--danger)}.action-menu{position:absolute;top:44px;inset-inline-start:0;min-width:190px;background:var(--surface);border:1px solid var(--hair);box-shadow:0 10px 28px var(--shadow-strong);z-index:80;padding:5px;border-radius:var(--r-sm);display:none}.action-menu button{display:block;width:100%;border:0;background:transparent;text-align:start;padding:8px 10px;color:var(--ink);border-radius:var(--r-sm)}.action-menu button:hover{background:var(--hover)}.rel{position:relative}.selectable-file{display:none}.form-note{font-size:10px;color:var(--muted);margin-top:4px}.toast strong{font-weight:600}.modal-wide{width:min(760px,calc(100vw - 30px))}.confirm-box{line-height:1.6;color:var(--ink);font-size:11px}.danger-confirm{border:1px solid var(--danger-line);background:color-mix(in srgb,var(--danger) 12%,var(--surface));padding:10px;margin:10px 0;color:var(--danger);border-radius:var(--r-sm)}@media(max-width:740px){.drawer{width:100%;top:48px}.detail-grid{grid-template-columns:1fr}}
 
 .user{border:0;background:transparent;display:flex;align-items:center;gap:7px;color:var(--clr-header-text);padding:4px 7px;border-radius:var(--r-sm)}.user:hover{background:var(--clr-header-hover)}.user-menu{position:fixed;top:43px;inset-inline-start:10px;z-index:120;width:210px;background:var(--surface);border:1px solid var(--hair);box-shadow:0 14px 35px var(--shadow-strong);display:none;padding:5px}.user-menu.open{display:block}.user-menu-head{padding:9px 10px;border-bottom:1px solid var(--hair);margin-bottom:4px}.user-menu-head strong{display:block}.user-menu-head small{color:var(--muted)}.user-menu button{display:block;width:100%;text-align:start;border:0;background:transparent;color:var(--ink);padding:8px 10px;border-radius:var(--r-sm)}.user-menu button:hover{background:var(--hover)}.user-menu .danger-item{color:var(--danger)}
-/* Login screen — vCenter-inspired. צבעים רק מטוקנים (בהיר/כהה). */
-.login-screen{position:fixed;inset:0;z-index:300;background:var(--porcelain);display:flex;align-items:center;justify-content:center;padding:24px;overflow:auto;direction:rtl}
-.login-bg{position:absolute;inset:0;background:radial-gradient(circle at 50% 35%,var(--indigo-soft),transparent 36%),linear-gradient(180deg,var(--porcelain) 0%,var(--clr-bg) 100%)}
-.login-grid{position:absolute;inset:0;opacity:.09;background-image:linear-gradient(var(--hair) 1px,transparent 1px),linear-gradient(90deg,var(--hair) 1px,transparent 1px);background-size:40px 40px;mask-image:linear-gradient(to bottom,transparent,var(--ink) 20%,var(--ink) 80%,transparent)}
-.login-panel{position:relative;width:min(440px,100%);background:var(--surface);border:1px solid var(--hair);box-shadow:0 24px 70px var(--shadow-strong);border-radius:var(--r-sm);overflow:hidden}
-.login-brand{padding:30px 34px 20px;background:var(--surface);text-align:center;border:0;display:block}
-.login-brand-top{display:flex;align-items:center;justify-content:center;gap:10px;color:var(--ink)}
-.login-brand .brand-mark{width:34px;height:34px;border:0;background:transparent}
-.login-brand .brandmark{height:34px;border:0;background:transparent;display:inline-flex;align-items:center;justify-content:center}
-.login-brand .brandmark img{height:34px;width:auto;max-width:150px;object-fit:contain}
-.login-brand h1{font-size:18px;margin:18px 0 6px;letter-spacing:0;color:var(--ink)}
-.login-brand p{max-width:none;color:var(--muted);line-height:1.55;margin:0;font-size:11px}
-.login-features,.login-footer{display:none}
-.login-card{background:var(--surface);padding:28px 34px 30px;display:flex;flex-direction:column;justify-content:center;border-top:1px solid var(--hair)}
-.login-card h2{font-size:17px;margin:0 0 7px;text-align:start;color:var(--ink)}
-.login-card .login-sub{margin:0 0 21px;color:var(--muted);font-size:10px;line-height:1.6}
-.login-form{display:grid;gap:13px}
-.login-field label{display:block;color:var(--muted);font-size:10px;margin-bottom:6px}
-#login input.login-input,.login-input{width:100%;height:38px;background:var(--field);border:1px solid var(--field-line);color:var(--ink);padding:0 11px;margin-bottom:0;border-radius:var(--r-sm);outline:none;box-sizing:border-box}
-#login input.login-input:focus,.login-input:focus{outline:none;border-color:var(--indigo);box-shadow:0 0 0 1px var(--indigo-soft)}
-.login-row{display:flex;justify-content:space-between;align-items:center;gap:10px}
-.login-check{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:10px;margin:0;font-weight:400}
-.login-check input{accent-color:var(--indigo)}
-.login-link{color:var(--indigo);text-decoration:none;font-size:10px}
-.login-btn{height:39px;width:100%;border:1px solid var(--indigo);background:var(--indigo);color:var(--on-ink);border-radius:var(--r-sm);font-weight:600;margin-top:2px;cursor:pointer}
-.login-btn:hover{background:var(--ink-hover)}
-.login-btn:disabled{opacity:.65;cursor:wait}
-.login-server{font-size:9px;color:var(--muted);margin-top:13px;text-align:center}
-.login-error{display:none;padding:8px 10px;border:1px solid var(--danger-line);background:color-mix(in srgb,var(--danger) 12%,var(--surface));color:var(--danger);font-size:10px;border-radius:var(--r-sm)}
-.login-demo{display:none}
-.login-meta{padding:0 34px 22px;text-align:center;color:var(--muted);font-size:9px;background:var(--surface)}
-.login-help-link{color:var(--indigo);text-decoration:none;cursor:pointer}
-/* כפתור "הצג" — ימין של שדה הסיסמה (RTL: inline-start) */
-#login .pw-wrap{position:relative}
-#login .pw-wrap .login-input{padding-inline-start:62px;padding-inline-end:11px}
-#login .pw-eye{position:absolute;inset-inline-start:8px;inset-inline-end:auto;top:50%;transform:translateY(-50%);padding:4px 9px;font-family:inherit;font-size:11.5px;cursor:pointer;color:var(--muted);background:var(--surface);border:1px solid var(--hair);border-radius:var(--r-sm);margin:0}
-#login .pw-eye:hover{color:var(--ink);border-color:var(--btn-hover-line)}
-#login #login-error{padding:8px 10px;border:1px solid var(--danger-line);background:color-mix(in srgb,var(--danger) 12%,var(--surface));color:var(--danger);font-size:10px;border-radius:var(--r-sm);min-height:0;margin:0}
-#login #login-error:empty{display:none;padding:0;border:0;background:transparent}
-@media(max-width:520px){.login-screen{padding:14px}.login-panel{width:100%;max-width:420px}.login-brand{padding:26px 24px 18px}.login-card{padding:24px}.login-meta{padding:0 24px 20px}}
+/* #1085: מסך כניסה מפוצל — מוקאפ 2026-09-18. טוקנים בלבד; בלי כרטיס ממורכז. */
+#login.login{position:fixed;inset:0;z-index:300;min-height:100vh;display:grid;grid-template-columns:minmax(360px,520px) minmax(0,1fr);background:var(--clr-surface);overflow:auto;direction:rtl}
+#login .pane{display:flex;flex-direction:column;padding:40px 48px 24px;min-width:0;background:var(--clr-surface)}
+#login .pane-body{flex:1;display:flex;flex-direction:column;justify-content:center;max-width:380px;width:100%;margin:0 auto}
+#login .art{position:relative;background:var(--art-bg);overflow:hidden;border-inline-start:1px solid var(--clr-border)}
+#login .art svg{position:absolute;inset:0;width:100%;height:100%}
+#login .brand{display:flex;align-items:center;gap:10px;font-size:20px;font-weight:600;letter-spacing:.2px;color:var(--clr-text)}
+#login .brand > span:last-child{direction:ltr;unicode-bidi:isolate}
+#login .brandmark{height:30px;display:inline-flex;align-items:center}
+#login .brandmark img{height:30px;width:auto;max-width:150px;object-fit:contain}
+#login .mark{width:30px;height:30px;border-radius:6px;background:var(--ink);position:relative;flex:none}
+#login .mark::before,#login .mark::after{content:"";position:absolute;inset-inline:8px;height:3px;border-radius:3px;background:var(--mark-line)}
+#login .mark::before{top:10px}#login .mark::after{top:17px;background:var(--led-write);width:9px;inset-inline-end:auto;inset-inline-start:8px}
+:root[data-theme="dark"] #login .mark{background:var(--header-mark-bg);border:1px solid var(--header-mark-border)}
+#login h1.title{font-size:22px;font-weight:600;line-height:1.25;margin:40px 0 26px;color:var(--clr-text)}
+#login h1.title.sub{margin-bottom:6px}
+#login .lead{color:var(--clr-muted);font-size:13px;margin-bottom:22px}
+#login .f{position:relative;margin-bottom:22px}
+#login .f label{display:block;font-size:12px;color:var(--clr-muted);margin-bottom:2px;font-weight:400}
+#login .f input,#login input.login-input{width:100%;height:34px;border:0;border-bottom:1px solid var(--clr-border);background:transparent;padding:0 0 4px;margin:0;font-size:15px;border-radius:0;outline:none;color:var(--clr-text);box-shadow:none}
+#login .f input:focus,#login input.login-input:focus{border-bottom:2px solid var(--clr-action);padding-bottom:3px;outline:none;box-shadow:none}
+#login .f.err input{border-bottom-color:var(--clr-danger)}
+#login .f .eye,#login .pw-eye{position:absolute;inset-inline-end:0;inset-inline-start:auto;bottom:6px;top:auto;transform:none;height:24px;border:0;background:transparent;color:var(--clr-action);font-size:12px;padding:0 4px;font-family:inherit;cursor:pointer}
+#login .f.pw input{padding-inline-end:40px}
+#login .check{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--clr-text);margin:2px 0 26px;cursor:pointer;font-weight:400}
+#login .check input{width:15px;height:15px;margin:0;accent-color:var(--clr-action)}
+#login .btn{height:38px;width:100%;border:1px solid var(--clr-action);background:var(--clr-action);color:var(--on-ink);border-radius:var(--r);font-size:14px;font-weight:600;letter-spacing:.3px;padding:0}
+#login .btn:hover{background:var(--clr-action-hover);border-color:var(--clr-action-hover)}
+#login .btn:focus-visible{outline:2px solid var(--clr-action);outline-offset:2px}
+#login .btn:disabled{opacity:.45;cursor:not-allowed}
+#login .btn.ghost{background:transparent;color:var(--clr-action);border-color:transparent;font-weight:400;height:32px}
+#login .btn.sec{background:transparent;color:var(--clr-action);border-color:var(--clr-border);font-weight:400;height:32px}
+#login .link{display:inline-block;margin-top:14px;font-size:13px;color:var(--clr-action);text-decoration:none;background:none;border:0;padding:0;cursor:pointer;font-family:inherit}
+#login .msg{display:flex;gap:8px;align-items:flex-start;font-size:13px;color:var(--clr-danger);margin:-6px 0 18px;line-height:1.4;min-height:0}
+#login .msg:empty{display:none;margin:0}
+#login .msg .ui-icon{color:var(--clr-danger);margin-top:1px;width:16px;height:16px;flex:none}
+#login .rules{list-style:none;display:grid;gap:5px;font-size:12px;color:var(--clr-muted);margin:-8px 0 22px}
+#login .rules li{display:flex;align-items:center;gap:7px}
+#login .rules li i{width:14px;height:14px;border:1px solid var(--clr-border);border-radius:50%;display:grid;place-items:center;flex:none}
+#login .rules li i .ui-icon{width:9px;height:9px;stroke-width:3;display:none}
+#login .rules li.ok{color:var(--clr-success)}
+#login .rules li.ok i{border-color:var(--clr-success);background:var(--clr-success);color:var(--on-ink)}
+#login .rules li.ok i .ui-icon{display:block}
+#login .otp{display:flex;gap:8px;direction:ltr;margin:6px 0 22px}
+#login .otp input{flex:1;min-width:0;height:46px;text-align:center;font-size:22px;font-family:var(--font-mono);border:1px solid var(--clr-border);border-radius:var(--r);background:var(--clr-field);outline:none;margin:0;padding:0}
+#login .otp input:focus{border-color:var(--clr-action);box-shadow:0 0 0 1px var(--clr-action)}
+#login .qr-row{display:flex;gap:18px;align-items:flex-start;margin:0 0 18px}
+#login .qr{width:132px;height:132px;flex:none;background:var(--on-ink);border:1px solid var(--clr-border);border-radius:var(--r);padding:6px}
+#login .qr svg{width:100%;height:100%;display:block}
+#login .secret{font-size:12px;color:var(--clr-muted);min-width:0}
+#login .secret .mono{display:block;font-size:12px;color:var(--clr-text);overflow-wrap:anywhere;margin-top:4px}
+#login .backup{background:var(--clr-bg);border:1px solid var(--clr-border);border-radius:var(--r);padding:12px 14px;margin:0 0 18px}
+#login .backup h2{font-size:13px;font-weight:600;margin-bottom:2px}
+#login .backup p{font-size:12px;color:var(--clr-muted);margin-bottom:10px}
+#login .codes{display:grid;grid-template-columns:1fr 1fr;gap:5px 16px;font-family:var(--font-mono);font-size:13px;direction:ltr;text-align:left}
+#login .actions2{display:flex;gap:8px}
+#login .actions2 .btn{height:32px;font-weight:400}
+#login .foot{margin-top:28px;font-size:11px;color:var(--clr-muted);display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center}
+#login .foot .mono{font-size:11px;letter-spacing:.2px}
+#login .foot .sep{color:var(--clr-border)}
+#login-form{width:auto;padding:0;border-radius:0;box-shadow:none}
+@media (max-width:767px){
+  #login.login{grid-template-columns:1fr;grid-template-rows:72px 1fr}
+  #login .art{order:-1;border-inline-start:0;border-bottom:1px solid var(--clr-border);min-height:72px}
+  #login .pane{padding:24px 16px 16px}
+  #login .pane-body{justify-content:flex-start}
+  #login h1.title{margin-top:24px}
+}
 
 /* ---------- מחלקות המודולים הקיימים (לא חלק מ-shell ה-reference) ----------
    library.js machines.js net.js netcfg.js monitor.js progress.js + index.html
@@ -127,10 +155,6 @@ button{cursor:pointer}
 .mono{font-family:var(--font-mono);direction:ltr}
 .hidden{display:none !important}
 
-/* ---------- login (#login.login-screen) — חיווט console.js נשאר על ה-id ---------- */
-#login-form{
-  width:auto; padding:0; border-radius:0; box-shadow:none;
-}
 .mark{
   width:34px; height:34px; border-radius:var(--r); flex:none;
   background:var(--ink); position:relative;
@@ -750,25 +774,28 @@ button:focus-visible,[role="button"]:focus-visible,.inventory-node:focus-visible
 .page.am .stack .st{display:flex}
 @media(max-width:740px){.page .dg tr.group td .grp{gap:6px}.page .dg tr.group td .acts{flex-wrap:wrap}.page #mch-table table.dg{min-width:760px}.page .dg-bar{flex-wrap:wrap}.page .dg-bar select,.page .dg-bar input[type="search"]{width:100%!important}}
 /* ---------- #954 גל 3א: משכפלים ומחשבי בנייה — גריד מחשבים, חריצים, מקרא, קליטה בתהליך ---------- */
-.page .mgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
-.page .mgrid.big{grid-template-columns:repeat(auto-fill,minmax(400px,1fr))}
+.page .mgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px}
+.page .mgrid.big{grid-template-columns:repeat(auto-fill,minmax(170px,1fr))}
 .page .mcard{border:1px solid var(--hair);border-radius:var(--rp);background:var(--surface);padding:10px 12px;display:flex;flex-direction:column;gap:8px;min-width:0}
 .page .mcard.off{opacity:.8}
 .page .mcard-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;min-width:0}
 .page .mcard-h .muted{font-size:12px;overflow-wrap:anywhere}
 .page .mcard .acts,.page .cap-now .acts{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:auto}
 .page .mcard .kv{font-size:12px}
-.page .slots{display:grid;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:6px}
-.page .mgrid.big .slots{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
-.page .mgrid.big .disk{min-height:120px;font-size:13px;padding:8px}
-.page .mgrid.big .disk b{font-size:14px}
+/* #1033: מלבן אנכי למכונה, דיסקים מוערמים לפי SATA (דיסק 1 למעלה) — לא זה
+   ליד זה. תיבת דיסק = שתי שורות בלבד (דיסק N / קיבולת), השאר ב-title. */
+.page .slots{display:flex;flex-direction:column;gap:5px;min-width:0}
+.page .slots .disk{flex-direction:row;flex-wrap:wrap;align-items:center;justify-content:space-between;text-align:start;min-height:0;padding:5px 8px}
+.page .slots .disk b{white-space:nowrap}
+.page .mgrid.big .slots .disk{font-size:13px;padding:7px 10px}
+.page .mgrid.big .slots .disk b{font-size:14px}
 .page .disk.run{border-color:var(--indigo);background:var(--indigo-soft)}
 .page .disk.empty{border-style:dashed;background:transparent;color:var(--muted)}
 .page .disk .cap.mono{direction:ltr;unicode-bidi:isolate;font-size:12px}
-.page .disk .bar-row{width:100%;gap:4px}
+.page .slots .disk .bar-row{width:100%;flex:0 0 100%;order:3;gap:4px}
 .page .disk .bar{min-width:0}
 .page .disk .bar-row .pct{width:auto;font-size:12px}
-.page .disk .btn{margin:2px auto 0}
+.page .slots .disk .btn{margin:0;order:4}
 .page .legend{display:flex;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--muted);font-weight:400}
 .page .legend i{display:inline-block;width:10px;height:10px;border:1px solid var(--hair);border-radius:2px;vertical-align:-1px;margin-inline-end:4px;background:var(--porcelain)}
 .page .legend i.sw-ok{border-color:var(--led-ok);background:color-mix(in srgb,var(--led-ok) 10%,var(--surface))}
@@ -779,7 +806,8 @@ button:focus-visible,[role="button"]:focus-visible,.inventory-node:focus-visible
 .page .cap-now{display:grid;gap:10px;padding-bottom:12px;margin-bottom:12px;border-bottom:1px solid var(--hair)}
 .page .cap-now:last-child{padding-bottom:0;margin-bottom:0;border-bottom:0}
 .page .cap-now .bar{display:inline-block;width:min(260px,100%);height:6px;vertical-align:middle;margin-inline-end:8px}
-@media(max-width:740px){.page .mgrid,.page .mgrid.big{grid-template-columns:1fr}.page .slots{grid-template-columns:repeat(auto-fill,minmax(100px,1fr))}.page .legend{gap:6px}}
+@media(max-width:740px){.page .mgrid,.page .mgrid.big{grid-template-columns:repeat(auto-fill,minmax(140px,1fr))}.page .legend{gap:6px}}
+@media(max-width:400px){.page .mgrid,.page .mgrid.big{grid-template-columns:repeat(2,minmax(0,1fr))}}
 /* ---------- #954 גל 4: סבב הפצה — חדר המשכפלים: טופס סבב חדש inline, הערות למפעיל ---------- */
 .page .rnew{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;align-items:end}
 .page .rnew label{display:grid;gap:4px;font-size:13px;color:var(--ink)}

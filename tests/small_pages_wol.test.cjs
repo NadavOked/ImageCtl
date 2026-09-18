@@ -185,7 +185,7 @@ test('permissions: one users table (name, role pill, state, created, hover actio
   assert.match(html,/3 משתמשים · 1 מנהלים פעילים · 1 מפעילי הפצה · המנהל האחרון אינו ניתן למחיקה או להורדה/);
   assert.match(html,/onclick="openNewUser\(\)">\+ משתמש</);
   assert.equal((html.match(/<table class="dg( acts-on)?">/g)||[]).length,2,'users + matrix'); assert.doesNotMatch(html,/role="tablist"|Add user|<th>User<\/th>|id="users-table"/);
-  assert.match(html,/<th>משתמש<\/th><th>תפקיד<\/th><th>מצב<\/th><th>נוצר<\/th><th><\/th>/);
+  assert.match(html,/<th>משתמש<\/th><th>תפקיד<\/th><th>מצב<\/th><th>MFA<\/th><th>נוצר<\/th><th><\/th>/);
   const a=row(html,'data-user="admin"'), y=row(html,'data-user="yossi"'), d=row(html,'data-user="deployer"');
   assert.match(a,/<span class="name">admin<\/span><span class="sub">זה אתה<\/span>/); assert.match(a,/class="pill info">מנהל</); assert.match(a,/class="st ok">פעיל</); assert.match(a,/01\/08\/2026/);
   assert.match(a,/userPasswordSheet\('admin'\)">סיסמה</); assert.doesNotMatch(a,/userRoleSheet|userDisable|userDeleteSheet/,'self: password only (server refuses role/disable on yourself; and admin is the last active admin)');

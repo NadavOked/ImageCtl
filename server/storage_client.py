@@ -35,11 +35,9 @@ class InterserverIdentityMismatch(InterserverClientError):
     סתירה ביניהן נכשלת **בקול ולפני שליחת הקוד** — לא מתוקנת בשקט."""
 
 
-def _read_http_response(conn) -> tuple[int, dict, bytes]:
-    """קורא תשובת HTTP/1.1 אחת (status, headers, body) מחיבור ה-TLS.
-
-    קורא עד סוף הכותרות, ואז בדיוק ``Content-Length`` בייטים. אין chunked —
-    השרת הבין-שרתי מחזיר תמיד אורך מפורש (תשובות זעירות)."""
+def _read_http_headers(conn) -> tuple[int, dict, bytes]:
+    """קורא כותרות HTTP/1.1 מחיבור ה-TLS. מחזיר ``(status, headers, rest)``
+    — ‏``rest`` הם בייטי גוף שכבר הגיעו עם הכותרות."""
     buf = b""
     while b"\r\n\r\n" not in buf:
         chunk = conn.recv(4096)
@@ -54,7 +52,16 @@ def _read_http_response(conn) -> tuple[int, dict, bytes]:
         if b":" in line:
             k, _, v = line.partition(b":")
             headers[k.strip().lower().decode()] = v.strip().decode()
-    length = int(headers.get("content-length", "0"))
+    return status, headers, rest
+
+
+def _read_http_response(conn) -> tuple[int, dict, bytes]:
+    """קורא תשובת HTTP/1.1 אחת (status, headers, body) מחיבור ה-TLS.
+
+    קורא עד סוף הכותרות, ואז בדיוק ``Content-Length`` בייטים. אין chunked —
+    השרת הבין-שרתי מחזיר תמיד אורך מפורש (תשובות זעירות)."""
+    status, headers, rest = _read_http_headers(conn)
+    length = int(headers.get("content-length", "0") or 0)
     body = rest
     while len(body) < length:
         chunk = conn.recv(4096)
@@ -204,6 +211,93 @@ class PinnedMTLSClient:
             raise InterserverClientError(
                 f"{path} נכשל ({status}): {body.get('detail')}")
         return body
+
+    def get_stream(self, path: str, token: str, dest, *, on_progress=None) -> int:
+        """‏GET של גוף בינארי לקובץ, עם ``Range`` אם היעד כבר חלקי.
+
+        ``dest`` הוא ``Path``. אם הקובץ קיים וגודלו > 0 נשלח
+        ``Range: bytes={size}-``: ‏206 ממשיך בסוף, ‏200 דורס (השרת התעלם
+        מהטווח), ‏416 = היעד כבר שלם. בלי ``Content-Length`` — כשל, לא
+        קריאה עד סגירת החיבור (עיקרון 5, keep-alive). מחזיר את גודל היעד.
+        """
+        from pathlib import Path
+        if self._conn is None:
+            raise InterserverClientError("החיבור אינו פתוח")
+        dest = Path(dest)
+        resume_from = dest.stat().st_size if dest.is_file() else 0
+        lines = [
+            f"GET {self.path_prefix}{path} HTTP/1.1",
+            f"Host: {self.host}",
+            "Connection: keep-alive",
+            f"ImageCtl-Protocol-Version: {interserver_auth.PROTOCOL_VERSION}",
+            f"Authorization: Bearer {token}",
+            "Content-Length: 0",
+        ]
+        if resume_from > 0:
+            lines.append(f"Range: bytes={resume_from}-")
+        self._conn.sendall(("\r\n".join(lines) + "\r\n\r\n").encode())
+        status, headers, rest = _read_http_headers(self._conn)
+        if status == 416 and resume_from > 0:
+            # כבר שלם — לרוקן גוף JSON אם יש, כדי לא לשבור keep-alive.
+            extra = int(headers.get("content-length", "0") or 0)
+            body = rest
+            while len(body) < extra:
+                chunk = self._conn.recv(4096)
+                if not chunk:
+                    break
+                body += chunk
+            return resume_from
+        if status not in (200, 206):
+            raw = rest
+            length = int(headers.get("content-length", "0") or 0)
+            while len(raw) < length:
+                chunk = self._conn.recv(4096)
+                if not chunk:
+                    break
+                raw += chunk
+            body = _parse_json(raw[:length] if length else raw)
+            raise InterserverClientError(
+                f"{path} נכשל ({status}): {body.get('detail')}")
+        if "content-length" not in headers:
+            raise InterserverClientError(f"{path}: חסר Content-Length")
+        length = int(headers["content-length"] or 0)
+        if length < 0:
+            raise InterserverClientError(f"{path}: Content-Length שלילי")
+        if status == 200:
+            mode = "wb"
+            already = 0
+        else:
+            mode = "ab"
+            already = resume_from
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        got = 0
+        try:
+            with dest.open(mode) as handle:
+                if rest:
+                    piece = rest[:length]
+                    handle.write(piece)
+                    got += len(piece)
+                    rest = rest[len(piece):]
+                while got < length:
+                    chunk = self._conn.recv(min(1024 * 1024, length - got))
+                    if not chunk:
+                        raise InterserverClientError(
+                            f"החיבור נסגר אחרי {already + got} בייטים")
+                    handle.write(chunk)
+                    got += len(chunk)
+                    if on_progress is not None:
+                        on_progress(already + got)
+        except InterserverClientError:
+            raise
+        except Exception as exc:                                 # noqa: BLE001
+            raise InterserverClientError(
+                f"החיבור למשני נותק אחרי {already + got} בייטים: {exc}") from exc
+        if got != length:
+            raise InterserverClientError(
+                f"{path}: התקבלו {got} מתוך {length} בייטים")
+        if on_progress is not None:
+            on_progress(already + got)
+        return already + got
 
     def put_stream(self, path: str, token: str, chunks, total: int, *,
                    on_progress=None) -> dict:

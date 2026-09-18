@@ -132,10 +132,10 @@ test('no round: header counters, "no round" pill, WoL + big-view actions, the in
   assert.doesNotMatch(grid,/sd[abc]/,'never sd*');
   const c1=card(grid,C1), c2=card(grid,C2), c3=card(grid,C3);
   assert.match(c1,/<span class="st ok"><b>מחשב 1<\/b><\/span><span class="muted">מחובר · 2 חריצים · <span class="mono">10.44.12.118<\/span>/);
-  assert.match(c1,/<div class="disk ok" data-slot="1"><b>דיסק 1<\/b><span>SATA 0<\/span>/);
-  assert.match(c2,/<div class="disk warn" data-slot="2"><b>דיסק 2<\/b><span>SATA 1<\/span>[^]*?SMART אזהרה/);
+  assert.match(c1,/<div class="disk ok" data-slot="1" title="SATA 0 · 870 EVO · S5Y10 · SMART תקין"><b>דיסק 1<\/b>/);
+  assert.match(c2,/<div class="disk warn" data-slot="2" title="[^"]*SMART אזהרה"><b>דיסק 2<\/b>/);
   assert.match(grid,/<div class="mcard off" data-mac="78:ac:c0:9b:11:c3"><div class="mcard-h"><span class="st "><b>מחשב 3<\/b><\/span><span class="muted">לא מחובר · 3 חריצים · מעולם לא</);
-  assert.equal((c3.match(/<div class="disk empty" data-slot="\d"><b>דיסק \d<\/b><span>SATA \d<\/span><span class="cap">ריק<\/span>/g)||[]).length,3);
+  assert.equal((c3.match(/<div class="disk empty" data-slot="\d" title="דיסק \d · SATA \d · ריק"><b>דיסק \d<\/b><span class="cap">ריק<\/span><\/div>/g)||[]).length,3);
   assert.match(c3,/wakeMachine\('[^']+'\)"[^>]*>WoL</,'not connected → per-machine WoL on the card (#984); the room stays wakeRoom in the header');
   assert.doesNotMatch(c1,/WoL/,'connected → no WoL');
   assert.doesNotMatch(html,/openMachineDetail/,'no machine drawer from the room');
@@ -203,9 +203,9 @@ test('running wave: the grid is the cloners grid in round mode — write bars, b
   assert.doesNotMatch(grid,/sd[abc]/,'never sd*');
   const c1=card(grid,C1), c2=card(grid,C2);
   assert.match(c1,/<span class="st run"><b>מחשב 1<\/b><\/span><span class="muted">בסבב · 38%/);
-  assert.match(c1,/<div class="disk run" data-slot="1">[^]*?<div class="bar "><i style="--w:38%"><\/i><\/div><span class="pct">38%<\/span><\/div><span class="cap">כותב · SMART תקין<\/span>/);
-  assert.match(c2,/<div class="disk warn" data-slot="2">[^]*?<div class="bar warn">[^]*?<span class="cap">כותב · CRC \+3 · לבדוק כבל · SMART אזהרה<\/span>/);
-  assert.match(c2,/<div class="disk err" data-slot="3">[^]*?<div class="bar err">[^]*?<span class="cap">נכשל בסבב — queue overflow: target lost bytes/);
+  assert.match(c1,/<div class="disk run" data-slot="1" title="SATA 0 · 870 EVO · S5Y10 · כותב · SMART תקין">[^]*?<div class="bar "><i style="--w:38%"><\/i><\/div><span class="pct">38%<\/span><\/div><\/div>/);
+  assert.match(c2,/<div class="disk warn" data-slot="2" title="SATA 1 · 870 EVO · S5Y31 · כותב · CRC \+3 · לבדוק כבל · SMART אזהרה">[^]*?<div class="bar warn">/);
+  assert.match(c2,/<div class="disk err" data-slot="3" title="[^"]*נכשל בסבב — queue overflow: target lost bytes[^"]*">[^]*?<div class="bar err">/);
   assert.doesNotMatch(c2,/<div class="disk ok" data-slot="3"/,'a failed drawer is never green');
   const notes=between(html,'<div class="c12 rnotes">');
   assert.match(notes,/<div class="note warn">[^]*?<b>מחשב 2 · דיסק 2<\/b> — SMART אזהרה \/ CRC: <b>הסוכן ממשיך לכתוב<\/b> \(כתום = כותב\)[^]*?דילוג מרחוק — <b[^>]*>דורש API<\/b>/);
@@ -243,13 +243,13 @@ test('wave states: open → "waiting to join" pill and "start wave (N ready)"; v
   assert.match(html,/<div class="kpi "><div class="l">נכתבו ואומתו<\/div><div class="v"><bdi dir="auto">0<\/bdi> <small>\/ 12<\/small>/);
   assert.match(html,/כותבים עכשיו<\/div><div class="v"><bdi dir="auto">0<\/bdi><\/div><div class="s">הגל טרם התחיל/);
   s=setup({room:roomRunning()}); s.run("ROOM.machines[0].drawer_list[0].state='verifying'");
-  html=s.run('deploy(0)'); assert.match(html,/כותבים עכשיו<\/div><div class="v"><bdi dir="auto">4</); assert.match(card(html,C1),/<div class="disk run" data-slot="1">[^]*?מאמת · SMART תקין/);
+  html=s.run('deploy(0)'); assert.match(html,/כותבים עכשיו<\/div><div class="v"><bdi dir="auto">4</); assert.match(card(html,C1),/<div class="disk run" data-slot="1" title="[^"]*מאמת · SMART תקין"/);
   s.run('ROOM.stream_stalled=true'); html=s.run('deploy(0)');
   assert.match(html,/<span class="pill warn">הזרם עצר</); assert.match(html,/<div class="kpi warn"><div class="l">הגל הנוכחי[^]*?<b>הזרם עצר<\/b>/); assert.match(html,/דורש מפעיל<\/div><div class="v"><bdi dir="auto">2<\/bdi><\/div><div class="s">מחשב 2 · דיסק 3 אדום — מדלג · הזרם עצר/);
   s=setup({room:roomRunning({wave_state:'closed',written_drives:12,remaining_drives:0})});
   s.run("ROOM.machines.forEach(m=>(m.drawer_list||[]).forEach(d=>{if(d.state==='writing'){d.state='done';d.bytes_written=100;}}))");
   html=s.run('deploy(0)'); assert.match(html,/<span class="pill ">הגל נסגר</); assert.match(html,/נכתבו ואומתו<\/div><div class="v"><bdi dir="auto">12<\/bdi> <small>\/ 12<\/small><\/div><div class="s">היעד לסבב הושלם/);
-  assert.match(card(html,C1),/<div class="disk ok" data-slot="1">[^]*?<div class="bar ok"><i style="--w:100%">[^]*?נכתב · SMART תקין/);
+  assert.match(card(html,C1),/<div class="disk ok" data-slot="1" title="[^"]*נכתב · SMART תקין">[^]*?<div class="bar ok"><i style="--w:100%">/);
   assert.match(html,/<span class="pill ">הגל נסגר<\/span>/); assert.doesNotMatch(html,/startWave/);
 });
 

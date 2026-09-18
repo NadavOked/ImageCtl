@@ -17,7 +17,8 @@ import re
 import sqlite3
 from urllib.parse import urlsplit
 
-from . import bootguard, capabilities, direct, disk_failures, inventory, probe, registry, room, shrink_records
+from . import (bootguard, capabilities, direct, disk_failures, inventory, probe,
+               registry, room, shrink_records, ssh_hostkey)
 from .db import get_setting, journal, net_seen
 from .images import ImageLibrary
 from .sessions import SessionStore
@@ -165,6 +166,7 @@ def build_answer(
     monitor_auth: str | None = None,
     hw_inventory: dict | None = None,
     hw_probe: dict | None = None,
+    hw_ssh: dict | None = None,
     multicast: dict | None = None,
     prompt: str | None = None,
     record_journal: bool = True,
@@ -193,6 +195,10 @@ def build_answer(
         # פותח גרסה.
         if hw_probe is not None:
             probe.record(conn, mac, hw_probe)
+        # ‏#1080: מפתח ה-host של dropbear. None = לא נשלח/פגום, הגרסה
+        # הקודמת נשארת. known_hosts נכתב ב-api.py — כאן רק ה-DB.
+        if hw_ssh is not None:
+            ssh_hostkey.record(conn, mac, hw_ssh)
 
     machine = registry.lookup(conn, mac, all_macs)
     if machine is None:

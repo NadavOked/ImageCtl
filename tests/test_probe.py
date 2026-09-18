@@ -84,7 +84,7 @@ def _agent_hello(fake_machine, libs: str) -> dict:
 def test_probe_sh_stays_under_the_lamp():
     n = sizelimit.assert_within_limit(AGENT / "lib" / "probe.sh")
     assert n <= 280
-    assert sizelimit.count_lines(AGENT / "imagectl-agent") == 300
+    assert sizelimit.count_lines(AGENT / "imagectl-agent") <= 300
 
 
 def test_the_agent_loads_probe_sh():

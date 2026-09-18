@@ -316,14 +316,7 @@ function toggleTheme() {
 
 $("#theme-toggle").addEventListener("click", toggleTheme);
 
-/* מתגי הצגת סיסמה שמחוץ למודאל (מסך הכניסה). */
-document.querySelectorAll("body > #login .pw-eye").forEach((eye) =>
-  eye.addEventListener("click", () => {
-    const input = document.getElementById(eye.dataset.pw);
-    const showing = input.type === "text";
-    input.type = showing ? "password" : "text";
-    eye.textContent = showing ? "הצג" : "הסתר";
-  }));
+/* מתגי הצגת סיסמה במסך הכניסה — delegation ב-bindLogin. */
 
 /* ---------- לוגו המוסד ---------- */
 /* מוחלף בכל מקום שבו מופיע הסמל: הכותרת ומסך הכניסה. הבדיקה נעשית
@@ -397,7 +390,214 @@ function startIdleWatch() {
   }, 1000);
 }
 
-/* ---------- כניסה ---------- */
+/* ---------- כניסה (#1085 שלב ב') ----------
+   חמשת המסכים מ-loginHtml(state) לפי המוקאפ. ה-API לא משתנה. */
+
+const PW_SPECIAL_RE = /[!@#$%^&*(),.?":{}|<>]/;
+const LOGIN_ALERT_ICON = '<svg class="ui-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>';
+const LOGIN_CHECK_ICON = '<i><svg class="ui-icon" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg></i>';
+
+let LOGIN = { screen: "login", username: "", remember: false, error: "",
+              challenge: "", secret: "", otpauth: "", svg: "", backupCodes: [],
+              savedAck: false, otpBackup: false, otp: ["", "", "", "", "", ""] };
+
+function passwordPolicy(pw) {
+  const v = String(pw || "");
+  const len = v.length >= 8;
+  const alpha = /[A-Za-z]/.test(v);
+  const digit = /\d/.test(v);
+  const special = PW_SPECIAL_RE.test(v);
+  return { len, alpha, digit, special, all: len && alpha && digit && special };
+}
+
+function passwordCanSubmit(current, next, confirm) {
+  return !!(passwordPolicy(next).all && String(current || "").length > 0
+            && next === confirm && String(next).length > 0);
+}
+
+function setupContinueEnabled(ack) { return !!ack; }
+
+function secretBlocks(secret) {
+  return String(secret || "").replace(/\s+/g, "").replace(/(.{4})/g, "$1 ").trim();
+}
+
+function otpFromPaste(text) {
+  const d = String(text || "").replace(/\D/g, "").slice(0, 6).split("");
+  while (d.length < 6) d.push("");
+  return d;
+}
+
+function loginErrorMessage(status, body, retryAfter) {
+  body = body || {};
+  if (status === 401) return "שם משתמש או סיסמה שגויים";
+  if (status === 403 && body.error === "deploy_no_console")
+    return body.message_he || "משתמש הפצה עובד ממחשב הבנייה, לא מהקונסולה";
+  if (status === 429) {
+    const sec = Number(retryAfter);
+    const mins = Number.isFinite(sec) && sec > 0 ? Math.max(1, Math.ceil(sec / 60)) : 15;
+    return "החשבון נעול ל-" + mins + " דקות";
+  }
+  if (status === 403 && retryAfter) {
+    const sec = Number(retryAfter);
+    const mins = Number.isFinite(sec) && sec > 0 ? Math.max(1, Math.ceil(sec / 60)) : 15;
+    return "החשבון נעול ל-" + mins + " דקות";
+  }
+  return body.message_he || body.detail || ("שגיאה " + status);
+}
+
+function loginStateFromResponse(status, body, retryAfter, prev) {
+  prev = prev || {};
+  body = body || {};
+  if (status === 200 && body.must_change_password)
+    return { screen: "change", username: prev.username || "", error: "" };
+  if (status === 200 && body.mfa_required)
+    return { screen: "mfa", username: prev.username || "", challenge: body.challenge,
+             remember: !!prev.remember, otp: ["", "", "", "", "", ""], otpBackup: false, error: "" };
+  if (status === 200 && body.mfa_enrollment_required)
+    return { screen: "setup", username: prev.username || "", error: "" };
+  if (status === 200 && (body.username || body.ok || body.mfa_enabled))
+    return { screen: "app" };
+  return { screen: "login", username: prev.username || "", remember: !!prev.remember,
+           error: loginErrorMessage(status, body, retryAfter), fieldErr: true };
+}
+
+function loginMsg(text) {
+  if (!text) return '<p class="msg" id="login-error" role="alert"></p>';
+  return `<p class="msg" id="login-error" role="alert">${LOGIN_ALERT_ICON}<span>${esc(text)}</span></p>`;
+}
+
+function loginEye(id) {
+  return `<button type="button" class="eye pw-eye" data-pw="${id}">הצג</button>`;
+}
+
+function loginFormHtml(state) {
+  const err = state.fieldErr ? " err" : "";
+  const user = esc(state.username || "");
+  return `<form id="login-form">
+    <h1 class="title">כניסה</h1>
+    <div class="f${err}"><label for="login-user">שם משתמש</label>
+      <input id="login-user" type="text" autocomplete="username" value="${user}" autofocus></div>
+    <div class="f pw${err}"><label for="login-pass">סיסמה</label>
+      <input id="login-pass" type="password" autocomplete="current-password">${loginEye("login-pass")}</div>
+    ${loginMsg(state.error)}
+    <label class="check"><input type="checkbox" id="login-remember"${state.remember ? " checked" : ""}> זכור את הדפדפן הזה ל-7 שעות</label>
+    <button class="btn" type="submit">כניסה</button>
+  </form>`;
+}
+
+function loginChangeHtml(state) {
+  const rules = passwordPolicy(state.next || "");
+  const mismatch = !!(state.confirm && state.confirm !== state.next);
+  const ready = passwordCanSubmit(state.current, state.next, state.confirm);
+  const row = (key, label) =>
+    `<li data-rule="${key}" class="${rules[key] ? "ok" : ""}">${LOGIN_CHECK_ICON}${label}</li>`;
+  return `<form id="pw-change-form">
+    <h1 class="title sub">בחר סיסמה חדשה</h1>
+    <p class="lead">הסיסמה הראשונית של <span class="mono">${esc(state.username || "")}</span> חייבת להתחלף לפני הכניסה.</p>
+    <div class="f pw"><label for="pw-change-current">סיסמה נוכחית</label>
+      <input id="pw-change-current" type="password" autocomplete="current-password" value="${esc(state.current || "")}">${loginEye("pw-change-current")}</div>
+    <div class="f pw"><label for="pw-change-new">סיסמה חדשה</label>
+      <input id="pw-change-new" type="password" autocomplete="new-password" value="${esc(state.next || "")}">${loginEye("pw-change-new")}</div>
+    <ul class="rules" id="pw-rules" aria-live="polite">
+      ${row("len", "לפחות 8 תווים")}${row("alpha", "אותיות")}${row("digit", "ספרות")}${row("special", "תו מיוחד (‏!@#$…)")}
+    </ul>
+    <div class="f pw${mismatch ? " err" : ""}" id="pw-change-confirm-wrap"><label for="pw-change-confirm">אימות הסיסמה החדשה</label>
+      <input id="pw-change-confirm" type="password" autocomplete="new-password" value="${esc(state.confirm || "")}">${loginEye("pw-change-confirm")}</div>
+    ${mismatch ? `<p class="msg" role="alert">${LOGIN_ALERT_ICON}<span>הסיסמאות אינן זהות</span></p>` : ""}
+    ${loginMsg(state.error)}
+    <button class="btn" type="submit" id="pw-change-go"${ready ? "" : " disabled"}>שמור והמשך</button>
+  </form>`;
+}
+
+function loginMfaHtml(state) {
+  const otp = (state.otp || otpFromPaste("")).slice(0, 6);
+  const cells = otp.map((d, i) =>
+    `<input inputmode="numeric" maxlength="1" aria-label="ספרה ${i + 1}" value="${esc(d)}" data-otp="${i}">`).join("");
+  const backup = state.otpBackup
+    ? `<div class="f"><label for="mfa-backup">קוד גיבוי</label>
+         <input id="mfa-backup" class="mono" type="text" autocomplete="one-time-code" value="${esc(state.backupCode || "")}"></div>`
+    : `<div class="otp" id="otp" aria-label="קוד אימות בן 6 ספרות">${cells}</div>`;
+  return `<form id="mfa-form">
+    <h1 class="title sub">הקוד מאפליקציית האימות</h1>
+    <p class="lead"><span class="mono">${esc(state.username || "")}</span> · שישה תווים, מתחלף כל 30 שניות</p>
+    ${backup}
+    ${loginMsg(state.error)}
+    <label class="check"><input type="checkbox" id="mfa-remember"${state.remember ? " checked" : ""}> זכור את הדפדפן הזה ל-7 שעות</label>
+    <button class="btn" type="submit">אימות</button>
+    ${state.otpBackup ? "" : `<button type="button" class="link" id="mfa-use-backup">השתמש בקוד גיבוי</button>`}
+  </form>`;
+}
+
+function loginSetupHtml(state) {
+  const qr = state.svg
+    ? `<div class="qr" aria-label="קוד QR להגדרת האפליקציה">${state.svg}</div>`
+    : "";
+  const url = state.otpauth || "";
+  return `<form id="setup-form">
+    <h1 class="title sub">הגדרת אימות דו-שלבי</h1>
+    <p class="lead">סרוק באפליקציית אימות (Google Authenticator, Microsoft Authenticator, Aegis) והקלד את הקוד שהיא מציגה.</p>
+    <div class="qr-row">${qr}<div class="secret">או הקלד את הסוד ידנית:<span class="mono">${esc(secretBlocks(state.secret))}</span>
+      ${url ? `<span style="display:block;margin-top:6px">חשבון: <a class="mono" href="${esc(url)}">${esc(url)}</a></span>` : ""}
+    </div></div>
+    <div class="f"><label for="setup-code">הקוד מהאפליקציה</label>
+      <input id="setup-code" class="mono" inputmode="numeric" maxlength="6" autocomplete="one-time-code" value="${esc(state.setupCode || "")}"></div>
+    ${loginMsg(state.error)}
+    <button class="btn" type="submit" id="setup-verify">אימות והפעלה</button>
+  </form>`;
+}
+
+function loginCodesHtml(state) {
+  const codes = state.backupCodes || [];
+  const ready = setupContinueEnabled(state.savedAck);
+  return `<form id="codes-form">
+    <h1 class="title sub">האימות הדו-שלבי פעיל</h1>
+    <p class="lead">מעכשיו כל כניסה תבקש קוד. אם הטלפון אובד, קוד גיבוי הוא הדרך היחידה להיכנס.</p>
+    <div class="backup">
+      <h2>8 קודי גיבוי — שמור אותם</h2>
+      <p>כל קוד עובד פעם אחת. הם לא יוצגו שוב.</p>
+      <div class="codes">${codes.map((c) => `<span>${esc(c)}</span>`).join("")}</div>
+    </div>
+    <div class="actions2">
+      <button class="btn sec" type="button" id="codes-print">הדפס</button>
+      <button class="btn sec" type="button" id="codes-copy">העתק</button>
+    </div>
+    <label class="check" style="margin-top:18px"><input type="checkbox" id="saved-ack"${state.savedAck ? " checked" : ""}> שמרתי את הקודים במקום בטוח</label>
+    <button class="btn" type="submit" id="setup-done"${ready ? "" : " disabled"}>המשך לקונסולה</button>
+  </form>`;
+}
+
+function loginHtml(state) {
+  const s = state || LOGIN;
+  if (s.screen === "change") return loginChangeHtml(s);
+  if (s.screen === "mfa") return loginMfaHtml(s);
+  if (s.screen === "setup") return loginSetupHtml(s);
+  if (s.screen === "codes") return loginCodesHtml(s);
+  return loginFormHtml(s);
+}
+
+function paintLoginFoot() {
+  const host = $("#login-foot-host");
+  if (host) host.textContent = (ME && ME.server_name) || (typeof location !== "undefined" && location.hostname) || "";
+  const ver = $("#login-foot-ver");
+  if (ver) ver.textContent = (ME && ME.version) || "";
+  const label = $("#login-foot-tls-label");
+  const tls = $("#login-foot-tls");
+  const fp = ME && ME.tls && ME.tls.fingerprint_sha256;
+  if (label) label.textContent = fp ? "TLS תעודה עצמית" : "";
+  if (tls) {
+    tls.textContent = fp ? fp.slice(0, 23) + "…" : "";
+    tls.title = fp ? "SHA-256 " + fp : "";
+  }
+}
+
+function loginRender(state) {
+  if (state) Object.assign(LOGIN, state);
+  const body = $("#login-body");
+  if (body) body.innerHTML = loginHtml(LOGIN);
+  paintLoginFoot();
+  const first = body && body.querySelector("input:not([type=checkbox])");
+  if (first && typeof first.focus === "function") first.focus();
+}
 
 function showLogin() {
   ME = null;
@@ -410,6 +610,20 @@ function showLogin() {
   $("#login").classList.remove("hidden");
   $("#app").classList.add("hidden");
   applyTheme("auto");   // #1093: מסך הכניסה לפי המערכת; המטמון נמחק
+  const keptUser = LOGIN.username || "";
+  const keptErr = LOGIN.error || "";
+  LOGIN = { screen: "login", username: keptUser, remember: false, error: keptErr,
+            challenge: "", secret: "", otpauth: "", svg: "", backupCodes: [],
+            savedAck: false, otpBackup: false, otp: ["", "", "", "", "", ""] };
+  loginRender();
+}
+
+async function enterApp() {
+  ME = await api("/me");
+  LOGIN = { screen: "login", username: "", remember: false, error: "",
+            challenge: "", secret: "", otpauth: "", svg: "", backupCodes: [],
+            savedAck: false, otpBackup: false, otp: ["", "", "", "", "", ""] };
+  await showApp();
 }
 
 async function showApp() {
@@ -468,17 +682,202 @@ async function showApp() {
   startStatusWatch();
 }
 
-$("#login-form").addEventListener("submit", async (event) => {
+async function loginFetch(path, body) {
+  const response = await fetch("/api/console" + path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify(body || {}),
+  });
+  let data = {};
+  try { data = await response.json(); } catch (e) {}
+  return { ok: response.ok, status: response.status, body: data,
+           retryAfter: response.headers.get("Retry-After") };
+}
+
+async function loginSubmitCredentials() {
+  const username = ($("#login-user") && $("#login-user").value || "").trim();
+  const password = ($("#login-pass") && $("#login-pass").value) || "";
+  const remember = !!( $("#login-remember") && $("#login-remember").checked );
+  LOGIN.username = username;
+  LOGIN.remember = remember;
+  const r = await loginFetch("/login", { username, password });
+  const next = loginStateFromResponse(r.status, r.body, r.retryAfter, LOGIN);
+  if (next.screen === "app") { await enterApp(); return; }
+  if (next.screen === "setup") { await loginStartSetup(next); return; }
+  loginRender(next);
+}
+
+async function loginSubmitPassword() {
+  const current = ($("#pw-change-current") && $("#pw-change-current").value) || "";
+  const next = ($("#pw-change-new") && $("#pw-change-new").value) || "";
+  const confirm = ($("#pw-change-confirm") && $("#pw-change-confirm").value) || "";
+  if (!passwordCanSubmit(current, next, confirm)) return;
+  const r = await loginFetch("/me/password", { current_password: current, new_password: next });
+  if (!r.ok) { loginRender({ error: r.body.detail || r.body.message_he || "החלפת הסיסמה נכשלה" }); return; }
+  if (r.body.mfa_enrollment_required) { await loginStartSetup({ screen: "setup", username: LOGIN.username }); return; }
+  await enterApp();
+}
+
+function loginReadOtp() {
+  if (LOGIN.otpBackup) return (($("#mfa-backup") && $("#mfa-backup").value) || "").trim();
+  const cells = document.querySelectorAll("#otp input");
+  let code = "";
+  cells.forEach((c) => { code += (c.value || "").replace(/\D/g, "").slice(0, 1); });
+  return code;
+}
+
+async function loginSubmitMfa() {
+  const remember = !!( $("#mfa-remember") && $("#mfa-remember").checked );
+  LOGIN.remember = remember;
+  const code = loginReadOtp();
+  const r = await loginFetch("/login/mfa", {
+    challenge: LOGIN.challenge, code, remember_browser: remember,
+  });
+  if (r.status === 401) {
+    loginRender({ error: "קוד שגוי" });
+    return;
+  }
+  const next = loginStateFromResponse(r.status, r.body, r.retryAfter, LOGIN);
+  if (next.screen === "app") { await enterApp(); return; }
+  loginRender(next);
+}
+
+async function loginStartSetup(base) {
+  const r = await loginFetch("/me/mfa/setup", {});
+  if (!r.ok) { loginRender({ screen: "setup", username: (base && base.username) || LOGIN.username,
+    error: r.body.detail || "הגדרת MFA נכשלה" }); return; }
+  loginRender({
+    screen: "setup", username: (base && base.username) || LOGIN.username, error: "",
+    secret: r.body.secret || "", otpauth: r.body.otpauth_url || "", svg: r.body.svg || "",
+    setupCode: "",
+  });
+}
+
+async function loginSubmitSetup() {
+  const code = (($("#setup-code") && $("#setup-code").value) || "").trim();
+  const v = await loginFetch("/me/mfa/verify", { code });
+  if (!v.ok) { loginRender({ error: "קוד שגוי", setupCode: code }); return; }
+  const en = await loginFetch("/me/mfa/enable", { code });
+  if (!en.ok) { loginRender({ error: en.body.detail || "קוד שגוי", setupCode: code }); return; }
+  loginRender({ screen: "codes", backupCodes: en.body.backup_codes || [], savedAck: false, error: "" });
+}
+
+async function loginOnSubmit(event) {
   event.preventDefault();
+  const id = event.target && event.target.id;
   try {
-    await post("/login", { username: $("#login-user").value, password: $("#login-pass").value });
-    // ‏#655 v1: תשובת ה-login אינה נושאת capabilities — רק /me. בלי זה
-    // רכיבי [data-cap] (לשונית "סניפים") נשארו נסתרים עד רענון הדף.
-    ME = await api("/me");
-    $("#login-error").textContent = "";
-    await showApp();
-  } catch (error) { $("#login-error").textContent = error.message; }
-});
+    if (id === "login-form") await loginSubmitCredentials();
+    else if (id === "pw-change-form") await loginSubmitPassword();
+    else if (id === "mfa-form") await loginSubmitMfa();
+    else if (id === "setup-form") await loginSubmitSetup();
+    else if (id === "codes-form") {
+      if (!setupContinueEnabled(LOGIN.savedAck)) return;
+      await enterApp();
+    }
+  } catch (error) {
+    loginRender({ error: error.message });
+  }
+}
+
+function loginToggleEye(eye) {
+  const input = document.getElementById(eye.dataset.pw);
+  if (!input) return;
+  const showing = input.type === "text";
+  input.type = showing ? "password" : "text";
+  eye.textContent = showing ? "הצג" : "הסתר";
+}
+
+function loginOnClick(event) {
+  const eye = event.target.closest && event.target.closest("[data-pw]");
+  if (eye) { loginToggleEye(eye); return; }
+  if (event.target.id === "mfa-use-backup") {
+    loginRender({ otpBackup: true, error: "" });
+    return;
+  }
+  if (event.target.id === "codes-copy") {
+    const text = (LOGIN.backupCodes || []).join("\n");
+    if (navigator.clipboard && navigator.clipboard.writeText)
+      navigator.clipboard.writeText(text).then(() => toast("הקודים הועתקו"), () => toast("ההעתקה נכשלה"));
+    else toast("ההעתקה אינה זמינה");
+    return;
+  }
+  if (event.target.id === "codes-print") {
+    printBackupCodes(LOGIN.backupCodes || []);
+  }
+}
+
+function printBackupCodes(codes) {
+  const w = window.open("", "_blank");
+  if (!w) { toast("הדפדפן חסם את חלון ההדפסה"); return; }
+  w.document.write("<!doctype html><html dir=\"rtl\"><head><meta charset=\"utf-8\"><title>קודי גיבוי ImageCtl</title></head><body><h1>קודי גיבוי</h1><pre dir=\"ltr\">"
+    + codes.map((c) => String(c)).join("\n") + "</pre></body></html>");
+  w.document.close();
+  w.print();
+}
+
+function loginOnInput(event) {
+  const t = event.target;
+  if (!t) return;
+  if (t.id === "pw-change-current" || t.id === "pw-change-new" || t.id === "pw-change-confirm") {
+    LOGIN.current = ($("#pw-change-current") && $("#pw-change-current").value) || "";
+    LOGIN.next = ($("#pw-change-new") && $("#pw-change-new").value) || "";
+    LOGIN.confirm = ($("#pw-change-confirm") && $("#pw-change-confirm").value) || "";
+    const focused = t.id;
+    loginRender();
+    const again = document.getElementById(focused);
+    if (again) { again.focus(); if (typeof again.setSelectionRange === "function") again.setSelectionRange(again.value.length, again.value.length); }
+    return;
+  }
+  if (t.id === "saved-ack") {
+    LOGIN.savedAck = !!t.checked;
+    const btn = $("#setup-done");
+    if (btn) btn.disabled = !setupContinueEnabled(LOGIN.savedAck);
+    return;
+  }
+  if (t.dataset && t.dataset.otp != null) {
+    t.value = t.value.replace(/\D/g, "").slice(0, 1);
+    const i = Number(t.dataset.otp);
+    if (t.value && t.parentNode) {
+      const next = t.parentNode.querySelector(`[data-otp="${i + 1}"]`);
+      if (next) next.focus();
+    }
+  }
+}
+
+function loginOnKeydown(event) {
+  const t = event.target;
+  if (!t || t.dataset.otp == null) return;
+  if (event.key === "Backspace" && !t.value && t.parentNode) {
+    const i = Number(t.dataset.otp);
+    const prev = t.parentNode.querySelector(`[data-otp="${i - 1}"]`);
+    if (prev) prev.focus();
+  }
+}
+
+function loginOnPaste(event) {
+  const t = event.target;
+  if (!t || t.dataset.otp == null) return;
+  const d = otpFromPaste((event.clipboardData && event.clipboardData.getData("text")) || "");
+  if (d.filter(Boolean).length < 2) return;
+  event.preventDefault();
+  const cells = t.parentNode.querySelectorAll("[data-otp]");
+  cells.forEach((c, k) => { c.value = d[k] || ""; });
+  const last = Math.min(d.filter(Boolean).length, 5);
+  if (cells[last]) cells[last].focus();
+}
+
+(function bindLogin() {
+  const root = $("#login");
+  if (!root || root.dataset.loginBound) return;
+  root.dataset.loginBound = "1";
+  root.addEventListener("submit", loginOnSubmit);
+  root.addEventListener("click", loginOnClick);
+  root.addEventListener("input", loginOnInput);
+  root.addEventListener("keydown", loginOnKeydown);
+  root.addEventListener("paste", loginOnPaste);
+  loginRender({ screen: "login" });
+})();
 
 $("#logout").addEventListener("click", async () => { await post("/logout"); ME = null; showLogin(); });
 
@@ -1102,7 +1501,11 @@ function homeNowRows(all = false) {
     const pct = t.bytes_total ? Math.round(100 * (t.bytes_sent || 0) / t.bytes_total) : null;
     const cls = t.state === "failed" ? "err" : t.state === "done" ? "ok" : t.state === "queued" ? "warn" : "run";
     const label = { queued: "ממתין בתור", sending: "שולח", verifying: "מאמת", done: "הושלם", failed: "נכשל" }[t.state] || t.state;
-    rows.push([UI.nameHtml(`העברה לסניף ${t.node_label || t.node_id} — ${t.image_name || t.image_id}`, `${ltr(fmtDate(t.created_at) + " " + fmtClock(t.created_at))} · ${esc(t.started_by || "")}`),
+    const primary = ME.server_name || "ראשי";
+    const title = t.direction === "pull"
+      ? `העברה ${t.node_label || t.node_id} → ${primary} — ${t.image_name || t.image_id}`
+      : `העברה לסניף ${t.node_label || t.node_id} — ${t.image_name || t.image_id}`;
+    rows.push([UI.nameHtml(title, `${ltr(fmtDate(t.created_at) + " " + fmtClock(t.created_at))} · ${esc(t.started_by || "")}`),
       esc(t.node_label || t.node_id || ""), UI.barRow(pct, cls === "err" ? "err" : ""),
       UI.status(cls, label + (t.error ? " — " + t.error : "")), UI.acts([["לסניפים", "selectPageById('branches')"]])]);
   }
@@ -2561,25 +2964,31 @@ function slotClass(s) {
   if (d.smart === "ok" || d.state === "done") return "ok";
   return "";
 }
-function slotHtml(m, s, admin) {
-  const cls = slotClass(s), d = s.disk, head = `<b>דיסק ${s.n}</b><span>SATA ${s.n - 1}</span>`;
-  if (!d) return `<div class="disk empty" data-slot="${s.n}">${head}<span class="cap">${m.disks == null ? "לא דווח" : "ריק"}</span></div>`;
-  const id = [d.size_bytes ? ltr(fmtBytes(d.size_bytes)) : "", d.model ? esc(d.model) : ""].filter(Boolean).join(" · ") || "—";
-  const serial = d.serial ? `<span class="cap mono">${esc(d.serial)}</span>` : "";
-  let bar = "";
-  if (s.live && d.state) {
-    const pct = d.bytes_total > 0 ? 100 * (d.bytes_written || 0) / d.bytes_total : d.state === "done" ? 100 : null;
-    bar = UI.barRow(pct, d.state === "failed" ? "err" : d.state === "done" ? "ok" : cls === "warn" ? "warn" : "");
-  }
-  const parts = [];
+/* #1033: מלבן הדיסק בגריד מציג רק שתי שורות — "דיסק N" והקיבולת. כל
+   השאר (דגם, מספר סידורי, SATA, SMART, סיבת כשל) עובר ל-title (tooltip)
+   ולמגירה (disksHtml) שלא השתנתה. */
+function diskTitle(m, s, d) {
+  if (!d) return `דיסק ${s.n} · SATA ${s.n - 1} · ${m.disks == null ? "לא דווח" : "ריק"}`;
+  const parts = [`SATA ${s.n - 1}`, d.model || "", d.serial || ""].filter(Boolean);
   if (s.fail) parts.push(`אדום ${fmtDate(s.fail.at)} · ${failureCauseText(s.fail)}`);
   else if (d.state === "failed") parts.push(`נכשל בסבב${d.error ? " — " + d.error : ""}`);
   if (s.live && d.state && d.state !== "failed") parts.push(DRAWER_STATE_HE[d.state] || d.state);
   if (d.crc_delta != null && d.crc_delta > 0) parts.push(`CRC +${d.crc_delta} · לבדוק כבל`);
   if (s.live && d.state === "writing" && d.stalled_s != null && d.stalled_s >= 60) parts.push(`ללא תזוזה ${d.stalled_s} ש'`);
   if (!s.fail) parts.push(smartText(d));
+  return parts.join(" · ");
+}
+function slotHtml(m, s, admin) {
+  const cls = slotClass(s), d = s.disk, title = esc(diskTitle(m, s, d));
+  if (!d) return `<div class="disk empty" data-slot="${s.n}" title="${title}"><b>דיסק ${s.n}</b><span class="cap">${m.disks == null ? "לא דווח" : "ריק"}</span></div>`;
+  const cap = d.size_bytes ? `<span class="cap mono">${ltr(fmtBytes(d.size_bytes))}</span>` : `<span class="cap">—</span>`;
+  let bar = "";
+  if (s.live && d.state) {
+    const pct = d.bytes_total > 0 ? 100 * (d.bytes_written || 0) / d.bytes_total : d.state === "done" ? 100 : null;
+    bar = UI.barRow(pct, d.state === "failed" ? "err" : d.state === "done" ? "ok" : cls === "warn" ? "warn" : "");
+  }
   const clear = s.fail && admin ? `<button class="btn sm" onclick="clearDiskFailure(${Number(s.fail.id)})">נקה</button>` : "";
-  return `<div class="disk ${cls}" data-slot="${s.n}">${head}<span>${id}</span>${serial}${bar}<span class="cap">${esc(parts.join(" · "))}</span>${clear}</div>`;
+  return `<div class="disk ${cls}" data-slot="${s.n}" title="${title}"><b>דיסק ${s.n}</b>${cap}${bar}${clear}</div>`;
 }
 function clonerState(m) {
   const rm = roomMachine(m.mac);
@@ -2978,6 +3387,20 @@ function machineHealthHtml(m) {
   ];
   return UI.kv(rows);
 }
+function sshHostkeyHtml(m) {
+  /* #1080: fingerprint from hello. 12 chars of the hash + full tooltip.
+     Orange only when the key changed inside the same boot_id; a reboot
+     is grey "מפתח חדש מאתחול". Missing field (old agent) is muted. */
+  const k = m.ssh_hostkey;
+  if (k == null) return `<span class="muted">לא דווח</span>`;
+  const fp = String(k.fingerprint || "");
+  const hash = fp.startsWith("SHA256:") ? fp.slice(7) : fp;
+  const short = hash.slice(0, 12);
+  const shown = `<span class="mono" dir="ltr" title="${esc(fp)}">SHA256:${esc(short)}${hash.length > 12 ? "…" : ""}</span>`;
+  if (m.ssh_hostkey_changed_in_boot) return shown + " " + UI.status("warn", "השתנה באתחול הזה");
+  if (m.ssh_hostkey_new_from_reboot) return shown + ` <span class="muted">מפתח חדש מאתחול</span>`;
+  return shown;
+}
 function machineDrawerHtml(m) {
   const macEnc = encodeId(m.mac), role = machineRole(m), g = machineGroup(m), net = netFor(m.mac), st = machineState(m), admin = isAdmin();
   const sub = [esc(ROLE_HE[role] || role), g ? esc(g.label) : "", `<span class="mono">${esc(m.mac)}</span>`, net && net.ip ? `<span class="mono">${esc(net.ip)}</span>` : "",
@@ -2994,6 +3417,7 @@ function machineDrawerHtml(m) {
     ["מה המכונה עושה", UI.status(st.cls, st.text)],
     ["שלב אתחול אחרון", net && net.boot ? bootCell(net.boot) : `<span class="muted">${NET ? "לא נרשם פירור" : "לא נקרא"}</span>`],
     ["IP אחרון", net && net.ip ? `<span class="mono">${esc(net.ip)}</span>` : `<span class="muted">—</span>`],
+    ["SSH", sshHostkeyHtml(m)],
     ["נראה לאחרונה", esc(NET ? seenAgo(net && net.last_seen) : "לא נקרא")],
   ].concat(m.note ? [["הערה", esc(m.note)]] : []));
   const slots = role === "cloner"
@@ -3335,6 +3759,12 @@ function findUser(name) {
 }
 function activeAdminCount() { return (USERS || []).filter((u) => u.role === "admin" && !u.disabled).length; }
 
+function userMfaLabel(u) {
+  if (u.is_builtin) return "מקומי";
+  if (u.mfa_enabled) return "✓";
+  return "—";
+}
+
 function userRowHtml(u) {
   const enc = encodeId(u.username), self = !!ME && u.username === ME.username;
   const lastAdmin = u.role === "admin" && !u.disabled && activeAdminCount() <= 1;
@@ -3345,11 +3775,16 @@ function userRowHtml(u) {
       + btn(u.disabled ? "הפעל" : "השבת", `userDisable('${enc}', ${u.disabled ? "false" : "true"})`)
       + btn("מחיקה", `userDeleteSheet('${enc}')`, "danger");
   }
-  const note = self ? "זה אתה" : lastAdmin ? "המנהל הפעיל האחרון — לא ניתן למחיקה, להורדה או להשבתה" : "";
+  if (!self && !u.is_builtin && u.mfa_enabled)
+    acts += btn("נתק MFA", `userMfaDisable('${enc}')`);
+  if (!self)
+    acts += btn("נתק את כל ההפעלות", `userRevokeSessions('${enc}')`);
+  const note = self ? "זה אתה" : lastAdmin ? "המנהל הפעיל האחרון — לא ניתן למחיקה, להורדה או להשבתה" : (u.is_builtin ? "מקומי · ללא MFA" : "");
   return { attrs: `data-user="${esc(u.username)}"`, cells: [
     UI.name(u.username, note),
     u.role === "admin" ? UI.pill("info", "מנהל") : UI.pill("", "הפצה"),
     u.disabled ? UI.status("warn", "מושבת") : UI.status("ok", "פעיל"),
+    esc(userMfaLabel(u)),
     `<span class="mono">${esc(fmtDate(u.created_at))}</span>`,
     `<div class="acts">${acts}</div>`] };
 }
@@ -3366,7 +3801,7 @@ function permissions() {
     actions: `<button class="btn primary" onclick="openNewUser()">+ משתמש</button>` });
   const table = !USERS
     ? UI.note("err", `לא הצלחתי לקרוא את המשתמשים: ${esc(usersError)}`)
-    : UI.datagrid({ cls: "acts-on", columns: ["משתמש", "תפקיד", "מצב", "נוצר", ""], rows: list.map(userRowHtml), empty: "אין משתמשים — השרת החזיר רשימה ריקה" });
+    : UI.datagrid({ cls: "acts-on", columns: ["משתמש", "תפקיד", "מצב", "MFA", "נוצר", ""], rows: list.map(userRowHtml), empty: "אין משתמשים — השרת החזיר רשימה ריקה" });
   const usersCard = UI.card({ title: "משתמשים", small: "כניסה אחרונה ומאיפה — דורש API (אין ב-/users)", cls: "c8", body: table, flush: !!USERS && list.length > 0 });
   const matrix = UI.datagrid({ columns: ["", "מנהל", "הפצה"],
     rows: ROLE_MATRIX.map(([area, a, d, src]) => [`<span title="${esc(src)}">${esc(area)}</span>`, UI.status(a[0], a[1]), UI.status(d[0], d[1])]) })
@@ -3402,6 +3837,18 @@ function userDeleteSheet(name) {
     danger: true, submitLabel: "מחק",
     verify: { label: "להמשך יש להקליד את שם המשתמש:", mustEqual: u.username },
     onSubmit: async () => { await del(`/users/${encodeId(u.username)}`); toast(`המשתמש ${u.username} נמחק`); await loadUsersData(); } });
+}
+function userMfaDisable(name) {
+  const u = findUser(name); if (!u || !isAdmin()) return;
+  confirmSheet("נתק MFA", `${u.username} יידרש להגדיר אימות דו-שלבי מחדש בכניסה הבאה.`,
+    "נתק MFA",
+    async () => { await post(`/users/${encodeId(u.username)}/mfa/disable`); toast("MFA נוטרל"); await loadUsersData(); });
+}
+function userRevokeSessions(name) {
+  const u = findUser(name); if (!u || !isAdmin()) return;
+  confirmSheet("נתק את כל ההפעלות", `כל הסשנים והדפדפנים הזכורים של ${u.username} יבוטלו מיד.`,
+    "נתק",
+    async () => { await post("/sessions/revoke", { username: u.username }); toast("ההפעלות נותקו"); await loadUsersData(); });
 }
 
 /* ---------- #954 גל 6: יומן ----------
@@ -4785,7 +5232,7 @@ const pages = {
   branches: { crumb: "סניפים", title: "סניפים", tabs: ["שרתים", "העברות", "קבוצות"], render: (i) => branchesPage(i), load: () => loadBranchesData(), own: true },
   // ‏#936: הדף של משני אחד (נבחר בעץ, BRANCH_NODE) — אותם נתונים ואותן
   // פונקציות של "סניפים" (branches.js), לפי לשונית.
-  branch: {crumb:"שרת משני", title:"שרת משני", desc:"מצב חיבור, המחשבים שלו, האימג'ים שהועברו אליו וההעברות — כפי שהראשי מדד מולו", tabs: BRANCH_VIEWS.map((v) => v[1]), render:pagePlaceholder},
+  branch: {crumb:"שרת משני", title:"שרת משני", desc:"מצב חיבור, המחשבים שלו, ספריית האימג'ים של המשני וההעברות בשני הכיוונים — כפי שהראשי מדד מולו", tabs: BRANCH_VIEWS.map((v) => v[1]), render:pagePlaceholder},
   // ‏#954: הדף מצייר את הכותרת והלשוניות שלו (own) לפי שפת העיצוב החדשה; הלשוניות בפועל לפי תפקיד (homeTabs).
   home: { crumb: "סקירה כללית", title: "סקירה כללית", tabs: ["סיכום", "משימות", "אירועים"], render: home, load: loadHome, own: true },
   images: { crumb: "אימג'ים", title: "ספריית אימג'ים", tabs: imagesTabs(), render: images, load: loadImages, own: true },
@@ -5144,7 +5591,63 @@ function openAccount() {
   closeUserMenu();
   const name = esc(ME && ME.username || "");
   const role = ME && ME.role === "admin" ? "מנהל" : "הפצה";
-  openDrawer("החשבון שלי", `<div class="detail-grid"><div class="detail-box"><span class="k">משתמש</span><span class="v">${name}</span></div><div class="detail-box"><span class="k">תפקיד</span><span class="v">${role}</span></div><div class="detail-box"><span class="k">סביבה</span><span class="v">ImageCtl Console</span></div><div class="detail-box"><span class="k">מצב</span><span class="v success-text">מחובר</span></div></div>`);
+  const builtin = !!(ME && ME.is_builtin);
+  const mfaOn = !!(ME && ME.mfa_enabled);
+  let mfa;
+  if (builtin) mfa = `<span class="pill">מקומי · ללא MFA</span>`;
+  else if (mfaOn) mfa = UI.status("ok", "פעיל")
+    + ` <button class="btn sm" onclick="accountNewBackupCodes()">צור קודי גיבוי חדשים</button>`;
+  else if (ME && ME.role === "admin")
+    mfa = UI.status("", "כבוי") + ` <button class="btn sm" onclick="accountEnableMfa()">הפעל</button>`;
+  else mfa = UI.status("", "כבוי");
+  openDrawer("המשתמש שלי", `<div class="detail-grid"><div class="detail-box"><span class="k">משתמש</span><span class="v">${name}</span></div><div class="detail-box"><span class="k">תפקיד</span><span class="v">${role}</span></div><div class="detail-box"><span class="k">MFA</span><span class="v">${mfa}</span></div><div class="detail-box"><span class="k">מצב</span><span class="v success-text">מחובר</span></div></div>`);
+}
+
+async function accountEnableMfa() {
+  try {
+    const setup = await post("/me/mfa/setup");
+    sheet({
+      title: "הגדרת אימות דו-שלבי",
+      sub: "הקלד את הסוד באפליקציה ואז את הקוד שהיא מציגה.",
+      note: `<p class="mono" dir="ltr">${esc(secretBlocks(setup.secret || ""))}</p>`
+        + (setup.otpauth_url ? `<p><a class="mono" href="${esc(setup.otpauth_url)}">${esc(setup.otpauth_url)}</a></p>` : ""),
+      fields: [{ id: "code", label: "הקוד מהאפליקציה" }],
+      submitLabel: "אימות והפעלה",
+      onSubmit: async (v) => {
+        await post("/me/mfa/verify", { code: v.code });
+        const en = await post("/me/mfa/enable", { code: v.code });
+        if (ME) ME.mfa_enabled = true;
+        showBackupCodesDrawer(en.backup_codes || []);
+      },
+    });
+  } catch (e) { toast(e.message); }
+}
+
+function accountNewBackupCodes() {
+  sheet({
+    title: "קודי גיבוי חדשים",
+    sub: "הקוד מאפליקציית האימות. הקודים הישנים יבוטלו.",
+    fields: [{ id: "code", label: "הקוד מהאפליקציה" }],
+    submitLabel: "צור קודים",
+    onSubmit: async (v) => {
+      const en = await post("/me/mfa/enable", { code: v.code });
+      showBackupCodesDrawer(en.backup_codes || []);
+    },
+  });
+}
+
+function showBackupCodesDrawer(codes) {
+  const list = (codes || []).map((c) => `<span class="mono">${esc(c)}</span>`).join("<br>");
+  openDrawer("קודי גיבוי", `<p>כל קוד עובד פעם אחת. הם לא יוצגו שוב.</p><div class="backup" style="margin-top:10px">${list}</div>`
+    + `<div class="action-strip"><button class="btn sm" onclick='copyBackupCodes(${JSON.stringify(codes || [])})'>העתק</button>`
+    + `<button class="btn sm" onclick='printBackupCodes(${JSON.stringify(codes || [])})'>הדפס</button></div>`);
+}
+
+function copyBackupCodes(codes) {
+  const text = (codes || []).join("\n");
+  if (navigator.clipboard && navigator.clipboard.writeText)
+    navigator.clipboard.writeText(text).then(() => toast("הקודים הועתקו"), () => toast("ההעתקה נכשלה"));
+  else toast("ההעתקה אינה זמינה");
 }
 
 function openSessionInfo() {
@@ -5220,7 +5723,13 @@ window.addEventListener("DOMContentLoaded", () => {
   applyTheme(cached === "dark" || cached === "light" ? cached : "auto");
   loadLogo();
   init();
-  api("/me").then((me) => { ME = me; return showApp(); }).catch(() => showLogin());
+  api("/me").then((me) => { ME = me; return showApp(); }).catch((e) => {
+    showLogin();
+    if (e && e.status === 403 && e.message === "password_change_required")
+      loginRender({ screen: "change", error: "" });
+    else if (e && e.status === 403 && e.message === "mfa_enrollment_required")
+      loginStartSetup({ screen: "setup" });
+  });
 });
 
 /* Restored baseline actions; existing API contracts and sheet confirmations. */

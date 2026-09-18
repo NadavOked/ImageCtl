@@ -33,6 +33,7 @@ function setup() {
       {mac:'c8:d9:d2:0b:fe:34',suffix:'בנייה 3',group_id:'grp_BUILD',note:null,drawer_count:null,prompt:null,disks:null,disks_reported_at:null,inventory:null,inventory_seen_at:null},
       {mac:'a0:48:1c:8a:18:40',suffix:'מחשב 1',group_id:'grp_CLONERS',note:null,drawer_count:2,prompt:null,disks:[],disks_reported_at:minutesAgo(9),inventory:null,inventory_seen_at:null},
       {mac:'78:ac:c0:9b:11:c2',suffix:'מחשב 2',group_id:'grp_CLONERS',note:'ליד הדלת',drawer_count:3,prompt:null,disks_reported_at:minutesAgo(9),inventory:{dmi:{sys_vendor:'LENOVO',product_name:'M720q'},pci:[],tpm:null},inventory_seen_at:minutesAgo(9),
+        ssh_hostkey:{type:'ed25519',fingerprint:'SHA256:ZkAslGjFiUHdGf/WUL8rQvkib4PTvQatUV0OUQSncCA',pubkey:'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f'},ssh_hostkey_seen_at:minutesAgo(9),ssh_hostkey_changed_in_boot:false,ssh_hostkey_new_from_reboot:false,
         disks:[{dev:'sda',size_bytes:256060514304,model:'870 EVO',serial:'S5Y30',port:1,smart:'ok'},{dev:'sdb',size_bytes:256060514304,model:'870 EVO',serial:'S5Y31',port:2},{dev:'sdc',size_bytes:256060514304,model:'870 EVO',serial:'S5Y2NX0R12345',port:3,smart:'ok'}]},
       {mac:'b4:2e:99:07:1a:c1',suffix:'01',group_id:'grp_LAB303',note:null,drawer_count:null,prompt:null,disks:[{dev:'sda',size_bytes:256060514304,model:'870 EVO',serial:'L1'}],disks_reported_at:minutesAgo(1),inventory:null,inventory_seen_at:null},
       {mac:'b4:2e:99:07:1a:c2',suffix:'02',group_id:'grp_LAB303',note:null,drawer_count:null,prompt:null,disks:[{dev:'sda',size_bytes:256060514304,model:'870 EVO',serial:'L2'}],disks_reported_at:minutesAgo(1),inventory:null,inventory_seen_at:null},
@@ -195,6 +196,7 @@ test('the machine drawer: header line, actions (monitor, WoL for the room, "requ
   assert.match(html,/<span class="k">מה המכונה עושה<\/span><span class="v"><span class="st ok">מחובר</);
   assert.match(html,/שלב אתחול אחרון<\/span><span class="v"><span class="st warn">GRUB נכנס לערך ImageCtl \(2\/9\) · לפני 9 דק'<\/span><span class="sub">נעצר לפני: מודול ה-HTTP נטען/);
   assert.match(html,/<span class="k">הערה<\/span><span class="v">ליד הדלת/);
+  assert.match(html,/<span class="k">SSH<\/span><span class="v"><span class="mono" dir="ltr" title="SHA256:ZkAslGjFiUHdGf\/WUL8rQvkib4PTvQatUV0OUQSncCA">SHA256:ZkAslGjFiUHd…<\/span><\/span>/);
   assert.match(html,/דיסקים \(דיווח אחרון, לפני 9 דק'\)/);
   assert.match(html,/<div class="disk ok"><b>דיסק 1<\/b><span>SATA 0<\/span><span><bdi dir="ltr">238 GB<\/bdi><\/span><span class="cap">870 EVO · <span class="mono">S5Y30<\/span><\/span><span class="cap">SMART תקין</);
   assert.match(html,/<div class="disk "><b>דיסק 2<\/b><span>SATA 1<\/span>[^]*SMART לא נבדק/,'no SMART = grey, not green');
@@ -213,10 +215,26 @@ test('the machine drawer: header line, actions (monitor, WoL for the room, "requ
 
   run("openMachineDetail('c8%3Ad9%3Ad2%3A0b%3Afe%3A34')"); html=node('#drawerBody').innerHTML; balanced(html);
   assert.match(html,/המכונה מעולם לא דיווחה על כוננים/); assert.match(html,/המכונה מעולם לא דיווחה על חומרה/); assert.doesNotMatch(html,/חריצים מוגדרים/,'slots are a cloner thing');
+  assert.match(html,/<span class="k">SSH<\/span><span class="v"><span class="muted">לא דווח<\/span>/,'#1080: old agent — field missing, not empty');
   run("openMachineDetail('a0:48:1c:8a:18:40')"); html=node('#drawerBody').innerHTML;
   assert.match(html,/המכונה דיווחה — ואין בה אף כונן/); assert.match(html,/2 חריצים מוגדרים/);
   run("openMachineDetail('b4:2e:99:07:1a:c3')"); html=node('#drawerBody').innerHTML;
   assert.match(html,/title="v2">WoL — לתחנות כיתה ב-v2</,'classroom: WoL is v2 (#984), not a button'); assert.doesNotMatch(html,/monitorMachine/); assert.match(html,/st warn">חסר בסבב</);
+});
+
+test('#1080 SSH fingerprint: orange when the key changed in the same boot, grey after a reboot', () => {
+  const {run,node}=setup();
+  run("MACHINES.find(m=>m.mac==='78:ac:c0:9b:11:c2').ssh_hostkey_changed_in_boot=true");
+  run("openMachineDetail('78%3Aac%3Ac0%3A9b%3A11%3Ac2')");
+  let html=node('#drawerBody').innerHTML;
+  assert.match(html,/st warn">השתנה באתחול הזה/);
+  assert.doesNotMatch(html,/מפתח חדש מאתחול/);
+  run("MACHINES.find(m=>m.mac==='78:ac:c0:9b:11:c2').ssh_hostkey_changed_in_boot=false");
+  run("MACHINES.find(m=>m.mac==='78:ac:c0:9b:11:c2').ssh_hostkey_new_from_reboot=true");
+  run("openMachineDetail('78%3Aac%3Ac0%3A9b%3A11%3Ac2')");
+  html=node('#drawerBody').innerHTML;
+  assert.match(html,/מפתח חדש מאתחול/);
+  assert.doesNotMatch(html,/השתנה באתחול הזה/);
 });
 
 test('the class as an object: crumbs, header, KPIs with meaning only, the same table filtered, rounds tab says "requires API"', () => {

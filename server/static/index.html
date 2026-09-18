@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ImageCtl — קונסולה</title>
-<link rel="stylesheet" href="design-tokens.css?v=8.9">
-<link rel="stylesheet" href="console.css?v=8.9">
-<link rel="stylesheet" href="progress.css?v=8.9">
+<link rel="stylesheet" href="design-tokens.css?v=9.1">
+<link rel="stylesheet" href="console.css?v=9.1">
+<link rel="stylesheet" href="progress.css?v=9.1">
 <script>
   /* לפני הציור הראשון, אחרת המסך מהבהב בלבן לפני שהכהה נטען.
      המטמון הוא בחירה מפורשת (light/dark) בלבד; בלי מטמון — לפי המערכת. */
@@ -21,43 +21,55 @@
 </head>
 <body>
 
-<div id="login" class="login-screen">
-  <div class="login-bg"></div>
-  <div class="login-grid"></div>
-  <section class="login-panel" aria-label="כניסה ל-ImageCtl">
-    <div class="login-brand">
-      <div class="login-brand-top">
-        <span class="brandmark"><span class="mark"></span></span>
-        <strong>ImageCtl</strong>
-      </div>
-      <h1>קונסולת ניהול ImageCtl</h1>
-      <p>כניסה לקונסולת הניהול המרכזית של מערכת הדמיה והפצה.</p>
+<div id="login" class="login">
+  <div class="pane">
+    <div class="brand"><span class="brandmark"><span class="mark" aria-hidden="true"></span></span><span>ImageCtl</span></div>
+    <div class="pane-body" id="login-body"></div>
+    <div class="foot">
+      <span id="login-foot-host"></span><span class="sep">·</span>
+      <span id="login-foot-ver"></span><span class="sep">·</span>
+      <span id="login-foot-tls-label"></span>
+      <span class="mono" id="login-foot-tls"></span>
     </div>
-    <div class="login-card">
-      <h2>התחברות</h2>
-      <p class="login-sub">הזן את פרטי החשבון שלך כדי להמשיך.</p>
-      <form class="login-form" id="login-form">
-        <div class="login-field">
-          <label for="login-user">שם משתמש</label>
-          <input class="login-input" type="text" id="login-user" autocomplete="username" required autofocus>
-        </div>
-        <div class="login-field">
-          <label for="login-pass">סיסמה</label>
-          <div class="pw-wrap">
-            <input class="login-input" type="password" id="login-pass" autocomplete="current-password" required>
-            <button type="button" class="pw-eye" data-pw="login-pass">הצג</button>
-          </div>
-        </div>
-        <p class="error" id="login-error"></p>
-        <div class="login-row">
-          <label class="login-check"><input type="checkbox"> זכור אותי</label>
-        </div>
-        <button class="login-btn" type="submit">כניסה</button>
-      </form>
-      <div class="login-server">גישה מאובטחת לקונסולה</div>
-    </div>
-    <div class="login-meta"><span>ImageCtl Server Console</span></div>
-  </section>
+  </div>
+  <div class="art" aria-hidden="true">
+    <svg viewBox="0 0 800 900" preserveAspectRatio="xMidYMid slice">
+      <defs>
+        <pattern id="login-mach" width="100" height="90" patternUnits="userSpaceOnUse">
+          <rect x="8" y="8" width="84" height="74" rx="3" fill="var(--art-a)"/>
+          <rect x="18" y="20" width="64" height="8" rx="2" fill="var(--art-b)"/>
+          <rect x="18" y="34" width="64" height="8" rx="2" fill="var(--art-b)"/>
+          <rect x="18" y="48" width="40" height="8" rx="2" fill="var(--art-c)"/>
+        </pattern>
+      </defs>
+      <rect width="800" height="900" fill="url(#login-mach)" opacity=".9"/>
+      <polygon points="0,0 800,0 800,900 0,900" fill="var(--art-bg)" opacity=".55"/>
+      <polygon points="0,0 800,0 800,300" fill="var(--art-bg)" opacity=".6"/>
+      <g transform="translate(560,120)">
+        <rect x="0" y="0" width="120" height="30" rx="3" fill="var(--art-server)"/>
+        <rect x="0" y="36" width="120" height="30" rx="3" fill="var(--art-server)" opacity=".7"/>
+        <circle cx="12" cy="15" r="3" fill="#C25400"/><circle cx="12" cy="51" r="3" fill="#9AADB8"/>
+      </g>
+      <g fill="none" stroke="var(--art-line)" stroke-width="1.5" stroke-linecap="round">
+        <path d="M620 190 V 330"/>
+        <path d="M620 330 H 130" stroke-dasharray="6 8"/>
+        <path d="M130 330 V 800" stroke-dasharray="6 8"/>
+        <path d="M300 330 V 800" stroke-dasharray="6 8"/>
+        <path d="M470 330 V 800" stroke-dasharray="6 8"/>
+        <path d="M620 330 V 800" stroke-dasharray="6 8"/>
+      </g>
+      <g>
+        <rect x="88" y="380" width="84" height="74" rx="3" fill="var(--art-b)"/><rect x="98" y="392" width="64" height="8" rx="2" fill="var(--art-c)"/><rect x="98" y="406" width="64" height="8" rx="2" fill="var(--art-c)"/><rect x="98" y="420" width="40" height="8" rx="2" fill="#318700" opacity=".55"/>
+        <rect x="258" y="380" width="84" height="74" rx="3" fill="var(--art-b)"/><rect x="268" y="392" width="64" height="8" rx="2" fill="var(--art-c)"/><rect x="268" y="406" width="64" height="8" rx="2" fill="#318700" opacity=".55"/><rect x="268" y="420" width="40" height="8" rx="2" fill="var(--art-c)"/>
+        <rect x="428" y="380" width="84" height="74" rx="3" fill="var(--art-b)"/><rect x="438" y="392" width="64" height="8" rx="2" fill="#318700" opacity=".55"/><rect x="438" y="406" width="64" height="8" rx="2" fill="var(--art-c)"/><rect x="438" y="420" width="40" height="8" rx="2" fill="var(--art-c)"/>
+        <rect x="578" y="380" width="84" height="74" rx="3" fill="var(--art-b)"/><rect x="588" y="392" width="64" height="8" rx="2" fill="var(--art-c)"/><rect x="588" y="406" width="64" height="8" rx="2" fill="var(--art-c)"/><rect x="588" y="420" width="40" height="8" rx="2" fill="#C25400" opacity=".55"/>
+        <rect x="88" y="560" width="84" height="74" rx="3" fill="var(--art-b)"/><rect x="98" y="572" width="64" height="8" rx="2" fill="var(--art-c)"/><rect x="98" y="586" width="64" height="8" rx="2" fill="var(--art-c)"/>
+        <rect x="258" y="560" width="84" height="74" rx="3" fill="var(--art-b)"/><rect x="268" y="572" width="64" height="8" rx="2" fill="#318700" opacity=".55"/><rect x="268" y="586" width="64" height="8" rx="2" fill="var(--art-c)"/><rect x="268" y="600" width="40" height="8" rx="2" fill="var(--art-c)"/>
+        <rect x="428" y="560" width="84" height="74" rx="3" fill="var(--art-b)"/><rect x="438" y="572" width="64" height="8" rx="2" fill="var(--art-c)"/><rect x="438" y="586" width="64" height="8" rx="2" fill="var(--art-c)"/><rect x="438" y="600" width="40" height="8" rx="2" fill="#318700" opacity=".55"/>
+        <rect x="578" y="560" width="84" height="74" rx="3" fill="var(--art-b)"/><rect x="588" y="572" width="64" height="8" rx="2" fill="var(--art-c)"/><rect x="588" y="586" width="64" height="8" rx="2" fill="#318700" opacity=".55"/><rect x="588" y="600" width="40" height="8" rx="2" fill="var(--art-c)"/>
+      </g>
+    </svg>
+  </div>
 </div>
 
 <div id="app" class="app hidden">
@@ -137,14 +149,14 @@
 <div class="toast" id="toast"></div>
 </div>
 
-<script src="progress.js?v=8.9"></script>
-<script src="console.js?v=8.9"></script>
-<script src="reorder.js?v=8.9"></script>
-<script src="net.js?v=8.9"></script>
-<script src="netcfg.js?v=8.9"></script>
-<script src="storage_nodes.js?v=8.9"></script>
-<script src="drivers.js?v=8.9"></script>
-<script src="storage.js?v=8.9"></script>
-<script src="branches.js?v=8.9"></script>
+<script src="progress.js?v=9.1"></script>
+<script src="console.js?v=9.1"></script>
+<script src="reorder.js?v=9.1"></script>
+<script src="net.js?v=9.1"></script>
+<script src="netcfg.js?v=9.1"></script>
+<script src="storage_nodes.js?v=9.1"></script>
+<script src="drivers.js?v=9.1"></script>
+<script src="storage.js?v=9.1"></script>
+<script src="branches.js?v=9.1"></script>
 </body>
 </html>

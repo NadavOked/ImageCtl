@@ -368,6 +368,19 @@ CREATE TABLE IF NOT EXISTS machine_probe (
 );
 CREATE INDEX IF NOT EXISTS machine_probe_mac ON machine_probe (mac, id);
 
+-- מפתח ה-host של dropbear בתחנה, מ-hello (#1080). **מגורסת** כמו
+-- machine_inventory: שורה חדשה רק כשה-JSON הקנוני השתנה; seen_at =
+-- מתי הגרסה הזו נראתה לראשונה. השורה האחרונה לכל MAC היא המפתח
+-- הנוכחי, וממנה נכתב <data_dir>/ssh/known_hosts. boot_id בתוך ה-JSON
+-- מבחין בין אתחול (מפתח חדש לגיטימי) לבין שינוי בתוך אותו אתחול.
+CREATE TABLE IF NOT EXISTS machine_ssh_hostkey (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    mac          TEXT NOT NULL,        -- קנוני: lowercase עם נקודתיים
+    seen_at      TEXT NOT NULL,
+    hostkey_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS machine_ssh_hostkey_mac ON machine_ssh_hostkey (mac, id);
+
 -- Storage Nodes (#655, tracer 1.1 / #723): רישום המשניים שהראשי מחזיק,
 -- וקבוצות האחסון שמשייכות אותם. קיים על **כל** בסיס לצורך עקביות
 -- הסכימה — גם על משני, ששם הוא נשאר ריק (מוטציה מסורבת בשכבת ה-service,
@@ -457,7 +470,9 @@ CREATE TABLE IF NOT EXISTS storage_transfers (
     error       TEXT,
     started_by  TEXT NOT NULL,
     created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL
+    updated_at  TEXT NOT NULL,
+    direction   TEXT NOT NULL DEFAULT 'push'
+                CHECK (direction IN ('push', 'pull'))
 );
 
 -- מיקומי אחסון לספרייה (#1066 שלב א'): תיקייה / NFS / SMB / iSCSI.
@@ -589,6 +604,9 @@ ADDED_COLUMNS = [
     # ‏#929: רשומת כיווץ לדיסק עם כמה מחיצות. NULL בשורה שנפתחה לפני —
     # רשומה של מחיצה אחת, והעמודות idx/start_sector/… הן היא.
     ("shrink_records", "partitions", "TEXT"),
+    # ‏#1071: כיוון ההעברה. התקנה קיימת — כל השורות הן push, ברירת המחדל.
+    ("storage_transfers", "direction",
+     "TEXT NOT NULL DEFAULT 'push'"),
 ]
 
 
@@ -619,7 +637,7 @@ _STORAGE_SCHEMA_COLUMNS = {
                          "server_cert_ref", "server_key_ref"},
     "storage_transfers": {"id", "node_id", "image_id", "image_name", "state",
                           "bytes_sent", "bytes_total", "error", "started_by",
-                          "created_at", "updated_at"},
+                          "created_at", "updated_at", "direction"},
     "storage_locations": {"id", "name", "type", "params_json", "mount_point",
                           "state", "state_since", "state_detail", "created_by",
                           "created_at", "last_images_json", "last_df_json"},

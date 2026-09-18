@@ -18,8 +18,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import PlainTextResponse
 
 from . import (auth, capabilities, console_login, console_mfa, dhcp, disk_failures,
-               identity, inventory, probe, registry, shrink_records, storage_locations,
-               storage_nodes, users)
+               identity, inventory, probe, registry, shrink_records, ssh_hostkey,
+               storage_locations, storage_nodes, users)
 from .api import ServerContext
 from .db import (_write_lock, get_setting, journal, now_iso, set_setting,
                  update_one, writing)
@@ -346,6 +346,8 @@ def create_console_router(
         # ‏#1049 שלב ב': הדגימה האחרונה של בדיקת המכונה + השערים שנגזרים ממנה.
         # null = מעולם לא דיווחה; verdicts ריק = לא נמצאה בעיה **במה שנמדד**.
         probes = probe.latest_all(ctx.conn)
+        # ‏#1080: מפתח ה-host האחרון. null = מעולם לא דיווחה (סוכן ישן / SSH כבוי).
+        hostkeys = ssh_hostkey.latest_all(ctx.conn)
         result = []
         for r in rows:
             row = dict(r)
@@ -358,6 +360,13 @@ def create_console_router(
             row["probe"] = sample["probe"] if sample else None
             row["probe_seen_at"] = sample["sampled_at"] if sample else None
             row["probe_verdicts"] = probe.verdicts(row["probe"])
+            hk = hostkeys.get(row["mac"])
+            row["ssh_hostkey"] = hk["ssh_hostkey"] if hk else None
+            row["ssh_hostkey_seen_at"] = hk["seen_at"] if hk else None
+            row["ssh_hostkey_changed_in_boot"] = (
+                hk["changed_in_boot"] if hk else False)
+            row["ssh_hostkey_new_from_reboot"] = (
+                hk["new_from_reboot"] if hk else False)
             result.append(row)
         return result
 

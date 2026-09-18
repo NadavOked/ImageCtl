@@ -529,7 +529,15 @@ PROC_LISTENING = PROC_HEADER + (
     "00:00000000 00000000 0 0 1\n")
 
 
-def run_ssh_start(tmp_path, key_text=None, with_dropbear=True, listening="yes"):
+#: מפתח ed25519 קנוני לזיוף dropbearkey -y — blob של 51 בייט, טביעת
+#: SHA256 כפי ש-OpenSSH מחשב. הסוכן מחשב את אותה טביעה מ-openssl.
+SSH_PUB_A = ("ssh-ed25519 "
+             "AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f")
+SSH_FP_A = "SHA256:ZkAslGjFiUHdGf/WUL8rQvkib4PTvQatUV0OUQSncCA"
+
+
+def run_ssh_start(tmp_path, key_text=None, with_dropbear=True, listening="yes",
+                  ip="10.44.12.187"):
     """מריץ ssh_start בארגז חול: dropbear/dropbearkey מזויפים ובית זמני.
 
     ‏_ssh_spawn נדרס אחרי ה-source כדי ללכוד את שורת הפקודה בלי להשאיר
@@ -560,10 +568,21 @@ def run_ssh_start(tmp_path, key_text=None, with_dropbear=True, listening="yes"):
             "STUB\n"
             f"cat > {posix(stub_dir)}/dropbearkey <<'STUB'\n"
             "#!/bin/sh\n"
+            "y=0; file=\n"
             'while [ $# -gt 0 ]; do\n'
-            '    [ "$1" = "-f" ] && printf fake-host-key > "$2"\n'
+            '    case "$1" in\n'
+            '        -y) y=1 ;;\n'
+            '        -f) file=$2; shift ;;\n'
+            "    esac\n"
             "    shift\n"
             "done\n"
+            'if [ "$y" = 1 ]; then\n'
+            "    echo 'Public key portion is:'\n"
+            f"    echo '{SSH_PUB_A}'\n"
+            "    echo 'Fingerprint: md5 aa:bb'\n"
+            "    exit 0\n"
+            "fi\n"
+            '[ -n "$file" ] && printf fake-host-key > "$file"\n'
             "STUB\n"
             f"chmod 0755 {posix(stub_dir)}/dropbear {posix(stub_dir)}/dropbearkey\n"
         )
@@ -581,7 +600,7 @@ def run_ssh_start(tmp_path, key_text=None, with_dropbear=True, listening="yes"):
         + f'export PATH="$(cd {posix(stub_dir)!r} && pwd):$PATH"; '
         f'export RUN_DIR={posix(run)!r} SSH_HOME={posix(home)!r} '
         f'SSH_KEYS={posix(keys)!r} SSH_PROC_NET={posix(proc_net)!r} '
-        'SSH_VERIFY_TRIES=1; '
+        f'IP={ip!r} SSH_VERIFY_TRIES=1; '
         # ‏PATH לבדו אינו מבודד: על מכונה ש-dropbear מותקן בה (שרת
         # המעבדה) `command -v dropbear` מצא את זה של המערכת, והמקרה
         # השלילי "עבר" רק במקומות שבהם הוא לא מותקן.
@@ -622,6 +641,24 @@ def test_ssh_runs_dropbear_with_passwords_disabled(tmp_path):
     assert "-r" in argv
     installed = home / ".ssh" / "authorized_keys"
     assert installed.read_text() == LAB_KEY
+
+
+def test_dropbear_binds_the_deployment_ip_not_wildcard(tmp_path):
+    """R20-F7 / #1080: ‏-p <IP>:22, לא 0.0.0.0 ולא פורט בלי כתובת."""
+    rc, spawned, _home, _run = run_ssh_start(tmp_path, key_text=LAB_KEY)
+    assert rc == "rc=0"
+    argv = spawned.read_text().split()
+    assert "-p" in argv
+    assert argv[argv.index("-p") + 1] == "10.44.12.187:22"
+    assert "0.0.0.0" not in spawned.read_text()
+
+
+def test_ssh_does_not_listen_without_a_deployment_ip(tmp_path):
+    """בלי $IP אין האזנה על 0.0.0.0 — הכיוון הבטוח הוא לא לפתוח דלת."""
+    rc, spawned, _home, run = run_ssh_start(tmp_path, key_text=LAB_KEY, ip="")
+    assert rc == "rc=1"
+    assert not spawned.exists()
+    assert "0.0.0.0" in (run / "agent.log").read_text(encoding="utf-8")
 
 
 def test_a_daemon_that_never_bound_the_port_is_reported_as_not_listening(tmp_path):
@@ -667,13 +704,43 @@ def test_ssh_makes_its_host_key_at_boot_not_at_build(tmp_path):
 
 def test_ssh_only_starts_behind_the_debug_gate():
     """אותו שער של מעטפת הטכנאי, לא שער שני. תחנת תלמיד רגילה
-    לא מאזינה לשום פורט."""
-    lines = (AGENT / "imagectl-agent").read_text(encoding="utf-8").splitlines()
-    start = next(i for i, ln in enumerate(lines)
-                 if "IMAGECTL_DEBUG" in ln and '"1"' in ln)
-    end = next(i for i in range(start + 1, len(lines)) if lines[i] == "fi")
-    assert any("ssh_start" in ln for ln in lines[start:end])
-    assert sum("ssh_start" in ln for ln in lines) == 1
+    לא מאזינה לשום פורט. אחרי $IP, כי ה-bind הוא לכתובת ההפצה (#1080)."""
+    text = (AGENT / "imagectl-agent").read_text(encoding="utf-8")
+    assert text.count("ssh_start") == 1
+    assert '[ "$IMAGECTL_DEBUG" = "1" ] && ssh_start' in text
+    assert text.index("ssh_start") > text.index(". \"$NET_FILE\"")
+
+
+def test_sshd_json_reads_the_pubkey_into_hello(tmp_path):
+    """ה-fingerprint וה-pubkey מגיעים ל-hello; בלי מפתח — השדה נעדר."""
+    rc, _spawned, _home, run = run_ssh_start(tmp_path, key_text=LAB_KEY)
+    assert rc == "rc=0"
+    sysroot = tmp_path / "sysroot"
+    (sysroot / "proc/sys/kernel/random").mkdir(parents=True)
+    (sysroot / "proc/sys/kernel/random/boot_id").write_text(
+        "11111111-2222-3333-4444-555555555555\n")
+    frag = sh(
+        f'export PATH="$(cd {posix(tmp_path / "box" / "stubs")!r} && pwd):$PATH" '
+        f'RUN_DIR={posix(run)!r} SYSROOT={posix(sysroot)!r}; '
+        f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/sshd.sh; '
+        f'printf "{{\\"x\\":0%s}}" "$(sshd_json)"'
+    )
+    body = json.loads(frag)
+    assert body["ssh_hostkey"]["type"] == "ed25519"
+    assert body["ssh_hostkey"]["pubkey"] == SSH_PUB_A
+    assert body["ssh_hostkey"]["fingerprint"] == SSH_FP_A
+    assert body["ssh_hostkey"]["boot_id"] == "11111111-2222-3333-4444-555555555555"
+
+
+def test_hello_without_sshd_has_no_ssh_hostkey_field(fake_machine):
+    hello = json.loads(sh(
+        f'export SYSROOT={posix(fake_machine["sysroot"])!r} '
+        f'DEVROOT={posix(fake_machine["dev"])!r} '
+        f'RUN_DIR={posix(fake_machine["run"])!r} IFACE=eth0 IP=10.44.12.187; '
+        f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/sysinfo.sh; '
+        f'build_hello'
+    ))
+    assert "ssh_hostkey" not in hello
 
 
 def test_the_builder_takes_the_authorized_keys_as_an_argument():
