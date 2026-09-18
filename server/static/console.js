@@ -1079,6 +1079,13 @@ function homeAttention() {
     if (c.state !== "warn" && c.state !== "bad") continue;
     items.push(UI.note(c.state === "bad" ? "err" : "warn", `<b>${esc(c.label)}</b> — ${esc(c.detail || "")}. ${UI.link("לבריאות", "selectPageById('health')")}`));
   }
+  // ‏#1049 שלב ב': שערי בדיקת המכונה (סוללה, שעון, NVMe, קריסה, כפילות IP, CRC)
+  // — מוצגים, אינם עוצרים סבב. רשימה ריקה = לא נמצא במה שנמדד, לא "הכול תקין".
+  for (const m of MACHINES || []) {
+    for (const v of Array.isArray(m.probe_verdicts) ? m.probe_verdicts : []) {
+      items.push(UI.note(v.level === "err" ? "err" : "warn", `<b>${esc(machineName(m) || m.mac)}</b> — ${esc(v.text_he || v.key || "")}. ${UI.link("פרטי המכונה", `openMachineDetail('${encodeId(m.mac)}')`)}`));
+    }
+  }
   const unread = [!Array.isArray(HEALTH) && "בריאות", HOME.err.net && "רשת", HOME.err.nodes && "סניפים"].filter(Boolean);
   let body;
   if (items.length) body = `<div class="stack">${items.join("")}</div>`;
@@ -2798,6 +2805,68 @@ function diskBoxesHtml(m) {
   }).join("");
   return `<div class="disks">${boxes}</div>`;
 }
+/* ‏#1049 שלב ב': "בריאות המכונה" — מה שהסוכן מדד ב-hello (probe). כל שדה
+   בשלושה מצבים (עיקרון 5): נמדד · null = "לא נבדק" (אפור, לא "תקין") ·
+   {error} = "לא הצלחנו לבדוק: …" (כתום). השערים (probe_verdicts) מהשרת
+   מוצגים מעל הקבוצה ואינם עוצרים סבב — עצירה היא הכרעה נפרדת. */
+function probeCell(value, render, unchecked = "לא נבדק") {
+  if (value == null) return `<span class="muted">${esc(unchecked)}</span>`;
+  if (typeof value === "object" && !Array.isArray(value) && value.error != null) return UI.status("warn", `לא הצלחנו לבדוק: ${value.error}`);
+  return render(value);
+}
+function probeSkewText(seconds) {
+  const s = Math.abs(Number(seconds) || 0);
+  return s >= 86400 ? `${Math.floor(s / 86400)} ימים` : s >= 3600 ? `${Math.floor(s / 3600)} שעות` : s >= 60 ? `${Math.floor(s / 60)} דק'` : `${s} שנ'`;
+}
+function machineVerdictsHtml(m) {
+  return (Array.isArray(m.probe_verdicts) ? m.probe_verdicts : []).map((v) => UI.note(v.level === "err" ? "err" : "warn", esc(v.text_he || v.key || ""))).join("");
+}
+function machineHealthHtml(m) {
+  const p = m.probe;
+  if (p == null) return UI.note("", "המכונה מעולם לא דיווחה בדיקת מכונה (סוכן ישן).");
+  const nvme = Array.isArray(p.disks) ? p.disks.filter((d) => d && d.nvme_smart !== null && d.nvme_smart !== undefined) : [];
+  const rows = [
+    ["חשמל", probeCell(p.power, (v) => v.on_battery ? UI.status("err", `על סוללה${v.supply ? ` (${v.supply})` : ""}`) : UI.status("ok", `חשמל${v.supply ? ` (${v.supply})` : ""}`))],
+    ["שעון", probeCell(p.rtc, (v) => v.skew_seconds == null ? `<span class="muted">לא נבדק</span>`
+      : Math.abs(v.skew_seconds) > 300 ? UI.status("warn", `סוטה ב-${probeSkewText(v.skew_seconds)} — סוללת BIOS חשודה`) : UI.status("ok", `סטייה ${probeSkewText(v.skew_seconds)}`))],
+    ["מעבד", probeCell(p.cpu, (v) => `${esc(v.model || "—")}${v.cores != null ? ` · ${esc(v.cores)} ליבות` : ""}${v.microcode ? ` · מיקרוקוד <span class="mono">${esc(v.microcode)}</span>` : ""}`)],
+    ["זיכרון", probeCell(p.memory, (v) => [
+      v.total_bytes != null ? ltr(fmtBytes(v.total_bytes)) : `<span class="muted">סה"כ לא נבדק</span>`,
+      probeCell(v.dimms, (d) => Array.isArray(d) ? `${d.length} DIMMs` : `<span class="muted">DIMMs לא נבדקו</span>`, "DIMMs לא נבדקו"),
+      probeCell(v.ecc, (e) => e.ue_count > 0 ? UI.status("err", `ECC: ${e.ue_count} לא-מתוקנות`) : e.ce_count > 0 ? UI.status("warn", `ECC: ${e.ce_count} מתוקנות`) : UI.status("ok", "ECC תקין"), "ECC לא נבדק"),
+    ].join(" · "))],
+    ["טמפ' מקס'", probeCell(p.thermal, (v) => {
+      const temps = (Array.isArray(v) ? v : []).map((z) => z && Number(z.temp_c)).filter((t) => Number.isFinite(t));
+      if (!temps.length) return `<span class="muted">אין אזור תרמי</span>`;
+      const max = Math.max(...temps);
+      return UI.status(max >= 90 ? "err" : max >= 80 ? "warn" : "ok", `${max}°C`);
+    })],
+    ["רשת", probeCell(p.nic, (v) => {
+      if (!Array.isArray(v) || !v.length) return `<span class="muted">אין כרטיס עם קישור</span>`;
+      return v.map((n) => {
+        const link = `<span class="mono">${esc(n.name || "?")}</span> ${n.speed_mbps != null ? `${esc(n.speed_mbps)}Mb/s` : "—"}${n.duplex ? ` ${esc(n.duplex)}` : ""}`;
+        const cnt = probeCell(n.stats, (x) => (x.rx_crc_errors > 0 ? UI.status("warn", `CRC ${x.rx_crc_errors}`) : `CRC ${esc(x.rx_crc_errors ?? "—")}`) + ` · dropped ${esc(x.rx_dropped ?? "—")}`, "מונים לא נבדקו");
+        const dup = probeCell(n.ip_conflict, (x) => x.duplicate ? UI.status("err", "כפילות IP") : `IP ללא כפילות`, "כפילות IP לא נבדקה");
+        return `${link} · ${cnt} · ${dup}`;
+      }).join("<br>");
+    })],
+    ["NVMe", p.disks == null ? `<span class="muted">לא נבדק</span>` : !nvme.length ? `<span class="muted">לא נבדק (אין NVMe, או nvme לא ארוז)</span>`
+      : nvme.map((d) => `<span class="mono">${esc(d.name || "?")}</span>: ` + probeCell(d.nvme_smart, (x) => {
+        const bad = (x.critical_warning != null && x.critical_warning !== 0) || x.media_errors > 0;
+        const text = `${x.percentage_used != null ? `${x.percentage_used}% בלאי` : "בלאי לא דווח"} · ${x.media_errors != null ? `${x.media_errors} שגיאות מדיה` : "שגיאות מדיה לא דווחו"}${x.critical_warning ? ` · critical_warning=${x.critical_warning}` : ""}`;
+        return UI.status(bad ? "err" : x.percentage_used >= 90 ? "warn" : "ok", text);
+      })).join("<br>")],
+    ["קריסה קודמת", probeCell(p.pstore, (v) => v.crashed
+      ? UI.status("warn", "קרס לפני האתחול הזה") + (Array.isArray(v.files) && v.files.length ? ` <span class="mono">${esc(v.files.join(", "))}</span>` : "") + (v.excerpt ? ` <details class="inline"><summary>קטע</summary><pre class="ata-log">${esc(v.excerpt)}</pre></details>` : "")
+      : `<span class="muted">לא</span>`)],
+    ["מפתח OEM", probeCell(p.oem_key, (v) => `<span class="mono" dir="ltr">${esc(v)}</span>`)],
+    ["PCI בלי דרייבר", probeCell(p.pci_without_driver, (v) => !Array.isArray(v) || !v.length ? `<span class="muted">אין</span>`
+      : `${UI.status("warn", `${v.length} ${v.length === 1 ? "התקן" : "התקנים"}`)} <span class="mono" title="${esc(v.join(" "))}">${esc(v.slice(0, 3).join(" · "))}${v.length > 3 ? " …" : ""}</span>${isAdmin() ? ` · ${UI.link("לדף הדרייברים", "selectPageById('drivers')")}` : ""}`)],
+    ["הצפנה", probeCell(p.encryption, (v) => !Array.isArray(v) || !v.length ? `<span class="muted">אין</span>`
+      : v.map((e) => `${esc(e.type === "crypto_LUKS" ? "LUKS" : e.type || "?")} <span class="mono">${esc(e.node || "")}</span>`).join(" · "))],
+  ];
+  return UI.kv(rows);
+}
 function machineDrawerHtml(m) {
   const macEnc = encodeId(m.mac), role = machineRole(m), g = machineGroup(m), net = netFor(m.mac), st = machineState(m), admin = isAdmin();
   const sub = [esc(ROLE_HE[role] || role), g ? esc(g.label) : "", `<span class="mono">${esc(m.mac)}</span>`, net && net.ip ? `<span class="mono">${esc(net.ip)}</span>` : "",
@@ -2840,7 +2909,7 @@ function machineDrawerHtml(m) {
   const foot = admin
     ? `<div style="border-top:1px solid var(--hair);padding-top:12px;display:flex;gap:6px;flex-wrap:wrap;align-items:center"><button class="btn sm" onclick="moveMachineSheet('${macEnc}')">העבר לקבוצה</button>${UI.soon("עריכת MAC")}<button class="btn sm danger" onclick="removeMachine('${macEnc}')">הסרה מהרישום (הקלדת שם)</button></div>`
     : "";
-  return `<div class="page drw"><div class="obj-sub">${sub}</div>${actions}${red}${machineCaptureWarningHtml(m.mac)}${machineRestoreWarningHtml(m.mac)}<div><div class="sec">מצב עכשיו</div>${now}</div><div><div class="sec">דיסקים${m.disks_reported_at ? ` (דיווח אחרון, ${esc(ago(m.disks_reported_at))})` : ""}</div>${diskBoxesHtml(m)}${slots}</div><div><div class="sec">חומרה (למיפוי דרייברים)${m.inventory_seen_at ? ` (${esc(ago(m.inventory_seen_at))})` : ""}</div>${hw}</div><div><div class="sec">היסטוריה</div>${history}</div>${foot}</div>`;
+  return `<div class="page drw"><div class="obj-sub">${sub}</div>${actions}${red}${machineCaptureWarningHtml(m.mac)}${machineRestoreWarningHtml(m.mac)}<div><div class="sec">מצב עכשיו</div>${now}</div><div><div class="sec">דיסקים${m.disks_reported_at ? ` (דיווח אחרון, ${esc(ago(m.disks_reported_at))})` : ""}</div>${diskBoxesHtml(m)}${slots}</div><div><div class="sec">חומרה (למיפוי דרייברים)${m.inventory_seen_at ? ` (${esc(ago(m.inventory_seen_at))})` : ""}</div>${hw}</div><div><div class="sec">בריאות המכונה${m.probe_seen_at ? ` (נדגם ${esc(ago(m.probe_seen_at))})` : ""}</div>${machineVerdictsHtml(m)}${machineHealthHtml(m)}</div><div><div class="sec">היסטוריה</div>${history}</div>${foot}</div>`;
 }
 function openMachineDetail(mac) {
   if (!isAdmin()) return;

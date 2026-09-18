@@ -17,7 +17,7 @@ import re
 import sqlite3
 from urllib.parse import urlsplit
 
-from . import bootguard, direct, disk_failures, inventory, registry, room, shrink_records
+from . import bootguard, direct, disk_failures, inventory, probe, registry, room, shrink_records
 from .db import get_setting, journal, net_seen
 from .images import ImageLibrary
 from .sessions import SessionStore
@@ -155,6 +155,7 @@ def build_answer(
     all_macs: list[str] | None = None,
     monitor_secret: str | None = None,
     hw_inventory: dict | None = None,
+    hw_probe: dict | None = None,
     multicast: dict | None = None,
     prompt: str | None = None,
     record_journal: bool = True,
@@ -177,6 +178,10 @@ def build_answer(
         # ‏None = הסוכן לא שלח (schema 1) או שלח פגום: הגרסה הקודמת נשארת.
         if hw_inventory is not None:
             inventory.record(conn, mac, hw_inventory)
+        # ‏#1049 שלב ב': בדיקת המכונה — אותו כלל: None = לא נשלח/פגום, הגרסה
+        # הקודמת נשארת; רק תוכן יציב שהשתנה פותח גרסה.
+        if hw_probe is not None:
+            probe.record(conn, mac, hw_probe)
 
     machine = registry.lookup(conn, mac, all_macs)
     if machine is None:

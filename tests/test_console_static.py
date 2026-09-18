@@ -180,18 +180,19 @@ def test_images_tree_node_uses_the_folder_icon():
 
 # ---------- #954 גל 2: ספריית האימג'ים ----------
 
-def test_static_includes_are_at_8_3():
+def test_static_includes_are_at_8_4():
     """גל 2 = ‏7.0; גל 3 (מחשבים) = ‏7.1; גל 3א = ‏7.3; השער (מוניטור רק בדף
     המוניטור) = ‏7.4; גל 5 (בריאות + פורטים) = ‏7.5; גל 6 (מוניטור, דרייברים,
     הגדרות, הרשאות, יומן + WoL למחשב) = ‏7.6; #703 (TLS) = ‏7.7; דף הפורטים
     לחוזה #996/#1015 וגל 7 (סניפים ושרת משני) נכנסו יחד בשער = ‏7.9; #1032
     (סבב ליטוש — hover, שורת סינון, כפתורים כפולים) = ‏8.1 (גל 8, הרשת,
-    לקח את 8.0 במקביל); בשער be שניהם יחד = ‏8.2; #649 שלב 1 (ארגז כלים) = ‏8.3.
+    לקח את 8.0 במקביל); בשער be שניהם יחד = ‏8.2; #649 שלב 1 (ארגז כלים) = ‏8.3;
+    #1049 שלב ב' (בריאות המכונה בכרטיס) = ‏8.4.
     שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
     versions = {float(v) for v in re.findall(r'\?v=(\d+\.\d+)"', page)}
-    assert versions == {8.3}, versions
+    assert versions == {8.4}, versions
 
 
 def test_old_images_page_code_is_gone():
@@ -441,3 +442,23 @@ def test_tools_page_is_an_admin_tree_node_with_two_selections_per_tool():
     css = (STATIC / "console.css").read_text(encoding="utf-8")
     for sel in (".page table.dg.tools{", ".page .dg-bar label.chk{"):
         assert sel in css, sel
+
+
+def test_the_machine_drawer_has_a_health_group_with_three_states_per_field():
+    """‏#1049 שלב ב': קבוצת "בריאות המכונה" במגירה — השערים מעליה, וכל שדה
+    בשלושה מצבים: null = "לא נבדק" (אפור), {error} = "לא הצלחנו לבדוק" (כתום),
+    ערך = מוצג. בעמוד הבית: כל verdict הוא UI.note ב"דורש טיפול"."""
+    js = _console_js()
+    assert 'class="sec">בריאות המכונה' in js
+    assert "machineVerdictsHtml(m)" in js and "machineHealthHtml(m)" in js
+    health = js[js.index("function machineHealthHtml"):js.index("function machineDrawerHtml")]
+    for label in ("חשמל", "שעון", "מעבד", "זיכרון", "טמפ' מקס'", "רשת", "NVMe",
+                  "קריסה קודמת", "מפתח OEM", "PCI בלי דרייבר", "הצפנה"):
+        assert f'["{label}"' in health, label
+    cell = js[js.index("function probeCell"):js.index("function probeSkewText")]
+    assert "לא נבדק" in cell and "לא הצלחנו לבדוק" in cell
+    assert 'UI.status("warn", `לא הצלחנו לבדוק' in cell, "שגיאה בכתום, לא באפור ולא בירוק"
+    assert "מעולם לא דיווחה בדיקת מכונה" in health
+    assert "selectPageById('drivers')" in health, "PCI בלי דרייבר מקשר לדף הדרייברים"
+    home = js[js.index("function homeAttention"):js.index("function journalSeverity")]
+    assert "m.probe_verdicts" in home and "openMachineDetail(" in home

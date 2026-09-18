@@ -270,9 +270,39 @@
   - **`encryption`** — לכל מחיצה ש-`blkid` מדווח `TYPE` ב-`crypto_LUKS` או
     `BitLocker`: `[{"node","type"}]`. אין blkid → `null`.
   - **`probe_seconds`** — כמה לקח האיסוף (שניות שלמות).
-  - **מה השרת עושה** (שלב ב', לא כאן): שומר בטבלת `machine_probe` מגורסת,
-    מציג בכרטיס המכונה; שערי סוללה/CMOS/NVMe — #1049 שלב ב'. שדה חסר או
-    פגום נזנח כמו `inventory` ואינו דורס גרסה תקינה קודמת.
+  - **מה השרת שומר** (‏#1049 שלב ב', `server/probe.py`, טבלת `machine_probe`):
+    הצורה **הקנונית** — מפתחות הממשק בלבד (מפתח זר נזנח, חסר → `null`),
+    מחרוזות ≤200 תווים, רשימות ≤64, מפתחות ממוינים — **מגורסת** כמו
+    `machine_inventory`: שורה חדשה `(mac, seen_at, sampled_at, probe_json)`
+    נכתבת **רק כשהתוכן היציב השתנה**. השדות **הנדיפים** — `probe_seconds`,
+    שלושת מספרי `rtc`, ‏`temp_c` של כל אזור תרמי ו-`stats` של כל כרטיס —
+    משתנים בכל דגימה ולכן **אינם** בהשוואה, אבל **נשמרים**: כשרק הם השתנו,
+    השורה האחרונה מתעדכנת במקום (‏`sampled_at` זז, ‏`seen_at` = מתי הגרסה
+    נראתה לראשונה — נשאר), כי השערים נגזרים מהדגימה **האחרונה**. ‏hello
+    עם אותו JSON (בתוך `PROBE_TTL`) אינו כותב — `SELECT` בלבד. ‏`probe`
+    **חסר או פגום** (לא אובייקט) נזנח ואינו דורס גרסה קודמת. שלושת המצבים
+    של כל שדה נשמרים כפי שהם — השרת אינו מקפל `null`/`error` ל"תקין".
+  - **השערים** (`probe.verdicts(probe) -> [{"key", "level": "warn"|"err",
+    "text_he"}]`) — נגזרים מהדגימה האחרונה, **מוצגים** (כרטיס המכונה +
+    "דורש טיפול" בעמוד הבית) ו**אינם עוצרים סבב** (עצירה — הכרעה נפרדת).
+    שדה שלא נמדד (`null`/`error`) **אינו** שער: רשימה ריקה = "לא נמצאה
+    בעיה במה שנמדד", לא "הכול תקין".
+
+    | key | level | תנאי |
+    |---|---|---|
+    | `battery` | err | `power.on_battery == true` |
+    | `rtc` | warn | `abs(rtc.skew_seconds) > 300` — "סוללת BIOS חשודה" (מחשב 1, 15/09) |
+    | `nvme:<name>` | err | `disks[].nvme_smart.critical_warning != 0` או `media_errors > 0` |
+    | `nvme:<name>` | warn | `percentage_used >= 90` (ולא err) |
+    | `pstore` | warn | `pstore.crashed == true` |
+    | `ip_conflict:<nic>` | err | `nic[].ip_conflict.duplicate == true` |
+    | `crc:<nic>` | warn | `nic[].stats.rx_crc_errors > 0` |
+  - **נחשף** ב-`GET /api/console/machines` (‏admin ו-deploy — מידע, לא
+    פעולה) כ-`probe` (‏`null` = מעולם לא דיווחה — סוכן ישן),
+    ‏`probe_seen_at` (= `sampled_at`, הדגימה האחרונה) ו-`probe_verdicts`
+    (‏`[]` גם כשאין probe). מוצג בכרטיס המכונה בקבוצה "בריאות המכונה":
+    ‏`null` = "לא נבדק" (אפור, לא "תקין"), ‏`{"error"}` = "לא הצלחנו
+    לבדוק: …" (כתום), ערך = מוצג.
 - **`monitor_secret`** (‏#839) — סוד המוניטור של **האתחול הזה**: 16
   בייטים שהסוכן הגריל מ-`/dev/urandom` פעם אחת ל-`$RUN_DIR`
   (`agent/lib/monitor.sh`), כ-32 ספרות hex קטנות. השרת שומר אותו

@@ -17,7 +17,7 @@ from typing import Callable
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import PlainTextResponse
 
-from . import (auth, dhcp, disk_failures, identity, inventory, registry,
+from . import (auth, dhcp, disk_failures, identity, inventory, probe, registry,
                shrink_records, storage_nodes, users)
 from .api import ServerContext
 from .db import (_write_lock, get_setting, journal, now_iso, set_setting,
@@ -328,6 +328,9 @@ def create_console_router(
         rows = ctx.conn.execute(query, (group,) if group else ()).fetchall()
         # ‏#720: המלאי החומרתי האחרון (schema 2). null = מעולם לא דיווחה.
         inventories = inventory.latest_all(ctx.conn)
+        # ‏#1049 שלב ב': הדגימה האחרונה של בדיקת המכונה + השערים שנגזרים ממנה.
+        # null = מעולם לא דיווחה; verdicts ריק = לא נמצאה בעיה **במה שנמדד**.
+        probes = probe.latest_all(ctx.conn)
         result = []
         for r in rows:
             row = dict(r)
@@ -336,6 +339,10 @@ def create_console_router(
             seen = inventories.get(row["mac"])
             row["inventory"] = seen["inventory"] if seen else None
             row["inventory_seen_at"] = seen["seen_at"] if seen else None
+            sample = probes.get(row["mac"])
+            row["probe"] = sample["probe"] if sample else None
+            row["probe_seen_at"] = sample["sampled_at"] if sample else None
+            row["probe_verdicts"] = probe.verdicts(row["probe"])
             result.append(row)
         return result
 

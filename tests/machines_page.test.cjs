@@ -93,7 +93,9 @@ const between=(html,a,b)=>html.slice(html.indexOf(a),b?html.indexOf(b,html.index
 test('one grouped table: header counters + pills, three tabs, build → cloners → a group per class, rows joined with /net', () => {
   const {run}=setup(); const html=run('machines(0)'); balanced(html);
   assert.match(html,/class="page"/); assert.match(html,/obj-name">מחשבים</);
-  assert.match(html,/8 רשומים · 2 כיתות · 2 מחשבי בנייה · 2 משכפלים · 5 נראו ברשת היום/);
+  // "בנייה 1" נראה לפני 3 שעות: בין 00:00 ל-03:00 UTC (isToday משווה תאריך ISO) זה עוד אתמול — נפל במעבדה 18/09 02:35 UTC.
+  const seenToday = new Date(Date.now()-180*60000).toISOString().slice(0,10)===today ? 5 : 4;
+  assert.match(html,new RegExp(`8 רשומים · 2 כיתות · 2 מחשבי בנייה · 2 משכפלים · ${seenToday} נראו ברשת היום`));
   assert.match(html,/pill err">1 דיסק אדום</); assert.match(html,/pill warn">1 לא רשום</);
   for(const t of ['כל המחשבים','נראו ברשת \\(1\\)','דיסקים אדומים \\(1\\)']) assert.match(html,new RegExp('role="tab"[^>]*>'+t+'<'));
   assert.match(html,/onclick="openAddMachine\(\{\}\)">\+ מחשב</); assert.match(html,/addGroupSheet\(\)">\+ כיתה</); assert.match(html,/href="\/api\/console\/machines.csv" download>ייצוא CSV</);

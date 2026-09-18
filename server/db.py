@@ -311,6 +311,21 @@ CREATE TABLE IF NOT EXISTS machine_inventory (
 );
 CREATE INDEX IF NOT EXISTS machine_inventory_mac ON machine_inventory (mac, id);
 
+-- בדיקת המכונה מה-hello (#1049 שלב ב'): חשמל, שעון, מעבד, זיכרון, רשת,
+-- NVMe, pstore, מפתח OEM… **מגורסת** כמו machine_inventory: שורה חדשה רק
+-- כשהתוכן היציב השתנה (server/probe.py); שדות נדיפים (rtc, temp_c, מוני
+-- רשת, probe_seconds) מרעננים את השורה האחרונה במקום — sampled_at זז,
+-- seen_at (הגרסה נראתה לראשונה) נשאר. השורה האחרונה לכל MAC היא הדגימה
+-- הנוכחית, ולפיה מחושבים השערים (verdicts).
+CREATE TABLE IF NOT EXISTS machine_probe (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    mac        TEXT NOT NULL,        -- קנוני: lowercase עם נקודתיים
+    seen_at    TEXT NOT NULL,
+    sampled_at TEXT NOT NULL,
+    probe_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS machine_probe_mac ON machine_probe (mac, id);
+
 -- Storage Nodes (#655, tracer 1.1 / #723): רישום המשניים שהראשי מחזיק,
 -- וקבוצות האחסון שמשייכות אותם. קיים על **כל** בסיס לצורך עקביות
 -- הסכימה — גם על משני, ששם הוא נשאר ריק (מוטציה מסורבת בשכבת ה-service,

@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from boot.grub_menu import normalize_mac as lenient_mac
 
 from . import (agent_loops, disk_events, foreign_vlan, identity, inventory,
-               pulls, registry, reports, shrink_records, users)
+               probe, pulls, registry, reports, shrink_records, users)
 from .db import journal
 from . import direct
 from .hello import (build_answer, login_required, off_deploy_vlan,
@@ -150,6 +150,8 @@ def create_agent_router(ctx: ServerContext,
         # פגום נזנח כמו שדה לא ידוע; סוכן ישן אינו שולח אותו, והגרסה
         # השמורה (אם יש) נשארת.
         hw_inventory = inventory.well_formed(body.get("inventory"))
+        # ‏#1049 שלב ב': בדיקת המכונה (probe) — אובייקט קנוני או None (חסר/פגום).
+        hw_probe = probe.well_formed(body.get("probe"))
         # ‏#906: המכונה ממתינה לאדם (שאלת SMART/אדום, מסך FAILED) ואומרת
         # על מה. רק `waiting_for: "operator"` עם `prompt` מחרוזת לא-ריקה
         # נשמר (קצוץ ל-PROMPT_MAX_CHARS); כל צורה אחרת — וגם היעדר השדה,
@@ -165,7 +167,7 @@ def create_agent_router(ctx: ServerContext,
             disks=disks, client_ip=client_ip, joining=joining,
             reported_ip=reported_ip, off_vlan=off_vlan,
             all_macs=all_macs, monitor_secret=monitor_secret,
-            hw_inventory=hw_inventory, prompt=prompt,
+            hw_inventory=hw_inventory, hw_probe=hw_probe, prompt=prompt,
             # ‏#715: פרמטרי השידור למקור שהוא מחשב בנייה — של המנוע, אם יש.
             multicast=ctx.sender.multicast_params() if ctx.sender is not None else None,
         )
