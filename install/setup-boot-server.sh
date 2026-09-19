@@ -38,6 +38,7 @@ SERVERS_DNS=""
 NO_FIREWALL=0
 ADMIN_USER=""
 ADMIN_PASS=""
+ADMIN_PASS_FD=""
 # Storage Nodes (#655/#723): תפקיד ההתקנה. standalone (ברירת מחדל) או
 # secondary. משני מחייב כתובת שרת ראשי. **תצורת שרת בלבד** — לא נכנס
 # לשורת הפקודה של הקרנל (עיקרון 2). מועבר ל-server.main דרך היחידה.
@@ -291,14 +292,15 @@ DHCP לא נדלק כאן בכלל — מגדירים אותו אחר כך מה�
 
 דגלים (רשות — לאוטומציה ולדיבאג בלבד):
   --deploy-if IFACE    כרטיס ההפצה (מדלג על השאלה); --interface הוא שם ישן לאותו דגל
-  --servers-if IFACE   כרטיס וילן השרתים (קונסולה 8081, SSH); בלי דגל — נשאל, או = כרטיס ההפצה באוטומציה
+  --servers-if IFACE   כרטיס וילן השרתים (קונסולה 8081); בלי דגל — נשאל, או = כרטיס ההפצה באוטומציה
   --servers-mode MODE  dhcp (ברירת מחדל) או static לכרטיס השרתים (#1088)
   --servers-address A  --servers-netmask M  --servers-gateway G  --servers-dns D1,D2
                        פרטי הכתובת הסטטית לכרטיס השרתים (עם --servers-mode static)
   --no-firewall        מדלג על nftables, עם אזהרה ביומן (R20-F1)
   --server-url URL     עוקף את הכתובת הנגזרת מהכרטיס (http בלבד)
   --admin-user NAME    מדלג על שאלת המשתמש
-  --admin-pass PASS    מדלג על שאלות הסיסמה (נשאר בהיסטוריית השלל — לדיבאג)
+  --admin-pass PASS    מדלג על שאלות הסיסמה (נשאר ברשימת התהליכים — לדיבאג בלבד)
+  --admin-pass-fd FD   קורא את הסיסמה מ-FD שכבר פתוח (האשף משתמש ב-3; אינו argv/env/log)
   --tftp-root PATH     ברירת מחדל /srv/tftp
   --http-root PATH     ברירת מחדל /srv/imagectl/boot; מועבר לשרת כ---boot-dir
   --storage-role ROLE  standalone (ברירת מחדל) או secondary (#655/#723)
@@ -328,6 +330,7 @@ while [[ $# -gt 0 ]]; do
         --server-url)  SERVER_URL="${2:?}"; shift 2 ;;
         --admin-user)  ADMIN_USER="${2:?}"; shift 2 ;;
         --admin-pass)  ADMIN_PASS="${2:?}"; shift 2 ;;
+        --admin-pass-fd) ADMIN_PASS_FD="${2:?}"; shift 2 ;;
         --tftp-root)   TFTP_ROOT="${2:?}"; shift 2 ;;
         --http-root)   HTTP_ROOT="${2:?}"; shift 2 ;;
         --storage-role) STORAGE_ROLE="${2:?}"; shift 2 ;;
@@ -341,6 +344,13 @@ while [[ $# -gt 0 ]]; do
         *)             die "unknown option: $1  (try --help)" ;;
     esac
 done
+
+if [[ -n "$ADMIN_PASS_FD" ]]; then
+    [[ "$ADMIN_PASS_FD" =~ ^[0-9]+$ ]] || die "--admin-pass-fd חייב להיות מספר FD"
+    [[ -z "$ADMIN_PASS" ]] || die "אין לשלב --admin-pass עם --admin-pass-fd"
+    ADMIN_PASS="$(cat <&"$ADMIN_PASS_FD")" || die "קריאת הסיסמה מ-fd $ADMIN_PASS_FD נכשלה"
+    [[ -n "$ADMIN_PASS" ]] || die "הסיסמה שנקראה מ-fd $ADMIN_PASS_FD ריקה"
+fi
 
 (( DRY_RUN )) || [[ $EUID -eq 0 ]] || die "צריך להריץ עם sudo (או --dry-run כדי רק לראות)."
 
@@ -903,6 +913,10 @@ run install -m 0644 "$APP_DIR/install/imagectl-netrollback.service" \
     /etc/systemd/system/imagectl-netrollback.service
 run install -m 0644 "$APP_DIR/install/imagectl-netrollback.timer" \
     /etc/systemd/system/imagectl-netrollback.timer
+# ‏#910 חלק ב': מסך השרת על tty1 (DCUI). getty@tty1 מוסווה — היחידה מכריזה
+# Conflicts= עליו, ובלי mask הוא היה חוזר בכל אתחול ומפיל את ה-DCUI.
+run install -m 0644 "$APP_DIR/install/imagectl-dcui.service" \
+    /etc/systemd/system/imagectl-dcui.service
 run install -d -m 0755 "$DATA_DIR/netcfg"
 # תצורת ה-Storage Node שעוברת ל-server.main דרך היחידה, וגם
 # `--boot-dir` מ-`--http-root` (#395): בלי זה המתקין כותב לתיקייה
@@ -970,6 +984,17 @@ TLSEOF
 fi
 run systemctl daemon-reload
 run systemctl enable --now imagectl-netrollback.timer
+# ‏#910 חלק ב': ה-DCUI עולה באתחול הבא (לא --now — tty1 עדיין של המתקין/האשף).
+run systemctl mask getty@tty1.service
+run systemctl enable imagectl-dcui.service
+# האשף מחזיק את 8081 בזמן ההתקנה. ממש לפני שהקונסולה עולה הוא משחרר את
+# המאזין ומחזיר אישור על socketpair פרטי; אין סיסמה או נתון משתמש ב-FD הזה.
+if [[ -n "${IMAGECTL_WIZARD_HANDOFF_FD:-}" ]]; then
+    [[ "$IMAGECTL_WIZARD_HANDOFF_FD" =~ ^[0-9]+$ ]] || die "IMAGECTL_WIZARD_HANDOFF_FD אינו FD מספרי"
+    printf 'release-8081\n' >&"$IMAGECTL_WIZARD_HANDOFF_FD" || die "הודעת handoff לאשף נכשלה"
+    IFS= read -r wizard_ack <&"$IMAGECTL_WIZARD_HANDOFF_FD" || die "האשף לא אישר ששחרר את 8081"
+    [[ "$wizard_ack" == "released" ]] || die "אישור handoff לא צפוי מהאשף: $wizard_ack"
+fi
 run systemctl enable --now imagectl-server
 
 # ‏#1131 ס' 1: השרת עונה? (liveness ללא הזדהות, על loopback) — לפני שנוגעים

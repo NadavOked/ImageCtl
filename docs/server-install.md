@@ -196,6 +196,42 @@ cmp /tmp/i /srv/imagectl/boot/initrd.img && echo "זהה"
 
 ## התקנה מ-ISO (#1139)
 
+### האשף
+
+אחרי שה-ISO מסיים את התקנת Debian והאתחול הראשון בונה את שני קובצי
+ה-initrd, עולה `imagectl-wizard` על `https://<כתובת-השרת>:8081`. התעודה
+עצמית והדף כולו מקומי — השרת אינו צריך אינטרנט. האשף מאשר או משנה את
+תפקיד השרת, מגדיר את **רשת הניהול בלבד**, קובע hostname וסיסמת `admin`,
+ומציג סיכום לפני ההחלה. רשת ההפצה מוגדרת אחר כך בקונסולה.
+
+בלחיצה על "החל התקנה" האשף מריץ את `setup-boot-server.sh`, מציג את הפלט
+וההתקדמות, ומסמן סיום רק אם גם המתקין וגם `verify-boot-payload.sh` יצאו 0
+ו-`/etc/imagectl/firstboot.status` נקרא בחזרה כ-`state=done`. אז הוא
+משחרר את פורט 8081 ל-`imagectl-server`, מציג את כתובת הקונסולה ואת טביעת
+SHA-256 של התעודה, וכותב `/var/lib/imagectl/.firstboot-done`.
+
+אשף שמופעל אחרי שהחותמת קיימת מסרב. הרצה חוזרת מפורשת היא
+`python3 -m server.wizard --rerun`; היא דורשת את סיסמת `admin` הקיימת
+ומעבירה למתקין `--force`.
+
+### מסך השרת (DCUI)
+
+אחרי ההתקנה `imagectl-dcui` תופס את `tty1` ומציג באנגלית מסך 80×25 לקריאה:
+כתובת הקונסולה וטביעת התעודה, כרטיסי הרשת, מצב השירותים, תפקיד האחסון
+והסבב הפעיל. ‏F2 פותח, אחרי סיסמת `admin`, הגדרת רשת ניהול, איפוס סיסמה,
+הפעלה מחדש של הרשת/השירותים, פרטי TLS והאשף. ‏F12 דורש שוב סיסמה והקלדה
+מדויקת של hostname לפני restart או shutdown; סבב פעיל מוצג כאזהרה ואינו
+חוסם. שינוי רשת חמוש באותה החזרה אוטומטית של 60 שניות כמו הקונסולה.
+
+אחרי העתקת `install/imagectl-dcui.service` אל `/etc/systemd/system/` ו-
+`systemctl daemon-reload`, אלה שתי שורות המתקין הנדרשות (ייכנסו למתקין
+רק אחרי בדיקת חלק 2):
+
+```bash
+systemctl mask getty@tty1.service
+systemctl enable imagectl-dcui.service   # עולה באתחול הבא; tty1 עדיין של המתקין
+```
+
 שני השלבים למעלה — המתקין ואז הקרנל וה-initrd — ארוזים ב-ISO אחד
 שמתקין **גם את דביאן**: `tools/iso/` (ראו את ה-README שם). ‏ISO אחד,
 ‏UEFI עם Secure Boot וגם BIOS, **בלי אינטרנט** בזמן ההתקנה — ה-netinst
@@ -216,20 +252,18 @@ sudo IMAGECTL_ROOT_PASSWORD='...' tools/iso/build-iso.sh \
 | תפריט | "ImageCtl server install (wipes the first disk)" מסומן; **ממתין ל-Enter** — אין timeout שמתחיל מחיקה לבד. ערך שני: שרת משני | המסך |
 | ‏d-i | דביאן על **הדיסק הראשון שאינו USB**, בלי שאלות: ‏`imagectl-server`, ‏root בלבד (הסיסמה מהבנייה, מוחלפת בכניסה הראשונה), החבילות מה-ISO | המסך |
 | ‏`late_command` | הקוד → `/opt/imagectl-src`; ‏`/etc/imagectl/installer-nic` = הכרטיס ש-d-i הגדיר (שם + MAC); ‏`installer-role`; ‏`iso-release.json` | — |
-| אתחול ראשון | ‏`imagectl-firstboot`: בונה `initrd.img` + `initrd.img.gui`, מעתיק `vmlinuz`, ואז **המתקין למעלה** עם `--servers-if <הכרטיס מההתקנה>` — בלי `--deploy-if` (רשת ההפצה: "לא עכשיו", ‏dnsmasq כבוי), ובסוף `verify-boot-payload.sh` | המסך + `journalctl -u imagectl-firstboot` |
-| הקונסולה | `https://<כתובת>:8081`, ‏admin/admin עם החלפה כפויה; רשת ההפצה מדף הרשת | הדפדפן |
+| אתחול ראשון | ‏`imagectl-firstboot`: בונה `initrd.img` + `initrd.img.gui`, מעתיק `vmlinuz`, ומפעיל את `imagectl-wizard` עם עובדות הכרטיס והתפקיד מ-d-i כברירות מחדל | המסך + `journalctl -u imagectl-firstboot` |
+| אשף | `https://<כתובת>:8081`; שישה שלבים, ורק לאחר אישור המפעיל המתקין ואימות מטען האתחול רצים | הדפדפן |
+| הקונסולה | מקבלת את 8081 בסיום המוצלח; רשת ההפצה מוגדרת ממדף הרשת | הדפדפן |
 
-**האתחול הראשון אינו מנחש כרטיס.** הוא קורא את מה ש-d-i הגדיר ומאמת
-שה-MAC עדיין על כרטיס קיים. אם d-i לא הגדיר רשת, או שה-MAC נעלם —
-‏`/etc/imagectl/firstboot.status` אומר `network-nic-undecidable`, היחידה
-אדומה, **והמתקין לא רץ** (בלי הדגל הוא שואל, ואין מי שיענה). ההשלמה:
-מהאשף (#910), או ידנית — `sudo bash /opt/imagectl-src/install/
-setup-boot-server.sh --servers-if <כרטיס>`. "הבדיקה עצמה לא רצה" הוא
-מצב שלישי (`check-error`), לא "אין כרטיס".
+**האתחול הראשון אינו מנחש כרטיס.** האשף מתאים את ה-MAC ש-d-i רשם
+לרשימת הכרטיסים החיים. אם d-i לא הגדיר רשת, ה-MAC נעלם או שהבדיקה עצמה
+לא רצה, אין ברירת מחדל מסומנת והמפעיל חייב לבחור כרטיס קיים. המצבים
+`network-nic-undecidable` ו-`check-error` נרשמים בשם ביומן ואינם הופכים
+לבחירה שקטה.
 
 **מה עוד לא אומת (19/09):** אתחול מה-ISO ב-VM/ברזל; ‏Secure Boot בפועל;
-שרת משני (המתקין מחייב `--primary-url`, וה-ISO אינו יודע אותו —
-‏`imagectl.primary=<url>` בשורת האתחול, אחרת `secondary-needs-primary`).
+שרת משני (כתובת הראשי נדרשת באשף; כשל בדיקת 8443 מוצג כאזהרה ואינו חוסם).
 
 ---
 

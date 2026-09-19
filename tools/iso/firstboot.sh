@@ -13,12 +13,9 @@
 #      מה-ISO; packages.txt הוא האיחוד, ו-tests/test_iso_build.py שומר).
 #      גם שרת **משני** בונה בעצמו (R60): הסיבה לא לבנות — קרנל cloud —
 #      אינה תקפה כשה-ISO מביא linux-image-amd64.
-#   ב. ‏install/setup-boot-server.sh --servers-if <כרטיס> — **בלי
-#      --deploy-if**: "לא עכשיו" לרשת ההפצה, dnsmasq נשאר כבוי, המנהל
-#      בוחר את כרטיס ההפצה מהקונסולה (#1088). השער בסוף המתקין
-#      (verify-boot-payload.sh, #332) מוצא את הקבצים משלב א' ומצליח —
-#      זו הסיבה לסדר: אילו המתקין רץ קודם, השער שלו היה נכשל על
-#      תיקייה ריקה, וכישלון "צפוי" שמקפלים הוא בדיוק עיקרון 5.
+#   ב. האשף הזמני ב-HTTPS 8081. הוא מקבל את עובדות הכרטיס והתפקיד דרך
+#      הקבצים שכתב d-i, והמפעיל מאשר או משנה אותן. רק בלחיצה על "החל"
+#      הוא מריץ את setup-boot-server.sh; רשת ההפצה נשארת לקונסולה (#1088).
 #
 # כרטיס השרתים — **לא heuristic** (R62 §12): ‏late-command.sh כתב
 # ל-/etc/imagectl/installer-nic את הכרטיס ש-d-i עצמו הגדיר (שם + MAC).
@@ -27,13 +24,12 @@
 #   UNDECIDABLE   → אין קובץ / d-i לא הגדיר רשת / ה-MAC אינו על אף כרטיס.
 #                   **לא מריצים את המתקין בלי הדגל** (הוא נעשה אינטראקטיבי).
 #   CHECK_ERROR   → הבדיקה עצמה לא רצה (ip/sysfs). אינו UNDECIDABLE.
-# בשניהם האחרונים: ‏/etc/imagectl/firstboot.status + journal, יציאה ≠0
-# בגלוי, וההכרעה עוברת לאשף (#910) / למסך. באתחול הבא הסקריפט רץ שוב.
+# ‏network-nic-undecidable / check-error אינם עוד סיבה לעצור: האשף מציג
+# את הרשימה החיה ומחייב בחירה. הם נכתבים ביומן בשם, לא מתקפלים לבחירה.
 #
-# תפקיד (R60): ‏/etc/imagectl/installer-role — standalone (ברירת מחדל) או
-# secondary מתפריט האתחול. משני מחייב --primary-url במתקין; בלי
-# ‏imagectl.primary=<url> בשורת האתחול — נעצרים בגלוי (state=secondary-
-# needs-primary), לא ממציאים כתובת.
+# תפקיד (R60): ‏/etc/imagectl/installer-role — standalone או secondary.
+# secondary בלי כתובת ראשי הוא secondary-needs-primary באשף: השדה נשאר
+# ריק ונדרש למלאו; אין כתובת מומצאת ואין חסימה לפני שהמפעיל רואה מסך.
 #
 # הכישלון גלוי: ‏`systemctl status imagectl-firstboot` אדום, והיומן
 # אומר באיזה שלב. אין Restart ואין `|| true`.
@@ -46,7 +42,6 @@ STAGE_A_STAMP="$STAMP_DIR/.firstboot-payload-done"
 ETC=/etc/imagectl
 STATUS="$ETC/firstboot.status"
 SRC=/opt/imagectl-src
-APP_DIR=/opt/imagectl
 HTTP_ROOT=/srv/imagectl/boot
 
 log() { printf 'imagectl-firstboot: %s\n' "$*"; }
@@ -78,14 +73,21 @@ else
     KVER=$(find /lib/modules -mindepth 1 -maxdepth 1 -printf '%f\n' | grep -v cloud | sort -V | tail -n1 || true)
     [[ -n "$KVER" ]] || fail payload-failed "אין קרנל לא-cloud ב-/lib/modules — linux-image-amd64 לא הותקן?"
     [[ -f "/boot/vmlinuz-$KVER" ]] || fail payload-failed "אין /boot/vmlinuz-$KVER"
-    log "שלב א': בונה initrd מול $KVER"
+    # ‏#1125: האריזה reproducible ודורשת SOURCE_DATE_EPOCH; ‏/opt/imagectl-src הוא
+    # ‏git archive בלי .git, ולכן הזמן נקרא ממניפסט ה-ISO (source_date_epoch =
+    # זמן הקומיט של --ref, build-iso.sh). בלי מניפסט — כישלון בשם, לא `date +%s`
+    # שקט שמפרק את השחזוריות (נמדד ב-QEMU 19/09: "'git log' failed").
+    EPOCH=$(python3 -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["source_date_epoch"]))' \
+        "$ETC/iso-release.json" 2>/dev/null) \
+        || fail payload-failed "אין source_date_epoch ב-$ETC/iso-release.json — late-command.sh לא העתיק את המניפסט?"
+    log "שלב א': בונה initrd מול $KVER (SOURCE_DATE_EPOCH=$EPOCH)"
     install -d "$HTTP_ROOT"
     bash "$SRC/tools/build_initramfs.sh" --skip-apt --kernel-version "$KVER" \
-        --output "$HTTP_ROOT/initrd.img" \
+        --source-date-epoch "$EPOCH" --output "$HTTP_ROOT/initrd.img" \
         || fail payload-failed "בניית initrd.img נכשלה (ראה למעלה ביומן)"
     # הגרסה הגרפית — מחשבי שיכפול ובנייה עולים איתה (#835, lab-site2-runbook).
     bash "$SRC/tools/build_initramfs.sh" --skip-apt --with-gui --kernel-version "$KVER" \
-        --output "$HTTP_ROOT/initrd.img.gui" \
+        --source-date-epoch "$EPOCH" --output "$HTTP_ROOT/initrd.img.gui" \
         || fail payload-failed "בניית initrd.img.gui נכשלה (ראה למעלה ביומן)"
     install -m 0644 "/boot/vmlinuz-$KVER" "$HTTP_ROOT/vmlinuz"
     for f in initrd.img initrd.img.gui vmlinuz; do
@@ -96,53 +98,28 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# שלב ב'.1 — כרטיס השרתים: העובדה מההתקנה, מאומתת מול המכונה עכשיו
+# שלב ב' — קורא את עובדות d-i, מדווח פערים, ומוסר אותן לאשף כברירות מחדל
 # ---------------------------------------------------------------------------
 NIC_FILE="$ETC/installer-nic"
-[[ -f "$NIC_FILE" ]] || fail network-nic-undecidable \
-    "אין $NIC_FILE — ההתקנה לא רשמה איזה כרטיס הוגדר. השלם מהאשף (#910), או ידנית: bash $SRC/install/setup-boot-server.sh --servers-if <כרטיס>"
-nic_state=$(sed -n 's/^state=//p' "$NIC_FILE" | head -n1)
-nic_mac=$(sed -n 's/^mac=//p' "$NIC_FILE" | head -n1 | tr 'A-F' 'a-f')
-nic_name_at_install=$(sed -n 's/^interface=//p' "$NIC_FILE" | head -n1)
-[[ "$nic_state" == "configured" && -n "$nic_mac" ]] || fail network-nic-undecidable \
-    "ההתקנה לא הגדירה רשת (installer-nic: state=${nic_state:-?}) — לא מנחש כרטיס. השלם מהאשף (#910) או ידנית עם --servers-if"
-
-# הבדיקה עצמה: אם ip/sysfs לא עונים — זה CHECK_ERROR, לא "אין כרטיס".
-mapfile -t all_ifaces < <(ip -o link show 2>/dev/null | awk -F': ' '$2 != "lo" {print $2}' | cut -d@ -f1) \
-    || fail check-error "ip -o link show נכשל"
-(( ${#all_ifaces[@]} )) || fail check-error "ip לא החזיר אף כרטיס (גם לא כזה בלי כתובת) — הבדיקה אינה אמינה"
-matches=()
-for ifname in "${all_ifaces[@]}"; do
-    [[ -r "/sys/class/net/$ifname/address" ]] || fail check-error "אין קריאה של /sys/class/net/$ifname/address"
-    if [[ "$(tr 'A-F' 'a-f' < "/sys/class/net/$ifname/address")" == "$nic_mac" ]]; then
-        matches+=("$ifname")
-    fi
-done
-case "${#matches[@]}" in
-    1) SERVERS_IF="${matches[0]}" ;;
-    0) fail network-nic-undecidable \
-        "ה-MAC $nic_mac (היה $nic_name_at_install בהתקנה) אינו על אף כרטיס עכשיו (${all_ifaces[*]}) — לא מנחש. השלם מהאשף (#910) או ידנית עם --servers-if" ;;
-    *) fail network-nic-undecidable \
-        "ה-MAC $nic_mac יושב על יותר מכרטיס אחד (${matches[*]}) — לא מנחש" ;;
-esac
-log "כרטיס השרתים: $SERVERS_IF (MAC $nic_mac, כפי ש-d-i הגדיר כ-$nic_name_at_install)"
-
-# ---------------------------------------------------------------------------
-# שלב ב'.2 — התפקיד, ואז המתקין
-# ---------------------------------------------------------------------------
-ROLE=standalone; PRIMARY=""
-if [[ -f "$ETC/installer-role" ]]; then
-    ROLE=$(sed -n 's/^role=//p' "$ETC/installer-role" | head -n1)
-    PRIMARY=$(sed -n 's/^primary=//p' "$ETC/installer-role" | head -n1)
+ROLE_FILE="$ETC/installer-role"
+if [[ ! -f "$NIC_FILE" ]]; then
+    log "[network-nic-undecidable] אין $NIC_FILE — האשף יחייב בחירה מהרשימה החיה"
+else
+    nic_state=$(sed -n 's/^state=//p' "$NIC_FILE" | head -n1)
+    nic_mac=$(sed -n 's/^mac=//p' "$NIC_FILE" | head -n1 | tr 'A-F' 'a-f')
+    [[ "$nic_state" == "configured" && -n "$nic_mac" ]] \
+        || log "[network-nic-undecidable] installer-nic אינו מכיל כרטיס מוגדר — האשף יחייב בחירה"
 fi
-ROLE_ARGS=()
+
+ROLE=standalone; PRIMARY=""
+if [[ -f "$ROLE_FILE" ]]; then
+    ROLE=$(sed -n 's/^role=//p' "$ROLE_FILE" | head -n1)
+    PRIMARY=$(sed -n 's/^primary=//p' "$ROLE_FILE" | head -n1)
+fi
 case "$ROLE" in
     standalone) ;;
-    secondary)
-        [[ -n "$PRIMARY" ]] || fail secondary-needs-primary \
-            "הותקן כשרת משני אבל בלי imagectl.primary=<url> בשורת האתחול; המתקין מחייב --primary-url. השלם ידנית: bash $SRC/install/setup-boot-server.sh --servers-if $SERVERS_IF --storage-role secondary --primary-url <url>"
-        ROLE_ARGS=(--storage-role secondary --primary-url "$PRIMARY") ;;
-    *) fail check-error "installer-role לא מוכר: $ROLE" ;;
+    secondary) [[ -n "$PRIMARY" ]] || log "[secondary-needs-primary] האשף יציג שרת משני עם כתובת ראשי ריקה" ;;
+    *) log "[check-error] installer-role לא מוכר: $ROLE — האשף יציג שרת ראשי כברירת מחדל" ;;
 esac
 
 # ה-repo המקומי שה-late_command השאיר (grub-pc-bin הוסר על ידי d-i בהתקנת
@@ -154,18 +131,10 @@ cand=$(apt-cache policy grub-pc-bin | awk '/Candidate:/ {print $2}')
 [[ -n "$cand" && "$cand" != "(none)" ]] || fail apt-repo-missing \
     "apt אינו מוצא את grub-pc-bin — ה-repo המקומי מ-ISO (/var/lib/imagectl/apt-repo) חסר, והמתקין ייכשל בלי אינטרנט"
 
-log "שלב ב': setup-boot-server.sh --servers-if $SERVERS_IF ${ROLE_ARGS[*]:-} (רשת ההפצה: לא עכשיו)"
-bash "$SRC/install/setup-boot-server.sh" --servers-if "$SERVERS_IF" "${ROLE_ARGS[@]}" \
-    || fail installer-failed "setup-boot-server.sh נכשל (ראה למעלה ביומן) — לא מסמן כהושלם"
-
-# השער של #332 רץ בתוך המתקין; ההרצה הנוספת כאן היא הראיה של היחידה
-# עצמה, על הקוד שהמתקין העתיק אל $APP_DIR.
-bash "$APP_DIR/install/verify-boot-payload.sh" --app-dir "$APP_DIR" \
-    --http-root "$HTTP_ROOT" --server-url http://127.0.0.1:8080 \
-    || fail verify-failed "verify-boot-payload נכשל אחרי ההתקנה"
-
-printf 'state=done\ntimestamp=%s\nservers_if=%s\nrole=%s\n' "$(date -u +%FT%TZ)" "$SERVERS_IF" "$ROLE" > "$STATUS"
-touch "$STAMP"
+install -m 0644 "$SRC/install/imagectl-wizard.service" /etc/systemd/system/imagectl-wizard.service
+printf 'state=wizard-running\ntimestamp=%s\nrole_default=%s\n' "$(date -u +%FT%TZ)" "$ROLE" > "$STATUS"
+systemctl daemon-reload || fail check-error "systemctl daemon-reload נכשל לפני הפעלת האשף"
+systemctl start imagectl-wizard || fail wizard-failed "imagectl-wizard לא עלה; ראה journalctl -u imagectl-wizard"
+systemctl is-active --quiet imagectl-wizard || fail wizard-failed "imagectl-wizard אינו active אחרי systemctl start"
 rm -rf "$TMPDIR"
-SERVERS_ADDR=$(ip -4 -o addr show dev "$SERVERS_IF" scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || true)
-log "הושלם. הקונסולה: https://${SERVERS_ADDR:-<כתובת $SERVERS_IF>}:8081 (admin/admin, החלפה כפויה). רשת ההפצה: מדף הרשת בקונסולה."
+log "שלב ב' ממתין למפעיל: אשף HTTPS על פורט 8081; ברירות המחדל נקראות מ-$NIC_FILE ומ-$ROLE_FILE"

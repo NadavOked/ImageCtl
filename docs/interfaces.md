@@ -3648,3 +3648,102 @@ SPKI+thumbprint של תעודת-הלקוח — ‏`TlsPeer` אינו נושא כ
 נאכף בשרת (409 על כל נתיבי הסניפים, `capabilities` ב-`/me`) ומוצג בעץ
 (`pageAllowed`) — `tests/test_console_visibility.py` הוא הטבלה. מסך
 "כרטיס ביקור" ייעודי למשני **לא נבנה כאן** — זה מסך, לא פער API.
+
+## 30. אשף ההתקנה הראשונית (#910)
+
+`imagectl-wizard` הוא שרת HTTPS זמני על `0.0.0.0:8081`. אין לו session
+או משתמשים: הוא קיים רק לפני השלמת ההתקנה, והגישה אליו היא מרשת הניהול
+המקומית. כל התשובות הן JSON ב-UTF-8 עם `Cache-Control: no-store`.
+
+### `GET /api/wizard/state`
+
+מחזיר את עובדות הפתיחה ואת הכרטיסים החיים:
+
+```json
+{
+  "ok": true,
+  "rerun": false,
+  "interfaces": [
+    {"name":"ens18","mac":"52:54:00:aa:10:01","link":"up",
+     "addresses":["10.44.10.37/24"],"current_ip":"10.44.10.37/24"}
+  ],
+  "defaults": {"role":"standalone","primary_url":"","interface":"ens18",
+               "mode":"dhcp","hostname":"imagectl-haifa"}
+}
+```
+
+השמות באים מ-`/sys/class/net`; הכתובות וה-link נקראים מ-`ip -j`. ברירת
+המחדל לכרטיס מתקבלת רק מה-MAC שב-`installer-nic`; כשל קריאה מחזיר רשימה
+או ברירת מחדל ריקה ואינו ממציא כרטיס.
+
+### `POST /api/wizard/validate`
+
+גוף הבקשה הוא מסמך התצורה המלא:
+
+```json
+{"role":"secondary","primary_url":"https://main.example:8443",
+ "interface":"ens18","mode":"static","address":"10.44.10.37",
+ "netmask":"255.255.255.0","gateway":"10.44.10.254","dns":"10.44.10.2",
+ "hostname":"imagectl-haifa","password":"...","password_confirm":"...",
+ "current_password":""}
+```
+
+הצלחה: `200 {"ok":true,"errors":{}}`. כשל: `400
+{"ok":false,"errors":{"address":"כתובת ה-IP אינה תקינה …"}}`. כל שדה
+נבדק שוב בצד השרת; `interface` חייב להופיע ברשימה החיה. `current_password`
+חובה רק ב-`--rerun` ואינו נשמר. בדיקת מעבר בין מסכים שולחת גם `step`
+(1–4) ומקבלת רק את שגיאות אותו מסך; `apply` תמיד בודק את המסמך כולו.
+
+### `POST /api/wizard/check-primary`
+
+קלט: `{"primary_url":"https://main.example:8443"}`. האשף מבצע DNS,
+חיבור TCP ו-TLS אמיתיים לפורט 8443. הצלחה מחזירה `ok`, ‏`name`, ‏`version`
+(גרסת TLS), ‏`fingerprint`, ‏`resolved`, ‏`checked`. כשל מחזיר
+`{"ok":false,"warning":true,"error":"…","reason":"…"}`. זהו **warning**:
+מותר להמשיך, אבל אין הצגת הצלחה בלי handshake חיובי.
+
+### `POST /api/wizard/apply` · `GET /api/wizard/progress`
+
+`apply` מקבל אותו מסמך כמו `validate`, מאמת שוב, ומתחיל החלה יחידה; החלה
+נוספת בזמן ריצה מקבלת 409. הבקשה נשארת פתוחה עד פסק הדין כדי לשרוד את
+העברת 8081 מהאשף לקונסולה. במקביל הדף קורא `progress`, שמחזיר:
+
+```json
+{"ok":true,"state":"installing","output":"…"}
+```
+
+המצבים: `ready`, ‏`validating`, ‏`hostname`, ‏`installing`, ‏`handoff`,
+`verifying`, ‏`done`; או כשל בשם: `validation-failed`, ‏`hostname-failed`,
+`installer-failed`, ‏`verify-failed`, ‏`check-error`. ב-`done` נוספים
+`console_url` ו-`fingerprint`. הפלט מוגבל ל-100,000 התווים האחרונים ולעולם
+אינו מכיל את הסיסמה: היא עוברת למתקין ב-FD 3 (stdin במבחן Windows), לא
+ב-argv, בסביבה, בקובץ המצב או ביומן.
+
+## 31. מסך השרת הפיזי — DCUI (#910 חלק 2)
+
+`python3 -m server.dcui` הוא תהליך root עצמאי על `tty1`; הוא אינו קורא
+HTTP ולכן אימות ואיפוס `admin` עובדים גם כש-`imagectl-server` אינו פעיל.
+הרינדור מקבל snapshot טהור של הנתונים ומפיק ASCII בגודל 80×25.
+
+**קריאות:** טבלת `users` דרך `users.verify`/`users.flags`; מפתחות
+`settings` מסוג `netcfg:<interface>`, ‏`deploy:interface`, ‏`deploy:url`,
+‏`storage:role` ו-`dcui:management_interface` אם הוגדר (אחרת
+`/etc/imagectl/firstboot.status`/override של היחידה); הטבלאות `sessions`,
+`session_members` ו-`storage_nodes`; ‏`/sys/class/net`; תעודת
+`console-tls`; וסבב `systemctl is-active` + `is-enabled` לכל שירות.
+
+**כתיבות:** איפוס `admin` כותב hash של `admin`, ‏`must_change_password=1`
+ו-`auth_epoch`; רשת הניהול כותבת `netcfg:<interface>`, קובץ
+`interfaces.d`, ‏`resolv.conf` וסמן `netcfg/pending.json` דרך אותם
+`netcfg`/`netcfg_host`/`netcfg_rollback` של הקונסולה. אישור מוחק רק את
+הסמן וכותב `dcui:management_interface`; Esc או פקיעה משאירים אותו
+ל-`imagectl-netrollback.timer`.
+
+כל ניסיון אימות ופעולה נרשמים עם `user=dcui`. שמות האירועים:
+`dcui_auth_success`, ‏`dcui_auth_failure`, ‏`dcui_auth_locked`,
+`admin_password_reset_dcui`, ‏`dcui_management_network_restart`,
+`dcui_services_restart`, ‏`dcui_tls_display`, ‏`dcui_wizard_rerun`,
+`dcui_power_action`, ‏`dcui_power_refused`, ‏`dcui_net_rollback_requested`,
+`dcui_net_confirm_refused`,
+ובמסלול הרשת המשותף גם `net_config`, ‏`net_config_unverified`,
+`net_config_refused`, ‏`net_rollback_armed` ו-`net_confirmed`.

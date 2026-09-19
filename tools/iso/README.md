@@ -15,7 +15,7 @@
 | `make-pool.sh` | ‏`apt-get download` של הרשימה **וכל התלויות** (מול status ריק — כלום לא "כבר מותקן") → `pool/{main,contrib}/imagectl/`, ואינדקסי `dists/` (‏`--index-only` מאנדקס עץ ISO) |
 | `preseed.cfg` | ‏d-i אוטומטי: mirror כבוי, חבילות מה-ISO (מסלול ה-cdrom של d-i), הדיסק הראשון שאינו USB, root בלבד, `late_command` |
 | `late-command.sh` | רץ **בתוך המתקין**: מעתיק את הקוד ל-`/opt/imagectl-src`, מתקין את היחידה, ורושם ל-`/etc/imagectl/` **עובדות** — הכרטיס ש-d-i הגדיר (‏`installer-nic`), התפקיד (‏`installer-role`), המניפסט (‏`iso-release.json`) |
-| `firstboot.sh` + `imagectl-firstboot.service` | האתחול הראשון: בונה `initrd.img`/`initrd.img.gui`/`vmlinuz`, ואז `setup-boot-server.sh --servers-if <הכרטיס מההתקנה>` — **בלי `--deploy-if`** |
+| `firstboot.sh` + `imagectl-firstboot.service` | האתחול הראשון: בונה `initrd.img`/`initrd.img.gui`/`vmlinuz`, ואז מפעיל את אשף ה-HTTPS עם עובדות הכרטיס והתפקיד כברירות מחדל |
 | `build-iso.sh` | ‏netinst רשמי (מאומת sha256) + pool + קוד (`git archive` של ה-ref) + preseed + תפריט → ISO hybrid ב-`xorriso -boot_image any replay`; מדפיס `-report_el_torito` |
 | `test-iso.sh` | ‏QEMU/OVMF עם Secure Boot, שני שלבים (התקנה → אתחול ראשון) — **טרם הורץ** (אין KVM במעבדה) |
 
@@ -37,17 +37,18 @@ sudo IMAGECTL_ROOT_PASSWORD='...' tools/iso/build-iso.sh \
 2. ‏d-i מתקין דביאן על הדיסק הראשון שאינו USB, בלי שאלות, בלי רשת. שם
    המחשב `imagectl-server`, ‏root עם הסיסמה שניתנה בבנייה.
 3. אתחול. ‏`imagectl-firstboot` (במסך וב-journal): בונה שני initrd,
-   מעתיק vmlinuz, מריץ את המתקין עם הכרטיס ש-d-i הגדיר, ומסיים ב-
-   ‏`verify-boot-payload.sh`. כניסה ראשונה ב-root (במסך — **אין sshd**,
-   הכרעת נדב 19/09) מחייבת החלפת סיסמה.
-4. הקונסולה: `https://<כתובת>:8081`, ‏admin/admin עם החלפה כפויה. רשת
+   מעתיק vmlinuz ומפעיל את האשף עם הכרטיס והתפקיד ש-d-i רשם כברירות
+   מחדל. כניסה ראשונה ב-root במסך מחייבת החלפת סיסמה.
+4. האשף: `https://<כתובת>:8081`; מאשרים תפקיד ורשת ניהול, hostname
+   וסיסמת `admin`, ורואים את ההתקנה והאימות בזמן אמת. בסיום הקונסולה
+   מקבלת את אותו פורט. רשת
    ההפצה — מדף הרשת.
 
-**שלושה מצבים באתחול הראשון** (`/etc/imagectl/firstboot.status`): ‏`done`;
-‏`network-nic-undecidable` (d-i לא הגדיר רשת, או ה-MAC כבר לא על אף כרטיס
-— **לא מנחשים**, המתקין לא רץ, ההשלמה מהאשף/ידנית עם `--servers-if`);
-‏`check-error` (הבדיקה עצמה לא רצה). כישלון אדום ב-`systemctl status
-imagectl-firstboot`, והיחידה רצה שוב באתחול הבא.
+**מצבי האתחול הראשון** (`/etc/imagectl/firstboot.status`): ‏`wizard-running`
+עד שהמפעיל מחיל; אחר כך `done` או מצב הכשל בשם. כרטיס חסר או MAC שלא נמצא
+הם `network-nic-undecidable` ביומן ומחייבים בחירה באשף — **לא מנחשים**.
+`check-error` הוא כשל בבדיקה עצמה. המתקין אינו רץ עד אישור המפעיל; כשל
+בהחלה נשאר במסך 5 עם המצב המדויק ב-`firstboot.status`.
 
 ## מה נמדד (19/09, שרת המעבדה, QEMU 10.0 ב-TCG — אין KVM)
 
@@ -76,7 +77,7 @@ imagectl-firstboot`, והיחידה רצה שוב באתחול הבא.
 * **Hyper-V Gen2 + Secure Boot וברזל** — הבנייה במעבדה, ה-boot אצל נדב
   (תבנית "Microsoft UEFI Certificate Authority").
 * **שרת משני**: המתקין מחייב `--primary-url`; בלי `imagectl.primary=<url>`
-  בשורת האתחול firstboot נעצר בגלוי (`secondary-needs-primary`). האם
+  בשורת האתחול האשף מציג שדה חובה ריק (`secondary-needs-primary`). האם
   המתקין צריך לקבל משני בלי primary (ה-pairing מהקונסולה) — הכרעת מוצר.
 * ‏reproducibility — אותו ref + netinst + pool → אותו sha256: לא נמדד.
 * ‏`test-iso.sh` — לא הורץ (הרצה ידנית מקבילה נעשתה ב-QEMU/TCG, ראה למעלה).

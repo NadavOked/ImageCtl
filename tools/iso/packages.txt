@@ -111,3 +111,9 @@ linux-image-amd64
 nftables
 # ה-CLI של sqlite — ‏server/db.py עובד דרך python3 (מובנה), הכלי הוא לניפוי.
 sqlite3
+# הקושחה ש-build_initramfs.sh **דורש** מאז #1125 (תיקייה חסרה תחת
+# /lib/firmware עוצרת את הבנייה): rtl_nic תמיד, i915 עם --with-gui. בלעדיהן
+# שלב א' של האתחול הראשון נופל payload-failed — נמדד ב-QEMU (19/09, #910).
+# ה-netinst נושא אותן ב-non-free-firmware, ו-build-iso.sh מאנדקס את הרכיב.
+firmware-realtek
+firmware-intel-graphics

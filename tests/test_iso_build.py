@@ -34,11 +34,14 @@ PACKAGES_TXT = ISO_DIR / "packages.txt"
 PRESEED = ISO_DIR / "preseed.cfg"
 FIRSTBOOT = ISO_DIR / "firstboot.sh"
 LATE_COMMAND = ISO_DIR / "late-command.sh"
+WIZARD_SERVICE = REPO / "install" / "imagectl-wizard.service"
 BUILD_ISO = ISO_DIR / "build-iso.sh"
 BASH_SCRIPTS = ("make-pool.sh", "build-iso.sh", "firstboot.sh", "test-iso.sh")
 
 #: מה שרק ה-ISO מוסיף — אין לו מקור בקבצים האחרים, ולכן מוצהר כאן.
 ISO_ONLY = {"linux-image-amd64", "nftables", "sqlite3"}
+#: תיקיית קושחה ש-build_initramfs.sh דורש (#1125) → החבילה שמביאה אותה בדביאן 13.
+FIRMWARE_PACKAGE = {"rtl_nic": "firmware-realtek", "i915": "firmware-intel-graphics"}
 
 
 def _strip_comments(text: str) -> str:
@@ -113,7 +116,7 @@ def test_packages_txt_is_the_union_of_every_apt_list() -> None:
 
 def test_every_package_in_packages_txt_has_a_source() -> None:
     """הכיוון ההפוך: שורה ב-packages.txt שאין לה מקור היא רשימה שנסחפה."""
-    known = set().union(*initramfs_lists().values(), installer_pkgs(), ISO_ONLY)
+    known = set().union(*initramfs_lists().values(), installer_pkgs(), ISO_ONLY, FIRMWARE_PACKAGE.values())
     orphans = sorted(packages_txt() - known)
     assert not orphans, f"ב-packages.txt בלי מקור ובלי הצהרה ב-ISO_ONLY: {orphans}"
 
@@ -122,6 +125,25 @@ def test_the_iso_only_packages_are_declared_in_packages_txt() -> None:
     missing = sorted(ISO_ONLY - packages_txt())
     assert not missing, f"חסר ב-packages.txt: {missing}"
     assert "linux-image-cloud-amd64" not in packages_txt(), "קרנל cloud — build_initramfs.sh מסרב לו (#904)"
+
+
+def firmware_gate_dirs() -> set[str]:
+    """התיקיות ש-build_initramfs.sh עוצר בלעדיהן: FIRMWARE_DIRS=(...) והצטרפות i915."""
+    text = INITRAMFS.read_text(encoding="utf-8")
+    dirs = {name.strip("\"'") for name in _paren_list(text, "\nFIRMWARE_DIRS=(")}
+    dirs.update(re.findall(r"FIRMWARE_DIRS\+=\((\w+)\)", text))
+    return dirs
+
+
+def test_firmware_the_initramfs_gate_demands_is_on_the_iso() -> None:
+    """‏#1125 הפך תיקיית קושחה חסרה לכישלון בנייה; שרת שהותקן מה-ISO בלי
+    ‏firmware-realtek נפל payload-failed בשלב א' של האתחול הראשון (QEMU, 19/09)."""
+    dirs = firmware_gate_dirs()
+    assert {"rtl_nic", "i915"} <= dirs, dirs
+    unknown = sorted(dirs - FIRMWARE_PACKAGE.keys())
+    assert not unknown, f"תיקיית קושחה בלי חבילה ידועה ב-FIRMWARE_PACKAGE: {unknown}"
+    missing = sorted({FIRMWARE_PACKAGE[d] for d in dirs} - packages_txt())
+    assert not missing, f"build_initramfs.sh ידרוש קושחה שה-ISO לא מתקין: {missing}"
 
 
 def test_no_ssh_server_on_the_product_server() -> None:
@@ -211,13 +233,22 @@ def test_build_iso_substitutes_every_placeholder_the_preseed_has() -> None:
 
 # --- firstboot -----------------------------------------------------------------
 
-def test_firstboot_never_passes_deploy_if_and_builds_with_skip_apt() -> None:
+def test_firstboot_never_passes_deploy_if_builds_payload_and_starts_wizard() -> None:
     code = _strip_comments(FIRSTBOOT.read_text(encoding="utf-8"))
     assert "--deploy-if" not in code, "כרטיס הפצה שנוחש = dnsmasq על הרשת הלא נכונה (R25 §2.5)"
-    assert re.search(r'setup-boot-server\.sh"\s+--servers-if\s+"\$SERVERS_IF"', code)
+    assert "setup-boot-server.sh" not in code, "שלב ב' שייך לאשף ואינו עוד התקנה לא-אינטראקטיבית"
     assert code.count("--skip-apt") == 2, "שני initrd (טקסט + GUI), שניהם בלי apt — החבילות מה-ISO"
+    # ‏#1125: build_initramfs.sh נופל בלי SOURCE_DATE_EPOCH כשאין .git — ו-/opt/imagectl-src
+    # הוא git archive. הזמן מגיע ממניפסט ה-ISO (נמדד ב-QEMU 19/09: payload-failed).
+    assert code.count("--source-date-epoch") == 2, "שני ה-initrd חייבים לקבל --source-date-epoch"
+    assert "source_date_epoch" in code and "iso-release.json" in code
     assert "--with-gui" in code
-    assert "verify-boot-payload.sh" in code
+    assert 'systemctl start imagectl-wizard' in code
+    assert 'install/imagectl-wizard.service' in code
+    unit = WIZARD_SERVICE.read_text(encoding="utf-8")
+    assert "After=network-online.target" in unit
+    assert "--installer-nic /etc/imagectl/installer-nic" in unit
+    assert "--installer-role /etc/imagectl/installer-role" in unit
 
 
 def test_firstboot_reads_the_installer_facts_and_never_guesses_a_nic() -> None:

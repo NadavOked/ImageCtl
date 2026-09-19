@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ImageCtl — אשף התקנה</title>
+  <link rel="stylesheet" href="/design-tokens.css">
+  <link rel="stylesheet" href="/wizard.css">
+</head>
+<body>
+<main class="wizard">
+  <header class="top"><span class="mark">I</span><strong><span dir="ltr">ImageCtl</span></strong><span>התקנה ראשונית</span><small id="server-name"></small></header>
+  <div class="layout">
+    <nav class="steps" aria-label="שלבי ההתקנה">
+      <button data-go="1"><i>1</i><span>תפקיד השרת</span></button>
+      <button data-go="2"><i>2</i><span>רשת הניהול</span></button>
+      <button data-go="3"><i>3</i><span>שם השרת</span></button>
+      <button data-go="4"><i>4</i><span>חשבון ניהול</span></button>
+      <button data-go="5"><i>5</i><span>סיכום והחלה</span></button>
+      <button data-go="6"><i>6</i><span>סיום</span></button>
+    </nav>
+    <section class="panel">
+      <form id="wizard-form" novalidate>
+        <section class="screen" data-step="1">
+          <div class="heading"><h1>תפקיד השרת במערכת</h1><p>התפקיד נבחר בתפריט ההתקנה. אפשר לשנות אותו לפני ההחלה.</p></div>
+          <div class="content narrow">
+            <div class="notice">התפקיד נבחר בתפריט ההתקנה; אפשר לשנותו כאן.</div>
+            <label class="choice"><input type="radio" name="role" value="standalone"><span><b>שרת ראשי</b><small>מנהל את ספריית האימג'ים והמחשבים באתר.</small></span></label>
+            <label class="choice"><input type="radio" name="role" value="secondary"><span><b>שרת משני</b><small>מקבל אימג'ים מהשרת הראשי ומשרת אתר נוסף.</small></span></label>
+            <div id="primary-fields" class="field hidden"><label for="primary_url">כתובת השרת הראשי</label><div class="inline"><input id="primary_url" dir="ltr" placeholder="https://imagectl-main.example:8443"><button id="check-primary" type="button" class="button">בדוק חיבור (8443)</button></div><small>כתובת מלאה כולל פורט 8443.</small><p class="error" data-error="primary_url" role="alert"></p></div>
+            <div id="primary-result" class="notice hidden" role="status"></div>
+            <p class="error" data-error="role" role="alert"></p>
+          </div>
+        </section>
+
+        <section class="screen" data-step="2">
+          <div class="heading"><h1>הגדרת רשת הניהול (הקונסולה)</h1><p>הכרטיס שדרכו נכנסים לקונסולה ב־HTTPS 8081. רשת ההפצה מוגדרת אחר כך מהקונסולה.</p></div>
+          <div class="content">
+            <div class="card"><h2>בחר כרטיס</h2><div class="table-wrap"><table><thead><tr><th></th><th>כרטיס</th><th>קישור</th><th>כתובת עכשיו</th><th>MAC</th></tr></thead><tbody id="nic-list"></tbody></table></div><p class="error" data-error="interface" role="alert"></p></div>
+            <div class="choices"><label class="choice"><input type="radio" name="mode" value="dhcp"><span><b>לקוח DHCP</b><small>מומלץ ברשת המכללה.</small></span></label><label class="choice"><input type="radio" name="mode" value="static"><span><b>כתובת סטטית</b><small>לרשת ניהול ללא DHCP.</small></span></label></div>
+            <fieldset id="static-fields" class="grid2"><div class="field"><label for="address">כתובת IP</label><input id="address" dir="ltr"><p class="error" data-error="address" role="alert"></p></div><div class="field"><label for="netmask">מסכת רשת</label><input id="netmask" value="255.255.255.0" dir="ltr"><p class="error" data-error="netmask" role="alert"></p></div><div class="field"><label for="gateway">שער (רשות)</label><input id="gateway" dir="ltr"><p class="error" data-error="gateway" role="alert"></p></div><div class="field"><label for="dns">DNS (רשות)</label><input id="dns" dir="ltr"><p class="error" data-error="dns" role="alert"></p></div></fieldset>
+            <p class="error" data-error="mode" role="alert"></p>
+          </div>
+        </section>
+
+        <section class="screen" data-step="3">
+          <div class="heading"><h1>שם השרת</h1><p>השם שיופיע בקונסולה, במסך השרת, ביומן ובשרת הראשי.</p></div>
+          <div class="content narrow"><div class="field"><label for="hostname">שם השרת (hostname)</label><input id="hostname" dir="ltr" maxlength="63"><small>אותיות אנגליות קטנות, ספרות ומקפים; לא מתחיל ולא מסתיים במקף.</small><p class="error" data-error="hostname" role="alert"></p></div><div class="card"><h2>איפה השם יופיע</h2><dl><dt>מסך השרת</dt><dd>Hostname</dd><dt>הקונסולה</dt><dd>כותרת השרת ושורת המצב</dd><dt>תעודת TLS</dt><dd>השם ייכלל ב־SAN</dd></dl></div></div>
+        </section>
+
+        <section class="screen" data-step="4">
+          <div class="heading"><h1>חשבון הניהול</h1><p>המשתמש הראשון בקונסולה. שם המשתמש קבוע.</p></div>
+          <div class="content narrow"><div class="field"><label>שם משתמש</label><input value="admin" dir="ltr" disabled></div><div id="current-wrap" class="field hidden"><label for="current_password">סיסמת admin הקיימת</label><input id="current_password" type="password" autocomplete="current-password"><small>נדרשת רק בהרצה חוזרת.</small><p class="error" data-error="current_password" role="alert"></p></div><div class="field"><label for="password">סיסמה</label><input id="password" type="password" autocomplete="new-password"><p class="error" data-error="password" role="alert"></p></div><ul class="rules" aria-live="polite"><li data-rule="length">לפחות 8 תווים</li><li data-rule="letters">אותיות</li><li data-rule="numbers">ספרות</li><li data-rule="special">תו מיוחד</li></ul><div class="field"><label for="password_confirm">אימות הסיסמה</label><input id="password_confirm" type="password" autocomplete="new-password"><p class="error" data-error="password_confirm" role="alert"></p></div></div>
+        </section>
+
+        <section class="screen" data-step="5">
+          <div class="heading"><h1>סיכום לפני החלה</h1><p>מה שיוחל על השרת. אפשר לחזור ולשנות כל סעיף.</p></div>
+          <div class="content"><div id="summary" class="card"></div><div class="card"><h2>מה יקרה בלחיצה על "החל התקנה"</h2><ol class="flow"><li>בדיקת תקינות כוללת</li><li>קבצים</li><li>dnsmasq</li><li>nftables</li><li>imagectl-server</li><li>TLS</li><li>אימות אתחול</li></ol><small>ההתקנה אינה מסתיימת בלי אימות חיובי של מטען האתחול.</small></div></div>
+        </section>
+
+        <section class="screen" data-step="progress">
+          <div class="heading"><h1>מחיל את ההתקנה…</h1><p>אל תכבה את השרת. ההחלה ממשיכה גם אם הדפדפן נסגר.</p></div>
+          <div class="content"><div class="progress"><i id="progress-bar"></i></div><ol id="progress-list" class="progress-list"><li>בדיקת תקינות כוללת</li><li>שם השרת</li><li>קבצים ושירותים</li><li>העברת 8081 לקונסולה</li><li>אימות אתחול</li></ol><details open><summary>הפלט המלא</summary><pre id="output" dir="ltr"></pre></details></div>
+        </section>
+
+        <section class="screen" data-step="failed">
+          <div class="heading danger"><h1>ההחלה נכשלה</h1><p>ההתקנה אינה מדווחת כהושלמה. תקן את הסיבה המוצגת ונסה שוב.</p></div>
+          <div class="content"><div id="failure" class="notice bad" role="alert"></div><details open><summary>הפלט המלא</summary><pre id="failed-output" dir="ltr"></pre></details><div class="card"><h2>מה לעשות</h2><p>חזור לסיכום, בדוק את הערכים ונסה שוב. אם הכשל הוא באימות האתחול, הפלט מציין איזה קובץ או שירות חסר.</p></div><div class="inline"><button id="failure-back" type="button" class="button">חזור לסיכום</button><button id="failure-retry" type="button" class="button primary">נסה שוב</button></div></div>
+        </section>
+
+        <section class="screen" data-step="6">
+          <div class="heading"><h1>סיום ההתקנה</h1><p>מכאן ממשיכים בקונסולה.</p></div>
+          <div class="content"><div class="done"><b>✓</b><div><h2>השרת מוכן לשימוש.</h2><p>המתקין ואימות מטען האתחול הסתיימו בהצלחה.</p></div></div><div class="card"><h2>הקונסולה</h2><a id="console-url" class="console-url" href="#"></a><dl><dt>משתמש</dt><dd dir="ltr">admin</dd><dt>טביעת התעודה (SHA-256)</dt><dd id="fingerprint" class="mono"></dd></dl><div class="notice warn">הדפדפן יציג אזהרה לתעודה עצמית. השווה את הטביעה לפני האישור.</div><a id="console-button" class="button primary link-button" href="#">מעבר לקונסולה</a></div><div class="card"><h2>מה נשאר להגדיר בקונסולה</h2><p>רשת ההפצה מוגדרת מהקונסולה (רשת → רשת ההפצה), ולא באשף.</p></div></div>
+        </section>
+
+        <footer id="actions"><span id="step-label"></span><span class="spacer"></span><button id="back" type="button" class="button">חזור</button><button id="next" type="button" class="button primary">הבא</button></footer>
+      </form>
+    </section>
+  </div>
+</main>
+<script src="/wizard.js"></script>
+</body>
+</html>
