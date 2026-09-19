@@ -542,3 +542,98 @@ def test_secret_file_rotates_after_an_authenticated_client_leaves(tmp_path):
     finally:
         text = monitor.stop()
     assert "rotated session secret" in text, text
+
+
+# --- ‏#949: מצביע מוחלט -----------------------------------------------------
+#
+# הדפדפן שולח PointerEvent עם מיקום **מוחלט** בפריימבאפר (‏`monitor.js`,
+# ‏`fbCoords`). עד #949 ‏`monitor.c` הפך אותו לתזוזה יחסית (‏EV_REL) על התקן
+# "עכבר", והסמן של הגואי — שמצטבר בנפרד, עם gain וגבולות משלו — סטה ממנו:
+# "העכבר קופץ" (נדב, על מחשב הבנייה, 17/09). התיקון: ההתקן מצהיר ABS_X/ABS_Y
+# בטווח 0..w-1 / 0..h-1, וכל PointerEvent (x,y) נכתב כ-ABS_X=x, ABS_Y=y.
+#
+# הראיה כאן היא ההתקן **בקרנל**, לא הקוד: קוראים את `/dev/input/eventN`
+# שהמוניטור יצר, שואלים אותו (‏EVIOCGABS) על הטווח שהצהיר, ומקבלים ממנו את
+# האירועים שהמוניטור הזריק. דורש `/dev/uinput` כתיב — כלומר root במעבדה.
+
+import evdev_lab
+
+UINPUT_NAME = "ImageCtl remote monitor"
+
+WITH_UINPUT = requires_native(
+    ("cc", shutil.which("cc") or shutil.which("gcc")),
+    ("libvncserver", _pkgconfig("libvncserver")),
+    ("/dev/uinput (root)", evdev_lab.uinput_available()),
+    posix=True,
+    why="uinput של המוניטור נבדק במעבדה בלבד, כ-root",
+)
+
+
+def _open_monitor_input_device() -> int:
+    node = evdev_lab.find_event_device(UINPUT_NAME)
+    return os.open(node, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+
+
+@WITH_UINPUT
+def test_input_device_is_an_absolute_pointer_over_the_framebuffer(tmp_path):
+    """ההתקן שנוצר עם `--input` הוא ABS, לא REL, והטווח שלו הוא מידות ה-fb.
+    בקרה שלילית: על main שלפני #949 ההתקן מצהיר EV_REL ואין לו EV_ABS."""
+    binary = _build(tmp_path)
+    monitor = Monitor(tmp_path, binary, extra=("--input",))
+    try:
+        monitor.connect().close()                  # מאזין = ההתקן כבר נוצר
+        fd = _open_monitor_input_device()
+        try:
+            assert evdev_lab.has_bit(fd, 0, evdev_lab.EV_ABS), "no EV_ABS on the device"
+            assert not evdev_lab.has_bit(fd, 0, evdev_lab.EV_REL), "still a relative device"
+            assert evdev_lab.has_bit(fd, evdev_lab.EV_ABS, evdev_lab.ABS_X)
+            assert evdev_lab.has_bit(fd, evdev_lab.EV_ABS, evdev_lab.ABS_Y)
+            assert evdev_lab.has_bit(fd, evdev_lab.EV_KEY, evdev_lab.BTN_LEFT)
+            # לא מסך מגע: native-gui מצייר סמן רק להתקן מוחלט בלי BTN_TOUCH.
+            assert not evdev_lab.has_bit(fd, evdev_lab.EV_KEY, evdev_lab.BTN_TOUCH)
+            _, min_x, max_x = evdev_lab.absinfo(fd, evdev_lab.ABS_X)
+            _, min_y, max_y = evdev_lab.absinfo(fd, evdev_lab.ABS_Y)
+            assert (min_x, max_x) == (0, WIDTH - 1), (min_x, max_x)
+            assert (min_y, max_y) == (0, HEIGHT - 1), (min_y, max_y)
+        finally:
+            os.close(fd)
+    finally:
+        text = monitor.stop()
+    assert "input enabled through" in text, text
+
+
+@WITH_UINPUT
+def test_pointer_event_lands_as_the_same_absolute_position(tmp_path):
+    """‏PointerEvent ב-(x,y) → ‏`EV_ABS ABS_X=x, ABS_Y=y` על ההתקן, וכפתור
+    שמאלי → ‏BTN_LEFT; מיקום מעבר לקצה נצמד לפיקסל האחרון (#850). בקרה
+    שלילית: הקוד הישן מזריק EV_REL (הפרשים) ואף ABS_X אינו מגיע."""
+    binary = _build(tmp_path)
+    monitor = Monitor(tmp_path, binary, extra=("--input",))
+    try:
+        sock = monitor.connect()
+        fd = _open_monitor_input_device()           # לפני הקלט: evdev אינו שומר לקורא שטרם פתח
+        try:
+            with sock:
+                width, height = _handshake(sock)
+                assert (width, height) == (WIDTH, HEIGHT)
+                _pointer(sock, 0, 17, 9)
+                _pointer(sock, 1, 40, 20)           # לחיצה שמאלית ב-(40,20)
+                _pointer(sock, 0, WIDTH + 5, HEIGHT + 5)
+                events = evdev_lab.read_events(fd, timeout=2.0)
+        finally:
+            os.close(fd)
+    finally:
+        text = monitor.stop()
+
+    EV_ABS, EV_KEY, EV_REL = evdev_lab.EV_ABS, evdev_lab.EV_KEY, evdev_lab.EV_REL
+    ABS_X, ABS_Y, BTN_LEFT = evdev_lab.ABS_X, evdev_lab.ABS_Y, evdev_lab.BTN_LEFT
+    relative = [e for e in events if e[0] == EV_REL]
+    assert relative == [], f"relative motion injected: {relative}"
+    positions = [(c, v) for t, c, v in events if t == EV_ABS]
+    assert positions == [
+        (ABS_X, 17), (ABS_Y, 9),
+        (ABS_X, 40), (ABS_Y, 20),
+        (ABS_X, WIDTH - 1), (ABS_Y, HEIGHT - 1),
+    ], f"events: {events}\nlog: {text}"
+    buttons = [(c, v) for t, c, v in events if t == EV_KEY]
+    assert buttons == [(BTN_LEFT, 1), (BTN_LEFT, 0)], buttons

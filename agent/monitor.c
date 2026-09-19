@@ -4,8 +4,15 @@
  * native-gui --backend mem draws when the machine has no display (#835).
  *
  * View-only unless --input is supplied. In input mode this process creates
- * its own uinput keyboard/mouse. native-gui's periodic input_rescan() then
- * discovers and EVIOCGRABs that event device.
+ * its own uinput keyboard + absolute pointer. native-gui's periodic
+ * input_rescan() then discovers and EVIOCGRABs that event device.
+ *
+ * The pointer is absolute (EV_ABS, #949): RFB PointerEvent carries the
+ * framebuffer position, and the device declares ABS_X/ABS_Y over exactly
+ * that range (0..width-1, 0..height-1), so native-gui maps it 1:1. The
+ * earlier relative device (EV_REL deltas) let the GUI's own accumulated
+ * cursor drift from the browser's -- "the mouse jumps" on the build
+ * machine, 17/09.
  */
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
@@ -44,9 +51,10 @@
 
 static volatile sig_atomic_t stopping;
 static int input_fd = -1;
-static int pointer_x;
-static int pointer_y;
-static int pointer_known;
+/* Framebuffer size, the ABS range of the uinput pointer; set in main
+ * before create_uinput. */
+static int fb_width;
+static int fb_height;
 static int previous_buttons;
 /* Keys this process currently holds down through uinput (#839): released
  * when the client that pressed them goes away mid-press. */
@@ -127,6 +135,17 @@ static void enable_key(int fd, int code) {
         fatal("UI_SET_KEYBIT");
 }
 
+static void enable_abs(int fd, int code, int maximum) {
+    struct uinput_abs_setup abs_setup = {
+        .code = (unsigned short)code,
+        .absinfo = { .minimum = 0, .maximum = maximum },
+    };
+
+    if (ioctl(fd, UI_SET_ABSBIT, code) < 0 ||
+        ioctl(fd, UI_ABS_SETUP, &abs_setup) < 0)
+        fatal("UI_ABS_SETUP");
+}
+
 static int create_uinput(void) {
     static const int keys[] = {
         KEY_A, KEY_B, KEY_C, KEY_D, KEY_E, KEY_F, KEY_G, KEY_H, KEY_I,
@@ -159,10 +178,11 @@ static int create_uinput(void) {
     if (fd < 0)
         fatal("open /dev/uinput");
     if (ioctl(fd, UI_SET_EVBIT, EV_KEY) < 0 ||
-        ioctl(fd, UI_SET_EVBIT, EV_REL) < 0 ||
-        ioctl(fd, UI_SET_RELBIT, REL_X) < 0 ||
-        ioctl(fd, UI_SET_RELBIT, REL_Y) < 0)
+        ioctl(fd, UI_SET_EVBIT, EV_ABS) < 0)
         fatal("configure /dev/uinput");
+    /* absinfo.maximum is inclusive: the last pixel, not one past it. */
+    enable_abs(fd, ABS_X, fb_width - 1);
+    enable_abs(fd, ABS_Y, fb_height - 1);
 
     for (i = 0; i < ARRAY_LEN(keys); i++)
         enable_key(fd, keys[i]);
@@ -340,7 +360,6 @@ static void client_gone(rfbClientPtr client) {
             released++;
         }
         previous_buttons = 0;
-        pointer_known = 0;
         if (released)
             sync_input();
     }
@@ -470,27 +489,27 @@ static void pointer_event_ignored(int buttons, int x, int y,
     (void)client;
 }
 
+/* RFB x,y are the framebuffer position. Clamped to the declared ABS
+ * range (#850): a position past the edge lands on the edge, never
+ * outside the screen; evdev itself drops a repeated value, so a client
+ * that resends the same position costs nothing. */
 static void pointer_event(int buttons, int x, int y, rfbClientPtr client) {
-    int dx, dy, left;
+    int left;
     (void)client;
 
     if (input_fd < 0)
         return;
 
-    if (!pointer_known) {
-        pointer_x = x;
-        pointer_y = y;
-        pointer_known = 1;
-    }
-    dx = x - pointer_x;
-    dy = y - pointer_y;
-    pointer_x = x;
-    pointer_y = y;
-
-    if (dx)
-        emit_event(EV_REL, REL_X, dx);
-    if (dy)
-        emit_event(EV_REL, REL_Y, dy);
+    if (x < 0)
+        x = 0;
+    if (x >= fb_width)
+        x = fb_width - 1;
+    if (y < 0)
+        y = 0;
+    if (y >= fb_height)
+        y = fb_height - 1;
+    emit_event(EV_ABS, ABS_X, x);
+    emit_event(EV_ABS, ABS_Y, y);
 
     left = !!(buttons & 1);
     if (left != !!(previous_buttons & 1))
@@ -761,6 +780,8 @@ int main(int argc, char **argv) {
     }
 
     if (input_enabled) {
+        fb_width = (int)var.xres;
+        fb_height = (int)var.yres;
         input_fd = create_uinput();
         screen->kbdAddEvent = keyboard_event;
         screen->ptrAddEvent = pointer_event;

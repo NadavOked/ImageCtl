@@ -16,7 +16,12 @@
 #define NBITS(x) (((x) / BITS_PER_LONG) + 1)
 #define test_bit(bit, arr) (((arr)[(bit) / BITS_PER_LONG] >> ((bit) % BITS_PER_LONG)) & 1)
 
-enum { DEV_KEYBOARD = 1, DEV_MOUSE = 2, DEV_TOUCH = 4 };
+/* DEV_ABSPTR (#949): an absolute pointer that is not a touchscreen --
+ * ABS_X/ABS_Y + BTN_LEFT, no BTN_TOUCH -- i.e. imagectl-monitor's uinput
+ * device, a tablet, a VM pointer. Position maps 1:1 like touch, but the
+ * cursor stays drawn: the person at the screen must see where the remote
+ * operator is. */
+enum { DEV_KEYBOARD = 1, DEV_MOUSE = 2, DEV_TOUCH = 4, DEV_ABSPTR = 8 };
 
 typedef struct {
     int fd, kinds;
@@ -89,7 +94,7 @@ static int probe(Input *in, const char *path) {
                 && ax.maximum > ax.minimum && ay.maximum > ay.minimum) {
                 d.abs_min_x = ax.minimum; d.abs_max_x = ax.maximum;
                 d.abs_min_y = ay.minimum; d.abs_max_y = ay.maximum;
-                d.kinds |= DEV_TOUCH;
+                d.kinds |= test_bit(BTN_TOUCH, key) ? DEV_TOUCH : DEV_ABSPTR;
             }
         }
     }
@@ -112,9 +117,9 @@ Input *input_open(int screen_w, int screen_h) {
     }
     int kinds = 0;
     for (int i = 0; i < in->ndev; i++) kinds |= in->dev[i].kinds;
-    fprintf(stderr, "native-gui: input: %d device(s):%s%s%s\n", in->ndev,
+    fprintf(stderr, "native-gui: input: %d device(s):%s%s%s%s\n", in->ndev,
             kinds & DEV_KEYBOARD ? " keyboard" : "", kinds & DEV_MOUSE ? " mouse" : "",
-            kinds & DEV_TOUCH ? " touch" : "");
+            kinds & DEV_TOUCH ? " touch" : "", kinds & DEV_ABSPTR ? " abs-pointer" : "");
     return in;                                     /* ndev may be 0 -- input_rescan grabs a late device */
 }
 
@@ -132,9 +137,9 @@ void input_rescan(Input *in) {
     int kinds = 0;
     for (int i = 0; i < in->ndev; i++) kinds |= in->dev[i].kinds;
     if (in->ndev > before)
-        fprintf(stderr, "native-gui: input: device appeared, now %d:%s%s%s\n", in->ndev,
+        fprintf(stderr, "native-gui: input: device appeared, now %d:%s%s%s%s\n", in->ndev,
                 kinds & DEV_KEYBOARD ? " keyboard" : "", kinds & DEV_MOUSE ? " mouse" : "",
-                kinds & DEV_TOUCH ? " touch" : "");
+                kinds & DEV_TOUCH ? " touch" : "", kinds & DEV_ABSPTR ? " abs-pointer" : "");
     /* Owner decision: once a keyboard AND a mouse are both present there is
      * nothing left to find, so stop scanning. A machine missing one (a cloner
      * has neither) keeps scanning, so a device plugged in later is still
@@ -203,13 +208,15 @@ static void read_dev(Input *in, Dev *d) {
                 if (ev[i].code == REL_Y) { in->py += ev[i].value * PTR_GAIN; in->moved = 1; }
                 break;
             case EV_ABS:
+                /* Inclusive range: absinfo.maximum is the last pixel (w-1),
+                 * so a device declared over 0..w-1 lands 1:1 (#949). */
                 if (ev[i].code == ABS_X || ev[i].code == ABS_MT_POSITION_X) {
-                    in->px = (ev[i].value - d->abs_min_x) * (double)in->w / (d->abs_max_x - d->abs_min_x);
-                    in->touch_moved = 1;
+                    in->px = (ev[i].value - d->abs_min_x) * (double)(in->w - 1) / (d->abs_max_x - d->abs_min_x);
+                    if (d->kinds & DEV_TOUCH) in->touch_moved = 1; else in->moved = 1;
                 }
                 if (ev[i].code == ABS_Y || ev[i].code == ABS_MT_POSITION_Y) {
-                    in->py = (ev[i].value - d->abs_min_y) * (double)in->h / (d->abs_max_y - d->abs_min_y);
-                    in->touch_moved = 1;
+                    in->py = (ev[i].value - d->abs_min_y) * (double)(in->h - 1) / (d->abs_max_y - d->abs_min_y);
+                    if (d->kinds & DEV_TOUCH) in->touch_moved = 1; else in->moved = 1;
                 }
                 break;
             case EV_SYN:
