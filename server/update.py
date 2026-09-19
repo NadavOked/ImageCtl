@@ -23,7 +23,7 @@ from typing import Callable
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 
-from .db import get_setting, journal, set_setting
+from .db import get_setting, journal, now_iso, set_setting
 
 Hooks = dict[str, Callable]
 
@@ -35,6 +35,11 @@ ENABLED_KEY = "update_enabled"
 PREVIOUS_KEY = "update_previous"
 #: מצב הרצת העדכון האחרון — נשרד את ה-restart כי הוא ב-DB, לא בזיכרון.
 STATUS_KEY = "update_status"
+#: ‏#1000: תוצאת בדיקת-העדכון האחרונה ``{at, current, latest, available,
+#: reason}`` — נכתבת ב-``POST /update/check`` ומוחזרת ב-``GET /update`` כ-
+#: ``last_check``, כדי שהדף יציג "בדיקה אחרונה: <זמן השרת> — <תוצאה>" גם
+#: אחרי רענון, ולא "לא נבדק בסשן הזה" משעון הדפדפן.
+LAST_CHECK_KEY = "update_last_check"
 
 #: הריפו הציבורי — הוא שער ה-CI (CLAUDE.md, "ארבעת הריפואים"). הבדיקה
 #: אף פעם אינה מול הפרטי: שם `tests` לא רץ ואין ראיה שהתג ירוק.
@@ -181,16 +186,34 @@ def _set_status(conn, doc: dict) -> None:
 
 
 def get_status(conn) -> dict | None:
+    return _get_json_setting(conn, STATUS_KEY)
+
+
+def _get_json_setting(conn, key: str) -> dict | None:
     try:
-        raw = get_setting(conn, STATUS_KEY)
+        raw = get_setting(conn, key)
     except Exception:                                    # noqa: BLE001
         return None
     if not raw:
         return None
     try:
-        return json.loads(raw)
+        doc = json.loads(raw)
     except ValueError:
         return None
+    return doc if isinstance(doc, dict) else None
+
+
+def record_last_check(conn, result: dict) -> dict:
+    """‏#1000: שומר את תוצאת הבדיקה עם חותמת השרת. הכתיבה **אינה** נבלעת:
+    בדיקה שרצה ולא נזכרה תציג "לא נבדק" — וזה שקר שקט (עיקרון 5)."""
+    doc = {"at": now_iso(), **result}
+    set_setting(conn, LAST_CHECK_KEY, json.dumps(doc))
+    return doc
+
+
+def get_last_check(conn) -> dict | None:
+    """‏``None`` = מעולם לא נבדק (או רשומה פגומה) — לא "אין חדש"."""
+    return _get_json_setting(conn, LAST_CHECK_KEY)
 
 
 def status_with_verification(conn, hooks: Hooks, repo_dir: str | Path) -> dict:
@@ -290,6 +313,9 @@ def create_update_router(ctx, repo_dir: str | Path, server_base: str,
             "enabled": enabled(ctx.conn),
             "previous": get_setting(ctx.conn, PREVIOUS_KEY),
             "server_name": _server_name(),
+            # ‏#1000: ‏null = מעולם לא נבדק בשרת הזה; אחרת {at, current,
+            # latest, available, reason} כפי שנשמר ב-POST /update/check.
+            "last_check": get_last_check(ctx.conn),
         }
 
     @router.get("/status")
@@ -301,7 +327,7 @@ def create_update_router(ctx, repo_dir: str | Path, server_base: str,
     def check(user=Depends(admin_only)):
         if not enabled(ctx.conn):
             raise HTTPException(404, "עדכון כבוי בהגדרות השרת")
-        result = check_update(hooks, repo_dir, public_url)
+        result = record_last_check(ctx.conn, check_update(hooks, repo_dir, public_url))
         journal(ctx.conn, "update_check",
                f"current={result['current']} latest={result['latest']}", user[0])
         return result

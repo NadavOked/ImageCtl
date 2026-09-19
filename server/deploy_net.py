@@ -98,6 +98,17 @@ def deploy_url(server_ip: str, port: int) -> str:
     return f"http://{server_ip}:{port}"
 
 
+def deploy_ip(server_base: str, state: "DeployState | None") -> str | None:
+    """‏#968: הכתובת שהתחנות רואות — המארח של ``server_base`` (מה שב-GRUB
+    ובשורת הקרנל). ‏``None`` כשרשת ההפצה טרם הוגדרה: אז ``server_base`` הוא
+    ‏loopback, ו-"127.0.0.1" בסקירה היה נתון מומצא (עיקרון 5). ‏``state``
+    ‏``None`` = אין הקשר הפצה (בדיקות/קוד ישן) — הכתובת כפי שהיא."""
+    if state is not None and not state.configured:
+        return None
+    from urllib.parse import urlsplit
+    return urlsplit(server_base).hostname or None
+
+
 # --- מה שנוגע במכונה (hooks) --------------------------------------------------
 
 

@@ -8,6 +8,10 @@ let ME = null;
 function classroomsOn() {
   return !!(ME && ME.capabilities && ME.capabilities.classrooms);
 }
+/* v1 ships without the toolbox (Nadav, 19/09). v1.1 turns ME.capabilities.tools on. */
+function toolsOn() {
+  return !!(ME && ME.capabilities && ME.capabilities.tools);
+}
 let OVERVIEW = null;
 let IMAGES = null, FOLDERS = null;
 let IMAGES_FOLDER = null;
@@ -1058,9 +1062,20 @@ async function loadMachines() {
 
 async function loadHealth() {
   try {
-    HEALTH = await api("/health");
+    // ‏#1000: fetch ישיר ולא api() — זמן המדידה מגיע בכותרת X-Health-Checked-At
+    // (שעון השרת, ISO); הגוף נשאר המערך שכל הקוראים תלויים בו.
+    const response = await fetch("/api/console/health", { credentials: "same-origin" });
+    if (response.status === 401) { showLogin(); throw new Error("לא מחובר"); }
+    if (!response.ok) {
+      let detail = "שגיאה " + response.status;
+      try { detail = (await response.json()).detail || detail; } catch (e) {}
+      const error = new Error(detail); error.status = response.status; throw error;
+    }
+    const checkedAt = response.headers.get("X-Health-Checked-At");
+    HEALTH = await response.json();
     healthError = "";
-    HEALTH_AT = clockNow();
+    // חותמת שלא הגיעה = "זמן המדידה לא נמסר", לא שעון הדפדפן (עיקרון 5).
+    HEALTH_AT = checkedAt ? fmtWhenShort(checkedAt) : "";
     updateAlertBadge();
   } catch (e) {
     HEALTH = null;
@@ -1372,8 +1387,9 @@ function renderCurrent() {
 
 /* ---------- סקירה כללית (#954 גל 1) ----------
    נבנה לפי docs/design/console-redesign/home.md: שלוש שאלות — השרת בסדר?
-   מה רץ עכשיו? מה דורש אותי? — מה-API הקיים בלבד. מה שאין לו API (זמן
-   פעילות) מוצג כ"בקרוב", לא כנתון מומצא. הנתונים המתחלפים (‏/overview,
+   מה רץ עכשיו? מה דורש אותי? — מה-API הקיים בלבד. ‏#968 סגר את הפערים:
+   uptime_seconds ו-deploy_ip ב-/me, severity ב-/journal, folder ב-/tasks —
+   ומה שלא נמדד (null) מוצג בשם ("לא נבדק"), לא כנתון מומצא. הנתונים המתחלפים (‏/overview,
    ‏/tasks) מגיעים מה-polling הקיים; השאר נקרא בכניסה לדף וברענון.
    כל קריאה שנכשלה נשמרת בשם (HOME.err) ומוצגת — לא נקראה ≠ ריקה. */
 let HOME = { net: null, journal: null, nodes: null, transfers: null, ports: null,
@@ -1492,7 +1508,7 @@ function homeNowRows(all = false) {
     const label = t.state === "pending" ? "ממתין שהמחשב יעלה ב-PXE" : t.state === "running" ? "קולט"
       : t.state === "done" ? (t.error ? "הושלם עם אזהרה" : "הושלם") : t.state === "failed" ? "נכשל" : t.state;
     rows.push([UI.nameHtml(`קליטת אימג' — ${t.name || ""}`, `${esc(t.machine || t.mac || "")}${t.disk ? " · " + ltr(t.disk) : ""} · ${ltr(fmtDate(t.created_at) + " " + fmtClock(t.created_at))}`),
-      "ספריית האימג'ים", UI.barRow(v.percent, cls === "err" ? "err" : ""),
+      t.folder ? esc(`תיקיית ${t.folder}`) : "שורש הספרייה", UI.barRow(v.percent, cls === "err" ? "err" : ""),
       UI.status(cls, label + (t.error ? " — " + t.error : "")), UI.acts([["לספרייה", "selectPageById('images')"]])]);
   }
   for (const t of HOME.transfers || []) {
@@ -1562,16 +1578,11 @@ function homeAttention() {
   return UI.card({ title: "דורש טיפול", acts: pill, cls: "c4", body });
 }
 
-/* ל-/journal אין שדה חומרה (Issue פערי ה-API של הסקירה) — עד אז לפי שם
-   ה-event (journal_he.py): כשל/סירוב → אדום; לא-מוכר/לא-מאומת/ביטול/סיכון
-   → כתום; הושלם/אושר → ירוק; השאר מידע. */
-function journalSeverity(row) {
-  const e = String(row.event || "").toLowerCase();
-  if (/_done$|_confirmed$|_cleared$|^login$|_staged$|_received$|_sent$/.test(e)) return "ok";   // לפני "fail": disk_failure_cleared
-  if (/fail|refused|denied|error|abort|lost|disk_failure$/.test(e)) return "err";
-  if (/unknown|unverified|unreadable|nonmember|cancel|risk|stopped|loop_local/.test(e)) return "warn";
-  return "info";
-}
+/* ‏#968: החומרה מגיעה מהשרת (severity ב-/journal, נקבעת ב-journal_he.py לצד
+   התרגום) — לא היוריסטיקה על שם ה-event. כאן רק מיפוי לשם המחלקה בציר-הזמן;
+   ערך זר/חסר = "info" (ניטרלי), לא ניחוש. */
+const JOURNAL_CLS = { ok: "ok", warn: "warn", err: "err", info: "info" };
+function journalCls(row) { return JOURNAL_CLS[row && row.severity] || "info"; }
 
 function homeEvents(limit) {
   const journal = Array.isArray(HOME.journal) ? HOME.journal : null;
@@ -1580,7 +1591,7 @@ function homeEvents(limit) {
   if (!journal) body = UI.note("warn", esc("היומן לא נקרא" + (HOME.err.journal ? ": " + HOME.err.journal : " עדיין")));
   else if (!journal.length) body = UI.empty("אין אירועים עדיין");
   else body = UI.timeline(journal.slice(0, limit).map((r) => ({
-    t: isToday(r.ts) ? fmtClock(r.ts) : fmtDate(r.ts), cls: journalSeverity(r),
+    t: isToday(r.ts) ? fmtClock(r.ts) : fmtDate(r.ts), cls: journalCls(r),
     text: esc(r.label || r.text || r.event || ""), who: r.user || "" })));
   return UI.card({ title: limit >= 50 ? "אירועים" : "אירועים אחרונים", small: limit >= 50 ? "50 האחרונים" : "", acts, cls: limit >= 50 ? "c12" : "c8", body });
 }
@@ -1611,6 +1622,26 @@ function homeServerCard() {
   return UI.card({ title: "השרת", acts, cls: "c4", body: UI.kv(pairs) });
 }
 
+/* ‏#968: "פעיל 6 ימים 3 שעות" מ-/me.uptime_seconds (המכונה, /proc/uptime);
+   ‏null = השרת לא הצליח לקרוא → "זמן פעילות לא נבדק" — בשם, לא 0 (עיקרון 5). */
+function fmtUptime(seconds) {
+  const s = Number(seconds);
+  if (seconds == null || !Number.isFinite(s) || s < 0) return "";
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+  if (d) return `${d} ${d === 1 ? "יום" : "ימים"} ${h} ${h === 1 ? "שעה" : "שעות"}`;
+  if (h) return `${h} ${h === 1 ? "שעה" : "שעות"} ${m} ${m === 1 ? "דקה" : "דקות"}`;
+  return `${m} ${m === 1 ? "דקה" : "דקות"}`;
+}
+function homeUptime() {
+  if (!ME || ME.uptime_seconds == null) return `<span class="muted">זמן פעילות לא נבדק</span>`;
+  return esc(`פעיל ${fmtUptime(ME.uptime_seconds)}`);
+}
+/* ‏#968: כתובת השרת בעיני התחנות (/me.deploy_ip); ‏null = רשת ההפצה לא הוגדרה (#1088). */
+function homeDeployIp() {
+  if (!ME || !("deploy_ip" in ME)) return "";
+  return ME.deploy_ip ? `<span class="mono">${esc(ME.deploy_ip)}</span>` : `<span class="muted">רשת הפצה לא הוגדרה</span>`;
+}
+
 function home(tab = 0) {
   const tabs = homeTabs();
   const o = OVERVIEW;
@@ -1621,7 +1652,7 @@ function home(tab = 0) {
   const actions = `<button class="btn primary" onclick="selectPageById('deploy')">+ סבב הפצה</button>`
     + (isAdmin() ? `<button class="btn" onclick="openCapture().catch(e => toast(e.message))">+ קליטת אימג'</button>` : "")
     + `<button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>`;
-  const sub = [esc(ME && ME.server_name || ""), ME && ME.version ? esc(ME.version) : "", UI.soon("זמן פעילות")].filter(Boolean).join(" · ");
+  const sub = [esc(ME && ME.server_name || ""), homeDeployIp(), ME && ME.version ? esc(ME.version) : "", homeUptime()].filter(Boolean).join(" · ");
   const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים" }, { label: "סקירה כללית" }], icon: "server",
     name: "שרת אימג'ים", sub, pill, actions, tabs, tab });
   const stale = overviewError ? `<div class="c12">${UI.note("warn", esc(overviewError))}</div>` : "";
@@ -2281,7 +2312,7 @@ function imageHistory(img) {
       text: esc(`נקלט ממחשב הבנייה ${t.machine || t.mac || ""}${t.disk ? " · " + t.disk : ""}`) + (t.error ? ` — ${esc(t.error)}` : ""), who: "" });
   }
   const j = IMG.history[img.id];
-  if (Array.isArray(j)) for (const r of j) events.push({ ts: r.ts, cls: journalSeverity(r), text: esc(r.label || r.event) + (r.text ? ` — ${esc(r.text)}` : ""), who: r.user });
+  if (Array.isArray(j)) for (const r of j) events.push({ ts: r.ts, cls: journalCls(r), text: esc(r.label || r.event) + (r.text ? ` — ${esc(r.text)}` : ""), who: r.user });
   events.sort((a, b) => String(b.ts).localeCompare(String(a.ts)));
   return events.map((e) => ({ t: isToday(e.ts) ? fmtClock(e.ts) : fmtDate(e.ts), cls: e.cls, text: e.text, who: e.who }));
 }
@@ -3438,7 +3469,7 @@ function machineDrawerHtml(m) {
     ]);
   const h = MCH.history[m.mac];
   const history = Array.isArray(h) && h.length
-    ? UI.timeline(h.slice(0, 20).map((r) => ({ t: isToday(r.ts) ? fmtClock(r.ts) : fmtDate(r.ts), cls: journalSeverity(r), text: esc(r.label || r.event || "") + (r.text ? " — " + esc(r.text) : ""), who: r.user || "" })))
+    ? UI.timeline(h.slice(0, 20).map((r) => ({ t: isToday(r.ts) ? fmtClock(r.ts) : fmtDate(r.ts), cls: journalCls(r), text: esc(r.label || r.event || "") + (r.text ? " — " + esc(r.text) : ""), who: r.user || "" })))
     : h && h.error ? UI.note("warn", "היומן לא נקרא: " + esc(h.error))
     : `<div class="muted">${Array.isArray(h) ? "אין אירועים ביומן למחשב הזה (20 האחרונים)." : "טוען את היומן…"}</div>`;
   const foot = admin
@@ -3642,17 +3673,29 @@ function updateStatusHtml(status) {
   return "";
 }
 
+/* ‏#1000: "היום HH:MM" / "dd/mm/yyyy HH:MM" מחותמת ISO של השרת. */
+function fmtWhenShort(ts) {
+  if (!ts) return "";
+  return isToday(ts) ? `היום ${fmtClock(ts)}` : `${fmtDate(ts)} ${fmtClock(ts)}`;
+}
+/* ‏#1000: שורת "בדיקה אחרונה" — מ-/update.last_check (השרת זוכר), לא מהסשן.
+   ‏null = מעולם לא נבדק בשרת הזה. "הבדיקה נכשלה" (reason) ≠ "אין חדש". */
+function updateLastCheckText(u) {
+  if (UPDATE_CHECK && UPDATE_CHECK.failed) return `${UPDATE_CHECK.at} — ${UPDATE_CHECK.reason}`;   // הבקשה עצמה נכשלה — לא נשמרה בשרת
+  const c = u && u.last_check;
+  if (!c) return "מעולם לא נבדק בשרת הזה";
+  const what = c.available ? `יש עדכון: ${c.current || "?"} → ${c.latest}`
+    : c.latest ? `כבר על הגרסה העדכנית (${c.current})` : (c.reason ? `הבדיקה נכשלה: ${c.reason}` : "לא נמצאה גרסה חדשה יותר");
+  return `${fmtWhenShort(c.at)} — ${what}`;
+}
+
 function healthUpdateCard() {
   let body;
   if (updateError) body = UI.note("err", `‏/update לא נקרא: ${esc(updateError)}`);
   else if (!HEALTH_UPDATE) body = UI.empty("‏/update לא נקרא עדיין");
   else {
     const u = HEALTH_UPDATE;
-    let last = "לא נבדק בסשן הזה";
-    if (UPDATE_CHECK) {
-      last = `${UPDATE_CHECK.at} — ` + (UPDATE_CHECK.available ? `יש עדכון: ${UPDATE_CHECK.current || "?"} → ${UPDATE_CHECK.latest}`
-        : UPDATE_CHECK.latest ? `כבר על הגרסה העדכנית (${UPDATE_CHECK.current})` : (UPDATE_CHECK.reason || "לא נמצאה גרסה חדשה יותר"));
-    }
+    const last = updateLastCheckText(u);
     const pairs = [["מותקן", u.current ? `<span class="mono">${esc(u.current)}</span>` : "לא ידועה (אין תגית git על העץ)"],
       ["קודם", u.previous ? `<span class="mono">${esc(u.previous)}</span> (חזרה זמינה)` : "—"],
       ["בדיקה אחרונה", esc(last)]];
@@ -3673,11 +3716,14 @@ function healthUpdateCard() {
 async function healthUpdateCheck() {
   try {
     const r = await post("/update/check", {});
-    UPDATE_CHECK = { ...r, at: clockNow() };
+    // ‏#1000: התשובה היא המסמך שהשרת שמר (עם `at` שלו) — אותו דבר ש-GET /update יחזיר.
+    UPDATE_CHECK = r;
+    if (HEALTH_UPDATE) HEALTH_UPDATE.last_check = r;
     UPDATE_INFO.latest = r.latest;
   } catch (e) {
-    // "הבדיקה נכשלה" ≠ "אין חדש" (עיקרון 5)
-    UPDATE_CHECK = { at: clockNow(), available: false, latest: null, reason: "הבדיקה נכשלה: " + e.message };
+    // הבקשה לשרת נכשלה (404 מתג כבוי / רשת): לא נשמר בשרת, ולכן שעון הדפדפן
+    // ובשם — "הבדיקה נכשלה" ≠ "אין חדש" (עיקרון 5)
+    UPDATE_CHECK = { at: clockNow(), available: false, latest: null, failed: true, reason: "הבדיקה נכשלה: " + e.message };
     toast(e.message);
   }
   if (current === "health") renderCurrent();
@@ -3698,7 +3744,7 @@ function health() {
   else if (n("off")) pill = UI.pill("", "חלק כבוי");
   else pill = UI.pill("ok", "הכל תקין");
   const sub = HEALTH
-    ? [`${checks.length} בדיקות`, `נקרא ${HEALTH_AT}`, ...counts, "המתגים (SSH, מוניטור, DHCP) — בעמוד הפורטים"].map(esc).join(" · ")
+    ? [`${checks.length} בדיקות`, HEALTH_AT ? `נבדק ${HEALTH_AT}` : "זמן המדידה לא נמסר", ...counts, "המתגים (SSH, מוניטור, DHCP) — בעמוד הפורטים"].map(esc).join(" · ")
     : `‏/health לא נקרא: ${esc(healthError)}`;
   const actions = `<button class="btn primary" onclick="loadHealth()">בדוק עכשיו</button>`;
   const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "תשתית" }, { label: "בריאות ושירותים" }],
@@ -3855,7 +3901,7 @@ function userRevokeSessions(name) {
    נבנה לפי docs/design/console-redesign/logs.md: יומן אחד (לא "אירועים/Audit"),
    שורת סינון בדף (q · סוג · משתמש · טווח) — לא במודאל — מול
    ‏/journal?q&event&user&from&to&limit; "עוד" מגדיל limit (השרת: עד 1,000;
-   אין offset — דורש API). חומרה = journalSeverity (event → ok/info/warn/err);
+   אין offset — דורש API). חומרה = severity מהשרת (#968; ok/info/warn/err);
    "יעד" כעמודה מבנית — דורש API, ולכן text מוצג מתחת למשפט. */
 let LOG = { q: "", event: "", user: "", range: "", since: "", until: "", limit: 200,
             rows: null, err: "", truncated: false, events: null };
@@ -3914,7 +3960,7 @@ function logMore() { LOG.limit = Math.min(1000, LOG.limit + 200); loadJournalDat
 function logEventLabel(ev) { const e = (LOG.events || []).find((x) => x.event === ev); return e ? e.label : ev; }
 
 function logRowHtml(r, i) {
-  const cls = journalSeverity(r);
+  const cls = journalCls(r);
   const t = isToday(r.ts) ? fmtHour(r.ts) : `${fmtDate(r.ts)} ${fmtHour(r.ts)}`;
   return { attrs: `onclick="openLogDetail(${i})" tabindex="0"`, cells: [
     `<span class="mono">${esc(t)}</span>`,
@@ -3960,13 +4006,13 @@ function logs() {
       : `<span class="cap">${rows.length >= 1000 ? "מגבלת השרת: 1,000 שורות — צמצמו את הסינון" : "זה הכול לסינון הזה"}</span>`;
     body = `<div class="c12 card">${logBarHtml(rows)}${truncated ? `<div style="padding:10px 12px 0">${truncated}</div>` : ""}<div class="card-b flush">${table}</div><div class="dg-bar foot"><span class="n">מוצגים ${rows.length}</span><span class="sp"></span>${more}</div></div>`;
   }
-  const cap = `<div class="c12 cap">לחיצה על שורה פותחת את הפרטים הטכניים (event, המזהים). הצבע = מיפוי event → חומרה בקונסולה (journalSeverity). ייצוא CSV ועמודת "יעד" מבנית — דורש API.</div>`;
+  const cap = `<div class="c12 cap">לחיצה על שורה פותחת את הפרטים הטכניים (event, המזהים). הצבע = חומרת האירוע כפי שהשרת קבע (severity ב-/journal). ייצוא CSV ועמודת "יעד" מבנית — דורש API.</div>`;
   return `<div class="page">${header}<div class="body">${body}${cap}</div></div>`;
 }
 function openLogDetail(i) {
   const row = (LOG.rows || [])[i];
   if (!row) { toast("אירוע לא נמצא"); return; }
-  const cls = journalSeverity(row);
+  const cls = journalCls(row);
   openDrawer("פרטי אירוע", `<div class="page drw">${UI.kv([
     ["זמן", `<span class="mono">${esc(fmtDate(row.ts))} ${esc(fmtHour(row.ts))}</span>`],
     ["חומרה", UI.status(cls, LOG_SEV_HE[cls] || cls)],
@@ -4585,7 +4631,8 @@ function healthCheckById(id) {
 /* ---------- #954 גל 5/#996: רשת › פורטים — טבלה אחת, מתג בכל שורה ----------
    docs/design/console-redesign/network-ports.md + docs/interfaces.md §16.
    מקור אחד לכל שורה: הכול מגיע מ-/ports (id, state/detail/bind, ו-#996:
-   enabled/listening/toggle/toggle_url/confirm_word/confirm_when/off_means).
+   enabled/listening/toggle/toggle_url/confirm_word/confirm_when/off_means;
+   #1013: warning_he — TFTP 69 הוא מתג "confirm" רגיל, dnsmasq בצד השרת).
    DHCP 67, PXE proxy 4011, מוניטור 5900 ו-SSH לתחנות ממשיכים לפנות לאותם
    endpoints כמו קודם (net.js / monitorToggle / sshToggle) — toggle_url של
    השורה מצביע לשם ואינו /ports/{id}, ו-PUT /ports/{id} עליהן היה מקבל 409.
@@ -4609,6 +4656,9 @@ const PORT_OFF_MEANS = {
 };
 const PORT_API_NEEDED = "דורש API (#996)";
 const offMeansNote = (text) => `<div class="sheet-note danger">מה קורה אם מכבים: ${esc(text)}</div>`;
+/* #1013: אזהרה שהשרת שולח לשורה (`warning_he`, TFTP 69) — מוצגת במודאל **לפני**
+   שדה הקלדת שם השרת, במקום "מה קורה אם מכבים" הגנרי (הכרעת נדב 19/09). */
+const warningNote = (text) => `<div class="sheet-note danger" data-testid="port-warning">${esc(text)}</div>`;
 
 function nicBody(n, over) {
   return { enabled: n.enabled, proxy: n.proxy, trunk: n.trunk, range_start: n.range_start, range_end: n.range_end,
@@ -4696,7 +4746,7 @@ function portServerToggle(p) {
   if (p.toggle === "none") { toast(`אין מתג לפורט הזה: ${p.off_means || p.detail || ""}`); return; }
   if (p.toggle === "confirm" && portConfirmDirection(p, enabling)) {
     sheet({ title, sub: p.desc || "", danger: true, submitLabel: enabling ? "הדלק" : "כבה",
-      note: enabling ? "" : offMeansNote(p.off_means || ""),
+      note: enabling ? "" : (p.warning_he ? warningNote(p.warning_he) : offMeansNote(p.off_means || "")),
       verify: { label: "להמשך יש להקליד את שם השרת:", mustEqual: word },
       onSubmit: () => send({ confirm: word }) });
     return;
@@ -6050,6 +6100,7 @@ function pageAllowed(id) {
   if (!ME) return false;
   if (id === "branches") return isAdmin() && !!ME.capabilities?.interbranch_transfer;
   if (id === "branch") return isAdmin() && !!ME.capabilities?.enroll_secondary;
+  if (id === "tools") return isAdmin() && toolsOn();   // v1 בלי ארגז הכלים; v1.1 מדליק
   return ["home", "images", "deploy"].includes(id) || isAdmin();
 }
 function wireRestoredPage() {

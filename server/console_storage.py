@@ -24,6 +24,7 @@ from starlette.websockets import WebSocketDisconnect
 from . import (auth, interserver_auth, monitor, registry, storage_client,
                storage_nodes, storage_transfer)
 from .api import ServerContext
+from .db import now_iso
 
 
 def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
@@ -178,6 +179,46 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
             raise HTTPException(extra.status, extra.detail)
         return {"id": tid}
 
+    # ‏#1017: כל פרוקסי רושם את תוצאת הקריאה על השורה (``record_contact``)
+    # ומחזיר את שלושת שדות המגע (``last_seen_at``/``last_error``/
+    # ‏``last_error_at``) — זמן השרת, לא שעון הדפדפן. "תשובה לא צפויה" היא
+    # מגע (המשני ענה) **וגם** כשל (התשובה אינה שמישה) — נרשמת ככשל.
+
+    def _contact(node, error: str | None) -> dict:
+        storage_nodes.record_contact(ctx.conn, node["id"], error=error)
+        return storage_nodes.contact_fields(ctx.conn, node["id"])
+
+    @router.post("/storage-nodes/{nid}/check")
+    def node_check(nid: str, user=Depends(require_standalone)):
+        """‏#1017: "בדוק חיבור" — ‏``GET /ping`` המאומת של המשני בלבד, בלי
+        לשלוף מכונות או אימג'ים. ‏``connected:false`` עם הסיבה — 200, לא 5xx;
+        משני מושבת אינו נשאל (ואינו נרשם כ"לא ענה")."""
+        node = storage_nodes.node_row(ctx.conn, nid)
+        if node is None:
+            raise HTTPException(404, "שרת משני לא קיים")
+        if node["disabled_at"]:
+            return {"connected": False, "error": "השרת המשני מושבת",
+                    "checked_at": now_iso(), "node_id": None, "protocol_version": None,
+                    **storage_nodes.contact_fields(ctx.conn, node["id"])}
+        try:
+            client, token = storage_nodes.node_client(ctx.conn, data_dir, node)
+            with client:
+                answer = client.ping(token)
+        except Exception as exc:                             # noqa: BLE001
+            error = interserver_auth.redact_secrets(str(exc))
+            return {"connected": False, "error": error, "checked_at": now_iso(),
+                    "node_id": None, "protocol_version": None,
+                    **_contact(node, error)}
+        if not isinstance(answer, dict) or answer.get("ok") is not True:
+            error = "תשובה לא צפויה מהמשני"
+            return {"connected": False, "error": error, "checked_at": now_iso(),
+                    "node_id": None, "protocol_version": None,
+                    **_contact(node, error)}
+        return {"connected": True, "error": None, "checked_at": now_iso(),
+                "node_id": answer.get("node_id"),
+                "protocol_version": answer.get("protocol_version"),
+                **_contact(node, None)}
+
     @router.get("/storage-nodes/{nid}/images")
     def node_images(nid: str, user=Depends(require_standalone)):
         """פרוקסי ל-``GET /images`` של המשני. כשל חיבור = ``connected:false``."""
@@ -185,19 +226,22 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
         if node is None:
             raise HTTPException(404, "שרת משני לא קיים")
         if node["disabled_at"]:
-            return {"connected": False, "error": "השרת המשני מושבת", "images": []}
+            return {"connected": False, "error": "השרת המשני מושבת", "images": [],
+                    **storage_nodes.contact_fields(ctx.conn, node["id"])}
         try:
             client, token = storage_nodes.node_client(ctx.conn, data_dir, node)
             with client:
                 answer = client.get_json("/images", token)
         except Exception as extra:                           # noqa: BLE001
-            return {"connected": False,
-                    "error": interserver_auth.redact_secrets(str(extra)),
-                    "images": []}
+            error = interserver_auth.redact_secrets(str(extra))
+            return {"connected": False, "error": error, "images": [],
+                    **_contact(node, error)}
         if not isinstance(answer, list):
-            return {"connected": False, "error": "תשובה לא צפויה מהמשני",
-                    "images": []}
-        return {"connected": True, "error": None, "images": answer}
+            error = "תשובה לא צפויה מהמשני"
+            return {"connected": False, "error": error, "images": [],
+                    **_contact(node, error)}
+        return {"connected": True, "error": None, "images": answer,
+                **_contact(node, None)}
 
     # --- צפייה במשני: המכונות שלו (#655 v1) ----------------------------------
     #
@@ -211,21 +255,23 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
         if node is None:
             raise HTTPException(404, "שרת משני לא קיים")
         if node["disabled_at"]:
-            return {"connected": False, "error": "השרת המשני מושבת", "machines": []}
+            return {"connected": False, "error": "השרת המשני מושבת", "machines": [],
+                    **storage_nodes.contact_fields(ctx.conn, node["id"])}
         try:
             client, token = storage_nodes.node_client(ctx.conn, data_dir, node)
             with client:
                 answer = client.get_json("/machines", token)
         except Exception as exc:                             # noqa: BLE001
-            return {"connected": False,
-                    "error": interserver_auth.redact_secrets(str(exc)),
-                    "machines": []}
+            error = interserver_auth.redact_secrets(str(exc))
+            return {"connected": False, "error": error, "machines": [],
+                    **_contact(node, error)}
         machines = answer.get("machines")
         if not isinstance(machines, list):
-            return {"connected": False, "error": "תשובה לא צפויה מהמשני",
-                    "machines": []}
+            error = "תשובה לא צפויה מהמשני"
+            return {"connected": False, "error": error, "machines": [],
+                    **_contact(node, error)}
         return {"connected": True, "error": None, "machines": machines,
-                "node_id": answer.get("node_id")}
+                "node_id": answer.get("node_id"), **_contact(node, None)}
 
     # --- מוניטור למכונה של המשני, דרך המשני (#655 v1) ------------------------
     #

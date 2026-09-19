@@ -459,6 +459,9 @@ def main() -> None:
                              storage_role=args.storage_role,
                              primary_url=args.primary_url,
                              known_macs_hooks={"apply": dhcp_host.apply_known_macs},
+                             # ‏#1013: קובץ ה-dnsmasq הראשי נגזר מה-DB בעלייה —
+                             # כאן בלבד, מאותו טעם כמו known_macs_hooks.
+                             sync_dnsmasq=True,
                              # ‏#855: מותקן כאן תמיד — כמו known_macs_hooks,
                              # ומאותו טעם: ברירת מחדל ב-create_runtime הייתה
                              # קוראת את קובץ המכונה בכל הרצת pytest.

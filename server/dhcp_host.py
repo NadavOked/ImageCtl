@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 DEFAULT_CONF = "/etc/dnsmasq.d/imagectl-dhcp.conf"
+#: קובץ המתקין (‏#1013) — נקרא כאן כדי לדעת אם `enable-tftp` עדיין יושב בו.
+INSTALLER_CONF = "/etc/dnsmasq.d/imagectl.conf"
 PROXY_CONF = "/etc/imagectl/dnsmasq-proxy.conf"
 PROXY_UNIT = "imagectl-proxy"
 
@@ -299,6 +301,19 @@ def read_active_conf(conf_path: str | Path = DEFAULT_CONF) -> str | None:
     """תוכן קובץ ה-dnsmasq הפעיל, או None אם לא ניתן לקרוא אותו."""
     try:
         return Path(conf_path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def read_installer_conf(conf_path: str | Path = INSTALLER_CONF) -> str | None:
+    """קובץ ה-dnsmasq **של המתקין** (‏#1013), בשלושה מצבים — עיקרון 5:
+    הטקסט כשנקרא; ‏`""` כשהקובץ **אינו קיים** (ראיה חיובית: אין קובץ
+    שיכול לשאת `enable-tftp`); ‏`None` כשהוא קיים ולא ניתן לקרוא אותו —
+    "לא הצלחנו לבדוק", שאסור לקפל ל"אין"."""
+    try:
+        return Path(conf_path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ""
     except OSError:
         return None
 

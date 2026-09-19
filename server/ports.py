@@ -31,10 +31,12 @@
 **מה נשאר במקום אחר, בכוונה.** ‏DHCP 67 ו-proxy 4011 (`PUT /net/interfaces/
 {n}`), מוניטור 5900 (`PUT /monitor/settings`) ושתי דלתות ה-SSH (`/ssh/…`)
 כבר יש להם מתג עם הראיה שלהם — ‏`/ports` **מצביע** אליהם (`toggle_url`) ואינו
-משכפל. ‏TFTP 69 אין לו מתג: ‏`enable-tftp` יושב בקובץ של המתקין
-(`/etc/dnsmasq.d/imagectl.conf`), ואין ב-dnsmasq דרך לבטל אותו מקובץ
-אחר — הסרה משם היא שינוי במתקין ובשרתים המותקנים, לא בשרת (ראה Issue
-משלו). מולטיקאסט 9000–9001 הוא תהליך udp-sender של סבב, לא מאזין.
+משכפל. ‏TFTP 69 (‏#1013) הוא dnsmasq: המתג נשמר כמו כל פורט (`port:tftp`)
+ומוחל דרך ה-render של הקונסולה (`console_dhcp.apply_dnsmasq` — ‏`enable-tftp`
+נכתב בקובץ שהשרת מרנדר, לא בקובץ המתקין), והראיה היא `ss -ulnp`. שרת
+שקובץ המתקין שלו עדיין נושא `enable-tftp` (שודרג בלי להריץ את המתקין)
+מקבל `toggle: none` עם הסבר — לא "כבוי" מזויף (`tftp_switch`). מולטיקאסט
+9000–9001 הוא תהליך udp-sender של סבב, לא מאזין.
 """
 
 from __future__ import annotations
@@ -49,7 +51,7 @@ from typing import Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from . import auth
+from . import auth, dhcp
 from .db import get_setting, journal, set_setting
 
 SETTING_PREFIX = "port:"
@@ -409,6 +411,44 @@ OWN = {
                     "שרתים משניים לא יוכלו להירשם או לסנכרן מול השרת הזה"),
 }
 
+#: ‏#1013 — TFTP 69. האזהרה מוצגת בקונסולה **לפני** שדה הקלדת שם השרת
+#: (הכרעת נדב 19/09); ‏v2 יוסיף את מחשבי הכיתה לניסוח.
+TFTP_WARNING_HE = ("כיבוי 69 (TFTP) עוצר את ה-PXE: מחשבי בנייה ושיכפול לא יעלו "
+                   "מהשרת.")
+TFTP_OFF_MEANS = ("אין shim/GRUB ותפריט — אף מחשב לא עולה ב-PXE מהשרת הזה, "
+                  "וסבבים לא יתחילו")
+
+
+def tftp_switch(conn, installer_conf: str | None) -> dict:
+    """שדות המתג של שורת `tftp` ב-`/ports` (‏#1013), לפי **קובץ המתקין**:
+
+    * ‏`installer_conf` הוא הטקסט של `/etc/dnsmasq.d/imagectl.conf` (‏`""`
+      = אין קובץ), או `None` = קיים ולא נקרא (`dhcp.read_installer_conf`).
+    * הקובץ עדיין נושא `enable-tftp` → **אין מתג** (`none`): dnsmasq קורא את
+      /etc/dnsmasq.d במצטבר, והקובץ שהשרת מרנדר אינו יכול לבטל אותו.
+      זה מצב שדרוג (המתקין לא הורץ מחדש), ו-`off_means` אומר מה לעשות.
+    * לא נקרא → גם `none`, בשם: "לא ידוע אם המתג יכול לכבות" אינו "יכול".
+    * אחרת → `confirm` מאחורי הקלדת שם השרת (עיקרון 7), כמו 8080/8081.
+    """
+    if installer_conf is None:
+        return {"toggle": "none", "enabled": None,
+                "off_means": (f"אין מתג: קובץ המתקין ({dhcp.INSTALLER_CONF}) לא נקרא, "
+                              "ולכן לא ידוע אם enable-tftp עדיין יושב בו — "
+                              "כיבוי מכאן היה יכול להיראות ככבוי בזמן ש-69 מאזין. "
+                              f"כיבוי = {TFTP_OFF_MEANS}")}
+    if dhcp.installer_serves_tftp(installer_conf):
+        return {"toggle": "none", "enabled": None,
+                "off_means": (f"אין מתג: enable-tftp עדיין יושב בקובץ המתקין "
+                              f"({dhcp.INSTALLER_CONF}) ו-dnsmasq אינו יודע לבטלו "
+                              "מקובץ אחר. הריצו את המתקין מחדש (מגרסה זו הוא אינו "
+                              "כותב את השורה, והשרת כותב אותה בקובץ שלו) — ואז "
+                              f"המתג יעבוד. כיבוי = {TFTP_OFF_MEANS}")}
+    return {"toggle": "confirm", "enabled": enabled(conn, "tftp"),
+            "toggle_url": "/api/console/ports/tftp",
+            "confirm_word": server_name(conn), "confirm_when": "off",
+            "off_means": TFTP_OFF_MEANS, "warning_he": TFTP_WARNING_HE}
+
+
 #: שורות שהמתג שלהן חי במקום אחר — ‏`/ports` מצביע לשם.
 ELSEWHERE = {
     "dhcp": "/api/console/net/interfaces/{name}",
@@ -532,13 +572,18 @@ def firewall_status(ruleset: str | None) -> tuple[str, str]:
 
 
 def create_ports_router(ctx, snapshot: Callable[[], list[dict]],
-                        listeners) -> APIRouter:
+                        listeners, dnsmasq_apply: Callable[[str, object], str | None] | None = None,
+                        ) -> APIRouter:
     """‏`PUT /api/console/ports/{id}` — ‏admin בלבד. נתלה בראוטר הבריאות
     (`/api/console`), כמו `/ssh`, כי המתג והחיווי הם אותם hooks.
 
     ‏`def` ולא `async def`, בכוונה (אותו לקח כמו console_ssh): המעבר עצמו
     רץ על לולאת האירועים דרך `Listeners.request`, ו-endpoint אסינכרוני
     היה חוסם את הלולאה שהוא ממתין לה.
+
+    ‏`dnsmasq_apply(what, user_id)` (‏#1013): מרנדר ומחיל את קובצי ה-dnsmasq
+    מה-DB — זה מה שמכבה/מדליק את TFTP 69 בפועל (`console_dhcp.apply_dnsmasq`).
+    ‏None = אין חיבור ל-dnsmasq בתהליך הזה, והמתג אומר זאת.
     """
     router = APIRouter(prefix="/ports")
     _current_user, admin_only = auth.dependencies(ctx.conn)
@@ -558,10 +603,10 @@ def create_ports_router(ctx, snapshot: Callable[[], list[dict]],
         row = next((r for r in snapshot() if r["id"] == port_id), None)
         if row is None:
             raise HTTPException(404, "אין פורט כזה")
-        if row["toggle"] == "none" or port_id not in OWN:
+        if row["toggle"] == "none" or (port_id not in OWN and port_id != "tftp"):
             raise HTTPException(409, f"אין מתג לשורה הזו — {row['off_means']}")
         want = bool(body.get("enabled", False))
-        toggle, off_means = OWN[port_id]
+        toggle, off_means = OWN.get(port_id, ("confirm", row["off_means"]))
         if not want:
             # הדלת האחרונה: בקשה שמגיעה דרך הפורט שהיא מבקשת לסגור.
             via = (request.scope.get("server") or ("", 0))[1]
@@ -578,7 +623,16 @@ def create_ports_router(ctx, snapshot: Callable[[], list[dict]],
         set_enabled(ctx.conn, port_id, want)
         journal(ctx.conn, "port_toggle", f"{port_id} {'on' if want else 'off'}", user[0])
         applied, detail = False, ""
-        if listeners is None:
+        if port_id == "tftp":
+            # ‏#1013: dnsmasq, לא מאזין של התהליך — הקובץ נכתב מחדש והשירות
+            # מופעל מחדש; "מאזין" נמדד אחר כך ב-ss כמו בכל שורה.
+            if dnsmasq_apply is None:
+                detail = ("אין חיבור ל-dnsmasq בתהליך הזה — ההגדרה נשמרה ותיכנס "
+                          "לתוקף בכתיבה הבאה של קובץ ה-DHCP")
+            else:
+                error = dnsmasq_apply(f"tftp {'on' if want else 'off'}", user[0])
+                applied, detail = error is None, error or ""
+        elif listeners is None:
             detail = ("אין מנהל מאזינים בתהליך הזה — ההגדרה נשמרה ותיכנס "
                       "לתוקף בעלייה הבאה")
         else:

@@ -186,12 +186,18 @@ def test_shared_ui_renderers_exist_for_the_next_pages():
         assert sel in css, sel
 
 
-def test_uptime_is_a_placeholder_not_a_number():
-    """‏home.md "דורש API": זמן הפעילות מוצג כ"בקרוב", לא כמספר מומצא."""
+def test_uptime_and_deploy_ip_come_from_me_and_null_is_named():
+    """‏#968 סגר את "דורש API" של home.md: זמן הפעילות וכתובת ההפצה מגיעים
+    מ-`/me` (uptime_seconds, deploy_ip); ‏null מוצג בשם — לא "בקרוב", לא 0,
+    ולא 127.0.0.1. ההיוריסטיקה `journalSeverity` נמחקה, לא נשארה לצד השדה."""
     js = _console_js()
     fn = js[js.index("function home("):js.index("function deploy(")]
-    assert 'UI.soon("זמן פעילות")' in fn
-    assert "uptime" not in fn.lower()
+    assert 'UI.soon("זמן פעילות")' not in fn
+    assert "homeUptime()" in fn and "homeDeployIp()" in fn
+    assert "ME.uptime_seconds" in js and "ME.deploy_ip" in js
+    assert "זמן פעילות לא נבדק" in js and "רשת הפצה לא הוגדרה" in js
+    assert "function journalSeverity" not in js
+    assert "function journalCls" in js and "row.severity" in js
 
 
 def test_images_tree_node_uses_the_folder_icon():
@@ -229,12 +235,13 @@ def test_static_includes_are_at_8_5():
     בתיבת דיסק) = ‏9.0;
     #1071 (pull אימג' מהמשני לראשי) = ‏9.0;
     #1080 (fingerprint SSH בכרטיס המכונה) — הגייט bk איחד את #1085ב/#1033/#1071/#1080 ל-‏9.1;
-    #1088 (רשת ההפצה מהקונסולה — הערה בדף הרשת, ההדלקה הראשונה) = ‏9.2.
+    #1088 (רשת ההפצה מהקונסולה — הערה בדף הרשת, ההדלקה הראשונה) = ‏9.2;
+    #1013 (מתג TFTP 69 בדף הפורטים — אזהרה לפני הקלדת השם) = ‏9.3.
     שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
     versions = {float(v) for v in re.findall(r'\?v=(\d+\.\d+)"', page)}
-    assert versions == {9.2}, versions
+    assert versions == {9.3}, versions
 
 
 def test_old_images_page_code_is_gone():
@@ -521,7 +528,7 @@ def test_the_machine_drawer_has_a_health_group_with_three_states_per_field():
     assert 'UI.status("warn", `לא הצלחנו לבדוק' in cell, "שגיאה בכתום, לא באפור ולא בירוק"
     assert "מעולם לא דיווחה בדיקת מכונה" in health
     assert "selectPageById('drivers')" in health, "PCI בלי דרייבר מקשר לדף הדרייברים"
-    home = js[js.index("function homeAttention"):js.index("function journalSeverity")]
+    home = js[js.index("function homeAttention"):js.index("function journalCls")]
     assert "m.probe_verdicts" in home and "openMachineDetail(" in home
 
 

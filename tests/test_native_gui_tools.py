@@ -144,3 +144,137 @@ def test_the_bridge_dispatches_both_tokens_behind_the_session_gate():
     assert body.index("tool-list) tools_gui_list") > gate
     assert body.index('"tool-run|"*) tools_gui_run "$token"') > gate
     assert '. "$LIB_DIR/tools.sh"' in BRIDGE
+
+
+# --- v1 בלי ארגז הכלים (הכרעת נדב 19/09; v1.1 = הכלים) ----------------------------
+#
+# הגואי יודע על יכולות השרת דרך קובץ המצב: hello/‏`/state` נושאים `tools`
+# (‏`server/capabilities.py`), ‏`tools_on` ב-`buildmenuitems.sh` קורא אותו
+# (חסר = כבוי), ‏`guistate.sh` כותב `menu_tools=0|1` **תמיד**, ו-`screens.c`
+# מצייר את כפתור "כלים" רק על 1 — אותו ערוץ בדיוק כמו `menu_class` (#1081).
+
+import json
+import os
+import shutil
+import subprocess
+
+import pytest
+
+from native import requires_native
+
+STATE_C = (SRC / "state.c").read_text(encoding="utf-8")
+AGENT = SRC.parents[1] / "agent"
+ITEMS = (AGENT / "lib" / "buildmenuitems.sh").read_text(encoding="utf-8")
+GUISTATE = (AGENT / "lib" / "guistate.sh").read_text(encoding="utf-8")
+
+
+def test_the_tools_button_is_drawn_only_when_menu_tools_is_on():
+    """הציור של HIT_TOOLS ב-`screen_menu` יושב בתוך `if (a->st.menu_tools)`,
+    ‏`state.c` מפרסר את הרשומה (היעדר = 0 מ-memset), והדגימה של `--png`
+    מדליקה אותה כדי ששלושת כרטיסי הכלים יישארו ברי-רינדור."""
+    body = function_body(SCREENS_C, "screen_menu")
+    gate = body.index("if (a->st.menu_tools) {")
+    assert gate < body.index("BTN_PLAIN, HIT_TOOLS") < body.index("body_clip_begin(a, cr, body)")
+    assert 'KEY("menu_tools")' in STATE_C and "s->menu_tools = num(val, 0) != 0" in STATE_C
+    assert "int menu_tools;" in UI_H
+    assert "s->menu_tools = 1;" in function_body(MAIN_C, "sample_state")
+
+
+def test_the_agent_gate_reads_tools_from_hello_then_state_and_guistate_writes_it():
+    assert "tools_on() {" in ITEMS
+    body = ITEMS[ITEMS.index("tools_on() {"):]
+    body = body[:body.index("\n}\n")]
+    assert '".tools"' in body and 'station.json' in body
+    assert "menu_tools=%s" in GUISTATE and "if tools_on; then _mt=1; else _mt=0; fi" in GUISTATE
+
+
+STATION = {"known": True, "role": "build", "disks": [], "task": None, "allowed_images": []}
+
+
+def _state_records(tmp_path: Path, hello: dict | None, station: dict = STATION) -> list[str]:
+    from test_cloner_gui import posix, sh
+    run = tmp_path / "run"; run.mkdir(parents=True)
+    gui = tmp_path / "gui"; gui.mkdir(parents=True)
+    (run / "station.json").write_text(json.dumps(station), newline="\n")
+    if hello is not None:
+        (run / "response.json").write_text(json.dumps(hello), newline="\n")
+    (gui / "mode").write_text("menu\n", newline="\n")
+    a = posix(AGENT)
+    script = (
+        f'export RUN_DIR={posix(run)!r} GUI_DIR={posix(gui)!r} '
+        f'SERVER=http://127.0.0.1:9 MAC=aa:bb:cc:dd:ee:ff IMAGECTL_TEST=1; '
+        f'. {a}/lib/common.sh; . {a}/lib/jsonq.sh; . {a}/lib/buildmenuitems.sh; . {a}/lib/buildmenu.sh; '
+        f'. {a}/lib/guistate.sh; '
+        + f'http_get() {{ cat {posix(run / "station.json")!r}; }}; gui_state'
+    )
+    out = sh(script)
+    assert out.returncode == 0, out.stderr
+    return (gui / "state").read_text().splitlines()
+
+
+def _bash():
+    from test_cloner_gui import BASH
+    return ("bash", BASH)
+
+
+@requires_native(_bash(), "jq", why="gui_state בונה את המצב ב-jq")
+def test_gui_state_writes_menu_tools_off_by_default_and_on_only_when_the_server_says_so(tmp_path):
+    """‏v1: hello בלי `tools` (ברירת המחדל) → `menu_tools=0` **נכתב**; גם
+    בלי קובץ hello. ‏v1.1: `tools: true` ב-hello, או ב-`/state` כשה-hello
+    שותק → `menu_tools=1`. **בקרה שלילית:** בלי `tools_on`/הרשומה — היא
+    חסרה מהמצב, והטסט נופל."""
+    absent = _state_records(tmp_path / "absent", {"role": "build"})
+    assert "menu_tools=0" in absent, absent
+    no_file = _state_records(tmp_path / "nofile", None)
+    assert "menu_tools=0" in no_file, no_file
+    off = _state_records(tmp_path / "off", {"role": "build", "tools": False})
+    assert "menu_tools=0" in off and "menu_tools=1" not in off, off
+    on = _state_records(tmp_path / "on", {"role": "build", "tools": True})
+    assert "menu_tools=1" in on, on
+    via_state = _state_records(tmp_path / "state", {"role": "build"}, station={**STATION, "tools": True})
+    assert "menu_tools=1" in via_state, via_state
+
+
+def _menu_png(tmp_path: Path, state_text: str) -> tuple[int, int, int, bytes]:
+    """מרנדר את כל הכרטיסים ממצב נתון ומחזיר את פיקסלי כרטיס התפריט."""
+    from test_cloner_gui import GUI, _build_gui, _png_rgb, posix
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    binary = _build_gui(tmp_path)
+    state = tmp_path / "state.txt"
+    state.write_text(state_text + "message=x|y\n", newline="\n")
+    env2 = dict(os.environ)
+    fonts_conf = GUI / "fonts.conf"
+    if fonts_conf.exists():
+        env2["FONTCONFIG_FILE"] = str(fonts_conf)
+    run = subprocess.run(
+        [str(binary), "--png", posix(tmp_path / "card"), "--size", "1000x760",
+         "--mac", "3C:52:82:A1:00:21", "--ip", "10.10.10.31", "--state", posix(state)],
+        capture_output=True, text=True, timeout=120, env=env2, stdin=subprocess.DEVNULL,
+    )
+    assert run.returncode == 0, run.stderr
+    return _png_rgb(tmp_path / "card-menu-light.png")
+
+
+def _differing_pixels(a, b) -> int:
+    assert a[:3] == b[:3], (a[:3], b[:3])
+    ch, pa, pb = a[2], a[3], b[3]
+    return sum(1 for i in range(0, len(pa), ch) if pa[i:i + 3] != pb[i:i + 3])
+
+
+def _cc():
+    from test_cloner_gui import _pkgconfig
+    return (("cc", shutil.which("cc") or shutil.which("gcc")),
+            ("pango/cairo/libdrm", _pkgconfig("pangocairo", "cairo", "libdrm")))
+
+
+@requires_native(*_cc(), why="native-gui נבנה על המעבדה בלבד")
+def test_the_tools_button_is_not_drawn_without_menu_tools(tmp_path):
+    """‏`menu_tools=1` מצייר את כפתור "כלים" בראש כרטיס התפריט; ‏0 לא, ורשומה
+    חסרה שווה ל-0 **פיקסל בפיקסל**. נמדד כהפרש בין שני רינדורים — לא בדיו
+    הכהה לבדו: הכיתוב קטן ורוב פיקסליו גווני-ביניים של אנטי-אליאסינג
+    (נמדד במעבדה 19/09: 2,166 פיקסלים שונים בתיבה של 57×38, ורק 13 כהים)."""
+    shown = _menu_png(tmp_path / "on", "menu_tools=1\n")
+    hidden = _menu_png(tmp_path / "off", "menu_tools=0\n")
+    absent = _menu_png(tmp_path / "absent", "")
+    assert _differing_pixels(shown, hidden) > 500
+    assert _differing_pixels(absent, hidden) == 0

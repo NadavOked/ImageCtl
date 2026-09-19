@@ -68,7 +68,7 @@ function setup(over={}) {
     return nodes.get(key);
   }
   const fixtures={'/health':HEALTH,'/update':{current:'v0.34.0',enabled:true,previous:'v0.33.0',server_name:'srv'},'/update/status':{state:'idle'},
-    '/update/check':{current:'v0.34.0',latest:'v0.35.0',available:true,reason:''},
+    '/update/check':{at:'2026-09-19T06:00:00+00:00',current:'v0.34.0',latest:'v0.35.0',available:true,reason:''},
     '/ports':PORTS_OLD,'/ssh':SSH,'/monitor/settings':{port:5900,enabled:false},'/net/interfaces':NICS,'/net/proxy-support':{read:true,version:'2.90',verified:false,broken:true,reason:'dnsmasq 2.90 — proxy שבור'},
     '/machines':[{mac:MAC1,suffix:'מחשב 1',group_id:'grp_CLONERS',disks:null}],'/groups':[{id:'grp_CLONERS',label:'מחשבי שיכפול',role:'cloner',sort:1}],
     ...over};
@@ -81,13 +81,15 @@ function setup(over={}) {
     fetch:async(url,options={})=>{
       const key=url.replace('/api/console','').split('?')[0]; requests.push({url:key,method:options.method||'GET',body:options.body?JSON.parse(options.body):null});
       const f=fixtures[key];
-      if(f instanceof Error) return {status:500,ok:false,headers:{get:()=>null},json:async()=>({detail:f.message})};
-      if(f===403) return {status:403,ok:false,headers:{get:()=>null},json:async()=>({detail:'admin only'})};
-      return {status:200,ok:true,headers:{get:()=>null},json:async()=>f ?? {ok:true,verified:true,apply_error:null}};
+      // ‏#1000: כותרות תשובה לפי נתיב (fixtures.__headers[key][name]) — X-Health-Checked-At
+      const headers={get:(name)=>(fixtures.__headers && fixtures.__headers[key] && fixtures.__headers[key][name]) || null};
+      if(f instanceof Error) return {status:500,ok:false,headers,json:async()=>({detail:f.message})};
+      if(f===403) return {status:403,ok:false,headers,json:async()=>({detail:'admin only'})};
+      return {status:200,ok:true,headers,json:async()=>f ?? {ok:true,verified:true,apply_error:null}};
     }});
   for(const f of ['progress.js','console.js','net.js']) vm.runInContext(fs.readFileSync(path.join(root,f),'utf8'),ctx);
   const run=s=>vm.runInContext(s,ctx);
-  run('ME={username:"admin",role:"admin",server_name:"srv",version:"v0.34.0",capabilities:{}}; globalThis.sheets=[]; globalThis.toasts=[]; sheet = o => { sheets.push(o); }; toast=(m)=>{ toasts.push(m); }; renderCurrent=()=>{ globalThis.rendered=(globalThis.rendered||0)+1; }; globalThis.selected=[]; selectPageById=(id)=>{ selected.push(id); current=id; }; openMachineDetail=(m)=>{ globalThis.openedMac=m; };');
+  run('ME={username:"admin",role:"admin",server_name:"srv",version:"v0.34.0",capabilities:{}}; globalThis.sheets=[]; globalThis.toasts=[]; globalThis.realSheet = sheet; sheet = o => { sheets.push(o); }; toast=(m)=>{ toasts.push(m); }; renderCurrent=()=>{ globalThis.rendered=(globalThis.rendered||0)+1; }; globalThis.selected=[]; selectPageById=(id)=>{ selected.push(id); current=id; }; openMachineDetail=(m)=>{ globalThis.openedMac=m; };');
   run('MACHINES='+JSON.stringify(fixtures['/machines'])+'; GROUPS='+JSON.stringify(fixtures['/groups'])+';');
   return {run,requests,fixtures,ctx};
 }
@@ -129,7 +131,7 @@ test('the checks table shows all five states with their own colour — "not chec
   // מה נמצא — ה-detail של השרת כלשונו
   assert.match(html,/אף אחד לא מגיש TFTP — מחשבים לא יעלו ב-PXE/);
   // הכותרת: מונים ותג
-  assert.match(html,/9 בדיקות · נקרא \d\d:\d\d · 2 תקינות · 1 אזהרות · 4 תקלות · 1 כבויות · 1 לא נבדקו/);
+  assert.match(html,/9 בדיקות · זמן המדידה לא נמסר · 2 תקינות · 1 אזהרות · 4 תקלות · 1 כבויות · 1 לא נבדקו/,'#1000: no X-Health-Checked-At header → named, not the browser clock');
   assert.match(html,/class="pill err">תקלה</);
   assert.match(html,/onclick="loadHealth\(\)">בדוק עכשיו</);
   // בלי מתגים ובלי הלשוניות הישנות
@@ -176,14 +178,14 @@ test('update card: installed/previous/last-check, check → apply button with ty
   const card=cell(html,'גרסה ועדכון',1500);
   assert.match(card,/מותקן<\/span><span class="v"><span class="mono">v0\.34\.0</);
   assert.match(card,/קודם<\/span><span class="v"><span class="mono">v0\.33\.0<\/span> \(חזרה זמינה\)/);
-  assert.match(card,/בדיקה אחרונה<\/span><span class="v">לא נבדק בסשן הזה/);
+  assert.match(card,/בדיקה אחרונה<\/span><span class="v">מעולם לא נבדק בשרת הזה/,'#1000: last_check null = never checked on this server');
   assert.match(card,/onclick="healthUpdateCheck\(\)">בדוק עדכון</);
   assert.doesNotMatch(card,/החל עדכון/,'no apply before a check found something');
   assert.match(card,/confirmUpdateAction\('חזרה לגרסה הקודמת', UPDATE_INFO\.previous, 'revert', UPDATE_INFO\.previous\)">חזור ל-v0\.33\.0</);
   await run('healthUpdateCheck()');
   assert.ok(requests.some((r)=>r.url==='/update/check' && r.method==='POST'));
   html=run('health()');
-  assert.match(cell(html,'גרסה ועדכון',1800),/בדיקה אחרונה<\/span><span class="v">\d\d:\d\d — יש עדכון: v0\.34\.0 → v0\.35\.0/);
+  assert.match(cell(html,'גרסה ועדכון',1800),/בדיקה אחרונה<\/span><span class="v">היום 06:00 — יש עדכון: v0\.34\.0 → v0\.35\.0/,'#1000: the time is the server `at`, not the browser clock');
   assert.match(html,/confirmUpdateAction\('עדכון שרת', UPDATE_INFO\.latest, 'apply', UPDATE_INFO\.latest\)">החל עדכון v0\.35\.0 \(הקלדת שם השרת\)</);
   run("confirmUpdateAction('עדכון שרת', UPDATE_INFO.latest, 'apply', UPDATE_INFO.latest)");
   const s=run('sheets.at(-1)');
@@ -208,6 +210,29 @@ test('update card: switch off → note with a link to settings and no buttons; f
   s=setup({'/update':new Error('403')}); s.run('current="health"');
   await s.run('loadHealth()');
   assert.match(cell(s.run('health()'),'גרסה ועדכון',600),/note err.*\/update לא נקרא: 403/);
+});
+
+test('#1000: "last check" comes from /update.last_check and survives a reload; a stored failure is named, not "no update"',async()=>{
+  let s=setup({'/update':{current:'v0.34.0',enabled:true,previous:null,server_name:'srv',last_check:{at:'2026-09-18T06:00:00+00:00',current:'v0.34.0',latest:'v0.34.0',available:false,reason:null}}}); s.run('current="health"');
+  await s.run('loadHealth()');
+  let card=cell(s.run('health()'),'גרסה ועדכון',1500);
+  assert.match(card,/בדיקה אחרונה<\/span><span class="v">18\/09\/2026 06:00 — כבר על הגרסה העדכנית \(v0\.34\.0\)/);
+  assert.doesNotMatch(card,/לא נבדק בסשן/);
+  s=setup({'/update':{current:'v0.34.0',enabled:true,previous:null,server_name:'srv',last_check:{at:'2026-09-18T06:00:00+00:00',current:'v0.34.0',latest:null,available:false,reason:'הבדיקה מול x נכשלה: timeout'}}}); s.run('current="health"');
+  await s.run('loadHealth()');
+  card=cell(s.run('health()'),'גרסה ועדכון',1500);
+  assert.match(card,/18\/09\/2026 06:00 — הבדיקה נכשלה: הבדיקה מול x נכשלה: timeout/); assert.doesNotMatch(card,/אין חדש|כבר על הגרסה/);
+  assert.doesNotMatch(card,/החל עדכון/,'a stored "available" from an earlier session is not an apply button — apply needs a fresh check (UPDATE_CHECK)');
+});
+
+test('#1000: the health header time comes from the X-Health-Checked-At header (server clock), read by a direct fetch',async()=>{
+  const s=setup({__headers:{'/health':{'X-Health-Checked-At':'2026-09-19T09:41:00+00:00'}}}); s.run('current="health"');
+  await s.run('loadHealth()');
+  assert.match(s.run('HEALTH_AT'),/^(היום|19\/09\/2026) 09:41$/);
+  const html=s.run('health()');
+  assert.match(html,/9 בדיקות · נבדק (היום|19\/09\/2026) 09:41 · 2 תקינות/);
+  assert.ok(Array.isArray(s.run('HEALTH')),'the body is still the array');
+  assert.equal(s.run('typeof clockNow'),'function','clockNow is still used for the ports page — but not for /health');
 });
 
 /* ---------- רשת › פורטים ---------- */
@@ -430,6 +455,57 @@ test('ports page (#1015 contract): rows come only from /ports — no duplicate d
   s=run('sheets.at(-1)'); assert.equal(s.verify.mustEqual,'ens18'); assert.match(s.sub,/הדלת האחרונה/);
   await s.onSubmit();
   assert.ok(requests.some((r)=>r.method==='PUT' && r.url==='/ssh/interfaces/ens18' && r.body.enabled===false && r.body.confirm==='ens18'));
+});
+
+// #1013: TFTP 69 — מתג "confirm" כמו 8080/8081, והאזהרה מהשרת (warning_he) מוצגת
+// במודאל **לפני** שדה הקלדת שם השרת (הכרעת נדב 19/09). שרת בקובץ מתקין ישן → toggle none.
+const TFTP_WARN='כיבוי 69 (TFTP) עוצר את ה-PXE: מחשבי בנייה ושיכפול לא יעלו מהשרת.';
+const PORTS_1013=PORTS_1015.map((p)=>p.id!=='tftp'?p:{...p,toggle:'confirm',toggle_url:'/api/console/ports/tftp',confirm_word:'srv',confirm_when:'off',
+  off_means:'אין shim/GRUB ותפריט — אף מחשב לא עולה ב-PXE מהשרת הזה, וסבבים לא יתחילו',warning_he:TFTP_WARN});
+
+test('ports page (#1013): the TFTP switch types the server name, sends PUT /ports/tftp, and the modal shows the warning before the typed field',async()=>{
+  const {run,requests}=setup({'/ports':PORTS_1013}); run('current="ports"');
+  await run('loadPorts()');
+  const html=run('ports()'); balanced(html);
+  const tftp=row(html,'>desc tftp<');
+  assert.match(tftp,/class="sw on" role="switch" aria-checked="true"/);
+  assert.match(tftp,/🔒 דלוק · כיבוי = הקלדת שם השרת/);
+  assert.match(tftp,/class="pill ok">קיים<\/span> <span class="cap mono">PUT \/ports\/tftp/);
+  assert.doesNotMatch(tftp,/דורש API|אין מתג/);
+  // כיבוי: הקלדת שם השרת + האזהרה של השרת (לא "מה קורה אם מכבים" הגנרי)
+  run("portSwitch('tftp')");
+  const s=run('sheets.at(-1)');
+  assert.equal(s.verify.mustEqual,'srv'); assert.match(s.title,/כיבוי TFTP 69\/udp/);
+  assert.match(s.note,/data-testid="port-warning"/); assert.ok(s.note.includes(TFTP_WARN),'warning_he verbatim');
+  assert.doesNotMatch(s.note,/מה קורה אם מכבים/);
+  await s.onSubmit();
+  assert.deepEqual(requests.filter((r)=>r.method==='PUT').at(-1),{url:'/ports/tftp',method:'PUT',body:{enabled:false,confirm:'srv'}});
+  // סדר בתוך המודאל האמיתי (sheet, לא confirm()): האזהרה לפני שדה ההקלדה
+  run('realSheet(sheets.at(-1))');
+  const modal=run('document.querySelector("#sheet").innerHTML');
+  const warnAt=modal.indexOf('data-testid="port-warning"'), fieldAt=modal.indexOf('id="sf-verify"');
+  assert.ok(warnAt>=0 && fieldAt>=0,'both the warning and the typed field are in the modal');
+  assert.ok(warnAt<fieldAt,'the warning is rendered before the typed field');
+  assert.doesNotMatch(modal,/confirm\(/);
+  // הדלקה חזרה (confirm_when=off): בלי הקלדה
+  let s2=setup({'/ports':PORTS_1013.map((p)=>p.id==='tftp'?{...p,enabled:false,listening:false,state:'off'}:p)}); s2.run('current="ports"');
+  await s2.run('loadPorts()'); s2.run('ports()');
+  s2.run("portSwitch('tftp')");
+  const on=s2.run('sheets.at(-1)'); assert.ok(!on.verify,'turning TFTP back on does not ask for the name');
+  await on.onSubmit();
+  assert.deepEqual(s2.requests.filter((r)=>r.method==='PUT').at(-1),{url:'/ports/tftp',method:'PUT',body:{enabled:true}});
+});
+
+test('ports page (#1013): a server whose installer file still carries enable-tftp has no TFTP switch — the click explains, nothing is sent',async()=>{
+  const none=PORTS_1015.map((p)=>p.id!=='tftp'?p:{...p,toggle:'none',enabled:null,off_means:'אין מתג: enable-tftp עדיין יושב בקובץ המתקין (/etc/dnsmasq.d/imagectl.conf) — הריצו את המתקין מחדש'});
+  const {run,requests}=setup({'/ports':none}); run('current="ports"');
+  await run('loadPorts()');
+  const html=run('ports()');
+  const tftp=row(html,'>desc tftp<');
+  assert.match(tftp,/אין מתג — לחיצה מסבירה/); assert.match(tftp,/class="st ok">/);
+  const before=run('sheets.length'); run("portSwitch('tftp')");
+  assert.equal(run('sheets.length'),before); assert.match(run('toasts.at(-1)'),/imagectl\.conf/);
+  assert.ok(!requests.some((r)=>r.method==='PUT'),'no PUT for a row without a switch');
 });
 
 test('deploy role: the pages stay admin-only and no admin endpoint is requested',async()=>{

@@ -32,6 +32,7 @@ from dataclasses import asdict, dataclass, field
 
 from .dhcp_host import (  # noqa: F401  — ה-API של המודול נשאר `dhcp.<שם>`
     DEFAULT_CONF,
+    INSTALLER_CONF,
     KNOWN_MACS_CONF,
     PROXY_CONF,
     PROXY_UNIT,
@@ -45,11 +46,14 @@ from .dhcp_host import (  # noqa: F401  — ה-API של המודול נשאר `d
     probe_existing_dhcp,
     proxy_support,
     read_active_conf,
+    read_installer_conf,
     service_active,
 )
 
 #: שורת conf פעילה שמשרתת ממשק, לעומת `except-interface=` (שוללת) או הערה.
 _INTERFACE_LINE = re.compile(r"^\s*interface\s*=\s*(\S+)\s*$")
+#: ‏`enable-tftp` פעיל (‏#1013) — בלי הערה, בלי ערך.
+_ENABLE_TFTP_LINE = re.compile(r"^\s*enable-tftp\s*$")
 
 SETTING_PREFIX = "dhcp:"
 DEFAULT_LEASE = "12h"
@@ -166,6 +170,17 @@ def validate(cfg: InterfaceConfig) -> None:
 # --- אמת חיה ל-DHCP (‏#762) --------------------------------------------------
 
 
+def installer_serves_tftp(text: str) -> bool:
+    """האם קובץ המתקין (‏INSTALLER_CONF) עדיין נושא `enable-tftp` פעיל (‏#1013).
+
+    פרסר טהור, כמו `parse_served_interfaces`: שורה פעילה בלבד — הערה
+    (`# enable-tftp`) אינה נספרת. ‏True = המתג מהקונסולה **אינו יכול
+    לכבות** את TFTP, ו-`/ports` חייב לומר זאת ולא להציג "כבוי" מזויף.
+    """
+    return any(_ENABLE_TFTP_LINE.match(raw.split("#", 1)[0])
+               for raw in (text or "").splitlines())
+
+
 def parse_served_interfaces(text: str) -> set[str]:
     """אילו ממשקים קובץ ה-conf **הפעיל** מצהיר עליהם `interface=`.
 
@@ -225,12 +240,27 @@ def _head(what: str) -> list[str]:
             ""]
 
 
+def _tftp_lines(tftp_root: str | None) -> list[str]:
+    """‏#1013: המתג. ‏None = כבוי — וגם אז נכתבת שורה, כדי שמי שקורא את
+    הקובץ על השרת ידע שזה כיבוי מכוון ולא שורה שנשמטה."""
+    if tftp_root:
+        return ["# TFTP (#1013): the switch is the ports page in the console.",
+                "enable-tftp", f"tftp-root={tftp_root}", ""]
+    return ["# TFTP off (#1013): switched off in the console (ports page) -- no PXE.", ""]
+
+
 def render(configs: list[InterfaceConfig], tftp_root: str | None = None,
            deploy_interface: str | None = None) -> str:
     """הקובץ של האינסטנס הראשי — ‏DEFAULT_CONF, בתוך /etc/dnsmasq.d.
 
-    dnsmasq קורא את כל /etc/dnsmasq.d, וקובץ ההתקנה (imagectl.conf) כבר
-    מגדיר את ה-TFTP ואת שורש ההגשה. הקובץ הזה מוסיף ממשקים וטווחים.
+    dnsmasq קורא את כל /etc/dnsmasq.d; קובץ ההתקנה (imagectl.conf) נותן את
+    הבסיס (port=0, dhcp-hostsfile, כרטיס ההפצה) והקובץ הזה מוסיף ממשקים
+    וטווחים — **ואת ה-TFTP** (‏#1013): ‏`tftp_root` הוא המתג. מחרוזת =
+    ‏`enable-tftp` + `tftp-root=`, ו-`None` = TFTP כבוי (המפעיל כיבה 69 בדף
+    הפורטים). השורות נכתבות **לפני** היציאה המוקדמת כשאין אף DHCP — אחרת
+    התקנה טרייה (עם כרטיס הפצה, בלי DHCP עדיין) הייתה נשארת בלי TFTP.
+    עד v0.47.5 המתקין כתב את שתי השורות ב-imagectl.conf, ומשם אי-אפשר
+    היה לכבות אותן מקובץ אחר (dnsmasq מצטבר) — לכן הן עברו לכאן.
 
     ממשק במצב proxy לא מופיע כאן בשום צורה (‏#36) — גם לא כ-`interface`
     להגשת TFTP: הוא רץ בתהליך אחר, ושני תהליכים לא יכולים לתפוס את
@@ -248,6 +278,7 @@ def render(configs: list[InterfaceConfig], tftp_root: str | None = None,
         validate_name(deploy_interface)
         lines += ["# Deploy interface, set from the console (#1088): TFTP on it only.",
                   "bind-interfaces", f"interface={deploy_interface}", ""]
+    lines += _tftp_lines(tftp_root)
     if not full and not proxied:
         lines.append("# No interface has DHCP or proxy enabled.")
         return "\n".join(lines) + "\n"
@@ -256,8 +287,6 @@ def render(configs: list[InterfaceConfig], tftp_root: str | None = None,
     if proxied:
         lines.append("# Proxy interfaces belong to the imagectl-proxy instance (#36):")
         lines += [f"except-interface={c.name}" for c in proxied] + [""]
-    if tftp_root:
-        lines += ["enable-tftp", f"tftp-root={tftp_root}", ""]
     if not full:
         lines.append("# No interface hands out addresses -- TFTP only.")
         return "\n".join(lines) + "\n"
@@ -294,8 +323,10 @@ def render(configs: list[InterfaceConfig], tftp_root: str | None = None,
 
 
 def render_proxy(configs: list[InterfaceConfig],
-                 tftp_root: str = DEFAULT_TFTP_ROOT) -> str:
+                 tftp_root: str | None = DEFAULT_TFTP_ROOT) -> str:
     """הקובץ של אינסטנס ה-proxy — ‏PROXY_CONF, מחוץ ל-/etc/dnsmasq.d.
+    ‏`tftp_root=None` = המתג של 69 כבוי (‏#1013) — גם כאן, אחרת האינסטנס
+    הזה היה ממשיך להאזין על 69 בכרטיסים שלו והמתג היה "כבוי אבל מאזין".
 
     מצב proxy הוא לרשת שיש בה DHCP קיים ואסור להתנגש בו: עונים על
     שאלות PXE בלבד, כתובות ממשיכות להגיע מהשרת הקיים. כאן זה גם התהליך
@@ -318,10 +349,8 @@ def render_proxy(configs: list[InterfaceConfig],
         "bind-interfaces",
         f"dhcp-leasefile={PROXY_LEASES}",
         "",
-        "enable-tftp",
-        f"tftp-root={tftp_root}",
-        "",
     ]
+    lines += _tftp_lines(tftp_root)
     lines += _ARCH_MATCH
     for cfg in active:
         tag = f"if-{cfg.name}"

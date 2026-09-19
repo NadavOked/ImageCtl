@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ImageCtl — קונסולה</title>
-<link rel="stylesheet" href="design-tokens.css?v=9.2">
-<link rel="stylesheet" href="console.css?v=9.2">
-<link rel="stylesheet" href="progress.css?v=9.2">
+<link rel="stylesheet" href="design-tokens.css?v=9.3">
+<link rel="stylesheet" href="console.css?v=9.3">
+<link rel="stylesheet" href="progress.css?v=9.3">
 <script>
   /* לפני הציור הראשון, אחרת המסך מהבהב בלבן לפני שהכהה נטען.
      המטמון הוא בחירה מפורשת (light/dark) בלבד; בלי מטמון — לפי המערכת. */
@@ -122,8 +122,9 @@
           </div>
           <div class="inventory-node" data-page="monitor" onclick="selectPageById('monitor')" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="7" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg></span><span>מוניטור</span></div>
           <div class="inventory-node" data-page="drivers" onclick="selectPageById('drivers')" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg></span><span>דרייברים</span></div>
-          <!-- #649 שלב 1: ארגז כלים — מה שמסומן ייארז ל-initrd (שלב 2); admin בלבד -->
-          <div class="inventory-node" data-page="tools" data-admin onclick="selectPageById('tools')" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 0 0 5.4-5.4l-2.4 2.4-2.1-.6-.6-2.1Z"/></svg></span><span>ארגז כלים</span></div>
+          <!-- #649 שלב 1: ארגז כלים — מה שמסומן ייארז ל-initrd (שלב 2); admin בלבד.
+               המהדורה הראשונה יוצאת בלי ארגז הכלים (נדב 19/09): מתחיל מוסתר, ‏/me → capabilities.tools מדליק. -->
+          <div class="inventory-node hidden" data-page="tools" data-admin data-cap="tools" onclick="selectPageById('tools')" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 0 0 5.4-5.4l-2.4 2.4-2.1-.6-.6-2.1Z"/></svg></span><span>ארגז כלים</span></div>
         </div>
         <div class="inventory-node" ondblclick="toggleInventoryGroup(this,'adminTA')" role="treeitem" tabindex="0" aria-expanded="false"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'adminTA')">▸</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="7" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg></span><span>ניהול</span></div>
         <div id="adminTA" class="inventory-children" role="group" data-admin hidden>
@@ -149,14 +150,14 @@
 <div class="toast" id="toast"></div>
 </div>
 
-<script src="progress.js?v=9.2"></script>
-<script src="console.js?v=9.2"></script>
-<script src="reorder.js?v=9.2"></script>
-<script src="net.js?v=9.2"></script>
-<script src="netcfg.js?v=9.2"></script>
-<script src="storage_nodes.js?v=9.2"></script>
-<script src="drivers.js?v=9.2"></script>
-<script src="storage.js?v=9.2"></script>
-<script src="branches.js?v=9.2"></script>
+<script src="progress.js?v=9.3"></script>
+<script src="console.js?v=9.3"></script>
+<script src="reorder.js?v=9.3"></script>
+<script src="net.js?v=9.3"></script>
+<script src="netcfg.js?v=9.3"></script>
+<script src="storage_nodes.js?v=9.3"></script>
+<script src="drivers.js?v=9.3"></script>
+<script src="storage.js?v=9.3"></script>
+<script src="branches.js?v=9.3"></script>
 </body>
 </html>

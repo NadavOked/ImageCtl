@@ -531,7 +531,8 @@
   קורא מאותה עמודה — אך שם `disks` תמיד רשימה (`[]` גם ל"מעולם לא
   דיווחה"), כי המסך ההוא מציג "מה מותקן עכשיו" ולא מאבחן דיווח חסר.
   ‏#1081: התשובה נושאת גם `classrooms` (bool, קבוע בקוד; v1 = `false`).
-  חסר = כבוי.
+  חסר = כבוי. ומאותו מקור `tools` (bool; v1 = `false`, v1.1 מדליק) —
+  כפתור "כלים" בגואי הקטן (סעיף 23).
 
 **כתיבה לטבלת המכונות** — `POST /api/console/machines`,
 `DELETE /api/console/machines/<mac>` ו-`POST /api/console/machines/import`
@@ -634,6 +635,13 @@
   — מ-`/state`; **שדה חסר = כבוי** (עיקרון 1). הקונסולה קוראת
   `GET /me` → `capabilities.classrooms` ומסתירה לפי `data-cap="classrooms"`.
   API/GRUB/DHCP למכונה עם תפקיד `classroom` אינם משתנים — רק הנראות.
+- **`tools`** (‏bool) — דגל מהדורה שני באותו קובץ, **הכרעת נדב 19/09: v1
+  יוצאת בלי ארגז הכלים; v1.1 = הכלים** (#649, #1104, #928). v1 = `false`.
+  מופיע בכל תשובת hello (גם ל-MAC לא רשום) וב-`GET /api/v1/agent/state`;
+  הסוכן (`tools_on` ב-`buildmenuitems.sh`, hello ואם חסר — `/state`;
+  **חסר = כבוי**) כותב מכאן `menu_tools=0|1` לקובץ המצב של הגואי
+  (`guistate.sh`, תמיד), והגואי מצייר את כפתור "כלים" רק על 1. הקונסולה
+  קוראת `GET /me` → `capabilities.tools`. מה נעלם כשהוא כבוי — סעיף 23.
 - **`class_deploy_enabled`** (‏bool) — **למחשב הבנייה בלבד** (‏#880): האם
   "הפצה לכיתות" מוצעת בתפריט שלו, **מעל** דגל המהדורה. ההגדרה בטבלת
   `settings`, ברירת מחדל `"false"`; נערכת מהקונסולה כש-`classrooms` דלוק
@@ -1826,6 +1834,7 @@ ServerInit מהמכונה → …). **‏`monitor.js` אינו משתנה ואי
 | `confirm_word` | מחרוזת/`null` | מה מקלידים: שם השרת (`/me.server_name`, ‏#936) לפורטים של השרת; `imagectl.monitor`/`imagectl.debug`/שם הכרטיס לשאר |
 | `confirm_when` | `off` / `on` / `on_or_last_off` | באיזה כיוון ההקלדה נדרשת: כיבוי (8080/8081 — שובר את המערכת) / הדלקה (DHCP, מוניטור, SSH תחנות — פותח דלת) / הדלקה או סגירת הכרטיס האחרון (SSH לשרת) |
 | `off_means` | משפט | "מה קורה אם מכבים" — לכל שורה, גם לאלה בלי מתג |
+| `warning_he` | משפט (רק `tftp`, ‏#1013) | אזהרה שהקונסולה מציגה במודאל **לפני** שדה הקלדת שם השרת, במקום `off_means`: "כיבוי 69 (TFTP) עוצר את ה-PXE: מחשבי בנייה ושיכפול לא יעלו מהשרת." (הכרעת נדב 19/09; ‏v2 יוסיף כיתות) |
 
 **עיקרון 5 — שלושה מצבים, שלושה צבעים** (`ports.measured_state`): "כבוי"
 (המתג) ≠ "לא מאזין" (נמדד) ≠ "לא נקרא" (ss חסר). דלוק+מאזין = `ok`;
@@ -1838,7 +1847,7 @@ ServerInit מהמכונה → …). **‏`monitor.js` אינו משתנה ואי
 
 | `id` | פורט | `toggle` | המתג חי ב- | מקור המצב |
 |---|---|---|---|---|
-| `tftp` | 69/udp | `none` | — | `port_owner(ss, 69)`. **אין מתג בכוונה:** `enable-tftp` יושב בקובץ המתקין (`/etc/dnsmasq.d/imagectl.conf`) ו-dnsmasq אינו יודע לבטל אפשרות מקובץ אחר — הסרה משם היא שינוי במתקין ובכל שרת מותקן (Issue נפרד) |
+| `tftp` | 69/udp | `confirm` (`off`) / `none` | `PUT /ports/tftp` (‏#1013) | `port_owner(ss, 69)`; `enabled` = `port:tftp` (חסר = דלוק). המתג הוא `enable-tftp`/`tftp-root` **בקובץ שהשרת מרנדר** (`imagectl-dhcp.conf`, ‏`dhcp.render` — לפני היציאה המוקדמת, גם בלי אף DHCP; וגם ב-`render_proxy`), והוא מוחל דרך `console_dhcp.apply_dnsmasq` (אותם hooks כמו לשונית ה-DHCP — restart של dnsmasq). **`none` בשני מצבים, בשם:** קובץ המתקין (`/etc/dnsmasq.d/imagectl.conf`, ‏`installer_conf` hook) עדיין נושא `enable-tftp` פעיל — שדרוג בלי להריץ את המתקין מחדש; dnsmasq מצטבר והמתג לא יכול לכבות — או שהקובץ לא נקרא. "כבוי" מזויף בזמן ש-69 מאזין הוא `bad` ("הכיבוי לא תפס"), לא `off` |
 | `dhcp` | 67/udp | `confirm` (`on`) | `PUT /net/interfaces/{name}` `enabled` (+`confirm`=שם הכרטיס) | `ss` על 67 (proxy גם מאזין שם); `enabled` = כרטיס עם DHCP מלא או proxy; `interfaces[]` = `{name, enabled, proxy}` |
 | `http_boot` | 8080/tcp | `confirm` (`off`) | `PUT /ports/http_boot` | `ss -ltnp` על פורט הסוכן; כשמאזין ודלוק — גם `GET /boot/menu` כמו קודם |
 | `http_console` | 8081/tcp (**HTTPS**, סעיף 22) | `confirm` (`off`) | `PUT /ports/http_console` | `ss -ltnp` (כרטיס הניהול + loopback, ‏#904) |
@@ -1873,7 +1882,14 @@ ServerInit מהמכונה → …). **‏`monitor.js` אינו משתנה ואי
 * **המצב נשמר** ב-`settings` (`port:<id>` → `{"enabled": bool}`) ושורד
   אתחול: `serve_all` פותח בעלייה רק מה ש-`ports.enabled` מרשה. חסר = דלוק
   (שדרוג אינו מכבה כלום).
-* **קודים:** 400 — כיבוי `toggle: confirm` בלי `confirm` = שם השרת (8080, 8081);
+* **‏TFTP 69 (‏#1013):** אותו גוף ואותה תשובה, אבל `applied` = הקובץ נכתב
+  ו-dnsmasq הופעל מחדש בלי שגיאה (`dnsmasq_apply`), ו-`verified` = `ss -ulnp`
+  אחרי ההחלה תואם. **בעליית השרת** (`console_dhcp.sync_main_conf`, ‏`main`
+  בלבד כמו known-macs) הקובץ הראשי נכתב מחדש מה-DB ו-dnsmasq מופעל מחדש
+  **רק** כשרשת ההפצה מוגדרת (‏#1088) **ורק** כשהתוכן שונה ממה שעל הדיסק —
+  כך התקנה טרייה (המתקין אינו כותב עוד `enable-tftp`) מקבלת TFTP ברגע
+  שהשרת עולה, ואתחול שגרתי אינו נוגע ב-dnsmasq. יומן: `dhcp_synced_at_startup`.
+* **קודים:** 400 — כיבוי `toggle: confirm` בלי `confirm` = שם השרת (8080, 8081, 69);
   409 — **הדלת האחרונה**: הבקשה הגיעה דרך הפורט שהיא מבקשת לסגור
   (`request.scope["server"]`, ‏8081 דרך 8081), או שורה שהמתג שלה חי במקום
   אחר (`detail` נוקב בנתיב), או שורה בלי מתג; 403 — `deploy`; 404 — id לא
@@ -2250,6 +2266,7 @@ TLS היא זרם RFB גולמי דו-כיווני, החל מ-ClientInit (כמו
 | `GET …/transfers` · `GET /api/console/storage-transfers` | ההעברות האחרונות (20, חדשה ראשונה) — שורות `storage_transfers` + `node_label` + `direction` |
 | `POST /api/console/storage-transfers/{id}/cancel` | ביטול pull פעיל. ‏409 אם אינו pull או אינו פעיל. ה-worker מוחק את `.incoming` ומסיים `failed`/"בוטל" |
 | `GET …/machines` | `{"connected": bool, "error", "machines", "node_id"}`. משני שלא ענה = `connected:false` עם הסיבה — **200, לא 5xx ולא רשימה ריקה** (לא-הצלחנו-לשאול ≠ אין מכונות) |
+| `POST …/check` | ‏#1017: **בדיקת חיבור בלבד** — `GET /ping` המאומת של המשני, בלי מכונות ואימג'ים. `{"connected", "error", "checked_at", "node_id", "protocol_version"}` + שדות המגע (סעיף 29). אותם כללים: לא ענה = `connected:false`, 200 |
 | `WebSocket …/monitor/{mac}` | כמו סעיף 14 לדפדפן (subprotocol `binary`, גרסה → None → OK → בייטים גולמיים; `monitor.bridge_browser`), רק שהצד השני הוא המנהרה מהמשני ולא TCP למכונה |
 
 **ההעברה ברקע, push** (`storage_transfer.run_transfer`, תהליכון עם חיבור DB
@@ -2294,7 +2311,7 @@ M בייטים"/הסיבה — ומתחילים מחדש בגלוי; אין חי
 
 | מסלול | ראשי / admin | ראשי / deploy | משני / admin | משני / deploy |
 |---|---|---|---|---|
-| `GET /storage-nodes` · `/storage-node-groups` · `/storage-transfers` · `/storage-nodes/{id}/transfers` · `/storage-nodes/{id}/machines` · `/storage-nodes/{id}/images` | 200 | **403** | **409** | **403** |
+| `GET /storage-nodes` · `/storage-node-groups` · `/storage-transfers` · `/storage-nodes/{id}/transfers` · `/storage-nodes/{id}/machines` · `/storage-nodes/{id}/images` · `POST /storage-nodes/{id}/check` | 200 | **403** | **409** | **403** |
 | `POST /storage-nodes/{id}/pull` · `POST /storage-transfers/{id}/cancel` | 200/4xx | **403** | **409** | **403** |
 | `POST /storage-nodes/enroll/preview` · `/enroll` | 200/400 | **403** | **409** | **403** |
 | `GET /storage-pairing-window` (loopback בלבד) | 409 | **403** | 200 | **403** |
@@ -2303,7 +2320,7 @@ M בייטים"/הסיבה — ומתחילים מחדש בגלוי; אין חי
 | `WebSocket /storage-nodes/{id}/monitor/{mac}` | לפי הטבלה למעלה | **4403** | **4409** | **4403** |
 | `GET /images` · סבבים · חדר (allowlist הקיוסק, סעיף 24) | 200 | 200 (מהקיוסק) | 200 | 200 (מהקיוסק) |
 | `GET /overview` · `/me` · `/machines` · כל נתיב קונסולה אחר | 200 | **403** `deploy_no_console` | 200 | **403** `deploy_no_console` |
-| `GET /me` → `capabilities` | `interbranch_transfer` (כשיש משני פעיל) · `enroll_secondary` · `classrooms` (`false` ב-v1, קבוע בקוד — #1081; זהה בכל שרת) | — (403) | `open_local_pairing` · `classrooms: false` | — (403) |
+| `GET /me` → `capabilities` | `interbranch_transfer` (כשיש משני פעיל) · `enroll_secondary` · `classrooms` (`false` ב-v1, קבוע בקוד — #1081; זהה בכל שרת) · `tools` (`false` ב-v1, v1.1 מדליק; זהה בכל שרת) | — (403) | `open_local_pairing` · `classrooms: false` · `tools: false` | — (403) |
 
 הסדר בשרת: **התפקיד של המשתמש נבדק לפני תפקיד השרת** (‏`admin_only` →
 ‏`require_standalone`), ולכן deploy מקבל 403 על משני **וגם** על ראשי —
@@ -2317,11 +2334,13 @@ M בייטים"/הסיבה — ומתחילים מחדש בגלוי; אין חי
 צומת שרת לכל משני נבנה מ-`GET /api/console/storage-nodes` (בקונסולה:
 `populateSidebarSecondaries`), עם ארבעה ילדים — סקירה · מחשבים · אימג'ים ·
 העברות — שכולם דף אחד (`branch`, ‏`branches.js`) עם המשני שנבחר. מצב
-החיבור (הנקודה ליד השם) הוא `connected` מ-`GET …/machines`; לשונית
+החיבור (הנקודה ליד השם) הוא `connected` מ-`GET …/machines`; "בדוק חיבור"
+מהשורה בדף "סניפים" הוא `POST …/check` (‏#1017); לשונית
 "אימג'ים" מציגה את **ספריית המשני** מ-`GET …/storage-nodes/{id}/images`
 (שם · גודל · תאריך · "קיים בראשי" · "העבר לראשי") ומתחתיה את ההעברות
 שהושלמו מכאן. כרטיס ההתקדמות מציג כיוון (`חיפה → ת"א` ל-pull) וביטול.
-גרסה ו"נראה לאחרונה" של המשני אינם נאספים בערוץ ולכן אינם מוצגים.
+גרסת המשני אינה נאספת בערוץ ולכן אינה מוצגת; "ענתה לאחרונה" **כן** —
+מ-`last_seen_at` שהראשי רושם (סעיף 29, #1017).
 deploy (403) ושרת משני (409) — אין צמתים, לא שגיאה. משני מושבת נשאר
 בעץ, אפור, ואינו נשאל.
 
@@ -2365,10 +2384,10 @@ deploy (403) ושרת משני (409) — אין צמתים, לא שגיאה. מ�
 
 | נתיב | שיטה | מה |
 |---|---|---|
-| `/update` | GET | `{current, enabled, previous, server_name}` — תמיד, גם כשהמתג כבוי |
-| `/me` | GET | (‏#915, **לכל משתמש מחובר**, לא רק admin) מחזיר גם `server_name` (‏#936, סעיף 18) ו-`version` — אותו ערך כמו `current` למעלה, נקרא מחדש בכל קריאה; `null` = אין תג על העץ, והקונסולה לא מציגה מספר. זה מקור הגרסה בשורת הסטטוס של הקונסולה — לא מחרוזת ב-HTML. גם `theme` (‏#1093, סעיף 24) |
+| `/update` | GET | `{current, enabled, previous, server_name, last_check}` — תמיד, גם כשהמתג כבוי. ‏`last_check` (‏#1000, סעיף 29): המסמך של הבדיקה האחרונה או `null` |
+| `/me` | GET | (‏#915, **לכל משתמש מחובר**, לא רק admin) מחזיר גם `server_name` (‏#936, סעיף 18) ו-`version` — אותו ערך כמו `current` למעלה, נקרא מחדש בכל קריאה; `null` = אין תג על העץ, והקונסולה לא מציגה מספר. זה מקור הגרסה בשורת הסטטוס של הקונסולה — לא מחרוזת ב-HTML. גם `theme` (‏#1093, סעיף 24), ו-`uptime_seconds`/`deploy_ip` (‏#968, סעיף 29) |
 | `/update/status` | GET | מצב ההרצה האחרונה + `verified` (ראו למטה) |
-| `/update/check` | POST | `{current, latest, available, reason}`; **404** אם `update_enabled` כבוי |
+| `/update/check` | POST | `{at, current, latest, available, reason}` — נשמר ב-`settings.update_last_check` (‏#1000); **404** אם `update_enabled` כבוי |
 | `/update/apply` | POST | `{tag, confirm_name}`; **404** כבוי · **403** שם שגוי · **409** סבב פתוח/רץ |
 | `/update/revert` | POST | `{confirm_name}` לגרסה ב-`update_previous`; **404** אם אין גרסה קודמת |
 
@@ -2765,6 +2784,23 @@ loopback בלבד (הכרעת #770) ותעודה עם SAN `127.0.0.1` + שם ה�
 
 ## 23. ארגז הכלים — קטלוג, בחירה ואריזה (‏#649 שלב 1, ‏#1050 שלב 2)
 
+> **הכרעת נדב 19/09: v1 יוצאת בלי ארגז הכלים; v1.1 = הכלים** (מילסטון
+> "v1.1 — ארגז הכלים": #649, #1104, #928; לכל כלי יהיה מוקאפ של החלון
+> שלו לפני בנייה). הקוד לא נמחק — הוא מאחורי דגל המהדורה `tools`
+> (`server/capabilities.py`, `False`; ליד `classrooms`, #1081). כשהוא כבוי:
+>
+> | איפה | מה נעלם |
+> |---|---|
+> | הקונסולה | הצומת "ארגז כלים" תחת תשתית (`data-cap="tools"`, מתחיל מוסתר) והניתוב אליו — `pageAllowed("tools")` מסרב גם ל-admin |
+> | ה-API | `GET /tools/catalog` ו-`PUT /tools/selection` עונים **404 בשם** ("ארגז הכלים אינו במהדורה זו (v1.1)") — **לפני** הזדהות, כי הדף אינו קיים במהדורה; deploy נשאר 403 (`deploy_no_console`, סעיף 24, נסגר לפני הניתוב) |
+> | hello / `/state` | `tools: false` → `guistate.sh` כותב `menu_tools=0` → הגואי הקטן אינו מצייר את כפתור "כלים" בתפריט מחשב הבנייה |
+>
+> מה **לא** משתנה: הקטלוג, קובץ הבחירה ששמור, `build_initramfs.sh
+> --tools-selection` והמסגרת בתחנה (`tools.sh`) — הכול נשאר ומחכה.
+> **מדליקים ב-v1.1:** `TOOLS = True` — ואז הצומת, ה-API והכפתור חוזרים
+> בלי שינוי אחר; `tests/test_console_visibility.py` ו-`test_native_gui_tools.py`
+> מוכיחים את שני המצבים.
+
 **הכרעת נדב 17/09:** במקום מסמך לסימון — דף "ארגז כלים" בקונסולה
 (תשתית › ארגז כלים, admin בלבד) שמציג את הכלים המועמדים בקבוצות, ובו
 הוא מסמן מה נכנס; **מה שמסומן יעלה ל-initrd** (שלב 2, Issue נפרד). חובה:
@@ -2896,7 +2932,8 @@ stderr `no selection file`; ‏`build: []` → רשימה ריקה בלי ההו
 והקונסולה — דרך דגל שרת אחד: `classrooms` (`server/capabilities.py`,
 `false` ב-v1; v2 מדליק). הסוכן קורא אותו מה-hello או מ-`/state`
 (`class_deploy_on` ב-`buildmenuitems.sh`; חסר = כבוי); `guistate.sh` כותב
-מכאן `menu_class=0`. **ההבדל בין v1 ל-v2 = כיתות בלבד.** אין SSO בין השרתים.
+מכאן `menu_class=0`. **ההבדל בין v1 ל-v2 = כיתות בלבד.** ובאותו ערוץ בדיוק
+`tools` → `menu_tools=0` מסתיר את כפתור "כלים" (v1.1, סעיף 23). אין SSO בין השרתים.
 
 ### איך זה ממומש בשרת
 
@@ -3290,3 +3327,75 @@ SPKI+thumbprint של תעודת-הלקוח — ‏`TlsPeer` אינו נושא כ
 - לרשום `deploy:*` כשהכתובת מוגדרת ביחידה, או להשלים התקנה בלי
   שהכרטיס נושא את `server_ip`.
 - להחליף את תעודת הקונסולה בחילוף כתובת.
+
+## 29. פערי ה-API של העיצוב מחדש (‏#968, ‏#1000, ‏#1017)
+
+הכרעת נדב (19/09): מה שהמוקאפים המאושרים של #954 מציגים **עובד ב-v1**,
+לא "בקרוב". הכלל בכל שדה כאן הוא עיקרון 5 — נתון שלא נמדד מוחזר `null`
+ומוצג **בשם** ("לא נבדק", "רשת הפצה לא הוגדרה"), לעולם לא 0, לא
+`127.0.0.1` ולא צבע שנראה כסיווג.
+
+### הסקירה הכללית (‏#968)
+
+| נתיב | שדה | מקור | `null` פירושו |
+|---|---|---|---|
+| `GET /api/console/me` (כל מחובר) | `uptime_seconds` | ‏`/proc/uptime` של **המכונה** (‏`health.read_uptime`; הוזרק דרך `health_hooks["uptime"]`), נקרא מחדש בכל קריאה. המכונה ולא התהליך — `systemctl restart` לא מאפס אותו | הקובץ לא נקרא (תחנת פיתוח, קובץ פגום) → "זמן פעילות לא נבדק" |
+| `GET /api/console/me` | `deploy_ip` | המארח של `server_base` — הכתובת שב-GRUB ובשורת הקרנל של התחנות (‏`deploy_net.deploy_ip`) | רשת ההפצה טרם הוגדרה (‏#1088, `DeployState.configured=False`; אז `server_base` הוא loopback) → "רשת הפצה לא הוגדרה" |
+| `GET /api/console/journal` (admin) | `severity` ∈ `info` · `ok` · `warn` · `err` | **השרת**, `journal_he.severity(event)` לצד התרגום — טבלה מפורשת של אירועים מ-`EVENTS_HE` (‏`test_every_severity_entry_is_a_known_event` נופל על אירוע שאינו קיים). `info` הוא ברירת המחדל לכל אירוע שאינו ברשימה | — (אין `null`; המבנה הקיים `ts/user/event/label/text` לא זז — רק שדה נוסף) |
+| `GET /api/console/tasks` | `folder` | עמודת `tasks.folder` — התיקייה שהוזמנה ב-`POST /tasks/capture` | — (‏`""` = שורש הספרייה, במפורש) |
+
+**בקונסולה (`console.js`, `home()`):** שורת-המשנה בכותרת היא
+`hostname · IP · גרסה · "פעיל N ימים M שעות"` — כולם מ-`/me`;
+ציר-הזמן ודף היומן צובעים לפי `severity` בלבד (‏`journalCls`; ערך
+זר/חסר = ניטרלי). **ההיוריסטיקה `journalSeverity` על שם ה-event
+נמחקה** — לא נשארה לצד השדה. עמודת "יעד" בקליטה היא "תיקיית X" /
+"שורש הספרייה" מ-`folder`.
+
+### בריאות ושירותים (‏#1000)
+
+| נתיב | מה | `null` / היעדר פירושו |
+|---|---|---|
+| `POST /api/console/update/check` | מחזיר **ושומר** `{at, current, latest, available, reason}` ב-`settings.update_last_check`. ‏`at` = `now_iso()` של השרת ברגע הבדיקה | — |
+| `GET /api/console/update` → `last_check` | אותו מסמך, כפי שנשמר — הדף מציג "בדיקה אחרונה: היום 06:00 — אין חדש" גם אחרי רענון ובכל דפדפן. ‏`reason` שאינו `null` = **הבדיקה נכשלה**, לא "אין חדש" | `null` = מעולם לא נבדק בשרת הזה (או רשומה פגומה — נקראת כ-`null`, לא כקריסה) |
+| `GET /api/console/health` → כותרת `X-Health-Checked-At` | ‏ISO של השרת, נחתם **אחרי** שהבדיקות רצו. **כותרת ולא מעטפת**: הגוף נשאר מערך `[{id,label,state,detail}]` שכל הקוראים הקיימים (`HOME`, ‏`updateAlertBadge`, טסטי node, `test_server_health`) תלויים בו | כותרת חסרה = "זמן המדידה לא נמסר" — הקונסולה **לא** נופלת לשעון הדפדפן |
+
+בקונסולה: `loadHealth` קורא ב-`fetch` ישיר (כמו היומן ו-
+`X-Journal-Search-Truncated`) ומציג "נבדק היום HH:MM"; שורת "בדיקה אחרונה"
+בכרטיס העדכון היא `updateLastCheckText` מ-`last_check`. כפתור "החל עדכון"
+עדיין דורש בדיקה **בסשן הזה** (`UPDATE_CHECK`) — `available` שנשמר אתמול
+אינו ראיה שהתג עדיין שם.
+
+### סניפים / שרת משני (‏#1017)
+
+**מה נשמר (טבלת `storage_nodes`, על הראשי; מיגרציה ב-`ADDED_COLUMNS`):**
+
+| עמודה | מתי נכתבת | `NULL` פירושו |
+|---|---|---|
+| `last_seen_at` | בכל קריאה בין-שרתית **שהמשני ענה לה** — `/check`, `/machines`, `/images`, ותחילת push/pull (התשובה הראשונה). כתיבה מוצלחת גם **מנקה** `last_error`/`last_error_at` | מעולם לא ענה (או לפני #1017) — "לא נמדד", לא "לא ענה" |
+| `last_error` · `last_error_at` | קריאה בין-שרתית שנכשלה **בערוץ**: חיבור/TLS/תשובה שאינה 200/תשובה לא שמישה (`interserver_auth.redact_secrets`). `last_seen_at` **נשאר** — "לא ענה 08:12 · ענתה לאחרונה 07:30". כשל לוגי של העברה (אימג' כבר קיים, sha256) **אינו** כשל ערוץ | הקריאה האחרונה הצליחה |
+
+הכותב: `storage_nodes.record_contact(conn, id, error=None|str)`;
+הקורא: `storage_nodes.contact_fields(conn, id)`. משני **מושבת** אינו נשאל
+ולכן אינו נרשם כ"לא ענה".
+
+**מה מוחזר:** `GET /storage-nodes` — שלוש העמודות על כל שורה (כדי שהטבלה
+תציג "ענתה לאחרונה HH:MM" עוד לפני שהדף בדק בעצמו, וגם כשלא היה בפוקוס);
+`POST …/check`, `GET …/machines`, `GET …/images` — אותן שלוש, כפי שנרשמו
+**אחרי** הקריאה הזו, בנוסף לשדות הקיימים.
+
+`POST /api/console/storage-nodes/{id}/check` (admin, standalone; 403/409/404
+כמו שאר הנתיבים) → `{"connected", "error", "checked_at", "node_id",
+"protocol_version", "last_seen_at", "last_error", "last_error_at"}`. `node_id`
+ו-`protocol_version` מתשובת ה-`/ping` של המשני (`null` כשלא ענה).
+
+**בקונסולה (`branches.js`):** תא "חיבור" — "מחובר · ענתה HH:MM" /
+"לא ענה — HH:MM" + הסיבה + "ענתה לאחרונה HH:MM", כולם מזמני **השרת**.
+תשובה בלי שדות זמן = בלי זמן; **שעון הדפדפן אינו תחליף** (זו הייתה
+הסטייה של גל 7). "בדוק חיבור" בשורה = `/check`; טעינת הדף = `/machines`
+(גם מונה המחשבים). כשל בבקשה לראשי עצמו (לא לשרת המשני) אינו נרשם ואינו
+מקבל זמן.
+
+**סעיף 3 של #1017 ("אדמין במשני רואה רק את השרת שלו"):** כלל הנראות
+נאכף בשרת (409 על כל נתיבי הסניפים, `capabilities` ב-`/me`) ומוצג בעץ
+(`pageAllowed`) — `tests/test_console_visibility.py` הוא הטבלה. מסך
+"כרטיס ביקור" ייעודי למשני **לא נבנה כאן** — זה מסך, לא פער API.

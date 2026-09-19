@@ -47,10 +47,12 @@ from .drivers import DriverLibrary
 from .branding import create_branding_router
 from .capture import create_agent_capture_router, create_console_capture_router
 from .console_net import create_net_router
+from . import console_dhcp
 from .console_dhcp import create_dhcp_router
 from .console_netcfg import create_netcfg_router, drain_crumbs
 from .db import connect
 from .health import create_health_router
+from .health import default_hooks as health_default_hooks
 from .update import (PUBLIC_UPDATE_URL, create_update_router, current_version,
                      default_hooks as default_update_hooks)
 from .hello import make_resolver, off_deploy_vlan, self_probe
@@ -281,6 +283,11 @@ def create_runtime(
     console_tls: ConsoleTLS | None = None,
     # ‏#1088: ראו ``ServerRuntime.deploy``.
     deploy: "deploy_net.DeployContext | None" = None,
+    # ‏#1013: בעלייה, לכתוב את קובץ ה-dnsmasq הראשי מה-DB אם הוא שונה ממה
+    # שעל הדיסק (‏`console_dhcp.sync_main_conf`). ‏False כברירת מחדל מאותו
+    # טעם כמו ``known_macs_hooks``: רק ``main`` מדליק; בדיקות לא נוגעות
+    # ב-dnsmasq של המכונה שהן רצות עליה.
+    sync_dnsmasq: bool = False,
 ) -> ServerRuntime:
     """בונה את המצב המשותף פעם אחת ומריץ את האתחול החד-פעמי.
 
@@ -404,6 +411,9 @@ def create_runtime(
         error = known_macs_hooks["apply"](dhcp.render_known_macs(registry.all_macs(conn)))
         if error:
             journal(conn, "known_macs_apply_failed", error)
+    if sync_dnsmasq:
+        console_dhcp.sync_main_conf(
+            ctx, {**console_dhcp.default_hooks(), **(dhcp_hooks or {})}, deploy)
 
     return ServerRuntime(
         ctx=ctx, conn=conn, library=library, store=store,
@@ -543,10 +553,17 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
     def include(router) -> None:
         app.include_router(router, dependencies=no_deploy)
 
+    # ‏#968: ‏uptime מאותו מנגנון הזרקה של מסך הבריאות (health_hooks);
+    # ‏deploy_ip מ-server_base — null כשרשת ההפצה טרם הוגדרה (#1088), כי
+    # אז server_base הוא 127.0.0.1 ולא כתובת שתחנה רואה.
+    uptime_hook = {**health_default_hooks(), **(rt.health_hooks or {})}["uptime"]
     include(create_console_router(
         ctx, rt.known_macs_hooks,
         version=lambda: current_version(update_hooks, repo_dir),
-        tls=rt.console_tls))
+        tls=rt.console_tls,
+        uptime=uptime_hook,
+        deploy_ip=lambda: deploy_net.deploy_ip(
+            rt.server_base, rt.deploy.state if rt.deploy else None)))
     include(create_storage_router(ctx, rt.data_dir))   # #727/#740
     include(create_storage_locations_router(
         ctx, rt.storage_hooks, rt.data_dir, rt.server_base))   # #1066
@@ -554,9 +571,15 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
     include(create_drivers_router(ctx))   # #720
     include(create_tools_router(ctx, rt.data_dir))   # #649: ארגז הכלים — קטלוג + בחירה
     include(create_net_router(ctx))
-    include(create_dhcp_router(ctx, rt.dhcp_hooks, deploy=rt.deploy))
+    # ‏#1013: מתג ה-TFTP בדף הפורטים מחיל את אותם קובצי dnsmasq, דרך אותם
+    # hooks, כמו לשונית ה-DHCP — מקום אחד שכותב את הקובץ.
+    dhcp_hooks = {**console_dhcp.default_hooks(), **(rt.dhcp_hooks or {})}
+    include(create_dhcp_router(ctx, dhcp_hooks, deploy=rt.deploy))
     include(create_netcfg_router(ctx, rt.netcfg_dir, rt.netcfg_hooks))
-    include(create_health_router(ctx, rt.server_base, rt.health_hooks))
+    include(create_health_router(
+        ctx, rt.server_base, rt.health_hooks,
+        dnsmasq_apply=lambda what, user_id: console_dhcp.apply_dnsmasq(
+            ctx, dhcp_hooks, rt.deploy, what, user_id)))
     include(create_update_router(
         ctx, repo_dir, rt.server_base, rt.update_hooks,
         public_url=PUBLIC_UPDATE_URL))

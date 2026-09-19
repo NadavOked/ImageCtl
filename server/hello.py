@@ -146,6 +146,8 @@ def _unknown(conn: sqlite3.Connection, mac: str, client_ip: str | None,
         "ui": _ui(conn, has_open_session=False, off_vlan=off_vlan),
         # #1081: v1 hides classrooms. Missing = off (principle 1). v2 turns this on.
         "classrooms": capabilities.classrooms(),
+        # v1 ships without the toolbox (Nadav, 19/09). Missing = off. v1.1 turns this on.
+        "tools": capabilities.tools(),
     }
 
 
@@ -213,6 +215,9 @@ def build_answer(
         # #1081: edition flag. v1 = False (hardcoded). v2 turns this on.
         # Missing = off. Not an operator setting.
         "classrooms": capabilities.classrooms(),
+        # v1 ships without the toolbox (Nadav, 19/09): the GUI's "כלים" button
+        # follows this. Missing = off. v1.1 turns this on.
+        "tools": capabilities.tools(),
         "schema": 1,
         "known": True,
         "role": machine["role"],

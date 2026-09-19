@@ -16,12 +16,19 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 
 import hashlib
 
 from . import (agent_loops, auth, console_ssh, dhcp, foreign_vlan, hello,
                identity, monitor, ports, ssh_switch)
+from .db import now_iso
+
+#: ‏#1000: מתי `/health` נמדד — כותרת HTTP (ISO, שעון השרת), כי הגוף הוא
+#: מערך ש-`HOME`, ‏`updateAlertBadge` וטסטי node קוראים כמות שהוא; מעטפת
+#: הייתה שוברת את כולם. הקונסולה קוראת אותה ב-`loadHealth` (fetch ישיר,
+#: כמו `X-Journal-Search-Truncated`) ומציגה "נבדק HH:MM" מזמן השרת.
+CHECKED_AT_HEADER = "X-Health-Checked-At"
 
 BOOT_FILES = ("bootx64.efi", "grubx64.efi", "grub/grub.cfg")
 
@@ -62,6 +69,10 @@ def default_hooks() -> dict:
         # ‏`ports.Listeners`) מוזרק מ-main.py; ‏None = אין מנהל בתהליך הזה.
         "ss_tcp": lambda: _run(["ss", "-ltnp"]),
         "port_listeners": None,
+        # ‏#1013: קובץ ה-dnsmasq של המתקין — אם הוא עדיין נושא enable-tftp,
+        # אין מתג ל-69 (dnsmasq מצטבר). שלושה מצבים: טקסט / "" (אין קובץ) /
+        # None (לא נקרא) — ראה dhcp.read_installer_conf.
+        "installer_conf": dhcp.read_installer_conf,
         "shim_src": lambda: "/usr/lib/shim/shimx64.efi.signed",
         "unit_active": lambda name: _run(["systemctl", "is-active", name]).strip(),
         "http_get": _http_probe,
@@ -78,7 +89,25 @@ def default_hooks() -> dict:
         # לא הוזרק — אין שורה, לא "הכול בסדר". ‏main מזריק את שניהם.
         "deploy": None,
         "servers_nic": None,
+        # ‏#968: זמן הפעילות של **המכונה** (‏`/proc/uptime`), ל-`/me`. ‏None =
+        # לא נקרא (ווינדוס, קובץ חסר) — הקונסולה מציגה "לא נבדק", לא 0.
+        "uptime": read_uptime,
     }
+
+
+#: ‏#968: המחשב, לא התהליך — למפעיל "השרת פעיל X" הוא המכונה; זמן
+#: התהליך היה מתאפס בכל `systemctl restart` ומטעה (הערת ה-Issue).
+UPTIME_PATH = "/proc/uptime"
+
+
+def read_uptime(path: str = UPTIME_PATH) -> int | None:
+    """שניות מאז שהמכונה עלתה, או ``None`` כשלא נקרא — שני מצבים שונים
+    (עיקרון 5): קובץ חסר/פגום אינו "0 שניות"."""
+    try:
+        first = Path(path).read_text(encoding="ascii").split()[0]
+        return int(float(first))
+    except (OSError, ValueError, IndexError):
+        return None
 
 
 def _probe_request(url: str) -> urllib.request.Request:
@@ -507,32 +536,29 @@ def ports_snapshot(ctx, hooks: dict, server_base: str) -> list[dict]:
     entries = []
     dhcp_flags = _dhcp_flags(ctx)
 
+    # ‏TFTP 69 (‏#1013): המתג נשמר כ-`port:tftp` ומוחל דרך ה-render של
+    # dnsmasq; `ports.tftp_switch` מחליט אם יש מתג בכלל (קובץ המתקין).
+    # המצב הנמדד נשאר `ss`: "כבוי" (המתג) ≠ "לא מאזין" ≠ "לא נקרא".
     tftp_bind = ports.bind_addresses(ss_out, 69)
     owner = port_owner(ss_out, 69) if ss_out else None
     tftp_note = "לפתוח ב-FW: UDP 69 מוילן ההפצה לשרת"
-    tftp_off = ("אין מתג: enable-tftp יושב בקובץ המתקין (/etc/dnsmasq.d/"
-                "imagectl.conf) ואין ל-dnsmasq דרך לבטלו מקובץ אחר; כיבוי = "
-                "אין shim/GRUB, מחשבים לא יעלו ב-PXE")
+    switch = ports.tftp_switch(ctx.conn, hooks["installer_conf"]())
+    flag = switch["enabled"]
     if not ss_out:
-        entries.append(_port("tftp", "TFTP", "69", "udp",
-            "bootloader — shim/GRUB והתפריט", "תחנות (PXE)", "unknown",
-            "טבלת הסוקטים לא נקראה (ss לא זמין) — לא ידוע אם מאזין", tftp_note,
-            off_means=tftp_off))
+        listening, state, detail = None, "unknown",             "טבלת הסוקטים לא נקראה (ss לא זמין) — לא ידוע אם מאזין"
     elif owner is None:
-        entries.append(_port("tftp", "TFTP", "69", "udp",
-            "bootloader — shim/GRUB והתפריט", "תחנות (PXE)", "bad",
-            "אף אחד לא מגיש TFTP — מחשבים לא יעלו ב-PXE", tftp_note,
-            listening=False, bind=tftp_bind, off_means=tftp_off))
+        listening = False
+        state, detail = (("off", "כבוי על ידי המפעיל — לא מאזין") if flag is False
+                         else ("bad", "אף אחד לא מגיש TFTP — מחשבים לא יעלו ב-PXE"))
     elif owner == "dnsmasq":
-        entries.append(_port("tftp", "TFTP", "69", "udp",
-            "bootloader — shim/GRUB והתפריט", "תחנות (PXE)", "ok",
-            "dnsmasq מגיש", tftp_note, listening=True, bind=tftp_bind,
-            off_means=tftp_off))
+        listening = True
+        state, detail = (("bad", "המתג כבוי אבל dnsmasq עדיין מגיש — הכיבוי לא תפס")
+                         if flag is False else ("ok", "dnsmasq מגיש"))
     else:
-        entries.append(_port("tftp", "TFTP", "69", "udp",
-            "bootloader — shim/GRUB והתפריט", "תחנות (PXE)", "warn",
-            f"מוגש על ידי {owner}, לא על ידי dnsmasq", tftp_note,
-            listening=True, bind=tftp_bind, off_means=tftp_off))
+        listening, state, detail = True, "warn", f"מוגש על ידי {owner}, לא על ידי dnsmasq"
+    entries.append(_port("tftp", "TFTP", "69", "udp",
+        "bootloader — shim/GRUB והתפריט", "תחנות (PXE)", state, detail, tftp_note,
+        listening=listening, bind=tftp_bind, **switch))
 
     # ‏DHCP 67 — המתג חי ב-PUT /net/interfaces/{n} (enabled, +confirm = שם
     # הכרטיס); כאן רק החיווי וההפניה. proxy גם הוא מאזין על 67.
@@ -663,7 +689,10 @@ def ports_snapshot(ctx, hooks: dict, server_base: str) -> list[dict]:
     return entries
 
 
-def create_health_router(ctx, server_base: str, hooks: dict | None = None) -> APIRouter:
+def create_health_router(ctx, server_base: str, hooks: dict | None = None,
+                         dnsmasq_apply=None) -> APIRouter:
+    """‏`dnsmasq_apply(what, user_id)` (‏#1013): מה שמתג ה-TFTP מפעיל —
+    ‏`console_dhcp.apply_dnsmasq` עם ה-hooks של ה-DHCP; ‏None = אין."""
     router = APIRouter(prefix="/api/console")
     current_user, admin_only = auth.dependencies(ctx.conn)
     # מתגי ה-SSH חולקים את אותו מנגנון הזרקה: בבדיקות אף פעולה אינה
@@ -671,8 +700,11 @@ def create_health_router(ctx, server_base: str, hooks: dict | None = None) -> AP
     hooks = {**default_hooks(), **ssh_switch.default_hooks(), **(hooks or {})}
 
     @router.get("/health")
-    def health(user=Depends(admin_only)):
-        return collect(ctx, hooks, server_base)
+    def health(response: Response, user=Depends(admin_only)):
+        checks = collect(ctx, hooks, server_base)
+        # אחרי המדידה, לא לפניה: "נבדק" הוא הרגע שבו התוצאות נכונות.
+        response.headers[CHECKED_AT_HEADER] = now_iso()
+        return checks
 
     @router.get("/ports")
     def list_ports(user=Depends(current_user)):
@@ -685,5 +717,5 @@ def create_health_router(ctx, server_base: str, hooks: dict | None = None) -> AP
     # ‏#996: המתג לכל פורט — אותם hooks (ss/ss_tcp/port_listeners) כמו החיווי.
     router.include_router(ports.create_ports_router(
         ctx, lambda: ports_snapshot(ctx, hooks, server_base),
-        hooks.get("port_listeners")))
+        hooks.get("port_listeners"), dnsmasq_apply))
     return router

@@ -32,6 +32,10 @@ gui_state() {
     # reads as 0 in state.c, so the card never shows by omission.
     if class_deploy_on; then _mc=1; else _mc=0; fi
     printf 'menu_class=%s\n' "$_mc" >> "$GUI_DIR/state.next" || return 1
+    # v1 without the toolbox (Nadav, 19/09): menu_tools=0|1 from tools_on
+    # (buildmenuitems.sh), always written for the same reason as menu_class.
+    if tools_on; then _mt=1; else _mt=0; fi
+    printf 'menu_tools=%s\n' "$_mt" >> "$GUI_DIR/state.next" || return 1
     # #1073: the machine's registered name -- the restore screen's typed
     # confirmation (principle 7). Always written; empty when the registry
     # has none, and then the screen refuses to start instead of guessing.

@@ -128,6 +128,8 @@ def create_station_router(ctx: ServerContext) -> APIRouter:
             "allowed_images": allowed_images,
             # #1081: edition flag, same as hello. Missing = off. v2 turns this on.
             "classrooms": capabilities.classrooms(),
+            # v1 without the toolbox (Nadav, 19/09), same as hello. v1.1 turns this on.
+            "tools": capabilities.tools(),
             "task": {
                 "id": task["id"], "type": task["type"], "state": task["state"],
                 "disk": task["disk"], "name": task["name"], "error": task["error"],

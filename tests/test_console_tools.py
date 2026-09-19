@@ -3,6 +3,10 @@
 admin בלבד (deploy → 403, אנונימי → 401); שמירה = ‏settings **וגם**
 `<data_dir>/tools-selection.json` (מה שבניית ה-initrd תקרא בשלב 2) ורשומת
 יומן אחת עם הספירות; id שאינו בקטלוג → 422 **בשמו** (לא נזרק בשקט).
+
+v1 יוצאת בלי ארגז הכלים (נדב 19/09) — ה-API עונה 404 (נבדק ב-
+`test_console_visibility.py`). כאן ה-fixture מדליק את הדגל, כלומר זה
+המסלול של v1.1, והוא נשמר עובד.
 """
 
 from __future__ import annotations
@@ -21,10 +25,11 @@ except ImportError:                                   # pragma: no cover
 
 
 @pytest.fixture()
-def tools_server(tmp_path: Path, images_root: Path, clock):
+def tools_server(tmp_path: Path, images_root: Path, clock, monkeypatch):
     if TestClient is None:
         pytest.skip("fastapi is required")
-    from server import users
+    from server import capabilities, users
+    monkeypatch.setattr(capabilities, "TOOLS", True)    # v1.1: הדגל דלוק
     from server.app import create_app
 
     app = create_app(tmp_path / "data", images_root, "http://10.44.12.10:8080", now_fn=clock)

@@ -816,3 +816,98 @@ def test_the_parent_is_authenticated_by_certificate_not_by_address():
     from server.storage_nodes import normalize_config
     assert normalize_config("secondary", "https://imagectl.college.local:8443")[1] == \
         "https://imagectl.college.local:8443"
+
+
+# --- ‏#1013: קובץ ה-dnsmasq הראשי נגזר מה-DB בעליית השרת --------------------------
+
+
+def _startup(tmp_path, images_root, clock, *, source: str, on_disk: str | None,
+             sync: bool = True, tftp_root: Path | None = None):
+    """מרים runtime כמו main (sync_dnsmasq=True) עם dnsmasq מזויף, ומחזיר
+    מה נכתב. ‏`on_disk` = מה ש-read_active_conf "רואה" (None = אין קובץ)."""
+    from server.app import create_app
+    applied: list[str] = []
+    hooks = {
+        "interfaces": lambda: [], "probe": lambda name: dhcp.ProbeResult(True, ()),
+        "apply": lambda text: applied.append(text) or None,
+        "apply_proxy": lambda text, active: pytest.fail("העלייה אינה נוגעת ב-proxy"),
+        "read_active_conf": lambda: on_disk, "service_active": lambda unit: True,
+        "dnsmasq_version": lambda: "Dnsmasq version 2.91\n",
+    }
+    state = {"cli": deploy_net.DeployState("cli", "eth1", "http://10.44.9.10:8080"),
+             "console": deploy_net.DeployState("console", "eth1", "http://10.44.9.10:8080"),
+             "none": deploy_net.DeployState("none", None, None)}[source]
+    ctx = deploy_net.DeployContext(state=state, agent_port=8080,
+                                   tftp_root=tftp_root or Path("/srv/tftp"), repo_dir=REPO)
+    app = create_app(tmp_path / f"data-{source}-{sync}", images_root, "http://127.0.0.1:8080",
+                     now_fn=clock, dhcp_hooks=hooks, deploy=ctx, sync_dnsmasq=sync)
+    return applied, app.state.ctx
+
+
+def test_startup_writes_tftp_into_the_console_file_on_a_fresh_install(tmp_path, images_root, clock):
+    """התקנה טרייה עם כרטיס הפצה (cli): המתקין כבר אינו כותב enable-tftp,
+    ו-dnsmasq שלו עלה בלי TFTP. השרת, בעלייה, כותב את הקובץ שלו — עם
+    TFTP ובלי DHCP — ומפעיל את dnsmasq (hook). זה מה שמעלה 69."""
+    applied, ctx = _startup(tmp_path, images_root, clock, source="cli", on_disk=None)
+    assert len(applied) == 1
+    text = applied[0]
+    assert dhcp.installer_serves_tftp(text) and "tftp-root=/srv/tftp" in text
+    assert "dhcp-range" not in text and "interface=" not in text        # cli: interface= במתקין
+    events = [r["event"] for r in ctx.conn.execute("SELECT event FROM journal").fetchall()]
+    assert "dhcp_synced_at_startup" in events
+
+
+def test_startup_does_not_touch_dnsmasq_when_the_file_already_matches(tmp_path, images_root, clock):
+    """אתחול שגרתי של השרת אינו מפיל את dnsmasq: אותו תוכן = אפס כתיבות."""
+    applied, _ = _startup(tmp_path, images_root, clock, source="cli", on_disk=None)
+    same = applied[0]
+    applied2, ctx = _startup(tmp_path / "again", images_root, clock, source="cli", on_disk=same)
+    assert applied2 == []
+    events = [r["event"] for r in ctx.conn.execute("SELECT event FROM journal").fetchall()]
+    assert "dhcp_synced_at_startup" not in events
+
+
+def test_startup_leaves_dnsmasq_alone_until_the_deploy_network_is_configured(tmp_path, images_root, clock):
+    """‏#1088: בלי רשת הפצה dnsmasq נשאר כבוי עד ההדלקה הראשונה — restart
+    מהעלייה היה מעלה אותו על כל הכרטיסים (בלי interface=)."""
+    applied, _ = _startup(tmp_path, images_root, clock, source="none", on_disk=None)
+    assert applied == []
+
+
+def test_startup_sync_is_opt_in_like_known_macs(tmp_path, images_root, clock):
+    """ברירת המחדל של create_runtime אינה נוגעת ב-dnsmasq — רק main מדליק."""
+    applied, _ = _startup(tmp_path, images_root, clock, source="cli", on_disk=None, sync=False)
+    assert applied == []
+
+
+def test_startup_honours_the_tftp_switch_and_the_console_deploy_interface(tmp_path, images_root, clock):
+    """מה שנשמר ב-DB הוא מה שנכתב: מתג כבוי → בלי enable-tftp; כרטיס הפצה
+    מהקונסולה → interface= בקובץ הזה; tftp_root מההתקנה."""
+    from server import ports as ports_mod
+    from server.app import create_app
+    applied: list[str] = []
+    hooks = {"interfaces": lambda: [], "probe": lambda name: dhcp.ProbeResult(True, ()),
+             "apply": lambda text: applied.append(text) or None,
+             "apply_proxy": lambda text, active: None,
+             "read_active_conf": lambda: None, "service_active": lambda unit: True}
+    ctx = deploy_net.DeployContext(
+        state=deploy_net.DeployState("console", "eth1", "http://10.44.9.10:8080"),
+        agent_port=8080, tftp_root=Path("/data/tftp"), repo_dir=REPO)
+    # ריצה ראשונה: המתג נשמר כבוי (כאילו המפעיל כיבה לפני האתחול)
+    data = tmp_path / "data"
+    app = create_app(data, images_root, "http://127.0.0.1:8080", now_fn=clock,
+                     dhcp_hooks=hooks, deploy=ctx)
+    ports_mod.set_enabled(app.state.ctx.conn, "tftp", False)
+    app.state.ctx.conn.close()
+    app = create_app(data, images_root, "http://127.0.0.1:8080", now_fn=clock,
+                     dhcp_hooks=hooks, deploy=ctx, sync_dnsmasq=True)
+    assert len(applied) == 1
+    text = applied[0]
+    assert not dhcp.installer_serves_tftp(text) and "TFTP off" in text
+    assert "interface=eth1" in text
+    app.state.ctx.conn.close()
+    # ומתג דלוק עם שורש לא-ברירת-מחדל
+    applied.clear()
+    app = create_app(tmp_path / "data2", images_root, "http://127.0.0.1:8080", now_fn=clock,
+                     dhcp_hooks=hooks, deploy=ctx, sync_dnsmasq=True)
+    assert "tftp-root=/data/tftp" in applied[0]

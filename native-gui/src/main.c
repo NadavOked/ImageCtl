@@ -679,6 +679,7 @@ static void sample_state(State *s) {
         .name = "CLONE-03", .mac = "3C:52:82:A1:00:23",
         .awake = 0, .drawer_count = 3, .pct = -1 };
     s->menu_class = 1;                        /* the sample shows every card (#880) */
+    s->menu_tools = 1;                        /* and the toolbox button (v1.1) */
     s->nclasses = 3;
     s->classes[0] = (ClassGroup){ "grp_b12", "כיתה 12", 14 };
     s->classes[1] = (ClassGroup){ "grp_b7", "כיתה 7", 30 };

@@ -134,6 +134,47 @@ EVENTS_HE = {
     "ssh_unverified": "שינוי SSH לא אומת מול המצב בפועל",
 }
 
+#: ‏#968: חומרת האירוע לציר-הזמן ולעמודת הצבע ביומן — נקבעת **כאן**, לצד
+#: התרגום, ולא בהיוריסטיקה על שם ה-event בקונסולה (שהתיישנה עם כל
+#: אירוע חדש). ארבעה ערכים: ``ok`` הושלם/אושר · ``warn`` דורש תשומת לב ·
+#: ``err`` כשל/סירוב · ``info`` (ברירת המחדל לכל אירוע שאינו ברשימה,
+#: כולל אירוע שאינו ב-EVENTS_HE — לא נופל, לא צובע).
+SEVERITY_LEVELS = ("info", "ok", "warn", "err")
+_SEVERITY_ERR = {
+    "login_failed", "login_refused_console", "login_lockout",
+    "agent_login_failed", "agent_role_refused", "class_deploy_refused",
+    "session_image_bound", "pull_refused", "client_failed", "wol_failed",
+    "room_wave_lost", "send_failed", "direct_failed", "disk_failure",
+    "identity_refused", "storage_transfer_failed", "logo_refused",
+    "capture_failed", "drivers_failed", "dhcp_apply_failed",
+    "known_macs_apply_failed",
+}
+_SEVERITY_WARN = {
+    "unknown_mac", "boot_loop_local", "boot_loop_unverified", "agent_loop",
+    "agent_loop_unverified", "report_from_nonmember", "identity_unverifiable",
+    "capture_cancel", "direct_cancel", "send_stopped", "dhcp_proxy_risk",
+    "net_config_unverified", "net_rollback_armed", "net_rollback",
+    "net_rollback_unreadable", "ssh_unverified", "work_area_kept",
+    "storage_node_disable",
+}
+_SEVERITY_OK = {
+    "login", "capture_done", "client_done", "pull_done", "room_done",
+    "send_done", "direct_done", "storage_transfer_done", "net_confirmed",
+    "disk_failure_cleared", "drivers_staged", "storage_image_received",
+    "wol_sent",
+}
+
+
+def severity(event: str) -> str:
+    if event in _SEVERITY_ERR:
+        return "err"
+    if event in _SEVERITY_WARN:
+        return "warn"
+    if event in _SEVERITY_OK:
+        return "ok"
+    return "info"
+
+
 SETTINGS_HE = {
     "recovery_require_login": "שחזור בודד דורש כניסה",
     "session_wait_seconds": "המתנה מהמצטרף האחרון (שניות)",

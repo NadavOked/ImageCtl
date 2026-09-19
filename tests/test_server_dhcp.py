@@ -163,6 +163,72 @@ def test_render_with_nothing_enabled_is_an_empty_comment():
     assert "interface=" not in text and "dhcp-range" not in text
 
 
+# --- ‏#1013: TFTP הוא מתג, והוא בקובץ שהשרת מרנדר -----------------------------
+
+
+def _active(text: str) -> list[str]:
+    return [ln for ln in text.splitlines() if ln and not ln.startswith("#")]
+
+
+def test_render_writes_tftp_even_when_no_interface_has_dhcp():
+    """הגדרת ה"גמור" של #1013: התקנה טרייה — כרטיס הפצה מהמתקין, אף DHCP
+    עדיין — חייבת TFTP, כי המתקין אינו כותב עוד enable-tftp. לכן השורות
+    יושבות **לפני** היציאה המוקדמת."""
+    text = render([], tftp_root="/srv/tftp")
+    assert "enable-tftp" in _active(text) and "tftp-root=/srv/tftp" in _active(text)
+    assert "dhcp-range" not in text
+    # ועם DHCP — פעם אחת, לא פעמיים
+    text = render([InterfaceConfig("eth0", **GOOD)], tftp_root="/srv/tftp")
+    assert _active(text).count("enable-tftp") == 1 and "dhcp-range=set:if-eth0" in text
+
+
+def test_render_without_tftp_root_is_tftp_off_and_says_so():
+    """‏`tftp_root=None` = המפעיל כיבה 69: אין שורה פעילה, ויש הערה שאומרת
+    שזה כיבוי מכוון — מי שקורא את הקובץ על השרת לא יחשוב ששורה נשמטה."""
+    for configs in ([], [InterfaceConfig("eth0", **GOOD)]):
+        text = render(configs, tftp_root=None)
+        assert "enable-tftp" not in _active(text)
+        assert not any(ln.startswith("tftp-root=") for ln in _active(text))
+        assert "TFTP off" in text
+
+
+def test_tftp_root_comes_from_the_install_not_a_constant():
+    text = render([], tftp_root="/data/tftp")
+    assert "tftp-root=/data/tftp" in _active(text)
+
+
+def test_the_proxy_instance_follows_the_same_tftp_switch():
+    """אחרת המתג היה "כבוי אבל מאזין": אינסטנס ה-proxy מאזין על 69 בכרטיסים
+    שלו, ו-ss היה מראה dnsmasq על 69 אחרי שהמפעיל כיבה."""
+    proxy = [InterfaceConfig("eth1.101", proxy=True, server_ip="10.44.101.10")]
+    assert "enable-tftp" in _active(render_proxy(proxy))              # ברירת המחדל: דלוק
+    off = render_proxy(proxy, tftp_root=None)
+    assert "enable-tftp" not in _active(off) and "TFTP off" in off
+    assert "pxe-service" in off                                       # ה-proxy עצמו נשאר
+
+
+def test_installer_serves_tftp_reads_only_an_active_line():
+    """קובץ המתקין הישן (עד v0.47.5) נושא `enable-tftp` — ואז אין מתג.
+    הערה אינה שורה פעילה; ריק/None אינם "כן"."""
+    old = "port=0\ninterface=eth1\nbind-interfaces\n\nenable-tftp\ntftp-root=/srv/tftp\n"
+    assert dhcp.installer_serves_tftp(old) is True
+    assert dhcp.installer_serves_tftp("  enable-tftp   # kept\n") is True
+    new = "port=0\ninterface=eth1\n# enable-tftp moved to imagectl-dhcp.conf (#1013)\n"
+    assert dhcp.installer_serves_tftp(new) is False
+    assert dhcp.installer_serves_tftp("enable-tftp-secure\n") is False
+    assert dhcp.installer_serves_tftp("") is False
+    assert dhcp.installer_serves_tftp(None) is False
+
+
+def test_read_installer_conf_has_three_states(tmp_path):
+    """עיקרון 5: "אין קובץ" (ראיה חיובית) ≠ "לא נקרא" (לא הצלחנו לבדוק)."""
+    missing = tmp_path / "imagectl.conf"
+    assert dhcp.read_installer_conf(missing) == ""
+    missing.write_text("enable-tftp\n", encoding="utf-8")
+    assert dhcp.read_installer_conf(missing) == "enable-tftp\n"
+    assert dhcp.read_installer_conf(tmp_path) is None          # תיקייה — OSError שאינו "אין"
+
+
 def test_list_interfaces_reads_sysfs_and_skips_loopback(tmp_path):
     for name, state in (("lo", "unknown"), ("eth0", "up"), ("eth1", "down")):
         d = tmp_path / name

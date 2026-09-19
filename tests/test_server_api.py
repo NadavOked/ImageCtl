@@ -30,6 +30,7 @@ def test_unknown_mac_gets_nothing_and_raises_an_alert(server):
         "task": None, "session": None, "allowed_images": [],
         "ui": {"language": "he", "require_login": True},
         "classrooms": False,
+        "tools": False,
     }
     events = [row["event"] for row in server["admin"].get("/api/console/journal").json()]
     assert "unknown_mac" in events

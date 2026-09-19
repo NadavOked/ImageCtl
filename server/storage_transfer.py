@@ -30,7 +30,7 @@ import uuid
 from pathlib import Path
 from urllib.parse import quote
 
-from . import interserver_auth, storage_nodes
+from . import interserver_auth, storage_client, storage_nodes
 from .db import _write_lock, journal, now_iso, writing
 
 log = logging.getLogger("imagectl.storage_transfer")
@@ -59,6 +59,14 @@ class TransferError(ValueError):
         super().__init__(detail)
         self.status = status
         self.detail = detail
+
+
+def _note_contact_failure(conn, node_id: str, exc: BaseException, detail: str) -> None:
+    """‏#1017: כשל **בערוץ** (חיבור/TLS/תשובה שאינה 200) נרשם על השורה של
+    המשני — "לא ענה — HH:MM" בטבלת הסניפים. כשל לוגי של ההעברה ("האימג'
+    כבר קיים", sha256) אינו כשל חיבור, והמשני שענה עליו כבר נרשם כ"ענה"."""
+    if isinstance(exc, (storage_client.InterserverClientError, OSError)):
+        storage_nodes.record_contact(conn, node_id, error=detail)
 
 
 def _node(conn, node_id: str):
@@ -157,6 +165,7 @@ def run_transfer(ctx, data_dir, transfer_id: str) -> None:
         _push(ctx, data_dir, transfer_id, row)
     except Exception as exc:                                     # noqa: BLE001
         detail = interserver_auth.redact_secrets(str(exc))
+        _note_contact_failure(conn, row["node_id"], exc, detail)
         log.warning("transfer %s failed: %s", transfer_id, detail)
         _set_state(conn, transfer_id, "failed", error=detail)
         journal(conn, "storage_transfer_failed",
@@ -184,6 +193,7 @@ def _push(ctx, data_dir, transfer_id: str, row) -> None:
     _set_state(conn, transfer_id, "sending", bytes_sent=0)
     with client:
         present = client.get_json(f"/images/{image_id}", token)
+        storage_nodes.record_contact(conn, node["id"], error=None)   # #1017: ענה
         if present.get("present") is True:
             raise RuntimeError(f"האימג' {image_id} כבר קיים בספריית המשני")
 
@@ -315,6 +325,7 @@ def run_pull(ctx, data_dir, transfer_id: str) -> None:
                     f"{transfer_id} {image_id}: בוטל", "")
         else:
             detail = interserver_auth.redact_secrets(str(exc))
+            _note_contact_failure(conn, row["node_id"], exc, detail)
             log.warning("pull %s failed: %s", transfer_id, detail)
             _set_state(conn, transfer_id, "failed", error=detail)
             journal(conn, "storage_transfer_failed",
@@ -351,6 +362,7 @@ def _pull(ctx, data_dir, transfer_id: str, row, incoming: Path | None) -> None:
     client, token = storage_nodes.node_client(conn, data_dir, node)
     with client:
         listing = client.get_json("/images", token)
+        storage_nodes.record_contact(conn, node["id"], error=None)   # #1017: ענה
         if not isinstance(listing, list):
             raise RuntimeError("תשובה לא צפויה מהמשני לרשימת אימג'ים")
         item = next((x for x in listing if isinstance(x, dict)

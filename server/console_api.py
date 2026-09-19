@@ -25,7 +25,7 @@ from .db import (_write_lock, get_setting, journal, now_iso, set_setting,
                  update_one, writing)
 from .images import restore_refusal
 from .imagefit import validate_expand_choice
-from .journal_he import EVENTS_HE, JournalTranslator
+from .journal_he import EVENTS_HE, JournalTranslator, severity
 from .session_view import label as session_label
 from .sessions import SessionError
 from .station import ROUND_OPENER_ROLES
@@ -72,6 +72,8 @@ def create_console_router(
     version: Callable[[], str | None] | None = None,
     tls=None,
     kiosk: bool = False,
+    uptime: Callable[[], int | None] | None = None,
+    deploy_ip: Callable[[], str | None] | None = None,
 ) -> APIRouter:
     """‏``tls`` (#703, tracer 5): ‏``console_tls.ConsoleTLS`` כשהקונסולה מוגשת
     ב-HTTPS — העוגייה מקבלת ``Secure`` ו-``/me`` מדווח את טביעת האצבע.
@@ -81,7 +83,13 @@ def create_console_router(
     ‏``kiosk`` (#1073): ‏``True`` כשהראוטר נבנה בשביל ה-allowlist של הקיוסק
     (`kiosk.py` — ‎:8082 ופורט הסוכן, שמהם מחשב הבנייה נכנס). שם הכניסה
     מקבלת גם ``deploy``; בקונסולה (ברירת המחדל) deploy מסורב ב-403 עם
-    ``deploy_no_console`` — למשתמש הפצה אין ניהול וובי (הכרעת נדב 18/09)."""
+    ``deploy_no_console`` — למשתמש הפצה אין ניהול וובי (הכרעת נדב 18/09).
+
+    ‏``uptime`` / ‏``deploy_ip`` (#968): שני קוראים ל-`/me` — זמן הפעילות
+    של המכונה (‏`health.read_uptime`, מוזרק דרך `health_hooks["uptime"]`)
+    וכתובת השרת כפי שהתחנות רואות אותה (מ-`server_base`; ‏``None`` כשרשת
+    ההפצה טרם הוגדרה — #1088). ‏``None`` לקורא עצמו = לא הוזרק (בדיקות
+    ישנות) — השדה מוחזר ``null``, לא ערך מומצא."""
     router = APIRouter(prefix="/api/console")
     current_user, admin_only = auth.dependencies(ctx.conn)
 
@@ -154,6 +162,12 @@ def create_console_router(
             # אם המנהל קבע אחת, אחרת שם המארח כפי שהמערכת מדווחת אותו.
             # לכל משתמש מחובר: גם deploy רואה את העץ.
             "server_name": get_setting(ctx.conn, "server_name") or socket.gethostname(),
+            # ‏#968: שורת-המשנה בסקירה — "פעיל 6 ימים 3 שעות" ו-"10.44.12.1".
+            # ‏uptime של המכונה (‏/proc/uptime); ‏null = לא נקרא → "לא נבדק".
+            # ‏deploy_ip = הכתובת שב-GRUB ובקרנל של התחנות (‏server_base);
+            # ‏null = רשת ההפצה לא הוגדרה (#1088) → מוצג בשם, לא 127.0.0.1.
+            "uptime_seconds": uptime() if uptime else None,
+            "deploy_ip": deploy_ip() if deploy_ip else None,
             "capabilities": {
                 "interbranch_transfer":
                     storage_nodes.can_interbranch_transfer(ctx.conn, user[1]),
@@ -165,6 +179,8 @@ def create_console_router(
                     storage_nodes.can_open_local_pairing(ctx.conn, user[1]),
                 # ‏#1081: v1 מסתיר כיתות. קבוע בקוד, לא הגדרה למפעיל. v2 מדליק.
                 "classrooms": capabilities.classrooms(),
+                # v1 בלי ארגז הכלים (נדב 19/09). קבוע בקוד; v1.1 מדליק.
+                "tools": capabilities.tools(),
             },
             # ‏#1093: ערכת הנושא של המשתמש — auto/light/dark. ברירת מחדל
             # auto (לפי מערכת ההפעלה). לא הגדרת שרת: זה של המשתמש.
@@ -754,6 +770,9 @@ def create_console_router(
             result.append({
                 "ts": r["ts"], "user": r["user"], "event": r["event"],
                 "label": label, "text": text,
+                # ‏#968: החומרה נקבעת בשרת לצד התרגום (journal_he.severity),
+                # לא בהיוריסטיקה על שם ה-event בקונסולה.
+                "severity": severity(r["event"]),
             })
             if len(result) >= limit:
                 break

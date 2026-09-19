@@ -30,8 +30,8 @@ function setup() {
       room:{id:7,image_id:'img_lnx001',image_name:'Ubuntu 24.04',wave_number:2,wave_state:'running',target_drives:6,written_drives:2},pulls:[]},
     '/tasks':[{id:'t1',type:'capture',name:'Office 2024 v3',machine:'בנייה 1',mac:'cc',disk:'sda',state:'pending',bytes_written:0,bytes_total:null,image_id:'img_new',created_at:today+'T09:40:00Z',updated_at:today+'T09:40:00Z'},
               {id:'t0',type:'capture',name:'Ubuntu 24.04',machine:'בנייה 1',mac:'cc',disk:'sda',state:'done',error:null,bytes_written:21474836480,bytes_total:21474836480,image_id:'img_lnx001',created_at:'2026-09-12T09:40:00Z',updated_at:'2026-09-12T09:50:00Z'}],
-    '/journal':[{ts:'2026-09-12T10:00:00Z',user:'nadav',event:'capture_done',label:'אימג\' נקלט',text:'"Ubuntu 24.04"'},
-                {ts:today+'T08:00:00Z',user:'nadav',event:'image_edit',label:'אימג\' עודכן',text:'"Ubuntu 24.04" — עודכנו: תיאור'}],
+    '/journal':[{ts:'2026-09-12T10:00:00Z',user:'nadav',event:'capture_done',label:'אימג\' נקלט',text:'"Ubuntu 24.04"',severity:'ok'},
+                {ts:today+'T08:00:00Z',user:'nadav',event:'image_edit',label:'אימג\' עודכן',text:'"Ubuntu 24.04" — עודכנו: תיאור',severity:'info'}],
   };
   const ctx=vm.createContext({console,URLSearchParams,URL,Date,Set,Map,Number,Math,JSON,Promise,String,Array,encodeURIComponent,decodeURIComponent,
     document:{hidden:false,querySelector:node,querySelectorAll:()=>[],getElementById:id=>node('#'+id),

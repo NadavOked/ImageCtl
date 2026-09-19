@@ -214,11 +214,15 @@ void screen_menu(App *a, cairo_t *cr, double W, double H, double head_h) {
      * (the RTL inline end), NOT one of the choice cards: it is the IT
      * person's drawer, not an operator flow. This menu is the build
      * machine's alone (cloner and class route before it), so the button
-     * never reaches those screens. Registered before the body clip. */
-    Text tools_l = btn_label(cr, "כלים");
-    double tools_w = btn_width(&tools_l);
-    draw_btn(a, cr, (Rect){ card.x + N_PAD, card.y + N_PAD, tools_w, N_BUTTON_H }, &tools_l, BTN_PLAIN, HIT_TOOLS);
-    text_free(&tools_l);
+     * never reaches those screens. Registered before the body clip.
+     * v1 ships without the toolbox (Nadav, 19/09): drawn only when the
+     * state file says menu_tools=1 (absent = 0); v1.1 turns it on. */
+    if (a->st.menu_tools) {
+        Text tools_l = btn_label(cr, "כלים");
+        double tools_w = btn_width(&tools_l);
+        draw_btn(a, cr, (Rect){ card.x + N_PAD, card.y + N_PAD, tools_w, N_BUTTON_H }, &tools_l, BTN_PLAIN, HIT_TOOLS);
+        text_free(&tools_l);
+    }
     body_clip_begin(a, cr, body);
     int visible = 0;
     for (int i = 0; i < MENU_N; i++) if (show[i]) {

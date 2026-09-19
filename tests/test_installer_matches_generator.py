@@ -104,6 +104,17 @@ def test_the_installer_never_enables_dhcp():
     assert re.search(r"^port=0$", text, re.M)
 
 
+def test_the_installer_no_longer_writes_enable_tftp():
+    """‏#1013: enable-tftp/tftp-root עברו לקובץ שהשרת מרנדר (dhcp.render),
+    כי dnsmasq קורא את /etc/dnsmasq.d במצטבר — שורה פעילה בקובץ המתקין
+    הייתה הופכת את המתג של 69 בקונסולה ל"כבוי" מזויף. הערה מותרת; שורה
+    פעילה לא. ‏--tftp-root נשאר: הוא נתיב ההעתקה של shim/GRUB ומועבר לשרת."""
+    text = INSTALLER.read_text(encoding="utf-8")
+    assert not re.search(r"^enable-tftp\s*$", text, re.M)
+    assert not re.search(r"^tftp-root=", text, re.M)
+    assert "--tftp-root" in text
+
+
 def test_the_storage_args_environment_is_quoted():
     """‏STORAGE_ARGS מכיל רווחים (--storage-role X --primary-url Y). ‏Environment=
     בלי גרשיים = systemd מפצל למילים וקולט רק ``IMAGECTL_STORAGE_ARGS=--storage-role``

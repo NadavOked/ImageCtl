@@ -171,6 +171,8 @@ def test_check_returns_available_once_enabled(update_server):
     _enable(admin)
     update_server["state"]["remote"] = "x\trefs/tags/v0.25.0\n"
     result = admin.post("/api/console/update/check").json()
+    # ‏#1000: התשובה היא המסמך שנשמר — עם חותמת `at` של השרת.
+    assert result.pop("at")
     assert result == {"current": "v0.24.0", "latest": "v0.25.0",
                       "available": True, "reason": None}
 

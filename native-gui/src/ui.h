@@ -169,6 +169,10 @@ typedef struct State {
     /* #880: menu_class=0|1 from guistate.sh -- the "הפצה לכיתות" card is
      * offered only when the server's switch is on. Absent = 0 (v1 default). */
     int menu_class;
+    /* menu_tools=0|1 from guistate.sh -- v1 ships without the toolbox
+     * (Nadav, 19/09; v1.1 turns it on): the "כלים" button is drawn only
+     * when the server said so. Absent = 0. */
+    int menu_tools;
     /* #1073: machine_name=<registered name> from guistate.sh -- the restore
      * screen's typed confirmation (principle 7). Empty = the registry has
      * none, and the screen refuses to start rather than match "" to "". */

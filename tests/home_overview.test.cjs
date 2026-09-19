@@ -22,15 +22,15 @@ function setup() {
     '/overview':{images:6,machines:12,storage:{total_bytes:1000*1024**3,free_bytes:312*1024**3},
       session:{id:'s1',group_id:'grp_303',group_label:'כיתה 303',image_name:'Office 2024',state:'open',joined:2,expected_clients:3,starts_in_seconds:252,members:[]},
       room:null,pulls:[]},
-    '/tasks':[{id:'t1',name:'Office 2024 v3',machine:'בנייה 1',disk:'sda',state:'pending',created_at:today+'T09:40:00Z'},
+    '/tasks':[{id:'t1',name:'Office 2024 v3',machine:'בנייה 1',disk:'sda',folder:'Office',state:'pending',created_at:today+'T09:40:00Z'},
               {id:'t0',name:'Kali',machine:'בנייה 1',disk:'sda',state:'done',error:null,created_at:'2026-09-12T09:40:00Z'}],
     '/net':[{mac:'de:ad:be:ef:00:01',ip:'10.44.12.199',registered:false,last_seen:today+'T09:38:00Z'},
             {mac:'aa:aa:aa:aa:aa:aa',registered:true,last_seen:today+'T09:42:00Z'},
             {mac:'bb:bb:bb:bb:bb:bb',registered:true,last_seen:'2026-09-10T09:42:00Z'}],
     '/ports':[{id:'http_console',name:'HTTP',port:'8081',state:'ok'},{id:'tftp',name:'TFTP',port:'69',state:'ok'},{id:'multicast',name:'Multicast',port:'9000–9001',state:'warn'}],
     '/health':[{id:'server',label:'השרת בכתובת ההפצה',state:'ok',detail:'עונה'},{id:'udp_sender',label:'מולטיקאסט',state:'warn',detail:'udp-sender לא נמצא'}],
-    '/journal':[{ts:today+'T09:41:00Z',user:'nadav',event:'session_open',label:'סבב הפצה נפתח לכיתה 303'},
-                {ts:'2026-09-16T08:12:00Z',user:'server',event:'transfer_failed',label:'העברה נכשלה'}],
+    '/journal':[{ts:today+'T09:41:00Z',user:'nadav',event:'session_open',label:'סבב הפצה נפתח לכיתה 303',severity:'info'},
+                {ts:'2026-09-16T08:12:00Z',user:'server',event:'transfer_failed',label:'העברה נכשלה',severity:'err'}],
     '/ssh':{stations:{enabled:false,evidence:'closed',detail:'סגור'}},
     '/update':{current:'v0.30.0',enabled:true},
     '/storage-nodes':[{id:'haifa',label:'סניף חיפה',disabled_at:null}],
@@ -56,7 +56,7 @@ function setup() {
   vm.runInContext(fs.readFileSync(path.join(root,'progress.js'),'utf8'),ctx);
   vm.runInContext(fs.readFileSync(path.join(root,'console.js'),'utf8'),ctx);
   const run=s=>vm.runInContext(s,ctx);
-  run('ME={username:"admin",role:"admin",server_name:"imagectl-srv",version:"v0.30.0",capabilities:{enroll_secondary:true}}; current="home";');
+  run('ME={username:"admin",role:"admin",server_name:"imagectl-srv",version:"v0.30.0",uptime_seconds:532802,deploy_ip:"10.44.12.1",capabilities:{enroll_secondary:true}}; current="home";');
   return {run,node,requests,fixtures};
 }
 function balanced(html) {
@@ -127,13 +127,39 @@ test('UI.kv, UI.timeline, UI.note, UI.empty, UI.soon are balanced and escape tex
   assert.match(run('UI.timeline([{t:"09:41",cls:"err",text:"x",who:"<s>"}])'),/class="d err".*&lt;s&gt;/);
   assert.equal(run('UI.soon("זמן פעילות")'),'<span class="muted" title="דורש API">זמן פעילות — בקרוב</span>');
 });
-test('journal severity follows the event names of journal_he.py until /journal carries one',()=>{
+test('#968: journal severity is the server\'s field, never derived from the event name; a foreign/missing value is neutral',()=>{
   const {run}=setup();
-  const sev=e=>run(`journalSeverity({event:${JSON.stringify(e)}})`);
-  for(const e of ['capture_failed','login_failed','agent_role_refused','pull_refused','room_wave_lost','disk_failure','storage_transfer_failed']) assert.equal(sev(e),'err',e);
-  for(const e of ['unknown_mac','boot_loop_unverified','net_rollback_unreadable','report_from_nonmember','capture_cancel','dhcp_proxy_risk','send_stopped']) assert.equal(sev(e),'warn',e);
-  for(const e of ['capture_done','client_done','net_confirmed','disk_failure_cleared','login','drivers_staged','wol_sent']) assert.equal(sev(e),'ok',e);
-  for(const e of ['session_open','machine_add','boot','image_edit']) assert.equal(sev(e),'info',e);
+  const cls=r=>run(`journalCls(${JSON.stringify(r)})`);
+  // אותו event, חומרה שונה מהשרת → הצבע עוקב אחרי השדה, לא אחרי השם
+  assert.equal(cls({event:'capture_failed',severity:'err'}),'err');
+  assert.equal(cls({event:'capture_failed',severity:'ok'}),'ok','the name says "failed" — the server said ok; the server wins');
+  assert.equal(cls({event:'capture_done',severity:'warn'}),'warn');
+  assert.equal(cls({event:'unknown_mac',severity:'info'}),'info');
+  // חסר/זר = ניטרלי, לא ניחוש לפי השם
+  assert.equal(cls({event:'capture_failed'}),'info','no severity field → neutral, not "err" from the name');
+  assert.equal(cls({event:'x',severity:'purple'}),'info');
+  assert.equal(run('typeof journalSeverity'),'undefined','the client-side heuristic is gone, not kept beside the field');
+});
+test('#968: uptime is formatted from /me.uptime_seconds; null is named, never 0',()=>{
+  const {run}=setup();
+  assert.equal(run('fmtUptime(532802)'),'6 ימים 4 שעות');
+  assert.equal(run('fmtUptime(86400)'),'1 יום 0 שעות');
+  assert.equal(run('fmtUptime(3660)'),'1 שעה 1 דקה');
+  assert.equal(run('fmtUptime(125)'),'2 דקות');
+  assert.equal(run('fmtUptime(null)'),'');
+  assert.equal(run('homeUptime()'),'פעיל 6 ימים 4 שעות');
+  run('ME.uptime_seconds=null');
+  assert.equal(run('homeUptime()'),'<span class="muted">זמן פעילות לא נבדק</span>');
+  run('ME.uptime_seconds=0');
+  assert.equal(run('homeUptime()'),'פעיל 0 דקות','0 is a measurement (just booted), not "unknown"');
+});
+test('#968: the deploy IP comes from /me.deploy_ip; null is "not configured" (#1088), an older server without the field shows nothing',()=>{
+  const {run}=setup();
+  assert.equal(run('homeDeployIp()'),'<span class="mono">10.44.12.1</span>');
+  run('ME.deploy_ip=null');
+  assert.equal(run('homeDeployIp()'),'<span class="muted">רשת הפצה לא הוגדרה</span>');
+  run('delete ME.deploy_ip');
+  assert.equal(run('homeDeployIp()'),'');
 });
 test('the global .ok form-message rule is neutralised under .page',()=>{
   const css=fs.readFileSync(path.join(root,'console.css'),'utf8');
@@ -155,7 +181,8 @@ test('home renders its own header (no generic toolbar, no "+ פעולה", no foo
   balanced(html);
   assert.match(html,/^<div class="page"><div class="obj">/);
   assert.match(html,/<div class="obj-name">שרת אימג'ים<\/div>/);
-  assert.match(html,/imagectl-srv · v0\.30\.0 · <span class="muted" title="דורש API">זמן פעילות — בקרוב<\/span>/,'uptime needs an API: placeholder, not a number');
+  assert.match(html,/imagectl-srv · <span class="mono">10\.44\.12\.1<\/span> · v0\.30\.0 · פעיל 6 ימים 4 שעות/,'#968: hostname · IP · version · uptime, all from /me');
+  assert.doesNotMatch(html,/זמן פעילות — בקרוב/);
   for(const gone of ['pageActionBtn','+ פעולה','footer-note','object-strip','vcenter-tabs','>Details<','אין נתונים להצגה']) assert.doesNotMatch(html,new RegExp(gone.replace(/[+]/g,'\\+')),gone);
   assert.match(html,/onclick="selectPageById\('deploy'\)">\+ סבב הפצה</); assert.match(html,/openCapture\(\)/); assert.match(html,/refreshPage\(\)/);
 });
@@ -173,7 +200,8 @@ test('"what is happening now" lists the session, the pending capture and the fai
   const html=run('home(0)');
   assert.match(html,/מה קורה עכשיו/);
   assert.match(html,/סבב הפצה — Office 2024<\/span><span class="sub">כיתה 303 · פתוח<\/span>.*3 תחנות.*>2\/3<.*<span class="st run">ממתין להצטרפות<\/span>.*startRound\(\).*openRoundDetail\(\)/);
-  assert.match(html,/קליטת אימג' — Office 2024 v3<\/span><span class="sub">בנייה 1 · <bdi dir="ltr">sda<\/bdi> · <bdi dir="ltr">\d\d\/\d\d\/\d{4} 09:40<\/bdi>.*<span class="st warn">ממתין שהמחשב יעלה ב-PXE<\/span>/);
+  assert.match(html,/קליטת אימג' — Office 2024 v3<\/span><span class="sub">בנייה 1 · <bdi dir="ltr">sda<\/bdi> · <bdi dir="ltr">\d\d\/\d\d\/\d{4} 09:40<\/bdi>.*<td>תיקיית Office<\/td>.*<span class="st warn">ממתין שהמחשב יעלה ב-PXE<\/span>/,'#968: the target column is the capture folder from /tasks');
+  assert.doesNotMatch(html,/ספריית האימג'ים<\/td>/,'no generic "library" target when the folder is known');
   assert.doesNotMatch(html.slice(0,html.indexOf('אירועים אחרונים')),/קליטת אימג' — Kali/,'a finished capture is not "now"');
   assert.match(html,/העברה לסניף סניף חיפה — Ubuntu 24.04.*bar err.*--w:38%.*<span class="st err">נכשל — הסניף לא ענה<\/span>/);
 });
@@ -189,7 +217,7 @@ test('"needs attention" lists the red disk, the unregistered machine, the unreac
   assert.match(card,/<b>מולטיקאסט<\/b> — udp-sender לא נמצא.*selectPageById\('health'\)/);
   assert.doesNotMatch(card,/השרת בכתובת ההפצה/,'ok checks are not attention items');
 });
-test('recent events come from /journal (6 rows, dd/mm for older days, severity by event) and link to the journal',async()=>{
+test('recent events come from /journal (6 rows, dd/mm for older days, severity from the server) and link to the journal',async()=>{
   const {run,requests}=await loaded();
   assert.ok(requests.some(r=>r.url==='/api/console/journal?limit=50'));
   const html=run('home(0)');

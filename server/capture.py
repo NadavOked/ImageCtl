@@ -351,6 +351,9 @@ def create_console_capture_router(ctx: ServerContext) -> APIRouter:
                 "id": r["id"], "mac": r["mac"], "machine": r["suffix"],
                 "group_label": r["group_label"], "type": r["type"],
                 "disk": r["disk"], "image_id": r["image_id"], "name": r["name"],
+                # ‏#968: תיקיית היעד כפי שהוזמנה — עמודת "יעד" בסקירה.
+                # ‏"" = שורש הספרייה (בלי תיקייה), לא "לא ידוע".
+                "folder": r["folder"],
                 "state": r["state"], "error": r["error"],
                 # ‏#435: ‏bytes_* דחוסים, ‏source_progress בציר הבלוקים —
                 # ‏`capture_progress` מקפל אפס-מכנה ל-`None` (לא ל-`0%`).

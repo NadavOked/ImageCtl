@@ -13,11 +13,12 @@ dnsmasq ו-dnsmasq מופעל מחדש.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from . import auth, deploy_net, dhcp
+from . import auth, deploy_net, dhcp, ports
 from .api import ServerContext
 from .db import get_setting, journal, set_setting
 
@@ -25,6 +26,95 @@ Hooks = dict[str, Callable]
 
 #: תיאור חופשי לכרטיס (settings) — "700" בשביל וילן 700, וכדומה.
 DESC_PREFIX = "nicdesc:"
+
+
+# --- ה-render מה-DB — מקום אחד לראוטר, למתג ה-TFTP ולעליית השרת (‏#1013) ---
+
+
+def load_configs(conn) -> list[dhcp.InterfaceConfig]:
+    rows = conn.execute(
+        "SELECT key, value FROM settings WHERE key LIKE ?",
+        (dhcp.SETTING_PREFIX + "%",),
+    ).fetchall()
+    return [
+        dhcp.InterfaceConfig.from_json(r["key"][len(dhcp.SETTING_PREFIX):], r["value"])
+        for r in rows
+    ]
+
+
+def console_deploy_interface(deploy: "deploy_net.DeployContext | None") -> str | None:
+    """כרטיס ההפצה **שהוגדר מהקונסולה** — ורק הוא נכנס לקובץ ה-dnsmasq
+    שהקונסולה כותבת (‏`imagectl.conf` של המתקין אינו נושא אותו)."""
+    state = deploy.state if deploy is not None else None
+    return state.interface if state is not None and state.source == "console" else None
+
+
+def render_dnsmasq(ctx: ServerContext,
+                   deploy: "deploy_net.DeployContext | None") -> tuple[str, str]:
+    """‏(הראשי, ה-proxy) מה-DB: הגדרות הכרטיסים, כרטיס ההפצה מהקונסולה,
+    ומתג ה-TFTP (‏#1013, ‏`port:tftp`; חסר = דלוק). ‏`tftp_root` מגיע
+    מההתקנה (‏`--tftp-root` → ‏`DeployContext`), ובלי deploy — ברירת המחדל
+    של המתקין. מעלה ValueError על רשומה פסולה שנשמרה לפני #102."""
+    configs = load_configs(ctx.conn)
+    # ‏as_posix: זה נתיב בקובץ dnsmasq של השרת (לינוקס) — לא נתיב של המכונה
+    # שהקוד רץ עליה (תחנת הפיתוח היא ווינדוס, ו-str(Path) שם נותן לוכסן הפוך).
+    root = (Path(deploy.tftp_root).as_posix() if deploy is not None else dhcp.DEFAULT_TFTP_ROOT)         if ports.enabled(ctx.conn, "tftp") else None
+    return (dhcp.render(configs, tftp_root=root,
+                        deploy_interface=console_deploy_interface(deploy)),
+            dhcp.render_proxy(configs, tftp_root=root))
+
+
+def apply_dnsmasq(ctx: ServerContext, hooks: Hooks,
+                  deploy: "deploy_net.DeployContext | None",
+                  what: str, user_id) -> str | None:
+    """מחילים על שני האינסטנסים (‏#36): הראשי מחלק כתובות, וה-proxy רץ
+    בתהליך משלו כדי שקפיאה שלו לא תוריד את וילן ההפצה. כשל באחד לא
+    מסתיר את השני — שתי ההודעות חוזרות לקונסולה וליומן. מחזיר הודעת
+    שגיאה או None."""
+    try:
+        text, proxy_text = render_dnsmasq(ctx, deploy)
+    except ValueError as exc:      # רשומה פסולה שנשמרה לפני #102
+        journal(ctx.conn, "dhcp_apply_failed", f"{what} {exc}", user_id)
+        return str(exc)
+    errors = [
+        hooks["apply"](text),
+        hooks["apply_proxy"](proxy_text, bool(dhcp.proxy_only(load_configs(ctx.conn)))),
+    ]
+    error = " · ".join(e for e in errors if e) or None
+    if error:
+        journal(ctx.conn, "dhcp_apply_failed", f"{what} {error}", user_id)
+    return error
+
+
+def sync_main_conf(ctx: ServerContext, hooks: Hooks,
+                   deploy: "deploy_net.DeployContext | None") -> str | None:
+    """עליית השרת (‏#1013): הקובץ הראשי הוא **נגזרת של ה-DB**, כמו
+    known-macs (‏#141) — ואם מה שעל הדיסק שונה ממה שה-DB אומר, כותבים
+    ומפעילים את dnsmasq מחדש. זה מה שמעלה TFTP בהתקנה טרייה (המתקין
+    אינו כותב עוד `enable-tftp`, ו-dnsmasq שלו עלה בלי TFTP) ואחרי הרצת
+    המתקין מחדש על שרת שהקובץ שלו נכתב לפני v0.48.
+
+    שני סייגים, בכוונה: רק כשרשת ההפצה **מוגדרת** (‏#1088 — בלעדיה dnsmasq
+    נשאר כבוי עד ההדלקה הראשונה, ו-`restart` היה מעלה אותו על כל
+    הכרטיסים), ורק כשהתוכן **שונה** — אתחול שגרתי של השרת אינו מפיל את
+    dnsmasq. ה-proxy אינו נוגע כאן: היחידה שלו עולה ויורדת עם ההגדרה
+    (‏`apply_dnsmasq`), ולעלייה אין מה לשנות בה.
+    """
+    if deploy is None or not deploy.state.configured:
+        return None
+    try:
+        text, _proxy = render_dnsmasq(ctx, deploy)
+    except ValueError as exc:
+        journal(ctx.conn, "dhcp_apply_failed", f"startup {exc}")
+        return str(exc)
+    if hooks["read_active_conf"]() == text:
+        return None
+    error = hooks["apply"](text)
+    if error:
+        journal(ctx.conn, "dhcp_apply_failed", f"startup {error}")
+    else:
+        journal(ctx.conn, "dhcp_synced_at_startup", "TFTP/DHCP conf rewritten from the DB")
+    return error
 
 
 def _checked_name(name: str) -> str:
@@ -73,46 +163,16 @@ def create_dhcp_router(ctx: ServerContext, hooks: Hooks | None = None,
     def deploy_state() -> "deploy_net.DeployState | None":
         return deploy.state if deploy is not None else None
 
-    def console_deploy_interface() -> str | None:
-        """כרטיס ההפצה **שהוגדר מהקונסולה** — ורק הוא נכנס לקובץ ה-dnsmasq
-        שהקונסולה כותבת (‏`imagectl.conf` של המתקין אינו נושא אותו)."""
-        state = deploy_state()
-        return state.interface if state is not None and state.source == "console" else None
-
     def load(name: str) -> dhcp.InterfaceConfig:
         return dhcp.InterfaceConfig.from_json(
             name, get_setting(ctx.conn, dhcp.SETTING_PREFIX + name)
         )
 
     def all_configs() -> list[dhcp.InterfaceConfig]:
-        rows = ctx.conn.execute(
-            "SELECT key, value FROM settings WHERE key LIKE ?",
-            (dhcp.SETTING_PREFIX + "%",),
-        ).fetchall()
-        return [
-            dhcp.InterfaceConfig.from_json(r["key"][len(dhcp.SETTING_PREFIX):], r["value"])
-            for r in rows
-        ]
+        return load_configs(ctx.conn)
 
     def apply_all(what: str, user_id) -> str | None:
-        """מחילים על שני האינסטנסים (‏#36): הראשי מחלק כתובות, וה-proxy
-        רץ בתהליך משלו כדי שקפיאה שלו לא תוריד את וילן ההפצה. כשל באחד
-        לא מסתיר את השני — שתי ההודעות חוזרות לקונסולה וליומן."""
-        configs = all_configs()
-        try:
-            texts = (dhcp.render(configs, deploy_interface=console_deploy_interface()),
-                     dhcp.render_proxy(configs))
-        except ValueError as exc:      # רשומה פסולה שנשמרה לפני #102
-            journal(ctx.conn, "dhcp_apply_failed", f"{what} {exc}", user_id)
-            return str(exc)
-        errors = [
-            hooks["apply"](texts[0]),
-            hooks["apply_proxy"](texts[1], bool(dhcp.proxy_only(configs))),
-        ]
-        error = " · ".join(e for e in errors if e) or None
-        if error:
-            journal(ctx.conn, "dhcp_apply_failed", f"{what} {error}", user_id)
-        return error
+        return apply_dnsmasq(ctx, hooks, deploy, what, user_id)
 
     def dhcp_live_state(name: str, cfg: dhcp.InterfaceConfig,
                         conf_text: str | None, svc_active: bool | None) -> dict:
@@ -405,9 +465,8 @@ def create_dhcp_router(ctx: ServerContext, hooks: Hooks | None = None,
     def preview(user=Depends(admin_only)):
         """הקבצים שייכתבו — לעין, לפני ואחרי. שניים, כי ה-proxy רץ
         באינסטנס נפרד (‏#36)."""
-        configs = all_configs()
         try:
-            text, proxy_text = dhcp.render(configs), dhcp.render_proxy(configs)
+            text, proxy_text = render_dnsmasq(ctx, deploy)
         except ValueError as exc:      # רשומה פסולה שנשמרה לפני #102
             raise HTTPException(500, str(exc))
         return {"text": text, "path": dhcp.DEFAULT_CONF,

@@ -607,6 +607,12 @@ ADDED_COLUMNS = [
     # ‏#1071: כיוון ההעברה. התקנה קיימת — כל השורות הן push, ברירת המחדל.
     ("storage_transfers", "direction",
      "TEXT NOT NULL DEFAULT 'push'"),
+    # ‏#1017: מתי המשני ענה לאחרונה, ומה הכשל של הקריאה האחרונה (ומתי).
+    # נכתבים בכל קריאה בין-שרתית (`storage_nodes.record_contact`). NULL
+    # בשורה קיימת = "לא נמדד עדיין", לא "לא ענה".
+    ("storage_nodes", "last_seen_at", "TEXT"),
+    ("storage_nodes", "last_error", "TEXT"),
+    ("storage_nodes", "last_error_at", "TEXT"),
 ]
 
 

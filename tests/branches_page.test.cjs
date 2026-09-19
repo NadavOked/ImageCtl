@@ -98,15 +98,61 @@ test('the servers tab lists each secondary with a measured connection, not a fro
   assert.match(html, /data-node-row="n0de"/);
 });
 
-test('an unreachable secondary shows the reason and the measured time, not an empty page', async () => {
-  const fixtures = {...base, [`/storage-nodes/${NODE}/machines`]: {connected: false, error: 'החיבור נסגר לפני סוף הכותרות', machines: []}};
+test('an unreachable secondary shows the reason and the server-recorded time (#1017), not an empty page and not the browser clock', async () => {
+  const fixtures = {...base, [`/storage-nodes/${NODE}/machines`]: {connected: false, error: 'החיבור נסגר לפני סוף הכותרות', machines: [],
+    last_seen_at: '2026-09-18T07:30:00+00:00', last_error: 'החיבור נסגר לפני סוף הכותרות', last_error_at: '2026-09-19T08:12:00+00:00'}};
   const {run} = setup(fixtures);
   await run('loadBranchesData()');
   const html = run('branchesPage(0)');
-  assert.match(html, /class="status err" id="branch-row-conn-n0de"><i><\/i>לא ענה/);
-  assert.match(html, /לא ענה — \d\d:\d\d/, 'the measured time is shown, not a frozen state');
-  assert.match(html, /החיבור נסגר לפני סוף הכותרות/);
+  assert.match(html, /class="status err" id="branch-row-conn-n0de"><i><\/i>לא ענה — (19\/09\/2026 )?08:12<span class="sub">החיבור נסגר לפני סוף הכותרות<\/span><span class="sub">ענתה לאחרונה 18\/09\/2026 07:30<\/span>/,
+    'the failure time and the last answer are the server\u2019s last_error_at / last_seen_at');
   assert.equal(run('pages.branches.tabs.length'), 3);
+});
+
+test('#1017: without server timestamps there is no time at all — never the browser clock', async () => {
+  const fixtures = {...base, [`/storage-nodes/${NODE}/machines`]: {connected: false, error: 'timeout', machines: []}};
+  const {run} = setup(fixtures);
+  await run('loadBranchesData()');
+  const html = run('branchesPage(0)');
+  assert.match(html, /<i><\/i>לא ענה<span class="sub">timeout<\/span><\/span>/);
+  assert.doesNotMatch(html, /לא ענה — \d\d:\d\d/, 'no last_error_at → no invented time');
+});
+
+test('#1017: a connected secondary shows "ענתה HH:MM" from last_seen_at; before the check the row shows what the server remembers', async () => {
+  const fixtures = {...base,
+    '/storage-nodes': [{...base['/storage-nodes'][0], last_seen_at: '2026-09-18T07:30:00+00:00', last_error: null, last_error_at: null}],
+    [`/storage-nodes/${NODE}/machines`]: {...base[`/storage-nodes/${NODE}/machines`], last_seen_at: '2026-09-19T09:41:00+00:00', last_error: null, last_error_at: null}};
+  const {run} = setup(fixtures);
+  const p = run('loadBranchesData()');
+  await new Promise((r) => setImmediate(r));
+  const before = run('branchStatusHtml("n0de")');
+  assert.match(before.html, /^<i><\/i>(בודק חיבור…<span class="sub">ענתה לאחרונה 18\/09\/2026 07:30<\/span>|מחובר · ענתה)/, 'remembered time from GET /storage-nodes while (or until) the check runs');
+  await p;
+  const html = run('branchesPage(0)');
+  assert.match(html, /class="status ok" id="branch-row-conn-n0de"><i><\/i>מחובר · ענתה (19\/09\/2026 )?09:41</);
+});
+
+test('#1017: the row action "בדוק חיבור" posts to …/check (ping only), keeps the machines count, and updates the cell from the response', async () => {
+  const fixtures = {...base,
+    [`/storage-nodes/${NODE}/check`]: {connected: false, error: 'ping נכשל (503)', checked_at: '2026-09-19T10:00:00+00:00', node_id: null, protocol_version: null,
+      last_seen_at: '2026-09-19T09:41:00+00:00', last_error: 'ping נכשל (503)', last_error_at: '2026-09-19T10:00:00+00:00'},
+    [`/storage-nodes/${NODE}/machines`]: {...base[`/storage-nodes/${NODE}/machines`], last_seen_at: '2026-09-19T09:41:00+00:00', last_error: null, last_error_at: null}};
+  const {run, calls, node} = setup(fixtures);
+  await run('loadBranchesData()');
+  run('branchesPage(0)');
+  await run('checkBranchNow("n0de")');
+  const check = calls.find((c) => c.method === 'POST' && c.url.endsWith('/storage-nodes/n0de/check'));
+  assert.ok(check, 'a dedicated check, not another /machines');
+  assert.equal(calls.filter((c) => c.url.endsWith('/storage-nodes/n0de/machines')).length, 1, '/machines was read once, on load');
+  const c = run('BRANCH_CONN.n0de');
+  assert.equal(c.state, 'err'); assert.equal(c.lastErrorAt, '2026-09-19T10:00:00+00:00'); assert.equal(c.lastSeenAt, '2026-09-19T09:41:00+00:00');
+  assert.equal(c.machines.length, 2, 'the machines count from the load is kept — /check does not fetch machines');
+  const cell = node('branch-row-conn-n0de');
+  assert.equal(cell.className, 'status err');
+  assert.match(cell.innerHTML, /לא ענה — (19\/09\/2026 )?10:00<span class="sub">ping נכשל \(503\)<\/span><span class="sub">ענתה לאחרונה (19\/09\/2026 )?09:41<\/span>/);
+  const html = run('branchesPage(0)');
+  assert.match(html, /onclick="checkBranchNow\('n0de'\)">בדוק חיבור</);
+  assert.match(html, /id="branch-row-machines-n0de">2</, 'the count survives a failed ping');
 });
 
 test('the header shows a count and "לא מגיב" tag when a secondary did not answer', async () => {

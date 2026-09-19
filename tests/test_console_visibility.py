@@ -91,6 +91,10 @@ ROWS = [
      (200, 403, 409, 403)),
     (f"/api/console/storage-nodes/{NODE}/images", "get", _http,
      (200, 403, 409, 403)),
+    # ‏#1017: בדיקת חיבור בלבד — אותה שורה בטבלה כמו /machines (200 עם
+    # connected:false על credential חסר — לא 5xx).
+    (f"/api/console/storage-nodes/{NODE}/check", "post", _http,
+     (200, 403, 409, 403)),
     (f"/api/console/storage-nodes/{NODE}/pull", "post", _http,
      (400, 403, 409, 403)),
     ("/api/console/storage-nodes/enroll/preview", "post", _http,
@@ -133,12 +137,12 @@ def test_visibility_matrix(server, clients, row):
 @pytest.mark.parametrize(("server_role", "user_role", "caps"), [
     ("standalone", "admin",
      {"interbranch_transfer": True, "enroll_secondary": True, "open_local_pairing": False,
-      "classrooms": False}),
+      "classrooms": False, "tools": False}),
     # ‏#1073: ל-deploy אין `/me` בכלל — הקונסולה סגורה בפניו (403).
     ("standalone", "deploy", None),
     ("secondary", "admin",
      {"interbranch_transfer": False, "enroll_secondary": False, "open_local_pairing": True,
-      "classrooms": False}),
+      "classrooms": False, "tools": False}),
     ("secondary", "deploy", None),
 ])
 def test_me_capabilities_follow_the_same_table(server, clients, server_role, user_role, caps):
@@ -152,3 +156,48 @@ def test_me_capabilities_follow_the_same_table(server, clients, server_role, use
     me = resp.json()
     assert me["role"] == user_role
     assert me["capabilities"] == caps
+
+
+# --- v1 בלי ארגז הכלים (הכרעת נדב 19/09; v1.1 = הכלים, #649/#1104/#928) ---------
+
+TOOLS_BODY = {"build": [], "student": []}
+
+
+def test_tools_capability_is_hardcoded_off_in_v1():
+    """לא הגדרה למפעיל — קבוע בקוד, ליד `classrooms`. v1.1 מדליק."""
+    from server import capabilities
+    assert capabilities.TOOLS is False
+    assert capabilities.tools() is False
+
+
+def test_the_tools_api_does_not_exist_in_v1_404_by_name(server, clients):
+    """הדף אינו במהדורה — 404 בשם, **לפני** הזדהות: admin, וגם אנונימי
+    (שהיה מקבל 401), רואים נתיב שאינו קיים. deploy נשאר 403 —
+    `deploy_no_console` (#1073) סוגר לו את הקונסולה כולה לפני הניתוב.
+    **בקרה שלילית:** בלי `_edition_gate` admin מקבל 200 ואנונימי 401."""
+    anon = TestClient(server["app"], client=("127.0.0.1", 40001))
+    for who, client in (("admin", clients["admin"]), ("anon", anon)):
+        r = client.get("/api/console/tools/catalog")
+        assert r.status_code == 404, (who, r.status_code, r.text)
+        assert "v1.1" in r.json()["detail"], (who, r.text)
+        r = client.put("/api/console/tools/selection", json=TOOLS_BODY)
+        assert r.status_code == 404, (who, r.status_code, r.text)
+    assert clients["deploy"].get("/api/console/tools/catalog").status_code == 403
+
+
+def test_turning_the_tools_flag_on_brings_the_api_and_the_capability_back(server, clients, monkeypatch):
+    """המסלול ש-v1.1 מדליק: אותו קוד, הדגל True → ‏/me אומר `tools: true`,
+    הקטלוג נקרא (admin 200), וההרשאות חוזרות למקומן (deploy 403)."""
+    from server import capabilities
+    monkeypatch.setattr(capabilities, "TOOLS", True)
+    assert clients["admin"].get("/api/console/me").json()["capabilities"]["tools"] is True
+    assert clients["admin"].get("/api/console/tools/catalog").status_code == 200
+    assert clients["deploy"].get("/api/console/tools/catalog").status_code == 403
+
+
+def test_index_html_gates_the_tools_tree_node_behind_data_cap():
+    """כמו כיתות (#1081): הצומת מתחיל מוסתר, ו-`data-cap="tools"` הוא מה
+    ש-showApp מדליק לפי `/me`."""
+    from pathlib import Path
+    page = (Path(__file__).resolve().parent.parent / "server" / "static" / "index.html").read_text(encoding="utf-8")
+    assert 'class="inventory-node hidden" data-page="tools" data-admin data-cap="tools"' in page

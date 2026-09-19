@@ -194,9 +194,26 @@ test('"בטל שינויים" returns the draft to the saved selection and re-re
 
 test('the tools page is admin-only: pageAllowed refuses deploy, and the tree node carries data-admin', () => {
   const s = setup({}, 'deploy');
+  s.run('ME.capabilities.tools=true');
   assert.equal(s.run("pageAllowed('tools')"), false);
   const admin = setup({});
+  admin.run('ME.capabilities.tools=true');
   assert.equal(admin.run("pageAllowed('tools')"), true);
   const index = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
-  assert.match(index, /<div class="inventory-node" data-page="tools" data-admin onclick="selectPageById\('tools'\)"/);
+  assert.match(index, /<div class="inventory-node hidden" data-page="tools" data-admin data-cap="tools" onclick="selectPageById\('tools'\)"/);
+});
+
+// --- v1 בלי ארגז הכלים (הכרעת נדב 19/09; v1.1 = הכלים) --------------------------------
+test('v1: with capabilities.tools off the sidebar node starts hidden behind data-cap and the page is unreachable even for admin', () => {
+  const admin = setup({});                                   // capabilities:{} — כמו /me של v1
+  assert.equal(admin.run("pageAllowed('tools')"), false, 'v1: admin cannot route to #tools');
+  admin.run('ME.capabilities.tools=false');
+  assert.equal(admin.run("pageAllowed('tools')"), false);
+  admin.run('ME.capabilities.tools=true');
+  assert.equal(admin.run("pageAllowed('tools')"), true, 'v1.1: the same flag brings the page back');
+  // הצומת בסיילד: כמו כיתות (#1081) — מתחיל מוסתר, showApp מדליק לפי data-cap.
+  const index = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+  const node = index.slice(index.indexOf('data-page="tools"') - 60, index.indexOf('data-page="tools"') + 60);
+  assert.match(node, /class="inventory-node hidden"/);
+  assert.match(node, /data-cap="tools"/);
 });

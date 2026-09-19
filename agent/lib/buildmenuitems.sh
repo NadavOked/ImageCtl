@@ -1,5 +1,5 @@
 # buildmenuitems.sh -- what the build machine's menu offers: the items, their
-# labels, and the two gates (role, classrooms). POSIX sh (busybox ash).
+# labels, and the gates (role, classrooms, tools). POSIX sh (busybox ash).
 # Split out of buildmenu.sh (#1073) the way roomdraw.sh was split from
 # roomflow.sh (#418): buildmenu.sh runs the menu, this file says what is on
 # it. Both the text menu (build_menu) and the GUI (guistate.sh, menu_class=)
@@ -41,6 +41,19 @@ class_deploy_on() {
     fi
     [ "$_flag" = true ] || return 1
     [ "$(json_get "$_hello" ".class_deploy_enabled")" = true ]
+}
+
+tools_on() {
+    # v1 ships without the toolbox (Nadav, 19/09; v1.1 turns it on). Same
+    # source and same fallback as class_deploy_on: `.tools` from the hello,
+    # else from /state. Missing = off (principle 1). guistate.sh writes
+    # menu_tools= from here, and the GUI hides its tools button on 0.
+    _hello="${RESP:-$RUN_DIR/response.json}"
+    _flag=$(json_get "$_hello" ".tools")
+    if [ "$_flag" != true ] && [ -n "${GUI_DIR:-}" ] && [ -f "$GUI_DIR/station.json" ]; then
+        _flag=$(json_get "$GUI_DIR/station.json" ".tools")
+    fi
+    [ "$_flag" = true ]
 }
 
 build_menu_label() {

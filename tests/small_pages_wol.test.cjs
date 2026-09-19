@@ -17,10 +17,10 @@ const USERS=[{username:'admin',role:'admin',created_at:'2026-08-01T10:00:00',dis
   {username:'deployer',role:'deploy',created_at:'2026-09-17T09:00:00',disabled:false}];
 const today=new Date().toISOString().slice(0,10);
 const JOURNAL=[
-  {ts:today+'T09:44:10',user:'',event:'boot_loop_local',label:'מחשב אתחל שוב ושוב — נשלח לדיסק המקומי',text:'LAB303-03 <b>x</b>'},
-  {ts:today+'T09:42:31',user:'nadav',event:'session_open',label:'סבב נפתח',text:'Office 2024 לכיתה 303'},
-  {ts:'2026-09-16T08:12:44',user:'',event:'storage_transfer_failed',label:'העברת אימג\' לסניף נכשלה',text:'timeout'},
-  {ts:'2026-09-16T08:10:02',user:'deployer',event:'client_done',label:'מחשב סיים לכתוב',text:''},
+  {ts:today+'T09:44:10',user:'',event:'boot_loop_local',label:'מחשב אתחל שוב ושוב — נשלח לדיסק המקומי',text:'LAB303-03 <b>x</b>',severity:'warn'},
+  {ts:today+'T09:42:31',user:'nadav',event:'session_open',label:'סבב נפתח',text:'Office 2024 לכיתה 303',severity:'info'},
+  {ts:'2026-09-16T08:12:44',user:'',event:'storage_transfer_failed',label:'העברת אימג\' לסניף נכשלה',text:'timeout',severity:'err'},
+  {ts:'2026-09-16T08:10:02',user:'deployer',event:'client_done',label:'מחשב סיים לכתוב',text:'',severity:'ok'},
 ];
 const wake=(sent,failed=0,reasons=[])=>({sent,failed,reasons});
 
@@ -240,7 +240,7 @@ test('permissions: /users that cannot be read is its own state (red note, "לא 
 
 /* ---------- יומן ---------- */
 
-test('logs: one table — time (hh:mm:ss today, date otherwise), severity dot from journalSeverity, sentence + text, who ("המערכת" when empty), details drawer; filter bar in the page; no tabs, no modal, no raw event column',async()=>{
+test('logs: one table — time (hh:mm:ss today, date otherwise), severity dot from the server severity field (#968), sentence + text, who ("המערכת" when empty), details drawer; filter bar in the page; no tabs, no modal, no raw event column',async()=>{
   const {run,requests}=setup(); run('current="logs"');
   await run('loadJournalData()');
   assert.ok(requests.some((r)=>r.url==='/journal/events'),'event types for the filter');

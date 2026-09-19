@@ -297,9 +297,13 @@ def list_nodes(conn, user: tuple[str, str]) -> list[dict]:
     "סניפים" מציגה אותו ליד השם.
     """
     assert_can_manage_nodes(conn, user)
+    # ‏#1017: ``last_seen_at``/``last_error``/``last_error_at`` — זמן התגובה
+    # האחרון כפי שהשרת רשם (``record_contact``), כדי שהטבלה תציג "ענתה
+    # לאחרונה HH:MM" משעון השרת גם לפני שהדף בדק בעצמו.
     rows = conn.execute(
         "SELECT n.id, n.label, n.base_url, n.group_id, n.tls_fingerprint,"
-        " n.node_id, n.enrolled_at, n.disabled_at, g.label AS group_label"
+        " n.node_id, n.enrolled_at, n.disabled_at, g.label AS group_label,"
+        " n.last_seen_at, n.last_error, n.last_error_at"
         " FROM storage_nodes n"
         " LEFT JOIN storage_node_groups g ON g.id = n.group_id"
         " ORDER BY n.label, n.id"
@@ -585,6 +589,41 @@ def node_row(conn, node_id: str):
     return conn.execute(
         "SELECT id, label, base_url, node_id, pinned_spki, credential_ref,"
         " disabled_at FROM storage_nodes WHERE id = ?", (node_id,)).fetchone()
+
+
+# --- #1017: מתי המשני ענה לאחרונה ------------------------------------------
+#
+# כל קריאה בין-שרתית — ‏/check, ‏/machines, ‏/images, ‏push ו-pull — רושמת
+# את תוצאתה על השורה: תשובה = ``last_seen_at`` עכשיו וניקוי הכשל; כשל =
+# ‏``last_error``/``last_error_at`` עכשיו, ו-``last_seen_at`` נשאר מה שהיה.
+# כך "לא ענה — 08:12" הוא זמן השרת, לא שעון הדפדפן שקרא את הדף.
+
+CONTACT_FIELDS = ("last_seen_at", "last_error", "last_error_at")
+
+
+def record_contact(conn, node_id: str, *, error: str | None) -> None:
+    """‏``error=None`` = המשני ענה; אחרת הכשל (כבר בלי סודות)."""
+    now = now_iso()
+    with _write_lock, writing(conn):
+        if error is None:
+            conn.execute(
+                "UPDATE storage_nodes SET last_seen_at = ?, last_error = NULL,"
+                " last_error_at = NULL WHERE id = ?", (now, node_id))
+        else:
+            conn.execute(
+                "UPDATE storage_nodes SET last_error = ?, last_error_at = ?"
+                " WHERE id = ?", (error, now, node_id))
+
+
+def contact_fields(conn, node_id: str) -> dict:
+    """השלושה כפי שרשומים עכשיו — לתשובות הפרוקסי, כדי שהדף יציג את זמן
+    השרת בלי קריאה נוספת ל-`GET /storage-nodes`. משני שנמחק → כולם ``None``."""
+    row = conn.execute(
+        "SELECT last_seen_at, last_error, last_error_at FROM storage_nodes"
+        " WHERE id = ?", (node_id,)).fetchone()
+    if row is None:
+        return {k: None for k in CONTACT_FIELDS}
+    return {k: row[k] for k in CONTACT_FIELDS}
 
 
 def node_client(conn, data_dir, node) -> tuple:

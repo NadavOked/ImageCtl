@@ -127,10 +127,13 @@ def evidence(row: dict) -> tuple:
     # ‏`seconds`/`stalled` בפירורי האתחול נגזרים משעון הקיר בזמן הקריאה —
     # שנייה שמתחלפת בין "לפני" ל"אחרי" אינה "השרת כתב" (נפל פעם אחת בשער
     # המעבדה, 17/09). הראיה היא הצעד, האינדקס והחותמת — לא הגיל.
+    def strip(step):
+        return {k: v for k, v in step.items() if k not in ("seconds", "stalled")}
     boot = row["boot"]
     if isinstance(boot, list):
-        boot = [{k: v for k, v in step.items() if k not in ("seconds", "stalled")}
-                for step in boot]
+        boot = [strip(step) for step in boot]
+    elif isinstance(boot, dict):     # צעד יחיד — אותו גיל, אותה סיבה (נפל שוב 19/09)
+        boot = strip(boot)
     return row["ip"], row["last_seen"], boot
 
 

@@ -20,7 +20,10 @@ let BRANCHES_LIST_TIMER = null;   // פולינג לשונית "העברות" ב
 let BRANCH_TRANSFERS = [];
 let BRANCH_GROUPS = [];
 let BRANCH_NODES = [];
-let BRANCH_CONN = {};   // id → {state:"checking"|"ok"|"err"|"disabled", error, machines, checkedAt}
+let BRANCH_CONN = {};   // id → {state:"checking"|"ok"|"err"|"disabled", error, machines, lastSeenAt, lastErrorAt}
+// ‏#1017: הזמנים הם של **השרת** (last_seen_at / last_error_at על storage_nodes,
+// נכתבים בכל קריאה בין-שרתית) — לא שעון הדפדפן ברגע שהדף קרא. בלי שדה מהשרת
+// אין זמן, לא ניחוש.
 
 const TRANSFER_STATE = {
   queued: ["ממתין", ""], sending: ["שולח", ""], verifying: ["המשני מאמת sha256", ""],
@@ -41,7 +44,9 @@ async function loadBranchesData() {
   BRANCH_NODES = nodes;
   BRANCH_TRANSFERS = transfers;
   for (const n of nodes) {
-    BRANCH_CONN[n.id] = n.disabled_at ? { state: "disabled" } : { state: "checking" };
+    // עוד לפני הבדיקה — מה שהשרת זוכר: "ענתה לאחרונה HH:MM" גם כשהעמוד לא היה בפוקוס.
+    const remembered = { lastSeenAt: n.last_seen_at || null, lastErrorAt: n.last_error_at || null, error: n.last_error || "" };
+    BRANCH_CONN[n.id] = n.disabled_at ? { state: "disabled", ...remembered } : { state: "checking", ...remembered };
   }
   if (current === "branches") renderCurrent();
   await Promise.all(nodes.filter((n) => !n.disabled_at).map((n) =>
@@ -49,42 +54,64 @@ async function loadBranchesData() {
   maybeStartBranchesListPolling();
 }
 
-async function checkBranchConnection(n) {
+/* ‏probe=true (#1017, "בדוק חיבור" מהשורה): POST …/check — /ping בלבד, בלי מכונות;
+   אחרת GET …/machines (טעינת הדף: גם מונה המחשבים). שניהם מחזירים את שדות המגע. */
+async function checkBranchConnection(n, probe = false) {
   let result;
+  const prev = BRANCH_CONN[n.id] || {};
   try {
-    const answer = await api(`/storage-nodes/${encodeId(n.id)}/machines`);
+    const answer = probe ? await post(`/storage-nodes/${encodeId(n.id)}/check`, {})
+      : await api(`/storage-nodes/${encodeId(n.id)}/machines`);
+    const contact = { lastSeenAt: answer.last_seen_at || null, lastErrorAt: answer.last_error_at || null };
+    // ‏/check אינו שולף מכונות — המונה מהקריאה האחרונה ל-/machines נשאר (הוא נמדד, לא הומצא).
+    const machines = probe ? prev.machines : (answer.connected ? answer.machines : prev.machines);
     result = answer.connected
-      ? { state: "ok", machines: answer.machines, checkedAt: new Date() }
-      : { state: "err", error: answer.error || "", checkedAt: new Date() };
+      ? { state: "ok", machines, ...contact }
+      : { state: "err", error: answer.error || "", machines, ...contact };
   } catch (e) {
-    result = { state: "err", error: e.message, checkedAt: new Date() };
+    // הבקשה לראשי עצמו נכשלה — לא נרשם בשרת, ולכן בלי זמן (לא שעון הדפדפן).
+    result = { state: "err", error: e.message, machines: prev.machines, lastSeenAt: prev.lastSeenAt || null, lastErrorAt: null };
   }
   BRANCH_CONN[n.id] = result;
   markSecondaryStatus(n, result.state === "ok", result.error);
   const connCell = $(`#branch-row-conn-${CSS.escape(n.id)}`);
   const machinesCell = $(`#branch-row-machines-${CSS.escape(n.id)}`);
   if (connCell) { const st = branchStatusHtml(n.id); connCell.className = st.cls; connCell.innerHTML = st.html; }
-  if (machinesCell) machinesCell.textContent = result.state === "ok" ? String(result.machines.length) : "—";
+  if (machinesCell) machinesCell.textContent = Array.isArray(result.machines) ? String(result.machines.length) : "—";
   if (current === "branches" && currentTab === 0) updateAlertBadge();
 }
 
-/* "בודק חיבור…" רק לפני המדידה הראשונה; אחריה — "מחובר" או "לא ענה" +
-   הסיבה ושעת המדידה (HH:MM, שעון הדפדפן) — לא "בודק…" שלעולם לא מתעדכן. */
+/* "בודק חיבור…" רק לפני המדידה הראשונה; אחריה — "מחובר · ענתה HH:MM" או
+   "לא ענה — HH:MM" + הסיבה. הזמנים מהשרת (#1017): last_seen_at / last_error_at;
+   בלי שדה — בלי זמן. לא "בודק…" שלעולם לא מתעדכן, ולא שעון הדפדפן. */
+function branchWhen(ts) { return ts ? (isToday(ts) ? fmtClock(ts) : `${fmtDate(ts)} ${fmtClock(ts)}`) : ""; }
 function branchStatusHtml(nid) {
   const c = BRANCH_CONN[nid] || { state: "checking" };
-  if (c.state === "disabled") return { cls: "status", html: "<i></i>מושבת" };
-  if (c.state === "checking") return { cls: "status", html: "<i></i>בודק חיבור…" };
-  if (c.state === "ok") return { cls: "status ok", html: "<i></i>מחובר" };
-  const hhmm = c.checkedAt instanceof Date
-    ? String(c.checkedAt.getHours()).padStart(2, "0") + ":" + String(c.checkedAt.getMinutes()).padStart(2, "0") : "";
-  return { cls: "status err", html: `<i></i>לא ענה${hhmm ? " — " + esc(hhmm) : ""}${c.error ? `<span class="sub">${esc(c.error)}</span>` : ""}` };
+  const seen = branchWhen(c.lastSeenAt);
+  if (c.state === "disabled") return { cls: "status", html: `<i></i>מושבת${seen ? `<span class="sub">ענתה לאחרונה ${esc(seen)}</span>` : ""}` };
+  if (c.state === "checking") return { cls: "status", html: `<i></i>בודק חיבור…${seen ? `<span class="sub">ענתה לאחרונה ${esc(seen)}</span>` : ""}` };
+  if (c.state === "ok") return { cls: "status ok", html: `<i></i>מחובר${seen ? ` · ענתה ${esc(seen)}` : ""}` };
+  const failed = branchWhen(c.lastErrorAt);
+  return { cls: "status err", html: `<i></i>לא ענה${failed ? " — " + esc(failed) : ""}${c.error ? `<span class="sub">${esc(c.error)}</span>` : ""}${seen ? `<span class="sub">ענתה לאחרונה ${esc(seen)}</span>` : ""}` };
+}
+
+/* ‏#1017: "בדוק חיבור" מהשורה — /check בלבד; התא חוזר ל"בודק…" בזמן הבדיקה. */
+async function checkBranchNow(nid) {
+  try { nid = decodeURIComponent(nid); } catch (e) {}
+  const n = BRANCH_NODES.find((x) => x.id === nid);
+  if (!n) { toast("שרת משני לא נמצא"); return; }
+  if (n.disabled_at) { toast("השרת מושבת — לא נשאל"); return; }
+  BRANCH_CONN[n.id] = { ...(BRANCH_CONN[n.id] || {}), state: "checking" };
+  const connCell = $(`#branch-row-conn-${CSS.escape(n.id)}`);
+  if (connCell) { const st = branchStatusHtml(n.id); connCell.className = st.cls; connCell.innerHTML = st.html; }
+  await checkBranchConnection(n, true);
 }
 
 function branchNodeRow(n) {
   const disabled = !!n.disabled_at;
   const st = branchStatusHtml(n.id);
   const c = BRANCH_CONN[n.id] || {};
-  const machinesCell = c.state === "ok" ? String(c.machines.length) : "—";
+  const machinesCell = Array.isArray(c.machines) ? String(c.machines.length) : "—";   // המונה כפי שנמדד לאחרונה; "—" = לא נקרא
   const done = BRANCH_TRANSFERS.filter((t) => t.node_id === n.id && t.state === "done");
   const seen = new Set();
   const transferred = done.filter((t) => !seen.has(t.image_id) && seen.add(t.image_id)).length;
@@ -95,6 +122,7 @@ function branchNodeRow(n) {
   const idEnc = encodeId(n.id);
   const acts = UI.acts([
     ["פתח", `openBranchView('${idEnc}',0,null)`],
+    ["בדוק חיבור", `checkBranchNow('${idEnc}')`],
     ["העבר אימג'", `openTransferSheetForNode('${idEnc}')`],
     ["עריכה", `editBranchNode('${idEnc}')`],
     [disabled ? "הפעל" : "השבת", `toggleBranchNode('${idEnc}')`],
@@ -475,7 +503,10 @@ async function loadBranchView(view) {
     const nodeTransfers = transfers.filter((t) => t.node_id === n.id);
     const activeCount = nodeTransfers.filter((t) => ["queued", "sending", "verifying"].includes(t.state)).length;
     const kpis = [
-      UI.kpi({ cls: answer.connected ? "ok" : "err", label: "חיבור", value: answer.connected ? "מחובר" : "לא מחובר" }),
+      UI.kpi({ cls: answer.connected ? "ok" : "err", label: "חיבור", value: answer.connected ? "מחובר" : "לא מחובר",
+        // ‏#1017: זמן השרת — ענתה לאחרונה / לא ענתה, מהשדות שהפרוקסי מחזיר
+        sub: answer.connected ? (answer.last_seen_at ? `ענתה ${branchWhen(answer.last_seen_at)}` : "")
+          : [answer.last_error_at ? `לא ענתה ${branchWhen(answer.last_error_at)}` : "", answer.last_seen_at ? `ענתה לאחרונה ${branchWhen(answer.last_seen_at)}` : ""].filter(Boolean).join(" · ") }),
       UI.kpi({ cls: "", label: "מחשבים בסניף", value: answer.connected ? `${answer.machines.filter((m) => m.online).length} מתוך ${answer.machines.length}` : "—", sub: "מחוברים מתוך רשומים" }),
       UI.kpi({ cls: "", label: "אימג'ים שהועברו", value: String(transferredCount) }),
       UI.kpi({ cls: activeCount ? "info" : "", label: "העברות", value: String(nodeTransfers.length), sub: activeCount ? `${activeCount} פעילות עכשיו` : "" }),

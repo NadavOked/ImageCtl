@@ -11,6 +11,10 @@
 שבניית ה-initrd תקרא בשלב 2 (‏`build_initramfs.sh --tools-selection`), ולכן
 הוא נכתב **בכל שמירה**, לא רק ב-DB. id שאינו בקטלוג נדחה ב-422 בשמו —
 לא נזרק בשקט (עיקרון 5).
+
+הכרעת נדב 19/09: v1 יוצאת בלי ארגז הכלים (v1.1 = הכלים). כש-
+`capabilities.tools()` כבוי שני המסלולים עונים **404 בשם** — לפני
+הזדהות, כי הדף אינו קיים במהדורה הזו (לא 403: אין כאן "אסור לך").
 """
 
 from __future__ import annotations
@@ -20,7 +24,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from . import auth
+from . import auth, capabilities
 from .api import ServerContext
 from .db import get_setting, journal, set_setting
 
@@ -68,8 +72,14 @@ def write_selection_file(data_dir: Path, selection: dict[str, list[str]]) -> Pat
     return path
 
 
+def _edition_gate() -> None:
+    """‏v1 בלי ארגז הכלים: הדף אינו קיים, ולכן 404 — לכל קורא, לפני auth."""
+    if not capabilities.tools():
+        raise HTTPException(404, "ארגז הכלים אינו במהדורה זו (v1.1)")
+
+
 def create_tools_router(ctx: ServerContext, data_dir: Path) -> APIRouter:
-    router = APIRouter(prefix="/api/console")
+    router = APIRouter(prefix="/api/console", dependencies=[Depends(_edition_gate)])
     current_user, admin_only = auth.dependencies(ctx.conn)
     catalog = load_catalog()
     known_ids = {t["id"] for t in catalog["tools"]}

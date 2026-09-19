@@ -57,8 +57,8 @@ function setup() {
       session:{id:'s1',state:'open',kind:'multicast',roster:null,group_id:'grp_LAB303',group_label:'כיתה 303 — סייבר',group_role:'classroom',image_id:'img_7f3a91',image_name:'Office 2024 — סטנדרט',prefix:'LAB303',expected_clients:3,single:false,joined:2,stuck:{},starts_in_seconds:0,
         members:[{mac:'b4:2e:99:07:1a:c1',name:'01',hostname:'LAB303-01',state:'waiting',done:false,bytes_written:0,bytes_total:null,error:null,disks:[]},
                  {mac:'b4:2e:99:07:1a:c2',name:'02',hostname:'LAB303-02',state:'waiting',done:false,bytes_written:0,bytes_total:null,error:null,disks:[]}]}},
-    '/journal':[{ts:'2026-09-15T10:00:00Z',user:'סוכן',event:'disk_failure',label:'דיסק נכשל בכתיבה',text:'מחשב 2 — דיסק 3 (S5Y2NX0R12345)'},
-                {ts:'2026-09-12T09:00:00Z',user:'nadav',event:'machine_add',label:'מכונה נוספה',text:'מחשב 2'}],
+    '/journal':[{ts:'2026-09-15T10:00:00Z',user:'סוכן',event:'disk_failure',label:'דיסק נכשל בכתיבה',text:'מחשב 2 — דיסק 3 (S5Y2NX0R12345)',severity:'err'},
+                {ts:'2026-09-12T09:00:00Z',user:'nadav',event:'machine_add',label:'מכונה נוספה',text:'מחשב 2',severity:'info'}],
     '/machines/import':{preview:[{raw:'b4:2e:99:07:1a:c4 04',mac:'b4:2e:99:07:1a:c4',suffix:'04',error:null},{raw:'zz 05',mac:null,suffix:null,error:'MAC לא תקין'}],saved:1,rejected:[],network:{applied:true}},
     '/room/wake':{sent:2,failed:0,reasons:[]},
   };
