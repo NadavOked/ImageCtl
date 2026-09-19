@@ -808,6 +808,7 @@ static void png_setup(App *a, const State *base, const char *card) {
 
 static int render_png(App *a, const State *base, const char *prefix, int w, int h) {
     const Theme *themes[2] = { &THEME_LIGHT, &THEME_DARK };
+    a->fixed_clock = 1;   /* renders must not differ by the wall clock (tests diff them) */
     int ncards = (int)(sizeof PNG_CARDS / sizeof PNG_CARDS[0]);
     for (int c = 0; c < ncards; c++) for (int t = 0; t < 2; t++) {
         a->theme = themes[t];

@@ -237,6 +237,8 @@ typedef struct App {
     int force_progress;         /* --screen progress: show it even with no task */
     int force_cloner;           /* --screen cloner: the cloning machine's own screen */
     int force_standby;          /* --screen standby / idle cloner */
+    int fixed_clock;            /* --png: header clock is a constant, so two renders
+                                   a minute apart are byte-identical (test flake, 19/09) */
     int watching;               /* #st-progress was on screen (drawDone trigger) */
     int showing_done;           /* stay on #st-done until "קליטה נוספת" */
     char done_title[64], done_sub[240];

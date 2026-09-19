@@ -38,10 +38,11 @@ static double draw_header(App *a, cairo_t *cr, double W) {
         text_free(&k);text_free(&v);
     }
     time_t now=time(NULL); struct tm tmv; char clock_s[8]="--:--";
+    if(a->fixed_clock) snprintf(clock_s,sizeof clock_s,"12:45");   /* the mockup's clock; --png only */
 #ifdef _WIN32
-    if(now!=(time_t)-1 && localtime_s(&tmv,&now)==0) strftime(clock_s,sizeof clock_s,"%H:%M",&tmv);
+    else if(now!=(time_t)-1 && localtime_s(&tmv,&now)==0) strftime(clock_s,sizeof clock_s,"%H:%M",&tmv);
 #else
-    if(now!=(time_t)-1 && localtime_r(&now,&tmv)) strftime(clock_s,sizeof clock_s,"%H:%M",&tmv);
+    else if(now!=(time_t)-1 && localtime_r(&now,&tmv)) strftime(clock_s,sizeof clock_s,"%H:%M",&tmv);
 #endif
     Text clock=text_make(cr,FONT_MONO,14,400,clock_s,0,DIR_LTR);
     text_draw(cr,&clock,N_HEADER_PAD,(N_HEADER_H-clock.h)/2,t->header_text); text_free(&clock);
