@@ -132,6 +132,7 @@ def driver(tmp_path_factory) -> Path:
     return _build_driver(tmp_path_factory.mktemp("input-drv"))
 
 
+@pytest.mark.uinput
 @LAB
 def test_absolute_pointer_maps_one_to_one_and_keeps_the_cursor(driver, tmp_path):
     ABS_X, ABS_Y, EV_ABS, EV_KEY, BTN_LEFT = (
@@ -149,6 +150,7 @@ def test_absolute_pointer_maps_one_to_one_and_keeps_the_cursor(driver, tmp_path)
     ], events
 
 
+@pytest.mark.uinput
 @LAB
 def test_touchscreen_maps_its_range_onto_the_screen_without_a_cursor(driver, tmp_path):
     ABS_X, ABS_Y, EV_ABS, EV_KEY, BTN_TOUCH = (
@@ -167,6 +169,7 @@ def test_touchscreen_maps_its_range_onto_the_screen_without_a_cursor(driver, tmp
     assert events[2][1:3] == (float(W - 1), float(H - 1)), events
 
 
+@pytest.mark.uinput
 @LAB
 def test_relative_mouse_is_unchanged(driver, tmp_path):
     """השומר מפני תיקון-יתר: עכבר פיזי עדיין יחסי, עם PTR_GAIN, מהמרכז."""

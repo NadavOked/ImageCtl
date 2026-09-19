@@ -81,7 +81,16 @@ jobs:
       - name: Run the test suite (fanout included)
         run: |
           set -o pipefail
-          python -m pytest tests -q -p no:cacheprovider 2>&1 | tee pytest.log
+          python -m pytest tests -q -p no:cacheprovider -m "not uinput" 2>&1 | tee pytest.log
+      # ‏#949: חמשת טסטי evdev כותבים ל-/dev/uinput וקוראים /dev/input/event*
+      # — במעבדה root, כאן sudo עם אותו אינטרפרטר (אותם site-packages).
+      # ‏`-m uinput` בלי טסטים = יציאה 5 של pytest = כישלון, לא "עבר".
+      - name: evdev/uinput tests as root (#949)
+        run: |
+          set -o pipefail
+          sudo modprobe uinput
+          test -c /dev/uinput
+          sudo -E "$(which python)" -m pytest tests -q -p no:cacheprovider -m uinput 2>&1 | tee pytest-uinput.log
 
       # ‏e2e_simulation מוחק את תיקיית העבודה שלו ב-`finally`, ולכן אין
       # מה להעלות ממנה. מה שכן שורד הוא הפלט — והוא כבר מכיל את זנב
@@ -100,6 +109,7 @@ jobs:
           name: logs-py${{ matrix.python-version }}
           path: |
             pytest.log
+            pytest-uinput.log
             e2e.log
           retention-days: 14
           if-no-files-found: ignore

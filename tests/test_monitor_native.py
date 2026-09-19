@@ -47,6 +47,8 @@ import subprocess
 import time
 from pathlib import Path
 
+import pytest
+
 from native import requires_native
 
 REPO = Path(__file__).resolve().parent.parent
@@ -574,6 +576,7 @@ def _open_monitor_input_device() -> int:
     return os.open(node, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
 
 
+@pytest.mark.uinput
 @WITH_UINPUT
 def test_input_device_is_an_absolute_pointer_over_the_framebuffer(tmp_path):
     """ההתקן שנוצר עם `--input` הוא ABS, לא REL, והטווח שלו הוא מידות ה-fb.
@@ -602,6 +605,7 @@ def test_input_device_is_an_absolute_pointer_over_the_framebuffer(tmp_path):
     assert "input enabled through" in text, text
 
 
+@pytest.mark.uinput
 @WITH_UINPUT
 def test_pointer_event_lands_as_the_same_absolute_position(tmp_path):
     """‏PointerEvent ב-(x,y) → ‏`EV_ABS ABS_X=x, ABS_Y=y` על ההתקן, וכפתור

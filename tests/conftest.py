@@ -42,6 +42,11 @@ def pytest_configure(config) -> None:
     config.addinivalue_line(
         "markers", f"{native.MISSING_MARK}(tools): כלי מקומי חסר במקום שנדרש"
     )
+    # ‏#949: חמשת טסטי evdev כותבים ל-/dev/uinput וקוראים /dev/input/event* —
+    # במעבדה root; ב-CI הציבורי הם רצים בצעד נפרד תחת sudo (tests.yml).
+    config.addinivalue_line(
+        "markers", "uinput: דורש /dev/uinput כתיב וקריאת /dev/input — root או sudo"
+    )
     hygiene.block_real_processes()
     # ‏portbase גבוה ואקראי לכל הריצה: יתום של ריצה שנקטעה לא ינקה איש,
     # ולכן ההגנה היא שלא יהיה לו במה להתנגש (#156).
