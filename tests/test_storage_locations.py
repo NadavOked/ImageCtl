@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -29,6 +31,8 @@ class FakeHooks:
         self.scan_reason = "showmount: command not found"
         self.mount_status = OK
         self.mount_reason = "access denied"
+        self.mount_fail_substr = ""      # #1123: כשל רק בעיגון שהיעד מכיל את זה
+        self.fstab_status = OK           # #1123: כשל בכתיבת fstab
         self.login_status = OK
         self.login_reason = "login failed"
         self.make_fs_status = OK
@@ -51,6 +55,9 @@ class FakeHooks:
         self.logins: list[tuple] = []
         self.logouts: list[tuple] = []
         self.probes: list[str] = []
+        self.creds_writes: list[tuple] = []
+        self.creds_removes: list[str] = []
+        self.calls: list[str] = []       # #1123: סדר הקריאות (fstab לפני mount)
 
     def nfs_scan(self, server):
         if self.scan_status != OK:
@@ -105,8 +112,11 @@ class FakeHooks:
 
     def mount(self, fstype, source, target, opts=""):
         self.mounts.append((fstype, source, target, opts))
+        self.calls.append("mount:" + target)
         if self.mount_status != OK:
             return HookResult(self.mount_status, self.mount_reason)
+        if self.mount_fail_substr and self.mount_fail_substr in target:
+            return HookResult(FAILED, self.mount_reason)
         Path(target).mkdir(parents=True, exist_ok=True)
         return HookResult(OK)
 
@@ -116,7 +126,18 @@ class FakeHooks:
 
     def fstab_write(self, entries):
         self.fstab.append(list(entries))
+        self.calls.append("fstab")
+        if self.fstab_status != OK:
+            return HookResult(self.fstab_status, "Read-only file system")
         return HookResult(OK, payload={"entries": len(entries)})
+
+    def creds_write(self, path, creds):
+        self.creds_writes.append((path, dict(creds)))
+        return HookResult(OK, payload={"path": path})
+
+    def creds_remove(self, path):
+        self.creds_removes.append(path)
+        return HookResult(OK)
 
     def df(self, target):
         if target in self.fail_targets:
@@ -135,6 +156,8 @@ class FakeHooks:
             "mount": self.mount,
             "umount": self.umount,
             "fstab_write": self.fstab_write,
+            "creds_write": self.creds_write,
+            "creds_remove": self.creds_remove,
             "df": self.df,
             "interfaces": lambda: list(self.interfaces),
         }
@@ -556,3 +579,240 @@ def test_shared_nic_warning_needs_positive_evidence():
     msg = sl.shared_nic_warning("10.44.12.50", nics, "http://10.44.12.10:8080")
     assert msg and "10.44.12.50" in msg
     assert sl.shared_nic_warning("10.44.10.20", nics, "http://10.44.12.10:8080") is None
+
+
+# --- #1123 (1): סיסמת SMB לא ב-argv ולא ב-fstab ------------------------------
+
+def _smb_params():
+    return {"server": "fs01", "share": "images", "username": "imagectl",
+            "secret": "s3cret", "domain": "COLLEGE"}
+
+
+def test_smb_secret_goes_to_credentials_file_not_argv_or_fstab(env):
+    """הסיסמה נכתבת לקובץ credentials (hook), ו-`mount`/fstab מקבלים
+    `credentials=<path>` — לא `password=`. גם בבדיקת החיבור, וגם הקובץ הזמני
+    של הבדיקה מוסר. הסרת המיקום מוחקת את הקובץ."""
+    created = env["admin"].post("/api/console/storage-locations", json={
+        "name": "fileserver-images", "type": "smb", "params": _smb_params(),
+        "tested": True,
+    })
+    assert created.status_code == 200, created.text
+    loc_id = created.json()["id"]
+    fake = env["fake"]
+    cifs_mounts = [m for m in fake.mounts if m[0] == "cifs"]
+    assert len(cifs_mounts) == 2, fake.mounts        # בדיקה + קבוע
+    for _, _, _, opts in cifs_mounts:
+        assert "password=" not in opts and "s3cret" not in opts, opts
+        assert "credentials=" in opts, opts
+    assert sl.creds_path(loc_id) == f"/etc/imagectl/creds/{loc_id}"
+    assert f"credentials={sl.creds_path(loc_id)}" in cifs_mounts[-1][3]
+    fstab_text = str(fake.fstab[-1])
+    assert "s3cret" not in fstab_text and "password=" not in fstab_text
+    assert f"credentials={sl.creds_path(loc_id)}" in fstab_text
+    path, creds = fake.creds_writes[-1]
+    assert path == sl.creds_path(loc_id)
+    assert creds == {"username": "imagectl", "password": "s3cret", "domain": "COLLEGE"}
+    test_path = fake.creds_writes[0][0]
+    assert test_path != path and test_path in fake.creds_removes
+    assert env["admin"].post(
+        f"/api/console/storage-locations/{loc_id}/disconnect").status_code == 200
+    gone = env["admin"].request("DELETE", f"/api/console/storage-locations/{loc_id}",
+                                json={"confirm": "fileserver-images"})
+    assert gone.status_code == 200, gone.text
+    assert path in fake.creds_removes
+
+
+def test_creds_write_is_0600_in_mount_cifs_format(tmp_path: Path):
+    """ה-hook האמיתי: `username=`/`password=`/`domain=`, ‏0600, בלי קובץ זמני."""
+    target = tmp_path / "creds" / "loc_ab12cd34"
+    result = sl.creds_write(str(target), {"username": "imagectl", "password": "s3cret",
+                                          "domain": "COLLEGE"})
+    assert result.status == OK, result.reason
+    assert target.read_text(encoding="utf-8") == (
+        "username=imagectl\npassword=s3cret\ndomain=COLLEGE\n")
+    assert not list(target.parent.glob("*.tmp"))
+    if os.name == "posix":
+        assert (target.stat().st_mode & 0o777) == 0o600
+    else:
+        assert target.is_file()  # ווינדוס: אין מצב POSIX; ההרשאות נבדקות במעבדה
+    assert sl.creds_remove(str(target)).status == OK and not target.exists()
+    assert sl.creds_remove(str(target)).status == OK  # כבר איננו — לא כשל
+
+
+def test_smb_scan_uses_auth_file_not_argv(monkeypatch, tmp_path: Path):
+    """‏`smbclient -L` מקבל `-A <קובץ>` ולא `-U user%password`, והקובץ מוסר."""
+    seen: list[list[str]] = []
+
+    def fake_run(cmd, timeout=30, input_text=None):
+        seen.append(list(cmd))
+        text = ("\n\tSharename       Type      Comment\n"
+                "\t---------       ----      -------\n\timages          Disk\n")
+        return HookResult(OK, payload={"stdout": text, "stderr": ""})
+
+    monkeypatch.setattr(sl, "_run", fake_run)
+    monkeypatch.setattr(sl, "CREDS_DIR", tmp_path / "creds")
+    result = sl.smb_scan("fs01", {"username": "imagectl", "secret": "s3cret"})
+    assert result.status == OK, result.reason
+    assert result.payload["items"] == [{"share": "images", "type": "Disk"}]
+    cmd = seen[0]
+    assert "s3cret" not in " ".join(cmd), cmd
+    assert "-A" in cmd
+    assert not list((tmp_path / "creds").glob("scan-*"))
+
+
+# --- #1123 (2): fstab אטומי + mount_point ייחודי ------------------------------
+
+def test_fstab_write_is_atomic(tmp_path: Path, monkeypatch):
+    """כתיבה ל-tmp + `os.replace`: כשל ב-replace משאיר את fstab המקורי בשלמותו."""
+    fstab = tmp_path / "fstab"
+    original = "UUID=abc / ext4 defaults 0 1\n"
+    fstab.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(sl, "FSTAB_PATH", fstab)
+    entry = {"source": "10.44.10.20:/mnt/pool/images",
+             "target": "/var/lib/imagectl/storage/nas", "fstype": "nfs",
+             "opts": "vers=4.1,soft"}
+    assert sl.fstab_write([entry]).status == OK
+    text = fstab.read_text(encoding="utf-8")
+    assert text.startswith(original) and sl.FSTAB_BEGIN in text
+    assert "_netdev,nofail" in text
+    assert not list(tmp_path.glob("fstab.*")), "לא נשאר קובץ זמני"
+
+    def broken_replace(src, dst):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(sl.os, "replace", broken_replace)
+    result = sl.fstab_write([])
+    assert result.status == FAILED and "fstab" in result.reason
+    assert fstab.read_text(encoding="utf-8") == text, "fstab לא השתנה כשההחלפה נכשלה"
+
+
+def test_duplicate_mount_point_is_409_and_enforced_in_db(env, tmp_path: Path):
+    shared = tmp_path / "shared-images"
+    shared.mkdir()
+    first = env["admin"].post("/api/console/storage-locations", json={
+        "name": "usb-a", "type": "local", "params": {"path": str(shared)},
+        "tested": True,
+    })
+    assert first.status_code == 200, first.text
+    second = env["admin"].post("/api/console/storage-locations", json={
+        "name": "usb-b", "type": "local", "params": {"path": str(shared)},
+        "tested": True,
+    })
+    assert second.status_code == 409
+    assert "usb-a" in second.json()["detail"]
+    with pytest.raises(sqlite3.IntegrityError):
+        env["ctx"].conn.execute(
+            "INSERT INTO storage_locations (id, name, type, mount_point, state,"
+            " state_since, created_at)"
+            " VALUES ('loc_dup', 'dup', 'local', ?, 'unchecked', 'x', 'x')",
+            (str(shared),))
+    env["ctx"].conn.rollback()
+
+
+# --- #1123 (3): validation לשמות רשת ----------------------------------------
+
+@pytest.mark.parametrize("kind,params,word", [
+    ("nfs", {"server": "10.44.10.20 -o rw", "export": "/mnt/pool/images"}, "שרת"),
+    ("nfs", {"server": "nas..college", "export": "/mnt/pool/images"}, "שרת"),
+    ("nfs", {"server": "10.44.10.20", "export": "mnt/pool"}, "ייצוא"),
+    ("nfs", {"server": "10.44.10.20", "export": "/mnt/pool,rw"}, "ייצוא"),
+    ("nfs", {"server": "10.44.10.20", "export": "/mnt/pool images"}, "ייצוא"),
+    ("nfs", {"server": "10.44.10.20", "export": "/mnt/pool", "version": "4.1,rw"}, "גרסת"),
+    ("smb", {"server": "fs01", "share": "images rw"}, "שיתוף"),
+    ("smb", {"server": "fs01", "share": "images", "username": "a\nb", "secret": "x"}, "משתמש"),
+    ("smb", {"server": "fs01", "share": "images", "username": "a", "secret": "x\ny"}, "סיסמה"),
+    ("iscsi", {"portal": "10.44.3.75:abc", "iqn": IQN}, "פורטל"),
+    ("iscsi", {"portal": "10.44.3.75:3260 x", "iqn": IQN}, "פורטל"),
+    ("iscsi", {"portal": PORTAL, "iqn": "iqn.bad"}, "IQN"),
+    ("iscsi", {"portal": PORTAL, "iqn": IQN + " x"}, "IQN"),
+])
+def test_invalid_network_names_are_400_before_any_tool_runs(env, kind, params, word):
+    r = env["admin"].post("/api/console/storage-locations/test", json={
+        "type": kind, "params": params,
+    })
+    assert r.status_code == 400, r.text
+    assert word in r.json()["detail"], r.json()["detail"]
+    c = env["admin"].post("/api/console/storage-locations", json={
+        "name": "bad", "type": kind, "params": params, "tested": True,
+    })
+    assert c.status_code == 400, c.text
+    fake = env["fake"]
+    assert fake.mounts == [] and fake.logins == [] and fake.creds_writes == []
+
+
+def test_scan_validates_server_and_portal(env):
+    bad = env["admin"].post("/api/console/storage-locations/scan", json={
+        "type": "nfs", "server": "10.44.10.20 -e",
+    })
+    assert bad.status_code == 400 and "שרת" in bad.json()["detail"]
+    bad = env["admin"].post("/api/console/storage-locations/scan", json={
+        "type": "iscsi", "portal": "10.44.3.75:99999",
+    })
+    assert bad.status_code == 400 and "פורטל" in bad.json()["detail"]
+
+
+@pytest.mark.parametrize("kind,params", [
+    ("nfs", {"server": "nas01.college.local", "export": "/mnt/pool/images",
+             "version": "4.1"}),
+    ("nfs", {"server": "fe80::1", "export": "/export"}),
+    ("smb", {"server": "10.44.10.21", "share": "images$", "username": "svc.imagectl",
+             "secret": "p=ss w0rd!", "domain": "COLLEGE"}),
+    ("iscsi", {"portal": "10.44.3.75", "iqn": IQN}),
+    ("iscsi", {"portal": "[fd00::75]:3260", "iqn": IQN}),
+])
+def test_valid_network_names_pass_validation(env, kind, params):
+    r = env["admin"].post("/api/console/storage-locations/test", json={
+        "type": kind, "params": params,
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["ok"] is True
+
+
+def test_validate_params_accepts_eui_and_naa_targets():
+    assert sl.validate_params("iscsi", {"portal": PORTAL, "iqn": "eui.02004567A425678D"}) is None
+    assert sl.validate_params("iscsi", {"portal": PORTAL,
+                                        "iqn": "naa.52004567BA64678D"}) is None
+    assert sl.validate_params("iscsi", {"portal": PORTAL, "iqn": "eui.zz"}) is not None
+
+
+# --- #1123 (4): סדר ביצירה — fstab → mount → connected ------------------------
+
+def test_create_writes_fstab_before_mount_and_is_connected_only_with_both(env):
+    created = _create_nfs(env)
+    assert created.status_code == 200, created.text
+    mount = created.json()["mount_point"]
+    calls = env["fake"].calls
+    assert calls.index("fstab") < calls.index("mount:" + mount), calls
+    assert created.json()["state"] == "connected"
+
+
+def test_create_fstab_failure_leaves_no_row_and_no_permanent_mount(env):
+    env["fake"].fstab_status = FAILED
+    r = _create_nfs(env)
+    assert r.status_code == 409 and "fstab" in r.json()["detail"]
+    rows = [x for x in sl.list_rows(env["ctx"].conn) if x["name"] == "nas-images"]
+    assert rows == []
+    assert all("/storage/" not in m[2].replace("\\", "/") for m in env["fake"].mounts), \
+        env["fake"].mounts
+
+
+def test_create_mount_failure_removes_fstab_line_and_row(env):
+    env["fake"].mount_fail_substr = "nas-images"   # רק העיגון הקבוע, לא הבדיקה
+    r = _create_nfs(env)
+    assert r.status_code == 409
+    rows = [x for x in sl.list_rows(env["ctx"].conn) if x["name"] == "nas-images"]
+    assert rows == []
+    assert len(env["fake"].fstab) >= 2
+    assert env["fake"].fstab[-1] == [], "שורת ה-fstab הוסרה אחרי כשל העיגון"
+
+
+def test_connect_with_fstab_failure_is_not_connected(env):
+    loc_id = _create_nfs(env).json()["id"]
+    assert env["admin"].post(
+        f"/api/console/storage-locations/{loc_id}/disconnect").status_code == 200
+    env["fake"].fstab_status = FAILED
+    r = env["admin"].post(f"/api/console/storage-locations/{loc_id}/connect")
+    assert r.status_code == 409
+    row = sl.get(env["ctx"].conn, loc_id)
+    assert row["state"] != "connected"
+    assert env["fake"].umounts[-1] == row["mount_point"]

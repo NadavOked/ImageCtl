@@ -15,7 +15,7 @@ import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
-from . import auth, totp, users
+from . import auth, login_guard, totp, users
 from .api import ServerContext
 from .db import _write_lock, get_setting, journal, now_iso, writing
 
@@ -236,19 +236,34 @@ def register(router: APIRouter, ctx: ServerContext, current_user, admin_only, tl
         stored = _challenge_user(ctx.conn, raw)
         if stored is None:
             raise HTTPException(401, "אתגר MFA פג או שגוי")
+        # ‏#1120: אותו מונה ואותם ספים כמו שלב הסיסמה — שם משתמש + IP.
+        # ‏`/login` אינו מאפס אותו למשתמש MFA (ראו console_login), אחרת
+        # "סיסמה נכונה → קוד שגוי → כניסה מחדש" היה מאפס בכל סיבוב.
+        ip = request.client.host if request.client else "?"
+        try:
+            login_guard.check(ctx.conn, stored, ip)
+        except login_guard.LoginBlocked as exc:
+            headers = {}
+            if exc.retry_after is not None:
+                headers["Retry-After"] = str(exc.retry_after)
+            raise HTTPException(exc.status, exc.message, headers=headers)
         info = users.flags(ctx.conn, stored)
         if not info["mfa_enabled"] or not info["mfa_secret"]:
             raise HTTPException(401, "MFA אינו מופעל")
         step = totp.verify_totp(info["mfa_secret"], code)
         used_backup = False
-        if step is None:
-            if consume_backup(ctx.conn, stored, code):
-                used_backup = True
-            else:
-                raise HTTPException(401, "קוד שגוי, נסה שוב")
-        elif info["mfa_last_step"] is not None and step == info["mfa_last_step"]:
-            raise HTTPException(401, "קוד שגוי, נסה שוב")
+        if step is None and consume_backup(ctx.conn, stored, code):
+            used_backup = True
+        elif step is None or (info["mfa_last_step"] is not None
+                              and step == info["mfa_last_step"]):
+            # ‏#1120: ה-challenge חד-פעמי גם בכישלון — ניחוש שני דורש
+            # סיסמה מחדש. הכישלון נספר, והמסך חוזר לכניסה.
+            consume_challenge(ctx.conn, raw)
+            login_guard.record_failure(ctx.conn, stored, ip)
+            journal(ctx.conn, "login_failed", f"{stored} (mfa)")
+            raise HTTPException(401, "קוד שגוי — היכנס מחדש")
         consume_challenge(ctx.conn, raw)
+        login_guard.clear(ctx.conn, stored, ip)
         if step is not None:
             with _write_lock, writing(ctx.conn):
                 ctx.conn.execute(

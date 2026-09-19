@@ -49,9 +49,13 @@ async def finish_login(conn, request: Request, response: Response, *,
         journal(conn, "login_failed", username)
         raise HTTPException(401, "שם משתמש או סיסמה שגויים")
 
-    login_guard.clear(conn, username, ip)
     stored = users.canonical_name(conn, username) or username
     info = users.flags(conn, stored)
+    # ‏#1120: למשתמש MFA בקונסולה הסיסמה היא חצי כניסה — המונה מתאפס רק
+    # ב-`/login/mfa` (או בדפדפן זכור, למטה). אחרת קוד שגוי + כניסה מחדש
+    # היו מאפסים את הספירה, ו-10 ניסיונות לא היו מצטברים לנעילה לעולם.
+    if kiosk or not info["mfa_enabled"] or info["must_change_password"]:
+        login_guard.clear(conn, username, ip)
 
     if role == "deploy" and not kiosk:
         # ‏#1073: הסיסמה נכונה — וזו בדיוק הסיבה שהתשובה אינה 401.
@@ -80,6 +84,7 @@ async def finish_login(conn, request: Request, response: Response, *,
     if info["mfa_enabled"]:
         trusted = request.cookies.get(console_mfa.TRUSTED_COOKIE)
         if console_mfa.trusted_ok(conn, stored, trusted):
+            login_guard.clear(conn, username, ip)
             auth.attach_cookie(response, conn, stored, role, tls)
             journal(conn, "login", "trusted_browser", stored)
             return {"username": stored, "role": role, "idle_seconds": _idle(conn)}

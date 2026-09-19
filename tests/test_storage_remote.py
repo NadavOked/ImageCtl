@@ -43,6 +43,10 @@ CHALLENGE = bytes(range(16))
 SERVER_INIT = b"\x00\x40\x00\x20" + b"\x00" * 16 + b"\x00\x00\x00\x00"
 
 
+#: ‏FramebufferUpdateRequest — הודעת לקוח RFB שלמה (ראו test_monitor.FB_REQUEST).
+FB_REQUEST = b"\x03\x01\x00\x00\x00\x00\x04\x00\x03\x00"
+
+
 def _register(conn, ip: str, *, secret: str | None = SECRET) -> None:
     registry.add_machine(conn, MAC, "Remote", "grp_BUILD", "test")
     net_seen(conn, MAC, ip, monitor_secret=secret,
@@ -205,14 +209,14 @@ def test_remote_monitor_reaches_the_machine_through_the_secondary(server, second
     with admin.websocket_connect(_ws_path(paired)) as ws:
         _browser_handshake(ws)
         assert ws.receive_bytes() == SERVER_INIT
-        ws.send_bytes(b"client-rfb-data")
-        assert ws.receive_bytes() == b"echo:client-rfb-data"
+        ws.send_bytes(FB_REQUEST)                            # ‏#1129: הודעה שלמה
+        assert ws.receive_bytes() == b"echo:" + FB_REQUEST
     assert machine.closed.wait(5)
     expected = hmaclib.new(SECRET_BYTES, CHALLENGE, hashlib.sha256).digest()[:16]
     assert machine.response == expected                      # HMAC יצא מהמשני
     assert machine.response != SECRET_BYTES
     assert machine.writes[0] == b"\x01"                      # ה-ClientInit של הדפדפן
-    assert b"client-rfb-data" in machine.writes
+    assert FB_REQUEST in machine.writes
     # הראשי לא ידע את הסוד: המכונה אינה רשומה בו ואין לו שום סוד מוניטור.
     assert server["ctx"].conn.execute(
         "SELECT COUNT(*) AS n FROM net_devices WHERE monitor_secret IS NOT NULL"
@@ -313,4 +317,135 @@ def test_remote_monitor_refused_on_a_secondary_server(server, secondary, paired,
     db.set_setting(server["ctx"].conn, storage_nodes.ROLE_KEY, "secondary")
     code, _reason = _close_code(server["admin"], _ws_path(paired))
     assert code == 4409
+    assert not machine.connected.is_set()
+
+
+# --- #1122 (3): ‏relay_tunnel אינו בולע את סיבת הסגירה -----------------------
+#
+# ‏``relay_tunnel`` מחזיר את הסיבה, ו-``_monitor_tunnel`` רושם אותה ליומן
+# (``storage_monitor_tunnel_closed``). כאן ה-TLS מזויף בגבול המערכת (אובייקט
+# עם ``pending``/``recv``/``send``), ה-sockets אמיתיים.
+
+class _FakeTls:
+    def __init__(self, *, pending: bool = False, recv_exc: BaseException | None = None):
+        self._pending = pending
+        self._recv_exc = recv_exc
+
+    def pending(self) -> bool:
+        return self._pending
+
+    def recv(self, _n):
+        from OpenSSL import SSL
+        if self._recv_exc is not None:
+            raise self._recv_exc
+        raise SSL.WantReadError()
+
+    def send(self, data):
+        return len(data)
+
+
+def _pairs():
+    raw_peer, raw = socket.socketpair()
+    machine_peer, machine = socket.socketpair()
+    return raw_peer, raw, machine_peer, machine
+
+
+def test_relay_tunnel_names_machine_closed():
+    raw_peer, raw, machine_peer, machine = _pairs()
+    try:
+        machine_peer.close()                                 # המכונה סגרה
+        reason = interserver_api.relay_tunnel(_FakeTls(), raw, machine, idle_seconds=5)
+        assert reason == "machine closed"
+    finally:
+        raw_peer.close(); raw.close(); machine.close()
+
+
+def test_relay_tunnel_names_a_tls_syscall_error_from_the_primary():
+    from OpenSSL import SSL
+    raw_peer, raw, machine_peer, machine = _pairs()
+    try:
+        tls = _FakeTls(pending=True, recv_exc=SSL.SysCallError(-1, "Unexpected EOF"))
+        reason = interserver_api.relay_tunnel(tls, raw, machine, idle_seconds=5)
+        assert reason is not None, "relay_tunnel החזיר None — הסיבה נבלעה"
+        assert reason.startswith("primary: SysCallError")
+        assert "Unexpected EOF" in reason
+    finally:
+        raw_peer.close(); raw.close(); machine_peer.close(); machine.close()
+
+
+def test_relay_tunnel_names_idle():
+    raw_peer, raw, machine_peer, machine = _pairs()
+    try:
+        reason = interserver_api.relay_tunnel(_FakeTls(), raw, machine, idle_seconds=0.2)
+        assert reason == "idle 0.2s"
+    finally:
+        raw_peer.close(); raw.close(); machine_peer.close(); machine.close()
+
+
+def test_remote_monitor_tunnel_close_is_journaled_with_a_reason(server, secondary,
+                                                                paired, machine):
+    """קצה-לקצה: הדפדפן נסגר → הראשי סוגר את המנהרה → המשני רושם
+    ``storage_monitor_tunnel_closed`` עם ה-MAC והסיבה, לא נעלם בשקט."""
+    import time
+    with server["admin"].websocket_connect(_ws_path(paired)) as ws:
+        _browser_handshake(ws)
+        assert ws.receive_bytes() == SERVER_INIT
+    assert machine.closed.wait(5)
+    deadline = time.monotonic() + 5
+    row = None
+    while row is None and time.monotonic() < deadline:
+        row = secondary["conn"].execute(
+            "SELECT detail FROM journal WHERE event = 'storage_monitor_tunnel_closed'"
+        ).fetchone()
+        if row is None:
+            time.sleep(0.05)
+    assert row is not None, "סגירת המנהרה לא נרשמה ביומן"
+    assert row["detail"].startswith(f"{MAC}: ")
+    assert len(row["detail"]) > len(MAC) + 2                   # יש סיבה, לא רק MAC
+
+
+# --- #1129: כוח למכונה של המשני — האישור בראשי, מול השם שהמשני מדווח ------
+
+def test_remote_power_verifies_the_secondarys_name_and_writes_through_the_tunnel(
+        server, secondary, paired, machine):
+    """‏`POST /storage-nodes/{nid}/monitor/{mac}/power`: השם מושווה לרשימת
+    המכונות של **המשני** ("Remote"), לא ל-`?name=`; בלי מוניטור פתוח → 409;
+    עם מוניטור פתוח והשם הנכון הפריים `imagectl-power:reboot` מגיע למכונה
+    דרך המנהרה, והראשי רושם `monitor_power`. ‏ClientCutText ישירות ב-WS
+    נדחה גם בנתיב הזה (אותו גשר)."""
+    admin = server["admin"]
+    path = f"/api/console/storage-nodes/{paired}/monitor/{MAC}/power"
+    assert admin.post(path, json={"action": "reboot", "confirm": "Remote"}).status_code == 409
+    assert admin.post(path, json={"action": "reboot", "confirm": "remote"}).status_code == 403
+    assert server["deploy"].post(path, json={"action": "reboot", "confirm": "Remote"}).status_code == 403
+    with admin.websocket_connect(_ws_path(paired)) as ws:
+        _browser_handshake(ws)
+        assert ws.receive_bytes() == SERVER_INIT
+        assert admin.post(path, json={"action": "reboot", "confirm": "remote"}).status_code == 403
+        ok = admin.post(path, json={"action": "reboot", "confirm": "Remote"})
+        assert ok.status_code == 200, ok.text
+        assert ws.receive_bytes() == b"echo:" + monitor.power_frame("reboot")
+        ws.send_bytes(monitor.power_frame("poweroff"))
+        with pytest.raises(WebSocketDisconnect) as e:
+            ws.receive_bytes()
+    assert e.value.code == monitor.WS_FORBIDDEN
+    assert machine.closed.wait(5)
+    assert monitor.power_frame("reboot") in machine.writes
+    assert monitor.power_frame("poweroff") not in machine.writes
+    rows = server["ctx"].conn.execute(
+        "SELECT event, detail FROM journal WHERE event LIKE 'monitor_%' ORDER BY id").fetchall()
+    assert [(r["event"], r["detail"]) for r in rows] == [
+        ("monitor_connected", f"{MAC} node={paired}"),
+        ("monitor_power", f"{MAC} reboot node={paired}"),
+        ("monitor_closed", f"{MAC} refused node={paired}")]
+    assert admin.post(path, json={"action": "reboot", "confirm": "Remote"}).status_code == 409
+
+
+def test_remote_monitor_refuses_a_foreign_origin_before_accept(server, secondary, paired,
+                                                                machine):
+    with pytest.raises(WebSocketDisconnect) as e:
+        with server["admin"].websocket_connect(_ws_path(paired),
+                                               headers={"origin": "http://evil.example"}):
+            pass
+    assert (e.value.code, e.value.reason) == (monitor.WS_FORBIDDEN, monitor.ORIGIN_REFUSED)
     assert not machine.connected.is_set()

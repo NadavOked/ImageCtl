@@ -155,3 +155,33 @@ test('all static includes carry the same ?v= and color literals stay in tokens',
     assert.deepEqual(literals,[],file+' contains literal colors');
   }
 });
+
+/* #1129 (R43): esc() משמש ב-67 attributes, והסריאליזציה של הדפדפן
+   (textContent→innerHTML) ממירה רק &<> — ערך עם " סגר את ה-attribute והזריק
+   onfocus=. הבדיקה מריצה את esc() המשוגר על ששת התווים, ועל שם שיתוף SMB
+   עוין מסריקת רשת (מקור שאינו בשליטת המפעיל). */
+test('#1129: esc() escapes all six characters, not only &<>',()=>{
+  const {run}=setup();
+  for(const [raw,expected] of [['&','&amp;'],['<','&lt;'],['>','&gt;'],['"','&quot;'],["'",'&#39;'],['`','&#96;']]) {
+    assert.equal(run('esc('+JSON.stringify(raw)+')'),expected,'esc('+JSON.stringify(raw)+')');
+  }
+  assert.equal(run('esc(null)'),''); assert.equal(run('esc(undefined)'),''); assert.equal(run('esc(7)'),'7');
+  const share='share"><img src=x onerror=alert(1)>';
+  const html=run('`<input value="${esc('+JSON.stringify(share)+')}">`');
+  assert.doesNotMatch(html,/"><img/,'the quote must not close the attribute');
+  assert.equal(html,'<input value="share&quot;&gt;&lt;img src=x onerror=alert(1)&gt;">');
+});
+test("#1129: server ids inside onclick=\"fn('…')\" go through encodeId, which escapes the quote",()=>{
+  const {run}=setup();
+  const evil="tsk'); alert(1); ('";
+  assert.doesNotMatch(run('encodeId('+JSON.stringify(evil)+')'),/'/,'encodeId must not leave a raw quote');
+  assert.equal(run('decodeURIComponent(encodeId('+JSON.stringify(evil)+'))'),evil,'round-trip');
+  // The two capture-cancel buttons and the port switch carry the id encoded, not esc()'d.
+  const js=fs.readFileSync(path.join(root,'console.js'),'utf8');
+  assert.doesNotMatch(js,/onclick="cancelCapture\('\$\{esc\(/);
+  assert.doesNotMatch(js,/onclick="portSwitch\('\$\{esc\(/);
+  assert.match(js,/cancelCapture\(decodeURIComponent\('\$\{encodeId\(t\.id\)\}'\)\)/);
+  assert.match(js,/portSwitch\(decodeURIComponent\('\$\{encodeId\(key\)\}'\)\)/);
+  const br=fs.readFileSync(path.join(root,'branches.js'),'utf8');
+  assert.doesNotMatch(br,/loadBranchMachines\('\$\{esc\(/);
+});

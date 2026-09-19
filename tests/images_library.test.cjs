@@ -65,13 +65,13 @@ const dragEvent=(data)=>({preventDefault(){},currentTarget:{classList:{add(){},r
 
 test('the page is the datastore browser: header, three tabs, tree with counters, one datagrid', () => {
   const {run}=setup(); const html=run('images(0)'); balanced(html);
-  assert.match(html,/class="page"/); assert.match(html,/ספריית אימג'ים/);
+  assert.match(html,/class="page"/); assert.match(html,/ספריית אימג&#39;ים/);
   assert.match(html,/4 אימג'ים · 3 תיקיות/);
   assert.match(html,/688 GB<\/bdi> בשימוש · <bdi dir="ltr">312 GB<\/bdi> פנוי/);
   for(const t of ['קבצים','קליטות','אחסון']) assert.match(html,new RegExp('role="tab"[^>]*>'+t+'<'));
   assert.match(html,/\+ קליטה ממחשב בנייה/); assert.match(html,/העלאת קובץ tar/); assert.match(html,/\+ תיקייה/);
   assert.match(html,/role="tree"/);
-  assert.match(html,/כל האימג'ים<\/span><span class="cnt">4</); assert.match(html,/Office<\/span><span class="cnt">2</);
+  assert.match(html,/כל האימג&#39;ים<\/span><span class="cnt">4</); assert.match(html,/Office<\/span><span class="cnt">2</);
   assert.match(html,/סייבר<\/span><span class="cnt">0</); assert.match(html,/ללא תיקייה<\/span><span class="cnt">1</);
   assert.equal((html.match(/<table class="dg"/g)||[]).length,1);
   for(const col of ['שם','מערכת','נכנס לדיסק מ-','בשרת','נוצר','אימות','בשימוש']) assert.match(html,new RegExp('<th>'+col+'</th>'));
@@ -96,7 +96,7 @@ test('rows: "fits from X GB" is decimal-ceil with bytes in the tooltip, null is 
 test('a running capture is a grey row inside the table, under "all images", with cancel — not a bar above', () => {
   const {run}=setup(); const html=run('images(0)');
   assert.match(html,/<tr class="task">/); assert.match(html,/Office 2024 v3/); assert.match(html,/ממתין שמחשב הבנייה בנייה 1 יעלה ב-PXE/);
-  assert.match(html,/cancelCapture\('t1'\)">בטל קליטה/); assert.match(html,/id="capture-bar"><\/div>/,'the bar above the table carries only done+error warnings');
+  assert.match(html,/cancelCapture\(decodeURIComponent\('t1'\)\)">בטל קליטה/); assert.match(html,/id="capture-bar"><\/div>/,'the bar above the table carries only done+error warnings');
   assert.match(html,/indeterminate|לא ידוע/,'pending capture with no denominator is not 0%');
   run('selectImagesFolder("Office")'); assert.doesNotMatch(run('images(0)'),/<tr class="task">/,'/tasks has no folder (#968) — shown only under all images');
 
@@ -116,14 +116,14 @@ test('folder selection, breadcrumb, description, edit/delete of the folder, and 
   assert.match(html,/<b>ללא תיקייה<\/b>/); assert.equal((html.match(/data-id="img_/g)||[]).length,1); assert.match(html,/CAD Heavy/);
   run('selectImagesFolder(null); imagesFilter("ubuntu")');
   assert.equal((node('#img-table').innerHTML.match(/data-id="img_/g)||[]).length,1);
-  run('imagesFilter("zzz")'); assert.match(node('#img-table').innerHTML,/אין אימג'ים שתואמים לסינון/);
+  run('imagesFilter("zzz")'); assert.match(node('#img-table').innerHTML,/אין אימג&#39;ים שתואמים לסינון/);
   run('imagesFilter("")'); assert.equal((node('#img-table').innerHTML.match(/data-id="img_/g)||[]).length,4);
 });
 
 test('an empty library says what to do; an unread library is a placeholder, not "no images"', () => {
   const {run}=setup();
   run('IMAGES=[];FOLDERS=[];CAPTURE_TASKS=[]'); const html=run('images(0)');
-  assert.match(html,/אין אימג'ים בספרייה — קלוט ממחשב בנייה או העלה קובץ tar/); assert.match(html,/onclick="openCapture/);
+  assert.match(html,/אין אימג&#39;ים בספרייה — קלוט ממחשב בנייה או העלה קובץ tar/); assert.match(html,/onclick="openCapture/);
   run('IMAGES=null'); assert.match(run('images(0)'),/טוען נתונים/); assert.doesNotMatch(run('images(0)'),/אין אימג'ים/);
 });
 
@@ -191,7 +191,7 @@ test('the image drawer: header line, actions, verification note, properties, "re
   assert.equal(new URL(j.url,'http://x').searchParams.get('q'),'Ubuntu 24.04');
   await new Promise(r=>setImmediate(r)); await new Promise(r=>setImmediate(r));
   html=node('#drawerBody').innerHTML;
-  assert.match(html,/אימג' עודכן — &quot;Ubuntu 24.04&quot; — עודכנו: תיאור/); assert.match(html,/12\/09\/2026/);
+  assert.match(html,/אימג&#39; עודכן — &quot;Ubuntu 24.04&quot; — עודכנו: תיאור/); assert.match(html,/12\/09\/2026/);
   assert.ok(html.indexOf('אימג\' עודכן')<html.indexOf('נקלט ממחשב הבנייה'),'newest first');
 });
 
@@ -211,10 +211,10 @@ test('captures tab lists /tasks with state colours; storage tab reads /overview 
   const {run}=setup();
   let html=run('images(1)'); balanced(html);
   assert.match(html,/<th>מחשב בנייה<\/th>/); assert.match(html,/st warn">ממתין שהמחשב יעלה ב-PXE/); assert.match(html,/st ok">הושלם/);
-  assert.match(html,/cancelCapture\('t1'\)">ביטול/); assert.match(html,/openImageDetail\('img_lnx001'\)">פרטים/);
+  assert.match(html,/cancelCapture\(decodeURIComponent\('t1'\)\)">ביטול/); assert.match(html,/openImageDetail\('img_lnx001'\)">פרטים/);
   run('CAPTURE_TASKS=[]'); assert.match(run('images(1)'),/אין קליטות עדיין/);
   html=run('images(2)'); balanced(html);
-  assert.match(html,/פנוי בדיסק האימג'ים/); assert.match(html,/312 GB/); assert.match(html,/688 GB<\/bdi> בשימוש מתוך <bdi dir="ltr">1000 GB/); assert.match(html,/aria-valuenow="69"/);
+  assert.match(html,/פנוי בדיסק האימג&#39;ים/); assert.match(html,/312 GB/); assert.match(html,/688 GB<\/bdi> בשימוש מתוך <bdi dir="ltr">1000 GB/); assert.match(html,/aria-valuenow="69"/);
   assert.match(html,/scrubLibrary\(\)">אמת את כל הספרייה/); assert.match(html,/דורשת API/);
   run('OVERVIEW=null'); html=run('images(2)'); assert.match(html,/לא נקרא/); assert.doesNotMatch(html,/aria-valuenow/);
 });

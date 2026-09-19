@@ -111,7 +111,7 @@ test('one grouped table: header counters + pills, three tabs, build → cloners 
   for(const col of ['שם','MAC','IP אחרון','נראה לאחרונה','דיסקים','מצב']) assert.match(html,new RegExp('<th>'+col+'</th>'));
   const b1=between(html,'data-mac="c8:d9:d2:0b:fe:32"','data-mac="c8:d9:d2:0b:fe:34"');
   assert.match(b1,/openMachineDetail\('c8%3Ad9%3Ad2%3A0b%3Afe%3A32'\)">בנייה 1<\/a><span class="sub">LENOVO ThinkCentre M720q · TPM 2.0</,'model from inventory.dmi');
-  assert.match(b1,/<span class="mono">c8:d9:d2:0b:fe:32<\/span>/); assert.match(b1,/<span class="mono">10.44.12.20<\/span>/); assert.match(b1,/לפני 3 שע'/);
+  assert.match(b1,/<span class="mono">c8:d9:d2:0b:fe:32<\/span>/); assert.match(b1,/<span class="mono">10.44.12.20<\/span>/); assert.match(b1,/לפני 3 שע&#39;/);
   assert.match(b1,/st warn">ממתין למפעיל: תפריט</,'prompt beats everything');
   assert.doesNotMatch(b1,/monitorMachine\(/,'monitor lives only on the monitor page (Nadav 17/09: "במקום החדש שביקשתי ורק שם")');
   const c2=between(html,'data-mac="78:ac:c0:9b:11:c2"','data-mac="b4:2e:99:07:1a:c1"');
@@ -188,16 +188,16 @@ test('the machine drawer: header line, actions (monitor, WoL for the room, "requ
   run("openMachineDetail('78%3Aac%3Ac0%3A9b%3A11%3Ac2')");
   assert.equal(node('#drawerTitle').textContent,'מחשב 2');
   let html=node('#drawerBody').innerHTML; balanced(html);
-  assert.match(html,/class="page drw"/); assert.match(html,/מחשב שיכפול · מחשבי שיכפול · <span class="mono">78:ac:c0:9b:11:c2<\/span> · <span class="mono">10.44.12.59<\/span> · נראה לפני 9 דק'/);
+  assert.match(html,/class="page drw"/); assert.match(html,/מחשב שיכפול · מחשבי שיכפול · <span class="mono">78:ac:c0:9b:11:c2<\/span> · <span class="mono">10.44.12.59<\/span> · נראה לפני 9 דק&#39;/);
   assert.doesNotMatch(html,/monitorMachine\(/,'no monitor in the drawer — only on the monitor page'); assert.match(html,/wakeMachine\('78%3Aac%3Ac0%3A9b%3A11%3Ac2'\)">WoL</,'#984: per-machine WoL in the cloner drawer'); assert.doesNotMatch(html,/wakeRoom/);
   assert.match(html,/renameMachine\(/); assert.match(html,/title="דורש API">אתחול מרחוק — בקרוב</); assert.match(html,/title="דורש API">עריכת MAC — בקרוב</);
   assert.match(html,/note err"[^]*<b>דיסק 3 אדום<\/b> — <span class="mono">S5Y2NX0R12345<\/span> נכשל בכתיבה .*סיבה: כבל\/חריץ SATA 2 \(ATA timeout\)/);
   assert.match(html,/clearDiskFailure\(7\)">נקה אחרי החלפה</); assert.match(html,/<summary>3 שורות קרנל<\/summary><pre class="ata-log">ata3.00: exception Emask/);
   assert.match(html,/<span class="k">מה המכונה עושה<\/span><span class="v"><span class="st ok">מחובר</);
-  assert.match(html,/שלב אתחול אחרון<\/span><span class="v"><span class="st warn">GRUB נכנס לערך ImageCtl \(2\/9\) · לפני 9 דק'<\/span><span class="sub">נעצר לפני: מודול ה-HTTP נטען/);
+  assert.match(html,/שלב אתחול אחרון<\/span><span class="v"><span class="st warn">GRUB נכנס לערך ImageCtl \(2\/9\) · לפני 9 דק&#39;<\/span><span class="sub">נעצר לפני: מודול ה-HTTP נטען/);
   assert.match(html,/<span class="k">הערה<\/span><span class="v">ליד הדלת/);
   assert.match(html,/<span class="k">SSH<\/span><span class="v"><span class="mono" dir="ltr" title="SHA256:ZkAslGjFiUHdGf\/WUL8rQvkib4PTvQatUV0OUQSncCA">SHA256:ZkAslGjFiUHd…<\/span><\/span>/);
-  assert.match(html,/דיסקים \(דיווח אחרון, לפני 9 דק'\)/);
+  assert.match(html,/דיסקים \(דיווח אחרון, לפני 9 דק&#39;\)/);
   assert.match(html,/<div class="disk ok"><b>דיסק 1<\/b><span>SATA 0<\/span><span><bdi dir="ltr">238 GB<\/bdi><\/span><span class="cap">870 EVO · <span class="mono">S5Y30<\/span><\/span><span class="cap">SMART תקין</);
   assert.match(html,/<div class="disk "><b>דיסק 2<\/b><span>SATA 1<\/span>[^]*SMART לא נבדק/,'no SMART = grey, not green');
   assert.match(html,/<div class="disk err"><b>דיסק 3<\/b><span>SATA 2<\/span>[^]*אדום — כבל\/חריץ SATA 2/);
@@ -241,7 +241,7 @@ test('the class as an object: crumbs, header, KPIs with meaning only, the same t
   const {run,node}=setup();
   run("openClass('grp_LAB303')"); assert.equal(run('selected'),'machines'); assert.equal(run('MACHINES_CLASS'),'grp_LAB303');
   let html=run('machines(0)'); balanced(html);
-  assert.match(html,/crumbs"><a[^>]*>שרת אימג'ים<\/a><span>\/<\/span><span>מלאי<\/span><span>\/<\/span><a[^>]*openMachinesPage\(\)">מחשבים<\/a><span>\/<\/span><span>כיתות<\/span><span>\/<\/span><span>כיתה 303 — סייבר<\/span>/);
+  assert.match(html,/crumbs"><a[^>]*>שרת אימג&#39;ים<\/a><span>\/<\/span><span>מלאי<\/span><span>\/<\/span><a[^>]*openMachinesPage\(\)">מחשבים<\/a><span>\/<\/span><span>כיתות<\/span><span>\/<\/span><span>כיתה 303 — סייבר<\/span>/);
   assert.match(html,/obj-name">כיתה 303 — סייבר</); assert.match(html,/קבוצת כיתה · קידומת LAB303 · 3 מחשבים · 2 נראו היום/); assert.match(html,/pill info">סבב פתוח</);
   assert.match(html,/deployToGroup\('grp_LAB303'\)">הפץ לכיתה…</); assert.match(html,/openAddMachine\(\{group:'grp_LAB303'\}\)">\+ מחשב לכיתה</); assert.match(html,/renameGroup\(/); assert.match(html,/deleteGroup\(/);
   for(const t of ['סיכום','מחשבים','סבבים']) assert.match(html,new RegExp('role="tab"[^>]*>'+t+'<'));
@@ -284,7 +284,7 @@ test('"seen on the network" tab: /net as a datagrid with "register" as the prima
   assert.equal((html.match(/<table class="dg"/g)||[]).length,1);
   const unreg=between(html,'data-mac="de:ad:be:ef:00:01"');
   assert.match(unreg,/pill warn">לא רשום</); assert.match(unreg,/btn sm primary" onclick="openAddMachine\(\{mac:'de%3Aad%3Abe%3Aef%3A00%3A01'\}\)">רשום</);
-  assert.match(unreg,/netDeviceDescribe\(/); assert.match(unreg,/netDeviceForget\(/); assert.match(unreg,/st warn">תפריט האתחול נמסר \(1\/9\) · לפני 30 דק'<\/span><span class="sub">נעצר לפני: GRUB נכנס לערך ImageCtl/);
+  assert.match(unreg,/netDeviceDescribe\(/); assert.match(unreg,/netDeviceForget\(/); assert.match(unreg,/st warn">תפריט האתחול נמסר \(1\/9\) · לפני 30 דק&#39;<\/span><span class="sub">נעצר לפני: GRUB נכנס לערך ImageCtl/);
   const reg=between(html,'data-mac="c8:d9:d2:0b:fe:32"','data-mac="a0:48:1c:8a:18:40"');
   assert.match(reg,/name">בנייה 1<\/span><span class="sub">מחשבי בנייה</); assert.match(reg,/openMachineDetail\(/); assert.doesNotMatch(reg,/>רשום</);
   assert.match(html,/netDeviceAdd\(\)">\+ הוספה ידנית</);

@@ -200,3 +200,19 @@ test('1085: 401/403/429 mapping does not drop the typed username', () => {
     assert.equal(st.screen, 'login');
   }
 });
+
+test('1120: wrong MFA code returns to the login screen with the server message and no challenge', () => {
+  const {run} = setup();
+  const prev = {screen: 'mfa', username: 'nadav', remember: true, challenge: 'chal-1', otp: ['1', '2', '3', '4', '5', '6']};
+  const st = run('mfaRejectedState(' + JSON.stringify({detail: 'קוד שגוי — היכנס מחדש'}) + ', ' + JSON.stringify(prev) + ')');
+  assert.equal(st.screen, 'login');
+  assert.equal(st.username, 'nadav');
+  assert.equal(st.remember, true);
+  assert.equal(st.challenge, '');
+  assert.equal(st.error, 'קוד שגוי — היכנס מחדש');
+  const html = run('loginHtml(' + JSON.stringify(st) + ')');
+  assert.match(html, /היכנס מחדש/);
+  assert.equal((html.match(/data-otp="/g) || []).length, 0);
+  const fallback = run('mfaRejectedState({}, {username: "x"})');
+  assert.equal(fallback.error, 'קוד שגוי — היכנס מחדש');
+});

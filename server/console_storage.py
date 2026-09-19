@@ -24,7 +24,7 @@ from starlette.websockets import WebSocketDisconnect
 from . import (auth, interserver_auth, monitor, registry, storage_client,
                storage_nodes, storage_transfer)
 from .api import ServerContext
-from .db import now_iso
+from .db import journal, now_iso
 
 
 def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
@@ -281,9 +281,63 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
     # קודי הסגירה כמו במוניטור המקומי (סעיף 14 ב-interfaces.md); כשל שהגיע
     # מהמשני חוזר כ-4000+הקוד שלו עם ה-detail שלו כסיבה.
 
+    #: ‏#1129: הכותב אל המנהרה של כל מוניטור-דרך-משני פתוח, לפי ``nid/mac``
+    #: — הנתיב היחיד של פקודת כוח למכונה של המשני (ראו ``monitor.power``).
+    tunnels: dict[str, object] = {}
+
+    @router.post("/storage-nodes/{nid}/monitor/{mac}/power")
+    async def remote_power(nid: str, mac: str, body: dict,
+                           user=Depends(require_standalone)):
+        """‏#1129: כוח למכונה של המשני — אותו חוזה כמו `POST /monitor/{mac}/power`,
+        אלא שהשם הקנוני מגיע מרשימת המכונות של **המשני** (הראשי אינו רושם
+        אותה), והפריים נכתב למנהרה הפתוחה — המשני מעביר אותו למכונה
+        כמו כל בייט אחר אחרי SecurityResult."""
+        import asyncio
+        node = storage_nodes.node_row(ctx.conn, nid)
+        if node is None:
+            raise HTTPException(404, "שרת משני לא קיים")
+        canonical = registry.normalize_mac(mac)
+        if canonical is None:
+            raise HTTPException(404, "מכונה לא מוכרת")
+        action = body.get("action")
+        if action not in monitor.POWER_ACTIONS:
+            raise HTTPException(400, "פעולה לא מוכרת — reboot או poweroff")
+
+        def remote_name() -> str | None:
+            client, token = storage_nodes.node_client(ctx.conn, data_dir, node)
+            with client:
+                answer = client.get_json("/machines", token)
+            machines = answer.get("machines") if isinstance(answer, dict) else None
+            for row in machines or []:
+                if isinstance(row, dict) and row.get("mac") == canonical:
+                    return row.get("name")
+            return None
+
+        try:
+            name = await asyncio.to_thread(remote_name)
+        except Exception as exc:                             # noqa: BLE001
+            raise HTTPException(502, "השרת המשני אינו זמין: "
+                                + interserver_auth.redact_secrets(str(exc)))
+        if name is None:
+            raise HTTPException(404, "המכונה אינה רשומה במשני")
+        if body.get("confirm") != name:
+            raise HTTPException(403, "השם שהוקלד אינו זהה לשם המחשב")
+        writer = tunnels.get(f"{nid}/{canonical}")
+        if writer is None:
+            raise HTTPException(
+                409, "אין מוניטור פתוח למכונה — הפקודה נוסעת דרך חיבור המוניטור")
+        writer.write(monitor.power_frame(action))
+        await writer.drain()
+        journal(ctx.conn, "monitor_power", f"{canonical} {action} node={nid}", user[0])
+        return {"ok": True, "action": action}
+
     @router.websocket("/storage-nodes/{nid}/monitor/{mac}")
     async def remote_monitor(websocket: WebSocket, nid: str, mac: str):
         import asyncio
+        if not monitor.origin_allowed(websocket.headers):   # ‏#1129: לפני accept
+            await websocket.close(code=monitor.WS_FORBIDDEN,
+                                  reason=monitor.ORIGIN_REFUSED)
+            return
         await monitor.accept_browser(websocket)             # ‏#904: קוד וסיבה, לא 403
         found = auth.check(ctx.conn, websocket.cookies.get(auth.COOKIE_NAME))
         if found is None:
@@ -331,10 +385,21 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
                     reason=monitor.close_reason(
                         f"השרת המשני אינו זמין: {interserver_auth.redact_secrets(str(exc))}"))
                 return
-            await monitor.bridge_browser(websocket, reader, writer)
+            tunnels[f"{nid}/{canonical}"] = writer
+            journal(ctx.conn, "monitor_connected", f"{canonical} node={nid}", found[0])
+            outcome = "error"
+            try:
+                outcome = await monitor.bridge_browser(websocket, reader, writer)
+            except (WebSocketDisconnect, asyncio.CancelledError):
+                outcome = "browser"
+                raise
+            finally:
+                journal(ctx.conn, "monitor_closed",
+                        f"{canonical} {outcome} node={nid}", found[0])
         except (WebSocketDisconnect, asyncio.CancelledError):
             pass
         finally:
+            tunnels.pop(f"{nid}/{canonical}", None)
             if writer is not None:
                 writer.close()
                 try:

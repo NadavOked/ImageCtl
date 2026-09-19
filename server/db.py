@@ -741,6 +741,12 @@ def _initialize(conn: sqlite3.Connection) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS users_username_nocase"
         " ON users (username COLLATE NOCASE)"
     )
+    # ‏#1123: שני מיקומים על נקודת עיגון אחת = שתי שורות fstab על יעד אחד.
+    # נכשל בקול על DB ותיק עם כפילות — אין "פינוי" אוטומטי למיקומי אחסון.
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS storage_locations_mount_point"
+        " ON storage_locations (mount_point)"
+    )
     _verify_storage_schema(conn)
     _close_duplicate_actives(conn)
     _create_unique_indexes(conn)

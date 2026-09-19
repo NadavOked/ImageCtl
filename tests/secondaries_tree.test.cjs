@@ -97,7 +97,7 @@ test('a server node per secondary from /storage-nodes, with four children; click
   assert.match(html, /data-secondary="n0de"[^>]*onclick="openBranchView\('n0de',0,this\)"[^>]*ondblclick="toggleInventoryGroup\(this,'srv-n0de'\)"/);
   assert.match(html, /<span class="tree-arrow" data-open="false" onclick="event\.stopPropagation\(\);toggleInventoryGroup\(this\.closest\('\.inventory-node'\),'srv-n0de'\)">▸<\/span>/);
   assert.match(html, /<div id="srv-n0de" class="inventory-children" role="group" hidden>/, 'closed by default');
-  for (const [i, [view, label]] of [['overview', 'סקירה'], ['machines', 'מחשבים'], ['images', "אימג'ים"], ['transfers', 'העברות']].entries()) {
+  for (const [i, [view, label]] of [['overview', 'סקירה'], ['machines', 'מחשבים'], ['images', "אימג&#39;ים"], ['transfers', 'העברות']].entries()) {
     const re = new RegExp(`data-branch-view="${view}" role="treeitem" tabindex="0" onclick="openBranchView\\('n0de',${i},this\\)">.*?<span>${label}</span>`);
     assert.match(html, re, `child ${view}`);
   }

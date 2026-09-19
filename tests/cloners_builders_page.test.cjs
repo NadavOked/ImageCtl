@@ -135,7 +135,7 @@ test('grid without a round: slots from /machines[].disks[] by drawer_count — d
   assert.match(html,/אין סבב — הדיסקים לפי הדיווח האחרון ב-hello/);
   assert.equal((grid.match(CARD)||[]).length,3);
   const c1=card(grid,C1), c2=card(grid,C2), c3=card(grid,C3);
-  assert.match(c1,/<b>מחשב 1<\/b><\/span><span class="muted">מחובר · 2 חריצים · <span class="mono">10.44.12.118<\/span> · לפני 9 דק'/);
+  assert.match(c1,/<b>מחשב 1<\/b><\/span><span class="muted">מחובר · 2 חריצים · <span class="mono">10.44.12.118<\/span> · לפני 9 דק&#39;/);
   assert.equal((c1.match(/<div class="disk empty" data-slot="\d" title="דיסק \d · SATA \d · ריק"><b>דיסק \d<\/b><span class="cap">ריק<\/span><\/div>/g)||[]).length,2,'drawer_count=2 with 0 disks reported → two dashed empty slots, each exactly two text lines (label + ריק)');
   assert.match(c2,/<div class="disk ok" data-slot="1" title="SATA 0 · 870 EVO · S5Y30 · SMART תקין"><b>דיסק 1<\/b><span class="cap mono"><bdi dir="ltr">238 GB<\/bdi><\/span><\/div>/,'#1033: exactly two lines — דיסק 1 / capacity; model+serial+SMART moved to the tooltip');
   assert.match(c2,/<div class="disk " data-slot="2" title="SATA 1 · 870 EVO · S5Y31 · SMART לא נבדק"><b>דיסק 2<\/b><span class="cap mono"><bdi dir="ltr">238 GB<\/bdi><\/span><\/div>/,'unchecked is grey, not green; SMART detail in tooltip');
@@ -164,7 +164,7 @@ test('grid during a round: slots from /room.machines[].drawer_list — write bar
   const c2=card(grid,C2);
   assert.match(c2,/<span class="st run"><b>מחשב 2<\/b><\/span><span class="muted">בסבב · 38%/);
   assert.match(c2,/<div class="disk run" data-slot="1" title="SATA 0 · 870 EVO · S5Y30 · כותב · SMART תקין"><b>דיסק 1<\/b><span class="cap mono"><bdi dir="ltr">238 GB<\/bdi><\/span><div class="bar-row"><div class="bar "><i style="--w:38%"><\/i><\/div><span class="pct">38%<\/span><\/div><\/div>/);
-  assert.match(c2,/<div class="disk warn" data-slot="2" title="SATA 1 · 870 EVO · S5Y31 · כותב · CRC \+3 · לבדוק כבל · ללא תזוזה 90 ש' · SMART לא נבדק">[^]*?<div class="bar warn">/,'CRC delta and stall are warnings (in the tooltip), and never colour SMART green');
+  assert.match(c2,/<div class="disk warn" data-slot="2" title="SATA 1 · 870 EVO · S5Y31 · כותב · CRC \+3 · לבדוק כבל · ללא תזוזה 90 ש&#39; · SMART לא נבדק">[^]*?<div class="bar warn">/,'CRC delta and stall are warnings (in the tooltip), and never colour SMART green');
   assert.match(c2,/<div class="disk err" data-slot="3" title="SATA 2 · 870 EVO · S5Y2NX0R12345 · אדום 15\/09\/2026 · כבל\/חריץ SATA 2">[^]*?<div class="bar err">[^]*?<button[^>]*clearDiskFailure\(7\)/,'red from the failure memory wins over the live state; tooltip carries model+serial+cause');
   const c1=card(grid,C1);
   assert.match(c1,/<b>מחשב 1<\/b><\/span><span class="muted">מחובר/,'not joined → the ordinary state');
@@ -227,7 +227,7 @@ test('builders object: header, capture pill, actions (capture, direct #715 → d
   run("selectMachinesGroup('grp_BUILD')"); assert.equal(run('MACHINES_CLASS'),'grp_BUILD');
   const html=run('machines(0)'); balanced(html);
   assert.match(html,/obj-name">מחשבי בנייה</);
-  assert.match(html,/קבוצה קבועה · 2 מחשבים · 1 מחוברים · קליטה אחת ממתינה · קליטה אחת רצה · אימג' אחרון שנקלט: Office 2024 — מרצה \(10\/09\/2026\)/);
+  assert.match(html,/קבוצה קבועה · 2 מחשבים · 1 מחוברים · קליטה אחת ממתינה · קליטה אחת רצה · אימג&#39; אחרון שנקלט: Office 2024 — מרצה \(10\/09\/2026\)/);
   assert.match(html,/pill info">2 קליטות בתהליך</);
   assert.match(html,/openCapture\(\)\.catch\(e => toast\(e\.message\)\)">\+ קליטת אימג'…</); assert.match(html,/openDirectRound\(\)">הפצה ישירה למשכפלים…</);
   assert.match(html,/openAddMachine\(\{group:'grp_BUILD'\}\)">\+ מחשב בנייה</); assert.match(html,/wakeGroup\('grp_BUILD'\)">הער את כולם \(WoL\)</,'#984: POST /groups/grp_BUILD/wake');
@@ -263,7 +263,7 @@ test('builders: machine cards from /machines + /monitor + /net (model/TPM, disk 
   const cards=between(html,'<div class="card-h"><span>המחשבים','קליטות אחרונות');
   assert.equal((cards.match(CARD)||[]).length,2);
   const b1=card(cards,B1), b2=card(cards,B2);
-  assert.match(b1,/<span class="st warn"><b>בנייה 1<\/b><\/span><span class="muted"><span class="mono">10.44.12.20<\/span> · לפני 3 שע'/);
+  assert.match(b1,/<span class="st warn"><b>בנייה 1<\/b><\/span><span class="muted"><span class="mono">10.44.12.20<\/span> · לפני 3 שע&#39;/);
   assert.match(b1,/<span class="k">דגם<\/span><span class="v">LENOVO ThinkCentre M720q · TPM 2.0<\/span>/);
   assert.match(b1,/<span class="k">דיסק 1<\/span><span class="v"><bdi dir="ltr">238 GB<\/bdi> · 870 EVO · <span class="mono">S5YB1<\/span><\/span>/);
   assert.match(b1,/<span class="k">מצב<\/span><span class="v"><span class="st warn">ממתין למפעיל: תפריט<\/span> <span class="pill warn">קליטה ממתינה<\/span>/);
@@ -273,7 +273,7 @@ test('builders: machine cards from /machines + /monitor + /net (model/TPM, disk 
   assert.match(b2,/<span class="st ok"><b>בנייה 2<\/b>/); assert.match(b2,/<span class="k">דגם<\/span><span class="v"><span class="muted">לא דיווח/); assert.match(b2,/<span class="k">דיסק<\/span><span class="v"><span class="muted">לא דיווח/);
   assert.match(b2,/<span class="pill info">קליטה רצה<\/span>/);
   run("CAPTURE_TASKS=[]"); html=run('machines(0)'); balanced(html);
-  assert.match(html,/אין קליטה בתהליך — &quot;\+ קליטת אימג'…&quot; פותחת אחת/); assert.match(html,/אין קליטות עדיין/); assert.doesNotMatch(html,/class="pill/);
+  assert.match(html,/אין קליטה בתהליך — &quot;\+ קליטת אימג&#39;…&quot; פותחת אחת/); assert.match(html,/אין קליטות עדיין/); assert.doesNotMatch(html,/class="pill/);
   assert.match(card(html,B2),/openCapture\('c8%3Ad9%3Ad2%3A0b%3Afe%3A34'\)\.catch\(e => toast\(e\.message\)\)">קלוט מכאן</);
   return run("openCapture('c8%3Ad9%3Ad2%3A0b%3Afe%3A34')").then(()=>{
     const f=run('formOptions.fields').find(x=>x.id==='mac'); assert.equal(f.value,B2,'the card preselects its machine in the capture sheet');
@@ -288,7 +288,7 @@ test('builders: recent captures table (group tasks only, 20 from /tasks) — sta
   const {run}=setup();
   run("openClass('grp_BUILD')"); let html=run('machines(1)'); balanced(html);
   assert.doesNotMatch(html,/cap-now|mcard/); assert.equal((html.match(/<table class="dg"/g)||[]).length,1);
-  for(const col of ["אימג'",'מחשב · דיסק','מצב','נקראו','משך','אזהרה / שגיאה','מתי']) assert.match(html,new RegExp('<th>'+col+'</th>'));
+  for(const col of ["אימג&#39;",'מחשב · דיסק','מצב','נקראו','משך','אזהרה / שגיאה','מתי']) assert.match(html,new RegExp('<th>'+col+'</th>'));
   assert.match(html,/תיקייה — דורש API \(#968\)/,'/tasks has no folder → said, not invented');
   const ids=[...html.matchAll(/<tr data-task="([^"]+)"/g)].map(m=>m[1]);
   assert.deepEqual(ids,['tsk_a1','tsk_b2','tsk_c3','tsk_d4'],'the classroom capture is not a builders capture');

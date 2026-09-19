@@ -104,7 +104,7 @@ test('UI.datagrid renders columns and rows, and an empty state that says what to
   const {run}=setup();
   const html=run('UI.datagrid({columns:["א","ב"],rows:[["1","2"],["3","4"]]})');
   assert.match(html,/<table class="dg"><thead><tr><th>א<\/th><th>ב<\/th>/); assert.equal((html.match(/<tr>/g)||[]).length,3); balanced(html);
-  assert.equal(run('UI.datagrid({columns:["א"],rows:[],empty:"אין אימג\'ים — קלוט"})'),"<div class=\"empty\">אין אימג'ים — קלוט</div>");
+  assert.equal(run('UI.datagrid({columns:["א"],rows:[],empty:"אין אימג\'ים — קלוט"})'),"<div class=\"empty\">אין אימג&#39;ים — קלוט</div>");
 });
 test('UI.barRow: unknown progress is a dash, never 0%',()=>{
   const {run}=setup();
@@ -180,7 +180,7 @@ test('home renders its own header (no generic toolbar, no "+ פעולה", no foo
   const html=run('layout(pages.home,0)');
   balanced(html);
   assert.match(html,/^<div class="page"><div class="obj">/);
-  assert.match(html,/<div class="obj-name">שרת אימג'ים<\/div>/);
+  assert.match(html,/<div class="obj-name">שרת אימג&#39;ים<\/div>/);
   assert.match(html,/imagectl-srv · <span class="mono">10\.44\.12\.1<\/span> · v0\.30\.0 · פעיל 6 ימים 4 שעות/,'#968: hostname · IP · version · uptime, all from /me');
   assert.doesNotMatch(html,/זמן פעילות — בקרוב/);
   for(const gone of ['pageActionBtn','+ פעולה','footer-note','object-strip','vcenter-tabs','>Details<','אין נתונים להצגה']) assert.doesNotMatch(html,new RegExp(gone.replace(/[+]/g,'\\+')),gone);
@@ -192,15 +192,15 @@ test('KPIs carry their meaning line from the existing API only',async()=>{
   assert.match(html,/<div class="kpi warn"><div class="l">בריאות השרת<\/div><div class="v"><bdi dir="auto">אזהרה<\/bdi><\/div><div class="s">1 מתוך 2 בדיקות: מולטיקאסט/);
   assert.match(html,/<div class="kpi info"><div class="l">סבב הפצה פעיל<\/div><div class="v"><bdi dir="auto">1<\/bdi><\/div><div class="s">כיתה 303 · Office 2024 — 2\/3 מחוברים · מתחיל בעוד 4:12/);
   assert.match(html,/מחשבים רשומים<\/div><div class="v"><bdi dir="auto">12<\/bdi><\/div><div class="s">2 נראו ברשת היום · 1 לא רשומים/);
-  assert.match(html,/אימג'ים בספרייה<\/div><div class="v"><bdi dir="auto">6<\/bdi> <small>ב-2 תיקיות<\/small><\/div><div class="s">אחרון: Kali 2026.2 — <bdi dir="ltr">12\/09\/2026<\/bdi>/);
-  assert.match(html,/אחסון אימג'ים<\/div><div class="v"><bdi dir="auto">312 GB<\/bdi> <small>פנוי<\/small><\/div>.*aria-valuenow="69".*<bdi dir="ltr">688 GB<\/bdi> מתוך <bdi dir="ltr">1000 GB<\/bdi> בשימוש/);
+  assert.match(html,/אימג&#39;ים בספרייה<\/div><div class="v"><bdi dir="auto">6<\/bdi> <small>ב-2 תיקיות<\/small><\/div><div class="s">אחרון: Kali 2026.2 — <bdi dir="ltr">12\/09\/2026<\/bdi>/);
+  assert.match(html,/אחסון אימג&#39;ים<\/div><div class="v"><bdi dir="auto">312 GB<\/bdi> <small>פנוי<\/small><\/div>.*aria-valuenow="69".*<bdi dir="ltr">688 GB<\/bdi> מתוך <bdi dir="ltr">1000 GB<\/bdi> בשימוש/);
 });
 test('"what is happening now" lists the session, the pending capture and the failed transfer with progress and status',async()=>{
   const {run}=await loaded();
   const html=run('home(0)');
   assert.match(html,/מה קורה עכשיו/);
   assert.match(html,/סבב הפצה — Office 2024<\/span><span class="sub">כיתה 303 · פתוח<\/span>.*3 תחנות.*>2\/3<.*<span class="st run">ממתין להצטרפות<\/span>.*startRound\(\).*openRoundDetail\(\)/);
-  assert.match(html,/קליטת אימג' — Office 2024 v3<\/span><span class="sub">בנייה 1 · <bdi dir="ltr">sda<\/bdi> · <bdi dir="ltr">\d\d\/\d\d\/\d{4} 09:40<\/bdi>.*<td>תיקיית Office<\/td>.*<span class="st warn">ממתין שהמחשב יעלה ב-PXE<\/span>/,'#968: the target column is the capture folder from /tasks');
+  assert.match(html,/קליטת אימג&#39; — Office 2024 v3<\/span><span class="sub">בנייה 1 · <bdi dir="ltr">sda<\/bdi> · <bdi dir="ltr">\d\d\/\d\d\/\d{4} 09:40<\/bdi>.*<td>תיקיית Office<\/td>.*<span class="st warn">ממתין שהמחשב יעלה ב-PXE<\/span>/,'#968: the target column is the capture folder from /tasks');
   assert.doesNotMatch(html,/ספריית האימג'ים<\/td>/,'no generic "library" target when the folder is known');
   assert.doesNotMatch(html.slice(0,html.indexOf('אירועים אחרונים')),/קליטת אימג' — Kali/,'a finished capture is not "now"');
   assert.match(html,/העברה לסניף סניף חיפה — Ubuntu 24.04.*bar err.*--w:38%.*<span class="st err">נכשל — הסניף לא ענה<\/span>/);
@@ -241,7 +241,7 @@ test('tabs: "משימות" is the full 20-task table, "אירועים" is 50 eve
   const {run}=await loaded();
   const tasks=run('layout(pages.home,1)');
   assert.match(tasks,/class="tab on" role="tab" aria-selected="true" tabindex="0" onclick="activateTab\(1\)">משימות/);
-  assert.match(tasks,/קליטת אימג' — Kali.*<span class="st ok">הושלם<\/span>/,'the history tab shows finished captures');
+  assert.match(tasks,/קליטת אימג&#39; — Kali.*<span class="st ok">הושלם<\/span>/,'the history tab shows finished captures');
   assert.doesNotMatch(tasks,/class="kpi/);
   const events=run('layout(pages.home,2)');
   assert.match(events,/>אירועים <small>50 האחרונים<\/small>/); assert.match(events,/העברה נכשלה/); balanced(events);
@@ -274,9 +274,9 @@ test('empty server: KPIs say "none"/"unknown" in grey, the now-table says what t
   const html=s.run('home(0)');
   assert.match(html,/<div class="kpi ok"><div class="l">בריאות השרת<\/div><div class="v"><bdi dir="auto">תקין<\/bdi><\/div><div class="s">0 בדיקות עברו/);
   assert.match(html,/<div class="kpi "><div class="l">סבב הפצה פעיל<\/div><div class="v"><bdi dir="auto">אין<\/bdi><\/div>/);
-  assert.match(html,/<div class="kpi "><div class="l">אחסון אימג'ים<\/div><div class="v"><bdi dir="auto">לא ידוע<\/bdi><\/div>/);
+  assert.match(html,/<div class="kpi "><div class="l">אחסון אימג&#39;ים<\/div><div class="v"><bdi dir="auto">לא ידוע<\/bdi><\/div>/);
   assert.match(html,/אין אימג'ים — קלוט ממחשב בנייה או העלה tar/);
-  assert.match(html,/<div class="empty">אין פעילות עכשיו — פתח סבב הפצה או קלוט אימג'<\/div>/);
+  assert.match(html,/<div class="empty">אין פעילות עכשיו — פתח סבב הפצה או קלוט אימג&#39;<\/div>/);
   assert.match(html,/<div class="empty">אין פריטים לטיפול<\/div>/);
   assert.match(html,/<div class="empty">אין אירועים עדיין<\/div>/);
   assert.match(html,/<span class="pill ok">תקין<\/span>/);

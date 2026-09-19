@@ -145,7 +145,7 @@ test('#953: every image says "fits a disk from X GB"; one that does not fit the 
   const {run}=setup();
   let html=run('deploy(0)');
   assert.match(html,/<option value="img_1">office365 · נכנס לדיסק מ-54 GB<\/option>/);
-  assert.match(html,/<option value="img_2" disabled>מרצים \/ win512-full · נכנס לדיסק מ-300 GB — לא נכנס: דיסק 3 במחשב מחשב 2 הוא 256GB, האימג' צריך 300GB<\/option>/);
+  assert.match(html,/<option value="img_2" disabled>מרצים \/ win512-full · נכנס לדיסק מ-300 GB — לא נכנס: דיסק 3 במחשב מחשב 2 הוא 256GB, האימג&#39; צריך 300GB<\/option>/);
   assert.match(html,/<option value="img_3">kali · גודל נדרש לא ידוע<\/option>/,'min_target_bytes null ≠ 0');
   assert.match(html,/המגירה הקטנה ביותר בחדר: 256GB \(דיסק 3 במחשב מחשב 2\)/);
   assert.equal(run("imageFitReason(IMAGES[1],ROOM.disk_floor)"),"דיסק 3 במחשב מחשב 2 הוא 256GB, האימג' צריך 300GB");
@@ -167,7 +167,7 @@ test('new round: POST /room {image_id, target_drives}; a 409 fit refusal is show
   run("roomFormSet('image','img_2')"); await run('openRoomRoundSubmit()');
   assert.equal(run('DEPLOY.err'),"דיסק 3 במחשב מחשב 2 הוא 256GB, האימג' צריך 300GB");
   fixtures['/room']=roomIdle(); const html=run('deploy(0)');
-  assert.match(html,/<div class="note err"><span aria-hidden="true">●<\/span><span>הסבב לא נפתח: דיסק 3 במחשב מחשב 2 הוא 256GB, האימג' צריך 300GB<\/span><\/div>/);
+  assert.match(html,/<div class="note err"><span aria-hidden="true">●<\/span><span>הסבב לא נפתח: דיסק 3 במחשב מחשב 2 הוא 256GB, האימג&#39; צריך 300GB<\/span><\/div>/);
   run("DEPLOY.err=''; roomFormSet('image','')"); await run('openRoomRoundSubmit()'); assert.equal(run('DEPLOY.err'),"בחר אימג'");
   requests.length=0; run("roomFormSet('src','build_disk'); roomFormSet('disk','sda')");
   assert.match(run('deploy(0)'),/היעד: כל המגירות המחוברות כרגע \(5\)/);

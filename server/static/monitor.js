@@ -14,7 +14,15 @@
 
 const params = new URLSearchParams(location.search);
 const MAC = params.get("mac") || "";
+/* ‏#1129: השם מהכתובת הוא כותרת בלבד. האישור לפעולת כוח נבדק **בשרת** מול
+   השם הקנוני שבטבלה (`POST …/power`), לא כאן ולא מול `?name=`. */
 const NAME = params.get("name") || MAC;
+
+/* ‏#1129 (R48): תקרות לפרסור RFB — תחנה עוינת (או מוניטור שהשתבש) לא
+   מפילה את הטאב. חריגה = שגיאה בשם, הלולאה נעצרת וה-WS נסגר. */
+const MAX_RECT_BYTES = 32 * 1024 * 1024;        // w*h*4 של מלבן/מסך
+const MAX_CUT_TEXT = 64 * 1024;                 // ServerCutText, ותיאור/שם
+const MAX_STREAM_BYTES = 64 * 1024 * 1024;      // חוצץ הקלט של ByteStream
 /* ‏#655 v1: ``node`` = מזהה שרת משני — המוניטור עובר דרך הראשי אל המשני
    ומשם למכונה. אותו זרם RFB, אותה לחיצת-יד מול הדפדפן; רק הנתיב שונה. */
 const NODE = params.get("node") || "";
@@ -40,18 +48,30 @@ class ByteStream {
     this.length = 0;
     this._want = 0;
     this._resolve = null;
+    this._reject = null;
     this.closed = false;
+    this.error = null;
   }
   push(buf) {
+    if (this.closed) return;
+    if (this.length + buf.byteLength > MAX_STREAM_BYTES) {
+      this.fail(new Error("חוצץ הקלט עבר " + (MAX_STREAM_BYTES >> 20) + "MB — המוניטור שולח מהר ממה שהדפדפן מצייר"));
+      return;
+    }
     this.chunks.push(new Uint8Array(buf));
     this.length += buf.byteLength;
     if (this._resolve && this.length >= this._want) {
-      const r = this._resolve; this._resolve = null; r(this._take(this._want));
+      const r = this._resolve; this._resolve = null; this._reject = null; r(this._take(this._want));
     }
   }
-  fail() {
+  /* סגירה. עם error — הקורא הממתין (וכל קריאה הבאה) נכשל בשם; בלעדיו — null. */
+  fail(error) {
     this.closed = true;
-    if (this._resolve) { const r = this._resolve; this._resolve = null; r(null); }
+    if (error) this.error = error;
+    const resolve = this._resolve, reject = this._reject;
+    this._resolve = null; this._reject = null;
+    if (error && reject) reject(error);
+    else if (resolve) resolve(null);
   }
   _take(n) {
     const out = new Uint8Array(n);
@@ -71,10 +91,11 @@ class ByteStream {
     return out;
   }
   read(n) {
+    if (this.error) return Promise.reject(this.error);
     if (this.closed) return Promise.resolve(null);
     if (this.length >= n) return Promise.resolve(this._take(n));
     this._want = n;
-    return new Promise((resolve) => { this._resolve = resolve; });
+    return new Promise((resolve, reject) => { this._resolve = resolve; this._reject = reject; });
   }
 }
 
@@ -108,6 +129,7 @@ async function handshake() {
   const nTypes = (await stream.read(1))[0];
   if (nTypes === 0) {
     const len = be32(await stream.read(4), 0);
+    if (len > MAX_CUT_TEXT) throw new Error("השרת דחה (סיבה ארוכה מדי: " + len + " בייט)");
     const reason = new TextDecoder().decode(await stream.read(len));
     throw new Error("השרת דחה: " + reason);
   }
@@ -120,14 +142,21 @@ async function handshake() {
 
   send([1]);                                   // ClientInit: shared
   const init = await stream.read(24);
-  fbWidth = be16(init, 0);
-  fbHeight = be16(init, 2);
+  const w = be16(init, 0), h = be16(init, 2);
   const nameLen = be32(init, 20);
+  if (nameLen > MAX_CUT_TEXT) throw new Error("שם המסך ארוך מדי: " + nameLen + " בייט");
   if (nameLen) await stream.read(nameLen);
-  resizeTo(fbWidth, fbHeight);
+  resizeTo(w, h);
+}
+
+/* מלבן בתוך המסך ובגודל סביר — אחרת שגיאה בשם (לא הקצאה של GB). */
+function checkRect(x, y, w, h, what) {
+  if (w * h * 4 > MAX_RECT_BYTES) throw new Error(`${what} גדול מדי: ${w}×${h}`);
+  if (x + w > fbWidth || y + h > fbHeight) throw new Error(`${what} מחוץ למסך: ${x},${y} ${w}×${h} במסך ${fbWidth}×${fbHeight}`);
 }
 
 function resizeTo(w, h) {
+  if (w * h * 4 > MAX_RECT_BYTES) throw new Error(`גודל מסך לא סביר: ${w}×${h}`);
   fbWidth = w; fbHeight = h;
   canvas.width = w; canvas.height = h;
   gctx.fillStyle = "#000"; gctx.fillRect(0, 0, w, h);
@@ -189,6 +218,7 @@ async function framebufferUpdate() {
 }
 
 async function rawRect(x, y, w, h) {
+  checkRect(x, y, w, h, "מלבן Raw");
   const data = await stream.read(w * h * 4);   // B,G,R,X
   const img = gctx.createImageData(w, h);
   const px = img.data;
@@ -199,13 +229,17 @@ async function rawRect(x, y, w, h) {
 }
 
 async function copyRect(x, y, w, h) {
+  checkRect(x, y, w, h, "מלבן CopyRect");
   const s = await stream.read(4);
-  gctx.drawImage(canvas, be16(s, 0), be16(s, 2), w, h, x, y, w, h);
+  const sx = be16(s, 0), sy = be16(s, 2);
+  checkRect(sx, sy, w, h, "מקור CopyRect");
+  gctx.drawImage(canvas, sx, sy, w, h, x, y, w, h);
 }
 
 async function serverCutText() {
   const h = await stream.read(7);              // padding(3) + length(4)
   const len = be32(h, 3);
+  if (len > MAX_CUT_TEXT) throw new Error("ServerCutText ארוך מדי: " + len + " בייט");
   if (len) await stream.read(len);
 }
 
@@ -245,24 +279,30 @@ function keysymFor(event) {
   return SPECIAL[event.key] || 0;
 }
 
-/* --- כוח: הפעלה מחדש / כיבוי של המחשב המנוטר (#781) -----------------------
-   הפקודה נוסעת על אותו ערוץ RFB כמו כל השאר — ClientCutText (msg type 6),
-   שה-WS מעביר כמות שהוא ל-imagectl-monitor. ‏monitor.c (root) מזהה את
-   האסימון וקורא ל-`reboot -f`/`poweroff -f`. אין fetch לנתיב חדש, ואין
-   תלות ב-view-only: כוח אינו קלט מסך, והשער הוא ה-WS האדמיני של השרת. */
-const POWER_PREFIX = "imagectl-power:";
-
-function clientCutText(text) {
-  const body = new TextEncoder().encode(text);
-  const msg = [6, 0, 0, 0,
-               (body.length >>> 24) & 255, (body.length >>> 16) & 255,
-               (body.length >>> 8) & 255, body.length & 255,
-               ...body];
-  send(msg);
+/* --- כוח: הפעלה מחדש / כיבוי של המחשב המנוטר (#781, #1129) ----------------
+   ‏#1129: הפקודה אינה נשלחת מכאן על ה-RFB. הדפדפן קורא ל-`POST …/power`
+   עם השם שהוקלד; השרת משווה אותו לשם הקנוני שבטבלה (לא ל-`?name=`),
+   כותב את אסימון הכוח (ClientCutText, `monitor.power_frame`) אל המכונה דרך הגשר
+   הפתוח, ורושם ביומן מי כיבה מה. ‏ClientCutText מהדפדפן נדחה בשרת (4403).
+   ‏monitor.c (root) מזהה את האסימון וקורא ל-`reboot -f`/`poweroff -f`.
+   אין תלות ב-view-only: כוח אינו קלט מסך. */
+function powerUrl() {
+  const mac = encodeURIComponent(MAC);
+  return NODE
+    ? `/api/console/storage-nodes/${encodeURIComponent(NODE)}/monitor/${mac}/power`
+    : `/api/console/monitor/${mac}/power`;
 }
 
-function sendPower(action) {
-  clientCutText(POWER_PREFIX + action);
+async function sendPower(action, confirm) {
+  const response = await fetch(powerUrl(), {
+    method: "POST", credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, confirm }),
+  });
+  if (response.ok) return;
+  let detail = "שגיאה " + response.status;
+  try { const body = await response.json(); detail = body.detail || detail; } catch (e) {}
+  throw new Error(detail);
 }
 
 /* --- חיבור וניתוק -------------------------------------------------------- */
@@ -283,12 +323,13 @@ function connect() {
     if (ws) ws.close();
   });
   ws.onclose = (event) => {
-    stream.fail();
+    stream.fail(event.reason ? new Error(event.reason) : null);
     /* ‏#904: השרת מקבל ואז סוגר, ולכן `event.reason` העברית שלו מגיעה
        (לפני כן הסגירה קדמה ל-accept → HTTP 403 → 1006 בלי קוד ובלי
        סיבה). הטבלה היא גיבוי לסיבה ריקה בלבד. */
     const reasons = { 4401: "נדרשת התחברות", 4403: "פעולה למנהל בלבד",
-      4404: "מכונה לא מוכרת", 4409: "מוניטור כבר פתוח למכונה זו",
+      4404: "מכונה לא מוכרת", 4408: "המוניטור נסגר — 10 דק' בלי תעבורה",
+      4409: "מוניטור כבר פתוח למכונה זו",
       4502: "שירות המוניטור במכונה אינו זמין",
       4512: "הפרוקסי לא הזדהה מול המוניטור במכונה" };
     setStatus(event.reason || reasons[event.code] || "החיבור נסגר", "bad");
@@ -331,12 +372,9 @@ function powerModal(action, label) {
   document.addEventListener("keydown", onKey);
   document.getElementById("pmodal-cancel").onclick = close;
   document.getElementById("pmodal-ok").onclick = () => {
-    if (input.value !== NAME) {
-      error.textContent = "השם שהוקלד אינו זהה לשם המחשב";
-      return;
-    }
-    sendPower(action);
-    close();
+    /* ‏#1129: ההשוואה בשרת. השם שהוקלד נשלח כמו שהוא; 403 = לא זהה. */
+    error.textContent = "";
+    sendPower(action, input.value).then(close, (e) => { error.textContent = e.message; });
   };
 }
 

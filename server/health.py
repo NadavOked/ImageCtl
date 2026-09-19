@@ -474,6 +474,9 @@ def _port(port_id: str, name: str, port: str, proto: str, desc: str,
     ‏`bind` (כתובות ההאזנה מטבלת הסוקטים), ‏`toggle` (`api`/`confirm`/
     ‏`none`), ‏`toggle_url` (איפה המתג חי), ‏`confirm_word`/`confirm_when`
     (מה מקלידים ומתי: `on`/`off`/`on_or_last_off`), ‏`off_means`."""
+    # אזהרה לפני כיבוי לכל פורט עם מתג (נדב 19/09) — מהטבלה, אלא אם השורה
+    # הביאה משלה (TFTP במצב שדרוג, למשל).
+    extra.setdefault("warning_he", ports.warning_for(port_id) if toggle != "none" else None)
     return {"id": port_id, "name": name, "port": port, "proto": proto,
             "desc": desc, "target": target, "state": state, "detail": detail,
             "note": note, "enabled": enabled, "listening": listening,

@@ -664,6 +664,18 @@ def record_parent(conn, *, parent_id: str, token_hash: bytes, bound_cert_ref: st
             raise ParentAlreadyEnrolledError("כבר קיים אב רשום") from exc
 
 
+def rebind_parent_cert(conn, *, bound_cert_ref: str) -> None:
+    """‏#1122: האב חידש תעודה על **אותו** מפתח — מעדכנים את הכריכה לתעודה
+    החדשה. ה-SPKI המוצמד והטוקן אינם משתנים; זו לא רשומת-אב חדשה.
+    ‏0 שורות שעודכנו = אין אב רשום = כשל בקול, לא "כנראה בסדר" (עיקרון 5)."""
+    with _write_lock, writing(conn):
+        cur = conn.execute(
+            "UPDATE parent_credentials SET bound_cert_ref = ? WHERE singleton = 1",
+            (bound_cert_ref,))
+        if cur.rowcount != 1:
+            raise ValueError("אין אב רשום לעדכון הכריכה")
+
+
 #: ‏#883: צורת מזהה המשני — ``sn_`` + 16 הקסה (``node_id_from_spki``). זה
 #: גם שם קובץ הטוקן ב-``secondaries/``, ולכן הצורה נאכפת כאן ולא רק
 #: בנקודת הגזירה.

@@ -361,16 +361,6 @@
   מוניטור (4512) ואינו נופל לשליחת הסוד הגולמי. נרשם ב-`net_devices.monitor_auth`
   יחד עם הסוד; hello עם סוד בלי השדה מנקה את `hmac` הקודם.
 
-- **`monitor_secret`** (‏#839) — סוד המוניטור של **האתחול הזה**: 16
-  בייטים שהסוכן הגריל מ-`/dev/urandom` פעם אחת ל-`$RUN_DIR`
-  (`agent/lib/monitor.sh`), כ-32 ספרות hex קטנות. השרת שומר אותו
-  ב-`net_devices.monitor_secret` ומשתמש בו **רק** כדי להזדהות מול
-  `imagectl-monitor` על 5900 של אותה מכונה (סעיף 14). שדה חסר משאיר את
-  הסוד הקודם; ערך שאינו 32 hex קטנות נזנח כמו שדה לא ידוע. **הכיוון
-  מכוון**: ‏hello אינו מאומת, ולכן סוד שהשרת היה מחזיר בתשובה היה נמסר
-  לכל מי ששולח hello עם ה-MAC של המכונה. בכיוון הזה מתחזה יכול לכל
-  היותר לדרוס את השורה (המוניטור נכשל עד ה-hello הבא של המכונה
-  האמיתית) — לא ללמוד את הסוד.
 - **`ssh_hostkey`** (‏#1080, schema נשאר 2) — מפתח ה-host של dropbear
   **באתחול הזה**. אין סוד מכונה יציב ב-initramfs (tmpfs, בלי דיסק),
   ולכן המפתח נוצר מחדש בכל עלייה; הסמכות היא מה שעבר ב-hello, לא
@@ -1728,6 +1718,7 @@ subprotocol `binary`; המסגרות הן **בייטי RFB גולמיים** לש
 | `4403` | מחובר, אך אינו admin |
 | `4404` | ‏MAC לא מוכר |
 | `4409` | מוניטור כבר פתוח למכונה זו (חיבור יחיד) |
+| `4408` | ‏(#1129) 10 דקות בלי בייט לאף כיוון — הגשר סוגר את שני הצדדים ומשחרר את המנעול |
 | `4502` | שירות המוניטור במכונה אינו זמין (‏TCP 5900 לא נענה) |
 | `4512` | ‏(#839/#1077) הפרוקסי לא הזדהה מול המוניטור: המכונה לא דיווחה `monitor_secret` (סוכן ישן — נסגר **לפני** TCP), המכונה לא דיווחה `monitor_auth: hmac` (סוכן ישן — נסגר **לפני** TCP, בלי נפילה לסוד גולמי), המוניטור לא הציע סוג 2 (מוניטור ישן/מתחזה — None **אינו** נבחר לעולם), ה-HMAC נדחה, או שלחיצת-היד לא הסתיימה תוך 5ש' |
 
@@ -1738,6 +1729,44 @@ subprotocol `binary`; המסגרות הן **בייטי RFB גולמיים** לש
 ‏SecurityResult `0`. מכאן הבייטים עוברים גולמיים (‏ClientInit של הדפדפן →
 ServerInit מהמכונה → …). **‏`monitor.js` אינו משתנה ואינו רואה את הסוד.**
 בייטים שהגיעו באותה מסגרת עם בחירת האבטחה מועברים למכונה, לא נבלעים.
+
+**‏#1129 — ארבעה שומרים על הגשר:**
+
+- **‏Origin.** ‏`Origin` חייב להתאים ל-`Host` של הבקשה או להיעדר (לקוח שאינו
+  דפדפן). ‏Origin זר — כולל `null` — נסגר `4403` **לפני** accept, כמו
+  ‏`ConsoleSourceGuard`: ‏`SameSite=lax` אינו מגן על WebSocket cross-site
+  בכל הדפדפנים, ודף זר עם ה-cookie של המנהל אינו מקבל 101. חל גם על
+  `WebSocket /storage-nodes/{nid}/monitor/{mac}`.
+- **הכיוון דפדפן→מכונה עובר בגבולות הודעה** (‏RFB 3.8 לקוח→שרת: סוגים
+  0/2/3/4/5; ‏ClientInit הוא הבייט היחיד בלי סוג). **‏ClientCutText (6)
+  מהדפדפן נדחה** — `4403` עם הסיבה "פקודת כוח אינה עוברת ב-WebSocket";
+  סוג לא מוכר → `1002`. הכיוון מכונה→דפדפן נשאר גולמי, והפרסור בדפדפן
+  מוגבל: מלבן ≤ 32MB (`w*h*4`) ובתוך ה-framebuffer, ‏DesktopSize ≤ 32MB,
+  ‏ServerCutText ≤ 64KB, חוצץ קלט ≤ 64MB — חריגה = שגיאה בשם וסגירה.
+- **יומן.** ‏`monitor_connected` (‏`<mac>`) אחרי אימות המכונה ולפני הגשר;
+  ‏`monitor_closed` (‏`<mac> browser|machine|idle|refused|error`) בסיום;
+  שניהם עם המשתמש. דרך משני: הסיומת ` node=<nid>`.
+- **‏idle.** ראו `4408`.
+
+### `POST /api/console/monitor/{mac}/power` (admin) · `POST …/storage-nodes/{nid}/monitor/{mac}/power`
+
+‏#1129 (‏#781): הפעלה-מחדש/כיבוי של המכונה המנוטרת, **עם האישור בשרת**.
+גוף: `{"action": "reboot"|"poweroff", "confirm": "<שם המכונה>"}`.
+‏`confirm` מושווה ל-`suffix` **מהטבלה** (דרך משני — ל-`name` שהמשני מדווח
+ב-`/machines`), לא ל-`?name=` שבכתובת דף המוניטור. השרת כותב
+‏ClientCutText עם `imagectl-power:<action>` (‏`monitor.power_frame`) אל
+המכונה דרך הגשר הפתוח — ולכן דורש מוניטור פתוח — ורושם `monitor_power`
+(‏`<mac> <action>[ node=<nid>]`, המשתמש). ‏`monitor.js` אינו בונה את הפריים
+ואינו מכיר את האסימון.
+
+| קוד | מתי |
+|---|---|
+| `400` | `action` שאינו `reboot`/`poweroff` |
+| `401` / `403` | לא מחובר / אינו admin |
+| `403` | `confirm` אינו השם הקנוני — "השם שהוקלד אינו זהה לשם המחשב" |
+| `404` | ‏MAC לא מוכר (דרך משני: לא רשום במשני) |
+| `409` | אין מוניטור פתוח למכונה — אין ערוץ מאומת לכתוב בו |
+| `502` | (דרך משני) המשני לא ענה על `/machines` |
 
 רק תפקידי `build` ו-`cloner` נתמכים (מחשב כיתה → 409). ה-`cloner` הוא
 **צפייה בלבד** — הסוכן מפעיל את `imagectl-monitor` בלי `--input`, ולכן
@@ -1834,7 +1863,7 @@ ServerInit מהמכונה → …). **‏`monitor.js` אינו משתנה ואי
 | `confirm_word` | מחרוזת/`null` | מה מקלידים: שם השרת (`/me.server_name`, ‏#936) לפורטים של השרת; `imagectl.monitor`/`imagectl.debug`/שם הכרטיס לשאר |
 | `confirm_when` | `off` / `on` / `on_or_last_off` | באיזה כיוון ההקלדה נדרשת: כיבוי (8080/8081 — שובר את המערכת) / הדלקה (DHCP, מוניטור, SSH תחנות — פותח דלת) / הדלקה או סגירת הכרטיס האחרון (SSH לשרת) |
 | `off_means` | משפט | "מה קורה אם מכבים" — לכל שורה, גם לאלה בלי מתג |
-| `warning_he` | משפט (רק `tftp`, ‏#1013) | אזהרה שהקונסולה מציגה במודאל **לפני** שדה הקלדת שם השרת, במקום `off_means`: "כיבוי 69 (TFTP) עוצר את ה-PXE: מחשבי בנייה ושיכפול לא יעלו מהשרת." (הכרעת נדב 19/09; ‏v2 יוסיף כיתות) |
+| `warning_he` | משפט (כל שורה עם מתג; `null` ב-`toggle:none`) | אזהרה שהקונסולה מציגה במודאל **לפני** שדה הקלדת שם השרת או כפתור האישור, בניסוח "כיבוי X … " — למשל "כיבוי 69 (TFTP) עוצר את ה-PXE: מחשבי בנייה ושיכפול לא יעלו מהשרת." הטבלה: `ports.WARNINGS_HE` + `warning_for()` ל-`ssh_server:<nic>` (הכרעת נדב 19/09 — "על כל פורט אזהרה", לא רק 69; ‏v2 יוסיף כיתות). `off_means` נשאר הטקסט הקצר בשורה |
 
 **עיקרון 5 — שלושה מצבים, שלושה צבעים** (`ports.measured_state`): "כבוי"
 (המתג) ≠ "לא מאזין" (נמדד) ≠ "לא נקרא" (ss חסר). דלוק+מאזין = `ok`;
@@ -2136,7 +2165,30 @@ channel-binding לפי RFC 9266) והזהות (`storage_identity`, ‏`node_id` 
 
 בייצור המאזין הוא `interserver_api.InterserverTLSServer` (terminator של
 pyOpenSSL, לא uvicorn — ‏stdlib ssl אינו קולט תעודת-לקוח לא-מוכרת ואין לו
-exporter). גוף JSON מוגבל ל-1MiB; גוף אימג' **זורם לקובץ**.
+exporter). גוף JSON מוגבל ל-1MiB; גוף אימג' **זורם לקובץ**. **‏#1122:**
+ל-handshake יש תקרה של 10 שניות (`HANDSHAKE_TIMEOUT_SECONDS`) — חיבור TCP
+שלא שולח בייט נסגר והתהליכון שלו משתחרר; אחרי ה-handshake הזרם חוסם רגיל
+(קליטת אימג' של עשרות ג'יגה אינה נופלת על זה). גוף JSON שאורכו אינו
+`Content-Length` — קצר (החיבור נסגר באמצע) → `400` וסגירה; בייטים מעבר
+לאורך → הבקשה נענית והחיבור נסגר, לא נשארים בצנרת לבקשה הבאה.
+
+### חידוש תעודה בראשי (‏#1122) — ‏TOFU על המפתח, לא על התעודה
+
+הכריכה של הטוקן (RFC 8705) נרשמת ב-pairing כטביעת **התעודה** של הראשי
+(`bound_cert_ref`), וה-pin הוא ה-**SPKI** (המפתח). מה קורה כשהראשי מציג
+תעודה אחרת:
+
+| מה השתנה בראשי | המשני | יומן במשני |
+|---|---|---|
+| **תעודה חדשה, אותו מפתח** (חידוש) | ה-SPKI תואם וה-handshake של TLS 1.3 כבר הוכיח (CertificateVerify) שהפונה מחזיק את המפתח הפרטי הזה — הכריכה לתעודה עצמה אינה מוסיפה הגנה. **הטוקן מאומת קודם**, ואז `bound_cert_ref` מתעדכן לתעודה החדשה והקריאה מצליחה. טוקן שגוי → `401 "טוקן שגוי"` בלי אימוץ | `storage_parent_cert_renewed` (פעם אחת, לא בכל קריאה) |
+| **מפתח אחר** (זהות חדשה, או גנב עם טוקן) | `401` עם `{"detail": "התעודה של הראשי השתנתה — יש לבצע רישום מחדש", "code": "peer_cert_changed"}` — בלי TOFU. ה-`detail` הוא מה שהקונסולה בראשי מציגה ב"לא ענה" של הסניף; הפעולה: ניתוק האב במשני (`DELETE /storage-parent`, מקומי) ו-pairing מחדש | — |
+
+ההכרעה: הפיצול "SPKI = זהות, טביעת תעודה = כריכה" היה אוכף רישום מחדש
+על כל חידוש תעודה — ובלי שום הודעה. גניבת טוקן **עדיין** דורשת את המפתח
+הפרטי של הראשי (הבקרה השלילית של #740 ו-`test_live_sender_constraint…`
+נשארות כפי שהן); ‏pairing ו-channel-binding אינם משתנים. `code` בגוף
+התשובה הוא שדה רשות: קיים רק כשיש שם למצב, וכרגע הערך היחיד הוא
+`peer_cert_changed`.
 
 ### חוקי חומת האש בין האתרים (הכרעת נדב 18/09)
 
@@ -2251,7 +2303,9 @@ application/octet-stream`, ‏`Connection: close`** — ומכאן אותה sess
 TLS היא זרם RFB גולמי דו-כיווני, החל מ-ClientInit (כמו CONNECT). הממסר
 במשני הוא תהליכון אחד עם `select` (אובייקט SSL אינו בטוח ל-recv/send
 מקבילים); סגירת צד אחד או 10 דקות בלי תנועה סוגרות את שניהם. יומן
-`storage_monitor_tunnel` במשני.
+`storage_monitor_tunnel` במשני בפתיחה, ו-`storage_monitor_tunnel_closed`
+בסגירה **עם הסיבה** (‏#1122: `<mac>: primary closed` / `machine closed` /
+`idle 600s` / `primary: SysCallError: …`) — מנהרה שנקטעת אינה נעלמת בשקט.
 
 ### הצד של הראשי — `/api/console/storage-nodes/{id}/…` (admin, standalone)
 
@@ -3002,6 +3056,43 @@ iSCSI שהמפעיל חיבר. **לא** לערבב עם `storage_nodes` (היר�
 * **iscsi** — `{portal, iqn, chap_user, chap_secret, auto}` ואחרי login
   `{device_by_path, fs_type, fs_label, fs_size}`
 
+### validation לשמות רשת (‏#1123) — ‏`400` בשם השדה, לפני שכלי כלשהו רץ
+
+מה שמגיע מהקונסולה נכנס ל-argv של `mount`/`showmount`/`iscsiadm` ול-opts
+של fstab; רווח או פסיק בתוכו הם הזרקת אפשרות (`,rw`) או שדה fstab חדש.
+לכן whitelist (`storage_locations.validate_params`), ב-`/scan`, ‏`/test`
+וביצירה:
+
+| שדה | מותר |
+|---|---|
+| `server` / host של `portal` | ‏IP (v4/v6) או hostname לפי RFC 1123 (תוויות `[A-Za-z0-9-]`, ≤63 כל אחת, ≤253 סה"כ) |
+| `export` (NFS) | מתחיל ב-`/`, בלי רווח, פסיק או תווי בקרה |
+| `version` (NFS) | `[0-9]+(.[0-9]+)?` |
+| `share` (SMB) | `[A-Za-z0-9_.$-]+` |
+| `username` / `domain` (SMB) | בלי תווי בקרה ובלי `=` (שורה בקובץ ה-credentials) |
+| `secret` / `chap_*` | בלי תווי בקרה |
+| `portal` (iSCSI) | `host[:port]`, ‏IPv6 בסוגריים `[fd00::75]:3260`, פורט 1–65535 |
+| `iqn` | ‏RFC 3720: `iqn.YYYY-MM.reverse.domain[:id]` · `eui.<16 hex>` · `naa.<16|32 hex>` |
+
+### סודות — איפה הם חיים (‏#1123)
+
+* **SMB.** הסיסמה **לעולם לא** ב-argv של `mount`/`smbclient` ולא ב-`/etc/fstab`
+  (שניהם נראים ב-`ps`, ב-journald ולכל מי שקורא fstab). היא נכתבת
+  לקובץ credentials בפורמט של `mount.cifs` (`username=`/`password=`/`domain=`),
+  ‏**0600**, ב-`/etc/imagectl/creds/<location_id>`, ו-`mount` ו-fstab מקבלים
+  `credentials=<path>`. הכתיבה דרך ה-hook ‏`creds_write(path, creds)`
+  (אטומית, tmp + `os.replace`), המחיקה דרך `creds_remove(path)` — בהסרת
+  המיקום. בדיקת חיבור (`/test`) וסריקה (`smbclient -A`) כותבות קובץ זמני
+  (`test-…` / `scan-…`) ומוחקות אותו ב-`finally`. ה-`secret` נשאר גם
+  ב-`params_json` (ה-DB ב-`/var/lib/imagectl`, root) — הוא המקור לכתיבת
+  הקובץ מחדש ב-`connect`; ‏`public_params` מסתיר אותו ב-GET.
+* **CHAP (iSCSI).** ‏`chap_secret` **נשאר** ב-`params_json` במודע: ‏`connect`
+  אחרי ניתוק מריץ `iscsi_login` מחדש ומחיל את הסוד דרך
+  `iscsiadm -o update` — ואין לו מקור אחר, כי אין מסך להקליד אותו מחדש
+  למיקום קיים, ו-`iscsiadm -m discovery` עלול לאפס את רשומת ה-node. המחיר
+  הידוע: הסוד עובר ב-argv של `iscsiadm` (ל-iscsiadm אין קובץ credentials).
+  לא v1 (‏#1123 "לא v1").
+
 ארבעה מצבים, כמו APD/PDL ב-vCenter — לא אחד אפור:
 
 | מצב | משמעות | המנטר (כל 60ש') |
@@ -3065,7 +3156,7 @@ iSCSI שהמפעיל חיבר. **לא** לערבב עם `storage_nodes` (היר�
 |---|---|
 | `POST /scan` | `{type, server, creds?}` → `{ok, items}` (ייצואים / שיתופים / IQN) |
 | `POST /test` | `{type, params}` → `{ok, free_bytes, total_bytes, warnings}`. אזהרת NIC משותף עם כרטיס ההפצה כשה-server/portal ב-subnet שלו (R10) |
-| `POST /` | יצירה. **מסרב** בלי `tested: true` באותה בקשה (422); test שנכשל דוחה (409). NFS/SMB מעגנים וכותבים fstab (`_netdev,nofail`) |
+| `POST /` | יצירה. **מסרב** בלי `tested: true` באותה בקשה (422); test שנכשל דוחה (409); שם רשת פסול → 400; `mount_point` תפוס → 409 בשם המיקום (אינדקס ייחודי ב-DB). NFS/SMB: **fstab → mount → `connected`** (‏#1123) — השורה נולדת `unchecked`; fstab שנכשל = אין שורה; mount שנכשל = השורה ושורת ה-fstab מוסרות. `connected` רק עם שניהם, וכך גם ב-`/connect`, ‏`/mount`, ‏`/format` (fstab שנכשל אחרי mount → umount + 409) |
 | `POST /{id}/iscsi-login` | התחברות ליעד אחרי גילוי |
 | `GET /{id}/disk` | מה על הדיסק — שלושת המצבים למעלה |
 | `POST /{id}/mount` | `{format: false}` — עיגון בלי פירמוט, רק כשיש FS |
@@ -3075,7 +3166,7 @@ iSCSI שהמפעיל חיבר. **לא** לערבב עם `storage_nodes` (היר�
 | `POST /{id}/connect` | ניסיון לחזור ל-`connected` |
 | `DELETE /{id}` | רק `disconnected` ו-0 אימג'ים; `confirm` = שם המיקום |
 
-כלי המערכת (`showmount`, `smbclient`, `iscsiadm`, `blkid`, `mount`, `mkfs.ext4`, `fstab`) רצים **רק** דרך `storage_hooks` שמוזרקים ל-`create_app`. הבדיקות מזייפות אותם.
+כלי המערכת (`showmount`, `smbclient`, `iscsiadm`, `blkid`, `mount`, `mkfs.ext4`, `fstab`, וקובצי ה-credentials) רצים **רק** דרך `storage_hooks` שמוזרקים ל-`create_app`. הבדיקות מזייפות אותם. ‏`/etc/fstab` נכתב **אטומית** (קובץ זמני לצידו + `os.replace`, ‏#1123): קריסה באמצע אינה משאירה fstab חצי-כתוב.
 
 ### אימג' ברשימה
 
@@ -3140,12 +3231,21 @@ iSCSI שהמפעיל חיבר. **לא** לערבב עם `storage_nodes` (היר�
 ### נוהל סיסמאות
 
 כמו באלפון (`validate_password`): ≥8 תווים, אותיות, ספרות, תו מיוחד
-מ-`!@#$%^&*(),.?":{}|<>`, הודעות בעברית. נאכף ב-`create`, בהחלפה
+מ-`!@#$%^&*(),.?":{}|<>`, הודעות בעברית. **תקרה: 128 תווים** (#1120 —
+‏PBKDF2 על סיסמה של מגה-בייט הוא DoS; ‏NIST 800-63B דורש ≥64):
+`400` "הסיסמה ארוכה מדי — עד 128 תווים". נאכף ב-`create`, בהחלפה
 עצמית ובאיפוס. `Aa12345!` עובר; `12345678` לא. שם משתמש: אחרי trim,
 `[a-z0-9._-]{2,50}` (השוואה ב-`COLLATE NOCASE`); כפילות → `409`.
 
 `POST /api/console/users/{u}/reset-password` (admin, לא על עצמו):
 סיסמה אקראית שעומדת בנוהל, מוחזרת פעם אחת, `must_change_password=1`.
+
+**סיסמה חדשה מבטלת את כל ה-sessions ואת הדפדפנים הזכורים** (#1120):
+גם `POST /me/password` וגם האיפוס קוראים ל-`bump_auth_epoch` (‏`auth_epoch`
+‏+1, מחיקת `trusted_browsers` ו-`mfa_challenges` של המשתמש). המחליף
+עצמו מקבל עוגייה חדשה בתשובה ל-`/me/password` ואינו מנותק; כל דפדפן
+אחר — כולל session של תוקף אחרי איפוס — מקבל `401` בבקשה הבאה, ונדרש
+ל-MFA מחדש בכניסה.
 
 ### `POST /api/console/login`
 
@@ -3161,7 +3261,10 @@ iSCSI שהמפעיל חיבר. **לא** לערבב עם `storage_nodes` (היר�
 2. **MFA** — אם `mfa_enabled`: `200 {"mfa_required": true, "challenge": <opaque>}`
    בלי session. שלב 2: `POST /api/console/login/mfa`
    `{"challenge","code", "remember_browser"?}` — TOTP (`valid_window=1`,
-   קוד לא נצרך פעמיים) או קוד גיבוי חד-פעמי → session. `remember_browser: true`
+   קוד לא נצרך פעמיים) או קוד גיבוי חד-פעמי → session. **ה-challenge
+   חד-פעמי גם בכישלון** (#1120): קוד שגוי → `401` "קוד שגוי — היכנס
+   מחדש", ה-challenge נמחק, והקונסולה חוזרת למסך הכניסה (שם המשתמש
+   נשמר); ניחוש נוסף דורש סיסמה מחדש. `remember_browser: true`
    → עוגייה נפרדת `imagectl_trusted` (token אקראי, hash בטבלה, **7 שעות**)
    שמדלגת על שלב 2 מאותו דפדפן.
 3. **הרשמת MFA** — admin שאינו builtin ובלי MFA: `200 {"mfa_enrollment_required": true}`
@@ -3187,6 +3290,13 @@ TOTP: RFC 6238, HMAC-SHA1, 30 שניות, 6 ספרות, stdlib בלבד.
 
 מפתח = שם משתמש (lowercase) + IP. 5 כשלונות → השהיה `2^(n-5)` שניות
 (`429`); 10 → נעילה 15 דקות (`403`) ויומן `login_lockout`.
+**המונה אחד לשני השלבים** (#1120): קוד MFA שגוי ב-`/login/mfa` נספר
+באותו מפתח (יומן `login_failed` "‏`<user> (mfa)`"), ו-`/login/mfa` בודק
+השהיה/נעילה לפני שהוא בודק קוד (אותם `429`/`403` + `Retry-After`).
+סיסמה נכונה **אינה** מאפסת את המונה למשתמש עם MFA — רק כניסה שהושלמה
+(‏TOTP/גיבוי נכון, או דפדפן זכור) מאפסת; אחרת "קוד שגוי → כניסה
+מחדש" היה מאפס בכל סיבוב ונעילה לא הייתה מצטברת לעולם. למשתמש בלי
+MFA, בקיוסק, ובהחלפה כפויה — הסיסמה הנכונה מאפסת כמו קודם.
 `POST /api/console/sessions/revoke {"username"}` (admin) מבטל את כל
 ה-sessions (‏`auth_epoch`) ואת הדפדפנים הזכורים של המשתמש.
 

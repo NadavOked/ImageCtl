@@ -236,12 +236,14 @@ def test_static_includes_are_at_8_5():
     #1071 (pull אימג' מהמשני לראשי) = ‏9.0;
     #1080 (fingerprint SSH בכרטיס המכונה) — הגייט bk איחד את #1085ב/#1033/#1071/#1080 ל-‏9.1;
     #1088 (רשת ההפצה מהקונסולה — הערה בדף הרשת, ההדלקה הראשונה) = ‏9.2;
-    #1013 (מתג TFTP 69 בדף הפורטים — אזהרה לפני הקלדת השם) = ‏9.3.
+    #1013 (מתג TFTP 69 בדף הפורטים — אזהרה לפני הקלדת השם) = ‏9.3;
+    אזהרה לפני כיבוי של **כל** פורט, לא רק 69 (נדב 19/09) = ‏9.4;
+    #1129 (esc() מבריח גרשיים; onclick דרך encodeId) = ‏9.4.
     שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
     versions = {float(v) for v in re.findall(r'\?v=(\d+\.\d+)"', page)}
-    assert versions == {9.3}, versions
+    assert versions == {9.4}, versions
 
 
 def test_old_images_page_code_is_gone():

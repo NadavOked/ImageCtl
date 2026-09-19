@@ -485,7 +485,7 @@ async function loadBranchView(view) {
   const idEnc = encodeId(n.id);
   const headActs = view === "overview" ? `<div class="action-strip">
       <button class="btn primary" ${disabled ? "disabled" : ""} onclick="openTransferSheetForNode('${idEnc}')">העבר אימג'</button>
-      <button class="btn" ${disabled ? "disabled" : ""} onclick="loadBranchMachines('${esc(n.id)}').catch((e)=>toast(e.message))">בדוק חיבור</button>
+      <button class="btn" ${disabled ? "disabled" : ""} onclick="loadBranchMachines(decodeURIComponent('${idEnc}')).catch((e)=>toast(e.message))">בדוק חיבור</button>
       <button class="btn" onclick="toggleBranchNode('${idEnc}').then(()=>loadBranchView('overview'))">${disabled ? "הפעל" : "השבת"}</button>
     </div>` : "";
   const head = `<div class="card-h"><span>${esc(n.label)} <small class="muted">${esc(n.group_label || "ללא קבוצה")}</small></span>${measured ? status : ""}</div>`;

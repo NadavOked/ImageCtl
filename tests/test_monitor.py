@@ -32,6 +32,10 @@ from starlette.websockets import WebSocketDisconnect
 
 MAC = "aa:bb:cc:dd:ee:ff"
 IP = "10.44.12.50"
+#: ‏FramebufferUpdateRequest (סוג 3, 10 בייט) — הודעת לקוח תקינה ומלאה,
+#: מה ש-monitor.js שולח אחרי כל עדכון. ‏#1129: הגשר מעביר דפדפן→מכונה
+#: בגבולות הודעה, ולכן "בייטים שרירותיים" אינם עוד קלט חוקי בטסטים.
+FB_REQUEST = b"\x03\x01\x00\x00\x00\x00\x04\x00\x03\x00"
 
 
 class FakeReader:
@@ -263,10 +267,10 @@ def test_admin_proxy_carries_raw_rfb_bytes(server):
         assert websocket.accepted_subprotocol == "binary"
         browser_handshake(websocket)
         assert websocket.receive_bytes() == SERVER_INIT
-        websocket.send_bytes(b"client-rfb-data")
+        websocket.send_bytes(FB_REQUEST)
 
     assert opened == [(IP, monitor.MONITOR_PORT)]
-    assert machine.writes[-1] == b"client-rfb-data"
+    assert machine.writes[-1] == FB_REQUEST
     assert machine.closed is True
 
 
@@ -477,13 +481,13 @@ def test_proxy_authenticates_to_the_machine_with_hmac_not_the_raw_secret(server)
     with client.websocket_connect(f"/api/console/monitor/{MAC}") as websocket:
         browser_handshake(websocket)
         assert websocket.receive_bytes() == SERVER_INIT
-        websocket.send_bytes(b"client-rfb-data")
+        websocket.send_bytes(FB_REQUEST)
 
     assert machine.writes[:3] == [b"RFB 003.008\n", b"\x02", KNOWN_HMAC]
     assert machine.response == KNOWN_HMAC
     assert machine.response != SECRET_BYTES
     assert b"\x01" in machine.writes[3:]                  # ה-ClientInit של הדפדפן
-    assert machine.writes[-1] == b"client-rfb-data"
+    assert machine.writes[-1] == FB_REQUEST
     assert machine.closed is True
 
 
@@ -500,11 +504,11 @@ def test_proxy_forwards_bytes_that_arrived_with_the_handshake(server):
         assert websocket.receive_bytes() == b"RFB 003.008\n"
         websocket.send_bytes(b"RFB 003.008\n")
         assert websocket.receive_bytes() == b"\x01\x01"
-        websocket.send_bytes(b"\x01" + b"\x01" + b"tail")
+        websocket.send_bytes(b"\x01" + b"\x01" + FB_REQUEST)
         assert websocket.receive_bytes() == b"\x00\x00\x00\x00"
         assert websocket.receive_bytes() == SERVER_INIT
 
-    assert b"".join(machine.writes[3:]) == b"\x01tail"
+    assert b"".join(machine.writes[3:]) == b"\x01" + FB_REQUEST
 
 
 def test_proxy_never_falls_back_to_none_security(server):
@@ -735,3 +739,299 @@ def test_a_long_question_is_cut_not_refused(server):
     prepare_build_machine(server)
     hello_waiting(server, "x" * (PROMPT_MAX_CHARS + 50))
     assert console_prompt(server) == "x" * PROMPT_MAX_CHARS
+
+
+# --- #1129: Origin, כוח בשרת, יומן, idle ---------------------------------------
+#
+# ‏R48: האישור בהקלדת שם היה UI בלבד — הדפדפן שלח `imagectl-power:` על ה-WS
+# והשרת גישר גולמי. עכשיו הגשר מסרב ל-ClientCutText מהדפדפן, והפקודה עוברת
+# רק ב-`POST /monitor/{mac}/power` שמשווה את השם לשם **מהטבלה**. ‏Origin זר
+# נסגר לפני accept; חיבור וסגירה נרשמים ביומן; 10 דק' בלי תעבורה סוגרות.
+
+
+def journal_rows(server, event: str) -> list[tuple[str, str]]:
+    return [(r["detail"], r["user"]) for r in server["ctx"].conn.execute(
+        "SELECT detail, user FROM journal WHERE event = ? ORDER BY id", (event,))]
+
+
+@pytest.mark.parametrize("origin", ["http://evil.example", "null",
+                                    "http://testserver.evil.example"])
+def test_foreign_origin_is_refused_before_accept_and_before_tcp(server, origin):
+    """‏SameSite=lax אינו מגן על WebSocket cross-site בכל הדפדפנים: דף זר
+    עם ה-cookie של המנהל היה מקבל 101 ואת ה-RFB. ‏Origin שאינו ה-Host
+    נסגר 4403 **לפני** accept (כמו ConsoleSourceGuard) — ה-TestClient
+    זורק כבר בכניסה ל-with — ולפני TCP. הבקרה השלילית: main בלי
+    `origin_allowed` מגיע ל-4404 אחרי accept (המכונה אינה רשומה)."""
+    called = False
+
+    async def connector(_host, _port):
+        nonlocal called
+        called = True
+        return FakeReader(), FakeWriter()
+
+    client = monitor_client(server, "admin", connector)
+    with pytest.raises(WebSocketDisconnect) as caught:
+        with client.websocket_connect(f"/api/console/monitor/{MAC}",
+                                      headers={"origin": origin}):
+            pass
+    assert caught.value.code == monitor.WS_FORBIDDEN
+    assert caught.value.reason == monitor.ORIGIN_REFUSED
+    assert called is False
+
+
+@pytest.mark.parametrize("headers", [{}, {"origin": "http://testserver"},
+                                     {"origin": "HTTP://TestServer"}])
+def test_same_origin_or_no_origin_passes_the_origin_gate(server, headers):
+    """‏monitor.js שולח את Origin של השרת עצמו; לקוח שאינו דפדפן (wsmon.py)
+    אינו שולח כלל. שניהם עוברים את השער ומגיעים לשלב הבא (4404 — MAC
+    לא מוכר — מגיע **אחרי** accept, כלומר השער לא עצר אותם)."""
+    client = monitor_client(server, "admin", None)
+    with client.websocket_connect("/api/console/monitor/not-a-mac",
+                                  headers=headers) as websocket:
+        with pytest.raises(WebSocketDisconnect) as caught:
+            websocket.receive_bytes()
+    assert caught.value.code == 4404
+
+
+def test_origin_allowed_matches_host_only():
+    assert monitor.origin_allowed({"host": "10.44.12.1:8081"}) is True
+    assert monitor.origin_allowed({"host": "10.44.12.1:8081",
+                                   "origin": "http://10.44.12.1:8081"}) is True
+    assert monitor.origin_allowed({"host": "10.44.12.1:8081",
+                                   "origin": "http://10.44.12.1"}) is False
+    assert monitor.origin_allowed({"host": "10.44.12.1:8081",
+                                   "origin": "http://evil.example"}) is False
+    assert monitor.origin_allowed({"origin": "http://x"}) is False   # אין Host
+
+
+def test_power_token_over_the_websocket_is_refused_and_never_reaches_the_machine(server):
+    """‏ClientCutText (סוג 6) מהדפדפן — הערוץ הישן של `imagectl-power:` —
+    נסגר 4403 בשם, והפריים אינו נכתב למכונה. הודעות לקוח רגילות לפניו
+    (FramebufferUpdateRequest) כן מגיעות: הסינון הוא לפי סוג, לא "הכול"."""
+    machine = prepare_secret_machine(server)
+    # הבקרה השלילית: מוניטור שמקבל ClientCutText עונה — ואז הדפדפן מקבל
+    # "leaked" במקום סגירה (כשל התנהגותי, לא המתנה אינסופית).
+    original_write = machine.write
+
+    def leaking_write(payload: bytes) -> None:
+        original_write(payload)
+        if payload.startswith(b"\x06"):
+            machine._reply(b"leaked")
+    machine.write = leaking_write
+    power_off = b"\x06\x00\x00\x00" + struct.pack(">I", 23) + b"imagectl-power:poweroff"
+
+    async def connector(_host, _port):
+        return machine, machine
+
+    client = monitor_client(server, "admin", connector)
+    with client.websocket_connect(f"/api/console/monitor/{MAC}") as websocket:
+        browser_handshake(websocket)
+        assert websocket.receive_bytes() == SERVER_INIT
+        websocket.send_bytes(FB_REQUEST)
+        websocket.send_bytes(power_off)
+        with pytest.raises(WebSocketDisconnect) as caught:
+            websocket.receive_bytes()
+
+    assert (caught.value.code, caught.value.reason) == (
+        monitor.WS_FORBIDDEN, monitor.POWER_OVER_WS_REFUSED)
+    assert FB_REQUEST in machine.writes
+    assert not any(w.startswith(b"\x06") for w in machine.writes)
+    assert not any(b"imagectl-power" in w for w in machine.writes)
+    assert machine.closed is True
+    assert journal_rows(server, "monitor_closed") == [(f"{MAC} refused", "noc")]
+
+
+def test_client_messages_are_forwarded_whole_even_when_split_across_frames(server):
+    """הגשר מצרף מסגרות: הודעה שהגיעה בשני חלקים נכתבת למכונה כיחידה
+    אחת, ושתי הודעות במסגרת אחת נכתבות בנפרד. סוג לא מוכר → 1002."""
+    machine = prepare_secret_machine(server)
+
+    async def connector(_host, _port):
+        return machine, machine
+
+    key_event = b"\x04\x01\x00\x00\x00\x00\xff\x0d"     # KeyEvent Enter down
+    client = monitor_client(server, "admin", connector)
+    with client.websocket_connect(f"/api/console/monitor/{MAC}") as websocket:
+        browser_handshake(websocket)
+        assert websocket.receive_bytes() == SERVER_INIT
+        websocket.send_bytes(FB_REQUEST[:4])
+        websocket.send_bytes(FB_REQUEST[4:] + key_event)
+        websocket.send_bytes(b"\x63garbage")
+        with pytest.raises(WebSocketDisconnect) as caught:
+            websocket.receive_bytes()
+
+    assert caught.value.code == 1002
+    assert machine.writes[-2:] == [FB_REQUEST, key_event]
+
+
+def test_client_message_length_table():
+    assert monitor.client_message_length(b"\x00") == 20
+    assert monitor.client_message_length(b"\x03") == 10
+    assert monitor.client_message_length(b"\x04") == 8
+    assert monitor.client_message_length(b"\x05") == 6
+    assert monitor.client_message_length(b"\x02\x00") is None
+    assert monitor.client_message_length(b"\x02\x00\x00\x03") == 16
+    assert monitor.client_message_length(b"\x06\x00\x00") is None
+    assert monitor.client_message_length(monitor.power_frame("reboot")) == 8 + len(b"imagectl-power:reboot")
+    with pytest.raises(ValueError):
+        monitor.client_message_length(b"\x63")
+
+
+def test_power_frame_is_client_cut_text_with_the_token():
+    frame = monitor.power_frame("reboot")
+    assert frame == b"\x06\x00\x00\x00" + struct.pack(">I", 21) + b"imagectl-power:reboot"
+    assert monitor.power_frame("poweroff").endswith(b"imagectl-power:poweroff")
+
+
+def test_power_endpoint_is_admin_only_and_verifies_the_server_side_name(server):
+    """‏403 בלי השם הקנוני (`suffix` מהטבלה — לא `?name=` מהכתובת), גם
+    כשמוניטור פתוח; 409 בלי מוניטור פתוח; deploy → 403, אנונימי → 401;
+    פעולה לא מוכרת → 400. שום דבר מזה אינו נוגע במכונה."""
+    machine = prepare_secret_machine(server)
+
+    async def connector(_host, _port):
+        return machine, machine
+
+    client = monitor_client(server, "admin", connector)
+    path = f"/api/console/monitor/{MAC}/power"
+
+    assert client.post(path, json={"action": "reboot", "confirm": "Monitor"}).status_code == 409
+    assert client.post(path, json={"action": "reboot", "confirm": "monitor"}).status_code == 403
+    assert client.post(path, json={"action": "halt", "confirm": "Monitor"}).status_code == 400
+    assert client.post("/api/console/monitor/not-a-mac/power",
+                       json={"action": "reboot", "confirm": "Monitor"}).status_code == 404
+    assert monitor_client(server, "deploy", connector).post(
+        path, json={"action": "reboot", "confirm": "Monitor"}).status_code == 403
+    anon = monitor_client(server, "admin", connector)
+    anon.cookies.clear()
+    assert anon.post(path, json={"action": "reboot", "confirm": "Monitor"}).status_code == 401
+
+    with client.websocket_connect(f"/api/console/monitor/{MAC}") as websocket:
+        browser_handshake(websocket)
+        assert websocket.receive_bytes() == SERVER_INIT
+        wrong = client.post(path, json={"action": "poweroff", "confirm": "monitor"})
+        assert wrong.status_code == 403
+        assert "השם שהוקלד" in wrong.json()["detail"]
+        assert not any(w.startswith(b"\x06") for w in machine.writes)
+    assert journal_rows(server, "monitor_power") == []
+
+
+def test_power_endpoint_writes_the_token_to_the_machine_and_journals_who(server):
+    """הראיה החיובית: עם מוניטור פתוח והשם הנכון, הפריים
+    ‏ClientCutText(`imagectl-power:reboot`) נכתב למכונה **מהשרת**,
+    ‏`monitor_power` נרשם עם המשתמש וה-MAC, וה-WS של הדפדפן נשאר פתוח."""
+    machine = prepare_secret_machine(server)
+
+    async def connector(_host, _port):
+        return machine, machine
+
+    client = monitor_client(server, "admin", connector)
+    path = f"/api/console/monitor/{MAC}/power"
+    with client.websocket_connect(f"/api/console/monitor/{MAC}") as websocket:
+        browser_handshake(websocket)
+        assert websocket.receive_bytes() == SERVER_INIT
+        ok = client.post(path, json={"action": "reboot", "confirm": "Monitor"})
+        assert ok.status_code == 200, ok.text
+        assert ok.json() == {"ok": True, "action": "reboot"}
+        websocket.send_bytes(FB_REQUEST)          # הגשר עדיין חי אחרי הפקודה
+    assert monitor.power_frame("reboot") in machine.writes
+    assert machine.writes[-1] == FB_REQUEST
+    assert journal_rows(server, "monitor_power") == [(f"{MAC} reboot", "noc")]
+    # אחרי הסגירה אין גשר, ולכן אין למי לכתוב — 409, לא פקודה למכונה מתה.
+    assert client.post(path, json={"action": "reboot", "confirm": "Monitor"}).status_code == 409
+
+
+def test_monitor_connect_and_close_are_journaled_with_user_and_mac(server):
+    """"מי חיבר מוניטור למי ומתי" — `monitor_connected` בפתיחה (אחרי אימות
+    המכונה, לפני הגשר) ו-`monitor_closed` עם הסיבה. סגירה מהדפדפן =
+    ``browser``; סגירה מצד המכונה = ``machine``."""
+    machine = prepare_secret_machine(server)
+
+    async def connector(_host, _port):
+        return machine, machine
+
+    client = monitor_client(server, "admin", connector)
+    with client.websocket_connect(f"/api/console/monitor/{MAC}") as websocket:
+        browser_handshake(websocket)
+        assert websocket.receive_bytes() == SERVER_INIT
+    assert journal_rows(server, "monitor_connected") == [(MAC, "noc")]
+    assert journal_rows(server, "monitor_closed") == [(f"{MAC} browser", "noc")]
+
+    # דחייה לפני הגשר (deploy) אינה "חיבור" — אין שורה.
+    with pytest.raises(WebSocketDisconnect):
+        with monitor_client(server, "deploy", connector).websocket_connect(
+                f"/api/console/monitor/{MAC}") as ws:
+            ws.receive_bytes()
+    assert len(journal_rows(server, "monitor_connected")) == 1
+
+
+def test_idle_bridge_closes_both_sides_and_releases_the_machine(server, monkeypatch):
+    """‏WS שנשאר פתוח בלי בייט לאף כיוון: אחרי IDLE_SECONDS הדפדפן מקבל
+    4408 בשם, ה-TCP למכונה נסגר, ‏`monitor_closed … idle` נרשם — והמנעול
+    משתחרר: חיבור שני לאותה מכונה מתקבל (לא 4409)."""
+    monkeypatch.setattr(monitor, "IDLE_SECONDS", 0.3, raising=False)
+    machine = prepare_secret_machine(server)
+
+    async def connector(_host, _port):
+        return machine, machine
+
+    client = monitor_client(server, "admin", connector)
+    with client.websocket_connect(f"/api/console/monitor/{MAC}") as websocket:
+        browser_handshake(websocket)
+        assert websocket.receive_bytes() == SERVER_INIT
+        with pytest.raises(WebSocketDisconnect) as caught:
+            websocket.receive_bytes()
+    assert caught.value.code == monitor.WS_IDLE
+    assert "בלי תעבורה" in caught.value.reason
+    assert machine.closed is True
+    assert journal_rows(server, "monitor_closed") == [(f"{MAC} idle", "noc")]
+
+    second = FakeMachine()                        # המכונה כבר רשומה עם הסוד
+
+    async def connector2(_host, _port):
+        return second, second
+
+    with monitor_client(server, "admin", connector2).websocket_connect(
+            f"/api/console/monitor/{MAC}") as websocket:
+        browser_handshake(websocket)
+        assert websocket.receive_bytes() == SERVER_INIT     # לא 4409
+
+
+def test_traffic_resets_the_idle_clock(server, monkeypatch):
+    """תעבורה מהדפדפן בתוך החלון דוחה את הסגירה — הטיימר הוא "בלי תעבורה",
+    לא "מאז הפתיחה"."""
+    import time
+    monkeypatch.setattr(monitor, "IDLE_SECONDS", 0.4, raising=False)
+    machine = prepare_secret_machine(server)
+
+    async def connector(_host, _port):
+        return machine, machine
+
+    client = monitor_client(server, "admin", connector)
+    with client.websocket_connect(f"/api/console/monitor/{MAC}") as websocket:
+        browser_handshake(websocket)
+        assert websocket.receive_bytes() == SERVER_INIT
+        for _ in range(3):
+            time.sleep(0.25)
+            websocket.send_bytes(FB_REQUEST)
+    assert journal_rows(server, "monitor_closed") == [(f"{MAC} browser", "noc")]
+    assert machine.writes.count(FB_REQUEST) == 3
+
+
+def test_journal_translates_monitor_events_to_hebrew(server):
+    from server.journal_he import EVENTS_HE, JournalTranslator
+    prepare_build_machine(server)
+    tr = JournalTranslator(server["ctx"].conn, server["ctx"].library)
+    for event in ("monitor_connected", "monitor_closed", "monitor_power"):
+        assert event in EVENTS_HE
+    who = tr._machines[MAC]                        # "Monitor · <שם הקבוצה>"
+    assert who.startswith("Monitor · ")
+    assert tr.translate("monitor_connected", MAC) == (
+        EVENTS_HE["monitor_connected"], who)
+    assert tr.translate("monitor_closed", f"{MAC} idle")[1] == (
+        f"{who} · נסגר אחרי 10 דק' בלי תעבורה")
+    assert tr.translate("monitor_closed", f"{MAC} refused")[1] == (
+        f"{who} · נסגר — הודעה אסורה מהדפדפן")
+    assert tr.translate("monitor_power", f"{MAC} poweroff")[1] == f"{who} · כיבוי"
+    assert tr.translate("monitor_power", f"{MAC} reboot node=n0de")[1] == (
+        f"{who} · הפעלה מחדש · node=n0de")

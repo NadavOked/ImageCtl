@@ -329,7 +329,9 @@ test('ports page (#996 contract): live switches — "api" confirms, "confirm" ty
   assert.match(kiosk,/<span class="mono">0\.0\.0\.0<\/span>/); assert.match(kiosk,/מסך התחנה לא נטען; הסוכן ממשיך לעבוד/);
   assert.doesNotMatch(kiosk,/דורש API/);
   run("portSwitch('kiosk')");
-  let s=run('sheets.at(-1)'); assert.ok(!s.verify); assert.match(s.title,/כיבוי HTTP 8082\/tcp/); assert.match(s.sub,/מסך התחנה לא נטען/);
+  let s=run('sheets.at(-1)'); assert.ok(!s.verify); assert.match(s.title,/כיבוי HTTP 8082\/tcp/);
+  // אזהרה על כל פורט, לא רק 69 (נדב 19/09): גם מתג "api" מקבל את הבלוק האדום מה-off_means
+  assert.match(s.note,/data-testid="port-warning"/); assert.match(s.note,/מה קורה אם מכבים: מסך התחנה לא נטען/);
   await s.onSubmit();
   assert.deepEqual(requests.filter((r)=>r.method==='PUT').at(-1),{url:'/ports/kiosk',method:'PUT',body:{enabled:false}});
   // 🔒 confirm: הקלדת שם השרת + "מה קורה אם מכבים"

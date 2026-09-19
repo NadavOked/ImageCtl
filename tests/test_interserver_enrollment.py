@@ -665,6 +665,107 @@ def test_ingress_ping_sender_constraint_decisive(tmp_path, monkeypatch):
     assert e.value.status == 401
 
 
+# --- (ז**) #1122: חידוש תעודה בראשי — TOFU על המפתח, לא על התעודה ----------
+#
+# ‏TLS 1.3 מוכיח ב-CertificateVerify שהפונה מחזיק את המפתח הפרטי של התעודה
+# שהציג. לכן תעודה **חדשה על אותו מפתח** (SPKI זהה) היא אותו ראשי, ומאמצים
+# אותה — אבל רק אחרי שהטוקן אומת, ועם שורת יומן. מפתח **אחר** נשאר 401 קשה,
+# בשם (``peer_cert_changed``) כדי שהקונסולה בראשי תגיד למנהל מה לעשות.
+
+PEER_CERT_CHANGED_DETAIL = "התעודה של הראשי השתנתה — יש לבצע רישום מחדש"
+
+
+def renew_cert(cert_pem: bytes, key_pem: bytes) -> bytes:
+    """תעודה חדשה על **אותו** מפתח: SPKI זהה, טביעת תעודה שונה — מה שחידוש
+    תעודה בראשי מייצר. נבנית כאן ולא בקוד הייצור, כדי שהבקרה השלילית תיכשל
+    על ההתנהגות (401) ולא על חתימה חסרה."""
+    import datetime
+    from ipaddress import ip_address
+    from cryptography import x509
+    from cryptography.x509.oid import NameOID
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.serialization import load_pem_private_key
+    key = load_pem_private_key(key_pem, password=None)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "renewed")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (x509.CertificateBuilder()
+            .subject_name(name).issuer_name(name)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - datetime.timedelta(minutes=5))
+            .not_valid_after(now + datetime.timedelta(days=30))
+            .add_extension(x509.SubjectAlternativeName(
+                [x509.IPAddress(ip_address("127.0.0.1"))]), critical=False)
+            .sign(key, hashes.SHA256()))
+    renewed = cert.public_bytes(serialization.Encoding.PEM)
+    assert interserver_auth.spki_sha256(renewed) == interserver_auth.spki_sha256(cert_pem)
+    assert (interserver_auth.certificate_ref(renewed)
+            != interserver_auth.certificate_ref(cert_pem))
+    return renewed
+
+
+def _bound_ref(conn) -> str:
+    return conn.execute("SELECT bound_cert_ref FROM parent_credentials"
+                        " WHERE singleton = 1").fetchone()["bound_cert_ref"]
+
+
+def _renewals(conn) -> int:
+    return conn.execute("SELECT COUNT(*) AS n FROM journal"
+                        " WHERE event = 'storage_parent_cert_renewed'").fetchone()["n"]
+
+
+def test_ingress_renewed_cert_on_the_same_key_is_adopted(tmp_path):
+    conn, ident = _secondary(tmp_path)
+    primary, key = interserver_auth.generate_self_signed("p", ip_sans=["127.0.0.1"])
+    _begin, comp, _ = _do_pair(conn, ident, primary)
+    renewed = renew_cert(primary, key)
+
+    res = interserver_api.ping(conn, _peer(renewed), token=comp["token"],
+                               protocol_version="2.1")
+    assert res["ok"] is True
+    # הכריכה עברה לתעודה החדשה; ה-pin (המפתח) לא זז; יומן אחד.
+    assert _bound_ref(conn) == interserver_auth.certificate_ref(renewed)
+    assert conn.execute("SELECT pinned_parent_spki FROM parent_credentials"
+                        " WHERE singleton = 1").fetchone()["pinned_parent_spki"]         == interserver_auth.spki_sha256(primary)
+    assert _renewals(conn) == 1
+    # ‏ping שני עם אותה תעודה — כבר כרוכה, בלי יומן נוסף.
+    interserver_api.ping(conn, _peer(renewed), token=comp["token"], protocol_version="2.1")
+    assert _renewals(conn) == 1
+
+
+def test_ingress_renewed_cert_with_a_wrong_token_is_not_adopted(tmp_path):
+    """הטוקן נבדק **לפני** האימוץ: תעודה חדשה על המפתח הנכון בלי הטוקן היא
+    401 "טוקן שגוי", והכריכה הישנה נשארת כפי שהיא."""
+    conn, ident = _secondary(tmp_path)
+    primary, key = interserver_auth.generate_self_signed("p", ip_sans=["127.0.0.1"])
+    _do_pair(conn, ident, primary)
+    before = _bound_ref(conn)
+    with pytest.raises(interserver_api.PairError) as e:
+        interserver_api.ping(conn, _peer(renew_cert(primary, key)),
+                             token=interserver_auth.generate_token(),
+                             protocol_version="2.1")
+    assert e.value.status == 401 and getattr(e.value, "code", None) is None
+    assert _bound_ref(conn) == before
+    assert _renewals(conn) == 0
+
+
+def test_ingress_changed_key_is_named_peer_cert_changed(tmp_path):
+    """מפתח אחר (ראשי שהוחלף, או גנב עם הטוקן) → 401 **בשם**, בלי אימוץ."""
+    conn, ident = _secondary(tmp_path)
+    primary, _ = interserver_auth.generate_self_signed("p", ip_sans=["127.0.0.1"])
+    _begin, comp, _ = _do_pair(conn, ident, primary)
+    other, _ = interserver_auth.generate_self_signed("p2", ip_sans=["127.0.0.1"])
+    before = _bound_ref(conn)
+    with pytest.raises(interserver_api.PairError) as e:
+        interserver_api.ping(conn, _peer(other), token=comp["token"],
+                             protocol_version="2.1")
+    assert e.value.status == 401
+    assert e.value.detail == PEER_CERT_CHANGED_DETAIL
+    assert getattr(e.value, "code", None) == "peer_cert_changed"
+    assert _bound_ref(conn) == before
+    assert _renewals(conn) == 0
+
+
 # --- (ח) שכבת ה-app: routes + דחיית עוגייה דרך TestClient --------------------
 
 def _interserver_app(conn, ident, peer_holder):

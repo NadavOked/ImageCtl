@@ -49,8 +49,107 @@ STATE_LABELS = {
 }
 FSTAB_BEGIN = "# BEGIN imagectl-storage"
 FSTAB_END = "# END imagectl-storage"
+FSTAB_PATH = Path("/etc/fstab")
+#: ‏#1123: קובצי credentials של SMB (פורמט mount.cifs / `smbclient -A`),
+#: ‏0600, אחד למיקום. ‏`-/etc/imagectl` כבר ב-ReadWritePaths של היחידה.
+CREDS_DIR = Path("/etc/imagectl/creds")
 SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 CHECK_INTERVAL = 60.0
+
+# ‏#1123 (3): מה שמגיע מהקונסולה נכנס ל-argv של mount/showmount/iscsiadm
+# ול-opts של fstab. subprocess בלי shell — אבל רווח/פסיק בתוך opts הם
+# הזרקת אפשרות, ורווח ב-fstab הוא שדה חדש. לכן whitelist, לא blacklist.
+_HOST_LABEL = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+_SHARE_RE = re.compile(r"^[A-Za-z0-9_.$-]+$")
+_VERSION_RE = re.compile(r"^[0-9]+(\.[0-9]+)?$")
+# ‏RFC 3720 §3.2.6.3: iqn.YYYY-MM.reverse.domain[:id] · eui.<16 hex> ·
+# ‏naa.<16|32 hex> (RFC 3980). ה-id אחרי הנקודתיים — בלי רווח/פסיק.
+_IQN_RE = re.compile(
+    r"^(iqn\.[0-9]{4}-[0-9]{2}\.[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*(:[A-Za-z0-9._:-]+)?"
+    r"|eui\.[0-9A-Fa-f]{16}|naa\.([0-9A-Fa-f]{16}|[0-9A-Fa-f]{32}))$"
+)
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def valid_host(value: str) -> bool:
+    """‏IP (v4/v6) או hostname לפי RFC 1123. ריק = לא תקין."""
+    host = (value or "").strip()
+    if not host or host != value:
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        pass
+    if len(host) > 253 or host.endswith("."):
+        return False
+    return all(_HOST_LABEL.fullmatch(label) for label in host.split("."))
+
+
+def valid_portal(value: str) -> bool:
+    """‏`host[:port]`; ‏IPv6 בסוגריים: ‏`[fd00::75]:3260`."""
+    portal = value or ""
+    host, port = portal, ""
+    if portal.startswith("["):
+        end = portal.find("]")
+        if end < 0:
+            return False
+        host, rest = portal[1:end], portal[end + 1:]
+        if rest and not rest.startswith(":"):
+            return False
+        port = rest[1:] if rest else ""
+        try:
+            ipaddress.IPv6Address(host)
+        except ValueError:
+            return False
+    elif portal.count(":") == 1:
+        host, port = portal.split(":", 1)
+    elif ":" in portal:
+        # ‏IPv6 חשוף בלי סוגריים — כתובת בלבד, בלי פורט
+        return valid_host(portal)
+    if port and not (port.isdigit() and 1 <= int(port) <= 65535):
+        return False
+    return valid_host(host)
+
+
+def validate_params(kind: str, params: dict) -> str | None:
+    """‏None = תקין; מחרוזת = סיבת ה-400 (בשם השדה, בעברית)."""
+    def clean(key: str) -> bool:
+        return not _CONTROL_CHARS.search(str(params.get(key) or ""))
+
+    if kind == "nfs":
+        if not valid_host(params.get("server") or ""):
+            return "כתובת שרת לא תקינה — IP או שם מארח (RFC 1123)"
+        export = params.get("export") or ""
+        if (not export.startswith("/") or "," in export
+                or re.search(r"\s", export) or not clean("export")):
+            return "נתיב ייצוא לא תקין — מתחיל ב-/ ובלי רווח או פסיק"
+        version = params.get("version")
+        if version not in (None, "") and not _VERSION_RE.fullmatch(str(version)):
+            return "גרסת NFS לא תקינה — למשל 4.1 או 3"
+        return None
+    if kind == "smb":
+        if not valid_host(params.get("server") or ""):
+            return "כתובת שרת לא תקינה — IP או שם מארח (RFC 1123)"
+        if not _SHARE_RE.fullmatch(params.get("share") or ""):
+            return "שם שיתוף לא תקין — אותיות, ספרות ו-_ . $ - בלבד"
+        if not clean("username") or "=" in str(params.get("username") or ""):
+            return "שם משתמש לא תקין — בלי תווי בקרה או ="
+        if not clean("domain") or "=" in str(params.get("domain") or ""):
+            return "דומיין לא תקין — בלי תווי בקרה או ="
+        if not clean("secret"):
+            return "סיסמה לא תקינה — בלי תווי בקרה"
+        return None
+    if kind == "iscsi":
+        if not valid_portal(params.get("portal") or ""):
+            return "פורטל לא תקין — IP[:port] או שם מארח[:port]"
+        iqn = params.get("iqn") or ""
+        if iqn and not _IQN_RE.fullmatch(iqn):
+            return "IQN לא תקין — iqn.YYYY-MM.domain[:id] / eui. / naa. (RFC 3720)"
+        if not clean("chap_user") or not clean("chap_secret"):
+            return "פרטי CHAP לא תקינים — בלי תווי בקרה"
+        return None
+    return None
 
 
 @dataclass(frozen=True)
@@ -110,19 +209,22 @@ def smb_scan(server: str, creds: dict | None = None) -> HookResult:
     """`smbclient -L` — רשימת שיתופים."""
     if not server:
         return HookResult(FAILED, "חסרה כתובת שרת")
-    creds = creds or {}
-    user = creds.get("username") or ""
-    secret = creds.get("secret") or ""
-    domain = creds.get("domain") or ""
-    auth = f"{user}%{secret}" if user else "guest%"
-    cmd = ["smbclient", "-L", server, "-N" if not user else "-U", auth]
-    if not user:
-        cmd = ["smbclient", "-L", server, "-N"]
+    creds = smb_creds(creds or {})
+    auth_file = ""
+    if creds.get("username"):
+        # ‏#1123: ‏`-A <קובץ>` ולא `-U user%password` — הסיסמה לא ב-argv/ps.
+        auth_file = creds_path("scan-" + secrets.token_hex(3))
+        written = creds_write(auth_file, creds)
+        if written.status != OK:
+            return written
+        cmd = ["smbclient", "-L", server, "-A", auth_file]
     else:
-        cmd = ["smbclient", "-L", server, "-U", auth]
-    if domain:
-        cmd.extend(["-W", domain])
-    result = _run(cmd, timeout=20)
+        cmd = ["smbclient", "-L", server, "-N"]
+    try:
+        result = _run(cmd, timeout=20)
+    finally:
+        if auth_file:
+            creds_remove(auth_file)
     if result.status != OK:
         return result
     shares = []
@@ -328,8 +430,12 @@ def umount(target: str) -> HookResult:
 
 
 def fstab_write(entries: list[dict]) -> HookResult:
-    """כותב את בלוק ImageCtl ב-fstab עם `_netdev,nofail`."""
-    path = Path("/etc/fstab")
+    """כותב את בלוק ImageCtl ב-fstab עם `_netdev,nofail`.
+
+    ‏#1123 (2): אטומי — קובץ זמני ליד fstab ו-`os.replace`. קריסה באמצע
+    כתיבה ישירה = fstab חצי-כתוב = שרת שלא עולה.
+    """
+    path = FSTAB_PATH
     try:
         text = path.read_text(encoding="utf-8") if path.is_file() else ""
     except OSError as exc:
@@ -361,11 +467,70 @@ def fstab_write(entries: list[dict]) -> HookResult:
         )
     block.append(FSTAB_END + "\n")
     new_text = "".join(lines) + ("" if not entries else "".join(block))
+    tmp = path.with_name(path.name + ".imagectl-tmp")
     try:
-        path.write_text(new_text, encoding="utf-8")
+        tmp.write_text(new_text, encoding="utf-8")
+        if path.is_file():
+            os.chmod(tmp, path.stat().st_mode & 0o777)
+        os.replace(tmp, path)
     except OSError as exc:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
         return HookResult(FAILED, f"לא הצלחנו לכתוב fstab: {exc}")
     return HookResult(OK, payload={"entries": len(entries)})
+
+
+def creds_path(loc_id: str) -> str:
+    """‏#1123: איפה קובץ ה-credentials של מיקום SMB חי — נגזר מה-id, לא נשמר."""
+    return (CREDS_DIR / loc_id).as_posix()
+
+
+def smb_creds(params: dict) -> dict:
+    """מה שנכנס לקובץ — בשמות של mount.cifs (`password`, לא `secret`)."""
+    creds = {}
+    if params.get("username"):
+        creds["username"] = str(params["username"])
+    if params.get("secret"):
+        creds["password"] = str(params["secret"])
+    if params.get("domain"):
+        creds["domain"] = str(params["domain"])
+    return creds
+
+
+def creds_write(path: str, creds: dict) -> HookResult:
+    """קובץ credentials ‏0600 (פורמט mount.cifs / smbclient -A), אטומי."""
+    target = Path(path)
+    tmp = target.with_name(target.name + ".tmp")
+    text = "".join(f"{key}={creds[key]}\n" for key in ("username", "password", "domain")
+                   if creds.get(key))
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, target)
+    except OSError as exc:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return HookResult(FAILED, f"לא הצלחנו לכתוב את קובץ ה-credentials: {exc}")
+    return HookResult(OK, payload={"path": str(target)})
+
+
+def creds_remove(path: str) -> HookResult:
+    """מחיקת הקובץ. "כבר איננו" הוא המצב הרצוי — לא כשל."""
+    target = Path(path)
+    try:
+        target.unlink(missing_ok=True)
+    except OSError as exc:
+        return HookResult(FAILED, f"לא הצלחנו למחוק את קובץ ה-credentials: {exc}")
+    if target.exists():
+        return HookResult(FAILED, f"הקובץ עדיין קיים אחרי מחיקה: {path}")
+    return HookResult(OK)
 
 
 def df(target: str) -> HookResult:
@@ -391,6 +556,8 @@ def default_hooks() -> dict:
         "mount": mount,
         "umount": umount,
         "fstab_write": fstab_write,
+        "creds_write": creds_write,
+        "creds_remove": creds_remove,
         "df": df,
         "interfaces": lambda: [],
     }
@@ -730,17 +897,11 @@ def _nfs_opts(params: dict) -> str:
     return ",".join(opts)
 
 
-def _smb_opts(params: dict) -> str:
+def _smb_opts(params: dict, creds_file: str = "") -> str:
+    """‏#1123: הסיסמה לעולם לא כאן — רק `credentials=<קובץ>` (0600)."""
     opts = ["vers=3.0"]
-    user = params.get("username") or ""
-    secret = params.get("secret") or ""
-    domain = params.get("domain") or ""
-    if user:
-        opts.append(f"username={user}")
-    if secret:
-        opts.append(f"password={secret}")
-    if domain:
-        opts.append(f"domain={domain}")
+    if creds_file:
+        opts.append(f"credentials={creds_file}")
     if params.get("readonly"):
         opts.append("ro")
     return ",".join(opts)
@@ -815,22 +976,36 @@ def test_connection(kind: str, params: dict, hooks: dict, *,
         target = tmp_target or Path("/tmp") / ("imagectl-test-" + secrets.token_hex(3))
         target.mkdir(parents=True, exist_ok=True)
         source = f"//{server}/{share}"
-        mounted = hooks["mount"]("cifs", source, str(target), _smb_opts(params))
-        if mounted.status != OK:
-            return {"ok": False, "reason": mounted.reason, "status": mounted.status,
-                    "warnings": warnings}
+        creds = smb_creds(params)
+        creds_file = creds_path("test-" + secrets.token_hex(3)) if creds else ""
+        if creds_file:
+            written = hooks["creds_write"](creds_file, creds)
+            if written.status != OK:
+                return {"ok": False, "reason": written.reason, "status": written.status,
+                        "warnings": warnings}
         try:
-            wrote = _write_probe(target, bool(params.get("readonly")))
-            if wrote.status != OK:
-                return {"ok": False, "reason": wrote.reason, "warnings": warnings}
-            space = hooks["df"](str(target))
-            if space.status != OK:
-                return {"ok": False, "reason": space.reason or "לא הצלחנו לקרוא מקום פנוי",
-                        "status": space.status, "warnings": warnings}
-            return {"ok": True, "free_bytes": space.payload.get("free_bytes"),
-                    "total_bytes": space.payload.get("total_bytes"), "warnings": warnings}
+            mounted = hooks["mount"]("cifs", source, str(target),
+                                     _smb_opts(params, creds_file))
+            if mounted.status != OK:
+                return {"ok": False, "reason": mounted.reason, "status": mounted.status,
+                        "warnings": warnings}
+            try:
+                wrote = _write_probe(target, bool(params.get("readonly")))
+                if wrote.status != OK:
+                    return {"ok": False, "reason": wrote.reason, "warnings": warnings}
+                space = hooks["df"](str(target))
+                if space.status != OK:
+                    return {"ok": False,
+                            "reason": space.reason or "לא הצלחנו לקרוא מקום פנוי",
+                            "status": space.status, "warnings": warnings}
+                return {"ok": True, "free_bytes": space.payload.get("free_bytes"),
+                        "total_bytes": space.payload.get("total_bytes"),
+                        "warnings": warnings}
+            finally:
+                hooks["umount"](str(target))
         finally:
-            hooks["umount"](str(target))
+            if creds_file:
+                hooks["creds_remove"](creds_file)
 
     if kind == "iscsi":
         portal = params.get("portal") or ""
@@ -872,7 +1047,13 @@ def apply_mount(row: dict, hooks: dict) -> HookResult:
         result = hooks["mount"]("nfs", source, target, _nfs_opts(params))
     elif kind == "smb":
         source = f"//{params.get('server')}/{params.get('share')}"
-        result = hooks["mount"]("cifs", source, target, _smb_opts(params))
+        creds = smb_creds(params)
+        creds_file = creds_path(row["id"]) if creds else ""
+        if creds_file:
+            written = hooks["creds_write"](creds_file, creds)
+            if written.status != OK:
+                return written
+        result = hooks["mount"]("cifs", source, target, _smb_opts(params, creds_file))
     elif kind == "iscsi":
         device = params.get("device_by_path")
         if not device:
@@ -905,11 +1086,12 @@ def fstab_entries(conn) -> list[dict]:
                 "opts": _nfs_opts(params) + ",_netdev,nofail",
             })
         elif row["type"] == "smb":
+            creds_file = creds_path(row["id"]) if smb_creds(params) else ""
             entries.append({
                 "source": f"//{params.get('server')}/{params.get('share')}",
                 "target": row["mount_point"],
                 "fstype": "cifs",
-                "opts": _smb_opts(params) + ",_netdev,nofail",
+                "opts": _smb_opts(params, creds_file) + ",_netdev,nofail",
             })
         elif row["type"] == "iscsi" and params.get("device_by_path"):
             entries.append({

@@ -82,7 +82,7 @@ test('1. list: header pill, unavailable-images note, one row per location with s
   assert.deepEqual(requests.map(r => r.method + ' ' + r.url), ['GET /storage-locations']);
   const html = run('storagePage()');
   assert.match(html, /<span class="pill err">3 מיקומים · 1 לא נגיש<\/span>/);
-  assert.match(html, /22 אימג'ים/);
+  assert.match(html, /22 אימג&#39;ים/);
   assert.match(html, /נבדק 09:40 \(כל 60 שניות\)/);
   assert.match(html, /2 אימג'ים לא זמינים כרגע/, 'the note names the count');
   assert.match(html, /san-lun1<\/span> \(לא נגיש מאז 09:12\)/, 'and the location behind it');

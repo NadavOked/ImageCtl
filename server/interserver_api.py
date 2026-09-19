@@ -15,6 +15,7 @@ terminator של pyOpenSSL (ראו ``interserver_auth`` — stdlib ssl אינו �
 422 (אותו באג של ``auth.py``/``boot/http.py``, ‏CLAUDE.md).
 """
 
+import logging
 import secrets
 import select
 import shutil
@@ -22,6 +23,7 @@ import socket
 import struct
 import tempfile
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -30,8 +32,16 @@ from typing import Iterable
 from . import interserver_auth, storage_nodes
 from .db import journal, now_iso
 
+log = logging.getLogger("imagectl.interserver")
+
 #: תוקף ה-handle של pair-begin עד pair-complete — קצר, אותה session.
 HANDLE_TTL_SECONDS = 60
+#: ‏#1122: כמה זמן מותר ל-handshake של ה-TLS להימשך. חיבור TCP שלא שולח
+#: בייט (סורק, FW שחתך באמצע) שחרר את התהליכון שלו אחרי זה, לא לעולם.
+HANDSHAKE_TIMEOUT_SECONDS = 10.0
+#: ‏#1122: קוד תשובה בשם כשהמפתח של האב השתנה — הקונסולה בראשי מציגה אותו.
+PEER_CERT_CHANGED = "peer_cert_changed"
+PEER_CERT_CHANGED_DETAIL = "התעודה של הראשי השתנתה — יש לבצע רישום מחדש"
 
 
 @dataclass
@@ -48,10 +58,18 @@ class TlsPeer:
 class PairError(Exception):
     """כשל בכניסה הבין-שרתית, עם קוד HTTP מפורש (route מתרגם אותו כפי שהוא)."""
 
-    def __init__(self, status: int, detail: str):
+    def __init__(self, status: int, detail: str, *, code: str | None = None):
         super().__init__(detail)
         self.status = status
         self.detail = detail
+        self.code = code
+
+    def payload(self) -> dict:
+        """גוף התשובה: ``detail`` תמיד, ו-``code`` רק כשיש שם למצב (#1122)."""
+        body = {"detail": self.detail}
+        if self.code:
+            body["code"] = self.code
+        return body
 
 
 def _utcnow() -> datetime:
@@ -223,12 +241,27 @@ def authenticate_parent(conn, peer: TlsPeer, *, token: str, protocol_version: st
     if cred is None:
         raise PairError(401, "אין אב רשום")
 
-    # הצמדת SPKI+תעודה שלאחר-ה-pairing (RFC 8705): שינוי מפתח או תעודה
-    # אחרת = כשל קשה 401, בלי TOFU. בלי הכריכה, טוקן גנוב היה מספיק.
-    if not _peer_bound(peer.cert_der, cred):
-        raise PairError(401, "תעודת-הלקוח/SPKI אינם כרוכים לטוקן")
+    # הצמדת SPKI+תעודה שלאחר-ה-pairing (RFC 8705). **מפתח** אחר = כשל קשה
+    # 401 בשם (``peer_cert_changed``), בלי TOFU — בלי הכריכה, טוקן גנוב היה
+    # מספיק. תעודה **מחודשת על אותו מפתח** (#1122) היא מצב אחר: ה-handshake
+    # של TLS 1.3 כבר הוכיח (CertificateVerify) שהפונה מחזיק את המפתח הפרטי
+    # שה-SPKI מוצמד אליו, ולכן הכריכה לתעודה עצמה אינה מוסיפה הגנה — היא
+    # מאומצת, אבל **רק אחרי** שהטוקן אומת, ועם שורת יומן.
+    bound = _peer_bound(peer.cert_der, cred)
+    if not bound and not interserver_auth.verify_pinned_spki(
+            peer.cert_der, cred["pinned_parent_spki"]):
+        raise PairError(401, PEER_CERT_CHANGED_DETAIL, code=PEER_CERT_CHANGED)
     if not interserver_auth.verify_token(token or "", cred["token_hash"]):
         raise PairError(401, "טוקן שגוי")
+    if not bound:
+        new_ref = interserver_auth.certificate_ref(peer.cert_der)
+        storage_nodes.rebind_parent_cert(conn, bound_cert_ref=new_ref)
+        journal(conn, "storage_parent_cert_renewed",
+                f"{cred['parent_id']}: {cred['bound_cert_ref'][:16]} → {new_ref[:16]}", "")
+        log.info("interserver: parent %s renewed its certificate (same key) — adopted",
+                 cred["parent_id"])
+        cred = dict(cred)
+        cred["bound_cert_ref"] = new_ref
     return cred
 
 
@@ -624,11 +657,20 @@ def authenticate_machine_sync(sock: socket.socket, secret: str) -> None:
         raise MachineAuthError(f"המוניטור דחה את סוד השרת: {_reason_sync(sock)}")
 
 
+def _close_reason(side: str, exc: BaseException) -> str:
+    """‏#1122: סיבת סגירה בשם — הצד + סוג החריגה + הפרטים. ‏SysCallError
+    ו-ZeroReturnError של OpenSSL הם שלושת-רבעי הסגירות בפועל, וכולם נבלעו."""
+    return f"{side}: {type(exc).__name__}: {exc}"
+
+
 def relay_tunnel(tls_conn, raw_sock: socket.socket, machine: socket.socket, *,
-                 initial: bytes = b"", idle_seconds: float = TUNNEL_IDLE_SECONDS) -> None:
+                 initial: bytes = b"", idle_seconds: float = TUNNEL_IDLE_SECONDS) -> str:
     """ממסר דו-כיווני בתהליכון אחד: ‏TLS(האב) ↔ TCP(המכונה), עד שצד נסגר
     או עד ``idle_seconds`` בלי תנועה. ‏non-blocking + select, ו-Want*Error
-    של OpenSSL מטופלים כ"עוד לא", לא ככשל."""
+    של OpenSSL מטופלים כ"עוד לא", לא ככשל.
+
+    מחזיר את **סיבת הסגירה** (#1122) — הקורא רושם אותה ליומן. מנהרה
+    שנקטעת בלי סיבה נראית כמו באג בדפדפן, והיא בדרך כלל FW או המכונה."""
     from OpenSSL import SSL
     raw_sock.setblocking(False)
     machine.setblocking(False)
@@ -648,16 +690,16 @@ def relay_tunnel(tls_conn, raw_sock: socket.socket, machine: socket.socket, *,
         else:
             readable, writable, _ = select.select(rlist, wlist, [], idle_seconds)
             if not readable and not writable:
-                return                                        # idle
+                return f"idle {idle_seconds:g}s"
         if raw_sock in readable:
             try:
                 data = tls_conn.recv(65536)
             except SSL.WantReadError:
                 data = None
-            except (SSL.ZeroReturnError, SSL.SysCallError, SSL.Error, OSError):
-                return
+            except (SSL.ZeroReturnError, SSL.SysCallError, SSL.Error, OSError) as exc:
+                return _close_reason("primary", exc)
             if data == b"":
-                return
+                return "primary closed"
             if data:
                 to_machine += data
         if machine in readable:
@@ -665,10 +707,10 @@ def relay_tunnel(tls_conn, raw_sock: socket.socket, machine: socket.socket, *,
                 data = machine.recv(65536)
             except BlockingIOError:
                 data = None
-            except OSError:
-                return
+            except OSError as exc:
+                return _close_reason("machine", exc)
             if data == b"":
-                return
+                return "machine closed"
             if data:
                 to_tls += data
         if to_machine and machine in writable:
@@ -677,16 +719,16 @@ def relay_tunnel(tls_conn, raw_sock: socket.socket, machine: socket.socket, *,
                 del to_machine[:sent]
             except BlockingIOError:
                 pass
-            except OSError:
-                return
+            except OSError as exc:
+                return _close_reason("machine send", exc)
         if to_tls and raw_sock in writable:
             try:
                 sent = tls_conn.send(bytes(to_tls[:16384]))
                 del to_tls[:sent]
             except (SSL.WantWriteError, SSL.WantReadError):
                 pass
-            except (SSL.ZeroReturnError, SSL.SysCallError, SSL.Error, OSError):
-                return
+            except (SSL.ZeroReturnError, SSL.SysCallError, SSL.Error, OSError) as exc:
+                return _close_reason("primary send", exc)
 
 
 # --- אפליקציית ה-FastAPI המבודדת --------------------------------------------
@@ -911,6 +953,48 @@ def _http_response(status: int, payload: object, *, close: bool = False) -> byte
 
 _CONTINUE = b"HTTP/1.1 100 Continue\r\n\r\n"
 
+#: שם התהליכון לכל חיבור — כדי שאפשר יהיה לספור אותם (ולראות שהם משתחררים).
+HANDLER_THREAD_NAME = "interserver-conn"
+
+
+def _peer_addr(raw) -> str:
+    try:
+        host, port = raw.getpeername()[:2]
+        return f"{host}:{port}"
+    except OSError:
+        return "?"
+
+
+def _handshake_within(conn, raw, seconds: float) -> bool:
+    """‏#1122: ‏``do_handshake`` עם תקרת זמן. מחזיר ``True`` כשה-handshake
+    הושלם, ‏``False`` כשפג הזמן — והקורא סוגר.
+
+    ‏socket עם timeout הוא non-blocking ל-pyOpenSSL (אותו מוקש כמו #902 בצד
+    הלקוח): ‏``do_handshake`` זורק ``WantReadError``/``WantWriteError`` ברגע
+    שהבייט הבא לא הגיע, ולכן ממתינים ב-``select`` עד ה-deadline ומנסים שוב.
+    בסיום — חוסם רגיל (``settimeout(None)``): קליטת אימג' של עשרות ג'יגה
+    אסור שתיפול על timeout של handshake."""
+    from OpenSSL import SSL
+    deadline = time.monotonic() + seconds
+    raw.settimeout(seconds)
+    try:
+        while True:
+            try:
+                conn.do_handshake()
+                return True
+            except SSL.WantReadError:
+                wait_r, wait_w = [raw], []
+            except SSL.WantWriteError:
+                wait_r, wait_w = [], [raw]
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            ready = select.select(wait_r, wait_w, [], remaining)
+            if not any(ready):
+                return False
+    finally:
+        raw.settimeout(None)
+
 
 class InterserverTLSServer:
     """מאזין mTLS 1.3 threaded לכניסה הבין-שרתית, מבוסס pyOpenSSL.
@@ -957,14 +1041,17 @@ class InterserverTLSServer:
                 break
             import threading
             threading.Thread(target=self._handle, args=(tls_ctx, raw),
-                             daemon=True).start()
+                             name=HANDLER_THREAD_NAME, daemon=True).start()
 
     def _handle(self, tls_ctx, raw) -> None:
         from OpenSSL import SSL
         conn = SSL.Connection(tls_ctx, raw)
         conn.set_accept_state()
         try:
-            conn.do_handshake()
+            if not _handshake_within(conn, raw, HANDSHAKE_TIMEOUT_SECONDS):
+                log.info("interserver: TLS handshake from %s did not finish in %gs — closed",
+                         _peer_addr(raw), HANDSHAKE_TIMEOUT_SECONDS)
+                return
             peer_cert = conn.get_peer_certificate()
             peer = TlsPeer(
                 tls_version=conn.get_protocol_version_name(),
@@ -1006,8 +1093,16 @@ class InterserverTLSServer:
             conn.sendall(_http_response(413, {"detail": "גוף גדול מדי"}, close=True))
             return False
         body = b"".join(_body_chunks(conn, rest, length))
+        # ‏#1122 (Low): גוף שאינו באורך המוצהר אסור שישאיר את החיבור ב-
+        # keep-alive — קצר = החיבור נסגר באמצע (400, לא dispatch של חצי
+        # JSON); ארוך = בייטים מעבר ל-Content-Length שאיש לא יקרא (desync).
+        if len(body) != length:
+            conn.sendall(_http_response(
+                400, {"detail": f"גוף קצר מהמוצהר: התקבלו {len(body)} מתוך {length}"},
+                close=True))
+            return False
         conn.sendall(self._dispatch(peer, method, path, headers, body))
-        return True
+        return len(rest) <= length
 
     def _receive_stream(self, conn, peer, path, headers, rest) -> bool:
         """‏``PUT /images/{id}``: precheck → ‏``100 Continue`` → זרם לקובץ →
@@ -1021,7 +1116,7 @@ class InterserverTLSServer:
                 protocol_version=headers.get("imagectl-protocol-version", ""),
                 has_console_cookie="imagectl_session" in headers.get("cookie", ""))
         except PairError as exc:
-            conn.sendall(_http_response(exc.status, {"detail": exc.detail}, close=True))
+            conn.sendall(_http_response(exc.status, exc.payload(), close=True))
             return False
         if "100-continue" in headers.get("expect", "").lower():
             conn.sendall(_CONTINUE)
@@ -1029,7 +1124,7 @@ class InterserverTLSServer:
             result = receive_image(self.ctx, plan,
                                    _body_chunks(conn, rest, plan.content_length))
         except PairError as exc:
-            conn.sendall(_http_response(exc.status, {"detail": exc.detail}, close=True))
+            conn.sendall(_http_response(exc.status, exc.payload(), close=True))
             return False
         conn.sendall(_http_response(200, result))
         return True
@@ -1046,8 +1141,7 @@ class InterserverTLSServer:
                 protocol_version=headers.get("imagectl-protocol-version", ""),
                 has_console_cookie="imagectl_session" in headers.get("cookie", ""))
         except PairError as extra:
-            conn.sendall(_http_response(extra.status, {"detail": extra.detail},
-                                        close=True))
+            conn.sendall(_http_response(extra.status, extra.payload(), close=True))
             return False
         reason = "Partial Content" if plan.status == 206 else "OK"
         lines = [
@@ -1074,7 +1168,7 @@ class InterserverTLSServer:
                 protocol_version=headers.get("imagectl-protocol-version", ""),
                 has_console_cookie="imagectl_session" in headers.get("cookie", ""))
         except PairError as exc:
-            conn.sendall(_http_response(exc.status, {"detail": exc.detail}, close=True))
+            conn.sendall(_http_response(exc.status, exc.payload(), close=True))
             return
         with _tunnels_lock:
             if mac in _tunnels:
@@ -1106,7 +1200,9 @@ class InterserverTLSServer:
             conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream"
                          b"\r\nConnection: close\r\n\r\n")
             journal(self.ctx.conn, "storage_monitor_tunnel", mac, "")
-            relay_tunnel(conn, raw, machine, initial=rest)
+            reason = relay_tunnel(conn, raw, machine, initial=rest)
+            journal(self.ctx.conn, "storage_monitor_tunnel_closed", f"{mac}: {reason}", "")
+            log.info("interserver: monitor tunnel to %s closed — %s", mac, reason)
         finally:
             if machine is not None:
                 try:
@@ -1150,7 +1246,7 @@ class InterserverTLSServer:
                     self.ctx, peer, image_id=image_id, **creds))
             return _http_response(404, {"detail": "לא קיים"})
         except PairError as exc:
-            return _http_response(exc.status, {"detail": exc.detail})
+            return _http_response(exc.status, exc.payload())
 
 
 def _monitor_mac_of(path: str) -> str | None:

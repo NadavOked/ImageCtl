@@ -100,13 +100,13 @@ test('a clean measured probe: the health group shows every field, green only whe
   run("openMachineDetail('a0:48:1c:8a:18:40')");
   const html=node('#drawerBody').innerHTML; balanced(html);
   const h=section(html);
-  assert.match(h,/בריאות המכונה \(נדגם לפני 3 דק'\)/,'sampled-ago in the group header');
+  assert.match(h,/בריאות המכונה \(נדגם לפני 3 דק&#39;\)/,'sampled-ago in the group header');
   assert.doesNotMatch(h,/class="note (err|warn)"/,'no verdicts on a clean probe');
   assert.match(h,/<span class="k">חשמל<\/span><span class="v"><span class="st ok">חשמל \(AC\)</);
-  assert.match(h,/<span class="k">שעון<\/span><span class="v"><span class="st ok">סטייה 12 שנ'</);
+  assert.match(h,/<span class="k">שעון<\/span><span class="v"><span class="st ok">סטייה 12 שנ&#39;</);
   assert.match(h,/<span class="k">מעבד<\/span><span class="v">Intel Core i5-8500 · 6 ליבות · מיקרוקוד <span class="mono">0xf4</);
   assert.match(h,/<span class="k">זיכרון<\/span><span class="v"><bdi dir="ltr">8.0 GB<\/bdi> · 1 DIMMs · <span class="muted">ECC לא נבדק</,'ecc null = grey, not "ECC ok"');
-  assert.match(h,/<span class="k">טמפ' מקס'<\/span><span class="v"><span class="st ok">42°C</,'max over zones');
+  assert.match(h,/<span class="k">טמפ&#39; מקס&#39;<\/span><span class="v"><span class="st ok">42°C</,'max over zones');
   assert.match(h,/<span class="k">רשת<\/span><span class="v"><span class="mono">eth0<\/span> 1000Mb\/s full · CRC 0 · dropped 0 · IP ללא כפילות</);
   assert.match(h,/<span class="k">מתג ופורט<\/span><span class="v"><span class="mono" dir="ltr" title="lab port · aa:bb:cc:dd:ee:ff">sw-lab-1 · Gi1\/0\/12/);
   assert.match(h,/<span class="k">כבל<\/span><span class="v"><span class="muted">לא נבדק — יש קישור/);
@@ -131,7 +131,7 @@ test('a bad probe: verdicts above the group in red/orange, error fields orange "
   assert.match(h,/<span class="k">שעון<\/span><span class="v"><span class="st warn">סוטה ב-2 שעות — סוללת BIOS חשודה</);
   assert.match(h,/<span class="k">מעבד<\/span><span class="v"><span class="st warn">לא הצלחנו לבדוק: cpuinfo empty</,'error = orange, not grey');
   assert.match(h,/<span class="muted">DIMMs לא נבדקו<\/span> · <span class="st err">ECC: 1 לא-מתוקנות</);
-  assert.match(h,/<span class="k">טמפ' מקס'<\/span><span class="v"><span class="muted">לא נבדק</,'thermal null = grey');
+  assert.match(h,/<span class="k">טמפ&#39; מקס&#39;<\/span><span class="v"><span class="muted">לא נבדק</,'thermal null = grey');
   assert.match(h,/eth0<\/span> 100Mb\/s half · <span class="st warn">CRC 7<\/span> · dropped 3 · <span class="st err">כפילות IP</);
   assert.match(h,/nvme0n1<\/span>: <span class="st err">95% בלאי · 2 שגיאות מדיה · critical_warning=1</);
   assert.match(h,/<span class="st warn">קרס לפני האתחול הזה<\/span> <span class="mono">dmesg-ramoops-0<\/span> <details class="inline"><summary>קטע<\/summary><pre class="ata-log">panic: boom</);
@@ -159,7 +159,7 @@ test('#1048 netprobe rows: unheard grey, pending, listen error orange, cable ope
   assert.match(pending,/<span class="k">כבל<\/span><span class="v"><span class="muted">ממתין/);
   assert.match(health({cable:null,lldp:{error:'no such interface'}}),/<span class="st warn">לא הצלחנו להאזין/);
   assert.match(health({cable:{status:'open',pairs:[{pair:'B',code:'Open',length_m:12}]},lldp:null}),
-    /<span class="k">כבל<\/span><span class="v"><span class="st err">זוג B פתוח ב-12 מ'/);
+    /<span class="k">כבל<\/span><span class="v"><span class="st err">זוג B פתוח ב-12 מ&#39;/);
   const notes=run('machineVerdictsHtml({probe_verdicts:[{key:"cable",level:"err",text_he:"כבל פגום: זוג B פתוח ב-12 מטר"}]})');
   assert.match(notes,/class="note err"[^]*כבל פגום: זוג B פתוח ב-12 מטר/);
 });

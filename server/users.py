@@ -52,10 +52,17 @@ class UsernameTaken(ValueError):
     """שם תפוס, כולל כפילות case-insensitive. הקורא מתרגם ל-409."""
 
 
+#: ‏#1120: תקרה. PBKDF2 עם 200K סבבים על סיסמה של מגה-בייט הוא DoS;
+#: ‏NIST 800-63B דורש להתיר ≥64, ו-128 משאיר מרווח לביטויי-סיסמה.
+MAX_PASSWORD_LEN = 128
+
+
 def validate_password(password: str) -> None:
     """נוהל אלפון: ≥8, אותיות, ספרות, תו מיוחד. הודעות בעברית כמו במקור."""
     if len(password) < 8:
         raise ValueError("הסיסמה חייבת להכיל לפחות 8 תווים")
+    if len(password) > MAX_PASSWORD_LEN:
+        raise ValueError(f"הסיסמה ארוכה מדי — עד {MAX_PASSWORD_LEN} תווים")
     if not re.search(r"[A-Za-z]", password):
         raise ValueError("הסיסמה חייבת להכיל אותיות")
     if not re.search(r"[0-9]", password):
@@ -357,6 +364,10 @@ def change_own_password(conn: sqlite3.Connection, username: str,
             " WHERE username = ?",
             (_hash(new, secrets.token_hex(16)), stored),
         )
+    # ‏#1120: סיסמה חדשה = כל session ישנה וכל דפדפן "זכור" מתבטלים.
+    # הקורא (`/me/password`) מנפיק לעצמו עוגייה חדשה אחרי הקריאה הזו.
+    # מחוץ ל-`_write_lock` — הוא נוטל אותה בעצמו והיא ``Lock``, לא ``RLock``.
+    bump_auth_epoch(conn, stored)
     journal(conn, "password_changed", stored, stored)
 
 
@@ -373,6 +384,9 @@ def reset_password(conn: sqlite3.Connection, username: str, by: str) -> str:
             " WHERE username = ?",
             (_hash(new, secrets.token_hex(16)), stored),
         )
+    # ‏#1120: איפוס הוא התגובה לחשבון שנפרץ — ה-session של התוקף והדפדפן
+    # ה"זכור" שלו (שעוקף MFA) חייבים למות יחד עם הסיסמה הישנה.
+    bump_auth_epoch(conn, stored)
     journal(conn, "password_reset", stored, by)
     return new
 

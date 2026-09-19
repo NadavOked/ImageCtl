@@ -117,7 +117,7 @@ test('renders build/cloner machines as one table: name+MAC, role, IP, server-dec
   assert.match(b, /class="st warn">ממתין למפעיל: כניסה</, '"what is on the screen" from prompt');
   assert.match(b, /class="btn sm primary" onclick="monitorMachine\('aa%3Abb%3Acc%3Add%3Aee%3A01'\)">פתח מוניטור</);
   assert.doesNotMatch(b, /wakeMachine/, 'online → no WoL');
-  assert.match(c, /class="st ">לא מחובר · נראה לפני 3 שע'</, 'last seen from /net, not from /monitor/machines');
+  assert.match(c, /class="st ">לא מחובר · נראה לפני 3 שע&#39;</, 'last seen from /net, not from /monitor/machines');
   assert.match(c, /<button class="btn sm" disabled title="[^"]+">פתח מוניטור</, 'not online → nothing to connect to');
   assert.doesNotMatch(c, /monitorMachine\(/);
   assert.match(c, /wakeMachine\('aa%3Abb%3Acc%3Add%3Aee%3A02'\)">WoL</, '#984: WoL for a machine that is not connected');

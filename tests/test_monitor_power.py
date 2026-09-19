@@ -1,14 +1,17 @@
 """כפתורי הפעלה-מחדש/כיבוי במסך המוניטור (#781).
 
 הכפתור Ctrl+Alt+Del הוסר, ובמקומו שני כפתורים תפעוליים: **הפעלה מחדש**
-ו-**כיבוי** של המחשב המנוטר. הפקודה נוסעת על אותו ערוץ RFB שעליו נסע
-Ctrl+Alt+Del — הדפדפן שולח ClientCutText עם אסימון כוח, ו-monitor.c
-(שרץ כ-root) ממפה אותו ל-`reboot -f`/`poweroff -f`.
+ו-**כיבוי** של המחשב המנוטר. האסימון נוסע למכונה כ-ClientCutText על
+ה-RFB, ו-monitor.c (שרץ כ-root) ממפה אותו ל-`reboot -f`/`poweroff -f`.
 
-מה שנבדק כאן: (א) שני הכפתורים קיימים ו-Ctrl+Alt+Del איננו, (ב) הם
-מחווטים לאסימון הנכון, (ג) האישור עובר במודאל של הדף (לא prompt/confirm
-החסומים), (ד) monitor.c רושם את hook ה-cut-text וממפה כל אסימון לפקודה
-הנכונה.
+‏#1129 (R48): את ה-ClientCutText כותב **השרת** (`POST …/power`,
+‏`monitor.power_frame`) אחרי שהשווה את השם שהוקלד לשם הקנוני מהטבלה —
+לא הדפדפן. הדפדפן רק קורא ל-POST; ClientCutText מהדפדפן נדחה בגשר.
+
+מה שנבדק כאן: (א) שני הכפתורים קיימים ו-Ctrl+Alt+Del איננו, (ב) הדפדפן
+קורא ל-POST ואינו בונה את הפריים בעצמו, (ג) האישור עובר במודאל של הדף
+(לא prompt/confirm החסומים) ואינו מושווה ל-`?name=`, (ד) monitor.c רושם
+את hook ה-cut-text וממפה כל אסימון לפקודה הנכונה.
 
 הבנייה וההרצה בפועל של monitor.c (gcc, ריבוט על ברזל) הן אימות מעבדה —
 כאן נבדק שהחיווט קיים, כמו ש-test_agent בודק שכל C מקומפל בבנאי.
@@ -71,14 +74,15 @@ def test_html_has_reboot_and_poweroff_buttons():
 # --- (ב) החיווט: כל כפתור לאסימון הנכון --------------------------------------
 
 
-def test_js_sends_the_reboot_and_poweroff_tokens():
-    """‏JS בונה את האסימון מהתחילית + הפעולה; זה מה ש-monitor.c יזהה.
-    נועלים את התחילית המדויקת ואת שתי הפעולות — שני הצדדים חייבים
-    להסכים על שתיהן, אחרת monitor.c לא ימפה את מה שהדפדפן שולח."""
-    js = _js()
-    assert POWER_PREFIX in js
-    assert '"reboot"' in js
-    assert '"poweroff"' in js
+def test_server_builds_the_reboot_and_poweroff_tokens():
+    """‏#1129: השרת בונה את האסימון מהתחילית + הפעולה; זה מה ש-monitor.c
+    יזהה. נועלים את התחילית המדויקת ואת שתי הפעולות — שני הצדדים חייבים
+    להסכים על שתיהן, אחרת monitor.c לא ימפה את מה שהשרת שולח."""
+    from server import monitor
+    assert monitor.POWER_PREFIX == POWER_PREFIX
+    assert set(monitor.POWER_ACTIONS) == {"reboot", "poweroff"}
+    assert monitor.power_frame("reboot").endswith(REBOOT_TOKEN.encode())
+    assert monitor.power_frame("poweroff").endswith(POWEROFF_TOKEN.encode())
 
 
 def test_js_wires_each_button_to_a_power_action():
@@ -87,15 +91,19 @@ def test_js_wires_each_button_to_a_power_action():
     assert "sendPower" in js
     assert "reboot-btn" in js
     assert "poweroff-btn" in js
+    assert '"reboot"' in js
+    assert '"poweroff"' in js
 
 
-def test_js_sends_power_over_rfb_client_cut_text():
-    """הפקודה נוסעת כ-ClientCutText (RFB msg type 6), על ערוץ ה-WS —
-    אותו send() שכל שאר הפרוטוקול משתמש בו. לא fetch לנתיב חדש."""
+def test_js_sends_power_through_the_server_not_over_the_websocket():
+    """‏#1129: הדפדפן קורא ל-`POST …/power` עם השם שהוקלד; הוא **אינו** בונה
+    ‏ClientCutText ואינו מכיר את האסימון — האישור והכתיבה למכונה בשרת."""
     js = _js()
-    assert "clientCutText" in js
-    # ‏6 = ClientCutText. חייב להיבנות ולעבור ב-send() הקיים.
-    assert "send(" in js
+    assert "clientCutText" not in js
+    assert POWER_PREFIX not in js
+    assert "/power" in js
+    assert 'method: "POST"' in js
+    assert "confirm" in js
 
 
 # --- (ג) אישור: מודאל של הדף, לא prompt/confirm החסומים ----------------------
@@ -111,6 +119,9 @@ def test_power_is_behind_a_confirm_modal_not_prompt_or_confirm():
     assert "powerModal" in js
     # מודאל האישור קיים ב-DOM של הדף.
     assert 'id="pmodal"' in _html()
+    # ‏#1129: ההשוואה אינה בדפדפן ואינה מול `?name=` — השם נשלח לשרת כמו שהוא.
+    assert "input.value !== NAME" not in js
+    assert "sendPower(action, input.value)" in js
 
 
 # --- (ד) הסוכן: monitor.c ממפה אסימון → פקודה --------------------------------

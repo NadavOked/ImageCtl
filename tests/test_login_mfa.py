@@ -129,6 +129,9 @@ def test_two_step_login_and_wrong_code(server):
     secret = server["ctx"].conn.execute(
         "SELECT mfa_secret FROM users WHERE username = 'mfa2'"
     ).fetchone()["mfa_secret"]
+    # ‏#1120: קוד שגוי צרך את ה-challenge — כניסה מחדש מנפיקה חדש
+    r = c2.post("/api/console/login", json={"username": "mfa2", "password": "Aa12345!"})
+    challenge = r.json()["challenge"]
     ok = c2.post("/api/console/login/mfa", json={
         "challenge": challenge, "code": totp.totp_code(secret),
     })
@@ -405,3 +408,158 @@ def test_password_change_session_is_not_blocked_by_console_only(server):
     assert changed.status_code == 200, changed.text
     assert c.get("/api/console/me").status_code == 200
     assert c.get("/api/console/me").json()["username"] == "pwadmin"
+
+
+# ---------- #1120 — ארבע הקשחות אחרי סקירה R28 ----------
+
+def _mfa_user(server, name):
+    """יוצר admin עם MFA רשום ומחזיר את הסוד — מבנה משותף לטסטים של #1120."""
+    server["admin"].post("/api/console/users", json={
+        "username": name, "password": "Aa12345!", "role": "admin",
+    })
+    c = _console_client(server)
+    complete_console_login(c, server["ctx"].conn, name, "Aa12345!")
+    secret = server["ctx"].conn.execute(
+        "SELECT mfa_secret FROM users WHERE username = ?", (name,),
+    ).fetchone()["mfa_secret"]
+    return c, secret
+
+
+def _challenge(server, name):
+    c = _console_client(server)
+    r = c.post("/api/console/login", json={"username": name, "password": "Aa12345!"})
+    return c, r
+
+
+def test_1120_wrong_mfa_code_consumes_the_challenge(server):
+    """קוד שגוי פוסל את ה-challenge — הקוד הנכון על אותו challenge נדחה."""
+    _, secret = _mfa_user(server, "burn")
+    c, r = _challenge(server, "burn")
+    challenge = r.json()["challenge"]
+    bad = c.post("/api/console/login/mfa", json={"challenge": challenge, "code": "000000"})
+    assert bad.status_code == 401
+    assert "היכנס מחדש" in bad.json()["detail"]
+    again = c.post("/api/console/login/mfa", json={
+        "challenge": challenge, "code": totp.totp_code(secret),
+    })
+    assert again.status_code == 401, again.text
+    assert "imagectl_session" not in again.cookies
+    # אחרי כניסה מחדש — challenge חדש עובד
+    c2, r2 = _challenge(server, "burn")
+    ok = c2.post("/api/console/login/mfa", json={
+        "challenge": r2.json()["challenge"], "code": totp.totp_code(secret),
+    })
+    assert ok.status_code == 200, ok.text
+
+
+def test_1120_ten_mfa_failures_lock_the_account(server, monkeypatch):
+    """10 קודים שגויים ב-/login/mfa → נעילה 15 דקות, גם על /login."""
+    from server import login_guard
+    t = {"now": 2_000_000.0}
+    monkeypatch.setattr(login_guard, "now", lambda: t["now"])
+    _mfa_user(server, "brute")
+    for n in range(1, 11):
+        t["now"] += 600          # מעבר להשהיה האקספוננציאלית — רק הספירה נבדקת
+        c, r = _challenge(server, "brute")
+        assert r.status_code == 200, (n, r.text)
+        bad = c.post("/api/console/login/mfa", json={
+            "challenge": r.json()["challenge"], "code": "000000",
+        })
+        assert bad.status_code == 401, (n, bad.text)
+    row = server["ctx"].conn.execute(
+        "SELECT failures, locked_until FROM login_attempts WHERE key LIKE 'brute|%'"
+    ).fetchone()
+    assert row is not None, "אף כשל ב-/login/mfa לא נספר"
+    assert row["failures"] == 10
+    assert row["locked_until"] > t["now"]
+    t["now"] += 1
+    locked = _challenge(server, "brute")[1]
+    assert locked.status_code == 403
+    assert "15 דקות" in locked.json()["detail"]
+    events = [r["event"] for r in server["admin"].get("/api/console/journal").json()]
+    assert "login_lockout" in events
+
+
+def test_1120_five_mfa_failures_delay_and_success_clears(server, monkeypatch):
+    """5 כשלים → 429 עם Retry-After ב-/login/mfa; TOTP נכון מאפס את המונה."""
+    from server import login_guard
+    t = {"now": 3_000_000.0}
+    monkeypatch.setattr(login_guard, "now", lambda: t["now"])
+    _, secret = _mfa_user(server, "slow")
+    for _ in range(5):
+        t["now"] += 600
+        c, r = _challenge(server, "slow")
+        assert c.post("/api/console/login/mfa", json={
+            "challenge": r.json()["challenge"], "code": "000000",
+        }).status_code == 401
+    # challenge שהונפק לפני הכשל החמישי — עדיין תקף, אבל המפתח בהשהיה
+    c, r = _challenge(server, "slow")   # /login עצמו: failures=5, ready_at=last_at+1
+    assert r.status_code == 429
+    t["now"] += 600
+    c, r = _challenge(server, "slow")
+    assert r.status_code == 200, r.text
+    ok = c.post("/api/console/login/mfa", json={
+        "challenge": r.json()["challenge"], "code": totp.totp_code(secret),
+    })
+    assert ok.status_code == 200, ok.text
+    assert server["ctx"].conn.execute(
+        "SELECT COUNT(*) AS n FROM login_attempts WHERE key LIKE 'slow|%'"
+    ).fetchone()["n"] == 0
+
+
+def test_1120_password_change_revokes_old_session_and_trusted_browser(server):
+    """החלפה עצמית: ה-session הישן והדפדפן הזכור מתבטלים; המחליף ממשיך."""
+    _, secret = _mfa_user(server, "chg")
+    old, r = _challenge(server, "chg")
+    assert old.post("/api/console/login/mfa", json={
+        "challenge": r.json()["challenge"], "code": totp.totp_code(secret),
+        "remember_browser": True,
+    }).status_code == 200
+    assert old.get("/api/console/me").status_code == 200
+    assert server["ctx"].conn.execute(
+        "SELECT COUNT(*) AS n FROM trusted_browsers WHERE username = 'chg'"
+    ).fetchone()["n"] == 1
+    # session שנייה של אותו משתמש מחליפה סיסמה
+    server["ctx"].conn.execute("UPDATE users SET mfa_last_step = NULL WHERE username = 'chg'")
+    server["ctx"].conn.commit()
+    me, r = _challenge(server, "chg")
+    assert me.post("/api/console/login/mfa", json={
+        "challenge": r.json()["challenge"], "code": totp.totp_code(secret),
+    }).status_code == 200
+    changed = me.post("/api/console/me/password", json={
+        "current_password": "Aa12345!", "new_password": "Bb12345!",
+    })
+    assert changed.status_code == 200, changed.text
+    assert me.get("/api/console/me").status_code == 200      # המחליף לא נותק
+    assert old.get("/api/console/me").status_code == 401     # הישן — כן
+    assert server["ctx"].conn.execute(
+        "SELECT COUNT(*) AS n FROM trusted_browsers WHERE username = 'chg'"
+    ).fetchone()["n"] == 0
+    skip = old.post("/api/console/login", json={"username": "chg", "password": "Bb12345!"})
+    assert skip.json().get("mfa_required") is True           # הדפדפן כבר לא זכור
+
+
+def test_1120_admin_reset_revokes_sessions_and_trusted(server):
+    _, secret = _mfa_user(server, "rsv")
+    live, r = _challenge(server, "rsv")
+    assert live.post("/api/console/login/mfa", json={
+        "challenge": r.json()["challenge"], "code": totp.totp_code(secret),
+        "remember_browser": True,
+    }).status_code == 200
+    assert live.get("/api/console/me").status_code == 200
+    assert server["admin"].post("/api/console/users/rsv/reset-password").status_code == 200
+    assert live.get("/api/console/me").status_code == 401
+    assert server["ctx"].conn.execute(
+        "SELECT COUNT(*) AS n FROM trusted_browsers WHERE username = 'rsv'"
+    ).fetchone()["n"] == 0
+
+
+def test_1120_password_longer_than_128_is_rejected_by_name(server):
+    r = server["admin"].post("/api/console/users", json={
+        "username": "longpw", "password": "Aa1!" + "x" * 125, "role": "deploy",
+    })
+    assert r.status_code == 400
+    assert "128" in r.json()["detail"]
+    assert server["admin"].post("/api/console/users", json={
+        "username": "longpw", "password": "Aa1!" + "x" * 124, "role": "deploy",
+    }).status_code == 200

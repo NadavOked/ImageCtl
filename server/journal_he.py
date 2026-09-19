@@ -92,6 +92,9 @@ EVENTS_HE = {
     "storage_transfer_failed": "העברת אימג' לסניף נכשלה",
     "storage_image_received": "אימג' התקבל מהשרת הראשי",
     "storage_monitor_tunnel": "מוניטור למכונה נפתח מהשרת הראשי",
+    "monitor_connected": "מוניטור נפתח למכונה",
+    "monitor_closed": "מוניטור נסגר",
+    "monitor_power": "פקודת כוח דרך המוניטור",
     "logo_set": "לוגו הוחלף",
     "logo_refused": "העלאת לוגו נדחתה",
     "logo_clear": "הלוגו הוסר",
@@ -352,6 +355,17 @@ class JournalTranslator:
                 name = SETTINGS_HE.get(m.group(1), m.group(1))
                 value = {"true": "פעיל", "false": "כבוי"}.get(m.group(2), m.group(2))
                 text = f"{name}: {value}"
+        elif event in ("monitor_closed", "monitor_power"):
+            # ‏#1129: "<mac> <סיבה/פעולה>[ node=<nid>]" — המילה השנייה מתורגמת.
+            words = {"browser": "הדפדפן סגר", "machine": "המכונה סגרה",
+                     "idle": "נסגר אחרי 10 דק' בלי תעבורה",
+                     "refused": "נסגר — הודעה אסורה מהדפדפן", "error": "כשל",
+                     "reboot": "הפעלה מחדש", "poweroff": "כיבוי"}
+            m = re.match(r"(\S+) (\S+)(.*)$", detail)
+            text = self._names(detail) if m is None else " · ".join(
+                part for part in (self._machines.get(m.group(1), m.group(1)),
+                                  words.get(m.group(2), m.group(2)),
+                                  m.group(3).strip()) if part)
         elif event in ("machine_add", "machine_edit", "machine_delete"):
             m = re.search(r"([0-9a-f:]{17})(?: name=(\S+))?(?: group=(\S+))?", detail)
             if m:

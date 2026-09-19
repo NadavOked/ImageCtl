@@ -196,6 +196,21 @@ def test_every_row_carries_the_switch_fields(toggles):
         assert row["off_means"]
 
 
+def test_every_switch_row_warns_before_shutdown_in_the_69_wording(toggles):
+    """נדב 19/09: "על כל פורט אזהרה" — לא רק 69. כל שורה עם מתג נושאת
+    `warning_he` בניסוח "כיבוי X … " שהקונסולה מציגה לפני ההקלדה/האישור;
+    שורה בלי מתג (`none`) לא מציגה אזהרת כיבוי כי אין מה לכבות."""
+    rows = rows_of(toggles)
+    with_switch = [r for r in rows.values() if r["toggle"] != "none"]
+    assert len(with_switch) >= 6, [r["id"] for r in with_switch]
+    for row in with_switch:
+        assert row.get("warning_he"), f"{row['id']} has no warning_he"
+        assert row["warning_he"].startswith("כיבוי "), (row["id"], row["warning_he"])
+    for row in rows.values():
+        if row["toggle"] == "none":
+            assert not row.get("warning_he"), row["id"]
+
+
 def test_the_missing_rows_are_there_now(toggles):
     """‏DHCP 67, בין-שרתים 8443 ו-SSH לשרת × כרטיס — חסרו ב-/ports."""
     rows = rows_of(toggles)

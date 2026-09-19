@@ -50,10 +50,15 @@ const post = (path, body) => api(path, { method: "POST", body: JSON.stringify(bo
 const put = (path, body) => api(path, { method: "PUT", body: JSON.stringify(body || {}) });
 const del = (path) => api(path, { method: "DELETE" });
 
+/* ‏#1129: הברחה מפורשת של ששת התווים, לא textContent→innerHTML — הסריאליזציה
+   של הדפדפן ממירה רק `&<>` בצומת טקסט, ו-esc() משמש ב-67 attributes
+   (`value="…"`, `title="…"`, `data-*`). ערך עם `"` היה סוגר את ה-attribute
+   ומזריק `onfocus=`; המקורות אינם בשליטת המפעיל (שמות שיתופי SMB/NFS
+   מסריקת רשת, IQN, ‏switch_name מ-LLDP, dmidecode). בתוך `onclick="fn('…')"`
+   זה עדיין לא מספיק — שם משתמשים ב-encodeId + decodeURIComponent. */
+const ESC_MAP = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;", "`": "&#96;" };
 function esc(text) {
-  const div = document.createElement("div");
-  div.textContent = text == null ? "" : String(text);
-  return div.innerHTML;
+  return (text == null ? "" : String(text)).replace(/[&<>"'`]/g, (c) => ESC_MAP[c]);
 }
 
 /* ---------- #954: שפת העיצוב המשותפת — רכיבי רינדור לכל עמוד חדש ----------
@@ -465,6 +470,15 @@ function loginStateFromResponse(status, body, retryAfter, prev) {
            error: loginErrorMessage(status, body, retryAfter), fieldErr: true };
 }
 
+function mfaRejectedState(body, prev) {
+  // ‏#1120: קוד שגוי צורך את ה-challenge בשרת — אין למה להישאר במסך
+  // הקוד. חזרה לכניסה עם השם שהוקלד ועם הודעת השרת כלשונה.
+  prev = prev || {};
+  return { screen: "login", username: prev.username || "", remember: !!prev.remember,
+           challenge: "", otp: ["", "", "", "", "", ""], otpBackup: false, fieldErr: false,
+           error: (body && body.detail) || "קוד שגוי — היכנס מחדש" };
+}
+
 function loginMsg(text) {
   if (!text) return '<p class="msg" id="login-error" role="alert"></p>';
   return `<p class="msg" id="login-error" role="alert">${LOGIN_ALERT_ICON}<span>${esc(text)}</span></p>`;
@@ -739,7 +753,7 @@ async function loginSubmitMfa() {
     challenge: LOGIN.challenge, code, remember_browser: remember,
   });
   if (r.status === 401) {
-    loginRender({ error: "קוד שגוי" });
+    loginRender(mfaRejectedState(r.body, LOGIN));
     return;
   }
   const next = loginStateFromResponse(r.status, r.body, r.retryAfter, LOGIN);
@@ -2037,7 +2051,7 @@ function captureRowHtml(t) {
   const waiting = t.state === "pending";
   const who = t.machine || t.mac || "";
   const sub = waiting ? `קליטה בתהליך — ממתין שמחשב הבנייה ${who} יעלה ב-PXE` : `קליטה בתהליך — ${who}${t.disk ? " · " + t.disk : ""}`;
-  const cancel = isAdmin() ? `<div class="acts"><button class="btn sm danger" onclick="cancelCapture('${esc(t.id)}')">בטל קליטה</button></div>` : "";
+  const cancel = isAdmin() ? `<div class="acts"><button class="btn sm danger" onclick="cancelCapture(decodeURIComponent('${encodeId(t.id)}'))">בטל קליטה</button></div>` : "";
   return `<tr class="task"><td></td><td>${UI.name(t.name || "", sub)}</td><td>—</td><td>—</td><td>${ltr(fmtBytes(t.bytes_written))}</td><td>${ltr(fmtDate(t.created_at))}</td><td>${captureProgressCell(t)}</td><td>${UI.status("run", waiting ? "ממתין" : "נקלט…")}</td><td>${cancel}</td></tr>`;
 }
 function imagesSelBar(list) {
@@ -2106,7 +2120,7 @@ function imagesCapturesCard() {
     const active = t.state === "pending" || t.state === "running";
     const acts = [];
     if (t.image_id && findImage(t.image_id)) acts.push(["פרטים", `openImageDetail('${encodeId(t.image_id)}')`]);
-    const cancel = isAdmin() && active ? `<div class="acts"><button class="btn sm danger" onclick="cancelCapture('${esc(t.id)}')">ביטול</button></div>` : "";
+    const cancel = isAdmin() && active ? `<div class="acts"><button class="btn sm danger" onclick="cancelCapture(decodeURIComponent('${encodeId(t.id)}'))">ביטול</button></div>` : "";
     return [UI.name(t.machine || t.mac || "", t.group_label || ""), `<span class="mono">${esc(t.disk || "—")}</span>`, UI.nameHtml(t.name || "", ltr(fmtDate(t.created_at) + " " + fmtClock(t.created_at))),
       UI.status(v.cls, v.label), active ? captureProgressCell(t) : ltr(fmtBytes(t.bytes_written)),
       t.error ? `<span class="${t.state === "failed" ? "muted" : "muted"}">${esc(t.error)}</span>` : "", (acts.length ? UI.acts(acts) : "") + cancel];
@@ -4656,9 +4670,13 @@ const PORT_OFF_MEANS = {
 };
 const PORT_API_NEEDED = "דורש API (#996)";
 const offMeansNote = (text) => `<div class="sheet-note danger">מה קורה אם מכבים: ${esc(text)}</div>`;
-/* #1013: אזהרה שהשרת שולח לשורה (`warning_he`, TFTP 69) — מוצגת במודאל **לפני**
-   שדה הקלדת שם השרת, במקום "מה קורה אם מכבים" הגנרי (הכרעת נדב 19/09). */
-const warningNote = (text) => `<div class="sheet-note danger" data-testid="port-warning">${esc(text)}</div>`;
+/* אזהרה לפני כל כיבוי (הכרעת נדב 19/09 — "על כל פורט אזהרה", לא רק 69):
+   `warning_he` מהשרת כשיש (#1013), אחרת "מה קורה אם מכבים" מה-`off_means` —
+   אותו בלוק אדום, לפני שדה ההקלדה או כפתור האישור. */
+const warningNote = (p) => {
+  const text = p.warning_he || (p.off_means ? `מה קורה אם מכבים: ${p.off_means}` : "");
+  return text ? `<div class="sheet-note danger" data-testid="port-warning">${esc(text)}</div>` : "";
+};
 
 function nicBody(n, over) {
   return { enabled: n.enabled, proxy: n.proxy, trunk: n.trunk, range_start: n.range_start, range_end: n.range_end,
@@ -4669,7 +4687,7 @@ function portSwitch(key) { const fn = PORT_ACTIONS.get(key); if (fn) fn(); }
 
 function portSwitchHtml(key, on, lock, cap, label) {
   const cls = on === null ? "unk" : on ? "on" : "";
-  return `<span class="swrow"><button type="button" class="sw ${cls}" role="switch" aria-checked="${on === null ? "mixed" : String(!!on)}" aria-label="${esc(label)}" onclick="portSwitch('${esc(key)}')"></button><span class="cap">${lock ? "🔒 " : ""}${esc(cap)}</span></span>`;
+  return `<span class="swrow"><button type="button" class="sw ${cls}" role="switch" aria-checked="${on === null ? "mixed" : String(!!on)}" aria-label="${esc(label)}" onclick="portSwitch(decodeURIComponent('${encodeId(key)}'))"></button><span class="cap">${lock ? "🔒 " : ""}${esc(cap)}</span></span>`;
 }
 
 /* DHCP: הדלקה = הטופס הקיים של net.js (מצב/טווח/הקלדת שם הכרטיס); אחרי
@@ -4746,12 +4764,17 @@ function portServerToggle(p) {
   if (p.toggle === "none") { toast(`אין מתג לפורט הזה: ${p.off_means || p.detail || ""}`); return; }
   if (p.toggle === "confirm" && portConfirmDirection(p, enabling)) {
     sheet({ title, sub: p.desc || "", danger: true, submitLabel: enabling ? "הדלק" : "כבה",
-      note: enabling ? "" : (p.warning_he ? warningNote(p.warning_he) : offMeansNote(p.off_means || "")),
+      note: enabling ? "" : warningNote(p),
       verify: { label: "להמשך יש להקליד את שם השרת:", mustEqual: word },
       onSubmit: () => send({ confirm: word }) });
     return;
   }
-  confirmSheet(title, enabling ? (p.desc || "") : (p.off_means || ""), enabling ? "הדלק" : "כבה", () => send({}));
+  if (!enabling) {
+    sheet({ title, sub: p.desc || "", danger: true, submitLabel: "כבה", note: warningNote(p),
+      onSubmit: () => send({}) });
+    return;
+  }
+  confirmSheet(title, p.desc || "", "הדלק", () => send({}));
 }
 
 function portRows() {

@@ -63,6 +63,10 @@ ProtectHome=yes
 # ‏#1088: ‏/srv/tftp — הקונסולה כותבת grub/grub.cfg כשרשת ההפצה מוגדרת
 # ממנה (deploy_net.write_grub_cfg). אופציונלי (מקף): שרת עם --tftp-root
 # אחר אינו נופל על תיקייה שאינה קיימת.
+#
+# ‏#1123: מיקומי אחסון (SMB) — קובצי credentials ‏0600 ב-/etc/imagectl/creds/
+# (מכוסה ב--/etc/imagectl), ו-/etc/fstab נכתב אטומית דרך קובץ זמני לצידו
+# (מכוסה ב-/etc). אין נתיב חדש להוסיף.
 ReadWritePaths=/var/lib/imagectl /srv/imagectl/images /etc/dnsmasq.d -/etc/imagectl /etc/network/interfaces.d /etc -/srv/tftp
 PrivateTmp=yes
 

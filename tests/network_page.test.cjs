@@ -302,7 +302,7 @@ test('NICs table: actual / configured / gap side by side, DHCP live + stored, ro
   assert.match(r19,/^<tr data-nic="ens19" class="sel" onclick="netSelect\('ens19'\)" tabindex="0" aria-selected="true">/);
   assert.match(r18,/class="st ok">מחובר · 1000 Mbps</); assert.match(r18,/class="mono">10\.44\.10\.1\/24</); assert.match(r18,/static 10\.44\.10\.1\/24 · gw 10\.44\.10\.254/); assert.match(r18,/class="st ok">תואם</);
   assert.match(r18,/class="st ">כבוי<\/span><span class="sub">שמור: כבוי</); assert.match(r18,/<td>TFTP 69 · HTTP 8080 · HTTP 8081<\/td>/);
-  assert.match(r18,/class="sw on" role="switch" aria-checked="true" aria-label="SSH לשרת ens18" onclick="portSwitch\('ssh_nic:ens18'\)"><\/button><span class="cap">🔒 פתוח · מאזין/,'last open door → typing the name');
+  assert.match(r18,/class="sw on" role="switch" aria-checked="true" aria-label="SSH לשרת ens18" onclick="portSwitch\(decodeURIComponent\('ssh_nic%3Aens18'\)\)"><\/button><span class="cap">🔒 פתוח · מאזין/,'last open door → typing the name');
   assert.match(r19,/class="st ok">משרת<\/span><span class="sub">שמור: מופעל</,'the range lives in the deploy tab and the selected card, not in the 9-column table'); assert.match(r19,/<td>הפצה · DHCP · TFTP 69 · HTTP 8080 · Multicast 9000–9001<\/td>/);
   assert.match(r19,/class="sw " role="switch" aria-checked="false".*🔒 סגור/,'opening = typing the name');
   assert.match(r20,/class="st err">כתובת: מוגדר 10\.44\.11\.1\/24, בפועל 10\.44\.11\.2\/24</,'gap is a state, red'); assert.match(r20,/class="mono">10\.44\.11\.2\/24</); assert.match(r20,/class="pill warn">רשת המכללה</);
@@ -369,7 +369,7 @@ test('deploy network: header from the DHCP NIC, "what the server hands out" says
   const r1=row(seen,'data-mac="'+C1+'"'), rb=row(seen,'data-mac="'+B1+'"'), ru=row(seen,'data-mac="'+UNREG+'"');
   assert.match(r1,/class="name">מחשב 1<\/span><span class="sub">מחשב שיכפול · מחשבי שיכפול/); assert.match(r1,/class="st ok">מחובר</); assert.match(r1,/<b>hello · בסוכן<\/b>/);
   assert.match(r1,/<div class="acts"><button class="btn sm" onclick="openMachineDetail\('a0%3A48%3A1c%3A8a%3A18%3A40'\)">פרטים<\/button><\/div>/);
-  assert.match(rb,/class="st ">לפני 3 שע'</); assert.match(rb,/<td><span style="color:var\(--muted\)">—<\/span><\/td>/,'no boot trail = dash, not a stage');
+  assert.match(rb,/class="st ">לפני 3 שע&#39;</); assert.match(rb,/<td><span style="color:var\(--muted\)">—<\/span><\/td>/,'no boot trail = dash, not a stage');
   assert.match(ru,/^<tr data-mac="de:ad:be:ef:00:01" class="unreg">/); assert.match(ru,/class="pill warn">לא רשום</); assert.match(ru,/GRUB → דיסק מקומי/);
   assert.match(ru,/<div class="acts on"><button class="btn sm primary" onclick="netRegister\('de%3Aad%3Abe%3Aef%3A00%3A01'\)">רשום<\/button><button class="btn sm" onclick="netDeviceDescribe\(/); assert.match(ru,/netDeviceForget\(/);
   run("netRegister('de%3Aad%3Abe%3Aef%3A00%3A01')"); assert.equal(run('JSON.stringify(globalThis.addMachine)'),JSON.stringify({mac:UNREG}));

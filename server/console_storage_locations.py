@@ -7,6 +7,8 @@ admin בלבד (deploy → 403). מחוץ ל-allowlist של הקיוסק. כלי
 from __future__ import annotations
 
 import json
+import logging
+import sqlite3
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -15,6 +17,8 @@ from . import auth
 from .api import ServerContext
 from .db import _settle, _write_lock, journal, now_iso, writing
 from . import storage_locations as sl
+
+log = logging.getLogger("imagectl.storage_locations")
 
 
 def create_storage_locations_router(
@@ -35,6 +39,25 @@ def create_storage_locations_router(
             raise HTTPException(404, "מיקום לא קיים")
         return row
 
+    def _validate(kind: str, params: dict) -> None:
+        """‏#1123 (3): 400 בשם השדה, לפני שכלי מערכת כלשהו רץ."""
+        reason = sl.validate_params(kind, params)
+        if reason:
+            raise HTTPException(400, reason)
+
+    def _delete_row(loc_id: str) -> None:
+        _settle(ctx.conn)
+        with _write_lock, writing(ctx.conn):
+            ctx.conn.execute("DELETE FROM storage_locations WHERE id = ?", (loc_id,))
+
+    def _fstab_or_unmount(row: dict) -> None:
+        """‏#1123 (4): עיגון בלי שורת fstab אינו `connected` — הוא לא ישרוד reboot."""
+        written = sl.rewrite_fstab(ctx.conn, hooks)
+        if written.status != sl.OK:
+            hooks["umount"](row["mount_point"])
+            raise HTTPException(
+                409, f"העיגון הצליח אבל fstab לא נכתב — בוטל: {written.reason}")
+
     @router.get("")
     def list_locations(user=Depends(admin_only)):
         del user
@@ -52,12 +75,17 @@ def create_storage_locations_router(
         kind = body.get("type")
         server = body.get("server") or ""
         creds = body.get("creds") or {}
+        if kind in ("nfs", "smb") and not sl.valid_host(server):
+            raise HTTPException(400, "כתובת שרת לא תקינה — IP או שם מארח (RFC 1123)")
         if kind == "nfs":
             result = hooks["nfs_scan"](server)
         elif kind == "smb":
+            _validate("smb", {"server": server, "share": "x", **creds})  # תווי בקרה ב-creds
             result = hooks["smb_scan"](server, creds)
         elif kind == "iscsi":
             portal = body.get("portal") or server
+            if not sl.valid_portal(portal):
+                raise HTTPException(400, "פורטל לא תקין — IP[:port] או שם מארח[:port]")
             chap = creds if creds.get("user") or creds.get("chap_user") else None
             if chap and "user" not in chap and creds.get("chap_user"):
                 chap = {"user": creds.get("chap_user"), "secret": creds.get("chap_secret")}
@@ -78,6 +106,7 @@ def create_storage_locations_router(
         params = body.get("params") or {}
         if kind not in sl.TYPES:
             raise HTTPException(400, "סוג לא מוכר")
+        _validate(kind, params)
         tmp = data_dir / "storage-test"
         outcome = sl.test_connection(
             kind, params, hooks, tmp_target=tmp, server_base=server_base)
@@ -102,6 +131,7 @@ def create_storage_locations_router(
             raise HTTPException(400, "סוג לא מוכר")
         if not name:
             raise HTTPException(400, "חסר שם תצוגה")
+        _validate(kind, params)
         existing = ctx.conn.execute(
             "SELECT id FROM storage_locations WHERE name = ?", (name,)
         ).fetchone()
@@ -120,32 +150,48 @@ def create_storage_locations_router(
                 raise HTTPException(400, "חסר נתיב")
         else:
             mount = str(sl.mount_point_for(data_dir, name, loc_id))
+        taken = ctx.conn.execute(
+            "SELECT name FROM storage_locations WHERE mount_point = ?", (mount,)
+        ).fetchone()
+        if taken:
+            raise HTTPException(409, f"כבר יש מיקום על הנתיב הזה: {taken['name']}")
         now = now_iso()
-        state = "unchecked" if kind == "iscsi" else "connected"
-        _settle(ctx.conn)
-        with _write_lock, writing(ctx.conn):
-            ctx.conn.execute(
-                "INSERT INTO storage_locations (id, name, type, params_json, mount_point,"
-                " state, state_since, state_detail, created_by, created_at,"
-                " last_images_json, last_df_json)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?, '[]', ?)",
-                (loc_id, name, kind, json.dumps(params, ensure_ascii=False), mount,
-                 state, now, user[0], now,
-                 json.dumps({"free_bytes": outcome.get("free_bytes"),
-                             "total_bytes": outcome.get("total_bytes"),
-                             "checked_at": now}) if outcome.get("free_bytes") is not None
-                 else None),
-            )
+        # ‏#1123 (4): מיקום רשת נולד `unchecked` — `connected` רק אחרי fstab וגם mount.
+        state = "connected" if kind == "local" else "unchecked"
+        try:
+            _settle(ctx.conn)
+            with _write_lock, writing(ctx.conn):
+                ctx.conn.execute(
+                    "INSERT INTO storage_locations (id, name, type, params_json,"
+                    " mount_point, state, state_since, state_detail, created_by,"
+                    " created_at, last_images_json, last_df_json)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?, '[]', ?)",
+                    (loc_id, name, kind, json.dumps(params, ensure_ascii=False), mount,
+                     state, now, user[0], now,
+                     json.dumps({"free_bytes": outcome.get("free_bytes"),
+                                 "total_bytes": outcome.get("total_bytes"),
+                                 "checked_at": now})
+                     if outcome.get("free_bytes") is not None else None),
+                )
+        except sqlite3.IntegrityError:
+            raise HTTPException(409, f"כבר יש מיקום על הנתיב הזה: {mount}") from None
         row = sl.get(ctx.conn, loc_id)
         if kind in ("nfs", "smb"):
+            written = sl.rewrite_fstab(ctx.conn, hooks)
+            if written.status != sl.OK:
+                _delete_row(loc_id)
+                raise HTTPException(
+                    409, f"fstab לא נכתב — המיקום לא נוצר: {written.reason}")
             mounted = sl.apply_mount(row, hooks)
             if mounted.status != sl.OK:
-                _settle(ctx.conn)
-                with _write_lock, writing(ctx.conn):
-                    ctx.conn.execute(
-                        "DELETE FROM storage_locations WHERE id = ?", (loc_id,))
+                _delete_row(loc_id)
+                undone = sl.rewrite_fstab(ctx.conn, hooks)
+                if undone.status != sl.OK:
+                    log.error("fstab line for %s not removed after mount failure: %s",
+                              loc_id, undone.reason)
+                if kind == "smb" and sl.smb_creds(params):
+                    hooks["creds_remove"](sl.creds_path(loc_id))
                 raise HTTPException(409, mounted.reason or "העיגון נכשל")
-            sl.rewrite_fstab(ctx.conn, hooks)
             sl.set_state(ctx.conn, loc_id, "connected", "")
         elif kind == "local":
             space = hooks["df"](mount)
@@ -232,7 +278,7 @@ def create_storage_locations_router(
         mounted = sl.apply_mount(row, hooks)
         if mounted.status != sl.OK:
             raise HTTPException(409, mounted.reason or "העיגון נכשל")
-        sl.rewrite_fstab(ctx.conn, hooks)
+        _fstab_or_unmount(row)
         sl.set_state(ctx.conn, loc_id, "connected", "", force_since=True)
         space = hooks["df"](row["mount_point"])
         if space.status == sl.OK:
@@ -276,7 +322,7 @@ def create_storage_locations_router(
         mounted = sl.apply_mount(row, hooks)
         if mounted.status != sl.OK:
             raise HTTPException(409, mounted.reason or "העיגון אחרי הפירמוט נכשל")
-        sl.rewrite_fstab(ctx.conn, hooks)
+        _fstab_or_unmount(row)
         sl.set_state(ctx.conn, loc_id, "connected", "", force_since=True)
         space = hooks["df"](row["mount_point"])
         if space.status == sl.OK:
@@ -343,7 +389,7 @@ def create_storage_locations_router(
         mounted = sl.apply_mount(row, hooks)
         if mounted.status != sl.OK:
             raise HTTPException(409, mounted.reason or "העיגון נכשל")
-        sl.rewrite_fstab(ctx.conn, hooks)
+        _fstab_or_unmount(row)
         sl.set_state(ctx.conn, loc_id, "connected", "", force_since=True)
         space = hooks["df"](row["mount_point"])
         if space.status == sl.OK:
@@ -371,10 +417,10 @@ def create_storage_locations_router(
         cached = sl.last_images(sl.get(ctx.conn, loc_id))
         if cached:
             raise HTTPException(409, f"על המיקום יש {len(cached)} אימג'ים — אין הסרה")
-        _settle(ctx.conn)
-        with _write_lock, writing(ctx.conn):
-            ctx.conn.execute("DELETE FROM storage_locations WHERE id = ?", (loc_id,))
+        _delete_row(loc_id)
         sl.rewrite_fstab(ctx.conn, hooks)
+        if row["type"] == "smb":
+            hooks["creds_remove"](sl.creds_path(loc_id))
         journal(ctx.conn, "storage_location_delete",
                 f"{loc_id} {row['name']}", user[0])
         return {"ok": True}
