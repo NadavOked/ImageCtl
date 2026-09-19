@@ -59,6 +59,9 @@ IMAGES_DIR="/srv/imagectl/images"
 REPO_URL="https://github.com/NadavOked/ImageCtl-archive"
 DRY_RUN=0
 PORT=8080
+# ‏#1131 ס' 3: המתקין הוא התקנה; עדכון קוד הוא tools/server-upgrade.sh.
+# שרת שכבר מותקן עוצר כאן, אלא אם --force (דורס תצורה, עם גיבוי).
+FORCE=0
 
 # ---------------------------------------------------------------------------
 # הקובץ הקבוע ל-GRUB
@@ -87,6 +90,9 @@ function try_chain {
     unset espdev
     search --no-floppy --file --set=espdev "$1"
     if [ -n "$espdev" ]; then
+        if [ -z "$local_found" ]; then
+            set local_found=$1
+        fi
         set root=$espdev
         if chainloader "$1"; then
             boot
@@ -101,7 +107,9 @@ function chain_local {
     insmod fat
     insmod chain
     insmod search_fs_file
+    insmod probe
     unset chain_refused
+    unset local_found
 
     for path in /EFI/Microsoft/Boot/bootmgfw.efi /EFI/ubuntu/shimx64.efi /EFI/ubuntu/grubx64.efi /EFI/debian/shimx64.efi /EFI/debian/grubx64.efi /EFI/fedora/shimx64.efi /EFI/fedora/grubx64.efi /EFI/centos/shimx64.efi /EFI/rocky/shimx64.efi /EFI/almalinux/shimx64.efi /EFI/opensuse/shim.efi /EFI/BOOT/bootx64.efi; do
         try_chain "$path"
@@ -123,7 +131,20 @@ function chain_local {
             echo "not a Secure Boot refusal. Read the error above."
         fi
     else
-        echo "No operating system found on the local disk."
+        unset local_disk
+        probe --set=local_disk --driver (hd0)
+        if [ -n "$local_disk" ]; then
+            echo "No operating system found on the local disk."
+            echo "A disk IS present (GRUB opened (hd0) via $local_disk), but none of"
+            echo "the boot loader paths this menu knows exists on any of its partitions."
+            echo "The disk is blank, or holds a system this menu does not know how to start."
+        else
+            echo "No disk device found."
+            echo "GRUB sees no (hd0) at all - this is not an empty disk, it is no disk."
+            echo "Check the drive, its cable and power, and whether the firmware lists it."
+        fi
+        echo "Devices GRUB can see:"
+        ls
     fi
     echo "Contact IT. This computer will stay powered on."
     set stay_on=y
@@ -141,7 +162,10 @@ function try_local {
     echo ""
     echo "This machine booted in Legacy BIOS mode, which on this network"
     echo "means a cloning machine. It has no local system to start, and the"
-    echo "drives attached to it are the payload - they are never booted from."
+    echo "drives attached to it are the payload. This menu will not start them."
+    echo "Only the BIOS boot order keeps them from booting: a cloning machine"
+    echo "must boot from the network BEFORE any disk, and a dead CMOS battery"
+    echo "resets that order on every power-up."
     echo "Nothing will be started."
     echo "Fix the server or the network, then power-cycle this machine."
     echo "Contact IT. This computer will stay powered on."
@@ -213,21 +237,42 @@ run() {
     fi
 }
 
+# הגיבוי האחרון ש-write_file יצר (ריק = לא היה קובץ קודם) — למי שצריך
+# להחזיר אותו בכשל (install_firewall).
+LAST_BACKUP=""
+
 write_file() {
-    # write_file <path> <<'EOF' ... EOF
-    local path="$1" content
+    # write_file <path> [mode] <<'EOF' ... EOF        (#1131 ס' 2)
+    # אטומי: tmp באותה תיקייה + mv — הריגה באמצע אינה משאירה קובץ חתוך.
+    # כל קובץ קיים מגובה ל-.pre-imagectl.<זמן>, גם אם אנחנו כתבנו אותו
+    # (הרצה חוזרת דרסה בלי גיבוי). mode מפורש, לא umask.
+    local path="$1" mode="${2:-0644}" content tmp
     content="$(cat)"
+    LAST_BACKUP=""
     if (( DRY_RUN )); then
-        printf '%s    would write %s (%d bytes)%s\n' "$DIM" "$path" "${#content}" "$OFF"
+        printf '%s    would write %s (%d bytes, %s)%s\n' "$DIM" "$path" "${#content}" "$mode" "$OFF"
         return
     fi
     install -d "$(dirname "$path")"
-    if [[ -f "$path" ]] && ! grep -q "ImageCtl" "$path" 2>/dev/null; then
-        # קובץ שלא אנחנו כתבנו — מגבים במקום לדרוס.
-        cp -a "$path" "${path}.pre-imagectl.$(date +%Y%m%d%H%M%S)"
-        warn "backed up existing $path"
+    if [[ -f "$path" ]]; then
+        LAST_BACKUP="${path}.pre-imagectl.$(date +%Y%m%d%H%M%S)"
+        cp -a "$path" "$LAST_BACKUP"
+        warn "backed up existing $path -> $LAST_BACKUP"
     fi
-    printf '%s\n' "$content" > "$path"
+    tmp="$(mktemp "${path}.XXXXXX")"
+    printf '%s\n' "$content" > "$tmp"
+    chmod "$mode" "$tmp"
+    mv -f "$tmp" "$path"
+}
+
+# ‏#1131 ס' 8: שם כרטיס = תווים בטוחים בלבד, וקיים במכונה. השם נכנס
+# ל-NFT_ARGS, ל-Environment של היחידה ולקובץ dnsmasq — בלי סינון,
+# `--servers-if 'eth0; echo x'` היה מגיע לשם כלשונו.
+SYS_NET="${SYS_NET:-/sys/class/net}"
+valid_ifname() { [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]] && [[ -e "$SYS_NET/$1" ]]; }
+require_ifname() {   # require_ifname <שם> <מה-זה>
+    [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]] || die "$2: שם כרטיס לא חוקי: $(printf '%q' "$1") (מותר: A-Za-z0-9._-)"
+    [[ -e "$SYS_NET/$1" ]] || die "$2: לא קיים ממשק בשם $1 (אין $SYS_NET/$1)"
 }
 
 usage() {
@@ -259,6 +304,8 @@ DHCP לא נדלק כאן בכלל — מגדירים אותו אחר כך מה�
   --storage-role ROLE  standalone (ברירת מחדל) או secondary (#655/#723)
   --primary-url URL    כתובת השרת הראשי — חובה ל-secondary
   --console-host ADDR  כתובת/שם כרטיס הניהול לקונסולה (8081, HTTPS); ברירת מחדל: כרטיס השרתים לפי שם (#1088)
+  --force              מריץ שוב על שרת שכבר מותקן (דורס תצורה, עם גיבוי .pre-imagectl.<זמן>);
+                       לעדכון קוד — כפתור "עדכן" בקונסולה / tools/server-upgrade.sh, לא המתקין
   --dry-run            מראה מה יקרה בלי לשנות כלום
   -h, --help           המסך הזה
 EOF
@@ -286,6 +333,7 @@ while [[ $# -gt 0 ]]; do
         --storage-role) STORAGE_ROLE="${2:?}"; shift 2 ;;
         --primary-url) PRIMARY_URL="${2:?}"; shift 2 ;;
         --console-host) CONSOLE_HOST="${2:?}"; shift 2 ;;
+        --force)       FORCE=1; shift ;;
         --dry-run)     DRY_RUN=1; shift ;;
         -h|--help)     usage; exit 0 ;;
         --mode|--dhcp-range)
@@ -297,6 +345,50 @@ done
 (( DRY_RUN )) || [[ $EUID -eq 0 ]] || die "צריך להריץ עם sudo (או --dry-run כדי רק לראות)."
 
 # ---------------------------------------------------------------------------
+# ‏#1131 ס' 3: כבר מותקן? המתקין = התקנה; עדכון קוד = tools/server-upgrade.sh.
+# הרצה חוזרת דורסת grub.cfg, override.conf, היחידות ו-/opt/imagectl (כולל
+# שינויים מקומיים) — ולכן עוצרת בשם, אלא אם --force.
+# ---------------------------------------------------------------------------
+
+UNIT_FILE="${IMAGECTL_UNIT_FILE:-/etc/systemd/system/imagectl-server.service}"
+refuse_if_installed() {
+    local mark=""
+    [[ -f "$DATA_DIR/imagectl.db" ]] && mark="$DATA_DIR/imagectl.db"
+    [[ -f "$UNIT_FILE" ]] && mark="${mark:-$UNIT_FILE}"
+    [[ -n "$mark" ]] || return 0
+    (( FORCE )) && { warn "כבר מותקן ($mark) — --force: ממשיך, קבצים קיימים מגובים ל-.pre-imagectl.<זמן>"; return 0; }
+    local msg="ImageCtl כבר מותקן כאן ($mark).
+    עדכון קוד: כפתור \"עדכן\" בקונסולה (tools/server-upgrade.sh) — לא המתקין.
+    להריץ את המתקין שוב בכל זאת (דורס תצורה, עם גיבוי .pre-imagectl.<זמן>): --force"
+    if (( DRY_RUN )); then warn "$msg"; else die "$msg"; fi
+}
+refuse_if_installed
+
+# ‏#1121 ס' 7: רשת הפצה שהוגדרה **מהקונסולה** (deploy:interface/deploy:url
+# ב-DB) נשמרת בהרצה חוזרת — בלי זה המתקין היה מכבה dnsmasq ומחולל חומת
+# אש בלי כרטיס ההפצה. ‏--deploy-if מפורש גובר (ואז המקור הופך ל-cli).
+console_deploy_if_from_db() {   # מדפיס את הכרטיס, או ריק; יציאה ≠0 = לא נקרא
+    [[ -f "$DATA_DIR/imagectl.db" ]] || return 0
+    python3 - "$DATA_DIR/imagectl.db" <<'DEPLOYEOF'
+import sqlite3, sys
+conn = sqlite3.connect(sys.argv[1])
+rows = dict(conn.execute(
+    "SELECT key, value FROM settings WHERE key IN ('deploy:interface', 'deploy:url')"))
+iface, url = rows.get("deploy:interface"), rows.get("deploy:url")
+# כרטיס בלי כתובת או להפך = תצורה חצי-כתובה, לא רשת הפצה (deploy_net.resolve).
+print(iface if iface and url else "")
+DEPLOYEOF
+}
+CONSOLE_DEPLOY_IF=""
+if [[ -z "$IFACE" ]]; then
+    CONSOLE_DEPLOY_IF="$(console_deploy_if_from_db)" || die "קריאת רשת ההפצה מ-$DATA_DIR/imagectl.db נכשלה"
+    if [[ -n "$CONSOLE_DEPLOY_IF" ]]; then
+        require_ifname "$CONSOLE_DEPLOY_IF" "רשת ההפצה שב-DB"
+        say "רשת ההפצה כבר הוגדרה מהקונסולה על $CONSOLE_DEPLOY_IF — נשמרת (dnsmasq וחומת האש); כרטיס אחר: --deploy-if"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # שאלה 1 — כרטיס וילן השרתים (קונסולה 8081, SSH 22), מתוך רשימה של מה שקיים
 # ---------------------------------------------------------------------------
 #
@@ -305,7 +397,11 @@ done
 # יפתור את שם השרת. הקונסולה נקשרת אליו **לפי שם** (--console-host <if>)
 # ומאזינה מחדש כשהכתובת משתנה. סטטי הוא בחירה, באותן שאלות כמו בקונסולה.
 
-iface_ip() { ip -4 -o addr show dev "$1" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1; }
+# ‏#1121 ס' 5: כתובת `scope global` שאינה deprecated (בחידוש lease יש לרגע
+# שתיים). בלי `2>/dev/null` — `ip` שנכשל נראה ככישלון, לא כ"אין כתובת";
+# ‏awk ולא grep/head: ‏grep -v בלי שורות יוצא 1, ותחת pipefail זה היה
+# מפיל את `ADDR=$(iface_ip …)`.
+iface_ip() { ip -4 -o addr show dev "$1" scope global | awk '!/deprecated/ {print $4; exit}' | cut -d/ -f1; }
 
 list_nics() {
     mapfile -t NICS < <(ip -br link | awk '$1 != "lo" {print $1}' | cut -d@ -f1)
@@ -341,7 +437,7 @@ if [[ -z "$SERVERS_IF" ]]; then
         esac
     fi
 fi
-ip link show "$SERVERS_IF" >/dev/null 2>&1 || die "לא קיים ממשק בשם $SERVERS_IF"
+require_ifname "$SERVERS_IF" "כרטיס השרתים"
 case "$SERVERS_MODE" in
     dhcp)   ;;
     static) [[ -n "$SERVERS_ADDR" ]] || die "כרטיס שרתים סטטי מחייב כתובת (--servers-address)" ;;
@@ -359,7 +455,8 @@ esac
 # והשרת עולה במצב "רשת ההפצה לא הוגדרה" (הסוכן על loopback בלבד).
 
 # באוטומציה (--servers-if בלי --deploy-if) אין שאלה: "לא עכשיו".
-if [[ -z "$IFACE" && ! $SERVERS_IF_FROM_FLAG -eq 1 ]]; then
+# ‏#1121 ס' 7: וכשהקונסולה כבר הגדירה כרטיס — אין מה לשאול, הוא נשמר.
+if [[ -z "$IFACE" && -z "$CONSOLE_DEPLOY_IF" && ! $SERVERS_IF_FROM_FLAG -eq 1 ]]; then
     say "כרטיס ההפצה (DHCP/TFTP/מולטיקאסט למחשבי השיכפול והבנייה):"
     printf '  0) לא עכשיו — המנהל יבחר אותו מהקונסולה (דף הרשת)\n'
     list_nics
@@ -373,7 +470,7 @@ if [[ -z "$IFACE" && ! $SERVERS_IF_FROM_FLAG -eq 1 ]]; then
     fi
 fi
 if [[ -n "$IFACE" ]]; then
-    ip link show "$IFACE" >/dev/null 2>&1 || die "לא קיים ממשק בשם $IFACE"
+    require_ifname "$IFACE" "כרטיס ההפצה"
     # הכתובת נגזרת מהכרטיס — אין סיבה להקליד אותה.
     if [[ -z "$SERVER_URL" ]]; then
         ADDR="$(iface_ip "$IFACE")"
@@ -387,6 +484,12 @@ fi
 # ‏#1088: ‏--console-host ברירת מחדל = כרטיס השרתים **לפי שם** — השרת פותר
 # את הכתובת בעלייה ומאזין מחדש בהחלפתה. כתובת מפורשת (הדגל) גוברת.
 CONSOLE_HOST="${CONSOLE_HOST:-$SERVERS_IF}"
+# ‏#1131 ס' 8: הערך נכנס ל-Environment של היחידה — כתובת, שם מארח או שם
+# כרטיס; שם כרטיס חייב להתקיים (הוא ה-SAN של התעודה, לפי כתובתו).
+[[ "$CONSOLE_HOST" =~ ^[A-Za-z0-9._:-]+$ ]] || die "--console-host: ערך לא חוקי: $(printf '%q' "$CONSOLE_HOST")"
+if [[ ! "$CONSOLE_HOST" =~ ^[0-9a-fA-F.:]+$ && -e "$SYS_NET/$CONSOLE_HOST" ]]; then
+    require_ifname "$CONSOLE_HOST" "--console-host"
+fi
 
 case "$SERVER_URL" in
     "")        ;;   # #1088: אין כרטיס הפצה עדיין — הכתובת תיקבע מהקונסולה
@@ -400,7 +503,10 @@ esac
 # רק כדי לעצור מוקדם, לפני שמתקינים חצי שירות.
 case "$STORAGE_ROLE" in
     standalone) PRIMARY_URL="" ;;
-    secondary)  [[ -n "$PRIMARY_URL" ]] || die "שרת משני מחייב --primary-url" ;;
+    secondary)  [[ -n "$PRIMARY_URL" ]] || die "שרת משני מחייב --primary-url"
+                # ‏#1131 ס' 8: נכנס ל-Environment של היחידה ול-NFT_ARGS.
+                [[ "$PRIMARY_URL" =~ ^https?://[A-Za-z0-9._:/-]+$ ]] \
+                    || die "--primary-url: ערך לא חוקי: $(printf '%q' "$PRIMARY_URL")" ;;
     *)          die "--storage-role חייב להיות standalone או secondary (התקבל: $STORAGE_ROLE)" ;;
 esac
 
@@ -522,12 +628,7 @@ else
     say "כותב את grub/grub.cfg עבור $GRUB_HOST"
     CFG_TEXT="${GRUB_BOOTSTRAP//@@GRUB_HOST@@/$GRUB_HOST}"
     CFG_TEXT="${CFG_TEXT//@@GRUB_PORT@@/$GRUB_PORT}"
-    if (( DRY_RUN )); then
-        printf '%s    would write %s/grub/grub.cfg%s\n' "$DIM" "$TFTP_ROOT" "$OFF"
-    else
-        printf '%s\n' "$CFG_TEXT" > "$TFTP_ROOT/grub/grub.cfg"
-        chmod 0644 "$TFTP_ROOT/grub/grub.cfg"
-    fi
+    write_file "$TFTP_ROOT/grub/grub.cfg" <<<"$CFG_TEXT"
 fi
 
 # אין tftp-secure, בכוונה: הוא מגיש רק קבצים שבבעלות משתמש dnsmasq,
@@ -590,10 +691,14 @@ if [[ -n "$IFACE" ]]; then
     run systemctl enable dnsmasq
     if (( ! DRY_RUN )); then
         systemctl restart dnsmasq || {
-            journalctl -u dnsmasq -n 20 --no-pager >&2 || true
+            # ‏#1131 ס' 7: journalctl שנכשל נאמר בשמו — לא `|| true` שמסתיר.
+            journalctl -u dnsmasq -n 20 --no-pager >&2 || warn "journalctl -u dnsmasq נכשל — הסיבה אינה זמינה כאן"
             die "dnsmasq לא עלה. תקן ונסה שוב."
         }
     fi
+elif [[ -n "$CONSOLE_DEPLOY_IF" ]]; then
+    # ‏#1121 ס' 7: הקונסולה כבר הפעילה אותו על $CONSOLE_DEPLOY_IF — לא נוגעים.
+    say "dnsmasq נשאר כפי שהקונסולה הגדירה (רשת הפצה על $CONSOLE_DEPLOY_IF)"
 else
     # ‏#1088: הקונסולה מפעילה (enable + restart) כשמודלק DHCP על כרטיס ההפצה.
     say "dnsmasq נשאר כבוי עד שתוגדר רשת ההפצה מהקונסולה"
@@ -601,24 +706,50 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# חומת אש nftables לפי וילן (#1074 / R20-F1)
+# חומת אש nftables לפי וילן (#1074 / R20-F1) — **הצעד האחרון** (#1131 ס' 1)
 # ---------------------------------------------------------------------------
 #
 # נכתבת כאן, בהתקנה, לא בשדרוג: tools/server-upgrade.sh אינו מפעיל
 # nftables — שרת קיים לא ינותק. --no-firewall מדלג עם אזהרה ביומן.
+#
+# רצה **אחרי** שהשרת עלה ועונה: policy drop לפני התעודה/DB/השירות, עם
+# `--servers-if` שגוי, השאירה שרת עם חומת אש ובלי SSH מהוילן הנכון —
+# ובלי דרך פנימה לתקן. כשל בתוך הצעד הזה מחזיר את ה-ruleset הקודם
+# (trap), כך ש-SSH שעבד לפני המתקין עובד גם אחרי כשל שלו.
 
-if (( NO_FIREWALL )); then
-    warn "ללא חומת אש — R20-F1"
-else
-    say "מתקין ומפעיל חומת אש nftables (הפצה=${IFACE:-טרם הוגדר}, שרתים=$SERVERS_IF)"
+NFT_CONF="${NFT_CONF:-/etc/nftables.conf}"
+NFT_PREV=""
+NFT_CONF_BACKUP=""
+firewall_rollback() {
+    warn "המתקין נכשל אחרי הפעלת חומת האש — מחזיר את ה-ruleset הקודם"
+    systemctl disable --now nftables || warn "systemctl disable --now nftables נכשל"
+    if [[ -s "$NFT_PREV" ]]; then
+        nft -f "$NFT_PREV" || warn "החזרת ה-ruleset הקודם נכשלה (nft -f $NFT_PREV)"
+    else
+        nft flush ruleset || warn "nft flush ruleset נכשל"
+    fi
+    if [[ -n "$NFT_CONF_BACKUP" ]]; then
+        mv -f "$NFT_CONF_BACKUP" "$NFT_CONF" || warn "החזרת $NFT_CONF נכשלה"
+    fi
+}
+
+install_firewall() {
+    if (( NO_FIREWALL )); then
+        warn "ללא חומת אש — R20-F1"
+        return 0
+    fi
+    local DEPLOY_FOR_NFT="${IFACE:-$CONSOLE_DEPLOY_IF}"
+    say "מתקין ומפעיל חומת אש nftables (הפצה=${DEPLOY_FOR_NFT:-טרם הוגדר}, שרתים=$SERVERS_IF)"
     run env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nftables
     NFT_GEN="$APP_DIR/install/nftables-rules.sh"
     [[ -f "$NFT_GEN" ]] || NFT_GEN="$SCRIPT_DIR/nftables-rules.sh"
     [[ -f "$NFT_GEN" ]] || die "חסר מחולל חומת האש: install/nftables-rules.sh"
     # ‏#1088: בלי כרטיס הפצה המחולל כותב רק את כללי וילן השרתים; הקונסולה
     # מריצה אותו שוב עם --deploy-if כשמודלק DHCP (server/deploy_net.py).
+    # ‏#1121 ס' 7: כרטיס שהקונסולה כבר הגדירה נכנס כאן, אחרת הרצה חוזרת
+    # הייתה סוגרת את וילן ההפצה.
     NFT_ARGS=(--servers-if "$SERVERS_IF")
-    [[ -n "$IFACE" ]] && NFT_ARGS+=(--deploy-if "$IFACE")
+    [[ -n "$DEPLOY_FOR_NFT" ]] && NFT_ARGS+=(--deploy-if "$DEPLOY_FOR_NFT")
     if [[ "$STORAGE_ROLE" == "secondary" ]]; then
         PRIMARY_IP="${PRIMARY_URL#http://}"
         PRIMARY_IP="${PRIMARY_IP#https://}"
@@ -639,25 +770,34 @@ else
     if (( DRY_RUN )); then
         printf '%s    would run: sh %s %s | nft -c -f -%s\n' \
             "$DIM" "$NFT_GEN" "${NFT_ARGS[*]}" "$OFF"
-        printf '%s    would install /etc/nftables.conf and enable nftables%s\n' \
+        printf '%s    would install /etc/nftables.conf and enable nftables (last, with rollback)%s\n' \
             "$DIM" "$OFF"
-    else
-        tmp="$(mktemp)"
-        sh "$NFT_GEN" "${NFT_ARGS[@]}" > "$tmp" \
-            || { rm -f "$tmp"; die "מחולל חומת האש נכשל"; }
-        nft -c -f "$tmp" || {
-            cat "$tmp" >&2 || true
-            rm -f "$tmp"
-            die "תחביר חומת האש אינו תקין (nft -c). המתקין עוצר."
-        }
-        install -m 0644 "$tmp" /etc/nftables.conf
-        rm -f "$tmp"
-        systemctl enable --now nftables || {
-            journalctl -u nftables -n 20 --no-pager >&2 || true
-            die "nftables לא עלה. תקן ונסה שוב, או --no-firewall."
-        }
+        return 0
     fi
-fi
+    local tmp
+    tmp="$(mktemp)"
+    sh "$NFT_GEN" "${NFT_ARGS[@]}" > "$tmp" \
+        || { rm -f "$tmp"; die "מחולל חומת האש נכשל"; }
+    nft -c -f "$tmp" || {
+        cat "$tmp" >&2 || warn "לא הצלחתי להדפיס את הקובץ שנכשל"
+        rm -f "$tmp"
+        die "תחביר חומת האש אינו תקין (nft -c). המתקין עוצר."
+    }
+    # מכאן נוגעים בקרנל: שומרים את מה שרץ עכשיו, וכל יציאה ≠0 מחזירה אותו.
+    NFT_PREV="$(mktemp)"
+    nft list ruleset > "$NFT_PREV" || die "nft list ruleset נכשל — לא נוגעים בחומת האש"
+    trap 'rc=$?; if (( rc != 0 )); then firewall_rollback; fi' EXIT
+    write_file "$NFT_CONF" < "$tmp"
+    NFT_CONF_BACKUP="$LAST_BACKUP"
+    rm -f "$tmp"
+    systemctl enable --now nftables || {
+        journalctl -u nftables -n 20 --no-pager >&2 || warn "journalctl -u nftables נכשל — הסיבה אינה זמינה כאן"
+        die "nftables לא עלה. תקן ונסה שוב, או --no-firewall."
+    }
+    systemctl is-active --quiet nftables || die "nftables אינו active אחרי enable --now"
+    trap - EXIT
+    rm -f "$NFT_PREV"
+}
 
 # מצב proxy רץ באינסטנס dnsmasq נפרד ‏(#36): ‏dnsmasq 2.91 קופא על בקשת
 # PXE לפורט 4011 במצב proxy, ובאינסטנס משותף הקפיאה הזו מורידה גם את
@@ -675,15 +815,18 @@ run install -m 0644 "$APP_DIR/install/imagectl-proxy.service" \
 say "יוצר את משתמש המנהל ומרים את השרת"
 run install -d "$DATA_DIR"
 if (( ! DRY_RUN )); then
-    ADMIN_USER="$ADMIN_USER" ADMIN_PASS="$ADMIN_PASS" \
-    python3 - <<PYEOF
+    # ‏#1131 ס' 4: הסיסמה עוברת ב-fd 3 (צינור מ-process substitution), לא
+    # ב-env — משתנה סביבה של תהליך-ילד נראה ב-`ps e`/`/proc/<pid>/environ`.
+    ADMIN_USER="$ADMIN_USER" \
+    python3 - 3< <(printf '%s' "$ADMIN_PASS") <<PYEOF
 import os, sys, sqlite3
 sys.path.insert(0, "$APP_DIR")
 from server.db import connect
 from server import users
 conn = connect("$DATA_DIR/imagectl.db")
 username = os.environ["ADMIN_USER"]
-password = os.environ.get("ADMIN_PASS") or ""
+with os.fdopen(3, encoding="utf-8") as fd3:
+    password = fd3.read()
 if password:
     try:
         users.create(conn, username, password, "admin", by="installer",
@@ -793,7 +936,8 @@ Environment=IMAGECTL_URL=$SERVER_URL
 # ‏בגרשיים: הערך מכיל רווחים (--storage-role X --primary-url Y), ובלי
 # גרשיים systemd מפצל את שורת ה-Environment למילים וקולט רק
 # IMAGECTL_STORAGE_ARGS=--storage-role → השרת קורס "expected one argument".
-# ‏ExecStart מרחיב $IMAGECTL_STORAGE_ARGS בלי גרשיים כדי לפצל שוב לארגומנטים.
+# ‏ExecStart מרחיב \$IMAGECTL_STORAGE_ARGS בלי גרשיים כדי לפצל שוב לארגומנטים
+# (ה-\$ מוברח: ה-heredoc אינו מצוטט, ותחת set -u משתנה לא-מוגדר מפיל — #1149).
 Environment="IMAGECTL_STORAGE_ARGS=$STORAGE_ARGS"
 EOF
 # ‏#703 (tracer 5): תעודת ה-TLS של הקונסולה נוצרת (או נטענת — התקנה
@@ -826,6 +970,16 @@ fi
 run systemctl daemon-reload
 run systemctl enable --now imagectl-netrollback.timer
 run systemctl enable --now imagectl-server
+
+# ‏#1131 ס' 1: השרת עונה? (liveness ללא הזדהות, על loopback) — לפני שנוגעים
+# בחומת האש, כי אחריה כשל = שרת שאין דרך פנימה לתקן.
+if (( ! DRY_RUN )); then
+    bash "$APP_DIR/install/console-live.sh" "https://127.0.0.1:8081" "" 60 "$DATA_DIR/console-tls/console.crt" \
+        || { journalctl -u imagectl-server -n 30 --no-pager >&2 || warn "journalctl -u imagectl-server נכשל"
+             die "השרת לא עלה (imagectl-server) — חומת האש לא הופעלה. תקן והרץ שוב עם --force."; }
+fi
+
+install_firewall
 
 # ---------------------------------------------------------------------------
 # סיכום

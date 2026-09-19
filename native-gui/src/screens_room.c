@@ -314,15 +314,23 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
     }
 
     /* ---- renderLive ---- */
-    char sub[160], count[48], hint[400];
-    snprintf(sub, sizeof sub, "משדר: %s · גל %d", s->round_image, s->wave_number);
+    char sub[240], count[48], hint[520], pace[160], age[64];
+    /* #410: how old this picture is, next to the wave -- a state file that
+     * stopped changing shows a growing number, not a current-looking screen. */
+    pace_age(s->updated, age, sizeof age);
+    snprintf(sub, sizeof sub, "משדר: %s · גל %d%s%s", s->round_image, s->wave_number,
+             age[0] ? " · " : "", age);
     snprintf(count, sizeof count, "%d / %d", s->written, s->target);
     if (s->wave_open) {
         int need = s->remaining - s->ready; if (need < 0) need = 0;
         snprintf(hint, sizeof hint, "הגל ממתין: %d מגירות מוכנות, צריך עוד %d — או \"התחל עכשיו\". החלפתם מגירות? הדליקו את המכונות והן יצטרפו.",
                  s->ready, need);
     } else {
-        snprintf(hint, sizeof hint, "הגל משדר. מכונה שסיימה — מכבים, מחליפים מגירות, מדליקים.");
+        /* #410: elapsed, rate and ETA come from the server (round= record);
+         * "לא נמדד" in words when it has nothing yet -- never a 0 rate. */
+        pace_text(s->elapsed_s, s->rate_bps, s->eta_s, 0, pace, sizeof pace);
+        snprintf(hint, sizeof hint, "הגל משדר — %s. מכונה שסיימה — מכבים, מחליפים מגירות, מדליקים.",
+                 pace[0] ? pace : "זמן וקצב טרם נמדדו");
     }
     int pct = s->target > 0 ? (int)floor(100.0 * s->written / s->target + 0.5) : 0;
 

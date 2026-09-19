@@ -56,6 +56,7 @@ static int room_fallback_port(const Machine *m) {
 void state_parse(State *s, FILE *fp) {
     memset(s, 0, sizeof *s);
     s->pct = -1;                                  /* no total known until said */
+    s->elapsed_s = s->eta_s = -1; s->rate_bps = -1;   /* #410: unmeasured until said */
     char line[1024];
     while (fgets(line, sizeof line, fp)) {
         line[strcspn(line, "\r\n")] = 0;
@@ -64,7 +65,7 @@ void state_parse(State *s, FILE *fp) {
         if (!eq) continue;
         *eq = 0;
         const char *key = line;
-        char *val = eq + 1, *f[9];
+        char *val = eq + 1, *f[12];
 #define KEY(k) (strcmp(key, k) == 0)
         if (KEY("disk") && s->ndisks < MAX_DISKS) {
             split(val, f, 5);
@@ -121,7 +122,8 @@ void state_parse(State *s, FILE *fp) {
             d->fresh = num(f[6], 0) != 0;
             d->selected = num(f[7], 0) != 0;
         } else if (KEY("drawer") && s->ndrawers < MAX_DRAWERS) {
-            if (split(val, f, 6) < 5) continue;       /* malformed -- no phantom drawer */
+            int nf = split(val, f, 8);
+            if (nf < 5) continue;                     /* malformed -- no phantom drawer */
             unsigned long long port, bytes, total;
             if (!parse_uint(f[0], &port) || port > INT_MAX) continue;  /* reject, don't fold to 0 */
             if (!parse_uint(f[3], &bytes)) continue;
@@ -133,6 +135,10 @@ void state_parse(State *s, FILE *fp) {
             d->bytes = bytes;
             d->total = total;
             cp(d->error, sizeof d->error, f[5]);
+            /* #410: fields 7-8 are optional (an older agent sends six);
+             * -1 / absent = not measured. */
+            d->rate_bps = nf >= 8 && f[6][0] ? strtoll(f[6], NULL, 10) : -1;
+            d->eta_s = nf >= 8 ? num(f[7], -1) : -1;
         } else if (KEY("cdisk") && s->nidisks < MAX_DRAWERS) {
             /* cdisk=port|dev|model|size|smart|cause -- the cloner's idle
              * inventory. NOT "disk=" -- that key already holds the build
@@ -197,12 +203,18 @@ void state_parse(State *s, FILE *fp) {
             split(val, f, 2);
             cp(s->msg_title, sizeof s->msg_title, f[0]); cp(s->msg_sub, sizeof s->msg_sub, f[1]);
         } else if (KEY("round")) {
-            split(val, f, 7);
+            split(val, f, 10);
             s->has_round = 1;
             cp(s->round_image, sizeof s->round_image, f[0]);
             s->wave_number = num(f[1], 0); s->wave_open = num(f[2], 0);
             s->written = num(f[3], 0); s->target = num(f[4], 0);
             s->ready = num(f[5], 0); s->remaining = num(f[6], 0);
+            /* #410: an older agent sends seven fields -> "" -> -1 (unmeasured) */
+            s->elapsed_s = num(f[7], -1);
+            s->rate_bps = f[8][0] ? strtoll(f[8], NULL, 10) : -1;
+            s->eta_s = num(f[9], -1);
+        } else if (KEY("updated")) {
+            s->updated = strtoll(val, NULL, 10);                 /* #410 */
         } else if (KEY("session")) {
             split(val, f, 7);
             s->has_session = 1;

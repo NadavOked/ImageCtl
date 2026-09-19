@@ -76,7 +76,8 @@ gui_state() {
               if (.machines|type) != "array" then error("bad room") else
               (if .round == null then empty else .round |
                 "round=" + ([.image_name,.wave_number,(if .wave_state == "open" then 1 else 0 end),
-                  .written_drives,.target_drives,.ready_drives,.remaining_drives] |
+                  .written_drives,.target_drives,.ready_drives,.remaining_drives,
+                  (.elapsed_s // -1),(.rate_bps // -1),(.eta_s // -1)] |
                   map(tostring|gsub("[\\r\\n|]";" "))|join("|")) end),
               (.machines[] | row),
               (.machines | to_entries[] |
@@ -111,6 +112,10 @@ gui_state() {
                 mv "$GUI_DIR/session-shown.next" "$GUI_DIR/session-shown.json" || return 1 ;;
     esac
     if [ -f "$GUI_DIR/error" ]; then cat "$GUI_DIR/error" >> "$GUI_DIR/state.next" || return 1; fi
+    # #410: when this snapshot was taken. The screen prints "updated Ns ago"
+    # from it, so a state file that stopped changing shows a growing age
+    # instead of a picture that looks current (rule 5).
+    printf 'updated=%s\n' "$(date +%s)" >> "$GUI_DIR/state.next" || return 1
     mv "$GUI_DIR/state.next" "$GUI_DIR/state"
 }
 

@@ -20,6 +20,7 @@ __all__ = [
     "STEP_PATH",
     "STEPS",
     "STEP_INDEX",
+    "LOCAL_STEPS",
     "GRUB_STEPS",
     "AGENT_STEPS",
     "TINY_BODY",
@@ -67,7 +68,33 @@ STEPS: tuple[str, ...] = (
     "agent-hello",
 )
 
-STEP_INDEX: dict[str, int] = {name: i for i, name in enumerate(STEPS)}
+#: ‏#416: הענף השני — "Boot from local disk". זו **אינה** המשכה של
+#: הרשימה למעלה אלא הסתעפות ממנה אחרי `menu`: מכונה שבחרה בדיסק
+#: המקומי לא תגיע לעולם ל-`entry`, ומכונה שנכנסה ל-ImageCtl לא תגיע
+#: לכאן. הענף הזה היה השקט היחיד בקובץ — ובדיוק הוא שנכשל ב-#416
+#: (מחשב הבנייה, 05/09: "No operating system found" על דיסק שהקושחה
+#: כלל לא ראתה, ושעה של פירוק אימג' בגלל זה).
+#:
+#:   local-entry          — ‏GRUB נכנס לערך הדיסק המקומי (‏chain_local).
+#:   local-search-ok      — ‏`search --file` מצא מטען אתחול; ‏chainloader
+#:                          בא מיד אחריו, ואם הצליח — זה הפירור האחרון.
+#:   local-search-empty   — יש דיסק ((hd0) קיים), ואף נתיב לא נמצא עליו.
+#:   local-no-disk        — ‏GRUB אינו רואה (hd0) כלל. לא "אין מערכת":
+#:                          אין דיסק.
+#:   local-chain-refused  — נמצא ונדחה (‏#61): ‏chainloader נכשל.
+#:
+#: שלושת האחרונים הם מסכי עצירה — המכונה נשארת דלוקה, ואין אחריהם
+#: פירור נוסף. הסדר כאן קובע רק את `idx` ב-DB (צעד שאינו מתקדם =
+#: אתחול חדש); "הצעד הבא" של ענף זה אינו רשימה אלא תוצאה.
+LOCAL_STEPS: tuple[str, ...] = (
+    "local-entry",
+    "local-search-ok",
+    "local-search-empty",
+    "local-no-disk",
+    "local-chain-refused",
+)
+
+STEP_INDEX: dict[str, int] = {name: i for i, name in enumerate(STEPS + LOCAL_STEPS)}
 
 #: מי מדווח מה. ‏`menu` אינו באף אחת מהן — הוא נרשם בצד השרת.
 GRUB_STEPS: tuple[str, ...] = STEPS[1:6]
@@ -79,7 +106,8 @@ GRUB_FUNCTION_NAME = "imagectl_trace"
 
 
 def is_step(name: object) -> bool:
-    """האם זה אחד מהצעדים המנויים. כל דבר אחר אינו נרשם."""
+    """האם זה אחד מהצעדים המנויים — בשרשרת ImageCtl או בענף הדיסק
+    המקומי. כל דבר אחר אינו נרשם."""
     return isinstance(name, str) and name in STEP_INDEX
 
 

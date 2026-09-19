@@ -351,7 +351,8 @@ def create_console_router(
         query = (
             "SELECT m.mac, m.suffix, m.group_id, m.note, m.drawer_count,"
             " m.added_at, d.disks_json, d.last_seen AS disks_reported_at,"
-            " d.prompt"   # #906: מה המכונה ממתינה עליו לאדם (NULL = לא ממתינה)
+            " d.prompt,"   # #906: מה המכונה ממתינה עליו לאדם (NULL = לא ממתינה)
+            " d.disk_probe"   # #402: למה אפס דיסקים (NULL = סוכן ישן)
             " FROM machines m LEFT JOIN net_devices d ON d.mac = m.mac"
             + (" WHERE m.group_id = ?" if group else "")
             + " ORDER BY m.group_id, m.suffix"

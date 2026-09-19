@@ -18,6 +18,9 @@
 # line. Every file's sha256 is checked twice: after the download, and again
 # on the NTFS after the copy -- "copied" is what reads back, not cp's exit.
 
+# #433: the UEFI Boot#### entry rides on the same hook (see below);
+# bootentry.sh is loaded by imagectl-agent, right before this file.
+
 DRIVERS_WIN_DIR="ImageCtl/Drivers"
 DEVICE_PATH_KEY='Microsoft\Windows\CurrentVersion'
 DEVICE_PATH_ENTRY='%SystemRoot%\..\ImageCtl\Drivers'
@@ -111,7 +114,10 @@ stage_drivers() {
     # $1 = disk name, $2 = manifest file. Always returns 0, and always leaves
     # the top-level state at "done": the restore IS complete, and a member
     # left in "staging" would never be terminal for the server (reports.py).
+    # #433: the boot entry comes after the drivers, on the same hook -- both
+    # restore paths (the round, single_restore.sh) pass through here.
     _stage_drivers "$@"
+    ensure_boot_entry "$@"
     echo "done" > "$RUN_DIR/state"
     return 0
 }

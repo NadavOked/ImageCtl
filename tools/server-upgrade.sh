@@ -5,13 +5,22 @@
 #
 # שימוש: server-upgrade.sh <tag> <repo-dir>
 #
-# מה שהוא עושה, בסדר הזה, ולמה בסדר הזה:
-#   1. יחידות systemd — קודם, כדי ש-daemon-reload יראה כל שינוי בהן.
-#   2. initrd, פעמיים — לפי דגלים שמורים, ולא בונה בלי דגלים (מדווח
+# מה שהוא עושה, בסדר הזה, ולמה בסדר הזה (‏#1131 ס' 5–6):
+#   0. סבב פתוח/רץ = לא משדרגים (גם כשמופעל ידנית, לא רק מהקונסולה).
+#   1. התג הקודם — מה ש-update.py שמר (update_previous) — הוא יעד החזרה.
+#   2. יחידות systemd — קודם, כדי ש-daemon-reload יראה כל שינוי בהן.
+#   3. initrd, פעמיים — לפי דגלים שמורים, ולא בונה בלי דגלים (מדווח
 #      זאת בשמה, לא נכשל בשקט — עיקרון 5).
-#   3. restart אחרון: השרת עצמו מוחלף רק אחרי שהכול מוכן, לא באמצע.
+#   4. restart, ואז **ראיה חיובית** שהחדש רץ: is-active + `/health/live`
+#      שמדווח בדיוק את התג + verify-boot-payload.sh.
+#   5. כשל בראיה → checkout לתג הקודם, יחידות, restart, וסטטוס `failed`
+#      עם הסיבה ב-DB (דרך update._set_status) — הקונסולה מציגה אותו.
 #
 # ‏#1074: שדרוג אינו מתקין ואינו מפעיל nftables. שרת קיים לא ינותק.
+#
+# משתני סביבה (לבדיקות — בייצור ברירות המחדל): IMAGECTL_DATA_DIR,
+# IMAGECTL_UNIT_DIR, IMAGECTL_INITRD_FLAGS, IMAGECTL_UPGRADE_LOG,
+# IMAGECTL_CONSOLE_URL, IMAGECTL_LIVE_WAIT.
 set -euo pipefail
 
 die() { echo "server-upgrade: $*" >&2; exit 1; }
@@ -19,8 +28,15 @@ die() { echo "server-upgrade: $*" >&2; exit 1; }
 [[ $# -eq 2 ]] || die "usage: server-upgrade.sh <tag> <repo-dir>"
 TAG=$1
 REPO_DIR=$2
-FLAGS_FILE=/etc/imagectl/initrd.flags
-LOG=/var/log/imagectl/server-upgrade.log
+DATA_DIR="${IMAGECTL_DATA_DIR:-/var/lib/imagectl}"
+DB="$DATA_DIR/imagectl.db"
+UNIT_DIR="${IMAGECTL_UNIT_DIR:-/etc/systemd/system}"
+FLAGS_FILE="${IMAGECTL_INITRD_FLAGS:-/etc/imagectl/initrd.flags}"
+LOG="${IMAGECTL_UPGRADE_LOG:-/var/log/imagectl/server-upgrade.log}"
+CONSOLE_URL="${IMAGECTL_CONSOLE_URL:-https://127.0.0.1:8081}"
+LIVE_WAIT="${IMAGECTL_LIVE_WAIT:-90}"
+CERT="$DATA_DIR/console-tls/console.crt"
+[[ -f "$CERT" ]] || CERT=""
 
 mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
 exec >>"$LOG" 2>&1
@@ -28,12 +44,73 @@ echo "--- $(date -Is) upgrading to $TAG in $REPO_DIR ---"
 
 cd "$REPO_DIR" || die "no such repo dir: $REPO_DIR"
 
+# סטטוס לקונסולה — אותו מפתח ואותה פונקציה של update.py, לא עותק.
+set_status() {   # set_status <state> [<error>]
+    python3 - "$REPO_DIR" "$DB" "$TAG" "$1" "${2:-}" <<'PYEOF' || echo "server-upgrade: כתיבת הסטטוס ל-DB נכשלה"
+import sys
+repo, db, tag, state, error = sys.argv[1:6]
+sys.path.insert(0, repo)
+from server.db import connect
+from server import update
+doc = {"state": state, "tag": tag}
+if error:
+    doc["error"] = error
+update._set_status(connect(db), doc)
+PYEOF
+}
+
+# 0. סבב פתוח/רץ? — אותה שאילתה של update._active_round; DB שלא נקרא = לא
+# יודעים = לא משדרגים (עיקרון 5: "לא הצלחנו לבדוק" אינו "אין סבב").
+ROUND="$(python3 - "$DB" <<'PYEOF'
+import sqlite3, sys
+conn = sqlite3.connect(sys.argv[1])
+row = conn.execute("SELECT 1 FROM sessions WHERE state IN ('open', 'running') LIMIT 1").fetchone()
+print("open" if row else "none")
+PYEOF
+)" || die "לא הצלחתי לבדוק אם יש סבב פתוח ($DB) — לא משדרגים"
+[[ "$ROUND" == "none" ]] || { set_status failed "יש סבב פתוח/רץ — השדרוג לא התחיל"; die "יש סבב פתוח/רץ — לא משדרגים"; }
+
+# 1. התג הקודם — יעד החזרה. update.py שומר אותו לפני ה-checkout.
+PREV="$(python3 - "$REPO_DIR" "$DB" <<'PYEOF'
+import sys
+repo, db = sys.argv[1:3]
+sys.path.insert(0, repo)
+from server.db import connect, get_setting
+from server import update
+print(get_setting(connect(db), update.PREVIOUS_KEY) or "")
+PYEOF
+)" || die "קריאת התג הקודם מה-DB נכשלה"
+[[ -n "$PREV" ]] || echo "אין תג קודם שמור (update_previous) — בכשל לא תהיה חזרה אוטומטית"
+
 # ה-checkout כבר בוצע ב-server/update.py (git fetch --tags + git checkout
 # --detach); כאן רק מוודאים שהעץ באמת על התג המבוקש לפני שממשיכים.
 current=$(git describe --tags 2>/dev/null || true)
 [[ "$current" == "$TAG" ]] || die "העץ ב-$REPO_DIR אינו על $TAG (הוא $current) — לא ממשיך"
 
-install -m 0644 install/*.service /etc/systemd/system/
+install_units_and_restart() {
+    install -m 0644 install/*.service "$UNIT_DIR/"
+    systemctl daemon-reload
+    systemctl restart imagectl-server
+}
+
+rollback() {   # rollback <סיבה>
+    local why="$1"
+    echo "--- $(date -Is) upgrade to $TAG FAILED: $why ---"
+    if [[ -z "$PREV" ]]; then
+        set_status failed "$why · אין תג קודם שמור — לא הוחזר"
+        die "$why (אין תג קודם — לא הוחזר)"
+    fi
+    echo "מחזיר ל-$PREV"
+    if git checkout --detach "$PREV" && install_units_and_restart; then
+        set_status failed "$why · הוחזר ל-$PREV (ה-initrd שנבנה מ-$TAG נשאר)"
+        die "$why — הוחזר ל-$PREV"
+    fi
+    set_status failed "$why · והחזרה ל-$PREV נכשלה גם היא"
+    die "$why — והחזרה ל-$PREV נכשלה"
+}
+
+# 2. יחידות + 3. initrd
+install -m 0644 install/*.service "$UNIT_DIR/"
 systemctl daemon-reload
 
 if [[ -r "$FLAGS_FILE" ]]; then
@@ -44,7 +121,7 @@ if [[ -r "$FLAGS_FILE" ]]; then
     while IFS= read -r line; do
         [[ -n "$line" && "$line" != \#* ]] || continue
         # shellcheck disable=SC2086
-        bash tools/build_initramfs.sh $line
+        bash tools/build_initramfs.sh $line || rollback "בניית initrd נכשלה ($line)"
         built=$((built + 1))
     done < "$FLAGS_FILE"
     ((built > 0)) || echo "initrd לא נבנה: $FLAGS_FILE ריק"
@@ -52,5 +129,27 @@ else
     echo "initrd לא נבנה: אין דגלים ($FLAGS_FILE חסר)"
 fi
 
-systemctl restart imagectl-server
-echo "--- $(date -Is) upgrade to $TAG done, restart issued ---"
+# 4. restart + ראיה חיובית
+systemctl restart imagectl-server || rollback "systemctl restart imagectl-server נכשל"
+systemctl is-active --quiet imagectl-server || rollback "imagectl-server אינו active אחרי restart"
+bash install/console-live.sh "$CONSOLE_URL" "$TAG" "$LIVE_WAIT" "$CERT" \
+    || rollback "השרת לא ענה ב-/health/live עם הגרסה $TAG תוך $LIVE_WAIT ש'"
+
+# כתובת הסוכן ל-verify-boot-payload: ‏IMAGECTL_URL מהיחידה (cli — המעבדה),
+# אחרת מה שהקונסולה רשמה (deploy:url), אחרת loopback (רשת הפצה שטרם
+# הוגדרה, #1088). ‏sed ולא grep -o: "לא נמצא" הוא תשובה, לא כישלון (pipefail).
+AGENT_URL="$(systemctl show -p Environment --value imagectl-server \
+    | sed -n 's/.*IMAGECTL_URL=\([^ "]*\).*/\1/p' | head -n1)"
+if [[ -z "$AGENT_URL" ]]; then
+    AGENT_URL="$(python3 - "$DB" <<'PYEOF'
+import sqlite3, sys
+conn = sqlite3.connect(sys.argv[1])
+row = conn.execute("SELECT value FROM settings WHERE key = 'deploy:url'").fetchone()
+print(row[0] if row and row[0] else "http://127.0.0.1:8080")
+PYEOF
+)" || AGENT_URL="http://127.0.0.1:8080"
+fi
+bash install/verify-boot-payload.sh --app-dir "$REPO_DIR" --server-url "$AGENT_URL" \
+    || rollback "verify-boot-payload.sh נכשל מול $AGENT_URL"
+
+echo "--- $(date -Is) upgrade to $TAG done and verified ---"

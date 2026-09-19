@@ -537,6 +537,11 @@ ADDED_COLUMNS = [
     # ‏#906: השאלה שהמכונה ממתינה עליה לאדם (‏hello עם `waiting_for`).
     # NULL = לא ממתינה; כל hello בלי השדה מנקה אותה.
     ("net_devices", "prompt", "TEXT"),
+    # ‏#402: מה הסוכן מצא כשספר אפס דיסקים — `drives` / `no_disks` /
+    # `no_ports` / `unchecked` (ממשק 2). בלי זה "מגירות=0" קיפל "לא חובר
+    # כונן" ו"בקר ה-SATA מנוטרל בקושחה" — פעולה הפוכה — לאותו מספר.
+    # NULL = סוכן ישן שלא שלח; COALESCE כמו disks_json.
+    ("net_devices", "disk_probe", "TEXT"),
     # מספר המגירות שהוגדר לכל מחשב שכפול במסוף (#695).
     ("machines", "drawer_count",
      "INTEGER NOT NULL DEFAULT 3 CHECK (drawer_count BETWEEN 1 AND 8)"),
@@ -955,7 +960,8 @@ def _net_seen_unchanged(row: sqlite3.Row, ip: str | None,
                         disks_json: str | None, now: datetime,
                         monitor_secret: str | None = None,
                         monitor_auth: str | None = None,
-                        prompt: str | None = None) -> bool:
+                        prompt: str | None = None,
+                        disk_probe: str | None = None) -> bool:
     """האם השורה כבר אומרת בדיוק את מה שהכתיבה הזו הייתה כותבת.
 
     ראיה חיובית בלבד (עיקרון 5): חותמת שאי אפשר לפענח, חותמת בלי אזור
@@ -973,6 +979,8 @@ def _net_seen_unchanged(row: sqlite3.Row, ip: str | None,
         return False
     if prompt != row["prompt"]:   # #906: גם המעבר שאלה→אין-שאלה נכתב
         return False
+    if disk_probe is not None and disk_probe != row["disk_probe"]:   # #402
+        return False
     try:
         last = datetime.fromisoformat(row["last_seen"])
     except (TypeError, ValueError):
@@ -989,6 +997,7 @@ def net_seen(
     monitor_secret: str | None = None,
     monitor_auth: str | None = None,
     prompt: str | None = None,
+    disk_probe: str | None = None,
 ) -> None:
     """כל מגע של מכונה עם השרת — hello או תפריט אתחול — נרשם כאן.
 
@@ -1010,12 +1019,12 @@ def net_seen(
     """
     now = datetime.now(timezone.utc)
     row = conn.execute(
-        "SELECT ip, last_seen, disks_json, monitor_secret, monitor_auth, prompt"
-        " FROM net_devices WHERE mac = ?", (mac,)
+        "SELECT ip, last_seen, disks_json, monitor_secret, monitor_auth, prompt,"
+        " disk_probe FROM net_devices WHERE mac = ?", (mac,)
     ).fetchone()
     if row is not None and _net_seen_unchanged(row, ip, disks_json, now,
                                                monitor_secret, monitor_auth,
-                                               prompt):
+                                               prompt, disk_probe):
         return
 
     ts = now.isoformat(timespec="seconds")
@@ -1027,14 +1036,17 @@ def net_seen(
     with _write_lock, writing(conn):
         conn.execute(
             "INSERT INTO net_devices (mac, ip, first_seen, last_seen, disks_json,"
-            " monitor_secret, monitor_auth, prompt) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            " monitor_secret, monitor_auth, prompt, disk_probe)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (mac) DO UPDATE SET ip = COALESCE(excluded.ip, ip),"
             " last_seen = ?, disks_json = COALESCE(excluded.disks_json, disks_json),"
             " monitor_secret = COALESCE(excluded.monitor_secret, monitor_secret),"
             " monitor_auth = CASE WHEN excluded.monitor_secret IS NOT NULL"
             " THEN excluded.monitor_auth ELSE monitor_auth END,"
-            " prompt = excluded.prompt",
-            (mac, ip, ts, ts, disks_json, monitor_secret, monitor_auth, prompt, ts),
+            " prompt = excluded.prompt,"
+            " disk_probe = COALESCE(excluded.disk_probe, disk_probe)",
+            (mac, ip, ts, ts, disks_json, monitor_secret, monitor_auth, prompt,
+             disk_probe, ts),
         )
 
 

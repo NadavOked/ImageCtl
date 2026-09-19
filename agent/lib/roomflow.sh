@@ -18,9 +18,18 @@
 # out to stay under the 300-line ceiling (tests/sizelimit.py). Sourced
 # alongside this file wherever it is loaded.
 
+#: #410: how long the text screen waits for a key before it redraws by
+#: itself. The GUI polls every 2 s; here the person is reading lines.
+ROOM_REFRESH_S="${ROOM_REFRESH_S:-5}"
+
 room_status_get() {
     _code=$(console_get "room" "$RUN_DIR/room.json")
-    [ "$_code" = "200" ] && return 0
+    if [ "$_code" = "200" ]; then
+        # #410: the screen prints "Updated Ns ago" from this stamp, so a
+        # refresh that failed shows a growing age instead of a fresh look.
+        date +%s > "$RUN_DIR/room_fetched_at"
+        return 0
+    fi
     console_say "$_code" "Could not read the cloning room"
     return 1
 }
@@ -120,7 +129,17 @@ room_flow() {
         printf "  [1] wake the room  [2] send now  [Enter] refresh  [0] back: "
         # A closed console reads EOF for ever. Without this the refresh loop
         # would spin against the server with nobody watching.
-        read -r _c || return 0
+        #
+        # #410: on a terminal the screen redraws by itself every
+        # ROOM_REFRESH_S. busybox read -t (Debian 1.37, measured on the lab
+        # 19/09) returns 1 on timeout AND on EOF, so it is used only when
+        # stdin is a tty; a closed console keeps the EOF exit.
+        if [ -t 0 ]; then
+            # shellcheck disable=SC3045 # busybox ash has read -t; see above
+            read -r -t "$ROOM_REFRESH_S" _c || _c=""
+        else
+            read -r _c || return 0
+        fi
         case "$_c" in
             0) return 0 ;;
             1) room_action wake ;;

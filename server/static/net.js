@@ -122,10 +122,11 @@ async function saveNic(name, body) {
   if (result.apply_error) toast("נשמר, אבל dnsmasq לא עודכן: " + result.apply_error);
   else toast("הגדרת DHCP עודכנה");
   // ‏#1088: ההדלקה הראשונה הגדירה את רשת ההפצה — מה הושלם, ומה לא.
+  // ‏#1121: השלמה שנכשלה היא 500 (נזרק למעלה, שום דבר לא נרשם); ‏`deploy`
+  // בתשובה מגיע רק כשהכול הושלם ונרשם.
   const d = result.deploy;
-  if (d) {
-    if (d.ok) toast(`רשת ההפצה הוגדרה על ${name} (${d.url}) — השרת מתאתחל, הקונסולה תחזור תוך כמה שניות`);
-    else toast(`רשת ההפצה נרשמה על ${name}, אבל חלק מההשלמה נכשל: ${(d.errors || []).join(" · ")}${d.restarting ? " · השרת מתאתחל" : " · השרת לא אותחל — אתחלו ידנית"}`);
+  if (d && d.ok) {
+    toast(`רשת ההפצה הוגדרה על ${name} (${d.url}) — השרת מתאתחל, הקונסולה תחזור תוך כמה שניות`);
     if (typeof NET_DEPLOY !== "undefined") NET_DEPLOY = { configured: true, source: "console", interface: name, url: d.url, hint: null };
   }
 }

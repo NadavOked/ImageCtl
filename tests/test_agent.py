@@ -2052,6 +2052,8 @@ REAL_BINARIES_USED = {
     "smartctl",
     # ‏#649 — ארגז הכלים: הכלי המובנה "זיהוי המחשב" (tools.sh).
     "dmidecode",
+    # ‏#433 — רשומת Boot#### לווינדוס המשוחזר על UEFI (bootentry.sh).
+    "efibootmgr",
 }
 
 #: מקומפל מהמקור בבנאי ולכן אינו ברשימת ה-BINARIES שנאספת מהמערכת.

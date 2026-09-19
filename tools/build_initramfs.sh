@@ -8,6 +8,12 @@
 #                                   [--firmware DIR]... [--ssh-key FILE]
 #                                   [--with-gui] [--skip-apt]
 #                                   [--tools-selection FILE]
+#                                   [--source-date-epoch SECONDS]
+#
+# The output is reproducible (#1125, feeding #1078): the same checkout and
+# the same builder give the same bytes. Every mtime in the image is set to
+# SOURCE_DATE_EPOCH -- the flag, the environment variable, or the time of
+# the commit the checkout is at, in that order.
 #
 # --ssh-key packs a public key as the technician's authorized_keys. Without
 # it dropbear has nobody to let in and never listens; with it, it still
@@ -49,6 +55,7 @@ while [ $# -gt 0 ]; do
         --with-gui)       WITH_GUI=1; shift ;;
         --skip-apt)       SKIP_APT=1; shift ;;
         --tools-selection) TOOLS_SELECTION_FILE="$2"; shift 2 ;;
+        --source-date-epoch) SOURCE_DATE_EPOCH="$2"; shift 2 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
@@ -168,13 +175,16 @@ fi
 # list against the actual commands in agent/ -- update both together.
 # udp-sender (#715): the build machine streams its own disk to the cloning
 # machines; the udpcast package ships both halves, so nothing new to install.
+# efibootmgr (#433): the Boot#### entry for the restored Windows on UEFI;
+# copy_bin pulls libefiboot/libefivar/libpopt through ldd and stops the
+# build if one is missing.
 BINARIES=(curl jq zstd pv sgdisk blockdev sha256sum od hdparm ntfsresize openssl
           ntfs-3g ntfs-3g.probe ntfsfix umount blkid df mount stty ethtool smartctl
           e2fsck resize2fs btrfs xfs_growfs
           udp-receiver udp-sender partclone.ntfs partclone.fat partclone.ext4
           partclone.btrfs partclone.dd
           dropbear dropbearkey
-          dmidecode)
+          dmidecode efibootmgr)
 
 if [ "$SKIP_APT" -eq 0 ]; then
     export DEBIAN_FRONTEND=noninteractive
@@ -182,7 +192,7 @@ if [ "$SKIP_APT" -eq 0 ]; then
         busybox-static zstd partclone udpcast gdisk curl jq pv \
         ntfs-3g libhivex-dev hdparm coreutils util-linux openssl \
         e2fsprogs btrfs-progs xfsprogs cpio gzip gcc libc6-dev dropbear-bin ethtool \
-        smartmontools dmidecode
+        smartmontools dmidecode efibootmgr
     # #1050: the toolbox delta -- only what the selection needs, or nothing.
     if [ "${#TOOL_PKGS[@]}" -gt 0 ]; then
         echo "tools: installing ${TOOL_PKGS[*]}"
@@ -247,14 +257,19 @@ for b in "${BINARIES[@]}"; do
 done
 
 # The dynamic loader and the NSS libraries curl resolves hostnames with.
+# Required, not best-effort: `cp ... 2>/dev/null || true` let a missing
+# loader or libnss build clean, and the station then failed in curl, DNS
+# and dropbear with messages that name none of them (#1125, the #33
+# pattern). `-n` stays: the loader is in every ldd closure and copy_libs
+# has usually packed it already -- that skip exits 0 (coreutils 9.7).
 for extra in /lib64/ld-linux-x86-64.so.2 \
              /lib/x86_64-linux-gnu/libnss_dns.so.2 \
              /lib/x86_64-linux-gnu/libnss_files.so.2 \
              /lib/x86_64-linux-gnu/libresolv.so.2; do
-    if [ -e "$extra" ]; then
-        mkdir -p "$ROOT$(dirname "$extra")"
-        cp -Ln "$extra" "$ROOT$extra" 2>/dev/null || true
-    fi
+    [ -e "$extra" ] || { echo "loader/NSS library missing: $extra" >&2; exit 1; }
+    mkdir -p "$ROOT$(dirname "$extra")"
+    cp -Ln "$extra" "$ROOT$extra"
+    [ -s "$ROOT$extra" ] || { echo "loader/NSS library not packed: $extra" >&2; exit 1; }
 done
 # passwd/group as well as hosts: dropbear resolves the account it hands
 # the session to through NSS, and a database with no line here is the #33
@@ -437,6 +452,14 @@ if [ "$WITH_GUI" -eq 1 ]; then
     install -m 0755 "$GUI_BIN" "$ROOT/usr/bin/imagectl-station-gui"
     # Same closure as measure-size.sh/copy_libs(), but this is a known ELF:
     # unresolved libraries or a failed copy must stop the GUI build.
+    #
+    # ldd is the whole closure here -- measured, not assumed (#1125, 19/09):
+    # a 32-screen `--png` render inside a chroot of the packed initrd under
+    # LD_DEBUG=files loaded 0 libraries dynamically (every load was a
+    # NEEDED one); libpango, libcairo and libvncserver import no dlopen at
+    # all, and Debian 13 ships no pango/cairo module directory. The dlopen
+    # extras that do exist -- gconv for hivex, the TCTI for tpm2 -- are
+    # handled by name above.
     _gui_ldd=$(ldd "$GUI_BIN")
     if [[ "$_gui_ldd" == *"not found"* ]]; then
         printf '%s\n' "--with-gui: unresolved native GUI libraries:" "$_gui_ldd" >&2
@@ -610,10 +633,18 @@ if [ "$WITH_GUI" -eq 1 ]; then
     FIRMWARE_DIRS+=(i915)
 fi
 
+# תת-עץ מוצהר שחסר נאסף כאן ומדווח יחד עם המודולים החסרים למטה, באותה
+# עצירה. ‏`if [ -d ]` לבדו העלים אותו בשקט (#1125 — הדפוס של #84: ‏usb/host
+# חסר הוא מקלדת USB בלי בקר, ובנייה שיצאה 0). אין רשימת "אופציונליים":
+# כל 20 העצים קיימים בקרנל דביאן 13 הרגיל (נמדד 19/09), ומה שאין בו הוא
+# קרנל שאינו מתאים לבנייה — ההודעה למטה אומרת גם את זה.
+_missing_sub=""
 for sub in "${MODULE_SUBDIRS[@]}"; do
     if [ -d "$MODSRC/$sub" ]; then
         mkdir -p "$ROOT/lib/modules/$KVER/$sub"
         cp -a "$MODSRC/$sub/." "$ROOT/lib/modules/$KVER/$sub/"
+    else
+        _missing_sub="$_missing_sub $sub"
     fi
 done
 
@@ -649,8 +680,9 @@ for _mod in "${REQUIRED_MODULES[@]}" "${REQUIRED_FS_MODULES[@]}"; do
         cp -a "$_hit" "$ROOT/lib/modules/$KVER/$_rel"
     fi
 done
-if [ -n "$_missing" ]; then
-    echo "missing required modules:$_missing" >&2
+if [ -n "$_missing" ] || [ -n "$_missing_sub" ]; then
+    [ -z "$_missing_sub" ] || echo "missing module trees under $MODSRC:$_missing_sub" >&2
+    [ -z "$_missing" ] || echo "missing required modules:$_missing" >&2
     echo "kernel $KVER cannot serve every platform and filesystem ImageCtl" >&2
     echo "claims to support." >&2
     # ‏#904: על קרנל cloud (linux-image-cloud-amd64 — אימג' הענן של
@@ -697,7 +729,14 @@ while [ "$_closure_changed" -eq 1 ]; do
     [ "$_closure_round" -ge 10 ] && break
 done
 echo "module dependency closure: $(find "$ROOT/lib/modules/$KVER" -name '*.ko*' | wc -l) modules after $_closure_round rounds"
-cp "$MODSRC"/modules.{order,builtin}* "$ROOT/lib/modules/$KVER/" 2>/dev/null || true
+# modules.order and modules.builtin are depmod's input next to the .ko
+# files; without them it indexes an incomplete tree and init reports
+# "N modules did not load" with no hint why. The copy was `2>/dev/null ||
+# true` -- a kernel package missing either built clean (#1125).
+for _f in modules.order modules.builtin; do
+    [ -f "$MODSRC/$_f" ] || { echo "$MODSRC/$_f is missing -- depmod needs it" >&2; exit 1; }
+done
+cp "$MODSRC"/modules.{order,builtin}* "$ROOT/lib/modules/$KVER/"
 depmod -b "$ROOT" "$KVER"
 
 # ‏דרייברי ה-PHY חייבים להיטען לפני דרייברי ה-MAC שנתלים בהם. ‏r8169
@@ -748,16 +787,47 @@ _phy_mods=$(find "$ROOT/lib/modules/$KVER/kernel/drivers/net/phy" \
 # קיפל את שניהם למספר אחד (#407).
 printf '%s\n' "${REQUIRED_FS_MODULES[@]}" > "$ROOT/etc/imagectl/modules.required"
 
+# קושחה מוצהרת שחסרה עוצרת: ‏rtl_nic הוא ה-NIC של הצי (‏firmware-realtek),
+# ו-i915 מצטרף עם --with-gui (‏firmware-intel-graphics בדביאן 13). ‏`if [ -d ]`
+# דילג בשקט, והתחנה עלתה בלי רשת או עם מסך שחור (#1125). כולם נאספים
+# לפני ההודעה, כמו המודולים.
+_no_fw=""
 for fw in "${FIRMWARE_DIRS[@]}"; do
     if [ -d "/lib/firmware/$fw" ]; then
         mkdir -p "$ROOT/lib/firmware/$fw"
         cp -a "/lib/firmware/$fw/." "$ROOT/lib/firmware/$fw/"
+    else
+        _no_fw="$_no_fw $fw"
     fi
 done
+if [ -n "$_no_fw" ]; then
+    echo "firmware directories missing under /lib/firmware:$_no_fw" >&2
+    echo "Debian 13: rtl_nic is firmware-realtek, i915 is firmware-intel-graphics." >&2
+    exit 1
+fi
 
 # --- pack --------------------------------------------------------------------
-
-(cd "$ROOT" && find . | cpio -o -H newc --quiet | gzip -9) > "$OUTPUT"
+# Reproducible (#1125, feeding #1078 -- the initrd hash in grub.cfg): the
+# same source must give the same bytes. Three sources of noise, each closed
+# by name: `find` walks in inode order (LC_ALL=C sort), mtimes are the build
+# time (every one clamped to SOURCE_DATE_EPOCH), and cpio stores inode and
+# device numbers (--reproducible) while gzip stores a timestamp (-n).
+# The epoch is the flag, the environment, or the commit the checkout is at.
+# No epoch and no git is a build with no stable hash -- that stops here
+# rather than falling back to `date` and printing a one-off hash that looks
+# exactly like a stable one (principle 5).
+if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+    SOURCE_DATE_EPOCH=$(git -C "$SCRIPT_DIR" log -1 --format=%ct) \
+        || { echo "SOURCE_DATE_EPOCH is unset and 'git log' failed: build from a checkout or pass --source-date-epoch" >&2; exit 1; }
+fi
+case "$SOURCE_DATE_EPOCH" in
+    ''|*[!0-9]*) echo "SOURCE_DATE_EPOCH must be seconds since the epoch, got '$SOURCE_DATE_EPOCH'" >&2; exit 1 ;;
+esac
+export SOURCE_DATE_EPOCH
+echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
+find "$ROOT" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
+(cd "$ROOT" && find . -print0 | LC_ALL=C sort -z \
+    | cpio -o -H newc --null --reproducible --quiet | gzip -9n) > "$OUTPUT"
 
 SIZE=$(du -h "$OUTPUT" | cut -f1)
 echo

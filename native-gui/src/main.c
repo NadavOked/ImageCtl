@@ -690,14 +690,16 @@ static void sample_state(State *s) {
     s->pct = 42; s->moving = 1; s->bytes = 23089744896ULL;
     snprintf(s->round_image, sizeof s->round_image, "Office 2024 — סטנדרט");
     s->wave_number = 2; s->wave_open = 1; s->written = 7; s->target = 24; s->ready = 5; s->remaining = 17;
+    s->elapsed_s = 3725; s->rate_bps = 52000000; s->eta_s = 610;      /* #410 */
+    s->updated = (long long)time(NULL) - 3;
     snprintf(s->sess_image, sizeof s->sess_image, "Office 2024 — סטנדרט");
     snprintf(s->sess_prefix, sizeof s->sess_prefix, "B12");
     snprintf(s->sess_group, sizeof s->sess_group, "כיתה 12");
     s->sess_open = 1; s->joined = 3; s->expected = 14; s->starts_in = 272;
     s->ndrawers = 3;
-    s->drawers[0] = (Drawer){ 1, "sda", "writing", "", 44814663680ULL, 85899345920ULL };
-    s->drawers[1] = (Drawer){ 2, "sdb", "failed", "", 0, 85899345920ULL };
-    s->drawers[2] = (Drawer){ 3, "sdc", "waiting", "", 0, 85899345920ULL };
+    s->drawers[0] = (Drawer){ 1, "sda", "writing", "", 44814663680ULL, 85899345920ULL, 98000000, 419 };   /* #410 */
+    s->drawers[1] = (Drawer){ 2, "sdb", "failed", "", 0, 85899345920ULL, -1, -1 };
+    s->drawers[2] = (Drawer){ 3, "sdc", "waiting", "", 0, 85899345920ULL, -1, -1 };
     snprintf(s->cloner_image, sizeof s->cloner_image, "Office 2024 — סטנדרט");
     s->smart_pending = 1; s->smart_port = 2;
     snprintf(s->smart_nonce, sizeof s->smart_nonce, "1-2");
@@ -889,6 +891,7 @@ int main(int argc, char **argv) {
      * cursor. */
     cairo_surface_t *scene = cairo_image_surface_create(CAIRO_FORMAT_RGB24, W, H);
     int done = 0, scene_dirty = 1, need_present = 1, last_hover = -1;
+    long long last_age_tick = 0;                    /* #410 */
     struct pollfd fds[32];
     while (!stop_now && !done) {
         if (a.toast[0] && now_s() >= a.toast_until) { a.toast[0] = 0; scene_dirty = 1; }
@@ -933,6 +936,10 @@ int main(int argc, char **argv) {
         }
         if (sf_state.path[0] && state_poll(&sf_state, &a.st) > 0) { after_reload(&a); scene_dirty = 1; }
         if (tools_poll(&a)) scene_dirty = 1;                                        /* #649 */
+        /* #410: "עודכן לפני N שנ'" must keep counting when the state file
+         * stops changing -- that is the whole point of the stamp. One
+         * redraw per wake (2 s) while a stamp is on screen. */
+        if (a.st.updated > 0 && (long long)time(NULL) != last_age_tick) { last_age_tick = (long long)time(NULL); scene_dirty = 1; }
     }
     if (in) input_close(in);
     cairo_surface_destroy(scene);

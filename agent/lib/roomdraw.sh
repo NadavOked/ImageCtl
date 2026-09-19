@@ -24,6 +24,7 @@ room_draw() {
     fi
     echo "  Drives:     $_written of $_target written, $_left to go"
     echo "  Ready now:  $_ready fresh drawers in machines that joined"
+    room_draw_pace
     echo
     echo "  Machines:"
     # No 2>/dev/null: a machine list we failed to read is not an empty room,
@@ -43,6 +44,42 @@ room_draw() {
     room_draw_writing
     room_draw_done
     room_draw_failures
+}
+
+# #410: "how long, how fast, how much longer" -- the three numbers the
+# operator did not have on 05/09, plus how old this screen is. The server
+# derives them (room.py:_pace/_wave_pace) from the bytes each drawer
+# reported and the wave's start; the screen only prints them. null is
+# printed as "(not measured)", never as 0: a rate of 0 reads as "stopped",
+# and a wave that simply has no measurement yet is not stopped (rule 5).
+room_hms() {
+    # $1 = seconds or "null" -> "1h 02m 03s" / "(not measured)"
+    case "$1" in ''|null|*[!0-9]*) echo "(not measured)"; return 0 ;; esac
+    if [ "$1" -ge 3600 ]; then
+        printf '%dh %02dm %02ds\n' $(($1 / 3600)) $(($1 % 3600 / 60)) $(($1 % 60))
+    else
+        printf '%dm %02ds\n' $(($1 / 60)) $(($1 % 60))
+    fi
+}
+
+room_draw_pace() {
+    _el=$(json_get "$RUN_DIR/room.json" ".round.elapsed_s")
+    _rt=$(json_get "$RUN_DIR/room.json" ".round.rate_bps")
+    _eta=$(json_get "$RUN_DIR/room.json" ".round.eta_s")
+    case "$_rt" in ''|null|*[!0-9]*) _rt="(not measured)" ;;
+        *) _rt="$(($_rt / 1000000)) MB/s (slowest drawer)" ;; esac
+    echo "  Elapsed:    $(room_hms "$_el")"
+    echo "  Rate:       $_rt"
+    echo "  ETA:        $(room_hms "$_eta")"
+    # Freshness: when room_status_get last succeeded (roomflow.sh writes
+    # the epoch). A screen that keeps an old picture must say how old.
+    if [ -r "$RUN_DIR/room_fetched_at" ]; then
+        _at=$(cat "$RUN_DIR/room_fetched_at")
+        case "$_at" in ''|*[!0-9]*) echo "  Updated:    (fetch time unreadable)" ;;
+            *) echo "  Updated:    $(( $(date +%s) - _at ))s ago" ;; esac
+    else
+        echo "  Updated:    (never fetched)"
+    fi
 }
 
 # #552: how many seconds a drawer's byte counter may stand still before

@@ -1706,7 +1706,8 @@ function roomMachines() {
     const m = findMachine(rm.mac) || {};
     return { ...m, mac: rm.mac, suffix: machineName(m) || rm.name || rm.mac, group_id: m.group_id || "grp_CLONERS",
       drawer_count: rm.drawer_count != null ? rm.drawer_count : (m.drawer_count ?? null),
-      disks: Array.isArray(rm.drawer_list) ? rm.drawer_list : (m.disks ?? null), prompt: m.prompt || null };
+      disks: Array.isArray(rm.drawer_list) ? rm.drawer_list : (m.disks ?? null), prompt: m.prompt || null,
+      disk_probe: rm.disk_probe ?? m.disk_probe ?? null };
   }));
 }
 /* אחוז הגל: ממוצע המגירות שהצטרפו ומדווחות (‏done = 100). ‏null = אין דיווח, לא 0 (עיקרון 5). */
@@ -2619,9 +2620,15 @@ function failureCauseText(f) {
   if (f.cause === "cable" && f.port != null) return `${cause} SATA ${f.port - 1}`;
   return cause;
 }
+/* ‏#402: "0 דיסקים" הם שלושה ממצאים שהפעולה עליהם הפוכה, ו-`disk_probe` מה-hello (ממשק 2) מבחין:
+   no_disks = יש פורטי SATA, לא חובר כונן (חברו כונן); no_ports = בקר ה-SATA מדווח 0 פורטים — מנוטרל
+   בקושחה (געו בביוס, כבל לא יעזור); unchecked = לא נספר (אין שורת ahci ב-dmesg) ≠ no_disks (עיקרון 5);
+   null = סוכן ישן שלא שלח — הטקסט הישן, לא ניחוש. */
+const DISK_PROBE_HE = { no_disks: "לא חוברו דיסקים", no_ports: "אין פורטי SATA בקושחה", unchecked: "0 דיסקים · לא נבדק" };
+function zeroDisksText(m) { return DISK_PROBE_HE[m.disk_probe] || "דיווח 0 דיסקים"; }
 function disksCell(m) {
   if (m.disks == null) return `<span class="muted">לא דיווח</span>`;
-  if (!m.disks.length) return UI.status("warn", "דיווח 0 דיסקים");
+  if (!m.disks.length) return UI.status("warn", zeroDisksText(m));
   const sizes = [...new Set(m.disks.map((d) => fmtBytes(d.size_bytes)))].map(ltr).join(" / ");
   const red = [...new Set(machineDiskFailures(m).map((f) => failureSlot(m, f)).filter((n) => n != null))].sort();
   return `${m.disks.length} · ${sizes}${red.map((n) => " " + UI.pill("err", `דיסק ${n} אדום`)).join("")}`;
@@ -3049,7 +3056,7 @@ function clonerCardHtml(m, admin, room = false) {
   const meta = [esc(st.text), `${slots.length} ${slots.length === 1 ? "חריץ" : "חריצים"}${declared || !slots.length ? "" : " (לפי הדיווח)"}`,
     net && net.ip ? `<span class="mono">${esc(net.ip)}</span>` : "", esc(NET ? seenAgo(net && net.last_seen) : "לא נקרא")].filter(Boolean).join(" · ");
   const body = slots.length ? `<div class="slots">${slots.map((s) => slotHtml(m, s, admin)).join("")}</div>`
-    : UI.note("", `מספר החריצים לא הוגדר והמכונה ${m.disks == null ? "מעולם לא דיווחה על דיסקים" : "דיווחה 0 דיסקים"}.${admin ? ` ${UI.link("הגדר חריצים", `editDrawerCount('${macEnc}')`)}` : ""}`);
+    : UI.note("", `מספר החריצים לא הוגדר והמכונה ${m.disks == null ? "מעולם לא דיווחה על דיסקים" : "דיווחה: " + zeroDisksText(m)}.${admin ? ` ${UI.link("הגדר חריצים", `editDrawerCount('${macEnc}')`)}` : ""}`);
   const wol = `<button class="btn sm" onclick="wakeMachine('${macEnc}')" title="WoL למכונה הזו בלבד (#984); לכל החדר — בכותרת">WoL</button>`;
   const acts = room
     ? (st.off && roomOperator() ? wol : "")
@@ -3200,7 +3207,7 @@ function builderCardHtml(m, admin) {
   const state = UI.status(st.cls, st.text) + (task ? " " + UI.pill(task.state === "pending" ? "warn" : "info", task.state === "pending" ? "קליטה ממתינה" : "קליטה רצה") : "");
   const kv = UI.kv([
     ["דגם", inv == null ? `<span class="muted">לא דיווח</span>` : esc(model || "—") + (tpm && tpm.present ? ` · TPM ${esc(tpm.version || "")}`.trimEnd() : "")],
-    [d0 ? `דיסק ${n0}` : "דיסק", m.disks == null ? `<span class="muted">לא דיווח</span>` : !d0 ? UI.status("warn", "דיווח 0 דיסקים")
+    [d0 ? `דיסק ${n0}` : "דיסק", m.disks == null ? `<span class="muted">לא דיווח</span>` : !d0 ? UI.status("warn", zeroDisksText(m))
       : `${ltr(fmtBytes(d0.size_bytes))} · ${esc(d0.model || "—")}${d0.serial ? ` · <span class="mono">${esc(d0.serial)}</span>` : ""}${m.disks.length > 1 ? ` <span class="cap">(+${m.disks.length - 1})</span>` : ""}`],
     ["לפני קליטה", `<span class="muted">NTFS / בשימוש — נבדקים בקליטה (<b title="לא מדווח ב-hello">דורש API</b>)</span>`],
     ["מצב", state],
@@ -3328,7 +3335,7 @@ async function clearShrinkRecord(id) {
 /* ---------- מגירת מחשב (machine-drawer.md) ---------- */
 function diskBoxesHtml(m) {
   if (m.disks == null) return UI.note("", "המכונה מעולם לא דיווחה על כוננים.");
-  if (!m.disks.length) return UI.note("warn", "המכונה דיווחה — ואין בה אף כונן.");
+  if (!m.disks.length) return UI.note("warn", `המכונה דיווחה — ואין בה אף כונן: ${zeroDisksText(m)}.`);
   const fails = machineDiskFailures(m);
   const boxes = m.disks.map((d, i) => {
     const n = diskSlot(d, i);

@@ -42,6 +42,8 @@ EVENTS_HE = {
     "session_start_auto": "השידור התחיל — ההמתנה הסתיימה",
     "session_start_manual": "השידור התחיל ידנית",
     "session_close": "סבב נסגר",
+    # ‏#411: פיוס בעליית השרת — סבב שהיה `running` בלי משדר.
+    "session_orphaned": "השרת עלה מחדש — המשדר אבד, הסבב נסגר ככישלון",
     "session_image_bound": "פתיחת סבב נדחתה — האימג' קשור למכונה אחרת",
     "pull_open": "משיכת יוניקאסט התחילה",
     "pull_done": "משיכת יוניקאסט הסתיימה",
@@ -148,7 +150,7 @@ _SEVERITY_ERR = {
     "agent_login_failed", "agent_role_refused", "class_deploy_refused",
     "session_image_bound", "pull_refused", "client_failed", "wol_failed",
     "room_wave_lost", "send_failed", "direct_failed", "disk_failure",
-    "identity_refused", "storage_transfer_failed", "logo_refused",
+    "session_orphaned", "identity_refused", "storage_transfer_failed", "logo_refused",
     "capture_failed", "drivers_failed", "dhcp_apply_failed",
     "known_macs_apply_failed",
 }

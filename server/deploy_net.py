@@ -27,7 +27,9 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -156,16 +158,20 @@ def firewall_installed(conf: str | Path = NFTABLES_CONF) -> bool | None:
         return None
 
 
-def regenerate_firewall(repo_dir: str | Path, *, deploy_if: str, servers_if: str,
+def regenerate_firewall(repo_dir: str | Path, *, deploy_if: str, servers_if: str | None,
                         primary_ip: str | None = None,
                         conf: str | Path = NFTABLES_CONF) -> str | None:
     """מריץ שוב את `install/nftables-rules.sh` עם שני הכרטיסים, בודק תחביר
-    (`nft -c`), כותב ומטעין. חומת אש שלא הותקנה — לא נוגעים."""
+    (`nft -c`), כותב ומטעין. חומת אש שלא הותקנה — לא נוגעים; הותקנה
+    וכרטיס השרתים אינו ידוע — שגיאה בשם (הכללים לוילן ההפצה לא ייכתבו)."""
     installed = firewall_installed(conf)
     if installed is None:
         return f"לא ניתן לקרוא את {conf} — חומת האש לא עודכנה"
     if not installed:
         return None
+    if not servers_if:
+        return ("כרטיס השרתים אינו ידוע (‎--console-host אינו שם כרטיס) — "
+                "הכללים לוילן ההפצה לא נוספו")
     gen = Path(repo_dir) / "install" / "nftables-rules.sh"
     args = ["sh", str(gen), "--deploy-if", deploy_if, "--servers-if", servers_if]
     if primary_ip:
@@ -173,22 +179,44 @@ def regenerate_firewall(repo_dir: str | Path, *, deploy_if: str, servers_if: str
     ok, ruleset, err = _run(args)
     if not ok or not ruleset.strip():
         return f"מחולל חומת האש נכשל: {err or 'פלט ריק'}"
-    ok, _out, err = _run(["nft", "-c", "-f", "-"], stdin_text=ruleset)
-    if not ok:
-        return f"תחביר חומת האש אינו תקין (nft -c): {err}"
+    # ‏#1121: candidate ליד הקובץ → `nft -c` → `nft -f candidate` → ורק אז
+    # החלפה אטומית. הקובץ הישן נדרס רק אחרי שהקרנל קיבל את החדש; טעינה
+    # שנכשלה מחזירה את ה-ruleset הישן מהקובץ הישן (שעדיין שם), כדי שמה
+    # שרץ עכשיו ומה שיעלה אחרי reboot יהיו אותו דבר.
+    conf = Path(conf)
+    candidate = conf.with_name(conf.name + ".candidate")
     try:
-        Path(conf).write_text(ruleset, encoding="utf-8")
+        candidate.write_text(ruleset, encoding="utf-8")
     except OSError as exc:
-        return f"לא ניתן לכתוב את {conf}: {exc}"
-    ok, _out, err = _run(["nft", "-f", str(conf)])
-    return None if ok else f"טעינת חומת האש נכשלה: {err}"
+        return f"לא ניתן לכתוב את {candidate}: {exc}"
+    try:
+        ok, _out, err = _run(["nft", "-c", "-f", str(candidate)])
+        if not ok:
+            return f"תחביר חומת האש אינו תקין (nft -c): {err}"
+        ok, _out, err = _run(["nft", "-f", str(candidate)])
+        if not ok:
+            restored, _o, r_err = _run(["nft", "-f", str(conf)])
+            return (f"טעינת חומת האש נכשלה: {err}; {conf} לא שונה, "
+                    + ("ה-ruleset הקודם הוחזר" if restored
+                       else f"והחזרת ה-ruleset הקודם נכשלה גם היא: {r_err}"))
+        try:
+            os.replace(candidate, conf)
+        except OSError as exc:
+            return f"חומת האש נטענה אך {conf} לא הוחלף: {exc}"
+        return None
+    finally:
+        candidate.unlink(missing_ok=True)
 
 
 def restart_server_later(delay: int = RESTART_DELAY_SECONDS) -> str | None:
     """אתחול השירות **אחרי** שהתשובה יצאה — יחידת systemd חולפת עם
     ‏`--on-active`, כמו העדכון (`update.py`): תהליך-ילד היה נהרג יחד איתנו."""
+    # ‏#1121: שם יחידה ייחודי — יחידה חולפת בשם קבוע שעדיין ממתינה (3 ש')
+    # הייתה מכשילה השלמה שנייה ב-"Unit already exists"; ‏--collect מנקה.
+    # ‏uuid ולא זמן: רזולוציית השעון בווינדוס (הבדיקות) היא מילישניות.
+    unit = f"imagectl-deploy-restart-{uuid.uuid4().hex[:12]}"
     ok, out, err = _run(["systemd-run", f"--on-active={delay}",
-                         "--unit=imagectl-deploy-restart", "--collect",
+                         f"--unit={unit}", "--collect",
                          "systemctl", "restart", SERVER_UNIT], timeout=15)
     return None if ok else f"לא ניתן לתזמן אתחול לשרת: {err or out.strip()}"
 
@@ -218,30 +246,34 @@ class DeployContext:
 
 
 def complete(ctx: DeployContext, conn, *, interface: str, server_ip: str) -> dict:
-    """משלים את ההתקנה לכרטיס שהודלק עליו DHCP. מחזיר מה קרה, שלב-שלב:
-    ‏`ok` רק כשכל השלבים הצליחו, ו-`errors` נוקב בכל שלב שנכשל."""
+    """משלים את ההתקנה לכרטיס שהודלק עליו DHCP — **apply לפני commit** (‏#1121).
+
+    הסדר: grub.cfg → dnsmasq באתחול → חומת אש → תזמון אתחול → ורק אז
+    ‏`deploy:*` ב-DB. שלב שנכשל עוצר: אין אתחול, אין רישום, ו-`errors`
+    נוקב בו — כדי שהמנהל יוכל לתקן ולהדליק שוב (רישום לפני apply היה
+    משאיר `source=console` על שרת שחומת האש שלו לא נכתבה, ואתחול היה
+    מעלה אותו כך). מה שכבר נכתב לדיסק (grub.cfg) הוא idempotent ונכתב
+    שוב בניסיון הבא. מחזיר `ok` רק כשהכול הצליח."""
     hooks = {**default_hooks(), **(ctx.hooks or {})}
     url = deploy_url(server_ip, ctx.agent_port)
-    record(conn, interface, url)
-    errors: list[str] = []
-    for label, call in (
+    result = {"ok": False, "url": url, "interface": interface,
+              "errors": [], "restarting": False, "recorded": False}
+    steps = [
         ("grub.cfg", lambda: hooks["write_grub_cfg"](url, ctx.tftp_root)),
         ("dnsmasq", hooks["enable_dnsmasq"]),
-    ):
+    ]
+    steps.append(("חומת אש", lambda: hooks["firewall"](
+        ctx.repo_dir, deploy_if=interface, servers_if=ctx.servers_interface,
+        primary_ip=ctx.primary_ip)))
+    for label, call in steps:
         err = call()
         if err:
-            errors.append(f"{label}: {err}")
-    if ctx.servers_interface:
-        err = hooks["firewall"](ctx.repo_dir, deploy_if=interface,
-                                servers_if=ctx.servers_interface,
-                                primary_ip=ctx.primary_ip)
-        if err:
-            errors.append(f"חומת אש: {err}")
-    else:
-        errors.append("חומת אש: כרטיס השרתים אינו ידוע (‎--console-host אינו שם "
-                      "כרטיס) — הכללים לוילן ההפצה לא נוספו")
+            result["errors"].append(f"{label}: {err}")
+            return result
     restart_error = hooks["restart_server"]()
     if restart_error:
-        errors.append(f"אתחול: {restart_error}")
-    return {"ok": not errors, "url": url, "interface": interface,
-            "errors": errors, "restarting": restart_error is None}
+        result["errors"].append(f"אתחול: {restart_error}")
+        return result
+    record(conn, interface, url)
+    result.update(ok=True, restarting=True, recorded=True)
+    return result

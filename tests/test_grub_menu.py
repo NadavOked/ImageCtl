@@ -514,3 +514,32 @@ def test_the_bootstrap_carries_the_same_refusal_screen():
     assert 'if [ -n "$chain_refused" ]' in boot
     assert 'if [ "$shim_lock" = "y" ]' in boot
     boot.encode("ascii")
+
+
+# --- #419: הצהרה בתפריט אינה הגדרה בקושחה ------------------------------------
+#
+# מחשב שיכפול 1 עלה לווינדוס מהמגירה (05/09, ושוב 15/09 — סוללת CMOS
+# מתה). המסך של Legacy הבטיח "they are never booted from" — הבטחה
+# שהקושחה אינה מחויבת לה. הטקסט אומר עכשיו מה התפריט עושה ומה שומר
+# בפועל (סדר האתחול), במקום להבטיח בשם מי שאינו שלנו.
+
+
+def _try_local() -> str:
+    text = render_local_only("x")
+    start = text.index("function try_local {")
+    return text[start : text.index("\n}", start)]
+
+
+def test_the_legacy_screen_does_not_promise_what_the_firmware_decides():
+    body = _try_local()
+    assert "never booted from" not in body
+    assert "This menu will not start them" in body
+    # מה כן שומר, ומה מבטל אותו — כדי שטכנאי מול המסך ידע לאן ללכת.
+    assert "boot order" in body.lower()
+    assert "BEFORE any disk" in body and "battery" in body
+
+
+def test_the_bootstrap_carries_the_same_legacy_screen():
+    boot = render_bootstrap(CFG)
+    assert "never booted from" not in boot
+    assert "This menu will not start them" in boot

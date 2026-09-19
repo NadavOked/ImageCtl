@@ -13,6 +13,7 @@ dnsmasq ו-dnsmasq מופעל מחדש.
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Callable
 
@@ -23,6 +24,10 @@ from .api import ServerContext
 from .db import get_setting, journal, set_setting
 
 Hooks = dict[str, Callable]
+
+#: ‏#1121 ס' 4: נעילה סביב ההדלקה הראשונה של DHCP (השלמת ההתקנה) — תהליכית,
+#: כי כל הראוטרים באותו תהליך; שתי בקשות מקבילות לא ישלימו פעמיים.
+_first_enable_lock = threading.Lock()
 
 #: תיאור חופשי לכרטיס (settings) — "700" בשביל וילן 700, וכדומה.
 DESC_PREFIX = "nicdesc:"
@@ -344,11 +349,36 @@ def create_dhcp_router(ctx: ServerContext, hooks: Hooks | None = None,
         # `server_ip` (אחרת השרת לא יעלה אחרי האתחול — "כתובת → DHCP" הוא
         # הסדר של נדב), והכתובת אינה מוגדרת ביחידה (אז ההגדרה כאן לא
         # הייתה משפיעה על דבר).
-        completion = None
-        if turning_on and cfg.enabled:
-            completion = _deploy_completion_or_409(name, cfg.server_ip, live.get(name))
+        # ‏#1121 ס' 4: שתי הדלקות ראשונות במקביל — רק אחת נכנסת; השנייה
+        # רואה כבר `source=console` ונשפטת לפי הכרטיס (409 אם אינו ההפצה).
+        # ‏non-blocking: מי שלא קיבל את הנעילה מקבל 409, לא ממתין.
+        if not _first_enable_lock.acquire(blocking=False):
+            raise HTTPException(409, "הדלקת DHCP אחרת בעיצומה — נסה שוב בעוד רגע")
+        try:
+            completion = None
+            if cfg.enabled and not before.enabled:
+                _only_the_deploy_nic_or_409(name)
+            if turning_on and cfg.enabled:
+                completion = _deploy_completion_or_409(name, cfg.server_ip, live.get(name))
+            result = None
+            if completion is not None:
+                # ‏#1121: ההשלמה רצה **לפני** הכתיבה של `dhcp:<כרטיס>` — apply
+                # ואז commit. כשל בה = שום דבר לא נרשם (לא deploy ולא DHCP),
+                # אחרת ההדלקה הבאה לא הייתה "הדלקה ראשונה" ולא הייתה מנסה שוב.
+                result = deploy_net.complete(deploy, ctx.conn, interface=name,
+                                             server_ip=cfg.server_ip)
+                if not result["ok"]:
+                    detail = " · ".join(result["errors"])
+                    journal(ctx.conn, "deploy_net_failed", f"{name} {detail}", user[0])
+                    raise HTTPException(
+                        500, f"השלמת ההתקנה לרשת ההפצה נכשלה — לא נרשם דבר, "
+                             f"תקן והדלק שוב: {detail}")
+                deploy.state = deploy_net.DeployState("console", name, result["url"])
+                journal(ctx.conn, "deploy_net_set", f"{name} {result['url']}", user[0])
 
-        set_setting(ctx.conn, dhcp.SETTING_PREFIX + name, cfg.to_json())
+            set_setting(ctx.conn, dhcp.SETTING_PREFIX + name, cfg.to_json())
+        finally:
+            _first_enable_lock.release()
         state = "on" if cfg.enabled else ("proxy" if cfg.proxy else "off")
         journal(ctx.conn, "dhcp_set", f"{name} {state}", user[0])
         if risky_proxy:
@@ -363,19 +393,24 @@ def create_dhcp_router(ctx: ServerContext, hooks: Hooks | None = None,
                                  hooks["read_active_conf"](),
                                  hooks["service_active"](DNSMASQ_UNIT)),
                "apply_error": error}
-        if completion is not None:
-            result = deploy_net.complete(deploy, ctx.conn, interface=name,
-                                         server_ip=cfg.server_ip)
+        if result is not None:
             # מכאן הקובץ של הקונסולה נושא `interface=<הפצה>` גם כשה-DHCP
-            # עליו יכובה (dhcp.render עם deploy_interface); עכשיו הכרטיס
-            # ממילא בקובץ כמחלק כתובות, ואין מה לכתוב שוב.
-            deploy.state = deploy_net.DeployState("console", name, result["url"])
-            journal(ctx.conn, "deploy_net_set",
-                    f"{name} {result['url']} ok={result['ok']} "
-                    f"{' · '.join(result['errors'])}".strip(), user[0])
+            # עליו יכובה (dhcp.render עם deploy_interface); הכרטיס ממילא
+            # בקובץ שנכתב הרגע כמחלק כתובות, ואין מה לכתוב שוב.
             out["deploy"] = result
-            out["ok"] = out["ok"] and result["ok"]
         return out
+
+    def _only_the_deploy_nic_or_409(name: str) -> None:
+        """‏#1121 ס' 4: אחרי שרשת ההפצה הוגדרה מהקונסולה, DHCP **מלא** מותר רק
+        על כרטיס ההפצה — כרטיס אחר הוא רשת המכללה, ו-dnsmasq שעונה שם
+        הוא התקלה ש-#53 נועד למנוע. ‏proxy אינו נחסם כאן (אינו מחלק כתובות)."""
+        state = deploy_state()
+        if state is None or state.source != "console" or state.interface == name:
+            return
+        raise HTTPException(
+            409, f"DHCP מלא מותר רק על כרטיס ההפצה ({state.interface}) — {name} אינו "
+                 "כרטיס ההפצה. כדי להחליף כרטיס הפצה יש להתקין מחדש; proxy מותר "
+                 "על כל כרטיס")
 
     def _deploy_completion_or_409(name: str, server_ip: str, live_nic: dict | None):
         """האם ההדלקה הזו היא גם הגדרת רשת ההפצה — ואם כן, האם מותר."""

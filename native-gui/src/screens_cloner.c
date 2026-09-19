@@ -43,7 +43,11 @@ static void drawer_order(const State *s, int *idx) {
 void screen_cloner(App *a, cairo_t *cr, double W, double H, double head_h) {
     const Theme *t=a->theme; const State *s=&a->st;
     double inner=card_width(W)-2*N_PAD, btn_h=btn_height(cr);
-    const char *hsub=s->cloner_image[0] ? s->cloner_image : "ממתין לסבב שיכפול";
+    /* #410: the snapshot's age next to the image name -- a kiosk that
+     * stopped writing the state shows a growing number, not a live look. */
+    char age[64], hsub[200]; pace_age(s->updated,age,sizeof age);
+    snprintf(hsub,sizeof hsub,"%s%s%s",s->cloner_image[0] ? s->cloner_image : "ממתין לסבב שיכפול",
+             age[0] ? " · " : "",age);
     Head hd=head_make(cr,"מחשב שיכפול",hsub,inner);
     int idx[MAX_DRAWERS]; drawer_order(s,idx);
     /* ---- the SMART panel (measured first, drawn on top of dimmed rows) ---- */
@@ -85,7 +89,7 @@ void screen_cloner(App *a, cairo_t *cr, double W, double H, double head_h) {
     int pcts[MAX_DRAWERS]; double row_h=0, written=0, total=0; int known=1;
     for(int k=0;k<s->ndrawers;k++) {
         const Drawer *d=&s->drawers[idx[k]];
-        char name[80],nm[40],stat[160],b1[32],b2[32],pct[24];
+        char name[80],nm[40],stat[256],b1[32],b2[32],pct[24];   /* #410: room for the pace */
         drawer_name(d,nm,sizeof nm);
         if(d->port>0) snprintf(name,sizeof name,"%s · SATA %d",nm,d->port-1);
         else snprintf(name,sizeof name,"%s",nm);
@@ -94,7 +98,11 @@ void screen_cloner(App *a, cairo_t *cr, double W, double H, double head_h) {
         if(pcts[k]>=0) snprintf(pct,sizeof pct,"%d%%",pcts[k]);
         else snprintf(pct,sizeof pct,"--");
         fmt_bytes(b1,sizeof b1,(double)d->bytes);fmt_bytes(b2,sizeof b2,(double)d->total);
-        snprintf(stat,sizeof stat,"%s / %s",b1,b2);              /* .clone-speed: bytes, no rate in the state */
+        /* .clone-speed: bytes, and since #410 the rate and ETA the kiosk
+         * measured on this drawer (drawer= fields 7-8); unmeasured = bytes only. */
+        char pace[96]; pace_text(-1,d->rate_bps,d->eta_s,1,pace,sizeof pace);   /* LTR line -> Latin words */
+        if(pace[0]) snprintf(stat,sizeof stat,"%s / %s · %s",b1,b2,pace);
+        else        snprintf(stat,sizeof stat,"%s / %s",b1,b2);
         /* .clone-card h3 13px; small 8px (the device -- the state has no model);
          * .clone-big 27px; .clone-status 8px: the state at the start, bytes at the end */
         names[k]=rtl_block_make(cr,N_CLONE_TITLE,600,name,tw);

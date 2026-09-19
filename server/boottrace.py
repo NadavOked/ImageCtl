@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from boot.trace import STEP_INDEX, STEPS, is_step
+from boot.trace import LOCAL_STEPS, STEP_INDEX, STEPS, is_step
 
 from .db import _write_lock, now_iso, writing
 
@@ -34,6 +34,23 @@ STEP_LABELS: dict[str, str] = {
     "agent-net": "הרשת עלתה ב-initramfs",
     "agent-start": "הסוכן התחיל",
     "agent-hello": "לפני ה-hello הראשון",
+    # ‏#416: ענף הדיסק המקומי. אינו המשך של הרשימה — הסתעפות ממנה.
+    "local-entry": "GRUB נכנס לערך הדיסק המקומי",
+    "local-search-ok": "נמצא מטען אתחול על הדיסק המקומי",
+    "local-search-empty": "יש דיסק, ולא נמצאה עליו מערכת",
+    "local-no-disk": "GRUB אינו רואה דיסק כלל",
+    "local-chain-refused": "מטען האתחול נמצא ונדחה",
+}
+
+#: ‏#416: מה בא אחרי כל צעד בענף המקומי. זו אינה רשימה אלא תוצאה:
+#: אחרי `local-entry` מגיעה אחת משלוש תוצאות (או `boot` שמצליח), ואחרי
+#: תוצאה — כלום. מסך עצירה אינו "תקוע", ומטען שעלה אינו משאיר פירור.
+LOCAL_NEXT: dict[str, str] = {
+    "local-entry": "תוצאת החיפוש על הדיסק המקומי",
+    "local-search-ok": "מטען האתחול המקומי מתחיל (אין פירור אחריו)",
+    "local-search-empty": "המכונה נשארת דלוקה עם ההודעה על המסך",
+    "local-no-disk": "המכונה נשארת דלוקה עם ההודעה על המסך",
+    "local-chain-refused": "המכונה נשארת דלוקה עם ההודעה על המסך",
 }
 
 #: מה שבא אחרי הצעד האחרון. זה כבר לא פירור אלא ה-hello עצמו, שנרשם
@@ -96,9 +113,24 @@ def describe(step: object, at: object, *, now: datetime | None = None) -> dict |
     """
     if not is_step(step):
         return None
+    seconds = _age_seconds(at, now)
+    if step in LOCAL_STEPS:
+        # ‏#416: הענף המקומי. ‏`local-entry` ממתין לתוצאה — חיפוש שלא
+        # דיווח תוצאה תוך STALL_SECONDS הוא תקיעה; כל תוצאה היא סופית.
+        waiting = step == "local-entry"
+        return {
+            "step": step,
+            "label": STEP_LABELS[step],
+            "index": 1 if waiting else 2,
+            "total": 2,
+            "at": at if isinstance(at, str) else None,
+            "seconds": seconds,
+            "next_step": None,
+            "next_label": LOCAL_NEXT[step],
+            "stalled": waiting and (seconds is None or seconds >= STALL_SECONDS),
+        }
     index = STEP_INDEX[step]
     nxt = STEPS[index + 1] if index + 1 < len(STEPS) else None
-    seconds = _age_seconds(at, now)
     return {
         "step": step,
         "label": STEP_LABELS[step],

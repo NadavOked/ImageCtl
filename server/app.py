@@ -67,6 +67,7 @@ from . import ssh_switch
 from . import storage_nodes
 from . import monitor
 from .monitor import create_monitor_router
+from .reconcile import reconcile_on_start
 from .work_areas import sweep as sweep_work_areas
 
 log = logging.getLogger("imagectl.app")
@@ -389,6 +390,12 @@ def create_runtime(
         on_opened=wake_class,
         **({"now_fn": now_fn} if now_fn else {}),
     )
+    # ‏#411: מה שנשאר `running` מהריצה הקודמת — משימת קליטה, סבב שידור —
+    # מסומן כישלון **בשם** לפני שהקונסולה עונה (הכרעת נדב 06/09, אפשרות
+    # 1). ‏`sender.status()` הוא הראיה החיובית היחידה שסבב עדיין משודר;
+    # מנוע שזה עתה נבנה אינו משדר דבר. אחרי ה-sweep (שמשאיר `running`
+    # במכוון) ולפני שמישהו יכול לקרוא את הסבב "פעיל" ב-hello.
+    reconcile_on_start(conn, library.root, sender.status())
     # ‏#720: ספריית חבילות הדרייברים — תיקייה ליד ה-DB, לא בספריית האימג'ים.
     ctx = ServerContext(conn=conn, library=library, store=store, sender=sender,
                         drivers=DriverLibrary(data_dir / "drivers"),
@@ -579,7 +586,8 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
     include(create_health_router(
         ctx, rt.server_base, rt.health_hooks,
         dnsmasq_apply=lambda what, user_id: console_dhcp.apply_dnsmasq(
-            ctx, dhcp_hooks, rt.deploy, what, user_id)))
+            ctx, dhcp_hooks, rt.deploy, what, user_id),
+        version=lambda: current_version(update_hooks, repo_dir)))
     include(create_update_router(
         ctx, repo_dir, rt.server_base, rt.update_hooks,
         public_url=PUBLIC_UPDATE_URL))

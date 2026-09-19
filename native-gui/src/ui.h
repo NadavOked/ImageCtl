@@ -133,6 +133,9 @@ typedef struct {
     int port;
     char dev[32], state[24], error[160];
     unsigned long long bytes, total;
+    /* #410: from the kiosk's local counter (clonergui.sh:cloner_gui_pace).
+     * rate_bps <= 0 / eta_s < 0 = not measured -- never drawn as 0. */
+    long long rate_bps; int eta_s;
 } Drawer;
 /* A physically connected disk shown on the cloner's IDLE screen (no round yet),
  * so the operator sees what is plugged in before a broadcast starts. */
@@ -163,6 +166,10 @@ typedef struct State {
     /* room.js round */
     int has_round; char round_image[96];
     int wave_number, wave_open, written, target, ready, remaining;
+    /* #410: round=...|elapsed_s|rate_bps|eta_s from the server (room.py
+     * _wave_pace); -1 = not measured. updated= is the epoch the agent wrote
+     * this snapshot, so the screen can say how old it is (0 = no stamp). */
+    int elapsed_s, eta_s; long long rate_bps, updated;
     /* classes.js live session */
     int has_session; char sess_image[96], sess_prefix[32], sess_group[80];
     int sess_open, joined, expected, starts_in;

@@ -112,6 +112,9 @@ class Box:
             f'export PATH="$(cd {posix(stub_dir)!r} && pwd):$PATH"; '
             f'export RUN_DIR={posix(self.run)!r} DEVROOT={posix(self.run)!r}/dev '
             f'LOG_FILE={posix(self.run / "agent.log")!r} FAKE_SERVER={posix(self.server)!r} '
+            # ‏#433: SYSROOT ריק היה מפנה את bootentry.sh ל-efivars **האמיתי** של
+            # מכונת הבדיקות (מעבדת ה-VM היא UEFI) — ו-efibootmgr היה כותב ל-NVRAM שלה.
+            f'SYSROOT={posix(self.run)!r}/sys LIB_DIR={posix(AGENT)!r}/lib '
             f'SERVER=http://10.44.12.10:8080 MAC=b4:2e:99:07:1a:c4 {env}; '
             f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/jsonq.sh; '
             f'. {posix(AGENT)}/lib/restore.sh; . {posix(AGENT)}/lib/hostname.sh; '

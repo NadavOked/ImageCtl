@@ -471,10 +471,14 @@ test('#1088 deploy network not configured: /net/deploy configured=false → note
   await t.run('saveNic("ens18",{enabled:true,confirm:"ens18"})');
   assert.match(t.run('toasts[toasts.length-1]'),/רשת ההפצה הוגדרה על ens18 \(http:\/\/10\.44\.9\.10:8080\) — השרת מתאתחל/);
   assert.equal(t.run('NET_DEPLOY.configured'),true);
-  // השלמה חלקית — השגיאות נאמרות, לא נבלעות
-  t.fixtures['/net/interfaces/ens18'].deploy={ok:false,url:'http://10.44.9.10:8080',interface:'ens18',errors:['חומת אש: nft נפל'],restarting:false};
-  await t.run('saveNic("ens18",{enabled:true,confirm:"ens18"})');
-  assert.match(t.run('toasts[toasts.length-1]'),/חלק מההשלמה נכשל: חומת אש: nft נפל · השרת לא אותחל/);
+  // ‏#1121: השלמה שנכשלה היא 500 — put זורק, שום דבר לא נרשם (NET_DEPLOY לא
+  // מתהפך), והשגיאה מגיעה לטופס דרך ה-catch של sheet(); אין טוסט "עודכנה".
+  t.run('NET_DEPLOY={configured:false,source:null,interface:null,url:null,hint:null}; toasts.length=0;');
+  t.fixtures['/net/interfaces/ens18']=new Error('ההשלמה נכשלה: חומת אש: nft נפל');
+  const thrown=await t.run('saveNic("ens18",{enabled:true,confirm:"ens18"}).then(()=>null,e=>e.message)');
+  assert.equal(thrown,'ההשלמה נכשלה: חומת אש: nft נפל');
+  assert.equal(t.run('NET_DEPLOY.configured'),false);
+  assert.equal(t.run('toasts.length'),0);
   // תשובה בלי configured (שרת ישן / fixture גנרי) אינה "לא הוגדרה" — ראיה חיובית בלבד
   t=await loaded({'/net/interfaces':none});
   html=t.run('networkPage(0)'); assert.doesNotMatch(html,/רשת ההפצה לא הוגדרה/);

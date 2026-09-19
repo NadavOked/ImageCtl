@@ -75,16 +75,26 @@ def _looks_like_ip(value: str) -> bool:
 
 
 def ipv4_of(name: str, nics: list) -> str | None:
-    """הכתובת ה-IPv4 הראשונה של הכרטיס מתוך פלט `ip -json addr` שכבר
-    נקרא. ‏None = הכרטיס קיים בלי IPv4 **או** אינו ברשימה — הקורא שרוצה
-    להבדיל ביניהם בודק `ifname` בעצמו; לצורך ה-bind שניהם "אין למה להיקשר"."""
+    """הכתובת ה-IPv4 של הכרטיס מתוך פלט `ip -json addr` שכבר נקרא.
+
+    ‏#1121 ס' 5: בזמן חידוש lease יש לרגע **שתי** כתובות, והישנה מסומנת
+    `deprecated`; ‏169.254.x היא `scope link`. לכן: כתובת `scope global`
+    שאינה deprecated קודמת; deprecated מדולגת תמיד; בלי global — הראשונה
+    שאינה deprecated. ‏None = הכרטיס קיים בלי IPv4 **או** אינו ברשימה —
+    הקורא שרוצה להבדיל ביניהם בודק `ifname` בעצמו."""
+    fallback: str | None = None
     for nic in nics or []:
         if nic.get("ifname") != name:
             continue
         for addr in nic.get("addr_info") or []:
-            if addr.get("family") == "inet" or (addr.get("local") or "").count(".") == 3:
+            if not (addr.get("family") == "inet" or (addr.get("local") or "").count(".") == 3):
+                continue
+            if addr.get("deprecated"):
+                continue
+            if addr.get("scope", "global") == "global":
                 return addr.get("local")
-    return None
+            fallback = fallback or addr.get("local")
+    return fallback
 
 
 def _run_ip(args: list[str]) -> str:
@@ -151,7 +161,14 @@ class AddressWatcher:
         if now == self.current:
             return False
         old, self.current = self.current, now
-        if self._on_change(old, now) is False:
+        try:
+            handled = self._on_change(old, now)
+        except Exception:
+            # ‏#1121 ס' 6: חריגה = הטיפול לא קרה; הערך הידוע חוזר לישן כדי
+            # שהדגימה הבאה תדווח שוב (אחרת השינוי "נזכר" בלי מאזין).
+            self.current = old
+            raise
+        if handled is False:
             # הטיפול נכשל (למשל לולאת האירועים עוד לא עלתה) — הערך הידוע
             # נשאר הישן, כדי שהדגימה הבאה תנסה שוב ולא "תזכור" כתובת
             # שאף מאזין לא נקשר אליה.
@@ -169,8 +186,14 @@ class AddressWatcher:
         self._stop.set()
 
     def _loop(self) -> None:
+        # ‏#1121 ס' 6: חריגה ב-`on_change`/`lookup` שאינה AddressLookupError
+        # הייתה הורגת את התהליכון לצמיתות — והקונסולה הייתה נשארת על
+        # כתובת ישנה בלי שאיש יראה. נרשמת ב-`on_error`, והדגימה הבאה רצה.
         while not self._stop.wait(self.interval):
-            self.check_once()
+            try:
+                self.check_once()
+            except Exception as exc:                                    # noqa: BLE001
+                self._on_error(f"הדוגם של {self.name} נפל ({exc!r}) — ממשיך לדגום")
 
 
 # --- חכירת DHCP של הכרטיס (למסך הבריאות) ----------------------------------------

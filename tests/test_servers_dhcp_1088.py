@@ -70,6 +70,22 @@ def test_read_ipv4_three_states():
         ifaddr.read_ipv4("eth0", run=lambda a: "not json")
 
 
+def test_ipv4_of_prefers_a_global_non_deprecated_address():
+    """‏#1121 ס' 5: חידוש lease = שתי כתובות לרגע, הישנה deprecated — לוקחים
+    את החדשה; ‏scope link (169.254) נסוג מפני global; deprecated לבדה = None."""
+    def nic(*addrs):
+        return [{"ifname": "eth0", "addr_info": [{"family": "inet", **a} for a in addrs]}]
+    old = {"local": "10.1.2.3", "scope": "global", "deprecated": True}
+    new = {"local": "10.1.2.9", "scope": "global"}
+    link = {"local": "169.254.7.7", "scope": "link"}
+    assert ifaddr.ipv4_of("eth0", nic(old, new)) == "10.1.2.9"
+    assert ifaddr.ipv4_of("eth0", nic(new, old)) == "10.1.2.9"
+    assert ifaddr.ipv4_of("eth0", nic(link, new)) == "10.1.2.9"
+    assert ifaddr.ipv4_of("eth0", nic(link)) == "169.254.7.7"
+    assert ifaddr.ipv4_of("eth0", nic(old)) is None
+    assert ifaddr.ipv4_of("eth0", nic({"local": "10.5.5.5"})) == "10.5.5.5"   # בלי scope — כמו קודם
+
+
 def test_read_ipv4_asks_ip_for_that_device_only():
     seen = []
     ifaddr.read_ipv4("ens18", run=lambda a: seen.append(a) or _ip_json("ens18", "10.9.9.9"))
@@ -110,6 +126,32 @@ def test_watcher_lookup_failure_is_not_an_address_change():
                               lookup=failing, on_error=errors.append)
     assert w.check_once() is False
     assert changes == [] and errors == ["boom"] and w.current == "10.1.2.3"
+
+
+def test_watcher_thread_survives_an_exception_in_on_change():
+    """‏#1121 ס' 6: `on_change` שזרק (למשל journal על DB נעול) אינו הורג את
+    הדוגם — השגיאה נרשמת, והדגימה הבאה מדווחת את השינוי."""
+    import time
+    errors, changes = [], []
+    state = {"addr": "10.1.2.3", "raise": True}
+
+    def on_change(old, new):
+        if state["raise"]:
+            state["raise"] = False
+            raise RuntimeError("database is locked")
+        changes.append((old, new))
+        return True
+
+    w = ifaddr.AddressWatcher("eth0", current=None, on_change=on_change,
+                              lookup=lambda name: state["addr"],
+                              on_error=errors.append, interval=0.01).start()
+    deadline = time.monotonic() + 3
+    while not changes and time.monotonic() < deadline:
+        time.sleep(0.01)
+    w.stop()
+    assert w._thread.is_alive() or changes            # התהליכון לא מת על החריגה
+    assert changes == [(None, "10.1.2.3")]
+    assert errors and "database is locked" in errors[0]
 
 
 LEASES = """
@@ -232,6 +274,41 @@ def test_rebind_moves_the_listener_to_the_new_address(second_loopback):
         assert _can_connect(second_loopback, port)
         assert mgr.spec("http_console")["hosts"] == [second_loopback]
         assert [b[0] for b in mgr.bound("http_console")] == [second_loopback]
+        mgr.stop()
+        await task
+
+    asyncio.run(scenario())
+
+
+def test_queued_rebinds_only_the_last_address_takes_effect(second_loopback):
+    """‏#1121 ס' 6: שני rebinds בתור מאחורי הנעילה — הישן (127.0.0.1) מוותר,
+    והמאזין עולה פעם אחת על הכתובת האחרונה."""
+    port = _free_port()
+
+    async def scenario():
+        mgr = ports.Listeners()
+        mgr.add("http_console", _factories("127.0.0.1", port), port=port, hosts=["127.0.0.1"])
+        task = asyncio.ensure_future(mgr.serve())
+        await _wait(lambda: mgr.is_open("http_console"))
+        opened = []
+        real_open = mgr._open
+
+        async def counting_open(port_id):
+            opened.append(mgr.spec(port_id)["hosts"][0])
+            await real_open(port_id)
+        mgr._open = counting_open
+        async with mgr._lock:                                 # שניהם ממתינים מאחורינו
+            stale = asyncio.ensure_future(mgr.rebind(
+                "http_console", hosts=["127.0.0.1"], factories=_factories("127.0.0.1", port)))
+            latest = asyncio.ensure_future(mgr.rebind(
+                "http_console", hosts=[second_loopback],
+                factories=_factories(second_loopback, port)))
+            await asyncio.sleep(0.05)
+        await asyncio.gather(stale, latest)
+        await _wait(lambda: mgr.is_open("http_console"))
+        assert opened == [second_loopback]
+        assert mgr.spec("http_console")["hosts"] == [second_loopback]
+        assert _can_connect(second_loopback, port)
         mgr.stop()
         await task
 
@@ -443,27 +520,138 @@ def test_regenerate_firewall_skips_when_the_installer_wrote_none(tmp_path):
     assert not (tmp_path / "nftables.conf").exists()
 
 
-def test_complete_records_then_runs_every_step_and_names_failures(tmp_path):
-    from server.db import connect
-    conn = connect(tmp_path / "x.db")
-    calls = []
-    hooks = {
+def _complete_ctx(tmp_path, hooks, servers_interface="eth0"):
+    return deploy_net.DeployContext(
+        state=deploy_net.DeployState("none", None, None), agent_port=8080,
+        tftp_root=tmp_path / "tftp", repo_dir=REPO, servers_interface=servers_interface,
+        primary_ip=None, hooks=hooks)
+
+
+def _complete_hooks(calls, *, fw="", restart=None):
+    return {
         "write_grub_cfg": lambda url, root: calls.append(("grub", url, root)) or None,
         "enable_dnsmasq": lambda: calls.append(("dnsmasq",)) or None,
         "firewall": lambda repo, deploy_if, servers_if, primary_ip: calls.append(
-            ("fw", deploy_if, servers_if, primary_ip)) or "nft נפל",
-        "restart_server": lambda: calls.append(("restart",)) or None,
+            ("fw", deploy_if, servers_if, primary_ip)) or (fw or None),
+        "restart_server": lambda: calls.append(("restart",)) or restart,
     }
-    ctx = deploy_net.DeployContext(
-        state=deploy_net.DeployState("none", None, None), agent_port=8080,
-        tftp_root=tmp_path / "tftp", repo_dir=REPO, servers_interface="eth0",
-        primary_ip=None, hooks=hooks)
-    result = deploy_net.complete(ctx, conn, interface="eth1", server_ip="10.44.9.10")
-    assert deploy_net.stored(conn) == ("eth1", "http://10.44.9.10:8080")
+
+
+def _fake_nft(calls, *, load_fails=False):
+    """‏`_run` מדומה: המחולל מחזיר ruleset, ‏`nft -c` עובר, ‏`nft -f` על
+    ה-candidate נכשל לפי `load_fails`; ‏`nft -f` על הקובץ הישן (החזרה) עובר."""
+    def run(cmd, **kw):
+        calls.append(list(cmd))
+        if cmd[0] == "sh":
+            return True, "table inet imagectl { }\n", ""
+        if cmd[:2] == ["nft", "-c"]:
+            return True, "", ""
+        if cmd[:2] == ["nft", "-f"] and cmd[2].endswith(".candidate"):
+            return (False, "", "Error: could not process rule") if load_fails else (True, "", "")
+        if cmd[:2] == ["nft", "-f"]:
+            return True, "", ""
+        raise AssertionError(cmd)
+    return run
+
+
+def test_regenerate_firewall_replaces_the_file_only_after_the_kernel_took_it(tmp_path, monkeypatch):
+    """‏#1121 ס' 2: הקובץ הישן נדרס רק אחרי `nft -f` שהצליח — ודרך candidate."""
+    conf = tmp_path / "nftables.conf"
+    conf.write_text("# ImageCtl old\n", encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(deploy_net, "_run", _fake_nft(calls))
+    assert deploy_net.regenerate_firewall(REPO, deploy_if="eth1", servers_if="eth0",
+                                          conf=conf) is None
+    assert conf.read_text(encoding="utf-8") == "table inet imagectl { }\n"
+    nft = [c for c in calls if c[0] == "nft"]
+    assert nft[0][:2] == ["nft", "-c"] and nft[1][:2] == ["nft", "-f"]
+    assert nft[1][2].endswith(".candidate")                 # לא הקובץ החי
+    assert not conf.with_name("nftables.conf.candidate").exists()
+
+
+def test_regenerate_firewall_keeps_the_old_file_and_restores_the_old_ruleset_when_load_fails(
+        tmp_path, monkeypatch):
+    """‏`nft -c` עובר ו-`nft -f` נכשל → /etc/nftables.conf הישן נשאר, ה-ruleset
+    הישן נטען חזרה ממנו, וה-candidate אינו נשאר על הדיסק."""
+    conf = tmp_path / "nftables.conf"
+    conf.write_text("# ImageCtl old\n", encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(deploy_net, "_run", _fake_nft(calls, load_fails=True))
+    err = deploy_net.regenerate_firewall(REPO, deploy_if="eth1", servers_if="eth0", conf=conf)
+    assert err and "could not process rule" in err and "הוחזר" in err
+    assert conf.read_text(encoding="utf-8") == "# ImageCtl old\n"
+    assert calls[-1] == ["nft", "-f", str(conf)]                # ההחזרה — מהקובץ הישן
+    assert not conf.with_name("nftables.conf.candidate").exists()
+
+
+def test_restart_is_scheduled_under_a_unique_transient_unit(monkeypatch):
+    """‏#1121 ס' 3: שתי השלמות בתוך חלון ה-3 ש' — שתי יחידות שונות, לא
+    "Unit imagectl-deploy-restart already exists"."""
+    calls = []
+    monkeypatch.setattr(deploy_net, "_run", lambda cmd, **kw: calls.append(cmd) or (True, "", ""))
+    assert deploy_net.restart_server_later() is None
+    assert deploy_net.restart_server_later() is None
+    units = [next(a for a in c if a.startswith("--unit=")) for c in calls]
+    assert all(u.startswith("--unit=imagectl-deploy-restart") for u in units)
+    assert units[0] != units[1]
+    assert all("--collect" in c and c[-3:] == ["systemctl", "restart", "imagectl-server"]
+               for c in calls)
+
+
+def test_complete_applies_every_step_and_commits_last(tmp_path):
+    """‏#1121: ‏`deploy:*` נרשם **אחרי** שכל השלבים הצליחו, לא לפניהם."""
+    from server.db import connect
+    conn = connect(tmp_path / "x.db")
+    calls = []
+    seen_at_restart = {}
+    hooks = _complete_hooks(calls)
+    hooks["restart_server"] = lambda: (calls.append(("restart",)),
+                                       seen_at_restart.update(stored=deploy_net.stored(conn)),
+                                       None)[2]
+    result = deploy_net.complete(_complete_ctx(tmp_path, hooks), conn,
+                                 interface="eth1", server_ip="10.44.9.10")
     assert [c[0] for c in calls] == ["grub", "dnsmasq", "fw", "restart"]
     assert calls[2] == ("fw", "eth1", "eth0", None)
+    assert seen_at_restart["stored"] == (None, None)        # עוד לא נרשם בזמן התזמון
+    assert deploy_net.stored(conn) == ("eth1", "http://10.44.9.10:8080")
+    assert result == {"ok": True, "url": "http://10.44.9.10:8080", "interface": "eth1",
+                      "errors": [], "restarting": True, "recorded": True}
+
+
+def test_complete_failure_mid_way_stops_without_restart_and_without_commit(tmp_path):
+    """חומת האש נפלה → אין אתחול, אין `deploy:*`, והשגיאה נקובה בשם."""
+    from server.db import connect
+    conn = connect(tmp_path / "x.db")
+    calls = []
+    result = deploy_net.complete(_complete_ctx(tmp_path, _complete_hooks(calls, fw="nft נפל")),
+                                 conn, interface="eth1", server_ip="10.44.9.10")
+    assert [c[0] for c in calls] == ["grub", "dnsmasq", "fw"]     # בלי restart
+    assert deploy_net.stored(conn) == (None, None)
     assert result["ok"] is False and result["errors"] == ["חומת אש: nft נפל"]
-    assert result["restarting"] is True and result["url"] == "http://10.44.9.10:8080"
+    assert result["restarting"] is False and result["recorded"] is False
+
+
+def test_complete_restart_failure_is_not_committed_either(tmp_path):
+    from server.db import connect
+    conn = connect(tmp_path / "x.db")
+    calls = []
+    result = deploy_net.complete(
+        _complete_ctx(tmp_path, _complete_hooks(calls, restart="systemd-run חסר")),
+        conn, interface="eth1", server_ip="10.44.9.10")
+    assert deploy_net.stored(conn) == (None, None)
+    assert result["ok"] is False and result["errors"] == ["אתחול: systemd-run חסר"]
+
+
+def test_complete_without_a_servers_nic_stops_only_when_a_firewall_is_installed(tmp_path):
+    """‏`--console-host` שאינו שם כרטיס: עם חומת אש מותקנת — עוצר בשם; בלי
+    חומת אש (‏--no-firewall) — אין מה לחולל, וההשלמה ממשיכה."""
+    conf = tmp_path / "nftables.conf"
+    assert deploy_net.regenerate_firewall(REPO, deploy_if="eth1", servers_if=None,
+                                          conf=conf) is None
+    conf.write_text("# ImageCtl\n", encoding="utf-8")
+    err = deploy_net.regenerate_firewall(REPO, deploy_if="eth1", servers_if=None, conf=conf)
+    assert err and "כרטיס השרתים אינו ידוע" in err
+    assert conf.read_text(encoding="utf-8") == "# ImageCtl\n"
 
 
 def test_render_adds_the_deploy_interface_line_when_set_from_the_console():
@@ -513,7 +701,7 @@ def console(tmp_path: Path, images_root: Path, clock):
     deploy_hooks = {
         "write_grub_cfg": lambda url, root: fake["deploy_calls"].append(("grub", url)) or None,
         "enable_dnsmasq": lambda: fake["deploy_calls"].append(("dnsmasq",)) or None,
-        "firewall": lambda repo, **kw: fake["deploy_calls"].append(("fw", kw)) or None,
+        "firewall": lambda repo, **kw: fake["deploy_calls"].append(("fw", kw)) or fake.get("fw_error"),
         "restart_server": lambda: fake["deploy_calls"].append(("restart",)) or None,
     }
 
@@ -540,7 +728,7 @@ def test_first_dhcp_enable_completes_the_install_and_restarts(console):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["deploy"] == {"ok": True, "url": "http://10.44.9.10:8080", "interface": "eth1",
-                              "errors": [], "restarting": True}
+                              "errors": [], "restarting": True, "recorded": True}
     assert deploy_net.stored(ctx.conn) == ("eth1", "http://10.44.9.10:8080")
     assert [c[0] for c in fake["deploy_calls"]] == ["grub", "dnsmasq", "fw", "restart"]
     assert fake["deploy_calls"][2][1] == {"deploy_if": "eth1", "servers_if": "eth0", "primary_ip": None}
@@ -550,6 +738,68 @@ def test_first_dhcp_enable_completes_the_install_and_restarts(console):
     assert client.get("/api/console/net/deploy").json()["source"] == "console"
     events = [r["event"] for r in ctx.conn.execute("SELECT event FROM journal")]
     assert "deploy_net_set" in events
+
+
+def test_first_dhcp_enable_that_fails_to_complete_writes_nothing_and_can_be_retried(console):
+    """‏#1121: חומת האש נפלה באמצע ההשלמה → 500 בשם, **שום דבר** לא נרשם
+    (לא `deploy:*`, לא `dhcp:eth1`), dnsmasq לא נכתב, השרת לא מאותחל —
+    והניסיון הבא הוא שוב "הדלקה ראשונה" שמשלימה."""
+    from server.db import get_setting
+    build, fake = console
+    client, ctx, deploy_ctx = build("none")
+    fake["fw_error"] = "nft -f נפל"
+    r = client.put("/api/console/net/interfaces/eth1", json={**GOOD, "confirm": "eth1"})
+    assert r.status_code == 500, r.text
+    assert "nft -f נפל" in r.json()["detail"] and "לא נרשם דבר" in r.json()["detail"]
+    assert deploy_net.stored(ctx.conn) == (None, None)
+    assert get_setting(ctx.conn, dhcp.SETTING_PREFIX + "eth1") is None
+    assert [c[0] for c in fake["deploy_calls"]] == ["grub", "dnsmasq", "fw"]     # בלי restart
+    assert fake["applied"] == []
+    assert deploy_ctx.state.source == "none"
+    events = [r["event"] for r in ctx.conn.execute("SELECT event FROM journal")]
+    assert "deploy_net_failed" in events and "deploy_net_set" not in events
+    # תיקנו את חומת האש — ההדלקה הבאה משלימה, כאילו הייתה הראשונה.
+    fake["fw_error"] = None
+    r = client.put("/api/console/net/interfaces/eth1", json={**GOOD, "confirm": "eth1"})
+    assert r.status_code == 200 and r.json()["deploy"]["ok"] is True
+    assert deploy_net.stored(ctx.conn) == ("eth1", "http://10.44.9.10:8080")
+    assert [c[0] for c in fake["deploy_calls"]][3:] == ["grub", "dnsmasq", "fw", "restart"]
+
+
+def test_full_dhcp_on_another_nic_after_console_deploy_is_409(console):
+    """‏#1121 ס' 4: אחרי `source=console` על eth1, DHCP **מלא** על eth0 (רשת
+    המכללה) נדחה בשם — ושום דבר לא נכתב; ‏proxy על eth0 מותר."""
+    from server.db import get_setting
+    build, fake = console
+    client, ctx, _ = build("none")
+    assert client.put("/api/console/net/interfaces/eth1",
+                      json={**GOOD, "confirm": "eth1"}).status_code == 200
+    applied_before = len(fake["applied"])
+    r = client.put("/api/console/net/interfaces/eth0", json={**GOOD, "confirm": "eth0"})
+    assert r.status_code == 409, r.text
+    assert "כרטיס ההפצה (eth1)" in r.json()["detail"] and "eth0" in r.json()["detail"]
+    assert get_setting(ctx.conn, dhcp.SETTING_PREFIX + "eth0") is None
+    assert len(fake["applied"]) == applied_before
+    assert deploy_net.stored(ctx.conn) == ("eth1", "http://10.44.9.10:8080")
+    r = client.put("/api/console/net/interfaces/eth0",
+                   json={"proxy": True, "confirm": "eth0", "confirm_proxy_broken": True})
+    assert r.status_code == 200, r.text
+
+
+def test_first_enable_lock_refuses_a_concurrent_first_enable(console, monkeypatch):
+    """הנעילה סביב ההדלקה הראשונה: כשהיא תפוסה — 409, לא השלמה כפולה."""
+    from server import console_dhcp
+    build, fake = console
+    client, ctx, _ = build("none")
+    assert console_dhcp._first_enable_lock.acquire(blocking=False)
+    try:
+        r = client.put("/api/console/net/interfaces/eth1", json={**GOOD, "confirm": "eth1"})
+    finally:
+        console_dhcp._first_enable_lock.release()
+    assert r.status_code == 409 and "בעיצומה" in r.json()["detail"]
+    assert fake["deploy_calls"] == [] and deploy_net.stored(ctx.conn) == (None, None)
+    assert client.put("/api/console/net/interfaces/eth1",
+                      json={**GOOD, "confirm": "eth1"}).status_code == 200
 
 
 def test_first_dhcp_enable_refuses_a_nic_that_does_not_carry_the_address(console):
@@ -764,7 +1014,7 @@ def test_installer_text_deploy_is_optional_and_servers_nic_is_dhcp_by_default():
     assert "לא עכשיו" in text
     assert 'CONSOLE_HOST="${CONSOLE_HOST:-$SERVERS_IF}"' in text
     # בלי כרטיס הפצה: אין interface=, dnsmasq כבוי, grub.cfg לא נכתב, חומת אש בלי --deploy-if.
-    assert '[[ -n "$IFACE" ]] && NFT_ARGS+=(--deploy-if "$IFACE")' in text
+    assert 'NFT_ARGS+=(--deploy-if "$DEPLOY_FOR_NFT")' in text          # ‏#1121 ס' 7
     assert "systemctl disable --now dnsmasq" in text
     assert "grub/grub.cfg לא נכתב" in text
     assert 'VERIFY_URL="${SERVER_URL:-http://127.0.0.1:${PORT:-8080}}"' in text

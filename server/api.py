@@ -33,6 +33,10 @@ log = logging.getLogger("imagectl.api")
 #: היא ~60 תווים; מעבר לזה נקצץ, לא נדחה.
 PROMPT_MAX_CHARS = 200
 
+#: ‏#402: הערכים של `disk_probe` בממשק 2. `unchecked` ≠ `no_disks`
+#: (עיקרון 5): "לא הצלחנו לספור פורטים" אינו "אפס פורטים".
+DISK_PROBE_VALUES = frozenset({"drives", "no_disks", "no_ports", "unchecked"})
+
 
 @dataclass
 class ServerContext:
@@ -180,6 +184,12 @@ def create_agent_router(ctx: ServerContext,
             prompt = None
         else:
             prompt = prompt.strip()[:PROMPT_MAX_CHARS]
+        # ‏#402: מה הסוכן מצא כשספר אפס דיסקים (ממשק 2). רק ארבעת הערכים
+        # המוכרים נשמרים; כל צורה אחרת — וגם היעדר (סוכן ישן) — היא None,
+        # והשורה שומרת את הערך הקודם (COALESCE), כמו disks_json.
+        disk_probe = body.get("disk_probe")
+        if disk_probe not in DISK_PROBE_VALUES:
+            disk_probe = None
         answer = build_answer(
             ctx.conn, ctx.library, ctx.store, mac,
             disks=disks, client_ip=client_ip, joining=joining,
@@ -187,7 +197,7 @@ def create_agent_router(ctx: ServerContext,
             all_macs=all_macs, monitor_secret=monitor_secret,
             monitor_auth=monitor_auth,
             hw_inventory=hw_inventory, hw_probe=hw_probe, hw_ssh=hw_ssh,
-            prompt=prompt,
+            prompt=prompt, disk_probe=disk_probe,
             # ‏#715: פרמטרי השידור למקור שהוא מחשב בנייה — של המנוע, אם יש.
             multicast=ctx.sender.multicast_params() if ctx.sender is not None else None,
         )

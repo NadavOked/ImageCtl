@@ -7,6 +7,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include "screens_rounds.h"
 
 /* ---- .room-machines rows (room.js machineRows / classes.js renderLive) ---- */
@@ -121,6 +122,42 @@ void rows_draw(App *a, cairo_t *cr, double x, double y, double w, RowSet *rs) {
         text_free(&r->name); text_free(&r->mac); text_free(&r->state);
     }
     cairo_restore(cr);
+}
+
+/* ---- #410: elapsed / rate / ETA / freshness, in words ----------------------- */
+
+static void hms(int secs, char *out, size_t n) {
+    if (secs >= 3600) snprintf(out, n, "%d:%02d:%02d", secs / 3600, secs % 3600 / 60, secs % 60);
+    else              snprintf(out, n, "%d:%02d", secs / 60, secs % 60);
+}
+
+void pace_text(int elapsed_s, long long rate_bps, int eta_s, int latin, char *out, size_t n) {
+    /* Each number is printed only when it was measured: a rate of 0 reads
+     * as "stopped", and a wave with no measurement yet is not stopped. */
+    char el[24], rt[32], eta[32]; size_t len = 0;
+    out[0] = 0;
+    if (elapsed_s >= 0) {
+        hms(elapsed_s, el, sizeof el);
+        len += snprintf(out + len, n - len, latin ? "elapsed %s" : "עבר %s", el);
+    }
+    if (rate_bps > 0) {
+        fmt_bytes(rt, sizeof rt, (double)rate_bps);
+        len += snprintf(out + len, n - len, latin ? "%s%s/s" : "%s%s/שנ'", len ? " · " : "", rt);
+    }
+    if (eta_s >= 0 && rate_bps > 0) {
+        hms(eta_s, eta, sizeof eta);
+        len += snprintf(out + len, n - len, latin ? "%sETA %s" : "%sנותרו ~%s", len ? " · " : "", eta);
+    } else if (len) {
+        len += snprintf(out + len, n - len, latin ? " · ETA not measured" : " · סיום לא נמדד");
+    }
+}
+
+void pace_age(long long updated, char *out, size_t n) {
+    out[0] = 0;
+    if (updated <= 0) return;
+    long long age = (long long)time(NULL) - updated;
+    if (age < 0) age = 0;
+    snprintf(out, n, "עודכן לפני %lld שנ'", age);
 }
 
 /* ---- the .st-prog-line (b 22px + span.sub, align-items:baseline) --------- */

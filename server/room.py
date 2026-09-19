@@ -114,12 +114,16 @@ def has_fresh_drawers(conn: sqlite3.Connection, mac: str) -> bool:
 
 def drawer_list(conn: sqlite3.Connection, mac: str, written: set[str],
                 member: sqlite3.Row | None = None,
-                selected_ports: set[int] | None = None) -> list[dict]:
+                selected_ports: set[int] | None = None,
+                started_at: str | None = None) -> list[dict]:
     """המגירות של המכונה כפי שהטכנאי רואה אותן: חריץ, התקן ומצב (#27).
 
     ‏`port` הוא ה-ataN שהסוכן דיווח בממשק 2 — החריץ הפיזי, לא סדר הגילוי
     של הקרנל. סוכן ישן, VM או בקר לא-ATA לא מדווחים אותו, והוא יוצא `null`:
     הקונסולה נופלת חזרה לתצוגה לפי שם ההתקן, בלי להיכשל (עיקרון 1).
+
+    ‏`started_at` (‏#410) — מתי הגל יצא לדרך; ממנו נגזרים `rate_bps` ו-`eta_s`
+    לכל מגירה. בלעדיו שניהם `None` — "לא נמדד", לא 0.
     """
     targets = {}
     if member is not None:
@@ -155,6 +159,8 @@ def drawer_list(conn: sqlite3.Connection, mac: str, written: set[str],
             "bytes_written": _int(target.get("bytes_written")),
             "bytes_total": _int(target.get("bytes_total")),
             "stalled_s": _stalled_s(target.get("moved_at")),
+            # ‏#410: קצב ו-ETA — מהבייטים שדווחו, לא מהערכה. ‏None = לא נמדד.
+            **_pace(target, started_at),
             # ‏#872: בכמה עלה מונה ה-CRC (199) בסבב הזה, מדוח הסוכן. ‏None =
             # לא נמדד — לא 0 (עיקרון 5). >0 מוצג "CRC +N · לבדוק כבל", ואינו
             # צובע את הדיסק.
@@ -177,6 +183,34 @@ def _int(value) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _pace(target: dict, started_at: str | None) -> dict:
+    """‏#410: ‏`rate_bps` ו-`eta_s` של מגירה, מהבייטים שדווחו.
+
+    הקצב הוא **ממוצע מאז שהגל יצא**: `bytes_written` חלקי הזמן בין
+    `started_at` של הגל ל-`moved_at` — הרגע שבו המונה גדל לאחרונה (#552),
+    כלומר הרגע שבו `bytes_written` היה הערך הזה. ממוצע ולא דגימה: הזרם
+    הוא מולטיקאסט אחד, ומה שהמפעיל צריך הוא "כמה עוד", לא תנודה של
+    שנייה. ‏ETA = מה שנשאר חלקי הקצב, רק כשיש סך ורק כשהמגירה כותבת.
+
+    ⚠️ ‏`None` ≠ `0` (עיקרון 5): אין חותמת, חותמת שאינה נפרסת, אפס בייטים
+    או אפס שניות — כולם "לא נמדד", ומסך שמצייר אותם כאפס אומר "עצר".
+    """
+    none = {"rate_bps": None, "eta_s": None}
+    if target.get("state") != "writing":
+        return none
+    written = _int(target.get("bytes_written"))
+    since, until = _iso_or_none(started_at), _iso_or_none(target.get("moved_at"))
+    if written <= 0 or since is None or until is None:
+        return none
+    seconds = (until - since).total_seconds()
+    if seconds <= 0:
+        return none
+    rate = written / seconds
+    total = _int(target.get("bytes_total"))
+    eta = int((total - written) / rate) if total > written else None
+    return {"rate_bps": int(rate), "eta_s": eta}
 
 
 def _stalled_s(moved_at: str | None) -> int | None:
@@ -853,20 +887,27 @@ def status_view(ctx) -> dict:
     round_row = active_round(ctx.conn)
     written = _written(round_row) if round_row else set()
     member_of = {}
+    wave = None
     if round_row is not None:
         member_of = {
             m["mac"]: m for m in ctx.store.members(round_row["wave_session_id"])
         }
+        wave = ctx.conn.execute(
+            "SELECT state, started_at FROM sessions WHERE id = ?",
+            (round_row["wave_session_id"],),
+        ).fetchone()
+    started_at = wave["started_at"] if wave and wave["state"] == "running" else None
 
     machines = []
     for row in ctx.conn.execute(
-        "SELECT m.mac, m.suffix, m.drawer_count, d.last_seen FROM machines m"
+        "SELECT m.mac, m.suffix, m.drawer_count, d.last_seen, d.disk_probe"
+        " FROM machines m"
         " LEFT JOIN net_devices d ON d.mac = m.mac"
         " WHERE m.group_id = ? ORDER BY m.suffix", (CLONERS_GROUP,)
     ):
         member = member_of.get(row["mac"])
         drawers = drawer_list(ctx.conn, row["mac"], written, member,
-                              _selected_ports(round_row, row["mac"]))
+                              _selected_ports(round_row, row["mac"]), started_at)
         # ‏#710: כל עוד #704 (הגדרת מגירות במסוף) לא נבנה, העמודה NULL —
         # ואז ברירת המחדל היא מספר הדיסקים שהמכונה מדווחת בפועל (הפורט
         # הגבוה ביותר, או הספירה כשאין פורטים), כדי שהגריד לא יסתיר דיסק.
@@ -879,6 +920,10 @@ def status_view(ctx) -> dict:
             "awake": _is_awake(row["last_seen"],
                                member["updated_at"] if member else None),
             "drawers": len(drawers),
+            # ‏#402: כש-`drawers` הוא 0 — למה: `no_disks` (חברו כונן) /
+            # `no_ports` (הבקר מנוטרל בקושחה) / `unchecked` (לא נספר) /
+            # ‏null (סוכן ישן). המספר לבדו קיפל את שלושתם.
+            "disk_probe": row["disk_probe"],
             "fresh_drawers": sum(1 for d in drawers if d["fresh"]),
             "drawer_list": drawers,
             "joined": member is not None,
@@ -894,10 +939,6 @@ def status_view(ctx) -> dict:
             # רצפה בדיוק שהשרת מסרב לפיה, ממקום אחד. ‏null = אין דיווח.
             "disk_floor": disk_floor(ctx.conn)}
     if round_row is not None:
-        wave = ctx.conn.execute(
-            "SELECT state FROM sessions WHERE id = ?",
-            (round_row["wave_session_id"],),
-        ).fetchone()
         view["round"] = {
             "id": round_row["id"],
             "image_id": round_row["image_id"],
@@ -911,8 +952,30 @@ def status_view(ctx) -> dict:
             "opened_by": round_row["opened_by"],
             # ‏#715: מאיפה הבייטים — ספרייה (השרת משדר) או מחשב בנייה.
             "source": _direct().source_view(ctx.conn, round_row),
+            # ‏#410: זמן, קצב והערכת סיום של הגל — null כשאין מה למדוד.
+            **_wave_pace(started_at, machines),
         }
     return view
+
+
+def _wave_pace(started_at: str | None, machines: list[dict]) -> dict:
+    """‏#410: מה שהמפעיל רואה בראש המסך — כמה זמן הגל רץ, באיזה קצב,
+    ומתי הוא צפוי להסתיים.
+
+    ‏`elapsed_s` מ-`started_at` של הגל (‏`running` בלבד). ‏`rate_bps` הוא
+    **האיטית** מבין המגירות הכותבות שנמדדו, ו-`eta_s` הוא **הארוך** —
+    הגל נגמר כשהאחרונה נגמרת, וקצב ממוצע-על-הכול היה מסתיר מגירה
+    שמפגרת. ‏None כשאין מגירה כותבת שנמדדה (עיקרון 5: לא 0).
+    """
+    since = _iso_or_none(started_at)
+    elapsed = (max(0, int((datetime.now(timezone.utc) - since).total_seconds()))
+               if since is not None else None)
+    writing = [d for m in machines for d in m.get("drawer_list", [])
+               if d.get("state") == "writing" and d.get("rate_bps") is not None]
+    rate = min(d["rate_bps"] for d in writing) if writing else None
+    etas = [d["eta_s"] for d in writing if d.get("eta_s") is not None]
+    return {"started_at": started_at, "elapsed_s": elapsed,
+            "rate_bps": rate, "eta_s": max(etas) if etas else None}
 
 
 def _direct():

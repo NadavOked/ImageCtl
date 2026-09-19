@@ -693,14 +693,23 @@ def ports_snapshot(ctx, hooks: dict, server_base: str) -> list[dict]:
 
 
 def create_health_router(ctx, server_base: str, hooks: dict | None = None,
-                         dnsmasq_apply=None) -> APIRouter:
+                         dnsmasq_apply=None, version=None) -> APIRouter:
     """‏`dnsmasq_apply(what, user_id)` (‏#1013): מה שמתג ה-TFTP מפעיל —
-    ‏`console_dhcp.apply_dnsmasq` עם ה-hooks של ה-DHCP; ‏None = אין."""
+    ‏`console_dhcp.apply_dnsmasq` עם ה-hooks של ה-DHCP; ‏None = אין.
+    ‏`version()` (‏#1131): תג ה-git של העץ, אותו מקור כמו `/me` — ל-`/health/live`."""
     router = APIRouter(prefix="/api/console")
     current_user, admin_only = auth.dependencies(ctx.conn)
     # מתגי ה-SSH חולקים את אותו מנגנון הזרקה: בבדיקות אף פעולה אינה
     # נוגעת ב-sshd אמיתי, בדיוק כמו ב-dhcp_hooks.
     hooks = {**default_hooks(), **ssh_switch.default_hooks(), **(hooks or {})}
+
+    @router.get("/health/live")
+    def live():
+        """‏#1131: liveness **ללא הזדהות** — המתקין (לפני שהוא מפעיל חומת אש)
+        ו-`tools/server-upgrade.sh` (אחרי restart) שואלים כאן מ-loopback אם
+        השרת החדש עונה, ואיזו גרסה רצה. רק `ok` וגרסה — לא מצב הבדיקות
+        (‏`/health` נשאר admin בלבד)."""
+        return {"ok": True, "version": version() if version else None}
 
     @router.get("/health")
     def health(response: Response, user=Depends(admin_only)):

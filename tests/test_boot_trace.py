@@ -349,6 +349,56 @@ def test_a_step_that_went_backwards_is_a_new_boot(conn):
     assert last(conn)[4] != "2020-01-01T00:00:00+00:00"
 
 
+# --- #416: ענף הדיסק המקומי — הסתעפות, לא המשך --------------------------------
+
+
+def test_a_local_step_after_the_menu_is_progress_not_a_new_boot(conn):
+    boottrace.record(conn, MAC, "menu")
+    conn.execute("UPDATE boot_steps SET first_at = '2020-01-01T00:00:00+00:00'")
+    conn.commit()
+    assert boottrace.record(conn, MAC, "local-entry") is True
+    assert last(conn)[1] == "local-entry"
+    assert last(conn)[4] == "2020-01-01T00:00:00+00:00"
+    boottrace.record(conn, MAC, "local-no-disk")
+    assert last(conn)[4] == "2020-01-01T00:00:00+00:00"
+
+
+def test_a_menu_after_a_local_outcome_is_a_new_boot(conn):
+    boottrace.record(conn, MAC, "local-search-empty")
+    conn.execute("UPDATE boot_steps SET first_at = '2020-01-01T00:00:00+00:00'")
+    conn.commit()
+    boottrace.record(conn, MAC, "menu")
+    assert last(conn)[1] == "menu" and last(conn)[4] != "2020-01-01T00:00:00+00:00"
+
+
+@pytest.mark.parametrize("step", ["local-search-ok", "local-search-empty",
+                                  "local-no-disk", "local-chain-refused"])
+def test_a_local_outcome_is_final_and_never_stalled(step):
+    """מסך עצירה אינו "תקוע", ומטען שעלה אינו משאיר פירור נוסף."""
+    info = stalled(step, minutes=99)
+    assert info["label"] == boottrace.STEP_LABELS[step]
+    assert info["next_step"] is None and info["stalled"] is False
+    assert info["next_label"] == boottrace.LOCAL_NEXT[step]
+    assert (info["index"], info["total"]) == (2, 2)
+
+
+def test_a_local_entry_that_never_reported_an_outcome_is_stalled():
+    info = stalled("local-entry")
+    assert info["stalled"] is True and info["next_step"] is None
+    assert (info["index"], info["total"]) == (1, 2)
+
+
+def test_the_two_no_os_states_have_two_different_labels():
+    """הבאג של #416, בצד הקונסולה: "אין דיסק" ו"אין מערכת" הם שני שמות."""
+    assert boottrace.STEP_LABELS["local-no-disk"] != boottrace.STEP_LABELS["local-search-empty"]
+    assert all(step in boottrace.STEP_LABELS for step in trace.LOCAL_STEPS)
+
+
+def test_the_local_steps_do_not_change_the_imagectl_chain():
+    assert len(trace.STEPS) == 9 and not any(s.startswith("local-") for s in trace.STEPS)
+    assert trace.GRUB_STEPS == trace.STEPS[1:6]
+
+
 # --- התצוגה: מה **לא** הגיע --------------------------------------------------
 
 

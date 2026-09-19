@@ -117,8 +117,46 @@ def test_a_drawer_record_reports_the_local_bytes_and_port(tmp_path):
     ולא פר-מגירה, שדה הבייטים היה שווה לכל המגירות (#25). כאן sda הוא
     45 (40+5) ו-sdb הוא 0 — שני מספרים שונים, מהקבצים המקומיים."""
     lines = state_lines(tmp_path)
-    assert "drawer=1|sda|writing|45|100|" in lines
-    assert "drawer=2|sdb|waiting|0|100|" in lines
+    # ‏#410: שדות 7–8 הם קצב ו-ETA; ‏-1 = לא נמדד (דגימה ראשונה / לא כותבת).
+    assert "drawer=1|sda|writing|45|100||-1|-1" in lines
+    assert "drawer=2|sdb|waiting|0|100||-1|-1" in lines
+
+
+def test_a_second_sample_carries_the_rate_and_eta_from_the_local_counter(tmp_path):
+    """‏#410: הקצב הוא ממוצע מאז הדגימה הראשונה עם בייטים על המגירה
+    (‏`$GUI_DIR/pace.<dev>` = "epoch bytes"). העוגן מוזז 10 שניות אחורה
+    כי שתי הריצות קורות באותה שנייה — ואפס שניות הוא בצדק "לא נמדד"."""
+    run = tmp_path / "run"; run.mkdir()
+    gui = tmp_path / "gui"; gui.mkdir()
+    (run / "manifest.json").write_text('{"name":"Office 2024"}', newline="\n")
+    target(run, "sda", "writing", 1000, 0, "50")
+    out = sh(env(run, gui) + PRELUDE + PORTS + "cloner_gui_state")
+    assert out.returncode == 0, out.stderr
+    assert "drawer=1|sda|writing|50|1000||-1|-1" in (gui / "state").read_text().splitlines()
+    t0, b0 = (gui / "pace.sda").read_text().split()
+    assert b0 == "50"
+    (gui / "pace.sda").write_text(f"{int(t0) - 10} 50\n", newline="\n")
+    target(run, "sda", "writing", 1000, 0, "250")           # +200 בייטים ב-10 שניות
+    out = sh(env(run, gui) + PRELUDE + PORTS + "cloner_gui_state")
+    assert out.returncode == 0, out.stderr
+    line = [l for l in (gui / "state").read_text().splitlines() if l.startswith("drawer=")][0]
+    port, dev, state, bytes_, total, err, rate, eta = line[len("drawer="):].split("|")
+    assert bytes_ == "250"
+    assert 15 <= int(rate) <= 20, rate                      # 200 / (10s + הזמן בין הריצות)
+    assert eta == str((1000 - 250) // int(rate))
+    assert any(l.startswith("updated=") for l in (gui / "state").read_text().splitlines())
+
+
+def test_a_drawer_that_stopped_writing_drops_its_anchor_and_reports_unmeasured(tmp_path):
+    run = tmp_path / "run"; run.mkdir()
+    gui = tmp_path / "gui"; gui.mkdir()
+    (run / "manifest.json").write_text('{"name":"Office 2024"}', newline="\n")
+    (gui / "pace.sda").write_text("1 1\n", newline="\n")
+    target(run, "sda", "done", 1000, 1000, "")
+    out = sh(env(run, gui) + PRELUDE + PORTS + "cloner_gui_state")
+    assert out.returncode == 0, out.stderr
+    assert "drawer=1|sda|done|1000|1000||-1|-1" in (gui / "state").read_text().splitlines()
+    assert not (gui / "pace.sda").exists()
 
 
 def test_a_pending_smart_request_becomes_a_prompt_record(tmp_path):
@@ -145,7 +183,7 @@ def test_an_error_pipe_cannot_corrupt_the_record(tmp_path):
     out = sh(env(run, gui) + PRELUDE + PORTS + "cloner_gui_state")
     assert out.returncode == 0, out.stderr
     drawer = [l for l in (gui / "state").read_text().splitlines() if l.startswith("drawer=")][0]
-    assert drawer.count("|") == 5, drawer          # בדיוק שישה שדות
+    assert drawer.count("|") == 7, drawer          # בדיוק שמונה שדות (#410: +קצב, +ETA)
     assert "bad   disk line2" in drawer
 
 

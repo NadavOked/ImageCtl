@@ -33,6 +33,14 @@ void room_status_markup(const App *a, const Machine *m, int mode, char *out, siz
 void rows_make(App *, cairo_t *, double, int, const char *, RowSet *);
 void rows_draw(App *, cairo_t *, double, double, double, RowSet *);
 ProgLine progline_make(cairo_t *, const char *, const char *, double);
+/* #410: "עבר 1:02:05 · 52 MB/s · נותרו ~10 דק'" from elapsed/rate/eta
+ * (-1 = unmeasured, said in words -- never 0); empty when nothing is
+ * measured. latin=1 gives "52 MB/s · ETA 10:10" for a line that is drawn
+ * DIR_LTR (the cloner's byte line) -- Hebrew words inside an LTR run come
+ * out scrambled. pace_age: "עודכן לפני N שנ'" from the updated= epoch,
+ * empty when there is no stamp. */
+void pace_text(int elapsed_s, long long rate_bps, int eta_s, int latin, char *out, size_t n);
+void pace_age(long long updated, char *out, size_t n);
 void progline_draw(cairo_t *, const Theme *, ProgLine *, double, double, double);
 Text confirm_label(cairo_t *, const char *, int, double);
 void foot_buttons(App *, cairo_t *, Rect, Text *, const int *, const int *, int);

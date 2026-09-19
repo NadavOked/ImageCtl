@@ -141,6 +141,7 @@ class Listeners:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._exit: asyncio.Event | None = None
         self._lock: asyncio.Lock | None = None
+        self._rebind_gen: dict[str, int] = {}
 
     # -- רישום (לפני serve) --
 
@@ -260,7 +261,13 @@ class Listeners:
         if port_id not in self._specs:
             raise KeyError(port_id)
         assert self._lock is not None, "serve() לא רץ"
+        # ‏#1121 ס' 6: אסימון דור — כמה rebinds שהצטברו (הדוגם המשיך אחרי
+        # timeout) מתבצעים לפי הסדר, ורק **האחרון** נכנס לתוקף: כתובת ישנה
+        # שהגיעה לתור מאוחר לא תדרוס את החדשה.
+        generation = self._rebind_gen[port_id] = self._rebind_gen.get(port_id, 0) + 1
         async with self._lock:
+            if self._rebind_gen.get(port_id) != generation:
+                return
             was_open = port_id in self._wanted
             if was_open:
                 await self._close(port_id)

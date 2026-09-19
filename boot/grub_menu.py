@@ -435,9 +435,10 @@ def _assemble(
         f"set timeout_style={timeout_style}",
     ]
     if chain_local:
+        # ‏#416: הענף המקומי מדווח פירורים בדיוק כשיש בקובץ את הפונקציה.
         head += [
             "",
-            _FUNC_CHAIN_LOCAL,
+            _func_chain_local(traced=bool(trace_host)),
             "",
             _FUNC_TRY_LOCAL,
             "",
@@ -510,10 +511,37 @@ _STAY_POWERED_ON = """    echo "Contact IT. This computer will stay powered on."
 # כשכל chainloader עובר דרכו (grub-core/kern/efi/sb.c). בלי הראיה לא
 # מנחשים. את שורת השגיאה המדויקת GRUB עצמו מדפיס לפני המסך הזה
 # (‏grub_script_execute_cmdline קורא ל-grub_print_error גם בתוך if).
-_FUNC_CHAIN_LOCAL = """function try_chain {
+#
+# ‏#416: "אין דיסק" ו"יש דיסק ואין עליו מערכת" הם שני מצבים (עיקרון 5),
+# והמסך קיפל אותם לאחד: מחשב הבנייה (05/09) הדפיס "No operating system
+# found on the local disk" על דיסק שהקושחה כלל לא ראתה, וההודעה שלחה
+# לפרק אימג' תקין. אחרי הלולאה שואלים את GRUB מה הוא **רואה** (5א):
+# ‏`probe --driver (hd0)` מצליח בדיוק כשיש התקן דיסק — על EFI ‏(efidisk)
+# ועל i386-pc ‏(biosdisk) — ונכשל ב-`no such device` כשאין, ו-`ls` מדפיס
+# את רשימת ההתקנים כדי שהטכנאי יקרא אותה ולא ינחש. שני המודולים חלק
+# מהתמונה החתומה של דביאן (build-efi-images), כמו search_fs_file.
+#
+# והענף הזה גם מדווח לשרת (`imagectl_trace local-*`, ‏boot/trace.py):
+# עד #416 ערך הדיסק המקומי היה היחיד בלי פירורים — והוא זה שנכשל.
+# הפירורים נפלטים רק בקובץ שיש בו את הפונקציה (‏`traced`): בקובץ
+# הקבוע שעל ה-TFTP השרת ממילא שקט, ובקובץ של מכונה לא רשומה אין מה
+# לרשום (עיקרון 1).
+
+
+def _trace_line(traced: bool, step: str, indent: int = 4) -> str:
+    """שורת פירור אחת, או כלום. עומדת לבדה בשורה — כמו בערך ImageCtl,
+    כישלון שלה אינו מפיל את המסלול."""
+    return f"\n{' ' * indent}{grub_call(step)}" if traced else ""
+
+
+def _func_chain_local(traced: bool) -> str:
+    return """function try_chain {
     unset espdev
     search --no-floppy --file --set=espdev "$1"
     if [ -n "$espdev" ]; then
+        if [ -z "$local_found" ]; then
+            set local_found=$1""" + _trace_line(traced, "local-search-ok", 12) + """
+        fi
         set root=$espdev
         if chainloader "$1"; then
             boot
@@ -528,14 +556,16 @@ function chain_local {
     insmod fat
     insmod chain
     insmod search_fs_file
+    insmod probe
     unset chain_refused
+    unset local_found""" + _trace_line(traced, "local-entry") + """
 
     for path in """ + " ".join(LOCAL_BOOT_PATHS) + """; do
         try_chain "$path"
     done
 
     echo ""
-    if [ -n "$chain_refused" ]; then
+    if [ -n "$chain_refused" ]; then""" + _trace_line(traced, "local-chain-refused", 8) + """
         echo "A boot loader WAS found on the local disk:"
         echo "  $chain_refused"
         echo "but this menu was refused permission to start it (see the error above)."
@@ -550,10 +580,26 @@ function chain_local {
             echo "not a Secure Boot refusal. Read the error above."
         fi
     else
-        echo "No operating system found on the local disk."
+        unset local_disk
+        probe --set=local_disk --driver (hd0)
+        if [ -n "$local_disk" ]; then""" + _trace_line(traced, "local-search-empty", 12) + """
+            echo "No operating system found on the local disk."
+            echo "A disk IS present (GRUB opened (hd0) via $local_disk), but none of"
+            echo "the boot loader paths this menu knows exists on any of its partitions."
+            echo "The disk is blank, or holds a system this menu does not know how to start."
+        else""" + _trace_line(traced, "local-no-disk", 12) + """
+            echo "No disk device found."
+            echo "GRUB sees no (hd0) at all - this is not an empty disk, it is no disk."
+            echo "Check the drive, its cable and power, and whether the firmware lists it."
+        fi
+        echo "Devices GRUB can see:"
+        ls
     fi
 """ + _STAY_POWERED_ON + """
 }"""
+
+
+_FUNC_CHAIN_LOCAL = _func_chain_local(traced=False)
 
 #: ‏#323: השומר שדרכו עוברת **כל** נפילה לדיסק המקומי.
 #:
@@ -563,6 +609,15 @@ function chain_local {
 #: מחשב Legacy BIOS, כי `server/dhcp.py` מוסר את `grub/i386-pc/core.0`
 #: אך ורק ל-`client-arch 0`, וברשת הזאת מחשבי השיכפול הם היחידים שאין
 #: להם UEFI (#38, אפיון סעיף 4). זו ראיה חיובית, לא ניחוש.
+#:
+#: ‏#391: הראיה עונה על "איזו פלטפורמה", ומשתמשים בה כתשובה ל"איזה
+#: תפקיד". שתי השאלות מתלכדות **רק בגלל דרישת רכש** — מחשב שיכפול =
+#: ‏Legacy BIOS (אפיון סעיף 4) — ולא בגלל תכונה של הקוד. מה נשבר
+#: בלעדיה: מחשב שיכפול UEFI שהשרת שקט מולו נכנס ל-`chain_local`, וזה
+#: סורק את **כל** הכוננים המחוברים — כלומר את מגירות הסחורה — ומעלה
+#: את ה-ESP הראשון שנמצא בהן. הלקוח היה מקבל דיסק שווינדוס כבר עלה
+#: ממנו פעם (SID, דרייברים, hiberfil). שום טסט לא היה נופל, כי הקוד
+#: נכון לפלטפורמה; מי שקונה מחשב שיכפול UEFI מבטל את ההגנה בשקט.
 #:
 #: למחשב שיכפול אין "אתחול רגיל": מה שמחובר אליו הן מגירות הסחורה,
 #: וחלקן נושאות ESP של Windows. עיקרון 1 שולח מצב לא ברור לדיסק
@@ -581,7 +636,10 @@ _FUNC_TRY_LOCAL = """function try_local {
     echo ""
     echo "This machine booted in Legacy BIOS mode, which on this network"
     echo "means a cloning machine. It has no local system to start, and the"
-    echo "drives attached to it are the payload - they are never booted from."
+    echo "drives attached to it are the payload. This menu will not start them."
+    echo "Only the BIOS boot order keeps them from booting: a cloning machine"
+    echo "must boot from the network BEFORE any disk, and a dead CMOS battery"
+    echo "resets that order on every power-up."
     echo "Nothing will be started."
     echo "Fix the server or the network, then power-cycle this machine."
 """ + _STAY_POWERED_ON + """

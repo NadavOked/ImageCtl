@@ -239,11 +239,13 @@ def test_static_includes_are_at_8_5():
     #1013 (מתג TFTP 69 בדף הפורטים — אזהרה לפני הקלדת השם) = ‏9.3;
     אזהרה לפני כיבוי של **כל** פורט, לא רק 69 (נדב 19/09) = ‏9.4;
     #1129 (esc() מבריח גרשיים; onclick דרך encodeId) = ‏9.4.
+    #1121/#402 (net.js: כשל השלמה = 500; console.js: `disk_probe` — "לא חוברו דיסקים" / "אין פורטי SATA בקושחה" / "לא נבדק"
+    במקום "0 דיסקים") = ‏9.5 — v0.48.1 יצא עם 9.4, ולכן bump.
     שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
     versions = {float(v) for v in re.findall(r'\?v=(\d+\.\d+)"', page)}
-    assert versions == {9.4}, versions
+    assert versions == {9.5}, versions
 
 
 def test_old_images_page_code_is_gone():

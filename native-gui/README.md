@@ -224,7 +224,16 @@ machine_name=<name>
 # #st-room (GET /api/console/room) and #st-class live rows
 image=<id>|<name>|<folder>          # /api/console/images
 machine=<name>|<mac>|<awake>|<joined>|<fresh_drawers>|<state>|<pct>|<moving>|<error>
-round=<image_name>|<wave_number>|<open 0/1>|<written>|<target>|<ready>|<remaining>
+round=<image_name>|<wave_number>|<open 0/1>|<written>|<target>|<ready>|<remaining>|<elapsed_s>|<rate_bps>|<eta_s>
+                                    # #410: the last three from GET /room .round (-1 = not measured, never 0);
+                                    # a seven-field record from an older agent reads as all three unmeasured
+updated=<epoch seconds>             # #410: when the agent wrote this snapshot -- the room and cloner heads say
+                                    # "עודכן לפני N שנ'" and keep counting when the file stops changing
+
+# #st-cloner (clonergui.sh, the kiosk's local truth)
+drawer=<port>|<dev>|<state>|<bytes>|<total>|<error>|<rate_bps>|<eta_s>
+                                    # #410: fields 7-8 measured by the kiosk on the local counter; -1 / absent
+                                    # (a six-field record) = not measured -- the line shows bytes only
 
 # #st-class
 class=<id>|<label>|<machines>       # /api/console/groups, role classroom

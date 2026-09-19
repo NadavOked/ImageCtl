@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
 from pathlib import Path
@@ -34,13 +35,26 @@ def installer_admin_python() -> str:
 
 def run_installer_admin(data_dir: Path, username: str, password: str,
                         monkeypatch: pytest.MonkeyPatch) -> None:
-    """מריץ את בלוק המתקין מול DB אמיתי, עם החלפת נתיבי ה-bash."""
+    """מריץ את בלוק המתקין מול DB אמיתי, עם החלפת נתיבי ה-bash.
+
+    ‏#1131 ס' 4: הסיסמה מגיעה ב-**fd 3** (המתקין: `3< <(printf …)`), לא ב-env
+    — כאן צינור על fd 3, ומה שישב שם קודם (pytest) מוחזר אחרי הבלוק."""
     code = installer_admin_python()
     code = code.replace("$APP_DIR", REPO.resolve().as_posix())
     code = code.replace("$DATA_DIR", data_dir.resolve().as_posix())
     monkeypatch.setenv("ADMIN_USER", username)
-    monkeypatch.setenv("ADMIN_PASS", password)
-    exec(compile(code, "install/setup-boot-server.sh", "exec"), {})
+    monkeypatch.delenv("ADMIN_PASS", raising=False)      # הבלוק אסור שיקרא מכאן
+    read_end, write_end = os.pipe()
+    with os.fdopen(write_end, "w", encoding="utf-8") as w:
+        w.write(password)
+    saved = os.dup(3)
+    os.dup2(read_end, 3)
+    os.close(read_end)
+    try:
+        exec(compile(code, "install/setup-boot-server.sh", "exec"), {})
+    finally:
+        os.dup2(saved, 3)
+        os.close(saved)
 
 
 def _role(data_dir: Path, username: str, password: str) -> str | None:
@@ -59,6 +73,16 @@ def test_installer_creates_admin_on_empty_db(tmp_path, monkeypatch):
     """המסלול הרגיל — יצירה ראשונה — לא נשבר על ידי שומר השם התפוס."""
     run_installer_admin(tmp_path, "admin", "admin-pass-1", monkeypatch)
     assert _role(tmp_path, "admin", "admin-pass-1") == "admin"
+
+
+def test_the_password_is_read_from_fd3_not_from_the_environment():
+    """‏#1131 ס' 4: env של תהליך-ילד נראה ב-`ps e`; הבלוק קורא fd 3 בלבד."""
+    code = installer_admin_python()
+    assert "os.fdopen(3" in code
+    assert 'environ.get("ADMIN_PASS")' not in code and 'environ["ADMIN_PASS"]' not in code
+    text = INSTALLER.read_text(encoding="utf-8")
+    assert "3< <(printf '%s' \"$ADMIN_PASS\")" in text
+    assert 'ADMIN_PASS="$ADMIN_PASS"' not in text
 
 
 def test_operational_error_is_not_swallowed(tmp_path, monkeypatch):

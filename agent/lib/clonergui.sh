@@ -36,6 +36,32 @@ gui_restore_parent() {
     esac
 }
 
+# #410: rate and ETA of one drawer, from the local counter (the same truth
+# the record is built from). Sets _cg_rate (bytes/s) and _cg_eta (seconds);
+# -1 = not measured -- never 0, which would read "stopped" (rule 5). The
+# rate is the average since the first sample this kiosk saw with bytes on
+# the drawer ($GUI_DIR/pace.<dev> = "epoch bytes"); a drawer that is not
+# writing drops its anchor so the next wave starts a new average.
+cloner_gui_pace() {
+    # $1 = dev, $2 = state, $3 = bytes, $4 = total
+    _cg_rate=-1; _cg_eta=-1
+    if [ "$2" != writing ] || [ "$3" -le 0 ]; then
+        rm -f "$GUI_DIR/pace.$1"; return 0
+    fi
+    _cg_now=$(date +%s)
+    _cg_t0=; _cg_b0=
+    [ -r "$GUI_DIR/pace.$1" ] && read -r _cg_t0 _cg_b0 < "$GUI_DIR/pace.$1"
+    case "$_cg_t0:$_cg_b0" in
+        *[!0-9:]*|:*|*:) printf '%s %s\n' "$_cg_now" "$3" > "$GUI_DIR/pace.$1"; return 0 ;;
+    esac
+    _cg_dt=$((_cg_now - _cg_t0)); _cg_db=$(($3 - _cg_b0))
+    [ "$_cg_dt" -gt 0 ] && [ "$_cg_db" -gt 0 ] || return 0
+    _cg_rate=$((_cg_db / _cg_dt))
+    [ "$_cg_rate" -gt 0 ] || { _cg_rate=-1; return 0; }
+    [ "$4" -gt "$3" ] && _cg_eta=$((($4 - $3) / _cg_rate))
+    return 0
+}
+
 cloner_gui_state() {
     # Written by the kiosk process. The per-drawer files are the local source
     # of truth (progress.sh), so the screen keeps updating even when a server
@@ -68,9 +94,12 @@ cloner_gui_state() {
         # A field separator or newline inside the error would corrupt the
         # record; fold them to spaces before the value reaches the parser.
         _cg_error=$(printf '%s' "$_cg_error" | tr '\r\n|' '   ')
-        printf 'drawer=%s|%s|%s|%s|%s|%s\n' \
+        # #410: fields 7-8 are rate (bytes/s) and ETA (s); -1 = not measured.
+        cloner_gui_pace "$_cg_dev" "$_cg_state" "$_cg_bytes" "$_cg_total"
+        printf 'drawer=%s|%s|%s|%s|%s|%s|%s|%s\n' \
             "$_cg_port" "$_cg_dev" "$_cg_state" \
-            "$_cg_bytes" "$_cg_total" "$_cg_error" >> "$_cg_next" ||
+            "$_cg_bytes" "$_cg_total" "$_cg_error" \
+            "$_cg_rate" "$_cg_eta" >> "$_cg_next" ||
             return 1
     done
 
@@ -121,6 +150,8 @@ cloner_gui_state() {
             return 1
     fi
 
+    # #410: when this snapshot was taken -- the screen shows its age.
+    printf 'updated=%s\n' "$(date +%s)" >> "$_cg_next" || return 1
     mv "$_cg_next" "$GUI_DIR/state"
 }
 
