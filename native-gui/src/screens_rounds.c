@@ -24,15 +24,15 @@ int smart_level(const char *smart) {
 
 Rgb smart_color(const Theme *t, const char *smart) {
     int lvl = smart_level(smart);
-    return lvl == 2 ? ROOM_BAD : lvl == 1 ? ROOM_WARN : t->led_ok;
+    return lvl == 2 ? t->danger : lvl == 1 ? t->warn : t->led_ok;
 }
 
 /* The status span, as Pango markup (room-ok / room-bad / room-warn / sub). */
 void room_status_markup(const App *a, const Machine *m, int mode, char *out, size_t n) {
     char ok[8], bad[8], warn[8], e[640], lbl[96];   /* e: 120 bytes escaped, worst case x5 */
     hex_of(a->theme->led_ok, ok, sizeof ok);
-    hex_of(ROOM_BAD, bad, sizeof bad);
-    hex_of(ROOM_WARN, warn, sizeof warn);
+    hex_of(a->theme->danger, bad, sizeof bad);
+    hex_of(a->theme->warn, warn, sizeof warn);
     text_escape(m->error, e, sizeof e);
     progress_label(lbl, sizeof lbl, m->pct, m->moving, 0);
     if (mode == ROWS_CLASS) {

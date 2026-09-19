@@ -1,0 +1,241 @@
+"""‏ISO ההתקנה (#1139): הרשימה האחת, ה-preseed, ומה ש-firstboot אסור לו.
+
+הלקח של R25: ההתקנה מה-ISO רצה **בלי אינטרנט**, ולכן חבילה שנוספה
+ל-`PKGS` של המתקין או לרשימות `build_initramfs.sh` ולא ל-`tools/iso/
+packages.txt` מתגלה רק מול שרת אמיתי, כשה-pool כבר נצרב. הטסט כאן קורא
+את **המקורות עצמם** (לא עותק) ונופל בשני הכיוונים — חבילה שחסרה
+ב-packages.txt, וחבילה ב-packages.txt שאין לה מקור.
+
+ועוד שלושה חוזים שאסור שיזוזו בשקט:
+* ‏preseed.cfg: mirror כבוי, החבילות מה-ISO (מסלול ה-cdrom), ‏late_command
+  מפעיל את late-command.sh, root בלבד, הדיסק נבחר ב-early_command.
+* ‏firstboot.sh לעולם אינו מעביר `--deploy-if` (R25 §2.5: זה המוקש —
+  ‏dnsmasq שנדלק על כרטיס שנוחש), ובונה עם `--skip-apt`.
+* ‏late-command.sh רושם עובדות (installer-nic/installer-role/iso-release)
+  ו-firstboot.sh קורא אותן — לא heuristic (R62).
+"""
+
+from __future__ import annotations
+
+import re
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from native import requires_native
+from test_installer_packages import installer_pkgs
+
+REPO = Path(__file__).resolve().parent.parent
+ISO_DIR = REPO / "tools" / "iso"
+INITRAMFS = REPO / "tools" / "build_initramfs.sh"
+PACKAGES_TXT = ISO_DIR / "packages.txt"
+PRESEED = ISO_DIR / "preseed.cfg"
+FIRSTBOOT = ISO_DIR / "firstboot.sh"
+LATE_COMMAND = ISO_DIR / "late-command.sh"
+BUILD_ISO = ISO_DIR / "build-iso.sh"
+BASH_SCRIPTS = ("make-pool.sh", "build-iso.sh", "firstboot.sh", "test-iso.sh")
+
+#: מה שרק ה-ISO מוסיף — אין לו מקור בקבצים האחרים, ולכן מוצהר כאן.
+ISO_ONLY = {"linux-image-amd64", "nftables", "sqlite3"}
+
+
+def _strip_comments(text: str) -> str:
+    return "\n".join(line.split("#", 1)[0] for line in text.split("\n"))
+
+
+def packages_txt() -> set[str]:
+    return set(_strip_comments(PACKAGES_TXT.read_text(encoding="utf-8")).split())
+
+
+def _paren_list(text: str, opener: str) -> list[str]:
+    """התוכן של `NAME=( ... )` בלי הערות; הערות עלולות להכיל סוגריים."""
+    body = text.split(opener, 1)[1]
+    names: list[str] = []
+    for line in body.split("\n"):
+        code = line.split("#", 1)[0]
+        done = ")" in code
+        names += code.split(")", 1)[0].split()
+        if done:
+            break
+    return names
+
+
+def _continued_command(text: str, first_line: str) -> list[str]:
+    """הטוקנים של פקודה שממשיכה ב-`\\` מהשורה שמכילה `first_line`."""
+    lines = text.split("\n")
+    start = next(i for i, l in enumerate(lines) if first_line in l)
+    tokens: list[str] = []
+    for line in lines[start:]:
+        code = line.split("#", 1)[0].rstrip()
+        cont = code.endswith("\\")
+        tokens += code.rstrip("\\").split()
+        if not cont:
+            break
+    return tokens
+
+
+def initramfs_lists() -> dict[str, set[str]]:
+    """ארבע הרשימות של build_initramfs.sh, מהקובץ עצמו."""
+    text = INITRAMFS.read_text(encoding="utf-8")
+    base = _continued_command(text, "apt-get install -y --no-install-recommends \\")
+    gui_build = _continued_command(text, "apt-get install -y --no-install-recommends make pkg-config")
+    tool_pkgs = {
+        m.group(1) for m in re.finditer(r"\[[\w.]+\]=([\w.+-]+)", text.split("declare -A TOOL_PKG=(", 1)[1].split(")", 1)[0])
+    }
+    return {
+        "build_initramfs.sh base apt list": set(base[3:]) - {"apt-get", "install", "-y", "--no-install-recommends"},
+        "build_initramfs.sh GUI_PACKAGES": set(_paren_list(text, "\nGUI_PACKAGES=(")),
+        "build_initramfs.sh GUI build deps": set(gui_build) - {"apt-get", "install", "-y", "--no-install-recommends"},
+        "build_initramfs.sh TOOL_PKG": tool_pkgs,
+    }
+
+
+def test_the_sources_were_actually_parsed() -> None:
+    """פרסור שהחזיר רשימה ריקה היה הופך את הטסט הבא לירוק על כלום."""
+    lists = initramfs_lists()
+    for name, pkgs in lists.items():
+        assert len(pkgs) >= 5, f"{name}: נקראו {sorted(pkgs)} — הפרסור נשבר"
+    assert "busybox-static" in lists["build_initramfs.sh base apt list"]
+    assert "fonts-ibm-plex" in lists["build_initramfs.sh GUI_PACKAGES"]
+    assert "libpango1.0-dev" in lists["build_initramfs.sh GUI build deps"]
+    assert "testdisk" in lists["build_initramfs.sh TOOL_PKG"]
+    assert "python3-fastapi" in installer_pkgs()
+
+
+def test_packages_txt_is_the_union_of_every_apt_list() -> None:
+    have = packages_txt()
+    sources = {"setup-boot-server.sh PKGS": set(installer_pkgs()) - {"git"}, **initramfs_lists()}
+    missing = {name: sorted(pkgs - have) for name, pkgs in sources.items() if pkgs - have}
+    assert not missing, f"חסר ב-tools/iso/packages.txt (ההתקנה offline תיכשל עליהן): {missing}"
+
+
+def test_every_package_in_packages_txt_has_a_source() -> None:
+    """הכיוון ההפוך: שורה ב-packages.txt שאין לה מקור היא רשימה שנסחפה."""
+    known = set().union(*initramfs_lists().values(), installer_pkgs(), ISO_ONLY)
+    orphans = sorted(packages_txt() - known)
+    assert not orphans, f"ב-packages.txt בלי מקור ובלי הצהרה ב-ISO_ONLY: {orphans}"
+
+
+def test_the_iso_only_packages_are_declared_in_packages_txt() -> None:
+    missing = sorted(ISO_ONLY - packages_txt())
+    assert not missing, f"חסר ב-packages.txt: {missing}"
+    assert "linux-image-cloud-amd64" not in packages_txt(), "קרנל cloud — build_initramfs.sh מסרב לו (#904)"
+
+
+def test_no_ssh_server_on_the_product_server() -> None:
+    """הכרעת נדב 19/09: אין SSH על השרת האמיתי — כלי מעבדה, מותקן ידנית.
+    ‏ISO שמביא sshd הוא ISO שמפר את ההכרעה בשקט."""
+    assert "openssh-server" not in packages_txt()
+    for name in ("preseed.cfg", "late-command.sh", "firstboot.sh", "imagectl-firstboot.service"):
+        code = _strip_comments((ISO_DIR / name).read_text(encoding="utf-8"))
+        assert not re.search(r"\bsshd?\b|openssh", code), f"{name} נוגע ב-SSH מחוץ להערה"
+
+
+# --- preseed -----------------------------------------------------------------
+
+def preseed_entries() -> dict[str, tuple[str, str]]:
+    """‏`owner key type value` → key: (type, value); שורות `\\` מאוחדות."""
+    text = PRESEED.read_text(encoding="utf-8")
+    text = re.sub(r"\\\n", " ", text)
+    entries: dict[str, tuple[str, str]] = {}
+    for raw in text.split("\n"):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(None, 3)
+        assert len(parts) >= 3, f"שורת preseed לא תקינה: {raw!r}"
+        _owner, key, qtype = parts[:3]
+        entries[key] = (qtype, parts[3].strip() if len(parts) == 4 else "")
+    return entries
+
+
+def test_preseed_installs_offline_from_the_iso_itself() -> None:
+    p = preseed_entries()
+    assert p["apt-setup/use_mirror"] == ("boolean", "false")
+    assert p["apt-setup/cdrom/set-first"] == ("boolean", "true"), "החבילות מגיעות דרך apt-cdrom (מסלול כל התקנה מ-CD)"
+    assert p["apt-setup/cdrom/set-next"] == ("boolean", "false")
+    # שתי השאלות שעצרו התקנה אמיתית ב-QEMU (19/09) — בלעדיהן ה-ISO ממתין לאדם.
+    assert p["apt-setup/cdrom/set-double"] == ("boolean", "false")
+    assert p["apt-setup/no_mirror"] == ("boolean", "true")
+    assert p["apt-setup/services-select"][1] == "", "עדכוני אבטחה מהרשת = בקשה שתיכשל offline"
+    assert "mirror/http/hostname" not in p
+    assert "apt-setup/local0/repository" not in p, "file:/cdrom בתוך ה-chroot אינו המסלול — ראה preseed.cfg"
+    assert "debian-installer/allow_unauthenticated" not in p, "ה-cdrom נחשב מהימן (TrustCDROM); בלי מתג שמכבה אימות"
+    assert p["apt-setup/disable-cdrom-entries"] == ("boolean", "true")
+    assert p["pkgsel/include"] == ("string", "@PKGSEL_INCLUDE@"), "הרשימה מוזרקת מ-packages.txt בבנייה"
+    assert p["clock-setup/ntp"] == ("boolean", "false")
+
+
+def test_preseed_takes_root_only_and_the_first_non_usb_disk() -> None:
+    p = preseed_entries()
+    assert p["passwd/root-login"] == ("boolean", "true")
+    assert p["passwd/make-user"] == ("boolean", "false")
+    assert p["passwd/root-password-crypted"] == ("password", "@ROOT_PASSWORD_HASH@"), "הגיבוב נקבע בבנייה, לא ב-git"
+    assert "passwd/root-password" not in p
+    early = p["partman/early_command"][1]
+    assert "list-devices disk" in early and "ID_BUS=usb" in early and "partman-auto/disk" in early
+    assert "partman-auto/disk" not in p, "ערך קשיח (sda) אינו יציב בסדר הטעינה; early_command בוחר"
+    assert p["partman-auto/method"] == ("string", "regular")
+    assert p["grub-installer/force-efi-extra-removable"] == ("boolean", "true")
+
+
+def test_preseed_late_command_runs_the_script_on_the_iso() -> None:
+    p = preseed_entries()
+    assert p["preseed/late_command"][1] == "sh /cdrom/imagectl/late-command.sh"
+    late = _strip_comments(LATE_COMMAND.read_text(encoding="utf-8"))
+    assert "cp -a /cdrom/imagectl-src /target/opt/imagectl-src" in late
+    assert "systemctl enable imagectl-firstboot.service" in late
+    assert "installer-nic" in late and "installer-role" in late and "iso-release.json" in late
+    assert "chage -d 0 root" in late
+    # ‏d-i מסיר grub-pc-bin בהתקנת UEFI (נמדד 19/09); המתקין באתחול הראשון
+    # מתקין אותו מחדש — בלי אינטרנט זה עובד רק מ-repo שנשאר על הדיסק.
+    assert "/var/lib/imagectl/apt-repo" in late and "sources.list.d/imagectl-iso.list" in late
+    first = _strip_comments(FIRSTBOOT.read_text(encoding="utf-8"))
+    assert "apt-repo-missing" in first and "grub-pc-bin" in first
+    assert LATE_COMMAND.read_text(encoding="utf-8").startswith("#!/bin/sh\n"), "רץ ב-busybox של d-i — POSIX sh"
+
+
+def test_build_iso_substitutes_every_placeholder_the_preseed_has() -> None:
+    placeholders = set(re.findall(r"@[A-Z_]+@", PRESEED.read_text(encoding="utf-8")))
+    assert placeholders == {"@PKGSEL_INCLUDE@", "@ROOT_PASSWORD_HASH@"}
+    build = BUILD_ISO.read_text(encoding="utf-8")
+    for ph in placeholders:
+        assert ph in build, f"build-iso.sh אינו מחליף את {ph}"
+    assert "auto=true priority=critical preseed/file=/cdrom/preseed.cfg" in build
+    assert "imagectl.role=secondary" in build
+    assert "-boot_image any replay" in build, "בלי replay ה-shim/GRUB החתומים לא נשמרים (R57)"
+    assert "-report_el_torito" in build
+
+
+# --- firstboot -----------------------------------------------------------------
+
+def test_firstboot_never_passes_deploy_if_and_builds_with_skip_apt() -> None:
+    code = _strip_comments(FIRSTBOOT.read_text(encoding="utf-8"))
+    assert "--deploy-if" not in code, "כרטיס הפצה שנוחש = dnsmasq על הרשת הלא נכונה (R25 §2.5)"
+    assert re.search(r'setup-boot-server\.sh"\s+--servers-if\s+"\$SERVERS_IF"', code)
+    assert code.count("--skip-apt") == 2, "שני initrd (טקסט + GUI), שניהם בלי apt — החבילות מה-ISO"
+    assert "--with-gui" in code
+    assert "verify-boot-payload.sh" in code
+
+
+def test_firstboot_reads_the_installer_facts_and_never_guesses_a_nic() -> None:
+    code = _strip_comments(FIRSTBOOT.read_text(encoding="utf-8"))
+    assert "/etc/imagectl" in code and "installer-nic" in code and "installer-role" in code
+    for state in ("network-nic-undecidable", "check-error", "secondary-needs-primary"):
+        assert state in code, f"המצב {state} אינו מדווח"
+    assert "firstboot.status" in code
+    # ה-heuristic של R25 — "הראשון עם IPv4" — אסור שיחזור.
+    assert not re.search(r"addr show scope global.*\|\s*awk.*exit", code), "בחירת 'הראשון עם IPv4' חזרה"
+
+
+# --- תחביר -------------------------------------------------------------------
+
+@requires_native(("bash", shutil.which("bash") or shutil.which("bash.exe")))
+@pytest.mark.parametrize("name", BASH_SCRIPTS + ("late-command.sh",))
+def test_scripts_parse(name: str) -> None:
+    bash = shutil.which("bash") or shutil.which("bash.exe")
+    proc = subprocess.run([bash, "-n", str(ISO_DIR / name)], capture_output=True, text=True,
+                          stdin=subprocess.DEVNULL)
+    assert proc.returncode == 0, f"{name}: {proc.stderr}"

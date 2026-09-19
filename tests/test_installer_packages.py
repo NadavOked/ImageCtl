@@ -25,6 +25,7 @@ SERVER_APT_TO_PIP = {
     "python3-websockets": "websockets",
     "python3-cryptography": "cryptography",
     "python3-openssl": "pyOpenSSL",
+    "python3-qrcode": "qrcode",          # #1150: QR במסך הגדרת ה-MFA
 }
 
 

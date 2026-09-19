@@ -240,12 +240,24 @@ def test_static_includes_are_at_8_5():
     אזהרה לפני כיבוי של **כל** פורט, לא רק 69 (נדב 19/09) = ‏9.4;
     #1129 (esc() מבריח גרשיים; onclick דרך encodeId) = ‏9.4.
     #1121/#402 (net.js: כשל השלמה = 500; console.js: `disk_probe` — "לא חוברו דיסקים" / "אין פורטי SATA בקושחה" / "לא נבדק"
-    במקום "0 דיסקים") = ‏9.5 — v0.48.1 יצא עם 9.4, ולכן bump.
+    במקום "0 דיסקים") = ‏9.5 — v0.48.1 יצא עם 9.4, ולכן bump;
+    #1150 (מסך ה-MFA: הודעה אדומה כשאין QR כי python3-qrcode חסר) = ‏9.6.
     שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
     versions = {float(v) for v in re.findall(r'\?v=(\d+\.\d+)"', page)}
-    assert versions == {9.5}, versions
+    assert versions == {9.6}, versions
+
+
+def test_mfa_setup_screen_names_the_missing_qr_package():
+    """‏#1150: כש-`svg` ריק (python3-qrcode חסר בשרת) מסך ההגדרה מציג הודעה
+    אדומה שאומרת זאת בשם — לא מסתיר את המקום בשקט. ה-QR עצמו נכנס inline
+    ל-`.qr` (ה-CSS ‏`#login .qr svg` שולט בגודל)."""
+    js = _console_js()
+    fn = js[js.index("function loginSetupHtml("):js.index("function loginCodesHtml(")]
+    assert "state.svg" in fn
+    assert "אין QR — החבילה python3-qrcode חסרה בשרת; הקלד את הסוד ידנית" in fn
+    assert 'role="alert"' in fn
 
 
 def test_old_images_page_code_is_gone():

@@ -1,233 +1,219 @@
 #include "theme.h"
+
 #define HEX(v) { (((v)>>16)&255)/255.0, (((v)>>8)&255)/255.0, ((v)&255)/255.0 }
-/* Source: docs/design/native-gui-mockup-2026-09-13.html.
- * Final desktop cascade. Light is derived for dark ink on pale surfaces. */
+
+/* Source: docs/design/native-gui-mockup-2026-09-18.html.
+ * There is no native-only palette: every colour below is one of the console
+ * tokens copied into that approved mockup (plus its --art-* / --bar-* tokens).
+ * Repeated fields are compatibility names used by the older screen modules. */
 const Theme THEME_LIGHT = {
  .id = "light",
- .porcelain = HEX(0xEEF1F5), /* derived light: .native-screen background */
- .surface = HEX(0xFFFFFF), /* derived light: .native-panel background */
- .ink = HEX(0x243540), /* derived light: .native-screen color */
- .muted = HEX(0x536975), /* derived light: .native-subtitle color */
- .hair = HEX(0xBFCBD3), /* derived light: .native-panel border */
- .indigo = HEX(0x2D668A), /* derived light: .native-btn.primary background */
- .indigo_soft = HEX(0xDFEDF5), /* derived light: .native-choice.selected background */
- .led_write = HEX(0x397EA9), /* derived light: .native-progressbar i background */
- .led_ok = HEX(0x318700), /* derived light: :root --green */
- .led_idle = HEX(0x737373), /* derived light: .native-statusbar color */
- .danger = HEX(0xA52F39), /* derived light: .smart-warn color */
- .hover = HEX(0xEAF2F7), /* derived light: .native-choice.selected background */
- .field = HEX(0xF5F8FA), /* derived light: .native-input background */
- .field_line = HEX(0xA7BAC7), /* derived light: .native-input border */
- .track = HEX(0xDCE5EB), /* derived light: .native-progressbar background */
- .sunken = HEX(0xF4F7F9), /* derived light: .native-panel background */
- .btn_hover = HEX(0xE5EFF5), /* derived light: .native-btn background */
- .btn_hover_line = HEX(0x4B86AC), /* derived light: .native-btn.primary border */
- .ink_hover = HEX(0x245572), /* derived light: .native-btn.primary background */
- .on_ink = HEX(0xFFFFFF), /* derived light: .native-btn color */
- .danger_line = HEX(0xB75A62), /* derived light: .native-btn.danger border */
- .mark_line = HEX(0x4E7186), /* derived light: .native-logo color */
- .login_a = HEX(0xEEF3F7), /* derived light: .native-screen background */
- .login_b = HEX(0xDCE6EC), /* derived light: .native-screen background */
- .login_glow = HEX(0xFFFFFF), /* derived light: .native-screen background */
- .choice = HEX(0xF5F8FA), /* derived light: .native-choice background */
- .choice_line = HEX(0xB8CAD5), /* derived light: .native-choice border */
- .selected_line = HEX(0x5E97BA), /* derived light: .native-choice.selected border */
- .button = HEX(0xEDF3F7), /* derived light: .native-btn background */
- .button_line = HEX(0xA8BCC9), /* derived light: .native-btn border */
- .danger_bg = HEX(0xF9E9EA), /* derived light: .native-btn.danger background */
- .warning_bg = HEX(0xFFF6DD), /* derived light: .native-message-icon background */
- .warning_line = HEX(0xB49A57), /* derived light: .native-message-icon border */
- .warning_ink = HEX(0x826117), /* derived light: .native-message-icon color */
- .success_bg = HEX(0xE8F4EB), /* derived light: .native-done-icon background */
- .success_line = HEX(0x4D8A63), /* derived light: .native-done-icon border */
- .success_ink = HEX(0x2E7342), /* derived light: .native-done-icon color */
- .metric = HEX(0xF0F5F8), /* derived light: .native-metric background */
- .metric_line = HEX(0xC0CDD5), /* derived light: .native-metric border */
- .status_bg = HEX(0xE6EEF3), /* derived light: .native-statusbar background */
- .disk_bg = HEX(0xF1F6F9), /* derived light: .disk-row background */
- .disk_line = HEX(0xB7C8D3), /* derived light: .disk-row border */
- .disk_selected = HEX(0xE1EEF5), /* derived light: .disk-row.selected background */
- .disk_selected_line = HEX(0x5C95B8), /* derived light: .disk-row.selected border-color */
- .clone_line = HEX(0xB6C8D2), /* derived light: .clone-card border */
- .round_line = HEX(0xB7C8D2), /* derived light: .native-round-card border */
- .image_bg = HEX(0xF1F6F9), /* derived light: .native-image-option background */
- .image_line = HEX(0xB5C9D5), /* derived light: .native-image-option border */
- .image_selected = HEX(0xDFEDF5), /* derived light: .native-image-option.selected background */
- .image_selected_line = HEX(0x5F9BC0), /* derived light: .native-image-option.selected border-color */
- .alert_bg = HEX(0xFBF3DC), /* derived light: .native-alert background */
- .alert_line = HEX(0xB49A57), /* derived light: .native-alert border */
- .alert_ink = HEX(0x6E5312), /* derived light: .native-alert color */
- .success_btn = HEX(0x2D6F4D), /* derived light: .native-btn.success background (kept: white ink reads on it) */
- .success_btn_line = HEX(0x55A879), /* derived light: .native-btn.success border-color */
- .node_active_line = HEX(0x4D89AD), /* derived light: .room-node.active border-color */
- .node_warn_line = HEX(0xB49A57), /* derived light: .room-node.warn border-color */
- .warn = HEX(0xC48A0A), /* derived light: :root --yellow */
- .brand_accent = HEX(0x2F6F97), /* derived light: .native-brand span color */
- .shadow_strong = HEX(0x000000), .shadow_strong_a = 0.32, /* .native-panel box-shadow */
+ .porcelain = HEX(0xEEF1F5), .surface = HEX(0xFFFFFF),
+ .ink = HEX(0x313131), .muted = HEX(0x565656), .hair = HEX(0xCDCDCD),
+ .indigo = HEX(0x0079B8), .indigo_soft = HEX(0xE8F4FA),
+ .led_write = HEX(0x0079B8), .led_ok = HEX(0x318700), .led_idle = HEX(0x8C8C8C),
+ .danger = HEX(0xE12200), .hover = HEX(0xF2F2F2),
+ .field = HEX(0xFFFFFF), .field_line = HEX(0xCDCDCD), .track = HEX(0xDCE5EB),
+ .sunken = HEX(0xEEF1F5), .btn_hover = HEX(0xF2F2F2),
+ .btn_hover_line = HEX(0x0079B8), .ink_hover = HEX(0x006394),
+ .on_ink = HEX(0xFFFFFF), .danger_line = HEX(0xE12200),
+ .mark_line = HEX(0x9AADB8), .login_a = HEX(0xE4E9EF),
+ .login_b = HEX(0xCBD5DE), .login_glow = HEX(0xB4C3CF),
+ .choice = HEX(0xFFFFFF), .choice_line = HEX(0xCDCDCD), .selected_line = HEX(0x0079B8),
+ .button = HEX(0xFFFFFF), .button_line = HEX(0xCDCDCD),
+ .danger_bg = HEX(0xFCEDEA), .warning_bg = HEX(0xFFF2E3),
+ .warning_line = HEX(0xC25400), .warning_ink = HEX(0xC25400),
+ .success_bg = HEX(0xEAF4E5), .success_line = HEX(0x318700), .success_ink = HEX(0x318700),
+ .metric = HEX(0xFFFFFF), .metric_line = HEX(0xCDCDCD), .status_bg = HEX(0xFFFFFF),
+ .header = HEX(0x25333D), .header_text = HEX(0xFFFFFF),
+ .info = HEX(0x0079B8), .info_soft = HEX(0xE8F4FA),
+ .success_soft = HEX(0xEAF4E5), .danger_soft = HEX(0xFCEDEA), .warning_soft = HEX(0xFFF2E3),
+ .bar_done = HEX(0x318700), .bar_idle = HEX(0xB4C3CF),
+ .art_bg = HEX(0xE4E9EF), .art_a = HEX(0xCBD5DE), .art_b = HEX(0xB4C3CF),
+ .art_c = HEX(0x9AADB8), .art_line = HEX(0x7E93A1), .art_server = HEX(0x25333D),
+ .disk_bg = HEX(0xFFFFFF), .disk_line = HEX(0xCDCDCD),
+ .disk_selected = HEX(0xE8F4FA), .disk_selected_line = HEX(0x0079B8),
+ .clone_line = HEX(0xCDCDCD), .round_line = HEX(0xCDCDCD),
+ .image_bg = HEX(0xFFFFFF), .image_line = HEX(0xCDCDCD),
+ .image_selected = HEX(0xE8F4FA), .image_selected_line = HEX(0x0079B8),
+ .alert_bg = HEX(0xFFF2E3), .alert_line = HEX(0xC25400), .alert_ink = HEX(0x313131),
+ .success_btn = HEX(0x318700), .success_btn_line = HEX(0x318700),
+ .node_active_line = HEX(0x0079B8), .node_warn_line = HEX(0xC25400),
+ .warn = HEX(0xC25400), .brand_accent = HEX(0xFFFFFF),
+ .shadow_strong = HEX(0x25333D), .shadow_strong_a = 0.18,
+ .radius = 4,
 };
+
 const Theme THEME_DARK = {
  .id = "dark",
- .porcelain = HEX(0x121B22), /* css: .native-screen | background | 0 */
- .surface = HEX(0x17232C), /* css: .native-panel | background | 0 */
- .ink = HEX(0xEEF4F7), /* css: .native-screen | color | 0 */
- .muted = HEX(0x93A1AA), /* css: .native-subtitle | color | 0 */
- .hair = HEX(0x354753), /* css: .native-panel | border | 0 */
- .indigo = HEX(0x2D668A), /* css: .native-btn.primary | background | 0 */
- .indigo_soft = HEX(0x203440), /* css: .native-choice.selected | background | 0 */
- .led_write = HEX(0x64A6D2), /* css: .native-progressbar i | background | 0 */
- .led_ok = HEX(0x5FBD7A), /* css: :root | --green | 0 */
- .led_idle = HEX(0x7E8C95), /* css: .native-statusbar | color | 0 */
- .danger = HEX(0xDC6B6B), /* css: :root | --red | 0 */
- .hover = HEX(0x203440), /* css: .native-choice.selected | background | 0 */
- .field = HEX(0x0E161C), /* css: .native-input | background | 0 */
- .field_line = HEX(0x445762), /* css: .native-input | border | 0 */
- .track = HEX(0x0C1216), /* css: .native-progressbar | background | 0 */
- .sunken = HEX(0x17232C), /* css: .native-panel | background | 0 */
- .btn_hover = HEX(0x25323B), /* css: .native-btn | background | 0 */
- .btn_hover_line = HEX(0x4B86AC), /* css: .native-btn.primary | border-color | 0 */
- .ink_hover = HEX(0x2D668A), /* css: .native-btn.primary | background | 0 */
- .on_ink = HEX(0xE2EAEE), /* css: .native-btn | color | 0 */
- .danger_line = HEX(0x8D4F55), /* css: .native-btn.danger | border-color | 0 */
- .mark_line = HEX(0x87B7D4), /* css: .native-logo | color | 0 */
- .login_a = HEX(0x121B22), /* css: .native-screen | background | 0 */
- .login_b = HEX(0x0C1318), /* css: .native-screen | background | 1 */
- .login_glow = HEX(0x121B22), /* css: .native-screen | background | 0 */
- .choice = HEX(0x1B282F), /* css: .native-choice | background | 0 */
- .choice_line = HEX(0x40515D), /* css: .native-choice | border | 0 */
- .selected_line = HEX(0x5E97BA), /* css: .native-choice.selected | border-color | 0 */
- .button = HEX(0x25323B), /* css: .native-btn | background | 0 */
- .button_line = HEX(0x4A5C68), /* css: .native-btn | border | 0 */
- .danger_bg = HEX(0x5C2F33), /* css: .native-btn.danger | background | 0 */
- .warning_bg = HEX(0x2A261C), /* css: .native-message-icon | background | 0 */
- .warning_line = HEX(0x765B2B), /* css: .native-message-icon | border | 0 */
- .warning_ink = HEX(0xE3BB5D), /* css: .native-message-icon | color | 0 */
- .success_bg = HEX(0x1D2C24), /* css: .native-done-icon | background | 0 */
- .success_line = HEX(0x4D8A63), /* css: .native-done-icon | border | 0 */
- .success_ink = HEX(0x7BC590), /* css: .native-done-icon | color | 0 */
- .metric = HEX(0x1D2A32), /* css: .native-metric | background | 0 */
- .metric_line = HEX(0x34454F), /* css: .native-metric | border | 0 */
- .status_bg = HEX(0x0E151A), /* css: .native-statusbar | background | 0 */
- .disk_bg = HEX(0x18252C), /* css: .disk-row | background | 0 */
- .disk_line = HEX(0x354650), /* css: .disk-row | border | 0 */
- .disk_selected = HEX(0x1D303A), /* css: .disk-row.selected | background | 0 */
- .disk_selected_line = HEX(0x5C95B8), /* css: .disk-row.selected | border-color | 0 */
- .clone_line = HEX(0x364852), /* css: .clone-card | border | 0 */
- .round_line = HEX(0x3A4A55), /* css: .native-round-card | border | 0 */
- .image_bg = HEX(0x19262D), /* css: .native-image-option | background | 0 */
- .image_line = HEX(0x374A56), /* css: .native-image-option | border | 0 */
- .image_selected = HEX(0x203640), /* css: .native-image-option.selected | background | 0 */
- .image_selected_line = HEX(0x5F9BC0), /* css: .native-image-option.selected | border-color | 0 */
- .alert_bg = HEX(0x2A271E), /* css: .native-alert | background | 0 */
- .alert_line = HEX(0x66572D), /* css: .native-alert | border | 0 */
- .alert_ink = HEX(0xD6C687), /* css: .native-alert | color | 0 */
- .success_btn = HEX(0x2D6F4D), /* css: .native-btn.success | background | 0 */
- .success_btn_line = HEX(0x55A879), /* css: .native-btn.success | border-color | 0 */
- .node_active_line = HEX(0x4D89AD), /* css: .room-node.active | border-color | 0 */
- .node_warn_line = HEX(0x745E30), /* css: .room-node.warn | border-color | 0 */
- .warn = HEX(0xE1B34F), /* css: .room-dot.warn | background | 0 */
- .brand_accent = HEX(0x6BA8CF), /* css: .native-brand span | color | 0 */
- .shadow_strong = HEX(0x000000), .shadow_strong_a = 0.32, /* .native-panel box-shadow */
+ .porcelain = HEX(0x151A1F), /* css: :root[data-theme="dark"] | --clr-bg | 0 */
+ .surface = HEX(0x1C232A), /* css: :root[data-theme="dark"] | --clr-surface | 0 */
+ .ink = HEX(0xE7EDF2), /* css: :root[data-theme="dark"] | --clr-text | 0 */
+ .muted = HEX(0xA9B4BD), /* css: :root[data-theme="dark"] | --clr-muted | 0 */
+ .hair = HEX(0x35414B), /* css: :root[data-theme="dark"] | --clr-border | 0 */
+ .indigo = HEX(0x4C8FBD), /* css: :root[data-theme="dark"] | --clr-action | 0 */
+ .indigo_soft = HEX(0x223E50), /* css: :root[data-theme="dark"] | --clr-action-soft | 0 */
+ .led_write = HEX(0x4C8FBD), /* css: :root[data-theme="dark"] | --bar-write | 0 */
+ .led_ok = HEX(0x5FBD7A), /* css: :root[data-theme="dark"] | --clr-success | 0 */
+ .led_idle = HEX(0x737373), /* css: :root[data-theme="dark"] | --clr-off | 0 */
+ .danger = HEX(0xDC6B6B), /* css: :root[data-theme="dark"] | --clr-danger | 0 */
+ .hover = HEX(0x25313A), /* css: :root[data-theme="dark"] | --clr-hover | 0 */
+ .field = HEX(0x11181D), /* css: :root[data-theme="dark"] | --clr-field | 0 */
+ .field_line = HEX(0x35414B), /* css: :root[data-theme="dark"] | --clr-border | 0 */
+ .track = HEX(0x0E151A), /* css: :root[data-theme="dark"] | --bar-track | 0 */
+ .sunken = HEX(0x151A1F), /* css: :root[data-theme="dark"] | --clr-bg | 0 */
+ .btn_hover = HEX(0x25313A), /* css: :root[data-theme="dark"] | --clr-hover | 0 */
+ .btn_hover_line = HEX(0x4C8FBD), /* css: :root[data-theme="dark"] | --clr-action | 0 */
+ .ink_hover = HEX(0x64A6D2), /* css: :root[data-theme="dark"] | --clr-action-hover | 0 */
+ .on_ink = HEX(0xFFFFFF), /* css: :root | --clr-header-text | 0 */
+ .danger_line = HEX(0xDC6B6B), /* css: :root[data-theme="dark"] | --clr-danger | 0 */
+ .mark_line = HEX(0x33434F), /* css: :root[data-theme="dark"] | --art-c | 0 */
+ .login_a = HEX(0x11181D), /* css: :root[data-theme="dark"] | --art-bg | 0 */
+ .login_b = HEX(0x1C262E), /* css: :root[data-theme="dark"] | --art-a | 0 */
+ .login_glow = HEX(0x26333D), /* css: :root[data-theme="dark"] | --art-b | 0 */
+ .choice = HEX(0x1C232A), /* css: .card | background | 0 */
+ .choice_line = HEX(0x35414B), /* css: :root[data-theme="dark"] | --clr-border | 0 */
+ .selected_line = HEX(0x4C8FBD), /* css: :root[data-theme="dark"] | --clr-action | 0 */
+ .button = HEX(0x1C232A), /* css: :root[data-theme="dark"] | --clr-surface | 0 */
+ .button_line = HEX(0x35414B), /* css: :root[data-theme="dark"] | --clr-border | 0 */
+ .danger_bg = HEX(0x3A2323), /* css: :root[data-theme="dark"] | --clr-danger-soft | 0 */
+ .warning_bg = HEX(0x33291A), /* css: :root[data-theme="dark"] | --clr-warning-soft | 0 */
+ .warning_line = HEX(0xE1B34F), /* css: :root[data-theme="dark"] | --clr-warning | 0 */
+ .warning_ink = HEX(0xE1B34F), /* css: :root[data-theme="dark"] | --clr-warning | 0 */
+ .success_bg = HEX(0x1E3325), /* css: :root[data-theme="dark"] | --clr-success-soft | 0 */
+ .success_line = HEX(0x5FBD7A), /* css: :root[data-theme="dark"] | --clr-success | 0 */
+ .success_ink = HEX(0x5FBD7A), /* css: :root[data-theme="dark"] | --clr-success | 0 */
+ .metric = HEX(0x1C232A), /* css: :root[data-theme="dark"] | --clr-surface | 0 */
+ .metric_line = HEX(0x35414B), /* css: :root[data-theme="dark"] | --clr-border | 0 */
+ .status_bg = HEX(0x182028), /* css: :root[data-theme="dark"] | --clr-nav | 0 */
+ .header = HEX(0x26343F), /* css: :root[data-theme="dark"] | --clr-header | 0 */
+ .header_text = HEX(0xFFFFFF), /* css: :root | --clr-header-text | 0 */
+ .info = HEX(0x61B5B8), /* css: :root[data-theme="dark"] | --clr-info | 0 */
+ .info_soft = HEX(0x1D3440), /* css: :root[data-theme="dark"] | --clr-info-soft | 0 */
+ .success_soft = HEX(0x1E3325), /* css: :root[data-theme="dark"] | --clr-success-soft | 0 */
+ .danger_soft = HEX(0x3A2323), /* css: :root[data-theme="dark"] | --clr-danger-soft | 0 */
+ .warning_soft = HEX(0x33291A), /* css: :root[data-theme="dark"] | --clr-warning-soft | 0 */
+ .bar_done = HEX(0x5FBD7A), /* css: :root[data-theme="dark"] | --bar-done | 0 */
+ .bar_idle = HEX(0x33434F), /* css: :root[data-theme="dark"] | --bar-idle | 0 */
+ .art_bg = HEX(0x11181D), /* css: :root[data-theme="dark"] | --art-bg | 0 */
+ .art_a = HEX(0x1C262E), /* css: :root[data-theme="dark"] | --art-a | 0 */
+ .art_b = HEX(0x26333D), /* css: :root[data-theme="dark"] | --art-b | 0 */
+ .art_c = HEX(0x33434F), /* css: :root[data-theme="dark"] | --art-c | 0 */
+ .art_line = HEX(0x4A5D6B), /* css: :root[data-theme="dark"] | --art-line | 0 */
+ .art_server = HEX(0x70A9CD), /* css: :root[data-theme="dark"] | --art-server | 0 */
+ .disk_bg = HEX(0x1C232A), /* css: :root[data-theme="dark"] | --clr-surface | 0 */
+ .disk_line = HEX(0x35414B), /* css: :root[data-theme="dark"] | --clr-border | 0 */
+ .disk_selected = HEX(0x223E50), /* css: :root[data-theme="dark"] | --clr-action-soft | 0 */
+ .disk_selected_line = HEX(0x4C8FBD), /* css: :root[data-theme="dark"] | --clr-action | 0 */
+ .clone_line = HEX(0x35414B), /* css: :root[data-theme="dark"] | --clr-border | 0 */
+ .round_line = HEX(0x35414B), /* css: :root[data-theme="dark"] | --clr-border | 0 */
+ .image_bg = HEX(0x11181D), /* css: :root[data-theme="dark"] | --clr-field | 0 */
+ .image_line = HEX(0x35414B), /* css: :root[data-theme="dark"] | --clr-border | 0 */
+ .image_selected = HEX(0x223E50), /* css: :root[data-theme="dark"] | --clr-action-soft | 0 */
+ .image_selected_line = HEX(0x4C8FBD), /* css: :root[data-theme="dark"] | --clr-action | 0 */
+ .alert_bg = HEX(0x33291A), /* css: .alert | background | 0 */
+ .alert_line = HEX(0xE1B34F), /* css: .alert | border | 0 */
+ .alert_ink = HEX(0xE7EDF2), /* css: .alert | color | 0 */
+ .success_btn = HEX(0x5FBD7A), /* css: :root[data-theme="dark"] | --clr-success | 0 */
+ .success_btn_line = HEX(0x5FBD7A), /* css: :root[data-theme="dark"] | --clr-success | 0 */
+ .node_active_line = HEX(0x4C8FBD), /* css: .node.active | border-color | 0 */
+ .node_warn_line = HEX(0xE1B34F), /* css: .node.warn | border-color | 0 */
+ .warn = HEX(0xE1B34F), /* css: :root[data-theme="dark"] | --clr-warning | 0 */
+ .brand_accent = HEX(0xFFFFFF), /* css: :root | --clr-header-text | 0 */
+ .shadow_strong = HEX(0x26343F), /* css: :root[data-theme="dark"] | --clr-header | 0 */
+ .shadow_strong_a = 0.45,
+ .radius = 3,
 };
-const double RADIUS_R = 4; /* css: .native-panel | border-radius | 0 */
-const double RADIUS_SM = 3; /* css: .native-input | border-radius | 0 */
-const double N_PANEL_W = 760; /* css: .native-panel | width | 0 */
-const double N_PANEL_RATIO = .92; /* css: .native-panel | width | 1 */
-const double N_NARROW_W = 520; /* css: .native-panel.narrow | max-width | 0 */
-const double N_PAD = 20; /* css: .native-panel | padding | 0 */
-const double N_CENTER_PAD = 14; /* css: .native-center | padding | 0 */
-const double N_HEADER_H = 40; /* css: .native-topline | height | 0 */
-const double N_HEADER_PAD = 18; /* css: .native-topline | padding | 1 */
-const double N_STATUS_H = 36; /* css: .native-statusbar | height | 0 */
-const double N_STATUS_PAD = 20; /* css: .native-statusbar | padding | 1 */
-const double N_TITLE = 26; /* css: .native-title | font-size | 0 */
-const double N_TITLE_GAP = 8; /* css: .native-title | margin | 2 */
-const double N_SUB = 12; /* css: .native-subtitle | font-size | 0 */
-const double N_LABEL = 11; /* css: .native-label | font-size | 0 */
-const double N_LABEL_GAP = 5; /* css: .native-label | margin-bottom | 0 */
-const double N_FORM_GAP = 12; /* css: .native-form | gap | 0 */
-const double N_FORM_TOP = 20; /* css: .native-form | margin-top | 0 */
-const double N_FIELD_H = 40; /* css: .native-input | height | 0 */
-const double N_FIELD_PAD = 11; /* css: .native-input | padding | 1 */
-const double N_BUTTON_H = 38; /* css: .native-btn | height | 0 */
-const double N_BUTTON_PAD = 16; /* css: .native-btn | padding | 1 */
-const double N_ACTION_GAP = 8; /* css: .native-actions | gap | 0 */
-const double N_ACTION_TOP = 18; /* css: .native-actions | margin-top | 0 */
-const double N_CHOICE_GAP = 14; /* css: .native-choice-grid | gap | 0 */
-const double N_CHOICE_H = 160; /* css: .native-choice | min-height | 0 */
-const double N_CHOICE_PAD = 22; /* css: .native-choice | padding | 0 */
-const double N_CHOICE_TITLE = 17; /* css: .native-choice h3 | font-size | 0 */
-const double N_CHOICE_SUB = 11; /* css: .native-choice p | font-size | 0 */
-const double N_CHOICE_ICON = 30; /* css: .native-choice .icon | font-size | 0 */
-const double N_LOGO = 56; /* css: .native-logo | width | 0 */
-const double N_LOGO_GAP = 16; /* css: .native-logo | margin-bottom | 0 */
-const double N_MESSAGE_ICON = 74; /* css: .native-message-icon | width | 0 */
-const double N_MESSAGE_GAP = 15; /* css: .native-message-icon | margin | 2 */
-const double N_DONE_ICON = 112; /* css: .native-done-icon | width | 0 */
-const double N_DONE_GAP = 22; /* css: .native-done | gap | 0 */
-const double N_PROGRESS_PCT = 44; /* css: .native-progress-pct | font-size | 0 */
-const double N_BAR_H = 14; /* css: .native-progressbar | height | 0 */
-const double N_METRIC_PAD = 12; /* css: .native-metric | padding | 0 */
-const double N_METRIC_LABEL = 10; /* css: .native-metric span | font-size | 0 */
-const double N_METRIC_VALUE = 15; /* css: .native-metric strong | font-size | 0 */
-const double N_METRIC_GAP = 8; /* css: .native-metrics | gap | 0 */
-const double N_SHADOW_Y = 20; /* css: .native-panel | box-shadow | 1 */
-const double N_SHADOW_BLUR = 60; /* css: .native-panel | box-shadow | 2 */
-const double N_BORDER = 1; /* css: .native-panel | border | 0 */
-const double N_HEADER_FONT = 10; /* css: .native-topline | font-size | 0 */
-const double N_BRAND_FONT = 14; /* css: .native-brand | font-size | 0 */
-const double N_IMAGE_PAD = 11; /* css: .native-image-option | padding | 0 */
-const double N_IMAGE_GAP = 7; /* css: .native-image-grid | gap | 0 */
-const double N_IMAGE_TITLE = 11; /* css: .native-image-option strong | font-size | 0 */
-const double N_IMAGE_SUB = 8; /* css: .native-image-option small | font-size | 0 */
-const double N_CLONE_GAP = 10; /* css: .clone-grid | gap | 0 */
-const double N_CLONE_PAD = 14; /* css: .clone-card | padding | 0 */
-const double N_CLONE_PCT = 27; /* css: .clone-big | font-size | 0 */
-const double N_CLONE_TITLE = 13; /* css: .clone-card h3 | font-size | 0 */
-const double N_ROOM_GAP = 9; /* css: .room-grid | gap | 0 */
-const double N_ROOM_PAD = 12; /* css: .room-node | padding | 0 */
-const double N_ROOM_MIN_H = 116; /* css: .room-node | min-height | 0 */
-const double N_CLASS_PRIMARY = 1.2; /* css: .native-class-grid | grid-template-columns | 0 */
-const double N_CLASS_SECONDARY = 0.8; /* css: .native-class-grid | grid-template-columns | 1 */
-const double N_ROUND_PAD = 18; /* css: .native-round-card | padding | 0 */
-const double N_BAR_SM = 5; /* css: .native-bar | height | 0 */
-const double N_ROUND_ID = 20; /* css: .native-round-id | font-size | 0 */
-const double N_ROUND_META = 10; /* css: .native-round-meta | font-size | 0 */
-const double N_ALERT_PAD_Y = 9; /* css: .native-alert | padding | 0 */
-const double N_ALERT_PAD_X = 11; /* css: .native-alert | padding | 1 */
-const double N_ALERT_FONT = 10; /* css: .native-alert | font-size | 0 */
-const double N_STATUS_DOT = 7; /* css: .native-status i | width | 0 */
-const double N_STATUS_GAP = 6; /* css: .native-status | gap | 0 */
-const double N_BRAND_GAP = 6; /* css: .native-brand span | margin-right | 0 */
-const double N_NODE_TITLE = 11; /* css: .room-node strong | font-size | 0 */
-const double N_NODE_SUB = 9; /* css: .room-node small | font-size | 0 */
-const double N_NODE_DOT = 8; /* css: .room-dot | width | 0 */
-const double N_DISK_ICON_COL = 44; /* css: .disk-row | grid-template-columns | 0 */
-const double N_DISK_PAD = 12; /* css: .disk-row | padding | 0 */
-const double N_DISK_GAP = 8; /* css: .disk-list | gap | 0 */
-const double N_DISK_COL_GAP = 12; /* css: .disk-row | gap | 0 */
-const double N_DISK_TITLE = 12; /* css: .disk-main strong | font-size | 0 */
-const double N_DISK_SUB = 9; /* css: .disk-main small | font-size | 0 */
-const double N_DISK_SIDE = 10; /* css: .disk-side | font-size | 0 */
-const double N_CLONE_SUB = 8; /* css: .clone-card small | font-size | 0 */
-const double N_CLONE_STATUS = 8; /* css: .clone-status | font-size | 0 */
-const double N_CLONE_STAT_PAD = 8; /* css: .native-clone-stat | padding | 0 */
-const double N_CLONE_STAT_LABEL = 8; /* css: .native-clone-stat span | font-size | 0 */
-const double N_CLONE_STAT_VALUE = 15; /* css: .native-clone-stat strong | font-size | 0 */
-const double N_CLONE_SOURCE_TITLE = 10; /* css: .native-clone-source strong | font-size | 0 */
-/* Inline styles of the screen functions (not in the stylesheet): the test
- * reads them from the function's own line of the mockup. */
-const double N_PROGRESS_TITLE = 23; /* html: nativeProgress | font-size | 0 */
-const double N_ROOM_TITLE = 22; /* html: nativeRoom | font-size | 0 */
-const double N_CLONER_TITLE = 20; /* html: nativeCloner | font-size | 0 */
-const double N_RESTORE_NAME = 18; /* html: nativeRestore | font-size | 0 */
-/* Compatibility status colours for states beyond the mockup; retain the
- * established SMART health semantics (.smart-ok / .smart-warn). */
-const Rgb HEAD_TITLE = HEX(0xE7EDF1); /* .native-brand color */
-const Rgb HEAD_SUB = HEX(0x90A0AA); /* .native-topline color */
-const Rgb ROOM_BAD = HEX(0xE5484D); /* .native-btn.danger: derived failure ink */
-const Rgb ROOM_WARN = HEX(0xB36B00); /* .native-alert: derived warning ink */
-const Rgb STRIPE_A = HEX(0x64A6D2); /* .native-progressbar i background */
-const Rgb STRIPE_B = HEX(0xA2CFE5); /* .native-progressbar: derived unknown stripe */
-const Rgb STRIPE_IDLE = HEX(0x7E8C95); /* .native-statusbar color */
 
-const double N_DIM_ALPHA = 0.55; /* .native-choice: retained disabled/SMART overlay opacity extension */
+/* Geometry bindings. The engine receives W/H; only the room column count,
+ * cloner percentage size, and restore image columns branch on H/W. */
+const double RADIUS_R = 3; /* css: :root[data-theme="dark"] | --r | 0 */
+const double RADIUS_SM = 3; /* css: :root[data-theme="dark"] | --r | 0 */
+const double N_PANEL_W = 600; /* css: .login | grid-template-columns | 1 */
+const double N_NARROW_W = 420; /* css: .login | grid-template-columns | 0 */
+const double N_PAD = 32; /* css: .body | padding | 1 */
+const double N_CENTER_PAD = 32; /* css: .body | padding | 1 */
+const double N_HEADER_H = 48; /* css: .hdr | height | 0 */
+const double N_HEADER_PAD = 24; /* css: .hdr | padding | 1 */
+const double N_STATUS_H = 36; /* css: .sb | height | 0 */
+const double N_STATUS_PAD = 24; /* css: .sb | padding | 1 */
+const double N_TITLE = 24; /* css: .ph h1 | font-size | 0 */
+const double N_TITLE_GAP = 3; /* css: .ph p | margin-top | 0 */
+const double N_SUB = 13; /* css: .ph p | font-size | 0 */
+const double N_LABEL = 12; /* css: .f label | font-size | 0 */
+const double N_LABEL_GAP = 2; /* css: .f label | margin-bottom | 0 */
+const double N_FORM_GAP = 22; /* css: .f | margin-bottom | 0 */
+const double N_FORM_TOP = 28; /* css: .lead | margin-bottom | 0 */
+const double N_FIELD_H = 34; /* css: .f input | height | 0 */
+const double N_FIELD_PAD = 4; /* css: .f input | padding | 2 */
+const double N_BUTTON_H = 38; /* css: .btn | height | 0 */
+const double N_BUTTON_PAD = 22; /* css: .btn | padding | 1 */
+const double N_ACTION_GAP = 10; /* css: .actions | gap | 0 */
+const double N_ACTION_TOP = 18; /* css: .body | gap | 0 */
+const double N_CHOICE_GAP = 18; /* css: .cards | gap | 0 */
+const double N_CHOICE_H = 52; /* css: .card .ic | height | 0 */
+const double N_CHOICE_PAD = 26; /* css: .card | padding | 1 */
+const double N_CHOICE_TITLE = 22; /* css: .card h2 | font-size | 0 */
+const double N_CHOICE_SUB = 14; /* css: .card p | font-size | 0 */
+const double N_CHOICE_ICON = 52; /* css: .card .ic | width | 0 */
+const double N_LOGO = 72; /* css: .standby .mark | width | 0 */
+const double N_LOGO_GAP = 22; /* css: .standby .mark | margin | 2 */
+const double N_MESSAGE_ICON = 72; /* css: .standby .mark | height | 0 */
+const double N_MESSAGE_GAP = 22; /* css: .standby .mark | margin | 2 */
+const double N_DONE_ICON = 72; /* css: .standby .mark | width | 0 */
+const double N_DONE_GAP = 22; /* css: .standby .mark | margin | 2 */
+const double N_PROGRESS_PCT = 88; /* css: .dcard .big | font-size | 0 */
+const double N_BAR_H = 6; /* css: .bar | height | 0 */
+const double N_METRIC_PAD = 16; /* css: .stat | padding | 1 */
+const double N_METRIC_LABEL = 12; /* css: .stat .k | font-size | 0 */
+const double N_METRIC_VALUE = 24; /* css: .stat .v | font-size | 0 */
+const double N_METRIC_GAP = 14; /* css: .strip | gap | 0 */
+const double N_SHADOW_Y = 10; /* css: .alert | padding | 0 */
+const double N_SHADOW_BLUR = 14; /* css: .alert | padding | 1 */
+const double N_BORDER = 1; /* css: .card | border | 0 */
+const double N_HEADER_FONT = 13; /* css: .hdr | font-size | 0 */
+const double N_BRAND_FONT = 16; /* css: .hdr .brand | font-size | 0 */
+const double N_IMAGE_PAD = 14; /* css: .img | padding | 1 */
+const double N_IMAGE_GAP = 10; /* css: .imgs | gap | 0 */
+const double N_IMAGE_TITLE = 15; /* css: .img b | font-size | 0 */
+const double N_IMAGE_SUB = 12; /* css: .img small | font-size | 0 */
+const double N_CLONE_GAP = 20; /* css: .mine | gap | 0 */
+const double N_CLONE_PAD = 26; /* css: .dcard | padding | 1 */
+const double N_CLONE_PCT = 88; /* css: .dcard .big | font-size | 0 */
+const double N_CLONE_TITLE = 26; /* css: .dcard h2 | font-size | 0 */
+const double N_ROOM_GAP = 14; /* css: .grid | gap | 0 */
+const double N_ROOM_PAD = 14; /* css: .node | padding | 1 */
+const double N_ROOM_MIN_H = 24; /* css: .pill | height | 0 */
+const double N_CLASS_PRIMARY = 1.4; /* css: .restore | grid-template-columns | 0 */
+const double N_CLASS_SECONDARY = 1; /* css: .restore | grid-template-columns | 1 */
+const double N_ROUND_PAD = 22; /* css: .panel | padding | 1 */
+const double N_BAR_SM = 6; /* css: .bar | height | 0 */
+const double N_ROUND_ID = 24; /* css: .stat .v | font-size | 0 */
+const double N_ROUND_META = 13; /* css: .ph p | font-size | 0 */
+const double N_ALERT_PAD_Y = 10; /* css: .alert | padding | 0 */
+const double N_ALERT_PAD_X = 14; /* css: .alert | padding | 1 */
+const double N_ALERT_FONT = 13; /* css: .alert | font-size | 0 */
+const double N_STATUS_DOT = 8; /* css: .sb .st i | width | 0 */
+const double N_STATUS_GAP = 7; /* css: .sb .st | gap | 0 */
+const double N_BRAND_GAP = 10; /* css: .hdr .brand | gap | 0 */
+const double N_NODE_TITLE = 16; /* css: .node .nm b | font-size | 0 */
+const double N_NODE_SUB = 12; /* css: .node .st | font-size | 0 */
+const double N_NODE_DOT = 8; /* css: .node .nm i | width | 0 */
+const double N_DISK_ICON_COL = 40; /* css: .tgt .ic | width | 0 */
+const double N_DISK_PAD = 14; /* css: .img | padding | 1 */
+const double N_DISK_GAP = 7; /* css: .disks | gap | 0 */
+const double N_DISK_COL_GAP = 8; /* css: .disk | gap | 0 */
+const double N_DISK_TITLE = 12; /* css: .disk | font-size | 0 */
+const double N_DISK_SUB = 12; /* css: .disk | font-size | 0 */
+const double N_DISK_SIDE = 12; /* css: .disk | font-size | 0 */
+const double N_CLONE_SUB = 14; /* css: .dcard h2 small | font-size | 0 */
+const double N_CLONE_STATUS = 12; /* css: .pill | font-size | 0 */
+const double N_CLONE_STAT_PAD = 10; /* css: .dcard .kv | gap | 0 */
+const double N_CLONE_STAT_LABEL = 13; /* css: .dcard .kv div | font-size | 0 */
+const double N_CLONE_STAT_VALUE = 20; /* css: .dcard .kv div b | font-size | 0 */
+const double N_CLONE_SOURCE_TITLE = 15; /* css: .img b | font-size | 0 */
+const double N_PROGRESS_TITLE = 24; /* css: .ph h1 | font-size | 0 */
+const double N_ROOM_TITLE = 24; /* css: .ph h1 | font-size | 0 */
+const double N_CLONER_TITLE = 24; /* css: .ph h1 | font-size | 0 */
+const double N_RESTORE_NAME = 15; /* css: .tgt b | font-size | 0 */
+const double N_DIM_ALPHA = 0.6; /* css: .node.off | opacity | 0 */

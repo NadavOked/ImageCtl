@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 pytest.importorskip("fastapi")
@@ -110,6 +112,66 @@ def test_new_admin_must_enroll_mfa(server):
     assert all(len(x) == 10 for x in en.json()["backup_codes"])
     assert c.get("/api/console/me").status_code == 200
     assert c.get("/api/console/me").json()["mfa_enabled"] is True
+
+
+# --- #1150: מסך ההגדרה בלי QR — השרת מחזיר `svg` ----------------------------
+
+
+def _setup_as_new_admin(server, name: str):
+    """admin חדש (לא builtin) → כניסה → `/me/mfa/setup`. מחזיר את גוף התשובה."""
+    assert server["admin"].post("/api/console/users", json={
+        "username": name, "password": "Aa12345!", "role": "admin",
+    }).status_code == 200
+    c = _console_client(server)
+    r = c.post("/api/console/login", json={"username": name, "password": "Aa12345!"})
+    assert r.json() == {"mfa_enrollment_required": True}
+    setup = c.post("/api/console/me/mfa/setup")
+    assert setup.status_code == 200, setup.text
+    return setup.json()
+
+
+def _journal_details(server, event: str) -> list[str]:
+    rows = server["ctx"].conn.execute(
+        "SELECT detail FROM journal WHERE event = ? ORDER BY id", (event,)
+    ).fetchall()
+    return [r["detail"] for r in rows]
+
+
+def test_mfa_setup_returns_inline_svg_qr(server):
+    """‏#1150: ‏`svg` הוא QR של `otpauth_url` — inline (בלי `<?xml`/DOCTYPE),
+    כי `console.js` מכניס אותו ישירות ל-`innerHTML` של `.qr`."""
+    import qrcode  # noqa: F401 — תלות ייצור (python3-qrcode); חסרה = כישלון, לא דילוג
+    body = _setup_as_new_admin(server, "qr")
+    svg = body["svg"]
+    assert svg.startswith("<svg")
+    assert "<path" in svg
+    assert "<?xml" not in svg and "DOCTYPE" not in svg
+    assert body["otpauth_url"].startswith("otpauth://totp/ImageCtl:qr?")
+
+
+def test_mfa_setup_svg_encodes_the_otpauth_url(server):
+    """התוכן המקודד הוא `otpauth_url` עצמו — לא הסוד לבדו ולא URL אחר.
+    ‏`qrcode` אינו מפענח, ולכן משווים למה שאותה ספרייה מייצרת מאותו קלט:
+    הפלט דטרמיניסטי (אין אקראיות ב-QR), ו-URL אחר נותן path אחר."""
+    import qrcode
+    import qrcode.image.svg as qsvg
+    body = _setup_as_new_admin(server, "qr2")
+    expected = qrcode.make(body["otpauth_url"], image_factory=qsvg.SvgPathImage)
+    assert body["svg"] == expected.to_string(encoding="unicode")
+    other = qrcode.make(body["otpauth_url"] + "x", image_factory=qsvg.SvgPathImage)
+    assert body["svg"] != other.to_string(encoding="unicode")
+
+
+def test_mfa_setup_without_qrcode_package_is_named_not_silent(server, monkeypatch):
+    """‏python3-qrcode חסר → ‏`svg == ""` ורשומת יומן שאומרת זאת בשם — לא
+    קריסה של ההרשמה ולא "הצלחה" שקטה (עיקרון 5). הסוד וה-URL עדיין חוזרים."""
+    monkeypatch.setitem(sys.modules, "qrcode", None)
+    monkeypatch.setitem(sys.modules, "qrcode.image.svg", None)
+    body = _setup_as_new_admin(server, "noqr")
+    assert body["svg"] == ""
+    assert body["secret"] and body["otpauth_url"].startswith("otpauth://")
+    details = _journal_details(server, "mfa_setup")
+    assert details and "python3-qrcode חסר בשרת" in details[-1], details
 
 
 def test_two_step_login_and_wrong_code(server):

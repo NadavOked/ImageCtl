@@ -649,6 +649,67 @@ def _count_color(px, ch, rgb, tol=26) -> int:
     return n
 
 
+# ‏#1090: לגואי אין פלטה משלו — כל צבע הוא טוקן של הקונסולה (design-tokens.css),
+# ו-theme.c מעתיק אותו. הטסטים קוראים את הטוקן מהקובץ, לא ערך קשיח: כשהקונסולה
+# תשנה צבע, הטסט ייפול אם הגואי לא זז איתה.
+TOKENS_CSS = REPO / "server" / "static" / "design-tokens.css"
+
+
+def _token(name: str, theme: str = "light") -> tuple[int, int, int]:
+    """‏`--clr-*` מהבלוק של `:root` (בהיר) או `:root[data-theme="dark"]` (כהה)."""
+    import re
+    css = TOKENS_CSS.read_text(encoding="utf-8")
+    start = css.index(':root[data-theme="dark"]{' if theme == "dark" else ":root{")
+    block = css[start:css.index("\n}", start)]
+    m = re.search(re.escape(name) + r":#([0-9a-fA-F]{6})\b", block)
+    assert m, f"{name} not in design-tokens.css ({theme})"
+    v = int(m.group(1), 16)
+    return (v >> 16) & 255, (v >> 8) & 255, v & 255
+
+
+def _screen_enum() -> dict[str, int]:
+    """‏`typedef enum { SCREEN_... } Screen;` מ-ui.h — שם→מספר, כדי שהודעת
+    "routed to screen 8, not 7" של `--png` תיקרא בשמות ולא במספרים קשיחים."""
+    import re
+    src = (REPO / "native-gui" / "src" / "ui.h").read_text(encoding="utf-8")
+    body = re.search(r"typedef enum \{(.*?)\} Screen;", src, re.S).group(1)
+    names = [n for n in re.findall(r"\b(SCREEN_[A-Z_]+)\b", body)]
+    return {n: i for i, n in enumerate(names)}
+
+
+def _routing_error(stderr: str) -> str:
+    """מתרגם `routed to screen N, not M` לשמות מה-enum, לדוח קריא."""
+    import re
+    by_num = {v: k for k, v in _screen_enum().items()}
+    m = re.search(r"routed to screen (\d+), not (\d+)", stderr)
+    if not m:
+        return stderr
+    got, want = int(m.group(1)), int(m.group(2))
+    return f"{stderr.strip()} ({by_num.get(got, got)} instead of {by_num.get(want, want)})"
+
+
+def _row_frac(px, ch, w, y, rgb, tol=2) -> float:
+    """איזה חלק מהפיקסלים בשורה y הוא בצבע rgb."""
+    row = px[y * w * ch:(y + 1) * w * ch]
+    return _count_color(row, ch, rgb, tol) / w
+
+
+def _ink_bounds(px, ch, w, y0, y1, bg, tol=2):
+    """גבולות (left, right, top, bottom) של כל מה שאינו צבע הרקע בין השורות y0..y1."""
+    r0, g0, b0 = bg
+    left, right, top, bottom = w, -1, -1, -1
+    for y in range(y0, y1):
+        base = y * w * ch
+        for x in range(w):
+            i = base + x * ch
+            if abs(px[i] - r0) > tol or abs(px[i + 1] - g0) > tol or abs(px[i + 2] - b0) > tol:
+                if x < left: left = x
+                if x > right: right = x
+                if top < 0: top = y
+                bottom = y
+    return left, right, top, bottom
+
+
 @requires_native(
     ("cc", shutil.which("cc") or shutil.which("gcc")),
     ("pango/cairo/libdrm", _pkgconfig("pangocairo", "cairo", "libdrm")),
@@ -657,7 +718,8 @@ def _count_color(px, ch, rgb, tol=26) -> int:
 def test_room_grid_paints_healthy_drawers_green(tmp_path):
     """‏#695: מסך "הפצה למחשבי שיכפול" מצייר מלבן לכל מחשב עם הדיסקים בפנים.
     ‏disk בריא (`smart=passed`) נצבע ב-`led_ok` ירוק, ו-`smart=fail` ב-**כתום**
-    (‏#872: F1 = כתום; אדום שמור ל-`failed_last`).
+    (‏#872: F1 = כתום; אדום שמור ל-`failed_last`). ‏#1090: שלושת הצבעים הם
+    טוקני הקונסולה `--clr-success`/`--clr-warning`/`--clr-danger` (בהיר).
     הטסט מזין `machine`/`machine_drawers`/`room_drawer` דרך `--state`, מרנדר
     את כרטיס החדר, וסופר פיקסלים ירוקים ואדומים. **בקרה שלילית:** בלי הפרסר
     של `room_drawer` ב-`state.c` אין מגירות, כל התאים אפורים (`led_idle`),
@@ -683,11 +745,11 @@ def test_room_grid_paints_healthy_drawers_green(tmp_path):
         capture_output=True, text=True, timeout=120, env=env2,
         stdin=subprocess.DEVNULL,
     )
-    assert run.returncode == 0, run.stderr
+    assert run.returncode == 0, _routing_error(run.stderr)
     w, h, ch, px = _png_rgb(tmp_path / "card-room-light.png")
-    green = _count_color(px, ch, (0x31, 0x87, 0x00))   # theme.light.led_ok (#765 Clarity)
-    orange = _count_color(px, ch, (0xB3, 0x6B, 0x00))  # ROOM_WARN (#872)
-    red = _count_color(px, ch, (0xE5, 0x48, 0x4D))     # ROOM_BAD
+    green = _count_color(px, ch, _token("--clr-success"))
+    orange = _count_color(px, ch, _token("--clr-warning"))
+    red = _count_color(px, ch, _token("--clr-danger"))
     assert green > 400, f"healthy drawers not painted green ({green} px)"
     assert orange > 200, f"F1 drawer not painted orange ({orange} px)"
     assert red < 200, f"a SMART-failed drawer must not be red -- red is failed_last ({red} px)"
@@ -724,11 +786,11 @@ def test_cloner_idle_disks_show_smart_health_color(tmp_path):
         capture_output=True, text=True, timeout=120, env=env2,
         stdin=subprocess.DEVNULL,
     )
-    assert run.returncode == 0, run.stderr
+    assert run.returncode == 0, _routing_error(run.stderr)
     w, h, ch, px = _png_rgb(tmp_path / "card-cloner-light.png")
-    green = _count_color(px, ch, (0x31, 0x87, 0x00))   # theme.light.led_ok (#765 Clarity)
-    orange = _count_color(px, ch, (0xB3, 0x6B, 0x00))  # ROOM_WARN (#872)
-    red = _count_color(px, ch, (0xE5, 0x48, 0x4D))     # ROOM_BAD
+    green = _count_color(px, ch, _token("--clr-success"))
+    orange = _count_color(px, ch, _token("--clr-warning"))
+    red = _count_color(px, ch, _token("--clr-danger"))
     assert green > 50, f"healthy idle disk not shown green ({green} px)"
     assert orange > 50, f"F1 idle disk not shown orange ({orange} px)"
     assert red < 50, f"a SMART-failed idle disk must not be red ({red} px)"
@@ -763,9 +825,9 @@ def test_cloner_idle_disk_that_failed_last_clone_is_painted_red(tmp_path):
         capture_output=True, text=True, timeout=120, env=env2,
         stdin=subprocess.DEVNULL,
     )
-    assert run.returncode == 0, run.stderr
+    assert run.returncode == 0, _routing_error(run.stderr)
     w, h, ch, px = _png_rgb(tmp_path / "card-cloner-light.png")
-    red = _count_color(px, ch, (0xE5, 0x48, 0x4D))     # ROOM_BAD
+    red = _count_color(px, ch, _token("--clr-danger"))
     assert red > 50, f"disk that failed the last clone not shown red ({red} px)"
 
 
@@ -801,9 +863,44 @@ def test_restore_card_routes_to_a_graphical_screen(tmp_path):
         capture_output=True, text=True, timeout=120, env=env2,
         stdin=subprocess.DEVNULL,
     )
-    assert run.returncode == 0, run.stderr        # restore routed to SCREEN_RESTORE, else rc≠0
+    assert run.returncode == 0, _routing_error(run.stderr)   # restore routed to SCREEN_RESTORE, else rc≠0
     assert (tmp_path / "card-restore-light.png").exists()
     assert (tmp_path / "card-restore-dark.png").exists()
+
+
+@requires_native(
+    ("cc", shutil.which("cc") or shutil.which("gcc")),
+    ("pango/cairo/libdrm", _pkgconfig("pangocairo", "cairo", "libdrm")),
+    why="native-gui נבנה על המעבדה בלבד",
+)
+def test_png_renders_the_cloner_card_from_a_state_without_cloner_data(tmp_path):
+    """‏#1090: משכפל ממתין מנותב ל-`SCREEN_STANDBY` (מסך חדש), ולכן קובץ מצב
+    של **מחשב בנייה** — בלי `cloner=`/`drawer=`/`smart_prompt=` — הפיל את
+    כל ה-`--png`: כרטיס `cloner` נחת על standby ובדיקת הניתוב יצאה rc≠0
+    ("routed to screen 8, not 7"). ‏`png_setup` מבטיח ש"קובץ מצב של המשתמש
+    מרנדר כל כרטיס" — ולכן הכרטיס מקבל נתוני דוגמה כשאין לו משלו, כמו
+    שכרטיס `standby` מנקה אותם. **בקרה שלילית:** בלי הזריעה ב-`png_setup`
+    ה-rc הוא 1 והכרטיס `cloner` אינו נכתב."""
+    binary = _build_gui(tmp_path)
+    state = tmp_path / "build.txt"
+    state.write_text("disk=/dev/sda|Samsung SSD 870 EVO|256060514304|1|0\nmessage=x|y\n",
+                     newline="\n")
+    env2 = dict(os.environ)
+    fonts_conf = GUI / "fonts.conf"
+    if fonts_conf.exists():
+        env2["FONTCONFIG_FILE"] = str(fonts_conf)
+    run = subprocess.run(
+        [str(binary), "--png", posix(tmp_path / "card"), "--size", "1000x760",
+         "--mac", "3C:52:82:A1:00:21", "--ip", "10.10.10.31", "--state", posix(state)],
+        capture_output=True, text=True, timeout=120, env=env2,
+        stdin=subprocess.DEVNULL,
+    )
+    assert run.returncode == 0, _routing_error(run.stderr)
+    assert (tmp_path / "card-cloner-light.png").exists()
+    assert (tmp_path / "card-standby-light.png").exists()
+    # שני המסכים קיימים ב-enum ושונים זה מזה: standby אינו alias של cloner.
+    screens = _screen_enum()
+    assert "SCREEN_STANDBY" in screens and screens["SCREEN_STANDBY"] != screens["SCREEN_CLONER"]
 
 
 # --- ‏#765: מסך-מלא רספונסיבי + פלטת Clarity -------------------------------
@@ -832,21 +929,48 @@ def _render_all(binary: Path, tmp_path: Path, size: str):
     why="native-gui נבנה על המעבדה בלבד",
 )
 @pytest.mark.parametrize("size", ["1920x1080", "1024x768"])
-def test_native_gui_centers_the_mockup_panel(tmp_path, size):
-    """#828: a centered panel replaces the old full-frame console surface.
+def test_native_gui_fills_the_screen(tmp_path, size):
+    """‏#1090: המסך מלא — אין יותר פאנל ממורכז של #828. לפי הערות המוקאפ
+    (‏`.hdr height 48`, ‏`.sb height 36`, ‏`.body padding 28/32/24`):
 
-    This is a Linux rendering guard, not a claim of pixel-perfect fidelity.
-    The old full-width frame fails the bounded-width assertion.
-    """
+    * ה-header — 48 שורות בראש ב-`--clr-header` (כהה גם בבהיר, כמו vSphere),
+      ושורה 48 כבר אינה header.
+    * שורת הסטטוס — 36 השורות התחתונות ב-`--clr-nav`, קו שיער מעליהן.
+    * התוכן נוגע בשוליים: 32 מימין ומשמאל, 28 מתחת ל-header, 24 מעל
+      שורת הסטטוס — בשתי הרזולוציות.
+
+    זה שומר רינדור בלינוקס, לא טענה לנאמנות פיקסל. הפאנל הישן (700–762px
+    ממורכז, topline של 40) נופל על גובה ה-header ועל השוליים."""
     binary = _build_gui(tmp_path)
     _render_all(binary, tmp_path, size)
     w, h, ch, px = _png_rgb(tmp_path / "card-menu-light.png")
-    points = [(i // ch) % w for i in range(0, len(px), ch)
-              if all(abs(px[i+j]-255) <= 2 for j in range(3))]
-    assert len(points) > w*h*.01, "panel surface missing"
-    left, right = min(points), max(points)
-    assert 700 <= right-left+1 <= 762, (left, right, w)
-    assert abs((left+right)/2 - (w-1)/2) <= 2, "panel is not centered"
+    header, nav, bg = _token("--clr-header"), _token("--clr-nav"), _token("--clr-bg")
+    border = _token("--clr-border")
+    hdr_h, sb_h, pad_x, pad_top, pad_bottom = 48, 36, 32, 28, 24
+
+    # ה-header: השורה הראשונה והאחרונה (0, 47) נקיות מטקסט; שורת האמצע
+    # נושאת את הטקסט (מכונה · שרת · גרסה, פיל, brand, שעה) — נמדד במעבדה
+    # 0.71 ב-1024 ו-0.845 ב-1920 (השעה משנה רוחב), ולכן שם רק "header ברובו".
+    # שורה 48 היא כבר הגוף.
+    for y in (0, hdr_h - 1):
+        assert _row_frac(px, ch, w, y, header) > .85, f"row {y} is not the header"
+    assert _row_frac(px, ch, w, hdr_h // 2, header) > .6, "the header's text row is not the header"
+    assert _row_frac(px, ch, w, hdr_h, header) < .05, f"the header is taller than {hdr_h}"
+
+    # שורת הסטטוס: 36 שורות תחתונות — השורה העליונה שלהן היא קו השיער
+    # (‏draw_status מצייר אותו ב-bar.y), השאר ב---clr-nav, ומעליהן רקע הגוף.
+    for y in (h - 1, h - sb_h // 2, h - sb_h + 1):
+        assert _row_frac(px, ch, w, y, nav) > .85, f"row {y} is not the status bar"
+    assert _row_frac(px, ch, w, h - sb_h, border) > .85, "no hairline atop the status bar"
+    assert _row_frac(px, ch, w, h - sb_h - 1, bg) > .85, f"the status bar is taller than {sb_h}"
+
+    # הגוף: מה שאינו רקע בין ה-header לשורת הסטטוס נוגע בשוליים של המוקאפ.
+    left, right, top, bottom = _ink_bounds(px, ch, w, hdr_h, h - sb_h, bg)
+    assert abs(left - pad_x) <= 2, f"left margin {left}, want {pad_x}"
+    assert abs((w - 1 - right) - pad_x) <= 2, f"right margin {w - 1 - right}, want {pad_x}"
+    assert 0 <= top - (hdr_h + pad_top) <= 12, f"content starts at {top}, want ~{hdr_h + pad_top}"
+    assert abs((h - sb_h - 1 - bottom) - pad_bottom) <= 2, \
+        f"bottom margin {h - sb_h - 1 - bottom}, want {pad_bottom}"
 
 
 @requires_native(
@@ -854,13 +978,16 @@ def test_native_gui_centers_the_mockup_panel(tmp_path, size):
     ("pango/cairo/libdrm", _pkgconfig("pangocairo", "cairo", "libdrm")),
     why="native-gui נבנה על המעבדה בלבד",
 )
-def test_native_gui_uses_the_mockup_action_blue(tmp_path):
-    """#828: the login action uses the mockup's #2d668a primary colour."""
+def test_native_gui_uses_the_console_action_blue(tmp_path):
+    """‏#1090: כפתור "כניסה" צבוע ב-`--clr-action` של הקונסולה — ‏#0079B8
+    בבהיר ו-#4c8fbd בכהה, כפי שהם ב-design-tokens.css (ולא הכחול הישן
+    ‏#2d668a של מוקאפ #828). הערך נקרא מהקובץ, לא מוקשח כאן."""
     binary = _build_gui(tmp_path)
     _render_all(binary, tmp_path, "1280x800")
-    w, h, ch, px = _png_rgb(tmp_path / "card-login-light.png")
-    blue = _count_color(px, ch, (0x2D, 0x66, 0x8A), tol=6)
-    assert blue > 200, f"mockup action blue absent ({blue}px)"
+    for theme in ("light", "dark"):
+        w, h, ch, px = _png_rgb(tmp_path / f"card-login-{theme}.png")
+        blue = _count_color(px, ch, _token("--clr-action", theme), tol=6)
+        assert blue > 200, f"console action blue absent on the {theme} login ({blue}px)"
 
 
 # --- #872: שלושה צבעים — אדום/כתום/ירוק — במסך הגרפי ובקונסולה ------------------
@@ -868,8 +995,10 @@ def test_native_gui_uses_the_mockup_action_blue(tmp_path):
 # ‏native-gui מתקמפל על המעבדה בלבד (אין cc בווינדוס), ולכן זה שומר על
 # **המקור**: הכלל יושב במקום אחד (`smart_level` + `smart_color` ב-
 # ‏screens_rounds.c, מוצהרים ב-screens_rounds.h), והקבצים המפוצלים — הגריד
-# ב-screens_room.c והרשימה הממתינה ב-screens_cloner.c — קוראים לו ואינם
-# מקפלים fail ל-ROOM_BAD בשום מקום אחר. הקונסולה נבדקת באותה צורה — המיפוי
+# ב-screens_room.c וכרטיסי המשכפל ב-screens_cloner.c — קוראים לו ואינם
+# מקפלים fail לאדום בשום מקום אחר. ‏#1090: שלושת הצבעים הם טוקני ה-Theme
+# (‏danger/warn/led_ok = ‏--clr-danger/--clr-warning/--clr-success של הקונסולה),
+# ואין יותר ROOM_BAD/ROOM_WARN מקומיים. הקונסולה נבדקת באותה צורה — המיפוי
 # ב-CSS/JS הוא טקסט. בקרה שלילית: לפני המיזוג ‏idle_smart_color/room_disk_healthy
 # מקפלים warn/fail/failed_last לאדום, ואין failed_last בקונסולה.
 
@@ -878,8 +1007,11 @@ GUI_SRC = REPO / "native-gui" / "src"
 
 
 def _c_function(src: str, name: str) -> str:
-    start = src.index(f" {name}(")
-    return src[start:src.index("\n}\n", start)]
+    """גוף ההגדרה של הפונקציה (רשימת פרמטרים ואז `{`) — לא אתר קריאה."""
+    import re
+    m = re.search(r"[ *]" + re.escape(name) + r"\([^;{)]*\)\s*\{", src)
+    assert m, f"{name}() is not defined here"
+    return src[m.start():src.index("\n}\n", m.start())]
 
 
 def test_the_gui_maps_the_three_colours_in_one_place():
@@ -889,33 +1021,47 @@ def test_the_gui_maps_the_three_colours_in_one_place():
     assert '"fail") || !strcmp(smart, "warn")) return 1' in level
     assert "return 0;" in level                             # ok/unchecked/כל השאר
     body = _c_function(src, "smart_color")
-    assert "lvl == 2 ? ROOM_BAD : lvl == 1 ? ROOM_WARN : t->led_ok" in body
-    # אין מיפוי שני: הגריד (screens_room.c) והרשימה הממתינה (screens_cloner.c)
-    # קוראים לאותה פונקציה, ואף קובץ אינו מחזיק עותק של הכלל.
+    assert "lvl == 2 ? t->danger : lvl == 1 ? t->warn : t->led_ok" in body
+    # אין מיפוי שני: הגריד (screens_room.c — תא המגירה בהגדרה והבר בסבב חי)
+    # וכרטיס הדיסק הממתין (screens_cloner.c) קוראים לאותה פונקציה, ואף קובץ
+    # אינו מחזיק עותק של הכלל או פלטה מקומית.
     room = (GUI_SRC / "screens_room.c").read_text(encoding="utf-8")
     cloner = (GUI_SRC / "screens_cloner.c").read_text(encoding="utf-8")
     for text in (src, room, cloner):
         assert "room_disk_healthy" not in text and "idle_smart_color" not in text
-    assert room.count("smart_color(t,") == 1
-    assert cloner.count("smart_color(t,") == 1
+        assert "ROOM_BAD" not in text and "ROOM_WARN" not in text
+    for text in (room, cloner):
+        assert text.count("smart_color(t,") >= 1
+        assert "Rgb smart_color(" not in text and "int smart_level(" not in text
     assert "smart_level(m->room_drawers[i].smart)" in room   # נקודת המכונה: לא-ירוק = אזהרה
 
 
 def test_the_gui_says_unchecked_in_words_next_to_a_green_dot():
-    src = (GUI_SRC / "screens_cloner.c").read_text(encoding="utf-8")
-    assert '!strcmp(d->smart, "unchecked")   ? " · לא נבדק"' in src
+    """‏unchecked נאמר במילים — "לא נבדק" ב-`smart_he`, שתא "בריאות" בכרטיס
+    הדיסק מציג — ונצבע ירוק: ‏`smart_level` אינו מכיר אותו ולכן הוא רמה 0
+    כמו passed. "לא הצלחנו לבדוק" מוצג, לא מוסתר (עיקרון 5)."""
+    cloner = (GUI_SRC / "screens_cloner.c").read_text(encoding="utf-8")
+    he = _c_function(cloner, "smart_he")
+    assert '!strcmp(smart, "unchecked")) return "לא נבדק"' in he
+    assert "smart_he(idle->smart)" in cloner                 # תא הבריאות מציג את המילה
+    rounds = (GUI_SRC / "screens_rounds.c").read_text(encoding="utf-8")
+    assert "unchecked" not in _c_function(rounds, "smart_level")   # נופל ל-return 0 = ירוק
 
 
 def test_the_gui_panel_offers_replace_or_continue_only_on_a_red_disk():
     """אדום = החלף / המשך (שני כפתורים, "המשך" שולח skip); כתום נשאר עם
-    שלושה. הסוכן ממילא אינו מקבל rescue על אדום (test_smart) — אבל המסך
-    לא מציע מה שלא יתקבל."""
+    שלושה ("כתוב בכל זאת" = rescue). הסוכן ממילא אינו מקבל rescue על אדום
+    (test_smart) — אבל המסך לא מציע מה שלא יתקבל. ‏#1090: הכפתורים יושבים
+    בשורה מתחת לשלושת הכרטיסים (`screen_cloner`), לא בפאנל."""
     src = (GUI_SRC / "screens_cloner.c").read_text(encoding="utf-8")
-    assert 'int red = panel && !strcmp(s->smart_verdict, "failed_last");' in src
-    assert "int nbtn = red ? 2 : 3;" in src
-    assert 'if (red) sp_btn[1] = btn_label(cr, "המשך");' in src
-    assert "red ? HIT_SMART_SKIP : HIT_SMART_RESCUE" in src
-    assert "i < nbtn" in src
+    fn = _c_function(src, "screen_cloner")
+    assert 'int red = !strcmp(a->st.smart_verdict, "failed_last");' in fn
+    guarded = fn[fn.index("if (!red) {"):]
+    guarded = guarded[:guarded.index("\n        }")]          # סוגר הבלוק, לא ה-`}` של (Rect){…}
+    assert '"כתוב בכל זאת"' in guarded and "HIT_SMART_RESCUE" in guarded   # rescue רק כשלא אדום
+    assert fn.count("HIT_SMART_RESCUE") == 1
+    assert 'red ? "המשך" : "דלג"' in fn and "HIT_SMART_SKIP" in fn
+    assert '"החלף דיסק"' in fn and "HIT_SMART_REPLACE" in fn
 
 
 def test_the_console_paints_failed_last_red_and_fail_orange():

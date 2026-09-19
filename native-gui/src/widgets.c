@@ -37,17 +37,18 @@ void draw_btn(App *a, cairo_t *cr, Rect b, Text *label, int kind, int id) {
     int hov = hovered(a, b);
     Rgb bg, line, fg;
     if (kind == BTN_PRIMARY) {
-        bg = hov ? t->ink_hover : t->indigo; line = t->btn_hover_line; fg = t->on_ink;
+        bg = hov ? t->ink_hover : t->indigo; line = bg; fg = t->on_ink;
     } else if (kind == BTN_SUCCESS) {
-        /* .native-btn.success: no :hover rule of its own in the mockup */
         bg = t->success_btn; line = t->success_btn_line; fg = t->on_ink;
+    } else if (kind == BTN_DANGER) {
+        bg = t->danger; line = t->danger; fg = t->on_ink;
     } else {
-        bg = kind == BTN_DANGER ? t->danger_bg : (hov ? t->btn_hover : t->button);
-        line = hov ? t->btn_hover_line : (kind == BTN_DANGER ? t->danger_line : t->button_line);
-        fg = kind == BTN_DANGER ? t->danger : t->ink;
+        bg = hov ? t->btn_hover : t->surface;
+        line = hov ? t->indigo : t->button_line;
+        fg = t->indigo;
     }
-    draw_fill_rrect(cr, b, RADIUS_SM, bg);
-    draw_border_rrect(cr, b, RADIUS_SM, line, 1);
+    draw_fill_rrect(cr, b, t->radius, bg);
+    draw_border_rrect(cr, b, t->radius, line, 1);
     text_draw(cr, label, b.x + (b.w - label->w) / 2, b.y + (b.h - label->h) / 2, fg);
     hit_add(a, b, id);
 }
@@ -205,45 +206,41 @@ Head head_make(cairo_t *cr, const char *h3, const char *p, double inner_w) {
     hd.h3 = rtl_block_make(cr, N_TITLE, 500, h3, inner_w);
     hd.p = rtl_block_make(cr, N_SUB, 400, p, inner_w);
     hd.logo = 0;
-    hd.h = N_PAD + hd.h3.h + N_TITLE_GAP + hd.p.h;
+    hd.h = 28 + hd.h3.h + N_TITLE_GAP + hd.p.h + 12 + N_BORDER + N_ACTION_TOP;
     return hd;
 }
 
 /* .native-logo above the title (login, menu): 56px box + margin-bottom 16 */
-void head_logo(Head *hd) { hd->logo = 1; hd->h += N_LOGO + N_LOGO_GAP; }
+void head_logo(Head *hd) { hd->logo = 1; }
 
 double card_width(double W) {
-    return fmin(N_PANEL_W, (W - 2 * N_CENTER_PAD) * N_PANEL_RATIO);
+    return W;
 }
 
 static void head_draw(cairo_t *cr, const Theme *t, Head *hd, Rect card) {
-    double y = card.y + N_PAD;
-    if (hd->logo) {
-        draw_native_icon(cr, t, (Rect){ card.x + card.w - N_PAD - N_LOGO, y, N_LOGO, N_LOGO }, ICON_NETWORK);
-        y += N_LOGO + N_LOGO_GAP;
-    }
+    double y = card.y + 28;
+    (void)hd->logo;
     if (!hd->h3.layout) return;                 /* a screen that draws its own head (progress) */
     text_draw(cr, &hd->h3, card.x + N_PAD, y, t->ink);
     text_draw(cr, &hd->p, card.x + N_PAD, y + hd->h3.h + N_TITLE_GAP, t->muted);
+    double line_y = y + hd->h3.h + N_TITLE_GAP + hd->p.h + 12;
+    cairo_rectangle(cr, card.x + N_PAD, line_y, card.w - 2 * N_PAD, N_BORDER);
+    draw_set(cr, t->hair); cairo_fill(cr);
     text_free(&hd->h3); text_free(&hd->p);
 }
 
 Rect card_frame(App *a, cairo_t *cr, double W, double H, double head_h, Head *hd,
                 double body_h, double foot_h, Rect *body, Rect *foot) {
+    (void)body_h;
     const Theme *t = a->theme;
-    double cw = card_width(W);
-    double available = H - head_h - N_STATUS_H - 2 * N_CENTER_PAD;
-    double ch = fmin(available, hd->h + body_h + foot_h + N_PAD);
-    Rect card = { (W - cw) / 2, head_h + N_CENTER_PAD + (available - ch) / 2, cw, ch };
-    draw_box_shadow(cr, card, RADIUS_R, N_SHADOW_Y, N_SHADOW_BLUR, 0,
-                    t->shadow_strong, t->shadow_strong_a);
-    draw_fill_rrect(cr, card, RADIUS_R, t->surface);
-    draw_border_rrect(cr, card, RADIUS_R, t->hair, N_BORDER);
+    double cw = W;
+    double ch = H - head_h - N_STATUS_H;
+    Rect card = { 0, head_h, cw, ch };
     cairo_save(cr);
-    draw_rrect_path(cr, card, RADIUS_R); cairo_clip(cr);
+    cairo_rectangle(cr, card.x, card.y, card.w, card.h); cairo_clip(cr);
     head_draw(cr, t, hd, card);
-    *body = (Rect){card.x, card.y + hd->h, cw, fmax(0, ch - hd->h - foot_h - N_PAD)};
-    *foot = (Rect){card.x, card.y + ch - foot_h - N_PAD, cw, foot_h};
+    *body = (Rect){card.x, card.y + hd->h, cw, fmax(0, ch - hd->h - foot_h - 24)};
+    *foot = (Rect){card.x, card.y + ch - foot_h - 24, cw, foot_h};
     return card;
 }
 
@@ -306,6 +303,78 @@ void draw_native_icon(cairo_t *cr, const Theme *t, Rect box, int kind) {
     cairo_stroke(cr); cairo_restore(cr);
 }
 
+void draw_brand_mark(cairo_t *cr, const Theme *t, Rect box) {
+    Rgb bg = t->header;
+    draw_fill_rrect(cr, box, box.w * .19, bg);
+    if (t == &THEME_DARK) draw_border_rrect(cr, box, box.w * .19, t->art_server, 1);
+    double x = box.x + box.w * .27, w = box.w * .46;
+    draw_fill_rrect(cr, (Rect){x, box.y + box.h * .31, w, box.h * .115}, 3, t->art_c);
+    draw_fill_rrect(cr, (Rect){x + w * .45, box.y + box.h * .58, w * .55, box.h * .115}, 3, t->warn);
+}
+
+/* The approved login illustration, expressed in Cairo rather than SVG: the
+ * same 800x900 coordinate system, server, multicast branches and machines. */
+void draw_station_art(cairo_t *cr, const Theme *t, Rect box, double opacity) {
+    static const int machines[][5] = {
+        {88,380,0,0,1},{258,380,0,1,0},{428,380,1,0,0},{578,380,0,0,2},
+        {88,560,0,0,-1},{258,560,1,0,0},{428,560,0,0,1},{578,560,0,1,0}
+    };
+    cairo_save(cr);
+    cairo_rectangle(cr, box.x, box.y, box.w, box.h); cairo_clip(cr);
+    cairo_translate(cr, box.x, box.y);
+    cairo_scale(cr, box.w / 800.0, box.h / 900.0);
+    cairo_push_group(cr);
+    draw_fill_rrect(cr, (Rect){0,0,800,900}, 0, t->art_bg);
+    for (int y = 8; y < 900; y += 90) for (int x = 8; x < 800; x += 100) {
+        draw_fill_rrect(cr, (Rect){x,y,84,74}, 3, t->art_a);
+        draw_fill_rrect(cr, (Rect){x+10,y+12,64,8}, 2, t->art_b);
+        draw_fill_rrect(cr, (Rect){x+10,y+26,64,8}, 2, t->art_b);
+        draw_fill_rrect(cr, (Rect){x+10,y+40,40,8}, 2, t->art_c);
+    }
+    draw_set_a(cr, t->art_bg, .55); cairo_rectangle(cr,0,0,800,900); cairo_fill(cr);
+    draw_set_a(cr, t->art_bg, .60);
+    cairo_move_to(cr,0,0); cairo_line_to(cr,800,0); cairo_line_to(cr,800,300); cairo_close_path(cr); cairo_fill(cr);
+    draw_fill_rrect(cr,(Rect){560,120,120,30},3,t->art_server);
+    draw_rrect_path(cr,(Rect){560,156,120,30},3);
+    draw_set_a(cr,t->art_server,.7); cairo_fill(cr);
+    cairo_arc(cr,572,135,3,0,2*M_PI); draw_set(cr,t->warn); cairo_fill(cr);
+    cairo_arc(cr,572,171,3,0,2*M_PI); draw_set(cr,t->art_c); cairo_fill(cr);
+    cairo_set_line_width(cr,1.5); draw_set(cr,t->art_line);
+    cairo_move_to(cr,620,190); cairo_line_to(cr,620,330); cairo_stroke(cr);
+    const double dash[] = {6,8}; cairo_set_dash(cr,dash,2,0);
+    cairo_move_to(cr,620,330); cairo_line_to(cr,130,330);
+    for (int x = 130; x <= 620; x += (x == 470 ? 150 : 170)) {
+        cairo_move_to(cr,x,330); cairo_line_to(cr,x,800);
+    }
+    cairo_stroke(cr); cairo_set_dash(cr,NULL,0,0);
+    for (size_t k=0;k<sizeof machines/sizeof machines[0];k++) {
+        int x=machines[k][0], y=machines[k][1];
+        draw_fill_rrect(cr,(Rect){x,y,84,74},3,t->art_b);
+        for (int i=0;i<3;i++) {
+            int state=machines[k][2+i]; if (state<0) continue;
+            Rgb c=state==1?t->led_ok:state==2?t->warn:t->art_c;
+            draw_rrect_path(cr,(Rect){x+10,y+12+i*14,i==2?40:64,8},2);
+            draw_set_a(cr,c,state? .55:1); cairo_fill(cr);
+        }
+    }
+    cairo_pop_group_to_source(cr); cairo_paint_with_alpha(cr,opacity);
+    cairo_restore(cr);
+}
+
+double draw_pill(cairo_t *cr, const Theme *t, double right, double y,
+                 const char *label, int kind, int dot) {
+    Rgb bg = kind == PILL_OK ? t->success_soft : kind == PILL_WARN ? t->warning_soft
+           : kind == PILL_BAD ? t->danger_soft : kind == PILL_INFO ? t->info_soft : t->hover;
+    Rgb fg = kind == PILL_OK ? t->led_ok : kind == PILL_WARN ? t->warn
+           : kind == PILL_BAD ? t->danger : kind == PILL_INFO ? t->info : t->muted;
+    Text v=text_make(cr,FONT_SANS,12,600,label,0,DIR_RTL);
+    double w=v.w+20+(dot?13:0), x=right-w;
+    draw_fill_rrect(cr,(Rect){x,y,w,24},12,bg);
+    text_draw_r(cr,&v,right-10,y+(24-v.h)/2,fg);
+    if(dot){ cairo_arc(cr,x+10+3.5,y+12,3.5,0,2*M_PI); draw_set(cr,fg); cairo_fill(cr); }
+    text_free(&v); return w;
+}
+
 /* repeating-linear-gradient(110deg, a 0 <p1>, b <p1> <period>) as a cairo
  * pattern; b_alpha 0 makes the second band transparent. */
 static void stripes(cairo_t *cr, Rect clip_r, Rgb a, double a_alpha, double p1,
@@ -337,9 +406,9 @@ void draw_big_bar(cairo_t *cr, const Theme *t, Rect r, int pct, int moving) {
         double w = r.w * (pct > 100 ? 100 : pct) / 100.0;
         if (w > 0) draw_fill_rrect(cr, (Rect){ r.x, r.y, w, r.h }, RADIUS_SM, t->led_write);
     } else if (moving) {
-        stripes(cr, (Rect){ r.x, r.y, r.w * 0.40, r.h }, STRIPE_A, 1, 8, STRIPE_B, 1, 16);
+        stripes(cr, (Rect){ r.x, r.y, r.w * 0.40, r.h }, t->led_write, 1, 8, t->info, 1, 16);
     } else {
-        stripes(cr, r, STRIPE_IDLE, 0.25, 2, STRIPE_IDLE, 0, 8);
+        stripes(cr, r, t->bar_idle, 0.25, 2, t->bar_idle, 0, 8);
     }
     cairo_restore(cr);
 }
@@ -390,9 +459,11 @@ void draw_cls_bars(cairo_t *cr, const Theme *t, double x, double y, double w, in
 /* #toast: fixed bottom 22, centred; ink on on-ink; padding 10px 18px;
  * radius 10; 13px; box-shadow 0 10px 30px -8px shadow-strong */
 void draw_toast(App *a, cairo_t *cr, double W, double H) {
-    if (!a->toast[0]) return;
+    const char *message = a->toast[0] ? a->toast :
+                          a->st.stale ? "הסוכן לא מעדכן מצב" : NULL;
+    if (!message) return;
     const Theme *t = a->theme;
-    Text v = text_make(cr, FONT_SANS, 13, 400, a->toast, (int)(W * 0.8), DIR_RTL);
+    Text v = text_make(cr, FONT_SANS, 13, 400, message, (int)(W * 0.8), DIR_RTL);
     Rect b = { (W - (v.w + 36)) / 2, H - 22 - (v.h + 20), v.w + 36, v.h + 20 };
     draw_box_shadow(cr, b, 10, 10, 30, -8, t->shadow_strong, t->shadow_strong_a);
     draw_fill_rrect(cr, b, 10, t->ink);

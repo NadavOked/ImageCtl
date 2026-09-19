@@ -58,6 +58,11 @@ void foot_draw_bg(cairo_t *cr, const Theme *t, Rect foot);
 void draw_tray(cairo_t *cr, const Theme *t, double x, double y, int multi);
 enum { ICON_DISK, ICON_NETWORK, ICON_WARNING, ICON_SUCCESS };
 void draw_native_icon(cairo_t *cr, const Theme *t, Rect box, int kind);
+void draw_brand_mark(cairo_t *cr, const Theme *t, Rect box);
+void draw_station_art(cairo_t *cr, const Theme *t, Rect box, double opacity);
+enum { PILL_OK, PILL_WARN, PILL_BAD, PILL_INFO, PILL_OFF };
+double draw_pill(cairo_t *cr, const Theme *t, double right, double y,
+                 const char *label, int kind, int dot);
 double metric_height(cairo_t *cr);
 void draw_metric(cairo_t *cr, const Theme *t, Rect box, const char *label, const char *value);
 /* .bar.big-bar with a Progress.view state: pct 0..100, or -1 unknown

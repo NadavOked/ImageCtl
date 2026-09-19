@@ -1,0 +1,113 @@
+# tools/iso/packages.txt — כל חבילת apt שה-ISO חייב לשאת (#1139).
+#
+# זה **האיחוד** של ארבע רשימות שחיות בקבצים אחרים, ואף אחת מהן אינה
+# מועתקת לכאן ביד: ‏tests/test_iso_build.py קורא את המקורות עצמם ונופל
+# אם חבילה נוספה שם ולא כאן (או להפך). הלקח של R25: ההתקנה offline
+# נכשלת על החבילה הראשונה שחסרה ב-pool, ואיש לא יגלה זאת עד מול שרת
+# אמיתי בלי אינטרנט.
+#
+# מקורות (אותו שם בדיוק, כמו ב-apt):
+#   [installer]  PKGS=(...)              install/setup-boot-server.sh
+#   [initramfs]  apt-get install ...     tools/build_initramfs.sh (הבסיס)
+#   [gui]        GUI_PACKAGES=(...)      tools/build_initramfs.sh (--with-gui)
+#   [gui-build]  make pkg-config *-dev   tools/build_initramfs.sh (--with-gui)
+#   [toolbox]    TOOL_PKG=(...)          tools/build_initramfs.sh (--tools-selection)
+#   [iso]        מה שרק ה-ISO מוסיף — ראה הסבר ליד כל אחת
+#
+# שורה = חבילה אחת. `#` פותח הערה. ‏make-pool.sh מוריד את כולן **עם
+# התלויות**; ‏build-iso.sh כותב אותן ל-`pkgsel/include` ב-preseed.
+# ‏fonts-ibm-plex יושבת ב-**contrib** (#120) — ה-pool כולל main+contrib.
+
+# --- [installer] install/setup-boot-server.sh · PKGS ---------------------
+shim-signed
+grub-efi-amd64-signed
+grub-pc-bin
+dnsmasq
+python3-fastapi
+python3-uvicorn
+python3-qrcode
+python3-websockets
+python3-cryptography
+python3-openssl
+open-iscsi
+nfs-common
+cifs-utils
+
+# --- [initramfs] tools/build_initramfs.sh · הבסיס -------------------------
+busybox-static
+zstd
+partclone
+udpcast
+gdisk
+curl
+jq
+pv
+ntfs-3g
+libhivex-dev
+hdparm
+coreutils
+util-linux
+openssl
+e2fsprogs
+btrfs-progs
+xfsprogs
+cpio
+gzip
+gcc
+libc6-dev
+dropbear-bin
+ethtool
+smartmontools
+dmidecode
+efibootmgr
+
+# --- [gui] tools/build_initramfs.sh · GUI_PACKAGES (--with-gui) -----------
+fonts-ibm-plex
+fontconfig-config
+libpango-1.0-0
+libpangocairo-1.0-0
+libpangoft2-1.0-0
+libcairo2
+libpixman-1-0
+libharfbuzz0b
+libfribidi0
+libfreetype6
+libfontconfig1
+libglib2.0-0t64
+libdrm2
+libvncserver1
+
+# --- [gui-build] tools/build_initramfs.sh · כלי הקומפילציה של הקיוסק ------
+make
+pkg-config
+libpango1.0-dev
+libcairo2-dev
+libdrm-dev
+libvncserver-dev
+
+# --- [toolbox] tools/build_initramfs.sh · TOOL_PKG (--tools-selection) -----
+nvme-cli
+nwipe
+tpm2-tools
+chntpw
+testdisk
+scalpel
+foremost
+extundelete
+magicrescue
+recoverjpeg
+squashfs-tools
+libarchive-tools
+gddrescue
+safecopy
+dosfstools
+
+# --- [iso] מה שרק ה-ISO מוסיף ----------------------------------------------
+# הקרנל של דביאן — **לא** cloud: ‏build_initramfs.sh מסרב לקרנל cloud (#904).
+linux-image-amd64
+# **אין openssh-server בכוונה** — הכרעת נדב 19/09: אין SSH על השרת האמיתי;
+# ‏SSH הוא כלי טכנאי במעבדה, מותקן ידנית אחרי ההתקנה, לא מה-ISO.
+# חומת האש — המתקין מתקין אותה בנפרד מ-PKGS (setup-boot-server.sh, R20-F1).
+nftables
+# ה-CLI של sqlite — ‏server/db.py עובד דרך python3 (מובנה), הכלי הוא לניפוי.
+sqlite3

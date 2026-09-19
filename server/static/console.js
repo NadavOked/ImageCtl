@@ -547,9 +547,10 @@ function loginMfaHtml(state) {
 }
 
 function loginSetupHtml(state) {
+  // ‏#1150: בלי svg = python3-qrcode חסר בשרת. אומרים זאת בשם, לא מסתירים.
   const qr = state.svg
     ? `<div class="qr" aria-label="קוד QR להגדרת האפליקציה">${state.svg}</div>`
-    : "";
+    : `<p class="msg" role="alert">${LOGIN_ALERT_ICON}<span>אין QR — החבילה python3-qrcode חסרה בשרת; הקלד את הסוד ידנית</span></p>`;
   const url = state.otpauth || "";
   return `<form id="setup-form">
     <h1 class="title sub">הגדרת אימות דו-שלבי</h1>

@@ -51,12 +51,8 @@ void draw_box_shadow(cairo_t *cr, Rect r, double rad, double dy,
 }
 
 void draw_station_background(cairo_t *cr, const Theme *t, double w, double h) {
-    /* .native-screen linear-gradient(180deg). */
-    cairo_pattern_t *p = cairo_pattern_create_linear(0, 0, 0, h);
-    cairo_pattern_add_color_stop_rgb(p, 0, t->login_a.r, t->login_a.g, t->login_a.b);
-    cairo_pattern_add_color_stop_rgb(p, 1, t->login_b.r, t->login_b.g, t->login_b.b);
     cairo_rectangle(cr, 0, 0, w, h);
-    cairo_set_source(cr, p); cairo_fill(cr); cairo_pattern_destroy(p);
+    draw_set(cr, t->porcelain); cairo_fill(cr);
 }
 
 void draw_led(cairo_t *cr, double cx, double cy, double d, Rgb c) {

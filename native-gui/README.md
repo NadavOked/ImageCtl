@@ -221,6 +221,10 @@ menu_class=<0/1>
 # restore screen's typed confirmation. Always written; empty = no start.
 machine_name=<name>
 
+# #1090 standby heartbeat (positive evidence from the latest hello)
+hello_age=<seconds>                  # age of the last completed hello
+hello_rc=<HTTP status>               # response code observed for that hello
+
 # #st-room (GET /api/console/room) and #st-class live rows
 image=<id>|<name>|<folder>          # /api/console/images
 machine=<name>|<mac>|<awake>|<joined>|<fresh_drawers>|<state>|<pct>|<moving>|<error>
@@ -242,6 +246,13 @@ session=<image_name>|<prefix>|<group_label>|<open 0/1>|<joined>|<expected>|<star
 form_error=  room_error=  class_error=   # the .error line of each card
 toast=<text>                             # shown for 2.6 s on every reload that carries it
 ```
+
+Every physical record must end in `\n`. An unterminated or overlong record is
+rejected whole (never kept as a possibly broken UTF-8 prefix), reported once on
+stderr, and flagged on screen. Rows beyond `MAX_DISKS` / `MAX_MACHINES` are
+also counted and shown as “+N more, not shown”. A loaded state file older than
+10 seconds remains the last snapshot but is marked stale with the toast
+“הסוכן לא מעדכן מצב”.
 
 `machine=` rows serve both the room (`awake`/`fresh_drawers`/`joined`/`state`
 per `room.js machineRows`, states `writing verifying waiting done failed
@@ -330,44 +341,36 @@ then XRGB8888 rows — is the contract in `docs/interfaces.md` §15.
 ### `--png`: every card, for comparing with the HTML
 
 ```sh
-make png                      # out/station-<card>-{light,dark}.png, 20 files, sample data
+make png                      # out/station-<card>-{light,dark}.png, 34 files, sample data
 make png STATE=/tmp/state.txt # the same cards from a real state file
 ```
 
 Cards: `login menu pick progress done room room-live class class-live
-cloner message restore direct`. The renderer puts the App into the state that *routes* to each
+cloner standby message restore direct tools tools-confirm tools-output`. The renderer puts the App into the state that *routes* to each
 card and fails if the route landed elsewhere — so `make png` also exercises
 the routing rule. The sample data has two disks (one chosen, the form open
 with a name typed), two folders, two images, three cloner machines (one
 writing at 42%, one done, one off), three classes (one with no machines,
 drawn dim), a wave-2 round 7/24 and a class round 3/14 opening in 4:32.
 
-### #828: the mockup is the design source now
+### #1090: the approved mockup and console tokens are the design source
 
-Since #828 the look is `docs/design/native-gui-mockup-2026-09-13.html`
-(the owner's 11 native screens), not the console CSS: every colour and
-size in `theme.c` cites a `.native-*` rule (`css: selector | prop | index`)
-or an inline style of one screen function (`html: nativeProgress |
-font-size | 0`), and `tests/test_native_gui_theme.py` reads the mockup and
-fails on any drift. Light is a derived palette pinned in the same test. What
-the mockup shows that the state file cannot feed (SMART attributes per
-disk, rate/ETA, image size/UEFI/SHA status, "דלג"/"בדוק שוב"/"אתחל
-עכשיו"/"עצור כתיבה" buttons with no stdout record) is **not drawn** -- the
-per-screen gap map is `docs/design/native-gui-redesign-status.md`. The
-status bar's word ("ממתין לאימות", "כותב 3 דיסקים במקביל") is derived from
-the screen itself, not a new state key. 1 CSS px = 1 pixel, as before.
+For #1090 the approved source is
+`docs/design/native-gui-mockup-2026-09-18.html`. Its colours
+are the console tokens from `server/static/design-tokens.css`; every colour and
+size in `theme.c` cites its mockup rule (`css: selector | prop | index`), and
+`tests/test_native_gui_theme.py` reads both light `:root` and dark
+`:root[data-theme="dark"]` values and fails on drift. Neither theme is derived.
+The status-bar word ("ממתין לאימות", "כותב 3 דיסקים במקביל") is derived from
+the current screen, not a state key. 1 CSS px = 1 framebuffer pixel.
 
 ### What matches the HTML, and where it does not
 
-Every dimension, colour, radius, padding and text is taken from
-`console.css`/`station.css`/`progress.css`/`index.html`/`station.js`/
-`room.js`/`classes.js` and cited next to its use; the tokens are one table in
-`theme.c`. Default theme is light; the header stays white/#8FA0B2 on the dark
-gradient in both themes, as the CSS has it. Hover states, focus ring, the
-password eye, `tray-multi`, the LED glow, `.disk-card.sel`, `.menu-card.dim`
-and `.room-row.dim` (opacity .55), the three status colours (`room-ok`,
-`room-bad #E5484D`, `room-warn #B36B00`), the big bar's three states and
-`#toast` are all there.
+The default theme is dark. The 48px header remains dark in both themes, like
+the console app shell; the body uses the selected console tokens. The login
+screen has no app header and uses the approved split form/illustration layout.
+The only aspect-ratio branches are the room's 6/4 columns, the cloner's 88/64px
+percentage, and the restore image grid's 2/1 columns.
 
 1. **Theme button glyph.** `station.js` sets `☾`/`☀`; IBM Plex has neither
    code point and the initramfs carries no other font, so the button would
@@ -376,10 +379,11 @@ and `.room-row.dim` (opacity .55), the three status colours (`room-ok`,
    translucent layers. Same colour, same offset, softer edge.
 3. **Theme persistence.** The browser remembers the choice in localStorage;
    here it lives for the process (`--theme dark` to start dark).
-4. **The restore card.** Three cards in `index.html`, four here (#382), same
-   `.menu-card` numbers. Shown to the deploy role like room/classes; `show[]`
-   in `screens.c` is the one line that flips it (`visible_cards` in `main.c`
-   assumes only the first card is gated, so flip both together).
+4. **Unavailable measurements.** The current state protocol has no per-disk
+   rate/ETA or SMART attributes 5/197/199, so those cells show `—`; Health uses
+   the available SMART verdict. Likewise, a room node cannot accept the
+   per-machine “המשך?” answer until `machine=` carries a nonce and response
+   target (the approved mockup records this protocol gap explicitly).
 5. **The `<select>` list.** The browser's dropdown is a native widget outside
    the CSS; here it is a list in the page's language (surface, hair border,
    14px rows, indigo-soft for the chosen one) below the box, closed by a

@@ -194,6 +194,45 @@ cmp /tmp/i /srv/imagectl/boot/initrd.img && echo "זהה"
 
 ---
 
+## התקנה מ-ISO (#1139)
+
+שני השלבים למעלה — המתקין ואז הקרנל וה-initrd — ארוזים ב-ISO אחד
+שמתקין **גם את דביאן**: `tools/iso/` (ראו את ה-README שם). ‏ISO אחד,
+‏UEFI עם Secure Boot וגם BIOS, **בלי אינטרנט** בזמן ההתקנה — ה-netinst
+הרשמי של דביאן 13 + preseed + ‏pool/ עם כל החבילות ותלויותיהן + הקוד.
+
+```bash
+# על דביאן 13 עם אינטרנט (שרת המעבדה), פעם אחת לגרסה:
+sudo tools/iso/make-pool.sh --out /root/ic-iso-tmp/repo
+sudo IMAGECTL_ROOT_PASSWORD='...' tools/iso/build-iso.sh \
+     --out /root/ic-iso-tmp --pool /root/ic-iso-tmp/repo --ref v0.48.0
+# → imagectl-v0.48.0-amd64.iso + SHA256SUMS
+```
+
+**מה קורה כשמאתחלים שרת ממנו:**
+
+| שלב | מה | מי רואה |
+|---|---|---|
+| תפריט | "ImageCtl server install (wipes the first disk)" מסומן; **ממתין ל-Enter** — אין timeout שמתחיל מחיקה לבד. ערך שני: שרת משני | המסך |
+| ‏d-i | דביאן על **הדיסק הראשון שאינו USB**, בלי שאלות: ‏`imagectl-server`, ‏root בלבד (הסיסמה מהבנייה, מוחלפת בכניסה הראשונה), החבילות מה-ISO | המסך |
+| ‏`late_command` | הקוד → `/opt/imagectl-src`; ‏`/etc/imagectl/installer-nic` = הכרטיס ש-d-i הגדיר (שם + MAC); ‏`installer-role`; ‏`iso-release.json` | — |
+| אתחול ראשון | ‏`imagectl-firstboot`: בונה `initrd.img` + `initrd.img.gui`, מעתיק `vmlinuz`, ואז **המתקין למעלה** עם `--servers-if <הכרטיס מההתקנה>` — בלי `--deploy-if` (רשת ההפצה: "לא עכשיו", ‏dnsmasq כבוי), ובסוף `verify-boot-payload.sh` | המסך + `journalctl -u imagectl-firstboot` |
+| הקונסולה | `https://<כתובת>:8081`, ‏admin/admin עם החלפה כפויה; רשת ההפצה מדף הרשת | הדפדפן |
+
+**האתחול הראשון אינו מנחש כרטיס.** הוא קורא את מה ש-d-i הגדיר ומאמת
+שה-MAC עדיין על כרטיס קיים. אם d-i לא הגדיר רשת, או שה-MAC נעלם —
+‏`/etc/imagectl/firstboot.status` אומר `network-nic-undecidable`, היחידה
+אדומה, **והמתקין לא רץ** (בלי הדגל הוא שואל, ואין מי שיענה). ההשלמה:
+מהאשף (#910), או ידנית — `sudo bash /opt/imagectl-src/install/
+setup-boot-server.sh --servers-if <כרטיס>`. "הבדיקה עצמה לא רצה" הוא
+מצב שלישי (`check-error`), לא "אין כרטיס".
+
+**מה עוד לא אומת (19/09):** אתחול מה-ISO ב-VM/ברזל; ‏Secure Boot בפועל;
+שרת משני (המתקין מחייב `--primary-url`, וה-ISO אינו יודע אותו —
+‏`imagectl.primary=<url>` בשורת האתחול, אחרת `secondary-needs-primary`).
+
+---
+
 ## מה בכוונה *לא* קורה בהתקנה
 
 **DHCP לא נדלק.** זו ההגדרה המסוכנת ביותר במערכת (אפיון סעיף 24) —

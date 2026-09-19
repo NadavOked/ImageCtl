@@ -35,6 +35,7 @@ enum {
     HIT_EYE,            /* #st-eye */
     HIT_SUBMIT,         /* .btn.primary "כניסה" */
     HIT_CAPTURE,        /* #st-menu-capture */
+    HIT_LOGOUT,         /* menu: local session logout */
     HIT_RESTORE,        /* restore to this machine's disk (#382; no HTML id yet) */
     HIT_ROOM,           /* #st-menu-room */
     HIT_DIRECT,         /* #715: deploy THIS disk directly to the room (native-only) */
@@ -97,7 +98,7 @@ typedef struct { Rect r; int id; } Hit;
 
 typedef enum {
     SCREEN_LOGIN, SCREEN_MENU, SCREEN_PICK, SCREEN_PROGRESS, SCREEN_DONE,
-    SCREEN_ROOM, SCREEN_CLASS, SCREEN_CLONER, SCREEN_MESSAGE, SCREEN_RESTORE,
+    SCREEN_ROOM, SCREEN_CLASS, SCREEN_CLONER, SCREEN_STANDBY, SCREEN_MESSAGE, SCREEN_RESTORE,
     SCREEN_TOOLS        /* #649 */
 } Screen;
 
@@ -192,6 +193,15 @@ typedef struct State {
     int smart_pending, smart_port;
     char smart_nonce[32], smart_verdict[16], smart_reason[96];
 
+    /* #1090: positive evidence from the agent's latest hello. -1 means the
+     * key was absent, which is different from a measured zero seconds/HTTP 0. */
+    int hello_age, hello_rc;
+
+    /* Parser integrity is visible, not only stderr: a partial picture must
+     * never look complete to the operator. */
+    int hidden_disks, hidden_machines, rejected_lines, stale;
+    char state_warning[160];
+
     char form_error[160], room_error[160], class_error[160], toast[160];
 } State;
 
@@ -226,6 +236,7 @@ typedef struct App {
     Mode mode;
     int force_progress;         /* --screen progress: show it even with no task */
     int force_cloner;           /* --screen cloner: the cloning machine's own screen */
+    int force_standby;          /* --screen standby / idle cloner */
     int watching;               /* #st-progress was on screen (drawDone trigger) */
     int showing_done;           /* stay on #st-done until "קליטה נוספת" */
     char done_title[64], done_sub[240];
@@ -310,6 +321,7 @@ void screen_message(App *a, cairo_t *cr, double W, double H, double head_h);
 void screen_room(App *a, cairo_t *cr, double W, double H, double head_h);
 void screen_class(App *a, cairo_t *cr, double W, double H, double head_h);
 void screen_cloner(App *a, cairo_t *cr, double W, double H, double head_h);
+void screen_standby(App *a, cairo_t *cr, double W, double H, double head_h);
 void screen_restore(App *a, cairo_t *cr, double W, double H, double head_h);
 void screen_tools(App *a, cairo_t *cr, double W, double H, double head_h);
 

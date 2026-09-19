@@ -31,3 +31,8 @@ websockets==15.0.1
 # ‏python3-cryptography 43.0.0 ו-python3-openssl 25.0.0 מותקנים ב-apt במתקין.
 cryptography==43.0.0
 pyOpenSSL==25.0.0
+# ‏#1150: QR במסך הגדרת ה-MFA (‏`console_mfa._qr_svg`, ‏SvgPathImage — בלי PIL).
+# הייבוא בתוך הפונקציה, ושרת בלעדיה מחזיר `svg: ""` ואומר זאת ביומן — אבל
+# הטסטים דורשים אותה (חסרה = כישלון, לא דילוג). מוצמד לגרסת דביאן 13
+# (trixie) — ‏python3-qrcode 8.2-1 מותקן ב-apt במתקין.
+qrcode==8.2

@@ -1,0 +1,20 @@
+# ImageCtl — האתחול הראשון אחרי התקנה מה-ISO (#1139, R25 §2.4).
+# ‏late-command.sh מתקין את היחידה ומפעיל אותה; firstboot.sh כותב
+# ‏/var/lib/imagectl/.firstboot-done בסיום — ומאז התנאי למטה מונע הרצה.
+# ‏oneshot, בלי Restart: כישלון נשאר אדום ב-`systemctl status`, ולא מוסתר
+# בניסיון חוזר. ‏TimeoutStartSec=0 — שתי בניות initrd הן דקות.
+[Unit]
+Description=ImageCtl first boot: build initrd, run setup-boot-server.sh
+ConditionPathExists=!/var/lib/imagectl/.firstboot-done
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/imagectl-firstboot
+TimeoutStartSec=0
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

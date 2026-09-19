@@ -138,6 +138,22 @@ def consume_backup(conn: sqlite3.Connection, username: str, code: str) -> bool:
     return False
 
 
+def _qr_svg(otpauth_url: str) -> str:
+    """‏QR של ה-URI כ-SVG inline (בלי `<?xml`), ל-`innerHTML` של הקונסולה.
+
+    ‏#1150: הייבוא בתוך הפונקציה — ‏python3-qrcode (דביאן 13: 8.2) מגיע
+    מהמתקין, ושרת שהותקן לפניו לא ייפול בכניסה; הוא מחזיר ‏`""` והקורא
+    אומר זאת בשם. ‏`SvgPathImage` אינו צריך PIL.
+    """
+    try:
+        import qrcode
+        import qrcode.image.svg as qsvg
+    except ImportError:
+        return ""
+    img = qrcode.make(otpauth_url, image_factory=qsvg.SvgPathImage)
+    return img.to_string(encoding="unicode")
+
+
 def register(router: APIRouter, ctx: ServerContext, current_user, admin_only, tls) -> None:
     """מוסיף את נתיבי ה-MFA לראוטר הקונסולה הקיים — מיזוג קל מול #1073."""
 
@@ -156,12 +172,15 @@ def register(router: APIRouter, ctx: ServerContext, current_user, admin_only, tl
                 " mfa_enrolled_at = NULL WHERE username = ?",
                 (secret, username),
             )
+        url = totp.otpauth_url(username, secret)
+        svg = _qr_svg(url)
+        # ‏#1150: "אין חבילה" נאמר בשם ביומן ובקונסולה — לא נקפל ל"הצלחה"
+        # (עיקרון 5). ההרשמה עצמה ממשיכה: הסוד וה-URI מספיקים להקלדה ידנית.
         journal(ctx.conn, "mfa_setup",
-                "בלי QR SVG — URI להקלדה ידנית", username)
-        return {
-            "secret": secret,
-            "otpauth_url": totp.otpauth_url(username, secret),
-        }
+                "QR SVG" if svg else
+                "python3-qrcode חסר בשרת — בלי QR, URI להקלדה ידנית",
+                username)
+        return {"secret": secret, "otpauth_url": url, "svg": svg}
 
     @router.post("/me/mfa/verify")
     async def mfa_verify(request: Request, user=Depends(current_user)):

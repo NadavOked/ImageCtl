@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ImageCtl — מוקאפ: הגואי של מחשב הבנייה והשיכפול (#1090)</title>
+<style>
+/* ImageCtl — מוקאפ הגואי הנייטיבי (#1090, 18/09): אותה שפת עיצוב כמו הקונסולה
+   (design-tokens.css) ומסך הכניסה החדש (login-mockup-2026-09-18.html), ועל
+   כל שטח המסך. הטוקנים מועתקים אחד-לאחד; כהה הוא ברירת המחדל (הגואי היום
+   כהה), בהיר ב-data-theme="light". סרגל המוקאפ הסגול אינו חלק מהמוצר.
+
+   הבמה (.stage) היא המסך הפיזי ברזולוציה מלאה — 1920×1080 או 1280×1024 —
+   ומוקטנת ב-transform כדי להיכנס לדפדפן; הפיקסלים בתוכה הם פיקסלי המסך. */
+:root,:root[data-theme="light"]{
+  color-scheme:light;
+  --clr-header:#25333D;--clr-header-hover:#31434F;--clr-header-text:#FFFFFF;
+  --clr-bg:#EEF1F5;--clr-surface:#FFFFFF;--clr-nav:#FFFFFF;
+  --clr-text:#313131;--clr-muted:#565656;--clr-border:#CDCDCD;
+  --clr-row-border:#E8E8E8;--clr-hover:#F2F2F2;--clr-row-hover:#F3F9FC;--clr-field:#FFFFFF;
+  --clr-action:#0079B8;--clr-action-hover:#006394;--clr-action-active:#004B70;--clr-action-soft:#E8F4FA;
+  --clr-success:#318700;--clr-danger:#E12200;--clr-warning:#C25400;--clr-info:#0079B8;
+  --clr-success-soft:#EAF4E5;--clr-danger-soft:#FCEDEA;--clr-warning-soft:#FFF2E3;--clr-info-soft:#E8F4FA;
+  --clr-off:#8C8C8C;
+  --font-ui:"Segoe UI","Assistant",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
+  --font-mono:ui-monospace,"Cascadia Mono","Segoe UI Mono",Consolas,monospace;
+  --r:4px;
+  --art-bg:#E4E9EF;--art-a:#CBD5DE;--art-b:#B4C3CF;--art-c:#9AADB8;--art-line:#7E93A1;--art-server:#25333D;
+  /* פסי הדיסקים (מלבני המכונות): מסלול + כתיבה + סיום */
+  --bar-track:#DCE5EB;--bar-write:#0079B8;--bar-done:#318700;--bar-idle:#B4C3CF;
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --clr-bg:#151a1f;--clr-surface:#1c232a;--clr-nav:#182028;
+  --clr-text:#e7edf2;--clr-muted:#a9b4bd;--clr-border:#35414b;
+  --clr-row-border:#303a42;--clr-hover:#25313a;--clr-row-hover:#202a31;--clr-field:#11181d;
+  --clr-action:#4c8fbd;--clr-action-hover:#64a6d2;--clr-action-active:#8dc3e6;--clr-action-soft:#223e50;
+  --clr-header:#26343f;--clr-header-hover:#30424e;
+  --clr-success:#5fbd7a;--clr-warning:#e1b34f;--clr-danger:#dc6b6b;--clr-info:#61b5b8;
+  --clr-success-soft:#1e3325;--clr-danger-soft:#3a2323;--clr-warning-soft:#33291a;--clr-info-soft:#1d3440;
+  --clr-off:#737373;
+  --r:3px;
+  --art-bg:#11181d;--art-a:#1c262e;--art-b:#26333d;--art-c:#33434f;--art-line:#4a5d6b;--art-server:#70a9cd;
+  --bar-track:#0e151a;--bar-write:#4c8fbd;--bar-done:#5fbd7a;--bar-idle:#33434f;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{font:400 14px/1.45 var(--font-ui);color:var(--clr-text);background:#0d1318;-webkit-font-smoothing:antialiased;overflow:hidden}
+button,input{font:inherit;color:inherit}
+button{cursor:pointer}
+.mono{font-family:var(--font-mono);direction:ltr;unicode-bidi:isolate}
+.hidden{display:none !important}
+.ui-icon{display:inline-block;width:16px;height:16px;flex:none;vertical-align:middle;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+
+/* ---------- סרגל המוקאפ (לא חלק מהמוצר) ---------- */
+.mockbar{height:36px;background:#7B2CBF;color:#fff;display:flex;align-items:center;gap:4px;padding:0 10px;font-size:12px;overflow:auto;direction:rtl;position:relative;z-index:20}
+.mockbar b{margin-inline-end:6px;white-space:nowrap}
+.mockbar button{height:24px;border:1px solid rgb(255 255 255 / 45%);background:transparent;color:#fff;border-radius:3px;padding:0 8px;font-size:12px;white-space:nowrap}
+.mockbar button.on{background:#fff;color:#7B2CBF;font-weight:600}
+.mockbar .sp{flex:1}
+.mockbar .grp{display:flex;gap:4px;margin-inline-start:10px;padding-inline-start:10px;border-inline-start:1px solid rgb(255 255 255 / 35%)}
+
+/* ---------- הבמה = המסך הפיזי ---------- */
+.viewport{position:absolute;inset:36px 0 0;display:grid;place-items:center;overflow:auto}
+.stage{width:1920px;height:1080px;transform-origin:center;background:var(--clr-bg);color:var(--clr-text);position:relative;overflow:hidden;box-shadow:0 0 0 1px #3a4851,0 20px 60px rgb(0 0 0 / 45%)}
+.stage.sq{width:1280px;height:1024px}
+.stage > .screen{display:none;position:absolute;inset:0}
+.stage > .screen.on{display:flex;flex-direction:column}
+
+/* header — כמו app-shell של הקונסולה: כהה תמיד, 48px */
+.hdr{height:48px;flex:none;background:var(--clr-header);color:var(--clr-header-text);display:flex;align-items:center;gap:22px;padding:0 24px;font-size:13px}
+.hdr .brand{display:flex;align-items:center;gap:10px;font-size:16px;font-weight:600}
+.hdr .brand span{direction:ltr;unicode-bidi:isolate}
+.mark{width:26px;height:26px;border-radius:5px;background:#111;position:relative;flex:none}
+.mark::before,.mark::after{content:"";position:absolute;inset-inline:7px;height:3px;border-radius:3px;background:#9AADB8}
+.mark::before{top:8px}.mark::after{top:15px;background:#C25400;width:8px;inset-inline-end:auto}
+:root[data-theme="dark"] .mark{background:#20303b;border:1px solid #70a9cd}
+.hdr .role{padding:2px 9px;border-radius:10px;background:rgb(255 255 255 / 14%);font-size:12px}
+.hdr .meta{display:flex;gap:18px;color:rgb(255 255 255 / 80%)}
+.hdr .meta .k{color:rgb(255 255 255 / 55%);margin-inline-end:5px}
+.hdr .sp{flex:1}
+.hdr .clock{font-family:var(--font-mono);font-size:14px;direction:ltr}
+
+/* statusbar — נשמר מהמוקאפ הישן: נקודה + מילת המסך */
+.sb{height:36px;flex:none;border-top:1px solid var(--clr-border);background:var(--clr-nav);display:flex;align-items:center;justify-content:space-between;padding:0 24px;font-size:12px;color:var(--clr-muted)}
+.sb .st{display:flex;align-items:center;gap:7px;color:var(--clr-text)}
+.sb .st i{width:8px;height:8px;border-radius:50%;background:var(--clr-success);flex:none}
+.sb .st i.warn{background:var(--clr-warning)}.sb .st i.idle{background:var(--clr-off)}
+.sb .keys{display:flex;gap:14px}
+kbd{font-family:var(--font-mono);font-size:11px;border:1px solid var(--clr-border);border-radius:3px;padding:0 5px;background:var(--clr-field);color:var(--clr-text);direction:ltr;display:inline-block;line-height:17px}
+
+/* גוף המסך — על כל השטח, שוליים 32px, בלי כרטיס ממורכז */
+.body{flex:1;min-height:0;padding:28px 32px 24px;display:flex;flex-direction:column;gap:18px}
+.ph{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;border-bottom:1px solid var(--clr-border);padding-bottom:12px}
+.ph h1{font-size:24px;font-weight:600;line-height:1.2}
+.ph p{color:var(--clr-muted);font-size:13px;margin-top:3px}
+.ph .right{display:flex;gap:10px;align-items:center}
+.pill{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px;border-radius:12px;font-size:12px;font-weight:600;border:1px solid transparent}
+.pill.ok{background:var(--clr-success-soft);color:var(--clr-success)}
+.pill.warn{background:var(--clr-warning-soft);color:var(--clr-warning)}
+.pill.bad{background:var(--clr-danger-soft);color:var(--clr-danger)}
+.pill.info{background:var(--clr-info-soft);color:var(--clr-info)}
+.pill.off{background:var(--clr-hover);color:var(--clr-muted)}
+.pill i{width:7px;height:7px;border-radius:50%;background:currentColor}
+
+.btn{height:38px;border:1px solid var(--clr-action);background:var(--clr-action);color:#fff;border-radius:var(--r);font-size:14px;font-weight:600;padding:0 22px;letter-spacing:.3px}
+.btn:hover{background:var(--clr-action-hover);border-color:var(--clr-action-hover)}
+.btn.sec{background:transparent;color:var(--clr-action);border-color:var(--clr-border);font-weight:400}
+.btn.danger{background:var(--clr-danger);border-color:var(--clr-danger)}
+.btn.warn{background:var(--clr-warning);border-color:var(--clr-warning);color:#fff}
+.btn:disabled{opacity:.45;cursor:default}
+.actions{display:flex;gap:10px;justify-content:flex-start;align-items:center}
+.actions .sp{flex:1}
+
+/* שדה עם קו תחתון — ממסך הכניסה */
+.f{position:relative;margin-bottom:22px}
+.f label{display:block;font-size:12px;color:var(--clr-muted);margin-bottom:2px}
+.f input{width:100%;height:34px;border:0;border-bottom:1px solid var(--clr-border);background:transparent;padding:0 0 4px;font-size:15px;border-radius:0;outline:none;color:var(--clr-text)}
+.f input:focus{border-bottom:2px solid var(--clr-action);padding-bottom:3px}
+.f:focus-within label{color:var(--clr-action)}
+.f .eye{position:absolute;inset-inline-end:0;bottom:6px;height:24px;border:0;background:transparent;color:var(--clr-action);font-size:12px;padding:0 4px}
+.f.pw input{padding-inline-end:40px}
+
+/* alert — כמו .native-alert הישן, בטוקני warning של הקונסולה */
+.alert{display:flex;gap:10px;align-items:flex-start;background:var(--clr-warning-soft);border:1px solid var(--clr-warning);border-radius:var(--r);padding:10px 14px;font-size:13px;color:var(--clr-text)}
+.alert .ui-icon{color:var(--clr-warning);margin-top:1px}
+.alert.danger{background:var(--clr-danger-soft);border-color:var(--clr-danger)}
+.alert.danger .ui-icon{color:var(--clr-danger)}
+
+/* ===== 1. כניסה — הפריסה המפוצלת של מוקאפ הכניסה ===== */
+.login{flex:1;display:grid;grid-template-columns:minmax(420px,600px) minmax(0,1fr);background:var(--clr-surface)}
+.pane{display:flex;flex-direction:column;padding:48px 64px 28px;min-width:0}
+.pane .brand{display:flex;align-items:center;gap:10px;font-size:20px;font-weight:600}
+.pane .brand span{direction:ltr;unicode-bidi:isolate}
+.pane .mark{width:30px;height:30px;border-radius:6px}
+.pane-body{flex:1;display:flex;flex-direction:column;justify-content:center;max-width:400px;width:100%;margin:0 auto}
+h1.title{font-size:24px;font-weight:600;line-height:1.25;margin:0 0 6px}
+.lead{color:var(--clr-muted);font-size:13px;margin-bottom:28px}
+.login .btn{width:100%}
+.art{position:relative;background:var(--art-bg);overflow:hidden;border-inline-start:1px solid var(--clr-border)}
+.art svg{position:absolute;inset:0;width:100%;height:100%}
+.foot{margin-top:28px;font-size:12px;color:var(--clr-muted);display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center}
+.foot .sep{color:var(--clr-border)}
+
+/* ===== 2. תפריט הבנייה — כרטיסי פעולה על כל הרוחב ===== */
+.cards{flex:1;display:grid;grid-template-columns:repeat(4,1fr);gap:18px;min-height:0}
+.cards.three{grid-template-columns:repeat(3,1fr)}
+.card{position:relative;background:var(--clr-surface);border:1px solid var(--clr-border);border-radius:var(--r);padding:28px 26px;display:flex;flex-direction:column;gap:14px;cursor:pointer;text-align:start;min-height:0}
+.card:hover,.card.sel{border-color:var(--clr-action);box-shadow:0 0 0 1px var(--clr-action)}
+.card .ic{width:52px;height:52px;border-radius:8px;background:var(--clr-action-soft);color:var(--clr-action);display:grid;place-items:center}
+.card .ic .ui-icon{width:28px;height:28px;stroke-width:1.5}
+.card h2{font-size:22px;font-weight:600;line-height:1.25}
+.card p{font-size:14px;color:var(--clr-muted);line-height:1.5;flex:1}
+.card .how{font-size:13px;color:var(--clr-text);border-top:1px solid var(--clr-row-border);padding-top:12px;display:grid;gap:5px}
+.card .how span::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--clr-border);margin-inline-end:8px;vertical-align:middle}
+.card kbd{position:absolute;top:16px;inset-inline-start:16px;font-size:13px;line-height:22px;padding:0 8px}
+.card.admin .ic{background:var(--clr-warning-soft);color:var(--clr-warning)}
+.card .adm{position:absolute;top:16px;inset-inline-end:16px}
+
+/* ===== 3. חדר השיכפול — גריד מלבני מכונות עם פסי דיסקים ===== */
+.strip{display:grid;grid-template-columns:2fr repeat(4,1fr);gap:14px}
+.stat{background:var(--clr-surface);border:1px solid var(--clr-border);border-radius:var(--r);padding:12px 16px;min-width:0}
+.stat .k{font-size:12px;color:var(--clr-muted)}
+.stat .v{font-size:24px;font-weight:600;line-height:1.2;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stat .v small{font-size:13px;font-weight:400;color:var(--clr-muted);margin-inline-start:6px}
+.stat .bar{margin-top:8px}
+.bar{height:6px;border-radius:3px;background:var(--bar-track);overflow:hidden}
+.bar b{display:block;height:100%;background:var(--bar-write);border-radius:3px}
+.bar.done b{background:var(--bar-done)}
+.bar.idle b{background:var(--bar-idle)}
+.bar.warn b{background:var(--clr-warning)}
+.bar.bad b{background:var(--clr-danger)}
+.grid{flex:1;min-height:0;display:grid;grid-template-columns:repeat(6,1fr);grid-auto-rows:1fr;gap:14px}
+.sq .grid{grid-template-columns:repeat(4,1fr)}
+.node{background:var(--clr-surface);border:1px solid var(--clr-border);border-radius:var(--r);padding:12px 14px;display:flex;flex-direction:column;gap:8px;min-height:0;position:relative}
+.node.active{border-color:var(--clr-action)}
+.node.warn{border-color:var(--clr-warning)}
+.node.bad{border-color:var(--clr-danger)}
+.node.off{opacity:.6}
+.node .nm{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.node .nm b{font-size:16px;font-weight:600}
+.node .nm i{width:8px;height:8px;border-radius:50%;background:var(--clr-success);flex:none}
+.node .nm i.off{background:var(--clr-off)}
+.node .nm small{font-size:11px;color:var(--clr-muted);font-family:var(--font-mono);direction:ltr}
+.node .st{font-size:12px;color:var(--clr-muted)}
+.disks{display:grid;gap:7px;margin-top:auto}
+.disk{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:8px;font-size:12px}
+.disk .lbl{color:var(--clr-text);white-space:nowrap}
+.disk .lbl small{color:var(--clr-muted);margin-inline-start:4px}
+.disk .pct{font-family:var(--font-mono);color:var(--clr-muted);min-width:34px;text-align:end;direction:ltr}
+.disk .sm{width:9px;height:9px;border-radius:50%;background:var(--clr-success);flex:none;grid-column:1;display:none}
+.disk.ok .pct{color:var(--clr-success)}
+.disk.warn .pct{color:var(--clr-warning)}
+.disk.bad .pct{color:var(--clr-danger)}
+.node .ask{margin-top:auto;background:var(--clr-warning-soft);border:1px solid var(--clr-warning);border-radius:var(--r);padding:8px 10px;font-size:12px;display:grid;gap:6px}
+.node .ask .row{display:flex;gap:6px}
+.node .ask button{height:26px;padding:0 10px;font-size:12px;border-radius:var(--r);border:1px solid var(--clr-border);background:var(--clr-surface);color:var(--clr-text);flex:1}
+.node .ask button.go{background:var(--clr-warning);border-color:var(--clr-warning);color:#fff;font-weight:600}
+.legend{display:flex;gap:18px;font-size:12px;color:var(--clr-muted);align-items:center}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-inline-end:5px;vertical-align:middle}
+
+/* ===== 4. מסך המשכפל — הדיסקים של המכונה הזו ===== */
+.mine{flex:1;min-height:0;display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+.sq .mine{grid-template-columns:repeat(3,1fr)}
+.dcard{background:var(--clr-surface);border:1px solid var(--clr-border);border-radius:var(--r);padding:24px 26px;display:flex;flex-direction:column;gap:16px;min-height:0}
+.dcard.active{border-color:var(--clr-action)}
+.dcard.warn{border-color:var(--clr-warning)}
+.dcard.bad{border-color:var(--clr-danger)}
+.dcard .top{display:flex;justify-content:space-between;align-items:baseline}
+.dcard h2{font-size:26px;font-weight:600}
+.dcard h2 small{font-size:14px;font-weight:400;color:var(--clr-muted);margin-inline-start:10px}
+.dcard .big{font-size:88px;font-weight:600;line-height:1;font-family:var(--font-mono);direction:ltr;text-align:start;letter-spacing:-2px}
+.sq .dcard .big{font-size:64px}
+.dcard .big small{font-size:28px;font-weight:400;color:var(--clr-muted);letter-spacing:0}
+.dcard .bar{height:10px;border-radius:5px}
+.dcard .kv{display:grid;grid-template-columns:1fr 1fr;gap:10px 16px}
+.dcard .kv div{font-size:13px;color:var(--clr-muted)}
+.dcard .kv div b{display:block;font-size:20px;font-weight:600;color:var(--clr-text);font-family:var(--font-mono);direction:ltr;text-align:start}
+.smart{margin-top:auto;border-top:1px solid var(--clr-row-border);padding-top:14px;display:grid;gap:8px}
+.smart .h{display:flex;align-items:center;justify-content:space-between;font-size:13px}
+.smart .h b{font-weight:600}
+.smart .g{display:grid;grid-template-columns:1fr 1fr;gap:6px 14px;font-size:12px;color:var(--clr-muted)}
+.smart .g span{display:flex;justify-content:space-between}
+.smart .g span b{font-family:var(--font-mono);color:var(--clr-text);font-weight:400;direction:ltr}
+.smart .g span.warn b{color:var(--clr-warning)}
+.smart .g span.bad b{color:var(--clr-danger)}
+.dcard .ask{display:grid;gap:8px}
+.dcard .ask .row{display:flex;gap:8px}
+.dcard .ask .row .btn{flex:1;height:34px;padding:0 10px;font-size:13px}
+
+/* ===== 5. שחזור לדיסק הזה ===== */
+.restore{flex:1;min-height:0;display:grid;grid-template-columns:1.4fr 1fr;gap:24px}
+.panel{background:var(--clr-surface);border:1px solid var(--clr-border);border-radius:var(--r);padding:20px 22px;display:flex;flex-direction:column;gap:14px;min-height:0}
+.panel h2{font-size:16px;font-weight:600;display:flex;justify-content:space-between;align-items:center}
+.imgs{display:grid;grid-template-columns:1fr 1fr;gap:10px;overflow:auto;min-height:0;align-content:start}
+.sq .imgs{grid-template-columns:1fr}
+.img{border:1px solid var(--clr-border);border-radius:var(--r);padding:12px 14px;cursor:pointer;background:var(--clr-field)}
+.img.sel{border-color:var(--clr-action);box-shadow:0 0 0 1px var(--clr-action);background:var(--clr-action-soft)}
+.img b{font-size:15px;display:block}
+.img small{font-size:12px;color:var(--clr-muted);display:block;margin-top:3px}
+.img .mono{font-size:11px}
+.tgt{display:grid;grid-template-columns:auto 1fr;gap:12px;align-items:center;border:1px solid var(--clr-border);border-radius:var(--r);padding:12px 14px}
+.tgt .ic{width:40px;height:40px;border-radius:6px;background:var(--clr-hover);display:grid;place-items:center;color:var(--clr-muted)}
+.tgt b{font-size:15px;display:block}
+.tgt small{color:var(--clr-muted);font-size:12px}
+.arrow{display:grid;place-items:center;color:var(--clr-muted);font-size:13px;gap:6px;padding:6px 0}
+.arrow .ui-icon{width:26px;height:26px;transform:scaleX(-1)}
+
+/* ===== 6. המתנה ===== */
+.standby{flex:1;display:grid;place-items:center;text-align:center}
+.standby .mark{width:72px;height:72px;border-radius:14px;margin:0 auto 22px}
+.standby .mark::before,.standby .mark::after{inset-inline:18px;height:7px;border-radius:5px}
+.standby .mark::before{top:22px}.standby .mark::after{top:38px;width:22px}
+.standby h1{font-size:30px;font-weight:600}
+.standby p{color:var(--clr-muted);font-size:15px;margin-top:8px}
+.standby .addr{font-size:22px;margin-top:26px;display:flex;justify-content:center;gap:28px}
+.standby .addr span{color:var(--clr-muted);font-size:13px;display:block;font-family:var(--font-ui);direction:rtl;margin-bottom:4px}
+.hello{margin-top:36px;display:inline-flex;align-items:center;gap:10px;font-size:13px;color:var(--clr-muted);border:1px solid var(--clr-border);border-radius:16px;padding:6px 14px}
+.hello i{width:9px;height:9px;border-radius:50%;background:var(--clr-success);animation:pulse 3s infinite}
+@keyframes pulse{0%,60%{opacity:1}30%{opacity:.25}}
+.standby .art-bg{position:absolute;inset:48px 0 36px;opacity:.5;z-index:0}
+.standby .inner{position:relative;z-index:1}
+
+/* ---------- הערות עיצוב ---------- */
+.notes-page{position:absolute;inset:36px 0 0;overflow:auto;display:none;background:var(--clr-bg);color:var(--clr-text)}
+.notes-page.on{display:block}
+.notes-wrap{padding:24px 48px 40px;max-width:960px}
+.notes-wrap h1{font-size:20px;font-weight:600;margin-bottom:4px}
+.notes-wrap h2{font-size:15px;font-weight:600;margin:22px 0 8px}
+.notes-wrap .sub{font-size:12px;color:var(--clr-muted);margin-bottom:18px}
+.notes{font-size:13px;display:grid;gap:10px;counter-reset:n;background:var(--clr-surface);border:1px solid var(--clr-border);border-radius:var(--r);padding:16px}
+.notes p{padding-inline-start:26px;position:relative;line-height:1.5}
+.notes p::before{counter-increment:n;content:counter(n);position:absolute;inset-inline-start:0;top:1px;width:18px;height:18px;border-radius:50%;background:var(--clr-action-soft);color:var(--clr-action);font-size:11px;display:grid;place-items:center;font-weight:600}
+.notes table{border-collapse:collapse;width:100%;font-size:12px}
+.notes th,.notes td{border-bottom:1px solid var(--clr-row-border);padding:5px 8px;text-align:start;vertical-align:top}
+.notes th{color:var(--clr-muted);font-weight:600}
+</style>
+</head>
+<body>
+
+<div class="mockbar">
+  <b>מוקאפ: הגואי של מחשב הבנייה והשיכפול (#1090)</b>
+  <button data-go="login" class="on">1 כניסה</button>
+  <button data-go="menu">2 תפריט הבנייה</button>
+  <button data-go="room">3 חדר השיכפול</button>
+  <button data-go="cloner">4 המשכפל</button>
+  <button data-go="restore">5 שחזור לדיסק הזה</button>
+  <button data-go="standby">6 המתנה</button>
+  <button data-go="notes">הערות</button>
+  <span class="grp"><button data-res="wide" class="on">1920×1080</button><button data-res="sq">1280×1024</button></span>
+  <span class="grp"><button id="admin-toggle">admin: כן</button></span>
+  <span class="sp"></span>
+  <button id="theme-toggle">מצב בהיר</button>
+</div>
+
+<div class="viewport"><div class="stage" id="stage">
+
+<!-- ===================== header משותף (מוכפל לכל מסך ב-JS) ===================== -->
+<template id="hdr-tpl">
+  <header class="hdr">
+    <div class="brand"><div class="mark" aria-hidden="true"></div><span>ImageCtl</span></div>
+    <span class="role" data-role>מחשב בנייה</span>
+    <div class="meta">
+      <span><span class="k">מכונה</span><span class="mono" data-host>BUILD-01</span></span>
+      <span><span class="k">שרת</span><span class="mono">imagectl-srv · 10.10.10.1</span></span>
+      <span><span class="k">גרסה</span><span class="mono">v0.42.1</span></span>
+    </div>
+    <span class="sp"></span>
+    <span class="clock" id="clock">14:32</span>
+  </header>
+</template>
+
+<!-- ===================== 1. כניסה ===================== -->
+<section class="screen on" id="s-login">
+  <div class="login">
+    <div class="pane">
+      <div class="brand"><div class="mark" aria-hidden="true"></div><span>ImageCtl</span></div>
+      <form class="pane-body" onsubmit="return false">
+        <h1 class="title">כניסה</h1>
+        <p class="lead">מחשב הבנייה <span class="mono">BUILD-01</span></p>
+        <div class="f"><label for="u1">שם משתמש</label><input id="u1" type="text" autocomplete="username" autofocus></div>
+        <div class="f pw"><label for="p1">סיסמה</label><input id="p1" type="password" autocomplete="current-password"><button type="button" class="eye" data-eye="p1">הצג</button></div>
+        <button class="btn" type="submit" data-go="menu">כניסה</button>
+      </form>
+      <div class="foot">
+        <span>imagectl-srv</span><span class="sep">·</span>
+        <span>v0.42.1</span><span class="sep">·</span>
+        <span class="mono">10.10.10.1</span>
+      </div>
+    </div>
+    <div class="art" aria-hidden="true" data-art></div>
+  </div>
+  <footer class="sb"><span class="st"><i class="idle"></i>ממתין לאימות</span><span class="keys"><kbd>Enter</kbd> כניסה</span></footer>
+</section>
+
+<!-- ===================== 2. תפריט הבנייה ===================== -->
+<section class="screen" id="s-menu">
+  <div class="body">
+    <div class="ph"><div><h1>מה לעשות עם המחשב הזה?</h1><p>מחוברים כ-<span class="mono">nadav</span> · מספר או Enter על הכרטיס</p></div>
+      <div class="right"><span class="pill ok"><i></i>השרת מחובר</span><span class="pill info">6 מחשבי שיכפול ערים</span></div></div>
+    <div class="cards" id="cards">
+      <button class="card" data-go="room"><kbd>1</kbd>
+        <div class="ic"><svg class="ui-icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/><path d="M7 7h.01M7 17h.01"/></svg></div>
+        <h2>שיכפול מהשרת</h2>
+        <p>אימג' מהספרייה משודר במולטיקאסט לכל מחשבי השיכפול בחדר, בגלים.</p>
+        <div class="how"><span>בוחרים אימג' ויעד</span><span>החדר מתעורר ומצטרף</span><span>כל גל כותב למגירות המוכנות</span></div>
+      </button>
+      <button class="card" data-go="room"><kbd>2</kbd>
+        <div class="ic"><svg class="ui-icon" viewBox="0 0 24 24"><rect x="2" y="6" width="8" height="12" rx="1"/><path d="M10 12h4M14 12l-2-2M14 12l-2 2"/><rect x="16" y="4" width="6" height="5" rx="1"/><rect x="16" y="15" width="6" height="5" rx="1"/></svg></div>
+        <h2>שיכפול ישיר</h2>
+        <p>הדיסק של המחשב הזה נקרא פעם אחת ומשודר ישירות למגירות — בלי לשמור אימג' בשרת.</p>
+        <div class="how"><span>קריאה בלבד מהדיסק הזה</span><span>סבב יחיד</span><span>למי שנבחר בלבד</span></div>
+      </button>
+      <button class="card" data-go="restore"><kbd>3</kbd>
+        <div class="ic"><svg class="ui-icon" viewBox="0 0 24 24"><path d="M12 3v12M12 15l-4-4M12 15l4-4"/><rect x="3" y="17" width="18" height="4" rx="1"/></svg></div>
+        <h2>שחזור לדיסק הזה</h2>
+        <p>אימג' מהספרייה נכתב על הדיסק הפנימי של המחשב הזה — כמו שיכפול בודד.</p>
+        <div class="how"><span>בוחרים אימג'</span><span>מקלידים את שם המכונה</span><span>הדיסק נמחק ונכתב</span></div>
+      </button>
+      <button class="card admin" data-go="menu" id="card-capture"><kbd>4</kbd><span class="pill warn adm">admin</span>
+        <div class="ic"><svg class="ui-icon" viewBox="0 0 24 24"><path d="M12 21V9M12 9l-4 4M12 9l4 4"/><rect x="3" y="3" width="18" height="4" rx="1"/></svg></div>
+        <h2>קליטת אימג' חדש</h2>
+        <p>הדיסק של המחשב הזה נקרא, מכווץ ומועלה לספרייה כאימג' חדש או כגרסה.</p>
+        <div class="how"><span>בדיקת SMART לפני</span><span>sha256 בקליטה</span><span>שם, תיאור, תיקייה</span></div>
+      </button>
+    </div>
+    <div class="actions"><span class="sp"></span><button class="btn sec" data-go="login">התנתק</button></div>
+  </div>
+  <footer class="sb"><span class="st"><i></i>בחירת פעולה</span><span class="keys"><kbd>1</kbd>–<kbd>4</kbd> בחירה <kbd>Enter</kbd> אישור <kbd>Esc</kbd> התנתק</span></footer>
+</section>
+
+<!-- ===================== 3. חדר השיכפול ===================== -->
+<section class="screen" id="s-room">
+  <div class="body">
+    <div class="ph"><div><h1>חדר השיכפול</h1><p>שיכפול מהשרת · <span class="mono">office365-2026-09</span> · 146 GB</p></div>
+      <div class="right"><span class="pill info"><i></i>גל 2 משדר</span><button class="btn sec">התחל את הגל הבא עכשיו</button><button class="btn danger">עצור סבב</button></div></div>
+    <div class="strip">
+      <div class="stat"><div class="k">הסבב</div><div class="v">7 / 24 <small>מגירות נכתבו</small></div><div class="bar"><b style="width:29%"></b></div></div>
+      <div class="stat"><div class="k">בגל הזה</div><div class="v">12 <small>דיסקים</small></div></div>
+      <div class="stat"><div class="k">קצב הזרם</div><div class="v"><span class="mono">106</span> <small>MB/s</small></div></div>
+      <div class="stat"><div class="k">זמן שנותר לגל</div><div class="v"><span class="mono">11:40</span></div></div>
+      <div class="stat"><div class="k">ממתינים להכרעה</div><div class="v" style="color:var(--clr-warning)">1</div></div>
+    </div>
+    <div class="grid" id="room-grid"></div>
+    <div class="legend"><span><i style="background:var(--clr-success)"></i>SMART תקין</span><span><i style="background:var(--clr-warning)"></i>אזהרה — כותב, אבל להחליף</span><span><i style="background:var(--clr-danger)"></i>נכשל — מדלג</span><span><i style="background:var(--clr-off)"></i>כבוי / לא הצטרף</span></div>
+  </div>
+  <footer class="sb"><span class="st"><i></i>גל 2 משדר · 12 דיסקים</span><span class="keys"><kbd>W</kbd> העֵר <kbd>N</kbd> גל הבא <kbd>Esc</kbd> עצור</span></footer>
+</section>
+
+<!-- ===================== 4. מסך המשכפל ===================== -->
+<section class="screen" id="s-cloner">
+  <div class="body">
+    <div class="ph"><div><h1>מחשב שיכפול 2</h1><p>מקבל <span class="mono">office365-2026-09</span> · גל 2 · 3 דיסקים נכתבים יחד</p></div>
+      <div class="right"><span class="pill info"><i></i>כותב</span><span class="pill warn"><i></i>דיסק 3 ממתין להכרעה</span></div></div>
+    <div class="mine">
+      <div class="dcard active">
+        <div class="top"><h2>דיסק 1<small>SATA 0 · 256 GB</small></h2><span class="pill ok"><i></i>SMART תקין</span></div>
+        <div class="big">42<small>%</small></div>
+        <div class="bar"><b style="width:42%"></b></div>
+        <div class="kv"><div>נכתב<b>61 GB</b></div><div>קצב<b>106 MB/s</b></div><div>זמן שנותר<b>13:20</b></div><div>מודל<b style="font-size:13px">Samsung 870 EVO</b></div></div>
+        <div class="smart"><div class="h"><b>SMART</b><span class="pill ok">תקין</span></div><div class="g"><span>Health<b>PASSED</b></span><span>שעות<b>8,412</b></span><span>Reallocated (5)<b>0</b></span><span>Pending (197)<b>0</b></span><span>CRC (199)<b>0</b></span><span>טמפרטורה<b>34 C</b></span></div></div>
+      </div>
+      <div class="dcard active">
+        <div class="top"><h2>דיסק 2<small>SATA 1 · 256 GB</small></h2><span class="pill ok"><i></i>SMART תקין</span></div>
+        <div class="big">42<small>%</small></div>
+        <div class="bar"><b style="width:42%"></b></div>
+        <div class="kv"><div>נכתב<b>61 GB</b></div><div>קצב<b>106 MB/s</b></div><div>זמן שנותר<b>13:20</b></div><div>מודל<b style="font-size:13px">Samsung 870 EVO</b></div></div>
+        <div class="smart"><div class="h"><b>SMART</b><span class="pill ok">תקין</span></div><div class="g"><span>Health<b>PASSED</b></span><span>שעות<b>3,105</b></span><span>Reallocated (5)<b>0</b></span><span>Pending (197)<b>0</b></span><span>CRC (199)<b>0</b></span><span>טמפרטורה<b>33 C</b></span></div></div>
+      </div>
+      <div class="dcard warn">
+        <div class="top"><h2>דיסק 3<small>SATA 2 · 256 GB</small></h2><span class="pill warn"><i></i>אזהרת SMART</span></div>
+        <div class="big" style="color:var(--clr-muted)">—</div>
+        <div class="bar warn"><b style="width:0"></b></div>
+        <div class="alert"><svg class="ui-icon" viewBox="0 0 24 24"><path d="M12 3l10 18H2z"/><path d="M12 10v4M12 17h.01"/></svg><span><b>Reallocated 5 = 12, ‏CRC 199 = 3.</b> הדיסק כותב, אבל כדאי להחליף. בלי תשובה — ממשיכים לכתוב (כתום = כותב).</span></div>
+        <div class="ask"><div class="row"><button class="btn warn">כתוב בכל זאת</button><button class="btn sec">דלג על הדיסק</button></div><div class="row"><button class="btn sec">כבו, החליפו והדליקו</button></div></div>
+        <div class="smart"><div class="h"><b>SMART</b><span class="pill warn">אזהרה</span></div><div class="g"><span>Health<b>PASSED</b></span><span>שעות<b>21,880</b></span><span class="warn">Reallocated (5)<b>12</b></span><span>Pending (197)<b>0</b></span><span class="warn">CRC (199)<b>3</b></span><span>טמפרטורה<b>41 C</b></span></div></div>
+      </div>
+    </div>
+  </div>
+  <footer class="sb"><span class="st"><i class="warn"></i>כותב 2 דיסקים · דיסק 3 ממתין להכרעת SMART</span><span class="keys"><kbd>Enter</kbd> כתוב בכל זאת <kbd>S</kbd> דלג</span></footer>
+</section>
+
+<!-- ===================== 5. שחזור לדיסק הזה ===================== -->
+<section class="screen" id="s-restore">
+  <div class="body">
+    <div class="ph"><div><h1>שחזור לדיסק הזה</h1><p>אימג' מהספרייה נכתב על הדיסק הפנימי של <span class="mono">BUILD-01</span></p></div>
+      <div class="right"><span class="pill off">14 אימג'ים בספרייה</span></div></div>
+    <div class="restore">
+      <div class="panel">
+        <h2>מקור — אימג' מהספרייה <span class="pill info">1 נבחר</span></h2>
+        <div class="imgs">
+          <div class="img sel"><b>office365-2026-09</b><small>windows · 146 GB · תיקייה: משרד · UEFI · נבדק sha256</small><small class="mono">2026-09-17 11:20</small></div>
+          <div class="img"><b>office365-2026-08</b><small>windows · 151 GB · תיקייה: משרד · UEFI</small><small class="mono">2026-08-30 09:02</small></div>
+          <div class="img"><b>win-build-cad</b><small>windows · 67 GB · תיקייה: הנדסה · UEFI</small><small class="mono">2026-09-11 16:44</small></div>
+          <div class="img"><b>debian13-lab</b><small>linux · 18 GB · תיקייה: מעבדה · UEFI</small><small class="mono">2026-09-15 08:10</small></div>
+          <div class="img"><b>student-base</b><small>windows · 92 GB · תיקייה: כיתות · UEFI</small><small class="mono">2026-09-02 13:30</small></div>
+          <div class="img"><b>kiosk-min</b><small>linux · 6 GB · תיקייה: מעבדה · UEFI</small><small class="mono">2026-08-21 10:00</small></div>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>יעד — הדיסק הפנימי</h2>
+        <div class="tgt"><div class="ic"><svg class="ui-icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/><path d="M7 7h.01M7 17h.01"/></svg></div><div><b>דיסק 1 — Samsung 870 EVO</b><small>SATA 0 · 256 GB · <span class="mono">/dev/sda</span> · SMART תקין · יש נתונים</small></div></div>
+        <div class="arrow"><svg class="ui-icon" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg><span>146 GB יוכפלו על 256 GB</span></div>
+        <div class="alert danger"><svg class="ui-icon" viewBox="0 0 24 24"><path d="M12 3l10 18H2z"/><path d="M12 10v4M12 17h.01"/></svg><span><b>הפעולה מוחקת את כל תוכן הדיסק.</b> אין שחזור לאחור. לאישור — הקלידו את שם המכונה בדיוק כפי שהוא: <span class="mono">BUILD-01</span></span></div>
+        <div class="f" style="margin-top:6px"><label for="rname">שם המכונה לאישור</label><input id="rname" type="text" class="mono" autocomplete="off" placeholder=""></div>
+        <div class="actions" style="margin-top:auto"><button class="btn danger" id="r-go" disabled>מחק ושחזר</button><span class="sp"></span><button class="btn sec" data-go="menu">חזרה</button></div>
+      </div>
+    </div>
+  </div>
+  <footer class="sb"><span class="st"><i class="warn"></i>בחירת אימג' לשחזור</span><span class="keys"><kbd>Tab</kbd> מעבר <kbd>Esc</kbd> חזרה</span></footer>
+</section>
+
+<!-- ===================== 6. המתנה ===================== -->
+<section class="screen" id="s-standby">
+  <div class="standby">
+    <div class="art art-bg" aria-hidden="true" data-art></div>
+    <div class="inner">
+      <div class="mark" aria-hidden="true"></div>
+      <h1>ממתין לשרת</h1>
+      <p>מחשב שיכפול 2 · אין סבב פתוח. המחשב יצטרף לבד כשייפתח סבב.</p>
+      <div class="addr mono"><div><span>המכונה</span>10.10.10.59</div><div><span>MAC</span>b4:2e:99:1a:7c:03</div><div><span>השרת</span>imagectl-srv · 10.10.10.1</div></div>
+      <div class="hello"><i></i>hello אחרון לפני 4 שניות · השרת ענה 200</div>
+    </div>
+  </div>
+  <footer class="sb"><span class="st"><i class="idle"></i>ממתין לסבב</span><span class="keys">דיסקים: <kbd>1</kbd> 256 GB <kbd>2</kbd> 256 GB <kbd>3</kbd> 256 GB · SMART תקין</span></footer>
+</section>
+
+</div></div>
+
+<!-- ===================== הערות עיצוב ===================== -->
+<div class="notes-page" id="s-notes"><div class="notes-wrap">
+  <h1>הערות עיצוב — #1090</h1>
+  <div class="sub">מה מהקונסולה, מה ממסך הכניסה, מה נשאר מהמוקאפ הישן (13/09), ומה הטסט יצטרך</div>
+
+  <h2>מהקונסולה (design-tokens.css)</h2>
+  <div class="notes">
+    <p><b>כל הצבעים הם הטוקנים של הקונסולה, אחד-לאחד</b> — <span class="mono">--clr-bg / surface / text / muted / border / action / success / warning / danger</span> והגרסאות ה-soft, בבהיר ובכהה. לגואי אין פלטה משלו יותר: <span class="mono">theme.c</span> יקרא את אותם ערכים. הוספו רק <span class="mono">--art-*</span> (הגרפיקה, ממסך הכניסה) ו-<span class="mono">--bar-*</span> (ארבעה צבעי פסי דיסק).</p>
+    <p><b>ה-header כמו app-shell</b> — 48px, <span class="mono">--clr-header</span> כהה תמיד (גם בבהיר, כמו vSphere), brandmark + ImageCtl, פיל תפקיד ("מחשב בנייה" / "מחשב שיכפול 2"), ואז מכונה · שרת · גרסה, שעה משמאל ב-mono. מחליף את ה-topline של 40px.</p>
+    <p><b>כותרת דף</b> — h1 24px + שורת משנה muted 13px, קו תחתון, ופעולות/פילים בצד השני — אותו דפוס כמו כותרות הדפים בקונסולה. <b>פילים</b> ‏(ok/warn/bad/info/off) בטוקני ה-soft — אותם pills של שורות המכונות בקונסולה.</p>
+    <p><b>כפתורים</b> — 38px, פעולה כחולה מלאה, משני שקוף עם מסגרת, הרסני אדום. רדיוס 4px בבהיר, 3px בכהה (<span class="mono">--r</span>), כמו במסך הכניסה.</p>
+  </div>
+
+  <h2>ממסך הכניסה (login-mockup-2026-09-18.html)</h2>
+  <div class="notes">
+    <p><b>מסך 1 = אותו מסך.</b> הפריסה המפוצלת (טופס 420–600px בצד ההתחלה, הגרפיקה ממלאת את השאר), שדות עם קו תחתון ותווית גלויה, כפתור אחד, foot עם שרת · גרסה · כתובת. <b>הוסר:</b> MFA, "זכור את הדפדפן", fingerprint TLS (אין TLS בין הגואי לשרת — #702). <b>נוסף:</b> שורת "מחשב הבנייה BUILD-01" מתחת ל"כניסה", כי במחשב פיזי צריך לדעת איפה עומדים.</p>
+    <p><b>הגרפיקה "שרת → מולטיקאסט → מלבני מכונות"</b> — אותו SVG בדיוק (מועתק ב-JS, לא מצויר מחדש), ובמסך ההמתנה הוא הרקע החלש (opacity .5) מאחורי הלוגו — כדי שמסך שדולק שעות בחדר לא יהיה ריק, ועדיין לא יסיח.</p>
+    <p><b>"מעט מילים"</b> — הכותרות הן מילה-שתיים ("חדר השיכפול", "שחזור לדיסק הזה"); ההסבר הוא שורת המשנה. בכרטיסי התפריט: משפט אחד + שלוש נקודות "איך זה עובד", לא פסקה.</p>
+  </div>
+
+  <h2>מה נשאר מהמוקאפ הישן (native-gui-mockup-2026-09-13.html)</h2>
+  <div class="notes">
+    <p><b>שורת הסטטוס התחתונה</b> — 36px, נקודה + מילת המסך ("ממתין לאימות", "גל 2 משדר", "בחירת אימג' לשחזור"); מימין המצב, משמאל <b>מקשי הקיצור של המסך</b> (חדש — היום אין רמז למקשים על המסך). הנקודה: ירוק/כתום/אפור לפי המצב, לא לפי בריאות השרת.</p>
+    <p><b>מסך המשכפל</b> — שלוש עמודות, כרטיס לדיסק עם אחוז גדול + בר + סטטוס, פאנל SMART pending (#652) — נשארו, אבל הכרטיס עכשיו על כל הגובה: אחוז 88px (64 במרובע), נכתב/קצב/זמן/מודל, וגריד SMART 2×3 עם הערכים שנמדדים (‏5/197/199/Health — הקריטריונים של #652). כתום = כותב וממתין, אדום = מדלג; שלושת הכפתורים של היום ("כתוב בכל זאת" / "דלג" / "החלף דיסק") באותו סדר.</p>
+    <p><b>חדר השיכפול</b> — <span class="mono">.room-node</span> (שם + נקודה ער/כבוי, סטטוס, גבול active/warn) נשאר, ומתווספים אליו <b>פסי הדיסקים</b> של הסקיצה #1033: "דיסק 1 <small>256 GB</small>" + בר + אחוז לכל דיסק, צבוע לפי SMART. מכונה שממתינה להכרעה מקבלת תיבת "המשך?" בתוך המלבן שלה עם שני כפתורים — כדי שהמפעיל ליד השרת יראה איפה השאלה בלי לגשת למכונה (#652 הכרעה 4: התשובה יכולה להגיע מהחדר).</p>
+    <p><b>שחזור</b> — שני פאנלים מקור/יעד + חץ + אזהרה (#706) נשארו. <b>שונה:</b> הבחירה היא גריד אימג'ים על המסך (לא popup), והאישור הוא <b>שם המכונה</b> במקום ERASE — כפי שההאצלה ביקשה; הכפתור נדלק רק כשההקלדה זהה (ראיה חיובית, עיקרון 5).</p>
+    <p><b>גריד הכרטיסים של התפריט</b> — 2 עמודות במוקאפ הישן; כאן 3 או 4 על כל הרוחב (הפצה: 3, admin: 4 — כפתור admin בסרגל המוקאפ). הסדר לפי #1073: שיכפול מהשרת · ישיר · שחזור לדיסק הזה · קליטה (admin). "הפצה לכיתות" הוסרה מהתפריט (#1073; כיתות = v2).</p>
+  </div>
+
+  <h2>שני מסכים שאין להם קוד היום</h2>
+  <div class="notes">
+    <p><b>המתנה (6)</b> — אין <span class="mono">SCREEN_STANDBY</span> ב-<span class="mono">ui.h</span>; הקרוב הוא <span class="mono">SCREEN_MESSAGE</span> עם "ממתין לסוכן". המסך מציע: לוגו, "ממתין לשרת", כתובת/MAC/שרת ב-mono, וחיווי hello (נקודה פועמת + "hello אחרון לפני N שניות · השרת ענה 200"). ה-hello הוא ראיה חיובית של קוד תשובה — לא "אין שגיאה". דורש שדה <span class="mono">hello_age=</span>/‏<span class="mono">hello_rc=</span> בקובץ ה---state (interfaces.md) — הכרעת נדב.</p>
+    <p><b>שאלת "המשך?" בחדר (3)</b> — הגריד היום מציג pct בלבד; תיבת השאלה במלבן המכונה דורשת ש-<span class="mono">machine=</span> יישא גם <span class="mono">smart_pending</span> ותשובה מהשרת (היום ה-nonce #679 הוא של המשכפל בלבד). בלי זה — הפיל "1 ממתין להכרעה" בסטריפ העליון בלבד.</p>
+  </div>
+
+  <h2>מה test_native_gui_theme יצטרך</h2>
+  <div class="notes">
+    <p>הטסט מפרסר את <span class="mono">&lt;style&gt;</span> של המוקאפ ומשווה כל שדה ב-<span class="mono">THEME_DARK</span> לציטוט <span class="mono">css: selector | prop | index</span>. המוקאפ הזה מגדיר את הצבעים <b>כמשתני :root</b> ולא כערכים קשיחים בסלקטורים — הטסט כבר פותר <span class="mono">var(--x)</span> דרך <span class="mono">CSS[":root"]</span>, אבל כאן הכהה יושב ב-<span class="mono">:root[data-theme="dark"]</span> ולא ב-<span class="mono">:root</span>. <b>שינוי נדרש בטסט:</b> לקרוא את המשתנים מ-<span class="mono">:root[data-theme="dark"]</span> עם fallback ל-<span class="mono">:root</span> (שורה אחת ב-<span class="mono">css_value</span>). ואז הטבלה:</p>
+    <table>
+      <tr><th>שדה theme.c</th><th>סלקטור/משתנה במוקאפ (כהה)</th><th>ערך</th></tr>
+      <tr><td>porcelain</td><td><span class="mono">--clr-bg</span></td><td><span class="mono">#151a1f</span></td></tr>
+      <tr><td>surface</td><td><span class="mono">--clr-surface</span></td><td><span class="mono">#1c232a</span></td></tr>
+      <tr><td>ink / muted / hair</td><td><span class="mono">--clr-text / --clr-muted / --clr-border</span></td><td><span class="mono">#e7edf2 / #a9b4bd / #35414b</span></td></tr>
+      <tr><td>field / field_line / track</td><td><span class="mono">--clr-field / --clr-border / --bar-track</span></td><td><span class="mono">#11181d / #35414b / #0e151a</span></td></tr>
+      <tr><td>indigo / ink_hover / indigo_soft</td><td><span class="mono">--clr-action / --clr-action-hover / --clr-action-soft</span></td><td><span class="mono">#4c8fbd / #64a6d2 / #223e50</span></td></tr>
+      <tr><td>led_ok / led_write / led_idle / warn / danger</td><td><span class="mono">--clr-success / --bar-write / --clr-off / --clr-warning / --clr-danger</span></td><td><span class="mono">#5fbd7a / #4c8fbd / #737373 / #e1b34f / #dc6b6b</span></td></tr>
+      <tr><td>alert_bg / alert_line / warning_bg / warning_line</td><td><span class="mono">--clr-warning-soft / --clr-warning</span></td><td><span class="mono">#33291a / #e1b34f</span></td></tr>
+      <tr><td>danger_bg / danger_line</td><td><span class="mono">--clr-danger-soft / --clr-danger</span></td><td><span class="mono">#3a2323 / #dc6b6b</span></td></tr>
+      <tr><td>success_bg / success_line / success_btn</td><td><span class="mono">--clr-success-soft / --clr-success</span></td><td><span class="mono">#1e3325 / #5fbd7a</span></td></tr>
+      <tr><td>choice / choice_line / selected_line</td><td><span class="mono">.card background / --clr-border / --clr-action</span></td><td><span class="mono">#1c232a / #35414b / #4c8fbd</span></td></tr>
+      <tr><td>status_bg</td><td><span class="mono">--clr-nav</span> (‏.sb)</td><td><span class="mono">#182028</span></td></tr>
+      <tr><td><b>חדש:</b> header / header_text</td><td><span class="mono">--clr-header / --clr-header-text</span></td><td><span class="mono">#26343f / #FFFFFF</span></td></tr>
+      <tr><td><b>חדש:</b> bar_done / bar_idle</td><td><span class="mono">--bar-done / --bar-idle</span></td><td><span class="mono">#5fbd7a / #33434f</span></td></tr>
+      <tr><td><b>חדש:</b> art_bg … art_server (6)</td><td><span class="mono">--art-*</span></td><td>לגרפיקה במסכי הכניסה וההמתנה</td></tr>
+    </table>
+    <p><b>הבהיר אינו נגזר יותר</b> — יש לו ערכים משלו ב-<span class="mono">:root</span> (הטוקנים של הקונסולה). <span class="mono">EXPECTED_LIGHT</span> הנעול בטסט מתחלף בקריאה של <span class="mono">:root</span> באותה דרך, ובדיקת הניגודיות (4.5:1) נשארת. שני ה-STRIPE/ROOM_* המורחבים (<span class="mono">check_retained_extension_tokens</span>) מתייתרים: הם הופכים ל-<span class="mono">--bar-*</span> ולטוקני warn/danger. <b>הידוע מראש:</b> לבן על <span class="mono">--clr-action</span> הכהה = 3.52:1 — כבר מתועד במוקאפ הכניסה כהכרעה לטוקנים (#829), לא למסך הזה.</p>
+    <p><b>מידות</b> — ה-<span class="mono">extern const double</span> יצוטטו מהסלקטורים החדשים: <span class="mono">.hdr height 48</span>, ‏<span class="mono">.sb height 36</span>, ‏<span class="mono">.body padding 28/32/24</span>, ‏<span class="mono">.ph h1 font-size 24</span>, ‏<span class="mono">.card padding 28/26</span>, ‏<span class="mono">.dcard .big font-size 88</span> (ו-64 תחת <span class="mono">.sq</span> — המנוע בוחר לפי H/W, לא media query), ‏<span class="mono">.bar height 6</span>, ‏<span class="mono">.grid gap 14</span>. <span class="mono">check_mockup_final_override_is_applied</span> (topline 40 / panel 20 / title 26) נמחק — אין יותר פאנל ממורכז.</p>
+  </div>
+
+  <h2>רזולוציה, RTL, נגישות</h2>
+  <div class="notes">
+    <p><b>שתי רזולוציות בסרגל</b> — 1920×1080 ו-1280×1024 (מרובע). הבמה היא פיקסלי מסך אמיתיים, מוקטנת ב-transform; שום דבר אינו רספונסיבי לדפדפן — המנוע מקבל W/H ופורס. במרובע: גריד החדר 4 עמודות במקום 6, אחוז המשכפל 64px, גריד האימג'ים עמודה אחת. אלה שלושת המקומות היחידים שתלויים ביחס.</p>
+    <p><b>RTL</b> — הכול לוגי (inset-inline, margin-inline); mono תמיד <span class="mono">direction:ltr; unicode-bidi:isolate</span> (כתובות, MAC, אחוזים, זמנים). החץ בשחזור מסובב (<span class="mono">scaleX(-1)</span>) כדי להצביע מהמקור ליעד בכיוון הקריאה.</p>
+    <p><b>נגישות</b> — במסך פיזי בלי עכבר: כל פעולה ממופה למקש, והמקשים כתובים בשורת הסטטוס. label לכל שדה, אישור השחזור אינו תלוי צבע (טקסט + הקלדה), ו-SMART כתום/אדום מלווה תמיד במילה ("אזהרה"/"נכשל") ובמספר. ניגודיות: הטוקנים כבר חושבו במוקאפ הכניסה (muted 7.5:1 בכהה).</p>
+  </div>
+</div></div>
+
+<script>
+(function(){
+  var $ = function(s, r){ return (r||document).querySelector(s); };
+  var $$ = function(s, r){ return Array.prototype.slice.call((r||document).querySelectorAll(s)); };
+
+  // header משותף — מוכפל לכל מסך שאינו כניסה/המתנה
+  var hdr = $('#hdr-tpl').content;
+  var roles = { menu:['מחשב בנייה','BUILD-01'], room:['מחשב בנייה','BUILD-01'], cloner:['מחשב שיכפול 2','CLONER-02'], restore:['מחשב בנייה','BUILD-01'], standby:['מחשב שיכפול 2','CLONER-02'] };
+  Object.keys(roles).forEach(function(id){
+    var s = $('#s-' + id), h = document.importNode(hdr, true);
+    h.querySelector('[data-role]').textContent = roles[id][0];
+    h.querySelector('[data-host]').textContent = roles[id][1];
+    s.insertBefore(h, s.firstChild);
+  });
+  function tick(){ var d = new Date(); $$('#clock').forEach(function(c){ c.textContent = ('0'+d.getHours()).slice(-2) + ':' + ('0'+d.getMinutes()).slice(-2); }); }
+  tick(); setInterval(tick, 15000);
+
+  // הגרפיקה ממסך הכניסה — אותו SVG, לשני המקומות
+  var ART = '<svg viewBox="0 0 800 900" preserveAspectRatio="xMidYMid slice"><defs><pattern id="mach" width="100" height="90" patternUnits="userSpaceOnUse"><rect x="8" y="8" width="84" height="74" rx="3" fill="var(--art-a)"/><rect x="18" y="20" width="64" height="8" rx="2" fill="var(--art-b)"/><rect x="18" y="34" width="64" height="8" rx="2" fill="var(--art-b)"/><rect x="18" y="48" width="40" height="8" rx="2" fill="var(--art-c)"/></pattern></defs>'
+    + '<rect width="800" height="900" fill="url(#mach)" opacity=".9"/><polygon points="0,0 800,0 800,900 0,900" fill="var(--art-bg)" opacity=".55"/><polygon points="0,0 800,0 800,300" fill="var(--art-bg)" opacity=".6"/>'
+    + '<g transform="translate(560,120)"><rect x="0" y="0" width="120" height="30" rx="3" fill="var(--art-server)"/><rect x="0" y="36" width="120" height="30" rx="3" fill="var(--art-server)" opacity=".7"/><circle cx="12" cy="15" r="3" fill="#C25400"/><circle cx="12" cy="51" r="3" fill="#9AADB8"/></g>'
+    + '<g fill="none" stroke="var(--art-line)" stroke-width="1.5" stroke-linecap="round"><path d="M620 190 V 330"/><path d="M620 330 H 130" stroke-dasharray="6 8"/><path d="M130 330 V 800" stroke-dasharray="6 8"/><path d="M300 330 V 800" stroke-dasharray="6 8"/><path d="M470 330 V 800" stroke-dasharray="6 8"/><path d="M620 330 V 800" stroke-dasharray="6 8"/></g><g>';
+  var M = [[88,380,'c','c','g'],[258,380,'c','g','c'],[428,380,'g','c','c'],[578,380,'c','c','o'],[88,560,'c','c',null],[258,560,'g','c','c'],[428,560,'c','c','g'],[578,560,'c','g','c']];
+  var F = { c:'var(--art-c)', g:'#318700', o:'#C25400' };
+  M.forEach(function(m){
+    ART += '<rect x="'+m[0]+'" y="'+m[1]+'" width="84" height="74" rx="3" fill="var(--art-b)"/>';
+    [m[2],m[3],m[4]].forEach(function(k,i){ if(!k) return; var op = k==='c' ? '' : ' opacity=".55"'; ART += '<rect x="'+(m[0]+10)+'" y="'+(m[1]+12+i*14)+'" width="'+(i===2?40:64)+'" height="8" rx="2" fill="'+F[k]+'"'+op+'/>'; });
+  });
+  ART += '</g></svg>';
+  $$('[data-art]').forEach(function(a){ a.innerHTML = ART; });
+
+  // חדר השיכפול — 24 מגירות ב-12 מכונות (2–3 דיסקים לכל אחת)
+  var ROOM = [
+    {n:'מחשב 1',ip:'.118',st:'גל 2 · כותב',cls:'active',d:[['ok',42],['ok',42]]},
+    {n:'מחשב 2',ip:'.59',st:'גל 2 · כותב · דיסק 3 ממתין',cls:'warn',d:[['ok',42],['ok',42],['warn',-1]],ask:true},
+    {n:'מחשב 3',ip:'.61',st:'גל 2 · כותב',cls:'active',d:[['ok',41],['ok',41]]},
+    {n:'מחשב 4',ip:'.62',st:'גל 2 · כותב · דיסק 2 נכשל',cls:'bad',d:[['ok',42],['bad',0],['ok',42]]},
+    {n:'מחשב 5',ip:'.63',st:'גל 2 · כותב',cls:'active',d:[['ok',42],['ok',42]]},
+    {n:'מחשב 6',ip:'.64',st:'גל 2 · כותב',cls:'active',d:[['ok',40],['ok',40],['ok',40]]},
+    {n:'מחשב 7',ip:'.65',st:'גל 1 · הושלם — החליפו מגירות',cls:'',d:[['done',100],['done',100]]},
+    {n:'מחשב 8',ip:'.66',st:'גל 1 · הושלם — החליפו מגירות',cls:'',d:[['done',100],['done',100],['done',100]]},
+    {n:'מחשב 9',ip:'.67',st:'ער · 2 מגירות מוכנות לגל הבא',cls:'',d:[['idle',0],['idle',0]]},
+    {n:'מחשב 10',ip:'.68',st:'ער · 3 מגירות מוכנות לגל הבא',cls:'',d:[['idle',0],['idle',0],['idle',0]]},
+    {n:'מחשב 11',ip:'.69',st:'כבוי',cls:'off',off:true,d:[['idle',0],['idle',0]]},
+    {n:'מחשב 12',ip:'.70',st:'כבוי · לא הצטרף לסבב',cls:'off',off:true,d:[['idle',0],['idle',0],['idle',0]]}
+  ];
+  var g = $('#room-grid'), html = '';
+  ROOM.forEach(function(m){
+    html += '<div class="node '+m.cls+'"><div class="nm"><b>'+m.n+'</b><span><small>10.10.10'+m.ip+'</small> <i class="'+(m.off?'off':'')+'"></i></span></div><div class="st">'+m.st+'</div><div class="disks">';
+    m.d.forEach(function(d,i){
+      var cls = d[0]==='ok' ? 'ok' : d[0], pct = d[1] < 0 ? 'המשך?' : (d[0]==='bad' ? 'דילוג' : d[1] + '%');
+      var w = d[1] < 0 ? 0 : d[1], bcls = d[0]==='ok' ? '' : d[0];
+      html += '<div class="disk '+cls+'"><span class="lbl">דיסק '+(i+1)+'<small>256 GB</small></span><div class="bar '+bcls+'"><b style="width:'+w+'%"></b></div><span class="pct">'+pct+'</span></div>';
+    });
+    html += '</div>';
+    if (m.ask) html += '<div class="ask"><span>דיסק 3 — אזהרת SMART (5=12). להמשיך?</span><div class="row"><button class="go">כתוב בכל זאת</button><button>דלג</button></div></div>';
+    html += '</div>';
+  });
+  g.innerHTML = html;
+
+  // ניווט, רזולוציה, admin, ערכה
+  function go(id){
+    var notes = id === 'notes';
+    $('.viewport').classList.toggle('hidden', notes);
+    $('#s-notes').classList.toggle('on', notes);
+    $$('#stage > .screen').forEach(function(s){ s.classList.toggle('on', s.id === 's-' + id); });
+    $$('.mockbar [data-go]').forEach(function(b){ b.classList.toggle('on', b.dataset.go === id); });
+  }
+  function fit(){
+    var st = $('#stage'), vp = $('.viewport'), w = st.offsetWidth, h = st.offsetHeight;
+    var k = Math.min(vp.clientWidth / w, vp.clientHeight / h, 1);
+    st.style.transform = 'scale(' + k + ')';
+    st.style.margin = k < 1 ? (-(h - h*k)/2) + 'px ' + (-(w - w*k)/2) + 'px' : '0';
+  }
+  window.addEventListener('resize', fit); fit();
+  var admin = true;
+  function setAdmin(v){ admin = v; $('#card-capture').classList.toggle('hidden', !v); $('#cards').classList.toggle('three', !v); $('#admin-toggle').textContent = 'admin: ' + (v ? 'כן' : 'לא'); }
+  $('#admin-toggle').addEventListener('click', function(){ setAdmin(!admin); });
+  document.addEventListener('click', function(e){
+    var t = e.target.closest('[data-go]'); if (t){ go(t.dataset.go); return; }
+    var r = e.target.closest('[data-res]'); if (r){ $('#stage').classList.toggle('sq', r.dataset.res === 'sq'); $$('[data-res]').forEach(function(b){ b.classList.toggle('on', b === r); }); fit(); return; }
+    var eye = e.target.closest('[data-eye]');
+    if (eye){ var i = $('#' + eye.dataset.eye); i.type = i.type === 'password' ? 'text' : 'password'; eye.textContent = i.type === 'password' ? 'הצג' : 'הסתר'; return; }
+    var im = e.target.closest('.img'); if (im){ $$('.img').forEach(function(x){ x.classList.toggle('sel', x === im); }); }
+  });
+  $('#theme-toggle').addEventListener('click', function(){
+    var root = document.documentElement, dark = root.dataset.theme !== 'dark';
+    root.dataset.theme = dark ? 'dark' : 'light';
+    this.textContent = dark ? 'מצב בהיר' : 'מצב כהה';
+  });
+  // 5. אישור השחזור: הכפתור נדלק רק כשההקלדה זהה לשם המכונה — ראיה חיובית
+  $('#rname').addEventListener('input', function(){ $('#r-go').disabled = this.value.trim() !== 'BUILD-01'; });
+  // הקלדת מספר בתפריט = בחירת כרטיס
+  document.addEventListener('keydown', function(e){
+    if (!$('#s-menu').classList.contains('on')) return;
+    var n = parseInt(e.key, 10), cards = $$('#cards .card:not(.hidden)');
+    if (n >= 1 && n <= cards.length){ cards.forEach(function(c, i){ c.classList.toggle('sel', i === n - 1); }); }
+  });
+
+  // קישור עמוק: #room, #cloner.light, #room.sq
+  var h = (location.hash || '').slice(1).split('.');
+  if (h.indexOf('light') > 0) $('#theme-toggle').click();
+  if (h.indexOf('sq') > 0) $('[data-res=sq]').click();
+  if (h[0]) go(h[0]);
+})();
+</script>
+</body>
+</html>

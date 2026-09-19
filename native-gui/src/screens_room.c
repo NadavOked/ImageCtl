@@ -37,7 +37,7 @@ static int room_selection_override(const App *a, const Machine *m, int port,
  * disks read as one comfortable rectangle rather than filling the whole card. */
 /* max_slots 0 = the live grid: the body is one .native-bar, not slots. */
 static RoomGrid room_grid_make(cairo_t *cr, double w, int n, int max_slots,
-                               double budget_h) {
+                               int wanted_cols, double budget_h) {
     RoomGrid g;
     memset(&g, 0, sizeof g);
     g.gap = N_ROOM_GAP;
@@ -46,8 +46,7 @@ static RoomGrid room_grid_make(cairo_t *cr, double w, int n, int max_slots,
     if (n <= 0) return g;
     if (max_slots > MAX_DRAWERS) max_slots = MAX_DRAWERS;
 
-    int want_cols = w >= N_NARROW_W ? 4 : 2;                 /* .room-grid: repeat(4,1fr) */
-    g.cols = n < want_cols ? n : want_cols;
+    g.cols = n < wanted_cols ? n : wanted_cols;
     g.rows = (n + g.cols - 1) / g.cols;
     g.card_w = (w - (g.cols - 1) * g.gap) / g.cols;
 
@@ -200,9 +199,9 @@ static void room_grid_draw(App *a, cairo_t *cr, double x, double y,
     }
 }
 
-/* The live round as .room-node tiles: name + dot, the status line of
- * room.js machineRows (as Pango markup, colours kept), and a .native-bar with
- * the machine's progress -- yellow for a partial ending, red for failed. */
+/* The live round as .room-node tiles.  The protocol has one progress value
+ * per machine and SMART per physical drawer, so every drawer gets its own
+ * labelled bar with the machine progress and its own health colour. */
 static void room_live_grid_draw(App *a, cairo_t *cr, double x, double y, double w,
                                 const RoomGrid *g, int wave_open) {
     const Theme *t = a->theme;
@@ -224,13 +223,32 @@ static void room_live_grid_draw(App *a, cairo_t *cr, double x, double y, double 
         Text small = text_make_markup(cr, FONT_SANS, N_NODE_SUB, 400, mk, (int)(item.w - 2*N_ROOM_PAD), DIR_RTL);
         if (!on) cairo_push_group(cr);                       /* .room-row.dim{opacity:.55} */
         Rect body = room_node_chrome(a, cr, item, g, m->name[0] ? m->name : m->mac, 0, 0,
-                                     failed ? ROOM_BAD : partial ? t->warn : on ? t->led_ok : t->hair,
+                  failed ? t->danger : partial ? t->warn : on ? t->led_ok : t->hair,
                                      failed ? t->danger_line : partial ? t->node_warn_line : on ? t->node_active_line : t->disk_line,
                                      &small);
         text_free(&small);
         int pct = m->pct >= 0 ? m->pct : (!strcmp(m->state, "done") ? 100 : 0);
-        draw_thin_bar(cr, t, (Rect){ body.x, body.y + N_LABEL_GAP, body.w, N_BAR_SM }, pct,
-                      failed ? ROOM_BAD : partial ? t->warn : t->led_write);
+        int slots = m->drawer_count;
+        if (slots < m->nroom_drawers) slots = m->nroom_drawers;
+        if (slots < 1) slots = 1;
+        if (slots > MAX_DRAWERS) slots = MAX_DRAWERS;
+        double slot_h = body.h / slots;
+        for (int port = 1; port <= slots; port++) {
+            const RoomDrawer *d = room_drawer_at(m, port);
+            char size[32] = "—", label[80], percent[16];
+            if (d && d->size_bytes) fmt_bytes(size, sizeof size, (double)d->size_bytes);
+            snprintf(label, sizeof label, "דיסק %d  %s", port, size);
+            snprintf(percent, sizeof percent, "%d%%", pct);
+            Text lt = rtl_block_make(cr, 10, 500, label, body.w - 48);
+            Text pt = text_make(cr, FONT_MONO, 10, 500, percent, 0, DIR_LTR);
+            double sy = body.y + (port - 1) * slot_h;
+            text_draw_r(cr, &lt, body.x + body.w, sy, t->ink);
+            text_draw(cr, &pt, body.x, sy, t->muted);
+            Rgb bar = failed ? t->danger : partial ? t->warn :
+                      d ? smart_color(t, d->smart) : t->bar_done;
+            draw_thin_bar(cr, t, (Rect){body.x, sy + 15, body.w, N_BAR_SM}, pct, bar);
+            text_free(&lt); text_free(&pt);
+        }
         if (!on) { cairo_pop_group_to_source(cr); cairo_paint_with_alpha(cr, N_DIM_ALPHA); }
     }
 }
@@ -240,6 +258,7 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
     const State *s = &a->st;
     double inner = card_width(W) - 2 * N_PAD, in_h = field_height(cr), btn_h = btn_height(cr);
     int ready = 0;
+    int room_cols = H / W >= .7 ? 4 : 6;
     for (int i = 0; i < s->nmachines; i++) if (s->machines[i].awake) ready += s->machines[i].fresh_drawers;
 
     if (!s->has_round) {
@@ -264,7 +283,8 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
         int max_slots = 1;
         for (int i = 0; i < s->nmachines; i++)
             if (s->machines[i].drawer_count > max_slots) max_slots = s->machines[i].drawer_count;
-        RoomGrid grid = room_grid_make(cr, inner, s->nmachines, max_slots, (H-head_h-N_STATUS_H)/2);
+        RoomGrid grid = room_grid_make(cr, inner, s->nmachines, max_slots,
+                                       room_cols, (H-head_h-N_STATUS_H)/2);
         Text err = error_make(cr, s->room_error, inner);
         double err_h = dmax(err.h, ERROR_MIN_H);
         double grid_h = s->nmachines ? grid.total_h : text_line_height(cr, FONT_SANS, N_SUB);
@@ -337,7 +357,14 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
     Head hd = head_make(cr, "הפצה למחשבי שיכפול", sub, inner);
     ProgLine pl = progline_make(cr, count, "כוננים שנכתבו", inner);
     Text hint_t = alert_make(cr, hint, inner);                  /* .native-alert */
-    RoomGrid grid = room_grid_make(cr, inner, s->nmachines, 0, (H-head_h-N_STATUS_H)/2);
+    int live_slots = 1;
+    for (int i = 0; i < s->nmachines; i++) {
+        int slots = s->machines[i].nroom_drawers;
+        if (slots < s->machines[i].drawer_count) slots = s->machines[i].drawer_count;
+        if (slots > live_slots) live_slots = slots;
+    }
+    RoomGrid grid = room_grid_make(cr, inner, s->nmachines, live_slots,
+                                   room_cols, (H-head_h-N_STATUS_H)/2);
     double rows_h = s->nmachines ? grid.total_h : text_line_height(cr, FONT_SANS, N_SUB);
     Text cl = { NULL, 0, 0 };
     double confirm_h = 0;
@@ -358,7 +385,9 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
     card_frame(a, cr, W, H, head_h, &hd, body_h, foot_height(cr, btn_h), &body, &foot);
     body_clip_begin(a, cr, body);
     double x = body.x + N_PAD, y = body.y + N_PAD;
-    progline_draw(cr, t, &pl, x, y, inner);              y += pl.h + N_LABEL_GAP;
+    text_draw_r(cr, &pl.big, x + inner, y, t->ink);
+    text_draw_r(cr, &pl.small, x + inner - pl.big.w - 10, y + pl.drop, t->ink);
+    text_free(&pl.big); text_free(&pl.small);             y += pl.h + N_LABEL_GAP;
     draw_big_bar(cr, t, (Rect){ x, y, inner, N_BAR_H }, pct, 0); y += N_BAR_H + N_ACTION_GAP;
     draw_alert(cr, t, (Rect){ x, y, inner, alert_height(&hint_t) }, &hint_t); y += alert_height(&hint_t) + N_CHOICE_GAP;
     room_live_grid_draw(a, cr, x, y, inner, &grid, s->wave_open); y += rows_h;
@@ -377,4 +406,3 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
     card_end(a, cr);
     text_free(&hint_t); text_free(&err);
 }
-

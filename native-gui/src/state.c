@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include "state.h"
 
 static char EMPTY[1] = "";
@@ -57,9 +58,28 @@ void state_parse(State *s, FILE *fp) {
     memset(s, 0, sizeof *s);
     s->pct = -1;                                  /* no total known until said */
     s->elapsed_s = s->eta_s = -1; s->rate_bps = -1;   /* #410: unmeasured until said */
-    char line[1024];
+    s->hello_age = -1;
+    s->hello_rc = -1;
+    int reported_long = 0, reported_disks = 0, reported_machines = 0;
+    char line[4096];
     while (fgets(line, sizeof line, fp)) {
-        line[strcspn(line, "\r\n")] = 0;
+        size_t len = strlen(line);
+        if (len == 0 || line[len - 1] != '\n') {
+            /* Reject the whole physical line. Keeping the prefix can end in
+             * half a UTF-8 character, and the remainder would otherwise be
+             * parsed as a second bogus key (R44 finding 1). A final line with
+             * no newline is rejected by the same complete-record rule. */
+            int ch;
+            while ((ch = fgetc(fp)) != EOF && ch != '\n') {}
+            s->rejected_lines++;
+            if (!reported_long) {
+                fprintf(stderr, "native-gui: state: unterminated or overlong line rejected\n");
+                reported_long = 1;
+            }
+            continue;
+        }
+        line[--len] = 0;
+        if (len && line[len - 1] == '\r') line[len - 1] = 0;
         if (!line[0] || line[0] == '#') continue;
         char *eq = strchr(line, '=');
         if (!eq) continue;
@@ -67,7 +87,15 @@ void state_parse(State *s, FILE *fp) {
         const char *key = line;
         char *val = eq + 1, *f[12];
 #define KEY(k) (strcmp(key, k) == 0)
-        if (KEY("disk") && s->ndisks < MAX_DISKS) {
+        if (KEY("disk")) {
+            if (s->ndisks >= MAX_DISKS) {
+                s->hidden_disks++;
+                if (!reported_disks) {
+                    fprintf(stderr, "native-gui: state: too many disks (max %d); extra rows hidden\n", MAX_DISKS);
+                    reported_disks = 1;
+                }
+                continue;
+            }
             split(val, f, 5);
             Disk *d = &s->disks[s->ndisks++];
             cp(d->dev, sizeof d->dev, f[0]); cp(d->model, sizeof d->model, f[1]);
@@ -79,7 +107,15 @@ void state_parse(State *s, FILE *fp) {
             split(val, f, 3);
             Image *im = &s->images[s->nimages++];
             cp(im->id, sizeof im->id, f[0]); cp(im->name, sizeof im->name, f[1]); cp(im->folder, sizeof im->folder, f[2]);
-        } else if (KEY("machine") && s->nmachines < MAX_MACHINES) {
+        } else if (KEY("machine")) {
+            if (s->nmachines >= MAX_MACHINES) {
+                s->hidden_machines++;
+                if (!reported_machines) {
+                    fprintf(stderr, "native-gui: state: too many machines (max %d); extra rows hidden\n", MAX_MACHINES);
+                    reported_machines = 1;
+                }
+                continue;
+            }
             split(val, f, 9);
             Machine *m = &s->machines[s->nmachines++];
             cp(m->name, sizeof m->name, f[0]); cp(m->mac, sizeof m->mac, f[1]);
@@ -195,6 +231,14 @@ void state_parse(State *s, FILE *fp) {
         else if (KEY("menu_class"))   s->menu_class = num(val, 0) != 0;
         else if (KEY("menu_tools"))   s->menu_tools = num(val, 0) != 0;   /* v1: off */
         else if (KEY("machine_name")) cp(s->machine_name, sizeof s->machine_name, val);   /* #1073 */
+        else if (KEY("hello_age")) {
+            unsigned long long v;
+            if (parse_uint(val, &v) && v <= INT_MAX) s->hello_age = (int)v;
+        }
+        else if (KEY("hello_rc")) {
+            unsigned long long v;
+            if (parse_uint(val, &v) && v <= 999) s->hello_rc = (int)v;
+        }
         else if (KEY("partition"))    s->partition = num(val, 0);
         else if (KEY("bytes"))        s->bytes = strtoull(val, NULL, 10);
         else if (KEY("title"))        cp(s->title, sizeof s->title, val);
@@ -229,6 +273,17 @@ void state_parse(State *s, FILE *fp) {
         else fprintf(stderr, "native-gui: state: unknown key '%s' ignored\n", key);
 #undef KEY
     }
+    int hidden = s->hidden_disks + s->hidden_machines;
+    if (s->rejected_lines && hidden)
+        snprintf(s->state_warning, sizeof s->state_warning,
+                 "קובץ המצב חלקי: %d שורות נדחו · +%d נוספים, לא מוצגים",
+                 s->rejected_lines, hidden);
+    else if (s->rejected_lines)
+        snprintf(s->state_warning, sizeof s->state_warning,
+                 "קובץ המצב חלקי: %d שורות ארוכות או לא שלמות נדחו", s->rejected_lines);
+    else if (hidden)
+        snprintf(s->state_warning, sizeof s->state_warning,
+                 "+%d נוספים, לא מוצגים", hidden);
 }
 
 int state_poll(StateFile *f, State *s) {
@@ -238,11 +293,19 @@ int state_poll(StateFile *f, State *s) {
         return -1;
     }
     f->complained = 0;
-    if (f->loaded && st.st_mtime == f->mtime && st.st_size == f->size) return 0;
+    time_t now = time(NULL);
+    int stale = now != (time_t)-1 && now > st.st_mtime && now - st.st_mtime > 10;
+    if (f->loaded && st.st_mtime == f->mtime && st.st_size == f->size) {
+        if (s->stale != stale) { s->stale = stale; return 1; }
+        return 0;
+    }
     FILE *fp = fopen(f->path, "r");
     if (!fp) { perror(f->path); return -1; }
-    state_parse(s, fp);
+    State next;
+    state_parse(&next, fp);
     fclose(fp);
+    next.stale = stale;
+    *s = next;
     f->mtime = st.st_mtime; f->size = st.st_size; f->loaded = 1;
     return 1;
 }

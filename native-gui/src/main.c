@@ -42,7 +42,7 @@ static const char *USAGE =
 "usage: imagectl-station-gui [--mac AA:BB:CC:DD:EE:FF] [--ip 10.0.0.5] [--title T]\n"
 "                            [--theme light|dark] [--backend auto|drm|fbdev|mem] [--fb-file PATH]\n"
 "                            [--auth-cmd CMD | --demo] [--state FILE] [--no-input]\n"
-"                            [--screen progress|class|cloner] [--signed-in USER [--role admin|deploy]]\n"
+"                            [--screen progress|class|cloner|standby] [--signed-in USER [--role admin|deploy]]\n"
 "       imagectl-station-gui --png PREFIX [--size WxH] [--state FILE] [--mac ..] [--ip ..] [--user NAME]\n"
 "  --png renders every card, both themes, to PREFIX-<card>-{light,dark}.png and exits\n"
 "  (no display needed). Without --state it uses built-in sample data.\n"
@@ -233,7 +233,7 @@ static int visible_card_ids(const App *a, int ids[5]) {
     ids[n++] = HIT_DIRECT;
     ids[n++] = HIT_RESTORE;
     if (a->admin) ids[n++] = HIT_CAPTURE;
-    if (a->st.menu_class) ids[n++] = HIT_CLASSES;
+    if (a->st.menu_class) ids[n++] = HIT_CLASSES;   /* #1081: v1 off, v1.2 on */
     return n;
 }
 
@@ -527,6 +527,7 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
             if (a->dd_open == HIT_FOLDER) a->folder_sel = i;
             else if (a->dd_open == HIT_ROOM_IMAGE) a->image_sel = i;
             else if (a->dd_open == HIT_RESTORE_IMAGE) a->restore_image_sel = i;
+            else if (a->screen == SCREEN_RESTORE && i < a->st.nimages) a->restore_image_sel = i + 1;
             a->dd_open = 0;
             break;
         }
@@ -545,6 +546,7 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
         }
         switch (id) {
         case HIT_THEME:  a->theme = a->theme == &THEME_DARK ? &THEME_LIGHT : &THEME_DARK; break;
+        case HIT_LOGOUT: a->signed_in = 0; a->mode = MODE_MENU; a->focus = HIT_USER; break;
         case HIT_USER: case HIT_PASS: case HIT_NAME: case HIT_DESC: case HIT_FOLDER_NEW:
         case HIT_ROOM_TARGET: case HIT_ROOM_CONFIRM: case HIT_CLASS_CONFIRM:
         case HIT_RESTORE_CONFIRM: case HIT_TOOL_ARG: case HIT_TOOL_CONFIRM:
@@ -592,6 +594,31 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
         break;
     }
     case UIEV_CHAR: {
+        if (a->screen == SCREEN_MENU && e->ch >= '1' && e->ch <= '5') {
+            int ids[5], n = visible_card_ids(a, ids), k = e->ch - '1';
+            if (k < n) a->menu_focus = k;
+            break;
+        }
+        if (a->screen == SCREEN_RESTORE && e->ch >= '1' && e->ch <= '9') {
+            int image = e->ch - '0';
+            if (image <= a->st.nimages) a->restore_image_sel = image;
+            break;
+        }
+        if (a->screen == SCREEN_RESTORE && a->st.nimages > 0 &&
+            (e->ch == '[' || e->ch == ']')) {
+            int image = a->restore_image_sel;
+            if (image < 1) image = 1;
+            else if (e->ch == ']') image = image == a->st.nimages ? 1 : image + 1;
+            else image = image == 1 ? a->st.nimages : image - 1;
+            a->restore_image_sel = image;
+            break;
+        }
+        if (a->screen == SCREEN_ROOM && (e->ch == 'w' || e->ch == 'W')) { emit1("room-wake"); break; }
+        if (a->screen == SCREEN_ROOM && (e->ch == 'n' || e->ch == 'N')) { emit1("room-start"); break; }
+        if (a->screen == SCREEN_CLONER && a->st.smart_pending) {
+            if (e->ch == 's' || e->ch == 'S') { emit_smart(a, "smart-skip"); break; }
+            if (e->ch == 'r' || e->ch == 'R') { emit_smart(a, "smart-replace"); break; }
+        }
         size_t n; char *buf = field_buf(a, a->focus, &n);
         if (!buf || !field_visible(a, a->focus)) break;
         if (a->focus == HIT_ROOM_TARGET && (e->ch < '0' || e->ch > '9')) break;   /* type=number */
@@ -599,7 +626,13 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
         break;
     }
     case UIEV_KEY: {
-        if (e->key == KEYSYM_ESC) { a->dd_open = 0; break; }
+        if (e->key == KEYSYM_ESC) {
+            if (a->dd_open) { a->dd_open = 0; break; }
+            if (a->screen == SCREEN_MENU) { a->signed_in = 0; a->mode = MODE_MENU; a->focus = HIT_USER; break; }
+            if (a->screen == SCREEN_ROOM && a->st.has_round) { close_round(a, &a->room_confirming, a->room_confirm, HIT_ROOM_CONFIRM, "room-close"); break; }
+            if (a->screen == SCREEN_RESTORE || a->screen == SCREEN_PICK || a->screen == SCREEN_ROOM || a->screen == SCREEN_TOOLS) { go_menu(a); emit1("back"); break; }
+            break;
+        }
         if (a->screen == SCREEN_MENU) {
             int ids[5], n = visible_card_ids(a, ids);
             if (e->key == KEYSYM_TAB)        a->menu_focus = (a->menu_focus + 1) % n;
@@ -613,7 +646,14 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
             for (int i = 0; i < n; i++) if (ids[i] == a->focus) k = i + 1;
             a->focus = ids[k % n];
         } else if (e->key == KEYSYM_ENTER) {
-            if (a->screen == SCREEN_LOGIN) do_login(a, auth_cmd, demo);   /* the only <form> that submits */
+            if (a->screen == SCREEN_LOGIN) do_login(a, auth_cmd, demo);
+            else if (a->screen == SCREEN_RESTORE && a->restore_image_sel > 0 &&
+                     !strcmp(a->restore_confirm, a->st.machine_name)) start_restore(a);
+            else if (a->screen == SCREEN_CLONER && a->st.smart_pending)
+                emit_smart(a, !strcmp(a->st.smart_verdict, "failed_last") ? "smart-skip" : "smart-rescue");
+            else if (a->screen == SCREEN_PICK) start_capture(a);
+            else if (a->screen == SCREEN_DONE) { a->showing_done = 0; go_menu(a); emit1("again"); }
+            else if (a->screen == SCREEN_CLASS && a->st.has_session) { if (class_gate(a)) emit1("class-start"); }
         } else if (e->key == KEYSYM_BACKSPACE) {
             size_t bn; char *buf = field_buf(a, a->focus, &bn);
             if (buf && field_visible(a, a->focus)) field_backspace(buf);
@@ -634,6 +674,7 @@ static void after_reload(App *a) {
         snprintf(a->st.msg_sub, sizeof a->st.msg_sub, "הדף נפתח בלי ?mac= — הסוכן אמור לספק אותו.");
     }
     if (a->st.toast[0]) toast(a, a->st.toast);
+    if (a->st.stale) toast(a, "הסוכן לא מעדכן מצב");
     if (a->chosen_disk >= a->st.ndisks) a->chosen_disk = -1;
     if (a->folder_sel > a->st.nfolders) a->folder_sel = 0;
     if (a->image_sel > a->st.nimages) a->image_sel = 0;
@@ -704,14 +745,15 @@ static void sample_state(State *s) {
     s->smart_pending = 1; s->smart_port = 2;
     snprintf(s->smart_nonce, sizeof s->smart_nonce, "1-2");
     snprintf(s->smart_verdict, sizeof s->smart_verdict, "fail");
-    snprintf(s->smart_reason, sizeof s->smart_reason, "pending");
+    snprintf(s->smart_reason, sizeof s->smart_reason, "health_failed");   /* smart.sh vocabulary */
     snprintf(s->msg_title, sizeof s->msg_title, "המחשב אינו רשום");
     snprintf(s->msg_sub, sizeof s->msg_sub, "רשמו אותו בקונסולה כמחשב בניית אימג'ים ורעננו.");
     snprintf(s->machine_name, sizeof s->machine_name, "BUILD-01");   /* #1073: the restore card's confirm field */
+    s->hello_age = 4; s->hello_rc = 200;
 }
 
 static const char *PNG_CARDS[] = { "login", "menu", "pick", "progress", "done", "room", "room-live",
-                                   "class", "class-live", "cloner", "message", "restore", "direct",
+                                   "class", "class-live", "cloner", "standby", "message", "restore", "direct",
                                    "tools", "tools-confirm", "tools-output" };
 
 /* Put the App in the state that routes to <card>; the flags that override
@@ -721,7 +763,7 @@ static void png_setup(App *a, const State *base, const char *card) {
     a->st = *base;
     a->st.msg_title[0] = a->st.msg_sub[0] = 0;
     a->st.task = TASK_NONE; a->st.has_round = 0; a->st.has_session = 0;
-    a->showing_done = a->watching = a->force_progress = a->force_cloner = 0;
+    a->showing_done = a->watching = a->force_progress = a->force_cloner = a->force_standby = 0;
     a->signed_in = 1; a->admin = 1; a->mode = MODE_MENU;
     a->chosen_disk = -1; a->room_confirming = a->class_confirming = 0; a->dd_open = 0;
     snprintf(a->signed_user, sizeof a->signed_user, "%s", a->user[0] ? a->user : "admin");
@@ -734,7 +776,13 @@ static void png_setup(App *a, const State *base, const char *card) {
     else if (!strcmp(card, "direct"))   { a->mode = MODE_DIRECT; a->room_target_set = 0; a->nroom_selection = 0; }   /* #715 */
     else if (!strcmp(card, "class"))    { a->mode = MODE_CLASSES; }
     else if (!strcmp(card, "class-live")){ a->mode = MODE_CLASSES; a->st.has_session = 1; }
-    else if (!strcmp(card, "cloner"))   { a->force_cloner = 1; }
+    else if (!strcmp(card, "cloner"))   { a->force_cloner = 1;
+                                          /* #1090: an idle cloner routes to SCREEN_STANDBY (app_route), so
+                                           * a state file with no cloner data -- a build machine's -- gets
+                                           * sample cloner data here: the mirror of "standby" clearing it. */
+                                          if (!base->ndrawers && !base->cloner_image[0] && !base->smart_pending)
+                                              snprintf(a->st.cloner_image, sizeof a->st.cloner_image, "Office 2024 — סטנדרט"); }
+    else if (!strcmp(card, "standby"))  { a->force_standby = 1; a->st.ndrawers = 0; a->st.cloner_image[0] = 0; a->st.smart_pending = 0; }
     else if (!strcmp(card, "message"))  { snprintf(a->st.msg_title, sizeof a->st.msg_title, "%s", base->msg_title);
                                           snprintf(a->st.msg_sub, sizeof a->st.msg_sub, "%s", base->msg_sub); }
     else if (!strcmp(card, "restore"))  { a->mode = MODE_RESTORE; if (base->nimages) a->restore_image_sel = 1; }
@@ -775,7 +823,7 @@ static int render_png(App *a, const State *base, const char *prefix, int w, int 
         if (st != CAIRO_STATUS_SUCCESS) { fprintf(stderr, "native-gui: %s: %s\n", path, cairo_status_to_string(st)); return 1; }
         /* the route must have landed on the card we asked for -- positive evidence */
         static const Screen want[] = { SCREEN_LOGIN, SCREEN_MENU, SCREEN_PICK, SCREEN_PROGRESS, SCREEN_DONE,
-                                       SCREEN_ROOM, SCREEN_ROOM, SCREEN_CLASS, SCREEN_CLASS, SCREEN_CLONER, SCREEN_MESSAGE,
+                                       SCREEN_ROOM, SCREEN_ROOM, SCREEN_CLASS, SCREEN_CLASS, SCREEN_CLONER, SCREEN_STANDBY, SCREEN_MESSAGE,
                                        SCREEN_RESTORE,
                                        SCREEN_ROOM, /* "direct" (#715): the room screen in MODE_DIRECT */
                                        SCREEN_TOOLS, SCREEN_TOOLS, SCREEN_TOOLS /* #649: list, confirm, output */ };
@@ -794,11 +842,13 @@ static int render_png(App *a, const State *base, const char *prefix, int w, int 
 int main(int argc, char **argv) {
     App a;
     memset(&a, 0, sizeof a);
-    a.theme = &THEME_LIGHT;                         /* index.html: light unless chosen */
+    a.theme = &THEME_DARK;                          /* approved native mockup: dark by default */
     a.focus = HIT_USER;
     a.menu_focus = -1;
     a.chosen_disk = -1;
     a.st.pct = -1;
+    a.st.hello_age = -1;
+    a.st.hello_rc = -1;
     snprintf(a.title, sizeof a.title, "מחשב בניית אימג'ים");
     const char *auth_cmd = NULL, *png = NULL, *backend = "auto", *fb_file = NULL, *screen = NULL, *role = "deploy";
     StateFile sf_state; memset(&sf_state, 0, sizeof sf_state);
@@ -830,8 +880,9 @@ int main(int argc, char **argv) {
     if (screen) {
         if (!strcmp(screen, "progress"))   a.force_progress = 1;
         else if (!strcmp(screen, "class")) a.mode = MODE_CLASSES;
-        else if (!strcmp(screen, "cloner")) { a.force_cloner = 1; a.theme = &THEME_LIGHT; }  /* cloner is light-only */
-        else { fprintf(stderr, "native-gui: --screen must be progress, class or cloner\n%s", USAGE); return 2; }
+        else if (!strcmp(screen, "cloner")) a.force_cloner = 1;
+        else if (!strcmp(screen, "standby")) a.force_standby = 1;
+        else { fprintf(stderr, "native-gui: --screen must be progress, class, cloner or standby\n%s", USAGE); return 2; }
     }
     setvbuf(stdout, NULL, _IOLBF, 0);               /* records reach the agent's pipe as they happen */
 
@@ -916,6 +967,7 @@ int main(int argc, char **argv) {
         int timeout = 2000;
         if (a.toast[0]) { int left = (int)((a.toast_until - now_s()) * 1000) + 1; if (left < timeout) timeout = left > 0 ? left : 1; }
         if (a.tool_running) { timeout = 120; a.tool_spin += 0.4; scene_dirty = 1; }   /* #649: the spinner turns */
+        if (a.screen == SCREEN_STANDBY && timeout > 500) { timeout = 500; scene_dirty = 1; }
         if (in) input_rescan(in);               /* pick up a late/hot-plugged keyboard or mouse */
         int n = in ? input_fill_pollfds(in, fds, 32) : 0;
         int r = poll(n ? fds : NULL, n, timeout);
