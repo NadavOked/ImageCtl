@@ -5,7 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-#include "widgets.h"
+#include "screens_rounds.h"
 
 static double draw_header(App *a, cairo_t *cr, double W) {
     const Theme *t=a->theme;
@@ -102,7 +102,7 @@ static void draw_status(App *a,cairo_t *cr,double W,double H){
     text_draw(cr,&keys,N_STATUS_PAD,bar.y+(bar.h-keys.h)/2,t->muted);text_free(&keys);
 }
 
-static void underlined_field(App *a,cairo_t *cr,Rect r,const char *label,const char *value,int mask,int id){
+static void underlined_field(App *a,cairo_t *cr,Rect r,const char *label,const char *value,int mask,int id,double reserve_right){
     const Theme *t=a->theme; Text l=rtl_block_make(cr,12,400,label,r.w);
     text_draw_r(cr,&l,r.x+r.w,r.y,t->indigo); text_free(&l);
     Rect input={r.x,r.y+16,r.w,34};
@@ -111,8 +111,10 @@ static void underlined_field(App *a,cairo_t *cr,Rect r,const char *label,const c
     char shown[256];
     if(mask&&value[0]){size_t k=0;for(const char *p=value;*p&&k+4<sizeof shown;p++)if((*p&0xc0)!=0x80){memcpy(shown+k,"\xe2\x80\xa2",3);k+=3;}shown[k]=0;}
     else snprintf(shown,sizeof shown,"%s",value);
-    Text v=text_make_field(cr,shown,(int)(input.w-(id==HIT_PASS?46:0)),1);
-    text_draw(cr,&v,input.x,input.y+(input.h-v.h)/2,t->ink);text_free(&v);hit_add(a,input,id);
+    Text v=text_make_field(cr,shown,(int)(input.w-reserve_right),1);
+    cairo_save(cr);cairo_rectangle(cr,input.x,input.y,input.w-reserve_right,input.h);cairo_clip(cr);
+    text_draw(cr,&v,input.x,input.y+(input.h-v.h)/2,t->ink);cairo_restore(cr);
+    text_free(&v);hit_add(a,input,id);
 }
 
 void screen_login(App *a,cairo_t *cr,double W,double H,double head_h){
@@ -132,10 +134,11 @@ void screen_login(App *a,cairo_t *cr,double W,double H,double head_h){
     double y=(usable-content)/2;
     text_draw_r(cr,&title,x+fw,y,t->ink);y+=title.h+6;
     text_draw_r(cr,&lead,x+fw,y,t->muted);y+=lead.h+28;
-    underlined_field(a,cr,(Rect){x,y,fw,50},"שם משתמש",a->user,0,HIT_USER);y+=72;
-    underlined_field(a,cr,(Rect){x,y,fw,50},"סיסמה",a->pass,!a->show_pw,HIT_PASS);
+    underlined_field(a,cr,(Rect){x,y,fw,50},"שם משתמש",a->user,0,HIT_USER,0);y+=72;
     Text eye=text_make(cr,FONT_SANS,12,400,a->show_pw?"הסתר":"הצג",0,DIR_RTL);
-    Rect er={x,y+20,eye.w+8,24};text_draw(cr,&eye,er.x+4,er.y+(er.h-eye.h)/2,t->indigo);hit_add(a,er,HIT_EYE);text_free(&eye);
+    Rect er={x+fw-eye.w-8,y+16+(34-24)/2,eye.w+8,24};
+    underlined_field(a,cr,(Rect){x,y,fw,50},"סיסמה",a->pass,!a->show_pw,HIT_PASS,er.w+8);
+    text_draw(cr,&eye,er.x+4,er.y+(er.h-eye.h)/2,t->indigo);hit_add(a,er,HIT_EYE);text_free(&eye);
     y+=72;
     if(a->error[0]){Text e=rtl_block_make(cr,13,400,a->error,fw);text_draw_r(cr,&e,x+fw,y-16,t->danger);text_free(&e);}
     Text go=btn_label(cr,"כניסה");draw_btn(a,cr,(Rect){x,y,fw,38},&go,BTN_PRIMARY,HIT_SUBMIT);text_free(&go);
@@ -204,20 +207,78 @@ void screen_menu(App *a,cairo_t *cr,double W,double H,double head_h){
     text_free(&title);text_free(&sub);
 }
 
+static const char *standby_probe_warning(const State *s){
+    if(!strcmp(s->disk_probe,"no_ports"))return "אין פורטי SATA בקושחה";
+    if(!strcmp(s->disk_probe,"no_disks"))return "לא חוברו דיסקים";
+    if(!strcmp(s->disk_probe,"unchecked"))return "הדיסקים לא נבדקו";
+    return NULL;
+}
+
+static void standby_disk_row(cairo_t *cr,const Theme *t,double center,double y,double row_w,
+                             const char *label,const char *model,unsigned long long bytes,
+                             const char *smart,int empty){
+    Rect row={center-row_w/2,y,row_w,28};
+    draw_fill_rrect(cr,row,4,t->surface);draw_border_rrect(cr,row,4,t->hair,1);
+    Text name=text_make(cr,FONT_SANS,13,600,label,0,DIR_RTL);
+    Text sep=text_make(cr,FONT_SANS,13,400,"·",0,DIR_RTL);
+    Text detail=text_make(cr,FONT_SANS,13,400,empty?"ריק":model,0,DIR_LTR);
+    char size[32];fmt_bytes(size,sizeof size,(double)bytes);
+    Text sz=text_make(cr,FONT_MONO,13,400,size,0,DIR_LTR);
+    Text health=text_make(cr,FONT_SANS,13,600,smart_he(smart),0,DIR_RTL);
+    double gap=9,total=name.w+gap+sep.w+gap+detail.w;
+    if(!empty)total+=gap+sep.w+gap+sz.w+gap+sep.w+gap+health.w;
+    double right=center+total/2,ty=y+(row.h-name.h)/2;
+    text_draw_r(cr,&name,right,ty,t->ink);right-=name.w+gap;
+    text_draw_r(cr,&sep,right,ty,t->muted);right-=sep.w+gap;
+    text_draw_r(cr,&detail,right,ty,empty?t->muted:t->ink);
+    if(!empty){
+        right-=detail.w+gap;text_draw_r(cr,&sep,right,ty,t->muted);right-=sep.w+gap;
+        text_draw_r(cr,&sz,right,ty,t->ink);right-=sz.w+gap;
+        text_draw_r(cr,&sep,right,ty,t->muted);right-=sep.w+gap;
+        text_draw_r(cr,&health,right,ty,smart_color(t,smart));
+    }
+    text_free(&name);text_free(&sep);text_free(&detail);text_free(&sz);text_free(&health);
+}
+
 void screen_standby(App *a,cairo_t *cr,double W,double H,double head_h){
-    const Theme *t=a->theme;Rect area={0,head_h,W,H-head_h-N_STATUS_H};draw_station_art(cr,t,area,.5);
-    double center=W/2,y=head_h+(area.h-330)/2;Rect mark={center-36,y,72,72};draw_brand_mark(cr,t,mark);y+=94;
-    Text h=text_make(cr,FONT_SANS,30,600,"ממתין לשרת",0,DIR_RTL);text_draw(cr,&h,center-h.w/2,y,t->ink);y+=h.h+8;text_free(&h);
-    Text p=text_make(cr,FONT_SANS,15,400,"אין סבב פתוח. המחשב יצטרף לבד כשייפתח סבב.",0,DIR_RTL);text_draw(cr,&p,center-p.w/2,y,t->muted);y+=p.h+26;text_free(&p);
+    const Theme *t=a->theme;const State *s=&a->st;Rect area={0,head_h,W,H-head_h-N_STATUS_H};draw_station_art(cr,t,area,.5);
+    int cloner=a->force_cloner,compact=W<=1280,rows=0;
+    const char *probe=standby_probe_warning(s);
+    if(probe)rows=1;else if(cloner)rows=3;else rows=s->ndisks<5?s->ndisks:5;
+    double list_h=rows?probe?20:rows*28+(rows-1)*4:0;
+    double after_mark=compact?16:22,after_sub=compact?16:26,before_list=compact?12:18,after_list=compact?14:22;
+    Text h=text_make(cr,FONT_SANS,30,600,"ממתין לשרת",0,DIR_RTL);
+    Text p=text_make(cr,FONT_SANS,15,400,"אין סבב פתוח. המחשב יצטרף לבד כשייפתח סבב.",0,DIR_RTL);
     char addr[256];snprintf(addr,sizeof addr,"%s     %s     imagectl-srv · 10.10.10.1",a->ip[0]?a->ip:"—",a->mac[0]?a->mac:"—");
-    Text ad=text_make(cr,FONT_MONO,22,400,addr,0,DIR_LTR);text_draw(cr,&ad,center-ad.w/2,y,t->ink);y+=ad.h+36;text_free(&ad);
+    Text ad=text_make(cr,FONT_MONO,22,400,addr,0,DIR_LTR);
     char hello[160];
-    if(a->st.hello_age>=0&&a->st.hello_rc>=0)snprintf(hello,sizeof hello,"hello אחרון לפני %d שניות · השרת ענה %d",a->st.hello_age,a->st.hello_rc);
+    if(s->hello_age>=0&&s->hello_rc>=0)snprintf(hello,sizeof hello,"hello אחרון לפני %d שניות · השרת ענה %d",s->hello_age,s->hello_rc);
     else snprintf(hello,sizeof hello,"טרם התקבלה ראיית hello מהסוכן");
-    Text he=text_make(cr,FONT_SANS,13,400,hello,0,DIR_RTL);Rect hb={center-(he.w+48)/2,y,he.w+48,32};draw_fill_rrect(cr,hb,16,t->surface);draw_border_rrect(cr,hb,16,t->hair,1);
+    Text he=text_make(cr,FONT_SANS,13,400,hello,0,DIR_RTL);
+    double content_h=72+after_mark+h.h+8+p.h+after_sub+ad.h+(rows?before_list+list_h:0)+after_list+32;
+    double center=W/2,y=head_h+(area.h-content_h)/2;Rect mark={center-36,y,72,72};draw_brand_mark(cr,t,mark);y+=72+after_mark;
+    text_draw(cr,&h,center-h.w/2,y,t->ink);y+=h.h+8;
+    text_draw(cr,&p,center-p.w/2,y,t->muted);y+=p.h+after_sub;
+    text_draw(cr,&ad,center-ad.w/2,y,t->ink);y+=ad.h;
+    if(rows){
+        y+=before_list;
+        if(probe){Text w=text_make(cr,FONT_SANS,13,600,probe,0,DIR_RTL);text_draw(cr,&w,center-w.w/2,y,t->warn);text_free(&w);y+=list_h;}
+        else if(cloner)for(int port=1;port<=rows;port++){
+            const IdleDisk *d=idle_for_port(s,port);char label[32];snprintf(label,sizeof label,"דיסק %d",port);
+            standby_disk_row(cr,t,center,y,fmin(760,W-2*N_PAD),label,d&&d->model[0]?d->model:"לא זוהה",d?d->size:0,d?d->smart:"unchecked",!d);
+            y+=32;
+        }else for(int i=0;i<rows;i++){
+            const Disk *d=&s->disks[i];
+            standby_disk_row(cr,t,center,y,fmin(760,W-2*N_PAD),d->removable?"מגירה":"דיסק פנימי",d->model[0]?d->model:d->dev,d->size_bytes,"unchecked",0);
+            y+=32;
+        }
+    }
+    y+=after_list;
+    Rect hb={center-(he.w+48)/2,y,he.w+48,32};draw_fill_rrect(cr,hb,16,t->surface);draw_border_rrect(cr,hb,16,t->hair,1);
     struct timespec ts; double pulse=9;
     if(timespec_get(&ts,TIME_UTC)==TIME_UTC) pulse=8+2*(.5+.5*sin((ts.tv_sec+ts.tv_nsec/1e9)*4));
-    draw_led(cr,hb.x+18,hb.y+16,pulse,a->st.hello_rc==200?t->led_ok:t->warn);text_draw_r(cr,&he,hb.x+hb.w-14,hb.y+(hb.h-he.h)/2,t->muted);text_free(&he);
+    draw_led(cr,hb.x+18,hb.y+16,pulse,s->hello_rc==200?t->led_ok:t->warn);text_draw_r(cr,&he,hb.x+hb.w-14,hb.y+(hb.h-he.h)/2,t->muted);
+    text_free(&h);text_free(&p);text_free(&ad);text_free(&he);
 }
 
 static void draw_cursor(cairo_t *cr,double x,double y){

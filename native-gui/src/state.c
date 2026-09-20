@@ -204,6 +204,12 @@ void state_parse(State *s, FILE *fp) {
             const char *cause = (nf >= 6 && !strcmp(sm, "failed_last")) ? f[5] : "";
             if (strcmp(cause, "cable") && strcmp(cause, "disk")) cause = "";
             cp(id->cause, sizeof id->cause, cause);
+        } else if (KEY("disk_probe")) {
+            if (!strcmp(val, "drives") || !strcmp(val, "no_disks") ||
+                !strcmp(val, "no_ports") || !strcmp(val, "unchecked"))
+                cp(s->disk_probe, sizeof s->disk_probe, val);
+            else
+                cp(s->disk_probe, sizeof s->disk_probe, "unchecked");
         } else if (KEY("cloner")) {
             cp(s->cloner_image, sizeof s->cloner_image, val);
         } else if (KEY("smart_prompt")) {

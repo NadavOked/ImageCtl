@@ -27,6 +27,22 @@ Rgb smart_color(const Theme *t, const char *smart) {
     return lvl == 2 ? t->danger : lvl == 1 ? t->warn : t->led_ok;
 }
 
+const char *smart_he(const char *smart) {
+    if (!smart || !smart[0] || !strcmp(smart, "unchecked")) return "לא נבדק";
+    if (!strcmp(smart, "pending")) return "ממתין להכרעה";
+    if (!strcmp(smart, "passed")) return "תקין";
+    if (!strcmp(smart, "failed_last")) return "נכשל בשיכפול הקודם";
+    if (!strcmp(smart, "fail")) return "נכשל";
+    if (!strcmp(smart, "warn")) return "אזהרה";
+    return smart;
+}
+
+const IdleDisk *idle_for_port(const State *s, int port) {
+    for (int i = 0; i < s->nidisks; i++)
+        if (s->idisks[i].port == port) return &s->idisks[i];
+    return NULL;
+}
+
 /* The status span, as Pango markup (room-ok / room-bad / room-warn / sub). */
 void room_status_markup(const App *a, const Machine *m, int mode, char *out, size_t n) {
     char ok[8], bad[8], warn[8], e[640], lbl[96];   /* e: 120 bytes escaped, worst case x5 */

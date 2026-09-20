@@ -152,6 +152,7 @@ typedef struct State {
     ClassGroup classes[MAX_CLASSES];    int nclasses;
     Drawer drawers[MAX_DRAWERS];        int ndrawers;
     IdleDisk idisks[MAX_DRAWERS];       int nidisks;   /* cloner idle inventory */
+    char disk_probe[16];                /* drives / no_disks / no_ports / unchecked */
 
     /* the build machine's own task (station.js drawProgress / drawDone) */
     TaskState task;

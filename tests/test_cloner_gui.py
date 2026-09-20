@@ -593,6 +593,21 @@ def _build_gui(tmp_path: Path) -> Path:
     return binary
 
 
+def _png(binary: Path, prefix: Path, state: Path, size: str = "1280x1024") -> None:
+    env2 = dict(os.environ)
+    fonts_conf = GUI / "fonts.conf"
+    if fonts_conf.exists():
+        env2["FONTCONFIG_FILE"] = str(fonts_conf)
+    run = subprocess.run(
+        [str(binary), "--png", posix(prefix), "--size", size,
+         "--mac", "3C:52:82:A1:00:1F", "--ip", "10.10.10.31",
+         "--state", posix(state)],
+        capture_output=True, text=True, timeout=120, env=env2,
+        stdin=subprocess.DEVNULL,
+    )
+    assert run.returncode == 0, _routing_error(run.stderr)
+
+
 def _png_rgb(path: Path):
     """מפענח PNG (8-bit, RGB/RGBA, filter method 0) בלי תלות חיצונית, ומחזיר
     (width, height, channels, bytes) אחרי ביטול הסינון פר-שורה."""
@@ -701,6 +716,123 @@ def _ink_bounds(px, ch, w, y0, y1, bg, tol=2):
     for y in range(y0, y1):
         base = y * w * ch
         for x in range(w):
+            i = base + x * ch
+            if abs(px[i] - r0) > tol or abs(px[i + 1] - g0) > tol or abs(px[i + 2] - b0) > tol:
+                if x < left: left = x
+                if x > right: right = x
+                if top < 0: top = y
+                bottom = y
+    return left, right, top, bottom
+
+
+def _color_bounds(px, ch, w, x0, x1, y0, y1, rgb, tol=6):
+    """גבולות הפיקסלים בצבע token בתוך מלבן — כמו _ink_bounds, בלי צבעי הרקע."""
+    r0, g0, b0 = rgb
+    left, right, top, bottom = w, -1, -1, -1
+    for y in range(y0, y1):
+        base = y * w * ch
+        for x in range(x0, x1):
+            i = base + x * ch
+            if (abs(px[i] - r0) <= tol and abs(px[i + 1] - g0) <= tol
+                    and abs(px[i + 2] - b0) <= tol):
+                left, right = min(left, x), max(right, x)
+                if top < 0:
+                    top = y
+                bottom = y
+    return left, right, top, bottom
+
+
+@requires_native(
+    ("cc", shutil.which("cc") or shutil.which("gcc")),
+    ("pango/cairo/libdrm", _pkgconfig("pangocairo", "cairo", "libdrm")),
+    why="native-gui נבנה על המעבדה בלבד",
+)
+def test_standby_shows_connected_disks_and_empty_cloner_port(tmp_path):
+    """‏#1170: standby מציג את פורטים 1–3 גם כשפורט 2 חסר מהמלאי.
+
+    שתי תמונות נבדלות רק בשורות cdisk: שמות הדגם והגדלים של פורטים 1 ו-3
+    מוסיפים דיו כהה לעומת שלוש שורות ריקות. בקרה שלילית: screens.c שלפני
+    התיקון מתעלם מ-cdisk בשני המצבים, ולכן מספר פיקסלי הטקסט זהה.
+    """
+    binary = _build_gui(tmp_path)
+    with_disks = tmp_path / "1170-with-disks.txt"
+    without_disks = tmp_path / "1170-without-disks.txt"
+    common = "disk_probe=drives\nmessage=x|y\n"
+    with_disks.write_text(
+        "cdisk=1|sda|Samsung SSD 870 EVO|500107862016|passed|\n"
+        "cdisk=3|sdc|Crucial MX500|1000204886016|warn|\n" + common,
+        encoding="utf-8", newline="\n",
+    )
+    without_disks.write_text(common, encoding="utf-8", newline="\n")
+    _png(binary, tmp_path / "1170-with", with_disks)
+    _png(binary, tmp_path / "1170-without", without_disks)
+
+    _, _, ch1, px1 = _png_rgb(tmp_path / "1170-with-standby-light.png")
+    _, _, ch0, px0 = _png_rgb(tmp_path / "1170-without-standby-light.png")
+    ink = _token("--clr-text")
+    assert _count_color(px1, ch1, ink, tol=6) > _count_color(px0, ch0, ink, tol=6)
+
+    source = (GUI / "src" / "screens.c").read_text(encoding="utf-8")
+    for wording in ("ריק", "אין פורטי SATA בקושחה", "לא חוברו דיסקים",
+                    "הדיסקים לא נבדקו"):
+        assert wording in source
+
+
+@requires_native(
+    ("cc", shutil.which("cc") or shutil.which("gcc")),
+    ("pango/cairo/libdrm", _pkgconfig("pangocairo", "cairo", "libdrm")),
+    why="native-gui נבנה על המעבדה בלבד",
+)
+def test_login_show_password_toggle_is_at_the_right_of_the_field(tmp_path):
+    """‏#1167: "הצג" יושב בקצה הימני של שדה הסיסמה.
+
+    שדה הסיסמה ריק ברינדור, ולכן **כל הדיו** בתוך תיבת השדה (בין תווית
+    "סיסמה" לקו התחתון, בתוך רוחב השדה) הוא הכפתור. מודדים דיו מול צבע
+    הרקע של השדה, לא צבע-טוקן: טקסט 12px מוחלק כמעט אינו פוגע בטוקן
+    המדויק (הגרסה הקודמת של הטסט עברה גם כשהכפתור היה משמאל). בקרה
+    שלילית: `Rect er={x,…}` (הנוסחה הישנה) → הדיו בחצי השמאלי.
+    """
+    binary = _build_gui(tmp_path)
+    state = tmp_path / "1170-login.txt"
+    state.write_text("message=x|y\n", encoding="utf-8", newline="\n")
+    for size in ("1920x1080", "1280x1024"):
+        prefix = tmp_path / f"1170-login-{size}"
+        _png(binary, prefix, state, size)
+        w, h, ch, px = _png_rgb(tmp_path / f"1170-login-{size}-login-light.png")
+        pane = min(600, max(420, w * .32))
+        fw = min(400, pane - 128)
+        field_left = int(w - pane + (pane - fw) / 2)
+        field_right = int(field_left + fw)
+        # רקע הפאנל: פיקסל בתוך השדה, גבוה מעל הטופס (אין שם דיו).
+        bg_i = ((h // 5) * w + (field_left + field_right) // 2) * ch
+        bg = (px[bg_i], px[bg_i + 1], px[bg_i + 2])
+        # קווי השדות: שורות שבהן הדיו (בכל צבע) חוצה >90% מרוחב השדה.
+        # שני קווים — שם משתמש וסיסמה — כל אחד עשוי כמה שורות רצופות.
+        wide = [y for y in range(h // 4, 3 * h // 4)
+                if (lambda b: b[1] - b[0] > fw * .9)(_ink_bounds_x(px, ch, w, field_left, field_right, y, y + 1, bg))]
+        lines: list[list[int]] = []
+        for y in wide:
+            if lines and y - lines[-1][1] <= 2:
+                lines[-1][1] = y
+            else:
+                lines.append([y, y])
+        assert len(lines) >= 2, f"expected two field underlines at {size}, got {lines}"
+        pw_line = lines[1][0]
+        y0, y1 = pw_line - 34, pw_line - 2
+        left, right, top, bottom = _ink_bounds_x(px, ch, w, field_left, field_right, y0, y1, bg)
+        assert right >= 0, f"no ink in the password box at {size} — the toggle is not drawn?"
+        centre = (left + right) / 2
+        assert centre > (field_left + field_right) / 2,             f"show-password toggle ink at columns {left}..{right} (rows {top}..{bottom}), not in the right half at {size}"
+        assert right - left < fw * .5, f"ink spans {right-left}px — more than a toggle; measuring the wrong band?"
+
+
+def _ink_bounds_x(px, ch, w, x0, x1, y0, y1, bg, tol=12):
+    """כמו _ink_bounds, מוגבל לעמודות x0..x1."""
+    r0, g0, b0 = bg
+    left, right, top, bottom = x1, -1, -1, -1
+    for y in range(y0, y1):
+        base = y * w * ch
+        for x in range(x0, x1):
             i = base + x * ch
             if abs(px[i] - r0) > tol or abs(px[i + 1] - g0) > tol or abs(px[i + 2] - b0) > tol:
                 if x < left: left = x
@@ -1041,10 +1173,10 @@ def test_the_gui_says_unchecked_in_words_next_to_a_green_dot():
     הדיסק מציג — ונצבע ירוק: ‏`smart_level` אינו מכיר אותו ולכן הוא רמה 0
     כמו passed. "לא הצלחנו לבדוק" מוצג, לא מוסתר (עיקרון 5)."""
     cloner = (GUI_SRC / "screens_cloner.c").read_text(encoding="utf-8")
-    he = _c_function(cloner, "smart_he")
+    rounds = (GUI_SRC / "screens_rounds.c").read_text(encoding="utf-8")
+    he = _c_function(rounds, "smart_he")
     assert '!strcmp(smart, "unchecked")) return "לא נבדק"' in he
     assert "smart_he(idle->smart)" in cloner                 # תא הבריאות מציג את המילה
-    rounds = (GUI_SRC / "screens_rounds.c").read_text(encoding="utf-8")
     assert "unchecked" not in _c_function(rounds, "smart_level")   # נופל ל-return 0 = ירוק
 
 

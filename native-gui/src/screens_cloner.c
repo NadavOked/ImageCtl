@@ -22,12 +22,6 @@ static const Drawer *drawer_for_port(const State *s, int port) {
     return NULL;
 }
 
-static const IdleDisk *idle_for_port(const State *s, int port) {
-    for (int i = 0; i < s->nidisks; i++)
-        if (s->idisks[i].port == port) return &s->idisks[i];
-    return NULL;
-}
-
 static void cloner_title(cairo_t *cr, const Theme *t, const State *s,
                          double W, double *y) {
     Text h = rtl_block_make(cr, N_TITLE, 600, "שיכפול במקביל", W - 2 * N_PAD);
@@ -65,16 +59,6 @@ static const char *smart_reason_he(const char *reason) {
     if (!strcmp(reason, "no_smartctl")) return "smartctl חסר ב-initramfs";
     if (!strcmp(reason, "pending")) return "ממתין להכרעה";
     return reason;
-}
-
-static const char *smart_he(const char *smart) {
-    if (!smart || !smart[0] || !strcmp(smart, "unchecked")) return "לא נבדק";
-    if (!strcmp(smart, "pending")) return "ממתין להכרעה";
-    if (!strcmp(smart, "passed")) return "תקין";
-    if (!strcmp(smart, "failed_last")) return "נכשל בשיכפול הקודם";
-    if (!strcmp(smart, "fail")) return "נכשל";
-    if (!strcmp(smart, "warn")) return "אזהרה";
-    return smart;
 }
 
 static void smart_cell(cairo_t *cr, const Theme *t, Rect r,

@@ -782,7 +782,7 @@ static void png_setup(App *a, const State *base, const char *card) {
                                            * sample cloner data here: the mirror of "standby" clearing it. */
                                           if (!base->ndrawers && !base->cloner_image[0] && !base->smart_pending)
                                               snprintf(a->st.cloner_image, sizeof a->st.cloner_image, "Office 2024 — סטנדרט"); }
-    else if (!strcmp(card, "standby"))  { a->force_standby = 1; a->st.ndrawers = 0; a->st.cloner_image[0] = 0; a->st.smart_pending = 0; }
+    else if (!strcmp(card, "standby"))  { a->force_standby = 1; a->force_cloner = 1; a->st.ndrawers = 0; a->st.cloner_image[0] = 0; a->st.smart_pending = 0; }
     else if (!strcmp(card, "message"))  { snprintf(a->st.msg_title, sizeof a->st.msg_title, "%s", base->msg_title);
                                           snprintf(a->st.msg_sub, sizeof a->st.msg_sub, "%s", base->msg_sub); }
     else if (!strcmp(card, "restore"))  { a->mode = MODE_RESTORE; if (base->nimages) a->restore_image_sel = 1; }
@@ -882,7 +882,7 @@ int main(int argc, char **argv) {
         if (!strcmp(screen, "progress"))   a.force_progress = 1;
         else if (!strcmp(screen, "class")) a.mode = MODE_CLASSES;
         else if (!strcmp(screen, "cloner")) a.force_cloner = 1;
-        else if (!strcmp(screen, "standby")) a.force_standby = 1;
+        else if (!strcmp(screen, "standby")) { a.force_standby = 1; a.force_cloner = 1; }
         else { fprintf(stderr, "native-gui: --screen must be progress, class, cloner or standby\n%s", USAGE); return 2; }
     }
     setvbuf(stdout, NULL, _IOLBF, 0);               /* records reach the agent's pipe as they happen */

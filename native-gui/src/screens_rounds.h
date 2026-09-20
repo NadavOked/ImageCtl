@@ -27,6 +27,8 @@ typedef struct { Text big, small; double drop, h; } ProgLine;
  * smart_level is the same rule as a number: 0 green, 1 orange, 2 red. */
 int smart_level(const char *smart);
 Rgb smart_color(const Theme *t, const char *smart);
+const char *smart_he(const char *smart);
+const IdleDisk *idle_for_port(const State *s, int port);
 /* The status span of room.js machineRows / classes.js renderLive, as Pango
  * markup (room-ok / room-bad / room-warn colours); <out> >= 640 bytes. */
 void room_status_markup(const App *a, const Machine *m, int mode, char *out, size_t n);
