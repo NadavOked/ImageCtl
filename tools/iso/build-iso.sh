@@ -36,6 +36,11 @@ OUT=""
 NETINST=""
 POOL=""
 REF="HEAD"
+# הקוד שנכנס ל-ISO מגיע מהריפו **הציבורי** (NadavOked/ImageCtl) — עותק
+# הפרסום הנקי, בלי כלי סוכנים, יומנים ותשובות מחקר. ‏`--source DIR` מאפשר
+# עץ מקומי (למעבדה), ובכל מקרה השומר למטה מסרב לארוז נתיבים פרטיים.
+PUBLIC_URL="${IMAGECTL_PUBLIC_URL:-https://github.com/NadavOked/ImageCtl.git}"
+SOURCE=""
 ROOT_PASSWORD="${IMAGECTL_ROOT_PASSWORD:-}"
 CDIMAGE_URL="https://cdimage.debian.org/debian-cd/current/amd64/iso-cd"
 
@@ -48,7 +53,11 @@ ImageCtl — בניית ISO ההתקנה.
   --out DIR            תיקיית העבודה והפלט (נדרשים ~4GB פנויים)
   --netinst FILE       ISO של דביאן 13 netinst; בלעדיו מוריד את הנוכחי מ-cdimage.debian.org
   --pool DIR           פלט של make-pool.sh --out; בלעדיו מריץ אותו (דורש אינטרנט)
-  --ref REF            הקומיט/התג של הקוד שייכנס ל-ISO (ברירת מחדל HEAD)
+  --ref REF            התג של הקוד שייכנס ל-ISO (ברירת מחדל HEAD של המקור)
+  --source DIR         ריפו מקומי במקום clone של הציבורי (מעבדה); נתיבים
+                       פרטיים (tools/agents, .agents, logs, docs/research…)
+                       עוצרים את הבנייה גם אז
+  --public-url URL     הריפו הציבורי לשיבוט (ברירת מחדל NadavOked/ImageCtl)
   --root-password PW   סיסמת root הראשונית (מוחלפת בכניסה הראשונה); או IMAGECTL_ROOT_PASSWORD
 EOF
 }
@@ -59,6 +68,8 @@ while [[ $# -gt 0 ]]; do
         --netinst)       NETINST="${2:?}"; shift 2 ;;
         --pool)          POOL="${2:?}"; shift 2 ;;
         --ref)           REF="${2:?}"; shift 2 ;;
+        --source)        SOURCE="${2:?}"; shift 2 ;;
+        --public-url)    PUBLIC_URL="${2:?}"; shift 2 ;;
         --root-password) ROOT_PASSWORD="${2:?}"; shift 2 ;;
         -h|--help)       usage; exit 0 ;;
         *) printf 'unknown option: %s  (try --help)\n' "$1" >&2; exit 2 ;;
@@ -81,6 +92,17 @@ WORK="$OUT/work"
 ISO_TREE="$WORK/iso"
 
 # --- הקוד: ref → תג, קומיט, epoch -----------------------------------------------
+if [[ -n "$SOURCE" ]]; then
+    REPO=$(cd "$SOURCE" && pwd) || die "--source לא קיים: $SOURCE"
+    say "מקור הקוד: עץ מקומי $REPO (לא הציבורי — רק למעבדה)"
+else
+    REPO="$OUT/public-src"
+    rm -rf "$REPO"
+    say "משכפל את הריפו הציבורי $PUBLIC_URL ($REF)"
+    git clone -q --branch "$REF" --depth 1 "$PUBLIC_URL" "$REPO" 2>/dev/null \
+        || die "clone של $PUBLIC_URL ב-$REF נכשל — התג לא פורסם לציבורי? (publish-to-public.sh)"
+    REF=HEAD
+fi
 COMMIT=$(git -C "$REPO" rev-parse --verify "$REF^{commit}") || die "ref לא מוכר: $REF"
 TAG=$(git -C "$REPO" describe --tags --always "$COMMIT")
 EPOCH=$(git -C "$REPO" log -1 --format=%ct "$COMMIT")
@@ -140,6 +162,17 @@ git -C "$REPO" archive --format=tar --prefix=imagectl-src/ --mtime="@$EPOCH" "$C
     | tar -x -C "$ISO_TREE" || die "git archive נכשל"
 [[ -f "$ISO_TREE/imagectl-src/server/main.py" && -f "$ISO_TREE/imagectl-src/install/setup-boot-server.sh" ]] \
     || die "imagectl-src חסר את server/main.py או install/setup-boot-server.sh"
+# השומר: מה שאסור לו להיות ב-ISO גם אם המקור הוא עץ פרטי (אותה רשימה
+# כמו HARD_DENY ב-publish-to-public.sh, ועוד מה שרק הפרטי מחזיק).
+leaked=()
+for deny in .claude .agents .otogit tools/agents AGENTS.md logs docs/research; do
+    [[ -e "$ISO_TREE/imagectl-src/$deny" ]] && leaked+=("$deny")
+done
+if ((${#leaked[@]} > 0)); then
+    printf 'build-iso: נתיב פרטי בתוך imagectl-src: %s\n' "${leaked[@]}" >&2
+    die "המקור אינו העץ הציבורי (${#leaked[@]} נתיבים פרטיים) — בנה מהריפו הציבורי, לא מ-ImageCtl-archive"
+fi
+say "imagectl-src: אין נתיבים פרטיים ($(find "$ISO_TREE/imagectl-src" -type f | wc -l) קבצים)"
 
 # --- preseed + firstboot --------------------------------------------------------
 mapfile -t PKGS < <(sed 's/#.*//' "$SCRIPT_DIR/packages.txt" | tr -s ' \t' '\n' | grep -v '^$' | LC_ALL=C sort -u)

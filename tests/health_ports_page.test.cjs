@@ -68,7 +68,7 @@ function setup(over={}) {
     return nodes.get(key);
   }
   const fixtures={'/health':HEALTH,'/update':{current:'v0.34.0',enabled:true,previous:'v0.33.0',server_name:'srv'},'/update/status':{state:'idle'},
-    '/update/check':{at:'2026-09-19T06:00:00+00:00',current:'v0.34.0',latest:'v0.35.0',available:true,reason:''},
+    '/update/check':{at:`${new Date().toISOString().slice(0,10)}T06:00:00+00:00`,current:'v0.34.0',latest:'v0.35.0',available:true,reason:''},   // "היום" = תאריך UTC של היום, לא תאריך קשיח (נפל ב-20/09 על 19/09)
     '/ports':PORTS_OLD,'/ssh':SSH,'/monitor/settings':{port:5900,enabled:false},'/net/interfaces':NICS,'/net/proxy-support':{read:true,version:'2.90',verified:false,broken:true,reason:'dnsmasq 2.90 — proxy שבור'},
     '/machines':[{mac:MAC1,suffix:'מחשב 1',group_id:'grp_CLONERS',disks:null}],'/groups':[{id:'grp_CLONERS',label:'מחשבי שיכפול',role:'cloner',sort:1}],
     ...over};

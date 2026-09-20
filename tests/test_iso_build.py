@@ -270,3 +270,17 @@ def test_scripts_parse(name: str) -> None:
     proc = subprocess.run([bash, "-n", str(ISO_DIR / name)], capture_output=True, text=True,
                           stdin=subprocess.DEVNULL)
     assert proc.returncode == 0, f"{name}: {proc.stderr}"
+
+
+def test_the_iso_source_is_the_public_repo_and_private_paths_stop_the_build() -> None:
+    """‏20/09: ISO v0.51.0 הראשון נבנה מ-`git archive` של הריפו **הפרטי** —
+    62 תשובות מחקר, `tools/agents/`, `.agents/`, `logs/` נסעו בתוך `imagectl-src/`
+    לכל שרת שיותקן. ברירת המחדל היא clone של הציבורי בתג, ושומר ב-ISO_TREE
+    מסרב לארוז נתיבים פרטיים גם כשנותנים `--source` מקומי — אותה רשימה כמו
+    HARD_DENY ב-publish-to-public.sh, ועוד מה שרק הפרטי מחזיק."""
+    code = BUILD_ISO.read_text(encoding="utf-8")
+    assert 'https://github.com/NadavOked/ImageCtl.git' in code, "ברירת המחדל אינה הריפו הציבורי"
+    assert 'git clone -q --branch "$REF" --depth 1 "$PUBLIC_URL"' in code
+    for deny in (".claude", ".agents", ".otogit", "tools/agents", "AGENTS.md", "logs", "docs/research"):
+        assert f" {deny} " in code or f" {deny};" in code, f"השומר אינו מכסה {deny}"
+    assert 'die "המקור אינו העץ הציבורי' in code
