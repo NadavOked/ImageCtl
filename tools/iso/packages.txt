@@ -23,6 +23,7 @@ shim-signed
 grub-efi-amd64-signed
 grub-pc-bin
 dnsmasq
+dhcpcd-base
 python3-fastapi
 python3-uvicorn
 python3-qrcode
@@ -32,6 +33,7 @@ python3-openssl
 open-iscsi
 nfs-common
 cifs-utils
+git                 # #1185: כפתור העדכון עובד על /opt/imagectl/.git שה-ISO נושא
 
 # --- [initramfs] tools/build_initramfs.sh · הבסיס -------------------------
 busybox-static

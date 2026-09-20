@@ -58,6 +58,7 @@ def test_installer_apt_list_has_the_server_runtime_packages() -> None:
     pkgs = installer_pkgs()
     missing = [p for p in SERVER_APT_TO_PIP if p not in pkgs]
     assert not missing, f"חסר ברשימת ה-apt של המתקין: {missing} (יש: {pkgs})"
+    assert "dhcpcd-base" in pkgs
 
 
 def test_requirements_pin_the_same_packages_the_installer_installs() -> None:

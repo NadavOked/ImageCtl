@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -75,10 +76,22 @@ def list_interfaces(sys_net: Path = Path("/sys/class/net")) -> list[dict]:
                 return (entry / name).read_text(encoding="utf-8").strip()
             except OSError:
                 return default
+        operstate = read("operstate", str(row.get("operstate", "unknown"))).lower()
+        carrier = read("carrier")
+        if carrier == "1":
+            link_label = "מחובר"
+        elif operstate == "down" and not carrier:
+            link_label = "לא מודלק"
+        elif operstate == "up" and carrier == "0":
+            link_label = "אין קישור"
+        else:
+            link_label = "מנותק"
         result.append({
             "name": entry.name,
             "mac": read("address"),
-            "link": read("operstate", str(row.get("operstate", "unknown"))).lower(),
+            "link": operstate,
+            "carrier": carrier or None,
+            "link_label": link_label,
             "addresses": addresses,
             "current_ip": addresses[0] if addresses else None,
         })
@@ -247,6 +260,7 @@ class WizardState:
     _result: dict = field(default_factory=dict, init=False)
     _thread: threading.Thread | None = field(default=None, init=False)
     _attempts: int = field(default=0, init=False)
+    _job: str | None = field(default=None, init=False)
 
     def interfaces(self) -> list[dict]:
         return self.interfaces_provider()
@@ -270,17 +284,26 @@ class WizardState:
 
     def progress(self) -> dict:
         with self._lock:
-            return {"state": self._phase, "output": "".join(self._output)[-100_000:], **self._result}
+            return {"state": self._phase, "output": "".join(self._output)[-100_000:],
+                    "job": self._job, **self._result}
 
-    def start_apply(self, config: WizardConfig) -> bool:
+    def active_job(self) -> str | None:
         with self._lock:
             if self._thread and self._thread.is_alive():
-                return False
+                return self._job
+            return None
+
+    def start_apply(self, config: WizardConfig) -> str:
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                assert self._job is not None
+                return self._job
             self._attempts += 1
+            self._job = uuid.uuid4().hex
             self._phase, self._output, self._result = "validating", [], {}
             self._thread = threading.Thread(target=self._apply, args=(config,), name="wizard-apply", daemon=False)
             self._thread.start()
-            return True
+            return self._job
 
     def wait(self, timeout: float | None = None) -> None:
         thread = self._thread
@@ -442,7 +465,8 @@ class WizardState:
                 nic = next((row for row in self.interfaces() if row["name"] == config.interface), {})
                 console_host = str(nic.get("current_ip") or "").split("/", 1)[0]
             console_url = f"https://{console_host or config.hostname}:8081"
-            self._set("done", console_url=console_url, fingerprint=tls.fingerprint_sha256)
+            self._set("done", console_url=console_url, user="admin",
+                      fingerprint=tls.fingerprint_sha256)
         except Exception as exc:  # visible terminal state; never turn an exception into success
             self._append(f"wizard: {type(exc).__name__}: {exc}\n")
             self._fail("check-error", f"האשף נכשל: {exc}", config)

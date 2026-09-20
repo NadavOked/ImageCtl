@@ -88,6 +88,10 @@ def _run(cmd: list[str], timeout: int, cwd: str | Path | None = None) -> tuple[b
         done = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
                               check=False, cwd=str(cwd) if cwd else None,
                               stdin=subprocess.DEVNULL)
+    except FileNotFoundError:
+        # ‏#1185: "[Errno 2] No such file or directory: 'git'" הוא הניחוש של
+        # המכונה על עצמה — למנהל זה אומר כלום. הכלי חסר, בשמו.
+        return False, "", f"{cmd[0]} אינו מותקן בשרת הזה — הותקן מ-ISO ישן (#1185)? התקנה מחדש מ-ISO עדכני"
     except (OSError, subprocess.SubprocessError) as exc:
         return False, "", str(exc)
     if done.returncode != 0:

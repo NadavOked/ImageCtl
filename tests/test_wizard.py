@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
+import threading
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from server.wizard.__main__ import main
-from server.wizard.core import WizardConfig, WizardPaths, WizardState, validate_config
+from server.wizard import core
+from server.wizard.core import WizardConfig, WizardPaths, WizardState, list_interfaces, validate_config
+from server.wizard.httpd import WizardHTTPServer
 
 REPO = Path(__file__).resolve().parent.parent
 STATIC = REPO / "server" / "wizard" / "static"
@@ -96,6 +101,102 @@ def test_failing_installer_sets_named_state_and_never_writes_stamp(tmp_path: Pat
     assert state.progress()["state"] == "installer-failed"
     assert not state.paths.stamp_file.exists()
     assert "state=installer-failed" in state.paths.status_file.read_text(encoding="utf-8")
+
+
+def test_apply_is_accepted_immediately_is_idempotent_and_progress_keeps_finish_payload(tmp_path: Path) -> None:
+    state = WizardState(_paths(tmp_path, tmp_path / "unused", tmp_path / "unused2"),
+                        dev=True, interfaces_provider=lambda: NICS)
+    entered = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    def fake_apply(_config: WizardConfig) -> None:
+        nonlocal calls
+        calls += 1
+        entered.set()
+        assert release.wait(5), "ה-hook של ההתקנה לא שוחרר"
+        state._set("done", console_url="https://10.44.10.37:8081", user="admin",
+                   fingerprint="AA:" * 31 + "AA")
+
+    state._apply = fake_apply  # type: ignore[method-assign]
+    nic_fact, role_fact = tmp_path / "nic", tmp_path / "role"
+    nic_fact.write_text("", encoding="utf-8")
+    role_fact.write_text("", encoding="utf-8")
+    server = WizardHTTPServer(("127.0.0.1", 0), state, nic_fact, role_fact)
+    serving = threading.Thread(target=server.serve_forever, daemon=True)
+    serving.start()
+    body = json.dumps(valid().__dict__).encode("utf-8")
+
+    def request(method: str, path: str, payload: bytes | None = None) -> tuple[int, dict]:
+        conn = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=1)
+        try:
+            headers = {"Content-Type": "application/json"} if payload is not None else {}
+            conn.request(method, path, body=payload, headers=headers)
+            response = conn.getresponse()
+            return response.status, json.loads(response.read())
+        finally:
+            conn.close()
+
+    try:
+        status, first = request("POST", "/api/wizard/apply", body)
+        assert status == 202 and first["job"]
+        assert entered.wait(1)
+        second_body = json.dumps({**valid().__dict__, "interface": "changed-while-running"}).encode("utf-8")
+        status, second = request("POST", "/api/wizard/apply", second_body)
+        assert status == 202
+        assert second["job"] == first["job"]
+        assert calls == 1
+        release.set()
+        state.wait(2)
+        status, finished = request("GET", "/api/wizard/progress")
+        assert status == 200
+        assert finished == {
+            "ok": True, "state": "done", "output": "", "job": first["job"],
+            "console_url": "https://10.44.10.37:8081", "user": "admin",
+            "fingerprint": "AA:" * 31 + "AA",
+        }
+    finally:
+        release.set()
+        server.shutdown()
+        server.server_close()
+        serving.join(2)
+
+
+def test_nic_status_distinguishes_admin_down_no_link_and_carrier(tmp_path: Path, monkeypatch) -> None:
+    for name, operstate, carrier in (
+        ("admin-down", "down", None),
+        ("no-link", "up", "0"),
+        ("connected", "down", "1"),
+    ):
+        nic = tmp_path / name
+        nic.mkdir()
+        (nic / "operstate").write_text(operstate, encoding="utf-8")
+        (nic / "address").write_text(f"02:00:00:00:00:0{len(list(nic.iterdir()))}", encoding="utf-8")
+        if carrier is not None:
+            (nic / "carrier").write_text(carrier, encoding="utf-8")
+    monkeypatch.setattr(core.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout="[]"))
+    found = {nic["name"]: nic for nic in list_interfaces(tmp_path)}
+    assert found["admin-down"]["link_label"] == "לא מודלק"
+    assert found["no-link"]["link_label"] == "אין קישור"
+    assert found["connected"]["link_label"] == "מחובר"
+
+
+def test_wizard_client_polls_with_backoff_and_never_turns_apply_fetch_into_failure() -> None:
+    js = (STATIC / "wizard.js").read_text(encoding="utf-8")
+    assert "const retryDelays = [1000, 2000, 5000]" in js
+    assert "const reconnectLimitMs = 5 * 60 * 1000" in js
+    assert 'status.textContent = "מתחבר מחדש…"' in js
+    assert 'response.status === 404' in js
+    assert "setInterval" not in js
+    apply = js.split("async function next()", 1)[1].split("function finish", 1)[0]
+    assert 'finish({state: "check-error"' not in apply
+    assert "catch (_) {\n    reconnecting();" in apply
+    assert "scheduleProgress(0)" in apply
+
+
+def test_finish_fingerprint_can_wrap_inside_the_card() -> None:
+    css = (STATIC / "wizard.css").read_text(encoding="utf-8")
+    assert "#fingerprint{overflow-wrap:anywhere;word-break:break-all}" in css
 
 
 def test_cli_refuses_existing_install_without_rerun(tmp_path: Path, capsys) -> None:

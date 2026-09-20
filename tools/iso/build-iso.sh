@@ -162,6 +162,24 @@ git -C "$REPO" archive --format=tar --prefix=imagectl-src/ --mtime="@$EPOCH" "$C
     | tar -x -C "$ISO_TREE" || die "git archive נכשל"
 [[ -f "$ISO_TREE/imagectl-src/server/main.py" && -f "$ISO_TREE/imagectl-src/install/setup-boot-server.sh" ]] \
     || die "imagectl-src חסר את server/main.py או install/setup-boot-server.sh"
+# ‏#1185: כפתור העדכון (server/update.py) הוא `git describe` / `git fetch --tags`
+# / `git checkout <tag>` על /opt/imagectl. עץ מ-`git archive` הוא עץ בלי
+# ‏.git — השרת הראשון שהותקן מה-ISO (20/09) הציג "לא ידועה (אין תגית git
+# על העץ)" ולא יכול היה לעדכן לעולם. לכן ה-.git של ה-clone הרדוד מהציבורי
+# נארז לצד העץ: ‏origin = הריפו הציבורי, התג של ה-ISO נמצא בו, ו-fetch של
+# תג חדש עובד גם על clone רדוד. **רק מהציבורי**: ה-.git של עץ מקומי
+# (--source) הוא ההיסטוריה של הריפו הפרטי, והיא לא עולה על ISO.
+if [[ -z "$SOURCE" ]]; then
+    origin=$(git -C "$REPO" remote get-url origin 2>/dev/null || true)
+    [[ "$origin" == "$PUBLIC_URL" ]] || die "ה-.git שנארז חייב להצביע על הציבורי ($PUBLIC_URL), לא על $origin"
+    cp -a "$REPO/.git" "$ISO_TREE/imagectl-src/.git"
+    # ה-mtime של .git (כמו של העץ) מקובע ל-SOURCE_DATE_EPOCH — קבצי ה-pack
+    # עצמם אינם reproducible בין שני clone-ים, וזה מחיר ידוע.
+    find "$ISO_TREE/imagectl-src/.git" -exec touch -h -d "@$EPOCH" {} +
+    say "imagectl-src/.git: clone רדוד של $origin ב-$TAG — כפתור העדכון יעבוד"
+else
+    say "אזהרה: --source — imagectl-src נארז בלי .git; כפתור העדכון לא יעבוד בשרת הזה (מעבדה בלבד)"
+fi
 # השומר: מה שאסור לו להיות ב-ISO גם אם המקור הוא עץ פרטי (אותה רשימה
 # כמו HARD_DENY ב-publish-to-public.sh, ועוד מה שרק הפרטי מחזיק).
 leaked=()
@@ -198,52 +216,37 @@ install -m 0644 "$SCRIPT_DIR/imagectl-firstboot.service" "$ISO_TREE/imagectl/ima
 # נלכד ב-late-command.sh מ-/proc/cmdline של המתקין). אין timeout: התפריט
 # ממתין לאדם — מחיקת דיסק אינה מתחילה לבד.
 DI_ARGS="auto=true priority=critical preseed/file=/cdrom/preseed.cfg locale=en_US keymap=us"
-cat > "$ISO_TREE/isolinux/imagectl.cfg" <<EOF
-label imagectl
-	menu label ^ImageCtl server install (wipes the first disk)
-	menu default
-	kernel /install.amd/vmlinuz
-	append vga=788 initrd=/install.amd/initrd.gz $DI_ARGS --- quiet
-label imagectl-secondary
-	menu label ImageCtl ^secondary server install (wipes the first disk)
-	kernel /install.amd/vmlinuz
-	append vga=788 initrd=/install.amd/initrd.gz $DI_ARGS imagectl.role=secondary --- quiet
-EOF
-sed -i '0,/^include stdmenu.cfg$/s//include stdmenu.cfg\ninclude imagectl.cfg/' "$ISO_TREE/isolinux/menu.cfg"
-grep -q '^include imagectl.cfg$' "$ISO_TREE/isolinux/menu.cfg" || die "הזרקת imagectl.cfg ל-isolinux/menu.cfg נכשלה"
-# נמדד ב-QEMU (19/09): ‏gtk.cfg נושא `menu default` משלו — והאחרון מנצח, כך
-# ש"Graphical install" נשאר מסומן; ו-spkgtk.cfg מגדיר `timeout 300` +
-# ‏ontimeout שמפעיל **התקנה קולית אינטראקטיבית** אחרי 30 שניות בלי מגע.
-# שניהם מוסרים: הערך שלנו הוא ברירת המחדל, והתפריט ממתין לאדם בלי גבול.
-sed -i '/^[[:space:]]*menu default$/d' "$ISO_TREE/isolinux/gtk.cfg"
-sed -i '/^timeout 300$/d; /^ontimeout /d; /^menu autoboot /d' "$ISO_TREE/isolinux/spkgtk.cfg"
-if grep -q 'menu default' "$ISO_TREE/isolinux/gtk.cfg"; then die "gtk.cfg עדיין נושא menu default"; fi
-if grep -qE '^(timeout|ontimeout|menu autoboot)' "$ISO_TREE/isolinux/spkgtk.cfg"; then die "spkgtk.cfg עדיין מפעיל התקנה קולית בטיימר"; fi
-n_default=$(cat "$ISO_TREE/isolinux/imagectl.cfg" "$ISO_TREE/isolinux/gtk.cfg" "$ISO_TREE/isolinux/txt.cfg" | grep -cE '^[[:space:]]+menu default$' || true)
+[[ -f "$SCRIPT_DIR/imagectl.cfg.in" ]] || die "חסרה תבנית imagectl.cfg.in"
+[[ -f "$SCRIPT_DIR/isolinux-menu.cfg.in" ]] || die "חסרה תבנית isolinux-menu.cfg.in"
+[[ -f "$ISO_TREE/isolinux/menu.cfg" ]] || die "חסר isolinux/menu.cfg ב-netinst"
+sed "s|@DI_ARGS@|$DI_ARGS|g" "$SCRIPT_DIR/imagectl.cfg.in" > "$ISO_TREE/isolinux/imagectl.cfg"
+grep -q '^label imagectl-secondary$' "$ISO_TREE/isolinux/imagectl.cfg" || die "יצירת isolinux/imagectl.cfg נכשלה"
+if grep -q '@DI_ARGS@' "$ISO_TREE/isolinux/imagectl.cfg"; then die "הפרמטרים לא הוזרקו ל-isolinux/imagectl.cfg"; fi
+n_isolinux=$(grep -c '^label ' "$ISO_TREE/isolinux/imagectl.cfg" || true)
+[[ "$n_isolinux" -eq 2 ]] || die "isolinux/imagectl.cfg אינו מכיל בדיוק שני ערכים (נמצאו $n_isolinux)"
+install -m 0644 "$SCRIPT_DIR/isolinux-menu.cfg.in" "$ISO_TREE/isolinux/menu.cfg"
+[[ "$(cat "$ISO_TREE/isolinux/menu.cfg")" == $'include stdmenu.cfg\ninclude imagectl.cfg' ]] || die "isolinux/menu.cfg מכיל ערכים שאינם של ImageCtl"
+n_default=$(grep -cE '^[[:space:]]+menu default$' "$ISO_TREE/isolinux/imagectl.cfg" || true)
 [[ "$n_default" -eq 1 ]] || die "לא בדיוק menu default אחד בתפריט הראשי (נמצאו $n_default)"
 
-GRUB_ENTRIES="$WORK/grub-entries.cfg"
-cat > "$GRUB_ENTRIES" <<EOF
-set default=0
-menuentry --hotkey=m 'ImageCtl server install (wipes the first disk)' {
-    set background_color=black
-    linux    /install.amd/vmlinuz vga=788 $DI_ARGS --- quiet
-    initrd   /install.amd/initrd.gz
-}
-menuentry --hotkey=s 'ImageCtl secondary server install (wipes the first disk)' {
-    set background_color=black
-    linux    /install.amd/vmlinuz vga=788 $DI_ARGS imagectl.role=secondary --- quiet
-    initrd   /install.amd/initrd.gz
-}
-EOF
-python3 - "$ISO_TREE/boot/grub/grub.cfg" "$GRUB_ENTRIES" <<'PY'
+[[ -f "$SCRIPT_DIR/grub.cfg.in" ]] || die "חסרה תבנית grub.cfg.in"
+[[ -f "$ISO_TREE/boot/grub/grub.cfg" ]] || die "חסר boot/grub/grub.cfg ב-netinst"
+python3 - "$SCRIPT_DIR/grub.cfg.in" "$ISO_TREE/boot/grub/grub.cfg" "$TAG" "$DI_ARGS" <<'PY'
 import sys
-path, entries = sys.argv[1], sys.argv[2]
-text = open(path, encoding="utf-8").read()
-i = text.index("\nmenuentry ")
-open(path, "w", encoding="utf-8", newline="\n").write(text[:i + 1] + open(entries, encoding="utf-8").read() + text[i + 1:])
+src, dst, tag, di_args = sys.argv[1:5]
+text = open(src, encoding="utf-8").read()
+text = text.replace("@TAG@", tag).replace("@DI_ARGS@", di_args)
+if "@" in text:
+    raise SystemExit("placeholder left in grub.cfg")
+open(dst, "w", encoding="utf-8", newline="\n").write(text)
 PY
-grep -q "ImageCtl server install" "$ISO_TREE/boot/grub/grub.cfg" || die "הזרקת הערך ל-boot/grub/grub.cfg נכשלה"
+n_grub=$(grep -c '^menuentry ' "$ISO_TREE/boot/grub/grub.cfg" || true)
+[[ "$n_grub" -eq 2 ]] || die "boot/grub/grub.cfg אינו מכיל בדיוק שני ערכים (נמצאו $n_grub)"
+grep -q '^set timeout=-1$' "$ISO_TREE/boot/grub/grub.cfg" || die "GRUB אינו ממתין לבחירת המפעיל"
+grep -q "ImageCtl $TAG installer" "$ISO_TREE/boot/grub/grub.cfg" || die "כותרת ImageCtl חסרה מ-GRUB"
+if grep -qE 'Graphical install|Advanced options|Accessible dark contrast' "$ISO_TREE/boot/grub/grub.cfg"; then
+    die "ערכי Debian נשארו ב-boot/grub/grub.cfg"
+fi
 
 # --- המניפסט (R61) --------------------------------------------------------------
 say "כותב imagectl-iso.json"

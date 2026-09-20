@@ -284,3 +284,16 @@ def test_deploy_user_cannot_reach_update_endpoints(update_server, images_root, c
                json={"username": "labtech", "password": "deploy-pass-1"})
     assert deploy.get("/api/console/update").status_code == 403
     assert deploy.post("/api/console/update/check").status_code == 403
+
+
+def test_a_missing_git_binary_is_named_not_errno_2(monkeypatch):
+    """‏#1185: השרת הראשון מה-ISO הציג "[Errno 2] No such file or directory:
+    'git'". הכלי החסר נקרא בשמו, עם הכיוון לתיקון."""
+    from server import update
+    def boom(*a, **k):
+        raise FileNotFoundError(2, "No such file or directory", "git")
+    monkeypatch.setattr(update.subprocess, "run", boom)
+    ok, out, err = update._run(["git", "describe", "--tags"], timeout=5)
+    assert not ok and out == ""
+    assert "git אינו מותקן" in err and "#1185" in err
+    assert "Errno" not in err

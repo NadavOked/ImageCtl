@@ -1,0 +1,9 @@
+label imagectl
+	menu label I^mageCtl server install (erases disk 1)
+	menu default
+	kernel /install.amd/vmlinuz
+	append vga=788 initrd=/install.amd/initrd.gz @DI_ARGS@ --- quiet
+label imagectl-secondary
+	menu label ImageCtl ^secondary server install (erases disk 1)
+	kernel /install.amd/vmlinuz
+	append vga=788 initrd=/install.amd/initrd.gz @DI_ARGS@ imagectl.role=secondary --- quiet

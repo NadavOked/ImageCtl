@@ -122,6 +122,11 @@ class WizardHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, result)
             return
         if path in {"/api/wizard/validate", "/api/wizard/apply"}:
+            if path.endswith("/apply"):
+                active_job = self.app.wizard.active_job()
+                if active_job:
+                    self._json(HTTPStatus.ACCEPTED, {"ok": True, "job": active_job})
+                    return
             config = WizardConfig.from_json(body)
             names = {row["name"] for row in self.app.wizard.interfaces()}
             errors = validate_config(config, names, rerun=self.app.wizard.rerun)
@@ -140,15 +145,8 @@ class WizardHandler(BaseHTTPRequestHandler):
             if path.endswith("/validate"):
                 self._json(HTTPStatus.OK, {"ok": True, "errors": {}})
                 return
-            if not self.app.wizard.start_apply(config):
-                self._json(HTTPStatus.CONFLICT, {"ok": False, "error": "ההתקנה כבר רצה."})
-                return
-            # Keep this accepted TLS connection alive across the 8081 handoff. The UI
-            # still polls progress; this response is the authoritative terminal result.
-            self.app.wizard.wait()
-            result = self.app.wizard.progress()
-            self._json(HTTPStatus.OK if result["state"] == "done" else HTTPStatus.INTERNAL_SERVER_ERROR,
-                       {"ok": result["state"] == "done", **result})
+            job = self.app.wizard.start_apply(config)
+            self._json(HTTPStatus.ACCEPTED, {"ok": True, "job": job})
             return
         self.send_error(HTTPStatus.NOT_FOUND)
 

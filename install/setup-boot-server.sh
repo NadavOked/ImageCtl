@@ -544,13 +544,13 @@ say "כרטיס הפצה: ${IFACE:-לא עכשיו (מהקונסולה)} · כר
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-PKGS=(shim-signed grub-efi-amd64-signed grub-pc-bin dnsmasq
+PKGS=(shim-signed grub-efi-amd64-signed grub-pc-bin dnsmasq dhcpcd-base
       python3-fastapi python3-uvicorn
       python3-qrcode                          # #1150: QR במסך הגדרת ה-MFA — בלעדיו הקונסולה מציגה סוד להקלדה ידנית
       python3-websockets                      # #904: uvicorn WebSocket — בלעדיו המוניטור (#690) מחזיר 500
       python3-cryptography python3-openssl    # #740: mTLS enrollment בין-שרתי
-      open-iscsi nfs-common cifs-utils)       # #1066: יוזם iSCSI + לקוח NFS/SMB
-[[ -f "$SCRIPT_DIR/../server/main.py" ]] || PKGS+=(git)
+      open-iscsi nfs-common cifs-utils        # #1066: יוזם iSCSI + לקוח NFS/SMB
+      git)                                    # #1185: כפתור העדכון = git describe/fetch/checkout על /opt/imagectl — גם כשהקוד הגיע מה-ISO
 
 say "מתקין חבילות: ${PKGS[*]}"
 run env DEBIAN_FRONTEND=noninteractive apt-get update -qq
@@ -874,6 +874,18 @@ fi
 # ---------------------------------------------------------------------------
 
 say "כותב את הגדרת כרטיס השרתים $SERVERS_IF ($SERVERS_MODE)"
+# firstboot starts one-shot DHCP on every interface with carrier. Keep the
+# lease on the selected servers NIC; stop the temporary clients on all others
+# before writing the permanent configuration.
+for temporary_nic_path in "$SYS_NET"/*; do
+    temporary_nic=${temporary_nic_path##*/}
+    [[ "$temporary_nic" == "lo" || "$temporary_nic" == "$SERVERS_IF" ]] && continue
+    if run dhcpcd -k "$temporary_nic"; then
+        say "stopped temporary DHCP on $temporary_nic"
+    else
+        warn "temporary DHCP stop reported no active client or an error on $temporary_nic"
+    fi
+done
 if (( ! DRY_RUN )); then
     SERVERS_IF="$SERVERS_IF" SERVERS_MODE="$SERVERS_MODE" SERVERS_ADDR="$SERVERS_ADDR" \
     SERVERS_MASK="$SERVERS_MASK" SERVERS_GW="$SERVERS_GW" SERVERS_DNS="$SERVERS_DNS" \
@@ -915,6 +927,7 @@ run install -m 0644 "$APP_DIR/install/imagectl-netrollback.timer" \
     /etc/systemd/system/imagectl-netrollback.timer
 # ‏#910 חלק ב': מסך השרת על tty1 (DCUI). getty@tty1 מוסווה — היחידה מכריזה
 # Conflicts= עליו, ובלי mask הוא היה חוזר בכל אתחול ומפיל את ה-DCUI.
+run rm -f /etc/systemd/system/imagectl-dcui.service.d/firstboot.conf
 run install -m 0644 "$APP_DIR/install/imagectl-dcui.service" \
     /etc/systemd/system/imagectl-dcui.service
 run install -d -m 0755 "$DATA_DIR/netcfg"
@@ -984,9 +997,11 @@ TLSEOF
 fi
 run systemctl daemon-reload
 run systemctl enable --now imagectl-netrollback.timer
-# ‏#910 חלק ב': ה-DCUI עולה באתחול הבא (לא --now — tty1 עדיין של המתקין/האשף).
+# ‏#910 חלק ב': ההתקנה מה-ISO כבר מפעילה את ה-DCUI; restart מחיל את
+# WorkingDirectory האמיתי אחרי הסרת ה-drop-in הזמני. בהרצה ידנית הוא מפעיל אותו.
 run systemctl mask getty@tty1.service
 run systemctl enable imagectl-dcui.service
+run systemctl restart imagectl-dcui.service
 # האשף מחזיק את 8081 בזמן ההתקנה. ממש לפני שהקונסולה עולה הוא משחרר את
 # המאזין ומחזיר אישור על socketpair פרטי; אין סיסמה או נתון משתמש ב-FD הזה.
 if [[ -n "${IMAGECTL_WIZARD_HANDOFF_FD:-}" ]]; then

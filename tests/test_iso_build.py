@@ -36,6 +36,9 @@ FIRSTBOOT = ISO_DIR / "firstboot.sh"
 LATE_COMMAND = ISO_DIR / "late-command.sh"
 WIZARD_SERVICE = REPO / "install" / "imagectl-wizard.service"
 BUILD_ISO = ISO_DIR / "build-iso.sh"
+GRUB_TEMPLATE = ISO_DIR / "grub.cfg.in"
+ISOLINUX_MENU_TEMPLATE = ISO_DIR / "isolinux-menu.cfg.in"
+ISOLINUX_ENTRY_TEMPLATE = ISO_DIR / "imagectl.cfg.in"
 BASH_SCRIPTS = ("make-pool.sh", "build-iso.sh", "firstboot.sh", "test-iso.sh")
 
 #: מה שרק ה-ISO מוסיף — אין לו מקור בקבצים האחרים, ולכן מוצהר כאן.
@@ -109,7 +112,7 @@ def test_the_sources_were_actually_parsed() -> None:
 
 def test_packages_txt_is_the_union_of_every_apt_list() -> None:
     have = packages_txt()
-    sources = {"setup-boot-server.sh PKGS": set(installer_pkgs()) - {"git"}, **initramfs_lists()}
+    sources = {"setup-boot-server.sh PKGS": set(installer_pkgs()), **initramfs_lists()}
     missing = {name: sorted(pkgs - have) for name, pkgs in sources.items() if pkgs - have}
     assert not missing, f"חסר ב-tools/iso/packages.txt (ההתקנה offline תיכשל עליהן): {missing}"
 
@@ -226,9 +229,38 @@ def test_build_iso_substitutes_every_placeholder_the_preseed_has() -> None:
     for ph in placeholders:
         assert ph in build, f"build-iso.sh אינו מחליף את {ph}"
     assert "auto=true priority=critical preseed/file=/cdrom/preseed.cfg" in build
-    assert "imagectl.role=secondary" in build
+    # ‏#1180: הערכים עברו לתבניות — הערך המשני חי בשתיהן (UEFI ו-BIOS), לא בסקריפט.
+    for tpl in ("grub.cfg.in", "imagectl.cfg.in"):
+        assert "imagectl.role=secondary" in (ISO_DIR / tpl).read_text(encoding="utf-8"), tpl
     assert "-boot_image any replay" in build, "בלי replay ה-shim/GRUB החתומים לא נשמרים (R57)"
     assert "-report_el_torito" in build
+
+
+def test_grub_template_has_only_the_two_imagectl_entries() -> None:
+    grub = GRUB_TEMPLATE.read_text(encoding="utf-8")
+    entries = re.findall(r"^menuentry .*", grub, re.MULTILINE)
+    assert entries == [
+        "menuentry --hotkey=m 'ImageCtl server install (erases disk 1)' {",
+        "menuentry --hotkey=s 'ImageCtl secondary server install (erases disk 1)' {",
+    ]
+    assert "set timeout=-1" in grub
+    assert "set default=0" in grub
+    assert "ImageCtl @TAG@ installer" in grub
+    assert "set color_normal=white/black" in grub and "background_color '#1b2a41'" in grub
+    assert all(word not in grub for word in ("Graphical", "Install", "Advanced", "Accessible"))
+    assert grub.count("/install.amd/vmlinuz") == 2
+    assert grub.count("/install.amd/initrd.gz") == 2
+
+
+def test_isolinux_templates_hide_every_debian_menu() -> None:
+    menu = ISOLINUX_MENU_TEMPLATE.read_text(encoding="utf-8").splitlines()
+    assert menu == ["include stdmenu.cfg", "include imagectl.cfg"]
+    entries = ISOLINUX_ENTRY_TEMPLATE.read_text(encoding="utf-8")
+    assert re.findall(r"^label (.+)$", entries, re.MULTILINE) == ["imagectl", "imagectl-secondary"]
+    assert entries.count("menu default") == 1
+    assert "I^mageCtl server install (erases disk 1)" in entries
+    assert "ImageCtl ^secondary server install (erases disk 1)" in entries
+    assert all(word not in entries for word in ("Graphical", "Install", "Advanced", "Accessible"))
 
 
 # --- firstboot -----------------------------------------------------------------
@@ -261,6 +293,39 @@ def test_firstboot_reads_the_installer_facts_and_never_guesses_a_nic() -> None:
     assert not re.search(r"addr show scope global.*\|\s*awk.*exit", code), "בחירת 'הראשון עם IPv4' חזרה"
 
 
+def test_installer_console_runtime_text_is_ascii_only() -> None:
+    for script in (FIRSTBOOT, LATE_COMMAND):
+        runtime_text = _strip_comments(script.read_text(encoding="utf-8"))
+        assert runtime_text.isascii(), f"{script.name} has non-ASCII runtime text"
+
+
+def test_firstboot_brings_up_dhcp_and_dcui_before_the_wizard() -> None:
+    code = _strip_comments(FIRSTBOOT.read_text(encoding="utf-8"))
+    dhcp = code.index('dhcpcd -4 -1 -t 20 "$nic"')
+    dcui = code.index("systemctl restart imagectl-dcui.service")
+    wizard = code.index("systemctl start imagectl-wizard")
+    assert dhcp < dcui < wizard
+    assert 'for nic_path in /sys/class/net/*' in code
+    assert 'temporary_dhcp "$nic" &' in code and 'wait "$dhcp_pid"' in code
+    assert '/sys/class/net/$nic/carrier' in code and "sleep 1" in code
+    assert "for attempt in 1 2 3" in code
+    for outcome in ("(dhcp)", "no carrier", "no dhcp offer"):
+        assert outcome in code
+    assert code.count('>>"$BUILD_LOG" 2>&1') >= 3
+    assert "WorkingDirectory=/opt/imagectl-src" in code
+    assert "imagectl-dcui.service.d/firstboot.conf" in code
+    assert 'systemctl mask getty@tty1.service' in code
+    assert 'systemctl is-active --quiet imagectl-dcui.service' in code
+
+
+def test_permanent_setup_stops_other_temporary_clients_and_removes_dcui_dropin() -> None:
+    setup = (REPO / "install" / "setup-boot-server.sh").read_text(encoding="utf-8")
+    assert 'dhcpcd -k "$temporary_nic"' in setup
+    assert '"$temporary_nic" == "$SERVERS_IF"' in setup
+    assert "rm -f /etc/systemd/system/imagectl-dcui.service.d/firstboot.conf" in setup
+    assert "systemctl restart imagectl-dcui.service" in setup
+
+
 # --- תחביר -------------------------------------------------------------------
 
 @requires_native(("bash", shutil.which("bash") or shutil.which("bash.exe")))
@@ -284,3 +349,26 @@ def test_the_iso_source_is_the_public_repo_and_private_paths_stop_the_build() ->
     for deny in (".claude", ".agents", ".otogit", "tools/agents", "AGENTS.md", "logs", "docs/research"):
         assert f" {deny} " in code or f" {deny};" in code, f"השומר אינו מכסה {deny}"
     assert 'die "המקור אינו העץ הציבורי' in code
+
+
+# --- #1185: כפתור העדכון משרת שהותקן מה-ISO --------------------------------
+# השרת הראשון שהותקן מה-ISO (20/09) הציג "לא ידועה (אין תגית git על העץ)"
+# ו-"[Errno 2] No such file or directory: 'git'": ה-ISO ארז את העץ ב-git
+# archive (בלי .git) ולא נשא git. שלושת התנאים שהעדכון דורש נבדקים כאן
+# בשמם, כי כל אחד מהם לבדו נכשל בשקט עד מול שרת אמיתי.
+
+
+def test_the_installer_always_installs_git_so_the_update_button_works() -> None:
+    assert "git" in installer_pkgs(), "git ב-PKGS של המתקין תמיד — לא רק כשמושכים קוד מהרשת"
+    src = (REPO / "install" / "setup-boot-server.sh").read_text(encoding="utf-8")
+    assert "PKGS+=(git)" not in src, "git מותנה בהיעדר server/main.py — מה-ISO הוא קיים ו-git לא הותקן"
+    assert "git" in packages_txt(), "git חייב להיות ב-pool של ה-ISO (ההתקנה offline)"
+
+
+def test_build_iso_packs_the_public_clone_with_its_git_dir_and_never_a_private_one() -> None:
+    src = BUILD_ISO.read_text(encoding="utf-8")
+    code = src.split("--- הקוד ---", 1)[1]
+    assert 'cp -a "$REPO/.git" "$ISO_TREE/imagectl-src/.git"' in code, "ה-.git של ה-clone מהציבורי לא נארז"
+    guard = code.split('cp -a "$REPO/.git"', 1)[0]
+    assert '"$origin" == "$PUBLIC_URL"' in guard, "אין בדיקה ש-origin של ה-.git הנארז הוא הציבורי"
+    assert 'if [[ -z "$SOURCE" ]]' in guard, "‏--source (עץ מקומי, היסטוריה פרטית) חייב להישאר בלי .git"

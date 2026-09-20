@@ -225,6 +225,42 @@ def network_config(form: dict[str, str]) -> netcfg.NetConfig:
     )
 
 
+def apply_preinstall_static(form: dict[str, str], interface_names: set[str],
+                            runner: Runner = run_argv) -> ActionResult:
+    """Apply an in-memory-only address while the installer wizard is running."""
+    address_with_prefix = form.get("address", "").strip()
+    if "/" in address_with_prefix:
+        address, prefix = address_with_prefix.rsplit("/", 1)
+    else:
+        address, prefix = address_with_prefix, ""
+    static_form = {
+        **form, "mode": netcfg.MODE_STATIC, "dns": "",
+        "address": address, "netmask": prefix,
+    }
+    errors = validate_network_form(static_form, interface_names)
+    if not form.get("gateway", "").strip():
+        errors["gateway"] = "Gateway is required."
+    if errors:
+        return ActionResult(False, "Static address form is invalid.",
+                            tuple(errors.values()))
+    cfg = network_config(static_form)
+    prefix = ipaddress.IPv4Network(f"0.0.0.0/{cfg.netmask}").prefixlen
+    commands = (
+        ["ip", "addr", "flush", "dev", cfg.name],
+        ["ip", "addr", "add", f"{cfg.address}/{prefix}", "dev", cfg.name],
+        ["ip", "route", "replace", "default", "via", cfg.gateway,
+         "dev", cfg.name],
+    )
+    for argv in commands:
+        result = runner(argv)
+        if result.returncode != 0:
+            return ActionResult(
+                False, f"Temporary network command failed: {' '.join(argv[:3])}.",
+                (_text(result) or "ip returned no detail",),
+            )
+    return ActionResult(True, f"Temporary address applied to {cfg.name}.")
+
+
 def _iso(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, timezone.utc).astimezone().isoformat(
         timespec="seconds")

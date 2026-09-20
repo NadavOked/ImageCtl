@@ -1,0 +1,26 @@
+set default=0
+set timeout=-1
+set color_normal=white/black
+set color_highlight=black/light-gray
+background_color '#1b2a41'
+# כמו ב-grub.cfg של ה-netinst: בלי gfxterm אין רקע ואין צבעים; אם אין
+# פונט — נשארים בטקסט, והתפריט עדיין עובד.
+if loadfont $prefix/font.pf2 ; then
+    set gfxmode=auto
+    insmod efi_gop
+    insmod efi_uga
+    insmod gfxterm
+    terminal_output gfxterm
+fi
+echo 'ImageCtl @TAG@ installer'
+
+menuentry --hotkey=m 'ImageCtl server install (erases disk 1)' {
+    set background_color='#1b2a41'
+    linux    /install.amd/vmlinuz vga=788 @DI_ARGS@ --- quiet
+    initrd   /install.amd/initrd.gz
+}
+menuentry --hotkey=s 'ImageCtl secondary server install (erases disk 1)' {
+    set background_color='#1b2a41'
+    linux    /install.amd/vmlinuz vga=788 @DI_ARGS@ imagectl.role=secondary --- quiet
+    initrd   /install.amd/initrd.gz
+}

@@ -60,7 +60,7 @@
 
         <section class="screen" data-step="progress">
           <div class="heading"><h1>מחיל את ההתקנה…</h1><p>אל תכבה את השרת. ההחלה ממשיכה גם אם הדפדפן נסגר.</p></div>
-          <div class="content"><div class="progress"><i id="progress-bar"></i></div><ol id="progress-list" class="progress-list"><li>בדיקת תקינות כוללת</li><li>שם השרת</li><li>קבצים ושירותים</li><li>העברת 8081 לקונסולה</li><li>אימות אתחול</li></ol><details open><summary>הפלט המלא</summary><pre id="output" dir="ltr"></pre></details></div>
+          <div class="content"><div id="reconnect-status" class="notice warn" role="status" hidden></div><div class="progress"><i id="progress-bar"></i></div><ol id="progress-list" class="progress-list"><li>בדיקת תקינות כוללת</li><li>שם השרת</li><li>קבצים ושירותים</li><li>העברת 8081 לקונסולה</li><li>אימות אתחול</li></ol><details open><summary>הפלט המלא</summary><pre id="output" dir="ltr"></pre></details></div>
         </section>
 
         <section class="screen" data-step="failed">
@@ -70,7 +70,7 @@
 
         <section class="screen" data-step="6">
           <div class="heading"><h1>סיום ההתקנה</h1><p>מכאן ממשיכים בקונסולה.</p></div>
-          <div class="content"><div class="done"><b>✓</b><div><h2>השרת מוכן לשימוש.</h2><p>המתקין ואימות מטען האתחול הסתיימו בהצלחה.</p></div></div><div class="card"><h2>הקונסולה</h2><a id="console-url" class="console-url" href="#"></a><dl><dt>משתמש</dt><dd dir="ltr">admin</dd><dt>טביעת התעודה (SHA-256)</dt><dd id="fingerprint" class="mono"></dd></dl><div class="notice warn">הדפדפן יציג אזהרה לתעודה עצמית. השווה את הטביעה לפני האישור.</div><a id="console-button" class="button primary link-button" href="#">מעבר לקונסולה</a></div><div class="card"><h2>מה נשאר להגדיר בקונסולה</h2><p>רשת ההפצה מוגדרת מהקונסולה (רשת → רשת ההפצה), ולא באשף.</p></div></div>
+          <div class="content"><div class="done"><b>✓</b><div><h2>השרת מוכן לשימוש.</h2><p>המתקין ואימות מטען האתחול הסתיימו בהצלחה.</p></div></div><div class="card"><h2>הקונסולה</h2><a id="console-url" class="console-url" href="#"></a><dl><dt>משתמש</dt><dd id="console-user" dir="ltr">admin</dd><dt>טביעת התעודה (SHA-256)</dt><dd id="fingerprint" class="mono"></dd></dl><div class="notice warn">הדפדפן יציג אזהרה לתעודה עצמית. השווה את הטביעה לפני האישור.</div><a id="console-button" class="button primary link-button" href="#">מעבר לקונסולה</a></div><div class="card"><h2>מה נשאר להגדיר בקונסולה</h2><p>רשת ההפצה מוגדרת מהקונסולה (רשת → רשת ההפצה), ולא באשף.</p></div></div>
         </section>
 
         <footer id="actions"><span id="step-label"></span><span class="spacer"></span><button id="back" type="button" class="button">חזור</button><button id="next" type="button" class="button primary">הבא</button></footer>

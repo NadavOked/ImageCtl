@@ -23,6 +23,8 @@ from server.db import connect, get_setting
 
 DATA_DIR = Path("/var/lib/imagectl")
 STATUS_FILE = Path("/etc/imagectl/firstboot.status")
+ISO_MANIFEST = Path("/etc/imagectl/iso-release.json")
+PREINSTALL_REPO = Path("/opt/imagectl-src")
 SERVER_OVERRIDE = Path("/etc/systemd/system/imagectl-server.service.d/override.conf")
 SYS_NET = Path("/sys/class/net")
 
@@ -105,6 +107,7 @@ class Snapshot:
     refreshed: str = "00:00:00"
     rollback_interface: str = ""
     rollback_seconds: int = 0
+    pre_install: bool = False
 
 
 def _command_text(result: CommandResult) -> str:
@@ -257,9 +260,49 @@ def _round(conn) -> DeployRound | None:
     )
 
 
-def _version(runner: Runner, repo_dir: Path) -> str:
+def _version(runner: Runner, repo_dir: Path,
+             manifest_file: Path = ISO_MANIFEST) -> str:
     result = runner(["git", "-C", str(repo_dir), "describe", "--tags", "--always"])
-    return _command_text(result) if result.returncode == 0 else "unknown"
+    if result.returncode == 0 and _command_text(result):
+        return _command_text(result)
+    try:
+        manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return "unknown"
+    return str(manifest.get("imagectl_tag") or "unknown")
+
+
+def is_pre_install(data_dir: Path = DATA_DIR,
+                   status_file: Path = STATUS_FILE) -> bool:
+    """The wizard status alone is insufficient once the real DB exists."""
+    return (_read_key_values(status_file).get("state") == "wizard-running"
+            and not (data_dir / "imagectl.db").exists())
+
+
+def _preinstall_snapshot(rows: list[dict], runner: Runner, sys_net: Path,
+                         repo_dir: Path, manifest_file: Path,
+                         current: datetime) -> Snapshot:
+    interfaces = []
+    for row in rows:
+        address = row["addresses"][0] if row["addresses"] else ""
+        carrier = _read(sys_net / row["name"] / "carrier")
+        link = "up" if carrier == "1" else "no carrier"
+        interfaces.append(NicInfo(
+            name=row["name"], address=address, mode="dhcp", link=link,
+            speed=row["speed"], mac=row["mac"], model=row["model"],
+            address_checked=bool(row.get("address_checked")),
+        ))
+    addressed = next((nic for nic in interfaces if nic.address), None)
+    address = addressed.address.split("/")[0] if addressed else ""
+    return Snapshot(
+        hostname=socket.gethostname(),
+        version=_version(runner, repo_dir, manifest_file),
+        console_url=f"https://{address}:8081" if address else "",
+        no_address=not bool(address), fingerprint="not created",
+        management=addressed or (interfaces[0] if interfaces else NicInfo("unknown")),
+        interfaces=tuple(interfaces), refreshed=current.strftime("%H:%M:%S"),
+        pre_install=True,
+    )
 
 
 def _certificate_not_after(cert_path: Path) -> str:
@@ -276,9 +319,15 @@ def collect_snapshot(data_dir: Path = DATA_DIR, *, runner: Runner = run_argv,
                      sys_net: Path = SYS_NET, status_file: Path = STATUS_FILE,
                      override_file: Path = SERVER_OVERRIDE,
                      repo_dir: Path = Path("/opt/imagectl"),
+                     manifest_file: Path = ISO_MANIFEST,
                      now: datetime | None = None, conn=None) -> Snapshot:
-    conn = conn or connect(data_dir / "imagectl.db")
     rows = _interface_rows(sys_net, runner)
+    current = now or datetime.now()
+    if is_pre_install(data_dir, status_file):
+        source_repo = PREINSTALL_REPO if repo_dir == Path("/opt/imagectl") else repo_dir
+        return _preinstall_snapshot(
+            rows, runner, sys_net, source_repo, manifest_file, current)
+    conn = conn or connect(data_dir / "imagectl.db")
     deploy_state = deploy_net.resolve(conn, None, None)
     deploy_name = deploy_state.interface or ""
     management_name = _management_name(
@@ -304,7 +353,6 @@ def collect_snapshot(data_dir: Path = DATA_DIR, *, runner: Runner = run_argv,
         certificate_sans = ()
         certificate_not_after = "unknown (certificate read failed)"
     marker = netcfg_rollback.read_pending(data_dir / "netcfg")
-    current = now or datetime.now()
     seconds = max(0, int(marker.deadline - current.timestamp())) if marker else 0
     services = {name: service_state(name, runner) for name in (
         "imagectl-server", "dnsmasq", "nftables")}

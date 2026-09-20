@@ -132,6 +132,52 @@ def render_main(snapshot: Snapshot, message: str = "") -> list[str]:
     return canvas.lines()
 
 
+def render_preinstall(snapshot: Snapshot, message: str = "") -> list[str]:
+    canvas = Canvas(
+        _title(f"ImageCtl {snapshot.version} - installation"),
+        "F2  Set a static address       F5  Refresh",
+    )
+    canvas.put(4, 4, "Management network is not configured yet.")
+    canvas.put(6, 4, "Addresses obtained by DHCP:")
+    for index, nic in enumerate(snapshot.interfaces[:6]):
+        address = nic.address or "-"
+        state = "link up" if nic.link == "up" else "no carrier"
+        canvas.put(8 + index, 6,
+                   f"{nic.name:<8}{nic.mac:<20}{address:<19}({state})", 68)
+    canvas.put(15, 4, "Continue the installation from a browser:")
+    if snapshot.console_url:
+        canvas.put(17, 6, snapshot.console_url)
+    else:
+        canvas.put(17, 6, "No address is available. Press F2 to set a static address.")
+    if message:
+        canvas.put(20, 4, message, 70)
+    return canvas.lines()
+
+
+def render_preinstall_network(interfaces: list[NicInfo], form: dict[str, str],
+                              field_index: int = 0, error: str = "") -> list[str]:
+    canvas = Canvas(
+        _title("Set a Temporary Static Address", "installation"),
+        "<Space> Interface  <Tab> Next field  <Enter> Apply  <Esc> Cancel",
+    )
+    canvas.put(4, 4, "This address lasts only until permanent setup is applied.")
+    canvas.put(7, 4, "Interface:")
+    for index, nic in enumerate(interfaces[:4]):
+        marker = "*" if nic.name == form.get("interface") else " "
+        canvas.put(8 + index, 8,
+                   f"({marker}) {nic.name:<8} {nic.mac:<17} ({nic.link})", 62)
+    cursor = "_"
+    canvas.put(14, 4, "IPv4 address / prefix:")
+    canvas.put(14, 30, f"[ {form.get('address', '')[:23]:<23}"
+               f"{cursor if field_index == 1 else ' '} ]")
+    canvas.put(16, 4, "Gateway:")
+    canvas.put(16, 30, f"[ {form.get('gateway', '')[:23]:<23}"
+               f"{cursor if field_index == 2 else ' '} ]")
+    canvas.put(19, 4, error or
+               "Applies: ip addr flush/add and ip route replace default.", 70)
+    return canvas.lines()
+
+
 def render_auth(failures: int = 0, lockout_seconds: int = 0,
                 password_length: int = 0, message: str = "") -> list[str]:
     canvas = Canvas(
@@ -336,7 +382,16 @@ def _initial_form(snapshot: Snapshot) -> dict[str, str]:
             "address": address, "netmask": prefix, "gateway": "", "dns": ""}
 
 
+def _preinstall_form(snapshot: Snapshot) -> dict[str, str]:
+    nic = snapshot.management
+    address = nic.address if nic.address else ""
+    return {"interface": nic.name, "address": address, "gateway": ""}
+
+
 def _refresh(runtime: Runtime) -> None:
+    db_path = runtime.data_dir / "imagectl.db"
+    if runtime.conn is None and db_path.is_file():
+        runtime.conn = connect(db_path)
     runtime.snapshot = collect_snapshot(runtime.data_dir, conn=runtime.conn)
     runtime.last_refresh = time.monotonic()
     runtime.interfaces = list(runtime.snapshot.interfaces or (runtime.snapshot.management,))
@@ -347,9 +402,14 @@ def _refresh(runtime: Runtime) -> None:
 def _current_lines(runtime: Runtime, now: float) -> list[str]:
     seconds = runtime.seconds(now)
     if runtime.screen == "main":
+        if runtime.snapshot.pre_install:
+            return render_preinstall(runtime.snapshot, runtime.message)
         lock = runtime.auth.seconds_left(time.time())
         message = runtime.message or (f"Authentication locked for {lock} more seconds." if lock else "")
         return render_main(runtime.snapshot, message)
+    if runtime.screen == "preinstall_network":
+        return render_preinstall_network(
+            runtime.interfaces, runtime.form, runtime.form_field, runtime.message)
     if runtime.screen == "auth":
         return render_auth(runtime.auth.failures, runtime.auth.seconds_left(time.time()),
                            len(runtime.password), runtime.message)
@@ -439,6 +499,24 @@ def _network_key(runtime: Runtime, key: object) -> None:
             runtime.form[field] += key
 
 
+def _preinstall_network_key(runtime: Runtime, key: object) -> None:
+    if key in (9, "\t"):
+        runtime.form_field = (runtime.form_field + 1) % 3
+        return
+    if key == " " and runtime.form_field == 0 and runtime.interfaces:
+        names = [nic.name for nic in runtime.interfaces]
+        current = runtime.form.get("interface", "")
+        index = names.index(current) if current in names else 0
+        runtime.form["interface"] = names[(index + 1) % len(names)]
+        return
+    if runtime.form_field in (1, 2):
+        field = "address" if runtime.form_field == 1 else "gateway"
+        if key in (8, 127, "KEY_BACKSPACE"):
+            runtime.form[field] = runtime.form[field][:-1]
+        elif isinstance(key, str) and len(key) == 1 and key in "0123456789./":
+            runtime.form[field] += key
+
+
 def _handle_key(runtime: Runtime, key: object, curses_module) -> bool:
     now = time.monotonic()
     if key != -1:
@@ -450,6 +528,15 @@ def _handle_key(runtime: Runtime, key: object, curses_module) -> bool:
         runtime.message = "Session expired after 90 seconds without a key."
         return True
     if runtime.screen == "main":
+        if runtime.snapshot.pre_install:
+            if key == curses_module.KEY_F5:
+                _refresh(runtime)
+            elif key == curses_module.KEY_F2:
+                runtime.screen = "preinstall_network"
+                runtime.form = _preinstall_form(runtime.snapshot)
+                runtime.form_field = 0
+                runtime.message = ""
+            return True
         if key == curses_module.KEY_F5:
             _refresh(runtime)
         elif key in (curses_module.KEY_F2, curses_module.KEY_F12):
@@ -470,6 +557,20 @@ def _handle_key(runtime: Runtime, key: object, curses_module) -> bool:
             runtime.password = runtime.password[:-1]
         elif isinstance(key, str) and key.isprintable() and len(key) == 1:
             runtime.password += key
+        return True
+    if runtime.screen == "preinstall_network":
+        if escape:
+            runtime.screen = "main"
+            runtime.message = ""
+        elif enter:
+            runtime.result = actions.apply_preinstall_static(
+                runtime.form, {nic.name for nic in runtime.interfaces})
+            runtime.message = runtime.result.message
+            if runtime.result.ok:
+                runtime.screen = "main"
+                _refresh(runtime)
+        else:
+            _preinstall_network_key(runtime, key)
         return True
     if escape:
         if runtime.screen == "network_confirm":
@@ -564,7 +665,8 @@ def curses_main(stdscr, data_dir: Path = DATA_DIR) -> None:
     if curses.has_colors():
         curses.start_color()
         curses.init_pair(1, curses.COLOR_RED, curses.COLOR_BLACK)
-    conn = connect(data_dir / "imagectl.db")
+    db_path = data_dir / "imagectl.db"
+    conn = connect(db_path) if db_path.is_file() else None
     snapshot = collect_snapshot(data_dir, conn=conn)
     runtime = Runtime(data_dir, conn, snapshot,
                       last_key_at=time.monotonic(), last_refresh=time.monotonic())

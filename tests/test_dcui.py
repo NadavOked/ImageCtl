@@ -9,8 +9,10 @@ from server import netcfg_host, netcfg_rollback, users
 from server.db import connect, get_setting
 from server.dcui import actions
 from server.dcui.app import (render_auth, render_main, render_menu,
-                             render_network, render_power)
-from server.dcui.data import CommandResult, NicInfo, _round, demo_snapshot
+                             render_network, render_power, render_preinstall,
+                             render_preinstall_network)
+from server.dcui.data import (CommandResult, NicInfo, _round, collect_snapshot,
+                              demo_snapshot)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -44,6 +46,12 @@ def test_all_approved_screens_are_pure_80x25_ascii():
          ("Prefix / Mask:", "Apply (60 s window)", "auto-rollback")),
         (render_power(snapshot, typed="imagectl-t"),
          ("Restart / Shut Down", "Type the hostname", "deploy round is running")),
+        (render_preinstall(replace(snapshot, pre_install=True)),
+         ("- installation", "Addresses obtained by DHCP:", "F2  Set a static address")),
+        (render_preinstall_network(list(snapshot.interfaces), {
+            "interface": "ens20", "address": "10.44.9.12/24",
+            "gateway": "10.44.9.254"}),
+         ("Temporary Static Address", "IPv4 address / prefix:", "ip route replace")),
     ]
     for lines, labels in cases:
         _assert_screen(lines, labels)
@@ -202,6 +210,68 @@ def test_demo_snapshot_exposes_real_picker_shape():
     assert len(snapshot.interfaces) == 3
     assert all(isinstance(nic, NicInfo) and nic.name != "lo"
                for nic in snapshot.interfaces)
+
+
+def test_preinstall_snapshot_uses_status_without_creating_a_database(tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    status = tmp_path / "firstboot.status"
+    status.write_text("state=wizard-running\ntimestamp=2026-09-20T10:00:00Z\n",
+                      encoding="utf-8")
+    manifest = tmp_path / "iso-release.json"
+    manifest.write_text('{"imagectl_tag":"v0.52.0"}', encoding="utf-8")
+    sys_net = tmp_path / "net"
+    for name, mac, carrier, state in (
+        ("ens33", "00:50:56:01:02:01", "1", "up"),
+        ("ens34", "00:50:56:01:02:02", "0", "down"),
+    ):
+        nic = sys_net / name
+        nic.mkdir(parents=True)
+        (nic / "address").write_text(mac, encoding="ascii")
+        (nic / "carrier").write_text(carrier, encoding="ascii")
+        (nic / "operstate").write_text(state, encoding="ascii")
+        (nic / "speed").write_text("1000", encoding="ascii")
+
+    def fake(argv):
+        if argv[:4] == ["ip", "-j", "address", "show"]:
+            return CommandResult(0, '[{"ifname":"ens33","operstate":"UP",'
+                                 '"addr_info":[{"family":"inet",'
+                                 '"local":"10.10.10.8","prefixlen":24}]},'
+                                 '{"ifname":"ens34","operstate":"DOWN",'
+                                 '"addr_info":[]}]')
+        return CommandResult(1, "", "git unavailable")
+
+    snapshot = collect_snapshot(
+        data_dir, runner=fake, sys_net=sys_net, status_file=status,
+        repo_dir=tmp_path / "source", manifest_file=manifest)
+    assert snapshot.pre_install
+    assert not (data_dir / "imagectl.db").exists()
+    screen = "\n".join(render_preinstall(snapshot))
+    assert "ImageCtl v0.52.0 - installation" in screen
+    assert "ens33   00:50:56:01:02:01   10.10.10.8/24" in screen
+    assert "ens34   00:50:56:01:02:02   -" in screen
+    assert "https://10.10.10.8:8081" in screen
+    assert "(link up)" in screen and "(no carrier)" in screen
+
+
+def test_preinstall_static_address_is_temporary_ip_state_only():
+    calls = []
+
+    def fake(argv):
+        calls.append(argv)
+        return CommandResult(0)
+
+    result = actions.apply_preinstall_static({
+        "interface": "ens33", "address": "10.10.10.9/24",
+        "gateway": "10.10.10.1",
+    }, {"ens33"}, fake)
+    assert result.ok
+    assert calls == [
+        ["ip", "addr", "flush", "dev", "ens33"],
+        ["ip", "addr", "add", "10.10.10.9/24", "dev", "ens33"],
+        ["ip", "route", "replace", "default", "via", "10.10.10.1",
+         "dev", "ens33"],
+    ]
 
 
 def test_dcui_unit_owns_tty1_without_requiring_the_web_server():

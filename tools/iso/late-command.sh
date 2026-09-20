@@ -16,10 +16,15 @@
 
 set -e
 
-log() { logger -t imagectl-late "$*" 2>/dev/null || true; echo "imagectl-late: $*" >&2; }
+log() {
+    if ! logger -t imagectl-late "$*" 2>/dev/null; then
+        echo "imagectl-late: logger unavailable" >&2
+    fi
+    echo "imagectl-late: $*" >&2
+}
 
-[ -d /target ] || { log "אין /target"; exit 1; }
-[ -f /cdrom/imagectl-src/server/main.py ] || { log "אין /cdrom/imagectl-src — ה-ISO נבנה בלי הקוד"; exit 1; }
+[ -d /target ] || { log "Missing /target"; exit 1; }
+[ -f /cdrom/imagectl-src/server/main.py ] || { log "Missing /cdrom/imagectl-src; the ISO has no application source"; exit 1; }
 
 ETC=/target/etc/imagectl
 mkdir -p "$ETC" /target/opt /target/usr/local/sbin /target/etc/systemd/system
@@ -50,11 +55,11 @@ cp -a /cdrom/dists "$REPO/"
 n_src=$(find /cdrom/pool -path '*/imagectl/*.deb' | wc -l)
 n_dst=$(find "$REPO/pool" -name '*.deb' | wc -l)
 if [ "$n_src" -eq 0 ] || [ "$n_dst" -ne "$n_src" ]; then
-    log "העתקת ה-pool נכשלה ($n_dst מתוך $n_src)"; exit 1
+    log "Package pool copy failed ($n_dst of $n_src files)"; exit 1
 fi
 printf 'deb [trusted=yes] file:/var/lib/imagectl/apt-repo trixie main contrib\n' \
     > /target/etc/apt/sources.list.d/imagectl-iso.list
-log "apt-repo: $n_dst קבצי .deb ב-/var/lib/imagectl/apt-repo"
+log "apt-repo: $n_dst .deb files in /var/lib/imagectl/apt-repo"
 
 # --- installer-nic: מה netcfg הגדיר בפועל --------------------------------------
 IFACES_FILE=/etc/network/interfaces
@@ -62,14 +67,19 @@ IFACES_FILE=/etc/network/interfaces
 NIC=""; METHOD=""
 if [ -f "$IFACES_FILE" ]; then
     # השורה 'iface <שם> inet <dhcp|static>' הראשונה שאינה lo.
-    line=$(grep -E '^[[:space:]]*iface[[:space:]]+[^[:space:]]+[[:space:]]+inet[[:space:]]+(dhcp|static)' "$IFACES_FILE" \
-           | grep -v -E '^[[:space:]]*iface[[:space:]]+lo[[:space:]]' | head -n1 || true)
+    line=$(awk '$1 == "iface" && $2 != "lo" && $3 == "inet" && ($4 == "dhcp" || $4 == "static") {print; exit}' "$IFACES_FILE") \
+        || { log "Could not read installer network configuration"; exit 1; }
     if [ -n "$line" ]; then
         NIC=$(printf '%s\n' "$line" | awk '{print $2}')
         METHOD=$(printf '%s\n' "$line" | awk '{print $4}')
     fi
 fi
-CHOSEN=$(debconf-get netcfg/choose_interface 2>/dev/null || true)
+if CHOSEN=$(debconf-get netcfg/choose_interface 2>/dev/null); then
+    :
+else
+    CHOSEN=""
+    log "installer-nic: netcfg interface selection was unavailable"
+fi
 {
     if [ -n "$NIC" ] && [ -r "/sys/class/net/$NIC/address" ]; then
         printf 'state=configured\ninterface=%s\nmac=%s\nreason=%s\n' \
@@ -89,16 +99,16 @@ PRIMARY=$(tr ' ' '\n' < /proc/cmdline | sed -n 's/^imagectl\.primary=//p' | head
 case "$ROLE" in
     ""|standalone) ROLE=standalone ;;
     secondary) ;;
-    *) log "imagectl.role לא מוכר: $ROLE"; exit 1 ;;
+    *) log "Unknown imagectl.role: $ROLE"; exit 1 ;;
 esac
 printf 'role=%s\nprimary=%s\n' "$ROLE" "$PRIMARY" > "$ETC/installer-role"
 log "installer-role: role=$ROLE primary=${PRIMARY:-(none)}"
 
 # --- מניפסט ה-ISO (R61) -----------------------------------------------------
-[ -f /cdrom/imagectl-iso.json ] || { log "אין /cdrom/imagectl-iso.json"; exit 1; }
+[ -f /cdrom/imagectl-iso.json ] || { log "Missing /cdrom/imagectl-iso.json"; exit 1; }
 cp /cdrom/imagectl-iso.json "$ETC/iso-release.json"
 
 # --- סיסמת root: מוחלפת בכניסה הראשונה ---------------------------------------
 in-target chage -d 0 root
 
-log "late_command הושלם"
+log "late_command complete"
