@@ -139,7 +139,7 @@ cand=$(apt-cache policy grub-pc-bin | awk '/Candidate:/ {print $2}')
     "apt cannot find grub-pc-bin; the ISO repository is missing and offline setup cannot continue"
 
 temporary_dhcp() {
-    local nic="$1" carrier="0" attempt address
+    local nic="$1" carrier="0" address
     if ! ip link set dev "$nic" up; then
         log "nic $nic: link setup failed"
         return 0
@@ -148,7 +148,7 @@ temporary_dhcp() {
         log "nic $nic: carrier check failed"
         return 0
     fi
-    for attempt in 1 2 3; do
+    for _ in 1 2 3; do
         carrier=$(<"/sys/class/net/$nic/carrier")
         [[ "$carrier" == "1" ]] && break
         sleep 1

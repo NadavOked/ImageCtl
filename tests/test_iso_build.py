@@ -308,7 +308,7 @@ def test_firstboot_brings_up_dhcp_and_dcui_before_the_wizard() -> None:
     assert 'for nic_path in /sys/class/net/*' in code
     assert 'temporary_dhcp "$nic" &' in code and 'wait "$dhcp_pid"' in code
     assert '/sys/class/net/$nic/carrier' in code and "sleep 1" in code
-    assert "for attempt in 1 2 3" in code
+    assert "for _ in 1 2 3" in code  # ‏shellcheck SC2034: המשתנה אינו בשימוש
     for outcome in ("(dhcp)", "no carrier", "no dhcp offer"):
         assert outcome in code
     assert code.count('>>"$BUILD_LOG" 2>&1') >= 3
