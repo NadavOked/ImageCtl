@@ -171,7 +171,7 @@ test('/health that cannot be read is its own state — red note, "לא נקרא"
   assert.match(run('toasts.join("|")'),/DB down/);
 });
 
-test('update card: installed/previous/last-check, check → apply button with typed server name, revert behind typed name',async()=>{
+test('update card: installed/previous/last-check, check → apply button with a plain confirm (#1192), revert behind typed name',async()=>{
   const {run,requests}=setup(); run('current="health"');
   await run('loadHealth()');
   let html=run('health()');
@@ -181,18 +181,21 @@ test('update card: installed/previous/last-check, check → apply button with ty
   assert.match(card,/בדיקה אחרונה<\/span><span class="v">מעולם לא נבדק בשרת הזה/,'#1000: last_check null = never checked on this server');
   assert.match(card,/onclick="healthUpdateCheck\(\)">בדוק עדכון</);
   assert.doesNotMatch(card,/החל עדכון/,'no apply before a check found something');
-  assert.match(card,/confirmUpdateAction\('חזרה לגרסה הקודמת', UPDATE_INFO\.previous, 'revert', UPDATE_INFO\.previous\)">חזור ל-v0\.33\.0</);
+  assert.match(card,/confirmUpdateRevert\(UPDATE_INFO\.previous\)">חזור ל-v0\.33\.0</);
   await run('healthUpdateCheck()');
   assert.ok(requests.some((r)=>r.url==='/update/check' && r.method==='POST'));
   html=run('health()');
   assert.match(cell(html,'גרסה ועדכון',1800),/בדיקה אחרונה<\/span><span class="v">היום 06:00 — יש עדכון: v0\.34\.0 → v0\.35\.0/,'#1000: the time is the server `at`, not the browser clock');
-  assert.match(html,/confirmUpdateAction\('עדכון שרת', UPDATE_INFO\.latest, 'apply', UPDATE_INFO\.latest\)">החל עדכון v0\.35\.0 \(הקלדת שם השרת\)</);
-  run("confirmUpdateAction('עדכון שרת', UPDATE_INFO.latest, 'apply', UPDATE_INFO.latest)");
+  // ‏#1192 (נדב 21/09): עדכון = דיאלוג אישור בלבד, בלי הקלדת שם השרת (הפעולה הפיכה: "חזור ל-").
+  assert.match(html,/confirmUpdateApply\(UPDATE_INFO\.latest\)">החל עדכון v0\.35\.0</);
+  assert.doesNotMatch(html,/הקלדת שם השרת\)/,'#1192: no typed-name hint on the apply button');
+  run("confirmUpdateApply(UPDATE_INFO.latest)");
   const s=run('sheets.at(-1)');
-  assert.equal(s.danger,true); assert.equal(s.verify.mustEqual,'srv'); assert.match(s.verify.label,/שם השרת/);
+  assert.equal(s.danger,true); assert.equal(s.verify,undefined,'#1192: no text field to type');
+  assert.match(s.sub,/v0\.35\.0 ויופעל מחדש/);
   await s.onSubmit();
   const apply=requests.find((r)=>r.url==='/update/apply');
-  assert.deepEqual(apply.body,{confirm_name:'srv',tag:'v0.35.0'});
+  assert.deepEqual(apply.body,{tag:'v0.35.0'},'#1192: no confirm_name');
 });
 
 test('update card: switch off → note with a link to settings and no buttons; failed check ≠ "no update"; status line; /update unreadable',async()=>{
@@ -202,7 +205,7 @@ test('update card: switch off → note with a link to settings and no buttons; f
   assert.match(card,/note warn.*update_enabled.*selectPageById\('settings'\)/); assert.doesNotMatch(card,/<button/);
   assert.match(card,/קודם<\/span><span class="v">—/);
   assert.ok(!s.requests.some((r)=>r.url==='/update/status'),'status is not asked while the switch is off');
-  s=setup({'/update/check':new Error('no route to github'),'/update/status':{state:'applying',tag:'v0.35.0',verified:false}}); s.run('current="health"');
+  s=setup({'/update/check':new Error('no route to github'),'/update/status':{state:'running',tag:'v0.35.0',verified:false}}); s.run('current="health"');
   await s.run('loadHealth()'); await s.run('healthUpdateCheck()');
   card=cell(s.run('health()'),'גרסה ועדכון',1800);
   assert.match(card,/הבדיקה נכשלה: no route to github/); assert.doesNotMatch(card,/החל עדכון|אין חדש/);

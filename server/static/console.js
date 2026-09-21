@@ -1102,7 +1102,7 @@ async function loadHealth() {
 }
 
 /* ‏#954 גל 5: כרטיס "גרסה ועדכון" בדף הבריאות — /update ו-/update/status
-   (admin). ‏UPDATE_INFO משותף עם confirmUpdateAction (שם השרת להקלדה). */
+   (admin). שם השרת לאישור חזרה מגיע מ-ME.server_name (/me), לא מכתובת הקונסולה. */
 async function loadHealthUpdate() {
   try {
     const info = await api("/update");
@@ -3690,7 +3690,7 @@ function healthRows(checks) {
 function updateStatusHtml(status) {
   if (!status || !status.state || status.state === "idle") return "";
   if (status.state === "failed") return UI.status("err", `העדכון ל-${status.tag} נכשל: ${status.error || ""}`);
-  if (status.state === "applying" && !status.verified) return UI.status("run", `העדכון ל-${status.tag} הופעל — ממתין לאתחול השרת. הראיה החיובית: גרסת השרת אחרי האתחול תואמת את התג.`);
+  if (status.state === "running" && !status.verified) return UI.status("run", `העדכון ל-${status.tag} הופעל — ממתין לאתחול השרת. הראיה החיובית: גרסת השרת אחרי האתחול תואמת את התג.`);
   if (status.state === "done" && status.verified) return UI.status("ok", `אומת: השרת רץ על ${status.tag}.`);
   return "";
 }
@@ -3726,8 +3726,8 @@ function healthUpdateCard() {
     const canApply = UPDATE_CHECK && UPDATE_CHECK.available && UPDATE_CHECK.latest;
     const btns = !u.enabled ? "" : [
       `<button class="btn" onclick="healthUpdateCheck()">בדוק עדכון</button>`,
-      canApply ? `<button class="btn primary" onclick="confirmUpdateAction('עדכון שרת', UPDATE_INFO.latest, 'apply', UPDATE_INFO.latest)">החל עדכון ${esc(UPDATE_CHECK.latest)} (הקלדת שם השרת)</button>` : "",
-      u.previous ? `<button class="btn danger" onclick="confirmUpdateAction('חזרה לגרסה הקודמת', UPDATE_INFO.previous, 'revert', UPDATE_INFO.previous)">חזור ל-${esc(u.previous)}</button>` : "",
+      canApply ? `<button class="btn primary" onclick="confirmUpdateApply(UPDATE_INFO.latest)">החל עדכון ${esc(UPDATE_CHECK.latest)}</button>` : "",
+      u.previous ? `<button class="btn danger" onclick="confirmUpdateRevert(UPDATE_INFO.previous)">חזור ל-${esc(u.previous)}</button>` : "",
     ].join("");
     const off = u.enabled ? "" : UI.note("warn", `העדכון כבוי (update_enabled) — ${UI.link("הדלקה בהגדרות", "selectPageById('settings')")}`);
     body = `<div class="upd">${UI.kv(pairs)}${btns ? `<div class="acts">${btns}</div>` : ""}</div>${off}`;
@@ -6058,20 +6058,30 @@ function sshToggle(path, enabled, word, needsConfirm, title, sub, offMeans = "")
 
 let UPDATE_INFO = {};
 
-function confirmUpdateAction(title, tag, path, applyTag) {
+function confirmUpdateApply(tag) {
   if (!tag) return;
   sheet({
-    title,
-    sub: path === "apply"
-      ? `השרת יעבור ל-${tag} ויופעל מחדש. הפעולה אינה הפיכה בקלות.`
-      : `השרת יחזור ל-${tag} ויופעל מחדש.`,
+    title: "עדכון שרת",
+    sub: `השרת יעבור ל-${tag} ויופעל מחדש. הקונסולה תתנתק לכמה שניות.`,
     danger: true, submitLabel: "אישור",
-    verify: { label: "להמשך יש להקליד את שם השרת:", mustEqual: UPDATE_INFO.server_name },
     onSubmit: async () => {
-      const body = { confirm_name: UPDATE_INFO.server_name };
-      if (path === "apply") body.tag = applyTag;
-      await post("/update/" + path, body);
+      await post("/update/apply", { tag });
       toast("העדכון הופעל — עוקבים אחרי סטטוס.");
+      if (current === "health") { await loadHealthUpdate(); renderCurrent(); }
+    },
+  });
+}
+function confirmUpdateRevert(tag) {
+  if (!tag) return;
+  const hostname = ME && ME.server_name || "";
+  sheet({
+    title: "חזרה לגרסה הקודמת",
+    sub: `השרת יחזור ל-${tag} ויופעל מחדש.`,
+    danger: true, submitLabel: "אישור",
+    verify: { label: "להמשך יש להקליד את שם השרת:", mustEqual: hostname },
+    onSubmit: async () => {
+      await post("/update/revert", { confirm_name: hostname });
+      toast("החזרה הופעלה — עוקבים אחרי סטטוס.");
       if (current === "health") { await loadHealthUpdate(); renderCurrent(); }
     },
   });

@@ -193,15 +193,18 @@ def test_preseed_installs_offline_from_the_iso_itself() -> None:
     assert p["clock-setup/ntp"] == ("boolean", "false")
 
 
-def test_preseed_takes_root_only_and_the_first_non_usb_disk() -> None:
+def test_preseed_takes_root_only_and_asks_which_disk_to_erase() -> None:
+    """‏#1189 (נדב 21/09): "אמור להיות לי בחירה של הדיסק" — שרת עם שלושה
+    כוננים; "הראשון שאינו USB" היה מוחק את הלא-נכון. הרשימה מוצגת, והכתיבה
+    מאושרת במפורש גם עם דיסק אחד (ISO שנשכח בכונן)."""
     p = preseed_entries()
     assert p["passwd/root-login"] == ("boolean", "true")
     assert p["passwd/make-user"] == ("boolean", "false")
     assert p["passwd/root-password-crypted"] == ("password", "@ROOT_PASSWORD_HASH@"), "הגיבוב נקבע בבנייה, לא ב-git"
     assert "passwd/root-password" not in p
-    early = p["partman/early_command"][1]
-    assert "list-devices disk" in early and "ID_BUS=usb" in early and "partman-auto/disk" in early
-    assert "partman-auto/disk" not in p, "ערך קשיח (sda) אינו יציב בסדר הטעינה; early_command בוחר"
+    assert "partman-auto/disk" not in p, "דיסק קבוע מראש = אין בחירה; המתקין מציג את הרשימה"
+    assert "partman/early_command" not in p, "early_command שבוחר דיסק לבד הוסר (#1189)"
+    assert p["partman/confirm"] == ("boolean", "false"), "‏\"Write the changes to disks?\" חייב להופיע — המחיקה מאחורי לחיצה"
     assert p["partman-auto/method"] == ("string", "regular")
     assert p["grub-installer/force-efi-extra-removable"] == ("boolean", "true")
 
@@ -243,7 +246,7 @@ def test_grub_template_has_only_the_two_imagectl_entries() -> None:
         "menuentry --hotkey=m 'ImageCtl server install (erases disk 1)' {",
         "menuentry --hotkey=s 'ImageCtl secondary server install (erases disk 1)' {",
     ]
-    assert "set timeout=-1" in grub
+    assert "set timeout=0" in grub, "‏#1189: ישר להתקנה, בלי תפריט"
     assert "set default=0" in grub
     assert "ImageCtl @TAG@ installer" in grub
     assert "set color_normal=white/black" in grub and "background_color '#1b2a41'" in grub
@@ -254,7 +257,7 @@ def test_grub_template_has_only_the_two_imagectl_entries() -> None:
 
 def test_isolinux_templates_hide_every_debian_menu() -> None:
     menu = ISOLINUX_MENU_TEMPLATE.read_text(encoding="utf-8").splitlines()
-    assert menu == ["include stdmenu.cfg", "include imagectl.cfg"]
+    assert menu == ["include stdmenu.cfg", "include imagectl.cfg", "timeout 1"], "‏#1189: ישר להתקנה גם ב-BIOS"
     entries = ISOLINUX_ENTRY_TEMPLATE.read_text(encoding="utf-8")
     assert re.findall(r"^label (.+)$", entries, re.MULTILINE) == ["imagectl", "imagectl-secondary"]
     assert entries.count("menu default") == 1
@@ -372,3 +375,19 @@ def test_build_iso_packs_the_public_clone_with_its_git_dir_and_never_a_private_o
     guard = code.split('cp -a "$REPO/.git"', 1)[0]
     assert '"$origin" == "$PUBLIC_URL"' in guard, "אין בדיקה ש-origin של ה-.git הנארז הוא הציבורי"
     assert 'if [[ -z "$SOURCE" ]]' in guard, "‏--source (עץ מקומי, היסטוריה פרטית) חייב להישאר בלי .git"
+
+
+def test_dcui_unit_starts_on_a_debian_13_server() -> None:
+    """‏21/09, ההתקנה הראשונה על ESXi: ‏`ReadWritePaths=/var/lib/dhcp` — תיקייה שאין
+    בדביאן 13 (dhcpcd, לא isc-dhcp-client) — הפילה את ה-namespace (226/NAMESPACE)
+    ו-DCUI לא עלה 156 פעמים; ‏`Type=simple` היה "active" מרגע ה-fork ו-firstboot
+    האמין לו. כל נתיב ב-ReadWritePaths הוא או כזה שהמתקין יוצר, או אופציונלי (-)."""
+    unit = (REPO / "install" / "imagectl-dcui.service").read_text(encoding="utf-8")
+    assert "Type=exec" in unit and "Type=simple" not in unit
+    paths = re.search(r"^ReadWritePaths=(.*)$", unit, re.M).group(1).split()
+    created_by_installer = {"/var/lib/imagectl", "/etc/network/interfaces.d", "/etc"}
+    for p in paths:
+        assert p in created_by_installer or p.startswith("-"), f"{p}: לא קיים בהכרח בשרת טרי ואינו אופציונלי"
+    assert "/var/lib/dhcp" not in paths, "isc-dhcp-client אינו בדביאן 13"
+    fb = FIRSTBOOT.read_text(encoding="utf-8")
+    assert '"$address" == 169.254.*' in fb, "link-local אינו offer — firstboot חייב לקרוא לזה 'no dhcp offer'"

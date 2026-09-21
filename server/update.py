@@ -110,16 +110,6 @@ def _ls_remote_tags(url: str) -> tuple[bool, str, str]:
     return _run(["git", "ls-remote", "--tags", url], timeout=20)
 
 
-def _fetch_tags(repo_dir: str | Path) -> tuple[bool, str]:
-    ok, _out, err = _run(["git", "fetch", "--tags"], timeout=60, cwd=repo_dir)
-    return ok, err
-
-
-def _checkout(repo_dir: str | Path, tag: str) -> tuple[bool, str]:
-    ok, _out, err = _run(["git", "checkout", "--detach", tag], timeout=30, cwd=repo_dir)
-    return ok, err
-
-
 def _run_upgrade_script(repo_dir: str | Path, tag: str) -> tuple[bool, str]:
     """מפעיל את `tools/server-upgrade.sh` **מנותק** מתהליך השרת, דרך
     `systemd-run` — כי השלב האחרון שלו הוא `systemctl restart
@@ -137,8 +127,6 @@ def default_hooks() -> Hooks:
     return {
         "describe": _describe,
         "ls_remote_tags": _ls_remote_tags,
-        "fetch_tags": _fetch_tags,
-        "checkout": _checkout,
         "run_upgrade": _run_upgrade_script,
     }
 
@@ -227,7 +215,7 @@ def status_with_verification(conn, hooks: Hooks, repo_dir: str | Path) -> dict:
     doc = get_status(conn) or {"state": "idle"}
     current = current_version(hooks, repo_dir)
     result = {**doc, "current": current}
-    if doc.get("state") == "applying" and doc.get("tag"):
+    if doc.get("state") == "running" and doc.get("tag"):
         if current == doc["tag"]:
             result["verified"] = True
             result["state"] = "done"
@@ -238,14 +226,6 @@ def status_with_verification(conn, hooks: Hooks, repo_dir: str | Path) -> dict:
 
 def _apply_in_background(conn, hooks: Hooks, repo_dir: str | Path, tag: str,
                          user: str) -> None:
-    _set_status(conn, {"state": "fetching", "tag": tag})
-    ok, err = hooks["fetch_tags"](repo_dir)
-    if not ok:
-        _set_status(conn, {"state": "failed", "tag": tag,
-                           "error": f"git fetch --tags נכשל: {err}"})
-        journal(conn, "update_apply_failed", f"{tag}: fetch — {err}", user)
-        return
-
     previous = current_version(hooks, repo_dir)
     if previous:
         try:
@@ -253,13 +233,11 @@ def _apply_in_background(conn, hooks: Hooks, repo_dir: str | Path, tag: str,
         except Exception:                                # noqa: BLE001
             pass
 
-    ok, err = hooks["checkout"](repo_dir, tag)
-    if not ok:
-        _set_status(conn, {"state": "failed", "tag": tag,
-                           "error": f"git checkout --detach {tag} נכשל: {err}"})
-        journal(conn, "update_apply_failed", f"{tag}: checkout — {err}", user)
-        return
-
+    # ‏#1193: תהליך ה-web רץ עם ProtectSystem=strict, ולכן אסור לו לכתוב
+    # לעץ הקוד. ה-fetch וה-checkout נעשים בתוך server-upgrade.sh, ביחידה
+    # המנותקת שמחוץ לארגז החול. הסטטוס נכתב לפני השיגור כדי שלא יהיה חלון
+    # שבו בקשה שהתקבלה עדיין נראית idle.
+    _set_status(conn, {"state": "running", "tag": tag})
     ok, err = hooks["run_upgrade"](repo_dir, tag)
     if not ok:
         _set_status(conn, {"state": "failed", "tag": tag,
@@ -268,18 +246,15 @@ def _apply_in_background(conn, hooks: Hooks, repo_dir: str | Path, tag: str,
         return
 
     # ‏#748 סעיף 5: "אומת" נקבע רק ב-``status_with_verification`` אחרי
-    # שהשרת עלה מחדש עם התג — לא כאן. כאן רק "הופעל".
-    _set_status(conn, {"state": "applying", "tag": tag})
+    # שהשרת עלה מחדש עם התג — לא כאן. ``running`` נשאר עד אז; הסקריפט
+    # עצמו מחליף אותו ל-``failed`` אם אחד משלבי השדרוג נכשל.
     journal(conn, "update_apply_started", tag, user)
 
 
 def start_apply(ctx, hooks: Hooks, repo_dir: str | Path, tag: str, user: str) -> None:
-    """‏fetch+checkout ולשיגור הסקריפט המנותק (שניות ספורות, לא הרסטארט
-    עצמו — זה קורה בתוך `tools/server-upgrade.sh`, אחרי שהתשובה כבר
-    חזרה). ‏FastAPI מריץ נתיבי `def` סינכרוניים בתוך thread pool משלו,
-    כך שזה כבר לא חוסם את event loop; אין צורך ב-``threading.Thread``
-    נוסף, וההרצה הסינכרונית הזו היא גם מה שהופך את הבדיקות לדטרמיניסטיות
-    (בלי race על ``calls``/``status``)."""
+    """שיגור הסקריפט המנותק (שניות ספורות, לא השדרוג עצמו). ‏FastAPI
+    מריץ נתיבי `def` סינכרוניים בתוך thread pool משלו, כך שזה אינו חוסם
+    את ה-event loop; אין צורך ב-``threading.Thread`` נוסף."""
     _apply_in_background(ctx.conn, hooks, repo_dir, tag, user)
 
 
@@ -303,11 +278,12 @@ def create_update_router(ctx, repo_dir: str | Path, server_base: str,
     router = APIRouter(prefix="/api/console/update")
     current_user, admin_only = auth.dependencies(ctx.conn)
     del current_user
+    del server_base  # שם השרת מגיע מ-/me ומהגדרת server_name, לא מכתובת ההאזנה.
     hooks = {**default_hooks(), **(hooks or {})}
 
     def _server_name() -> str:
-        from urllib.parse import urlsplit
-        return urlsplit(server_base).hostname or server_base
+        import socket
+        return get_setting(ctx.conn, "server_name") or socket.gethostname()
 
     @router.get("")
     def info(user=Depends(admin_only)):
@@ -316,7 +292,6 @@ def create_update_router(ctx, repo_dir: str | Path, server_base: str,
             "current": current_version(hooks, repo_dir),
             "enabled": enabled(ctx.conn),
             "previous": get_setting(ctx.conn, PREVIOUS_KEY),
-            "server_name": _server_name(),
             # ‏#1000: ‏null = מעולם לא נבדק בשרת הזה; אחרת {at, current,
             # latest, available, reason} כפי שנשמר ב-POST /update/check.
             "last_check": get_last_check(ctx.conn),
@@ -336,36 +311,33 @@ def create_update_router(ctx, repo_dir: str | Path, server_base: str,
                f"current={result['current']} latest={result['latest']}", user[0])
         return result
 
-    def _apply_or_revert(body: dict, user, tag: str) -> dict:
+    def _apply_or_revert(body: dict, user, tag: str, *, confirm_name: bool) -> dict:
         if not enabled(ctx.conn):
             raise HTTPException(404, "עדכון כבוי בהגדרות השרת")
         typed = body.get("confirm_name", "") if isinstance(body, dict) else ""
-        # פעולה הרסנית מאחורי הקלדת שם — עיקרון 7, אותו דפוס כמו מחיקת
-        # אימג'/עצירת סבב (console_api.py): מקלידים את שם השרת שכבר מוצג.
-        if typed != _server_name():
+        if confirm_name and typed != _server_name():
             raise HTTPException(403, "השם שהוקלד אינו תואם את שם השרת")
         if _active_round(ctx):
             raise HTTPException(409, "יש סבב פתוח/רץ — לא ניתן לעדכן עכשיו")
         start_apply(ctx, hooks, repo_dir, tag, user[0])
         return {"ok": True, "started": True, "tag": tag}
 
-    # ‏def רגיל (לא async): FastAPI מריץ אותו ב-thread pool משלו — בדיוק
-    # כמו ``check`` למעלה — כדי ש-``git fetch --tags`` (עד 60 שניות,
-    # רשת אמיתית) לא יחסום את ה-event loop היחיד שמשרת גם /health וגם
-    # כל בקשה אחרת בו-זמנית. זו גם הסיבה שהבדיקות דטרמיניסטיות בלי
-    # ‏thread נוסף מהצד שלנו: תגובת ה-HTTP ממילא ממתינה לסיום.
+    # ‏def רגיל (לא async): FastAPI מריץ אותו ב-thread pool משלו. הקריאה
+    # ממתינה רק ל-systemd-run שמקבל את היחידה; git והרסטארט רצים ביחידה
+    # המנותקת, מחוץ לתהליך ולארגז החול של שרת ה-web.
     @router.post("/apply")
     def apply(body: dict = Body(default={}), user=Depends(admin_only)):
         tag = body.get("tag", "") if isinstance(body, dict) else ""
         if not semver_key(tag):
             raise HTTPException(400, f"תג לא תקין: {tag!r}")
-        return _apply_or_revert(body, user, tag)
+        # עדכון הפיך דרך update_previous, ולכן אינו דורש הקלדת שם (#1192).
+        return _apply_or_revert(body, user, tag, confirm_name=False)
 
     @router.post("/revert")
     def revert(body: dict = Body(default={}), user=Depends(admin_only)):
         previous = get_setting(ctx.conn, PREVIOUS_KEY)
         if not previous:
             raise HTTPException(404, "אין גרסה קודמת לחזור אליה")
-        return _apply_or_revert(body, user, previous)
+        return _apply_or_revert(body, user, previous, confirm_name=True)
 
     return router

@@ -213,8 +213,8 @@ install -m 0644 "$SCRIPT_DIR/imagectl-firstboot.service" "$ISO_TREE/imagectl/ima
 
 # --- תפריטי האתחול: ערך ImageCtl (ומשני) ב-BIOS וב-UEFI ---------------------------
 # הפרמטרים לפני `---` הם של d-i ואינם עוברים לקרנל המותקן (R60: התפקיד
-# נלכד ב-late-command.sh מ-/proc/cmdline של המתקין). אין timeout: התפריט
-# ממתין לאדם — מחיקת דיסק אינה מתחילה לבד.
+# נלכד ב-late-command.sh מ-/proc/cmdline של המתקין). ‏#1189: אין תפריט —
+# ה-ISO עולה ישר להתקנה; מחיקת הדיסק מאושרת **בתוך** המתקין (preseed).
 DI_ARGS="auto=true priority=critical preseed/file=/cdrom/preseed.cfg locale=en_US keymap=us"
 [[ -f "$SCRIPT_DIR/imagectl.cfg.in" ]] || die "חסרה תבנית imagectl.cfg.in"
 [[ -f "$SCRIPT_DIR/isolinux-menu.cfg.in" ]] || die "חסרה תבנית isolinux-menu.cfg.in"
@@ -225,7 +225,8 @@ if grep -q '@DI_ARGS@' "$ISO_TREE/isolinux/imagectl.cfg"; then die "הפרמטר
 n_isolinux=$(grep -c '^label ' "$ISO_TREE/isolinux/imagectl.cfg" || true)
 [[ "$n_isolinux" -eq 2 ]] || die "isolinux/imagectl.cfg אינו מכיל בדיוק שני ערכים (נמצאו $n_isolinux)"
 install -m 0644 "$SCRIPT_DIR/isolinux-menu.cfg.in" "$ISO_TREE/isolinux/menu.cfg"
-[[ "$(cat "$ISO_TREE/isolinux/menu.cfg")" == $'include stdmenu.cfg\ninclude imagectl.cfg' ]] || die "isolinux/menu.cfg מכיל ערכים שאינם של ImageCtl"
+[[ "$(cat "$ISO_TREE/isolinux/menu.cfg")" == $'include stdmenu.cfg\ninclude imagectl.cfg
+timeout 1' ]] || die "isolinux/menu.cfg מכיל ערכים שאינם של ImageCtl"
 n_default=$(grep -cE '^[[:space:]]+menu default$' "$ISO_TREE/isolinux/imagectl.cfg" || true)
 [[ "$n_default" -eq 1 ]] || die "לא בדיוק menu default אחד בתפריט הראשי (נמצאו $n_default)"
 
@@ -242,7 +243,7 @@ open(dst, "w", encoding="utf-8", newline="\n").write(text)
 PY
 n_grub=$(grep -c '^menuentry ' "$ISO_TREE/boot/grub/grub.cfg" || true)
 [[ "$n_grub" -eq 2 ]] || die "boot/grub/grub.cfg אינו מכיל בדיוק שני ערכים (נמצאו $n_grub)"
-grep -q '^set timeout=-1$' "$ISO_TREE/boot/grub/grub.cfg" || die "GRUB אינו ממתין לבחירת המפעיל"
+grep -q '^set timeout=0$' "$ISO_TREE/boot/grub/grub.cfg" || die "GRUB אינו עולה ישר להתקנה (#1189)"
 grep -q "ImageCtl $TAG installer" "$ISO_TREE/boot/grub/grub.cfg" || die "כותרת ImageCtl חסרה מ-GRUB"
 if grep -qE 'Graphical install|Advanced options|Accessible dark contrast' "$ISO_TREE/boot/grub/grub.cfg"; then
     die "ערכי Debian נשארו ב-boot/grub/grub.cfg"

@@ -165,7 +165,9 @@ temporary_dhcp() {
         log "nic $nic: address check failed"
         return 0
     fi
-    if [[ -z "$address" ]]; then
+    # 169.254/16 is dhcpcd's link-local fallback, not an offer (seen on the
+    # deploy NIC, 21/09) -- naming it "dhcp" would send the operator there.
+    if [[ -z "$address" || "$address" == 169.254.* ]]; then
         log "nic $nic: no dhcp offer"
     else
         log "nic $nic: $address (dhcp)"

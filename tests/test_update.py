@@ -1,6 +1,6 @@
 """כפתור "עדכן" בהגדרות השרת (‏#748) — בדיקת-עדכון ואפליקציה מול הריפו
-הציבורי. אף פקודת git/systemd-run אמיתית לא רצה כאן: כל חמשת ה-hooks
-(‏describe/ls_remote_tags/fetch_tags/checkout/run_upgrade) מוזרקים דרך
+הציבורי. אף פקודת git/systemd-run אמיתית לא רצה כאן: ה-hooks
+(‏describe/ls_remote_tags/run_upgrade) מוזרקים דרך
 ``update_hooks``, ומחליפים לגמרי את server.update.default_hooks().
 """
 
@@ -100,18 +100,23 @@ def update_server(tmp_path: Path, images_root: Path, clock):
     from server.app import create_app
 
     state = {"current": "v0.24.0", "remote": "x\trefs/tags/v0.24.0\n",
-             "fetch_ok": True, "checkout_ok": True, "run_ok": True}
-    calls = {"fetch": 0, "checkout": 0, "run": 0}
+             "run_ok": True}
+    calls = {"fetch": 0, "checkout": 0, "run": 0, "run_args": None}
 
     hooks = {
         "describe": lambda repo_dir: state["current"],
         "ls_remote_tags": lambda url: (True, state["remote"], ""),
+        # Sentinels for the removed hooks: even if a caller supplies the old
+        # names, applying must never run git inside the web process (#1193).
         "fetch_tags": lambda repo_dir: (calls.__setitem__("fetch", calls["fetch"] + 1)
-                                        or (state["fetch_ok"], "")),
+                                        or (True, "")),
         "checkout": lambda repo_dir, tag: (calls.__setitem__("checkout", calls["checkout"] + 1)
-                                           or (state["checkout_ok"], "")),
-        "run_upgrade": lambda repo_dir, tag: (calls.__setitem__("run", calls["run"] + 1)
-                                              or (state["run_ok"], "")),
+                                           or (True, "")),
+        "run_upgrade": lambda repo_dir, tag: (
+            calls.__setitem__("run", calls["run"] + 1)
+            or calls.__setitem__("run_args", (str(repo_dir), tag))
+            or (state["run_ok"], "")
+        ),
     }
     app = create_app(tmp_path / "data", images_root, "http://10.44.12.10:8080",
                      now_fn=clock, update_hooks=hooks, repo_dir="/repo")
@@ -156,14 +161,14 @@ def test_switch_off_blocks_check_and_apply_with_404(update_server):
     admin = update_server["admin"]
     assert admin.post("/api/console/update/check").status_code == 404
     assert admin.post("/api/console/update/apply",
-                      json={"tag": "v0.25.0", "confirm_name": "x"}).status_code == 404
+                      json={"tag": "v0.25.0"}).status_code == 404
 
 
 def test_info_shows_current_version_even_when_switch_is_off(update_server):
     info = update_server["admin"].get("/api/console/update").json()
     assert info["current"] == "v0.24.0"
     assert info["enabled"] is False
-    assert info["server_name"] == "10.44.12.10"
+    assert "server_name" not in info
 
 
 def test_check_returns_available_once_enabled(update_server):
@@ -181,18 +186,17 @@ def test_apply_rejects_bad_tag_format(update_server):
     admin = update_server["admin"]
     _enable(admin)
     r = admin.post("/api/console/update/apply",
-                   json={"tag": "not-a-tag", "confirm_name": "10.44.12.10"})
+                   json={"tag": "not-a-tag"})
     assert r.status_code == 400
     assert update_server["calls"]["fetch"] == 0
 
 
-def test_apply_wrong_server_name_is_403_and_does_not_run(update_server):
+def test_apply_does_not_require_a_confirm_name(update_server):
     admin = update_server["admin"]
     _enable(admin)
-    r = admin.post("/api/console/update/apply",
-                   json={"tag": "v0.25.0", "confirm_name": "wrong-name"})
-    assert r.status_code == 403
-    assert update_server["calls"] == {"fetch": 0, "checkout": 0, "run": 0}
+    r = admin.post("/api/console/update/apply", json={"tag": "v0.25.0"})
+    assert r.status_code == 200
+    assert update_server["calls"]["run"] == 1
 
 
 def test_apply_blocked_409_when_a_round_is_open(update_server):
@@ -208,22 +212,26 @@ def test_apply_blocked_409_when_a_round_is_open(update_server):
         (image_id, "2026-09-16T00:00:00+00:00"))
     conn.commit()
     r = admin.post("/api/console/update/apply",
-                   json={"tag": "v0.25.0", "confirm_name": "10.44.12.10"})
+                   json={"tag": "v0.25.0"})
     assert r.status_code == 409
-    assert update_server["calls"] == {"fetch": 0, "checkout": 0, "run": 0}
+    assert update_server["calls"]["run"] == 0
 
 
-def test_apply_runs_fetch_checkout_then_script_and_reports_status(update_server):
+def test_apply_never_runs_git_and_starts_script_with_tag_and_repo(update_server):
     admin = update_server["admin"]
     _enable(admin)
     r = admin.post("/api/console/update/apply",
-                   json={"tag": "v0.25.0", "confirm_name": "10.44.12.10"})
+                   json={"tag": "v0.25.0"})
     assert r.status_code == 200
     assert r.json()["started"] is True
-    assert update_server["calls"] == {"fetch": 1, "checkout": 1, "run": 1}
+    assert update_server["calls"]["fetch"] == 0
+    assert update_server["calls"]["checkout"] == 0
+    assert update_server["calls"]["run"] == 1
+    assert update_server["calls"]["run_args"] == ("/repo", "v0.25.0")
+    assert admin.get("/api/console/update").json()["previous"] == "v0.24.0"
 
     status = admin.get("/api/console/update/status").json()
-    assert status["state"] == "applying"
+    assert status["state"] == "running"
     assert status["tag"] == "v0.25.0"
     # השרת עדיין לא "עלה מחדש" בתוך הבדיקה — ``current`` נשאר הישן,
     # ולכן טרם אומת. זה בדיוק ההבדל בין 'הופעל' ל'אומת' (סעיף 5, #748).
@@ -234,7 +242,7 @@ def test_apply_verified_true_once_current_version_matches_the_target(update_serv
     admin = update_server["admin"]
     _enable(admin)
     admin.post("/api/console/update/apply",
-              json={"tag": "v0.25.0", "confirm_name": "10.44.12.10"})
+              json={"tag": "v0.25.0"})
     # מדמה את מה שה-restart של תוכנית השדרוג עושה בפועל: השרת עולה
     # מחדש על העץ שכבר עבר checkout, ו-``describe`` קורא את התג החדש.
     update_server["state"]["current"] = "v0.25.0"
@@ -243,13 +251,15 @@ def test_apply_verified_true_once_current_version_matches_the_target(update_serv
     assert status["state"] == "done"
 
 
-def test_fetch_failure_is_reported_and_stops_before_checkout(update_server):
+def test_script_launch_failure_is_reported(update_server):
     admin = update_server["admin"]
     _enable(admin)
-    update_server["state"]["fetch_ok"] = False
+    update_server["state"]["run_ok"] = False
     admin.post("/api/console/update/apply",
-              json={"tag": "v0.25.0", "confirm_name": "10.44.12.10"})
-    assert update_server["calls"] == {"fetch": 1, "checkout": 0, "run": 0}
+              json={"tag": "v0.25.0"})
+    assert update_server["calls"]["fetch"] == 0
+    assert update_server["calls"]["checkout"] == 0
+    assert update_server["calls"]["run"] == 1
     status = admin.get("/api/console/update/status").json()
     assert status["state"] == "failed"
 
@@ -257,19 +267,25 @@ def test_fetch_failure_is_reported_and_stops_before_checkout(update_server):
 def test_revert_without_a_previous_version_is_404(update_server):
     admin = update_server["admin"]
     _enable(admin)
-    r = admin.post("/api/console/update/revert",
-                   json={"confirm_name": "10.44.12.10"})
+    r = admin.post("/api/console/update/revert", json={})
     assert r.status_code == 404
 
 
 def test_revert_uses_the_version_saved_before_the_last_apply(update_server):
     admin = update_server["admin"]
     _enable(admin)
+    saved = admin.post("/api/console/settings", json={"server_name": "imagectl-tlvserver"})
+    assert saved.status_code == 200
+    assert admin.get("/api/console/me").json()["server_name"] == "imagectl-tlvserver"
     admin.post("/api/console/update/apply",
-              json={"tag": "v0.25.0", "confirm_name": "10.44.12.10"})
+              json={"tag": "v0.25.0"})
     update_server["state"]["current"] = "v0.25.0"   # אחרי ה-restart המדומה
+    hostname = admin.get("/api/console/me").json()["server_name"]
+    wrong = admin.post("/api/console/update/revert",
+                       json={"confirm_name": "127.0.0.1"})
+    assert wrong.status_code == 403
     r = admin.post("/api/console/update/revert",
-                   json={"confirm_name": "10.44.12.10"})
+                   json={"confirm_name": hostname})
     assert r.status_code == 200
     assert r.json()["tag"] == "v0.24.0"
 

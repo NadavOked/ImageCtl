@@ -241,12 +241,37 @@ def test_static_includes_are_at_8_5():
     #1129 (esc() מבריח גרשיים; onclick דרך encodeId) = ‏9.4.
     #1121/#402 (net.js: כשל השלמה = 500; console.js: `disk_probe` — "לא חוברו דיסקים" / "אין פורטי SATA בקושחה" / "לא נבדק"
     במקום "0 דיסקים") = ‏9.5 — v0.48.1 יצא עם 9.4, ולכן bump;
-    #1150 (מסך ה-MFA: הודעה אדומה כשאין QR כי python3-qrcode חסר) = ‏9.6.
+    #1150 (מסך ה-MFA: הודעה אדומה כשאין QR כי python3-qrcode חסר) = ‏9.6;
+    #1192 (אישור עדכון בלי הקלדת שם) = ‏9.7.
     שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
     versions = {float(v) for v in re.findall(r'\?v=(\d+\.\d+)"', page)}
-    assert versions == {9.6}, versions
+    assert versions == {9.7}, versions
+
+
+def test_update_apply_is_a_sheet_without_text_verification_and_revert_uses_hostname():
+    """‏#1192: apply הוא אישור הפיך, ולכן אין בו input/verify. חזרה עדיין
+    שומרת את האישור הקיים, אבל מקור שם השרת הוא /me.server_name (hostname
+    או ההגדרה), לא כתובת 8081. מחיקה ועצירת סבב נשארות עם שם היעד שלהן."""
+    js = _console_js()
+    apply = js[js.index("function confirmUpdateApply("):js.index("function confirmUpdateRevert(")]
+    assert "sheet({" in apply
+    assert "verify:" not in apply and "<input" not in apply
+    assert "prompt(" not in apply and "confirm(" not in apply
+    assert "השרת יעבור ל-${tag} ויופעל מחדש. הקונסולה תתנתק לכמה שניות." in apply
+    assert 'await post("/update/apply", { tag })' in apply
+    assert 'status.state === "running"' in js
+
+    revert = js[js.index("function confirmUpdateRevert("):js.index("function openNewUser(")]
+    assert 'const hostname = ME && ME.server_name || ""' in revert
+    assert "mustEqual: hostname" in revert
+    assert '{ confirm_name: hostname }' in revert
+
+    delete = js[js.index("function deleteImage("):js.index("function confirmDeleteImage(")]
+    stop = js[js.index("function stopRound("):js.index("function confirmStopRound(")]
+    assert "img.name" in delete and '<input id="confirmName"' in delete
+    assert "sessionImage(session)" in stop and '<input id="confirmName"' in stop
 
 
 def test_mfa_setup_screen_names_the_missing_qr_package():

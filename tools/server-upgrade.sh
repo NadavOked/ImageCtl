@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# server-upgrade.sh — מסלול השדרוג של #748, אחרי שה-checkout כבר בוצע
-# (server/update.py). רץ דרך `systemd-run --collect`, מנותק מתהליך
+# server-upgrade.sh — מסלול השדרוג של #748/#1193. רץ דרך
+# `systemd-run --collect`, מנותק מתהליך
 # imagectl-server, כי הצעד האחרון כאן הוא restart שלו.
 #
 # שימוש: server-upgrade.sh <tag> <repo-dir>
@@ -8,12 +8,13 @@
 # מה שהוא עושה, בסדר הזה, ולמה בסדר הזה (‏#1131 ס' 5–6):
 #   0. סבב פתוח/רץ = לא משדרגים (גם כשמופעל ידנית, לא רק מהקונסולה).
 #   1. התג הקודם — מה ש-update.py שמר (update_previous) — הוא יעד החזרה.
-#   2. יחידות systemd — קודם, כדי ש-daemon-reload יראה כל שינוי בהן.
-#   3. initrd, פעמיים — לפי דגלים שמורים, ולא בונה בלי דגלים (מדווח
+#   2. fetch + checkout לתג המבוקש — מחוץ לארגז החול של שרת ה-web.
+#   3. יחידות systemd — קודם, כדי ש-daemon-reload יראה כל שינוי בהן.
+#   4. initrd, פעמיים — לפי דגלים שמורים, ולא בונה בלי דגלים (מדווח
 #      זאת בשמה, לא נכשל בשקט — עיקרון 5).
-#   4. restart, ואז **ראיה חיובית** שהחדש רץ: is-active + `/health/live`
+#   5. restart, ואז **ראיה חיובית** שהחדש רץ: is-active + `/health/live`
 #      שמדווח בדיוק את התג + verify-boot-payload.sh.
-#   5. כשל בראיה → checkout לתג הקודם, יחידות, restart, וסטטוס `failed`
+#   6. כשל בראיה → checkout לתג הקודם, יחידות, restart, וסטטוס `failed`
 #      עם הסיבה ב-DB (דרך update._set_status) — הקונסולה מציגה אותו.
 #
 # ‏#1074: שדרוג אינו מתקין ואינו מפעיל nftables. שרת קיים לא ינותק.
@@ -82,10 +83,28 @@ PYEOF
 )" || die "קריאת התג הקודם מה-DB נכשלה"
 [[ -n "$PREV" ]] || echo "אין תג קודם שמור (update_previous) — בכשל לא תהיה חזרה אוטומטית"
 
-# ה-checkout כבר בוצע ב-server/update.py (git fetch --tags + git checkout
-# --detach); כאן רק מוודאים שהעץ באמת על התג המבוקש לפני שממשיכים.
-current=$(git describe --tags 2>/dev/null || true)
-[[ "$current" == "$TAG" ]] || die "העץ ב-$REPO_DIR אינו על $TAG (הוא $current) — לא ממשיך"
+# 2. רק היחידה המנותקת רשאית לכתוב לעץ. כשל git נכתב לסטטוס כלשונו,
+# ולפני שנגענו ביחידות, ב-initrd או בשירות הרץ.
+if ! git_error="$(git -C "$REPO_DIR" fetch --tags 2>&1)"; then
+    why="git fetch --tags נכשל: $git_error"
+    set_status failed "$why"
+    die "$why"
+fi
+if ! git_error="$(git -C "$REPO_DIR" checkout --detach "$TAG" 2>&1)"; then
+    why="git checkout --detach $TAG נכשל: $git_error"
+    set_status failed "$why"
+    die "$why"
+fi
+current=$(git describe --tags 2>&1) || {
+    why="git describe --tags נכשל אחרי checkout: $current"
+    set_status failed "$why"
+    die "$why"
+}
+if [[ "$current" != "$TAG" ]]; then
+    why="העץ ב-$REPO_DIR אינו על $TAG (הוא $current) — לא ממשיך"
+    set_status failed "$why"
+    die "$why"
+fi
 
 install_units_and_restart() {
     install -m 0644 install/*.service "$UNIT_DIR/"
@@ -109,7 +128,7 @@ rollback() {   # rollback <סיבה>
     die "$why — והחזרה ל-$PREV נכשלה"
 }
 
-# 2. יחידות + 3. initrd
+# 3. יחידות + 4. initrd
 install -m 0644 install/*.service "$UNIT_DIR/"
 systemctl daemon-reload
 
@@ -129,7 +148,7 @@ else
     echo "initrd לא נבנה: אין דגלים ($FLAGS_FILE חסר)"
 fi
 
-# 4. restart + ראיה חיובית
+# 5. restart + ראיה חיובית
 systemctl restart imagectl-server || rollback "systemctl restart imagectl-server נכשל"
 systemctl is-active --quiet imagectl-server || rollback "imagectl-server אינו active אחרי restart"
 bash install/console-live.sh "$CONSOLE_URL" "$TAG" "$LIVE_WAIT" "$CERT" \
