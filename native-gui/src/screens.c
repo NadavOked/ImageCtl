@@ -345,6 +345,17 @@ static void draw_state_warning(App *a,cairo_t *cr,double W,double H){
     Rect b={(W-v.w-32)/2,H-N_STATUS_H-36,v.w+32,28};draw_fill_rrect(cr,b,t->radius,t->warning_soft);draw_border_rrect(cr,b,t->radius,t->warn,1);text_draw(cr,&v,b.x+16,b.y+(b.h-v.h)/2,t->warn);text_free(&v);
 }
 
+/* #434: the power-off countdown, over every screen: the agent found nobody
+ * here for IDLE_POWEROFF_S; any key cancels (the GUI emits "touch"). */
+static void draw_idle_countdown(App *a,cairo_t *cr,double W,double H){
+    if(a->st.idle_poweroff_at<=0)return;
+    long long left=a->st.idle_poweroff_at-(long long)time(NULL); if(left<0)left=0;
+    char msg[160];snprintf(msg,sizeof msg,"אין פעילות — המחשב יכבה בעוד %lld שניות · כל מקש מבטל",left);
+    const Theme *t=a->theme;
+    Text v=text_make(cr,FONT_SANS,14,600,msg,0,DIR_RTL);
+    Rect b={(W-v.w-40)/2,H-N_STATUS_H-80,v.w+40,40};draw_fill_rrect(cr,b,t->radius,t->warning_soft);draw_border_rrect(cr,b,t->radius,t->warn,2);text_draw(cr,&v,b.x+20,b.y+(b.h-v.h)/2,t->warn);text_free(&v);
+}
+
 void app_draw(App *a,cairo_t *cr,int W,int H){
     a->nhits=0;a->clip_on=0;app_route(a);draw_station_background(cr,a->theme,W,H);
     if(a->screen==SCREEN_INSTALL){screen_install(a,cr,W,H);return;}
@@ -364,7 +375,7 @@ void app_draw(App *a,cairo_t *cr,int W,int H){
     case SCREEN_TOOLS:    screen_tools(a, cr, W, H, head_h); break;     /* #649 */
     case SCREEN_INSTALL:  break;
     }
-    draw_state_warning(a,cr,W,H);draw_status(a,cr,W,H);draw_toast(a,cr,W,H);
+    draw_state_warning(a,cr,W,H);draw_idle_countdown(a,cr,W,H);draw_status(a,cr,W,H);draw_toast(a,cr,W,H);
 }
 
 void app_draw_pointer(App *a,cairo_t *cr){if(a->ptr_visible)draw_cursor(cr,a->ptr_x,a->ptr_y);}

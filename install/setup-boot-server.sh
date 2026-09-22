@@ -939,6 +939,20 @@ run install -m 0644 "$APP_DIR/install/90-imagectl-console.conf" /etc/sysctl.d/90
 if (( ! DRY_RUN )); then
     sysctl -q -p /etc/sysctl.d/90-imagectl-console.conf || warn "sysctl kernel.printk לא הוחל עכשיו — ייכנס באתחול הבא"
 fi
+# ‏#729: שרת הייצור בא בלי sshd בכלל (#1148). שרת שיש בו sshd (מעבדה, התקנה
+# ידנית) האזין על **כל** הכרטיסים עד שמישהו נגע במתג בקונסולה — כאן
+# הדלת נסגרת ללולאה המקומית כבר בהתקנה, באותו drop-in שהמתג מנהל
+# (`server/ssh_switch.py`), והמתג פותח ממשק רק כשמדליקים אותו.
+if [[ -d /etc/ssh/sshd_config.d ]]; then
+    say "sshd קיים — ‏ListenAddress ללולאה המקומית בלבד עד שמתג SSH יודלק (#729)"
+    run install -d -m 0755 /etc/ssh/sshd_config.d
+    if (( ! DRY_RUN )); then
+        python3 -c "import sys; sys.path.insert(0, '$APP_DIR'); from server import ssh_switch; print(ssh_switch.render_sshd_conf([]), end='')"             > /etc/ssh/sshd_config.d/imagectl-ssh.conf || die "כתיבת ה-drop-in של sshd נכשלה"
+        if systemctl is-active --quiet ssh; then
+            systemctl reload ssh || warn "sshd לא נטען מחדש — ה-ListenAddress ייכנס באתחול הבא"
+        fi
+    fi
+fi
 run install -m 0644 "$APP_DIR/install/imagectl-wizard.service" \
     /etc/systemd/system/imagectl-wizard.service
 run install -m 0644 "$APP_DIR/install/imagectl-wizard-rerun.service" \

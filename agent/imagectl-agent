@@ -37,7 +37,7 @@ LIB_DIR="${LIB_DIR:-/usr/lib/imagectl}"
 . "$LIB_DIR/buildcapture.sh"
 . "$LIB_DIR/roomdraw.sh"; . "$LIB_DIR/roomflow.sh"; . "$LIB_DIR/directflow.sh"   # #418 draw/flow; #715 direct
 . "$LIB_DIR/hold.sh"
-. "$LIB_DIR/poll.sh"
+. "$LIB_DIR/poll.sh"; . "$LIB_DIR/idle.sh"   # #434: idle power-off, beats inside poll_sleep
 . "$LIB_DIR/guiparent.sh"
 . "$LIB_DIR/clonergui.sh"
 . "$LIB_DIR/guibridge.sh"   # run in imagectl-kiosk; sourced here for the load gate

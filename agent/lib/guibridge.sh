@@ -59,6 +59,12 @@ gui_dispatch() {
     # would fail with no session) does not swallow the decision. Only on the
     # cloner screen, and only the three valid tokens.
     case "$token" in
+        touch)
+            # #434: a key press in the GUI -- the idle clock's activity, and
+            # what cancels the power-off countdown. Before gui_role: it needs
+            # no session (the login screen is exactly where a person waits).
+            touch "$RUN_DIR/idle.touch" || return 1
+            return 0 ;;
         smart-*)
             # ה-GUI שולח `smart-<action>|<nonce>` -- ה-nonce של הבקשה
             # ש**צוירה**. הגשר מקבל רק אם ה-nonce הזה תואם ל-nonce של

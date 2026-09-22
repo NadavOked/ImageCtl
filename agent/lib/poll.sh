@@ -60,12 +60,17 @@ poll_sleep() {
     # One idle beat. Widening needs two things to be true at once: the answer
     # did not change, and no round is open for this group.
     _sig=$(poll_signature)
+    POLL_MARK_CHANGED=0
     if [ "$D_SESSION_STATE" = "open" ] || [ "$_sig" != "$POLL_MARK" ]; then
+        [ "$_sig" != "$POLL_MARK" ] && POLL_MARK_CHANGED=1   # #434: a changed answer is activity
         POLL_MARK="$_sig"
         POLL_SLEEP="$POLL_FIRST"
     else
         POLL_SLEEP=$(poll_widen "$POLL_SLEEP")
     fi
+    # #434: the idle clock -- only waiting states beat here; inert when idle.sh
+    # is not loaded (poll.sh is also sourced alone by the tests)
+    command -v idle_check >/dev/null 2>&1 && idle_check
     sleep "$POLL_SLEEP"
 }
 

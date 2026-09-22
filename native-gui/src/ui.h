@@ -196,6 +196,9 @@ typedef struct State {
      * _wave_pace); -1 = not measured. updated= is the epoch the agent wrote
      * this snapshot, so the screen can say how old it is (0 = no stamp). */
     int elapsed_s, eta_s; long long rate_bps, updated;
+    /* #434: idle_poweroff_at=<epoch> from guistate.sh while the agent counts
+     * down to a power-off; 0 = no countdown. Any key press emits "touch". */
+    long long idle_poweroff_at;
     /* classes.js live session */
     int has_session; char sess_image[96], sess_prefix[32], sess_group[80];
     int sess_open, joined, expected, starts_in;

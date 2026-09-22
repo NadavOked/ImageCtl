@@ -53,6 +53,8 @@ gui_state() {
         _hello_age=$((_now - _hello_at))
     fi
     printf 'hello_age=%s\nhello_rc=%s\n' "$_hello_age" "$_hello_rc" >> "$GUI_DIR/state.next" || return 1
+    # #434: the power-off countdown -- the epoch idle.sh wrote; absent = none.
+    [ -s "$RUN_DIR/idle.warn" ] && { printf 'idle_poweroff_at=%s\n' "$(cat "$RUN_DIR/idle.warn")" >> "$GUI_DIR/state.next" || return 1; }
     _sm=$(cat "$GUI_DIR/mode") || return 1
     case "$_sm" in
         restore)

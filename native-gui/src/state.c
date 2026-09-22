@@ -266,6 +266,8 @@ void state_parse(State *s, FILE *fp) {
             s->eta_s = num(f[9], -1);
         } else if (KEY("updated")) {
             s->updated = strtoll(val, NULL, 10);                 /* #410 */
+        } else if (KEY("idle_poweroff_at")) {
+            s->idle_poweroff_at = strtoll(val, NULL, 10);        /* #434 */
         } else if (KEY("session")) {
             split(val, f, 7);
             s->has_session = 1;

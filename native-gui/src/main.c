@@ -14,7 +14,8 @@
  *                    capture-start | room-open | room-wake | room-start |
  *                    room-close | class-pick | class-start | class-close |
  *                    smart-replace | smart-rescue | smart-skip |
- *                    tool-list | tool-run|<id>|<arg>|<confirm>  (#649)),
+ *                    tool-list | tool-run|<id>|<arg>|<confirm>  (#649) |
+ *                    touch  (#434: a key press -- the idle clock's activity)),
  *                    then key=value detail lines, then an empty line.
  *   exit 0           after "restore" (the agent takes the disk);
  *   exit 1           could not start / render, or stopped by a signal.
@@ -493,7 +494,18 @@ static void room_select_range(App *a, int begin, int end) {
     }
 }
 
+/* #434: a key press or click is activity for the agent's idle clock. Sent at
+ * most once per 10 s -- and always while a countdown shows, since that is
+ * exactly the press that cancels it. */
+static void emit_touch(App *a, int demo) {
+    static time_t last = 0; time_t now = time(NULL);
+    if (demo) return;
+    if (a->st.idle_poweroff_at <= 0 && now - last < 10) return;
+    last = now; emit("touch"); emit_end();
+}
+
 static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
+    if (e->type == UIEV_CLICK || e->type == UIEV_CHAR || e->type == UIEV_KEY) emit_touch(a, demo);
     switch (e->type) {
     case UIEV_MOVE:
         a->ptr_x = e->x; a->ptr_y = e->y; a->ptr_visible = !e->is_touch;
@@ -1014,7 +1026,7 @@ int main(int argc, char **argv) {
         /* #410: "עודכן לפני N שנ'" must keep counting when the state file
          * stops changing -- that is the whole point of the stamp. One
          * redraw per wake (2 s) while a stamp is on screen. */
-        if (a.st.updated > 0 && (long long)time(NULL) != last_age_tick) { last_age_tick = (long long)time(NULL); scene_dirty = 1; }
+        if ((a.st.updated > 0 || a.st.idle_poweroff_at > 0) && (long long)time(NULL) != last_age_tick) { last_age_tick = (long long)time(NULL); scene_dirty = 1; }
     }
     if (in) input_close(in);
     cairo_surface_destroy(scene);
