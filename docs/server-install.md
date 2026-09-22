@@ -413,6 +413,74 @@ tftp <כתובת-השרת> -c get bootx64.efi
 
 ---
 
+## גיבוי ושחזור (‏#1128, עיצוב R41)
+
+מה יש לגבות, ומה **לא** צריך: האימג'ים הם תיקיות עם `manifest.json`
+(הדיסק הוא מקור האמת, עיקרון 3) — הם מועתקים כקבצים ומאומתים מול
+המניפסט. ה-DB (`/var/lib/imagectl/imagectl.db`, ‏sqlite ב-WAL) מחזיק את
+מה שאין לו ייצוג כקבצים: מכונות וקבוצות, משתמשים, סודות MFA,
+‏`console_secret` (חותם את ה-cookies), מיקומי אחסון. **‏`cp imagectl.db`
+בזמן שהשרת רץ אינו גיבוי** — ב-WAL חלק מהטרנזאקציות יושב ב-`imagectl.db-wal`,
+והעותק יוצא חסר או לא תקין. הכלים כאן מעתיקים דרך ה-backup API של sqlite
+ובודקים `integrity_check` על העותק; "נכתב" אינו "קריא".
+
+### שלושת הכלים
+
+| כלי | מה הוא עושה | מתי |
+|---|---|---|
+| `tools/backup-server.sh --dest DIR` | ‏DB (עותק עקבי + integrity) → `db/`, שאר `data_dir` → `data/`, קובצי המערכת של ImageCtl (dnsmasq, nftables, ‏interfaces.d, ‏`/etc/imagectl`, שורות fstab, יחידות) → `system/<ts>/`, אימג'ים → `images/` (‏rsync **בלי** `--delete` — או `cp -au` כשאין rsync, כמו בשרת מה-ISO של v0.53.0 — בלי `.capture-*`/`.import-*`) **ואימות** מול המניפסטים; ‏`SHA256SUMS-<ts>`. ‏`--no-images` לריצה השעתית | cron |
+| `tools/verify-images.py DIR` | לכל `manifest.json`: ‏sha256 של כל מחיצה מול המניפסט. יציאה 0 רק כשהכול תואם; **אפס אימג'ים אינו פאס** (יציאה 3) אלא עם `--allow-empty` | אחרי כל העתקה, ועל השרת עצמו |
+| `tools/restore-drill.sh` | גיבוי (או `--backup DIR` קיים) → שחזור לתיקייה זמנית → **שרת שני** על העותק (‏loopback, פורט 18080+, כ-`nobody` כדי שלא ייגע ב-`/etc` של הייצור) → `GET /health/live` = 200, מספר האימג'ים שווה, ‏verify-images ירוק. **זה הפאס** — לא `is-active`. ‏`--skip-images` כשאין מקום לעותק האימג'ים (אז DB ותצורה בלבד, ונאמר) | שבועי |
+
+### RPO — כמה אפשר להפסיד
+
+- **‏DB: כל שעה** — `backup-server.sh --no-images` (שניות; ‏`umask 077`).
+- **תצורה: אחרי כל שינוי** בקונסולה (רשת, DHCP, אחסון, משתמשים) —
+  אותה פקודה; או **"הורד גיבוי הגדרות"** בקונסולה (בריאות → כרטיס
+  "גרסה ועדכון"): ‏tar.gz של ה-DB ושאר תיקיית הנתונים עם `MANIFEST.txt`
+  ו-`SHA256SUMS`, בלי אימג'ים. **הקובץ מכיל סודות** (סיסמאות מגובבות,
+  סודות MFA, מפתח התעודה) — שומרים אותו כמו סיסמה, לא בתיקייה משותפת.
+- **אימג'ים: אחרי כל קליטה/העלאה + לילי** — `backup-server.sh` מלא.
+
+```bash
+# /etc/cron.d/imagectl-backup — יעד על דיסק אחר או NAS מעוגן
+0 * * * *   root  bash /opt/imagectl/tools/backup-server.sh --dest /backup/imagectl --no-images >> /var/log/imagectl-backup.log 2>&1
+30 2 * * *  root  bash /opt/imagectl/tools/backup-server.sh --dest /backup/imagectl >> /var/log/imagectl-backup.log 2>&1
+0 4 * * 0   root  bash /opt/imagectl/tools/restore-drill.sh --backup /backup/imagectl >> /var/log/imagectl-backup.log 2>&1
+```
+
+`db/` צובר קובץ לכל ריצה — לגזום לפי מדיניות האתר (למשל
+`find /backup/imagectl/db -name 'imagectl-*.db' -mtime +30 -delete`).
+
+### סדר השחזור לשרת חדש
+
+1. **התקנה נקייה** מה-ISO (או `setup-boot-server.sh`) לאותה גרסה
+   (‏`MANIFEST.txt` / שם קובץ ה-DB אומרים איזו). לא לגעת בקונסולה עדיין.
+2. `systemctl stop imagectl-server imagectl-proxy`.
+3. **‏`data_dir`:** ‏`rsync -a <גיבוי>/data/ /var/lib/imagectl/` ואז
+   `cp <גיבוי>/db/imagectl-<האחרון>.db /var/lib/imagectl/imagectl.db`
+   (למחוק `imagectl.db-wal`/`-shm` ישנים אם יש). התעודה, ‏`console_secret`
+   ו-MFA **משוחזרים, לא נוצרים מחדש** — מי שהיה רשום ממשיך להיכנס.
+   ‏`known_hosts` משוחזר; ‏`machine_ssh_hostkey` ב-DB הוא ה-fallback.
+4. **אימג'ים:** ‏`rsync -a <גיבוי>/images/ /srv/imagectl/images/` ואז
+   `python3 tools/verify-images.py /srv/imagectl/images` — חייב 0.
+5. **קובצי מערכת — בזהירות:** ‏`system/<ts>/` מכיל שמות כרטיסים
+   (‏`ens33`, ‏`enp3s0`) של השרת הישן. על חומרה אחרת **לא** מעתיקים
+   עיוור: משווים, ומתקנים שמות כרטיסים ב-dnsmasq/nftables/interfaces.d
+   לפני שמעתיקים. ‏`/etc/iscsi/initiatorname.iscsi` — לפי ACL של האחסון
+   (הכרעת אתר: לשמור את הישן או לרשום את החדש באחסון).
+6. **‏boot payload:** ‏`tools/build_initramfs.sh` (או ההעתקה מה-ISO), ואז
+   `bash install/verify-boot-payload.sh --server-url http://<כתובת ההפצה>:8080`.
+7. `systemctl start imagectl-server` → קונסולה → **בריאות** ירוק.
+8. **ניתוק sessions ישנים:** לכל מנהל — משתמשים → "נתק מכל מקום"
+   (‏`POST /api/console/sessions/revoke`): ‏cookies שנחתמו על השרת הישן
+   תקפים גם כאן (אותו `console_secret`), וזה הרגע לאפס אותם.
+
+**הכרעות נעולות (R41 §10):** ‏backup API למחזורי, ‏`VACUUM INTO` לאד-הוק;
+העתקה גולמית של `imagectl.db` **רק** כשהשרת עצור; תרגיל restore שבועי.
+
+---
+
 ## צ'קליסט מחשב שיכפול — הקושחה, לא הקוד (‏#419, ‏#391)
 
 מחשב שיכפול הוא **Legacy BIOS** (דרישת רכש, אפיון סעיף 4), ולכן אין

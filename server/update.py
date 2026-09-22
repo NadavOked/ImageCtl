@@ -289,6 +289,22 @@ def create_update_router(ctx, repo_dir: str | Path, server_base: str,
         import socket
         return get_setting(ctx.conn, "server_name") or socket.gethostname()
 
+    @router.get("/backup")
+    def settings_backup(user=Depends(admin_only)):
+        """‏#1128: "הורד גיבוי הגדרות" — tar.gz של data_dir עם עותק עקבי של
+        ה-DB (backup API, לא cp), ‏MANIFEST.txt ו-SHA256SUMS; **בלי אימג'ים**.
+        הארכיון מכיל סודות — הקונסולה מזהירה לפני ההורדה."""
+        from fastapi.responses import Response  # noqa: PLC0415
+        from . import backup  # noqa: PLC0415
+        if ctx.data_dir is None:
+            raise HTTPException(503, "תיקיית הנתונים אינה ידועה לשרת הזה — אין מה לגבות")
+        payload, name = backup.build_archive(ctx.conn, Path(ctx.data_dir),
+                                             current_version(hooks, repo_dir))
+        journal(ctx.conn, "settings_backup_downloaded", f"{name} {len(payload)} bytes", user[0])
+        return Response(payload, media_type="application/gzip",
+                        headers={"Content-Disposition": f'attachment; filename="{name}"',
+                                 "Cache-Control": "no-store"})
+
     @router.get("")
     def info(user=Depends(admin_only)):
         del user

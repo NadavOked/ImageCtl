@@ -550,7 +550,8 @@ PKGS=(shim-signed grub-efi-amd64-signed grub-pc-bin dnsmasq dhcpcd-base
       python3-websockets                      # #904: uvicorn WebSocket — בלעדיו המוניטור (#690) מחזיר 500
       python3-cryptography python3-openssl    # #740: mTLS enrollment בין-שרתי
       open-iscsi nfs-common cifs-utils        # #1066: יוזם iSCSI + לקוח NFS/SMB
-      git)                                    # #1185: כפתור העדכון = git describe/fetch/checkout על /opt/imagectl — גם כשהקוד הגיע מה-ISO
+      git                                     # #1185: כפתור העדכון = git describe/fetch/checkout על /opt/imagectl — גם כשהקוד הגיע מה-ISO
+      rsync)                                  # #1128: tools/backup-server.sh — אימג'ים ותיקיית הנתונים ליעד הגיבוי, מצטבר
 
 say "מתקין חבילות: ${PKGS[*]}"
 run env DEBIAN_FRONTEND=noninteractive apt-get update -qq

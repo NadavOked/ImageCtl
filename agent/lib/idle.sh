@@ -19,7 +19,11 @@ idle_reset() { date +%s > "$RUN_DIR/idle.since"; rm -f "$RUN_DIR/idle.warn"; }
 idle_touched() {
     # The kiosk touches idle.touch on a key press; not older than the clock =
     # activity (same second counts -- the safe direction is staying on).
-    [ -f "$RUN_DIR/idle.touch" ] && [ ! "$RUN_DIR/idle.since" -nt "$RUN_DIR/idle.touch" ]
+    # `find -newer` and not `-nt`: -nt is undefined in POSIX sh (SC3013).
+    # find prints idle.since only when it is strictly newer than the touch;
+    # a find that fails prints nothing = "touched" = stay on, the safe side.
+    [ -f "$RUN_DIR/idle.touch" ] || return 1
+    [ -z "$(find "$RUN_DIR/idle.since" -newer "$RUN_DIR/idle.touch" 2>/dev/null)" ]
 }
 
 idle_exempt() {

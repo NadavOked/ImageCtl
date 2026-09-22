@@ -167,9 +167,12 @@ def run_transfer(ctx, data_dir, transfer_id: str) -> None:
         detail = interserver_auth.redact_secrets(str(exc))
         _note_contact_failure(conn, row["node_id"], exc, detail)
         log.warning("transfer %s failed: %s", transfer_id, detail)
-        _set_state(conn, transfer_id, "failed", error=detail)
+        # היומן לפני המצב הסופי, בכל אתר: המצב הוא מה שהקונסולה (והטסטים)
+        # ממתינים לו, ומי שרואה ``failed``/``done`` חייב לראות גם את
+        # האירוע — בסדר ההפוך יש חלון שבו המצב סופי והיומן עוד ריק.
         journal(conn, "storage_transfer_failed",
                 f"{transfer_id} {row['image_id']}: {detail}", "")
+        _set_state(conn, transfer_id, "failed", error=detail)
 
 
 def _push(ctx, data_dir, transfer_id: str, row) -> None:
@@ -207,9 +210,9 @@ def _push(ctx, data_dir, transfer_id: str, row) -> None:
                                    row["bytes_total"], on_progress=on_progress)
     if result.get("ok") is not True or result.get("id") != image_id:
         raise RuntimeError(f"תשובה לא צפויה מהמשני: {result!r}")
-    _set_state(conn, transfer_id, "done", bytes_sent=row["bytes_total"])
     journal(conn, "storage_transfer_done",
             f'{transfer_id} {image_id} "{row["image_name"]}" -> {node["label"]}', "")
+    _set_state(conn, transfer_id, "done", bytes_sent=row["bytes_total"])
 
 
 def _cancel_flag(transfer_id: str) -> threading.Event:
@@ -313,23 +316,23 @@ def run_pull(ctx, data_dir, transfer_id: str) -> None:
         if incoming is not None:
             _clear_incoming(incoming)
         log.info("pull %s cancelled", transfer_id)
-        _set_state(conn, transfer_id, "failed", error="בוטל")
         journal(conn, "storage_transfer_failed",
                 f"{transfer_id} {image_id}: בוטל", "")
+        _set_state(conn, transfer_id, "failed", error="בוטל")
     except Exception as exc:                                     # noqa: BLE001
         if _is_cancelled(transfer_id):
             if incoming is not None:
                 _clear_incoming(incoming)
-            _set_state(conn, transfer_id, "failed", error="בוטל")
             journal(conn, "storage_transfer_failed",
                     f"{transfer_id} {image_id}: בוטל", "")
+            _set_state(conn, transfer_id, "failed", error="בוטל")
         else:
             detail = interserver_auth.redact_secrets(str(exc))
             _note_contact_failure(conn, row["node_id"], exc, detail)
             log.warning("pull %s failed: %s", transfer_id, detail)
-            _set_state(conn, transfer_id, "failed", error=detail)
             journal(conn, "storage_transfer_failed",
                     f"{transfer_id} {image_id}: {detail}", "")
+            _set_state(conn, transfer_id, "failed", error=detail)
     finally:
         with _cancel_lock:
             _cancel_flags.pop(transfer_id, None)
@@ -431,6 +434,6 @@ def _pull(ctx, data_dir, transfer_id: str, row, incoming: Path | None) -> None:
         except OSError as extra:
             _clear_incoming(incoming)
             raise RuntimeError(f"לא ניתן להכניס את האימג' לספרייה: {extra}") from extra
-    _set_state(conn, transfer_id, "done", bytes_sent=completed)
     journal(conn, "storage_transfer_done",
             f'{transfer_id} {image_id} "{name}" <- {node["label"]}', "")
+    _set_state(conn, transfer_id, "done", bytes_sent=completed)

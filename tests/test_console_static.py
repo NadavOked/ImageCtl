@@ -244,12 +244,13 @@ def test_static_includes_are_at_9_9():
     #1150 (מסך ה-MFA: הודעה אדומה כשאין QR כי python3-qrcode חסר) = ‏9.6;
     #1192 (אישור עדכון בלי הקלדת שם) = ‏9.7;
     #1148/#1177 (מצב "לא ישים" ומסך MFA בלי otpauth גלוי) = ‏9.8;
-    #1126/#854 (מצב כשל מפורש לסבב) = ‏9.9.
+    #1126/#854 (מצב כשל מפורש לסבב) = ‏9.9;
+    #1128 (כפתור "הורד גיבוי הגדרות" בכרטיס הגרסה) = ‏10.0.
     שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
     versions = {float(v) for v in re.findall(r'\?v=(\d+\.\d+)"', page)}
-    assert versions == {9.9}, versions
+    assert versions == {10.0}, versions
 
 
 def test_update_apply_is_a_sheet_without_text_verification_and_revert_uses_hostname():

@@ -217,7 +217,9 @@ test('update card: switch off → note with a link to settings and no buttons; f
   let s=setup({'/update':{current:'v0.34.0',enabled:false,previous:null,server_name:'srv'}}); s.run('current="health"');
   await s.run('loadHealth()');
   let card=cell(s.run('health()'),'גרסה ועדכון',1500);
-  assert.match(card,/note warn.*update_enabled.*selectPageById\('settings'\)/); assert.doesNotMatch(card,/<button/);
+  assert.match(card,/note warn.*update_enabled.*selectPageById\('settings'\)/);
+  // #1128: the settings-backup button does not depend on the update switch; no update buttons though
+  assert.doesNotMatch(card,/healthUpdateCheck|confirmUpdateApply|confirmUpdateRevert/); assert.match(card,/confirmSettingsBackup/);
   assert.match(card,/קודם<\/span><span class="v">—/);
   assert.ok(!s.requests.some((r)=>r.url==='/update/status'),'status is not asked while the switch is off');
   s=setup({'/update/check':new Error('no route to github'),'/update/status':{state:'running',tag:'v0.35.0',verified:false}}); s.run('current="health"');

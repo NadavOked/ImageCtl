@@ -189,6 +189,7 @@ EVENTS_HE = {
     "storage_parent_cert_renewed": "תעודת השרת הראשי חודשה במשני",
     "storage_parent_unbind": "השרת המשני נותק מהראשי",
     "task_token_refused": "אסימון משימה נדחה",
+    "settings_backup_downloaded": "גיבוי ההגדרות הורד",
     "update_apply_failed": "החלת עדכון נכשלה",
     "update_apply_started": "החלת עדכון החלה",
     "update_check": "בדיקת עדכון מול הריפו הציבורי",

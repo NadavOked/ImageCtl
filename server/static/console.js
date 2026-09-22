@@ -3768,9 +3768,27 @@ function healthUpdateCard() {
       u.previous ? `<button class="btn danger" onclick="confirmUpdateRevert(UPDATE_INFO.previous)">חזור ל-${esc(u.previous)}</button>` : "",
     ].join("");
     const off = u.enabled ? "" : UI.note("warn", `העדכון כבוי (update_enabled) — ${UI.link("הדלקה בהגדרות", "selectPageById('settings')")}`);
-    body = `<div class="upd">${UI.kv(pairs)}${btns ? `<div class="acts">${btns}</div>` : ""}</div>${off}`;
+    // ‏#1128: גיבוי ההגדרות אינו תלוי במתג העדכון — הוא זמין תמיד למנהל.
+    const backup = `<button class="btn" onclick="confirmSettingsBackup()">הורד גיבוי הגדרות</button>`;
+    body = `<div class="upd">${UI.kv(pairs)}<div class="acts">${btns}${backup}</div></div>${off}`;
   }
   return UI.card({ title: "גרסה ועדכון", small: "מהתג של עץ השרת (git describe)", body });
+}
+
+/* ‏#1128: "הורד גיבוי הגדרות" — tar.gz של ה-DB (עותק עקבי) ושאר תיקיית
+   הנתונים, בלי אימג'ים. הארכיון מכיל סודות (סיסמאות מגובבות, סודות MFA,
+   מפתח התעודה) — ולכן אזהרה לפני ההורדה, לא אחריה. */
+function confirmSettingsBackup() {
+  sheet({
+    title: "הורדת גיבוי הגדרות",
+    sub: "הקובץ מכיל סודות: סיסמאות מגובבות, סודות MFA ומפתח התעודה. לשמור אותו כמו סיסמה — לא בתיקייה משותפת ולא במייל. האימג'ים אינם בפנים (הם בתיקיית האימג'ים ומגובים ב-rsync).",
+    submitLabel: "הורד",
+    onSubmit: async () => {
+      const a = document.createElement("a");
+      a.href = "/api/console/update/backup";
+      document.body.appendChild(a); a.click(); a.remove();
+    },
+  });
 }
 
 async function healthUpdateCheck() {

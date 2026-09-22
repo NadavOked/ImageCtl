@@ -34,6 +34,7 @@ open-iscsi
 nfs-common
 cifs-utils
 git                 # #1185: כפתור העדכון עובד על /opt/imagectl/.git שה-ISO נושא
+rsync               # #1128: tools/backup-server.sh — גיבוי מצטבר של האימג'ים
 
 # --- [initramfs] tools/build_initramfs.sh · הבסיס -------------------------
 busybox-static

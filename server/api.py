@@ -49,6 +49,8 @@ class ServerContext:
     #: מוזרק כמו `dhcp_hooks`. ‏`server.main` מתקין אותו תמיד; ‏None =
     #: הרצת בדיקות בלי מקור, ואז שומר הזהות אינו מותקן (וה-/health אומר).
     leases: object | None = None
+    #: ‏#1128: תיקיית הנתונים — לגיבוי ההגדרות מהקונסולה; None בבדיקות ישנות.
+    data_dir: Path | None = None
 
 
 def _error(status: int, message: str, code: str) -> JSONResponse:

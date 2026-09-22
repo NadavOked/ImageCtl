@@ -2592,6 +2592,7 @@ deploy (403) ושרת משני (409) — אין צמתים, לא שגיאה. מ�
 | `/update/check` | POST | `{at, current, latest, available, reason}` — נשמר ב-`settings.update_last_check` (‏#1000); **404** אם `update_enabled` כבוי |
 | `/update/apply` | POST | `{tag, confirm_name}`; **404** כבוי · **403** שם שגוי · **409** סבב פתוח/רץ |
 | `/update/revert` | POST | `{confirm_name}` לגרסה ב-`update_previous`; **404** אם אין גרסה קודמת |
+| `/update/backup` | GET | (‏#1128) `application/gzip`, ‏`Content-Disposition: attachment; filename="imagectl-settings-<ts>.tar.gz"`, ‏`Cache-Control: no-store`. תוכן: `data/imagectl.db` (עותק עקבי דרך backup API, ‏`integrity_check`=ok, ‏journal_mode=DELETE), שאר `data_dir` תחת `data/` (בלי `imagectl.db*`, ‏`storage/`, ‏`storage-test/`), ‏`MANIFEST.txt` (‏`version=`, ‏`created=`, ‏`warning=`), ‏`SHA256SUMS`. **בלי אימג'ים.** **לא תלוי** ב-`update_enabled`. יומן: `settings_backup_downloaded`. **503** כשלשרת אין `data_dir` (בדיקות בלבד) |
 
 **"שם השרת" בהקלדת האישור** (עיקרון 7, אותו דפוס כמו מחיקת אימג'/עצירת
 סבב) הוא ה-hostname מתוך `--server-url` — לא שדה חדש, כדי לא להוסיף

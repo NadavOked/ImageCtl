@@ -416,7 +416,8 @@ def create_runtime(
     # ‏#720: ספריית חבילות הדרייברים — תיקייה ליד ה-DB, לא בספריית האימג'ים.
     ctx = ServerContext(conn=conn, library=library, store=store, sender=sender,
                         drivers=DriverLibrary(data_dir / "drivers"),
-                        leases=(identity_hooks or {}).get("leases"))
+                        leases=(identity_hooks or {}).get("leases"),
+                        data_dir=data_dir)
     drain_crumbs(ctx, netcfg_dir)
 
     # בהתקנה טרייה: admin/admin עם החלפה כפויה (#1085). אם כבר יש מנהל — לא נוגעים.

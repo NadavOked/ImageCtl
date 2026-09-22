@@ -84,5 +84,6 @@ test('index.html was bumped so the browser does not run the old console.js', () 
   const page = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
   const versions = new Set([...page.matchAll(/\?v=([0-9.]+)/g)].map((m) => m[1]));
   assert.equal(versions.size, 1, [...versions].join(','));
-  assert.ok([...versions][0] >= '6.6', `?v=${[...versions][0]} — #856 ships as 6.6`);
+  // numeric, not lexical: '10.0' >= '6.6' is false as strings (caught at ?v=10.0, #1128)
+  assert.ok(parseFloat([...versions][0]) >= 6.6, `?v=${[...versions][0]} — #856 ships as 6.6`);
 });
