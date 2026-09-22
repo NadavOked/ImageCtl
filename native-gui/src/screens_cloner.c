@@ -151,8 +151,10 @@ static void disk_card(App *a, cairo_t *cr, Rect card, int port,
     y += cell_h + 10;
 
     if (d && d->error[0]) {
+        /* #943: a done disk that still carries an error is a warning
+         * (orange), not a failed disk (red) -- the restore completed. */
         Text error = error_make(cr, d->error, card.w - 48);
-        text_draw_r(cr, &error, right, y, t->danger);
+        text_draw_r(cr, &error, right, y, !strcmp(d->state, "done") ? t->warn : t->danger);
         text_free(&error);
     } else if (pending && a->st.smart_reason[0]) {
         Text reason = error_make(cr, smart_reason_he(a->st.smart_reason), card.w - 48);

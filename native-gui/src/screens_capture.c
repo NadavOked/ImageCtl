@@ -172,7 +172,7 @@ void screen_progress(App *a, cairo_t *cr, double W, double H, double head_h) {
     /* drawProgress, unless the agent set the texts itself (a cloning
      * machine or a class receiver shows this card with no operator). The
      * old "קולט: <name>" head is now label "קליטת אימג׳" + the name. */
-    char title[160], sub[224], pct[96], bytes[64] = "—", total[64] = "—";
+    char title[160], sub[224], pct[96], bytes[64] = "—", total[64] = "—", rate[64] = "—";
     const char *label = s->title[0] ? "משימה" : s->task_direct ? "הפצה ישירה" : "קליטת אימג׳";
     if (s->title[0])              snprintf(title, sizeof title, "%s", s->title);
     else if (s->task_direct)      snprintf(title, sizeof title, "משדר מהדיסק %s למחשבי השיכפול", s->task_disk);   /* #715 */
@@ -187,6 +187,9 @@ void screen_progress(App *a, cairo_t *cr, double W, double H, double head_h) {
         fmt_bytes(bytes, sizeof bytes, (double)s->bytes);
         if (s->pct > 0) fmt_bytes(total, sizeof total, (double)s->bytes * 100.0 / s->pct);
     }
+    /* #408: the rate is what says "alive" when there is no denominator; it is
+     * shown only once measured (two reads), never as 0. */
+    if (a->capture_rate_bps > 0) { char r[32]; fmt_bytes(r, sizeof r, a->capture_rate_bps); snprintf(rate, sizeof rate, "%s/s", r); }
     char short_pct[32];
     if (s->pct >= 0) snprintf(short_pct,sizeof short_pct,"%d%%",s->pct > 100 ? 100 : s->pct);
     else snprintf(short_pct,sizeof short_pct,"--");
@@ -219,7 +222,10 @@ void screen_progress(App *a, cairo_t *cr, double W, double H, double head_h) {
     draw_big_bar(cr,t,(Rect){x,y,inner,N_BAR_H},s->pct,s->moving);
     y += N_BAR_H+N_METRIC_GAP;
     draw_metric(cr,t,(Rect){xr-mw,y,mw,mh},s->title[0] ? "נכתב" : "נקראו",bytes);
-    draw_metric(cr,t,(Rect){xr-2*mw-N_METRIC_GAP,y,mw,mh},"סה״כ (משוער)",total);
+    /* #408: without a denominator the middle metric is the rate -- "10.7 GB
+     * read at 93 MB/s" is a whole answer; "— of —" was a frozen screen. */
+    if (s->pct >= 0) draw_metric(cr,t,(Rect){xr-2*mw-N_METRIC_GAP,y,mw,mh},"סה״כ (משוער)",total);
+    else             draw_metric(cr,t,(Rect){xr-2*mw-N_METRIC_GAP,y,mw,mh},"קצב",rate);
     draw_metric(cr,t,(Rect){x,y,mw,mh},"התקדמות",pct);
     y += mh+N_ACTION_TOP;
     text_draw(cr,&note,x,y,t->muted);

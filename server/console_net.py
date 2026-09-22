@@ -28,7 +28,7 @@ def create_net_router(ctx: ServerContext) -> APIRouter:
         """
         rows = ctx.conn.execute(
             "SELECT d.mac, d.ip, d.description, d.first_seen, d.last_seen,"
-            "       d.disk_probe,"
+            "       d.disk_probe, d.firmware, d.secure_boot,"
             "       m.suffix, g.id AS group_id, g.label AS group_label, g.role,"
             "       b.step AS boot_step, b.at AS boot_at"
             "  FROM net_devices d"
@@ -47,6 +47,9 @@ def create_net_router(ctx: ServerContext) -> APIRouter:
                 "boot": boottrace.describe(r["boot_step"], r["boot_at"]),
                 # ‏#402: drives/no_disks/no_ports/unchecked; null = סוכן ישן
                 "disk_probe": r["disk_probe"],
+                # ‏#500: uefi/bios ו-true/false כפי שנמדדו; null = לא דווח
+                "firmware": r["firmware"],
+                "secure_boot": None if r["secure_boot"] is None else bool(r["secure_boot"]),
             }
             for r in rows
         ]

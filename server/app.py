@@ -242,6 +242,8 @@ def create_runtime(
     now_fn=None,
     sender_runner=None,
     sender_portbase: int | None = None,
+    # ‏e2e_simulation בלבד: שולח מדומה (ראו sender.Sender.simulate).
+    sender_simulate: bool = False,
     # שתי תקרות ההמתנה של udpcast. ‏None = ברירת המחדל של `sender.py`
     # (כמו `sender_portbase`): הערך בייצור אינו זז, ומי שצריך תקרה קצרה —
     # מעבדה, טסט, ‏e2e — מעביר אותה כאן במקום לחכות דקות (#341).
@@ -354,12 +356,27 @@ def create_runtime(
     # לא זזה. מי שמעביר ערך הוא מי שאסור לו להתנגש בהפצה אמיתית: ה-e2e,
     # שמריץ שרת אמיתי בתת-תהליך ולכן אין לאן להזריק לו שולח מזויף. הגנה
     # שאינה תלויה בכך שמישהו יזכור לנקות — פורט שאינו יכול להתנגש (#156).
+    def on_sender_event(event: str, detail: str) -> None:
+        journal(conn, event, detail)
+        if event != "send_failed":
+            return
+        status = sender.status()
+        session_id = status.get("session_id") if status else None
+        if session_id:
+            store.fail(
+                session_id, detail,
+                related=lambda: room.fail_wave(
+                    conn, session_id, detail, commit=False,
+                ),
+            )
+
     sender = SenderEngine(
         library,
         interface=interface,
-        on_event=lambda event, detail: journal(conn, event, detail),
+        on_event=on_sender_event,
         **({"runner": sender_runner} if sender_runner else {}),
         **({"portbase": sender_portbase} if sender_portbase is not None else {}),
+        **({"simulate": True} if sender_simulate else {}),
         **({"max_wait": sender_max_wait} if sender_max_wait is not None else {}),
         **({"start_timeout": sender_start_timeout}
            if sender_start_timeout is not None else {}),

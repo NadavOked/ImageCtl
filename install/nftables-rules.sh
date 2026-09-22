@@ -164,7 +164,8 @@ ${SSH_RULES}
 ${INTERSERVER_RULE}
 
 		# כל השאר: יומן מצומצם ואז drop (ה-policy). כיתות = v2, לא נפתח כאן.
-		log prefix "imagectl-drop " limit rate 5/minute
+		# ‏level info: לא warning — אחרת השורה מודפסת על הקונסולה מעל ה-DCUI (#1195)
+		log prefix "imagectl-drop " level info limit rate 5/minute
 	}
 
 	chain output {

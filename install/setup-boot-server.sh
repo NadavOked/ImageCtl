@@ -932,6 +932,13 @@ run install -m 0644 "$APP_DIR/install/imagectl-dcui.service" \
     /etc/systemd/system/imagectl-dcui.service
 run install -m 0644 "$APP_DIR/install/imagectl-installer-gui.service" \
     /etc/systemd/system/imagectl-installer-gui.service
+# ‏#1195: הודעות קרנל (‏`imagectl-drop` של nftables) הודפסו מעל ה-DCUI על tty1;
+# הן נשארות ביומן, הקונסולה מקבלת רק crit ומעלה. ‏sysctl -p — מעכשיו, לא רק
+# מהאתחול הבא; כישלון נאמר (מארח בלי /proc/sys/kernel/printk הוא מקרה שם).
+run install -m 0644 "$APP_DIR/install/90-imagectl-console.conf" /etc/sysctl.d/90-imagectl-console.conf
+if (( ! DRY_RUN )); then
+    sysctl -q -p /etc/sysctl.d/90-imagectl-console.conf || warn "sysctl kernel.printk לא הוחל עכשיו — ייכנס באתחול הבא"
+fi
 run install -m 0644 "$APP_DIR/install/imagectl-wizard.service" \
     /etc/systemd/system/imagectl-wizard.service
 run install -m 0644 "$APP_DIR/install/imagectl-wizard-rerun.service" \

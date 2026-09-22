@@ -572,6 +572,47 @@ def test_the_round_starts_the_sender_and_closing_stops_it(server_with_sender, fr
     assert wait_for(lambda: recorder.processes[0].terminated)
 
 
+def test_sender_failure_is_a_terminal_round_and_member_boots_local(
+    server_with_sender, free_ports,
+):
+    """בקרה שלילית #854: על main ‏``send_failed`` רק נרשם ביומן;
+    הטענות למטה מוצאות ``running`` ושידור פעיל, ולכן נכשלות."""
+    server, recorder = server_with_sender
+    ids = setup_classroom(server)
+    session = server["deploy"].post(
+        "/api/console/sessions",
+        json={"group_id": ids["group"], "image_id": "img_7f3a91",
+              "prefix": "LAB1", "expected_clients": 1},
+    ).json()["id"]
+    recorder.code = 3
+
+    server["anon"].post("/api/v1/agent/hello", json=hello_body(ids["mac1"]))
+    server["anon"].post("/api/v1/agent/hello", json=hello_body(ids["mac1"]))
+    assert recorder.spawned.wait(timeout=5)
+    recorder.processes[0].release()
+    ctx = server["ctx"]
+    assert wait_for(lambda: ctx.conn.execute(
+        "SELECT state FROM sessions WHERE id = ?", (session,)
+    ).fetchone()["state"] == "failed")
+
+    failed = ctx.conn.execute(
+        "SELECT state, failed_reason FROM sessions WHERE id = ?", (session,)
+    ).fetchone()
+    member = ctx.conn.execute(
+        "SELECT state, error FROM session_members WHERE session_id = ? AND mac = ?",
+        (session, ids["mac1"]),
+    ).fetchone()
+    assert failed["state"] == "failed" and failed["failed_reason"]
+    assert member["state"] == "failed" and member["error"] == failed["failed_reason"]
+    assert ctx.store.active_broadcast() is None
+    reboot = server["anon"].post(
+        "/api/v1/agent/hello", json=hello_body(ids["mac1"])
+    ).json()
+    assert reboot["session"] is None and reboot["task"] is None
+    shown = server["admin"].get("/api/console/overview").json()["session"]
+    assert shown["state"] == "failed" and shown["failed_reason"]
+
+
 def test_the_journal_reports_the_broadcast_in_hebrew(server_with_sender, free_ports):
     server, recorder = server_with_sender
     ids = setup_classroom(server)
@@ -706,3 +747,23 @@ def test_stop_with_no_session_id_still_stops_unconditionally(library, free_ports
     engine.stop()
     assert wait_for(lambda: recorder.processes[0].terminated)
     assert wait_for(lambda: engine.status()["state"] == "stopped")
+
+
+def test_a_simulated_sender_never_runs_udp_sender_and_never_fails(library, monkeypatch):
+    """‏#854 המשך: בסימולציה (ווינדוס, ‏CI בלי udpcast) אין udp-sender ואין
+    טבלת ‎/proc/net/udp — ומאז שכשל השולח הוא כשל הסבב, הסימולציה הייתה
+    נופלת. ‏`simulate=True`: אף בדיקת פורט, אף תהליך, אירוע `send_simulated`
+    ביומן, "משדר" עד שהסבב נסגר — ואז `send_stopped`, לא `send_failed`."""
+    events = []
+    recorder = Recorder()
+    # בדיקת הפורט חייבת לא לרוץ בכלל — ‏OSError כאן היה כישלון
+    monkeypatch.setattr(sender_module, "_inodes_on_port", lambda port: None)
+    engine = SenderEngine(library, runner=recorder, simulate=True,
+                          on_event=lambda e, d: events.append(e))
+    engine.start({"id": "ses_sim", "image_id": "img_7f3a91", "joined": 3})
+    assert wait_for(lambda: engine.status()["state"] == "sending")
+    assert recorder.commands == []
+    assert "send_simulated" in events and "send_failed" not in events
+    engine.stop("ses_sim")
+    assert wait_for(lambda: "send_stopped" in events)
+    assert "send_failed" not in events

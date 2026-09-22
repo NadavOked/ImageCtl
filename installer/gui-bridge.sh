@@ -23,7 +23,7 @@ set -u
 LC_ALL=C; export LC_ALL
 
 case "$0" in */*) BRIDGE_DIR=${0%/*} ;; *) BRIDGE_DIR=. ;; esac
-BRIDGE_DIR=$(CDPATH= cd "$BRIDGE_DIR" && pwd) || exit 2
+BRIDGE_DIR=$(CDPATH="" cd "$BRIDGE_DIR" && pwd) || exit 2
 ENGINE="${ENGINE:-$BRIDGE_DIR/imagectl-install}"
 RUN_DIR="${RUN_DIR:-/run/imagectl}"
 STATE_FILE="${STATE_FILE:-$RUN_DIR/install.state}"
@@ -89,7 +89,7 @@ nic_rows() {
 write_answers() {
     _wa_out=$1; _wa_if=$(field interface); _wa_mac=
     [ -n "$_wa_if" ] && _wa_mac=$(cat "$SYSROOT/sys/class/net/$_wa_if/address" 2>/dev/null || printf '')
-    _wa_user=$(field admin_user); [ -n "$_wa_user" ] || _wa_user=admin
+    _wa_user=$(field admin_user); [ -n "$_wa_user" ] || _wa_user="admin"
     umask 077
     {
         emit disk "$(field disk)"

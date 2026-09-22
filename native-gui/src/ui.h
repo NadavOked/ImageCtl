@@ -210,6 +210,9 @@ typedef struct State {
      * screen's typed confirmation (principle 7). Empty = the registry has
      * none, and the screen refuses to start rather than match "" to "". */
     char machine_name[64];
+    /* #1168: logo=<png path> from guistate.sh -- the college's logo in the
+     * header instead of the brandmark. Empty = brandmark. */
+    char logo[256];
 
     /* the cloner screen (clonergui.sh): image name + a pending SMART choice.
      * smart_nonce is the request's identity, drawn with the prompt and echoed
@@ -265,6 +268,11 @@ typedef struct App {
     int fixed_clock;            /* --png: header clock is a constant, so two renders
                                    a minute apart are byte-identical (test flake, 19/09) */
     int watching;               /* #st-progress was on screen (drawDone trigger) */
+    /* #408: the capture rate, measured here from two state reads (bytes and
+     * the agent's updated= epoch). <= 0 = not measured yet -- never drawn as 0.
+     * "Is it alive?" needs only the counter; the rate answers it without a
+     * denominator, which is exactly what a dirty NTFS (no used_bytes) lacks. */
+    unsigned long long rate_prev_bytes; long long rate_prev_updated; double capture_rate_bps;
     int showing_done;           /* stay on #st-done until "קליטה נוספת" */
     char done_title[64], done_sub[240];
 

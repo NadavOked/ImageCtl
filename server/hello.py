@@ -76,6 +76,34 @@ def off_deploy_vlan(scope: dict | None, server_base: str | None) -> bool:
 PROBE_HEADER = b"x-imagectl-probe"
 
 
+#: ‏#1127: תקרת גודל ועומק לשדות ה-hello שנשמרים כ-JSON (מלאי, probe, מפתח
+#: SSH). ‏64KB/שדה ועומק 8 — הסוכן שלנו שולח קילובייטים בודדים ועומק 3.
+HELLO_FIELD_MAX_BYTES = 64 * 1024
+HELLO_FIELD_MAX_DEPTH = 8
+HELLO_CAPPED_FIELDS = ("inventory", "probe", "netprobe", "ssh_hostkey")
+
+
+def _json_depth(value: object, depth: int = 1) -> int:
+    if isinstance(value, dict):
+        return max([depth] + [_json_depth(v, depth + 1) for v in value.values()])
+    if isinstance(value, list):
+        return max([depth] + [_json_depth(v, depth + 1) for v in value])
+    return depth
+
+
+def hello_payload_oversized(body: dict) -> str | None:
+    """שם השדה הראשון שחורג מהתקרה (גודל JSON או עומק), או None."""
+    for name in HELLO_CAPPED_FIELDS:
+        value = body.get(name)
+        if value is None:
+            continue
+        if _json_depth(value) > HELLO_FIELD_MAX_DEPTH:
+            return name
+        if len(json.dumps(value, ensure_ascii=False)) > HELLO_FIELD_MAX_BYTES:
+            return name
+    return None
+
+
 def self_probe(scope: dict | None) -> bool:
     """האם בקשת `/boot/*` הזו היא הבדיקה העצמית של השרת (‏#976).
 
@@ -94,7 +122,10 @@ def self_probe(scope: dict | None) -> bool:
     try:
         if dict(scope.get("headers") or ()).get(PROBE_HEADER) != b"1":
             return False
-        client = ipaddress.ip_address(scope.get("client")[0])
+        client_addr = scope.get("client")           # ‏#1127: בלי לקוח אין ראיה
+        if not client_addr:
+            return False
+        client = ipaddress.ip_address(client_addr[0])
         return client.is_loopback or client == ipaddress.ip_address(
             scope.get("server")[0])
     except Exception:  # noqa: BLE001 — כאן זו בדיוק הכוונה
@@ -205,6 +236,8 @@ def build_answer(
     prompt: str | None = None,
     record_journal: bool = True,
     disk_probe: str | None = None,
+    firmware: str | None = None,
+    secure_boot: int | None = None,
 ) -> dict:
     # כל מגע של המכונה נרשם ברשימת ההתקנים, גם של מכונה שאינה רשומה
     # בטבלה — ככה מתגלה MAC לא מוכר, וזה חלק מעיקרון 1. ‏hello הוא POST
@@ -220,7 +253,8 @@ def build_answer(
         net_seen(conn, mac, reported_ip or client_ip,
                  disks_json=json.dumps(disks) if disks is not None else None,
                  monitor_secret=monitor_secret, monitor_auth=monitor_auth,
-                 prompt=prompt, disk_probe=disk_probe)
+                 prompt=prompt, disk_probe=disk_probe,
+                 firmware=firmware, secure_boot=secure_boot)
         # ‏#720: המלאי החומרתי (schema 2) נשמר מגורסת — שורה חדשה רק כשהשתנה.
         # ‏None = הסוכן לא שלח (schema 1) או שלח פגום: הגרסה הקודמת נשארת.
         if hw_inventory is not None:
@@ -310,7 +344,15 @@ def build_answer(
         return answer
 
     if session["state"] == "open" and joining:
-        store.record_hello(session, mac)
+        if not store.record_hello(session, mac):
+            # הגל עשוי היה לצאת אחרי הקריאה מ-`active_for_group`. מכונה
+            # שאיחרה עולה מקומית, ואינה מצטרפת לגל שכבר עזב.
+            return answer
+        session = conn.execute(
+            "SELECT * FROM sessions WHERE id = ?", (session["id"],)
+        ).fetchone()
+        if session is None or session["state"] not in ("open", "running"):
+            return answer
 
     if session["state"] == "running" and not store.is_member(session["id"], mac):
         # מאחרים נכנסים לסבב הבא (סעיף 13.3) — עכשיו: דיסק מקומי.

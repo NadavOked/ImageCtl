@@ -682,6 +682,12 @@ static void after_reload(App *a) {
     if (a->image_sel > a->st.nimages) a->image_sel = 0;
     if (!a->st.has_round) a->room_confirming = 0;
     if (!a->st.has_session) a->class_confirming = 0;
+    /* #408: rate from consecutive reads; a counter that went backwards
+     * (new task) or a clock that did not move resets, not divides. */
+    if (a->st.updated > a->rate_prev_updated && a->st.bytes >= a->rate_prev_bytes && a->rate_prev_updated > 0)
+        a->capture_rate_bps = (double)(a->st.bytes - a->rate_prev_bytes) / (double)(a->st.updated - a->rate_prev_updated);
+    else if (a->st.bytes < a->rate_prev_bytes) a->capture_rate_bps = 0;
+    a->rate_prev_bytes = a->st.bytes; a->rate_prev_updated = a->st.updated;
 }
 
 /* ---- --png: every card, both themes, to files -------------------------------------- */

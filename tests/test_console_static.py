@@ -215,7 +215,7 @@ def test_images_tree_node_uses_the_folder_icon():
 
 # ---------- #954 גל 2: ספריית האימג'ים ----------
 
-def test_static_includes_are_at_8_5():
+def test_static_includes_are_at_9_9():
     """גל 2 = ‏7.0; גל 3 (מחשבים) = ‏7.1; גל 3א = ‏7.3; השער (מוניטור רק בדף
     המוניטור) = ‏7.4; גל 5 (בריאות + פורטים) = ‏7.5; גל 6 (מוניטור, דרייברים,
     הגדרות, הרשאות, יומן + WoL למחשב) = ‏7.6; #703 (TLS) = ‏7.7; דף הפורטים
@@ -243,12 +243,13 @@ def test_static_includes_are_at_8_5():
     במקום "0 דיסקים") = ‏9.5 — v0.48.1 יצא עם 9.4, ולכן bump;
     #1150 (מסך ה-MFA: הודעה אדומה כשאין QR כי python3-qrcode חסר) = ‏9.6;
     #1192 (אישור עדכון בלי הקלדת שם) = ‏9.7;
-    #1148/#1177 (מצב "לא ישים" ומסך MFA בלי otpauth גלוי) = ‏9.8.
+    #1148/#1177 (מצב "לא ישים" ומסך MFA בלי otpauth גלוי) = ‏9.8;
+    #1126/#854 (מצב כשל מפורש לסבב) = ‏9.9.
     שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
     versions = {float(v) for v in re.findall(r'\?v=(\d+\.\d+)"', page)}
-    assert versions == {9.8}, versions
+    assert versions == {9.9}, versions
 
 
 def test_update_apply_is_a_sheet_without_text_verification_and_revert_uses_hostname():
@@ -390,6 +391,21 @@ def test_deploy_page_is_the_cloners_room_from_the_api_only():
     css = (STATIC / "console.css").read_text(encoding="utf-8")
     for sel in (".page .rnew{", ".page .rnotes{", ".page .rnew .radios{"):
         assert sel in css, sel
+
+
+def test_failed_rounds_show_the_reason_and_offer_close_or_reopen():
+    js = _console_js()
+    for needed in (
+        'return `נכשל: ${session.failed_reason || "סיבה לא ידועה"}`',
+        'UI.pill("err", `נכשל: ${r.failed_reason || "סיבה לא ידועה"}`)',
+        'onclick="reopenRound()">פתח מחדש',
+        'onclick="reopenRoom()">פתח מחדש',
+        "function reopenRound()",
+        "function reopenRoom()",
+        'onclick="stopRound()"',
+        'onclick="stopRoom()"',
+    ):
+        assert needed in js, needed
 
 
 def test_health_and_ports_pages_are_tables_from_the_api_with_a_switch_per_row():

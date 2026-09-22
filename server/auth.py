@@ -55,6 +55,10 @@ def _enforce_purpose(request, session: Session) -> None:
     from fastapi import HTTPException
     path = request.url.path
     method = request.method
+    # ‏#1127: משתמש שמתחרט באמצע החלפת סיסמה/רישום MFA חייב לוכל להתנתק —
+    # ‏403 על logout השאיר אותו כלוא במצב הביניים.
+    if method == "POST" and path.rstrip("/") == "/api/console/logout":
+        return
     if session.purpose == PURPOSE_PWCHANGE:
         if not (method == "POST" and path.rstrip("/") == "/api/console/me/password"):
             raise HTTPException(403, "password_change_required")

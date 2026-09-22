@@ -195,6 +195,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sender-portbase", type=int, default=None,
                         help="portbase של udp-sender; ברירת המחדל היא 9000 "
                              "(הייצור). לשימוש הסימולציה בלבד")
+    parser.add_argument("--sender-simulate", action="store_true",
+                        help="שולח מדומה — בלי udp-sender ובלי בדיקת פורטים; "
+                             "tools/e2e_simulation.py בלבד, לעולם לא בשרת אמיתי")
     # ‏Storage Nodes (#655/#723): תפקיד ההתקנה של השרת. **תצורת שרת
     # בלבד** — אינה נכנסת לשורת הפקודה של הקרנל (עיקרון 2), רק להגדרות.
     # ‏#732: ברירת המחדל היא ``None`` (לא ``standalone``). ריסטארט בלי
@@ -456,6 +459,7 @@ def main() -> None:
     runtime = create_runtime(args.data_dir, args.images, server_url,
                              boot_dir=args.boot_dir, interface=interface,
                              sender_portbase=args.sender_portbase,
+                             sender_simulate=args.sender_simulate,
                              storage_role=args.storage_role,
                              primary_url=args.primary_url,
                              known_macs_hooks={"apply": dhcp_host.apply_known_macs},

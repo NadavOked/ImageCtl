@@ -87,6 +87,7 @@ _MAC_STRIP = re.compile(r"[^0-9a-fA-F]")
 # חייב להיות אנגלית ASCII בלבד.
 # הראשון לערכים בשורה אחת (מוחק גם שורות חדשות), השני לקובץ שלם.
 _ASCII_SAFE = re.compile(r"[^\x20-\x7e]")
+_GRUB_META = re.compile(r"[\s$\"'`\\;{}()<>|&]")
 _ASCII_SAFE_MULTILINE = re.compile(r"[^\x20-\x7e\n]")
 
 # ---------------------------------------------------------------------------
@@ -134,6 +135,10 @@ class GrubConfig:
             raise ValueError(f"server_base has no host: {self.server_base!r}")
         if _ASCII_SAFE.search(self.server_base):
             raise ValueError("server_base must be plain ASCII")
+        # ‏#1127: הכתובת נכנסת לשורת הקרנל ולסקריפט GRUB — תווים שמפרשים
+        # שם ($, גרשיים, רווח, ;) אינם כתובת. המקור מקומי (CLI/DB), וזול לסגור.
+        if _GRUB_META.search(self.server_base):
+            raise ValueError("server_base carries a GRUB/shell metacharacter")
 
     @property
     def grub_host(self) -> str:

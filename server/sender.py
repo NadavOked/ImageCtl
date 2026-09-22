@@ -333,9 +333,15 @@ class SenderEngine:
         retries_until_drop: int | None = None,
         max_bitrate: str | None = None,
         on_event: Callable[[str, str], None] | None = None,
+        simulate: bool = False,
     ):
         self.library = library
         self.runner = runner
+        # סימולציה (‏tools/e2e_simulation.py): אין udp-sender ואין ‎/proc/net/udp
+        # בתחנת פיתוח, ומאז #854 כישלון השולח הוא כישלון הסבב — בלי הדגל
+        # הסימולציה הייתה "עוברת" רק כל עוד הכישלון נבלע בשקט. עם הדגל
+        # השולח אינו משדר ואינו בודק פורטים; הוא נאמר ביומן ואינו בייצור.
+        self.simulate = simulate
         # ‏None ולא `DEFAULT_PORTBASE` כברירת מחדל בחתימה: ברירת מחדל
         # נקשרת בהגדרת הפונקציה, וחבילת הטסטים דורסת את המודול אחריה.
         self.portbase = DEFAULT_PORTBASE if portbase is None else portbase
@@ -481,6 +487,17 @@ class SenderEngine:
             "max_bitrate": self.max_bitrate or None,
         }
 
+    def _run_simulated(self, session: dict) -> None:
+        """שולח מדומה: "משדר" עד שהסבב נסגר. אף פורט לא נבדק, אף תהליך לא רץ."""
+        with self._lock:
+            self._state.total = 1
+            self._state.index = 1
+            self._state.state = "sending"
+        self.on_event("send_simulated", f'{session["id"]} {session["image_id"]}')
+        log.warning("sender: simulated -- no udp-sender, no port probe (%s)", session["id"])
+        self._stop.wait()
+        self.on_event("send_stopped", session["id"])
+
     def _fail(self, message: str) -> None:
         with self._lock:
             if self._state is not None:
@@ -564,6 +581,9 @@ class SenderEngine:
                 " על פורט, והסיבה אינה ידועה")
 
     def _run(self, session: dict) -> None:
+        if self.simulate:
+            self._run_simulated(session)
+            return
         if not self._ports_are_free():
             return
         manifest = self.library.get(session["image_id"])

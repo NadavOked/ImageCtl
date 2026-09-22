@@ -134,6 +134,80 @@ def test_late_machine_waits_for_the_next_round(server):
     assert late["session"] is None                   # מאחר → דיסק מקומי
 
 
+def test_hello_cannot_join_a_wave_that_started_after_its_read(server, monkeypatch):
+    """בקרה שלילית #1126: בקוד שלפני התיקון הקריאה ואז ההכנסה יוצרות
+    חבר, אף שה-hook מעביר את הסבב ל-``running`` בדיוק ביניהן."""
+    from server.sessions import SessionStore             # noqa: PLC0415
+
+    ids = open_session(server, expected=2)
+    original = SessionStore.record_hello
+
+    def start_between_read_and_insert(self, session, mac):
+        self.conn.execute(
+            "UPDATE sessions SET state = 'running' WHERE id = ?", (session["id"],)
+        )
+        self.conn.commit()
+        return original(self, session, mac)
+
+    monkeypatch.setattr(SessionStore, "record_hello", start_between_read_and_insert)
+    answer = hello(server, ids["mac1"])
+    member = server["ctx"].conn.execute(
+        "SELECT 1 FROM session_members WHERE session_id = ? AND mac = ?",
+        (ids["session"], ids["mac1"]),
+    ).fetchone()
+    assert answer["session"] is None
+    assert member is None
+
+
+def test_done_report_is_idempotent_without_a_second_journal_row(server):
+    ids = open_session(server, expected=1)
+    hello(server, ids["mac1"])
+    hello(server, ids["mac1"])
+    payload = {
+        "session_id": ids["session"], "mac": ids["mac1"], "state": "done",
+        "targets": [{"dev": "sda", "bytes_written": 100,
+                     "bytes_total": 100, "state": "done"}],
+    }
+    assert server["anon"].post("/api/v1/agent/progress", json=payload).json()["ok"]
+    conn = server["ctx"].conn
+    before = conn.execute(
+        "SELECT state, done, targets_json, updated_at FROM session_members"
+        " WHERE session_id = ? AND mac = ?", (ids["session"], ids["mac1"]),
+    ).fetchone()
+    journal_before = conn.execute(
+        "SELECT COUNT(*) AS n FROM journal WHERE event = 'client_done'"
+    ).fetchone()["n"]
+
+    duplicate = dict(payload)
+    duplicate["targets"] = []
+    assert server["anon"].post(
+        "/api/v1/agent/progress", json=duplicate
+    ).json()["ok"]
+    after = conn.execute(
+        "SELECT state, done, targets_json, updated_at FROM session_members"
+        " WHERE session_id = ? AND mac = ?", (ids["session"], ids["mac1"]),
+    ).fetchone()
+    journal_after = conn.execute(
+        "SELECT COUNT(*) AS n FROM journal WHERE event = 'client_done'"
+    ).fetchone()["n"]
+    assert dict(after) == dict(before)
+    assert journal_after == journal_before
+
+
+def test_done_then_immediate_reboot_does_not_receive_the_same_round(server):
+    ids = open_session(server, expected=1)
+    hello(server, ids["mac1"])
+    hello(server, ids["mac1"])
+    report = {
+        "session_id": ids["session"], "mac": ids["mac1"], "state": "done",
+        "targets": [{"dev": "sda", "bytes_written": 100,
+                     "bytes_total": 100, "state": "done"}],
+    }
+    assert server["anon"].post("/api/v1/agent/progress", json=report).json()["ok"]
+    reboot = hello(server, ids["mac1"])
+    assert reboot["session"] is None and reboot["task"] is None
+
+
 def test_failed_target_reaches_the_journal(server):
     ids = open_session(server, expected=2)
     hello(server, ids["mac1"])

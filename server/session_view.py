@@ -78,6 +78,7 @@ def build(store, session: sqlite3.Row, library) -> dict:
     return {
         "id": session["id"],
         "state": session["state"],
+        "failed_reason": session["failed_reason"],
         # הזרם: 'multicast' תופס את חריץ השידור היחיד, 'unicast' לא (#60).
         "kind": session["kind"],
         # בחירת המחשבים של הסבב; None = כל הקבוצה. הקונסולה מציגה
@@ -91,6 +92,7 @@ def build(store, session: sqlite3.Row, library) -> dict:
         "image_name": label(session, library),
         "prefix": session["prefix"],
         "expected_clients": session["expected_clients"],
+        "expand_partition": session["expand_partition"] or "auto",
         # סבב של מכונה אחת אינו הפצה לכיתה — הקונסולה מסמנת אותו אחרת.
         "single": session["expected_clients"] == 1,
         "joined": len(members),

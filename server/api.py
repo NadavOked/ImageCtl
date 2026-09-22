@@ -21,7 +21,7 @@ from . import (agent_loops, disk_events, foreign_vlan, identity, inventory,
                users)
 from .db import journal
 from . import direct
-from .hello import (build_answer, login_required, off_deploy_vlan,
+from .hello import (build_answer, hello_payload_oversized, login_required, off_deploy_vlan,
                     well_formed_monitor_auth, well_formed_monitor_secret)
 from .images import ImageLibrary, restore_refusal
 from .sessions import SessionError, SessionStore
@@ -122,6 +122,11 @@ def create_agent_router(ctx: ServerContext,
         mac = lenient_mac(body.get("mac"))
         if mac is None:
             return _error(400, "missing or malformed mac", "bad_mac")
+        # ‏#1127: המלאי/ה-probe/מפתח ה-SSH נשמרים כ-JSON בלי תקרה; הסוכן
+        # שלנו לעולם לא מתקרב לזו, ומי שכן — נאמר לו, לא נשמר.
+        oversized = hello_payload_oversized(body)
+        if oversized:
+            return _error(413, f"hello field {oversized} exceeds the size or depth cap", "payload_too_large")
         refused = identity_gate(ctx, mac, request, "hello")
         if refused is not None:
             return refused
@@ -190,6 +195,14 @@ def create_agent_router(ctx: ServerContext,
         disk_probe = body.get("disk_probe")
         if disk_probe not in DISK_PROBE_VALUES:
             disk_probe = None
+        # ‏#500: הקושחה (uefi/bios) ומצב ה-Secure Boot כפי שהסוכן קרא מה-EFI
+        # var. רק הצורה המדויקת נשמרת; כל דבר אחר = None והשורה שומרת את
+        # הערך הקודם (COALESCE) — "לא דווח" אינו "כבוי".
+        firmware = body.get("firmware")
+        if firmware not in ("uefi", "bios"):
+            firmware = None
+        secure_boot = body.get("secure_boot")
+        secure_boot = int(secure_boot) if isinstance(secure_boot, bool) else None
         answer = build_answer(
             ctx.conn, ctx.library, ctx.store, mac,
             disks=disks, client_ip=client_ip, joining=joining,
@@ -198,6 +211,7 @@ def create_agent_router(ctx: ServerContext,
             monitor_auth=monitor_auth,
             hw_inventory=hw_inventory, hw_probe=hw_probe, hw_ssh=hw_ssh,
             prompt=prompt, disk_probe=disk_probe,
+            firmware=firmware, secure_boot=secure_boot,
             # ‏#715: פרמטרי השידור למקור שהוא מחשב בנייה — של המנוע, אם יש.
             multicast=ctx.sender.multicast_params() if ctx.sender is not None else None,
         )
@@ -441,6 +455,19 @@ def create_agent_router(ctx: ServerContext,
         if not shrink_records.note_record(ctx.conn, body.get("serial"), record_id, note):
             return _error(404, "no open shrink record for this serial", "not_open")
         return JSONResponse({"ok": True})
+
+    @router.get("/agent/branding/logo")
+    def branding_logo():
+        """‏#1168: הלוגו שהועלה בקונסולה, על פורט הסוכן — הגואי הקטן במחשבי
+        הבנייה/השיכפול מושך אותו בעלייה. ‏204 = אין לוגו, הגואי מצייר את
+        ה-brandmark הקבוע. קריאה בלבד, כמו המניפסטים."""
+        from fastapi.responses import Response  # noqa: PLC0415
+        from .branding import SERVE_HEADERS, TYPES, find_logo  # noqa: PLC0415
+        path = find_logo(data_dir) if data_dir is not None else None
+        if path is None:
+            return Response(status_code=204)
+        media = next(t for t, s in TYPES.items() if s == path.suffix)
+        return FileResponse(path, media_type=media, headers=SERVE_HEADERS)
 
     @router.get("/images/{image_id}/manifest")
     def image_manifest(image_id: str, request: Request):

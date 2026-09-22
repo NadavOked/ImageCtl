@@ -23,14 +23,20 @@ CLONER2 = "aa:bb:cc:00:00:22"
 
 
 @pytest.fixture()
-def room_server(tmp_path: Path):
+def room_server(tmp_path: Path, monkeypatch):
     """שרת עם WoL מזויף ומנוע שידור מזויף, ושני מחשבי שיכפול רשומים."""
     if TestClient is None:
         pytest.skip("fastapi is required")
     from test_sender import Recorder                       # noqa: PLC0415
 
+    from server import sender as sender_module
     from server import users
     from server.app import create_app
+
+    # ה-runner המזויף הוא הראיה שהשידור עצמו בשליטת הטסט. גם בדיקת
+    # הפורטים חייבת להיות ראיה מזויפת חיובית: ב-Windows אין /proc/net/udp,
+    # ובלי זה #1126 הופך בצדק את כשל הבדיקה ל-send_failed ומפסיק את החדר.
+    monkeypatch.setattr(sender_module, "port_holders", lambda _port: [])
 
     images = tmp_path / "images"
     write_image(images, MANIFEST_256)
@@ -55,7 +61,7 @@ def room_server(tmp_path: Path):
             "mac": mac, "name": name, "group_id": "grp_CLONERS",
         }).status_code == 200
     yield {"app": app, "ctx": ctx, "admin": admin, "deploy": deploy,
-           "anon": TestClient(app), "woken": woken}
+           "anon": TestClient(app), "woken": woken, "recorder": recorder}
     ctx.sender.stop()
 
 
@@ -173,6 +179,119 @@ def test_room_start_with_no_members_is_refused_and_wave_stays_open(room_server):
     assert room(deploy)["round"]["wave_state"] == "running"
 
 
+def test_sender_failure_stops_room_until_operator_opens_it_again(room_server):
+    """#1126: send_failed מסיים גם את הגל וגם את החדר כ-`failed`.
+
+    `failed` הוא מצב סופי מפורש עם סיבה, לא `running` ולא `active`; דופק
+    אינו פותח גל נוסף, ורק פתיחה מפורשת של מפעיל יוצרת חדר `active` חדש.
+    """
+    from test_sender import wait_for                         # noqa: PLC0415
+
+    deploy, anon, ctx = room_server["deploy"], room_server["anon"], room_server["ctx"]
+    room_server["recorder"].code = 3
+    opened = deploy.post(
+        "/api/console/room",
+        json={"image_id": "img_7f3a91", "target_drives": 2},
+    ).json()
+    wave = cloner_hello(anon, CLONER1, ["S1"])["session"]["id"]
+    assert deploy.post("/api/console/room/start").status_code == 200
+    assert wait_for(lambda: ctx.conn.execute(
+        "SELECT state FROM room_rounds WHERE id = ?", (opened["id"],)
+    ).fetchone()["state"] == "failed")
+    failed = room(deploy)["round"]
+    assert failed["state"] == "failed" and failed["failed_reason"]
+    assert ctx.conn.execute(
+        "SELECT state FROM sessions WHERE id = ?", (wave,)
+    ).fetchone()["state"] == "failed"
+
+    sessions_before = ctx.conn.execute(
+        "SELECT COUNT(*) AS n FROM sessions"
+    ).fetchone()["n"]
+    heartbeat(room_server)
+    heartbeat(room_server)
+    assert ctx.conn.execute(
+        "SELECT COUNT(*) AS n FROM sessions"
+    ).fetchone()["n"] == sessions_before
+
+    room_server["recorder"].code = 0
+    reopened = deploy.post(
+        "/api/console/room",
+        json={"image_id": "img_7f3a91", "target_drives": 2},
+    )
+    assert reopened.status_code == 200, reopened.text
+    assert reopened.json()["id"] != opened["id"]
+    assert room(deploy)["round"]["state"] == "active"
+    assert ctx.conn.execute(
+        "SELECT state FROM room_rounds WHERE id = ?", (opened["id"],)
+    ).fetchone()["state"] == "failed"
+
+
+def test_tally_requires_the_serial_that_was_present_at_done(room_server):
+    from server import room as room_module                  # noqa: PLC0415
+
+    deploy, anon, ctx = room_server["deploy"], room_server["anon"], room_server["ctx"]
+    opened = deploy.post(
+        "/api/console/room",
+        json={"image_id": "img_7f3a91", "target_drives": 2},
+    ).json()
+    wave = cloner_hello(anon, CLONER1, ["S1"])["session"]["id"]
+    assert deploy.post("/api/console/room/start").status_code == 200
+    report(anon, wave, CLONER1, {"sda": "done"})
+
+    round_row = ctx.conn.execute(
+        "SELECT * FROM room_rounds WHERE id = ?", (opened["id"],)
+    ).fetchone()
+    members = ctx.store.members(wave)
+    targets = json.loads(members[0]["targets_json"])
+    assert targets[0]["serial"] == "S1"
+    assert room_module._tally(ctx.conn, round_row, members)[0] == 1
+
+    cloner_hello(anon, CLONER1, ["S9"], joining=False)
+    assert room_module._tally(ctx.conn, round_row, members)[0] == 0
+    assert room_module._tally(ctx.conn, round_row, members)[0] == 0
+    changed = ctx.conn.execute(
+        "SELECT detail FROM journal WHERE event = 'room_drawer_changed'"
+    ).fetchall()
+    assert len(changed) == 1
+    assert "shich-1" in changed[0]["detail"]
+    assert "serial=S1 current=S9" in changed[0]["detail"]
+
+
+def test_close_marks_closing_before_sender_stop_so_tick_opens_no_wave(
+    room_server, monkeypatch,
+):
+    from server import room as room_module                  # noqa: PLC0415
+
+    deploy, ctx = room_server["deploy"], room_server["ctx"]
+    opened = deploy.post(
+        "/api/console/room",
+        json={"image_id": "img_7f3a91", "target_drives": 2},
+    ).json()
+    before = ctx.conn.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()["n"]
+    observed = []
+
+    def stop_during_close(*_args):
+        observed.append(ctx.conn.execute(
+            "SELECT state FROM room_rounds WHERE id = ?", (opened["id"],)
+        ).fetchone()["state"])
+        room_module.tick(ctx.conn, ctx.store)
+        return None
+
+    monkeypatch.setattr(ctx.sender, "stop", stop_during_close)
+    closed = deploy.post(
+        "/api/console/room/close",
+        json={"confirm_name": "Office 2024 Standard"},
+    )
+    assert closed.status_code == 200, closed.text
+    assert observed and set(observed) == {"closing"}
+    assert ctx.conn.execute(
+        "SELECT COUNT(*) AS n FROM sessions"
+    ).fetchone()["n"] == before
+    assert ctx.conn.execute(
+        "SELECT state FROM room_rounds WHERE id = ?", (opened["id"],)
+    ).fetchone()["state"] == "closed"
+
+
 def test_waves_accumulate_by_serial_until_target(room_server):
     deploy, anon, ctx = room_server["deploy"], room_server["anon"], room_server["ctx"]
 
@@ -286,9 +405,10 @@ def test_a_machine_that_lost_one_drawer_is_partial_and_not_done(room_server):
 
 
 def test_an_old_agent_that_still_says_done_keeps_working(room_server):
-    """תאימות לאחור (#67): סוכן שלא עודכן שולח `done` גם כשמגירה נכשלה.
+    """תאימות לאחור (#67/#1126): סוכן ישן שולח `done` בלי קשירת serial.
 
     ‏`schema` לא עלה, ולכן הוא חייב להמשיך לעבוד בדיוק כמו קודם —
+    השרת קושר serial כשהוא זמין, והיעדר החותמת החדשה אינו החלפת מגירה;
     הספירה היא ממילא יעד-יעד, והמגירה הכושלת עדיין אינה נספרת.
     """
     deploy, anon, ctx = room_server["deploy"], room_server["anon"], room_server["ctx"]
@@ -299,6 +419,20 @@ def test_an_old_agent_that_still_says_done_keeps_working(room_server):
     assert deploy.post("/api/console/room/start").status_code == 200
 
     report(anon, wave1, CLONER1, {"sda": "done", "sdb": "failed"})   # top=done
+
+    # מדמה targets_json שנשמר לפני #1126: אין בו חותמת serial חדשה. היעדר
+    # השדה אינו ראיה שהמגירה הוחלפה; sda עדיין חייבת להיספר לפי המלאי החי.
+    legacy_targets = json.loads(ctx.conn.execute(
+        "SELECT targets_json FROM session_members WHERE session_id = ? AND mac = ?",
+        (wave1, CLONER1),
+    ).fetchone()["targets_json"])
+    for target in legacy_targets:
+        target.pop("serial", None)
+    ctx.conn.execute(
+        "UPDATE session_members SET targets_json = ? WHERE session_id = ? AND mac = ?",
+        (json.dumps(legacy_targets), wave1, CLONER1),
+    )
+    ctx.conn.commit()
 
     heartbeat(room_server)
     view = room(deploy)["round"]

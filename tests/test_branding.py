@@ -175,3 +175,14 @@ def test_the_logo_is_served_with_headers_that_disarm_it(server):
     assert "default-src 'none'" in csp
     assert "sandbox" in csp
     assert headers["cache-control"] == "no-cache"      # לא נמחק בדרך
+
+
+def test_the_agent_port_serves_the_logo_for_the_station_screens(server):
+    """‏#1168: הגואי הקטן במחשבי הבנייה/השיכפול יושב בוילן ההפצה ורואה רק את
+    פורט הסוכן — הלוגו מוגש גם שם, לקריאה בלבד; 204 כשאין."""
+    assert server["anon"].get("/api/v1/agent/branding/logo").status_code == 204
+    server["admin"].post("/api/console/branding/logo", content=PNG,
+                         headers={"Content-Type": "image/png"})
+    served = server["anon"].get("/api/v1/agent/branding/logo")
+    assert served.status_code == 200
+    assert served.headers["content-type"] == "image/png" and served.content == PNG

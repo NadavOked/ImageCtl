@@ -1218,3 +1218,18 @@ def test_the_station_assets_all_carry_the_same_version():
     versions = set(re.findall(r"\?v=([0-9.]+)", page))
     assert len(versions) == 1, versions
     assert "room.js?v=" in page and "station.css?v=" in page
+
+
+def test_the_native_gui_paints_done_with_warning_orange_not_red_or_green():
+    """‏#943: `done` שעדיין נושא `error` (שם לא נכתב #856, grow deferred #648)
+    הוא "הסתיים · עם אזהרה" בכתום — לא ירוק נקי ולא אדום; אדום רק ל-`failed`.
+    בשורת המגירה של מחשב השיכפול אותו כלל: שגיאה של דיסק `done` בכתום."""
+    rounds = (REPO / "native-gui" / "src" / "screens_rounds.c").read_text(encoding="utf-8")
+    assert rounds.count('!strcmp(m->state, "done") && m->error[0]) snprintf(out, n, "<span foreground=\\"%s\\">הסתיים · עם אזהרה: %s</span>", warn, e)') == 2, \
+        "שני המסלולים (כיתה וחדר חי) חייבים את ענף האזהרה, לפני ענף ה-done הירוק"
+    for mode_done in ('!strcmp(m->state, "done"))    snprintf(out, n, "<span foreground=\\"%s\\">הסתיים</span>", ok)',
+                      '!strcmp(m->state, "done"))     snprintf(out, n, "<span foreground=\\"%s\\">הסתיים</span>", ok)'):
+        assert mode_done in rounds
+        assert rounds.index('m->error[0]) snprintf(out, n, "<span foreground=\\"%s\\">הסתיים · עם אזהרה') < rounds.index(mode_done)
+    cloner = (REPO / "native-gui" / "src" / "screens_cloner.c").read_text(encoding="utf-8")
+    assert 'text_draw_r(cr, &error, right, y, !strcmp(d->state, "done") ? t->warn : t->danger);' in cloner

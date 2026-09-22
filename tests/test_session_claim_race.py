@@ -326,6 +326,76 @@ def test_an_existing_db_with_duplicates_still_comes_up(tmp_path):
     assert closed == {"ses_ghost", "ses_pull2"}
 
 
+def test_old_state_checks_are_rebuilt_without_losing_rounds_or_members(tmp_path):
+    path = tmp_path / "old-state-checks.db"
+    legacy = db_module.SCHEMA.replace(
+        "('open', 'running', 'failed', 'closed')",
+        "('open', 'running', 'closed')",
+    ).replace(
+        "('active', 'closing', 'failed', 'closed')",
+        "('active', 'closed')",
+    ).replace(
+        "    failed_reason    TEXT,\n",
+        "",
+    ).replace(
+        "    closed_at       TEXT,\n    failed_reason   TEXT\n);",
+        "    closed_at       TEXT\n);",
+    )
+    raw = sqlite3.connect(path)
+    raw.executescript(legacy)
+    raw.execute(
+        "INSERT INTO groups (id, label, role) VALUES (?, ?, 'classroom')",
+        (GROUP, "כיתה"),
+    )
+    _legacy_row(raw, "ses_old", MULTICAST, "2026-09-20T08:00:00+00:00", None)
+    raw.execute(
+        "INSERT INTO session_members (session_id, mac, updated_at) VALUES (?, ?, ?)",
+        ("ses_old", MAC, "2026-09-20T08:01:00+00:00"),
+    )
+    raw.execute(
+        "INSERT INTO room_rounds (id, image_id, target_drives, state,"
+        " wave_session_id, opened_by, created_at)"
+        " VALUES ('room_old', ?, 2, 'active', 'ses_old', 'noc', ?)",
+        (IMAGE, "2026-09-20T08:00:00+00:00"),
+    )
+    raw.commit()
+    raw.close()
+
+    db = connect(path)
+    assert db.execute(
+        "SELECT mac FROM session_members WHERE session_id = 'ses_old'"
+    ).fetchone()["mac"] == MAC
+    db.execute(
+        "UPDATE sessions SET state = 'failed', failed_reason = 'sender stopped'"
+        " WHERE id = 'ses_old'"
+    )
+    db.execute(
+        "UPDATE room_rounds SET state = 'closing' WHERE id = 'room_old'"
+    )
+    db.commit()
+    assert db.execute(
+        "SELECT state, failed_reason FROM sessions WHERE id = 'ses_old'"
+    ).fetchone()["state"] == "failed"
+    assert db.execute(
+        "SELECT state FROM room_rounds WHERE id = 'room_old'"
+    ).fetchone()["state"] == "closing"
+    db.execute(
+        "UPDATE room_rounds SET state = 'failed', failed_reason = 'sender stopped'"
+        " WHERE id = 'room_old'"
+    )
+    db.commit()
+    failed_room = db.execute(
+        "SELECT state, failed_reason FROM room_rounds WHERE id = 'room_old'"
+    ).fetchone()
+    assert failed_room["state"] == "failed"
+    assert failed_room["failed_reason"] == "sender stopped"
+    indexes = {row["name"] for row in db.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'index'"
+    )}
+    assert {"one_active_broadcast", "one_active_pull_per_station"} <= indexes
+    assert db.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
 def test_the_indexes_exist_and_actually_block(tmp_path):
     """ראיה חיובית: לא "לא נזרקה חריגה" אלא האינדקס בסכימה, והוא דוחה."""
     db = _fresh_db(tmp_path)

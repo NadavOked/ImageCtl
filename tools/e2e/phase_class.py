@@ -75,7 +75,8 @@ def run(ctx) -> None:
 
     wait_until(lambda: {h: m["state"] for h, m in _members(ctx).items()} ==
                {"LAB1-05": "done", "LAB1-06": "done", "LAB1-07": "failed"},
-               "שתי תחנות סיימו, השלישית נכשלה — והשאר לא נעצרו")
+               "שתי תחנות סיימו, השלישית נכשלה — והשאר לא נעצרו",
+               detail=lambda: f"members={ {h: m['state'] for h, m in _members(ctx).items()} } view={_view(ctx)}")
     check("השמות נגזרו מטבלת ה-MAC ולא מהמכונה",
           set(_members(ctx)) == {"LAB1-05", "LAB1-06", "LAB1-07"})
     check("הקונסולה מציגה את שם האימג'",

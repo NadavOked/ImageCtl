@@ -364,6 +364,33 @@ class SessionStore:
             self.on_closed(session_id)
         return True
 
+    def fail(self, session_id: str, reason: str,
+             related: Callable[[], None] | None = None) -> bool:
+        """מסיים סבב שהמשדר שלו נכשל, בלי לקפל אותו ל-``closed`` (#854).
+
+        התביעה היא CAS על ``open/running``. החברים שלא כבר סיימו מקבלים
+        מצב טרמינלי באותה טרנזאקציה, כך שאין רגע שבו hello רואה סבב
+        שנכשל אבל חבר שעדיין ממתין לזרם שאיננו.
+        """
+        stamp = now_iso()
+        with writing(self.conn):
+            changed = self.conn.execute(
+                "UPDATE sessions SET state = 'failed', failed_reason = ?, closed_at = ?"
+                " WHERE id = ? AND state IN ('open', 'running')",
+                (reason, stamp, session_id),
+            ).rowcount
+            if changed != 1:
+                return False
+            self.conn.execute(
+                "UPDATE session_members SET state = 'failed', error = ?, updated_at = ?"
+                " WHERE session_id = ?"
+                " AND state NOT IN ('done', 'failed', 'partial', 'lost')",
+                (reason, stamp, session_id),
+            )
+            if related is not None:
+                related()
+        return True
+
     def _spent(self, session: sqlite3.Row) -> bool:
         """סבב שהתחיל וכל מי שהצטרף סיים או נכשל — תצוגת סיכום בלבד (#35).
         גלי חדר השיכפולים מוחרגים: ‏room.py מנהל את מחזורם בעצמו, ופינוי
@@ -410,6 +437,14 @@ class SessionStore:
             "SELECT * FROM sessions WHERE state IN ('open', 'running')"
             " AND kind = ? ORDER BY created_at LIMIT 1", (MULTICAST,)
         ).fetchone()
+
+    def latest_failed_broadcast(self) -> sqlite3.Row | None:
+        """השידור האחרון, אם נכשל — לתצוגה בלבד ואינו תופס את החריץ."""
+        row = self.conn.execute(
+            "SELECT * FROM sessions WHERE kind = ?"
+            " ORDER BY created_at DESC LIMIT 1", (MULTICAST,)
+        ).fetchone()
+        return row if row is not None and row["state"] == "failed" else None
 
     def active(self) -> sqlite3.Row | None:
         """"הסבב" שהמסכים מציגים ושמכונה מצטרפת אליו — זה השידור.
@@ -462,23 +497,33 @@ class SessionStore:
 
     # --- הצטרפות והבשלה ------------------------------------------------------
 
-    def record_hello(self, session: sqlite3.Row, mac: str) -> None:
-        """hello בזמן סבב פתוח = הצטרפות. מאפס את טיימר ההמתנה."""
-        if session["state"] != "open" or self.is_member(session["id"], mac):
-            return
+    def record_hello(self, session: sqlite3.Row, mac: str) -> bool:
+        """hello בזמן סבב פתוח = הצטרפות CAS. מחזיר אם המכונה חברה.
+
+        השורה שקיבלנו נקראה לפני הטרנזאקציה ועלולה להיות ישנה. לכן מצב
+        ``open`` נבדק בתוך ה-INSERT עצמו; גל שכבר יצא אינו מקבל מאחר.
+        """
+        if session["state"] != "open":
+            return self.is_member(session["id"], mac)
         # שתי הכתיבות הן טרנזאקציה אחת: הצטרפות שנרשמה בלי לאפס את
         # הטיימר היא סבב שיוצא מוקדם מדי. ‏`writing` מוודא שכישלון של
         # השנייה אינו משאיר את הנעילה של הראשונה יתומה (#290).
         with writing(self.conn):
-            self.conn.execute(
+            inserted = self.conn.execute(
                 "INSERT INTO session_members (session_id, mac, updated_at)"
-                " VALUES (?, ?, ?)",
-                (session["id"], mac, now_iso()),
-            )
+                " SELECT id, ?, ? FROM sessions"
+                " WHERE id = ? AND state = 'open'"
+                " ON CONFLICT (session_id, mac) DO NOTHING",
+                (mac, now_iso(), session["id"]),
+            ).rowcount
+            if inserted != 1:
+                return self.is_member(session["id"], mac)
             self.conn.execute(
-                "UPDATE sessions SET last_join_at = ? WHERE id = ?",
+                "UPDATE sessions SET last_join_at = ?"
+                " WHERE id = ? AND state = 'open'",
                 (self.now(), session["id"]),
             )
+        return True
 
     def starts_in_seconds(self, session: sqlite3.Row) -> int:
         deadline = session["last_join_at"] + session["wait_seconds"]

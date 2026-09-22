@@ -121,7 +121,7 @@ def ingest(conn: sqlite3.Connection, payload: dict,
     # טיפול. אותה תשובה בשם, ואותו רישום ביומן.
     session = conn.execute(
         "SELECT state FROM sessions WHERE id = ?", (session_id,)).fetchone()
-    if session is None or session["state"] == "closed":
+    if session is None or session["state"] not in ("open", "running"):
         journal(conn, "report_on_closed_session", f"{mac} for {session_id}{sent_as}")
         return {"ok": False, "error": "this session is no longer open",
                 "code": "not_open"}
@@ -147,7 +147,9 @@ def ingest(conn: sqlite3.Connection, payload: dict,
     if row["state"] in TERMINAL:
         return {"ok": True}
 
-    targets = stamp_movement(row["targets_json"], targets)
+    previous_targets = row["targets_json"]
+    targets = stamp_movement(previous_targets, targets)
+    targets = stamp_done_serials(conn, mac, previous_targets, targets)
     bytes_written = sum(_int(t.get("bytes_written")) for t in targets)
     bytes_total = sum(_int(t.get("bytes_total")) for t in targets)
     errors = "; ".join(
@@ -188,6 +190,51 @@ def ingest(conn: sqlite3.Connection, payload: dict,
         if t.get("state") == "failed":
             disk_failures.record(conn, session_id, mac, t)
     return {"ok": True}
+
+
+def stamp_done_serials(conn: sqlite3.Connection, mac: str,
+                       previous_json: str | None, targets: list) -> list:
+    """קושר יעד שהושלם למגירה הפיזית שהייתה בו ברגע ההשלמה.
+
+    הסוכן מדווח נתיב התקן; מלאי ה-hello האחרון בשרת הוא מקור האמת ל-serial
+    שהיה באותו נתיב. בלי serial החותמת נשארת חסרה; `_tally` שומר תאימות
+    לשורות ישנות כאלה וסופר לפי ה-serial הנוכחי אם הוא זמין, אך אינו מנחש
+    זהות כשגם המלאי הנוכחי חסר serial.
+    """
+    row = conn.execute(
+        "SELECT disks_json FROM net_devices WHERE mac = ?", (mac,)
+    ).fetchone()
+    try:
+        disks = json.loads(row["disks_json"] or "[]") if row else []
+    except (TypeError, ValueError):
+        disks = []
+    serial_of = {
+        disk.get("dev"): disk.get("serial")
+        for disk in disks if isinstance(disk, dict)
+    }
+    try:
+        previous = json.loads(previous_json or "[]")
+    except (TypeError, ValueError):
+        previous = []
+    completed = {
+        target.get("dev"): target.get("serial")
+        for target in previous
+        if isinstance(target, dict) and target.get("state") == "done"
+    }
+    stamped = []
+    for target in targets:
+        if not isinstance(target, dict):
+            stamped.append(target)
+            continue
+        item = dict(target)
+        if item.get("state") == "done":
+            item.pop("serial", None)
+            dev = item.get("dev")
+            serial = completed.get(dev) if dev in completed else serial_of.get(dev)
+            if serial:
+                item["serial"] = serial
+        stamped.append(item)
+    return stamped
 
 
 def stamp_movement(previous_json: str | None, targets: list) -> list:

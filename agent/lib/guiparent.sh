@@ -51,6 +51,7 @@ gui_parent() {
         _gui_disabled=1
         return 1
     fi
+    gui_fetch_logo
     GUI_SCREEN=
     [ "$D_ROLE" = classroom ] && GUI_SCREEN=class
     [ "$D_ROLE" = cloner ] && GUI_SCREEN=cloner

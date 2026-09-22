@@ -253,7 +253,7 @@ sudo ./tools/build_initramfs.sh
 ב-`/var/lib/imagectl/console-tls/`, הדפדפן מאשר אותה פעם אחת אחרי
 השוואת טביעת האצבע שהמתקין/השרת הדפיסו. ‏`8080` נשאר http לתחנות.
 המפרט המלא ב-[`install/firewall-rules.md`](install/firewall-rules.md) ומימוש
-ההתייחסות ב-[`tools/lab/firewall/`](tools/lab/firewall/).
+ההתייחסות בחומות האש של המעבדה, [`tools/lab/fw-ta/`](tools/lab/fw-ta/) ו-[`tools/lab/fw-haifa/`](tools/lab/fw-haifa/).
 
 **מה שבטוח לחסום תמיד, מוילני הכיתות אל השרת:**
 

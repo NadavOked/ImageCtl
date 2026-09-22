@@ -16,6 +16,7 @@ describe --tags` על עץ השרת (`--repo-dir`, ברירת מחדל תיקי�
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
 from pathlib import Path
@@ -24,6 +25,8 @@ from typing import Callable
 from fastapi import APIRouter, Body, Depends, HTTPException
 
 from .db import get_setting, journal, now_iso, set_setting
+
+log = logging.getLogger("imagectl.update")
 
 Hooks = dict[str, Callable]
 
@@ -173,8 +176,9 @@ def check_update(hooks: Hooks, repo_dir: str | Path, public_url: str) -> dict:
 def _set_status(conn, doc: dict) -> None:
     try:
         set_setting(conn, STATUS_KEY, json.dumps(doc))
-    except Exception:                                    # noqa: BLE001 — לוג בלבד
-        pass
+    except Exception:                                    # noqa: BLE001
+        # ‏#1127: DB נעול = המפעיל רואה `idle` במקום `failed`; לפחות ביומן
+        log.warning("update: status %s not written (db)", doc.get("state"), exc_info=True)
 
 
 def get_status(conn) -> dict | None:
@@ -231,7 +235,7 @@ def _apply_in_background(conn, hooks: Hooks, repo_dir: str | Path, tag: str,
         try:
             set_setting(conn, PREVIOUS_KEY, previous)
         except Exception:                                # noqa: BLE001
-            pass
+            log.warning("update: previous version %s not recorded (db)", previous, exc_info=True)
 
     # ‏#1193: תהליך ה-web רץ עם ProtectSystem=strict, ולכן אסור לו לכתוב
     # לעץ הקוד. ה-fetch וה-checkout נעשים בתוך server-upgrade.sh, ביחידה

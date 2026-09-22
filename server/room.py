@@ -26,7 +26,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from . import auth, registry, reports, storage_locations
-from .db import journal, now_iso, update_one
+from .db import journal, now_iso, update_one, writing
 from .images import required_bytes, restore_refusal
 from .imagefit import validate_expand_choice
 from .sessions import SessionError, SessionStore, SessionSuperseded
@@ -62,6 +62,39 @@ def active_round(conn: sqlite3.Connection) -> sqlite3.Row | None:
     return conn.execute(
         "SELECT * FROM room_rounds WHERE state = 'active' LIMIT 1"
     ).fetchone()
+
+
+def visible_round(conn: sqlite3.Connection) -> sqlite3.Row | None:
+    """מצב החדר החי או הכושל שעדיין דורש את תשומת לב המפעיל."""
+    # החי קודם: חדר שנפתח מחדש באותה שנייה שבה הקודם נכשל חולק איתו
+    # `created_at`, והסדר לבדו החזיר את הכושל למסך (rowid שובר את השוויון).
+    row = conn.execute(
+        "SELECT * FROM room_rounds WHERE state IN ('active', 'closing') "
+        "ORDER BY created_at DESC, rowid DESC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        row = conn.execute(
+            "SELECT * FROM room_rounds ORDER BY created_at DESC, rowid DESC LIMIT 1"
+        ).fetchone()
+    return (row if row is not None
+            and row["state"] in ("active", "closing", "failed") else None)
+
+
+def fail_wave(conn: sqlite3.Connection, session_id: str, reason: str,
+              *, commit: bool = True) -> bool:
+    """הופך כשל שולח לסופי בחדר; רק מפעיל יכול לפתוח אותו מחדש.
+
+    ‏`commit=False` — הקורא כבר בתוך טרנזאקציה (‏`sessions.fail` מריץ אותה
+    כ-`related` באותו מעבר אטומי); אחרת הכתיבה עוברת ב-`update_one`, שגם
+    משחרר נעילה כשאף שורה לא תאמה (#54), ומסתיימת ב-`writing` (#525).
+    """
+    sql = ("UPDATE room_rounds SET state = 'failed', failed_reason = ?, closed_at = ?"
+           " WHERE wave_session_id = ? AND state = 'active'")
+    args = (reason, now_iso(), session_id)
+    if not commit:
+        return conn.execute(sql, args).rowcount == 1
+    with writing(conn):
+        return update_one(conn, sql, args)
 
 
 def _written(round_row: sqlite3.Row) -> set[str]:
@@ -425,7 +458,7 @@ def round_label(ctx, round_row: sqlite3.Row) -> str:
 
 
 def close_round(ctx, user: str, confirm_name: str) -> None:
-    round_row = active_round(ctx.conn)
+    round_row = visible_round(ctx.conn)
     if round_row is None:
         raise SessionError("אין סבב חדר פעיל")
     # פעולה הרסנית מאחורי הקלדת שם — אותו דפוס כמו מחיקת אימג'
@@ -433,25 +466,45 @@ def close_round(ctx, user: str, confirm_name: str) -> None:
     # ‏POST ריק עם עוגייה תקפה הרג משדר חי, וההקלדה נאכפה במסך בלבד.
     if confirm_name != round_label(ctx, round_row):
         raise ValueError("השם שהוקלד אינו זהה לשם האימג' שהסבב משדר")
-    wave = ctx.conn.execute(
-        "SELECT id, state FROM sessions WHERE id = ?",
-        (round_row["wave_session_id"],),
-    ).fetchone()
-    if wave is not None and wave["state"] in ("open", "running"):
-        ctx.store.close(wave["id"], user)
-    # store.close קורא on_closed → sender.stop רק כשהגל עוד open/running.
-    # גל שכבר סגור (או חסר) היה מחזיר ok והמשדר נשאר חי (#439).
-    left = ctx.sender.stop()
-    if left is not None:
-        who = f"PID {left}" if left > 0 else "לא הצלחנו לוודא שהוא מת"
-        raise SessionError(
-            f"udp-sender עדיין רץ ({who}) אחרי ניסיון העצירה — הסבב לא נסגר"
-        )
-    ctx.conn.execute(
-        "UPDATE room_rounds SET state = 'closed', closed_at = ? WHERE id = ?",
-        (now_iso(), round_row["id"]),
-    )
+    original_state = round_row["state"]
+    if not update_one(
+        ctx.conn,
+        "UPDATE room_rounds SET state = 'closing'"
+        " WHERE id = ? AND state IN ('active', 'failed')",
+        (round_row["id"],),
+    ):
+        raise SessionError("סבב החדר כבר נסגר או נמצא בתהליך סגירה")
     ctx.conn.commit()
+    try:
+        wave = ctx.conn.execute(
+            "SELECT id, state FROM sessions WHERE id = ?",
+            (round_row["wave_session_id"],),
+        ).fetchone()
+        if wave is not None and wave["state"] in ("open", "running"):
+            ctx.store.close(wave["id"], user)
+        # store.close קורא on_closed → sender.stop רק כשהגל עוד open/running.
+        # גל שכבר סגור (או חסר) היה מחזיר ok והמשדר נשאר חי (#439).
+        # מזהה הגל מונע מסגירה מאוחרת של כשל ישן לעצור שידור חדש שכבר
+        # נפתח בחריץ שהתפנה (#773).
+        left = ctx.sender.stop(round_row["wave_session_id"])
+        if left is not None:
+            who = f"PID {left}" if left > 0 else "לא הצלחנו לוודא שהוא מת"
+            raise SessionError(
+                f"udp-sender עדיין רץ ({who}) אחרי ניסיון העצירה — הסבב לא נסגר"
+            )
+        ctx.conn.execute(
+            "UPDATE room_rounds SET state = 'closed', closed_at = ?"
+            " WHERE id = ? AND state = 'closing'",
+            (now_iso(), round_row["id"]),
+        )
+        ctx.conn.commit()
+    except Exception:
+        ctx.conn.execute(
+            "UPDATE room_rounds SET state = ? WHERE id = ? AND state = 'closing'",
+            (original_state, round_row["id"]),
+        )
+        ctx.conn.commit()
+        raise
     journal(ctx.conn, "room_close",
             f'{round_row["id"]} written={round_row["written_drives"]}'
             f'/{round_row["target_drives"]}', user)
@@ -531,6 +584,11 @@ def tick(conn: sqlite3.Connection, store: SessionStore) -> None:
         # הסבב פעיל והגל שלו כבר אינו. בלי הענף הזה זה מצב **יציב**:
         # כל דופק עתידי נוסג כאן, החדר נראה פתוח ואף גל אינו נפתח (#217).
         _resume(conn, store, round_row, wave)
+    elif wave["state"] == "failed":
+        # גיבוי למעבר האטומי של callback המשדר: גם אם ה-session כבר
+        # סומן מכיוון אחר, כשל מפורש לעולם אינו נתיב לגל אוטומטי נוסף.
+        fail_wave(conn, wave["id"],
+                  wave["failed_reason"] or "גל השידור נכשל")
     elif wave["state"] == "open":
         remaining = round_row["target_drives"] - round_row["written_drives"]
         ready = ready_drives(conn, store, round_row)
@@ -639,6 +697,24 @@ def sweep(conn: sqlite3.Connection, store: SessionStore) -> bool:
         return False
 
 
+def _journal_drawer_changed(conn: sqlite3.Connection, round_id: str,
+                            member: sqlite3.Row, dev: str | None,
+                            recorded: str | None, current: str | None) -> None:
+    row = conn.execute(
+        "SELECT suffix FROM machines WHERE mac = ?", (member["mac"],)
+    ).fetchone()
+    name = row["suffix"] if row else member["mac"]
+    detail = (
+        f"{round_id} {name} {dev or '?'} serial="
+        f"{recorded or 'missing'} current={current or 'missing'}"
+    )
+    if conn.execute(
+        "SELECT 1 FROM journal WHERE event = 'room_drawer_changed' AND detail = ?",
+        (detail,),
+    ).fetchone() is None:
+        journal(conn, "room_drawer_changed", detail)
+
+
 def _tally(conn: sqlite3.Connection, round_row: sqlite3.Row,
            members: list[sqlite3.Row]) -> tuple[int, set[str]]:
     """כמה מגירות נכתבו בסבב עד כה, ואילו — לפי serial.
@@ -656,8 +732,29 @@ def _tally(conn: sqlite3.Connection, round_row: sqlite3.Row,
             for d in _disks(conn, member["mac"]) if isinstance(d, dict)
         }
         for target in json.loads(member["targets_json"] or "[]"):
-            serial = serial_of.get(target.get("dev"))
-            if target.get("state") == "done" and serial and serial not in written:
+            if target.get("state") != "done":
+                continue
+            dev = target.get("dev")
+            recorded = target.get("serial")
+            current = serial_of.get(dev)
+            # #1126 item 4 binds a completed target to the serial observed at
+            # completion when that binding is available.  Rows written by an
+            # older server have no such field; absence is not evidence that a
+            # drawer was swapped, so retain their historical behaviour and
+            # count the serial currently observed in that device.  A present
+            # binding remains authoritative and must match exactly.
+            if recorded and recorded != current:
+                _journal_drawer_changed(
+                    conn, round_row["id"], member, dev, recorded, current,
+                )
+                continue
+            serial = recorded or current
+            if not serial:
+                _journal_drawer_changed(
+                    conn, round_row["id"], member, dev, recorded, current,
+                )
+                continue
+            if serial not in written:
                 written.add(serial)
                 new_drives += 1
     return round_row["written_drives"] + new_drives, written
@@ -771,6 +868,13 @@ def _attach_wave(conn: sqlite3.Connection, store: SessionStore,
 def _finish_wave(conn: sqlite3.Connection, store: SessionStore,
                  round_row: sqlite3.Row, members: list[sqlite3.Row]) -> None:
     """הגל הסתיים: סופרים לפי serial אילו מגירות נכתבו, וממשיכים."""
+    current = conn.execute(
+        "SELECT state, wave_session_id FROM room_rounds WHERE id = ?",
+        (round_row["id"],),
+    ).fetchone()
+    if (current is None or current["state"] != "active"
+            or current["wave_session_id"] != round_row["wave_session_id"]):
+        return
     total, written = _tally(conn, round_row, members)
 
     # ‏#715: מדיסק חי הגל היחיד הוא הסבב כולו (ראו `_resume`).
@@ -780,11 +884,15 @@ def _finish_wave(conn: sqlite3.Connection, store: SessionStore,
         # רק זה שסגר אותו בפועל כותב את השורה התחתונה של הסבב (#177).
         if not store.close(round_row["wave_session_id"], ""):
             return
-        conn.execute(
+        if not update_one(
+            conn,
             "UPDATE room_rounds SET written_drives = ?, written_serials = ?,"
-            " state = 'closed', closed_at = ? WHERE id = ?",
-            (total, json.dumps(sorted(written)), now_iso(), round_row["id"]),
-        )
+            " state = 'closed', closed_at = ? WHERE id = ? AND state = 'active'"
+            " AND wave_session_id = ?",
+            (total, json.dumps(sorted(written)), now_iso(), round_row["id"],
+             round_row["wave_session_id"]),
+        ):
+            return
         conn.commit()
         journal(conn, "room_done",
                 f'{round_row["id"]} written={total}/{round_row["target_drives"]}')
@@ -794,6 +902,13 @@ def _finish_wave(conn: sqlite3.Connection, store: SessionStore,
     machines = conn.execute(
         "SELECT COUNT(*) AS n FROM machines WHERE group_id = ?", (CLONERS_GROUP,)
     ).fetchone()["n"]
+    current = conn.execute(
+        "SELECT state, wave_session_id FROM room_rounds WHERE id = ?",
+        (round_row["id"],),
+    ).fetchone()
+    if (current is None or current["state"] != "active"
+            or current["wave_session_id"] != round_row["wave_session_id"]):
+        return
     # סגירת הגל הגמור ופתיחת הבא הן טרנזאקציה אחת: בין השתיים החריץ
     # היה פנוי, ושני דופקים בו-זמנית הפכו את השני ל-`TAKEN` — ה-hello
     # שהריץ אותו החזיר 500 (#177), ופותח שלישי (סבב כיתה מהקונסולה)
@@ -809,11 +924,20 @@ def _finish_wave(conn: sqlite3.Connection, store: SessionStore,
         # תהליכון אחר סגר את הגל הזה ופתח את הבא. זה אינו כישלון אלא
         # בדיוק מה שהאטומיות נועדה לייצר: פותח אחד, לא שניים.
         return
-    conn.execute(
+    if not update_one(
+        conn,
         "UPDATE room_rounds SET written_drives = ?, written_serials = ?,"
-        " wave_session_id = ?, wave_number = wave_number + 1 WHERE id = ?",
-        (total, json.dumps(sorted(written)), wave_id, round_row["id"]),
-    )
+        " wave_session_id = ?, wave_number = wave_number + 1"
+        " WHERE id = ? AND state = 'active' AND wave_session_id = ?",
+        (total, json.dumps(sorted(written)), wave_id, round_row["id"],
+         round_row["wave_session_id"]),
+    ):
+        if conn.execute(
+            "SELECT 1 FROM room_rounds WHERE id = ? AND wave_session_id = ?",
+            (round_row["id"], wave_id),
+        ).fetchone() is None:
+            store.close(wave_id, "")
+        return
     conn.commit()
     journal(conn, "room_wave",
             f'{round_row["id"]} wave={round_row["wave_number"] + 1}'
@@ -884,7 +1008,7 @@ def _stream_stalled(machines: list[dict]) -> bool:
 
 def status_view(ctx) -> dict:
     """מה שמסך החדר מציג: המכונות, המגירות, והסבב אם יש."""
-    round_row = active_round(ctx.conn)
+    round_row = visible_round(ctx.conn)
     written = _written(round_row) if round_row else set()
     member_of = {}
     wave = None
@@ -941,14 +1065,20 @@ def status_view(ctx) -> dict:
     if round_row is not None:
         view["round"] = {
             "id": round_row["id"],
+            "state": round_row["state"],
+            "failed_reason": round_row["failed_reason"],
             "image_id": round_row["image_id"],
             "image_name": round_label(ctx, round_row),
             "target_drives": round_row["target_drives"],
+            "target_slots": (json.loads(round_row["target_slots_json"])
+                             if round_row["target_slots_json"] else None),
+            "expand_partition": round_row["expand_partition"] or "auto",
             "written_drives": round_row["written_drives"],
             "remaining_drives": round_row["target_drives"] - round_row["written_drives"],
             "wave_number": round_row["wave_number"],
             "wave_state": wave["state"] if wave else "closed",
-            "ready_drives": ready_drives(ctx.conn, ctx.store, round_row),
+            "ready_drives": (ready_drives(ctx.conn, ctx.store, round_row)
+                             if round_row["state"] == "active" else 0),
             "opened_by": round_row["opened_by"],
             # ‏#715: מאיפה הבייטים — ספרייה (השרת משדר) או מחשב בנייה.
             "source": _direct().source_view(ctx.conn, round_row),

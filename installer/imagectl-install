@@ -22,7 +22,7 @@ fi
 umask 022
 
 case "$0" in */*) INSTALLER_DIR=${0%/*} ;; *) INSTALLER_DIR=. ;; esac
-INSTALLER_DIR=$(CDPATH= cd "$INSTALLER_DIR" && pwd) || { echo 'installer: cannot locate installer directory' >&2; exit 2; }
+INSTALLER_DIR=$(CDPATH="" cd "$INSTALLER_DIR" && pwd) || { echo 'installer: cannot locate installer directory' >&2; exit 2; }
 # In the repo the agent libs are ../agent/lib; in the live image
 # (build_initramfs --installer) installer/ sits under /usr/lib/imagectl next
 # to them, so ../common.sh is the second place to look.
@@ -92,6 +92,7 @@ ANSWERS_FILE=$1; shift
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --dry-run) DRY_RUN=1; shift ;;
+        # shellcheck disable=SC2034 # read by progress.sh (sourced above) at call time
         --state) [ "$#" -ge 2 ] || usage; STATE_FILE=$2; shift 2 ;;
         *) usage ;;
     esac
@@ -125,5 +126,5 @@ else
     [ "$MOUNT_CDROM$MOUNT_SYS$MOUNT_PROC$MOUNT_DEV$MOUNT_ESP$MOUNT_ROOT" = 000000 ] || fail unmount-failed "one or more target filesystems remain mounted"
     sync || fail sync-failed "sync failed"
 fi
-progress done 100 "Installation complete" "Safe to restart"
+progress "done" 100 "Installation complete" "Safe to restart"
 exit 0

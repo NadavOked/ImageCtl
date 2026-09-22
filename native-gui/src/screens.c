@@ -7,15 +7,39 @@
 #include <time.h>
 #include "screens_rounds.h"
 
+/* #1168: the college's logo (PNG) in place of the brandmark. Decoded once
+ * per path and kept; a file that does not decode falls back to the brandmark
+ * (cairo's status is the evidence, not the file's existence). */
+static cairo_surface_t *logo_surface(const char *path) {
+    static char cached[256]; static cairo_surface_t *surf=NULL;
+    if (strcmp(path,cached)) {
+        if (surf) { cairo_surface_destroy(surf); surf=NULL; }
+        snprintf(cached,sizeof cached,"%s",path);
+        if (path[0]) { surf=cairo_image_surface_create_from_png(path);
+            if (cairo_surface_status(surf)!=CAIRO_STATUS_SUCCESS) { cairo_surface_destroy(surf); surf=NULL; } }
+    }
+    return surf;
+}
+
 static double draw_header(App *a, cairo_t *cr, double W) {
     const Theme *t=a->theme;
     Rect bar={0,0,W,N_HEADER_H}; draw_fill_rrect(cr,bar,0,t->header);
     double right=W-N_HEADER_PAD;
-    Rect mark={right-26,(N_HEADER_H-26)/2,26,26};
-    draw_brand_mark(cr,t,mark); right=mark.x-10;
-    Text brand=text_make(cr,FONT_SANS,16,600,"ImageCtl",0,DIR_LTR);
-    text_draw_r(cr,&brand,right,(N_HEADER_H-brand.h)/2,t->header_text); right-=brand.w+22;
-    text_free(&brand);
+    cairo_surface_t *logo=logo_surface(a->st.logo);
+    if (logo) {
+        double lh=26, sw=cairo_image_surface_get_width(logo), sh=cairo_image_surface_get_height(logo);
+        double lw=sh>0?sw*lh/sh:lh; if (lw>220) { lw=220; lh=sw>0?sh*lw/sw:lh; }
+        cairo_save(cr); cairo_translate(cr,right-lw,(N_HEADER_H-lh)/2);
+        if (sw>0&&sh>0) cairo_scale(cr,lw/sw,lh/sh);
+        cairo_set_source_surface(cr,logo,0,0); cairo_paint(cr); cairo_restore(cr);
+        right-=lw+22;
+    } else {
+        Rect mark={right-26,(N_HEADER_H-26)/2,26,26};
+        draw_brand_mark(cr,t,mark); right=mark.x-10;
+        Text brand=text_make(cr,FONT_SANS,16,600,"ImageCtl",0,DIR_LTR);
+        text_draw_r(cr,&brand,right,(N_HEADER_H-brand.h)/2,t->header_text); right-=brand.w+22;
+        text_free(&brand);
+    }
 
     const int clone=a->force_cloner||a->force_standby||a->screen==SCREEN_CLONER||a->screen==SCREEN_STANDBY;
     const char *role=clone?"מחשב שיכפול 2":"מחשב בנייה";

@@ -294,6 +294,7 @@ if "@" in text:
 open(dst, "w", encoding="utf-8", newline="\n").write(text)
 PY
 n_grub=$(grep -c '^menuentry ' "$ISO_TREE/boot/grub/grub.cfg" || true)
+[[ "$n_grub" == 1 ]] || die "GRUB: $n_grub ערכים במקום אחד — רק המתקין החי (#1190)"
 grep -q '^set timeout=0$' "$ISO_TREE/boot/grub/grub.cfg" || die "GRUB אינו עולה ישר למתקין (#1190)"
 grep -q "ImageCtl $TAG installer" "$ISO_TREE/boot/grub/grub.cfg" || die "כותרת ImageCtl חסרה מ-GRUB"
 grep -q '^ *linux */live/vmlinuz imagectl.mode=installer' "$ISO_TREE/boot/grub/grub.cfg" || die "GRUB אינו מעלה את /live/vmlinuz במצב installer"

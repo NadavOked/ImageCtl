@@ -68,12 +68,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     prefix           TEXT NOT NULL,
     expected_clients INTEGER NOT NULL,
     wait_seconds     INTEGER NOT NULL,
-    state            TEXT NOT NULL CHECK (state IN ('open', 'running', 'closed')),
+    state            TEXT NOT NULL CHECK (state IN ('open', 'running', 'failed', 'closed')),
     opened_by        TEXT NOT NULL,
     created_at       TEXT NOT NULL,
     last_join_at     REAL NOT NULL,     -- epoch; הטיימר מתאפס בכל מצטרף
     started_at       TEXT,
     closed_at        TEXT,
+    failed_reason    TEXT,
     roster_json      TEXT,              -- בחירת מחשבים; NULL = כל הקבוצה
     -- הזרם: 'multicast' הוא udp-sender, ולכן אחד בכל המערכת. 'unicast'
     -- הוא משיכת HTTP של תחנה בודדת — לא נוגעת בשידור, וכמה כאלה יחד.
@@ -114,12 +115,13 @@ CREATE TABLE IF NOT EXISTS room_rounds (
     source_disk     TEXT,                  -- הדיסק שלו, כפי שדווח ב-hello
     source_task_id  TEXT,                  -- משימת direct_send שנפתחה לו
     live_manifest_json TEXT,               -- המניפסט שמחשב הבנייה דיווח; NULL = טרם
-    state           TEXT NOT NULL CHECK (state IN ('active', 'closed')),
+    state           TEXT NOT NULL CHECK (state IN ('active', 'closing', 'failed', 'closed')),
     wave_session_id TEXT,                  -- הגל הנוכחי הוא session רגיל
     wave_number     INTEGER NOT NULL DEFAULT 1,
     opened_by       TEXT NOT NULL,
     created_at      TEXT NOT NULL,
-    closed_at       TEXT
+    closed_at       TEXT,
+    failed_reason   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS users (
@@ -531,6 +533,10 @@ ADDED_COLUMNS = [
     # (server/monitor.py) מזדהה איתו מול 5900 של אותה מכונה, ושום תשובת
     # קונסולה אינה מחזירה אותו.
     ("net_devices", "monitor_secret", "TEXT"),
+    # ‏#500: הקושחה ומצב ה-Secure Boot שהסוכן מודד ושולח בכל hello — נמדדו
+    # על ברזל ונזרקו (07/09). NULL = הסוכן לא דיווח (ישן / hello בלי השדה).
+    ("net_devices", "firmware", "TEXT"),
+    ("net_devices", "secure_boot", "INTEGER"),
     # ‏#1077: ``hmac`` כשהסוכן תומך באתגר-תגובה. NULL = סוכן ישן; הפרוקסי
     # מסרב ולא נופל לשליחת הסוד הגולמי.
     ("net_devices", "monitor_auth", "TEXT"),
@@ -598,6 +604,9 @@ ADDED_COLUMNS = [
     # ‏#59: בחירת המחיצה להרחבה מהקונסולה בפתיחת הסבב. NULL בכל שורה
     # קיימת — התקנה שמוגרת רואה בדיוק את הבחירה האוטומטית שהייתה לה.
     ("sessions", "expand_partition", "TEXT"),
+    # ‏#854: סיבת כשל המשדר נשמרת בנפרד מסגירה יזומה. העמודה לבדה אינה
+    # מספיקה להתקנה קיימת — ה-CHECK הישן נבנה מחדש למטה.
+    ("sessions", "failed_reason", "TEXT"),
     ("room_rounds", "expand_partition", "TEXT"),
     # ‏#715: המקור של סבב החדר. כל שורה קיימת היא סבב מספרייה — ברירת
     # המחדל אומרת בדיוק את זה, ואף סבב ישן אינו משנה משמעות.
@@ -606,6 +615,7 @@ ADDED_COLUMNS = [
     ("room_rounds", "source_disk", "TEXT"),
     ("room_rounds", "source_task_id", "TEXT"),
     ("room_rounds", "live_manifest_json", "TEXT"),
+    ("room_rounds", "failed_reason", "TEXT"),
     # ‏#929: רשומת כיווץ לדיסק עם כמה מחיצות. NULL בשורה שנפתחה לפני —
     # רשומה של מחיצה אחת, והעמודות idx/start_sector/… הן היא.
     ("shrink_records", "partitions", "TEXT"),
@@ -622,10 +632,126 @@ ADDED_COLUMNS = [
 
 
 def _add_missing_columns(conn: sqlite3.Connection) -> None:
-    for table, column, definition in ADDED_COLUMNS:
-        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
-        if column not in existing:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    # ‏#1127: כל ה-ALTERים בטרנזאקציה אחת — מיגרציה שנקטעה באמצע השאירה
+    # סכימה חצי-מעודכנת שהעלייה הבאה לא יודעת לזהות.
+    with writing(conn):
+        for table, column, definition in ADDED_COLUMNS:
+            existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if column not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _state_check_has(conn: sqlite3.Connection, table: str, state: str) -> bool:
+    """האם אילוץ המצב של הטבלה כבר מכיר את הערך.
+
+    ‏sqlite אינו מאפשר ``ALTER CHECK``. בדיקת עמודות אינה מספיקה כאן:
+    התקנה יכולה כבר להכיל ``failed_reason`` ועדיין לסרב ל-``failed``.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+    ).fetchone()
+    return bool(row and row["sql"] and f"'{state}'" in row["sql"])
+
+
+def _rebuild_state_tables(conn: sqlite3.Connection) -> None:
+    """מרחיב CHECK-ים קיימים בלי לאבד שורות או לשבור מפתחות זרים.
+
+    יוצרים טבלה חדשה, מעתיקים, מוחקים את הישנה ורק אז משנים שם. לא
+    משנים את שם הטבלה הישנה: בגרסאות sqlite חדשות פעולה כזאת משכתבת את
+    ה-FK של ``session_members`` לשם הזמני ומשאירה אותו שבור אחרי המחיקה.
+    """
+    sessions = not _state_check_has(conn, "sessions", "failed")
+    rooms = (not _state_check_has(conn, "room_rounds", "failed")
+             or not _state_check_has(conn, "room_rounds", "closing"))
+    if not sessions and not rooms:
+        return
+
+    # אי-אפשר לשנות foreign_keys בתוך טרנזאקציה. ה-ALTER-ים שלמעלה
+    # נשמרים קודם; כל בנייה מחדש עצמה אטומית.
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if sessions:
+            conn.execute("""
+                CREATE TABLE sessions_new (
+                    id TEXT PRIMARY KEY,
+                    group_id TEXT NOT NULL REFERENCES groups(id),
+                    image_id TEXT NOT NULL,
+                    prefix TEXT NOT NULL,
+                    expected_clients INTEGER NOT NULL,
+                    wait_seconds INTEGER NOT NULL,
+                    state TEXT NOT NULL CHECK (state IN ('open', 'running', 'failed', 'closed')),
+                    opened_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    last_join_at REAL NOT NULL,
+                    started_at TEXT,
+                    closed_at TEXT,
+                    roster_json TEXT,
+                    kind TEXT NOT NULL DEFAULT 'multicast'
+                         CHECK (kind IN ('multicast', 'unicast')),
+                    expand_partition TEXT,
+                    failed_reason TEXT
+                )
+            """)
+            conn.execute("""
+                INSERT INTO sessions_new
+                    (id, group_id, image_id, prefix, expected_clients, wait_seconds,
+                     state, opened_by, created_at, last_join_at, started_at, closed_at,
+                     roster_json, kind, expand_partition, failed_reason)
+                SELECT id, group_id, image_id, prefix, expected_clients, wait_seconds,
+                       state, opened_by, created_at, last_join_at, started_at, closed_at,
+                       roster_json, kind, expand_partition, failed_reason
+                  FROM sessions
+            """)
+            conn.execute("DROP TABLE sessions")
+            conn.execute("ALTER TABLE sessions_new RENAME TO sessions")
+        if rooms:
+            conn.execute("""
+                CREATE TABLE room_rounds_new (
+                    id TEXT PRIMARY KEY,
+                    image_id TEXT NOT NULL,
+                    target_drives INTEGER NOT NULL,
+                    written_drives INTEGER NOT NULL DEFAULT 0,
+                    written_serials TEXT NOT NULL DEFAULT '[]',
+                    target_slots_json TEXT,
+                    expand_partition TEXT,
+                    source_kind TEXT NOT NULL DEFAULT 'library',
+                    source_mac TEXT,
+                    source_disk TEXT,
+                    source_task_id TEXT,
+                    live_manifest_json TEXT,
+                    state TEXT NOT NULL CHECK (state IN ('active', 'closing', 'failed', 'closed')),
+                    wave_session_id TEXT,
+                    wave_number INTEGER NOT NULL DEFAULT 1,
+                    opened_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    closed_at TEXT,
+                    failed_reason TEXT
+                )
+            """)
+            conn.execute("""
+                INSERT INTO room_rounds_new
+                    (id, image_id, target_drives, written_drives, written_serials,
+                     target_slots_json, expand_partition, source_kind, source_mac,
+                     source_disk, source_task_id, live_manifest_json, state,
+                     wave_session_id, wave_number, opened_by, created_at, closed_at,
+                     failed_reason)
+                SELECT id, image_id, target_drives, written_drives, written_serials,
+                       target_slots_json, expand_partition, source_kind, source_mac,
+                       source_disk, source_task_id, live_manifest_json, state,
+                       wave_session_id, wave_number, opened_by, created_at, closed_at,
+                       failed_reason
+                  FROM room_rounds
+            """)
+            conn.execute("DROP TABLE room_rounds")
+            conn.execute("ALTER TABLE room_rounds_new RENAME TO room_rounds")
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
 
 
 #: העמודות שכל טבלת אחסון (#655/#723/#727) חייבת. טבלה חלקית שנוצרה
@@ -745,6 +871,7 @@ def _initialize(conn: sqlite3.Connection) -> None:
     # ורץ לפני שהקונסולה יכולה לקרוא את net_devices.
     conn.execute("DELETE FROM net_devices WHERE lower(mac) = '00:00:00:00:00:00'")
     _add_missing_columns(conn)
+    _rebuild_state_tables(conn)
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS users_username_nocase"
         " ON users (username COLLATE NOCASE)"
@@ -964,7 +1091,9 @@ def _net_seen_unchanged(row: sqlite3.Row, ip: str | None,
                         monitor_secret: str | None = None,
                         monitor_auth: str | None = None,
                         prompt: str | None = None,
-                        disk_probe: str | None = None) -> bool:
+                        disk_probe: str | None = None,
+                        firmware: str | None = None,
+                        secure_boot: int | None = None) -> bool:
     """האם השורה כבר אומרת בדיוק את מה שהכתיבה הזו הייתה כותבת.
 
     ראיה חיובית בלבד (עיקרון 5): חותמת שאי אפשר לפענח, חותמת בלי אזור
@@ -984,6 +1113,10 @@ def _net_seen_unchanged(row: sqlite3.Row, ip: str | None,
         return False
     if disk_probe is not None and disk_probe != row["disk_probe"]:   # #402
         return False
+    if firmware is not None and firmware != row["firmware"]:          # #500
+        return False
+    if secure_boot is not None and secure_boot != row["secure_boot"]:
+        return False
     try:
         last = datetime.fromisoformat(row["last_seen"])
     except (TypeError, ValueError):
@@ -1001,6 +1134,8 @@ def net_seen(
     monitor_auth: str | None = None,
     prompt: str | None = None,
     disk_probe: str | None = None,
+    firmware: str | None = None,
+    secure_boot: int | None = None,
 ) -> None:
     """כל מגע של מכונה עם השרת — hello או תפריט אתחול — נרשם כאן.
 
@@ -1023,11 +1158,12 @@ def net_seen(
     now = datetime.now(timezone.utc)
     row = conn.execute(
         "SELECT ip, last_seen, disks_json, monitor_secret, monitor_auth, prompt,"
-        " disk_probe FROM net_devices WHERE mac = ?", (mac,)
+        " disk_probe, firmware, secure_boot FROM net_devices WHERE mac = ?", (mac,)
     ).fetchone()
     if row is not None and _net_seen_unchanged(row, ip, disks_json, now,
                                                monitor_secret, monitor_auth,
-                                               prompt, disk_probe):
+                                               prompt, disk_probe,
+                                               firmware, secure_boot):
         return
 
     ts = now.isoformat(timespec="seconds")
@@ -1039,17 +1175,19 @@ def net_seen(
     with _write_lock, writing(conn):
         conn.execute(
             "INSERT INTO net_devices (mac, ip, first_seen, last_seen, disks_json,"
-            " monitor_secret, monitor_auth, prompt, disk_probe)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            " monitor_secret, monitor_auth, prompt, disk_probe, firmware, secure_boot)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (mac) DO UPDATE SET ip = COALESCE(excluded.ip, ip),"
             " last_seen = ?, disks_json = COALESCE(excluded.disks_json, disks_json),"
             " monitor_secret = COALESCE(excluded.monitor_secret, monitor_secret),"
             " monitor_auth = CASE WHEN excluded.monitor_secret IS NOT NULL"
             " THEN excluded.monitor_auth ELSE monitor_auth END,"
             " prompt = excluded.prompt,"
-            " disk_probe = COALESCE(excluded.disk_probe, disk_probe)",
+            " disk_probe = COALESCE(excluded.disk_probe, disk_probe),"
+            " firmware = COALESCE(excluded.firmware, firmware),"
+            " secure_boot = COALESCE(excluded.secure_boot, secure_boot)",
             (mac, ip, ts, ts, disks_json, monitor_secret, monitor_auth, prompt,
-             disk_probe, ts),
+             disk_probe, firmware, secure_boot, ts),
         )
 
 

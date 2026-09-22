@@ -41,6 +41,9 @@ gui_state() {
     # has none, and then the screen refuses to start instead of guessing.
     _mn=$(jq -r '.name // "" | tostring | gsub("[\\r\\n|]"; " ")' "$GUI_DIR/station.json") || return 1
     printf 'machine_name=%s\n' "$_mn" >> "$GUI_DIR/state.next" || return 1
+    # #1168: the college's logo, fetched once by gui_fetch_logo; the line is
+    # written only when the file is there, so the GUI falls back by itself.
+    [ -s "$GUI_DIR/logo.png" ] && { printf 'logo=%s\n' "$GUI_DIR/logo.png" >> "$GUI_DIR/state.next" || return 1; }
     _hello_age=""; _hello_rc=""; _now=$(date +%s) || return 1
     if [ -f "$RUN_DIR/hello.state" ]; then
         IFS='|' read -r _hello_at _hello_rc < "$RUN_DIR/hello.state" || return 1
@@ -126,6 +129,24 @@ gui_state() {
     # instead of a picture that looks current (rule 5).
     printf 'updated=%s\n' "$_now" >> "$GUI_DIR/state.next" || return 1
     mv "$GUI_DIR/state.next" "$GUI_DIR/state"
+}
+
+# #1168: the logo uploaded in the console (branding), once per boot. Only
+# PNG is drawn (cairo); anything else -- or no logo, or a failed fetch --
+# is said in the log and the GUI keeps the fixed brandmark. Never fatal.
+gui_fetch_logo() {
+    mkdir -p "$GUI_DIR" || return 0
+    rm -f "$GUI_DIR/logo.png"
+    if ! http_get "$SERVER/api/v1/agent/branding/logo" > "$GUI_DIR/logo.bin" 2>>"$LOG_FILE"; then
+        log "branding: logo fetch failed -- brandmark"; rm -f "$GUI_DIR/logo.bin"; return 0
+    fi
+    if [ ! -s "$GUI_DIR/logo.bin" ]; then log "branding: no logo on the server -- brandmark"; rm -f "$GUI_DIR/logo.bin"; return 0; fi
+    if [ "$(head -c 4 "$GUI_DIR/logo.bin" | od -An -tx1 | tr -d ' \n')" != "89504e47" ]; then
+        log "branding: logo is not PNG -- brandmark (upload a PNG for the station screens)"
+        rm -f "$GUI_DIR/logo.bin"; return 0
+    fi
+    mv "$GUI_DIR/logo.bin" "$GUI_DIR/logo.png" && log "branding: logo fetched ($(wc -c < "$GUI_DIR/logo.png") bytes)"
+    return 0
 }
 
 gui_state_loop() {

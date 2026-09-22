@@ -53,6 +53,10 @@ void room_status_markup(const App *a, const Machine *m, int mode, char *out, siz
     progress_label(lbl, sizeof lbl, m->pct, m->moving, 0);
     if (mode == ROWS_CLASS) {
         if (!strcmp(m->state, "failed"))       snprintf(out, n, "<span foreground=\"%s\">נכשל · %s</span>", bad, e);
+        /* #943: done that still carries an error (name not written, grow
+         * deferred) is "finished, with a warning" -- orange, not green, and
+         * not red: the restore did not fail. Same rule as the console (#856). */
+        else if (!strcmp(m->state, "done") && m->error[0]) snprintf(out, n, "<span foreground=\"%s\">הסתיים · עם אזהרה: %s</span>", warn, e);
         else if (!strcmp(m->state, "done"))    snprintf(out, n, "<span foreground=\"%s\">הסתיים</span>", ok);
         else if (!strcmp(m->state, "waiting")) snprintf(out, n, "ממתין לשידור");
         else                                   snprintf(out, n, "%s", lbl);
@@ -62,6 +66,7 @@ void room_status_markup(const App *a, const Machine *m, int mode, char *out, siz
         /* three endings, not two (#67) */
         if (!strcmp(m->state, "failed"))        snprintf(out, n, "<span foreground=\"%s\">נכשל · %s</span>", bad, e);
         else if (!strcmp(m->state, "partial"))  snprintf(out, n, "<span foreground=\"%s\">הושלם חלקית · %s</span>", warn, m->error[0] ? e : "מגירה אחת לא נכתבה");
+        else if (!strcmp(m->state, "done") && m->error[0]) snprintf(out, n, "<span foreground=\"%s\">הסתיים · עם אזהרה: %s</span>", warn, e);   /* #943 */
         else if (!strcmp(m->state, "done"))     snprintf(out, n, "<span foreground=\"%s\">הסתיים</span>", ok);
         else if (!m->state[0] || !strcmp(m->state, "waiting")) snprintf(out, n, "מחכה לשידור");
         else if (m->error[0])                   snprintf(out, n, "%s · <span foreground=\"%s\">%s</span>", lbl, bad, e);

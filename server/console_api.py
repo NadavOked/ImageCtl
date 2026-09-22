@@ -43,6 +43,15 @@ WRITE_SETTINGS = {"recovery_require_login", "session_wait_seconds",
 #: #406: השדות שעריכת מכונה מכירה. שדה מחוץ לרשימה = טעות של הקורא,
 #: והוא נדחה ב-400 במקום להיבלע ולהחזיר ``{"ok": True}`` שלא שינה כלום.
 EDIT_MACHINE_FIELDS = {"name", "group_id", "drawer_count"}
+#: ‏#1127: שדה טקסט חופשי (שם קבוצה/מכונה) — תקרת אורך, כי הוא נכנס ליומן,
+#: לתפריט GRUB ולמסך; בלי תקרה שורה של מגה-בייט היא DoS שקט על הקונסולה.
+TEXT_FIELD_MAX = 100
+
+
+def _text_field_ok(value: str, what: str) -> None:
+    from fastapi import HTTPException  # noqa: PLC0415 — כמו שאר הקובץ
+    if len(value) > TEXT_FIELD_MAX:
+        raise HTTPException(400, f"{what} ארוך מדי ({len(value)} תווים, המקסימום {TEXT_FIELD_MAX})")
 
 
 def _drawer_count(raw):
@@ -210,6 +219,10 @@ def create_console_router(
         session_view = None
         if session is not None:
             session_view = ctx.store.view(ctx.store.maybe_start(session), ctx.library)
+        else:
+            session = ctx.store.latest_failed_broadcast()
+            if session is not None:
+                session_view = ctx.store.view(session, ctx.library)
         machines = ctx.conn.execute("SELECT COUNT(*) AS n FROM machines").fetchone()["n"]
         try:
             usage = shutil.disk_usage(ctx.library.root)
@@ -267,6 +280,7 @@ def create_console_router(
         gid, label, role = body.get("id", "").strip(), body.get("label", "").strip(), body.get("role", "")
         if not label or role not in ("build", "cloner", "classroom"):
             raise HTTPException(400, "צריך שם ותפקיד חוקי")
+        _text_field_ok(label, "שם הקבוצה")
         # המזהה נכנס לכתובות URL ולשורות היומן, ולכן חייב להיות ASCII —
         # אבל הוא רשות: בלעדיו הוא נגזר מהשם (שיכול להיות בכל שפה).
         if gid in ("", "grp_"):
@@ -320,6 +334,7 @@ def create_console_router(
         label = (body.get("label") or "").strip()
         if not label:
             raise HTTPException(400, "שם ריק")
+        _text_field_ok(label, "שם הקבוצה")
         # ‏`update_one` מכסה את השורה שלא נמצאה; ‏`writing` מכסה את
         # ה-UPDATE שנכשל בכלל, ואת ה-``commit`` שאחריו.
         with _write_lock, writing(ctx.conn):
@@ -352,7 +367,8 @@ def create_console_router(
             "SELECT m.mac, m.suffix, m.group_id, m.note, m.drawer_count,"
             " m.added_at, d.disks_json, d.last_seen AS disks_reported_at,"
             " d.prompt,"   # #906: מה המכונה ממתינה עליו לאדם (NULL = לא ממתינה)
-            " d.disk_probe"   # #402: למה אפס דיסקים (NULL = סוכן ישן)
+            " d.disk_probe,"   # #402: למה אפס דיסקים (NULL = סוכן ישן)
+            " d.firmware, d.secure_boot"   # #500: כפי שהסוכן מדד (NULL = לא דווח)
             " FROM machines m LEFT JOIN net_devices d ON d.mac = m.mac"
             + (" WHERE m.group_id = ?" if group else "")
             + " ORDER BY m.group_id, m.suffix"

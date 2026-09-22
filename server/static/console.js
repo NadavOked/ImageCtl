@@ -1002,14 +1002,20 @@ function sessionProgressPct(s) {
 function stateLabel(state) {
   if (state === "running") return "פעיל";
   if (state === "open") return "פתוח";
+  if (state === "failed") return "נכשל";
   if (state === "closed") return "נסגר";
   return state || "—";
+}
+
+function sessionStateText(session) {
+  if (session && session.state === "failed") return `נכשל: ${session.failed_reason || "סיבה לא ידועה"}`;
+  return stateLabel(session && session.state);
 }
 
 function stateClass(state) {
   if (state === "running") return "ok";
   if (state === "open") return "warn";
-  if (state === "closed") return "err";
+  if (state === "closed" || state === "failed") return "err";
   return "";
 }
 
@@ -1447,14 +1453,17 @@ function homeHealth() {
 
 function homeSessionKpi(session, room) {
   if (session) {
+    const failed = session.state === "failed";
     const wait = session.state === "open" && session.starts_in_seconds != null
       ? ` · מתחיל בעוד ${Math.floor(session.starts_in_seconds / 60)}:${String(session.starts_in_seconds % 60).padStart(2, "0")}` : "";
-    return UI.kpi({ cls: "info", label: "סבב הפצה פעיל", value: 1,
-      sub: esc(`${sessionGroup(session)} · ${sessionImage(session)} — ${session.joined || 0}/${sessionExpected(session)} מחוברים${wait}`) });
+    return UI.kpi({ cls: failed ? "err" : "info", label: failed ? "סבב הפצה נכשל" : "סבב הפצה פעיל", value: 1,
+      sub: esc(`${failed ? sessionStateText(session) + " · " : ""}${sessionGroup(session)} · ${sessionImage(session)} — ${session.joined || 0}/${sessionExpected(session)} מחוברים${wait}`) });
   }
   if (room) {
-    return UI.kpi({ cls: "info", label: "סבב שיכפול פעיל", value: 1,
-      sub: esc(`${room.image_name || ""} — ${room.written_drives || 0}/${room.target_drives || 0} דיסקים נכתבו · גל ${room.wave_number || 1}`) });
+    const failed = room.state === "failed";
+    const state = failed ? `נכשל: ${room.failed_reason || "סיבה לא ידועה"}` : "פעיל";
+    return UI.kpi({ cls: failed ? "err" : "info", label: failed ? "סבב שיכפול נכשל" : "סבב שיכפול פעיל", value: 1,
+      sub: esc(`${state} · ${room.image_name || ""} — ${room.written_drives || 0}/${room.target_drives || 0} דיסקים נכתבו · גל ${room.wave_number || 1}`) });
   }
   return UI.kpi({ cls: "", label: "סבב הפצה פעיל", value: "אין", sub: UI.link("פתח סבב מדף ההפצה", "selectPageById('deploy')") });
 }
@@ -1475,8 +1484,8 @@ function homeKpis() {
           : h.failing.length ? `${h.failing.length} מתוך ${h.total} בדיקות: ${esc(h.failing.map((c) => c.label).join(", "))} — ${UI.link("לבריאות", "selectPageById('health')")}`
           : esc(`${h.total} בדיקות עברו`);
         return UI.kpi({ cls: h.cls, label: "בריאות השרת", value: h.label, sub }); })()
-    : UI.kpi({ cls: o.session ? "info" : "", label: "מצב הסבב",
-        value: o.session ? stateLabel(o.session.state) : "אין",
+    : UI.kpi({ cls: o.session ? (o.session.state === "failed" ? "err" : "info") : "", label: "מצב הסבב",
+        value: o.session ? sessionStateText(o.session) : "אין",
         sub: o.session ? esc(`${o.session.joined || 0} מתוך ${sessionExpected(o.session)} מחוברים`) : "אין סבב פתוח" });
   return `<div class="c12 kpis">${first}${homeSessionKpi(o.session, o.room)}
 ${UI.kpi({ cls: o.machines == null ? "" : "ok", label: "מחשבים רשומים", value: o.machines == null ? "—" : o.machines,
@@ -1497,9 +1506,9 @@ function homeNowRows(all = false) {
   const s = o.session;
   if (s) {
     const open = s.state === "open";
-    rows.push([UI.name(`סבב הפצה — ${sessionImage(s)}`, `${sessionGroup(s)} · ${stateLabel(s.state)}`),
+    rows.push([UI.name(`סבב הפצה — ${sessionImage(s)}`, `${sessionGroup(s)} · ${sessionStateText(s)}`),
       esc(`${sessionExpected(s)} תחנות`), UI.barRow(sessionProgressPct(s), "", open ? `${s.joined || 0}/${sessionExpected(s)}` : null),
-      UI.status(open ? "run" : "ok", open ? "ממתין להצטרפות" : "משדר"),
+      UI.status(s.state === "failed" ? "err" : open ? "run" : "ok", s.state === "failed" ? sessionStateText(s) : open ? "ממתין להצטרפות" : "משדר"),
       UI.acts(open ? [["התחל עכשיו", "startRound()"], ["פרטים", "openRoundDetail()"]] : [["פרטים", "openRoundDetail()"]])]);
   }
   if (o.room) {
@@ -1666,7 +1675,7 @@ function home(tab = 0) {
   const h = homeHealth();
   const pill = isAdmin()
     ? (Array.isArray(HEALTH) ? UI.pill(h.cls, !h.failing.length ? "תקין" : h.cls === "err" ? `${h.failing.length} ${h.failing.length === 1 ? "תקלה" : "תקלות"}` : `${h.failing.length} ${h.failing.length === 1 ? "אזהרה" : "אזהרות"}`) : UI.pill("", "לא נבדק"))
-    : (o && o.session ? UI.pill("info", stateLabel(o.session.state)) : UI.pill("", "אין סבב"));
+    : (o && o.session ? UI.pill(o.session.state === "failed" ? "err" : "info", sessionStateText(o.session)) : UI.pill("", "אין סבב"));
   const actions = `<button class="btn primary" onclick="selectPageById('deploy')">+ סבב הפצה</button>`
     + (isAdmin() ? `<button class="btn" onclick="openCapture().catch(e => toast(e.message))">+ קליטת אימג'</button>` : "")
     + `<button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>`;
@@ -1696,7 +1705,7 @@ function home(tab = 0) {
    API. מה שאין לו API — קצב/איבוד, מספר הגלים הכולל, היסטוריה, דילוג מרחוק — טקסט,
    לא נתון מומצא (README §8, עיקרון 5). */
 const DEPLOY = { big: false, err: "", roomErr: "", busy: false, form: { image: "", src: "library", builder: "", disk: "", target: "" } };
-const WAVE_HE = { open: "ממתין להצטרפות", running: "משדר", closed: "הגל נסגר" };
+const WAVE_HE = { open: "ממתין להצטרפות", running: "משדר", failed: "הגל נכשל", closed: "הגל נסגר" };
 
 function deployTabs() {
   return classroomsOn() ? ["חדר המשכפלים", "כיתה", "היסטוריה"] : ["חדר המשכפלים", "היסטוריה"];
@@ -1774,14 +1783,16 @@ function deploy(tab = 0) {
   if (r) {
     name = `חדר המשכפלים — גל ${r.wave_number || 1}`;
     sub = [roomImageLabel(r), `יעד: ${r.target_drives || 0} דיסקים`, `נכתבו ${r.written_drives || 0}`, `נשארו ${r.remaining_drives != null ? r.remaining_drives : "?"}`, r.opened_by ? `פתח ${esc(r.opened_by)}` : ""].filter(Boolean).join(" · ");
-    pill = stalled ? UI.pill("warn", "הזרם עצר") : r.wave_state === "running" ? UI.pill("info", `משדר${pct != null ? ` — ${pct}%` : ""}`)
+    pill = r.state === "failed" ? UI.pill("err", `נכשל: ${r.failed_reason || "סיבה לא ידועה"}`)
+      : stalled ? UI.pill("warn", "הזרם עצר") : r.wave_state === "running" ? UI.pill("info", `משדר${pct != null ? ` — ${pct}%` : ""}`)
       : r.wave_state === "open" ? UI.pill("info", `ממתין להצטרפות · ${r.ready_drives || 0} מוכנים`) : UI.pill("", WAVE_HE[r.wave_state] || r.wave_state || "—");
   } else {
     name = "חדר המשכפלים";
     sub = ROOM == null ? "החדר לא נקרא" : [`${kids.length} ${kids.length === 1 ? "משכפל" : "משכפלים"}`, `${st.slots} חריצים`, `${st.awake} מחוברים`, `${st.filled} דיסקים בחריצים`].join(" · ");
     pill = ROOM == null ? UI.pill("", "החדר לא נקרא") : UI.pill("", "אין סבב");
   }
-  const actions = (tab === 0 && ROOM ? (op && r && r.wave_state === "open" ? `<button class="btn primary" onclick="startWave()">התחל גל (${r.ready_drives || 0} מוכנים)</button>` : "")
+  const actions = (tab === 0 && ROOM ? (op && r && r.state === "failed" ? `<button class="btn primary" onclick="reopenRoom()">פתח מחדש</button>` : "")
+    + (op && r && r.state !== "failed" && r.wave_state === "open" ? `<button class="btn primary" onclick="startWave()">התחל גל (${r.ready_drives || 0} מוכנים)</button>` : "")
     + (op ? `<button class="btn" onclick="wakeRoom()">הער משכפלים (WoL)</button>` : "")
     + (op && r ? `<button class="btn danger" onclick="stopRoom()">עצור סבב (הקלדת שם)</button>` : "")
     + `<button class="btn" onclick="toggleRoomBig()">${DEPLOY.big ? "חזרה לתצוגה המלאה" : "תצוגה גדולה"}</button>` : "")
@@ -1794,7 +1805,7 @@ function deploy(tab = 0) {
   else if (tab === histTab) body = UI.card({ title: "היסטוריית סבבים", cls: "c12", body: UI.note("info", `סבבים קודמים בחדר${classroomsOn() ? " ובכיתות" : ""} — <b title="אין endpoint לסבבים סגורים (#980 §3)">דורש API</b>. היום רק ${isAdmin() ? UI.link("ביומן", "selectPageById('logs')") : "ביומן (מנהל)"}.`) });
   else if (ROOM == null) body = `<div class="c12">${UI.note("warn", `החדר לא נקרא${DEPLOY.roomErr ? ": " + esc(DEPLOY.roomErr) : ""} — הגריד והסבב לא ידועים.`)}</div>`;
   else if (DEPLOY.big) body = roomGridCard(kids, st, true);
-  else if (r) body = `<div class="c12 kpis">${roomKpis(r, st, pct)}</div>` + roomGridCard(kids, st, false) + roomNotes(kids, st);
+  else if (r) body = (r.state === "failed" ? `<div class="c12">${UI.note("err", `נכשל: ${esc(r.failed_reason || "סיבה לא ידועה")}`)}</div>` : "") + `<div class="c12 kpis">${roomKpis(r, st, pct)}</div>` + roomGridCard(kids, st, false) + roomNotes(kids, st);
   else body = roomNewCard(kids, st) + roomGridCard(kids, st, false) + roomNotes(kids, st);
   return `<div class="page">${header}<div class="body">${stale}${body}</div></div>`;
 }
@@ -1908,6 +1919,16 @@ async function startWave() {
   try { await post("/room/start"); toast("הגל התחיל"); await loadDeploy(); }
   catch (e) { toast("הגל לא התחיל: " + e.message, 6000); }   // ‏409 — אף משכפל לא הצטרף / המניפסט טרם הגיע
 }
+async function reopenRoom() {
+  const r = roomRound();
+  if (!roomOperator() || !r || r.state !== "failed") return;
+  try {
+    await post("/room", { image_id: r.image_id, target_drives: r.target_drives,
+      target_slots: r.target_slots, expand_partition: r.expand_partition });
+    toast("הסבב נפתח מחדש");
+    await loadDeploy();
+  } catch (e) { toast("הסבב לא נפתח מחדש: " + e.message, 6000); }
+}
 function stopRoom() {
   const r = roomRound();
   if (!roomOperator() || !r) return;
@@ -1926,9 +1947,9 @@ function deployClassView() {
   if (!s || wave) return UI.card({ title: "סבב כיתה", small: "v2", cls: "c12", body: UI.empty(wave ? "אין סבב כיתה — הסבב הפעיל הוא גל בחדר המשכפלים (הלשונית הראשונה)." : "אין סבב כיתה פתוח. סבב כיתה נפתח ממסך התחנה; מחשבי כיתה בקונסולה — v2.") + (pulls.length ? `<div style="margin-top:12px">${pullsHtml(pulls, false)}</div>` : "") });
   const img = sessionImage(s), pct = sessionProgressPct(s);
   const bar = pct == null ? "—" : `<div class="progress" style="width:150px"><i style="width:${pct}%"></i></div>`;
-  const table = `<table class="table"><thead><tr><th>סבב</th><th>אימג׳</th><th>כיתה</th><th>מחוברים</th><th>התקדמות</th><th>סטטוס</th></tr></thead><tbody><tr><td><strong>${esc(s.group_label || s.prefix || img)}</strong></td><td>${esc(img)}</td><td>${esc(sessionGroup(s))}</td><td>${s.joined || 0} / ${sessionExpected(s)}</td><td>${bar}</td><td><span class="status ${stateClass(s.state)}"><i></i>${esc(stateLabel(s.state))}${s.state === "open" && s.starts_in_seconds != null ? ` · מתחיל בעוד ${s.starts_in_seconds} ש'` : ""}</span></td></tr></tbody></table>`;
+  const table = `<table class="table"><thead><tr><th>סבב</th><th>אימג׳</th><th>כיתה</th><th>מחוברים</th><th>התקדמות</th><th>סטטוס</th></tr></thead><tbody><tr><td><strong>${esc(s.group_label || s.prefix || img)}</strong></td><td>${esc(img)}</td><td>${esc(sessionGroup(s))}</td><td>${s.joined || 0} / ${sessionExpected(s)}</td><td>${bar}</td><td><span class="status ${stateClass(s.state)}"><i></i>${esc(sessionStateText(s))}${s.state === "open" && s.starts_in_seconds != null ? ` · מתחיל בעוד ${s.starts_in_seconds} ש'` : ""}</span></td></tr></tbody></table>`;
   const op = roomOperator();
-  const acts = op ? `<div class="acts">${s.state === "open" ? `<button class="btn primary" onclick="startRound()">התחל עכשיו</button>` : ""}<button class="btn danger" onclick="stopRound()">עצור סבב (הקלדת שם)</button></div>` : "";
+  const acts = op ? `<div class="acts">${s.state === "failed" ? `<button class="btn primary" onclick="reopenRound()">פתח מחדש</button>` : s.state === "open" ? `<button class="btn primary" onclick="startRound()">התחל עכשיו</button>` : ""}<button class="btn danger" onclick="stopRound()">עצור סבב (הקלדת שם)</button></div>` : "";
   const roster = s.roster ? new Set(s.roster) : null, byMac = new Map((s.members || []).map((m) => [m.mac, m]));
   let rows = (s.members || []).map((m) => memberRow(m, s, stuckNote(s.stuck, m.mac))).join("");
   const machines = s.single ? [] : (SESSION_MACHINES.group === s.group_id ? SESSION_MACHINES.list : null);
@@ -1981,7 +2002,7 @@ function imgFits(r) {
 /* "בשימוש" — סבב פעיל / סבב שיכפול מ-/overview בלבד (אין היסטוריית סבבים לאימג' — דורש API). */
 function imgUsage(id) {
   const o = OVERVIEW || {}, out = [];
-  if (o.session && o.session.image_id === id) out.push(`סבב ${stateLabel(o.session.state)} · ${sessionGroup(o.session)}`);
+  if (o.session && o.session.image_id === id) out.push(`סבב ${sessionStateText(o.session)} · ${sessionGroup(o.session)}`);
   if (o.room && o.room.image_id === id) out.push(`סבב שיכפול · גל ${o.room.wave_number || 1}`);
   return out;
 }
@@ -2535,6 +2556,20 @@ async function startRound() {
   }
 }
 
+async function reopenRound() {
+  if (!ME || !["admin", "deploy"].includes(ME.role)) return;
+  const s = OVERVIEW && OVERVIEW.session;
+  if (!s || s.state !== "failed") return;
+  const body = { group_id: s.group_id, image_id: s.image_id, prefix: s.prefix,
+    expected_clients: s.expected_clients, expand_partition: s.expand_partition };
+  if (Array.isArray(s.roster)) body.macs = s.roster;
+  try {
+    await post("/sessions", body);
+    toast("הסבב נפתח מחדש");
+    refreshStatus();
+  } catch (e) { toast("הסבב לא נפתח מחדש: " + e.message, 6000); }
+}
+
 function stopRound() {
   if (!ME || !["admin", "deploy"].includes(ME.role)) return;
   const session = OVERVIEW && OVERVIEW.session;
@@ -2733,7 +2768,7 @@ function groupRowHtml(g, kids) {
     const on = kids.filter((m) => (monitorRow(m.mac) || {}).online).length;
     live += UI.status(on ? "ok" : "", `${on} מחוברים`);
   }
-  if (s) live += UI.status("run", `סבב ${stateLabel(s.state)} — ${sessionImage(s)}, ${s.joined || 0}/${sessionExpected(s)}`);
+  if (s) live += UI.status(s.state === "failed" ? "err" : "run", `סבב ${sessionStateText(s)} — ${sessionImage(s)}, ${s.joined || 0}/${sessionExpected(s)}`);
   const acts = fixed
     ? [["פתח", `openClass('${gidEnc}')`], ["+ מחשב", `openAddMachine({group:'${gidEnc}'})`]]
     : [["פתח כיתה", `openClass('${gidEnc}')`], ["+ מחשב לכיתה", `openAddMachine({group:'${gidEnc}'})`]];
@@ -2900,7 +2935,7 @@ function groupKpis(g, kids) {
     : red ? UI.kpi({ cls: "err", label: "דיסקים", value: red, unit: "אדומים", sub: esc(kids.filter((m) => machineDiskFailures(m).length).map(machineName).join(", ")) })
     : UI.kpi({ cls: reported ? "ok" : "", label: "דיסקים", value: reported ? "אין אדומים" : "לא דווחו", sub: `${reported} מתוך ${kids.length} דיווחו על דיסקים` });
   return UI.kpi({ cls: "", label: "מחשבים", value: kids.length, sub: seen == null ? "הרשת לא נקראה" : `${seen} נראו ברשת היום` })
-    + (s ? UI.kpi({ cls: "info", label: "סבב פעיל", value: s.joined || 0, unit: `/ ${sessionExpected(s)}`, sub: `${esc(sessionImage(s))} · ${esc(stateLabel(s.state))} · ${UI.link("לסבב", "selectPageById('deploy')")}` })
+    + (s ? UI.kpi({ cls: s.state === "failed" ? "err" : "info", label: s.state === "failed" ? "סבב נכשל" : "סבב פעיל", value: s.joined || 0, unit: `/ ${sessionExpected(s)}`, sub: `${esc(sessionImage(s))} · ${esc(sessionStateText(s))} · ${UI.link("לסבב", "selectPageById('deploy')")}` })
          : UI.kpi({ cls: "", label: "סבב פעיל", value: "אין", sub: g.role === "classroom" ? UI.link("הפץ לכיתה…", `deployToGroup('${encodeId(g.id)}')`) : "" }))
     + disks
     + UI.kpi({ cls: care ? "warn" : "", label: "דורש טיפול", value: care, sub: careSub || "אין ממתינים, אדומים או כשלים" });
@@ -2909,8 +2944,8 @@ function groupKpis(g, kids) {
 function groupRoundsCard(g, cls) {
   const s = groupSession(g.id), r = g.role === "cloner" ? roomRound() : null;
   const events = [];
-  if (s) events.push({ t: "עכשיו", cls: "info", text: `${esc(sessionImage(s))} · ${esc(stateLabel(s.state))}, ${s.joined || 0}/${sessionExpected(s)} הצטרפו · ${UI.link("לסבב", "selectPageById('deploy')")}`, who: "" });
-  if (r) events.push({ t: "עכשיו", cls: ROOM.stream_stalled ? "warn" : "info", text: `${esc(r.image_name || r.image_id || "")} · גל ${r.wave_number || 1} · ${r.written_drives || 0}/${r.target_drives || 0} נכתבו${ROOM.stream_stalled ? " · הזרם עצר" : ""} · ${UI.link("לסבב", "selectPageById('deploy')")}`, who: r.opened_by || "" });
+  if (s) events.push({ t: "עכשיו", cls: s.state === "failed" ? "err" : "info", text: `${esc(sessionImage(s))} · ${esc(sessionStateText(s))}, ${s.joined || 0}/${sessionExpected(s)} הצטרפו · ${UI.link("לסבב", "selectPageById('deploy')")}`, who: "" });
+  if (r) events.push({ t: "עכשיו", cls: r.state === "failed" ? "err" : ROOM.stream_stalled ? "warn" : "info", text: `${esc(r.image_name || r.image_id || "")} · גל ${r.wave_number || 1} · ${r.state === "failed" ? esc(`נכשל: ${r.failed_reason || "סיבה לא ידועה"}`) + " · " : ""}${r.written_drives || 0}/${r.target_drives || 0} נכתבו${ROOM.stream_stalled ? " · הזרם עצר" : ""} · ${UI.link("לסבב", "selectPageById('deploy')")}`, who: r.opened_by || "" });
   const now = events.length ? UI.timeline(events) + `<div style="margin-top:12px"></div>` : "";
   const unread = g.role === "cloner" && ROOM == null ? UI.note("warn", "החדר לא נקרא — הסבב הפעיל לא ידוע.") + `<div style="margin-top:12px"></div>` : "";
   const what = g.role === "classroom" ? "לכיתה" : g.role === "cloner" ? "בחדר" : "לקבוצה";
@@ -2923,7 +2958,7 @@ function classView(g, kids, tab) {
   const gidEnc = encodeId(g.id), s = groupSession(g.id), classroom = g.role === "classroom";
   const seen = NET ? kids.filter((m) => { const n = netFor(m.mac); return n && n.last_seen && isToday(n.last_seen); }).length : null;
   const sub = [classroom ? "קבוצת כיתה" : "קבוצה קבועה", s && s.prefix ? `קידומת ${s.prefix}` : "", `${kids.length} ${kids.length === 1 ? "מחשב" : "מחשבים"}`, seen == null ? "" : `${seen} נראו היום`].filter(Boolean).join(" · ");
-  const pill = s ? UI.pill("info", `סבב ${stateLabel(s.state)}`) : "";
+  const pill = s ? UI.pill(s.state === "failed" ? "err" : "info", `סבב ${sessionStateText(s)}`) : "";
   const actions = isAdmin() ? (classroom ? `<button class="btn primary" onclick="deployToGroup('${gidEnc}')">הפץ לכיתה…</button>` : "")
     + `<button class="btn" onclick="openAddMachine({group:'${gidEnc}'})">+ מחשב${classroom ? " לכיתה" : ""}</button>`
     + (classroom ? `<button class="btn" onclick="renameGroup('${gidEnc}')">שינוי שם</button><button class="btn danger" onclick="deleteGroup('${gidEnc}')">מחיקה (הקלדת שם)</button>` : "") : "";

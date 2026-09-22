@@ -813,7 +813,11 @@ while [ "$_closure_changed" -eq 1 ]; do
             }' "$MODSRC/modules.softdep"); do
             _soft=$(printf '%s' "$_soft" | tr '-' '_')
             _soft_found=0
-            for _candidate in $(find "$MODSRC" -type f -name '*.ko*'); do
+            # a file, not a pipe: the flags set inside must survive the loop,
+            # and the tests run this snippet under dash, so no process
+            # substitution either (SC2044 on the public run, 22/09)
+            _cands=$(mktemp); find "$MODSRC" -type f -name '*.ko*' > "$_cands"
+            while IFS= read -r _candidate; do
                 _candidate_name=$(basename "$_candidate")
                 _candidate_name=${_candidate_name%%.ko*}
                 _candidate_name=$(printf '%s' "$_candidate_name" | tr '-' '_')
@@ -827,7 +831,7 @@ while [ "$_closure_changed" -eq 1 ]; do
                             _closure_changed=1
                         fi ;;
                 esac
-            done
+            done < "$_cands"; rm -f "$_cands"
             # A softdep names a *capability*, not always a file: btrfs wants
             # blake2b-256, which the alias table maps to blake2b_generic
             # (`alias crypto-blake2b-256 blake2b_generic`). Resolve through
@@ -837,7 +841,8 @@ while [ "$_closure_changed" -eq 1 ]; do
                 _soft_dash=$(printf '%s' "$_soft" | tr '_' '-')
                 for _alias_mod in $(awk -v a="crypto-$_soft_dash" -v b="$_soft_dash" '$1 == "alias" && ($2 == a || $2 == b) { print $3 }' "$MODSRC/modules.alias" | sort -u); do
                     _alias_mod=$(printf '%s' "$_alias_mod" | tr '-' '_')
-                    for _candidate in $(find "$MODSRC" -type f -name '*.ko*'); do
+                    _cands=$(mktemp); find "$MODSRC" -type f -name '*.ko*' > "$_cands"
+                    while IFS= read -r _candidate; do
                         _candidate_name=$(basename "$_candidate"); _candidate_name=${_candidate_name%%.ko*}
                         _candidate_name=$(printf '%s' "$_candidate_name" | tr '-' '_')
                         [ "$_candidate_name" = "$_alias_mod" ] || continue
@@ -848,7 +853,7 @@ while [ "$_closure_changed" -eq 1 ]; do
                             cp -a "$_candidate" "$ROOT/lib/modules/$KVER/$_dep"
                             _closure_changed=1
                         fi
-                    done
+                    done < "$_cands"; rm -f "$_cands"
                     if [ "$_soft_found" -eq 0 ] && awk -v want="$_alias_mod" '
                         { n=$0; sub(/^.*\//, "", n); sub(/\.ko.*$/, "", n); gsub(/-/, "_", n) }
                         n == want { found=1 } END { exit !found }' "$MODSRC/modules.builtin"; then

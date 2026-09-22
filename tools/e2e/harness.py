@@ -251,6 +251,9 @@ def start_server(workdir: Path) -> tuple[subprocess.Popen, Path, Path]:
          # ‏#201: השרת הזה אמיתי ומגיע ל-udp-sender אמיתי. בלי הדגל הזה
          # הוא משדר על פורטי ההפצה של הייצור.
          "--sender-portbase", str(SENDER_PORTBASE),
+         # ‏#854: בלי udp-sender (ווינדוס, ‏CI) השולח נכשל וכשל השולח הוא
+         # עכשיו כשל הסבב — הסימולציה "עברה" רק כל עוד זה נבלע בשקט.
+         "--sender-simulate",
          # ‏#855: חכירות לכל מכונה מדומה — השומר פעיל, הקובץ הוא של הסימולציה.
          "--dhcp-leases", str(leases)],
         cwd=str(REPO), stdout=log, stderr=subprocess.STDOUT,
