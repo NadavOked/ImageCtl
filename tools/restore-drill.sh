@@ -28,6 +28,7 @@ PORT=18080
 KEEP=0
 WAIT=60
 SKIP_IMAGES=0
+SYS_ROOT="/"
 
 usage() {
     cat <<'EOF'
@@ -42,6 +43,7 @@ ImageCtl — תרגיל שחזור: גיבוי → שחזור לתיקייה ז�
   --port N             פורט הסוכן של השרת השני; הקונסולה על N+1, הקיוסק N+2 (ברירת מחדל 18080)
   --wait SECONDS       כמה להמתין לשרת השני (ברירת מחדל 60)
   --skip-images        לא לשחזר אימג'ים (אין מקום לעותק) — DB ותצורה בלבד
+  --system-root DIR    מועבר ל-backup-server.sh (לבדיקות)
   --keep               לא למחוק את תיקיית התרגיל בסיום (לניפוי)
   -h, --help           המסך הזה
 
@@ -58,6 +60,7 @@ while [[ $# -gt 0 ]]; do
         --port) PORT="${2:-}"; shift 2 ;;
         --wait) WAIT="${2:-}"; shift 2 ;;
         --skip-images) SKIP_IMAGES=1; shift ;;
+        --system-root) SYS_ROOT="${2:-}"; shift 2 ;;
         --keep) KEEP=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "restore-drill: ארגומנט לא מוכר: $1" >&2; usage >&2; exit 2 ;;
@@ -88,7 +91,7 @@ if [[ -z "$BACKUP" ]]; then
     say "גיבוי טרי → $BACKUP"
     NOIMG=(); [[ "$SKIP_IMAGES" -eq 1 ]] && NOIMG=(--no-images)
     bash "$APP_DIR/tools/backup-server.sh" --dest "$BACKUP" --data-dir "$DATA_DIR" \
-        --images "$IMAGES_DIR" --app-dir "$APP_DIR" "${NOIMG[@]}"
+        --images "$IMAGES_DIR" --app-dir "$APP_DIR" --system-root "$SYS_ROOT" "${NOIMG[@]}"
 fi
 [[ -d "$BACKUP/db" && -d "$BACKUP/data" ]] || fail "$BACKUP אינו גיבוי של backup-server.sh (אין db/ ו-data/)"
 LATEST_DB="$(find "$BACKUP/db" -maxdepth 1 -name 'imagectl-*.db' -print0 | sort -z | tail -z -n 1 | tr -d '\0')"

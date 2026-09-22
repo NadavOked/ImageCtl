@@ -37,6 +37,7 @@ DATA_DIR="/var/lib/imagectl"
 IMAGES_DIR="/srv/imagectl/images"
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WITH_IMAGES=1
+SYS_ROOT="/"
 
 usage() {
     cat <<'EOF'
@@ -48,6 +49,7 @@ ImageCtl — גיבוי השרת: DB (עותק עקבי), תיקיית הנתו�
   --data-dir DIR       תיקיית הנתונים (ברירת מחדל /var/lib/imagectl)
   --images DIR         תיקיית האימג'ים (ברירת מחדל /srv/imagectl/images)
   --app-dir DIR        שורש הקוד (ברירת מחדל: התיקייה שמעל הסקריפט)
+  --system-root DIR    מאיפה לקרוא את קובצי המערכת (ברירת מחדל /; לבדיקות)
   --no-images          רק DB/נתונים/מערכת — לגיבוי השעתי; האימג'ים בלילי
   -h, --help           המסך הזה
 
@@ -61,6 +63,7 @@ while [[ $# -gt 0 ]]; do
         --data-dir) DATA_DIR="${2:-}"; shift 2 ;;
         --images) IMAGES_DIR="${2:-}"; shift 2 ;;
         --app-dir) APP_DIR="${2:-}"; shift 2 ;;
+        --system-root) SYS_ROOT="${2:-}"; shift 2 ;;
         --no-images) WITH_IMAGES=0; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "backup-server: ארגומנט לא מוכר: $1" >&2; usage >&2; exit 2 ;;
@@ -148,18 +151,26 @@ SYS_PATHS=(
     /etc/systemd/system/imagectl-proxy.service.d
     /etc/systemd/system/imagectl-dcui.service
     /etc/iscsi/initiatorname.iscsi
-    /etc/dnsmasq.d/imagectl*
-    /etc/network/interfaces.d/imagectl-*
+    '/etc/dnsmasq.d/imagectl*'                  # מצוטט: הגלוב מתרחב בלולאה, יחסית ל---system-root
+    '/etc/network/interfaces.d/imagectl-*'
 )
 copied=0
+# ‏--system-root: הבדיקות מצביעות על שורש מזויף ולא על /etc של המכונה
+# שמריצה אותן (ב-CI יש `/etc/iscsi/initiatorname.iscsi` שרק root קורא).
+# ‏cp שנכשל מפיל את הריצה: כ-root "לא קריא" הוא תקלה, לא משהו שמדלגים עליו.
+cd "$SYS_ROOT"
 for path in "${SYS_PATHS[@]}"; do          # glob שלא תאם נשאר מילולי — ולכן -e
-    [[ -e "$path" ]] || continue
-    cp -a --parents "$path" "$SYS/"
-    copied=$((copied + 1))
+    # shellcheck disable=SC2086  # ‏${path#/} יחסי לשורש; הגלוב מתרחב כאן בכוונה
+    for match in ${path#/}; do
+        [[ -e "$match" ]] || continue
+        cp -a --parents "$match" "$SYS/"
+        copied=$((copied + 1))
+    done
 done
+cd - >/dev/null
 # שורות ImageCtl ב-fstab: ‏grep 1 = אין שורות (תקין), ‏2 = הבדיקה נשברה.
 set +e
-grep -i imagectl /etc/fstab > "$SYS/fstab.imagectl"
+grep -i imagectl "$SYS_ROOT/etc/fstab" > "$SYS/fstab.imagectl"
 rc=$?
 set -e
 case "$rc" in

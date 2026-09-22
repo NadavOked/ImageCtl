@@ -481,3 +481,29 @@ def test_the_settle_window_is_bounded_and_not_a_bare_sleep(tmp_path):
     assert fields["rc"] == "1", out
     assert int(fields["elapsed"]) <= 10, "הבדיקה לא נגמרת בזמן סביר"
     assert "0 of 3 partitions came back" in log_of(run)
+
+
+# --- ‏#1171: "קטן מדי" אומר בכמה ---------------------------------------------
+
+
+def test_a_disk_too_small_says_by_how_much(tmp_path):
+    """‏256GB של יצרן אחד אינו 256GB של אחר: הפסילה נשארת (עיקרון 4), אבל
+    ההודעה אומרת את ההפרש בפועל — 1.7MB — ולא רק שני מספרים של 12 ספרות."""
+    box, run, prelude = build_box(tmp_path)
+    (box / "needs").write_text("256062259200\n")
+    (box / "disksize").write_text("256060514304\n")
+    out = sh(prelude + 'disk_fits sda m.json; echo "rc=$?"')
+    assert rc_of(out) == "rc=1", out
+    err = target_error(run)
+    assert err.startswith("disk too small by 2 MiB"), err
+    assert "1744896 bytes short" in err and "needs 256062259200" in err, err
+    assert state_of(run / "targets" / "sda") == "failed"
+
+
+def test_a_disk_that_fits_passes_disk_fits(tmp_path):
+    box, run, prelude = build_box(tmp_path)
+    (box / "needs").write_text("256060514304\n")
+    (box / "disksize").write_text("256060514304\n")
+    out = sh(prelude + 'disk_fits sda m.json; echo "rc=$?"')
+    assert rc_of(out) == "rc=0", out
+    assert target_error(run) == ""

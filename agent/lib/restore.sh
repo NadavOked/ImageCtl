@@ -92,9 +92,9 @@ disk_fits() {
             "cannot tell whether the image fits: needs=${_n:-unknown} disk=${_h:-unknown}"
         return 1
     fi
-    if [ "$_h" -lt "$_n" ]; then
-        target_set "$1" "failed" \
-            "disk too small: image needs $_n bytes, disk has $_h"
+    if [ "$_h" -lt "$_n" ]; then    # #1171: the gap itself in MiB, before the two 12-digit numbers
+        target_set "$1" "failed" "disk too small by $(( (_n - _h + 1048575) / 1048576 )) MiB\
+ (needs $_n bytes, has $_h; $((_n - _h)) bytes short)"
         return 1
     fi
 }

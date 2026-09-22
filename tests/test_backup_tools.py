@@ -108,6 +108,14 @@ def _seed_server(tmp_path: Path) -> tuple[Path, Path]:
     (data / "storage-test" / "probe").write_bytes(b"x")
     _image(images, "win-a", {"p1.img": b"a" * 4096})
     _image(images, ".capture-7", {"p1.img": b"half"})
+    # שורש מערכת מזויף (--system-root): הסקריפט לא קורא את /etc של המכונה
+    # שמריצה את הטסט — ב-CI יש שם קובץ iSCSI שרק root קורא.
+    root = tmp_path / "sysroot"
+    (root / "etc" / "dnsmasq.d").mkdir(parents=True)
+    (root / "etc" / "dnsmasq.d" / "imagectl-dhcp.conf").write_text("dhcp-range=...\n")
+    (root / "etc" / "dnsmasq.d" / "other.conf").write_text("not ours\n")
+    (root / "etc" / "nftables.conf").write_text("table inet imagectl {}\n")
+    (root / "etc" / "fstab").write_text("UUID=1 / ext4 defaults 0 1\n//nas/img /srv/imagectl/images cifs imagectl 0 0\n")
     return data, images
 
 
@@ -123,7 +131,7 @@ def test_backup_server_writes_a_consistent_db_data_dir_and_verified_images(tmp_p
     data, images = _seed_server(tmp_path)
     dest = tmp_path / "dest"
     r = _sh(BACKUP_SH, "--dest", str(dest), "--data-dir", str(data), "--images", str(images),
-            "--app-dir", str(REPO))
+            "--app-dir", str(REPO), "--system-root", str(tmp_path / "sysroot"))
     assert r.returncode == 0, r.stdout + r.stderr
     dbs = sorted((dest / "db").glob("imagectl-*.db"))
     assert len(dbs) == 1
@@ -136,6 +144,13 @@ def test_backup_server_writes_a_consistent_db_data_dir_and_verified_images(tmp_p
     assert not (dest / "data" / "storage-test").exists()
     assert (dest / "images" / "win-a" / "manifest.json").exists()
     assert not (dest / "images" / ".capture-7").exists()
+    sysdirs = list((dest / "system").iterdir())
+    assert len(sysdirs) == 1
+    sysd = sysdirs[0]
+    assert (sysd / "etc" / "dnsmasq.d" / "imagectl-dhcp.conf").exists()
+    assert not (sysd / "etc" / "dnsmasq.d" / "other.conf").exists()     # לא שלנו
+    assert (sysd / "etc" / "nftables.conf").exists()
+    assert (sysd / "fstab.imagectl").read_text() == "//nas/img /srv/imagectl/images cifs imagectl 0 0\n"
     sums = list(dest.glob("SHA256SUMS-*"))
     assert len(sums) == 1 and dbs[0].name in sums[0].read_text(encoding="utf-8")
     assert oct(dbs[0].stat().st_mode & 0o777) == "0o600"        # umask 077 — סודות
@@ -147,7 +162,7 @@ def test_backup_server_fails_when_a_backed_up_image_is_corrupt(tmp_path: Path):
     data, images = _seed_server(tmp_path)
     (images / "win-a" / "p1.img").write_bytes(b"corrupt")
     r = _sh(BACKUP_SH, "--dest", str(tmp_path / "dest"), "--data-dir", str(data),
-            "--images", str(images), "--app-dir", str(REPO))
+            "--images", str(images), "--app-dir", str(REPO), "--system-root", str(tmp_path / "sysroot"))
     assert r.returncode != 0
     assert "BAD SHA256" in r.stderr
 
@@ -157,7 +172,7 @@ def test_restore_drill_brings_up_a_server_on_the_copy(tmp_path: Path):
     data, images = _seed_server(tmp_path)
     port = 18480 + (os.getpid() % 200) * 3
     r = _sh(DRILL_SH, "--data-dir", str(data), "--images", str(images), "--app-dir", str(REPO),
-            "--port", str(port), "--wait", "90", timeout=300)
+            "--system-root", str(tmp_path / "sysroot"), "--port", str(port), "--wait", "90", timeout=300)
     assert r.returncode == 0, r.stdout + r.stderr
     assert "PASS" in r.stdout and '"ok":true' in r.stdout
     assert "1 = 1" in r.stdout                               # מספר האימג'ים שווה
