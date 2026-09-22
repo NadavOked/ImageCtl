@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
 #
-# ImageCtl — בניית ISO ההתקנה (#1139): דביאן 13 netinst רשמי + preseed +
-# ‏pool/ מקומי + הקוד + firstboot, כ-ISO hybrid (BIOS + UEFI/Secure Boot).
+# ImageCtl — בניית ISO ההתקנה (#1139, #1190): ציוד האתחול החתום של דביאן 13
+# netinst + ‏pool/ מקומי + הקוד + **המתקין החי שלנו** (קרנל + initramfs עם
+# הגואי והמנוע), כ-ISO hybrid (BIOS + UEFI/Secure Boot).
 #
-#   sudo tools/iso/build-iso.sh --out /root/ic-iso-tmp \
+#   sudo tools/iso/build-iso.sh --out /root/ic-iso-tmp --live-initrd live.img \
 #        [--netinst debian-13.7.0-amd64-netinst.iso] [--pool /root/ic-iso-tmp/repo] \
 #        [--ref v0.48.0] [--root-password '...' | IMAGECTL_ROOT_PASSWORD=...]
+#
+# ‏#1190 (הכרעת נדב 21/09): ה-ISO **אינו** מריץ את מתקין דביאן. הוא עולה
+# ישר ל-initramfs שלנו (`build_initramfs.sh --installer --with-gui`) עם
+# ‏`imagectl.mode=installer`; הגואי שואל דיסק/תפקיד/רשת/שם/admin על מסך
+# השרת, המנוע (installer/) מתקין מה-pool שעל ה-ISO, ואחרי הריסטרט
+# ‏firstboot משלים מהתשובות בלי אשף. הקרנל ל-/live הוא זה שמודולי
+# ה-initramfs נבנו מולו — build-iso מאמת את ההתאמה ועוצר בלעדיה.
 #
 # רץ על דביאן 13 (שרת המעבדה). מה שהוא **אינו** עושה: לא מאתחל שום
 # מכונה. הבדיקה שה-ISO עולה היא test-iso.sh (QEMU/OVMF) או VM אמיתי.
@@ -42,6 +50,9 @@ REF="HEAD"
 PUBLIC_URL="${IMAGECTL_PUBLIC_URL:-https://github.com/NadavOked/ImageCtl.git}"
 SOURCE=""
 ROOT_PASSWORD="${IMAGECTL_ROOT_PASSWORD:-}"
+LIVE_INITRD=""
+VOLID="IMAGECTL_INSTALL"
+DEBUG_SSH=0
 CDIMAGE_URL="https://cdimage.debian.org/debian-cd/current/amd64/iso-cd"
 
 usage() {
@@ -59,6 +70,10 @@ ImageCtl — בניית ISO ההתקנה.
                        עוצרים את הבנייה גם אז
   --public-url URL     הריפו הציבורי לשיבוט (ברירת מחדל NadavOked/ImageCtl)
   --root-password PW   סיסמת root הראשונית (מוחלפת בכניסה הראשונה); או IMAGECTL_ROOT_PASSWORD
+  --live-initrd FILE   ה-initramfs של המתקין החי (build_initramfs.sh --installer --with-gui);
+                       הקרנל ל-/live נלקח מ-linux-image של ה-pool ומושווה למודולים שבו
+  --debug-ssh          **מעבדה בלבד**: imagectl.debug=1 בשורת הקרנל — dropbear במתקין החי
+                       עם המפתח שנארז ב-initramfs (--ssh-key). שם ה-ISO מקבל -debug
 EOF
 }
 
@@ -71,6 +86,8 @@ while [[ $# -gt 0 ]]; do
         --source)        SOURCE="${2:?}"; shift 2 ;;
         --public-url)    PUBLIC_URL="${2:?}"; shift 2 ;;
         --root-password) ROOT_PASSWORD="${2:?}"; shift 2 ;;
+        --live-initrd)   LIVE_INITRD="${2:?}"; shift 2 ;;
+        --debug-ssh)     DEBUG_SSH=1; shift ;;
         -h|--help)       usage; exit 0 ;;
         *) printf 'unknown option: %s  (try --help)\n' "$1" >&2; exit 2 ;;
     esac
@@ -81,10 +98,13 @@ say() { printf 'build-iso: %s\n' "$*"; }
 
 [[ -n "$OUT" ]] || { usage >&2; exit 2; }
 [[ -n "$ROOT_PASSWORD" ]] || die "חסרה סיסמת root: --root-password או IMAGECTL_ROOT_PASSWORD (הגיבוב אינו נשמר ב-git)"
-for tool in xorriso dpkg-scanpackages git python3 sha256sum openssl gzip tar; do
+for tool in xorriso dpkg-scanpackages dpkg-deb git python3 sha256sum openssl gzip tar cpio zstd; do
     command -v "$tool" >/dev/null || die "חסר $tool"
 done
-[[ -f "$SCRIPT_DIR/preseed.cfg" && -f "$SCRIPT_DIR/packages.txt" ]] || die "אין preseed.cfg/packages.txt ליד הסקריפט"
+[[ -f "$SCRIPT_DIR/packages.txt" ]] || die "אין packages.txt ליד הסקריפט"
+[[ -n "$LIVE_INITRD" ]] || die "חסר --live-initrd (‏build_initramfs.sh --installer --with-gui) — ה-ISO עולה למתקין החי, לא למתקין דביאן"
+[[ -s "$LIVE_INITRD" ]] || die "‏--live-initrd אינו קובץ: $LIVE_INITRD"
+LIVE_INITRD=$(readlink -f "$LIVE_INITRD")
 
 install -d "$OUT"
 OUT=$(cd "$OUT" && pwd)
@@ -151,6 +171,28 @@ done
 # --- מיזוג ה-pool ואינדוקס מחדש ------------------------------------------------
 say "ממזג את ה-pool ($(find "$POOL/pool" -name '*.deb' | wc -l) קבצים)"
 cp -a "$POOL/pool/." "$ISO_TREE/pool/"
+
+# packages.txt is the installer's offline contract.  Index the merged pool by
+# the Package control field once: filenames are not evidence because versions,
+# epochs and Debian filename escaping can all change them.
+mapfile -t PKGS < <(sed 's/#.*//' "$SCRIPT_DIR/packages.txt" | tr -s ' \t' '\n' | grep -v '^$' | LC_ALL=C sort -u)
+(( ${#PKGS[@]} )) || die "packages.txt ריק"
+POOL_PACKAGES=$(mktemp "$WORK/pool-packages.XXXXXX")
+while IFS= read -r -d '' deb; do
+    dpkg-deb -f "$deb" Package >> "$POOL_PACKAGES" \
+        || die "לא ניתן לקרוא Package מתוך $deb"
+done < <(find "$ISO_TREE/pool" -type f -name '*.deb' -print0)
+LC_ALL=C sort -u -o "$POOL_PACKAGES" "$POOL_PACKAGES"
+missing=()
+for p in "${PKGS[@]}"; do
+    grep -Fxq "$p" "$POOL_PACKAGES" || missing+=("$p")
+done
+rm -f "$POOL_PACKAGES"
+if (( ${#missing[@]} )); then
+    die "חבילות מ-packages.txt חסרות מה-pool הממוזג: ${missing[*]}"
+fi
+say "pool: כל ${#PKGS[@]} החבילות מ-packages.txt קיימות לפי שדה Package"
+
 bash "$SCRIPT_DIR/make-pool.sh" --index-only "$ISO_TREE" || die "אינדוקס dists/ נכשל"
 for comp in main contrib; do
     [[ -s "$ISO_TREE/dists/trixie/$comp/binary-amd64/Packages.gz" ]] || die "אין Packages.gz ל-$comp אחרי האינדוקס"
@@ -192,41 +234,51 @@ if ((${#leaked[@]} > 0)); then
 fi
 say "imagectl-src: אין נתיבים פרטיים ($(find "$ISO_TREE/imagectl-src" -type f | wc -l) קבצים)"
 
-# --- preseed + firstboot --------------------------------------------------------
-mapfile -t PKGS < <(sed 's/#.*//' "$SCRIPT_DIR/packages.txt" | tr -s ' \t' '\n' | grep -v '^$' | LC_ALL=C sort -u)
-(( ${#PKGS[@]} )) || die "packages.txt ריק"
+# --- המטען החי: קרנל + initramfs + הקבצים ש-firstboot והמנוע קוראים ----------------
 HASH=$(openssl passwd -6 "$ROOT_PASSWORD")
-python3 - "$SCRIPT_DIR/preseed.cfg" "$ISO_TREE/preseed.cfg" "${PKGS[*]}" "$HASH" <<'PY'
-import re, sys
-src, dst, pkgs, pwhash = sys.argv[1:5]
-text = open(src, encoding="utf-8").read()
-text = text.replace("@PKGSEL_INCLUDE@", pkgs).replace("@ROOT_PASSWORD_HASH@", pwhash)
-left = re.findall(r"@[A-Z_]+@", text)
-if left:
-    sys.exit(f"placeholders left in preseed: {left}")
-open(dst, "w", encoding="utf-8", newline="\n").write(text)
-PY
-install -d "$ISO_TREE/imagectl"
+install -d "$ISO_TREE/imagectl" "$ISO_TREE/live"
 install -m 0755 "$SCRIPT_DIR/firstboot.sh" "$ISO_TREE/imagectl/firstboot.sh"
-install -m 0755 "$SCRIPT_DIR/late-command.sh" "$ISO_TREE/imagectl/late-command.sh"
 install -m 0644 "$SCRIPT_DIR/imagectl-firstboot.service" "$ISO_TREE/imagectl/imagectl-firstboot.service"
+# הגיבוב לבדו, בקובץ משלו: המנוע (installer/lib/finish.sh) קורא אותו ומזין
+# ל-chpasswd -e ביעד. אין preseed שיישא אותו יותר.
+printf '%s\n' "$HASH" > "$ISO_TREE/imagectl/root-password.hash"
+grep -q '^\$6\$' "$ISO_TREE/imagectl/root-password.hash" || die "גיבוב ה-root לא נכתב"
 
-# --- תפריטי האתחול: ערך ImageCtl (ומשני) ב-BIOS וב-UEFI ---------------------------
-# הפרמטרים לפני `---` הם של d-i ואינם עוברים לקרנל המותקן (R60: התפקיד
-# נלכד ב-late-command.sh מ-/proc/cmdline של המתקין). ‏#1189: אין תפריט —
-# ה-ISO עולה ישר להתקנה; מחיקת הדיסק מאושרת **בתוך** המתקין (preseed).
-DI_ARGS="auto=true priority=critical preseed/file=/cdrom/preseed.cfg locale=en_US keymap=us"
+# הקרנל: מה-linux-image שב-pool (זה שהמותקן יקבל), והמודולים ב-initramfs
+# חייבים להיות שלו — מודול של קרנל אחר לא נטען, וזה נראה כמו "אין דיסקים".
+kdeb=$(find "$ISO_TREE/pool" -name 'linux-image-6*-amd64_*.deb' | LC_ALL=C sort | tail -n1)
+[[ -n "$kdeb" ]] || die "אין linux-image-6.*-amd64 ב-pool — packages.txt מבקש linux-image-amd64?"
+KTMP="$WORK/kernel"; rm -rf "$KTMP"; install -d "$KTMP"
+dpkg-deb -x "$kdeb" "$KTMP" || die "dpkg-deb -x $kdeb נכשל"
+kvmlinuz=$(find "$KTMP/boot" -name 'vmlinuz-*' | head -n1)
+[[ -s "$kvmlinuz" ]] || die "ב-$kdeb אין boot/vmlinuz-*"
+KVER=${kvmlinuz##*/vmlinuz-}
+ikver=$( (zstd -dc "$LIVE_INITRD" 2>/dev/null || gzip -dc "$LIVE_INITRD" 2>/dev/null || cat "$LIVE_INITRD") \
+    | cpio -t 2>/dev/null | grep -m1 -o '^lib/modules/[^/]*' | cut -d/ -f3 || true)
+[[ -n "$ikver" ]] || die "ב-$LIVE_INITRD אין lib/modules/<kver> — זה לא initramfs של build_initramfs.sh?"
+[[ "$ikver" == "$KVER" ]] || die "אי-התאמה: המודולים ב-initramfs הם של $ikver והקרנל ב-pool הוא $KVER — בנה את ה-initramfs מול linux-image-amd64 של ה-pool"
+install -m 0644 "$kvmlinuz" "$ISO_TREE/live/vmlinuz"
+install -m 0644 "$LIVE_INITRD" "$ISO_TREE/live/initrd.img"
+say "live: vmlinuz-$KVER + initrd.img ($(du -h "$LIVE_INITRD" | cut -f1)) — מודולים תואמים"
+# מתקין דביאן יורד מהעץ: לא מוצע בתפריט, ולא תופס 100MB.
+rm -rf "$ISO_TREE/install.amd" "$ISO_TREE/preseed.cfg"
+
+# --- תפריטי האתחול: ערך ImageCtl אחד ב-BIOS וב-UEFI ---------------------------------
+# ‏#1190: שורת הקרנל נושאת רק imagectl.mode=installer (עיקרון 2 — כמו
+# ב-PXE, בלי פרטי משימה); אין תפריט — ה-ISO עולה ישר למתקין החי, ומחיקת
+# הדיסק מאושרת בגואי. ‏DI_ARGS הוא השם ההיסטורי של הפרמטרים בתבניות.
+DI_ARGS="imagectl.mode=installer"
+if (( DEBUG_SSH )); then DI_ARGS="$DI_ARGS imagectl.debug=1"; say "אזהרה: --debug-ssh — ISO של מעבדה עם dropbear במתקין; לא למכללה"; fi
 [[ -f "$SCRIPT_DIR/imagectl.cfg.in" ]] || die "חסרה תבנית imagectl.cfg.in"
 [[ -f "$SCRIPT_DIR/isolinux-menu.cfg.in" ]] || die "חסרה תבנית isolinux-menu.cfg.in"
 [[ -f "$ISO_TREE/isolinux/menu.cfg" ]] || die "חסר isolinux/menu.cfg ב-netinst"
 sed "s|@DI_ARGS@|$DI_ARGS|g" "$SCRIPT_DIR/imagectl.cfg.in" > "$ISO_TREE/isolinux/imagectl.cfg"
-grep -q '^label imagectl-secondary$' "$ISO_TREE/isolinux/imagectl.cfg" || die "יצירת isolinux/imagectl.cfg נכשלה"
+grep -q '^label imagectl$' "$ISO_TREE/isolinux/imagectl.cfg" || die "יצירת isolinux/imagectl.cfg נכשלה"
 if grep -q '@DI_ARGS@' "$ISO_TREE/isolinux/imagectl.cfg"; then die "הפרמטרים לא הוזרקו ל-isolinux/imagectl.cfg"; fi
 n_isolinux=$(grep -c '^label ' "$ISO_TREE/isolinux/imagectl.cfg" || true)
-[[ "$n_isolinux" -eq 2 ]] || die "isolinux/imagectl.cfg אינו מכיל בדיוק שני ערכים (נמצאו $n_isolinux)"
+[[ "$n_isolinux" -eq 1 ]] || die "isolinux/imagectl.cfg אינו מכיל בדיוק ערך אחד (נמצאו $n_isolinux)"
 install -m 0644 "$SCRIPT_DIR/isolinux-menu.cfg.in" "$ISO_TREE/isolinux/menu.cfg"
-[[ "$(cat "$ISO_TREE/isolinux/menu.cfg")" == $'include stdmenu.cfg\ninclude imagectl.cfg
-timeout 1' ]] || die "isolinux/menu.cfg מכיל ערכים שאינם של ImageCtl"
+[[ "$(cat "$ISO_TREE/isolinux/menu.cfg")" == $'include stdmenu.cfg\ninclude imagectl.cfg\ntimeout 1' ]] || die "isolinux/menu.cfg מכיל ערכים שאינם של ImageCtl"
 n_default=$(grep -cE '^[[:space:]]+menu default$' "$ISO_TREE/isolinux/imagectl.cfg" || true)
 [[ "$n_default" -eq 1 ]] || die "לא בדיוק menu default אחד בתפריט הראשי (נמצאו $n_default)"
 
@@ -242,16 +294,17 @@ if "@" in text:
 open(dst, "w", encoding="utf-8", newline="\n").write(text)
 PY
 n_grub=$(grep -c '^menuentry ' "$ISO_TREE/boot/grub/grub.cfg" || true)
-[[ "$n_grub" -eq 2 ]] || die "boot/grub/grub.cfg אינו מכיל בדיוק שני ערכים (נמצאו $n_grub)"
-grep -q '^set timeout=0$' "$ISO_TREE/boot/grub/grub.cfg" || die "GRUB אינו עולה ישר להתקנה (#1189)"
+grep -q '^set timeout=0$' "$ISO_TREE/boot/grub/grub.cfg" || die "GRUB אינו עולה ישר למתקין (#1190)"
 grep -q "ImageCtl $TAG installer" "$ISO_TREE/boot/grub/grub.cfg" || die "כותרת ImageCtl חסרה מ-GRUB"
+grep -q '^ *linux */live/vmlinuz imagectl.mode=installer' "$ISO_TREE/boot/grub/grub.cfg" || die "GRUB אינו מעלה את /live/vmlinuz במצב installer"
+if grep -q 'install.amd\|preseed' "$ISO_TREE/boot/grub/grub.cfg" "$ISO_TREE/isolinux/imagectl.cfg"; then die "שרידי מתקין דביאן בתפריטים"; fi
 if grep -qE 'Graphical install|Advanced options|Accessible dark contrast' "$ISO_TREE/boot/grub/grub.cfg"; then
     die "ערכי Debian נשארו ב-boot/grub/grub.cfg"
 fi
 
 # --- המניפסט (R61) --------------------------------------------------------------
 say "כותב imagectl-iso.json"
-python3 - "$ISO_TREE" "$OUT/imagectl-iso.json" "$TAG" "$COMMIT" "$EPOCH" "$(basename "$NETINST")" "$NETINST_SHA" "${PKGS[*]}" <<'PY'
+KVER="$KVER" SOURCE_GIT="$([[ -z "$SOURCE" ]] && echo true || echo false)" python3 - "$ISO_TREE" "$OUT/imagectl-iso.json" "$TAG" "$COMMIT" "$EPOCH" "$(basename "$NETINST")" "$NETINST_SHA" "${PKGS[*]}" <<'PY'
 import hashlib, json, os, subprocess, sys
 tree, out, tag, commit, epoch, netinst, netinst_sha, pkgs = sys.argv[1:9]
 debs = []
@@ -272,6 +325,10 @@ manifest = {
     "netinst": netinst, "netinst_sha256": netinst_sha,
     "xorriso": subprocess.run(["xorriso", "-version"], capture_output=True, text=True).stdout.splitlines()[0],
     "requested_packages": pkgs.split(),
+    "live_kernel": os.environ.get("KVER", ""),
+    # false only for a --source (lab) build: the engine then tolerates the missing .git
+    "source_git": os.environ.get("SOURCE_GIT", "true") == "true",
+    "live_initrd_sha256": hashlib.sha256(open(os.path.join(tree, "live", "initrd.img"), "rb").read()).hexdigest(),
     "pool_debs": debs,
 }
 s = json.dumps(manifest, indent=1, ensure_ascii=False, sort_keys=True) + "\n"
@@ -284,16 +341,20 @@ PY
 find "$ISO_TREE" -exec touch -h -d "@$EPOCH" {} +
 
 # --- ה-ISO עצמו --------------------------------------------------------------
-ISO="$OUT/imagectl-$TAG-amd64.iso"
+ISO_SUFFIX=""
+if (( DEBUG_SSH )); then ISO_SUFFIX="-debug"; fi
+ISO="$OUT/imagectl-$TAG-amd64$ISO_SUFFIX.iso"
 rm -f "$ISO"
 say "בונה $ISO (replay של ציוד האתחול מה-netinst)"
 xorriso -indev "$NETINST" -outdev "$ISO" \
     -boot_image any replay \
+    -volid "$VOLID" \
     -volume_date all_file_dates "=$EPOCH" \
     -update_r "$ISO_TREE" / -- \
     >"$WORK/xorriso-build.log" 2>&1 \
     || { tail -n 30 "$WORK/xorriso-build.log" >&2; die "xorriso נכשל"; }
 [[ -s "$ISO" ]] || die "ה-ISO לא נכתב"
+xorriso -indev "$ISO" -pvd_info 2>/dev/null | grep -q "Volume Id *: *$VOLID" || die "תווית הכרך אינה $VOLID — init לא ימצא את המדיה"
 
 # --- הראיה: שני קטעי El Torito (BIOS 0x00 + UEFI 0xEF) נשמרו --------------------
 REPORT="$ISO.el_torito.txt"

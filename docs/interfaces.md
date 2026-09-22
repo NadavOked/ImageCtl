@@ -37,6 +37,7 @@
       "index": 1,
       "type_guid": "C12A7328-F81F-11D2-BA4B-00A0C93EC93B",
       "unique_guid": "6C2E9F71-1A3B-4F0A-9C1D-2E7B85A0C3D4",
+      "attrs": "0000000000000000",
       "role": "esp",
       "fs": "vfat",
       "start_sector": 2048,
@@ -119,6 +120,9 @@
     נכנס לספרייה מלכתחילה, במקום להידלג עליו בשקט ולהגיע ל-`done`.
     **לינוקס פטור** — הוא אינו קשור ל-`disk_guid`, ולכן נקלט בלעדיו
     כרגיל. ההבחנה היא לפי `os`: ‏Windows דורש, לינוקס לא.
+- **`attrs`** — 16 ספרות ההקסה של דגלי רשומת ה-GPT מהמקור. הן נכתבות
+  מחדש בכל יצירת מחיצה ובהזזת הזנב; שדה חסר במניפסט ישן משאיר את ברירת
+  המחדל של `sgdisk`. כך מחיצת Windows Recovery נשארת מוסתרת ואינה מקבלת אות כונן.
 - שדה לא ידוע — **מתעלמים ממנו**, לא נכשלים. `schema` עולה רק בשינוי שובר.
 
 ### הספרייה על הדיסק
@@ -1708,9 +1712,11 @@ resolv_after, problems, changed}` — הקובץ שייכתב, לפני ואחר
 `key=value` ושורה חדשה אחרי כל רשומה. למסך ההמתנה נוספו שני מפתחות:
 
 - **`hello_age=<seconds>`** — מספר השניות מאז ה-hello האחרון שהסתיים. חסר
-  פירושו "לא נמסרה מדידה", לא אפס.
+  פירושו "לא נמסרה מדידה", לא אפס. הסוכן כותב `hello_age=` ריק לפני
+  שניסיון hello ראשון הסתיים.
 - **`hello_rc=<HTTP status>`** — קוד ה-HTTP שנקרא בתשובת אותו hello. החיווי
-  אומר במפורש "השרת ענה 200" רק כשהערך הוא `200`; חסר אינו הצלחה.
+  אומר במפורש "השרת ענה 200" רק כשהערך הוא `200`; `hello_rc=` ריק פירושו
+  שטרם התקבלה תשובת HTTP (גם אם ניסיון תעבורה כבר נכשל), ואינו קוד `0`.
 
 שורה שאינה מסתיימת ב-`\n` (לרבות שורה ארוכה מחוצץ הקורא) נדחית בשלמותה,
 כדי שחצי תו UTF-8 והמשך השורה לא יפורשו כשתי רשומות. חריגה ממספר הדיסקים או
@@ -3654,6 +3660,8 @@ SPKI+thumbprint של תעודת-הלקוח — ‏`TlsPeer` אינו נושא כ
 `imagectl-wizard` הוא שרת HTTPS זמני על `0.0.0.0:8081`. אין לו session
 או משתמשים: הוא קיים רק לפני השלמת ההתקנה, והגישה אליו היא מרשת הניהול
 המקומית. כל התשובות הן JSON ב-UTF-8 עם `Cache-Control: no-store`.
+`imagectl-wizard.service` מותנה בהיעדר `.firstboot-done`; הרצה חוזרת מה-DCUI
+משתמשת ביחידה הנפרדת `imagectl-wizard-rerun.service`, שמעבירה `--rerun` במפורש.
 
 ### `GET /api/wizard/state`
 
@@ -3747,3 +3755,82 @@ HTTP ולכן אימות ואיפוס `admin` עובדים גם כש-`imagectl-s
 `dcui_net_confirm_refused`,
 ובמסלול הרשת המשותף גם `net_config`, ‏`net_config_unverified`,
 `net_config_refused`, ‏`net_rollback_armed` ו-`net_confirmed`.
+
+## 32. מתקין ה-live — חוזי מנוע/GUI (#1190)
+
+ה-ISO מריץ `imagectl-install <answers-file> [--dry-run] [--state FILE]`.
+המנוע מסיים ב-0 אחרי `state=done` ואינו מאתחל; רק הגשר של ה-GUI רשאי
+לבצע `reboot -f` אחרי שהמפעיל ביקש זאת. `--dry-run` מבצע את אותו preflight
+ומדפיס את הפקודות במקום להריץ אותן. `imagectl-install --inventory` אינו
+מקבל קובץ תשובות ואינו כותב דיסק.
+
+### קובץ התשובות
+
+UTF-8, שורת `key=value` אחת לכל מפתח, בלי quoting ובלי מפתחות נוספים:
+
+```text
+disk=/dev/sda
+role=standalone
+primary_url=
+servers_if=ens33
+servers_mac=00:50:56:01:02:01
+servers_mode=dhcp
+servers_addr=
+servers_mask=
+servers_gw=
+servers_dns=
+hostname=imagectl-ta
+admin_user=admin
+admin_pass=...
+```
+
+כל 13 המפתחות חובה ומופיעים פעם אחת. `disk` הוא נתיב `/dev/` של כונן
+שלם שמופיע ברשימת `agent/lib/sysinfo.sh::list_disks`; כונן שמכיל את
+`/cdrom` (או דווח על ידי iso-scan) נדחה. `role` הוא `standalone` או
+`secondary`; בראשון `primary_url` ריק ובשני הוא `https://HOST:8443`.
+`hostname` הוא label יחיד לפי RFC 1123, עד 63 תווים. `servers_if` חייב
+להתקיים בזמן ההתקנה, וה-MAC הקנוני ב-`servers_mac` חייב להיות ה-MAC שלו.
+ב-`dhcp` ארבעת שדות ה-static ריקים; ב-`static` כולם כתובות IPv4 תקינות,
+ו-`servers_dns` הוא רשימת IPv4 מופרדת בפסיקים. `admin_user` (נדב 21/09: שם המנהל
+לבחירה, `admin` הוא רק ברירת המחדל) — אותיות קטנות/ספרות/`._-`, עד 32 תווים.
+כל חריגה נכשלת בשם ובקוד יציאה 2 לפני פקודת כתיבה כלשהי.
+
+במערכת המותקנת נכתב `/etc/imagectl/answers` במצב 0600 עם כל המפתחות
+מלבד `admin_pass`. הסיסמה בלבד נכתבת כ-`admin_pass=...` אל
+`/etc/imagectl/answers.secret`, גם הוא root:root במצב 0600. firstboot
+קורא את שניהם ומוחק בבטחה את קובץ הסוד אחרי השימוש (חלק 3 של #1190).
+`installer-nic` ו-`installer-role` ממשיכים להיכתב בפורמט הקיים, כדי
+שהקוראים הקיימים אינם מקבלים ממשק שני.
+
+### מלאי דיסקים
+
+שורה אחת לכל כונן שלם, באותו סדר של `list_disks`; התו `|` אינו מורשה
+בתוכן שדה ומוחלף ברווח:
+
+```text
+disk=/dev/sda|model=VMware Virtual disk|size=64424509440|bus=sata|removable=0|has=gpt:2 partitions (ext4, vfat)|iso=0
+```
+
+`size` הוא בתים ו-`removable`/`iso` הם `0|1`. `iso=1` הוא הכונן שממנו
+מגיע `/cdrom`, ואינו יעד חוקי. `has` הוא `empty`, ‏`filesystem TYPE`,
+`SCHEME:N partitions (TYPE, ...)`, או `SCHEME:0 partitions`; חתימת מחיצה
+לא מזוהה נקראת `unknown`, לא `empty`. כשל של sysfs או `blkid` מפיל את
+המלאי בשם ואינו הופך דיסק מלא ל-`empty`.
+
+### קובץ מצב
+
+כל snapshot נכתב ל-`<state>.next` ומוחלף ב-`mv` אטומי. הרשומות הן
+`key=value`, ASCII, וכל snapshot מכיל:
+
+```text
+state=partitioning|bootstrap|packages|bootloader|finishing|done|failed
+pct=0..100
+title=English ASCII text
+log=last available log line
+error=named-code: message
+```
+
+`log` מושמט כשאין שורה ו-`error` מופיע רק ב-`failed`. כל snapshot משוקף
+גם ל-stderr לטובת tty1 ללא GUI. הכשלים ששייכים לשלב נקראים במפורש
+(למשל `bootstrap-failed`, ‏`grub-uefi`, ‏`unmount-failed`); אין מצב שבו
+פקודה שנכשלה מתורגמת ל-`done`.

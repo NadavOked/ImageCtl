@@ -195,6 +195,25 @@ def test_a_stream_that_never_starts_uses_the_start_ceiling(tmp_path):
     assert "0 בייטים" in log_of(box)
 
 
+def test_stream_timeout_releases_a_fifo_reader_left_by_the_pipeline_wrapper(tmp_path):
+    """#1130 negative control: killing the wrapper alone left sha/zstd children alive."""
+    box = tmp_path / "box"; box.mkdir(parents=True)
+    counter = box / "bytes.raw"; counter.write_text("")
+    fifo = box / "hash.fifo"
+    out = run_sh(
+        waits_prelude(box, WAIT_POLL_S=1)
+        + f'mkfifo {posix(fifo)!r}; '
+        + f'( cat < {posix(fifo)!r}; echo released > {posix(box / "released")!r} ) & reader=$!; '
+        + 'sleep 120 & wrapper=$!; '
+        + f'wait_progress "$wrapper" {posix(counter)!r} 2 60 "stalled" {posix(fifo)!r}; rc=$?; '
+        + 'wait_pid "$reader" 5 "fifo-reader"; reader_rc=$?; '
+        + f'[ -f {posix(box / "released")!r} ] && released=yes || released=no; '
+        + 'echo "rc=$rc reader_rc=$reader_rc released=$released"'
+    )
+    assert "rc=1" in out
+    assert "reader_rc=0" in out and "released=yes" in out
+
+
 # --- המסלולים האמיתיים -------------------------------------------------------
 
 STUBS = {

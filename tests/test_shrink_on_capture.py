@@ -260,6 +260,7 @@ def test_the_manifest_describes_the_compacted_layout(tmp_path):
     assert rec["start_sector"] == REC_START - delta_sectors
     assert rec["source_start_sector"] == REC_START
     assert rec["size_bytes"] == REC_SECTORS * 512
+    assert rec["attrs"] == "8000000000000001"
     assert "shrunk_from_bytes" not in rec
     assert rec["start_sector"] % 2048 == 0, "הזנב חייב להישאר מיושר ל-2048"
 

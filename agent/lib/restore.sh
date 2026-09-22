@@ -20,8 +20,8 @@ UDPCAST_STALL_TIMEOUT="${UDPCAST_STALL_TIMEOUT:-${WAIT_STREAM_STALL_S:-300}}"
 
 manifest_plan() {
     # $1 = manifest file. One line per partition:
-    # index|type_guid|role|fs|start_sector|size_bytes|file|sha256|expandable|unique_guid|uuid
-    # ‏unique_guid ו-uuid אחרונים בכוונה — מניפסט ישן בלעדיהם עדיין נקרא.
+    # index|type_guid|role|fs|start_sector|size_bytes|file|sha256|expandable|unique_guid|uuid|attrs
+    # השדות האופציונליים בסוף בכוונה — מניפסט ישן בלעדיהם עדיין נקרא.
     # ל-read חייב להיות משתנה לכל שדה: האחרון בולע את הזנב עם הקווים.
     #
     # ‏jq פולט שורות תוך כדי ואז נופל על האלמנט הראשון שאינו ניתן
@@ -32,7 +32,7 @@ manifest_plan() {
     # מצהיר עליו — ורק אז היא נקראת. גם tmpfs שנגמר נתפס כאן.
     _pf="$RUN_DIR/plan.txt"
     jq -r '.partitions[] | [.index, .type_guid, .role, .fs, .start_sector, .size_bytes,
-        .file, .sha256, .expandable, (.unique_guid // ""), (.uuid // "")] | join("|")' \
+        .file, .sha256, .expandable, (.unique_guid // ""), (.uuid // ""), (.attrs // "")] | join("|")' \
         "$1" > "$_pf" 2>> "$LOG_FILE" || { log "plan: jq failed on $1" >&2; return 1; }
     _pw=$(jq -r '.partitions | length' "$1" 2>> "$LOG_FILE")
     case "$_pw" in ''|*[!0-9]*) log "plan: no partition count in $1" >&2; return 1 ;; esac
@@ -208,7 +208,7 @@ restore_partition() {
 
     if wait_progress "$_pipepid" "$_tdir/bytes.raw" \
             "$STREAM_START_CEILING" "$WAIT_STREAM_STALL_S" \
-            "מחיצה $5 ($7) על $4"; then
+            "מחיצה $5 ($7) על $4" "$_tdir/shafifo"; then
         _rc=$(cat "$_tdir/pipe.rc" 2>/dev/null || echo 1)
     else
         _rc="$WAIT_TIMED_OUT"
@@ -241,8 +241,7 @@ run_restore() {
     echo "writing" > "$RUN_DIR/state"
     target_set "$2" "writing"
 
-    # דיסק קטן מדי נתפס כאן, בשמו — לא כ"כשל טבלת מחיצות" עמום אחרי
-    # שכבר נגענו בדיסק (מעבדה, #12: שחזור 40GB אל כונן 20GB).
+    # A too-small disk is rejected by name before its table is touched (#12).
     if ! disk_fits "$2" "$5"; then
         echo "failed" > "$RUN_DIR/state"
         return 1
@@ -267,9 +266,7 @@ run_restore() {
         return 1
     fi
 
-    # התוכנית מחומרנת פעם אחת ונקראת מקובץ, ולא מצינור: בצינור הלולאה רצה
-    # בתת-מעטפת, והמונה שמכריע בסוף היה נמחק איתה. ‏fd 3 ולא stdin, כדי
-    # שאף כלי בתוך הלולאה לא יבלע את התוכנית עצמה.
+    # Materialize once; fd 3 keeps tools in the loop from consuming the plan.
     _plan="$RUN_DIR/restore.plan"
     if ! manifest_plan "$5" > "$_plan"; then
         fail_written_target "$2" "could not read the partition plan from the manifest"
@@ -277,17 +274,20 @@ run_restore() {
         return 1
     fi
     _expected=$(awk 'END { print NR }' "$_plan")
+    _expected_rc=$?
+    case "$_expected" in ''|*[!0-9]*) _expected_rc=1 ;; esac
+    if [ "$_expected_rc" -ne 0 ]; then
+        fail_written_target "$2" "could not count partitions in the restore plan"
+        echo "failed" > "$RUN_DIR/state"; return 1
+    fi
     _written=0; STREAMED_PARTITIONS=0   # #957: הזרם הראשון של השחזור הזה
-    while IFS='|' read -r _idx _guid _role _fs _start _size _f _sha _exp _uguid _uuid <&3; do
+    while IFS='|' read -r _idx _guid _role _fs _start _size _f _sha _exp _uguid _uuid _attrs <&3; do
         log "partition $_idx ($_role, $_fs): receiving $_f"
         restore_partition "$1" "$3" "$4" "$2" "$_idx" "$_fs" "$_f" "$_sha" "$_uuid" \
             || break
         _written=$((_written + 1))
     done 3< "$_plan"
 
-    # ‏done נגזר ממספר, לא מהיעדר כישלון: לולאה שנגמרה בשלום על תוכנית
-    # קצרה מדי היא בדיוק "הצלחה בלי ראיה", וכך יצא לכיתה מחשב עם טבלת
-    # מחיצות וכלום (#51).
     if [ "$_expected" -lt 1 ] || [ "$_written" -ne "$_expected" ]; then
         fail_written_target "$2" "wrote $_written of $_expected partitions"
         echo "failed" > "$RUN_DIR/state"

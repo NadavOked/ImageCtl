@@ -112,9 +112,9 @@ def test_a_healthy_server_is_all_green(health_server):
     assert rows["nics"]["state"] == "ok"
     # DHCP עוד לא הודלק מהקונסולה — וזה נאמר, לא מוסתר.
     assert "לא הודלק" in rows["nics"]["detail"]
-    # שתי דלתות ה-SSH סגורות, וזה נאמר לפי ראיה ולא לפי ההגדרה.
-    assert rows["ssh_stations"]["state"] == "ok"
-    assert rows["ssh_server"]["state"] == "ok"
+    # המתגים כבויים ברירת-מחדל, ולכן SSH אינו בדיקת בריאות שדורשת טיפול.
+    assert "ssh_stations" not in rows
+    assert "ssh_server" not in rows
     assert rows["udp_sender"]["state"] == "ok"
     assert rows["firewall"]["state"] == "ok"
     assert "פעילה" in rows["firewall"]["detail"]
@@ -216,15 +216,19 @@ def test_where_checks_cannot_run_the_light_is_grey_not_red(health_server):
     assert rows["dnsmasq"]["state"] == "off"
 
 
-def test_but_an_ssh_check_that_could_not_run_is_red_not_grey(health_server):
+def test_ssh_check_is_only_health_attention_while_the_switch_is_on(health_server):
     """ההפך המכוון של הבדיקה שמעליה. פורט 67 שלא נבדק משאיר PXE שלא
     עובד — ורואים את זה מיד. דלת SSH שלא נבדקה נראית *בדיוק* כמו דלת
     סגורה, ולכן אפור כאן היה שקר מרגיע (#83)."""
-    health_server["fake"]["listeners"] = Listeners(False, reason="אין /proc")
-    health_server["fake"]["menu"] = ""
+    from server import ssh_switch
+    from server.db import set_setting
+    set_setting(health_server["admin"].app.state.ctx.conn, ssh_switch.STATION_KEY,
+                ssh_switch.flag_json(True))
+    health_server["fake"]["menu"] += " imagectl.debug=1"
     rows = by_id(health_server["admin"].get("/api/console/health").json())
-    assert rows["ssh_server"]["state"] == "bad"
-    assert rows["ssh_stations"]["state"] == "bad"
+    assert rows["ssh_stations"]["state"] == "warn"
+    assert rows["ssh_stations"]["detail"].startswith("פתוח — ")  # הראיה, לא המתג
+    assert "ssh_server" not in rows
 
 
 def test_health_is_admin_only(health_server):

@@ -28,10 +28,16 @@ from server.interserver_auth import generate_self_signed
 HOSTNAME_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
 IFNAME_RE = re.compile(r"[A-Za-z0-9._-]+\Z")
 FP_RE = re.compile(r"(?:[0-9A-F]{2}:){31}[0-9A-F]{2}\Z")
+ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))")
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def strip_ansi(text: str) -> str:
+    """Remove terminal CSI/OSC control sequences before exposing output to HTML."""
+    return ANSI_RE.sub("", text)
 
 
 def _ipv4(value: str) -> bool:
@@ -225,7 +231,7 @@ def check_primary(url: str, timeout: float = 5.0) -> dict:
                 "checked": f"TCP 8443 ו-TLS אל {host}"}
     except (OSError, ssl.SSLError) as exc:
         return {"ok": False, "warning": True,
-                "error": "התקשרות לשרת הראשי בפורט 8443 נכשלה. ודא כי חומת האש שבין האתרים פתוחה.",
+                "error": f"התקשרות אל {raw} בפורט 8443 נכשלה. ודא כי חומת האש שבין האתרים פתוחה.",
                 "reason": str(exc), "resolved": resolved, "checked": f"TCP 8443 ו-TLS אל {host}"}
     except Exception as exc:  # certificate generation/decoding is part of the check
         return {"ok": False, "warning": True,
@@ -284,7 +290,8 @@ class WizardState:
 
     def progress(self) -> dict:
         with self._lock:
-            return {"state": self._phase, "output": "".join(self._output)[-100_000:],
+            return {"state": self._phase,
+                    "output": strip_ansi("".join(self._output))[-100_000:],
                     "job": self._job, **self._result}
 
     def active_job(self) -> str | None:

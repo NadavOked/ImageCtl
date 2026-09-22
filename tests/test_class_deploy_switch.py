@@ -48,17 +48,21 @@ PRELUDE = (
 
 
 def state_records(tmp_path: Path, hello: dict | None, *, env: str = "",
-                  station: dict = STATION) -> list[str]:
+                  station: dict = STATION, hello_state: str | None = None,
+                  shell_pre: str = "") -> list[str]:
     run = tmp_path / "run"; run.mkdir(parents=True)
     gui = tmp_path / "gui"; gui.mkdir(parents=True)
     (run / "station.json").write_text(json.dumps(station), newline="\n")
     if hello is not None:
         (run / "response.json").write_text(json.dumps(hello), newline="\n")
+    if hello_state is not None:
+        (run / "hello.state").write_text(hello_state + "\n", newline="\n")
     (gui / "mode").write_text("menu\n", newline="\n")
     script = (
         f'export RUN_DIR={posix(run)!r} GUI_DIR={posix(gui)!r} '
         f'SERVER=http://127.0.0.1:9 MAC=aa:bb:cc:dd:ee:ff IMAGECTL_TEST=1 {env}; '
         + PRELUDE
+        + shell_pre
         + f'http_get() {{ cat {posix(run / "station.json")!r}; }}; '
         + 'gui_state'
     )
@@ -110,6 +114,19 @@ def test_gui_state_writes_off_when_the_hello_has_no_field_or_no_file(tmp_path):
     assert "menu_class=0" in absent, absent
     no_file = state_records(tmp_path / "nofile", None)
     assert "menu_class=0" in no_file, no_file
+
+
+@requires_native(("bash", BASH), "jq", why="gui_state בונה את המצב ב-jq")
+def test_gui_state_distinguishes_no_hello_from_a_completed_http_answer(tmp_path):
+    """#1154 negative control: the writer previously emitted neither key."""
+    never = state_records(tmp_path / "never", None, shell_pre='date() { echo 100; }; ')
+    assert "hello_age=" in never and "hello_rc=" in never
+    assert "hello_age=0" not in never and "hello_rc=0" not in never
+
+    answered = state_records(tmp_path / "answered", None, hello_state="90|204",
+                             shell_pre='date() { echo 100; }; ')
+    assert "hello_age=10" in answered
+    assert "hello_rc=204" in answered
 
 
 # --- הצד הגרפי: הכרטיס נעלם מהתפריט --------------------------------------------

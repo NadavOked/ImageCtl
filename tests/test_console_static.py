@@ -242,12 +242,13 @@ def test_static_includes_are_at_8_5():
     #1121/#402 (net.js: כשל השלמה = 500; console.js: `disk_probe` — "לא חוברו דיסקים" / "אין פורטי SATA בקושחה" / "לא נבדק"
     במקום "0 דיסקים") = ‏9.5 — v0.48.1 יצא עם 9.4, ולכן bump;
     #1150 (מסך ה-MFA: הודעה אדומה כשאין QR כי python3-qrcode חסר) = ‏9.6;
-    #1192 (אישור עדכון בלי הקלדת שם) = ‏9.7.
+    #1192 (אישור עדכון בלי הקלדת שם) = ‏9.7;
+    #1148/#1177 (מצב "לא ישים" ומסך MFA בלי otpauth גלוי) = ‏9.8.
     שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
     versions = {float(v) for v in re.findall(r'\?v=(\d+\.\d+)"', page)}
-    assert versions == {9.7}, versions
+    assert versions == {9.8}, versions
 
 
 def test_update_apply_is_a_sheet_without_text_verification_and_revert_uses_hostname():
@@ -283,6 +284,15 @@ def test_mfa_setup_screen_names_the_missing_qr_package():
     assert "state.svg" in fn
     assert "אין QR — החבילה python3-qrcode חסרה בשרת; הקלד את הסוד ידנית" in fn
     assert 'role="alert"' in fn
+
+
+def test_mfa_setup_hides_the_manual_secret_and_never_renders_otpauth_url():
+    js = _console_js()
+    fn = js[js.index("function loginSetupHtml("):js.index("function loginCodesHtml(")]
+    assert "otpauth://" not in fn and "state.otpauth" not in fn
+    assert "ImageCtl:${state.username" in fn
+    assert 'id="setup-secret"' in fn and 'type="password"' in fn
+    assert 'loginEye("setup-secret")' in fn
 
 
 def test_old_images_page_code_is_gone():

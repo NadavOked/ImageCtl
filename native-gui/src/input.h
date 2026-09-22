@@ -8,13 +8,15 @@
 
 #include <poll.h>
 
-typedef enum { UIEV_NONE = 0, UIEV_CHAR, UIEV_KEY, UIEV_MOVE, UIEV_CLICK } EvType;
-enum { KEYSYM_TAB = 1, KEYSYM_ENTER, KEYSYM_BACKSPACE, KEYSYM_ESC };
+typedef enum { UIEV_NONE = 0, UIEV_CHAR, UIEV_KEY, UIEV_MOVE, UIEV_CLICK, UIEV_SCROLL } EvType;
+enum { KEYSYM_TAB = 1, KEYSYM_BACKTAB, KEYSYM_ENTER, KEYSYM_BACKSPACE, KEYSYM_ESC,
+       KEYSYM_UP, KEYSYM_DOWN };
 
 typedef struct {
     EvType type;
     int ch;             /* EV_CHAR: printable ASCII */
     int key;            /* EV_KEY: KEYSYM_* */
+    int delta;          /* UIEV_SCROLL: positive is up */
     double x, y;        /* EV_MOVE / EV_CLICK, screen pixels */
     int is_touch;       /* absolute device: no cursor to draw */
 } Event;

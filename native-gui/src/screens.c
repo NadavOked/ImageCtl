@@ -68,6 +68,7 @@ static const char *status_word(const App *a,char *buf,size_t n,Rgb *dot){
         {int w=0;for(int i=0;i<s->ndrawers;i++)w+=!strcmp(s->drawers[i].state,"writing");snprintf(buf,n,"כותב %d דיסקים במקביל",w);return buf;}
     case SCREEN_RESTORE:*dot=a->theme->warn;return "בחירת אימג' לשחזור";
     case SCREEN_TOOLS:return a->tool_running?"מריץ כלי":"ארגז הכלים";
+    case SCREEN_INSTALL:return "אשף התקנה";
     }
     return "מוכן";
 }
@@ -86,6 +87,7 @@ static const char *status_keys(const App *a){
     case SCREEN_CLASS:return "Enter  התחלה    Esc  עצור / חזרה";
     case SCREEN_DONE:return "Enter  קליטה נוספת";
     case SCREEN_TOOLS:return "Tab  מעבר    Enter  הפעלה    Esc  חזרה";
+    case SCREEN_INSTALL:return "Tab / Shift-Tab  מעבר    Enter  אישור    Esc  חזרה";
     default:return "Esc  חזרה";
     }
 }
@@ -289,6 +291,7 @@ static void draw_cursor(cairo_t *cr,double x,double y){
 
 void app_route(App *a){
     const State *s=&a->st;
+    if(a->install.active){a->screen=SCREEN_INSTALL;return;}
     if(a->force_standby){a->screen=SCREEN_STANDBY;return;}
     if(a->force_cloner){a->screen=(s->ndrawers||s->cloner_image[0]||s->smart_pending)?SCREEN_CLONER:SCREEN_STANDBY;return;}
     if(s->msg_title[0]){a->screen=SCREEN_MESSAGE;return;}
@@ -320,6 +323,7 @@ static void draw_state_warning(App *a,cairo_t *cr,double W,double H){
 
 void app_draw(App *a,cairo_t *cr,int W,int H){
     a->nhits=0;a->clip_on=0;app_route(a);draw_station_background(cr,a->theme,W,H);
+    if(a->screen==SCREEN_INSTALL){screen_install(a,cr,W,H);return;}
     double head_h=a->screen==SCREEN_LOGIN?0:draw_header(a,cr,W);
     switch(a->screen){
     case SCREEN_LOGIN:    screen_login(a, cr, W, H, head_h); break;
@@ -334,6 +338,7 @@ void app_draw(App *a,cairo_t *cr,int W,int H){
     case SCREEN_MESSAGE:  screen_message(a, cr, W, H, head_h); break;
     case SCREEN_RESTORE:  screen_restore(a, cr, W, H, head_h); break;
     case SCREEN_TOOLS:    screen_tools(a, cr, W, H, head_h); break;     /* #649 */
+    case SCREEN_INSTALL:  break;
     }
     draw_state_warning(a,cr,W,H);draw_status(a,cr,W,H);draw_toast(a,cr,W,H);
 }

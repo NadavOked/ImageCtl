@@ -20,6 +20,7 @@ mkdir -p /dev/pts /run
 mount -t devpts   devpts   /dev/pts 2>/dev/null
 mount -t tmpfs    tmpfs    /run   2>/dev/null
 mkdir -p /run/imagectl
+RUN_DIR="${RUN_DIR:-/run/imagectl}"
 
 # Storage and NIC drivers. The list is generated at build time. A module that
 # does not load has two opposite meanings, and folding them into one line taught
@@ -51,8 +52,15 @@ if [ -f "$MOD_DIR/modules" ]; then
 fi
 [ -n "$_opt_fail" ] && \
     echo "imagectl init: platform modules absent, expected on this hardware: $_opt_fail"
-[ -n "$_req_fail" ] && \
+if [ -n "$_req_fail" ]; then
+    printf '%s\n' "$_req_fail" | tr ' ' '\n' | awk 'NF' > "$RUN_DIR/modules.failed.next" \
+        || fail "could not write the required-module failure list"
+    mv "$RUN_DIR/modules.failed.next" "$RUN_DIR/modules.failed" \
+        || fail "could not publish the required-module failure list"
     echo "imagectl init: ERROR required modules did not load, restore may corrupt: $_req_fail"
+else
+    rm -f "$RUN_DIR/modules.failed"
+fi
 
 # efivars for the SecureBoot bit in hello -- after the module load, because
 # efivarfs is itself one of them (CONFIG_EFIVAR_FS=m).
@@ -69,6 +77,24 @@ fi
 
 # Give USB/PCI enumeration a moment before looking for NICs and disks.
 sleep 2
+
+# --- the install ISO (#1190) --------------------------------------------------
+# imagectl.mode=installer on the kernel line: this image was booted from the
+# ImageCtl install ISO, not by PXE. The live installer needs no lease (the
+# install is offline) and must never reboot-loop on a network that is not
+# there yet, so it takes over before the DHCP loop below. Only parse_cmdline
+# reads the kernel line (principle 2); the mode is one of its two words.
+LIB_DIR="${LIB_DIR:-/usr/lib/imagectl}"
+if [ -f "$LIB_DIR/common.sh" ]; then
+    . "$LIB_DIR/common.sh"
+    parse_cmdline
+    if [ "$IMAGECTL_MODE" = installer ]; then
+        [ -f "$LIB_DIR/installer_boot.sh" ] || fail "installer image without installer_boot.sh"
+        . "$LIB_DIR/installer_boot.sh"
+        installer_boot
+        fail "installer handover returned"
+    fi
+fi
 
 # --- network -----------------------------------------------------------------
 # Try every wired interface with a carrier, in order, until DHCP answers.
@@ -118,10 +144,7 @@ echo "imagectl init: network up on $IFACE ($IP)"
 #
 # Never fatal, and never silent: trace_step always returns 0 and logs a
 # failed delivery. A diagnostic that stops a machine booting is damage.
-LIB_DIR="${LIB_DIR:-/usr/lib/imagectl}"
 if [ -f "$LIB_DIR/common.sh" ]; then
-    . "$LIB_DIR/common.sh"
-    parse_cmdline
     SERVER="$IMAGECTL_SERVER"
     MAC=$(cat "/sys/class/net/$IFACE/address" 2>/dev/null)
     trace_step agent-net

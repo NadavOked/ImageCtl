@@ -161,6 +161,21 @@ test('health pill follows the worst state: warn-only, unknown-only, off-only, al
   assert.deepEqual(await pill([]),['','אין בדיקות']);
 });
 
+test('a fresh server has one needs-attention item: configure the deployment network',()=>{
+  const {run}=setup();
+  const fresh=[
+    check('deploy_net','הגדר את רשת ההפצה','warn','בחר כרטיס בדף הרשת'),
+    check('dhcp_port','פורט 67 (DHCP)','not_applicable','לא ישים עד שתוגדר רשת ההפצה'),
+    check('identity','זהות מכונה','not_applicable','לא ישים עד שתוגדר רשת ההפצה'),
+  ];
+  run('HEALTH='+JSON.stringify(fresh)+'; HOME.net=[]; HOME.nodes=[]; DISK_FAILURES=[]; SHRINK_RECORDS=[]; MACHINES=[]; SECONDARY_STATUS={}');
+  const html=run('homeAttention()');
+  assert.match(html,/<span class="pill err">1<\/span>/);
+  assert.match(html,/<b>הגדר את רשת ההפצה<\/b>/);
+  assert.match(html,/openNetwork\(2\)/);
+  assert.doesNotMatch(html,/פורט 67|זהות מכונה/);
+});
+
 test('/health that cannot be read is its own state — red note, "לא נקרא" pill, not a placeholder and not an empty table',async()=>{
   const {run}=setup({'/health':new Error('DB down')}); run('current="health"');
   await run('loadHealth()');

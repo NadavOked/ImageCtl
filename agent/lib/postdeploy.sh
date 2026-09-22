@@ -125,8 +125,18 @@ stage_drivers() {
 _stage_drivers() {
     _dr_mnt=""; _dr_why=""
     rm -f "$RUN_DIR/drivers.json"
-    if ! manifest_plan "$2" 2>/dev/null | awk -F'|' '$3 == "windows"' | grep -q .; then
+    _dr_plan="$RUN_DIR/drivers.plan"
+    if ! manifest_plan "$2" > "$_dr_plan"; then
+        _drivers_fail "could not read the partition plan"
+        return 0
+    fi
+    grep -qE '^[^|]*\|[^|]*\|windows\|' "$_dr_plan"; _dr_plan_rc=$?
+    if [ "$_dr_plan_rc" -eq 1 ]; then
         _drivers_result "skipped" "" "not_windows"
+        return 0
+    fi
+    if [ "$_dr_plan_rc" -ne 0 ]; then
+        _drivers_fail "could not check the partition plan"
         return 0
     fi
     echo "staging" > "$RUN_DIR/state"
@@ -153,7 +163,9 @@ _stage_drivers() {
     rm -rf "$RUN_DIR/drivers"
     _drivers_fetch "$_rows" || { _drivers_fail "$_dr_why"; return 0; }
 
-    _dr_mnt=$(_mount_windows "$1" "$2") || { _dr_mnt=""; _drivers_fail "could not mount the windows partition"; return 0; }
+    _dr_mnt=$(_mount_windows "$1" "$2" "$_dr_plan") || {
+        _dr_mnt=""; _drivers_fail "could not mount the windows partition"; return 0
+    }
     _hive="$_dr_mnt/Windows/System32/config/SOFTWARE"
     [ -f "$_hive" ] || { _drivers_fail "SOFTWARE hive not found"; return 0; }
     for _n in $_names; do rm -rf "${_dr_mnt:?}/${DRIVERS_WIN_DIR:?}/$_n"; done   # SC2115: לעולם לא "/"

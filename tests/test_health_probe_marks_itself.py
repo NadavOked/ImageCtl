@@ -156,13 +156,40 @@ def test_health_does_not_journal_the_all_zero_probe(probing_server):
     assert "unknown_mac" not in events
 
 
-def test_a_real_foreign_zero_mac_is_still_journaled(probing_server):
+def test_an_all_zero_mac_is_never_recorded_or_journaled(probing_server):
     setup_classroom(probing_server)
     assert probing_server["station"].get(
         f"{BASE}/boot/menu?mac={ZERO_MAC}").status_code == 200
     events = [row["event"] for row in
               probing_server["admin"].get("/api/console/journal").json()]
-    assert "unknown_mac" in events
+    assert "unknown_mac" not in events
+    assert ZERO_MAC not in devices(probing_server)
+
+
+def test_a_menu_fetch_from_the_servers_own_interface_ip_is_not_a_machine(probing_server):
+    local = TestClient(probing_server["app"], client=("10.44.12.10", 40002))
+    mac = "02:11:22:33:44:55"
+    assert local.get(f"{BASE}/boot/menu?mac={mac}").status_code == 200
+    assert mac not in devices(probing_server)
+
+
+def test_a_real_unicast_mac_is_still_recorded(probing_server):
+    mac = "02:11:22:33:44:55"
+    assert probing_server["station"].get(f"{BASE}/boot/menu?mac={mac}").status_code == 200
+    assert devices(probing_server)[mac]["ip"] == STATION_IP
+
+
+def test_startup_removes_the_existing_all_zero_device(tmp_path):
+    from server.db import connect, net_seen
+    path = tmp_path / "imagectl.db"
+    conn = connect(path)
+    net_seen(conn, ZERO_MAC, "10.44.0.1")
+    conn.close()
+    conn = connect(path)
+    try:
+        assert conn.execute("SELECT 1 FROM net_devices WHERE mac = ?", (ZERO_MAC,)).fetchone() is None
+    finally:
+        conn.close()
 
 
 def test_health_leaves_the_probed_machine_evidence_alone(probing_server):
@@ -175,8 +202,7 @@ def test_health_leaves_the_probed_machine_evidence_alone(probing_server):
             probing_server["admin"].get("/api/console/health").json()}
     # הראיה החיובית של הבדיקה עצמה לא נפגעה: התפריט נקרא, ושורת
     # הקרנל של mac1 היא זו שנבדקה.
-    assert rows["ssh_stations"]["state"] == "ok"
-    assert ids["mac1"] in rows["ssh_stations"]["detail"]
+    assert "ssh_stations" not in rows
 
     assert evidence(devices(probing_server)[ids["mac1"]]) == before
 
@@ -235,13 +261,14 @@ def test_the_servers_own_address_counts_as_itself(probing_server):
     assert evidence(devices(probing_server)[ids["mac1"]]) == before
 
 
-def test_loopback_without_the_mark_is_still_recorded(probing_server):
-    """הסימון הוא הכותרת, לא הכתובת: בקשה מ-loopback בלי הכותרת נרשמת
-    — כלי מעבדה שמושך תפריט ביד עדיין משאיר עקבות."""
+def test_loopback_without_the_mark_is_not_a_boot(probing_server):
+    """‏#1178 הפך את הכלל הישן ("בקשה מ-loopback בלי הכותרת נרשמת"): משיכת
+    תפריט מהשרת עצמו — curl מקומי, verify-boot-payload — אינה אתחול של
+    תחנה, עם כותרת או בלעדיה, והיא אינה יוצרת מכונה ואינה רושמת צעד."""
     ids = setup_classroom(probing_server)
     bare = TestClient(probing_server["app"], client=("127.0.0.1", 40004))
     assert bare.get(f"{BASE}/boot/menu?mac={ids['mac2']}").status_code == 200
-    assert devices(probing_server)[ids["mac2"]]["boot"]["step"] == "menu"
+    assert ids["mac2"] not in devices(probing_server)
 
 
 # --- ה-hooks האמיתיים שולחים את הסימון --------------------------------------

@@ -235,7 +235,9 @@ def test_ntfs_grow_calls_the_three_steps_in_order_dirty_last(tmp_path):
 
 def test_ntfsfix_failure_still_attempts_double_force_resize(tmp_path):
     """ntfsfix -b -d נכשל — ntfsresize עדיין רץ עם double force (-f -f).
-    כישלון ntfsfix לא עוצר את הרצף (best-effort), וה-clone נשאר done."""
+    כישלון ntfsfix לא עוצר את הרצף (best-effort), וה-clone נשאר done —
+    ומאז #1124 ה-`ntfsfix -d` האחרון שנכשל **נאמר**: הדגל המלוכלך נשאר,
+    וזה done עם אזהרה, לא done נקי."""
     run, out = grow_drawers(tmp_path, stubs={
         "ntfsfix": '#!/bin/sh\necho "$*" >> "$RUN_DIR/ntfsfix.called"\nexit 1\n',
         "ntfsresize": '#!/bin/sh\n[ -f "$RUN_DIR/ntfsfix.called" ] || exit 2\n'
@@ -244,7 +246,7 @@ def test_ntfsfix_failure_still_attempts_double_force_resize(tmp_path):
     })
     assert out.strip().endswith("rc=0"), out
     assert state_of(run, "sda") == "done"
-    assert error_of(run, "sda") == ""
+    assert "dirty flag stayed" in error_of(run, "sda"), error_of(run, "sda")
     # ‏ntfsfix -b -d לפני ה-resize, וגם ntfsfix -d האחרון — שניהם רצו.
     calls = (run / "ntfsfix.called").read_text(encoding="utf-8").strip().splitlines()
     dev = f"{posix(run)}/dev/sda2"

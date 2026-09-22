@@ -122,6 +122,24 @@ def test_transfer_wait_renews_lease_but_stalled_wait_finishes(tmp_path, moving):
     assert out.stdout.strip() == expected
 
 
+def test_attended_hello_loop_renews_the_watchdog_lease(tmp_path):
+    """#1130 negative control: attended used to send hello without a watchdog beat."""
+    out = run(tmp_path, f'''
+        . {AGENT.as_posix()!r}/lib/attended.sh
+        attended_hello() {{ echo hello >> "$RUN_DIR/hellos"; }}
+        watchdog_beat() {{ echo beat >> "$RUN_DIR/beats"; }}
+        sleep() {{
+            n=$(wc -l < "$RUN_DIR/beats")
+            [ "$n" -lt 3 ] || exit 0
+        }}
+        attended_start "choose"
+        wait "$ATTENDED_PID"
+        echo "beats=$(wc -l < "$RUN_DIR/beats") hellos=$(wc -l < "$RUN_DIR/hellos")"
+    ''')
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "beats=3 hellos=3"
+
+
 def test_hardware_pet_error_does_not_kill_supervisor(tmp_path):
     out = run(tmp_path, '''
         echo '599.0 0' > "$WATCHDOG_UPTIME"

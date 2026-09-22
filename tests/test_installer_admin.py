@@ -85,6 +85,15 @@ def test_the_password_is_read_from_fd3_not_from_the_environment():
     assert 'ADMIN_PASS="$ADMIN_PASS"' not in text
 
 
+def test_install_summary_distinguishes_default_and_installer_passwords():
+    """#1160: the operator is told which credential path was actually used."""
+    text = INSTALLER.read_text(encoding="utf-8")
+    assert 'if [[ -n "$ADMIN_PASS" ]]; then' in text
+    assert 'משתמש $ADMIN_USER נוצר עם הסיסמה שנקבעה בהתקנה' in text
+    assert 'כניסה ראשונה: $ADMIN_USER / admin — הקונסולה תדרוש החלפת סיסמה' in text
+    assert "must_change_password=False" in installer_admin_python()
+
+
 def test_operational_error_is_not_swallowed(tmp_path, monkeypatch):
     """‏`except Exception` היה הופך דיסק נעול ל-«משתמש לא קיים».
 

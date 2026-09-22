@@ -163,11 +163,13 @@ static void key_event(Input *in, Dev *d, int code, int value) {
     if (value == 0) return;                          /* release */
     Event e = { 0 };
     switch (code) {
-    case KEY_TAB:       e.type = UIEV_KEY; e.key = KEYSYM_TAB; push(in, e); return;
+    case KEY_TAB:       e.type = UIEV_KEY; e.key = d->shift ? KEYSYM_BACKTAB : KEYSYM_TAB; push(in, e); return;
     case KEY_ENTER: case KEY_KPENTER:
                         e.type = UIEV_KEY; e.key = KEYSYM_ENTER; push(in, e); return;
     case KEY_BACKSPACE: e.type = UIEV_KEY; e.key = KEYSYM_BACKSPACE; push(in, e); return;
     case KEY_ESC:       e.type = UIEV_KEY; e.key = KEYSYM_ESC; push(in, e); return;
+    case KEY_UP:        e.type = UIEV_KEY; e.key = KEYSYM_UP; push(in, e); return;
+    case KEY_DOWN:      e.type = UIEV_KEY; e.key = KEYSYM_DOWN; push(in, e); return;
     }
     for (size_t i = 0; i < sizeof KEYMAP / sizeof KEYMAP[0]; i++)
         if (KEYMAP[i].code == code) {
@@ -201,6 +203,10 @@ static void read_dev(Input *in, Dev *d) {
                 } else if (d->kinds & DEV_KEYBOARD) key_event(in, d, ev[i].code, ev[i].value);
                 break;
             case EV_REL:
+                if (ev[i].code == REL_WHEEL) {
+                    Event e = { .type = UIEV_SCROLL, .delta = ev[i].value };
+                    push(in, e);
+                }
                 /* A raw 1:1 delta feels slow across a 1080p screen; scale it.
                  * Flat gain -- enough to make the pointer usable without the
                  * jumpiness of an acceleration curve. */

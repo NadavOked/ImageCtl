@@ -208,7 +208,7 @@ def run_subdirs(tmp_path: Path, *, hide: tuple[str, ...] = ()):
             (src / sub).mkdir(parents=True, exist_ok=True)
     (root / "lib" / "modules" / KVER).mkdir(parents=True)
     done = run(tmp_path, f"ROOT={bash_path(root)!r}\nKVER={KVER!r}\n"
-               f"MODSRC={bash_path(src)!r}\nWITH_GUI=0\n{subdirs_snippet()}\n")
+               f"MODSRC={bash_path(src)!r}\nWITH_GUI=0\nWITH_INSTALLER=0\n{subdirs_snippet()}\n")
     return done, root / "lib" / "modules" / KVER
 
 

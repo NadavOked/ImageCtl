@@ -247,6 +247,20 @@ def test_a_table_that_really_landed_passes_and_says_so(tmp_path):
     assert "all 3 partitions are live block devices" in log_of(run)
 
 
+def test_apply_gpt_restores_partition_attribute_bits(tmp_path):
+    """#1130 negative control: -n/-t/-u recreated partitions with attrs=0."""
+    attrs = "8000000000000001"
+    plan = [line + f"|{attrs}" for line in PLAN]  # PLAN ends with the empty uuid field.
+    box, _run, prelude = build_box(tmp_path, plan=plan)
+    out = sh(prelude + 'apply_gpt sda m.json; echo "rc=$?"')
+    assert rc_of(out) == "rc=0", out
+    calls = (box / "sgdisk.calls").read_text().splitlines()
+    creates = [line for line in calls if line.startswith("-n ")]
+    assert len(creates) == len(plan)
+    for index, call in enumerate(creates, 1):
+        assert f"-A {index}:=:0x{attrs}" in call, call
+
+
 def test_the_expansion_reads_its_own_table_back_too(tmp_path):
     """ההרחבה בונה טבלה **שונה** מזו של apply_gpt, ולכן היא נקראת בחזרה
     שוב: מי שכתב אינו מעיד על עצמו. גם כאן ה-rereadpt היה `|| true`."""

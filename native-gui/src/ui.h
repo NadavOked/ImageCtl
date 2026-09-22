@@ -12,6 +12,7 @@
 
 #include <cairo.h>
 #include "draw.h"
+#include "install_state.h"
 #include "theme.h"
 
 #define MAX_HITS    320     /* #695: 30 machines x 8 disks need room-disk hit targets */
@@ -80,6 +81,28 @@ enum {
     HIT_TOOL_CONFIRM,   /* confirm view: the typed machine name (principle 7) */
     HIT_TOOL_UP,        /* list / output: scroll */
     HIT_TOOL_DOWN,
+    /* #1188: first-boot installer. */
+    HIT_INSTALL_BACK,
+    HIT_INSTALL_NEXT,
+    HIT_INSTALL_PRIMARY,
+    HIT_INSTALL_SECONDARY,
+    HIT_INSTALL_CHECK_PRIMARY,
+    HIT_INSTALL_DHCP,
+    HIT_INSTALL_STATIC,
+    HIT_INSTALL_PRIMARY_URL,
+    HIT_INSTALL_ADDRESS,
+    HIT_INSTALL_NETMASK,
+    HIT_INSTALL_GATEWAY,
+    HIT_INSTALL_DNS,
+    HIT_INSTALL_HOSTNAME,
+    HIT_INSTALL_PASSWORD,
+    HIT_INSTALL_CONFIRM,
+    HIT_INSTALL_CURRENT_PASSWORD,
+    HIT_INSTALL_RETRY,
+    HIT_INSTALL_OUTPUT_UP,
+    HIT_INSTALL_OUTPUT_DOWN,
+    HIT_INSTALL_SUMMARY_BASE = 1000,
+    HIT_INSTALL_NIC_BASE = 1020,
     /* ranges: base + index */
     HIT_DISK_BASE   = 100,   /* .disk-card[data-dev] */
     HIT_CLASS_BASE  = 200,   /* .menu-card[data-class] */
@@ -99,7 +122,8 @@ typedef struct { Rect r; int id; } Hit;
 typedef enum {
     SCREEN_LOGIN, SCREEN_MENU, SCREEN_PICK, SCREEN_PROGRESS, SCREEN_DONE,
     SCREEN_ROOM, SCREEN_CLASS, SCREEN_CLONER, SCREEN_STANDBY, SCREEN_MESSAGE, SCREEN_RESTORE,
-    SCREEN_TOOLS        /* #649 */
+    SCREEN_TOOLS,       /* #649 */
+    SCREEN_INSTALL      /* #1188 */
 } Screen;
 
 /* station.js MODE: null (menu) / "capture" / "room" / "classes"; #706 adds restore */
@@ -296,6 +320,9 @@ typedef struct App {
 
     State st;
 
+    /* #1188: local UI state; validation and apply remain in wizard/core.py. */
+    InstallState install;
+
     /* pointer */
     double ptr_x, ptr_y;
     int ptr_visible;            /* a mouse moved; touch leaves no cursor */
@@ -327,6 +354,7 @@ void screen_cloner(App *a, cairo_t *cr, double W, double H, double head_h);
 void screen_standby(App *a, cairo_t *cr, double W, double H, double head_h);
 void screen_restore(App *a, cairo_t *cr, double W, double H, double head_h);
 void screen_tools(App *a, cairo_t *cr, double W, double H, double head_h);
+void screen_install(App *a, cairo_t *cr, double W, double H);
 
 /* #649 (screens_tools.c): the tools / tool-result files next to --state.
  * tools_poll re-reads what changed; returns 1 when the scene must redraw.

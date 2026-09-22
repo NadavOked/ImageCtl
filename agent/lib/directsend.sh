@@ -124,7 +124,7 @@ direct_send_one() {
     ) &
     _do_pid=$!
     if wait_progress "$_do_pid" "$RUN_DIR/targets/$1/bytes.raw" \
-            "$STREAM_START_CEILING" "$WAIT_STREAM_STALL_S" "שידור מחיצה $2 מ-$1"; then
+            "$STREAM_START_CEILING" "$WAIT_STREAM_STALL_S" "שידור מחיצה $2 מ-$1" "$_do_fifo"; then
         _do_stage=none
         for _do_s in dsend dtee dzstd dpcl; do
             _do_rc=$(cat "$RUN_DIR/$_do_s.$2.rc" 2>/dev/null || echo 1)
@@ -197,7 +197,7 @@ direct_send_run() {
     # is never streamed (spec 14) -- exactly streamed_partitions() on the server.
     _dr_expected=$(awk -F'|' '$7 != "" && $7 != "null" { n++ } END { print n + 0 }' "$_dr_plan")
     _dr_sent=0; STREAMED_PARTITIONS=0
-    while IFS='|' read -r _dr_idx _dr_g _dr_role _dr_fs _dr_st _dr_sz _dr_f _dr_sha _dr_e _dr_ug _dr_uu <&3; do
+    while IFS='|' read -r _dr_idx _dr_g _dr_role _dr_fs _dr_st _dr_sz _dr_f _dr_sha _dr_e _dr_ug _dr_uu _dr_attrs <&3; do
         case "$_dr_f" in ''|null) continue ;; esac
         # The first stream waits for the operator; every later one waits for
         # the drawers still writing the previous partition (#957).

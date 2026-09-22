@@ -81,7 +81,7 @@ def answer_for(packages: dict[str, dict[str, bytes]], inventory=True, tamper: st
 class Box:
     def __init__(self, tmp_path: Path, packages=FILES, *, answer: dict | None = None,
                  plan: str = WIN_PLAN, device_path: str | None = STOCK,
-                 stubs: dict[str, str] | None = None, env: str = ""):
+                 stubs: dict[str, str] | None = None, env: str = "", plan_rc: int = 0):
         self.run = tmp_path / "run"
         self.win = self.run / "win"
         self.server = tmp_path / "server"
@@ -119,7 +119,7 @@ class Box:
             f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/jsonq.sh; '
             f'. {posix(AGENT)}/lib/restore.sh; . {posix(AGENT)}/lib/hostname.sh; '
             f'. {posix(AGENT)}/lib/postdeploy.sh; '
-            f'manifest_plan() {{ printf \'%s\\n\' {plan!r}; }}; '
+            f'manifest_plan() {{ printf \'%s\\n\' {plan!r}; return {plan_rc}; }}; '
             f'partition_node() {{ echo /dev/fake; }}; '
             f'json_get() {{ case "$2" in ".ok") echo {str(self.answer.get("ok", False)).lower()};; '
             f'".inventory") echo {str(self.answer.get("inventory", False)).lower()};; '
@@ -221,6 +221,15 @@ def test_a_linux_image_is_skipped_by_name(tmp_path):
     _, result = box.stage()
     assert result == {"state": "skipped", "packages": [], "reason": "not_windows"}
     assert box.calls() == []
+
+
+def test_a_failed_manifest_plan_is_failed_even_after_partial_windows_output(tmp_path):
+    """#1130 negative control: the old pipeline reported skipped/not_windows."""
+    box = Box(tmp_path, plan=WIN_PLAN, plan_rc=7)
+    _, result = box.stage()
+    assert result["state"] == "failed"
+    assert "partition plan" in result["error"]
+    assert box.calls() == [] and box.staged_files() == {}
 
 
 def test_device_path_is_idempotent(tmp_path):

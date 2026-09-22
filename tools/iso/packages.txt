@@ -103,6 +103,15 @@ libarchive-tools
 gddrescue
 safecopy
 dosfstools
+debootstrap            # [installer] live installer base system bootstrap
+dpkg                   # [installer] debootstrap extracts packages with dpkg-deb
+perl-base              # [installer] debootstrap pkgdetails (perl one-liners) in the live image
+dbus                   # [installer] hostnamectl/logind need the system bus; debootstrap's base has none (ESXi 21/09: hostname-failed)
+ca-certificates        # [installer] git fetch from github over HTTPS (the update button); only a Recommends of git
+systemd-timesyncd      # [installer] a clock that is right: TLS validity and journal times; a Recommends of systemd
+dash                   # [installer] the engine and debootstrap run under dash: busybox sh runs its own applets whatever PATH says
+tar                    # [installer] GNU tar for debootstrap's extraction (-k), not the busybox applet
+eject                  # [installer] "remove the media and restart" -- ejects the ISO device (#1190)
 
 # --- [iso] מה שרק ה-ISO מוסיף ----------------------------------------------
 # הקרנל של דביאן — **לא** cloud: ‏build_initramfs.sh מסרב לקרנל cloud (#904).

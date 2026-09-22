@@ -6,7 +6,7 @@
 # Usage:
 #   sudo ./tools/build_initramfs.sh [--output FILE] [--kernel-version VER]
 #                                   [--firmware DIR]... [--ssh-key FILE]
-#                                   [--with-gui] [--skip-apt]
+#                                   [--with-gui] [--installer] [--skip-apt]
 #                                   [--tools-selection FILE]
 #                                   [--source-date-epoch SECONDS]
 #
@@ -37,6 +37,7 @@ OUTPUT="$PWD/imagectl-initramfs.cpio.gz"
 KVER="$(uname -r)"
 SKIP_APT=0
 WITH_GUI=0
+WITH_INSTALLER=0
 SSH_KEY_FILE=""
 TOOLS_SELECTION_FILE=""
 #: `auto` (ברירת המחדל — `finish_and_stop` גוזר מהתפקיד: כיתה=reboot,
@@ -53,6 +54,7 @@ while [ $# -gt 0 ]; do
         --ssh-key)        SSH_KEY_FILE="$2"; shift 2 ;;
         --after-task)     AFTER_TASK="$2"; shift 2 ;;
         --with-gui)       WITH_GUI=1; shift ;;
+        --installer)      WITH_INSTALLER=1; shift ;;
         --skip-apt)       SKIP_APT=1; shift ;;
         --tools-selection) TOOLS_SELECTION_FILE="$2"; shift 2 ;;
         --source-date-epoch) SOURCE_DATE_EPOCH="$2"; shift 2 ;;
@@ -95,11 +97,9 @@ if [ -n "$TOOLS_SELECTION_FILE" ]; then
     echo "tools: packing ${#TOOL_BINS[@]} toolbox binaries: ${TOOL_BINS[*]:-(none)}"
 fi
 
-# The Debian 13 package for each toolbox binary the table can name. Only the
-# packages of the binaries actually planned are installed -- a selection of
-# two tools does not pull testdisk. A planned binary missing from this map
-# is a build error (it would fail in copy_bin anyway, but with a worse
-# message): add the binary to toolbins.sh and its package here together.
+# The Debian 13 package for each conditionally packed binary. Toolbox entries
+# come from --tools-selection; the four installer entries come only from
+# --installer. A planned binary missing from this map is a build error.
 declare -A TOOL_PKG=(
     [blkdiscard]=util-linux  [wipefs]=util-linux   [hdparm]=hdparm
     [sgdisk]=gdisk           [nvme]=nvme-cli       [nwipe]=nwipe
@@ -110,11 +110,34 @@ declare -A TOOL_PKG=(
     [unsquashfs]=squashfs-tools [bsdtar]=libarchive-tools
     [ddrescue]=gddrescue     [safecopy]=safecopy   [fsck.vfat]=dosfstools
 )
+# --installer only: binaries needed by installer/, never by cloner images.
+# A table of its own: TOOL_PKG is the toolbox (#1050) and moves with
+# tools/toolbins.sh; these are the live installer's (#1190).
+declare -A INSTALLER_PKG=(
+    [debootstrap]=debootstrap [mkfs.vfat]=dosfstools [chroot]=coreutils
+    [mkfs.ext4]=e2fsprogs [dpkg-deb]=dpkg [eject]=eject [perl]=perl-base
+    [dash]=dash [tar]=tar
+)
+if [ "$WITH_INSTALLER" -eq 1 ]; then
+    # eject (#1190): "remove the media and restart" -- the bridge ejects the ISO
+    # device on a VM; blkid is already in BINARIES (the media is found by label).
+    # perl (#1190): debootstrap's pkgdetails is a perl one-liner unless the
+    # d-i udeb binary is present; without perl "Installing Debian base" fails
+    # (ESXi, 21/09). Only the interpreter + libperl: the snippets use no modules.
+    # dash + GNU tar (#1190): Debian's busybox sh runs its own applets --
+    # dpkg-deb, dpkg, tar, chroot -- instead of the packed tools whatever
+    # PATH says (FEATURE_SH_STANDALONE), and busybox dpkg-deb has no
+    # --fsys-tarfile while busybox dpkg ran maintainer scripts with an
+    # empty argument (ESXi, 21/09). debootstrap and the engine run under
+    # dash, which honours PATH; the shadowing applet links go below.
+    TOOL_BINS+=(debootstrap dpkg-deb mkfs.vfat chroot mkfs.ext4 eject perl dash tar)
+fi
 TOOL_PKGS=()
 for _tb in "${TOOL_BINS[@]}"; do
-    [ -n "${TOOL_PKG[$_tb]:-}" ] \
+    _tp="${TOOL_PKG[$_tb]:-${INSTALLER_PKG[$_tb]:-}}"
+    [ -n "$_tp" ] \
         || { echo "tools: no apt package known for binary $_tb (toolbins.sh and TOOL_PKG drifted)" >&2; exit 1; }
-    case " ${TOOL_PKGS[*]:-} " in *" ${TOOL_PKG[$_tb]} "*) ;; *) TOOL_PKGS+=("${TOOL_PKG[$_tb]}") ;; esac
+    case " ${TOOL_PKGS[*]:-} " in *" $_tp "*) ;; *) TOOL_PKGS+=("$_tp") ;; esac
 done
 
 # --- הצהרת הקיוסק (--with-gui) ------------------------------------------------
@@ -287,6 +310,38 @@ EOF
 install -m 0755 "$AGENT_DIR/init"           "$ROOT/init"
 install -m 0755 "$AGENT_DIR/imagectl-agent" "$ROOT/usr/bin/imagectl-agent"
 install -m 0644 "$AGENT_DIR"/lib/*.sh       "$ROOT/usr/lib/imagectl/"
+if [ "$WITH_INSTALLER" -eq 1 ]; then
+    # --installer (#1190): the live installer -- engine, its libs, the console
+    # process, and the GUI bridge (part 2; packed when present, missing = the
+    # console process says so on screen rather than the image failing to boot).
+    INSTALLER_SRC="$AGENT_DIR/../installer"
+    # debootstrap is a shell script plus /usr/share/debootstrap/{functions,
+    # scripts/*}; copy_bin packs only the binary. Without the data dir the
+    # engine fails at "Installing Debian base" (measured, ESXi 21/09).
+    [ -f /usr/share/debootstrap/functions ] || { echo "--installer: /usr/share/debootstrap is missing on the builder (apt-get install debootstrap)" >&2; exit 1; }
+    mkdir -p "$ROOT/usr/share/debootstrap"
+    cp -a /usr/share/debootstrap/. "$ROOT/usr/share/debootstrap/"
+    [ -e "$ROOT/usr/share/debootstrap/scripts/trixie" ] || { echo "--installer: debootstrap has no trixie script" >&2; exit 1; }
+    # debootstrap wants these at runtime beyond its own script: ar/tar/gzip
+    # come from busybox; perl is not needed with --no-check-gpg; pkgdetails
+    # is /usr/share/debootstrap/pkgdetails (shell) or /usr/lib/debootstrap/pkgdetails.
+    if [ -x /usr/lib/debootstrap/pkgdetails ]; then
+        mkdir -p "$ROOT/usr/lib/debootstrap"
+        cp -L /usr/lib/debootstrap/pkgdetails "$ROOT/usr/lib/debootstrap/pkgdetails"
+        copy_libs /usr/lib/debootstrap/pkgdetails
+    fi
+    [ -x "$INSTALLER_SRC/imagectl-install" ] && [ -x "$INSTALLER_SRC/imagectl-installer" ] \
+        || { echo "--installer: $INSTALLER_SRC lacks imagectl-install/imagectl-installer" >&2; exit 1; }
+    install -d "$ROOT/usr/lib/imagectl/installer/lib"
+    install -m 0755 "$INSTALLER_SRC/imagectl-install"   "$ROOT/usr/lib/imagectl/installer/imagectl-install"
+    install -m 0755 "$INSTALLER_SRC/imagectl-installer" "$ROOT/usr/lib/imagectl/installer/imagectl-installer"
+    install -m 0644 "$INSTALLER_SRC"/lib/*.sh           "$ROOT/usr/lib/imagectl/installer/lib/"
+    if [ -f "$INSTALLER_SRC/gui-bridge.sh" ]; then
+        install -m 0755 "$INSTALLER_SRC/gui-bridge.sh" "$ROOT/usr/lib/imagectl/installer/gui-bridge.sh"
+    else
+        echo "--installer: installer/gui-bridge.sh not present -- the GUI cannot drive the engine in this image" >&2
+    fi
+fi
 
 # fanout: the isolated multi-drawer writer. A shell cannot do non-blocking
 # writes to several drives at once, and `tee` would let one stalled drive
@@ -363,6 +418,18 @@ for _tb in "${TOOL_BINS[@]}"; do
         copy_libs "$_tcti"
     fi
 done
+if [ "$WITH_INSTALLER" -eq 1 ]; then
+    # A busybox applet link in /bin shadows the real tool for anything that
+    # looks /bin up first -- debootstrap's in_target sets
+    # PATH=/sbin:/usr/sbin:/bin:/usr/bin, so busybox chroot ran and its
+    # dpkg applet configured the target (ESXi, 21/09). Only names that
+    # have a real binary lose their link; the rest of busybox stays.
+    for _shadow in "${TOOL_BINS[@]}"; do
+        [ -L "$ROOT/bin/$_shadow" ] && [ -x "$ROOT/usr/bin/$_shadow" ] || continue
+        rm "$ROOT/bin/$_shadow"
+        echo "installer: busybox applet $_shadow unlinked, /usr/bin/$_shadow is the real one"
+    done
+fi
 if [ -n "$TOOLS_SELECTION_FILE" ]; then
     install -m 0644 "$TOOLS_SELECTION_FILE" "$ROOT/etc/imagectl/tools-selection.json"
     [ -s "$ROOT/etc/imagectl/tools-selection.json" ] \
@@ -617,7 +684,15 @@ REQUIRED_MODULES=(hv_netvsc   hv_storvsc      # Hyper-V
 # אמיתי למחיצה כזאת, ובלעדיו `_used_bytes` מדווח 0 **עם אזהרה ביומן**
 # ולא בשקט. אם יתברר שכן צריך אותם — הוספת שם לרשימה הזאת היא כל
 # השינוי, והבנייה תאכוף אותו מיד.
-REQUIRED_FS_MODULES=(ext4 btrfs xfs vfat fat nls_cp437 nls_ascii efivarfs)
+REQUIRED_FS_MODULES=(ext4 btrfs xfs vfat fat nls_cp437 nls_ascii efivarfs
+                     crc32c_generic crc32c-intel)
+if [ "$WITH_INSTALLER" -eq 1 ]; then
+    # ‏#1190: המתקין החי עולה **ממדיה** — ISO על CD וירטואלי (sr_mod/cdrom)
+    # או על USB — וקורא iso9660 (isofs). בלי שלושתם `blkid -L` לא מוצא את
+    # התווית ו-init אומר "no media" (נמדד ב-ESXi, 21/09). לתמונת ה-PXE הם
+    # נשארים בחוץ בכוונה (ראו למעלה).
+    REQUIRED_FS_MODULES+=(isofs sr_mod cdrom)
+fi
 
 if [ "$WITH_GUI" -eq 1 ]; then
     # רק מודולי התצוגה/קלט של חומרת הקיוסק; modules.dep מוסיף תלויות
@@ -710,6 +785,10 @@ fi
 # כל מודול שהועתק גורר את התלויות שלו, עד שאין מה להוסיף. מודול חסר
 # תלות הוא מודול שנכשל בטעינה בשקט, ובלי זה `N modules did not load`
 # היה 69 מתוך ~180.
+[ -f "$MODSRC/modules.softdep" ] || {
+    echo "$MODSRC/modules.softdep is missing -- soft dependencies cannot be verified" >&2
+    exit 1
+}
 _closure_round=0
 _closure_changed=1
 while [ "$_closure_changed" -eq 1 ]; do
@@ -721,6 +800,70 @@ while [ "$_closure_changed" -eq 1 ]; do
                 mkdir -p "$ROOT/lib/modules/$KVER/$(dirname "$_dep")"
                 cp -a "$MODSRC/$_dep" "$ROOT/lib/modules/$KVER/$_dep"
                 _closure_changed=1
+            fi
+        done
+        _module=$(basename "$_rel")
+        _module=${_module%%.ko*}
+        _module=$(printf '%s' "$_module" | tr '-' '_')
+        for _soft in $(awk -v want="$_module" '
+            $1 == "softdep" {
+                mod=$2; gsub(/-/, "_", mod)
+                if (mod == want) for (i=3; i<=NF; i++)
+                    if ($i != "pre:" && $i != "post:") print $i
+            }' "$MODSRC/modules.softdep"); do
+            _soft=$(printf '%s' "$_soft" | tr '-' '_')
+            _soft_found=0
+            for _candidate in $(find "$MODSRC" -type f -name '*.ko*'); do
+                _candidate_name=$(basename "$_candidate")
+                _candidate_name=${_candidate_name%%.ko*}
+                _candidate_name=$(printf '%s' "$_candidate_name" | tr '-' '_')
+                case "$_candidate_name" in
+                    "$_soft"|"$_soft"_*)
+                        _soft_found=1
+                        _dep=${_candidate#"$MODSRC"/}
+                        if [ ! -f "$ROOT/lib/modules/$KVER/$_dep" ]; then
+                            mkdir -p "$ROOT/lib/modules/$KVER/$(dirname "$_dep")"
+                            cp -a "$_candidate" "$ROOT/lib/modules/$KVER/$_dep"
+                            _closure_changed=1
+                        fi ;;
+                esac
+            done
+            # A softdep names a *capability*, not always a file: btrfs wants
+            # blake2b-256, which the alias table maps to blake2b_generic
+            # (`alias crypto-blake2b-256 blake2b_generic`). Resolve through
+            # modules.alias before declaring it missing (found on the first
+            # --installer build, 21/09).
+            if [ "$_soft_found" -eq 0 ] && [ -f "$MODSRC/modules.alias" ]; then
+                _soft_dash=$(printf '%s' "$_soft" | tr '_' '-')
+                for _alias_mod in $(awk -v a="crypto-$_soft_dash" -v b="$_soft_dash" '$1 == "alias" && ($2 == a || $2 == b) { print $3 }' "$MODSRC/modules.alias" | sort -u); do
+                    _alias_mod=$(printf '%s' "$_alias_mod" | tr '-' '_')
+                    for _candidate in $(find "$MODSRC" -type f -name '*.ko*'); do
+                        _candidate_name=$(basename "$_candidate"); _candidate_name=${_candidate_name%%.ko*}
+                        _candidate_name=$(printf '%s' "$_candidate_name" | tr '-' '_')
+                        [ "$_candidate_name" = "$_alias_mod" ] || continue
+                        _soft_found=1
+                        _dep=${_candidate#"$MODSRC"/}
+                        if [ ! -f "$ROOT/lib/modules/$KVER/$_dep" ]; then
+                            mkdir -p "$ROOT/lib/modules/$KVER/$(dirname "$_dep")"
+                            cp -a "$_candidate" "$ROOT/lib/modules/$KVER/$_dep"
+                            _closure_changed=1
+                        fi
+                    done
+                    if [ "$_soft_found" -eq 0 ] && awk -v want="$_alias_mod" '
+                        { n=$0; sub(/^.*\//, "", n); sub(/\.ko.*$/, "", n); gsub(/-/, "_", n) }
+                        n == want { found=1 } END { exit !found }' "$MODSRC/modules.builtin"; then
+                        _soft_found=1
+                    fi
+                done
+            fi
+            if [ "$_soft_found" -eq 0 ]; then
+                if ! awk -v want="$_soft" '
+                    { n=$0; sub(/^.*\//, "", n); sub(/\.ko.*$/, "", n); gsub(/-/, "_", n) }
+                    n == want { found=1 } END { exit !found }' "$MODSRC/modules.builtin"
+                then
+                    echo "soft dependency $_soft of $_module is missing under $MODSRC" >&2
+                    exit 1
+                fi
             fi
         done
     done
@@ -737,6 +880,7 @@ for _f in modules.order modules.builtin; do
     [ -f "$MODSRC/$_f" ] || { echo "$MODSRC/$_f is missing -- depmod needs it" >&2; exit 1; }
 done
 cp "$MODSRC"/modules.{order,builtin}* "$ROOT/lib/modules/$KVER/"
+cp "$MODSRC/modules.softdep" "$ROOT/lib/modules/$KVER/"
 depmod -b "$ROOT" "$KVER"
 
 # ‏דרייברי ה-PHY חייבים להיטען לפני דרייברי ה-MAC שנתלים בהם. ‏r8169
@@ -769,7 +913,7 @@ _phy_mods=$(find "$ROOT/lib/modules/$KVER/kernel/drivers/net/phy" \
     # ‏`mount -t ext4` אמנם מבקש `fs-ext4` דרך modules.alias, אבל זו
     # שרשרת הנחות (‏depmod, ‏busybox modprobe, ‏/proc/sys/kernel/modprobe)
     # שכל חוליה בה נכשלת בשקט. כאן כישלון נספר ומדווח (#84).
-    printf '%s\n' efivarfs fat vfat nls_cp437 nls_ascii ext4 btrfs xfs
+    printf '%s\n' efivarfs fat vfat nls_cp437 nls_ascii ext4 btrfs xfs crc32c_generic crc32c-intel
     [ -n "$_phy_mods" ] && printf '%s\n' "$_phy_mods"
     find "$ROOT/lib/modules/$KVER/kernel/drivers/net" -name '*.ko*' 2>/dev/null \
         | sed 's|.*/||; s|\.ko.*||' | sort

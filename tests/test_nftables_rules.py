@@ -123,7 +123,7 @@ def test_deploy_opens_dhcp_tftp_and_not_ssh() -> None:
     got = generate(*PRIMARY_ARGS)
     assert 'iifname "eth-deploy" udp dport 67 accept' in got
     assert 'iifname "eth-deploy" udp dport 69 accept' in got
-    assert 'iifname "eth-srv" tcp dport 22 accept' in got
+    assert 'tcp dport 22' not in got
     assert 'iifname "eth-deploy" tcp dport 22' not in got
     assert 'log prefix "imagectl-drop "' in got
     assert "limit rate 5/minute" in got
@@ -132,16 +132,25 @@ def test_deploy_opens_dhcp_tftp_and_not_ssh() -> None:
 @needs_bash
 def test_without_deploy_if_only_the_servers_vlan_opens() -> None:
     """‏#1088: במסירה רשת ההפצה טרם הוגדרה — המחולל רץ בלי --deploy-if,
-    פותח את וילן השרתים (קונסולה, SSH) ו**סוגר** את כל פורטי ההפצה.
+    פותח את הקונסולה בוילן השרתים ו**סוגר** את SSH ואת כל פורטי ההפצה.
     הקונסולה מריצה אותו שוב עם הכרטיס כשמודלק DHCP (deploy_net)."""
     text = generate("--servers-if", "eth-srv")
     assert 'iifname "eth-srv" tcp dport 8081 accept' in text
-    assert 'iifname "eth-srv" tcp dport 22 accept' in text
+    assert 'tcp dport 22' not in text
     for closed in ("udp dport 67", "udp dport 69", "tcp dport 8080",
                    "tcp dport 8082", "udp dport 9000-9001"):   # פורט-הפצה-מכוון: סגור בלי כרטיס
         assert closed not in text, closed
     assert "1088" in text
     assert "policy drop" in text
+
+
+@needs_bash
+def test_server_ssh_rule_follows_the_interface_switch() -> None:
+    off = generate(*PRIMARY_ARGS)
+    on = generate(*PRIMARY_ARGS, "--ssh-if", "eth-srv")
+    assert "tcp dport 22" not in off
+    assert 'iifname "eth-srv" tcp dport 22 accept' in on
+    assert 'iifname "eth-deploy" tcp dport 22' not in on
 
 
 @needs_bash

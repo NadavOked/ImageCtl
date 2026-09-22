@@ -7,11 +7,11 @@ packages.txt` מתגלה רק מול שרת אמיתי, כשה-pool כבר נצ�
 ב-packages.txt, וחבילה ב-packages.txt שאין לה מקור.
 
 ועוד שלושה חוזים שאסור שיזוזו בשקט:
-* ‏preseed.cfg: mirror כבוי, החבילות מה-ISO (מסלול ה-cdrom), ‏late_command
   מפעיל את late-command.sh, root בלבד, הדיסק נבחר ב-early_command.
 * ‏firstboot.sh לעולם אינו מעביר `--deploy-if` (R25 §2.5: זה המוקש —
   ‏dnsmasq שנדלק על כרטיס שנוחש), ובונה עם `--skip-apt`.
-* ‏late-command.sh רושם עובדות (installer-nic/installer-role/iso-release)
+* ‏#1190: אין מתקין דביאן — ה-ISO עולה ל-/live (הקרנל + initramfs המתקין החי) עם
+  imagectl.mode=installer בלבד; firstboot משלים מהתשובות בלי אשף.
   ו-firstboot.sh קורא אותן — לא heuristic (R62).
 """
 
@@ -31,18 +31,22 @@ REPO = Path(__file__).resolve().parent.parent
 ISO_DIR = REPO / "tools" / "iso"
 INITRAMFS = REPO / "tools" / "build_initramfs.sh"
 PACKAGES_TXT = ISO_DIR / "packages.txt"
-PRESEED = ISO_DIR / "preseed.cfg"
 FIRSTBOOT = ISO_DIR / "firstboot.sh"
-LATE_COMMAND = ISO_DIR / "late-command.sh"
+FIRSTBOOT_ANSWERS = ISO_DIR / "firstboot-answers.sh"
+INSTALLER_BOOT = REPO / "agent" / "lib" / "installer_boot.sh"
+LIVE_CONSOLE = REPO / "installer" / "imagectl-installer"
 WIZARD_SERVICE = REPO / "install" / "imagectl-wizard.service"
+WIZARD_RERUN_SERVICE = REPO / "install" / "imagectl-wizard-rerun.service"
+INSTALLER_GUI_SERVICE = REPO / "install" / "imagectl-installer-gui.service"
 BUILD_ISO = ISO_DIR / "build-iso.sh"
 GRUB_TEMPLATE = ISO_DIR / "grub.cfg.in"
 ISOLINUX_MENU_TEMPLATE = ISO_DIR / "isolinux-menu.cfg.in"
 ISOLINUX_ENTRY_TEMPLATE = ISO_DIR / "imagectl.cfg.in"
-BASH_SCRIPTS = ("make-pool.sh", "build-iso.sh", "firstboot.sh", "test-iso.sh")
+BASH_SCRIPTS = ("make-pool.sh", "build-iso.sh", "firstboot.sh", "firstboot-answers.sh", "test-iso.sh")
 
 #: מה שרק ה-ISO מוסיף — אין לו מקור בקבצים האחרים, ולכן מוצהר כאן.
-ISO_ONLY = {"linux-image-amd64", "nftables", "sqlite3"}
+#: ‏dbus/ca-certificates/systemd-timesyncd: מה ש-d-i היה מביא ב-standard ו-debootstrap לא (ESXi 21/09).
+ISO_ONLY = {"linux-image-amd64", "nftables", "sqlite3", "dbus", "ca-certificates", "systemd-timesyncd"}
 #: תיקיית קושחה ש-build_initramfs.sh דורש (#1125) → החבילה שמביאה אותה בדביאן 13.
 FIRMWARE_PACKAGE = {"rtl_nic": "firmware-realtek", "i915": "firmware-intel-graphics"}
 
@@ -88,9 +92,13 @@ def initramfs_lists() -> dict[str, set[str]]:
     base = _continued_command(text, "apt-get install -y --no-install-recommends \\")
     gui_build = _continued_command(text, "apt-get install -y --no-install-recommends make pkg-config")
     tool_pkgs = {
-        m.group(1) for m in re.finditer(r"\[[\w.]+\]=([\w.+-]+)", text.split("declare -A TOOL_PKG=(", 1)[1].split(")", 1)[0])
+        m.group(1) for m in re.finditer(r"\[[\w.-]+\]=([\w.+-]+)", text.split("declare -A TOOL_PKG=(", 1)[1].split(")", 1)[0])
+    }
+    installer_pkgs = {
+        m.group(1) for m in re.finditer(r"\[[\w.-]+\]=([\w.+-]+)", text.split("declare -A INSTALLER_PKG=(", 1)[1].split(")", 1)[0])
     }
     return {
+        "build_initramfs.sh INSTALLER_PKG": installer_pkgs,
         "build_initramfs.sh base apt list": set(base[3:]) - {"apt-get", "install", "-y", "--no-install-recommends"},
         "build_initramfs.sh GUI_PACKAGES": set(_paren_list(text, "\nGUI_PACKAGES=(")),
         "build_initramfs.sh GUI build deps": set(gui_build) - {"apt-get", "install", "-y", "--no-install-recommends"},
@@ -153,117 +161,68 @@ def test_no_ssh_server_on_the_product_server() -> None:
     """הכרעת נדב 19/09: אין SSH על השרת האמיתי — כלי מעבדה, מותקן ידנית.
     ‏ISO שמביא sshd הוא ISO שמפר את ההכרעה בשקט."""
     assert "openssh-server" not in packages_txt()
-    for name in ("preseed.cfg", "late-command.sh", "firstboot.sh", "imagectl-firstboot.service"):
+    for name in ("firstboot.sh", "firstboot-answers.sh", "imagectl-firstboot.service"):
         code = _strip_comments((ISO_DIR / name).read_text(encoding="utf-8"))
         assert not re.search(r"\bsshd?\b|openssh", code), f"{name} נוגע ב-SSH מחוץ להערה"
 
 
-# --- preseed -----------------------------------------------------------------
-
-def preseed_entries() -> dict[str, tuple[str, str]]:
-    """‏`owner key type value` → key: (type, value); שורות `\\` מאוחדות."""
-    text = PRESEED.read_text(encoding="utf-8")
-    text = re.sub(r"\\\n", " ", text)
-    entries: dict[str, tuple[str, str]] = {}
-    for raw in text.split("\n"):
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        parts = line.split(None, 3)
-        assert len(parts) >= 3, f"שורת preseed לא תקינה: {raw!r}"
-        _owner, key, qtype = parts[:3]
-        entries[key] = (qtype, parts[3].strip() if len(parts) == 4 else "")
-    return entries
-
-
-def test_preseed_installs_offline_from_the_iso_itself() -> None:
-    p = preseed_entries()
-    assert p["apt-setup/use_mirror"] == ("boolean", "false")
-    assert p["apt-setup/cdrom/set-first"] == ("boolean", "true"), "החבילות מגיעות דרך apt-cdrom (מסלול כל התקנה מ-CD)"
-    assert p["apt-setup/cdrom/set-next"] == ("boolean", "false")
-    # שתי השאלות שעצרו התקנה אמיתית ב-QEMU (19/09) — בלעדיהן ה-ISO ממתין לאדם.
-    assert p["apt-setup/cdrom/set-double"] == ("boolean", "false")
-    assert p["apt-setup/no_mirror"] == ("boolean", "true")
-    assert p["apt-setup/services-select"][1] == "", "עדכוני אבטחה מהרשת = בקשה שתיכשל offline"
-    assert "mirror/http/hostname" not in p
-    assert "apt-setup/local0/repository" not in p, "file:/cdrom בתוך ה-chroot אינו המסלול — ראה preseed.cfg"
-    assert "debian-installer/allow_unauthenticated" not in p, "ה-cdrom נחשב מהימן (TrustCDROM); בלי מתג שמכבה אימות"
-    assert p["apt-setup/disable-cdrom-entries"] == ("boolean", "true")
-    assert p["pkgsel/include"] == ("string", "@PKGSEL_INCLUDE@"), "הרשימה מוזרקת מ-packages.txt בבנייה"
-    assert p["clock-setup/ntp"] == ("boolean", "false")
-
-
-def test_preseed_takes_root_only_and_asks_which_disk_to_erase() -> None:
-    """‏#1189 (נדב 21/09): "אמור להיות לי בחירה של הדיסק" — שרת עם שלושה
-    כוננים; "הראשון שאינו USB" היה מוחק את הלא-נכון. הרשימה מוצגת, והכתיבה
-    מאושרת במפורש גם עם דיסק אחד (ISO שנשכח בכונן)."""
-    p = preseed_entries()
-    assert p["passwd/root-login"] == ("boolean", "true")
-    assert p["passwd/make-user"] == ("boolean", "false")
-    assert p["passwd/root-password-crypted"] == ("password", "@ROOT_PASSWORD_HASH@"), "הגיבוב נקבע בבנייה, לא ב-git"
-    assert "passwd/root-password" not in p
-    assert "partman-auto/disk" not in p, "דיסק קבוע מראש = אין בחירה; המתקין מציג את הרשימה"
-    assert "partman/early_command" not in p, "early_command שבוחר דיסק לבד הוסר (#1189)"
-    assert p["partman/confirm"] == ("boolean", "false"), "‏\"Write the changes to disks?\" חייב להופיע — המחיקה מאחורי לחיצה"
-    assert p["partman-auto/method"] == ("string", "regular")
-    assert p["grub-installer/force-efi-extra-removable"] == ("boolean", "true")
-
-
-def test_preseed_late_command_runs_the_script_on_the_iso() -> None:
-    p = preseed_entries()
-    assert p["preseed/late_command"][1] == "sh /cdrom/imagectl/late-command.sh"
-    late = _strip_comments(LATE_COMMAND.read_text(encoding="utf-8"))
-    assert "cp -a /cdrom/imagectl-src /target/opt/imagectl-src" in late
-    assert "systemctl enable imagectl-firstboot.service" in late
-    assert "installer-nic" in late and "installer-role" in late and "iso-release.json" in late
-    assert "chage -d 0 root" in late
-    # ‏d-i מסיר grub-pc-bin בהתקנת UEFI (נמדד 19/09); המתקין באתחול הראשון
-    # מתקין אותו מחדש — בלי אינטרנט זה עובד רק מ-repo שנשאר על הדיסק.
-    assert "/var/lib/imagectl/apt-repo" in late and "sources.list.d/imagectl-iso.list" in late
-    first = _strip_comments(FIRSTBOOT.read_text(encoding="utf-8"))
-    assert "apt-repo-missing" in first and "grub-pc-bin" in first
-    assert LATE_COMMAND.read_text(encoding="utf-8").startswith("#!/bin/sh\n"), "רץ ב-busybox של d-i — POSIX sh"
-
-
-def test_build_iso_substitutes_every_placeholder_the_preseed_has() -> None:
-    placeholders = set(re.findall(r"@[A-Z_]+@", PRESEED.read_text(encoding="utf-8")))
-    assert placeholders == {"@PKGSEL_INCLUDE@", "@ROOT_PASSWORD_HASH@"}
+def test_build_iso_ships_the_live_installer_and_no_debian_installer() -> None:
+    """‏#1190: המטען הוא /live/vmlinuz + /live/initrd.img (build_initramfs --installer
+    --with-gui), הקרנל מה-pool ומודולי ה-initramfs מושווים אליו, גיבוב ה-root בקובץ
+    משלו, ומתקין דביאן (install.amd, preseed) אינו על ה-ISO."""
     build = BUILD_ISO.read_text(encoding="utf-8")
-    for ph in placeholders:
-        assert ph in build, f"build-iso.sh אינו מחליף את {ph}"
-    assert "auto=true priority=critical preseed/file=/cdrom/preseed.cfg" in build
-    # ‏#1180: הערכים עברו לתבניות — הערך המשני חי בשתיהן (UEFI ו-BIOS), לא בסקריפט.
-    for tpl in ("grub.cfg.in", "imagectl.cfg.in"):
-        assert "imagectl.role=secondary" in (ISO_DIR / tpl).read_text(encoding="utf-8"), tpl
+    assert "--live-initrd" in build and 'die "חסר --live-initrd' in build
+    assert 'dpkg-deb -x "$kdeb"' in build and '"$ikver" == "$KVER"' in build, "אין השוואת קרנל↔מודולים"
+    assert 'install -m 0644 "$kvmlinuz" "$ISO_TREE/live/vmlinuz"' in build
+    assert 'install -m 0644 "$LIVE_INITRD" "$ISO_TREE/live/initrd.img"' in build
+    assert '"$ISO_TREE/imagectl/root-password.hash"' in build
+    assert 'rm -rf "$ISO_TREE/install.amd"' in build
+    assert 'DI_ARGS="imagectl.mode=installer"' in build, "שורת הקרנל: רק המצב (עיקרון 2)"
+    assert "preseed/file=" not in build and "late-command" not in build.replace("late-command.sh מתקין", "")
+    assert '-volid "$VOLID"' in build and 'VOLID="IMAGECTL_INSTALL"' in build, "init מוצא את המדיה לפי התווית"
     assert "-boot_image any replay" in build, "בלי replay ה-shim/GRUB החתומים לא נשמרים (R57)"
     assert "-report_el_torito" in build
+    assert not (ISO_DIR / "preseed.cfg").exists() and not (ISO_DIR / "late-command.sh").exists()
 
 
-def test_grub_template_has_only_the_two_imagectl_entries() -> None:
+def test_build_iso_proves_every_requested_package_is_in_the_merged_pool() -> None:
+    """#1162: the build must inspect Package fields and name every missing package.
+
+    Negative control for the Linux Testrunner: delete one requested package's
+    .deb from both the supplied pool and netinst tree, then build; build-iso
+    must exit nonzero and print that package name before xorriso packs the ISO.
+    """
+    build = BUILD_ISO.read_text(encoding="utf-8")
+    merge = build.index('cp -a "$POOL/pool/." "$ISO_TREE/pool/"')
+    pack = build.index('xorriso -indev "$NETINST" -outdev "$ISO"')
+    guard = build[merge:pack]
+    assert 'dpkg-deb -f "$deb" Package' in guard
+    assert 'find "$ISO_TREE/pool" -type f -name \'*.deb\' -print0' in guard
+    assert 'grep -Fxq "$p" "$POOL_PACKAGES" || missing+=("$p")' in guard
+    assert 'חבילות מ-packages.txt חסרות מה-pool הממוזג: ${missing[*]}' in guard
+
+
+def test_grub_template_boots_the_live_installer_only() -> None:
     grub = GRUB_TEMPLATE.read_text(encoding="utf-8")
     entries = re.findall(r"^menuentry .*", grub, re.MULTILINE)
-    assert entries == [
-        "menuentry --hotkey=m 'ImageCtl server install (erases disk 1)' {",
-        "menuentry --hotkey=s 'ImageCtl secondary server install (erases disk 1)' {",
-    ]
-    assert "set timeout=0" in grub, "‏#1189: ישר להתקנה, בלי תפריט"
+    assert entries == ["menuentry --hotkey=m 'ImageCtl server install' {"]
+    assert "set timeout=0" in grub, "‏#1190: ישר למתקין, בלי תפריט"
     assert "set default=0" in grub
     assert "ImageCtl @TAG@ installer" in grub
     assert "set color_normal=white/black" in grub and "background_color '#1b2a41'" in grub
-    assert all(word not in grub for word in ("Graphical", "Install", "Advanced", "Accessible"))
-    assert grub.count("/install.amd/vmlinuz") == 2
-    assert grub.count("/install.amd/initrd.gz") == 2
+    assert all(word not in grub for word in ("Graphical", "Advanced", "Accessible", "install.amd", "secondary"))
+    assert "linux    /live/vmlinuz @DI_ARGS@ --- quiet" in grub
+    assert "initrd   /live/initrd.img" in grub
 
 
-def test_isolinux_templates_hide_every_debian_menu() -> None:
+def test_isolinux_templates_boot_the_live_installer_only() -> None:
     menu = ISOLINUX_MENU_TEMPLATE.read_text(encoding="utf-8").splitlines()
-    assert menu == ["include stdmenu.cfg", "include imagectl.cfg", "timeout 1"], "‏#1189: ישר להתקנה גם ב-BIOS"
+    assert menu == ["include stdmenu.cfg", "include imagectl.cfg", "timeout 1"], "‏#1190: ישר למתקין גם ב-BIOS"
     entries = ISOLINUX_ENTRY_TEMPLATE.read_text(encoding="utf-8")
-    assert re.findall(r"^label (.+)$", entries, re.MULTILINE) == ["imagectl", "imagectl-secondary"]
+    assert re.findall(r"^label (.+)$", entries, re.MULTILINE) == ["imagectl"]
     assert entries.count("menu default") == 1
-    assert "I^mageCtl server install (erases disk 1)" in entries
-    assert "ImageCtl ^secondary server install (erases disk 1)" in entries
-    assert all(word not in entries for word in ("Graphical", "Install", "Advanced", "Accessible"))
+    assert "kernel /live/vmlinuz" in entries and "append initrd=/live/initrd.img @DI_ARGS@ --- quiet" in entries
+    assert all(word not in entries for word in ("Graphical", "Advanced", "Accessible", "install.amd", "secondary"))
 
 
 # --- firstboot -----------------------------------------------------------------
@@ -280,10 +239,13 @@ def test_firstboot_never_passes_deploy_if_builds_payload_and_starts_wizard() -> 
     assert "--with-gui" in code
     assert 'systemctl start imagectl-wizard' in code
     assert 'install/imagectl-wizard.service' in code
+    assert 'install/imagectl-wizard-rerun.service' in code
     unit = WIZARD_SERVICE.read_text(encoding="utf-8")
     assert "After=network-online.target" in unit
     assert "--installer-nic /etc/imagectl/installer-nic" in unit
     assert "--installer-role /etc/imagectl/installer-role" in unit
+    rerun_unit = WIZARD_RERUN_SERVICE.read_text(encoding="utf-8")
+    assert "--rerun --host 0.0.0.0" in rerun_unit
 
 
 def test_firstboot_reads_the_installer_facts_and_never_guesses_a_nic() -> None:
@@ -297,28 +259,50 @@ def test_firstboot_reads_the_installer_facts_and_never_guesses_a_nic() -> None:
 
 
 def test_installer_console_runtime_text_is_ascii_only() -> None:
-    for script in (FIRSTBOOT, LATE_COMMAND):
+    for script in (FIRSTBOOT, FIRSTBOOT_ANSWERS, INSTALLER_BOOT, LIVE_CONSOLE):
         runtime_text = _strip_comments(script.read_text(encoding="utf-8"))
         assert runtime_text.isascii(), f"{script.name} has non-ASCII runtime text"
 
 
-def test_firstboot_brings_up_dhcp_and_dcui_before_the_wizard() -> None:
-    code = _strip_comments(FIRSTBOOT.read_text(encoding="utf-8"))
+def test_firstboot_brings_up_dhcp_then_wizard_gui_and_dcui_fallback_on_the_headless_path() -> None:
+    full = _strip_comments(FIRSTBOOT.read_text(encoding="utf-8"))
+    # ‏#1190: המסלול הראשון (תשובות) מדליק את ה-DCUI ויוצא; המסלול ללא תשובות
+    # (שרת בלי מסך) מתחיל ב-NIC_FILE — בודקים את הסדר שם.
+    code = full[full.index('NIC_FILE="$ETC/installer-nic"'):]
     dhcp = code.index('dhcpcd -4 -1 -t 20 "$nic"')
-    dcui = code.index("systemctl restart imagectl-dcui.service")
     wizard = code.index("systemctl start imagectl-wizard")
-    assert dhcp < dcui < wizard
+    gui = code.index("systemctl start imagectl-installer-gui.service")
+    fallback = code.index("systemctl restart imagectl-dcui.service")
+    assert dhcp < wizard < gui < fallback
     assert 'for nic_path in /sys/class/net/*' in code
     assert 'temporary_dhcp "$nic" &' in code and 'wait "$dhcp_pid"' in code
     assert '/sys/class/net/$nic/carrier' in code and "sleep 1" in code
     assert "for _ in 1 2 3" in code  # ‏shellcheck SC2034: המשתנה אינו בשימוש
     for outcome in ("(dhcp)", "no carrier", "no dhcp offer"):
         assert outcome in code
-    assert code.count('>>"$BUILD_LOG" 2>&1') >= 3
+    assert full.count('>>"$BUILD_LOG" 2>&1') >= 3
     assert "WorkingDirectory=/opt/imagectl-src" in code
     assert "imagectl-dcui.service.d/firstboot.conf" in code
     assert 'systemctl mask getty@tty1.service' in code
     assert 'systemctl is-active --quiet imagectl-dcui.service' in code
+    assert "[[ -e /dev/fb0" in code
+    assert "ID_INPUT_KEYBOARD=1" in code and "/dev/input/event*" in code
+    assert 'installer gui: started on tty1' in code
+    assert 'installer gui: no framebuffer/keyboard, DCUI only' in code
+
+
+def test_native_installer_unit_owns_tty1_then_hands_it_to_dcui() -> None:
+    unit = INSTALLER_GUI_SERVICE.read_text(encoding="utf-8")
+    assert "Conflicts=getty@tty1.service imagectl-dcui.service" in unit
+    assert "Type=simple" in unit and "Restart=no" in unit
+    assert "StandardInput=tty" in unit and "TTYPath=/dev/tty1" in unit
+    assert "--screen install --wizard-cwd /opt/imagectl-src" in unit
+    assert "ExecStopPost=systemctl start imagectl-dcui.service" in unit
+    first = FIRSTBOOT.read_text(encoding="utf-8")
+    setup = (REPO / "install" / "setup-boot-server.sh").read_text(encoding="utf-8")
+    assert 'install/imagectl-installer-gui.service' in first
+    assert 'install/imagectl-installer-gui.service' in setup
+    assert "enable imagectl-installer-gui" not in first + setup
 
 
 def test_permanent_setup_stops_other_temporary_clients_and_removes_dcui_dropin() -> None:
@@ -332,7 +316,7 @@ def test_permanent_setup_stops_other_temporary_clients_and_removes_dcui_dropin()
 # --- תחביר -------------------------------------------------------------------
 
 @requires_native(("bash", shutil.which("bash") or shutil.which("bash.exe")))
-@pytest.mark.parametrize("name", BASH_SCRIPTS + ("late-command.sh",))
+@pytest.mark.parametrize("name", BASH_SCRIPTS)
 def test_scripts_parse(name: str) -> None:
     bash = shutil.which("bash") or shutil.which("bash.exe")
     proc = subprocess.run([bash, "-n", str(ISO_DIR / name)], capture_output=True, text=True,
@@ -377,17 +361,55 @@ def test_build_iso_packs_the_public_clone_with_its_git_dir_and_never_a_private_o
     assert 'if [[ -z "$SOURCE" ]]' in guard, "‏--source (עץ מקומי, היסטוריה פרטית) חייב להישאר בלי .git"
 
 
-def test_dcui_unit_starts_on_a_debian_13_server() -> None:
-    """‏21/09, ההתקנה הראשונה על ESXi: ‏`ReadWritePaths=/var/lib/dhcp` — תיקייה שאין
-    בדביאן 13 (dhcpcd, לא isc-dhcp-client) — הפילה את ה-namespace (226/NAMESPACE)
-    ו-DCUI לא עלה 156 פעמים; ‏`Type=simple` היה "active" מרגע ה-fork ו-firstboot
-    האמין לו. כל נתיב ב-ReadWritePaths הוא או כזה שהמתקין יוצר, או אופציונלי (-)."""
-    unit = (REPO / "install" / "imagectl-dcui.service").read_text(encoding="utf-8")
-    assert "Type=exec" in unit and "Type=simple" not in unit
-    paths = re.search(r"^ReadWritePaths=(.*)$", unit, re.M).group(1).split()
-    created_by_installer = {"/var/lib/imagectl", "/etc/network/interfaces.d", "/etc"}
-    for p in paths:
-        assert p in created_by_installer or p.startswith("-"), f"{p}: לא קיים בהכרח בשרת טרי ואינו אופציונלי"
-    assert "/var/lib/dhcp" not in paths, "isc-dhcp-client אינו בדביאן 13"
-    fb = FIRSTBOOT.read_text(encoding="utf-8")
-    assert '"$address" == 169.254.*' in fb, "link-local אינו offer — firstboot חייב לקרוא לזה 'no dhcp offer'"
+# --- #1190: המתקין החי ---------------------------------------------------------
+
+def test_firstboot_completes_from_the_installers_answers_without_the_wizard() -> None:
+    """הגואי על מסך השרת כבר שאל הכול: firstboot מריץ את setup-boot-server מהתשובות,
+    מאמת את המטען, חותם, מדליק את ה-DCUI — ולא את האשף. בלי תשובות: המסלול הישן."""
+    fb = _strip_comments(FIRSTBOOT.read_text(encoding="utf-8"))
+    answers = fb.index('if [[ -f "$ETC/answers" ]]')
+    assert answers < fb.index('NIC_FILE="$ETC/installer-nic"'), "מסלול התשובות קודם למסלול האשף"
+    branch = fb[answers:fb.index("NIC_FILE=")]
+    assert "firstboot_from_answers" in branch and "systemctl restart imagectl-dcui.service" in branch
+    assert "imagectl-wizard" not in branch and "exit 0" in branch
+    fa = FIRSTBOOT_ANSWERS.read_text(encoding="utf-8")
+    for flag in ("--servers-if", "--servers-mode", "--console-host", "--storage-role", '--admin-user "$(answers_get admin_user)"', "--admin-pass-fd 3"):
+        assert flag in fa, flag
+    # הערך בלבד מגיע ל-fd 3 — לא `admin_pass=...` כולו: כך הסיסמה הפכה
+    # ל-"admin_pass=Aa..." על השרת הראשון שהותקן חי (ESXi 21/09).
+    assert "sed -n 's/^admin_pass=//p' \"$ANSWERS_SECRET\"" in fa, "הערך נחלץ מהשורה"
+    assert "3< <(printf '%s\\n' \"$secret\")" in fa and 'shred -u "$ANSWERS_SECRET"' in fa, "הסיסמה דרך FD ונמחקת"
+    assert '3< "$ANSWERS_SECRET"' not in fa, "הקובץ כולו אינו הסיסמה"
+    assert "answers-secret-missing \"$ANSWERS_SECRET has no admin_pass= line\"" in fa
+    # ‏ifup אחרי setup-boot-server — networking.service רץ לפני שהקובץ נכתב
+    assert 'ifup "$servers_if"' in fa and "[nic-up-failed]" in fa
+    assert "verify-boot-payload.sh" in fa and 'touch "$STAMP"' in fa
+    assert fa.index("verify-boot-payload.sh") < fa.index('touch "$STAMP"'), "החותמת רק אחרי האימות"
+    assert "servers_mac" in fa, "הכרטיס נפתר לפי MAC — השם עלול להשתנות בין הקרנל החי למותקן"
+
+
+def test_init_hands_over_to_the_live_installer_only_in_installer_mode() -> None:
+    init = _strip_comments((REPO / "agent" / "init").read_text(encoding="utf-8"))
+    common = (REPO / "agent" / "lib" / "common.sh").read_text(encoding="utf-8")
+    assert "imagectl.mode=installer)" in common and 'IMAGECTL_MODE="installer"' in common
+    assert 'if [ "$IMAGECTL_MODE" = installer ]; then' in init
+    assert init.index("installer_boot") < init.index("udhcpc -i"), "המסירה למתקין לפני לולאת ה-DHCP שנכשלת בלי חכירה"
+    assert init.count("parse_cmdline") == 1, "שורת הקרנל נקראת פעם אחת (עיקרון 2)"
+    boot = _strip_comments(INSTALLER_BOOT.read_text(encoding="utf-8"))
+    assert 'blkid -L "$INSTALL_LABEL"' in boot and 'INSTALL_LABEL:-IMAGECTL_INSTALL' in boot
+    assert "reboot" not in boot, "המסך החי לא מאתחל לעולם מעצמו"
+    assert 'exec "$INSTALLER_BIN"' in boot
+    console = _strip_comments(LIVE_CONSOLE.read_text(encoding="utf-8"))
+    assert "--screen install" in console and "--install-cmd" in console
+    assert "reboot" not in console, "הגואי/הגשר מאתחלים; המסך החי רק מדווח וממתין"
+    assert 'hold "no framebuffer' in console and 'hold "no keyboard found"' in console
+
+
+def test_build_initramfs_packs_the_installer_only_with_the_flag() -> None:
+    text = INITRAMFS.read_text(encoding="utf-8")
+    start = text.index("# --installer (#1190): the live installer")
+    block = text[start:text.index("\nfi\n", start)]
+    for f in ("imagectl-install", "imagectl-installer", "lib/*.sh", "gui-bridge.sh"):
+        assert f in block, f
+    tools = text[text.index('if [ "$WITH_INSTALLER" -eq 1 ]; then'):]
+    assert "eject" in tools[:tools.index("\nfi\n")], "eject נארז רק עם --installer"

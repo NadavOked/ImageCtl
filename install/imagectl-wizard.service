@@ -4,15 +4,12 @@
 Description=ImageCtl first-boot web wizard
 After=network-online.target
 Wants=network-online.target
-# On first boot IMAGECTL_WIZARD_MODE is unset (and expands to no argument).
-# The DCUI temporarily sets it
-# to --rerun before explicitly starting this same unit.  The Python entry
-# point remains the authority that refuses a stamped install without --rerun.
+ConditionPathExists=!/var/lib/imagectl/.firstboot-done
 
 [Service]
 Type=simple
 WorkingDirectory=/opt/imagectl-src
-ExecStart=/usr/bin/python3 -m server.wizard $IMAGECTL_WIZARD_MODE --host 0.0.0.0 --port 8081 \
+ExecStart=/usr/bin/python3 -m server.wizard --host 0.0.0.0 --port 8081 \
     --data-dir /var/lib/imagectl \
     --status-file /etc/imagectl/firstboot.status \
     --installer-nic /etc/imagectl/installer-nic \

@@ -25,7 +25,7 @@ from .data import CommandResult, Runner, run_argv
 LOCKOUT_ATTEMPTS = 3
 LOCKOUT_SECONDS = 30
 AUTH_IDLE_SECONDS = 90
-WIZARD_UNIT = "imagectl-wizard.service"
+WIZARD_UNIT = "imagectl-wizard-rerun.service"
 
 
 @dataclass
@@ -114,22 +114,13 @@ def restart_services(conn, runner: Runner = run_argv) -> ActionResult:
 
 
 def start_wizard(conn, console_url: str, runner: Runner = run_argv) -> ActionResult:
-    """Start the part-1 unit with its explicit ``--rerun`` manager argument."""
-    prepared = runner([
-        "systemctl", "set-environment", "IMAGECTL_WIZARD_MODE=--rerun",
-    ])
-    if prepared.returncode != 0:
-        journal(conn, "dcui_wizard_rerun", "manager environment failed", "dcui")
-        return ActionResult(False, "Initial setup wizard rerun could not be prepared.",
-                            (_text(prepared) or "systemctl returned no detail",))
+    """Start the dedicated unit whose ExecStart carries ``--rerun``."""
     stopped = runner(["systemctl", "stop", "imagectl-server"])
     if stopped.returncode != 0:
-        runner(["systemctl", "unset-environment", "IMAGECTL_WIZARD_MODE"])
         journal(conn, "dcui_wizard_rerun", "imagectl-server stop failed", "dcui")
         return ActionResult(False, "The web server could not release HTTPS port 8081.",
                             (_text(stopped) or "systemctl returned no detail",))
     result = runner(["systemctl", "start", WIZARD_UNIT])
-    cleared = runner(["systemctl", "unset-environment", "IMAGECTL_WIZARD_MODE"])
     active = runner(["systemctl", "is-active", WIZARD_UNIT]) \
         if result.returncode == 0 else CommandResult(result.returncode, "", "")
     ok = result.returncode == 0 and active.stdout.strip() == "active"
@@ -139,9 +130,7 @@ def start_wizard(conn, console_url: str, runner: Runner = run_argv) -> ActionRes
     journal(conn, "dcui_wizard_rerun", f"unit={WIZARD_UNIT} ok={str(ok).lower()}",
             "dcui")
     if ok:
-        detail = () if cleared.returncode == 0 else (
-            "Wizard started, but the temporary systemd manager variable was not cleared.",)
-        return ActionResult(True, f"Initial setup wizard started at {console_url}.", detail)
+        return ActionResult(True, f"Initial setup wizard started at {console_url}.")
     return ActionResult(False, "Initial setup wizard did not start.",
                         (_text(result) or _text(active) or
                          "systemctl did not read the wizard back as active",))

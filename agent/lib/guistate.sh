@@ -41,6 +41,15 @@ gui_state() {
     # has none, and then the screen refuses to start instead of guessing.
     _mn=$(jq -r '.name // "" | tostring | gsub("[\\r\\n|]"; " ")' "$GUI_DIR/station.json") || return 1
     printf 'machine_name=%s\n' "$_mn" >> "$GUI_DIR/state.next" || return 1
+    _hello_age=""; _hello_rc=""; _now=$(date +%s) || return 1
+    if [ -f "$RUN_DIR/hello.state" ]; then
+        IFS='|' read -r _hello_at _hello_rc < "$RUN_DIR/hello.state" || return 1
+        case "$_hello_at" in ''|*[!0-9]*) printf 'native-gui: invalid hello timestamp\n' >&2; return 1 ;; esac
+        case "$_hello_rc" in ''|[0-9][0-9][0-9]) ;; *) printf 'native-gui: invalid hello HTTP code\n' >&2; return 1 ;; esac
+        [ "$_now" -ge "$_hello_at" ] || { printf 'native-gui: hello timestamp is in the future\n' >&2; return 1; }
+        _hello_age=$((_now - _hello_at))
+    fi
+    printf 'hello_age=%s\nhello_rc=%s\n' "$_hello_age" "$_hello_rc" >> "$GUI_DIR/state.next" || return 1
     _sm=$(cat "$GUI_DIR/mode") || return 1
     case "$_sm" in
         restore)
@@ -115,7 +124,7 @@ gui_state() {
     # #410: when this snapshot was taken. The screen prints "updated Ns ago"
     # from it, so a state file that stopped changing shows a growing age
     # instead of a picture that looks current (rule 5).
-    printf 'updated=%s\n' "$(date +%s)" >> "$GUI_DIR/state.next" || return 1
+    printf 'updated=%s\n' "$_now" >> "$GUI_DIR/state.next" || return 1
     mv "$GUI_DIR/state.next" "$GUI_DIR/state"
 }
 

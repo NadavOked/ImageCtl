@@ -7,6 +7,7 @@ const terminal = new Set([
   "validation-failed", "check-error",
 ]);
 const phaseIndex = {validating: 0, hostname: 1, installing: 2, handoff: 3, verifying: 4, done: 5};
+const phaseText = {validating: "בודק את ההגדרות…", hostname: "מגדיר את שם השרת…", installing: "מתקין קבצים ושירותים…", handoff: "מעביר את הקונסולה לפורט 8081…", verifying: "מאמת את מטען האתחול…", done: "ההתקנה הושלמה."};
 const retryDelays = [1000, 2000, 5000];
 const reconnectLimitMs = 5 * 60 * 1000;
 
@@ -148,10 +149,12 @@ function renderProgress(progressData) {
   $("#reconnect-status").hidden = true;
   $("#output").textContent = progressData.output || "";
   const index = phaseIndex[progressData.state] ?? 2;
+  $("#current-step").textContent = phaseText[progressData.state] || "ההתקנה ממשיכה…";
   $("#progress-bar").style.width = `${Math.min(100, (index + 1) * 20)}%`;
   $$("#progress-list li").forEach((item, itemIndex) => {
     item.classList.toggle("done", itemIndex < index);
     item.classList.toggle("current", itemIndex === index);
+    item.dataset.mark = itemIndex < index ? "✓" : (itemIndex === index ? "◌" : "×");
   });
 }
 
@@ -296,6 +299,12 @@ $("#failure-retry").addEventListener("click", () => { show(5); next(); });
 $("#check-primary").addEventListener("click", checkPrimary);
 $("#wizard-form").addEventListener("change", toggle);
 $("#password").addEventListener("input", toggle);
+$$('.password-eye').forEach((button) => button.addEventListener("click", () => {
+  const input = $("#" + button.dataset.password);
+  const showing = input.type === "text";
+  input.type = showing ? "password" : "text";
+  button.textContent = showing ? "הצג" : "הסתר";
+}));
 $$('.steps button').forEach((button, index) => button.addEventListener("click", () => {
   if (index + 1 <= step) show(index + 1);
 }));

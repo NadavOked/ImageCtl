@@ -551,12 +551,12 @@ function loginSetupHtml(state) {
   const qr = state.svg
     ? `<div class="qr" aria-label="קוד QR להגדרת האפליקציה">${state.svg}</div>`
     : `<p class="msg" role="alert">${LOGIN_ALERT_ICON}<span>אין QR — החבילה python3-qrcode חסרה בשרת; הקלד את הסוד ידנית</span></p>`;
-  const url = state.otpauth || "";
+  const account = `ImageCtl:${state.username || ""}`;
   return `<form id="setup-form">
     <h1 class="title sub">הגדרת אימות דו-שלבי</h1>
     <p class="lead">סרוק באפליקציית אימות (Google Authenticator, Microsoft Authenticator, Aegis) והקלד את הקוד שהיא מציגה.</p>
-    <div class="qr-row">${qr}<div class="secret">או הקלד את הסוד ידנית:<span class="mono">${esc(secretBlocks(state.secret))}</span>
-      ${url ? `<span style="display:block;margin-top:6px">חשבון: <a class="mono" href="${esc(url)}">${esc(url)}</a></span>` : ""}
+    <div class="qr-row">${qr}<div class="secret"><span>חשבון: <span class="mono">${esc(account)}</span></span>
+      <div class="f pw"><label for="setup-secret">או הקלד את הסוד ידנית</label><input id="setup-secret" class="mono" type="password" readonly value="${esc(secretBlocks(state.secret))}">${loginEye("setup-secret")}</div>
     </div></div>
     <div class="f"><label for="setup-code">הקוד מהאפליקציה</label>
       <input id="setup-code" class="mono" inputmode="numeric" maxlength="6" autocomplete="one-time-code" value="${esc(state.setupCode || "")}"></div>
@@ -1575,7 +1575,10 @@ function homeAttention() {
   }
   for (const c of Array.isArray(HEALTH) ? HEALTH : []) {
     if (c.state !== "warn" && c.state !== "bad") continue;
-    items.push(UI.note(c.state === "bad" ? "err" : "warn", `<b>${esc(c.label)}</b> — ${esc(c.detail || "")}. ${UI.link("לבריאות", "selectPageById('health')")}`));
+    const action = c.id === "deploy_net"
+      ? UI.link("הגדר רשת הפצה", "openNetwork(2)")
+      : UI.link("לבריאות", "selectPageById('health')");
+    items.push(UI.note(c.state === "bad" ? "err" : "warn", `<b>${esc(c.label)}</b> — ${esc(c.detail || "")}. ${action}`));
   }
   // ‏#1049 שלב ב': שערי בדיקת המכונה (סוללה, שעון, NVMe, קריסה, כפילות IP, CRC)
   // — מוצגים, אינם עוצרים סבב. רשימה ריקה = לא נמצא במה שנמדד, לא "הכול תקין".
@@ -3634,7 +3637,7 @@ function deleteGroup(gidEnc) {
    docs/design/console-redesign/health.md. בדיקות ועדכון בלבד: המתגים (SSH,
    מוניטור, DHCP) עברו לדף הפורטים (הכרעת נדב 17/09 06:12). חמישה מצבים,
    חמישה צבעים — "לא נבדק" לעולם לא ירוק (עיקרון 5). */
-const HEALTH_STATES = { ok: ["ok", "תקין"], warn: ["warn", "אזהרה"], bad: ["err", "תקלה"], off: ["", "כבוי"], unknown: ["unk", "לא נבדק"] };
+const HEALTH_STATES = { ok: ["ok", "תקין"], warn: ["warn", "אזהרה"], bad: ["err", "תקלה"], off: ["", "כבוי"], not_applicable: ["", "לא ישים"], unknown: ["unk", "לא נבדק"] };
 function healthStatusClass(state) { return (HEALTH_STATES[state] || HEALTH_STATES.unknown)[0]; }
 function healthStatusLabel(state) { return HEALTH_STATES[state] ? HEALTH_STATES[state][1] : (state || "—"); }
 /* שורות דינמיות למכונה (agent_loop:<mac>, off_vlan:<mac>) מקובצות תחת שורת-קבוצה
@@ -3643,7 +3646,7 @@ const HEALTH_GROUPS = [["agent_loop:", "לולאות אתחול", "agent_loops"]
   ["storage_", "אחסון — מיקומים", "storage_summary"]];   // ‏#1066: שורה לכל מיקום (storage_<id>), בלי שורת סיכום → קבוצה בסוף
 /* עמודת "פעולה": לאן הולכים לטפל — הדף שבו יושב מה שנבדק. אין ב-/health שדה
    "איך מתקנים"; ה-detail של השרת כבר נושא את ההוראה ("הריצו את המתקין"). */
-const HEALTH_GOTO = { dhcp_port: ["רשת הפצה", "openNetwork(2)"], tftp_port: ["פורטים", "selectPageById('ports')"], dnsmasq: ["רשת הפצה", "openNetwork(2)"],
+const HEALTH_GOTO = { deploy_net: ["רשת הפצה", "openNetwork(2)"], dhcp_port: ["רשת הפצה", "openNetwork(2)"], tftp_port: ["פורטים", "selectPageById('ports')"], dnsmasq: ["רשת הפצה", "openNetwork(2)"],
   server: ["פורטים", "selectPageById('ports')"], udp_sender: ["פורטים", "selectPageById('ports')"], nics: ["חיבורים פיזיים", "openNetwork(1)"],
   ssh_stations: ["פורטים", "ports"], ssh_server: ["פורטים", "ports"], agent_loops: ["מחשבים", "machines"], off_vlan: ["מחשבים", "machines"] };
 let healthError = "", HEALTH_AT = "";
@@ -3755,7 +3758,7 @@ function health() {
   if (!HEALTH && !healthError) return pagePlaceholder();
   const checks = Array.isArray(HEALTH) ? HEALTH : [];
   const n = (s) => checks.filter((c) => c.state === s).length;
-  const counts = [["ok", "תקינות"], ["warn", "אזהרות"], ["bad", "תקלות"], ["off", "כבויות"], ["unknown", "לא נבדקו"]]
+  const counts = [["ok", "תקינות"], ["warn", "אזהרות"], ["bad", "תקלות"], ["off", "כבויות"], ["not_applicable", "לא ישימות"], ["unknown", "לא נבדקו"]]
     .filter(([s]) => n(s)).map(([s, l]) => `${n(s)} ${l}`);
   let pill;
   if (!HEALTH) pill = UI.pill("err", "לא נקרא");
@@ -3764,6 +3767,7 @@ function health() {
   else if (n("warn")) pill = UI.pill("warn", "אזהרה");
   else if (n("unknown")) pill = UI.pill("warn", "לא נבדק");
   else if (n("off")) pill = UI.pill("", "חלק כבוי");
+  else if (n("not_applicable")) pill = UI.pill("", "חלק לא ישים");
   else pill = UI.pill("ok", "הכל תקין");
   const sub = HEALTH
     ? [`${checks.length} בדיקות`, HEALTH_AT ? `נבדק ${HEALTH_AT}` : "זמן המדידה לא נמסר", ...counts, "המתגים (SSH, מוניטור, DHCP) — בעמוד הפורטים"].map(esc).join(" · ")

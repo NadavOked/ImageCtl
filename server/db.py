@@ -741,6 +741,9 @@ def _open(path: str) -> sqlite3.Connection:
 def _initialize(conn: sqlite3.Connection) -> None:
     """הסכימה וברירות המחדל — פעם אחת לקובץ, לא פעם אחת לחיבור."""
     conn.executescript(SCHEMA)
+    # #1178: בדיקת boot מקומית ישנה נרשמה כתחנה. הניקוי אידמפוטנטי
+    # ורץ לפני שהקונסולה יכולה לקרוא את net_devices.
+    conn.execute("DELETE FROM net_devices WHERE lower(mac) = '00:00:00:00:00:00'")
     _add_missing_columns(conn)
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS users_username_nocase"

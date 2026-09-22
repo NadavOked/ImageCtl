@@ -19,7 +19,7 @@ def finish_probe(tmp_path, *, after="poweroff", mode="ok", role=None):
     if after is not None and mode != "missing":
         config.write_text(after, encoding="utf-8")
     role_line = f"D_ROLE={shlex.quote(role)}" if role is not None else ":"
-    script = f"""set -eu
+    script = f"""set -u
 SYSROOT={shlex.quote(posix(tmp_path))}
 AFTER_TASK_FILE={shlex.quote(posix(config))}
 {role_line}
@@ -53,7 +53,7 @@ ethtool() {{
 # A shell-only missing-tool case cannot accidentally find the host ethtool.
 if [ "$mode" = missing ]; then unset -f ethtool; PATH=/nonexistent; fi
 finish_and_stop
-echo RETURNED
+echo "RETURNED:$?"
 """
     result = subprocess.run(
         [BASH, "-c", script], cwd=REPO, stdin=subprocess.DEVNULL,
@@ -78,17 +78,18 @@ def test_poweroff_arms_before_stopping(tmp_path, after):
 @pytest.mark.parametrize("mode", [
     "set-fails", "unchanged", "query-fails", "readback-fails", "missing",
 ])
-def test_arming_failure_still_powers_off(tmp_path, mode):
+def test_arming_failure_keeps_the_machine_powered_on(tmp_path, mode):
     out = finish_probe(tmp_path, mode=mode)
-    assert "POWEROFF -f\nRETURNED" in out, out
-    assert "no interface armed -- continuing shutdown" in out, out
+    assert "POWEROFF" not in out and "SYNC" not in out, out
+    assert "RETURNED:1" in out, out
+    assert "no interface armed -- staying powered on" in out, out
     assert "LOG wol: eth1 armed" not in out
 
 
 @requires_native(("bash", BASH))
 def test_reboot_does_not_arm(tmp_path):
     out = finish_probe(tmp_path, after="reboot")
-    assert "REBOOT -f\nRETURNED" in out, out
+    assert "REBOOT -f\nRETURNED:0" in out, out
     assert "wol:" not in out
     assert "POWEROFF" not in out
 
@@ -97,7 +98,7 @@ def test_reboot_does_not_arm(tmp_path):
 def test_classroom_role_reboots_without_arming(tmp_path):
     """בלי override, תפקיד classroom נגזר ל-reboot — ואינו חמושת WoL."""
     out = finish_probe(tmp_path, after=None, role="classroom")
-    assert "REBOOT -f\nRETURNED" in out, out
+    assert "REBOOT -f\nRETURNED:0" in out, out
     assert "wol:" not in out
     assert "POWEROFF" not in out
 

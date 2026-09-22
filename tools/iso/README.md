@@ -19,30 +19,40 @@
 | `build-iso.sh` | ‏netinst רשמי (מאומת sha256) + pool + קוד (`git archive` של ה-ref) + preseed + תפריט → ISO hybrid ב-`xorriso -boot_image any replay`; מדפיס `-report_el_torito` |
 | `test-iso.sh` | ‏QEMU/OVMF עם Secure Boot, שני שלבים (התקנה → אתחול ראשון) — **טרם הורץ** (אין KVM במעבדה) |
 
-## בנייה (על דביאן 13 עם אינטרנט — שרת המעבדה)
+## בנייה (על דביאן 13 עם אינטרנט — Testrunner)
 
 ```bash
-sudo tools/iso/make-pool.sh --out /root/ic-iso-tmp/repo            # פעם אחת; ~600 קבצים, ~370MB
-sudo IMAGECTL_ROOT_PASSWORD='...' tools/iso/build-iso.sh \
-     --out /root/ic-iso-tmp --pool /root/ic-iso-tmp/repo --ref v0.48.0
+sudo tools/iso/make-pool.sh --out /srv/iso/repo                        # פעם אחת; ~600 קבצים, ~400MB
+sudo apt-get install linux-image-amd64                                  # הקרנל שמודולי ה-initramfs נבנים מולו = זה שב-pool
+sudo tools/build_initramfs.sh --installer --with-gui --output /srv/iso/live.img   # המתקין החי (#1190)
+sudo IMAGECTL_ROOT_PASSWORD='...' tools/iso/build-iso.sh      --out /srv/iso/out --pool /srv/iso/repo --ref v0.53.0 --live-initrd /srv/iso/live.img
 ```
 
 הפלט: `imagectl-<tag>-amd64.iso`, ‏`SHA256SUMS`, ‏`*.el_torito.txt` (הראיה
-ששני קטעי האתחול — BIOS ו-UEFI — נשמרו), ‏`imagectl-iso.json`.
+ששני קטעי האתחול — BIOS ו-UEFI — נשמרו), ‏`imagectl-iso.json` (כולל
+‏`live_kernel` ו-`live_initrd_sha256`). ‏build-iso עוצר אם גרסת הקרנל
+ב-pool אינה זו של המודולים ב-initramfs, ואם תווית הכרך אינה `IMAGECTL_INSTALL`.
 
-## מה קורה כשמאתחלים ממנו
+## מה קורה כשמאתחלים ממנו (#1190 — הכרעת נדב 21/09: "כמו ESXi")
 
-1. תפריט (BIOS או UEFI) עם "ImageCtl server install (wipes the first
-   disk)" מסומן — **ממתין ל-Enter**, אין timeout. ערך שני: שרת משני.
-2. ‏d-i מתקין דביאן על הדיסק הראשון שאינו USB, בלי שאלות, בלי רשת. שם
-   המחשב `imagectl-server`, ‏root עם הסיסמה שניתנה בבנייה.
-3. אתחול. ‏`imagectl-firstboot` (במסך וב-journal): בונה שני initrd,
-   מעתיק vmlinuz ומפעיל את האשף עם הכרטיס והתפקיד ש-d-i רשם כברירות
-   מחדל. כניסה ראשונה ב-root במסך מחייבת החלפת סיסמה.
-4. האשף: `https://<כתובת>:8081`; מאשרים תפקיד ורשת ניהול, hostname
-   וסיסמת `admin`, ורואים את ההתקנה והאימות בזמן אמת. בסיום הקונסולה
-   מקבלת את אותו פורט. רשת
-   ההפצה — מדף הרשת.
+1. ‏GRUB/isolinux עולים **ישר** (‏`timeout=0`) ל-`/live/vmlinuz` + `/live/initrd.img`
+   עם `imagectl.mode=installer` — אותו initramfs של מחשבי הבנייה, עם
+   ‏`installer/` (המנוע) והגואי. אין מתקין דביאן ואין preseed על ה-ISO.
+2. ‏`agent/init` (‏`installer_boot.sh`): DHCP זמני על כל כרטיס עם קישור
+   (תוצאה לכל כרטיס ב-`/run/imagectl/dhcp/<if>`), עיגון המדיה לפי התווית
+   ב-`/cdrom`, ו-exec ל-`imagectl-installer` — שמעלה את הגואי על fb0. בלי
+   מסך/מקלדת/מדיה: הודעה באנגלית על הקונסולה, המתנה — לעולם לא reboot.
+3. הגואי (מסכי `docs/design/console-redesign/mockups/install-*`): דיסק
+   (רשימה + אישור מחיקה) → תפקיד → רשת ניהול → שם → admin → סיכום →
+   התקדמות. ‏`installer/gui-bridge.sh` מפעיל את המנוע `imagectl-install`:
+   ‏GPT, debootstrap מ-`/cdrom`, ‏`packages.txt` מה-pool, ‏GRUB לשתי הקושחות,
+   ‏`/etc/imagectl/answers` (+ `answers.secret` 0600), ‏`iso-release.json`.
+4. "הסר את מדיית ההתקנה והפעל מחדש" → eject + reboot.
+5. אתחול ראשון: ‏`imagectl-firstboot` בונה את שני ה-initrd (שלב א'), ואז —
+   כשיש `answers` — `firstboot-answers.sh` מריץ את `setup-boot-server.sh`
+   מהתשובות (הסיסמה דרך FD 3 מ-`answers.secret`, שנמחק), מאמת את המטען,
+   חותם, ומדליק את ה-DCUI על tty1. **בלי אשף.** בלי `answers` (שרת בלי
+   מסך שהותקן אחרת) — המסלול הישן: DHCP זמני, DCUI טרום-התקנה, אשף ב-8081.
 
 **מצבי האתחול הראשון** (`/etc/imagectl/firstboot.status`): ‏`wizard-running`
 עד שהמפעיל מחיל; אחר כך `done` או מצב הכשל בשם. כרטיס חסר או MAC שלא נמצא

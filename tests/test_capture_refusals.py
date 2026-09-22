@@ -61,6 +61,8 @@ ONE_PARTITION = (
     '  echo "Partition unique GUID: 4C7B1E00-0000-4000-8000-000000000002"\n'
     '  echo "First sector: 2048 (at 1024 KiB)"\n'
     '  echo "Partition size: 204800 sectors (100.0 MiB)"\n'
+    '  echo "Attribute flags: 0000000000000000"\n'
+    '  echo "Partition name: \'EFI system partition\'"\n'
     '  exit 0\n'
     'fi\n'
     'echo "Disk identifier (GUID): 4C7B1E00-0000-4000-8000-000000000001"\n'
@@ -168,6 +170,12 @@ def capture_run(tmp_path, *, present=True, image=GPT_DISK, stubs=None,
     dev.mkdir(parents=True)
     run.mkdir(parents=True)
     (dev / disk).write_bytes(image)
+    # ‏#1130: שער ה-BitLocker קורא את הסקטור הראשון של **צומת המחיצה**, וקריאה
+    # שנכשלה היא "לא הצלחנו לבדוק" — סירוב, לא ירוק. בקופסה יש קובץ לדיסק
+    # בלבד; המחיצות מקבלות כותרת נקייה (512 אפסים), וטסט שרוצה חתימה
+    # (‏FVE_SECTOR) דורס אותה ב-shell_pre.
+    for idx in range(1, 5):
+        (dev / f"{disk}{idx}").write_bytes(bytes(512))
     # ‏`disk_scheme` גוזר את מיקום כותרת ה-GPT מגודל הסקטור הלוגי (#126),
     # ולכן הקופסה חייבת לחשוף אותו כמו כל כונן אמיתי. בלעדיו התשובה היא
     # `unknown` — לא ידענו — וזה מצב אחר מכל ארבעת הסירובים שנבדקים כאן.

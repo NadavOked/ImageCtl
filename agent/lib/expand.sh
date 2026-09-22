@@ -109,15 +109,16 @@ apply_gpt() {
     fi
 
     sgdisk --zap-all "$DEVROOT/$1" >> "$LOG_FILE" 2>&1 || return 1
-    manifest_plan "$2" | while IFS='|' read -r _idx _guid _role _fs _start _size _f _sha _exp _uguid _uuid; do
+    manifest_plan "$2" | while IFS='|' read -r _idx _guid _role _fs _start _size _f _sha _exp _uguid _uuid _attrs; do
         _end=$((_start + _size / 512 - 1))
         # ה-GUID הייחודי משוחזר כשיש: ה-BCD של Windows מאתר את מחיצת
         # המערכת לפי זוג ה-GUIDים (דיסק+מחיצה) — טבלה עם GUIDים חדשים
         # נגמרת ב-winload.efi 0xc000000e על כל מחשב משוחזר (#26).
-        _u=""
-        [ -n "$_uguid" ] && _u="-u $_idx:$_uguid"
-        # shellcheck disable=SC2086 # הפיצול של $_u מכוון
-        sgdisk -n "$_idx:$_start:$_end" -t "$_idx:$_guid" $_u "$DEVROOT/$1" \
+        _u=""; _a=""
+        if [ -n "$_uguid" ]; then _u="-u $_idx:$_uguid"; fi
+        if [ -n "$_attrs" ]; then _a="-A $_idx:=:0x$_attrs"; fi
+        # shellcheck disable=SC2086 # הפיצול של $_u/$_a מכוון
+        sgdisk -n "$_idx:$_start:$_end" -t "$_idx:$_guid" $_u $_a "$DEVROOT/$1" \
             >> "$LOG_FILE" 2>&1 || exit 1
     done || return 1
     _dguid=$(json_get "$2" ".disk_guid")
@@ -160,6 +161,7 @@ expand_last() {
     _start=$(echo "$_line" | cut -d'|' -f5)
     _size=$(echo "$_line" | cut -d'|' -f6)
     _uguid=$(echo "$_line" | cut -d'|' -f10)
+    _attrs=$(echo "$_line" | cut -d'|' -f12)
 
     # כל מה שיושב אחרי המועמד חוסם את מתיחתו — ה-swap של מתקין דביאן
     # (‏#46) ומחיצת ה-recovery של Windows 11, שהיא הפריסה השכיחה ולא
@@ -182,11 +184,12 @@ expand_last() {
     _move_to_tail "$1" "$_tail" || return 1
     # ההרחבה בונה את המחיצה מחדש — ה-GUID הייחודי חייב לשרוד גם אותה,
     # אחרת ה-BCD מאבד את מחיצת המערכת שהרגע שוחזרה (#26).
-    _u=""
-    [ -n "$_uguid" ] && _u="-u $_idx:$_uguid"
+    _u=""; _a=""
+    if [ -n "$_uguid" ]; then _u="-u $_idx:$_uguid"; fi
+    if [ -n "$_attrs" ]; then _a="-A $_idx:=:0x$_attrs"; fi
     # ‏0 בסוף = סוף השטח הפנוי הגדול ביותר, כלומר עד תחילת ה-swap החדשה.
-    # shellcheck disable=SC2086 # הפיצול של $_u מכוון
-    sgdisk -d "$_idx" -n "$_idx:$_start:0" -t "$_idx:$_guid" $_u "$DEVROOT/$1" \
+    # shellcheck disable=SC2086 # הפיצול של $_u/$_a מכוון
+    sgdisk -d "$_idx" -n "$_idx:$_start:0" -t "$_idx:$_guid" $_u $_a "$DEVROOT/$1" \
         >> "$LOG_FILE" 2>&1 || return 1
     # ההרחבה בנתה טבלה **שונה** מזו של apply_gpt, ולכן היא נקראת בחזרה
     # שוב: מי שכתב לא מעיד על עצמו. ‏rereadpt שנכשל היה `|| true` עד כאן,
@@ -278,13 +281,14 @@ _move_to_tail() {
                        if (k[j] > k[i]) { t = k[i]; k[i] = k[j]; k[j] = t
                                           u = a[i]; a[i] = a[j]; a[j] = u }
                    for (i = 1; i <= NR; i++) print a[i] }' \
-        | while IFS='|' read -r _si _sg _sr _sf _ss _sb _sfile _ssha _sexp _su _suuid; do
+        | while IFS='|' read -r _si _sg _sr _sf _ss _sb _sfile _ssha _sexp _su _suuid _sa; do
         [ -n "$_si" ] || continue
         # ה-GUID הייחודי שורד גם את ההזזה: ‏/etc/fstab עשוי להפנות ל-PARTUUID.
-        _su_arg=""
-        [ -n "$_su" ] && _su_arg="-u $_si:$_su"
-        # shellcheck disable=SC2086 # הפיצול של $_su_arg מכוון
-        sgdisk -n "$_si:-$((_sb / 512)):0" -t "$_si:$_sg" $_su_arg "$DEVROOT/$1" \
+        _su_arg=""; _sa_arg=""
+        if [ -n "$_su" ]; then _su_arg="-u $_si:$_su"; fi
+        if [ -n "$_sa" ]; then _sa_arg="-A $_si:=:0x$_sa"; fi
+        # shellcheck disable=SC2086 # הפיצול של $_su_arg/$_sa_arg מכוון
+        sgdisk -n "$_si:-$((_sb / 512)):0" -t "$_si:$_sg" $_su_arg $_sa_arg "$DEVROOT/$1" \
             >> "$LOG_FILE" 2>&1 || exit 1
     done || return 1
 }

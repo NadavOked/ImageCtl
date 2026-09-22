@@ -90,7 +90,7 @@ capture_disk() {
                  | awk -F': ' '/Disk identifier/ { print $2 }' | awk '{print $1}')
     # index:start:size:type-guid, from the partition table itself.
     sgdisk -p "$_node_base" 2>/dev/null | awk '/^ *[0-9]+ / { print $1 }' > "$RUN_DIR/idx.txt"
-    : > "$_parts"
+    : > "$_parts"; : > "$RUN_DIR/partition.attrs"
     while read -r _idx; do
         [ -n "$_idx" ] || continue
         _guid=$(sgdisk -i "$_idx" "$_node_base" 2>/dev/null \
@@ -100,7 +100,10 @@ capture_disk() {
         _first=$(sgdisk -i "$_idx" "$_node_base" 2>/dev/null \
                  | awk -F': ' '/First sector/ { print $2 }' | awk '{print $1}')
         _size=$(sgdisk -i "$_idx" "$_node_base" 2>/dev/null \
-                | awk -F': ' '/Partition size/ { print $2 }' | awk '{print $1}')
+                 | awk -F': ' '/Partition size/ { print $2 }' | awk '{print $1}')
+        _shrink_entry "$_disk" "$_idx" > "$RUN_DIR/partition.entry" \
+            || { _capture_failed "$_disk" "$SHRINK_ERROR"; return 1; }
+        printf '%s|%s\n' "$_idx" "$(awk -F'|' '{print $NF}' "$RUN_DIR/partition.entry")" >> "$RUN_DIR/partition.attrs"
         echo "$_idx|$_guid|$_uguid|$_first|$_size" >> "$_parts"
     done < "$RUN_DIR/idx.txt"
     # כותרת GPT תקינה וטבלה ריקה — מצב אחר לגמרי מ"אינו GPT" (עיקרון 5).
@@ -166,6 +169,7 @@ capture_disk() {
     _esp_node=""
     while IFS='|' read -r _idx _guid _uguid _first _sizesec; do
         _node=$(partition_node "$_disk" "$_idx")
+        _attrs=$(awk -F'|' -v i="$_idx" '$1 == i { print $2 }' "$RUN_DIR/partition.attrs")
         _fs=$(_fs_of "$_node")
         _why=$(_bitlocker_reason "$_idx" "$_fs" "$_node")
         [ -n "$_why" ] && { _capture_failed "$_disk" "$_why"; return 1; }
@@ -181,7 +185,7 @@ capture_disk() {
             _uuid=$(_uuid_of "$_node")
             if [ -n "$_uuid" ]; then _ujson="\"$_uuid\""; else _ujson="null"; fi
             log "partition $_idx (swap): recorded, not read"
-            _json_parts="$_json_parts{\"index\":$_idx,\"type_guid\":\"$_guid\",\"unique_guid\":\"$_uguid\",\"uuid\":$_ujson,\"role\":\"swap\",\"fs\":\"swap\",\"start_sector\":$_first,\"size_bytes\":$((_sizesec * _sector_size)),\"used_bytes\":0,\"file\":null,\"sha256\":null,\"expandable\":false$(shrink_json_extra "$_idx" "$_first" "$_sizesec" "$_sector_size")},"
+            _json_parts="$_json_parts{\"index\":$_idx,\"type_guid\":\"$_guid\",\"unique_guid\":\"$_uguid\",\"attrs\":\"$_attrs\",\"uuid\":$_ujson,\"role\":\"swap\",\"fs\":\"swap\",\"start_sector\":$_first,\"size_bytes\":$((_sizesec * _sector_size)),\"used_bytes\":0,\"file\":null,\"sha256\":null,\"expandable\":false$(shrink_json_extra "$_idx" "$_first" "$_sizesec" "$_sector_size")},"
             continue
         fi
         _file="p$_idx.$_role.pcl.zst"
@@ -227,7 +231,7 @@ capture_disk() {
         _stage=pipeline
         if wait_progress "$_readpid" "$RUN_DIR/targets/$_disk/bytes.raw" \
                 "$WAIT_STREAM_START_S" "$WAIT_STREAM_STALL_S" \
-                "קריאת מחיצה $_idx מ-$_disk"; then
+                "קריאת מחיצה $_idx מ-$_disk" "$_out"; then
             for _stage in tee pv zstd pcl; do
                 _rc=$(cat "$RUN_DIR/$_stage.$_idx.rc" 2>/dev/null || echo 1)
                 [ "$_rc" -eq 0 ] || break
@@ -263,7 +267,7 @@ capture_disk() {
 
         # Every partition is written not expandable; _mark_expandable picks
         # the one candidate once the whole list is known.
-        _json_parts="$_json_parts{\"index\":$_idx,\"type_guid\":\"$_guid\",\"unique_guid\":\"$_uguid\",\"role\":\"$_role\",\"fs\":\"$_fs\",\"start_sector\":$_first,\"size_bytes\":$((_sizesec * _sector_size)),\"used_bytes\":$_used,\"file\":\"$_file\",\"sha256\":\"$_sha\",\"expandable\":false$(shrink_json_extra "$_idx" "$_first" "$_sizesec" "$_sector_size")},"
+        _json_parts="$_json_parts{\"index\":$_idx,\"type_guid\":\"$_guid\",\"unique_guid\":\"$_uguid\",\"attrs\":\"$_attrs\",\"role\":\"$_role\",\"fs\":\"$_fs\",\"start_sector\":$_first,\"size_bytes\":$((_sizesec * _sector_size)),\"used_bytes\":$_used,\"file\":\"$_file\",\"sha256\":\"$_sha\",\"expandable\":false$(shrink_json_extra "$_idx" "$_first" "$_sizesec" "$_sector_size")},"
     done < "$_parts"
     # ‏#87: הבייטים עברו; מחשב הבנייה מקבל את מחיצתו בחזרה. כשל = אזהרה בלבד.
     shrink_restore_source "$_disk"

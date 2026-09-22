@@ -11,6 +11,7 @@
 
 LIB_DIR="${LIB_DIR:-/usr/lib/imagectl}"
 . "$LIB_DIR/common.sh"
+. "$LIB_DIR/hello.sh"
 # waits.sh לפני כל מי שמזרים: התקרות שלו נקראות כבר בטעינה של restore.sh.
 . "$LIB_DIR/waits.sh"
 . "$LIB_DIR/jsonq.sh"
@@ -27,7 +28,7 @@ LIB_DIR="${LIB_DIR:-/usr/lib/imagectl}"
 . "$LIB_DIR/classround.sh"
 . "$LIB_DIR/hostname.sh"; . "$LIB_DIR/bootentry.sh"; . "$LIB_DIR/postdeploy.sh"   # #720: driver staging, after the name; #433: Boot#### before it
 . "$LIB_DIR/sshd.sh"
-. "$LIB_DIR/watchdog.sh"; . "$LIB_DIR/monitor.sh"   # #690: RFB, role+flag gated
+. "$LIB_DIR/watchdog.sh"; . "$LIB_DIR/monitor.sh"; . "$LIB_DIR/installer_boot.sh"   # #690: RFB, role+flag gated; #1190: init-only (inert here, load gate #84)
 . "$LIB_DIR/ui.sh"
 . "$LIB_DIR/attended.sh"; . "$LIB_DIR/smart.sh"; . "$LIB_DIR/crcdelta.sh"   # hello בזמן המתנה לאדם (#906); שער SMART בצד השחזור (#652) והפרש CRC בסבב (#872); אחרי ui.sh/progress.sh
 . "$LIB_DIR/recovery.sh"   # אחרי ui.sh, classround.sh ו-pull.sh: הפיצול מ-ui.sh (#564)
@@ -77,7 +78,7 @@ RESP="$RUN_DIR/response.json"; trace_step agent-start   # #400, see common.sh
 send_hello() {
     build_hello > "$RUN_DIR/hello.json" || return 1
     [ -n "$_traced_hello" ] || { trace_step agent-hello; _traced_hello=1; }
-    http_post_json "$SERVER/api/v1/agent/hello" "$RUN_DIR/hello.json" > "$RESP"
+    hello_post "$SERVER/api/v1/agent/hello" "$RUN_DIR/hello.json" "$RESP"
 }
 
 read_answer() {

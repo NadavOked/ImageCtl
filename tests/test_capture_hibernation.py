@@ -33,6 +33,17 @@ def _reason(tmp_path, *, hiberfil=False, probe_rc=0):
     return int(rc.strip()), body.strip()
 
 
+def _bitlocker(tmp_path, dd_body: str) -> str:
+    run = tmp_path / "run"; run.mkdir(parents=True)
+    script = (
+        make_stubs(tmp_path / "stubs", {"dd": f"#!/bin/sh\n{dd_body}\n"})
+        + f'RUN_DIR={posix(run)!r}; LOG_FILE={posix(run / "agent.log")!r}; '
+        + f'. {posix(AGENT)}/lib/hibernation.sh; '
+        + '_bitlocker_reason 1 ntfs /dev/fake'
+    )
+    return sh(script).strip()
+
+
 def test_hiberfil_presence_alone_is_not_hibernation(tmp_path):
     """17/09, נמדד על מחשב הבנייה במעבדה: hiberfil.sys של 3.36GB קיים על כל
     ווינדוס שה-hibernation/fast-startup מופעל בו, גם אחרי כיבוי מלא
@@ -58,6 +69,16 @@ def test_probe_failure_is_not_clean(tmp_path):
     result = _reason(tmp_path, probe_rc=18)
     assert result[0] == 2
     assert "לא הצלחנו לבדוק" in result[1]
+
+
+def test_bitlocker_header_has_detected_clean_and_unable_states(tmp_path):
+    """#1130: a failed dd used to look exactly like a clean non-match."""
+    unable = _bitlocker(tmp_path / "unable", "exit 7")
+    clean = _bitlocker(tmp_path / "clean", "printf plain-header")
+    encrypted = _bitlocker(tmp_path / "encrypted", "printf -- '-FVE-FS-'")
+    assert "לא הצלחנו לבדוק" in unable and "dd rc=7" in unable
+    assert clean == ""
+    assert "BitLocker" in encrypted and "מוצפנת" in encrypted
 
 
 def test_detection_commands_are_read_only():

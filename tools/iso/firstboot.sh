@@ -105,7 +105,28 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# שלב ב' — קורא את עובדות d-i, מדווח פערים, ומוסר אותן לאשף כברירות מחדל
+# שלב ב' (#1190) — מהתשובות של המתקין החי: הכול כבר נענה על מסך השרת, אין
+# אשף. ‏setup-boot-server מהדגלים, אימות המטען, חותמת, ואז ה-DCUI.
+# ---------------------------------------------------------------------------
+if [[ -f "$ETC/answers" ]]; then
+    [[ -f "$SRC/tools/iso/firstboot-answers.sh" ]] || fail check-error "$ETC/answers exists but $SRC/tools/iso/firstboot-answers.sh is missing"
+    # shellcheck source=tools/iso/firstboot-answers.sh
+    . "$SRC/tools/iso/firstboot-answers.sh"
+    firstboot_from_answers
+    install -m 0644 "$SRC/install/imagectl-dcui.service" /etc/systemd/system/imagectl-dcui.service
+    rm -f /etc/systemd/system/imagectl-dcui.service.d/firstboot.conf
+    systemctl daemon-reload || fail check-error "systemctl daemon-reload failed before starting the DCUI"
+    systemctl mask getty@tty1.service || fail check-error "Could not mask getty@tty1.service"
+    systemctl enable imagectl-dcui.service || fail check-error "Could not enable imagectl-dcui.service"
+    systemctl restart imagectl-dcui.service || fail check-error "Could not start imagectl-dcui.service"
+    rm -rf "$TMPDIR"
+    log "Stage B complete from the installer's answers: the DCUI is on tty1, the console on 8081"
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# שלב ב' (ללא תשובות — שרת בלי מסך) — קורא את עובדות ההתקנה, מדווח פערים,
+# ומוסר אותן לאשף בדפדפן כברירות מחדל
 # ---------------------------------------------------------------------------
 NIC_FILE="$ETC/installer-nic"
 ROLE_FILE="$ETC/installer-role"
@@ -186,17 +207,37 @@ for dhcp_pid in "${dhcp_pids[@]}"; do
 done
 
 install -m 0644 "$SRC/install/imagectl-wizard.service" /etc/systemd/system/imagectl-wizard.service
+install -m 0644 "$SRC/install/imagectl-wizard-rerun.service" /etc/systemd/system/imagectl-wizard-rerun.service
 install -m 0644 "$SRC/install/imagectl-dcui.service" /etc/systemd/system/imagectl-dcui.service
+install -m 0644 "$SRC/install/imagectl-installer-gui.service" /etc/systemd/system/imagectl-installer-gui.service
 install -d /etc/systemd/system/imagectl-dcui.service.d
 printf '[Service]\nWorkingDirectory=/opt/imagectl-src\n' \
     > /etc/systemd/system/imagectl-dcui.service.d/firstboot.conf
 printf 'state=wizard-running\ntimestamp=%s\nrole_default=%s\n' "$(date -u +%FT%TZ)" "$ROLE" > "$STATUS"
-systemctl daemon-reload || fail check-error "systemctl daemon-reload failed before starting the DCUI"
+systemctl daemon-reload || fail check-error "systemctl daemon-reload failed before starting the installer UI"
 systemctl mask getty@tty1.service || fail check-error "Could not mask getty@tty1.service"
 systemctl enable imagectl-dcui.service || fail check-error "Could not enable imagectl-dcui.service"
-systemctl restart imagectl-dcui.service || fail check-error "Could not start imagectl-dcui.service"
-systemctl is-active --quiet imagectl-dcui.service || fail check-error "imagectl-dcui.service is not active after restart"
 systemctl start imagectl-wizard || fail wizard-failed "imagectl-wizard did not start; see journalctl -u imagectl-wizard"
 systemctl is-active --quiet imagectl-wizard || fail wizard-failed "imagectl-wizard is not active after systemctl start"
+
+has_keyboard=0
+for event in /dev/input/event*; do
+    [[ -e "$event" ]] || continue
+    if udevadm info --query=property --name="$event" | grep -qx 'ID_INPUT_KEYBOARD=1'; then
+        has_keyboard=1
+        break
+    fi
+done
+if [[ -e /dev/fb0 && "$has_keyboard" == 1 ]]; then
+    systemctl start imagectl-installer-gui.service \
+        || fail check-error "Could not start imagectl-installer-gui.service"
+    systemctl is-active --quiet imagectl-installer-gui.service \
+        || fail check-error "imagectl-installer-gui.service is not active after start"
+    log "installer gui: started on tty1"
+else
+    systemctl restart imagectl-dcui.service || fail check-error "Could not start imagectl-dcui.service"
+    systemctl is-active --quiet imagectl-dcui.service || fail check-error "imagectl-dcui.service is not active after restart"
+    log "installer gui: no framebuffer/keyboard, DCUI only"
+fi
 rm -rf "$TMPDIR"
-log "Stage B is ready: use the DCUI on tty1 or the HTTPS wizard on port 8081"
+log "Stage B is ready: use tty1 or the HTTPS wizard on port 8081"

@@ -21,6 +21,7 @@ pytest.importorskip("fastapi")
 
 from conftest import setup_classroom
 from server import ssh_switch
+from server.db import set_setting
 
 try:
     from fastapi.testclient import TestClient
@@ -250,6 +251,10 @@ def journal_events(server):
     return [(r["event"], r["detail"], r["user"]) for r in rows]
 
 
+def enable_health_switch(server, key):
+    set_setting(server["app"].state.ctx.conn, key, '{"enabled": true}')
+
+
 # --- ברירת המחדל -------------------------------------------------------------
 
 
@@ -257,6 +262,9 @@ def test_both_doors_are_closed_by_default(ssh_server):
     state = ssh_server["admin"].get("/api/console/ssh").json()
     assert state["stations"]["enabled"] is False
     assert [n["enabled"] for n in state["interfaces"]] == [False, False]
+    health = by_id(ssh_server["admin"].get("/api/console/health").json())
+    assert "ssh_stations" not in health
+    assert "ssh_server" not in health
 
 
 def test_the_boot_menu_carries_the_debug_flag_only_while_the_switch_is_on(ssh_server):
@@ -359,7 +367,7 @@ def test_closing_everything_leaves_loopback_only_and_is_verified(ssh_server):
     assert result["verified"] is True
     assert "ListenAddress 127.0.0.1" in ssh_server["fake"]["applied"][-1]
     rows = by_id(admin.get("/api/console/health").json())
-    assert rows["ssh_server"]["state"] == "ok"
+    assert "ssh_server" not in rows
 
 
 def test_a_switch_that_did_not_take_effect_reports_failure_not_success(ssh_server):
@@ -413,12 +421,14 @@ def test_a_station_switch_is_verified_against_the_served_menu(ssh_server):
 
 
 def test_a_wide_open_sshd_is_red_and_says_so(ssh_server):
+    enable_health_switch(ssh_server, ssh_switch.IFACE_PREFIX + "eth0")
     rows = by_id(ssh_server["admin"].get("/api/console/health").json())
     assert rows["ssh_server"]["state"] == "bad"
     assert "0.0.0.0" in rows["ssh_server"]["detail"]
 
 
 def test_an_unreadable_socket_table_is_red_not_green(ssh_server):
+    enable_health_switch(ssh_server, ssh_switch.IFACE_PREFIX + "eth0")
     ssh_server["fake"]["listeners"] = ssh_switch.Listeners(
         False, reason="tcp: Permission denied")
     rows = by_id(ssh_server["admin"].get("/api/console/health").json())
@@ -427,6 +437,7 @@ def test_an_unreadable_socket_table_is_red_not_green(ssh_server):
 
 
 def test_a_menu_that_did_not_answer_is_red_not_green(ssh_server):
+    enable_health_switch(ssh_server, ssh_switch.STATION_KEY)
     ssh_server["fake"]["menu_status"] = None
     ssh_server["fake"]["menu"] = ""
     rows = by_id(ssh_server["admin"].get("/api/console/health").json())
@@ -448,6 +459,7 @@ def test_a_local_only_menu_is_not_evidence_that_the_door_is_shut(ssh_server):
     אחרי כישלונות חוזרים (#75) — מקבל תפריט "עלה מהדיסק המקומי", בלי
     שורת קרנל בכלל. חיפוש הדגל שם היה מחזיר "סגור" לנצח, גם כשהדלת
     פתוחה לרווחה. ‏אין שורת קרנל = אין ראיה."""
+    enable_health_switch(ssh_server, ssh_switch.STATION_KEY)
     ssh_server["fake"]["menu"] = "set default=local\nmenuentry \"local\" {}"
     rows = by_id(ssh_server["admin"].get("/api/console/health").json())
     assert rows["ssh_stations"]["state"] == "bad"
@@ -466,6 +478,7 @@ def test_the_menu_is_asked_for_a_machine_the_server_knows(ssh_server):
 def test_with_no_machine_registered_the_station_door_is_unknown(ssh_server):
     """שרת טרי: אין מכונה רשומה לבקש עבורה תפריט, ולכן אין ראיה —
     ואדום, לא ירוק. "לא ידוע" אינו "סגור"."""
+    enable_health_switch(ssh_server, ssh_switch.STATION_KEY)
     state = ssh_server["admin"].get("/api/console/ssh").json()
     assert state["stations"]["evidence"] == "unknown"
     rows = by_id(ssh_server["admin"].get("/api/console/health").json())
@@ -474,6 +487,7 @@ def test_with_no_machine_registered_the_station_door_is_unknown(ssh_server):
 
 def test_an_open_station_door_is_a_warning_not_a_quiet_line(ssh_server):
     setup_classroom(ssh_server)
+    enable_health_switch(ssh_server, ssh_switch.STATION_KEY)
     ssh_server["fake"]["menu"] = ("linux /boot/vmlinuz imagectl.server=x "
                                  "imagectl.debug=1")
     rows = by_id(ssh_server["admin"].get("/api/console/health").json())

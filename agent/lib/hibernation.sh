@@ -35,14 +35,33 @@ capture_ntfs_hibernation_reason() {
 _bitlocker_reason() {
     # $1=idx $2=fs $3=node. FOG -FVE-FS-; empty=ok, text=refuse (#671).
     case "$2" in *[Bb]it[Ll]ocker*) echo "מחיצה $1 מוצפנת ב-BitLocker — כבו את BitLocker לפני הקליטה"; return ;; esac
-    command -v dd >/dev/null && command -v grep >/dev/null && command -v tr >/dev/null \
-        || { echo "לא הצלחנו לבדוק BitLocker במחיצה $1"; return; }
+    for _bltool in dd grep tr; do
+        command -v "$_bltool" >/dev/null 2>&1 || {
+            echo "לא הצלחנו לבדוק BitLocker במחיצה $1: הכלי $_bltool חסר"
+            return
+        }
+    done
     # ‏LC_ALL=C ו-F: החתימה בייטים קבועים, לא טקסט מקומי. בלי -i — היא
     # תמיד באותיות גדולות, ו-`grep -i` על קלט בינרי תחת locale של UTF-8
     # קורס (SIGABRT) ב-MSYS, מה שהיה הופך "לא נמצא" ל"לא הצלחנו לבדוק".
-    dd if="$3" bs=512 count=1 2>/dev/null | tr -d '\0' | LC_ALL=C grep -qF -- '-FVE-FS-'
-    _blrc=$?
-    [ "$_blrc" -eq 1 ] && return
-    [ "$_blrc" -eq 0 ] && echo "מחיצה $1 מוצפנת ב-BitLocker — כבו את BitLocker לפני הקליטה" \
-        || echo "לא הצלחנו לבדוק BitLocker במחיצה $1"
+    _blraw="$RUN_DIR/bitlocker.raw.$$"; _bltext="$RUN_DIR/bitlocker.text.$$"
+    dd if="$3" bs=512 count=1 > "$_blraw" 2>> "$LOG_FILE"; _blrc=$?
+    if [ "$_blrc" -ne 0 ]; then
+        rm -f "$_blraw" "$_bltext"
+        echo "לא הצלחנו לבדוק BitLocker במחיצה $1: קריאת הכותרת נכשלה (dd rc=$_blrc)"
+        return
+    fi
+    tr -d '\0' < "$_blraw" > "$_bltext"; _blrc=$?
+    if [ "$_blrc" -ne 0 ]; then
+        rm -f "$_blraw" "$_bltext"
+        echo "לא הצלחנו לבדוק BitLocker במחיצה $1: פענוח הכותרת נכשל (tr rc=$_blrc)"
+        return
+    fi
+    LC_ALL=C grep -qF -- '-FVE-FS-' "$_bltext"; _blrc=$?
+    rm -f "$_blraw" "$_bltext"
+    case "$_blrc" in
+        0) echo "מחיצה $1 מוצפנת ב-BitLocker — כבו את BitLocker לפני הקליטה" ;;
+        1) return ;;
+        *) echo "לא הצלחנו לבדוק BitLocker במחיצה $1: חיפוש החתימה נכשל (grep rc=$_blrc)" ;;
+    esac
 }

@@ -14,8 +14,9 @@
 #
 #   sudo bash install/verify-boot-payload.sh --server-url http://10.44.12.10:8080
 #
-# המידות והשיפוט מגיעים מ-`server/health.py` ואינם משוכפלים כאן: מסך
-# הבריאות והמתקין חייבים לומר על אותו שרת את אותו דבר.
+# מידות הקרנל וה-initrd הטקסטואלי מגיעות מ-`server/health.py`: מסך הבריאות
+# והמתקין חייבים לומר עליהם אותו דבר. ה-initrd הגרפי נשאר לא-חוסם במסך
+# הבריאות, אבל כלי הטכנאי בודק אותו ברצפה נפרדת כאשר הוא קיים (#1161).
 
 set -euo pipefail
 
@@ -111,6 +112,35 @@ for name in health.BOOT_ASSETS:
 
 problems += health.boot_asset_problems(probe, base)
 
+# The GUI initramfs is optional on a server built without --with-gui, and the
+# server deliberately falls back to the text image in that case.  If it is
+# present, build/cloner roles use it, so verify it with its own realistic floor.
+gui_name = "initrd.img.gui"
+GUI_MIN_ASSET_BYTES = 30 << 20
+gui_path = root / gui_name
+if not gui_path.is_file():
+    print(f"  {gui_name}: absent (server built without --with-gui)")
+else:
+    disk = gui_path.stat().st_size
+    status, served = probe(f"{base}/boot/{gui_name}")
+    print(f"  {gui_name}: דיסק={disk}"
+          f" · HTTP={status if status is not None else 'לא ענה'}"
+          f" · מוגש={served if served is not None else 'לא הוצהר'}")
+    if disk < GUI_MIN_ASSET_BYTES:
+        problems.append(
+            f"{gui_name}: {disk} בייטים בלבד על הדיסק, מתחת ל-{GUI_MIN_ASSET_BYTES}"
+            " — אינו initramfs גרפי")
+    if status is None:
+        problems.append(f"{gui_name}: הבדיקה עצמה לא רצה (השרת לא ענה)")
+    elif status != 200:
+        problems.append(f"{gui_name}: {status} מ-/boot")
+    elif served is None:
+        problems.append(f"{gui_name}: 200 בלי גודל מוצהר — הבדיקה לא רצה")
+    elif served < GUI_MIN_ASSET_BYTES:
+        problems.append(
+            f"{gui_name}: {served} בייטים בלבד הוגשו, מתחת ל-{GUI_MIN_ASSET_BYTES}"
+            " — אינו initramfs גרפי")
+
 for line in problems:
     print(f"  - {line}", file=sys.stderr)
 sys.exit(1 if problems else 0)
@@ -140,6 +170,9 @@ cat >&2 <<EOF
   KVER=\$(ls /lib/modules | grep -v cloud | tail -n1)
   sudo bash tools/build_initramfs.sh --kernel-version "\$KVER" \\
        --output $HTTP_ROOT/initrd.img
+  # לשרת שמציע GUI למחשבי בנייה/שיכפול:
+  sudo bash tools/build_initramfs.sh --with-gui --kernel-version "\$KVER" \\
+       --output $HTTP_ROOT/initrd.img.gui
   sudo cp "/boot/vmlinuz-\$KVER" $HTTP_ROOT/vmlinuz
 
 ואז מריצים את הבדיקה הזו שוב, עד שהיא עוברת:

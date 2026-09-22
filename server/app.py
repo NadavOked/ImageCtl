@@ -542,6 +542,15 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
     מכאן כקובץ סטטי (חלק מעץ `/console`), אבל ה-API `/api/v1/agent/*` שלו
     כבר לא — הוא חי על הקיוסק ועל הסוכן (#824)."""
     ctx = rt.ctx
+    health_hooks = dict(rt.health_hooks or {})
+    if rt.deploy is not None:
+        health_hooks["apply_ssh_firewall"] = lambda interfaces: deploy_net.regenerate_firewall(
+            rt.deploy.repo_dir,
+            deploy_if=rt.deploy.state.interface or "",
+            servers_if=rt.deploy.servers_interface,
+            primary_ip=rt.deploy.primary_ip,
+            ssh_interfaces=tuple(interfaces),
+        )
     # ‏#748: תיקיית העץ נופלת לתיקיית הקוד עצמה כשאין ``--repo-dir``
     # מפורש (בדיקות/הרצה ישירה) — ראו ``main.py``.
     repo_dir = rt.repo_dir or Path(__file__).resolve().parents[1]
@@ -584,7 +593,7 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
     include(create_dhcp_router(ctx, dhcp_hooks, deploy=rt.deploy))
     include(create_netcfg_router(ctx, rt.netcfg_dir, rt.netcfg_hooks))
     include(create_health_router(
-        ctx, rt.server_base, rt.health_hooks,
+        ctx, rt.server_base, health_hooks,
         dnsmasq_apply=lambda what, user_id: console_dhcp.apply_dnsmasq(
             ctx, dhcp_hooks, rt.deploy, what, user_id),
         version=lambda: current_version(update_hooks, repo_dir)))

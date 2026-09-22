@@ -123,7 +123,7 @@ restore_partition_drawers() {
     _streampid=$!
     if wait_progress "$_streampid" "$RUN_DIR/bytes.raw" \
             "$STREAM_START_CEILING" "$WAIT_STREAM_STALL_S" \
-            "הזרם של מחיצה $_idx ($_file)"; then
+            "הזרם של מחיצה $_idx ($_file)" "$RUN_DIR/shafifo"; then
         _fanout_rc=$(cat "$RUN_DIR/fanout.rc" 2>/dev/null || echo 1)
     else
         _fanout_rc="$WAIT_TIMED_OUT"
@@ -248,7 +248,7 @@ run_restore_drawers() {
     fi
     _expected=$(awk 'END { print NR }' "$_plan")
     _written=0; STREAMED_PARTITIONS=0   # #957: הזרם הראשון של השחזור הזה
-    while IFS='|' read -r _i _g _role _fs _s _sz _f _sha _exp _ug _uuid <&3; do
+    while IFS='|' read -r _i _g _role _fs _s _sz _f _sha _exp _ug _uuid _attrs <&3; do
         if is_swap_partition "$_fs"; then
             log "partition $_i (swap): recreated on each drawer, not fed"
         else

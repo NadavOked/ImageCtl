@@ -123,14 +123,12 @@ def snapshot(ctx, hooks: dict, server_base: str) -> dict:
     }
 
 
-def ssh_checks(state: dict) -> list[dict]:
-    """שתי שורות, ובשתיהן **הראיה** היא מה שנצבע.
+def ssh_checks(state: dict, *, include_disabled: bool = False) -> list[dict]:
+    """שורות SSH פעילות לבריאות; דף הפורטים יכול לבקש גם מתגים כבויים.
 
-    ‏"אי אפשר לבדוק" אינו אפור כאן אלא אדום, בניגוד לשאר המסך: פורט 67
-    שלא נבדק משאיר PXE שלא עובד ורואים את זה מיד, אבל דלת SSH שלא
-    נבדקה נראית בדיוק כמו דלת סגורה — וזו ההנחה שהמשימה הזאת קיימת
-    כדי לשבור. דלת פתוחה שיודעים עליה היא צהוב; דלת שאי אפשר לראות
-    היא אדום.
+    כשהמתג כבוי אין שורת בריאות כלל. בדף הפורטים, שבו המתג עצמו מוצג,
+    ‏"אי אפשר לבדוק" נשאר אדום: דלת SSH שלא נבדקה עלולה להיות פתוחה למרות
+    שהמסך אומר "סגור". ראו #83 ו-#1148.
 
     ‏(#354) עברה הנה מ-`server/health.py` — זה המודול שהיא באמת שייכת
     אליו. `check` נשאר ב-health.py כי הוא כבר מייבא את המודול הזה;
@@ -139,11 +137,13 @@ def ssh_checks(state: dict) -> list[dict]:
     from .health import check  # noqa: PLC0415 — נמנע ממעגל ייבוא
     rows = []
     st = state["stations"]
-    if st["evidence"] == "unknown":
+    # המתג דלוק: השורה מופיעה, והצבע הוא **הראיה** — לא המתג. "לא נבדק"
+    # אדום (עיקרון 5), פתוח צהוב, ודגל שלא הגיע לתפריט אדום.
+    if st["enabled"] and st["evidence"] == "unknown":
         rows.append(check("ssh_stations", "SSH בתחנות", "bad",
                           f"{st['detail']} — הבדיקה עצמה לא רצה, ואי אפשר "
                           "להסיק מכך שסגור"))
-    elif st["evidence"] == "open":
+    elif st["enabled"] and st["evidence"] == "open":
         rows.append(check("ssh_stations", "SSH בתחנות", "warn",
                           "פתוח — כל תחנה שעולה מריצה dropbear ומעטפת טכנאי. "
                           + st["detail"]))
@@ -151,7 +151,15 @@ def ssh_checks(state: dict) -> list[dict]:
         # המתג דלוק והתפריט נקי: מישהו או משהו לא הגיע ליעד.
         rows.append(check("ssh_stations", "SSH בתחנות", "bad",
                           "המתג דלוק אבל הדגל אינו בתפריט שמוגש — המתג לא תפס"))
-    else:
+    elif include_disabled and st["evidence"] == "unknown":
+        rows.append(check("ssh_stations", "SSH בתחנות", "bad",
+                          f"{st['detail']} — הבדיקה עצמה לא רצה, ואי אפשר "
+                          "להסיק מכך שסגור"))
+    elif include_disabled and st["evidence"] == "open":
+        rows.append(check("ssh_stations", "SSH בתחנות", "warn",
+                          "פתוח — כל תחנה שעולה מריצה dropbear ומעטפת טכנאי. "
+                          + st["detail"]))
+    elif include_disabled:
         rows.append(check("ssh_stations", "SSH בתחנות", "ok", st["detail"]))
 
     live = state["listeners"]
@@ -159,6 +167,8 @@ def ssh_checks(state: dict) -> list[dict]:
     unwanted = [n["name"] for n in state["interfaces"]
                 if bool(n["listening"]) != n["enabled"]]
     port = live["port"]
+    if not any(n["enabled"] for n in state["interfaces"]) and not include_disabled:
+        return rows
     if not live["checked"]:
         rows.append(check("ssh_server", "SSH לשרת", "bad",
                           f"טבלת הסוקטים לא נקראה ({live['reason']}) — לא "
@@ -211,7 +221,10 @@ def _apply_and_verify(ctx, hooks: dict, server_base: str) -> dict:
         for name in ssh_switch.enabled_interfaces(ctx.conn)
         for address in (live.get(name, {}).get("addresses") or [])
     ]
-    error = hooks["apply_sshd"](ssh_switch.render_sshd_conf(addresses))
+    enabled = tuple(ssh_switch.enabled_interfaces(ctx.conn))
+    firewall_error = hooks["apply_ssh_firewall"](enabled)
+    sshd_error = hooks["apply_sshd"](ssh_switch.render_sshd_conf(addresses))
+    error = firewall_error or sshd_error
     state = snapshot(ctx, hooks, server_base)
     for _ in range(VERIFY_TRIES - 1):
         if _matches(state):

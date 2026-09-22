@@ -113,16 +113,22 @@ def test_the_builder_packs_the_usb_core_and_host_trees(tmp_path: Path):
 def closure_snippet() -> str:
     """הקטע שסוגר את גרף התלויות, כפי שהוא בסקריפט."""
     lines = BUILDER.read_text(encoding="utf-8").split("\n")
-    start = next(i for i, l in enumerate(lines) if l.startswith("_closure_round=0"))
+    start = next(i for i, l in enumerate(lines)
+                 if l.startswith('[ -f "$MODSRC/modules.softdep" ]'))
     end = next(i for i, l in enumerate(lines)
                if l.startswith('echo "module dependency closure:'))
     return "\n".join(lines[start:end + 1])
 
 
-def run_closure(tmp_path: Path, src: Path, root: Path):
+def run_closure(tmp_path: Path, src: Path, root: Path, *, softdep: bool = True,
+                check: bool = True):
+    if softdep and not (src / "modules.softdep").exists():
+        (src / "modules.softdep").write_text("", encoding="utf-8")
+    if not (src / "modules.builtin").exists():
+        (src / "modules.builtin").write_text("", encoding="utf-8")
     script = (f"ROOT={root.as_posix()!r}\nKVER={KVER!r}\n"
               f"MODSRC={src.as_posix()!r}\n" + closure_snippet())
-    return subprocess.run(["sh", "-c", script], check=True,
+    return subprocess.run(["sh", "-c", script], check=check,
                           stdin=subprocess.DEVNULL, capture_output=True, timeout=90)
 
 
@@ -174,6 +180,50 @@ def test_the_closure_terminates_when_nothing_is_missing(tmp_path: Path):
 
     done = run_closure(tmp_path, src, root)
     assert b"after 1 rounds" in done.stdout
+
+
+def test_libcrc32c_softdep_pulls_the_crc32c_implementation_into_the_image(tmp_path: Path):
+    """#1169 negative control: modules.dep alone left crc32c_generic out."""
+    src, root = tmp_path / "src", tmp_path / "root"
+    (src / "kernel/lib").mkdir(parents=True)
+    (src / "kernel/crypto").mkdir(parents=True)
+    (src / "kernel/lib/libcrc32c.ko.xz").write_bytes(b"")
+    (src / "kernel/crypto/crc32c_generic.ko.xz").write_bytes(b"")
+    (src / "modules.dep").write_text(
+        "kernel/lib/libcrc32c.ko.xz:\n"
+        "kernel/crypto/crc32c_generic.ko.xz:\n", encoding="utf-8")
+    (src / "modules.softdep").write_text(
+        "softdep libcrc32c pre: crc32c\n", encoding="utf-8")
+    dst = root / "lib" / "modules" / KVER / "kernel/lib"
+    dst.mkdir(parents=True)
+    (dst / "libcrc32c.ko.xz").write_bytes(b"")
+
+    run_closure(tmp_path, src, root)
+
+    packed = root / "lib" / "modules" / KVER
+    assert (packed / "kernel/crypto/crc32c_generic.ko.xz").is_file()
+
+
+def test_missing_modules_softdep_is_a_named_build_failure(tmp_path: Path):
+    src, root = tmp_path / "src", tmp_path / "root"
+    (src / "kernel/lib").mkdir(parents=True)
+    (src / "kernel/lib/libcrc32c.ko.xz").write_bytes(b"")
+    (src / "modules.dep").write_text("kernel/lib/libcrc32c.ko.xz:\n",
+                                      encoding="utf-8")
+    dst = root / "lib" / "modules" / KVER / "kernel/lib"
+    dst.mkdir(parents=True)
+    (dst / "libcrc32c.ko.xz").write_bytes(b"")
+
+    done = run_closure(tmp_path, src, root, softdep=False, check=False)
+
+    assert done.returncode != 0
+    assert b"modules.softdep" in done.stderr
+
+
+def test_softdep_metadata_is_packed_for_busybox_modprobe():
+    """The closure alone is insufficient: modprobe needs the metadata too."""
+    source = BUILDER.read_text(encoding="utf-8")
+    assert 'cp "$MODSRC/modules.softdep" "$ROOT/lib/modules/$KVER/"' in source
 
 
 # --- מערכות קבצים: העץ שלא נארז, וארבעה תסמינים שנראו לא קשורים (#84) --------
@@ -330,6 +380,8 @@ FS_LAYOUT = {
     "nls_cp437": "kernel/fs/nls",
     "nls_ascii": "kernel/fs/nls",
     "efivarfs": "kernel/fs/efivarfs",
+    "crc32c_generic": "kernel/crypto",
+    "crc32c-intel": "kernel/arch/x86/crypto",
 }
 
 LAYOUT = {**PLATFORM_LAYOUT, **FS_LAYOUT}
@@ -596,7 +648,9 @@ def run_init_block(tmp_path: Path, modules: list[str], required: list[str],
     # ‏`:` בסוף — הקטע יושב באמצע `agent/init`, אחריו יש עוד קוד ואין
     # ‏`set -e`, ולכן קוד היציאה של השורה האחרונה בו אינו משמעותי שם.
     # בלעדיו, ריצה שבה רק מודול רשות נכשל הייתה יוצאת 1 על `[ -n "" ]`.
-    script = f'FAIL="{" ".join(fail)}"\n' + stub + block + "\n:\n"
+    run_dir = tmp_path / "run"; run_dir.mkdir()
+    script = (f'FAIL="{" ".join(fail)}"\nRUN_DIR={run_dir.as_posix()!r}\n'
+              + stub + block + "\n:\n")
     done = subprocess.run(["sh", "-c", script], stdin=subprocess.DEVNULL,
                           capture_output=True, encoding="utf-8", errors="replace",
                           timeout=30)
@@ -604,7 +658,8 @@ def run_init_block(tmp_path: Path, modules: list[str], required: list[str],
     return done.stdout
 
 
-FS_REQUIRED = ["ext4", "btrfs", "xfs", "vfat", "fat", "nls_cp437", "nls_ascii", "efivarfs"]
+FS_REQUIRED = ["ext4", "btrfs", "xfs", "vfat", "fat", "nls_cp437", "nls_ascii",
+               "efivarfs", "crc32c_generic", "crc32c-intel"]
 
 
 def test_init_names_required_and_platform_failures_on_separate_lines(tmp_path: Path):
@@ -625,6 +680,7 @@ def test_init_names_required_and_platform_failures_on_separate_lines(tmp_path: P
     # ההודעה השטוחה הישנה — שלא הבחינה בין השניים — נעלמה
     assert not re.search(r"\d+ modules did not load", out), (
         f"ההודעה השטוחה הישנה חזרה: {out!r}")
+    assert (tmp_path / "run/modules.failed").read_text().splitlines() == ["ext4"]
 
 
 def test_a_required_module_failure_is_named_not_a_silent_count(tmp_path: Path):

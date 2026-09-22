@@ -25,6 +25,7 @@ from .sessions import SessionStore
 from .tasks import active_task
 
 log = logging.getLogger("imagectl.hello")
+_BOOT_SKIP_LOGGED: set[str] = set()
 
 #: ‏#839: סוד המוניטור — 16 בייטים אקראיים שהסוכן הגריל באתחול, כ-32
 #: ספרות hex קטנות. אורך קבוע כי תשובת ה-VNC Authentication היא 16 בייטים
@@ -98,6 +99,37 @@ def self_probe(scope: dict | None) -> bool:
             scope.get("server")[0])
     except Exception:  # noqa: BLE001 — כאן זו בדיוק הכוונה
         return False
+
+
+def server_source(scope: dict | None) -> bool:
+    """האם מקור בקשת האתחול הוא השרת עצמו.
+
+    curl מקומי אל כתובת הממשק יוצא מאותה כתובת; אל localhost הוא
+    יוצא מ-loopback. בשני המקרים זה אינו אתחול של תחנה, גם בלי
+    כותרת ה-probe של מסך הבריאות.
+    """
+    try:
+        client = ipaddress.ip_address(scope.get("client")[0])
+        local = ipaddress.ip_address(scope.get("server")[0])
+        return client.is_loopback or client == local
+    except Exception:  # noqa: BLE001 — ספק נשאר בהתנהגות הישנה
+        return False
+
+
+def valid_machine_mac(mac: str) -> bool:
+    """זהות MAC שיכולה לשייך לתחנה: לא אפסים/שידור/מולטיקאסט."""
+    try:
+        raw = bytes.fromhex(mac.replace(":", ""))
+        return len(raw) == 6 and any(raw) and raw != b"\xff" * 6 and not raw[0] & 1
+    except (TypeError, ValueError):
+        return False
+
+
+def _debug_boot_skip_once(kind: str, mac: str, client_ip: str | None) -> None:
+    if kind in _BOOT_SKIP_LOGGED:
+        return
+    _BOOT_SKIP_LOGGED.add(kind)
+    log.debug("boot menu for %s from %s not recorded: %s", mac, client_ip, kind)
 
 
 def login_required(conn: sqlite3.Connection, has_open_session: bool,
@@ -325,15 +357,22 @@ def make_resolver(conn: sqlite3.Connection, library: ImageLibrary,
                 scope: dict | None = None) -> dict:
         off_vlan = off_deploy_vlan(scope, server_base)
         probe = self_probe(scope)
+        local_request = server_source(scope)
+        invalid_mac = not valid_machine_mac(mac)
+        do_not_record = off_vlan or probe or local_request or invalid_mac
         answer = build_answer(
             conn, library, store, mac, client_ip=client_ip, joining=False,
             # ‏#585: בקשת תפריט מחוץ לווילן ההפצה אינה כותבת `net_seen` —
             # אותה הכרעה בדיוק כמו הספירה למטה, ומאותו טעם (‏MAC בשאילתה
             # אינו זהות). על וילן ההפצה התפריט כן רושם, כמו היום.
             # ‏#976: וגם לא הבדיקה העצמית של השרת — היא אינה המכונה.
-            record_seen=not (off_vlan or probe),
-            record_journal=not probe,
+            record_seen=not do_not_record,
+            record_journal=not (probe or local_request or invalid_mac),
         )
+        if local_request or invalid_mac:
+            reason = "server source" if local_request else "invalid MAC"
+            _debug_boot_skip_once(reason, mac, client_ip)
+            return answer
         if probe:
             # ‏#976: הבדיקה העצמית מקבלת את התפריט האמיתי — זו הראיה
             # החיובית שהיא באה בשבילו — אבל אינה אתחול: לא `net_seen`,

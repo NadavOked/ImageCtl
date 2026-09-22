@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import http.client
+import io
 import json
 import os
 import re
 import threading
+import urllib.error
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,7 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from server.wizard.__main__ import main
-from server.wizard import core
+from server.wizard import bridge, core
 from server.wizard.core import WizardConfig, WizardPaths, WizardState, list_interfaces, validate_config
 from server.wizard.httpd import WizardHTTPServer
 
@@ -162,6 +164,15 @@ def test_apply_is_accepted_immediately_is_idempotent_and_progress_keeps_finish_p
         serving.join(2)
 
 
+def test_progress_strips_ansi_before_exposing_output(tmp_path: Path) -> None:
+    state = WizardState(_paths(tmp_path, tmp_path / "unused", tmp_path / "unused2"),
+                        dev=True, interfaces_provider=lambda: NICS)
+    state._append("plain \x1b[31mred\x1b[0m \x1b]8;;https://example.invalid\x07link\x1b]8;;\x07\n")
+    output = state.progress()["output"]
+    assert output == "plain red link\n"
+    assert "\x1b" not in output
+
+
 def test_nic_status_distinguishes_admin_down_no_link_and_carrier(tmp_path: Path, monkeypatch) -> None:
     for name, operstate, carrier in (
         ("admin-down", "down", None),
@@ -187,11 +198,23 @@ def test_wizard_client_polls_with_backoff_and_never_turns_apply_fetch_into_failu
     assert "const reconnectLimitMs = 5 * 60 * 1000" in js
     assert 'status.textContent = "מתחבר מחדש…"' in js
     assert 'response.status === 404' in js
+    assert 'if (response.status === 404) return {handoff: true}' in js
     assert "setInterval" not in js
     apply = js.split("async function next()", 1)[1].split("function finish", 1)[0]
     assert 'finish({state: "check-error"' not in apply
     assert "catch (_) {\n    reconnecting();" in apply
     assert "scheduleProgress(0)" in apply
+
+
+def test_wizard_source_has_password_eyes_hidden_footer_and_operator_progress() -> None:
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    js = (STATIC / "wizard.js").read_text(encoding="utf-8")
+    assert html.count('class="password-eye"') == 2
+    assert 'data-password="password"' in html
+    assert 'data-password="password_confirm"' in html
+    assert "מה קורה עכשיו" in html and "פרטים טכניים" in html
+    assert '<details open>' not in html
+    assert 'footer.hidden = typeof which !== "number" || which === 6' in js
 
 
 def test_finish_fingerprint_can_wrap_inside_the_card() -> None:
@@ -222,3 +245,74 @@ def test_wizard_static_files_have_no_external_resources() -> None:
             continue
         text = path.read_text(encoding="utf-8")
         assert not re.search(r"(?:src|href)=[\"']https?://", text), path
+
+
+def test_check_primary_endpoint_returns_measured_success_and_named_failure(tmp_path, monkeypatch) -> None:
+    state = WizardState(_paths(tmp_path, tmp_path / "unused", tmp_path / "unused2"),
+                        dev=True, interfaces_provider=lambda: NICS)
+    nic_fact, role_fact = tmp_path / "nic", tmp_path / "role"
+    nic_fact.write_text("", encoding="utf-8")
+    role_fact.write_text("", encoding="utf-8")
+    server = WizardHTTPServer(("127.0.0.1", 0), state, nic_fact, role_fact)
+    serving = threading.Thread(target=server.serve_forever, daemon=True)
+    serving.start()
+
+    def post() -> dict:
+        conn = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=1)
+        try:
+            body = json.dumps({"primary_url": "https://primary:8443"}).encode()
+            conn.request("POST", "/api/wizard/check-primary", body,
+                         {"Content-Type": "application/json"})
+            response = conn.getresponse()
+            assert response.status == 200
+            return json.loads(response.read())
+        finally:
+            conn.close()
+
+    try:
+        monkeypatch.setattr("server.wizard.httpd.check_primary", lambda _url: {
+            "ok": True, "name": "primary", "version": "TLSv1.3", "fingerprint": "AA:BB",
+        })
+        assert post()["fingerprint"] == "AA:BB"
+        monkeypatch.setattr("server.wizard.httpd.check_primary", lambda _url: {
+            "ok": False, "error": "התקשרות לשרת הראשי בפורט 8443 נכשלה. ודא כי חומת האש שבין האתרים פתוחה.",
+        })
+        assert post()["ok"] is False
+    finally:
+        server.shutdown(); server.server_close(); serving.join(2)
+
+
+def test_native_bridge_interfaces_and_apply_are_line_oriented(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(bridge, "_request", lambda path, body=None: {
+        "state": {"ok": True, "rerun": False, "defaults": {
+            "role": "standalone", "interface": "eth-test", "mode": "dhcp",
+            "hostname": "imagectl-server", "primary_url": "",
+        }, "interfaces": [{"name": "eth-test", "model": "Intel I350",
+            "mac": "02:00:00:00:00:01", "link_label": "מחובר",
+            "current_ip": "10.44.10.37/24", "source": "DHCP"}]},
+        "apply": {"ok": True, "job": "job-1"},
+    }[path])
+    monkeypatch.setattr(bridge.sys, "stdin", io.StringIO("{}"))
+    assert bridge.main(["interfaces"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert "role=standalone" in lines
+    assert "nic=eth-test|Intel I350|02:00:00:00:00:01|מחובר|10.44.10.37/24|DHCP||||" in lines
+    monkeypatch.setattr(bridge.sys, "stdin", io.StringIO(json.dumps(valid().__dict__)))
+    assert bridge.main(["apply"]) == 0
+    assert "job=job-1" in capsys.readouterr().out.splitlines()
+
+
+def test_native_bridge_returns_nonzero_when_wizard_is_down(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(bridge, "_request", lambda *_args, **_kwargs:
+                        (_ for _ in ()).throw(urllib.error.URLError("connection refused")))
+    monkeypatch.setattr(bridge.sys, "stdin", io.StringIO("{}"))
+    assert bridge.main(["progress"]) == 1
+    assert "URLError" in capsys.readouterr().err
+
+
+def test_native_bridge_progress_404_uses_local_finish_evidence(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(bridge, "_request", lambda *_args, **_kwargs: {"_http_status": 404})
+    monkeypatch.setattr(bridge, "_finish", lambda: print("state=done\nfingerprint=AA:BB"))
+    monkeypatch.setattr(bridge.sys, "stdin", io.StringIO("{}"))
+    assert bridge.main(["progress"]) == 0
+    assert capsys.readouterr().out.splitlines() == ["state=done", "fingerprint=AA:BB"]

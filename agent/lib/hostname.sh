@@ -15,10 +15,17 @@ HOSTNAME_METHOD="offline-registry"
 HOSTNAME_METHOD_LINUX="etc-hostname"
 
 _mount_windows() {
-    # $1 = disk, $2 = manifest. Echoes the mount point, or fails. ‏#876: הקורא
+    # $1 = disk, $2 = manifest, $3 = an already verified plan (optional).
+    # Echoes the mount point, or fails. ‏#876: הקורא
     # לוכד את הפלט ב-`$( )`, ולכן כל `log` כאן (ובכל עוזרת של write_hostname)
     # הולך ל-stderr -- אחרת שורת היומן נכנסת לערך.
-    _idx=$(manifest_plan "$2" | awk -F'|' '$3 == "windows" { print $1; exit }')
+    if [ -n "${3:-}" ]; then
+        _idx=$(awk -F'|' '$3 == "windows" { print $1; exit }' "$3") || return 1
+    else
+        _mount_plan="$RUN_DIR/mount-windows.plan"
+        manifest_plan "$2" > "$_mount_plan" || return 1
+        _idx=$(awk -F'|' '$3 == "windows" { print $1; exit }' "$_mount_plan") || return 1
+    fi
     [ -n "$_idx" ] || { log "no windows partition in the manifest" >&2; return 1; }
     _node=$(partition_node "$1" "$_idx")
     _mnt="$RUN_DIR/win"
@@ -33,12 +40,19 @@ _mount_windows() {
 }
 
 _mount_linux() {
-    # $1 = disk, $2 = manifest. Echoes the mount point, or fails. A btrfs
+    # $1 = disk, $2 = manifest, $3 = an already verified plan (optional).
+    # Echoes the mount point, or fails. A btrfs
     # root usually lives in a subvolume (Ubuntu: "@"), so if there is no
     # /etc at the top level the mount is retried with that subvolume.
-    _idx=$(manifest_plan "$2" | awk -F'|' '$3 == "linux" { print $1; exit }')
+    if [ -n "${3:-}" ]; then
+        _mount_plan="$3"
+    else
+        _mount_plan="$RUN_DIR/mount-linux.plan"
+        manifest_plan "$2" > "$_mount_plan" || return 1
+    fi
+    _idx=$(awk -F'|' '$3 == "linux" { print $1; exit }' "$_mount_plan") || return 1
     [ -n "$_idx" ] || { log "no linux partition in the manifest" >&2; return 1; }
-    _fs=$(manifest_plan "$2" | awk -F'|' -v i="$_idx" '$1 == i { print $4 }')
+    _fs=$(awk -F'|' -v i="$_idx" '$1 == i { print $4 }' "$_mount_plan") || return 1
     _node=$(partition_node "$1" "$_idx")
     _mnt="$RUN_DIR/linux"
     mkdir -p "$_mnt"
@@ -81,8 +95,9 @@ _umount_checked() {
 }
 
 _write_hostname_linux() {
-    # $1 = disk, $2 = manifest, $3 = name. Emits the section 5 result.
-    _mnt=$(_mount_linux "$1" "$2") || {
+    # $1 = disk, $2 = manifest, $3 = name, $4 = verified plan (optional).
+    # Emits the section 5 result.
+    _mnt=$(_mount_linux "$1" "$2" "${4:-}") || {
         printf '{"ok":false,"error":"could not mount the linux partition","code":"mount_failed"}\n'
         return 1
     }
@@ -140,12 +155,23 @@ write_hostname() {
     # Which system is on the disk decides how the name is written. The
     # partition roles in the manifest are the source of truth for this
     # (spec section 14) -- there is no separate "which OS" flag to get wrong.
-    if ! manifest_plan "$_manifest" 2>/dev/null | awk -F'|' '$3 == "windows"' | grep -q .; then
-        _write_hostname_linux "$_disk" "$_manifest" "$_name"
+    _hostname_plan="$RUN_DIR/hostname.plan"
+    if ! manifest_plan "$_manifest" > "$_hostname_plan"; then
+        printf '{"ok":false,"error":"could not read the partition plan","code":"manifest_plan_failed"}\n'
+        return 1
+    fi
+    grep -qE '^[^|]*\|[^|]*\|windows\|' "$_hostname_plan"
+    _plan_rc=$?
+    if [ "$_plan_rc" -eq 1 ]; then
+        _write_hostname_linux "$_disk" "$_manifest" "$_name" "$_hostname_plan"
         return $?
     fi
+    if [ "$_plan_rc" -ne 0 ]; then
+        printf '{"ok":false,"error":"could not check the partition plan","code":"manifest_plan_check_failed"}\n'
+        return 1
+    fi
 
-    _mnt=$(_mount_windows "$_disk" "$_manifest") || {
+    _mnt=$(_mount_windows "$_disk" "$_manifest" "$_hostname_plan") || {
         printf '{"ok":false,"error":"could not mount the windows partition","code":"mount_failed"}\n'
         return 1
     }

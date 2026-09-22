@@ -229,7 +229,7 @@ def render_menu(snapshot: Snapshot, selected: int = 0, seconds: int = 90) -> lis
          "Live state is read back before success."),
         ("Restart Services", "Restarts imagectl-server and dnsmasq only", "when dnsmasq is enabled, then reads back", "each service state."),
         ("Display TLS Certificate", "Shows SHA-256, certificate SANs and", "the not-after date read from the cert."),
-        ("Re-run Initial Setup Wizard", "Starts imagectl-wizard.service in rerun", "mode. The wizard is shown on HTTPS 8081."),
+        ("Re-run Initial Setup Wizard", "Starts imagectl-wizard-rerun.service.", "The wizard is shown on HTTPS 8081."),
     )
     for row, line in enumerate(descriptions[selected], start=4):
         canvas.put(row, 38, line, 39)
@@ -435,7 +435,7 @@ def _current_lines(runtime: Runtime, now: float) -> list[str]:
                               seconds=seconds)
     if runtime.screen == "wizard_confirm":
         return render_message("Re-run Initial Setup Wizard",
-                              "Press Y to start imagectl-wizard.service; Esc cancels.",
+                              "Press Y to start imagectl-wizard-rerun.service; Esc cancels.",
                               (f"URL: {runtime.snapshot.console_url}",), seconds)
     result = runtime.result or actions.ActionResult(False, runtime.message or "No result.")
     return render_message("Action Result", result.message, result.details, seconds)

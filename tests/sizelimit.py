@@ -29,6 +29,19 @@ MAX_LINES = 300
 WARN_LINES = 280
 
 
+def guarded_shell_files(root: Path | str) -> list[Path]:
+    """POSIX initramfs code covered by the 300-line wall."""
+    root = Path(root)
+    agent = root / "agent"
+    installer = root / "installer"
+    return sorted([
+        agent / "init", agent / "imagectl-agent",
+        *(agent / "lib").glob("*.sh"),
+        installer / "imagectl-install",
+        *(installer / "lib").glob("*.sh"),
+    ])
+
+
 class FileGrowingWarning(UserWarning):
     """קובץ שעבר את סף האזהרה ועדיין לא את הקיר.
 

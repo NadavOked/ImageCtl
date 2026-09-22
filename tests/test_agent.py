@@ -27,6 +27,7 @@ import sizelimit
 
 REPO = Path(__file__).resolve().parent.parent
 AGENT = REPO / "agent"
+INSTALLER = REPO / "installer"
 
 
 def find_bash() -> str | None:
@@ -48,9 +49,7 @@ BASH = find_bash()
 # לגיטימי; במקום שבו bash אמור להיות — כישלון, לא ירוק (#52).
 pytestmark = requires_native(("bash", BASH))
 
-SH_FILES = sorted(
-    [AGENT / "init", AGENT / "imagectl-agent", *(AGENT / "lib").glob("*.sh")]
-)
+SH_FILES = sizelimit.guarded_shell_files(REPO)
 
 
 def sh(script: str, cwd: Path | None = None) -> str:
@@ -1524,6 +1523,16 @@ def test_a_trailing_swap_is_rebuilt_at_the_tail_and_the_root_takes_the_rest(tmp_
     assert marker == "2|ext4"
 
 
+def test_expansion_preserves_attributes_on_the_candidate_and_moved_tail(tmp_path):
+    """#1130: both partition recreations used to omit sgdisk -A."""
+    attrs = "8000000000000001"
+    plan = [line + f"||{attrs}" for line in DEBIAN_PLAN]
+    rc, calls, _marker = run_expand(tmp_path, plan, disk_sectors=976773168)
+    assert rc == "rc=0"
+    assert any(f"-A 2:=:0x{attrs}" in call for call in calls), calls
+    assert any(f"-A 3:=:0x{attrs}" in call for call in calls), calls
+
+
 def test_the_room_check_counts_the_swap_that_comes_back(tmp_path):
     """הזנב גדול ב-9GiB מהטבלה, אבל 8GiB מתוכו חוזרים ל-swap — מתחת
     לסף הרווח האמיתי אין נגיעה בטבלה בכלל."""
@@ -2154,12 +2163,14 @@ def _finish_and_stop(tmp_path, after_task, role=None):
         'BOX=' + repr(posix(box)) + '; OUT=' + repr(posix(out)) + '; '
         'poweroff() { echo poweroff >> "$OUT"; }; '
         'reboot()   { echo reboot   >> "$OUT"; }; '
-        'arm_wol()  { :; }; '
         'sync()     { :; }; log() { :; }; '
         + role_line +
         'export AFTER_TASK_FILE="$BOX/etc/imagectl/after-task"; '
         # הפונקציה האמיתית, לא עותק שלה
-        '. ' + posix(AGENT) + '/lib/common.sh; finish_and_stop')
+        '. ' + posix(AGENT) + '/lib/common.sh; '
+        # These tests isolate after-task selection.  A separate shim suite
+        # exercises real arm_wol success and every failure state.
+        'arm_wol() { :; }; finish_and_stop')
     subprocess.run([BASH, "-c", script], capture_output=True,
                    cwd=str(REPO), stdin=subprocess.DEVNULL)
     return out.read_text(encoding="utf-8").split() if out.exists() else []

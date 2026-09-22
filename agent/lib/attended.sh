@@ -52,6 +52,7 @@ attended_start() {
     attended_stop
     (
         while :; do
+            if command -v watchdog_beat >/dev/null; then watchdog_beat; fi
             attended_hello "$1" || :
             sleep "$ATTENDED_BEAT_S"
         done

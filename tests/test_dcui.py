@@ -185,24 +185,23 @@ def test_restart_services_only_restarts_enabled_dnsmasq(tmp_path):
     assert ["systemctl", "restart", "dnsmasq"] not in calls
 
 
-def test_wizard_rerun_releases_8081_and_starts_the_part_one_unit(tmp_path):
+def test_wizard_rerun_releases_8081_and_starts_the_dedicated_unit(tmp_path):
     conn = _db(tmp_path)
     calls = []
 
     def fake(argv):
         calls.append(argv)
-        if argv == ["systemctl", "is-active", "imagectl-wizard.service"]:
+        if argv == ["systemctl", "is-active", "imagectl-wizard-rerun.service"]:
             return CommandResult(0, "active\n", "")
         return CommandResult(0, "", "")
 
     result = actions.start_wizard(conn, "https://192.0.2.10:8081", fake)
     assert result.ok
-    assert calls[:3] == [
-        ["systemctl", "set-environment", "IMAGECTL_WIZARD_MODE=--rerun"],
+    assert calls[:2] == [
         ["systemctl", "stop", "imagectl-server"],
-        ["systemctl", "start", "imagectl-wizard.service"],
+        ["systemctl", "start", "imagectl-wizard-rerun.service"],
     ]
-    assert ["systemctl", "unset-environment", "IMAGECTL_WIZARD_MODE"] in calls
+    assert all("environment" not in arg for call in calls for arg in call)
 
 
 def test_demo_snapshot_exposes_real_picker_shape():
@@ -285,7 +284,10 @@ def test_dcui_unit_owns_tty1_without_requiring_the_web_server():
     assert "Requires=imagectl-server.service" not in unit
 
 
-def test_wizard_unit_has_an_explicit_systemd_rerun_argument():
+def test_wizard_units_separate_first_boot_from_explicit_rerun():
     unit = (ROOT / "install" / "imagectl-wizard.service").read_text(encoding="utf-8")
-    assert "$IMAGECTL_WIZARD_MODE" in unit
-    assert "ConditionPathExists" not in unit
+    rerun = (ROOT / "install" / "imagectl-wizard-rerun.service").read_text(encoding="utf-8")
+    assert "ConditionPathExists=!/var/lib/imagectl/.firstboot-done" in unit
+    assert "--rerun" not in unit and "$IMAGECTL_WIZARD_MODE" not in unit
+    assert "ConditionPathExists" not in rerun
+    assert "python3 -m server.wizard --rerun" in rerun

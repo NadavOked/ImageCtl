@@ -32,6 +32,8 @@ BASH = shutil.which("bash")
 #: גוף ה-404 של ‎/boot — **תשעה** בייטים. זה המספר שהוגש ב-200 מדומה
 #: ונספר כהצלחה, וזו הסיבה ש"יש תשובה ויש גודל" אינו "יש קובץ".
 NOT_FOUND_BODY = b"Not Found"
+GUI_INITRD = "initrd.img.gui"
+GUI_MIN_ASSET_BYTES = 30 * 1024 * 1024
 
 pytestmark = requires_native(
     "bash", "python3", why="השער הוא סקריפט bash שמריץ python3"
@@ -176,6 +178,28 @@ def test_real_files_that_are_really_served_pass(tmp_path: Path):
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "תחנה יכולה לעלות" in result.stdout
+
+
+def test_absent_gui_initrd_is_a_named_non_blocking_outcome(tmp_path: Path):
+    """A server built without --with-gui falls back to text, but must say so."""
+    directory = boot_dir(tmp_path, MIN_ASSET_BYTES + 1)
+    with serving(directory) as base:
+        result = run_gate(directory, base)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"{GUI_INITRD}: absent" in result.stdout
+
+
+def test_empty_gui_initrd_is_refused(tmp_path: Path):
+    """Negative control: a named GUI payload that is truncated cannot pass."""
+    directory = boot_dir(tmp_path, MIN_ASSET_BYTES + 1)
+    (directory / GUI_INITRD).write_bytes(b"")
+    with serving(directory) as base:
+        result = run_gate(directory, base)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert GUI_INITRD in result.stderr
+    assert str(GUI_MIN_ASSET_BYTES) in result.stderr
 
 
 def gate_block() -> str:

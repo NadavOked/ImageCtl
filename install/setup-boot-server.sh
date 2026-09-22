@@ -399,7 +399,7 @@ if [[ -z "$IFACE" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# שאלה 1 — כרטיס וילן השרתים (קונסולה 8081, SSH 22), מתוך רשימה של מה שקיים
+# שאלה 1 — כרטיס וילן השרתים (קונסולה 8081), מתוך רשימה של מה שקיים
 # ---------------------------------------------------------------------------
 #
 # ‏#1088: הכרטיס הזה הוא לקוח DHCP של המכללה כברירת מחדל — הכתובת מגיעה
@@ -428,7 +428,7 @@ if [[ -z "$SERVERS_IF" ]]; then
         # אוטומציה (--deploy-if בלי --servers-if): אותו כרטיס, כדי לא לשבור סקריפטים.
         SERVERS_IF="$IFACE"
     else
-        say "כרטיס וילן השרתים (קונסולה HTTPS, SSH ניהול):"
+        say "כרטיס וילן השרתים (קונסולה HTTPS):"
         list_nics
         read -r -p "על איזה כרטיס וילן השרתים? [1]: " pick
         pick="${pick:-1}"
@@ -930,6 +930,12 @@ run install -m 0644 "$APP_DIR/install/imagectl-netrollback.timer" \
 run rm -f /etc/systemd/system/imagectl-dcui.service.d/firstboot.conf
 run install -m 0644 "$APP_DIR/install/imagectl-dcui.service" \
     /etc/systemd/system/imagectl-dcui.service
+run install -m 0644 "$APP_DIR/install/imagectl-installer-gui.service" \
+    /etc/systemd/system/imagectl-installer-gui.service
+run install -m 0644 "$APP_DIR/install/imagectl-wizard.service" \
+    /etc/systemd/system/imagectl-wizard.service
+run install -m 0644 "$APP_DIR/install/imagectl-wizard-rerun.service" \
+    /etc/systemd/system/imagectl-wizard-rerun.service
 run install -d -m 0755 "$DATA_DIR/netcfg"
 # תצורת ה-Storage Node שעוברת ל-server.main דרך היחידה, וגם
 # `--boot-dir` מ-`--http-root` (#395): בלי זה המתקין כותב לתיקייה
@@ -1029,12 +1035,17 @@ install_firewall
 # ‏#1088: הכתובת שמדפיסים היא זו של כרטיס השרתים **עכשיו**; בלקוח DHCP
 # היא יכולה להתחלף — ואז השם (hostname ב-DNS של המכללה) הוא הדרך היציבה.
 CONSOLE_SHOWN="${CONSOLE_TLS_HOST:-127.0.0.1}"
+if [[ -n "$ADMIN_PASS" ]]; then
+    ADMIN_LOGIN_MESSAGE="משתמש $ADMIN_USER נוצר עם הסיסמה שנקבעה בהתקנה"
+else
+    ADMIN_LOGIN_MESSAGE="כניסה ראשונה: $ADMIN_USER / admin — הקונסולה תדרוש החלפת סיסמה"
+fi
 cat <<EOF
 
   קונסולה        https://${CONSOLE_SHOWN}:8081  (משתמש: $ADMIN_USER)
                  גם https://$(hostname):8081 — כרטיס השרתים $SERVERS_IF ב-$SERVERS_MODE;
                  בלקוח DHCP הכתובת יכולה להתחלף, הקונסולה עוקבת אחריה (#1088)
-                 כניסה ראשונה: admin / admin — הקונסולה תדרוש החלפת סיסמה
+                 $ADMIN_LOGIN_MESSAGE
                  תעודה עצמית — הדפדפן יבקש אישור פעם אחת; להשוות:
                  SHA-256 $CONSOLE_FP
   רשת הפצה       ${IFACE:+$IFACE · $SERVER_URL}${IFACE:-לא הוגדרה — דף הרשת בקונסולה: בחר כרטיס → כתובת → DHCP}

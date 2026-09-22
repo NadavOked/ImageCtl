@@ -112,8 +112,11 @@ finish_and_stop() {
             sync; reboot -f
             ;;
         *)
-            # Only poweroff needs wake arming. Failure must never block it.
-            arm_wol || log "wol: no interface armed -- continuing shutdown"
+            # A remote poweroff is safe only after wake-on-LAN read-back.
+            if ! arm_wol; then
+                log "wol: no interface armed -- staying powered on"
+                return 1
+            fi
             log "task complete -- powering off"
             sync; poweroff -f
             ;;
@@ -134,6 +137,11 @@ parse_cmdline() {
                 ;;
             imagectl.mode=recovery)
                 IMAGECTL_MODE="recovery"
+                ;;
+            imagectl.mode=installer)
+                # ‏#1190: ה-ISO של ההתקנה מריץ את אותו initramfs, ו-init מוסר
+                # למתקין החי במקום לסוכן. ‏PXE מהשרת לעולם אינו שולח את זה.
+                IMAGECTL_MODE="installer"
                 ;;
             imagectl.debug=1)
                 # מעטפת ניפוי לטכנאי (ראו imagectl-agent). לא ברירת מחדל:

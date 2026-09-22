@@ -31,6 +31,7 @@
 #include <sys/wait.h>
 #include "backend.h"
 #include "input.h"
+#include "install.h"
 #include "state.h"
 #include "text.h"
 #include "ui.h"
@@ -42,7 +43,8 @@ static const char *USAGE =
 "usage: imagectl-station-gui [--mac AA:BB:CC:DD:EE:FF] [--ip 10.0.0.5] [--title T]\n"
 "                            [--theme light|dark] [--backend auto|drm|fbdev|mem] [--fb-file PATH]\n"
 "                            [--auth-cmd CMD | --demo] [--state FILE] [--no-input]\n"
-"                            [--screen progress|class|cloner|standby] [--signed-in USER [--role admin|deploy]]\n"
+"                            [--screen progress|class|cloner|standby|install] [--signed-in USER [--role admin|deploy]]\n"
+"                            [--install-cmd CMD] [--install-cwd DIR] (legacy: --wizard-cmd/--wizard-cwd)\n"
 "       imagectl-station-gui --png PREFIX [--size WxH] [--state FILE] [--mac ..] [--ip ..] [--user NAME]\n"
 "  --png renders every card, both themes, to PREFIX-<card>-{light,dark}.png and exits\n"
 "  (no display needed). Without --state it uses built-in sample data.\n"
@@ -852,6 +854,8 @@ int main(int argc, char **argv) {
     a.st.hello_rc = -1;
     snprintf(a.title, sizeof a.title, "מחשב בניית אימג'ים");
     const char *auth_cmd = NULL, *png = NULL, *backend = "auto", *fb_file = NULL, *screen = NULL, *role = "deploy";
+    InstallBridge wizard = { "python3 -m server.wizard.bridge", "/opt/imagectl-src", 0 };
+    int install_screen = 0;
     StateFile sf_state; memset(&sf_state, 0, sizeof sf_state);
     int demo = 0, no_input = 0, pw = 1280, ph = 800;
 
@@ -869,6 +873,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(o, "--backend")) backend = argv[++i];
         else if (!strcmp(o, "--fb-file")) fb_file = argv[++i];
         else if (!strcmp(o, "--auth-cmd")) auth_cmd = argv[++i];
+        else if (!strcmp(o, "--install-cmd") || !strcmp(o, "--wizard-cmd")) wizard.cmd = argv[++i];
+        else if (!strcmp(o, "--install-cwd") || !strcmp(o, "--wizard-cwd")) wizard.cwd = argv[++i];
         else if (!strcmp(o, "--state")) snprintf(sf_state.path, sizeof sf_state.path, "%s", argv[++i]);
         else if (!strcmp(o, "--screen")) screen = argv[++i];
         else if (!strcmp(o, "--signed-in")) { snprintf(a.signed_user, sizeof a.signed_user, "%s", argv[++i]); a.signed_in = 1; }
@@ -883,7 +889,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(screen, "class")) a.mode = MODE_CLASSES;
         else if (!strcmp(screen, "cloner")) a.force_cloner = 1;
         else if (!strcmp(screen, "standby")) { a.force_standby = 1; a.force_cloner = 1; }
-        else { fprintf(stderr, "native-gui: --screen must be progress, class, cloner or standby\n%s", USAGE); return 2; }
+        else if (!strcmp(screen, "install")) install_screen = 1;
+        else { fprintf(stderr, "native-gui: --screen must be progress, class, cloner, standby or install\n%s", USAGE); return 2; }
     }
     setvbuf(stdout, NULL, _IOLBF, 0);               /* records reach the agent's pipe as they happen */
 
@@ -898,6 +905,10 @@ int main(int argc, char **argv) {
     }
 
     if (png) {
+        if (install_screen) {
+            install_demo(&a, INSTALL_ROLE);
+            return install_render_png(&a, png, pw, ph);
+        }
         State base;
         if (sf_state.path[0]) {
             if (state_poll(&sf_state, &base) < 0) return 1;
@@ -908,7 +919,9 @@ int main(int argc, char **argv) {
     }
 
     a.tool_sel = -1; a.tool_disk_sel = -1; a.tool_rc = -1;
-    if (sf_state.path[0]) {
+    if (install_screen) {
+        install_start(&a, &wizard, demo);
+    } else if (sf_state.path[0]) {
         if (state_poll(&sf_state, &a.st) < 0) return 1;   /* a missing file at start is a wrong invocation, say so */
         after_reload(&a);
         /* #649: the toolbox files live next to the state file ($GUI_DIR) */
@@ -966,6 +979,7 @@ int main(int argc, char **argv) {
         /* setInterval(poll, 2000): wake at least every 2 s for the state
          * file, sooner to take a toast down. */
         int timeout = 2000;
+        if (install_polling(&a) && timeout > 1000) timeout = 1000;
         if (a.toast[0]) { int left = (int)((a.toast_until - now_s()) * 1000) + 1; if (left < timeout) timeout = left > 0 ? left : 1; }
         if (a.tool_running) { timeout = 120; a.tool_spin += 0.4; scene_dirty = 1; }   /* #649: the spinner turns */
         if (a.screen == SCREEN_STANDBY && timeout > 500) { timeout = 500; scene_dirty = 1; }
@@ -979,7 +993,8 @@ int main(int argc, char **argv) {
             while (!done && input_next(in, &e)) {
                 if (e.type == UIEV_MOVE) moved = 1;
                 else scene_dirty = 1;           /* char/key/click change the scene */
-                done = handle(&a, &e, auth_cmd, demo);
+                done = a.install.active ? install_handle(&a, &wizard, &e)
+                                        : handle(&a, &e, auth_cmd, demo);
             }
             if (moved) {
                 need_present = 1;               /* the cursor moved */
@@ -987,8 +1002,9 @@ int main(int argc, char **argv) {
                 if (h != last_hover) { last_hover = h; scene_dirty = 1; }  /* a hover highlight changed */
             }
         }
-        if (sf_state.path[0] && state_poll(&sf_state, &a.st) > 0) { after_reload(&a); scene_dirty = 1; }
-        if (tools_poll(&a)) scene_dirty = 1;                                        /* #649 */
+        if (!a.install.active && sf_state.path[0] && state_poll(&sf_state, &a.st) > 0) { after_reload(&a); scene_dirty = 1; }
+        if (!a.install.active && tools_poll(&a)) scene_dirty = 1;                    /* #649 */
+        if (install_tick(&a, &wizard)) scene_dirty = 1;
         /* #410: "עודכן לפני N שנ'" must keep counting when the state file
          * stops changing -- that is the whole point of the stamp. One
          * redraw per wake (2 s) while a stamp is on screen. */

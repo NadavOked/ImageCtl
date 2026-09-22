@@ -39,6 +39,7 @@ PROBE_HEADER = hello.PROBE_HEADER.decode("ascii")
 #: מה שהתחנה מושכת ב-HTTP אחרי התפריט, מתוך תיקיית האתחול (#333).
 #: ה-initramfs הגרפי (#32) אינו כאן: היעדרו נופל לטקסטואלי, ואינו חוסם.
 BOOT_ASSETS = ("vmlinuz", "initrd.img")
+NOT_APPLICABLE = "לא ישים עד שתוגדר רשת ההפצה"
 
 #: רצפה גסה. קרנל ו-initramfs אמיתיים גדולים בהרבה, וגוף ה-404 של ‎/boot
 #: הוא **תשעה** בייטים — ולכן "יש תשובה ויש גודל" אינו "יש קובץ" (#332).
@@ -274,7 +275,8 @@ def collect(ctx, hooks: dict, server_base: str) -> list[dict]:
     deploy_state = hooks.get("deploy")() if hooks.get("deploy") else None
     unconfigured = deploy_state is not None and not deploy_state.configured
     if unconfigured:
-        results.append(check("deploy_net", "רשת ההפצה", "warn", deploy_state.public()["hint"]))
+        results.append(check("deploy_net", "הגדר את רשת ההפצה", "warn",
+                             deploy_state.public()["hint"]))
 
     # ‏#1088: כתובת כרטיס השרתים — DHCP ומתי החכירה פגה, או סטטי.
     servers_nic = hooks.get("servers_nic")() if hooks.get("servers_nic") else None
@@ -283,7 +285,10 @@ def collect(ctx, hooks: dict, server_base: str) -> list[dict]:
 
     # פורט 67 — DHCP. פנוי זה מצב לגיטימי (עוד לא הוגדר מהקונסולה).
     owner = port_owner(ss_out, 67) if ss_out else None
-    if not ss_out:
+    if unconfigured:
+        results.append(check("dhcp_port", "פורט 67 (DHCP)", "not_applicable",
+                             NOT_APPLICABLE))
+    elif not ss_out:
         results.append(check("dhcp_port", "פורט 67 (DHCP)", "off",
                              "אי אפשר לבדוק כאן (ss לא זמין)"))
     elif owner is None:
@@ -297,7 +302,10 @@ def collect(ctx, hooks: dict, server_base: str) -> list[dict]:
 
     # פורט 69 — TFTP. בלעדיו אין שרשרת אתחול.
     owner = port_owner(ss_out, 69) if ss_out else None
-    if not ss_out:
+    if unconfigured:
+        results.append(check("tftp_port", "פורט 69 (TFTP)", "not_applicable",
+                             NOT_APPLICABLE))
+    elif not ss_out:
         results.append(check("tftp_port", "פורט 69 (TFTP)", "off",
                              "אי אפשר לבדוק כאן (ss לא זמין)"))
     elif owner is None and unconfigured:
@@ -315,11 +323,11 @@ def collect(ctx, hooks: dict, server_base: str) -> list[dict]:
     # dnsmasq עצמו.
     active = hooks["unit_active"]("dnsmasq")
     results.append(
-        check("dnsmasq", "שירות dnsmasq", "ok", "רץ") if active == "active"
+        check("dnsmasq", "שירות dnsmasq", "not_applicable", NOT_APPLICABLE)
+        if unconfigured
+        else check("dnsmasq", "שירות dnsmasq", "ok", "רץ") if active == "active"
         else check("dnsmasq", "שירות dnsmasq", "off",
                    "אי אפשר לבדוק כאן (systemctl לא זמין)") if not active
-        else check("dnsmasq", "שירות dnsmasq", "off",
-                   f"מצב: {active} — רשת ההפצה לא הוגדרה") if unconfigured
         else check("dnsmasq", "שירות dnsmasq", "bad", f"מצב: {active}"))
 
     # שרשרת האתחול, משני קצותיה: הקבצים על שורש ה-TFTP, ומיד אחריהם
@@ -331,8 +339,12 @@ def collect(ctx, hooks: dict, server_base: str) -> list[dict]:
         # הפצה; הקונסולה כותבת אותו בהדלקת DHCP (deploy_net.complete).
         missing = [name for name in missing if name != "grub/grub.cfg"]
     problems = [f"חסרים ב-{root}: {', '.join(missing)}"] if missing else []
-    problems += boot_asset_problems(hooks["http_size"], server_base)
-    if not problems:
+    if not unconfigured:
+        problems += boot_asset_problems(hooks["http_size"], server_base)
+    if unconfigured:
+        results.append(check("boot_files", "קבצי האתחול", "not_applicable",
+                             NOT_APPLICABLE))
+    elif not problems:
         results.append(check("boot_files", "קבצי האתחול", "ok",
                              f"shim, GRUB והתפריט הקבוע נמצאים ב-{root}, "
                              "ו-vmlinuz ו-initrd.img נמשכו מ-/boot בגודל מלא"))
@@ -367,9 +379,8 @@ def collect(ctx, hooks: dict, server_base: str) -> list[dict]:
     else:
         status = hooks["http_get"](server_base.rstrip("/") + "/boot/menu?mac=00:00:00:00:00:00")
     if status == "unconfigured":
-        results.append(check("server", "השרת בכתובת ההפצה", "off",
-                             "רשת ההפצה לא הוגדרה — הסוכן והקיוסק מאזינים על "
-                             "127.0.0.1 בלבד עד שיוגדר כרטיס הפצה"))
+        results.append(check("server", "השרת בכתובת ההפצה", "not_applicable",
+                             NOT_APPLICABLE))
     elif status == "disabled":
         results.append(check("server", "השרת בכתובת ההפצה", "off",
                              "פורט הסוכן (8080) כבוי על ידי המפעיל בדף הפורטים — "
@@ -423,8 +434,12 @@ def collect(ctx, hooks: dict, server_base: str) -> list[dict]:
 
     # ‏#855: שומר הזהות — מתג כבוי הוא מצב מוצהר שנאמר כאן, וקובץ חכירות
     # שאינו נקרא הוא "כל hello מסורב", לא שקט.
-    results.append(check("identity", "זהות מכונה",
-                         *identity.health_status(ctx.conn, getattr(ctx, "leases", None))))
+    if unconfigured:
+        results.append(check("identity", "זהות מכונה", "not_applicable",
+                             NOT_APPLICABLE))
+    else:
+        results.append(check("identity", "זהות מכונה",
+                             *identity.health_status(ctx.conn, getattr(ctx, "leases", None))))
 
     # ואחרונות, כי אורכן משתנה: מי נופל לסוכן בלולאה עכשיו (#112), ומי
     # מדבר עם השרת מרשת שאינה וילן ההפצה (#137). שתי רשימות נפרדות —
@@ -645,7 +660,8 @@ def ports_snapshot(ctx, hooks: dict, server_base: str) -> list[dict]:
 
     ssh_state = console_ssh.snapshot(ctx, hooks, server_base)
     stations_check = next(
-        c for c in console_ssh.ssh_checks(ssh_state) if c["id"] == "ssh_stations")
+        c for c in console_ssh.ssh_checks(ssh_state, include_disabled=True)
+        if c["id"] == "ssh_stations")
     entries.append(_port("ssh_stations", "SSH", str(ssh_switch.SSH_PORT), "tcp",
         "מעטפת טכנאי + dropbear בתחנות שעולות עם imagectl.debug",
         "תחנות", stations_check["state"], stations_check["detail"],
@@ -702,6 +718,7 @@ def create_health_router(ctx, server_base: str, hooks: dict | None = None,
     # מתגי ה-SSH חולקים את אותו מנגנון הזרקה: בבדיקות אף פעולה אינה
     # נוגעת ב-sshd אמיתי, בדיוק כמו ב-dhcp_hooks.
     hooks = {**default_hooks(), **ssh_switch.default_hooks(), **(hooks or {})}
+    hooks.setdefault("apply_ssh_firewall", lambda _interfaces: None)
 
     @router.get("/health/live")
     def live():

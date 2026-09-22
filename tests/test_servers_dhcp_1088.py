@@ -531,7 +531,7 @@ def _complete_hooks(calls, *, fw="", restart=None):
     return {
         "write_grub_cfg": lambda url, root: calls.append(("grub", url, root)) or None,
         "enable_dnsmasq": lambda: calls.append(("dnsmasq",)) or None,
-        "firewall": lambda repo, deploy_if, servers_if, primary_ip: calls.append(
+        "firewall": lambda repo, deploy_if, servers_if, primary_ip, ssh_interfaces=(): calls.append(
             ("fw", deploy_if, servers_if, primary_ip)) or (fw or None),
         "restart_server": lambda: calls.append(("restart",)) or restart,
     }
@@ -731,7 +731,8 @@ def test_first_dhcp_enable_completes_the_install_and_restarts(console):
                               "errors": [], "restarting": True, "recorded": True}
     assert deploy_net.stored(ctx.conn) == ("eth1", "http://10.44.9.10:8080")
     assert [c[0] for c in fake["deploy_calls"]] == ["grub", "dnsmasq", "fw", "restart"]
-    assert fake["deploy_calls"][2][1] == {"deploy_if": "eth1", "servers_if": "eth0", "primary_ip": None}
+    assert fake["deploy_calls"][2][1] == {"deploy_if": "eth1", "servers_if": "eth0", "primary_ip": None,
+                                          "ssh_interfaces": ()}
     # קובץ ה-dnsmasq שנכתב נושא את כרטיס ההפצה (R20-F1 במסירה).
     assert "interface=eth1" in fake["applied"][-1]
     assert len(fake["applied"]) == 1                       # כתיבה אחת, לא שתיים
@@ -866,10 +867,11 @@ def test_health_says_deploy_not_configured_instead_of_red_pxe_rows(health_ctx):
         health_ctx, _health_hooks(deploy_net.DeployState("none", None, None)),
         "http://127.0.0.1:8080")}
     assert rows["deploy_net"]["state"] == "warn" and "בחר כרטיס" in rows["deploy_net"]["detail"]
-    assert rows["tftp_port"]["state"] == "off"
-    assert rows["dnsmasq"]["state"] == "off"
-    assert rows["server"]["state"] == "off" and "127.0.0.1" in rows["server"]["detail"]
-    assert "grub/grub.cfg" not in rows["boot_files"]["detail"]
+    dependent = ("dhcp_port", "tftp_port", "dnsmasq", "boot_files", "server", "identity")
+    assert all(rows[name]["state"] == "not_applicable" for name in dependent)
+    assert all(rows[name]["detail"] == "לא ישים עד שתוגדר רשת ההפצה"
+               for name in dependent)
+    assert "ssh_stations" not in rows and "ssh_server" not in rows
 
 
 def test_health_keeps_the_red_rows_when_deploy_is_configured(health_ctx):
