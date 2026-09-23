@@ -228,7 +228,7 @@ def test_dry_run_prints_the_exact_command_sequence_and_redacts_secrets(tmp_path)
         "chroot", "chroot", "cp", "cp", "chmod", "cp", "chroot",
         "mkdir", "mkdir", "cp", "cp", "verify-package-pool", "write-target",
         "write-target", "write-target", "write-target", "cp", "printf",
-        "chroot", "chroot", "chroot", "chroot", "blkid", "blkid",
+        "chroot", "chroot", "chroot", "write-target", "chroot", "blkid", "blkid",
         "write-target", "write-target", "write-target", "write-target",
         "write-target-secret", "umount", "umount", "umount", "umount",
         "umount", "umount", "sync",
@@ -238,6 +238,8 @@ def test_dry_run_prints_the_exact_command_sequence_and_redacts_secrets(tmp_path)
     assert "+ chroot <target> grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=debian --force-extra-removable" in lines
     assert "--removable --force-extra-removable" not in got.stdout
     assert "+ chroot <target> grub-install --target=i386-pc /dev/sda" in lines
+    grub_cfg = "+ write-target mode=0644 <target>/etc/default/grub.d/imagectl.cfg"
+    assert lines.index(grub_cfg) + 1 == lines.index("+ chroot <target> update-grub")
     assert lines[-7:] == [
         "+ umount <target>/cdrom", "+ umount <target>/sys", "+ umount <target>/proc",
         "+ umount <target>/dev", "+ umount <target>/boot/efi", "+ umount <target>", "+ sync",
@@ -248,6 +250,44 @@ def test_dry_run_prints_the_exact_command_sequence_and_redacts_secrets(tmp_path)
         assert f"state={state} " in got.stderr
     assert box["state"].read_text(encoding="utf-8").splitlines()[:3] == [
         "state=done", "pct=100", "title=Installation complete"]
+
+
+def test_grub_menu_is_hidden_with_an_esc_window_written_before_update_grub(tmp_path):
+    """Nadav, 23/09 (#1208): boot straight through like ESXi, Esc shows the
+    menu. The dry run prints only the path, so install_bootloader runs here
+    for real against stubbed helpers and the content is read back."""
+    target = tmp_path / "target"
+    target.mkdir()
+    (tmp_path / "imagectl").mkdir()
+    (tmp_path / "imagectl" / "root-password.hash").write_text("$6$salt$hash\n", newline="\n")
+    calls = tmp_path / "calls"
+    harness = tmp_path / "harness.sh"
+    harness.write_text(f"""set -u
+DRY_RUN=0 TARGET='{target.as_posix()}' CDROM='{tmp_path.as_posix()}' ANSWER_DISK=/dev/sda
+log() {{ printf '%s\\n' "$*" >> '{calls.as_posix()}'; }}
+fail() {{ log "fail $1"; exit 2; }}
+progress() {{ :; }}
+must_run() {{ shift 2; "$@" || exit 2; }}
+chroot() {{ log "chroot $*"; }}
+mount() {{ return 1; }}
+write_target() {{
+    log "write-target $1 $2"
+    mkdir -p "$TARGET${{2%/*}}" && printf '%s' "$3" > "$TARGET$2"
+}}
+. '{(INSTALLER / "lib" / "finish.sh").as_posix()}'
+install_bootloader
+""", newline="\n")
+    got = subprocess.run([SH, str(harness)], text=True, capture_output=True,
+                         stdin=subprocess.DEVNULL)
+    assert got.returncode == 0, got.stderr
+    log = calls.read_text(encoding="utf-8").splitlines()
+    write = "write-target 0644 /etc/default/grub.d/imagectl.cfg"
+    assert write in log, log
+    assert log.index(write) < log.index(f"chroot {target.as_posix()} update-grub"), log
+    cfg = (target / "etc" / "default" / "grub.d" / "imagectl.cfg").read_text(encoding="utf-8")
+    settings = [line for line in cfg.splitlines() if line and not line.startswith("#")]
+    # hidden with 0 would leave no window in which to press Esc
+    assert settings == ["GRUB_TIMEOUT_STYLE=hidden", "GRUB_TIMEOUT=2"]
 
 
 @LINUX_ONLY

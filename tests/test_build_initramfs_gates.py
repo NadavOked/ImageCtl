@@ -182,7 +182,7 @@ def declared_subdirs() -> list[str]:
         names += code.split(")", 1)[0].split()
         if closed:
             break
-    assert len(names) == 20, names
+    assert len(names) == 21, names
     return names
 
 
@@ -231,8 +231,9 @@ def test_every_missing_tree_is_named_at_once(tmp_path: Path):
 
 
 def test_all_declared_trees_present_is_a_clean_build(tmp_path: Path):
-    """הצד החיובי — כל 20 העצים קיימים בקרנל דביאן 13 הרגיל (נמדד 19/09),
-    ולכן אין רשימת אופציונליים: הרשימה המוצהרת היא כולה חובה."""
+    """הצד החיובי — כל 21 העצים קיימים בקרנל דביאן 13 הרגיל (20 נמדדו
+    19/09, ‏kernel/drivers/input/mouse נוסף ב-#1204), ולכן אין רשימת
+    אופציונליים: הרשימה המוצהרת היא כולה חובה."""
     done, packed = run_subdirs(tmp_path)
     assert done.returncode == 0, done.stderr
     for sub in declared_subdirs():

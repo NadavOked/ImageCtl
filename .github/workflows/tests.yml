@@ -68,6 +68,8 @@ jobs:
           # מריץ את `json_escape` תחת ה-awk של busybox דווקא, כי gawk (כאן),
           # mawk (דביאן) ו-busybox awk קוראים אחרת את רצפי הבריחה של gsub —
           # וזה בדיוק ההבדל שהשאיר את #145 ירוק בזמן שהסוכן נשבר.
+          # #1210: בלי update האינדקס השמור ב-runner מחזיר 404 כשהמראה מתקדמת.
+          sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             libhivex-dev libhivex-bin dash busybox nodejs libpango1.0-dev libcairo2-dev libdrm-dev libharfbuzz-dev libfribidi-dev fonts-ibm-plex fontconfig libvncserver-dev >/dev/null
           # איזה busybox רץ כאן -- ‏gsub שלו נבדל בין בניות, וה-runner אינו

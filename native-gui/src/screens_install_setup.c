@@ -51,9 +51,9 @@ void install_draw_role(App *a,cairo_t *cr,InstallLayout l){InstallState *s=&a->i
     install_text_r(cr,t,"נבחר בתפריט ההתקנה",12,500,x+w,y,w,t->muted);y+=24;
     install_radio(a,cr,(Rect){x,y,w,74},"שרת ראשי","מנהל את הספרייה, השיכפול והשרתים המשניים.",!s->secondary,HIT_INSTALL_PRIMARY);y+=86;
     install_radio(a,cr,(Rect){x,y,w,74},"שרת משני","שרת באתר נוסף; הראשי יוזם אליו חיבור מאובטח בפורט 8443.",s->secondary,HIT_INSTALL_SECONDARY);y+=96;
-    if(s->secondary){install_field_draw(a,cr,(Rect){x,y,w-150,56},"כתובת השרת הראשי",s->primary_url,0,HIT_INSTALL_PRIMARY_URL,1);Text check=btn_label(cr,"בדוק חיבור");draw_btn(a,cr,(Rect){x+w-138,y+19,138,36},&check,BTN_PLAIN,HIT_INSTALL_CHECK_PRIMARY);text_free(&check);y+=70;result_box(a,cr,(Rect){x,y,w,70});y+=82;}
+    if(s->secondary){install_field_draw(a,cr,(Rect){x,y,w-150,56},"כתובת השרת הראשי",s->primary_url,0,HIT_INSTALL_PRIMARY_URL,1);Text check=btn_label(cr,"בדוק חיבור");Rect cb={x+w-138,y+19,138,36};draw_btn(a,cr,cb,&check,BTN_PLAIN,HIT_INSTALL_CHECK_PRIMARY);install_focus_ring(a,cr,cb,HIT_INSTALL_CHECK_PRIMARY);text_free(&check);y+=70;result_box(a,cr,(Rect){x,y,w,70});y+=82;}
     if(s->error[0])install_text_r(cr,t,s->error,13,600,x+w,y,w,t->danger);
-    install_footer(a,cr,l,"הבא",HIT_INSTALL_NEXT,0,1);
+    install_footer(a,cr,l,"הבא",HIT_INSTALL_NEXT,1,1);
 }
 
 static void table_head(cairo_t *cr,const Theme *t,Rect r){draw_fill_rrect(cr,r,0,t->field);const char *h[]={"כרטיס","קישור","כתובת עכשיו","מקור"};double x[]={r.x+r.w-55,r.x+r.w*.57,r.x+r.w*.39,r.x+r.w*.2};double widths[]={r.w*.34,r.w*.16,r.w*.18,r.w*.18};for(int i=0;i<4;i++)install_text_r(cr,t,h[i],12,600,x[i],r.y+9,widths[i],t->muted);}
@@ -63,7 +63,7 @@ static void nic_row(App *a,cairo_t *cr,Rect r,int i){InstallState *s=&a->install
     install_text_ltr(cr,n->name,13,600,r.x+r.w-210,r.y+9,145,t->ink);char model[150];snprintf(model,sizeof model,"%s · %s",n->model[0]?n->model:"כרטיס רשת",n->mac);install_text_ltr(cr,model,10,400,r.x+r.w-210,r.y+31,180,t->muted);
     install_text_r(cr,t,n->link,12,600,r.x+r.w*.56,r.y+20,r.w*.15,!strcmp(n->link,"מחובר")?t->success_ink:t->muted);
     install_text_ltr(cr,n->current[0]?n->current:"—",12,400,r.x+r.w*.21,r.y+20,r.w*.18,t->ink);
-    install_text_r(cr,t,n->source[0]?n->source:"—",11,400,r.x+r.w*.19,r.y+15,r.w*.18,t->muted);hit_add(a,r,HIT_INSTALL_NIC_BASE+i);}
+    install_text_r(cr,t,n->source[0]?n->source:"—",11,400,r.x+r.w*.19,r.y+15,r.w*.18,t->muted);if(a->focus==HIT_INSTALL_NIC_BASE+i)draw_border_rrect(cr,(Rect){r.x+3,r.y+3,r.w-6,r.h-7},4,t->indigo,2);hit_add(a,r,HIT_INSTALL_NIC_BASE+i);}
 
 void install_draw_network(App *a,cairo_t *cr,InstallLayout l){InstallState *s=&a->install;const Theme *t=a->theme;double w=l.body.w,x=l.body.x,y=l.body.y;Rect table={x,y,w,42+s->nnics*58};install_card(cr,t,table);table_head(cr,t,(Rect){x+1,y+1,w-2,40});for(int i=0;i<s->nnics;i++)nic_row(a,cr,(Rect){x+1,y+41+i*58,w-2,58},i);y+=table.h+16;
     double half=(w-12)/2;install_radio(a,cr,(Rect){x+half+12,y,half,66},"לקוח DHCP (מומלץ)","הכתובת מגיעה משרת ה-DHCP של המכללה.",!s->static_mode,HIT_INSTALL_DHCP);install_radio(a,cr,(Rect){x,y,half,66},"כתובת סטטית","כשאין DHCP או כשהכתובת חייבת להישאר קבועה.",s->static_mode,HIT_INSTALL_STATIC);y+=79;

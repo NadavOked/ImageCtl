@@ -16,6 +16,7 @@ void install_field_draw(App *a, cairo_t *cr, Rect r, const char *label,
                         const char *value, int mask, int id, int enabled);
 void install_radio(App *a, cairo_t *cr, Rect r, const char *title,
                    const char *desc, int selected, int id);
+void install_focus_ring(App *a, cairo_t *cr, Rect r, int id);
 void install_footer(App *a, cairo_t *cr, InstallLayout l, const char *primary,
                     int primary_id, int allow_back, int primary_enabled);
 void install_draw_disk(App *a, cairo_t *cr, InstallLayout l);

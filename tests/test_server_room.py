@@ -752,9 +752,13 @@ def test_a_round_whose_image_was_deleted_can_still_be_stopped(room_server):
                        json={"image_id": "img_7f3a91",
                              "target_drives": 8}).status_code == 200
     cloner_hello(anon, CLONER1, ["S1", "S2"])
+    # #784: the console refuses to delete an image a live round uses.
     assert admin.post("/api/console/images/img_7f3a91/delete",
                       json={"confirm_name": "Office 2024 Standard"},
-                      ).status_code == 200
+                      ).status_code == 409
+    # The manifest can still vanish under a live round (disk, another
+    # tool); stopping it must survive that, so remove it underneath.
+    assert room_server["ctx"].library.delete("img_7f3a91")
 
     assert room(deploy)["round"]["image_name"] == "img_7f3a91"
     assert deploy.post("/api/console/room/close",

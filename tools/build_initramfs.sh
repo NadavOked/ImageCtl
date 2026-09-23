@@ -629,6 +629,13 @@ MODULE_SUBDIRS=(kernel/drivers/net/ethernet kernel/drivers/net/phy
                 # מקלדת USB עדיין לא עבדה על חומרה (‏#77). ‏PS/2 הסתירה
                 # את זה: ‏i8042 הוא built-in.
                 kernel/drivers/usb/core     kernel/drivers/usb/host
+                # ‏עכבר. ‏VM של ESXi שנוצר ב-govc יש לו בקר PS/2 בלבד —
+                # בלי בקר USB — ובלעדי psmouse (שכולל את פרוטוקול
+                # vmmouse) אין עכבר במתקין הגרפי בכלל, אף שהמקלדת עבדה
+                # (i8042 built-in). ‏native-gui/src/input.c כבר תומך
+                # בעכבר יחסי ובמצביע מוחלט (#949) — הדרייבר היה החסר
+                # (#1204).
+                kernel/drivers/input/mouse
                 # מערכות קבצים. בלעדיהן ה-initramfs יכול לעגן NTFS דרך
                 # FUSE ותו לא, וזה נראה כמו שלושה באגים נפרדים: שם
                 # המחשב בלינוקס לא נכתב כי `mount -t ext4` נכשל (#62),
@@ -701,8 +708,10 @@ if [ "$WITH_GUI" -eq 1 ]; then
     # דביאן 13, ולכן הוא **אינו** נכנס לרשימה כאן (הלולאה מחפשת קובץ ותיכשל);
     # ה-modules-load עדיין קורא ל-hid-generic כ-no-op לא-מזיק.
     # ‏uinput (#690): המוניטור במצב input יוצר מקלדת/עכבר וירטואליים דרכו.
-    # מודול מוצהר חסר עוצר את הבנייה, כמו כל השאר.
-    REQUIRED_MODULES+=(i915 evdev usbhid hid uinput)
+    # ‏psmouse (#1204): עכבר PS/2 של VM/חומרה בלי בקר USB (govc, ‏ESXi) —
+    # בלעדיו המקלדת עובדת (i8042 built-in) אבל אין עכבר במתקין הגרפי,
+    # ולא נראה כתקלה בבנייה. מודול מוצהר חסר עוצר את הבנייה, כמו כל השאר.
+    REQUIRED_MODULES+=(i915 evdev usbhid hid uinput psmouse)
     # ‏i915 דורש firmware; modules.dep לא מעתיק firmware, ורק rtl_nic ברירת
     # מחדל — בלעדיו התצוגה עלולה לצאת מנוונת/שחורה.
     FIRMWARE_DIRS+=(i915)
@@ -711,7 +720,9 @@ fi
 # תת-עץ מוצהר שחסר נאסף כאן ומדווח יחד עם המודולים החסרים למטה, באותה
 # עצירה. ‏`if [ -d ]` לבדו העלים אותו בשקט (#1125 — הדפוס של #84: ‏usb/host
 # חסר הוא מקלדת USB בלי בקר, ובנייה שיצאה 0). אין רשימת "אופציונליים":
-# כל 20 העצים קיימים בקרנל דביאן 13 הרגיל (נמדד 19/09), ומה שאין בו הוא
+# כל 21 העצים קיימים בקרנל דביאן 13 הרגיל (20 נמדדו 19/09;
+# ‏kernel/drivers/input/mouse נוסף ב-#1204 ואומת באותה בנייה עצמה —
+# חסר היה עוצר אותה, לא רק "נמדד" בעין), ומה שאין בו הוא
 # קרנל שאינו מתאים לבנייה — ההודעה למטה אומרת גם את זה.
 _missing_sub=""
 for sub in "${MODULE_SUBDIRS[@]}"; do
@@ -913,7 +924,9 @@ _phy_mods=$(find "$ROOT/lib/modules/$KVER/kernel/drivers/net/phy" \
     # האפיק כבר שם כשאלה נטענים (#78).
     printf '%s\n' vmw_pvscsi virtio_scsi virtio_blk xen-blkfront
     # ‏מקלדת לאשף השחזור — מודול חסר אינו פטאלי (issue #43).
-    printf '%s\n' hid hid-generic usbhid atkbd hyperv_keyboard
+    # ‏psmouse (#1204): עכבר PS/2 של VM/חומרה בלי בקר USB. נטען תמיד
+    # ולא רק תחת --with-gui, כמו atkbd/hyperv_keyboard לצידו.
+    printf '%s\n' hid hid-generic usbhid atkbd hyperv_keyboard psmouse
     # מערכות קבצים במפורש, ולא בהסתמך על טעינה-לפי-דרישה של הקרנל.
     # ‏`mount -t ext4` אמנם מבקש `fs-ext4` דרך modules.alias, אבל זו
     # שרשרת הנחות (‏depmod, ‏busybox modprobe, ‏/proc/sys/kernel/modprobe)

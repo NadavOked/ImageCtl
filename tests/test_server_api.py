@@ -710,9 +710,13 @@ def test_a_class_round_whose_image_was_deleted_can_still_be_stopped(server):
     ids = open_session(server, expected=30)
     hello(server, ids["mac1"])
     admin, deploy = server["admin"], server["deploy"]
+    # #784: the console refuses to delete an image a live round uses.
     assert admin.post("/api/console/images/img_7f3a91/delete",
                       json={"confirm_name": "Office 2024 Standard"},
-                      ).status_code == 200
+                      ).status_code == 409
+    # The manifest can still vanish under a live round (disk, another
+    # tool); stopping it must survive that, so remove it underneath.
+    assert server["ctx"].library.delete("img_7f3a91")
 
     view = admin.get("/api/console/overview").json()["session"]
     assert view["image_name"] == "img_7f3a91"

@@ -43,6 +43,12 @@ install_bootloader() {
         umount "$TARGET/sys/firmware/efi/efivars" || fail efivars-unmount "could not unmount efivarfs from the target"
     fi
     must_run grub-bios "BIOS grub-install failed" chroot "$TARGET" grub-install --target=i386-pc "$ANSWER_DISK"
+    # Nadav, 23/09 (#1208): the server boots straight through like ESXi and
+    # Esc opens the menu. hidden needs a timeout above 0: with 0 there is
+    # no window in which to press Esc. Written before update-grub reads it.
+    write_target 0644 /etc/default/grub.d/imagectl.cfg "GRUB_TIMEOUT_STYLE=hidden
+GRUB_TIMEOUT=2
+"
     must_run grub-config "update-grub failed" chroot "$TARGET" update-grub
 }
 

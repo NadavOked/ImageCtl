@@ -110,6 +110,26 @@ def test_the_builder_packs_the_usb_core_and_host_trees(tmp_path: Path):
     assert "kernel/drivers/usb/host" in text
 
 
+def test_psmouse_is_in_the_modules_load_list(tmp_path: Path):
+    """‏#1204: ‏VM של ESXi (govc) מקבל בקר PS/2 בלבד, בלי בקר USB. בלי
+    ‏psmouse (שכולל את פרוטוקול vmmouse) אין עכבר במתקין הגרפי בכלל,
+    אף שהמקלדת עבדה — ‏`i8042` הוא built-in, בדיוק כמו ש-PS/2 הסתיר את
+    היעדר `usbhid` ב-#77. מודול חסר אינו פטאלי, כמו atkbd/hyperv_keyboard
+    לצידו."""
+    mods = generate(tmp_path, phy=["realtek"], ethernet=["r8169"])
+    assert "psmouse" in mods
+
+
+@requires_native("bash", why="MODULE_SUBDIRS הוא מערך bash")
+def test_the_builder_packs_the_input_mouse_tree(tmp_path: Path):
+    """רשימת הטעינה (לעיל) חסרת ערך אם psmouse עצמו אינו נארז (#1204)."""
+    packed = run_copy(tmp_path, {
+        "kernel/drivers/input/mouse": ["psmouse"],
+        "kernel/drivers/net/ethernet": ["e1000e"],
+    })
+    assert (packed / "kernel/drivers/input/mouse/psmouse.ko.xz").is_file()
+
+
 def closure_snippet() -> str:
     """הקטע שסוגר את גרף התלויות, כפי שהוא בסקריפט."""
     lines = BUILDER.read_text(encoding="utf-8").split("\n")

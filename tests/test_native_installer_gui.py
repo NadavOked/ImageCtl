@@ -124,6 +124,35 @@ def test_progress_has_no_primary_button_ink_in_the_footer_action_area(tmp_path) 
     assert colors == 1, "running progress must leave the footer action area blank"
 
 
+@NATIVE
+def test_back_button_is_drawn_on_every_screen_where_escape_goes_back(tmp_path) -> None:
+    """‏#1205: Esc חוזר ממסכים 2–6, אבל כפתור "חזור" צויר רק בחלקם — במסך
+    התפקיד (2) היה רק "הבא". מי שלא יודע על Esc לא מוצא את החזרה.
+
+    ב-1280: ‏"הבא" ברוחב 118 מתחיל ב-x=880, ו"חזור" נגמר 12 פיקסלים לפניו.
+    האזור 850–866 נמצא בתוך "חזור" (מסגרת + רקע) ובמסך בלי חזרה הוא רקע
+    הפס התחתון בלבד — צבע אחד."""
+    binary = _build(tmp_path)
+    prefix = tmp_path / "back"
+    env = dict(os.environ)
+    if (GUI / "fonts.conf").exists():
+        env["FONTCONFIG_FILE"] = str(GUI / "fonts.conf")
+    proc = subprocess.run([str(binary), "--screen", "install", "--demo", "--png",
+                           str(prefix), "--size", "1280x1024"], capture_output=True,
+                          text=True, timeout=120, env=env, stdin=subprocess.DEVNULL)
+    assert proc.returncode == 0, proc.stderr
+    box = (850, 968, 866, 1015)
+    with_back = ("install-1-role", "install-2-servers-net", "install-3-hostname",
+                 "install-4-admin", "install-5-summary")
+    without = ("install-0-disk", "install-5c-progress", "install-6-done")
+    for name in with_back + without:
+        _, _, colors = _size_and_ink(tmp_path / f"back-{name}-light.png", box)
+        if name in with_back:
+            assert colors > 1, f"{name}: no Back button where Escape goes back"
+        else:
+            assert colors == 1, f"{name}: Back drawn where there is no way back"
+
+
 def test_role_radios_register_hit_boxes_and_dispatch_to_distinct_values() -> None:
     draw = (GUI / "src" / "screens_install_setup.c").read_text(encoding="utf-8")
     control = (GUI / "src" / "install.c").read_text(encoding="utf-8")

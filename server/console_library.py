@@ -78,6 +78,12 @@ def create_library_router(ctx: ServerContext) -> APIRouter:
             raise HTTPException(404, "אימג' לא קיים")
         if body.get("confirm_name", "") != manifest["name"]:
             raise HTTPException(400, "השם שהוקלד אינו זהה לשם האימג'")
+        from . import room as room_module  # noqa: PLC0415 — נמנע ממעגל ייבוא
+        active_session = ctx.store.active()
+        round_row = room_module.active_round(ctx.conn)
+        if (active_session is not None and active_session["image_id"] == image_id) \
+                or (round_row is not None and round_row["image_id"] == image_id):
+            raise HTTPException(409, "האימג' נמצא בשימוש בסשן פעיל")
         ctx.library.delete(image_id)
         journal(ctx.conn, "image_delete", f'{image_id} "{manifest["name"]}"', user[0])
         return {"ok": True}

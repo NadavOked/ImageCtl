@@ -72,6 +72,22 @@ def test_image_delete_needs_the_exact_name(server, images_root):
     assert not (images_root / "img_7f3a91").exists()
 
 
+def test_image_in_active_session_cannot_be_deleted(server, images_root):
+    admin = server["admin"]
+    ctx = server["ctx"]
+    # שידור פעיל על האימג' — עכשיו הוא בשימוש, המחיקה חייבת להידחות
+    ctx.conn.execute("INSERT INTO groups (id, label, role, sort) VALUES (?, ?, ?, 0)",
+                     ("g1", "LAB1", "classroom"))
+    ctx.conn.commit()
+    ctx.store.open(group_id="g1", image_id="img_7f3a91", prefix="LAB1",
+                   expected_clients=2, opened_by="test")
+    # מחיקה עם שם נכון חייבת להידחות ב-409, והאימג' נשאר
+    r = admin.post("/api/console/images/img_7f3a91/delete",
+                   json={"confirm_name": "Office 2024 Standard"})
+    assert r.status_code == 409
+    assert (images_root / "img_7f3a91").exists()
+
+
 def test_library_edits_are_admin_only(server):
     deploy = server["deploy"]
     assert deploy.put("/api/console/images/img_7f3a91", json={"sort": 1}).status_code == 403
