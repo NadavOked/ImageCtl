@@ -96,6 +96,29 @@ def parse_leases(text: str) -> dict[str, str]:
     return leases
 
 
+def parse_lease_rows(text: str) -> list[dict]:
+    """‏#1039: השורות המלאות, לקונסולה — ‏``{mac, ip, hostname, expires}``.
+    אותו סינון כמו ``parse_leases`` (‏duid/IPv6 מדולגים). ‏``hostname``
+    ‏``None`` כש-dnsmasq כתב ``*``; ‏``expires`` = שניות epoch, ‏``0`` =
+    חכירה בלי תפוגה."""
+    rows = []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) < 3:
+            continue
+        mac = lenient_mac(fields[1])
+        if mac is None:
+            continue
+        try:
+            ip = ipaddress.IPv4Address(fields[2])
+            expires = int(fields[0])
+        except ValueError:
+            continue
+        host = fields[3] if len(fields) > 3 and fields[3] != "*" else None
+        rows.append({"mac": mac, "ip": str(ip), "hostname": host, "expires": expires})
+    return rows
+
+
 class LeaseFile:
     """מקור החכירות — קובץ dnsmasq. נקרא **בכל** בדיקה: הקובץ קטן (שורה
     למכונה), dnsmasq כותב אותו מחדש בכל חכירה, ומטמון היה מחזיר "אין
@@ -125,6 +148,11 @@ class LeaseFile:
             return Holders(read=False)
         return Holders(read=True, macs=tuple(
             mac for mac, ip in leases.items() if _same_address(ip, client_ip)))
+
+    def rows(self) -> list[dict]:
+        """‏#1039: כל החכירות (``parse_lease_rows``). ‏``OSError`` עולה
+        לקורא — "לא נקרא" הוא מצב שהקונסולה אומרת בשם, לא רשימה ריקה."""
+        return parse_lease_rows(self.path.read_text(encoding="utf-8", errors="replace"))
 
     def count(self) -> int | None:
         """כמה חכירות בקובץ, או ``None`` כשאינו נקרא — למסך הבריאות."""

@@ -108,16 +108,28 @@ def console_only(conn: sqlite3.Connection):
     (המוניטור דרך המשני, ‏`console_storage`), ושם השער נסגר ב-4403
     **אחרי** accept כדי שהסיבה תגיע לדפדפן (#904) — ‏`HTTPConnection`
     ולא ``Request`` כדי ש-FastAPI ימלא את הפרמטר בשני הסוגים, והסירוב
-    עצמו נשאר של ה-HTTP."""
+    עצמו נשאר של ה-HTTP.
+
+    ‏#1039: כאן גם נרשם "מי מחובר לקונסולה" (``console_presence.touch``) —
+    זה המקום היחיד שרואה כל בקשת קונסולה ואת העוגייה שכבר אומתה, ורק
+    בקונסולה (לא בקיוסק ולא בפורט הסוכן). הכתיבה עצמה — לכל היותר פעם
+    בדקה לעוגייה."""
     from fastapi import HTTPException
     from starlette.requests import HTTPConnection
+
+    from . import console_presence
 
     def no_deploy(connection: HTTPConnection) -> None:
         if connection.scope.get("type") != "http":
             return
-        found = check(conn, connection.cookies.get(COOKIE_NAME))
+        token = connection.cookies.get(COOKIE_NAME)
+        found = check(conn, token)
         if found is not None and found[1] == "deploy":
             raise HTTPException(403, DEPLOY_NO_CONSOLE_HE)
+        if found is not None:
+            console_presence.touch(
+                conn, token, found[0],
+                connection.client.host if connection.client else "", TTL_SECONDS)
 
     return no_deploy
 

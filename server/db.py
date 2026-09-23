@@ -124,6 +124,15 @@ CREATE TABLE IF NOT EXISTS room_rounds (
     failed_reason   TEXT
 );
 
+-- ‏#972: תוצאת האימות החוזר (scrub) האחרונה לכל אימג'. אין לה ייצוג
+-- טבעי כקובץ (עיקרון 3) — המניפסט אומר מה *צריך* להיות, לא מתי נבדק.
+-- אין שורה = לא אומת מאז שנכנס לספרייה.
+CREATE TABLE IF NOT EXISTS image_scrubs (
+    image_id TEXT PRIMARY KEY,
+    ts       TEXT NOT NULL,
+    state    TEXT NOT NULL CHECK (state IN ('intact', 'drift'))
+);
+
 CREATE TABLE IF NOT EXISTS users (
     username TEXT PRIMARY KEY,
     pw_hash  TEXT NOT NULL,
@@ -172,6 +181,18 @@ CREATE TABLE IF NOT EXISTS mfa_challenges (
     token_hash TEXT PRIMARY KEY,
     username   TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
     expires_at REAL NOT NULL
+);
+
+-- ‏#1039: מי מחובר לקונסולה (`console_presence`). שורה לעוגייה — לפי
+-- ה-sha256 שלה, לא העוגייה עצמה. ‏last_seen נכתב לכל היותר פעם בדקה.
+CREATE TABLE IF NOT EXISTS console_sessions (
+    token_hash TEXT PRIMARY KEY,
+    username   TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    ip         TEXT NOT NULL DEFAULT '',
+    since      TEXT NOT NULL,
+    last_seen  TEXT NOT NULL,
+    expires_at REAL NOT NULL,
+    auth_epoch INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS journal (

@@ -67,6 +67,8 @@ verify_table() {
         fi
         log "$1: disk GUID $_got_guid came back from the disk"
     fi
+    # ‏#1212: וה-GUID הייחודי של כל מחיצה — אותו זוג, אותה ראיה (manifest.sh).
+    verify_unique_guids "$1" "$_plan"
 }
 
 apply_gpt() {

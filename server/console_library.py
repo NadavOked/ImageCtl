@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -17,11 +18,48 @@ from fastapi.responses import StreamingResponse
 from . import auth
 from .api import ServerContext
 from .images import validate_display_name
-from .library_scrub import scrub_library
+from .library_scrub import forget_scrub, last_scrubs, scrub_library
 from .archive import ArchiveError, import_tar, tar_stream
 from .db import get_setting, journal, set_setting
+from .sessions import ROOM_PREFIX
 
 FOLDERS_KEY = "image_folders"
+#: חלון "סבבים לאחרונה" במגירת האימג' (#972, המוקאפ: "ב-30 הימים האחרונים").
+ROUNDS_WINDOW = timedelta(days=30)
+
+
+def _aware(stamp: object) -> datetime | None:
+    try:
+        when = datetime.fromisoformat(str(stamp))
+    except ValueError:
+        return None
+    return when if when.tzinfo is not None else None
+
+
+def recent_rounds(conn, now: datetime | None = None) -> dict[str, int | None]:
+    """כמה סבבים השתמשו בכל אימג' בחלון ``ROUNDS_WINDOW`` (#972).
+
+    סבב = שורה ב-``sessions`` (כיתה, תחנה, משיכה) **או** סבב חדר ב-
+    ``room_rounds``. כל גל של סבב חדר הוא גם שורה ב-``sessions`` (קבוצת
+    המשכפלים, קידומת ``ROOM``) — אלה לא נספרים שוב, אחרת סבב של שלושה
+    גלים היה נראה כשלושה סבבים. אימג' שאינו במילון = 0 (הטבלאות אינן
+    נמחקות לעולם, ולכן היעדר הוא מדידה). ‏``None`` = לפחות שורה אחת
+    שחותמת הזמן שלה אינה נקראת — אי אפשר לדעת אם היא בחלון, וספירה
+    בלעדיה הייתה מספר קטן שנראה אמיתי (עיקרון 5)."""
+    from .room import CLONERS_GROUP  # noqa: PLC0415 — נמנע ממעגל ייבוא, כמו במחיקה
+    since = (now or datetime.now(timezone.utc)) - ROUNDS_WINDOW
+    rows = list(conn.execute(
+        "SELECT image_id, created_at FROM sessions WHERE NOT (group_id = ? AND prefix = ?)",
+        (CLONERS_GROUP, ROOM_PREFIX)))
+    rows += list(conn.execute("SELECT image_id, created_at FROM room_rounds"))
+    counts: dict[str, int | None] = {}
+    for row in rows:
+        image_id, when = row["image_id"], _aware(row["created_at"])
+        if when is None:
+            counts[image_id] = None
+        elif when >= since and counts.get(image_id, 0) is not None:
+            counts[image_id] = counts.get(image_id, 0) + 1
+    return counts
 
 
 def _checked_name(value: str, what: str) -> str:
@@ -40,16 +78,32 @@ def create_library_router(ctx: ServerContext) -> APIRouter:
 
     @router.get("/images")
     def images(user=Depends(current_user)):
-        return ctx.library.public_list()
+        # ‏#972: שני שדות מה-DB לצד מה שמהדיסק — ‏`last_scrub` (‏null = לא
+        # אומת מאז הכניסה) ו-`rounds_30d` (‏null = לא ניתן לספור).
+        scrubs, rounds = last_scrubs(ctx.conn), recent_rounds(ctx.conn)
+        listed = ctx.library.public_list()
+        for image in listed:
+            image["last_scrub"] = scrubs.get(image["id"])
+            image["rounds_30d"] = rounds.get(image["id"], 0)
+        return listed
+
+    @router.get("/images/{image_id}")
+    def image_manifest(image_id: str, user=Depends(current_user)):
+        """‏#972: המניפסט הציבורי למגירת האימג' — בלי מפתחות `_` (‏`_dir`
+        ונתיבי הדיסק). ‏`/api/v1/.../manifest` נשאר של הסוכן (#738)."""
+        manifest = ctx.library.get(image_id)
+        if manifest is None:
+            raise HTTPException(404, "אימג' לא קיים")
+        return {k: v for k, v in manifest.items() if not k.startswith("_")}
 
     @router.post("/images/scrub")
     def scrub_images(user=Depends(admin_only)):
-        return scrub_library(ctx.library.root)
+        return scrub_library(ctx.library, conn=ctx.conn)
 
     @router.post("/images/{image_id}/scrub")
     def scrub_image(image_id: str, user=Depends(admin_only)):
         try:
-            return scrub_library(ctx.library.root, image_id)
+            return scrub_library(ctx.library, image_id, conn=ctx.conn)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
         except KeyError:
@@ -85,6 +139,7 @@ def create_library_router(ctx: ServerContext) -> APIRouter:
                 or (round_row is not None and round_row["image_id"] == image_id):
             raise HTTPException(409, "האימג' נמצא בשימוש בסשן פעיל")
         ctx.library.delete(image_id)
+        forget_scrub(ctx.conn, image_id)
         journal(ctx.conn, "image_delete", f'{image_id} "{manifest["name"]}"', user[0])
         return {"ok": True}
 

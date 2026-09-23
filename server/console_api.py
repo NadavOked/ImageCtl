@@ -17,8 +17,9 @@ from typing import Callable
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import PlainTextResponse
 
-from . import (auth, capabilities, console_login, console_mfa, dhcp, disk_failures,
-               identity, inventory, probe, registry, shrink_records, ssh_hostkey,
+from . import (auth, capabilities, console_login, console_mfa, console_presence,
+               dhcp, disk_failures, identity, inventory, probe, registry,
+               shrink_records, ssh_hostkey,
                storage_locations, storage_nodes, users)
 from .api import ServerContext
 from .db import (_write_lock, get_setting, journal, now_iso, set_setting,
@@ -138,9 +139,16 @@ def create_console_router(
         )
 
     @router.post("/logout")
-    def logout(response: Response, user=Depends(current_user)):
+    def logout(request: Request, response: Response, user=Depends(current_user)):
+        console_presence.forget(ctx.conn, request.cookies.get(auth.COOKIE_NAME))
         response.delete_cookie(auth.COOKIE_NAME)
         return {"ok": True}
+
+    @router.get("/sessions")
+    def sessions(user=Depends(admin_only)):
+        """‏#1039: מי מחובר לקונסולה — ‏``[{user, ip, since, last_seen}]``.
+        ‏``last_seen`` מדויק עד דקה (``console_presence.TOUCH_SECONDS``)."""
+        return console_presence.active(ctx.conn)
 
     @router.get("/me")
     def me(user=Depends(current_user)):

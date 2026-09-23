@@ -103,6 +103,18 @@ def test_the_usb_controller_loads_before_anything_that_hangs_off_it(tmp_path: Pa
     assert mods.index("usbcore") < mods.index("usb-storage")
 
 
+def test_the_crc32c_provider_loads_before_the_filesystems_that_need_it(tmp_path: Path):
+    """#1207: libcrc32c (ext4/btrfs/xfs) needs a crc32c provider already
+    registered. busybox modprobe ignores the softdep, so btrfs and xfs,
+    listed before crc32c_generic, failed with "unknown symbol" on every boot
+    and init reported a broken restore. Measured in QEMU 24/09: xfs alone
+    rc=1, crc32c_generic then xfs rc=0 -- one variable."""
+    mods = generate(tmp_path, phy=["realtek"], ethernet=["r8169"])
+    for fs in ("ext4", "btrfs", "xfs"):
+        assert mods.index("crc32c_generic") < mods.index(fs), fs
+        assert mods.index("crc32c-intel") < mods.index(fs), fs
+
+
 def test_the_builder_packs_the_usb_core_and_host_trees(tmp_path: Path):
     """רשימת הטעינה חסרת ערך אם המודולים עצמם אינם נארזים."""
     text = BUILDER.read_text(encoding="utf-8")

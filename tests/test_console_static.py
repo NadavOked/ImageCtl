@@ -245,12 +245,15 @@ def test_static_includes_are_at_9_9():
     #1192 (אישור עדכון בלי הקלדת שם) = ‏9.7;
     #1148/#1177 (מצב "לא ישים" ומסך MFA בלי otpauth גלוי) = ‏9.8;
     #1126/#854 (מצב כשל מפורש לסבב) = ‏9.9;
-    #1128 (כפתור "הורד גיבוי הגדרות" בכרטיס הגרסה) = ‏10.0.
+    #1128 (כפתור "הורד גיבוי הגדרות" בכרטיס הגרסה) = ‏10.0;
+    #972 (מגירת האימג': מחיצות מהמניפסט, אימות שמור, סבבים ב-30 יום) = ‏10.1;
+    #1039 (אובייקט הרשת: /sessions, חכירות dnsmasq, bind null) = ‏10.2;
+    #1215 (אימג' במיקום לא זמין: "לא נבדק", לא "לא תואם") = ‏10.3.
     שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
     versions = {float(v) for v in re.findall(r'\?v=(\d+\.\d+)"', page)}
-    assert versions == {10.0}, versions
+    assert versions == {10.3}, versions
 
 
 def test_update_apply_is_a_sheet_without_text_verification_and_revert_uses_hostname():

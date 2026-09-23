@@ -1983,10 +1983,10 @@ async function loadDeploy() {
    נבנה לפי docs/design/console-redesign/images.md — דפדפן datastore: עץ
    תיקיות, טבלת התיקייה, מגירת אימג'. מה-API הקיים בלבד: ‏/images, ‏/folders,
    ‏/overview (אחסון, "בשימוש"), ‏/tasks (קליטות), ‏/journal (היסטוריה, admin),
-   ‏POST /images/{id}/scrub (אימות חוזר). המניפסט המלא (מחיצות, כיווץ, boot_ca)
-   אינו חשוף לקונסולה — "דורש API", לא מומצא (README §8).
+   ‏POST /images/{id}/scrub (אימות חוזר). ‏#972: ‏GET /images/{id} (המניפסט
+   הציבורי — מחיצות, כיווץ, boot_ca) למגירה, ו-last_scrub / rounds_30d ב-/images.
    ‏IMAGES_FOLDER: ‏null = כל האימג'ים · "" = ללא תיקייה · "שם" = תיקייה. */
-let IMG = { sel: new Set(), filter: "", scrub: {}, history: {}, tasksKey: "" };
+let IMG = { sel: new Set(), filter: "", scrub: {}, history: {}, manifest: {}, tasksKey: "" };
 
 function imagesTabs() { return ["קבצים", "קליטות", "אחסון"]; }
 
@@ -1999,22 +1999,33 @@ function imgFits(r) {
   const g = gbCeil(r.min_target_bytes);
   return g == null ? `<span class="muted">לא ידוע</span>` : `<span title="${esc(r.min_target_bytes)} bytes">${ltr(g + " GB")}</span>`;
 }
-/* "בשימוש" — סבב פעיל / סבב שיכפול מ-/overview בלבד (אין היסטוריית סבבים לאימג' — דורש API). */
+/* "בשימוש" — סבב פעיל / סבב שיכפול מ-/overview. הספירה ל-30 יום — imgRounds (#972). */
 function imgUsage(id) {
   const o = OVERVIEW || {}, out = [];
   if (o.session && o.session.image_id === id) out.push(`סבב ${sessionStateText(o.session)} · ${sessionGroup(o.session)}`);
   if (o.room && o.room.image_id === id) out.push(`סבב שיכפול · גל ${o.room.wave_number || 1}`);
   return out;
 }
+/* סבבים ב-30 יום (#972, ‏sessions + סבבי חדר). ‏null / שדה חסר = לא ידוע, לא 0. */
+function imgRounds(r) {
+  const n = r.rounds_30d;
+  if (n == null) return `<span class="muted">סבבים ב-30 הימים האחרונים: לא ידוע</span>`;
+  return esc(n === 0 ? "אין סבבים ב-30 הימים האחרונים" : n === 1 ? "סבב אחד ב-30 הימים האחרונים" : `${n} סבבים ב-30 הימים האחרונים`);
+}
 /* אימות: אימג' בספרייה = כל sha256 אומת בכניסה (עיקרון 6; מניפסט נכנס רק
-   אחרי אימות). תוצאת scrub מהישיבה הזו גוברת; תוצאה שמורה — דורש API. */
+   אחרי אימות). תוצאת scrub מהישיבה הזו גוברת, אחריה השמורה (last_scrub, #972). */
+/* #1215: אימג' במיקום אחסון לא זמין — השרת לא הצליח לבדוק אותו. זה לא
+   "תקין" וגם לא "לא תואם" (עיקרון 5): הוא לא פגום, הוא לא נבדק. */
+const SCRUB_UNAVAILABLE = "המיקום לא זמין · לא נבדק";
 function imgVerify(r) {
-  const s = IMG.scrub[r.id];
+  const s = IMG.scrub[r.id], saved = r.last_scrub;
+  if (s && s.state === "unavailable") return UI.status("warn", SCRUB_UNAVAILABLE);
   if (s) {
     const bad = (s.files || []).filter((f) => f.state !== "ok").map((f) => f.file);
     return s.state === "intact" ? UI.status("ok", "sha256 תקין · אומת עכשיו") : UI.status("err", "sha256 לא תואם: " + bad.join(", "));
   }
-  return `<span title="כל sha256 אומת בכניסה לספרייה (קליטה או העלאה)">${UI.status("ok", "sha256 אומת")}</span>`;
+  if (saved) return saved.state === "intact" ? UI.status("ok", "sha256 תקין · " + fmtDate(saved.ts)) : UI.status("err", "sha256 לא תואם · " + fmtDate(saved.ts));
+  return `<span title="כל sha256 אומת בכניסה לספרייה (קליטה או העלאה); אימות חוזר לא הורץ מאז">${UI.status("ok", "sha256 אומת")}</span>`;
 }
 
 function imagesVisible() {
@@ -2172,12 +2183,13 @@ function imagesStorageCard() {
   const rows = results.map(([id, s]) => {
     const img = findImage(id);
     const bad = (s.files || []).filter((f) => f.state !== "ok");
-    return [UI.name(img ? img.name : id, id), UI.status(s.state === "intact" ? "ok" : "err", s.state === "intact" ? "sha256 תקין" : "sha256 לא תואם"),
+    const shown = s.state === "intact" ? ["ok", "sha256 תקין"] : s.state === "unavailable" ? ["warn", SCRUB_UNAVAILABLE] : ["err", "sha256 לא תואם"];
+    return [UI.name(img ? img.name : id, id), UI.status(...shown),
       esc(`${(s.files || []).length} קבצים`), bad.length ? esc(bad.map((f) => `${f.file}: ${f.state}${f.error ? " — " + f.error : ""}`).join(" · ")) : ""];
   });
   const scrub = isAdmin()
     ? UI.card({ title: "אימות הספרייה", small: "sha256 של כל קובץ מחיצה מול המניפסט", acts: `<button class="btn sm" onclick="scrubLibrary()">אמת את כל הספרייה</button>`, flush: true,
-      body: UI.datagrid({ columns: ["אימג'", "תוצאה", "קבצים", "פרטים"], rows, empty: "לא הורץ אימות בישיבה הזו. תוצאות אימות נשמרות רק לישיבה — תוצאה אחרונה לכל אימג' דורשת API." }) })
+      body: UI.datagrid({ columns: ["אימג'", "תוצאה", "קבצים", "פרטים"], rows, empty: "לא הורץ אימות בישיבה הזו. התוצאה השמורה האחרונה לכל אימג' — בעמודת \"אימות\" בטבלת הקבצים." }) })
     : "";
   return kpis + scrub;
 }
@@ -2326,10 +2338,17 @@ async function scrubImage(id) {
   try {
     const r = await post("/images/" + encodeId(img.id) + "/scrub");
     for (const one of r.images || []) IMG.scrub[one.id] = one;
-    toast(r.intact ? "sha256 תקין." : "sha256 לא תואם — האימג' פגום!", 6000);
+    toast(r.intact ? "sha256 תקין." : scrubVerdict(r.images) || "sha256 לא תואם — האימג' פגום!", 6000);
     if (current === "images") renderCurrent();
     openImageDetail(img.id);
   } catch (e) { toast(e.message); }
+}
+/* #1215: כשהסיבה היחידה ש-intact הוא false היא מיקום לא זמין, אין אימג' פגום
+   — יש אימג' שלא נבדק. ‏null = נמצא פגום באמת, וההודעה הרגילה חלה. */
+function scrubVerdict(images) {
+  const list = images || [];
+  if (!list.length || list.some((i) => i.state !== "intact" && i.state !== "unavailable")) return null;
+  return SCRUB_UNAVAILABLE + " — אימג' במיקום אחסון לא זמין לא אומת.";
 }
 async function scrubLibrary() {
   if (!isAdmin()) return;
@@ -2337,13 +2356,14 @@ async function scrubLibrary() {
   try {
     const r = await post("/images/scrub");
     for (const one of r.images || []) IMG.scrub[one.id] = one;
-    toast(r.intact ? "כל הספרייה תקינה." : "נמצא אימג' פגום — ראו את הטבלה.", 6000);
+    toast(r.intact ? "כל הספרייה תקינה." : scrubVerdict(r.images) || "נמצא אימג' פגום — ראו את הטבלה.", 6000);
     if (current === "images") renderCurrent();
   } catch (e) { toast(e.message); }
 }
 
 /* --- מגירת אימג' (image-drawer): כותרת → פעולות → אימות → מאפיינים →
-   מחיצות (מתוצאת scrub) → היסטוריה (יומן + קליטות) → פעולות משניות. --- */
+   מחיצות (מהמניפסט, #972; sha256 מתוצאת scrub) → היסטוריה (יומן + קליטות) →
+   פעולות משניות. --- */
 function imageHistory(img) {
   const events = [];
   for (const t of CAPTURE_TASKS || []) {
@@ -2356,14 +2376,52 @@ function imageHistory(img) {
   events.sort((a, b) => String(b.ts).localeCompare(String(a.ts)));
   return events.map((e) => ({ t: isToday(e.ts) ? fmtClock(e.ts) : fmtDate(e.ts), cls: e.cls, text: e.text, who: e.who }));
 }
+/* ‏#972: מה שהמגירה מציגה מהמניפסט הציבורי (GET /images/{id}). שדה חסר
+   (מניפסט ישן) = "לא נרשם"; ‏null = "לא נמדד"/"לא נגזר" — לא ערך מומצא. */
+function imageBootCa(m) {
+  if (!("boot_ca" in m)) return `<span class="muted">לא נרשם (אימג' מלפני #85)</span>`;
+  if (m.boot_ca == null) return `<span class="muted">לא נגזר</span>${m.boot_ca_error ? " — " + esc(m.boot_ca_error) : ""}`;
+  return m.boot_ca.length ? esc(m.boot_ca.join(" · ")) : "המטענים נקראו — אין עליהם חתימה";
+}
+function imageManifestKv(m) {
+  const known = (v) => v == null || v === "" ? `<span class="muted">לא נרשם</span>` : esc(v);
+  return [
+    ["נקלט על ידי", known(m.created_by)],
+    ["טבלת מחיצות", `${known(m.scheme)} · סקטור ${m.sector_size == null ? known(null) : ltr(m.sector_size + " B")}`],
+    ["רשויות אתחול", imageBootCa(m)],
+    ["דחיסה", `${known(m.compression)} · partclone ${known(m.partclone_version)}`],
+  ];
+}
+/* טבלת המחיצות מהמניפסט; עמודת sha256 מתוצאת scrub מהישיבה כשיש, אחרת הערך הצפוי. */
+function imagePartitionsGrid(m, s) {
+  const scrubbed = new Map(((s && s.files) || []).map((f) => [f.index, f]));
+  const bytes = (n) => n == null ? `<span class="muted">לא נמדד</span>` : `<span title="${esc(n)} bytes">${ltr(fmtBytes(n))}</span>`;
+  const rows = (m.partitions || []).map((p) => {
+    const f = scrubbed.get(p.index);
+    const sha = !p.file ? `<span class="muted">לא נשמר (${esc(p.fs || "—")})</span>`
+      : f ? UI.status(f.state === "ok" ? "ok" : "err", f.state === "ok" ? "תקין" : f.state)
+      : `<span class="mono" title="${esc(p.sha256 || "")}">${esc(String(p.sha256 || "—").slice(0, 12))}…</span>`;
+    return [esc(p.index), esc(p.role || "—"), esc(p.fs || "—"), bytes(p.size_bytes), bytes(p.used_bytes),
+      p.shrunk_from_bytes == null ? `<span class="muted">—</span>` : bytes(p.shrunk_from_bytes), sha];
+  });
+  return UI.datagrid({ columns: ["#", "תפקיד", "מערכת קבצים", "גודל", "בשימוש", "כווץ מ-", "sha256"], rows, empty: "אין מחיצות במניפסט" });
+}
 function imageDrawerHtml(img) {
   const admin = isAdmin(), idEnc = encodeId(img.id);
   const use = imgUsage(img.id);
   const s = IMG.scrub[img.id];
   const actions = `<div class="acts" style="display:flex;gap:6px;flex-wrap:wrap">${classroomsOn() ? `<button class="btn primary" onclick="deployImage('${idEnc}')">הפץ לכיתה…</button>` : ""}<a class="btn" href="/api/console/images/${idEnc}/download">הורדה</a>${admin ? `<button class="btn" onclick="scrubImage('${idEnc}')">אימות חוזר</button>` : ""}</div>`;
+  const saved = img.last_scrub, again = admin ? ` ${UI.link("הרץ עכשיו", `scrubImage('${idEnc}')`)}` : "";
+  const when = (ts) => ltr(`${fmtDate(ts)} ${fmtClock(ts)}`);
   const verify = s
-    ? (s.state === "intact" ? UI.note("ok", "sha256 של כל קובץ מחיצה תואם למניפסט — אומת עכשיו.") : UI.note("err", "sha256 לא תואם: " + esc((s.files || []).filter((f) => f.state !== "ok").map((f) => `${f.file} (${f.state})`).join(", ")) + " — האימג' פגום, אין להפיץ אותו."))
-    : UI.note("ok", `sha256 של כל מחיצה אומת בכניסה לספרייה.${admin ? ` אימות חוזר: ${UI.link("הרץ עכשיו", `scrubImage('${idEnc}')`)}` : ""}`);
+    ? (s.state === "intact" ? UI.note("ok", "sha256 של כל קובץ מחיצה תואם למניפסט — אומת עכשיו.")
+      : s.state === "unavailable" ? UI.note("warn", SCRUB_UNAVAILABLE + ".")
+      : UI.note("err", "sha256 לא תואם: " + esc((s.files || []).filter((f) => f.state !== "ok").map((f) => `${f.file} (${f.state})`).join(", ")) + " — האימג' פגום, אין להפיץ אותו."))
+    : saved
+      ? (saved.state === "intact" ? UI.note("ok", `sha256 של כל קובץ מחיצה תואם למניפסט — אימות חוזר אחרון ${when(saved.ts)}.${again}`)
+        : UI.note("err", `האימות החוזר האחרון (${when(saved.ts)}) מצא sha256 לא תואם — האימג' פגום, אין להפיץ אותו.${again}`))
+      : UI.note("ok", `sha256 של כל מחיצה אומת בכניסה לספרייה · אימות חוזר לא הורץ מאז.${admin ? ` אימות חוזר: ${UI.link("הרץ עכשיו", `scrubImage('${idEnc}')`)}` : ""}`);
+  const m = IMG.manifest[img.id], mOk = !!m && !m.error;
   const kv = UI.kv([
     ["תיאור", esc(img.description || "—") + (admin ? ` ${UI.link("עריכה", `editImageDescription('${idEnc}')`)}` : "")],
     ["תיקייה", esc(img.folder || "ללא תיקייה") + (admin ? ` ${UI.link("העבר", `moveImage('${idEnc}')`)}` : "")],
@@ -2373,11 +2431,15 @@ function imageDrawerHtml(img) {
     ["בשימוש במקור", img.used_bytes == null ? `<span class="muted">לא ידוע</span>` : ltr(fmtBytes(img.used_bytes))],
     ["גודל בשרת", `${ltr(fmtBytes(img.total_compressed_bytes))} דחוס`],
     ["מחיצות", esc(String(img.partitions ?? "—"))],
-    ["שימוש", use.length ? esc(use.join(" · ")) : `<span class="muted">לא בסבב פעיל</span>`],
+    ["שימוש", (use.length ? esc(use.join(" · ")) : `<span class="muted">לא בסבב פעיל</span>`) + " · " + imgRounds(img)],
+    ...(mOk ? imageManifestKv(m) : []),
   ]);
-  const parts = s && (s.files || []).length
+  // עד שהמניפסט נקרא (או כשלא נקרא) — תוצאת scrub מהישיבה, אם יש, לפי קובץ.
+  const scrubGrid = s && (s.files || []).length
     ? UI.datagrid({ columns: ["#", "קובץ", "sha256"], rows: s.files.map((f) => [esc(f.index), `<span class="mono">${esc(f.file)}</span>`, UI.status(f.state === "ok" ? "ok" : "err", f.state === "ok" ? "תקין" : f.state)]) })
-    : UI.note("", `טבלת המחיצות (תפקיד, מערכת קבצים, גדלים, כיווץ המקור, רשויות האתחול) — <span title="המניפסט המלא אינו חשוף ב-/api/console">דורש API</span>.${admin ? ` ‏sha256 לכל קובץ מחיצה: ${UI.link("אימות חוזר", `scrubImage('${idEnc}')`)}.` : ""}`);
+    : "";
+  const parts = mOk ? imagePartitionsGrid(m, s)
+    : (m ? UI.note("warn", "המניפסט לא נקרא: " + esc(m.error)) : UI.note("", "טוען את טבלת המחיצות…")) + scrubGrid;
   const hist = imageHistory(img);
   const jErr = IMG.history[img.id] && IMG.history[img.id].error;
   const history = hist.length ? UI.timeline(hist)
@@ -2392,12 +2454,18 @@ function openImageDetail(id) {
   const img = findImage(id);
   if (!img) { toast("אימג' לא נמצא"); return; }
   openDrawer(img.name, imageDrawerHtml(img));
-  if (!isAdmin() || IMG.history[img.id]) return;
   const gen = drawerGeneration;
+  const redraw = () => { if (gen === drawerGeneration) document.getElementById("drawerBody").innerHTML = imageDrawerHtml(img); };
+  // ‏#972: המניפסט נקרא בכל פתיחה (לכל משתמש) — הקודם מוצג עד שהחדש מגיע.
+  api("/images/" + encodeId(img.id))
+    .then((m) => { IMG.manifest[img.id] = m; })
+    .catch((e) => { IMG.manifest[img.id] = { error: e.message }; })
+    .then(redraw);
+  if (!isAdmin() || IMG.history[img.id]) return;
   api("/journal?q=" + encodeURIComponent(img.name) + "&limit=20")
     .then((rows) => { IMG.history[img.id] = rows; })
     .catch((e) => { IMG.history[img.id] = { error: e.message }; })
-    .then(() => { if (gen === drawerGeneration) document.getElementById("drawerBody").innerHTML = imageDrawerHtml(img); });
+    .then(redraw);
 }
 
 function renameImage(id) {
@@ -4110,13 +4178,14 @@ function openLogDetail(i) {
    loadNet → NICS), /net/config (NETCFG), /net (NET — מי נראה ברשת), /ports
    (bind — "מה מותר על כל וילן" עד מודל וילן, #705), /ssh (SSH_STATE — SSH
    לשרת × כרטיס), /monitor/machines (משכפלים/בנייה, online), /storage-nodes
-   (+ …/machines.connected — סניפים), /net/interfaces/{n}/probe (מי עוד עונה).
+   (+ …/machines.connected — סניפים), /net/interfaces/{n}/probe (מי עוד עונה),
+   /sessions (מי מחובר לקונסולה, #1039), /net/interfaces/{n}/leases (חכירות dnsmasq של כרטיס ההפצה, #1039).
    כל מקור נכשל בנפרד (NETW.err) ומוצג "לא נקרא" — לא "אין" (עיקרון 5).
    וילן = הכרטיס (1:1, "לפי הגדרה") — מודל וילן אמיתי דורש API (#705).
    כיתות = תיבה סטטית "v2" — לא נבנה מעבר לזה (v1 = בנייה/שיכפול/שרתים).
    כל שינוי DHCP/כתובת עובר בטפסים הקיימים של net.js/netcfg.js (editNic,
    editAddress, הקלדת שם הכרטיס, rollback) — לא נבנתה זרימת שמירה חדשה (#53). */
-let NETW = { nics: null, cfg: null, ports: null, mon: null, nodes: null, probe: {}, sel: null, at: "", err: {} };
+let NETW = { nics: null, cfg: null, ports: null, mon: null, nodes: null, sessions: null, leases: null, probe: {}, sel: null, at: "", err: {} };
 // ‏#1088: מקור כתובת ההפצה — /net/deploy: {configured, source, interface, url, hint}. null = לא נקרא.
 let NET_DEPLOY = null;
 const NET_ONLINE_SECONDS = 90;   // כמו monitor.py: "מחובר" = נראה ב-90 השניות האחרונות
@@ -4125,7 +4194,8 @@ async function loadNetwork() {
   if (!isAdmin()) return;
   const err = {};
   const grab = async (key, fn) => { try { return await fn(); } catch (e) { err[key] = e.message; return null; } };
-  const [nics, cfg, net, ports, ssh, mon, nodes, deploy] = await Promise.all([
+  const list = async (url) => { const r = await api(url); if (!Array.isArray(r)) throw new Error("תשובה שאינה רשימה"); return r; };
+  const [nics, cfg, net, ports, ssh, mon, nodes, deploy, sessions] = await Promise.all([
     grab("interfaces", async () => { await loadNet(); return Array.isArray(NICS) ? NICS : null; }),
     grab("config", () => api("/net/config")),
     grab("net", () => api("/net")),
@@ -4134,9 +4204,13 @@ async function loadNetwork() {
     grab("monitor", () => api("/monitor/machines")),
     grab("nodes", loadNetworkNodes),
     grab("deploy", () => api("/net/deploy")),
+    grab("sessions", () => list("/sessions")),
   ]);
   NETW = { ...NETW, nics, cfg, ports: Array.isArray(ports) ? ports : null, mon: Array.isArray(mon) ? mon : null,
-           nodes, at: clockNow(), err };
+           nodes, sessions, leases: null, at: clockNow(), err };
+  // ‏#1039: חכירות dnsmasq — של כרטיס ההפצה בלבד (הלשונית שמציגה אותן); הכרטיס ידוע רק אחרי /net/interfaces.
+  const focus = netDeployNic();
+  if (focus) NETW.leases = await grab("leases", () => api(`/net/interfaces/${encodeId(focus.name)}/leases`));
   NET_DEPLOY = deploy && typeof deploy === "object" ? deploy : null;
   if (cfg) NETCFG = cfg;                                   // netcfg.js (editAddress, נתיבים, rollback) קורא מכאן
   if (Array.isArray(net)) { NET = net; NET_ERR = ""; } else { NET = null; NET_ERR = err.net || "תשובה שאינה רשימה"; }
@@ -4181,12 +4255,15 @@ function netNetworkOf(n) { const c = netLiveAddrs(n)[0]; const p = cidrParts(c);
 function urlHost(u) { const m = String(u || "").match(/^[a-z]+:\/\/\[?([^\]/:]+)/i); return m ? m[1] : ""; }
 function secondsSince(iso) { const t = iso ? new Date(iso).getTime() : NaN; return Number.isFinite(t) ? Math.max(0, (Date.now() - t) / 1000) : null; }
 
-/* "מה מותר על כל וילן" — רק מה ש-/ports.bind אומר (#996); בלי bind בכלל = דורש API (#705). null = לא ידוע. */
+/* "מה מותר על כל וילן" — רק מה ש-/ports.bind אומר (#996); בלי bind בכלל = דורש API (#705). null = לא ידוע.
+   ‏#1039: ‏bind null = טבלת הסוקטים לא נקראה ≠ [] = נקראה ואף אחד לא מאזין. שורה אחת שלא נקראה = לא ידוע (עיקרון 5). */
+function netBindUnread() { return Array.isArray(NETW.ports) && NETW.ports.some((p) => p.bind === null); }
+function netAllowedUnknown() { return netBindUnread() ? "מה מותר — טבלת הסוקטים לא נקראה" : "מה מותר — דורש API (#705)"; }
 function netServicesOn(n) {
   const ports = NETW.ports;
-  // ‏bind בשרת: רשימת "כתובת[/bits][:port]" (ריקה = לא נקרא / לא מאזין), או מחרוזת. בלי אף bind — לא ידוע.
+  // ‏bind בשרת: רשימת "כתובת[/bits][:port]" (ריקה = נקראה ואף אחד לא מאזין), null = לא נקרא, או מחרוזת (שרת ישן).
   const bindsOf = (p) => (Array.isArray(p.bind) ? p.bind : p.bind ? [p.bind] : []).map((b) => String(b).replace(/:\d+$/, "").replace(/\/\d+$/, ""));
-  if (!Array.isArray(ports) || !ports.some((p) => bindsOf(p).length)) return null;
+  if (!Array.isArray(ports) || !ports.some((p) => p.bind !== undefined) || netBindUnread()) return null;
   const ips = netLiveAddrs(n).map((c) => c.split("/")[0]);
   const out = [];
   for (const p of ports) {
@@ -4215,6 +4292,7 @@ function netRoleLabel(n) {
   const svc = netServicesOn(n);
   if (svc && svc.length) parts.push(svc.join(" · "));
   if (parts.length) return esc(parts.join(" · "));
+  if (svc === null && netBindUnread()) return `<span class="muted" title="bind של /ports: טבלת הסוקטים לא נקראה">— לא נקרא</span>`;
   return svc === null ? `<span class="muted" title="דורש API (#705): מודל וילן / bind">— דורש API</span>` : `<span class="muted">—</span>`;
 }
 function netLinkStatus(n) {
@@ -4357,8 +4435,12 @@ function netDiagramModel() {
         led: on === ms.length ? "ok" : on ? "warn" : "", dashed: on === 0 });
     }
   }
-  // הקונסולה — אנחנו (הדף הזה נטען = ראיה); מי עוד מחובר דורש API (sessions)
-  place({ kind: "console", title: `קונסולה — ${ME ? ME.username : ""}`, sub: "session פעיל · מי עוד מחובר — דורש API", led: "ok" }, null,
+  // הקונסולה — אנחנו (הדף הזה נטען = ראיה); מי מחובר — /sessions (#1039; last_seen מדויק עד דקה)
+  const ses = NETW.sessions;
+  const who = ses ? ses.map((x) => `${x.user} (${bidi(x.ip || "—")})`).join(" · ") : "";
+  place({ kind: "console", title: `קונסולה — ${ME ? ME.username : ""}`, led: "ok",
+    sub: ses === null ? `session פעיל · מי מחובר — לא נקרא${NETW.err.sessions ? `: ${NETW.err.sessions}` : ""}` : `${ses.length} מחוברים: ${who || "—"}`,
+    tip: ses === null ? undefined : ses.map((x) => `${x.user} · ${bidi(x.ip || "—")} · נכנס ${ago(x.since)} · נראה ${ago(x.last_seen)}`).join(" · ") || undefined }, null,
     () => laneOf(["mgmt", "trunk", "inter", "none", "proxy", "deploy"]));
   // סניפים — /storage-nodes + connected נמדד. המשני יושב מאחורי FW משלו (interfaces.md §18, נדב 18/09): הראשי יוזם,
   // ורק 8443 פתוח ביניהם — ולכן הקו מקווקו (מעבר ל-FW, לא לקוח על הוילן), והתיבה נשארת לפי connected.
@@ -4424,7 +4506,7 @@ function netDiagramSvg(model) {
       + svgLines(ND.nicX + 8, mid - ND.nicH / 2 + 6, ND.nicW - 18, ND.nicH - 12, [{ cls: "t", text: `${n.name} — ${n.description || "ללא תיאור"}` },
         { cls: "m", text: `${addr} · ${link}` }, { cls: "m", text: `DHCP: ${n.dhcp_live_label || "לא ידוע"} · SSH לשרת: ${ssh}` }], "nic")
       + `<circle class="led ${lane.led}" cx="${ND.nicX + 12}" cy="${mid - ND.nicH / 2 + 12}" r="6"/></g>`);
-    const allowed = lane.allowed === null ? "מה מותר — דורש API (#705)" : `bind: ${lane.allowed.length ? netAllowedShort(lane.allowed) : "אף שירות לא מאזין כאן"}`;
+    const allowed = lane.allowed === null ? netAllowedUnknown() : `bind: ${lane.allowed.length ? netAllowedShort(lane.allowed) : "אף שירות לא מאזין כאן"}`;
     parts.push(`<rect class="vlan" x="${ND.vlX}" y="${mid - ND.vlH / 2}" width="${ND.vlW}" height="${ND.vlH}" rx="6"/>`
       + svgLines(ND.vlX + 10, mid - ND.vlH / 2 + 6, ND.vlW - 20, ND.vlH - 12, [{ cls: "t", text: `${lane.vlan.label} — לפי הגדרה` },
         { cls: "m w2", text: allowed, tip: lane.allowed === null ? allowed : `מותר (לפי bind): ${lane.allowed.join(" · ") || "אף שירות לא מאזין כאן"}` },
@@ -4466,6 +4548,8 @@ function netUnreadNotes() {
   if (e.net) out.push(UI.note("warn", `‏/net לא נקרא: ${esc(e.net)} — "מי נראה ברשת" ו"לא רשומים" אינם ידועים`));
   if (e.ports) out.push(UI.note("warn", `‏/ports לא נקרא: ${esc(e.ports)} — "מה מותר על כל וילן" אינו ידוע`));
   if (e.ssh) out.push(UI.note("warn", `‏/ssh לא נקרא: ${esc(e.ssh)}`));
+  if (e.sessions) out.push(UI.note("warn", `‏/sessions לא נקרא: ${esc(e.sessions)} — מי מחובר לקונסולה אינו ידוע`));
+  if (e.leases) out.push(UI.note("warn", `חכירות dnsmasq לא נקראו: ${esc(e.leases)} — מכונה שקיבלה כתובת ולא דיברה עם השרת אינה נראית`));
   if (e.monitor) out.push(UI.note("warn", `‏/monitor/machines לא נקרא: ${esc(e.monitor)} — משכפלים ובנייה אינם בתרשים`));
   if (e.nodes) out.push(UI.note("warn", `‏/storage-nodes לא נקרא: ${esc(e.nodes)} — סניפים אינם בתרשים`));
   const rb = NETCFG && NETCFG.rollback && typeof rollbackBanner === "function" ? rollbackBanner(NETCFG.rollback) : "";
@@ -4499,7 +4583,7 @@ function netSelectedCard() {
   const kv2 = UI.kv([["DHCP", netDhcpCell(n)],
     ["חכירה", esc(n.enabled || n.proxy ? `${n.lease || "—"} · שער ${n.gateway || "—"} · DNS ${(n.dns || []).join(", ") || "—"}` : "—")],
     ["מי עוד עונה", UI.status(pr.cls, pr.text)]]);
-  const kv3 = UI.kv([["שירותים כאן", svc === null ? `<span class="muted" title="דורש API (#705)">דורש API (#705)</span>` : esc(svc.join(" · ") || "אף שירות לא מאזין כאן")],
+  const kv3 = UI.kv([["שירותים כאן", svc === null ? (netBindUnread() ? UI.status("unk", "טבלת הסוקטים לא נקראה") : `<span class="muted" title="דורש API (#705)">דורש API (#705)</span>`) : esc(svc.join(" · ") || "אף שירות לא מאזין כאן")],
     ["SSH לשרת", UI.status(ssh.cls, ssh.text)],
     ["פעולות", `<div class="acts on"><button class="btn sm" onclick="netEditAddress('${enc}')">עריכת כתובת</button><button class="btn sm" onclick="netEditDhcp('${enc}')">עריכת DHCP</button><button class="btn sm" onclick="netProbe('${enc}')">בדוק מי עונה</button></div>`]]);
   return UI.card({ title: `${n.name} — ${n.description || "ללא תיאור"}`, small: "לחיצה על כרטיס בתרשים מחליפה", body: `<div class="kv3">${kv1}${kv2}${kv3}</div>` });
@@ -4606,6 +4690,22 @@ function netSeenRow(d) {
     : `<div class="acts on"><button class="btn sm primary" onclick="netRegister('${macEnc}')">רשום</button><button class="btn sm" onclick="netDeviceDescribe('${macEnc}')">תיאור</button><button class="btn sm danger" onclick="netDeviceForget('${macEnc}')">הסר</button></div>`;
   return { attrs: `data-mac="${esc(d.mac)}"${reg ? "" : ' class="unreg"'}`, cells: [who, `<span class="mono">${esc(d.mac)}</span>`, d.ip ? `<span class="mono">${esc(d.ip)}</span>` : `<span class="muted">—</span>`, seen, bootWhere(d.boot), acts] };
 }
+/* ‏#1039: חכירה ב-dnsmasq בלי hello/boottrace — מכונה שקיבלה כתובת ולא הגיעה לשרת. אותן עמודות כמו netSeenRow. */
+function netLeaseRow(l) {
+  const macEnc = encodeId(l.mac);
+  const until = l.expires ? `חכירה עד ${new Date(l.expires).toLocaleString("he-IL", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit" })}` : "חכירה בלי תפוגה";
+  return { attrs: `data-mac="${esc(l.mac)}" class="unreg"`, cells: [`${UI.pill("warn", "חכירה בלבד")}<span class="sub">${esc(l.hostname || "ללא שם")} · לא דיבר עם השרת</span>`,
+    `<span class="mono">${esc(l.mac)}</span>`, `<span class="mono">${esc(l.ip)}</span>`, UI.status("", until), `<span class="muted">—</span>`,
+    `<div class="acts on"><button class="btn sm primary" onclick="netRegister('${macEnc}')">רשום</button></div>`] };
+}
+/* כותרת "מי קיבל כתובת": מה נקרא ומאיפה — "לא נקרא" בשם, לא רשימה ריקה (עיקרון 5). */
+function netLeasesCaption(focus) {
+  const l = NETW.leases;
+  if (!focus) return "חכירות dnsmasq — אין כרטיס הפצה";
+  if (!l) return `חכירות dnsmasq — לא נקראו${NETW.err.leases ? `: ${NETW.err.leases}` : ""}`;
+  if (!l.checked) return `חכירות dnsmasq — לא נקראו: ${l.reason || ""}`;
+  return `${l.leases.length} חכירות dnsmasq על ${focus.name}`;
+}
 function netOtherNicRow(n) {
   const enc = encodeId(n.name), pr = netProbeStatus(n.name);
   return [`${UI.nameHtml(n.name, esc(n.description || "ללא תיאור"))}${n.trunk ? ` ${UI.pill("warn", "רשת המכללה")}` : ""}`, netDhcpCell(n), esc(n.enabled ? "מופעל" : n.proxy ? "proxy" : "כבוי"),
@@ -4637,14 +4737,16 @@ function networkDeployTab() {
         ["טווח", `<span class="mono">${esc(focus.range_start && focus.range_end ? `${focus.range_start} – ${focus.range_end}` : "—")}</span>`], ["מסכה", `<span class="mono">${esc(focus.netmask || "—")}</span>`],
         ["שער", `<span class="mono">${esc(focus.gateway || "—")}</span>`], ["DNS", `<span class="mono">${esc((focus.dns || []).join(", ") || "—")}</span>`], ["חכירה", esc(focus.lease || "—")],
         ["בפועל", netDhcpCell(focus)], ["שמור בקונסולה", match], ["מי עוד עונה", UI.status(pr.cls, pr.text)]]);
-    const seenRows = (NET || []).map(netSeenRow);
+    const known = new Set((NET || []).map((d) => String(d.mac).toLowerCase()));
+    const leaseOnly = NETW.leases && NETW.leases.checked ? NETW.leases.leases.filter((l) => !known.has(String(l.mac).toLowerCase())) : [];
+    const seenRows = (NET || []).map(netSeenRow).concat(leaseOnly.map(netLeaseRow));
     const seenBody = NET === null ? UI.note("err", `‏/net לא נקרא: ${esc(NET_ERR || NETW.err.net || "")} — אין לדעת מי קיבל כתובת`)
       : UI.datagrid({ columns: ["מכונה", "MAC", "IP", "נראה", "שלב אתחול", ""], rows: seenRows, cls: "stable", empty: "אף מכונה עוד לא דיברה עם השרת — כשמחשב יעלה ב-PXE הוא יופיע כאן" });
     const others = (nics || []).filter((n) => n !== focus && (classroomsOn() || !n.proxy));
     const othersTable = UI.datagrid({ columns: ["כרטיס", "מצב DHCP חי", "שמור בקונסולה", "מי עוד עונה", ""], rows: others.map(netOtherNicRow), cls: "stable", empty: "אין כרטיסים נוספים" });
     body = netUnreadNotes()
       + UI.card({ title: "מה השרת מחלק", small: focus ? "כפי שנקרא מקובץ dnsmasq ומהשירות" : "", cls: "c4", body: serves })
-      + UI.card({ title: "מי קיבל כתובת", small: `מה-hello ומ-net_devices · ${NET_ONLINE_SECONDS} שניות = "מחובר" · חכירות dnsmasq עצמן — דורש API`, cls: "c8", body: seenBody, flush: NET !== null && seenRows.length > 0 })
+      + UI.card({ title: "מי קיבל כתובת", small: `מה-hello ומ-net_devices · ${NET_ONLINE_SECONDS} שניות = "מחובר" · ${netLeasesCaption(focus)}`, cls: "c8", body: seenBody, flush: NET !== null && seenRows.length > 0 })
       + UI.card({ title: "כרטיסים אחרים", small: "DHCP הוא בדיוק על כרטיס אחד — ההפצה", cls: "c12", body: othersTable, flush: others.length > 0 });
   }
   return `<div class="page">${header}<div class="body">${body}</div></div>`;
@@ -4871,10 +4973,10 @@ function portRows() {
   }
 
   for (const p of PORTS) {
-    // #1015: bind הוא מערך כתובות (גם ריק כשקוראים ולא מוצאים). שרת ישן
-    // בלי השדה כלל (undefined) — "" כמו קודם, שמראה "דורש API".
+    // #1015: bind הוא מערך כתובות (גם ריק כשקוראים ולא מוצאים). ‏#1039: null =
+    // טבלת הסוקטים לא נקראה. שרת ישן בלי השדה כלל (undefined) — "" כמו קודם, שמראה "דורש API".
     const r = { key: p.id, name: p.name, desc: p.desc, port: p.port, proto: p.proto, who: p.target,
-      nic: Array.isArray(p.bind) ? p.bind : (p.bind || ""),
+      nic: Array.isArray(p.bind) || p.bind === null ? p.bind : (p.bind || ""),
       state: p.state, detail: p.detail, note: p.note, off: p.off_means || "", api: null, on: null, lock: false, cap: "", act: null };
     if (p.id === "monitor") {
       const m = PORTS_MONITOR;
@@ -4974,6 +5076,7 @@ function portRows() {
    מקופל ל-"+N" עם tooltip — אחרת שורת TFTP (8 כתובות) מתחה את הטבלה מעבר למסך
    והמתגים נעלמו מימין (נדב 17/09). */
 function portNicHtml(nic) {
+  if (nic === null) return UI.status("unk", "לא נקרא");
   if (Array.isArray(nic)) {
     if (!nic.length) return `<span class="muted">—</span>`;
     const main = nic.filter((a) => !a.startsWith("[fe80") && !a.startsWith("[::1]"));

@@ -85,18 +85,17 @@ capture_disk() {
     _parts="$RUN_DIR/parts.txt"
     # ה-GUID הייחודי של הדיסק ושל כל מחיצה חייבים לשרוד את השחזור:
     # ה-BCD של Windows מאתר את מחיצת המערכת לפי הזוג הזה, וטבלה עם
-    # GUIDים חדשים = ‏winload.efi 0xc000000e על כל מחשב משוחזר (#26).
+    # GUIDים חדשים = ‏winload.efi 0xc000000e על כל מחשב משוחזר (#26). GUID מחיצה שלא נקרא — unique_guid_gate (#1212).
     _disk_guid=$(sgdisk -p "$_node_base" 2>/dev/null \
                  | awk -F': ' '/Disk identifier/ { print $2 }' | awk '{print $1}')
     # index:start:size:type-guid, from the partition table itself.
     sgdisk -p "$_node_base" 2>/dev/null | awk '/^ *[0-9]+ / { print $1 }' > "$RUN_DIR/idx.txt"
-    : > "$_parts"; : > "$RUN_DIR/partition.attrs"
+    : > "$_parts"; : > "$RUN_DIR/partition.attrs"; : > "$RUN_DIR/uguid.fail"
     while read -r _idx; do
         [ -n "$_idx" ] || continue
         _guid=$(sgdisk -i "$_idx" "$_node_base" 2>/dev/null \
                 | awk -F': ' '/Partition GUID code/ { print $2 }' | awk '{print $1}')
-        _uguid=$(sgdisk -i "$_idx" "$_node_base" 2>/dev/null \
-                | awk -F': ' '/Partition unique GUID/ { print $2 }' | awk '{print $1}')
+        _uguid=$(read_unique_guid "$_node_base" "$_idx") || { echo "$_idx|$?|$_uguid" >> "$RUN_DIR/uguid.fail"; _uguid=""; }
         _first=$(sgdisk -i "$_idx" "$_node_base" 2>/dev/null \
                  | awk -F': ' '/First sector/ { print $2 }' | awk '{print $1}')
         _size=$(sgdisk -i "$_idx" "$_node_base" 2>/dev/null \
@@ -108,6 +107,7 @@ capture_disk() {
     done < "$RUN_DIR/idx.txt"
     # כותרת GPT תקינה וטבלה ריקה — מצב אחר לגמרי מ"אינו GPT" (עיקרון 5).
     [ -s "$_parts" ] || { _capture_failed "$_disk" "לא נמצאו מחיצות על /dev/$_disk"; return 1; }
+    _why=$(unique_guid_gate "$_parts" "$RUN_DIR/uguid.fail"); [ -z "$_why" ] || { _capture_failed "$_disk" "$_why"; return 1; }
 
     while IFS='|' read -r _idx _guid _uguid _first _sizesec; do
         _node=$(partition_node "$_disk" "$_idx"); _fs=$(_fs_of "$_node")

@@ -931,7 +931,10 @@ _phy_mods=$(find "$ROOT/lib/modules/$KVER/kernel/drivers/net/phy" \
     # ‏`mount -t ext4` אמנם מבקש `fs-ext4` דרך modules.alias, אבל זו
     # שרשרת הנחות (‏depmod, ‏busybox modprobe, ‏/proc/sys/kernel/modprobe)
     # שכל חוליה בה נכשלת בשקט. כאן כישלון נספר ומדווח (#84).
-    printf '%s\n' efivarfs fat vfat nls_cp437 nls_ascii ext4 btrfs xfs crc32c_generic crc32c-intel
+    # ‏ספק ה-crc32c לפני מערכות הקבצים (#1207): ‏libcrc32c (של ext4/btrfs/xfs)
+    # נכשל ב-"unknown symbol" כשאין ספק רשום, ו-busybox modprobe אינו מכבד
+    # את ה-softdep. נמדד ב-QEMU 24/09: ‏xfs לבד rc=1, ‏crc32c_generic לפניו rc=0.
+    printf '%s\n' crc32c_generic crc32c-intel efivarfs fat vfat nls_cp437 nls_ascii ext4 btrfs xfs
     [ -n "$_phy_mods" ] && printf '%s\n' "$_phy_mods"
     find "$ROOT/lib/modules/$KVER/kernel/drivers/net" -name '*.ko*' 2>/dev/null \
         | sed 's|.*/||; s|\.ko.*||' | sort

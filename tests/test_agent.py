@@ -1493,6 +1493,9 @@ def run_expand(tmp_path, plan, disk_sectors, override=None):
         # מוודאים שהיא באמת חוסמת. כאן היא מוחלפת כי אין דרך ליצור התקן
         # בלוקים בלי root, וטסט מדולג הוא ירוק בלי ראיה (#52).
         "node_is_block() { true; }; "
+        # אותו דבר לקריאה החוזרת של GUID המחיצות (#1212): היא נבדקת, גם
+        # אחרי הרחבה, ב-test_partition_guid.py מול sgdisk שזוכר את `-u`.
+        "verify_unique_guids() { true; }; "
         f'expand_last sda /dev/null >/dev/null 2>&1; echo "rc=$?"'
     )
     marker = run / "targets" / "sda" / "expanded"

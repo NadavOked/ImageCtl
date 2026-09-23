@@ -425,7 +425,7 @@ const PORTS_1015=[
   p1015('ssh_server:ens19','SSH','22','tcp','off','סגור · אומת',{enabled:false,listening:false,bind:[],
     toggle:'confirm',toggle_url:'/api/console/ssh/interfaces/ens19',confirm_word:'ens19',confirm_when:'on_or_last_off',
     off_means:'אין SSH לשרת דרך הכרטיס הזה',interface:'ens19',addresses:['10.44.9.10/24']}),
-  p1015('ssh_server:ens20','SSH','22','tcp','unknown','טבלת הסוקטים לא נקראה',{enabled:false,listening:null,bind:[],
+  p1015('ssh_server:ens20','SSH','22','tcp','unknown','טבלת הסוקטים לא נקראה',{enabled:false,listening:null,bind:null,
     toggle:'confirm',toggle_url:'/api/console/ssh/interfaces/ens20',confirm_word:'ens20',confirm_when:'on_or_last_off',
     off_means:'אין SSH לשרת דרך הכרטיס הזה',interface:'ens20',addresses:['10.44.11.1/24']}),
 ];
@@ -442,6 +442,9 @@ test('ports page (#1015 contract): rows come only from /ports — no duplicate d
   // bind הוא רשימה — כל הכתובות, mono, ולא "a,b" משרשור מחרוזות
   const kiosk=row(html,'>desc kiosk<');
   assert.match(kiosk,/<span class="mono bindlist" dir="ltr">0\.0\.0\.0:8082<\/span>/);
+  // ‏#1039: ‏bind null = טבלת הסוקטים לא נקראה ≠ [] = נקראה ואף אחד לא מאזין
+  assert.match(row(html,'>desc ssh_server:ens20<'),/<span class="st unk">לא נקרא<\/span>/);
+  assert.doesNotMatch(row(html,'>desc ssh_server:ens19<'),/לא נקרא/); assert.match(row(html,'>desc ssh_server:ens19<'),/<span class="muted">—<\/span>/);
   // kiosk (8082) — toggle:"api" → PUT /ports/kiosk, בלי הקלדה
   run("portSwitch('kiosk')");
   let s=run('sheets.at(-1)'); assert.ok(!s.verify);

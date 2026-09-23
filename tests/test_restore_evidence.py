@@ -69,6 +69,11 @@ esac
 #: ‏`-U` יוצא 0 כברירת מחדל — וזה **אינו** ראיה שה-GUID נכתב (#572).
 #: ‏`-p` מדווח מה שעל הדיסק: מה ש-`-U` ביקשה, או את השקר ב-`disk_guid.lie`
 #: כשרוצים את המצב שבו קוד היציאה 0 והערך לא נתפס.
+#:
+#: ‏#1212: אותו דבר ל-GUID הייחודי של כל מחיצה. ‏`-u N:G` נרשם ב-`uguid.N`,
+#: ‏`-d N` ו-`--zap-all` מוחקים אותו, ו-`-i N` מדווח מה שעל הדיסק: השקר
+#: ב-`uguid.lie.N` אם יש, אחרת מה ש-`-u` ביקש, ואחרת GUID ש-sgdisk "המציא"
+#: — בדיוק מה שקורה במחיצה שנבראה בלי `-u`.
 SGDISK_STUB = """#!/bin/sh
 B="{box}"
 printf '%s\\n' "$*" >> "$B/sgdisk.calls"
@@ -78,7 +83,25 @@ if [ -f "$B/sgdisk.fail" ]; then
         case "$*" in $pat) exit 2 ;; esac
     done < "$B/sgdisk.fail"
 fi
+prev=""
+for a in "$@"; do
+    case "$prev" in
+        -d) rm -f "$B/uguid.$a" ;;
+        -u) printf '%s\\n' "${{a#*:}}" > "$B/uguid.${{a%%:*}}" ;;
+    esac
+    [ "$a" = "--zap-all" ] && rm -f "$B"/uguid.[0-9]*
+    prev="$a"
+done
 case "$1" in
+    -i)
+        if [ -f "$B/uguid.lie.$2" ]; then
+            echo "Partition unique GUID: $(cat "$B/uguid.lie.$2")"
+        elif [ -f "$B/uguid.$2" ]; then
+            echo "Partition unique GUID: $(cat "$B/uguid.$2")"
+        else
+            echo "Partition unique GUID: 0BADC0DE-0000-4000-8000-000000000000"
+        fi
+        ;;
     -U)
         printf '%s\\n' "$2" > "$B/disk_guid.requested"
         ;;
@@ -179,6 +202,8 @@ def build_box(tmp_path, *, plan=PLAN, count=None, plan_cut=None, nodes=None,
         f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/waits.sh; '
         f'. {posix(AGENT)}/lib/jsonq.sh; . {posix(AGENT)}/lib/progress.sh; '
         f'. {posix(AGENT)}/lib/restore.sh; . {posix(AGENT)}/lib/expand.sh; . {posix(AGENT)}/lib/grow.sh; . {posix(AGENT)}/lib/failmark.sh; '
+        # ‏#1212: ‏verify_table קורא בחזרה את GUID המחיצות דרך manifest.sh.
+        f'. {posix(AGENT)}/lib/manifest.sh; '
         # הבדיקה היחידה שאי אפשר לזייף בלי root: התקן בלוקים אמיתי.
         # רשימת הצמתים ה"חיים" יושבת בקופסה, ולכן "הקרנל לא בנה את
         # /dev/sda3" הוא מצב שאפשר להעמיד בו את הקוד.

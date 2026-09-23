@@ -13,7 +13,9 @@ dnsmasq ו-dnsmasq מופעל מחדש.
 
 from __future__ import annotations
 
+import ipaddress
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -252,6 +254,43 @@ def create_dhcp_router(ctx: ServerContext, hooks: Hooks | None = None,
         found = hooks["probe"](name)
         return {"interface": name, "checked": found.checked,
                 "servers": list(found.servers)}
+
+    @router.get("/interfaces/{name}/leases")
+    def leases(name: str, user=Depends(admin_only)):
+        """‏#1039: "מי קיבל כתובת" — קובץ החכירות של dnsmasq, מסונן לרשתות
+        שעל הכרטיס בפועל. מכונה שקיבלה DHCP ולא הגיעה ל-hello נראית רק כאן.
+
+        עיקרון 5: ‏``checked:false`` + ‏``reason`` + ‏``leases:null`` כשהקובץ
+        לא נקרא, כשאין מקור חכירות בריצה הזו (``ctx.leases``, מוזרק כמו
+        ``dhcp_hooks``), או כשלכרטיס אין כתובת IPv4 שאפשר לשייך אליה —
+        ‏``[]`` רק כשנקרא ואין חכירה ברשת שלו."""
+        _checked_name(name)
+
+        def unchecked(reason: str, path: str | None = None) -> dict:
+            return {"interface": name, "checked": False, "reason": reason,
+                    "path": path, "leases": None}
+
+        if ctx.leases is None:
+            return unchecked("אין מקור חכירות בריצה הזו (--dhcp-leases)")
+        path = str(ctx.leases.path)
+        live = next((i for i in hooks["interfaces"]() if i["name"] == name), None)
+        networks = []
+        for address in (live or {}).get("addresses") or []:
+            try:
+                networks.append(ipaddress.IPv4Interface(address).network)
+            except ValueError:
+                continue
+        if not networks:
+            return unchecked(f"לכרטיס {name} אין כתובת IPv4 בפועל — אי אפשר "
+                             "לשייך אליו חכירות", path)
+        try:
+            rows = ctx.leases.rows()
+        except OSError as exc:
+            return unchecked(f"{path}: {exc.strerror or exc}", path)
+        mine = [dict(row, expires=_lease_expiry(row["expires"])) for row in rows
+                if any(ipaddress.IPv4Address(row["ip"]) in n for n in networks)]
+        return {"interface": name, "checked": True, "reason": "", "path": path,
+                "leases": mine}
 
     @router.get("/proxy-support")
     def proxy_support(user=Depends(admin_only)):
@@ -509,6 +548,13 @@ def create_dhcp_router(ctx: ServerContext, hooks: Hooks | None = None,
                 "proxy_path": dhcp.PROXY_CONF, "proxy_unit": dhcp.PROXY_UNIT}
 
     return router
+
+
+def _lease_expiry(epoch: int) -> str | None:
+    """‏dnsmasq כותב שניות epoch; ‏``0`` = חכירה בלי תפוגה → ``None``."""
+    if not epoch:
+        return None
+    return datetime.fromtimestamp(epoch, timezone.utc).isoformat(timespec="seconds")
 
 
 def _as_list(value: object) -> list[str]:

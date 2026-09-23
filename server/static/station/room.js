@@ -111,6 +111,9 @@ const Room = (() => {
           ? `<span class="room-warn">הושלם חלקית · ${
               esc(m.error || "מגירה אחת לא נכתבה")}</span>`
           : m.state === "done" ? `<span class="room-ok">הסתיים</span>`
+          : m.state === "lost"
+          ? `<span class="room-warn">נעלם · ${
+              esc(m.error || "לא ידוע אם נכתב")}</span>`
           : m.state === "waiting" || !m.state ? `<span class="sub">מחכה לשידור</span>`
           : m.error
           ? `<span>${progress.label} · <span class="room-bad">${esc(m.error)}</span></span>`
@@ -120,8 +123,11 @@ const Room = (() => {
           ? `<span class="room-ok">ער · ${m.fresh_drawers} מגירות מוכנות</span>`
           : `<span class="sub">כבוי</span>`;
       }
-      return `<div class="room-row ${m.awake || m.joined ? "" : "dim"}">
-        <span class="led ${m.awake || m.joined ? "on" : ""}"></span>
+      /* #1213: מכונה ב-lost כבר ויתרנו עליה — הנורית לא דולקת בשבילה גם
+         כשהיא עדיין joined בסבב הישן, בניגוד לכל מצב אחר. */
+      const lit = m.state !== "lost" && (m.awake || m.joined);
+      return `<div class="room-row ${lit ? "" : "dim"}">
+        <span class="led ${lit ? "on" : ""}"></span>
         <b>${esc(m.name)}</b>
         <span class="mono dev" dir="ltr">${esc(m.mac)}</span>
         <span class="state">${status}</span>

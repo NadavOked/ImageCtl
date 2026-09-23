@@ -61,6 +61,7 @@ PRELUDE = (
     f'. {posix(AGENT)}/lib/progress.sh; '
     f'. {posix(AGENT)}/lib/failmark.sh; '   # disk_failure_cause — זיכרון השרת בשער (#872/#874)
     f'. {posix(AGENT)}/lib/smart.sh; '
+    f'. {posix(AGENT)}/lib/smartgate.sh; '   # #1211: השער (smart_preflight/smart_gate) פוצל מ-smart.sh
     f'. {posix(AGENT)}/lib/clonergui.sh; '   # gui_smart_choice — כמו בסוכן האמיתי
     # ‏#906: hello בזמן ההמתנה לאדם. **רק אם הקובץ קיים**: הבקרה השלילית
     # מחזירה את main, ושם הטסט חייב ליפול על ההתנהגות ולא על `.` של קובץ חסר.
@@ -510,6 +511,27 @@ def test_an_undelivered_disk_event_does_not_leak_into_the_write_list(tmp_path):
     assert out.stdout.splitlines()[:2] == ["sda sdb", "rc=0"], out.stdout
     assert "imagectl:" not in out.stdout, out.stdout
     assert "disk_event for sda was not delivered" in (run / "agent.log").read_text()
+
+
+# --- #1216: smart_gate כשלא נשאר מה לכתוב -----------------------------------
+
+def test_smart_gate_returns_1_when_all_disks_are_skipped(tmp_path):
+    """‏smart_gate הוא השער שמונע התחלת כתיבה (#652, cloning-always-attended)
+    כשהמפעיל דילג על **כל** הדיסקים -- לא רק חלקם. #1216: זה נמדד כפער
+    כיסוי, לא כבאג -- ההתנהגות היום נכונה, ונמצא במוטציה בפיצול #1211
+    (24/09) שעברה בשקט. בקרה שלילית: `return 0` בסוף smart_gate מפיל
+    את הטסט הזה."""
+    run = tmp_path / "run"; run.mkdir()
+    dev = tmp_path / "dev"; dev.mkdir()
+    for d in ("sda", "sdb"):
+        (dev / d).write_bytes(b"\x00")
+    sc = make_smartctl(tmp_path, full(HEALTH_FAIL))
+    out = sh(env(run, dev, smartctl=sc) + PRELUDE
+             + "printf '3\\n3\\n' | smart_gate sess1 sda sdb; echo \"rc=$?\"")
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "rc=1", out.stdout   # לא נכתב דבר, השער עצר
+    assert (run / "targets/sda/state").read_text().strip() == "skipped"
+    assert (run / "targets/sdb/state").read_text().strip() == "skipped"
 
 
 # --- תווית הדיסק: לפי חריץ, לא לפי שם ההתקן ----------------------------------

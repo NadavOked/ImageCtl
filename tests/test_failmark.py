@@ -311,6 +311,9 @@ def test_a_wave_that_succeeds_leaves_no_evidence(tmp_path):
 def test_a_station_whose_second_partition_failed_carries_evidence_and_is_not_renamed(tmp_path):
     box, run, prelude = build_box(tmp_path)
     prelude += make_stubs(box / "failmark-stubs", {"sgdisk": stub_for(box)})
+    # הזיוף כאן רק רושם, ואינו עונה ל-`sgdisk -i`. הקריאה החוזרת של GUID
+    # המחיצות (#1212) נבדקת ב-test_partition_guid.py; כאן נבדק הכשל במחיצה 2.
+    prelude += "verify_unique_guids() { true; }; "
     out = run_sh(restore_run(prelude, IDENT + 'dmesg() { echo "[ 99999999.0] ata1: SError: { ICRC }"; }; '
                              + '[ "$5" = 2 ] && return 1; return 0'))
     assert out.strip().endswith("rc=1"), out

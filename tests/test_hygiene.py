@@ -238,6 +238,35 @@ def test_windows_allowed_failures_stay_empty():
     )
 
 
+def test_windows_env_skip_tags_have_not_grown():
+    """#312: תקרת הדילוגים המוצהרים. גידול בלי עדכון כאן הוא הכשל.
+
+    הסורק מחפש את התג `issue-312-windows-env` ליד הסימון. skipif גורף
+    על הקובץ אינו נושא תג, ולכן גם לא נספר כאן — והוא אסור ממילא.
+    """
+    root = Path(__file__).resolve().parent
+    found: list[str] = []
+    for path in sorted(root.glob("test_*.py")):
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for i, line in enumerate(lines):
+            if line.startswith("def test_"):
+                window = "\n".join(lines[max(0, i - 8):i])
+                if "issue-312-windows-env" in window:
+                    found.append(f"{path.name}::{line[4:].split('(')[0]}")
+    expected = [
+        "test_sender_ports.py::test_a_busy_udpcast_port_refuses_the_broadcast",
+        "test_wol.py::test_no_sysfs_at_all_is_unknown_and_still_sends",
+        "test_wol.py::test_an_unreadable_link_state_is_unknown_and_still_sends",
+        "test_wol.py::test_the_journal_carries_the_reason_and_not_only_the_count",
+    ]
+    assert found == expected, (
+        f"דילוגי #312 השתנו ({len(expected)} → {len(found)}). "
+        "גידול דורש הכרעה לכל אחד, לא skipif גורף.\n"
+        f"נוספו: {sorted(set(found) - set(expected))}\n"
+        f"נעלמו: {sorted(set(expected) - set(found))}"
+    )
+
+
 def test_the_guard_blocks_a_real_spawn_and_records_it(tmp_path, monkeypatch):
     """גם כשטסט שוכח להזריק שולח — תהליך אמיתי לא יוצא מכאן.
 

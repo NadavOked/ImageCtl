@@ -103,3 +103,82 @@ _mark_expandable() {
         printf "%s%s", out, parts[n];
     }'
 }
+
+# --- ה-GUID הייחודי של המחיצה: נקרא בקליטה ונקרא בחזרה בשחזור (#1212) --------
+# ה-BCD של Windows מאתר את מחיצת המערכת לפי זוג GUID — של הדיסק ושל
+# המחיצה (#26). עד #1212 הקריאה בקליטה נבלעה ב-`2>/dev/null` והפכה ל-"",
+# ‏apply_gpt דילג על `-u` כשהערך ריק, sgdisk המציא GUID חדש, ואיש לא קרא
+# אותו בחזרה: ‏winload.efi 0xc000000e על כל מחשב משוחזר, אחרי done. קורא
+# אחד לשני הצדדים (capture.sh, ‏verify_table ב-expand.sh), ופרסור אחד.
+
+valid_guid() {
+    # $1 = value. 8-4-4-4-12 hex digits and nothing else.
+    [ "${#1}" -eq 36 ] && printf '%s\n' "$1" \
+        | LC_ALL=C grep -Eqx '[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}'
+}
+
+read_unique_guid() {
+    # $1 = disk node, $2 = partition index. rc 0: stdout is the GUID.
+    # Otherwise stdout is the reason, and the rc says which of three states:
+    # 1 = sgdisk failed (nothing about the partition was read, its type
+    # included), 2 = sgdisk printed no unique GUID, 3 = what it printed is
+    # not a GUID. ‏stderr ליומן ולא ל-/dev/null: הסיבה של הכלי היא הראיה.
+    _rg_out=$(sgdisk -i "$2" "$1" 2>> "$LOG_FILE")
+    _rg_rc=$?
+    [ "$_rg_rc" -eq 0 ] || { echo "sgdisk -i $2 failed (rc=$_rg_rc)"; return 1; }
+    _rg=$(printf '%s\n' "$_rg_out" \
+        | awk -F': ' '/Partition unique GUID/ { print $2; exit }' | awk '{print $1}')
+    [ -n "$_rg" ] || { echo "sgdisk -i $2 printed no unique GUID"; return 2; }
+    valid_guid "$_rg" || { echo "sgdisk -i $2 printed '$_rg', which is not a GUID"; return 3; }
+    echo "$_rg"
+}
+
+unique_guid_gate() {
+    # $1 = parts file (index|type_guid|unique_guid|...), $2 = the reads that
+    # failed (index|rc|reason). stdout: the refusal, or nothing.
+    # ‏rc 1 ו-3 נדחים בכל אימג': sgdisk שנכשל לא קרא גם את סוג המחיצה, ולכן
+    # אין ממה לגזור שהאימג' *אינו* Windows; וערך שאינו GUID היה נופל על
+    # ‏`sgdisk -u` בכל שחזור. ‏rc 2 (אין ערך) נדחה רק באימג' Windows — אותו
+    # כלל כמו `_image_os`, מתפקידי המחיצות. לינוקס פטור כמו disk_guid בשרת
+    # (‏server/capture.py: ‏GRUB מאתר לפי UUID של מערכת הקבצים), ונרשם ריק
+    # כמו עד כאן — אבל ביומן, בשמו, ולא בשקט.
+    [ -s "$2" ] || return 0
+    _gw=$(awk -F'|' '$2 != 2 { r = $0; sub(/^[^|]*\|[^|]*\|/, "", r)
+        print "מחיצה " $1 ": לא ניתן לקרוא את ה-GUID הייחודי — " r; exit }' "$2")
+    [ -n "$_gw" ] && { echo "$_gw"; return 0; }
+    while IFS='|' read -r _gi _gt _grest; do
+        [ "$(_partition_role "$_gt")" = windows ] || continue
+        awk -F'|' '{ r = $0; sub(/^[^|]*\|[^|]*\|/, "", r)
+            print "מחיצה " $1 ": אימג Windows בלי GUID ייחודי (" r ") — ה-BCD נקשר אליו (#26)"; exit }' "$2"
+        return 0
+    done < "$1"
+    while IFS='|' read -r _gi _grc _gr; do
+        log "partition $_gi: $_gr -- recorded empty; not a windows image, exempt like disk_guid" >&2
+    done < "$2"
+}
+
+verify_unique_guids() {
+    # $1 = disk name, $2 = plan file (manifest_plan). Every partition whose
+    # manifest carries a unique GUID is read back from the disk and compared.
+    # מחיצה בלי GUID במניפסט (אימג' ישן, או לינוקס שנפטר בקליטה) אינה
+    # נכשלת, אבל נרשמת "לא נבדק" — "לא נבדק" ו"נבדק, תואם" הם שני מצבים.
+    # ‏PLAN_ERROR נושא את הסיבה אל היעד, כמו בשער של apply_gpt (עיקרון 4).
+    _vn=0
+    while IFS='|' read -r _vi _r _r _r _r _r _r _r _r _vu _r; do
+        if [ -z "$_vu" ]; then
+            log "$1: partition $_vi has no unique GUID in the manifest -- not checked"
+            continue
+        fi
+        if ! _vg=$(read_unique_guid "$DEVROOT/$1" "$_vi"); then
+            PLAN_ERROR="partition $_vi: unique GUID could not be read back from the disk ($_vg)"
+        elif [ "$(printf '%s' "$_vg" | tr 'a-f' 'A-F')" != "$(printf '%s' "$_vu" | tr 'a-f' 'A-F')" ]; then
+            PLAN_ERROR="partition $_vi: unique GUID on the disk is $_vg, not $_vu (#26)"
+        else
+            _vn=$((_vn + 1))
+            continue
+        fi
+        log "$1: $PLAN_ERROR"
+        return 1
+    done < "$2"
+    log "$1: $_vn partition unique GUIDs came back from the disk"
+}

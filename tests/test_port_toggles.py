@@ -282,6 +282,25 @@ def test_socket_table_unreadable_is_unknown_never_green(toggles):
         assert "לא נקרא" in rows[pid]["detail"]
 
 
+def test_bind_is_null_when_not_read_and_empty_only_when_read_and_not_listening(toggles):
+    """‏#1039: ‏`bind` הגיע כ-`[]` גם כשטבלת הסוקטים לא נקראה — "לא נקרא"
+    קופל ל"לא מאזין", והקונסולה לא יכלה להבחין (עיקרון 5)."""
+    fake = toggles["fake"]
+    fake["ss"], fake["ss_tcp"] = "", ""               # ss לא רץ, בשני הפרוטוקולים
+    fake["listeners"] = SshListeners(False, reason="אין /proc/net")
+    rows = rows_of(toggles)
+    for pid in ("tftp", "dhcp", "pxe_proxy", "http_boot", "http_console", "kiosk",
+                "ssh_server:eth0"):
+        assert rows[pid]["bind"] is None, (pid, rows[pid]["bind"])
+
+    fake["ss"], fake["ss_tcp"] = SS_HEAD, SS_HEAD     # נקרא, ואף אחד לא מאזין
+    fake["listeners"] = SshListeners(True)
+    rows = rows_of(toggles)
+    for pid in ("tftp", "dhcp", "pxe_proxy", "http_boot", "http_console", "kiosk",
+                "ssh_server:eth0"):
+        assert rows[pid]["bind"] == [], (pid, rows[pid]["bind"])
+
+
 # --- המתג ---------------------------------------------------------------------
 
 

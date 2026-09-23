@@ -50,6 +50,11 @@ const PORTS=[
   port('ssh_stations','SSH','22','tcp','ok','x'),
 ];
 const PORTS_NO_BIND=PORTS.map(({bind,...p})=>p);
+// ‏#1039: מי מחובר לקונסולה, וחכירות dnsmasq של כרטיס ההפצה (C1 גם ב-/net; LEASED רק בחכירה)
+const LEASED='02:00:00:00:00:77';
+const SESSIONS=[{user:'nadav',ip:'10.44.10.50',since:ago(3600),last_seen:ago(30)},{user:'tech',ip:'10.44.10.51',since:ago(600),last_seen:ago(120)}];
+const LEASES={interface:'ens19',checked:true,reason:'',path:'/var/lib/misc/dnsmasq.leases',leases:[
+  {mac:C1,ip:'10.44.9.118',hostname:'cloner1',expires:'2026-09-24T10:00:00+00:00'},{mac:LEASED,ip:'10.44.9.150',hostname:null,expires:null}]};
 const SSH={stations:{enabled:false,evidence:'closed',detail:'',confirm_word:'imagectl.debug'},listeners:{checked:true,addresses:['10.44.10.1'],wildcard:false,reason:'',port:22},stray:[],
   interfaces:[{name:'ens18',state:'up',addresses:['10.44.10.1/24'],enabled:true,listening:true},{name:'ens19',state:'up',addresses:['10.44.9.10/24'],enabled:false,listening:false},
               {name:'ens20',state:'up',addresses:['10.44.11.2/24'],enabled:false,listening:null}]};
@@ -71,6 +76,7 @@ function setup(over={},me={}) {
     '/net/interfaces/ens19/probe':{interface:'ens19',checked:true,servers:[]},
     '/net/interfaces/ens18/probe':{interface:'ens18',checked:false,servers:[]},
     '/net/interfaces/ens20/probe':{interface:'ens20',checked:true,servers:['10.44.11.254']},
+    '/sessions':SESSIONS,'/net/interfaces/ens19/leases':LEASES,
     '/machines':[{mac:C1,suffix:'מחשב 1',group_id:'grp_CLONERS',disks:null}],'/groups':[{id:'grp_CLONERS',label:'מחשבי שיכפול',role:'cloner',sort:1}],
     ...over};
   const ctx=vm.createContext({console,URLSearchParams,URL,Date,Set,Map,Number,Math,JSON,Promise,String,Array,Object,encodeURIComponent,decodeURIComponent,
@@ -127,7 +133,8 @@ test('network is one own page with four tabs (ports = the wave-5 page); the old 
 test('loadNetwork reads every source once, sets the shared globals for net.js/netcfg.js/ports, and selects the deploy NIC',async()=>{
   const {run,requests,node}=await loaded();
   const urls=requests.map(r=>r.url);
-  for(const u of ['/net/interfaces','/net/config','/net','/ports','/ssh','/monitor/machines','/storage-nodes','/storage-nodes/sn1/machines']) assert.equal(urls.filter(x=>x===u).length,1,u);
+  for(const u of ['/net/interfaces','/net/config','/net','/ports','/ssh','/monitor/machines','/storage-nodes','/storage-nodes/sn1/machines','/sessions','/net/interfaces/ens19/leases']) assert.equal(urls.filter(x=>x===u).length,1,u);
+  assert.ok(!urls.includes('/net/interfaces/ens18/leases'),'leases of the deploy NIC only (#1039)');
   assert.ok(!urls.includes('/storage-nodes/sn2/machines'),'a disabled secondary is not asked');
   assert.equal(run('NETW.nics.length'),4); assert.equal(run('NETCFG.live.checked'),true); assert.equal(run('NET.length'),3);
   assert.equal(run('SSH_STATE.interfaces.length'),3); assert.equal(run('NETW.sel'),'ens19','the DHCP NIC is selected by default');
@@ -175,7 +182,8 @@ test('diagram model: a lane per NIC, VLAN kind by configuration, "allowed" only 
   assert.equal(lane('ens19').unreg,1);
   // ניהול: הקונסולה (ירוק — הדף הזה נטען), סניף חיפה (אדום — לא ענה; הכתובת מחוץ לכל רשת → נופל לניהול), סניף מושבת (אפור מקווקו, לפי הכתובת)
   assert.deepEqual(kinds(lane('ens18')),[['console','ok',false],['branch','err',false],['branch','',true]],'not answering = red solid line; disabled = dashed');
-  assert.match(lane('ens18').clients[0].sub,/מי עוד מחובר — דורש API/);
+  assert.equal(plain(lane('ens18').clients[0].sub),'2 מחוברים: nadav (10.44.10.50) · tech (10.44.10.51)','#1039: /sessions, not "דורש API"');
+  assert.match(plain(lane('ens18').clients[0].tip),/nadav · 10\.44\.10\.50 · נכנס .* · נראה /);
   assert.match(lane('ens18').clients[1].sub,/https:\/\/10\.44\.13\.5:8443 · לא ענה: timeout/);
   assert.match(lane('ens18').clients[2].sub,/מושבת/);
   // כיתות = תיבה סטטית v2 על ה-proxy, מקווקו, בלי נתונים
@@ -265,15 +273,21 @@ test('without bind on any /ports row the VLAN says "דורש API (#705)" — nev
   assert.match(run('networkPage(1)'),/title="דורש API \(#705\): מודל וילן \/ bind">— דורש API/);
 });
 
-test('bind as the server sends it — a list of "addr/bits:port", empty list = not read — is normalised; all lists empty = דורש API',async()=>{
+test('bind as the server sends it — a list of "addr/bits:port", [] = read and nobody listens, null = not read (#1039)',async()=>{
   const server=[port('tftp','TFTP','69','udp','ok','',{bind:[]}),port('http_console','HTTP','8081','tcp','ok','',{bind:['10.44.10.1/24:8081']}),
     port('ssh_server:ens18','SSH לשרת — ens18','22','tcp','ok','',{bind:['10.44.10.1/24:22']}),port('multicast','Multicast','9000–9001','udp','off','',{bind:['[::]:9000']})];
   const {run}=await loaded({'/ports':server});
   assert.equal(run('JSON.stringify(netServicesOn(NETW.nics[0]))'),JSON.stringify(['HTTP 8081','SSH לשרת — ens18 22','Multicast 9000–9001']));
   assert.equal(run('JSON.stringify(netServicesOn(NETW.nics[1]))'),JSON.stringify(['Multicast 9000–9001']),'only the wildcard');
-  const t=await loaded({'/ports':server.map(p=>({...p,bind:[]}))});
-  assert.equal(t.run('netServicesOn(NETW.nics[0])'),null,'every bind empty = nothing was read, not "nothing listens"');
-  assert.match(t.run('networkPage(0)'),/מה מותר — דורש API \(#705\)/);
+  let t=await loaded({'/ports':server.map(p=>({...p,bind:[]}))});
+  assert.equal(t.run('JSON.stringify(netServicesOn(NETW.nics[0]))'),'[]','every bind [] = read, and nothing listens here');
+  assert.match(t.run('networkPage(0)'),/bind: אף שירות לא מאזין כאן/); assert.doesNotMatch(t.run('networkPage(0)'),/מה מותר — דורש API/);
+  // null בשורה אחת = טבלת הסוקטים לא נקראה → לא ידוע (לא "דורש API", ולא רשימה חלקית)
+  t=await loaded({'/ports':server.map(p=>p.id==='tftp'?{...p,bind:null}:p)});
+  assert.equal(t.run('netServicesOn(NETW.nics[0])'),null);
+  const html=t.run('networkPage(0)');
+  assert.match(html,/מה מותר — טבלת הסוקטים לא נקראה/); assert.doesNotMatch(html,/מה מותר — דורש API/);
+  assert.match(t.run('networkPage(1)'),/title="bind של \/ports: טבלת הסוקטים לא נקראה">— לא נקרא</);
 });
 
 test('empty and unread are messages, not an empty drawing: no NICs → empty state; /net/interfaces failed → red note; other sources failed → their own notes',async()=>{
@@ -396,8 +410,33 @@ test('deploy network: stored ≠ live (dhcp_diverged) is orange, live not read i
   // ‏/net לא נקרא → "מי קיבל כתובת" הוא הודעה, ולא טבלה ריקה
   t=await loaded({'/net':new Error('db locked')}); html=t.run('networkPage(2)');
   assert.match(html,/נראו ברשת: לא נקרא/); assert.match(card(html,'מי קיבל כתובת'),/class="note err".*\/net לא נקרא: db locked/); assert.doesNotMatch(card(html,'מי קיבל כתובת'),/<table/);
-  t=await loaded({'/net':[]}); html=t.run('networkPage(2)');
+  t=await loaded({'/net':[],'/net/interfaces/ens19/leases':{...LEASES,leases:[]}}); html=t.run('networkPage(2)');
   assert.match(html,/0 נראו ברשת ההפצה/); assert.match(card(html,'מי קיבל כתובת'),/class="empty">אף מכונה עוד לא דיברה עם השרת/);
+  assert.match(card(html,'מי קיבל כתובת'),/0 חכירות dnsmasq על ens19/);
+});
+
+/* ‏#1039: חכירות dnsmasq — מכונה שקיבלה כתובת ולא הגיעה ל-hello נראית רק שם; "לא נקרא" בשם, לא טבלה ריקה. */
+test('deploy network: a lease without hello is a "חכירה בלבד" row with "רשום"; a MAC already in /net is not doubled; unread leases are named',async()=>{
+  let t=await loaded(); let html=t.run('networkPage(2)'); balanced(html);
+  const seen=card(html,'מי קיבל כתובת');
+  assert.match(seen,/2 חכירות dnsmasq על ens19/); assert.doesNotMatch(seen,/דורש API/);
+  assert.equal((seen.match(new RegExp('data-mac="'+C1+'"','g'))||[]).length,1,'C1 talked to the server — its /net row, not a second lease row');
+  const rl=row(seen,'data-mac="'+LEASED+'"');
+  assert.match(rl,/^<tr data-mac="02:00:00:00:00:77" class="unreg">/); assert.match(rl,/class="pill warn">חכירה בלבד</); assert.match(rl,/ללא שם · לא דיבר עם השרת/);
+  assert.match(rl,/class="mono">10\.44\.9\.150</); assert.match(rl,/חכירה בלי תפוגה/);
+  assert.match(rl,/onclick="netRegister\('02%3A00%3A00%3A00%3A00%3A77'\)">רשום/);
+  t=await loaded({'/net/interfaces/ens19/leases':{interface:'ens19',checked:false,reason:'/var/lib/misc/dnsmasq.leases: Permission denied',path:'/var/lib/misc/dnsmasq.leases',leases:null}});
+  html=t.run('networkPage(2)');
+  assert.match(card(html,'מי קיבל כתובת'),/חכירות dnsmasq — לא נקראו: \/var\/lib\/misc\/dnsmasq\.leases: Permission denied/); assert.doesNotMatch(html,/חכירה בלבד/);
+  t=await loaded({'/net/interfaces/ens19/leases':new Error('boom')}); html=t.run('networkPage(2)');
+  assert.match(card(html,'מי קיבל כתובת'),/חכירות dnsmasq — לא נקראו: boom/); assert.match(html,/חכירות dnsmasq לא נקראו: boom/);
+});
+
+test('console box: /sessions not read is named on the box and as a note — never "only me"',async()=>{
+  const t=await loaded({'/sessions':new Error('db locked')});
+  const lane=JSON.parse(plain(t.run('JSON.stringify(netDiagramModel())'))).lanes.find(l=>l.nic.name==='ens18');
+  assert.equal(lane.clients[0].sub,'session פעיל · מי מחובר — לא נקרא: db locked');
+  assert.match(t.run('networkPage(0)'),/\/sessions לא נקרא: db locked — מי מחובר לקונסולה אינו ידוע/);
 });
 
 test('probe ("מי עוד עונה"): checked=false is "the check did not run", not "nobody"; servers found is red; a failed request is a toast + unknown',async()=>{

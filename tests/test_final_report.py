@@ -197,7 +197,7 @@ def journal(run: Path) -> str:
 LOOP_STUB = 'progress_loop() { echo "LOOP $1$4" >> "$RUN_DIR/trace"; }; '
 
 STUBS = (
-    # ‏#652: הסוכן האמיתי טוען את smart.sh (imagectl-agent), ולכן `smart_gate`
+    # ‏#652: הסוכן האמיתי טוען את smartgate.sh (imagectl-agent), ולכן `smart_gate`
     # מוגדר שם. כאן, כמו `run_restore` ו-`progress_loop`, הוא מזויף כדי
     # לבודד את מסלול הדיווח מבדיקת ה-SMART: מעביר את כל הדיסקים הלאה
     # (בריאים) ומחזיר 0. ה-SMART עצמו נבדק ב-test_smart.py.

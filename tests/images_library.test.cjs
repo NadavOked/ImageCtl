@@ -30,6 +30,15 @@ function setup() {
       room:{id:7,image_id:'img_lnx001',image_name:'Ubuntu 24.04',wave_number:2,wave_state:'running',target_drives:6,written_drives:2},pulls:[]},
     '/tasks':[{id:'t1',type:'capture',name:'Office 2024 v3',machine:'בנייה 1',mac:'cc',disk:'sda',state:'pending',bytes_written:0,bytes_total:null,image_id:'img_new',created_at:today+'T09:40:00Z',updated_at:today+'T09:40:00Z'},
               {id:'t0',type:'capture',name:'Ubuntu 24.04',machine:'בנייה 1',mac:'cc',disk:'sda',state:'done',error:null,bytes_written:21474836480,bytes_total:21474836480,image_id:'img_lnx001',created_at:'2026-09-12T09:40:00Z',updated_at:'2026-09-12T09:50:00Z'}],
+    // ‏#972: המניפסט הציבורי (GET /images/{id}) — מה שהמגירה מציגה כטבלת מחיצות.
+    '/images/img_lnx001':{id:'img_lnx001',name:'Ubuntu 24.04',created_by:'nadav',scheme:'gpt',sector_size:512,compression:'zstd-3',partclone_version:'0.3.27',
+      boot_ca:['Microsoft Corporation UEFI CA 2011','Microsoft UEFI CA 2023'],boot_ca_error:null,
+      partitions:[{index:1,role:'esp',fs:'vfat',size_bytes:104857600,used_bytes:31457280,file:'p1.esp.pcl.zst',sha256:'ab12cd34ef56'+'0'.repeat(52)},
+                  {index:2,role:'swap',fs:'swap',size_bytes:8589934592,used_bytes:0,file:null,sha256:null},
+                  {index:3,role:'linux',fs:'ext4',size_bytes:64424509440,used_bytes:null,shrunk_from_bytes:255013683200,file:'p3.root.pcl.zst',sha256:'9f'.repeat(32)}]},
+    '/images/img_7f3a91':{id:'img_7f3a91',name:'Office 2024 — סטנדרט',scheme:'gpt',sector_size:512,
+      partitions:[{index:1,role:'esp',fs:'vfat',size_bytes:104857600,used_bytes:31457280,file:'p1.esp.pcl.zst',sha256:'aa'.repeat(32)},
+                  {index:3,role:'windows',fs:'ntfs',size_bytes:254803968000,used_bytes:84509376512,file:'p3.win.pcl.zst',sha256:'bb'.repeat(32)}]},
     '/journal':[{ts:'2026-09-12T10:00:00Z',user:'nadav',event:'capture_done',label:'אימג\' נקלט',text:'"Ubuntu 24.04"',severity:'ok'},
                 {ts:today+'T08:00:00Z',user:'nadav',event:'image_edit',label:'אימג\' עודכן',text:'"Ubuntu 24.04" — עודכנו: תיאור',severity:'info'}],
   };
@@ -173,7 +182,7 @@ test('drag: image onto a folder = PUT folder (selection travels), folder onto fo
   assert.equal(requests.length,0,'no reorder across folders');
 });
 
-test('the image drawer: header line, actions, verification note, properties, "requires API" for partitions, history from journal + tasks', async () => {
+test('the image drawer: header line, actions, verification note, properties, partitions loading, history from journal + tasks', async () => {
   const {run,node,requests}=setup();
   run('openImageDetail("img_lnx001")');
   assert.equal(node('#drawerTitle').textContent,'Ubuntu 24.04');
@@ -184,7 +193,8 @@ test('the image drawer: header line, actions, verification note, properties, "re
   assert.match(html,/<span class="k">תיקייה<\/span><span class="v">Linux <a[^>]*>העבר/);
   assert.match(html,/<span class="k">מחיצות<\/span><span class="v">3</);
   assert.match(html,/<span class="k">שימוש<\/span><span class="v">סבב שיכפול · גל 2/);
-  assert.match(html,/דורש API/,'partition table is not invented'); assert.doesNotMatch(html,/Secure Boot/);
+  assert.match(html,/טוען את טבלת המחיצות/,'before the manifest arrives: loading, not an empty table');
+  assert.doesNotMatch(html,/דורש API/); assert.doesNotMatch(html,/Secure Boot/);
   assert.match(html,/נקלט ממחשב הבנייה בנייה 1 · sda/,'capture history from /tasks');
   assert.match(html,/מחיקה \(הקלדת שם\)/);
   const j=requests.find(r=>r.url.startsWith('/api/console/journal?'));
@@ -215,12 +225,13 @@ test('captures tab lists /tasks with state colours; storage tab reads /overview 
   run('CAPTURE_TASKS=[]'); assert.match(run('images(1)'),/אין קליטות עדיין/);
   html=run('images(2)'); balanced(html);
   assert.match(html,/פנוי בדיסק האימג&#39;ים/); assert.match(html,/312 GB/); assert.match(html,/688 GB<\/bdi> בשימוש מתוך <bdi dir="ltr">1000 GB/); assert.match(html,/aria-valuenow="69"/);
-  assert.match(html,/scrubLibrary\(\)">אמת את כל הספרייה/); assert.match(html,/דורשת API/);
+  assert.match(html,/scrubLibrary\(\)">אמת את כל הספרייה/); assert.doesNotMatch(html,/דורשת API/);
+  assert.match(html,/התוצאה השמורה האחרונה לכל אימג/,'#972: the saved result exists now — the empty text points to it');
   run('OVERVIEW=null'); html=run('images(2)'); assert.match(html,/לא נקרא/); assert.doesNotMatch(html,/aria-valuenow/);
 });
 
 test('deploy role: browse, deploy, download and details — no capture, upload, folders, move, rename, delete, scrub, drag', () => {
-  const {run,node}=setup(); run('ME.role="deploy"');
+  const {run,node,requests}=setup(); run('ME.role="deploy"');
   const html=run('images(0)');
   for(const bad of ['openCapture','openImageIngest','addFolderSheet','draggable=','ondrop=','bulkMove','bulkDelete','עריכת תיקייה','cancelCapture']) assert.doesNotMatch(html,new RegExp(bad),bad);
   assert.match(html,/deployImage\(/); assert.match(html,/<input type="checkbox"/);
@@ -229,7 +240,78 @@ test('deploy role: browse, deploy, download and details — no capture, upload, 
   run('openImageDetail("img_7f3a91")'); const d=node('#drawerBody').innerHTML;
   assert.match(d,/הורדה/); assert.doesNotMatch(d,/scrubImage|renameImage|deleteImage|moveImage|editImageDescription/);
   assert.match(d,/היסטוריית היומן זמינה למנהל בלבד/);
+  assert.ok(requests.some(r=>r.url==='/api/console/images/img_7f3a91'),'#972: the manifest is for every logged-in user');
+  assert.ok(!requests.some(r=>r.url.startsWith('/api/console/journal')),'the journal stays admin-only');
   assert.doesNotMatch(run('images(2)'),/scrubLibrary/);
+});
+
+const tick=async()=>{ for(let i=0;i<3;i++) await new Promise(r=>setImmediate(r)); };
+
+test('#972: the drawer shows the partition table from the manifest — null used is "not measured", swap has no file, shrink and boot_ca shown', async () => {
+  const {run,node,requests}=setup();
+  run('openImageDetail("img_lnx001")'); await tick();
+  const html=node('#drawerBody').innerHTML; balanced(html);
+  assert.ok(requests.some(r=>r.url==='/api/console/images/img_lnx001'),'GET /images/{id}');
+  for(const col of ['#','תפקיד','מערכת קבצים','גודל','בשימוש','כווץ מ-','sha256']) assert.match(html,new RegExp('<th>'+col+'</th>'));
+  const root=html.slice(html.indexOf('<td>3</td>')); assert.ok(root.length>0);
+  assert.match(root,/<td>linux<\/td><td>ext4<\/td>/);
+  assert.match(root,/60\.0 GB/); assert.match(root,/<span class="muted">לא נמדד<\/span>/,'used_bytes null is not measured, not 0');
+  assert.match(root,/title="255013683200 bytes"><bdi dir="ltr">238 GB/,'shrunk_from_bytes');
+  assert.match(root,/title="9f9f/); assert.match(root,/>9f9f9f9f9f9f…</);
+  assert.match(html,/<td>2<\/td><td>swap<\/td>.*לא נשמר \(swap\)/);
+  const esp=html.slice(html.indexOf('<td>1</td>'),html.indexOf('<td>2</td>'));
+  assert.match(esp,/30\.0 MB/); assert.match(esp,/<span class="muted">—<\/span>/,'no shrink = dash');
+  assert.match(html,/<span class="k">נקלט על ידי<\/span><span class="v">nadav</);
+  assert.match(html,/<span class="k">טבלת מחיצות<\/span><span class="v">gpt · סקטור <bdi dir="ltr">512 B/);
+  assert.match(html,/<span class="k">רשויות אתחול<\/span><span class="v">Microsoft Corporation UEFI CA 2011 · Microsoft UEFI CA 2023</);
+  assert.match(html,/<span class="k">דחיסה<\/span><span class="v">zstd-3 · partclone 0\.3\.27</);
+  assert.doesNotMatch(html,/דורש API|טוען את טבלת המחיצות/);
+});
+
+test('#972: boot_ca null says why, absent says "not recorded", and a manifest that failed to load is a warning — not an empty table', async () => {
+  const {run,node,fixtures}=setup();
+  Object.assign(fixtures['/images/img_lnx001'],{boot_ca:null,boot_ca_error:'no ESP mounted'});
+  run('openImageDetail("img_lnx001")'); await tick();
+  assert.match(node('#drawerBody').innerHTML,/<span class="muted">לא נגזר<\/span> — no ESP mounted/);
+  delete fixtures['/images/img_lnx001'].boot_ca; delete fixtures['/images/img_lnx001'].created_by;
+  run('openImageDetail("img_lnx001")'); await tick();
+  let html=node('#drawerBody').innerHTML;
+  assert.match(html,/רשויות אתחול<\/span><span class="v"><span class="muted">לא נרשם/);
+  assert.match(html,/נקלט על ידי<\/span><span class="v"><span class="muted">לא נרשם/);
+  fixtures['/images/img_7f3a91']=new Error('network down');
+  run('openImageDetail("img_7f3a91")'); await tick();
+  html=node('#drawerBody').innerHTML;
+  assert.match(html,/note warn.*המניפסט לא נקרא: network down/); assert.doesNotMatch(html,/אין מחיצות במניפסט|<th>תפקיד<\/th>/);
+});
+
+test('#972: the saved scrub result drives the column and the drawer; a scrub in this session still wins', async () => {
+  const {run,node,fixtures}=setup(); run('renderCurrent=()=>{}');
+  run('IMAGES[0].last_scrub={ts:"2026-09-20T08:15:00+00:00",state:"intact"}; IMAGES[3].last_scrub={ts:"2026-09-21T07:00:00+00:00",state:"drift"}');
+  let html=run('images(0)');
+  assert.match(html,/st ok">sha256 תקין · 20\/09\/2026</); assert.match(html,/st err">sha256 לא תואם · 21\/09\/2026</);
+  assert.equal((html.match(/st ok">sha256 אומת</g)||[]).length,2,'never re-verified = verified on entry');
+  run('openImageDetail("img_lnx001")');
+  html=node('#drawerBody').innerHTML;
+  assert.match(html,/note err.*האימות החוזר האחרון \(<bdi dir="ltr">21\/09\/2026 07:00<\/bdi>\) מצא sha256 לא תואם/);
+  run('openImageDetail("img_7f3a91")');
+  assert.match(node('#drawerBody').innerHTML,/note ok.*אימות חוזר אחרון <bdi dir="ltr">20\/09\/2026 08:15/);
+  fixtures['/images/img_7f3a91/scrub']={intact:false,images:[{id:'img_7f3a91',state:'drift',files:[{index:1,file:'p1.esp.pcl.zst',state:'ok'},{index:3,file:'p3.win.pcl.zst',state:'mismatch'}]}]};
+  await run('scrubImage("img_7f3a91")'); await tick();
+  assert.match(run('images(0)'),/st err">sha256 לא תואם: p3\.win\.pcl\.zst/,'this session beats the saved "intact"');
+  html=node('#drawerBody').innerHTML;
+  assert.match(html,/<td>3<\/td><td>windows<\/td>.*st err">mismatch/,'per-file state lands on its partition row');
+});
+
+test('#972: rounds in the last 30 days — a number, "none" for a measured 0, and unknown for null or a server without the field', () => {
+  const {run,node}=setup();
+  const usage=()=>node('#drawerBody').innerHTML.match(/<span class="k">שימוש<\/span><span class="v">(.*?)<\/span>(?:<span class="k">|<\/div>)/)[1];
+  run('IMAGES[3].rounds_30d=4; openImageDetail("img_lnx001")');
+  assert.match(usage(),/^סבב שיכפול · גל 2 · 4 סבבים ב-30 הימים האחרונים$/);
+  run('IMAGES[2].rounds_30d=0; openImageDetail("img_2c8e04")');
+  assert.match(usage(),/לא בסבב פעיל<\/span> · אין סבבים ב-30 הימים האחרונים$/);
+  run('IMAGES[2].rounds_30d=1; openImageDetail("img_2c8e04")'); assert.match(usage(),/סבב אחד ב-30 הימים האחרונים/);
+  run('IMAGES[2].rounds_30d=null; openImageDetail("img_2c8e04")'); assert.match(usage(),/לא ידוע/); assert.doesNotMatch(usage(),/אין סבבים|0 סבבים/);
+  run('delete IMAGES[1].rounds_30d; openImageDetail("img_a1b2c3")'); assert.match(usage(),/לא ידוע/);
 });
 
 test('the capture list re-renders the page only when the tasks actually changed (selection survives polling)', async () => {
@@ -244,4 +326,29 @@ test('the pages table owns the new page and the old renderer entry is gone', () 
   assert.equal(run('pages.images.own'),true); assert.equal(JSON.stringify(run('pages.images.tabs')),JSON.stringify(['קבצים','קליטות','אחסון']));
   assert.match(run('layout(pages.images,1)'),/class="page"/);
   assert.equal(run('typeof filterImagesFolder'),'undefined'); assert.equal(run('typeof reorderImage'),'undefined');
+});
+
+test('#1215: an image on an unavailable location is "not checked", never "sha256 mismatch"; drift still is', async () => {
+  const {run,node,fixtures}=setup(); run('renderCurrent=()=>{}');
+  fixtures['/images/scrub']={intact:false,images:[
+    {id:'img_7f3a91',state:'unavailable',files:[]},
+    {id:'img_2c8e04',state:'drift',files:[{index:3,file:'p3.win.pcl.zst',state:'mismatch'}]},
+    {id:'img_lnx001',state:'intact',files:[{index:1,file:'p1.esp.pcl.zst',state:'ok'}]}]};
+  await run('scrubLibrary()'); await tick();
+  let html=run('images(0)');
+  assert.match(html,/st warn">המיקום לא זמין · לא נבדק</);
+  assert.equal((html.match(/sha256 לא תואם/g)||[]).length,1,'only the drifted image is "mismatch"');
+  assert.match(html,/st err">sha256 לא תואם: p3\.win\.pcl\.zst/);
+  const storage=run('images(2)');
+  assert.match(storage,/st warn">המיקום לא זמין · לא נבדק</);
+  assert.equal((storage.match(/sha256 לא תואם/g)||[]).length,1,'storage tab: one mismatch row, the drifted one');
+  run('openImageDetail("img_7f3a91")');
+  const drawer=node('#drawerBody').innerHTML;
+  assert.match(drawer,/note warn.*המיקום לא זמין · לא נבדק/); assert.doesNotMatch(drawer,/לא תואם|אין להפיץ אותו/);
+  run('openImageDetail("img_2c8e04")');
+  assert.match(node('#drawerBody').innerHTML,/note err.*sha256 לא תואם/);
+  assert.match(node('#toast').textContent,/פגום/,'a real drift still says corrupt');
+  fixtures['/images/img_7f3a91/scrub']={intact:false,images:[{id:'img_7f3a91',state:'unavailable',files:[]}]};
+  await run('scrubImage("img_7f3a91")'); await tick();
+  assert.match(node('#toast').textContent,/לא זמין/); assert.doesNotMatch(node('#toast').textContent,/פגום|לא תואם/);
 });

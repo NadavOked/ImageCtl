@@ -480,13 +480,15 @@ KIOSK_PORT = DEFAULT_OWN_PORTS["kiosk"]
 def _port(port_id: str, name: str, port: str, proto: str, desc: str,
           target: str, state: str, detail: str, note: str, *,
           enabled: bool | None = None, listening: bool | None = None,
-          bind: list[str] | None = None, toggle: str = "none",
+          bind: list[str] | tuple | None = (), toggle: str = "none",
           toggle_url: str | None = None, confirm_word: str | None = None,
           confirm_when: str | None = None, off_means: str = "",
           **extra) -> dict:
     """שורה ב-/ports. ‏#996 הוסיף את המתג: ‏`enabled` (המתג השמור; None =
     אין מתג), ‏`listening` (נמדד: True/False, ‏None = לא נקרא כאן),
-    ‏`bind` (כתובות ההאזנה מטבלת הסוקטים), ‏`toggle` (`api`/`confirm`/
+    ‏`bind` (כתובות ההאזנה מטבלת הסוקטים; ‏#1039: ‏None = הטבלה לא
+    נקראה ≠ ‏`[]` = נקראה ואף אחד לא מאזין; שורה בלי סוקט בשרת לא מעבירה
+    ומקבלת `[]`), ‏`toggle` (`api`/`confirm`/
     ‏`none`), ‏`toggle_url` (איפה המתג חי), ‏`confirm_word`/`confirm_when`
     (מה מקלידים ומתי: `on`/`off`/`on_or_last_off`), ‏`off_means`."""
     # אזהרה לפני כיבוי לכל פורט עם מתג (נדב 19/09) — מהטבלה, אלא אם השורה
@@ -495,7 +497,7 @@ def _port(port_id: str, name: str, port: str, proto: str, desc: str,
     return {"id": port_id, "name": name, "port": port, "proto": proto,
             "desc": desc, "target": target, "state": state, "detail": detail,
             "note": note, "enabled": enabled, "listening": listening,
-            "bind": bind if bind is not None else [], "toggle": toggle,
+            "bind": None if bind is None else list(bind), "toggle": toggle,
             "toggle_url": toggle_url, "confirm_word": confirm_word,
             "confirm_when": confirm_when, "off_means": off_means, **extra}
 
@@ -688,7 +690,8 @@ def ports_snapshot(ctx, hooks: dict, server_base: str) -> list[dict]:
             f"לפתוח ב-FW: TCP {ssh_switch.SSH_PORT} מתחנת הניהול לשרת — לא מוילן הכיתות",
             enabled=nic["enabled"],
             listening=None if listening is None else bool(listening),
-            bind=[f"{a}:{ssh_switch.SSH_PORT}" for a in nic["addresses"]] if listening else [],
+            bind=(None if listening is None else
+                  [f"{a}:{ssh_switch.SSH_PORT}" for a in nic["addresses"]] if listening else []),
             toggle="confirm", toggle_url=f"/api/console/ssh/interfaces/{nic['name']}",
             confirm_word=nic["name"], confirm_when="on_or_last_off",
             off_means=f"אין SSH לשרת מהכרטיס {nic['name']}; סגירת הכרטיס האחרון "

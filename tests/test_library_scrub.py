@@ -4,6 +4,7 @@ import hashlib
 import json
 
 import server.library_scrub as library_scrub
+from server.images import ImageLibrary
 from server.library_scrub import scrub_library
 
 
@@ -40,7 +41,7 @@ def _image(result):
 def test_healthy_image_is_intact_and_swap_is_skipped(tmp_path):
     # Catches hashing failures and a mutation that treats swap as a stored file.
     _write_image(tmp_path)
-    result = scrub_library(tmp_path)
+    result = scrub_library(ImageLibrary(tmp_path))
     image = _image(result)
     assert result["intact"] is True
     assert image["state"] == "intact"
@@ -52,7 +53,7 @@ def test_flipped_byte_is_mismatch_and_image_drift(tmp_path):
     # Negative control: catches a mutation that always reports files/images intact.
     folder = _write_image(tmp_path)
     (folder / "p1.esp.pcl.zst").write_bytes(b"Esp")
-    result = scrub_library(tmp_path)
+    result = scrub_library(ImageLibrary(tmp_path))
     image = _image(result)
     assert result["intact"] is False
     assert image["state"] == "drift"
@@ -63,7 +64,7 @@ def test_absent_manifest_file_is_missing_not_mismatch(tmp_path):
     # Catches a mutation that collapses absence into checksum mismatch.
     folder = _write_image(tmp_path)
     (folder / "p2.root.pcl.zst").unlink()
-    image = _image(scrub_library(tmp_path))
+    image = _image(scrub_library(ImageLibrary(tmp_path)))
     missing = image["files"][1]
     assert image["state"] == "drift"
     assert missing["state"] == "missing"
@@ -78,7 +79,7 @@ def test_hash_io_failure_is_unreadable_not_mismatch(tmp_path, monkeypatch):
         raise OSError("simulated read failure")
 
     monkeypatch.setattr(library_scrub, "_sha256", cannot_read)
-    image = _image(scrub_library(tmp_path))
+    image = _image(scrub_library(ImageLibrary(tmp_path)))
     assert image["state"] == "drift"
     assert [item["state"] for item in image["files"]] == ["unreadable", "unreadable"]
 
