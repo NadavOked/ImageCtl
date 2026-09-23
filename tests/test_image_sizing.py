@@ -122,10 +122,30 @@ def test_the_requirement_never_exceeds_the_disk_it_was_captured_from():
 
 def test_the_gpt_backup_gets_room_at_the_tail():
     """‏sgdisk -e מזיז את עותק הגיבוי לסוף הכונן, וצריך לו מקום. כונן
-    בדיוק בגודל המחיצה האחרונה אינו מספיק."""
+    בדיוק בגודל המחיצה האחרונה אינו מספיק.
+
+    ‏#1171: המקום הזה הוא 256KiB — עותק הגיבוי הוא 33 סקטורים (135,168
+    בייט בכונן 4Kn, הגרוע שבשניים) — ו**לא** מגה-בייט מעוגל כלפי מעלה
+    למגה. הכמות היא דרישה על גודל הכונן; היישור של `sgdisk` הוא של
+    המחיצות, ואינו שייך לכאן.
+    """
     exact = manifest([(0, 100 << 20)], source=10 ** 15)
-    assert required_bytes(exact) > (100 << 20)
-    assert required_bytes(exact) % (1 << 20) == 0
+    assert required_bytes(exact) == (100 << 20) + (256 << 10)
+    assert required_bytes(exact) > 33 * 4096 + (100 << 20)
+
+
+def test_a_layout_from_a_byte_identical_drive_no_longer_needs_the_source_clamp():
+    """‏#1171, נמדד על ברזל: דיסק ווינדוס אמיתי של 256,060,514,304 בייט —
+    בדיוק גודל ה-Samsung שפסלנו — נגמר ב-256,060,162,048, כלומר 344KB
+    לפני הסוף. הדרישה הישנה (מגה ועיגול למגה) הייתה 256,061,210,624,
+    גדולה מהכונן עצמו: הפריסה עברה **רק** דרך ההצמדה ל-`source_disk_bytes`,
+    ולכן כל יעד קטן ולו בבייט אחד מהמקור נפסל. עכשיו היא עוברת לבדה.
+    """
+    real_end = 256_060_162_048            # מדידה, 22/09: Get-Partition על דיסק GPT חי
+    real_disk = 256_060_514_304
+    image = manifest([(0, real_end)], source=real_disk + (2 << 20))
+    assert required_bytes(image) <= real_disk
+    assert required_bytes(image) - real_end == 256 << 10
 
 
 def test_a_manifest_without_geometry_falls_back_to_the_declared_value():

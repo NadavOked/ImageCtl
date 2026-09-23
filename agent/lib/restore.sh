@@ -63,7 +63,7 @@ required_bytes() {
       | if ($ends | length) == 0 or ($ends | length) != (.partitions | length)
         then (.min_target_bytes // empty)
         else ($ends | max) as $end
-             | ((($end + 2097151) / 1048576) | floor) * 1048576 as $need
+             | ($end + 262144) as $need         # ‏#1171: GPT backup, no MiB round-up
              | if (.source_disk_bytes != null) and (.source_disk_bytes >= $end)
                   and (.source_disk_bytes < $need)
                then .source_disk_bytes else $need end

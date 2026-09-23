@@ -267,9 +267,9 @@ def test_the_manifest_describes_the_compacted_layout(tmp_path):
     esp = part(m, 1)
     assert "shrunk_from_bytes" not in esp and "source_start_sector" not in esp
 
-    # הרצפה: סוף ה-recovery החדש + מגה, לא 512GB.
+    # הרצפה: סוף ה-recovery החדש + גיבוי ה-GPT (#1171), לא 512GB.
     end = (rec["start_sector"] * 512) + rec["size_bytes"]
-    assert m["min_target_bytes"] == (end + 2 * MIB - 1) // MIB * MIB
+    assert m["min_target_bytes"] == end + 256 * 1024  # #1171
     assert m["min_target_bytes"] < 130 * 10**9
 
 
@@ -696,7 +696,7 @@ def test_the_manifest_compacts_both_and_marks_only_the_last_expandable(tmp_path)
         assert "shrunk_from_bytes" not in part(m, idx) and "source_start_sector" not in part(m, idx)
 
     end = data["start_sector"] * 512 + data["size_bytes"]
-    assert m["min_target_bytes"] == (end + 2 * MIB - 1) // MIB * MIB
+    assert m["min_target_bytes"] == end + 256 * 1024  # #1171
     assert m["min_target_bytes"] < 140 * 10**9
     from server.images import required_bytes
     assert required_bytes(m) == m["min_target_bytes"]

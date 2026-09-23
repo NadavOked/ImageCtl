@@ -101,7 +101,7 @@ def test_4kn_capture_writes_logical_geometry_not_512(tmp_path):
     by_role = {p["role"]: p for p in written["partitions"]}
     linux, swap = by_role["linux"], by_role["swap"]
     end = (SWAP_START + SWAP_SECS) * SECTOR
-    need = ((end + 2_097_151) // 1_048_576) * 1_048_576
+    need = end + 262_144  # #1171: עותק הגיבוי של ה-GPT, בלי עיגול
 
     assert written["sector_size"] == SECTOR
     assert written["sector_size"] != WRONG
@@ -113,8 +113,8 @@ def test_4kn_capture_writes_logical_geometry_not_512(tmp_path):
     assert swap["start_sector"] == SWAP_START
     assert written["min_target_bytes"] == need
     assert written["min_target_bytes"] != (
-        ((SWAP_START + SWAP_SECS) * WRONG + 2_097_151) // 1_048_576
-    ) * 1_048_576
+        (SWAP_START + SWAP_SECS) * WRONG + 262_144
+    )
     # sysfs /size הוא יחידות 512 גם על 4Kn — לא logical_block_size.
     assert written["source_disk_bytes"] == KERNEL_SECTORS * WRONG
     assert written["source_disk_bytes"] != KERNEL_SECTORS * SECTOR

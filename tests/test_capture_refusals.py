@@ -517,7 +517,7 @@ def test_capture_manifest_uses_source_logical_sector_size(tmp_path):
     )
     part = written["partitions"][0]
     expected_end = (2048 + 204800) * sector_size
-    expected_need = ((expected_end + 2097151) // 1048576) * 1048576
+    expected_need = expected_end + 262144  # #1171: גיבוי ה-GPT, בלי עיגול
 
     assert written["sector_size"] == sector_size
     assert part["size_bytes"] == 204800 * sector_size
