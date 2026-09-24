@@ -6415,12 +6415,17 @@ function monitorMachine(mac) {
 
 /* #827: אותה זרימה כמו מתג ה-SSH לתחנות (sshToggle) — הדלקה דורשת הקלדת
    מילת האישור, כיבוי לא. ‏confirm חייב לתאום בדיוק את מה שהשרת דורש
-   (imagectl.monitor, #690). */
+   (imagectl.monitor, #690).
+   ‏#1227 (עיקרון 5): ההודעה נגזרת מה-`enabled` שחזר בתשובה, לא ממה
+   שביקשנו — תשובה בלי `enabled` היא "לא אומת", לא הצלחה בשתיקה. */
 function monitorToggle(enabling) {
   if (!isAdmin()) return;
   const send = async (extra) => {
     const result = await put("/monitor/settings", { enabled: enabling, ...extra });
-    toast(enabling
+    if (!("enabled" in result)) toast("לא אומת — התשובה לא כללה enabled");
+    else if (result.enabled !== enabling)
+      toast(`המוניטור לא ${enabling ? "הודלק" : "כובה"}: השרת מחזיר ${result.enabled ? "דלוק" : "כבוי"}`);
+    else toast(enabling
       ? "המוניטור הודלק — תופס באתחול הבא של כל תחנה"
       : "המוניטור כובה — תופס באתחול הבא של כל תחנה");
     if (current === "ports") await loadPorts(); else await loadMonitor();

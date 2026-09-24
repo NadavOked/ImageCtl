@@ -138,6 +138,8 @@ def clear_pending(state_dir: str | Path) -> None:
     try:
         pending_path(state_dir).unlink(missing_ok=True)
     except OSError:
+        # לא נבלע: מי שמדווח "אושר" בודק `pending_path().exists()` אחרי
+        # הקריאה (‏#291); ‏`run_once` שנכשל כאן פשוט מחזיר שוב בסבב הבא.
         pass
 
 
@@ -184,6 +186,8 @@ def write_crumb(state_dir: str | Path, interface: str, reason: str,
              "at": at, "errors": errors, "setting": setting},
             ensure_ascii=False), encoding="utf-8")
     except OSError:
+        # מכוון (ה-docstring): ההחזרה כבר קרתה, ו-`main` מדפיס אותה ליומן
+        # של systemd גם כשהפירור לא נכתב.
         pass
 
 
@@ -209,6 +213,8 @@ def clear_crumbs(state_dir: str | Path) -> None:
         try:
             path.unlink()
         except OSError:
+            # פירור שלא נמחק נקרא שוב ב-`drain_crumbs` הבא — כפילות גלויה ביומן,
+            # לא אירוע שנעלם.
             pass
 
 

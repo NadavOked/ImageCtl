@@ -285,7 +285,8 @@ def create_netcfg_router(ctx: ServerContext, state_dir,
 
     def _read_resolv() -> str | None:
         try:
-            return open(netcfg_host.RESOLV_CONF, encoding="utf-8").read()
+            with open(netcfg_host.RESOLV_CONF, encoding="utf-8") as handle:
+                return handle.read()
         except OSError:
             return None
 
@@ -336,6 +337,13 @@ def create_netcfg_router(ctx: ServerContext, state_dir,
             raise HTTPException(409, f"חלון האישור על {pending.interface} נסגר. "
                                 "ההגדרה הקודמת חוזרת, ואי אפשר לבטל את זה מכאן.")
         netcfg_rollback.clear_pending(state_dir)
+        # ‏#291: ‏`clear_pending` בולע כישלון מחיקה. "אושר" נקבע לפי ראיה
+        # שהסמן איננו — אחרת הזרוע מחזירה את מה שהמפעיל ראה "מאושר".
+        if netcfg_rollback.pending_path(state_dir).exists():
+            raise HTTPException(
+                500, f"לא הצלחנו למחוק את סמן ההחזרה "
+                     f"({netcfg_rollback.pending_path(state_dir)}) — השינוי "
+                     f"על {pending.interface} לא אושר ויוחזר בתום החלון.")
         journal(ctx.conn, "net_confirmed", pending.interface, user[0])
         return {"ok": True, "interface": pending.interface,
                 "rollback": rollback_view(now)}

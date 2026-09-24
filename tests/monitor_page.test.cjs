@@ -47,7 +47,7 @@ function setup(fixtures) {
    האמיתי, אותו רכיב כמו מתג ה-SSH) — כדי לבדוק "הקלדה שגויה => אין
    fetch" צריך DOM שמחזיק זהות עקבית לאלמנט (#sf-verify) בין הרינדור
    לבין ה-submit, ולא צומת חד-פעמי כמו ב-stubNode של setup() הרגיל. */
-function setupWithDom(fixtures) {
+function setupWithDom(fixtures, putResponses = {}) {
   const opened = [];
   const toasts = [];
   const calls = [];
@@ -71,7 +71,12 @@ function setupWithDom(fixtures) {
     fetch: async (url, options = {}) => {
       calls.push({url, method: options.method || 'GET', body: options.body ? JSON.parse(options.body) : null});
       const key = url.replace('/api/console', '').split('?')[0];
-      if (options.method && options.method !== 'GET') return {status: 200, ok: true, headers: {get: () => null}, json: async () => ({enabled: true})};
+      // ‏#1227: כברירת מחדל תשובת PUT מדמה הצלחה תואמת (enabled: true) —
+      // טסטים שצריכים לבדוק אי-התאמה/היעדר enabled מזריקים putResponses[key].
+      if (options.method && options.method !== 'GET') {
+        const body = Object.prototype.hasOwnProperty.call(putResponses, key) ? putResponses[key] : {enabled: true};
+        return {status: 200, ok: true, headers: {get: () => null}, json: async () => body};
+      }
       if (fixtures[key] instanceof Error) return {status: 500, ok: false, headers: {get: () => null}, json: async () => ({detail: fixtures[key].message})};
       return {status: 200, ok: true, headers: {get: () => null}, json: async () => fixtures[key] || {}};
     },
@@ -230,4 +235,55 @@ test('turning on with the exact confirm word sends PUT with confirm, then reload
   assert.deepEqual(puts[0].body, {enabled: true, confirm: 'imagectl.monitor'});
   // אחרי ה-PUT נטען המצב מחדש מהשרת
   assert.ok(calls.some(c => c.method === 'GET' && c.url === '/api/console/monitor/settings' && calls.indexOf(c) > calls.indexOf(puts[0])));
+});
+
+// --- #1227: ההודעה נגזרת מה-enabled שחזר, לא ממה שביקשנו ------------------
+
+// monitorToggle(false) לא ממתין ל-send() שלו (fire-and-forget, כמו הטסט
+// הקיים למעלה שבודק רק calls) — toast() מגיע אחרי כמה תורי-מיקרו על שרשרת
+// fetch→json→api→put. ‏setImmediate מרוקן את כולם לפני שהוא רץ.
+const tick = () => new Promise((r) => setImmediate(r));
+
+test('turning off: server confirms enabled:false — success toast, not an error (#1227)', async () => {
+  const {run, toasts} = setupWithDom(base, {'/monitor/settings': {enabled: false}}); // base: enabled true before the toggle
+  await run('loadMonitor()');
+  run('monitorToggle(false)');
+  await tick();
+  assert.equal(toasts.length, 1);
+  assert.match(toasts[0], /^המוניטור כובה/);
+});
+
+test('turning off: server-returned enabled disagrees (still true) — error toast, not "כובה" (#1227)', async () => {
+  const {run, toasts} = setupWithDom(base, {'/monitor/settings': {enabled: true}});
+  await run('loadMonitor()');
+  run('monitorToggle(false)');
+  await tick();
+  assert.equal(toasts.length, 1);
+  assert.match(toasts[0], /המוניטור לא כובה: השרת מחזיר דלוק/);
+  assert.doesNotMatch(toasts[0], /^המוניטור כובה/);
+});
+
+test('turning on: server-returned enabled disagrees (still false) — error toast, not "הודלק" (#1227)', async () => {
+  const {run, calls, node, toasts} = setupWithDom(
+    {...base, '/monitor/settings': {port: 5900, enabled: false}},
+    {'/monitor/settings': {enabled: false}});
+  await run('loadMonitor()');
+  run('monitorToggle(true)');
+  node('#sf-verify').value = 'imagectl.monitor';
+  const form = node('#sheet');
+  await form.onsubmit({preventDefault() {}});
+  assert.equal(calls.filter(c => c.method === 'PUT').length, 1);
+  assert.equal(toasts.length, 1);
+  assert.match(toasts[0], /המוניטור לא הודלק: השרת מחזיר כבוי/);
+  assert.doesNotMatch(toasts[0], /^המוניטור הודלק/);
+});
+
+test('PUT response without an "enabled" field is "לא אומת", not a silent success (principle 5, #1227)', async () => {
+  const {run, toasts} = setupWithDom(base, {'/monitor/settings': {}});
+  await run('loadMonitor()');
+  run('monitorToggle(false)');
+  await tick();
+  assert.equal(toasts.length, 1);
+  assert.match(toasts[0], /לא אומת/);
+  assert.doesNotMatch(toasts[0], /הודלק|כובה/);
 });

@@ -292,6 +292,29 @@ def test_confirming_the_wrong_card_is_refused(net_server):
     assert confirm(net_server, "eth1").status_code == 409
 
 
+def test_a_confirmation_whose_marker_survives_is_not_reported_as_confirmed(
+        net_server, monkeypatch):
+    """‏#291 (התראת code-scanning על ה-``except: pass`` ב-`clear_pending`):
+    מחיקת הסמן שנכשלה נבלעת שם, והקונסולה ענתה "אושר — ההגדרה נשארת"
+    ורשמה `net_confirmed` — בזמן שהסמן נשאר על הדיסק והזרוע מחזירה את
+    השינוי בתום החלון. "אושר" בלי ראיה שהסמן איננו הוא עיקרון 5 בדיוק.
+    ה-DCUI כבר בודק את זה (`dcui/actions.confirm_network`)."""
+    put(net_server, name="eth0", address="10.10.10.9")
+    real_unlink = Path.unlink
+
+    def stuck(self, *args, **kwargs):
+        if self.name == netcfg_rollback.PENDING_NAME:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", stuck)
+    response = confirm(net_server, "eth0")
+    assert response.status_code == 500, response.text
+    assert "סמן ההחזרה" in response.json()["detail"]
+    assert pending_file(net_server)["interface"] == "eth0"
+    assert ("net_confirmed", "eth0") not in journal_events(net_server)
+
+
 # --- הפירור → שורת יומן --------------------------------------------------------
 
 
