@@ -58,6 +58,10 @@ EVENTS_HE = {
     "room_drawer_changed": "המגירה הוחלפה אחרי סיום הכתיבה",
     "room_done": "סבב חדר השיכפולים הושלם",
     "room_close": "סבב חדר השיכפולים נסגר",
+    # ‏#980: כיבוי החדר עובר דרך הסוכן (hello) — בקשה, מסירה, או פקיעה.
+    "room_poweroff": "התבקש כיבוי כל מחשבי השיכפול",
+    "power_delivered": "בקשת הכיבוי נמסרה לסוכן",
+    "power_expired": "בקשת הכיבוי פגה — המכונה לא ענתה בזמן, ולא נכבתה",
     "send_start": "השידור יצא לדרך",
     "send_done": "השידור הסתיים",
     "send_failed": "השידור נכשל",
@@ -222,6 +226,7 @@ _SEVERITY_WARN = {
     "net_rollback_unreadable", "ssh_unverified", "work_area_kept",
     "storage_node_disable",
     "room_drawer_changed",
+    "power_expired",
 }
 _SEVERITY_OK = {
     "login", "capture_done", "client_done", "pull_done", "room_done",

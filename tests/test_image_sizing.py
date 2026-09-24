@@ -252,7 +252,7 @@ def test_the_agent_and_the_server_agree_on_the_requirement(tmp_path, case):
     מציע ובדיקת 2.7 חוסמת — או, גרוע יותר, ההפך."""
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(case), encoding="utf-8")
-    out = sh(f'. {posix(AGENT)}/lib/restore.sh; required_bytes {posix(path)!r}')
+    out = sh(f'. {posix(AGENT)}/lib/diskfit.sh; required_bytes {posix(path)!r}')   # #1217
     assert int(out.strip()) == required_bytes(case)
 
 
@@ -299,7 +299,7 @@ def fits_box(tmp_path, blockdev_body: str, image=TINY11):
         f'export PATH="$(cd {posix(stubs)!r} && pwd):$PATH"; '
         f'export RUN_DIR={posix(run)!r} DEVROOT={posix(run)!r}/dev LOG_FILE={posix(run)!r}/log; '
         f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/progress.sh; '
-        f'. {posix(AGENT)}/lib/restore.sh; '
+        f'. {posix(AGENT)}/lib/restore.sh; . {posix(AGENT)}/lib/diskfit.sh; '   # #1217
     )
     return run, path, prelude
 

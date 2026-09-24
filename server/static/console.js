@@ -1066,7 +1066,8 @@ async function loadMachines() {
     // ‏#954 גל 3: IP / נראה לאחרונה / שלב אתחול מ-/net, "מחובר" מ-/monitor/machines.
     // קריאה שנכשלה = "לא נקרא" (null), לא רשימה ריקה (עיקרון 5).
     // ‏גל 3א: מצב המגירות בזמן סבב מ-/room (אובייקט המשכפלים); הקליטות מ-/tasks (אובייקט הבנייה).
-    const [net, mon, room] = await Promise.allSettled([api("/net"), api("/monitor/machines"), api("/room")]);
+    const [net, mon, room, hist] = await Promise.allSettled([api("/net"), api("/monitor/machines"), api("/room"), api("/room/history")]);
+    ROOM_HISTORY = hist.status === "fulfilled" && Array.isArray(hist.value) ? hist.value : null;   // ‏#980 §3
     NET = net.status === "fulfilled" && Array.isArray(net.value) ? net.value : null;   // תשובה שאינה רשימה = לא נקרא
     NET_ERR = net.status === "rejected" ? (net.reason && net.reason.message) || "" : "";
     MONITOR_ROWS = mon.status === "fulfilled" && Array.isArray(mon.value) ? mon.value : null;
@@ -1802,7 +1803,8 @@ function deploy(tab = 0) {
   const stale = overviewError ? `<div class="c12">${UI.note("warn", esc(overviewError))}</div>` : "";
   let body;
   if (tab === classTab) body = deployClassView();
-  else if (tab === histTab) body = UI.card({ title: "היסטוריית סבבים", cls: "c12", body: UI.note("info", `סבבים קודמים בחדר${classroomsOn() ? " ובכיתות" : ""} — <b title="אין endpoint לסבבים סגורים (#980 §3)">דורש API</b>. היום רק ${isAdmin() ? UI.link("ביומן", "selectPageById('logs')") : "ביומן (מנהל)"}.`) });
+  else if (tab === histTab) body = UI.card({ title: "היסטוריית סבבים", small: "סבבי החדר שהסתיימו — מ-/room/history", cls: "c12", body: roomHistoryHtml()
+    + (classroomsOn() ? UI.note("info", `סבבים קודמים בכיתות — <b title="אין endpoint לסבבי כיתה סגורים">דורש API</b>. היום רק ${isAdmin() ? UI.link("ביומן", "selectPageById('logs')") : "ביומן (מנהל)"}.`) : "") });
   else if (ROOM == null) body = `<div class="c12">${UI.note("warn", `החדר לא נקרא${DEPLOY.roomErr ? ": " + esc(DEPLOY.roomErr) : ""} — הגריד והסבב לא ידועים.`)}</div>`;
   else if (DEPLOY.big) body = roomGridCard(kids, st, true);
   else if (r) body = (r.state === "failed" ? `<div class="c12">${UI.note("err", `נכשל: ${esc(r.failed_reason || "סיבה לא ידועה")}`)}</div>` : "") + `<div class="c12 kpis">${roomKpis(r, st, pct)}</div>` + roomGridCard(kids, st, false) + roomNotes(kids, st);
@@ -1976,6 +1978,7 @@ async function loadDeploy() {
   jobs.push(api("/room").then((v) => { ROOM = v && Array.isArray(v.machines) ? v : null; DEPLOY.roomErr = ROOM ? "" : "תשובה שאינה חדר"; })
     .catch((e) => { ROOM = null; DEPLOY.roomErr = e.message; }));
   jobs.push(api("/images").then((v) => { if (Array.isArray(v)) IMAGES = v; }).catch(() => {}));
+  jobs.push(api("/room/history").then((v) => { ROOM_HISTORY = Array.isArray(v) ? v : null; }).catch(() => { ROOM_HISTORY = null; }));   // ‏#980 §3
   jobs.push(Promise.allSettled([api("/machines"), api("/groups"), api("/disk-failures"), api("/net")]).then(([m, g, f, n]) => {
     if (m.status === "fulfilled" && Array.isArray(m.value)) MACHINES = m.value;
     if (g.status === "fulfilled" && Array.isArray(g.value)) GROUPS = g.value;
@@ -3018,7 +3021,20 @@ function groupKpis(g, kids) {
     + disks
     + UI.kpi({ cls: care ? "warn" : "", label: "דורש טיפול", value: care, sub: careSub || "אין ממתינים, אדומים או כשלים" });
 }
-/* ציר הסבבים: הסבב הפעיל (כיתה — /overview.session; משכפלים — /room.round) + "דורש API" להיסטוריה. */
+/* ‏#980 §3: סבבי החדר שהסתיימו, מ-GET /room/history (מהחדש לישן). null = לא נקרא ≠ [] אין סבבים.
+   ירוק רק כשנכתבו כל הכוננים שהוצהרו (ראיה מהשרת); סבב שנסגר לפני היעד — אפור. */
+function roomHistoryHtml() {
+  if (ROOM_HISTORY == null) return UI.note("warn", "היסטוריית הסבבים לא נקראה");
+  if (!ROOM_HISTORY.length) return UI.note("info", "אין סבבים קודמים בחדר");
+  return UI.timeline(ROOM_HISTORY.map((h) => ({
+    t: isToday(h.created_at) ? fmtClock(h.created_at) : fmtDate(h.created_at),
+    cls: h.state === "failed" ? "err" : h.written_drives >= h.target_drives ? "ok" : "",
+    text: `${esc(h.image_name || h.image_id || "")} · ${h.written_drives}/${h.target_drives} נכתבו · `
+      + (h.state === "failed" ? esc(`נכשל: ${h.failed_reason || "סיבה לא ידועה"}`) : "נסגר")
+      + (h.closed_at ? ` ${ltr(fmtWhen(h.closed_at))}` : ""),
+    who: h.opened_by || "" })));
+}
+/* ציר הסבבים: הסבב הפעיל (כיתה — /overview.session; משכפלים — /room.round) + ההיסטוריה (משכפלים — /room/history; אחרים — "דורש API"). */
 function groupRoundsCard(g, cls) {
   const s = groupSession(g.id), r = g.role === "cloner" ? roomRound() : null;
   const events = [];
@@ -3026,9 +3042,9 @@ function groupRoundsCard(g, cls) {
   if (r) events.push({ t: "עכשיו", cls: r.state === "failed" ? "err" : ROOM.stream_stalled ? "warn" : "info", text: `${esc(r.image_name || r.image_id || "")} · גל ${r.wave_number || 1} · ${r.state === "failed" ? esc(`נכשל: ${r.failed_reason || "סיבה לא ידועה"}`) + " · " : ""}${r.written_drives || 0}/${r.target_drives || 0} נכתבו${ROOM.stream_stalled ? " · הזרם עצר" : ""} · ${UI.link("לסבב", "selectPageById('deploy')")}`, who: r.opened_by || "" });
   const now = events.length ? UI.timeline(events) + `<div style="margin-top:12px"></div>` : "";
   const unread = g.role === "cloner" && ROOM == null ? UI.note("warn", "החדר לא נקרא — הסבב הפעיל לא ידוע.") + `<div style="margin-top:12px"></div>` : "";
-  const what = g.role === "classroom" ? "לכיתה" : g.role === "cloner" ? "בחדר" : "לקבוצה";
-  const today = g.role === "cloner" ? "‏/room מחזיק סבב אחד; היסטוריה רק " : "היום רק ";
-  const note = UI.note("info", `היסטוריית סבבים ${what} — <b title="אין endpoint לסבבים סגורים לפי קבוצה">דורש API</b> (${today}${UI.link("ביומן", "selectPageById('logs')")}).`);
+  const what = g.role === "classroom" ? "לכיתה" : "לקבוצה";
+  const note = g.role === "cloner" ? roomHistoryHtml()
+    : UI.note("info", `היסטוריית סבבים ${what} — <b title="אין endpoint לסבבים סגורים לפי קבוצה">דורש API</b> (היום רק ${UI.link("ביומן", "selectPageById('logs')")}).`);
   return UI.card({ title: g.role === "classroom" ? "סבבים של הכיתה" : g.role === "cloner" ? "סבבים בחדר" : "סבבים", cls, body: unread + now + note });
 }
 /* הכיתה (class.md): KPI, הטבלה שטוחה, סבבים. */
@@ -3074,9 +3090,11 @@ async function wakeRoom() {
    (#874/#890), /tasks (קליטות), /monitor/machines ("מחובר"), /net (IP, נראה).
    חריץ = "דיסק N · SATA N-1" (מוסכמת נדב: SATA 0 → דיסק 1; לעולם לא sd*). צבע:
    ירוק רק על SMART `ok` או "נכתב"; "לא נבדק" אפור, לא ירוק (עיקרון 5). מה שאין לו
-   API — כיבוי כולם, היסטוריית סבבים, שלבי הקליטה, WoL למחשב יחיד, תיקיית הקליטה —
-   "דורש API" בטקסט (Issue מרוכז), לא כפתור מנוטרל ולא נתון מומצא. */
+   API — שלבי הקליטה, מצב הדיסק לפני קליטה (#980 §4, §6) — "דורש API" בטקסט, לא
+   כפתור מנוטרל ולא נתון מומצא. כיבוי כולם (§1), היסטוריית סבבים (§3), WoL למחשב
+   (#984) ותיקיית הקליטה (#968) — מה-API. */
 let ROOM = null;                          // ‏GET /room — null = לא נקרא (≠ חדר בלי סבב)
+let ROOM_HISTORY = null;                  // ‏GET /room/history (#980 §3) — null = לא נקרא (≠ [] אין סבבים קודמים)
 let ROOM_KEY = "";                        // חתימת התשובה האחרונה — רינדור מחדש רק על שינוי
 let CAPTURE_TASKS_READ = false;           // ‏/tasks נקרא לפחות פעם אחת (‏[] ריק ≠ לא נקרא)
 const DRAWER_STATE_HE = { writing: "כותב", done: "נכתב", failed: "נכשל", verifying: "מאמת", waiting: "ממתין" };
@@ -3224,11 +3242,22 @@ function clonersView(g, kids, tab) {
     `${st.filled} דיסקים בחריצים`, DISK_FAILURES ? `${fails.length} אדומים` : "אדומים: לא נקרא"].join(" · ");
   const pill = r ? UI.pill(ROOM.stream_stalled ? "warn" : "info", `סבב פעיל — גל ${r.wave_number || 1}, ${r.written_drives || 0}/${r.target_drives || 0}${ROOM.stream_stalled ? " · הזרם עצר" : ""}`)
     : ROOM == null ? UI.pill("", "החדר לא נקרא") : "";
-  const actions = admin ? `<button class="btn primary" onclick="openRoomRound()">פתח סבב במשכפלים…</button><button class="btn" onclick="wakeRoom()">הער את כולם (WoL)</button><button class="btn" onclick="openAddMachine({group:'${gidEnc}'})">+ מחשב שיכפול</button>${UI.soon("כיבוי כולם")}` : "";
+  const actions = admin ? `<button class="btn primary" onclick="openRoomRound()">פתח סבב במשכפלים…</button><button class="btn" onclick="wakeRoom()">הער את כולם (WoL)</button><button class="btn" onclick="openAddMachine({group:'${gidEnc}'})">+ מחשב שיכפול</button><button class="btn danger" onclick="poweroffRoom('${gidEnc}')">כיבוי כולם (הקלדת שם)</button>` : "";
   const body = tab === 1 ? clonerGridCard(g, kids, true)
     : tab === 2 ? groupRoundsCard(g, "c12")
     : `<div class="c12 kpis">${clonerKpis(kids, st, fails)}</div>` + clonerGridCard(g, kids, false) + diskFailuresCard(kids, "c8") + groupRoundsCard(g, "c4");
   return { sub, pill, actions, body };
+}
+/* ‏#980 §1: כיבוי כל המשכפלים — **דרך הסוכן**: השרת רושם בקשה, היא נוסעת ב-hello הבא של כל
+   משכפל, והסוכן דורך WoL (arm_wol, #587) ורק אז נכבה. לא poweroff -f מהשרת. התשובה היא כמה
+   בקשות נרשמו, לא כמה נכבו — "מחוברים" יורד כשהם באמת נכבים. */
+function poweroffRoom(gidEnc) {
+  let gid = gidEnc; try { gid = decodeURIComponent(gidEnc); } catch (e) {}
+  const g = (GROUPS || []).find((x) => x.id === gid);
+  if (!g || !isAdmin()) return;
+  sheet({ title: "כיבוי כל מחשבי השיכפול", sub: "כל משכפל שממתין נכבה ב-hello הבא שלו (עד כ-15 שניות), ורק אחרי שדרך WoL — כדי שאפשר יהיה להעיר אותו שוב. מחשב שלא יענה תוך 2 דקות לא ייכבה. בזמן סבב פעיל השרת מסרב.",
+    danger: true, submitLabel: "כבה את כולם", verify: { label: "הקלד את שם הקבוצה", mustEqual: g.label },
+    onSubmit: async () => { const r = await post("/room/poweroff", { confirm_name: g.label }); toast(`בקשת כיבוי נשלחה ל-${r.requested} מחשבים — "מחוברים" יירד כשהם נכבים`, 6000); } });
 }
 /* הכתיבה ל-/room נשארת בדף ההפצה (גל 6) ובמסך החדר — כאן רק ניווט. */
 function openRoomRound() {
@@ -3341,13 +3370,16 @@ function buildersCard(g, kids) {
 }
 function capturesTableCard(kids, cls) {
   const rows = groupTasks(kids).map((t) => ({ attrs: `data-task="${esc(t.id)}"`, cells: [
-    UI.name(t.name || "", t.image_id || ""), `${esc(taskWho(t))} · ${taskDisk(t)}`, taskStatus(t),
+    UI.name(t.name || "", t.image_id || ""),
+    // ‏#968: ‏"" = שורש הספרייה; שדה חסר (שרת ישן) = "—", לא "שורש".
+    t.folder == null ? `<span class="muted">—</span>` : t.folder ? esc(t.folder) : `<span class="muted">שורש הספרייה</span>`,
+    `${esc(taskWho(t))} · ${taskDisk(t)}`, taskStatus(t),
     t.state === "pending" ? `<span class="muted">—</span>` : ltr(fmtBytes(t.bytes_written)),
     t.state === "pending" ? `<span class="muted">—</span>` : esc(fmtDuration(t.created_at, t.updated_at)),
     taskWarning(t), esc(taskWhen(t))] }));
   const body = !CAPTURE_TASKS_READ ? UI.note("warn", "רשימת הקליטות לא נקראה")
-    : UI.datagrid({ columns: ["אימג'", "מחשב · דיסק", "מצב", "נקראו", "משך", "אזהרה / שגיאה", "מתי"], rows, empty: "אין קליטות עדיין — \"+ קליטת אימג'…\" פותחת את הראשונה" });
-  return UI.card({ title: "קליטות אחרונות", small: "עד 20 האחרונות מ-/tasks · תיקייה — דורש API (#968)", cls, flush: true, body });
+    : UI.datagrid({ columns: ["אימג'", "תיקייה", "מחשב · דיסק", "מצב", "נקראו", "משך", "אזהרה / שגיאה", "מתי"], rows, empty: "אין קליטות עדיין — \"+ קליטת אימג'…\" פותחת את הראשונה" });
+  return UI.card({ title: "קליטות אחרונות", small: "עד 20 האחרונות מ-/tasks", cls, flush: true, body });
 }
 function buildersView(g, kids, tab) {
   const gidEnc = encodeId(g.id), admin = isAdmin(), active = activeTasks(kids);

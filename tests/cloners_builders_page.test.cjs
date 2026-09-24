@@ -73,6 +73,12 @@ function setup({roundOpen=false}={}) {
     '/overview':{images:2,machines:6,storage:null,pulls:[],room:null,session:null},
     '/journal':[],
     '/room/wake':{sent:3,failed:0,reasons:[]},
+    '/room/poweroff':{requested:3,ttl_s:120},
+    // ‏#980 §3: סבבי חדר שהסתיימו — מהחדש לישן, כמו שהשרת מחזיר.
+    '/room/history':[
+      {id:'rr_15',state:'failed',image_id:'img_1',image_name:'office365',source_kind:'library',target_drives:4,written_drives:1,opened_by:'nadav',created_at:'2026-09-15T08:00:00Z',closed_at:'2026-09-15T08:20:00Z',failed_reason:'send_failed'},
+      {id:'rr_12',state:'closed',image_id:'img_9',image_name:'win11-base',source_kind:'library',target_drives:6,written_drives:6,opened_by:'nadav',created_at:'2026-09-12T08:00:00Z',closed_at:'2026-09-12T09:30:00Z',failed_reason:null},
+      {id:'rr_10',state:'closed',image_id:'img_gone',image_name:'img_gone',source_kind:'library',target_drives:6,written_drives:2,opened_by:'yossi',created_at:'2026-09-10T08:00:00Z',closed_at:'2026-09-10T08:40:00Z',failed_reason:null}],
   };
   const ctx=vm.createContext({console,URLSearchParams,URL,Date,Set,Map,Number,Math,JSON,Promise,String,Array,encodeURIComponent,decodeURIComponent,
     document:{hidden:false,querySelector:node,querySelectorAll:()=>[],getElementById:id=>node('#'+id),
@@ -88,7 +94,7 @@ function setup({roundOpen=false}={}) {
   for(const f of ['progress.js','console.js','net.js']) vm.runInContext(fs.readFileSync(path.join(root,f),'utf8'),ctx);
   const run=s=>vm.runInContext(s,ctx);
   run('ME={username:"admin",role:"admin",server_name:"srv",version:"v0.32.1",capabilities:{}}; current="machines"; sheet = o => { globalThis.formOptions=o; }; confirmSheet=(t,s,l,fn)=>{ globalThis.confirmFn=fn; }; selectPageById=(id)=>{ globalThis.selected=id; current=id; }; toast=(m)=>{ globalThis.toasted=m; }; renderCurrent=()=>{ globalThis.rendered=(globalThis.rendered||0)+1; };');
-  for(const [name,key] of [['OVERVIEW','/overview'],['MACHINES','/machines'],['GROUPS','/groups'],['DISK_FAILURES','/disk-failures'],['SHRINK_RECORDS','/shrink-records'],['NET','/net'],['MONITOR_ROWS','/monitor/machines'],['ROOM','/room'],['CAPTURE_TASKS','/tasks']]) run(name+'='+JSON.stringify(fixtures[key]));
+  for(const [name,key] of [['OVERVIEW','/overview'],['MACHINES','/machines'],['GROUPS','/groups'],['DISK_FAILURES','/disk-failures'],['SHRINK_RECORDS','/shrink-records'],['NET','/net'],['MONITOR_ROWS','/monitor/machines'],['ROOM','/room'],['ROOM_HISTORY','/room/history'],['CAPTURE_TASKS','/tasks']]) run(name+'='+JSON.stringify(fixtures[key]));
   run('CAPTURE_TASKS_READ=true; ROOM_KEY=JSON.stringify(ROOM);');
   return {run,node,requests,fixtures,ctx,opened};
 }
@@ -114,7 +120,8 @@ test('cloners object from the tree: header counters, round pill, actions, three 
   assert.doesNotMatch(html,/class="pill[^>]*>סבב/,'no round → no round pill');
   assert.match(html,/openRoomRound\(\)">פתח סבב במשכפלים…</); assert.match(html,/wakeRoom\(\)">הער את כולם \(WoL\)</);
   assert.match(html,/openAddMachine\(\{group:'grp_CLONERS'\}\)">\+ מחשב שיכפול</);
-  assert.match(html,/title="דורש API">כיבוי כולם — בקרוב</,'shutdown has no endpoint → text, not a disabled button');
+  assert.match(html,/<button class="btn danger" onclick="poweroffRoom\('grp_CLONERS'\)">כיבוי כולם \(הקלדת שם\)</,'#980 §1: shutdown through the agent, behind the typed group name');
+  assert.doesNotMatch(html,/בקרוב/);
   assert.doesNotMatch(html,/disabled/);
   for(const t of ['סיכום','מגירות','סבבים']) assert.match(html,new RegExp('role="tab"[^>]*>'+t+'<'));
   assert.match(html,/<div class="kpi ok"><div class="l">מחוברים<\/div><div class="v"><bdi dir="auto">2<\/bdi> <small>\/ 3<\/small><\/div><div class="s">מחשב 3 — לא מחובר/);
@@ -148,7 +155,8 @@ test('grid without a round: slots from /machines[].disks[] by drawer_count — d
   assert.match(red,/דיסקים אדומים — נכשלו בכתיבה/); assert.match(red,/<td><span class="mono">S5Y2NX0R12345<\/span><\/td><td>מחשב 2 · דיסק 3 · SATA 2<\/td><td>2026-09-15 14:22:00<\/td><td><span class="st err">כבל\/חריץ SATA 2<\/span><\/td><td>ATA bus error: SError: CommWake<\/td><td><details><summary>3 שורות קרנל/);
   assert.match(red,/clearDiskFailure\(7\)">נקה</);
   const rounds=between(html,'<div class="c4 card">');
-  assert.match(rounds,/סבבים בחדר/); assert.match(rounds,/היסטוריית סבבים בחדר — <b[^>]*>דורש API<\/b>/); assert.doesNotMatch(rounds,/class="ev"/);
+  assert.match(rounds,/סבבים בחדר/); assert.doesNotMatch(rounds,/דורש API/,'#980 §3: history comes from /room/history');
+  assert.equal((rounds.match(/class="ev"/g)||[]).length,3,'no active round → the three finished rounds only');
 });
 
 test('grid during a round: slots from /room.machines[].drawer_list — write bar per drawer, CRC warning, failed drawer red, machine "in round"; pill and KPIs from /room.round', () => {
@@ -179,7 +187,8 @@ test('cloners tabs: "drawers" is the grid alone and larger (4:3 screen next to t
   run("openClass('grp_CLONERS')");
   let html=run('machines(1)'); balanced(html);
   assert.match(html,/<div class="mgrid big">/); assert.doesNotMatch(html,/class="kpi/); assert.doesNotMatch(html,/<table class="dg"/); assert.equal((html.match(/class="c12 card"/g)||[]).length,1);
-  html=run('machines(2)'); assert.match(html,/class="c12 card"><div class="card-h"><span>סבבים בחדר/); assert.match(html,/office365 · גל 2/); assert.match(html,/דורש API/); assert.doesNotMatch(html,/mgrid/);
+  html=run('machines(2)'); assert.match(html,/class="c12 card"><div class="card-h"><span>סבבים בחדר/); assert.match(html,/office365 · גל 2/); assert.doesNotMatch(html,/דורש API/); assert.doesNotMatch(html,/mgrid/);
+  assert.equal((html.match(/class="ev"/g)||[]).length,4,'the active round + three finished rounds');
   run('ROOM=null'); html=run('machines(0)');
   assert.match(html,/pill ">החדר לא נקרא</); assert.match(html,/<div class="kpi "><div class="l">סבב פעיל<\/div><div class="v"><bdi dir="auto">לא נקרא/);
   assert.match(html,/החדר לא נקרא — הדיסקים לפי הדיווח האחרון ב-hello/); assert.match(html,/החדר לא נקרא — הסבב הפעיל לא ידוע/);
@@ -289,7 +298,7 @@ test('builders: recent captures table (group tasks only, 20 from /tasks) — sta
   run("openClass('grp_BUILD')"); let html=run('machines(1)'); balanced(html);
   assert.doesNotMatch(html,/cap-now|mcard/); assert.equal((html.match(/<table class="dg"/g)||[]).length,1);
   for(const col of ["אימג&#39;",'מחשב · דיסק','מצב','נקראו','משך','אזהרה / שגיאה','מתי']) assert.match(html,new RegExp('<th>'+col+'</th>'));
-  assert.match(html,/תיקייה — דורש API \(#968\)/,'/tasks has no folder → said, not invented');
+  assert.match(html,/<th>תיקייה<\/th>/,'#968: /tasks carries the folder'); assert.doesNotMatch(html,/דורש API/);
   const ids=[...html.matchAll(/<tr data-task="([^"]+)"/g)].map(m=>m[1]);
   assert.deepEqual(ids,['tsk_a1','tsk_b2','tsk_c3','tsk_d4'],'the classroom capture is not a builders capture');
   const r=(id)=>between(html,`data-task="${id}"`,'</tr>');
@@ -306,6 +315,7 @@ test('data: loadMachines reads /room and /tasks; the 2s poll re-reads /room only
   await run('loadMachines()');
   assert.ok(requests.some(r=>r.url==='/api/console/room')); assert.ok(requests.some(r=>r.url==='/api/console/tasks'));
   assert.equal(run('ROOM.machines.length'),3); assert.equal(run('CAPTURE_TASKS_READ'),true);
+  assert.ok(requests.some(r=>r.url==='/api/console/room/history')); assert.equal(run('ROOM_HISTORY.length'),3,'#980 §3: history read with the machines');
   run("MACHINES_CLASS='grp_BUILD'; current='machines'; rendered=0"); requests.length=0;
   await run('refreshGroupLive()'); assert.equal(requests.length,0,'build object: no /room poll');
   run("MACHINES_CLASS='grp_CLONERS'");
@@ -313,6 +323,7 @@ test('data: loadMachines reads /room and /tasks; the 2s poll re-reads /room only
   fixtures['/room']={...fixtures['/room'],round:{id:'r2',image_id:'i',image_name:'x',target_drives:1,written_drives:0,remaining_drives:1,wave_number:1,wave_state:'open',ready_drives:0,opened_by:'n',source:null}};
   await run('refreshGroupLive()'); assert.equal(run('rendered'),1,'changed answer → re-render'); assert.equal(run('ROOM.round.id'),'r2');
   run("current='images'"); await run('refreshGroupLive()'); assert.equal(requests.filter(r=>r.url==='/api/console/room').length,2,'not on the machines page → no poll');
+  assert.ok(!requests.some(r=>r.url==='/api/console/room/history'),'history is read on load, never in the 2s poll');
   run("current='machines'; MACHINES_CLASS='grp_BUILD'; rendered=0; MCH.tasksKey=''");
   await run('loadCaptures()'); assert.equal(run('rendered'),1,'new task list → build object re-rendered');
   await run('loadCaptures()'); assert.equal(run('rendered'),1,'same task list → not again');
@@ -323,4 +334,41 @@ test('the machines table links every group row to its object, fixed groups inclu
   run('MACHINES_CLASS=null'); const html=run('machines(0)');
   assert.match(html,/<tr class="group" data-group="grp_CLONERS">[^]*?openClass\('grp_CLONERS'\)">מחשבי שיכפול<\/a>/);
   assert.match(html,/<tr class="group" data-group="grp_BUILD">[^]*?openClass\('grp_BUILD'\)">פתח</);
+});
+
+test('#980 §3: room history from /room/history — newest first, failed red with the reason, all-written green, short of the target grey; unread ≠ none', () => {
+  const {run}=setup();
+  run("openClass('grp_CLONERS')"); let html=run('machines(2)'); balanced(html);
+  const ev=[...html.matchAll(/<div class="ev">([^]*?)<span class="who">([^<]*)<\/span><\/div>/g)].map(m=>m[0]);
+  assert.equal(ev.length,3);
+  assert.match(ev[0],/<span class="t">15\/09\/2026<\/span><span class="d err"><\/span><span>office365 · 1\/4 נכתבו · נכשל: send_failed/);
+  assert.match(ev[1],/<span class="d ok"><\/span><span>win11-base · 6\/6 נכתבו · נסגר/,'every declared drive written → green');
+  assert.match(ev[2],/<span class="d "><\/span><span>img_gone · 2\/6 נכתבו · נסגר/,'closed short of the target is not green');
+  assert.match(ev[2],/<span class="who">yossi<\/span>/);
+  run('ROOM_HISTORY=[]'); html=run('machines(2)'); assert.match(html,/אין סבבים קודמים בחדר/); assert.doesNotMatch(html,/class="ev"/);
+  run('ROOM_HISTORY=null'); html=run('machines(2)'); assert.match(html,/note warn[^]*היסטוריית הסבבים לא נקראה/,'unread is said, not shown as empty');
+});
+
+test('#980 §1: "power off all" is a danger sheet behind the typed group name, posts confirm_name, and reports requests — not machines powered off', async () => {
+  const {run,requests}=setup();
+  run("poweroffRoom('grp_CLONERS')");
+  assert.equal(run('formOptions.danger'),true);
+  assert.equal(run('formOptions.verify.mustEqual'),'מחשבי שיכפול');
+  assert.match(run('formOptions.sub'),/hello הבא/); assert.match(run('formOptions.sub'),/WoL/);
+  await run('formOptions.onSubmit({})');
+  const req=requests.find(r=>r.url==='/api/console/room/poweroff');
+  assert.ok(req,'POST /room/poweroff was sent'); assert.equal(req.options.method,'POST');
+  assert.deepEqual(JSON.parse(req.options.body),{confirm_name:'מחשבי שיכפול'});
+  assert.match(run('toasted'),/בקשת כיבוי נשלחה ל-3 מחשבים/);
+  run('ME.role="deploy"; formOptions=null'); run("poweroffRoom('grp_CLONERS')"); assert.equal(run('formOptions'),null,'not an admin → no sheet');
+});
+
+test('#968: the recent captures table shows the folder from /tasks — "" is the library root, a missing field is a dash', () => {
+  const {run}=setup();
+  run("CAPTURE_TASKS[0].folder='Office'; CAPTURE_TASKS[1].folder=''; delete CAPTURE_TASKS[2].folder;");
+  run("openClass('grp_BUILD')"); const html=run('machines(1)'); balanced(html);
+  const r=(id)=>between(html,`data-task="${id}"`,'</tr>');
+  assert.match(r('tsk_a1'),/<\/td><td>Office<\/td><td>בנייה 1/);
+  assert.match(r('tsk_b2'),/<\/td><td><span class="muted">שורש הספרייה<\/span><\/td>/);
+  assert.match(r('tsk_c3'),/<\/td><td><span class="muted">—<\/span><\/td><td>בנייה 1/);
 });

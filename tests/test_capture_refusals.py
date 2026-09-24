@@ -212,7 +212,7 @@ def capture_run(tmp_path, *, present=True, image=GPT_DISK, stubs=None,
         # ‏#929: shrinkplan.sh (המדידה והשאלה) לפניו, shrinkoffer.sh (ההצעה באתחול) אחריו.
         f". {posix(AGENT)}/lib/shrinkplan.sh; . {posix(AGENT)}/lib/shrink.sh; "
         f". {posix(AGENT)}/lib/shrinkmem.sh; . {posix(AGENT)}/lib/shrinkoffer.sh; "
-        f". {posix(AGENT)}/lib/capture.sh; "
+        f". {posix(AGENT)}/lib/capture.sh; . {posix(AGENT)}/lib/capturesink.sh; "   # #1217
         f'node_is_block() {{ grep -qxF "$1" {posix(nodes)!r} 2>/dev/null; }}; '
         # ‏shell_pre רץ **אחרי** שרשרת הטעינה, ולכן הוא יכול להחליף
         # פונקציה שנטענה — זה מה שמאפשר לבדוק מה קורה כשהיא מתנהגת רע.

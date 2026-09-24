@@ -124,6 +124,15 @@ CREATE TABLE IF NOT EXISTS room_rounds (
     failed_reason   TEXT
 );
 
+-- ‏#980: בקשת כוח מהקונסולה שממתינה ל-hello של המכונה (‏`room_console.py`).
+-- שורה אחת למכונה; נמחקת כשנמסרה או כשפגה. אין שורה = אין בקשה.
+CREATE TABLE IF NOT EXISTS power_requests (
+    mac          TEXT PRIMARY KEY,
+    action       TEXT NOT NULL CHECK (action IN ('poweroff')),
+    requested_at TEXT NOT NULL,
+    requested_by TEXT NOT NULL
+);
+
 -- ‏#972: תוצאת האימות החוזר (scrub) האחרונה לכל אימג'. אין לה ייצוג
 -- טבעי כקובץ (עיקרון 3) — המניפסט אומר מה *צריך* להיות, לא מתי נבדק.
 -- אין שורה = לא אומת מאז שנכנס לספרייה.

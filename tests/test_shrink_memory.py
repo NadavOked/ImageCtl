@@ -654,7 +654,7 @@ def test_the_agent_loads_shrinkmem_after_shrink_and_offers_before_the_gui():
     src = (AGENT / "imagectl-agent").read_text(encoding="utf-8")
     assert src.index('"$LIB_DIR/shrinkplan.sh"') < src.index('"$LIB_DIR/shrink.sh"') < src.index('"$LIB_DIR/shrinkmem.sh"') \
         < src.index('"$LIB_DIR/shrinkoffer.sh"') < src.index('"$LIB_DIR/capture.sh"')
-    body = src[src.index("build_console_screen()"):src.index("do_task()")]
+    body = src[src.index("build_console_screen()"):src.index("do_restore_drawers()")]   # #1217: do_task -> task.sh
     assert body.index("shrink_offer_pending") < body.index("gui_parent")
 
 

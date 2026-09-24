@@ -20,7 +20,7 @@ import logging
 import re
 import subprocess
 from pathlib import Path
-from typing import Callable
+from typing import Callable, NamedTuple
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 
@@ -94,7 +94,7 @@ def _run(cmd: list[str], timeout: int, cwd: str | Path | None = None) -> tuple[b
     except FileNotFoundError:
         # ‏#1185: "[Errno 2] No such file or directory: 'git'" הוא הניחוש של
         # המכונה על עצמה — למנהל זה אומר כלום. הכלי חסר, בשמו.
-        return False, "", f"{cmd[0]} אינו מותקן בשרת הזה — הותקן מ-ISO ישן (#1185)? התקנה מחדש מ-ISO עדכני"
+        return False, "", f"{cmd[0]} {_NOT_INSTALLED} — הותקן מ-ISO ישן (#1185)? התקנה מחדש מ-ISO עדכני"
     except (OSError, subprocess.SubprocessError) as exc:
         return False, "", str(exc)
     if done.returncode != 0:
@@ -102,9 +102,47 @@ def _run(cmd: list[str], timeout: int, cwd: str | Path | None = None) -> tuple[b
     return True, done.stdout, ""
 
 
-def _describe(repo_dir: str | Path) -> str | None:
-    ok, out, _err = _run(["git", "-C", str(repo_dir), "describe", "--tags"], timeout=10)
-    return out.strip() if ok and out.strip() else None
+_NOT_INSTALLED = "אינו מותקן בשרת הזה"
+
+#: ‏#1159: הקטגוריות של ``version_error`` ב-``/health/live``. ה-endpoint הזה
+#: אינו דורש הזדהות, ולכן הוא מקבל **רק** את אחת המחרוזות הקבועות האלה —
+#: בלי נתיבים ובלי stderr. הסיבה המלאה הולכת ליומן ול-``GET /update``.
+VERSION_ERRORS = ("git-missing", "not-a-git-tree", "dubious-ownership",
+                  "no-tag", "git-failed", "not-wired")
+
+
+class VersionError(RuntimeError):
+    """כישלון קריאת הגרסה: ``category`` מתוך ``VERSION_ERRORS``, והסיבה
+    המלאה (עם נתיב ו-stderr) ב-``str(exc)``."""
+
+    def __init__(self, category: str, detail: str):
+        super().__init__(detail)
+        self.category = category
+
+
+def _describe_error(err: str) -> str:
+    if _NOT_INSTALLED in err:
+        return "git-missing"
+    low = err.lower()
+    if "not a git repository" in low:
+        return "not-a-git-tree"
+    if "dubious ownership" in low:
+        return "dubious-ownership"
+    if "no names found" in low or "no tags can describe" in low or "cannot describe" in low:
+        return "no-tag"
+    return "git-failed"
+
+
+def _describe(repo_dir: str | Path) -> str:
+    """‏#1159: כישלון זורק ``VersionError`` — קטגוריה + הסיבה של git.
+    ‏``current_version`` מקפל אותו ל-``None`` כמו קודם."""
+    ok, out, err = _run(["git", "-C", str(repo_dir), "describe", "--tags"], timeout=10)
+    if not ok:
+        raise VersionError(_describe_error(err),
+                           f"git describe --tags על {repo_dir} נכשל: {err or 'בלי פלט שגיאה'}")
+    if not out.strip():
+        raise VersionError("no-tag", f"git describe --tags על {repo_dir} לא החזיר תג")
+    return out.strip()
 
 
 def _ls_remote_tags(url: str) -> tuple[bool, str, str]:
@@ -149,6 +187,34 @@ def current_version(hooks: Hooks, repo_dir: str | Path) -> str | None:
         return hooks["describe"](repo_dir)
     except Exception:                                  # noqa: BLE001
         return None
+
+
+class VersionRead(NamedTuple):
+    """‏``version`` שנקרא ו-``error``/``detail`` שניהם ``None``; או ``version``
+    ‏``None`` עם ``error`` (קטגוריה קבועה, ל-endpoint ללא הזדהות) ו-``detail``
+    (הסיבה המלאה, ליומן ולמנהל)."""
+    version: str | None
+    error: str | None
+    detail: str | None
+
+
+def read_version(hooks: Hooks, repo_dir: str | Path) -> VersionRead:
+    """‏#1159: לעולם לא גרסה ``None`` בלי קטגוריה, ולעולם לא ניחוש (בלי
+    נפילה לתג של ה-ISO: אחרי עדכון הוא כבר לא נכון). גרסה שלא נקראה
+    נכתבת גם ליומן, כי ``/health/live`` נשאל בדיוק ברגעים שבהם היא
+    קובעת — סוף ההתקנה וסוף השדרוג."""
+    try:
+        version = hooks["describe"](repo_dir)
+    except VersionError as exc:
+        category, detail = exc.category, str(exc)
+    except Exception as exc:                           # noqa: BLE001
+        category, detail = "git-failed", str(exc) or type(exc).__name__
+    else:
+        if version:
+            return VersionRead(version, None, None)
+        category, detail = "no-tag", f"git describe --tags על {repo_dir} לא החזיר תג"
+    log.warning("version: not read from %s (%s): %s", repo_dir, category, detail)
+    return VersionRead(None, category, detail)
 
 
 def check_update(hooks: Hooks, repo_dir: str | Path, public_url: str) -> dict:
@@ -308,8 +374,12 @@ def create_update_router(ctx, repo_dir: str | Path, server_base: str,
     @router.get("")
     def info(user=Depends(admin_only)):
         del user
+        ver = read_version(hooks, repo_dir)
         return {
-            "current": current_version(hooks, repo_dir),
+            "current": ver.version,
+            # ‏#1159: הסיבה המלאה (נתיב + stderr של git) — admin בלבד; ל-
+            # ‏`/health/live` ללא ההזדהות מגיעה רק הקטגוריה.
+            "current_error": ver.detail,
             "enabled": enabled(ctx.conn),
             "previous": get_setting(ctx.conn, PREVIOUS_KEY),
             # ‏#1000: ‏null = מעולם לא נבדק בשרת הזה; אחרת {at, current,

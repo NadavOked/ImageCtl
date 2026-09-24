@@ -94,3 +94,40 @@ def test_the_clock_beats_only_in_poll_sleep_and_the_failure_hold_never_reaches_i
     gui = (AGENT.parent / "native-gui" / "src" / "main.c").read_text(encoding="utf-8")
     assert 'emit("touch"); emit_end();' in gui
     assert 'if (a->st.idle_poweroff_at <= 0 && now - last < 10) return;' in gui, "בזמן ספירה כל מקש נשלח, אחרת עד אחד ל-10 שניות"
+
+
+# --- ‏#980: "כיבוי כולם" מהקונסולה נוסע ב-hello (`power_action`) ---------------
+# ‏json_get מזויף: jq אינו מותקן בתחנת הווינדוס, והמסלול הנבדק הוא ההחלטה
+# ב-idle.sh. שם השדה נעוץ משני הצדדים: כאן בטקסט של idle.sh, ובשרת
+# ב-`test_room_console.py` (‏`power_action` בתשובת ה-hello).
+_PA = ('json_get() { [ "$2" = ".power_action" ] && [ -s "$RUN_DIR/pa" ] '
+       '&& { cat "$RUN_DIR/pa"; return 0; }; echo null; }; RESP=/dev/null')
+
+
+def test_a_console_poweroff_in_the_answer_powers_off_a_busy_waiting_machine(tmp_path):
+    # השעון טרי (הייתה פעילות לפני רגע) — ובכל זאת נכבית: זו בקשה, לא המתנה.
+    out, calls = run_idle(tmp_path, _since(tmp_path, 0) + "; " + _PA
+                          + '; echo poweroff > "$RUN_DIR/pa"', "idle_check")
+    assert "the console asked to power off -- powering off" in out
+    assert calls.read_text(encoding="utf-8") == "POWEROFF -f\n"
+
+
+def test_a_console_poweroff_without_wol_stays_on_and_says_so(tmp_path):
+    out, calls = run_idle(tmp_path, _since(tmp_path, 0) + "; " + _PA
+                          + '; echo poweroff > "$RUN_DIR/pa"; arm_wol() { return 1; }',
+                          "idle_check; echo rc=$?")
+    assert "power: wol not armed -- staying powered on" in out and "rc=1" in out
+    assert not calls.exists()
+
+
+@pytest.mark.parametrize("value", ["", "null", "reboot", "POWEROFF"])
+def test_anything_but_poweroff_in_the_answer_is_ignored(tmp_path, value):
+    out, calls = run_idle(tmp_path, _since(tmp_path, 0) + "; " + _PA
+                          + f'; printf %s {value!r} > "$RUN_DIR/pa"', "idle_check; echo rc=$?")
+    assert "rc=0" in out and "powering off" not in out
+    assert not calls.exists()
+
+
+def test_the_power_check_reads_the_hello_answer_field():
+    idle = (LIB / "idle.sh").read_text(encoding="utf-8")
+    assert 'json_get "$RESP" ".power_action"' in idle

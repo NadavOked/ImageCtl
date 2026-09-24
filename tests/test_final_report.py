@@ -137,7 +137,11 @@ def url_of(httpd: HTTPServer) -> str:
 
 
 def cut_function(name: str) -> str | None:
-    source = (AGENT / "imagectl-agent").read_text(encoding="utf-8")
+    # ‏#1217: ‏`do_task` עבר ל-`lib/task.sh` (קיר 300). נחתך משם באותו גבול;
+    # שהקובץ נטען בסוכן — ‏test_every_lib_file_is_loaded_and_packed.
+    task = AGENT / "lib" / "task.sh"
+    source = (AGENT / "imagectl-agent").read_text(encoding="utf-8") \
+        + (task.read_text(encoding="utf-8") if task.exists() else "")
     marker = f"\n{name}() {{\n"
     start = source.find(marker)
     if start == -1:

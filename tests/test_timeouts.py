@@ -510,7 +510,7 @@ def test_every_ceiling_is_defined_in_one_place():
         # ‏curl: בלי תקרת משך (מחיצה גדולה לוקחת דקות) אבל עם תקרת
         # חוסר-התקדמות — חיבור שנפל יוצא במקום להיתלות.
         ("lib/common.sh", ["--speed-limit", "--speed-time"]),
-        ("lib/capture.sh", ["--speed-limit", "--speed-time"]),
+        ("lib/capturesink.sh", ["--speed-limit", "--speed-time"]),   # #1217: capture_sink
         # ‏udp-receiver ממתין לשדר לנצח כברירת מחדל. אלה התקרות שלו עצמו.
         ("lib/restore.sh", ["--start-timeout", "--receive-timeout"]),
     ],

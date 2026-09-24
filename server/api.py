@@ -20,7 +20,7 @@ from . import (agent_loops, disk_events, foreign_vlan, identity, inventory,
                login_guard, probe, pulls, registry, reports, shrink_records, ssh_hostkey,
                users)
 from .db import journal
-from . import direct
+from . import direct, room_console
 from .hello import (build_answer, hello_payload_oversized, login_required, off_deploy_vlan,
                     well_formed_monitor_auth, well_formed_monitor_secret)
 from .images import ImageLibrary, restore_refusal
@@ -217,6 +217,13 @@ def create_agent_router(ctx: ServerContext,
             # ‏#715: פרמטרי השידור למקור שהוא מחשב בנייה — של המנוע, אם יש.
             multicast=ctx.sender.multicast_params() if ctx.sender is not None else None,
         )
+        # ‏#980: בקשת כיבוי מהקונסולה נוסעת באותו hello, באותו קצב — בלי
+        # polling חדש. רק ב-hello האמיתי (לא בתפריט האתחול), ורק למכונה
+        # רשומה; השדה חסר כשאין בקשה, וסוכן ישן מתעלם ממנו.
+        if answer["known"]:
+            power_action = room_console.take_power_action(ctx.conn, mac)
+            if power_action is not None:
+                answer["power_action"] = power_action
         if hw_ssh is not None and data_dir is not None:
             ssh_hostkey.upsert_known_host(
                 data_dir, reported_ip or "", hw_ssh)

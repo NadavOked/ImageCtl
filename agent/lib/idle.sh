@@ -42,7 +42,19 @@ idle_poweroff() {
     sync; poweroff -f
 }
 
+power_check() {
+    # #980: the console's "power off the room" rides the hello answer
+    # (power_action) at the same rate -- no new polling. Same rule as the
+    # idle power-off: only after the wake-on-LAN read-back (#587), or the room
+    # could not be woken again. The server hands it out once.
+    [ "$(json_get "$RESP" ".power_action")" = "poweroff" ] || return 0
+    if ! arm_wol; then log "power: wol not armed -- staying powered on"; return 1; fi
+    log "power: the console asked to power off -- powering off"
+    sync; poweroff -f
+}
+
 idle_check() {
+    power_check || return 1
     [ -f "$RUN_DIR/idle.since" ] || { idle_reset; return 0; }
     if idle_exempt || idle_touched || [ "${POLL_MARK_CHANGED:-0}" = 1 ]; then idle_reset; return 0; fi
     _now=$(date +%s); _since=$(cat "$RUN_DIR/idle.since" 2>/dev/null || echo "$_now")

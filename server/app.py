@@ -54,12 +54,13 @@ from .db import connect
 from .health import create_health_router
 from .health import default_hooks as health_default_hooks
 from .update import (PUBLIC_UPDATE_URL, create_update_router, current_version,
-                     default_hooks as default_update_hooks)
+                     default_hooks as default_update_hooks, read_version)
 from .hello import make_resolver, off_deploy_vlan, self_probe
 from .images import ImageLibrary
 from .kiosk import create_kiosk_router
 from . import room
 from .room import CLONERS_GROUP, create_room_router
+from .room_console import create_room_console_router
 from .wake_api import create_wake_router
 from .sessions import SessionStore
 from .users import ensure_admin
@@ -614,7 +615,7 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
         ctx, rt.server_base, health_hooks,
         dnsmasq_apply=lambda what, user_id: console_dhcp.apply_dnsmasq(
             ctx, dhcp_hooks, rt.deploy, what, user_id),
-        version=lambda: current_version(update_hooks, repo_dir)))
+        version=lambda: read_version(update_hooks, repo_dir)))   # #1159
     include(create_update_router(
         ctx, repo_dir, rt.server_base, rt.update_hooks,
         public_url=PUBLIC_UPDATE_URL))
@@ -625,6 +626,8 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
     include(create_room_router(ctx, wake=_kiosk_room_wake(rt)))
     # ‏#984: מכונה בודדת / grp_BUILD — אותו שולח מוזרק כמו בחדר.
     include(create_wake_router(ctx, rt.wol_send))
+    # ‏#980: כיבוי החדר + היסטוריית סבבים — קונסולה בלבד, לא בקיוסק.
+    include(create_room_console_router(ctx))
     app.mount("/console", StaticFiles(directory=STATIC_DIR, html=True), name="console")
     # ‏#151: השומר לפי כתובת מקור, כשמוגדר — נרשם **לפני** ConsoleNoStaleCache
     # (‏add_middleware ראשון = השכבה החיצונית ביותר, נבדקת ראשונה, כדי

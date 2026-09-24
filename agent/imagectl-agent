@@ -19,12 +19,12 @@ LIB_DIR="${LIB_DIR:-/usr/lib/imagectl}"
 . "$LIB_DIR/decide.sh"
 . "$LIB_DIR/progress.sh"
 . "$LIB_DIR/pull.sh"   # אחרי progress.sh: pull_close קורא ל-report_final (#562)
-. "$LIB_DIR/restore.sh"
+. "$LIB_DIR/restore.sh"; . "$LIB_DIR/diskfit.sh"   # #1217: check 2.7, split from restore.sh
 . "$LIB_DIR/expand.sh"; . "$LIB_DIR/grow.sh"   # ההרחבה: לפני הזרם ואחריו (#478)
 . "$LIB_DIR/drawers.sh"; . "$LIB_DIR/verdict.sh"; . "$LIB_DIR/failmark.sh"   # הזרם, הפסק עליו (#520), והראיה על כשל (#874)
 . "$LIB_DIR/manifest.sh"
 . "$LIB_DIR/bootca.sh"; . "$LIB_DIR/hibernation.sh"; . "$LIB_DIR/shrinkplan.sh"; . "$LIB_DIR/shrink.sh"; . "$LIB_DIR/shrinkmem.sh"; . "$LIB_DIR/shrinkoffer.sh"   # לפני capture.sh: capture_disk קורא להם (#85, #651, #87, #926, #929)
-. "$LIB_DIR/capture.sh"; . "$LIB_DIR/directsend.sh"   # #715: pass 1 is capture_disk with the sink discarded
+. "$LIB_DIR/capture.sh"; . "$LIB_DIR/capturesink.sh"; . "$LIB_DIR/directsend.sh"   # #715: pass 1 is capture_disk with the sink discarded; #1217: the sink split from capture.sh
 . "$LIB_DIR/classround.sh"
 . "$LIB_DIR/hostname.sh"; . "$LIB_DIR/bootentry.sh"; . "$LIB_DIR/postdeploy.sh"   # #720: driver staging, after the name; #433: Boot#### before it
 . "$LIB_DIR/sshd.sh"
@@ -36,7 +36,7 @@ LIB_DIR="${LIB_DIR:-/usr/lib/imagectl}"
 . "$LIB_DIR/buildmenuitems.sh"; . "$LIB_DIR/buildmenu.sh"; . "$LIB_DIR/selfrestore.sh"   # #1073: הפריטים והשערים; פריט (ג) — אימג' מהשרת הזה על הדיסק הזה
 . "$LIB_DIR/buildcapture.sh"
 . "$LIB_DIR/roomdraw.sh"; . "$LIB_DIR/roomflow.sh"; . "$LIB_DIR/directflow.sh"   # #418 draw/flow; #715 direct
-. "$LIB_DIR/hold.sh"
+. "$LIB_DIR/hold.sh"; . "$LIB_DIR/task.sh"   # #1217: do_task, split from this file
 . "$LIB_DIR/poll.sh"; . "$LIB_DIR/idle.sh"   # #434: idle power-off, beats inside poll_sleep
 . "$LIB_DIR/guiparent.sh"
 . "$LIB_DIR/clonergui.sh"
@@ -98,58 +98,6 @@ build_console_screen() {
     [ "$_build_standby" = "1" ] && return 0
     build_menu_flow
 }
-do_task() {
-    _type=$(json_get "$RESP" ".task.type")
-    _tid=$(json_get "$RESP" ".task.id")
-    # ‏#530: האסימון מגיע בתשובת ה-hello, ורק למכונה שה-MAC שלה תואם,
-    # וכל כתיבה על המשימה דורשת אותו בחזרה. **בלי `export`**: שני
-    # אתרי השימוש ב-`capture.sh` הם הרחבת מעטפת בקובץ שנטען ב-`.`,
-    # ותת-מעטפת יורשת משתנה גם בלי ייצוא. אין שם `sh -c`.
-    TASK_TOKEN=$(json_get "$RESP" ".task.token")
-    case "$_type" in
-        capture) ;;
-        direct_send) direct_send_task "$_tid"; return $? ;;   # #715
-        # A task type this build does not know is not a reason to guess.
-        *) log "unknown task type '$_type' -- ignoring it"; sleep 5; return 0 ;;
-    esac
-
-    _disk=$(json_get "$RESP" ".task.disk")
-    ui_clear; ui_header
-    echo "  Capturing $(json_get "$RESP" ".task.name")"
-    echo "  Source disk: /dev/$_disk"
-    echo
-    echo "  Reading used blocks only. Do not power off."
-
-    progress_loop "" "$MAC" "$SERVER" "$_tid" &
-    _ppid=$!
-
-    # Both roads out of here end at report_final (#127). `sleep 4; kill` was
-    # the same gamble #101 took out of the round and the drawers, and on this
-    # path it is the worst of the three: the next step is `poweroff -f` with
-    # the drive about to be pulled out, so a capture the server never heard
-    # about stays open for ever against a machine that is off.
-    if capture_disk "$_tid" "$_disk"; then
-        if upload_manifest "$_tid" "$RUN_DIR/new-manifest.json"; then
-            echo "done" > "$RUN_DIR/state"
-            report_final "$_ppid" "" "$MAC" "$SERVER" "$_tid" \
-                || { hold_unheard "" "$_tid"; return 1; }
-            ui_clear; ui_header
-            echo "  Capture complete. The image is in the library."
-            echo "  You can power off and remove the drive."
-            [ "${IMAGECTL_TEST:-0}" = "1" ] && exit 0
-            sleep 20
-            finish_and_stop
-        fi
-        log "manifest upload failed"
-    fi
-    echo "failed" > "$RUN_DIR/state"
-    report_final "$_ppid" "" "$MAC" "$SERVER" "$_tid" \
-        || { hold_unheard "" "$_tid" \
-             "capture did not complete, and the server was not told"; return 1; }
-    ui_error_hold "capture did not complete" hold_beat
-    return 1
-}
-
 do_restore_drawers() {
     # $1 = image id, $2 = session id. Cloning room: 2-3 drawers at once.
     resolve_target_drawers          # #695: sets $_disks; die_local on a bad mapping

@@ -12,6 +12,7 @@
 # ב-manifest.sh; שני הקבצים נטענים יחד. כאן נשאר מה שמזרים את הבייטים עצמם.
 # שערי הקריאה-בלבד (מהובר #651, BitLocker #671) יושבים ב-hibernation.sh;
 # כיווץ מחיצת המקור לפני הזרם והחזרתה אחריו (#87) — ב-shrink.sh.
+# לאן התוצאה הולכת — ההעלאה, המניפסט וסיבת הכשל — ב-capturesink.sh (#1217).
 
 # ‏#72, נמדד ולא נאמד (‏4GiB מראש `p3` של tiny11, שרת המעבדה): רמה 9 עולה
 # פי 3.1 בזמן ומחזירה 1.1% — ‏~80MB על 7.3GB, ‏4 שניות בשידור שאורך 5:54.
@@ -25,34 +26,6 @@ CAPTURE_THREADS="${CAPTURE_THREADS:-2}"
 # ‏`family` היא תווית בת שתי מחלקות ולא מידה, ושני כוננים באותה משפחה
 # נבדלים בעשרות ג'יגה. מי שיודע את המספר הוא מי שמדד כונן יעד אמיתי.
 CAPTURE_TARGET_BYTES="${CAPTURE_TARGET_BYTES:-}"
-
-_capture_failed() {
-    # $1 = disk, $2 = הסיבה. היומן לבדו נעלם (‏tmpfs, ו-ui_clear מוחק את המסך),
-    # ולכן הסיבה נכתבת גם לשדה `error` של היעד — אותו מסלול ככשל מחיצה (#106).
-    log "capture failed on $1: $2"
-    # ‏#87: המקור חוזר לגודלו קודם. החזרה שנכשלה מצטרפת לסיבה — היומן
-    # לבדו נעלם, והמפעיל חייב לדעת אם דיסק הבנייה נשאר מכווץ.
-    _cf_why="$2"
-    shrink_restore_source "$1" || _cf_why="$2 | $(cat "$RUN_DIR/targets/$1/error")"
-    target_set "$1" "failed" "$_cf_why"
-    echo "failed" > "$RUN_DIR/state"
-}
-
-capture_sink() {
-    # $1 = fifo, $2 = task id, $3 = file. Consumes one compressed partition.
-    # ‏CAPTURE_SINK=discard (#715): הדיסק נקרא ומגובב בדיוק כמו בקליטה —
-    # אותם שערים, אותו מניפסט — אבל אף בייט לא יוצא מהמכונה; מחשב הבנייה
-    # משדר אותם בעצמו בקריאה השנייה (directsend.sh).
-    [ "${CAPTURE_SINK:-upload}" = discard ] && { cat "$1" > /dev/null; return; }
-    # ‏-T ולא --data-binary: ‏--data-binary קורא את כל ה-FIFO לזיכרון כדי
-    # לחשב Content-Length — מחיצה גדולה מה-RAM נהרגת ב-OOM (‏#15). ‏-T
-    # מזרים ב-chunked. ‏--max-time 0 = בלי תקרת משך (100GB לוקחים זמן),
-    # אבל עם תקרת חוסר-התקדמות: חיבור שנפל באמצע יוצא, לא נתלה.
-    curl -sfS --max-time 0 --speed-limit 1 --speed-time "$HTTP_STALL_TIMEOUT" \
-        -H "Content-Type: application/octet-stream" \
-        -H "X-Imagectl-Task-Token: ${TASK_TOKEN:-}" \
-        -T "$1" "$SERVER/api/v1/capture/$2/files/$3"
-}
 
 capture_disk() {
     # $1 = task id, $2 = disk name. Emits the manifest path on success.
@@ -290,11 +263,4 @@ capture_disk() {
     printf '{"schema":1,"family":%s,"os":"%s",%s,"source_disk_bytes":%s,"min_target_bytes":%s,"target_floor_bytes":%s,"scheme":"gpt","sector_size":%s,"disk_guid":"%s","partitions":[%s],"total_compressed_bytes":%s,"compression":"zstd-%s"}\n' \
         "$_family" "$_os" "$_bootca" "$_disk_bytes" "$_min_target" "$_floor_json" "$_sector_size" "$_disk_guid" "$_json_parts" "$_total" "$CAPTURE_LEVEL" \
         > "$RUN_DIR/new-manifest.json"
-}
-upload_manifest() {
-    # $1 = task id, $2 = manifest path.
-    curl -sfS -X PUT -H "Content-Type: application/json" \
-        -H "X-Imagectl-Task-Token: ${TASK_TOKEN:-}" \
-        --data-binary "@$2" \
-        "$SERVER/api/v1/capture/$1/manifest" >> "$LOG_FILE" 2>&1
 }

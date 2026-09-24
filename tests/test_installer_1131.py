@@ -377,7 +377,8 @@ def test_health_live_is_unauthenticated_and_reports_the_version(tmp_path, images
                      update_hooks={"describe": lambda repo_dir: "v0.49.0"}, repo_dir="/repo")
     client = TestClient(app)
     r = client.get("/api/console/health/live")
-    assert r.status_code == 200 and r.json() == {"ok": True, "version": "v0.49.0"}
+    assert r.status_code == 200 and r.json() == {"ok": True, "version": "v0.49.0",
+                                                 "version_error": None}   # #1159
     assert client.get("/api/console/health").status_code == 401           # הבריאות עצמה — admin
 
 

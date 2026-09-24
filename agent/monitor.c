@@ -596,7 +596,7 @@ static void memfb_describe(int fd, off_t size, struct fb_var_screeninfo *var,
     if (memcmp(header.magic, MEMFB_MAGIC, sizeof(header.magic)) ||
         header.format != MEMFB_FORMAT_XRGB8888 ||
         header.width == 0 || header.height == 0 ||
-        header.stride < header.width * 4 ||
+        header.stride < (uint64_t)header.width * 4 ||   /* no u32 wrap (#850) */
         (uint64_t)size < MEMFB_HEADER_BYTES +
             (uint64_t)header.stride * header.height) {
         fprintf(stderr,
@@ -612,10 +612,67 @@ static void memfb_describe(int fd, off_t size, struct fb_var_screeninfo *var,
     var->yres = header.height;
     var->bits_per_pixel = 32;
     var->red.length = var->green.length = var->blue.length = 8;
+    var->red.offset = 16;           /* XRGB8888, interfaces.md s15 */
+    var->green.offset = 8;
+    var->blue.offset = 0;
     fix->line_length = header.stride;
     fix->smem_len = (uint32_t)size;
     fprintf(stderr, "imagectl-monitor: serving a memory framebuffer, %ux%u\n",
             header.width, header.height);
+}
+
+/*
+ * #850: the pixel format is read from the framebuffer, not assumed. The
+ * copy loop moves 4-byte pixels untouched, so the format is served as-is:
+ * 32 bpp, three 8-bit channels on distinct byte boundaries, and those
+ * offsets become serverFormat's shifts in main(). LibVNCServer's own
+ * default (red at bit 0 on little-endian) is not what fbdev XRGB8888 or
+ * the memory framebuffer hold. Anything else is refused by name -- a
+ * guessed format is a picture in the wrong colours (principle 5).
+ */
+static const char *pixel_format_error(const struct fb_var_screeninfo *var) {
+    const struct fb_bitfield *channel[3] = { &var->red, &var->green,
+                                             &var->blue };
+    unsigned int used = 0;
+    int i;
+
+    if (var->bits_per_pixel != 32)
+        return "only 32 bpp is served";
+    for (i = 0; i < 3; i++) {
+        if (channel[i]->length != 8 || channel[i]->msb_right)
+            return "a colour channel is not 8 bits, msb left";
+        if (channel[i]->offset % 8 || channel[i]->offset > 24)
+            return "a colour channel is not on a byte boundary";
+        if (used & (1u << (channel[i]->offset / 8)))
+            return "two colour channels share a byte";
+        used |= 1u << (channel[i]->offset / 8);
+    }
+    return NULL;
+}
+
+/*
+ * #850: every byte the copy loop reads lies inside the mapping. It reads
+ * rows yoffset..yoffset+yres-1, bytes xoffset*4..(xoffset+xres)*4 of each,
+ * pixel_offset into the file. All arithmetic in 64 bits: xres*4 in __u32
+ * wraps. The size cap is RFB's -- ServerInit carries width and height as
+ * U16, and rfbGetScreen takes int.
+ */
+static const char *layout_error(const struct fb_var_screeninfo *var,
+                                const struct fb_fix_screeninfo *fix,
+                                uint64_t pixel_offset) {
+    uint64_t row_end = ((uint64_t)var->xoffset + var->xres) * 4;
+    uint64_t last_byte;
+
+    if (!var->xres || !var->yres || var->xres > 65535 || var->yres > 65535)
+        return "width and height must be 1..65535 (RFB U16)";
+    if (row_end > fix->line_length)
+        return "(xoffset + xres) * 4 is past the stride";
+    last_byte = pixel_offset +
+                ((uint64_t)var->yoffset + var->yres - 1) * fix->line_length +
+                row_end;
+    if (last_byte > fix->smem_len)
+        return "(yoffset + yres) rows are past the mapped length";
+    return NULL;
 }
 
 static void usage(const char *program) {
@@ -642,6 +699,7 @@ int main(int argc, char **argv) {
     size_t pixel_offset = 0;             /* MEMFB_HEADER_BYTES for a file */
     const uint32_t *frame_seq = NULL;    /* the GUI's seqlock, files only */
     char *rfb_framebuffer;
+    const char *refusal;
     int port = DEFAULT_PORT;
     int fps = DEFAULT_FPS;
     int input_enabled = 0;
@@ -701,7 +759,10 @@ int main(int argc, char **argv) {
             pixel_offset = MEMFB_HEADER_BYTES;
         } else {
             /* A plain file stands in for /dev/fb0: the geometry is given
-             * explicitly and the pixels are packed 32bpp rows, no padding. */
+             * explicitly and the pixels are packed XRGB8888 rows, no
+             * padding. Sizes in 64 bits: WxHx4 wrapped __u32 (#850). */
+            uint64_t need;
+
             memset(&var, 0, sizeof(var));
             memset(&fix, 0, sizeof(fix));
             if (!geometry ||
@@ -714,34 +775,46 @@ int main(int argc, char **argv) {
             }
             var.bits_per_pixel = 32;
             var.red.length = var.green.length = var.blue.length = 8;
-            fix.line_length = var.xres * 4;
-            fix.smem_len = var.xres * var.yres * 4;
-            if ((unsigned long long)fb_stat.st_size < fix.smem_len) {
+            var.red.offset = 16;
+            var.green.offset = 8;
+            var.blue.offset = 0;
+            need = (uint64_t)var.xres * var.yres * 4;
+            if ((uint64_t)fb_stat.st_size < need) {
                 fprintf(stderr,
                         "imagectl-monitor: FATAL: %s holds %lld bytes, "
-                        "geometry needs %u\n",
-                        fb_path, (long long)fb_stat.st_size, fix.smem_len);
+                        "geometry needs %llu\n",
+                        fb_path, (long long)fb_stat.st_size,
+                        (unsigned long long)need);
                 return EXIT_FAILURE;
             }
+            /* xres*4 wraps only past 2^30, which layout_error() refuses by
+             * the RFB cap; a length past __u32 is clamped, never wrapped
+             * into a small one, so layout_error() refuses it too. */
+            fix.line_length = var.xres * 4;
+            fix.smem_len = (uint32_t)(need > UINT32_MAX ? UINT32_MAX : need);
         }
     } else if (ioctl(fb_fd, FBIOGET_VSCREENINFO, &var) < 0 ||
                ioctl(fb_fd, FBIOGET_FSCREENINFO, &fix) < 0) {
         fatal("FBIOGET_*SCREENINFO");
     }
-    if (var.bits_per_pixel != 32 ||
-        var.red.length != 8 || var.green.length != 8 ||
-        var.blue.length != 8) {
+    refusal = pixel_format_error(&var);
+    if (refusal) {
         fprintf(stderr,
-                "imagectl-monitor: FATAL: unsupported framebuffer: "
-                "%ux%u, %u bpp, RGB lengths %u/%u/%u\n",
-                var.xres, var.yres, var.bits_per_pixel,
-                var.red.length, var.green.length, var.blue.length);
+                "imagectl-monitor: FATAL: unsupported pixel format (%s): "
+                "%u bpp, R %u@%u G %u@%u B %u@%u (length@offset)\n",
+                refusal, var.bits_per_pixel,
+                var.red.length, var.red.offset,
+                var.green.length, var.green.offset,
+                var.blue.length, var.blue.offset);
         return EXIT_FAILURE;
     }
-    if (fix.line_length < var.xres * 4) {
+    refusal = layout_error(&var, &fix, pixel_offset);
+    if (refusal) {
         fprintf(stderr,
-                "imagectl-monitor: FATAL: framebuffer stride %u < row %u\n",
-                fix.line_length, var.xres * 4);
+                "imagectl-monitor: FATAL: framebuffer layout out of bounds "
+                "(%s): %ux%u at +%u+%u, stride %u, %u bytes mapped\n",
+                refusal, var.xres, var.yres, var.xoffset, var.yoffset,
+                fix.line_length, fix.smem_len);
         return EXIT_FAILURE;
     }
 
@@ -762,6 +835,11 @@ int main(int argc, char **argv) {
         fatal("rfbGetScreen");
     screen->desktopName = "ImageCtl monitor";
     screen->frameBuffer = rfb_framebuffer;
+    /* The pixels are copied untouched, so the format the clients are told
+     * is the framebuffer's own (#850; pixel_format_error() vetted it). */
+    screen->serverFormat.redShift = (uint8_t)var.red.offset;
+    screen->serverFormat.greenShift = (uint8_t)var.green.offset;
+    screen->serverFormat.blueShift = (uint8_t)var.blue.offset;
     screen->alwaysShared = TRUE;
     /* #839: a non-NULL authPasswdData makes LibVNCServer offer security
      * type 2 *instead of* None; passwordCheck is what decides. The pointer
@@ -833,6 +911,11 @@ int main(int argc, char **argv) {
                    source + (size_t)y * fix.line_length,
                    (size_t)var.xres * 4);
 
+        /* Seqlock reader (#850): an acquire load orders what comes after
+         * it, not the copy before it; the fence keeps every pixel read
+         * ahead of the re-check, so a torn copy cannot pass for whole. */
+        if (frame_seq)
+            __atomic_thread_fence(__ATOMIC_ACQUIRE);
         if (frame_seq &&
             __atomic_load_n(frame_seq, __ATOMIC_ACQUIRE) != seq_before) {
             rfbProcessEvents(screen, 1000000 / fps);

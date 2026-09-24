@@ -250,12 +250,13 @@ def test_static_includes_are_at_9_9():
     #1039 (אובייקט הרשת: /sessions, חכירות dnsmasq, bind null) = ‏10.2;
     #1215 (אימג' במיקום לא זמין: "לא נבדק", לא "לא תואם") = ‏10.3;
     #989 (קצב הזרם ובלוקים ששודרו שוב בחדר המשכפלים) = ‏10.4;
-    #1008 (כניסה אחרונה בהרשאות, דפדוף before ו-CSV ביומן) = ‏10.5.
+    #1008 (כניסה אחרונה בהרשאות, דפדוף before ו-CSV ביומן) = ‏10.5;
+    #980 (כיבוי כל המשכפלים, היסטוריית סבבי החדר, עמודת התיקייה בקליטות) = ‏10.6.
     שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
     versions = {float(v) for v in re.findall(r'\?v=(\d+\.\d+)"', page)}
-    assert versions == {10.5}, versions
+    assert versions == {10.6}, versions
 
 
 def test_update_apply_is_a_sheet_without_text_verification_and_revert_uses_hostname():
@@ -354,12 +355,16 @@ def test_cloners_and_builders_objects_are_built_on_group_page_from_the_api_only(
     גריד חריצים "דיסק N · SATA N-1" (לעולם לא sd*), צבע SMART ירוק רק על
     `ok`, אדום מזיכרון הכשלים עם "נקה", מגירות מ-`/room` בסבב ומ-`/machines`
     בלעדיו; מחשבי בנייה — קליטה בתהליך מ-`/tasks` עם ביטול מאחורי הקלדת שם.
-    מה שאין לו API — כיבוי כולם, WoL למחשב יחיד, שלבי הקליטה, תיקייה,
-    היסטוריה — "דורש API" בטקסט, לא כפתור מנוטרל ולא נתון מומצא."""
+    מה שאין לו API — שלבי הקליטה, מצב הדיסק לפני קליטה (#980 §4, §6) —
+    "דורש API" בטקסט, לא כפתור מנוטרל ולא נתון מומצא. ‏#980: כיבוי כולם
+    (‏`POST /room/poweroff` מאחורי הקלדת שם הקבוצה) והיסטוריית הסבבים
+    (‏`GET /room/history`) — מה-API."""
     js = _console_js()
     for needed in ("function clonersView(", "function buildersView(", "function machineSlots(", "function slotClass(",
                    "function slotHtml(", "function captureNowCard(", "function capturesTableCard(", "function cancelCaptureVerified(",
-                   "function refreshGroupLive(", 'api("/room")', "drawer_list", 'UI.soon("כיבוי כולם")', "verify: { label: \"הקלד את שם האימג'\"",
+                   "function refreshGroupLive(", 'api("/room")', "drawer_list", "verify: { label: \"הקלד את שם האימג'\"",
+                   'post("/room/poweroff", { confirm_name: g.label })', 'verify: { label: "הקלד את שם הקבוצה", mustEqual: g.label }',
+                   'api("/room/history")',
                    'return "SMART לא נבדק"', "SATA ${s.n - 1}", "דורש API"):
         assert needed in js, needed
     block = js[js.index("/* ---------- #954 גל 3א"):js.index("/* ---------- לשונית \"נראו ברשת\"")]

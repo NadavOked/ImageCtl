@@ -64,6 +64,7 @@ function setup({room=roomIdle(),role='admin',session=null,prompts={}}={}) {
       {id:'img_3',name:'kali',description:'',folder:'',sort:3,family:'linux',os:'linux',created:'2026-09-10T10:00:00Z',source_disk_bytes:GB256,total_compressed_bytes:9e9,partitions:2,min_target_bytes:null}],
     '/overview':{images:3,machines:6,storage:null,pulls:[],room:room.round,session},
     '/room':room,
+    '/room/history':[{id:'rr_12',state:'closed',image_id:'img_9',image_name:'win11-base',source_kind:'library',target_drives:6,written_drives:6,opened_by:'nadav',created_at:'2026-09-12T08:00:00Z',closed_at:'2026-09-12T09:30:00Z',failed_reason:null}],
     '/room/wake':{sent:3,failed:0,reasons:[]},
     '/room/start':{ok:true},
     '/room/close':{ok:true},
@@ -294,7 +295,7 @@ test('big view: the grid alone, larger (4:3 screen next to the machines); ROOM u
 test('class tab: the existing session code as-is inside cards (row, start/stop, members with SMART/error, absent roster, next round, pulls); history tab = API note', () => {
   const session={id:'s1',image_id:'img_1',image_name:'Office 2024',group_id:'grp_LAB303',group_label:'כיתה 303',prefix:'LAB',expected_clients:2,joined:1,state:'open',starts_in_seconds:252,kind:'multicast',
     members:[{mac:'b4:2e:99:07:1a:c1',hostname:'LAB-01',state:'waiting',bytes_written:0,bytes_total:0,error:'disk error',disks:[{disk_number:1,verdict:'fail',decision:'replace'}]}],roster:['b4:2e:99:07:1a:c1','b4:2e:99:07:1a:c2'],stuck:{}};
-  const {run}=setup({session});
+  const {run,fixtures}=setup({session});
   run("SESSION_MACHINES={group:'grp_LAB303',list:[{mac:'b4:2e:99:07:1a:c1',suffix:'01'},{mac:'b4:2e:99:07:1a:c2',suffix:'02'},{mac:'b4:2e:99:07:1a:c3',suffix:'03'}]}");
   let html=run('deploy(1)'); balanced(html);
   assert.match(html,/obj-name">סבב כיתה</); assert.match(html,/v2/);
@@ -309,19 +310,24 @@ test('class tab: the existing session code as-is inside cards (row, start/stop, 
   html=run('deploy(1)'); assert.match(html,/אין סבב כיתה — הסבב הפעיל הוא גל בחדר המשכפלים/); assert.doesNotMatch(html,/stopRound|<table class="table"/,'the room wave is not a class round — no class stop button on it');
   run('OVERVIEW=null'); assert.match(run('deploy(1)'),/\/overview לא נקרא/);
   html=run('deploy(2)'); balanced(html); assert.match(html,/obj-name">היסטוריית סבבים</); assert.match(html,/דורש API/); assert.match(html,/selectPageById\('logs'\)">ביומן</); assert.doesNotMatch(html,/class="ev"|mgrid/);
-  run('ME.role="deploy"'); assert.match(run('deploy(2)'),/ביומן \(מנהל\)/);
+  run('ME.role="deploy"'); assert.match(run('deploy(2)'),/ביומן \(מנהל\)/); run('ME.role="admin"');
+  // ‏#980 §3: החדר מ-/room/history; הכיתות (v2) נשארות "דורש API".
+  assert.match(html,/היסטוריית הסבבים לא נקראה/,'unread history is said');
+  run('ROOM_HISTORY='+JSON.stringify(fixtures['/room/history'])); html=run('deploy(2)'); balanced(html);
+  assert.match(html,/<span class="d ok"><\/span><span>win11-base · 6\/6 נכתבו · נסגר/);
+  assert.match(html,/סבבים קודמים בכיתות — <b[^>]*>דורש API<\/b>/);
 });
 
 test('#1081 v1: classrooms flag off drops the class tab; history stays', () => {
   const {run}=setup();
-  run('ME.capabilities.classrooms=false');
+  run('ME.capabilities.classrooms=false; ROOM_HISTORY=[]');
   assert.deepEqual(JSON.parse(run('JSON.stringify(deployTabs())')),['חדר המשכפלים','היסטוריה']);
   const room=run('deploy(0)'); balanced(room);
   assert.match(room,/obj-name">חדר המשכפלים</);
   assert.doesNotMatch(room,/>כיתה</);
   const hist=run('deploy(1)');
   assert.match(hist,/obj-name">היסטוריית סבבים</);
-  assert.doesNotMatch(hist,/ובכיתות/);
+  assert.doesNotMatch(hist,/ובכיתות|בכיתות|דורש API/); assert.match(hist,/אין סבבים קודמים בחדר/);
 });
 
 test('data: loadDeploy reads /overview, /room, /images, /machines, /groups, /disk-failures, /net and the class roster; the 2s poll re-reads /room + /machines on the deploy page and re-renders only on change (prompt included)', async () => {
@@ -329,8 +335,8 @@ test('data: loadDeploy reads /overview, /room, /images, /machines, /groups, /dis
   const {run,requests,fixtures}=setup({session});
   run('ROOM=null; IMAGES=null; MACHINES=null; renderActivity=()=>{}; markStatusFresh=()=>{}; rendered=0');
   await run('loadDeploy()');
-  for(const u of ['/overview','/room','/images','/machines','/groups','/disk-failures','/net','/machines?group=grp_LAB303']) assert.ok(requests.some(r=>r.url==='/api/console'+u),u);
-  assert.equal(run('ROOM.machines.length'),3); assert.equal(run('IMAGES.length'),3); assert.equal(run('SESSION_MACHINES.group'),'grp_LAB303'); assert.ok(run('rendered')>=1);
+  for(const u of ['/overview','/room','/room/history','/images','/machines','/groups','/disk-failures','/net','/machines?group=grp_LAB303']) assert.ok(requests.some(r=>r.url==='/api/console'+u),u);
+  assert.equal(run('ROOM.machines.length'),3); assert.equal(run('ROOM_HISTORY.length'),1); assert.equal(run('IMAGES.length'),3); assert.equal(run('SESSION_MACHINES.group'),'grp_LAB303'); assert.ok(run('rendered')>=1);
   run("current='deploy'; rendered=0"); requests.length=0;
   await run('refreshGroupLive()');
   assert.equal(requests.filter(r=>r.url==='/api/console/room').length,1); assert.equal(requests.filter(r=>r.url==='/api/console/machines').length,1); assert.equal(run('rendered'),0,'same answer → no re-render');

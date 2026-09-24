@@ -137,35 +137,58 @@ def _answer_challenge(sock: socket.socket, response: bytes | None = None,
     return struct.unpack(">I", _recv_exact(sock, 4))[0]
 
 
-def _handshake(sock: socket.socket) -> tuple[int, int]:
+#: ‏PIXEL_FORMAT של RFB: ‏bpp, depth, big-endian, true-colour, שלושה max,
+#: שלושה shift, ‏3 ריפוד.
+PIXEL_FORMAT = ">BBBBHHHBBB3x"
+
+
+def _server_init(sock: socket.socket) -> tuple[int, int, tuple[int, ...]]:
     """‏RFB 3.8, סוג 2 עם HMAC-SHA256(סוד, challenge), ‏ClientInit משותף.
-    מחזיר את גודל המסך. ‏None אסור שיוצע בכלל — זה השער של #839."""
+    מחזיר את גודל המסך ואת פורמט הפיקסלים שהשרת הצהיר עליו. ‏None אסור
+    שיוצע בכלל — זה השער של #839."""
     types = _security_types(sock)
     assert 1 not in types, f"None security offered: {list(types)}"
     assert 2 in types, f"no secret security in {list(types)}"
     assert _answer_challenge(sock) == 0, "security failed"
     sock.sendall(b"\x01")                      # ClientInit: shared
     width, height = struct.unpack(">HH", _recv_exact(sock, 4))
-    _recv_exact(sock, 16)                      # pixel format
+    pixel_format = struct.unpack(PIXEL_FORMAT, _recv_exact(sock, 16))
     name_len = struct.unpack(">I", _recv_exact(sock, 4))[0]
     _recv_exact(sock, name_len)
+    return width, height, pixel_format
+
+
+def _handshake(sock: socket.socket) -> tuple[int, int]:
+    width, height, _ = _server_init(sock)
     return width, height
 
 
-def _request_update(sock: socket.socket, width: int, height: int) -> int:
+def _request_pixels(sock: socket.socket, width: int, height: int) -> bytes:
     """‏FramebufferUpdateRequest מלא (לא incremental), וקריאת ה-Update.
-    מחזיר כמה בייטי פיקסלים הגיעו ב-Raw — הראיה שהתמונה הוגשה."""
+    מחזיר את בייטי הפיקסלים שהגיעו ב-Raw, בסדר המלבנים."""
     sock.sendall(struct.pack(">BBHHHH", 3, 0, 0, 0, width, height))
     kind = _recv_exact(sock, 1)[0]
     assert kind == 0, f"expected FramebufferUpdate (0), got message type {kind}"
     _recv_exact(sock, 1)
     rects = struct.unpack(">H", _recv_exact(sock, 2))[0]
-    pixel_bytes = 0
+    pixels = bytearray()
     for _ in range(rects):
         _x, _y, w, h, encoding = struct.unpack(">HHHHi", _recv_exact(sock, 12))
         assert encoding == 0, f"unexpected encoding {encoding}; the client asked for none"
-        pixel_bytes += len(_recv_exact(sock, w * h * 4))
-    return pixel_bytes
+        pixels += _recv_exact(sock, w * h * 4)
+    return bytes(pixels)
+
+
+def _request_update(sock: socket.socket, width: int, height: int) -> int:
+    """כמה בייטי פיקסלים הגיעו ב-Raw — הראיה שהתמונה הוגשה."""
+    return len(_request_pixels(sock, width, height))
+
+
+def _set_pixel_format(sock: socket.socket, red: int, green: int, blue: int) -> None:
+    """‏SetPixelFormat (msg 0): ‏32bpp, ‏depth 24, little-endian, true-colour,
+    עם ה-shifts שהלקוח מבקש — כמו `setPixelFormat()` ב-monitor.js."""
+    sock.sendall(struct.pack(">B3x" + PIXEL_FORMAT[1:], 0, 32, 24, 0, 1,
+                             255, 255, 255, red, green, blue))
 
 
 def _key(sock: socket.socket, keysym: int, down: bool) -> None:
@@ -641,3 +664,285 @@ def test_pointer_event_lands_as_the_same_absolute_position(tmp_path):
     ], f"events: {events}\nlog: {text}"
     buttons = [(c, v) for t, c, v in events if t == EV_KEY]
     assert buttons == [(BTN_LEFT, 1), (BTN_LEFT, 0)], buttons
+
+
+# --- ‏#850: פורמט הפיקסלים וגבולות ה-mmap ---------------------------------------
+#
+# ‏(1) הפורמט נגזר מה-framebuffer ולא מונח. ‏LibVNCServer מצהיר כברירת מחדל
+# על אדום בביט 0 (סדר R,G,B,X בזיכרון, ב-little-endian); ‏fbdev ‏XRGB8888
+# ו-framebuffer הזיכרון (‏interfaces.md §15) מחזיקים אדום בביט 16. עד #850
+# ‏monitor.c לא העתיק את ה-offsets ל-`serverFormat`, ולכן כל לקוח קיבל
+# פיקסלים "מתורגמים" מפורמט שאינו שלהם. הראיה כאן היא מה שהלקוח מקבל:
+# ‏ה-ServerInit, ובייטי הפיקסל עצמם בשני פורמטי לקוח שונים.
+#
+# ‏(2) כל בייט שלולאת ההעתקה קוראת נמצא בתוך המיפוי, והחשבון ב-64 ביט.
+# גיאומטריה שגלשה ב-‏`__u32` עברה את בדיקת הגודל עם קובץ זעיר.
+
+#: ‏Monitor כותב את הקובץ כ-`10 20 30 00` לכל פיקסל: ב-XRGB8888 LE זה
+#: ‏B=0x10, ‏G=0x20, ‏R=0x30.
+FIXTURE_BGRX = bytes([0x10, 0x20, 0x30, 0x00])
+
+
+@NATIVE
+def test_pixel_format_is_the_framebuffers_own_xrgb8888(tmp_path):
+    """‏ServerInit מצהיר R@16 G@8 B@0; לקוח שמבקש את אותו פורמט (monitor.js)
+    מקבל את הבייטים כמות שהם, ולקוח שמבקש R@0 מקבל אותם מתורגמים — כלומר
+    השרת מתרגם **מהפורמט שהצהיר**, וההצהרה נכונה.
+    בקרה שלילית: על main שלפני #850 ה-ServerInit אומר R@0 G@8 B@16."""
+    binary = _build(tmp_path)
+    monitor = Monitor(tmp_path, binary)
+    try:
+        with monitor.connect() as sock:
+            width, height, fmt = _server_init(sock)
+            bpp, depth, big_endian, true_colour, r_max, g_max, b_max, r, g, b = fmt
+            assert (r, g, b) == (16, 8, 0), f"ServerInit shifts R@{r} G@{g} B@{b}"
+            # ‏true-colour הוא "nonzero" ב-RFB, ו-LibVNCServer שולח 0xFF
+            # ‏(TRUE מוגדר -1 ב-rfbproto.h). ‏depth הוא ברירת המחדל של
+            # ‏rfbGetScreen, ‏8*bytesPerPixel = 32 (נמדד ב-Testrunner עם #850,
+            # ‏24/09) — לא נגענו בו; הלקוח מפענח לפי max/shift, לא לפי depth.
+            assert (bpp, big_endian) == (32, 0), fmt
+            assert true_colour != 0, fmt
+            assert 24 <= depth <= 32, fmt
+            assert (r_max, g_max, b_max) == (255, 255, 255), fmt
+
+            # שלוש דגימות, כל אחת עם תקרה, כדי שריצה אחת תכריע בין
+            # "העדכון הראשון יצא לפני ההעתקה" (תזמון, הטסט) לבין
+            # "ההעתקה או התרגום מחזירים אפס" (הקוד). ‏native = בלי
+            # SetPixelFormat, כלומר בפורמט השרת, בלי תרגום ב-LibVNCServer.
+            seen = {}
+            seen["native"] = _pixels_until_content(sock, width, height)
+            _set_pixel_format(sock, 16, 8, 0)          # monitor.js: B,G,R,X
+            seen["monitor.js"] = _pixels_until_content(sock, width, height)
+            _set_pixel_format(sock, 0, 8, 16)          # R,G,B,X
+            seen["rgbx"] = _pixels_until_content(sock, width, height)
+    finally:
+        log = monitor.stop()
+    expected = {"native": FIXTURE_BGRX[:3], "monitor.js": FIXTURE_BGRX[:3],
+                "rgbx": bytes([0x30, 0x20, 0x10])}
+    report = {k: (tries, px[:4].hex(), sum(1 for x in px if x)) for k, (tries, px) in seen.items()}
+    detail = f"(requests, first pixel, non-zero bytes): {report}\nlog: {log[-1500:]}"
+    for name, (_, pixels) in seen.items():
+        wrong, cursor_box = _compare_frame(pixels, width, height, expected[name])
+        assert wrong == [], f"{name}: {len(wrong)} pixels differ, first {wrong[:5]}\n{detail}"
+        # מה שבפינה הוא הסמן של LibVNCServer או הפיקסל עצמו — לא משהו שלישי.
+        assert cursor_box <= {expected[name].hex(), "000000", "ffffff"}, (
+            f"{name}: cursor box holds {cursor_box}\n{detail}")
+
+
+#: ‏LibVNCServer מצייר לתוך הפריים את סמן ברירת המחדל שלו (‏X בגודל 8×7,
+#: ‏hotspot ‏(3,3), שחור על לבן) ללקוח שלא הצהיר על קידודי סמן — הלקוח
+#: כאן, וגם monitor.js, מבקשים Raw/CopyRect/DesktopSize בלבד. ‏monitor.c
+#: מחליף את ptrAddEvent, ולכן הסמן נשאר ב-(0,0). נמדד ב-Testrunner
+#: ‏24/09: ‏6132 = 6144 − 4 פיקסלים שחורים × 3, בדיוק החלק הנראה של הסמן.
+CURSOR_BOX = 8
+
+
+def _compare_frame(pixels: bytes, width: int, height: int,
+                   expected: bytes) -> tuple[list, set]:
+    """כל פיקסל מחוץ לריבוע הסמן חייב להיות `expected` (שלושת בייטי הצבע);
+    מחזיר את השגויים ואת קבוצת הצבעים שבתוך הריבוע."""
+    assert len(pixels) == width * height * 4, len(pixels)
+    wrong, box = [], set()
+    for y in range(height):
+        for x in range(width):
+            at = (y * width + x) * 4
+            colour = pixels[at:at + 3]
+            if x < CURSOR_BOX and y < CURSOR_BOX:
+                box.add(colour.hex())
+            elif colour != expected:
+                wrong.append((x, y, colour.hex()))
+    return wrong, box
+
+
+def _pixels_until_content(sock: socket.socket, width: int, height: int,
+                          ceiling: float = 3.0) -> tuple[int, bytes]:
+    """מבקש עדכון מלא שוב ושוב עד שמגיע פיקסל שאינו אפס, או עד התקרה.
+    מחזיר (כמה בקשות, הבייטים האחרונים) — לא נופל בעצמו: הדוח של הטסט
+    הוא שמכריע, והמספר הוא חלק מהראיה."""
+    deadline = time.monotonic() + ceiling
+    tries = 0
+    while True:
+        tries += 1
+        pixels = _request_pixels(sock, width, height)
+        if any(pixels) or time.monotonic() >= deadline:
+            return tries, pixels
+        time.sleep(0.2)
+
+
+def _run_refused(argv: list[str], timeout: float = 20) -> subprocess.CompletedProcess:
+    """מריץ מוניטור שחייב לסרב לעלות. אם הוא עדיין רץ אחרי `timeout` —
+    הוא עלה והגיש, וזה הכישלון (לא "עבר כי לא נפל"). הפלט לקבצים, לא
+    ל-PIPE: תהליך שעלה וכותב לוג לא ייחסם על צינור מלא."""
+    out_path = Path(argv[0]).with_suffix(".refused.log")
+    with open(out_path, "wb") as log:
+        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=log)
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=10)
+            pytest.fail("the monitor started instead of refusing: "
+                        + out_path.read_text(errors="replace")[-2000:])
+    return subprocess.CompletedProcess(argv, proc.returncode, "",
+                                       out_path.read_text(errors="replace"))
+
+
+def _base_argv(binary: Path, tmp_path: Path) -> list[str]:
+    secret = tmp_path / "monitor.secret"
+    secret.write_text(SECRET + "\n")
+    return [str(binary), "--bind", "127.0.0.1", "--port", str(_free_port()),
+            "--secret-file", str(secret), "--allow-from", "127.0.0.1"]
+
+
+@NATIVE
+def test_geometry_that_wraps_u32_is_refused_by_name(tmp_path):
+    """‏65535×16385×4 = 4,295,163,900 — ב-`__u32` זה 196,604. קובץ בגודל
+    הזה עבר את בדיקת הגודל, ולולאת ההעתקה קראה שורה של 262,140 בייט
+    ממיפוי של 196,604. עכשיו: סירוב בשם, עם המספר האמיתי, לפני האזנה.
+    בקרה שלילית: על main שלפני #850 התהליך ממשיך — ‏SIGSEGV בהעתקה או
+    ‏FATAL על הקצאת 4GB — ואף אחד מהם אינו הסירוב הזה."""
+    binary = _build(tmp_path)
+    fb = tmp_path / "wrapped.raw"
+    fb.write_bytes(bytes(196_604))
+    run = _run_refused(_base_argv(binary, tmp_path) +
+                       ["--fb", str(fb), "--geometry", "65535x16385"])
+    assert run.returncode == 1, (run.returncode, run.stderr)
+    assert "geometry needs 4295163900" in run.stderr, run.stderr
+    assert "RFB listening" not in run.stderr, run.stderr
+
+
+@NATIVE
+def test_size_past_rfb_u16_is_refused_by_name(tmp_path):
+    """‏ServerInit נושא רוחב וגובה כ-U16: מסך ברוחב 70000 היה מוצהר כ-4464.
+    בקרה שלילית: על main שלפני #850 המוניטור עולה ומגיש (‏_run_refused
+    נופל על "started instead of refusing")."""
+    binary = _build(tmp_path)
+    fb = tmp_path / "wide.raw"
+    fb.write_bytes(bytes(70_000 * 4))
+    run = _run_refused(_base_argv(binary, tmp_path) +
+                       ["--fb", str(fb), "--geometry", "70000x1"])
+    assert run.returncode == 1, (run.returncode, run.stderr)
+    assert "layout out of bounds" in run.stderr and "RFB U16" in run.stderr, run.stderr
+
+
+@NATIVE
+def test_memfb_header_whose_row_wraps_u32_is_refused(tmp_path):
+    """כותרת IMCTLFB1 עם width=0x40000001 ו-stride=4: ‏`width*4` ב-u32 הוא 4,
+    ולכן `stride < width*4` לא תפס. בקרה שלילית: על main שלפני #850 הכותרת
+    מתקבלת ("serving a memory framebuffer")."""
+    binary = _build(tmp_path)
+    fb = tmp_path / "fb.mem"
+    header = b"IMCTLFB1" + struct.pack("<5I", 0x40000001, 1, 4, 1, 0)
+    fb.write_bytes(header.ljust(4096, b"\0") + bytes(4))
+    run = _run_refused(_base_argv(binary, tmp_path) + ["--fb", str(fb)])
+    assert run.returncode == 1, (run.returncode, run.stderr)
+    assert "not a memory framebuffer" in run.stderr, run.stderr
+    assert "serving a memory framebuffer" not in run.stderr, run.stderr
+
+
+# ‏/dev/fb0 עצמו — ‏yoffset, ‏xoffset, ‏offsets של ערוצים — אינו בר-זיוף בקובץ
+# (אין ‏FBIOGET_* על קובץ רגיל). לכן שתי הפונקציות שמחליטות נבדקות ישירות:
+# ‏driver שמכליל את monitor.c (‏main שלו בשם אחר) וקורא להן עם פריסות
+# מזויפות. ‏revert מלא של monitor.c הוא כאן שגיאת הידור, לא בקרה —
+# הבקרה ההתנהגותית לדרייבר היא מוטציה ממוקדת (ראו גוף ה-PR).
+
+_DRIVER = r"""
+#define main imagectl_monitor_main
+#include "monitor.c"
+#undef main
+
+static void fmt(const char *name, unsigned bpp, unsigned r, unsigned g,
+                unsigned b, unsigned len, unsigned msb_right) {
+    struct fb_var_screeninfo v;
+    const char *why;
+    memset(&v, 0, sizeof(v));
+    v.bits_per_pixel = bpp;
+    v.red.offset = r; v.green.offset = g; v.blue.offset = b;
+    v.red.length = v.green.length = v.blue.length = len;
+    v.red.msb_right = msb_right;
+    why = pixel_format_error(&v);
+    printf("%s=%s\n", name, why ? why : "OK");
+}
+
+static void lay(const char *name, unsigned xres, unsigned yres, unsigned xoff,
+                unsigned yoff, unsigned stride, unsigned smem, unsigned header) {
+    struct fb_var_screeninfo v;
+    struct fb_fix_screeninfo f;
+    const char *why;
+    memset(&v, 0, sizeof(v));
+    memset(&f, 0, sizeof(f));
+    v.xres = xres; v.yres = yres; v.xoffset = xoff; v.yoffset = yoff;
+    f.line_length = stride; f.smem_len = smem;
+    why = layout_error(&v, &f, header);
+    printf("%s=%s\n", name, why ? why : "OK");
+}
+
+int main(void) {
+    fmt("xrgb", 32, 16, 8, 0, 8, 0);
+    fmt("xbgr", 32, 0, 8, 16, 8, 0);
+    fmt("rgbx", 32, 24, 16, 8, 8, 0);
+    fmt("rgb565", 16, 11, 5, 0, 8, 0);
+    fmt("nibble", 32, 20, 8, 0, 8, 0);
+    fmt("shared", 32, 16, 16, 0, 8, 0);
+    fmt("len6", 32, 16, 8, 0, 6, 0);
+    fmt("msbright", 32, 16, 8, 0, 8, 1);
+    lay("single", 1024, 768, 0, 0, 4096, 768 * 4096, 0);
+    lay("panned", 1024, 768, 0, 768, 4096, 2 * 768 * 4096, 0);
+    lay("panned_past", 1024, 768, 0, 768, 4096, 768 * 4096, 0);
+    lay("tail_exact", 1000, 768, 0, 0, 4096, 767 * 4096 + 4000, 0);
+    lay("tail_short", 1000, 768, 0, 0, 4096, 767 * 4096 + 3999, 0);
+    lay("xoff_past", 1024, 768, 1, 0, 4096, 2 * 768 * 4096, 0);
+    lay("wrap", 0x40000001u, 1, 0, 0, 4, 4096, 0);
+    lay("memfb", 1280, 800, 0, 0, 5120, 4096 + 5120 * 800, 4096);
+    lay("memfb_short", 1280, 800, 0, 0, 5120, 4096 + 5120 * 800 - 1, 4096);
+    return 0;
+}
+"""
+
+
+@NATIVE
+def test_format_and_layout_checks_on_fake_fbdev_geometry(tmp_path):
+    """‏(א) פורמט: כל סידור של שלושה ערוצי 8 ביט על גבולות בייט מתקבל;
+    ‏16bpp, ‏offset שאינו כפולה של 8, ערוצים חופפים, ‏length≠8, ‏msb_right —
+    נדחים, כל אחד בשם. ‏(ב) גבולות: ‏double-buffer ב-yoffset=yres מתקבל כשה-
+    ‏smem_len מכיל אותו ונדחה כשלא — זה בדיוק תרחיש ה-Issue; הזנב המדויק
+    (שורה אחרונה בלי ריפוד) מתקבל ובייט אחד פחות נדחה — הבדיקה אינה
+    מחמירה מהקריאה עצמה."""
+    driver = tmp_path / "layout_drv.c"
+    driver.write_text(_DRIVER)
+    binary = tmp_path / "layout_drv"
+    cc = shutil.which("cc") or shutil.which("gcc")
+    build = subprocess.run(
+        [cc, "-O2", "-Wall", "-Wextra", "-o", str(binary), str(driver),
+         str(HMAC_C), "-I", str(REPO / "agent"), "-lvncserver"],
+        capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL,
+    )
+    assert build.returncode == 0, build.stderr
+    run = subprocess.run([str(binary)], capture_output=True, text=True,
+                         timeout=10, stdin=subprocess.DEVNULL)
+    assert run.returncode == 0, run.stderr
+    got = dict(line.split("=", 1) for line in run.stdout.splitlines())
+
+    for accepted in ("xrgb", "xbgr", "rgbx", "single", "panned", "tail_exact", "memfb"):
+        assert got[accepted] == "OK", (accepted, got[accepted])
+    assert "32 bpp" in got["rgb565"], got
+    assert "byte boundary" in got["nibble"], got
+    assert "share a byte" in got["shared"], got
+    assert "8 bits" in got["len6"] and "8 bits" in got["msbright"], got
+    assert "mapped length" in got["panned_past"], got
+    assert "mapped length" in got["tail_short"], got
+    assert "mapped length" in got["memfb_short"], got
+    assert "stride" in got["xoff_past"], got
+    assert "RFB U16" in got["wrap"], got
+
+
+def test_source_serves_the_framebuffers_own_format_and_bounds():
+    """שומר-מקור (רץ גם בלי gcc): ה-shifts מועתקים מה-fb, ‏layout_error
+    נקרא לפני ה-mmap, והקורא של ה-seqlock מגודר לפני הבדיקה החוזרת.
+    בקרה שלילית: על main שלפני #850 אף אחת מהמחרוזות אינה בקובץ."""
+    c = _source()
+    assert "serverFormat.redShift = (uint8_t)var.red.offset" in c
+    assert "serverFormat.blueShift = (uint8_t)var.blue.offset" in c
+    assert c.index("layout_error(&var, &fix, pixel_offset)") < c.index("mmap(NULL")
+    assert c.index("__atomic_thread_fence(__ATOMIC_ACQUIRE)") < c.rindex(
+        "__atomic_load_n(frame_seq, __ATOMIC_ACQUIRE)")
