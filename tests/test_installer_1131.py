@@ -397,12 +397,23 @@ def _fake_repo(tmp_path: Path, *, live_ok: bool, payload_ok: bool = True) -> Pat
     (repo / "install" / "verify-boot-payload.sh").write_text(
         '#!/usr/bin/env bash\nprintf "verify-boot-payload %s\\n" "$*" >> "$FAKE_LOG"\n'
         + ("exit 0" if payload_ok else "exit 1") + "\n", encoding="utf-8", newline="\n")
+    # ‏#1230: הבנייה עצמה נבדקת ב-test_boot_payload_1230; כאן רק שהיא נקראה.
+    (repo / "tools" / "boot-payload-build.sh").write_text(
+        '#!/usr/bin/env bash\nprintf "boot-payload-build %s\\n" "$*" >> "$FAKE_LOG"\n',
+        encoding="utf-8", newline="\n")
     return repo
 
 
 def _upgrade_env(tmp_path: Path, repo: Path, data: Path) -> dict:
+    flags = tmp_path / "initrd.flags"
+    if not flags.exists():
+        flags.write_text("--skip-apt --output /srv/imagectl/boot/initrd.img\n",
+                         encoding="utf-8", newline="\n")
     return {"IMAGECTL_DATA_DIR": posix(data), "IMAGECTL_UNIT_DIR": posix(tmp_path / "units"),
             "IMAGECTL_UPGRADE_LOG": posix(tmp_path / "upgrade.log"),
+            "IMAGECTL_INITRD_FLAGS": posix(flags),
+            "IMAGECTL_ISO_MANIFEST": posix(tmp_path / "no-iso-release.json"),
+            "IMAGECTL_HTTP_ROOT": posix(tmp_path / "boot"),
             "IMAGECTL_LIVE_WAIT": "1", "PYTHONPATH": posix(REPO)}
 
 

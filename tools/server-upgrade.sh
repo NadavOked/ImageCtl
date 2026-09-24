@@ -10,8 +10,8 @@
 #   1. התג הקודם — מה ש-update.py שמר (update_previous) — הוא יעד החזרה.
 #   2. fetch + checkout לתג המבוקש — מחוץ לארגז החול של שרת ה-web.
 #   3. יחידות systemd — קודם, כדי ש-daemon-reload יראה כל שינוי בהן.
-#   4. initrd, פעמיים — לפי דגלים שמורים, ולא בונה בלי דגלים (מדווח
-#      זאת בשמה, לא נכשל בשקט — עיקרון 5).
+#   4. initrd (#1230) — tools/boot-payload-build.sh לפי הדגלים השמורים, מול
+#      הקרנל שנגזר עכשיו. בלי דגלים ובלי ראיה שזה שרת ISO — חזרה, לא דילוג.
 #   5. restart, ואז **ראיה חיובית** שהחדש רץ: is-active + `/health/live`
 #      שמדווח בדיוק את התג + verify-boot-payload.sh.
 #   6. כשל בראיה → checkout לתג הקודם, יחידות, restart, וסטטוס `failed`
@@ -20,8 +20,9 @@
 # ‏#1074: שדרוג אינו מתקין ואינו מפעיל nftables. שרת קיים לא ינותק.
 #
 # משתני סביבה (לבדיקות — בייצור ברירות המחדל): IMAGECTL_DATA_DIR,
-# IMAGECTL_UNIT_DIR, IMAGECTL_INITRD_FLAGS, IMAGECTL_UPGRADE_LOG,
-# IMAGECTL_CONSOLE_URL, IMAGECTL_LIVE_WAIT.
+# IMAGECTL_UNIT_DIR, IMAGECTL_INITRD_FLAGS, IMAGECTL_ISO_MANIFEST,
+# IMAGECTL_HTTP_ROOT, IMAGECTL_UPGRADE_LOG, IMAGECTL_CONSOLE_URL,
+# IMAGECTL_LIVE_WAIT.
 set -euo pipefail
 
 die() { echo "server-upgrade: $*" >&2; exit 1; }
@@ -33,6 +34,9 @@ DATA_DIR="${IMAGECTL_DATA_DIR:-/var/lib/imagectl}"
 DB="$DATA_DIR/imagectl.db"
 UNIT_DIR="${IMAGECTL_UNIT_DIR:-/etc/systemd/system}"
 FLAGS_FILE="${IMAGECTL_INITRD_FLAGS:-/etc/imagectl/initrd.flags}"
+ISO_MANIFEST="${IMAGECTL_ISO_MANIFEST:-/etc/imagectl/iso-release.json}"
+HTTP_ROOT="${IMAGECTL_HTTP_ROOT:-/srv/imagectl/boot}"
+INITRD_NOTE=""   # נקבע רק אחרי שה-initrd החדש הוחלף בפועל
 LOG="${IMAGECTL_UPGRADE_LOG:-/var/log/imagectl/server-upgrade.log}"
 CONSOLE_URL="${IMAGECTL_CONSOLE_URL:-https://127.0.0.1:8081}"
 LIVE_WAIT="${IMAGECTL_LIVE_WAIT:-90}"
@@ -121,7 +125,7 @@ rollback() {   # rollback <סיבה>
     fi
     echo "מחזיר ל-$PREV"
     if git checkout --detach "$PREV" && install_units_and_restart; then
-        set_status failed "$why · הוחזר ל-$PREV (ה-initrd שנבנה מ-$TAG נשאר)"
+        set_status failed "$why · הוחזר ל-$PREV$INITRD_NOTE"
         die "$why — הוחזר ל-$PREV"
     fi
     set_status failed "$why · והחזרה ל-$PREV נכשלה גם היא"
@@ -132,21 +136,25 @@ rollback() {   # rollback <סיבה>
 install -m 0644 install/*.service "$UNIT_DIR/"
 systemctl daemon-reload
 
-if [[ -r "$FLAGS_FILE" ]]; then
-    # ‏$FLAGS_FILE: שורה אחת לכל בנייה שהמתקין הריץ בהתקנה המקורית (רגיל
-    # וגרפי, #32) — בדיוק דגלי ה---output של tools/build_initramfs.sh,
-    # לא מנוחשים כאן. שורה ריקה/‏# מדולגת.
-    built=0
-    while IFS= read -r line; do
-        [[ -n "$line" && "$line" != \#* ]] || continue
-        # shellcheck disable=SC2086
-        bash tools/build_initramfs.sh $line || rollback "בניית initrd נכשלה ($line)"
-        built=$((built + 1))
-    done < "$FLAGS_FILE"
-    ((built > 0)) || echo "initrd לא נבנה: $FLAGS_FILE ריק"
+# ‏#1230: "העדכון עבר והמכונות על initrd ישן" אסור — סוכן ישן מול שרת חדש.
+# הבנייה היא tools/boot-payload-build.sh, אותו קוד של firstboot: הקרנל וה-
+# epoch נגזרים עכשיו (לא מהקובץ), ו-vmlinuz של הקרנל הזה מועתק. שלושה מצבים:
+#   * ‏$FLAGS_FILE קיים — הבניות שנרשמו בהתקנה (תפקיד + --output בלבד).
+#   * חסר, בשרת שהותקן מה-ISO (יש $ISO_MANIFEST) — firstboot של לפני #1230
+#     בנה בדיוק את ברירת המחדל של ה-ISO ולא רשם אותה. בונים אותה ורושמים.
+#   * חסר, ואין ראיה איך השרת נבנה — לא מנחשים דגלים (עיקרון 5): חזרה
+#     לתג הקודם, בשם. מי שבנה ידנית כותב את הקובץ ומנסה שוב.
+if [[ -e "$FLAGS_FILE" ]]; then
+    payload_args=(--flags-file "$FLAGS_FILE")
+elif [[ -e "$ISO_MANIFEST" ]]; then
+    echo "$FLAGS_FILE חסר בשרת מה-ISO — בונה את ברירת המחדל של ה-ISO ורושם אותה"
+    payload_args=(--iso-default --write-flags "$FLAGS_FILE")
 else
-    echo "initrd לא נבנה: אין דגלים ($FLAGS_FILE חסר)"
+    rollback "$FLAGS_FILE חסר ואין $ISO_MANIFEST — לא ידוע אילו initrd לבנות, והמכונות היו נשארות על initrd ישן"
 fi
+bash tools/boot-payload-build.sh --http-root "$HTTP_ROOT" --manifest "$ISO_MANIFEST" "${payload_args[@]}" \
+    || rollback "בניית ה-initrd נכשלה (הפירוט ב-$LOG)"
+INITRD_NOTE=" (ה-initrd שנבנה מ-$TAG נשאר)"
 
 # 5. restart + ראיה חיובית
 systemctl restart imagectl-server || rollback "systemctl restart imagectl-server נכשל"
@@ -168,7 +176,7 @@ print(row[0] if row and row[0] else "http://127.0.0.1:8080")
 PYEOF
 )" || AGENT_URL="http://127.0.0.1:8080"
 fi
-bash install/verify-boot-payload.sh --app-dir "$REPO_DIR" --server-url "$AGENT_URL" \
+bash install/verify-boot-payload.sh --app-dir "$REPO_DIR" --http-root "$HTTP_ROOT" --server-url "$AGENT_URL" \
     || rollback "verify-boot-payload.sh נכשל מול $AGENT_URL"
 
 echo "--- $(date -Is) upgrade to $TAG done and verified ---"

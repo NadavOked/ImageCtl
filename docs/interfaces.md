@@ -2669,9 +2669,9 @@ deploy (403) ושרת משני (409) — אין צמתים, לא שגיאה. מ�
 5. בתוך הסקריפט (‏#1131): **קודם** בדיקת סבב פתוח/רץ (אותה שאילתה של
    `_active_round`; גם בהפעלה ידנית) וקריאת התג הקודם מ-`update_previous`;
    יחידות systemd (`install install/*.service` + `daemon-reload`), בניית
-   initrd לפי `/etc/imagectl/initrd.flags` (שורה לכל בנייה שהמתקין הריץ
-   בהתקנה המקורית; קובץ חסר/ריק = "initrd לא נבנה", בשם — לא נכשל
-   בשקט), ה-restart, **ואז ראיה חיובית**: `systemctl is-active` +
+   initrd דרך `tools/boot-payload-build.sh` (‏#1230 — אותו קוד ש-firstboot
+   מריץ בהתקנה) לפי `/etc/imagectl/initrd.flags`, ה-restart, **ואז ראיה
+   חיובית**: `systemctl is-active` +
    `install/console-live.sh` (‏`GET /api/console/health/live` על loopback
    מחזיר 200 עם `version` **שווה לתג**) + `install/verify-boot-payload.sh`
    מול כתובת הסוכן (‏`IMAGECTL_URL` מהיחידה, אחרת `deploy:url`, אחרת
@@ -2680,6 +2680,25 @@ deploy (403) ושרת משני (409) — אין צמתים, לא שגיאה. מ�
    ב-/health/live עם הגרסה v0.49.0 תוך 90 ש' · הוחזר ל-v0.48.0"). בלי תג
    קודם שמור — `failed` בשם, בלי חזרה. ה-initrd שנבנה מהתג החדש נשאר
    גם אחרי חזרה (נאמר בסטטוס).
+
+### `/etc/imagectl/initrd.flags` (‏#1230)
+
+נכתב על ידי firstboot (‏`boot-payload-build.sh --write-flags`) **רק אחרי**
+שכל הבניות הצליחו. שורה לכל הרצת `tools/build_initramfs.sh`, ‏`#` ושורה ריקה
+מדולגות. השורה נושאת **רק מה שקבוע** — התפקיד ו-`--output`:
+
+```
+--skip-apt --output /srv/imagectl/boot/initrd.img
+--skip-apt --with-gui --output /srv/imagectl/boot/initrd.img.gui
+```
+
+‏`--kernel-version` ו-`--source-date-epoch` **אסורים** בקובץ (השורה נדחית):
+הם נגזרים בכל בנייה — הקרנל המותקן החדש ביותר שאינו cloud (#904) וה-vmlinuz
+שלו, וזמן הקומיט של העץ (אחרת `source_date_epoch` ממניפסט ה-ISO). כל initrd
+נבנה ל-`<output>.new` ומוחלף רק כשכולם נבנו — בנייה שנכשלה משאירה את המטען
+הקודם שלם. **קובץ חסר בעדכון:** בשרת שיש לו `/etc/imagectl/iso-release.json`
+(הותקן מה-ISO לפני #1230) נבנית ברירת המחדל של ה-ISO ונרשמת; בלי ראיה כזו —
+חזרה לתג הקודם עם `failed` בשם. "העדכון עבר והמכונות על initrd ישן" אינו מצב.
 
 ### `GET /api/console/health/live` — ללא הזדהות (‏#1131)
 

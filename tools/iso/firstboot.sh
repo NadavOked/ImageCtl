@@ -9,8 +9,9 @@
 #
 # שני שלבים, בסדר הזה בכוונה:
 #   א. ‏initrd.img + initrd.img.gui + vmlinuz אל /srv/imagectl/boot —
-#      מתוך /opt/imagectl-src, עם --skip-apt (החבילות כבר מותקנות
-#      מה-ISO; packages.txt הוא האיחוד, ו-tests/test_iso_build.py שומר).
+#      מתוך /opt/imagectl-src, דרך tools/boot-payload-build.sh (#1230), עם
+#      --skip-apt (החבילות כבר מותקנות מה-ISO; packages.txt הוא האיחוד,
+#      ו-tests/test_iso_build.py שומר). הבניות נרשמות ב-initrd.flags.
 #      גם שרת **משני** בונה בעצמו (R60): הסיבה לא לבנות — קרנל cloud —
 #      אינה תקפה כשה-ISO מביא linux-image-amd64.
 #   ב. האשף הזמני ב-HTTPS 8081. הוא מקבל את עובדות הכרטיס והתפקיד דרך
@@ -72,31 +73,16 @@ install -d "$TMPDIR"
 if [[ -f "$STAGE_A_STAMP" ]]; then
     log "Stage A already completed; continuing to stage B"
 else
-    # הקרנל המותקן שאינו cloud (‏build_initramfs.sh מסרב ל-cloud, #904).
-    KVER=$(find /lib/modules -mindepth 1 -maxdepth 1 -printf '%f\n' \
-        | awk '$0 !~ /cloud/' | sort -V | tail -n1) \
-        || fail check-error "Could not inspect installed kernels in /lib/modules"
-    [[ -n "$KVER" ]] || fail payload-failed "No non-cloud kernel found in /lib/modules; is linux-image-amd64 installed?"
-    [[ -f "/boot/vmlinuz-$KVER" ]] || fail payload-failed "Missing /boot/vmlinuz-$KVER"
-    # ‏#1125: האריזה reproducible ודורשת SOURCE_DATE_EPOCH; ‏/opt/imagectl-src הוא
-    # ‏git archive בלי .git, ולכן הזמן נקרא ממניפסט ה-ISO (source_date_epoch =
-    # זמן הקומיט של --ref, build-iso.sh). בלי מניפסט — כישלון בשם, לא `date +%s`
-    # שקט שמפרק את השחזוריות (נמדד ב-QEMU 19/09: "'git log' failed").
-    EPOCH=$(python3 -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["source_date_epoch"]))' \
-        "$ETC/iso-release.json" 2>/dev/null) \
-        || fail payload-failed "Missing source_date_epoch in $ETC/iso-release.json; late-command.sh did not copy the manifest"
-    log "Stage A: building initramfs for $KVER; detailed output is in $BUILD_LOG"
-    install -d "$HTTP_ROOT"
-    bash "$SRC/tools/build_initramfs.sh" --skip-apt --kernel-version "$KVER" \
-        --source-date-epoch "$EPOCH" --output "$HTTP_ROOT/initrd.img" \
-        >>"$BUILD_LOG" 2>&1 \
-        || fail payload-failed "initrd.img build failed; see $BUILD_LOG"
-    # הגרסה הגרפית — מחשבי שיכפול ובנייה עולים איתה (#835, lab-site2-runbook).
-    bash "$SRC/tools/build_initramfs.sh" --skip-apt --with-gui --kernel-version "$KVER" \
-        --source-date-epoch "$EPOCH" --output "$HTTP_ROOT/initrd.img.gui" \
-        >>"$BUILD_LOG" 2>&1 \
-        || fail payload-failed "initrd.img.gui build failed; see $BUILD_LOG"
-    install -m 0644 "/boot/vmlinuz-$KVER" "$HTTP_ROOT/vmlinuz"
+    # ‏#1230: הבנייה עצמה — הקרנל (שאינו cloud, #904), ה-epoch (#1125) וה-
+    # ‏vmlinuz — ב-tools/boot-payload-build.sh, **אותו קוד** שכפתור העדכון
+    # מריץ. ‏--write-flags רושם, רק אחרי שהכול נבנה, את שתי הבניות אל
+    # ‏initrd.flags — בלי קרנל ובלי epoch, שנגזרים מחדש בכל עדכון.
+    log "Stage A: building the boot payload; detailed output is in $BUILD_LOG"
+    payload_out=$(bash "$SRC/tools/boot-payload-build.sh" --iso-default \
+        --http-root "$HTTP_ROOT" --manifest "$ETC/iso-release.json" \
+        --write-flags "$ETC/initrd.flags" --build-log "$BUILD_LOG" 2>&1) \
+        || fail payload-failed "$(printf '%s\n' "$payload_out" | tail -n1) (see $BUILD_LOG)"
+    printf '%s\n' "$payload_out"
     for f in initrd.img initrd.img.gui vmlinuz; do
         [[ -s "$HTTP_ROOT/$f" ]] || fail payload-failed "$HTTP_ROOT/$f is empty after the build"
     done

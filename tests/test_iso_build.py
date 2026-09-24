@@ -33,6 +33,7 @@ INITRAMFS = REPO / "tools" / "build_initramfs.sh"
 PACKAGES_TXT = ISO_DIR / "packages.txt"
 FIRSTBOOT = ISO_DIR / "firstboot.sh"
 FIRSTBOOT_ANSWERS = ISO_DIR / "firstboot-answers.sh"
+PAYLOAD_BUILD = REPO / "tools" / "boot-payload-build.sh"
 INSTALLER_BOOT = REPO / "agent" / "lib" / "installer_boot.sh"
 LIVE_CONSOLE = REPO / "installer" / "imagectl-installer"
 WIZARD_SERVICE = REPO / "install" / "imagectl-wizard.service"
@@ -231,12 +232,17 @@ def test_firstboot_never_passes_deploy_if_builds_payload_and_starts_wizard() -> 
     code = _strip_comments(FIRSTBOOT.read_text(encoding="utf-8"))
     assert "--deploy-if" not in code, "כרטיס הפצה שנוחש = dnsmasq על הרשת הלא נכונה (R25 §2.5)"
     assert "setup-boot-server.sh" not in code, "שלב ב' שייך לאשף ואינו עוד התקנה לא-אינטראקטיבית"
-    assert code.count("--skip-apt") == 2, "שני initrd (טקסט + GUI), שניהם בלי apt — החבילות מה-ISO"
+    # ‏#1230: הבנייה עברה ל-tools/boot-payload-build.sh — אותו קוד שכפתור העדכון
+    # מריץ. שני ה-initrd, ‏--skip-apt וה-epoch נבדקים בהרצה ב-test_boot_payload_1230.
+    assert "tools/boot-payload-build.sh" in code and "--iso-default" in code
+    assert '--write-flags "$ETC/initrd.flags"' in code, "העדכון בונה לפי מה ש-firstboot רשם"
     # ‏#1125: build_initramfs.sh נופל בלי SOURCE_DATE_EPOCH כשאין .git — ו-/opt/imagectl-src
-    # הוא git archive. הזמן מגיע ממניפסט ה-ISO (נמדד ב-QEMU 19/09: payload-failed).
-    assert code.count("--source-date-epoch") == 2, "שני ה-initrd חייבים לקבל --source-date-epoch"
-    assert "source_date_epoch" in code and "iso-release.json" in code
-    assert "--with-gui" in code
+    # של בניית --source הוא git archive. הזמן מגיע ממניפסט ה-ISO (נמדד ב-QEMU 19/09).
+    assert '--manifest "$ETC/iso-release.json"' in code
+    helper = _strip_comments(PAYLOAD_BUILD.read_text(encoding="utf-8"))
+    assert helper.count("--skip-apt") == 2, "שני initrd (טקסט + GUI), שניהם בלי apt — החבילות מה-ISO"
+    assert '--source-date-epoch "$EPOCH"' in helper and "source_date_epoch" in helper
+    assert "--with-gui" in helper
     assert 'systemctl start imagectl-wizard' in code
     assert 'install/imagectl-wizard.service' in code
     assert 'install/imagectl-wizard-rerun.service' in code
@@ -259,7 +265,7 @@ def test_firstboot_reads_the_installer_facts_and_never_guesses_a_nic() -> None:
 
 
 def test_installer_console_runtime_text_is_ascii_only() -> None:
-    for script in (FIRSTBOOT, FIRSTBOOT_ANSWERS, INSTALLER_BOOT, LIVE_CONSOLE):
+    for script in (FIRSTBOOT, FIRSTBOOT_ANSWERS, PAYLOAD_BUILD, INSTALLER_BOOT, LIVE_CONSOLE):
         runtime_text = _strip_comments(script.read_text(encoding="utf-8"))
         assert runtime_text.isascii(), f"{script.name} has non-ASCII runtime text"
 
@@ -280,7 +286,7 @@ def test_firstboot_brings_up_dhcp_then_wizard_gui_and_dcui_fallback_on_the_headl
     assert "for _ in 1 2 3" in code  # ‏shellcheck SC2034: המשתנה אינו בשימוש
     for outcome in ("(dhcp)", "no carrier", "no dhcp offer"):
         assert outcome in code
-    assert full.count('>>"$BUILD_LOG" 2>&1') >= 3
+    assert full.count('>>"$BUILD_LOG" 2>&1') >= 1 and '--build-log "$BUILD_LOG"' in full
     assert "WorkingDirectory=/opt/imagectl-src" in code
     assert "imagectl-dcui.service.d/firstboot.conf" in code
     assert 'systemctl mask getty@tty1.service' in code
