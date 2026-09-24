@@ -687,8 +687,10 @@ FIXTURE_BGRX = bytes([0x10, 0x20, 0x30, 0x00])
 def test_pixel_format_is_the_framebuffers_own_xrgb8888(tmp_path):
     """‏ServerInit מצהיר R@16 G@8 B@0; לקוח שמבקש את אותו פורמט (monitor.js)
     מקבל את הבייטים כמות שהם, ולקוח שמבקש R@0 מקבל אותם מתורגמים — כלומר
-    השרת מתרגם **מהפורמט שהצהיר**, וההצהרה נכונה.
-    בקרה שלילית: על main שלפני #850 ה-ServerInit אומר R@0 G@8 B@16."""
+    השרת מתרגם **מהפורמט שהצהיר**, וההצהרה נכונה. מ-#1221 כל הפריים,
+    כולל הפינה, נבדק בלי היתר — הסמן של LibVNCServer מבוטל.
+    בקרה שלילית: על main שלפני #850 ה-ServerInit אומר R@0 G@8 B@16;
+    בלי #1221 (`screen->cursor = NULL`) הפינה נכשלת על סמן ה-X."""
     binary = _build(tmp_path)
     monitor = Monitor(tmp_path, binary)
     try:
@@ -722,36 +724,32 @@ def test_pixel_format_is_the_framebuffers_own_xrgb8888(tmp_path):
     report = {k: (tries, px[:4].hex(), sum(1 for x in px if x)) for k, (tries, px) in seen.items()}
     detail = f"(requests, first pixel, non-zero bytes): {report}\nlog: {log[-1500:]}"
     for name, (_, pixels) in seen.items():
-        wrong, cursor_box = _compare_frame(pixels, width, height, expected[name])
+        wrong = _compare_frame(pixels, width, height, expected[name])
         assert wrong == [], f"{name}: {len(wrong)} pixels differ, first {wrong[:5]}\n{detail}"
-        # מה שבפינה הוא הסמן של LibVNCServer או הפיקסל עצמו — לא משהו שלישי.
-        assert cursor_box <= {expected[name].hex(), "000000", "ffffff"}, (
-            f"{name}: cursor box holds {cursor_box}\n{detail}")
 
 
-#: ‏LibVNCServer מצייר לתוך הפריים את סמן ברירת המחדל שלו (‏X בגודל 8×7,
-#: ‏hotspot ‏(3,3), שחור על לבן) ללקוח שלא הצהיר על קידודי סמן — הלקוח
-#: כאן, וגם monitor.js, מבקשים Raw/CopyRect/DesktopSize בלבד. ‏monitor.c
-#: מחליף את ptrAddEvent, ולכן הסמן נשאר ב-(0,0). נמדד ב-Testrunner
-#: ‏24/09: ‏6132 = 6144 − 4 פיקסלים שחורים × 3, בדיוק החלק הנראה של הסמן.
-CURSOR_BOX = 8
+#: עד #1221 ‏LibVNCServer צייר לתוך הפריים את סמן ברירת המחדל שלו (‏X
+#: בגודל 8×7, hotspot ‏(3,3), שחור על לבן) ללקוח שלא הצהיר על קידודי
+#: סמן — הלקוח כאן, וגם monitor.js, מבקשים Raw/CopyRect/DesktopSize
+#: בלבד. ‏monitor.c מחליף את ptrAddEvent, ולכן הסמן נשאר ב-(0,0). נמדד
+#: ב-Testrunner 24/09: ‏6132 = 6144 − 4 פיקסלים שחורים × 3, בדיוק החלק
+#: הנראה של הסמן. #1221 מבטל את הסמן (`screen->cursor = NULL`) —
+#: אין עוד היתר לפינה, כל הפריים חייב להיות צבע הפיקצ'ר.
 
 
 def _compare_frame(pixels: bytes, width: int, height: int,
-                   expected: bytes) -> tuple[list, set]:
-    """כל פיקסל מחוץ לריבוע הסמן חייב להיות `expected` (שלושת בייטי הצבע);
-    מחזיר את השגויים ואת קבוצת הצבעים שבתוך הריבוע."""
+                   expected: bytes) -> list:
+    """כל פיקסל, כולל הפינה, חייב להיות `expected` (שלושת בייטי הצבע);
+    מחזיר את הפיקסלים השגויים."""
     assert len(pixels) == width * height * 4, len(pixels)
-    wrong, box = [], set()
+    wrong = []
     for y in range(height):
         for x in range(width):
             at = (y * width + x) * 4
             colour = pixels[at:at + 3]
-            if x < CURSOR_BOX and y < CURSOR_BOX:
-                box.add(colour.hex())
-            elif colour != expected:
+            if colour != expected:
                 wrong.append((x, y, colour.hex()))
-    return wrong, box
+    return wrong
 
 
 def _pixels_until_content(sock: socket.socket, width: int, height: int,

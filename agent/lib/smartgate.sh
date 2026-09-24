@@ -175,3 +175,22 @@ smart_replace_screen() {
     echo
     echo "  Powering off for the swap."
 }
+
+smart_replace_stop() {
+    # smart_gate rc=2, on either restore path (drawers, #1222; station,
+    # #1224): the screen, then the power-off -- before a byte is written.
+    # Never returns.
+    smart_replace_screen
+    [ "${IMAGECTL_TEST:-0}" = "1" ] && exit 0
+    finish_and_stop
+    # finish_and_stop returns only when Wake-on-LAN was not armed (#587).
+    # Nothing failed and the disk still has to come out, so this is not
+    # "skipped" / "no drawer completed", and not back into the round either
+    # (the next hello hands the same round back, with this progress_loop
+    # still running): hold on this screen, heartbeat on (#64), for a
+    # power-off by hand.
+    log "smart: replace chosen -- wol not armed, staying powered on"
+    echo "  Wake-on-LAN could not be armed: power off by hand for the swap."
+    HOLD_PROMPT="Replace the flagged disk: power off by hand"
+    hold_watch hold_beat
+}

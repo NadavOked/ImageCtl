@@ -171,7 +171,9 @@ def loadable_functions() -> str:
     ולכן החיתוך מ-`imagectl-agent` מחזיר `None` — ‏`sourced_libs` מביאה
     אותן משם. שתי הדרכים חיות זו לצד זו בכוונה: זה מה שמאפשר להריץ את
     אותו טסט בדיוק מול הקוד שלפני התיקון ומול זה שאחריו."""
-    wanted = ("hold_unheard", "do_task", "do_restore_drawers", "do_restore")
+    wanted = ("hold_unheard", "do_task", "capture_end_ask",   # #409: task.sh
+              "task_done_stays_on",                            # #1222: task.sh
+              "do_restore_drawers", "do_restore")
     return "\n".join(body for body in (cut_function(n) for n in wanted)
                      if body is not None)
 
@@ -183,6 +185,7 @@ def sourced_libs() -> str:
     names = ["common.sh", "jsonq.sh", "progress.sh", "pull.sh",
              "ui.sh", "hold.sh", "clonergui.sh",   # #708: resolve_target_drawers (#701) lives here
              "smart.sh", "crcdelta.sh"]   # #872: crc_delta_after sits on the write line of do_restore
+    names += ["attended.sh", "shrinkplan.sh"]   # #409: the question at the end of a capture
     return "".join(f". {posix(AGENT)}/lib/{n}; "
                    for n in names if (AGENT / "lib" / n).exists())
 

@@ -116,7 +116,7 @@ do_restore_drawers() {
     # שער SMART לפני כתיבה (#652); rc=2 = "החלף" -> כיבוי לפני שנכתב בייט.
     # shellcheck disable=SC2086 # the disk list is a word list on purpose
     _disks=$(smart_gate "$2" $_disks); _gr=$?
-    [ "$_gr" = 2 ] && { smart_replace_screen; [ "${IMAGECTL_TEST:-0}" = "1" ] && exit 0; finish_and_stop; }
+    [ "$_gr" = 2 ] && smart_replace_stop   # #1222: never returns
     [ "$_gr" = 0 ] || { ui_error_hold "all drawers skipped" hold_beat; return 1; }
     log "writing $(echo "$_disks" | wc -w) drawers: $_disks"
 
@@ -132,6 +132,8 @@ do_restore_drawers() {
         log "drawers complete -- powering off for the swap"
         [ "${IMAGECTL_TEST:-0}" = "1" ] && exit 0
         finish_and_stop
+        # #1222: returns only when Wake-on-LAN was not armed -- still done.
+        task_done_stays_on "Drawers complete. The drives were written."; return 0
     fi
     # ‏progress_loop ממשיך לרוץ, בדיוק כמו במסלול התחנה: הקונסולה חייבת
     # להוסיף לראות 'failed'. הריגתו כאן היא שהשתיקה את המכונה (#64).
@@ -160,7 +162,7 @@ do_restore() {
 
     # שער SMART לפני כתיבה (#652), אותו שער כמו בחדר השיכפולים.
     _disk=$(smart_gate "$_ses" "$_disk"); _gr=$?
-    [ "$_gr" = 2 ] && { smart_replace_screen; [ "${IMAGECTL_TEST:-0}" = "1" ] && exit 0; finish_and_stop; }
+    [ "$_gr" = 2 ] && smart_replace_stop   # #1224: never returns
     [ "$_gr" = 0 ] || { ui_error_hold "the disk was skipped -- nothing written" hold_beat; return 1; }
 
     ui_clear; ui_header

@@ -841,6 +841,18 @@ int main(int argc, char **argv) {
     screen->serverFormat.greenShift = (uint8_t)var.green.offset;
     screen->serverFormat.blueShift = (uint8_t)var.blue.offset;
     screen->alwaysShared = TRUE;
+    /* #1221: rfbGetScreen() installs its own 8x7 black-and-white "X"
+     * software cursor (screen->cursor). rfbShowCursor()/rfbHideCursor()
+     * bake it straight into the outgoing framebuffer, at cl->cursorX/Y,
+     * for any client that has not negotiated a cursor pseudo-encoding --
+     * ours never do (monitor.js and the test client both ask for
+     * CopyRect/Raw/DesktopSize only). cursorX/Y start at (0,0) and are
+     * never moved: view-only mode's ptrAddEvent drops every pointer event,
+     * and input mode's injects into uinput instead of updating the
+     * client's own cursor position -- so every client saw a permanent X
+     * baked into the top-left corner. NULL disables the soft-cursor draw
+     * outright: no cursor is ever composited into the frame, for anyone. */
+    screen->cursor = NULL;
     /* #839: a non-NULL authPasswdData makes LibVNCServer offer security
      * type 2 *instead of* None; passwordCheck is what decides. The pointer
      * itself is never dereferenced by the library once passwordCheck is

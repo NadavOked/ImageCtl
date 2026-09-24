@@ -115,10 +115,11 @@ shrink_gui_release() {
     # ממתינה לנצח. הוא נעצר כמו ב-handoff (gui_cleanup מחזיר את הקונסולה),
     # והקליטה ממשיכה על מסך הטקסט כפי שעבדה לפני שהיה מסך גרפי. דיאלוג
     # גרפי הוא עבודת C בקיוסק -- Issue המשך; בינתיים אין המתנה עיוורת.
+    # ‏$1 = איזו שאלה (ליומן); ריק = שאלת הכיווץ. גם שאלת סוף הקליטה (#409).
     [ -n "${_gui_pid:-}" ] && kill -0 "$_gui_pid" 2>/dev/null || return 0
-    log "native GUI stopped for the shrink question -- the capture continues on the text screen"
+    log "native GUI stopped for ${1:-the shrink question} -- the text screen takes over"
     kill "$_gui_pid" 2>/dev/null
-    wait_pid "$_gui_pid" "$WAIT_HELPER_S" "native GUI before the shrink question" || :
+    wait_pid "$_gui_pid" "$WAIT_HELPER_S" "native GUI before ${1:-the shrink question}" || :
     _gui_pid=""; _gui_disabled=1
 }
 

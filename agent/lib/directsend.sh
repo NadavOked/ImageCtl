@@ -235,6 +235,9 @@ direct_send_task() {
         [ "${IMAGECTL_TEST:-0}" = "1" ] && exit 0
         sleep 20
         finish_and_stop
+        # #1222: returns only when Wake-on-LAN was not armed -- still done.
+        task_done_stays_on "Direct deployment complete. The drawers were written."
+        return 0
     fi
     echo "failed" > "$RUN_DIR/state"
     report_final "$_dt_ppid" "" "$MAC" "$SERVER" "$1" \
