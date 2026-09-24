@@ -252,12 +252,13 @@ def test_static_includes_are_at_9_9():
     #989 (קצב הזרם ובלוקים ששודרו שוב בחדר המשכפלים) = ‏10.4;
     #1008 (כניסה אחרונה בהרשאות, דפדוף before ו-CSV ביומן) = ‏10.5;
     #980 (כיבוי כל המשכפלים, היסטוריית סבבי החדר, עמודת התיקייה בקליטות) = ‏10.6;
-    #1227 (monitorToggle נגזר מ-enabled שחזר בתשובה, לא ממה שביקשו) = ‏10.7.
+    #1227 (monitorToggle נגזר מ-enabled שחזר בתשובה, לא ממה שביקשו) = ‏10.7;
+    #1179 (העץ של המשני = העץ של הראשי; "‹שם› לא ענה" בכל עמוד) = ‏10.8.
     שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
     versions = {float(v) for v in re.findall(r'\?v=(\d+\.\d+)"', page)}
-    assert versions == {10.7}, versions
+    assert versions == {10.8}, versions
 
 
 def test_update_apply_is_a_sheet_without_text_verification_and_revert_uses_hostname():

@@ -1331,12 +1331,40 @@ function renameServer(el) {
 /* ‏#936: צומת שרת לכל משני מ-GET /storage-nodes, כמו vCenter. הנתיב הוא
    admin+standalone (deploy → 403, משני → 409): במקרים האלה אין צמתים —
    לא שגיאה אדומה. מצב החיבור נמדד מול המשני (‏/machines, ‏connected) אחרי
-   שהצמתים כבר על המסך; משני שלא ענה נשאר בעץ עם נקודה אדומה. */
-const BRANCH_VIEWS = [
-  ["overview", "סקירה", "home"], ["machines", "מחשבים", "machine"],
-  ["images", "אימג'ים", "image"], ["transfers", "העברות", "deploy"],
+   שהצמתים כבר על המסך; משני שלא ענה נשאר בעץ עם נקודה אדומה.
+
+   ‏#1179: העץ של משני = אותו עץ של הראשי (‏#srvTA ב-index.html) — סקירה
+   כללית · סבב הפצה · מלאי ▸ · תשתית ▸ — עד רמת הדף. בלי "ניהול" (הכרעה
+   פתוחה של נדב: גלובלי או לכל שרת) ובלי "ארגז כלים" (כבוי ב-v1). "העברות"
+   תחת מלאי הן ההעברות בין הראשי לשרת הזה, ואין להן מקבילה בעץ של הראשי.
+   הרביעי בכל עלה: האם יש היום נתיב relay לנתונים (8443). עלה בלי נתיב
+   מופיע בעץ ומציג "דורש API דרך 8443 (#1179)" — לא מוסתר ולא נתון מומצא. */
+const BRANCH_TREE = [
+  ["overview", "סקירה כללית", "home", true],
+  ["deploy", "סבב הפצה", "deploy", false],
+  { id: "inv", label: "מלאי", icon: "list", open: true, kids: [
+    ["images", "אימג'ים", "folder", true], ["machines", "מחשבים", "list", true],
+    ["transfers", "העברות", "deploy", true]] },
+  { id: "infra", label: "תשתית", icon: "health", open: false, kids: [
+    ["health", "בריאות ושירותים", "health", false], ["storage", "אחסון", "storage", false],
+    ["network", "רשת", "network", false], ["monitor", "מוניטור", "user", true],
+    ["drivers", "דרייברים", "settings", false]] },
 ];
+const BRANCH_VIEWS = BRANCH_TREE.flatMap((x) => Array.isArray(x) ? [x] : x.kids);
 let BRANCH_NODE = null;
+let BRANCH_VIEW = "overview";
+
+function branchTreeHtml(n, wasOpen) {
+  const idEnc = encodeId(n.id);
+  const leaf = ([view, label, icon]) =>
+    `<div class="inventory-node" data-branch-view="${esc(view)}" data-branch-node="${esc(n.id)}" role="treeitem" tabindex="0" onclick="openBranchView('${idEnc}','${view}',this)"><span class="tree-arrow-sp"></span><span>${uiIcon(icon)}</span><span>${esc(label)}</span></div>`;
+  return BRANCH_TREE.map((x) => {
+    if (Array.isArray(x)) return leaf(x);
+    const boxId = `srv-${n.id}-${x.id}`;
+    const open = boxId in wasOpen ? wasOpen[boxId] : x.open;
+    return `<div class="inventory-node" role="treeitem" tabindex="0" aria-expanded="${open}" ondblclick="toggleInventoryGroup(this,'${esc(boxId)}')"><span class="tree-arrow" data-open="${open}" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'${esc(boxId)}')">${open ? "▾" : "▸"}</span><span>${uiIcon(x.icon)}</span><span>${esc(x.label)}</span></div><div id="${esc(boxId)}" class="inventory-children" role="group"${open ? "" : " hidden"}>${x.kids.map(leaf).join("")}</div>`;
+  }).join("");
+}
 
 function secondaryDotClass(n, connected) {
   if (n.disabled_at) return "status";
@@ -1356,15 +1384,18 @@ async function populateSidebarSecondaries() {
     if (e.status === 403 || e.status === 409) { host.innerHTML = ""; return; }
     throw e;
   }
-  const wasOpen = sidebarChildOpen(host);
+  // ‏#1179: גם הקבוצות המקוננות (מלאי/תשתית) שומרות פתוח/סגור בין רינדורים.
+  const wasOpen = {};
+  host.querySelectorAll(".inventory-children").forEach((el) => {
+    wasOpen[el.id] = !(el.hasAttribute("hidden") || el.style.display === "none");
+  });
   host.innerHTML = nodes.map((n) => {
     const boxId = "srv-" + n.id;
     const open = !!wasOpen[boxId];
     const idEnc = encodeId(n.id);
-    const kids = BRANCH_VIEWS.map(([view, label, icon], i) =>
-      `<div class="inventory-node" data-branch-view="${esc(view)}" role="treeitem" tabindex="0" onclick="openBranchView('${idEnc}',${i},this)"><span class="tree-arrow-sp"></span><span>${uiIcon(icon)}</span><span>${esc(label)}</span></div>`).join("");
+    const kids = branchTreeHtml(n, wasOpen);
     const title = n.disabled_at ? "מושבת" : "מצב החיבור נבדק…";
-    return `<div class="inventory-node server-node" data-secondary="${esc(n.id)}" role="treeitem" tabindex="0" aria-expanded="${open}" onclick="openBranchView('${idEnc}',0,this)" ondblclick="toggleInventoryGroup(this,'${esc(boxId)}')"><span class="tree-arrow" data-open="${open}" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'${esc(boxId)}')">${open ? "▾" : "▸"}</span><span>${uiIcon("server")}</span><strong class="server-name">${esc(n.label)}</strong><span class="${secondaryDotClass(n, null)}" data-secondary-status="${esc(n.id)}" title="${esc(title)}" aria-label="${esc(title)}"><i></i></span></div><div id="${esc(boxId)}" class="inventory-children" role="group"${open ? "" : " hidden"}>${kids}</div>`;
+    return `<div class="inventory-node server-node" data-secondary="${esc(n.id)}" data-conn="${n.disabled_at ? "off" : "checking"}" role="treeitem" tabindex="0" aria-expanded="${open}" onclick="openBranchView('${idEnc}','overview',this)" ondblclick="toggleInventoryGroup(this,'${esc(boxId)}')"><span class="tree-arrow" data-open="${open}" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'${esc(boxId)}')">${open ? "▾" : "▸"}</span><span>${uiIcon("server")}</span><strong class="server-name">${esc(n.label)}</strong><span class="${secondaryDotClass(n, null)}" data-secondary-status="${esc(n.id)}" title="${esc(title)}" aria-label="${esc(title)}"><i></i></span></div><div id="${esc(boxId)}" class="inventory-children" role="group"${open ? "" : " hidden"}>${kids}</div>`;
   }).join("");
   await Promise.all(nodes.filter((n) => !n.disabled_at).map((n) =>
     api(`/storage-nodes/${encodeId(n.id)}/machines`)
@@ -1374,6 +1405,9 @@ async function populateSidebarSecondaries() {
 
 function markSecondaryStatus(n, connected, error) {
   SECONDARY_STATUS[n.id] = { connected, error };   // ‏#954: "דורש טיפול" בסקירה קורא מכאן
+  // ‏#1179: הענף כולו אדום כשהמשני לא ענה — לא רק הנקודה (console.css: data-conn).
+  const row = document.querySelector(`[data-secondary="${CSS.escape(n.id)}"]`);
+  if (row) row.setAttribute("data-conn", n.disabled_at ? "off" : (connected ? "ok" : "err"));
   const dot = document.querySelector(`[data-secondary-status="${CSS.escape(n.id)}"]`);
   if (!dot) return;
   dot.className = secondaryDotClass(n, connected);
@@ -1382,11 +1416,14 @@ function markSecondaryStatus(n, connected, error) {
   dot.setAttribute("aria-label", title);
 }
 
-function openBranchView(nid, tabIndex, el) {
+/* ‏#1179: עמוד של משני = BRANCH_NODE + BRANCH_VIEW (מפתח עלה מ-BRANCH_TREE),
+   לא אינדקס לשונית. בלי el (מעבר מתוך הדף) — העלה בעץ נמצא ומודגש. */
+function openBranchView(nid, view, el) {
   try { nid = decodeURIComponent(nid); } catch (e) {}
   BRANCH_NODE = nid;
-  selectPage(el || null, "branch");
-  if (tabIndex) activateTab(tabIndex);
+  BRANCH_VIEW = BRANCH_VIEWS.some((v) => v[0] === view) ? view : "overview";
+  selectPage(el || document.querySelector(
+    `[data-branch-node="${CSS.escape(nid)}"][data-branch-view="${BRANCH_VIEW}"]`), "branch");
 }
 
 function renderCurrent() {
@@ -5544,8 +5581,9 @@ const pages = {
   // ‏#954 גל 7: כותרת אובייקט + datagrid (UI.*, כמו drivers.js) — שרתים/העברות/קבוצות.
   branches: { crumb: "סניפים", title: "סניפים", tabs: ["שרתים", "העברות", "קבוצות"], render: (i) => branchesPage(i), load: () => loadBranchesData(), own: true },
   // ‏#936: הדף של משני אחד (נבחר בעץ, BRANCH_NODE) — אותם נתונים ואותן
-  // פונקציות של "סניפים" (branches.js), לפי לשונית.
-  branch: {crumb:"שרת משני", title:"שרת משני", desc:"מצב חיבור, המחשבים שלו, ספריית האימג'ים של המשני וההעברות בשני הכיוונים — כפי שהראשי מדד מולו", tabs: BRANCH_VIEWS.map((v) => v[1]), render:pagePlaceholder},
+  // פונקציות של "סניפים" (branches.js). ‏#1179: בלי לשוניות — העמוד הוא העלה
+  // שנבחר בעץ של המשני (BRANCH_VIEW), כמו שכל עמוד של הראשי הוא עלה בעץ שלו.
+  branch: {crumb:"שרת משני", title:"שרת משני", desc:"אותו עץ כמו הראשי, מול הנתונים של השרת המשני — כפי שהראשי מדד מולו", tabs: [], render:pagePlaceholder},
   // ‏#954: הדף מצייר את הכותרת והלשוניות שלו (own) לפי שפת העיצוב החדשה; הלשוניות בפועל לפי תפקיד (homeTabs).
   home: { crumb: "סקירה כללית", title: "סקירה כללית", tabs: ["סיכום", "משימות", "אירועים"], render: home, load: loadHome, own: true },
   images: { crumb: "אימג'ים", title: "ספריית אימג'ים", tabs: imagesTabs(), render: images, load: loadImages, own: true },
@@ -5568,7 +5606,7 @@ let searchQuery = "";
 
 function tabRender(pageId, index) {
   const renderers = {
-    branch: BRANCH_VIEWS.map(([view]) => () => `<div id="branch-view" class="stack" data-view="${view}">${pagePlaceholder()}</div>`),
+    branch: [() => `<div id="branch-view" class="stack" data-view="${esc(BRANCH_VIEW)}">${pagePlaceholder()}</div>`],
   };
   const fn = renderers[pageId]?.[index];
   return fn ? fn() : `<div class="card"><div class="card-b">אין תוכן עבור הכרטיס הזה.</div></div>`;
@@ -6372,7 +6410,7 @@ function pageAllowed(id) {
 function wireRestoredPage() {
   if (current === "images") loadCaptures().catch(e => toast(e.message));
   if (current === "branches") wireBranchesGroupsTab();   // ‏own page: הטעינה עצמה דרך page.load (loadBranchesData)
-  if (current === "branch") loadBranchView(BRANCH_VIEWS[currentTab][0]).catch(e => toast(e.message));
+  if (current === "branch") loadBranchView(BRANCH_VIEW).catch(e => toast(e.message));
 }
 let pollTimer = null, overviewBusy = false, overviewError = "", overviewLastOk = null;
 let CAPTURE_TASKS = [];

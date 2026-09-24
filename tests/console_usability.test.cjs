@@ -205,11 +205,12 @@ test('S3: at <=740px, where the statusbar is hidden, the dock returns to the bot
 
 test('S4: tabs render as <button role="tab"> inside role="tablist" with aria-selected and roving tabindex', () => {
   const {run} = setup();
-  // ‏#954: העמודים החדשים (page.own) מציירים לשוניות משלהן — הבדיקה על המסגרת הגנרית עוברת לשרת המשני (גל 8: גם הרשת own; branch = 4 לשוניות)
-  const html = run('layout(pages.branch, 1)');
+  // ‏#954: העמודים החדשים (page.own) מציירים לשוניות משלהן — הבדיקה על המסגרת הגנרית עברה לשרת המשני (גל 8),
+  // ומ-#1179 גם לו אין לשוניות (כל עמוד שלו הוא עלה בעץ) — ולכן עמוד סינתטי עם 4 לשוניות על אותה מסגרת.
+  const html = run('layout({crumb: "x", title: "x", desc: "", tabs: ["א", "ב", "ג", "ד"]}, 1)');
   assert.match(html, /<div class="vcenter-tabs" role="tablist">/);
   const tabs = [...html.matchAll(/<button type="button" class="vcenter-tab ?(active)?" role="tab" aria-selected="(true|false)" tabindex="(0|-1)"/g)];
-  assert.equal(tabs.length, 4, 'four branch tabs as buttons');
+  assert.equal(tabs.length, 4, 'four tabs as buttons');
   assert.deepEqual(tabs.map((m) => [m[1] || '', m[2], m[3]]), [['', 'false', '-1'], ['active', 'true', '0'], ['', 'false', '-1'], ['', 'false', '-1']]);
   assert.doesNotMatch(html, /<div class="vcenter-tab[ "]/, 'no div tabs left');
   assert.match(html, /id="pageActionBtn" aria-haspopup="menu" aria-expanded="false"/);

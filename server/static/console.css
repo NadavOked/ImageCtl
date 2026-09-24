@@ -569,6 +569,8 @@ fieldset.radio-group .check input{margin:0}
 .breadcrumbs,.toolbar,.object-strip{flex:none}
 .inventory-node{min-height:30px}
 .inventory-node > span:last-child,.server-name{min-width:0;overflow-wrap:anywhere}
+/* #1179: משני שלא ענה — הענף אדום, לא רק הנקודה (markSecondaryStatus → data-conn) */
+.server-node[data-conn="err"] .server-name{color:var(--danger)}
 .tag.danger{color:var(--danger);background:color-mix(in srgb,var(--danger) 12%,var(--surface))}
 .form-grid{padding:16px}
 #branches-body .panel{overflow:auto}

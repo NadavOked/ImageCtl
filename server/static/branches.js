@@ -121,7 +121,7 @@ function branchNodeRow(n) {
     : `<span class="muted">—</span>`;
   const idEnc = encodeId(n.id);
   const acts = UI.acts([
-    ["פתח", `openBranchView('${idEnc}',0,null)`],
+    ["פתח", `openBranchView('${idEnc}','overview',null)`],
     ["בדוק חיבור", `checkBranchNow('${idEnc}')`],
     ["העבר אימג'", `openTransferSheetForNode('${idEnc}')`],
     ["עריכה", `editBranchNode('${idEnc}')`],
@@ -233,7 +233,7 @@ async function startPullFromSecondary(nidEnc, imageIdEnc) {
   try {
     await post(`/storage-nodes/${encodeId(nid)}/pull`, { image_id });
     toast("ההעברה לראשי התחילה");
-    if (current === "branch") activateTab(BRANCH_VIEWS.findIndex((v) => v[0] === "transfers"));
+    if (current === "branch") openBranchView(encodeId(nid), "transfers", null);
     else {
       BRANCH_TRANSFERS = await api("/storage-transfers");
       renderCurrent();
@@ -387,9 +387,11 @@ async function loadBranchMachines(nid) {
 }
 
 function renderBranchMachines(nid, answer, box, status) {
+  const n = BRANCH_NODES.find((x) => x.id === nid);
+  if (n) markSecondaryStatus(n, !!answer.connected, answer.error);
   if (!answer.connected) {
     if (status) { status.innerHTML = `<i></i>לא מחובר`; status.className = "status err"; }
-    box.innerHTML = `<div class="notice warn" role="status">השרת המשני לא ענה: ${esc(answer.error || "")}</div>`;
+    box.innerHTML = branchDownNote(n ? n.label : "השרת המשני", answer.error);
     return;
   }
   if (status) { status.innerHTML = `<i></i>מחובר`; status.className = "status ok"; }
@@ -455,16 +457,42 @@ function openTransferSheet(n, images, afterSubmit) {
   });
 }
 
-/* ---------- #936: הדף של משני אחד (צומת השרת בעץ) ---------- */
+/* ---------- #936: הדף של משני אחד (צומת השרת בעץ) ----------
+   ‏#1179: כל עלה בעץ של המשני (BRANCH_TREE ב-console.js) הוא view כאן.
+   כל עמוד מודד את החיבור, ומשני שלא ענה מציג "‹שם› לא ענה: ‹סיבה›" — לא
+   דף ריק. עלה בלי נתיב relay מציג "דורש API דרך 8443 (#1179)" ולא נתון. */
 
 let BRANCH_VIEW_GEN = 0;
+
+function branchDownNote(label, error) {
+  return `<div class="notice err" role="status" data-branch-down>${esc(label)} לא ענה: ${esc(error || "בלי סיבה בתשובה")}</div>`;
+}
+
+/* החיבור נמדד מול ה-machines של המשני — אותה מדידה של הנקודה בעץ. משני
+   מושבת אינו נשאל. בקשה לראשי שנכשלה אינה "המשני לא ענה" (5א): היא נשארת
+   "לא נבדק" עם הסיבה, והנקודה בעץ אינה נצבעת ממנה. */
+async function measureBranch(n) {
+  if (n.disabled_at) return { connected: false, disabled: true, error: "השרת המשני מושבת" };
+  let answer;
+  try { answer = await api(`/storage-nodes/${encodeId(n.id)}/machines`); }
+  catch (e) { return { connected: false, unchecked: true, error: e.message }; }
+  markSecondaryStatus(n, !!answer.connected, answer.error);
+  return answer;
+}
+
+function branchConnHtml(n, conn) {
+  if (conn.disabled) return { status: `<span class="status"><i></i>מושבת</span>`, note: `<div class="notice err" role="status">השרת מושבת — לא נשאל.</div>` };
+  if (conn.unchecked) return { status: `<span class="status"><i></i>לא נבדק</span>`, note: `<div class="notice warn" role="status">לא נבדק אם ${esc(n.label)} עונה — הבקשה לראשי נכשלה: ${esc(conn.error)}</div>` };
+  if (!conn.connected) return { status: `<span class="status err"><i></i>לא מחובר</span>`, note: branchDownNote(n.label, conn.error) };
+  return { status: `<span class="status ok"><i></i>מחובר</span>`, note: "" };
+}
 
 async function loadBranchView(view) {
   const host = $("#branch-view");
   if (!host) return;
   stopBranchPolling();
-  // מעבר מהיר בין לשוניות/משניים (openBranchView מרנדר פעמיים: הדף ואז
-  // הלשונית) — טעינה שהתיישנה בזמן ה-await לא כותבת ל-DOM שכבר הוחלף.
+  // מעבר מהיר בין עמודים/משניים בעץ — טעינה שהתיישנה בזמן ה-await לא
+  // כותבת ל-DOM שכבר הוחלף.
   const gen = ++BRANCH_VIEW_GEN;
   const stale = () => gen !== BRANCH_VIEW_GEN || $("#branch-view") !== host;
   const nid = BRANCH_NODE;
@@ -475,20 +503,24 @@ async function loadBranchView(view) {
     host.innerHTML = `<div class="card"><div class="card-b"><div class="empty">השרת המשני אינו רשום עוד. בחר שרת אחר בעץ.</div></div></div>`;
     return;
   }
+  BRANCH_NODES = nodes;
+  const meta = BRANCH_VIEWS.find((v) => v[0] === view) || BRANCH_VIEWS[0];
+  view = meta[0];
   const disabled = !!n.disabled_at;
   const status = disabled
     ? `<span class="status"><i></i>מושבת</span>`
     : `<span class="status" id="branch-status-${esc(n.id)}"><i></i>בודק חיבור…</span>`;
-  // מצב החיבור מוצג רק בלשוניות שמודדות אותו (סקירה, מחשבים) — לא "בודק
-  // חיבור…" שלעולם לא מתעדכן (עיקרון 5).
-  const measured = view === "overview" || view === "machines";
+  // "בודק חיבור…" רק בעמודים שמעדכנים אותו אחרי המדידה (סקירה, מחשבים,
+  // מוניטור); השאר מציירים אחרי המדידה את התוצאה עצמה (עיקרון 5).
+  const measured = view === "overview" || view === "machines" || view === "monitor";
   const idEnc = encodeId(n.id);
   const headActs = view === "overview" ? `<div class="action-strip">
       <button class="btn primary" ${disabled ? "disabled" : ""} onclick="openTransferSheetForNode('${idEnc}')">העבר אימג'</button>
       <button class="btn" ${disabled ? "disabled" : ""} onclick="loadBranchMachines(decodeURIComponent('${idEnc}')).catch((e)=>toast(e.message))">בדוק חיבור</button>
       <button class="btn" onclick="toggleBranchNode('${idEnc}').then(()=>loadBranchView('overview'))">${disabled ? "הפעל" : "השבת"}</button>
     </div>` : "";
-  const head = `<div class="card-h"><span>${esc(n.label)} <small class="muted">${esc(n.group_label || "ללא קבוצה")}</small></span>${measured ? status : ""}</div>`;
+  const headOf = (st) => `<div class="card-h"><span>${esc(n.label)} · ${esc(meta[1])} <small class="muted">${esc(n.group_label || "ללא קבוצה")}</small></span>${st}</div>`;
+  const head = headOf(measured ? status : "");
   if (view === "overview") {
     const [answer, transfers] = await Promise.all([
       disabled ? Promise.resolve({ connected: false, error: "השרת המשני מושבת", machines: [] }) : api(`/storage-nodes/${encodeId(n.id)}/machines`),
@@ -533,12 +565,16 @@ async function loadBranchView(view) {
       $("#branch-online-count").textContent = `${answer.machines.filter((m) => m.online).length} מתוך ${answer.machines.length}`;
     } else {
       if (st) { st.innerHTML = `<i></i>לא מחובר`; st.className = "status err"; }
-      $("#branch-connect-note").innerHTML = `<div class="notice err" role="status">השרת המשני לא ענה: ${esc(answer.error || "")}</div>`;
+      $("#branch-connect-note").innerHTML = branchDownNote(n.label, answer.error);
     }
     return;
   }
-  if (view === "machines") {
-    host.innerHTML = `<div class="card">${head}<div class="card-b">
+  // ‏#1179: "מוניטור" של המשני = אותה רשימה (‏monitor.machine_rows של המשני, דרך
+  // ‏…/machines) עם כפתור המוניטור (#1129) — זה מה שה-relay נותן היום.
+  if (view === "machines" || view === "monitor") {
+    const intro = view === "monitor"
+      ? `<p class="sub">מחשבי הבנייה והשיכפול של ${esc(n.label)}, כפי שהמשני מדווח עליהם. הצפייה עוברת דרך המשני (8443).</p>` : "";
+    host.innerHTML = `<div class="card">${head}<div class="card-b">${intro}
       <div class="action-strip"><button class="btn" id="branch-view-refresh" ${disabled ? "disabled" : ""}>רענן מכונות</button></div>
       <div id="branch-machines-${esc(n.id)}" class="sub">${disabled ? "השרת מושבת — לא נשאל." : "טוען…"}</div>
     </div></div>`;
@@ -551,12 +587,13 @@ async function loadBranchView(view) {
     const remoteP = disabled
       ? Promise.resolve({ connected: false, error: "השרת המשני מושבת", images: [] })
       : api(`/storage-nodes/${encodeId(n.id)}/images`).catch((e) => (
-        { connected: false, error: e.message, images: [] }));
+        { connected: false, unchecked: true, error: e.message, images: [] }));
     const [transfers, images, remote] = await Promise.all([
       api("/storage-transfers"), api("/images"), remoteP,
     ]);
     if (stale()) return;
     BRANCH_TRANSFERS = transfers;
+    if (!disabled && !remote.unchecked) markSecondaryStatus(n, !!remote.connected, remote.error);
     const done = transfers.filter((t) => t.node_id === n.id && t.state === "done");
     const seen = new Set();
     const rows = done.filter((t) => !seen.has(t.image_id) && seen.add(t.image_id));
@@ -573,7 +610,7 @@ async function loadBranchView(view) {
       </tr>`;
     }).join("");
     const libBody = !remote.connected
-      ? `<div class="notice warn" role="status">לא ניתן לקרוא את ספריית המשני: ${esc(remote.error || "")}</div>`
+      ? branchConnHtml(n, disabled ? { disabled: true } : remote).note
       : (libRows
         ? `<table><thead><tr><th>שם</th><th>גודל</th><th>תאריך</th><th>קיים בראשי</th><th></th></tr></thead><tbody>${libRows}</tbody></table>`
         : `<div class="empty">אין אימג'ים בספריית המשני.</div>`);
@@ -586,13 +623,25 @@ async function loadBranchView(view) {
         `<tr><td><b>${esc(t.image_name)}</b> <span class="mono muted" dir="ltr">${esc(t.image_id)}</span></td><td class="mono" dir="ltr">${esc((t.updated_at || t.created_at || "").replace("T", " ").slice(0, 19))}</td></tr>`).join("")}</tbody></table>`
         : `<div class="empty">עוד לא הועבר אימג' לשרת הזה.</div>`}
     </div></div>`;
-    $("#branch-view-transfer").onclick = () => openTransferSheet(n, images, async () => activateTab(BRANCH_VIEWS.findIndex((v) => v[0] === "transfers")));
+    $("#branch-view-transfer").onclick = () => openTransferSheet(n, images, async () => openBranchView(encodeId(n.id), "transfers", null));
     return;
   }
-  const transfers = await api("/storage-transfers");
+  if (!meta[3]) {
+    // ‏#1179: אין היום נתיב relay לעמוד הזה — העמוד מופיע, בלי נתון מומצא.
+    const conn = await measureBranch(n);
+    if (stale()) return;
+    const c = branchConnHtml(n, conn);
+    host.innerHTML = `<div class="card">${headOf(c.status)}<div class="card-b">${c.note}
+      <div class="notice info" role="status" data-branch-needs-api>${esc(meta[1])} של ${esc(n.label)} — דורש API דרך 8443 (#1179). הראשי אינו מעביר היום את הנתונים של העמוד הזה מהמשני, ולכן אין כאן נתון.</div>
+    </div></div>`;
+    return;
+  }
+  // העברות: הרשומות הן של הראשי (הוא המעביר), אבל גם כאן — האם המשני עונה.
+  const [transfers, conn] = await Promise.all([api("/storage-transfers"), measureBranch(n)]);
   if (stale()) return;
   BRANCH_TRANSFERS = transfers;
-  host.innerHTML = `<div class="card">${head}<div class="card-b"><div id="branch-transfers-${esc(n.id)}"></div></div></div>`;
+  const c = branchConnHtml(n, conn);
+  host.innerHTML = `<div class="card">${headOf(c.status)}<div class="card-b">${c.note}<div id="branch-transfers-${esc(n.id)}"></div></div></div>`;
   renderBranchTransfers(n.id, null, 20);
   BRANCH_TIMER = setInterval(() => {
     if (current !== "branch" || BRANCH_NODE !== n.id || document.hidden) { stopBranchPolling(); return; }
