@@ -248,12 +248,14 @@ def test_static_includes_are_at_9_9():
     #1128 (כפתור "הורד גיבוי הגדרות" בכרטיס הגרסה) = ‏10.0;
     #972 (מגירת האימג': מחיצות מהמניפסט, אימות שמור, סבבים ב-30 יום) = ‏10.1;
     #1039 (אובייקט הרשת: /sessions, חכירות dnsmasq, bind null) = ‏10.2;
-    #1215 (אימג' במיקום לא זמין: "לא נבדק", לא "לא תואם") = ‏10.3.
+    #1215 (אימג' במיקום לא זמין: "לא נבדק", לא "לא תואם") = ‏10.3;
+    #989 (קצב הזרם ובלוקים ששודרו שוב בחדר המשכפלים) = ‏10.4;
+    #1008 (כניסה אחרונה בהרשאות, דפדוף before ו-CSV ביומן) = ‏10.5.
     שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
     versions = {float(v) for v in re.findall(r'\?v=(\d+\.\d+)"', page)}
-    assert versions == {10.3}, versions
+    assert versions == {10.5}, versions
 
 
 def test_update_apply_is_a_sheet_without_text_verification_and_revert_uses_hostname():
@@ -375,14 +377,15 @@ def test_deploy_page_is_the_cloners_room_from_the_api_only():
     גל 3א (`clonerCardHtml` במצב חדר, `machineSlots`, `slotHtml`), לא עותק.
     כתיבה רק ל-endpoints הקיימים (`POST /room`, `/room/start`, `/room/wake`,
     `/room/close` מאחורי הקלדת שם); סבב חדש inline (לא sheet); ההכרעה על
-    SMART (כתום ממשיך, אדום מדלג) גלויה בדף; מה שאין לו API — קצב/איבוד,
-    היסטוריה, דילוג מרחוק, תשובה מהקונסולה — "דורש API" בטקסט. הדף הישן
+    SMART (כתום ממשיך, אדום מדלג) גלויה בדף; קצב הזרם ובלוקים ששודרו שוב —
+    מ-`/room.round` (#989), ‏null = "לא נמדד"; מה שאין לו API — היסטוריה,
+    דילוג מרחוק, תשובה מהקונסולה — "דורש API" בטקסט. הדף הישן
     (סבבים / הצטרפות חיה, בקרת סבב, המגירה) איננו."""
     js = _console_js()
     for needed in ("function deploy(tab = 0)", "function loadDeploy(", "function roomKpis(", "function roomGridCard(", "function roomNotes(",
                    "function roomNewCard(", "function stopRoom(", "function startWave(", "function imageFitReason(", "function deployClassView(",
                    'post("/room", body)', 'post("/room/start")', 'post("/room/close", { confirm_name: name })', "verify: { label: \"הקלד את שם האימג'\", mustEqual: name }",
-                   "clonerCardHtml(m, admin, true)", "בלי תשובה הסוכן ממשיך לכתוב", "בלי תשובה הסוכן מדלג", "קצב ואיבוד — <b", "דורש API",
+                   "clonerCardHtml(m, admin, true)", "בלי תשובה הסוכן ממשיך לכתוב", "בלי תשובה הסוכן מדלג", "r.throughput_bps != null", "r.loss_blocks != null", "דורש API",
                    'deploy: { crumb: "סבב הפצה", title: "סבב הפצה", tabs: deployTabs(), render: deploy, load: loadDeploy, own: true }'):
         assert needed in js, needed
     block = js[js.index("/* ---------- #954 גל 4"):js.index("/* ---------- ספריית אימג'ים (#954 גל 2)")]
@@ -457,7 +460,7 @@ def test_small_pages_are_own_tables_from_the_api_and_wol_is_per_machine():
     for needed in ("function monitorPage()", "function monitorRowHtml(", "function settings()", "function settingRowHtml(", "async function saveSettings()",
                    "function permissions()", "const ROLE_MATRIX = [", "function userDeleteSheet(", "function logs()", "function logBarHtml(", "function logMore()",
                    "async function wakeMachine(", "async function wakeGroup(", "function wolResultText(",
-                   'key: "identity_check"', "WoL נשלח ל-", '"/api/console/journal" + logQuery()', 'X-Journal-Search-Truncated',
+                   'key: "identity_check"', "WoL נשלח ל-", '"/api/console/journal" + logQuery(last)', 'X-Journal-Search-Truncated',
                    'settings: { crumb: "הגדרות", title: "הגדרות", tabs: [], render: settings, load: loadSettingsData, own: true }',
                    'permissions: { crumb: "הרשאות", title: "הרשאות", tabs: [], render: permissions, load: loadUsersData, own: true }',
                    'logs: { crumb: "יומן", title: "יומן", tabs: [], render: logs, load: loadJournalData, own: true }',

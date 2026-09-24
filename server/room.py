@@ -1084,6 +1084,11 @@ def status_view(ctx) -> dict:
             "source": _direct().source_view(ctx.conn, round_row),
             # ‏#410: זמן, קצב והערכת סיום של הגל — null כשאין מה למדוד.
             **_wave_pace(started_at, machines),
+            # ‏#989: מה ש-udp-sender של השרת מדפיס — קצב הזרם ובלוקים ששודרו
+            # שוב. ‏null כשהשרת אינו המשדר (מחשב בנייה, #715) או לא נמדד.
+            **(ctx.sender.stream_stats(round_row["wave_session_id"])
+               if ctx.sender is not None and round_row["wave_session_id"]
+               else {"throughput_bps": None, "loss_blocks": None}),
         }
     return view
 

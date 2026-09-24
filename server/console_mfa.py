@@ -293,6 +293,7 @@ def register(router: APIRouter, ctx: ServerContext, current_user, admin_only, tl
         auth.attach_cookie(response, ctx.conn, stored, row["role"], tls)
         if body.get("remember_browser"):
             remember_browser(ctx.conn, response, stored, request, tls)
+        users.record_login(ctx.conn, stored, ip)
         journal(ctx.conn, "login", "mfa_backup" if used_backup else "mfa", stored)
         idle = int(get_setting(ctx.conn, "console_idle_seconds") or 300)
         return {"username": stored, "role": row["role"], "idle_seconds": idle}

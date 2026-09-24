@@ -319,7 +319,8 @@ def delete(conn: sqlite3.Connection, username: str, by: str) -> None:
 def list_users(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute(
         "SELECT username, role, created_at, disabled_at,"
-        " must_change_password, mfa_enabled, is_builtin"
+        " must_change_password, mfa_enabled, is_builtin,"
+        " last_login_at, last_login_from"
         " FROM users ORDER BY username"
     ).fetchall()
     return [{
@@ -329,6 +330,21 @@ def list_users(conn: sqlite3.Connection) -> list[dict]:
         "mfa_enabled": bool(r["mfa_enabled"]),
         "is_builtin": bool(r["is_builtin"]),
     } for r in rows]
+
+
+def record_login(conn: sqlite3.Connection, username: str, ip: str) -> None:
+    """‏#1008: כניסה שהנפיקה עוגייה — מתי ומאיזו כתובת (``request.client.host``).
+
+    נקרא ליד כל ``attach_cookie`` של כניסה (``console_login``, ‏``/login/mfa``),
+    ולא ב-``mfa_required``: סיסמה בלי הגורם השני אינה כניסה. זה המקור של
+    ``last_login_*`` ב-``GET /users`` — לא ``console_sessions`` (#1039), שהשורה
+    שלה נמחקת ביציאה ובתפוגה."""
+    with _write_lock, writing(conn):
+        conn.execute(
+            "UPDATE users SET last_login_at = ?, last_login_from = ?"
+            " WHERE username = ?",
+            (now_iso(), ip, username),
+        )
 
 
 def get_theme(conn: sqlite3.Connection, username: str) -> str:

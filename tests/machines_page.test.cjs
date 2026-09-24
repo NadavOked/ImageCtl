@@ -95,7 +95,9 @@ test('one grouped table: header counters + pills, three tabs, build → cloners 
   const {run}=setup(); const html=run('machines(0)'); balanced(html);
   assert.match(html,/class="page"/); assert.match(html,/obj-name">מחשבים</);
   // "בנייה 1" נראה לפני 3 שעות: בין 00:00 ל-03:00 UTC (isToday משווה תאריך ISO) זה עוד אתמול — נפל במעבדה 18/09 02:35 UTC.
-  const seenToday = new Date(Date.now()-180*60000).toISOString().slice(0,10)===today ? 5 : 4;
+  // ‏#1219: כל מכונה רשומה לפי הגיל שלה (180, 9, 9, 1, 1 דק׳) — התיקון הקודם כיסה רק את 180,
+  // ושתי המכונות של "לפני 9 דק׳" נפלו בין 00:00 ל-00:09 UTC (שער 0924b).
+  const seenToday = [180, 9, 9, 1, 1].filter((n) => new Date(Date.now()-n*60000).toISOString().slice(0,10)===today).length;
   assert.match(html,new RegExp(`8 רשומים · 2 כיתות · 2 מחשבי בנייה · 2 משכפלים · ${seenToday} נראו ברשת היום`));
   assert.match(html,/pill err">1 דיסק אדום</); assert.match(html,/pill warn">1 לא רשום</);
   for(const t of ['כל המחשבים','נראו ברשת \\(1\\)','דיסקים אדומים \\(1\\)']) assert.match(html,new RegExp('role="tab"[^>]*>'+t+'<'));

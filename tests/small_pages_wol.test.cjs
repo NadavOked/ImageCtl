@@ -12,9 +12,9 @@ const root=path.resolve(__dirname,'../server/static');
 
 const MAC_B='c8:d9:d2:0b:fe:32', MAC_C='a0:48:1c:8a:18:40', MAC_S='00:11:22:33:44:55';
 const SETTINGS={recovery_require_login:'true',session_wait_seconds:'300',console_idle_seconds:'600',class_deploy_enabled:'false',update_enabled:'false',server_name:'שרת המכללה'};
-const USERS=[{username:'admin',role:'admin',created_at:'2026-08-01T10:00:00',disabled:false},
-  {username:'yossi',role:'admin',created_at:'2026-09-17T08:00:00',disabled:true},
-  {username:'deployer',role:'deploy',created_at:'2026-09-17T09:00:00',disabled:false}];
+const USERS=[{username:'admin',role:'admin',created_at:'2026-08-01T10:00:00',disabled:false,last_login_at:'2026-09-17T08:05:00+00:00',last_login_from:'10.44.10.55'},
+  {username:'yossi',role:'admin',created_at:'2026-09-17T08:00:00',disabled:true,last_login_at:null,last_login_from:null},
+  {username:'deployer',role:'deploy',created_at:'2026-09-17T09:00:00',disabled:false,last_login_at:null,last_login_from:null}];
 const today=new Date().toISOString().slice(0,10);
 const JOURNAL=[
   {ts:today+'T09:44:10',user:'',event:'boot_loop_local',label:'מחשב אתחל שוב ושוב — נשלח לדיסק המקומי',text:'LAB303-03 <b>x</b>',severity:'warn'},
@@ -47,7 +47,7 @@ function setup(over={}) {
     fetch:async(url,options={})=>{
       const key=url.replace('/api/console','').split('?')[0]; requests.push({url:key,full:url,method:options.method||'GET',body:typeof options.body==='string'?JSON.parse(options.body):(options.body||null)});
       const f=fixtures[key];
-      const hdr={get:(h)=>h==='X-Journal-Search-Truncated'&&fixtures.__truncated?'true':null};
+      const hdr={get:(h)=>h==='X-Journal-Search-Truncated'&&fixtures.__truncated?'true':h==='X-Journal-Total'&&fixtures.__total!=null?String(fixtures.__total):null};
       if(f instanceof Error) return {status:500,ok:false,headers:hdr,json:async()=>({detail:f.message})};
       if(f===403) return {status:403,ok:false,headers:hdr,json:async()=>({detail:'WoL לתחנות כיתה — v2'})};
       if(f===404) return {status:404,ok:false,headers:hdr,json:async()=>({detail:'Not Found'})};
@@ -185,13 +185,15 @@ test('permissions: one users table (name, role pill, state, created, hover actio
   assert.match(html,/3 משתמשים · 1 מנהלים פעילים · 1 מפעילי הפצה · המנהל האחרון אינו ניתן למחיקה או להורדה/);
   assert.match(html,/onclick="openNewUser\(\)">\+ משתמש</);
   assert.equal((html.match(/<table class="dg( acts-on)?">/g)||[]).length,2,'users + matrix'); assert.doesNotMatch(html,/role="tablist"|Add user|<th>User<\/th>|id="users-table"/);
-  assert.match(html,/<th>משתמש<\/th><th>תפקיד<\/th><th>מצב<\/th><th>MFA<\/th><th>נוצר<\/th><th><\/th>/);
+  assert.match(html,/<th>משתמש<\/th><th>תפקיד<\/th><th>מצב<\/th><th>MFA<\/th><th>נוצר<\/th><th>כניסה אחרונה<\/th><th><\/th>/);
   const a=row(html,'data-user="admin"'), y=row(html,'data-user="yossi"'), d=row(html,'data-user="deployer"');
   assert.match(a,/<span class="name">admin<\/span><span class="sub">זה אתה<\/span>/); assert.match(a,/class="pill info">מנהל</); assert.match(a,/class="st ok">פעיל</); assert.match(a,/01\/08\/2026/);
   assert.match(a,/userPasswordSheet\('admin'\)">סיסמה</); assert.doesNotMatch(a,/userRoleSheet|userDisable|userDeleteSheet/,'self: password only (server refuses role/disable on yourself; and admin is the last active admin)');
   assert.match(y,/class="st warn">מושבת</); assert.match(y,/userDisable\('yossi', false\)">הפעל</); assert.match(y,/class="btn sm danger" onclick="userDeleteSheet\('yossi'\)">מחיקה</,'a disabled admin is deletable — the server counts active admins');
   assert.match(d,/class="pill ">הפצה</); assert.match(d,/userRoleSheet\('deployer'\)">תפקיד</); assert.match(d,/userDisable\('deployer', true\)">השבת</); assert.match(d,/userDeleteSheet\('deployer'\)">מחיקה</);
-  assert.match(html,/כניסה אחרונה ומאיפה — דורש API/,'not invented');
+  // ‏#1008: כניסה אחרונה מ-/users; null = "לא נרשמה", לא תאריך מומצא
+  assert.match(a,/17\/09\/2026 08:05<\/span> · <span class="mono">10\.44\.10\.55</);
+  assert.match(y,/class="muted"[^>]*>לא נרשמה</); assert.doesNotMatch(html,/דורש API/);
   // המטריצה: שורות מהקוד. ‏#1073: deploy — "לא" לכניסה לקונסולה, "ממחשב הבנייה" למה שהקיוסק מגיש
   assert.match(html,/<span>מה כל תפקיד רואה/); assert.match(html,/<th><\/th><th>מנהל<\/th><th>הפצה<\/th>/);
   assert.match(row(html,'כניסה לקונסולה'),/class="st ok">כן<\/span><\/td><td><span class="st ">לא</);
@@ -246,7 +248,7 @@ test('logs: one table — time (hh:mm:ss today, date otherwise), severity dot fr
   assert.ok(requests.some((r)=>r.url==='/journal/events'),'event types for the filter');
   const j=requests.find((r)=>r.url==='/journal'); assert.equal(new URL(j.full,'http://x').searchParams.get('limit'),'200'); assert.equal(new URL(j.full,'http://x').searchParams.get('from'),null,'no range by default');
   const html=run('logs()'); balanced(html);
-  assert.match(html,/class="obj-name">יומן</); assert.match(html,/4 אירועים מוצגים \(מגבלה 200\) · בלי סינון — האחרונים/);
+  assert.match(html,/class="obj-name">יומן</); assert.match(html,/4 אירועים מוצגים \(הסך לא נמסר\) · בלי סינון — האחרונים/,'no X-Journal-Total → not a number');
   assert.match(html,/<th>זמן<\/th><th><\/th><th>מה קרה<\/th><th>מי<\/th><th><\/th>/);
   assert.doesNotMatch(html,/role="tablist"|openLogFilter|<th>event<\/th>|עקרון התצוגה|Audit/);
   const r0=row(html,'LAB303-03');
@@ -261,12 +263,12 @@ test('logs: one table — time (hh:mm:ss today, date otherwise), severity dot fr
   assert.match(html,/<select aria-label="משתמש"[^>]*><option value="" selected>כל המשתמשים<\/option><option value="deployer">deployer<\/option><option value="nadav">nadav</,'users from the rows');
   assert.match(html,/<select aria-label="טווח זמן"[^>]*><option value="" selected>כל הזמן<\/option><option value="today">היום</);
   assert.match(html,/class="n">4 אירועים</); assert.match(html,/זה הכול לסינון הזה/,'fewer rows than the limit → nothing more to load');
-  assert.match(html,/title="דורש API">ייצוא CSV — בקרוב/);
+  assert.match(html,/<a class="btn" href="\/api\/console\/journal\.csv" download>ייצוא CSV</,'#1008: the export, same filter');
   run('openLogDetail(2)');
   assert.match(run('drawer'),/פרטי אירוע\|/); assert.match(run('drawer'),/<span class="mono">storage_transfer_failed<\/span>/); assert.match(run('drawer'),/class="st err">כשל \/ סירוב/);
 });
 
-test('logs: filters go to the server as query parameters (q, event, user, from for today/7d, to+:59 for a custom range), reset the limit, "more" raises it; truncated header → warning',async()=>{
+test('logs: filters go to the server as query parameters (q, event, user, from for today/7d, to+:59 for a custom range), the CSV link carries them, "more" pages with before= and appends (#1008); truncated header → warning',async()=>{
   const {run,requests,fixtures}=setup(); run('current="logs"');
   await run('loadJournalData()');
   const q=()=>new URL(requests.filter((r)=>r.url==='/journal').at(-1).full,'http://x').searchParams;
@@ -280,11 +282,17 @@ test('logs: filters go to the server as query parameters (q, event, user, from f
   run("logFilter('since','2026-09-01T10:00')"); await new Promise((r)=>setImmediate(r)); run("logFilter('until','2026-09-13T12:00')"); await new Promise((r)=>setImmediate(r));
   assert.equal(q().get('from'),'2026-09-01T10:00'); assert.equal(q().get('to'),'2026-09-13T12:00:59','inclusive end minute');
   assert.match(run('logs()'),/מסונן: &quot;LAB303&quot; · סבב נפתח · nadav · 2026-09-01T10:00 – 2026-09-13T12:00/);
-  // "עוד": limit עולה רק כשיש בדיוק limit שורות (יכול להיות עוד)
-  fixtures['/journal']=Array.from({length:400},(_,i)=>({ts:today+'T10:00:00',user:'u',event:'login',label:'L'+i,text:''}));
-  run('logMore()'); await new Promise((r)=>setImmediate(r)); assert.equal(q().get('limit'),'400');
-  assert.match(run('logs()'),/onclick="logMore\(\)">עוד \(600\)</);
-  run("logFilter('q','')"); await new Promise((r)=>setImmediate(r)); assert.equal(q().get('limit'),'200','a filter change resets the limit');
+  // ‏#1008: "עוד" = הדף הבא עם before=<id האחרון>, ומוסיף — לא limit גדל
+  assert.match(run('logs()'),/href="\/api\/console\/journal\.csv\?q=LAB303&amp;event=session_open&amp;user=nadav&amp;from=2026-09-01T10%3A00&amp;to=2026-09-13T12%3A00%3A59" download>/,'the export carries the filter, without limit');
+  fixtures['/journal']=Array.from({length:200},(_,i)=>({id:1000-i,ts:today+'T10:00:00',user:'u',event:'login',label:'L'+i,text:''}));
+  fixtures.__total=350;
+  run("logFilter('q','')"); await new Promise((r)=>setImmediate(r)); assert.equal(q().get('before'),null,'a filter change starts from the top');
+  assert.match(run('logs()'),/200 מתוך 350 אירועים/); assert.match(run('logs()'),/onclick="logMore\(\)">עוד 200</);
+  fixtures['/journal']=Array.from({length:150},(_,i)=>({id:800-i,ts:today+'T09:00:00',user:'u',event:'login',label:'M'+i,text:''}));
+  run('logMore()'); await new Promise((r)=>setImmediate(r));
+  assert.equal(q().get('before'),'801'); assert.equal(q().get('limit'),'200');
+  assert.equal(run('LOG.rows.length'),350,'appended, not replaced');
+  assert.match(run('logs()'),/350 מתוך 350 אירועים/); assert.match(run('logs()'),/זה הכול לסינון הזה/);
   fixtures.__truncated=true; await run('loadJournalData()');
   const html=run('logs()'); assert.match(html,/class="pill warn">חיפוש חלקי</); assert.match(html,/note warn.*החיפוש כיסה רק את השורות האחרונות/);
 });

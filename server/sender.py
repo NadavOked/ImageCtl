@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import tempfile
 import threading
@@ -289,6 +290,43 @@ def transfer_started_in_log(log_path: Path) -> bool | None:
     return TRANSFER_STARTED in text
 
 
+#: ‏#989: שורת ההתקדמות ש-udp-sender כותב ל-stderr (= הלוג הפר-מחיצתי) לכל
+#: היותר פעם ב-500ms. הצורה מקוד המקור של udpcast, לא ממדידה על ברזל
+#: (‏`statistics.c` ‏`displaySenderStats`: ‏`"bytes=" printLongNum
+#: " re-xmits=%07llu (%3u.%01u%%) slice=%04d ... - %3d\r"`). ‏`printLongNum`
+#: (‏log.c) מדפיס שלוש קבוצות של שלוש ספרות מופרדות ברווח, ואחריהן סיומת:
+#: רווח ביחידות בייט, ‏K (‏×1024) מ-10⁹ ומעלה, ‏M (‏×2²⁰) מעל 10¹².
+#: ‏re-xmits = בלוקים ששודרו שוב כי מקבל דיווח שחסרו לו — אובדן ברשת או
+#: במקבל שהפרוטוקול תיקן; לא בייט שאבד ליעד (עיקרון 4).
+_PROGRESS = re.compile(r"bytes=([ \d]*)([KM]?) re-xmits=(\d+) \(")
+_UNIT = {"": 1, "K": 1024, "M": 1_048_576}
+#: כמה מסוף הלוג קוראים כדי למצוא את השורה האחרונה (‏~80 בייט לשורה).
+PROGRESS_TAIL = 4096
+#: ‏#989: בלי שורה חדשה זמן כזה — אין "קצב עכשיו" (udp-sender מדפיס כל 0.5ש').
+PACE_STALE_S = 10.0
+
+
+def sender_progress(log_path: Path) -> tuple[int, int] | None:
+    """‏(בייטים שנשלחו, בלוקים ששודרו שוב) מהשורה השלמה האחרונה בלוג.
+
+    ‏None = הקובץ לא נקרא, או שאין בו שורה בצורה שאנחנו מכירים — ‏"לא
+    נמדד", לא אפס (עיקרון 5). שורה שנקטעה באמצע הכתיבה אינה תואמת
+    (אין לה `(` אחרי המונה) ונופלת לשורה שלפניה.
+    """
+    try:
+        with log_path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - PROGRESS_TAIL))
+            text = handle.read().decode("ascii", errors="replace")
+    except OSError:
+        return None
+    matches = _PROGRESS.findall(text)
+    if not matches:
+        return None
+    digits, suffix, rexmits = matches[-1]
+    return int(digits.replace(" ", "") or "0") * _UNIT[suffix], int(rexmits)
+
+
 def _reaped(process, seconds: float) -> bool:
     """True רק כשיש ראיה שהילד מת. היעדר בדיקה אינו ראיה (#439)."""
     deadline = time.monotonic() + seconds
@@ -364,6 +402,11 @@ class SenderEngine:
         self._process: subprocess.Popen | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        # ‏#989: הדגימה הקודמת של הלוג הנוכחי — (נתיב, mtime, בייטים) —
+        # והקצב האחרון שנגזר ממנה. נדגם רק כשמישהו קורא את `/room`.
+        self._pace_sample: tuple[Path, float, int] | None = None
+        self._pace_rate: int | None = None
+        self._pace_lock = threading.Lock()
 
     # --- API ------------------------------------------------------------------
 
@@ -432,6 +475,66 @@ class SenderEngine:
                 "partition": s.index, "partitions": s.total,
                 "file": s.file, "state": s.state, "error": s.error,
             }
+
+    def stream_stats(self, session_id: str) -> dict:
+        """‏#989: ‏`throughput_bps` ו-`loss_blocks` של הגל `session_id`.
+
+        שניהם נקראים מהלוגים הפר-מחיצתיים ש-udp-sender כבר כותב — שום
+        תעבורה חדשה, ושום דגימה ברקע: הדגימה היא הקריאה של `/room` עצמה.
+
+        * ‏`throughput_bps` — בייטים לשנייה בין שתי השורות האחרונות שנדגמו
+          מהמחיצה המשודרת, על פני ה-mtime שלהן (הרגע שבו udp-sender כתב
+          אותן, לא הרגע שבו קראנו). ‏None: דגימה ראשונה, מחיצה חדשה, מונה
+          שירד, או לוג שלא נכתב `PACE_STALE_S` שניות.
+        * ‏`loss_blocks` — סכום ה-re-xmits על כל המחיצות שהגל הזה הריץ.
+          מחיצה שהלוג שלה נקרא ואין בו `Starting transfer` תורמת 0 (לא
+          שודר כלום, אז לא שודר שוב); מחיצה שהשידור בה התחיל ואין בה
+          שורה מוכרת, או לוג שלא נקרא — הסכום כולו None.
+
+        גל שהמנוע אינו משדר (מקור מחשב בנייה, סימולציה, גל אחר) — None.
+        """
+        none = {"throughput_bps": None, "loss_blocks": None}
+        with self._lock:
+            s = self._state
+            if (self.simulate or s is None or s.session_id != session_id
+                    or not s.commands):
+                return none
+            logs = [partition_log(c[c.index("--file") + 1]) for c in s.commands]
+            sending = s.state == "sending"
+        loss: int | None = 0
+        for path in logs:
+            got = sender_progress(path)
+            if got is not None:
+                loss += got[1]
+                continue
+            if transfer_started_in_log(path) is not False:
+                loss = None
+                break
+        return {"throughput_bps": self._throughput(logs[-1]) if sending else None,
+                "loss_blocks": loss}
+
+    def _throughput(self, path: Path) -> int | None:
+        with self._pace_lock:        # שני דפדפנים פתוחים = שתי קריאות במקביל
+            return self._throughput_locked(path)
+
+    def _throughput_locked(self, path: Path) -> int | None:
+        got = sender_progress(path)
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            got = None
+        if got is None:
+            self._pace_sample, self._pace_rate = None, None
+            return None
+        prev = self._pace_sample
+        if prev is None or prev[0] != path or got[0] < prev[2]:
+            self._pace_sample, self._pace_rate = (path, mtime, got[0]), None
+        elif mtime > prev[1]:
+            self._pace_rate = int((got[0] - prev[2]) / (mtime - prev[1]))
+            self._pace_sample = (path, mtime, got[0])
+        if time.time() - mtime > PACE_STALE_S:
+            return None
+        return self._pace_rate
 
     # --- הלולאה ---------------------------------------------------------------
 

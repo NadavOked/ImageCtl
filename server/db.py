@@ -148,7 +148,10 @@ CREATE TABLE IF NOT EXISTS users (
     mfa_enrolled_at TEXT,
     is_builtin INTEGER NOT NULL DEFAULT 0,
     auth_epoch INTEGER NOT NULL DEFAULT 0,
-    mfa_last_step INTEGER
+    mfa_last_step INTEGER,
+    -- #1008: הכניסה האחרונה שהנפיקה עוגייה, ומאיזו כתובת. NULL = לא נרשמה.
+    last_login_at TEXT,
+    last_login_from TEXT
 );
 
 -- ‏#1085: קודי גיבוי חד-פעמיים ל-TOTP. מוצגים פעם אחת בהפעלה, נשמרים כ-hash.
@@ -605,6 +608,11 @@ ADDED_COLUMNS = [
     ("users", "is_builtin", "INTEGER NOT NULL DEFAULT 0"),
     ("users", "auth_epoch", "INTEGER NOT NULL DEFAULT 0"),
     ("users", "mfa_last_step", "INTEGER"),
+    # ‏#1008: כניסה אחרונה ומאיפה. NULL בכל משתמש קיים = "לא נרשמה כניסה
+    # מאז העדכון" — לא "מעולם לא נכנס", ולא נגזר בדיעבד מהיומן (שורת
+    # ה-login שם אינה נושאת כתובת).
+    ("users", "last_login_at", "TEXT"),
+    ("users", "last_login_from", "TEXT"),
     # ‏#530: האסימון שמוכיח שהפונה הוא בעל המשימה. ‏NULL בהתקנה קיימת,
     # כלומר משימות שנוצרו לפני המיגרציה **אינן ניתנות לכתיבה** —
     # ‏`claim` מסרב על `token` ריק. זו הכרעה: משימה ישנה שתיתקע עדיפה

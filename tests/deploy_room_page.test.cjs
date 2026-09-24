@@ -186,13 +186,23 @@ test('running wave: header "wave N", transmitting pill with the wave percent, st
   assert.match(html,/<span class="pill info">משדר — 31%</,'mean of the joined drawers: (38+38+37+37+4)/5');
   assert.doesNotMatch(html,/startWave/,'running → nothing to start'); assert.match(html,/stopRoom\(\)">עצור סבב \(הקלדת שם\)</); assert.match(html,/wakeRoom\(\)">הער משכפלים \(WoL\)</);
   assert.doesNotMatch(html,/rnew/,'no new-round form while a round is active');
-  assert.match(html,/<div class="kpi info"><div class="l">הגל הנוכחי<\/div><div class="v"><bdi dir="auto">גל 2<\/bdi><\/div><div class="bar" style="margin-top:6px" role="progressbar"[^>]*aria-valuenow="31"><i style="--w:31%"><\/i><\/div><div class="s">31% בממוצע על המגירות שהצטרפו · קצב ואיבוד — <b[^>]*>דורש API<\/b>/);
+  assert.match(html,/<div class="kpi info"><div class="l">הגל הנוכחי<\/div><div class="v"><bdi dir="auto">גל 2<\/bdi><\/div><div class="bar" style="margin-top:6px" role="progressbar"[^>]*aria-valuenow="31"><i style="--w:31%"><\/i><\/div><div class="s">31% בממוצע על המגירות שהצטרפו · קצב הזרם — <b[^>]*>לא נמדד<\/b> · שידור חוזר — <b[^>]*>לא נמדד<\/b>/,'no throughput_bps/loss_blocks → "not measured", not 0 (#989)');
   assert.match(html,/<div class="kpi ok"><div class="l">נכתבו ואומתו<\/div><div class="v"><bdi dir="auto">5<\/bdi> <small>\/ 12<\/small><\/div><div class="s">7 נשארו · מכל הגלים/);
   assert.match(html,/<div class="kpi info"><div class="l">כותבים עכשיו<\/div><div class="v"><bdi dir="auto">4<\/bdi><\/div><div class="s">מחשב 1 · דיסק 1,2 — מחשב 2 · דיסק 1,2/);
   assert.match(html,/<div class="kpi err"><div class="l">דורש מפעיל<\/div><div class="v"><bdi dir="auto">1<\/bdi><\/div><div class="s">מחשב 2 · דיסק 3 אדום — מדלג/);
   assert.match(html,/<div class="kpi "><div class="l">ריקים \/ לא מחוברים<\/div><div class="v"><bdi dir="auto">1<\/bdi><\/div><div class="s">מחשב 3 לא מחובר · 0 חריצים פנויים/,'a machine that is off counts once, not per empty slot');
   const s2=setup({room:roomRunning()}); s2.run("ROOM.machines[0].drawer_list.pop()"); assert.match(s2.run('deploy(0)'),/ריקים \/ לא מחוברים<\/div><div class="v"><bdi dir="auto">2<\/bdi><\/div><div class="s">מחשב 3 לא מחובר · 1 חריצים פנויים/);
   assert.doesNotMatch(html,/Gb\/s|איבוד 0|מתוך 3 גלים/,'no invented rate, loss or wave total');
+});
+
+test('running wave: throughput and re-sent blocks come from /room.round (udp-sender of the server, #989) — 0 is a measurement, null is not', () => {
+  const {run}=setup({room:roomRunning({throughput_bps:117964800,loss_blocks:0})});
+  let k1=kpi(run('deploy(0)'),'הגל הנוכחי');
+  assert.match(k1,/קצב הזרם <bdi dir="ltr">113 MB\/s<\/bdi> · 0 בלוקים שודרו שוב/);
+  assert.doesNotMatch(k1,/דורש API|לא נמדד/);
+  const s2=setup({room:roomRunning({throughput_bps:null,loss_blocks:37})});
+  k1=kpi(s2.run('deploy(0)'),'הגל הנוכחי');
+  assert.match(k1,/קצב הזרם — <b[^>]*>לא נמדד<\/b> · 37 בלוקים שודרו שוב/);
 });
 
 test('running wave: the grid is the cloners grid in round mode — write bars, blue writing, orange CRC, red failed drawer; machine "in round · N%"; the notes say what happens without an answer', () => {

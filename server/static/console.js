@@ -1702,7 +1702,7 @@ function home(tab = 0) {
    POST /room, /room/start, /room/wake, /room/close (הקלדת שם, עיקרון 7); בלי שינוי שרת.
    ההכרעה על SMART (נדב 16/09): כתום = בלי תשובה ממשיך לכתוב, אדום = בלי תשובה מדלג —
    לעולם לא דילוג בשני המקרים; היא נענית ליד המכונה (או במוניטור), ותשובה מהקונסולה — דורש
-   API. מה שאין לו API — קצב/איבוד, מספר הגלים הכולל, היסטוריה, דילוג מרחוק — טקסט,
+   API. קצב הזרם ובלוקים ששודרו שוב — מ-/room.round (#989). מה שאין לו API — מספר הגלים הכולל, היסטוריה, דילוג מרחוק — טקסט,
    לא נתון מומצא (README §8, עיקרון 5). */
 const DEPLOY = { big: false, err: "", roomErr: "", busy: false, form: { image: "", src: "library", builder: "", disk: "", target: "" } };
 const WAVE_HE = { open: "ממתין להצטרפות", running: "משדר", failed: "הגל נכשל", closed: "הגל נסגר" };
@@ -1810,11 +1810,21 @@ function deploy(tab = 0) {
   return `<div class="page">${header}<div class="body">${stale}${body}</div></div>`;
 }
 
+/* ‏#989: קצב הזרם ובלוקים ששודרו שוב — מה ש-udp-sender של השרת מדפיס (/room.round).
+   ‏null = לא נמדד (השרת אינו המשדר, דגימה ראשונה, לוג שלא נקרא) — לא 0 (עיקרון 5). */
+function roomStream(r) {
+  const unmeasured = (what, why) => `${what} — <b title="${esc(why)}">לא נמדד</b>`;
+  const rate = r.throughput_bps != null ? `קצב הזרם ${ltr(fmtBytes(r.throughput_bps) + "/s")}`
+    : unmeasured("קצב הזרם", "‏/room.round.throughput_bps הוא null: אין עדיין שתי שורות מ-udp-sender של השרת, או שהמשדר אינו השרת");
+  const loss = r.loss_blocks != null ? `${r.loss_blocks} בלוקים שודרו שוב`
+    : unmeasured("שידור חוזר", "‏/room.round.loss_blocks הוא null: הלוג של udp-sender לא נקרא, או שהמשדר אינו השרת");
+  return `${rate} · ${loss}`;
+}
 function roomKpis(r, st, pct) {
   const stalled = !!ROOM.stream_stalled, open = r.wave_state === "open";
   const k1 = UI.kpi({ cls: stalled ? "warn" : "info", label: "הגל הנוכחי", value: `גל ${r.wave_number || 1}`, bar: pct,
     sub: (open ? `${r.ready_drives || 0} מגירות מוכנות · הגל טרם התחיל` : pct == null ? "עוד אין דיווח כתיבה" : `${pct}% בממוצע על המגירות שהצטרפו`)
-      + (stalled ? " · <b>הזרם עצר</b>" : "") + ` · קצב ואיבוד — <b title="‏/room אינו מחזיר קצב או איבוד חבילות">דורש API</b>` });
+      + (stalled ? " · <b>הזרם עצר</b>" : "") + " · " + roomStream(r) });
   const k2 = UI.kpi({ cls: r.written_drives ? "ok" : "", label: "נכתבו ואומתו", value: r.written_drives || 0, unit: `/ ${r.target_drives || 0}`,
     sub: r.remaining_drives === 0 ? "היעד לסבב הושלם" : `${r.remaining_drives != null ? r.remaining_drives : "?"} נשארו · מכל הגלים` });
   const k3 = UI.kpi({ cls: st.writing.length ? "info" : "", label: "כותבים עכשיו", value: st.writing.length,
@@ -3979,7 +3989,15 @@ function userRowHtml(u) {
     u.disabled ? UI.status("warn", "מושבת") : UI.status("ok", "פעיל"),
     esc(userMfaLabel(u)),
     `<span class="mono">${esc(fmtDate(u.created_at))}</span>`,
+    userLastLoginHtml(u),
     `<div class="acts">${acts}</div>`] };
+}
+/* ‏#1008: last_login_at/from מ-/users (הכניסה האחרונה שהנפיקה עוגייה). null =
+   "לא נרשמה" — משתמש חדש, או שלא נכנס מאז העדכון — לא "מעולם" ולא תאריך. */
+function userLastLoginHtml(u) {
+  if (!u.last_login_at) return `<span class="muted" title="אין כניסה רשומה בשרת (או שלא נכנס מאז העדכון)">לא נרשמה</span>`;
+  const when = isToday(u.last_login_at) ? `היום ${fmtClock(u.last_login_at)}` : `${fmtDate(u.last_login_at)} ${fmtClock(u.last_login_at)}`;
+  return `<span class="mono">${esc(when)}</span>${u.last_login_from ? ` · <span class="mono">${esc(u.last_login_from)}</span>` : ""}`;
 }
 
 function permissions() {
@@ -3994,8 +4012,8 @@ function permissions() {
     actions: `<button class="btn primary" onclick="openNewUser()">+ משתמש</button>` });
   const table = !USERS
     ? UI.note("err", `לא הצלחתי לקרוא את המשתמשים: ${esc(usersError)}`)
-    : UI.datagrid({ cls: "acts-on", columns: ["משתמש", "תפקיד", "מצב", "MFA", "נוצר", ""], rows: list.map(userRowHtml), empty: "אין משתמשים — השרת החזיר רשימה ריקה" });
-  const usersCard = UI.card({ title: "משתמשים", small: "כניסה אחרונה ומאיפה — דורש API (אין ב-/users)", cls: "c8", body: table, flush: !!USERS && list.length > 0 });
+    : UI.datagrid({ cls: "acts-on", columns: ["משתמש", "תפקיד", "מצב", "MFA", "נוצר", "כניסה אחרונה", ""], rows: list.map(userRowHtml), empty: "אין משתמשים — השרת החזיר רשימה ריקה" });
+  const usersCard = UI.card({ title: "משתמשים", small: "כניסה אחרונה ומאיפה — מהשרת, ברגע הכניסה", cls: "c8", body: table, flush: !!USERS && list.length > 0 });
   const matrix = UI.datagrid({ columns: ["", "מנהל", "הפצה"],
     rows: ROLE_MATRIX.map(([area, a, d, src]) => [`<span title="${esc(src)}">${esc(area)}</span>`, UI.status(a[0], a[1]), UI.status(d[0], d[1])]) })
     + `<div class="cap" style="padding:10px 14px">אין הרשאה שקטה: מה שאינו "כן" מחזיר 403 בשרת, לא רק מוסתר בממשק. למשתמש הפצה אין כניסה לקונסולה (#1073) — הוא עובד ממחשב הבנייה: שיכפול מאימג' בשרת, שיכפול ישיר מהדיסק, ושחזור לדיסק שלו. ריחוף על אזור מציג את ה-endpoint.</div>`;
@@ -4047,11 +4065,12 @@ function userRevokeSessions(name) {
 /* ---------- #954 גל 6: יומן ----------
    נבנה לפי docs/design/console-redesign/logs.md: יומן אחד (לא "אירועים/Audit"),
    שורת סינון בדף (q · סוג · משתמש · טווח) — לא במודאל — מול
-   ‏/journal?q&event&user&from&to&limit; "עוד" מגדיל limit (השרת: עד 1,000;
-   אין offset — דורש API). חומרה = severity מהשרת (#968; ok/info/warn/err);
-   "יעד" כעמודה מבנית — דורש API, ולכן text מוצג מתחת למשפט. */
+   ‏/journal?q&event&user&from&to&limit; "עוד" מביא את הדף הבא עם before=<id של
+   השורה האחרונה> ומוסיף (#1008). ‏X-Journal-Total = הסך; חסר (סינון מכונה/חיפוש)
+   = לא ידוע, לא 0. ייצוא = /journal.csv עם אותו סינון. חומרה = severity מהשרת
+   (#968; ok/info/warn/err); "יעד" כעמודה מבנית — דורש API, ולכן text מוצג מתחת למשפט. */
 let LOG = { q: "", event: "", user: "", range: "", since: "", until: "", limit: 200,
-            rows: null, err: "", truncated: false, events: null };
+            rows: null, err: "", truncated: false, events: null, total: null, more: false };
 const LOG_RANGES = [["", "כל הזמן"], ["today", "היום"], ["7d", "7 ימים"], ["30d", "30 יום"], ["custom", "טווח…"]];
 const LOG_SEV_HE = { ok: "הושלם / אושר", info: "מידע", warn: "דורש תשומת לב", err: "כשל / סירוב" };
 
@@ -4061,7 +4080,7 @@ function logSince(range) {
   const days = range === "7d" ? 7 : range === "30d" ? 30 : 0;
   return days ? new Date(Date.now() - days * 86400000).toISOString().slice(0, 19) : "";
 }
-function logQuery() {
+function logParams() {
   const p = new URLSearchParams();
   if (LOG.q) p.set("q", LOG.q);
   if (LOG.event) p.set("event", LOG.event);
@@ -4070,17 +4089,28 @@ function logQuery() {
   if (since) p.set("from", since);
   // "עד" הוא דקה שלמה (datetime-local): בלי :59, "10:00" כמחרוזת פוסל 10:00:15.
   if (LOG.range === "custom" && LOG.until) p.set("to", LOG.until + ":59");
+  return p;
+}
+function logQuery(before) {
+  const p = logParams();
   p.set("limit", String(LOG.limit));
+  if (before != null) p.set("before", String(before));
   return "?" + p.toString();
 }
-async function loadJournalData() {
+/* ‏#1008: הייצוא — אותו סינון, בלי limit (השרת: עד חלון הסריקה, 20,000). */
+function logCsvHref() {
+  const qs = logParams().toString();
+  return "/api/console/journal.csv" + (qs ? "?" + qs : "");
+}
+async function loadJournalData(append = false) {
   try {
     if (!LOG.events) LOG.events = await api("/journal/events");
   } catch (e) { LOG.events = null; }   // הסינון לפי סוג לא זמין — הרשימה עצמה עדיין נקראת
   try {
     // fetch ישיר ולא api(): הכותרת X-Journal-Search-Truncated — "לא בדקנו
     // הכל" אינו "אין תוצאות" (עיקרון 5).
-    const response = await fetch("/api/console/journal" + logQuery(), { credentials: "same-origin" });
+    const last = append && LOG.rows && LOG.rows.length ? LOG.rows[LOG.rows.length - 1].id : null;
+    const response = await fetch("/api/console/journal" + logQuery(last), { credentials: "same-origin" });
     if (response.status === 401) { showLogin(); return; }
     if (!response.ok) {
       let detail = "שגיאה " + response.status;
@@ -4088,7 +4118,11 @@ async function loadJournalData() {
       throw new Error(detail);
     }
     LOG.truncated = response.headers.get("X-Journal-Search-Truncated") === "true";
-    LOG.rows = await response.json();
+    const total = response.headers.get("X-Journal-Total");
+    LOG.total = total != null && /^\d+$/.test(total) ? Number(total) : null;
+    const page = await response.json();
+    LOG.more = page.length >= LOG.limit;
+    LOG.rows = last != null ? LOG.rows.concat(page) : page;
     JOURNAL = LOG.rows;
     LOG.err = "";
   } catch (e) {
@@ -4099,11 +4133,10 @@ async function loadJournalData() {
 }
 function logFilter(key, value) {
   LOG[key] = value;
-  if (key !== "limit") LOG.limit = 200;
   if (key === "range" && value === "custom" && !LOG.since && !LOG.until) { renderCurrent(); return; }   // קודם התאריכים
   loadJournalData();
 }
-function logMore() { LOG.limit = Math.min(1000, LOG.limit + 200); loadJournalData(); }
+function logMore() { loadJournalData(true); }
 function logEventLabel(ev) { const e = (LOG.events || []).find((x) => x.event === ev); return e ? e.label : ev; }
 
 function logRowHtml(r, i) {
@@ -4136,24 +4169,24 @@ function logs() {
   const filters = [LOG.q ? `"${LOG.q}"` : "", LOG.event ? logEventLabel(LOG.event) : "", LOG.user,
     LOG.range ? (LOG.range === "custom" ? `${LOG.since || "…"} – ${LOG.until || "…"}` : LOG_RANGES.find(([v]) => v === LOG.range)[1]) : ""].filter(Boolean);
   const sub = LOG.rows
-    ? [`${rows.length} אירועים מוצגים (מגבלה ${LOG.limit})`, filters.length ? "מסונן: " + filters.join(" · ") : "בלי סינון — האחרונים"].map(esc).join(" · ")
+    ? [LOG.total != null ? `${rows.length} מתוך ${LOG.total} אירועים` : `${rows.length} אירועים מוצגים (הסך לא נמסר)`, filters.length ? "מסונן: " + filters.join(" · ") : "בלי סינון — האחרונים"].map(esc).join(" · ")
     : `‏/journal לא נקרא: ${esc(LOG.err)}`;
   const pill = !LOG.rows ? UI.pill("err", "לא נקרא") : LOG.truncated ? UI.pill("warn", "חיפוש חלקי") : "";
   const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "ניהול" }, { label: "יומן" }],
     icon: "list", name: "יומן", sub, pill,
-    actions: `<button class="btn" onclick="loadJournalData()">${uiIcon("refresh")} רענון</button>${UI.soon("ייצוא CSV")}` });
+    actions: `<button class="btn" onclick="loadJournalData()">${uiIcon("refresh")} רענון</button><a class="btn" href="${esc(logCsvHref())}" download>ייצוא CSV</a>` });
   let body;
   if (!LOG.rows) body = UI.note("err", `לא הצלחתי לקרוא את היומן: ${esc(LOG.err)}`);
   else {
     const truncated = LOG.truncated ? UI.note("warn", "החיפוש כיסה רק את השורות האחרונות ביומן — צמצמו עם טווח תאריכים או סוג אירוע.") : "";
     const table = UI.datagrid({ cls: "acts-on", columns: ["זמן", "", "מה קרה", "מי", ""], rows: rows.map(logRowHtml),
       empty: filters.length ? "אין אירועים שתואמים לסינון" : "היומן ריק — עדיין לא נרשם אירוע" });
-    const more = rows.length >= LOG.limit && LOG.limit < 1000
-      ? `<button class="btn sm" onclick="logMore()">עוד (${LOG.limit + 200 > 1000 ? 1000 : LOG.limit + 200})</button>`
-      : `<span class="cap">${rows.length >= 1000 ? "מגבלת השרת: 1,000 שורות — צמצמו את הסינון" : "זה הכול לסינון הזה"}</span>`;
+    const more = LOG.more
+      ? `<button class="btn sm" onclick="logMore()">עוד ${LOG.limit}</button>`
+      : `<span class="cap">זה הכול לסינון הזה</span>`;
     body = `<div class="c12 card">${logBarHtml(rows)}${truncated ? `<div style="padding:10px 12px 0">${truncated}</div>` : ""}<div class="card-b flush">${table}</div><div class="dg-bar foot"><span class="n">מוצגים ${rows.length}</span><span class="sp"></span>${more}</div></div>`;
   }
-  const cap = `<div class="c12 cap">לחיצה על שורה פותחת את הפרטים הטכניים (event, המזהים). הצבע = חומרת האירוע כפי שהשרת קבע (severity ב-/journal). ייצוא CSV ועמודת "יעד" מבנית — דורש API.</div>`;
+  const cap = `<div class="c12 cap">לחיצה על שורה פותחת את הפרטים הטכניים (event, המזהים). הצבע = חומרת האירוע כפי שהשרת קבע (severity ב-/journal). הייצוא הוא אותו סינון, עד 20,000 שורות. עמודת "יעד" מבנית — דורש API.</div>`;
   return `<div class="page">${header}<div class="body">${body}${cap}</div></div>`;
 }
 function openLogDetail(i) {

@@ -72,12 +72,14 @@ async def finish_login(conn, request: Request, response: Response, *,
         if info["must_change_password"]:
             raise HTTPException(403, "החלף סיסמה בקונסולה קודם")
         auth.attach_cookie(response, conn, stored, role, tls)
+        users.record_login(conn, stored, ip)
         journal(conn, "login", "kiosk", stored)
         return {"username": stored, "role": role, "idle_seconds": _idle(conn)}
 
     if info["must_change_password"]:
         auth.attach_cookie(response, conn, stored, role, tls,
                            purpose=auth.PURPOSE_PWCHANGE)
+        users.record_login(conn, stored, ip)
         journal(conn, "login", "must_change_password", stored)
         return {"must_change_password": True}
 
@@ -86,6 +88,7 @@ async def finish_login(conn, request: Request, response: Response, *,
         if console_mfa.trusted_ok(conn, stored, trusted):
             login_guard.clear(conn, username, ip)
             auth.attach_cookie(response, conn, stored, role, tls)
+            users.record_login(conn, stored, ip)
             journal(conn, "login", "trusted_browser", stored)
             return {"username": stored, "role": role, "idle_seconds": _idle(conn)}
         challenge = console_mfa.make_challenge(conn, stored)
@@ -95,9 +98,11 @@ async def finish_login(conn, request: Request, response: Response, *,
     if role == "admin" and not info["is_builtin"]:
         auth.attach_cookie(response, conn, stored, role, tls,
                            purpose=auth.PURPOSE_MFAENROLL)
+        users.record_login(conn, stored, ip)
         journal(conn, "login", "mfa_enrollment_required", stored)
         return {"mfa_enrollment_required": True}
 
     auth.attach_cookie(response, conn, stored, role, tls)
+    users.record_login(conn, stored, ip)
     journal(conn, "login", "", stored)
     return {"username": stored, "role": role, "idle_seconds": _idle(conn)}

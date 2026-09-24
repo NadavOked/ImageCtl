@@ -7,6 +7,8 @@ RBAC לפי סעיף 11: משתמש deploy יכול לראות אימג'ים ו�
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import re
 import sqlite3
@@ -53,6 +55,15 @@ def _text_field_ok(value: str, what: str) -> None:
     from fastapi import HTTPException  # noqa: PLC0415 — כמו שאר הקובץ
     if len(value) > TEXT_FIELD_MAX:
         raise HTTPException(400, f"{what} ארוך מדי ({len(value)} תווים, המקסימום {TEXT_FIELD_MAX})")
+
+
+def _csv_cell(value):
+    """‏#1008: תא בייצוא היומן. טקסט שמתחיל ב-``= + - @`` (או טאב/CR) מקבל
+    ``'`` בראשו, כדי שגיליון אלקטרוני לא יריץ אותו כנוסחה — ‏``login_failed``
+    נושא את השם שהוקלד במסך הכניסה, כלומר טקסט של מי שלא נכנס."""
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + value
+    return value
 
 
 def _drawer_count(raw):
@@ -731,19 +742,14 @@ def create_console_router(
             key=lambda e: e["label"],
         )
 
-    @router.get("/journal")
-    def read_journal(
-        response: Response,
-        limit: int = 200,
-        event: str = "",
-        user_filter: str = Query("", alias="user"),
-        date_from: str = Query("", alias="from"),
-        date_to: str = Query("", alias="to"),
-        machine: str = "",
-        q: str = "",
-        user=Depends(admin_only),
-    ):
-        limit = max(1, min(limit, 1000))
+    #: חלון הסריקה של סינון מכונה/חיפוש (על הטקסט המתורגם), וגם התקרה של
+    #: ייצוא ה-CSV. ‏`/journal` עצמו מוגבל ל-1,000 שורות לדף.
+    journal_scan_cap = 20000
+
+    def _journal_rows(response: Response, *, limit: int, max_limit: int,
+                      event: str, user_filter: str, date_from: str, date_to: str,
+                      machine: str, q: str, before: int | None) -> list[dict]:
+        limit = max(1, min(limit, max_limit))
         conditions = []
         params: list = []
         # אירוע, משתמש וטווח זמן הם עמודות אמיתיות — מסננים בשאילתה עצמה.
@@ -760,12 +766,26 @@ def create_console_router(
             conditions.append("ts <= ?")
             params.append(date_to)
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        if not (machine or q):
+            # ‏#1008: הסך של כל השורות התואמות — בלי ``before``, שמזיז את
+            # הדף ולא את הסך. עם מכונה/חיפוש הסינון הוא על הטקסט המתורגם,
+            # והסך אינו ידוע בלי לתרגם את כל היומן — ואז הכותרת **חסרה**
+            # ("לא ידוע"), לא 0 ולא אורך הדף (עיקרון 5).
+            response.headers["X-Journal-Total"] = str(ctx.conn.execute(
+                f"SELECT COUNT(*) AS n FROM journal {where}", params
+            ).fetchone()["n"])
+        if before is not None:
+            # ‏#1008: דפדוף לפי ``id`` ולא לפי offset — שורה שנכתבת בין שני
+            # דפים אינה מזיזה את הדף הבא ואינה מכפילה בו שורה.
+            conditions.append("id < ?")
+            params.append(before)
+            where = f"WHERE {' AND '.join(conditions)}"
         # מכונה/MAC וחיפוש חופשי חבויים בתוך detail הגולמי, לא בעמודה
         # (המלכודת ב-#115: מה שהמפעיל רואה, כמו שם כיתה, אינו מה
         # שכתוב בשורה — grp_a3f1 וכו'). לכן סורקים חלון גדול של שורות,
         # מתרגמים אותן כמו למסך, ומסננים על התוצאה המתורגמת — לא על
         # המזהה הגולמי שהמפעיל לא הקליד ולא ראה.
-        scan_cap = 20000
+        scan_cap = journal_scan_cap
         if machine or q:
             scanned = ctx.conn.execute(
                 f"SELECT COUNT(*) AS n FROM journal {where}", params
@@ -776,7 +796,7 @@ def create_console_router(
             if scanned > scan_cap:
                 response.headers["X-Journal-Search-Truncated"] = "true"
         rows = ctx.conn.execute(
-            f"SELECT ts, user, event, detail FROM journal {where} "
+            f"SELECT id, ts, user, event, detail FROM journal {where} "
             "ORDER BY id DESC LIMIT ?",
             (*params, scan_cap),
         ).fetchall()
@@ -793,6 +813,8 @@ def create_console_router(
             ):
                 continue
             result.append({
+                # ‏#1008: סמן הדפדוף — ``before=<id>`` של השורה האחרונה בדף.
+                "id": r["id"],
                 "ts": r["ts"], "user": r["user"], "event": r["event"],
                 "label": label, "text": text,
                 # ‏#968: החומרה נקבעת בשרת לצד התרגום (journal_he.severity),
@@ -802,6 +824,58 @@ def create_console_router(
             if len(result) >= limit:
                 break
         return result
+
+    @router.get("/journal")
+    def read_journal(
+        response: Response,
+        limit: int = 200,
+        event: str = "",
+        user_filter: str = Query("", alias="user"),
+        date_from: str = Query("", alias="from"),
+        date_to: str = Query("", alias="to"),
+        machine: str = "",
+        q: str = "",
+        before: int | None = None,
+        user=Depends(admin_only),
+    ):
+        return _journal_rows(
+            response, limit=limit, max_limit=1000, event=event,
+            user_filter=user_filter, date_from=date_from, date_to=date_to,
+            machine=machine, q=q, before=before)
+
+    @router.get("/journal.csv")
+    def journal_csv(
+        limit: int = journal_scan_cap,
+        event: str = "",
+        user_filter: str = Query("", alias="user"),
+        date_from: str = Query("", alias="from"),
+        date_to: str = Query("", alias="to"),
+        machine: str = "",
+        q: str = "",
+        before: int | None = None,
+        user=Depends(admin_only),
+    ):
+        """‏#1008: אותם פרמטרים ואותן שורות כמו ``/journal``, אחרי אותה
+        הרשאה (admin). ברירת המחדל והתקרה של ``limit`` הן חלון הסריקה ולא
+        1,000 — ייצוא שנחתך בשקט בדף הראשון אינו ייצוא. ‏``X-Journal-Total``
+        ו-``X-Journal-Search-Truncated`` כמו במסך."""
+        meta = Response()
+        rows = _journal_rows(
+            meta, limit=limit, max_limit=journal_scan_cap, event=event,
+            user_filter=user_filter, date_from=date_from, date_to=date_to,
+            machine=machine, q=q, before=before)
+        out = io.StringIO()
+        writer = csv.writer(out, lineterminator="\r\n")
+        fields = ("id", "ts", "user", "event", "label", "text", "severity")
+        writer.writerow(fields)
+        for row in rows:
+            writer.writerow([_csv_cell(row[f]) for f in fields])
+        headers = {k: v for k, v in meta.headers.items()
+                   if k.lower().startswith("x-journal-")}
+        headers["Content-Disposition"] = 'attachment; filename="imagectl-journal.csv"'
+        # BOM: אקסל פותח UTF-8 בלעדיו כ-ANSI, והעברית (label/text) נשברת.
+        return Response(("﻿" + out.getvalue()).encode("utf-8"),
+                        media_type="text/csv; charset=utf-8", headers=headers)
 
     @router.get("/settings")
     def read_settings(user=Depends(admin_only)):
