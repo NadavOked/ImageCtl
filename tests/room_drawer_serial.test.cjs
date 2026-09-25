@@ -66,3 +66,38 @@ test('a disk the agent never reported a serial for shows no invented tag', () =>
   ]), false);
   assert.doesNotMatch(html, /class="mono serial"/);
 });
+
+// #105: a drive with no serial cannot be in the round's written_serials --
+// it has no identity to count. An old server sent it `fresh: false`, the
+// same value as "written", and this chip said "נכתבה" over an EMPTY drive.
+test('a drive with no serial is never labelled written', () => {
+  for (const fresh of [false, null]) {
+    const html = drawerLine(machine([
+      {dev: 'sdb', port: 2, state: null, fresh, serial: null},
+    ]), false);
+    assert.doesNotMatch(html, /נכתבה/);
+    assert.doesNotMatch(html, /class="drawer ok"/);
+    assert.match(html, /מגירה 2/);
+    assert.match(html, /לא ניתן לזהות את הכונן/);
+  }
+});
+
+test('a drive with no serial shows this wave\'s own report beside it', () => {
+  // The agent's report for this wave is evidence the round has no other
+  // way to get; it is shown as it is, and the drive still says it cannot
+  // be identified.
+  const html = drawerLine({name: 'HP1', joined: true, drawer_list: [
+    {dev: 'sdb', port: 2, state: 'done', fresh: null, serial: null},
+  ]}, true);
+  assert.match(html, /נכתבה · לא ניתן לזהות את הכונן/);
+});
+
+test('an identified drive keeps its two states', () => {
+  const html = drawerLine(machine([
+    {dev: 'sda', port: 1, state: null, fresh: true, serial: 'naa.1'},
+    {dev: 'sdb', port: 2, state: null, fresh: false, serial: 'naa.2'},
+  ]), false);
+  assert.match(html, /מוכנה/);
+  assert.match(html, /נכתבה/);
+  assert.doesNotMatch(html, /לא ניתן לזהות/);
+});

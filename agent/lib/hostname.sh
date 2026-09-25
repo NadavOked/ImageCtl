@@ -8,11 +8,10 @@
 # the real control set is read from Select\Current first. Editing the wrong
 # one silently does nothing.
 #
-# Linux: /etc/hostname is replaced and the 127.0.1.1 line of /etc/hosts is
-# rewritten, which is what every Debian/Ubuntu-family installer does.
+# Linux: hostname_linux.sh (/etc/hostname and /etc/hosts). A dual-boot disk
+# is named on both sides (#107).
 
 HOSTNAME_METHOD="offline-registry"
-HOSTNAME_METHOD_LINUX="etc-hostname"
 
 _mount_windows() {
     # $1 = disk, $2 = manifest, $3 = an already verified plan (optional).
@@ -39,48 +38,6 @@ _mount_windows() {
     echo "$_mnt"
 }
 
-_mount_linux() {
-    # $1 = disk, $2 = manifest, $3 = an already verified plan (optional).
-    # Echoes the mount point, or fails. A btrfs
-    # root usually lives in a subvolume (Ubuntu: "@"), so if there is no
-    # /etc at the top level the mount is retried with that subvolume.
-    if [ -n "${3:-}" ]; then
-        _mount_plan="$3"
-    else
-        _mount_plan="$RUN_DIR/mount-linux.plan"
-        manifest_plan "$2" > "$_mount_plan" || return 1
-    fi
-    _idx=$(awk -F'|' '$3 == "linux" { print $1; exit }' "$_mount_plan") || return 1
-    [ -n "$_idx" ] || { log "no linux partition in the manifest" >&2; return 1; }
-    _fs=$(awk -F'|' -v i="$_idx" '$1 == i { print $4 }' "$_mount_plan") || return 1
-    _node=$(partition_node "$1" "$_idx")
-    _mnt="$RUN_DIR/linux"
-    mkdir -p "$_mnt"
-    mount -t "$_fs" "$_node" "$_mnt" >> "$LOG_FILE" 2>&1 || { log "could not mount $_node" >&2; return 1; }
-    if [ ! -d "$_mnt/etc" ] && [ "$_fs" = "btrfs" ]; then
-        umount "$_mnt" 2>/dev/null
-        mount -t btrfs -o subvol=@ "$_node" "$_mnt" >> "$LOG_FILE" 2>&1 \
-            || { log "could not mount $_node (subvol @)" >&2; return 1; }
-    fi
-    [ -d "$_mnt/etc" ] || { umount "$_mnt" 2>/dev/null; log "no /etc on $_node" >&2; return 1; }
-    echo "$_mnt"
-}
-
-_write_linux_files() {
-    # $1 = the restored system's /etc, $2 = name. Replaces /etc/hostname and
-    # the 127.0.1.1 line the installer wrote in /etc/hosts (added if absent).
-    printf '%s\n' "$2" > "$1/hostname" || return 1
-    if [ -f "$1/hosts" ]; then
-        awk -v n="$2" 'BEGIN { done = 0 }
-            /^127\.0\.1\.1[ \t]/ { print "127.0.1.1\t" n; done = 1; next }
-            { print }
-            END { if (!done) print "127.0.1.1\t" n }' "$1/hosts" > "$1/hosts.new" \
-            && mv "$1/hosts.new" "$1/hosts" || return 1
-    else
-        printf '127.0.0.1\tlocalhost\n127.0.1.1\t%s\n' "$2" > "$1/hosts" || return 1
-    fi
-}
-
 _umount_checked() {
     # $1 = mount point. Flushes and unmounts, returning umount's exit code.
     # A disk left mounted after a successful write is NOT success -- the next
@@ -92,29 +49,6 @@ _umount_checked() {
     _umrc=$?
     [ "$_umrc" -eq 0 ] || log "umount of $1 failed (rc=$_umrc) -- disk left mounted" >&2
     return "$_umrc"
-}
-
-_write_hostname_linux() {
-    # $1 = disk, $2 = manifest, $3 = name, $4 = verified plan (optional).
-    # Emits the section 5 result.
-    _mnt=$(_mount_linux "$1" "$2" "${4:-}") || {
-        printf '{"ok":false,"error":"could not mount the linux partition","code":"mount_failed"}\n'
-        return 1
-    }
-    log "writing hostname $3 into $_mnt/etc/hostname" >&2
-    _write_linux_files "$_mnt/etc" "$3"
-    _rc=$?
-    _umount_checked "$_mnt"
-    _umrc=$?
-    if [ "$_rc" -ne 0 ]; then
-        printf '{"ok":false,"error":"could not write /etc/hostname","code":"hostname_write_failed"}\n'
-        return 1
-    fi
-    if [ "$_umrc" -ne 0 ]; then
-        printf '{"ok":false,"error":"could not unmount after writing /etc/hostname","code":"umount_failed"}\n'
-        return 1
-    fi
-    printf '{"ok":true,"hostname":"%s","method":"%s"}\n' "$3" "$HOSTNAME_METHOD_LINUX"
 }
 
 _control_set() {
@@ -160,17 +94,52 @@ write_hostname() {
         printf '{"ok":false,"error":"could not read the partition plan","code":"manifest_plan_failed"}\n'
         return 1
     fi
+    # grep: 0 = found, 1 = not found (an answer), 2+ = the check broke.
     grep -qE '^[^|]*\|[^|]*\|windows\|' "$_hostname_plan"
     _plan_rc=$?
+    grep -qE '^[^|]*\|[^|]*\|linux\|' "$_hostname_plan"
+    _lin_rc=$?
+    if [ "$_plan_rc" -gt 1 ] || [ "$_lin_rc" -gt 1 ]; then
+        printf '{"ok":false,"error":"could not check the partition plan","code":"manifest_plan_check_failed"}\n'
+        return 1
+    fi
     if [ "$_plan_rc" -eq 1 ]; then
         _write_hostname_linux "$_disk" "$_manifest" "$_name" "$_hostname_plan"
         return $?
     fi
-    if [ "$_plan_rc" -ne 0 ]; then
-        printf '{"ok":false,"error":"could not check the partition plan","code":"manifest_plan_check_failed"}\n'
-        return 1
-    fi
+    [ "$_lin_rc" -eq 0 ] || { _write_hostname_windows; return $?; }
+    _write_hostname_both
+}
 
+_write_hostname_both() {
+    # #107: a dual-boot disk is named on BOTH sides -- until #107 only Windows
+    # was, and every Linux boot came up with the build machine's name. Each
+    # side runs in its own subshell (their _mnt/_rc must not cross). Both /
+    # windows only / linux only / neither are four results, not two: a side
+    # that failed is named with its own error, never hidden by the other's
+    # success (עיקרון 5). Uses write_hostname's _disk/_manifest/_name/_hostname_plan.
+    _w=$(_write_hostname_windows); _wrc=$?
+    _l=$(_write_hostname_linux "$_disk" "$_manifest" "$_name" "$_hostname_plan"); _lrc=$?
+    _werr=$(printf '%s' "$_w" | sed -n 's/.*"error":"\([^"]*\)".*/\1/p')
+    _lerr=$(printf '%s' "$_l" | sed -n 's/.*"error":"\([^"]*\)".*/\1/p')
+    [ -n "$_werr" ] || _werr="rc=$_wrc"
+    [ -n "$_lerr" ] || _lerr="rc=$_lrc"
+    if [ "$_wrc" -eq 0 ] && [ "$_lrc" -eq 0 ]; then
+        printf '{"ok":true,"hostname":"%s","method":"%s+%s"}\n' "$_name" "$HOSTNAME_METHOD" "$HOSTNAME_METHOD_LINUX"
+        return 0
+    elif [ "$_wrc" -eq 0 ]; then
+        printf '{"ok":false,"error":"the linux side was not named (windows was): %s","code":"named_windows_only"}\n' "$_lerr"
+    elif [ "$_lrc" -eq 0 ]; then
+        printf '{"ok":false,"error":"the windows side was not named (linux was): %s","code":"named_linux_only"}\n' "$_werr"
+    else
+        printf '{"ok":false,"error":"neither side was named: windows: %s; linux: %s","code":"named_neither"}\n' "$_werr" "$_lerr"
+    fi
+    return 1
+}
+
+_write_hostname_windows() {
+    # The offline-registry path. Uses write_hostname's _disk/_manifest/_name/
+    # _hostname_plan; emits the section 5 result.
     _mnt=$(_mount_windows "$_disk" "$_manifest" "$_hostname_plan") || {
         printf '{"ok":false,"error":"could not mount the windows partition","code":"mount_failed"}\n'
         return 1

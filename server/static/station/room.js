@@ -68,10 +68,16 @@ const Room = (() => {
       || String(a.dev || "").localeCompare(String(b.dev || "")));
     const chips = drawers.map((d) => {
       const live = withProgress && m.joined && d.state;
+      /* #105: בלי serial הסבב אינו יכול לדעת אם הכונן נכתב (הוא סופר לפי
+         serial). ‏`fresh` שלו הוא null — ושרת ישן החזיר false — ולכן
+         "!fresh" אינו "נכתבה" כאן לעולם. דיווח חי מהגל הזה (`state`) כן
+         מוצג, לצד "לא ניתן לזהות". */
+      const unknown = !d.serial;
       const word = live ? (DRAWER_STATE[d.state] || d.state)
-        : d.fresh ? "מוכנה" : "נכתבה";
+        : unknown ? "לא ניתן לזהות את הכונן" : d.fresh ? "מוכנה" : "נכתבה";
       const tone = d.state === "failed" ? " bad"
-        : d.state === "done" || (!live && !d.fresh) ? " ok" : "";
+        : d.state === "done" || (!live && !unknown && !d.fresh) ? " ok" : "";
+      const unid = live && unknown ? " · לא ניתן לזהות את הכונן" : "";
       const slot = typeof d.port === "number" ? `מגירה ${d.port}` : "מגירה נוספת";
       /* בריאות SMART לפני start (#652): רק ממצא שאיננו תקין מוצג, כדי
          לא להציף. ‏unchecked (אין SMART / VM) אינו כשל — לא מוצג. */
@@ -88,7 +94,7 @@ const Room = (() => {
         ? ` <span class="crc">CRC +${d.crc_delta} · לבדוק כבל</span>` : "";
       return `<span class="drawer${tone}">${slot}
         <span class="mono dev" dir="ltr">${esc(d.dev || "")}</span>${serial}
-        · ${esc(word)}${smart}${crc}</span>`;
+        · ${esc(word)}${unid}${smart}${crc}</span>`;
     }).join("");
     return `<div class="room-drawers" title="${SLOTS_TITLE}">${chips}</div>`;
   }

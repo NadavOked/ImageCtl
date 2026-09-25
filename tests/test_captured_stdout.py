@@ -30,11 +30,12 @@ pytestmark = requires_native(("bash", BASH))
 #: תוקנה ב-PR #879 ונבדקת ב-test_smart.
 CAPTURED_LOGGERS = [
     ("hostname.sh", "_mount_windows"),
-    ("hostname.sh", "_mount_linux"),
+    ("hostname_linux.sh", "_mount_linux"),
     ("hostname.sh", "_umount_checked"),
-    ("hostname.sh", "_write_hostname_linux"),
+    ("hostname_linux.sh", "_write_hostname_linux"),
     ("hostname.sh", "_control_set"),
     ("hostname.sh", "write_hostname"),
+    ("hostname.sh", "_write_hostname_windows"),  # ‏#107: נלכד ב-dual-boot
     ("restore.sh", "manifest_plan"),
     ("monitor.sh", "monitor_secret"),
 ]
@@ -77,7 +78,7 @@ def box(tmp_path: Path, stubs: dict[str, str], plan: str = WIN_PLAN) -> tuple[st
         f'export RUN_DIR={posix(run)!r} DEVROOT={posix(run)!r}/dev '
         f'LOG_FILE={posix(run / "agent.log")!r}; '
         f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/restore.sh; '
-        f'. {posix(AGENT)}/lib/hostname.sh; '
+        f'. {posix(AGENT)}/lib/hostname.sh; . {posix(AGENT)}/lib/hostname_linux.sh; '
         f'manifest_plan() {{ printf \'%s\\n\' {plan!r}; }}; '
         f'partition_node() {{ echo /dev/fake; }}; '
     )
@@ -179,7 +180,8 @@ def test_mount_helpers_print_nothing_on_failure(tmp_path):
     for name, (make, over, call) in cases.items():
         script, _ = make(tmp_path / name, **over)
         out = sh(script + call)
-        assert out.returncode == 1, (name, out.stdout, out.stderr)
+        # ‏#89: ‏_mount_linux מחזיר קוד שאומר *למה* — 2 = עוגן אבל אין /etc.
+        assert out.returncode == (2 if name == "lin-noetc" else 1), (name, out.stdout, out.stderr)
         assert out.stdout == "", (name, out.stdout)
 
 

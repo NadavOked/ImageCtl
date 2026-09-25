@@ -125,7 +125,12 @@ def _disks(conn: sqlite3.Connection, mac: str) -> list[dict]:
 def fresh_serials(conn: sqlite3.Connection, mac: str, written: set[str],
                   selected_ports: set[int] | None = None) -> list[str]:
     """המגירות של המכונה שעוד לא נכתבו בסבב הנוכחי. ‏selected_ports מסנן
-    לפורטים שנבחרו בלבד (‏None = כל הדיסקים, סבב ישן)."""
+    לפורטים שנבחרו בלבד (‏None = כל הדיסקים, סבב ישן).
+
+    ‏#105: כונן בלי serial נשאר מחוץ לרשימה **בכוונה** — `_tally` סופר
+    לפי serial, וכונן שנספר כאן כ"טרי" היה מצרף את המכונה לכל גל וכותב
+    אותו שוב ושוב בלי שייספר לעולם. הוא אינו נעלם: `drawer_list` מחזיר
+    לו `fresh: None`, והמסך אומר "לא ניתן לזהות את הכונן" בחריץ שלו."""
     return [
         d["serial"] for d in _disks(conn, mac)
         if isinstance(d, dict) and d.get("serial") and d["serial"] not in written
@@ -179,7 +184,11 @@ def drawer_list(conn: sqlite3.Connection, mac: str, written: set[str],
             # שנשאר. שורת כשל בלי אחד מהם שולחת אדם לחפש.
             "serial": disk.get("serial") or None,
             "model": disk.get("model") or None,
-            "fresh": bool(disk.get("serial")) and disk["serial"] not in written,
+            # ‏#105: שלושה מצבים, לא שניים. ‏`None` = הכונן לא דיווח serial,
+            # ולכן הסבב (שסופר לפי serial) אינו יכול לדעת אם הוא נכתב —
+            # "לא ניתן לזהות את הכונן", לא `False` ("נכתבה") ולא `True`.
+            "fresh": (disk["serial"] not in written) if disk.get("serial")
+            else None,
             # ‏#695: האם הפורט הזה נבחר כיעד בסבב (לצביעת הגריד/בחירה).
             "selected": (selected_ports is not None
                          and isinstance(port, int) and not isinstance(port, bool)
@@ -359,10 +368,17 @@ def _validate_target_slots(conn: sqlite3.Connection, raw) -> list[dict]:
                 isinstance(p, bool) or not isinstance(p, int)
                 or p < 1 or p > row["drawer_count"] for p in ports)):
             raise ValueError(f"בחירת המגירות של {mac} אינה תקינה")
-        live = {
-            d.get("port") for d in _disks(conn, mac)
-            if isinstance(d, dict) and d.get("serial")
-        }
+        disks = [d for d in _disks(conn, mac) if isinstance(d, dict)]
+        live = {d.get("port") for d in disks if d.get("serial")}
+        # ‏#105: כונן מחובר בלי serial אינו "אינה מחוברת" — זה שולח את
+        # הטכנאי לבדוק כבל תקין. הוא נדחה, ובשם הנכון.
+        unidentified = sorted(
+            {d.get("port") for d in disks if not d.get("serial")}
+            & set(ports) - live)
+        if unidentified:
+            raise ValueError(
+                f"אי אפשר לפתוח סבב: לא ניתן לזהות את הכונן בחריץ "
+                f"{unidentified[0]} ב־{mac} (הכונן לא דיווח serial)")
         if not set(ports) <= live:
             raise ValueError(
                 f"אי אפשר לפתוח סבב: אחת המגירות שנבחרו ב־{mac} אינה מחוברת")
@@ -699,7 +715,8 @@ def sweep(conn: sqlite3.Connection, store: SessionStore) -> bool:
 
 def _journal_drawer_changed(conn: sqlite3.Connection, round_id: str,
                             member: sqlite3.Row, dev: str | None,
-                            recorded: str | None, current: str | None) -> None:
+                            recorded: str | None, current: str | None,
+                            event: str = "room_drawer_changed") -> None:
     row = conn.execute(
         "SELECT suffix FROM machines WHERE mac = ?", (member["mac"],)
     ).fetchone()
@@ -709,10 +726,10 @@ def _journal_drawer_changed(conn: sqlite3.Connection, round_id: str,
         f"{recorded or 'missing'} current={current or 'missing'}"
     )
     if conn.execute(
-        "SELECT 1 FROM journal WHERE event = 'room_drawer_changed' AND detail = ?",
-        (detail,),
+        "SELECT 1 FROM journal WHERE event = ? AND detail = ?",
+        (event, detail),
     ).fetchone() is None:
-        journal(conn, "room_drawer_changed", detail)
+        journal(conn, event, detail)
 
 
 def _tally(conn: sqlite3.Connection, round_row: sqlite3.Row,
@@ -750,8 +767,11 @@ def _tally(conn: sqlite3.Connection, round_row: sqlite3.Row,
                 continue
             serial = recorded or current
             if not serial:
+                # ‏#105: לא הוחלפה — מעולם לא הייתה לה זהות לספור. לא נספרת
+                # (ערך מומצא ב-`written_serials` היה מדלג על כונן ריק).
                 _journal_drawer_changed(
                     conn, round_row["id"], member, dev, recorded, current,
+                    event="room_drawer_unidentified",
                 )
                 continue
             if serial not in written:

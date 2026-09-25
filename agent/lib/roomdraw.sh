@@ -29,12 +29,16 @@ room_draw() {
     echo "  Machines:"
     # No 2>/dev/null: a machine list we failed to read is not an empty room,
     # and an empty room is exactly what somebody would act on (rule 5).
+    # #105: "0/3 fresh" alone is the screen that told nobody why. A drive
+    # with no serial is counted on its own, and listed by slot further down.
     if jq -r '.machines[] | [.name, (if .awake then "on" else "off" end),
-            "\(.fresh_drawers)/\(.drawers)", (.state // "-")] | @tsv' \
+            "\(.fresh_drawers)/\(.drawers)", (.state // "-"),
+            ([(.drawer_list // [])[] | select((.serial // "") == "")] | length
+             | if . > 0 then "\(.) unidentified" else "" end)] | @tsv' \
             "$RUN_DIR/room.json" > "$RUN_DIR/room_rows.txt"; then
-        while IFS="$(printf '\t')" read -r _nm _on _dr _st; do
-            printf '    %-12s %-3s  %-6s fresh  %s\n' \
-                "$_nm" "$_on" "$_dr" "$_st"
+        while IFS="$(printf '\t')" read -r _nm _on _dr _st _un; do
+            printf '    %-12s %-3s  %-6s fresh  %s  %s\n' \
+                "$_nm" "$_on" "$_dr" "$_st" "$_un"
         done < "$RUN_DIR/room_rows.txt"
     else
         echo "    (the machine list could not be read -- see the journal)"
@@ -43,6 +47,7 @@ room_draw() {
     echo
     room_draw_writing
     room_draw_done
+    room_draw_unidentified
     room_draw_failures
 }
 
@@ -153,8 +158,8 @@ room_draw_writing() {
 }
 
 # #418: a drawer already written, in the same actionable shape as the
-# failure list below (#553) -- slot, serial, model. `fresh == false` is
-# the server's own positive evidence that this exact serial finished
+# failure list below (#553) -- slot, serial, model. `fresh == false` WITH
+# a serial is the server's own positive evidence that this exact serial finished
 # writing in this round (room.py:_tally): it is set from the round's
 # `written_serials`, so unlike `state` -- which only exists for the
 # CURRENT wave's live members -- it still reads correctly for a drawer
@@ -165,12 +170,12 @@ room_draw_writing() {
 # the serial together, so pulling the right drive needs no memory.
 room_draw_done() {
     jq -r '[.machines[] | . as $m | (.drawer_list // [])[]
-            | select(.fresh == false) | {name: $m.name, port, dev, model, serial}]
+            | select(.fresh == false and (.serial // "") != "")
+            | {name: $m.name, port, dev, model, serial}]
            | .[] | [ .name,
                      (if .port then "drive \(.port) (SATA \(.port - 1))"
                      else (.dev // "?") end),
-                     ((.model // "unknown model")[0:20]),
-                     (.serial // "no serial") ] | @tsv' \
+                     ((.model // "unknown model")[0:20]), .serial ] | @tsv' \
         "$RUN_DIR/room.json" > "$RUN_DIR/room_done.txt" 2>/dev/null || {
         echo "  (the written-drive list could not be read -- see the journal)"
         log "cloning room: the written-drive list did not parse"
@@ -181,6 +186,38 @@ room_draw_done() {
     while IFS="$(printf '\t')" read -r _nm _where _model _serial; do
         printf '    %-8s %-16s %-20s %s\n' "$_nm" "$_where" "$_model" "$_serial"
     done < "$RUN_DIR/room_done.txt"
+    echo
+}
+
+# #105: a drive that reported no serial. The round counts by serial
+# (room.py:_tally), so for this drive `fresh` has no answer -- and before
+# this an EMPTY drive with no serial came back `fresh: false` and was
+# listed above as WRITTEN, where it gets pulled as done. It is never
+# listed as written. It gets its own line, by slot, with the only evidence
+# there is: this wave's own report for that device (`state`), or none.
+# No machine joins a wave for it alone (room.py:fresh_serials); the
+# operator sees it here and decides.
+room_draw_unidentified() {
+    jq -r '[.machines[] | . as $m | (.drawer_list // [])[]
+            | select((.serial // "") == "") | {name: $m.name, port, dev, model, state}]
+           | .[] | [ .name,
+                     (if .port then "drive \(.port) (SATA \(.port - 1))"
+                     else (.dev // "?") end),
+                     ((.model // "unknown model")[0:20]),
+                     (if .state == "done" then "written this wave (agent)"
+                      elif .state == "failed" then "failed (see below)"
+                      elif .state == null then "not known if written"
+                      else .state end) ] | @tsv' \
+        "$RUN_DIR/room.json" > "$RUN_DIR/room_unid.txt" 2>/dev/null || {
+        echo "  (the unidentified-drive list could not be read -- see the journal)"
+        log "cloning room: the unidentified-drive list did not parse"
+        return 0
+    }
+    [ -s "$RUN_DIR/room_unid.txt" ] || return 0
+    echo "  CANNOT IDENTIFY THE DRIVE (no serial -- the round cannot count it):"
+    while IFS="$(printf '\t')" read -r _nm _where _model _ev; do
+        printf '    %-8s %-16s %-20s %s\n' "$_nm" "$_where" "$_model" "$_ev"
+    done < "$RUN_DIR/room_unid.txt"
     echo
 }
 

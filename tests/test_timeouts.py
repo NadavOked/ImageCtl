@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -73,8 +74,14 @@ def run_sh(script: str, timeout: int = TEST_TIMEOUT) -> str:
             cwd=str(REPO), stdin=subprocess.DEVNULL, timeout=timeout,
         )
     except subprocess.TimeoutExpired:
+        shutil.rmtree(out_file.parent, ignore_errors=True)
         pytest.fail(f"המסלול נתקע יותר מ-{timeout} שניות במקום לדווח ולהיכשל")
-    return out_file.read_text(encoding="utf-8", errors="replace")
+    try:
+        return out_file.read_text(encoding="utf-8", errors="replace")
+    finally:
+        # ‏#1238: בלי זה כל קריאה השאירה תיקייה ב-/tmp — ~8,100 על ה-Testrunner,
+        # ‏tmpfs של 2GB ב-91%, ו-507 מזויף בטסט לא קשור.
+        shutil.rmtree(out_file.parent, ignore_errors=True)
 
 
 def waits_prelude(box: Path, **env) -> str:
@@ -564,3 +571,11 @@ def test_fanout_bounds_the_fifo_open_itself():
     assert "FANOUT_EXPECTED_BYTES" in source
     assert "empty stream" in source
     assert "fsync" in source
+
+
+def test_run_sh_leaves_no_temp_dir_behind():
+    """#1238: run_sh מנקה את התיקייה הזמנית שלו — גם אחרי ריצה תקינה."""
+    before = set(Path(tempfile.gettempdir()).glob("imagectl-wait-*"))
+    assert run_sh("echo hi").strip() == "hi"
+    after = set(Path(tempfile.gettempdir()).glob("imagectl-wait-*"))
+    assert after - before == set(), f"left behind: {sorted(after - before)}"

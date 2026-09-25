@@ -1167,7 +1167,7 @@ def test_a_linux_image_is_named_through_etc_hostname(tmp_path):
         f'export RUN_DIR={posix(run)!r} DEVROOT={posix(tmp_path / "nodev")!r} '
         f'LOG_FILE={posix(run / "log")!r}; '
         f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/jsonq.sh; '
-        f'. {posix(AGENT)}/lib/restore.sh; . {posix(AGENT)}/lib/hostname.sh; '
+        f'. {posix(AGENT)}/lib/restore.sh; . {posix(AGENT)}/lib/hostname.sh; . {posix(AGENT)}/lib/hostname_linux.sh; '
         f'write_hostname sda {posix(manifest)!r} LAB1-05 || true'
     )
     result = json.loads(out.strip().splitlines()[-1])
@@ -1184,7 +1184,7 @@ def test_linux_hostname_files_are_rewritten_the_installer_way(tmp_path):
     (etc / "hosts").write_text(
         "127.0.0.1\tlocalhost\n127.0.1.1\tubuntu-build\n\n::1 ip6-localhost\n",
         encoding="utf-8")
-    sh(f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/hostname.sh; '
+    sh(f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/hostname_linux.sh; '
        f'_write_linux_files {posix(etc)!r} LAB2-INS')
     assert (etc / "hostname").read_text(encoding="utf-8") == "LAB2-INS\n"
     hosts = (etc / "hosts").read_text(encoding="utf-8").splitlines()
@@ -1197,7 +1197,7 @@ def test_linux_hosts_line_is_added_when_missing(tmp_path):
     etc = tmp_path / "etc"
     etc.mkdir()
     (etc / "hostname").write_text("x\n", encoding="utf-8")
-    sh(f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/hostname.sh; '
+    sh(f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/hostname_linux.sh; '
        f'_write_linux_files {posix(etc)!r} LAB1-07')
     assert "127.0.1.1\tLAB1-07" in (etc / "hosts").read_text(encoding="utf-8")
 
@@ -1226,7 +1226,7 @@ def test_a_linux_hostname_write_that_cannot_unmount_is_not_success(tmp_path):
         f'export RUN_DIR={posix(run)!r} DEVROOT={posix(run)!r}/dev '
         f'LOG_FILE={posix(run / "log")!r}; '
         f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/restore.sh; '
-        f'. {posix(AGENT)}/lib/hostname.sh; '
+        f'. {posix(AGENT)}/lib/hostname.sh; . {posix(AGENT)}/lib/hostname_linux.sh; '
         f'manifest_plan() {{ printf \'%s\\n\' {plan!r}; }}; '
         f'partition_node() {{ echo /dev/fake2; }}; '
         f'write_hostname sda /dev/null LAB1-05 || true'

@@ -56,6 +56,8 @@ EVENTS_HE = {
     "room_wave": "גל חדש בחדר השיכפולים",
     "room_wave_lost": "הגל של סבב החדר נסגר לפני הזמן — ממתין לגל הבא",
     "room_drawer_changed": "המגירה הוחלפה אחרי סיום הכתיבה",
+    # ‏#105: כונן בלי serial שסיים — לא הוחלף, פשוט אין זהות לספור.
+    "room_drawer_unidentified": "לא ניתן לזהות את הכונן (אין serial) — הכתיבה לא נספרה",
     "room_done": "סבב חדר השיכפולים הושלם",
     "room_close": "סבב חדר השיכפולים נסגר",
     # ‏#980: כיבוי החדר עובר דרך הסוכן (hello) — בקשה, מסירה, או פקיעה.
@@ -225,7 +227,7 @@ _SEVERITY_WARN = {
     "net_config_unverified", "net_rollback_armed", "net_rollback",
     "net_rollback_unreadable", "ssh_unverified", "work_area_kept",
     "storage_node_disable",
-    "room_drawer_changed",
+    "room_drawer_changed", "room_drawer_unidentified",
     "power_expired",
 }
 _SEVERITY_OK = {

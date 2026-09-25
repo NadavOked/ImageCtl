@@ -56,8 +56,11 @@ imagectl-agent
 **Windows ולינוקס באותו מסלול** (אפיון סעיף 14). המניפסט הוא שמבדיל:
 `fs` בוחר את `partclone.<fs>` ואת כלי ההרחבה (`ntfsresize` / `resize2fs` /
 `btrfs filesystem resize`), ותפקידי המחיצות בוחרים איך נכתב השם —
-מחיצת `windows` → רג'יסטרי offline; אין כזו ויש `linux` → `/etc/hostname`
-ושורת `127.0.1.1` ב-`/etc/hosts` (עם ניסיון שני ל-subvolume `@` ב-btrfs).
+מחיצת `windows` → רג'יסטרי offline; מחיצת `linux` → `/etc/hostname`
+ושורת `127.0.1.1` ב-`/etc/hosts` (‏`agent/lib/hostname_linux.sh`); שתיהן
+(dual-boot) → שני הצדדים, וכל צד מדווח בנפרד (#107). שורש btrfs שאינו
+ב-subvolume ברירת המחדל נמצא ב-top level — הילד היחיד שיש בו `etc/`, בלי
+לנחש שם (#89).
 את הרג'יסטרי עורך [`agent/hivewrite.c`](../agent/hivewrite.c) — עוזר
 libhivex שכותב ערך בודד ומשמר את שאר ערכי המפתח (`setval` של hivexsh
 מחליף את *כל* הרשימה — ב-`Tcpip\Parameters` זה היה מוחק את הגדרות
