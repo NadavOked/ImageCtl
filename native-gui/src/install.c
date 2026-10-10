@@ -76,7 +76,7 @@ static int run_bridge(const InstallBridge *b, const char *action, const char *in
     int in_p[2],out_p[2]; if(pipe(in_p)||pipe(out_p))return -1;
     pid_t pid=fork(); if(pid<0)return -1;
     if(pid==0){dup2(in_p[0],0);dup2(out_p[1],1);close(in_p[0]);close(in_p[1]);close(out_p[0]);close(out_p[1]);
-        if(b->cwd&&chdir(b->cwd))_exit(126);char command[1024];snprintf(command,sizeof command,"%s %s",b->cmd,action);
+        if(b->cwd&&chdir(b->cwd)){_exit(126);}char command[1024];snprintf(command,sizeof command,"%s %s",b->cmd,action);
         execl("/bin/sh","sh","-c",command,(char *)NULL);_exit(127);}
     close(in_p[0]);close(out_p[1]);FILE *w=fdopen(in_p[1],"w");
     if(w){fputs(input,w);fputc('\n',w);fclose(w);}else close(in_p[1]);
@@ -89,17 +89,17 @@ static int truth(const char *v){return !strcmp(v,"1")||!strcmp(v,"true")||!strcm
 static int error_slot(const char *key){static const char *names[]={"disk","role","primary_url","interface","mode","address","netmask","gateway","dns","hostname","admin_user","password","password_confirm","current_password"};for(int i=0;i<14;i++)if(!strcmp(key,names[i]))return i;return -1;}
 
 static void parse_disk(InstallState *s,char *value){
-    if(s->ndisks>=INSTALL_MAX_DISKS)return;InstallDisk *d=&s->disks[s->ndisks];memset(d,0,sizeof *d);
+    if(s->ndisks>=INSTALL_MAX_DISKS){return;}InstallDisk *d=&s->disks[s->ndisks];memset(d,0,sizeof *d);
     char *save=NULL,*part=strtok_r(value,"|",&save);if(!part)return;snprintf(d->path,sizeof d->path,"%s",part);
     while((part=strtok_r(NULL,"|",&save))){char *eq=strchr(part,'=');if(!eq)continue;*eq++=0;
         if(!strcmp(part,"model"))snprintf(d->model,sizeof d->model,"%s",eq);else if(!strcmp(part,"size"))d->size_bytes=strtoull(eq,NULL,10);
         else if(!strcmp(part,"bus"))snprintf(d->bus,sizeof d->bus,"%s",eq);else if(!strcmp(part,"removable"))d->removable=truth(eq);
         else if(!strcmp(part,"has"))snprintf(d->has,sizeof d->has,"%s",eq);else if(!strcmp(part,"iso"))d->iso=truth(eq);}
-    if(!d->iso&&s->disk<0)s->disk=s->ndisks;if(strstr(d->has,"imagectl")||strstr(d->has,"ImageCtl"))s->existing_disk=s->ndisks;s->ndisks++;
+    if(!d->iso&&s->disk<0){s->disk=s->ndisks;}if(strstr(d->has,"imagectl")||strstr(d->has,"ImageCtl"))s->existing_disk=s->ndisks;s->ndisks++;
 }
 
 static void parse_nic(InstallState *s,char *v){
-    if(s->nnics>=INSTALL_MAX_NICS)return;InstallNic *d=&s->nics[s->nnics++];
+    if(s->nnics>=INSTALL_MAX_NICS){return;}InstallNic *d=&s->nics[s->nnics++];
     char *fields[]={d->name,d->model,d->mac,d->link,d->current,d->source,d->address,d->netmask,d->gateway,d->dns};
     size_t sizes[]={sizeof d->name,sizeof d->model,sizeof d->mac,sizeof d->link,sizeof d->current,sizeof d->source,sizeof d->address,sizeof d->netmask,sizeof d->gateway,sizeof d->dns};
     for(int i=0;i<10;i++){char *end=strchr(v,'|');if(end)*end=0;snprintf(fields[i],sizes[i],"%s",v);v=end?end+1:v+strlen(v);}
@@ -151,7 +151,7 @@ static int finish_install(App *a,InstallBridge *b){a->install.error[0]=0;if(call
 static void route_engine_state(App *a,InstallBridge *b){InstallState *s=&a->install;int state=engine_state_index(s->phase);if(state<0){snprintf(s->error,sizeof s->error,"מצב מנוע לא מוכר: %s",s->phase);s->view=INSTALL_FAILED;}else if(!strcmp(s->phase,"ready"))s->view=INSTALL_DISK;else if(!strcmp(s->phase,"done"))finish_install(a,b);else if(!strcmp(s->phase,"failed"))s->view=INSTALL_FAILED;else s->view=INSTALL_PROGRESS;}
 
 int install_start(App *a,InstallBridge *b,int demo){if(demo){install_demo(a,INSTALL_DISK);return 0;}memset(&a->install,0,sizeof a->install);a->install.active=1;a->install.view=INSTALL_DISK;a->install.disk=a->install.nic=a->install.existing_disk=-1;
-    if(call(a,b,"inventory","{}"))return -1;seed_from_nic(&a->install);if(!a->install.hostname[0])snprintf(a->install.hostname,sizeof a->install.hostname,"imagectl-server");if(!a->install.admin_user[0])snprintf(a->install.admin_user,sizeof a->install.admin_user,"admin");
+    if(call(a,b,"inventory","{}")){return -1;}seed_from_nic(&a->install);if(!a->install.hostname[0])snprintf(a->install.hostname,sizeof a->install.hostname,"imagectl-server");if(!a->install.admin_user[0])snprintf(a->install.admin_user,sizeof a->install.admin_user,"admin");
     if(!call(a,b,"progress","{}")&&strcmp(a->install.phase,"ready")){route_engine_state(a,b);b->next_poll=0;}return 0;}
 
 int install_password_ready(const InstallState *s){const char *p=s->password;int letter=0,digit=0,special=0;for(;*p;p++){letter|=(*p>='A'&&*p<='Z')||(*p>='a'&&*p<='z');digit|=*p>='0'&&*p<='9';special|=strchr("!@#$%^&*(),.?\":{}|<>",*p)!=NULL;}return s->admin_user[0]&&strlen(s->password)>=8&&letter&&digit&&special&&!strcmp(s->password,s->confirm);}

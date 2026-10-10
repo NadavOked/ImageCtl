@@ -155,26 +155,47 @@ void draw_select(App *a, cairo_t *cr, Rect r, const char *shown, int id) {
 void draw_popup(App *a, cairo_t *cr, Rect anchor, const char *const *opts, int n, int sel) {
     const Theme *t = a->theme;
     if (a->dd_open == HIT_ROOM_IMAGE || a->dd_open == HIT_RESTORE_IMAGE) {
-        /* Image selection stays an existing dropdown action: no new route,
-         * state key or stdout record. Only names/folders are available. */
+        /* owner, 10/10: folder-first. The cells are the folders (name and
+         * count); a folder shows "← כל התיקיות" and then its images. An image
+         * cell is option <image index + 1> (option 0 is "בחרו אימג'…"), so the
+         * click handling in main.c is the one it always was. */
+        (void)opts; (void)n;
+        int ffirst[MAX_FOLDERS], fcount[MAX_FOLDERS], items[MAX_IMAGES];
+        int nf = image_folders(&a->st, ffirst, fcount, MAX_FOLDERS);
+        int in = a->pick_in_folder;
+        int ni = in ? folder_images(&a->st, a->pick_folder, items, MAX_IMAGES) : 0;
+        int cells = in ? ni + 1 : nf;
         int cols = anchor.w >= N_NARROW_W ? 2 : 1;
         double cw = (anchor.w - (cols - 1) * N_IMAGE_GAP) / cols;
         double row_h = N_FIELD_H + 2 * N_IMAGE_PAD;
         Rect box = {anchor.x, anchor.y, anchor.w,
-                    ((n + cols - 1) / cols) * (row_h + N_IMAGE_GAP)};
+                    ((cells + cols - 1) / cols) * (row_h + N_IMAGE_GAP)};
         draw_box_shadow(cr, box, RADIUS_R, N_SHADOW_Y, N_SHADOW_BLUR, 0,
                         t->shadow_strong, t->shadow_strong_a);
         draw_fill_rrect(cr, box, RADIUS_R, t->surface);
-        for (int i = 0; i < n; i++) {
+        const char *sel_folder = sel > 0 && sel <= a->st.nimages ? a->st.images[sel - 1].folder : NULL;
+        for (int i = 0; i < cells; i++) {
             Rect cell = {box.x + box.w - cw - (i % cols) * (cw + N_IMAGE_GAP),
                          box.y + (i / cols) * (row_h + N_IMAGE_GAP), cw, row_h};
-            int active = i == sel || hovered(a, cell);
+            char label[200]; int id, active;
+            if (!in) {
+                const char *f = a->st.images[ffirst[i]].folder;
+                snprintf(label, sizeof label, "%d · %s (%d)", i + 1, folder_label(f), fcount[i]);
+                id = HIT_PICK_FOLDER_BASE + i; active = sel_folder && !strcmp(sel_folder, f);
+            } else if (i == 0) {
+                snprintf(label, sizeof label, "← כל התיקיות");
+                id = HIT_PICK_FOLDERS_BACK; active = 0;
+            } else {
+                snprintf(label, sizeof label, "%d · %s", i, a->st.images[items[i - 1]].name);
+                id = HIT_OPTION_BASE + items[i - 1] + 1; active = sel == items[i - 1] + 1;
+            }
+            active = active || hovered(a, cell);
             draw_fill_rrect(cr, cell, RADIUS_SM, active ? t->image_selected : t->image_bg);
             draw_border_rrect(cr, cell, RADIUS_SM, active ? t->image_selected_line : t->image_line, N_BORDER);
-            Text name = rtl_block_make(cr, N_IMAGE_TITLE, 600, opts[i], cw - 2*N_IMAGE_PAD);
-            text_draw(cr, &name, cell.x + N_IMAGE_PAD, cell.y + (cell.h-name.h)/2, t->ink);
+            Text name = rtl_block_make(cr, N_IMAGE_TITLE, 600, label, cw - 2*N_IMAGE_PAD);
+            text_draw(cr, &name, cell.x + N_IMAGE_PAD, cell.y + (cell.h-name.h)/2, in && i == 0 ? t->action_fg : t->ink);
             text_free(&name);
-            hit_add(a, cell, HIT_OPTION_BASE + i);
+            hit_add(a, cell, id);
         }
         return;
     }

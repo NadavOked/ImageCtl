@@ -199,11 +199,7 @@ static char *field_buf(App *a, int id, size_t *n) {
     case HIT_DESC:          *n = sizeof a->desc;          return a->desc;
     case HIT_FOLDER_NEW:    *n = sizeof a->folder_new;    return a->folder_new;
     case HIT_ROOM_TARGET:   *n = sizeof a->room_target;   return a->room_target;
-    case HIT_ROOM_CONFIRM:  *n = sizeof a->room_confirm;  return a->room_confirm;
-    case HIT_RESTORE_CONFIRM: *n = sizeof a->restore_confirm; return a->restore_confirm;
-    case HIT_CLASS_CONFIRM: *n = sizeof a->class_confirm; return a->class_confirm;
     case HIT_TOOL_ARG:      *n = sizeof a->tool_arg;      return a->tool_arg;        /* #649 */
-    case HIT_TOOL_CONFIRM:  *n = sizeof a->tool_confirm;  return a->tool_confirm;
     default: *n = 0; return NULL;
     }
 }
@@ -220,20 +216,12 @@ static int fields_on(const App *a, int *out) {
         }
         break;
     case SCREEN_ROOM:
-        if (!a->st.has_round) { if (a->mode != MODE_DIRECT) out[n++] = HIT_ROOM_TARGET; }   /* #715: no count field */
-        else if (a->room_confirming) out[n++] = HIT_ROOM_CONFIRM;
-        break;
-    case SCREEN_CLASS:
-        if (a->st.has_session && a->class_confirming) out[n++] = HIT_CLASS_CONFIRM;
-        break;
-    case SCREEN_RESTORE:
-        out[n++] = HIT_RESTORE_CONFIRM;
+        if (!a->st.has_round && a->mode != MODE_DIRECT) out[n++] = HIT_ROOM_TARGET;   /* #715: no count field */
         break;
     case SCREEN_TOOLS:                                   /* #649: the confirm view only */
         if (a->tools_view == TOOLS_CONFIRM && a->tool_sel >= 0 && a->tool_sel < a->ntools) {
             const Tool *t = &a->tools[a->tool_sel];
             if (t->args[0] && strncmp(t->args, "disk:", 5)) out[n++] = HIT_TOOL_ARG;
-            if (tools_risk_level(t->risk)) out[n++] = HIT_TOOL_CONFIRM;
         }
         break;
     default: break;
@@ -247,13 +235,31 @@ static int field_visible(const App *a, int id) {
     return 0;
 }
 
+/* owner, 10/10: the folder-first image pickers. Open folder k of
+ * image_folders(), or go back to the folder list. */
+static void pick_open_folder(App *a, int k) {
+    int first[MAX_FOLDERS], count[MAX_FOLDERS], n = image_folders(&a->st, first, count, MAX_FOLDERS);
+    if (k < 0 || k >= n) return;
+    char f[64]; snprintf(f, sizeof f, "%s", a->st.images[first[k]].folder);   /* both inside *a (-Wrestrict) */
+    snprintf(a->pick_folder, sizeof a->pick_folder, "%s", f);
+    a->pick_in_folder = 1;
+}
+
+/* A digit in a folder-first picker: folder k at the top, image k inside a
+ * folder. Returns the chosen image's index into st.images, or -1. */
+static int pick_digit(App *a, int k) {
+    if (!a->pick_in_folder) { pick_open_folder(a, k); return -1; }
+    int idx[MAX_IMAGES], n = folder_images(&a->st, a->pick_folder, idx, MAX_IMAGES);
+    return k >= 0 && k < n ? idx[k] : -1;
+}
+
 /* Leaving a sub-screen for the menu (st-back-capture / room-back / cls-back). */
 static void go_menu(App *a) {
+    a->pick_in_folder = 0; a->pick_folder[0] = 0;
     a->mode = MODE_MENU;
     a->chosen_disk = -1; a->dd_open = 0;
     a->newfolder_shown = 0;
-    a->room_confirming = 0; a->room_target_set = 0;
-    a->class_confirming = 0;
+    a->room_target_set = 0; a->confirm = CONFIRM_NONE;
     a->menu_focus = -1;
     a->tools_view = TOOLS_LIST; a->tool_sel = -1;          /* #649 */
 }
@@ -325,10 +331,10 @@ static void menu_arrow(App *a, int key, int ncards) {
 static int choose_card(App *a, int id) {
     switch (id) {
     case HIT_CAPTURE: a->mode = MODE_CAPTURE; a->chosen_disk = -1; a->newfolder_shown = 0; emit1("capture"); break;
-    case HIT_RESTORE: a->mode = MODE_RESTORE; a->restore_image_sel = 0; a->restore_confirm[0] = 0; emit1("restore"); break;
-    case HIT_ROOM:    a->mode = MODE_ROOM; a->room_confirming = 0; a->room_target_set = 0; a->image_sel = 0; emit1("room"); break;
-    case HIT_DIRECT:  a->mode = MODE_DIRECT; a->room_confirming = 0; a->room_target_set = 0; a->nroom_selection = 0; emit1("direct"); break;   /* #715 */
-    case HIT_CLASSES: a->mode = MODE_CLASSES; a->class_confirming = 0; emit1("classes"); break;
+    case HIT_RESTORE: a->mode = MODE_RESTORE; a->restore_image_sel = 0; a->pick_in_folder = 0; emit1("restore"); break;
+    case HIT_ROOM:    a->mode = MODE_ROOM; a->room_target_set = 0; a->image_sel = 0; a->pick_in_folder = 0; emit1("room"); break;
+    case HIT_DIRECT:  a->mode = MODE_DIRECT; a->room_target_set = 0; a->nroom_selection = 0; emit1("direct"); break;   /* #715 */
+    case HIT_CLASSES: a->mode = MODE_CLASSES; emit1("classes"); break;
     case HIT_TOOLS:                                       /* #649: ask the bridge for the list */
         a->mode = MODE_TOOLS; a->tools_view = TOOLS_LIST; a->tool_sel = -1;
         a->tool_error[0] = 0; a->tool_list_scroll = 0;
@@ -340,33 +346,40 @@ static int choose_card(App *a, int id) {
 
 /* ---- #649: the toolbox ---------------------------------------------------------- */
 
-/* Send tool-run|<id>|<arg>|<confirm>; the bridge (tools.sh) checks the name
- * again before any module runs -- this local check only saves a round trip.
- * '|' and newlines cannot travel in the record and are refused here. */
-static void tool_run(App *a) {
-    if (a->tool_sel < 0 || a->tool_sel >= a->ntools) return;
+/* What tool_run sends, checked before the confirm dialog opens: the disk or
+ * the argument. Returns 1 when the run can go out; else says why. */
+static int tool_ready(App *a, char *arg, size_t n) {
+    if (a->tool_sel < 0 || a->tool_sel >= a->ntools) return 0;
     const Tool *t = &a->tools[a->tool_sel];
-    int level = tools_risk_level(t->risk), disk = !strncmp(t->args, "disk:", 5);
-    char arg[96] = "", confirm[96];
-    if (disk) {
+    arg[0] = 0;
+    if (!strncmp(t->args, "disk:", 5)) {
         if (a->tool_disk_sel < 0 || a->tool_disk_sel >= a->st.ndisks) {
-            snprintf(a->tool_error, sizeof a->tool_error, "בחרו דיסק"); return;
+            snprintf(a->tool_error, sizeof a->tool_error, "בחרו דיסק"); return 0;
         }
-        snprintf(arg, sizeof arg, "%s", a->st.disks[a->tool_disk_sel].dev);
+        snprintf(arg, n, "%s", a->st.disks[a->tool_disk_sel].dev);
     } else if (t->args[0]) {
-        snprintf(arg, sizeof arg, "%s", a->tool_arg); trim(arg);
+        snprintf(arg, n, "%s", a->tool_arg); trim(arg);
         if (!arg[0] || strpbrk(arg, "|\r\n ")) {
-            snprintf(a->tool_error, sizeof a->tool_error, "מלאו את השדה: %s (בלי רווחים)", t->args); return;
+            snprintf(a->tool_error, sizeof a->tool_error, "מלאו את השדה: %s (בלי רווחים)", t->args); return 0;
         }
     }
-    snprintf(confirm, sizeof confirm, "%s", a->tool_confirm); trim(confirm);
-    if (level) {
-        if (strpbrk(confirm, "|\r\n") || !confirm[0] ||
-            (a->tools_machine[0] && strcmp(confirm, a->tools_machine))) {   /* principle 7 */
-            snprintf(a->tool_error, sizeof a->tool_error, "הקלידו את שם המחשב בדיוק כפי שהוא רשום"); return;
-        }
-    } else confirm[0] = 0;
+    /* #1270: rw/destroy are confirmed in a dialog; the bridge (tools.sh) still
+     * checks the machine's name, and the name is the one tools= sent us */
+    if (tools_risk_level(t->risk) && (!a->tools_machine[0] || strpbrk(a->tools_machine, "|\r\n"))) {
+        snprintf(a->tool_error, sizeof a->tool_error, "שם המחשב אינו ידוע — לא ניתן לאשר"); return 0;
+    }
     a->tool_error[0] = 0;
+    return 1;
+}
+
+/* Send tool-run|<id>|<arg>|<confirm>; the bridge (tools.sh) checks the name
+ * again before any module runs. '|' and newlines cannot travel in the record
+ * and are refused (tool_ready). Called after the confirm dialog for rw/destroy. */
+static void tool_run(App *a) {
+    char arg[96], confirm[96];
+    if (!tool_ready(a, arg, sizeof arg)) return;
+    const Tool *t = &a->tools[a->tool_sel];
+    snprintf(confirm, sizeof confirm, "%s", tools_risk_level(t->risk) ? a->tools_machine : "");
     char line[400];
     snprintf(line, sizeof line, "tool-run|%s|%s|%s", t->id, arg, confirm);
     emit1(line);
@@ -376,14 +389,23 @@ static void tool_run(App *a) {
 }
 
 /* A row was clicked: ro without an argument runs at once; anything else
- * goes through the confirm view (argument and/or the machine name). */
+ * goes through the confirm view (the warning, a disk or an argument), and
+ * rw/destroy then through the confirm dialog (#1270: no typed name). */
 static void tool_open(App *a, int i) {
     if (i < 0 || i >= a->ntools) return;
-    a->tool_sel = i; a->tool_disk_sel = -1; a->tool_arg[0] = a->tool_confirm[0] = a->tool_error[0] = 0;
+    a->tool_sel = i; a->tool_disk_sel = -1; a->tool_arg[0] = a->tool_error[0] = 0;
     const Tool *t = &a->tools[i];
     if (!tools_risk_level(t->risk) && !t->args[0]) { tool_run(a); return; }
     a->tools_view = TOOLS_CONFIRM;
-    a->focus = t->args[0] && strncmp(t->args, "disk:", 5) ? HIT_TOOL_ARG : HIT_TOOL_CONFIRM;
+    a->focus = t->args[0] && strncmp(t->args, "disk:", 5) ? HIT_TOOL_ARG : 0;
+}
+
+/* "הרץ" on the confirm view: ro runs, rw/destroy ask first. */
+static void tool_go(App *a) {
+    char arg[96];
+    if (!tool_ready(a, arg, sizeof arg)) return;
+    if (tools_risk_level(a->tools[a->tool_sel].risk)) a->confirm = CONFIRM_TOOL;
+    else tool_run(a);
 }
 
 static void start_capture(App *a) {
@@ -410,26 +432,28 @@ static void start_capture(App *a) {
 
 /* #706: write a library image onto THIS machine's disk. The agent rediscovers
  * the internal disk before writing -- the GUI never supplies a device. */
-static void start_restore(App *a) {
+static int restore_ready(App *a) {
     if (a->restore_image_sel <= 0 || a->restore_image_sel > a->st.nimages) {
         snprintf(a->st.form_error, sizeof a->st.form_error, "בחרו אימג' לשחזור");
-        return;
+        return 0;
     }
-    /* principle 7, #1073: the typed confirmation is this machine's registered
-     * name (state machine_name=). No name -> nothing to confirm against -> refuse;
-     * the bridge re-reads the name from the server before it hands off. */
+    /* #1073: the bridge compares confirm= with this machine's registered name
+     * (it re-reads it from the server before handing off). #1270: nobody types
+     * it any more -- the dialog asked -- so it is filled from machine_name=.
+     * No name in the registry -> nothing the bridge will accept -> refuse. */
     if (!a->st.machine_name[0]) {
         snprintf(a->st.form_error, sizeof a->st.form_error, "למחשב הזה אין שם במרשם השרת — לא ניתן לאשר");
-        return;
-    }
-    if (strcmp(a->restore_confirm, a->st.machine_name) != 0) {
-        snprintf(a->st.form_error, sizeof a->st.form_error, "הקלידו את שם המחשב (%s) לאישור מחיקת הדיסק", a->st.machine_name);
-        return;
+        return 0;
     }
     a->st.form_error[0] = 0;
+    return 1;
+}
+
+static void start_restore(App *a) {
+    if (!restore_ready(a)) return;
     emit("restore-start");
     emit_kv("image", a->st.images[a->restore_image_sel - 1].id);
-    emit_kv("confirm", a->restore_confirm);
+    emit_kv("confirm", a->st.machine_name);
     emit_end();
 }
 
@@ -486,18 +510,40 @@ static void open_round(App *a) {
     emit_end();
 }
 
-/* Stop behind the typed image name (principle 7); the server decides (#533/#581).
- * mockup 10/10: the first press opens the field; the stop goes out only once
- * the name matches <want> (the round's image, what the server compares) --
- * the red button is not clickable before that. want NULL = no local check. */
-static void close_round(App *a, int *confirming, char *typed, int focus_id, const char *token, const char *want) {
-    if (!*confirming) { *confirming = 1; a->focus = focus_id; return; }
-    if (want && !typed_matches(typed, want)) {
-        snprintf(a->st.room_error, sizeof a->st.room_error, "הקלידו את שם האימג' בדיוק כפי שהוא מוצג");
-        return;
+/* Stop a round (#533/#581: the server decides). #1270: the operator answered
+ * the confirm dialog; the server still compares confirm_name with the name
+ * of the round (round_label = the image the screen shows), so that name goes. */
+static void stop_round(const char *token, const char *name) {
+    emit(token); emit_kv("confirm", name); emit_end();
+}
+
+/* #1270: what the confirm dialog's OK does. */
+static void confirm_do(App *a) {
+    int what = a->confirm;
+    a->confirm = CONFIRM_NONE;
+    if (what == CONFIRM_RESTORE) start_restore(a);
+    else if (what == CONFIRM_ROOM_STOP && a->st.has_round) stop_round("room-close", a->st.round_image);
+    else if (what == CONFIRM_CLASS_STOP && a->st.has_session && class_gate(a)) stop_round("class-close", a->st.sess_image);
+    else if (what == CONFIRM_TOOL) tool_run(a);
+}
+
+/* #1270: the dialog is modal -- Enter confirms, Esc cancels, its two buttons
+ * click; nothing else reaches the screen behind it. */
+static int confirm_modal(App *a, const Event *e) {
+    if (!a->confirm) return 0;
+    if (e->type == UIEV_KEY) {
+        if (e->key == KEYSYM_ENTER) confirm_do(a);
+        else if (e->key == KEYSYM_ESC) a->confirm = CONFIRM_NONE;
+        return 1;
     }
-    char c[96]; snprintf(c, sizeof c, "%s", typed); trim(c);
-    emit(token); emit_kv("confirm", c); emit_end();
+    if (e->type == UIEV_CLICK) {
+        a->ptr_x = e->x; a->ptr_y = e->y;
+        int id = app_hit(a, e->x, e->y);
+        if (id == HIT_CONFIRM_OK) confirm_do(a);
+        else if (id == HIT_CONFIRM_CANCEL) a->confirm = CONFIRM_NONE;
+        return 1;
+    }
+    return e->type == UIEV_CHAR;
 }
 
 /* #695: the effective target state of a room disk -- an operator override if
@@ -600,6 +646,7 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
     if (e->type == UIEV_CLICK || e->type == UIEV_CHAR || e->type == UIEV_KEY) emit_touch(a, demo);
     if (shrink_modal(a, e)) return 0;              /* #928 */
     if (logout_modal(a, e)) return 0;              /* mockup 10/10 */
+    if (confirm_modal(a, e)) return 0;             /* #1270 */
     switch (e->type) {
     case UIEV_MOVE:
         a->ptr_x = e->x; a->ptr_y = e->y; a->ptr_visible = !e->is_touch;
@@ -607,6 +654,9 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
     case UIEV_CLICK: {
         a->ptr_x = e->x; a->ptr_y = e->y;
         int id = app_hit(a, e->x, e->y);
+        /* the folder cells and "כל התיקיות" belong to the open list too */
+        if (id == HIT_PICK_FOLDERS_BACK) { a->pick_in_folder = 0; break; }
+        if (id >= HIT_PICK_FOLDER_BASE && id < HIT_PICK_FOLDER_BASE + MAX_FOLDERS) { pick_open_folder(a, id - HIT_PICK_FOLDER_BASE); break; }
         if (a->dd_open && !(id >= HIT_OPTION_BASE)) {   /* click outside the open list closes it */
             a->dd_open = 0;
             break;
@@ -656,8 +706,7 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
         case HIT_THEME:  a->theme = a->theme == &THEME_DARK ? &THEME_LIGHT : &THEME_DARK; break;
         case HIT_LOGOUT: sign_out(a); break;     /* the button is the explicit choice; Esc asks */
         case HIT_USER: case HIT_PASS: case HIT_NAME: case HIT_DESC: case HIT_FOLDER_NEW:
-        case HIT_ROOM_TARGET: case HIT_ROOM_CONFIRM: case HIT_CLASS_CONFIRM:
-        case HIT_RESTORE_CONFIRM: case HIT_TOOL_ARG: case HIT_TOOL_CONFIRM:
+        case HIT_ROOM_TARGET: case HIT_TOOL_ARG:
             a->focus = id; break;
         case HIT_EYE:    a->show_pw = !a->show_pw; break;
         case HIT_SUBMIT: do_login(a, auth_cmd, demo); break;
@@ -668,27 +717,27 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
             if (a->newfolder_shown) a->focus = HIT_FOLDER_NEW;
             break;
         case HIT_START:  start_capture(a); break;
-        case HIT_RESTORE_START: start_restore(a); break;
+        case HIT_RESTORE_START: if (restore_ready(a)) a->confirm = CONFIRM_RESTORE; break;   /* #1270: asks first */
         case HIT_BACK:   go_menu(a); emit1("back"); break;
         case HIT_AGAIN:  a->showing_done = 0; go_menu(a); emit1("again"); break;
         case HIT_ROOM_SELECT_ALL: room_select_range(a, 0, a->st.nmachines); break;
         case HIT_ROOM_OPEN:  open_round(a); break;
         case HIT_ROOM_WAKE:  emit1("room-wake"); break;
         case HIT_ROOM_START: emit1("room-start"); break;
-        case HIT_ROOM_CLOSE: close_round(a, &a->room_confirming, a->room_confirm, HIT_ROOM_CONFIRM, "room-close", a->st.round_image); break;
+        case HIT_ROOM_CLOSE: if (a->st.has_round) a->confirm = CONFIRM_ROOM_STOP; break;   /* #1270 */
         case HIT_CLASS_START: if (class_gate(a)) emit1("class-start"); break;
-        case HIT_CLASS_CLOSE: if (class_gate(a)) close_round(a, &a->class_confirming, a->class_confirm, HIT_CLASS_CONFIRM, "class-close", NULL); break;
+        case HIT_CLASS_CLOSE: if (class_gate(a)) a->confirm = CONFIRM_CLASS_STOP; break;   /* #1270 */
         case HIT_SMART_REPLACE: emit_smart(a, "smart-replace"); break;
         case HIT_SMART_RESCUE:  emit_smart(a, "smart-rescue");  break;
         case HIT_SMART_SKIP:    emit_smart(a, "smart-skip");    break;
         /* #649 */
         case HIT_TOOL_LIST:  if (!a->tool_running) { a->tools_view = TOOLS_LIST; a->tool_error[0] = 0; } break;
-        case HIT_TOOL_RUN:   tool_run(a); break;
+        case HIT_TOOL_RUN:   tool_go(a); break;
         case HIT_TOOL_AGAIN:
             if (a->tool_running || a->tool_sel < 0) break;
-            /* an argument or a typed name is asked again -- never replayed */
+            /* an argument, or the confirmation of rw/destroy, is asked again -- never replayed */
             if (tools_risk_level(a->tools[a->tool_sel].risk) || a->tools[a->tool_sel].args[0])
-                 { a->tool_confirm[0] = 0; a->tools_view = TOOLS_CONFIRM; }
+                 a->tools_view = TOOLS_CONFIRM;
             else tool_run(a);
             break;
         case HIT_TOOL_DOWN:
@@ -707,18 +756,26 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
             if (k < n) a->menu_focus = k;
             break;
         }
+        /* owner, 10/10: folder-first -- 1-9 picks a folder, then an image in it */
         if (a->screen == SCREEN_RESTORE && e->ch >= '1' && e->ch <= '9') {
-            int image = e->ch - '0';
-            if (image <= a->st.nimages) a->restore_image_sel = image;
+            int image = pick_digit(a, e->ch - '1');
+            if (image >= 0) a->restore_image_sel = image + 1;
             break;
         }
-        if (a->screen == SCREEN_RESTORE && a->st.nimages > 0 &&
-            (e->ch == '[' || e->ch == ']')) {
-            int image = a->restore_image_sel;
-            if (image < 1) image = 1;
-            else if (e->ch == ']') image = image == a->st.nimages ? 1 : image + 1;
-            else image = image == 1 ? a->st.nimages : image - 1;
-            a->restore_image_sel = image;
+        if (a->screen == SCREEN_ROOM && a->dd_open == HIT_ROOM_IMAGE && e->ch >= '1' && e->ch <= '9') {
+            int image = pick_digit(a, e->ch - '1');
+            if (image >= 0) { a->image_sel = image + 1; a->dd_open = 0; }
+            break;
+        }
+        /* [ ] walk the images of the open folder */
+        if (a->screen == SCREEN_RESTORE && a->pick_in_folder && (e->ch == '[' || e->ch == ']')) {
+            int idx[MAX_IMAGES], n = folder_images(&a->st, a->pick_folder, idx, MAX_IMAGES), at = -1;
+            if (!n) break;
+            for (int i = 0; i < n; i++) if (idx[i] + 1 == a->restore_image_sel) at = i;
+            if (at < 0) at = 0;
+            else if (e->ch == ']') at = (at + 1) % n;
+            else at = (at + n - 1) % n;
+            a->restore_image_sel = idx[at] + 1;
             break;
         }
         if (a->screen == SCREEN_ROOM && (e->ch == 'w' || e->ch == 'W')) { emit1("room-wake"); break; }
@@ -735,12 +792,14 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
     }
     case UIEV_KEY: {
         if (e->key == KEYSYM_ESC) {
+            /* inside a folder of an image picker, Esc goes back to the folders */
+            if (a->pick_in_folder && (a->dd_open == HIT_ROOM_IMAGE || (a->screen == SCREEN_RESTORE && !a->dd_open))) {
+                a->pick_in_folder = 0; break;
+            }
             if (a->dd_open) { a->dd_open = 0; break; }
             if (a->screen == SCREEN_MENU) { a->logout_confirming = 1; break; }   /* asks first (mockup 10/10) */
-            /* the live round: Esc opens the stop question, and Esc again closes it --
-             * it used to send the stop with whatever was typed */
-            if (a->screen == SCREEN_ROOM && a->st.has_round && a->room_confirming) { a->room_confirming = 0; a->room_confirm[0] = 0; break; }
-            if (a->screen == SCREEN_ROOM && a->st.has_round) { close_round(a, &a->room_confirming, a->room_confirm, HIT_ROOM_CONFIRM, "room-close", a->st.round_image); break; }
+            /* the live round: Esc opens the stop question (#1270: a dialog; Esc there cancels) */
+            if (a->screen == SCREEN_ROOM && a->st.has_round) { a->confirm = CONFIRM_ROOM_STOP; break; }
             if (a->screen == SCREEN_CLASS && !a->st.has_session) { go_menu(a); emit1("back"); break; }   /* like its "חזרה" */
             if (a->screen == SCREEN_RESTORE || a->screen == SCREEN_PICK || a->screen == SCREEN_ROOM || a->screen == SCREEN_TOOLS) { go_menu(a); emit1("back"); break; }
             break;
@@ -758,6 +817,7 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
                 return choose_card(a, HIT_TOOLS);
             break;
         }
+        if (e->key == KEYSYM_BACKSPACE && a->dd_open == HIT_ROOM_IMAGE) { a->pick_in_folder = 0; break; }
         int ids[8], n = fields_on(a, ids);
         if ((e->key == KEYSYM_TAB || e->key == KEYSYM_BACKTAB) && n) {
             int k = -1;                              /* Shift-Tab walks back (mockup 10/10) */
@@ -765,10 +825,9 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
             a->focus = e->key == KEYSYM_TAB ? ids[(k + 1) % n] : ids[k <= 0 ? n - 1 : k - 1];
         } else if (e->key == KEYSYM_ENTER) {
             if (a->screen == SCREEN_LOGIN) do_login(a, auth_cmd, demo);
-            else if (a->screen == SCREEN_ROOM && a->st.has_round && a->room_confirming)
-                close_round(a, &a->room_confirming, a->room_confirm, HIT_ROOM_CONFIRM, "room-close", a->st.round_image);
-            else if (a->screen == SCREEN_RESTORE && a->restore_image_sel > 0 &&
-                     !strcmp(a->restore_confirm, a->st.machine_name)) start_restore(a);
+            else if (a->screen == SCREEN_RESTORE && a->restore_image_sel > 0) {
+                if (restore_ready(a)) a->confirm = CONFIRM_RESTORE;    /* #1270: Enter asks, Enter again erases */
+            }
             else if (a->screen == SCREEN_CLONER && a->st.smart_pending)
                 emit_smart(a, !strcmp(a->st.smart_verdict, "failed_last") ? "smart-skip" : "smart-rescue");
             else if (a->screen == SCREEN_PICK) start_capture(a);
@@ -776,7 +835,11 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
             else if (a->screen == SCREEN_CLASS && a->st.has_session) { if (class_gate(a)) emit1("class-start"); }
         } else if (e->key == KEYSYM_BACKSPACE) {
             size_t bn; char *buf = field_buf(a, a->focus, &bn);
-            if (buf && field_visible(a, a->focus)) field_backspace(buf);
+            int has_text = buf && field_visible(a, a->focus) && buf[0];
+            /* an empty field (or none): Backspace leaves the folder; text is edited first */
+            if (!has_text && a->pick_in_folder &&
+                (a->dd_open == HIT_ROOM_IMAGE || a->screen == SCREEN_RESTORE)) a->pick_in_folder = 0;
+            else if (buf && field_visible(a, a->focus)) field_backspace(buf);
         }
         break;
     }
@@ -798,8 +861,9 @@ static void after_reload(App *a) {
     if (a->chosen_disk >= a->st.ndisks) a->chosen_disk = -1;
     if (a->folder_sel > a->st.nfolders) a->folder_sel = 0;
     if (a->image_sel > a->st.nimages) a->image_sel = 0;
-    if (!a->st.has_round) a->room_confirming = 0;
-    if (!a->st.has_session) a->class_confirming = 0;
+    /* #1270: a question about a round that is gone is closed */
+    if ((a->confirm == CONFIRM_ROOM_STOP && !a->st.has_round) ||
+        (a->confirm == CONFIRM_CLASS_STOP && !a->st.has_session)) a->confirm = CONFIRM_NONE;
     /* #408: rate from consecutive reads; a counter that went backwards
      * (new task) or a clock that did not move resets, not divides. */
     if (a->st.updated > a->rate_prev_updated && a->st.bytes >= a->rate_prev_bytes && a->rate_prev_updated > 0)
@@ -889,7 +953,8 @@ static void sample_state(State *s) {
 
 static const char *PNG_CARDS[] = { "login", "menu", "pick", "progress", "done", "room", "room-live",
                                    "class", "class-live", "cloner", "standby", "message", "restore", "direct",
-                                   "tools", "tools-confirm", "tools-output", "shrink", "logout" };
+                                   "tools", "tools-confirm", "tools-output", "shrink", "logout",
+                                   "restore-folder", "room-images", "restore-confirm" };
 
 /* Put the App in the state that routes to <card>; the flags that override
  * the route (message, task, round, session, done) are cleared first so a
@@ -900,7 +965,8 @@ static void png_setup(App *a, const State *base, const char *card) {
     a->st.task = TASK_NONE; a->st.has_round = 0; a->st.has_session = 0;
     a->showing_done = a->watching = a->force_progress = a->force_cloner = a->force_standby = 0;
     a->signed_in = 1; a->admin = 1; a->mode = MODE_MENU; a->logout_confirming = 0; a->menu_focus = -1;
-    a->chosen_disk = -1; a->room_confirming = a->class_confirming = 0; a->dd_open = 0;
+    a->chosen_disk = -1; a->confirm = CONFIRM_NONE; a->dd_open = 0;
+    a->pick_in_folder = 0; a->pick_folder[0] = 0;
     a->st.shrink_pending = !strcmp(card, "shrink") && base->shrink_pending;   /* #928: one card shows it */
     snprintf(a->signed_user, sizeof a->signed_user, "%s", a->user[0] ? a->user : "admin");
     if (!strcmp(card, "login"))         { a->signed_in = 0; }
@@ -923,6 +989,12 @@ static void png_setup(App *a, const State *base, const char *card) {
     else if (!strcmp(card, "message"))  { snprintf(a->st.msg_title, sizeof a->st.msg_title, "%s", base->msg_title);
                                           snprintf(a->st.msg_sub, sizeof a->st.msg_sub, "%s", base->msg_sub); }
     else if (!strcmp(card, "logout"))   { a->logout_confirming = 1; }   /* mockup 10/10: what Esc opens */
+    else if (!strcmp(card, "restore-folder")) { a->mode = MODE_RESTORE; if (base->nimages) a->restore_image_sel = 1;
+                                                pick_open_folder(a, 0); }   /* owner 10/10: inside a folder */
+    else if (!strcmp(card, "restore-confirm")) { a->mode = MODE_RESTORE; if (base->nimages) a->restore_image_sel = 1;
+                                                 a->confirm = CONFIRM_RESTORE; }   /* #1270 */
+    else if (!strcmp(card, "room-images")) { a->mode = MODE_ROOM; a->room_target_set = 0; a->nroom_selection = 0;
+                                             a->dd_open = HIT_ROOM_IMAGE; }   /* the picker, on the folders */
     else if (!strcmp(card, "restore"))  { a->mode = MODE_RESTORE; if (base->nimages) a->restore_image_sel = 1; }
     else if (!strncmp(card, "tools", 5)) {                                       /* #649 */
         a->mode = MODE_TOOLS; a->tools_view = TOOLS_LIST; a->tool_sel = -1; a->tool_running = 0;
@@ -934,7 +1006,7 @@ static void png_setup(App *a, const State *base, const char *card) {
         }
         if (!strcmp(card, "tools-confirm")) {
             a->tool_sel = wipe >= 0 ? wipe : 0; a->tools_view = TOOLS_CONFIRM; a->tool_disk_sel = base->ndisks ? 0 : -1;
-            snprintf(a->tool_confirm, sizeof a->tool_confirm, "BUILD-0"); a->focus = HIT_TOOL_CONFIRM;
+            a->focus = 0;
         } else if (!strcmp(card, "tools-output")) {
             a->tool_sel = smart >= 0 ? smart : 0; a->tools_view = TOOLS_OUTPUT; a->tool_rc = 2;
             tool_output_set(a, "/dev/sda (Samsung SSD 870 EVO 500GB): תקין -- SMART overall-health PASSED\n"
@@ -967,7 +1039,10 @@ static int render_png(App *a, const State *base, const char *prefix, int w, int 
                                        SCREEN_ROOM, /* "direct" (#715): the room screen in MODE_DIRECT */
                                        SCREEN_TOOLS, SCREEN_TOOLS, SCREEN_TOOLS, /* #649: list, confirm, output */
                                        SCREEN_PROGRESS, /* "shrink" (#928): the dialog over the capture */
-                                       SCREEN_MENU /* "logout": the Esc question over the menu (mockup 10/10) */ };
+                                       SCREEN_MENU, /* "logout": the Esc question over the menu (mockup 10/10) */
+                                       SCREEN_RESTORE, /* "restore-folder": the images of the first folder */
+                                       SCREEN_ROOM, /* "room-images": the image select open on the folders */
+                                       SCREEN_RESTORE /* "restore-confirm": the #1270 dialog */ };
         /* One entry per card, or want[c] reads past the table -- that is exactly
          * what the lab saw when "direct" was added to PNG_CARDS alone. */
         _Static_assert(sizeof want / sizeof want[0] == sizeof PNG_CARDS / sizeof PNG_CARDS[0],

@@ -19,8 +19,6 @@ from . import auth, login_guard, totp, users
 from .api import ServerContext
 from .db import _write_lock, get_setting, journal, now_iso, writing
 
-TRUSTED_COOKIE = "imagectl_trusted"
-TRUSTED_TTL = 7 * 3600
 CHALLENGE_TTL = 5 * 60
 BACKUP_COUNT = 8
 BACKUP_LEN = 10
@@ -74,35 +72,6 @@ def consume_challenge(conn: sqlite3.Connection, raw: str) -> None:
             "DELETE FROM mfa_challenges WHERE token_hash = ?",
             (_hash_token(raw or ""),),
         )
-
-
-def trusted_ok(conn: sqlite3.Connection, username: str, token: str | None) -> bool:
-    if not token:
-        return False
-    row = conn.execute(
-        "SELECT username, expires_at FROM trusted_browsers WHERE token_hash = ?",
-        (_hash_token(token),),
-    ).fetchone()
-    if row is None or row["expires_at"] < time.time():
-        return False
-    return row["username"].lower() == username.lower()
-
-
-def remember_browser(conn: sqlite3.Connection, response: Response, username: str,
-                     request: Request, tls) -> None:
-    raw = secrets.token_urlsafe(32)
-    ua = (request.headers.get("user-agent") or "")[:200]
-    with _write_lock, writing(conn):
-        conn.execute(
-            "INSERT INTO trusted_browsers"
-            " (token_hash, username, expires_at, created_at, ua)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (_hash_token(raw), username, time.time() + TRUSTED_TTL, now_iso(), ua),
-        )
-    response.set_cookie(
-        TRUSTED_COOKIE, raw, httponly=True, samesite="lax",
-        max_age=TRUSTED_TTL, secure=tls is not None,
-    )
 
 
 def _new_backup_codes(conn: sqlite3.Connection, username: str) -> list[str]:
@@ -240,9 +209,6 @@ def register(router: APIRouter, ctx: ServerContext, current_user, admin_only, tl
             ctx.conn.execute(
                 "DELETE FROM mfa_backup_codes WHERE username = ?", (stored,),
             )
-            ctx.conn.execute(
-                "DELETE FROM trusted_browsers WHERE username = ?", (stored,),
-            )
         journal(ctx.conn, "mfa_disabled", stored, actor)
         return {"ok": True, "mfa_enabled": False}
 
@@ -291,8 +257,6 @@ def register(router: APIRouter, ctx: ServerContext, current_user, admin_only, tl
                 )
         row = users.lookup(ctx.conn, stored)
         auth.attach_cookie(response, ctx.conn, stored, row["role"], tls)
-        if body.get("remember_browser"):
-            remember_browser(ctx.conn, response, stored, request, tls)
         users.record_login(ctx.conn, stored, ip)
         journal(ctx.conn, "login", "mfa_backup" if used_backup else "mfa", stored)
         idle = int(get_setting(ctx.conn, "console_idle_seconds") or 600)

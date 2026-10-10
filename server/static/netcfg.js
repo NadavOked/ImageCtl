@@ -148,7 +148,7 @@ function liveReadback(row) {
    (נבחר בהתקנה, ‏NETCFG.management_interface) — DHCP או ידנית בלבד.
    הגדרות רשת ההפצה עצמן (רשת, מסכה, טווח, חכירה) נערכות בחלון של לשונית
    "רשת הפצה" (‏editDeployNet ב-net.js): כאן "רשת הפצה" מסמן את הכרטיס
-   וממשיך לשם. בלי הקלדת שם הכרטיס (נדב 10/10) — השם בכותרת, והשרת ממשיך
+   וממשיך לשם. בלי הקלדה (נדב 10/10) — השם בכותרת, והשרת ממשיך
    לקבל `confirm` = השם, מהמסך ולא מהמקלדת. כרטיס הניהול מוגן בהחזרה
    האוטומטית של ‏#56 (60 שניות), שלא השתנתה. "+ כרטיס" פותח את אותו חלון
    עם בחירה מתוך הכרטיסים שזוהו. */
@@ -335,8 +335,6 @@ function routeDeleteSheet(nameEnc, index) {
     sub: `${nic.routes[index].destination} · ${nic.name}`,
     danger: true, submitLabel: "מחק",
     note: `<div class="sheet-note">הנתיב יוסר מהקובץ ומטבלת הניתוב.</div>`,
-    verify: { label: `להמשך הקלד את שם הכרטיס: ${nic.name}`,
-              mustEqual: nic.name },
     onSubmit: () => saveAddress(nic.name, bodyOf(nic, { routes: gone })),
   });
 }

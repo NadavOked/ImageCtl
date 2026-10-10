@@ -40,7 +40,19 @@ static char *read_all(const char *path, size_t max) {
     return buf;
 }
 
-static void cp(char *dst, size_t n, const char *src) { snprintf(dst, n, "%s", src); }
+/* A deliberate cut: at most n-1 bytes, never inside a UTF-8 character (a
+ * Hebrew title cut mid-letter drew a replacement box). No snprintf, so gcc's
+ * -Wformat-truncation has nothing to guess about. */
+static void cp(char *dst, size_t n, const char *src) {
+    if (!n) return;
+    size_t len = strlen(src);
+    if (len > n - 1) {
+        len = n - 1;
+        while (len && ((unsigned char)src[len] & 0xC0) == 0x80) len--;   /* back to a character start */
+    }
+    memcpy(dst, src, len);
+    dst[len] = 0;
+}
 
 int tools_risk_level(const char *risk) {
     if (!strcmp(risk, "ro")) return 0;
@@ -208,9 +220,9 @@ static void tools_list_view(App *a, cairo_t *cr, double W, double H, double head
     double inner = card_width(W) - 2 * N_PAD, btn_h = btn_height(cr);
     char sub[240];
     if (a->tools_machine[0])
-        snprintf(sub, sizeof sub, "כלי אבחון ותיקון לאיש ה-IT. פעולה שמשנה דיסק דורשת הקלדת שם המחשב — %s.", a->tools_machine);
+        snprintf(sub, sizeof sub, "כלי אבחון ותיקון לאיש ה-IT. פעולה שמשנה דיסק נשאלת בחלון אישור — %s.", a->tools_machine);
     else
-        snprintf(sub, sizeof sub, "כלי אבחון ותיקון לאיש ה-IT. פעולה שמשנה דיסק דורשת הקלדת שם המחשב.");
+        snprintf(sub, sizeof sub, "כלי אבחון ותיקון לאיש ה-IT. פעולה שמשנה דיסק נשאלת בחלון אישור.");
     Head hd = head_make(cr, "כלים", sub, inner);
     int items[MAX_TOOLS + 16], nitems = list_items(a, items, MAX_TOOLS + 16);
     int cols = inner < N_NARROW_W ? 1 : 2;
@@ -293,28 +305,18 @@ static void tools_confirm_view(App *a, cairo_t *cr, double W, double H, double h
         drow = 2 * N_LABEL_GAP + 2 * N_ACTION_GAP + text_line_height(cr, FONT_SANS, N_CHOICE_TITLE);
         arg_h = l_arg.h + N_LABEL_GAP + (disk ? (s->ndisks ? s->ndisks : 1) * drow : in_h) + N_FORM_GAP;
     }
-    Text l_conf = { NULL, 0, 0 }; double conf_h = 0;
-    if (level) {
-        char e[256], mk[400];
-        text_escape(a->tools_machine[0] ? a->tools_machine : "שם המחשב", e, sizeof e);
-        snprintf(mk, sizeof mk, "הקלידו את שם המחשב — <b>%s</b> — לאישור:", e);
-        l_conf = text_make_markup(cr, FONT_SANS, N_SUB, 500, mk, (int)inner, DIR_RTL);
-        pango_layout_set_alignment(l_conf.layout, PANGO_ALIGN_RIGHT);
-        conf_h = l_conf.h + N_LABEL_GAP + in_h + N_FORM_GAP;
-    }
     Text err = error_make(cr, a->tool_error, inner);
-    double body_h = N_PAD + warn_h + arg_h + conf_h + dmax(err.h, ERROR_MIN_H);
+    double body_h = N_PAD + warn_h + arg_h + dmax(err.h, ERROR_MIN_H);
 
-    /* mockup 10/10, one destructive pattern: the run button opens only once
-     * what tool_run() checks is there (disk, argument, the typed machine
-     * name), red only for a destructive tool, and named after the tool. It
-     * was red and clickable while the field still said "BUILD-0". */
+    /* one destructive pattern: the run button opens only once what tool_run()
+     * needs is there (disk, argument), red only for a destructive tool, named
+     * after the tool; rw/destroy then ask in the #1270 confirm dialog (no
+     * typed machine name any more). */
     int ready = (!disk || (a->tool_disk_sel >= 0 && a->tool_disk_sel < s->ndisks)) &&
-                (disk || !has_arg || a->tool_arg[0]) &&
-                (!level || (a->tools_machine[0] ? typed_matches(a->tool_confirm, a->tools_machine) : a->tool_confirm[0] != 0));
+                (disk || !has_arg || a->tool_arg[0]);
     char run_label[160];
-    if (level == 2 && strlen(tool->title) < 60) snprintf(run_label, sizeof run_label, "הרץ: %s", tool->title);
-    else snprintf(run_label, sizeof run_label, "הרץ");
+    if (level == 2 && strlen(tool->title) < 60) snprintf(run_label, sizeof run_label, "הרץ: %s…", tool->title);
+    else snprintf(run_label, sizeof run_label, level ? "הרץ…" : "הרץ");
     Text labels[2]; int kinds[2], ids[2], nb = 0;
     labels[nb] = btn_label(cr, run_label); kinds[nb] = !ready ? BTN_OFF : level == 2 ? BTN_DANGER : BTN_PRIMARY; ids[nb++] = HIT_TOOL_RUN;
     labels[nb] = btn_label(cr, "חזרה"); kinds[nb] = BTN_PLAIN; ids[nb++] = HIT_TOOL_LIST;
@@ -351,17 +353,12 @@ static void tools_confirm_view(App *a, cairo_t *cr, double W, double H, double h
         }
         y += N_FORM_GAP;
     }
-    if (level) {
-        text_draw(cr, &l_conf, x, y, t->ink); y += l_conf.h + N_LABEL_GAP;
-        draw_field(a, cr, (Rect){ x, y, inner, in_h }, a->tool_confirm, 0, NULL, HIT_TOOL_CONFIRM);
-        y += in_h + N_FORM_GAP;
-    }
     text_draw(cr, &err, x, y, t->danger);
     body_clip_end(a, cr);
     foot_draw_bg(cr, t, foot);
     foot_buttons(a, cr, foot, labels, kinds, ids, nb);
     card_end(a, cr);
-    if (level) { text_free(&warn); text_free(&l_conf); }
+    if (level) text_free(&warn);
     if (has_arg) text_free(&l_arg);
     text_free(&err);
 }

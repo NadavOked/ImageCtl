@@ -379,12 +379,13 @@ PLAIN_HINT = ("רק אם הכיווץ נכשל, או שכל דיסקי היעד 
               "האימג' לא ייכנס לדיסקים קטנים יותר")
 
 
-def test_shrink_is_the_one_primary_button_and_plain_is_a_hinted_link():
+def test_shrink_is_the_one_primary_button_and_plain_is_a_hinted_secondary():
     """Nadav, 10/10: "shrink and capture" is the primary button and comes
-    first; "capture without shrinking" is a small link -- not a button, not in
-    the primary colour -- with a grey hint under it; "cancel" stays a plain
-    button. Read from the source: there is no compiler on the Windows station
-    (the --png test below checks the pixels on the lab)."""
+    first; "capture without shrinking" is a secondary button -- the same box
+    as "cancel", never filled -- with a grey hint right under it (the owner,
+    10/10: the underlined link looked out of place); "cancel" is the same
+    secondary button, last. Read from the source: there is no compiler on the
+    Windows station (the --png test below checks the pixels on the lab)."""
     src = (SRC / "screens_shrink.c").read_text(encoding="utf-8")
     label = dict(re.findall(r'static const char (SHRINK_\w+)\[\] =\s*"([^"]+)";', src))
     assert label.get("SHRINK_CONTINUE_LABEL") == "כווץ וקלוט", label
@@ -395,10 +396,10 @@ def test_shrink_is_the_one_primary_button_and_plain_is_a_hinted_link():
     answers = [(m.group(1), m.group(2) or "", m.group(3)) for m in re.finditer(
         r"(draw_btn|hit_add)\(a, [^;]*?(?:(BTN_\w+), )?(HIT_SHRINK_\w+)\);", body)]
     assert answers == [("draw_btn", "BTN_PRIMARY", "HIT_SHRINK_CONTINUE"),
-                       ("hit_add", "", "HIT_SHRINK_PLAIN"),
+                       ("draw_btn", "BTN_PLAIN", "HIT_SHRINK_PLAIN"),
                        ("draw_btn", "BTN_PLAIN", "HIT_SHRINK_CANCEL")], answers
-    plain = body[body.index("SHRINK_PLAIN_LABEL"):body.index("HIT_SHRINK_PLAIN")]
-    assert "t->indigo" not in plain and "BTN_" not in plain, "the secondary answer looks primary"
+    assert body.count("BTN_PRIMARY") == 1, "one primary answer only"
+    assert "cairo_rectangle(cr, lx" not in body, "the underline of the old link is back"
     assert re.search(r"text_draw\(cr, &hint, [^;]*t->muted\)", body), "the hint is not grey"
     assert body.index("HIT_SHRINK_PLAIN") < body.index("&hint, ") < body.index("HIT_SHRINK_CANCEL"), \
         "the hint is not under the secondary answer"
@@ -478,10 +479,9 @@ def _bands(rows: list[int]) -> list[tuple[int, int]]:
 @GUI_TOOLS
 def test_the_drawn_dialog_has_one_primary_button_and_a_grey_hint(tmp_path):
     """Nadav, 10/10, in pixels: inside the dialog exactly one button is filled
-    with the primary colour (--clr-action) -- "shrink and capture" -- and under
-    it there is grey (--clr-muted) text in rows with no ink text: the hint of
-    "capture without shrinking". Until 10/10 the secondary answer was a
-    second full button and there was no grey line under the primary one."""
+    with the primary colour (--clr-action) -- "shrink and capture" -- then two
+    bordered secondary buttons, and between them grey (--clr-muted) text in
+    rows with no ink text: the hint under "capture without shrinking"."""
     binary = _build_gui(tmp_path)
     _render(binary, tmp_path / "q", BASE_STATE + QUESTION)
     for theme in ("light", "dark"):
@@ -500,7 +500,15 @@ def test_the_drawn_dialog_has_one_primary_button_and_a_grey_hint(tmp_path):
         assert len(filled) == 1, f"{theme}: {len(filled)} primary-coloured buttons {filled}"
         first, last = filled[0]
         assert 40 <= last - first + 1 <= 48, f"{theme}: primary button is {last - first + 1}px tall"
+        # two secondary buttons below it: their left border is one crisp column
+        # (x = dialog left + 28, an integer at 1280), a run of ~44 rows each
+        dw = min(w - 64, 760); bx = (w - dw) // 2 + 28
+        border = _token("--clr-border", theme)
+        col = [y for y in range(last + 1, bottom)
+               if all(abs(px[(y * w + bx) * ch + k] - border[k]) <= 12 for k in range(3))]
+        boxes = [b for b in _bands(col) if 30 <= b[1] - b[0] + 1 <= 48]
+        assert len(boxes) == 2, f"{theme}: {len(boxes)} bordered secondary buttons {boxes}"
         muted, ink = _token("--clr-muted", theme), _token("--clr-text", theme)
-        hint = [y for y in range(last + 1, bottom)
+        hint = [y for y in range(boxes[0][1] + 1, boxes[1][0])
                 if row(muted, y) >= 20 and row(ink, y, tol=26) == 0]
-        assert len(hint) >= 5, f"{theme}: no grey hint under the primary button ({hint})"
+        assert len(hint) >= 5, f"{theme}: no grey hint under 'capture without shrinking' ({hint})"

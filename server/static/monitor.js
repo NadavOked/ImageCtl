@@ -281,7 +281,7 @@ function keysymFor(event) {
 
 /* --- כוח: הפעלה מחדש / כיבוי של המחשב המנוטר (#781, #1129) ----------------
    ‏#1129: הפקודה אינה נשלחת מכאן על ה-RFB. הדפדפן קורא ל-`POST …/power`
-   עם השם שהוקלד; השרת משווה אותו לשם הקנוני שבטבלה (לא ל-`?name=`),
+   עם השם הידוע של המחשב; השרת משווה אותו לשם הקנוני שבטבלה (לא ל-`?name=`),
    כותב את אסימון הכוח (ClientCutText, `monitor.power_frame`) אל המכונה דרך הגשר
    הפתוח, ורושם ביומן מי כיבה מה. ‏ClientCutText מהדפדפן נדחה בשרת (4403).
    ‏monitor.c (root) מזהה את האסימון וקורא ל-`reboot -f`/`poweroff -f`.
@@ -348,11 +348,10 @@ canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 canvas.addEventListener("keydown", (e) => { e.preventDefault(); keyEvent(keysymFor(e), true); });
 canvas.addEventListener("keyup", (e) => { e.preventDefault(); keyEvent(keysymFor(e), false); });
 
-/* מודאל אישור לפעולת כוח: הקלדת שם המחשב (עיקרון 7), במקום
-   prompt/confirm החסומים. משתמש ב-DOM ובמחלקות של console.css. */
+/* מודאל אישור לפעולת כוח (#1270): שאלה, השלכה וכפתור אדום — בלי הקלדה,
+   במקום prompt/confirm החסומים. משתמש ב-DOM ובמחלקות של console.css. */
 function powerModal(action, label) {
   const modal = document.getElementById("pmodal");
-  const input = document.getElementById("pmodal-input");
   const error = document.getElementById("pmodal-error");
   document.getElementById("pmodal-title").textContent = label + " — אישור";
   document.getElementById("pmodal-msg").textContent =
@@ -360,9 +359,8 @@ function powerModal(action, label) {
   document.getElementById("pmodal-name").textContent = NAME;
   document.getElementById("pmodal-ok").textContent = label;
   error.textContent = "";
-  input.value = "";
   modal.style.display = "flex";
-  input.focus();
+  document.getElementById("pmodal-cancel").focus();
 
   const close = () => {
     modal.style.display = "none";
@@ -372,9 +370,9 @@ function powerModal(action, label) {
   document.addEventListener("keydown", onKey);
   document.getElementById("pmodal-cancel").onclick = close;
   document.getElementById("pmodal-ok").onclick = () => {
-    /* ‏#1129: ההשוואה בשרת. השם שהוקלד נשלח כמו שהוא; 403 = לא זהה. */
+    /* ‏#1129: ההשוואה בשרת. השם הידוע (NAME) נשלח כ-confirm; 403 = לא זהה. */
     error.textContent = "";
-    sendPower(action, input.value).then(close, (e) => { error.textContent = e.message; });
+    sendPower(action, NAME).then(close, (e) => { error.textContent = e.message; });
   };
 }
 

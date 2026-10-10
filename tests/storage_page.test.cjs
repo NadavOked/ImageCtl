@@ -2,7 +2,7 @@
 // docs/design/console-redesign/storage-mockup-2026-09-18.html: רשימה ·
 // הוסף → סוג · טופס NFS · SMB · iSCSI א' · iSCSI ב' (שלושה מצבים) · מגירה.
 // כל מסך מרונדר מ-JSON קבוע; "שמור ועגן" מושבת עד POST /test מוצלח (עיקרון 5);
-// דיסק unknown בלי כפתור פירמוט; הקלדת IQN / שם שגויה לא שולחת דבר (עיקרון 7).
+// דיסק unknown בלי כפתור פירמוט; פירמוט והסרה בחלון אישור (#1270).
 // הבדיקה מריצה את console.js + storage.js ב-vm עם fetch מזויף (כמו drivers_page).
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
@@ -105,7 +105,7 @@ test('1. list: header pill, unavailable-images note, one row per location with s
   assert.match(html, /מנותק — המפעיל ניתק; לא מנסים עד "חבר"/);
 });
 
-test('list: a disconnected location offers חבר + הסר; delete needs the exact typed name and only then sends DELETE with confirm', async () => {
+test('list: a disconnected location offers חבר + הסר; delete is a confirm sheet (#1270) and sends DELETE with confirm = the known name', async () => {
   const fixtures = {...BASE, '/storage-locations': {locations: [LOCAL, OFF], summary: {locations: 2, unreachable: 0, images: 6, unavailable_images: 0, free_bytes: 1, total_bytes: 2, checked_at: null}},
     'DELETE /storage-locations/loc_cccc0003': {ok: true}};
   const {run, requests} = setup(fixtures);
@@ -116,10 +116,9 @@ test('list: a disconnected location offers חבר + הסר; delete needs the exa
   run(`storageDelete('loc_cccc0003')`);
   assert.equal(run('sheets.length'), 1);
   assert.equal(run('sheets[0].danger'), true);
-  assert.equal(run('sheets[0].fields[0].placeholder'), 'old-nas');
-  await assert.rejects(run(`sheets[0].onSubmit({confirm: "old-nas "+"x"})`), /אינו זהה/);
-  assert.equal(requests.filter(r => r.method === 'DELETE').length, 0, 'wrong name sends nothing');
-  await run(`sheets[0].onSubmit({confirm: " old-nas "})`);
+  assert.equal(run('sheets[0].fields'), undefined, '#1270: no typed field');
+  assert.equal(requests.filter(r => r.method === 'DELETE').length, 0, 'nothing sent before the sheet is confirmed');
+  await run(`sheets[0].onSubmit({})`);
   const d = requests.find(r => r.method === 'DELETE');
   assert.deepEqual(d, {url: '/storage-locations/loc_cccc0003', method: 'DELETE', body: {confirm: 'old-nas'}});
   // a location that is still connected refuses at the client too (the server says 409 anyway)
@@ -281,10 +280,9 @@ test('5. iSCSI א\': discover → pick target → CHAP fields → התחבר run
   assert.equal(run('sheets[0].danger'), true);
   assert.match(run('sheets[0].note'), /יימחקו לצמיתות/);
   assert.match(run('sheets[0].note'), /mkfs\.ext4 -L san-lun1 \/dev\/sdb/);
-  assert.equal(run('sheets[0].fields[0].placeholder'), IQN);
-  await assert.rejects(run(`sheets[0].onSubmit({confirm: ${JSON.stringify(IQN.slice(0, -1))}})`), /אינו זהה ליעד/);
-  assert.equal(requests.filter(r => r.url.endsWith('/format')).length, 0, 'wrong IQN sends nothing');
-  await run(`sheets[0].onSubmit({confirm: ${JSON.stringify(' ' + IQN)}})`); await settle();
+  assert.equal(run('sheets[0].fields'), undefined, '#1270: no typed IQN');
+  assert.equal(requests.filter(r => r.url.endsWith('/format')).length, 0, 'nothing sent before the sheet is confirmed');
+  await run(`sheets[0].onSubmit({})`); await settle();
   const fmt = requests.find(r => r.url.endsWith('/format'));
   assert.deepEqual(fmt.body, {confirm: IQN, wipe: true}, 'a disk with a filesystem is wiped only with wipe:true');
   assert.match(toasts.at(-1), /פורמט ועוגן/);

@@ -2,7 +2,7 @@
 // + WoL למחשב בודד ולקבוצת הבנייה (#984). מוניטור ודרייברים — בקבצים שלהם.
 // בלי דפדפן: console.js + net.js + progress.js רצים ב-vm מול DOM מזערי ו-fetch
 // מזויף. עיקרון 5: כל endpoint שלא נקרא הוא מצב משלו, לא "ריק"; "נשלח" ≠
-// "התעוררה" (#528). עיקרון 7: מחיקת משתמש = הקלדת שם.
+// "התעוררה" (#528). #1270: מחיקת משתמש = חלון אישור.
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
@@ -190,9 +190,10 @@ test('permissions: one users table (name, role pill, state, created, hover actio
   assert.match(html,/<th>משתמש<\/th><th>תפקיד<\/th><th>מצב<\/th><th>MFA<\/th><th class="c-opt">נוצר<\/th><th class="c-opt">כניסה אחרונה<\/th><th><span class="sr">פעולות<\/span><\/th>/);
   const a=row(html,'data-user="admin"'), y=row(html,'data-user="yossi"'), d=row(html,'data-user="deployer"');
   assert.match(a,/<span class="name">admin<\/span><span class="sub">זה אתה<\/span>/); assert.match(a,/class="pill info">מנהל</); assert.match(a,/class="st ok">פעיל</); assert.match(a,/01\/08\/2026/);
-  // אחרי apple-pending-4: כל פעולות השורה בתפריט ⋯ אחד; ההרסנית (מחיקה — עדיין הקלדת שם) אחרונה, מסומנת "danger"
-  assert.deepEqual(menuOf(a),[['סיסמה…',"userPasswordSheet('admin')"]],'self: password only (server refuses role/disable on yourself; and admin is the last active admin)');
-  assert.match(y,/class="st warn">מושבת</); assert.deepEqual(menuOf(y).map((i)=>i[0]),['סיסמה…','תפקיד…','הפעל','נתק את כל ההפעלות…','מחק משתמש…']);
+  // אחרי apple-pending-4: כל פעולות השורה בתפריט ⋯ אחד; ההרסנית (מחיקה — חלון אישור) אחרונה, מסומנת "danger"
+  assert.doesNotMatch(a,/class="kebab"/,'self: no row actions (server refuses role/disable/reset on yourself; "שנה סיסמה" is in "החשבון שלי", #1268)');
+  assert.match(y,/class="st warn">מושבת</); assert.deepEqual(menuOf(y).map((i)=>i[0]),['תפקיד…','איפוס סיסמה…','הפעל','נתק את כל ההפעלות…','מחק משתמש…']);
+  assert.ok(menuOf(y).some((i)=>i[1]==="userResetPassword('yossi')")); assert.doesNotMatch(y+d,/userPasswordSheet/,'#1268: no typed password for another user');
   assert.deepEqual(menuOf(y).at(-1),['מחק משתמש…',"userDeleteSheet('yossi')",'danger'],'a disabled admin is deletable — the server counts active admins');
   assert.ok(menuOf(y).some((i)=>i[1]==="userDisable('yossi', false)"));
   assert.match(d,/class="pill ">הפצה</); assert.ok(menuOf(d).some((i)=>i[1]==="userRoleSheet('deployer')")); assert.ok(menuOf(d).some((i)=>i[0]==='השבת'&&i[1]==="userDisable('deployer', true)")); assert.deepEqual(menuOf(d).at(-1),['מחק משתמש…',"userDeleteSheet('deployer')",'danger']);
@@ -213,27 +214,73 @@ test('permissions: one users table (name, role pill, state, created, hover actio
   // עם מנהל פעיל נוסף — admin כבר לא "האחרון" אבל עדיין "זה אתה": רק סיסמה; yossi הפעיל מקבל הכול
   run('USERS[1].disabled=false');
   const h2=run('permissions()');
-  assert.deepEqual(menuOf(row(h2,'data-user="yossi"')).map((i)=>i[0]),['סיסמה…','תפקיד…','השבת','נתק את כל ההפעלות…','מחק משתמש…']);
+  assert.deepEqual(menuOf(row(h2,'data-user="yossi"')).map((i)=>i[0]),['תפקיד…','איפוס סיסמה…','השבת','נתק את כל ההפעלות…','מחק משתמש…']);
   assert.doesNotMatch(row(h2,'data-user="admin"'),/userDeleteSheet/);
   assert.ok(!requests.some((r)=>r.method!=='GET'),'rendering sends nothing');
 });
 
-test('permissions: the sheets call the same endpoints — password (PUT), role (PUT), disable (PUT), delete behind the typed username (DELETE), new user (POST); each reloads /users',async()=>{
+test('permissions: the sheets call the same endpoints — role (PUT), disable (PUT), delete behind the typed username (DELETE), new user (POST); each reloads /users',async()=>{
   const {run,requests}=setup(); run('current="permissions"');
   await run('loadUsersData()'); run('permissions()');
   const puts=()=>requests.filter((r)=>r.method==='PUT');
-  run("userPasswordSheet('deployer')"); let s=run('sheets.at(-1)'); assert.equal(s.fields[0].type,'password'); assert.equal(s.fields[0].confirm,'אימות הסיסמה החדשה');
-  await s.onSubmit({password:'12345678'}); assert.deepEqual(puts().at(-1),{url:'/users/deployer',full:'/api/console/users/deployer',method:'PUT',body:{password:'12345678'}});
-  run("userRoleSheet('deployer')"); s=run('sheets.at(-1)'); assert.equal(s.fields[0].options.map((o)=>o.value).join(','),'deploy,admin');
+  // ‏#1268: אין יותר הקלדת סיסמה בטבלת המשתמשים — לעצמך ב"החשבון שלי", לאחר "איפוס סיסמה…".
+  assert.equal(run('typeof userPasswordSheet'),'undefined');
+  run("userRoleSheet('deployer')"); let s=run('sheets.at(-1)'); assert.equal(s.fields[0].options.map((o)=>o.value).join(','),'deploy,admin');
   await s.onSubmit({role:'admin'}); assert.deepEqual(puts().at(-1).body,{role:'admin'});
   run("userDisable('deployer', true)"); s=run('sheets.at(-1)'); assert.match(s.sub,/לא יוכל להיכנס, וסשן פתוח שלו נסגר מיד/);
   await s.onSubmit(); assert.deepEqual(puts().at(-1).body,{disabled:true});
-  run("userDeleteSheet('deployer')"); s=run('sheets.at(-1)'); assert.equal(s.danger,true); assert.equal(s.verify.mustEqual,'deployer'); assert.match(s.verify.label,/שם המשתמש/);
+  run("userDeleteSheet('deployer')"); s=run('sheets.at(-1)'); assert.equal(s.danger,true); assert.equal(s.verify,undefined,'#1270: no typed name'); assert.equal(s.fields,undefined);
   await s.onSubmit(); assert.equal(requests.filter((r)=>r.method==='DELETE').at(-1).url,'/users/deployer');
   run('openNewUser()'); s=run('sheets.at(-1)'); assert.equal(s.fields.map((f)=>f.id).join(','),'username,password,role');
   await s.onSubmit({username:'newbie',password:'12345678',role:'deploy'}); assert.deepEqual(requests.filter((r)=>r.method==='POST').at(-1).body,{username:'newbie',password:'12345678',role:'deploy'});
-  assert.equal(requests.filter((r)=>r.url==='/users'&&r.method==='GET').length,6,'initial + 5 reloads');
-  assert.match(run('toasts.join("|")'),/הסיסמה שונתה.*התפקיד שונה.*המשתמש הושבת.*המשתמש deployer נמחק.*המשתמש newbie נוצר/);
+  assert.equal(requests.filter((r)=>r.url==='/users'&&r.method==='GET').length,5,'initial + 4 reloads');
+  assert.match(run('toasts.join("|")'),/התפקיד שונה.*המשתמש הושבת.*המשתמש deployer נמחק.*המשתמש newbie נוצר/);
+});
+
+test('#1268: "איפוס סיסמה…" — a confirm window (no typed word) → POST reset-password → the one-time password is shown once, LTR with "הצג", and copied from there',async()=>{
+  const PW='Xy7-q2Lm9Pz';
+  const {run,requests,ctx}=setup({'/users/deployer/reset-password':{new_password:PW}});
+  run('current="permissions"'); await run('loadUsersData()');
+  run("userResetPassword('deployer')");
+  const s=run('sheets.at(-1)');
+  assert.match(s.title,/לאפס את הסיסמה/); assert.equal(s.sub,'deployer');
+  assert.equal(s.danger,true); assert.ok(!s.verify,'no typed-word confirmation'); assert.equal(s.submitLabel,'איפוס סיסמה');
+  assert.match(s.note,/תוצג לך פעם אחת/); assert.match(s.note,/יחויב לבחור סיסמה חדשה/); assert.match(s.note,/ינותק מכל הדפדפנים/);
+  assert.ok(!requests.some((r)=>r.method==='POST'),'nothing is sent before the confirmation');
+  const next=await s.onSubmit({});
+  assert.deepEqual(requests.filter((r)=>r.method==='POST'),[{url:'/users/deployer/reset-password',full:'/api/console/users/deployer/reset-password',method:'POST',body:{}}]);
+  assert.equal(requests.filter((r)=>r.url==='/users'&&r.method==='GET').length,2,'the table reloads after the reset');
+  assert.equal(run('sheets.length'),1,'the result opens only after the confirm window closes');
+  assert.equal(typeof next,'function'); next();
+  const r=run('sheets.at(-1)');
+  assert.match(r.title,/הסיסמה הזמנית/); assert.equal(r.sub,'deployer');
+  assert.match(r.note,/מסור אותה למשתמש — בכניסה הבאה הוא יבחר סיסמה חדשה/);
+  // אותו שדה כמו בכניסה: LTR, "הצג" בתוך השדה מימין, מוסתר כברירת מחדל, לקריאה בלבד.
+  const field=r.note.match(/<div class="n-f" data-pwf>.*?<\/div><\/div>/s); assert.ok(field,'the password field component');
+  assert.match(field[0],/<input class="n-in" type="password" dir="ltr" id="[^"]+" autocomplete="off" value="Xy7-q2Lm9Pz" readonly>/);
+  assert.match(field[0],/<button type="button" class="pw-eye"[^>]*>הצג<\/button>/);
+  assert.equal(r.submitLabel,'העתקה'); assert.equal(r.cancelLabel,'סגירה');
+  // שום מקום אחר לא נושא את הסיסמה: לא חלון האישור, לא הודעה, לא הכותרות.
+  assert.ok(!JSON.stringify(s).includes(PW)&&!r.title.includes(PW)&&!r.sub.includes(PW));
+  assert.ok(!run('toasts.join("|")').includes(PW));
+  const copied=[]; ctx.navigator={clipboard:{writeText:async(t)=>{copied.push(t);}}};
+  await r.onSubmit({}); assert.deepEqual(copied,[PW]); assert.match(run('toasts.at(-1)'),/הסיסמה הועתקה/);
+  // בלי לוח (HTTP לא מאובטח) — החלון לא נסגר בשקט: שגיאה, והסיסמה עדיין שם להעתקה ידנית.
+  ctx.navigator={};
+  await assert.rejects(r.onSubmit({}),/ההעתקה אינה זמינה/);
+  ctx.navigator={clipboard:{writeText:async()=>{throw new Error('denied');}}};
+  await assert.rejects(r.onSubmit({}),/ההעתקה נכשלה/);
+});
+
+test('#1268: a reset answer without a password is a failure in the confirm window, not an empty result; yourself gets no reset',async()=>{
+  const {run,requests}=setup({'/users/deployer/reset-password':{ok:true}});
+  run('current="permissions"'); await run('loadUsersData()');
+  run("userResetPassword('deployer')");
+  await assert.rejects(run('sheets.at(-1)').onSubmit({}),/לא החזיר סיסמה/);
+  assert.equal(run('sheets.length'),1,'no result window');
+  run("userResetPassword('admin')");
+  assert.equal(run('sheets.length'),1,'the server refuses to reset yourself — the UI does not offer it');
+  assert.equal(requests.filter((r)=>r.method==='POST').length,1);
 });
 
 test('permissions: /users that cannot be read is its own state (red note, "לא נקרא" pill), not "no users"; an empty list is an empty state',async()=>{

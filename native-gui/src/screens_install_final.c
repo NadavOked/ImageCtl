@@ -34,7 +34,7 @@ static void summary(App *a,cairo_t *cr,InstallLayout l){
 
 static int phase_index(const char *phase){
     static const char *states[]={"partitioning","bootstrap","packages","bootloader","finishing","done"};
-    for(int i=0;i<6;i++)if(!strcmp(phase,states[i]))return i;return 0;
+    for(int i=0;i<6;i++){if(!strcmp(phase,states[i]))return i;}return 0;
 }
 
 static void phase_rows(App *a,cairo_t *cr,Rect r,int failed){

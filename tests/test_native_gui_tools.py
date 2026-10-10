@@ -91,10 +91,14 @@ def test_the_empty_state_and_the_loading_state_are_two_texts():
     assert "טוען את רשימת הכלים" in TOOLS_C
 
 
-def test_the_confirm_view_asks_for_the_machine_name_on_rw_and_destroy():
+def test_the_confirm_view_asks_no_typed_name_rw_and_destroy_confirm_in_a_dialog():
+    """#1270 (owner, 10/10): no typed-word confirmation -- the view keeps the
+    warning, the disk and the argument; "הרץ…" opens the confirm dialog."""
     body = function_body(TOOLS_C, "tools_confirm_view")
-    assert "הקלידו את שם המחשב" in body and "HIT_TOOL_CONFIRM" in body
+    assert "הקלידו את שם המחשב" not in body and "HIT_TOOL_CONFIRM" not in body
     assert "HIT_TOOL_DISK_BASE" in body and "HIT_TOOL_ARG" in body
+    go = function_body(MAIN_C, "tool_go")
+    assert "if (tools_risk_level(a->tools[a->tool_sel].risk)) a->confirm = CONFIRM_TOOL;" in go
 
 
 def test_the_output_view_spins_while_running_and_offers_run_again():
@@ -104,17 +108,22 @@ def test_the_output_view_spins_while_running_and_offers_run_again():
     assert "למטה" in body and "למעלה" in body
 
 
-def test_run_again_never_replays_a_typed_name():
-    """‏rw/destroy חוזר למסך האישור עם שדה שם ריק; רק ro בלי ארגומנט רץ שוב."""
+def test_run_again_never_replays_a_risky_run():
+    """‏rw/destroy (או כלי עם ארגומנט) חוזר למסך האישור — ומשם לחלון האישור
+    (#1270); רק ro בלי ארגומנט רץ שוב מיד."""
     body = function_body(MAIN_C, "handle")
     again = body[body.index("case HIT_TOOL_AGAIN:"):body.index("case HIT_TOOL_DOWN:")]
-    assert "a->tool_confirm[0] = 0" in again and "TOOLS_CONFIRM" in again
+    assert "a->tools_view = TOOLS_CONFIRM;" in again and "else tool_run(a);" in again
 
 
-def test_the_local_confirm_check_mirrors_the_bridge():
+def test_the_bridge_still_gets_the_machine_name_it_checks():
+    """#1270: nobody types the name; tools.sh still checks it, so tool_run
+    sends the name tools= gave, and refuses when it is not known."""
     body = function_body(MAIN_C, "tool_run")
-    assert "strcmp(confirm, a->tools_machine)" in body
+    assert 'snprintf(confirm, sizeof confirm, "%s", tools_risk_level(t->risk) ? a->tools_machine : "");' in body
     assert 'tool-run|%s|%s|%s' in body
+    ready = function_body(MAIN_C, "tool_ready")
+    assert "!a->tools_machine[0]" in ready
 
 
 # --- טוקנים בלבד, וטבלאות --png ---------------------------------------------------

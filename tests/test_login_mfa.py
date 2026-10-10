@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import sys
+import time
 
 import pytest
 
@@ -251,32 +253,28 @@ def test_backup_code_is_single_use(server):
     }).status_code == 401
 
 
-def test_remember_browser_skips_mfa_until_it_expires(server):
-    admin = server["admin"]
-    admin.post("/api/console/users", json={
-        "username": "rem", "password": "Aa12345!", "role": "admin",
-    })
-    c = _console_client(server)
-    complete_console_login(c, server["ctx"].conn, "rem", "Aa12345!")
-    secret = server["ctx"].conn.execute(
-        "SELECT mfa_secret FROM users WHERE username = 'rem'"
-    ).fetchone()["mfa_secret"]
-    c2 = _console_client(server)
-    ch = c2.post("/api/console/login", json={
-        "username": "rem", "password": "Aa12345!",
-    }).json()["challenge"]
-    r = c2.post("/api/console/login/mfa", json={
-        "challenge": ch, "code": totp.totp_code(secret), "remember_browser": True,
-    })
-    assert r.status_code == 200
-    assert "imagectl_trusted" in r.cookies
-    skip = c2.post("/api/console/login", json={"username": "rem", "password": "Aa12345!"})
-    assert skip.json().get("username") == "rem"
-    assert "mfa_required" not in skip.json()
-    server["ctx"].conn.execute("UPDATE trusted_browsers SET expires_at = 1")
+def test_old_remember_cookie_does_not_skip_mfa(server):
+    _, secret = _mfa_user(server, "rem")
+    raw = "former-remember-token"
+    server["ctx"].conn.execute(
+        "INSERT INTO trusted_browsers"
+        " (token_hash, username, expires_at, created_at, ua) VALUES (?, ?, ?, ?, ?)",
+        (hashlib.sha256(raw.encode()).hexdigest(), "rem", time.time() + 3600, "now", "test"),
+    )
     server["ctx"].conn.commit()
-    again = c2.post("/api/console/login", json={"username": "rem", "password": "Aa12345!"})
-    assert again.json().get("mfa_required") is True
+    c = _console_client(server)
+    c.cookies.set("imagectl_trusted", raw)
+    login = c.post("/api/console/login", json={"username": "rem", "password": "Aa12345!"})
+    assert login.status_code == 200
+    assert login.json().get("mfa_required") is True
+    assert login.json().get("challenge")
+    verified = c.post("/api/console/login/mfa", json={
+        "challenge": login.json()["challenge"],
+        "code": totp.totp_code(secret),
+        "remember_browser": True,
+    })
+    assert verified.status_code == 200
+    assert "imagectl_trusted" not in verified.cookies
 
 
 def test_builtin_cannot_setup_mfa(tmp_path, images_root, clock, monkeypatch):
@@ -569,18 +567,14 @@ def test_1120_five_mfa_failures_delay_and_success_clears(server, monkeypatch):
     ).fetchone()["n"] == 0
 
 
-def test_1120_password_change_revokes_old_session_and_trusted_browser(server):
-    """החלפה עצמית: ה-session הישן והדפדפן הזכור מתבטלים; המחליף ממשיך."""
+def test_1120_password_change_revokes_old_session(server):
+    """החלפה עצמית: ה-session הישן מתבטל; המחליף ממשיך."""
     _, secret = _mfa_user(server, "chg")
     old, r = _challenge(server, "chg")
     assert old.post("/api/console/login/mfa", json={
         "challenge": r.json()["challenge"], "code": totp.totp_code(secret),
-        "remember_browser": True,
     }).status_code == 200
     assert old.get("/api/console/me").status_code == 200
-    assert server["ctx"].conn.execute(
-        "SELECT COUNT(*) AS n FROM trusted_browsers WHERE username = 'chg'"
-    ).fetchone()["n"] == 1
     # session שנייה של אותו משתמש מחליפה סיסמה
     server["ctx"].conn.execute("UPDATE users SET mfa_last_step = NULL WHERE username = 'chg'")
     server["ctx"].conn.commit()
@@ -594,26 +588,17 @@ def test_1120_password_change_revokes_old_session_and_trusted_browser(server):
     assert changed.status_code == 200, changed.text
     assert me.get("/api/console/me").status_code == 200      # המחליף לא נותק
     assert old.get("/api/console/me").status_code == 401     # הישן — כן
-    assert server["ctx"].conn.execute(
-        "SELECT COUNT(*) AS n FROM trusted_browsers WHERE username = 'chg'"
-    ).fetchone()["n"] == 0
-    skip = old.post("/api/console/login", json={"username": "chg", "password": "Bb12345!"})
-    assert skip.json().get("mfa_required") is True           # הדפדפן כבר לא זכור
 
 
-def test_1120_admin_reset_revokes_sessions_and_trusted(server):
+def test_1120_admin_reset_revokes_sessions(server):
     _, secret = _mfa_user(server, "rsv")
     live, r = _challenge(server, "rsv")
     assert live.post("/api/console/login/mfa", json={
         "challenge": r.json()["challenge"], "code": totp.totp_code(secret),
-        "remember_browser": True,
     }).status_code == 200
     assert live.get("/api/console/me").status_code == 200
     assert server["admin"].post("/api/console/users/rsv/reset-password").status_code == 200
     assert live.get("/api/console/me").status_code == 401
-    assert server["ctx"].conn.execute(
-        "SELECT COUNT(*) AS n FROM trusted_browsers WHERE username = 'rsv'"
-    ).fetchone()["n"] == 0
 
 
 def test_1120_password_longer_than_128_is_rejected_by_name(server):

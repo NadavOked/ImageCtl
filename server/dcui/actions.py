@@ -95,8 +95,8 @@ def record_reset_failure(conn, guard: AuthGuard, reason: str,
 def physical_reset_admin_password(conn, new_password: str) -> ActionResult:
     """#1249: reset by physical presence at tty1 -- no current password.
 
-    Replaces the hash, ends every admin session and remembered browser,
-    drops admin's MFA (whoever lost the password has likely lost the phone
+    Replaces the hash, ends every admin session, drops admin's MFA
+    (whoever lost the password has likely lost the phone
     too) and clears the web-console login lockout. Success is read back.
     """
     problem = password_problem(new_password)
@@ -127,7 +127,7 @@ def physical_reset_admin_password(conn, new_password: str) -> ActionResult:
     return ActionResult(
         True, "Admin password reset. Log in to the web console with the new password.",
         ("Every admin web session was signed out.",
-         "Two-factor enrollment and remembered browsers were removed."))
+         "Two-factor enrollment was removed."))
 
 
 def _text(result: CommandResult) -> str:

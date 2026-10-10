@@ -283,7 +283,7 @@ test('ports page (old /ports contract): one table, a switch in every row, wired 
   assert.match(mon,/class="pill ok">קיים<\/span> <span class="cap mono">PUT \/monitor\/settings/); assert.match(mon,/בתחנה, לא בשרת/);
   // DHCP מ-/net/interfaces: ens19 משרת → מתג דלוק, נעול, מצב נמדד ירוק עם הטווח
   const dhcp=row(html,'DHCP הפצה — ens19');
-  assert.match(dhcp,/class="sw on" role="switch" aria-checked="true"/); assert.match(dhcp,/🔒 דלוק · כיבוי = הקלדת ens19/);
+  assert.match(dhcp,/class="sw on" role="switch" aria-checked="true"/); assert.match(dhcp,/🔒 דלוק · כיבוי בחלון אישור/);
   assert.match(dhcp,/class="st ok">תקין<\/span><span class="sub">משרת · 10\.44\.9\.100–10\.44\.9\.200/);
   // PXE proxy: דלוק על ens20
   assert.match(row(html,'>PXE<'),/class="sw on".*דלוק על ens20/s);
@@ -302,8 +302,8 @@ test('SSH to the server: a row per interface with three measured states (listeni
   const html=run('ports()');
   const a=row(html,'SSH לשרת — ens18'), b=row(html,'SSH לשרת — ens19'), c=row(html,'SSH לשרת — ens20');
   assert.match(a,/class="st ok">תקין<\/span><span class="sub">מאזין 10\.44\.10\.1:22 · אומת/);
-  assert.match(a,/class="sw on"/); assert.match(a,/🔒 הדלת האחרונה · סגירה = הקלדת ens18/); assert.match(a,/אין SSH לשרת מאף רשת/);
-  assert.match(b,/class="st ">כבוי<\/span><span class="sub">סגור · אומת/); assert.match(b,/class="sw " /); assert.match(b,/🔒 סגור · פתיחה = הקלדת ens19/);
+  assert.match(a,/class="sw on"/); assert.match(a,/🔒 הדלת האחרונה · סגירה בחלון אישור/); assert.match(a,/אין SSH לשרת מאף רשת/);
+  assert.match(b,/class="st ">כבוי<\/span><span class="sub">סגור · אומת/); assert.match(b,/class="sw " /); assert.match(b,/🔒 סגור · פתיחה בחלון אישור/);
   assert.match(c,/class="st unk">לא נבדק<\/span><span class="sub">טבלת הסוקטים לא נקראה/); assert.doesNotMatch(c,/סגור · אומת/);
   assert.match(a,/PUT \/ssh\/interfaces\/ens18/);
 });
@@ -314,23 +314,23 @@ test('the wired switches call the same endpoints as before: monitor, SSH station
   const put=(u)=>requests.filter((r)=>r.method==='PUT' && r.url===u);
   // מוניטור — הדלקה = sheet עם imagectl.monitor → PUT /monitor/settings
   run("portSwitch('monitor')");
-  let s=run('sheets.at(-1)'); assert.equal(s.verify.mustEqual,'imagectl.monitor'); assert.match(s.note,/מה קורה אם מכבים/);
+  let s=run('sheets.at(-1)'); assert.equal(s.verify,undefined,'#1270: no typed word'); assert.match(s.note,/מה קורה אם מכבים/);
   await s.onSubmit(); assert.deepEqual(put('/monitor/settings').at(-1).body,{enabled:true,confirm:'imagectl.monitor'});
   // SSH לתחנות — הדלקה = sheet עם imagectl.debug → PUT /ssh/stations
   run("portSwitch('ssh_stations')");
-  s=run('sheets.at(-1)'); assert.equal(s.verify.mustEqual,'imagectl.debug');
+  s=run('sheets.at(-1)'); assert.equal(s.verify,undefined,'#1270: no typed word');
   await s.onSubmit(); assert.deepEqual(put('/ssh/stations').at(-1).body,{enabled:true,confirm:'imagectl.debug'});
   // SSH לשרת — פתיחת ens19 = הקלדת ens19
   run("portSwitch('ssh_nic:ens19')");
-  s=run('sheets.at(-1)'); assert.equal(s.verify.mustEqual,'ens19'); assert.match(s.title,/פתיחת SSH לשרת על ens19/);
+  s=run('sheets.at(-1)'); assert.equal(s.verify,undefined,'#1270: no typed word'); assert.match(s.title,/פתיחת SSH לשרת על ens19/);
   await s.onSubmit(); assert.deepEqual(put('/ssh/interfaces/ens19').at(-1).body,{enabled:true,confirm:'ens19'});
   // הדלת האחרונה — סגירת ens18 דורשת הקלדה ומזהירה
   run("portSwitch('ssh_nic:ens18')");
-  s=run('sheets.at(-1)'); assert.equal(s.verify.mustEqual,'ens18'); assert.match(s.sub,/הדלת האחרונה/); assert.match(s.note,/אין SSH לשרת מאף רשת/);
+  s=run('sheets.at(-1)'); assert.equal(s.verify,undefined,'#1270: no typed word'); assert.match(s.sub,/הדלת האחרונה/); assert.match(s.note,/אין SSH לשרת מאף רשת/);
   await s.onSubmit(); assert.deepEqual(put('/ssh/interfaces/ens18').at(-1).body,{enabled:false,confirm:'ens18'});
   // DHCP — כיבוי = הקלדת שם הכרטיס → PUT /net/interfaces/ens19 עם enabled:false, proxy:false והשאר כמו שהיה
   run("portSwitch('dhcp:ens19')");
-  s=run('sheets.at(-1)'); assert.equal(s.verify.mustEqual,'ens19'); assert.match(s.note,/מה קורה אם מכבים: אף מכונה בוילן ההפצה/);
+  s=run('sheets.at(-1)'); assert.equal(s.verify,undefined,'#1270: no typed word'); assert.match(s.note,/מה קורה אם מכבים: אף מכונה בוילן ההפצה/);
   await s.onSubmit();
   const d=put('/net/interfaces/ens19').at(-1).body;
   assert.equal(d.enabled,false); assert.equal(d.proxy,false); assert.equal(d.confirm,'ens19'); assert.equal(d.range_start,'10.44.9.100'); assert.equal(d.server_ip,'10.44.9.10');
@@ -349,9 +349,9 @@ test('ports page (#996 contract): live switches — "api" confirms, "confirm" ty
   assert.equal((html.match(/<tr><td>/g)||[]).length,13,'DHCP + 9 server rows + 3 SSH');
   // 🔒 confirm: הקלדת שם השרת + "מה קורה אם מכבים"
   const boot=row(html,'>desc http_boot<');
-  assert.match(boot,/🔒 דלוק · כיבוי = הקלדת שם השרת/);
+  assert.match(boot,/🔒 דלוק · כיבוי בחלון אישור/);
   run("portSwitch('http_boot')");
-  let s=run('sheets.at(-1)'); assert.equal(s.verify.mustEqual,'srv'); assert.match(s.note,/מה קורה אם מכבים: אין PXE ואין hello/);
+  let s=run('sheets.at(-1)'); assert.equal(s.verify,undefined,'#1270: no typed word'); assert.match(s.note,/מה קורה אם מכבים: אין PXE ואין hello/);
   await s.onSubmit();
   assert.deepEqual(requests.filter((r)=>r.method==='PUT').at(-1).body,{enabled:false,confirm:'srv'});
   // none: מתג שמסביר
@@ -445,7 +445,7 @@ test('ports page (#1015 contract): rows come only from /ports — no duplicate d
   assert.deepEqual(requests.filter((r)=>r.method==='PUT').at(-1),{url:'/ports/interserver',method:'PUT',body:{enabled:false}});
   // DHCP — המתג ממשיך לפנות ל-PUT /net/interfaces/{n} (toggle_url מצביע לשם), לא ל-/ports/dhcp (409 בשרת האמיתי)
   run("portSwitch('dhcp')");
-  s=run('sheets.at(-1)'); assert.equal(s.verify.mustEqual,'ens19');
+  s=run('sheets.at(-1)'); assert.equal(s.verify,undefined,'#1270: no typed word');
   await s.onSubmit();
   const dhcpPut=requests.find((r)=>r.method==='PUT' && r.url==='/net/interfaces/ens19');
   assert.ok(dhcpPut,'DHCP switch must PUT /net/interfaces/ens19'); assert.equal(dhcpPut.body.enabled,false);
@@ -460,17 +460,17 @@ test('ports page (#1015 contract): rows come only from /ports — no duplicate d
   assert.deepEqual(s2.requests.filter((r)=>r.method==='PUT').at(-1),{url:'/ports/http_boot',method:'PUT',body:{enabled:true}});
   // confirm_when="on" (מוניטור): הדלקה דורשת את confirm_word מהשרת, לא ניחוש בלקוח
   run("portSwitch('monitor')");
-  s=run('sheets.at(-1)'); assert.equal(s.verify.mustEqual,'imagectl.monitor');
+  s=run('sheets.at(-1)'); assert.equal(s.verify,undefined,'#1270: no typed word');
   await s.onSubmit();
   assert.ok(requests.some((r)=>r.method==='PUT' && r.url==='/monitor/settings' && r.body.confirm==='imagectl.monitor'));
   // ssh_server:<nic> — confirm_when="on_or_last_off": פתיחת ens19 (סגור) דורשת הקלדה, ישירות מ-toggle_url של השורה, בלי fetch נוסף ל-/ssh
   run("portSwitch('ssh_server:ens19')");
-  s=run('sheets.at(-1)'); assert.equal(s.verify.mustEqual,'ens19'); assert.match(s.title,/פתיחת SSH לשרת על ens19/);
+  s=run('sheets.at(-1)'); assert.equal(s.verify,undefined,'#1270: no typed word'); assert.match(s.title,/פתיחת SSH לשרת על ens19/);
   await s.onSubmit();
   assert.ok(requests.some((r)=>r.method==='PUT' && r.url==='/ssh/interfaces/ens19' && r.body.enabled===true && r.body.confirm==='ens19'));
   // סגירת ens18 — הדלת האחרונה הפתוחה (מחושב מתוך שורות ה-/ports עצמן) — עדיין הקלדה, עם אזהרה
   run("portSwitch('ssh_server:ens18')");
-  s=run('sheets.at(-1)'); assert.equal(s.verify.mustEqual,'ens18'); assert.match(s.sub,/הדלת האחרונה/);
+  s=run('sheets.at(-1)'); assert.equal(s.verify,undefined,'#1270: no typed word'); assert.match(s.sub,/הדלת האחרונה/);
   await s.onSubmit();
   assert.ok(requests.some((r)=>r.method==='PUT' && r.url==='/ssh/interfaces/ens18' && r.body.enabled===false && r.body.confirm==='ens18'));
 });
@@ -487,23 +487,22 @@ test('ports page (#1013): the TFTP switch types the server name, sends PUT /port
   const html=run('ports()'); balanced(html);
   const tftp=row(html,'>desc tftp<');
   assert.match(tftp,/class="sw on" role="switch" aria-checked="true"/);
-  assert.match(tftp,/🔒 דלוק · כיבוי = הקלדת שם השרת/);
+  assert.match(tftp,/🔒 דלוק · כיבוי בחלון אישור/);
   assert.match(tftp,/class="pill ok">קיים<\/span> <span class="cap mono">PUT \/ports\/tftp/);
   assert.doesNotMatch(tftp,/דורש API|אין מתג/);
   // כיבוי: הקלדת שם השרת + האזהרה של השרת (לא "מה קורה אם מכבים" הגנרי)
   run("portSwitch('tftp')");
   const s=run('sheets.at(-1)');
-  assert.equal(s.verify.mustEqual,'srv'); assert.match(s.title,/כיבוי TFTP 69\/udp/);
+  assert.equal(s.verify,undefined,'#1270: no typed word'); assert.match(s.title,/כיבוי TFTP 69\/udp/);
   assert.match(s.note,/data-testid="port-warning"/); assert.ok(s.note.includes(TFTP_WARN),'warning_he verbatim');
   assert.doesNotMatch(s.note,/מה קורה אם מכבים/);
   await s.onSubmit();
   assert.deepEqual(requests.filter((r)=>r.method==='PUT').at(-1),{url:'/ports/tftp',method:'PUT',body:{enabled:false,confirm:'srv'}});
-  // סדר בתוך המודאל האמיתי (sheet, לא confirm()): האזהרה לפני שדה ההקלדה
+  // המודאל האמיתי (sheet, לא confirm()): האזהרה מוצגת, ואין שדה הקלדה (#1270)
   run('realSheet(sheets.at(-1))');
   const modal=run('document.querySelector("#sheet").innerHTML');
-  const warnAt=modal.indexOf('data-testid="port-warning"'), fieldAt=modal.indexOf('id="sf-verify"');
-  assert.ok(warnAt>=0 && fieldAt>=0,'both the warning and the typed field are in the modal');
-  assert.ok(warnAt<fieldAt,'the warning is rendered before the typed field');
+  assert.ok(modal.indexOf('data-testid="port-warning"')>=0,'the warning is in the modal');
+  assert.doesNotMatch(modal,/sf-verify/); assert.match(modal,/id="sf-cancel"/); assert.match(modal,/class="btn danger"/);
   assert.doesNotMatch(modal,/confirm\(/);
   // הדלקה חזרה (confirm_when=off): בלי הקלדה
   let s2=setup({'/ports':PORTS_1013.map((p)=>p.id==='tftp'?{...p,enabled:false,listening:false,state:'off'}:p)}); s2.run('current="ports"');

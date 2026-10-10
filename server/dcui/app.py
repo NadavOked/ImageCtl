@@ -213,7 +213,7 @@ def render_reset(stage: str = "confirm", typed: str = "", failures: int = 0,
     canvas.put(5, 4, "No current password is needed: being at this screen is the")
     canvas.put(6, 4, "authorization, as with Reset System Configuration on ESXi.")
     canvas.put(8, 4, "The reset also signs out every admin web session, removes admin's")
-    canvas.put(9, 4, "two-factor enrollment and remembered browsers, if any, and is journaled.")
+    canvas.put(9, 4, "two-factor enrollment, if any, and is journaled.")
     if stage == "done":
         result = result or actions.ActionResult(False, "No result.")
         canvas.put(12, 4, result.message, 72)

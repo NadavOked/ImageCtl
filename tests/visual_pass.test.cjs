@@ -117,10 +117,12 @@ test('drawer grid column is bounded so a wide table cannot widen the drawer', ()
   assert.match(css, /\.page\.drw table\.dg\{display:block;overflow-x:auto\}/);
 });
 
-test('image delete confirm button is danger, and other modals reset it to primary', () => {
+test('image delete is a danger sheet with no typed field (#1270), and modals reset the confirm button to primary', () => {
   const {run, doc} = setup(async () => ({status: 200, ok: true, headers: {get: () => null}, json: async () => ({})}));
   run('ME={username:"a",role:"admin",capabilities:{}}; IMAGES=[{id:"i1",name:"Img"}]; findImage=(id)=>IMAGES.find(i=>i.id===id); openModalFrame=()=>{};');
-  run('deleteImage("i1")');
+  run('globalThis.cfg=null; sheet=(o)=>{ globalThis.cfg=o; }; deleteImage("i1")');
+  assert.equal(run('cfg.danger'), true); assert.equal(run('cfg.verify'), undefined); assert.equal(run('cfg.fields'), undefined);
+  run('openModalContent("x","y","ok","closeModal()",true)');
   assert.equal(doc.getElementById('modalOk').className, 'btn danger');
   run('openModalContent("x","y")');
   assert.equal(doc.getElementById('modalOk').className, 'btn primary');

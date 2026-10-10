@@ -478,25 +478,46 @@ def test_shift_tab_walks_the_fields_backwards():
 
 def test_one_destructive_pattern_red_and_only_after_the_confirmation():
     """The live round's "עצור סבב" was a filled red button, clickable before
-    anything was typed; Esc a second time sent the stop with whatever was in
-    the field. Tools' "הרץ" was red and live with "BUILD-0" typed."""
+    anything was asked. Since #1270 (owner, 10/10: no typed word anywhere)
+    the red action lives in a confirm dialog; the screen offers red words."""
     widgets = code(body(_src("widgets.c"), "draw_btn"))
     assert "if (kind != BTN_OFF) hit_add(a, b, id);" in widgets          # disabled = not clickable
     footer = code(body(_src("screens_room.c"), "live_footer"))
-    assert "ready = confirming && typed_matches(a->room_confirm, s->round_image)" in footer
-    assert "!confirming ? BTN_GHOST_DANGER : ready ? BTN_DANGER : BTN_OFF" in footer
+    assert "BTN_GHOST_DANGER, HIT_ROOM_CLOSE);" in footer
     room = code(body(_src("screens_room.c"), "screen_room"))
     assert "BTN_DANGER" not in room
-    close = code(body(_src("main.c"), "close_round"))
-    assert "if (want && !typed_matches(typed, want))" in close
-    handle = code(body(_src("main.c"), "handle"))
-    assert "a->st.has_round && a->room_confirming) { a->room_confirming = 0;" in handle   # Esc cancels
-    assert handle.count('"room-close", a->st.round_image)') == 3                          # click, Esc, Enter
     tools = code(body(_src("screens_tools.c"), "tools_confirm_view"))
     assert "kinds[nb] = !ready ? BTN_OFF : level == 2 ? BTN_DANGER : BTN_PRIMARY;" in tools
-    assert "typed_matches(a->tool_confirm, a->tools_machine)" in tools
-    match = code(body(_src("screens_rounds.c"), "typed_matches"))
-    assert "want[0] &&" in match                                        # "" never matches ""
+
+
+def test_no_typed_word_confirmation_anywhere_1270():
+    """#1270 (owner, 10/10): restore, the room stop and rw/destroy tools ask in
+    a dialog -- [ביטול] and the red action; Enter confirms, Esc cancels. The
+    token the bridge/server still checks is filled from the known value."""
+    ui = code(_src("ui.h"))
+    for gone in ("restore_confirm", "room_confirm", "class_confirm", "tool_confirm",
+                 "HIT_RESTORE_CONFIRM", "HIT_ROOM_CONFIRM", "HIT_CLASS_CONFIRM", "HIT_TOOL_CONFIRM"):
+        assert gone not in ui, gone
+    for f in sorted(SRC.glob("*.c")):
+        text = code(f.read_text(encoding="utf-8"))
+        assert "typed_matches" not in text and "confirm_label" not in text, f.name
+        assert "הקלידו את שם" not in text and "מקלידים את שם" not in text, f.name
+    main = code(_src("main.c"))
+    modal = body(main, "confirm_modal")
+    assert "if (e->key == KEYSYM_ENTER) confirm_do(a);" in modal
+    assert "else if (e->key == KEYSYM_ESC) a->confirm = CONFIRM_NONE;" in modal
+    handle = body(main, "handle")
+    assert handle.index("confirm_modal(a, e)") < handle.index("switch (e->type)")
+    assert "case HIT_RESTORE_START: if (restore_ready(a)) a->confirm = CONFIRM_RESTORE;" in handle
+    assert "case HIT_ROOM_CLOSE: if (a->st.has_round) a->confirm = CONFIRM_ROOM_STOP;" in handle
+    do = body(main, "confirm_do")
+    assert 'stop_round("room-close", a->st.round_image)' in do          # what the server compares
+    assert 'emit_kv("confirm", a->st.machine_name);' in body(main, "start_restore")
+    dialog = code(body(_src("screens.c"), "draw_confirm_dialog"))
+    assert "BTN_DANGER,HIT_CONFIRM_OK" in dialog and "BTN_PLAIN,HIT_CONFIRM_CANCEL" in dialog
+    assert "a->nhits=0;" in dialog                                     # modal
+    restore = code(body(_src("screens_restore.c"), "screen_restore"))
+    assert "draw_field(" not in restore                                 # the name field is gone
 
 
 def test_every_status_bar_lists_only_keys_that_work():
@@ -506,7 +527,7 @@ def test_every_status_bar_lists_only_keys_that_work():
     restore = keys[keys.index("case SCREEN_RESTORE:"):].split(";")[0]
     assert "Tab" not in restore                                          # one field: Tab goes nowhere
     room = keys[keys.index("case SCREEN_ROOM:"):keys.index("case SCREEN_CLONER:")]
-    setup = room[:room.index("if(a->room_confirming)")]
+    setup = next(x for x in room.splitlines() if "if(!a->st.has_round)return" in x)
     assert "N  " not in setup                                            # N starts a wave; setup has none
     assert "Esc  עצור / חזרה" not in keys
     # and the class screen's Esc, which its status bar promised, now works
@@ -548,3 +569,233 @@ def test_the_live_rounds_stop_is_red_words_until_confirmed(tmp_path):
     n = sum(1 for y in range(700, 742) for x in range(w)
             if all(abs(px[(y * w + x) * ch + k] - red[k]) <= 12 for k in range(3)))
     assert 0 < n < 900, f"{n} red pixels in the footer (a filled button is ~3000)"
+
+
+# --- 6. polish after the first real renders (gate-1010f, 1920x1080 cloner) ---------
+
+
+def test_the_snapshot_age_is_said_in_whole_words():
+    """The cloner subtitle showed "עודכן לפני 4 שנ" -- the abbreviation read
+    as cut off, and its geresh jumped to the other end of the line."""
+    age = code(body(_src("screens_rounds.c"), "pace_age"))
+    assert "שנ'" not in age
+    for words in ('"עודכן לפני %lld שניות"', '"עודכן לפני %lld דקות"', '"עודכן לפני %lld שעות"',
+                  '"עודכן לפני שנייה"', '"עודכן לפני דקה"', '"עודכן לפני שעה"'):
+        assert words in age, words
+
+
+def test_an_image_name_is_one_isolated_run_in_an_rtl_line():
+    """"Office 2024 — סטנדרט" first in the subtitle made auto-dir lay the whole
+    line LTR: "'סטנדרט · 3 דיסקים · עודכן לפני 4 שנ — Office 2024"."""
+    iso = code(body(_src("screens_rounds.c"), "bidi_isolate"))
+    assert r'"\xE2\x81\xA8%s\xE2\x81\xA9"' in iso                      # FSI ... PDI
+    assert r'#define RLM "\xE2\x80\x8F"' in _src("screens_rounds.h")
+    title = code(body(_src("screens_cloner.c"), "cloner_title"))
+    assert 'snprintf(sub, sizeof sub, RLM "%s · %s%s%s", image,' in title
+    assert "bidi_isolate(s->cloner_image[0] ? s->cloner_image" in title
+    live = code(body(_src("screens_room.c"), "screen_room"))
+    assert "bidi_isolate(s->round_image, image, sizeof image);" in live
+    assert 'RLM "משדר: %s · גל %d%s%s", image,' in live
+
+
+def test_tool_fields_are_cut_on_a_character_boundary():
+    cp = code(body(_src("screens_tools.c"), "cp"))
+    assert "snprintf" not in cp
+    assert "((unsigned char)src[len] & 0xC0) == 0x80" in cp
+
+
+def _guard_flagged(s: str) -> bool:
+    """gcc -Wmisleading-indentation, for a line that starts with a guard: its
+    one-statement body is followed by another statement on the same line."""
+    def end(s, i, stop):
+        depth = 0; q = None
+        while i < len(s):
+            c = s[i]
+            if q:
+                if c == "\\":
+                    i += 2; continue
+                if c == q:
+                    q = None
+            elif c in "\"'":
+                q = c
+            elif c in "([{":
+                depth += 1
+            elif c in ")]}":
+                depth -= 1
+                if depth == 0 and stop == ")" and c == ")":
+                    return i + 1
+            elif c == ";" and depth == 0 and stop == ";":
+                return i + 1
+            i += 1
+        return -1
+    m = re.match(r"(else\s+if|if|for|while)\s*\(", s)
+    if m:
+        j = end(s, s.index("(", m.start()), ")")
+    elif re.match(r"else\b", s):
+        j = 4
+    else:
+        return False
+    rest = s[j:].lstrip()
+    if not rest or rest[0] == "{":
+        return False
+    e = _body_end(rest, end)
+    after = rest[e:].strip() if e > 0 else ""
+    return bool(after) and not after.startswith(("else", "}", "//"))
+
+
+def _body_end(rest: str, end) -> int:
+    """Where the one statement of an unbraced guard body ends: a braced
+    block, a nested guard with its own body (`for(..)for(..){..} return 0;`
+    -- the shape gcc flagged in screens_install.c:78), or up to its ';'."""
+    if rest[0] == "{":
+        depth = 0; q = None; i = 0
+        while i < len(rest):                     # braces inside "..." do not count
+            c = rest[i]
+            if q:
+                if c == "\\":
+                    i += 2; continue
+                if c == q:
+                    q = None
+            elif c in "\"'":
+                q = c
+            elif c in "{}":
+                depth += 1 if c == "{" else -1
+                if depth == 0:
+                    return i + 1
+            i += 1
+        return -1
+    m = re.match(r"(if|for|while)\s*\(", rest)
+    if m:
+        j = end(rest, rest.index("("), ")")
+        inner = rest[j:].lstrip()
+        k = _body_end(inner, end) if inner else -1
+        return -1 if k < 0 else len(rest) - len(inner) + k
+    return end(rest, 0, ";")
+
+
+def test_no_unbraced_guard_shares_its_line_with_the_next_statement():
+    bad = [f"{f.name}:{n}" for f in sorted(SRC.glob("*.c"))
+           for n, line in enumerate(code(f.read_text(encoding="utf-8")).splitlines(), 1)
+           if _guard_flagged(line.strip())]
+    assert not bad, bad
+
+
+def test_the_login_fields_are_bordered_with_the_label_above():
+    """The owner, 10/10: the native login as the console draws it -- label
+    above, a bordered LTR input (draw_field), only "הצג" inside the password
+    field at its right end in the action colour, the error only after a
+    failed attempt. The underline fields (underlined_field) are gone."""
+    screens = code(_src("screens.c"))
+    assert "underlined_field" not in screens
+    login = body(screens, "screen_login")
+    assert 'y+=login_label(a,cr,x,y,fw,"שם משתמש");' in login
+    assert "draw_field(a,cr,(Rect){x,y,fw,N_FIELD_H},a->user,0,NULL,HIT_USER);" in login
+    assert "draw_field(a,cr,pf,a->pass,!a->show_pw,NULL,HIT_PASS);" in login
+    assert login.index('"שם משתמש"') < login.index("HIT_USER") < login.index('"סיסמה"') < login.index("HIT_PASS")
+    assert "Rect er={pf.x+pf.w-eye.w-24," in login and "t->action_fg);hit_add(a,er,HIT_EYE);" in login
+    assert "if(a->error[0]){" in login                          # drawn only when set
+    widgets = code(body(_src("widgets.c"), "draw_field"))
+    assert "int ltr = (id == HIT_USER || id == HIT_PASS);" in widgets  # LTR, from the left
+
+
+# --- 7. folder-first image pickers (owner, 10/10) --------------------------------------
+
+
+def test_the_pickers_group_images_by_the_folder_the_agent_sends():
+    """image= records already carry the folder (guistate.sh: id|name|folder,
+    for restore from allowed_images and for the room from /images)."""
+    rounds = code(_src("screens_rounds.c"))
+    folders = body(rounds, "image_folders")
+    assert "strcmp(s->images[first[k]].folder, s->images[i].folder)" in folders
+    assert "count[k]++;" in folders
+    assert "if (!strcmp(s->images[i].folder, folder)) idx[n++] = i;" in body(rounds, "folder_images")
+    assert '"ללא תיקייה"' in body(rounds, "folder_label")
+
+
+def test_restore_shows_folders_first_then_the_images_of_one():
+    grid = code(body(_src("screens_restore.c"), "screen_restore"))
+    assert "hit_add(a, box, in ? HIT_OPTION_BASE + items[i] : HIT_PICK_FOLDER_BASE + i);" in grid
+    assert "HIT_PICK_FOLDERS_BACK" in grid and '"כל התיקיות"' in grid
+    assert '"תיקיות › %s"' in grid                                    # the breadcrumb
+    assert "for (int i = 0; i < shown; i++)" in grid and "shown = s->nimages" not in grid
+
+
+def test_the_room_image_select_is_folder_first_too():
+    popup = code(body(_src("widgets.c"), "draw_popup"))
+    assert "id = HIT_PICK_FOLDER_BASE + i;" in popup
+    assert "id = HIT_PICK_FOLDERS_BACK;" in popup
+    assert "id = HIT_OPTION_BASE + items[i - 1] + 1;" in popup        # option = image + 1, as before
+
+
+def test_digits_pick_a_folder_then_an_image_and_esc_or_backspace_go_back():
+    main = code(_src("main.c"))
+    handle = body(main, "handle")
+    assert "int image = pick_digit(a, e->ch - '1');" in handle
+    assert handle.count("pick_digit(a, e->ch - '1')") == 2               # restore and the room's list
+    assert "if (image >= 0) a->restore_image_sel = image + 1;" in handle
+    assert "if (image >= 0) { a->image_sel = image + 1; a->dd_open = 0; }" in handle
+    esc = handle[handle.index("if (e->key == KEYSYM_ESC) {"):]
+    assert esc.index("a->pick_in_folder = 0; break;") < esc.index("if (a->dd_open) { a->dd_open = 0; break; }")
+    assert "if (e->key == KEYSYM_BACKSPACE && a->dd_open == HIT_ROOM_IMAGE) { a->pick_in_folder = 0; break; }" in handle
+    assert "if (!has_text && a->pick_in_folder &&" in handle            # restore: a typed name is edited first
+    digit = body(main, "pick_digit")
+    assert "if (!a->pick_in_folder) { pick_open_folder(a, k); return -1; }" in digit
+    assert "a->pick_in_folder = 0;" in body(main, "go_menu")
+
+
+def test_the_pick_disk_subtitle_says_image_in_hebrew():
+    pick = body(_src("screens_capture.c"), "screen_pick")
+    assert "ייווצר image" not in pick and "ייווצר האימג'" in pick
+
+
+@GUI_BUILD
+def test_the_folder_cards_render(tmp_path):
+    """Sample data has two folders. "restore" shows the folders, "restore-
+    folder" the images of the first; "room-images" is the room with the image
+    select open on the folders."""
+    binary = _build_gui(tmp_path)
+    _render_all(binary, tmp_path, "1280x800")
+    for a, b in (("restore", "restore-folder"), ("room", "room-images"), ("restore", "restore-confirm")):
+        assert (tmp_path / f"card-{a}-light.png").read_bytes() != (tmp_path / f"card-{b}-light.png").read_bytes(), (a, b)
+
+
+# --- 8. a picked disk slot reads at a glance (owner, 10/10) -----------------------------
+
+
+def test_a_selected_slot_has_a_ring_and_a_check_and_the_rest_are_lighter():
+    """The selected state was a thin blue border on a green/orange bar."""
+    room = code(body(_src("screens_room.c"), "room_machine_draw"))
+    assert "Rect ring = { slot.x - SLOT_RING, slot.y - SLOT_RING," in room
+    assert "draw_border_rrect(cr, ring, RADIUS_SM + SLOT_RING, t->indigo, 3);" in room
+    assert "smart.r * .55 + t->surface.r * .45" in room                # 45% toward the surface
+    assert "draw_border_rrect(cr, slot, RADIUS_SM, smart, 2);" in room # the SMART colour stays
+    assert "cairo_line_to(cr, cx + h * .90, cy + h * .20);" in room    # the check
+    assert '"ער · %d מגירות מוכנות · %d נבחרו"' in room
+    assert "if (nsel) draw_border_rrect(cr, item, RADIUS_SM, t->indigo, 2);" in room
+    assert "#define SLOT_GAP  (2 * SLOT_RING)" in _src("screens_room.c")
+
+
+def _room_png(binary, tmp_path: Path, name: str, selected: tuple[int, int]) -> tuple:
+    state = tmp_path / f"{name}.txt"
+    state.write_text("machine=CLONE-01|3C:52:82:A1:00:21|1|1|2|writing|-1|0|\n"
+                     "machine_drawers=0|2\n"
+                     f"room_drawer=0|1|SER-A|Model A|256060514304|passed|1|{selected[0]}\n"
+                     f"room_drawer=0|2|SER-B|Model B|500107862016|passed|1|{selected[1]}\n"
+                     "message=x|y\n", newline="\n")
+    _png(binary, tmp_path / name, state, "1000x760")
+    return _png_rgb(tmp_path / f"{name}-room-light.png")
+
+
+@GUI_BUILD
+def test_selecting_a_slot_changes_it_unmistakably(tmp_path):
+    """Two healthy slots. Selecting the second one fills it with the solid
+    SMART green (unselected it is a lighter tint) and rings it in the action
+    blue -- thousands of pixels, not a 1px border."""
+    binary = _build_gui(tmp_path)
+    one = _room_png(binary, tmp_path, "one", (1, 0))
+    both = _room_png(binary, tmp_path, "both", (1, 1))
+    green, blue = _token("--clr-success"), _token("--clr-action")
+    g1, g2 = _count_color(one[3], one[2], green, tol=6), _count_color(both[3], both[2], green, tol=6)
+    b1, b2 = _count_color(one[3], one[2], blue, tol=6), _count_color(both[3], both[2], blue, tol=6)
+    assert g2 - g1 > 3000, (g1, g2)
+    assert b2 - b1 > 1500, (b1, b2)

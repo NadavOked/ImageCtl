@@ -310,7 +310,6 @@ function removeBranchNode(idEnc) {
     title: "הסרת שרת משני",
     sub: `"${node.label}" יוסר מהמרשם. הרישום מחדש דורש כתובת ואישורים.`,
     danger: true, submitLabel: "הסר",
-    verify: { label: "להמשך יש להקליד את שם השרת:", mustEqual: node.label },
     onSubmit: async () => { await del(`/storage-nodes/${encodeId(id)}`); await loadBranchesData(); },
   });
 }

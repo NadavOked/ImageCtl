@@ -121,7 +121,8 @@ def test_power_is_behind_a_confirm_modal_not_prompt_or_confirm():
     assert 'id="pmodal"' in _html()
     # ‏#1129: ההשוואה אינה בדפדפן ואינה מול `?name=` — השם נשלח לשרת כמו שהוא.
     assert "input.value !== NAME" not in js
-    assert "sendPower(action, input.value)" in js
+    assert "sendPower(action, NAME)" in js, "#1270: the known name is sent, not typed"
+    assert "pmodal-input" not in js and "pmodal-input" not in _html()
 
 
 # --- (ד) הסוכן: monitor.c ממפה אסימון → פקודה --------------------------------

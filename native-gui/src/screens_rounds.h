@@ -43,8 +43,12 @@ ProgLine progline_make(cairo_t *, const char *, const char *, double);
  * empty when there is no stamp. */
 void pace_text(int elapsed_s, long long rate_bps, int eta_s, int latin, char *out, size_t n);
 void pace_age(long long updated, char *out, size_t n);
+/* <in> as an isolated bidi run (FSI/PDI) for an RTL line; <out> >= strlen+7. */
+void bidi_isolate(const char *in, char *out, size_t n);
+/* U+200F RIGHT-TO-LEFT MARK: put first in a line that may start with a Latin
+ * value, so auto-dir still resolves the paragraph RTL. */
+#define RLM "\xE2\x80\x8F"
 void progline_draw(cairo_t *, const Theme *, ProgLine *, double, double, double);
-Text confirm_label(cairo_t *, const char *, int, double);
 void foot_buttons(App *, cairo_t *, Rect, Text *, const int *, const int *, int);
 int image_options(const App *, const char **, char (*)[168], int);
 #endif

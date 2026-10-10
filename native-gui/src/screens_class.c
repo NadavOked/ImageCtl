@@ -8,7 +8,7 @@
 void screen_class(App *a, cairo_t *cr, double W, double H, double head_h) {
     const Theme *t = a->theme;
     const State *s = &a->st;
-    double inner = card_width(W) - 2 * N_PAD, in_h = field_height(cr), btn_h = btn_height(cr);
+    double inner = card_width(W) - 2 * N_PAD, btn_h = btn_height(cr);
 
     if (!s->has_session) {
         /* ---- renderClassPick (step 1 of the wizard) ---- */
@@ -93,23 +93,17 @@ void screen_class(App *a, cairo_t *cr, double W, double H, double head_h) {
     Text labels[3]; int kinds[3], ids[3], nb = 0;
     if (s->sess_open) { labels[nb] = btn_label(cr, "התחל עכשיו"); kinds[nb] = BTN_PRIMARY; ids[nb++] = HIT_CLASS_START; }
     /* mockup 10/10: red words until the confirm field is open, filled red after */
-    labels[nb] = btn_label(cr, a->class_confirming ? "עצור סבב" : "עצור סבב…");
-    kinds[nb] = a->class_confirming ? BTN_DANGER : BTN_GHOST_DANGER; ids[nb++] = HIT_CLASS_CLOSE;
+    labels[nb] = btn_label(cr, "עצור סבב…");      /* #1270: opens the confirm dialog */
+    kinds[nb] = BTN_GHOST_DANGER; ids[nb++] = HIT_CLASS_CLOSE;
     labels[nb] = btn_label(cr, "חזרה");     kinds[nb] = BTN_PLAIN;  ids[nb++] = HIT_BACK;
     double cnt_h = dmax(cnt_l.h, cnt_v.h);
     double card_h = 2*N_ROUND_PAD + rid_t.h + meta_t.h + N_CHOICE_GAP + alert_height(&hint_t)
                   + N_LOGO_GAP + cnt_h + N_LABEL_GAP + N_BAR_SM + N_ACTION_TOP + btn_h;
     double mh=metric_height(cr), top_h=dmax(3*mh+2*N_METRIC_GAP, card_h);
     RowSet rs; rows_make(a, cr, inner, ROWS_CLASS, "עוד לא הצטרף אף מחשב — הכיתה מתעוררת.", &rs);
-    Text cl = { NULL, 0, 0 };
-    double confirm_h = 0;
-    if (a->class_confirming) {
-        cl = confirm_label(cr, s->sess_image, 0, inner);
-        confirm_h = N_LABEL_GAP + cl.h + 2 + in_h + N_FORM_GAP;
-    }
     Text err = error_make(cr, s->class_error, inner);
     double err_h = dmax(err.h, ERROR_MIN_H);
-    double body_h = N_PAD + top_h + N_FORM_GAP + rs.h + confirm_h + N_LABEL_GAP + err_h;
+    double body_h = N_PAD + top_h + N_FORM_GAP + rs.h + N_LABEL_GAP + err_h;
 
     Rect body, foot;
     card_frame(a, cr, W, H, head_h, &hd, body_h, 0, &body, &foot);
@@ -132,13 +126,6 @@ void screen_class(App *a, cairo_t *cr, double W, double H, double head_h) {
     draw_metric(cr,t,(Rect){x,y+2*(mh+N_METRIC_GAP),side_w,mh},"אימג'",s->sess_image);
     y+=top_h+N_FORM_GAP;
     rows_draw(a, cr, x, y, inner, &rs);                  y += rs.h;
-    if (a->class_confirming) {
-        y += N_LABEL_GAP;
-        text_draw(cr, &cl, x, y, t->muted);              y += cl.h + 2;
-        draw_field(a, cr, (Rect){ x, y, inner, in_h }, a->class_confirm, 0, NULL, HIT_CLASS_CONFIRM);
-        y += in_h + N_FORM_GAP;
-        text_free(&cl);
-    }
     y += N_LABEL_GAP;
     text_draw(cr, &err, x, y, t->danger);
     body_clip_end(a, cr);

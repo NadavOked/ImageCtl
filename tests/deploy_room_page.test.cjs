@@ -2,7 +2,7 @@
 // §"המבנה — חדר המשכפלים". בלי דפדפן: console.js + net.js + progress.js ב-vm מול DOM מזערי
 // ו-fetch מזויף. עיקרון 5: "לא נבדק" ≠ ירוק; ROOM null (לא נקרא) ≠ חדר בלי סבב.
 // הכרעת נדב 16/09: כתום = בלי תשובה ממשיך לכתוב, אדום = בלי תשובה מדלג — לעולם לא "דלג בשניהם".
-// עיקרון 7: עצירת סבב מאחורי הקלדת שם. "דיסק N · SATA N-1", לעולם לא sd*.
+// עיקרון 7: עצירת סבב מאחורי חלון אישור (#1270). "דיסק N · SATA N-1", לעולם לא sd*.
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
@@ -185,7 +185,7 @@ test('running wave: header "wave N", transmitting pill with the wave percent, st
   assert.match(html,/obj-name">חדר המשכפלים — גל 2</);
   assert.match(html,/obj-sub"[^>]*>office365 · <bdi dir="ltr">18.6 GB<\/bdi> בשרת · יעד: 12 דיסקים · נכתבו 5 · נשארו 7 · פתח nadav</);
   assert.match(html,/<span class="pill info">משדר — 31%</,'mean of the joined drawers: (38+38+37+37+4)/5');
-  assert.doesNotMatch(html,/startWave/,'running → nothing to start'); assert.match(html,/stopRoom\(\)">עצור סבב \(הקלדת שם\)</); assert.match(html,/wakeRoom\(\)">הער משכפלים \(WoL\)</);
+  assert.doesNotMatch(html,/startWave/,'running → nothing to start'); assert.match(html,/stopRoom\(\)">עצור סבב</); assert.match(html,/wakeRoom\(\)">הער משכפלים \(WoL\)</);
   assert.doesNotMatch(html,/rnew/,'no new-round form while a round is active');
   assert.match(html,/<div class="kpi info"><div class="l">הגל הנוכחי<\/div><div class="v"><bdi dir="auto">גל 2<\/bdi><\/div><div class="bar" style="margin-top:6px" role="progressbar"[^>]*aria-valuenow="31"><i style="--w:31%"><\/i><\/div><div class="s">31% בממוצע על המגירות שהצטרפו · קצב הזרם — <b[^>]*>לא נמדד<\/b> · שידור חוזר — <b[^>]*>לא נמדד<\/b>/,'no throughput_bps/loss_blocks → "not measured", not 0 (#989)');
   assert.match(html,/<div class="kpi ok"><div class="l">נכתבו ואומתו<\/div><div class="v"><bdi dir="auto">5<\/bdi> <small>\/ 12<\/small><\/div><div class="s">7 נשארו · מכל הגלים/);
@@ -270,13 +270,13 @@ test('start wave posts /room/start and a 409 is a toast with the reason; stop is
   fixtures['/room/start']={__status:409,detail:'אף מכונת שיכפול עוד לא הצטרפה לגל'};
   await run('startWave()'); assert.match(run('toasted'),/הגל לא התחיל: אף מכונת שיכפול עוד לא הצטרפה לגל/);
   run('stopRoom()');
-  assert.equal(run('formOptions.danger'),true); assert.equal(JSON.stringify(run('formOptions.verify')),JSON.stringify({label:"הקלד את שם האימג'",mustEqual:'office365'})); assert.equal(run('formOptions.submitLabel'),'עצור סבב');
+  assert.equal(run('formOptions.danger'),true); assert.equal(run('formOptions.verify'),undefined,'#1270: no typed name'); assert.equal(run('formOptions.submitLabel'),'עצור סבב');
   assert.ok(!requests.some(r=>r.url==='/api/console/room/close'),'nothing posted before the sheet is confirmed');
   await run('formOptions.onSubmit({})');
   const close=requests.find(r=>r.url==='/api/console/room/close'); assert.deepEqual(JSON.parse(close.options.body),{confirm_name:'office365'});
   await run('wakeRoom()'); assert.ok(requests.some(r=>r.url==='/api/console/room/wake')); assert.match(run('toasted'),/WoL נשלח ל-3 מחשבים/);
   run("ROOM.round.source={kind:'build_disk',mac:'"+B1+"',disk:'sda',name:'בנייה 1',task_state:'running',manifest_ready:true}; ROOM.round.image_name='בנייה 1:sda'");
-  assert.match(run('deploy(0)'),/obj-sub"[^>]*>מקור: מחשב הבנייה \(בנייה 1:sda\)/); run('stopRoom()'); assert.equal(run('formOptions.verify.mustEqual'),'בנייה 1:sda','#715: the typed name is what GET returns');
+  assert.match(run('deploy(0)'),/obj-sub"[^>]*>מקור: מחשב הבנייה \(בנייה 1:sda\)/); run('stopRoom()'); assert.equal(run('formOptions.verify'),undefined); await run('formOptions.onSubmit({})'); assert.deepEqual(JSON.parse(requests.filter(r=>r.url==='/api/console/room/close').at(-1).options.body),{confirm_name:'בנייה 1:sda'},'#715: the name sent is what GET returns');
   run('ME.role="deploy"'); run('formOptions=undefined; stopRoom()'); assert.equal(run('formOptions.danger'),true,'deploy is a room operator');
   run('ME=null'); run('formOptions=undefined; stopRoom()'); assert.equal(run('typeof formOptions'),'undefined');
 });
@@ -300,7 +300,7 @@ test('class tab: the existing session code as-is inside cards (row, start/stop, 
   let html=run('deploy(1)'); balanced(html);
   assert.match(html,/obj-name">סבב כיתה</); assert.match(html,/v2/);
   assert.match(html,/<td><strong>כיתה 303<\/strong><\/td><td>Office 2024<\/td><td>כיתה 303<\/td><td>1 \/ 2<\/td>/); assert.match(html,/פתוח · מתחיל בעוד 252 ש'/);
-  assert.match(html,/startRound\(\)">התחל עכשיו</); assert.match(html,/stopRound\(\)">עצור סבב \(הקלדת שם\)</);
+  assert.match(html,/startRound\(\)">התחל עכשיו</); assert.match(html,/stopRound\(\)">עצור סבב</);
   assert.match(html,/<b>LAB-01<\/b>/); assert.match(html,/disk error/); assert.match(html,/disk-smart fail/); assert.match(html,/<b>LAB-02<\/b><div class="sub">טרם הצטרפה/); assert.match(html,/הסבב הבא: 03/);
   assert.doesNotMatch(html,/mgrid|kpi|rnew/,'no room content on the class tab');
   run('ME.role="deploy"'); assert.match(run('deploy(1)'),/startRound\(\)/,'deploy operates class rounds too'); run('ME.role="admin"');

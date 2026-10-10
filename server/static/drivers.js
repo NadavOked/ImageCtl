@@ -4,7 +4,7 @@
    ולשונית "כיסוי לפי מכונה" (בנייה/שיכפול; כיתות v2) שהופכת את הטבלה: אילו
    חבילות יונחו על כל מכונה שדיווחה חומרה, ואילו בקרי PCI נשארו בלי חבילה.
    ייבוא tar (admin; השרת מאמת sha256 של כל קובץ לפני הכניסה, tools/drivers/
-   build-package.py בונה אותו) ומחיקה מאחורי הקלדת שם. משתמש ב-UI/api/post/
+   build-package.py בונה אותו) ומחיקה מאחורי חלון אישור. משתמש ב-UI/api/post/
    sheet/toast/esc מ-console.js; המכונות מ-/machines (loadMachines). */
 "use strict";
 
@@ -207,7 +207,6 @@ function deleteDriver(name) {
     title: "מחיקת חבילת דרייברים",
     sub: `החבילה "${p.name}" תימחק מהספרייה. מכונות שכבר קיבלו אותה אינן מושפעות.`,
     danger: true, submitLabel: "מחק",
-    verify: { label: "להמשך יש להקליד את שם החבילה:", mustEqual: p.name },
     onSubmit: async () => {
       await post("/drivers/" + encodeURIComponent(p.name) + "/delete", { confirm_name: p.name });
       toast("החבילה נמחקה.");

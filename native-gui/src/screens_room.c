@@ -15,6 +15,12 @@ typedef struct {
 
 static double node_head_h(const RoomGrid *g) { return g->name_h + 2 + g->small_h + N_LABEL_GAP; }
 
+/* Owner, 10/10: a selected slot wears a 3px action ring 2px outside it, so
+ * the slots stand SLOT_GAP apart and the stack has SLOT_RING of room above
+ * and below -- rings never overlap a neighbour or the status line. */
+#define SLOT_RING 5.0           /* 2px gap + 3px ring */
+#define SLOT_GAP  (2 * SLOT_RING)
+
 static const RoomDrawer *room_drawer_at(const Machine *m, int port) {
     for (int i = 0; i < m->nroom_drawers; i++)
         if (m->room_drawers[i].present && m->room_drawers[i].port == port)
@@ -57,14 +63,14 @@ static RoomGrid room_grid_make(cairo_t *cr, double w, int n, int max_slots,
         return g;
     }
     g.slot_h = N_PAD;
-    g.body_h = max_slots * g.slot_h + (max_slots - 1)*N_BORDER;
+    g.body_h = max_slots * g.slot_h + (max_slots - 1)*SLOT_GAP + 2*SLOT_RING;
     g.item_h = 2*N_ROOM_PAD + node_head_h(&g) + g.body_h;
     g.total_h = g.rows * g.item_h + (g.rows - 1) * g.gap;
     if (g.total_h > budget_h) {                              /* many rows: shrink slots to fit */
         double avail = (budget_h - (g.rows - 1) * g.gap) / g.rows - 2*N_ROOM_PAD - node_head_h(&g);
-        g.slot_h = floor((avail - (max_slots - 1)*N_BORDER) / max_slots);
+        g.slot_h = floor((avail - (max_slots - 1)*SLOT_GAP - 2*SLOT_RING) / max_slots);
         if (g.slot_h < N_ACTION_GAP) g.slot_h = N_ACTION_GAP;
-        g.body_h = max_slots * g.slot_h + (max_slots - 1)*N_BORDER;
+        g.body_h = max_slots * g.slot_h + (max_slots - 1)*SLOT_GAP + 2*SLOT_RING;
         g.item_h = 2*N_ROOM_PAD + node_head_h(&g) + g.body_h;
         g.total_h = g.rows * g.item_h + (g.rows - 1) * g.gap;
     }
@@ -131,9 +137,13 @@ static void room_machine_draw(App *a, cairo_t *cr, const Machine *m, int mi,
      * machine. It fills indigo when they are all selected, so the state shows. */
     int all_sel = m->awake && room_machine_all_selected(a, m);
     int warn = m->awake && room_machine_has_warn(m);
-    char st[64];
-    if (m->awake) snprintf(st, sizeof st, "ער · %d מגירות מוכנות", m->fresh_drawers);
-    else          snprintf(st, sizeof st, "כבוי");
+    int nsel = 0;                                  /* owner, 10/10: say how many are picked */
+    for (int i = 0; m->awake && i < m->nroom_drawers; i++)
+        if (m->room_drawers[i].present && room_selection_override(a, m, m->room_drawers[i].port, m->room_drawers[i].selected)) nsel++;
+    char st[96];
+    if (m->awake && nsel) snprintf(st, sizeof st, "ער · %d מגירות מוכנות · %d נבחרו", m->fresh_drawers, nsel);
+    else if (m->awake)    snprintf(st, sizeof st, "ער · %d מגירות מוכנות", m->fresh_drawers);
+    else                  snprintf(st, sizeof st, "כבוי");
     Text small = text_make(cr, FONT_SANS, N_NODE_SUB, 400, st, (int)(item.w - 2*N_ROOM_PAD), DIR_RTL);
     Rect card = room_node_chrome(a, cr, item, g, name, all_sel,
                                  m->awake ? HIT_ROOM_MACHINE_BASE + mi : 0,
@@ -141,25 +151,39 @@ static void room_machine_draw(App *a, cairo_t *cr, const Machine *m, int mi,
                                  !m->awake ? t->disk_line : warn ? t->node_warn_line : t->node_active_line,
                                  &small);
     text_free(&small);
+    if (nsel) draw_border_rrect(cr, item, RADIUS_SM, t->indigo, 2);   /* a machine with picked disks */
 
     int slots = m->drawer_count;
     if (slots < 1) slots = 1;
     if (slots > MAX_DRAWERS) slots = MAX_DRAWERS;
 
-    double sx = card.x, sy = card.y, sw = card.w;
+    double sx = card.x, sy = card.y + SLOT_RING, sw = card.w;
     for (int port = 1; port <= slots; port++) {
         const RoomDrawer *d = room_drawer_at(m, port);
-        Rect slot = { sx, sy + (port - 1) * (g->slot_h + 1), sw, g->slot_h };
+        Rect slot = { sx, sy + (port - 1) * (g->slot_h + SLOT_GAP), sw, g->slot_h };
         int selected = d && room_selection_override(a, m, port, d->selected);
-        Rgb fill = t->led_idle;
-        if (m->awake && d)
-            fill = smart_color(t, d->smart);
+        int avail = m->awake && d;
+        /* owner, 10/10: picked vs not must read at a glance. Picked = the
+         * SMART colour solid, a 3px action ring 2px outside and a check at
+         * the start. Available but not picked = the same colour lightened
+         * (45% surface) inside a border of the colour itself -- the SMART
+         * meaning (green ok / orange warn / red failed_last) stays. */
+        Rgb smart = avail ? smart_color(t, d->smart) : t->led_idle;
+        Rgb light = { smart.r * .55 + t->surface.r * .45, smart.g * .55 + t->surface.g * .45,
+                      smart.b * .55 + t->surface.b * .45 };
+        if (avail && selected) {
+            draw_fill_rrect(cr, slot, RADIUS_SM, smart);
+            Rect ring = { slot.x - SLOT_RING, slot.y - SLOT_RING, slot.w + 2 * SLOT_RING, slot.h + 2 * SLOT_RING };
+            draw_border_rrect(cr, ring, RADIUS_SM + SLOT_RING, t->indigo, 3);
+        } else if (avail) {
+            draw_fill_rrect(cr, slot, RADIUS_SM, light);
+            draw_border_rrect(cr, slot, RADIUS_SM, smart, 2);
+        } else {
+            draw_fill_rrect(cr, slot, RADIUS_SM, t->led_idle);
+            draw_border_rrect(cr, slot, RADIUS_SM, t->hair, 1);
+        }
 
-        draw_fill_rrect(cr, slot, RADIUS_SM, fill);
-        draw_border_rrect(cr, slot, RADIUS_SM, selected ? t->indigo : t->hair,
-                          selected ? 2 : 1);
-
-        if (m->awake && d) {
+        if (avail) {
             char capacity[24];
             fmt_bytes(capacity, sizeof capacity, (double)d->size_bytes);
             Text ct = text_make(cr, FONT_SANS, g->slot_h >= N_CLONE_TITLE ? N_HEADER_FONT : N_IMAGE_SUB,
@@ -168,7 +192,16 @@ static void room_machine_draw(App *a, cairo_t *cr, const Machine *m, int mi,
             cairo_rectangle(cr, slot.x + 2, slot.y + 1, slot.w - 4, slot.h - 2);
             cairo_clip(cr);
             text_draw(cr, &ct, slot.x + (slot.w - ct.w) / 2,
-                      slot.y + (slot.h - ct.h) / 2, t->on_ink);
+                      slot.y + (slot.h - ct.h) / 2, selected ? t->on_ink : t->ink);
+            if (selected && slot.h >= 12) {          /* the check at the slot's start (right, RTL) */
+                double h = fmin(slot.h * .5, 14), cx = slot.x + slot.w - 8 - h, cy = slot.y + (slot.h - h) / 2;
+                cairo_move_to(cr, cx + h * .12, cy + h * .52);
+                cairo_line_to(cr, cx + h * .40, cy + h * .80);
+                cairo_line_to(cr, cx + h * .90, cy + h * .20);
+                cairo_set_line_width(cr, 2.2);
+                cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+                draw_set(cr, t->on_ink); cairo_stroke(cr);
+            }
             cairo_restore(cr);
             text_free(&ct);
         }
@@ -289,16 +322,14 @@ static void room_live_grid_draw(App *a, cairo_t *cr, double x, double y, double 
 }
 
 /* mockup 10/10 ("חדר + סבב חי"): "עצור סבב…" stands apart at the start as
- * red words; once its field is open it is filled red -- and clickable --
- * only when the typed name matches the round's image (principle 7, one
- * destructive pattern). The rest sit at the inline end, the primary last. */
+ * red words; it opens the #1270 confirm dialog (the red "עצור סבב" is
+ * there). The rest sit at the inline end, the primary last. */
 static void live_footer(App *a, cairo_t *cr, Rect foot) {
     const Theme *t = a->theme; const State *s = &a->st;
     double bh = btn_height(cr), by = foot.y + N_ACTION_TOP;
-    int confirming = a->room_confirming, ready = confirming && typed_matches(a->room_confirm, s->round_image);
-    Text stop = btn_label(cr, confirming ? "עצור סבב" : "עצור סבב…");
+    Text stop = btn_label(cr, "עצור סבב…");
     double sw = btn_width(&stop), sx = foot.x + foot.w - N_PAD - sw;
-    draw_btn(a, cr, (Rect){ sx, by, sw, bh }, &stop, !confirming ? BTN_GHOST_DANGER : ready ? BTN_DANGER : BTN_OFF, HIT_ROOM_CLOSE);
+    draw_btn(a, cr, (Rect){ sx, by, sw, bh }, &stop, BTN_GHOST_DANGER, HIT_ROOM_CLOSE);
     text_free(&stop);
     Text labels[3]; int kinds[3], ids[3], nb = 0;     /* from the inline end: the primary first */
     if (s->wave_open) { labels[nb] = btn_label(cr, "התחל עכשיו"); kinds[nb] = BTN_PRIMARY; ids[nb++] = HIT_ROOM_START; }
@@ -313,7 +344,7 @@ static void live_footer(App *a, cairo_t *cr, Rect foot) {
     }
     double room = sx - 12 - (x + 4);
     if (room > 80) {
-        Text h = rtl_block_make(cr, 12, 400, confirming ? "הקלידו את שם האימג' למעלה · Esc מבטל" : "עצירה דורשת הקלדת שם האימג'", room);
+        Text h = rtl_block_make(cr, 12, 400, "עצירה באמצע — אחרי אישור בחלון", room);
         text_draw_r(cr, &h, sx - 12, by + (bh - h.h) / 2, t->muted);
         text_free(&h);
     }
@@ -403,11 +434,12 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
     }
 
     /* ---- renderLive ---- */
-    char sub[240], count[48], hint[520], pace[160], age[64];
+    char sub[300], count[48], hint[520], pace[160], age[64], image[112];
     /* #410: how old this picture is, next to the wave -- a state file that
      * stopped changing shows a growing number, not a current-looking screen. */
     pace_age(s->updated, age, sizeof age);
-    snprintf(sub, sizeof sub, "משדר: %s · גל %d%s%s", s->round_image, s->wave_number,
+    bidi_isolate(s->round_image, image, sizeof image);   /* a Latin-first name stays one run */
+    snprintf(sub, sizeof sub, RLM "משדר: %s · גל %d%s%s", image, s->wave_number,
              age[0] ? " · " : "", age);
     snprintf(count, sizeof count, "%d / %d", s->written, s->target);
     if (s->wave_open) {
@@ -435,17 +467,11 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
     RoomGrid grid = room_grid_make(cr, inner, s->nmachines, live_slots,
                                    room_cols, (H-head_h-N_STATUS_H)/2);
     double rows_h = s->nmachines ? grid.total_h : text_line_height(cr, FONT_SANS, N_SUB);
-    Text cl = { NULL, 0, 0 };
-    double confirm_h = 0;
-    if (a->room_confirming) {
-        cl = confirm_label(cr, s->round_image, 1, inner);
-        confirm_h = N_LABEL_GAP + cl.h + 2 + in_h + N_FORM_GAP;             /* label margin-top 6; input inside it */
-    }
     Text err = error_make(cr, s->room_error, inner);
     double err_h = dmax(err.h, ERROR_MIN_H);
     Text unid = room_unidentified_make(cr, s, inner);
     double unid_h = unid.layout ? N_LABEL_GAP + unid.h : 0;
-    double body_h = N_PAD + pl.h + N_LABEL_GAP + N_BAR_H + N_ACTION_GAP + alert_height(&hint_t) + N_CHOICE_GAP + rows_h + unid_h + confirm_h + N_LABEL_GAP + err_h + N_PAD;
+    double body_h = N_PAD + pl.h + N_LABEL_GAP + N_BAR_H + N_ACTION_GAP + alert_height(&hint_t) + N_CHOICE_GAP + rows_h + unid_h + N_LABEL_GAP + err_h + N_PAD;
 
     Rect body, foot;
     card_frame(a, cr, W, H, head_h, &hd, body_h, foot_height(cr, btn_h), &body, &foot);
@@ -458,13 +484,6 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
     draw_alert(cr, t, (Rect){ x, y, inner, alert_height(&hint_t) }, &hint_t); y += alert_height(&hint_t) + N_CHOICE_GAP;
     room_live_grid_draw(a, cr, x, y, inner, &grid, s->wave_open); y += rows_h;
     if (unid.layout) { text_draw_r(cr, &unid, x + inner, y + N_LABEL_GAP, t->warning_ink); y += unid_h; }
-    if (a->room_confirming) {
-        y += N_LABEL_GAP;
-        text_draw(cr, &cl, x, y, t->muted);              y += cl.h + 2;
-        draw_field(a, cr, (Rect){ x, y, inner, in_h }, a->room_confirm, 0, NULL, HIT_ROOM_CONFIRM);
-        y += in_h + N_FORM_GAP;
-        text_free(&cl);
-    }
     y += N_LABEL_GAP;
     text_draw(cr, &err, x, y, t->danger);
     body_clip_end(a, cr);

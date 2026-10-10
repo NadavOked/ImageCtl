@@ -309,13 +309,11 @@ def _type(runtime, text, enter=True):
 
 
 def _admin_with_mfa_and_sessions(conn):
-    """admin עם MFA, קודי גיבוי, דפדפן זכור, אתגר פתוח ונעילת כניסה בקונסולה."""
+    """admin עם MFA, קודי גיבוי, אתגר פתוח ונעילת כניסה בקונסולה."""
     conn.execute("UPDATE users SET mfa_enabled = 1, mfa_secret = 'JBSWY3DP',"
                  " mfa_enrolled_at = 'x', mfa_last_step = 7, must_change_password = 1"
                  " WHERE username = 'admin'")
     conn.execute("INSERT INTO mfa_backup_codes (username, code_hash) VALUES ('admin', 'h')")
-    conn.execute("INSERT INTO trusted_browsers (token_hash, username, expires_at,"
-                 " created_at) VALUES ('t', 'admin', 9e12, 'now')")
     conn.execute("INSERT INTO mfa_challenges (token_hash, username, expires_at)"
                  " VALUES ('c', 'admin', 9e12)")
     conn.execute("INSERT INTO login_attempts (key, failures, locked_until, last_at)"
@@ -342,7 +340,7 @@ def test_physical_reset_replaces_the_hash_ends_sessions_and_drops_mfa(tmp_path):
     assert info["mfa_enabled"] is False and info["mfa_secret"] is None
     assert info["must_change_password"] is False       # המפעיל בחר את הסיסמה בעצמו
     assert _count(conn, "SELECT auth_epoch FROM users WHERE username = 'admin'") == epoch + 1
-    for table in ("mfa_backup_codes", "trusted_browsers", "mfa_challenges"):
+    for table in ("mfa_backup_codes", "mfa_challenges"):
         assert _count(conn, f"SELECT COUNT(*) FROM {table} WHERE username = 'admin'") == 0, table
     assert _count(conn, "SELECT COUNT(*) FROM login_attempts WHERE key LIKE 'admin|%'") == 0
     row = conn.execute("SELECT detail, user FROM journal"

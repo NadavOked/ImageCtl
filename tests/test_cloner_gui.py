@@ -788,8 +788,9 @@ def test_standby_shows_connected_disks_and_empty_cloner_port(tmp_path):
 def test_login_show_password_toggle_is_at_the_right_of_the_field(tmp_path):
     """‏#1167: "הצג" יושב בקצה הימני של שדה הסיסמה.
 
-    שדה הסיסמה ריק ברינדור, ולכן **כל הדיו** בתוך תיבת השדה (בין תווית
-    "סיסמה" לקו התחתון, בתוך רוחב השדה) הוא הכפתור. מודדים דיו מול צבע
+    שדה הסיסמה ריק ברינדור, ולכן **כל הדיו** בתוך תיבת השדה (בין המסגרת
+    העליונה לתחתונה ובין שתי הצלעות — מאז 10/10 שדות ממוסגרים כמו בקונסולה,
+    התווית מעליהם) הוא "הצג". מודדים דיו מול צבע
     הרקע של השדה, לא צבע-טוקן: טקסט 12px מוחלק כמעט אינו פוגע בטוקן
     המדויק (הגרסה הקודמת של הטסט עברה גם כשהכפתור היה משמאל). בקרה
     שלילית: `Rect er={x,…}` (הנוסחה הישנה) → הדיו בחצי השמאלי.
@@ -810,8 +811,8 @@ def test_login_show_password_toggle_is_at_the_right_of_the_field(tmp_path):
         # רקע הפאנל: פיקסל בתוך השדה, גבוה מעל הטופס (אין שם דיו).
         bg_i = ((h // 5) * w + (field_left + field_right) // 2) * ch
         bg = (px[bg_i], px[bg_i + 1], px[bg_i + 2])
-        # קווי השדות: שורות שבהן הדיו (בכל צבע) חוצה >90% מרוחב השדה.
-        # שני קווים — שם משתמש וסיסמה — כל אחד עשוי כמה שורות רצופות.
+        # שורות שבהן הדיו (בכל צבע) חוצה >90% מרוחב השדה: המסגרת העליונה
+        # והתחתונה של שדה המשתמש, של שדה הסיסמה, ואז מילוי כפתור "כניסה".
         wide = [y for y in range(h // 4, 3 * h // 4)
                 if (lambda b: b[1] - b[0] > fw * .9)(_ink_bounds_x(px, ch, w, field_left, field_right, y, y + 1, bg))]
         lines: list[list[int]] = []
@@ -820,10 +821,22 @@ def test_login_show_password_toggle_is_at_the_right_of_the_field(tmp_path):
                 lines[-1][1] = y
             else:
                 lines.append([y, y])
-        assert len(lines) >= 2, f"expected two field underlines at {size}, got {lines}"
-        pw_line = lines[1][0]
-        y0, y1 = pw_line - int(34 * s), pw_line - 2
-        left, right, top, bottom = _ink_bounds_x(px, ch, w, field_left, field_right, y0, y1, bg)
+        assert len(lines) >= 4, f"expected two bordered fields at {size}, got {lines}"
+        # count from the bottom: the "כניסה" fill is the last tall band. The
+        # password field is filled (not the pane colour), so it reads as a tall
+        # band of its own right above the button, or as its two border lines.
+        tall = [i for i, (a, b) in enumerate(lines) if b - a > 15]
+        assert tall, f"no button fill under the fields at {size}: {lines}"
+        if len(tall) >= 2:
+            a, b = lines[tall[-2]]
+            y0, y1 = a + 3, b - 2
+            fi = (((a + b) // 2) * w + field_left + 6) * ch
+            bg = (px[fi], px[fi + 1], px[fi + 2])       # the field's own fill
+        else:
+            btn = tall[-1]
+            assert btn >= 2, f"no password box above the button at {size}: {lines}"
+            y0, y1 = lines[btn - 2][1] + 2, lines[btn - 1][0] - 1
+        left, right, top, bottom = _ink_bounds_x(px, ch, w, field_left + 3, field_right - 3, y0, y1, bg)
         assert right >= 0, f"no ink in the password box at {size} — the toggle is not drawn?"
         centre = (left + right) / 2
         assert centre > (field_left + field_right) / 2,             f"show-password toggle ink at columns {left}..{right} (rows {top}..{bottom}), not in the right half at {size}"

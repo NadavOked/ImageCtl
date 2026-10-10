@@ -84,7 +84,7 @@ test('each group is a card with its own table; each tool row has a build checkbo
   assert.match(html, /<span class="mono">efibootmgr -o<\/span>/);
   assert.match(html, /<span class="pill warn">משנה<\/span>/);
   assert.match(html, /<span class="pill err">מוחק<\/span>/);
-  assert.match(html, /title="destroy — מוחק נתונים: דורש הקלדת שם המחשב לפני ההרצה"/);
+  assert.match(html, /title="destroy — מוחק נתונים: דורש חלון אישור לפני ההרצה"/);
   assert.match(html, /<span class="pill ">קריאה<\/span>/);
   assert.match(html, /<span class="st ok">ארוז<\/span>/);
   assert.match(html, /title="1.5MB \(1\/2\) · 1.8MB \(3\)">1.5 MB</, 'המספר עם המקור ב-title');

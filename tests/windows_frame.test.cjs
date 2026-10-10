@@ -60,22 +60,47 @@ test('sheet: width follows the content (narrow 440 by default, mid 600 for six f
   assert.equal(get('sheet').className, 'sheet win n-wide');
 });
 
-test('sheet: a destructive confirmation is a red primary, disabled until the typed text matches (principle 7)', async () => {
+test('sheet: a destructive confirmation is cancel + a red button, no typed field (#1270)', async () => {
   const {run, get} = setup();
-  run('globalThis.done=false; sheet({title:"מחיקה", danger:true, submitLabel:"מחק", verify:{label:"הקלד שם", mustEqual:"CLONE-01"}, onSubmit(){ globalThis.done=true; }})');
-  assert.match(get('sheet').innerHTML, /class="btn danger" type="submit"/);
-  assert.equal(get('sf-submit').disabled, true, 'disabled at the start');
-  get('sf-verify').value = 'CLONE-0';
-  get('sf-verify').fire('input');
-  assert.equal(get('sf-submit').disabled, true);
-  get('sf-verify').value = 'CLONE-01';
-  get('sf-verify').fire('input');
-  assert.equal(get('sf-submit').disabled, false);
-  // וגם בשליחה עצמה: הקלדה שגויה לא מריצה את הפעולה
-  get('sf-verify').value = 'nope';
+  run('globalThis.done=false; sheet({title:"מחיקה", sub:"השלכות", danger:true, submitLabel:"מחק", onSubmit(){ globalThis.done=true; }})');
+  const html = get('sheet').innerHTML;
+  assert.match(html, /class="btn danger" type="submit"/);
+  assert.match(html, /id="sf-cancel"/);
+  assert.doesNotMatch(html, /<input|sf-verify/, 'no field to type in');
+  assert.notEqual(get('sf-submit').disabled, true, 'enabled: the red button is the confirmation');
   await get('sheet').onsubmit({preventDefault() {}});
-  assert.equal(run('done'), false);
-  assert.match(get('sf-error').textContent, /אינו זהה/);
+  assert.equal(run('done'), true);
+});
+
+test('sheet: onSubmit may return a follow-up that runs after the window closes; the cancel label can be renamed', async () => {
+  const {run, get} = setup();
+  run('globalThis.order = []; sheet({title:"t", cancelLabel:"סגירה", onSubmit: async () => () => { order.push(document.getElementById("modal").classList.contains("show") ? "open" : "closed"); }})');
+  assert.match(get('sheet').innerHTML, /<button class="btn" type="button" id="sf-cancel">סגירה<\/button>/);
+  await get('sheet').onsubmit({preventDefault() {}});
+  assert.equal(run('order.join(",")'), 'closed', 'the follow-up runs once, after close');
+  run('sheet({title:"t", onSubmit(){}})');
+  assert.match(get('sheet').innerHTML, /id="sf-cancel">ביטול</, 'default stays "ביטול"');
+});
+
+test('#1268: the change-password window draws the login-style fields — current without rules, new with the green-check policy list, then confirm', () => {
+  const {run, get} = setup();
+  run('ME={username:"nadav",role:"admin"}; accountChangePassword()');
+  const html = get('sheet').innerHTML;
+  const cur = html.indexOf('id="sf-current"'), nxt = html.indexOf('id="sf-next"'), pol = html.indexOf('class="pw-pol"'), cnf = html.indexOf('id="sf-next-confirm"');
+  assert.ok(cur > 0 && cur < nxt && nxt < pol && pol < cnf, 'current, new, rules, confirm');
+  assert.match(html, /<input class="n-in" type="password" dir="ltr" id="sf-current" autocomplete="current-password">/);
+  assert.match(html, /<input class="n-in" type="password" dir="ltr" id="sf-next" autocomplete="new-password">/);
+  assert.equal((html.match(/class="pw-pol"/g) || []).length, 1, 'one rules list, under the new password');
+  assert.equal((html.match(/class="pw-eye"/g) || []).length, 3, '"הצג" in each of the three');
+  assert.match(html, /<li data-rule="0"><i><svg[^]*?<\/svg><\/i>לפחות 8 תווים<\/li>/, 'the login check icon');
+});
+
+test('password field: a read-only value for one-time display (#1268) — escaped, LTR, same "הצג" button', () => {
+  const {run} = setup();
+  const html = run('passwordFieldHtml({id:"x", label:"סיסמה", value:"a\\"b<c", readonly:true, autocomplete:"off"})');
+  assert.match(html, /<input class="n-in" type="password" dir="ltr" id="x" autocomplete="off" value="a&quot;b&lt;c" readonly>/);
+  assert.match(html, /class="pw-eye" data-pw="x" aria-pressed="false">הצג</);
+  assert.doesNotMatch(run('passwordFieldHtml({id:"y", label:"l"})'), /value=|readonly/, 'the editable field is unchanged');
 });
 
 test('password: one component — show/hide button, live policy that mirrors the server (not "any character")', () => {

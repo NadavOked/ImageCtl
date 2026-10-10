@@ -36,7 +36,7 @@ static void disk_ack(App *a,cairo_t *cr,Rect r){
 void install_draw_disk(App *a,cairo_t *cr,InstallLayout l){
     InstallState *s=&a->install;const Theme *t=a->theme;double x=l.body.x,w=l.body.w,y=l.body.y;
     Rect table={x,y,w,42+s->ndisks*58};install_card(cr,t,table);disk_head(cr,t,(Rect){x+1,y+1,w-2,40});
-    for(int i=0;i<s->ndisks;i++)disk_row(a,cr,(Rect){x+1,y+41+i*58,w-2,58},i);y+=table.h+16;
+    for(int i=0;i<s->ndisks;i++){disk_row(a,cr,(Rect){x+1,y+41+i*58,w-2,58},i);}y+=table.h+16;
     if(s->disk>=0&&s->disk<s->ndisks){char warning[260];snprintf(warning,sizeof warning,"כל הנתונים בדיסק %s יימחקו",s->disks[s->disk].model[0]?s->disks[s->disk].model:s->disks[s->disk].path);install_text_r(cr,t,warning,14,600,x+w,y,w,t->danger);y+=30;disk_ack(a,cr,(Rect){x+w-180,y,180,44});}
     else{install_text_r(cr,t,"לא נמצא דיסק חוקי להתקנה.",13,600,x+w,y,w,t->danger);y+=48;}
     if(s->field_error[0][0]){install_text_r(cr,t,s->field_error[0],12,600,x+w,y+50,w,t->danger);}

@@ -3,7 +3,7 @@
 // ל-admin בלבד, ו-memberRow מציג את תוצאת ה-staging ליד המחשב.
 // ‏#954 גל 6 (drivers.md): עמוד own — טבלה אחת (datagrid), לשונית "כיסוי לפי
 // מכונה" שחושבת בלקוח לפי אותם כללים של drivers.match (pci / pci_any / דגם;
-// מזהה בלי class = כל class), מחיקה בהקלדת שם, "לא נקרא" ≠ ריק.
+// מזהה בלי class = כל class), מחיקה בחלון אישור, "לא נקרא" ≠ ריק.
 // הבדיקה מריצה את console.js + drivers.js המשוגרים ב-vm עם fetch מזויף.
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
@@ -94,9 +94,9 @@ test('packages tab: one datagrid — name+description (escaped), rules (pci / mo
   assert.match(html, /openDriverImport\(\)">ייבוא חבילה \(tar\)</);
   assert.match(html, /role="tab" aria-selected="true"[^>]*>חבילות</); assert.match(html, /role="tab" aria-selected="false"[^>]*>כיסוי לפי מכונה</);
   assert.doesNotMatch(html, /class="table"|title="[^"]*">מתאים ל-\d+ מכונות/, 'the old table and the tooltip-only names are gone');
-  // מחיקה — הקלדת שם החבילה (עיקרון 7) → POST /drivers/{name}/delete עם confirm_name
+  // מחיקה — חלון אישור (#1270) → POST /drivers/{name}/delete עם confirm_name
   run("deleteDriver('intel-nic')");
-  const s = run('sheets.at(-1)'); assert.equal(s.danger, true); assert.equal(s.verify.mustEqual, 'intel-nic');
+  const s = run('sheets.at(-1)'); assert.equal(s.danger, true); assert.equal(s.verify, undefined, '#1270: no typed name');
   await s.onSubmit();
   assert.deepEqual(requests.filter((x) => x.method === 'POST').at(-1), {url: '/drivers/intel-nic/delete', method: 'POST', body: {confirm_name: 'intel-nic'}});
   // פרטים — מגירה עם הכללים, הקבצים וה-sha256

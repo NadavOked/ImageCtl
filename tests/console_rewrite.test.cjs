@@ -148,7 +148,7 @@ test('existing upload posts tar bytes and reports progress',()=>{
 });
 test('existing start and stop retain endpoint payloads',async()=>{
   const {run,node,requests}=setup();run('refreshStatus=async()=>{}');
-  await run('startRound()');node('#confirmName').value='Image';await run('confirmStopRound("session")');
+  await run('startRound()');run('sheet = options => { globalThis.formOptions=options; }; OVERVIEW={session:{id:"session",image_name:"Image"}};');run('stopRound()');assert.equal(run('formOptions.verify'),undefined,'#1270: no typed name');assert.equal(run('formOptions.danger'),true);await run('formOptions.onSubmit({})');
   assert.ok(requests.some(r=>r.url==='/api/console/sessions/session/start'));
   assert.ok(requests.some(r=>r.url==='/api/console/sessions/session/close' && JSON.parse(r.options.body).confirm_name==='Image'));
 });

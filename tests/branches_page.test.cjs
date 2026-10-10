@@ -240,7 +240,7 @@ test('removing a secondary requires typing its name', async () => {
   await run('loadBranchesData()');
   run('__sheet=null; sheet=(o)=>{ __sheet=o; };');
   run(`removeBranchNode('${NODE}')`);
-  assert.equal(run('__sheet.verify.mustEqual'), 'חיפה');
+  assert.ok(!run('__sheet.verify'), '#1270: no typed name'); assert.equal(run('__sheet.fields'), undefined);
   assert.equal(run('__sheet.danger'), true);
 });
 

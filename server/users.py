@@ -439,7 +439,6 @@ def bump_auth_epoch(conn: sqlite3.Connection, username: str) -> None:
             "UPDATE users SET auth_epoch = auth_epoch + 1 WHERE username = ?",
             (stored,),
         )
-        conn.execute("DELETE FROM trusted_browsers WHERE username = ?", (stored,))
         conn.execute("DELETE FROM mfa_challenges WHERE username = ?", (stored,))
 
 

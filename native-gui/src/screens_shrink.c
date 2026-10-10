@@ -12,13 +12,15 @@
 #define SHRINK_PAD    28.0
 #define SHRINK_BTN_H  44.0
 #define SHRINK_GAP    10.0
-#define SHRINK_LINK_H 30.0
+#define SHRINK_HINT_GAP 6.0
 #define SHRINK_HINT_PX 12.0
 
 /* Nadav, 10/10 (#928): "shrink and capture" is the default and the one
- * primary button, first in the dialog. "Capture without shrinking" is a small
- * text link -- not a button, not in the primary colour -- with a grey line
- * under it that says when it is the right answer. "Cancel" is unchanged. The
+ * primary button, first in the dialog. "Capture without shrinking" is a
+ * secondary button -- the same box as "cancel", a label in the action colour,
+ * never filled -- with a grey line right under it that says when it is the
+ * right answer (the owner, 10/10: the underlined link looked out of place).
+ * "Cancel" is the same secondary button, last. The
  * keys (main.c:shrink_modal) are unchanged too: 1/2/3, Esc cancels, and Enter
  * answers nothing -- so no focus ring is drawn on the primary button either,
  * since a ring would promise that Enter presses it. */
@@ -63,7 +65,7 @@ void draw_shrink_dialog(App *a, cairo_t *cr, double W, double H) {
     }
     Text hint = text_make(cr, FONT_SANS, SHRINK_HINT_PX, 400, SHRINK_PLAIN_HINT, (int)inner, DIR_RTL);
     pango_layout_set_alignment(hint.layout, PANGO_ALIGN_CENTER);
-    double answers_h = SHRINK_BTN_H + SHRINK_GAP + SHRINK_LINK_H + hint.h + SHRINK_GAP + SHRINK_BTN_H;
+    double answers_h = SHRINK_BTN_H + SHRINK_GAP + SHRINK_BTN_H + SHRINK_HINT_GAP + hint.h + SHRINK_GAP + SHRINK_BTN_H;
     double dh = SHRINK_PAD + title.h + 8 + lead.h + 18 + rows_h + 18 + answers_h + SHRINK_PAD;
     if (dh > usable - 24) dh = usable - 24;   /* MAX_SHRINK_PARTS keeps this from clipping on 768 */
     Rect box = { (W - dw) / 2, (usable - dh) / 2, dw, dh };
@@ -85,16 +87,11 @@ void draw_shrink_dialog(App *a, cairo_t *cr, double W, double H) {
     text_free(&l);
     y += SHRINK_BTN_H + SHRINK_GAP;
 
-    /* the secondary answer: underlined ink text, its hit area the line around it */
+    /* the secondary answer: a bordered button like "cancel", the hint under it */
     l = btn_label(cr, SHRINK_PLAIN_LABEL);
-    double lx = box.x + (box.w - l.w) / 2, ly = y + (SHRINK_LINK_H - l.h) / 2;
-    text_draw(cr, &l, lx, ly, t->ink);
-    cairo_rectangle(cr, lx, ly + text_baseline(&l) + 2, l.w, 1);
-    draw_set(cr, t->ink);
-    cairo_fill(cr);
-    hit_add(a, (Rect){ lx - 12, y, l.w + 24, SHRINK_LINK_H }, HIT_SHRINK_PLAIN);
+    draw_btn(a, cr, (Rect){ box.x + SHRINK_PAD, y, inner, SHRINK_BTN_H }, &l, BTN_PLAIN, HIT_SHRINK_PLAIN);
     text_free(&l);
-    y += SHRINK_LINK_H;
+    y += SHRINK_BTN_H + SHRINK_HINT_GAP;
     text_draw(cr, &hint, box.x + SHRINK_PAD, y, t->muted);
     y += hint.h + SHRINK_GAP;
 

@@ -83,21 +83,21 @@ test('the page is the datastore browser: header, three tabs, tree with counters,
   assert.match(html,/כל האימג&#39;ים<\/span><span class="cnt">4</); assert.match(html,/Office<\/span><span class="cnt">2</);
   assert.match(html,/סייבר<\/span><span class="cnt">0</); assert.match(html,/ללא תיקייה<\/span><span class="cnt">1</);
   assert.equal((html.match(/<table class="dg kebab-col"/g)||[]).length,1);
-  for(const col of ['שם','נכנס לדיסק מ-','בשרת','נוצר','אימות','בשימוש']) assert.match(html,new RegExp('<th>'+col+'</th>'));
+  for(const col of ['שם','מתאים לדיסק','בשרת','נוצר','אימות','בשימוש']) assert.match(html,new RegExp('<th>'+col+'</th>'));
   for(const col of ['מערכת','תיקייה']) assert.match(html,new RegExp('<th class="c-opt">'+col+'</th>'),'stage 2: the folder column is in the table, secondary when the card is narrow');
   assert.match(html,/<div class="card-h"><span>אימג&#39;ים<\/span><\/div>/,'stage 2: the card has a title');
   assert.match(html,/<span class="dskico"><svg[^>]*><ellipse/,'stage 2: an image row carries the disk icon');
   assert.doesNotMatch(html,/כללי בטיחות|פעולות מהירות|מטא־נתונים|>Up<|>Down<|>Edit</);
 });
 
-test('rows: "fits from X GB" is decimal-ceil with bytes in the tooltip, null is "unknown" not 0, usage comes from /overview only', () => {
+test('rows: market disk fit includes the decimal requirement, null is a dash not 0, usage comes from /overview only', () => {
   const {run}=setup(); const html=run('images(0)');
-  assert.match(html,/title="254908301312 bytes"><bdi dir="ltr">255 GB<\/bdi>/);
-  assert.match(html,/title="255000000000 bytes"><bdi dir="ltr">255 GB<\/bdi>/);
+  assert.match(html,/title="254908301312 bytes"><bdi dir="ltr">256GB<\/bdi><\/span><span class="sub muted">נדרש לפחות 255 GB/);
+  assert.match(html,/title="255000000000 bytes"><bdi dir="ltr">256GB<\/bdi><\/span><span class="sub muted">נדרש לפחות 255 GB/);
   const teacher=html.slice(html.indexOf('img_a1b2c3'),html.indexOf('img_2c8e04'));
-  assert.match(teacher,/לא ידוע/); assert.doesNotMatch(teacher,/>0 GB</);
+  assert.match(teacher,/class="muted">—<\/span>/); assert.doesNotMatch(teacher,/>0 GB</);
   const cad=html.slice(html.indexOf('img_2c8e04'),html.indexOf('img_lnx001'));
-  assert.match(cad,/לא ידוע/,'field absent (pre-#953 server) is unknown, not invented');
+  assert.match(cad,/class="muted">—<\/span>/,'field absent (pre-#953 server) is unknown, not invented');
   assert.match(html,/סבב פתוח · כיתה 303/); assert.match(html,/סבב שיכפול · גל 2/);
   assert.equal((html.match(/st ok">sha256 אומת</g)||[]).length,4,'every image in the library was verified on entry');
   assert.doesNotMatch(html,/st ok">sha256 תקין/,'"תקין now" only after a scrub in this session');
@@ -142,7 +142,7 @@ test('an empty library says what to do; an unread library is a placeholder, not 
   run('IMAGES=null'); assert.match(run('images(0)'),/טוען נתונים/); assert.doesNotMatch(run('images(0)'),/אין אימג'ים/);
 });
 
-test('multi-select: bar counts, move-to-folder PUTs every selected image, delete demands each name typed', async () => {
+test('multi-select: bar counts, move-to-folder PUTs every selected image, delete is one confirm sheet listing the names (#1270)', async () => {
   const {run,node,requests}=setup();
   run('toggleImgSel("img_7f3a91",true); toggleImgSel("img_a1b2c3",true)');
   let html=run('images(0)');
@@ -154,10 +154,10 @@ test('multi-select: bar counts, move-to-folder PUTs every selected image, delete
   assert.deepEqual(puts.map(r=>r.url).sort(),['/api/console/images/img_7f3a91','/api/console/images/img_a1b2c3']);
   assert.equal(JSON.parse(puts[0].options.body).folder,'Linux'); assert.equal(run('IMG.sel.size'),0);
   run('toggleImgSel("img_7f3a91",true); toggleImgSel("img_2c8e04",true); bulkDelete()');
-  assert.equal(run('formOptions.fields.length'),2); assert.equal(run('formOptions.danger'),true);
-  await assert.rejects(run('formOptions.onSubmit({n0:"Office 2024 — סטנדרט",n1:"wrong"})'),/השם שהוקלד אינו זהה: CAD Heavy/);
-  assert.ok(!requests.some(r=>r.url.endsWith('/delete')),'nothing deleted while a name mismatches');
-  await run('formOptions.onSubmit({n0:"Office 2024 — סטנדרט",n1:"CAD Heavy"})');
+  assert.equal(run('formOptions.fields'),undefined,'#1270: no typed fields'); assert.equal(run('formOptions.danger'),true);
+  assert.match(run('formOptions.note'),/Office 2024 — סטנדרט/); assert.match(run('formOptions.note'),/CAD Heavy/);
+  assert.ok(!requests.some(r=>r.url.endsWith('/delete')),'nothing deleted before the sheet is confirmed');
+  await run('formOptions.onSubmit({})');
   const dels=requests.filter(r=>r.url.endsWith('/delete'));
   assert.equal(dels.length,2); assert.equal(JSON.parse(dels[1].options.body).confirm_name,'CAD Heavy');
   run('toggleImgSel("img_lnx001",true); toggleImgSelAll(true)'); assert.match(run('images(0)'),/נבחרו 4 מתוך 4/);
@@ -202,7 +202,7 @@ test('the image drawer: header line, actions, verification note, properties, par
   assert.match(html,/טוען את טבלת המחיצות/,'before the manifest arrives: loading, not an empty table');
   assert.doesNotMatch(html,/דורש API/); assert.doesNotMatch(html,/Secure Boot/);
   assert.match(html,/נקלט ממחשב הבנייה בנייה 1 · sda/,'capture history from /tasks');
-  assert.match(html,/מחיקה \(הקלדת שם\)/);
+  assert.match(html,/deleteImage\([^)]*\)">מחיקה</); assert.doesNotMatch(html,/הקלדת שם/);
   const j=requests.find(r=>r.url.startsWith('/api/console/journal?'));
   assert.equal(new URL(j.url,'http://x').searchParams.get('q'),'Ubuntu 24.04');
   await new Promise(r=>setImmediate(r)); await new Promise(r=>setImmediate(r));

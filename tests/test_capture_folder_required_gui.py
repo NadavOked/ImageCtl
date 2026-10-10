@@ -27,7 +27,10 @@ def test_the_capture_screen_offers_no_no_folder_option():
     ונשארת במסך השחזור — אימג' ישן בלי תיקייה עדיין מוצג בשמה."""
     assert "ללא תיקייה" not in (SRC / "screens_capture.c").read_text(encoding="utf-8")
     assert "ללא תיקייה" not in (SRC / "main.c").read_text(encoding="utf-8")
-    assert "ללא תיקייה" in (SRC / "screens_restore.c").read_text(encoding="utf-8")
+    # owner 10/10: the restore picker is folder-first; the name of the
+    # no-folder group lives in one helper (folder_label), shared with the room
+    assert "folder_label(" in (SRC / "screens_restore.c").read_text(encoding="utf-8")
+    assert "ללא תיקייה" in (SRC / "screens_rounds.c").read_text(encoding="utf-8")
 
 
 def _state(path: Path, folders: list[str]) -> Path:

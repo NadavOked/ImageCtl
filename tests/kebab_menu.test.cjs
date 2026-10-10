@@ -1,7 +1,7 @@
 // apple-pending-4 · 1: תפריט ⋯ בסוף שורה (UI.rowMenu). בלי דפדפן: console.js ב-vm מול DOM מזערי.
 // נבדק: (א) הפעולה ההרסנית אחרונה, מופרדת ואדומה, גם כשהקורא סידר אותה באמצע; (ב) נגישות — aria,
 // Enter/↓ פותחים, חצים/Home/End מזיזים, Esc סוגר והפוקוס חוזר לכפתור, Tab סוגר; (ג) הפעולה ההרסנית
-// עדיין פותחת sheet עם הקלדת שם (עיקרון 7) — התפריט לא עוקף אותה.
+// עדיין פותחת sheet אישור (#1270) — התפריט לא עוקף אותה.
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
@@ -103,19 +103,22 @@ test('permissions: deleting a user from the ⋯ menu still opens the typed-name 
   run(del[1]);   // = מה שה-onclick של הפריט מריץ
   assert.equal(run('sheets.length'),1);
   assert.equal(run('sheets[0].danger'),true);
-  assert.equal(run('sheets[0].verify.mustEqual'),'yossi','the destructive action still demands the typed name');
+  assert.equal(run('sheets[0].verify'),undefined,'the destructive action is a confirm sheet, no typed name (#1270)');
 });
 
-test('#1262: the builtin admin row offers only password and revoke-sessions, and says why',()=>{
+test('#1262/#1268: the builtin admin row offers only password reset and revoke-sessions, and says why',()=>{
   const {run}=setup();
   // שלושה מנהלים פעילים — שומר "המנהל האחרון" שקט, ולכן הסינון בא מ-is_builtin בלבד.
   run('ME={username:"noc",role:"admin",capabilities:{}}; USERS=[{username:"admin",role:"admin",disabled:false,is_builtin:true},{username:"noc",role:"admin",disabled:false},{username:"tech2",role:"admin",disabled:false}];');
   const labels=(i)=>JSON.parse(unesc(run(`userRowHtml(USERS[${i}]).cells.at(-1)`).match(/data-menu="([^"]*)"/)[1])).map((x)=>x[0]);
-  assert.deepEqual(labels(0),['סיסמה…','נתק את כל ההפעלות…']);
+  assert.deepEqual(labels(0),['איפוס סיסמה…','נתק את כל ההפעלות…']);
   assert.match(run('userRowHtml(USERS[0]).cells[0]'),/נוצר בהתקנה · לא ניתן למחיקה · ללא MFA/);
   // מנהל רגיל באותו מצב — עדיין עם תפקיד/השבתה/מחיקה (לא סינון-יתר).
-  assert.deepEqual(labels(2),['סיסמה…','תפקיד…','השבת','נתק את כל ההפעלות…','מחק משתמש…']);
-  // ה-builtin כשהוא המחובר: רק סיסמה (אין ניתוק הפעלות של עצמך).
+  // ‏#1268: למשתמש אחר — "איפוס סיסמה…" במקום "סיסמה…" (הקלדת סיסמה קבועה נשארת רק לעצמך).
+  assert.deepEqual(labels(2),['תפקיד…','איפוס סיסמה…','השבת','נתק את כל ההפעלות…','מחק משתמש…']);
+  for(const i of [0,2]) assert.doesNotMatch(run(`userRowHtml(USERS[${i}]).cells.at(-1)`),/userPasswordSheet/,'no typed password for another user');
+  // ה-builtin כשהוא המחובר: אין פעולות בשורה — אין ניתוק הפעלות של עצמך, השרת מסרב לאפס את
+  // עצמך, ו"שנה סיסמה" עבר ל"החשבון שלי" (#1268). בלי ⋯ ריק.
   run('ME={username:"admin",role:"admin",capabilities:{},is_builtin:true};');
-  assert.deepEqual(labels(0),['סיסמה…']);
+  assert.doesNotMatch(run('userRowHtml(USERS[0]).cells.at(-1)'),/class="kebab"/);
 });

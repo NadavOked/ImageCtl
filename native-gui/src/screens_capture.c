@@ -27,7 +27,7 @@ void screen_pick(App *a, cairo_t *cr, double W, double H, double head_h) {
     const Theme *t = a->theme;
     const State *s = &a->st;
     double inner = card_width(W) - 2 * N_PAD;
-    Head hd = head_make(cr, "בחר דיסק לקליטת אימג׳", "בחר את דיסק המקור שממנו ייווצר image.", inner);
+    Head hd = head_make(cr, "בחר דיסק לקליטת אימג׳", "בחר את דיסק המקור שממנו ייווצר האימג'.", inner);
 
     /* drawDisks: internal disks only (removable filtered out) */
     int idx[MAX_DISKS], n = 0;

@@ -191,7 +191,7 @@ test('1085: MFA column and my-user labels', () => {
 
 test('1085: 401/403/429 mapping does not drop the typed username', () => {
   const {run} = setup();
-  const prev = {username: 'nadav', remember: true};
+  const prev = {username: 'nadav'};
   for (const [status, body, ra] of [
     [401, {}, null],
     [403, {error: 'deploy_no_console', message_he: 'משתמש הפצה עובד ממחשב הבנייה, לא מהקונסולה'}, null],
@@ -203,37 +203,27 @@ test('1085: 401/403/429 mapping does not drop the typed username', () => {
   }
 });
 
-test('1243: the first login screen has no "remember" checkbox; the MFA screen says what it really does', async () => {
-  // השרת לא מקבל ב-/login שום שדה "זכור" — הסימון לא עשה כלום (#1243).
-  // רק ב-/login/mfa ‏`remember_browser` פוטר מקוד ל-7 שעות (TRUSTED_TTL).
+test('the login screens have no "remember this browser" checkbox', async () => {
   const {run, node} = setup();
-  for (const st of [{screen: 'login'}, {screen: 'login', remember: true, username: 'nadav'}]) {
-    const login = run('loginHtml(' + JSON.stringify(st) + ')');
-    assert.doesNotMatch(login, /login-remember/, 'no checkbox on the first screen');
-    assert.doesNotMatch(login, /7 שעות|זכור/, 'no promise the first screen cannot keep');
-  }
+  const login = run('loginHtml({screen: "login"})');
+  assert.doesNotMatch(login, /login-remember|mfa-remember|7 שעות/);
   const mfa = run('loginHtml(' + JSON.stringify({screen: 'mfa', username: 'nadav', otp: ['', '', '', '', '', '']}) + ')');
-  assert.match(mfa, /<input type="checkbox" id="mfa-remember"> אל תבקש קוד בדפדפן הזה ל-7 שעות<\/label>/);
-  assert.doesNotMatch(mfa, /זכור את הדפדפן/);
-  // מה שנשלח ל-/login הוא שם וסיסמה בלבד, גם כשמשהו סימן "זכור" קודם.
+  assert.doesNotMatch(mfa, /mfa-remember|7 שעות|זכור את הדפדפן/);
   const sent = [];
   run('globalThis.__sent = []; loginFetch = async (p, b) => { __sent.push([p, b]); return {ok: false, status: 401, body: {}, retryAfter: null}; };');
   node('#login-user').value = 'nadav';
   node('#login-pass').value = 'Aa12345!';
-  node('#login-remember').checked = true;
   await run('loginSubmitCredentials()');
   sent.push(...JSON.parse(run('JSON.stringify(__sent)')));
   assert.deepEqual(sent, [['/login', {username: 'nadav', password: 'Aa12345!'}]]);
-  assert.equal(run('LOGIN.remember'), false, 'a stale first-screen checkbox does not pre-tick the MFA screen');
 });
 
 test('1120: wrong MFA code returns to the login screen with the server message and no challenge', () => {
   const {run} = setup();
-  const prev = {screen: 'mfa', username: 'nadav', remember: true, challenge: 'chal-1', otp: ['1', '2', '3', '4', '5', '6']};
+  const prev = {screen: 'mfa', username: 'nadav', challenge: 'chal-1', otp: ['1', '2', '3', '4', '5', '6']};
   const st = run('mfaRejectedState(' + JSON.stringify({detail: 'קוד שגוי — היכנס מחדש'}) + ', ' + JSON.stringify(prev) + ')');
   assert.equal(st.screen, 'login');
   assert.equal(st.username, 'nadav');
-  assert.equal(st.remember, true);
   assert.equal(st.challenge, '');
   assert.equal(st.error, 'קוד שגוי — היכנס מחדש');
   const html = run('loginHtml(' + JSON.stringify(st) + ')');
@@ -250,7 +240,7 @@ test('stage 2: account - the built-in admin has no MFA button and no backup-code
   const builtin = open({username: 'admin', role: 'admin', is_builtin: true, mfa_enabled: false});
   assert.match(builtin, /<span class="pill ">מקומי · ללא MFA<\/span>/);
   assert.match(builtin, /בכוונה, כדי שתמיד תהיה דרך להיכנס/, 'one explanatory line');
-  assert.doesNotMatch(builtin, /<button/, 'no MFA button, no backup-codes button');
+  assert.doesNotMatch(builtin, /<button(?![^>]*accountChangePassword)/, 'no MFA button, no backup-codes button (the password button is #1268)');
   assert.doesNotMatch(builtin, /קודי גיבוי|accountEnableMfa|accountNewBackupCodes/);
   const on = open({username: 'nadav', role: 'admin', is_builtin: false, mfa_enabled: true});
   assert.match(on, /<span>קודי גיבוי<\/span>/); assert.match(on, /accountNewBackupCodes\(\)">צור קודי גיבוי חדשים/);
@@ -258,5 +248,41 @@ test('stage 2: account - the built-in admin has no MFA button and no backup-code
   const off = open({username: 'nadav', role: 'admin', is_builtin: false, mfa_enabled: false});
   assert.match(off, /accountEnableMfa\(\)">הפעל/); assert.doesNotMatch(off, /קודי גיבוי|accountNewBackupCodes/, 'backup codes are gated on mfa_enabled');
   const deploy = open({username: 'lab', role: 'deploy', is_builtin: false, mfa_enabled: false});
-  assert.doesNotMatch(deploy, /<button/, 'a deploy user has nothing to enable here');
+  assert.doesNotMatch(deploy, /accountEnableMfa|accountNewBackupCodes/, 'a deploy user has nothing to enable here');
+  // ‏#1268: "שנה סיסמה" — לכל אחד על עצמו, גם ל-builtin (דלת חירום שדלפה = מחליפים סיסמה).
+  for (const html of [builtin, on, off, deploy]) {
+    assert.match(html, /<span>סיסמה<\/span>/);
+    assert.match(html, /<button class="btn primary sm" onclick="accountChangePassword\(\)">שנה סיסמה<\/button>/);
+  }
+  assert.equal((builtin.match(/<button/g) || []).length, 1, 'the built-in admin: the password button only');
+});
+
+test('#1268: "שנה סיסמה" in my account — current + new + confirm, POST /me/password with the current one; a weak or mismatched password never leaves the browser', async () => {
+  const {run, ctx} = setup();
+  const calls = [];
+  let answer = {status: 200, body: {ok: true}};
+  ctx.fetch = async (url, o = {}) => { calls.push({url, method: o.method, body: o.body ? JSON.parse(o.body) : null}); return {status: answer.status, ok: answer.status < 300, headers: {get: () => null}, json: async () => answer.body}; };
+  run('ME={username:"nadav",role:"admin",is_builtin:false,mfa_enabled:true}; globalThis.sheets=[]; sheet=(o)=>sheets.push(o); globalThis.toasts=[]; toast=(m)=>toasts.push(m); closeDrawer=()=>{};');
+  run('accountChangePassword()');
+  const s = run('sheets.at(-1)');
+  assert.equal(s.title, 'שינוי סיסמה'); assert.equal(s.sub, 'nadav');
+  assert.deepEqual(JSON.parse(JSON.stringify(s.fields.map((f) => [f.id, f.type, f.label, f.confirm || '', !!f.policy, f.autocomplete || '']))), [
+    ['current', 'password', 'סיסמה נוכחית', '', false, 'current-password'],
+    ['next', 'password', 'סיסמה חדשה', 'אימות הסיסמה החדשה', true, 'new-password']]);
+  await assert.rejects(s.onSubmit({current: 'Old-pass-1!', next: 'short'}), /אינה עומדת במדיניות/);
+  assert.equal(calls.length, 0, 'the policy is checked before anything is sent');
+  await s.onSubmit({current: 'Old-pass-1!', next: 'New-pass-2!'});
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [{url: '/api/console/me/password', method: 'POST', body: {current_password: 'Old-pass-1!', new_password: 'New-pass-2!'}}]);
+  assert.match(run('toasts.at(-1)'), /הסיסמה הוחלפה/);
+  // הנוכחית שגויה — הסירוב של השרת בחלון, כלשונו.
+  answer = {status: 400, body: {detail: 'הסיסמה הנוכחית שגויה'}};
+  await assert.rejects(s.onSubmit({current: 'x', next: 'New-pass-2!'}), /הסיסמה הנוכחית שגויה/);
+  // ‏200 בלי ok — לא "הוחלפה" (עיקרון 5).
+  answer = {status: 200, body: {}};
+  await assert.rejects(s.onSubmit({current: 'Old-pass-1!', next: 'New-pass-2!'}), /לא אישר/);
+  // מנהל בלי MFA: השרת מחזיר עוגיית הגדרת-MFA בלבד — עוברים למסך ההגדרה, לא נשארים בקונסולה שתסרב.
+  answer = {status: 200, body: {ok: true, mfa_enrollment_required: true}};
+  run('globalThis.flow=[]; showLogin=()=>flow.push("login"); loginStartSetup=(b)=>{ flow.push("setup:"+b.username); };');
+  await s.onSubmit({current: 'Old-pass-1!', next: 'New-pass-2!'});
+  assert.equal(run('flow.join(",")'), 'login,setup:nadav');
 });

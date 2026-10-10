@@ -44,8 +44,8 @@ function setup(fixtures) {
 }
 
 /* #827: המתג להדלקה/כיבוי דורש להריץ בפועל את sheet() (מודאל האישור
-   האמיתי, אותו רכיב כמו מתג ה-SSH) — כדי לבדוק "הקלדה שגויה => אין
-   fetch" צריך DOM שמחזיק זהות עקבית לאלמנט (#sf-verify) בין הרינדור
+   האמיתי, אותו רכיב כמו מתג ה-SSH) — כדי לבדוק "פתיחת החלון לבדה אינה
+   שולחת fetch" צריך DOM שמחזיק זהות עקבית לאלמנט בין הרינדור
    לבין ה-submit, ולא צומת חד-פעמי כמו ב-stubNode של setup() הרגיל. */
 function setupWithDom(fixtures, putResponses = {}) {
   const opened = [];
@@ -209,25 +209,20 @@ test('turning off sends PUT with no confirm word and no sheet() prompt', async (
   assert.equal(puts[0].url, '/api/console/monitor/settings');
 });
 
-test('turning on requires typing the exact confirm word — wrong/empty input sends no PUT', async () => {
+test('turning on is a confirm sheet with no typed field (#1270) — opening it sends no PUT', async () => {
   const {run, calls, node} = setupWithDom({...base, '/monitor/settings': {port: 5900, enabled: false}});
   await run('loadMonitor()');
   run('monitorToggle(true)'); // opens the sheet() — does not itself call fetch
   assert.equal(calls.filter(c => c.method === 'PUT').length, 0, 'opening the sheet must not send a PUT by itself');
 
-  // הקלדה שגויה: לא מריקים את השדה (ברירת המחדל '') ולא כותבים את המילה הנכונה
-  node('#sf-verify').value = 'imagectl.monito'; // חסר תו — לא זהה
-  const form = node('#sheet');
-  await form.onsubmit({preventDefault() {}});
-  assert.equal(calls.filter(c => c.method === 'PUT').length, 0, 'wrong confirm word must not send a PUT');
-  assert.match(node('#sf-error').textContent, /אינו זהה/);
+  assert.doesNotMatch(node('#sheet').innerHTML, /sf-verify/);
+  assert.match(node('#sheet').innerHTML, /id="sf-cancel"/); assert.match(node('#sheet').innerHTML, /class="btn danger"/);
 });
 
-test('turning on with the exact confirm word sends PUT with confirm, then reloads', async () => {
+test('turning on, confirmed in the sheet, sends PUT with the confirm word from code, then reloads', async () => {
   const {run, calls, node} = setupWithDom({...base, '/monitor/settings': {port: 5900, enabled: false}});
   await run('loadMonitor()');
   run('monitorToggle(true)');
-  node('#sf-verify').value = 'imagectl.monitor';
   const form = node('#sheet');
   await form.onsubmit({preventDefault() {}});
   const puts = calls.filter(c => c.method === 'PUT');
@@ -269,7 +264,6 @@ test('turning on: server-returned enabled disagrees (still false) — error toas
     {'/monitor/settings': {enabled: false}});
   await run('loadMonitor()');
   run('monitorToggle(true)');
-  node('#sf-verify').value = 'imagectl.monitor';
   const form = node('#sheet');
   await form.onsubmit({preventDefault() {}});
   assert.equal(calls.filter(c => c.method === 'PUT').length, 1);

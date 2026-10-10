@@ -39,13 +39,14 @@ static void cloner_title(cairo_t *cr, const Theme *t, const State *s, int ndisks
     Text h = rtl_block_make(cr, N_TITLE, 600, "שיכפול במקביל", W - 2 * N_PAD);
     /* #410: the snapshot's age next to the image name -- a kiosk that
      * stopped writing the state shows a growing number, not a live look. */
-    char sub[300], age[64], count[48]; pace_age(s->updated, age, sizeof age);
+    char sub[400], age[64], count[48], image[112]; pace_age(s->updated, age, sizeof age);
     if (ndisks == 1) snprintf(count, sizeof count, "דיסק אחד");
     else if (ndisks) snprintf(count, sizeof count, "%d דיסקים", ndisks);
     else             snprintf(count, sizeof count, "לא נמצאו דיסקים");
-    snprintf(sub, sizeof sub, "%s · %s%s%s",
-             s->cloner_image[0] ? s->cloner_image : "ממתין לשידור מהשרת", count,
-             age[0] ? " · " : "", age);
+    /* the name is an isolated run and the line opens with an RLM: a Latin-first
+     * name ("Office 2024 — סטנדרט") made auto-dir turn the whole line LTR */
+    bidi_isolate(s->cloner_image[0] ? s->cloner_image : "ממתין לשידור מהשרת", image, sizeof image);
+    snprintf(sub, sizeof sub, RLM "%s · %s%s%s", image, count, age[0] ? " · " : "", age);
     Text p = rtl_block_make(cr, 13, 400, sub, W - 2 * N_PAD);
     text_draw_r(cr, &h, W - N_PAD, *y, t->ink); *y += h.h + 4;
     text_draw_r(cr, &p, W - N_PAD, *y, t->muted); *y += p.h + 12;

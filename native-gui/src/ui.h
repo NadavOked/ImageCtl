@@ -56,7 +56,6 @@ enum {
     HIT_AGAIN,          /* #st-again "קליטה נוספת" */
     /* #706 restore-to-local-disk screen (native-only) */
     HIT_RESTORE_IMAGE,  /* image picker (select) */
-    HIT_RESTORE_CONFIRM,/* the ERASE confirm field */
     HIT_RESTORE_START,  /* "התחל שחזור" */
     /* #st-room (room.js) */
     HIT_ROOM_IMAGE,     /* #room-image (select) */
@@ -65,12 +64,10 @@ enum {
     HIT_ROOM_WAKE,      /* #room-wake */
     HIT_ROOM_START,     /* #room-start */
     HIT_ROOM_CLOSE,     /* #room-close */
-    HIT_ROOM_CONFIRM,   /* #room-confirm-text */
     HIT_ROOM_SELECT_ALL,/* #714: select/clear every disk in the room */
     /* #st-class (classes.js) */
     HIT_CLASS_START,    /* #cls-start */
     HIT_CLASS_CLOSE,    /* #cls-close */
-    HIT_CLASS_CONFIRM,  /* #cls-confirm-text */
     /* the cloner's SMART choice (no HTML id: this screen is native-only) */
     HIT_SMART_REPLACE,
     HIT_SMART_RESCUE,
@@ -85,7 +82,6 @@ enum {
     HIT_TOOL_RUN,       /* confirm view: run */
     HIT_TOOL_AGAIN,     /* output view: run again */
     HIT_TOOL_ARG,       /* confirm view: the free-text argument field */
-    HIT_TOOL_CONFIRM,   /* confirm view: the typed machine name (principle 7) */
     HIT_TOOL_UP,        /* list / output: scroll */
     HIT_TOOL_DOWN,
     /* #1188: first-boot installer. */
@@ -111,6 +107,12 @@ enum {
     /* mockup 10/10: Esc on the menu asks before it signs out */
     HIT_LOGOUT_CONFIRM,
     HIT_LOGOUT_CANCEL,
+    /* owner, 10/10: image pickers are folder-first -- back to the folders */
+    HIT_PICK_FOLDERS_BACK,
+    /* #1270 (owner, 10/10): no typed-word confirmation -- a destructive action
+     * asks in a dialog: [ביטול] and the red action */
+    HIT_CONFIRM_OK,
+    HIT_CONFIRM_CANCEL,
     HIT_INSTALL_SUMMARY_BASE = 1000,
     HIT_INSTALL_NIC_BASE = 1020,
     /* ranges: base + index */
@@ -125,6 +127,8 @@ enum {
      * confirm view (+index into st.disks) */
     HIT_TOOL_BASE = 800,
     HIT_TOOL_DISK_BASE = 900,
+    /* owner, 10/10: a folder of the image picker (+index from image_folders) */
+    HIT_PICK_FOLDER_BASE = 950,
 };
 
 typedef struct { Rect r; int id; } Hit;
@@ -142,6 +146,9 @@ typedef enum {
 typedef enum { MODE_MENU, MODE_CAPTURE, MODE_ROOM, MODE_CLASSES, MODE_RESTORE, MODE_DIRECT, MODE_TOOLS } Mode;
 
 typedef enum { TASK_NONE, TASK_PENDING, TASK_RUNNING, TASK_DONE, TASK_FAILED } TaskState;
+
+/* #1270: what the confirm dialog is about to do */
+enum { CONFIRM_NONE, CONFIRM_RESTORE, CONFIRM_ROOM_STOP, CONFIRM_CLASS_STOP, CONFIRM_TOOL };
 
 typedef struct { char dev[32], model[80]; unsigned long long size_bytes; int has_data, removable; } Disk;
 typedef struct { char id[64], name[96], folder[64]; } Image;
@@ -290,6 +297,10 @@ typedef struct App {
     int menu_focus;             /* keyboard focus, -1 = none: 0..n-1 the visible cards,
                                    n "התנתק", n+1 "כלים" (when the menu shows it) */
     int logout_confirming;      /* mockup 10/10: Esc asked "להתנתק?" -- Enter signs out, Esc cancels */
+    /* #1270 (owner, 10/10): the open confirm dialog, CONFIRM_*; 0 = none.
+     * Enter confirms, Esc cancels; the token the bridge/server still checks
+     * (machine name, round image) is filled from the known value. */
+    int confirm;
     Mode mode;
     int force_progress;         /* --screen progress: show it even with no task */
     int force_cloner;           /* --screen cloner: the cloning machine's own screen */
@@ -303,7 +314,7 @@ typedef struct App {
      * denominator, which is exactly what a dirty NTFS (no used_bytes) lacks. */
     unsigned long long rate_prev_bytes; long long rate_prev_updated; double capture_rate_bps;
     int showing_done;           /* stay on #st-done until "קליטה נוספת" */
-    char done_title[64], done_sub[240];
+    char done_title[64], done_sub[1100];   /* holds task_error[1024] whole (gcc -Wformat-truncation) */
 
     /* #st-pick */
     int chosen_disk;            /* index into st.disks, -1 = none (CHOSEN_DISK) */
@@ -316,23 +327,24 @@ typedef struct App {
     int image_sel;              /* 0 = "בחרו אימג'…", i = st.images[i-1] */
     char room_target[8];        /* #room-target, digits */
     int room_target_set;        /* value seeded once per setup skeleton */
-    int room_confirming;        /* #room-confirm shown */
-    char room_confirm[96];
     /* #706 restore-to-local-disk: own selection so a room reload never
      * authorizes a local erase, and its own confirm field -- the machine's
      * registered name since #1073 (was the word ERASE). */
     int restore_image_sel;      /* 0 = "בחרו אימג'…", i = st.images[i-1] */
-    char restore_confirm[96];
     /* #695: per-disk target overrides, keyed by machine identity + physical
      * port -- outside State so a 2 s state reload does not erase clicks. */
     struct { char mac[24]; int port, selected; } room_selection[MAX_ROOM_SELECTIONS];
     int nroom_selection;
 
     /* #st-class */
-    int class_confirming;
-    char class_confirm[96];
 
     int dd_open;                /* HIT_FOLDER | HIT_ROOM_IMAGE, or 0 */
+    /* owner, 10/10: the image pickers (restore cards, room select) open on
+     * the folders; pick_in_folder = 1 shows the images of pick_folder. One
+     * pair for both pickers -- they are never on screen together; reset when
+     * a card is chosen or the menu comes back. */
+    char pick_folder[64];
+    int pick_in_folder;
 
     /* #649: the toolbox. The list and the result are two files next to the
      * state file ($GUI_DIR/tools, $GUI_DIR/tool-result), polled like it. */
@@ -344,7 +356,7 @@ typedef struct App {
     ToolsView tools_view;
     int tool_sel;               /* index into tools, -1 = none */
     int tool_disk_sel;          /* confirm view disk picker: index into st.disks, -1 */
-    char tool_arg[96], tool_confirm[96], tool_error[160];
+    char tool_arg[96], tool_error[160];
     int tool_list_scroll, tool_scroll;
     int tool_running, tool_rc;  /* rc -1 = no result yet */
     long tool_seq;              /* seq of the last result consumed */
@@ -385,9 +397,14 @@ void app_draw(App *a, cairo_t *cr, int W, int H);
 /* The screen's scale (mockup 10/10): clamp(H/800, 1, 1.4) in quarter steps --
  * 1024x768 and 1280x800 stay 1:1, 1280x1024 and 1920x1080 are 1.25. */
 double ui_scale(int H);
-/* A typed confirmation (principle 7): equal to <want> once the spaces and
- * tabs at both ends are ignored. An empty <want> never matches. */
-int typed_matches(const char *typed, const char *want);
+/* owner, 10/10: the image pickers, folder-first. image_folders lists the
+ * distinct folders of st.images in first-seen order (first[k] = an image of
+ * folder k, count[k] = how many), at most <max>; an image with no folder is
+ * its own group "ללא תיקייה". folder_images lists the indices into st.images
+ * of one folder. folder_label is how a folder is named on screen. */
+int image_folders(const State *s, int *first, int *count, int max);
+int folder_images(const State *s, const char *folder, int *idx, int max);
+const char *folder_label(const char *folder);
 void app_draw_pointer(App *a, cairo_t *cr);
 /* Which registered element is under (x, y); topmost wins. */
 int app_hit(const App *a, double x, double y);
@@ -412,6 +429,9 @@ void screen_install(App *a, cairo_t *cr, double W, double H);
 /* #928 (screens_shrink.c): the shrink question, modal over any screen while
  * st.shrink_pending -- it replaces the hit table with its three buttons. */
 void draw_shrink_dialog(App *a, cairo_t *cr, double W, double H);
+/* #1270 (screens.c): the confirm dialog of a->confirm, modal like the shrink
+ * question -- it replaces the hit table with [ביטול] and the red action. */
+void draw_confirm_dialog(App *a, cairo_t *cr, double W, double H);
 
 /* #649 (screens_tools.c): the tools / tool-result files next to --state.
  * tools_poll re-reads what changed; returns 1 when the scene must redraw.

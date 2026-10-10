@@ -21,7 +21,7 @@ static void restore_arrow(cairo_t *cr, Rgb c, double cx, double cy, double w) {
 static void restore_title(cairo_t *cr, const Theme *t, double W, double *y) {
     Text h = rtl_block_make(cr, N_TITLE, 600, "שחזור אימג' למחשב הזה", W - 2 * N_PAD);
     Text p = rtl_block_make(cr, 13, 400,
-        "בוחרים מקור, בודקים את הדיסק הפנימי ומקלידים את שם המחשב לאישור.",
+        "בוחרים מקור, בודקים את הדיסק הפנימי ומאשרים בחלון.",
         W - 2 * N_PAD);
     text_draw_r(cr, &h, W - N_PAD, *y, t->ink);
     *y += h.h + 4;
@@ -112,32 +112,59 @@ void screen_restore(App *a, cairo_t *cr, double W, double H, double head_h) {
     draw_alert(cr, t, (Rect){N_PAD, y, avail_w, alert_height(&warning)}, &warning);
     y += alert_height(&warning) + 17;
 
-    Text gh = rtl_block_make(cr, 15, 600, "בחירת אימג'", avail_w);
-    text_draw_r(cr, &gh, W - N_PAD, y, t->ink);
-    y += gh.h + 10;
+    /* owner, 10/10: folder-first. The folders (name, how many images) with
+     * keys 1-9; a folder opens its images, with the way back next to the
+     * heading ("כל התיקיות", Esc / Backspace). */
+    int ffirst[MAX_FOLDERS], fcount[MAX_FOLDERS];
+    int nf = image_folders(s, ffirst, fcount, MAX_FOLDERS);
+    int in = a->pick_in_folder, items[MAX_IMAGES], shown;
+    shown = in ? folder_images(s, a->pick_folder, items, MAX_IMAGES) : nf;
+    char head[160];
+    if (in) snprintf(head, sizeof head, "תיקיות › %s", folder_label(a->pick_folder));
+    else    snprintf(head, sizeof head, "בחירת אימג' — תיקייה");
+    double head_row = 32;
+    Text gh = rtl_block_make(cr, 15, 600, head, avail_w - (in ? 180 : 0));
+    text_draw_r(cr, &gh, W - N_PAD, y + (head_row - gh.h) / 2, t->ink);
+    if (in) {
+        Text bk = btn_label(cr, "כל התיקיות");
+        draw_btn(a, cr, (Rect){N_PAD, y, btn_width(&bk), head_row}, &bk, BTN_PLAIN, HIT_PICK_FOLDERS_BACK);
+        text_free(&bk);
+    }
+    y += head_row + 10;
     int cols = H / W >= .7 ? 1 : 2;
     double grid_gap = 14;
     double image_w = (avail_w - (cols - 1) * grid_gap) / cols;
     double image_h = 56;
-    int shown = s->nimages;
     double grid_bottom = H - N_STATUS_H - 128;
+    const char *sel_folder = a->restore_image_sel > 0 && a->restore_image_sel <= s->nimages
+                           ? s->images[a->restore_image_sel - 1].folder : NULL;
     for (int i = 0; i < shown; i++) {
         int row = i / cols, col = i % cols;
         Rect box = {W - N_PAD - image_w - col * (image_w + grid_gap),
                     y + row * (image_h + grid_gap), image_w, image_h};
         if (box.y + box.h > grid_bottom) break;
-        int selected_now = a->restore_image_sel == i + 1;
+        const char *line1, *line2; char count[48];
+        int selected_now;
+        if (in) {
+            line1 = s->images[items[i]].name; line2 = folder_label(a->pick_folder);
+            selected_now = a->restore_image_sel == items[i] + 1;
+        } else {
+            const char *f = s->images[ffirst[i]].folder;
+            line1 = folder_label(f);
+            if (fcount[i] == 1) snprintf(count, sizeof count, "אימג' אחד");
+            else snprintf(count, sizeof count, "%d אימג'ים", fcount[i]);
+            line2 = count;
+            selected_now = sel_folder && !strcmp(sel_folder, f);
+        }
         draw_fill_rrect(cr, box, t->radius,
                         selected_now ? t->indigo_soft : t->surface);
         draw_border_rrect(cr, box, t->radius,
                           selected_now ? t->indigo : t->hair,
                           selected_now ? 2 : 1);
-        Text name = rtl_block_make(cr, 14, 600, s->images[i].name, box.w - 32);
-        Text folder = rtl_block_make(cr, 11, 400,
-                                     s->images[i].folder[0] ? s->images[i].folder : "ללא תיקייה",
-                                     box.w - 32);
+        Text name = rtl_block_make(cr, 14, 600, line1, box.w - 32);
+        Text sub = rtl_block_make(cr, 11, 400, line2, box.w - 32);
         text_draw_r(cr, &name, box.x + box.w - 16, box.y + 10, t->ink);
-        text_draw_r(cr, &folder, box.x + box.w - 16, box.y + 31, t->muted);
+        text_draw_r(cr, &sub, box.x + box.w - 16, box.y + 31, t->muted);
         if (i < 9) {
             char key[4]; snprintf(key, sizeof key, "%d", i + 1);
             Text kt = text_make(cr, FONT_MONO, 11, 500, key, 0, DIR_LTR);
@@ -148,8 +175,8 @@ void screen_restore(App *a, cairo_t *cr, double W, double H, double head_h) {
             text_free(&kt);
         }
         text_free(&name);
-        text_free(&folder);
-        hit_add(a, box, HIT_OPTION_BASE + i);
+        text_free(&sub);
+        hit_add(a, box, in ? HIT_OPTION_BASE + items[i] : HIT_PICK_FOLDER_BASE + i);
     }
     if (shown == 0) {
         Text none = rtl_block_make(cr, 13, 400, "אין אימג'ים זמינים לשחזור.", avail_w);
@@ -162,29 +189,23 @@ void screen_restore(App *a, cairo_t *cr, double W, double H, double head_h) {
 
     double controls_y = H - N_STATUS_H - 94;
     if (y < controls_y) y = controls_y;
-    char prompt[160];
-    snprintf(prompt, sizeof prompt, "להמשך הקלידו את שם המחשב: %s",
-             s->machine_name[0] ? s->machine_name : "לא הוגדר שם במרשם");
-    Text label = rtl_block_make(cr, 12, 400, prompt, avail_w - 310);
-    text_draw_r(cr, &label, W - N_PAD, y, s->machine_name[0] ? t->muted : t->danger);
-    Rect input = {W - N_PAD - (avail_w - 310), y + label.h + 3, avail_w - 310, 38};
-    draw_field(a, cr, input, a->restore_confirm, 0, NULL, HIT_RESTORE_CONFIRM);
-
-    int exact = target && a->restore_image_sel > 0 && s->machine_name[0] &&
-                strcmp(a->restore_confirm, s->machine_name) == 0;
-    Text start = btn_label(cr, "מחק ושחזר");
+    /* #1270 (owner, 10/10): no typed name -- "מחק ושחזר" opens a confirm
+     * dialog once an image is chosen and there is a disk to write to */
+    int ready = target && a->restore_image_sel > 0 && a->restore_image_sel <= s->nimages;
+    Text start = btn_label(cr, "מחק ושחזר…");
     double sw = btn_width(&start);
-    Rect start_box = {N_PAD, y + label.h + 3, sw, 38};
-    if (exact) draw_btn(a, cr, start_box, &start, BTN_DANGER, HIT_RESTORE_START);
+    Rect start_box = {N_PAD, y, sw, 38};
+    if (ready) draw_btn(a, cr, start_box, &start, BTN_DANGER, HIT_RESTORE_START);
     else disabled_button(cr, t, start_box, &start);
     Text back = btn_label(cr, "חזרה");
     double bw = btn_width(&back);
-    draw_btn(a, cr, (Rect){N_PAD + sw + 10, y + label.h + 3, bw, 38},
-             &back, BTN_PLAIN, HIT_BACK);
-
+    draw_btn(a, cr, (Rect){N_PAD + sw + 10, y, bw, 38}, &back, BTN_PLAIN, HIT_BACK);
+    Text label = rtl_block_make(cr, 12, 400, ready ? "השחזור יתחיל אחרי אישור בחלון."
+                                                  : "בחרו אימג' כדי להמשיך.", avail_w - sw - bw - 40);
+    text_draw_r(cr, &label, W - N_PAD, y + (38 - label.h) / 2, t->muted);
     if (s->form_error[0]) {
         Text err = error_make(cr, s->form_error, avail_w);
-        text_draw_r(cr, &err, W - N_PAD, input.y + input.h + 3, t->danger);
+        text_draw_r(cr, &err, W - N_PAD, y + 38 + 6, t->danger);
         text_free(&err);
     }
 

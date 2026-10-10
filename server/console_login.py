@@ -52,7 +52,7 @@ async def finish_login(conn, request: Request, response: Response, *,
     stored = users.canonical_name(conn, username) or username
     info = users.flags(conn, stored)
     # ‏#1120: למשתמש MFA בקונסולה הסיסמה היא חצי כניסה — המונה מתאפס רק
-    # ב-`/login/mfa` (או בדפדפן זכור, למטה). אחרת קוד שגוי + כניסה מחדש
+    # ב-`/login/mfa`. אחרת קוד שגוי + כניסה מחדש
     # היו מאפסים את הספירה, ו-10 ניסיונות לא היו מצטברים לנעילה לעולם.
     if kiosk or not info["mfa_enabled"] or info["must_change_password"]:
         login_guard.clear(conn, username, ip)
@@ -84,13 +84,6 @@ async def finish_login(conn, request: Request, response: Response, *,
         return {"must_change_password": True}
 
     if info["mfa_enabled"]:
-        trusted = request.cookies.get(console_mfa.TRUSTED_COOKIE)
-        if console_mfa.trusted_ok(conn, stored, trusted):
-            login_guard.clear(conn, username, ip)
-            auth.attach_cookie(response, conn, stored, role, tls)
-            users.record_login(conn, stored, ip)
-            journal(conn, "login", "trusted_browser", stored)
-            return {"username": stored, "role": role, "idle_seconds": _idle(conn)}
         challenge = console_mfa.make_challenge(conn, stored)
         journal(conn, "login", "mfa_required", stored)
         return {"mfa_required": True, "challenge": challenge}

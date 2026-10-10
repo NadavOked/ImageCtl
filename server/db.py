@@ -179,7 +179,7 @@ CREATE TABLE IF NOT EXISTS login_attempts (
     last_at      REAL NOT NULL
 );
 
--- ‏#1085: דפדפן זכור — מדלג על שלב ה-TOTP ל-7 שעות.
+-- ‏#1085: סכמת עבר של "דפדפן זכור"; נשארת לתאימות, ואינה נקראת או נכתבת.
 CREATE TABLE IF NOT EXISTS trusted_browsers (
     token_hash TEXT PRIMARY KEY,
     username   TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,

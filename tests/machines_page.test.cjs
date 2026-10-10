@@ -167,12 +167,12 @@ test('collapse/expand per group; above 50 machines groups start folded; the filt
   run("mchFilter('state','zzz'); mchFilter('q','nothing-here')"); assert.match(node('#mch-table').innerHTML,/אין מחשבים שתואמים לסינון/);
 });
 
-test('selection → action bar; move PUTs group_id per machine; removal demands every name typed and deletes nothing on a mismatch', async () => {
+test('selection → action bar; move PUTs group_id per machine; removal is one confirm sheet listing the machines (#1270)', async () => {
   const {run,node,requests}=setup(); run('loadMachines=async()=>{}');
   assert.doesNotMatch(run('machines(0)'),/dg-bar foot/);
   run("toggleMchSel('78%3Aac%3Ac0%3A9b%3A11%3Ac2',true); toggleMchSel('a0:48:1c:8a:18:40',true)");
   const html=node('#mch-table').innerHTML;
-  assert.match(html,/נבחרו 2 מתוך 8/); assert.match(html,/bulkMoveMachines\(\)">העבר לקבוצה…/); assert.match(html,/bulkRemoveMachines\(\)">הסרה \(הקלדת שם\)/);
+  assert.match(html,/נבחרו 2 מתוך 8/); assert.match(html,/bulkMoveMachines\(\)">העבר לקבוצה…/); assert.match(html,/bulkRemoveMachines\(\)">הסרה</);
   assert.equal((html.match(/<tr data-mac="[^"]*" class="sel"/g)||[]).length,2);
   run('bulkMoveMachines()'); assert.equal(run('formOptions.fields[0].type'),'select');
   await run('formOptions.onSubmit({group_id:"grp_BUILD"})');
@@ -180,10 +180,10 @@ test('selection → action bar; move PUTs group_id per machine; removal demands 
   assert.deepEqual(puts.map(r=>[r.url,JSON.parse(r.options.body).group_id]).sort(),[['/api/console/machines/78%3Aac%3Ac0%3A9b%3A11%3Ac2','grp_BUILD'],['/api/console/machines/a0%3A48%3A1c%3A8a%3A18%3A40','grp_BUILD']]);
   assert.equal(run('MCH.sel.size'),0);
   run("toggleMchSel('78:ac:c0:9b:11:c2',true); toggleMchSel('b4:2e:99:07:1a:c3',true); bulkRemoveMachines()");
-  assert.equal(run('formOptions.fields.length'),2); assert.equal(run('formOptions.danger'),true);
-  await assert.rejects(run('formOptions.onSubmit({n0:"מחשב 2",n1:"wrong"})'),/השם שהוקלד אינו זהה: 03/);
-  assert.ok(!requests.some(r=>r.options.method==='DELETE'),'nothing deleted while a name mismatches');
-  await run('formOptions.onSubmit({n0:"מחשב 2",n1:"03"})');
+  assert.equal(run('formOptions.fields'),undefined,'#1270: no typed fields'); assert.equal(run('formOptions.danger'),true);
+  assert.match(run('formOptions.note'),/מחשב 2/); assert.match(run('formOptions.note'),/03/);
+  assert.ok(!requests.some(r=>r.options.method==='DELETE'),'nothing deleted before the sheet is confirmed');
+  await run('formOptions.onSubmit({})');
   assert.deepEqual(requests.filter(r=>r.options.method==='DELETE').map(r=>r.url),['/api/console/machines/78%3Aac%3Ac0%3A9b%3A11%3Ac2','/api/console/machines/b4%3A2e%3A99%3A07%3A1a%3Ac3']);
   run('toggleMchSelAll(true)'); assert.match(node('#mch-table').innerHTML,/נבחרו 8 מתוך 8/);
   run('mchSelClear()'); assert.doesNotMatch(node('#mch-table').innerHTML,/dg-bar foot/);
@@ -217,7 +217,7 @@ test('the machine drawer: header line, actions (monitor, WoL for the room, "requ
   html=node('#drawerBody').innerHTML;
   assert.match(html,/<span class="d err"><\/span><span>דיסק נכשל בכתיבה — מחשב 2 — דיסק 3/); assert.match(html,/15\/09\/2026/); assert.match(html,/מכונה נוספה — מחשב 2/);
   assert.match(html,/moveMachineSheet\(/); assert.match(html,/removeMachine\(/);
-  run('removeMachine("78:ac:c0:9b:11:c2")'); assert.equal(run('formOptions.verify.mustEqual'),'מחשב 2'); assert.equal(run('formOptions.danger'),true);
+  run('removeMachine("78:ac:c0:9b:11:c2")'); assert.equal(run('formOptions.verify'),undefined,'#1270: no typed name'); assert.equal(run('formOptions.danger'),true);
 
   run("openMachineDetail('c8%3Ad9%3Ad2%3A0b%3Afe%3A34')"); html=node('#drawerBody').innerHTML; balanced(html);
   assert.match(html,/המכונה מעולם לא דיווחה על כוננים/); assert.match(html,/המכונה מעולם לא דיווחה על חומרה/); assert.doesNotMatch(html,/חריצים מוגדרים/,'slots are a cloner thing');
@@ -262,7 +262,7 @@ test('the class as an object: crumbs, header, KPIs with meaning only, the same t
   assert.match(html,/סבבים של הכיתה/); assert.match(html,/Office 2024 — סטנדרט · פתוח, 2\/3 הצטרפו/); assert.match(html,/היסטוריית סבבים לכיתה — <b[^>]*>דורש API<\/b>/);
   html=run('machines(2)'); assert.match(html,/דורש API/); assert.doesNotMatch(html,/<table class="dg"/);
   html=run('machines(1)'); assert.equal((html.match(/<table class="dg kebab-col"/g)||[]).length,1); assert.doesNotMatch(html,/class="kpi/);
-  run("deleteGroup('grp_LAB303')"); assert.equal(run('formOptions.verify.mustEqual'),'כיתה 303 — סייבר');
+  run("deleteGroup('grp_LAB303')"); assert.equal(run('formOptions.verify'),undefined,'#1270: no typed name');
   run('OVERVIEW.session=null; DISK_FAILURES=null'); html=run('machines(0)');
   assert.doesNotMatch(html,/קידומת/,'prefix comes only from a session'); assert.match(html,/<div class="kpi "><div class="l">סבב פעיל<\/div><div class="v"><bdi dir="auto">אין/);
   assert.match(html,/<div class="kpi "><div class="l">דיסקים<\/div><div class="v"><bdi dir="auto">לא נקרא/,'failures unread ≠ none');

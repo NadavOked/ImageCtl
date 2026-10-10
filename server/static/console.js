@@ -171,7 +171,7 @@ const UI = {
   link(label, onclick) { return `<a role="link" tabindex="0" onclick="${onclick}">${esc(label)}</a>`; },
   /* ‏⋯ בסוף שורה: כל פעולות השורה בתפריט אחד (עמודה דביקה בקצה — ‏console.css .kebab-col).
      items = [[תווית, onclick, "danger"?]]; הפעולה ההרסנית עוברת לתחתית, מופרדת ואדומה.
-     הפעולה עצמה לא משתנה: מי שדורש הקלדת שם (עיקרון 7) עדיין פותח את אותו sheet. */
+     הפעולה עצמה לא משתנה: הפעולה ההרסנית פותחת sheet אישור (שאלה, השלכות, כפתור אדום). */
   rowMenu(label, items) {
     const ordered = items.filter((i) => i[2] !== "danger").concat(items.filter((i) => i[2] === "danger"));
     return `<button type="button" class="kebab" aria-haspopup="menu" aria-expanded="false" aria-label="${esc("פעולות עבור " + label)}" data-menu="${esc(JSON.stringify(ordered))}" onclick="event.stopPropagation();openRowMenu(this)" onkeydown="rowMenuTriggerKey(event,this)">⋯</button>`;
@@ -289,9 +289,11 @@ const winCloseBtn = (attrs) => `<button type="button" class="n-x" aria-label="ס
 /* רכיב סיסמה אחד: "הצג/הסתר" + מדיניות חיה. המדיניות זהה לשרת (server/users.py validate_password):
    8 תווים, אותיות, ספרות, ותו מהקבוצה !@#$%^&*(),.?":{}|<> — לא "כל תו", אחרת הרשימה תהיה ירוקה והשרת יסרב. */
 const PW_RULES = [["לפחות 8 תווים", /.{8,}/], ["אותיות", /[A-Za-z]/], ["ספרות", /[0-9]/], ["תו מיוחד", /[!@#$%^&*(),.?":{}|<>]/]];
-function passwordFieldHtml({ id, label, policy = false, autocomplete = "new-password" }) {
+/* ‏value + readonly (#1268): סיסמה זמנית שמוצגת פעם אחת — אותו שדה ואותו "הצג", רק לקריאה. */
+function passwordFieldHtml({ id, label, policy = false, autocomplete = "new-password", value = "", readonly = false }) {
   const rules = policy ? `<ul class="pw-pol" aria-live="polite">${PW_RULES.map(([name], i) => `<li data-rule="${i}">${LOGIN_CHECK_ICON}${esc(name)}</li>`).join("")}</ul>` : "";
-  return `<div class="n-f" data-pwf><label for="${id}">${esc(label)}</label><div class="pw-wrap"><input class="n-in" type="password" dir="ltr" id="${id}" autocomplete="${autocomplete}"><button type="button" class="pw-eye" data-pw="${id}" aria-pressed="false">הצג</button></div>${rules}</div>`;
+  const shown = (value ? ` value="${esc(value)}"` : "") + (readonly ? " readonly" : "");
+  return `<div class="n-f" data-pwf><label for="${id}">${esc(label)}</label><div class="pw-wrap"><input class="n-in" type="password" dir="ltr" id="${id}" autocomplete="${autocomplete}"${shown}><button type="button" class="pw-eye" data-pw="${id}" aria-pressed="false">הצג</button></div>${rules}</div>`;
 }
 function passwordPolicyState(value) { return PW_RULES.map(([, re]) => re.test(value)); }
 function wirePasswordFields(root) {
@@ -383,9 +385,10 @@ function openWizard({ title, sub = "", steps, state = {}, finishLabel = "סיו�
 }
 
 /* מודאל אחיד במקום prompt/confirm — net.js/netcfg.js קוראים ל-sheet().
-   אפשרויות מעבר לקודמות: size (narrow|mid|wide), hint (טקסט בפס התחתון), field.help, field.type="section". */
-function sheet({ title, sub = "", fields = [], submitLabel = "שמירה",
-                 danger = false, verify = null, note = "", size = "", hint = "", onSubmit }) {
+   אפשרויות מעבר לקודמות: size (narrow|mid|wide), hint (טקסט בפס התחתון), field.help, field.type="section".
+   cancelLabel; ו-onSubmit יכול להחזיר פונקציה — היא רצה אחרי שהחלון נסגר (חלון תוצאה אחרי חלון אישור, #1268). */
+function sheet({ title, sub = "", fields = [], submitLabel = "שמירה", cancelLabel = "ביטול",
+                 danger = false, note = "", size = "", hint = "", onSubmit }) {
   const modal = $("#modal");
   const form = $("#sheet");
   const help = (f) => (f.help ? `<div class="n-help">${esc(f.help)}</div>` : "");
@@ -411,25 +414,21 @@ function sheet({ title, sub = "", fields = [], submitLabel = "שמירה",
         <textarea class="n-in" id="sf-${f.id}" rows="3">${esc(f.value || "")}</textarea>${help(f)}</div>`;
     }
     if (f.type === "password") {
-      return passwordFieldHtml({ id: "sf-" + f.id, label: f.label, policy: f.policy === undefined ? !!f.confirm : f.policy })
+      return passwordFieldHtml({ id: "sf-" + f.id, label: f.label, policy: f.policy === undefined ? !!f.confirm : f.policy, autocomplete: f.autocomplete || undefined })
         + (f.confirm ? passwordFieldHtml({ id: "sf-" + f.id + "-confirm", label: f.confirm }) : "");
     }
     return `<div class="n-f"><label for="sf-${f.id}">${esc(f.label)}</label>
       <input class="n-in${f.dir === "ltr" ? " n-mono" : ""}" type="${f.type || "text"}" id="sf-${f.id}" value="${esc(f.value || "")}"
         placeholder="${esc(f.placeholder || "")}" ${f.dir ? `dir="${f.dir}"` : ""}>${help(f)}</div>`;
   };
-  const verifyHtml = verify ? `
-    <div class="n-f"><label for="sf-verify">${esc(verify.label)}</label>
-      <input class="n-in n-mono" type="text" id="sf-verify" placeholder="${esc(verify.mustEqual)}" autocomplete="off">
-      <div class="n-help">הקלדה זהה לטקסט מונעת פעולה בטעות: <span class="n-name">${esc(verify.mustEqual)}</span></div></div>` : "";
   const sizeName = size || (fields.length >= 6 ? "mid" : "narrow");
   form.className = `sheet win ${winSizeClass(sizeName, "narrow")}`;
   form.innerHTML = `
     <div class="n-h shead"><div><h2 id="sheetTitle">${esc(title)}</h2>${sub ? `<p>${esc(sub)}</p>` : ""}</div>${winCloseBtn('id="sf-x"')}</div>
-    <div class="n-b sbody">${note}${fields.map(fieldHtml).join("")}${verifyHtml}<p class="error n-formerr" id="sf-error" role="alert"></p></div>
+    <div class="n-b sbody">${note}${fields.map(fieldHtml).join("")}<p class="error n-formerr" id="sf-error" role="alert"></p></div>
     <footer class="n-f-bar sfoot">
       <span class="n-hint" id="sf-hint">${esc(hint)}</span>
-      <button class="btn" type="button" id="sf-cancel">ביטול</button>
+      <button class="btn" type="button" id="sf-cancel">${esc(cancelLabel)}</button>
       <button class="btn ${danger ? "danger" : "primary"}" type="submit" id="sf-submit">${esc(submitLabel)}</button>
     </footer>`;
   form.classList.remove("hidden");
@@ -446,23 +445,8 @@ function sheet({ title, sub = "", fields = [], submitLabel = "שמירה",
   $("#sf-cancel").onclick = close;
   $("#sf-x").onclick = close;
   wireWindowParts(form);
-  if (verify) {   // עיקרון 7: הכפתור ההרסני כבוי עד שהטקסט זהה (והבדיקה בשליחה נשארת)
-    const field = $("#sf-verify"), go = $("#sf-submit");
-    const sync = () => {
-      const same = field.value === verify.mustEqual;
-      go.disabled = !same;
-      const h = $("#sf-hint");
-      if (h) h.textContent = same ? "" : (hint || "הקלידו את הטקסט כדי להפעיל");
-    };
-    field.addEventListener("input", sync);
-    sync();
-  }
   form.onsubmit = async (event) => {
     event.preventDefault();
-    if (verify && $("#sf-verify").value !== verify.mustEqual) {
-      $("#sf-error").textContent = "הטקסט שהוקלד אינו זהה";
-      return;
-    }
     for (const f of fields) {
       if (f.type !== "password" || !f.confirm) continue;
       if ($("#sf-" + f.id).value !== $(`#sf-${f.id}-confirm`).value) {
@@ -481,8 +465,10 @@ function sheet({ title, sub = "", fields = [], submitLabel = "שמירה",
       const el = $("#sf-" + f.id);
       values[f.id] = f.type === "checkbox" ? !!(el && el.checked) : (el ? el.value : "");
     });
-    try { await onSubmit(values); close(); }
-    catch (error) { $("#sf-error").textContent = error.message; }
+    let next;
+    try { next = await onSubmit(values); close(); }
+    catch (error) { $("#sf-error").textContent = error.message; return; }
+    if (typeof next === "function") next();
   };
 }
 
@@ -654,7 +640,7 @@ const PW_SPECIAL_RE = /[!@#$%^&*(),.?":{}|<>]/;
 const LOGIN_ALERT_ICON = '<svg class="ui-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>';
 const LOGIN_CHECK_ICON = '<i><svg class="ui-icon" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg></i>';
 
-let LOGIN = { screen: "login", username: "", remember: false, error: "",
+let LOGIN = { screen: "login", username: "", error: "",
               challenge: "", secret: "", otpauth: "", svg: "", backupCodes: [],
               savedAck: false, otpBackup: false, otp: ["", "", "", "", "", ""] };
 
@@ -709,12 +695,12 @@ function loginStateFromResponse(status, body, retryAfter, prev) {
     return { screen: "change", username: prev.username || "", error: "" };
   if (status === 200 && body.mfa_required)
     return { screen: "mfa", username: prev.username || "", challenge: body.challenge,
-             remember: !!prev.remember, otp: ["", "", "", "", "", ""], otpBackup: false, error: "" };
+             otp: ["", "", "", "", "", ""], otpBackup: false, error: "" };
   if (status === 200 && body.mfa_enrollment_required)
     return { screen: "setup", username: prev.username || "", error: "" };
   if (status === 200 && (body.username || body.ok || body.mfa_enabled))
     return { screen: "app" };
-  return { screen: "login", username: prev.username || "", remember: !!prev.remember,
+  return { screen: "login", username: prev.username || "",
            error: loginErrorMessage(status, body, retryAfter), fieldErr: true };
 }
 
@@ -722,7 +708,7 @@ function mfaRejectedState(body, prev) {
   // ‏#1120: קוד שגוי צורך את ה-challenge בשרת — אין למה להישאר במסך
   // הקוד. חזרה לכניסה עם השם שהוקלד ועם הודעת השרת כלשונה.
   prev = prev || {};
-  return { screen: "login", username: prev.username || "", remember: !!prev.remember,
+  return { screen: "login", username: prev.username || "",
            challenge: "", otp: ["", "", "", "", "", ""], otpBackup: false, fieldErr: false,
            error: (body && body.detail) || "קוד שגוי — היכנס מחדש" };
 }
@@ -787,7 +773,6 @@ function loginMfaHtml(state) {
     <p class="lead"><span class="mono">${esc(state.username || "")}</span> · שישה תווים, מתחלף כל 30 שניות</p>
     ${backup}
     ${loginMsg(state.error)}
-    <label class="check"><input type="checkbox" id="mfa-remember"${state.remember ? " checked" : ""}> אל תבקש קוד בדפדפן הזה ל-7 שעות</label>
     <button class="btn" type="submit">אימות</button>
     ${state.otpBackup ? "" : `<button type="button" class="link" id="mfa-use-backup">השתמש בקוד גיבוי</button>`}
   </form>`;
@@ -883,7 +868,7 @@ function showLogin() {
   applyTheme("auto");   // #1093: מסך הכניסה לפי המערכת; המטמון נמחק
   const keptUser = LOGIN.username || "";
   const keptErr = LOGIN.error || "";
-  LOGIN = { screen: "login", username: keptUser, remember: false, error: keptErr,
+  LOGIN = { screen: "login", username: keptUser, error: keptErr,
             challenge: "", secret: "", otpauth: "", svg: "", backupCodes: [],
             savedAck: false, otpBackup: false, otp: ["", "", "", "", "", ""] };
   loginRender();
@@ -891,7 +876,7 @@ function showLogin() {
 
 async function enterApp() {
   ME = await api("/me");
-  LOGIN = { screen: "login", username: "", remember: false, error: "",
+  LOGIN = { screen: "login", username: "", error: "",
             challenge: "", secret: "", otpauth: "", svg: "", backupCodes: [],
             savedAck: false, otpBackup: false, otp: ["", "", "", "", "", ""] };
   await showApp();
@@ -970,8 +955,6 @@ async function loginFetch(path, body) {
 async function loginSubmitCredentials() {
   const username = ($("#login-user") && $("#login-user").value || "").trim();
   const password = ($("#login-pass") && $("#login-pass").value) || "";
-  // ‏#1243: אין "זכור" במסך הזה — ‏/login לא מקבל אותו. הפטור מקוד ל-7
-  // שעות (`remember_browser`) נבחר רק במסך ה-MFA.
   LOGIN.username = username;
   const r = await loginFetch("/login", { username, password });
   const next = loginStateFromResponse(r.status, r.body, r.retryAfter, LOGIN);
@@ -1000,11 +983,9 @@ function loginReadOtp() {
 }
 
 async function loginSubmitMfa() {
-  const remember = !!( $("#mfa-remember") && $("#mfa-remember").checked );
-  LOGIN.remember = remember;
   const code = loginReadOtp();
   const r = await loginFetch("/login/mfa", {
-    challenge: LOGIN.challenge, code, remember_browser: remember,
+    challenge: LOGIN.challenge, code,
   });
   if (r.status === 401) {
     loginRender(mfaRejectedState(r.body, LOGIN));
@@ -2103,7 +2084,7 @@ function home(tab = 0) {
    clonerCardHtml במצב חדר — לא עותק. מקורות: /room (round, machines[].drawer_list,
    stream_stalled, disk_floor #953), /images (min_target_bytes #953), /machines (prompt —
    השאלה למפעיל #906), /disk-failures (אדום), /net (IP). כתיבה — רק ה-endpoints הקיימים:
-   POST /room, /room/start, /room/wake, /room/close (הקלדת שם, עיקרון 7); בלי שינוי שרת.
+   POST /room, /room/start, /room/wake, /room/close (חלון אישור, #1270); בלי שינוי שרת.
    ההכרעה על SMART (נדב 16/09): כתום = בלי תשובה ממשיך לכתוב, אדום = בלי תשובה מדלג —
    לעולם לא דילוג בשני המקרים; היא נענית ליד המכונה (או במוניטור), ותשובה מהקונסולה — דורש
    API. קצב הזרם ובלוקים ששודרו שוב — מ-/room.round (#989). מה שאין לו API — מספר הגלים הכולל, היסטוריה, דילוג מרחוק — טקסט,
@@ -2198,7 +2179,7 @@ function deploy(tab = 0) {
   const actions = (tab === 0 && ROOM ? (op && r && r.state === "failed" ? `<button class="btn primary" onclick="reopenRoom()">פתח מחדש</button>` : "")
     + (op && r && r.state !== "failed" && r.wave_state === "open" ? `<button class="btn primary" onclick="startWave()">התחל גל (${r.ready_drives || 0} מוכנים)</button>` : "")
     + (op ? `<button class="btn" onclick="wakeRoom()">הער משכפלים (WoL)</button>` : "")
-    + (op && r ? `<button class="btn danger" onclick="stopRoom()">עצור סבב (הקלדת שם)</button>` : "")
+    + (op && r ? `<button class="btn danger" onclick="stopRoom()">עצור סבב</button>` : "")
     + `<button class="btn" onclick="toggleRoomBig()">${DEPLOY.big ? "חזרה לתצוגה המלאה" : "תצוגה גדולה"}</button>` : "")
     + `<button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>`;
   const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "סבב הפצה" }], icon: "t-deploy",
@@ -2348,8 +2329,8 @@ function stopRoom() {
   const r = roomRound();
   if (!roomOperator() || !r) return;
   const name = r.image_name || r.image_id || "";
-  sheet({ title: "עצירת סבב החדר", sub: `הסבב על "${name}" ייעצר: השידור נפסק, הגל נסגר ומגירות שלא נכתבו נשארות טריות. פעולה הרסנית — הקלדת שם.`,
-    danger: true, submitLabel: "עצור סבב", verify: { label: "הקלד את שם האימג'", mustEqual: name },
+  sheet({ title: "עצירת סבב החדר", sub: `הסבב על "${name}" ייעצר: השידור נפסק, הגל נסגר ומגירות שלא נכתבו נשארות טריות. פעולה הרסנית.`,
+    danger: true, submitLabel: "עצור סבב",
     onSubmit: async () => { await post("/room/close", { confirm_name: name }); toast("הסבב נעצר"); await loadDeploy(); } });
 }
 /* לשונית "כיתה": קוד ה-session הקיים כמו שהוא (סבב כיתה = v2) — שורת הסבב, התחלה/עצירה,
@@ -2364,7 +2345,7 @@ function deployClassView() {
   const bar = pct == null ? "—" : `<div class="progress" style="width:150px"><i style="width:${pct}%"></i></div>`;
   const table = `<table class="table"><thead><tr><th>סבב</th><th>אימג׳</th><th>כיתה</th><th>מחוברים</th><th>התקדמות</th><th>סטטוס</th></tr></thead><tbody><tr><td><strong>${esc(s.group_label || s.prefix || img)}</strong></td><td>${esc(img)}</td><td>${esc(sessionGroup(s))}</td><td>${s.joined || 0} / ${sessionExpected(s)}</td><td>${bar}</td><td><span class="status ${stateClass(s.state)}"><i></i>${esc(sessionStateText(s))}${s.state === "open" && s.starts_in_seconds != null ? ` · מתחיל בעוד ${s.starts_in_seconds} ש'` : ""}</span></td></tr></tbody></table>`;
   const op = roomOperator();
-  const acts = op ? `<div class="acts">${s.state === "failed" ? `<button class="btn primary" onclick="reopenRound()">פתח מחדש</button>` : s.state === "open" ? `<button class="btn primary" onclick="startRound()">התחל עכשיו</button>` : ""}<button class="btn danger" onclick="stopRound()">עצור סבב (הקלדת שם)</button></div>` : "";
+  const acts = op ? `<div class="acts">${s.state === "failed" ? `<button class="btn primary" onclick="reopenRound()">פתח מחדש</button>` : s.state === "open" ? `<button class="btn primary" onclick="startRound()">התחל עכשיו</button>` : ""}<button class="btn danger" onclick="stopRound()">עצור סבב</button></div>` : "";
   const roster = s.roster ? new Set(s.roster) : null, byMac = new Map((s.members || []).map((m) => [m.mac, m]));
   let rows = (s.members || []).map((m) => memberRow(m, s, stuckNote(s.stuck, m.mac))).join("");
   const machines = s.single ? [] : (SESSION_MACHINES.group === s.group_id ? SESSION_MACHINES.list : null);
@@ -2411,9 +2392,18 @@ function gbCeil(bytes) {
   const n = Number(bytes);
   return bytes == null || !Number.isFinite(n) || n <= 0 ? null : Math.ceil(n / 1e9);
 }
+function fitsDisk(bytes) {
+  const n = Number(bytes);
+  if (bytes == null || !Number.isFinite(n) || n <= 0) return "—";
+  const sizes = [[128e9, "128GB"], [256e9, "256GB"], [500e9, "500GB"],
+    [512e9, "512GB"], [1e12, "1TB"], [2e12, "2TB"], [4e12, "4TB"]];
+  const match = sizes.find(([size]) => n <= size);
+  return match ? match[1] : "> 4TB";
+}
 function imgFits(r) {
   const g = gbCeil(r.min_target_bytes);
-  return g == null ? `<span class="muted">לא ידוע</span>` : `<span title="${esc(r.min_target_bytes)} bytes">${ltr(g + " GB")}</span>`;
+  return g == null ? `<span class="muted">—</span>`
+    : `<span title="${esc(r.min_target_bytes)} bytes">${ltr(fitsDisk(r.min_target_bytes))}</span><span class="sub muted">נדרש לפחות ${esc(g)} GB</span>`;
 }
 /* "בשימוש" — סבב פעיל / סבב שיכפול מ-/overview. הספירה ל-30 יום — imgRounds (#972). */
 function imgUsage(id) {
@@ -2540,7 +2530,7 @@ function imagesTableHtml() {
   }
   const allSel = list.length > 0 && list.every((r) => IMG.sel.has(r.id));
   const columns = [{ html: `<input type="checkbox" aria-label="בחירת הכול" ${allSel ? "checked" : ""} onchange="toggleImgSelAll(this.checked)">` },
-    "שם", "מערכת", "תיקייה", "נכנס לדיסק מ-", "בשרת", "נוצר", "אימות", "בשימוש", { html: `<span class="sr">פעולות</span>` }];
+    "שם", "מערכת", "תיקייה", "מתאים לדיסק", "בשרת", "נוצר", "אימות", "בשימוש", { html: `<span class="sr">פעולות</span>` }];
   return UI.datagrid({ columns, cls: "kebab-col", opt: [2, 3], rows: list.map(imageRow).concat(tasks.map((t) => ({ html: captureRowHtml(t) }))) }) + imagesSelBar(list);
 }
 /* ‏#954 גל 2: הדף נצבע מחדש רק כשרשימת /tasks השתנתה — אחרת הבחירה
@@ -2666,18 +2656,17 @@ function bulkDownload() {
     document.body.appendChild(a); a.click(); a.remove();
   }
 }
-/* מחיקה מרובה: הקלדת שם לכל אימג' (עיקרון 7) — השרת מאמת כל שם בנפרד. */
+/* מחיקה מרובה: חלון אישור אחד עם הרשימה (#1270); confirm_name נשלח מהשם הידוע — השרת מאמת כל שם בנפרד. */
 function bulkDelete() {
   if (!isAdmin() || !IMG.sel.size) return;
   const imgs = [...IMG.sel].map((id) => findImage(id)).filter(Boolean);
   if (imgs.length === 1) { deleteImage(encodeId(imgs[0].id)); return; }
   sheet({
     title: `מחיקת ${imgs.length} אימג'ים`, danger: true, submitLabel: "מחק",
-    sub: "האימג'ים וכל קבציהם יימחקו לצמיתות מהשרת. אין דרך חזרה. הקלידו את שם כל אימג' לאישור.",
-    fields: imgs.map((m, i) => ({ id: "n" + i, label: m.name, placeholder: m.name })),
-    onSubmit: async (v) => {
-      imgs.forEach((m, i) => { if ((v["n" + i] || "").trim() !== m.name) throw new Error(`השם שהוקלד אינו זהה: ${m.name}`); });
-      for (const [i, m] of imgs.entries()) await post("/images/" + encodeId(m.id) + "/delete", { confirm_name: v["n" + i].trim() });
+    sub: "האימג'ים וכל קבציהם יימחקו לצמיתות מהשרת. אין דרך חזרה.",
+    note: `<div class="sheet-note"><ul>${imgs.map((m) => `<li>${esc(m.name)}</li>`).join("")}</ul></div>`,
+    onSubmit: async () => {
+      for (const m of imgs) await post("/images/" + encodeId(m.id) + "/delete", { confirm_name: m.name });
       IMG.sel.clear(); closeDrawer(); toast(`${imgs.length} אימג'ים נמחקו`); await loadImages();
     },
   });
@@ -2870,7 +2859,7 @@ function imageDrawerHtml(img) {
     : jErr ? UI.note("warn", "היומן לא נקרא: " + esc(jErr))
     : `<div class="muted">${admin ? "אין אירועים ביומן לאימג' הזה (20 האחרונים)." : "היסטוריית היומן זמינה למנהל בלבד."}</div>`;
   const foot = admin
-    ? `<div style="border-top:1px solid var(--hair);padding-top:12px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn sm" onclick="renameImage('${idEnc}')">שינוי שם</button><button class="btn sm" onclick="moveImage('${idEnc}')">העבר לתיקייה</button><button class="btn sm danger" onclick="deleteImage('${idEnc}')">מחיקה (הקלדת שם)</button></div>`
+    ? `<div style="border-top:1px solid var(--hair);padding-top:12px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn sm" onclick="renameImage('${idEnc}')">שינוי שם</button><button class="btn sm" onclick="moveImage('${idEnc}')">העבר לתיקייה</button><button class="btn sm danger" onclick="deleteImage('${idEnc}')">מחיקה</button></div>`
     : "";
   return `<div class="page drw"><div class="obj-sub">${esc(img.folder || "ללא תיקייה")} / <span class="mono">${esc(img.id)}</span> · ${esc(imageOsLabel(img.os))} · נוצר ${ltr(fmtDate(img.created))}</div>${actions}${verify}<div><div class="sec">מאפיינים</div>${kv}</div><div><div class="sec">מחיצות</div>${parts}</div><div><div class="sec">היסטוריה</div>${history}</div>${foot}</div>`;
 }
@@ -2956,29 +2945,16 @@ function deleteImage(id) {
   if (!isAdmin()) return;
   const img = findImage(id);
   if (!img) return;
-  openModalContent(
-    "מחיקת אימג׳",
-    `<div class="confirm-box">האימג׳ וכל קבציו יימחקו לצמיתות מהשרת. אין דרך חזרה.</div><div class="danger-confirm">הקלידו את שם האימג׳ <b>${esc(img.name)}</b> לאישור.</div><div class="form"><div class="field full"><label>שם האימג׳</label><input id="confirmName" autocomplete="off"></div></div>`,
-    "מחק",
-    () => confirmDeleteImage(img.id),
-    true
-  );
-  const input = document.getElementById("confirmName");
-  if (input) input.focus();
-}
-
-async function confirmDeleteImage(id) {
-  const input = document.getElementById("confirmName");
-  const typed = input ? input.value.trim() : "";
-  try {
-    await post("/images/" + encodeId(id) + "/delete", { confirm_name: typed });
-    closeModal();
-    closeDrawer();
-    toast("האימג׳ נמחק", 2600, "ok");
-    loadImages();
-  } catch (e) {
-    toast(e.message);
-  }
+  sheet({
+    title: `למחוק את "${img.name}"?`, danger: true, submitLabel: "מחק אימג׳",
+    sub: "האימג׳ וכל קבציו יימחקו לצמיתות מהשרת. אין דרך חזרה.",
+    onSubmit: async () => {
+      await post("/images/" + encodeId(img.id) + "/delete", { confirm_name: img.name });
+      closeDrawer();
+      toast("האימג׳ נמחק", 2600, "ok");
+      loadImages();
+    },
+  });
 }
 
 function openImageIngest() {
@@ -3069,27 +3045,15 @@ function stopRound() {
   if (!session || !session.id) return;
   const sessionId = session.id;
   const name = sessionImage(session);
-  openModalContent(
-    "עצירת סבב",
-    `<div class="confirm-box">עצירת הסבב תמנע הצטרפות חדשה ותעצור את השידור.</div><div class="danger-confirm">הקלידו את שם האימג׳ <b>${esc(name)}</b> לאישור.</div><div class="form"><div class="field full"><label>שם האימג׳</label><input id="confirmName" autocomplete="off"></div></div>`,
-    "עצור",
-    () => confirmStopRound(sessionId)
-  );
-  const input = document.getElementById("confirmName");
-  if (input) input.focus();
-}
-
-async function confirmStopRound(sessionId) {
-  const input = document.getElementById("confirmName");
-  const typed = input ? input.value.trim() : "";
-  try {
-    await post("/sessions/" + encodeId(sessionId) + "/close", { confirm_name: typed });
-    closeModal();
-    toast("הסבב נעצר");
-    refreshStatus();
-  } catch (e) {
-    toast(e.message);
-  }
+  sheet({
+    title: "לעצור את הסבב?", danger: true, submitLabel: "עצור סבב",
+    sub: `הסבב על "${name}" ייעצר: לא תתאפשר הצטרפות חדשה והשידור ייפסק.`,
+    onSubmit: async () => {
+      await post("/sessions/" + encodeId(sessionId) + "/close", { confirm_name: name });
+      toast("הסבב נעצר");
+      refreshStatus();
+    },
+  });
 }
 
 /* ---------- #954 גל 3: מחשבים — טבלה אחת מקובצת, מגירת מחשב, כיתה כאובייקט ----------
@@ -3238,7 +3202,7 @@ function mchFilter(key, value) { MCH[key] = value; redrawMachinesTable(); }
 function machineRowHtml(m) {
   const macEnc = encodeId(m.mac), net = netFor(m.mac), st = machineState(m), role = machineRole(m);
   const name = machineName(m) || m.mac, sub = machineSub(m), sel = MCH.sel.has(m.mac);
-  // ‏⋯ אחד לשורה (console-full.html MENUS.machine): פרטים, ובמנהל — שם / קבוצה / חריצים (שיכפול) / הסרה (עדיין הקלדת שם).
+  // ‏⋯ אחד לשורה (console-full.html MENUS.machine): פרטים, ובמנהל — שם / קבוצה / חריצים (שיכפול) / הסרה (חלון אישור).
   const items = [["פרטים", `openMachineDetail('${macEnc}')`]];
   if (isAdmin()) {
     items.push(["שינוי שם…", `renameMachine('${macEnc}')`], ["העבר לקבוצה…", `moveMachineSheet('${macEnc}')`]);
@@ -3306,7 +3270,7 @@ function machinesTableHtml() {
 function mchSelBar(list) {
   const n = list.filter((m) => MCH.sel.has(m.mac)).length;
   if (!n) return "";
-  return `<div class="dg-bar foot"><span class="n">נבחרו ${n} מתוך ${list.length}</span><span class="sp"></span><button class="btn sm" onclick="bulkMoveMachines()">העבר לקבוצה…</button><button class="btn sm danger" onclick="bulkRemoveMachines()">הסרה (הקלדת שם)</button><button class="btn sm" onclick="mchSelClear()">נקה בחירה</button></div>`;
+  return `<div class="dg-bar foot"><span class="n">נבחרו ${n} מתוך ${list.length}</span><span class="sp"></span><button class="btn sm" onclick="bulkMoveMachines()">העבר לקבוצה…</button><button class="btn sm danger" onclick="bulkRemoveMachines()">הסרה</button><button class="btn sm" onclick="mchSelClear()">נקה בחירה</button></div>`;
 }
 function toggleMchSel(macEnc, on) {
   let mac = macEnc; try { mac = decodeURIComponent(macEnc); } catch (e) {}
@@ -3472,7 +3436,7 @@ function classView(g, kids, tab) {
   const pill = s ? UI.pill(s.state === "failed" ? "err" : "info", `סבב ${sessionStateText(s)}`) : "";
   const actions = isAdmin() ? (classroom ? `<button class="btn primary" onclick="deployToGroup('${gidEnc}')">הפץ לכיתה…</button>` : "")
     + `<button class="btn" onclick="openAddMachine({group:'${gidEnc}'})">+ מחשב${classroom ? " לכיתה" : ""}</button>`
-    + (classroom ? `<button class="btn" onclick="renameGroup('${gidEnc}')">שינוי שם</button><button class="btn danger" onclick="deleteGroup('${gidEnc}')">מחיקה (הקלדת שם)</button>` : "") : "";
+    + (classroom ? `<button class="btn" onclick="renameGroup('${gidEnc}')">שינוי שם</button><button class="btn danger" onclick="deleteGroup('${gidEnc}')">מחיקה</button>` : "") : "";
   let body;
   if (tab === 1) body = machinesTableCard(g);
   else if (tab === 2) body = groupRoundsCard(g, "c12");
@@ -3664,7 +3628,7 @@ function clonersView(g, kids, tab) {
     `${st.filled} דיסקים בחריצים`, DISK_FAILURES ? `${fails.length} אדומים` : "אדומים: לא נקרא"].join(" · ");
   const pill = r ? UI.pill(ROOM.stream_stalled ? "warn" : "info", `סבב פעיל — גל ${r.wave_number || 1}, ${r.written_drives || 0}/${r.target_drives || 0}${ROOM.stream_stalled ? " · הזרם עצר" : ""}`)
     : ROOM == null ? UI.pill("", "החדר לא נקרא") : "";
-  const actions = admin ? `<button class="btn primary" onclick="openRoomRound()">פתח סבב במשכפלים…</button><button class="btn" onclick="wakeRoom()">הער את כולם (WoL)</button><button class="btn" onclick="openAddMachine({group:'${gidEnc}'})">+ מחשב שיכפול</button><button class="btn danger" onclick="poweroffRoom('${gidEnc}')">כיבוי כולם (הקלדת שם)</button>` : "";
+  const actions = admin ? `<button class="btn primary" onclick="openRoomRound()">פתח סבב במשכפלים…</button><button class="btn" onclick="wakeRoom()">הער את כולם (WoL)</button><button class="btn" onclick="openAddMachine({group:'${gidEnc}'})">+ מחשב שיכפול</button><button class="btn danger" onclick="poweroffRoom('${gidEnc}')">כיבוי כולם</button>` : "";
   const body = tab === 1 ? clonerGridCard(g, kids, true)
     : tab === 2 ? groupRoundsCard(g, "c12")
     : `<div class="c12 kpis">${clonerKpis(kids, st, fails)}</div>` + clonerGridCard(g, kids, false) + diskFailuresCard(kids, "c8") + groupRoundsCard(g, "c4");
@@ -3678,7 +3642,7 @@ function poweroffRoom(gidEnc) {
   const g = (GROUPS || []).find((x) => x.id === gid);
   if (!g || !isAdmin()) return;
   sheet({ title: "כיבוי כל מחשבי השיכפול", sub: "כל משכפל שממתין נכבה ב-hello הבא שלו (עד כ-15 שניות), ורק אחרי שדרך WoL — כדי שאפשר יהיה להעיר אותו שוב. מחשב שלא יענה תוך 2 דקות לא ייכבה. בזמן סבב פעיל השרת מסרב.",
-    danger: true, submitLabel: "כבה את כולם", verify: { label: "הקלד את שם הקבוצה", mustEqual: g.label },
+    danger: true, submitLabel: "כבה את כולם",
     onSubmit: async () => { const r = await post("/room/poweroff", { confirm_name: g.label }); toast(`בקשת כיבוי נשלחה ל-${r.requested} מחשבים — "מחוברים" יירד כשהם נכבים`, 6000); } });
 }
 /* הכתיבה ל-/room נשארת בדף ההפצה (גל 6) ובמסך החדר — כאן רק ניווט. */
@@ -3742,7 +3706,6 @@ function cancelCaptureVerified(id) {
   const t = (CAPTURE_TASKS || []).find((x) => x.id === tid);
   if (!t || !isAdmin()) return;
   sheet({ title: "ביטול הקליטה", sub: `"${t.name}" תבוטל והקבצים שהתקבלו יימחקו; מחשב הבנייה שיעלה ב-PXE לא יקבל אותה.`, danger: true, submitLabel: "בטל את הקליטה",
-    verify: { label: "הקלד את שם האימג'", mustEqual: t.name || "" },
     onSubmit: async () => { await post(`/tasks/${encodeId(t.id)}/cancel`); await loadCaptures(); if (current === "machines") renderCurrent(); } });
 }
 function captureNowCard(kids) {
@@ -3761,7 +3724,7 @@ function captureNowCard(kids) {
       ["נוצרה", `${ltr(fmtWhen(t.created_at))} (${esc(ago(t.created_at))})`],
       ["שלבים", `<span class="muted">בדיקת NTFS → כיווץ → זרם + sha256 → החזרת הגודל → אימות — <b title="‏/tasks מחזיר state ו-source_progress בלבד">דורש API</b></span>`],
     ]);
-    const acts = admin ? `<div class="acts"><button class="btn danger" onclick="cancelCaptureVerified('${encodeId(t.id)}')">בטל קליטה (הקלדת שם)</button><button class="btn" onclick="wakeMachine('${encodeId(t.mac)}')">WoL ל-${esc(who)}</button></div>` : "";
+    const acts = admin ? `<div class="acts"><button class="btn danger" onclick="cancelCaptureVerified('${encodeId(t.id)}')">בטל קליטה</button><button class="btn" onclick="wakeMachine('${encodeId(t.mac)}')">WoL ל-${esc(who)}</button></div>` : "";
     return `<div class="cap-now" data-task="${esc(t.id)}"><div class="mcard-h"><b>${esc(t.name || "")}</b>${head}</div>${kv}${acts}</div>`;
   });
   return UI.card({ title: active.length === 1 ? "קליטה בתהליך" : `${active.length} קליטות בתהליך`, cls: "c12", body: items.join("") });
@@ -4065,7 +4028,7 @@ function machineDrawerHtml(m) {
     : h && h.error ? UI.note("warn", "היומן לא נקרא: " + esc(h.error))
     : `<div class="muted">${Array.isArray(h) ? "אין אירועים ביומן למחשב הזה (20 האחרונים)." : "טוען את היומן…"}</div>`;
   const foot = admin
-    ? `<div style="border-top:1px solid var(--hair);padding-top:12px;display:flex;gap:6px;flex-wrap:wrap;align-items:center"><button class="btn sm" onclick="moveMachineSheet('${macEnc}')">העבר לקבוצה</button>${UI.soon("עריכת MAC")}<button class="btn sm danger" onclick="removeMachine('${macEnc}')">הסרה מהרישום (הקלדת שם)</button></div>`
+    ? `<div style="border-top:1px solid var(--hair);padding-top:12px;display:flex;gap:6px;flex-wrap:wrap;align-items:center"><button class="btn sm" onclick="moveMachineSheet('${macEnc}')">העבר לקבוצה</button>${UI.soon("עריכת MAC")}<button class="btn sm danger" onclick="removeMachine('${macEnc}')">הסרה מהרישום</button></div>`
     : "";
   return `<div class="page drw"><div class="obj-sub">${sub}</div>${actions}${red}${machineCaptureWarningHtml(m.mac)}${machineRestoreWarningHtml(m.mac)}<div><div class="sec">מצב עכשיו</div>${now}</div><div><div class="sec">דיסקים${m.disks_reported_at ? ` (דיווח אחרון, ${esc(ago(m.disks_reported_at))})` : ""}</div>${diskBoxesHtml(m)}${slots}</div><div><div class="sec">חומרה (למיפוי דרייברים)${m.inventory_seen_at ? ` (${esc(ago(m.inventory_seen_at))})` : ""}</div>${hw}</div><div><div class="sec">בריאות המכונה${m.probe_seen_at ? ` (נדגם ${esc(ago(m.probe_seen_at))})` : ""}</div>${machineVerdictsHtml(m)}${machineHealthHtml(m)}</div><div><div class="sec">היסטוריה</div>${history}</div>${foot}</div>`;
 }
@@ -4104,7 +4067,6 @@ function removeMachine(mac) {
   const m = findMachine(mac); if (!m || !isAdmin()) return;
   const name = machineName(m) || m.mac;
   sheet({ title: "הסרה מהרישום", sub: `${name} (${m.mac}) תוסר מהטבלה. באתחול הבא היא תדווח כלא רשומה.`, danger: true, submitLabel: "הסר",
-    verify: { label: "הקלד את שם המחשב", mustEqual: name },
     onSubmit: async () => { dhcpNotice(await del("/machines/" + encodeId(m.mac))); closeDrawer(); MCH.sel.delete(m.mac); await loadMachines(); } });
 }
 function bulkMoveMachines() {
@@ -4112,14 +4074,13 @@ function bulkMoveMachines() {
   sheet({ title: "העבר לקבוצה", sub: `${macs.length} מחשבים`, fields: [{ id: "group_id", type: "select", label: "קבוצה", options: groupOptions(""), value: "" }],
     onSubmit: async (v) => { for (const mac of macs) await put("/machines/" + encodeId(mac), { group_id: v.group_id }); MCH.sel.clear(); await loadMachines(); } });
 }
-/* פעולה הרסנית מאחורי הקלדת שם (עיקרון 7) — שם לכל מחשב, כמו מחיקה מרובה בספרייה. */
+/* פעולה הרסנית מאחורי חלון אישור עם הרשימה (#1270). */
 function bulkRemoveMachines() {
   const macs = [...MCH.sel]; if (!macs.length || !isAdmin()) return;
   const names = macs.map((mac) => { const m = findMachine(mac); return m ? machineName(m) || mac : mac; });
-  sheet({ title: `הסרה מהרישום — ${macs.length} מחשבים`, sub: "כל מחשב יוסר מהטבלה ובאתחול הבא ידווח כלא רשום. הקלידו את שמו של כל אחד.", danger: true, submitLabel: "הסר את כולם",
-    fields: macs.map((mac, i) => ({ id: "n" + i, label: `הקלד "${names[i]}" (${mac})`, dir: "ltr" })),
-    onSubmit: async (v) => {
-      macs.forEach((mac, i) => { if (v["n" + i] !== names[i]) throw new Error("השם שהוקלד אינו זהה: " + names[i]); });
+  sheet({ title: `הסרה מהרישום — ${macs.length} מחשבים`, sub: "כל מחשב יוסר מהטבלה ובאתחול הבא ידווח כלא רשום.", danger: true, submitLabel: "הסר את כולם",
+    note: `<div class="sheet-note"><ul>${macs.map((mac, i) => `<li>${esc(names[i])} (${esc(mac)})</li>`).join("")}</ul></div>`,
+    onSubmit: async () => {
       for (const mac of macs) dhcpNotice(await del("/machines/" + encodeId(mac)));
       MCH.sel.clear(); await loadMachines();
     } });
@@ -4204,7 +4165,6 @@ function deleteGroup(gidEnc) {
   const g = (GROUPS || []).find((x) => x.id === gid); if (!g || !isAdmin()) return;
   const n = (MACHINES || []).filter((m) => machineGroupId(m) === g.id).length;
   sheet({ title: "מחיקת כיתה", sub: `"${g.label}" תימחק על כל ${n} המחשבים שבה.`, danger: true, submitLabel: "מחק את הכיתה",
-    verify: { label: "הקלד את שם הכיתה", mustEqual: g.label },
     onSubmit: async () => { await del(`/groups/${encodeId(g.id)}`); MACHINES_CLASS = null; await loadMachines(); } });
 }
 
@@ -4436,15 +4396,16 @@ function userMfaLabel(u) {
 function userRowHtml(u) {
   const enc = encodeId(u.username), self = !!ME && u.username === ME.username;
   const lastAdmin = u.role === "admin" && !u.disabled && activeAdminCount() <= 1;
-  // ‏⋯ אחד לשורה (UI.rowMenu): ההרסני (מחיקה — עדיין הקלדת שם) בתחתית, באדום.
-  const items = [["סיסמה…", `userPasswordSheet('${enc}')`]];
+  // ‏⋯ אחד לשורה (UI.rowMenu): ההרסני (מחיקה — חלון אישור) בתחתית, באדום.
+  // ‏#1268: אין הקלדת סיסמה בטבלה. למשתמש אחר רק "איפוס סיסמה…" (סיסמה זמנית
+  // חד-פעמית, והוא בוחר חדשה בכניסה הבאה); לעצמך — "שנה סיסמה" ב"החשבון שלי".
   // ‏#1262: המנהל שנוצר בהתקנה הוא דלת החירום — השרת מסרב (409) למחיקה,
-  // השבתה והורדה, ולכן התפריט מציע רק סיסמה וניתוק הפעלות.
+  // השבתה והורדה, ולכן התפריט מציע רק איפוס סיסמה וניתוק הפעלות.
+  const items = [];
   const locked = lastAdmin || u.is_builtin;
-  if (!self && !locked) {
-    items.push(["תפקיד…", `userRoleSheet('${enc}')`],
-      [u.disabled ? "הפעל" : "השבת", `userDisable('${enc}', ${u.disabled ? "false" : "true"})`]);
-  }
+  if (!self && !locked) items.push(["תפקיד…", `userRoleSheet('${enc}')`]);
+  if (!self) items.push(["איפוס סיסמה…", `userResetPassword('${enc}')`]);
+  if (!self && !locked) items.push([u.disabled ? "הפעל" : "השבת", `userDisable('${enc}', ${u.disabled ? "false" : "true"})`]);
   if (!self && !u.is_builtin && u.mfa_enabled) items.push(["נתק MFA…", `userMfaDisable('${enc}')`]);
   if (!self) items.push(["נתק את כל ההפעלות…", `userRevokeSessions('${enc}')`]);
   if (!self && !locked) items.push(["מחק משתמש…", `userDeleteSheet('${enc}')`, "danger"]);
@@ -4457,7 +4418,7 @@ function userRowHtml(u) {
     esc(userMfaLabel(u)),
     `<span class="mono">${esc(fmtDate(u.created_at))}</span>`,
     userLastLoginHtml(u),
-    UI.rowMenu(u.username, items)] };
+    items.length ? UI.rowMenu(u.username, items) : ""] };
 }
 /* ‏#1008: last_login_at/from מ-/users (הכניסה האחרונה שהנפיקה עוגייה). null =
    "לא נרשמה" — משתמש חדש, או שלא נכנס מאז העדכון — לא "מעולם" ולא תאריך. */
@@ -4488,11 +4449,31 @@ function permissions() {
   return `<div class="page">${header}<div class="body">${usersCard}${matrixCard}</div></div>`;
 }
 
-function userPasswordSheet(name) {
-  const u = findUser(name); if (!u || !isAdmin()) return;
-  sheet({ title: "שינוי סיסמה", sub: u.username,
-    fields: [{ id: "password", label: "סיסמה חדשה (8 תווים לפחות)", type: "password", confirm: "אימות הסיסמה החדשה" }],
-    onSubmit: async (v) => { await put(`/users/${encodeId(u.username)}`, { password: v.password }); toast("הסיסמה שונתה — נרשם ביומן"); await loadUsersData(); } });
+/* ‏#1268: איפוס על ידי מנהל — POST /users/{u}/reset-password. אישור בלי הקלדת מילה, ואחריו חלון
+   שמציג את הסיסמה הזמנית פעם אחת. תשובה בלי new_password היא כשל גלוי (עיקרון 5), לא חלון ריק. */
+function userResetPassword(name) {
+  const u = findUser(name); if (!u || !isAdmin() || (ME && u.username === ME.username)) return;
+  sheet({ title: "לאפס את הסיסמה?", sub: u.username, danger: true, submitLabel: "איפוס סיסמה",
+    note: UI.note("warn", "תיווצר סיסמה זמנית חד-פעמית — היא תוצג לך פעם אחת, כדי שתמסור אותה למשתמש")
+      + UI.note("info", "בכניסה הבאה המשתמש יחויב לבחור סיסמה חדשה, והוא ינותק מכל הדפדפנים"),
+    onSubmit: async () => {
+      const r = await post(`/users/${encodeId(u.username)}/reset-password`);
+      const pw = r && typeof r.new_password === "string" ? r.new_password : "";
+      if (!pw) throw new Error("השרת לא החזיר סיסמה זמנית — לא ידוע אם הסיסמה אופסה");
+      await loadUsersData();
+      return () => userResetResult(u.username, pw);
+    } });
+}
+function userResetResult(username, pw) {
+  sheet({ title: "הסיסמה הזמנית", sub: username, submitLabel: "העתקה", cancelLabel: "סגירה", hint: "לא תוצג שוב",
+    note: UI.note("info", "מסור אותה למשתמש — בכניסה הבאה הוא יבחר סיסמה חדשה.")
+      + passwordFieldHtml({ id: "sf-onetime", label: "סיסמה זמנית", value: pw, readonly: true, autocomplete: "off" }),
+    onSubmit: async () => {
+      const clip = navigator.clipboard;
+      if (!clip || !clip.writeText) throw new Error("ההעתקה אינה זמינה בדפדפן הזה — לחץ \"הצג\" והעתק ידנית");
+      try { await clip.writeText(pw); } catch (e) { throw new Error("ההעתקה נכשלה — לחץ \"הצג\" והעתק ידנית"); }
+      toast("הסיסמה הועתקה");
+    } });
 }
 function userRoleSheet(name) {
   const u = findUser(name); if (!u || !isAdmin()) return;
@@ -4513,7 +4494,6 @@ function userDeleteSheet(name) {
   const u = findUser(name); if (!u || !isAdmin()) return;
   sheet({ title: "מחיקת משתמש", sub: `${u.username} יאבד גישה מיידית. שורות היומן שלו נשארות.`,
     danger: true, submitLabel: "מחק",
-    verify: { label: "להמשך יש להקליד את שם המשתמש:", mustEqual: u.username },
     onSubmit: async () => { await del(`/users/${encodeId(u.username)}`); toast(`המשתמש ${u.username} נמחק`); await loadUsersData(); } });
 }
 function userMfaDisable(name) {
@@ -4685,7 +4665,7 @@ function openLogDetail(i) {
    כיתות = תיבה סטטית "v2" — לא נבנה מעבר לזה (v1 = בנייה/שיכפול/שרתים).
    ‏#1263: כל כרטיס — אופן הגדרה אחד (רשת הפצה / DHCP מהרשת / כתובת ידנית)
    בחלון "הגדרת כרטיס…" (editNicConfig, netcfg.js); הגדרות רשת ההפצה בחלון
-   של לשונית "רשת הפצה" (editDeployNet, net.js). כיבוי DHCP — הקלדת שם
+   של לשונית "רשת הפצה" (editDeployNet, net.js). כיבוי DHCP — חלון אישור
    הכרטיס (#53). שינוי כתובת עדיין חמוש בהחזרה של #56. */
 let NETW = { nics: null, cfg: null, ports: null, mon: null, nodes: null, sessions: null, leases: null, probe: {}, sel: null, at: "", err: {} };
 // ‏#1088: מקור כתובת ההפצה — /net/deploy: {configured, source, interface, url, hint}. null = לא נקרא.
@@ -4845,7 +4825,7 @@ function netSshSwitch(name) {
   const s = netSshOf(name);
   PORT_ACTIONS.set(`ssh_nic:${name}`, () => SSH_STATE ? portSshNic(name) : toast(`‏/ssh לא נקרא${sshError ? `: ${sshError}` : ""}`));
   const open = SSH_STATE ? (SSH_STATE.interfaces || []).filter((i) => i.enabled).length : 0;
-  const lock = s.on === null ? false : (!s.on || open <= 1);   // פתיחה = הקלדת שם הכרטיס; סגירת הדלת האחרונה = הקלדה (גל 5)
+  const lock = s.on === null ? false : (!s.on || open <= 1);   // פתיחה וסגירת הדלת האחרונה = חלון אישור (גל 5, #1270)
   return portSwitchHtml(`ssh_nic:${name}`, s.on, lock, s.text, `SSH לשרת ${name}`);
 }
 function netProbeStatus(name) {
@@ -4870,12 +4850,11 @@ function netSelect(nameEnc) { let name = nameEnc; try { name = decodeURIComponen
 function netNic(nameEnc) { let name = nameEnc; try { name = decodeURIComponent(nameEnc); } catch (e) {} return (NETW.nics || []).find((n) => n.name === name) || null; }
 function netEditNic(nameEnc) { const n = netNic(nameEnc); if (n) editNicConfig(n.name); else toast("כרטיס לא נמצא"); }
 function netEditDeploy(nameEnc) { const n = netNic(nameEnc); if (n) editDeployNet(n.name); else toast("כרטיס לא נמצא"); }
-/* ‏#1263: "כיבוי DHCP…" — בכותרת כרטיס ה-DHCP ובתפריט של כרטיס ההפצה. הקלדת שם הכרטיס (#53). */
+/* ‏#1263: "כיבוי DHCP…" — בכותרת כרטיס ה-DHCP ובתפריט של כרטיס ההפצה. חלון אישור (#53, #1270). */
 function netDhcpOff(nameEnc) {
   const n = netNic(nameEnc); if (!n) return;
   sheet({ title: `כיבוי DHCP על ${n.name}`, sub: "הכרטיס מפסיק לחלק כתובות ולענות ל-PXE.", danger: true, submitLabel: "כבה",
     note: offMeansNote(PORT_OFF_MEANS.dhcp),
-    verify: { label: `להמשך הקלד את שם הכרטיס: ${n.name}`, mustEqual: n.name },
     onSubmit: async () => { await saveNic(n.name, nicBody(n, { enabled: false, proxy: false })); await loadNetwork(); } });
 }
 function netDescribe(nameEnc) {
@@ -5344,7 +5323,7 @@ function healthCheckById(id) {
    ‏`dhcp`/`ssh_server:*` בכלל נופל לבנייה מקומית מ-/net/interfaces ו-/ssh,
    כמו בגל 5 (`havePortsDhcp`/`havePortsSshServer` למטה). כשהשדות חסרים
    המתג מוצג במצב "לא ידוע" ולחיצה מסבירה — לא כפתור אפור (README §8).
-   🔒 = הקלדת שם (עיקרון 7); ‏confirm_when קובע כיוון ההקלדה — לא ניחוש
+   🔒 = חלון אישור (#1270); ‏confirm_when קובע באיזה כיוון — לא ניחוש
    בלקוח (#1015). "מה קורה אם מכבים" מהשרת (`off_means`) כשקיים. */
 let SSH_STATE = null, sshError = "";
 let PORTS_MONITOR = null, portsMonitorError = "";
@@ -5379,7 +5358,7 @@ function portSwitchHtml(key, on, lock, cap, label) {
   return `<span class="swrow"><button type="button" class="sw ${cls}" role="switch" aria-checked="${on === null ? "mixed" : String(!!on)}" aria-label="${esc(label)}" onclick="portSwitch(decodeURIComponent('${encodeId(key)}'))"></button><span class="cap">${lock ? "🔒 " : ""}${esc(cap)}</span></span>`;
 }
 
-/* DHCP: הדלקה = הטופס הקיים של net.js (מצב/טווח/הקלדת שם הכרטיס); אחרי
+/* DHCP: הדלקה = הטופס הקיים של net.js (מצב/טווח); אחרי
    שמירה מרעננים את הטבלה הזו (ה-sheet של net.js מרענן רק את דפי הרשת). */
 function portDhcpOn() {
   const list = PORTS_NICS || [];
@@ -5394,7 +5373,6 @@ function portDhcpOn() {
 function portDhcpOff(n) {
   sheet({ title: `כיבוי DHCP על ${n.name}`, sub: "הכרטיס מפסיק לחלק כתובות ולענות ל-PXE.", danger: true, submitLabel: "כבה",
     note: offMeansNote(PORT_OFF_MEANS.dhcp),
-    verify: { label: `להמשך הקלד את שם הכרטיס: ${n.name}`, mustEqual: n.name },
     onSubmit: async () => { await saveNic(n.name, nicBody(n, { enabled: false, proxy: false })); await loadPorts(); } });
 }
 
@@ -5426,7 +5404,7 @@ function portSshStations() {
     "");
 }
 
-/* #996: מתג פר-פורט בשרת. "confirm" = הקלדת שם השרת; "api" = אישור בלחיצה;
+/* #996: מתג פר-פורט בשרת. "confirm" = חלון אישור, והמילה נשלחת מהקוד; "api" = אישור בלחיצה;
    "none" = אין מתג, הלחיצה מסבירה למה. `confirm_when` קובע את הכיוון
    שדורש הקלדה (השרת, לא ניחוש כאן): "off"/"on"/"on_or_last_off"; שרת ישן
    בלי השדה — נשמר הכיוון הישן (הקלדה בכל כיוון, כמו לפני #1015). */
@@ -5454,7 +5432,6 @@ function portServerToggle(p) {
   if (p.toggle === "confirm" && portConfirmDirection(p, enabling)) {
     sheet({ title, sub: p.desc || "", danger: true, submitLabel: enabling ? "הדלק" : "כבה",
       note: enabling ? "" : warningNote(p),
-      verify: { label: "להמשך יש להקליד את שם השרת:", mustEqual: word },
       onSubmit: () => send({ confirm: word }) });
     return;
   }
@@ -5482,14 +5459,14 @@ function portRows() {
         on: null, lock: true, cap: "לא נקרא", act: () => toast("רשימת הכרטיסים לא נקראה — אין על מה להפעיל את המתג: " + portsNicsError) });
     } else if (!serving.length) {
       rows.push({ ...dhcpBase, key: "dhcp", nic: "", state: "off", detail: "לא הודלק על אף כרטיס",
-        on: false, lock: true, cap: "כבוי · הדלקה = הקלדת שם הכרטיס", act: portDhcpOn });
+        on: false, lock: true, cap: "כבוי · הדלקה בחלון אישור", act: portDhcpOn });
     } else {
       for (const n of serving) {
         const live = n.dhcp_live ? dhcpLiveClass(n.dhcp_live.state) : "unknown";
         rows.push({ ...dhcpBase, key: `dhcp:${n.name}`, name: `DHCP הפצה — ${n.name}`, nic: n.name,
           state: { ok: "ok", warn: "warn", off: "off" }[live] || "unknown",
           detail: `${n.dhcp_live_label || ""}${n.range_start ? ` · ${n.range_start}–${n.range_end}` : ""}`,
-          on: true, lock: true, cap: `דלוק · כיבוי = הקלדת ${n.name}`, act: () => portDhcpOff(n) });
+          on: true, lock: true, cap: "דלוק · כיבוי בחלון אישור", act: () => portDhcpOff(n) });
       }
     }
   }
@@ -5510,7 +5487,7 @@ function portRows() {
       const st = SSH_STATE && SSH_STATE.stations;
       Object.assign(r, { nic: "בתחנה, לא בשרת", off: r.off || PORT_OFF_MEANS.ssh_stations, api: ["ok", "קיים", "PUT /ssh/stations"],
         on: st ? !!st.enabled : null, lock: !(st && st.enabled),
-        cap: !st ? `לא נקרא: ${sshError}` : st.enabled ? "דלוק · כיבוי בלחיצה" : `כבוי · הדלקה = הקלדת ${st.confirm_word}`,
+        cap: !st ? `לא נקרא: ${sshError}` : st.enabled ? "דלוק · כיבוי בלחיצה" : "כבוי · הדלקה בחלון אישור",
         act: st ? portSshStations : () => toast("‏/ssh לא נקרא: " + sshError) });
     } else if (p.id === "pxe_proxy") {
       const nic = PORTS_NICS ? PORTS_NICS.find((n) => n.proxy) : undefined;
@@ -5526,8 +5503,8 @@ function portRows() {
         nic: serving && serving.length === 1 ? serving[0].name : r.nic,
         on: serving === null ? null : !!p.enabled, lock: true,
         cap: serving === null ? `לא נקרא: ${portsNicsError}`
-          : !p.enabled ? "כבוי · הדלקה = הקלדת שם הכרטיס"
-          : serving.length === 1 ? `דלוק · כיבוי = הקלדת ${serving[0].name}`
+          : !p.enabled ? "כבוי · הדלקה בחלון אישור"
+          : serving.length === 1 ? "דלוק · כיבוי בחלון אישור"
           : "דלוק · כיבוי דרך חיבורים פיזיים (כמה כרטיסים משרתים)",
         act: serving === null ? () => toast("‏/net/interfaces לא נקרא: " + portsNicsError)
           : !p.enabled ? portDhcpOn
@@ -5542,7 +5519,7 @@ function portRows() {
       const needsConfirm = !p.enabled || last;
       Object.assign(r, { who: "טכנאי → השרת", off: r.off || (last ? "אין SSH לשרת מאף רשת — פתיחה מחדש רק ממסך השרת" : "אין SSH לשרת דרך הכרטיס הזה"),
         api: ["ok", "קיים", `PUT ${portToggleUrl(p)}`], on: !!p.enabled, lock: needsConfirm,
-        cap: p.enabled ? (last ? `הדלת האחרונה · סגירה = הקלדת ${name}` : "פתוח · סגירה בלחיצה") : `סגור · פתיחה = הקלדת ${name}`,
+        cap: p.enabled ? (last ? "הדלת האחרונה · סגירה בחלון אישור" : "פתוח · סגירה בלחיצה") : "סגור · פתיחה בחלון אישור",
         act: () => sshToggle(portToggleUrl(p), !p.enabled, p.confirm_word || name, needsConfirm,
           p.enabled ? `סגירת SSH לשרת על ${name}` : `פתיחת SSH לשרת על ${name}`,
           p.enabled ? (last ? "זו הדלת האחרונה שפתוחה — אחריה אין SSH לשרת מאף רשת." : "")
@@ -5554,7 +5531,7 @@ function portRows() {
       // כשהוא קיים (#1015, /api/console/ports/{id}) ואחרת ל-/ports/{id}
       // (המסלול היחיד לפני #1015).
       Object.assign(r, { api: ["ok", "קיים", `PUT ${portToggleUrl(p)}`], on: !!p.enabled, lock: p.toggle === "confirm",
-        cap: p.toggle === "none" ? "אין מתג — לחיצה מסבירה" : p.enabled ? (p.toggle === "confirm" ? "דלוק · כיבוי = הקלדת שם השרת" : "דלוק") : "כבוי",
+        cap: p.toggle === "none" ? "אין מתג — לחיצה מסבירה" : p.enabled ? (p.toggle === "confirm" ? "דלוק · כיבוי בחלון אישור" : "דלוק") : "כבוי",
         act: () => portServerToggle(p) });
     } else {
       Object.assign(r, { api: ["warn", "דורש API", "#996"], on: null, lock: false, cap: PORT_API_NEEDED, off: r.off || PORT_API_NEEDED,
@@ -5583,7 +5560,7 @@ function portRows() {
         else { state = "off"; detail = "סגור · אומת"; }
         rows.push({ ...sshBase, key: `ssh_nic:${n.name}`, name: `SSH לשרת — ${n.name}`, desc: `sshd · ${addr || "ללא כתובת IPv4"}`, nic: n.name,
           state, detail, on: !!n.enabled, lock: !n.enabled || last,
-          cap: n.enabled ? (last ? `הדלת האחרונה · סגירה = הקלדת ${n.name}` : "פתוח · סגירה בלחיצה") : `סגור · פתיחה = הקלדת ${n.name}`,
+          cap: n.enabled ? (last ? "הדלת האחרונה · סגירה בחלון אישור" : "פתוח · סגירה בלחיצה") : "סגור · פתיחה בחלון אישור",
           off: last ? "אין SSH לשרת מאף רשת — פתיחה מחדש רק ממסך השרת" : "אין SSH לשרת דרך הכרטיס הזה",
           api: ["ok", "קיים", `PUT /ssh/interfaces/${n.name}`], act: () => portSshNic(n.name) });
       }
@@ -5651,7 +5628,7 @@ function ports() {
   else if (n("unknown")) pill = UI.pill("warn", `${n("unknown")} לא נקרא`);
   else pill = UI.pill("ok", "כל השורות נמדדו");
   const sub = PORTS
-    ? esc(`${rows.length} שורות · מצב האזנה כפי שנקרא מהשרת ב-${PORTS_AT} · מתג הדלקה/כיבוי לכל פורט · 🔒 = כיבוי ששובר את המערכת, מאחורי הקלדת שם`)
+    ? esc(`${rows.length} שורות · מצב האזנה כפי שנקרא מהשרת ב-${PORTS_AT} · מתג הדלקה/כיבוי לכל פורט · 🔒 = כיבוי ששובר את המערכת, מאחורי חלון אישור`)
     : `‏/ports לא נקרא: ${esc(portsError)}`;
   const header = UI.objHeader({
     crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "תשתית" }, { label: "רשת" }, { label: "פורטים" }],
@@ -5668,7 +5645,7 @@ function ports() {
       ? `<div class="c12">${UI.note("", esc(`מאזינים בפורט ${l.port}: ${(l.addresses || []).join(", ") || "אף אחד"}`))}</div>`
       : `<div class="c12">${UI.note("warn", esc(`טבלת הסוקטים לא נקראה (${l.reason}) — אין לדעת מה פתוח`))}</div>`;
   }
-  const legend = `<div class="c12">${UI.note("info", `<b>כל מתג</b> = מודאל עם מה יקרה, ו-🔒 = הקלדת שם (עיקרון 7) לפני שהוא זז. ${UI.pill("ok", "קיים")} — מחובר ל-API של היום; ${UI.pill("warn", "דורש API")} — הדלקה/כיבוי פר-פורט בשרת (#996): המתג מוצג, לחיצה עליו מסבירה — לא כפתור אפור.`)}</div>`;
+  const legend = `<div class="c12">${UI.note("info", `<b>כל מתג</b> = מודאל עם מה יקרה, ו-🔒 = חלון אישור עם השלכות לפני שהוא זז. ${UI.pill("ok", "קיים")} — מחובר ל-API של היום; ${UI.pill("warn", "דורש API")} — הדלקה/כיבוי פר-פורט בשרת (#996): המתג מוצג, לחיצה עליו מסבירה — לא כפתור אפור.`)}</div>`;
   return `<div class="page">${header}<div class="body">${table}${foot}${legend}</div></div>`;
 }
 
@@ -5860,7 +5837,7 @@ const TOOLS_FILTER = { q: "", risk: "", rec: false, packed: false, scope: "build
 const TOOLS_TARGETS = ["build", "student"];
 const TOOLS_RISK = { ro: ["", "קריאה", "ro — קריאה בלבד: מציג מידע ולא משנה כלום במחשב"],
                      rw: ["warn", "משנה", "rw — משנה משהו הפיך (סדר אתחול, איפוס USB, הערת מחשב)"],
-                     destroy: ["err", "מוחק", "destroy — מוחק נתונים: דורש הקלדת שם המחשב לפני ההרצה"] };
+                     destroy: ["err", "מוחק", "destroy — מוחק נתונים: דורש חלון אישור לפני ההרצה"] };
 
 async function loadTools() {
   try {
@@ -6007,7 +5984,7 @@ function toolsPage() {
   let body;
   if (!TOOLS) body = UI.note("err", `לא הצלחתי לקרוא את קטלוג הכלים: ${esc(toolsError)}`);
   else body = `<div class="c12 card">${toolsBarHtml()}</div><div id="tools-groups" style="display:contents">${toolsGroupsHtml()}</div>`
-    + `<div class="c12">${UI.note("info", `${UI.pill("", "קריאה")} מציג ולא משנה · ${UI.pill("warn", "משנה")} שינוי הפיך · ${UI.pill("err", "מוחק")} מוחק נתונים — יופעל רק אחרי הקלדת שם המחשב (עיקרון 7). ${UI.status("ok", "ארוז")} = הבינארי כבר ב-initrd היום (תוספת 0). הגדלים הם גודל חבילה מותקנת <b>עם המקור ב-tooltip</b> — לא תוספת נמדדת ל-initrd הדחוס; "לא נמדד" נספר בנפרד ואינו מקופל ל-0.`)}</div>`;
+    + `<div class="c12">${UI.note("info", `${UI.pill("", "קריאה")} מציג ולא משנה · ${UI.pill("warn", "משנה")} שינוי הפיך · ${UI.pill("err", "מוחק")} מוחק נתונים — יופעל רק אחרי חלון אישור. ${UI.status("ok", "ארוז")} = הבינארי כבר ב-initrd היום (תוספת 0). הגדלים הם גודל חבילה מותקנת <b>עם המקור ב-tooltip</b> — לא תוספת נמדדת ל-initrd הדחוס; "לא נמדד" נספר בנפרד ואינו מקופל ל-0.`)}</div>`;
   return `<div class="page">${header}<div class="body">${body}</div></div>`;
 }
 
@@ -6640,7 +6617,8 @@ function accountCardsHtml() {
   const name = esc(ME && ME.username || "");
   const role = ME && ME.role === "admin" ? "מנהל" : "הפצה";
   const builtin = !!(ME && ME.is_builtin), mfaOn = !!(ME && ME.mfa_enabled), admin = !!(ME && ME.role === "admin");
-  const me = UI.card({ title: "חשבון", body: UI.kv([["משתמש", name], ["תפקיד", esc(role)], ["מצב", UI.status("ok", "מחובר")]]) });
+  const me = UI.card({ title: "חשבון", body: UI.kv([["משתמש", name], ["תפקיד", esc(role)], ["מצב", UI.status("ok", "מחובר")]]) })
+    + UI.card({ title: "סיסמה", body: `<button class="btn primary sm" onclick="accountChangePassword()">שנה סיסמה</button>` });
   let mfa, codes = "";
   if (builtin) mfa = UI.pill("", "מקומי · ללא MFA")
     + `<p class="muted" style="margin-top:8px">משתמש המנהל שנוצר בהתקנת השרת אינו משתמש ב-MFA — בכוונה, כדי שתמיד תהיה דרך להיכנס. למשתמשי מנהל אחרים MFA מופעל מכאן.</p>`;
@@ -6653,6 +6631,24 @@ function accountCardsHtml() {
 function openAccount() {
   closeUserMenu();
   openDrawer("המשתמש שלי", `<div class="page drw">${accountCardsHtml()}</div>`);
+}
+
+/* ‏#1268: החלפת סיסמה עצמית — POST /me/password עם הנוכחית, כמו מסך "בחר סיסמה חדשה". המדיניות נבדקת לפני
+   שליחה (passwordPolicy, אותם כללים כמו בשרת), ותשובה בלי ok אינה "הוחלפה" (עיקרון 5). מנהל בלי MFA מקבל
+   מהשרת עוגיית הגדרת-MFA בלבד — ולכן עוברים למסך ההגדרה, כמו בכניסה. */
+function accountChangePassword() {
+  const name = (ME && ME.username) || "";
+  sheet({ title: "שינוי סיסמה", sub: name, submitLabel: "שמירה",
+    fields: [
+      { id: "current", label: "סיסמה נוכחית", type: "password", policy: false, autocomplete: "current-password" },
+      { id: "next", label: "סיסמה חדשה", type: "password", confirm: "אימות הסיסמה החדשה", policy: true, autocomplete: "new-password" }],
+    onSubmit: async (v) => {
+      if (!passwordPolicy(v.next).all) throw new Error("הסיסמה החדשה אינה עומדת במדיניות");
+      const r = await post("/me/password", { current_password: v.current, new_password: v.next });
+      if (!r || r.ok !== true) throw new Error("השרת לא אישר את החלפת הסיסמה");
+      if (r.mfa_enrollment_required) { showLogin(); await loginStartSetup({ screen: "setup", username: name }); return; }
+      toast("הסיסמה הוחלפה — שאר ההפעלות שלך נותקו");
+    } });
 }
 
 async function accountEnableMfa() {
@@ -6925,7 +6921,7 @@ async function openCapture(preMac = "") {
   if (!isAdmin()) return;
   try { preMac = decodeURIComponent(preMac); } catch (e) {}   // ‏גל 3א: "קלוט מכאן" מכרטיס מחשב בנייה
   /* בוחרים מחשב בנייה ואת הדיסק שהוא דיווח עליו ב-hello — כך אין
-     הקלדת שם התקן, והשרת יודע מה באמת מחובר שם. */
+     ניחוש של שם התקן, והשרת יודע מה באמת מחובר שם. */
   const machines = await api("/machines");
   const groups = await api("/groups");
   const buildIds = new Set(groups.filter((g) => g.role === "build").map((g) => g.id));
@@ -7027,7 +7023,6 @@ function sshToggle(path, enabled, word, needsConfirm, title, sub, offMeans = "")
   sheet({
     title, sub, danger: true, submitLabel: enabled ? "פתח" : "סגור",
     note: offMeans ? offMeansNote(offMeans) : "",
-    verify: { label: "להמשך יש להקליד בדיוק:", mustEqual: word },
     onSubmit: () => send({ confirm: word }),
   });
 }
@@ -7055,7 +7050,6 @@ function confirmUpdateRevert(tag) {
     title: "חזרה לגרסה הקודמת",
     sub: `השרת יחזור ל-${tag} ויופעל מחדש.`,
     danger: true, submitLabel: "אישור",
-    verify: { label: "להמשך יש להקליד את שם השרת:", mustEqual: hostname },
     onSubmit: async () => {
       await post("/update/revert", { confirm_name: hostname });
       toast("החזרה הופעלה — עוקבים אחרי סטטוס.");
@@ -7248,7 +7242,6 @@ function monitorToggle(enabling) {
       + "תופס באתחול הבא של כל תחנה — לא במכונות שכבר רצות.",
     danger: true, submitLabel: "הדלק",
     note: offMeansNote(PORT_OFF_MEANS.monitor),
-    verify: { label: "להמשך יש להקליד בדיוק:", mustEqual: "imagectl.monitor" },
     onSubmit: () => send({ confirm: "imagectl.monitor" }),
   });
 }

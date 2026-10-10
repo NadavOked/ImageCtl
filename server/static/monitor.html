@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ImageCtl — מוניטור</title>
-<link rel="stylesheet" href="design-tokens.css?v=11.13">
-<link rel="stylesheet" href="console.css?v=11.13">
+<link rel="stylesheet" href="design-tokens.css?v=11.15">
+<link rel="stylesheet" href="console.css?v=11.15">
 <script>
   (function () {
     var choice = localStorage.getItem("imagectl-theme");
@@ -51,7 +51,7 @@
     <canvas id="screen" width="1024" height="768" tabindex="0"></canvas>
   </div>
 </div>
-<!-- מודאל אישור לפעולה הרסנית על מכונה חיה (עיקרון 7): הקלדת שם.
+<!-- מודאל אישור לפעולה הרסנית על מכונה חיה (#1270): שאלה, השלכה, ביטול וכפתור אדום.
      prompt()/confirm() חסומים בדפדפן מוטמע, ולכן מודאל של הדף. משתמש
      במחלקות של console.css שכבר נטענו כאן. -->
 <div class="modal-backdrop" id="pmodal">
@@ -59,11 +59,7 @@
     <div class="modal-h"><strong id="pmodal-title">פעולה</strong></div>
     <div class="modal-b">
       <div class="confirm-box" id="pmodal-msg"></div>
-      <div class="danger-confirm">הקלידו את שם המחשב <b id="pmodal-name"></b> לאישור.</div>
-      <div class="form"><div class="field full">
-        <label>שם המחשב</label>
-        <input id="pmodal-input" autocomplete="off" dir="ltr">
-      </div></div>
+      <div class="danger-confirm">הפעולה מתבצעת מיד על המחשב <b id="pmodal-name"></b>, ועבודה שלא נשמרה עליו תאבד.</div>
       <p class="danger-text" id="pmodal-error"></p>
     </div>
     <div class="modal-f">

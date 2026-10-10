@@ -343,7 +343,7 @@ test('NICs table: actual / configured / gap side by side, DHCP live + stored, ro
   const routes=card(html,'נתיבים סטטיים');
   assert.match(routes,/class="st ok"><\/span><span class="mono">10\.44\.13\.0\/24<\/span><\/td><td><span class="mono">10\.44\.10\.254<\/span><\/td><td><span class="mono">ens18</);
   assert.match(routes,/onclick="routeDeleteSheet\('ens18',0\)">מחק/);
-  run("routeDeleteSheet('ens18',0)"); assert.equal(run('sheets.length'),1); assert.equal(run('sheets[0].verify.mustEqual'),'ens18'); assert.equal(run('sheets[0].danger'),true);
+  run("routeDeleteSheet('ens18',0)"); assert.equal(run('sheets.length'),1); assert.equal(run('sheets[0].verify'),undefined,'#1270: no typed word'); assert.equal(run('sheets[0].danger'),true);
 });
 
 test('NICs: live state not read → "לא נקרא" everywhere (never green), interfaces.d not sourced → red note, rollback pending → the banner',async()=>{
@@ -489,9 +489,9 @@ test('#1263 card-window wiring: static fields hide outside "כתובת ידני�
 test('#1263 DHCP off keeps the typed NIC name; the forget/description sheets are unchanged',async()=>{
   const {run,requests}=await loaded();
   run("netDhcpOff('ens19')");
-  assert.equal(run('sheets[0].title'),'כיבוי DHCP על ens19'); assert.equal(run('sheets[0].verify.mustEqual'),'ens19'); assert.equal(run('sheets[0].danger'),true);
+  assert.equal(run('sheets[0].title'),'כיבוי DHCP על ens19'); assert.equal(run('sheets[0].verify'),undefined,'#1270: no typed word'); assert.equal(run('sheets[0].danger'),true);
   run("netForget('ens21')"); assert.match(run('sheets[1].title'),/הסרת הגדרות הכרטיס/);
-  run('networkPage(1)'); run("portSwitch('ssh_nic:ens19')"); assert.match(run('sheets[2].title'),/פתיחת SSH לשרת על ens19/); assert.equal(run('sheets[2].verify.mustEqual'),'ens19');
+  run('networkPage(1)'); run("portSwitch('ssh_nic:ens19')"); assert.match(run('sheets[2].title'),/פתיחת SSH לשרת על ens19/); assert.equal(run('sheets[2].verify'),undefined,'#1270: no typed word');
   for(const fn of ['editNic','editAddress','showFile','previewDnsmasq','netShowFile','netEditDhcp','netEditAddress']) assert.equal(run(`typeof ${fn}`),'undefined',fn+' should be gone');
   assert.ok(!requests.some(r=>r.method==='PUT'),'nothing is written without the sheet being submitted');
 });

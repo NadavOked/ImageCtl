@@ -61,7 +61,6 @@ def test_login_screens_copy_is_in_console_js():
     """#1085 שלב ב': חמשת המסכים וההודעות לפי המוקאפ — ב-loginHtml, לא ב-HTML קשיח."""
     js = _console_js()
     for s in (
-        'אל תבקש קוד בדפדפן הזה ל-7 שעות',   # #1243: רק במסך ה-MFA
         "בחר סיסמה חדשה",
         "הקוד מאפליקציית האימות",
         "השתמש בקוד גיבוי",
@@ -78,6 +77,12 @@ def test_login_screens_copy_is_in_console_js():
     assert "function passwordCanSubmit(" in js
     assert "function setupContinueEnabled(" in js
     assert "function otpFromPaste(" in js
+
+
+def test_mfa_remember_checkbox_text_is_not_in_console_js():
+    js = _console_js()
+    assert "אל תבקש קוד בדפדפן הזה ל-7 שעות" not in js
+    assert "mfa-remember" not in js
 
 
 def test_console_js_fills_the_version_from_me():
@@ -270,17 +275,17 @@ def test_static_includes_are_at_9_9():
     שלב 2 (ספריית אימג'ים, אחסון, סקירה, מחשבים, חשבון) = ‏11.10 — ההשוואה כאן במחרוזות, כי float('11.10') == 11.1.
     ‏#1262 (admin שנוצר בהתקנה מוגן) = ‏11.11.
     שדות סיסמה LTR + "הצג" אחד, ותיקוני הגואי הנייטיבי = ‏11.12;
-    #1263 (כרטיס רשת בשלושה אופנים, חלון רשת הפצה, בלי קבצי dnsmasq) = ‏11.13.
+    #1263 (כרטיס רשת בשלושה אופנים, חלון רשת הפצה, בלי קבצי dnsmasq) = ‏11.13; #1268/#1270/מתאים לדיסק/בלי זכירת MFA = ‏11.15.
     שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
     versions = set(re.findall(r'\?v=(\d+\.\d+)"', page))
-    assert versions == {"11.13"}, versions
+    assert versions == {"11.15"}, versions
     # ביקורת 10/10: monitor.html מושך את אותם console.css ו-design-tokens.css — הם נשארו על 3.29 לנצח,
     # ולכן דפדפן שזכר אותם הציג את המוניטור בעיצוב ישן. monitor.js לבדו שומר על גרסה משלו (test_monitor).
     mon = (STATIC / "monitor.html").read_text(encoding="utf-8")
     shared = set(re.findall(r'(?:design-tokens|console)\.css\?v=(\d+\.\d+)"', mon))
-    assert shared == {"11.13"}, shared
+    assert shared == {"11.15"}, shared
 
 
 def test_update_apply_is_a_sheet_without_text_verification_and_revert_uses_hostname():
@@ -298,13 +303,13 @@ def test_update_apply_is_a_sheet_without_text_verification_and_revert_uses_hostn
 
     revert = js[js.index("function confirmUpdateRevert("):js.index("function openNewUser(")]
     assert 'const hostname = ME && ME.server_name || ""' in revert
-    assert "mustEqual: hostname" in revert
+    assert "verify:" not in revert and "mustEqual" not in revert, "#1270: no typed word"
     assert '{ confirm_name: hostname }' in revert
 
-    delete = js[js.index("function deleteImage("):js.index("function confirmDeleteImage(")]
-    stop = js[js.index("function stopRound("):js.index("function confirmStopRound(")]
-    assert "img.name" in delete and '<input id="confirmName"' in delete
-    assert "sessionImage(session)" in stop and '<input id="confirmName"' in stop
+    delete = js[js.index("function deleteImage("):js.index("function openImageIngest(")]
+    stop = js[js.index("function stopRound("):js.index("/* ---------- #954 גל 3: מחשבים")]
+    assert "sheet({" in delete and "danger: true" in delete and "confirm_name: img.name" in delete and "<input" not in delete
+    assert "sheet({" in stop and "danger: true" in stop and "sessionImage(session)" in stop and "confirm_name: name" in stop and "<input" not in stop
 
 
 def test_mfa_setup_screen_names_the_missing_qr_package():
@@ -362,7 +367,7 @@ def test_machines_page_is_one_grouped_table_from_the_api_only():
     js = _console_js()
     for needed in ("function machines(tab = 0)", "function groupRowHtml(", "function machineRowHtml(", "function groupPage(",
                    "function machineDrawerHtml(", "function seenDevicesCard()", "function openAddMachine(", "dry_run: true",
-                   'UI.soon("אתחול מרחוק")', 'UI.soon("עריכת MAC")', "דורש API", "SATA ${n - 1}", 'verify: { label: "הקלד את שם המחשב"'):
+                   'UI.soon("אתחול מרחוק")', 'UI.soon("עריכת MAC")', "דורש API", "SATA ${n - 1}"):
         assert needed in js, needed
     block = js[js.index("/* ---------- #954 גל 3"):js.index("function healthStatusClass(")]
     assert "disabled" not in block, "כפתור מנוטרל במקום 'דורש API' (README §8)"
@@ -386,8 +391,8 @@ def test_cloners_and_builders_objects_are_built_on_group_page_from_the_api_only(
     js = _console_js()
     for needed in ("function clonersView(", "function buildersView(", "function machineSlots(", "function slotClass(",
                    "function slotHtml(", "function captureNowCard(", "function capturesTableCard(", "function cancelCaptureVerified(",
-                   "function refreshGroupLive(", 'api("/room")', "drawer_list", "verify: { label: \"הקלד את שם האימג'\"",
-                   'post("/room/poweroff", { confirm_name: g.label })', 'verify: { label: "הקלד את שם הקבוצה", mustEqual: g.label }',
+                   "function refreshGroupLive(", 'api("/room")', "drawer_list",
+                   'post("/room/poweroff", { confirm_name: g.label })',
                    'api("/room/history")',
                    'return "SMART לא נבדק"', "SATA ${s.n - 1}", "דורש API"):
         assert needed in js, needed
@@ -413,7 +418,7 @@ def test_deploy_page_is_the_cloners_room_from_the_api_only():
     js = _console_js()
     for needed in ("function deploy(tab = 0)", "function loadDeploy(", "function roomKpis(", "function roomGridCard(", "function roomNotes(",
                    "function roomNewCard(", "function stopRoom(", "function startWave(", "function imageFitReason(", "function deployClassView(",
-                   'post("/room", body)', 'post("/room/start")', 'post("/room/close", { confirm_name: name })', "verify: { label: \"הקלד את שם האימג'\", mustEqual: name }",
+                   'post("/room", body)', 'post("/room/start")', 'post("/room/close", { confirm_name: name })',
                    "clonerCardHtml(m, admin, true)", "בלי תשובה הסוכן ממשיך לכתוב", "בלי תשובה הסוכן מדלג", "r.throughput_bps != null", "r.loss_blocks != null", "דורש API",
                    'deploy: { crumb: "סבב הפצה", title: "סבב הפצה", tabs: deployTabs(), render: deploy, load: loadDeploy, own: true }'):
         assert needed in js, needed
@@ -459,9 +464,9 @@ def test_health_and_ports_pages_are_tables_from_the_api_with_a_switch_per_row():
                    'unknown: ["unk", "לא נבדק"]', 'off: ["", "כבוי"]', '["agent_loop:", "לולאות אתחול", "agent_loops"]',
                    "function ports()", "function portRows(", "function portSwitchHtml(", "function portServerToggle(",
                    "function portConfirmDirection(", "function portToggleUrl(",
-                   "await put(portToggleUrl(p), { enabled: enabling, ...extra })", "const word = p.confirm_word || ME.server_name", 'mustEqual: word',
+                   "await put(portToggleUrl(p), { enabled: enabling, ...extra })", "const word = p.confirm_word || ME.server_name",
                    "nicBody(n, { enabled: false, proxy: false })",
-                   '"/ssh/stations"', "`/ssh/interfaces/${encodeId(nic.name)}`", 'mustEqual: "imagectl.monitor"',
+                   '"/ssh/stations"', "`/ssh/interfaces/${encodeId(nic.name)}`",
                    'role="switch"', "דורש API (#996)", "havePortsDhcp", "havePortsSshServer",
                    'health: { crumb: "בריאות ושירותים", title: "בריאות ושירותים", tabs: [], render: health, load: loadHealth, own: true }',
                    'render: ports, load: loadPorts, own: true }'):
@@ -586,7 +591,7 @@ def test_tools_page_is_an_admin_tree_node_with_two_selections_per_tool():
                    "function toolsToggle(", "function toolsGroupMark(", "async function toolsSave()", "function toolsDirty()", "function toolsSummary(",
                    'await api("/tools/catalog")', 'await put("/tools/selection", body)', 'const body = { build: [...TOOLS_DRAFT.build], student: [...TOOLS_DRAFT.student] };',
                    'box("build", "בנייה/שיכפול"), box("student", "לתלמיד (v2)")', 'id="tools-save"', "סמן את המומלצים", "לא נמדד", 'UI.status("ok", "ארוז")',
-                   "דורש הקלדת שם המחשב", 'destroy: ["err"', 'rw: ["warn"', 'ro: [""',
+                   "דורש חלון אישור", 'destroy: ["err"', 'rw: ["warn"', 'ro: [""',
                    'tools: { crumb: "ארגז כלים", title: "ארגז כלים", tabs: [], render: toolsPage, load: loadTools, own: true }'):
         assert needed in js, needed
     block = js[js.index("/* ---------- #649 שלב 1: ארגז כלים"):js.index("const pages = {")]
@@ -668,8 +673,7 @@ def test_storage_page_is_an_admin_tree_node_with_all_eight_mockup_screens():
                    "function storageFormatSheet(id)", "function storageDelete(id)", "function storageDisconnect(id)",
                    'post(SL + "/scan", body)', 'post(SL + "/test", { type: storageType(), params: storageParams() })',
                    "tested: true", "/iscsi-login`", "/disk`", "/mount`", "/format`", "/check`", "/disconnect`", "/connect`", 'method: "DELETE"',
-                   'disabled title="נדלק רק אחרי בדיקה מוצלחת"', "ה-IQN שהוקלד אינו זהה ליעד", "השם שהוקלד אינו זהה לשם המיקום",
-                   'unknown: אין כפתור פירמוט כלל', "}, 30000);", "legend-states", "show-acts storage"):
+                   'disabled title="נדלק רק אחרי בדיקה מוצלחת"',                   'unknown: אין כפתור פירמוט כלל', "}, 30000);", "legend-states", "show-acts storage"):
         assert needed in storage, needed
     assert "prompt(" not in storage and "confirm(" not in storage.replace("confirmSheet(", ""), "prompt/confirm חסומים — רק sheet()"
     css = (STATIC / "console.css").read_text(encoding="utf-8")

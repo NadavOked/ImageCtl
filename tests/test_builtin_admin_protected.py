@@ -146,7 +146,11 @@ def test_demoting_the_builtin_through_the_console_is_409_and_changes_nothing(env
 
 
 def test_the_builtins_password_can_still_be_changed(env):
-    """"סיסמה…" נשאר בתפריט — זה מה שעושים לדלת חירום שדלפה."""
+    """השרת עדיין מקבל סיסמה חדשה ל-builtin — זה מה שעושים לדלת חירום שדלפה.
+
+    בקונסולה זה "איפוס סיסמה…" בתפריט שלו (POST reset-password), או "שנה
+    סיסמה" ב"החשבון שלי" כשהוא המחובר (#1268); ה-PUT הזה הוא ה-API.
+    """
     r = env["admin"].put(f"/api/console/users/{BUILTIN}",
                          json={"password": "Brand-new-1!"})
     assert r.status_code == 200, r.text

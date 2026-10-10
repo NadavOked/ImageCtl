@@ -121,7 +121,7 @@ test('cloners object from the tree: header counters, round pill, actions, three 
   assert.doesNotMatch(html,/class="pill[^>]*>סבב/,'no round → no round pill');
   assert.match(html,/openRoomRound\(\)">פתח סבב במשכפלים…</); assert.match(html,/wakeRoom\(\)">הער את כולם \(WoL\)</);
   assert.match(html,/openAddMachine\(\{group:'grp_CLONERS'\}\)">\+ מחשב שיכפול</);
-  assert.match(html,/<button class="btn danger" onclick="poweroffRoom\('grp_CLONERS'\)">כיבוי כולם \(הקלדת שם\)</,'#980 §1: shutdown through the agent, behind the typed group name');
+  assert.match(html,/<button class="btn danger" onclick="poweroffRoom\('grp_CLONERS'\)">כיבוי כולם</,'#980 §1: shutdown through the agent, behind a confirm sheet (#1270)');
   assert.doesNotMatch(html,/בקרוב/);
   assert.doesNotMatch(html,/disabled/);
   for(const t of ['סיכום','מגירות','סבבים']) assert.match(html,new RegExp('role="tab"[^>]*>'+t+'<'));
@@ -260,8 +260,8 @@ test('builders: "capture in progress" lists both active captures with progress, 
   assert.match(b,/<span class="k">מחשב · דיסק<\/span><span class="v">בנייה 2 · <span class="mono">sda<\/span><\/span>/,'machine never reported disks → the chosen device as-is, not an invented slot');
   assert.match(b,/role="progressbar"[^>]*aria-valuenow="40"/); assert.match(b,/<span class="k">נקראו<\/span><span class="v"><bdi dir="ltr">18.6 GB<\/bdi>/); assert.match(b,/<span class="k">משך<\/span><span class="v">8:00<\/span>/);
   assert.match(b,/בדיקת NTFS → כיווץ → זרם \+ sha256 → החזרת הגודל → אימות — <b[^>]*>דורש API<\/b>/);
-  assert.match(b,/cancelCaptureVerified\('tsk_b2'\)">בטל קליטה \(הקלדת שם\)</); assert.match(b,/wakeMachine\('[^']+'\)">WoL ל-בנייה 2</,'#984');
-  run("cancelCaptureVerified('tsk_b2')"); assert.equal(run('formOptions.verify.mustEqual'),'Kali 2026.2 — סייבר'); assert.equal(run('formOptions.danger'),true);
+  assert.match(b,/cancelCaptureVerified\('tsk_b2'\)">בטל קליטה</); assert.match(b,/wakeMachine\('[^']+'\)">WoL ל-בנייה 2</,'#984');
+  run("cancelCaptureVerified('tsk_b2')"); assert.ok(!run('formOptions.verify'),'#1270: no typed name'); assert.equal(run('formOptions.danger'),true);
   return run('formOptions.onSubmit({})').then(()=>{
     assert.ok(requests.some(r=>r.url.endsWith('/tasks/tsk_b2/cancel')&&r.options.method==='POST'),'cancel is POST /tasks/{id}/cancel');
     assert.ok(requests.some(r=>r.url.endsWith('/tasks')),'and the list is re-read');
@@ -358,7 +358,7 @@ test('#980 §1: "power off all" is a danger sheet behind the typed group name, p
   const {run,requests}=setup();
   run("poweroffRoom('grp_CLONERS')");
   assert.equal(run('formOptions.danger'),true);
-  assert.equal(run('formOptions.verify.mustEqual'),'מחשבי שיכפול');
+  assert.ok(!run('formOptions.verify'),'#1270: no typed name');
   assert.match(run('formOptions.sub'),/hello הבא/); assert.match(run('formOptions.sub'),/WoL/);
   await run('formOptions.onSubmit({})');
   const req=requests.find(r=>r.url==='/api/console/room/poweroff');

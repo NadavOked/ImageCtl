@@ -4,7 +4,7 @@
    יעד ו-CHAP→התחברות) · iSCSI ב' (מה על הדיסק, שלושה מצבים) · מגירת
    "לא נגיש". ה-API: server/console_storage_locations.py (interfaces.md §24).
    "שמור ועגן" נדלק רק אחרי POST /test מוצלח (עיקרון 5: "לא נבדק" אינו
-   "תקין"); הפירמוט ומחיקת מיקום מאחורי הקלדת IQN / שם (עיקרון 7); במצב
+   "תקין"); הפירמוט ומחיקת מיקום מאחורי חלון אישור (#1270); במצב
    "לא הצלחנו לקרוא" אין כפתור פירמוט כלל. ערכי הטפסים חיים ב-SV.form (לא
    ב-DOM) כדי שהבדיקות ב-vm יוכלו להניע אותם. משתמש ב-UI/api/post/sheet/
    toast/esc/openDrawer/fmtBytes/fmtClock/ltr מ-console.js. */
@@ -377,7 +377,7 @@ function storageIscsiBView() {
   if (d.disk_status === "reading") main = `<div class="c8 card"><div class="card-h"><span>מה נמצא על הדיסק</span></div><div class="card-b"><span class="st run">קורא את הדיסק… (blkid, lsblk)</span></div></div>`;
   else if (d.disk_status === "fs") {
     const kv = UI.kv(diskKv.concat([["מערכת קבצים", `<span class="st ok">${esc(d.fs_type)}</span>${d.fs_label ? ` · תווית <span class="mono">${esc(d.fs_label)}</span>` : ""}${d.fs_uuid ? ` · UUID <span class="mono">${esc(String(d.fs_uuid).slice(0, 4))}…${esc(String(d.fs_uuid).slice(-4))}</span>` : ""}`]]));
-    main = `<div class="c8 card"><div class="card-h"><span>מה נמצא על הדיסק</span><small>נקרא עם blkid ו-lsblk · לא שונה דבר</small></div><div class="card-b disk-state">${kv}<div class="big-choice"><button class="btn primary" onclick="storageMount('${idEnc}')"${SV.busy ? " disabled" : ""}>עגן בלי פירמוט</button><button class="btn danger" onclick="storageFormatSheet('${idEnc}')"${SV.busy ? " disabled" : ""}>פרמט ועגן…</button><div class="cap">ברירת המחדל שומרת על מה שיש. פירמוט משמיד את מערכת הקבצים ודורש הקלדת ה-IQN.</div></div></div></div>`;
+    main = `<div class="c8 card"><div class="card-h"><span>מה נמצא על הדיסק</span><small>נקרא עם blkid ו-lsblk · לא שונה דבר</small></div><div class="card-b disk-state">${kv}<div class="big-choice"><button class="btn primary" onclick="storageMount('${idEnc}')"${SV.busy ? " disabled" : ""}>עגן בלי פירמוט</button><button class="btn danger" onclick="storageFormatSheet('${idEnc}')"${SV.busy ? " disabled" : ""}>פרמט ועגן…</button><div class="cap">ברירת המחדל שומרת על מה שיש. פירמוט משמיד את מערכת הקבצים ודורש אישור בחלון.</div></div></div></div>`;
   } else if (d.disk_status === "empty") {
     const kv = UI.kv(diskKv.concat([["מערכת קבצים", `<span class="st">אין</span> — ‏blkid לא זיהה חתימה`], ["הראיה", "1 MB הראשונים והאחרונים — אפסים. זו ראיה חיובית לריק, לא היעדר שגיאה."]]));
     main = `<div class="c8 card"><div class="card-h"><span>מה נמצא על הדיסק</span><small>נקרא עם blkid ו-lsblk · לא שונה דבר</small></div><div class="card-b disk-state">${kv}<div class="big-choice"><button class="btn primary" onclick="storageFormatSheet('${idEnc}')"${SV.busy ? " disabled" : ""}>פרמט ועגן (ext4)…</button><div class="cap">גם בדיסק ריק הפירמוט עובר את אותו מודאל — כי "ריק" הוא קריאה שלנו, והדיסק שייך ל-NAS.</div></div></div></div>`;
@@ -397,7 +397,7 @@ async function storageMount(id) {
     SV.busy = false; storageGo("list"); await loadStorage();
   } catch (e) { SV.busy = false; toast("העיגון נכשל: " + e.message); renderCurrent(); }
 }
-/* פירמוט — הקלדת ה-IQN המלא (עיקרון 7). הקלדה שגויה לא שולחת דבר. */
+/* פירמוט — חלון אישור (#1270); ה-IQN נשלח מהקוד כ-confirm (חוזה ה-API לא השתנה). */
 function storageFormatSheet(id) {
   try { id = decodeURIComponent(id); } catch (e) {}
   const s = SV.iscsi || {}, loc = (s.loc && s.loc.id === id) ? s.loc : storageLoc(id);
@@ -409,9 +409,7 @@ function storageFormatSheet(id) {
     + `<div style="margin:10px 0">${UI.kv([["מה ייעשה", `<span class="mono">mkfs.ext4 -L ${esc(loc.name.slice(0, 16))} ${esc(device)}</span>, ואז עיגון ב-<span class="mono">${esc(loc.mount_point)}</span>`]])}</div>`;
   sheet({
     title: "פירמוט הדיסק — השמדת נתונים", danger: true, submitLabel: "פרמט ועגן", note: `<div class="page drw">${note}</div>`,
-    fields: [{ id: "confirm", label: "לאישור, הקלד את ה-IQN המלא של היעד", placeholder: iqn, dir: "ltr" }],
-    onSubmit: async (v) => {
-      if ((v.confirm || "").trim() !== iqn) throw new Error("ה-IQN שהוקלד אינו זהה ליעד");
+    onSubmit: async () => {
       const row = await post(`${SL}/${encodeURIComponent(loc.id)}/format`, { confirm: iqn, wipe: d.disk_status === "fs" });
       toast(`${row.name} פורמט ועוגן`);
       storageGo("list"); await loadStorage();
@@ -464,7 +462,7 @@ function storageDisconnect(id) {
     await loadStorage();
   });
 }
-/* הסרה — רק מיקום מנותק, מאחורי הקלדת השם (עיקרון 7). הדיסק ב-NAS לא נמחק. */
+/* הסרה — רק מיקום מנותק, מאחורי חלון אישור (#1270). הדיסק ב-NAS לא נמחק. */
 function storageDelete(id) {
   try { id = decodeURIComponent(id); } catch (e) {}
   const loc = storageLoc(id);
@@ -472,9 +470,7 @@ function storageDelete(id) {
   if (loc.state !== "disconnected") { toast("הסרה רק אחרי ניתוק"); return; }
   sheet({
     title: "הסרת מיקום", sub: "המיקום יורד מהרשימה. הדיסק ב-NAS לא נמחק ולא מפורמט. השרת מסרב אם יש עליו אימג'ים.", danger: true, submitLabel: "הסר",
-    fields: [{ id: "confirm", label: "לאישור, הקלד את שם המיקום", placeholder: loc.name }],
-    onSubmit: async (v) => {
-      if ((v.confirm || "").trim() !== loc.name) throw new Error("השם שהוקלד אינו זהה לשם המיקום");
+    onSubmit: async () => {
       await api(`${SL}/${encodeURIComponent(id)}`, { method: "DELETE", body: JSON.stringify({ confirm: loc.name }) });
       toast(`${loc.name} הוסר`); closeDrawer(); await loadStorage();
     },
@@ -500,7 +496,7 @@ function storageDrawerHtml(loc) {
     : imgs.length ? UI.datagrid({ columns: ["אימג'", "זמינות"], rows: imgs.map((r) => [UI.name(r.name, `${fmtBytes(r.total_compressed_bytes)} · נקלט ${fmtDate(r.created)}`), r.available === false ? UI.pill("err", "לא זמין") : UI.pill("ok", "זמין")]) })
     : `<div class="cap">אין אימג'ים על המיקום הזה.</div>`;
   const round = loc.state === "connected" ? "" : `<div><div class="sec">מה קורה בסבב</div>${UI.note("warn", `<b>סבב שיבחר באחד מהם מסרב להתחיל:</b> "האימג' לא זמין — <span class="mono">${esc(loc.name)}</span> לא נגיש מאז ${esc(fmtClock(loc.state_since))}". סבב שכבר רץ מהמיקום הזה — נכשל בגלוי בכל המשכפלים, לא נתקע בהמתנה.`)}</div>`;
-  const kv = UI.kv([["נסה שוב", "גילוי + התחברות + עיגון עכשיו, במקום לחכות לניסיון הבא. הצלחה = \"מחובר\"."], ["נתק", "מסמן \"מנותק\": לא מנסים לבד עד \"חבר\". האימג'ים נשארים \"לא זמינים\"."], ["הסר", "מוריד את המיקום מהרשימה (רק מנותק, בלי אימג'ים). הדיסק ב-NAS לא נמחק ולא מפורמט. דורש הקלדת השם."]]);
+  const kv = UI.kv([["נסה שוב", "גילוי + התחברות + עיגון עכשיו, במקום לחכות לניסיון הבא. הצלחה = \"מחובר\"."], ["נתק", "מסמן \"מנותק\": לא מנסים לבד עד \"חבר\". האימג'ים נשארים \"לא זמינים\"."], ["הסר", "מוריד את המיקום מהרשימה (רק מנותק, בלי אימג'ים). הדיסק ב-NAS לא נמחק ולא מפורמט. דורש אישור בחלון."]]);
   const buttons = [`<button class="btn primary" onclick="storageCheck('${idEnc}')">בדוק עכשיו</button>`];
   if (loc.removable) {
     if (loc.state === "disconnected") buttons.push(`<button class="btn primary" onclick="storageConnect('${idEnc}')">חבר</button>`, `<button class="btn danger" onclick="storageDelete('${idEnc}')">הסר…</button>`);

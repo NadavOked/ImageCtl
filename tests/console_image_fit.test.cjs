@@ -54,21 +54,32 @@ test('an unmeasured used_bytes reads "לא ידוע", not 0', () => {
   assert.doesNotMatch(html, /בשימוש 0/);
 });
 
-test('an unknown requirement is "לא ידוע" and never a number', () => {
+test('an unknown requirement is a dash and never a number', () => {
   const run = setup();
   assert.equal(run('fitGB(null)'), null);
   assert.equal(run('fitGB(-1)'), null);
   assert.match(run(`imageSizeCells(${JSON.stringify({...IMAGE, min_target_bytes: null})})`),
                /נכנס לדיסק מ-לא ידוע/);
+  assert.match(run(`imgFits(${JSON.stringify({...IMAGE, min_target_bytes: null})})`),
+               /class="muted">—<\/span>/);
+});
+
+test('market disk fit uses decimal sold sizes and unknown stays a dash', () => {
+  const run = setup();
+  for (const [bytes, want] of [[100e9, '128GB'], [128e9, '128GB'], [129e9, '256GB'],
+    [501e9, '512GB'], [3e12, '4TB'], [5e12, '> 4TB'], [0, '—']]) {
+    assert.equal(run(`fitsDisk(${bytes})`), want);
+  }
+  assert.match(fs.readFileSync(path.join(root, 'console.js'), 'utf8'), /"מתאים לדיסק"/);
 });
 
 test('the library table and the image drawer both use it', () => {
   const run = setup();
   run(`IMAGES=[${JSON.stringify(IMAGE)}]; IMAGES_FOLDER=null; FOLDERS=[];`);
-  // ‏#954 גל 2: הטבלה החדשה — העמודה "נכנס לדיסק מ-", הבייטים ב-title, הערך LTR.
+  // ‏#954 גל 2: הטבלה החדשה — גודל שוק, הבייטים ב-title, הערך LTR.
   const table = run('images()');
-  assert.match(table, /<th>נכנס לדיסק מ-<\/th>/);
-  assert.match(table, /<span title="229556000000 bytes"><bdi dir="ltr">230 GB<\/bdi><\/span>/);
+  assert.match(table, /<th>מתאים לדיסק<\/th>/);
+  assert.match(table, /<span title="229556000000 bytes"><bdi dir="ltr">256GB<\/bdi><\/span><span class="sub muted">נדרש לפחות 230 GB<\/span>/);
   const drawer = run(`imageDrawerHtml(${JSON.stringify(IMAGE)})`);
   assert.match(drawer, /נכנס לדיסק מ-/);
   assert.match(drawer, /230 GB/);

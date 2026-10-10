@@ -179,7 +179,21 @@ void pace_age(long long updated, char *out, size_t n) {
     if (updated <= 0) return;
     long long age = (long long)time(NULL) - updated;
     if (age < 0) age = 0;
-    snprintf(out, n, "עודכן לפני %lld שנ'", age);
+    /* whole words: "שנ'" read as cut off, and its geresh jumped ends in a
+     * mixed line (gate-1010f render) */
+    if (age == 1)          snprintf(out, n, "עודכן לפני שנייה");
+    else if (age < 60)     snprintf(out, n, "עודכן לפני %lld שניות", age);
+    else if (age < 120)    snprintf(out, n, "עודכן לפני דקה");
+    else if (age < 3600)   snprintf(out, n, "עודכן לפני %lld דקות", age / 60);
+    else if (age < 7200)   snprintf(out, n, "עודכן לפני שעה");
+    else                   snprintf(out, n, "עודכן לפני %lld שעות", age / 3600);
+}
+
+/* An LTR-or-mixed value (an image name, "Office 2024 — סטנדרט") inside an
+ * RTL line, as one isolated run: FSI ... PDI (U+2068 / U+2069). Without it
+ * the name's own em dash and digits are reordered with the line around it. */
+void bidi_isolate(const char *in, char *out, size_t n) {
+    snprintf(out, n, "\xE2\x81\xA8%s\xE2\x81\xA9", in);
 }
 
 /* ---- the .st-prog-line (b 22px + span.sub, align-items:baseline) --------- */
@@ -199,22 +213,30 @@ void progline_draw(cairo_t *cr, const Theme *t, ProgLine *p, double x, double y,
     text_free(&p->big); text_free(&p->small);
 }
 
-/* ---- the confirm box (room.js #room-confirm / classes.js #cls-confirm) ---- */
+/* ---- the folder-first image pickers (owner, 10/10) ---- */
 
-int typed_matches(const char *typed, const char *want) {
-    while (*typed == ' ' || *typed == '\t') typed++;
-    size_t n = strlen(typed);
-    while (n && (typed[n - 1] == ' ' || typed[n - 1] == '\t')) n--;
-    return want[0] && strlen(want) == n && !strncmp(typed, want, n);
+int image_folders(const State *s, int *first, int *count, int max) {
+    int n = 0;
+    for (int i = 0; i < s->nimages; i++) {
+        int k = 0;
+        while (k < n && strcmp(s->images[first[k]].folder, s->images[i].folder)) k++;
+        if (k == n) {
+            if (n >= max) continue;              /* more folders than the picker holds */
+            first[n] = i; count[n] = 0; n++;
+        }
+        count[k]++;
+    }
+    return n;
 }
 
-Text confirm_label(cairo_t *cr, const char *image, int room, double w) {
-    char e[512], mk[768];                          /* image name: 96 bytes escaped, worst case x5 */
-    text_escape(image, e, sizeof e);
-    if (room) snprintf(mk, sizeof mk, "עצירת הסבב באמצע היא פעולת חירום. הקלידו את שם האימג' המשודר — <b>%s</b> — לאישור:", e);
-    else      snprintf(mk, sizeof mk, "עצירת הסבב באמצע היא פעולת חירום. הקלידו את שם האימג' המשודר <b>%s</b> לאישור:", e);
-    return text_make_markup(cr, FONT_SANS, N_SUB, 500, mk, (int)w, DIR_RTL);
+int folder_images(const State *s, const char *folder, int *idx, int max) {
+    int n = 0;
+    for (int i = 0; i < s->nimages && n < max; i++)
+        if (!strcmp(s->images[i].folder, folder)) idx[n++] = i;
+    return n;
 }
+
+const char *folder_label(const char *folder) { return folder[0] ? folder : "ללא תיקייה"; }
 
 /* Lay the footer buttons from the right edge; ids[] / kinds[] in DOM order. */
 void foot_buttons(App *a, cairo_t *cr, Rect foot, Text *labels, const int *kinds, const int *ids, int n) {

@@ -178,11 +178,11 @@ stdout is line-buffered so a record arrives as it happens.
 | `direct-open` | פתח סבב והער את המחשבים שנבחרו | `slots=<mac>@<port>,<port>/<mac>@<port>` | #715: POST `/api/console/room` with `source: {kind: build_disk, mac, disk}` + `target_slots`; the disk is the first non-removable one in the server inventory. Only ticked, present, fresh drawers are listed; none → `room_error=` locally |
 | `room-wake` | העֵר … | — | POST `/api/console/room/wake`; answer with `toast=` |
 | `room-start` | התחל עכשיו | — | POST `/api/console/room/start` |
-| `room-close` | עצור סבב, second press | `confirm=<typed>` | POST `/api/console/room/close {confirm_name}`; the server decides (#533), answer with `room_error=` or drop `round=` |
+| `room-close` | עצור סבב… → the confirm dialog's "עצור סבב" (#1270) | `confirm=<round image>` (filled from `round=`, not typed) | POST `/api/console/room/close {confirm_name}`; the server decides (#533), answer with `room_error=` or drop `round=` |
 | `class-pick` | a class card | `group=<id>` | the operator chose a class. **Steps 2–3 of the wizard (machine grid, image list) are not built** — see "Not built" |
 | `class-start` | התחל עכשיו | — | POST `/api/console/sessions/<id>/start` |
-| `class-close` | עצור סבב, second press | `confirm=<typed>` | POST `/api/console/sessions/<id>/close {confirm_name}` (#581) |
-| `restore-start` | התחל שחזור | `image=<id>`, `confirm=<typed>` | #706/#1073: hand-off to the agent (`handoff` file) — the bridge re-reads the machine's registered name from `GET /api/v1/agent/state` and accepts only a `confirm` equal to it; the agent re-validates the image against fresh `allowed_images`, then `single_restore_run` erases the internal disk and reboots |
+| `class-close` | עצור סבב… → the confirm dialog (#1270) | `confirm=<session image>` (filled, not typed) | POST `/api/console/sessions/<id>/close {confirm_name}` (#581) |
+| `restore-start` | מחק ושחזר… → the confirm dialog (#1270) | `image=<id>`, `confirm=<machine_name>` (filled, not typed) | #706/#1073: hand-off to the agent (`handoff` file) — the bridge re-reads the machine's registered name from `GET /api/v1/agent/state` and accepts only a `confirm` equal to it; the agent re-validates the image against fresh `allowed_images`, then `single_restore_run` erases the internal disk and reboots |
 | `shrink-continue\|<nonce>` · `shrink-plain\|<nonce>` · `shrink-cancel\|<nonce>` | the shrink dialog (#928): כווץ וקלוט / קלוט בלי כיווץ / בטל קליטה, or keys 1 / 2 / 3, Esc = cancel | — (the token carries the nonce of the question on screen) | `gui_shrink_dispatch` (`agent/lib/shrinkgui.sh`) writes `nonce\|<answer>` to `$GUI_DIR/shrink-decision` only for the nonce of the active `shrink-request`; no console session is needed. One answer per question; Enter answers nothing |
 | `tool-list` | the "כלים" button of the build menu (#649) | — | the bridge writes `$GUI_DIR/tools` (`tools_gui_list` in `agent/lib/tools.sh`) |
 | `tool-run\|<id>\|<arg>\|<confirm>` | הרץ on a tool's confirm view, or a `ro` row with no argument (#649) | — (the token carries the fields; `\|` and newlines never travel) | `tools_gui_run`: the framework refuses `rw`/`destroy` unless `confirm` equals the machine's registered name, runs the domain module, and writes `$GUI_DIR/tool-result` |
@@ -219,7 +219,8 @@ message=<title>|<sub>
 menu_class=<0/1>
 
 # #1073: the machine's registered name (GET /api/v1/agent/state .name) -- the
-# restore screen's typed confirmation. Always written; empty = no start.
+# confirm= the restore sends after its dialog (#1270: no typed name; the
+# bridge still compares). Always written; empty = no start.
 machine_name=<name>
 
 # #1252: the server this machine talks to -- the header ("שרת", "גרסה"), the
@@ -251,7 +252,7 @@ round=<image_name>|<wave_number>|<open 0/1>|<written>|<target>|<ready>|<remainin
                                     # #410: the last three from GET /room .round (-1 = not measured, never 0);
                                     # a seven-field record from an older agent reads as all three unmeasured
 updated=<epoch seconds>             # #410: when the agent wrote this snapshot -- the room and cloner heads say
-                                    # "עודכן לפני N שנ'" and keep counting when the file stops changing
+                                    # "עודכן לפני N שניות" (דקות, שעות) and keep counting when the file stops changing
 
 # #st-cloner (clonergui.sh, the kiosk's local truth)
 drawer=<port>|<dev>|<state>|<bytes>|<total>|<error>|<rate_bps>|<eta_s>
@@ -307,9 +308,10 @@ machine=<the name the operator must type for rw/destroy>
   disk picker over the `disk=` records (the chosen `dev` is sent); any other
   non-empty text is a free field (no spaces, no `|`). Empty = no argument.
 * A `ro` tool with no argument runs on the click; everything else passes the
-  confirm view -- the argument, and for `rw`/`destroy` the typed machine
-  name (principle 7; the GUI compares locally to save a round trip, and the
-  bridge compares again before any module runs).
+  confirm view -- the warning and the argument -- and `rw`/`destroy` then
+  ask in the confirm dialog (#1270, owner 10/10: no typed word); the GUI
+  sends the machine's name from `machine=`, which the bridge compares before
+  any module runs.
 * `rc` words: 0 הסתיים (success tokens) · 1 נמצאה בעיה · **2 לא הצלחנו
   לבדוק (warning tokens, never green -- principle 5)** · 3 האישור לא תואם ·
   4 כלי לא מוכר. `seq` increases per run so an identical result of a second
@@ -360,13 +362,13 @@ then XRGB8888 rows — is the contract in `docs/interfaces.md` §15.
 ### `--png`: every card, for comparing with the HTML
 
 ```sh
-make png                      # out/station-<card>-{light,dark}.png, 38 files, sample data
+make png                      # out/station-<card>-{light,dark}.png, 44 files, sample data
 make png STATE=/tmp/state.txt # the same cards from a real state file
 ```
 
 Cards: `login menu pick progress done room room-live class class-live
 cloner standby message restore direct tools tools-confirm tools-output
-shrink logout` (`logout` is the menu with the question Esc opens). Since the
+shrink logout restore-folder room-images restore-confirm` (`logout` is the menu with the question Esc opens; `restore-folder`/`room-images` are the folder-first image pickers inside a folder and open; `restore-confirm` is the #1270 confirm dialog). Since the
 10/10 mockup every screen is laid out in logical pixels and drawn at
 `ui_scale(H)` = clamp(H/800, 1, 1.4) in quarter steps: 1024x768 and 1280x800
 are 1:1, 1280x1024 and 1920x1080 are 1.25 -- a test that measures pixels at

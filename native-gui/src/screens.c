@@ -133,6 +133,7 @@ static const char *status_word(const App *a,char *buf,size_t n,Rgb *dot){
  * there -- nothing it ignores. */
 static const char *status_keys(const App *a,char *buf,size_t n){
     if(a->st.shrink_pending)return "1  כווץ וקלוט    2  קלוט בלי כיווץ    3 / Esc  בטל קליטה";   /* #928 */
+    if(a->confirm)return "Enter  אישור    Esc  ביטול";   /* #1270: the confirm dialog */
     switch(a->screen){
     case SCREEN_LOGIN:return "Tab  מעבר    Enter  כניסה";
     case SCREEN_MENU:
@@ -141,15 +142,18 @@ static const char *status_keys(const App *a,char *buf,size_t n){
                  (a->admin?4:3)+(a->st.menu_class?1:0));
         return buf;
     case SCREEN_ROOM:
+        if(!a->st.has_round&&a->dd_open==HIT_ROOM_IMAGE)
+            return a->pick_in_folder?"1–9  בחירת אימג'    Esc / Backspace  לתיקיות":"1–9  בחירת תיקייה    Esc  סגירה";
         if(!a->st.has_round)return a->mode==MODE_DIRECT?"W  העֵר    Esc  חזרה":"Tab  מעבר    W  העֵר    Esc  חזרה";
-        if(a->room_confirming)return "Enter  עצור סבב (אחרי הקלדת השם)    Esc  ביטול";
         return a->st.wave_open?"W  העֵר שוב    N  התחל עכשיו    Esc  עצור סבב…":"W  העֵר שוב    Esc  עצור סבב…";
     case SCREEN_CLONER:   /* mockup 10/10: the SMART keys only while a question is open */
         if(!a->st.smart_pending)return "אין פעולה במסך הזה";
         return !strcmp(a->st.smart_verdict,"failed_last")
         ? "R  החלף דיסק    Enter / S  המשך בלי הדיסק"
         : "R  החלף דיסק    S  דלג על הדיסק    Enter  כתוב בכל זאת";
-    case SCREEN_RESTORE:return "1–9 / [ ]  בחירת אימג'    Enter  מחק ושחזר    Esc  חזרה";
+    case SCREEN_RESTORE:return a->pick_in_folder   /* owner 10/10: folder-first */
+        ? "1–9 / [ ]  בחירת אימג'    Esc / Backspace  לתיקיות    Enter  מחק ושחזר…"
+        : "1–9  בחירת תיקייה    Enter  מחק ושחזר…    Esc  חזרה";
     case SCREEN_STANDBY:return "אין פעולה במסך הזה";   /* "דיסקים: 1 · 2 · 3 SMART" sat where keys go */
     case SCREEN_PICK:return a->chosen_disk>=0?"Tab / Shift-Tab  מעבר    Enter  התחלה    Esc  חזרה":"Esc  חזרה";
     case SCREEN_CLASS:return a->st.has_session?"Enter  התחל עכשיו":"Esc  חזרה";
@@ -173,19 +177,14 @@ static void draw_status(App *a,cairo_t *cr,double W,double H){
     text_draw(cr,&keys,N_STATUS_PAD,bar.y+(bar.h-keys.h)/2,t->muted);text_free(&keys);
 }
 
-static void underlined_field(App *a,cairo_t *cr,Rect r,const char *label,const char *value,int mask,int id,double reserve_right){
-    const Theme *t=a->theme; Text l=rtl_block_make(cr,12,400,label,r.w);
-    text_draw_r(cr,&l,r.x+r.w,r.y,t->indigo); text_free(&l);
-    Rect input={r.x,r.y+16,r.w,34};
-    cairo_rectangle(cr,input.x,input.y+input.h-(a->focus==id?2:1),input.w,a->focus==id?2:1);
-    draw_set(cr,a->focus==id?t->indigo:t->hair);cairo_fill(cr);
-    char shown[256];
-    if(mask&&value[0]){size_t k=0;for(const char *p=value;*p&&k+4<sizeof shown;p++)if((*p&0xc0)!=0x80){memcpy(shown+k,"\xe2\x80\xa2",3);k+=3;}shown[k]=0;}
-    else snprintf(shown,sizeof shown,"%s",value);
-    Text v=text_make_field(cr,shown,(int)(input.w-reserve_right),1);
-    cairo_save(cr);cairo_rectangle(cr,input.x,input.y,input.w-reserve_right,input.h);cairo_clip(cr);
-    text_draw(cr,&v,input.x,input.y+(input.h-v.h)/2,t->ink);cairo_restore(cr);
-    text_free(&v);hit_add(a,input,id);
+/* The owner, 10/10: the login fields as the console draws them -- the label
+ * above, a bordered input (draw_field: the radius/border/focus ring of every
+ * other input; user and password are LTR, the text from the left edge).
+ * Returns the label's height + gap, where the box starts. */
+#define LOGIN_LABEL_GAP 4.0
+static double login_label(App *a,cairo_t *cr,double x,double y,double w,const char *label){
+    Text l=rtl_block_make(cr,12,500,label,w);text_draw_r(cr,&l,x+w,y,a->theme->muted);
+    double h=l.h+LOGIN_LABEL_GAP;text_free(&l);return h;
 }
 
 void screen_login(App *a,cairo_t *cr,double W,double H,double head_h){
@@ -200,20 +199,27 @@ void screen_login(App *a,cairo_t *cr,double W,double H,double head_h){
     Text title=rtl_block_make(cr,24,600,"כניסה",fw);
     char lead_s[128];snprintf(lead_s,sizeof lead_s,"מחשב הבנייה %s",known(a->st.machine_name));   /* #1252 */
     Text lead=rtl_block_make(cr,13,400,lead_s,fw);
-    double content=title.h+6+lead.h+28+50+22+50+22+38+(a->error[0]?24:0);
+    double lab=text_line_height(cr,FONT_SANS,12)+LOGIN_LABEL_GAP;
+    double content=title.h+6+lead.h+28+lab+N_FIELD_H+18+lab+N_FIELD_H+22+38+(a->error[0]?24:0);
     double y=(usable-content)/2;
     text_draw_r(cr,&title,x+fw,y,t->ink);y+=title.h+6;
     text_draw_r(cr,&lead,x+fw,y,t->muted);y+=lead.h+28;
-    underlined_field(a,cr,(Rect){x,y,fw,50},"שם משתמש",a->user,0,HIT_USER,0);y+=72;
-    Text eye=text_make(cr,FONT_SANS,12,400,a->show_pw?"הסתר":"הצג",0,DIR_RTL);
-    Rect er={x+fw-eye.w-8,y+16+(34-24)/2,eye.w+8,24};
-    underlined_field(a,cr,(Rect){x,y,fw,50},"סיסמה",a->pass,!a->show_pw,HIT_PASS,er.w+8);
-    text_draw(cr,&eye,er.x+4,er.y+(er.h-eye.h)/2,t->indigo);hit_add(a,er,HIT_EYE);text_free(&eye);
-    y+=72;
-    if(a->error[0]){Text e=rtl_block_make(cr,13,400,a->error,fw);text_draw_r(cr,&e,x+fw,y-16,t->danger);text_free(&e);}
+    y+=login_label(a,cr,x,y,fw,"שם משתמש");
+    draw_field(a,cr,(Rect){x,y,fw,N_FIELD_H},a->user,0,NULL,HIT_USER);y+=N_FIELD_H+18;
+    y+=login_label(a,cr,x,y,fw,"סיסמה");
+    Rect pf={x,y,fw,N_FIELD_H};
+    draw_field(a,cr,pf,a->pass,!a->show_pw,NULL,HIT_PASS);   /* keeps 62px clear at the right (widgets.c) */
+    /* only "הצג" inside the field, at its right end: action-colour words, no box */
+    Text eye=text_make(cr,FONT_SANS,12,500,a->show_pw?"הסתר":"הצג",0,DIR_RTL);
+    Rect er={pf.x+pf.w-eye.w-24,pf.y+(pf.h-24)/2,eye.w+16,24};
+    text_draw(cr,&eye,er.x+8,er.y+(er.h-eye.h)/2,t->action_fg);hit_add(a,er,HIT_EYE);text_free(&eye);
+    y+=N_FIELD_H+10;
+    /* the error only after a failed attempt (do_login sets it), in its own row */
+    if(a->error[0]){Text e=rtl_block_make(cr,13,400,a->error,fw);text_draw_r(cr,&e,x+fw,y,t->danger);text_free(&e);y+=24;}
+    y+=12;
     Text go=btn_label(cr,"כניסה");draw_btn(a,cr,(Rect){x,y,fw,38},&go,BTN_PRIMARY,HIT_SUBMIT);text_free(&go);
     char srv[160];server_label(&a->st,srv,sizeof srv);   /* #1252: was the mockup's fixed line */
-    char foot_s[240];snprintf(foot_s,sizeof foot_s,"%s   ·   %s",srv,known(a->st.server_version));
+    char foot_s[320];snprintf(foot_s,sizeof foot_s,"%s   ·   %s",srv,known(a->st.server_version));   /* 160 + 129 + separators */
     Text foot=text_make(cr,FONT_MONO,12,400,foot_s,0,DIR_LTR);text_draw(cr,&foot,pr.x+64,usable-28-foot.h,t->muted);text_free(&foot);
     text_free(&title);text_free(&lead);
 }
@@ -513,6 +519,59 @@ static void draw_idle_countdown(App *a,cairo_t *cr,double W,double H){
     Rect b={(W-v.w-40)/2,H-N_STATUS_H-80,v.w+40,40};draw_fill_rrect(cr,b,t->radius,t->warning_soft);draw_border_rrect(cr,b,t->radius,t->warn,2);text_draw(cr,&v,b.x+20,b.y+(b.h-v.h)/2,t->warn);text_free(&v);
 }
 
+/* #1270 (owner, 10/10): no typed-word confirmation anywhere. A destructive
+ * action asks here: the question, what will happen, [ביטול] (bordered) and
+ * the red action; Enter confirms, Esc cancels (main.c confirm_modal). */
+void draw_confirm_dialog(App *a,cairo_t *cr,double W,double H){
+    if(!a->confirm)return;
+    const Theme *t=a->theme;const State *s=&a->st;double usable=H-N_STATUS_H;
+    char title[200],what[800],ok[120];
+    if(a->confirm==CONFIRM_RESTORE){
+        const Disk *d=NULL;for(int i=0;i<s->ndisks;i++)if(!s->disks[i].removable){d=&s->disks[i];break;}
+        const char *img=a->restore_image_sel>0&&a->restore_image_sel<=s->nimages?s->images[a->restore_image_sel-1].name:"";
+        snprintf(title,sizeof title,"למחוק את הדיסק ולשחזר?");
+        /* the disk, the machine and the image are Latin runs inside an RTL line:
+         * isolated (FSI/PDI) so "(/dev/sda)" keeps its parentheses in place */
+        char disk[200],disk_i[220],mach_i[120],img_i[200];
+        snprintf(disk,sizeof disk,"%s (%s)",d&&d->model[0]?d->model:"הדיסק הפנימי",d?d->dev:"—");
+        bidi_isolate(disk,disk_i,sizeof disk_i);
+        bidi_isolate(known(s->machine_name),mach_i,sizeof mach_i);
+        bidi_isolate(img,img_i,sizeof img_i);
+        snprintf(what,sizeof what,"כל התוכן של %s במחשב %s יימחק, והאימג' \"%s\" ייכתב עליו. אי־אפשר לבטל אחרי שהתחיל.",
+                 disk_i,mach_i,img_i);
+        snprintf(ok,sizeof ok,"מחק ושחזר");
+    }else if(a->confirm==CONFIRM_ROOM_STOP||a->confirm==CONFIRM_CLASS_STOP){
+        snprintf(title,sizeof title,"לעצור את הסבב?");
+        snprintf(what,sizeof what,"השידור של \"%s\" ייעצר באמצע. מגירות שלא סיימו לא יהיו שמישות ויש לכתוב אותן מחדש.",
+                 a->confirm==CONFIRM_ROOM_STOP?s->round_image:s->sess_image);
+        snprintf(ok,sizeof ok,"עצור סבב");
+    }else{
+        const Tool *tl=a->tool_sel>=0&&a->tool_sel<a->ntools?&a->tools[a->tool_sel]:NULL;
+        int lvl=tl?tools_risk_level(tl->risk):2;
+        snprintf(title,sizeof title,"להריץ את \"%s\"?",tl?tl->title:"הכלי");
+        snprintf(what,sizeof what,lvl==2?"פעולה הרסנית על המחשב %s: מה שיימחק לא יחזור.":"הפעולה משנה את הדיסק של המחשב %s.",
+                 known(a->tools_machine));
+        snprintf(ok,sizeof ok,"הרץ");
+    }
+    cairo_rectangle(cr,0,0,W,usable);draw_set_a(cr,(Rgb){0,0,0},.55);cairo_fill(cr);
+    a->nhits=0;a->clip_on=0;                       /* modal: only its two buttons */
+    double dw=fmin(520,W-64),inner=dw-56;
+    Text h=rtl_block_make(cr,20,600,title,inner);
+    Text p=rtl_block_make(cr,13,400,what,inner);
+    double dh=28+h.h+8+p.h+24+N_BUTTON_H+28;
+    Rect box={(W-dw)/2,(usable-dh)/2,dw,dh};
+    draw_fill_rrect(cr,box,t->radius,t->surface);draw_border_rrect(cr,box,t->radius,t->hair,1);
+    double right=box.x+box.w-28,y=box.y+28;
+    text_draw_r(cr,&h,right,y,t->ink);y+=h.h+8;
+    text_draw_r(cr,&p,right,y,t->muted);
+    Text go=btn_label(cr,ok),no=btn_label(cr,"ביטול");
+    double gw=btn_width(&go),nw=btn_width(&no),by=box.y+box.h-28-N_BUTTON_H;
+    /* the approved window: the action at the inline end, cancel next to it */
+    draw_btn(a,cr,(Rect){box.x+28,by,gw,N_BUTTON_H},&go,BTN_DANGER,HIT_CONFIRM_OK);
+    draw_btn(a,cr,(Rect){box.x+28+gw+N_ACTION_GAP,by,nw,N_BUTTON_H},&no,BTN_PLAIN,HIT_CONFIRM_CANCEL);
+    text_free(&h);text_free(&p);text_free(&go);text_free(&no);
+}
+
 /* clamp(H/800, 1, 1.4), taken down to a quarter: a 1px line then lands on
  * a quarter pixel at most (1080p = 1.25, 60px header, 45px status bar) --
  * 1.35 smeared every hairline over two rows. */
@@ -540,6 +599,7 @@ static void app_draw_logical(App *a,cairo_t *cr,double W,double H){
     }
     draw_state_warning(a,cr,W,H);draw_idle_countdown(a,cr,W,H);
     draw_shrink_dialog(a,cr,W,H);   /* #928: modal, over every screen but the status bar */
+    draw_confirm_dialog(a,cr,W,H);  /* #1270 */
     draw_status(a,cr,W,H);draw_toast(a,cr,W,H);
 }
 
@@ -554,4 +614,4 @@ void app_draw(App *a,cairo_t *cr,int W,int H){
 
 void app_draw_pointer(App *a,cairo_t *cr){if(a->ptr_visible)draw_cursor(cr,a->ptr_x,a->ptr_y);}
 int app_hit(const App *a,double x,double y){double s=a->scale>0?a->scale:1;x/=s;y/=s;   /* screen pixels in, logical hits */
-    for(int i=a->nhits-1;i>=0;i--)if(rect_has(a->hits[i].r,x,y))return a->hits[i].id;return HIT_NONE;}
+    for(int i=a->nhits-1;i>=0;i--){if(rect_has(a->hits[i].r,x,y))return a->hits[i].id;}return HIT_NONE;}
