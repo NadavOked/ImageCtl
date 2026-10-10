@@ -102,7 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="ImageCtl server + console")
     # ‏#1088: אינו חובה עוד. ריק = הכתובת נקראת ממה שנרשם מהקונסולה
     # (`deploy:url`, בהדלקת DHCP על כרטיס), ואם גם זה חסר — "רשת ההפצה לא
-    # הוגדרה": הסוכן והקיוסק על loopback בלבד, והקונסולה אומרת מה לעשות.
+    # הוגדרה": הסוכן על loopback בלבד, והקונסולה אומרת מה לעשות.
     # היחידה מעבירה ``${IMAGECTL_URL}`` גם כשהוא ריק (ארגומנט ריק אחד).
     parser.add_argument("--server-url", default="",
                         help="הכתובת שהלקוחות רואים, http בלבד (כמו במתקין). "
@@ -133,7 +133,7 @@ def build_parser() -> argparse.ArgumentParser:
     # ‏None כאן = "לא ביקשו"; ‏main ממלא מ-`--interface` (או מ-server-url
     # כשאין `ip`). ‏0.0.0.0 רק בבקשה מפורשת, ועם אזהרה ביומן.
     parser.add_argument("--host", default=None,
-                        help="כתובת ה-bind של הסוכן והקיוסק. ברירת מחדל: "
+                        help="כתובת ה-bind של הסוכן. ברירת מחדל: "
                              "כתובת כרטיס ההפצה (--interface). 0.0.0.0 רק "
                              "בבקשה מפורשת (R20-F1)")
     parser.add_argument("--port", type=int, default=8080,
@@ -167,12 +167,6 @@ def build_parser() -> argparse.ArgumentParser:
                         help="TLS לקונסולה (8081). off מותר רק עם "
                              "--console-host על loopback (127.0.0.1) — "
                              "פיתוח/e2e; ברירת מחדל on")
-    # ‏#738 (tracer 2 של #703): הקיוסק (מסך התחנה על וילן ההפצה) מאזין
-    # על פורט **נפרד** מהקונסולה — allowlist קשיח, בלי נתיבי ניהול.
-    # ‏#1074: אותו `--host` כמו הסוכן — כתובת כרטיס ההפצה, לא 0.0.0.0.
-    parser.add_argument("--kiosk-port", type=int, default=8082,
-                        help="פורט הקיוסק: מסך התחנה (capture/סבב/חדר) "
-                             "ו-/console/station")
     # ‏#151: שומר לפי כתובת מקור בתוך אפליקציית הקונסולה — שכבה שלא תלויה
     # בחומת אש חיצונית. רשת/כתובת אחת לכל דגל (CIDR או כתובת בודדת),
     # ‏ניתן להעביר כמה פעמים (למשל MGMT ו-DEPLOY בנפרד). ברירת המחדל
@@ -383,7 +377,7 @@ def main() -> None:
     if not deploy.configured:
         server_url, interface = deploy_net.deploy_url(deploy_net.UNCONFIGURED_HOST,
                                                       args.port), None
-        print("deploy network: not configured — agent and kiosk on "
+        print("deploy network: not configured — agent on "
               f"{deploy_net.UNCONFIGURED_HOST} only; set it from the console "
               "(network page: address, then DHCP) (#1088)")
     if interface:
@@ -393,7 +387,7 @@ def main() -> None:
               "broadcast is simulated)")
     host = urllib.parse.urlsplit(server_url).hostname
 
-    # ‏#1074: סוכן 8080 וקיוסק 8082 נקשרים לכתובת כרטיס ההפצה. ‏0.0.0.0
+    # ‏#1074: הסוכן (8080) נקשר לכתובת כרטיס ההפצה. ‏0.0.0.0
     # רק אם המפעיל ביקש במפורש — ואז נאמר, לא בשקט (R20-F1).
     if args.host is None:
         nic_addr = None
@@ -404,14 +398,13 @@ def main() -> None:
                 parser.error(str(exc))
         args.host = nic_addr or host
     if args.host == "0.0.0.0":
-        print("warning: --host 0.0.0.0 — הסוכן והקיוסק מאזינים על כל "
+        print("warning: --host 0.0.0.0 — הסוכן מאזין על כל "
               "הכרטיסים (R20-F1). ברירת המחדל היא כתובת כרטיס ההפצה.")
 
     import uvicorn
 
     from . import dhcp_host, ports
-    from .app import (create_agent_app, create_console_app, create_kiosk_app,
-                      create_runtime)
+    from .app import create_agent_app, create_console_app, create_runtime
     from .db import journal
 
     # ‏#996: מנהל המאזינים — נבנה לפני ה-runtime כי הוא מוזרק אליו
@@ -480,7 +473,6 @@ def main() -> None:
                              deploy=deploy_ctx)
     agent_app = create_agent_app(runtime)
     console_app = create_console_app(runtime)
-    kiosk_app = create_kiosk_app(runtime)
 
     # ‏#996: ה-`Config` נבנה פעם אחת; ה-`Server` נבנה מחדש בכל פתיחה
     # (‏uvicorn.Server אינו רב-פעמי), ולכן המנהל מקבל **יצרנים**.
@@ -488,7 +480,7 @@ def main() -> None:
         agent_app, host=args.host, port=args.port, log_level="info")
     # ‏#770: הקונסולה על כרטיס הניהול (`--console-host`) בלבד — לא `--host`.
     # ‏#703 (tracer 5): ‏`ssl_certfile`/`ssl_keyfile` של uvicorn (stdlib ssl)
-    # על **כל** מאזין קונסולה — ורק עליהם; הסוכן והקיוסק נשארים http.
+    # על **כל** מאזין קונסולה — ורק עליהם; הסוכן נשאר http.
     console_ssl = console_tls.uvicorn_kwargs() if console_tls else {}
     console_scheme = "https" if console_tls else "http"
     from .interserver_auth import is_loopback
@@ -516,17 +508,12 @@ def main() -> None:
     console_factories, console_hosts = console_servers(console_addr)
     console_binds = " + ".join(f"{console_scheme}://{h}:{args.console_port}"
                                for h in console_hosts)
-    kiosk_config = uvicorn.Config(
-        kiosk_app, host=args.host, port=args.kiosk_port, log_level="info")
     listeners.add("http_boot", [lambda: uvicorn.Server(agent_config)],
                   port=args.port, hosts=[args.host])
     listeners.add("http_console", console_factories,
                   port=args.console_port, hosts=console_hosts)
-    listeners.add("kiosk", [lambda: uvicorn.Server(kiosk_config)],
-                  port=args.kiosk_port, hosts=[args.host])
     print(f"agent on {args.host}:{args.port}"
-          f"  console on {console_binds}"
-          f"  kiosk on {args.host}:{args.kiosk_port}")
+          f"  console on {console_binds}")
     if console_iface:
         print(f"console interface: {console_iface} "
               f"({console_addr or 'no address yet — loopback until a lease arrives'})")
@@ -626,7 +613,7 @@ async def serve_all(listeners) -> None:
     ניהול שלא הצליח לתפוס את הפורט אינו 'עלה בהצלחה', ואסור שיֵרָאה כך
     בזמן שהסוכן ממשיך לבדו (עיקרון 5). נבדק ב-tests/test_port_listeners.py."""
     # מה שהמפעיל כיבה בדף הפורטים לא עולה — ונאמר, כדי שהשורה
-    # "agent on … kiosk on …" למעלה לא תיקרא כאילו הכול מאזין.
+    # "agent on … console on …" למעלה לא תיקרא כאילו הכול מאזין.
     disabled = [p for p in listeners.ids() if not listeners.want_open(p)]
     if disabled:
         print(f"ports disabled by operator (not bound): {', '.join(disabled)}")

@@ -36,7 +36,7 @@ RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6 AF_PACKET
 # '-' = optional: Debian 13 has dhcpcd (/var/lib/dhcpcd), not isc-dhcp-client;
 # a ReadWritePaths entry that does not exist aborts the namespace and the unit
 # never starts (found on the first ESXi install, 21/09).
-ReadWritePaths=/var/lib/imagectl /etc/network/interfaces.d /etc -/var/lib/dhcpcd
+ReadWritePaths=/var/lib/imagectl /etc/network/interfaces.d /etc -/run/network -/run/dhcpcd -/var/lib/dhcpcd
 
 [Install]
 WantedBy=multi-user.target

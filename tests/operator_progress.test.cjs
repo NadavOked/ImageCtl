@@ -40,9 +40,7 @@ async function render(file, name, written, total, extra = {}) {
   return html;
 }
 
-for (const [file, name] of [['console.js', 'captureProgressCell'], ['console.js', 'memberRow'],
-  ['station/station.js', 'drawProgress'], ['station/room.js', 'machineRows'],
-  ['station/classes.js', 'renderLive']]) {
+for (const [file, name] of [['console.js', 'captureProgressCell'], ['console.js', 'memberRow']]) {
   for (const total of [undefined, null, 0]) test(`${file}: unknown ${total} differs from zero progress`, async () => {
     const moving = await render(file, name, 8192, total);
     const idle = await render(file, name, 0, total);

@@ -1,6 +1,6 @@
 /* imagectl-station-gui -- the build machine's screens, drawn natively
  * (Pango/Cairo -> KMS), replacing cage+chromium for the cards of
- * server/static/station/index.html.
+ * the former server/static/station/index.html (removed in #1247).
  *
  * Contract with the agent (POSIX sh) -- README "Contract with the agent":
  *   --auth-cmd CMD   login: CMD gets "<user>\n<pass>\n" on stdin; exit 0
@@ -14,6 +14,8 @@
  *                    capture-start | room-open | room-wake | room-start |
  *                    room-close | class-pick | class-start | class-close |
  *                    smart-replace | smart-rescue | smart-skip |
+ *                    shrink-continue|<nonce> | shrink-plain|<nonce> |
+ *                    shrink-cancel|<nonce>  (#928) |
  *                    tool-list | tool-run|<id>|<arg>|<confirm>  (#649) |
  *                    touch  (#434: a key press -- the idle clock's activity)),
  *                    then key=value detail lines, then an empty line.
@@ -115,6 +117,45 @@ static void emit_smart(const App *a, const char *action) {
     char line[64];
     snprintf(line, sizeof line, "%s|%s", action, a->st.smart_nonce);
     emit1(line);
+}
+
+/* #928: the shrink answer echoes the question's nonce, as the SMART choice
+ * does. One answer per question: a double click would only reach a bridge
+ * whose request is already gone. */
+static void emit_shrink(App *a, const char *action) {
+    if (!a->st.shrink_pending || !strcmp(a->shrink_sent, a->st.shrink_nonce)) return;
+    char line[64];
+    snprintf(line, sizeof line, "%s|%s", action, a->st.shrink_nonce);
+    snprintf(a->shrink_sent, sizeof a->shrink_sent, "%s", a->st.shrink_nonce);
+    emit1(line);
+}
+
+/* #928: while the shrink question is open it is modal. Only its answers get
+ * through -- 1/2/3, Esc = cancel, or a click on one of its buttons -- and a
+ * stray key or click never reaches the screen behind it. Enter answers
+ * nothing: "shrink" is never the default. Returns 1 when it took the event. */
+static int shrink_modal(App *a, const Event *e) {
+    if (!a->st.shrink_pending) return 0;
+    switch (e->type) {
+    case UIEV_CHAR:
+        if (e->ch == '1') emit_shrink(a, "shrink-continue");
+        else if (e->ch == '2') emit_shrink(a, "shrink-plain");
+        else if (e->ch == '3') emit_shrink(a, "shrink-cancel");
+        return 1;
+    case UIEV_KEY:
+        if (e->key == KEYSYM_ESC) emit_shrink(a, "shrink-cancel");
+        return 1;
+    case UIEV_CLICK:
+        a->ptr_x = e->x; a->ptr_y = e->y;
+        switch (app_hit(a, e->x, e->y)) {
+        case HIT_SHRINK_CONTINUE: emit_shrink(a, "shrink-continue"); break;
+        case HIT_SHRINK_PLAIN:    emit_shrink(a, "shrink-plain");    break;
+        case HIT_SHRINK_CANCEL:   emit_shrink(a, "shrink-cancel");   break;
+        }
+        return 1;
+    default:
+        return 0;                                 /* pointer moves still move the cursor */
+    }
 }
 
 /* ---- small helpers ------------------------------------------------------------ */
@@ -227,15 +268,15 @@ static int class_gate(App *a) {
 
 /* ---- events --------------------------------------------------------------------- */
 
-/* Same visibility rule as screens.c, in MENU order (#1073): room, direct,
- * restore for everyone; capture admin-only, last; the class card follows
+/* Same visibility rule as screens.c, in MENU order (#1244): capture for
+ * admin first, then room, direct, restore; the class card follows
  * the server's switch (#880, pinned off in v1). Returns how many. */
 static int visible_card_ids(const App *a, int ids[5]) {
     int n = 0;
+    if (a->admin) ids[n++] = HIT_CAPTURE;
     ids[n++] = HIT_ROOM;
     ids[n++] = HIT_DIRECT;
     ids[n++] = HIT_RESTORE;
-    if (a->admin) ids[n++] = HIT_CAPTURE;
     if (a->st.menu_class) ids[n++] = HIT_CLASSES;   /* #1081: v1 off, v1.2 on */
     return n;
 }
@@ -506,6 +547,7 @@ static void emit_touch(App *a, int demo) {
 
 static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
     if (e->type == UIEV_CLICK || e->type == UIEV_CHAR || e->type == UIEV_KEY) emit_touch(a, demo);
+    if (shrink_modal(a, e)) return 0;              /* #928 */
     switch (e->type) {
     case UIEV_MOVE:
         a->ptr_x = e->x; a->ptr_y = e->y; a->ptr_visible = !e->is_touch;
@@ -766,6 +808,11 @@ static void sample_state(State *s) {
     snprintf(s->smart_nonce, sizeof s->smart_nonce, "1-2");
     snprintf(s->smart_verdict, sizeof s->smart_verdict, "fail");
     snprintf(s->smart_reason, sizeof s->smart_reason, "health_failed");   /* smart.sh vocabulary */
+    /* #928: the capture's shrink question -- drawn on the "shrink" card only */
+    s->shrink_pending = 1; s->nshrink = 2;
+    snprintf(s->shrink_nonce, sizeof s->shrink_nonce, "3-0");
+    s->shrink[0].idx = 3; s->shrink[0].old_bytes = 499000000000ULL; s->shrink[0].new_bytes = 146000000000ULL;
+    s->shrink[1].idx = 4; s->shrink[1].old_bytes = 1000000000ULL;   s->shrink[1].new_bytes = 700000000ULL;
     snprintf(s->msg_title, sizeof s->msg_title, "המחשב אינו רשום");
     snprintf(s->msg_sub, sizeof s->msg_sub, "רשמו אותו בקונסולה כמחשב בניית אימג'ים ורעננו.");
     snprintf(s->machine_name, sizeof s->machine_name, "BUILD-01");   /* #1073: the restore card's confirm field */
@@ -774,7 +821,7 @@ static void sample_state(State *s) {
 
 static const char *PNG_CARDS[] = { "login", "menu", "pick", "progress", "done", "room", "room-live",
                                    "class", "class-live", "cloner", "standby", "message", "restore", "direct",
-                                   "tools", "tools-confirm", "tools-output" };
+                                   "tools", "tools-confirm", "tools-output", "shrink" };
 
 /* Put the App in the state that routes to <card>; the flags that override
  * the route (message, task, round, session, done) are cleared first so a
@@ -786,10 +833,12 @@ static void png_setup(App *a, const State *base, const char *card) {
     a->showing_done = a->watching = a->force_progress = a->force_cloner = a->force_standby = 0;
     a->signed_in = 1; a->admin = 1; a->mode = MODE_MENU;
     a->chosen_disk = -1; a->room_confirming = a->class_confirming = 0; a->dd_open = 0;
+    a->st.shrink_pending = !strcmp(card, "shrink") && base->shrink_pending;   /* #928: one card shows it */
     snprintf(a->signed_user, sizeof a->signed_user, "%s", a->user[0] ? a->user : "admin");
     if (!strcmp(card, "login"))         { a->signed_in = 0; }
     else if (!strcmp(card, "pick"))     { a->mode = MODE_CAPTURE; if (base->ndisks) { a->chosen_disk = 0; snprintf(a->name, sizeof a->name, "Office 2024 — סטנדרט"); a->folder_sel = base->nfolders ? 1 : 0; } }
     else if (!strcmp(card, "progress")) { a->st.task = base->task == TASK_PENDING ? TASK_PENDING : TASK_RUNNING; }
+    else if (!strcmp(card, "shrink"))   { a->st.task = TASK_RUNNING; }   /* #928: the question comes mid-capture */
     else if (!strcmp(card, "done"))     { a->st.task = TASK_DONE; a->watching = 1; }
     else if (!strcmp(card, "room"))     { a->mode = MODE_ROOM; a->room_target_set = 0; a->nroom_selection = 0; }
     else if (!strcmp(card, "room-live")){ a->mode = MODE_ROOM; a->st.has_round = 1; }
@@ -847,7 +896,8 @@ static int render_png(App *a, const State *base, const char *prefix, int w, int 
                                        SCREEN_ROOM, SCREEN_ROOM, SCREEN_CLASS, SCREEN_CLASS, SCREEN_CLONER, SCREEN_STANDBY, SCREEN_MESSAGE,
                                        SCREEN_RESTORE,
                                        SCREEN_ROOM, /* "direct" (#715): the room screen in MODE_DIRECT */
-                                       SCREEN_TOOLS, SCREEN_TOOLS, SCREEN_TOOLS /* #649: list, confirm, output */ };
+                                       SCREEN_TOOLS, SCREEN_TOOLS, SCREEN_TOOLS, /* #649: list, confirm, output */
+                                       SCREEN_PROGRESS /* "shrink" (#928): the dialog over the capture */ };
         /* One entry per card, or want[c] reads past the table -- that is exactly
          * what the lab saw when "direct" was added to PNG_CARDS alone. */
         _Static_assert(sizeof want / sizeof want[0] == sizeof PNG_CARDS / sizeof PNG_CARDS[0],

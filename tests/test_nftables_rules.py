@@ -96,7 +96,7 @@ def test_console_8081_is_on_servers_if_not_deploy() -> None:
     assert 'iifname "eth-srv" tcp dport 8081 accept' in got
     assert 'iifname "eth-deploy" tcp dport 8081' not in got
     assert 'iifname "eth-deploy" tcp dport 8080 accept' in got
-    assert 'iifname "eth-deploy" tcp dport 8082 accept' in got
+    assert "8082" not in got   # #1247: הקיוסק הוסר
 
 
 @needs_bash

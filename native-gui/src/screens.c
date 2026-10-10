@@ -75,6 +75,7 @@ static double draw_header(App *a, cairo_t *cr, double W) {
 
 static const char *status_word(const App *a,char *buf,size_t n,Rgb *dot){
     const State *s=&a->st; *dot=a->theme->led_ok;
+    if(s->shrink_pending){*dot=a->theme->warn;return "ממתין להחלטת כיווץ";}   /* #928: the modal owns the screen */
     switch(a->screen){
     case SCREEN_LOGIN:return "ממתין לאימות";
     case SCREEN_MENU:return "בחירת פעולה";
@@ -98,6 +99,7 @@ static const char *status_word(const App *a,char *buf,size_t n,Rgb *dot){
 }
 
 static const char *status_keys(const App *a){
+    if(a->st.shrink_pending)return "1  כווץ וקלוט    2  קלוט בלי כיווץ    3 / Esc  בטל קליטה";   /* #928 */
     switch(a->screen){
     case SCREEN_LOGIN:return "Enter  כניסה";
     case SCREEN_MENU:return "1–4  בחירה    Enter  אישור    Esc  התנתק";
@@ -176,10 +178,10 @@ void screen_login(App *a,cairo_t *cr,double W,double H,double head_h){
 typedef struct{const char *title,*desc,*how[3];int id,multi,admin,cls;}MenuItem;
 #define MENU_N 5
 static const MenuItem MENU[MENU_N]={
+ { "קליטת אימג' חדש","הדיסק של המחשב הזה נקרא, מכווץ ומועלה לספרייה כאימג' חדש או כגרסה.",{"בדיקת SMART לפני","sha256 בקליטה","שם, תיאור, תיקייה"},HIT_CAPTURE,0,1,0},
  { "שיכפול מהשרת","אימג' מהספרייה משודר במולטיקאסט לכל מחשבי השיכפול בחדר, בגלים.",{"בוחרים אימג' ויעד","החדר מתעורר ומצטרף","כל גל כותב למגירות המוכנות"},HIT_ROOM,1,0,0},
  { "שיכפול ישיר","הדיסק של המחשב הזה נקרא פעם אחת ומשודר ישירות למגירות — בלי לשמור אימג' בשרת.",{"קריאה בלבד מהדיסק הזה","סבב יחיד","למי שנבחר בלבד"},HIT_DIRECT,1,0,0},
  { "שחזור לדיסק הזה","אימג' מהספרייה נכתב על הדיסק הפנימי של המחשב הזה — כמו שיכפול בודד.",{"בוחרים אימג'","מקלידים את שם המכונה","הדיסק נמחק ונכתב"},HIT_RESTORE,0,0,0},
- { "קליטת אימג' חדש","הדיסק של המחשב הזה נקרא, מכווץ ומועלה לספרייה כאימג' חדש או כגרסה.",{"בדיקת SMART לפני","sha256 בקליטה","שם, תיאור, תיקייה"},HIT_CAPTURE,0,1,0},
  /* #1081: classes are v1.2 -- drawn only when the state file says menu_class=1 (absent = 0). */
  { "הפצה לכיתות","בוחרים כיתה, מחשבים ואימג' — הסבב מעיר את הכיתה ורץ בשרת.",{"בוחרים כיתה ואימג'","הכיתה מתעוררת ומצטרפת","הסבב רץ בשרת"},HIT_CLASSES,1,0,1}
 };
@@ -375,7 +377,9 @@ void app_draw(App *a,cairo_t *cr,int W,int H){
     case SCREEN_TOOLS:    screen_tools(a, cr, W, H, head_h); break;     /* #649 */
     case SCREEN_INSTALL:  break;
     }
-    draw_state_warning(a,cr,W,H);draw_idle_countdown(a,cr,W,H);draw_status(a,cr,W,H);draw_toast(a,cr,W,H);
+    draw_state_warning(a,cr,W,H);draw_idle_countdown(a,cr,W,H);
+    draw_shrink_dialog(a,cr,W,H);   /* #928: modal, over every screen but the status bar */
+    draw_status(a,cr,W,H);draw_toast(a,cr,W,H);
 }
 
 void app_draw_pointer(App *a,cairo_t *cr){if(a->ptr_visible)draw_cursor(cr,a->ptr_x,a->ptr_y);}

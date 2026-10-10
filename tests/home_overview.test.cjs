@@ -163,7 +163,7 @@ test('#968: the deploy IP comes from /me.deploy_ip; null is "not configured" (#1
 });
 test('the global .ok form-message rule is neutralised under .page',()=>{
   const css=fs.readFileSync(path.join(root,'console.css'),'utf8');
-  assert.match(css,/\n\.ok\{color:var\(--led-ok\); font-size:12\.5px; min-height:18px; margin-top:6px\}/,'precondition: the global rule still exists for form messages');
+  assert.match(css,/\n\.ok\{color:var\(--led-ok\); font-size:var\(--t-sm\); min-height:18px; margin-top:6px\}/,'precondition: the global rule still exists for form messages');
   const pageCss=css.slice(css.indexOf('.page{--rp:4px'));
   assert.match(pageCss,/\.page \.ok\{font-size:inherit;min-height:0;margin-top:0;color:inherit\}/);
 });
@@ -299,7 +299,7 @@ test('a source that could not be read is shown as unread — never as green or a
 test('a failed /overview read marks the page stale instead of pretending',async()=>{
   const s=setup(); s.fixtures['/overview']=new Error('offline'); s.run('renderActivity=()=>{}');
   await s.run('refreshStatus()');
-  assert.match(s.run('home(0)'),/<div class="note warn">.*Server status could not be read/);
+  assert.match(s.run('home(0)'),/<div class="note warn">.*מצב השרת לא נקרא/);
 });
 
 // ---- תפקיד deploy --------------------------------------------------------------

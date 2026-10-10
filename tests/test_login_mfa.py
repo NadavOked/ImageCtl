@@ -343,14 +343,14 @@ def test_revoke_disconnects_a_live_session(server):
 
 
 def test_kiosk_login_skips_mfa(server):
-    from server.app import create_kiosk_app
+    from server.app import create_agent_app
     admin = server["admin"]
     admin.post("/api/console/users", json={
         "username": "kioskadm", "password": "Aa12345!", "role": "admin",
     })
     c = _console_client(server)
     complete_console_login(c, server["ctx"].conn, "kioskadm", "Aa12345!")
-    kiosk = TestClient(create_kiosk_app(server["app"].state.runtime))
+    kiosk = TestClient(create_agent_app(server["app"].state.runtime))
     r = kiosk.post("/api/console/login", json={
         "username": "kioskadm", "password": "Aa12345!",
     })

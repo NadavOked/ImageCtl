@@ -2,7 +2,7 @@
 // שלילית ודאית. לכל אתר: כשל חייב להוליד תצוגה/ערך שונה מהמצב הוודאי.
 // הבדיקה מריצה את הפונקציות המשוגרות עצמן — כך שהחזרת הצורה הישנה
 // (בקרה שלילית) מפילה את הטסט התנהגותית, לא ב-collection.
-// #517: console.js / netcfg.js. #752: station/*.js. #516: כשל /logout
+// #517: console.js / netcfg.js. #516: כשל /logout
 // בחוסר פעילות אינו "נותקת" ודאית.
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
@@ -96,127 +96,6 @@ test('site4 startCountdown: reload failure after rollback surfaces, not swallowe
   assert.match(toasts[0], /cfg down/);
 });
 
-// חילוץ השמה של onclick — ה-handlers ב-classes.js הם פונקציות חסרות-שם
-// שכבר היו לפני התיקון; מריצים אותן עצמן, לא פונקציה חדשה שנעלמת ב-revert.
-function assignmentSource(file, needle) {
-  const source = fs.readFileSync(path.join(root, file), 'utf8');
-  const lines = source.split('\n');
-  const start = lines.findIndex(line => line.includes(needle));
-  assert.ok(start >= 0, `${needle} exists in ${file}`);
-  const indent = lines[start].match(/^\s*/)[0];
-  const end = lines.findIndex((line, i) => i > start && line.trimEnd() === indent + '};');
-  assert.ok(end > start, `${needle} has a closing };`);
-  return lines.slice(start, end + 1).join('\n');
-}
-
-function elStub(extra) {
-  return {
-    textContent: '', value: 'X', onclick: null, focus() {},
-    classList: { contains: () => false, add() {}, remove() {}, toggle() {} },
-    ...extra,
-  };
-}
-
-/* --- מקום 5: station fmtBytes — אותו סמן "לא נקרא" כמו ב-console.js ------ */
-test('site5 station fmtBytes: unread (null/NaN/Infinity) differs from real zero', () => {
-  const stationFmt = load(vm.createContext({}), 'station/station.js', 'fmtBytes');
-  const consoleFmt = load(vm.createContext({}), 'console.js', 'fmtBytes');
-  assert.notEqual(stationFmt(null), stationFmt(0), 'null must not render the same as real zero');
-  assert.equal(stationFmt(null), '–');
-  assert.equal(stationFmt(undefined), '–');
-  assert.equal(stationFmt(NaN), '–');
-  assert.equal(stationFmt(Infinity), '–');
-  assert.doesNotMatch(stationFmt(0), /^–$/);
-  assert.match(stationFmt(1024), /1\.0 KB/);
-  // אותו fmtBytes כמו בקונסולה — לא עותק שנסחף
-  for (const v of [null, undefined, NaN, Infinity, -1, 0, 50, 1024]) {
-    assert.equal(stationFmt(v), consoleFmt(v), `station fmtBytes drifted from console for ${String(v)}`);
-  }
-});
-
-/* --- מקום 6: room.refresh — כשל /room מסמן כרטיס ישן, לא return שקט ------ */
-test('site6 room refresh: /room failure marks the card stale, not silent', async () => {
-  let staleCalls = 0, freshCalls = 0;
-  const ctx = vm.createContext({
-    fetch: async () => { throw new Error('room down'); },
-    markRoomStale: () => { staleCalls++; },
-    markRoomFresh: () => { freshCalls++; },
-    renderLive() {},
-    renderSetup: async () => {},
-  });
-  const fn = load(ctx, 'station/room.js', 'refresh');
-  await fn();
-  assert.equal(staleCalls, 1, 'a failed /room must flag staleness, not return silently');
-  assert.equal(freshCalls, 0);
-
-  ctx.fetch = async () => ({ ok: true, json: async () => ({ round: null }) });
-  await fn();
-  assert.equal(freshCalls, 1, 'a successful read must clear staleness');
-  assert.equal(staleCalls, 1);
-});
-
-/* --- מקום 7: classes closeSession — כשל authed מדווח, לא נבלע ------------ */
-test('site7 classes closeSession: authed failure toasts, not swallowed', async () => {
-  const toasts = [];
-  const ctx = vm.createContext({
-    $: () => elStub(),
-    authed: async () => { throw new Error('network down'); },
-    toast: (m) => toasts.push(m),
-    reset() {},
-    refresh() {},
-  });
-  const fn = load(ctx, 'station/classes.js', 'closeSession');
-  await fn('sid');
-  assert.equal(toasts.length, 1, 'close failure must surface to the operator');
-  assert.match(toasts[0], /network down/);
-  assert.match(toasts[0], /לא הצלחנו/);
-});
-
-/* --- מקום 8: classes cls-open — כשל פתיחת סבב מדווח, לא נבלע ------------ */
-test('site8 classes cls-open: session POST failure toasts, not swallowed', async () => {
-  const toasts = [];
-  const store = {};
-  const $ = (sel) => { if (!store[sel]) store[sel] = elStub(); return store[sel]; };
-  const ctx = vm.createContext({
-    $,
-    chosenImage: 'img1',
-    group: { id: 'g1' },
-    chosen: { size: 2 },
-    machines: [{}, {}],
-    authed: async () => { throw new Error('network down'); },
-    toast: (m) => toasts.push(m),
-    shown: 'image',
-    refresh() {},
-    expandBlockValue: () => 'auto',   // #59: הבחירה חיה ב-station.js, לא כאן
-  });
-  vm.runInContext(assignmentSource('station/classes.js', '$("#cls-open").onclick'), ctx);
-  assert.ok(store['#cls-open'].onclick, 'open handler assigned');
-  await store['#cls-open'].onclick();
-  assert.equal(toasts.length, 1, 'open failure must surface to the operator');
-  assert.match(toasts[0], /network down/);
-  assert.match(toasts[0], /לא הצלחנו/);
-});
-
-/* --- מקום 9: classes cls-start — כשל התחלה מדווח, לא נבלע --------------- */
-test('site9 classes cls-start: start POST failure toasts, not swallowed', async () => {
-  const toasts = [];
-  const store = {};
-  const $ = (sel) => { if (!store[sel]) store[sel] = elStub(); return store[sel]; };
-  const ctx = vm.createContext({
-    $,
-    session: { id: 's1' },
-    authed: async () => { throw new Error('network down'); },
-    toast: (m) => toasts.push(m),
-    shown: 'live-open',
-    refresh() {},
-  });
-  vm.runInContext(assignmentSource('station/classes.js', '$("#cls-start").onclick'), ctx);
-  assert.ok(store['#cls-start'].onclick, 'start handler assigned');
-  await store['#cls-start'].onclick();
-  assert.equal(toasts.length, 1, 'start failure must surface to the operator');
-  assert.match(toasts[0], /network down/);
-  assert.match(toasts[0], /לא הצלחנו/);
-});
 /* --- מקום 5: startIdleWatch — כשל /logout אינו ניתוק ודאי (#516) ------ */
 function idleWatchContext(postImpl) {
   const loginError = {textContent: ''};

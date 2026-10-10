@@ -7,6 +7,12 @@
 :root{
   color-scheme:light;
 
+  /* תנועה: משכים ו-easing אחידים (apple-design 4,7) */
+  --dur-fast:120ms; --dur:180ms; --ease:cubic-bezier(.2,0,0,1);
+  --dur-press:100ms; --dur-base:240ms; --dur-sheet:320ms;
+  /* קנה מידה טיפוגרפי: שש דרגות ב-rem (מכבדות הגדלת גופן בדפדפן), אין טקסט מתחת ל-11px */
+  --t-xs:.6875rem; --t-sm:.75rem; --t-base:.8125rem; --t-md:.9375rem; --t-lg:1.125rem; --t-xl:1.375rem;
+
   --clr-header:#25333D; --clr-header-hover:#31434F; --clr-header-text:#FFFFFF;
 
   --clr-bg:#EEF1F5; --clr-surface:#FFFFFF; --clr-nav:#FFFFFF;

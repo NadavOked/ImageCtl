@@ -627,6 +627,20 @@ def test_the_server_unit_may_write_where_the_code_writes():
     assert " /etc" in paths and netcfg_host.RESOLV_CONF.startswith("/etc/")
 
 
+@pytest.mark.parametrize("unit_name", ["imagectl-server.service", "imagectl-dcui.service",
+                                       "imagectl-netrollback.service"])
+def test_units_that_run_ifup_may_write_its_runtime_state(unit_name):
+    """‏#1241: ‏ProtectSystem=strict הופך את /run ל-read-only. ‏ifup/ifdown
+    נועלים את /run/network/ifstate.<כרטיס>, ו-dhcpcd כותב ל-/run/dhcpcd
+    ול-/var/lib/dhcpcd — בלעדיהם כל החלת כתובת נכשלה על שרת מה-ISO."""
+    unit = (REPO / "install" / unit_name).read_text(encoding="utf-8")
+    assert "ProtectSystem=strict" in unit
+    paths = next(line for line in unit.splitlines()
+                 if line.startswith("ReadWritePaths=")).split("=", 1)[1].split()
+    for need in ("/run/network", "/run/dhcpcd", "/var/lib/dhcpcd"):
+        assert need in paths or f"-{need}" in paths, f"{unit_name}: {need} is read-only for ifup/dhcpcd"
+
+
 # --- #761: פאנל אחד בסגנון vCenter, לא שני פאנלים לאותו כרטיס ---------------
 
 

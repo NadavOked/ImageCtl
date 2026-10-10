@@ -109,7 +109,6 @@ def test_main_wires_the_flag_into_the_runtime(tmp_path: Path, monkeypatch) -> No
     monkeypatch.setattr(server.app, "create_runtime", fake_create_runtime)
     monkeypatch.setattr(server.app, "create_agent_app", lambda rt: "agent")
     monkeypatch.setattr(server.app, "create_console_app", lambda rt: "console")
-    monkeypatch.setattr(server.app, "create_kiosk_app", lambda rt: "kiosk")
     monkeypatch.setattr(uvicorn, "Config", lambda *a, **k: None)
     monkeypatch.setattr(uvicorn, "Server", lambda config: object())
     monkeypatch.setattr(server.main, "serve_all", lambda servers: None)

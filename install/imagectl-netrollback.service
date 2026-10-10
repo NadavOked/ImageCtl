@@ -46,7 +46,7 @@ ExecStart=/usr/bin/python3 -m server.netcfg_rollback --state-dir /var/lib/imagec
 # The rollback writes /etc/network/interfaces.d and /etc/resolv.conf and runs
 # ifup, so it needs root and those paths writable.
 ProtectSystem=strict
-ReadWritePaths=/var/lib/imagectl /etc/network/interfaces.d /etc
+ReadWritePaths=/var/lib/imagectl /etc/network/interfaces.d /etc -/run/network -/run/dhcpcd -/var/lib/dhcpcd
 NoNewPrivileges=yes
 
 [Install]

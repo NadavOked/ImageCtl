@@ -254,12 +254,15 @@ def test_static_includes_are_at_9_9():
     #980 (כיבוי כל המשכפלים, היסטוריית סבבי החדר, עמודת התיקייה בקליטות) = ‏10.6;
     #1227 (monitorToggle נגזר מ-enabled שחזר בתשובה, לא ממה שביקשו) = ‏10.7;
     #1179 (העץ של המשני = העץ של הראשי; "‹שם› לא ענה" בכל עמוד) = ‏10.8;
-    #1235 (כונן בלי serial: "לא ניתן לזהות את הכונן בחריץ N" בכרטיס המשכפל) = ‏10.9.
+    #1235 (כונן בלי serial: "לא ניתן לזהות את הכונן בחריץ N" בכרטיס המשכפל) = ‏10.9;
+    apple-quick-wins (‏:active, reduced-motion, toast/backdrop, טוקני תנועה, long-press עכבר) = ‏11.0;
+    F06 (חלון צומח מהכפתור, מגירה 320ms) ו-F09 (קנה מידה טיפוגרפי ב-rem) = ‏11.1;
+    visual-pass (toast בטוקנים + שגיאת רשת בעברית, חץ העץ ב-RTL, מגירה בלי גלישה, כפתור מחיקה אדום) = ‏11.2.
     שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
     versions = {float(v) for v in re.findall(r'\?v=(\d+\.\d+)"', page)}
-    assert versions == {10.9}, versions
+    assert versions == {11.2}, versions
 
 
 def test_update_apply_is_a_sheet_without_text_verification_and_revert_uses_hostname():

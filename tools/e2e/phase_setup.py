@@ -12,7 +12,7 @@ import sys
 from types import SimpleNamespace
 
 from .harness import (ADMIN, BUILD_MAC, CLASS_MACS, CLONER_MAC, DEPLOY,
-                      GB256, KIOSK_BASE, REPO, Client, check, disk)
+                      GB256, BASE, REPO, Client, check, disk)
 from .machines import SimMachine
 
 
@@ -42,14 +42,14 @@ def run(data_dir, images_dir) -> SimpleNamespace:
     status, _ = console.json("POST", "/api/console/users", dict(DEPLOY, role="deploy"))
     check("משתמש הפצה נוצר", status == 200, str(status))
     # ‏#1073: למשתמש הפצה אין קונסולה וובית — הכניסה בקונסולה נדחית בשם,
-    # והוא נכנס דרך הקיוסק (פני מחשב הבנייה), שנושא את allowlist הקיוסק.
+    # והוא נכנס דרך פורט הסוכן (פני מחשב הבנייה), שנושא את allowlist הקיוסק.
     web = Client()
     status, body = web.json("POST", "/api/console/login", DEPLOY)
     check("למשתמש ההפצה אין קונסולה וובית (#1073)",
           status == 403 and body.get("error") == "deploy_no_console", f"{status} {body}")
-    deploy = Client(console_base=KIOSK_BASE)
+    deploy = Client(console_base=BASE)
     status, _ = deploy.json("POST", "/api/console/login", DEPLOY)
-    check("כניסת משתמש ההפצה דרך הקיוסק", status == 200, str(status))
+    check("כניסת משתמש ההפצה דרך פורט הסוכן", status == 200, str(status))
 
     status, _ = console.json("POST", "/api/console/groups",
                              {"id": "grp_LAB1", "label": "כיתה LAB1", "role": "classroom"})

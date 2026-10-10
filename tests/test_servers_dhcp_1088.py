@@ -346,7 +346,6 @@ def test_console_host_by_name_resolves_and_watches(tmp_path, monkeypatch):
     monkeypatch.setattr(server.app, "create_runtime", lambda *a, **k: (captured.update(kwargs=k), "rt")[1])
     monkeypatch.setattr(server.app, "create_agent_app", lambda rt: "agent")
     monkeypatch.setattr(server.app, "create_console_app", lambda rt: "console")
-    monkeypatch.setattr(server.app, "create_kiosk_app", lambda rt: "kiosk")
     monkeypatch.setattr(uvicorn, "Config", lambda app, **kw: configs.setdefault(app, []).append(kw) or object())
     monkeypatch.setattr(uvicorn, "Server", lambda config: object())
     monkeypatch.setattr(server.main, "serve_all", lambda servers: None)
@@ -378,7 +377,6 @@ def test_console_host_by_name_without_a_lease_yet_is_loopback_only(tmp_path, mon
     monkeypatch.setattr(server.app, "create_runtime", lambda *a, **k: "rt")
     monkeypatch.setattr(server.app, "create_agent_app", lambda rt: "agent")
     monkeypatch.setattr(server.app, "create_console_app", lambda rt: "console")
-    monkeypatch.setattr(server.app, "create_kiosk_app", lambda rt: "kiosk")
     monkeypatch.setattr(uvicorn, "Config", lambda app, **kw: configs.setdefault(app, []).append(kw) or object())
     monkeypatch.setattr(uvicorn, "Server", lambda config: object())
     monkeypatch.setattr(server.main, "serve_all", lambda servers: None)
@@ -417,7 +415,6 @@ def _run_main_no_url(tmp_path, monkeypatch, interface_for=None):
                         lambda *a, **k: (captured.update(args=a, kwargs=k), "rt")[1])
     monkeypatch.setattr(server.app, "create_agent_app", lambda rt: "agent")
     monkeypatch.setattr(server.app, "create_console_app", lambda rt: "console")
-    monkeypatch.setattr(server.app, "create_kiosk_app", lambda rt: "kiosk")
     monkeypatch.setattr(uvicorn, "Config", lambda app, **kw: configs.setdefault(app, []).append(kw) or object())
     monkeypatch.setattr(uvicorn, "Server", lambda config: object())
     monkeypatch.setattr(server.main, "serve_all", lambda servers: None)
@@ -434,11 +431,10 @@ def _run_main_no_url(tmp_path, monkeypatch, interface_for=None):
 def test_without_server_url_and_without_a_console_record_the_server_is_unconfigured(
         tmp_path, monkeypatch, capsys):
     """התקנה נקייה (#1088): היחידה מעבירה ${IMAGECTL_URL} ריק. השרת עולה —
-    סוכן וקיוסק על loopback בלבד, ומצב ההפצה נאמר: source=none."""
+    סוכן על loopback בלבד, ומצב ההפצה נאמר: source=none."""
     configs, captured = _run_main_no_url(tmp_path, monkeypatch)
     assert captured["args"][2] == "http://127.0.0.1:8080"
     assert [c["host"] for c in configs["agent"]] == ["127.0.0.1"]
-    assert [c["host"] for c in configs["kiosk"]] == ["127.0.0.1"]
     assert captured["kwargs"]["interface"] is None
     deploy = captured["kwargs"]["deploy"]
     assert deploy.state.source == "none" and not deploy.state.configured

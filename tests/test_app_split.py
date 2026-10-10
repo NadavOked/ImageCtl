@@ -26,7 +26,7 @@ except ImportError:  # pragma: no cover
     TestClient = None
 
 from server import app as app_module
-from server.app import (create_agent_app, create_console_app, create_kiosk_app,
+from server.app import (create_agent_app, create_console_app,
                         create_runtime)
 
 
@@ -99,19 +99,15 @@ def test_console_routes_only_on_console_app(split):
     assert "/console" not in _mounts(agent_app)
 
 
-def test_station_router_on_kiosk_and_agent_not_console(split):
-    # ‏#738 (tracer 2 של #703): הקיוסק (`create_station_router`, ‏prefix
-    # `/api/v1/agent/{groups,state,sessions}`) חולץ מהקונסולה לאפליקציית
-    # הקיוסק — ואפליקציית הניהול אינה מאזינה בוילן הכיתות.
+def test_station_router_on_agent_not_console(split):
+    # ‏#738 (tracer 2 של #703): `create_station_router` (‏prefix
+    # `/api/v1/agent/{groups,state,sessions}`) חולץ מהקונסולה — ואפליקציית
+    # הניהול אינה מאזינה בוילן ההפצה. ‏#1247: אפליקציית הקיוסק (:8082) הוסרה.
     # ‏#824: אותם נתיבים הם גם ה-API שהסוכן על המכונה צורך (‏guistate.sh,
     # ‏guibridge.sh, ‏guiparent.sh, ‏classround.sh) דרך `$SERVER` = פורט
     # הסוכן — ולכן הם חיים גם על הסוכן. על הקונסולה — לא.
     rt, agent_app, console_app = split
-    kiosk_app = create_kiosk_app(rt)
     agent, console = TestClient(agent_app), TestClient(console_app)
-    kiosk = TestClient(kiosk_app)
-    assert _present(kiosk, "POST", "/api/v1/agent/sessions")
-    assert _present(kiosk, "GET", "/api/v1/agent/state?mac=aa:bb:cc:dd:ee:ff")
     assert _present(agent, "POST", "/api/v1/agent/sessions")
     assert _present(agent, "GET", "/api/v1/agent/state?mac=aa:bb:cc:dd:ee:ff")
     assert _absent(console, "POST", "/api/v1/agent/sessions")
@@ -142,8 +138,8 @@ def test_agent_app_alone_serves_station_state(split):
 def test_build_flow_console_calls_on_agent_app(split):
     """17/09 01:06, מדוד על השרת החי: מחשב הבנייה (10.44.0.88) שלח
     `POST /api/console/login` ל-`$SERVER` = פורט הסוכן וקיבל **404** — הכניסה
-    במסך הבנייה נכשלה עם סיסמה נכונה. ‏#738 העביר את allowlist הקיוסק ל-‎:8082
-    בלבד, והסוכן (`buildmenu.sh:59,95,105`, ‏`roomflow.sh`) קורא את אותם
+    במסך הבנייה נכשלה עם סיסמה נכונה. ‏#738 העביר את allowlist מחשב הבנייה ל-‎:8082
+    בלבד (הוסר ב-#1247), והסוכן (`buildmenu.sh:59,95,105`, ‏`roomflow.sh`) קורא את אותם
     נתיבים דרך `$SERVER` — אותה משפחה כמו #824. ה-allowlist של הקיוסק (login,
     folders, images, tasks/capture, room) חי גם על הסוכן; נתיבי ניהול — לא."""
     rt, agent_app, _console_app = split

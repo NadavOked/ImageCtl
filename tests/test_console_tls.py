@@ -7,7 +7,7 @@
 - ‏``--console-tls off`` מתקבל רק על loopback; על כרטיס ניהול — סירוב
   בשם שני הדגלים, לא נפילה שקטה ל-HTTP.
 - ‏``main`` מוליך את התעודה **למאזיני הקונסולה בלבד** (כולל המאזין
-  הכפול על 127.0.0.1, #904) — לא לסוכן (8080) ולא לקיוסק (8082).
+  הכפול על 127.0.0.1, #904) — לא לסוכן (8080).
 - עוגיית ההתחברות נושאת ``Secure`` תחת TLS, ולא בלעדיו (שומר מפני
   תיקון-יתר שהיה שובר את הרצת הפיתוח על http://127.0.0.1).
 - ‏``/me`` מדווח ``tls`` עם טביעת האצבע (לשורת הסטטוס), ומסך הפורטים
@@ -119,9 +119,8 @@ def test_main_gives_the_cert_to_every_console_listener_and_nothing_else(
         assert Path(cfg["ssl_certfile"]) == expected_cert
         assert Path(cfg["ssl_keyfile"]) == expected_cert.with_name("console.key")
     assert expected_cert.is_file()
-    for app in ("agent", "kiosk"):
-        for cfg in configs[app]:
-            assert "ssl_certfile" not in cfg and "ssl_keyfile" not in cfg
+    for cfg in configs["agent"]:
+        assert "ssl_certfile" not in cfg and "ssl_keyfile" not in cfg
 
 
 def test_main_tls_off_on_loopback_serves_plain_http(tmp_path: Path, monkeypatch):
@@ -162,8 +161,8 @@ def _console(tmp_path: Path, images_root: Path, clock, tls):
              "http_text": lambda url: (200, ""), "interfaces": lambda: [],
              "tftp_root": lambda: tmp_path, "udp_sender_pids": lambda: []}
     # אפליקציית הקונסולה **האמיתית** (8081), לא המעטפת המשולבת: במעטפת
-    # ה-``/login`` של הקיוסק (8082, http — allowlist של מסך התחנה) נרשם
-    # ראשון ומצל על זה של הקונסולה, ועוגיית הקיוסק בצדק אינה Secure.
+    # ה-``/login`` של allowlist הסוכן (http) נרשם ראשון ומצל על זה של
+    # הקונסולה, ועוגיית הסוכן בצדק אינה Secure.
     rt = create_runtime(tmp_path / "data", images_root, "http://10.44.12.10:8080",
                         now_fn=clock, health_hooks=hooks, console_tls=tls,
                         sender_runner=Recorder(block=True))

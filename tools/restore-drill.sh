@@ -125,13 +125,12 @@ fi
 
 # --- 3. שרת שני על העותק ----------------------------------------------------
 CONSOLE_PORT=$((PORT + 1))
-KIOSK_PORT=$((PORT + 2))
-say "מרים שרת שני על 127.0.0.1:$PORT/$CONSOLE_PORT/$KIOSK_PORT (לוג: $LOG)"
+say "מרים שרת שני על 127.0.0.1:$PORT/$CONSOLE_PORT (לוג: $LOG)"
 # הפלט לקובץ ולא ל-PIPE (שרת שאיש לא קורא את הפלט שלו נחסם — CLAUDE.md).
 "${RUN_AS[@]}" env PYTHONPATH="$APP_DIR" python3 -m server.main \
     --server-url "http://127.0.0.1:$PORT" --data-dir "$RESTORE/data" --images "$RESTORE/images" \
     --host 127.0.0.1 --port "$PORT" --console-host 127.0.0.1 --console-port "$CONSOLE_PORT" \
-    --console-tls off --kiosk-port "$KIOSK_PORT" --tftp-root "$RESTORE/tftp" \
+    --console-tls off --tftp-root "$RESTORE/tftp" \
     --boot-dir "$RESTORE/boot" --dhcp-leases "$RESTORE/leases" --sender-simulate \
     --repo-dir "$APP_DIR" >> "$LOG" 2>&1 </dev/null &
 SERVER_PID=$!

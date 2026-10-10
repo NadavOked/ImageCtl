@@ -5,7 +5,7 @@
 ההפצה/הכיתות — בדיוק מה שמודל ה-FW אוסר (#703: "הגבול הוא ה-socket").
 
 מודל ה-FW: הקונסולה על ממשק המשרדים/שרתים **בלבד**. לכן הקונסולה מקבלת
-דגל ``--console-host`` משלה, בנפרד מ-``--host`` (הסוכן/קיוסק על וילן
+דגל ``--console-host`` משלה, בנפרד מ-``--host`` (הסוכן על וילן
 ההפצה). ברירת המחדל fail-closed — ‏loopback, לא ``0.0.0.0``: בלי כתובת
 ניהול מפורשת הקונסולה אינה נגישה מאף כרטיס חיצוני, ואינה תופסת 8081
 בממשקי ההפצה (עיקרון 5 — השומר עובד כברירת מחדל, לא רק אם זכרו דגל).
@@ -61,7 +61,6 @@ def run_main(tmp_path: Path, monkeypatch, *extra_argv: str) -> dict[str, list[di
     monkeypatch.setattr(server.app, "create_runtime", lambda *a, **k: "rt")
     monkeypatch.setattr(server.app, "create_agent_app", lambda rt: "agent")
     monkeypatch.setattr(server.app, "create_console_app", lambda rt: "console")
-    monkeypatch.setattr(server.app, "create_kiosk_app", lambda rt: "kiosk")
     monkeypatch.setattr(uvicorn, "Config", fake_config)
     monkeypatch.setattr(uvicorn, "Server", lambda config: object())
     monkeypatch.setattr(server.main, "serve_all", lambda servers: None)
@@ -103,7 +102,7 @@ def test_console_on_a_management_nic_also_listens_on_loopback(
     כתובת ה-peer — loopback בלבד. במעבדה הקונסולה של המשני נקשרה ל-
     ‏10.30.0.8 בלבד, ומשם ה-peer לעולם אינו loopback: ‏403 תמיד, וה-ssh -L
     היה המוצא היחיד. לכן כשכרטיס הניהול אינו loopback הקונסולה מקבלת
-    מאזין **שני** על 127.0.0.1, על אותו פורט — ורק היא: לסוכן ולקיוסק
+    מאזין **שני** על 127.0.0.1, על אותו פורט — ורק היא: לסוכן
     אין מה לחפש על loopback."""
     configs = run_main(tmp_path, monkeypatch,
                        "--console-host", "10.30.0.8", "--console-port", "8081")
@@ -111,7 +110,7 @@ def test_console_on_a_management_nic_also_listens_on_loopback(
     console = configs["console"]
     assert sorted(c["host"] for c in console) == ["10.30.0.8", "127.0.0.1"]
     assert {c["port"] for c in console} == {8081}
-    assert len(configs["agent"]) == 1 and len(configs["kiosk"]) == 1
+    assert len(configs["agent"]) == 1 and "kiosk" not in configs   # #1247
 
 
 def test_console_on_loopback_gets_a_single_listener(
@@ -124,15 +123,14 @@ def test_console_on_loopback_gets_a_single_listener(
     assert [c["host"] for c in configs["console"]] == ["127.0.0.1"]
 
 
-def test_agent_and_kiosk_bind_to_interface_address_by_default(
+def test_agent_binds_to_interface_address_by_default(
         tmp_path: Path, monkeypatch) -> None:
-    """#1074: ברירת המחדל של 8080/8082 היא כתובת ``--interface``, לא
+    """#1074: ברירת המחדל של 8080 היא כתובת ``--interface``, לא
     0.0.0.0. ‏R20-F1 — bind לכל הכרטיסים היה החשיפה הרחבה."""
     monkeypatch.setattr(server.main, "_address_for_interface",
                         lambda name: "10.44.9.1")
     configs = run_main(tmp_path, monkeypatch, "--interface", "eth-deploy")
     assert [c["host"] for c in configs["agent"]] == ["10.44.9.1"]
-    assert [c["host"] for c in configs["kiosk"]] == ["10.44.9.1"]
 
 
 def test_without_host_flag_dev_station_binds_to_server_url_ip(
@@ -141,7 +139,6 @@ def test_without_host_flag_dev_station_binds_to_server_url_ip(
     נופל לכתובת ``--server-url`` — לא ל-0.0.0.0 בשקט."""
     configs = run_main(tmp_path, monkeypatch)
     assert [c["host"] for c in configs["agent"]] == ["10.44.12.10"]
-    assert [c["host"] for c in configs["kiosk"]] == ["10.44.12.10"]
 
 
 def test_host_all_interfaces_only_when_explicit_and_warns(
@@ -149,7 +146,6 @@ def test_host_all_interfaces_only_when_explicit_and_warns(
     """0.0.0.0 רק במפורש, ועם אזהרה שנוקבת ב-R20-F1."""
     configs = run_main(tmp_path, monkeypatch, "--host", "0.0.0.0")
     assert [c["host"] for c in configs["agent"]] == ["0.0.0.0"]
-    assert [c["host"] for c in configs["kiosk"]] == ["0.0.0.0"]
     out = capsys.readouterr().out
     assert "0.0.0.0" in out
     assert "R20-F1" in out

@@ -1813,6 +1813,20 @@ resolv_after, problems, changed}` — הקובץ שייכתב, לפני ואחר
   ‏`$RUN_DIR/stay_on` (קובץ) מבטל תמיד. **מסך כשל אינו מגיע לשעון** — ‏`ui_error_hold`
   ו-`hold.sh` לעולם אינם קוראים ל-`poll_sleep`. הכיבוי עובר ב-`arm_wol`
   כמו `finish_and_stop`; בלי WoL המכונה נשארת דולקת, בשם.
+- **`shrink_prompt=<nonce>|<count>` ו-`shrink_partition=<idx>|<old>|<new>`**
+  (‏#928) — שאלת הכיווץ של הקליטה (‏`shrinkplan.sh:shrink_ask`) כדיאלוג של
+  המסך הגרפי, במקום מסך טקסט מאחוריו. הסוכן (‏`agent/lib/shrinkgui.sh`)
+  מאמת את **כל** התוכנית וכותב אטומית את `$GUI_DIR/shrink-request` (שורת
+  `nonce|count` ואחריה שורה לכל מחיצה, בייטים לפני/אחרי); ‏`guistate.sh`
+  מעתיק אותו לקובץ המצב — גם בתמונת הכשל, כי השאלה מקומית. הגואי מצייר
+  אותו רק כש-`count` השורות הגיעו וכולן תקינות (חדש < ישן), עם שלושת
+  הכפתורים "כווץ וקלוט" / "קלוט בלי כיווץ (האימג' לא ייכנס לדיסקים קטנים
+  יותר)" / "בטל קליטה" (מקשים 1/2/3, ‏Esc = ביטול, ‏Enter אינו עונה), ופולט
+  `shrink-continue|plain|cancel|<nonce>`. הגשר כותב `$GUI_DIR/shrink-decision`
+  (‏`nonce|answer`) רק ל-nonce של הבקשה הפעילה ובמסך הבנייה בלבד, בלי כניסה.
+  **שום מסלול לא עונה "כווץ" לבד** (עיקרון 5): גואי שמת, תוכנית פגומה,
+  החלטה שלא נקראה או בלי תשובה תוך `WAIT_SHRINK_GUI_S` (‏1800ש',
+  ‏`waits.sh`) — הקליטה מבוטלת. בלי גואי — מסך הטקסט, כמו קודם.
 - **`hello_age=<seconds>`** — מספר השניות מאז ה-hello האחרון שהסתיים. חסר
   פירושו "לא נמסרה מדידה", לא אפס. הסוכן כותב `hello_age=` ריק לפני
   שניסיון hello ראשון הסתיים.
@@ -2019,8 +2033,8 @@ ServerInit מהמכונה → …). **‏`monitor.js` אינו משתנה ואי
 
 לפני זה: `ports()` ב-console.js צייר `defs` קבוע — חמישה פורטים,
 שניים מהם בלי בדיקת האזנה בכלל. ‏5900 (מוניטור, סעיף 14), 8082
-(קיוסק, `--kiosk-port`) ו-SSH לתחנות (`imagectl.debug`, סעיף 8) לא
-היו ברשימה — ונדב חיפש את 5900 ב-14/09 ולא מצא אותו.
+(קיוסק, `--kiosk-port` — **הוסר ב-#1247**) ו-SSH לתחנות (`imagectl.debug`,
+סעיף 8) לא היו ברשימה — ונדב חיפש את 5900 ב-14/09 ולא מצא אותו.
 
 ### `GET /api/console/ports` (מחובר; admin **לא** נדרש)
 
@@ -2028,13 +2042,13 @@ ServerInit מהמכונה → …). **‏`monitor.js` אינו משתנה ואי
 ניהולי, ומשתמש `deploy` רואה אותה. מחזירה מערך, שורה לכל פורט:
 
 ```json
-{"id": "kiosk", "name": "HTTP", "port": "8082", "proto": "tcp",
- "desc": "...", "target": "דפדפן (קלונרים)",
+{"id": "interserver", "name": "HTTPS (mTLS)", "port": "8443", "proto": "tcp",
+ "desc": "...", "target": "שרת ראשי/משני",
  "state": "ok", "detail": "המתג דלוק ומאזין", "note": "לפתוח ב-FW: ...",
- "enabled": true, "listening": true, "bind": ["0.0.0.0:8082"],
- "toggle": "api", "toggle_url": "/api/console/ports/kiosk",
+ "enabled": true, "listening": true, "bind": ["10.30.0.8:8443"],
+ "toggle": "api", "toggle_url": "/api/console/ports/interserver",
  "confirm_word": null, "confirm_when": null,
- "off_means": "מסך התחנה על מחשבי השיכפול לא ייטען; הסוכן והסבבים ממשיכים"}
+ "off_means": "שרתים משניים לא יוכלו להירשם או לסנכרן מול השרת הזה"}
 ```
 
 ‏`state` הוא אותו וקבולרי כמו כל check ב-`/health` (`ok`/`warn`/`bad`/`off`,
@@ -2074,7 +2088,6 @@ ServerInit מהמכונה → …). **‏`monitor.js` אינו משתנה ואי
 | `pxe_proxy` | 4011/udp | `api` | `PUT /net/interfaces/{name}` `proxy` | `ss` על 4011; `enabled` = כרטיס ב-proxy |
 | `multicast` | 9000–9001/udp | `none` | — | `sender_check` — udp-sender של סבב, לא מאזין קבוע; הכיבוי הוא עצירת סבב |
 | `monitor` | 5900/tcp | `confirm` (`on`) | `PUT /monitor/settings` | המתג `monitor:stations` בלבד (RFB בתחנות, לא בשרת) |
-| `kiosk` | 8082/tcp | `api` | `PUT /ports/kiosk` | `ss -ltnp` |
 | `interserver` | 8443/tcp | `api` / `none` | `PUT /ports/interserver` | `ss -ltnp`; `none` כשאין מאזין רשום (עולה רק על משני עם `--interserver-host`) |
 | `ssh_stations` | 22/tcp | `confirm` (`on`) | `PUT /ssh/stations` | התפריט שהשרת מגיש בפועל (`console_ssh.snapshot`) |
 | `ssh_server:<nic>` | 22/tcp | `confirm` (`on_or_last_off`) | `PUT /ssh/interfaces/<nic>` | שורה **לכל כרטיס** — `listening` מטבלת הסוקטים של הקרנל, `addresses` של הכרטיס |
@@ -2151,14 +2164,14 @@ nftables — שרת קיים לא ינותק.
 |---|---|---|
 | loopback | הכול | pairing מקומי, קונסולה על 127.0.0.1 |
 | כל הכרטיסים | established/related; ICMP echo; ICMPv6 echo+ND (+PMTU) | תשובות, אבחון, שכנות IPv6 |
-| הפצה (`--deploy-if`) | UDP 67, 69; TCP 8080, 8082; UDP מולטיקאסט (ברירת מחדל 9000–9001 מ-`server/sender.py`) | DHCP/TFTP/סוכן/קיוסק/שידור. WoL UDP 9 הוא **יוצא** — output לא נחסם, אין כלל כניסה |
+| הפצה (`--deploy-if`) | UDP 67, 69; TCP 8080; UDP מולטיקאסט (ברירת מחדל 9000–9001 מ-`server/sender.py`) | DHCP/TFTP/סוכן/שידור. WoL UDP 9 הוא **יוצא** — output לא נחסם, אין כלל כניסה |
 | שרתים (`--servers-if`) | TCP 8081, TCP 22 | קונסולה HTTPS, SSH ניהול |
 | שרתים, **משני בלבד** | TCP 8443 מ-`--primary-ip` בלבד (`ip saddr`) | הראשי יוזם; בראשי 8443 אינו נפתח כלל |
 | כל השאר | drop + `log prefix "imagectl-drop "` `limit rate 5/minute` | כיתות = v2 |
 
 TFTP בקובץ המתקין (`/etc/dnsmasq.d/imagectl.conf`): `interface=<deploy-if>`
 + `bind-interfaces` — בלי זה dnsmasq מאזין ל-69 על כל הכרטיסים מההתקנה
-(R20-F1). הסוכן (8080) והקיוסק (8082) נקשרים לכתובת כרטיס ההפצה, לא
+(R20-F1). הסוכן (8080) נקשר לכתובת כרטיס ההפצה, לא
 ל-`0.0.0.0`; `0.0.0.0` רק עם `--host 0.0.0.0` מפורש (אזהרה ביומן).
 
 דף הפורטים ומסך הבריאות: שורה **"חומת אש"** (`id=firewall`) מ-`nft list
@@ -2176,7 +2189,6 @@ imagectl"` / `"לא נטענה"` / `"לא הצלחנו לבדוק"`. אין מת
 | 6 / host | תחנות אתחול → `SRV_D` | UDP 69 | allow TFTP |
 | 7 / host | תחנות רשומות → `SRV_D` | TCP 8080 | allow (שער הזהות נשאר) |
 | 8 / host | ניהול → `SRV_S` | TCP 8081 | allow HTTPS |
-| 9 / host | קיוסק מאושר → bind מקומי | TCP 8082 | allow על כרטיס ההפצה |
 | 10 / host | שולח ↔ מקבלים בוילן ההפצה | UDP 9000–9001 | allow בתוך ההפצה |
 | 12 / host | ניהול → השרת | TCP 22 | allow בוילן השרתים |
 | 13 / יציאה | השרת → שידור וילן ההפצה | UDP 9 | allow יוצא (WoL); אין כלל כניסה |
@@ -2990,10 +3002,10 @@ registered machine (manifest|files)`). **מחיר ידוע:** `curl` מהשרת 
   שהאסימון מוכיח איזו משימה מבוקשת, ולפני קריאת הגוף, `identity_gate` משווה
   את כתובת המקור ל-MAC של המשימה. האסימון (#530) וזהות הרשת הם שני שומרים
   נפרדים; אותם קודי סירוב ואירועי יומן כמו בשאר נתיבי הסוכן.
-- **מניפסט בקיוסק (‎:8082)** — אינו נפתח. מסך התחנה כן מציג את מועמד הרחבת
-  המחיצה, אבל מקבל רק `expand_partitions` בתוך `GET /api/console/images`
-  המאומת שכבר נמצא ב-allowlist. ‏`GET /api/v1/images/<id>/manifest` נשאר
-  מחוץ ל-allowlist של הקיוסק ואינו נחשף לכל פונה בוילן.
+- **מניפסט ב-allowlist של מחשב הבנייה** — אינו נפתח. מחשב הבנייה מקבל רק
+  `expand_partitions` בתוך `GET /api/console/images` המאומת שכבר נמצא
+  ב-allowlist. ‏`GET /api/v1/images/<id>/manifest` נשאר מחוץ ל-allowlist
+  ואינו נחשף לכל פונה בוילן. (‏#1247: הקיוסק על ‎:8082 הוסר.)
 
 ### המתג — `identity_check` (טבלת `settings`)
 
@@ -3041,7 +3053,6 @@ registered machine (manifest|files)`). **מחיר ידוע:** `curl` מהשרת 
 |---|---|---|---|
 | `8080/tcp` | סוכן: `/api/v1/agent/*`, `/boot/*`, `/api/v1/images/*` | **HTTP** (ה-GRUB החתום נבנה בלי TLS — לא משתנה) | כתובת כרטיס ההפצה (`--interface`); `0.0.0.0` רק במפורש (#1074) |
 | `8081/tcp` | קונסולה/ניהול: `/console/`, `/api/console/*` | **HTTPS בלבד** — תעודה חתומה-עצמית | `--console-host` (כרטיס הניהול — כתובת **או שם כרטיס**, ‏#1088 סעיף 27) + `127.0.0.1` (#904) |
-| `8082/tcp` | קיוסק: מסך התחנה | HTTP (לא משתנה) | אותה כתובת כמו 8080 — כרטיס ההפצה (#1074) |
 | `8443/tcp` | בין-שרתי (`/api/interserver/v1/*`) | mTLS 1.3, pyOpenSSL (סעיף 18 — לא משתנה) | `--interserver-host` |
 | `5900/tcp` | מוניטור RFB **במכונה** (סעיף 14) | דרך ה-WebSocket של הקונסולה — יורש את ה-TLS שלה (`wss://`) | — |
 
@@ -3252,7 +3263,7 @@ stderr `no selection file`; ‏`build: []` → רשימה ריקה בלי ההו
 |---|---|---|
 | **וובי** (‎:8081, `/api/console/*`) | הכול. ת"א רואה גם את חיפה (סניפים, העברות, מוניטור דרך הראשי); חיפה רואה רק את עצמה (#988 כללים 1 ו-3) | **אין.** ‏`POST /login` → `403 {"error": "deploy_no_console", "message_he": "משתמש הפצה עובד ממחשב הבנייה, לא מהקונסולה"}`; מסך הכניסה מציג את ההודעה; יומן `login_refused_console`. וכל נתיב אחר → `403` עם אותה הודעה גם עם עוגייה תקפה (ראו "העוגייה" למטה) |
 | **מחשב הבנייה** — התפריט (`buildmenu.sh`) וה-GUI (`native-gui`) | שלוש הפעולות של deploy + **אחרונה** קליטת אימג' לשרת (`capture`) | **בדיוק שלוש**, ובסדר הזה בטקסט וב-GUI: (א) `room` — הפצה למשכפלים מאימג' **שבשרת הזה**; (ב) `direct` — ישיר מדיסק הבנייה (#715); (ג) `self` — שחזור אימג' **מהשרת הזה** לדיסק של מחשב הבנייה עצמו |
-| **הקיוסק** (‎:8082 ופורט הסוכן — allowlist `kiosk.py`) | כניסה + allowlist | כניסה + allowlist — זו הדלת של מחשב הבנייה |
+| **allowlist מחשב הבנייה** (פורט הסוכן ‎:8080 — `kiosk.py`; ‎:8082 הוסר ב-#1247) | כניסה + allowlist | כניסה + allowlist — זו הדלת של מחשב הבנייה |
 | **ת"א / חיפה** | ת"א רואה גם חיפה; חיפה רק חיפה | זהה: ספריית **השרת שאליו המכונה מדברת** — אימג' שבת"א וטרם הועבר לחיפה אינו מוצע בחיפה |
 
 "כיתה" (`class`) קיימת בקוד **ומוסתרת** ב-v1 בשני הצדדים — הטקסט, ה-GUI
@@ -3621,7 +3632,7 @@ MFA, בקיוסק, ובהחלפה כפויה — הסיסמה הנכונה מא�
 |---|---|---|
 | `cli` | `--server-url` (‏`IMAGECTL_URL` ביחידה) + `--interface` | המעבדה; שרת שהותקן עם כרטיס הפצה |
 | `console` | `settings`: `deploy:interface` + `deploy:url` | נרשם בהדלקת ה-DHCP הראשונה מהקונסולה |
-| `none` | — | התקנה נקייה: הסוכן (8080) והקיוסק (8082) על `127.0.0.1` בלבד; `server_base` = `http://127.0.0.1:8080` |
+| `none` | — | התקנה נקייה: הסוכן (8080) על `127.0.0.1` בלבד; `server_base` = `http://127.0.0.1:8080` |
 
 `source=console` שהכרטיס שלו כבר אינו נושא את הכתובת → השרת **עולה**
 במצב `none` (לא נופל — נפילה הייתה משאירה את המנהל בלי קונסולה), עם

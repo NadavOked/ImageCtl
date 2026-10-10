@@ -198,18 +198,7 @@ def test_a_partial_machine_still_names_the_drawer_that_failed(tmp_path):
 # --- המסך --------------------------------------------------------------------
 
 
-def test_the_room_screen_has_a_third_word_for_a_partial_machine():
-    """מצב שאין לו מילה במסך הוא מצב שנבלע — וזו הייתה כל התלונה ב-#67."""
-    room_js = (STATION / "room.js").read_text(encoding="utf-8")
-    assert '"partial"' in room_js
-    assert "הושלם חלקית" in room_js
-    assert "room-warn" in room_js
-    assert "room-warn" in (STATION / "station.css").read_text(encoding="utf-8")
-
-
-def test_every_static_reference_in_the_station_page_carries_the_same_version():
-    """מטמון הדפדפן בקיוסק: חצי bump גרוע מאין bump — ‏JS חדש מול CSS
-    ישן הוא בדיוק המצב שאף אחד לא בודק."""
-    page = (STATION / "index.html").read_text(encoding="utf-8")
-    versions = set(re.findall(r"\?v=([0-9.]+)", page))
-    assert len(versions) == 1, versions
+def test_the_web_station_screen_is_gone():
+    """‏#1247: מסך התחנה בדפדפן הוסר; מצב 'partial' (#67) מוצג בגואי
+    הנייטיב ובקונסולה, לא בדף שאין מי שפותח."""
+    assert not STATION.exists()

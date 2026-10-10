@@ -1,7 +1,7 @@
 # native-gui — the station screens without a browser
 
 The build machine's operator screens were authored in HTML
-(`server/static/station/`). Displaying them costs a browser in a RAM-resident
+(`server/static/station/`, removed in #1247 once this GUI replaced it). Displaying them costs a browser in a RAM-resident
 initramfs: 120 MB (WPE WebKit) to 315 MB (Chromium) for 57 KB of HTML
 (`docs/research/R03-network-gui.md`, `R09-hebrew-ui-without-a-browser.md`).
 R09's finding is that the browser was chosen for **Hebrew** — bidi and
@@ -16,7 +16,7 @@ not been compiled yet** — see "What I could not verify".
 | card (`index.html` id) | native screen | login | what it shows |
 |---|---|---|---|
 | `#st-login` | `SCREEN_LOGIN` | — | כניסה: user, password + eye, error, כניסה |
-| `#st-menu` | `SCREEN_MENU` | gated | מה עושים? four cards, #1073 order: room · direct · restore (#382/#706) · capture (admin-only, last); the class card only with `menu_class=1` (v2) |
+| `#st-menu` | `SCREEN_MENU` | gated | מה עושים? four cards, #1244 order: capture (admin-only, first) · room · direct · restore (#382/#706); keys 1–4 follow the order on screen; the class card only with `menu_class=1` (v2), last |
 | `#st-pick` | `SCREEN_PICK` | gated | קליטת אימג' חדש: the internal disks, then name / description / folder + "+ חדשה", התחל קליטה, חזרה, the hint |
 | `#st-progress` | `SCREEN_PROGRESS` | **open** | קולט: … / big bar / percent + bytes / "אל תכבו את המחשב…". Also the cloner's and the class receiver's display |
 | `#st-done` | `SCREEN_DONE` | open | הקליטה הושלמה / נכשלה + קליטה נוספת |
@@ -183,6 +183,7 @@ stdout is line-buffered so a record arrives as it happens.
 | `class-start` | התחל עכשיו | — | POST `/api/console/sessions/<id>/start` |
 | `class-close` | עצור סבב, second press | `confirm=<typed>` | POST `/api/console/sessions/<id>/close {confirm_name}` (#581) |
 | `restore-start` | התחל שחזור | `image=<id>`, `confirm=<typed>` | #706/#1073: hand-off to the agent (`handoff` file) — the bridge re-reads the machine's registered name from `GET /api/v1/agent/state` and accepts only a `confirm` equal to it; the agent re-validates the image against fresh `allowed_images`, then `single_restore_run` erases the internal disk and reboots |
+| `shrink-continue\|<nonce>` · `shrink-plain\|<nonce>` · `shrink-cancel\|<nonce>` | the shrink dialog (#928): כווץ וקלוט / קלוט בלי כיווץ / בטל קליטה, or keys 1 / 2 / 3, Esc = cancel | — (the token carries the nonce of the question on screen) | `gui_shrink_dispatch` (`agent/lib/shrinkgui.sh`) writes `nonce\|<answer>` to `$GUI_DIR/shrink-decision` only for the nonce of the active `shrink-request`; no console session is needed. One answer per question; Enter answers nothing |
 | `tool-list` | the "כלים" button of the build menu (#649) | — | the bridge writes `$GUI_DIR/tools` (`tools_gui_list` in `agent/lib/tools.sh`) |
 | `tool-run\|<id>\|<arg>\|<confirm>` | הרץ on a tool's confirm view, or a `ro` row with no argument (#649) | — (the token carries the fields; `\|` and newlines never travel) | `tools_gui_run`: the framework refuses `rw`/`destroy` unless `confirm` equals the machine's registered name, runs the domain module, and writes `$GUI_DIR/tool-result` |
 
@@ -220,6 +221,12 @@ menu_class=<0/1>
 # #1073: the machine's registered name (GET /api/v1/agent/state .name) -- the
 # restore screen's typed confirmation. Always written; empty = no start.
 machine_name=<name>
+
+# #928: the capture's shrink question (shrinkgui.sh -> guistate.sh). A modal
+# dialog over every screen; drawn only when every declared row arrived and is
+# valid (new < old) -- otherwise a warning, and the agent cancels on its timeout.
+shrink_prompt=<nonce>|<count 1..16>
+shrink_partition=<idx>|<old bytes>|<new bytes>   # one per row, <count> rows
 
 # #1090 standby heartbeat (positive evidence from the latest hello)
 hello_age=<seconds>                  # age of the last completed hello

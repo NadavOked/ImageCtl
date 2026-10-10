@@ -526,27 +526,25 @@ def _add_agent_routes(app: FastAPI, rt: ServerRuntime) -> None:
     ‏#824: `create_station_router` (‏`/api/v1/agent/{state,groups,sessions}`)
     הוא גם ה-API שהסוכן על המכונה צורך — ‏guistate.sh/guibridge.sh/
     guiparent.sh/classround.sh קוראים אותו דרך `$SERVER`, שהוא פורט הסוכן.
-    ‏#738 חילץ אותו מהקונסולה לקיוסק בלבד, והסוכן קיבל 404 בכל דגימה;
-    המעטפת המשולבת של הבדיקות (`create_app`) הסתירה זאת. הנתיבים האלה
-    מחזירים את מה ש-hello מחזיר ממילא למכונה (ראה ה-docstring של
-    ‏`station_state`), ואין ביניהם נתיב ניהול — הפעולה היחידה, פתיחת סבב,
-    דורשת שם וסיסמה. ולכן הם חיים כאן **וגם** על הקיוסק (הדפדפן קורא
-    אותם יחסית מ-‎:8082), ולא על הקונסולה (#703: הגבול הוא ה-socket)."""
+    הנתיבים האלה מחזירים את מה ש-hello מחזיר ממילא למכונה (ראה ה-docstring
+    של ‏`station_state`), ואין ביניהם נתיב ניהול — הפעולה היחידה, פתיחת סבב,
+    דורשת שם וסיסמה. ולכן הם חיים כאן ולא על הקונסולה (#703: הגבול הוא
+    ה-socket). ‏#1247: מסך התחנה בדפדפן והמאזין ‎:8082 הוסרו; הגואי הנייטיב
+    הוא הצרכן היחיד."""
     app.include_router(create_agent_router(rt.ctx, rt.server_base, rt.data_dir))
     app.include_router(create_agent_drivers_router(rt.ctx))   # #720
     app.include_router(create_agent_capture_router(rt.ctx))
     app.include_router(direct.create_direct_router(rt.ctx))   # #715
     # ‏17/09 (מדוד על השרת החי): הכניסה במסך מחשב הבנייה קיבלה 404 —
     # ‏buildmenu.sh/roomflow.sh קוראים `$SERVER/api/console/{login,folders,
-    # images,tasks/capture,room…}` על פורט הסוכן, ו-#738 השאיר את ה-allowlist
-    # הזה על הקיוסק (‎:8082) בלבד. אותה משפחה כמו #824, ואותו כלל: allowlist
-    # הקיוסק (בלי שום נתיב ניהול) חי גם כאן; `create_station_router` כלול בו.
+    # images,tasks/capture,room…}` על פורט הסוכן. אותה משפחה כמו #824:
+    # allowlist מחשב הבנייה (בלי שום נתיב ניהול); `create_station_router` כלול בו.
     app.include_router(create_kiosk_router(rt.ctx, room_wake=_kiosk_room_wake(rt)))
     app.mount("/boot", _boot_asgi(rt))
 
 
 def _kiosk_room_wake(rt: ServerRuntime):
-    """שליחת ה-WoL של חדר השיכפולים — אותה פונקציה בקונסולה ובקיוסק."""
+    """שליחת ה-WoL של חדר השיכפולים — אותה פונקציה בקונסולה ובסוכן."""
     conn = rt.conn
     return lambda: wol.wake_group(
         conn, CLONERS_GROUP, **({"send": rt.wol_send} if rt.wol_send else {})
@@ -554,12 +552,8 @@ def _kiosk_room_wake(rt: ServerRuntime):
 
 
 def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
-    """הצד של הקונסולה/הניהול. ‏#738 (tracer 2 של #703): הקיוסק
-    (`create_station_router` + הדף `/console/station`) חולץ מכאן ל-
-    `kiosk_app`; הקונסולה שומרת את נתיבי הניהול שהיא-עצמה צורכת (כולל
-    ‏room, שהוא גם מסך ניהול). מסך התחנה `/console/station/` עדיין מוגש
-    מכאן כקובץ סטטי (חלק מעץ `/console`), אבל ה-API `/api/v1/agent/*` שלו
-    כבר לא — הוא חי על הקיוסק ועל הסוכן (#824)."""
+    """הצד של הקונסולה/הניהול: נתיבי הניהול שהקונסולה צורכת (כולל room,
+    שהוא גם מסך ניהול). ה-API `/api/v1/agent/*` חי על הסוכן (#824)."""
     ctx = rt.ctx
     health_hooks = dict(rt.health_hooks or {})
     if rt.deploy is not None:
@@ -578,9 +572,9 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
     # ‏`/me`, כי אחרי ``apply`` העץ כבר על תג אחר.
     update_hooks = {**default_update_hooks(), **(rt.update_hooks or {})}
     # ‏#1073: למשתמש הפצה אין קונסולה — `deploy` מקבל 403 על **כל** נתיב
-    # ניהול, גם עם עוגייה שהקיוסק הנפיק (אותו סוד). ה-dependency נוסף
+    # ניהול, גם עם עוגייה שפורט הסוכן הנפיק (אותו סוד). ה-dependency נוסף
     # כאן, בהרכבה, ולא בתוך הראוטרים: ‏`kiosk.py` בונה מהם עותקים משלו
-    # ל-‎:8082 ולפורט הסוכן, ושם deploy מותר — מחשב הבנייה נכנס משם.
+    # לפורט הסוכן, ושם deploy מותר — מחשב הבנייה נכנס משם.
     # ‏HTTP בלבד (`Request`): ה-WebSocket של המוניטור סוגר deploy ב-4403
     # **אחרי** accept (#904) כדי שהסיבה תגיע לדפדפן, ולכן נשאר מחוץ לזה.
     no_deploy = [Depends(auth.console_only(ctx.conn))]
@@ -626,7 +620,7 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
     include(create_room_router(ctx, wake=_kiosk_room_wake(rt)))
     # ‏#984: מכונה בודדת / grp_BUILD — אותו שולח מוזרק כמו בחדר.
     include(create_wake_router(ctx, rt.wol_send))
-    # ‏#980: כיבוי החדר + היסטוריית סבבים — קונסולה בלבד, לא בקיוסק.
+    # ‏#980: כיבוי החדר + היסטוריית סבבים — קונסולה בלבד, לא בסוכן.
     include(create_room_console_router(ctx))
     app.mount("/console", StaticFiles(directory=STATIC_DIR, html=True), name="console")
     # ‏#151: השומר לפי כתובת מקור, כשמוגדר — נרשם **לפני** ConsoleNoStaleCache
@@ -665,33 +659,6 @@ def create_console_app(rt: ServerRuntime) -> FastAPI:
     return app
 
 
-def _add_kiosk_routes(app: FastAPI, rt: ServerRuntime) -> None:
-    """הצד של הקיוסק (‎:8082 בייצור): רק ‏allowlist הקיוסק + הדף הסטטי.
-
-    ‏#738: זו רשימת-ההיתר הקשיחה — capture/סבב/חדר בלבד, בלי שום נתיב
-    ניהול. הדף הסטטי מוגש מעץ `/console` (מסך התחנה מפנה ל-`../console.css`
-    ולכן צריך את השורש), אבל בלי ה-API של הניהול הדפים הניהוליים באותו
-    עץ אינם מתפקדים — הגבול האמיתי הוא ה-socket וה-API allowlist. ‏`/`
-    מפנה למסך התחנה, שהוא פני הקיוסק."""
-    app.include_router(create_kiosk_router(rt.ctx, room_wake=_kiosk_room_wake(rt)))
-    app.mount("/console", StaticFiles(directory=STATIC_DIR, html=True), name="console")
-    app.add_middleware(ConsoleNoStaleCache)
-
-    @app.get("/")
-    def root() -> RedirectResponse:
-        return RedirectResponse("/console/station/")
-
-
-def create_kiosk_app(rt: ServerRuntime) -> FastAPI:
-    """אפליקציית הקיוסק (‎:8082 בייצור) — ‏allowlist קשיח (#738)."""
-    app = FastAPI(title="ImageCtl kiosk", docs_url=None, redoc_url=None)
-    app.state.ctx = rt.ctx
-    app.state.runtime = rt
-    app.state.data_dir = rt.data_dir
-    _add_kiosk_routes(app, rt)
-    return app
-
-
 def create_app(
     data_dir: str | Path,
     images_root: str | Path,
@@ -712,8 +679,8 @@ def create_app(
     app.state.ctx = rt.ctx
     app.state.runtime = rt
     app.state.data_dir = rt.data_dir
-    # הקיוסק לפני הקונסולה: שניהם מגדירים POST /api/console/login, והראשון
-    # מנצח. בבדיקות המשולבות (#1073) deploy נכנס דרך הקיוסק (allowlist)
+    # allowlist הסוכן לפני הקונסולה: שניהם מגדירים POST /api/console/login,
+    # והראשון מנצח. בבדיקות המשולבות (#1073) deploy נכנס דרך הסוכן (allowlist)
     # ומסורב על נתיבי ניהול (`console_only`). MFA והחלפה כפויה (#1085)
     # נבדקים על `create_console_app`, לא כאן — בייצור הם על שני פורטים.
     _add_agent_routes(app, rt)

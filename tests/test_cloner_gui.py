@@ -1197,27 +1197,12 @@ def test_the_gui_panel_offers_replace_or_continue_only_on_a_red_disk():
 
 
 def test_the_console_paints_failed_last_red_and_fail_orange():
+    # ‏#1247: מסך התחנה בדפדפן (station.css / room.js) הוסר — נשארת הקונסולה.
     css = (STATIC / "console.css").read_text(encoding="utf-8")
-    scss = (STATIC / "station" / "station.css").read_text(encoding="utf-8")
     assert ".disk-smart.failed_last{background:var(--danger-line); color:var(--danger)}" in css
     assert ".disk-smart.fail{" not in css                   # כתום = ברירת המחדל של .disk-smart
-    assert ".room-drawers .drawer .smart.failed_last{" in scss
-    assert ".room-drawers .drawer .smart.fail{" not in scss
     js = (STATIC / "console.js").read_text(encoding="utf-8")
-    rjs = (STATIC / "station" / "room.js").read_text(encoding="utf-8")
     assert 'failed_last: "נכשל בשיכפול הקודם"' in js
-    assert 'failed_last: "נכשל בשיכפול הקודם"' in rjs
-    assert 'SMART_HE[d.smart]\n        ? ` <span class="smart ${esc(d.smart)}">' in rjs
-
-
-def test_the_station_assets_all_carry_the_same_version():
-    """אותו כלל כמו ב-index.html הראשי (test_server_netcfg): חצי bump גרוע
-    מאין bump — ‏room.js חדש מול station.css ישן הוא מחלקה בלי צבע."""
-    import re
-    page = (STATIC / "station" / "index.html").read_text(encoding="utf-8")
-    versions = set(re.findall(r"\?v=([0-9.]+)", page))
-    assert len(versions) == 1, versions
-    assert "room.js?v=" in page and "station.css?v=" in page
 
 
 def test_the_native_gui_paints_done_with_warning_orange_not_red_or_green():

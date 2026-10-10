@@ -36,15 +36,15 @@ SS_UDP = SS_DHCP_ONLY + (
 INSTALLER_OLD = "port=0\ninterface=eth0\nbind-interfaces\n\nenable-tftp\ntftp-root=/srv/tftp\n"
 INSTALLER_NEW = "port=0\ninterface=eth0\nbind-interfaces\n# enable-tftp moved (#1013)\n"
 
-PORTS = {"http_boot": 8080, "http_console": 8081, "kiosk": 8082, "interserver": 8443}
+PORTS = {"http_boot": 8080, "http_console": 8081, "interserver": 8443}
 HOSTS = {"http_boot": ["0.0.0.0"], "http_console": ["10.44.0.1", "127.0.0.1"],
-         "kiosk": ["0.0.0.0"], "interserver": ["10.30.0.8"]}
+         "interserver": ["10.30.0.8"]}
 
 
 class FakeListeners:
     """המנהל המזויף: `set_open`/`request` רושמים, `is_open`/`bound` עונים."""
 
-    def __init__(self, ids=("http_boot", "http_console", "kiosk")):
+    def __init__(self, ids=("http_boot", "http_console", "interserver")):
         self.open = set(ids)
         self.calls: list[tuple[str, bool]] = []
         self.fail_open: set[str] = set()
@@ -237,8 +237,8 @@ def test_our_ports_point_at_the_ports_api_and_say_who_needs_the_name(toggles):
         assert rows[pid]["toggle"] == "confirm"
         assert rows[pid]["confirm_word"] == name
         assert rows[pid]["toggle_url"] == f"/api/console/ports/{pid}"
-    assert rows["kiosk"]["toggle"] == "api"
-    assert rows["kiosk"]["toggle_url"] == "/api/console/ports/kiosk"
+    assert rows["interserver"]["toggle"] == "api"
+    assert rows["interserver"]["toggle_url"] == "/api/console/ports/interserver"
     # למי שיש כבר מתג במקום אחר — מצביעים לשם, לא משכפלים.
     assert rows["dhcp"]["toggle_url"] == "/api/console/net/interfaces/{name}"
     assert rows["dhcp"]["toggle"] == "confirm"
@@ -260,23 +260,23 @@ def test_our_ports_point_at_the_ports_api_and_say_who_needs_the_name(toggles):
 def test_enabled_but_nobody_listens_is_red_not_off(toggles):
     toggles["fake"]["ss_tcp"] = SS_HEAD           # הטבלה נקראה, ריקה
     rows = rows_of(toggles)
-    assert rows["kiosk"]["enabled"] is True
-    assert rows["kiosk"]["listening"] is False
-    assert rows["kiosk"]["state"] == "bad"
+    assert rows["interserver"]["enabled"] is True
+    assert rows["interserver"]["listening"] is False
+    assert rows["interserver"]["state"] == "bad"
 
 
 def test_disabled_but_still_listening_is_red(toggles):
     from server import ports
-    ports.set_enabled(toggles["conn"], "kiosk", False)
+    ports.set_enabled(toggles["conn"], "interserver", False)
     rows = rows_of(toggles)                        # ה-fake עדיין "מאזין"
-    assert rows["kiosk"]["enabled"] is False and rows["kiosk"]["listening"] is True
-    assert rows["kiosk"]["state"] == "bad"
+    assert rows["interserver"]["enabled"] is False and rows["interserver"]["listening"] is True
+    assert rows["interserver"]["state"] == "bad"
 
 
 def test_socket_table_unreadable_is_unknown_never_green(toggles):
     toggles["fake"]["ss_tcp"] = ""                 # ss לא רץ
     rows = rows_of(toggles)
-    for pid in ("http_boot", "http_console", "kiosk"):
+    for pid in ("http_boot", "http_console", "interserver"):
         assert rows[pid]["listening"] is None
         assert rows[pid]["state"] == "unknown"
         assert "לא נקרא" in rows[pid]["detail"]
@@ -289,14 +289,14 @@ def test_bind_is_null_when_not_read_and_empty_only_when_read_and_not_listening(t
     fake["ss"], fake["ss_tcp"] = "", ""               # ss לא רץ, בשני הפרוטוקולים
     fake["listeners"] = SshListeners(False, reason="אין /proc/net")
     rows = rows_of(toggles)
-    for pid in ("tftp", "dhcp", "pxe_proxy", "http_boot", "http_console", "kiosk",
+    for pid in ("tftp", "dhcp", "pxe_proxy", "http_boot", "http_console", "interserver",
                 "ssh_server:eth0"):
         assert rows[pid]["bind"] is None, (pid, rows[pid]["bind"])
 
     fake["ss"], fake["ss_tcp"] = SS_HEAD, SS_HEAD     # נקרא, ואף אחד לא מאזין
     fake["listeners"] = SshListeners(True)
     rows = rows_of(toggles)
-    for pid in ("tftp", "dhcp", "pxe_proxy", "http_boot", "http_console", "kiosk",
+    for pid in ("tftp", "dhcp", "pxe_proxy", "http_boot", "http_console", "interserver",
                 "ssh_server:eth0"):
         assert rows[pid]["bind"] == [], (pid, rows[pid]["bind"])
 
@@ -304,34 +304,34 @@ def test_bind_is_null_when_not_read_and_empty_only_when_read_and_not_listening(t
 # --- המתג ---------------------------------------------------------------------
 
 
-def test_kiosk_off_closes_the_listener_and_reads_back(toggles):
-    """הגדרת ה"גמור" של #996: כיבוי 8082 → ‏ss (מוזרק) לא מראה מאזין +
+def test_api_port_off_closes_the_listener_and_reads_back(toggles):
+    """הגדרת ה"גמור" של #996: כיבוי 8443 → ‏ss (מוזרק) לא מראה מאזין +
     ‏`/ports.enabled=false`; הדלקה → חוזר."""
-    resp = toggles["admin"].put("/api/console/ports/kiosk", json={"enabled": False})
+    resp = toggles["admin"].put("/api/console/ports/interserver", json={"enabled": False})
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["ok"] is True and body["applied"] is True
     assert body["port"]["enabled"] is False and body["port"]["listening"] is False
-    assert toggles["listeners"].calls == [("kiosk", False)]
+    assert toggles["listeners"].calls == [("interserver", False)]
     rows = rows_of(toggles)
-    assert rows["kiosk"]["enabled"] is False
-    assert rows["kiosk"]["bind"] == [] and rows["kiosk"]["listening"] is False
-    assert rows["kiosk"]["state"] == "off"
-    assert "מפעיל" in rows["kiosk"]["detail"]
+    assert rows["interserver"]["enabled"] is False
+    assert rows["interserver"]["bind"] == [] and rows["interserver"]["listening"] is False
+    assert rows["interserver"]["state"] == "off"
+    assert "מפעיל" in rows["interserver"]["detail"]
 
-    resp = toggles["admin"].put("/api/console/ports/kiosk", json={"enabled": True})
+    resp = toggles["admin"].put("/api/console/ports/interserver", json={"enabled": True})
     assert resp.status_code == 200, resp.text
     assert resp.json()["ok"] is True
     rows = rows_of(toggles)
-    assert rows["kiosk"]["enabled"] is True and rows["kiosk"]["listening"] is True
-    assert rows["kiosk"]["state"] == "ok"
+    assert rows["interserver"]["enabled"] is True and rows["interserver"]["listening"] is True
+    assert rows["interserver"]["state"] == "ok"
 
 
 def test_the_state_is_saved_so_it_survives_a_restart(toggles):
     from server import ports
-    assert ports.enabled(toggles["conn"], "kiosk") is True
-    toggles["admin"].put("/api/console/ports/kiosk", json={"enabled": False})
-    assert ports.enabled(toggles["conn"], "kiosk") is False
+    assert ports.enabled(toggles["conn"], "interserver") is True
+    toggles["admin"].put("/api/console/ports/interserver", json={"enabled": False})
+    assert ports.enabled(toggles["conn"], "interserver") is False
     journal = [r["event"] for r in toggles["conn"].execute(
         "SELECT event FROM journal ORDER BY id DESC LIMIT 3").fetchall()]
     assert "port_toggle" in journal
@@ -373,13 +373,13 @@ def test_the_console_cannot_be_closed_through_itself(tmp_path, images_root, cloc
     assert t["listeners"].is_open("http_console")
 
 
-def test_kiosk_needs_no_name(toggles):
-    assert toggles["admin"].put("/api/console/ports/kiosk",
+def test_api_port_needs_no_name(toggles):
+    assert toggles["admin"].put("/api/console/ports/interserver",
                                 json={"enabled": False}).status_code == 200
 
 
 def test_deploy_user_gets_403_and_the_listener_is_untouched(toggles):
-    resp = toggles["deploy"].put("/api/console/ports/kiosk", json={"enabled": False})
+    resp = toggles["deploy"].put("/api/console/ports/interserver", json={"enabled": False})
     assert resp.status_code == 403
     assert toggles["listeners"].calls == []
 
@@ -404,16 +404,16 @@ def test_rows_toggled_elsewhere_refuse_here_and_point_there(toggles):
 def test_open_that_fails_to_bind_is_reported_not_faked(toggles):
     """‏DB אומר "דלוק", הפורט תפוס על ידי אחר: ‏ok=false עם הסיבה, המצב
     השמור נשאר "דלוק" (זו הבקשה), ו-/ports מראה את הפער באדום."""
-    toggles["admin"].put("/api/console/ports/kiosk", json={"enabled": False})
-    toggles["listeners"].fail_open.add("kiosk")
-    resp = toggles["admin"].put("/api/console/ports/kiosk", json={"enabled": True})
+    toggles["admin"].put("/api/console/ports/interserver", json={"enabled": False})
+    toggles["listeners"].fail_open.add("interserver")
+    resp = toggles["admin"].put("/api/console/ports/interserver", json={"enabled": True})
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["ok"] is False and body["applied"] is False
     assert "already in use" in body["detail"]
     rows = rows_of(toggles)
-    assert rows["kiosk"]["enabled"] is True and rows["kiosk"]["listening"] is False
-    assert rows["kiosk"]["state"] == "bad"
+    assert rows["interserver"]["enabled"] is True and rows["interserver"]["listening"] is False
+    assert rows["interserver"]["state"] == "bad"
 
 
 def test_without_a_listener_manager_the_switch_says_it_did_not_apply(
@@ -421,24 +421,26 @@ def test_without_a_listener_manager_the_switch_says_it_did_not_apply(
     """‏create_app בבדיקות אינו מריץ מאזינים — המתג נשמר, ואומר במפורש
     שלא הוחל עכשיו. לא "ok" על מה שלא קרה (עיקרון 5)."""
     t = _build(tmp_path, images_root, clock, None)
-    resp = t["admin"].put("/api/console/ports/kiosk", json={"enabled": False})
+    resp = t["admin"].put("/api/console/ports/http_boot",
+                          json={"enabled": False, "confirm": server_name(t)})
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["ok"] is False and body["applied"] is False
     assert body["port"]["enabled"] is False
     from server import ports
-    assert ports.enabled(t["conn"], "kiosk") is False
+    assert ports.enabled(t["conn"], "http_boot") is False
 
 
 def test_interserver_without_a_listener_has_no_switch(tmp_path, images_root, clock):
     """‏8443 עולה רק על משני עם --interserver-host; בלעדיו השורה קיימת,
     אומרת שאינה מוגדרת, ואין לה מתג."""
-    t = _build(tmp_path, images_root, clock, FakeListeners())
+    t = _build(tmp_path, images_root, clock,
+               FakeListeners(("http_boot", "http_console")))
     rows = rows_of(t)
     assert rows["interserver"]["toggle"] == "none"
     assert rows["interserver"]["state"] == "off"
     t2 = _build(tmp_path / "b", images_root, clock,
-                FakeListeners(("http_boot", "http_console", "kiosk", "interserver")))
+                FakeListeners(("http_boot", "http_console", "interserver")))
     rows = rows_of(t2)
     assert rows["interserver"]["toggle"] == "api"
     assert rows["interserver"]["bind"] == ["10.30.0.8:8443"]

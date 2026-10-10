@@ -28,8 +28,32 @@ let MONITOR = null, monitorError = "";
 let PORTS = null, portsError = "";
 let USERS = null, JOURNAL = null;   // ‏#954 גל 6: JOURNAL = השורות שנטענו (LOG.rows), USERS = /users
 
+/* עיקרון 5: "השרת לא ענה" ו"השרת ענה בשגיאה" הם שני מצבים. כשל רשת של
+   fetch (TypeError / "Failed to fetch" / NetworkError / AbortError) הופך
+   כאן, במקום אחד, להודעה בעברית עם `error.network = true` ובלי `status`;
+   4xx/5xx ממשיכים להציג את ה-`detail` של השרת עם `error.status`. */
+const NET_DOWN_HE = "השרת לא עונה — בדוק שהוא דלוק ונסה שוב";
+async function apiFetch(url, options) {
+  try {
+    return await fetch(url, options);
+  } catch (e) {
+    const name = e && e.name;
+    if (name === "TypeError" || name === "AbortError" || name === "NetworkError"
+        || /failed to fetch|networkerror|load failed|network request failed/i.test(String(e && e.message))) {
+      const error = new Error(NET_DOWN_HE);
+      error.network = true;
+      noteApiFailure(NET_DOWN_HE);
+      throw error;
+    }
+    throw e;
+  }
+}
+/* ה-toast צובע "שגיאה" רק כשהטקסט שלו בא מכשל API שזה עתה קרה — כך
+   `toast(e.message)` ב-200 האתרים הקיימים נצבע נכון בלי לשנות אף אחד מהם. */
+let lastApiFailure = { text: "", at: 0 };
+function noteApiFailure(text) { lastApiFailure = { text: String(text), at: Date.now() }; }
 async function api(path, options = {}) {
-  const response = await fetch("/api/console" + path, {
+  const response = await apiFetch("/api/console" + path, {
     headers: { "Content-Type": "application/json" },
     credentials: "same-origin",
     ...options,
@@ -42,6 +66,7 @@ async function api(path, options = {}) {
     try { const body = await response.json(); detail = body.message_he || body.detail || detail; } catch (e) {}
     const error = new Error(detail);
     error.status = response.status;   // ‏#936: הקורא מבחין בין 403/409 לכשל אמיתי
+    noteApiFailure(detail);
     throw error;
   }
   return response.json();
@@ -192,8 +217,7 @@ function sheet({ title, sub = "", fields = [], submitLabel = "שמירה",
       <button class="btn" type="button" id="sf-cancel">ביטול</button>
     </div>`;
   form.classList.remove("hidden");
-  modal.classList.add("show", "sheet-mode");
-  modal.style.display = "flex";
+  openModalFrame(modal, "sheet-mode");
   const first = form.querySelector("input, textarea, select");
   if (first) first.focus();
   const close = () => {
@@ -702,7 +726,7 @@ async function showApp() {
 }
 
 async function loginFetch(path, body) {
-  const response = await fetch("/api/console" + path, {
+  const response = await apiFetch("/api/console" + path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "same-origin",
@@ -1027,7 +1051,7 @@ function memberRows(members) {
 /* עיקרון 5 (#517): קריאת /overview שנכשלה מסמנת את הכרטיס כישן — ולא
    חוזרת בשקט. "לא נקרא" ו"נקרא, ריק" הם שני מצבים נבדלים. */
 function markStatusStale() {
-  overviewError = "Server status could not be read. Last update: " + (overviewLastOk || "never");
+  overviewError = "מצב השרת לא נקרא. עדכון אחרון: " + (overviewLastOk || "אף פעם");
   if (ME && (current === "home" || current === "deploy")) renderCurrent();
 }
 function markStatusFresh() {
@@ -1086,7 +1110,7 @@ async function loadHealth() {
   try {
     // ‏#1000: fetch ישיר ולא api() — זמן המדידה מגיע בכותרת X-Health-Checked-At
     // (שעון השרת, ISO); הגוף נשאר המערך שכל הקוראים תלויים בו.
-    const response = await fetch("/api/console/health", { credentials: "same-origin" });
+    const response = await apiFetch("/api/console/health", { credentials: "same-origin" });
     if (response.status === 401) { showLogin(); throw new Error("לא מחובר"); }
     if (!response.ok) {
       let detail = "שגיאה " + response.status;
@@ -1426,6 +1450,26 @@ function openBranchView(nid, view, el) {
     `[data-branch-node="${CSS.escape(nid)}"][data-branch-view="${BRANCH_VIEW}"]`), "branch");
 }
 
+/* F13: רענון תקופתי (חדר ההפצה, כל 2 שניות כשהנתונים השתנו) בונה את הדף מחדש
+   — בלי זה הפוקוס, הסימון והטקסט שהמפעיל בעיצומו של הקלדה נעלמים. מזהים את
+   האלמנט לפי הנתיב שלו מתוך #content (המבנה זהה בין שתי בניות של אותו דף). */
+function focusLocator() {
+  const host = document.getElementById("content"), a = document.activeElement;
+  if (!host || !a || a === document.body || typeof host.contains !== "function" || !host.contains(a)) return null;
+  const path = [];
+  for (let n = a; n && n !== host; n = n.parentElement) path.unshift(Array.prototype.indexOf.call(n.parentElement.children, n));
+  const text = typeof a.value === "string" && a.type !== "radio" && a.type !== "checkbox";
+  return { path, tag: a.tagName, value: text ? a.value : null, start: a.selectionStart, end: a.selectionEnd };
+}
+function restoreFocus(loc) {
+  if (!loc) return;
+  let n = document.getElementById("content");
+  for (const i of loc.path) { n = n && n.children[i]; }
+  if (!n || n.tagName !== loc.tag || typeof n.focus !== "function") return;
+  n.focus({ preventScroll: true });
+  if (loc.value !== null && n.value !== loc.value) n.value = loc.value;
+  try { if (loc.start != null) n.setSelectionRange(loc.start, loc.end); } catch (e) {}
+}
 function renderCurrent() {
   const page = pages[current];
   if (!page || !pageAllowed(current)) return;
@@ -1433,7 +1477,9 @@ function renderCurrent() {
   // קופצת לראש הדף בכל דגימה. הגולל הוא .page (עמוד חדש) או .scroll (ישן).
   const scroller = document.querySelector("#content .page, #content .scroll");
   const scrollTop = scroller ? scroller.scrollTop : 0;
+  const focus = focusLocator();
   document.getElementById("content").innerHTML = layout(page, currentTab);
+  restoreFocus(focus);
   if (scrollTop) {
     const again = document.querySelector("#content .page, #content .scroll");
     if (again) again.scrollTop = scrollTop;
@@ -2539,7 +2585,7 @@ async function applyRename(id) {
   try {
     await put("/images/" + encodeId(id), { name });
     closeModal();
-    toast("נשמר.");
+    toast("נשמר.", 2600, "ok");
     await loadImages();
     openImageDetail(id);
   } catch (e) {
@@ -2570,7 +2616,7 @@ async function applyMove(id) {
   try {
     await put("/images/" + encodeId(id), { folder });
     closeModal();
-    toast("נשמר.");
+    toast("נשמר.", 2600, "ok");
     await loadImages();
     openImageDetail(id);
   } catch (e) {
@@ -2586,7 +2632,8 @@ function deleteImage(id) {
     "מחיקת אימג׳",
     `<div class="confirm-box">האימג׳ וכל קבציו יימחקו לצמיתות מהשרת. אין דרך חזרה.</div><div class="danger-confirm">הקלידו את שם האימג׳ <b>${esc(img.name)}</b> לאישור.</div><div class="form"><div class="field full"><label>שם האימג׳</label><input id="confirmName" autocomplete="off"></div></div>`,
     "מחק",
-    () => confirmDeleteImage(img.id)
+    () => confirmDeleteImage(img.id),
+    true
   );
   const input = document.getElementById("confirmName");
   if (input) input.focus();
@@ -2599,7 +2646,7 @@ async function confirmDeleteImage(id) {
     await post("/images/" + encodeId(id) + "/delete", { confirm_name: typed });
     closeModal();
     closeDrawer();
-    toast("האימג׳ נמחק");
+    toast("האימג׳ נמחק", 2600, "ok");
     loadImages();
   } catch (e) {
     toast(e.message);
@@ -4184,7 +4231,7 @@ async function loadJournalData(append = false) {
     // fetch ישיר ולא api(): הכותרת X-Journal-Search-Truncated — "לא בדקנו
     // הכל" אינו "אין תוצאות" (עיקרון 5).
     const last = append && LOG.rows && LOG.rows.length ? LOG.rows[LOG.rows.length - 1].id : null;
-    const response = await fetch("/api/console/journal" + logQuery(last), { credentials: "same-origin" });
+    const response = await apiFetch("/api/console/journal" + logQuery(last), { credentials: "same-origin" });
     if (response.status === 401) { showLogin(); return; }
     if (!response.ok) {
       let detail = "שגיאה " + response.status;
@@ -5403,7 +5450,7 @@ async function settingsLogoUpload(input) {
   const file = input.files && input.files[0];
   input.value = "";
   if (!file) return;
-  const response = await fetch("/api/console/branding/logo", { method: "POST", credentials: "same-origin", headers: { "Content-Type": file.type }, body: file });
+  const response = await apiFetch("/api/console/branding/logo", { method: "POST", credentials: "same-origin", headers: { "Content-Type": file.type }, body: file });
   if (!response.ok) {
     let message = "שגיאה " + response.status;
     try { message = (await response.json()).detail || message; } catch (e) {}
@@ -5829,35 +5876,69 @@ function openDrawer(title, body) {
   document.getElementById("drawerTitle").textContent = title;
   document.getElementById("drawerBody").innerHTML = body;
   document.getElementById("drawer").classList.add("open");
-  document.getElementById("detailBackdrop").style.display = "block";
+  document.getElementById("detailBackdrop").classList.add("show");
 }
 
 function closeDrawer() {
   drawerGeneration++;
   document.getElementById("drawer").classList.remove("open");
-  document.getElementById("detailBackdrop").style.display = "none";
+  document.getElementById("detailBackdrop").classList.remove("show");
+}
+
+// F06: החלון נפתח/נסגר במצבי CSS (class "show"), לא ב-display. הניקוי של
+// sheet-mode וה-form ממתין לסוף ה-fade כדי שהתוכן לא יתחלף בזמן שהוא דוהה,
+// ופתיחה חוזרת באמצע מבטלת אותו.
+const MODAL_CLOSE_MS = 260;
+let modalCleanupTimer = null;
+
+// נקודת המוצא של האנימציה בלבד (קישוט): כשאין כפתור שפתח — מרכז החלון.
+function modalOrigin(modal, mode) {
+  const trigger = document.activeElement;
+  const box = document.getElementById(mode === "sheet-mode" ? "sheet" : "modalBox");
+  const usable = box && typeof box.offsetLeft === "number" && trigger && trigger !== document.body
+    && typeof trigger.getBoundingClientRect === "function" && !(modal.contains && modal.contains(trigger))
+    && modal.style && typeof modal.style.setProperty === "function";
+  if (!usable) {
+    if (modal.style && typeof modal.style.removeProperty === "function") modal.style.removeProperty("--origin");
+    return;
+  }
+  const t = trigger.getBoundingClientRect();
+  modal.style.setProperty("--origin",
+    `${t.left + t.width / 2 - box.offsetLeft}px ${t.top + t.height / 2 - box.offsetTop}px`);
+}
+
+function openModalFrame(modal, mode) {
+  clearTimeout(modalCleanupTimer);
+  if (mode === "sheet-mode") modal.classList.add("sheet-mode");
+  else modal.classList.remove("sheet-mode");
+  modalOrigin(modal, mode);
+  modal.classList.add("show");
 }
 
 function closeModal() {
   const modal = document.getElementById("modal");
-  modal.style.display = "none";
-  modal.classList.remove("show", "sheet-mode");
+  modal.classList.remove("show");
   const form = document.getElementById("sheet");
-  if (form) {
-    form.classList.add("hidden");
-    form.onsubmit = null;
-  }
+  if (form) form.onsubmit = null;
+  clearTimeout(modalCleanupTimer);
+  modalCleanupTimer = setTimeout(() => {
+    modal.classList.remove("sheet-mode");
+    if (form) form.classList.add("hidden");
+  }, MODAL_CLOSE_MS);
 }
 
-function toast(message, ms = 2600) {
+function toast(message, ms = 2600, kind = "") {
   const el = document.getElementById("toast");
+  const text = String(message);
+  // שגיאה = הטקסט בא מכשל API שקרה ב-15 השניות האחרונות (ראו noteApiFailure)
+  if (!kind && lastApiFailure.text && text.includes(lastApiFailure.text) && Date.now() - lastApiFailure.at < 15000) kind = "err";
   el.textContent = message;
+  el.classList.remove("err", "ok");
+  if (kind) el.classList.add(kind);
   el.classList.add("show");
-  el.style.display = "block";
   clearTimeout(window.__toastTimer);
   window.__toastTimer = setTimeout(() => {
     el.classList.remove("show");
-    el.style.display = "none";
   }, ms);
 }
 
@@ -5871,19 +5952,18 @@ function dhcpNotice(r) {
   return true;
 }
 
-function openModalContent(title, body, okLabel = "אישור", okFn = "closeModal()") {
+function openModalContent(title, body, okLabel = "אישור", okFn = "closeModal()", danger = false) {
   document.getElementById("modalTitle").textContent = title;
   document.getElementById("modalBody").innerHTML = body;
   const ok = document.getElementById("modalOk");
   ok.textContent = okLabel;
+  ok.className = "btn " + (danger ? "danger" : "primary");   // פעולה הרסנית לא נראית כמו אישור רגיל
   ok.disabled = false;
   ok.onclick = typeof okFn === "function" ? okFn : new Function(okFn);
   const modal = document.getElementById("modal");
   const form = document.getElementById("sheet");
   if (form) form.classList.add("hidden");
-  modal.classList.remove("sheet-mode");
-  modal.classList.add("show");
-  modal.style.display = "flex";
+  openModalFrame(modal, "box");
 }
 
 function downloadFile(name, text, type) {
@@ -6279,7 +6359,7 @@ function editFolderSheet(folder) {
                                { name: v.name, description: v.description });
       IMAGES_FOLDER = result.name;
       await loadImages();
-      toast("נשמר.");
+      toast("נשמר.", 2600, "ok");
     },
   });
 }

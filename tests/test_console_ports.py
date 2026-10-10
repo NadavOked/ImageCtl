@@ -99,12 +99,12 @@ def test_ports_endpoint_requires_login(ports_server):
     assert ports_server["anon"].get("/api/console/ports").status_code == 401
 
 
-def test_the_list_includes_5900_8082_and_ssh_not_a_fixed_five(ports_server):
-    """זה בדיוק מה שהעניין #822 מדווח: 5900/8082/SSH חסרים ברשימה
-    הקבועה הישנה."""
+def test_the_list_includes_5900_and_ssh_and_no_8082(ports_server):
+    """זה בדיוק מה שהעניין #822 מדווח: 5900/SSH חסרים ברשימה
+    הקבועה הישנה. ‏#1247: 8082 הוסר ואינו ברשימה."""
     rows = by_id(ports_server["admin"].get("/api/console/ports").json())
     assert rows["monitor"]["port"] == "5900"
-    assert rows["kiosk"]["port"] == "8082"
+    assert "kiosk" not in rows and not any(r["port"] == "8082" for r in rows.values())
     assert rows["ssh_stations"]["port"] == "22"
     # וגם הקיימים מקודם
     assert rows["tftp"]["port"] == "69"
@@ -132,17 +132,17 @@ def test_monitor_switch_on_shows_a_warning_not_green(ports_server):
 
 
 def test_unverified_ports_say_so_and_are_not_painted_green(ports_server):
-    """8081/8082: טבלת הסוקטים של TCP לא נקראה — "לא נקרא" הוא `unknown`
+    """8081: טבלת הסוקטים של TCP לא נקראה — "לא נקרא" הוא `unknown`
     (אדום, כמו דלת SSH שאי אפשר לראות), ולעולם לא ok (עיקרון 5). ‏#996
     החליף את "אין hook" הישן בקריאה אמיתית מ-`ss -ltnp`; ‏4011 נקרא
     מטבלת ה-UDP, שכאן קיימת ואין בה מאזין — ובלי proxy דלוק זה off."""
     rows = by_id(ports_server["admin"].get("/api/console/ports").json())
-    for pid in ("http_console", "kiosk"):
+    for pid in ("http_console",):
         assert rows[pid]["state"] == "unknown"
         assert rows[pid]["listening"] is None
     assert rows["pxe_proxy"]["state"] == "off"
     assert rows["pxe_proxy"]["listening"] is False
-    for pid in ("http_console", "pxe_proxy", "kiosk"):
+    for pid in ("http_console", "pxe_proxy"):
         assert rows[pid]["state"] != "ok"
 
 

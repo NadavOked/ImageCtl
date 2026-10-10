@@ -41,6 +41,7 @@ gui_state() {
     # has none, and then the screen refuses to start instead of guessing.
     _mn=$(jq -r '.name // "" | tostring | gsub("[\\r\\n|]"; " ")' "$GUI_DIR/station.json") || return 1
     printf 'machine_name=%s\n' "$_mn" >> "$GUI_DIR/state.next" || return 1
+    gui_shrink_state >> "$GUI_DIR/state.next" || return 1   # #928: the capture's shrink question
     # #1168: the college's logo, fetched once by gui_fetch_logo; the line is
     # written only when the file is there, so the GUI falls back by itself.
     [ -s "$GUI_DIR/logo.png" ] && { printf 'logo=%s\n' "$GUI_DIR/logo.png" >> "$GUI_DIR/state.next" || return 1; }
@@ -152,11 +153,24 @@ gui_fetch_logo() {
     return 0
 }
 
+gui_shrink_state() {
+    # #928: the agent's pending shrink question (shrinkgui.sh), copied into
+    # the state file. The question is local -- it needs no server -- so the
+    # failure snapshot below carries it too. One awk opens the file once:
+    # a removal after the open cannot split the header from its rows, and a
+    # removal before it (the question was just answered) is no question.
+    [ -s "$GUI_DIR/shrink-request" ] || return 0
+    awk 'NR == 1 { print "shrink_prompt=" $0; next }
+         { print "shrink_partition=" $0 }' "$GUI_DIR/shrink-request" 2>/dev/null ||
+        [ ! -e "$GUI_DIR/shrink-request" ]
+}
+
 gui_state_loop() {
     while :; do
         if ! gui_state; then
             printf 'native-gui: state could not be verified\n' >&2
-            printf 'message=State could not be verified|Check connection; see agent log\n' > "$GUI_DIR/state.next" &&
+            { printf 'message=State could not be verified|Check connection; see agent log\n' &&
+                gui_shrink_state; } > "$GUI_DIR/state.next" &&
                 mv "$GUI_DIR/state.next" "$GUI_DIR/state" || return 1
         fi
         sleep 2

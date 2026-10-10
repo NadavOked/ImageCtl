@@ -87,7 +87,7 @@ test('polling refreshes status, marks failed reads, and stops on logout',async()
   const {run,intervals,fixtures,node}=setup(); run('renderCurrent=()=>{};startStatusWatch();');
   assert.equal(intervals.size,1); await run('refreshStatus()'); assert.equal(run('overviewError'),'');
   fixtures['/overview']=new Error('offline'); await run('refreshStatus()');
-  assert.match(run('overviewError'),/could not be read/);assert.match(node('.task-summary').textContent,/could not be read/);
+  assert.match(run('overviewError'),/מצב השרת לא נקרא/);assert.match(node('.task-summary').textContent,/מצב השרת לא נקרא/);
   run('showLogin()');assert.equal(intervals.size,0);assert.equal(run('ME'),null);
 });
 test('the class tab of the deploy page (#954 גל 4 — no round drawer) includes absent roster members, errors and SMART',async()=>{

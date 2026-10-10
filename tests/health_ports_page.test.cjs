@@ -31,7 +31,6 @@ const PORTS_OLD=[
   port('pxe_proxy','PXE','4011','udp','off','אין hook — לא אומת'),
   port('multicast','Multicast','9000–9001','udp','off','אין udp-sender חי — ואין סבב'),
   port('monitor','Monitor (RFB)','5900','tcp','off','המתג monitor:stations כבוי'),
-  port('kiosk','HTTP','8082','tcp','off','אין hook — לא אומת'),
   port('ssh_stations','SSH','22','tcp','ok','שורת הקרנל אינה נושאת imagectl.debug'),
 ];
 // החוזה של #996: enabled / bind / toggle / off_means + שורות חדשות (8443, טווח דינמי)
@@ -42,7 +41,6 @@ const PORTS_NEW=[
   port('pxe_proxy','PXE','4011','udp','off','אין hook — לא אומת'),
   port('multicast','Multicast','9000–9001','udp','off','אין סבב רץ',{enabled:true,bind:'10.44.9.10',toggle:'none',off_means:'סבב לא יכול להתחיל לשדר'}),
   port('monitor','Monitor (RFB)','5900','tcp','off','המתג monitor:stations כבוי'),
-  port('kiosk','HTTP','8082','tcp','ok','uvicorn',{enabled:true,bind:'0.0.0.0',toggle:'api',off_means:'מסך התחנה לא נטען; הסוכן ממשיך לעבוד'}),
   port('interserver','mTLS','8443','tcp','off','כבוי — שרת ראשי, לא משני',{enabled:false,bind:'',toggle:'api',off_means:'משני לא יכול להירשם או לקבל אימג\'ים'}),
   port('dynamic','UDP','9002–9099','udp','unknown','לא נקרא — ss חסר',{enabled:true,bind:'',toggle:'none',off_means:'שחזור תחנה בודדת ממסך התחנה נכשל'}),
   port('ssh_stations','SSH','22','tcp','ok','שורת הקרנל אינה נושאת imagectl.debug'),
@@ -265,7 +263,7 @@ test('ports page (old /ports contract): one table, a switch in every row, wired 
   assert.match(html,/<th>שירות<\/th><th>פורט<\/th><th>מי מתחבר<\/th><th>על איזה כרטיס<\/th><th>מצב נמדד<\/th><th>מתג<\/th><th>מה קורה אם מכבים<\/th><th>API<\/th>/);
   const switches=[...html.matchAll(/<button type="button" class="sw ([a-z]*)" role="switch" aria-checked="(true|false|mixed)"/g)];
   // DHCP (ens19) + 8 שורות שרת + 3 SSH לשרת = 12, מתג בכל שורה
-  assert.equal(switches.length,12); assert.equal((html.match(/<tr><td>/g)||[]).length,12);
+  assert.equal(switches.length,11); assert.equal((html.match(/<tr><td>/g)||[]).length,11);
   // TFTP: אין toggle בחוזה הישן → מתג "לא ידוע", "דורש API", לחיצה מסבירה
   const tftp=row(html,'>TFTP<');
   assert.match(tftp,/class="sw unk" role="switch" aria-checked="mixed"/); assert.match(tftp,/class="pill warn">דורש API</); assert.match(tftp,/דורש API \(#996\)/);
@@ -285,7 +283,7 @@ test('ports page (old /ports contract): one table, a switch in every row, wired 
   // PXE proxy: דלוק על ens20
   assert.match(row(html,'>PXE<'),/class="sw on".*דלוק על ens20/s);
   // סיכום בכותרת
-  assert.match(html,/12 שורות · מצב האזנה כפי שנקרא מהשרת ב-\d\d:\d\d/);
+  assert.match(html,/11 שורות · מצב האזנה כפי שנקרא מהשרת ב-\d\d:\d\d/);
   assert.match(html,/מאזינים בפורט 22: 10\.44\.10\.1/);
   // ‏#954 גל 8: הלשוניות הן של אובייקט הרשת — תרשים · חיבורים פיזיים · רשת הפצה · פורטים (הדף הזה, tab 3)
   assert.match(html,/role="tab" aria-selected="false" tabindex="-1" onclick="openNetwork\(0\)">תרשים/);
@@ -343,22 +341,12 @@ test('ports page (#996 contract): live switches — "api" confirms, "confirm" ty
   const {run,requests}=setup({'/ports':PORTS_NEW}); run('current="ports"');
   await run('loadPorts()');
   const html=run('ports()'); balanced(html);
-  assert.equal((html.match(/<tr><td>/g)||[]).length,14,'DHCP + 10 server rows + 3 SSH');
-  const kiosk=row(html,'>desc kiosk<');
-  assert.match(kiosk,/class="sw on" role="switch" aria-checked="true"/); assert.match(kiosk,/class="pill ok">קיים<\/span> <span class="cap mono">PUT \/ports\/kiosk/);
-  assert.match(kiosk,/<span class="mono">0\.0\.0\.0<\/span>/); assert.match(kiosk,/מסך התחנה לא נטען; הסוכן ממשיך לעבוד/);
-  assert.doesNotMatch(kiosk,/דורש API/);
-  run("portSwitch('kiosk')");
-  let s=run('sheets.at(-1)'); assert.ok(!s.verify); assert.match(s.title,/כיבוי HTTP 8082\/tcp/);
-  // אזהרה על כל פורט, לא רק 69 (נדב 19/09): גם מתג "api" מקבל את הבלוק האדום מה-off_means
-  assert.match(s.note,/data-testid="port-warning"/); assert.match(s.note,/מה קורה אם מכבים: מסך התחנה לא נטען/);
-  await s.onSubmit();
-  assert.deepEqual(requests.filter((r)=>r.method==='PUT').at(-1),{url:'/ports/kiosk',method:'PUT',body:{enabled:false}});
+  assert.equal((html.match(/<tr><td>/g)||[]).length,13,'DHCP + 9 server rows + 3 SSH');
   // 🔒 confirm: הקלדת שם השרת + "מה קורה אם מכבים"
   const boot=row(html,'>desc http_boot<');
   assert.match(boot,/🔒 דלוק · כיבוי = הקלדת שם השרת/);
   run("portSwitch('http_boot')");
-  s=run('sheets.at(-1)'); assert.equal(s.verify.mustEqual,'srv'); assert.match(s.note,/מה קורה אם מכבים: אין PXE ואין hello/);
+  let s=run('sheets.at(-1)'); assert.equal(s.verify.mustEqual,'srv'); assert.match(s.note,/מה קורה אם מכבים: אין PXE ואין hello/);
   await s.onSubmit();
   assert.deepEqual(requests.filter((r)=>r.method==='PUT').at(-1).body,{enabled:false,confirm:'srv'});
   // none: מתג שמסביר
@@ -413,8 +401,6 @@ const PORTS_1015=[
   p1015('multicast','Multicast','9000–9001','udp','off','אין סבב רץ'),
   p1015('monitor','Monitor (RFB)','5900','tcp','off','המתג monitor:stations כבוי',{enabled:false,toggle:'confirm',
     toggle_url:'/api/console/monitor/settings',confirm_word:'imagectl.monitor',confirm_when:'on',off_means:'אין צפייה מרחוק'}),
-  p1015('kiosk','HTTP','8082','tcp','ok','uvicorn',{enabled:true,listening:true,bind:['0.0.0.0:8082'],toggle:'api',
-    toggle_url:'/api/console/ports/kiosk',off_means:'מסך התחנה לא נטען; הסוכן ממשיך לעבוד'}),
   p1015('interserver','HTTPS (mTLS)','8443','tcp','ok','uvicorn',{enabled:true,listening:true,bind:['10.44.10.1:8443'],toggle:'api',
     toggle_url:'/api/console/ports/interserver',off_means:'משני לא יכול להירשם או לסנכרן'}),
   p1015('ssh_stations','SSH','22','tcp','off','imagectl.debug לא בשורת הקרנל',{enabled:false,toggle:'confirm',
@@ -440,16 +426,18 @@ test('ports page (#1015 contract): rows come only from /ports — no duplicate d
     assert.equal((html.match(new RegExp('desc ssh_server:'+nic+'<','g'))||[]).length,1,'exactly one SSH-to-server row per NIC — no duplicate built from /ssh');
   assert.equal((html.match(/<tr><td>/g)||[]).length,PORTS_1015.length,'one row per /ports entry, nothing added, nothing dropped');
   // bind הוא רשימה — כל הכתובות, mono, ולא "a,b" משרשור מחרוזות
-  const kiosk=row(html,'>desc kiosk<');
-  assert.match(kiosk,/<span class="mono bindlist" dir="ltr">0\.0\.0\.0:8082<\/span>/);
+  const inter=row(html,'>desc interserver<');
+  assert.match(inter,/<span class="mono bindlist" dir="ltr">10\.44\.10\.1:8443<\/span>/);
   // ‏#1039: ‏bind null = טבלת הסוקטים לא נקראה ≠ [] = נקראה ואף אחד לא מאזין
   assert.match(row(html,'>desc ssh_server:ens20<'),/<span class="st unk">לא נקרא<\/span>/);
   assert.doesNotMatch(row(html,'>desc ssh_server:ens19<'),/לא נקרא/); assert.match(row(html,'>desc ssh_server:ens19<'),/<span class="muted">—<\/span>/);
-  // kiosk (8082) — toggle:"api" → PUT /ports/kiosk, בלי הקלדה
-  run("portSwitch('kiosk')");
+  // interserver (8443) — toggle:"api" → PUT /ports/interserver, בלי הקלדה
+  run("portSwitch('interserver')");
   let s=run('sheets.at(-1)'); assert.ok(!s.verify);
+  // אזהרה על כל פורט, לא רק 69 (נדב 19/09): גם מתג "api" מקבל את הבלוק האדום מה-off_means
+  assert.match(s.note,/data-testid="port-warning"/); assert.match(s.note,/מה קורה אם מכבים: משני לא יכול להירשם/);
   await s.onSubmit();
-  assert.deepEqual(requests.filter((r)=>r.method==='PUT').at(-1),{url:'/ports/kiosk',method:'PUT',body:{enabled:false}});
+  assert.deepEqual(requests.filter((r)=>r.method==='PUT').at(-1),{url:'/ports/interserver',method:'PUT',body:{enabled:false}});
   // DHCP — המתג ממשיך לפנות ל-PUT /net/interfaces/{n} (toggle_url מצביע לשם), לא ל-/ports/dhcp (409 בשרת האמיתי)
   run("portSwitch('dhcp')");
   s=run('sheets.at(-1)'); assert.equal(s.verify.mustEqual,'ens19');

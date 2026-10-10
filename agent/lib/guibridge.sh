@@ -59,6 +59,7 @@ gui_dispatch() {
     # would fail with no session) does not swallow the decision. Only on the
     # cloner screen, and only the three valid tokens.
     case "$token" in
+        shrink-*) gui_shrink_dispatch; return $? ;;
         touch)
             # #434: a key press in the GUI -- the idle clock's activity, and
             # what cancels the power-off countdown. Before gui_role: it needs
@@ -204,7 +205,8 @@ gui_cleanup() {
     done
     # A stale click must never authorize the next disk (principle 5).
     rm -f "$CONSOLE_JAR" "$GUI_DIR/actions" \
-        "$GUI_DIR/smart-request" "$GUI_DIR/smart-decision"
+        "$GUI_DIR/smart-request" "$GUI_DIR/smart-decision" \
+        "$GUI_DIR/shrink-request" "$GUI_DIR/shrink-decision"
 }
 
 # The framebuffer device; monitor.sh tests the same one (#835).
@@ -236,6 +238,7 @@ gui_libs() {
     . "$LIB_DIR/buildcapture.sh"
     . "$LIB_DIR/roomdraw.sh"; . "$LIB_DIR/roomflow.sh"   # #418: draw split from flow
     . "$LIB_DIR/guistate.sh"
+    . "$LIB_DIR/shrinkgui.sh"
     . "$LIB_DIR/sysinfo.sh"   # disk_port, for the cloner state producer
     . "$LIB_DIR/progress.sh"  # target_bytes, the per-drawer local truth
     . "$LIB_DIR/smart.sh"     # smart_hello_field: the cached verdict per cdisk (#834)

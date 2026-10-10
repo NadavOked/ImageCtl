@@ -5,7 +5,7 @@
 # ואז מניח ב-/etc/nftables.conf ומפעיל את השירות.
 #
 # מודל האתר: שלושה וילנים. הכיתות (v2) אינן נפתחות כאן כלל.
-#   הפצה  — DHCP/TFTP/סוכן/קיוסק/מולטיקאסט. WoL יוצא ב-output (לא נחסם).
+#   הפצה  — DHCP/TFTP/סוכן/מולטיקאסט. WoL יוצא ב-output (לא נחסם).
 #   שרתים — קונסולה HTTPS ו-SSH ניהול. 8443 רק במשני, ורק מכתובת הראשי.
 #   כיתות — כלום.
 #
@@ -13,7 +13,7 @@
 #   nftables-rules.sh --deploy-if <if> --servers-if <if> \
 #     [--primary-ip <ip>] [--mcast-ports a-b] \
 #     [--console-port 8081] [--agent-port 8080] \
-#     [--kiosk-port 8082] [--interserver-port 8443] [--ssh-if IF]
+#     [--interserver-port 8443] [--ssh-if IF]
 
 set -eu
 
@@ -23,7 +23,6 @@ PRIMARY_IP=""
 MCAST_PORTS="9000-9001"
 CONSOLE_PORT="8081"
 AGENT_PORT="8080"
-KIOSK_PORT="8082"
 INTERSERVER_PORT="8443"
 SSH_IFS=""
 
@@ -40,7 +39,6 @@ Usage: nftables-rules.sh --servers-if IF [--deploy-if IF] [options]
   --mcast-ports A-B       טווח UDP של udpcast (ברירת מחדל 9000-9001)
   --console-port N        קונסולה (ברירת מחדל 8081)
   --agent-port N          סוכן (ברירת מחדל 8080)
-  --kiosk-port N          קיוסק (ברירת מחדל 8082)
   --interserver-port N    בין-שרתים (ברירת מחדל 8443)
   --ssh-if IF             פתח TCP 22 על ממשק שמתג ssh:iface:<IF> שלו דלוק
 EOF
@@ -54,7 +52,6 @@ while [ $# -gt 0 ]; do
         --mcast-ports)      MCAST_PORTS="${2:?}"; shift 2 ;;
         --console-port)     CONSOLE_PORT="${2:?}"; shift 2 ;;
         --agent-port)       AGENT_PORT="${2:?}"; shift 2 ;;
-        --kiosk-port)       KIOSK_PORT="${2:?}"; shift 2 ;;
         --interserver-port) INTERSERVER_PORT="${2:?}"; shift 2 ;;
         --ssh-if)
             SSH_IF="${2:?}"
@@ -81,7 +78,7 @@ case "$MCAST_PORTS" in
     *) die "--mcast-ports must be A-B (got: $MCAST_PORTS)" ;;
 esac
 
-for p in "$CONSOLE_PORT" "$AGENT_PORT" "$KIOSK_PORT" "$INTERSERVER_PORT"; do
+for p in "$CONSOLE_PORT" "$AGENT_PORT" "$INTERSERVER_PORT"; do
     case "$p" in
         *[!0-9]*|"") die "port must be a number (got: $p)" ;;
     esac
@@ -111,15 +108,14 @@ if [ -n "$DEPLOY_IF" ]; then
 		iifname \"${DEPLOY_IF}\" udp dport 67 accept
 		# TFTP: קריאת shim/GRUB. העברת הנתונים היא related אם nf_conntrack_tftp טעון.
 		iifname \"${DEPLOY_IF}\" udp dport 69 accept
-		# סוכן (hello/boot/images) וקיוסק — HTTP על כרטיס ההפצה בלבד.
+		# סוכן (hello/boot/images) — HTTP על כרטיס ההפצה בלבד.
 		iifname \"${DEPLOY_IF}\" tcp dport ${AGENT_PORT} accept
-		iifname \"${DEPLOY_IF}\" tcp dport ${KIOSK_PORT} accept
 		# מולטיקאסט udpcast: portbase ו-portbase+1 (ברירת מחדל 9000-9001, server/sender.py).
 		iifname \"${DEPLOY_IF}\" udp dport ${MCAST_PORTS} accept
 		# WoL (UDP 9) הוא יוצא — chain output ב-accept, אין כלל כניסה."
 else
     DEPLOY_RULES="		# --- וילן ההפצה: טרם הוגדר (#1088) ---
-		# אין כרטיס הפצה — DHCP/TFTP/סוכן/קיוסק/מולטיקאסט סגורים. הקונסולה
+		# אין כרטיס הפצה — DHCP/TFTP/סוכן/מולטיקאסט סגורים. הקונסולה
 		# כותבת את הקובץ הזה מחדש עם הכרטיס כשמודלק עליו DHCP."
 fi
 

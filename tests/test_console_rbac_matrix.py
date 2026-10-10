@@ -2,7 +2,7 @@
 
 הכלל (CLAUDE.md): "משתמש deploy: אימג'ים וסבבים בלבד, כל השאר 403". ומאז
 ‏#1073 הוא חד יותר: בקונסולה (‏8081) deploy מסורב **בכל** נתיב
-(‏`deploy_no_console`), ובקיוסק (‏8082) הוא מקבל רק את ה-allowlist של
+(‏`deploy_no_console`), ובפורט הסוכן (‏8080) הוא מקבל רק את ה-allowlist של
 `kiosk.KIOSK_CONSOLE_ROUTES`. הנתיבים נמנים כאן **מהאפליקציה עצמה**, ולכן
 נתיב חדש נכנס למטריצה בלי שאיש יזכור לרשום אותו — וזה השער: נתיב קונסולה
 שמשיב ל-deploy משהו שאינו 403 מפיל את הבדיקה בשם."""
@@ -19,7 +19,7 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from starlette.routing import Mount
 
-from server.app import create_console_app, create_kiosk_app
+from server.app import create_agent_app, create_console_app
 from server.kiosk import KIOSK_CONSOLE_ROUTES
 
 #: נתיבים ציבוריים במכוון — בלי כניסה בכלל, ולכן גם deploy רואה אותם:
@@ -62,7 +62,7 @@ def _routes(app):
 
 
 def _deploy_cookie(rt) -> dict:
-    kiosk = TestClient(create_kiosk_app(rt))
+    kiosk = TestClient(create_agent_app(rt))
     r = kiosk.post("/api/console/login", json={"username": "labtech", "password": "deploy-pass-1"})
     assert r.status_code == 200, r.text
     return dict(kiosk.cookies)
@@ -87,7 +87,7 @@ def test_deploy_gets_403_on_every_console_route(server):
 
 def test_the_kiosk_allowlist_is_exactly_what_deploy_can_reach(server):
     rt = server["app"].state.runtime
-    kiosk = TestClient(create_kiosk_app(rt))
+    kiosk = TestClient(create_agent_app(rt))
     kiosk.cookies.update(_deploy_cookie(rt))
     served = set(_routes(kiosk.app))
     # the allowlisted console routes, plus the kiosk's own room routes (#738) -- nothing else

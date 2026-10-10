@@ -317,10 +317,10 @@ def test_an_admin_is_offered_all_four_actions(tmp_path, console):
     result = run_screen(tmp_path, url_of(console), ["admin", "pw", "0"])
 
     assert "Username:" in result["out"], "המסך לא ביקש כניסה בכלל"
-    assert f"1) {ROOM_LABEL}" in result["out"]
-    assert f"2) {DIRECT_LABEL}" in result["out"]
-    assert f"3) {SELF_LABEL}" in result["out"]
-    assert f"4) {CAPTURE_LABEL}" in result["out"]
+    assert f"1) {CAPTURE_LABEL}" in result["out"]
+    assert f"2) {ROOM_LABEL}" in result["out"]
+    assert f"3) {DIRECT_LABEL}" in result["out"]
+    assert f"4) {SELF_LABEL}" in result["out"]
     assert CLASS_LABEL not in result["out"], "כיתה הוצעה ב-v1"
     assert "Choose [1-4]" in result["out"]
 
@@ -375,10 +375,10 @@ def test_the_class_option_is_hidden_when_the_server_switched_it_off(
                         answer=answer)
 
     assert CLASS_LABEL not in result["out"], "הכיתה הוצעה כשהמתג כבוי"
-    assert f"1) {ROOM_LABEL}" in result["out"]
-    assert f"2) {DIRECT_LABEL}" in result["out"]
-    assert f"3) {SELF_LABEL}" in result["out"]
-    assert f"4) {CAPTURE_LABEL}" in result["out"]
+    assert f"1) {CAPTURE_LABEL}" in result["out"]
+    assert f"2) {ROOM_LABEL}" in result["out"]
+    assert f"3) {DIRECT_LABEL}" in result["out"]
+    assert f"4) {SELF_LABEL}" in result["out"]
     assert "Choose [1-4]" in result["out"]
 
 
@@ -420,7 +420,7 @@ def test_the_role_comes_from_the_answer_the_login_already_stored(
 def test_a_capture_into_an_existing_folder_carries_that_folder(
         tmp_path, console):
     """תיקייה קיימת: בחירה מהרשימה, ואותו שם הולך ב-`folder`."""
-    answers = ["admin", "pw", "4", "2", "Win11 lab", "y"]
+    answers = ["admin", "pw", "1", "2", "Win11 lab", "y"]
 
     result = run_screen(tmp_path, url_of(console), answers)
 
@@ -440,7 +440,7 @@ def test_a_capture_into_a_new_folder_creates_it_first(tmp_path, console):
     הסדר הוא של האפיון (סעיף 26): רשימת התיקיות, בחירה מתוכן או חדשה,
     ואז שם האימג' והדיסק.
     """
-    answers = ["admin", "pw", "4", "3", "New Course", "Win11 lab", "y"]
+    answers = ["admin", "pw", "1", "3", "New Course", "Win11 lab", "y"]
 
     result = run_screen(tmp_path, url_of(console), answers)
 
@@ -457,7 +457,7 @@ def test_a_hebrew_folder_name_never_reaches_the_server(tmp_path, console):
 
     ‏(הכרעת נדב, 30/08: שמות תיקיות ואימג'ים באנגלית או מספרים.)
     """
-    answers = ["admin", "pw", "4", "3", "מעבדה", "מעבדה", "מעבדה"]
+    answers = ["admin", "pw", "1", "3", "מעבדה", "מעבדה", "מעבדה"]
 
     result = run_screen(tmp_path, url_of(console), answers)
 
@@ -473,7 +473,7 @@ def test_the_capture_body_is_the_one_the_console_sends(tmp_path, console):
     (library.js), והשרת מקבל אותו (capture.py). זרימת הטקסט שולחת ריק.
     """
     run_screen(tmp_path, url_of(console),
-               ["admin", "pw", "4", "1", "Base", "y"])
+               ["admin", "pw", "1", "1", "Base", "y"])
 
     body = posted(console, "/api/console/tasks/capture")[0]
     assert sorted(body) == ["description", "disk", "folder", "mac", "name"]
@@ -485,7 +485,7 @@ def test_the_capture_request_carries_the_console_session_cookie(
         tmp_path, console):
     """הקליטה היא `admin_only` — היא חייבת לנסוע עם ה-cookie של הקונסולה."""
     run_screen(tmp_path, url_of(console),
-               ["admin", "pw", "4", "1", "Base", "y"])
+               ["admin", "pw", "1", "1", "Base", "y"])
 
     sent = [r for r in console.requests
             if r["path"] == "/api/console/tasks/capture"][0]
@@ -564,7 +564,7 @@ def test_the_class_option_uses_the_existing_class_round_flow(
 def test_the_room_option_reads_the_room_before_it_offers_anything(
         tmp_path, console):
     """הפצה למחשבי שיכפול: קודם קוראים את מצב החדר מהשרת."""
-    run_screen(tmp_path, url_of(console), ["admin", "pw", "1", "0"])
+    run_screen(tmp_path, url_of(console), ["admin", "pw", "2", "0"])
 
     assert any(r["method"] == "GET" and r["path"] == "/api/console/room"
                for r in console.requests), console.requests
@@ -577,7 +577,7 @@ def test_the_direct_option_posts_this_disk_as_the_source_with_chosen_targets(
     שנבחרו, וכל מגירה טרייה **עם חריץ** בהן. המכונה הישנה (2) אינה מוצעת;
     המגירה בלי `port` אינה נשלחת."""
     console.room = ROOM_AWAKE
-    result = run_screen(tmp_path, url_of(console), ["admin", "pw", "2", "1", "y"])
+    result = run_screen(tmp_path, url_of(console), ["admin", "pw", "3", "1", "y"])
 
     assert "1) shich-1  drawers 1,2" in result["out"], result["out"]
     assert "shich-2" not in result["out"]
@@ -593,7 +593,7 @@ def test_the_direct_option_posts_this_disk_as_the_source_with_chosen_targets(
 
 @native_tools
 def test_the_direct_option_with_no_awake_machine_posts_nothing(tmp_path, console):
-    result = run_screen(tmp_path, url_of(console), ["admin", "pw", "2", "0"])
+    result = run_screen(tmp_path, url_of(console), ["admin", "pw", "3", "0"])
     assert "No awake cloning machine" in result["out"], result["out"]
     assert posted(console, "/api/console/room") == []
 
@@ -607,7 +607,7 @@ def test_self_restore_lists_this_servers_images_from_the_machine_state(
     """הרשימה היא `allowed_images` מ-`/api/v1/agent/state` — ספריית **השרת
     הזה**, מסוננת לדיסק (#706) — ולא `/api/console/images`. בחיפה זו ספריית
     חיפה; אימג' שבת"א וטרם הועבר אינו ברשימה (הכרעת נדב 18/09)."""
-    result = run_screen(tmp_path, url_of(console), ["admin", "pw", "3", "0"])
+    result = run_screen(tmp_path, url_of(console), ["admin", "pw", "4", "0"])
 
     assert "1) Win11  [Lab]" in result["out"], result["out"]
     assert "2) Office" in result["out"]
@@ -641,7 +641,7 @@ def test_self_restore_with_the_wrong_name_writes_nothing(tmp_path, console):
     לא נקראת, והתפריט חוזר. **בקרה שלילית:** בלי ההשוואה ל-SELF_NAME
     הכתיבה יוצאת והטסט נופל על SINGLE-RESTORE בפלט."""
     result = run_screen(tmp_path, url_of(console),
-                        ["admin", "pw", "3", "1", "ERASE", "0"])
+                        ["admin", "pw", "4", "1", "ERASE", "0"])
 
     assert "did not match" in result["out"], result["out"]
     assert "Nothing was written" in result["out"]
@@ -656,7 +656,7 @@ def test_self_restore_refuses_a_machine_without_a_registered_name(
     """בלי שם במרשם אין מה להקליד — מסרבים, לא משווים ריק לריק (עיקרון 5)."""
     console.state = {**STATE, "name": None}
 
-    result = run_screen(tmp_path, url_of(console), ["admin", "pw", "3", "0"])
+    result = run_screen(tmp_path, url_of(console), ["admin", "pw", "4", "0"])
 
     assert "no name in the server's registry" in result["out"], result["out"]
     assert "SINGLE-RESTORE" not in result["out"]
@@ -667,7 +667,7 @@ def test_self_restore_refuses_a_machine_without_a_registered_name(
 def test_self_restore_with_no_fitting_image_offers_nothing(tmp_path, console):
     console.state = {**STATE, "allowed_images": []}
 
-    result = run_screen(tmp_path, url_of(console), ["admin", "pw", "3", "0"])
+    result = run_screen(tmp_path, url_of(console), ["admin", "pw", "4", "0"])
 
     assert "No image in this server's library fits" in result["out"], result["out"]
     assert "SINGLE-RESTORE" not in result["out"]

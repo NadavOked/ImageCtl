@@ -95,7 +95,6 @@ shrink_before_capture() {
         return 1
     fi
     _sb_q=$(shrink_question "$_sb_plan")
-    shrink_gui_release
     # ‏#906: hello ממשיך בזמן ההמתנה לאדם, והשאלה מגיעה לקונסולה. שאלה אחת לכולן.
     _sb_dec=$(attended "$_sb_q" shrink_ask "$_sb_plan")
     case "$_sb_dec" in

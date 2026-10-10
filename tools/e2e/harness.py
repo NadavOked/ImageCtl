@@ -27,11 +27,6 @@ DEAD_BASE = f"http://127.0.0.1:{PORT + 1}"
 #: קונסולה על CONSOLE_PORT. לא PORT+1 (זה DEAD_BASE, ה"שרת השקט").
 CONSOLE_PORT = PORT + 2
 CONSOLE_BASE = f"http://127.0.0.1:{CONSOLE_PORT}"
-#: ‏#738 (tracer 2 של #703): הקיוסק חולץ מהקונסולה למאזין שלישי משלו.
-#: ‏server.main מרים שלושה מאזינים — סוכן/קונסולה/קיוסק. לא PORT+1
-#: (זה DEAD_BASE, ה"שרת השקט").
-KIOSK_PORT = PORT + 3
-KIOSK_BASE = f"http://127.0.0.1:{KIOSK_PORT}"
 
 #: הקידומות שחיות על אפליקציית הקונסולה (‏CONSOLE_BASE), לא על הסוכן:
 #: הדף הסטטי ונתיבי הניהול `/api/console/*`.
@@ -39,16 +34,6 @@ _CONSOLE_PREFIXES = (
     "/console",
     "/api/console",
 )
-#: ‏#738: נתיבי מסך התחנה (`create_station_router`, ‏prefix `/api/v1/agent/
-#: {groups,state,sessions}`) חולצו לאפליקציית הקיוסק — ולכן מנותבים ל-
-#: `KIOSK_BASE`, בעוד `hello`/`login`/`pulls`/`progress`/`disk-event`
-#: (‏`create_agent_router`, אותו prefix `/api/v1/agent`) נשארים על הסוכן.
-_KIOSK_PREFIXES = (
-    "/api/v1/agent/groups",
-    "/api/v1/agent/state",
-    "/api/v1/agent/sessions",
-)
-
 #: הפורט שהשרת של הסימולציה משדר עליו — ‏30199 ו-30200, ולא 9000/9001.
 #: זה **לא** נוחות: השרת שהסימולציה מרימה הוא שרת אמיתי, ובמעבדה מותקן
 #: `udp-sender` אמיתי ומחוברות אליה שתי מכונות פיזיות. שידור על 9000
@@ -141,18 +126,14 @@ class Client:
     פורטים על אותו host. מי שמעביר `base` מפורש (למשל DEAD_BASE) מנתב
     את צד הסוכן לשם — נתיבי הקונסולה עדיין הולכים ל-console_base."""
 
-    def __init__(self, base: str = BASE, console_base: str = CONSOLE_BASE,
-                 kiosk_base: str = KIOSK_BASE):
+    def __init__(self, base: str = BASE, console_base: str = CONSOLE_BASE):
         self.base = base
         self.console_base = console_base
-        self.kiosk_base = kiosk_base
         self.cookie = None
         # ‏#737: כותרות שהסוכן האמיתי שולח בכל בקשה (אסימון משימה).
         self.headers = {}
 
     def _base_for(self, path: str) -> str:
-        if any(path.startswith(p) for p in _KIOSK_PREFIXES):
-            return self.kiosk_base
         if any(path.startswith(p) for p in _CONSOLE_PREFIXES):
             return self.console_base
         return self.base
@@ -246,8 +227,6 @@ def start_server(workdir: Path) -> tuple[subprocess.Popen, Path, Path]:
          # ‎--console-host), ולכן ``off`` מותר — הלקוח למעלה מדבר http פשוט.
          # לחיצת-היד האמיתית עם התעודה נבדקת ב-tests/test_console_tls.py.
          "--console-tls", "off",
-         # ‏#738: פורט נפרד לקיוסק (מסך התחנה), כמו בייצור.
-         "--kiosk-port", str(KIOSK_PORT),
          # ‏#201: השרת הזה אמיתי ומגיע ל-udp-sender אמיתי. בלי הדגל הזה
          # הוא משדר על פורטי ההפצה של הייצור.
          "--sender-portbase", str(SENDER_PORTBASE),
@@ -321,14 +300,13 @@ def _responded(url: str) -> bool:
 
 
 def wait_for_server(timeout: float = 25.0) -> bool:
-    # ‏#731/#738: שלושה מאזינים — קונסולה (‎/console/), סוכן (GET על נתיב-
-    # POST מחזיר 405, וזו ראיה שהאפליקציה עלתה) וקיוסק (‎/console/station/).
-    # שלושתם חייבים לענות לפני שהסימולציה מתחילה.
+    # ‏#731: שני מאזינים — קונסולה (‎/console/) וסוכן (GET על נתיב-POST
+    # מחזיר 405, וזו ראיה שהאפליקציה עלתה). שניהם חייבים לענות לפני
+    # שהסימולציה מתחילה (#1247: הקיוסק הוסר).
     deadline = time.time() + timeout
     while time.time() < deadline:
         if (_responded(CONSOLE_BASE + "/console/")
-                and _responded(BASE + "/api/v1/agent/hello")
-                and _responded(KIOSK_BASE + "/console/station/")):
+                and _responded(BASE + "/api/v1/agent/hello")):
             return True
         time.sleep(0.4)
     return False

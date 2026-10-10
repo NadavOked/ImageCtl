@@ -1,19 +1,22 @@
-"""‏#738 (tracer 2 של #703): הקיוסק כאפליקציה נפרדת עם allowlist קשיח.
+"""‏#738 (tracer 2 של #703) + #1247: ה-allowlist של מחשב הבנייה על פורט הסוכן.
+
+#1247 הסיר את הקיוסק כאפליקציה נפרדת (:8082) ואת מסך התחנה בדפדפן
+(`/console/station`). ה-allowlist עצמו (`server/kiosk.py`) נשאר, כי הסוכן
+(buildmenu.sh/roomflow.sh/הגואי הנייטיב) צורך אותו דרך פורט הסוכן.
 
 מה שנבדק כאן הוא **התנהגות**, לא מבנה:
 
-- **allowlist קשיח** — מלאי הנתיבים של `kiosk_app` שווה **בדיוק** לרשימה
-  המוצהרת, ובנוסף נבדק התנהגותית שנתיבי ניהול (users/machines/net/dhcp/
-  storage/monitor/journal/settings/library-management) מחזירים 404 על
-  הקיוסק. שני צדי הטענה: מה שצריך — יש, מה שאסור — אין.
-- **כל workflow של הקיוסק עובד** על `kiosk_app`: כניסה, מסך התחנה
-  (state/groups/sessions/active), פתיחת סבב כיתה, קליטה, וחדר השיכפולים.
-- **בקרה שלילית** (`test_negative_control_*`): כשמחברים ל-kiosk_app ראוטר
-  אסור (storage/users), טסט ה-allowlist נכשל **התנהגותית** — הנתיב האסור
-  הופך נגיש, ומלאי הנתיבים מפסיק להיות שווה לרשימה.
+- **allowlist קשיח** — מלאי נתיבי `/api/console` על אפליקציית הסוכן שווה
+  **בדיוק** לרשימה המוצהרת, ונתיבי ניהול מחזירים 404 גם למשתמש מחובר.
+- **כל workflow של מחשב הבנייה עובד** על אפליקציית הסוכן: כניסה, מצב
+  תחנה, פתיחת סבב, קליטה, וחדר השיכפולים.
+- **ההסרה (#1247)** — אין `create_kiosk_app`, אין `--kiosk-port`, אין דף
+  `/console/station` באף אפליקציה ואין עץ `static/station`.
+- **בקרה שלילית** (`test_negative_control_*`): כשמחברים לאפליקציה ראוטר
+  אסור (storage/users), טסט ה-allowlist נכשל התנהגותית.
 
 הגבול הוא ה-socket (אסטרה, #703): אפליקציית הניהול לא תאזין על כתובת
-שכיתה רואה. הטסט הזה הוא ההוכחה שה-socket של הקיוסק נושא רק את הקיוסק.
+שמחשב בנייה רואה.
 """
 
 from __future__ import annotations
@@ -29,18 +32,18 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from server import users
-from server.app import create_console_app, create_kiosk_app, create_runtime
+from server import app as server_app
+from server.app import create_agent_app, create_console_app, create_runtime
 from server.console_storage import create_storage_router
 from server.console_api import create_console_router
 
 from conftest import setup_classroom
 
 
-#: מלאי הנתיבים המדויק של `kiosk_app` — (method, path). כל שינוי מכוון
-#: כאן מחייב שינוי מקביל ב-`server/kiosk.py`; כל שינוי לא-מכוון (ראוטר
-#: ניהול שנדבק) נופל כאן. ‏`/` הוא ה-redirect למסך התחנה.
+#: מלאי נתיבי `/api/console` על אפליקציית הסוכן — (method, path). כל שינוי
+#: מכוון כאן מחייב שינוי מקביל ב-`server/kiosk.py`; כל שינוי לא-מכוון
+#: (ראוטר ניהול שנדבק) נופל כאן.
 EXPECTED_KIOSK_ROUTES = frozenset({
-    ("GET", "/"),
     # תת-קבוצת /api/console המסוננת (allowlist הקיוסק)
     ("POST", "/api/console/login"),
     ("GET", "/api/console/groups"),
@@ -57,7 +60,10 @@ EXPECTED_KIOSK_ROUTES = frozenset({
     ("POST", "/api/console/room/start"),
     ("POST", "/api/console/room/wake"),
     ("POST", "/api/console/room/close"),
-    # מסך התחנה (ראוטר שלם — כולו קיוסק)
+})
+
+#: נתיבי התחנה (`create_station_router`) שחיים על הסוכן — הגואי הנייטיב צורך.
+EXPECTED_STATION_ROUTES = frozenset({
     ("GET", "/api/v1/agent/groups"),
     ("GET", "/api/v1/agent/groups/{group_id}/machines"),
     ("GET", "/api/v1/agent/sessions/active"),
@@ -67,8 +73,8 @@ EXPECTED_KIOSK_ROUTES = frozenset({
 
 #: נתיבי ניהול שאסור שיהיו נגישים על הקיוסק — (method, path). נבדקים
 #: **התנהגותית** (404), לא רק מבנית: אלה הנתיבים שאסטרה מסמנת כמסוכנים
-#: אם ייחשפו לווילן הכיתות.
-FORBIDDEN_ON_KIOSK = (
+#: אם ייחשפו לווילן ההפצה.
+FORBIDDEN_ON_AGENT_PORT = (
     ("GET", "/api/console/users"),
     ("GET", "/api/console/machines"),
     ("GET", "/api/console/overview"),
@@ -110,9 +116,13 @@ def _api_routes(app: FastAPI) -> set[tuple[str, str]]:
     return routes
 
 
+def _console_routes(app: FastAPI) -> set[tuple[str, str]]:
+    return {r for r in _api_routes(app) if r[1].startswith("/api/console")}
+
+
 @pytest.fixture()
 def kiosk_env(tmp_path: Path, images_root: Path):
-    """runtime אחד → console_app (להקמה כ-admin) + kiosk_app (הנבדק).
+    """runtime אחד → console_app (להקמה כ-admin) + agent_app (הנבדק).
 
     ‏WoL מזויף (`wol_send`) כדי ש-`/room/wake` יעבוד בלי חומרה. סבב לא
     נפתח בהקמה, אבל השולח נבנה בכל מקרה — ריאל אחד היה מגיע ל-udp-sender
@@ -125,7 +135,7 @@ def kiosk_env(tmp_path: Path, images_root: Path):
         sender_runner=Recorder(block=True), wol_send=woken.append,
     )
     console_app = create_console_app(rt)
-    kiosk_app = create_kiosk_app(rt)
+    agent_app = create_agent_app(rt)
     users.create(rt.conn, "noc", "admin-pass-123", "admin", by="test", is_builtin=True, check_policy=False)
     users.create(rt.conn, "labtech", "deploy-pass-1", "deploy", by="test", check_policy=False)
 
@@ -144,14 +154,14 @@ def kiosk_env(tmp_path: Path, images_root: Path):
         json={"group_id": "grp_CLONERS", "text": "aa:bb:cc:00:00:20 c1\n"},
     ).json()["saved"] == 1
 
-    yield {"rt": rt, "console_app": console_app, "kiosk_app": kiosk_app,
-           "kiosk": TestClient(kiosk_app), "anon": TestClient(kiosk_app),
+    yield {"rt": rt, "console_app": console_app, "agent_app": agent_app,
+           "kiosk": TestClient(agent_app), "anon": TestClient(agent_app),
            "woken": woken}
     rt.ctx.sender.stop()
 
 
 def _login_kiosk(env, username="noc", password="admin-pass-123") -> TestClient:
-    client = TestClient(env["kiosk_app"])
+    client = TestClient(env["agent_app"])
     assert client.post(
         "/api/console/login", json={"username": username, "password": password}
     ).status_code == 200
@@ -162,36 +172,37 @@ def _login_kiosk(env, username="noc", password="admin-pass-123") -> TestClient:
 
 def test_kiosk_route_inventory_is_exactly_the_allowlist(kiosk_env):
     # מה שצריך — יש; מה שלא הוצהר — אין. שוויון, לא הכלה.
-    assert _api_routes(kiosk_env["kiosk_app"]) == EXPECTED_KIOSK_ROUTES
+    app = kiosk_env["agent_app"]
+    assert _console_routes(app) == EXPECTED_KIOSK_ROUTES
+    assert EXPECTED_STATION_ROUTES <= _api_routes(app)
 
 
 def test_forbidden_admin_apis_are_not_reachable_on_kiosk(kiosk_env):
     # התנהגותית: כל נתיב ניהול מחזיר 404 ברמת ה-app — הנתיב פשוט לא
     # קיים על ה-socket הזה, גם למשתמש מחובר.
     admin = _login_kiosk(kiosk_env)
-    for method, path in FORBIDDEN_ON_KIOSK:
+    for method, path in FORBIDDEN_ON_AGENT_PORT:
         assert admin.request(method, path, json={}).status_code == 404, \
             f"{method} {path} נגיש על הקיוסק — הוא אמור להיות ניהול בלבד"
 
 
-def test_image_manifests_are_not_exposed_on_the_kiosk_socket(kiosk_env):
-    """המסך מקבל פרטי הרחבה מ-/api/console/images אחרי כניסה; ה-manifest
-    המלא אינו נוסף ל-allowlist ולכן גם משתמש מחובר מקבל 404."""
-    admin = _login_kiosk(kiosk_env)
-    images = admin.get("/api/console/images").json()
-    assert images and images[0]["expand_partitions"]
-    assert admin.get(f"/api/v1/images/{images[0]['id']}/manifest").status_code == 404
+def test_kiosk_app_listener_and_station_page_are_gone(kiosk_env):
+    """#1247: אין אפליקציית קיוסק, אין מאזין :8082, אין דף /console/station."""
+    import inspect
+    from server import main as server_main
+
+    assert not hasattr(server_app, "create_kiosk_app")
+    src = inspect.getsource(server_main)
+    assert "--kiosk-port" not in src and "8082" not in src
+    assert not (Path(server_app.__file__).parent / "static" / "station").exists()
+    admin = TestClient(kiosk_env["console_app"])
+    admin.post("/api/console/login", json={"username": "noc", "password": "admin-pass-123"})
+    assert admin.get("/console/station/").status_code == 404
+    assert admin.get("/console/station/index.html").status_code == 404
+    assert kiosk_env["anon"].get("/console/station/").status_code == 404
 
 
-def test_agent_and_boot_are_not_on_kiosk(kiosk_env):
-    # הסוכן והאתחול חיים על אפליקציית הסוכן, לא על הקיוסק.
-    kiosk = kiosk_env["anon"]
-    assert kiosk.post("/api/v1/agent/hello", json={}).status_code == 404
-    assert "/boot" not in {r.path for r in kiosk_env["kiosk_app"].routes
-                           if hasattr(r, "path") and not isinstance(r, APIRoute)}
-
-
-# --- workflows של הקיוסק -----------------------------------------------------
+# --- workflows של מחשב הבנייה -----------------------------------------------------
 
 def test_login_workflow(kiosk_env):
     ok = kiosk_env["kiosk"].post(
@@ -222,7 +233,7 @@ def test_open_class_round_workflow(kiosk_env):
         "image_id": "img_7f3a91",
     })
     assert opened.status_code == 200, opened.text
-    # הסבב חי בשרת המשותף — נראה גם דרך תצוגת הסבב הפעיל של הקיוסק.
+    # הסבב חי בשרת המשותף — נראה גם דרך תצוגת הסבב הפעיל.
     active = anon.get("/api/v1/agent/sessions/active").json()["session"]
     assert active is not None and active["group_id"] == "grp_LAB1"
 
@@ -253,12 +264,12 @@ def test_room_workflow(kiosk_env):
 
 # --- בקרה שלילית -------------------------------------------------------------
 #
-# ההוכחה שהטסט תופס: כשראוטר ניהול נדבק ל-kiosk_app, שני הטסטים של ה-
+# ההוכחה שהטסט תופס: כשראוטר ניהול נדבק לאפליקציית הסוכן, שני הטסטים של ה-
 # allowlist נכשלים התנהגותית. אנחנו בונים את המוטציה כאן ומוודאים שהיא
 # נופלת — כך שאם מחר מישהו יחבר ראוטר אסור בטעות, לא נסמוך על "נראה בסדר".
 
 def _mutated_kiosk_app(rt, extra_router) -> FastAPI:
-    app = create_kiosk_app(rt)
+    app = create_agent_app(rt)
     app.include_router(extra_router)
     return app
 
@@ -267,7 +278,7 @@ def test_negative_control_storage_router_breaks_allowlist(kiosk_env):
     rt = kiosk_env["rt"]
     mutated = _mutated_kiosk_app(rt, create_storage_router(rt.ctx))
     # מלאי הנתיבים מפסיק להיות שווה לרשימה — ‏storage-nodes נדבקו.
-    assert _api_routes(mutated) != EXPECTED_KIOSK_ROUTES
+    assert _console_routes(mutated) != EXPECTED_KIOSK_ROUTES
     assert ("GET", "/api/console/storage-nodes") in _api_routes(mutated)
     # והתנהגותית: נתיב אסור שהיה 404 הפך נגיש (לא 404).
     admin = TestClient(mutated)
@@ -279,7 +290,7 @@ def test_negative_control_storage_router_breaks_allowlist(kiosk_env):
 def test_negative_control_full_console_router_breaks_allowlist(kiosk_env):
     rt = kiosk_env["rt"]
     mutated = _mutated_kiosk_app(rt, create_console_router(rt.ctx))
-    routes = _api_routes(mutated)
+    routes = _console_routes(mutated)
     assert routes != EXPECTED_KIOSK_ROUTES
     # users ו-machines — בדיוק מה שאסור על וילן הכיתות — נגישים כעת.
     admin = TestClient(mutated)

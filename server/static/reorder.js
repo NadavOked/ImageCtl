@@ -11,7 +11,12 @@
 */
 "use strict";
 
-const LONG_PRESS_MS = 400;
+const LONG_PRESS_MS = 400;        // מגע: ארוך, כדי שגלילה לא תהפוך לגרירה
+const LONG_PRESS_MOUSE_MS = 150;  // עכבר: אין גלילה-באצבע לבלבל איתה
+
+function longPressDelay(pointerType) {
+  return pointerType === "mouse" ? LONG_PRESS_MOUSE_MS : LONG_PRESS_MS;
+}
 const MOVE_TOLERANCE = 8;      // תזוזה גדולה מזו לפני ההשהיה = גלילה, לא גרירה
 
 function enableLongPressReorder({ container, itemSelector, handleSelector, onDrop }) {
@@ -70,7 +75,7 @@ function enableLongPressReorder({ container, itemSelector, handleSelector, onDro
     if (!item) return;
     startX = event.clientX;
     startY = event.clientY;
-    timer = setTimeout(begin, LONG_PRESS_MS);
+    timer = setTimeout(begin, longPressDelay(event.pointerType));
   });
 
   container.addEventListener("pointermove", (event) => {

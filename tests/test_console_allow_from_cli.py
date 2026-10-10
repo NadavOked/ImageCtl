@@ -59,7 +59,6 @@ def test_main_passes_parsed_networks_to_create_runtime(
     monkeypatch.setattr(server.app, "create_runtime", fake_create_runtime)
     monkeypatch.setattr(server.app, "create_agent_app", lambda rt: "agent")
     monkeypatch.setattr(server.app, "create_console_app", lambda rt: "console")
-    monkeypatch.setattr(server.app, "create_kiosk_app", lambda rt: "kiosk")
     monkeypatch.setattr(uvicorn, "Config", lambda app, **kwargs: object())
     monkeypatch.setattr(uvicorn, "Server", lambda config: object())
     monkeypatch.setattr(server.main, "serve_all", lambda servers: None)

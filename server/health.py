@@ -65,7 +65,7 @@ def _run(cmd: list[str]) -> str:
 def default_hooks() -> dict:
     return {
         "ss": lambda: _run(["ss", "-ulnp"]),
-        # ‏#996: גם TCP — המאזינים של השרת עצמו (8080/8081/8082/8443) נקראים
+        # ‏#996: גם TCP — המאזינים של השרת עצמו (8080/8081/8443) נקראים
         # מטבלת הסוקטים, לא מההגדרה. ‏`port_listeners` (מנהל המאזינים,
         # ‏`ports.Listeners`) מוזרק מ-main.py; ‏None = אין מנהל בתהליך הזה.
         "ss_tcp": lambda: _run(["ss", "-ltnp"]),
@@ -472,9 +472,8 @@ def _last_seen(seconds: int) -> str:
 #: הפורטים של השרת עצמו כשאין מנהל מאזינים בתהליך (‏create_app של
 #: הבדיקות): מה ש-main.py קושר כברירת מחדל. עם מנהל (‏#996) הפורט
 #: והכתובות נקראים ממנו, ומה שבאמת מאזין — מטבלת הסוקטים.
-DEFAULT_OWN_PORTS = {"http_boot": 8080, "http_console": 8081, "kiosk": 8082,
+DEFAULT_OWN_PORTS = {"http_boot": 8080, "http_console": 8081,
                      "interserver": 8443}
-KIOSK_PORT = DEFAULT_OWN_PORTS["kiosk"]
 
 
 def _port(port_id: str, name: str, port: str, proto: str, desc: str,
@@ -651,10 +650,6 @@ def ports_snapshot(ctx, hooks: dict, server_base: str) -> list[dict]:
         confirm_word=monitor.MONITOR_CONFIRM, confirm_when="on",
         off_means="אין צפייה/שליטה מרחוק במחשבי בנייה ושיכפול; אף תחנה לא "
                   "מפעילה שירות RFB"))
-
-    entries.append(_own_row(ctx, hooks, "kiosk", ss_tcp, name="HTTP",
-        desc="אפליקציית הקיוסק (מחשבי שיכפול)", target="דפדפן (קלונרים)",
-        note=f"לפתוח ב-FW: TCP {KIOSK_PORT} מהקלונרים לשרת"))
 
     entries.append(_own_row(ctx, hooks, "interserver", ss_tcp, name="HTTPS (mTLS)",
         desc="רישום וסנכרון של שרתים משניים (#740)", target="שרת ראשי/משני",

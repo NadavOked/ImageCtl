@@ -1,4 +1,4 @@
-/* Application state for every card of server/static/station/index.html
+/* Application state for every card of the former server/static/station/index.html
  * and the hit-test table that drawing fills in. Layout lives in the
  * screens_*.c files and registers where it put each clickable thing, so
  * the event loop never re-derives geometry.
@@ -27,6 +27,9 @@
 #define MAX_TOOLS      64
 #define TOOL_OUT_MAX   32768
 #define TOOL_OUT_LINES 512
+/* #928: the rows of the capture's shrink question (shrinkgui.sh,
+ * SHRINK_GUI_MAX_ROWS). A request with more is not drawn at all. */
+#define MAX_SHRINK_PARTS 16
 
 enum {
     HIT_NONE = 0,
@@ -72,6 +75,10 @@ enum {
     HIT_SMART_REPLACE,
     HIT_SMART_RESCUE,
     HIT_SMART_SKIP,
+    /* #928: the capture's shrink question (a modal over the build screens) */
+    HIT_SHRINK_CONTINUE,
+    HIT_SHRINK_PLAIN,
+    HIT_SHRINK_CANCEL,
     /* #649: the toolbox (native-only; build machine's menu) */
     HIT_TOOLS,          /* the "כלים" button at the menu's top-left */
     HIT_TOOL_LIST,      /* back to the list from confirm / output */
@@ -224,6 +231,14 @@ typedef struct State {
     int smart_pending, smart_port;
     char smart_nonce[32], smart_verdict[16], smart_reason[96];
 
+    /* #928: the capture's shrink question (shrinkgui.sh via guistate.sh):
+     * shrink_prompt=<nonce>|<count> and one shrink_partition=<idx>|<old
+     * bytes>|<new bytes> per row. Pending only when every row arrived and
+     * is valid -- a partial table is never drawn as the whole question. */
+    int shrink_pending, nshrink;
+    char shrink_nonce[32];
+    struct { int idx; unsigned long long old_bytes, new_bytes; } shrink[MAX_SHRINK_PARTS];
+
     /* #1090: positive evidence from the agent's latest hello. -1 means the
      * key was absent, which is different from a measured zero seconds/HTTP 0. */
     int hello_age, hello_rc;
@@ -329,6 +344,8 @@ typedef struct App {
     char toast[160];            /* #toast; empty = hidden */
     double toast_until;         /* monotonic seconds */
 
+    char shrink_sent[32];       /* #928: the nonce already answered -- one answer per question */
+
     State st;
 
     /* #1188: local UI state; validation and apply remain in wizard/core.py. */
@@ -366,6 +383,9 @@ void screen_standby(App *a, cairo_t *cr, double W, double H, double head_h);
 void screen_restore(App *a, cairo_t *cr, double W, double H, double head_h);
 void screen_tools(App *a, cairo_t *cr, double W, double H, double head_h);
 void screen_install(App *a, cairo_t *cr, double W, double H);
+/* #928 (screens_shrink.c): the shrink question, modal over any screen while
+ * st.shrink_pending -- it replaces the hit table with its three buttons. */
+void draw_shrink_dialog(App *a, cairo_t *cr, double W, double H);
 
 /* #649 (screens_tools.c): the tools / tool-result files next to --state.
  * tools_poll re-reads what changed; returns 1 when the scene must redraw.

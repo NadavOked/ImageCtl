@@ -61,6 +61,9 @@ void state_parse(State *s, FILE *fp) {
     s->hello_age = -1;
     s->hello_rc = -1;
     int reported_long = 0, reported_disks = 0, reported_machines = 0;
+    /* #928: the shrink question is all-or-nothing -- the declared count and
+     * a bad row are remembered here and settled after the last line. */
+    unsigned long long shrink_declared = 0; int shrink_seen = 0, shrink_bad = 0;
     char line[4096];
     while (fgets(line, sizeof line, fp)) {
         size_t len = strlen(line);
@@ -224,6 +227,26 @@ void state_parse(State *s, FILE *fp) {
             s->smart_port = (int)port;
             cp(s->smart_verdict, sizeof s->smart_verdict, f[2]);
             cp(s->smart_reason, sizeof s->smart_reason, f[3]);
+        } else if (KEY("shrink_prompt")) {
+            /* nonce|count. The nonce is echoed back on the answer, so it is
+             * kept only in the shape the bridge accepts: digits and '-'. */
+            unsigned long long n;
+            if (shrink_seen++ || split(val, f, 3) != 2 || !f[0][0] ||
+                strspn(f[0], "0123456789-") != strlen(f[0]) ||
+                strlen(f[0]) >= sizeof s->shrink_nonce ||
+                !parse_uint(f[1], &n) || n < 1 || n > MAX_SHRINK_PARTS) { shrink_bad = 1; continue; }
+            cp(s->shrink_nonce, sizeof s->shrink_nonce, f[0]);
+            shrink_declared = n;
+        } else if (KEY("shrink_partition")) {
+            /* idx|old bytes|new bytes -- a shrink makes a partition smaller */
+            unsigned long long idx, old_b, new_b;
+            if (split(val, f, 4) != 3 || !parse_uint(f[0], &idx) || idx < 1 || idx > INT_MAX ||
+                !parse_uint(f[1], &old_b) || !parse_uint(f[2], &new_b) ||
+                new_b < 1 || new_b >= old_b || s->nshrink >= MAX_SHRINK_PARTS) { shrink_bad = 1; continue; }
+            s->shrink[s->nshrink].idx = (int)idx;
+            s->shrink[s->nshrink].old_bytes = old_b;
+            s->shrink[s->nshrink].new_bytes = new_b;
+            s->nshrink++;
         } else if (KEY("class") && s->nclasses < MAX_CLASSES) {
             split(val, f, 3);
             ClassGroup *g = &s->classes[s->nclasses++];
@@ -285,6 +308,13 @@ void state_parse(State *s, FILE *fp) {
         else fprintf(stderr, "native-gui: state: unknown key '%s' ignored\n", key);
 #undef KEY
     }
+    s->shrink_pending = shrink_seen && !shrink_bad && shrink_declared > 0 &&
+                        (unsigned long long)s->nshrink == shrink_declared;
+    int shrink_broken = (shrink_seen || s->nshrink) && !s->shrink_pending;
+    if (shrink_broken) {
+        fprintf(stderr, "native-gui: state: shrink question incomplete or malformed; not shown\n");
+        s->nshrink = 0; s->shrink_nonce[0] = 0;
+    }
     int hidden = s->hidden_disks + s->hidden_machines;
     if (s->rejected_lines && hidden)
         snprintf(s->state_warning, sizeof s->state_warning,
@@ -296,6 +326,11 @@ void state_parse(State *s, FILE *fp) {
     else if (hidden)
         snprintf(s->state_warning, sizeof s->state_warning,
                  "+%d נוספים, לא מוצגים", hidden);
+    /* #928: a question that cannot be drawn whole is said, not hidden --
+     * the agent cancels the capture when no answer comes. */
+    if (shrink_broken && !s->state_warning[0])
+        snprintf(s->state_warning, sizeof s->state_warning,
+                 "שאלת הכיווץ הגיעה פגומה ולא מוצגת — הקליטה תבוטל");
 }
 
 int state_poll(StateFile *f, State *s) {

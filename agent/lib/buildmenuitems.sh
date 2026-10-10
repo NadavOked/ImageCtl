@@ -14,14 +14,13 @@ build_menu_options() {
     # The menu is built from the role. Hiding is not permission -- the
     # server enforces admin_only on the capture either way -- but a menu
     # that offers what it would refuse is a menu that lies to the operator.
-    # #1073 (Nadav, 18/09): one order on the text menu and on the GUI --
-    # deploy from the server, deploy this disk directly, restore onto this
-    # disk, and for admin the capture last. The class card (v2) after all.
+    # #1244: capture first for admin, then room, direct and restore.
+    # The class card (v2) stays last, as on the native GUI.
     rm -f "$RUN_DIR/build_menu.txt"
+    [ "$BUILD_ROLE" = "admin" ] && echo "capture" >> "$RUN_DIR/build_menu.txt"
     echo "room" >> "$RUN_DIR/build_menu.txt"
     echo "direct" >> "$RUN_DIR/build_menu.txt"   # #715: always, like room
     echo "self" >> "$RUN_DIR/build_menu.txt"     # #1073 (c): this server's image onto this disk
-    [ "$BUILD_ROLE" = "admin" ] && echo "capture" >> "$RUN_DIR/build_menu.txt"
     # #880: v1 is the cloning edition -- the class option is offered only
     # when the last hello said the server has it switched on. The server
     # refuses the round either way (409); a missing field reads as off.

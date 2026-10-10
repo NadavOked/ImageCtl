@@ -89,6 +89,16 @@ shrink_ask() {
     # ב-`$( )`): continue / plain / cancel. שאלה **אחת** עם הטבלה של כל
     # המחיצות -- לא שאלה למחיצה. בלי תשובה (EOF, מסך שנעלם) -- cancel: שום
     # דבר לא מכווץ בלי אדם שאמר כן.
+    # ‏#928: כשהמסך הגרפי מחזיק את התצוגה, השאלה היא דיאלוג שלו
+    # (‏shrinkgui.sh) ולא מסך טקסט מאחוריו. גשר שנכשל, מסך שמת או פקיעה
+    # -- cancel, ולעולם לא נפילה למסך טקסט שאיש לא רואה.
+    if [ -n "${_gui_pid:-}" ]; then
+        if _sa_gui=$(gui_shrink_choice "$1"); then
+            case "$_sa_gui" in continue|plain|cancel) printf '%s\n' "$_sa_gui"; return ;; esac
+        fi
+        printf 'native GUI: the shrink question was not answered -- capture cancelled\n' >&2
+        echo cancel; return
+    fi
     while :; do
         {
             ui_clear; ui_header
@@ -113,9 +123,10 @@ shrink_gui_release() {
     # המסך הגרפי (‏imagectl-kiosk) תופס את התצוגה ואת המקלדת (EVIOCGRAB):
     # שאלה על מסך הטקסט מאחוריו לא נראית ולא נענית -- והקליטה הייתה
     # ממתינה לנצח. הוא נעצר כמו ב-handoff (gui_cleanup מחזיר את הקונסולה),
-    # והקליטה ממשיכה על מסך הטקסט כפי שעבדה לפני שהיה מסך גרפי. דיאלוג
-    # גרפי הוא עבודת C בקיוסק -- Issue המשך; בינתיים אין המתנה עיוורת.
-    # ‏$1 = איזו שאלה (ליומן); ריק = שאלת הכיווץ. גם שאלת סוף הקליטה (#409).
+    # והשאלה נשאלת על מסך הטקסט כפי שעבדה לפני שהיה מסך גרפי. שאלת הכיווץ
+    # עצמה כבר דיאלוג גרפי (‏#928, ‏shrinkgui.sh); כאן נשארו שאלת ההחזרה
+    # (‏shrinkoffer.sh) ושאלת סוף הקליטה (#409).
+    # ‏$1 = איזו שאלה (ליומן); ריק = שאלת ההחזרה של הכיווץ.
     [ -n "${_gui_pid:-}" ] && kill -0 "$_gui_pid" 2>/dev/null || return 0
     log "native GUI stopped for ${1:-the shrink question} -- the text screen takes over"
     kill "$_gui_pid" 2>/dev/null

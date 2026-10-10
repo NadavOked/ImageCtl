@@ -3,8 +3,8 @@
 1. **למשתמש הפצה אין קונסולה.** ‏`POST /api/console/login` על אפליקציית
    הקונסולה (‎:8081) מסרב ל-`deploy` ב-403 עם ``deploy_no_console`` והודעה
    שמסך הכניסה מציג; והסירוב יושב על **כל** נתיב ניהול, לא רק על הדלת —
-   עוגייה שהקיוסק הנפיק חתומה באותו סוד ותקפה גם כאן.
-2. **מחשב הבנייה ממשיך לעבוד.** הקיוסק (‎:8082) וכניסת הסוכן
+   עוגייה שפורט הסוכן הנפיק חתומה באותו סוד ותקפה גם כאן.
+2. **מחשב הבנייה ממשיך לעבוד.** allowlist פורט הסוכן (‎:8080) וכניסת הסוכן
    (`/api/v1/agent/login`) מקבלים deploy — משם `buildmenu.sh` וה-GUI נכנסים.
 3. **חיפה = ת"א.** שרת משני עונה לאדמין שלו בדיוק כמו standalone על כל
    נתיב, מלבד ההיררכיה (ניהול משניים — במשני אין צאצאים), והקונסולה
@@ -93,8 +93,8 @@ def _safe_hooks(tmp_path: Path) -> dict:
 
 @pytest.fixture()
 def split_env(tmp_path: Path, images_root: Path):
-    """‏console_app (‎:8081) + kiosk_app (‎:8082) על runtime אחד — כמו בייצור."""
-    from server.app import create_console_app, create_kiosk_app, create_runtime
+    """‏console_app (‎:8081) + agent_app (‎:8080) על runtime אחד — כמו בייצור."""
+    from server.app import create_agent_app, create_console_app, create_runtime
     from test_sender import Recorder                       # noqa: PLC0415
 
     rt = create_runtime(tmp_path / "data", images_root, "http://10.44.12.10:8080",
@@ -103,7 +103,7 @@ def split_env(tmp_path: Path, images_root: Path):
                  is_builtin=True, check_policy=False)
     users.create(rt.conn, *DEPLOY, "deploy", by="test", check_policy=False)
     env = {"rt": rt, "console_app": create_console_app(rt),
-           "kiosk_app": create_kiosk_app(rt)}
+           "agent_app": create_agent_app(rt)}
     yield env
     rt.ctx.sender.stop()
 
@@ -137,7 +137,7 @@ def test_console_login_still_admits_admin_and_still_says_401_for_a_wrong_passwor
 
 
 def _kiosk_deploy_cookie(env) -> str:
-    kiosk = TestClient(env["kiosk_app"])
+    kiosk = TestClient(env["agent_app"])
     resp = _login(kiosk, DEPLOY)
     assert resp.status_code == 200, resp.text
     return resp.cookies[auth.COOKIE_NAME]
@@ -153,7 +153,7 @@ def _http_routes(app) -> list[tuple[str, str]]:
 
 
 def test_a_kiosk_issued_deploy_cookie_is_refused_on_every_console_route(split_env):
-    """הסירוב אינו רק בדלת: העוגייה מ-‎:8082 תקפה קריפטוגרפית גם ב-‎:8081,
+    """הסירוב אינו רק בדלת: העוגייה מ-‎:8080 תקפה קריפטוגרפית גם ב-‎:8081,
     ולכן כל נתיב ניהול מחזיר 403 עם אותה הודעה — כולל מה שסעיף 11 הישן
     פתח ל-deploy (‏`/overview`, ‏`/images`, ‏`/me`, ‏`/room`)."""
     cookie = _kiosk_deploy_cookie(split_env)
@@ -205,7 +205,7 @@ def test_an_admin_demoted_to_deploy_loses_the_console_at_once(split_env):
 
 
 def test_kiosk_login_admits_deploy_with_a_session_cookie(split_env):
-    kiosk = TestClient(split_env["kiosk_app"])
+    kiosk = TestClient(split_env["agent_app"])
     resp = _login(kiosk, DEPLOY)
     assert resp.status_code == 200
     assert resp.json()["role"] == "deploy"

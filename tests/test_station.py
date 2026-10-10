@@ -451,10 +451,9 @@ def test_station_state_for_a_stranger_is_polite(station):
     assert station["anon"].get("/api/v1/agent/state").status_code == 400
 
 
-def test_the_station_page_is_served(station):
-    page = station["anon"].get("/console/station/")
-    assert page.status_code == 200
-    assert "מחשב בניית אימג'ים" in page.text
+def test_the_station_web_page_is_gone(station):
+    """#1247: מסך התחנה בדפדפן הוסר; הגואי הנייטיב הוא המסך היחיד."""
+    assert station["anon"].get("/console/station/").status_code == 404
 
 
 def test_a_wake_failure_does_not_stop_the_rest(tmp_path, images_root, clock):

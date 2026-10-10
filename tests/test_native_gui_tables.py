@@ -17,6 +17,16 @@ MAIN = Path(__file__).resolve().parents[1] / "native-gui" / "src" / "main.c"
 SCREENS = MAIN.with_name("screens.c")
 
 
+def test_capture_first_menu_matches_number_key_order():
+    expected = ["HIT_CAPTURE", "HIT_ROOM", "HIT_DIRECT", "HIT_RESTORE", "HIT_CLASSES"]
+    menu = re.search(r"MENU\[MENU_N\]\s*=\s*\{(.*?)\n\};",
+                     SCREENS.read_text(encoding="utf-8"), re.S)[1]
+    assert re.findall(r"\},(HIT_\w+),", menu) == expected
+    handler = re.search(r"static int visible_card_ids.*?\{(.*?)\n\}",
+                        MAIN.read_text(encoding="utf-8"), re.S)[1]
+    assert re.findall(r"ids\[n\+\+\] = (HIT_\w+)", handler) == expected
+
+
 def _c_array_items(text: str, name: str) -> list[str]:
     """הפריטים של `... name[] = { ... };` — בלי הערות, מפוצלים בפסיקים."""
     m = re.search(r"\b" + re.escape(name) + r"\[\]\s*=\s*\{(.*?)\};", text, flags=re.S)
