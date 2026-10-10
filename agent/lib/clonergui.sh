@@ -74,6 +74,7 @@ cloner_gui_state() {
         _cg_name=$(json_get "$RUN_DIR/manifest.json" ".name")
     case "$_cg_name" in null) _cg_name= ;; esac
     printf 'cloner=%s\n' "$_cg_name" >> "$_cg_next" || return 1
+    gui_server_addr >> "$_cg_next" || return 1   # #1252: the header's server (guistate.sh)
 
     _cg_any=0
     for _cg_dir in "$RUN_DIR"/targets/*/; do

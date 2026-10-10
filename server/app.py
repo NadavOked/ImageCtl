@@ -539,8 +539,17 @@ def _add_agent_routes(app: FastAPI, rt: ServerRuntime) -> None:
     # ‏buildmenu.sh/roomflow.sh קוראים `$SERVER/api/console/{login,folders,
     # images,tasks/capture,room…}` על פורט הסוכן. אותה משפחה כמו #824:
     # allowlist מחשב הבנייה (בלי שום נתיב ניהול); `create_station_router` כלול בו.
-    app.include_router(create_kiosk_router(rt.ctx, room_wake=_kiosk_room_wake(rt)))
+    app.include_router(create_kiosk_router(rt.ctx, room_wake=_kiosk_room_wake(rt),
+                                           version=_server_version(rt)))
     app.mount("/boot", _boot_asgi(rt))
+
+
+def _server_version(rt: ServerRuntime):
+    """‏#1252: תג ה-git של השרת לכותרת הגואי (‏`/agent/state`) — אותו מקור
+    כמו `/me.version` (‏#915) ואותה ברירת מחדל לתיקיית העץ (‏#748)."""
+    repo_dir = rt.repo_dir or Path(__file__).resolve().parents[1]
+    hooks = {**default_update_hooks(), **(rt.update_hooks or {})}
+    return lambda: current_version(hooks, repo_dir)
 
 
 def _kiosk_room_wake(rt: ServerRuntime):

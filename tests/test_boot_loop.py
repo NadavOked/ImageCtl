@@ -195,7 +195,7 @@ def test_a_capture_task_has_its_own_budget(server):
         "mac": mac, "name": "מחשב בנייה", "group_id": "grp_BUILD",
     }).status_code == 200
     assert server["admin"].post("/api/console/tasks/capture", json={
-        "mac": mac, "disk": "sda", "name": "Windows 11 Base",
+        "mac": mac, "disk": "sda", "name": "Windows 11 Base", "folder": "Office",
     }).status_code == 200
     assert boot_until_local(server, mac) == ATTEMPT_LIMIT + 1
 

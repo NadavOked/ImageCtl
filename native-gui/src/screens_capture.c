@@ -8,12 +8,19 @@
 
 /* ---- #st-pick -------------------------------------------------------------- */
 
-/* The options of #st-folder: "ללא תיקייה" then the folders (loadFolders). */
+/* The options of #st-folder: the folders (loadFolders) and nothing else --
+ * #1251 (Nadav, 10/10): a new image always goes into a folder, so there is
+ * no "no folder" option. folder_sel is 1-based; 0 = nothing chosen yet. */
 static int folder_options(const App *a, const char **out, int max) {
     int n = 0;
-    out[n++] = "ללא תיקייה";
     for (int i = 0; i < a->st.nfolders && n < max; i++) out[n++] = a->st.folders[i];
     return n;
+}
+
+/* What the closed select shows: the chosen folder, or what to do next. */
+static const char *folder_shown(const App *a) {
+    if (a->folder_sel > 0 && a->folder_sel <= a->st.nfolders) return a->st.folders[a->folder_sel - 1];
+    return a->st.nfolders ? "בחרו תיקייה" : "אין תיקיות — צרו חדשה ב-\"+ חדשה\"";
 }
 
 void screen_pick(App *a, cairo_t *cr, double W, double H, double head_h) {
@@ -114,11 +121,9 @@ void screen_pick(App *a, cairo_t *cr, double W, double H, double head_h) {
         /* .folder-row: flex, gap 8, align-items:center; select flex:1. The
          * select keeps its margin-bottom 14 inside the row, so the row is
          * that much taller and the button is centred against it. */
-        const char *opts[MAX_FOLDERS + 1];
-        int nopt = folder_options(a, opts, MAX_FOLDERS + 1);
         double bw = btn_width(&nf), row_h = in_h + N_FORM_GAP;
         sel_r = (Rect){ x + bw + N_ACTION_GAP, y, inner - bw - N_ACTION_GAP, in_h };
-        draw_select(a, cr, sel_r, opts[a->folder_sel < nopt ? a->folder_sel : 0], HIT_FOLDER);
+        draw_select(a, cr, sel_r, folder_shown(a), HIT_FOLDER);
         draw_btn(a, cr, (Rect){ x, y + (row_h - btn_h) / 2, bw, btn_h }, &nf, BTN_PLAIN, HIT_NEWFOLDER);
         y += row_h;
         if (a->newfolder_shown) {
@@ -150,9 +155,9 @@ void screen_pick(App *a, cairo_t *cr, double W, double H, double head_h) {
     /* the open <select> list: after card_end, so the card's clip does not
      * cut it, and last, so it is on top of everything */
     if (a->dd_open == HIT_FOLDER && form) {
-        const char *opts[MAX_FOLDERS + 1];
-        int nopt = folder_options(a, opts, MAX_FOLDERS + 1);
-        draw_popup(a, cr, sel_r, opts, nopt, a->folder_sel);
+        const char *opts[MAX_FOLDERS];
+        int nopt = folder_options(a, opts, MAX_FOLDERS);
+        draw_popup(a, cr, sel_r, opts, nopt, a->folder_sel - 1);
     }
 }
 

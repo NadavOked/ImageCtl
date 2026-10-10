@@ -354,6 +354,10 @@ static void start_capture(App *a) {
     }
     char typed[64]; snprintf(typed, sizeof typed, "%s", a->newfolder_shown ? a->folder_new : ""); trim(typed);
     const char *folder = typed[0] ? typed : a->folder_sel > 0 && a->folder_sel <= a->st.nfolders ? a->st.folders[a->folder_sel - 1] : "";
+    if (!folder[0]) {                     /* #1251: a new image always goes into a folder */
+        snprintf(a->st.form_error, sizeof a->st.form_error, "בחרו תיקיית יעד, או צרו חדשה ב-\"+ חדשה\"");
+        return;
+    }
     a->st.form_error[0] = 0;
     emit("capture-start");
     emit_kv("dev", a->st.disks[a->chosen_disk].dev);
@@ -580,7 +584,7 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
         if (id >= HIT_TOOL_DISK_BASE && id < HIT_TOOL_DISK_BASE + MAX_DISKS) { a->tool_disk_sel = id - HIT_TOOL_DISK_BASE; break; }
         if (id >= HIT_OPTION_BASE && id < HIT_OPTION_BASE + MAX_IMAGES + 1) {
             int i = id - HIT_OPTION_BASE;
-            if (a->dd_open == HIT_FOLDER) a->folder_sel = i;
+            if (a->dd_open == HIT_FOLDER) a->folder_sel = i + 1;   /* #1251: 1-based, no "no folder" row */
             else if (a->dd_open == HIT_ROOM_IMAGE) a->image_sel = i;
             else if (a->dd_open == HIT_RESTORE_IMAGE) a->restore_image_sel = i;
             else if (a->screen == SCREEN_RESTORE && i < a->st.nimages) a->restore_image_sel = i + 1;
@@ -816,6 +820,10 @@ static void sample_state(State *s) {
     snprintf(s->msg_title, sizeof s->msg_title, "המחשב אינו רשום");
     snprintf(s->msg_sub, sizeof s->msg_sub, "רשמו אותו בקונסולה כמחשב בניית אימג'ים ורעננו.");
     snprintf(s->machine_name, sizeof s->machine_name, "BUILD-01");   /* #1073: the restore card's confirm field */
+    /* #1252: --png sample only -- a real screen reads these from the state file */
+    snprintf(s->server_name, sizeof s->server_name, "imagectl-ta");
+    snprintf(s->server_addr, sizeof s->server_addr, "10.44.0.1");
+    snprintf(s->server_version, sizeof s->server_version, "v0.59.2");
     s->hello_age = 4; s->hello_rc = 200;
 }
 

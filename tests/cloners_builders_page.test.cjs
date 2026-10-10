@@ -57,6 +57,7 @@ function setup({roundOpen=false}={}) {
       {mac:C2,ip:'10.44.12.59',description:'',first_seen:'2026-09-01T08:00:00Z',last_seen:minutesAgo(9),registered:true,name:'מחשב 2',group_id:'grp_CLONERS',group_label:'מחשבי שיכפול',role:'cloner',boot:null}],
     '/disk-failures':[{id:7,session_id:'r15',mac:C2,dev:'sdc',serial:'S5Y2NX0R12345',port:3,disk_number:3,ata_port:'ata3',at:'2026-09-15T14:22:00Z',cause:'cable',error:'ATA bus error: SError: CommWake',ata_log:['ata3.00: exception Emask','ata3: hard resetting link','ata3.00: failed command: WRITE FPDMA QUEUED']}],
     '/shrink-records':[],
+    '/folders':[{name:'Office',description:'',images:0}],   // #1251: openCapture reads them itself
     '/monitor/machines':[
       {mac:B1,name:'בנייה 1',role:'build',ip:'10.44.12.20',online:false,prompt:'menu'},
       {mac:B2,name:'בנייה 2',role:'build',ip:'10.44.12.21',online:true,prompt:null},
@@ -272,10 +273,12 @@ test('builders: machine cards from /machines + /monitor + /net (model/TPM, disk 
   const cards=between(html,'<div class="card-h"><span>המחשבים','קליטות אחרונות');
   assert.equal((cards.match(CARD)||[]).length,2);
   const b1=card(cards,B1), b2=card(cards,B2);
+  // כרטיס צר (נדב 10/10): רוחב סביר, טקסט מצב עד 3 שורות עם title מלא, serial בשורה אחת עם title
+  assert.match(cards,/<div class="mgrid wide">/,'builder cards use the wide grid (min 320px), not the 140px cloner-slot grid');
   assert.match(b1,/<span class="st warn"><b>בנייה 1<\/b><\/span><span class="muted"><span class="mono">10.44.12.20<\/span> · לפני 3 שע&#39;/);
   assert.match(b1,/<span class="k">דגם<\/span><span class="v">LENOVO ThinkCentre M720q · TPM 2.0<\/span>/);
-  assert.match(b1,/<span class="k">דיסק 1<\/span><span class="v"><bdi dir="ltr">238 GB<\/bdi> · 870 EVO · <span class="mono">S5YB1<\/span><\/span>/);
-  assert.match(b1,/<span class="k">מצב<\/span><span class="v"><span class="st warn">ממתין למפעיל: תפריט<\/span> <span class="pill warn">קליטה ממתינה<\/span>/);
+  assert.match(b1,/<span class="k">דיסק 1<\/span><span class="v"><bdi dir="ltr">238 GB<\/bdi> · 870 EVO · <span class="mono" title="S5YB1">S5YB1<\/span><\/span>/);
+  assert.match(b1,/<span class="k">מצב<\/span><span class="v"><span class="st warn"><span class="clamp" title="ממתין למפעיל: תפריט">ממתין למפעיל: תפריט<\/span><\/span> <span class="pill warn">קליטה ממתינה<\/span>/);
   assert.match(b1,/לפני קליטה<\/span><span class="v"><span class="muted">NTFS \/ בשימוש — נבדקים בקליטה \(<b[^>]*>דורש API<\/b>\)/);
   assert.doesNotMatch(b1,/קלוט מכאן/,'a machine with an open capture gets no second one (server would 409)');
   assert.doesNotMatch(b1,/monitorMachine\(/,'monitor only on the monitor page'); assert.match(b1,/openMachineDetail\(/); assert.match(b1,/wakeMachine\('[^']+'\)">WoL</,'#984: per-machine WoL on the builder card');

@@ -234,14 +234,20 @@ def create_console_router(
         from . import room as room_module      # noqa: PLC0415 — נמנע ממעגל ייבוא
         room_module.tick(ctx.conn, ctx.store)
         pulls_module.sweep(ctx.store)
+        from . import session_view as sv       # noqa: PLC0415 — נמנע ממעגל ייבוא
+
+        def with_extras(row):
+            # ‏#1255: מי פתח ומתי — רק כאן (קונסולה מאומתת), לא ב-`view()` המשותף לתחנה/סוכן
+            return {**ctx.store.view(row, ctx.library), **sv.console_extras(ctx.store, row)}
+
         session = ctx.store.active()
         session_view = None
         if session is not None:
-            session_view = ctx.store.view(ctx.store.maybe_start(session), ctx.library)
+            session_view = with_extras(ctx.store.maybe_start(session))
         else:
             session = ctx.store.latest_failed_broadcast()
             if session is not None:
-                session_view = ctx.store.view(session, ctx.library)
+                session_view = with_extras(session)
         machines = ctx.conn.execute("SELECT COUNT(*) AS n FROM machines").fetchone()["n"]
         try:
             usage = shutil.disk_usage(ctx.library.root)
@@ -252,8 +258,7 @@ def create_console_router(
             "session": session_view,
             # משיכות היוניקאסט שרצות עכשיו. הן אינן "הסבב" — אבל הן
             # עבודה אמיתית על השרת, ושרת שעובד לא ייראה פנוי (#60).
-            "pulls": [ctx.store.view(row, ctx.library)
-                      for row in ctx.store.active_pulls()],
+            "pulls": [with_extras(row) for row in ctx.store.active_pulls()],
             "room": room_module.status_view(ctx)["round"],
             "sender": ctx.sender.status() if ctx.sender else None,
             "machines": machines,

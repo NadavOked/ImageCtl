@@ -168,8 +168,8 @@ test('a fresh server has one needs-attention item: configure the deployment netw
   ];
   run('HEALTH='+JSON.stringify(fresh)+'; HOME.net=[]; HOME.nodes=[]; DISK_FAILURES=[]; SHRINK_RECORDS=[]; MACHINES=[]; SECONDARY_STATUS={}');
   const html=run('homeAttention()');
-  assert.match(html,/<span class="pill err">1<\/span>/);
-  assert.match(html,/<b>הגדר את רשת ההפצה<\/b>/);
+  assert.match(html,/<span class="cnt">1<\/span>/);
+  assert.match(html,/<b>הגדר את רשת ההפצה<\/b> — בחר כרטיס בדף הרשת/,'a Hebrew detail stays inline');
   assert.match(html,/openNetwork\(2\)/);
   assert.doesNotMatch(html,/פורט 67|זהות מכונה/);
 });
@@ -260,7 +260,12 @@ test('ports page (old /ports contract): one table, a switch in every row, wired 
   assert.equal(run('ports()'),run('pagePlaceholder()'));
   await run('loadPorts()');
   const html=run('ports()'); balanced(html);
-  assert.match(html,/<th>שירות<\/th><th>פורט<\/th><th>מי מתחבר<\/th><th>על איזה כרטיס<\/th><th>מצב נמדד<\/th><th>מתג<\/th><th>מה קורה אם מכבים<\/th><th>API<\/th>/);
+  assert.match(html,/<th>שירות<\/th><th>פורט<\/th><th>מי מתחבר<\/th><th>על איזה כרטיס<\/th><th>מצב נמדד<\/th><th>מתג<\/th><th class="c-opt">מה קורה אם מכבים<\/th><th class="c-opt">API<\/th><th><span class="sr">פעולות<\/span><\/th>/);
+  assert.match(html,/<table class="dg dense kebab-col">/);
+  // ⋯ בכל שורה: אותה פעולה של המתג, בדיקה מחדש ופרטים (המתג עצמו נשאר בעמודה)
+  assert.equal((html.match(/class="kebab"/g)||[]).length,11);   // #1247: שורת הקיוסק (8082) הוסרה
+  const tftpMenu=JSON.parse(row(html,'>TFTP<').match(/data-menu="([^"]*)"/)[1].replaceAll('&quot;','"').replaceAll('&#39;',"'"));
+  assert.deepEqual(tftpMenu.map((i)=>i[0]),['בדוק עכשיו','הצג פרטים'],'TFTP has no switch API → no open/close item');
   const switches=[...html.matchAll(/<button type="button" class="sw ([a-z]*)" role="switch" aria-checked="(true|false|mixed)"/g)];
   // DHCP (ens19) + 8 שורות שרת + 3 SSH לשרת = 12, מתג בכל שורה
   assert.equal(switches.length,11); assert.equal((html.match(/<tr><td>/g)||[]).length,11);
@@ -540,4 +545,15 @@ test('a long bind list renders one address per line, IPv6 link-local folded into
   assert.doesNotMatch(html,/, \[fe80/,'no comma-joined inline string');
   assert.match(run(`portNicHtml(['0.0.0.0:8080'])`),/0\.0\.0\.0:8080/);
   assert.match(run(`portNicHtml([])`),/—/);
+});
+
+// apple-pending-4 · 4: פיל ה-TLS עבר מכותרת הסקירה לדף הבריאות
+test('health header carries the TLS pill (moved from the overview): self-signed → info, off → grey; the overview header has none',async()=>{
+  const {run}=setup(); run('current="health"');
+  await run('loadHealth()');
+  run('ME.tls={fingerprint_sha256:"AB:CD"}');
+  assert.match(run('health()'),/class="pill info">TLS תעודה עצמית</);
+  run('ME.tls=null');
+  assert.match(run('health()'),/class="pill ">TLS כבוי</);
+  assert.doesNotMatch(run('layout(pages.home,0)'),/TLS (כבוי|תעודה)/,'the overview header no longer shows TLS');
 });

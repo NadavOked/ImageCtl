@@ -69,6 +69,8 @@ function balanced(html) {
   }
   assert.deepEqual(stack,[]);
 }
+const unesc=(t)=>t.replaceAll('&quot;','"').replaceAll('&#39;',"'").replaceAll('&#96;','`').replaceAll('&lt;','<').replaceAll('&gt;','>').replaceAll('&amp;','&');
+const menuOf=(tr)=>{const m=tr.match(/class="kebab"[^>]*data-menu="([^"]*)"/); assert.ok(m,'row has a ⋯ menu'); return JSON.parse(unesc(m[1]));};
 const row=(html,needle)=>{const i=html.indexOf(needle); assert.ok(i>=0,'missing row: '+needle); const s=html.lastIndexOf('<tr',i); return html.slice(s,html.indexOf('</tr>',i)+5);};
 
 /* ---------- הרישום: חמישה עמודים own, בלי הקוד הישן ---------- */
@@ -184,13 +186,17 @@ test('permissions: one users table (name, role pill, state, created, hover actio
   const html=run('permissions()'); balanced(html);
   assert.match(html,/3 משתמשים · 1 מנהלים פעילים · 1 מפעילי הפצה · המנהל האחרון אינו ניתן למחיקה או להורדה/);
   assert.match(html,/onclick="openNewUser\(\)">\+ משתמש</);
-  assert.equal((html.match(/<table class="dg( acts-on)?">/g)||[]).length,2,'users + matrix'); assert.doesNotMatch(html,/role="tablist"|Add user|<th>User<\/th>|id="users-table"/);
-  assert.match(html,/<th>משתמש<\/th><th>תפקיד<\/th><th>מצב<\/th><th>MFA<\/th><th>נוצר<\/th><th>כניסה אחרונה<\/th><th><\/th>/);
+  assert.equal((html.match(/<table class="dg( kebab-col)?">/g)||[]).length,2,'users + matrix'); assert.doesNotMatch(html,/role="tablist"|Add user|<th>User<\/th>|id="users-table"/);
+  assert.match(html,/<th>משתמש<\/th><th>תפקיד<\/th><th>מצב<\/th><th>MFA<\/th><th class="c-opt">נוצר<\/th><th class="c-opt">כניסה אחרונה<\/th><th><span class="sr">פעולות<\/span><\/th>/);
   const a=row(html,'data-user="admin"'), y=row(html,'data-user="yossi"'), d=row(html,'data-user="deployer"');
   assert.match(a,/<span class="name">admin<\/span><span class="sub">זה אתה<\/span>/); assert.match(a,/class="pill info">מנהל</); assert.match(a,/class="st ok">פעיל</); assert.match(a,/01\/08\/2026/);
-  assert.match(a,/userPasswordSheet\('admin'\)">סיסמה</); assert.doesNotMatch(a,/userRoleSheet|userDisable|userDeleteSheet/,'self: password only (server refuses role/disable on yourself; and admin is the last active admin)');
-  assert.match(y,/class="st warn">מושבת</); assert.match(y,/userDisable\('yossi', false\)">הפעל</); assert.match(y,/class="btn sm danger" onclick="userDeleteSheet\('yossi'\)">מחיקה</,'a disabled admin is deletable — the server counts active admins');
-  assert.match(d,/class="pill ">הפצה</); assert.match(d,/userRoleSheet\('deployer'\)">תפקיד</); assert.match(d,/userDisable\('deployer', true\)">השבת</); assert.match(d,/userDeleteSheet\('deployer'\)">מחיקה</);
+  // אחרי apple-pending-4: כל פעולות השורה בתפריט ⋯ אחד; ההרסנית (מחיקה — עדיין הקלדת שם) אחרונה, מסומנת "danger"
+  assert.deepEqual(menuOf(a),[['סיסמה…',"userPasswordSheet('admin')"]],'self: password only (server refuses role/disable on yourself; and admin is the last active admin)');
+  assert.match(y,/class="st warn">מושבת</); assert.deepEqual(menuOf(y).map((i)=>i[0]),['סיסמה…','תפקיד…','הפעל','נתק את כל ההפעלות…','מחק משתמש…']);
+  assert.deepEqual(menuOf(y).at(-1),['מחק משתמש…',"userDeleteSheet('yossi')",'danger'],'a disabled admin is deletable — the server counts active admins');
+  assert.ok(menuOf(y).some((i)=>i[1]==="userDisable('yossi', false)"));
+  assert.match(d,/class="pill ">הפצה</); assert.ok(menuOf(d).some((i)=>i[1]==="userRoleSheet('deployer')")); assert.ok(menuOf(d).some((i)=>i[0]==='השבת'&&i[1]==="userDisable('deployer', true)")); assert.deepEqual(menuOf(d).at(-1),['מחק משתמש…',"userDeleteSheet('deployer')",'danger']);
+  assert.doesNotMatch(y+a+d,/class="btn sm/,'no inline buttons left in the table cells');
   // ‏#1008: כניסה אחרונה מ-/users; null = "לא נרשמה", לא תאריך מומצא
   assert.match(a,/17\/09\/2026 08:05<\/span> · <span class="mono">10\.44\.10\.55</);
   assert.match(y,/class="muted"[^>]*>לא נרשמה</); assert.doesNotMatch(html,/דורש API/);
@@ -207,7 +213,7 @@ test('permissions: one users table (name, role pill, state, created, hover actio
   // עם מנהל פעיל נוסף — admin כבר לא "האחרון" אבל עדיין "זה אתה": רק סיסמה; yossi הפעיל מקבל הכול
   run('USERS[1].disabled=false');
   const h2=run('permissions()');
-  assert.match(row(h2,'data-user="yossi"'),/userRoleSheet\('yossi'\)">תפקיד<\/button><button class="btn sm" onclick="userDisable\('yossi', true\)">השבת<\/button><button class="btn sm danger" onclick="userDeleteSheet\('yossi'\)">מחיקה</);
+  assert.deepEqual(menuOf(row(h2,'data-user="yossi"')).map((i)=>i[0]),['סיסמה…','תפקיד…','השבת','נתק את כל ההפעלות…','מחק משתמש…']);
   assert.doesNotMatch(row(h2,'data-user="admin"'),/userDeleteSheet/);
   assert.ok(!requests.some((r)=>r.method!=='GET'),'rendering sends nothing');
 });

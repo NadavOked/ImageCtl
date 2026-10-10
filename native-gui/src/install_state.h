@@ -4,6 +4,9 @@
 #define INSTALL_MAX_NICS 16
 #define INSTALL_MAX_DISKS 16
 #define INSTALL_OUTPUT_MAX 100000
+/* #1250: the done screen restarts by itself after this many seconds, like
+ * the ESXi installer. One name, so changing it is one line. */
+#define INSTALL_AUTO_REBOOT_S 90
 
 enum {
     INSTALL_DISK = 1, INSTALL_ROLE, INSTALL_NETWORK, INSTALL_HOSTNAME, INSTALL_ADMIN,
@@ -30,6 +33,8 @@ typedef struct {
     char address[48], netmask[48], gateway[48], dns[96];
     char primary_name[96], primary_version[32], primary_fingerprint[128], primary_error[256];
     char phase[48], title[160], log[256], job[64], error[256], console_url[192], user[64];
+    double reboot_at;   /* #1250: monotonic deadline of the auto restart; 0 = not counting (cancelled or fired) */
+    int reboot_left;    /* seconds shown on the done screen */
     char field_error[14][256];
     char output[INSTALL_OUTPUT_MAX];
     InstallDisk disks[INSTALL_MAX_DISKS];

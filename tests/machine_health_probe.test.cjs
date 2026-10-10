@@ -168,9 +168,9 @@ test('home "needs attention": every verdict is a note with the machine name and 
   const {run}=setup();
   run('HOME.net=[]; HOME.nodes=[]; HOME.err={};');
   const html=run('homeAttention()'); balanced(html);
-  assert.equal((html.match(/class="note (err|warn)"/g)||[]).length,6,'six verdicts of מחשב 2, none for מחשב 1/3');
-  assert.match(html,/note err"[^]*<b>מחשב 2<\/b> — המחשב על סוללה — שיכפול\/קליטה עלולים להיקטע\. <a role="link" tabindex="0" onclick="openMachineDetail\('78%3Aac%3Ac0%3A9b%3A11%3Ac2'\)">פרטי המכונה</);
-  assert.match(html,/note warn"[^]*<b>מחשב 2<\/b> — 7 שגיאות CRC על eth0/);
+  assert.equal((html.match(/class="attn-i (err|warn)"/g)||[]).length,6,'six verdicts of מחשב 2, none for מחשב 1/3');
+  assert.match(html,/attn-i err"[^]*<b>מחשב 2<\/b> — המחשב על סוללה — שיכפול\/קליטה עלולים להיקטע\. <a role="link" tabindex="0" onclick="openMachineDetail\('78%3Aac%3Ac0%3A9b%3A11%3Ac2'\)">פרטי המכונה</);
+  assert.match(html,/attn-i warn"[^]*<b>מחשב 2<\/b> — 7 שגיאות CRC על eth0/);
   assert.doesNotMatch(html,/מחשב 1|מחשב 3/);
-  assert.match(html,/pill err">6</);
+  assert.match(html,/<span class="cnt">6<\/span>/);
 });

@@ -680,9 +680,10 @@ button:focus-visible,[role="button"]:focus-visible,.inventory-node:focus-visible
 .page .bar-row{display:flex;align-items:center;gap:8px}
 .page .bar-row .pct{width:42px;text-align:end;font-size:var(--t-sm);color:var(--muted);font-variant-numeric:tabular-nums;direction:ltr;unicode-bidi:isolate}
 /* מפתח-ערך */
-.page .kv{display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;font-size:var(--t-base);align-items:baseline}
+.page .kv{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:6px 16px;font-size:var(--t-base);align-items:baseline}
 .page .kv .k{color:var(--muted)}
-.page .kv .v{min-width:0;overflow-wrap:anywhere}
+.page .kv .v{min-width:0;overflow-wrap:break-word}
+.page .kv .v .mono{overflow-wrap:anywhere}
 /* הודעות, ריק-מצב */
 .page .note{padding:9px 12px;border:1px solid var(--hair);background:var(--porcelain);border-radius:var(--rp);font-size:var(--t-base);display:flex;gap:8px;align-items:flex-start;color:var(--ink)}
 .page .note > span:last-child{min-width:0;overflow-wrap:anywhere}
@@ -1036,3 +1037,88 @@ th,.table th,.page .dg th{letter-spacing:.02em}
   .drawer,.drawer.open{transform:none!important}
   .drawer{opacity:0}.drawer.open{opacity:1}
 }
+/* ---------- apple-pending-4 · 1: טבלאות רחבות — עמודת פעולות דביקה + תפריט ⋯ ----------
+   הבעיה: עמודת הפעולות היא האחרונה, ב-RTL זה הקצה השמאלי, והיא נחתכת ראשונה (ב-1024 כולה
+   מחוץ למסך, בלי שום רמז). העמודה נדבקת לקצה (inline-end) ונשארת בעין גם בגלילה;
+   עמודות משניות (.c-opt) נעלמות כשהכרטיס צר. ה-container הוא ה-card-b שגולל. */
+.sr{position:absolute;inline-size:1px;block-size:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.page .card-b.flush{container-type:inline-size}
+.page .dg.kebab-col th:last-child,.page .dg.kebab-col td:last-child{position:sticky;inset-inline-end:0;width:1%;text-align:center;white-space:nowrap;padding-inline:6px;border-inline-start:1px solid var(--field-line);box-shadow:8px 0 10px -8px var(--shadow-strong);z-index:1}
+.page .dg.kebab-col td:last-child{background:var(--surface)}
+.page .dg.kebab-col th:last-child{background:var(--porcelain)}
+.page .dg.kebab-col tr:hover td:last-child{background:var(--btn-hover)}
+.page .dg.kebab-col tr.sel td:last-child{background:var(--indigo-soft)}
+@container (max-width:640px){.page .dg.kebab-col .c-opt{display:none}}
+.kebab{width:32px;height:32px;display:inline-grid;place-items:center;border:0;background:transparent;color:var(--muted);border-radius:var(--r-sm);cursor:pointer;font-size:1.25rem;line-height:1;padding:0;transition:background-color var(--dur-fast) var(--ease),color var(--dur-fast) var(--ease),transform var(--dur-press) var(--ease)}
+.kebab:hover,.kebab[aria-expanded="true"]{background:var(--indigo-soft);color:var(--indigo)}
+.kebab:active{transform:scale(.94)}
+.kebab:focus-visible{outline:2px solid var(--indigo);outline-offset:1px}
+.row-menu{position:fixed;z-index:400;min-width:180px;max-width:min(320px,calc(100vw - 16px));background:var(--surface);color:var(--ink);border:1px solid var(--hair);border-radius:var(--r);box-shadow:0 8px 24px var(--shadow-strong);padding:4px;opacity:0;visibility:hidden;transform:scale(.95);transform-origin:var(--ox,50%) 0;transition:opacity var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease),visibility 0s linear var(--dur-fast)}
+.row-menu.open{opacity:1;visibility:visible;transform:none;transition-delay:0s}
+.row-menu button{display:block;width:100%;text-align:start;font:inherit;font-size:var(--t-base);border:0;background:none;color:var(--ink);padding:7px 10px;border-radius:var(--r-sm);cursor:pointer;white-space:nowrap}
+.row-menu button:hover,.row-menu button:focus-visible{background:var(--btn-hover);outline:0}
+.row-menu button:focus-visible{box-shadow:inset 0 0 0 2px var(--indigo)}
+.row-menu button.dg{color:var(--danger)}
+.row-menu hr{border:0;border-top:1px solid var(--field-line);margin:4px 0}
+@media (prefers-reduced-motion:reduce){.row-menu{transform:none!important;transition:opacity var(--dur-fast) linear,visibility 0s linear var(--dur-fast)}.kebab:active{transform:none}}
+/* ---------- apple-pending-4 · 2: סימון העץ עוקב אחרי הלשונית ----------
+   .active = הצומת של הלשונית: רקע מלא, צבע ומשקל, ופס בצד (border-inline-start, מלמעלה).
+   .anc = הצומת האב (רשת): צבע רך + נקודה בקצה — "באיזה אזור אני", בלי לתפוס את ההדגשה. */
+.inventory-node.active{font-weight:600}
+.inventory-node.anc{color:var(--indigo);font-weight:600}
+.inventory-node.anc::after{content:"";flex:none;width:6px;height:6px;border-radius:50%;background:var(--indigo);margin-inline-start:auto;opacity:.65}
+.inventory-node.active .ui-icon,.inventory-node.anc .ui-icon{color:var(--indigo)}
+/* ---------- apple-pending-4 · 4: כותרת הסקירה ----------
+   שורה אחת (אייקון, כותרת, פיל מצב, פעולות), מתחתיה שורת משנה אחת שנחתכת עם …; האזהרות מקופלות
+   לשורת "דורש טיפול" עם מונה (details) — הטקסט הגולמי רק מאחורי "פרטים טכניים". */
+.page .obj.compact .obj-name{font-size:var(--t-lg);letter-spacing:-.01em}
+.page .obj.compact .obj-sub{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;overflow-wrap:normal}
+.page .obj.compact{padding-bottom:10px}
+.page .attn{border:1px solid var(--hair);border-radius:var(--rp);background:var(--surface);overflow:hidden}
+.page .attn>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:8px;padding:8px 12px;font-size:var(--t-base);font-weight:600}
+.page .attn>summary::-webkit-details-marker{display:none}
+.page .attn>summary .ui-icon{width:16px;height:16px;color:var(--warn-ink)}
+.page .attn.err>summary .ui-icon{color:var(--danger)}
+.page .attn>summary .cnt{background:var(--warn-ink);color:var(--surface);border-radius:99px;padding:0 7px;font-size:var(--t-xs);font-variant-numeric:tabular-nums;font-weight:600;line-height:1.6}
+.page .attn.err>summary .cnt{background:var(--danger)}
+.page .attn>summary::after{content:"‹";margin-inline-start:auto;color:var(--muted);transition:transform var(--dur-base) var(--ease)}
+.page .attn[open]>summary::after{transform:rotate(-90deg)}
+.page .attn>ul{margin:0;padding:0;list-style:none;border-top:1px solid var(--hair)}
+.page .attn-i{display:flex;align-items:flex-start;gap:8px;padding:8px 12px;font-size:var(--t-sm);border-bottom:1px solid var(--field-line)}
+.page .attn-i:last-child{border-bottom:0}
+.page .attn-i .dot{width:8px;height:8px;border-radius:50%;background:var(--warn-ink);flex:none;margin-top:5px}
+.page .attn-i.err .dot{background:var(--danger)}
+.page .attn-i .b{flex:1;min-width:0;overflow-wrap:anywhere}
+.page .attn-i a{color:var(--indigo);cursor:pointer}
+.page .attn-i .tech{margin-top:4px;color:var(--muted)}
+.page .attn-i .tech summary{cursor:pointer;font-size:var(--t-xs)}
+.page .attn-i .tech code{display:block;margin-top:4px;padding:6px 8px;border-radius:var(--rp);background:var(--porcelain);font-family:var(--font-mono);font-size:var(--t-xs);white-space:pre-wrap;overflow-wrap:anywhere;text-align:start}
+@media (prefers-reduced-motion:reduce){.page .attn>summary::after{transition:none}}
+@media(min-width:741px){.page .obj.compact .obj-row{flex-wrap:nowrap}.page .obj.compact .obj-row>div:nth-child(2){flex:1 1 0}.page .obj.compact .obj-actions{flex-wrap:nowrap;flex:none}}
+.page .attn-none{font-size:var(--t-sm);color:var(--muted);padding:2px 4px}
+/* ---------- #1255: פאנל "משימות אחרונות" — כמו Recent Tasks של vCenter ----------
+   עמודות מיושרות (start), זמנים ומשך ב-tabular-nums, מצב כפיל. הפאנל מחוץ ל-.page, לכן הפיל מוגדר כאן. */
+.task-table th,.task-table td{text-align:start}
+.task-table td.num{font-variant-numeric:tabular-nums;direction:ltr;unicode-bidi:isolate;text-align:start}
+.task-table th:nth-child(3),.task-table th:nth-child(4){text-align:start}
+.task-table .pill{display:inline-flex;align-items:center;font-family:inherit;padding:1px 8px;border-radius:10px;font-size:var(--t-xs);border:1px solid var(--hair);background:var(--hover);color:var(--muted);white-space:nowrap}
+.task-table .pill.ok{background:color-mix(in srgb,var(--led-ok) 12%,var(--surface));color:var(--led-ok);border-color:color-mix(in srgb,var(--led-ok) 40%,var(--surface))}
+.task-table .pill.err{background:color-mix(in srgb,var(--danger) 12%,var(--surface));color:var(--danger);border-color:color-mix(in srgb,var(--danger) 40%,var(--surface))}
+.task-table .pill.info{background:var(--indigo-soft);color:var(--indigo);border-color:color-mix(in srgb,var(--indigo) 40%,var(--surface))}
+/* ---------- כרטיס מחשב בנייה צר (נדב, 10/10) ----------
+   .mgrid נתן לכל כרטיס מינימום 140px, ובעמודת kv של max-content/1fr הערכים התכווצו ל-min-content:
+   "HP / HP / Desktop / Pro G2" ו"ממתין למפעיל…" נשברו מילה-מילה. עכשיו: כרטיס בנייה ברוחב סביר
+   (minmax(320px,1fr), ובמסך צר — כל השורה), עמודת הערכים minmax(0,1fr), שבירה-בכוח רק ל-mono
+   (serial/MAC), serial בשורה אחת עם … ו-title מלא, וטקסט מצב ארוך עד 3 שורות (title מלא). */
+.page .mgrid.wide{grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),1fr))}
+.page .mcard .kv .v .mono{display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom}
+.page .mcard .kv .v{overflow-wrap:break-word;word-break:normal}
+.page .mcard .kv .st{white-space:normal;align-items:flex-start}
+.page .mcard .kv .st::before{margin-top:.4em}
+.page .mcard .clamp{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;min-width:0}
+/* ---------- דשבורדים: עקביות (apple-pending-4) ----------
+   מספרים/זמנים/אחוזים ב-tabular-nums בכל הדף (לא רק ב-KPI); אותה "פרטים טכניים" בהודעות כמו בשורת "דורש טיפול". */
+.page{font-variant-numeric:tabular-nums}
+.page .note .tech{margin-top:4px;color:var(--muted)}
+.page .note .tech summary{cursor:pointer;font-size:var(--t-xs)}
+.page .note .tech code{display:block;margin-top:4px;padding:6px 8px;border-radius:var(--rp);background:var(--surface);font-family:var(--font-mono);font-size:var(--t-xs);white-space:pre-wrap;overflow-wrap:anywhere;text-align:start;color:var(--ink)}

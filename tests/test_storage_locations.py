@@ -512,7 +512,7 @@ def test_capture_on_unavailable_local_is_409(env):
     env["admin"].post("/api/console/storage-locations/loc_local/check")
     assert sl.get(env["ctx"].conn, "loc_local")["state"] == "unreachable"
     r = env["admin"].post("/api/console/tasks/capture", json={
-        "mac": "b4:2e:99:07:1a:c4", "disk": "sda", "name": "שחזור",
+        "mac": "b4:2e:99:07:1a:c4", "disk": "sda", "name": "שחזור", "folder": "כיתות",
     })
     assert r.status_code == 409
     assert "זמין" in r.json()["detail"]

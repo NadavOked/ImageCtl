@@ -112,6 +112,8 @@ function balanced(html) {
 }
 // ‏LRI…PDI (U+2066/2069): רצפי ASCII בתוך טקסט ה-SVG מבודדים (bidi()) — הבדיקות משוות בלעדיהם
 const plain=(s)=>String(s).replace(/[\u2066\u2069]/g,'');
+const unesc=(t)=>t.replaceAll('&quot;','"').replaceAll('&#39;',"'").replaceAll('&#96;','`').replaceAll('&lt;','<').replaceAll('&gt;','>').replaceAll('&amp;','&');
+const menuOf=(tr)=>{const m=tr.match(/class="kebab"[^>]*data-menu="([^"]*)"/); assert.ok(m,'row has a ⋯ menu'); return JSON.parse(unesc(m[1]));};
 const row=(html,needle)=>{const i=html.indexOf(needle); assert.ok(i>=0,'missing row: '+needle); const s=html.lastIndexOf('<tr',i); return html.slice(s,html.indexOf('</tr>',i)+5);};
 const card=(html,title)=>{const i=html.indexOf('<span>'+title); assert.ok(i>=0,'missing card: '+title); const re=/<div class="c(?:12|8|6|4|3) card">/g; let s=0,e=html.length; for(const m of html.matchAll(re)){ if(m.index<i) s=m.index; else { e=m.index; break; } } return html.slice(s,e);};
 async function loaded(over,me) { const t=setup(over,me); t.run('current="network"'); await t.run('loadNetwork()'); return t; }
@@ -299,7 +301,7 @@ test('empty and unread are messages, not an empty drawing: no NICs → empty sta
   assert.match(t.run('networkPage(1)'),/לא הצלחתי לקרוא את כרטיסי הרשת/); assert.match(t.run('networkPage(2)'),/לא הצלחתי לקרוא את כרטיסי הרשת/);
   t=await loaded({'/net':new Error('db locked'),'/ports':new Error('ss חסר'),'/monitor/machines':403,'/storage-nodes':409});
   html=t.run('networkPage(0)'); balanced(html);
-  assert.match(html,/\/net לא נקרא: db locked/); assert.match(html,/\/ports לא נקרא: ss חסר/); assert.match(html,/\/monitor\/machines לא נקרא: admin only/);
+  assert.match(html,/\/net לא נקרא[^<]*<details class="tech"><summary>פרטים טכניים<\/summary><code dir="ltr">db locked<\/code>/,'raw system text is behind "technical details"'); assert.match(html,/\/ports לא נקרא: ss חסר/,'a Hebrew-dominant detail stays inline'); assert.match(html,/\/monitor\/machines לא נקרא[^<]*<details class="tech"><summary>פרטים טכניים<\/summary><code dir="ltr">admin only<\/code>/);
   assert.match(html,/לא רשומים: לא נקרא/); assert.match(html,/אין סניפים/,'409 = no secondaries, not an error');
   assert.match(html,/<svg class="netdiag-svg"/,'NICs were read — the drawing stays, without the unread clients');
   assert.match(html,/מה מותר — דורש API \(#705\)/);
@@ -310,14 +312,15 @@ test('empty and unread are messages, not an empty drawing: no NICs → empty sta
 test('NICs table: actual / configured / gap side by side, DHCP live + stored, role from bind, SSH switch per NIC, actions cell in every row (#1032)',async()=>{
   const {run}=await loaded();
   const html=run('networkPage(1)'); balanced(html);
-  assert.match(html,/<table class="dg stable"><thead><tr><th>כרטיס<\/th><th>קישור<\/th><th>בפועל<\/th><th>מוגדר<\/th><th>פער<\/th><th>DHCP<\/th><th>תפקיד<\/th><th>SSH לשרת<\/th><th><\/th>/);
+  assert.match(html,/<table class="dg stable kebab-col"><thead><tr><th>כרטיס<\/th><th>קישור<\/th><th>בפועל<\/th><th class="c-opt">מוגדר<\/th><th>פער<\/th><th>DHCP<\/th><th class="c-opt">תפקיד<\/th><th>SSH לשרת<\/th><th><span class="sr">פעולות<\/span><\/th>/);
   const r18=row(html,'data-nic="ens18"'), r19=row(html,'data-nic="ens19"'), r20=row(html,'data-nic="ens20"'), r21=row(html,'data-nic="ens21"');
-  for(const r of [r18,r19,r20,r21]) { assert.match(r,/<div class="acts"><button class="btn sm" onclick="event\.stopPropagation\(\);netEditAddress\('ens\d\d'\)">כתובת<\/button><button class="btn sm" onclick="event\.stopPropagation\(\);netEditDhcp\('ens\d\d'\)">DHCP<\/button><\/div>/); }
+  for(const r of [r18,r19,r20,r21]) { const n=r.match(/data-nic="(ens\d\d)"/)[1];   // ⋯ אחד: כתובת, DHCP, קובץ; "שכחה" הרסנית — אחרונה
+    assert.deepEqual(menuOf(r),[['עריכת כתובת…',`netEditAddress('${n}')`],['DHCP…',`netEditDhcp('${n}')`],['תצוגה מקדימה של הקובץ',`netShowFile('${n}')`],['שכחה…',`netForget('${n}')`,'danger']]); }
   assert.match(r19,/^<tr data-nic="ens19" class="sel" onclick="netSelect\('ens19'\)" tabindex="0" aria-selected="true">/);
   assert.match(r18,/class="st ok">מחובר · 1000 Mbps</); assert.match(r18,/class="mono">10\.44\.10\.1\/24</); assert.match(r18,/static 10\.44\.10\.1\/24 · gw 10\.44\.10\.254/); assert.match(r18,/class="st ok">תואם</);
-  assert.match(r18,/class="st ">כבוי<\/span><span class="sub">שמור: כבוי</); assert.match(r18,/<td>TFTP 69 · HTTP 8080 · HTTP 8081<\/td>/);
+  assert.match(r18,/class="st ">כבוי<\/span><span class="sub">שמור: כבוי</); assert.match(r18,/<td class="c-opt">TFTP 69 · HTTP 8080 · HTTP 8081<\/td>/);
   assert.match(r18,/class="sw on" role="switch" aria-checked="true" aria-label="SSH לשרת ens18" onclick="portSwitch\(decodeURIComponent\('ssh_nic%3Aens18'\)\)"><\/button><span class="cap">🔒 פתוח · מאזין/,'last open door → typing the name');
-  assert.match(r19,/class="st ok">משרת<\/span><span class="sub">שמור: מופעל</,'the range lives in the deploy tab and the selected card, not in the 9-column table'); assert.match(r19,/<td>הפצה · DHCP · TFTP 69 · HTTP 8080 · Multicast 9000–9001<\/td>/);
+  assert.match(r19,/class="st ok">משרת<\/span><span class="sub">שמור: מופעל</,'the range lives in the deploy tab and the selected card, not in the 9-column table'); assert.match(r19,/<td class="c-opt">הפצה · DHCP · TFTP 69 · HTTP 8080 · Multicast 9000–9001<\/td>/);
   assert.match(r19,/class="sw " role="switch" aria-checked="false".*🔒 סגור/,'opening = typing the name');
   assert.match(r20,/class="st err">כתובת: מוגדר 10\.44\.11\.1\/24, בפועל 10\.44\.11\.2\/24</,'gap is a state, red'); assert.match(r20,/class="mono">10\.44\.11\.2\/24</); assert.match(r20,/class="pill warn">רשת המכללה</);
   assert.match(r20,/class="st ok">proxy פעיל</); assert.match(r20,/class="sw unk" role="switch" aria-checked="mixed".*סגור · לא נקרא/,'listening null → unknown, not off');
@@ -343,7 +346,7 @@ test('NICs: live state not read → "לא נקרא" everywhere (never green), in
   const {run}=await loaded({'/net/config':cfg});
   const html=run('networkPage(1)'); balanced(html);
   const r18=row(html,'data-nic="ens18"');
-  assert.match(r18,/<td><span class="st unk">לא נקרא<\/span><\/td><td><span class="mono">static 10\.44\.10\.1\/24 · gw 10\.44\.10\.254<\/span><\/td><td><span class="st unk">לא נקרא<\/span><\/td>/);
+  assert.match(r18,/<td><span class="st unk">לא נקרא<\/span><\/td><td class="c-opt"><span class="mono">static 10\.44\.10\.1\/24 · gw 10\.44\.10\.254<\/span><\/td><td><span class="st unk">לא נקרא<\/span><\/td>/);
   assert.doesNotMatch(html,/class="st ok">תואם/); assert.match(html,/class="pill warn">לא מאומת</);
   assert.match(html,/מצב בפועל לא נקרא \(ip addr: לא רץ\)/); assert.match(html,/interfaces\.d — כל מה שנכתב שם לא ייקרא באתחול/);
   assert.match(html,/id="netcfg-pending"/); assert.match(html,/ההגדרה של ens18 ממתינה לאישור/); assert.match(html,/onclick="confirmNetRollback\(\)"/);
@@ -429,14 +432,14 @@ test('deploy network: a lease without hello is a "חכירה בלבד" row with 
   html=t.run('networkPage(2)');
   assert.match(card(html,'מי קיבל כתובת'),/חכירות dnsmasq — לא נקראו: \/var\/lib\/misc\/dnsmasq\.leases: Permission denied/); assert.doesNotMatch(html,/חכירה בלבד/);
   t=await loaded({'/net/interfaces/ens19/leases':new Error('boom')}); html=t.run('networkPage(2)');
-  assert.match(card(html,'מי קיבל כתובת'),/חכירות dnsmasq — לא נקראו: boom/); assert.match(html,/חכירות dnsmasq לא נקראו: boom/);
+  assert.match(card(html,'מי קיבל כתובת'),/חכירות dnsmasq — לא נקראו: boom/); assert.match(html,/חכירות dnsmasq לא נקראו[^<]*<details class="tech"><summary>פרטים טכניים<\/summary><code dir="ltr">boom<\/code>/);
 });
 
 test('console box: /sessions not read is named on the box and as a note — never "only me"',async()=>{
   const t=await loaded({'/sessions':new Error('db locked')});
   const lane=JSON.parse(plain(t.run('JSON.stringify(netDiagramModel())'))).lanes.find(l=>l.nic.name==='ens18');
   assert.equal(lane.clients[0].sub,'session פעיל · מי מחובר — לא נקרא: db locked');
-  assert.match(t.run('networkPage(0)'),/\/sessions לא נקרא: db locked — מי מחובר לקונסולה אינו ידוע/);
+  assert.match(t.run('networkPage(0)'),/\/sessions לא נקרא — מי מחובר לקונסולה אינו ידוע<details class="tech"><summary>פרטים טכניים<\/summary><code dir="ltr">db locked<\/code>/);
 });
 
 test('probe ("מי עוד עונה"): checked=false is "the check did not run", not "nobody"; servers found is red; a failed request is a toast + unknown',async()=>{
@@ -528,5 +531,13 @@ test('#1088 deploy network not configured: /net/deploy configured=false → note
   assert.doesNotMatch(t.run('networkPage(0)'),/רשת ההפצה לא הוגדרה/);
   // ‏/net/deploy שלא נקרא — נאמר, לא "מוגדר"
   t=await loaded({'/net/interfaces':none,'/net/deploy':new Error('boom')});
-  assert.match(t.run('networkPage(0)'),/\/net\/deploy לא נקרא: boom/);
+  assert.match(t.run('networkPage(0)'),/\/net\/deploy לא נקרא[^<]*<details class="tech"><summary>פרטים טכניים<\/summary><code dir="ltr">boom<\/code>/);
+});
+
+// apple-pending-4 · 4: פיל ה-DHCP עבר מכותרת הסקירה לדף הרשת (התרשים)
+test('network diagram header carries the DHCP pill (moved from the overview); the overview header has none',async()=>{
+  const {run}=await loaded();
+  const html=run('networkPage(0)');
+  assert.match(html,/class="pill (ok|warn|)">DHCP: ens19 · /);
+  assert.doesNotMatch(run('layout(pages.home,0)'),/DHCP: |DHCP חיצוני/);
 });

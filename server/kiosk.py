@@ -65,7 +65,7 @@ def _allowlisted(source: APIRouter, allow: frozenset[tuple[str, str]]) -> list[A
     return picked
 
 
-def create_kiosk_router(ctx: ServerContext, *, room_wake) -> APIRouter:
+def create_kiosk_router(ctx: ServerContext, *, room_wake, version=None) -> APIRouter:
     """הראוטר של הקיוסק: תת-קבוצת ``/api/console`` המסוננת + חדר + תחנה.
 
     ‏`room_wake` מוזרק (כמו ב-app.py) כדי ששליחת ה-WoL של החדר תהיה אותה
@@ -78,5 +78,5 @@ def create_kiosk_router(ctx: ServerContext, *, room_wake) -> APIRouter:
                    create_console_capture_router(ctx)):
         router.routes.extend(_allowlisted(source, KIOSK_CONSOLE_ROUTES))
     router.include_router(create_room_router(ctx, wake=room_wake))
-    router.include_router(create_station_router(ctx))
+    router.include_router(create_station_router(ctx, version=version))   # #1252
     return router

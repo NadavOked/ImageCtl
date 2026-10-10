@@ -263,6 +263,9 @@ void state_parse(State *s, FILE *fp) {
         else if (KEY("menu_class"))   s->menu_class = num(val, 0) != 0;
         else if (KEY("menu_tools"))   s->menu_tools = num(val, 0) != 0;   /* v1: off */
         else if (KEY("machine_name")) cp(s->machine_name, sizeof s->machine_name, val);   /* #1073 */
+        else if (KEY("server_name")) cp(s->server_name, sizeof s->server_name, val);         /* #1252 */
+        else if (KEY("server_addr")) cp(s->server_addr, sizeof s->server_addr, val);         /* #1252 */
+        else if (KEY("server_version")) cp(s->server_version, sizeof s->server_version, val); /* #1252 */
         else if (KEY("logo")) cp(s->logo, sizeof s->logo, val);   /* #1168 */
         else if (KEY("hello_age")) {
             unsigned long long v;

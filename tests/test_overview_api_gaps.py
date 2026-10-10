@@ -196,7 +196,9 @@ def test_tasks_carry_the_capture_folder(server):
 
 
 def test_tasks_folder_is_empty_string_for_the_library_root(server):
-    """קליטה בלי תיקייה = שורש הספרייה — ‏"" מפורש, לא ‏null ולא "לא ידוע"."""
+    """קליטה ישנה בלי תיקייה = שורש הספרייה — ‏"" מפורש, לא ‏null ולא
+    "לא ידוע". ‏#1251: קליטה חדשה בלי תיקייה נדחית (‏test_capture.py), ולכן
+    השורה הישנה נכתבת ישירות ל-DB — כמו משימה שנוצרה לפני ההכרעה."""
     admin = server["admin"]
     admin.post("/api/console/groups",
                json={"id": "grp_BUILD", "label": "בנייה", "role": "build"})
@@ -205,5 +207,8 @@ def test_tasks_folder_is_empty_string_for_the_library_root(server):
                             "group_id": "grp_BUILD"}).status_code == 200
     assert admin.post("/api/console/tasks/capture",
                       json={"mac": "aa:bb:cc:dd:ee:11", "name": "Kali",
-                            "disk": "sda"}).status_code == 200
+                            "disk": "sda", "folder": "Kali"}).status_code == 200
+    conn = server["ctx"].conn
+    conn.execute("UPDATE tasks SET folder = '' WHERE mac = 'aa:bb:cc:dd:ee:11'")
+    conn.commit()
     assert admin.get("/api/console/tasks").json()[0]["folder"] == ""

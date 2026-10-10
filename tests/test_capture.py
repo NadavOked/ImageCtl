@@ -118,6 +118,22 @@ def test_one_open_task_per_machine(server):
     assert make_task(server, mac).status_code == 409
 
 
+@pytest.mark.parametrize("folder", [None, "", "   "])
+def test_a_capture_without_a_target_folder_is_refused(server, folder):
+    """‏#1251 (נדב, 10/10): אימג' חדש נשמר תמיד בתיקייה. השרת אוכף —
+    לא רק המסכים — כי כל לקוח (קונסולה, קיוסק, גואי, טקסט, curl) מגיע
+    לכאן. ‏400 עם הסבר בעברית, ואף משימה לא נוצרה."""
+    mac = setup_build_machine(server)
+    body = {"mac": mac, "disk": "sda", "name": "Windows 11 Base"}
+    if folder is not None:
+        body["folder"] = folder
+    r = server["admin"].post("/api/console/tasks/capture", json=body)
+    assert r.status_code == 400, r.text
+    assert "תיקייה" in r.json()["detail"]
+    assert server["ctx"].conn.execute(
+        "SELECT COUNT(*) FROM tasks WHERE mac = ?", (mac,)).fetchone()[0] == 0
+
+
 def test_creating_a_task_is_admin_only(server):
     mac = setup_build_machine(server)
     assert server["deploy"].post(

@@ -207,7 +207,7 @@ def test_a_machine_with_a_task_never_shows_up(loop_server):
         "mac": mac, "name": "מחשב בנייה", "group_id": "grp_BUILD",
     }).status_code == 200
     assert loop_server["admin"].post("/api/console/tasks/capture", json={
-        "mac": mac, "disk": "sda", "name": "Windows 11 Base",
+        "mac": mac, "disk": "sda", "name": "Windows 11 Base", "folder": "Office",
     }).status_code == 200
     hello(loop_server, mac)
     assert loop_rows(loop_server) == {}

@@ -11,6 +11,8 @@
 from __future__ import annotations
 
 import json
+import socket
+from collections.abc import Callable
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -18,7 +20,7 @@ from fastapi.responses import JSONResponse
 from .progress_view import capture_progress
 from . import capabilities, storage_locations, users
 from .api import ServerContext, _error, identity_gate
-from .db import journal
+from .db import get_setting, journal
 from .hello import class_deploy_enabled
 from .images import restore_refusal
 from .registry import normalize_mac
@@ -38,7 +40,10 @@ def default_prefix(group_id: str) -> str:
     return group_id.removeprefix("grp_").upper() or "CLASS"
 
 
-def create_station_router(ctx: ServerContext) -> APIRouter:
+def create_station_router(ctx: ServerContext,
+                          version: Callable[[], str | None] | None = None) -> APIRouter:
+    """‏`version` (‏#1252) — תג ה-git של השרת, אותו מקור כמו `/me.version`;
+    ‏`None` (בדיקות ישנות) = לא ידוע, ואז `server_version` הוא `null`."""
     router = APIRouter(prefix="/api/v1/agent")
 
     @router.get("/groups")
@@ -130,6 +135,12 @@ def create_station_router(ctx: ServerContext) -> APIRouter:
             "classrooms": capabilities.classrooms(),
             # v1 without the toolbox (Nadav, 19/09), same as hello. v1.1 turns this on.
             "tools": capabilities.tools(),
+            # #1252: the GUI header said "imagectl-srv · 10.10.10.1 · v0.48.1" --
+            # mockup strings. The name is /me's (#936: the setting, else the host
+            # name); the version is /me's (#915: the git tag) and null when it was
+            # not read -- the screen then says "unknown", never a number.
+            "server_name": get_setting(ctx.conn, "server_name") or socket.gethostname(),
+            "server_version": version() if version else None,
             "task": {
                 "id": task["id"], "type": task["type"], "state": task["state"],
                 "disk": task["disk"], "name": task["name"], "error": task["error"],

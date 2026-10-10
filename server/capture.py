@@ -341,9 +341,11 @@ def create_console_capture_router(ctx: ServerContext) -> APIRouter:
     @router.get("/tasks")
     def tasks(user=Depends(current_user)):
         rows = ctx.conn.execute(
-            "SELECT t.*, m.suffix, g.label AS group_label FROM tasks t"
+            "SELECT t.*, m.suffix, g.label AS group_label, u.role AS created_by_role"
+            " FROM tasks t"
             " LEFT JOIN machines m ON m.mac = t.mac"
             " LEFT JOIN groups g ON g.id = m.group_id"
+            " LEFT JOIN users u ON u.username = t.created_by COLLATE NOCASE"
             " ORDER BY t.created_at DESC LIMIT 20"
         ).fetchall()
         return [
@@ -359,6 +361,11 @@ def create_console_capture_router(ctx: ServerContext) -> APIRouter:
                 # ‏`capture_progress` מקפל אפס-מכנה ל-`None` (לא ל-`0%`).
                 **capture_progress(r),
                 "created_at": r["created_at"], "updated_at": r["updated_at"],
+                # ‏#1255: מי יצר את המשימה (עמודת "יוזם" בפאנל "משימות אחרונות"), ותפקידו —
+                # משתמש הפצה אינו נכנס לקונסולה (#1073), לכן קליטה שלו הופעלה ממחשב הבנייה.
+                # ‏`None` = אין רשומה (משתמש שנמחק), לא "ריק".
+                "created_by": r["created_by"] or None,
+                "created_by_role": r["created_by_role"],
             }
             for r in rows
         ]
@@ -388,10 +395,16 @@ def create_console_capture_router(ctx: ServerContext) -> APIRouter:
         # טקסט של לינוקס, בלי גליפים עבריים ובלי RTL.
         # הערכים **הגולמיים** נבדקים, לא המנוקים: רווח בקצה נדחה בשמו.
         folder = body.get("folder") or ""
+        # ‏#1251 (נדב, 10/10): אימג' חדש נשמר תמיד בתיקייה. האכיפה כאן ולא
+        # רק במסכים — כל לקוח מגיע לנקודה הזו. אימג'ים ישנים בלי תיקייה
+        # ממשיכים להופיע ולשחזר; ההכרעה היא על קליטה חדשה בלבד.
+        if not folder:
+            raise HTTPException(
+                400, "צריך תיקיית יעד — אימג' חדש נשמר תמיד בתיקייה. "
+                     "אם אין תיקייה, צרו אחת (בקונסולה: אימג'ים ← תיקייה חדשה)")
         try:
             name = validate_display_name(body.get("name") or "", "שם האימג'")
-            if folder:
-                folder = validate_display_name(folder, "שם התיקייה")
+            folder = validate_display_name(folder, "שם התיקייה")
         except ValueError as exc:
             raise HTTPException(400, str(exc))
         if active_task(ctx.conn, mac) is not None:

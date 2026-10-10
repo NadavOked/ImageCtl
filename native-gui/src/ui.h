@@ -220,6 +220,11 @@ typedef struct State {
      * screen's typed confirmation (principle 7). Empty = the registry has
      * none, and the screen refuses to start rather than match "" to "". */
     char machine_name[64];
+    /* #1252: the server this machine talks to, for the header, the login foot
+     * and the standby line -- server_name=/server_version= from GET
+     * /api/v1/agent/state, server_addr= from imagectl.server. Empty = not
+     * known, drawn as "לא ידוע" -- never the mockup's numbers. */
+    char server_name[64], server_addr[64], server_version[48];
     /* #1168: logo=<png path> from guistate.sh -- the college's logo in the
      * header instead of the brandmark. Empty = brandmark. */
     char logo[256];
@@ -297,7 +302,7 @@ typedef struct App {
     /* #st-pick */
     int chosen_disk;            /* index into st.disks, -1 = none (CHOSEN_DISK) */
     char name[96], desc[160];
-    int folder_sel;             /* 0 = "ללא תיקייה", i = st.folders[i-1] */
+    int folder_sel;             /* 0 = none chosen yet (#1251: no "no folder"), i = st.folders[i-1] */
     int newfolder_shown;        /* #st-folder-new visible */
     char folder_new[64];
 

@@ -125,10 +125,12 @@ test('renderActivity does not count a finished, warned capture as an active tran
   const context = vm.createContext({
     document: {querySelector: (sel) => (sel === '#taskPanel tbody' ? taskPanelBody : null)},
     $, esc: String, isAdmin: () => true, OVERVIEW: {}, sessionImage: () => '', sessionGroup: () => '',
-    Progress: {view: () => ({label: ''})},
+    Progress: {view: () => ({label: ''})}, taskWhen: () => '', sessionStateText: () => '', Date, Number, Math,
     CAPTURE_TASKS: [warnedTask()], overviewError: '',
   });
-  vm.runInContext(functionSource(CONSOLE_JS, 'renderActivity'), context);
+  // ‏#1255: renderActivity נשען על עוזרי הפאנל (משך/יוזם) שמוגדרים לידו
+  const src = require('node:fs').readFileSync(CONSOLE_JS, 'utf8');
+  vm.runInContext(src.slice(src.indexOf('const ACTIVITY_UNKNOWN'), src.indexOf('function editImageDescription')), context);
   vm.runInContext('renderActivity()', context);
   assert.match(taskPanelBody.innerHTML, /אין העברות פעילות/,
     'a done task, even one with a lingering warning, is not "an active transfer"');

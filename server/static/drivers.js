@@ -128,7 +128,7 @@ function driversPage(tab = 0) {
     : `‏/drivers לא נקרא: ${esc(driversError)}`;
   const actions = (admin ? `<button class="btn primary" onclick="openDriverImport()">ייבוא חבילה (tar)</button>` : "") + `<button class="btn" onclick="loadDrivers()">רענון</button>`;
   const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "תשתית" }, { label: "דרייברים" }],
-    icon: "settings", name: "דרייברים", sub, pill: DRIVERS ? "" : UI.pill("err", "לא נקרא"), actions, tabs: ["חבילות", "כיסוי לפי מכונה"], tab });
+    icon: "t-drivers", name: "דרייברים", sub, pill: DRIVERS ? "" : UI.pill("err", "לא נקרא"), actions, tabs: ["חבילות", "כיסוי לפי מכונה"], tab });
   let body;
   if (!DRIVERS) body = UI.note("err", `לא הצלחתי לקרוא את רשימת הדרייברים: ${esc(driversError)}`);
   else if (tab === 1) body = driversCoverageCard();

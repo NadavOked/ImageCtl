@@ -393,7 +393,8 @@ def test_the_station_state_feeds_the_build_screen(station):
     # אחרי הזמנת קליטה — המשימה מופיעה, עם ההתקדמות.
     created = station["admin"].post(
         "/api/console/tasks/capture",
-        json={"mac": "aa:bb:cc:00:00:10", "disk": "sda", "name": "Base"}).json()
+        json={"mac": "aa:bb:cc:00:00:10", "disk": "sda", "name": "Base",
+              "folder": "Office"}).json()
     station["anon"].post("/api/v1/agent/progress", json={
         "task_id": created["id"], "mac": "aa:bb:cc:00:00:10",
         "state": "capturing",

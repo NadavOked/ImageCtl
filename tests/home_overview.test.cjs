@@ -179,7 +179,7 @@ test('home renders its own header (no generic toolbar, no "+ פעולה", no foo
   const {run}=await loaded();
   const html=run('layout(pages.home,0)');
   balanced(html);
-  assert.match(html,/^<div class="page"><div class="obj">/);
+  assert.match(html,/^<div class="page"><div class="obj compact">/,'apple-pending-4: one compact row + one sub line');
   assert.match(html,/<div class="obj-name">שרת אימג&#39;ים<\/div>/);
   assert.match(html,/imagectl-srv · <span class="mono">10\.44\.12\.1<\/span> · v0\.30\.0 · פעיל 6 ימים 4 שעות/,'#968: hostname · IP · version · uptime, all from /me');
   assert.doesNotMatch(html,/זמן פעילות — בקרוב/);
@@ -209,12 +209,16 @@ test('"needs attention" lists the red disk, the unregistered machine, the unreac
   const {run}=await loaded();
   run('SECONDARY_STATUS={haifa:{connected:false,error:"timeout"}}');
   const html=run('home(0)');
-  const card=html.slice(html.indexOf('דורש טיפול'),html.indexOf('אירועים אחרונים'));
-  assert.match(card,/<span class="pill err">4<\/span>/);
+  const card=html.slice(html.indexOf('id="home-attn"'),html.indexOf('</ul>',html.indexOf('id="home-attn"')));
+  assert.match(card,/<summary>.*דורש טיפול<\/span><span class="cnt">4<\/span><\/summary>/,'folded row with a counter');
+  assert.doesNotMatch(card,/ open[ >]/,'closed by default');
+  assert.ok(html.indexOf('id="home-attn"')<html.indexOf('<div class="kpi '),'the row sits between the header and the numbers');
   assert.match(card,/<b>דיסק אדום<\/b> — 2 · דיסק 3 \(<span class="mono">S5Y2NX0R<\/span>\) נכשל בכתיבה, סיבה: כבל\/חריץ SATA 2.*selectPageById\('machines'\)/);
   assert.match(card,/<b>מכונה לא רשומה<\/b> ברשת ההפצה — <span class="mono">de:ad:be:ef:00:01<\/span> קיבלה <bdi dir="ltr">10.44.12.199<\/bdi>.*openNewMachine\(\)/);
-  assert.match(card,/<b>סניף סניף חיפה לא מגיב<\/b> — timeout.*selectPageById\('branches'\)/);
-  assert.match(card,/<b>מולטיקאסט<\/b> — udp-sender לא נמצא.*selectPageById\('health'\)/);
+  // טקסט גולמי באנגלית (שגיאת מערכת מהשרת) לא בגוף הפריט — מאחורי "פרטים טכניים"
+  assert.match(card,/<b>סניף סניף חיפה לא מגיב<\/b>\. <a[^>]*selectPageById\('branches'\)[^<]*<\/a><details class="tech"><summary>פרטים טכניים<\/summary><code dir="ltr">timeout<\/code>/);
+  assert.match(card,/<b>מולטיקאסט<\/b>\. <a[^>]*selectPageById\('health'\)[^<]*<\/a><details class="tech"><summary>פרטים טכניים<\/summary><code dir="ltr">udp-sender לא נמצא/);
+  assert.doesNotMatch(card.replace(/<details class="tech">.*?<\/details>/g,''),/timeout|udp-sender/,'no raw English outside the technical details');
   assert.doesNotMatch(card,/השרת בכתובת ההפצה/,'ok checks are not attention items');
 });
 test('recent events come from /journal (6 rows, dd/mm for older days, severity from the server) and link to the journal',async()=>{
@@ -277,7 +281,8 @@ test('empty server: KPIs say "none"/"unknown" in grey, the now-table says what t
   assert.match(html,/<div class="kpi "><div class="l">אחסון אימג&#39;ים<\/div><div class="v"><bdi dir="auto">לא ידוע<\/bdi><\/div>/);
   assert.match(html,/אין אימג'ים — קלוט ממחשב בנייה או העלה tar/);
   assert.match(html,/<div class="empty">אין פעילות עכשיו — פתח סבב הפצה או קלוט אימג&#39;<\/div>/);
-  assert.match(html,/<div class="empty">אין פריטים לטיפול<\/div>/);
+  assert.match(html,/<div class="c12 attn-none">אין פריטים לטיפול<\/div>/,'a clean server says so (no folded row, no counter)');
+  assert.doesNotMatch(html,/id="home-attn"/);
   assert.match(html,/<div class="empty">אין אירועים עדיין<\/div>/);
   assert.match(html,/<span class="pill ok">תקין<\/span>/);
   balanced(html);
@@ -319,15 +324,53 @@ test('deploy sees the summary without attention, events and server cards; two ta
 
 // ---- הסרגל: אייקון תיקייה לאימג'ים ------------------------------------------
 
-test('the images tree node and its folders use the folder icon (Nadav, 17/09)',()=>{
+// 17/09 נדב: צומת האימג'ים עם אייקון תיקייה. 10/10 (apple-pending-4, "הכול מאושר"): הצומת מקבל אייקון ייחודי
+// (שכבות — כמו ספרייה), כי תיקייה הייתה גם של כל תיקיית משנה; התיקיות עצמן נשארות עם אייקון התיקייה.
+test('the images tree node has its own layers icon; its sub-folders keep the folder icon',()=>{
   const {run,node}=setup();
   const index=fs.readFileSync(path.join(root,'index.html'),'utf8');
   const start=index.indexOf('data-page="images"');
   const imagesNode=index.slice(start,index.indexOf("אימג'ים</span>",start));
-  assert.match(imagesNode,/<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"\/>/);
+  assert.match(imagesNode,/<path d="m12 3 9 5-9 5-9-5Z"\/><path d="m3 13 9 5 9-5"\/>/);
+  assert.doesNotMatch(imagesNode,/M3 7a2 2 0 0 1 2-2h4l2 2h8/,'the node is no longer the same folder icon as its children');
   assert.doesNotMatch(imagesNode,/circle cx="16"/,'the picture icon is gone from the images node');
   run('FOLDERS=[{name:"Linux"},{name:"Empty"}]; IMAGES=[{id:"i1",name:"Kali",folder:"Linux"}]; populateSidebarImages()');
   const tree=node('#imagesTree').innerHTML;
   assert.equal((tree.match(/M3 7a2 2 0 0 1 2-2h4l2 2h8/g)||[]).length,2,'both folders carry the folder icon');
   assert.equal((tree.match(/circle cx="16"/g)||[]).length,1,'the image inside keeps the picture icon');
+});
+
+// apple-pending-4 · 4: כותרת הסקירה — שורה אחת, שורת משנה אחת, האזהרות מקופלות
+test('overview header: compact (one row + one ellipsis sub-line with the full text in title); the attention row keeps its open state across the 2s refresh',async()=>{
+  const {run}=await loaded();
+  const html=run('home(0)');
+  assert.match(html,/<div class="obj compact">/);
+  assert.match(html,/<div class="obj-sub" title="imagectl-srv · 10\.44\.12\.1 · v0\.30\.0 · פעיל 6 ימים 4 שעות">/);
+  assert.doesNotMatch(run('UI.objHeader({name:"x",sub:"y"})'),/compact|title=/,'other pages keep the old header');
+  assert.doesNotMatch(html,/ id="home-attn"[^>]* open/);
+  run('HOME_ATTN_OPEN=true');
+  assert.match(run('home(0)'),/id="home-attn"[^>]* open/,'open stays open after a re-render');
+  run('HOME_ATTN_OPEN=false');
+});
+test('raw technical text goes to "technical details"; a Hebrew sentence that mentions SATA stays in the body',()=>{
+  const {run}=setup();
+  assert.equal(run('isRawTechnical("Server status could not be read: [Errno 2] No such file")'),true);
+  assert.equal(run('isRawTechnical("leases file /var/lib/misc/dnsmasq.leases not readable")'),true);
+  assert.equal(run('isRawTechnical("udp-sender לא נמצא")'),true);
+  assert.equal(run('isRawTechnical("כבל/חריץ SATA 2")'),false);
+  assert.equal(run('isRawTechnical("")'),false);
+  assert.equal(run('isRawTechnical(null)'),false);
+});
+
+// apple-pending-4 · דשבורדים: UI.noteTech — שגיאת מערכת גולמית מאחורי "פרטים טכניים", משפט עברי נשאר בגוף
+test('UI.noteTech: raw Latin error text goes behind "technical details"; a Hebrew-dominant detail stays inline; no raw text = no details',()=>{
+  const {run}=setup();
+  const raw=run(`UI.noteTech("warn","‏/net לא נקרא","db locked"," — אינם ידועים")`);
+  assert.match(raw,/^<div class="note warn"><span aria-hidden="true">●<\/span><span>‏\/net לא נקרא — אינם ידועים<details class="tech"><summary>פרטים טכניים<\/summary><code dir="ltr">db locked<\/code><\/details><\/span><\/div>$/);
+  assert.doesNotMatch(raw.replace(/<details.*<\/details>/,''),/db locked/,'the raw text is not in the body');
+  const heb=run(`UI.noteTech("err","‏/ports לא נקרא","ss חסר"," — לא ידוע")`);
+  assert.match(heb,/‏\/ports לא נקרא: ss חסר — לא ידוע/); assert.doesNotMatch(heb,/details/);
+  const none=run(`UI.noteTech("warn","לא נקרא","","!")`);
+  assert.match(none,/<span>לא נקרא!<\/span>/); assert.doesNotMatch(none,/details|: /);
+  assert.match(run(`UI.noteTech("warn","a","<script>alert(1)</script>")`),/&lt;script&gt;/,'escaped');
 });

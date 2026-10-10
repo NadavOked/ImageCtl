@@ -117,7 +117,7 @@ test('page registry: deploy is an own page with three tabs, the room first; the 
 test('no round: header counters, "no round" pill, WoL + big-view actions, the inline new-round card (not a sheet) and the idle grid from /room drawer_list', () => {
   const {run}=setup();
   const html=run('deploy(0)'); balanced(html);
-  assert.match(html,/obj-name">חדר המשכפלים</); assert.match(html,/obj-sub">3 משכפלים · 8 חריצים · 2 מחוברים · 5 דיסקים בחריצים</);
+  assert.match(html,/obj-name">חדר המשכפלים</); assert.match(html,/obj-sub"[^>]*>3 משכפלים · 8 חריצים · 2 מחוברים · 5 דיסקים בחריצים</);
   assert.match(html,/<span class="pill ">אין סבב</);
   assert.match(html,/wakeRoom\(\)">הער משכפלים \(WoL\)</); assert.match(html,/toggleRoomBig\(\)">תצוגה גדולה</);
   assert.doesNotMatch(html,/startWave|stopRoom/,'no wave to start or stop');
@@ -183,7 +183,7 @@ test('running wave: header "wave N", transmitting pill with the wave percent, st
   const {run}=setup({room:roomRunning()});
   const html=run('deploy(0)'); balanced(html);
   assert.match(html,/obj-name">חדר המשכפלים — גל 2</);
-  assert.match(html,/obj-sub">office365 · <bdi dir="ltr">18.6 GB<\/bdi> בשרת · יעד: 12 דיסקים · נכתבו 5 · נשארו 7 · פתח nadav</);
+  assert.match(html,/obj-sub"[^>]*>office365 · <bdi dir="ltr">18.6 GB<\/bdi> בשרת · יעד: 12 דיסקים · נכתבו 5 · נשארו 7 · פתח nadav</);
   assert.match(html,/<span class="pill info">משדר — 31%</,'mean of the joined drawers: (38+38+37+37+4)/5');
   assert.doesNotMatch(html,/startWave/,'running → nothing to start'); assert.match(html,/stopRoom\(\)">עצור סבב \(הקלדת שם\)</); assert.match(html,/wakeRoom\(\)">הער משכפלים \(WoL\)</);
   assert.doesNotMatch(html,/rnew/,'no new-round form while a round is active');
@@ -276,7 +276,7 @@ test('start wave posts /room/start and a 409 is a toast with the reason; stop is
   const close=requests.find(r=>r.url==='/api/console/room/close'); assert.deepEqual(JSON.parse(close.options.body),{confirm_name:'office365'});
   await run('wakeRoom()'); assert.ok(requests.some(r=>r.url==='/api/console/room/wake')); assert.match(run('toasted'),/WoL נשלח ל-3 מחשבים/);
   run("ROOM.round.source={kind:'build_disk',mac:'"+B1+"',disk:'sda',name:'בנייה 1',task_state:'running',manifest_ready:true}; ROOM.round.image_name='בנייה 1:sda'");
-  assert.match(run('deploy(0)'),/obj-sub">מקור: מחשב הבנייה \(בנייה 1:sda\)/); run('stopRoom()'); assert.equal(run('formOptions.verify.mustEqual'),'בנייה 1:sda','#715: the typed name is what GET returns');
+  assert.match(run('deploy(0)'),/obj-sub"[^>]*>מקור: מחשב הבנייה \(בנייה 1:sda\)/); run('stopRoom()'); assert.equal(run('formOptions.verify.mustEqual'),'בנייה 1:sda','#715: the typed name is what GET returns');
   run('ME.role="deploy"'); run('formOptions=undefined; stopRoom()'); assert.equal(run('formOptions.danger'),true,'deploy is a room operator');
   run('ME=null'); run('formOptions=undefined; stopRoom()'); assert.equal(run('typeof formOptions'),'undefined');
 });

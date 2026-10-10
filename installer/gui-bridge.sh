@@ -14,7 +14,8 @@
 #   check-primary  https://<primary>/health/live within 5 s
 #   finish         what the done screen shows after a reboot-less handoff
 #   eject          eject the install medium (reported, never fatal)
-#   reboot         reboot -f -- only the GUI's "restart" button reaches here
+#   reboot         reboot -f -- only the GUI's "restart" (button or the done
+#                  screen's countdown, #1250) reaches here
 #   boot-local     eject + reboot, for a disk that already carries ImageCtl
 #
 # No jq-less JSON parsing: jq is in the image (agent/ uses it). Every value

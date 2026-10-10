@@ -41,6 +41,12 @@ gui_state() {
     # has none, and then the screen refuses to start instead of guessing.
     _mn=$(jq -r '.name // "" | tostring | gsub("[\\r\\n|]"; " ")' "$GUI_DIR/station.json") || return 1
     printf 'machine_name=%s\n' "$_mn" >> "$GUI_DIR/state.next" || return 1
+    # #1252: the header's server -- name and version from /state (null = not
+    # read -> empty -> "unknown" on screen), the address from imagectl.server.
+    jq -r 'def c: (. // "") | tostring | gsub("[\\r\\n|]"; " ");
+        "server_name=\(.server_name | c)", "server_version=\(.server_version | c)"' \
+        "$GUI_DIR/station.json" >> "$GUI_DIR/state.next" || return 1
+    gui_server_addr >> "$GUI_DIR/state.next" || return 1
     gui_shrink_state >> "$GUI_DIR/state.next" || return 1   # #928: the capture's shrink question
     # #1168: the college's logo, fetched once by gui_fetch_logo; the line is
     # written only when the file is there, so the GUI falls back by itself.
@@ -153,6 +159,14 @@ gui_fetch_logo() {
     return 0
 }
 
+gui_server_addr() {
+    # #1252: server_addr=<host of $SERVER> -- imagectl.server, which init
+    # normalised to a URL. Known without the server, so the failure snapshot
+    # and the cloner screen carry it too. Empty $SERVER = empty = unknown.
+    _ga=${SERVER:-}; _ga=${_ga#*://}; _ga=${_ga%%/*}; _ga=${_ga%:*}
+    printf 'server_addr=%s\n' "$(printf '%s' "$_ga" | tr '\r\n|' '   ')"
+}
+
 gui_shrink_state() {
     # #928: the agent's pending shrink question (shrinkgui.sh), copied into
     # the state file. The question is local -- it needs no server -- so the
@@ -170,7 +184,7 @@ gui_state_loop() {
         if ! gui_state; then
             printf 'native-gui: state could not be verified\n' >&2
             { printf 'message=State could not be verified|Check connection; see agent log\n' &&
-                gui_shrink_state; } > "$GUI_DIR/state.next" &&
+                gui_server_addr && gui_shrink_state; } > "$GUI_DIR/state.next" &&
                 mv "$GUI_DIR/state.next" "$GUI_DIR/state" || return 1
         fi
         sleep 2

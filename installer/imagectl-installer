@@ -3,7 +3,8 @@
 # init exec's this after the media is mounted and temporary DHCP ran. It puts
 # the native GUI on the framebuffer in install mode; the GUI drives the engine
 # through installer/gui-bridge.sh (part 2), and asks the bridge to eject the
-# media and reboot when the person presses "restart". This process therefore
+# media and reboot when the person presses "restart" or the done screen's
+# countdown runs out (#1250). This process therefore
 # never reboots by itself, and when it cannot show anything it says why on
 # the text console and waits -- a person is in front of this screen.
 set -u

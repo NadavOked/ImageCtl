@@ -173,7 +173,7 @@ stdout is line-buffered so a record arrives as it happens.
 | `classes` | menu | — | `#st-class` is showing (feed `class=`, or `session=` for a live round) |
 | `back` | חזרה on pick / room / class | — | back at the menu; stop feeding that screen |
 | `again` | קליטה נוספת | — | back at the menu after `#st-done` |
-| `capture-start` | התחל קליטה | `dev=`, `name=`, `desc=`, `folder=`, `folder_new=yes\|no` | POST `/api/console/tasks/capture` (`resolveFolder`: with `folder_new=yes` create the folder first). The screen stays on `#st-pick` until the file says `task=pending`/`running`; a failure goes back as `form_error=` |
+| `capture-start` | התחל קליטה | `dev=`, `name=`, `desc=`, `folder=`, `folder_new=yes\|no` | POST `/api/console/tasks/capture` (`resolveFolder`: with `folder_new=yes` create the folder first). `folder=` is never empty (#1251: no "ללא תיקייה" -- the screen refuses before emitting, and the server answers 400 anyway). The screen stays on `#st-pick` until the file says `task=pending`/`running`; a failure goes back as `form_error=` |
 | `room-open` | פתח סבב והער את החדר | `image=<id>`, `target=<n>` | POST `/api/console/room`; answer with `round=` or `room_error=` |
 | `direct-open` | פתח סבב והער את המחשבים שנבחרו | `slots=<mac>@<port>,<port>/<mac>@<port>` | #715: POST `/api/console/room` with `source: {kind: build_disk, mac, disk}` + `target_slots`; the disk is the first non-removable one in the server inventory. Only ticked, present, fresh drawers are listed; none → `room_error=` locally |
 | `room-wake` | העֵר … | — | POST `/api/console/room/wake`; answer with `toast=` |
@@ -221,6 +221,15 @@ menu_class=<0/1>
 # #1073: the machine's registered name (GET /api/v1/agent/state .name) -- the
 # restore screen's typed confirmation. Always written; empty = no start.
 machine_name=<name>
+
+# #1252: the server this machine talks to -- the header ("שרת", "גרסה"), the
+# login foot and the standby line. name/version from GET /api/v1/agent/state
+# (.server_name / .server_version, null -> empty); the address is the host of
+# imagectl.server ($SERVER), written also in the failure snapshot and by
+# clonergui.sh. Empty = drawn as "לא ידוע", never a made-up value.
+server_name=<name>
+server_addr=<host>
+server_version=<git tag>
 
 # #928: the capture's shrink question (shrinkgui.sh -> guistate.sh). A modal
 # dialog over every screen; drawn only when every declared row arrived and is

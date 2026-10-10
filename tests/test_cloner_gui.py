@@ -65,6 +65,7 @@ PRELUDE = (
     f'. {posix(AGENT)}/lib/jsonq.sh; '
     f'. {posix(AGENT)}/lib/sysinfo.sh; '
     f'. {posix(AGENT)}/lib/progress.sh; '
+    f'. {posix(AGENT)}/lib/guistate.sh; '   # #1252: gui_server_addr -- gui_libs loads it first too
     f'. {posix(AGENT)}/lib/clonergui.sh; '
 )
 

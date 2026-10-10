@@ -94,7 +94,8 @@ def capture(server, **fields):
                json={"id": "grp_BUILD", "label": "BUILD", "role": "build"})
     admin.post("/api/console/machines",
                json={"mac": mac, "name": "b1", "group_id": "grp_BUILD"})
-    body = {"mac": mac, "disk": "sda", "name": "Base", **fields}
+    # ‏#1251: תיקייה תקינה כברירת מחדל — אחרת שם פגום נדחה בגלל התיקייה החסרה.
+    body = {"mac": mac, "disk": "sda", "name": "Base", "folder": "Lab", **fields}
     return admin.post("/api/console/tasks/capture", json=body)
 
 

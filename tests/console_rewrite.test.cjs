@@ -67,6 +67,26 @@ test('capture sheet submits the existing endpoint and selected folder',async()=>
   await run('formOptions.onSubmit({mac:"cc",disk:"sda",name:"Capture",folder:"Folder"})');
   assert.ok(requests.some(r=>r.url==='/api/console/tasks/capture' && JSON.parse(r.options.body).disk==='sda'));
 });
+// #1251 (Nadav, 10/10): a new image always goes into a folder -- the capture
+// sheet offers no "ללא תיקייה", refuses an empty choice before the POST, and
+// with no folders at all it says where to create one instead of opening.
+test('capture sheet has no "no folder" option and refuses an empty folder (#1251)',async()=>{
+  const {run,requests}=setup(); run('sheet = options => { globalThis.formOptions=options; }; IMAGES_FOLDER=null; FOLDERS=null;');
+  await run('openCapture()');
+  const opts=run('JSON.stringify(formOptions.fields.find(f=>f.id==="folder").options)');
+  assert.doesNotMatch(opts,/ללא תיקייה/);
+  assert.deepEqual(JSON.parse(opts).map(o=>o.value),['','Folder'],'placeholder, then the folders read from /folders (FOLDERS was not loaded)');
+  assert.equal(run('formOptions.fields.find(f=>f.id==="folder").value'),'');
+  await assert.rejects(run('formOptions.onSubmit({mac:"cc",disk:"sda",name:"Capture",folder:""})'),/תיקיית יעד/);
+  assert.ok(!requests.some(r=>r.url==='/api/console/tasks/capture'),'no POST without a folder');
+});
+test('capture with no folders at all says where to create one (#1251)',async()=>{
+  const {run,fixtures}=setup(); fixtures['/folders']=[];
+  run('globalThis.formOptions=null; sheet = options => { globalThis.formOptions=options; }; toast=(m)=>{ globalThis.toasted=m; };');
+  await run('openCapture()');
+  assert.equal(run('formOptions'),null,'no capture sheet without a folder to put the image in');
+  assert.match(run('toasted'),/אימג'ים/); assert.match(run('toasted'),/תיקייה/);
+});
 test('folder creation and editing call existing endpoints',async()=>{
   const {run,requests}=setup(); run('sheet = options => { globalThis.formOptions=options; }; loadImages=async()=>{};');
   run('addFolderSheet()'); await run('formOptions.onSubmit({name:"New",description:"Text"})');

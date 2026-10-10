@@ -21,6 +21,17 @@ static cairo_surface_t *logo_surface(const char *path) {
     return surf;
 }
 
+/* #1252: a value the state file did not carry is said as unknown -- the
+ * header once showed the mockup's server, address and version
+ * on a server that was TA, 10.44.0.1, v0.59.2 (principle 5). */
+static const char *known(const char *v) { return v[0] ? v : "לא ידוע"; }
+
+/* "name · address" when both are known, the one that is known, or unknown. */
+static void server_label(const State *s, char *out, size_t n) {
+    if (s->server_name[0] && s->server_addr[0]) snprintf(out, n, "%s · %s", s->server_name, s->server_addr);
+    else snprintf(out, n, "%s", s->server_name[0] ? s->server_name : known(s->server_addr));
+}
+
 static double draw_header(App *a, cairo_t *cr, double W) {
     const Theme *t=a->theme;
     Rect bar={0,0,W,N_HEADER_H}; draw_fill_rrect(cr,bar,0,t->header);
@@ -42,16 +53,17 @@ static double draw_header(App *a, cairo_t *cr, double W) {
     }
 
     const int clone=a->force_cloner||a->force_standby||a->screen==SCREEN_CLONER||a->screen==SCREEN_STANDBY;
-    const char *role=clone?"מחשב שיכפול 2":"מחשב בנייה";
+    const char *role=clone?"מחשב שיכפול":"מחשב בנייה";   /* #1252: the "2" was the mockup's */
     Text rt=text_make(cr,FONT_SANS,12,400,role,0,DIR_RTL);
     Rect pill={right-rt.w-18,(N_HEADER_H-20)/2,rt.w+18,20};
     draw_set_a(cr,t->header_text,.14); draw_rrect_path(cr,pill,10); cairo_fill(cr);
     text_draw_r(cr,&rt,right-9,pill.y+(pill.h-rt.h)/2,t->header_text); right=pill.x-22;
     text_free(&rt);
 
-    const char *host=a->st.machine_name[0]?a->st.machine_name:(clone?"CLONER-02":"BUILD-01");
+    /* #1252: every value from the state file; unknown is said, not invented */
+    char srv[160]; server_label(&a->st,srv,sizeof srv);
     const char *keys[]={"מכונה","שרת","גרסה"};
-    const char *vals[]={host,"imagectl-srv · 10.10.10.1","v0.48.1"};
+    const char *vals[]={known(a->st.machine_name),srv,known(a->st.server_version)};
     for(int i=0;i<3;i++){
         Text k=text_make(cr,FONT_SANS,13,400,keys[i],0,DIR_RTL);
         Text v=text_make(cr,FONT_MONO,13,400,vals[i],0,DIR_LTR);
@@ -155,8 +167,7 @@ void screen_login(App *a,cairo_t *cr,double W,double H,double head_h){
     text_draw_r(cr,&brand,mark.x-10,48+(30-brand.h)/2,t->ink);text_free(&brand);
     double fw=fmin(400,pane-128),x=pr.x+(pane-fw)/2;
     Text title=rtl_block_make(cr,24,600,"כניסה",fw);
-    const char *host=a->st.machine_name[0]?a->st.machine_name:"BUILD-01";
-    char lead_s[128];snprintf(lead_s,sizeof lead_s,"מחשב הבנייה %s",host);
+    char lead_s[128];snprintf(lead_s,sizeof lead_s,"מחשב הבנייה %s",known(a->st.machine_name));   /* #1252 */
     Text lead=rtl_block_make(cr,13,400,lead_s,fw);
     double content=title.h+6+lead.h+28+50+22+50+22+38+(a->error[0]?24:0);
     double y=(usable-content)/2;
@@ -170,7 +181,8 @@ void screen_login(App *a,cairo_t *cr,double W,double H,double head_h){
     y+=72;
     if(a->error[0]){Text e=rtl_block_make(cr,13,400,a->error,fw);text_draw_r(cr,&e,x+fw,y-16,t->danger);text_free(&e);}
     Text go=btn_label(cr,"כניסה");draw_btn(a,cr,(Rect){x,y,fw,38},&go,BTN_PRIMARY,HIT_SUBMIT);text_free(&go);
-    char foot_s[160];snprintf(foot_s,sizeof foot_s,"imagectl-srv   ·   v0.48.1   ·   10.10.10.1");
+    char srv[160];server_label(&a->st,srv,sizeof srv);   /* #1252: was the mockup's fixed line */
+    char foot_s[240];snprintf(foot_s,sizeof foot_s,"%s   ·   %s",srv,known(a->st.server_version));
     Text foot=text_make(cr,FONT_MONO,12,400,foot_s,0,DIR_LTR);text_draw(cr,&foot,pr.x+64,usable-28-foot.h,t->muted);text_free(&foot);
     text_free(&title);text_free(&lead);
 }
@@ -277,7 +289,8 @@ void screen_standby(App *a,cairo_t *cr,double W,double H,double head_h){
     double after_mark=compact?16:22,after_sub=compact?16:26,before_list=compact?12:18,after_list=compact?14:22;
     Text h=text_make(cr,FONT_SANS,30,600,"ממתין לשרת",0,DIR_RTL);
     Text p=text_make(cr,FONT_SANS,15,400,"אין סבב פתוח. המחשב יצטרף לבד כשייפתח סבב.",0,DIR_RTL);
-    char addr[256];snprintf(addr,sizeof addr,"%s     %s     imagectl-srv · 10.10.10.1",a->ip[0]?a->ip:"—",a->mac[0]?a->mac:"—");
+    char srv[160];server_label(s,srv,sizeof srv);   /* #1252 */
+    char addr[256];snprintf(addr,sizeof addr,"%s     %s     %s",a->ip[0]?a->ip:"—",a->mac[0]?a->mac:"—",srv);
     Text ad=text_make(cr,FONT_MONO,22,400,addr,0,DIR_LTR);
     char hello[160];
     if(s->hello_age>=0&&s->hello_rc>=0)snprintf(hello,sizeof hello,"hello אחרון לפני %d שניות · השרת ענה %d",s->hello_age,s->hello_rc);
@@ -304,7 +317,7 @@ void screen_standby(App *a,cairo_t *cr,double W,double H,double head_h){
     y+=after_list;
     Rect hb={center-(he.w+48)/2,y,he.w+48,32};draw_fill_rrect(cr,hb,16,t->surface);draw_border_rrect(cr,hb,16,t->hair,1);
     struct timespec ts; double pulse=9;
-    if(timespec_get(&ts,TIME_UTC)==TIME_UTC) pulse=8+2*(.5+.5*sin((ts.tv_sec+ts.tv_nsec/1e9)*4));
+    if(!a->fixed_clock&&timespec_get(&ts,TIME_UTC)==TIME_UTC) pulse=8+2*(.5+.5*sin((ts.tv_sec+ts.tv_nsec/1e9)*4));   /* --png: a still frame, no wall-clock pulse */
     draw_led(cr,hb.x+18,hb.y+16,pulse,s->hello_rc==200?t->led_ok:t->warn);text_draw_r(cr,&he,hb.x+hb.w-14,hb.y+(hb.h-he.h)/2,t->muted);
     text_free(&h);text_free(&p);text_free(&ad);text_free(&he);
 }

@@ -28,6 +28,30 @@ def label(session: sqlite3.Row, library) -> str:
     return manifest["name"] if manifest else session["image_id"]
 
 
+def role_of(conn, username):
+    """תפקיד המשתמש (admin/deploy) או None כשהמשתמש נמחק/לא ידוע."""
+    if not username:
+        return None
+    row = conn.execute(
+        "SELECT role FROM users WHERE username = ? COLLATE NOCASE", (username,)
+    ).fetchone()
+    return row["role"] if row else None
+
+
+def console_extras(store, row: sqlite3.Row) -> dict:
+    """‏#1255: שדות "משימות אחרונות" — **רק** לתשובת הקונסולה המאומתת (`/overview`).
+
+    ‏`build()` משותף גם ל-`station.active_session_view`, שמוגש לסוכן על 8080 בלי הרשאת קונסולה:
+    שם המשתמש שפתח את הסבב ותפקידו לא יוצאים לשם. כאן: מי פתח (`None` = לא ידוע), מתי התחיל ומתי נסגר."""
+    return {
+        "opened_by": row["opened_by"] or None,
+        "opened_by_role": role_of(store.conn, row["opened_by"]),
+        "created_at": row["created_at"],
+        "started_at": row["started_at"],
+        "closed_at": row["closed_at"],
+    }
+
+
 def build(store, session: sqlite3.Row, library) -> dict:
     """מחשב מזוהה בשם המחשב שייכתב לו (קידומת-סיומת), לא ב-MAC: זה מה
     שמופיע על המסך בכיתה, וזה מה שמחפשים כשמשהו נכשל. ה-MAC נשאר

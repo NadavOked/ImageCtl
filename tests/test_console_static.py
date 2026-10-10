@@ -200,13 +200,15 @@ def test_uptime_and_deploy_ip_come_from_me_and_null_is_named():
     assert "function journalCls" in js and "row.severity" in js
 
 
-def test_images_tree_node_uses_the_folder_icon():
-    """הכרעת נדב (17/09 06:50): אייקון "אימג'ים" בעץ → תיקייה, גם לתיקיות
-    מתחתיו. האימג' עצמו נשאר עם אייקון תמונה."""
+def test_images_tree_node_has_its_own_icon_and_the_folders_keep_the_folder_icon():
+    """17/09 (נדב): אייקון "אימג'ים" בעץ → תיקייה. 10/10 (apple-pending-4, "הכול מאושר"): הצומת מקבל
+    אייקון שכבות ייחודי כדי שלא יהיה זהה לתיקיות שמתחתיו; התיקיות עצמן נשארות עם אייקון התיקייה
+    והאימג' עם אייקון תמונה."""
     page, js = _index(), _console_js()
     start = page.index('data-page="images"')
     node = page[start:page.index("אימג'ים</span>", start)]
-    assert 'M3 7a2 2 0 0 1 2-2h4l2 2h8' in node
+    assert 'm12 3 9 5-9 5-9-5Z' in node
+    assert 'M3 7a2 2 0 0 1 2-2h4l2 2h8' not in node
     assert 'circle cx="16"' not in node
     fn = js[js.index("function populateSidebarImages"):js.index("function fillSidebarTree")]
     assert fn.count('uiIcon("folder")') == 2
@@ -257,12 +259,14 @@ def test_static_includes_are_at_9_9():
     #1235 (כונן בלי serial: "לא ניתן לזהות את הכונן בחריץ N" בכרטיס המשכפל) = ‏10.9;
     apple-quick-wins (‏:active, reduced-motion, toast/backdrop, טוקני תנועה, long-press עכבר) = ‏11.0;
     F06 (חלון צומח מהכפתור, מגירה 320ms) ו-F09 (קנה מידה טיפוגרפי ב-rem) = ‏11.1;
-    visual-pass (toast בטוקנים + שגיאת רשת בעברית, חץ העץ ב-RTL, מגירה בלי גלישה, כפתור מחיקה אדום) = ‏11.2.
+    visual-pass (toast בטוקנים + שגיאת רשת בעברית, חץ העץ ב-RTL, מגירה בלי גלישה, כפתור מחיקה אדום) = ‏11.2;
+    apple-pending-4 (עמודת פעולות דביקה + ⋯, סימון עץ לפי לשונית, אייקוני עץ ייחודיים, כותרת סקירה, דשבורדים, חלונות, פאנל משימות) = ‏11.3.
+    #1251 (קליטה: תיקיית יעד חובה) + #1252 = ‏11.4.
     שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
     versions = {float(v) for v in re.findall(r'\?v=(\d+\.\d+)"', page)}
-    assert versions == {11.2}, versions
+    assert versions == {11.4}, versions
 
 
 def test_update_apply_is_a_sheet_without_text_verification_and_revert_uses_hostname():

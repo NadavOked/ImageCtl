@@ -94,7 +94,9 @@ function esc(text) {
    טקסט חופשי עובר esc() אצל הקורא כשהוא HTML, וכאן כשהוא מחרוזת. */
 const UI = {
   /* כותרת אובייקט: breadcrumb, אייקון, שם, שורת-משנה, תג מצב, פעולות, לשוניות. */
-  objHeader({ crumbs = [], icon = "server", name = "", sub = "", pill = "", actions = "", tabs = [], tab = 0, tabClick = (i) => `activateTab(${i})` }) {
+  /* compact (apple-pending-4 · 4): שורה אחת — אייקון, כותרת, פיל מצב, פעולות — ומתחתיה שורת משנה אחת
+     (נחתכת עם … ובמלואה ב-title). לא משנה את המבנה של שאר הדפים. */
+  objHeader({ crumbs = [], icon = "server", name = "", sub = "", pill = "", actions = "", tabs = [], tab = 0, tabClick = (i) => `activateTab(${i})`, compact = false }) {
     const crumbHtml = crumbs.map((c, i) => {
       const last = i === crumbs.length - 1;
       const item = c.onclick && !last
@@ -103,7 +105,8 @@ const UI = {
     }).join("");
     const tabHtml = tabs.length > 1 ? `<div class="tabs" role="tablist">${tabs.map((t, i) =>
       `<button type="button" class="tab${i === tab ? " on" : ""}" role="tab" aria-selected="${i === tab}" tabindex="${i === tab ? 0 : -1}" onclick="${tabClick(i)}">${esc(t)}</button>`).join("")}</div>` : "";
-    return `<div class="obj"><div class="crumbs">${crumbHtml}</div><div class="obj-row"><div class="obj-icon">${uiIcon(icon)}</div><div><div class="obj-name">${esc(name)}</div>${sub ? `<div class="obj-sub">${sub}</div>` : ""}</div>${pill}<div class="obj-actions">${actions}</div></div>${tabHtml}</div>`;
+    const subTitle = compact && sub ? ` title="${esc(String(sub).replace(/<[^>]*>/g, ""))}"` : "";
+    return `<div class="obj${compact ? " compact" : ""}"><div class="crumbs">${crumbHtml}</div><div class="obj-row"><div class="obj-icon">${uiIcon(icon)}</div><div><div class="obj-name">${esc(name)}</div>${sub ? `<div class="obj-sub"${subTitle}>${sub}</div>` : ""}</div>${pill}<div class="obj-actions">${actions}</div></div>${tabHtml}</div>`;
   },
   /* KPI: מספר גדול + תווית + שורת משמעות. cls: ok/warn/err/info/"" (אפור = אין/לא נבדק). */
   kpi({ cls = "", label, value, unit = "", sub = "", bar = null }) {
@@ -119,11 +122,12 @@ const UI = {
   /* datagrid: columns = תוויות; rows = מערכי HTML לתאים (מוברחים ע"י הקורא). */
   /* שורה: מערך תאים, או {cells, attrs} (תכונות ל-<tr>), או {html} (שורה מוכנה).
      עמודה: מחרוזת (מוברחת) או {html}. */
-  datagrid({ columns, rows, empty = "אין נתונים", cls = "" }) {
+  datagrid({ columns, rows, empty = "אין נתונים", cls = "", opt = [] }) {
     if (!rows.length) return `<div class="empty">${esc(empty)}</div>`;
-    const tr = (r) => Array.isArray(r) ? `<tr>${r.map((c) => `<td>${c}</td>`).join("")}</tr>`
-      : r.html != null ? r.html : `<tr ${r.attrs || ""}>${r.cells.map((c) => `<td>${c}</td>`).join("")}</tr>`;
-    return `<table class="dg${cls ? " " + cls : ""}"><thead><tr>${columns.map((c) => `<th>${typeof c === "string" ? esc(c) : c.html}</th>`).join("")}</tr></thead><tbody>${rows.map(tr).join("")}</tbody></table>`;
+    const td = (c, i) => `<td${opt.includes(i) ? ` class="c-opt"` : ""}>${c}</td>`;   // opt = עמודות משניות: מוסתרות בכרטיס צר
+    const tr = (r) => Array.isArray(r) ? `<tr>${r.map(td).join("")}</tr>`
+      : r.html != null ? r.html : `<tr ${r.attrs || ""}>${r.cells.map(td).join("")}</tr>`;
+    return `<table class="dg${cls ? " " + cls : ""}"><thead><tr>${columns.map((c, i) => `<th${opt.includes(i) ? ` class="c-opt"` : ""}>${typeof c === "string" ? esc(c) : c.html}</th>`).join("")}</tr></thead><tbody>${rows.map(tr).join("")}</tbody></table>`;
   },
   name(main, sub = "") { return `<span class="name">${esc(main)}</span>${sub ? `<span class="sub">${esc(sub)}</span>` : ""}`; },
   nameHtml(main, subHtml) { return `<span class="name">${esc(main)}</span>${subHtml ? `<span class="sub">${subHtml}</span>` : ""}`; },
@@ -137,6 +141,15 @@ const UI = {
   },
   kv(pairs) { return `<div class="kv">${pairs.map(([k, v]) => `<span class="k">${esc(k)}</span><span class="v">${v}</span>`).join("")}</div>`; },
   note(cls, html) { return `<div class="note ${cls}"><span aria-hidden="true">●</span><span>${html}</span></div>`; },
+  /* הודעה עם שגיאת מערכת (apple-pending-4, דשבורדים): ‏raw — הטקסט הגולמי שהשרת החזיר. כשהוא לטיני בעיקרו
+     (נתיב, שם קובץ, שגיאת OS) הוא לא מוצג בגוף ההודעה אלא מאחורי "פרטים טכניים"; משפט עברי נשאר בגוף.
+     ‏before/after הם HTML מוכן (הקורא מבריח). */
+  noteTech(cls, before, raw, after = "") {
+    const hasRaw = raw != null && String(raw) !== "";
+    if (hasRaw && isRawTechnical(raw))
+      return UI.note(cls, `${before}${after}<details class="tech"><summary>פרטים טכניים</summary><code dir="ltr">${esc(raw)}</code></details>`);
+    return UI.note(cls, `${before}${hasRaw ? `: ${esc(raw)}` : ""}${after}`);
+  },
   empty(text, action = "") { return `<div class="empty">${esc(text)}${action ? `<div>${action}</div>` : ""}</div>`; },
   /* ציר-זמן: [{t, cls, text(html), who}] */
   timeline(events) {
@@ -145,7 +158,90 @@ const UI = {
   /* מה שאין לו API: הודעה ולא כפתור מנוטרל (README §8). */
   soon(label) { return `<span class="muted" title="דורש API">${esc(label)} — בקרוב</span>`; },
   link(label, onclick) { return `<a role="link" tabindex="0" onclick="${onclick}">${esc(label)}</a>`; },
+  /* ‏⋯ בסוף שורה: כל פעולות השורה בתפריט אחד (עמודה דביקה בקצה — ‏console.css .kebab-col).
+     items = [[תווית, onclick, "danger"?]]; הפעולה ההרסנית עוברת לתחתית, מופרדת ואדומה.
+     הפעולה עצמה לא משתנה: מי שדורש הקלדת שם (עיקרון 7) עדיין פותח את אותו sheet. */
+  rowMenu(label, items) {
+    const ordered = items.filter((i) => i[2] !== "danger").concat(items.filter((i) => i[2] === "danger"));
+    return `<button type="button" class="kebab" aria-haspopup="menu" aria-expanded="false" aria-label="${esc("פעולות עבור " + label)}" data-menu="${esc(JSON.stringify(ordered))}" onclick="event.stopPropagation();openRowMenu(this)" onkeydown="rowMenuTriggerKey(event,this)">⋯</button>`;
+  },
 };
+
+/* ---------- תפריט ⋯ (מקלדת: Enter/רווח/↓ פותחים, ↑↓ Home/End מזיזים, Esc סוגר והפוקוס חוזר לכפתור) ---------- */
+let ROW_MENU_BTN = null, ROW_MENU_WATCH = null;
+function rowMenuEl() {
+  let m = document.getElementById("rowMenu");
+  if (m) return m;
+  m = document.createElement("div");
+  m.id = "rowMenu"; m.className = "row-menu"; m.setAttribute("role", "menu");
+  m.addEventListener("keydown", rowMenuKey);
+  document.body.appendChild(m);
+  return m;
+}
+function rowMenuHtml(items) {
+  return items.map(([label, onclick, kind], i) => {
+    const sep = kind === "danger" && i > 0 && items[i - 1][2] !== "danger" ? `<hr role="separator">` : "";
+    return `${sep}<button type="button" role="menuitem" tabindex="-1"${kind === "danger" ? ` class="dg"` : ""} onclick="closeRowMenu(true);${onclick}">${esc(label)}</button>`;
+  }).join("");
+}
+function openRowMenu(btn, focusLast = false) {
+  if (ROW_MENU_BTN === btn) { closeRowMenu(true); return; }
+  closeRowMenu(false);
+  let items = [];
+  try { items = JSON.parse(btn.getAttribute("data-menu") || "[]"); } catch (e) { items = []; }
+  if (!items.length) return;
+  const menu = rowMenuEl();
+  if (!ROW_MENU_WATCH && typeof MutationObserver !== "undefined") {   // הדף צויר מחדש — הכפתור שפתח כבר לא קיים
+    const host = document.getElementById("content");
+    if (host) { ROW_MENU_WATCH = new MutationObserver(() => closeRowMenu(false)); ROW_MENU_WATCH.observe(host, { childList: true }); }
+  }
+  menu.innerHTML = rowMenuHtml(items);
+  menu.setAttribute("aria-label", btn.getAttribute("aria-label") || "");
+  menu.classList.remove("open");
+  const r = btn.getBoundingClientRect(), w = menu.offsetWidth || 180, h = menu.offsetHeight || 0;
+  const rtl = (document.documentElement.getAttribute("dir") || "rtl") === "rtl";
+  let left = rtl ? r.left : r.right - w;
+  left = Math.max(8, Math.min(left, window.innerWidth - w - 8));
+  let top = r.bottom + 4;
+  if (h && top + h > window.innerHeight - 8) top = Math.max(8, r.top - h - 4);
+  menu.style.left = left + "px"; menu.style.top = top + "px";
+  menu.style.setProperty("--ox", (r.left + r.width / 2 - left) + "px");
+  menu.classList.add("open");
+  btn.setAttribute("aria-expanded", "true");
+  ROW_MENU_BTN = btn;
+  const all = menu.querySelectorAll("[role=menuitem]");
+  const first = all[focusLast ? all.length - 1 : 0];
+  if (first && first.focus) first.focus();
+}
+function closeRowMenu(restoreFocus) {
+  const btn = ROW_MENU_BTN;
+  ROW_MENU_BTN = null;
+  const menu = document.getElementById("rowMenu");
+  if (menu) menu.classList.remove("open");
+  if (!btn) return;
+  btn.setAttribute("aria-expanded", "false");
+  if (restoreFocus && btn.isConnected !== false && btn.focus) btn.focus();
+}
+function rowMenuTriggerKey(event, btn) {
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); event.stopPropagation(); if (ROW_MENU_BTN === btn) closeRowMenu(false); openRowMenu(btn, event.key === "ArrowUp"); }
+}
+function rowMenuKey(event) {
+  const menu = document.getElementById("rowMenu");
+  const items = Array.from(menu.querySelectorAll("[role=menuitem]"));
+  const at = items.indexOf(document.activeElement);
+  const to = (i) => { event.preventDefault(); items[(i + items.length) % items.length].focus(); };
+  if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeRowMenu(true); }
+  else if (event.key === "ArrowDown") to(at + 1);
+  else if (event.key === "ArrowUp") to(at < 0 ? -1 : at - 1);
+  else if (event.key === "Home") to(0);
+  else if (event.key === "End") to(items.length - 1);
+  else if (event.key === "Tab") closeRowMenu(true);
+}
+if (typeof document !== "undefined" && document.addEventListener) {
+  document.addEventListener("click", () => closeRowMenu(false));
+  window.addEventListener("scroll", () => closeRowMenu(false), true);
+  window.addEventListener("resize", () => closeRowMenu(false));
+}
 
 /* תאריך dd/mm/yyyy ושעה hh:mm מחותמת ISO (#829 M11). */
 /* רצף מספר+יחידה או תאריך+שעה בתוך משפט עברי: הרווח שביניהם נפתר RTL
@@ -1364,15 +1460,15 @@ function renameServer(el) {
    הרביעי בכל עלה: האם יש היום נתיב relay לנתונים (8443). עלה בלי נתיב
    מופיע בעץ ומציג "דורש API דרך 8443 (#1179)" — לא מוסתר ולא נתון מומצא. */
 const BRANCH_TREE = [
-  ["overview", "סקירה כללית", "home", true],
-  ["deploy", "סבב הפצה", "deploy", false],
+  ["overview", "סקירה כללית", "t-home", true],
+  ["deploy", "סבב הפצה", "t-deploy", false],
   { id: "inv", label: "מלאי", icon: "list", open: true, kids: [
-    ["images", "אימג'ים", "folder", true], ["machines", "מחשבים", "list", true],
+    ["images", "אימג'ים", "t-images", true], ["machines", "מחשבים", "t-machines", true],
     ["transfers", "העברות", "deploy", true]] },
-  { id: "infra", label: "תשתית", icon: "health", open: false, kids: [
-    ["health", "בריאות ושירותים", "health", false], ["storage", "אחסון", "storage", false],
-    ["network", "רשת", "network", false], ["monitor", "מוניטור", "user", true],
-    ["drivers", "דרייברים", "settings", false]] },
+  { id: "infra", label: "תשתית", icon: "t-infra", open: false, kids: [
+    ["health", "בריאות ושירותים", "t-health", false], ["storage", "אחסון", "storage", false],
+    ["network", "רשת", "t-network", false], ["monitor", "מוניטור", "t-monitor", true],
+    ["drivers", "דרייברים", "t-drivers", false]] },
 ];
 const BRANCH_VIEWS = BRANCH_TREE.flatMap((x) => Array.isArray(x) ? [x] : x.kids);
 let BRANCH_NODE = null;
@@ -1645,48 +1741,65 @@ function homeNowCard(all = false) {
     cls: all || !isAdmin() ? "c12" : "c8", flush: true, body: warn + grid });   // ‏deploy: בלי "דורש טיפול" לצידו
 }
 
-/* "דורש טיפול": דיסקים אדומים, דיסקים מכווצים, מכונות לא רשומות, סניפים
-   שלא מגיבים, בדיקות בריאות warn/bad. ריק אמיתי ≠ "לא נקרא" (עיקרון 5). */
+/* "דורש טיפול" (apple-pending-4 · 4): שורה מקופלת מתחת לכותרת עם מונה — נפתחת בלחיצה.
+   דיסקים אדומים, דיסקים מכווצים, מכונות לא רשומות, סניפים שלא מגיבים, בדיקות בריאות
+   warn/bad. ריק אמיתי ≠ "לא נקרא" (עיקרון 5). טקסט גולמי באנגלית (שגיאת מערכת מהשרת)
+   לא מוצג בגוף: הוא עובר ל"פרטים טכניים" בתוך הפריט. */
+let HOME_ATTN_OPEN = false;
+/* טקסט גולמי = רוב האותיות לטיניות (שגיאת מערכת/נתיב/שם קובץ): "timeout", "udp-sender לא נמצא".
+   משפט עברי שמזכיר "SATA" או שם מכונה נשאר בגוף הפריט. */
+function isRawTechnical(text) {
+  const t = String(text == null ? "" : text);
+  const latin = (t.match(/[A-Za-z]/g) || []).length, hebrew = (t.match(/[֐-׿]/g) || []).length;
+  return latin >= 4 && latin > hebrew;
+}
+function attnItem(cls, mainHtml, tech = "") {
+  const techHtml = tech ? `<details class="tech"><summary>פרטים טכניים</summary><code dir="ltr">${esc(tech)}</code></details>` : "";
+  return `<li class="attn-i ${cls}"><span class="dot" aria-hidden="true"></span><div class="b">${mainHtml}${techHtml}</div></li>`;
+}
 function homeAttention() {
   const items = [];
   for (const f of DISK_FAILURES || []) {
     const m = findMachine(f.mac);
-    items.push(UI.note("err", `<b>דיסק אדום</b> — ${esc(machineName(m) || f.mac)} · דיסק ${esc(f.disk_number ?? "?")}${f.serial ? ` (<span class="mono">${esc(f.serial)}</span>)` : ""} נכשל בכתיבה${f.cause ? ", סיבה: " + esc(f.cause) : ""}. ${UI.link("נקה אחרי החלפה", "selectPageById('machines')")}`));
+    const raw = f.cause && isRawTechnical(f.cause);
+    items.push(attnItem("err", `<b>דיסק אדום</b> — ${esc(machineName(m) || f.mac)} · דיסק ${esc(f.disk_number ?? "?")}${f.serial ? ` (<span class="mono">${esc(f.serial)}</span>)` : ""} נכשל בכתיבה${f.cause && !raw ? ", סיבה: " + esc(f.cause) : ""}. ${UI.link("נקה אחרי החלפה", "selectPageById('machines')")}`, raw ? f.cause : ""));
   }
   for (const r of SHRINK_RECORDS || []) {
     const m = findMachine(r.mac);
-    items.push(UI.note("warn", `<b>דיסק מכווץ</b> — ${esc(machineName(m) || r.mac)} · דיסק ${esc(r.port ?? "?")} כווץ לקליטה ולא הוחזר לגודלו. ${UI.link("למחשבים", "selectPageById('machines')")}`));
+    items.push(attnItem("warn", `<b>דיסק מכווץ</b> — ${esc(machineName(m) || r.mac)} · דיסק ${esc(r.port ?? "?")} כווץ לקליטה ולא הוחזר לגודלו. ${UI.link("למחשבים", "selectPageById('machines')")}`));
   }
   for (const d of HOME.net || []) {
     if (d.registered) continue;
-    items.push(UI.note("warn", `<b>מכונה לא רשומה</b> ברשת ההפצה — <span class="mono">${esc(d.mac)}</span>${d.ip ? ` קיבלה ${ltr(d.ip)}` : ""} · ${ltr(fmtDate(d.last_seen) + " " + fmtClock(d.last_seen))}. ${UI.link("רשום", "openNewMachine()")}`));
+    items.push(attnItem("warn", `<b>מכונה לא רשומה</b> ברשת ההפצה — <span class="mono">${esc(d.mac)}</span>${d.ip ? ` קיבלה ${ltr(d.ip)}` : ""} · ${ltr(fmtDate(d.last_seen) + " " + fmtClock(d.last_seen))}. ${UI.link("רשום", "openNewMachine()")}`));
   }
   for (const n of HOME.nodes || []) {
     const st = SECONDARY_STATUS[n.id];
     if (n.disabled_at || !st || st.connected) continue;
-    items.push(UI.note("err", `<b>סניף ${esc(n.label)} לא מגיב</b>${st.error ? " — " + esc(st.error) : ""}. ${UI.link("פרטי הסניף", "selectPageById('branches')")}`));
+    const raw = st.error && isRawTechnical(st.error);
+    items.push(attnItem("err", `<b>סניף ${esc(n.label)} לא מגיב</b>${st.error && !raw ? " — " + esc(st.error) : ""}. ${UI.link("פרטי הסניף", "selectPageById('branches')")}`, raw ? st.error : ""));
   }
   for (const c of Array.isArray(HEALTH) ? HEALTH : []) {
     if (c.state !== "warn" && c.state !== "bad") continue;
     const action = c.id === "deploy_net"
       ? UI.link("הגדר רשת הפצה", "openNetwork(2)")
       : UI.link("לבריאות", "selectPageById('health')");
-    items.push(UI.note(c.state === "bad" ? "err" : "warn", `<b>${esc(c.label)}</b> — ${esc(c.detail || "")}. ${action}`));
+    const raw = c.detail && isRawTechnical(c.detail);
+    items.push(attnItem(c.state === "bad" ? "err" : "warn", `<b>${esc(c.label)}</b>${c.detail && !raw ? " — " + esc(c.detail) : ""}. ${action}`, raw ? c.detail : ""));
   }
   // ‏#1049 שלב ב': שערי בדיקת המכונה (סוללה, שעון, NVMe, קריסה, כפילות IP, CRC)
   // — מוצגים, אינם עוצרים סבב. רשימה ריקה = לא נמצא במה שנמדד, לא "הכול תקין".
   for (const m of MACHINES || []) {
     for (const v of Array.isArray(m.probe_verdicts) ? m.probe_verdicts : []) {
-      items.push(UI.note(v.level === "err" ? "err" : "warn", `<b>${esc(machineName(m) || m.mac)}</b> — ${esc(v.text_he || v.key || "")}. ${UI.link("פרטי המכונה", `openMachineDetail('${encodeId(m.mac)}')`)}`));
+      items.push(attnItem(v.level === "err" ? "err" : "warn", `<b>${esc(machineName(m) || m.mac)}</b> — ${esc(v.text_he || v.key || "")}. ${UI.link("פרטי המכונה", `openMachineDetail('${encodeId(m.mac)}')`)}`));
     }
   }
   const unread = [!Array.isArray(HEALTH) && "בריאות", HOME.err.net && "רשת", HOME.err.nodes && "סניפים"].filter(Boolean);
-  let body;
-  if (items.length) body = `<div class="stack">${items.join("")}</div>`;
-  else if (unread.length) body = UI.note("warn", esc(`לא נקראו: ${unread.join(", ")} — לא ניתן לומר שאין מה לטפל`));
-  else body = UI.empty("אין פריטים לטיפול");
-  const pill = items.length ? UI.pill("err", String(items.length)) : "";
-  return UI.card({ title: "דורש טיפול", acts: pill, cls: "c4", body });
+  if (!items.length) {
+    // ריק אמיתי = שורה שקטה שאומרת זאת; "לא נקרא" = הודעה בשם (לא ניתן לומר שאין מה לטפל)
+    return unread.length ? `<div class="c12">${UI.note("warn", esc(`לא נקראו: ${unread.join(", ")} — לא ניתן לומר שאין מה לטפל`))}</div>` : `<div class="c12 attn-none">אין פריטים לטיפול</div>`;
+  }
+  const worst = items.some((i) => i.includes('attn-i err')) ? "err" : "warn";
+  return `<details class="c12 attn ${worst}" id="home-attn"${HOME_ATTN_OPEN ? " open" : ""} ontoggle="HOME_ATTN_OPEN=this.open"><summary>${uiIcon("health")}<span>דורש טיפול</span><span class="cnt">${items.length}</span></summary><ul>${items.join("")}</ul></details>`;
 }
 
 /* ‏#968: החומרה מגיעה מהשרת (severity ב-/journal, נקבעת ב-journal_he.py לצד
@@ -1704,7 +1817,7 @@ function homeEvents(limit) {
   else body = UI.timeline(journal.slice(0, limit).map((r) => ({
     t: isToday(r.ts) ? fmtClock(r.ts) : fmtDate(r.ts), cls: journalCls(r),
     text: esc(r.label || r.text || r.event || ""), who: r.user || "" })));
-  return UI.card({ title: limit >= 50 ? "אירועים" : "אירועים אחרונים", small: limit >= 50 ? "50 האחרונים" : "", acts, cls: limit >= 50 ? "c12" : "c8", body });
+  return UI.card({ title: limit >= 50 ? "אירועים" : "אירועים אחרונים", small: limit >= 50 ? "50 האחרונים" : "", acts, cls: "c12", body });
 }
 
 function homeServerCard() {
@@ -1764,14 +1877,14 @@ function home(tab = 0) {
     + (isAdmin() ? `<button class="btn" onclick="openCapture().catch(e => toast(e.message))">+ קליטת אימג'</button>` : "")
     + `<button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>`;
   const sub = [esc(ME && ME.server_name || ""), homeDeployIp(), ME && ME.version ? esc(ME.version) : "", homeUptime()].filter(Boolean).join(" · ");
-  const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים" }, { label: "סקירה כללית" }], icon: "server",
-    name: "שרת אימג'ים", sub, pill, actions, tabs, tab });
+  const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים" }, { label: "סקירה כללית" }], icon: "t-home",
+    name: "שרת אימג'ים", sub, pill, actions, tabs, tab, compact: true });
   const stale = overviewError ? `<div class="c12">${UI.note("warn", esc(overviewError))}</div>` : "";
   let body;
   if (tab === 1) body = homeNowCard(true);
   else if (tab === 2 && isAdmin()) body = homeEvents(50);
   else if (!o && !overviewError) body = `<div class="c12">${pagePlaceholder()}</div>`;
-  else body = homeKpis() + homeNowCard(false) + (isAdmin() ? homeAttention() + homeEvents(6) + homeServerCard() : "");
+  else body = (isAdmin() ? homeAttention() : "") + homeKpis() + homeNowCard(false) + (isAdmin() ? homeServerCard() + homeEvents(6) : "");
   return `<div class="page">${header}<div class="body">${stale}${body}</div></div>`;
 }
 
@@ -1881,8 +1994,8 @@ function deploy(tab = 0) {
     + (op && r ? `<button class="btn danger" onclick="stopRoom()">עצור סבב (הקלדת שם)</button>` : "")
     + `<button class="btn" onclick="toggleRoomBig()">${DEPLOY.big ? "חזרה לתצוגה המלאה" : "תצוגה גדולה"}</button>` : "")
     + `<button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>`;
-  const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "סבב הפצה" }], icon: "copy",
-    name: tab === 0 ? name : tab === classTab ? "סבב כיתה" : "היסטוריית סבבים", sub: tab === 0 ? sub : tab === classTab ? "מחשבי כיתה — v2 (הכרעת נדב 17/09); מוצג כפי שקיים היום" : "סבבים קודמים", pill: tab === 0 ? pill : "", actions, tabs, tab });
+  const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "סבב הפצה" }], icon: "t-deploy",
+    name: tab === 0 ? name : tab === classTab ? "סבב כיתה" : "היסטוריית סבבים", sub: tab === 0 ? sub : tab === classTab ? "מחשבי כיתה — v2 (הכרעת נדב 17/09); מוצג כפי שקיים היום" : "סבבים קודמים", pill: tab === 0 ? pill : "", actions, tabs, tab, compact: true });
   const stale = overviewError ? `<div class="c12">${UI.note("warn", esc(overviewError))}</div>` : "";
   let body;
   if (tab === classTab) body = deployClassView();
@@ -2299,7 +2412,7 @@ function images(tab = 0) {
     ? `<button class="btn primary" onclick="openCapture().catch(e => toast(e.message))">+ קליטה ממחשב בנייה</button><button class="btn" onclick="openImageIngest()">העלאת קובץ tar</button><button class="btn" onclick="addFolderSheet()">+ תיקייה</button>`
     : "") + `<button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>`;
   const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "מלאי" }, { label: "אימג'ים" }],
-    icon: "image", name: "ספריית אימג'ים", sub, actions, tabs, tab });
+    icon: "t-images", name: "ספריית אימג'ים", sub, actions, tabs, tab });
   let body;
   if (!IMAGES) body = `<div class="c12">${pagePlaceholder()}</div>`;
   else if (tab === 1) body = imagesCapturesCard();
@@ -3022,7 +3135,7 @@ function machines(tab = 0) {
   }
   const crumbs = [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "מלאי" }, { label: "מחשבים" }];
   if (!MACHINES || !GROUPS) {
-    return `<div class="page">${UI.objHeader({ crumbs, icon: "machine", name: "מחשבים", tabs: machinesTabs(), tab })}<div class="body"><div class="c12">${pagePlaceholder()}</div></div></div>`;
+    return `<div class="page">${UI.objHeader({ crumbs, icon: "t-machines", name: "מחשבים", tabs: machinesTabs(), tab })}<div class="body"><div class="c12">${pagePlaceholder()}</div></div></div>`;
   }
   if (MACHINES_CLASS) {
     const g = GROUPS.find((x) => x.id === MACHINES_CLASS);
@@ -3439,11 +3552,11 @@ function builderCardHtml(m, admin) {
   (m.disks || []).forEach((d, i) => { const n = diskSlot(d, i); if (!d0 || n < n0) { d0 = d; n0 = n; } });
   const inv = m.inventory, tpm = inv && inv.tpm, model = machineModel(m);
   const task = activeTasks([m])[0] || null;
-  const state = UI.status(st.cls, st.text) + (task ? " " + UI.pill(task.state === "pending" ? "warn" : "info", task.state === "pending" ? "קליטה ממתינה" : "קליטה רצה") : "");
+  const state = `<span class="st ${esc(st.cls)}"><span class="clamp" title="${esc(st.text)}">${esc(st.text)}</span></span>` + (task ? " " + UI.pill(task.state === "pending" ? "warn" : "info", task.state === "pending" ? "קליטה ממתינה" : "קליטה רצה") : "");
   const kv = UI.kv([
     ["דגם", inv == null ? `<span class="muted">לא דיווח</span>` : esc(model || "—") + (tpm && tpm.present ? ` · TPM ${esc(tpm.version || "")}`.trimEnd() : "")],
     [d0 ? `דיסק ${n0}` : "דיסק", m.disks == null ? `<span class="muted">לא דיווח</span>` : !d0 ? UI.status("warn", zeroDisksText(m))
-      : `${ltr(fmtBytes(d0.size_bytes))} · ${esc(d0.model || "—")}${d0.serial ? ` · <span class="mono">${esc(d0.serial)}</span>` : ""}${m.disks.length > 1 ? ` <span class="cap">(+${m.disks.length - 1})</span>` : ""}`],
+      : `${ltr(fmtBytes(d0.size_bytes))} · ${esc(d0.model || "—")}${d0.serial ? ` · <span class="mono" title="${esc(d0.serial)}">${esc(d0.serial)}</span>` : ""}${m.disks.length > 1 ? ` <span class="cap">(+${m.disks.length - 1})</span>` : ""}`],
     ["לפני קליטה", `<span class="muted">NTFS / בשימוש — נבדקים בקליטה (<b title="לא מדווח ב-hello">דורש API</b>)</span>`],
     ["מצב", state],
   ]);
@@ -3453,7 +3566,7 @@ function builderCardHtml(m, admin) {
 }
 function buildersCard(g, kids) {
   const admin = isAdmin();
-  const body = kids.length ? `<div class="mgrid">${sortMachinesBySuffix(kids).map((m) => builderCardHtml(m, admin)).join("")}</div>`
+  const body = kids.length ? `<div class="mgrid wide">${sortMachinesBySuffix(kids).map((m) => builderCardHtml(m, admin)).join("")}</div>`
     : UI.empty("אין מחשב בנייה רשום — הוסיפו אותו (MAC + שם) כדי לקלוט ממנו אימג'.", admin ? `<button class="btn primary" onclick="openAddMachine({group:'${encodeId(g.id)}'})">+ מחשב בנייה</button>` : "");
   return UI.card({ title: "המחשבים", small: '"מחובר" מ-/monitor/machines · מה על המסך מ-hello', cls: "c12", body });
 }
@@ -4025,8 +4138,11 @@ function health() {
     ? [`${checks.length} בדיקות`, HEALTH_AT ? `נבדק ${HEALTH_AT}` : "זמן המדידה לא נמסר", ...counts, "המתגים (SSH, מוניטור, DHCP) — בעמוד הפורטים"].map(esc).join(" · ")
     : `‏/health לא נקרא: ${esc(healthError)}`;
   const actions = `<button class="btn primary" onclick="loadHealth()">בדוק עכשיו</button>`;
+  // ‏apple-pending-4 · 4: מצב ה-TLS עבר מכותרת הסקירה לכאן (טביעת האצבע המלאה — ב"פרטי Session")
+  const tlsFp = ME && ME.tls && ME.tls.fingerprint_sha256;
+  const tlsPill = UI.pill(tlsFp ? "info" : "", tlsFp ? "TLS תעודה עצמית" : "TLS כבוי");
   const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "תשתית" }, { label: "בריאות ושירותים" }],
-    icon: "health", name: "בריאות ושירותים", sub, pill, actions });
+    icon: "t-health", name: "בריאות ושירותים", sub, pill: pill + tlsPill, actions, compact: true });
   const body = !HEALTH
     ? UI.note("err", `לא הצלחתי לקרוא את הבדיקות: ${esc(healthError)}`)
     : UI.datagrid({ columns: ["בדיקה", "מצב", "מה נמצא", ""], rows: healthRows(checks), empty: "אין בדיקות — השרת החזיר רשימה ריקה" });
@@ -4092,17 +4208,15 @@ function userMfaLabel(u) {
 function userRowHtml(u) {
   const enc = encodeId(u.username), self = !!ME && u.username === ME.username;
   const lastAdmin = u.role === "admin" && !u.disabled && activeAdminCount() <= 1;
-  const btn = (label, onclick, cls = "") => `<button class="btn sm${cls ? " " + cls : ""}" onclick="${onclick}">${esc(label)}</button>`;
-  let acts = btn("סיסמה", `userPasswordSheet('${enc}')`);
+  // ‏⋯ אחד לשורה (UI.rowMenu): ההרסני (מחיקה — עדיין הקלדת שם) בתחתית, באדום.
+  const items = [["סיסמה…", `userPasswordSheet('${enc}')`]];
   if (!self && !lastAdmin) {
-    acts += btn("תפקיד", `userRoleSheet('${enc}')`)
-      + btn(u.disabled ? "הפעל" : "השבת", `userDisable('${enc}', ${u.disabled ? "false" : "true"})`)
-      + btn("מחיקה", `userDeleteSheet('${enc}')`, "danger");
+    items.push(["תפקיד…", `userRoleSheet('${enc}')`],
+      [u.disabled ? "הפעל" : "השבת", `userDisable('${enc}', ${u.disabled ? "false" : "true"})`]);
   }
-  if (!self && !u.is_builtin && u.mfa_enabled)
-    acts += btn("נתק MFA", `userMfaDisable('${enc}')`);
-  if (!self)
-    acts += btn("נתק את כל ההפעלות", `userRevokeSessions('${enc}')`);
+  if (!self && !u.is_builtin && u.mfa_enabled) items.push(["נתק MFA…", `userMfaDisable('${enc}')`]);
+  if (!self) items.push(["נתק את כל ההפעלות…", `userRevokeSessions('${enc}')`]);
+  if (!self && !lastAdmin) items.push(["מחק משתמש…", `userDeleteSheet('${enc}')`, "danger"]);
   const note = self ? "זה אתה" : lastAdmin ? "המנהל הפעיל האחרון — לא ניתן למחיקה, להורדה או להשבתה" : (u.is_builtin ? "מקומי · ללא MFA" : "");
   return { attrs: `data-user="${esc(u.username)}"`, cells: [
     UI.name(u.username, note),
@@ -4111,7 +4225,7 @@ function userRowHtml(u) {
     esc(userMfaLabel(u)),
     `<span class="mono">${esc(fmtDate(u.created_at))}</span>`,
     userLastLoginHtml(u),
-    `<div class="acts">${acts}</div>`] };
+    UI.rowMenu(u.username, items)] };
 }
 /* ‏#1008: last_login_at/from מ-/users (הכניסה האחרונה שהנפיקה עוגייה). null =
    "לא נרשמה" — משתמש חדש, או שלא נכנס מאז העדכון — לא "מעולם" ולא תאריך. */
@@ -4129,11 +4243,11 @@ function permissions() {
     ? [`${list.length} משתמשים`, `${admins} מנהלים פעילים`, `${deployers} מפעילי הפצה`, "המנהל האחרון אינו ניתן למחיקה או להורדה"].map(esc).join(" · ")
     : `‏/users לא נקרא: ${esc(usersError)}`;
   const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "ניהול" }, { label: "הרשאות" }],
-    icon: "user", name: "הרשאות", sub, pill: USERS ? "" : UI.pill("err", "לא נקרא"),
+    icon: "t-key", name: "הרשאות", sub, pill: USERS ? "" : UI.pill("err", "לא נקרא"),
     actions: `<button class="btn primary" onclick="openNewUser()">+ משתמש</button>` });
   const table = !USERS
     ? UI.note("err", `לא הצלחתי לקרוא את המשתמשים: ${esc(usersError)}`)
-    : UI.datagrid({ cls: "acts-on", columns: ["משתמש", "תפקיד", "מצב", "MFA", "נוצר", "כניסה אחרונה", ""], rows: list.map(userRowHtml), empty: "אין משתמשים — השרת החזיר רשימה ריקה" });
+    : UI.datagrid({ cls: "kebab-col", opt: [4, 5], columns: ["משתמש", "תפקיד", "מצב", "MFA", "נוצר", "כניסה אחרונה", { html: `<span class="sr">פעולות</span>` }], rows: list.map(userRowHtml), empty: "אין משתמשים — השרת החזיר רשימה ריקה" });
   const usersCard = UI.card({ title: "משתמשים", small: "כניסה אחרונה ומאיפה — מהשרת, ברגע הכניסה", cls: "c8", body: table, flush: !!USERS && list.length > 0 });
   const matrix = UI.datagrid({ columns: ["", "מנהל", "הפצה"],
     rows: ROLE_MATRIX.map(([area, a, d, src]) => [`<span title="${esc(src)}">${esc(area)}</span>`, UI.status(a[0], a[1]), UI.status(d[0], d[1])]) })
@@ -4294,7 +4408,7 @@ function logs() {
     : `‏/journal לא נקרא: ${esc(LOG.err)}`;
   const pill = !LOG.rows ? UI.pill("err", "לא נקרא") : LOG.truncated ? UI.pill("warn", "חיפוש חלקי") : "";
   const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "ניהול" }, { label: "יומן" }],
-    icon: "list", name: "יומן", sub, pill,
+    icon: "t-log", name: "יומן", sub, pill,
     actions: `<button class="btn" onclick="loadJournalData()">${uiIcon("refresh")} רענון</button><a class="btn" href="${esc(logCsvHref())}" download>ייצוא CSV</a>` });
   let body;
   if (!LOG.rows) body = UI.note("err", `לא הצלחתי לקרוא את היומן: ${esc(LOG.err)}`);
@@ -4693,19 +4807,20 @@ function netLegend() {
 }
 function netUnreadNotes() {
   const e = NETW.err, out = [];
+  const T = UI.noteTech;
   // ‏#1088: אחרי התקנה נקייה — מה שהמנהל צריך לעשות, לפני כל אזהרה אחרת.
   if (NET_DEPLOY && NET_DEPLOY.configured === false) out.push(UI.note("warn", `${esc(NET_DEPLOY.hint || "רשת ההפצה לא הוגדרה")} — <a href="#" onclick="openNetwork(2);return false;">לשונית רשת הפצה</a>`));
-  else if (e.deploy) out.push(UI.note("warn", `‏/net/deploy לא נקרא: ${esc(e.deploy)} — לא ידוע אם רשת ההפצה הוגדרה`));
-  if (e.config) out.push(UI.note("warn", `‏/net/config לא נקרא: ${esc(e.config)} — "מוגדר" ו"פער" אינם ידועים`));
-  else if (NETCFG && NETCFG.live && !NETCFG.live.checked) out.push(UI.note("warn", `המצב בפועל לא נקרא (${esc(NETCFG.live.reason || "")}) — אף כתובת אינה מאומתת`));
+  else if (e.deploy) out.push(T("warn", "‏/net/deploy לא נקרא", e.deploy, " — לא ידוע אם רשת ההפצה הוגדרה"));
+  if (e.config) out.push(T("warn", "‏/net/config לא נקרא", e.config, ' — "מוגדר" ו"פער" אינם ידועים'));
+  else if (NETCFG && NETCFG.live && !NETCFG.live.checked) out.push(T("warn", "המצב בפועל לא נקרא", NETCFG.live.reason || "", " — אף כתובת אינה מאומתת"));
   if (NETCFG && NETCFG.sourced === false) out.push(UI.note("err", "‏/etc/network/interfaces אינו טוען את interfaces.d — כל מה שנכתב שם לא ייקרא באתחול"));
-  if (e.net) out.push(UI.note("warn", `‏/net לא נקרא: ${esc(e.net)} — "מי נראה ברשת" ו"לא רשומים" אינם ידועים`));
-  if (e.ports) out.push(UI.note("warn", `‏/ports לא נקרא: ${esc(e.ports)} — "מה מותר על כל וילן" אינו ידוע`));
-  if (e.ssh) out.push(UI.note("warn", `‏/ssh לא נקרא: ${esc(e.ssh)}`));
-  if (e.sessions) out.push(UI.note("warn", `‏/sessions לא נקרא: ${esc(e.sessions)} — מי מחובר לקונסולה אינו ידוע`));
-  if (e.leases) out.push(UI.note("warn", `חכירות dnsmasq לא נקראו: ${esc(e.leases)} — מכונה שקיבלה כתובת ולא דיברה עם השרת אינה נראית`));
-  if (e.monitor) out.push(UI.note("warn", `‏/monitor/machines לא נקרא: ${esc(e.monitor)} — משכפלים ובנייה אינם בתרשים`));
-  if (e.nodes) out.push(UI.note("warn", `‏/storage-nodes לא נקרא: ${esc(e.nodes)} — סניפים אינם בתרשים`));
+  if (e.net) out.push(T("warn", "‏/net לא נקרא", e.net, ' — "מי נראה ברשת" ו"לא רשומים" אינם ידועים'));
+  if (e.ports) out.push(T("warn", "‏/ports לא נקרא", e.ports, ' — "מה מותר על כל וילן" אינו ידוע'));
+  if (e.ssh) out.push(T("warn", "‏/ssh לא נקרא", e.ssh));
+  if (e.sessions) out.push(T("warn", "‏/sessions לא נקרא", e.sessions, " — מי מחובר לקונסולה אינו ידוע"));
+  if (e.leases) out.push(T("warn", "חכירות dnsmasq לא נקראו", e.leases, " — מכונה שקיבלה כתובת ולא דיברה עם השרת אינה נראית"));
+  if (e.monitor) out.push(T("warn", "‏/monitor/machines לא נקרא", e.monitor, " — משכפלים ובנייה אינם בתרשים"));
+  if (e.nodes) out.push(T("warn", "‏/storage-nodes לא נקרא", e.nodes, " — סניפים אינם בתרשים"));
   const rb = NETCFG && NETCFG.rollback && typeof rollbackBanner === "function" ? rollbackBanner(NETCFG.rollback) : "";
   return (rb ? `<div class="c12">${rb}</div>` : "") + out.map((h) => `<div class="c12">${h}</div>`).join("");
 }
@@ -4720,10 +4835,11 @@ function netWarnCount() {
 }
 const NET_TABS = ["תרשים", "חיבורים פיזיים", "רשת הפצה", "פורטים"];
 function netTabClick(i) { return i === 3 ? "selectPageById('ports')" : `openNetwork(${i})`; }
-function netHeader(tab, { name, sub, pill, actions, icon = "network" }) {
+const NET_TAB_ICONS = ["t-network", "t-nic", "deploy", "t-ports"];
+function netHeader(tab, { name, sub, pill, actions, icon = NET_TAB_ICONS[tab] || "t-network" }) {
   const crumbs = [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "תשתית" }, { label: "רשת", onclick: "openNetwork(0)" }];
   if (tab) crumbs.push({ label: NET_TABS[tab] });
-  return UI.objHeader({ crumbs, icon, name, sub, pill, actions: actions + `<button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>`, tabs: NET_TABS, tab, tabClick: netTabClick });
+  return UI.objHeader({ crumbs, icon, name, sub, pill, actions: actions + `<button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>`, tabs: NET_TABS, tab, tabClick: netTabClick, compact: true });
 }
 
 /* --- לשונית 0: התרשים --- */
@@ -4751,7 +4867,10 @@ function networkDiagramTab() {
     : esc([`${nics.length} כרטיסים`, `${nics.length} וילנים (לפי הגדרה — מודל וילן דורש API (#705))`, `DHCP הפצה: ${deploy ? `${deploy.name} · ${deploy.dhcp_live_label}` : "כבוי"}`,
       unreg === null ? "לא רשומים: לא נקרא" : `${unreg} לא רשומים`, nodes.length ? `${nodes.length} סניפים${down ? ` · ${down} לא מגיבים` : ""}` : "אין סניפים"].join(" · "));
   const warn = netWarnCount();
-  const pill = nics === null ? UI.pill("err", "לא נקרא") : warn ? UI.pill("warn", `${warn} אזהרות`) : UI.pill("ok", "אין אזהרות");
+  // ‏apple-pending-4 · 4: מצב ה-DHCP עבר מכותרת הסקירה לכאן, לדף הרשת
+  const dcls = deploy ? dhcpLiveClass(deploy.dhcp_live && deploy.dhcp_live.state) : "";
+  const dhcpPill = nics === null ? "" : UI.pill(dcls === "ok" ? "ok" : dcls === "warn" ? "warn" : "", deploy ? `DHCP: ${deploy.name} · ${deploy.dhcp_live_label || "לא נקרא"}` : "DHCP כבוי");
+  const pill = (nics === null ? UI.pill("err", "לא נקרא") : warn ? UI.pill("warn", `${warn} אזהרות`) : UI.pill("ok", "אין אזהרות")) + dhcpPill;
   const actions = `<button class="btn" onclick="addNic()">+ כרטיס</button><button class="btn" onclick="previewDnsmasq().catch(e=>toast(e.message))">קבצי dnsmasq</button>`;
   const header = netHeader(0, { name: "רשת", sub, pill, actions });
   let body;
@@ -4774,9 +4893,9 @@ function netNicRow(n) {
   const name = `${UI.nameHtml(n.name, `${esc(n.description || "ללא תיאור")} · <span class="mono">${esc(n.mac || "—")}</span>`)}${tags}`;
   const live = netLiveAddrs(n);
   const actual = (NETCFG && !netLiveChecked()) ? UI.status("unk", "לא נקרא") : `<span class="mono">${esc(live.join(" · ") || "—")}</span>`;
-  const stop = "event.stopPropagation();";
-  // תוויות קצרות: 9 עמודות ב-1100px; "עריכת כתובת" המלא — בכרטיס הנבחר
-  const acts = `<div class="acts"><button class="btn sm" onclick="${stop}netEditAddress('${enc}')">כתובת</button><button class="btn sm" onclick="${stop}netEditDhcp('${enc}')">DHCP</button></div>`;
+  // ‏⋯ אחד לשורה: עריכת כתובת/DHCP/תצוגה מקדימה; "שכחה" (מסירת ההגדרות) הרסנית — בתחתית
+  const acts = UI.rowMenu(n.name, [["עריכת כתובת…", `netEditAddress('${enc}')`], ["DHCP…", `netEditDhcp('${enc}')`],
+    ["תצוגה מקדימה של הקובץ", `netShowFile('${enc}')`], ["שכחה…", `netForget('${enc}')`, "danger"]]);
   return { attrs: `data-nic="${esc(n.name)}"${sel ? ' class="sel"' : ""} onclick="netSelect('${enc}')" tabindex="0" aria-selected="${sel}"`,
     cells: [name, netLinkStatus(n), actual, `<span class="mono">${esc(netConfiguredText(n))}</span>`, netGapStatus(n), netDhcpCell(n, false), netRoleLabel(n), netSshSwitch(n.name), acts] };
 }
@@ -4826,7 +4945,7 @@ function networkNicsTab() {
   let body;
   if (nics === null) body = `<div class="c12">${UI.note("err", `לא הצלחתי לקרוא את כרטיסי הרשת: ${esc(NETW.err.interfaces || "")}`)}</div>`;
   else {
-    const table = UI.datagrid({ columns: ["כרטיס", "קישור", "בפועל", "מוגדר", "פער", "DHCP", "תפקיד", "SSH לשרת", ""], rows: nics.map(netNicRow), cls: "stable",
+    const table = UI.datagrid({ columns: ["כרטיס", "קישור", "בפועל", "מוגדר", "פער", "DHCP", "תפקיד", "SSH לשרת", { html: `<span class="sr">פעולות</span>` }], rows: nics.map(netNicRow), cls: "stable kebab-col", opt: [3, 6],
       empty: "לא נמצאו כרטיסי רשת — השרת לא רואה אף כרטיס, ואין הגדרה שמורה" });
     body = netUnreadNotes() + `<div class="c12 card"><div class="card-b${nics.length ? " flush" : ""}">${table}</div></div>` + netNicSelectedCard() + netRoutesCard();
   }
@@ -5245,8 +5364,23 @@ function portNicHtml(nic) {
   return /^[ -~]+$/.test(nic) ? `<span class="mono">${esc(nic)}</span>` : esc(nic);
 }
 
+/* ‏⋯ בשורת הפורט: המתג נשאר בעמודה שלו (הפעולה העיקרית); בתפריט — אותה פעולה, בדיקה מחדש ופרטים. */
+const PORT_ROWS = new Map();
+function portDetail(key) {
+  const r = PORT_ROWS.get(key); if (!r) return;
+  openDrawer(r.name, UI.kv([["פורט", `<span class="mono">${esc(r.port)}/${esc(r.proto)}</span>`], ["מי מתחבר", esc(r.who || "—")], ["על איזה כרטיס", portNicHtml(r.nic)],
+    ["מצב נמדד", `${UI.status(healthStatusClass(r.state), healthStatusLabel(r.state))} ${esc(r.detail || "")}`], ["אם מכבים", esc(r.off || "—")],
+    ["API", r.api ? `${UI.pill(r.api[0], r.api[1])}${r.api[2] ? ` <span class="mono">${esc(r.api[2])}</span>` : ""}` : "—"]]));
+}
+function portRowMenu(r) {
+  const k = encodeId(r.key), items = [];
+  if (r.on !== null && r.act) items.push([r.on ? "סגור…" : "פתח…", `portSwitch(decodeURIComponent('${k}'))`]);
+  items.push(["בדוק עכשיו", "loadPorts()"], ["הצג פרטים", `portDetail(decodeURIComponent('${k}'))`]);
+  return UI.rowMenu(`${r.name} ${r.port}`, items);
+}
 function portRow(r) {
   PORT_ACTIONS.set(r.key, r.act);
+  PORT_ROWS.set(r.key, r);
   const nic = portNicHtml(r.nic);
   const api = r.api ? `${UI.pill(r.api[0], r.api[1])}${r.api[2] ? ` <span class="cap mono">${esc(r.api[2])}</span>` : ""}` : "";
   // ה-note של השרת ("לפתוח ב-FW: …") — tooltip על שם השירות, לא שורה שלישית בכל תא.
@@ -5254,12 +5388,12 @@ function portRow(r) {
     `<span class="mono">${esc(r.port)}/${esc(r.proto)}</span>`, esc(r.who || "—"), nic,
     `${UI.status(healthStatusClass(r.state), healthStatusLabel(r.state))}<span class="sub">${esc(r.detail || "")}</span>`,
     portSwitchHtml(r.key, r.on, r.lock, r.cap, `${r.name} ${r.port}`),
-    `<span class="wrap">${esc(r.off || "")}</span>`, api];
+    `<span class="wrap">${esc(r.off || "")}</span>`, api, portRowMenu(r)];
 }
 
 function ports() {
   if (!PORTS && !portsError) return pagePlaceholder();
-  PORT_ACTIONS.clear();
+  PORT_ACTIONS.clear(); PORT_ROWS.clear();
   const rows = PORTS ? portRows() : [];
   const n = (s) => rows.filter((r) => r.state === s).length;
   let pill;
@@ -5272,11 +5406,11 @@ function ports() {
     : `‏/ports לא נקרא: ${esc(portsError)}`;
   const header = UI.objHeader({
     crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "תשתית" }, { label: "רשת" }, { label: "פורטים" }],
-    icon: "network", name: "פורטים", sub, pill, actions: `<button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>`,
-    tabs: NET_TABS, tab: 3, tabClick: (i) => i === 3 ? "activateTab(3)" : `openNetwork(${i})` });   // ‏#954 גל 8: לשונית של אובייקט הרשת
+    icon: "t-ports", name: "פורטים", sub, pill, actions: `<button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>`,
+    tabs: NET_TABS, tab: 3, tabClick: (i) => i === 3 ? "activateTab(3)" : `openNetwork(${i})`, compact: true });   // ‏#954 גל 8: לשונית של אובייקט הרשת
   const body = !PORTS
     ? UI.note("err", `לא הצלחתי לקרוא את רשימת הפורטים: ${esc(portsError)}`)
-    : UI.datagrid({ columns: ["שירות", "פורט", "מי מתחבר", "על איזה כרטיס", "מצב נמדד", "מתג", "מה קורה אם מכבים", "API"], rows: rows.map(portRow), cls: "dense" });
+    : UI.datagrid({ columns: ["שירות", "פורט", "מי מתחבר", "על איזה כרטיס", "מצב נמדד", "מתג", "מה קורה אם מכבים", "API", { html: `<span class="sr">פעולות</span>` }], rows: rows.map(portRow), cls: "dense kebab-col", opt: [6, 7] });
   const table = UI.card({ title: "שירותים ופורטים", small: "מצב נמדד — \"כבוי\" ≠ \"לא מאזין\" ≠ \"לא נקרא\"", body, flush: !!PORTS });
   let foot = "";
   if (PORTS && SSH_STATE && SSH_STATE.listeners) {
@@ -5324,7 +5458,7 @@ function monitorPage() {
   const pill = !MONITOR ? UI.pill("err", "לא נקרא") : enabled ? UI.pill("ok", "המתג דלוק") : UI.pill("warn", "המתג כבוי");
   const sw = !MONITOR ? "" : `<span class="swrow"><button type="button" class="sw${enabled ? " on" : ""}" role="switch" aria-checked="${enabled ? "true" : "false"}" aria-label="מוניטור לתחנות" onclick="monitorToggle(${enabled ? "false" : "true"})"></button><span class="cap">מוניטור לתחנות${enabled ? "" : " · כבוי (ברירת מחדל) — הדלקה חושפת 5900 על וילן ההפצה"}</span></span>`;
   const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "תשתית" }, { label: "מוניטור" }],
-    icon: "machine", name: "מוניטור", sub, pill, actions: sw + `<button class="btn" onclick="loadMonitor()">${uiIcon("refresh")} רענון</button>` });
+    icon: "t-monitor", name: "מוניטור", sub, pill, actions: sw + `<button class="btn" onclick="loadMonitor()">${uiIcon("refresh")} רענון</button>`, compact: true });
   let body;
   if (!MONITOR) body = UI.note("err", `לא הצלחתי לקרוא את רשימת המוניטור: ${esc(monitorError)}`);
   else {
@@ -5407,7 +5541,7 @@ function settings() {
   const sub = SETTINGS ? "מדיניות הקונסולה ומיתוג · נשמר ב-DB של השרת · כל שינוי נרשם ביומן" : `‏/settings לא נקרא: ${esc(settingsError)}`;
   const pill = `<span id="set-pill">${!SETTINGS ? UI.pill("err", "לא נקרא") : dirty ? UI.pill("warn", "שינויים לא נשמרו") : ""}</span>`;
   const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "ניהול" }, { label: "הגדרות" }],
-    icon: "settings", name: "הגדרות", sub, pill, actions: SETTINGS ? actions : "" });
+    icon: "t-sliders", name: "הגדרות", sub, pill, actions: SETTINGS ? actions : "" });
   const body = !SETTINGS
     ? UI.note("err", `לא הצלחתי לקרוא את ההגדרות: ${esc(settingsError)}`)
     : UI.card({ title: "כללי", small: "שורה שהשתנתה מסומנת עד השמירה", cls: "c8", body: `<div class="srows">${SETTING_ROWS.filter((r) => r.key !== "class_deploy_enabled" || classroomsOn()).map(settingRowHtml).join("")}</div>` }) + brandingCardHtml();
@@ -5673,8 +5807,8 @@ function layout(page, index = 0) {
 /* S1 (#829): הצומת של הדף הנוכחי מודגש בעץ. הצמתים הם .inventory-node
    עם data-page; הורים סגורים נפתחים כדי שההדגשה תיראה. */
 function markTreeSelection(el, id) {
-  document.querySelectorAll(".inventory-node.active, .inventory-node[aria-current]").forEach((x) => {
-    x.classList.remove("active");
+  document.querySelectorAll(".inventory-node.active, .inventory-node[aria-current], .inventory-node.anc").forEach((x) => {
+    x.classList.remove("active", "anc");
     x.removeAttribute("aria-current");
   });
   const node = el || document.querySelector(`.inventory-node[data-page="${id}"]`);
@@ -5688,6 +5822,31 @@ function markTreeSelection(el, id) {
       toggleInventoryGroup(owner && owner.classList.contains("inventory-node") ? owner : null, box.id);
     }
   }
+  markTreeAncestor(node);
+}
+
+/* apple-pending-4 · 2: הלשונית היא המקור והעץ עוקב אחריה. הצומת של הלשונית מסומן במלואו
+   (רקע + פס בצד); הצומת האב — "רשת" כשהלשונית היא חיבורים פיזיים / רשת הפצה / פורטים —
+   מקבל סימון רך (נקודה + צבע), כך שרואים גם "איפה אני" וגם "באיזה אזור". */
+function markTreeAncestor(node) {
+  const net = document.querySelector('.inventory-node[data-page="network"]');
+  if (!net || net === node || !node.closest || !node.closest("#netTA")) return;
+  net.classList.add("anc");
+}
+
+/* מזהה הצומת של הלשונית הנוכחית. התרשים (0) = צומת "רשת" עצמו; פורטים (3 / דף ports) = צומת הפורטים. */
+function treeNodeForTab() {
+  const q = (sel) => document.querySelector(sel);
+  if (current === "ports") return q('.inventory-node[data-page="ports"]');
+  if (current !== "network") return null;
+  if (currentTab === 1) return q("#nicNode");
+  if (currentTab === 2) return q('.inventory-node[data-net-tab="2"]');
+  if (currentTab === 3) return q('.inventory-node[data-page="ports"]');
+  return q('.inventory-node[data-page="network"]');
+}
+function syncTreeToTab() {
+  const node = treeNodeForTab();
+  if (node) markTreeSelection(node, current);
 }
 
 function selectPage(el, id) {
@@ -5836,6 +5995,7 @@ function activateTab(index) {
   if (search) search.value = searchQuery || "";
   if (current === "network") wireNetPage();
   wireRestoredPage();
+  syncTreeToTab();   // apple-pending-4 · 2: העץ עוקב אחרי הלשונית
 }
 
 function refreshPage() {
@@ -6319,6 +6479,15 @@ async function openCapture(preMac = "") {
   }
   const devices = await api("/net");
   const seen = new Map(devices.map((d) => [d.mac, d]));
+  /* ‏#1251 (נדב, 10/10): אימג' חדש נשמר תמיד בתיקייה — אין "ללא תיקייה".
+     הרשימה נקראת כאן ולא מ-FOLDERS, שאינו טעון כשפותחים מדף מחשבי הבנייה:
+     "לא נטען" אינו "אין תיקיות". */
+  const folders = await api("/folders");
+  if (!folders.length) {
+    toast("אין עדיין תיקיות. צרו תיקייה בקונסולה ← אימג'ים (+ תיקייה), ואז הזמינו קליטה.");
+    return;
+  }
+  const preFolder = folders.some((f) => f.name === IMAGES_FOLDER) ? IMAGES_FOLDER : "";
 
   sheet({
     title: "קליטת אימג' חדש",
@@ -6335,13 +6504,16 @@ async function openCapture(preMac = "") {
       { id: "name", label: "שם האימג'", placeholder: "למשל: Office 2024 — סטנדרט" },
       { id: "description", label: "תיאור (לא חובה)", type: "textarea" },
       {
-        id: "folder", label: "תיקייה", type: "select", value: IMAGES_FOLDER || "",
-        options: [{ value: "", label: "ללא תיקייה" }].concat(
-          (FOLDERS || []).map((f) => ({ value: f.name, label: f.name }))),
+        id: "folder", label: "תיקיית יעד", type: "select", value: preFolder,
+        options: [{ value: "", label: "בחרו תיקייה" }].concat(
+          folders.map((f) => ({ value: f.name, label: f.name }))),
       },
     ],
     submitLabel: "צור משימת קליטה",
-    onSubmit: async (v) => { await post("/tasks/capture", v); await loadCaptures(); },
+    onSubmit: async (v) => {
+      if (!v.folder) throw new Error("בחרו תיקיית יעד — אימג' חדש נשמר תמיד בתיקייה.");
+      await post("/tasks/capture", v); await loadCaptures();
+    },
   });
 }
 function editFolderSheet(folder) {
@@ -6509,18 +6681,73 @@ function startStatusWatch() {
     if ((current === "machines" && MACHINES_CLASS) || current === "deploy") refreshGroupLive().catch(() => {});   // ‏גל 3א/4: /room חי באובייקט המשכפלים ובחדר
   }, 2000);
 }
-function renderActivity() {
-  const rows = [];
+/* ‏#1255: פאנל "משימות אחרונות" (כמו Recent Tasks של vCenter). התחלה / משך / יוזם היו "-" קבוע בקוד
+   למרות שהנתונים קיימים. עיקרון 5: ערך שהשרת לא החזיר = "לא ידוע", לא "-" ולא ריק.
+   התחלה: ‏`taskWhen` (היום HH:MM / dd/mm/yyyy HH:MM). משך: עכשיו פחות התחלה, מתעדכן בכל רענון;
+   למשימה שהסתיימה "הסתיים אחרי X". יוזם: המשתמש; ‏`deploy` אינו נכנס לקונסולה (#1073) ולכן
+   ההפעלה שלו היא ממחשב הבנייה — "מחשב בנייה ‹שם›". */
+const ACTIVITY_UNKNOWN = "לא ידוע";
+function fmtSpan(seconds) {
+  const s = Number(seconds);
+  if (seconds == null || !Number.isFinite(s) || s < 0) return null;
+  if (s < 60) return `${Math.floor(s)} שנ'`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} דק'`;
+  const h = Math.floor(m / 60), r = m % 60;
+  return r ? `${h} שע' ${r} דק'` : `${h} שע'`;
+}
+/* end = null → עדיין רץ (משך = עכשיו - התחלה). ‏ts חסר/פגום = "לא ידוע". */
+function activityDuration(startTs, endTs) {
+  const a = Date.parse(startTs || "");
+  if (!Number.isFinite(a)) return ACTIVITY_UNKNOWN;
+  const b = endTs ? Date.parse(endTs) : Date.now();
+  const d = Number.isFinite(b) ? fmtSpan((b - a) / 1000) : null;
+  if (d == null) return ACTIVITY_UNKNOWN;
+  return endTs ? `הסתיים אחרי ${d}` : d;
+}
+function activityStart(ts) { return ts ? taskWhen({ created_at: ts }) : ACTIVITY_UNKNOWN; }
+function activityInitiator(user, role, machine) {
+  if (!user) return ACTIVITY_UNKNOWN;
+  if (role === "deploy") return machine ? `מחשב בנייה ${machine}` : `מחשב בנייה (${user})`;
+  return user;
+}
+const ACTIVITY_PILL = { pending: "info", running: "info", open: "info", done: "ok", closed: "", failed: "err", cancelled: "" };
+function activityRows() {
+  const rows = [], recent = [];
   const s = OVERVIEW?.session;
-  if (s) rows.push([sessionImage(s), sessionGroup(s), s.state]);
-  for (const p of OVERVIEW?.pulls || []) for (const m of p.members || []) rows.push([p.image_name, m.hostname || m.name || m.mac, Progress.view(m).label]);
-  // ‏#927: CAPTURE_TASKS מחזיק גם משימות שהסתיימו (לאזהרת ה-shrink) —
-  // כאן, כמו קודם, רק הפעילות באמת נחשבות "העברה".
-  if (isAdmin()) for (const t of CAPTURE_TASKS) {
-    if (t.state === "pending" || t.state === "running") rows.push([t.name, "Capture", Progress.view(t).label]);
+  if (s) {
+    const ended = s.state === "closed" || s.state === "failed";
+    rows.push({ name: sessionImage(s), target: sessionGroup(s), start: s.started_at || s.created_at, end: ended ? s.closed_at : null,
+      label: sessionStateText(s), cls: ACTIVITY_PILL[s.state] || "", by: activityInitiator(s.opened_by, s.opened_by_role, ""), ended });
   }
+  // משיכה (pull) מתחילה מהמחשב עצמו — הוא היוזם
+  for (const p of OVERVIEW?.pulls || []) for (const m of p.members || []) {
+    const who = m.hostname || m.name || m.mac;
+    rows.push({ name: p.image_name, target: who, start: p.started_at || p.created_at, end: null, label: Progress.view(m).label, cls: "info",
+      by: who ? `מחשב ${who}` : ACTIVITY_UNKNOWN });
+  }
+  // ‏#927: CAPTURE_TASKS מחזיק גם משימות שהסתיימו (לאזהרת ה-shrink) — "העברה פעילה" רק pending/running;
+  // שהסתיימו (עד 5 אחרונות) מופיעות מתחת, בלי להיספר.
+  if (isAdmin()) for (const t of CAPTURE_TASKS) {
+    const active = t.state === "pending" || t.state === "running";
+    const row = { name: t.name, target: t.folder ? `תיקיית ${t.folder}` : "ספריית האימג'ים", start: t.created_at,
+      end: active ? null : t.updated_at, label: Progress.view(t).label, cls: ACTIVITY_PILL[t.state] || "",
+      by: activityInitiator(t.created_by, t.created_by_role, t.machine || t.mac), ended: !active };
+    if (active) rows.push(row);
+    else if (["done", "failed", "cancelled"].includes(t.state) && recent.length < 5) recent.push(row);
+  }
+  return { rows, recent };
+}
+function activityRowHtml(r) {
+  const duration = r.ended && !r.end ? ACTIVITY_UNKNOWN : activityDuration(r.start, r.end);
+  return `<tr><td>${esc(r.name)}</td><td>${esc(r.target)}</td><td class="num">${esc(activityStart(r.start))}</td><td class="num">${esc(duration)}</td>`
+    + `<td><span class="pill ${r.cls}">${esc(r.label)}</span></td><td>${esc(r.by)}</td></tr>`;
+}
+function renderActivity() {
+  const { rows, recent } = activityRows();
   const body = document.querySelector("#taskPanel tbody");
-  if (body) body.innerHTML = rows.length ? rows.map(r => '<tr>'+[r[0],r[1],"-","-",r[2],"-"].map(x => '<td>'+esc(x)+'</td>').join('')+'</tr>').join('') : '<tr><td colspan="6">אין העברות פעילות</td></tr>';
+  if (body) body.innerHTML = (rows.length ? rows.map(activityRowHtml).join("") : '<tr><td colspan="6">אין העברות פעילות</td></tr>')
+    + recent.map(activityRowHtml).join("");
   const count = $(".task-count"); if (count) count.textContent = String(rows.length);
   const summary = $(".task-summary"); if (summary) summary.textContent = overviewError || (rows.length ? rows.length + " העברות פעילות" : "אין העברות פעילות");
 }
@@ -6594,7 +6821,23 @@ const UI_ICON_PATHS = {
   "sun": "<circle cx=\"12\" cy=\"12\" r=\"4\"/><path d=\"M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1 1M18 18l1 1M5 19l1-1M18 6l1-1\"/>",
   "moon": "<path d=\"M20 15A9 9 0 0 1 9 4a9 9 0 1 0 11 11Z\"/>",
   "storage": "<ellipse cx=\"12\" cy=\"5\" rx=\"8\" ry=\"3\"/><path d=\"M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3\"/>",
-  "plus": "<path d=\"M12 5v14M5 12h14\"/>"
+  "plus": "<path d=\"M12 5v14M5 12h14\"/>",
+  /* apple-pending-4 · 3: אייקוני העץ — כל אחד ייחודי (בלי כפילויות), קו 1.6, ‏currentColor */
+  "t-home": '<rect x="3" y="3" width="8" height="10" rx="1.5"/><rect x="13" y="3" width="8" height="6" rx="1.5"/><rect x="13" y="11" width="8" height="10" rx="1.5"/><rect x="3" y="15" width="8" height="6" rx="1.5"/>',
+  "t-deploy": '<circle cx="12" cy="12" r="2"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M4.9 4.9a10 10 0 0 0 0 14.2M19.1 4.9a10 10 0 0 1 0 14.2"/>',
+  "t-images": '<path d="m12 3 9 5-9 5-9-5Z"/><path d="m3 13 9 5 9-5"/>',
+  "t-machines": '<rect x="6" y="3" width="12" height="18" rx="2"/><path d="M9 7h6M9 11h6M12 17h.01"/>',
+  "t-health": '<path d="M12 20.5S3.5 15.4 3.5 9.3A4.8 4.8 0 0 1 12 6.6a4.8 4.8 0 0 1 8.5 2.7c0 6.1-8.5 11.2-8.5 11.2Z"/><path d="M7 12h3l1.5-2.5 2 5 1.5-2.5h2"/>',
+  "t-network": '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3.2 3 3.2 15 0 18M12 3c-3.2 3-3.2 15 0 18"/>',
+  "t-monitor": '<rect x="3" y="4" width="18" height="13" rx="1.5"/><path d="m10 8.5 5 2.5-5 2.5Z"/><path d="M8 21h8M12 17v4"/>',
+  "t-drivers": '<rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M9 3v4M15 3v4M9 17v4M15 17v4M3 9h4M3 15h4M17 9h4M17 15h4"/>',
+  "t-admin": '<path d="M12 3 4 6v6c0 4.5 3.4 8 8 9 4.6-1 8-4.5 8-9V6Z"/><path d="m9 12 2 2 4-4"/>',
+  "t-nic": '<rect x="4" y="6" width="16" height="11" rx="1.5"/><path d="M8 17v3M16 17v3M8 10v3M12 10v3M16 10v3"/>',
+  "t-ports": '<path d="M9 3v5M15 3v5M6 8h12v4a6 6 0 0 1-12 0Z"/><path d="M12 18v3"/>',
+  "t-sliders": '<path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/>',
+  "t-key": '<circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M16 7l3 3M14 9l2 2"/>',
+  "t-log": '<path d="M6 3h9l4 4v14H6Z"/><path d="M14 3v5h5M9 13h7M9 17h5"/>',
+  "t-infra": '<path d="m12 3 8 4.5v9L12 21l-8-4.5v-9Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/>'
 };
 function uiIcon(name) { return '<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">'+(UI_ICON_PATHS[name] || UI_ICON_PATHS.list)+'</svg>'; }
 

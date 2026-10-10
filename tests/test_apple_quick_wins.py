@@ -73,7 +73,8 @@ def test_f06_modal_and_drawer_use_state_classes_with_origin_and_sheet_duration()
 
 def test_f06_reduced_motion_is_a_short_fade_only():
     css = _read(CSS["console"])
-    block = css[css.rindex("@media (prefers-reduced-motion"):]
+    # every reduced-motion block, not just the last (later features add their own)
+    block = "".join(css[i:i + 4000] for i in [m.start() for m in re.finditer(r"@media \(prefers-reduced-motion", css)])
     assert re.search(r"#modal,\.drawer\{transition:opacity var\(--dur-fast\) linear", block)
     assert "transform:none!important" in block
 
