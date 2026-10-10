@@ -99,8 +99,9 @@ const UI = {
   objHeader({ crumbs = [], icon = "server", name = "", sub = "", pill = "", actions = "", tabs = [], tab = 0, tabClick = (i) => `activateTab(${i})`, compact = false }) {
     const crumbHtml = crumbs.map((c, i) => {
       const last = i === crumbs.length - 1;
+      const label = i === 0 ? serverRootName(c.label) : c.label;   // שורש השביל = שורש העץ (שם השרת), כמו ב-vCenter
       const item = c.onclick && !last
-        ? `<a role="link" tabindex="0" onclick="${c.onclick}">${esc(c.label)}</a>` : `<span>${esc(c.label)}</span>`;
+        ? `<a role="link" tabindex="0" onclick="${c.onclick}">${esc(label)}</a>` : `<span>${esc(label)}</span>`;
       return (i ? `<span>/</span>` : "") + item;
     }).join("");
     const tabHtml = tabs.length > 1 ? `<div class="tabs" role="tablist">${tabs.map((t, i) =>
@@ -306,7 +307,7 @@ function sheet({ title, sub = "", fields = [], submitLabel = "שמירה",
     <label>${esc(verify.label)}
       <input type="text" id="sf-verify" placeholder="${esc(verify.mustEqual)}"></label>` : "";
   form.innerHTML = `
-    <div class="shead"><h3>${esc(title)}</h3>${sub ? `<p>${esc(sub)}</p>` : ""}</div>
+    <div class="shead"><h3 id="sheetTitle">${esc(title)}</h3>${sub ? `<p>${esc(sub)}</p>` : ""}</div>
     <div class="sbody">${note}${fields.map(fieldHtml).join("")}${verifyHtml}<p class="error" id="sf-error"></p></div>
     <div class="sfoot">
       <button class="btn ${danger ? "danger" : "primary"}" type="submit">${esc(submitLabel)}</button>
@@ -726,6 +727,11 @@ function paintLoginFoot() {
     tls.textContent = fp ? fp.slice(0, 23) + "…" : "";
     tls.title = fp ? "SHA-256 " + fp : "";
   }
+  /* מפרידים רק בין ערכים שקיימים — לפני כניסה אין גרסה ו-TLS, ואז "host · ·" היה שורה עם נקודות יתומות. */
+  const has = (el) => !!(el && el.textContent);
+  const sep1 = $("#login-foot-sep1"), sep2 = $("#login-foot-sep2");
+  if (sep1) sep1.hidden = !(has(host) && has(ver));
+  if (sep2) sep2.hidden = !(has(tls) && (has(ver) || has(host)));
 }
 
 function loginRender(state) {
@@ -771,6 +777,7 @@ async function showApp() {
   closeUserMenu();
   closeDrawer();
   closeModal();
+  restoreNavCollapsed();
   const userBtn = document.querySelector(".topbar .user");
   if (userBtn) {
     const avatar = userBtn.querySelector(".avatar");
@@ -1221,6 +1228,7 @@ async function loadHealth() {
   } catch (e) {
     HEALTH = null;
     healthError = e.message;
+    paintServiceStatus();
     toast("טעינת הבריאות נכשלה: " + e.message);
   }
   if (current === "health") await loadHealthUpdate();
@@ -1358,13 +1366,13 @@ function populateSidebarImages() {
     const imgs = (IMAGES || []).filter((im) => im.folder === f.name);
     const open = !!wasOpen[fid];
     if (!imgs.length) {
-      return `<div class="inventory-node" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span>${uiIcon("folder")}</span><span>${esc(f.name)}</span></div>`;
+      return `<div class="inventory-node" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span>${uiIcon("t-subfolder")}</span><span>${esc(f.name)}</span></div>`;
     }
     const rows = imgs.map((im) => {
       const idEnc = encodeId(im.id || "");
       return `<div class="inventory-node" role="treeitem" tabindex="0" onclick="openImageDetail('${idEnc}')"><span class="tree-arrow-sp"></span><span>${uiIcon("image")}</span><span>${esc(im.name)}</span></div>`;
     }).join("");
-    return `<div class="inventory-node" role="treeitem" tabindex="0" aria-expanded="${open}" ondblclick="toggleInventoryGroup(this,'${fid}')"><span class="tree-arrow" data-open="${open}" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'${fid}')">${open ? "▾" : "▸"}</span><span>${uiIcon("folder")}</span><span>${esc(f.name)}</span></div><div id="${fid}" class="inventory-children"${open ? "" : " hidden"}>${rows}</div>`;
+    return `<div class="inventory-node" role="treeitem" tabindex="0" aria-expanded="${open}" ondblclick="toggleInventoryGroup(this,'${fid}')"><span class="tree-arrow" data-open="${open}" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'${fid}')">${open ? "▾" : "▸"}</span><span>${uiIcon("t-subfolder")}</span><span>${esc(f.name)}</span></div><div id="${fid}" class="inventory-children"${open ? "" : " hidden"}>${rows}</div>`;
   }).join("");
 }
 
@@ -1394,7 +1402,45 @@ function machineIsFailed(m) {
   return s === "failed" || s === "fail" || s === "error" || s === "err" || s === "bad" || s === "נכשל";
 }
 
+/* שורת הסטטוס והכותרת התחתונה של העץ היו קבועות — ירוק "כל השירותים פעילים" גם כש-/health אדום.
+   עכשיו הן נגזרות מאותן בדיקות, וללא נתון הן אפורות ("לא נבדק", עיקרון 5) ולא ירוקות. */
+const SERVICE_DOTS = { API: ["server"], PXE: ["tftp_port", "boot_files"], Multicast: ["udp_sender"] };
+const SERVICE_RANK = { bad: 4, warn: 3, unknown: 2, ok: 1, off: 0, not_applicable: 0 };
+function serviceState(ids) {
+  if (!Array.isArray(HEALTH)) return { state: "unknown", detail: "" };
+  const found = HEALTH.filter((c) => ids.includes(c.id));
+  if (!found.length) return { state: "unknown", detail: "" };
+  let worst = found[0];
+  for (const c of found) if ((SERVICE_RANK[c.state] ?? 2) > (SERVICE_RANK[worst.state] ?? 2)) worst = c;
+  return { state: (SERVICE_RANK[worst.state] ?? 2) === 0 ? "off" : worst.state, detail: worst.detail || "" };
+}
+function paintServiceStatus() {
+  for (const [name, ids] of Object.entries(SERVICE_DOTS)) {
+    const el = document.querySelector(`[data-svc="${name}"]`);
+    if (!el) continue;
+    const { state, detail } = serviceState(ids);
+    const cls = healthStatusClass(state) || "off";
+    // קידומת svc-: ל-.ok/.err הגלובליים יש כללי טקסט-הודעה (גודל, שוליים) שהזיזו את "API" 6px.
+    for (const c of ["ok", "warn", "err", "unk", "off"]) el.classList.toggle("svc-" + c, c === cls);
+    el.setAttribute("title", `${name}: ${healthStatusLabel(state)}${detail ? " — " + detail : ""}`);
+  }
+  const foot = document.getElementById("treeFootStatus");
+  const nameEl = document.getElementById("treeFootName");
+  if (nameEl) nameEl.textContent = serverRootName("שרת אימג'ים") + (healthError ? " · לא מחובר" : " · מחובר");
+  if (!foot) return;
+  let cls = "unk", text = "מצב השירותים לא נבדק";
+  if (Array.isArray(HEALTH)) {
+    const bad = HEALTH.filter((c) => c.state === "bad").length, warn = HEALTH.filter((c) => c.state === "warn").length;
+    if (bad) { cls = "err"; text = `${bad} שירותים בתקלה`; }
+    else if (warn) { cls = "warn"; text = `${warn} אזהרות בבריאות`; }
+    else { cls = "ok"; text = "כל השירותים פעילים"; }
+  }
+  foot.className = "status " + cls;
+  foot.innerHTML = "<i></i>" + text;
+}
+
 function updateAlertBadge() {
+  paintServiceStatus();
   const badge = document.getElementById("alertBadge");
   if (!badge) return;
   let n = 0;
@@ -1419,6 +1465,7 @@ function updateAlertBadge() {
 
 /* ‏#936: שם השרת הראשי בצומת העליון מגיע מ-/me (‏`server_name`: ההגדרה
    אם המנהל קבע, אחרת שם המארח) — לא מחרוזת דמו ב-HTML ולא localStorage. */
+function serverRootName(fallback) { return (ME && ME.server_name) || fallback; }
 function applyServerName() {
   const el = document.getElementById("primaryServerName");
   if (el && ME && ME.server_name) el.textContent = ME.server_name;
@@ -2791,7 +2838,7 @@ async function confirmDeleteImage(id) {
 function openImageIngest() {
   if (!(ME && ME.role === "admin")) { toast("אין הרשאה"); return; }
   openModalContent(
-    "קליטת אימג׳",
+    "העלאת קובץ tar",   // כמו הכפתור שפתח אותו; "קליטת אימג׳" היא גם השם של הקליטה ממחשב בנייה
     `<div class="form"><div class="field full"><label>קובץ tar</label><input type="file" id="imageFile" accept=".tar,application/x-tar"></div><div class="field full"><div class="form-note">הקובץ יועלה ויאומת מול ה-manifest. אימג׳ פגום לא ייכנס לספרייה.</div></div></div>`,
     "העלה",
     startImageUpload
@@ -4431,7 +4478,7 @@ function logs() {
   const pill = !LOG.rows ? UI.pill("err", "לא נקרא") : LOG.truncated ? UI.pill("warn", "חיפוש חלקי") : "";
   const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "ניהול" }, { label: "יומן" }],
     icon: "t-log", name: "יומן", sub, pill,
-    actions: `<button class="btn" onclick="loadJournalData()">${uiIcon("refresh")} רענון</button><a class="btn" href="${esc(logCsvHref())}" download>ייצוא CSV</a>` });
+    actions: `<button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button><a class="btn" href="${esc(logCsvHref())}" download>ייצוא CSV</a>` });
   let body;
   if (!LOG.rows) body = UI.note("err", `לא הצלחתי לקרוא את היומן: ${esc(LOG.err)}`);
   else {
@@ -5480,7 +5527,7 @@ function monitorPage() {
   const pill = !MONITOR ? UI.pill("err", "לא נקרא") : enabled ? UI.pill("ok", "המתג דלוק") : UI.pill("warn", "המתג כבוי");
   const sw = !MONITOR ? "" : `<span class="swrow"><button type="button" class="sw${enabled ? " on" : ""}" role="switch" aria-checked="${enabled ? "true" : "false"}" aria-label="מוניטור לתחנות" onclick="monitorToggle(${enabled ? "false" : "true"})"></button><span class="cap">מוניטור לתחנות${enabled ? "" : " · כבוי (ברירת מחדל) — הדלקה חושפת 5900 על וילן ההפצה"}</span></span>`;
   const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "תשתית" }, { label: "מוניטור" }],
-    icon: "t-monitor", name: "מוניטור", sub, pill, actions: sw + `<button class="btn" onclick="loadMonitor()">${uiIcon("refresh")} רענון</button>`, compact: true });
+    icon: "t-monitor", name: "מוניטור", sub, pill, actions: sw + `<button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>`, compact: true });
   let body;
   if (!MONITOR) body = UI.note("err", `לא הצלחתי לקרוא את רשימת המוניטור: ${esc(monitorError)}`);
   else {
@@ -5774,7 +5821,7 @@ function toolsPage() {
     : `‏/tools/catalog לא נקרא: ${esc(toolsError)}`;
   const pill = TOOLS ? `<span class="pill info" id="tools-pill">${esc(toolsPillText())}</span><span id="tools-state">${dirty ? UI.pill("warn", "שינויים לא נשמרו") : ""}</span>` : UI.pill("err", "לא נקרא");
   const actions = (TOOLS ? `<button class="btn primary" id="tools-save" onclick="toolsSave()"${dirty ? "" : " disabled"}>שמור</button><button class="btn" id="tools-cancel" onclick="toolsCancel()"${dirty ? "" : " hidden"}>בטל שינויים</button>` : "")
-    + `<button class="btn" onclick="loadTools()">${uiIcon("refresh")} רענון</button>`;
+    + `<button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>`;
   const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "תשתית" }, { label: "ארגז כלים" }],
     icon: "tools", name: "ארגז כלים", sub, pill, actions });
   let body;
@@ -5823,7 +5870,7 @@ function tabRender(pageId, index) {
 function layout(page, index = 0) {
   if (page.own) return page.render(index);   // ‏#954: עמוד שנבנה מחדש מצייר כותרת+לשוניות בעצמו
   const stale = overviewError && ["home","deploy"].includes(current) ? `<div class="notice warn" role="status">${esc(overviewError)}</div>` : "";
-  return `<div class="breadcrumbs"><span>שרת אימג'ים</span><span class="sep">/</span><strong>${page.crumb}</strong></div><div class="toolbar"><div class="title-block"><h1>${page.title}</h1><p>${page.desc}</p></div><div class="toolbar-actions"><button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button><div class="rel"><button class="btn primary" id="pageActionBtn" aria-haspopup="menu" aria-expanded="false" onclick="openAction()">+ פעולה</button><div id="pageActionMenu" class="action-menu" role="menu"></div></div></div></div><div class="vcenter-tabs" role="tablist">${page.tabs.map((t, i) => `<button type="button" class="vcenter-tab ${i === index ? "active" : ""}" role="tab" aria-selected="${i === index}" tabindex="${i === index ? 0 : -1}" onclick="activateTab(${i})">${t}</button>`).join("")}</div><div class="scroll">${stale}${tabRender(current, index)}<div class="footer-note">ImageCtl Console</div></div>`;
+  return `<div class="breadcrumbs"><span>${esc(serverRootName("שרת אימג'ים"))}</span><span class="sep">/</span><strong>${page.crumb}</strong></div><div class="toolbar"><div class="title-block"><h1>${page.title}</h1><p>${page.desc}</p></div><div class="toolbar-actions"><button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>${PAGE_ACTIONS[current] ? `<div class="rel"><button class="btn primary" id="pageActionBtn" aria-haspopup="menu" aria-expanded="false" onclick="openAction()">+ פעולה</button><div id="pageActionMenu" class="action-menu" role="menu"></div></div>` : ""}</div></div><div class="vcenter-tabs" role="tablist">${page.tabs.map((t, i) => `<button type="button" class="vcenter-tab ${i === index ? "active" : ""}" role="tab" aria-selected="${i === index}" tabindex="${i === index ? 0 : -1}" onclick="activateTab(${i})">${t}</button>`).join("")}</div><div class="scroll">${stale}${tabRender(current, index)}<div class="footer-note">ImageCtl Console</div></div>`;
 }
 
 /* S1 (#829): הצומת של הדף הנוכחי מודגש בעץ. הצמתים הם .inventory-node
@@ -6006,6 +6053,32 @@ function toggleSidebar(force) {
 }
 function closeSidebar() { toggleSidebar(false); }
 
+/* כיווץ/הרחבת עץ הניווט (כמו collapse sidebar ב-vCenter). במסך רחב: מחלקה על .app, והמצב נשמר
+   כהעדפה לכל מפעיל (localStorage — נוחות בלבד). במסך צר: אותה שכבה של toggleSidebar. */
+const NAV_COLLAPSE_KEY = "imagectl-nav-collapsed";
+function navIsNarrow() { return window.matchMedia("(max-width:740px)").matches; }
+function setNavCollapsed(on, focus) {
+  const app = document.getElementById("app");
+  if (!app) return;
+  app.classList.toggle("nav-collapsed", on);
+  const top = document.querySelector(".nav-toggle");
+  if (top) top.setAttribute("aria-expanded", String(!on));
+  const inner = document.getElementById("navCollapse");
+  if (inner) inner.setAttribute("aria-expanded", String(!on));
+  try { localStorage.setItem(NAV_COLLAPSE_KEY, on ? "1" : "0"); } catch (e) { /* העדפה בלבד */ }
+  if (focus) { const t = on ? top : inner; if (t && t.focus) t.focus(); }
+}
+function navButton() {
+  if (navIsNarrow()) { toggleSidebar(); return; }
+  const app = document.getElementById("app");
+  setNavCollapsed(!(app && app.classList.contains("nav-collapsed")), true);
+}
+function restoreNavCollapsed() {
+  let v = null;
+  try { v = localStorage.getItem(NAV_COLLAPSE_KEY); } catch (e) { /* ללא מטמון — פתוח */ }
+  if (v === "1") setNavCollapsed(true, false);
+}
+
 function toggleTaskPanel() { document.getElementById("taskPanel").classList.toggle("open"); }
 
 function activateTab(index) {
@@ -6030,14 +6103,16 @@ function refreshPage() {
   toast("הנתונים עודכנו");
 }
 
+/* ביקורת 10/10: כפתור "+ פעולה" בכותרת הגנרית נפתח לתפריט ריק בשרת המשני (אין לו רשומה כאן). עכשיו הוא מצויר רק
+   לעמוד שיש לו פעולות. */
+const PAGE_ACTIONS = {
+  images: [["אימג׳ חדש", "openCapture().catch(e => toast(e.message))"], ["קליטת אימג׳", "openImageIngest()"], ["אימות ספרייה", "soon()"]],
+};
 function openAction() {
   if (!isAdmin()) { selectPageById("images"); return; }
   const menu = document.getElementById("pageActionMenu");
   if (!menu) return;
-  const actions = {
-    images: [["אימג׳ חדש", "openCapture().catch(e => toast(e.message))"], ["קליטת אימג׳", "openImageIngest()"], ["אימות ספרייה", "soon()"]],
-  };
-  menu.innerHTML = (actions[current] || []).map(([label, fn]) =>
+  menu.innerHTML = (PAGE_ACTIONS[current] || []).map(([label, fn]) =>
     `<button type="button" role="menuitem" onclick="${fn};closeActionMenu()">${label}</button>`).join("");
   menu.style.display = "block";
   const btn = document.getElementById("pageActionBtn");
@@ -6054,17 +6129,21 @@ function closeActionMenu() {
 }
 
 function openDrawer(title, body) {
+  dialogRemember();
   drawerGeneration++;
   document.getElementById("drawerTitle").textContent = title;
   document.getElementById("drawerBody").innerHTML = body;
   document.getElementById("drawer").classList.add("open");
   document.getElementById("detailBackdrop").classList.add("show");
+  dialogFocusIn();
 }
 
 function closeDrawer() {
   drawerGeneration++;
+  const wasOpen = hasClass(document.getElementById("drawer"), "open");
   document.getElementById("drawer").classList.remove("open");
   document.getElementById("detailBackdrop").classList.remove("show");
+  if (wasOpen) dialogRestoreFocus();
 }
 
 // F06: החלון נפתח/נסגר במצבי CSS (class "show"), לא ב-display. הניקוי של
@@ -6072,6 +6151,55 @@ function closeDrawer() {
 // ופתיחה חוזרת באמצע מבטלת אותו.
 const MODAL_CLOSE_MS = 260;
 let modalCleanupTimer = null;
+
+/* ביקורת ממשק 10/10: modal / sheet / מגירה הם דיאלוג. הפוקוס עובר פנימה בפתיחה, Tab נשאר בתוכו,
+   ובסגירה חוזר לכפתור שפתח. לפני זה: ב-modal ובמגירה הפוקוס נשאר בעמוד שמאחורי ה-scrim, Tab המשיך
+   דרך העמוד, ואחרי סגירה הפוקוס נפל לשורש העץ. */
+let dialogOpener = null;
+const hasClass = (el, name) => !!(el && el.classList && el.classList.contains && el.classList.contains(name));
+const DIALOG_FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]):not([type=hidden]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+function dialogRoot() {
+  if (hasClass(document.getElementById("modal"), "show")) {
+    const form = document.getElementById("sheet");
+    return form && !hasClass(form, "hidden") ? form : document.getElementById("modalBox");
+  }
+  const drawer = document.getElementById("drawer");
+  return hasClass(drawer, "open") ? drawer : null;
+}
+function dialogFocusables(root) {
+  return [...root.querySelectorAll(DIALOG_FOCUSABLE)].filter((e) => e.offsetParent !== null);
+}
+function dialogRemember() {
+  const active = document.activeElement;
+  if (active && active !== document.body && !dialogRoot()) dialogOpener = active;   // חלון על חלון: נשמר הראשון
+}
+function dialogFocusIn() {
+  if (typeof requestAnimationFrame !== "function") return;
+  requestAnimationFrame(() => {
+    const root = dialogRoot();
+    if (!root || root.contains(document.activeElement)) return;   // sheet() כבר פוקס על השדה הראשון
+    const first = root.querySelector(".modal-b input,.modal-b select,.modal-b textarea,#modalOk") || root;
+    if (first.focus) first.focus();
+  });
+}
+function dialogRestoreFocus() {
+  if (dialogRoot()) return;   // עדיין יש חלון פתוח
+  const opener = dialogOpener;
+  dialogOpener = null;
+  if (opener && opener.isConnected !== false && opener.focus) opener.focus();
+}
+function dialogKeydown(e) {
+  if (e.key !== "Tab") return;
+  const root = dialogRoot();
+  if (!root) return;
+  const items = dialogFocusables(root);
+  if (!items.length) { e.preventDefault(); if (root.focus) root.focus(); return; }
+  const first = items[0], last = items[items.length - 1], active = document.activeElement;
+  if (!root.contains(active) || active === root) { e.preventDefault(); (e.shiftKey ? last : first).focus(); return; }
+  if (e.shiftKey && active === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && active === last) { e.preventDefault(); first.focus(); }
+}
+
 
 // נקודת המוצא של האנימציה בלבד (קישוט): כשאין כפתור שפתח — מרכז החלון.
 function modalOrigin(modal, mode) {
@@ -6091,15 +6219,19 @@ function modalOrigin(modal, mode) {
 
 function openModalFrame(modal, mode) {
   clearTimeout(modalCleanupTimer);
+  dialogRemember();
   if (mode === "sheet-mode") modal.classList.add("sheet-mode");
   else modal.classList.remove("sheet-mode");
   modalOrigin(modal, mode);
   modal.classList.add("show");
+  dialogFocusIn();
 }
 
 function closeModal() {
   const modal = document.getElementById("modal");
+  const wasOpen = hasClass(modal, "show");
   modal.classList.remove("show");
+  if (wasOpen) dialogRestoreFocus();
   const form = document.getElementById("sheet");
   if (form) form.onsubmit = null;
   clearTimeout(modalCleanupTimer);
@@ -6159,28 +6291,36 @@ function downloadFile(name, text, type) {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
+/* ביקורת 10/10: החיפוש בסרגל סינן רק `.table tbody tr`, אבל כל העמודים שנבנו מחדש (#954) משתמשים ב-`table.dg` —
+   אז "build" בדף המחשבים החזיר "0 תוצאות" מול שורה build-01 שעל המסך. עכשיו שני סוגי הטבלאות, ושורת כותרת קבוצה
+   (tr.group) לא נספרת כתוצאה: היא מוצגת רק כשיש מתחתיה שורה תואמת. */
+const SEARCH_ROWS = ".table tbody tr, table.dg tbody tr";
 function doGlobalSearch(value) {
   searchQuery = value;
   const q = value.trim().toLowerCase();
+  const rows = [...document.querySelectorAll(SEARCH_ROWS)];
   if (!q) {
-    document.querySelectorAll(".table tbody tr").forEach((r) => { r.style.display = ""; });
+    rows.forEach((r) => { r.style.display = ""; });
     return;
   }
   let hits = 0;
-  document.querySelectorAll(".table tbody tr").forEach((r) => {
+  for (const r of rows) {
+    if (r.classList.contains("group")) continue;
     const match = r.textContent.toLowerCase().includes(q);
     r.style.display = match ? "" : "none";
     if (match) hits++;
+  }
+  rows.forEach((r, i) => {
+    if (!r.classList.contains("group")) return;
+    let any = false;
+    for (let j = i + 1; j < rows.length && !rows[j].classList.contains("group"); j++) if (rows[j].style.display !== "none") any = true;
+    r.style.display = any ? "" : "none";
   });
   toast("חיפוש: " + value + " · " + hits + " תוצאות בעמוד");
 }
 
 function openUserMenu() { document.getElementById("userMenu").classList.toggle("open"); }
 function closeUserMenu() { document.getElementById("userMenu").classList.remove("open"); }
-
-function toggleSidebarInfo() {
-  openDrawer("ניווט ImageCtl", `<div class="notice">הניווט מחולק לפי משימות תפעוליות: ספרייה → הפצה → מחשבים → בריאות → רשת → הרשאות → יומן.</div>`);
-}
 
 /* ‏#915: המגירה מציגה בדיוק את מה שהתג בסרגל סופר (updateAlertBadge):
    מכונות שנכשלו ובדיקות בריאות במצב אזהרה/תקלה. תג בלי רשימה שמסבירה
@@ -6328,6 +6468,7 @@ function init() {
   });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") { closeModal(); closeDrawer(); closeUserMenu(); closeSidebar(); closeActionMenu(); }
+    dialogKeydown(e);
   });
   document.getElementById("content").addEventListener("keydown", tablistKeydown);
   const tree = document.querySelector(".tree");
@@ -6848,7 +6989,8 @@ const UI_ICON_PATHS = {
   /* apple-pending-4 · 3: אייקוני העץ — כל אחד ייחודי (בלי כפילויות), קו 1.6, ‏currentColor */
   "t-home": '<rect x="3" y="3" width="8" height="10" rx="1.5"/><rect x="13" y="3" width="8" height="6" rx="1.5"/><rect x="13" y="11" width="8" height="10" rx="1.5"/><rect x="3" y="15" width="8" height="6" rx="1.5"/>',
   "t-deploy": '<circle cx="12" cy="12" r="2"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M4.9 4.9a10 10 0 0 0 0 14.2M19.1 4.9a10 10 0 0 1 0 14.2"/>',
-  "t-images": '<path d="m12 3 9 5-9 5-9-5Z"/><path d="m3 13 9 5 9-5"/>',
+  "t-images": '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',   /* נדב 17/09: אימג'ים = תיקייה */
+  "t-subfolder": '<g stroke-width="1.2"><path d="M5.5 8.5a1.5 1.5 0 0 1 1.5-1.5h2.8l1.4 1.5h5.8a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5H7a1.5 1.5 0 0 1-1.5-1.5Z"/></g>',   /* תיקיות משנה בעץ: וריאנט קטן ודק, שלא ייראה כמו צומת האימג'ים */
   "t-machines": '<rect x="6" y="3" width="12" height="18" rx="2"/><path d="M9 7h6M9 11h6M12 17h.01"/>',
   "t-health": '<path d="M12 20.5S3.5 15.4 3.5 9.3A4.8 4.8 0 0 1 12 6.6a4.8 4.8 0 0 1 8.5 2.7c0 6.1-8.5 11.2-8.5 11.2Z"/><path d="M7 12h3l1.5-2.5 2 5 1.5-2.5h2"/>',
   "t-network": '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3.2 3 3.2 15 0 18M12 3c-3.2 3-3.2 15 0 18"/>',

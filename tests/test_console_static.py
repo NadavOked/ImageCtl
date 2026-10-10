@@ -200,18 +200,18 @@ def test_uptime_and_deploy_ip_come_from_me_and_null_is_named():
     assert "function journalCls" in js and "row.severity" in js
 
 
-def test_images_tree_node_has_its_own_icon_and_the_folders_keep_the_folder_icon():
-    """17/09 (נדב): אייקון "אימג'ים" בעץ → תיקייה. 10/10 (apple-pending-4, "הכול מאושר"): הצומת מקבל
-    אייקון שכבות ייחודי כדי שלא יהיה זהה לתיקיות שמתחתיו; התיקיות עצמן נשארות עם אייקון התיקייה
-    והאימג' עם אייקון תמונה."""
+def test_images_tree_node_is_the_folder_icon_and_sub_folders_carry_a_thin_variant():
+    """17/09 (נדב): אייקון "אימג'ים" בעץ → תיקייה. apple-pending-4 החליף לשכבות; הוחזר ב-10/10 (הכרעת נדב).
+    כדי שלא תהיה כפילות עם תיקיות המשנה, הן מקבלות וריאנט קטן ודק (t-subfolder); האימג' עם אייקון תמונה."""
     page, js = _index(), _console_js()
     start = page.index('data-page="images"')
     node = page[start:page.index("אימג'ים</span>", start)]
-    assert 'm12 3 9 5-9 5-9-5Z' in node
-    assert 'M3 7a2 2 0 0 1 2-2h4l2 2h8' not in node
+    assert 'M3 7a2 2 0 0 1 2-2h4l2 2h8' in node
+    assert 'm12 3 9 5-9 5-9-5Z' not in node
     assert 'circle cx="16"' not in node
     fn = js[js.index("function populateSidebarImages"):js.index("function fillSidebarTree")]
-    assert fn.count('uiIcon("folder")') == 2
+    assert fn.count('uiIcon("t-subfolder")') == 2
+    assert 'uiIcon("folder")' not in fn
     assert fn.count('uiIcon("image")') == 1
 
 
@@ -264,12 +264,18 @@ def test_static_includes_are_at_9_9():
     #1251 (קליטה: תיקיית יעד חובה) + #1252 = ‏11.4;
     #1253/#1254 (דיסק מכווץ בקליטה פעילה, התקדמות קליטה בדף האימג'ים) = ‏11.6
     (‏11.5 תפוס בענף מקביל של ביקורת הממשק);
-    #1243 (בלי "זכור" במסך הכניסה הראשון) + איחוד עם #1253/#1254 = ‏11.7.
+    #1243 (בלי "זכור" במסך הכניסה הראשון) + איחוד עם #1253/#1254 = ‏11.7;
+    ביקורת ממשק מלאה (אייקון תיקייה, כיווץ העץ, דיאלוג, סטטוס מ-/health…) = ‏11.8.
     שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
     versions = {float(v) for v in re.findall(r'\?v=(\d+\.\d+)"', page)}
-    assert versions == {11.7}, versions
+    assert versions == {11.8}, versions
+    # ביקורת 10/10: monitor.html מושך את אותם console.css ו-design-tokens.css — הם נשארו על 3.29 לנצח,
+    # ולכן דפדפן שזכר אותם הציג את המוניטור בעיצוב ישן. monitor.js לבדו שומר על גרסה משלו (test_monitor).
+    mon = (STATIC / "monitor.html").read_text(encoding="utf-8")
+    shared = {float(v) for v in re.findall(r'(?:design-tokens|console)\.css\?v=(\d+\.\d+)"', mon)}
+    assert shared == {11.8}, shared
 
 
 def test_update_apply_is_a_sheet_without_text_verification_and_revert_uses_hostname():
@@ -667,3 +673,34 @@ def test_storage_page_is_an_admin_tree_node_with_all_eight_mockup_screens():
     narrow = css[css.index("#1066 שלב ב'"):]
     assert "grid-template-columns:1fr" not in narrow, "1fr לבדו = minmax(auto,1fr) וגולש ב-375 (הלקח מהמוקאפ)"
     assert ".page table.dg.storage{min-width:760px}" in narrow
+
+
+def test_every_refresh_button_goes_through_refreshpage_so_it_gives_feedback():
+    """ביקורת 10/10: ב-logs/monitor/tools/drivers/storage כפתור "רענון" קרא ישר ל-loader — בלי toast ובלי
+    אייקון, בעוד שבדפים האחרים (refreshPage) יש 'הנתונים עודכנו'. כל כפתור רענון: אותו handler; בכותרות גם אותו אייקון."""
+    seen = 0
+    for name in ("console.js", "drivers.js", "storage.js", "net.js", "netcfg.js", "branches.js"):
+        text = (STATIC / name).read_text(encoding="utf-8")
+        for m in re.finditer(r'<button class="btn"[^>]*onclick="([^"]*)"[^>]*>([^<]*)רענון</button>', text):
+            seen += 1
+            assert m.group(1) == "refreshPage()", f"{name}: {m.group(0)[:90]}"
+    assert seen >= 10, seen
+    for name in ("drivers.js", "storage.js"):
+        assert 'onclick="refreshPage()">${uiIcon("refresh")} רענון</button>' in (STATIC / name).read_text(encoding="utf-8"), name
+
+
+def test_ports_table_switch_cell_wraps_so_the_table_fits_its_card():
+    """ביקורת 10/10: .swrow היה nowrap ועמודת "מתג" יצאה 423px — הטבלה גלשה (1250 מול כרטיס 1074 ב-1440) והעמודה
+    "מה קורה אם מכבים" נחתכה מאחורי העמודה הדביקה. בטבלה דחוסה הטקסט עוטף, ברוחב מוגבל."""
+    css = (STATIC / "console.css").read_text(encoding="utf-8")
+    m = re.findall(r"\.page \.dg\.dense \.swrow\{([^}]*)\}", css)
+    assert m, "אין כלל ל-.dg.dense .swrow"
+    body = m[-1]
+    assert "white-space:normal" in body and re.search(r"max-width:\d+px", body)
+
+
+def test_upload_modal_title_matches_the_button_that_opens_it():
+    """הכפתור "העלאת קובץ tar" פתח חלון בשם "קליטת אימג׳" — שם שהוא גם של הקליטה ממחשב בנייה."""
+    js = _console_js()
+    start = js.index("function openImageIngest")
+    assert '"העלאת קובץ tar"' in js[start:start + 600]

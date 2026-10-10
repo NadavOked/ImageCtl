@@ -81,3 +81,60 @@ test('reopening mid-close cancels the pending cleanup (direction flips, input no
   assert.ok(modal.classList.contains('show'));
   assert.equal(timers[timers.length - 1].cancelled, true);
 });
+
+// ---- ביקורת ממשק 10/10: חלון = דיאלוג (פוקוס פנימה, Tab כלוא, חזרה לפותח) ------------------
+
+let ctxDoc = null;
+function focusable(name, log) {
+  const e = {name, offsetParent: {}, focus() { log.focused = name; ctxDoc.activeElement = e; }};
+  return e;
+}
+
+function dialogSetup() {
+  const log = {};
+  const a = focusable('a', log), b = focusable('b', log);
+  const opener = {name: 'opener', focus() { log.focused = 'opener'; ctxDoc.activeElement = opener; }};
+  const modal = {classList: classSet(), style: {setProperty() {}, removeProperty() {}}, contains: () => false};
+  const form = {classList: classSet(), onsubmit: null, contains: (x) => x === a || x === b,
+    querySelectorAll: () => [a, b], querySelector: () => null, focus() { log.focused = 'root'; }};
+  const frames = [];
+  const els = {modal, sheet: form, modalBox: {offsetLeft: 0, offsetTop: 0}, drawer: {classList: classSet()}};
+  ctxDoc = {getElementById: (id) => els[id], activeElement: opener, body: {}};
+  const ctx = {document: ctxDoc, requestAnimationFrame: (fn) => frames.push(fn), setTimeout: () => 1, clearTimeout() {}};
+  vm.createContext(ctx);
+  vm.runInContext(source.slice(start, end) + '\n;this.api={openModalFrame,closeModal,dialogKeydown,dialogRoot};', ctx);
+  return {api: ctx.api, modal, form, a, b, log, frames};
+}
+
+test('a window remembers its opener, takes focus on open, and gives it back on close', () => {
+  const {api, modal, form, log, frames} = dialogSetup();
+  api.openModalFrame(modal, 'sheet-mode');
+  assert.equal(api.dialogRoot(), form, 'the visible sheet is the dialog root');
+  frames.forEach((f) => f());
+  assert.equal(log.focused, 'root', 'focus moved into the dialog (the root: nothing inside was focused yet)');
+  api.closeModal();
+  assert.equal(log.focused, 'opener', 'focus returns to the button that opened it');
+});
+
+test('Tab is trapped inside the open window: last wraps to first, Shift+Tab on first wraps to last', () => {
+  const {api, modal, a, b, log} = dialogSetup();
+  api.openModalFrame(modal, 'sheet-mode');
+  const key = (shiftKey) => { const e = {key: 'Tab', shiftKey, prevented: false, preventDefault() { this.prevented = true; }}; api.dialogKeydown(e); return e; };
+  ctxDoc.activeElement = b;
+  assert.equal(key(false).prevented, true); assert.equal(log.focused, 'a');
+  ctxDoc.activeElement = a;
+  assert.equal(key(true).prevented, true); assert.equal(log.focused, 'b');
+  ctxDoc.activeElement = {};
+  const outside = key(false);
+  assert.equal(outside.prevented, true, 'focus that escaped is pulled back in');
+});
+
+test('index.html: the three windows are role=dialog aria-modal with a name, and every close X has an accessible name', () => {
+  const html = fs.readFileSync(path.resolve(__dirname, '../server/static/index.html'), 'utf8');
+  for (const id of ['drawer', 'modalBox', 'sheet']) {
+    assert.match(html, new RegExp(`id="${id}"[^>]*role="dialog"[^>]*aria-modal="true"[^>]*aria-labelledby="\\w+"`), id);
+  }
+  for (const fn of ['closeDrawer', 'closeModal', 'toggleTaskPanel']) {
+    assert.match(html, new RegExp(`aria-label="סגור"[^>]*onclick="${fn}\\(\\)"`), fn);
+  }
+});

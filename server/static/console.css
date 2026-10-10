@@ -1122,3 +1122,29 @@ th,.table th,.page .dg th{letter-spacing:.02em}
 .page .note .tech{margin-top:4px;color:var(--muted)}
 .page .note .tech summary{cursor:pointer;font-size:var(--t-xs)}
 .page .note .tech code{display:block;margin-top:4px;padding:6px 8px;border-radius:var(--rp);background:var(--surface);font-family:var(--font-mono);font-size:var(--t-xs);white-space:pre-wrap;overflow-wrap:anywhere;text-align:start;color:var(--ink)}
+
+/* כיווץ עץ הניווט (כמו vCenter): העמודה מתכווצת ל-0 בתנועת --dur-base; כפתור ההצגה חוזר בכותרת העליונה.
+   רק במסך רחב — במסך צר העץ הוא שכבה (S2). */
+@media (min-width:741px){
+  .main{transition:grid-template-columns var(--dur-base) var(--ease)}
+  .app.nav-collapsed .main{grid-template-columns:0 minmax(0,1fr)}
+  .app.nav-collapsed .sidebar{visibility:hidden;border-inline-end-width:0}
+  .app.nav-collapsed .nav-toggle{display:inline-flex}
+}
+@media (prefers-reduced-motion:reduce){.main{transition:none}}
+
+/* שורת הסטטוס: הנקודה נגזרת מ-/health (ביקורת 10/10) — ירוק רק כשהבדיקה אמרה "תקין". */
+.statusbar-item.svc-warn i{background:var(--clr-warning)}
+.statusbar-item.svc-err i{background:var(--clr-danger)}
+.statusbar-item.svc-unk i,.statusbar-item.svc-off i{background:var(--led-idle)}
+
+/* ביקורת 10/10: המגירה נגמרה ב-bottom:0, ושורת המשימות (dock) + שורת הסטטוס, שהן מעליה, כיסו את 56 הפיקסלים
+   התחתונים שלה — כולל פס הפעולות (שינוי שם / העבר / מחיקה) בפרטי אימג'. עכשיו היא נגמרת מעל ה-dock. */
+.drawer{bottom:56px}
+@media(max-width:740px){.drawer{bottom:34px}}
+/* תווית המצב ברשימת ההתראות הייתה 13px מעל כותרת של 11px — היררכיה הפוכה. */
+.drawer .list-row .status{font-size:var(--t-xs);white-space:nowrap}
+
+/* ביקורת 10/10: עמודת "מתג" בטבלת הפורטים הייתה 423px (טקסט המתג nowrap) והטבלה גלשה ב-176px — "מה קורה אם מכבים"
+   נחתך והעמודה הדביקה כיסתה אותו. הטקסט עוטף; הטבלה (1087→1047px) נכנסת לכרטיס של 1074px ברוחב 1440. */
+.page .dg.dense .swrow{white-space:normal;max-width:220px;align-items:flex-start}

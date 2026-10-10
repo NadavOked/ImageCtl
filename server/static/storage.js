@@ -127,7 +127,7 @@ function storageListView() {
     : `‏/storage-locations לא נקרא: ${esc(storageError)}`;
   const pill = !STORAGE ? UI.pill("err", "לא נקרא")
     : s.unreachable ? UI.pill("err", `${s.locations} מיקומים · ${s.unreachable} לא נגיש`) : UI.pill("ok", `${s.locations} ${s.locations === 1 ? "מיקום" : "מיקומים"}`);
-  const actions = `<button class="btn primary" onclick="storageGo('add')">+ הוסף מיקום</button><button class="btn" onclick="storageCheckAll()"${SV.busy ? " disabled" : ""}>בדוק הכול</button><button class="btn" onclick="loadStorage()">רענון</button>`;
+  const actions = `<button class="btn primary" onclick="storageGo('add')">+ הוסף מיקום</button><button class="btn" onclick="storageCheckAll()"${SV.busy ? " disabled" : ""}>בדוק הכול</button><button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>`;
   const header = UI.objHeader({ crumbs: storageCrumbs(), icon: "storage", name: "אחסון", sub, pill, actions, compact: true });
   let body;
   if (!STORAGE) body = UI.note("err", `לא הצלחתי לקרוא את מיקומי האחסון: ${esc(storageError)}`);

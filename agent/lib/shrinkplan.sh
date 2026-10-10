@@ -109,8 +109,11 @@ shrink_ask() {
             done < "$1"
             echo "  They are grown back when the capture ends. Windows boots either way."
             echo
-            echo "    [1] Shrink and capture"
-            echo "    [2] Capture without shrinking (the image will not fit smaller disks)"
+            # ‏#928, הכרעת נדב 10/10: 1 הוא ברירת המחדל, 2 משני ועם ההסבר מתי.
+            echo "    [1] Shrink and capture (recommended)"
+            echo "    [2] Capture without shrinking"
+            echo "        only if shrinking failed, or every target disk is larger than"
+            echo "        the source -- the image will not fit smaller disks"
             echo "    [3] Cancel the capture"
             echo
             printf "  Choose [1-3]: "

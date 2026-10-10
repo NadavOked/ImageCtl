@@ -115,7 +115,8 @@ test('UI.barRow: unknown progress is a dash, never 0%',()=>{
 test('UI.objHeader: crumbs, name, sub, pill, actions and role=tab buttons with roving tabindex; no tabs when only one',()=>{
   const {run}=setup();
   const html=run('UI.objHeader({crumbs:[{label:"שרת"},{label:"סקירה"}],name:"שרת אימג\'ים",sub:"x",pill:UI.pill("ok","תקין"),actions:"<button>a</button>",tabs:["א","ב","ג"],tab:1})');
-  assert.match(html,/<div class="crumbs"><span>שרת<\/span><span>\/<\/span><span>סקירה<\/span><\/div>/);
+  // ביקורת 10/10: הפריט הראשון בשביל הוא שורש העץ = שם השרת מ-/me (כמו ב-vCenter), לא הטקסט שהוזן
+  assert.match(html,/<div class="crumbs"><span>imagectl-srv<\/span><span>\/<\/span><span>סקירה<\/span><\/div>/);
   const tabs=[...html.matchAll(/<button type="button" class="tab( on)?" role="tab" aria-selected="(true|false)" tabindex="(0|-1)"/g)];
   assert.deepEqual(tabs.map(m=>[m[1]||'',m[2],m[3]]),[['','false','-1'],[' on','true','0'],['','false','-1']]);
   assert.match(html,/role="tablist"/); balanced(html);
@@ -324,19 +325,20 @@ test('deploy sees the summary without attention, events and server cards; two ta
 
 // ---- הסרגל: אייקון תיקייה לאימג'ים ------------------------------------------
 
-// 17/09 נדב: צומת האימג'ים עם אייקון תיקייה. 10/10 (apple-pending-4, "הכול מאושר"): הצומת מקבל אייקון ייחודי
-// (שכבות — כמו ספרייה), כי תיקייה הייתה גם של כל תיקיית משנה; התיקיות עצמן נשארות עם אייקון התיקייה.
-test('the images tree node has its own layers icon; its sub-folders keep the folder icon',()=>{
+// 17/09 נדב: צומת האימג'ים עם אייקון תיקייה — והחלפתו לשכבות ב-apple-pending-4 בוטלה (הכרעה, 10/10).
+// כדי שלא תהיה כפילות עם תיקיות המשנה, הן מקבלות וריאנט קטן ודק (t-subfolder).
+test('the images tree node is the folder icon (Nadav, 17/09); its sub-folders carry a smaller thinner variant',()=>{
   const {run,node}=setup();
   const index=fs.readFileSync(path.join(root,'index.html'),'utf8');
   const start=index.indexOf('data-page="images"');
   const imagesNode=index.slice(start,index.indexOf("אימג'ים</span>",start));
-  assert.match(imagesNode,/<path d="m12 3 9 5-9 5-9-5Z"\/><path d="m3 13 9 5 9-5"\/>/);
-  assert.doesNotMatch(imagesNode,/M3 7a2 2 0 0 1 2-2h4l2 2h8/,'the node is no longer the same folder icon as its children');
+  assert.match(imagesNode,/<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"\/>/);
+  assert.doesNotMatch(imagesNode,/m12 3 9 5-9 5-9-5Z/,'the layers icon is gone');
   assert.doesNotMatch(imagesNode,/circle cx="16"/,'the picture icon is gone from the images node');
   run('FOLDERS=[{name:"Linux"},{name:"Empty"}]; IMAGES=[{id:"i1",name:"Kali",folder:"Linux"}]; populateSidebarImages()');
   const tree=node('#imagesTree').innerHTML;
-  assert.equal((tree.match(/M3 7a2 2 0 0 1 2-2h4l2 2h8/g)||[]).length,2,'both folders carry the folder icon');
+  assert.equal((tree.match(/M3 7a2 2 0 0 1 2-2h4l2 2h8/g)||[]).length,0,'no sub-folder repeats the images-node icon');
+  assert.equal((tree.match(/stroke-width="1.2"/g)||[]).length,2,'both sub-folders carry the thin variant');
   assert.equal((tree.match(/circle cx="16"/g)||[]).length,1,'the image inside keeps the picture icon');
 });
 

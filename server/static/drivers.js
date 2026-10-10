@@ -126,7 +126,7 @@ function driversPage(tab = 0) {
   const sub = DRIVERS
     ? [`${list.length} ${list.length === 1 ? "חבילה" : "חבילות"}`, "מונחות על הדיסק אחרי שחזור Windows, מותקנות בעלייה הראשונה", MACHINES ? `${reported} מכונות דיווחו חומרה` : "מכונות: לא נקרא"].map(esc).join(" · ")
     : `‏/drivers לא נקרא: ${esc(driversError)}`;
-  const actions = (admin ? `<button class="btn primary" onclick="openDriverImport()">ייבוא חבילה (tar)</button>` : "") + `<button class="btn" onclick="loadDrivers()">רענון</button>`;
+  const actions = (admin ? `<button class="btn primary" onclick="openDriverImport()">ייבוא חבילה (tar)</button>` : "") + `<button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>`;
   const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "תשתית" }, { label: "דרייברים" }],
     icon: "t-drivers", name: "דרייברים", sub, pill: DRIVERS ? "" : UI.pill("err", "לא נקרא"), actions, tabs: ["חבילות", "כיסוי לפי מכונה"], tab });
   let body;

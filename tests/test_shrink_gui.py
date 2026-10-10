@@ -217,6 +217,28 @@ def test_without_a_gui_the_text_menu_still_asks(tmp_path):
     assert not (gui / "shrink-request").exists()
 
 
+def test_the_text_menu_puts_shrink_first_and_explains_plain(tmp_path):
+    """The same decision on the text screen: [1] is the recommended answer,
+    the hint sits under [2] and before [3], and the numbers keep their
+    answers -- habits and callers depend on 1/2/3."""
+    for key, answer in (("1", "continue"), ("2", "plain"), ("3", "cancel")):
+        sub = tmp_path / key; sub.mkdir()
+        pre, gui = ask_setup(sub)
+        out = run_with_stdin(pre + 'shrink_ask "$RUN_DIR/shrink.plan"', key + "\n")
+        assert out.stdout.strip() == answer, (key, out.stdout + out.stderr)
+    menu = [ln.strip() for ln in out.stderr.splitlines() if ln.strip()]
+    for line in ("[1] Shrink and capture (recommended)", "[2] Capture without shrinking",
+                 "[3] Cancel the capture"):
+        assert line in menu, (line, menu)
+    one = menu.index("[1] Shrink and capture (recommended)")
+    two = menu.index("[2] Capture without shrinking")
+    three = menu.index("[3] Cancel the capture")
+    assert one < two < three, menu
+    hint = " ".join(menu[two + 1:three])
+    assert hint == ("only if shrinking failed, or every target disk is larger than "
+                    "the source -- the image will not fit smaller disks"), menu
+
+
 def test_the_capture_keeps_the_gui_and_asks_it(tmp_path):
     """`shrink_before_capture` no longer stops the kiosk: the question goes
     to the GUI (a request is published), the kiosk is still running when the
@@ -350,12 +372,36 @@ def test_the_dialog_keys_and_buttons_map_to_the_three_answers():
     assert re.findall(r"case (HIT_SHRINK_\w+):\s+emit_shrink\(a, \"(shrink-\w+)\"\)", modal) == [
         ("HIT_SHRINK_CONTINUE", "shrink-continue"), ("HIT_SHRINK_PLAIN", "shrink-plain"),
         ("HIT_SHRINK_CANCEL", "shrink-cancel")]
-    dialog = (SRC / "screens_shrink.c").read_text(encoding="utf-8")
-    labels = re.findall(r'\{ "([^"]+)", BTN_\w+, (HIT_SHRINK_\w+) \}', dialog)
-    assert labels == [
-        ("כווץ וקלוט", "HIT_SHRINK_CONTINUE"),
-        ("קלוט בלי כיווץ (האימג' לא ייכנס לדיסקים קטנים יותר)", "HIT_SHRINK_PLAIN"),
-        ("בטל קליטה", "HIT_SHRINK_CANCEL")]
+
+
+#: Nadav, 10/10: when "capture without shrinking" is the right answer.
+PLAIN_HINT = ("רק אם הכיווץ נכשל, או שכל דיסקי היעד גדולים מהמקור — "
+              "האימג' לא ייכנס לדיסקים קטנים יותר")
+
+
+def test_shrink_is_the_one_primary_button_and_plain_is_a_hinted_link():
+    """Nadav, 10/10: "shrink and capture" is the primary button and comes
+    first; "capture without shrinking" is a small link -- not a button, not in
+    the primary colour -- with a grey hint under it; "cancel" stays a plain
+    button. Read from the source: there is no compiler on the Windows station
+    (the --png test below checks the pixels on the lab)."""
+    src = (SRC / "screens_shrink.c").read_text(encoding="utf-8")
+    label = dict(re.findall(r'static const char (SHRINK_\w+)\[\] =\s*"([^"]+)";', src))
+    assert label.get("SHRINK_CONTINUE_LABEL") == "כווץ וקלוט", label
+    assert label.get("SHRINK_PLAIN_LABEL") == "קלוט בלי כיווץ", label
+    assert label.get("SHRINK_CANCEL_LABEL") == "בטל קליטה", label
+    assert label.get("SHRINK_PLAIN_HINT") == PLAIN_HINT, label
+    body = _body(src, "draw_shrink_dialog")
+    answers = [(m.group(1), m.group(2) or "", m.group(3)) for m in re.finditer(
+        r"(draw_btn|hit_add)\(a, [^;]*?(?:(BTN_\w+), )?(HIT_SHRINK_\w+)\);", body)]
+    assert answers == [("draw_btn", "BTN_PRIMARY", "HIT_SHRINK_CONTINUE"),
+                       ("hit_add", "", "HIT_SHRINK_PLAIN"),
+                       ("draw_btn", "BTN_PLAIN", "HIT_SHRINK_CANCEL")], answers
+    plain = body[body.index("SHRINK_PLAIN_LABEL"):body.index("HIT_SHRINK_PLAIN")]
+    assert "t->indigo" not in plain and "BTN_" not in plain, "the secondary answer looks primary"
+    assert re.search(r"text_draw\(cr, &hint, [^;]*t->muted\)", body), "the hint is not grey"
+    assert body.index("HIT_SHRINK_PLAIN") < body.index("&hint, ") < body.index("HIT_SHRINK_CANCEL"), \
+        "the hint is not under the secondary answer"
 
 
 GUI_TOOLS = requires_native(
@@ -416,3 +462,45 @@ def test_an_incomplete_question_is_not_drawn(tmp_path):
         a = (tmp_path / name / "card-shrink-light.png").read_bytes()
         b = (tmp_path / name / "card-progress-light.png").read_bytes()
         assert a == b, f"{name}: a dialog was drawn for a broken question"
+
+
+def _bands(rows: list[int]) -> list[tuple[int, int]]:
+    """Consecutive row numbers grouped into (first, last) bands."""
+    out: list[tuple[int, int]] = []
+    for y in rows:
+        if out and y == out[-1][1] + 1:
+            out[-1] = (out[-1][0], y)
+        else:
+            out.append((y, y))
+    return out
+
+
+@GUI_TOOLS
+def test_the_drawn_dialog_has_one_primary_button_and_a_grey_hint(tmp_path):
+    """Nadav, 10/10, in pixels: inside the dialog exactly one button is filled
+    with the primary colour (--clr-action) -- "shrink and capture" -- and under
+    it there is grey (--clr-muted) text in rows with no ink text: the hint of
+    "capture without shrinking". Until 10/10 the secondary answer was a
+    second full button and there was no grey line under the primary one."""
+    binary = _build_gui(tmp_path)
+    _render(binary, tmp_path / "q", BASE_STATE + QUESTION)
+    for theme in ("light", "dark"):
+        w, h, ch, px = _png_rgb(tmp_path / "q" / f"card-shrink-{theme}.png")
+        x0, x1 = w // 2 - 300, w // 2 + 300
+
+        def row(rgb, y, tol=12):
+            start = (y * w + x0) * ch
+            return _count_color(px[start:start + (x1 - x0) * ch], ch, rgb, tol=tol)
+
+        frame = [y for y in range(h) if row(_token("--clr-warning", theme), y) > 400]
+        assert frame, f"{theme}: no dialog frame"
+        top, bottom = min(frame), max(frame)
+        action = _token("--clr-action", theme)
+        filled = _bands([y for y in range(top, bottom) if row(action, y) > 400])
+        assert len(filled) == 1, f"{theme}: {len(filled)} primary-coloured buttons {filled}"
+        first, last = filled[0]
+        assert 40 <= last - first + 1 <= 48, f"{theme}: primary button is {last - first + 1}px tall"
+        muted, ink = _token("--clr-muted", theme), _token("--clr-text", theme)
+        hint = [y for y in range(last + 1, bottom)
+                if row(muted, y) >= 20 and row(ink, y, tol=26) == 0]
+        assert len(hint) >= 5, f"{theme}: no grey hint under the primary button ({hint})"

@@ -243,7 +243,7 @@ test('the class as an object: crumbs, header, KPIs with meaning only, the same t
   const {run,node}=setup();
   run("openClass('grp_LAB303')"); assert.equal(run('selected'),'machines'); assert.equal(run('MACHINES_CLASS'),'grp_LAB303');
   let html=run('machines(0)'); balanced(html);
-  assert.match(html,/crumbs"><a[^>]*>שרת אימג&#39;ים<\/a><span>\/<\/span><span>מלאי<\/span><span>\/<\/span><a[^>]*openMachinesPage\(\)">מחשבים<\/a><span>\/<\/span><span>כיתות<\/span><span>\/<\/span><span>כיתה 303 — סייבר<\/span>/);
+  assert.match(html,/crumbs"><a[^>]*>srv<\/a><span>\/<\/span><span>מלאי<\/span><span>\/<\/span><a[^>]*openMachinesPage\(\)">מחשבים<\/a><span>\/<\/span><span>כיתות<\/span><span>\/<\/span><span>כיתה 303 — סייבר<\/span>/);
   assert.match(html,/obj-name">כיתה 303 — סייבר</); assert.match(html,/קבוצת כיתה · קידומת LAB303 · 3 מחשבים · 2 נראו היום/); assert.match(html,/pill info">סבב פתוח</);
   assert.match(html,/deployToGroup\('grp_LAB303'\)">הפץ לכיתה…</); assert.match(html,/openAddMachine\(\{group:'grp_LAB303'\}\)">\+ מחשב לכיתה</); assert.match(html,/renameGroup\(/); assert.match(html,/deleteGroup\(/);
   for(const t of ['סיכום','מחשבים','סבבים']) assert.match(html,new RegExp('role="tab"[^>]*>'+t+'<'));

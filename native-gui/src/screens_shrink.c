@@ -8,16 +8,25 @@
 #include <stdio.h>
 #include "widgets.h"
 
-#define SHRINK_W_MAX 760.0
-#define SHRINK_PAD   28.0
-#define SHRINK_BTN_H 44.0
-#define SHRINK_GAP   10.0
+#define SHRINK_W_MAX  760.0
+#define SHRINK_PAD    28.0
+#define SHRINK_BTN_H  44.0
+#define SHRINK_GAP    10.0
+#define SHRINK_LINK_H 30.0
+#define SHRINK_HINT_PX 12.0
 
-static const struct { const char *label; int kind, id; } SHRINK_BTN[3] = {
-    { "כווץ וקלוט", BTN_PRIMARY, HIT_SHRINK_CONTINUE },
-    { "קלוט בלי כיווץ (האימג' לא ייכנס לדיסקים קטנים יותר)", BTN_PLAIN, HIT_SHRINK_PLAIN },
-    { "בטל קליטה", BTN_PLAIN, HIT_SHRINK_CANCEL },
-};
+/* Nadav, 10/10 (#928): "shrink and capture" is the default and the one
+ * primary button, first in the dialog. "Capture without shrinking" is a small
+ * text link -- not a button, not in the primary colour -- with a grey line
+ * under it that says when it is the right answer. "Cancel" is unchanged. The
+ * keys (main.c:shrink_modal) are unchanged too: 1/2/3, Esc cancels, and Enter
+ * answers nothing -- so no focus ring is drawn on the primary button either,
+ * since a ring would promise that Enter presses it. */
+static const char SHRINK_CONTINUE_LABEL[] = "כווץ וקלוט";
+static const char SHRINK_PLAIN_LABEL[] = "קלוט בלי כיווץ";
+static const char SHRINK_PLAIN_HINT[] =
+    "רק אם הכיווץ נכשל, או שכל דיסקי היעד גדולים מהמקור — האימג' לא ייכנס לדיסקים קטנים יותר";
+static const char SHRINK_CANCEL_LABEL[] = "בטל קליטה";
 
 /* The same unit as the text screen (shrinkplan.sh:_shrink_gb): decimal GB,
  * one digit -- the operator sees one number for one partition everywhere. */
@@ -52,8 +61,10 @@ void draw_shrink_dialog(App *a, cairo_t *cr, double W, double H) {
         rows[i] = rtl_block_make(cr, 15, 500, line, inner);
         rows_h += rows[i].h + 6;
     }
-    double dh = SHRINK_PAD + title.h + 8 + lead.h + 18 + rows_h + 18 +
-                3 * SHRINK_BTN_H + 2 * SHRINK_GAP + SHRINK_PAD;
+    Text hint = text_make(cr, FONT_SANS, SHRINK_HINT_PX, 400, SHRINK_PLAIN_HINT, (int)inner, DIR_RTL);
+    pango_layout_set_alignment(hint.layout, PANGO_ALIGN_CENTER);
+    double answers_h = SHRINK_BTN_H + SHRINK_GAP + SHRINK_LINK_H + hint.h + SHRINK_GAP + SHRINK_BTN_H;
+    double dh = SHRINK_PAD + title.h + 8 + lead.h + 18 + rows_h + 18 + answers_h + SHRINK_PAD;
     if (dh > usable - 24) dh = usable - 24;   /* MAX_SHRINK_PARTS keeps this from clipping on 768 */
     Rect box = { (W - dw) / 2, (usable - dh) / 2, dw, dh };
     draw_box_shadow(cr, box, t->radius, 10, 30, -8, t->shadow_strong, t->shadow_strong_a);
@@ -68,13 +79,27 @@ void draw_shrink_dialog(App *a, cairo_t *cr, double W, double H) {
         y += rows[i].h + 6;
         text_free(&rows[i]);
     }
-    y = box.y + box.h - SHRINK_PAD - 3 * SHRINK_BTN_H - 2 * SHRINK_GAP;
-    for (int k = 0; k < 3; k++) {
-        Text l = btn_label(cr, SHRINK_BTN[k].label);
-        draw_btn(a, cr, (Rect){ box.x + SHRINK_PAD, y, inner, SHRINK_BTN_H }, &l,
-                 SHRINK_BTN[k].kind, SHRINK_BTN[k].id);
-        text_free(&l);
-        y += SHRINK_BTN_H + SHRINK_GAP;
-    }
-    text_free(&title); text_free(&lead);
+    y = box.y + box.h - SHRINK_PAD - answers_h;
+    Text l = btn_label(cr, SHRINK_CONTINUE_LABEL);
+    draw_btn(a, cr, (Rect){ box.x + SHRINK_PAD, y, inner, SHRINK_BTN_H }, &l, BTN_PRIMARY, HIT_SHRINK_CONTINUE);
+    text_free(&l);
+    y += SHRINK_BTN_H + SHRINK_GAP;
+
+    /* the secondary answer: underlined ink text, its hit area the line around it */
+    l = btn_label(cr, SHRINK_PLAIN_LABEL);
+    double lx = box.x + (box.w - l.w) / 2, ly = y + (SHRINK_LINK_H - l.h) / 2;
+    text_draw(cr, &l, lx, ly, t->ink);
+    cairo_rectangle(cr, lx, ly + text_baseline(&l) + 2, l.w, 1);
+    draw_set(cr, t->ink);
+    cairo_fill(cr);
+    hit_add(a, (Rect){ lx - 12, y, l.w + 24, SHRINK_LINK_H }, HIT_SHRINK_PLAIN);
+    text_free(&l);
+    y += SHRINK_LINK_H;
+    text_draw(cr, &hint, box.x + SHRINK_PAD, y, t->muted);
+    y += hint.h + SHRINK_GAP;
+
+    l = btn_label(cr, SHRINK_CANCEL_LABEL);
+    draw_btn(a, cr, (Rect){ box.x + SHRINK_PAD, y, inner, SHRINK_BTN_H }, &l, BTN_PLAIN, HIT_SHRINK_CANCEL);
+    text_free(&l);
+    text_free(&title); text_free(&lead); text_free(&hint);
 }

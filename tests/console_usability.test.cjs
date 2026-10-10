@@ -169,6 +169,84 @@ test('S2: toggleSidebar opens/closes with aria-expanded; navigation and Escape c
   assert.ok(!side.classList.contains('open'), 'Escape closes the overlay');
 });
 
+// ---- ביקורת ממשק 10/10: ☰ בעץ = כיווץ/הרחבת העץ, לא מגירת טקסט בצד הנגדי ------------------
+
+test('audit: the tree-head button collapses/expands the tree (wide) — it no longer opens a text drawer on the far side', () => {
+  const html = read('index.html'), js = read('console.js');
+  assert.doesNotMatch(js, /toggleSidebarInfo/, 'the info-drawer handler is gone');
+  assert.doesNotMatch(html, /toggleSidebarInfo/);
+  assert.match(html, /id="navCollapse"[^>]*aria-expanded="true"[^>]*onclick="navButton\(\)"/, 'the tree-head button is wired to navButton');
+  const {run, tree, document} = setup();
+  const app = document.getElementById('app'), top = tree.querySelector('.nav-toggle');
+  tree.querySelector('.topbar').children.push(el('button', {id: 'navCollapse', 'aria-expanded': 'true'}));
+  run('navButton()');
+  assert.ok(app.classList.contains('nav-collapsed'), 'wide: the click collapses the tree');
+  assert.equal(top.getAttribute('aria-expanded'), 'false');
+  run('navButton()');
+  assert.ok(!app.classList.contains('nav-collapsed'), 'a second click expands it again');
+  assert.equal(top.getAttribute('aria-expanded'), 'true');
+});
+
+test('audit: narrow screens keep the overlay behaviour, and Escape never collapses the wide tree', () => {
+  const {run, tree, document} = setup();
+  const side = tree.querySelector('#sidebar'), app = document.getElementById('app');
+  run('window.matchMedia=()=>({matches:true}); navButton()');
+  assert.ok(side.classList.contains('open') && !app.classList.contains('nav-collapsed'), 'narrow: overlay opens, no collapse class');
+  run('window.matchMedia=()=>({matches:false}); setNavCollapsed(false,false)');
+  for (const fn of document.listeners.keydown || []) fn({key: 'Escape', target: side});
+  assert.ok(!app.classList.contains('nav-collapsed'), 'Escape does not collapse the tree');
+});
+
+test('audit: the collapsed state is a css rule on the grid column, wide screens only, with reduced motion honoured', () => {
+  const css = read('console.css');
+  assert.match(css, /@media \(min-width:741px\)\{[^@]*\.app\.nav-collapsed \.main\{grid-template-columns:0 minmax\(0,1fr\)\}/);
+  assert.match(css, /\.app\.nav-collapsed \.sidebar\{visibility:hidden/);
+  assert.match(css, /\.app\.nav-collapsed \.nav-toggle\{display:inline-flex\}/);
+  assert.match(css, /prefers-reduced-motion:reduce\)\{\.main\{transition:none\}\}/);
+});
+
+test('audit: the login footer draws a separator only between values that exist (no orphan dots before sign-in)', () => {
+  const {run, document} = setup();
+  assert.match(read('index.html'), /id="login-foot-sep1" hidden/);
+  const sep1 = document.querySelector('#login-foot-sep1'), sep2 = document.querySelector('#login-foot-sep2');
+  run('ME=null; globalThis.location={hostname:"srv"}; paintLoginFoot()');
+  assert.equal(sep1.hidden, true, 'host only: no separator');
+  assert.equal(sep2.hidden, true);
+  run('ME={server_name:"srv",version:"v1.2.3",tls:{fingerprint_sha256:"ab".repeat(32)}}; paintLoginFoot()');
+  assert.equal(sep1.hidden, false, 'host and version: separated');
+  assert.equal(sep2.hidden, false, 'version and TLS: separated');
+});
+
+test('audit: the topbar search filters table.dg rows too, never counts a group header as a hit, and hides empty groups', () => {
+  const {run, document} = setup();
+  const row = (text, group = false) => ({textContent: text, style: {}, classList: {contains: (c) => group && c === 'group'}});
+  const rows = [row('מחשב בניית אימג׳ים', true), row('build-01 aa:bb'), row('מחשבי שיכפול', true), row('01 aa:cc'), row('02 aa:dd')];
+  document.querySelectorAll = (sel) => { assert.match(sel, /table\.dg tbody tr/, 'the selector covers the rebuilt pages\' tables'); return rows; };
+  run('doGlobalSearch("build")');
+  assert.deepEqual(rows.map((r) => r.style.display), ['', '', 'none', 'none', 'none'], 'only the matching row and its own group header remain');
+  run('doGlobalSearch("")');
+  assert.deepEqual(rows.map((r) => r.style.display), ['', '', '', '', ''], 'clearing restores everything');
+  run('doGlobalSearch("aa")');
+  assert.equal(rows.filter((r) => r.style.display === 'none').length, 0, 'a term in every data row keeps both groups');
+});
+
+test('audit: the status bar dots and the tree footer follow /health — green only on "ok", grey when nothing was measured', () => {
+  const {run, document} = setup();
+  const html = read('index.html');
+  for (const n of ['API', 'PXE', 'Multicast']) assert.match(html, new RegExp(`class="statusbar-item svc-unk" data-svc="${n}"`), n + ' starts grey, not green');
+  assert.doesNotMatch(html, /כל השירותים פעילים/, 'the static green claim is gone from the markup');
+  const dot = (n) => document.querySelector(`[data-svc="${n}"]`), foot = document.getElementById('treeFootStatus');
+  run('HEALTH=null; healthError=""; paintServiceStatus()');
+  assert.ok(dot('Multicast').classList.contains('svc-unk') && foot.innerHTML.includes('לא נבדק'), 'no data: grey + "not checked"');
+  run('HEALTH=[{id:"udp_sender",state:"bad",detail:"לא נמצא"},{id:"tftp_port",state:"ok"},{id:"boot_files",state:"warn"},{id:"server",state:"ok"}]; paintServiceStatus()');
+  assert.ok(dot('Multicast').classList.contains('svc-err'), 'a failing udp_sender makes Multicast red');
+  assert.ok(dot('PXE').classList.contains('warn') === false && dot('PXE').classList.contains('svc-warn'), 'PXE = the worst of tftp_port + boot_files; the class is prefixed so the global .ok/.err message rules do not apply');
+  assert.ok(dot('API').classList.contains('svc-ok'));
+  assert.match(foot.className, /err/); assert.ok(foot.innerHTML.includes('1 שירותים בתקלה'));
+  run('HEALTH=[{id:"udp_sender",state:"ok"},{id:"tftp_port",state:"ok"},{id:"boot_files",state:"ok"},{id:"server",state:"ok"}]; paintServiceStatus()');
+  assert.match(foot.className, /ok/); assert.ok(foot.innerHTML.includes('כל השירותים פעילים'));
+});
+
 // ---- S3: שורת הסטטוס אינה מכוסה ע"י ה-dock הקבוע --------------------------
 
 /* הערך האחרון של מאפיין עבור סלקטור, מחוץ ל-@media (הסדר ב-CSS מכריע). */
@@ -194,6 +272,15 @@ test('S3: the fixed task dock starts above the in-flow statusbar, and the task p
   assert.equal(px(lastDecl(css, '.task-panel', 'bottom')), dockBottom + dockH, 'task panel rests on the dock');
 });
 
+test('audit: the drawer ends above the dock + statusbar stack, so its action bar is never covered', () => {
+  const css = read('console.css');
+  const statusH = px(lastDecl(css, '.statusbar', 'height'));
+  const dockBottom = px(lastDecl(css, '.task-dock', 'bottom')), dockH = px(lastDecl(css, '.task-dock', 'height'));
+  assert.equal(px(lastDecl(css, '.drawer', 'bottom')), dockBottom + dockH, `the drawer clears the ${dockBottom + dockH}px stack (statusbar ${statusH}px + dock ${dockH}px); it was bottom:0 and the dock hid 56px of it`);
+  assert.match(narrowCss(), /\.drawer\{bottom:34px\}/, 'narrow: only the 34px dock (the statusbar is hidden)');
+  assert.match(css, /\.drawer \.list-row \.status\{font-size:var\(--t-xs\)/, 'a status label in a drawer list is not larger than its 11px title');
+});
+
 test('S3: at <=740px, where the statusbar is hidden, the dock returns to the bottom edge', () => {
   const narrow = narrowCss();
   assert.match(narrow, /\.statusbar\{display:none\}/, 'precondition: statusbar hidden when narrow');
@@ -213,8 +300,10 @@ test('S4: tabs render as <button role="tab"> inside role="tablist" with aria-sel
   assert.equal(tabs.length, 4, 'four tabs as buttons');
   assert.deepEqual(tabs.map((m) => [m[1] || '', m[2], m[3]]), [['', 'false', '-1'], ['active', 'true', '0'], ['', 'false', '-1'], ['', 'false', '-1']]);
   assert.doesNotMatch(html, /<div class="vcenter-tab[ "]/, 'no div tabs left');
-  assert.match(html, /id="pageActionBtn" aria-haspopup="menu" aria-expanded="false"/);
-  assert.match(html, /id="pageActionMenu" class="action-menu" role="menu"/);
+  assert.doesNotMatch(html, /pageActionBtn/, 'ביקורת 10/10: עמוד בלי פעולות (כמו השרת המשני) אינו מקבל כפתור "+ פעולה" שנפתח לתפריט ריק');
+  const withActions = run('current="images"; layout({crumb: "x", title: "x", desc: "", tabs: ["א"]}, 0)');
+  assert.match(withActions, /id="pageActionBtn" aria-haspopup="menu" aria-expanded="false"/);
+  assert.match(withActions, /id="pageActionMenu" class="action-menu" role="menu"/);
 });
 
 test('S4: static tree nodes in index.html carry role="treeitem" tabindex="0"; groups carry aria-expanded', () => {
