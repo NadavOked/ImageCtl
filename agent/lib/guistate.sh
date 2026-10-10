@@ -103,7 +103,8 @@ gui_state() {
                   "room_drawer=" +
                     ([$mi, (.port // 0), .serial, .model, (.size_bytes // 0),
                       (.smart // "unchecked"),
-                      (if .fresh then 1 else 0 end),
+                      # #1235: fresh null = no serial (#105) -> -1, "cannot identify".
+                      (if .fresh == null then -1 elif .fresh then 1 else 0 end),
                       (if .selected then 1 else 0 end)]
                      | map(clean) | join("|")))) end' \
                 "$GUI_DIR/room.json" >> "$GUI_DIR/state.next" || return 1 ;;

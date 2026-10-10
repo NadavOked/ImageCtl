@@ -179,6 +179,35 @@ static void room_machine_draw(App *a, cairo_t *cr, const Machine *m, int mi,
     }
 }
 
+/* #1235: a drawer with no serial (fresh null, #105). The round counts by
+ * serial, so it cannot tell whether that drive was written: say so by slot
+ * instead of drawing it as one more drawer (rule 5). One line per drawer;
+ * when they do not all fit, the last line says that more were left out --
+ * never a silent cut. Text{NULL} when every drawer is identified. */
+static Text room_unidentified_make(cairo_t *cr, const State *s, double w) {
+    char buf[2048], *line;
+    const char *more = "\nועוד כוננים שלא ניתן לזהות — ראו בקונסולה";
+    size_t used = 0, cap = sizeof buf - strlen(more) - 1;
+    buf[0] = 0;
+    for (int i = 0; i < s->nmachines; i++) {
+        const Machine *m = &s->machines[i];
+        for (int j = 0; j < m->nroom_drawers; j++) {
+            const RoomDrawer *d = &m->room_drawers[j];
+            if (!d->present || !d->unidentified) continue;
+            line = buf + used;
+            int k = snprintf(line, cap - used, "%sלא ניתן לזהות את הכונן בחריץ %d · %s",
+                             used ? "\n" : "", d->port, m->name[0] ? m->name : m->mac);
+            if (k < 0 || (size_t)k >= cap - used) {
+                snprintf(line, sizeof buf - used, "%s", more);
+                return text_make(cr, FONT_SANS, N_SUB, 600, buf, (int)w, DIR_RTL);
+            }
+            used += (size_t)k;
+        }
+    }
+    if (!used) return (Text){ NULL, 0, 0 };
+    return text_make(cr, FONT_SANS, N_SUB, 600, buf, (int)w, DIR_RTL);
+}
+
 /* First machine is physically rightmost. Index increases leftward, then the
  * next visual row begins again at the right. */
 static void room_grid_draw(App *a, cairo_t *cr, double x, double y,
@@ -287,11 +316,13 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
                                        room_cols, (H-head_h-N_STATUS_H)/2);
         Text err = error_make(cr, s->room_error, inner);
         double err_h = dmax(err.h, ERROR_MIN_H);
+        Text unid = room_unidentified_make(cr, s, inner);
+        double unid_h = unid.layout ? unid.h + N_LABEL_GAP : 0;
         double grid_h = s->nmachines ? grid.total_h : text_line_height(cr, FONT_SANS, N_SUB);
         double sel_all_h = s->nmachines ? btn_h : 0;
         double ready_line_h = dmax(ready_t.h, sel_all_h);
         double fields_h = direct ? l1.h + N_FORM_GAP : l1.h + 2 + in_h + N_FORM_GAP + l2.h + 2 + in_h + N_FORM_GAP;
-        double body_h = N_PAD + fields_h + ready_line_h + N_ACTION_GAP + grid_h + N_LABEL_GAP + err_h + N_PAD;
+        double body_h = N_PAD + fields_h + ready_line_h + N_ACTION_GAP + grid_h + N_LABEL_GAP + unid_h + err_h + N_PAD;
         Text labels[3] = { btn_label(cr, direct ? "פתח סבב והער את המחשבים שנבחרו" : "פתח סבב והער את החדר"), btn_label(cr, "העֵר את מחשבי השיכפול"), btn_label(cr, "חזרה") };
         static const int kinds[3] = { BTN_PRIMARY, BTN_PLAIN, BTN_PLAIN };
         static const int ids[3] = { HIT_ROOM_OPEN, HIT_ROOM_WAKE, HIT_BACK };
@@ -323,13 +354,14 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
         text_draw_r(cr, &ready_t, x + inner, y + (ready_line_h - ready_t.h) / 2, t->ink);
         y += ready_line_h + N_ACTION_GAP;
         room_grid_draw(a, cr, x, y, inner, &grid);       y += grid_h + N_LABEL_GAP;
+        if (unid.layout) { text_draw_r(cr, &unid, x + inner, y, t->warning_ink); y += unid_h; }
         text_draw(cr, &err, x, y, t->danger);
         body_clip_end(a, cr);
         foot_draw_bg(cr, t, foot);
         foot_buttons(a, cr, foot, labels, kinds, ids, 3);
         card_end(a, cr);
         if (!direct && a->dd_open == HIT_ROOM_IMAGE) draw_popup(a, cr, sel_r, opts, nopt, a->image_sel);   /* outside the card's clip, topmost */
-        text_free(&l1); text_free(&l2); text_free(&ready_t); text_free(&err);
+        text_free(&l1); text_free(&l2); text_free(&ready_t); text_free(&err); text_free(&unid);
         return;
     }
 
@@ -374,7 +406,9 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
     }
     Text err = error_make(cr, s->room_error, inner);
     double err_h = dmax(err.h, ERROR_MIN_H);
-    double body_h = N_PAD + pl.h + N_LABEL_GAP + N_BAR_H + N_ACTION_GAP + alert_height(&hint_t) + N_CHOICE_GAP + rows_h + confirm_h + N_LABEL_GAP + err_h + N_PAD;
+    Text unid = room_unidentified_make(cr, s, inner);
+    double unid_h = unid.layout ? N_LABEL_GAP + unid.h : 0;
+    double body_h = N_PAD + pl.h + N_LABEL_GAP + N_BAR_H + N_ACTION_GAP + alert_height(&hint_t) + N_CHOICE_GAP + rows_h + unid_h + confirm_h + N_LABEL_GAP + err_h + N_PAD;
     Text labels[4]; int kinds[4], ids[4], nb = 0;
     if (s->wave_open) { labels[nb] = btn_label(cr, "התחל עכשיו"); kinds[nb] = BTN_PRIMARY; ids[nb++] = HIT_ROOM_START; }
     labels[nb] = btn_label(cr, "העֵר שוב");  kinds[nb] = BTN_PLAIN;  ids[nb++] = HIT_ROOM_WAKE;
@@ -391,6 +425,7 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
     draw_big_bar(cr, t, (Rect){ x, y, inner, N_BAR_H }, pct, 0); y += N_BAR_H + N_ACTION_GAP;
     draw_alert(cr, t, (Rect){ x, y, inner, alert_height(&hint_t) }, &hint_t); y += alert_height(&hint_t) + N_CHOICE_GAP;
     room_live_grid_draw(a, cr, x, y, inner, &grid, s->wave_open); y += rows_h;
+    if (unid.layout) { text_draw_r(cr, &unid, x + inner, y + N_LABEL_GAP, t->warning_ink); y += unid_h; }
     if (a->room_confirming) {
         y += N_LABEL_GAP;
         text_draw(cr, &cl, x, y, t->muted);              y += cl.h + 2;
@@ -404,5 +439,5 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
     foot_draw_bg(cr, t, foot);
     foot_buttons(a, cr, foot, labels, kinds, ids, nb);
     card_end(a, cr);
-    text_free(&hint_t); text_free(&err);
+    text_free(&hint_t); text_free(&err); text_free(&unid);
 }

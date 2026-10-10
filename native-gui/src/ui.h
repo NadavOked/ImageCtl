@@ -139,7 +139,7 @@ typedef struct { char id[64], name[96], folder[64]; } Image;
  * is separate from size_bytes (a real disk may report 0). port 0 is the
  * legacy/null-port fallback assigned by state_parse(). */
 typedef struct {
-    int port, present, fresh, selected;
+    int port, present, fresh, selected, unidentified;   /* #1235: no serial */
     char serial[80], model[80], smart[16];
     unsigned long long size_bytes;
 } RoomDrawer;

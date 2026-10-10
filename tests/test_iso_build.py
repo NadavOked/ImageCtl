@@ -39,6 +39,7 @@ LIVE_CONSOLE = REPO / "installer" / "imagectl-installer"
 WIZARD_SERVICE = REPO / "install" / "imagectl-wizard.service"
 WIZARD_RERUN_SERVICE = REPO / "install" / "imagectl-wizard-rerun.service"
 INSTALLER_GUI_SERVICE = REPO / "install" / "imagectl-installer-gui.service"
+FIRSTBOOT_SERVICE = ISO_DIR / "imagectl-firstboot.service"
 BUILD_ISO = ISO_DIR / "build-iso.sh"
 GRUB_TEMPLATE = ISO_DIR / "grub.cfg.in"
 ISOLINUX_MENU_TEMPLATE = ISO_DIR / "isolinux-menu.cfg.in"
@@ -262,6 +263,27 @@ def test_firstboot_reads_the_installer_facts_and_never_guesses_a_nic() -> None:
     assert "firstboot.status" in code
     # ה-heuristic של R25 — "הראשון עם IPv4" — אסור שיחזור.
     assert not re.search(r"addr show scope global.*\|\s*awk.*exit", code), "בחירת 'הראשון עם IPv4' חזרה"
+
+
+def test_firstboot_owns_tty1_shows_progress_and_leaves_failure_visible() -> None:
+    unit = FIRSTBOOT_SERVICE.read_text(encoding="utf-8")
+    assert "Type=oneshot" in unit and "Restart=" not in unit
+    assert "StandardOutput=journal+console" in unit and "StandardError=journal+console" in unit
+    assert "Before=getty@tty1.service" in unit and "Conflicts=getty@tty1.service" in unit, \
+        "firstboot must stop tty1 getty from racing its progress output"
+
+    code = FIRSTBOOT.read_text(encoding="utf-8")
+    assert "FIRSTBOOT_TTY=/dev/tty1" in code, "firstboot progress is not directed to tty1"
+    assert 'printf \'ImageCtl: %s\\n\' "$*" > "$FIRSTBOOT_TTY"' in code
+    assert "Stage A: building boot files (several minutes)" in code
+    assert code.count("preparing the server - Stage B:") == 2
+    failure = code[code.index("fail() {"):code.index("[[ -f \"$STAMP\" ]]")]
+    assert 'message="$*"' in failure
+    assert 'message=%s\\n\' "$state" "$(date -u +%FT%TZ)" "$message"' in failure
+    assert '"$state" "$message" > "$FIRSTBOOT_TTY"' in failure
+    assert "Press Alt+F2 to log in on tty2." in failure
+    assert "trap - ERR" in code and "trap 'unexpected_failure" in code
+    assert "getty@tty2" not in code + unit
 
 
 def test_installer_console_runtime_text_is_ascii_only() -> None:

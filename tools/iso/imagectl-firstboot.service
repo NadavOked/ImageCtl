@@ -8,6 +8,8 @@ Description=ImageCtl first boot: build initrd, start installation wizard
 ConditionPathExists=!/var/lib/imagectl/.firstboot-done
 After=network-online.target
 Wants=network-online.target
+Before=getty@tty1.service
+Conflicts=getty@tty1.service
 
 [Service]
 Type=oneshot

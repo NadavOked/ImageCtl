@@ -45,16 +45,32 @@ STATUS="$ETC/firstboot.status"
 SRC=/opt/imagectl-src
 HTTP_ROOT=/srv/imagectl/boot
 BUILD_LOG=/var/log/imagectl-firstboot-build.log
+FIRSTBOOT_TTY=/dev/tty1
+TTY_PROGRESS=1
 
-log() { printf 'imagectl-firstboot: %s\n' "$*"; }
+log() {
+    printf 'imagectl-firstboot: %s\n' "$*"
+    if [[ "$TTY_PROGRESS" == 1 ]]; then
+        printf 'ImageCtl: %s\n' "$*" > "$FIRSTBOOT_TTY"
+    fi
+}
 fail() {
     # state=<מצב> ואז הסבר; הקובץ נקרא על ידי האשף/המסך, היומן על ידי אדם.
-    local state="$1"; shift
+    local state="$1" message; shift
+    message="$*"
     install -d "$ETC"
-    printf 'state=%s\ntimestamp=%s\nmessage=%s\n' "$state" "$(date -u +%FT%TZ)" "$*" > "$STATUS"
-    printf 'imagectl-firstboot: [%s] %s\n' "$state" "$*" >&2
+    printf 'state=%s\ntimestamp=%s\nmessage=%s\n' "$state" "$(date -u +%FT%TZ)" "$message" > "$STATUS"
+    printf 'imagectl-firstboot: [%s] %s\n' "$state" "$message" >&2
+    printf '\nImageCtl: first boot failed [%s]\n%s\nPress Alt+F2 to log in on tty2.\n' \
+        "$state" "$message" > "$FIRSTBOOT_TTY"
     exit 1
 }
+unexpected_failure() {
+    local line="$1" rc="$2"
+    trap - ERR
+    fail check-error "Unexpected failure at line $line (exit $rc)"
+}
+trap 'unexpected_failure "$LINENO" "$?"' ERR
 
 [[ -f "$STAMP" ]] && { log "Already completed ($STAMP exists); nothing to do"; exit 0; }
 [[ $EUID -eq 0 ]] || fail check-error "Root privileges are required"
@@ -77,7 +93,7 @@ else
     # ‏vmlinuz — ב-tools/boot-payload-build.sh, **אותו קוד** שכפתור העדכון
     # מריץ. ‏--write-flags רושם, רק אחרי שהכול נבנה, את שתי הבניות אל
     # ‏initrd.flags — בלי קרנל ובלי epoch, שנגזרים מחדש בכל עדכון.
-    log "Stage A: building the boot payload; detailed output is in $BUILD_LOG"
+    log "preparing the server - Stage A: building boot files (several minutes); details are in $BUILD_LOG"
     payload_out=$(bash "$SRC/tools/boot-payload-build.sh" --iso-default \
         --http-root "$HTTP_ROOT" --manifest "$ETC/iso-release.json" \
         --write-flags "$ETC/initrd.flags" --build-log "$BUILD_LOG" 2>&1) \
@@ -95,6 +111,7 @@ fi
 # אשף. ‏setup-boot-server מהדגלים, אימות המטען, חותמת, ואז ה-DCUI.
 # ---------------------------------------------------------------------------
 if [[ -f "$ETC/answers" ]]; then
+    log "preparing the server - Stage B: applying installer answers and starting the DCUI"
     [[ -f "$SRC/tools/iso/firstboot-answers.sh" ]] || fail check-error "$ETC/answers exists but $SRC/tools/iso/firstboot-answers.sh is missing"
     # shellcheck source=tools/iso/firstboot-answers.sh
     . "$SRC/tools/iso/firstboot-answers.sh"
@@ -104,6 +121,7 @@ if [[ -f "$ETC/answers" ]]; then
     systemctl daemon-reload || fail check-error "systemctl daemon-reload failed before starting the DCUI"
     systemctl mask getty@tty1.service || fail check-error "Could not mask getty@tty1.service"
     systemctl enable imagectl-dcui.service || fail check-error "Could not enable imagectl-dcui.service"
+    TTY_PROGRESS=0
     systemctl restart imagectl-dcui.service || fail check-error "Could not start imagectl-dcui.service"
     rm -rf "$TMPDIR"
     log "Stage B complete from the installer's answers: the DCUI is on tty1, the console on 8081"
@@ -114,6 +132,7 @@ fi
 # שלב ב' (ללא תשובות — שרת בלי מסך) — קורא את עובדות ההתקנה, מדווח פערים,
 # ומוסר אותן לאשף בדפדפן כברירות מחדל
 # ---------------------------------------------------------------------------
+log "preparing the server - Stage B: starting the installation wizard"
 NIC_FILE="$ETC/installer-nic"
 ROLE_FILE="$ETC/installer-role"
 if [[ ! -f "$NIC_FILE" ]]; then
@@ -215,12 +234,14 @@ for event in /dev/input/event*; do
     fi
 done
 if [[ -e /dev/fb0 && "$has_keyboard" == 1 ]]; then
+    TTY_PROGRESS=0
     systemctl start imagectl-installer-gui.service \
         || fail check-error "Could not start imagectl-installer-gui.service"
     systemctl is-active --quiet imagectl-installer-gui.service \
         || fail check-error "imagectl-installer-gui.service is not active after start"
     log "installer gui: started on tty1"
 else
+    TTY_PROGRESS=0
     systemctl restart imagectl-dcui.service || fail check-error "Could not start imagectl-dcui.service"
     systemctl is-active --quiet imagectl-dcui.service || fail check-error "imagectl-dcui.service is not active after restart"
     log "installer gui: no framebuffer/keyboard, DCUI only"

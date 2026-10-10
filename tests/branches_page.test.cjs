@@ -132,6 +132,28 @@ test('#1017: a connected secondary shows "ענתה HH:MM" from last_seen_at; bef
   assert.match(html, /class="status ok" id="branch-row-conn-n0de"><i><\/i>מחובר · ענתה (19\/09\/2026 )?09:41</);
 });
 
+test('#1237: after a reload, what GET /storage-nodes remembers is shown where no live answer replaces it', async () => {
+  // דטרמיניסטי, בלי תזמון: משני מושבת אינו נשאל כלל, ומשני שהבקשה לראשי עצמו
+  // נכשלה עליו נשאר עם מה שהשרת זכר. ‏null (לא נמדד) = בלי זמן, לא "ענתה".
+  const row = base['/storage-nodes'][0];
+  const fixtures = {...base,
+    '/storage-nodes': [
+      {...row, id: 'off1', label: 'אילת', disabled_at: '2026-09-20T10:00:00+00:00', last_seen_at: '2026-09-18T07:30:00+00:00', last_error: null, last_error_at: null},
+      {...row, id: 'off2', label: 'עכו', disabled_at: '2026-09-20T10:00:00+00:00', last_seen_at: null, last_error: null, last_error_at: null},
+      {...row, id: 'on1', label: 'חיפה', last_seen_at: '2026-09-17T06:15:00+00:00', last_error: null, last_error_at: null},
+    ],
+    '/storage-nodes/on1/machines': new Error('500')};
+  const {run, calls} = setup(fixtures);
+  await run('loadBranchesData()');
+  assert.equal(calls.filter((c) => /storage-nodes\/off\d/.test(c.url)).length, 0, 'a disabled secondary is not asked');
+  assert.match(run('branchStatusHtml("off1")').html, /^<i><\/i>מושבת<span class="sub">ענתה לאחרונה 18\/09\/2026 07:30<\/span>$/);
+  assert.equal(run('branchStatusHtml("off2")').html, '<i></i>מושבת', 'never answered (null) → no time at all');
+  const on = run('branchStatusHtml("on1")');
+  assert.equal(on.cls, 'status err');
+  assert.match(on.html, /<span class="sub">ענתה לאחרונה 17\/09\/2026 06:15<\/span>$/, 'the request to the primary failed — the remembered answer stays');
+  assert.doesNotMatch(on.html, /לא ענה — /, 'the primary recorded no failure time, so none is shown');
+});
+
 test('#1017: the row action "בדוק חיבור" posts to …/check (ping only), keeps the machines count, and updates the cell from the response', async () => {
   const fixtures = {...base,
     [`/storage-nodes/${NODE}/check`]: {connected: false, error: 'ping נכשל (503)', checked_at: '2026-09-19T10:00:00+00:00', node_id: null, protocol_version: null,

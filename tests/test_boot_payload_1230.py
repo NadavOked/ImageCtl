@@ -93,7 +93,7 @@ def _with_payload_builder(tree: Path) -> None:
 def _firstboot_stage_a() -> str:
     """‏log(), ‏fail() ובלוק שלב א' — מתוך firstboot.sh עצמו."""
     text = FIRSTBOOT.read_text(encoding="utf-8")
-    log = re.search(r"^log\(\) \{.*\}\n", text, flags=re.MULTILINE)
+    log = re.search(r"^log\(\) \{.*?^\}\n", text, flags=re.MULTILINE | re.DOTALL)
     fail = re.search(r"^fail\(\) \{.*?^\}\n", text, flags=re.MULTILINE | re.DOTALL)
     block = re.search(r'^if \[\[ -f "\$STAGE_A_STAMP" \]\]; then\n.*?^fi\n', text,
                       flags=re.MULTILINE | re.DOTALL)
@@ -109,6 +109,8 @@ def _run_firstboot(tmp_path: Path, host: Path, bindir: Path, env: dict | None = 
         f'SRC="{posix(src)}"; ETC="{posix(host / "etc")}"; HTTP_ROOT="{posix(host / "boot")}"\n'
         f'BUILD_LOG="{posix(tmp_path / "build.log")}"; STAGE_A_STAMP="{posix(tmp_path / "stage-a")}"\n'
         'STATUS="$ETC/firstboot.status"\n'
+        # ‏#1240: ההתקדמות נכתבת ל-tty1 של המכונה; בטסט — לקובץ.
+        f'FIRSTBOOT_TTY="{posix(tmp_path / "tty1")}"; TTY_PROGRESS=1\n'
         + _firstboot_stage_a()
     )
     return run_bash(script, tmp_path, bindir, env={**_host_env(host), **(env or {})})
@@ -150,6 +152,9 @@ def test_firstboot_build_failure_records_no_flags_and_names_the_failure(tmp_path
     status = (host / "etc" / "firstboot.status").read_text(encoding="utf-8")
     assert "state=payload-failed" in status and "Build failed" in status
     assert not (tmp_path / "stage-a").exists()
+    # ‏#1240: הכישלון מוצג על tty1, לא רק ביומן.
+    tty = (tmp_path / "tty1").read_text(encoding="utf-8")
+    assert "first boot failed [payload-failed]" in tty and "Alt+F2" in tty
 
 
 # --- server-upgrade.sh -----------------------------------------------------------

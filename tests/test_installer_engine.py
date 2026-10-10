@@ -225,7 +225,7 @@ def test_dry_run_prints_the_exact_command_sequence_and_redacts_secrets(tmp_path)
         "sgdisk", "sgdisk", "blockdev", "mkfs.vfat", "mkfs.ext4",
         "mkdir", "mount", "mkdir", "mount", "debootstrap", "mkdir",
         "mount", "mount", "mount", "mount", "write-target", "rm",
-        "chroot", "chroot", "cp", "cp", "chmod", "cp", "chroot",
+        "chroot", "chroot", "cp", "cp", "chmod", "cp", "chroot", "chroot",
         "mkdir", "mkdir", "cp", "cp", "verify-package-pool", "write-target",
         "write-target", "write-target", "write-target", "cp", "printf",
         "chroot", "chroot", "chroot", "write-target", "chroot", "blkid", "blkid",
@@ -382,6 +382,16 @@ def test_removing_the_iso_guard_makes_the_destructive_dry_run_reachable(tmp_path
     got = _run(box, _answers(tmp_path / "answers"), "--dry-run", engine=mutated / "imagectl-install")
     assert got.returncode == 0, got.stderr
     assert "+ sgdisk --zap-all" in got.stdout
+
+
+def test_installed_system_reserves_tty1_before_enabling_firstboot():
+    bootstrap = (INSTALLER / "lib" / "bootstrap.sh").read_text(encoding="utf-8")
+    mask = 'systemctl mask getty@tty1.service'
+    enable = 'systemctl enable imagectl-firstboot.service'
+    assert bootstrap.count(mask) == 1, "the installed target does not reserve tty1 before first boot"
+    assert bootstrap.index(mask) < bootstrap.index(enable)
+    assert 'must_run firstboot-tty1 "could not reserve tty1 for firstboot progress"' in bootstrap
+    assert "getty@tty2" not in bootstrap
 
 
 @pytest.mark.parametrize("path", sizelimit.guarded_shell_files(REPO), ids=lambda p: p.name)

@@ -155,7 +155,10 @@ void state_parse(State *s, FILE *fp) {
             cp(d->model, sizeof d->model, f[3]);
             d->size_bytes = size;
             cp(d->smart, sizeof d->smart, f[5]);
-            d->fresh = num(f[6], 0) != 0;
+            /* #1235: -1 = no serial (#105, fresh null): "cannot identify",
+             * which is neither ready nor written. */
+            d->fresh = num(f[6], 0) == 1;
+            d->unidentified = num(f[6], 0) < 0;
             d->selected = num(f[7], 0) != 0;
         } else if (KEY("drawer") && s->ndrawers < MAX_DRAWERS) {
             int nf = split(val, f, 8);

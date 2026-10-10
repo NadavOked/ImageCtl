@@ -228,6 +228,9 @@ hello_rc=<HTTP status>               # response code observed for that hello
 # #st-room (GET /api/console/room) and #st-class live rows
 image=<id>|<name>|<folder>          # /api/console/images
 machine=<name>|<mac>|<awake>|<joined>|<fresh_drawers>|<state>|<pct>|<moving>|<error>
+room_drawer=<machine-index>|<port or 0>|<serial>|<model>|<size>|<smart>|<fresh>|<selected>
+                                    # #1235: fresh 1 = ready, 0 = written, -1 = no serial (GET /room
+                                    # fresh:null, #105) -- shown as "לא ניתן לזהות את הכונן בחריץ N"
 round=<image_name>|<wave_number>|<open 0/1>|<written>|<target>|<ready>|<remaining>|<elapsed_s>|<rate_bps>|<eta_s>
                                     # #410: the last three from GET /room .round (-1 = not measured, never 0);
                                     # a seven-field record from an older agent reads as all three unmeasured

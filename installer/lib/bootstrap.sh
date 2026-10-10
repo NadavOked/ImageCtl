@@ -145,6 +145,7 @@ install_target_packages() {
     must_run firstboot-copy "could not install firstboot" cp "$CDROM/imagectl/firstboot.sh" "$TARGET/usr/local/sbin/imagectl-firstboot"
     must_run firstboot-mode "could not mark firstboot executable" chmod 0755 "$TARGET/usr/local/sbin/imagectl-firstboot"
     must_run firstboot-service "could not install firstboot service" cp "$CDROM/imagectl/imagectl-firstboot.service" "$TARGET/etc/systemd/system/imagectl-firstboot.service"
+    must_run firstboot-tty1 "could not reserve tty1 for firstboot progress" chroot "$TARGET" systemctl mask getty@tty1.service
     must_run firstboot-enable "could not enable firstboot service" chroot "$TARGET" systemctl enable imagectl-firstboot.service
     copy_local_repo
     write_target 0644 /etc/apt/sources.list ""

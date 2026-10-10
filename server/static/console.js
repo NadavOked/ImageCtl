@@ -3227,7 +3227,12 @@ function clonerCardHtml(m, admin, room = false) {
   const macEnc = encodeId(m.mac), net = netFor(m.mac), st = room ? roomCardState(m) : clonerState(m), { slots, declared } = machineSlots(m);
   const meta = [esc(st.text), `${slots.length} ${slots.length === 1 ? "חריץ" : "חריצים"}${declared || !slots.length ? "" : " (לפי הדיווח)"}`,
     net && net.ip ? `<span class="mono">${esc(net.ip)}</span>` : "", esc(NET ? seenAgo(net && net.last_seen) : "לא נקרא")].filter(Boolean).join(" · ");
-  const body = slots.length ? `<div class="slots">${slots.map((s) => slotHtml(m, s, admin)).join("")}</div>`
+  /* #1235: ‏`fresh: null` = הכונן לא דיווח serial (#105) — הסבב סופר לפי serial ואינו יכול
+     לדעת אם נכתב. נאמר לפי חריץ, מתחת לגריד (#1033: המלבן עצמו נשאר שתי שורות). ‏`=== null`
+     ולא `!fresh`: ‏false = נכתב, ו-undefined = רשומת /machines שאין בה `fresh` כלל. */
+  const unid = slots.filter((s) => s.disk && s.disk.fresh === null)
+    .map((s) => UI.note("warn", `<b>לא ניתן לזהות את הכונן בחריץ ${s.n}</b> — אין לו מספר סידורי, ולכן הסבב אינו יודע אם נכתב.`)).join("");
+  const body = slots.length ? `<div class="slots">${slots.map((s) => slotHtml(m, s, admin)).join("")}</div>${unid}`
     : UI.note("", `מספר החריצים לא הוגדר והמכונה ${m.disks == null ? "מעולם לא דיווחה על דיסקים" : "דיווחה: " + zeroDisksText(m)}.${admin ? ` ${UI.link("הגדר חריצים", `editDrawerCount('${macEnc}')`)}` : ""}`);
   const wol = `<button class="btn sm" onclick="wakeMachine('${macEnc}')" title="WoL למכונה הזו בלבד (#984); לכל החדר — בכותרת">WoL</button>`;
   const acts = room
