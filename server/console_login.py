@@ -21,7 +21,7 @@ def _ip(request: Request) -> str:
 
 
 def _idle(conn) -> int:
-    return int(get_setting(conn, "console_idle_seconds") or 300)
+    return int(get_setting(conn, "console_idle_seconds") or 600)
 
 
 def _raise_blocked(exc: login_guard.LoginBlocked) -> None:

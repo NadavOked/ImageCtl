@@ -188,7 +188,8 @@ typedef struct State {
     /* the build machine's own task (station.js drawProgress / drawDone) */
     TaskState task;
     int task_direct;                    /* #715: task.type == direct_send (sending, not capturing) */
-    char task_name[96], task_disk[32], task_error[200];
+    char task_name[96], task_disk[32], task_error[1024];
+    char agent_version[129];   /* #1257; server_version is declared with the #1252 header fields */
     int pct, moving, partition;         /* pct -1 = unknown total */
     unsigned long long bytes;           /* bytes_written */
     char title[128], sub[200];          /* overrides for #st-prog-title / #st-prog-sub */
@@ -224,7 +225,7 @@ typedef struct State {
      * and the standby line -- server_name=/server_version= from GET
      * /api/v1/agent/state, server_addr= from imagectl.server. Empty = not
      * known, drawn as "לא ידוע" -- never the mockup's numbers. */
-    char server_name[64], server_addr[64], server_version[48];
+    char server_name[64], server_addr[64], server_version[129];
     /* #1168: logo=<png path> from guistate.sh -- the college's logo in the
      * header instead of the brandmark. Empty = brandmark. */
     char logo[256];

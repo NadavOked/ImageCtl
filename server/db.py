@@ -545,7 +545,7 @@ DEFAULT_SETTINGS = {
     "session_wait_seconds": "300",
     # ניתוק אוטומטי של הקונסולה בחוסר פעילות. המסך עומד בכיתה או במשרד
     # פתוח — מי שקם והלך לא משאיר אחריו קונסולת ניהול פתוחה.
-    "console_idle_seconds": "300",
+    "console_idle_seconds": "600",
     # ‏#880: v1 "מהדורת שיכפול" — הפצה לכיתות ממחשב הבנייה כבויה כברירת
     # מחדל. הקוד נשאר (v2); המתג בקונסולה, מסך ההגדרות.
     "class_deploy_enabled": "false",
@@ -570,6 +570,7 @@ ADDED_COLUMNS = [
     # על ברזל ונזרקו (07/09). NULL = הסוכן לא דיווח (ישן / hello בלי השדה).
     ("net_devices", "firmware", "TEXT"),
     ("net_devices", "secure_boot", "INTEGER"),
+    ("net_devices", "agent_version", "TEXT"),
     # ‏#1077: ``hmac`` כשהסוכן תומך באתגר-תגובה. NULL = סוכן ישן; הפרוקסי
     # מסרב ולא נופל לשליחת הסוד הגולמי.
     ("net_devices", "monitor_auth", "TEXT"),
@@ -1131,7 +1132,8 @@ def _net_seen_unchanged(row: sqlite3.Row, ip: str | None,
                         prompt: str | None = None,
                         disk_probe: str | None = None,
                         firmware: str | None = None,
-                        secure_boot: int | None = None) -> bool:
+                        secure_boot: int | None = None,
+                        agent_version: str | None = None) -> bool:
     """האם השורה כבר אומרת בדיוק את מה שהכתיבה הזו הייתה כותבת.
 
     ראיה חיובית בלבד (עיקרון 5): חותמת שאי אפשר לפענח, חותמת בלי אזור
@@ -1155,6 +1157,8 @@ def _net_seen_unchanged(row: sqlite3.Row, ip: str | None,
         return False
     if secure_boot is not None and secure_boot != row["secure_boot"]:
         return False
+    if agent_version is not None and agent_version != row["agent_version"]:
+        return False
     try:
         last = datetime.fromisoformat(row["last_seen"])
     except (TypeError, ValueError):
@@ -1174,6 +1178,7 @@ def net_seen(
     disk_probe: str | None = None,
     firmware: str | None = None,
     secure_boot: int | None = None,
+    agent_version: str | None = None,
 ) -> None:
     """כל מגע של מכונה עם השרת — hello או תפריט אתחול — נרשם כאן.
 
@@ -1196,12 +1201,12 @@ def net_seen(
     now = datetime.now(timezone.utc)
     row = conn.execute(
         "SELECT ip, last_seen, disks_json, monitor_secret, monitor_auth, prompt,"
-        " disk_probe, firmware, secure_boot FROM net_devices WHERE mac = ?", (mac,)
+        " disk_probe, firmware, secure_boot, agent_version FROM net_devices WHERE mac = ?", (mac,)
     ).fetchone()
     if row is not None and _net_seen_unchanged(row, ip, disks_json, now,
                                                monitor_secret, monitor_auth,
                                                prompt, disk_probe,
-                                               firmware, secure_boot):
+                                               firmware, secure_boot, agent_version):
         return
 
     ts = now.isoformat(timespec="seconds")
@@ -1213,8 +1218,8 @@ def net_seen(
     with _write_lock, writing(conn):
         conn.execute(
             "INSERT INTO net_devices (mac, ip, first_seen, last_seen, disks_json,"
-            " monitor_secret, monitor_auth, prompt, disk_probe, firmware, secure_boot)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            " monitor_secret, monitor_auth, prompt, disk_probe, firmware, secure_boot, agent_version)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (mac) DO UPDATE SET ip = COALESCE(excluded.ip, ip),"
             " last_seen = ?, disks_json = COALESCE(excluded.disks_json, disks_json),"
             " monitor_secret = COALESCE(excluded.monitor_secret, monitor_secret),"
@@ -1223,9 +1228,10 @@ def net_seen(
             " prompt = excluded.prompt,"
             " disk_probe = COALESCE(excluded.disk_probe, disk_probe),"
             " firmware = COALESCE(excluded.firmware, firmware),"
-            " secure_boot = COALESCE(excluded.secure_boot, secure_boot)",
+            " secure_boot = COALESCE(excluded.secure_boot, secure_boot),"
+            " agent_version = COALESCE(excluded.agent_version, agent_version)",
             (mac, ip, ts, ts, disks_json, monitor_secret, monitor_auth, prompt,
-             disk_probe, firmware, secure_boot, ts),
+             disk_probe, firmware, secure_boot, agent_version, ts),
         )
 
 

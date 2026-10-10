@@ -36,18 +36,26 @@ _used_bytes() {
     # null and a measured 0 are two states, and the manifest keeps them apart.
     _m="$RUN_DIR/probe"
     mkdir -p "$_m"
+    # A read-only mount can still replay a journal. Capacity preflight must
+    # not change the source before the operator has approved shrinking it.
+    _probe_opts=ro
+    case "$2" in ext2|ext3|ext4) _probe_opts=ro,noload ;; btrfs) _probe_opts=ro,nologreplay ;; esac
     # ‏-t מפורש, ולא זיהוי אוטומטי: ‏mount בלי סוג בוחר רק מבין מערכות הקבצים
     # שכבר טעונות (/proc/filesystems), ואילו `-t ext4` מבקש מהקרנל לטעון את
     # המודול. כל עוד עץ kernel/fs לא נארז בכלל שני המסלולים נכשלו, וכל
     # המחיצות דיווחו used_bytes=0 (#84). ‏stderr ליומן ולא ל-/dev/null:
     # "לא הצלחנו לעגן" ו"עגנו וזה ריק" הם שני מצבים שונים, והסיבה מבדילה.
-    if mount -t "$2" -o ro "$1" "$_m" 2>>"$LOG_FILE" \
-       || mount -o ro "$1" "$_m" 2>>"$LOG_FILE"; then
+    if mount -t "$2" -o "$_probe_opts" "$1" "$_m" 2>>"$LOG_FILE" \
+       || mount -o "$_probe_opts" "$1" "$_m" 2>>"$LOG_FILE"; then
         # ‏-kP ולא -B1: ה-df של busybox לא מכיר ‎-B, וכל המחיצות דווחו
         # בשקט used_bytes=0 (נתפס באימג' הראשון של המעבדה, #12).
-        _used=$(df -kP "$_m" 2>/dev/null | awk 'NR==2 {print $3 * 1024}')
-        umount "$_m" 2>/dev/null
-        [ -n "$_used" ] && { echo "$_used"; return 0; }
+        _used=""
+        if _usage=$(df -kP "$_m" 2>>"$LOG_FILE"); then
+            _used=$(printf '%s\n' "$_usage" | awk 'NR==2 && $3 ~ /^[0-9]+$/ {printf "%.0f\n", $3 * 1024}')
+        fi
+        if umount "$_m" 2>>"$LOG_FILE" && [ -n "$_used" ]; then
+            echo "$_used"; return 0
+        fi
     fi
     # An image captured from a hibernated Windows mounts dirty. Section 9 of the
     # spec tells the operator to run powercfg /h off first; saying so here is the

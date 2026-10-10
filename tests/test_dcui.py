@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 from server import netcfg_host, netcfg_rollback, users
 from server.db import connect, get_setting
 from server.dcui import actions
-from server.dcui.app import (render_auth, render_main, render_menu,
-                             render_network, render_power, render_preinstall,
+from server.dcui import app as dcui_app
+from server.dcui.app import (Runtime, _current_lines, _handle_key, render_auth,
+                             render_main, render_menu, render_network,
+                             render_power, render_preinstall,
                              render_preinstall_network)
 from server.dcui.data import (CommandResult, NicInfo, _round, collect_snapshot,
                               demo_snapshot)
@@ -72,16 +76,24 @@ def test_three_wrong_passwords_lock_auth_for_30_seconds(tmp_path):
     assert len(events) == 3 and {row["user"] for row in events} == {"dcui"}
 
 
-def test_reset_password_is_admin_admin_and_forces_change(tmp_path):
+def test_f2_menu_has_no_admin_admin_reset(tmp_path, monkeypatch):
+    """הכרעת נדב 10/10 (#1249): האיפוס ל-admin/admin מתפריט F2 הוסר — רק F9.
+    כל פריט בתפריט נפתח (גם עם "y"), והסיסמה לא זזה."""
     conn = _db(tmp_path)
-    result = actions.reset_admin_password(conn)
-    assert result.ok
-    assert users.verify(conn, "admin", "admin") == "admin"
-    assert users.flags(conn, "admin")["must_change_password"] is True
-    row = conn.execute(
-        "SELECT user FROM journal WHERE event = 'admin_password_reset_dcui'"
-    ).fetchone()
-    assert row["user"] == "dcui"
+    for name in ("restart_services", "restart_management_network", "start_wizard"):
+        monkeypatch.setattr(actions, name,
+                            lambda *a, **k: actions.ActionResult(True, "stub"))
+    monkeypatch.setattr(actions, "note_tls_display", lambda conn: None)
+    snapshot = demo_snapshot()
+    for index in range(len(dcui_app.MENU_ITEMS)):
+        screen = "\n".join(render_menu(snapshot, selected=index))
+        assert "Reset Admin Password" not in screen and "admin/admin" not in screen
+        runtime = _runtime(tmp_path, conn)
+        runtime.screen, runtime.menu_index = "menu", index
+        _press(runtime, "\n", "y")
+        assert runtime.screen != "reset_confirm", dcui_app.MENU_ITEMS[index]
+    assert users.verify(conn, "admin", "before") == "admin"
+    assert users.flags(conn, "admin")["must_change_password"] is False
 
 
 def test_power_action_requires_exact_hostname_before_runner(tmp_path):
@@ -271,6 +283,153 @@ def test_preinstall_static_address_is_temporary_ip_state_only():
         ["ip", "route", "replace", "default", "via", "10.10.10.1",
          "dev", "ens33"],
     ]
+
+
+#: מקשי curses בלי curses — ‏get_wch מחזיר int למקשי פונקציה ו-str לתווים.
+KEYS = SimpleNamespace(KEY_ENTER=343, KEY_F2=266, KEY_F5=269, KEY_F9=273,
+                       KEY_F12=276, KEY_BACKSPACE=263, KEY_UP=259, KEY_DOWN=258)
+NEW_PW = "Nn12345!"
+
+
+def _runtime(tmp_path, conn, **snapshot):
+    return Runtime(tmp_path, conn, replace(demo_snapshot(), **snapshot),
+                   last_key_at=time.monotonic())
+
+
+def _press(runtime, *keys):
+    for key in keys:
+        _handle_key(runtime, key, KEYS)
+
+
+def _type(runtime, text, enter=True):
+    """כמו ש-get_wch מחזיר על tty1: תווים, ו-Enter כ-"\\n" (לא 10)."""
+    _press(runtime, *text)
+    if enter:
+        _press(runtime, "\n")
+
+
+def _admin_with_mfa_and_sessions(conn):
+    """admin עם MFA, קודי גיבוי, דפדפן זכור, אתגר פתוח ונעילת כניסה בקונסולה."""
+    conn.execute("UPDATE users SET mfa_enabled = 1, mfa_secret = 'JBSWY3DP',"
+                 " mfa_enrolled_at = 'x', mfa_last_step = 7, must_change_password = 1"
+                 " WHERE username = 'admin'")
+    conn.execute("INSERT INTO mfa_backup_codes (username, code_hash) VALUES ('admin', 'h')")
+    conn.execute("INSERT INTO trusted_browsers (token_hash, username, expires_at,"
+                 " created_at) VALUES ('t', 'admin', 9e12, 'now')")
+    conn.execute("INSERT INTO mfa_challenges (token_hash, username, expires_at)"
+                 " VALUES ('c', 'admin', 9e12)")
+    conn.execute("INSERT INTO login_attempts (key, failures, locked_until, last_at)"
+                 " VALUES ('admin|10.0.0.5', 10, 9e12, 1)")
+    conn.commit()
+    return conn.execute("SELECT auth_epoch FROM users WHERE username = 'admin'"
+                        ).fetchone()["auth_epoch"]
+
+
+def _count(conn, sql):
+    return conn.execute(sql).fetchone()[0]
+
+
+def test_physical_reset_replaces_the_hash_ends_sessions_and_drops_mfa(tmp_path):
+    """#1249: איפוס בנוכחות פיזית — סיסמה חדשה, כל ה-sessions מתבטלות,
+    ה-MFA נמחק (מי ששכח סיסמה איבד כנראה גם את הטלפון), והיומן כותב."""
+    conn = _db(tmp_path)
+    epoch = _admin_with_mfa_and_sessions(conn)
+    result = actions.physical_reset_admin_password(conn, NEW_PW)
+    assert result.ok, result
+    assert users.verify(conn, "admin", NEW_PW) == "admin"
+    assert users.verify(conn, "admin", "before") is None
+    info = users.flags(conn, "admin")
+    assert info["mfa_enabled"] is False and info["mfa_secret"] is None
+    assert info["must_change_password"] is False       # המפעיל בחר את הסיסמה בעצמו
+    assert _count(conn, "SELECT auth_epoch FROM users WHERE username = 'admin'") == epoch + 1
+    for table in ("mfa_backup_codes", "trusted_browsers", "mfa_challenges"):
+        assert _count(conn, f"SELECT COUNT(*) FROM {table} WHERE username = 'admin'") == 0, table
+    assert _count(conn, "SELECT COUNT(*) FROM login_attempts WHERE key LIKE 'admin|%'") == 0
+    row = conn.execute("SELECT detail, user FROM journal"
+                       " WHERE event = 'admin_password_reset_dcui'").fetchone()
+    assert "admin password reset from the server console (DCUI)" in row["detail"]
+    assert "verified=true" in row["detail"] and row["user"] == "dcui"
+
+
+def test_physical_reset_uses_the_server_password_policy(tmp_path, monkeypatch):
+    """אותה מדיניות כמו המתקין והקונסולה — ‏`users.validate_password`, לא עותק."""
+    conn = _db(tmp_path)
+    for weak in ("Aa1!", "abcdefgh!", "abcd1234", "12345678!", "Aa1!" + "x" * 125):
+        result = actions.physical_reset_admin_password(conn, weak)
+        assert not result.ok, weak
+        assert result.message.isascii()
+    assert users.verify(conn, "admin", "before") == "admin"
+
+    def refuse(password):
+        raise ValueError("nope")
+    monkeypatch.setattr(users, "validate_password", refuse)
+    assert not actions.physical_reset_admin_password(conn, NEW_PW).ok
+    assert users.verify(conn, "admin", "before") == "admin"
+
+
+def test_f9_reset_needs_no_old_password_and_returns_to_main_not_menu(tmp_path):
+    conn = _db(tmp_path)
+    runtime = _runtime(tmp_path, conn)
+    _press(runtime, KEYS.KEY_F9)
+    assert runtime.screen == "reset"                    # לא "auth" — אין סיסמה ישנה
+    screen = "\n".join(_current_lines(runtime, time.monotonic()))
+    assert "WARNING:" in screen and "Type RESET to confirm" in screen
+    _press(runtime, *"RESETX", "\x7f", "\n")            # Backspace של tty1 = "\x7f"
+    assert runtime.reset_stage == "password", runtime.message
+    _type(runtime, NEW_PW)
+    _type(runtime, NEW_PW)
+    assert runtime.result is not None and runtime.result.ok, runtime.result
+    assert users.verify(conn, "admin", NEW_PW) == "admin"
+    assert runtime.auth.failures == 0
+    _press(runtime, "\n")
+    assert runtime.screen == "main"                     # בלי אימות — לא לתפריט F2
+
+
+def test_reset_word_must_be_exact_and_three_misses_lock_for_30_seconds(tmp_path):
+    conn = _db(tmp_path)
+    runtime = _runtime(tmp_path, conn)
+    _press(runtime, KEYS.KEY_F9)
+    for word in ("reset", "RESE", "yes"):
+        assert runtime.screen == "reset"
+        _type(runtime, word)
+    assert runtime.screen == "main"
+    assert runtime.reset_guard.seconds_left(time.time()) > 0
+    assert "locked" in runtime.message
+    _press(runtime, KEYS.KEY_F9)
+    assert runtime.screen == "main"                     # נעול — F9 לא נפתח
+    assert users.verify(conn, "admin", "before") == "admin"
+    assert _count(conn, "SELECT COUNT(*) FROM journal"
+                        " WHERE event = 'dcui_reset_failure' AND user = 'dcui'") == 3
+
+
+def test_reset_mismatch_or_weak_password_changes_nothing(tmp_path):
+    conn = _db(tmp_path)
+    runtime = _runtime(tmp_path, conn)
+    _press(runtime, KEYS.KEY_F9)
+    assert runtime.screen == "reset"
+    _type(runtime, "RESET")
+    _type(runtime, "abcdefgh")                          # בלי ספרה ותו מיוחד
+    assert runtime.reset_stage == "password"
+    _type(runtime, NEW_PW)
+    _type(runtime, NEW_PW + "x")                        # האימות לא תואם
+    assert runtime.screen == "reset" and runtime.reset_stage == "password"
+    assert "differ" in runtime.message
+    assert users.verify(conn, "admin", "before") == "admin"
+    _press(runtime, "\x1b")                             # Esc של get_wch
+    assert runtime.screen == "main"
+    assert users.verify(conn, "admin", "before") == "admin"
+
+
+def test_reset_screens_are_80x25_ascii_and_main_offers_f9():
+    _assert_screen(render_main(demo_snapshot()), ("<F9> Reset Password", "<F2>", "<F12>"))
+    render_reset = dcui_app.render_reset         # בתוך הטסט: בקרה שלילית אינה ImportError
+    for stage in ("confirm", "password", "repeat"):
+        _assert_screen(render_reset(stage, "RES" if stage == "confirm" else "abc"),
+                       ("Reset Admin Password", "WARNING:", "Type RESET to confirm",
+                        "special character"))
+    done = render_reset("done", result=actions.ActionResult(True, "Admin password reset."))
+    _assert_screen(done, ("Admin password reset.", "Back to main screen"))
+    assert "abc" not in "\n".join(render_reset("password", "abc"))   # סיסמה לא מוצגת
 
 
 def test_dcui_unit_owns_tty1_without_requiring_the_web_server():

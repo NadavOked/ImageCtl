@@ -1,7 +1,9 @@
 # common.sh -- logging, HTTP, kernel command line, fail-safe reboot.
 # POSIX sh (busybox ash). No bashisms.
 
-AGENT_VERSION="0.1.0"
+# A missing stamp is unknown; never substitute the script's original version.
+AGENT_VERSION=$(cat "${AGENT_VERSION_FILE:-/etc/imagectl/agent-version}" 2>/dev/null) || AGENT_VERSION=unknown
+case "$AGENT_VERSION" in ''|*[!a-zA-Z0-9._+-]*) AGENT_VERSION=unknown ;; esac
 RUN_DIR="${RUN_DIR:-/run/imagectl}"
 LOG_FILE="$RUN_DIR/agent.log"
 

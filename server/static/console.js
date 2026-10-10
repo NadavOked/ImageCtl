@@ -618,7 +618,6 @@ function loginFormHtml(state) {
     <div class="f pw${err}"><label for="login-pass">סיסמה</label>
       <input id="login-pass" type="password" autocomplete="current-password">${loginEye("login-pass")}</div>
     ${loginMsg(state.error)}
-    <label class="check"><input type="checkbox" id="login-remember"${state.remember ? " checked" : ""}> זכור את הדפדפן הזה ל-7 שעות</label>
     <button class="btn" type="submit">כניסה</button>
   </form>`;
 }
@@ -660,7 +659,7 @@ function loginMfaHtml(state) {
     <p class="lead"><span class="mono">${esc(state.username || "")}</span> · שישה תווים, מתחלף כל 30 שניות</p>
     ${backup}
     ${loginMsg(state.error)}
-    <label class="check"><input type="checkbox" id="mfa-remember"${state.remember ? " checked" : ""}> זכור את הדפדפן הזה ל-7 שעות</label>
+    <label class="check"><input type="checkbox" id="mfa-remember"${state.remember ? " checked" : ""}> אל תבקש קוד בדפדפן הזה ל-7 שעות</label>
     <button class="btn" type="submit">אימות</button>
     ${state.otpBackup ? "" : `<button type="button" class="link" id="mfa-use-backup">השתמש בקוד גיבוי</button>`}
   </form>`;
@@ -837,9 +836,9 @@ async function loginFetch(path, body) {
 async function loginSubmitCredentials() {
   const username = ($("#login-user") && $("#login-user").value || "").trim();
   const password = ($("#login-pass") && $("#login-pass").value) || "";
-  const remember = !!( $("#login-remember") && $("#login-remember").checked );
+  // ‏#1243: אין "זכור" במסך הזה — ‏/login לא מקבל אותו. הפטור מקוד ל-7
+  // שעות (`remember_browser`) נבחר רק במסך ה-MFA.
   LOGIN.username = username;
-  LOGIN.remember = remember;
   const r = await loginFetch("/login", { username, password });
   const next = loginStateFromResponse(r.status, r.body, r.retryAfter, LOGIN);
   if (next.screen === "app") { await enterApp(); return; }
@@ -1605,7 +1604,7 @@ async function loadHome() {
     .then((v) => { HOME[key] = v; delete HOME.err[key]; })
     .catch((e) => { HOME[key] = null; HOME.err[key] = e.message; }));
   jobs.push(refreshStatus());
-  jobs.push(loadCaptures().catch((e) => { HOME.err.tasks = e.message; }));
+  jobs.push(loadCaptures().then(() => { delete HOME.err.tasks; }, (e) => { HOME.err.tasks = e.message; }));
   grab("net", "/net");
   grab("ports", "/ports");
   if (isAdmin()) {
@@ -1711,7 +1710,10 @@ function homeNowRows(all = false) {
     const cls = t.state === "failed" ? "err" : t.state === "done" ? (t.error ? "warn" : "ok") : t.state === "pending" ? "warn" : "run";
     const label = t.state === "pending" ? "ממתין שהמחשב יעלה ב-PXE" : t.state === "running" ? "קולט"
       : t.state === "done" ? (t.error ? "הושלם עם אזהרה" : "הושלם") : t.state === "failed" ? "נכשל" : t.state;
-    rows.push([UI.nameHtml(`קליטת אימג' — ${t.name || ""}`, `${esc(t.machine || t.mac || "")}${t.disk ? " · " + ltr(t.disk) : ""} · ${ltr(fmtDate(t.created_at) + " " + fmtClock(t.created_at))}`),
+    // ‏#1253: דיסק המקור כווץ לקליטה הזו — יוחזר בסופה (לא "דורש טיפול"). ‏/tasks שלא נקרא — לא כאן.
+    const shrunk = active && !HOME.err.tasks ? (SHRINK_RECORDS || []).filter((r) => shrinkOfTask(r, t))
+      .map((r) => ` · דיסק ${esc(r.port ?? "?")} מכווץ — יוחזר בסוף הקליטה`).join("") : "";
+    rows.push([UI.nameHtml(`קליטת אימג' — ${t.name || ""}`, `${esc(t.machine || t.mac || "")}${t.disk ? " · " + ltr(t.disk) : ""} · ${ltr(fmtDate(t.created_at) + " " + fmtClock(t.created_at))}${shrunk}`),
       t.folder ? esc(`תיקיית ${t.folder}`) : "שורש הספרייה", UI.barRow(v.percent, cls === "err" ? "err" : ""),
       UI.status(cls, label + (t.error ? " — " + t.error : "")), UI.acts([["לספרייה", "selectPageById('images')"]])]);
   }
@@ -1746,6 +1748,16 @@ function homeNowCard(all = false) {
    warn/bad. ריק אמיתי ≠ "לא נקרא" (עיקרון 5). טקסט גולמי באנגלית (שגיאת מערכת מהשרת)
    לא מוצג בגוף: הוא עובר ל"פרטים טכניים" בתוך הפריט. */
 let HOME_ATTN_OPEN = false;
+/* ‏#1253: רשומת כיווץ פתוחה מול משימות הקליטה. הרשומה שייכת לקליטה שלה
+   (`task_id`); רשומה בלי task_id (מלפני השדה) — לקליטה על אותה מכונה. */
+function shrinkOfTask(r, t) { return r.task_id ? t.id === r.task_id : t.mac === r.mac; }
+/* "active" רק בראיה חיובית: המשימה של הרשומה ב-pending/running ב-/tasks
+   שנקרא עכשיו. ‏/tasks שלא נקרא (או שהקריאה האחרונה נכשלה) = "unknown" —
+   לא הסתרה ולא "נשכח" (עיקרון 5). משימה שאינה ברשימה = "stale": האזהרה. */
+function shrinkCaptureState(r) {
+  if (!CAPTURE_TASKS_READ || HOME.err.tasks) return "unknown";
+  return (CAPTURE_TASKS || []).some((t) => (t.state === "pending" || t.state === "running") && shrinkOfTask(r, t)) ? "active" : "stale";
+}
 /* טקסט גולמי = רוב האותיות לטיניות (שגיאת מערכת/נתיב/שם קובץ): "timeout", "udp-sender לא נמצא".
    משפט עברי שמזכיר "SATA" או שם מכונה נשאר בגוף הפריט. */
 function isRawTechnical(text) {
@@ -1765,8 +1777,12 @@ function homeAttention() {
     items.push(attnItem("err", `<b>דיסק אדום</b> — ${esc(machineName(m) || f.mac)} · דיסק ${esc(f.disk_number ?? "?")}${f.serial ? ` (<span class="mono">${esc(f.serial)}</span>)` : ""} נכשל בכתיבה${f.cause && !raw ? ", סיבה: " + esc(f.cause) : ""}. ${UI.link("נקה אחרי החלפה", "selectPageById('machines')")}`, raw ? f.cause : ""));
   }
   for (const r of SHRINK_RECORDS || []) {
-    const m = findMachine(r.mac);
-    items.push(attnItem("warn", `<b>דיסק מכווץ</b> — ${esc(machineName(m) || r.mac)} · דיסק ${esc(r.port ?? "?")} כווץ לקליטה ולא הוחזר לגודלו. ${UI.link("למחשבים", "selectPageById('machines')")}`));
+    const st = shrinkCaptureState(r);
+    if (st === "active") continue;   // ‏#1253: יוחזר בסוף הקליטה — שורה ב"מה קורה עכשיו"
+    const where = `${esc(machineName(findMachine(r.mac)) || r.mac)} · דיסק ${esc(r.port ?? "?")}`;
+    items.push(attnItem("warn", st === "unknown"
+      ? `<b>דיסק מכווץ — לא נבדק</b> — ${where} כווץ לקליטה. רשימת הקליטות לא נקראה, ולכן לא ידוע אם הקליטה עדיין רצה ותחזיר אותו בסופה. ${UI.link("למחשבים", "selectPageById('machines')")}`
+      : `<b>דיסק מכווץ</b> — ${where} כווץ לקליטה ולא הוחזר לגודלו. ${UI.link("למחשבים", "selectPageById('machines')")}`));
   }
   for (const d of HOME.net || []) {
     if (d.registered) continue;
@@ -2287,9 +2303,13 @@ function imageRow(r) {
     ],
   };
 }
-/* התקדמות קליטה — Progress בלבד (‏#435: מכנה אפס = "לא ידוע", לא 0%). */
-function captureProgressCell(t) {
-  return Progress.bar(t) + `<span class="sub">${esc(Progress.view(t).label)}</span>`;
+/* התקדמות קליטה — Progress בלבד (‏#435: מכנה אפס = "לא ידוע", לא 0%).
+   ‏#1254: בלי מכנה — כמה כבר נכתב לשרת, במספר (דחוס, מונה ה-pv); לא "נקראו בייטים" בלי מספר. */
+function captureProgressCell(t, prefix = "") {
+  const v = Progress.view(t), n = t.bytes_written;
+  const label = v.percent == null && typeof n === "number" && n > 0
+    ? `<bdi dir="ltr">${esc(fmtBytes(n))}</bdi> נכתבו לשרת · הסך לא ידוע` : esc(v.label);
+  return Progress.bar(t) + `<span class="sub">${esc(prefix)}${label}</span>`;
 }
 /* קליטה בתהליך = שורה אפורה בטבלה (images.md), לא בר מעל. ‏/tasks אינו
    מחזיר תיקייה (#968) — מוצגת תחת "כל האימג'ים". */
@@ -2298,7 +2318,9 @@ function captureRowHtml(t) {
   const who = t.machine || t.mac || "";
   const sub = waiting ? `קליטה בתהליך — ממתין שמחשב הבנייה ${who} יעלה ב-PXE` : `קליטה בתהליך — ${who}${t.disk ? " · " + t.disk : ""}`;
   const cancel = isAdmin() ? `<div class="acts"><button class="btn sm danger" onclick="cancelCapture(decodeURIComponent('${encodeId(t.id)}'))">בטל קליטה</button></div>` : "";
-  return `<tr class="task"><td></td><td>${UI.name(t.name || "", sub)}</td><td>—</td><td>—</td><td>${ltr(fmtBytes(t.bytes_written))}</td><td>${ltr(fmtDate(t.created_at))}</td><td>${captureProgressCell(t)}</td><td>${UI.status("run", waiting ? "ממתין" : "נקלט…")}</td><td>${cancel}</td></tr>`;
+  // ‏#1254: ההתקדמות בעמודת "בשימוש" (המצב של השורה); "אימות" נשאר ל-sha256, שנבדק בכניסה לספרייה.
+  const verify = `<span class="muted" title="sha256 של כל מחיצה נבדק כשהאימג' נכנס לספרייה">בסוף הקליטה</span>`;
+  return `<tr class="task"><td></td><td>${UI.name(t.name || "", sub)}</td><td>—</td><td>—</td><td>${ltr(fmtBytes(t.bytes_written))}</td><td>${ltr(fmtDate(t.created_at))}</td><td>${verify}</td><td>${waiting ? UI.status("run", "ממתין") + captureProgressCell(t) : captureProgressCell(t, "נקלט… ")}</td><td>${cancel}</td></tr>`;
 }
 function imagesSelBar(list) {
   const n = IMG.sel.size;
@@ -2332,7 +2354,7 @@ function imagesTableHtml() {
 /* ‏#954 גל 2: הדף נצבע מחדש רק כשרשימת /tasks השתנתה — אחרת הבחירה
    והסינון היו נמחקים בכל דגימה (2 שניות). */
 function imagesTasksChanged(all) {
-  const key = JSON.stringify(all.map((t) => [t.id, t.state, t.bytes_written, t.error]));
+  const key = JSON.stringify(all.map((t) => [t.id, t.state, t.bytes_written, t.error, t.source_progress]));   // ‏#1254: גם האחוז
   if (key === IMG.tasksKey) return false;
   IMG.tasksKey = key;
   return current === "images";
@@ -6677,7 +6699,8 @@ function startStatusWatch() {
   pollTimer = setInterval(() => {
     if (!ME || document.hidden) return;
     refreshStatus();
-    if (isAdmin() || current === "images") loadCaptures().catch(e => toast(e.message));
+    // ‏#1253: כשל בדגימה = הרשימה שבזיכרון אינה ראיה שקליטה עדיין רצה (HOME.err.tasks).
+    if (isAdmin() || current === "images") loadCaptures().then(() => { delete HOME.err.tasks; }, (e) => { HOME.err.tasks = e.message; toast(e.message); });
     if ((current === "machines" && MACHINES_CLASS) || current === "deploy") refreshGroupLive().catch(() => {});   // ‏גל 3א/4: /room חי באובייקט המשכפלים ובחדר
   }, 2000);
 }

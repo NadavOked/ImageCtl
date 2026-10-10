@@ -37,8 +37,11 @@ void draw_shrink_dialog(App *a, cairo_t *cr, double W, double H) {
     double dw = W - 2 * 32 < SHRINK_W_MAX ? W - 2 * 32 : SHRINK_W_MAX;
     double inner = dw - 2 * SHRINK_PAD;
     Text title = rtl_block_make(cr, 22, 600, "הקליטה תכווץ מחיצות במחשב הזה", inner);
-    Text lead = rtl_block_make(cr, 14, 400,
-        "המחיצות מוחזרות לגודלן כשהקליטה מסתיימת. ווינדוס עולה בכל מקרה.", inner);
+    char explanation[1400];
+    snprintf(explanation, sizeof explanation, "%s%s%s",
+        "המחיצות מוחזרות לגודלן כשהקליטה מסתיימת. ווינדוס עולה בכל מקרה.",
+        a->st.task_error[0] ? "\n" : "", a->st.task_error);
+    Text lead = rtl_block_make(cr, 14, 400, explanation, inner);
     Text rows[MAX_SHRINK_PARTS];
     double rows_h = 0;
     for (int i = 0; i < a->st.nshrink; i++) {

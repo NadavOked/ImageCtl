@@ -26,7 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from . import auth, registry, storage_locations
 from .api import ServerContext, identity_gate
 from .images import validate_display_name
-from .db import journal, now_iso, update_one
+from .db import _write_lock, journal, now_iso, update_one, writing
 from .progress_view import capture_progress
 from .images import (
     MACHINE_MAC, carries_a_stream_file, has_disk_guid, has_partition_geometry,
@@ -146,6 +146,69 @@ def create_agent_capture_router(ctx: ServerContext) -> APIRouter:
             raise _DiskFull(
                 f"אזל המקום בשרת בזמן כתיבת {path.name} — הדיסק התמלא") from exc
         return digest.hexdigest()
+
+    @router.post("/{task_id}/preflight")
+    async def preflight(task_id: str, request: Request):
+        row = task_for(task_id, request)
+        if row["type"] != "capture":
+            raise HTTPException(400, "בדיקת מקום מיועדת למשימת קליטה")
+        refused = identity_gate(ctx, row["mac"], request, "capture-preflight")
+        if refused is not None:
+            return refused
+        try:
+            body = await request.json()
+        except ValueError:
+            raise HTTPException(400, "הגוף אינו JSON תקין")
+        parts = body.get("partitions") if isinstance(body, dict) else None
+        if not isinstance(parts, list) or not parts or any(
+            not isinstance(p, dict) or type(p.get("index")) is not int
+            or p["index"] <= 0 for p in parts
+        ) or len({p["index"] for p in parts}) != len(parts):
+            raise HTTPException(400, "נדרשת רשימת מחיצות עם מספרים ייחודיים")
+        missing = [str(p["index"]) for p in parts
+                   if type(p.get("used_bytes")) is not int or p["used_bytes"] < 0]
+        used = None if missing else sum(p["used_bytes"] for p in parts)
+        # Measure the actual upload destination, not a cached health sample or
+        # the source disk. Capture staging and final images both live here.
+        free = None
+        unchecked = []
+        if missing:
+            unchecked.append("נפח תפוס במחיצות " + ", ".join(missing))
+        try:
+            free = _free_bytes(ctx.library.root)
+            if type(free) is not int or free < 0:
+                free = None
+        except OSError:
+            pass
+        if free is None:
+            unchecked.append("מקום פנוי באחסון השרת (loc_local)")
+        if unchecked:
+            status, reason = "unchecked", "לא נבדק: " + " · ".join(unchecked) + " — הקליטה נעצרה לפני הכיווץ"
+        else:
+            numbers = f"תפוס {used / 1e9:.1f} GB · פנוי בשרת {free / 1e9:.1f} GB"
+            if used > free:
+                status, reason = "refused", "אין מקום בשרת לקליטה: " + numbers
+            elif used * 2 > free:
+                status, reason = "warning", "אזהרת מקום: " + numbers + " — יחס הדחיסה אינו ידוע; ניתן להמשיך"
+            else:
+                status, reason = "ok", numbers
+        if status in ("refused", "unchecked", "warning"):
+            # #54: every write inside the lock + writing(), never a bare commit.
+            if status == "warning":
+                sql, params = ("UPDATE tasks SET error = ? WHERE id = ? AND state IN ('pending', 'running')",
+                               (reason, task_id))
+            else:
+                sql, params = ("UPDATE tasks SET state = 'failed', error = ?, updated_at = ?"
+                               " WHERE id = ? AND state IN ('pending', 'running')",
+                               (reason, now_iso(), task_id))
+            with _write_lock, writing(ctx.conn):
+                changed = ctx.conn.execute(sql, params).rowcount == 1
+            if not changed:
+                raise HTTPException(409, "המשימה כבר אינה פתוחה")
+            journal(ctx.conn, "capture_space_warning" if status == "warning" else "capture_failed",
+                    f"{task_id} {reason}")
+        return {"status": status, "reason": reason, "used_bytes": used,
+                "free_bytes": free, "location_id": storage_locations.LOCAL_ID}
 
     @router.put("/{task_id}/files/{filename}")
     async def upload_partition(task_id: str, filename: str, request: Request):

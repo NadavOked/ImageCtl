@@ -178,3 +178,110 @@ def test_a_round_report_never_carries_source_progress(tmp_path):
     לוג נוכח — דיווח סבב אינו נושא אותו."""
     body = _build_progress(tmp_path, PCL_LOG, who="session")
     assert "source_progress" not in body["targets"][0]
+
+
+# --- #1254: האחוז של partclone יוצא ל-stderr, לא ל-`-L` ----------------------
+#
+# נמדד על ברזל 10/10 (קליטה tsk_749e מ-HP-BUILD): דף האימג'ים הראה "נקראו
+# בייטים · הסך לא ידוע" אחרי 50.8GB — `source_progress` לא הגיע. ‏partclone
+# כותב ל-`-L` את שורות הכותרת (‏`Starting to clone`, ‏`Space in use`), ואת
+# שורת ההתקדמות (‏`\rElapsed: … Completed: P%`) הוא מדפיס ל-**stderr** — שם
+# FOG קורא אותה. הסוכן שלח את ה-stderr ליומן הכללי, ולכן לפרסר לא הגיע
+# אחוז. ⚠️ זו מסקנה מהקוד ומהסימפטום, לא מדידה של partclone חי — האימות
+# הוא קליטה על ברזל (‏needs:metal).
+
+PCL_HEADER = "\n".join(PCL_LOG.splitlines()[:-1]) + "\n"
+#: ה-stderr כמו שהוא: ריפוד ו-`\r` לפני כל עדכון, בלי שורה חדשה ביניהם.
+PCL_STDERR = ("Starting to clone device (/dev/sda3) to image (-)\n"
+              + "".join(f"\r{' ' * 81}\rElapsed: 00:00:0{i}, Remaining: 00:00:22, "
+                        f"Completed: {p:6.2f}%, Rate: 2.10GB/min"
+                        for i, p in enumerate((0.0, 5.1, 11.8))))
+
+
+def _build_progress_with(tmp_path, log, err=None, parts=None):
+    run = tmp_path / "run"
+    (run / "targets" / "sda").mkdir(parents=True)
+    (run / "targets" / "sda" / "partclone.log").write_text(log, encoding="utf-8")
+    if err is not None:
+        (run / "targets" / "sda" / "partclone.err").write_bytes(err.encode())
+    if parts is not None:
+        (run / "parts.txt").write_text(parts, encoding="utf-8", newline="\n")
+    out = bb(
+        tmp_path,
+        f'export RUN_DIR="{run.as_posix()}"\n'
+        + source_line("common.sh", "progress.sh")
+        + 'target_init sda 0\n'
+        'build_progress "" b4:2e:99:07:1a:c4 tsk_4e10\n',
+    )
+    return json.loads(out)["targets"][0]
+
+
+@requires_busybox
+def test_the_percent_partclone_prints_to_stderr_is_the_one_reported(tmp_path):
+    sp = _build_progress_with(tmp_path, PCL_HEADER, PCL_STDERR)["source_progress"]
+    assert sp["partition"] == 3
+    assert sp["blocks_total"] == 1665979
+    assert sp["blocks_read"] == int(0.118 * 1665979)
+
+
+@requires_busybox
+def test_the_partition_is_numbered_k_of_m_from_the_captured_table(tmp_path):
+    """‏`parts.txt` היא הטבלה שהקליטה עוברת עליה (`idx|guid|…`). ‏K הוא
+    המקום של המחיצה בה, לא האינדקס — טבלה 1,2,5 היא "3 מתוך 3", לא "5 מתוך 3"."""
+    parts = "1|g|u|2048|204800\n2|g|u|206848|32768\n3|g|u|239616|104857600\n4|g|u|105097216|1024000\n"
+    sp = _build_progress_with(tmp_path, PCL_HEADER, PCL_STDERR, parts)["source_progress"]
+    assert (sp["partition_seq"], sp["partitions_total"]) == (3, 4)
+    holes = "1|g|u|2048|204800\n2|g|u|206848|32768\n5|g|u|239616|104857600\n"
+    sp = _build_progress_with(tmp_path / "b", PCL_HEADER.replace("sda3", "sda5"),
+                              PCL_STDERR.replace("sda3", "sda5"), holes)["source_progress"]
+    assert (sp["partition"], sp["partition_seq"], sp["partitions_total"]) == (5, 3, 3)
+
+
+@requires_busybox
+def test_without_the_table_the_percent_still_goes_out_but_k_of_m_does_not(tmp_path):
+    sp = _build_progress_with(tmp_path, PCL_HEADER, PCL_STDERR)["source_progress"]
+    assert "partition_seq" not in sp and "partitions_total" not in sp
+    assert sp["blocks_total"] == 1665979
+
+
+#: ‏partclone מזויף שמתנהג כמו האמיתי בשני הערוצים: כותרת ל-`-L`, אחוז ל-stderr.
+PARTCLONE_TWO_CHANNELS = (
+    '#!/bin/sh\n'
+    'log=""\n'
+    'while [ $# -gt 0 ]; do [ "$1" = "-L" ] && { log="$2"; shift; }; shift; done\n'
+    "printf 'Starting to clone device (/dev/sda1) to image (-)\\nSpace in use:   0.1 GB = 25600 Blocks\\n' > \"$log\"\n"
+    "printf 'Starting to clone device (/dev/sda1) to image (-)\\n' >&2\n"
+    "printf '\\rElapsed: 00:00:01, Remaining: 00:00:09, Completed:  10.00%%, Rate: 1.00GB/min' >&2\n"
+    "printf '\\rElapsed: 00:00:02, Remaining: 00:00:03, Completed:  42.00%%, Rate: 1.00GB/min' >&2\n"
+    'head -c 4096 /dev/zero\n'
+)
+
+
+def test_a_real_capture_reports_the_stderr_percent_and_k_of_m(tmp_path):
+    """‏`capture_disk` האמיתי עם partclone דו-ערוצי, ואחריו `build_progress`
+    של אותה ריצה: האחוז מה-stderr מגיע לדיווח, עם "מחיצה 1 מתוך 1"."""
+    from test_capture_refusals import CURL_SINK, ONE_PARTITION, capture_run
+    box, run, out = capture_run(tmp_path, stubs={
+        "sgdisk": ONE_PARTITION, "curl": CURL_SINK, "partclone.dd": PARTCLONE_TWO_CHANNELS})
+    assert out.strip().endswith("rc=0"), \
+        out + (box / "capture.out").read_text(encoding="utf-8", errors="replace")
+    target = json.loads((box / "progress.json").read_text(encoding="utf-8"))["targets"][0]
+    assert target.get("source_progress") == {
+        "partition": 1, "blocks_read": int(0.42 * 25600), "blocks_total": 25600,
+        "partition_seq": 1, "partitions_total": 1}, target
+
+
+def test_k_of_m_reaches_the_console_and_a_contradiction_drops_only_it(server):
+    mac = setup_build_machine(server)
+    task_id = make_task(server, mac).json()["id"]
+    base = {"partition": 3, "blocks_read": 118, "blocks_total": 1000}
+    for extra, expected in (
+            ({"partition_seq": 3, "partitions_total": 4}, {"partition_seq": 3, "partitions_total": 4}),
+            ({"partition_seq": 5, "partitions_total": 4}, {}),
+            ({"partition_seq": 0, "partitions_total": 4}, {}),
+            ({"partition_seq": "3", "partitions_total": 4}, {}),
+            ({"partitions_total": 4}, {})):
+        report = _report(task_id, mac, {"dev": "sda", "bytes_written": 1, "bytes_total": 0,
+                                        "state": "capturing", "source_progress": {**base, **extra}})
+        assert _post(server, report).json()["ok"]
+        assert _console_task(server)["source_progress"] == {**base, **expected}, extra

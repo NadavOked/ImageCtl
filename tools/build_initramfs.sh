@@ -9,6 +9,7 @@
 #                                   [--with-gui] [--installer] [--skip-apt]
 #                                   [--tools-selection FILE]
 #                                   [--source-date-epoch SECONDS]
+#                                   [--version VERSION]
 #
 # The output is reproducible (#1125, feeding #1078): the same checkout and
 # the same builder give the same bytes. Every mtime in the image is set to
@@ -40,6 +41,7 @@ WITH_GUI=0
 WITH_INSTALLER=0
 SSH_KEY_FILE=""
 TOOLS_SELECTION_FILE=""
+SOURCE_VERSION=""
 #: `auto` (ברירת המחדל — `finish_and_stop` גוזר מהתפקיד: כיתה=reboot,
 #: בנייה/שיכפול=poweroff), `poweroff` או `reboot`. `reboot` הוא ההגדרה
 #: שכלי המעבדה כותב (tools/lab/after-task-reboot.sh).
@@ -58,6 +60,7 @@ while [ $# -gt 0 ]; do
         --skip-apt)       SKIP_APT=1; shift ;;
         --tools-selection) TOOLS_SELECTION_FILE="$2"; shift 2 ;;
         --source-date-epoch) SOURCE_DATE_EPOCH="$2"; shift 2 ;;
+        --version)        SOURCE_VERSION="$2"; shift 2 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
@@ -232,6 +235,9 @@ ROOT=$(mktemp -d "${TMPDIR:-/tmp}/imagectl-initramfs.XXXXXX")
 trap 'rm -rf "$ROOT"' EXIT
 
 mkdir -p "$ROOT"/{bin,sbin,usr/bin,usr/sbin,usr/lib/imagectl,etc/imagectl,proc,sys,dev,run,tmp,lib}
+. "$SCRIPT_DIR/initramfs-version.sh"
+stamp_initramfs_version "$SCRIPT_DIR/.." "$SOURCE_VERSION" \
+    "${IMAGECTL_ISO_MANIFEST:-/etc/imagectl/iso-release.json}" "$ROOT"
 
 # --- busybox and its applets -------------------------------------------------
 

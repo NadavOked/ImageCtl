@@ -95,4 +95,11 @@ sudo IMAGECTL_ROOT_PASSWORD='...' tools/iso/build-iso.sh      --out /srv/iso/out
   בלי openssh-server) — טרם הותקן מקצה לקצה; ההתקנה שנמדדה רצה על
   ‏ISO קודם, ושני המפתחות נענו ביד, וה-apt-repo הוזרק לדיסק ביד.
 
+## הקשר לשתי התיקיות האחרות
+
+‏`tools/iso/` **בונה**: היא אורזת את `installer/` (המנוע החי, רץ ב-initramfs
+לפני שיש שרת) ואת עץ הקוד, כולל `install/` (הגדרת השרת המותקן —
+‏`setup-boot-server.sh` והיחידות). ‏`firstboot.sh` שכאן הוא החוליה
+ביניהן: הוא מפעיל את `install/setup-boot-server.sh` באתחול הראשון.
+
 </div>

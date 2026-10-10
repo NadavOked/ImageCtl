@@ -177,7 +177,7 @@ def create_console_router(
             "mfa_enabled": info["mfa_enabled"],
             "is_builtin": info["is_builtin"],
             "must_change_password": info["must_change_password"],
-            "idle_seconds": int(get_setting(ctx.conn, "console_idle_seconds") or 300),
+            "idle_seconds": int(get_setting(ctx.conn, "console_idle_seconds") or 600),
             # ‏#915: גרסת השרת (תג git, ‏`update.current_version`) לשורת
             # הסטטוס — לכל משתמש מחובר, לא רק admin. ‏None = אין תג על
             # העץ, והקונסולה לא מציגה מספר שאין לו מקור.
@@ -392,7 +392,8 @@ def create_console_router(
             " m.added_at, d.disks_json, d.last_seen AS disks_reported_at,"
             " d.prompt,"   # #906: מה המכונה ממתינה עליו לאדם (NULL = לא ממתינה)
             " d.disk_probe,"   # #402: למה אפס דיסקים (NULL = סוכן ישן)
-            " d.firmware, d.secure_boot"   # #500: כפי שהסוכן מדד (NULL = לא דווח)
+            " d.firmware, d.secure_boot,"   # #500: כפי שהסוכן מדד (NULL = לא דווח)
+            " d.agent_version"   # #1257: גרסת ה-initrd מה-hello האחרון (NULL = לא דווח)
             " FROM machines m LEFT JOIN net_devices d ON d.mac = m.mac"
             + (" WHERE m.group_id = ?" if group else "")
             + " ORDER BY m.group_id, m.suffix"

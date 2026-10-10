@@ -205,6 +205,12 @@ def create_agent_router(ctx: ServerContext,
             firmware = None
         secure_boot = body.get("secure_boot")
         secure_boot = int(secure_boot) if isinstance(secure_boot, bool) else None
+        agent_version = body.get("agent_version")
+        # A missing/invalid version in an old hello is explicitly unknown.
+        if (not isinstance(agent_version, str) or not agent_version
+                or len(agent_version) > 128
+                or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._+-" for c in agent_version)):
+            agent_version = "unknown"
         answer = build_answer(
             ctx.conn, ctx.library, ctx.store, mac,
             disks=disks, client_ip=client_ip, joining=joining,
@@ -214,6 +220,7 @@ def create_agent_router(ctx: ServerContext,
             hw_inventory=hw_inventory, hw_probe=hw_probe, hw_ssh=hw_ssh,
             prompt=prompt, disk_probe=disk_probe,
             firmware=firmware, secure_boot=secure_boot,
+            agent_version=agent_version,
             # ‏#715: פרמטרי השידור למקור שהוא מחשב בנייה — של המנוע, אם יש.
             multicast=ctx.sender.multicast_params() if ctx.sender is not None else None,
         )

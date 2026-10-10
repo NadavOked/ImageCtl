@@ -28,7 +28,7 @@ def create_net_router(ctx: ServerContext) -> APIRouter:
         """
         rows = ctx.conn.execute(
             "SELECT d.mac, d.ip, d.description, d.first_seen, d.last_seen,"
-            "       d.disk_probe, d.firmware, d.secure_boot,"
+            "       d.disk_probe, d.firmware, d.secure_boot, d.agent_version,"
             "       m.suffix, g.id AS group_id, g.label AS group_label, g.role,"
             "       b.step AS boot_step, b.at AS boot_at"
             "  FROM net_devices d"
@@ -50,6 +50,8 @@ def create_net_router(ctx: ServerContext) -> APIRouter:
                 # ‏#500: uefi/bios ו-true/false כפי שנמדדו; null = לא דווח
                 "firmware": r["firmware"],
                 "secure_boot": None if r["secure_boot"] is None else bool(r["secure_boot"]),
+                # ‏#1257: גרסת ה-initrd שהמכונה דיווחה; null = לא דווח
+                "agent_version": r["agent_version"],
             }
             for r in rows
         ]

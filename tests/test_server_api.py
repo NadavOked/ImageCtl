@@ -483,18 +483,18 @@ def test_idle_timeout_reaches_every_signed_in_user(server):
     second = TestClient(server["app"])
     assert second.post("/api/console/login",
                        json={"username": "noc2", "password": "admin-pass-456"}
-                       ).json()["idle_seconds"] == 300
-    assert second.get("/api/console/me").json()["idle_seconds"] == 300
-    assert server["admin"].post(
-        "/api/console/settings", json={"console_idle_seconds": "600"}
-    ).status_code == 200
+                       ).json()["idle_seconds"] == 600
     assert second.get("/api/console/me").json()["idle_seconds"] == 600
+    assert server["admin"].post(
+        "/api/console/settings", json={"console_idle_seconds": "900"}
+    ).status_code == 200
+    assert second.get("/api/console/me").json()["idle_seconds"] == 900
     # וגם בתשובת הכניסה עצמה, כדי שהשעון יתחיל נכון מהרגע הראשון.
     fresh = server["anon"].post(
         "/api/console/login",
         json={"username": "noc2", "password": "admin-pass-456"},
     ).json()
-    assert fresh["idle_seconds"] == 600
+    assert fresh["idle_seconds"] == 900
 
 
 def test_agent_login_checks_the_console_users(server):

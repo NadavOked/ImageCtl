@@ -18,7 +18,6 @@ WIDTH = 80
 HEIGHT = 25
 MENU_ITEMS = (
     "Configure Management Network",
-    "Reset Admin Password",
     "Restart Management Network",
     "Restart Services",
     "Display TLS Certificate",
@@ -83,7 +82,7 @@ def render_main(snapshot: Snapshot, message: str = "") -> list[str]:
     canvas = Canvas(
         _title("ImageCtl Server Operations Console",
                f"{snapshot.version}  {snapshot.storage_role}"),
-        "<F2> Customize System    <F12> Restart/Shutdown    <F5> Refresh",
+        "<F2> Customize  <F9> Reset Password  <F12> Restart/Shutdown  <F5> Refresh",
     )
     fp1, fp2 = _fingerprint_lines(snapshot.fingerprint)
     canvas.put(4, 4, "Hostname:")
@@ -127,7 +126,7 @@ def render_main(snapshot: Snapshot, message: str = "") -> list[str]:
     if message:
         canvas.put(19, 4, message, 72)
     else:
-        canvas.put(19, 4, "This screen is read-only. Configuration requires the admin password.")
+        canvas.put(19, 4, "This screen is read-only. F2/F12 need the admin password; F9 resets it.")
     canvas.put(21, 4, f"Last refresh: {snapshot.refreshed}   (every 5 s)")
     return canvas.lines()
 
@@ -204,6 +203,41 @@ def render_auth(failures: int = 0, lockout_seconds: int = 0,
     return canvas.lines()
 
 
+def render_reset(stage: str = "confirm", typed: str = "", failures: int = 0,
+                 message: str = "", result: actions.ActionResult | None = None) -> list[str]:
+    """#1249: F9 -- reset the admin password by physical presence (like ESXi)."""
+    footer = ("<Enter/Esc> Back to main screen" if stage == "done" else
+              "<Enter> Continue                       <Esc> Cancel (back to main screen)")
+    canvas = Canvas(_title("Reset Admin Password", "physical console only"), footer)
+    canvas.put(4, 4, "WARNING: This sets a new password for the console account 'admin'.")
+    canvas.put(5, 4, "No current password is needed: being at this screen is the")
+    canvas.put(6, 4, "authorization, as with Reset System Configuration on ESXi.")
+    canvas.put(8, 4, "The reset also signs out every admin web session, removes admin's")
+    canvas.put(9, 4, "two-factor enrollment and remembered browsers, if any, and is journaled.")
+    if stage == "done":
+        result = result or actions.ActionResult(False, "No result.")
+        canvas.put(12, 4, result.message, 72)
+        for index, detail in enumerate(result.details[:6]):
+            canvas.put(14 + index, 6, detail, 70)
+        return canvas.lines()
+    cursor = "_"
+    word = typed if stage == "confirm" else actions.RESET_WORD
+    canvas.put(11, 4, f"Type {actions.RESET_WORD} to confirm:   "
+                      f"[ {word[:24]:<24}{cursor if stage == 'confirm' else ' '} ]")
+    if stage in ("password", "repeat"):
+        first = "*" * min(len(typed), 24) if stage == "password" else "*" * 8
+        canvas.put(13, 4, f"New password:            [ {first:<24}"
+                          f"{cursor if stage == 'password' else ' '} ]")
+    if stage == "repeat":
+        canvas.put(14, 4, f"Repeat the new password: [ {'*' * min(len(typed), 24):<24}{cursor} ]")
+    canvas.put(16, 4, actions.PASSWORD_POLICY)
+    canvas.put(17, 4, actions.PASSWORD_SPECIALS)
+    canvas.put(19, 4, message, 72)
+    canvas.put(20, 4, f"Failed attempts: {failures} of {actions.LOCKOUT_ATTEMPTS} "
+                      f"({actions.LOCKOUT_SECONDS} s lockout).")
+    return canvas.lines()
+
+
 def render_menu(snapshot: Snapshot, selected: int = 0, seconds: int = 90) -> list[str]:
     canvas = Canvas(
         _title("System Customization", f"admin  (auto-logout in {seconds} s)"),
@@ -223,8 +257,6 @@ def render_menu(snapshot: Snapshot, selected: int = 0, seconds: int = 90) -> lis
          "(HTTPS 8081). DHCP client or a static", "address, gateway and DNS.",
          f"Current: {snapshot.management.name}  {snapshot.management.address or 'no IPv4'}  {snapshot.management.mode.upper()}",
          "Changes have a 60 s rollback window."),
-        ("Reset Admin Password", "Sets admin/admin and forces a password", "change at the next web console login.",
-         "The reset is journaled."),
         ("Restart Management Network", "Re-applies the saved configuration for", f"{snapshot.management.name} with rollback armed.",
          "Live state is read back before success."),
         ("Restart Services", "Restarts imagectl-server and dnsmasq only", "when dnsmasq is enabled, then reads back", "each service state."),
@@ -369,6 +401,10 @@ class Runtime:
     form_field: int = 0
     interfaces: list[NicInfo] = field(default_factory=list)
     last_refresh: float = 0.0
+    reset_stage: str = "confirm"
+    reset_typed: str = ""
+    reset_first: str = ""
+    reset_guard: actions.AuthGuard = field(default_factory=actions.AuthGuard)
 
     def seconds(self, now: float) -> int:
         return max(0, actions.AUTH_IDLE_SECONDS - int(now - self.last_key_at))
@@ -413,6 +449,9 @@ def _current_lines(runtime: Runtime, now: float) -> list[str]:
     if runtime.screen == "auth":
         return render_auth(runtime.auth.failures, runtime.auth.seconds_left(time.time()),
                            len(runtime.password), runtime.message)
+    if runtime.screen == "reset":
+        return render_reset(runtime.reset_stage, runtime.reset_typed,
+                            runtime.reset_guard.failures, runtime.message, runtime.result)
     if runtime.screen == "menu":
         return render_menu(runtime.snapshot, runtime.menu_index, seconds)
     if runtime.screen == "network":
@@ -429,10 +468,6 @@ def _current_lines(runtime: Runtime, now: float) -> list[str]:
                             runtime.typed_hostname, seconds, runtime.message)
     if runtime.screen == "tls":
         return render_tls(runtime.snapshot, seconds)
-    if runtime.screen == "reset_confirm":
-        return render_message("Reset Admin Password",
-                              "Press Y to set admin/admin and require a change; Esc cancels.",
-                              seconds=seconds)
     if runtime.screen == "wizard_confirm":
         return render_message("Re-run Initial Setup Wizard",
                               "Press Y to start imagectl-wizard-rerun.service; Esc cancels.",
@@ -455,6 +490,73 @@ def _authenticate(runtime: Runtime) -> None:
     runtime.password = ""
 
 
+def _leave_reset(runtime: Runtime, message: str) -> None:
+    runtime.screen = "main"
+    runtime.message = message
+    runtime.reset_stage = "confirm"
+    runtime.reset_typed = runtime.reset_first = ""
+
+
+def _start_reset(runtime: Runtime) -> None:
+    guard = runtime.reset_guard
+    lock = guard.seconds_left(time.time())
+    if lock:
+        runtime.message = f"Admin password reset is locked for {lock} more seconds."
+        return
+    if guard.locked_until:
+        guard.failures, guard.locked_until = 0, 0.0
+    _leave_reset(runtime, "")
+    runtime.screen = "reset"
+    runtime.result = None
+
+
+def _reset_enter(runtime: Runtime) -> None:
+    typed, runtime.reset_typed = runtime.reset_typed, ""
+    if runtime.reset_stage == "confirm":
+        if typed == actions.RESET_WORD:
+            runtime.reset_stage, runtime.message = "password", ""
+            return
+        reason, problem = "confirmation word", f"Type {actions.RESET_WORD} exactly, in capital letters."
+    elif runtime.reset_stage == "password":
+        problem = actions.password_problem(typed)
+        if problem is None:
+            runtime.reset_first, runtime.reset_stage, runtime.message = typed, "repeat", ""
+            return
+        reason = "password policy"
+    elif typed == runtime.reset_first:
+        runtime.result = actions.physical_reset_admin_password(runtime.conn, typed)
+        runtime.reset_first, runtime.reset_stage, runtime.message = "", "done", ""
+        if runtime.result.ok:
+            runtime.reset_guard = actions.AuthGuard()
+        return
+    else:
+        reason, problem = "passwords differ", "The two passwords differ. Enter the new password again."
+        runtime.reset_first, runtime.reset_stage = "", "password"
+    actions.record_reset_failure(runtime.conn, runtime.reset_guard, reason)
+    if runtime.reset_guard.seconds_left(time.time()):
+        _leave_reset(runtime, f"Admin password reset locked for {actions.LOCKOUT_SECONDS} "
+                              f"seconds after {actions.LOCKOUT_ATTEMPTS} failures.")
+    else:
+        runtime.message = problem
+
+
+def _reset_key(runtime: Runtime, key: object, enter: bool, escape: bool,
+               curses_module) -> None:
+    if runtime.reset_stage == "done":
+        if enter or escape:
+            result = runtime.result
+            _leave_reset(runtime, result.message if result else "")
+        return
+    if escape:
+        _leave_reset(runtime, "Admin password reset cancelled; nothing was changed.")
+    elif enter:
+        _reset_enter(runtime)
+    elif key in (8, 127, "\b", "\x7f", curses_module.KEY_BACKSPACE):
+        runtime.reset_typed = runtime.reset_typed[:-1]
+    elif isinstance(key, str) and key.isprintable() and len(key) == 1:
+        runtime.reset_typed += key
+
+
 def _open_menu_item(runtime: Runtime) -> None:
     item = runtime.menu_index
     runtime.message = ""
@@ -463,15 +565,13 @@ def _open_menu_item(runtime: Runtime) -> None:
         runtime.form = _initial_form(runtime.snapshot)
         runtime.form_field = 0
     elif item == 1:
-        runtime.screen = "reset_confirm"
-    elif item == 2:
         runtime.result = actions.restart_management_network(
             runtime.conn, runtime.snapshot.management.name, runtime.data_dir)
         runtime.screen = "result"
-    elif item == 3:
+    elif item == 2:
         runtime.result = actions.restart_services(runtime.conn)
         runtime.screen = "result"
-    elif item == 4:
+    elif item == 3:
         actions.note_tls_display(runtime.conn)
         runtime.screen = "tls"
     else:
@@ -521,8 +621,10 @@ def _handle_key(runtime: Runtime, key: object, curses_module) -> bool:
     now = time.monotonic()
     if key != -1:
         runtime.last_key_at = now
-    enter = key in (10, 13, curses_module.KEY_ENTER)
-    escape = key == 27
+    # get_wch() returns str for ordinary keys: Enter is "\n" and Esc "\x1b",
+    # not 10/27 (#1249: the F9 reset needs Enter on the real tty1).
+    enter = key in (10, 13, "\n", "\r", curses_module.KEY_ENTER)
+    escape = key in (27, "\x1b")
     if runtime.screen != "main" and runtime.screen != "auth" and runtime.seconds(now) <= 0:
         runtime.screen = "main"
         runtime.message = "Session expired after 90 seconds without a key."
@@ -539,6 +641,8 @@ def _handle_key(runtime: Runtime, key: object, curses_module) -> bool:
             return True
         if key == curses_module.KEY_F5:
             _refresh(runtime)
+        elif key == curses_module.KEY_F9:
+            _start_reset(runtime)
         elif key in (curses_module.KEY_F2, curses_module.KEY_F12):
             if runtime.auth.seconds_left(time.time()):
                 runtime.message = "Authentication is temporarily locked."
@@ -557,6 +661,9 @@ def _handle_key(runtime: Runtime, key: object, curses_module) -> bool:
             runtime.password = runtime.password[:-1]
         elif isinstance(key, str) and key.isprintable() and len(key) == 1:
             runtime.password += key
+        return True
+    if runtime.screen == "reset":
+        _reset_key(runtime, key, enter, escape, curses_module)
         return True
     if runtime.screen == "preinstall_network":
         if escape:
@@ -621,9 +728,6 @@ def _handle_key(runtime: Runtime, key: object, curses_module) -> bool:
             runtime.typed_hostname = runtime.typed_hostname[:-1]
         elif isinstance(key, str) and key.isprintable() and len(key) == 1:
             runtime.typed_hostname += key
-    elif runtime.screen == "reset_confirm" and key in ("y", "Y"):
-        runtime.result = actions.reset_admin_password(runtime.conn)
-        runtime.screen = "result"
     elif runtime.screen == "wizard_confirm" and key in ("y", "Y"):
         runtime.result = actions.start_wizard(
             runtime.conn, runtime.snapshot.console_url, run_argv)

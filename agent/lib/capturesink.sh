@@ -33,6 +33,44 @@ capture_sink() {
         -T "$1" "$SERVER/api/v1/capture/$2/files/$3"
 }
 
+capture_space_preflight() {
+    # $1 task, $2 disk, $3 partitions, $4 sector size. Read-only, before shrink.
+    # Direct send stores no image on the server and needs no server capacity.
+    CAPTURE_SPACE_ERROR="לא נבדק: מקום פנוי בשרת — בדיקת הקליטה לא התקבלה"
+    CAPTURE_SPACE_WARNING=""
+    [ "${CAPTURE_SINK:-upload}" = discard ] && return 0
+    _cs_parts=""
+    while IFS='|' read -r _cs_i _cs_guid _cs_u _cs_start _cs_size; do
+        _cs_node=$(partition_node "$2" "$_cs_i"); _cs_fs=$(_fs_of "$_cs_node")
+        if [ "$_cs_fs" = swap ] || [ "$(_partition_role "$_cs_guid")" = swap ]; then
+            _cs_used=0
+        elif [ "$(partclone_for_fs "$_cs_fs")" = partclone.dd ]; then
+            # Raw capture streams every byte, including MSR/unknown filesystems.
+            _cs_used=$((_cs_size * $4))
+        else
+            _cs_used=$(_used_bytes "$_cs_node" "$_cs_fs")
+        fi
+        case "$_cs_used" in ''|*[!0-9]*) _cs_used=null ;; esac
+        _cs_parts="$_cs_parts${_cs_parts:+,}{\"index\":$_cs_i,\"used_bytes\":$_cs_used}"
+    done < "$3"
+    printf '{"partitions":[%s]}\n' "$_cs_parts" > "$RUN_DIR/capture-space.json"
+    http_post_json "$SERVER/api/v1/capture/$1/preflight" "$RUN_DIR/capture-space.json" \
+        "X-Imagectl-Task-Token: ${TASK_TOKEN:-}" > "$RUN_DIR/capture-space.reply" || return 1
+    _cs_status=$(json_get "$RUN_DIR/capture-space.reply" .status)
+    _cs_reason=$(json_get "$RUN_DIR/capture-space.reply" .reason)
+    case "$_cs_reason" in ''|null) return 1 ;; esac
+    case "$_cs_status" in
+        ok) return 0 ;;
+        warning)
+            CAPTURE_SPACE_WARNING="$_cs_reason"
+            log "$_cs_reason"
+            target_set "$2" waiting "$_cs_reason"
+            return 0 ;;
+        refused|unchecked) CAPTURE_SPACE_ERROR="$_cs_reason"; return 1 ;;
+        *) return 1 ;;
+    esac
+}
+
 upload_manifest() {
     # $1 = task id, $2 = manifest path.
     curl -sfS -X PUT -H "Content-Type: application/json" \

@@ -258,6 +258,7 @@ void state_parse(State *s, FILE *fp) {
         else if (KEY("task_name"))  cp(s->task_name, sizeof s->task_name, val);
         else if (KEY("task_disk"))    cp(s->task_disk, sizeof s->task_disk, val);
         else if (KEY("task_error"))   cp(s->task_error, sizeof s->task_error, val);
+        else if (KEY("agent_version")) cp(s->agent_version, sizeof s->agent_version, val);
         else if (KEY("pct"))          s->pct = num(val, -1);
         else if (KEY("moving"))       s->moving = num(val, 0);
         else if (KEY("menu_class"))   s->menu_class = num(val, 0) != 0;

@@ -54,9 +54,9 @@ APP_DIR="/opt/imagectl"
 DATA_DIR="/var/lib/imagectl"
 IMAGES_DIR="/srv/imagectl/images"
 # הריפו שונה שמו ל-ImageCtl-archive ב-09/2026 והפך לפרטי; השם הישן
-# `NadavOked/ImageCtl` שייך היום לפרויקט אחר, ו-clone ממנו היה מתקין
-# קוד זר על שרת האתחול בלי להתלונן. ‏clone מהארכיון דורש אישורים
-# ונכשל בקול — וזה המצב הרצוי מבין השניים.
+# `NadavOked/ImageCtl` הוא הריפו הציבורי (פרסום נקי, קומיט יחיד, בלי היסטוריה), לא ריפו העבודה.
+# שרת האתחול מתקין מהארכיון הפרטי: ‏clone ממנו דורש אישורים ונכשל בקול
+# כשהם חסרים — וזה המצב הרצוי.
 REPO_URL="https://github.com/NadavOked/ImageCtl-archive"
 DRY_RUN=0
 PORT=8080

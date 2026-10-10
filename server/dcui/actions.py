@@ -26,6 +26,10 @@ LOCKOUT_ATTEMPTS = 3
 LOCKOUT_SECONDS = 30
 AUTH_IDLE_SECONDS = 90
 WIZARD_UNIT = "imagectl-wizard-rerun.service"
+RESET_WORD = "RESET"
+# users.validate_password decides; its messages are Hebrew and tty1 is ASCII.
+PASSWORD_POLICY = "Use 8-128 characters with letters, digits and a special character."
+PASSWORD_SPECIALS = 'Special characters: ! @ # $ % ^ & * ( ) , . ? " : { } | < >'
 
 
 @dataclass
@@ -50,11 +54,18 @@ class AuthGuard:
             self.failures = 0
             journal(conn, "dcui_auth_success", "admin", "dcui")
             return True
-        self.failures += 1
+        self.record_failure(current)
         journal(conn, "dcui_auth_failure", f"admin attempt={self.failures}", "dcui")
+        return False
+
+    def record_failure(self, now: float | None = None) -> None:
+        current = time.time() if now is None else now
+        if self.locked_until and self.locked_until <= current:
+            self.failures = 0
+            self.locked_until = 0.0
+        self.failures += 1
         if self.failures >= LOCKOUT_ATTEMPTS:
             self.locked_until = current + LOCKOUT_SECONDS
-        return False
 
 
 @dataclass(frozen=True)
@@ -64,25 +75,59 @@ class ActionResult:
     details: tuple[str, ...] = ()
 
 
-def reset_admin_password(conn) -> ActionResult:
-    """Set admin/admin, invalidate sessions, and force the next web login change."""
-    users.update(conn, "admin", by="dcui", password="admin", check_policy=False)
+def password_problem(password: str) -> str | None:
+    """The installer/console policy (``users.validate_password``), in ASCII."""
+    try:
+        users.validate_password(password)
+    except ValueError:
+        return PASSWORD_POLICY
+    return None
+
+
+def record_reset_failure(conn, guard: AuthGuard, reason: str,
+                         now: float | None = None) -> None:
+    guard.record_failure(now)
+    locked = f" locked={LOCKOUT_SECONDS}s" if guard.locked_until else ""
+    journal(conn, "dcui_reset_failure",
+            f"admin attempt={guard.failures} reason={reason}{locked}", "dcui")
+
+
+def physical_reset_admin_password(conn, new_password: str) -> ActionResult:
+    """#1249: reset by physical presence at tty1 -- no current password.
+
+    Replaces the hash, ends every admin session and remembered browser,
+    drops admin's MFA (whoever lost the password has likely lost the phone
+    too) and clears the web-console login lockout. Success is read back.
+    """
+    problem = password_problem(new_password)
+    if problem:
+        return ActionResult(False, problem)
+    stored = users.canonical_name(conn, "admin")
+    if stored is None:
+        journal(conn, "admin_password_reset_dcui", "refused: no admin account", "dcui")
+        return ActionResult(False, "The server DB has no 'admin' account; nothing changed.")
+    users.update(conn, stored, by="dcui", password=new_password)
     with _write_lock, writing(conn):
         conn.execute(
-            "UPDATE users SET must_change_password = 1 WHERE username = 'admin'"
-        )
-    users.bump_auth_epoch(conn, "admin")
-    verified = (users.verify(conn, "admin", "admin") == "admin"
-                and users.flags(conn, "admin")["must_change_password"])
+            "UPDATE users SET must_change_password = 0, mfa_enabled = 0,"
+            " mfa_secret = NULL, mfa_enrolled_at = NULL, mfa_last_step = NULL"
+            " WHERE username = ?", (stored,))
+        conn.execute("DELETE FROM mfa_backup_codes WHERE username = ?", (stored,))
+        conn.execute("DELETE FROM login_attempts WHERE key LIKE ?",
+                     (stored.lower() + "|%",))
+    users.bump_auth_epoch(conn, stored)
+    info = users.flags(conn, stored)
+    verified = (users.verify(conn, stored, new_password) == "admin"
+                and not info["mfa_enabled"] and not info["must_change_password"])
     journal(conn, "admin_password_reset_dcui",
-            f"admin default password; forced change verified={str(verified).lower()}",
-            "dcui")
+            "admin password reset from the server console (DCUI);"
+            f" verified={str(verified).lower()}", "dcui")
     if not verified:
-        return ActionResult(False, "Password reset could not be verified.")
+        return ActionResult(False, "The new password could not be read back from the DB.")
     return ActionResult(
-        True,
-        "Password reset. Log in to the console as admin/admin and set a new one.",
-    )
+        True, "Admin password reset. Log in to the web console with the new password.",
+        ("Every admin web session was signed out.",
+         "Two-factor enrollment and remembered browsers were removed."))
 
 
 def _text(result: CommandResult) -> str:

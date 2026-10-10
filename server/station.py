@@ -18,6 +18,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from .progress_view import capture_progress
+from .agent_version import server_version
 from . import capabilities, storage_locations, users
 from .api import ServerContext, _error, identity_gate
 from .db import get_setting, journal
@@ -45,6 +46,9 @@ def create_station_router(ctx: ServerContext,
     """‏`version` (‏#1252) — תג ה-git של השרת, אותו מקור כמו `/me.version`;
     ‏`None` (בדיקות ישנות) = לא ידוע, ואז `server_version` הוא `null`."""
     router = APIRouter(prefix="/api/v1/agent")
+    # Populate before concurrent polls arrive; cache also retains None.
+    # #1252's injected reader (tests, /me's source) wins, read once here too (#1257).
+    running_version = version() if version else server_version()
 
     @router.get("/groups")
     def classes():
@@ -105,7 +109,7 @@ def create_station_router(ctx: ServerContext,
             " JOIN groups g ON g.id = m.group_id WHERE m.mac = ?", (canonical,)
         ).fetchone()
         device = ctx.conn.execute(
-            "SELECT disks_json FROM net_devices WHERE mac = ?", (canonical,)
+            "SELECT disks_json, agent_version FROM net_devices WHERE mac = ?", (canonical,)
         ).fetchone()
         task = ctx.conn.execute(
             "SELECT * FROM tasks WHERE mac = ? ORDER BY created_at DESC LIMIT 1",
@@ -126,6 +130,8 @@ def create_station_router(ctx: ServerContext,
         return {
             "mac": canonical,
             "known": machine is not None,
+            "agent_version": device["agent_version"] if device else None,
+            "server_version": running_version,
             "role": machine["role"] if machine else "unknown",
             "name": machine["suffix"] if machine else None,
             "group_label": machine["label"] if machine else None,
@@ -139,8 +145,8 @@ def create_station_router(ctx: ServerContext,
             # mockup strings. The name is /me's (#936: the setting, else the host
             # name); the version is /me's (#915: the git tag) and null when it was
             # not read -- the screen then says "unknown", never a number.
+            # The version itself is "server_version" above (#1257: read once).
             "server_name": get_setting(ctx.conn, "server_name") or socket.gethostname(),
-            "server_version": version() if version else None,
             "task": {
                 "id": task["id"], "type": task["type"], "state": task["state"],
                 "disk": task["disk"], "name": task["name"], "error": task["error"],

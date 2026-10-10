@@ -90,6 +90,7 @@ AWK_WITHOUT_AN_ANSWER = (
 #: השומר של #338 שבסוף הקובץ צריך אותו.
 CURL_SINK = (
     '#!/bin/sh\n'
+    'case "$*" in */preflight*) echo \'{"status":"ok","reason":"space checked"}\'; exit 0 ;; esac\n'
     'f=""\n'
     'while [ $# -gt 0 ]; do\n'
     '  [ "$1" = "-T" ] && { f="$2"; shift; }\n'
@@ -118,6 +119,7 @@ CURL_SHRINK_SERVER = (
     '  shift\n'
     'done\n'
     'case "$url" in\n'
+    '  */preflight) echo \'{"status":"ok","reason":"space checked"}\'; exit 0 ;;\n'
     '  */agent/shrink-open)\n'
     '    cat "$d" >> "$RUN_DIR/shrink_open.sent"; echo >> "$RUN_DIR/shrink_open.sent"\n'
     '    echo "shrink-open" >> "$RUN_DIR/order.log"\n'
@@ -142,6 +144,13 @@ CURL_SHRINK_SERVER = (
     'esac\n'
     '[ -n "$f" ] && cat "$f" > /dev/null\n'
     'exit 0\n'
+)
+
+#: ‏#1248: בדיקת המקום עוברת, וכל קריאה אחרת נכשלת כמו curl שלא התחבר.
+CURL_NO_SERVER = (
+    '#!/bin/sh\n'
+    'case "$*" in */preflight*) echo \'{"status":"ok","reason":"space checked"}\'; exit 0 ;; esac\n'
+    'exit 7\n'
 )
 
 #: ‏jq אינו מותקן בווינדוס; ‏`json_get` על תשובת `shrink-open` (ok/id) עובר
@@ -191,6 +200,8 @@ def capture_run(tmp_path, *, present=True, image=GPT_DISK, stubs=None,
     extra_env = "".join(f"export {name}={value!r}; "
                         for name, value in (env or {}).items())
     stubs = dict(stubs or {})
+    # ‏#1248: בדיקת המקום רצה לפני הכיווץ; טסט בלי curl משלו בודק שער אחר.
+    stubs.setdefault("curl", CURL_NO_SERVER)
     if shutil.which("jq") is None and "jq" not in stubs:
         stubs["jq"] = JQ_STUB
     out = run_sh(

@@ -238,6 +238,7 @@ def build_answer(
     disk_probe: str | None = None,
     firmware: str | None = None,
     secure_boot: int | None = None,
+    agent_version: str | None = None,
 ) -> dict:
     # כל מגע של המכונה נרשם ברשימת ההתקנים, גם של מכונה שאינה רשומה
     # בטבלה — ככה מתגלה MAC לא מוכר, וזה חלק מעיקרון 1. ‏hello הוא POST
@@ -254,7 +255,7 @@ def build_answer(
                  disks_json=json.dumps(disks) if disks is not None else None,
                  monitor_secret=monitor_secret, monitor_auth=monitor_auth,
                  prompt=prompt, disk_probe=disk_probe,
-                 firmware=firmware, secure_boot=secure_boot)
+                 firmware=firmware, secure_boot=secure_boot, agent_version=agent_version)
         # ‏#720: המלאי החומרתי (schema 2) נשמר מגורסת — שורה חדשה רק כשהשתנה.
         # ‏None = הסוכן לא שלח (schema 1) או שלח פגום: הגרסה הקודמת נשארת.
         if hw_inventory is not None:

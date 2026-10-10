@@ -625,3 +625,31 @@ def test_1120_password_longer_than_128_is_rejected_by_name(server):
     assert server["admin"].post("/api/console/users", json={
         "username": "longpw", "password": "Aa1!" + "x" * 124, "role": "deploy",
     }).status_code == 200
+
+
+def test_1243_idle_default_is_600_on_every_login_path(server):
+    """#1243: ברירת המחדל של הניתוק בחוסר פעילות היא 600 שניות — ב-DB
+    טרי, וגם בגיבוי (`or …`) של שלושת המסלולים שמחזירים `idle_seconds`:
+    ‏`/login` (console_login), ‏`/login/mfa` (console_mfa) ו-`/me`
+    (console_api). שלושה עותקים של אותו מספר — הטסט תופס סחיפה של כל אחד."""
+    from server.db import DEFAULT_SETTINGS, get_setting      # noqa: PLC0415
+    conn = server["ctx"].conn
+    assert DEFAULT_SETTINGS["console_idle_seconds"] == "600"
+    assert get_setting(conn, "console_idle_seconds") == "600"
+    _, secret = _mfa_user(server, "idle6")
+    # בלי השורה — רק הגיבוי שבקוד קובע.
+    conn.execute("DELETE FROM settings WHERE key = 'console_idle_seconds'")
+    conn.commit()
+    c, r = _challenge(server, "idle6")
+    mfa = c.post("/api/console/login/mfa", json={
+        "challenge": r.json()["challenge"], "code": totp.totp_code(secret),
+    })
+    assert mfa.status_code == 200, mfa.text
+    assert mfa.json()["idle_seconds"] == 600
+    assert c.get("/api/console/me").json()["idle_seconds"] == 600
+    users.create(conn, "idlebuiltin", "x", "admin", by="test",
+                 is_builtin=True, check_policy=False)
+    plain = _console_client(server).post("/api/console/login", json={
+        "username": "idlebuiltin", "password": "x",
+    })
+    assert plain.json()["idle_seconds"] == 600, plain.text

@@ -48,8 +48,8 @@ loopback). להרצת פיתוח על `127.0.0.1` בלבד מותר `--console-t
 ### כשירות קבוע
 
 > הריפו **פרטי** מאז 09/2026 (‏`ImageCtl-archive`) — ‏`git clone` אנונימי
-> ייכשל, וצריך אישורים. השם הישן `NadavOked/ImageCtl` שייך היום לפרויקט
-> אחר: clone ממנו יביא קוד זר בלי להתלונן.
+> ייכשל, וצריך אישורים. השם הישן `NadavOked/ImageCtl` הוא היום הריפו
+> הציבורי (פרסום נקי, קומיט יחיד) — לא ריפו העבודה ולא מה שמתקינים ממנו.
 
 ```bash
 sudo git clone https://github.com/NadavOked/ImageCtl-archive /opt/imagectl

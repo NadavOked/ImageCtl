@@ -112,9 +112,16 @@ _source_progress_json() {
     # לבדה נספרת, ולכן `Completed:` של מחיצה קודמת אינו נמשך אל החדשה. כל
     # השוואה מספרית עם `+0` — תחת busybox awk השוואת מחרוזת-למספר מכריעה
     # לפי תווים, ו-"754688" > "1665979" יצא אמת.
-    _sp_log="$RUN_DIR/targets/$1/partclone.log"
+    # ‏#1254: את שורת `Completed:` partclone מדפיס ל-stderr (`\r` לפני כל
+    # עדכון), לא ל-`-L` — capture.sh שומר אותו ב-partclone.err, מאופס לכל
+    # מחיצה. ממנו רק האחוז; המחיצה והמכנה מה-`-L`. ‏K מתוך M — מקום המחיצה
+    # ב-parts.txt (הטבלה שהקליטה עוברת עליה); בלי הטבלה — בלי K/M.
+    _sp_log="$RUN_DIR/targets/$1/partclone.log"; _sp_err="$RUN_DIR/targets/$1/partclone.err"
     [ -f "$_sp_log" ] || return 0
-    tr -d '\r' < "$_sp_log" 2>/dev/null | awk '
+    { tr '\r' '\n' < "$_sp_log"; [ ! -f "$_sp_err" ] || { echo "@@stderr@@"; tr '\r' '\n' < "$_sp_err"; }; } | awk -v pf="$RUN_DIR/parts.txt" '
+        $0 == "@@stderr@@" { err = 1; next }
+        err { if ($0 ~ /Completed:/) { c = $0; sub(/.*Completed:[ \t]*/, "", c); sub(/%.*/, "", c)
+                if (c ~ /^[0-9]+(\.[0-9]+)?$/) epct = c }; next }
         /Starting to clone/ { part=""; total=""; pct="";
             if (match($0, /\/dev\/[A-Za-z0-9]+/)) {
                 d = substr($0, RSTART, RLENGTH)
@@ -124,11 +131,14 @@ _source_progress_json() {
         /Completed:/ { c = $0; sub(/.*Completed:[ \t]*/, "", c); sub(/%.*/, "", c);
             if (c ~ /^[0-9]+(\.[0-9]+)?$/) pct = c }
         END {
+            if (epct != "") pct = epct
             if (part == "" || total == "" || total + 0 <= 0 || pct == "") exit
             r = int(pct / 100.0 * total)
             if (r + 0 > total + 0) r = total; if (r + 0 < 0) r = 0
-            printf ",\"source_progress\":{\"partition\":%d,\"blocks_read\":%d,\"blocks_total\":%d}", \
-                part, r, total }'
+            while ((getline l < pf) > 0) { split(l, f, "|"); if (f[1] ~ /^[0-9]+$/) { n++; if (f[1] + 0 == part + 0) k = n } }
+            km = k ? sprintf(",\"partition_seq\":%d,\"partitions_total\":%d", k, n) : ""
+            printf ",\"source_progress\":{\"partition\":%d,\"blocks_read\":%d,\"blocks_total\":%d%s}", \
+                part, r, total, km }'
 }
 
 build_progress() {

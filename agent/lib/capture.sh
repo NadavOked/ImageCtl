@@ -88,6 +88,8 @@ capture_disk() {
     done < "$_parts"
     # ‏#87: אחרי שער המהובר ולפני חישוב הפריסה — הכיווץ משכתב את $_parts,
     # וכל מה שלמטה (הרצפה, השער החמישי, המניפסט) רואה את הפריסה המצומצמת.
+    capture_space_preflight "$_task" "$_disk" "$_parts" "$_sector_size" \
+        || { _capture_failed "$_disk" "$CAPTURE_SPACE_ERROR"; return 1; }
     shrink_before_capture "$_disk" "$_parts" "$_sector_size" \
         || { _capture_failed "$_disk" "${SHRINK_ERROR:-הכיווץ נכשל בלי סיבה (shrink.sh לא נטען?)}"; return 1; }
 
@@ -175,7 +177,8 @@ capture_disk() {
         _uppid=$!
 
         rm -f "$RUN_DIR/sha.$_idx" "$RUN_DIR/pcl.$_idx.rc" \
-            "$RUN_DIR/zstd.$_idx.rc" "$RUN_DIR/pv.$_idx.rc" "$RUN_DIR/tee.$_idx.rc"
+            "$RUN_DIR/zstd.$_idx.rc" "$RUN_DIR/pv.$_idx.rc" "$RUN_DIR/tee.$_idx.rc" \
+            "$RUN_DIR/targets/$_disk/partclone.err"   # ‏#1254: האחוז של המחיצה הזו בלבד (progress.sh)
         _pcl=$(partclone_for_fs "$_fs")
         # The read-only preflight above has already refused dirty/hibernated
         # NTFS. -I remains read-only and partclone's rc still decides success.
@@ -190,7 +193,7 @@ capture_disk() {
         (
             # shellcheck disable=SC2046 # דגלי partclone_mode הם רשימת מילים
             { "$_pcl" $(partclone_mode "$_pcl" -c) $_ignore -s "$_node" \
-                  -L "$RUN_DIR/targets/$_disk/partclone.log" 2>> "$LOG_FILE"
+                  -L "$RUN_DIR/targets/$_disk/partclone.log" 2>> "$RUN_DIR/targets/$_disk/partclone.err"
               echo "$?" > "$RUN_DIR/pcl.$_idx.rc"; } \
                 | { zstd -"$CAPTURE_LEVEL" -T"$CAPTURE_THREADS" -c 2>> "$LOG_FILE"
                     echo "$?" > "$RUN_DIR/zstd.$_idx.rc"; } \
@@ -213,6 +216,8 @@ capture_disk() {
         else
             _rc="$WAIT_TIMED_OUT"
         fi
+        # ה-stderr של partclone ממשיך ליומן — אחרי המחיצה במקום תוך כדי.
+        [ ! -f "$RUN_DIR/targets/$_disk/partclone.err" ] || cat "$RUN_DIR/targets/$_disk/partclone.err" >> "$LOG_FILE"
         # ממתינים להעלאה בלבד, בשם: wait ריק תופס גם את דמון ההתקדמות
         # שרץ ברקע — וכשהפונקציה רצה ב-shell הראשי זה נעצר לנצח (מעבדה #12).
         # ובתקרה: ‏curl שנתקע בפתיחת ה-fifo לא ייתלה כאן לנצח.

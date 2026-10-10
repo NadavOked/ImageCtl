@@ -1,0 +1,221 @@
+"""#1257: provenance survives initrd -> hello -> machine -> native header."""
+import json
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from conftest import hello_body
+from native import requires_native
+from test_agent import AGENT, BASH, posix
+from test_capture import setup_build_machine
+from test_cloner_gui import _build_gui, _pkgconfig, _png, _png_rgb
+
+REPO = AGENT.parent
+
+
+@pytest.mark.parametrize("value", ["v0.59.0", "v0.59.0-2-gabcd123", "unknown"])
+def test_hello_version_is_stored_and_exposed_per_machine(server, value):
+    mac = setup_build_machine(server)
+    body = hello_body(mac)
+    body["agent_version"] = value
+    assert server["anon"].post("/api/v1/agent/hello", json=body).status_code == 200
+    state = server["anon"].get(f"/api/v1/agent/state?mac={mac}").json()
+    assert state.get("agent_version") == value
+    row = server["ctx"].conn.execute("SELECT * FROM net_devices WHERE mac=?", (mac,)).fetchone()
+    assert dict(row).get("agent_version") == value
+    other = server["anon"].get("/api/v1/agent/state?mac=aa:bb:cc:00:00:22").json()
+    assert other.get("agent_version") is None
+
+
+def test_console_lists_reported_version_per_machine(server):
+    mac = setup_build_machine(server)
+    machines = {m["mac"]: m for m in server["admin"].get("/api/console/machines").json()}
+    assert machines[mac].get("agent_version", "absent") is None
+    body = {**hello_body(mac), "agent_version": "v0.58.0"}
+    assert server["anon"].post("/api/v1/agent/hello", json=body).status_code == 200
+    machines = {m["mac"]: m for m in server["admin"].get("/api/console/machines").json()}
+    assert machines[mac].get("agent_version") == "v0.58.0"
+    devices = {d["mac"]: d for d in server["admin"].get("/api/console/net").json()}
+    assert devices[mac].get("agent_version") == "v0.58.0"
+
+
+def test_version_change_is_not_lost_to_hello_throttling(server):
+    mac = setup_build_machine(server)
+    for version in ("v0.58.0", "v0.59.0", None):
+        body = hello_body(mac)
+        body["agent_version"] = version
+        assert server["anon"].post("/api/v1/agent/hello", json=body).status_code == 200
+        state = server["anon"].get(f"/api/v1/agent/state?mac={mac}").json()
+        assert state.get("agent_version") == (version or "unknown")
+
+
+@pytest.mark.parametrize("value", [True, "bad\nversion", "x" * 129, "bad|version"])
+def test_invalid_version_is_explicitly_unknown(server, value):
+    mac = setup_build_machine(server)
+    body = {**hello_body(mac), "agent_version": value}
+    assert server["anon"].post("/api/v1/agent/hello", json=body).status_code == 200
+    state = server["anon"].get(f"/api/v1/agent/state?mac={mac}").json()
+    assert state.get("agent_version") == "unknown"
+
+
+@pytest.mark.parametrize("version", ["v0.59.0", None])
+def test_state_reads_server_version_once_even_if_unavailable(request, monkeypatch, version):
+    from server import update
+    # No import of the new module: reverting all production files must reach
+    # the endpoint and fail on its response, not during test collection.
+    cached = sys.modules.get("server.agent_version")
+    if cached:
+        cached.server_version.cache_clear()
+    calls = []
+    def describe(path):
+        calls.append(path)
+        if version is None:
+            raise OSError("git unavailable")
+        return version
+    monkeypatch.setattr(update, "_describe", describe)
+    try:
+        server = request.getfixturevalue("server")
+        mac = setup_build_machine(server)
+        for _ in range(4):
+            reply = server["anon"].get(f"/api/v1/agent/state?mac={mac}")
+            assert reply.status_code == 200
+            assert "server_version" in reply.json()
+            assert reply.json()["server_version"] == version
+        assert len(calls) == 1
+    finally:
+        cached = sys.modules.get("server.agent_version")
+        if cached:
+            cached.server_version.cache_clear()
+
+
+def shell(tmp_path, script):
+    path = tmp_path / "check.sh"
+    path.write_text(script, encoding="utf-8", newline="\n")
+    return subprocess.run([BASH, posix(path)], stdin=subprocess.DEVNULL,
+                          capture_output=True, encoding="utf-8", timeout=30)
+
+
+@requires_native(("bash", BASH))
+@pytest.mark.parametrize("stamp,expected", [("v0.59.0", "v0.59.0"), (None, "unknown")])
+def test_running_hello_uses_stamp_or_unknown(tmp_path, stamp, expected):
+    version_file = tmp_path / "agent-version"
+    interface = tmp_path / "sys/class/net/eth0"
+    interface.mkdir(parents=True)
+    (interface / "address").write_text("aa:bb:cc:00:00:10\n")
+    if stamp:
+        version_file.write_text(stamp + "\n")
+    result = shell(tmp_path, f'''
+AGENT_VERSION_FILE={posix(version_file)!r}
+RUN_DIR={posix(tmp_path)!r}
+SYSROOT=$RUN_DIR; IFACE=eth0
+. {posix(AGENT / 'lib/common.sh')!r}
+. {posix(AGENT / 'lib/sysinfo.sh')!r}
+list_macs() {{ echo aa:bb:cc:00:00:10; }}
+detect_uuid() {{ :; }}
+detect_firmware() {{ echo bios; }}
+detect_secure_boot() {{ echo null; }}
+detect_memory_bytes() {{ echo 1024; }}
+disk_probe() {{ echo ok; }}
+list_disks() {{ :; }}
+IP=10.0.0.1
+build_hello
+''')
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["agent_version"] == expected
+
+
+@requires_native(("bash", BASH))
+@pytest.mark.parametrize("explicit,git_version,expected", [
+    ("v8.2.1", None, "v8.2.1"), ("", "v8.2.0-3-gabc", "v8.2.0-3-gabc"),
+    ("", None, "unknown"), ("", "", "unknown"),
+])
+def test_builder_stamps_source_version(tmp_path, explicit, git_version, expected):
+    tools_dir = tmp_path / "source/tools"
+    tools_dir.mkdir(parents=True)
+    helper = REPO / "tools/initramfs-version.sh"
+    if helper.exists():
+        shutil.copyfile(helper, tools_dir / helper.name)
+    if git_version is not None:
+        (tools_dir.parent / ".git").mkdir()
+    # Run the real packaging stanza. On the baseline it creates the initrd
+    # directories but never emits a version; the assertion concerns its output.
+    builder = (REPO / "tools/build_initramfs.sh").read_text(encoding="utf-8")
+    stanza = builder.split('mkdir -p "$ROOT"/{bin,', 1)[1].split("# --- busybox", 1)[0]
+    stanza = 'mkdir -p "$ROOT"/{bin,' + stanza
+    root = tmp_path / "initrd"
+    result = shell(tmp_path, f'''
+set -e
+SCRIPT_DIR={posix(tools_dir)!r}
+ROOT={posix(root)!r}
+SOURCE_VERSION={explicit!r}
+IMAGECTL_ISO_MANIFEST={posix(tmp_path / 'missing.json')!r}
+git() {{ printf '%s\\n' {git_version or ''!r}; }}
+{stanza}
+''')
+    assert result.returncode == 0, result.stderr
+    stamp = root / "etc/imagectl/agent-version"
+    assert stamp.exists(), "builder produced an initrd without source provenance"
+    assert stamp.read_text().strip() == expected
+
+
+@requires_native(("bash", BASH), "jq")
+def test_iso_manifest_supplies_version_without_git(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    manifest = tmp_path / "iso-release.json"
+    manifest.write_text(json.dumps({"imagectl_tag": "v0.59.0"}))
+    # Use the same real builder stanza, with its helper resolved in the source tree.
+    tools_dir = source / "tools"
+    tools_dir.mkdir()
+    helper = REPO / "tools/initramfs-version.sh"
+    if helper.exists():
+        shutil.copyfile(helper, tools_dir / helper.name)
+    builder = (REPO / "tools/build_initramfs.sh").read_text(encoding="utf-8")
+    stanza = 'mkdir -p "$ROOT"/{bin,' + builder.split('mkdir -p "$ROOT"/{bin,', 1)[1].split("# --- busybox", 1)[0]
+    root = tmp_path / "initrd"
+    result = shell(tmp_path, f'SCRIPT_DIR={posix(tools_dir)!r}\nROOT={posix(root)!r}\nSOURCE_VERSION=""\nIMAGECTL_ISO_MANIFEST={posix(manifest)!r}\n' + stanza)
+    assert result.returncode == 0, result.stderr
+    stamp = root / "etc/imagectl/agent-version"
+    assert stamp.exists(), "ISO build omitted the agent version"
+    assert stamp.read_text().strip() == "v0.59.0"
+
+
+@requires_native(("bash", BASH), "jq")
+def test_gui_snapshot_carries_local_and_server_versions(tmp_path):
+    state = tmp_path / "station-input.json"
+    state.write_text(json.dumps({"known": True, "name": "build", "disks": [], "task": None, "server_version": "v0.59.0"}))
+    (tmp_path / "mode").write_text("build\n")
+    result = shell(tmp_path, f'''
+RUN_DIR={posix(tmp_path)!r}; GUI_DIR=$RUN_DIR
+. {posix(AGENT / 'lib/guistate.sh')!r}
+AGENT_VERSION=v0.58.0
+http_get() {{ cat {posix(state)!r}; }}
+class_deploy_on() {{ return 1; }}
+tools_on() {{ return 1; }}
+gui_shrink_state() {{ :; }}
+gui_state
+''')
+    assert result.returncode == 0, result.stderr
+    output = (tmp_path / "state").read_text()
+    assert "agent_version=v0.58.0\n" in output
+    assert "server_version=v0.59.0\n" in output
+
+
+@requires_native(("bash", BASH), ("cc", shutil.which("cc") or shutil.which("gcc")),
+                 ("pango/cairo/libdrm", _pkgconfig("pangocairo", "cairo", "libdrm")), posix=True)
+def test_native_header_changes_with_versions_and_mismatch(tmp_path):
+    binary = _build_gui(tmp_path)
+    headers = []
+    for i, versions in enumerate([("v0.59.0", "v0.59.0"), ("v0.58.0", "v0.59.0"), ("unknown", "v0.59.0")]):
+        state = tmp_path / f"state-{i}"
+        state.write_text(f"agent_version={versions[0]}\nserver_version={versions[1]}\nmessage=x|y\n")  # --png: "message" needs msg_title
+        prefix = tmp_path / f"view-{i}"
+        _png(binary, prefix, state)
+        png = next(tmp_path.glob(f"view-{i}-menu-light.png"))   # the login card has no header bar
+        width, height, channels, pixels = _png_rgb(png)
+        headers.append(pixels[:width * channels * min(48, height)])
+    assert headers[0] != headers[1], "mismatched initrd produced the same header"
+    assert headers[1] != headers[2], "unknown provenance must not claim an old initrd"

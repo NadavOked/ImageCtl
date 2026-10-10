@@ -10,7 +10,10 @@ const Progress = (() => {
         source.blocks_read <= source.blocks_total) {
       read = source.blocks_read;
       total = source.blocks_total;
-      suffix = ` · מחיצה ${source.partition} (בלוקים)`;
+      // ‏#1254: "מחיצה K מתוך M" כשהסוכן מסר את מקום המחיצה בטבלה — רק עקבי.
+      const k = source.partition_seq, m = source.partitions_total;
+      suffix = Number.isInteger(k) && Number.isInteger(m) && k > 0 && k <= m
+        ? ` · מחיצה ${k} מתוך ${m}` : ` · מחיצה ${source.partition} (בלוקים)`;
     }
     const known = count(read) && count(total) && total > 0;
     const percent = known ? Math.min(100, Math.round(100 * read / total)) : null;

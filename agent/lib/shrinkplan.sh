@@ -81,7 +81,7 @@ shrink_question() {
         [ -n "$_sq_i" ] || continue
         _sq="$_sq${_sq:+, }מחיצה $_sq_i מ-$(_shrink_gb "$_sq_cur") ל-$(_shrink_gb "$_sq_new")"
     done < "$1"
-    printf 'הקליטה תכווץ במחשב הזה: %s — המשך/ביטול' "$_sq"
+    printf '%sהקליטה תכווץ במחשב הזה: %s — המשך/ביטול' "${CAPTURE_SPACE_WARNING:+$CAPTURE_SPACE_WARNING — }" "$_sq"
 }
 
 shrink_ask() {
@@ -102,6 +102,7 @@ shrink_ask() {
     while :; do
         {
             ui_clear; ui_header
+            [ -z "${CAPTURE_SPACE_WARNING:-}" ] || printf '  %s\n' "$CAPTURE_SPACE_WARNING"
             echo "  The capture will shrink these partitions on THIS computer:"
             while IFS='|' read -r _sa_i _sa_g _sa_u _sa_s _sa_z _sa_cur _sa_new; do
                 [ -n "$_sa_i" ] && echo "    partition $_sa_i: $(_shrink_gb "$_sa_cur") -> $(_shrink_gb "$_sa_new")"

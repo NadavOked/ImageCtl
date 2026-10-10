@@ -60,11 +60,12 @@ static double draw_header(App *a, cairo_t *cr, double W) {
     text_draw_r(cr,&rt,right-9,pill.y+(pill.h-rt.h)/2,t->header_text); right=pill.x-22;
     text_free(&rt);
 
-    /* #1252: every value from the state file; unknown is said, not invented */
+    /* #1252: every value from the state file; unknown is said, not invented.
+     * #1257: the versions (agent · server) are drawn on their own line below. */
     char srv[160]; server_label(&a->st,srv,sizeof srv);
-    const char *keys[]={"מכונה","שרת","גרסה"};
-    const char *vals[]={known(a->st.machine_name),srv,known(a->st.server_version)};
-    for(int i=0;i<3;i++){
+    const char *keys[]={"מכונה","שרת"};
+    const char *vals[]={known(a->st.machine_name),srv};
+    for(int i=0;i<2;i++){
         Text k=text_make(cr,FONT_SANS,13,400,keys[i],0,DIR_RTL);
         Text v=text_make(cr,FONT_MONO,13,400,vals[i],0,DIR_LTR);
         text_draw_r(cr,&k,right,(N_HEADER_H-k.h)/2,(Rgb){1,1,1});
@@ -72,6 +73,24 @@ static double draw_header(App *a, cairo_t *cr, double W) {
         text_draw_r(cr,&v,right,(N_HEADER_H-v.h)/2,(Rgb){.8,.84,.87});
         right-=v.w+18;
         text_free(&k);text_free(&v);
+    }
+    const char *av=a->st.agent_version, *sv=a->st.server_version;
+    /* empty, "unknown" (the agent's stamp) and "לא ידוע" are all "not known" */
+    int ak=av[0]&&strcmp(av,"unknown")&&strcmp(av,"לא ידוע"), sk=sv[0]&&strcmp(sv,"unknown")&&strcmp(sv,"לא ידוע");
+    if(av[0]=='v')av++;
+    if(sv[0]=='v')sv++;
+    int mismatch=ak&&sk&&strcmp(av,sv);
+    char versions[360];
+    snprintf(versions,sizeof versions,"סוכן %s%s · שרת %s%s",
+             ak?"v":"",ak?av:"לא ידוע",sk?"v":"",sk?sv:"לא ידוע");
+    double vw=right-90; if(vw<100)vw=100;
+    Text vt=text_make(cr,FONT_SANS,11,400,versions,vw,DIR_RTL);
+    text_draw_r(cr,&vt,right,mismatch?5:(N_HEADER_H-vt.h)/2,t->header_text);
+    text_free(&vt);
+    if(mismatch){
+        Text hint=text_make(cr,FONT_SANS,11,600,"ה-initrd ישן מהשרת",vw,DIR_RTL);
+        text_draw_r(cr,&hint,right,N_HEADER_H-hint.h-4,(Rgb){1,.78,.35});
+        text_free(&hint);
     }
     time_t now=time(NULL); struct tm tmv; char clock_s[8]="--:--";
     if(a->fixed_clock) snprintf(clock_s,sizeof clock_s,"12:45");   /* the mockup's clock; --png only */

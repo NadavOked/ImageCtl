@@ -47,6 +47,8 @@ gui_state() {
         "server_name=\(.server_name | c)", "server_version=\(.server_version | c)"' \
         "$GUI_DIR/station.json" >> "$GUI_DIR/state.next" || return 1
     gui_server_addr >> "$GUI_DIR/state.next" || return 1
+    # #1257: this initrd's stamp is known even before its first hello reaches the server.
+    printf 'agent_version=%s\n' "${AGENT_VERSION:-unknown}" >> "$GUI_DIR/state.next" || return 1
     gui_shrink_state >> "$GUI_DIR/state.next" || return 1   # #928: the capture's shrink question
     # #1168: the college's logo, fetched once by gui_fetch_logo; the line is
     # written only when the file is there, so the GUI falls back by itself.

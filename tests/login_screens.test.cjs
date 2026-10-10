@@ -59,7 +59,6 @@ test('1085: five screens from fixed JSON — login, error, change, mfa, setup/co
   const {run} = setup();
   const login = run('loginHtml(' + JSON.stringify(FIX.login) + ')');
   assert.match(login, /<h1 class="title">כניסה<\/h1>/);
-  assert.match(login, /זכור את הדפדפן הזה ל-7 שעות/);
   assert.match(login, /<label for="login-user">שם משתמש<\/label>/);
   assert.match(login, />הצג</);
   assert.doesNotMatch(login, /גישה מאובטחת|זכור אותי|הזן את פרטי|קונסולת ניהול/);
@@ -202,6 +201,30 @@ test('1085: 401/403/429 mapping does not drop the typed username', () => {
     assert.equal(st.username, 'nadav', String(status));
     assert.equal(st.screen, 'login');
   }
+});
+
+test('1243: the first login screen has no "remember" checkbox; the MFA screen says what it really does', async () => {
+  // השרת לא מקבל ב-/login שום שדה "זכור" — הסימון לא עשה כלום (#1243).
+  // רק ב-/login/mfa ‏`remember_browser` פוטר מקוד ל-7 שעות (TRUSTED_TTL).
+  const {run, node} = setup();
+  for (const st of [{screen: 'login'}, {screen: 'login', remember: true, username: 'nadav'}]) {
+    const login = run('loginHtml(' + JSON.stringify(st) + ')');
+    assert.doesNotMatch(login, /login-remember/, 'no checkbox on the first screen');
+    assert.doesNotMatch(login, /7 שעות|זכור/, 'no promise the first screen cannot keep');
+  }
+  const mfa = run('loginHtml(' + JSON.stringify({screen: 'mfa', username: 'nadav', otp: ['', '', '', '', '', '']}) + ')');
+  assert.match(mfa, /<input type="checkbox" id="mfa-remember"> אל תבקש קוד בדפדפן הזה ל-7 שעות<\/label>/);
+  assert.doesNotMatch(mfa, /זכור את הדפדפן/);
+  // מה שנשלח ל-/login הוא שם וסיסמה בלבד, גם כשמשהו סימן "זכור" קודם.
+  const sent = [];
+  run('globalThis.__sent = []; loginFetch = async (p, b) => { __sent.push([p, b]); return {ok: false, status: 401, body: {}, retryAfter: null}; };');
+  node('#login-user').value = 'nadav';
+  node('#login-pass').value = 'Aa12345!';
+  node('#login-remember').checked = true;
+  await run('loginSubmitCredentials()');
+  sent.push(...JSON.parse(run('JSON.stringify(__sent)')));
+  assert.deepEqual(sent, [['/login', {username: 'nadav', password: 'Aa12345!'}]]);
+  assert.equal(run('LOGIN.remember'), false, 'a stale first-screen checkbox does not pre-tick the MFA screen');
 });
 
 test('1120: wrong MFA code returns to the login screen with the server message and no challenge', () => {
