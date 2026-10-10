@@ -95,8 +95,7 @@ function storageStateHtml(l) {
 }
 function storageSpaceHtml(l) {
   if (l.free_bytes == null) return `<span class="muted">—</span>`;
-  const text = `${fmtBytes(l.free_bytes)} / ${fmtBytes(l.total_bytes)}`;
-  return l.state === "connected" ? ltr(text) : `<span class="muted">— (נמדד לאחרונה ${ltr(fmtBytes(l.free_bytes))})</span>`;
+  return l.state === "connected" ? UI.usage(l.total_bytes, l.free_bytes) : `<span class="muted">— (נמדד לאחרונה ${ltr(fmtBytes(l.free_bytes))} פנוי)</span>`;
 }
 function storageRowActs(l) {
   const id = encodeId(l.id), b = (label, fn, cls = "") => `<button class="btn sm${cls ? " " + cls : ""}" onclick="${fn}('${id}')">${label}</button>`;
@@ -117,7 +116,23 @@ function storageRow(l) {
   const images = `${l.images}${l.unavailable_images ? ` <span class="muted">${l.unavailable_images === l.images ? "לא זמינים" : `${l.unavailable_images} לא זמינים`}</span>` : ""}`;
   return { attrs: `data-loc="${esc(l.id)}"`, cells: [
     `<a role="link" tabindex="0" class="name" onclick="storageOpenDrawer('${id}')">${esc(l.name)}</a>${l.subtitle ? `<span class="sub">${esc(l.subtitle)}</span>` : ""}`,
-    esc(l.type_label), target, storageStateHtml(l), `<span class="num">${storageSpaceHtml(l)}</span>`, `<span class="num">${images}</span>`, storageRowActs(l)] };
+    esc(l.type_label), target, storageStateHtml(l), `<span class="usewrap">${storageSpaceHtml(l)}</span>`, `<span class="num">${images}</span>`, storageRowActs(l)] };
+}
+/* ‏"קיבולת הספרייה" = סכום המיקומים **המחוברים** שנמדדו. מיקום שאינו מחובר (לא נגיש / מנותק / לא נבדק) אינו נספר — המדידה
+   שלו ישנה — והכרטיס אומר כמה לא נכללו. שלושה מצבים נפרדים (עיקרון 5): לא נמדד מעולם · הבדיקה האחרונה לא הצליחה · נמדד. */
+function storageCapacityCard(list, s) {
+  const measured = list.filter((l) => l.free_bytes != null && l.total_bytes != null);
+  const live = measured.filter((l) => l.state === "connected");
+  const skipped = list.length - live.length;
+  let body;
+  if (!measured.length && !s.checked_at) body = `<span class="muted">לא נמדד עדיין — הבדיקה הראשונה של המיקומים טרם הסתיימה</span>`;
+  else if (!live.length) body = `<span class="muted">הבדיקה האחרונה לא הצליחה — אין מיקום מחובר שנמדד כרגע${s.checked_at ? ` (נבדק לאחרונה ${esc(fmtClock(s.checked_at))})` : ""}</span>`;
+  else {
+    const total = live.reduce((n, l) => n + Number(l.total_bytes), 0), free = live.reduce((n, l) => n + Number(l.free_bytes), 0);
+    body = `<div class="capline"><b>${ltr(fmtBytes(Math.max(0, total - free)))} בשימוש</b><span class="muted">מתוך ${ltr(fmtBytes(total))} · ${s.images ?? 0} אימג'ים</span></div>${UI.usage(total, free)}`
+      + (skipped ? `<p class="muted" style="margin-top:8px">${skipped === 1 ? "מיקום אחד לא נכלל" : `${skipped} מיקומים לא נכללו`} בסכום — לא מחובר${skipped === 1 ? "" : "ים"} כרגע</p>` : "");
+  }
+  return `<div class="c12 card"><div class="card-h"><span>קיבולת הספרייה</span></div><div class="card-b">${body}</div></div>`;
 }
 function storageListView() {
   const s = (STORAGE && STORAGE.summary) || {}, list = (STORAGE && STORAGE.locations) || [];
@@ -135,10 +150,11 @@ function storageListView() {
     const bad = list.filter((l) => l.state !== "connected" && l.unavailable_images);
     const note = s.unavailable_images
       ? `<div class="c12">${UI.note("err", `<b>${s.unavailable_images} ${s.unavailable_images === 1 ? "אימג' לא זמין" : "אימג'ים לא זמינים"} כרגע</b> — ${bad.length ? `על ${bad.map((l) => `<span class="mono">${esc(l.name)}</span> (${esc(l.state_label)}${l.state_since ? ` מאז ${esc(fmtClock(l.state_since))}` : ""})`).join(", ")}. ` : ""}${s.unavailable_images === 1 ? "הוא רשום בספרייה ולא נמחק; סבב שיבחר בו יסרב להתחיל." : "הם רשומים בספרייה ולא נמחקו; סבב שיבחר בהם יסרב להתחיל."}${bad.length ? ` ${UI.link("פרטים", `storageOpenDrawer('${encodeId(bad[0].id)}')`)}` : ""}`)}</div>` : "";
-    const table = UI.datagrid({ cls: "show-acts storage", columns: ["שם", "סוג", "יעד", "מצב", 'פנוי / סה"כ', "אימג'ים", ""], rows: list.map(storageRow), empty: "אין מיקומים — גם 'מקומי' חסר; השרת לא יצר אותו בעלייה" });
+    const table = UI.datagrid({ cls: "show-acts storage", columns: ["שם", "סוג", "יעד", "מצב", "שימוש", "אימג'ים", ""], rows: list.map(storageRow), empty: "אין מיקומים — גם 'מקומי' חסר; השרת לא יצר אותו בעלייה" });
     const legend = `<div class="legend-states"><span class="st ok">מחובר — מעוגן ונקרא בבדיקה האחרונה</span><span class="st err">לא נגיש — מעוגן, אבל הבדיקה נכשלה; מנסים שוב כל 60 שניות</span><span class="st">מנותק — המפעיל ניתק; לא מנסים עד "חבר"</span><span class="st">לא נבדק — נשמר ועדיין לא הורצה בדיקה</span></div>`;
     // לא UI.card: ה-small מוברח, ו-"--images" בלי .mono מתהפך ל-"images--" ב-RTL.
-    body = note + `<div class="c12 card"><div class="card-h"><span>מיקומים <small>"מקומי" הוא המיקום המובנה (<span class="mono">--images</span>) — תמיד ראשון, לא ניתן להסרה</small></span></div><div class="card-b${list.length ? " flush" : ""}">${table}${legend}</div></div>`;
+    const cap = storageCapacityCard(list, s);
+    body = note + cap + `<div class="c12 card"><div class="card-h"><span>מיקומים <small>"מקומי" הוא המיקום המובנה (<span class="mono">--images</span>) — תמיד ראשון, לא ניתן להסרה</small></span></div><div class="card-b${list.length ? " flush" : ""}">${table}${legend}</div></div>`;
   }
   return `<div class="page">${header}<div class="body">${body}</div></div>`;
 }
@@ -161,7 +177,7 @@ function storageAddView() {
 /* ---------- טפסים: שדות, סריקה, בדיקה, שמירה ---------- */
 function storageInput(key, label, { mono = false, type = "text", placeholder = "" } = {}) {
   const v = SV.form[key] == null ? "" : SV.form[key];
-  return `<div class="field"><label for="st-${key}">${label}</label><input id="st-${key}" type="${type}" class="${mono ? "mono" : ""}" value="${esc(v)}" placeholder="${esc(placeholder)}" autocomplete="off" oninput="storageField('${key}',this.value)"></div>`;
+  return `<div class="field"><label for="st-${key}">${label}</label><input id="st-${key}" type="${type}"${type === "password" ? ' dir="ltr"' : ""} class="${mono ? "mono" : ""}" value="${esc(v)}" placeholder="${esc(placeholder)}" autocomplete="off" oninput="storageField('${key}',this.value)"></div>`;
 }
 function storageCheckbox(key, label, onchange = "") {
   return `<label class="check"><input type="checkbox" id="st-${key}" ${SV.form[key] ? "checked" : ""} onchange="storageField('${key}',this.checked)${onchange}"><span>${label}</span></label>`;
@@ -471,7 +487,7 @@ function storageOpenDrawer(id) {
   const loc = storageLoc(id);
   if (!loc) { toast("מיקום לא נמצא"); return; }
   openDrawer(loc.name, storageDrawerHtml(loc));
-  if (IMAGES == null) api("/images").then((rows) => { IMAGES = rows; if (storageLoc(id)) document.getElementById("drawerBody").innerHTML = storageDrawerHtml(loc); }).catch(() => {});
+  if (IMAGES == null) api("/images").then((rows) => { IMAGES = rows; if (storageLoc(id)) setDrawerBody(storageDrawerHtml(loc)); }).catch(() => {});
 }
 function storageDrawerHtml(loc) {
   const idEnc = encodeId(loc.id), cls = STORAGE_STATE_CLS[loc.state] ?? "";

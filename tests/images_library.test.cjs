@@ -82,8 +82,11 @@ test('the page is the datastore browser: header, three tabs, tree with counters,
   assert.match(html,/role="tree"/);
   assert.match(html,/כל האימג&#39;ים<\/span><span class="cnt">4</); assert.match(html,/Office<\/span><span class="cnt">2</);
   assert.match(html,/סייבר<\/span><span class="cnt">0</); assert.match(html,/ללא תיקייה<\/span><span class="cnt">1</);
-  assert.equal((html.match(/<table class="dg"/g)||[]).length,1);
-  for(const col of ['שם','מערכת','נכנס לדיסק מ-','בשרת','נוצר','אימות','בשימוש']) assert.match(html,new RegExp('<th>'+col+'</th>'));
+  assert.equal((html.match(/<table class="dg kebab-col"/g)||[]).length,1);
+  for(const col of ['שם','נכנס לדיסק מ-','בשרת','נוצר','אימות','בשימוש']) assert.match(html,new RegExp('<th>'+col+'</th>'));
+  for(const col of ['מערכת','תיקייה']) assert.match(html,new RegExp('<th class="c-opt">'+col+'</th>'),'stage 2: the folder column is in the table, secondary when the card is narrow');
+  assert.match(html,/<div class="card-h"><span>אימג&#39;ים<\/span><\/div>/,'stage 2: the card has a title');
+  assert.match(html,/<span class="dskico"><svg[^>]*><ellipse/,'stage 2: an image row carries the disk icon');
   assert.doesNotMatch(html,/כללי בטיחות|פעולות מהירות|מטא־נתונים|>Up<|>Down<|>Edit</);
 });
 
@@ -99,7 +102,10 @@ test('rows: "fits from X GB" is decimal-ceil with bytes in the tooltip, null is 
   assert.equal((html.match(/st ok">sha256 אומת</g)||[]).length,4,'every image in the library was verified on entry');
   assert.doesNotMatch(html,/st ok">sha256 תקין/,'"תקין now" only after a scrub in this session');
   assert.match(html,/02\/09\/2026/); assert.match(html,/54\.0 GB/);
-  assert.match(html,/onclick="deployImage\('img_7f3a91'\)">הפץ</); assert.match(html,/onclick="openImageDetail\('img_7f3a91'\)">פרטים</);
+  const menu=JSON.parse(html.match(/aria-label="פעולות עבור Office 2024 — סטנדרט" data-menu="([^"]*)"/)[1].replaceAll('&quot;','"').replaceAll('&#39;',"'"));
+  assert.deepEqual(menu.map(i=>i[0]),['פרטים','הפץ','שינוי שם…','העבר לתיקייה…','מחיקה…'],'stage 2: one ⋯ menu per row, destructive last');
+  assert.equal(menu[4][2],'danger'); assert.equal(menu[1][1],"deployImage('img_7f3a91')");
+  assert.doesNotMatch(html,/class="btn sm" onclick="deployImage/,'no inline buttons per row any more');
 });
 
 test('a running capture is a grey row inside the table, under "all images", with cancel — not a bar above', () => {
@@ -120,7 +126,7 @@ test('folder selection, breadcrumb, description, edit/delete of the folder, and 
   assert.match(html,/— אימג׳י משרד/); assert.match(html,/עריכת תיקייה/); assert.doesNotMatch(html,/מחק תיקייה/,'a folder with images cannot be deleted');
   assert.equal((html.match(/data-id="img_/g)||[]).length,2);
   run('selectImagesFolder("%D7%A1%D7%99%D7%99%D7%91%D7%A8")'); html=run('images(0)');
-  assert.match(html,/התיקייה ריקה/); assert.match(html,/מחק תיקייה/);
+  assert.match(html,/התיקייה ריקה/); assert.match(html,/מחק תיקייה/); assert.match(html,/<b class="et">התיקייה ריקה<\/b>גררו אליה אימג/,'stage 2: the empty folder has a title and a hint');
   run('selectImagesFolder("")'); html=run('images(0)');
   assert.match(html,/<b>ללא תיקייה<\/b>/); assert.equal((html.match(/data-id="img_/g)||[]).length,1); assert.match(html,/CAD Heavy/);
   run('selectImagesFolder(null); imagesFilter("ubuntu")');
@@ -141,7 +147,7 @@ test('multi-select: bar counts, move-to-folder PUTs every selected image, delete
   run('toggleImgSel("img_7f3a91",true); toggleImgSel("img_a1b2c3",true)');
   let html=run('images(0)');
   assert.match(html,/נבחרו 2 מתוך 4/); assert.match(html,/bulkMove\(\)">העבר לתיקייה…/); assert.match(html,/bulkDelete\(\)">מחיקה/);
-  assert.doesNotMatch(html,/שינוי שם/,'rename is a single-image action'); assert.equal((html.match(/<tr class="sel"/g)||[]).length,2);
+  assert.doesNotMatch(html.slice(html.indexOf('dg-bar foot')),/שינוי שם/,'rename is a single-image action'); assert.equal((html.match(/<tr class="sel"/g)||[]).length,2);
   run('loadImages=async()=>{}; bulkMove()');
   await run('formOptions.onSubmit({folder:"Linux"})');
   const puts=requests.filter(r=>r.options.method==='PUT');
@@ -224,7 +230,7 @@ test('captures tab lists /tasks with state colours; storage tab reads /overview 
   assert.match(html,/cancelCapture\(decodeURIComponent\('t1'\)\)">ביטול/); assert.match(html,/openImageDetail\('img_lnx001'\)">פרטים/);
   run('CAPTURE_TASKS=[]'); assert.match(run('images(1)'),/אין קליטות עדיין/);
   html=run('images(2)'); balanced(html);
-  assert.match(html,/פנוי בדיסק האימג&#39;ים/); assert.match(html,/312 GB/); assert.match(html,/688 GB<\/bdi> בשימוש מתוך <bdi dir="ltr">1000 GB/); assert.match(html,/aria-valuenow="69"/);
+  assert.match(html,/פנוי בדיסק האימג&#39;ים/); assert.match(html,/312 GB/); assert.match(html,/688 GB<\/bdi> בשימוש מתוך <bdi dir="ltr">1000 GB/); assert.match(html,/aria-valuenow="69"/); assert.match(html,/<span class="pct">69%<\/span>/,'stage 2: the percent sits next to the usage bar');
   assert.match(html,/scrubLibrary\(\)">אמת את כל הספרייה/); assert.doesNotMatch(html,/דורשת API/);
   assert.match(html,/התוצאה השמורה האחרונה לכל אימג/,'#972: the saved result exists now — the empty text points to it');
   run('OVERVIEW=null'); html=run('images(2)'); assert.match(html,/לא נקרא/); assert.doesNotMatch(html,/aria-valuenow/);

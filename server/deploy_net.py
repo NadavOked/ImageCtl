@@ -71,8 +71,8 @@ class DeployState:
         return {"configured": self.configured, "source": self.source,
                 "interface": self.interface, "url": self.url,
                 "hint": None if self.configured else
-                "רשת ההפצה לא הוגדרה — בחר כרטיס בדף הרשת, קבע לו כתובת "
-                "סטטית והדלק עליו DHCP"}
+                "רשת ההפצה לא הוגדרה — בחר כרטיס בלשונית רשת הפצה והגדר את "
+                "הרשת שלו; כתובת השרת נגזרת ממנה (#1263)"}
 
 
 def stored(conn) -> tuple[str | None, str | None]:

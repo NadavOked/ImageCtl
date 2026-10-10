@@ -1,20 +1,12 @@
 /* ImageCtl — לשונית הרשת (אפיון סעיף 24): מה השרת ראה בפועל, ומה השרת
-   מחלק — DHCP לכל כרטיס רשת, כבוי כברירת מחדל, מאחורי הקלדת שם הכרטיס. */
+   מחלק — DHCP של רשת ההפצה, כבוי כברירת מחדל; הכיבוי מאחורי הקלדת שם
+   הכרטיס, וההגדרה בחלון "רשת הפצה" (‏#1263). */
 "use strict";
 
 // --- כרטיסי רשת ו-DHCP -------------------------------------------------------
 
-/* מצב proxy: מבודד לאינסטנס dnsmasq משלו (imagectl-proxy) אחרי #36 —
-   ‏dnsmasq 2.91 קופא על בקשת PXE לפורט 4011, ובאינסטנס משותף הקפיאה
-   הזו לוקחת איתה את ה-DHCP של וילן ההפצה. הבידוד מציל את ההפצה; הוא
-   לא מתקן את ה-proxy עצמו, ולכן ההדלקה עצמה דורשת אישור מפורש נוסף.
-
-   הטקסט מגיע מהשרת (`/net/proxy-support`) ולא נכתב כאן: זה בדיוק
-   ההסבר שה-API יסרב בו, ולפי הגרסה שבאמת מותקנת על המכונה — לא לפי
-   מחרוזת קבועה שתשקר ביום שבו dnsmasq יעודכן. */
-let PROXY_SUPPORT = null;
-//: כרטיסי הרשת האחרונים שנקראו (‏/net/interfaces), לצריכת renderNetTable
-// ב-netcfg.js ולפעולות ה-DHCP בטבלה המאוחדת (‏#761).
+//: כרטיסי הרשת האחרונים שנקראו (‏/net/interfaces) — לחלונות "הגדרת כרטיס"
+// ו"רשת הפצה" (‏#1263) ולדף הרשת.
 let NICS = [];
 
 /* ‏#762: תווית מצב DHCP חי — ‏dhcp_live_label מגיע מהשרת (אמת נקראת, לא
@@ -26,97 +18,31 @@ function dhcpLiveClass(state) {
   return "warn";
 }
 
-function nicMode(n) {
-  const cls = dhcpLiveClass(n.dhcp_live.state);
-  const proxyTag = n.proxy && !(PROXY_SUPPORT && PROXY_SUPPORT.verified)
-    ? ` <span class="tag warn">${esc(
-        PROXY_SUPPORT && PROXY_SUPPORT.version
-          ? `dnsmasq ${PROXY_SUPPORT.version} — לא נבדק` : "גרסת dnsmasq לא נקראה")}</span>`
-    : "";
-  const diverged = n.dhcp_diverged
-    ? `<br><span class="tag warn">המוגדר אינו תואם למצב הפעיל</span>` : "";
-  const stored = `שמורה בקונסולה: ${n.enabled ? "מופעל" : n.proxy ? "proxy" : "כבוי"}`;
-  return {
-    html: `<b class="dhcp-${cls}">${esc(n.dhcp_live_label)}</b>${proxyTag}
-      <br><small style="color:var(--muted)">${esc(stored)}</small>${diverged}`,
-    on: n.enabled || n.proxy,
-  };
+/* ‏#1263: עזרי IPv4 וכרטיס הניהול — כאן ולא ב-netcfg.js, כי net.js נטען ראשון
+   וגם דפים שטוענים רק אותו (פורטים) פותחים את חלון רשת ההפצה. */
+const IPV4_RE = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+
+function validIp(text) { return IPV4_RE.test(String(text || "").trim()); }
+function ipNum(text) { return String(text).trim().split(".").reduce((a, p) => ((a << 8) | Number(p)) >>> 0, 0); }
+function numIp(n) { return [24, 16, 8, 0].map((s) => (n >>> s) & 255).join("."); }
+/* מסכה = רצף אחדות. ‏255.0.255.0 נראית כמו מסכה ואינה (כמו netcfg._valid_mask). */
+function validMask(text) {
+  return validIp(text) && /^1*0*$/.test(ipNum(text).toString(2).padStart(32, "0"));
+}
+function networkOf(ip, netmask) {
+  return validIp(ip) && validMask(netmask) ? numIp((ipNum(ip) & ipNum(netmask)) >>> 0) : "";
+}
+/* מה שהשרת יגזור (‏netcfg.deploy_address): הכתובת הראשונה ברשת. ‏"" = לא
+   כתובת רשת, או רשת קטנה מדי (‏/31, ‏/32) — כמו השרת, בלי עיגול שקט. */
+function firstHost(network, netmask) {
+  if (!validIp(network) || !validMask(netmask) || ipNum(netmask) > 0xfffffffc) return "";
+  if (networkOf(network, netmask) !== String(network).trim()) return "";
+  return numIp(ipNum(network) + 1);
 }
 
-function editNic(nic) {
-  const guess = (nic.addresses[0] || "").split("/")[0];
-  const active = nic.enabled || nic.proxy;
-  // כשהגרסה המותקנת נבדקה במעבדה ועבדה — אין מה לאשר, והשדה נעלם מעצמו.
-  const gated = !(PROXY_SUPPORT && PROXY_SUPPORT.verified);
-  sheet({
-    title: `DHCP על ${nic.name}`,
-    sub: "כתובות יחולקו רק על הכרטיס הזה. לרשת שיש בה DHCP קיים — בחר proxy.",
-    note: (nic.trunk ? `<div class="sheet-note danger">הכרטיס מסומן כמחובר לרשת המכללה. DHCP מלא כאן ישבית את הרשת — אלא אם אתה בטוח לגמרי, השאר proxy.</div>`
-      : `<div class="sheet-note">ההגדרה המסוכנת ביותר במערכת: DHCP על רשת שכבר יש בה שרת משבית אותה. השרת יבדוק לפני ההדלקה אם מישהו כבר עונה.</div>`)
-      // ‏#1088: אחרי התקנה נקייה ההדלקה הראשונה היא גם הגדרת רשת ההפצה —
-      // השרת משלים את ההתקנה ומאתחל את עצמו; הכרטיס חייב לשאת את הכתובת.
-      + (typeof NET_DEPLOY !== "undefined" && NET_DEPLOY && NET_DEPLOY.configured === false && !active
-        ? `<div class="sheet-note">רשת ההפצה מוגדרת כאן <b>בפעם הראשונה</b>: ההדלקה משלימה את ההתקנה (grub.cfg, dnsmasq, חומת אש) ומאתחלת את השרת על כתובת ההפצה — הקונסולה תחזור תוך כמה שניות. הכרטיס חייב כבר לשאת את "כתובת השרת בוילן" (עריכת כתובת → סטטית), אחרת השרת יסרב.</div>`
-        : "")
-      + `<div class="sheet-note danger" id="proxy-warn" hidden>${
-           esc((PROXY_SUPPORT && PROXY_SUPPORT.reason) || "")}</div>`,
-    fields: [
-      { id: "mode", label: "מצב", type: "select",
-        value: nic.enabled ? "dhcp" : nic.proxy ? "proxy" : "dhcp",
-        options: [{ value: "dhcp", label: "DHCP מלא — מחלק כתובות (וילן הפצה)" },
-                  { value: "proxy", label: "proxy — עונה על PXE בלבד, DHCP קיים נשאר" },
-                  ...(active ? [{ value: "off", label: "כבוי — הכרטיס מפסיק לענות" }] : [])] },
-      { id: "server_ip", label: "כתובת השרת בוילן", value: nic.server_ip || guess, dir: "ltr", placeholder: "10.44.9.10" },
-      { id: "range_start", label: "תחילת טווח הכתובות", value: nic.range_start, dir: "ltr", placeholder: "10.44.9.50" },
-      { id: "range_end", label: "סוף הטווח", value: nic.range_end, dir: "ltr", placeholder: "10.44.9.200" },
-      { id: "netmask", label: "מסכת רשת", value: nic.netmask || "255.255.255.0", dir: "ltr" },
-      { id: "gateway", label: "שער (לא חובה)", value: nic.gateway, dir: "ltr" },
-      { id: "dns", label: "שרתי DNS (מופרדים בפסיק, לא חובה)", value: (nic.dns || []).join(", "), dir: "ltr" },
-      { id: "lease", label: "זמן חכירה", value: nic.lease || "12h", dir: "ltr" },
-      { id: "trunk", label: "הכרטיס הזה מחובר ל-trunk של רשת המכללה", type: "checkbox", value: nic.trunk },
-      ...(nic.trunk ? [{ id: "confirm_trunk", label: "אני מבין שזו רשת המכללה ורוצה להדליק בכל זאת", type: "checkbox", value: false }] : []),
-      ...(gated ? [{ id: "confirm_proxy_broken", type: "checkbox", value: false,
-                     label: "אני מבין שמצב proxy עלול להקפיא את dnsmasq ורוצה להדליק בכל זאת" }] : []),
-    ],
-    verify: { label: `${active ? "לשמירה" : "להדלקה"} הקלד את שם הכרטיס: ${nic.name}`,
-              mustEqual: nic.name },
-    submitLabel: active ? "שמור" : "הדלק",
-    danger: true,
-    onSubmit: async (v) => {
-      // המסך חוסם כאן רק כדי לומר את זה בעברית מיד; הסירוב האמיתי
-      // הוא של השרת, וגם מי שיעקוף את המסך יפגוש אותו.
-      if (v.mode === "proxy" && gated && v.confirm_proxy_broken !== true) {
-        throw new Error("מצב proxy דורש את סימון האישור — קרא את האזהרה שמעל.");
-      }
-      await saveNic(nic.name, {
-        enabled: v.mode === "dhcp", proxy: v.mode === "proxy",
-        server_ip: v.server_ip, range_start: v.range_start, range_end: v.range_end,
-        netmask: v.netmask, gateway: v.gateway, dns: v.dns, lease: v.lease,
-        trunk: v.trunk, confirm: nic.name, confirm_trunk: v.confirm_trunk === true,
-        confirm_proxy_broken: v.confirm_proxy_broken === true,
-      });
-      await loadNet();
-      if (typeof refreshNetPages === "function") refreshNetPages();
-    },
-  });
-  // האזהרה והאישור נדלקים רק כשבוחרים proxy. ‏sheet() בונה את ה-DOM
-  // סינכרונית, אז השדות כבר קיימים כאן — אין צורך בקריאה חוזרת לקונסולה.
-  const modeField = document.getElementById("sf-mode");
-  const warning = document.getElementById("proxy-warn");
-  const ack = gated ? document.getElementById("sf-confirm_proxy_broken") : null;
-  const syncWarning = () => {
-    const proxy = modeField.value === "proxy";
-    warning.hidden = !proxy;
-    if (ack) {
-      // ‏style ולא התכונה hidden: ‏`label.check{display:flex}` גובר עליה.
-      ack.closest("label").style.display = proxy ? "" : "none";
-      if (!proxy) ack.checked = false;
-    }
-  };
-  modeField.addEventListener("change", syncWarning);
-  syncWarning();
+function isMgmtNic(name) {
+  return !!(NETCFG && NETCFG.management_interface && NETCFG.management_interface === name);
 }
-
 async function saveNic(name, body) {
   const result = await put(`/net/interfaces/${encodeURIComponent(name)}`, body);
   if (result.apply_error) toast("נשמר, אבל dnsmasq לא עודכן: " + result.apply_error);
@@ -129,6 +55,126 @@ async function saveNic(name, body) {
     toast(`רשת ההפצה הוגדרה על ${name} (${d.url}) — השרת מתאתחל, הקונסולה תחזור תוך כמה שניות`);
     if (typeof NET_DEPLOY !== "undefined") NET_DEPLOY = { configured: true, source: "console", interface: name, url: d.url, hint: null };
   }
+}
+
+/* ‏#1263: חלון "רשת הפצה" — הגדרות ה-DHCP של ההפצה על הכרטיס שסומן.
+   המפעיל נותן כתובת רשת + מסכה, וכתובת השרת **נגזרת** (הראשונה ברשת,
+   ‏firstHost ב-netcfg.js = ‏netcfg.deploy_address בשרת) — היא אינה שדה.
+   בלי proxy (הכרעת נדב 10/10: לכל היותר ברשת כיתות, v1.2), בלי שער ובלי
+   ‏DNS (רשת סגורה: dnsmasq רץ ב-port=0 והשרת אינו מנתב), ובלי הקלדת שם
+   הכרטיס. השמירה היא בקשה אחת — ‏PUT /net/config/{שם}/deploy — שמחילה את
+   הכתובת ואת ה-DHCP יחד, כדי שלא יהיה רגע של כרטיס שמכריז על כתובת
+   שאינה שלו. שער/DNS שנשמרו בהגדרה קיימת נשארים בשרת כפי שהם. */
+const LEASE_UNITS = [["h", "שעות"], ["m", "דקות"], ["d", "ימים"]];
+
+function deployFormProblems(v) {
+  const found = [];
+  const server = firstHost(v.network, v.netmask);
+  if (!validIp(v.network)) found.push("כתובת הרשת אינה תקינה");
+  else if (!validMask(v.netmask)) found.push("מסכה אינה תקינה");
+  else if (!server) {
+    const net = networkOf(v.network, v.netmask);
+    found.push(net !== String(v.network).trim()
+      ? `${String(v.network).trim()} אינה כתובת רשת — עם המסכה הזו הרשת היא ${net}`
+      : "הרשת קטנה מדי — אין בה מקום לשרת ולטווח");
+  }
+  if (!validIp(v.range_start)) found.push("תחילת הטווח אינה תקינה");
+  if (!validIp(v.range_end)) found.push("סוף הטווח אינו תקין");
+  if (server && validIp(v.range_start) && validIp(v.range_end)) {
+    const net = v.network.trim(), mask = v.netmask.trim();
+    const start = ipNum(v.range_start), end = ipNum(v.range_end), me = ipNum(server);
+    if (start > end) found.push("תחילת הטווח גדולה מסופו");
+    if (networkOf(v.range_start, mask) !== net || networkOf(v.range_end, mask) !== net) {
+      found.push("הטווח חייב להיות בתוך הרשת");
+    }
+    if (start <= me && me <= end) found.push(`כתובת השרת (${server}) נמצאת בתוך הטווח`);
+  }
+  if (!/^\d+$/.test(String(v.lease_n || "").trim()) || Number(v.lease_n) < 1) {
+    found.push("משך חכירה: מספר שלם חיובי");
+  }
+  return found;
+}
+
+function deployServerNote(network, netmask) {
+  const ip = firstHost(network, netmask);
+  return ip ? `השרת יקבל אוטומטית את <b dir="ltr">${esc(ip)}</b> — הכתובת הראשונה ברשת.`
+    : "כתובת השרת נגזרת מהרשת: הכתובת הראשונה בה.";
+}
+
+function editDeployNet(name) {
+  const nic = (NICS || []).find((n) => n.name === name);
+  if (!nic) { toast("כרטיס לא נמצא"); return; }
+  if (isMgmtNic(name)) { toast(`${name} הוא כרטיס הניהול — הוא לא יכול להיות רשת ההפצה`); return; }
+  const netmask = nic.netmask || "255.255.255.0";
+  const network = networkOf(nic.server_ip, netmask);
+  const lease = String(nic.lease || "12h").trim().toLowerCase().match(/^(\d+)([mhd])$/) || [null, "12", "h"];
+  const firstTime = typeof NET_DEPLOY !== "undefined" && NET_DEPLOY && NET_DEPLOY.configured === false && !nic.enabled;
+  sheet({
+    title: `רשת הפצה — ${name}`,
+    sub: "ה-DHCP למחשבי השיכפול והבנייה רץ על הכרטיס הזה",
+    note: (nic.trunk ? `<div class="sheet-note danger">הכרטיס מסומן כמחובר לרשת המכללה. DHCP כאן ישבית את הרשת.</div>`
+      : !nic.enabled ? `<div class="sheet-note">ההגדרה המסוכנת ביותר במערכת: DHCP על רשת שכבר יש בה שרת משבית אותה. השרת יבדוק לפני ההדלקה אם מישהו כבר עונה.</div>` : "")
+      + (firstTime ? `<div class="sheet-note">רשת ההפצה מוגדרת כאן <b>בפעם הראשונה</b>: השמירה משלימה את ההתקנה (grub.cfg, dnsmasq, חומת אש) ומאתחלת את השרת על כתובת ההפצה — הקונסולה תחזור תוך כמה שניות.</div>` : "")
+      + `<div class="sheet-note" id="deploy-server-ip">${deployServerNote(network, netmask)}</div>`,
+    size: "mid",
+    fields: [
+      { type: "section", label: "רשת ההפצה" },
+      { id: "network", label: "כתובת רשת", value: network, dir: "ltr" },
+      { id: "netmask", label: "מסכה", value: netmask, dir: "ltr" },
+      { type: "section", label: "DHCP למחשבים" },
+      { id: "range_start", label: "תחילת טווח", value: nic.range_start, dir: "ltr" },
+      { id: "range_end", label: "סוף טווח", value: nic.range_end, dir: "ltr" },
+      { id: "lease_n", label: "משך חכירה", value: lease[1], dir: "ltr" },
+      { id: "lease_u", label: "יחידה", type: "select", value: lease[2],
+        options: LEASE_UNITS.map(([value, label]) => ({ value, label })) },
+      ...(nic.trunk && !nic.enabled ? [{ id: "confirm_trunk", type: "checkbox", value: false,
+        label: "אני מבין שזו רשת המכללה ורוצה להדליק בכל זאת" }] : []),
+    ],
+    submitLabel: "שמירה והחלה",
+    onSubmit: async (v) => {
+      const problems = deployFormProblems(v);
+      if (problems.length) throw new Error(problems.join(" · "));
+      await saveDeployNet(name, {
+        network: v.network.trim(), netmask: v.netmask.trim(),
+        range_start: v.range_start.trim(), range_end: v.range_end.trim(),
+        lease: `${Number(v.lease_n)}${v.lease_u}`,
+        confirm: name, confirm_trunk: v.confirm_trunk === true,
+      });
+    },
+  });
+  // כתובת השרת מתעדכנת תוך כדי הקלדה, והכפתור נדלק כשהשדות תקינים.
+  const form = document.getElementById("sheet");
+  const body = form && form.querySelector(".sbody");
+  if (!body) return;
+  const value = (id) => { const el = document.getElementById("sf-" + id); return el ? el.value : ""; };
+  const sync = () => {
+    const v = { network: value("network"), netmask: value("netmask"), range_start: value("range_start"),
+                range_end: value("range_end"), lease_n: value("lease_n") };
+    const note = document.getElementById("deploy-server-ip");
+    if (note) note.innerHTML = deployServerNote(v.network, v.netmask);
+    const problems = deployFormProblems(v);
+    const submit = form.querySelector('button[type="submit"]');
+    if (submit) submit.disabled = problems.length > 0;
+    const hint = document.getElementById("sf-hint");
+    if (hint) hint.textContent = problems[0] || "";
+  };
+  body.addEventListener("input", sync);
+  sync();
+}
+
+async function saveDeployNet(name, body) {
+  const result = await put(`/net/config/${encodeURIComponent(name)}/deploy`, body);
+  if (typeof refreshNetPages === "function") refreshNetPages();
+  // הכתובת לא הוחלה/לא אומתה/ממתינה לאישור — ה-DHCP לא שונה, והחלון נשאר פתוח עם הסיבה.
+  if (!result.dhcp) throw new Error(result.apply_error || "הכתובת לא הוחלה — ה-DHCP לא שונה");
+  if (result.apply_error) toast("נשמר, אבל dnsmasq לא עודכן: " + result.apply_error);
+  else toast(`רשת ההפצה נשמרה על ${name} — כתובת השרת ${result.server_ip}`);
+  const d = result.deploy;
+  if (d && d.ok) {
+    toast(`רשת ההפצה הוגדרה על ${name} (${d.url}) — השרת מתאתחל, הקונסולה תחזור תוך כמה שניות`);
+    if (typeof NET_DEPLOY !== "undefined") NET_DEPLOY = { configured: true, source: "console", interface: name, url: d.url, hint: null };
+  }
+  await loadNet();
 }
 
 /* --- בריאות המערכת — רמזור לכל בדיקה (health.py) ------------------------- */
@@ -150,106 +196,17 @@ const healthRefresh = $("#health-refresh");
 if (healthRefresh) healthRefresh.addEventListener("click", () =>
   loadHealthPanel().catch((error) => toast("רענון נכשל: " + error.message)));
 
-async function previewDnsmasq() {
-  // שני קבצים, כי ה-proxy רץ בתהליך dnsmasq משלו (#36).
-  const conf = await api("/net/dnsmasq");
-  sheet({
-    title: "קבצי dnsmasq שנוצרים",
-    sub: "האינסטנס הראשי, ולידו אינסטנס ה-proxy המבודד",
-    note: `<p class="mono" dir="ltr" style="color:var(--muted);font-size:12px;margin:0 0 4px">${esc(conf.path)}</p>
-           <pre class="conf">${esc(conf.text)}</pre>
-           <p class="mono" dir="ltr" style="color:var(--muted);font-size:12px;margin:10px 0 4px">${esc(conf.proxy_path)} · ${esc(conf.proxy_unit)}.service</p>
-           <pre class="conf">${esc(conf.proxy_text)}</pre>`,
-    submitLabel: "סגור", onSubmit: async () => {},
-  });
-}
-
-const dhcpPreview = $("#dhcp-preview");
-if (dhcpPreview) dhcpPreview.addEventListener("click", () =>
-  previewDnsmasq().catch((error) => toast(error.message)));
-
 async function loadNet() {
   // הלשונית כולה היא הכרטיסים: כל שורה היא כרטיס רשת של השרת,
   // שיכול להיות DHCP או לא. מכונות שנראו ברשת — בלשונית המחשבים.
-  const admin = ME.role === "admin";
-  // ‏#36: לפני שמציירים שורות, שואלים את השרת מה גרסת ה-dnsmasq שמותקנת
-  // אומרת על מצב proxy. כשל בקריאה משאיר null — ו-null נחשב "לא נבדק",
-  // כלומר הצד החוסם. ‏admin בלבד, כמו ה-endpoint עצמו.
-  if (admin) {
-    try { PROXY_SUPPORT = await api("/net/proxy-support"); }
-    catch (error) { PROXY_SUPPORT = null; }
-  }
-  // ‏#761: הטבלה המאוחדת נבנית ב-netcfg.js (renderNetTable), אחרי שגם
-  // הכתובות המוגדרות (loadNetcfg) נטענו — כדי שלא יהיה join שביר של שתי
-  // תשובות שמגיעות בזמנים שונים. כאן רק שולפים ושומרים.
   NICS = await api("/net/interfaces");
   const addBtn = $("#nic-add");
   if (addBtn) addBtn.onclick = addNic;
   if (typeof populateSidebarNics === "function") populateSidebarNics();
 }
 
-function addNic() {
-  // המערכת מזהה לבד מה מחובר ועוד לא הוגדר — בוחרים מרשימה, לא מקלידים.
-  const fresh = NICS.filter((n) =>
-    n.present && !n.enabled && !n.proxy && !n.description);
-  if (!fresh.length) {
-    toast("כל הכרטיסים שמחוברים כבר מוגדרים.");
-    return;
-  }
-  sheet({
-    title: "הוספת כרטיס",
-    sub: "אלה הכרטיסים שמחוברים ועוד לא הוגדרו — בוחרים ונותנים תיאור.",
-    fields: [
-      { id: "name", label: "כרטיס שזוהה", type: "select",
-        value: fresh[0].name,
-        options: fresh.map((n) => ({
-          value: n.name,
-          label: `${n.name}${n.mac ? " · " + n.mac : ""}`,
-        })) },
-      { id: "description", label: "תיאור", placeholder: "למשל: וילן 700" },
-    ],
-    submitLabel: "הוסף",
-    onSubmit: async (v) => {
-      await post("/net/interfaces", { name: v.name, description: v.description });
-      await loadNet();
-      await loadNetcfg();
-      renderNetTable();
-    },
-  });
-}
-
-/* מחוברים לטבלה המאוחדת מ-netcfg.js, אחרי שהיא נבנתה — שלוש הפעולות
-   שנשארות ספציפיות לצד ה-DHCP (הגדרת DHCP / תיאור / הסרה). */
-function wireNicActions(nics) {
-  document.querySelectorAll("[data-nic-edit]").forEach((b) => b.onclick = () => {
-    const nic = nics.find((n) => n.name === b.dataset.nicEdit);
-    if (!nic) { toast("כרטיס לא נמצא"); return; }
-    editNic(nic);
-  });
-  document.querySelectorAll("[data-nic-desc]").forEach((b) => b.onclick = () => {
-    const nic = nics.find((n) => n.name === b.dataset.nicDesc);
-    if (!nic) { toast("כרטיס לא נמצא"); return; }
-    sheet({
-      title: "תיאור הכרטיס", sub: nic.name,
-      fields: [{ id: "description", label: "תיאור חופשי",
-                 value: nic.description, placeholder: "למשל: וילן 700" }],
-      onSubmit: async (v) => {
-        await put(`/net/interfaces/${encodeURIComponent(nic.name)}/description`,
-                  { description: v.description });
-        await loadNet();
-        renderNetTable();
-      },
-    });
-  });
-  document.querySelectorAll("[data-nic-forget]").forEach((b) => b.onclick = () => confirmSheet(
-    "הסרת הגדרות הכרטיס",
-    `ההגדרות והתיאור של ${b.dataset.nicForget} יימחקו. אם רץ עליו DHCP — הוא ייכבה.`,
-    "הסר", async () => {
-      await del(`/net/interfaces/${encodeURIComponent(b.dataset.nicForget)}`);
-      await loadNet();
-      renderNetTable();
-    }));
-}
+/* ‏#1263: "+ כרטיס" פותח את חלון "הגדרת כרטיס" עם בחירה מתוך מה שזוהה. */
+function addNic() { editNicConfig(null, { add: true }); }
 
 // --- "נראו ברשת" — מוצג בלשונית המחשבים (machines.js קורא לזה) -------------
 

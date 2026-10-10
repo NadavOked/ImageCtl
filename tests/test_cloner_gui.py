@@ -18,6 +18,7 @@ SMART גרפי, ומחליף את התפריט הטקסטואלי של #666 כש
 
 from __future__ import annotations
 
+import math
 import os
 import shutil
 import subprocess
@@ -800,9 +801,11 @@ def test_login_show_password_toggle_is_at_the_right_of_the_field(tmp_path):
         prefix = tmp_path / f"1170-login-{size}"
         _png(binary, prefix, state, size)
         w, h, ch, px = _png_rgb(tmp_path / f"1170-login-{size}-login-light.png")
-        pane = min(600, max(420, w * .32))
-        fw = min(400, pane - 128)
-        field_left = int(w - pane + (pane - fw) / 2)
+        s = ui_scale(h)                       # mockup 10/10: laid out in w/s x h/s
+        wl = w / s
+        pane = min(600, max(420, wl * .32))
+        fw = min(400, pane - 128) * s
+        field_left = int((wl - pane + (pane - min(400, pane - 128)) / 2) * s)
         field_right = int(field_left + fw)
         # רקע הפאנל: פיקסל בתוך השדה, גבוה מעל הטופס (אין שם דיו).
         bg_i = ((h // 5) * w + (field_left + field_right) // 2) * ch
@@ -819,7 +822,7 @@ def test_login_show_password_toggle_is_at_the_right_of_the_field(tmp_path):
                 lines.append([y, y])
         assert len(lines) >= 2, f"expected two field underlines at {size}, got {lines}"
         pw_line = lines[1][0]
-        y0, y1 = pw_line - 34, pw_line - 2
+        y0, y1 = pw_line - int(34 * s), pw_line - 2
         left, right, top, bottom = _ink_bounds_x(px, ch, w, field_left, field_right, y0, y1, bg)
         assert right >= 0, f"no ink in the password box at {size} — the toggle is not drawn?"
         centre = (left + right) / 2
@@ -1039,6 +1042,14 @@ def test_png_renders_the_cloner_card_from_a_state_without_cloner_data(tmp_path):
 # --- ‏#765: מסך-מלא רספונסיבי + פלטת Clarity -------------------------------
 
 
+def ui_scale(height: int) -> float:
+    """native-gui ui_scale(): clamp(H/800, 1, 1.4) taken down to a quarter
+    (mockup 10/10) -- 1024x768 / 1280x800 are 1, 1080p and 1280x1024 1.25."""
+    import math
+    s = math.floor(height / 800 * 4) / 4
+    return min(max(s, 1.0), 1.4)
+
+
 def _render_all(binary: Path, tmp_path: Path, size: str):
     """מרנדר את כל הכרטיסים בגודל נתון (בלי --state: משתמש ב-sample_state,
     שמאכלס גם msg_title כך שבדיקת הניתוב של message עוברת)."""
@@ -1079,7 +1090,10 @@ def test_native_gui_fills_the_screen(tmp_path, size):
     w, h, ch, px = _png_rgb(tmp_path / "card-menu-light.png")
     header, nav, bg = _token("--clr-header"), _token("--clr-nav"), _token("--clr-bg")
     border = _token("--clr-border")
-    hdr_h, sb_h, pad_x, pad_top, pad_bottom = 48, 36, 32, 28, 24
+    # mockup 10/10: every size is the mockup's times the screen scale
+    # (1 at 1024x768, 1.25 at 1920x1080) -- the layout itself is unchanged.
+    s = ui_scale(h)
+    hdr_h, sb_h, pad_x, pad_top, pad_bottom = (round(v * s) for v in (48, 36, 32, 28, 24))
 
     # ה-header: השורה הראשונה והאחרונה (0, 47) נקיות מטקסט; שורת האמצע
     # נושאת את הטקסט (מכונה · שרת · גרסה, פיל, brand, שעה) — נמדד במעבדה
@@ -1092,7 +1106,8 @@ def test_native_gui_fills_the_screen(tmp_path, size):
 
     # שורת הסטטוס: 36 שורות תחתונות — השורה העליונה שלהן היא קו השיער
     # (‏draw_status מצייר אותו ב-bar.y), השאר ב---clr-nav, ומעליהן רקע הגוף.
-    for y in (h - 1, h - sb_h // 2, h - sb_h + 1):
+    # the hairline is 1 logical px = s physical rows: the row after it may be a blend
+    for y in (h - 1, h - sb_h // 2, h - sb_h + math.ceil(s)):
         assert _row_frac(px, ch, w, y, nav) > .85, f"row {y} is not the status bar"
     assert _row_frac(px, ch, w, h - sb_h, border) > .85, "no hairline atop the status bar"
     assert _row_frac(px, ch, w, h - sb_h - 1, bg) > .85, f"the status bar is taller than {sb_h}"
@@ -1101,7 +1116,7 @@ def test_native_gui_fills_the_screen(tmp_path, size):
     left, right, top, bottom = _ink_bounds(px, ch, w, hdr_h, h - sb_h, bg)
     assert abs(left - pad_x) <= 2, f"left margin {left}, want {pad_x}"
     assert abs((w - 1 - right) - pad_x) <= 2, f"right margin {w - 1 - right}, want {pad_x}"
-    assert 0 <= top - (hdr_h + pad_top) <= 12, f"content starts at {top}, want ~{hdr_h + pad_top}"
+    assert 0 <= top - (hdr_h + pad_top) <= 12 * s, f"content starts at {top}, want ~{hdr_h + pad_top}"
     assert abs((h - sb_h - 1 - bottom) - pad_bottom) <= 2, \
         f"bottom margin {h - sb_h - 1 - bottom}, want {pad_bottom}"
 
@@ -1113,7 +1128,7 @@ def test_native_gui_fills_the_screen(tmp_path, size):
 )
 def test_native_gui_uses_the_console_action_blue(tmp_path):
     """‏#1090: כפתור "כניסה" צבוע ב-`--clr-action` של הקונסולה — ‏#0079B8
-    בבהיר ו-#4c8fbd בכהה, כפי שהם ב-design-tokens.css (ולא הכחול הישן
+    בבהיר ו-#2f78a8 בכהה (שלב 1 של הקונסולה, 10/10), כפי שהם ב-design-tokens.css (ולא הכחול הישן
     ‏#2d668a של מוקאפ #828). הערך נקרא מהקובץ, לא מוקשח כאן."""
     binary = _build_gui(tmp_path)
     _render_all(binary, tmp_path, "1280x800")
@@ -1193,14 +1208,15 @@ def test_the_gui_panel_offers_replace_or_continue_only_on_a_red_disk():
     guarded = guarded[:guarded.index("\n        }")]          # סוגר הבלוק, לא ה-`}` של (Rect){…}
     assert '"כתוב בכל זאת"' in guarded and "HIT_SMART_RESCUE" in guarded   # rescue רק כשלא אדום
     assert fn.count("HIT_SMART_RESCUE") == 1
-    assert 'red ? "המשך" : "דלג"' in fn and "HIT_SMART_SKIP" in fn
+    assert 'red ? "המשך בלי הדיסק" : "דלג על הדיסק"' in fn and "HIT_SMART_SKIP" in fn   # mockup 10/10
     assert '"החלף דיסק"' in fn and "HIT_SMART_REPLACE" in fn
 
 
 def test_the_console_paints_failed_last_red_and_fail_orange():
     # ‏#1247: מסך התחנה בדפדפן (station.css / room.js) הוסר — נשארת הקונסולה.
     css = (STATIC / "console.css").read_text(encoding="utf-8")
-    assert ".disk-smart.failed_last{background:var(--danger-line); color:var(--danger)}" in css
+    # stage 1 (10/10): text in a colour is the --clr-*-fg token; failed_last stays red
+    assert ".disk-smart.failed_last{background:var(--danger-line); color:var(--clr-danger-fg)}" in css
     assert ".disk-smart.fail{" not in css                   # כתום = ברירת המחדל של .disk-smart
     js = (STATIC / "console.js").read_text(encoding="utf-8")
     assert 'failed_last: "נכשל בשיכפול הקודם"' in js

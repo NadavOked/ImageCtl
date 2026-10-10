@@ -5,7 +5,11 @@
 /* Source: docs/design/native-gui-mockup-2026-09-18.html.
  * There is no native-only palette: every colour below is one of the console
  * tokens copied into that approved mockup (plus its --art-* / --bar-* tokens).
- * Repeated fields are compatibility names used by the older screen modules. */
+ * Repeated fields are compatibility names used by the older screen modules.
+ * A binding whose selector starts with "tokens " is read from
+ * server/static/design-tokens.css instead: the console's stage 1 (10/10)
+ * darkened the dark action fill (#4c8fbd -> #2f78a8, white on it 4.8:1) and
+ * moved text in the action colour to --clr-action-fg. */
 const Theme THEME_LIGHT = {
  .id = "light",
  .porcelain = HEX(0xEEF1F5), .surface = HEX(0xFFFFFF),
@@ -39,7 +43,7 @@ const Theme THEME_LIGHT = {
  .alert_bg = HEX(0xFFF2E3), .alert_line = HEX(0xC25400), .alert_ink = HEX(0x313131),
  .success_btn = HEX(0x318700), .success_btn_line = HEX(0x318700),
  .node_active_line = HEX(0x0079B8), .node_warn_line = HEX(0xC25400),
- .warn = HEX(0xC25400), .brand_accent = HEX(0xFFFFFF),
+ .warn = HEX(0xC25400), .brand_accent = HEX(0xFFFFFF), .action_fg = HEX(0x006394),
  .shadow_strong = HEX(0x25333D), .shadow_strong_a = 0.18,
  .radius = 4,
 };
@@ -51,7 +55,7 @@ const Theme THEME_DARK = {
  .ink = HEX(0xE7EDF2), /* css: :root[data-theme="dark"] | --clr-text | 0 */
  .muted = HEX(0xA9B4BD), /* css: :root[data-theme="dark"] | --clr-muted | 0 */
  .hair = HEX(0x35414B), /* css: :root[data-theme="dark"] | --clr-border | 0 */
- .indigo = HEX(0x4C8FBD), /* css: :root[data-theme="dark"] | --clr-action | 0 */
+ .indigo = HEX(0x2F78A8), /* css: tokens :root[data-theme="dark"] | --clr-action | 0 */
  .indigo_soft = HEX(0x223E50), /* css: :root[data-theme="dark"] | --clr-action-soft | 0 */
  .led_write = HEX(0x4C8FBD), /* css: :root[data-theme="dark"] | --bar-write | 0 */
  .led_ok = HEX(0x5FBD7A), /* css: :root[data-theme="dark"] | --clr-success | 0 */
@@ -63,8 +67,8 @@ const Theme THEME_DARK = {
  .track = HEX(0x0E151A), /* css: :root[data-theme="dark"] | --bar-track | 0 */
  .sunken = HEX(0x151A1F), /* css: :root[data-theme="dark"] | --clr-bg | 0 */
  .btn_hover = HEX(0x25313A), /* css: :root[data-theme="dark"] | --clr-hover | 0 */
- .btn_hover_line = HEX(0x4C8FBD), /* css: :root[data-theme="dark"] | --clr-action | 0 */
- .ink_hover = HEX(0x64A6D2), /* css: :root[data-theme="dark"] | --clr-action-hover | 0 */
+ .btn_hover_line = HEX(0x2F78A8), /* css: tokens :root[data-theme="dark"] | --clr-action | 0 */
+ .ink_hover = HEX(0x276A96), /* css: tokens :root[data-theme="dark"] | --clr-action-hover | 0 */
  .on_ink = HEX(0xFFFFFF), /* css: :root | --clr-header-text | 0 */
  .danger_line = HEX(0xDC6B6B), /* css: :root[data-theme="dark"] | --clr-danger | 0 */
  .mark_line = HEX(0x33434F), /* css: :root[data-theme="dark"] | --art-c | 0 */
@@ -73,7 +77,7 @@ const Theme THEME_DARK = {
  .login_glow = HEX(0x26333D), /* css: :root[data-theme="dark"] | --art-b | 0 */
  .choice = HEX(0x1C232A), /* css: .card | background | 0 */
  .choice_line = HEX(0x35414B), /* css: :root[data-theme="dark"] | --clr-border | 0 */
- .selected_line = HEX(0x4C8FBD), /* css: :root[data-theme="dark"] | --clr-action | 0 */
+ .selected_line = HEX(0x2F78A8), /* css: tokens :root[data-theme="dark"] | --clr-action | 0 */
  .button = HEX(0x1C232A), /* css: :root[data-theme="dark"] | --clr-surface | 0 */
  .button_line = HEX(0x35414B), /* css: :root[data-theme="dark"] | --clr-border | 0 */
  .danger_bg = HEX(0x3A2323), /* css: :root[data-theme="dark"] | --clr-danger-soft | 0 */
@@ -104,13 +108,13 @@ const Theme THEME_DARK = {
  .disk_bg = HEX(0x1C232A), /* css: :root[data-theme="dark"] | --clr-surface | 0 */
  .disk_line = HEX(0x35414B), /* css: :root[data-theme="dark"] | --clr-border | 0 */
  .disk_selected = HEX(0x223E50), /* css: :root[data-theme="dark"] | --clr-action-soft | 0 */
- .disk_selected_line = HEX(0x4C8FBD), /* css: :root[data-theme="dark"] | --clr-action | 0 */
+ .disk_selected_line = HEX(0x2F78A8), /* css: tokens :root[data-theme="dark"] | --clr-action | 0 */
  .clone_line = HEX(0x35414B), /* css: :root[data-theme="dark"] | --clr-border | 0 */
  .round_line = HEX(0x35414B), /* css: :root[data-theme="dark"] | --clr-border | 0 */
  .image_bg = HEX(0x11181D), /* css: :root[data-theme="dark"] | --clr-field | 0 */
  .image_line = HEX(0x35414B), /* css: :root[data-theme="dark"] | --clr-border | 0 */
  .image_selected = HEX(0x223E50), /* css: :root[data-theme="dark"] | --clr-action-soft | 0 */
- .image_selected_line = HEX(0x4C8FBD), /* css: :root[data-theme="dark"] | --clr-action | 0 */
+ .image_selected_line = HEX(0x2F78A8), /* css: tokens :root[data-theme="dark"] | --clr-action | 0 */
  .alert_bg = HEX(0x33291A), /* css: .alert | background | 0 */
  .alert_line = HEX(0xE1B34F), /* css: .alert | border | 0 */
  .alert_ink = HEX(0xE7EDF2), /* css: .alert | color | 0 */
@@ -120,6 +124,7 @@ const Theme THEME_DARK = {
  .node_warn_line = HEX(0xE1B34F), /* css: .node.warn | border-color | 0 */
  .warn = HEX(0xE1B34F), /* css: :root[data-theme="dark"] | --clr-warning | 0 */
  .brand_accent = HEX(0xFFFFFF), /* css: :root | --clr-header-text | 0 */
+ .action_fg = HEX(0x7BB6DC), /* css: tokens :root[data-theme="dark"] | --clr-action-fg | 0 */
  .shadow_strong = HEX(0x26343F), /* css: :root[data-theme="dark"] | --clr-header | 0 */
  .shadow_strong_a = 0.45,
  .radius = 3,

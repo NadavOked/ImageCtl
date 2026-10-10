@@ -344,7 +344,7 @@ test('a secondary that does not answer: the branch turns red and every page says
   await run('populateSidebarSecondaries()');
   assert.equal(node('[data-secondary="n0de"]').attrs['data-conn'], 'err', 'the branch itself is red, not only the dot');
   assert.equal(node('[data-secondary-status="n0de"]').className, 'status err');
-  assert.match(fs.readFileSync(path.join(root, 'console.css'), 'utf8'), /\.server-node\[data-conn="err"\] \.server-name\{color:var\(--danger\)\}/);
+  assert.match(fs.readFileSync(path.join(root, 'console.css'), 'utf8'), /\.server-node\[data-conn="err"\] \.server-name\{color:var\(--clr-danger-fg\)\}/);
   run('BRANCH_NODE="n0de"; current="branch"');
   const views = run('BRANCH_VIEWS.map((v) => v[0])');
   assert.equal(views.length, 10);

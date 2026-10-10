@@ -190,10 +190,12 @@ def test_the_refusal_is_deploy_only_admin_and_anonymous_are_untouched(split_env)
 
 def test_an_admin_demoted_to_deploy_loses_the_console_at_once(split_env):
     """‏#91 באותו כיוון: ההרשאה נקראת מהטבלה בכל בקשה, לא מהעוגייה."""
+    from conftest import complete_console_login
     console = TestClient(split_env["console_app"])
+    # ‏#1262: לא is_builtin — ה-builtin אינו ניתן להורדה, וזה מנהל רגיל.
     users.create(split_env["rt"].conn, "second", "admin-pass-456", "admin",
-                 by="test", is_builtin=True, check_policy=False)
-    assert _login(console, ("second", "admin-pass-456")).status_code == 200
+                 by="test", check_policy=False)
+    complete_console_login(console, split_env["rt"].conn, "second", "admin-pass-456")
     assert console.get("/api/console/overview").status_code == 200
     users.update(split_env["rt"].conn, "second", by="test", role="deploy")
     resp = console.get("/api/console/overview")

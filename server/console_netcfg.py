@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import socket
 import time
+from pathlib import Path
 from typing import Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -32,8 +33,41 @@ from .db import get_setting, journal, set_setting
 Hooks = dict[str, Callable]
 
 
+#: ‏#1263: איפה המתקין רושם את כרטיס הניהול (‏`servers_if=`, ‏server/wizard).
+FIRSTBOOT_STATUS = Path("/etc/imagectl/firstboot.status")
+#: ההגדרה שמסך השרת (DCUI) כותב כשהמפעיל מאשר שם כרטיס ניהול.
+MANAGEMENT_SETTING = "dcui:management_interface"
+
+
+def installed_management(status_file: Path = FIRSTBOOT_STATUS) -> str:
+    """כרטיס הניהול שנבחר בהתקנה, או ריק כשלא נרשם/לא נקרא.
+
+    ריק אינו "אין כרטיס ניהול" — הוא "לא ידוע", והקונסולה מציגה אותו
+    כך ואינה מנחשת לפי איזה כרטיס נושא כתובת (עיקרון 5)."""
+    try:
+        lines = status_file.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    for line in lines:
+        key, _, value = line.partition("=")
+        if key.strip() == "servers_if":
+            return value.strip()
+    return ""
+
+
+def management_interface(conn, installed: Callable[[], str]) -> str:
+    """כרטיס הניהול (‏#1263): מה שמסך השרת אישר, אחרת מה שהמתקין רשם.
+    ריק = לא ידוע. מקום אחד — ראוטר הכתובות וראוטר ה-DHCP קוראים לזה."""
+    try:
+        recorded = installed() or ""
+    except Exception:                                  # noqa: BLE001 — כוונה
+        recorded = ""
+    return get_setting(conn, MANAGEMENT_SETTING) or recorded
+
+
 def default_hooks() -> Hooks:
     return {
+        "netcfg_management": installed_management,
         **netcfg_host.default_hooks(),
         # אותה רשימת כרטיסים של לשונית ה-DHCP — שני הצדדים של אותו
         # כרטיס חייבים להסכים מי קיים במכונה.
@@ -87,7 +121,10 @@ def drain_crumbs(ctx, state_dir, hooks: Hooks | None = None) -> int:
 
 
 def create_netcfg_router(ctx: ServerContext, state_dir,
-                         hooks: Hooks | None = None) -> APIRouter:
+                         hooks: Hooks | None = None,
+                         dhcp_steps: dict | None = None) -> APIRouter:
+    """‏`dhcp_steps` (‏#1263): שלבי ההדלקה של ראוטר ה-DHCP
+    (‏`create_dhcp_router(...).dhcp_steps`) — בלעדיהם אין `…/deploy`."""
     router = APIRouter(prefix="/api/console/net/config")
     _current_user, admin_only = auth.dependencies(ctx.conn)
     hooks = {**default_hooks(), **(hooks or {})}
@@ -109,6 +146,9 @@ def create_netcfg_router(ctx: ServerContext, state_dir,
 
     def marker():
         return netcfg_rollback.read_pending(state_dir)
+
+    def management() -> str:
+        return management_interface(ctx.conn, hooks["netcfg_management"])
 
     def active_interface(request: Request, live: dict) -> str | None:
         """הכרטיס שדרכו הגיעה הבקשה — או None כשלא ניתן לקבוע.
@@ -174,8 +214,11 @@ def create_netcfg_router(ctx: ServerContext, state_dir,
         live = {i["name"]: i for i in hooks["interfaces"]()}
         state = hooks["netcfg_state"]()
         names = sorted(set(live) | {c.name for c in all_configs()})
+        mgmt = management()
         return {
-            "interfaces": [state_view(load(n), live.get(n), state) for n in names],
+            "interfaces": [{**state_view(load(n), live.get(n), state),
+                            "management": n == mgmt} for n in names],
+            "management_interface": mgmt or None,
             "live": {"checked": state.checked, "reason": state.reason,
                      "routes": state.routes, "nameservers": state.nameservers},
             "sourced": hooks["netcfg_sourced"](),
@@ -195,9 +238,12 @@ def create_netcfg_router(ctx: ServerContext, state_dir,
                     for r in (body.get("routes") or [])],
         )
 
-    def check(cfg: netcfg.NetConfig) -> list[str]:
+    def check(cfg: netcfg.NetConfig,
+              dhcp_cfg: dhcp.InterfaceConfig | None = None) -> list[str]:
+        """‏`dhcp_cfg` (‏#1263): ה-DHCP **שייכתב** יחד עם הכתובת — רשת
+        הפצה משנה את שניהם בבקשה אחת, וההשוואה היא מול מה שיהיה."""
         others = [c for c in all_configs() if c.name != cfg.name] + [cfg]
-        return netcfg.problems(cfg, others, dhcp_of(cfg.name))
+        return netcfg.problems(cfg, others, dhcp_cfg or dhcp_of(cfg.name))
 
     @router.post("/{name}/preview")
     async def preview(name: str, request: Request, user=Depends(admin_only)):
@@ -228,6 +274,11 @@ def create_netcfg_router(ctx: ServerContext, state_dir,
         found = check(cfg)
         if found:
             raise HTTPException(400, " · ".join(found))
+        return _configure(name, before, cfg, body, request, user, live)
+
+    def _configure(name: str, before: netcfg.NetConfig, cfg: netcfg.NetConfig,
+                   body: dict, request: Request, user, live: dict) -> dict:
+        """מכאן — אחרי שהקלט נבדק: הקלדת השם, זרוע ההחזרה, כתיבה, קריאה חוזרת."""
         # עיקרון 7: שינוי כתובת הוא הרסני-בפועל — הוא מנתק מחשבים, ועל
         # הכרטיס הפעיל גם את המפעיל עצמו. הקלדת השם, כמו בהדלקת DHCP.
         if body.get("confirm") != name:
@@ -315,6 +366,88 @@ def create_netcfg_router(ctx: ServerContext, state_dir,
                 "apply_error": error, "mismatches": gaps,
                 "interface": state_view(cfg, live, state),
                 "rollback": rollback_view(now)}
+
+    @router.put("/{name}/deploy")
+    async def configure_deploy(name: str, request: Request, user=Depends(admin_only)):
+        """רשת ההפצה (‏#1263): רשת + מסכה, וכתובת השרת **נגזרת** — הראשונה
+        ברשת (‏`netcfg.deploy_address`). ה-DHCP של ההפצה (טווח, חכירה) נשמר
+        באותה בקשה, על אותו כרטיס.
+
+        למה בקשה אחת ולא שתיים מהמסך: כתובת חדשה מול DHCP ישן (או להפך) היא
+        מצב ששני המסלולים הקיימים מסרבים לו — ובצדק — ולכן אין סדר של שתי
+        קריאות שעובר בלי להשאיר כרטיס שמכריז על כתובת שאינה שלו.
+
+        הסדר: כל הבדיקות של שני הצדדים (‏`check` עם ה-DHCP **החדש**, ושומרי
+        ההדלקה של ראוטר ה-DHCP — trunk, ‏"מי כבר עונה", כרטיס ההפצה היחיד)
+        **לפני** שנוגעים במשהו; אז הכתובת (עם אותה זרוע החזרה וקריאה
+        חוזרת), ורק אם היא **אומתה** ואינה ממתינה לאישור — ה-DHCP. כתובת
+        שלא אומתה עוצרת: DHCP שמכריז על כתובת שהכרטיס אינו נושא אינו
+        "חצי הצלחה".
+        """
+        if dhcp_steps is None:
+            raise HTTPException(501, "שלבי ה-DHCP לא חוברו לראוטר הזה")
+        try:
+            dhcp.validate_name(name)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        body = await request.json()
+        live = {i["name"]: i for i in hooks["interfaces"]()}
+        if name not in live:
+            raise HTTPException(404, "כרטיס רשת כזה לא קיים במכונה")
+        if name == management():
+            raise HTTPException(
+                409, f"{name} הוא כרטיס הניהול (נבחר בהתקנה) — הוא יכול להיות "
+                     "לקוח DHCP או כתובת ידנית, לא רשת ההפצה")
+        netmask = str(body.get("netmask") or "255.255.255.0").strip()
+        network = str(body.get("network", "")).strip()
+        address, found = netcfg.deploy_address(network, netmask)
+        if found:
+            raise HTTPException(400, " · ".join(found))
+        before = load(name)
+        # השער וה-DNS של **הכרטיס** ריקים בכוונה: הם של המחשבים (ב-DHCP),
+        # ושער ברירת מחדל שני על השרת היה מתחרה בזה של כרטיס הניהול.
+        cfg = netcfg.NetConfig(name=name, mode=netcfg.MODE_STATIC, address=address,
+                               netmask=netmask, routes=before.routes)
+        dhcp_before = dhcp_steps["load"](name)
+        # שער ו-DNS **למחשבים**: הקונסולה אינה מציעה אותם ברשת ההפצה (רשת
+        # סגורה — dnsmasq ב-port=0, השרת אינו מנתב; נדב 10/10). מי שלא שולח
+        # אותם שומר את מה שכבר נשמר — הגדרה קיימת אינה נמחקת בשקט.
+        dhcp_body = {
+            "enabled": True, "proxy": False, "trunk": dhcp_before.trunk,
+            "range_start": body.get("range_start", ""), "range_end": body.get("range_end", ""),
+            "netmask": netmask,
+            "gateway": body["gateway"] if "gateway" in body else dhcp_before.gateway,
+            "dns": body["dns"] if "dns" in body else dhcp_before.dns,
+            "lease": body.get("lease") or "",
+            "server_ip": address, "confirm": body.get("confirm"),
+            "confirm_trunk": body.get("confirm_trunk") is True,
+            "ignore_existing": bool(body.get("ignore_existing")),
+        }
+        dhcp_cfg = dhcp_steps["build"](name, dhcp_body, dhcp_before)
+        found = check(cfg, dhcp_cfg)
+        if found:
+            raise HTTPException(400, " · ".join(found))
+        risky = dhcp_steps["gates"](name, dhcp_cfg, dhcp_before, dhcp_body)
+        address_result = None
+        if netcfg.changed(before, cfg):
+            address_result = _configure(name, before, cfg, body, request, user, live)
+            if not address_result["ok"] or address_result["rollback"]["pending"]:
+                why = ("ממתינה לאישור שהקונסולה עדיין נגישה — אשרו, ואז שמרו "
+                       "שוב את רשת ההפצה" if address_result["ok"] else
+                       "לא אומתה מול המצב בפועל")
+                return {"ok": False, "server_ip": address, "address": address_result,
+                        "dhcp": None, "apply_error": f"הכתובת {address} על {name} {why} "
+                        "— ה-DHCP לא שונה"}
+        dhcp_result = dhcp_steps["commit"](name, dhcp_cfg, dhcp_before, user,
+                                           dhcp_steps["live"](), risky)
+        journal(ctx.conn, "net_deploy_saved",
+                f"{name} {network}/{netcfg._prefix_len(netmask)} server={address} "
+                f"range={dhcp_cfg.range_start}-{dhcp_cfg.range_end}", user[0])
+        out = {"ok": dhcp_result["ok"], "server_ip": address, "address": address_result,
+               "dhcp": dhcp_result, "apply_error": dhcp_result["apply_error"]}
+        if "deploy" in dhcp_result:
+            out["deploy"] = dhcp_result["deploy"]
+        return out
 
     @router.post("/confirm")
     async def confirm(request: Request, user=Depends(admin_only)):

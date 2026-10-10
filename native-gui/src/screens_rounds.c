@@ -86,6 +86,7 @@ void rows_make(App *a, cairo_t *cr, double w, int mode, const char *empty, RowSe
     rs->n = s->nmachines;
     if (rs->n == 0) {
         rs->empty = sub_make(cr, empty, w - 2);
+        pango_layout_set_alignment(rs->empty.layout, PANGO_ALIGN_RIGHT);   /* ui-audit */
         rs->h = 2 + rs->empty.h;
         return;
     }
@@ -199,6 +200,13 @@ void progline_draw(cairo_t *cr, const Theme *t, ProgLine *p, double x, double y,
 }
 
 /* ---- the confirm box (room.js #room-confirm / classes.js #cls-confirm) ---- */
+
+int typed_matches(const char *typed, const char *want) {
+    while (*typed == ' ' || *typed == '\t') typed++;
+    size_t n = strlen(typed);
+    while (n && (typed[n - 1] == ' ' || typed[n - 1] == '\t')) n--;
+    return want[0] && strlen(want) == n && !strncmp(typed, want, n);
+}
 
 Text confirm_label(cairo_t *cr, const char *image, int room, double w) {
     char e[512], mk[768];                          /* image name: 96 bytes escaped, worst case x5 */

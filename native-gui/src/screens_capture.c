@@ -44,6 +44,7 @@ void screen_pick(App *a, cairo_t *cr, double W, double H, double head_h) {
     Text none = { NULL, 0, 0 };
     if (n == 0) {
         none = sub_make(cr, "עוד לא דווחו כוננים — המידע מגיע כשהמחשב עולה ב-PXE.", inner);
+        pango_layout_set_alignment(none.layout, PANGO_ALIGN_RIGHT);   /* ui-audit: was drawn at the physical left of an RTL page */
         body_h += none.h;
     }
     for (int k = 0; k < n; k++) {
@@ -196,21 +197,39 @@ void screen_progress(App *a, cairo_t *cr, double W, double H, double head_h) {
     /* #408: the rate is what says "alive" when there is no denominator; it is
      * shown only once measured (two reads), never as 0. */
     if (a->capture_rate_bps > 0) { char r[32]; fmt_bytes(r, sizeof r, a->capture_rate_bps); snprintf(rate, sizeof rate, "%s/s", r); }
-    char short_pct[32];
-    if (s->pct >= 0) snprintf(short_pct,sizeof short_pct,"%d%%",s->pct > 100 ? 100 : s->pct);
-    else snprintf(short_pct,sizeof short_pct,"--");
+    /* mockup 10/10 ("מסך קליטה"): the big number is what is KNOWN. A
+     * known total gives "42%" + "הושלם"; without one it is the bytes read
+     * ("23.1 GB" + "נקראו"), and before the first byte only words -- never
+     * "--" in 88px over "הושלם" on a capture that is still running. */
+    char big[32] = "", unit[16] = "";
+    const char *cap_s;
+    if (s->pct >= 0) { snprintf(big, sizeof big, "%d%%", s->pct > 100 ? 100 : s->pct); cap_s = "הושלם"; }
+    else if (s->bytes) {
+        char rd[32]; fmt_bytes(rd, sizeof rd, (double)s->bytes);
+        char *sp = strchr(rd, ' ');                       /* "23.1 GB": the number, then its unit */
+        if (sp) { *sp = 0; snprintf(unit, sizeof unit, "%s", sp + 1); }
+        snprintf(big, sizeof big, "%s", rd);
+        cap_s = s->title[0] ? "נכתבו" : "נקראו";
+    } else cap_s = s->task == TASK_PENDING ? "ממתין לסוכן" : "טרם נקראו בייטים";
 
-    Text tp = text_make(cr,FONT_MONO,N_PROGRESS_PCT,400,short_pct,0,DIR_LTR);
-    Text cap = text_make(cr,FONT_SANS,N_LABEL,400,"הושלם",0,DIR_RTL);
-    double end_w = dmax(tp.w, cap.w), start_w = inner - end_w - N_ACTION_TOP;   /* gap 20 ~ N_ACTION_TOP */
+    Text tp = big[0] ? text_make(cr,FONT_MONO,s->pct >= 0 ? N_PROGRESS_PCT : 72,400,big,0,DIR_LTR) : (Text){ NULL, 0, 0 };
+    Text un = unit[0] ? text_make(cr,FONT_MONO,28,400,unit,0,DIR_LTR) : (Text){ NULL, 0, 0 };
+    Text cap = text_make(cr,FONT_SANS,big[0] ? N_LABEL : N_SUB,big[0] ? 400 : 600,cap_s,0,DIR_RTL);
+    double num_w = tp.w + (un.layout ? 6 + un.w : 0);
+    double end_w = dmax(num_w, cap.w), start_w = inner - end_w - N_ACTION_TOP;   /* gap 20 ~ N_ACTION_TOP */
     Text lb = label_make(cr, label, start_w);
     Text ti = rtl_block_make(cr, N_PROGRESS_TITLE, 500, title, start_w);
     Text su = rtl_block_make(cr, N_SUB, 400, sub, start_w);
     double start_h = lb.h + N_LABEL_GAP + ti.h + N_TITLE_GAP + su.h, end_h = tp.h + cap.h;
     double top_h = dmax(start_h, end_h);
+    /* what is not known is said in words, under the bar */
+    Text unknown = s->pct < 0 ? rtl_block_make(cr, N_LABEL, 400, "הסך לא ידוע — מוצג מה שכבר נקרא; האחוז יופיע כשהסך יידע.", inner)
+                              : (Text){ NULL, 0, 0 };
+    double unknown_h = unknown.layout ? N_LABEL_GAP + 6 + unknown.h : 0;
     Text note = sub_make(cr,"אל תכבו את המחשב. אפשר לעקוב גם מהקונסולה.",inner);
+    pango_layout_set_alignment(note.layout, PANGO_ALIGN_RIGHT);       /* ui-audit: same edge as the title above it */
     double mh = metric_height(cr), mw = (inner - 2*N_METRIC_GAP) / 3;
-    double body_h = top_h + N_ACTION_TOP + N_BAR_H + N_METRIC_GAP + mh + N_ACTION_TOP + note.h;   /* card_frame adds the bottom N_PAD */
+    double body_h = top_h + N_ACTION_TOP + N_BAR_H + unknown_h + N_METRIC_GAP + mh + N_ACTION_TOP + note.h;   /* card_frame adds the bottom N_PAD */
 
     Head hd = { {NULL,0,0}, {NULL,0,0}, N_PAD, 0 };     /* the head is the progress-top itself */
     Rect body,foot;
@@ -222,21 +241,31 @@ void screen_progress(App *a, cairo_t *cr, double W, double H, double head_h) {
     text_draw_r(cr,&lb,xr,sy,t->muted);                  sy += lb.h + N_LABEL_GAP;
     text_draw_r(cr,&ti,xr,sy,t->ink);                    sy += ti.h + N_TITLE_GAP;
     text_draw_r(cr,&su,xr,sy,t->muted);
-    text_draw(cr,&tp,x,ey,t->ink);                       ey += tp.h;
-    text_draw(cr,&cap,x,ey,t->muted);
+    if (tp.layout) {
+        text_draw(cr,&tp,x,ey,t->ink);
+        /* the unit on the number's baseline, after it (the line is LTR) */
+        if (un.layout) text_draw(cr,&un,x+tp.w+6,ey+text_baseline(&tp)-text_baseline(&un),t->muted);
+        ey += tp.h;
+    }
+    text_draw(cr,&cap,x,ey,big[0] ? t->muted : t->ink);
     y += top_h + N_ACTION_TOP;
     draw_big_bar(cr,t,(Rect){x,y,inner,N_BAR_H},s->pct,s->moving);
-    y += N_BAR_H+N_METRIC_GAP;
+    y += N_BAR_H;
+    if (unknown.layout) { text_draw_r(cr,&unknown,xr,y+N_LABEL_GAP+6,t->muted); y += unknown_h; }
+    y += N_METRIC_GAP;
     draw_metric(cr,t,(Rect){xr-mw,y,mw,mh},s->title[0] ? "נכתב" : "נקראו",bytes);
     /* #408: without a denominator the middle metric is the rate -- "10.7 GB
      * read at 93 MB/s" is a whole answer; "— of —" was a frozen screen. */
     if (s->pct >= 0) draw_metric(cr,t,(Rect){xr-2*mw-N_METRIC_GAP,y,mw,mh},"סה״כ (משוער)",total);
     else             draw_metric(cr,t,(Rect){xr-2*mw-N_METRIC_GAP,y,mw,mh},"קצב",rate);
-    draw_metric(cr,t,(Rect){x,y,mw,mh},"התקדמות",pct);
+    /* the unknown total is said under the bar; this box then names the partition being read */
+    if (s->pct >= 0) draw_metric(cr,t,(Rect){x,y,mw,mh},"התקדמות",pct);
+    else { char part[16] = "—"; if (s->partition > 0) snprintf(part, sizeof part, "%d", s->partition);
+           draw_metric(cr,t,(Rect){x,y,mw,mh},"מחיצה",part); }
     y += mh+N_ACTION_TOP;
     text_draw(cr,&note,x,y,t->muted);
     body_clip_end(a,cr);card_end(a,cr);
-    text_free(&tp);text_free(&cap);text_free(&lb);text_free(&ti);text_free(&su);text_free(&note);
+    text_free(&tp);text_free(&un);text_free(&cap);text_free(&lb);text_free(&ti);text_free(&su);text_free(&note);text_free(&unknown);
 }
 
 /* ---- #st-done ---------------------------------------------------------------- */

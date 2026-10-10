@@ -722,6 +722,9 @@ def create_console_router(
                          password=body.get("password") or None, role=role)
             if disabled is not None:
                 users.set_disabled(ctx.conn, username, bool(disabled), by=user[0])
+        except users.BuiltinProtected as exc:
+            # ‏#1262: לא קלט שגוי אלא מצב שמסרב — כמו שם תפוס.
+            raise HTTPException(409, str(exc))
         except ValueError as exc:
             raise HTTPException(400, str(exc))
         return {"ok": True}
@@ -735,6 +738,8 @@ def create_console_router(
         # בו-זמנית אינם רואים שניהם "יש שניים". כאן נשאר רק התרגום ל-HTTP.
         try:
             users.delete(ctx.conn, username, by=user[0])
+        except users.BuiltinProtected as exc:
+            raise HTTPException(409, str(exc))
         except ValueError as exc:
             raise HTTPException(404 if "לא קיים" in str(exc) else 400, str(exc))
         return {"ok": True}

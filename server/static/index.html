@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ImageCtl — קונסולה</title>
-<link rel="stylesheet" href="design-tokens.css?v=11.8">
-<link rel="stylesheet" href="console.css?v=11.8">
-<link rel="stylesheet" href="progress.css?v=11.8">
+<link rel="stylesheet" href="design-tokens.css?v=11.13">
+<link rel="stylesheet" href="console.css?v=11.13">
+<link rel="stylesheet" href="progress.css?v=11.13">
 <script>
   /* לפני הציור הראשון, אחרת המסך מהבהב בלבן לפני שהכהה נטען.
      המטמון הוא בחירה מפורשת (light/dark) בלבד; בלי מטמון — לפי המערכת. */
@@ -76,7 +76,7 @@
 <header class="topbar">
   <button class="icon-btn nav-toggle" type="button" aria-label="הצג את עץ הניווט" title="הצג את עץ הניווט" aria-controls="sidebar" aria-expanded="false" onclick="navButton()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
   <div class="brand"><span class="brandmark"><span class="mark"></span></span><span class="brand-name">שרת אימג'ים</span></div>
-  <div class="search"><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="7"/><path d="m15 15 6 6"/></svg></span><input id="globalSearch" placeholder="חיפוש באימג'ים, מחשבים ומשימות" /></div>
+  <div class="search"><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="7"/><path d="m15 15 6 6"/></svg></span><input id="globalSearch" type="search" placeholder="חיפוש בעמוד הנוכחי" aria-label="חיפוש בעמוד הנוכחי" autocomplete="off" /></div>
   <div class="top-actions">
     <button class="icon-btn" title="רענן" onclick="refreshPage()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7a9 9 0 1 0 1 7M20 2v6h-6"/></svg></button>
     <button class="icon-btn" title="התראות" onclick="topNotifications()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17h16l-2-3V8a6 6 0 0 0-12 0v6ZM9 21h6"/></svg> <span id="alertBadge" class="tag" style="margin-inline-start:3px" hidden></span></button>
@@ -143,21 +143,21 @@
 
   <main class="content" id="content"></main>
 </div>
-<div class="task-panel" id="taskPanel"><div class="task-panel-head"><strong>משימות אחרונות</strong><button class="icon-btn" type="button" aria-label="סגור" title="סגור" onclick="toggleTaskPanel()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><div class="table-wrap"><table class="task-table"><thead><tr><th>משימה</th><th>יעד</th><th>התחלה</th><th>משך</th><th>מצב</th><th>יוזם</th></tr></thead><tbody><tr><td colspan="6">אין העברות פעילות</td></tr></tbody></table></div></div><div class="task-dock"><div class="task-dock-head" onclick="toggleTaskPanel()"><span>משימות</span><span class="task-count">0</span><span>⌃</span></div><div class="task-summary">אין העברות פעילות</div></div><div class="statusbar"><span>ImageCtl Console · Session פעיל</span><span class="statusbar-right"><span class="statusbar-item svc-unk" data-svc="API" title="API: לא נבדק"><i></i>API</span><span class="statusbar-item svc-unk" data-svc="PXE" title="PXE: לא נבדק"><i></i>PXE</span><span class="statusbar-item svc-unk" data-svc="Multicast" title="Multicast: לא נבדק"><i></i>Multicast</span><span id="serverTls"></span><span id="serverVersion"></span></span></div><div class="user-menu" id="userMenu"><div class="user-menu-head"><strong>מנהל</strong><small>Administrator</small></div><button onclick="openAccount()">החשבון שלי</button><button onclick="openSessionInfo()">פרטי session</button><button id="logout" class="danger-item" type="button">התנתקות</button></div>
+<div class="task-panel" id="taskPanel"><div class="task-panel-head"><strong>משימות אחרונות</strong><button class="icon-btn" type="button" aria-label="סגור" title="סגור" onclick="toggleTaskPanel()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><div class="table-wrap"><table class="task-table"><thead><tr><th>משימה</th><th>יעד</th><th>התחלה</th><th>משך</th><th>מצב</th><th>יוזם</th></tr></thead><tbody><tr><td colspan="6">אין העברות פעילות</td></tr></tbody></table></div></div><div class="task-dock"><div class="task-dock-head" onclick="toggleTaskPanel()"><span>משימות</span><span class="task-count">0</span><span>⌃</span></div><div class="task-summary">אין העברות פעילות</div><div class="statusbar"><span class="statusbar-right"><span class="statusbar-item svc-unk" data-svc="API" title="API: לא נבדק"><i></i>API</span><span class="statusbar-item svc-unk" data-svc="PXE" title="PXE: לא נבדק"><i></i>PXE</span><span class="statusbar-item svc-unk" data-svc="Multicast" title="Multicast: לא נבדק"><i></i>Multicast</span><span id="serverTls"></span><span id="serverVersion"></span></span></div></div><div class="user-menu" id="userMenu"><div class="user-menu-head"><strong>מנהל</strong><small>Administrator</small></div><button onclick="openAccount()">החשבון שלי</button><button onclick="openSessionInfo()">פרטי session</button><button id="logout" class="danger-item" type="button">התנתקות</button></div>
 <input class="selectable-file" id="csvFile" type="file" accept=".csv" aria-hidden="true">
-<div class="detail-backdrop" id="detailBackdrop"></div><aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawerTitle" tabindex="-1"><div class="drawer-head"><strong id="drawerTitle">פרטים</strong><button class="icon-btn" type="button" aria-label="סגור" title="סגור" onclick="closeDrawer()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><div class="drawer-body" id="drawerBody"></div></aside>
-<div class="modal-backdrop" id="modal"><div class="modal" id="modalBox" role="dialog" aria-modal="true" aria-labelledby="modalTitle" tabindex="-1"><div class="modal-h"><strong id="modalTitle">פעולה</strong><button class="icon-btn" type="button" aria-label="סגור" title="סגור" onclick="closeModal()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><div class="modal-b" id="modalBody"></div><div class="modal-f"><button class="btn primary" id="modalOk">אישור</button><button class="btn" onclick="closeModal()">ביטול</button></div></div><form id="sheet" class="sheet hidden" role="dialog" aria-modal="true" aria-labelledby="sheetTitle" tabindex="-1"></form></div>
+<div class="detail-backdrop" id="detailBackdrop"></div><aside class="drawer win n-drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawerTitle" tabindex="-1"><div class="n-h drawer-head"><div><h2 id="drawerTitle">פרטים</h2><p id="drawerSub"></p></div><button class="n-x" type="button" aria-label="סגור" title="סגור" onclick="closeDrawer()"><svg class="n-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><div class="n-tabs" id="drawerTabs" role="tablist" hidden></div><div class="n-b drawer-body" id="drawerBody" tabindex="0"></div><footer class="n-f-bar drawer-foot" id="drawerFoot" hidden></footer></aside>
+<div class="modal-backdrop" id="modal"><div class="modal win n-mid" id="modalBox" role="dialog" aria-modal="true" aria-labelledby="modalTitle" tabindex="-1"><div class="n-h modal-h"><div><h2 id="modalTitle">פעולה</h2><p id="modalSub" hidden></p></div><button class="n-x" type="button" aria-label="סגור" title="סגור" onclick="closeModal()"><svg class="n-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><div class="n-b modal-b" id="modalBody" tabindex="0"></div><footer class="n-f-bar modal-f"><span class="n-hint" id="modalHint"></span><button class="btn" type="button" id="modalCancel" onclick="closeModal()">ביטול</button><button class="btn primary" id="modalOk">אישור</button></footer></div><form id="sheet" class="sheet win n-narrow hidden" role="dialog" aria-modal="true" aria-labelledby="sheetTitle" tabindex="-1"></form></div>
 <div class="toast" id="toast"></div>
 </div>
 
-<script src="progress.js?v=11.8"></script>
-<script src="console.js?v=11.8"></script>
-<script src="reorder.js?v=11.8"></script>
-<script src="net.js?v=11.8"></script>
-<script src="netcfg.js?v=11.8"></script>
-<script src="storage_nodes.js?v=11.8"></script>
-<script src="drivers.js?v=11.8"></script>
-<script src="storage.js?v=11.8"></script>
-<script src="branches.js?v=11.8"></script>
+<script src="progress.js?v=11.13"></script>
+<script src="console.js?v=11.13"></script>
+<script src="reorder.js?v=11.13"></script>
+<script src="net.js?v=11.13"></script>
+<script src="netcfg.js?v=11.13"></script>
+<script src="storage_nodes.js?v=11.13"></script>
+<script src="drivers.js?v=11.13"></script>
+<script src="storage.js?v=11.13"></script>
+<script src="branches.js?v=11.13"></script>
 </body>
 </html>

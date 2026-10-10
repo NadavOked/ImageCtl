@@ -13,7 +13,10 @@ int hovered(const App *a, Rect r);
 double dmax(double x, double y);
 
 /* ---- console.css .btn / .btn.primary / .btn.danger ---------------------- */
-enum { BTN_PLAIN, BTN_PRIMARY, BTN_DANGER, BTN_SUCCESS };   /* .native-btn{,.primary,.danger,.success} */
+enum { BTN_PLAIN, BTN_PRIMARY, BTN_DANGER, BTN_SUCCESS,      /* .native-btn{,.primary,.danger,.success} */
+       BTN_WARN,       /* mockup 10/10: a risky choice that is not the default -- warn outline, not filled */
+       BTN_GHOST_DANGER, /* a destructive action before it is confirmed: red words, no fill */
+       BTN_OFF };      /* not available yet (the confirmation is not typed): drawn, not clickable */
 Text btn_label(cairo_t *cr, const char *s);            /* 13.5px 500 */
 double btn_height(cairo_t *cr);                        /* 9 + line + 9 + 2 */
 double btn_width(const Text *label);                   /* 15 + w + 15 + 2 */
@@ -56,13 +59,24 @@ void foot_draw_bg(cairo_t *cr, const Theme *t, Rect foot);
 
 /* ---- station.css pieces ------------------------------------------------- */
 void draw_tray(cairo_t *cr, const Theme *t, double x, double y, int multi);
-enum { ICON_DISK, ICON_NETWORK, ICON_WARNING, ICON_SUCCESS };
+enum { ICON_DISK, ICON_WARNING, ICON_SUCCESS };
 void draw_native_icon(cairo_t *cr, const Theme *t, Rect box, int kind);
+/* mockup 10/10: the build menu's four icons, the SVGs' 24-unit paths --
+ * capture (a disk, an arrow up to the library), clone from the server (a
+ * server to three machines), direct clone (two disks, an arrow), restore
+ * (a turning arrow round the disk). Stroked in <c> inside <box>. */
+enum { MENU_ICON_CAPTURE, MENU_ICON_SERVER, MENU_ICON_DIRECT, MENU_ICON_RESTORE };
+void draw_menu_icon(cairo_t *cr, Rect box, int kind, Rgb c);
+/* A visible keyboard-focus ring: 2px in the action colour, 3px outside <r>
+ * (the console's outline:2px; outline-offset). */
+void draw_focus_ring(App *a, cairo_t *cr, Rect r);
 void draw_brand_mark(cairo_t *cr, const Theme *t, Rect box);
 void draw_station_art(cairo_t *cr, const Theme *t, Rect box, double opacity);
 enum { PILL_OK, PILL_WARN, PILL_BAD, PILL_INFO, PILL_OFF };
 double draw_pill(cairo_t *cr, const Theme *t, double right, double y,
                  const char *label, int kind, int dot);
+/* The width draw_pill would give <label> -- to place a pill by its left edge. */
+double pill_width(cairo_t *cr, const char *label, int dot);
 double metric_height(cairo_t *cr);
 void draw_metric(cairo_t *cr, const Theme *t, Rect box, const char *label, const char *value);
 /* .bar.big-bar with a Progress.view state: pct 0..100, or -1 unknown

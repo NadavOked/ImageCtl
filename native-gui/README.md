@@ -360,12 +360,18 @@ then XRGB8888 rows — is the contract in `docs/interfaces.md` §15.
 ### `--png`: every card, for comparing with the HTML
 
 ```sh
-make png                      # out/station-<card>-{light,dark}.png, 34 files, sample data
+make png                      # out/station-<card>-{light,dark}.png, 38 files, sample data
 make png STATE=/tmp/state.txt # the same cards from a real state file
 ```
 
 Cards: `login menu pick progress done room room-live class class-live
-cloner standby message restore direct tools tools-confirm tools-output`. The renderer puts the App into the state that *routes* to each
+cloner standby message restore direct tools tools-confirm tools-output
+shrink logout` (`logout` is the menu with the question Esc opens). Since the
+10/10 mockup every screen is laid out in logical pixels and drawn at
+`ui_scale(H)` = clamp(H/800, 1, 1.4) in quarter steps: 1024x768 and 1280x800
+are 1:1, 1280x1024 and 1920x1080 are 1.25 -- a test that measures pixels at
+those sizes multiplies the mockup's numbers by it. No text is drawn below
+11px (`TEXT_MIN_PX`, text.c). The renderer puts the App into the state that *routes* to each
 card and fails if the route landed elsewhere — so `make png` also exercises
 the routing rule. The sample data has two disks (one chosen, the form open
 with a name typed), two folders, two images, three cloner machines (one

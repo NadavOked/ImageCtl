@@ -2,7 +2,7 @@
 // רשת הפצה (network-deploy.md). בלי דפדפן: console.js + net.js + netcfg.js + progress.js
 // רצים ב-vm מול DOM מזערי ו-fetch מזויף (כמו health_ports_page.test.cjs).
 // עיקרון 5: "בפועל" ≠ "מוגדר" ≠ "לא נקרא" — כל מקור שנכשל הוא מצב משלו, לא "אין".
-// ‏#53: DHCP/כתובת נשארים מאחורי הטפסים הקיימים (editNic/editAddress + הקלדת שם הכרטיס).
+// ‏#1263: כרטיס = חלון "הגדרת כרטיס…" (שלושה אופנים), רשת ההפצה = חלון משלה; בלי הקלדת שם — חוץ מכיבוי DHCP (#53).
 // ‏#705: "מה מותר על כל וילן" — רק ממה ש-/ports.bind אומר; בלעדיו "דורש API", לא המצאה.
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
@@ -31,6 +31,7 @@ const NETCFG={interfaces:[
     cfgRow('ens21',{mode:'manual',mode_he:'לא מנוהל',state:'down'}),
   ],
   live:{checked:true,reason:'',routes:['default via 10.44.10.254','10.44.13.0/24 via 10.44.10.254'],nameservers:['10.44.10.2']},
+  management_interface:'ens18',
   sourced:true,resolv_path:'/etc/resolv.conf',
   rollback:{armed:true,armed_detail:'active',unit:'imagectl-netrollback.timer',window_seconds:60,pending:false,interface:'',seconds_left:0,expired:false,corrupt:false}};
 const NET=[
@@ -193,118 +194,119 @@ test('diagram model: a lane per NIC, VLAN kind by configuration, "allowed" only 
   assert.deepEqual(model.orphans,[]);
 });
 
-test('diagram SVG: explicit width/height (gotcha), line classes per state, dashed = off, selected NIC highlighted, nothing invented',async()=>{
+// ---------- שלב 1: תרשים הרשת לפי המוקאפ המאושר — השרת למעלה, וילן לכל כרטיס מוגדר, לחיצה = מגירה ----------
+const mapOf=(html)=>{ const s0=html.indexOf('<svg class="netmap-svg"'); assert.ok(s0>=0,'the map is there'); return html.slice(s0,html.indexOf('</svg>',s0)+6); };
+const vlans=(svg)=>[...svg.matchAll(/<g class="nm-vl" role="button" tabindex="0" aria-label="([^"]*)" onclick="netLaneOpen\('([^']*)'\)"[^>]*>(.*?)<\/g>/g)].map(m=>({label:m[1],nic:m[2],inner:m[3]}));
+test('network map: the server on top, a VLAN card per configured NIC with its NIC name + IP, explicit width/height (gotcha), nothing invented',async()=>{
   const {run}=await loaded();
   const html=plain(run('networkPage(0)')); balanced(html);
-  assert.match(html,/<svg class="netdiag-svg" xmlns="http:\/\/www\.w3\.org\/2000\/svg" width="1100" height="\d+" viewBox="0 0 1100 \d+" role="img"/);
-  assert.match(html,/class="box sel"/); assert.equal((html.match(/class="box sel"/g)||[]).length,1);
-  assert.match(html,/<g class="hit" role="button" tabindex="0" aria-label="ens19" onclick="netSelect\('ens19'\)"/);
-  assert.match(html,/class="ln ok" d="M840 [\d.]+ H720"/,'NIC up → VLAN: green'); assert.match(html,/class="ln off" d="M840 [\d.]+ H720"/,'NIC down: dashed');
-  assert.match(html,/class="ln err"/,'branch not answering: red'); assert.match(html,/class="ln warn"/,'unregistered: orange');
-  assert.match(html,/stroke-dasharray="4 4"/);
-  assert.match(html,/>bind: TFTP 69 · HTTP 8080 · Multicast 9000–9001</,'the visible line, not the tooltip');
-  assert.match(html,/וילן ההפצה — לפי הגדרה/); assert.match(html,/רשת 10\.44\.9\.0\/24/);
-  assert.doesNotMatch(html,/VLAN \d/,'no invented VLAN numbers'); assert.doesNotMatch(html,/10\.44\.12\./,'no mockup data');
-  assert.match(html,/3 מחוברים · 1 לא רשומים/);
-  assert.match(html,/שרת המכללה/); assert.match(html,/v0\.38\.1 · 4 כרטיסים · נקרא \d\d:\d\d/);
-  // כותרת: מונים ותג
+  const svg=mapOf(html);
+  assert.match(svg,/^<svg class="netmap-svg" xmlns="http:\/\/www\.w3\.org\/2000\/svg" width="\d+" height="340" viewBox="0 0 \d+ 340" role="img"/);
+  const lanes=vlans(svg);
+  assert.deepEqual(lanes.map(l=>l.nic),['ens18','ens19','ens20'],'ens21 has no role ("לא מוגדר") — it stays in the physical tab, not on the map');
+  assert.match(lanes[0].inner,/ens18 · 10\.44\.10\.1</); assert.match(lanes[1].inner,/ens19 · 10\.44\.9\.10</);
+  assert.match(lanes[1].inner,/וילן ההפצה/); assert.match(lanes[1].inner,/10\.44\.9\.0\/24/); assert.match(lanes[0].inner,/שרתים — קונסולה/);
+  assert.match(svg,/שרת המכללה/); assert.match(svg,/v0\.38\.1 · מחובר ל-3 וילנים/);
+  assert.equal((svg.match(/class="nm-port"/g)||[]).length,3,'one port on the server per VLAN');
+  assert.doesNotMatch(svg,/VLAN \d/,'no invented VLAN numbers'); assert.doesNotMatch(svg,/10\.10\.10\.|10\.44\.0\./,'no mockup data');
+  assert.doesNotMatch(svg,/class="[^"]*\b(bad|warn)\b/,'every NIC is up here — nothing red or orange');
+  assert.match(html,/<span>מפת הרשת<\/span><small>לחיצה על וילן פותחת פרטים<\/small>/);
+  // כותרת: מונים ותג (כמו שהיו)
   assert.match(html,/4 כרטיסים · 4 וילנים \(לפי הגדרה — מודל וילן דורש API \(#705\)\) · DHCP הפצה: ens19 · משרת · 1 לא רשומים · 2 סניפים · 1 לא מגיבים/);
   assert.match(html,/class="pill warn">3 אזהרות</,'unregistered + branch down + ens20 mismatch');
-  assert.match(html,/onclick="addNic\(\)">\+ כרטיס/); assert.match(html,/previewDnsmasq\(\)/);
+  assert.match(html,/onclick="addNic\(\)">\+ כרטיס/); assert.doesNotMatch(html,/previewDnsmasq|קבצי dnsmasq/,'#1263: removed');
   assert.match(html,/role="tab" aria-selected="true" tabindex="0" onclick="openNetwork\(0\)">תרשים/); assert.match(html,/onclick="selectPageById\('ports'\)">פורטים/);
-  // הכרטיס הנבחר מתחת: בפועל/מוגדר/פער · DHCP/חכירה/מי עוד עונה · שירותים/SSH/פעולות
-  const sel=card(html,'ens19 — הפצה');
-  assert.match(sel,/class="st ok">תואם</); assert.match(sel,/class="st ok">משרת</); assert.match(sel,/12h · שער — · DNS 10\.44\.10\.2/); assert.match(sel,/class="st ">לא נבדק</);
-  assert.match(sel,/TFTP 69 · HTTP 8080 · Multicast 9000–9001/); assert.match(sel,/class="st ">סגור</);
-  assert.match(sel,/onclick="netEditAddress\('ens19'\)">עריכת כתובת/); assert.match(sel,/onclick="netEditDhcp\('ens19'\)">עריכת DHCP/); assert.match(sel,/onclick="netProbe\('ens19'\)">בדוק מי עונה/);
 });
 
-/* 18/09 (צילום מהמעבדה, v0.41.1): <text> ב-SVG אינו נשבר ואינו נחתך — "מותר (לפי bind): SSH 22 · HTTP 8082 · HTTP 8080 · DHCP 67"
-   ורשימת ארבע כתובות גלשו מהתיבה ורכבו על הקווים. התיקון: הטקסט ב-foreignObject בגבולות התיבה, ellipsis + title מלא, פורמט קצר. */
-const foBoxes=(svg)=>{
-  const num=(tag,k)=>Number(tag.match(new RegExp(' '+k+'="([^"]+)"'))[1]);
-  const out=[];
-  for(const m of svg.matchAll(/<foreignObject([^>]*)>(.*?)<\/foreignObject>/g)){
-    const rects=[...svg.slice(0,m.index).matchAll(/<rect class="(box[^"]*|vlan)"[^>]*>/g)]; const rect=rects[rects.length-1][0];
-    out.push({fo:{x:num(m[1],'x'),y:num(m[1],'y'),w:num(m[1],'width'),h:num(m[1],'height')},box:{x:num(rect,'x'),y:num(rect,'y'),w:num(rect,'width'),h:num(rect,'height')},
-      lines:[...m[2].matchAll(/<div class="fl ([^"]*)" title="([^"]*)">([^<]*)<\/div>/g)].map(l=>({cls:l[1],title:l[2],text:l[3]})),inner:m[2]});
-  }
-  return out;
-};
-test('diagram text stays inside its box: every box line is a foreignObject within the rect, ellipsis + full title, no free <text> but the server header',async()=>{
+test('network map: a disconnected NIC is red + dashed + "מנותק" — in the card, the wire and the chip; an unread link is orange, not green',async()=>{
+  const down=NICS.map(n=>n.name==='ens19'?{...n,state:'down',speed_mbps:null}:n);
+  let t=await loaded({'/net/interfaces':down});
+  let svg=mapOf(plain(t.run('networkPage(0)')));
+  const lane=vlans(svg).find(l=>l.nic==='ens19');
+  assert.match(lane.inner,/class="nm-box bad"/); assert.match(lane.inner,/ens19 · מנותק</); assert.match(lane.inner,/class="nm-chip bad"/); assert.match(lane.inner,/>מנותק<\/text>/);
+  assert.equal((svg.match(/class="nm-wire bad"/g)||[]).length,1,'exactly the disconnected NIC has a red wire'); assert.equal((svg.match(/class="nm-port bad"/g)||[]).length,1);
+  const unknown=NICS.map(n=>n.name==='ens19'?{...n,state:'unknown'}:n);
+  t=await loaded({'/net/interfaces':unknown}); svg=mapOf(plain(t.run('networkPage(0)')));
+  assert.match(vlans(svg).find(l=>l.nic==='ens19').inner,/class="nm-box warn"/); assert.match(svg,/ens19 · קישור לא נקרא/);
+});
+
+test('network map: the services chip is the visible "bind" only — same-name services fold ("HTTP 8080/8081"), clipped with the full text in the <title>',async()=>{
   const {run}=await loaded();
-  const html=run('networkPage(0)'); const s0=html.indexOf('<svg class="netdiag-svg"'); const svg=html.slice(s0,html.indexOf('</svg>',s0));
-  const boxes=foBoxes(svg);
-  assert.equal(boxes.length,4+4+7,'NIC + VLAN per lane, and 7 client boxes (3 deploy, 3 mgmt, 1 class)');
-  for(const b of boxes){
-    assert.ok(b.fo.x>=b.box.x && b.fo.x+b.fo.w<=b.box.x+b.box.w,`horizontally inside: ${JSON.stringify(b)}`);
-    assert.ok(b.fo.y>=b.box.y && b.fo.y+b.fo.h<=b.box.y+b.box.h,`vertically inside: ${JSON.stringify(b)}`);
-    assert.ok(b.lines.length>=2,'title + at least one detail line'); assert.match(b.inner,/^<div xmlns="http:\/\/www\.w3\.org\/1999\/xhtml" class="fo(?: nic)?" dir="rtl">/);
-    for(const l of b.lines){ assert.ok(l.title.length>=l.text.length,'title carries at least the visible text: '+l.text); assert.ok(l.text,'no empty line'); }
-    assert.equal((b.inner.match(/<div class="fl /g)||[]).length,b.lines.length,'every line has a title');
-  }
-  assert.equal((svg.match(/<text /g)||[]).length,2,'only the two server header lines are free SVG text');
-  assert.equal((html.match(/<foreignObject/g)||[]).length,boxes.length);
-  // מה שמחזיק את הטקסט בפנים בדפדפן — ה-CSS, לא רק הגיאומטריה
-  const css=fs.readFileSync(path.join(root,'console.css'),'utf8');
-  assert.match(css,/\.page \.netdiag \.fl\{[^}]*white-space:nowrap;overflow:hidden;text-overflow:ellipsis/);
-  assert.match(css,/\.page \.netdiag \.fl\.w2\{[^}]*-webkit-line-clamp:2/);
-  assert.match(css,/\.page \.netdiag \.fo\{[^}]*overflow:hidden/);
-});
-
-test('diagram lines are short: "bind:" folds same-name services (HTTP 8080/8081) with the raw list in the tooltip; addresses are 2 + "+N" with all of them in the tooltip',async()=>{
-  const many=[...MON,{mac:'aa:bb:cc:dd:ee:01',name:'מחשב 3',role:'cloner',ip:'10.44.9.60',online:true},{mac:'aa:bb:cc:dd:ee:02',name:'מחשב 4',role:'cloner',ip:'10.44.9.61',online:false}];
-  const {run}=await loaded({'/monitor/machines':many});
-  const html=plain(run('networkPage(0)')); const boxes=foBoxes(html);
-  const line=(re)=>{ for(const b of boxes) for(const l of b.lines) if(re.test(l.text)) return l; assert.fail('no line matching '+re); };
-  const allowed=line(/^bind: TFTP 69 · HTTP 8080\/8081$/);
-  assert.equal(allowed.cls,'m w2','may wrap to two lines'); assert.equal(allowed.title,'מותר (לפי bind): TFTP 69 · HTTP 8080 · HTTP 8081');
-  assert.doesNotMatch(html,/>מותר \(לפי bind\)/,'the long prefix is tooltip-only');
+  const svg=plain(mapOf(run('networkPage(0)')));
+  const ens19=vlans(svg).find(l=>l.nic==='ens19').inner;
+  assert.match(ens19,/TFTP 69 · HTTP 8080 · Multicast 9000–9001|TFTP 69 · HTTP 8080 · Multicast 9000…|TFTP 69 · HTTP 8080 · Multica…/);
+  assert.match(ens19,/<title>[^<]*TFTP 69 · HTTP 8080 · Multicast 9000–9001<\/title>/,'the full text is the tooltip');
   assert.equal(run('netAllowedShort(["SSH 22","HTTP 8082","HTTP 8080","DHCP 67"])'),'SSH 22 · HTTP 8082/8080 · DHCP 67','the lab line from the screenshot');
-  const cl=line(/מתוך 4 מחוברים$/);
-  assert.equal(cl.text,'10.44.9.118 · 10.44.9.59 · +2 · 2 מתוך 4 מחוברים'); assert.match(run('netAddrList(["1.1.1.1","2.2.2.2","3.3.3.3"])'),/⁦\+1⁩$/,'"+1" isolated, not mirrored to "1+"'); assert.equal(cl.title,'10.44.9.118 · 10.44.9.59 · 10.44.9.60 · 10.44.9.61 · 2 מתוך 4 מחוברים');
-  assert.equal(line(/^משכפלים — /).text,'משכפלים — מחשב 1, מחשב 2, מחשב 3, מחשב 4','names stay (ellipsis + title when the box is narrower)');
   assert.equal(run('netAddrList([])'),'ללא כתובת'); assert.equal(run('netAddrList(["10.0.0.1"])'),'⁦10.0.0.1⁩'); assert.equal(run('netAddrList(["1.1.1.1","2.2.2.2","3.3.3.3"])'),'⁦1.1.1.1⁩ · ⁦2.2.2.2⁩ · ⁦+1⁩','each address isolated on its own — " · " is not ASCII');
 });
 
-test('without bind on any /ports row the VLAN says "דורש API (#705)" — never a guessed policy',async()=>{
-  const {run}=await loaded({'/ports':PORTS_NO_BIND});
+test('network map: without bind the chip says "דורש API", with bind null "טבלת הסוקטים לא נקראה" — never a guessed policy (#705, #1039)',async()=>{
+  let {run}=await loaded({'/ports':PORTS_NO_BIND});
   assert.equal(run('netServicesOn(NETW.nics[1])'),null);
-  const html=run('networkPage(0)');
-  assert.match(html,/מה מותר — דורש API \(#705\)/); assert.doesNotMatch(html,/מותר \(לפי bind\)/);
+  const html=plain(run('networkPage(0)')); assert.match(mapOf(html),/מה מותר: דורש API/); assert.doesNotMatch(mapOf(html),/TFTP 69/);
   assert.match(run('networkPage(1)'),/title="דורש API \(#705\): מודל וילן \/ bind">— דורש API/);
-});
-
-test('bind as the server sends it — a list of "addr/bits:port", [] = read and nobody listens, null = not read (#1039)',async()=>{
   const server=[port('tftp','TFTP','69','udp','ok','',{bind:[]}),port('http_console','HTTP','8081','tcp','ok','',{bind:['10.44.10.1/24:8081']}),
     port('ssh_server:ens18','SSH לשרת — ens18','22','tcp','ok','',{bind:['10.44.10.1/24:22']}),port('multicast','Multicast','9000–9001','udp','off','',{bind:['[::]:9000']})];
-  const {run}=await loaded({'/ports':server});
-  assert.equal(run('JSON.stringify(netServicesOn(NETW.nics[0]))'),JSON.stringify(['HTTP 8081','SSH לשרת — ens18 22','Multicast 9000–9001']));
-  assert.equal(run('JSON.stringify(netServicesOn(NETW.nics[1]))'),JSON.stringify(['Multicast 9000–9001']),'only the wildcard');
-  let t=await loaded({'/ports':server.map(p=>({...p,bind:[]}))});
+  let t=await loaded({'/ports':server});
+  assert.equal(t.run('JSON.stringify(netServicesOn(NETW.nics[0]))'),JSON.stringify(['HTTP 8081','SSH לשרת — ens18 22','Multicast 9000–9001']));
+  assert.equal(t.run('JSON.stringify(netServicesOn(NETW.nics[1]))'),JSON.stringify(['Multicast 9000–9001']),'only the wildcard');
+  t=await loaded({'/ports':server.map(p=>({...p,bind:[]}))});
   assert.equal(t.run('JSON.stringify(netServicesOn(NETW.nics[0]))'),'[]','every bind [] = read, and nothing listens here');
-  assert.match(t.run('networkPage(0)'),/bind: אף שירות לא מאזין כאן/); assert.doesNotMatch(t.run('networkPage(0)'),/מה מותר — דורש API/);
-  // null בשורה אחת = טבלת הסוקטים לא נקראה → לא ידוע (לא "דורש API", ולא רשימה חלקית)
   t=await loaded({'/ports':server.map(p=>p.id==='tftp'?{...p,bind:null}:p)});
   assert.equal(t.run('netServicesOn(NETW.nics[0])'),null);
-  const html=t.run('networkPage(0)');
-  assert.match(html,/מה מותר — טבלת הסוקטים לא נקראה/); assert.doesNotMatch(html,/מה מותר — דורש API/);
+  assert.match(mapOf(t.run('networkPage(0)')),/טבלת הסוקטים לא נקראה/); assert.doesNotMatch(mapOf(t.run('networkPage(0)')),/מה מותר: דורש API/);
   assert.match(t.run('networkPage(1)'),/title="bind של \/ports: טבלת הסוקטים לא נקראה">— לא נקרא</);
+});
+
+test('network map: the lane drawer lists the machines placed on that NIC by subnet (monitor + unregistered + branches) with their state, from the existing API only',async()=>{
+  const {run}=await loaded();
+  run('globalThis.opened=null; openDrawer=(t,b)=>{ opened={t,b}; }');
+  run("netLaneOpen('ens19')");
+  const o=run('opened'); assert.equal(o.t,'וילן ההפצה'); balanced(o.b);
+  assert.match(o.b,/<div class="obj-sub">וילן ההפצה · <span class="mono">10\.44\.9\.0\/24<\/span><\/div>/);
+  assert.match(o.b,/<div class="sec">כרטיס<\/div>[\s\S]*<div class="sec"[^>]*>כתובת<\/div>[\s\S]*<div class="sec"[^>]*>שירותים<\/div>/,'overview = card, address, services');
+  assert.match(o.b,/<div class="sec">מחשבים \(\d+\)<\/div>/,'machines are the second tab');
+  const tbl=o.b.slice(o.b.indexOf('מחשבים ('));
+  assert.match(tbl,/מחשב 1<\/td>.*10\.44\.9\.118/s); assert.match(tbl,/מחשב 2<\/td>.*10\.44\.9\.59/s); assert.match(tbl,/>לא רשום<\/span>/); assert.match(tbl,/>מחובר</); assert.match(tbl,/>לא מחובר</);
+  assert.match(o.b,/<button class="btn primary" onclick="closeDrawer\(\);openNetwork\(1\)">לכרטיסי הרשת<\/button>/,'the primary goes to the physical NIC tab');
+  assert.doesNotMatch(o.b,/10\.44\.12\./,'no mockup data');
+  run("netLaneOpen('nope')"); assert.equal(run('toasts.at(-1)'),'כרטיס לא נמצא');
+});
+
+test('network map: a down NIC drawer says so and lists no machines; classroom (proxy) VLANs are not on the map in v1 (#1081, v1.2)',async()=>{
+  const down=NICS.map(n=>n.name==='ens19'?{...n,state:'down',speed_mbps:null}:n);
+  const t=await loaded({'/net/interfaces':down});
+  t.run('globalThis.opened=null; openDrawer=(x,b)=>{ opened=b; }'); t.run("netLaneOpen('ens19')");
+  assert.match(t.run('opened'),/class="note err".*הכרטיס ens19 מנותק\. מחשבים בוילן לא יראו את השרת/);
+  const v1=await loaded({}, {capabilities:{enroll_secondary:true,classrooms:false}});
+  assert.deepEqual(vlans(mapOf(v1.run('networkPage(0)'))).map(l=>l.nic),['ens18','ens19'],'ens20 is the classroom (proxy) VLAN — hidden');
+});
+
+test('stage 2: "1000 Mbps" in the link row (VLAN drawer and NIC table) is an isolated LTR run — RTL otherwise prints "Mbps 1000"',async()=>{
+  const t=await loaded();
+  t.run('globalThis.opened=null; openDrawer=(x,b)=>{ opened=b; }'); t.run("netLaneOpen('ens18')");
+  const d=t.run('opened');
+  assert.match(d,/<span class="st ok">מחובר · <bdi dir="ltr">1000 Mbps<\/bdi><\/span>/,'the drawer link row');
+  assert.doesNotMatch(d,/מחובר · 1000 Mbps/,'never as plain text inside the Hebrew sentence');
+  assert.match(t.run('netLinkStatus({present:true,state:"up",speed_mbps:null,name:"x"})'),/^<span class="st ok">מחובר<\/span>$/,'no speed - no stray separator');
+  assert.match(t.run('netLinkStatus({present:true,state:"down"})'),/מנותק/); assert.match(t.run('netLinkStatus({present:false})'),/לא קיים במערכת/);
 });
 
 test('empty and unread are messages, not an empty drawing: no NICs → empty state; /net/interfaces failed → red note; other sources failed → their own notes',async()=>{
   let t=await loaded({'/net/interfaces':[]});
-  let html=t.run('networkPage(0)'); assert.doesNotMatch(html,/<svg class="netdiag-svg"/); assert.match(html,/class="empty">לא נמצאו כרטיסי רשת/);
+  let html=t.run('networkPage(0)'); assert.doesNotMatch(html,/<svg class="netmap-svg"/); assert.match(html,/class="empty">לא נמצאו כרטיסי רשת/);
   t=await loaded({'/net/interfaces':new Error('ip link: לא רץ')});
   assert.equal(t.run('NETW.nics'),null);
-  html=t.run('networkPage(0)'); assert.doesNotMatch(html,/<svg class="netdiag-svg"/); assert.match(html,/class="note err".*לא הצלחתי לקרוא את כרטיסי הרשת: ip link: לא רץ — אין מה לצייר/); assert.match(html,/class="pill err">לא נקרא</);
+  html=t.run('networkPage(0)'); assert.doesNotMatch(html,/<svg class="netmap-svg"/); assert.match(html,/class="note err".*לא הצלחתי לקרוא את כרטיסי הרשת: ip link: לא רץ — אין מה לצייר/); assert.match(html,/class="pill err">לא נקרא</);
   assert.match(t.run('networkPage(1)'),/לא הצלחתי לקרוא את כרטיסי הרשת/); assert.match(t.run('networkPage(2)'),/לא הצלחתי לקרוא את כרטיסי הרשת/);
   t=await loaded({'/net':new Error('db locked'),'/ports':new Error('ss חסר'),'/monitor/machines':403,'/storage-nodes':409});
   html=t.run('networkPage(0)'); balanced(html);
-  assert.match(html,/\/net לא נקרא[^<]*<details class="tech"><summary>פרטים טכניים<\/summary><code dir="ltr">db locked<\/code>/,'raw system text is behind "technical details"'); assert.match(html,/\/ports לא נקרא: ss חסר/,'a Hebrew-dominant detail stays inline'); assert.match(html,/\/monitor\/machines לא נקרא[^<]*<details class="tech"><summary>פרטים טכניים<\/summary><code dir="ltr">admin only<\/code>/);
+  assert.match(html,/\/net לא נקרא[^<]*<details class="tech"><summary>פרטים טכניים<\/summary><code dir="ltr">db locked<\/code>/,'raw system text is behind "technical details"'); assert.match(html,/\/ports לא נקרא: ss חסר/,'a Hebrew-dominant detail stays inline'); assert.match(html,/\/monitor\/machines לא נקרא/);
   assert.match(html,/לא רשומים: לא נקרא/); assert.match(html,/אין סניפים/,'409 = no secondaries, not an error');
-  assert.match(html,/<svg class="netdiag-svg"/,'NICs were read — the drawing stays, without the unread clients');
-  assert.match(html,/מה מותר — דורש API \(#705\)/);
+  assert.match(html,/<svg class="netmap-svg"/,'NICs were read — the map stays, without the unread machines');
+  assert.match(mapOf(html),/מה מותר: דורש API/,'/ports unread → the chip says it does not know, it never draws a guessed policy');
+  t=await loaded({'/ports':new Error('x'),'/net/interfaces':NICS.map(n=>({...n,enabled:false,proxy:false,trunk:false}))});
+  assert.match(t.run('networkPage(0)'),/אין כרטיס שמוגדר כוילן/,'no NIC has a role that can be known without bind: the map says so');
 });
 
 /* ---------- לשונית 1: חיבורים פיזיים ---------- */
@@ -312,13 +314,17 @@ test('empty and unread are messages, not an empty drawing: no NICs → empty sta
 test('NICs table: actual / configured / gap side by side, DHCP live + stored, role from bind, SSH switch per NIC, actions cell in every row (#1032)',async()=>{
   const {run}=await loaded();
   const html=run('networkPage(1)'); balanced(html);
-  assert.match(html,/<table class="dg stable kebab-col"><thead><tr><th>כרטיס<\/th><th>קישור<\/th><th>בפועל<\/th><th class="c-opt">מוגדר<\/th><th>פער<\/th><th>DHCP<\/th><th class="c-opt">תפקיד<\/th><th>SSH לשרת<\/th><th><span class="sr">פעולות<\/span><\/th>/);
+  assert.match(html,/<table class="dg stable kebab-col"><thead><tr><th>כרטיס<\/th><th>תיאור<\/th><th>קישור<\/th><th>בפועל<\/th><th class="c-opt">מוגדר<\/th><th>פער<\/th><th>DHCP<\/th><th class="c-opt">תפקיד<\/th><th>SSH לשרת<\/th><th><span class="sr">פעולות<\/span><\/th>/);
   const r18=row(html,'data-nic="ens18"'), r19=row(html,'data-nic="ens19"'), r20=row(html,'data-nic="ens20"'), r21=row(html,'data-nic="ens21"');
-  for(const r of [r18,r19,r20,r21]) { const n=r.match(/data-nic="(ens\d\d)"/)[1];   // ⋯ אחד: כתובת, DHCP, קובץ; "שכחה" הרסנית — אחרונה
-    assert.deepEqual(menuOf(r),[['עריכת כתובת…',`netEditAddress('${n}')`],['DHCP…',`netEditDhcp('${n}')`],['תצוגה מקדימה של הקובץ',`netShowFile('${n}')`],['שכחה…',`netForget('${n}')`,'danger']]); }
+  for(const r of [r18,r20,r21]) { const n=r.match(/data-nic="(ens\d\d)"/)[1];   // ‏#1263: ⋯ = הגדרת כרטיס · תיאור; בלי "הקובץ"
+    assert.deepEqual(menuOf(r),[['הגדרת כרטיס…',`netEditNic('${n}')`],['תיאור…',`netDescribe('${n}')`]]); }
+  assert.deepEqual(menuOf(r19),[['הגדרת כרטיס…',"netEditNic('ens19')"],['תיאור…',"netDescribe('ens19')"],['כיבוי DHCP…',"netDhcpOff('ens19')",'danger']],'the deploy NIC: DHCP off');
   assert.match(r19,/^<tr data-nic="ens19" class="sel" onclick="netSelect\('ens19'\)" tabindex="0" aria-selected="true">/);
-  assert.match(r18,/class="st ok">מחובר · 1000 Mbps</); assert.match(r18,/class="mono">10\.44\.10\.1\/24</); assert.match(r18,/static 10\.44\.10\.1\/24 · gw 10\.44\.10\.254/); assert.match(r18,/class="st ok">תואם</);
-  assert.match(r18,/class="st ">כבוי<\/span><span class="sub">שמור: כבוי</); assert.match(r18,/<td class="c-opt">TFTP 69 · HTTP 8080 · HTTP 8081<\/td>/);
+  // ‏#1263: תיאור = עמודה משלו (נערך ב"תיאור…"), ה-MAC נשאר מתחת לשם
+  assert.match(r19,/<td><span class="name">ens19<\/span><span class="sub"><span class="mono">bc:24:11:00:00:19<\/span><\/span><\/td><td>הפצה<\/td>/);
+  assert.match(r21,/<td><span class="muted">ללא תיאור<\/span><\/td>/);
+  assert.match(r18,/class="st ok">מחובר · <bdi dir="ltr">1000 Mbps<\/bdi><\/span>/); assert.match(r18,/class="mono">10\.44\.10\.1\/24</); assert.match(r18,/static 10\.44\.10\.1\/24 · gw 10\.44\.10\.254/); assert.match(r18,/class="st ok">תואם</);
+  assert.match(r18,/class="st ">כבוי<\/span><span class="sub">שמור: כבוי</); assert.match(r18,/<td class="c-opt">ניהול · TFTP 69 · HTTP 8080 · HTTP 8081<\/td>/,'#1263: the management NIC is named');
   assert.match(r18,/class="sw on" role="switch" aria-checked="true" aria-label="SSH לשרת ens18" onclick="portSwitch\(decodeURIComponent\('ssh_nic%3Aens18'\)\)"><\/button><span class="cap">🔒 פתוח · מאזין/,'last open door → typing the name');
   assert.match(r19,/class="st ok">משרת<\/span><span class="sub">שמור: מופעל</,'the range lives in the deploy tab and the selected card, not in the 9-column table'); assert.match(r19,/<td class="c-opt">הפצה · DHCP · TFTP 69 · HTTP 8080 · Multicast 9000–9001<\/td>/);
   assert.match(r19,/class="sw " role="switch" aria-checked="false".*🔒 סגור/,'opening = typing the name');
@@ -331,7 +337,8 @@ test('NICs table: actual / configured / gap side by side, DHCP live + stored, ro
   // הכרטיס הנבחר: מפתח-ערך, החזרה לפי השרת (60 שניות, לא מספר קבוע), פעולות משניות
   const sel=card(html,'ens19 — הפצה');
   assert.match(sel,/10\.44\.9\.10\/24<\/span> <span class="cap">\(נקרא \d\d:\d\d\)/); assert.match(sel,/חלון חזרה של 60 שניות/); assert.match(sel,/imagectl-netrollback\.timer/);
-  assert.match(sel,/onclick="netShowFile\('ens19'\)">תצוגה מקדימה של הקובץ/); assert.match(sel,/onclick="netForget\('ens19'\)">שכחה/); assert.match(sel,/onclick="netDescribe\('ens19'\)">עריכה/);
+  assert.match(sel,/onclick="netEditNic\('ens19'\)">הגדרת כרטיס…/); assert.match(sel,/onclick="netDhcpOff\('ens19'\)">כיבוי DHCP…/); assert.match(sel,/onclick="netDescribe\('ens19'\)">עריכה/);
+  assert.doesNotMatch(sel,/netShowFile|netForget/,'a present NIC is not forgotten from here');
   // נתיבים סטטיים: ראיה חיובית מטבלת הניתוב, מחיקה דרך ה-sheet של netcfg.js
   const routes=card(html,'נתיבים סטטיים');
   assert.match(routes,/class="st ok"><\/span><span class="mono">10\.44\.13\.0\/24<\/span><\/td><td><span class="mono">10\.44\.10\.254<\/span><\/td><td><span class="mono">ens18</);
@@ -358,16 +365,134 @@ test('NICs: live state not read → "לא נקרא" everywhere (never green), in
   assert.match(card(h2,'נתיבים סטטיים'),/\/net\/config לא נקרא: permission denied/);
 });
 
-test('the DHCP and address edits are the existing net.js/netcfg.js sheets (typed NIC name, danger) — no new save flow (#53)',async()=>{
+// ‏#1263 (הכרעת נדב 10/10): לכל כרטיס אופן הגדרה אחד — רשת הפצה / DHCP מהרשת / כתובת ידנית — בחלון
+// אחד "הגדרת כרטיס…"; הגדרות רשת ההפצה בחלון של לשונית "רשת הפצה". בלי הקלדת שם הכרטיס בשניהם;
+// כיבוי DHCP — כן. כרטיס הניהול: DHCP או ידנית בלבד.
+// מערכים מתוך ה-vm הם מ-realm אחר — deepEqual קפדני משווה גם prototype; JSON מנרמל.
+const sheetAt=(run,i)=>JSON.parse(run(`JSON.stringify(sheets[${i}])`));
+test('#1263 the card window: three modes, no typed name; the management NIC has no deploy mode and says the 60-second rollback',async()=>{
   const {run,requests}=await loaded();
-  run("netEditDhcp('ens19')");
-  assert.equal(run('sheets.length'),1); assert.equal(run('sheets[0].title'),'DHCP על ens19'); assert.equal(run('sheets[0].danger'),true); assert.equal(run('sheets[0].verify.mustEqual'),'ens19');
-  run("netEditAddress('ens20')");
-  assert.equal(run('sheets[1].title'),'עריכת הגדרות — ens20'); assert.equal(run('sheets[1].danger'),true); assert.equal(run('sheets[1].verify.mustEqual'),'ens20');
-  run("netEditAddress('ens21')"); assert.equal(run('sheets[2].title'),'עריכת הגדרות — ens21','manual NIC: the form opens with an empty static row');
-  run("netForget('ens21')"); assert.match(run('sheets[3].title'),/הסרת הגדרות הכרטיס/);
-  // SSH לשרת — אותו endpoint של גל 5 דרך portSshNic (המתגים נרשמים בציור הטבלה)
-  run('networkPage(1)'); run("portSwitch('ssh_nic:ens19')"); assert.match(run('sheets[4].title'),/פתיחת SSH לשרת על ens19/); assert.equal(run('sheets[4].verify.mustEqual'),'ens19');
+  run("netEditNic('ens19')");
+  let sh=sheetAt(run,0);
+  assert.equal(sh.title,'הגדרת כרטיס — ens19'); assert.equal(sh.verify,undefined,'no typed NIC name'); assert.notEqual(sh.danger,true);
+  const mode=(o)=>o.fields.find(f=>f.id==='mode');
+  assert.deepEqual(mode(sh).options.map(o=>[o.value,o.label]),[['deploy','רשת הפצה'],['dhcp','DHCP מהרשת'],['static','כתובת ידנית']]);
+  assert.equal(mode(sh).value,'deploy','DHCP serving = the deploy mode'); assert.equal(mode(sh).type,'radio');
+  assert.deepEqual(sh.fields.map(f=>f.id),['mode','address','netmask','gateway','dns1','dns2'],'static: IP/mask/gateway + two DNS');
+  assert.match(sh.note,/כבו קודם את ה-DHCP/,'leaving the deploy mode means DHCP off first');
+  run("netEditNic('ens18')"); sh=sheetAt(run,1);
+  assert.equal(sh.sub,'כרטיס הניהול · רשת השרתים'); assert.deepEqual(mode(sh).options.map(o=>o.value),['dhcp','static']);
+  assert.match(sh.note,/כרטיס הניהול — נבחר בהתקנה/); assert.match(sh.note,/תוך 60 שניות, ההגדרה הקודמת תחזור/);
+  assert.equal(mode(sh).value,'static'); assert.equal(sh.fields.find(f=>f.id==='dns1').value,'10.44.10.2');
+  run("netEditNic('ens20')"); sh=sheetAt(run,2);
+  assert.equal(mode(sh).value,'static'); assert.equal(sh.fields.find(f=>f.id==='address').value,'10.44.11.1');
+  run("netEditNic('ens21')"); sh=sheetAt(run,3);
+  assert.equal(mode(sh).value,'dhcp','unmanaged with no live address → DHCP'); assert.match(sh.note,/אינו מנוהל היום מהקונסולה/);
+  assert.ok(!requests.some(r=>r.method!=='GET'),'nothing is written before a submit');
+});
+
+test('#1263 the card window saves static (two DNS) and DHCP through the existing address API, confirm sent by the screen',async()=>{
+  const t=await loaded();
+  t.fixtures['/net/config/ens20/preview']={problems:[]};
+  t.fixtures['/net/config/ens20']={ok:true,verified:true,apply_error:null,mismatches:[],rollback:{pending:false}};
+  t.run("netEditNic('ens20')");
+  await t.run("sheets[0].onSubmit({mode:'static',address:'10.44.11.5',netmask:'255.255.255.0',gateway:'10.44.11.254',dns1:'10.44.10.2',dns2:'10.44.10.3'})");
+  const put=t.requests.find(r=>r.method==='PUT'&&r.url==='/net/config/ens20');
+  assert.ok(put,'PUT /net/config/ens20');
+  assert.equal(put.body.mode,'static'); assert.equal(put.body.address,'10.44.11.5'); assert.deepEqual(put.body.dns,['10.44.10.2','10.44.10.3']);
+  assert.equal(put.body.confirm,'ens20','the screen sends the NIC name — no typing');
+  assert.ok(t.requests.some(r=>r.method==='POST'&&r.url==='/net/config/ens20/preview'),'server problems are asked first');
+  t.requests.length=0;
+  await t.run("sheets[0].onSubmit({mode:'dhcp',address:'',netmask:'',gateway:'',dns1:'',dns2:''})");
+  const dhcp=t.requests.find(r=>r.method==='PUT'); assert.equal(dhcp.body.mode,'dhcp'); assert.deepEqual(dhcp.body.dns,[]); assert.equal(dhcp.body.address,'');
+  // שדות לא תקינים — שום בקשה
+  t.requests.length=0;
+  const bad=await t.run("sheets[0].onSubmit({mode:'static',address:'10.44.11.300',netmask:'255.0.255.0',gateway:'',dns1:'x',dns2:''}).then(()=>null,e=>e.message)");
+  assert.equal(bad,'כתובת IP אינה תקינה · מסכה אינה תקינה · DNS ראשי אינו כתובת תקינה'); assert.equal(t.requests.filter(r=>r.method!=='GET').length,0);
+  // כרטיס הניהול לא נהיה רשת הפצה, וכרטיס ההפצה לא עוזב את האופן בלי לכבות DHCP
+  t.run("netEditNic('ens18')");
+  assert.match(await t.run("sheets[1].onSubmit({mode:'deploy'}).then(()=>null,e=>e.message)"),/כרטיס הניהול/);
+  t.run("netEditNic('ens19')");
+  assert.match(await t.run("sheets[2].onSubmit({mode:'static',address:'10.44.9.1',netmask:'255.255.255.0',gateway:'',dns1:'',dns2:''}).then(()=>null,e=>e.message)"),/כבו קודם את ה-DHCP/);
+  assert.equal(t.requests.filter(r=>r.method!=='GET').length,0);
+});
+
+test('#1263 "+ כרטיס" is the same window with a detected-NIC select; deploy mode continues to the deploy window',async()=>{
+  const t=await loaded();
+  t.run('addNic()');
+  const sh=sheetAt(t.run,0);
+  assert.equal(sh.title,'הוספת כרטיס'); assert.deepEqual(sh.fields.slice(0,2).map(f=>f.id),['nic','description']);
+  assert.deepEqual(sh.fields[0].options.map(o=>o.value),['ens21'],'present, not serving, not described'); assert.match(sh.fields[0].options[0].label,/^ens21 — מנותק$/);
+  t.run('setTimeout=(f)=>{ f(); return 1; }');
+  await t.run("sheets[0].onSubmit({nic:'ens21',description:'כיתה 3',mode:'deploy'})");
+  assert.deepEqual(t.requests.filter(r=>r.method!=='GET').map(r=>[r.method,r.url,r.body]),[['POST','/net/interfaces',{name:'ens21',description:'כיתה 3'}]]);
+  assert.equal(t.run('sheets[1].title'),'רשת הפצה — ens21','the deploy window opens for the chosen NIC');
+});
+
+test('#1263 the deploy window: network + mask → the server address is derived; no gateway, no DNS, no proxy, no typed name',async()=>{
+  const t=await loaded();
+  assert.equal(t.run("firstHost('10.0.20.0','255.255.255.0')"),'10.0.20.1');
+  assert.equal(t.run("firstHost('10.0.20.5','255.255.255.0')"),'','not a network address — not rounded');
+  assert.equal(t.run("firstHost('10.0.20.0','255.255.255.254')"),'','/31 has no room');
+  t.run("netEditDeploy('ens19')");
+  const sh=sheetAt(t.run,0);
+  assert.equal(sh.title,'רשת הפצה — ens19'); assert.equal(sh.verify,undefined);
+  const ids=sh.fields.filter(f=>f.id); assert.deepEqual(ids.map(f=>f.id),['network','netmask','range_start','range_end','lease_n','lease_u']);
+  assert.deepEqual(sh.fields.filter(f=>f.type==='section').map(f=>f.label),['רשת ההפצה','DHCP למחשבים'],'the mockup sections, in the stage-1 window frame');
+  assert.equal(ids[0].value,'10.44.9.0'); assert.equal(ids[4].value,'12'); assert.equal(ids[5].value,'h');
+  assert.doesNotMatch(JSON.stringify(sh),/proxy|שער|DNS/,'closed network: no proxy, gateway or DNS');
+  assert.match(sh.note,/השרת יקבל אוטומטית את <b dir="ltr">10\.44\.9\.1<\/b>/);
+  const err=(v)=>t.run(`sheets[0].onSubmit(${JSON.stringify(v)}).then(()=>null,e=>e.message)`);
+  const good={network:'10.44.30.0',netmask:'255.255.255.0',range_start:'10.44.30.50',range_end:'10.44.30.200',lease_n:'8',lease_u:'h'};
+  assert.equal(await err({...good,network:'10.44.30.5'}),'10.44.30.5 אינה כתובת רשת — עם המסכה הזו הרשת היא 10.44.30.0');
+  assert.equal(await err({...good,range_start:'10.44.30.1'}),'כתובת השרת (10.44.30.1) נמצאת בתוך הטווח');
+  assert.equal(await err({...good,range_end:'10.44.31.9'}),'הטווח חייב להיות בתוך הרשת');
+  assert.equal(await err({...good,lease_n:'0'}),'משך חכירה: מספר שלם חיובי');
+  assert.equal(t.requests.filter(r=>r.method!=='GET').length,0);
+  t.fixtures['/net/config/ens19/deploy']={ok:true,server_ip:'10.44.30.1',address:{ok:true},dhcp:{ok:true},apply_error:null};
+  assert.equal(await err(good),null);
+  const put=t.requests.find(r=>r.method==='PUT');
+  assert.equal(put.url,'/net/config/ens19/deploy','one request — address and DHCP together');
+  assert.deepEqual(put.body,{network:'10.44.30.0',netmask:'255.255.255.0',range_start:'10.44.30.50',range_end:'10.44.30.200',lease:'8h',confirm:'ens19',confirm_trunk:false});
+  assert.match(t.run('toasts[toasts.length-1]'),/רשת ההפצה נשמרה על ens19 — כתובת השרת 10\.44\.30\.1/);
+  // הכתובת לא אומתה — ה-DHCP לא נגע, והחלון נשאר פתוח עם הסיבה
+  t.fixtures['/net/config/ens19/deploy']={ok:false,server_ip:'10.44.30.1',address:{ok:false},dhcp:null,apply_error:'הכתובת 10.44.30.1 על ens19 לא אומתה מול המצב בפועל — ה-DHCP לא שונה'};
+  assert.match(await err(good),/לא אומתה.*ה-DHCP לא שונה/);
+  // כרטיס הניהול — אין חלון בכלל
+  t.run("netEditDeploy('ens18')"); assert.equal(t.run('sheets.length'),1); assert.match(t.run('toasts[toasts.length-1]'),/כרטיס הניהול/);
+});
+
+// ‏#1263 אחרי שלב 1: כל שדה ב-sheet() יושב ב-`.n-f` והתווית היא אחות, לא אם — ההסתרה היא של ה-`.n-f`.
+test('#1263 card-window wiring: static fields hide outside "כתובת ידנית", the button and the footer hint follow validity',async()=>{
+  const {run}=await loaded();
+  run(`globalThis.W={}; const mk=(v)=>{const wrap={style:{display:''}}; return {value:v,wrap,closest:(sel)=>sel==='.n-f'?wrap:null};};
+    W.els={address:mk('10.44.11.5'),netmask:mk('255.255.255.0'),gateway:mk(''),dns1:mk(''),dns2:mk('')};
+    W.mode='dhcp'; W.on={}; W.submit={disabled:false}; W.hint={textContent:''};
+    W.panes=[{dataset:{nicPane:'deploy'},hidden:false},{dataset:{nicPane:'dhcp'},hidden:true},{dataset:{nicPane:'leave-deploy'},hidden:true}];
+    W.body={addEventListener:(t,f)=>{W.on[t]=f;},querySelectorAll:()=>W.panes};
+    W.form={querySelector:(sel)=>sel==='.sbody'?W.body:sel==='button[type="submit"]'?W.submit:sel.indexOf('sf-mode')>=0?{value:W.mode}:null};
+    document.getElementById=(id)=>id==='sheet'?W.form:id==='sf-hint'?W.hint:(W.els[id.replace('sf-','')]||null);
+    W.shown=()=>Object.values(W.els).map(e=>e.wrap.style.display);`);
+  // כרטיס הפצה שבחרו בו "DHCP מהרשת": השדות מוסתרים, הכפתור כבוי והסיבה בפס התחתון
+  run("wireNicWindow('dhcp','deploy')");
+  assert.deepEqual(JSON.parse(run('JSON.stringify(W.shown())')),['none','none','none','none','none']);
+  assert.equal(run('W.submit.disabled'),true); assert.equal(run('W.hint.textContent'),'כבו קודם את ה-DHCP של ההפצה');
+  assert.equal(run('W.panes[1].hidden'),false); assert.equal(run('W.panes[0].hidden'),true); assert.equal(run('W.panes[2].hidden'),false);
+  // כרטיס ידני תקין: השדות גלויים והכפתור דלוק; כתובת שבורה — כבוי, והסיבה נאמרת
+  run("W.mode='static'; wireNicWindow('static','static')");
+  assert.deepEqual(JSON.parse(run('JSON.stringify(W.shown())')),['','','','','']);
+  assert.equal(run('W.submit.disabled'),false); assert.equal(run('W.hint.textContent'),'');
+  run("W.els.address.value='10.44.11.300'; W.on.input()");
+  assert.equal(run('W.submit.disabled'),true); assert.equal(run('W.hint.textContent'),'כתובת IP אינה תקינה');
+});
+
+test('#1263 DHCP off keeps the typed NIC name; the forget/description sheets are unchanged',async()=>{
+  const {run,requests}=await loaded();
+  run("netDhcpOff('ens19')");
+  assert.equal(run('sheets[0].title'),'כיבוי DHCP על ens19'); assert.equal(run('sheets[0].verify.mustEqual'),'ens19'); assert.equal(run('sheets[0].danger'),true);
+  run("netForget('ens21')"); assert.match(run('sheets[1].title'),/הסרת הגדרות הכרטיס/);
+  run('networkPage(1)'); run("portSwitch('ssh_nic:ens19')"); assert.match(run('sheets[2].title'),/פתיחת SSH לשרת על ens19/); assert.equal(run('sheets[2].verify.mustEqual'),'ens19');
+  for(const fn of ['editNic','editAddress','showFile','previewDnsmasq','netShowFile','netEditDhcp','netEditAddress']) assert.equal(run(`typeof ${fn}`),'undefined',fn+' should be gone');
   assert.ok(!requests.some(r=>r.method==='PUT'),'nothing is written without the sheet being submitted');
 });
 
@@ -378,8 +503,11 @@ test('deploy network: header from the DHCP NIC, "what the server hands out" says
   const html=run('networkPage(2)'); balanced(html);
   assert.match(html,/class="obj-name">רשת הפצה — DHCP</);
   assert.match(html,/ens19 · 10\.44\.9\.0\/24 · dnsmasq: משרת · 3 נראו ברשת ההפצה · מי עוד עונה: לא נבדק/); assert.match(html,/class="pill ok">משרת</);
-  assert.match(html,/<button class="btn primary" onclick="netEditDhcp\('ens19'\)">עריכת DHCP<\/button><button class="btn" onclick="netProbe\('ens19'\)">בדוק מי עונה<\/button><button class="btn" onclick="previewDnsmasq\(\)/);
-  const serves=card(html,'מה השרת מחלק');
+  assert.match(html,/<div class="obj-actions"><button class="btn" onclick="netProbe\('ens19'\)">בדוק מי עונה<\/button><button class="btn" onclick="refreshPage\(\)">/);
+  assert.doesNotMatch(html,/previewDnsmasq|קבצי dnsmasq/);
+  const serves=card(html,'DHCP על ens19');   // ‏#1263: עריכה וכיבוי בכותרת כרטיס ה-DHCP
+  assert.match(serves,/<div class="acts"><button class="btn sm" onclick="netEditDeploy\('ens19'\)">עריכה…<\/button><button class="btn sm danger" onclick="netDhcpOff\('ens19'\)">כיבוי DHCP…<\/button><\/div>/);
+  assert.match(serves,/<span class="k">רשת<\/span><span class="v"><span class="mono">10\.44\.9\.0\/24<\/span>/);
   assert.match(serves,/10\.44\.9\.100 – 10\.44\.9\.200/); assert.match(serves,/255\.255\.255\.0/); assert.match(serves,/class="st ok">מופעל — תואם למצב הפעיל</); assert.match(serves,/class="st ">לא נבדק</);
   const seen=card(html,'מי קיבל כתובת');
   assert.match(seen,/<table class="dg stable"><thead><tr><th>מכונה<\/th><th>MAC<\/th><th>IP<\/th><th>נראה<\/th><th>שלב אתחול<\/th><th><\/th>/);
@@ -393,21 +521,22 @@ test('deploy network: header from the DHCP NIC, "what the server hands out" says
   const others=card(html,'כרטיסים אחרים');
   for(const n of ['ens18','ens20','ens21']) assert.match(others,new RegExp('class="name">'+n+'<'));
   assert.doesNotMatch(others,/class="name">ens19</);
-  assert.match(row(others,'class="name">ens18<'),/onclick="netEditDhcp\('ens18'\)">הגדר כרשת הפצה/); assert.match(row(others,'class="name">ens20<'),/onclick="netEditDhcp\('ens20'\)">עריכה/);
+  assert.doesNotMatch(others,/הגדר כרשת הפצה/,'one deploy NIC is configured — no second one from here');
   assert.match(row(others,'class="name">ens18<'),/onclick="netProbe\('ens18'\)">בדוק/);
 });
 
 test('deploy network: stored ≠ live (dhcp_diverged) is orange, live not read is "לא נקרא", no DHCP NIC at all → "הגדר כרשת הפצה" on a non-trunk NIC',async()=>{
   const div=NICS.map(n=>n.name==='ens19'?{...n,dhcp_diverged:true,dhcp_live:{state:'configured_not_running',checked:true,detail:'dnsmasq inactive'},dhcp_live_label:'מוגדר, השירות אינו פועל'}:n);
   let t=await loaded({'/net/interfaces':div}); let html=t.run('networkPage(2)');
-  assert.match(html,/class="pill warn">לא תואם למצב הפעיל</); assert.match(card(html,'מה השרת מחלק'),/class="st warn">מופעל — לא תואם למצב הפעיל</);
+  assert.match(html,/class="pill warn">לא תואם למצב הפעיל</); assert.match(card(html,'DHCP על ens19'),/class="st warn">מופעל — לא תואם למצב הפעיל</);
   const unk=NICS.map(n=>n.name==='ens19'?{...n,dhcp_live:{state:'unknown',checked:false,detail:'לא ניתן לקרוא את מצב ה-DHCP הפעיל'},dhcp_live_label:'לא ידוע'}:n);
   t=await loaded({'/net/interfaces':unk}); html=t.run('networkPage(2)');
-  assert.match(html,/class="pill err">לא נקרא</); assert.match(card(html,'מה השרת מחלק'),/class="st unk">מופעל — המצב הפעיל לא נקרא</); assert.doesNotMatch(card(html,'מה השרת מחלק'),/st ok/);
+  assert.match(html,/class="pill err">לא נקרא</); assert.match(card(html,'DHCP על ens19'),/class="st unk">מופעל — המצב הפעיל לא נקרא</); assert.doesNotMatch(card(html,'DHCP על ens19'),/st ok/);
   const none=NICS.map(n=>({...n,enabled:false,proxy:false,dhcp_live:{state:'off',checked:true,detail:''},dhcp_live_label:'כבוי'}));
   t=await loaded({'/net/interfaces':none}); html=t.run('networkPage(2)');
   assert.match(html,/אין כרטיס מוגדר כרשת הפצה, ואין כרטיס שמשרת DHCP כרגע/); assert.match(html,/class="pill ">כבוי</);
-  assert.match(html,/<button class="btn primary" onclick="netEditDhcp\('ens18'\)">הגדר כרשת הפצה</,'first present non-trunk NIC'); assert.doesNotMatch(html,/בדוק מי עונה/);
+  assert.match(html,/<button class="btn primary" onclick="netEditDeploy\('ens19'\)">הגדר כרשת הפצה</,'first present non-trunk NIC that is not the management NIC'); assert.doesNotMatch(html,/בדוק מי עונה/);
+  assert.doesNotMatch(row(card(html,'כרטיסים אחרים'),'class="name">ens18<'),/הגדר כרשת הפצה/,'#1263: the management NIC is never offered');
   assert.match(card(html,'מה השרת מחלק'),/class="empty">אין כרטיס מוגדר כרשת הפצה/);
   assert.match(t.run('networkPage(0)'),/DHCP הפצה: כבוי · 1 לא רשומים/,'diagram header still counts');
   // ‏/net לא נקרא → "מי קיבל כתובת" הוא הודעה, ולא טבלה ריקה
@@ -447,7 +576,7 @@ test('probe ("מי עוד עונה"): checked=false is "the check did not run", 
   await run("netProbe('ens19')");
   assert.deepEqual(requests.filter(r=>r.url.endsWith('/probe')).map(r=>[r.method,r.url]),[['GET','/net/interfaces/ens19/probe']]);
   let html=run('networkPage(2)');
-  assert.match(html,/מי עוד עונה: אף שרת אחר לא עונה \(נבדק \d\d:\d\d\)/); assert.match(card(html,'מה השרת מחלק'),/class="st ok">אף שרת אחר לא עונה \(נבדק \d\d:\d\d\)</);
+  assert.match(html,/מי עוד עונה: אף שרת אחר לא עונה \(נבדק \d\d:\d\d\)/); assert.match(card(html,'DHCP על ens19'),/class="st ok">אף שרת אחר לא עונה \(נבדק \d\d:\d\d\)</);
   await run("netProbe('ens18')"); await run("netProbe('ens20')");
   html=run('networkPage(2)'); const others=card(html,'כרטיסים אחרים');
   assert.match(row(others,'class="name">ens18<'),/class="st unk">הבדיקה לא רצה \(\d\d:\d\d\) — לא ידוע מי עונה</);
@@ -456,7 +585,6 @@ test('probe ("מי עוד עונה"): checked=false is "the check did not run", 
   const t=await loaded({'/net/interfaces/ens19/probe':new Error('timeout')});
   await t.run("netProbe('ens19')");
   assert.equal(t.run('JSON.stringify(toasts)'),JSON.stringify(['בדיקת DHCP נכשלה: timeout'])); assert.match(t.run('networkPage(2)'),/class="st unk">הבדיקה נכשלה \(\d\d:\d\d\): timeout</);
-  assert.match(t.run('networkPage(0)'),/הבדיקה נכשלה/,'the selected-NIC card in the diagram shows the same result');
 });
 
 /* 18/09 — מודל האתרים (הכרעת נדב, interfaces.md §18 "חוקי חומת האש בין האתרים"): לכל אתר שלושה וילנים — שרתים / הפצה / כיתות,
@@ -476,11 +604,11 @@ test('site model: the console/8443 VLAN is "שרתים", and a secondary is "ד�
   assert.equal(old.sub,'דרך FW · 8443 בלבד · https://10.44.10.77:8443 · מושבת');
   assert.equal(haifa.viaFw,true); assert.equal(old.viaFw,true); assert.equal(haifa.dashed,false,'the box stays solid — connected is measured; the line is what marks the FW');
   const html=plain(run('networkPage(0)')); balanced(html);
-  assert.match(html,/שרתים — קונסולה — לפי הגדרה/); assert.doesNotMatch(html,/ניהול — קונסולה|>בין-שרתים —/);
-  const lines=[...html.matchAll(/<path class="ln ([a-z]*)" d="M470 [\d.]+ H430 V[\d.]+ H390"( stroke-dasharray="4 4")?\/>/g)].map(m=>[m[1],!!m[2]]);
-  assert.deepEqual(lines.filter(l=>l[1]),[['err',true],['off',true]],'exactly the two secondaries are dashed lines: red (not answering) and grey (disabled)');
-  assert.ok(lines.some(l=>l[0]==='ok'&&!l[1]),'the console line is solid');
-  assert.match(html,/title="המשני מאחורי FW משלו; הראשי יוזם, רק 8443 · https:\/\/10\.44\.13\.5:8443 · לא ענה: timeout">דרך FW · 8443 בלבד · https:\/\/10\.44\.13\.5:8443 · לא ענה: timeout</);
+  assert.match(mapOf(html),/שרתים — קונסולה/); assert.doesNotMatch(html,/ניהול — קונסולה|>בין-שרתים —/);
+  // המשני אינו קופסה על המפה אלא שורה במגירת הוילן, עם "שרת משני" וחיבור לפי מה שנמדד
+  assert.deepEqual(lane('ens18').rows.filter(r=>r.kind==='branch').map(r=>[r.name,r.ok]),[['סניף חיפה',false],['סניף ישן',false]],'connected is measured; disabled is not "connected"');
+  run('globalThis.opened=null; openDrawer=(t,b)=>{ opened=b; }'); run("netLaneOpen('ens18')");
+  assert.match(run('opened'),/סניף חיפה<\/td>.*שרת משני/s);
 });
 
 test('#1081 v1: classrooms flag off does not draw the classrooms box and hides proxy DHCP from רשת הפצה', async () => {
@@ -504,9 +632,9 @@ test('#1088 deploy network not configured: /net/deploy configured=false → note
   let html=t.run('networkPage(0)'); balanced(html);
   assert.match(html,new RegExp(hint+' — <a href="#" onclick="openNetwork\\(2\\);return false;">לשונית רשת הפצה</a>'));
   html=t.run('networkPage(2)');
-  assert.match(html,/רשת ההפצה לא הוגדרה — בחר כרטיס למטה, קבע לו כתובת סטטית \(עריכת כתובת\) ואז "הגדר כרשת הפצה"/);
+  assert.match(html,/רשת ההפצה לא הוגדרה — בחר כרטיס למטה ו"הגדר כרשת הפצה": כתובת השרת נגזרת מהרשת/);
   // הטופס של ההדלקה הראשונה אומר שזו הגדרת רשת ההפצה, והשמירה מדווחת על האתחול
-  t.run('netEditDhcp("ens18")');
+  t.run('netEditDeploy("ens19")');
   const sh=t.run('sheets[sheets.length-1]');
   assert.match(sh.note,/רשת ההפצה מוגדרת כאן <b>בפעם הראשונה<\/b>/);
   t.fixtures['/net/interfaces/ens18']={ok:true,apply_error:null,interface:{},deploy:{ok:true,url:'http://10.44.9.10:8080',interface:'ens18',errors:[],restarting:true}};
@@ -525,7 +653,7 @@ test('#1088 deploy network not configured: /net/deploy configured=false → note
   t=await loaded({'/net/interfaces':none});
   html=t.run('networkPage(0)'); assert.doesNotMatch(html,/רשת ההפצה לא הוגדרה/);
   html=t.run('networkPage(2)'); assert.match(html,/אין כרטיס מוגדר כרשת הפצה, ואין כרטיס שמשרת DHCP כרגע/);
-  t.run('netEditDhcp("ens18")'); assert.doesNotMatch(t.run('sheets[sheets.length-1]').note,/בפעם הראשונה/);
+  t.run('netEditDeploy("ens19")'); assert.doesNotMatch(t.run('sheets[sheets.length-1]').note,/בפעם הראשונה/);
   // כשההפצה מוגדרת (cli) — אין הערה ואין "בפעם הראשונה"
   t=await loaded({'/net/interfaces':none,'/net/deploy':{configured:true,source:'cli',interface:'ens19',url:'http://10.44.9.10:8080',hint:null}});
   assert.doesNotMatch(t.run('networkPage(0)'),/רשת ההפצה לא הוגדרה/);
@@ -540,4 +668,16 @@ test('network diagram header carries the DHCP pill (moved from the overview); th
   const html=run('networkPage(0)');
   assert.match(html,/class="pill (ok|warn|)">DHCP: ens19 · /);
   assert.doesNotMatch(run('layout(pages.home,0)'),/DHCP: |DHCP חיצוני/);
+});
+
+test('stage 2: devices whose address is outside every NIC subnet are named in a warning under the diagram (restored from main)',async()=>{
+  const t=await loaded();
+  const none=t.run('netMapBody(netDiagramModel())');
+  assert.doesNotMatch(none,/מחוץ לרשתות הכרטיסים/,'no orphans - no warning');
+  t.run('NETW.nics=[]; NET=[{mac:"de:ad:be:ef:00:09",ip:"192.168.99.9",registered:false,last_seen:null}]');
+  const model=JSON.parse(plain(t.run('JSON.stringify(netDiagramModel())')));
+  assert.ok(model.orphans.some(o=>/de:ad:be:ef:00:09/.test(o.title)),'no lane at all - the unregistered device has nowhere to be drawn');
+  const html=t.run('netMapBody(netDiagramModel())');
+  assert.match(html,/class="note warn".*\d+ מחוברים עם כתובת מחוץ לרשתות הכרטיסים: .*de:ad:be:ef:00:09/);
+  assert.match(t.run('netOrphansNote({orphans:[{title:"a"},{title:"b"}]})'),/2 מחוברים עם כתובת מחוץ לרשתות הכרטיסים: a · b/);
 });

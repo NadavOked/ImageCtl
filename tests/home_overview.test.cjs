@@ -164,7 +164,7 @@ test('#968: the deploy IP comes from /me.deploy_ip; null is "not configured" (#1
 });
 test('the global .ok form-message rule is neutralised under .page',()=>{
   const css=fs.readFileSync(path.join(root,'console.css'),'utf8');
-  assert.match(css,/\n\.ok\{color:var\(--led-ok\); font-size:var\(--t-sm\); min-height:18px; margin-top:6px\}/,'precondition: the global rule still exists for form messages');
+  assert.match(css,/\n\.ok\{color:var\(--clr-success-fg\); font-size:var\(--t-sm\); min-height:18px; margin-top:6px\}/,'precondition: the global rule still exists for form messages');
   const pageCss=css.slice(css.indexOf('.page{--rp:4px'));
   assert.match(pageCss,/\.page \.ok\{font-size:inherit;min-height:0;margin-top:0;color:inherit\}/);
 });
@@ -222,10 +222,13 @@ test('"needs attention" lists the red disk, the unregistered machine, the unreac
   assert.doesNotMatch(card.replace(/<details class="tech">.*?<\/details>/g,''),/timeout|udp-sender/,'no raw English outside the technical details');
   assert.doesNotMatch(card,/השרת בכתובת ההפצה/,'ok checks are not attention items');
 });
-test('recent events come from /journal (6 rows, dd/mm for older days, severity from the server) and link to the journal',async()=>{
+test('events come from /journal (dd/mm for older days, severity from the server) and link to the journal — on the events tab; the summary carries recent images instead (stage 2)',async()=>{
   const {run,requests}=await loaded();
   assert.ok(requests.some(r=>r.url==='/api/console/journal?limit=50'));
-  const html=run('home(0)');
+  const summary=run('home(0)');
+  assert.doesNotMatch(summary,/class="timeline"/,'console-full.html P.home: the summary has no event list');
+  assert.match(summary,/<span>אימג&#39;ים אחרונים<\/span>/); assert.match(summary,/selectPageById\('images'\)">לספרייה/);
+  const html=run('layout(pages.home,2)');
   assert.match(html,/<span class="t">09:41<\/span><span class="d info"><\/span><span>סבב הפצה נפתח לכיתה 303<\/span><span class="who">nadav<\/span>/);
   assert.match(html,/<span class="t">16\/09\/2026<\/span><span class="d err"><\/span><span>העברה נכשלה<\/span>/);
   assert.match(html,/selectPageById\('logs'\)">ליומן המלא/);
@@ -235,12 +238,14 @@ test('"the server" card reads ports, ssh, branches and update; DHCP without net.
   run('SECONDARY_STATUS={haifa:{connected:true}}');
   const html=run('home(0)');
   const card=html.slice(html.indexOf('>השרת<'));
-  assert.match(card,/API \/ קונסולה<\/span><span class="v"><span class="st ok">תקין · 8081<\/span>/);
-  assert.match(card,/מולטיקאסט<\/span><span class="v"><span class="st warn">אזהרה · 9000–9001<\/span>/);
-  assert.match(card,/DHCP הפצה<\/span><span class="v"><span class="st ">לא נקרא<\/span>/);
-  assert.match(card,/SSH לתחנות<\/span><span class="v"><span class="st ">כבוי<\/span>/);
-  assert.match(card,/סניפים<\/span><span class="v"><span class="st ok">1 מחוברים<\/span>/);
-  assert.match(card,/עדכון<\/span><span class="v">v0\.30\.0 · <a role="link" tabindex="0" onclick="selectPageById\('health'\)">בדוק<\/a>/);
+  const tile=(n,cls,t)=>new RegExp('<span class="led '+cls+'"></span><div><div class="tt">'+n+'</div><small>'+t);
+  assert.match(card,/<div class="tiles">/);
+  assert.match(card,tile('API / קונסולה','ok','תקין · 8081<'));
+  assert.match(card,tile('מולטיקאסט','warn','אזהרה · 9000–9001<'));
+  assert.match(card,tile('DHCP הפצה','','לא נקרא<'));
+  assert.match(card,tile('SSH לתחנות','','כבוי<'));
+  assert.match(card,tile('סניפים','ok','1 מחוברים<'));
+  assert.match(card,/<div class="tt">עדכון<\/div><small>v0\.30\.0 · <a role="link" tabindex="0" onclick="selectPageById\('health'\)">בדוק<\/a>/);
 });
 test('tabs: "משימות" is the full 20-task table, "אירועים" is 50 events; activateTab keeps the header',async()=>{
   const {run}=await loaded();
@@ -273,7 +278,7 @@ test('the 2-second re-render keeps the scroll position of the page',async()=>{
 
 test('empty server: KPIs say "none"/"unknown" in grey, the now-table says what to do, attention is an honest empty',async()=>{
   const s=setup();
-  Object.assign(s.fixtures,{'/overview':{images:0,machines:0,storage:null,session:null,room:null,pulls:[]},'/tasks':[],'/net':[],'/health':[],'/journal':[],'/storage-nodes':[],'/storage-transfers':[],'/disk-failures':[]});
+  Object.assign(s.fixtures,{'/overview':{images:0,machines:0,storage:null,session:null,room:null,pulls:[]},'/tasks':[],'/images':[],'/net':[],'/health':[],'/journal':[],'/storage-nodes':[],'/storage-transfers':[],'/disk-failures':[]});
   s.run('IMAGES=[];FOLDERS=[];DISK_FAILURES=[];SHRINK_RECORDS=[]');
   await s.run('loadHome()');
   const html=s.run('home(0)');
@@ -284,7 +289,8 @@ test('empty server: KPIs say "none"/"unknown" in grey, the now-table says what t
   assert.match(html,/<div class="empty">אין פעילות עכשיו — פתח סבב הפצה או קלוט אימג&#39;<\/div>/);
   assert.match(html,/<div class="c12 attn-none">אין פריטים לטיפול<\/div>/,'a clean server says so (no folded row, no counter)');
   assert.doesNotMatch(html,/id="home-attn"/);
-  assert.match(html,/<div class="empty">אין אירועים עדיין<\/div>/);
+  assert.match(s.run('layout(pages.home,2)'),/<div class="empty">אין אירועים עדיין<\/div>/);
+  assert.match(html,/<div class="empty">אין אימג&#39;ים בספרייה עדיין<\/div>/,'stage 2: the recent-images card is honest about an empty library');
   assert.match(html,/<span class="pill ok">תקין<\/span>/);
   balanced(html);
 });
@@ -299,7 +305,7 @@ test('a source that could not be read is shown as unread — never as green or a
   assert.match(html,/רשת לא נקראה: net down/);
   assert.match(html,/לא נקראו: בריאות, רשת — לא ניתן לומר שאין מה לטפל/);
   assert.doesNotMatch(html,/אין פריטים לטיפול/);
-  assert.match(html,/היומן לא נקרא: no journal/);
+  assert.match(s.run('layout(pages.home,2)'),/היומן לא נקרא: no journal/,'the events tab says it is unread');
   assert.doesNotMatch(html,/class="kpi ok"><div class="l">בריאות/);
 });
 test('a failed /overview read marks the page stale instead of pretending',async()=>{
@@ -375,4 +381,29 @@ test('UI.noteTech: raw Latin error text goes behind "technical details"; a Hebre
   const none=run(`UI.noteTech("warn","לא נקרא","","!")`);
   assert.match(none,/<span>לא נקרא!<\/span>/); assert.doesNotMatch(none,/details|: /);
   assert.match(run(`UI.noteTech("warn","a","<script>alert(1)</script>")`),/&lt;script&gt;/,'escaped');
+});
+
+test('stage 2: the overview reads /images itself; a failed read is a red "could not read", not "loading" forever',async()=>{
+  const s=setup();
+  s.fixtures['/images']=new Error('images down');
+  s.run('OVERVIEW='+JSON.stringify(s.fixtures['/overview'])+';IMAGES=null;FOLDERS=[];DISK_FAILURES=[];SHRINK_RECORDS=[];toast=()=>{}');
+  const before=s.run('home(0)');
+  assert.match(before,/טוען את הספרייה/,'before any attempt it is loading');
+  await s.run('loadHome()');
+  assert.ok(s.requests.some(r=>r.url==='/api/console/images'),'loadHome requests /images');
+  const html=s.run('home(0)');
+  assert.match(html,/class="note err"[^>]*>.*לא הצלחנו לקרוא את הספרייה: images down/);
+  assert.doesNotMatch(html,/טוען את הספרייה/);
+  s.fixtures['/images']=[{id:'i9',name:'Fresh',folder:'',created:'2026-10-01T10:00:00Z',total_compressed_bytes:1e9}];
+  await s.run('loadHome()');
+  const ok=s.run('home(0)');
+  assert.match(ok,/Fresh/); assert.doesNotMatch(ok,/לא הצלחנו לקרוא את הספרייה/,'a later success clears the failure');
+});
+
+test('stage 2: a non-list /images answer is a read failure, not a crash of the overview',async()=>{
+  const s=setup();
+  s.fixtures['/images']={detail:'not a list'};
+  s.run('OVERVIEW='+JSON.stringify(s.fixtures['/overview'])+';IMAGES=null;FOLDERS=[];DISK_FAILURES=[];SHRINK_RECORDS=[];toast=()=>{}');
+  await s.run('loadHome()');
+  assert.match(s.run('home(0)'),/לא הצלחנו לקרוא את הספרייה: תשובה לא צפויה/);
 });

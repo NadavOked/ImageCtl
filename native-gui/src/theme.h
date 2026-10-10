@@ -78,6 +78,7 @@ typedef struct {
  Rgb node_warn_line;
  Rgb warn;
  Rgb brand_accent;
+ Rgb action_fg;      /* text and strokes in the action colour (console --clr-action-fg) */
  Rgb shadow_strong; double shadow_strong_a;
  double radius;
 } Theme;

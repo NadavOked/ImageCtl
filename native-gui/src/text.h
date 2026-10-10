@@ -33,6 +33,12 @@ typedef struct {
  * <= 0 measures the natural single-line size. */
 Text text_make(cairo_t *cr, Font font, double px, int weight,
                const char *utf8, int width_px, Dir dir);
+/* A left-to-right line whose direction does not follow its first letter
+ * (auto-dir off, like CSS direction:ltr): the menu's "a → b → c" flow, where
+ * a Hebrew-first value must still read left to right. With a width it is
+ * aligned to the right edge of the box (the start of the RTL page). */
+Text text_make_ltr(cairo_t *cr, Font font, double px, int weight,
+                   const char *utf8, int width_px);
 /* Same, from Pango markup -- for a label with <b>…</b> inside it
  * (room.js / classes.js confirm text). Escape values with text_escape. */
 Text text_make_markup(cairo_t *cr, Font font, double px, int weight,

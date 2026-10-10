@@ -257,20 +257,26 @@ static void room_live_grid_draw(App *a, cairo_t *cr, double x, double y, double 
                                      &small);
         text_free(&small);
         int pct = m->pct >= 0 ? m->pct : (!strcmp(m->state, "done") ? 100 : 0);
-        int slots = m->drawer_count;
-        if (slots < m->nroom_drawers) slots = m->nroom_drawers;
-        if (slots < 1) slots = 1;
-        if (slots > MAX_DRAWERS) slots = MAX_DRAWERS;
-        double slot_h = body.h / slots;
-        for (int port = 1; port <= slots; port++) {
+        /* mockup 10/10: a bar per disk the machine REPORTED (present
+         * drawers, by port), not per configured slot -- a slot with no disk
+         * was drawn as "דיסק 3 —" with the machine's progress on it. */
+        const RoomDrawer *found[MAX_DRAWERS]; int nfound = 0;
+        for (int port = 1; port <= MAX_DRAWERS; port++) {
             const RoomDrawer *d = room_drawer_at(m, port);
+            if (d) found[nfound++] = d;
+        }
+        int slots = nfound ? nfound : 1;
+        double slot_h = body.h / slots;
+        for (int k = 0; k < slots; k++) {
+            const RoomDrawer *d = nfound ? found[k] : NULL;
             char size[32] = "—", label[80], percent[16];
             if (d && d->size_bytes) fmt_bytes(size, sizeof size, (double)d->size_bytes);
-            snprintf(label, sizeof label, "דיסק %d  %s", port, size);
+            if (d) snprintf(label, sizeof label, "דיסק %d  %s", d->port, size);
+            else   snprintf(label, sizeof label, "%s", "לא דווחו דיסקים");
             snprintf(percent, sizeof percent, "%d%%", pct);
-            Text lt = rtl_block_make(cr, 10, 500, label, body.w - 48);
-            Text pt = text_make(cr, FONT_MONO, 10, 500, percent, 0, DIR_LTR);
-            double sy = body.y + (port - 1) * slot_h;
+            Text lt = rtl_block_make(cr, 11, 500, label, body.w - 48);
+            Text pt = text_make(cr, FONT_MONO, 11, 500, percent, 0, DIR_LTR);
+            double sy = body.y + k * slot_h;
             text_draw_r(cr, &lt, body.x + body.w, sy, t->ink);
             text_draw(cr, &pt, body.x, sy, t->muted);
             Rgb bar = failed ? t->danger : partial ? t->warn :
@@ -279,6 +285,37 @@ static void room_live_grid_draw(App *a, cairo_t *cr, double x, double y, double 
             text_free(&lt); text_free(&pt);
         }
         if (!on) { cairo_pop_group_to_source(cr); cairo_paint_with_alpha(cr, N_DIM_ALPHA); }
+    }
+}
+
+/* mockup 10/10 ("חדר + סבב חי"): "עצור סבב…" stands apart at the start as
+ * red words; once its field is open it is filled red -- and clickable --
+ * only when the typed name matches the round's image (principle 7, one
+ * destructive pattern). The rest sit at the inline end, the primary last. */
+static void live_footer(App *a, cairo_t *cr, Rect foot) {
+    const Theme *t = a->theme; const State *s = &a->st;
+    double bh = btn_height(cr), by = foot.y + N_ACTION_TOP;
+    int confirming = a->room_confirming, ready = confirming && typed_matches(a->room_confirm, s->round_image);
+    Text stop = btn_label(cr, confirming ? "עצור סבב" : "עצור סבב…");
+    double sw = btn_width(&stop), sx = foot.x + foot.w - N_PAD - sw;
+    draw_btn(a, cr, (Rect){ sx, by, sw, bh }, &stop, !confirming ? BTN_GHOST_DANGER : ready ? BTN_DANGER : BTN_OFF, HIT_ROOM_CLOSE);
+    text_free(&stop);
+    Text labels[3]; int kinds[3], ids[3], nb = 0;     /* from the inline end: the primary first */
+    if (s->wave_open) { labels[nb] = btn_label(cr, "התחל עכשיו"); kinds[nb] = BTN_PRIMARY; ids[nb++] = HIT_ROOM_START; }
+    labels[nb] = btn_label(cr, "העֵר שוב"); kinds[nb] = BTN_PLAIN; ids[nb++] = HIT_ROOM_WAKE;
+    labels[nb] = btn_label(cr, "חזרה");     kinds[nb] = BTN_PLAIN; ids[nb++] = HIT_BACK;
+    double x = foot.x + N_PAD;
+    for (int i = 0; i < nb; i++) {
+        double bw = btn_width(&labels[i]);
+        draw_btn(a, cr, (Rect){ x, by, bw, bh }, &labels[i], kinds[i], ids[i]);
+        x += bw + 8;
+        text_free(&labels[i]);
+    }
+    double room = sx - 12 - (x + 4);
+    if (room > 80) {
+        Text h = rtl_block_make(cr, 12, 400, confirming ? "הקלידו את שם האימג' למעלה · Esc מבטל" : "עצירה דורשת הקלדת שם האימג'", room);
+        text_draw_r(cr, &h, sx - 12, by + (bh - h.h) / 2, t->muted);
+        text_free(&h);
     }
 }
 
@@ -389,11 +426,11 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
     Head hd = head_make(cr, "הפצה למחשבי שיכפול", sub, inner);
     ProgLine pl = progline_make(cr, count, "כוננים שנכתבו", inner);
     Text hint_t = alert_make(cr, hint, inner);                  /* .native-alert */
-    int live_slots = 1;
+    int live_slots = 1;                 /* the deepest machine, in disks it reported */
     for (int i = 0; i < s->nmachines; i++) {
-        int slots = s->machines[i].nroom_drawers;
-        if (slots < s->machines[i].drawer_count) slots = s->machines[i].drawer_count;
-        if (slots > live_slots) live_slots = slots;
+        int found = 0;
+        for (int j = 0; j < s->machines[i].nroom_drawers; j++) found += s->machines[i].room_drawers[j].present;
+        if (found > live_slots) live_slots = found;
     }
     RoomGrid grid = room_grid_make(cr, inner, s->nmachines, live_slots,
                                    room_cols, (H-head_h-N_STATUS_H)/2);
@@ -409,11 +446,6 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
     Text unid = room_unidentified_make(cr, s, inner);
     double unid_h = unid.layout ? N_LABEL_GAP + unid.h : 0;
     double body_h = N_PAD + pl.h + N_LABEL_GAP + N_BAR_H + N_ACTION_GAP + alert_height(&hint_t) + N_CHOICE_GAP + rows_h + unid_h + confirm_h + N_LABEL_GAP + err_h + N_PAD;
-    Text labels[4]; int kinds[4], ids[4], nb = 0;
-    if (s->wave_open) { labels[nb] = btn_label(cr, "התחל עכשיו"); kinds[nb] = BTN_PRIMARY; ids[nb++] = HIT_ROOM_START; }
-    labels[nb] = btn_label(cr, "העֵר שוב");  kinds[nb] = BTN_PLAIN;  ids[nb++] = HIT_ROOM_WAKE;
-    labels[nb] = btn_label(cr, "עצור סבב");  kinds[nb] = BTN_DANGER; ids[nb++] = HIT_ROOM_CLOSE;
-    labels[nb] = btn_label(cr, "חזרה");      kinds[nb] = BTN_PLAIN;  ids[nb++] = HIT_BACK;
 
     Rect body, foot;
     card_frame(a, cr, W, H, head_h, &hd, body_h, foot_height(cr, btn_h), &body, &foot);
@@ -437,7 +469,7 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
     text_draw(cr, &err, x, y, t->danger);
     body_clip_end(a, cr);
     foot_draw_bg(cr, t, foot);
-    foot_buttons(a, cr, foot, labels, kinds, ids, nb);
+    live_footer(a, cr, foot);
     card_end(a, cr);
     text_free(&hint_t); text_free(&err); text_free(&unid);
 }

@@ -151,6 +151,7 @@ test('grid without a round: slots from /machines[].disks[] by drawer_count — d
   assert.doesNotMatch(c2,/data-slot="3"[^]*?SMART תקין[^]*?data-slot="3"/,'a red slot never shows its SMART as green');
   assert.doesNotMatch(c2,/monitorMachine\(/,'monitor only on the monitor page'); assert.match(c2,/openMachineDetail\(/); assert.match(c2,new RegExp("wakeMachine\\('"+encodeURIComponent(C2)+"'\\)\"[^>]*>WoL<"),'#984: per-machine WoL on the cloner card');
   assert.match(c3,/מספר החריצים לא הוגדר והמכונה מעולם לא דיווחה על דיסקים/); assert.match(c3,/editDrawerCount\(/);
+  assert.match(c2,/editDrawerCount\('[^']*'\)">חריצים<\/button>/,'stage 2 (console-full.html P.cloners): the card has a "חריצים" button');
   assert.match(c3,/<span class="st "><b>מחשב 3<\/b>/,'not connected → grey dot');
   const red=between(html,'<div class="c8 card">','<div class="c4 card">');
   assert.match(red,/דיסקים אדומים — נכשלו בכתיבה/); assert.match(red,/<td><span class="mono">S5Y2NX0R12345<\/span><\/td><td>מחשב 2 · דיסק 3 · SATA 2<\/td><td>2026-09-15 14:22:00<\/td><td><span class="st err">כבל\/חריץ SATA 2<\/span><\/td><td>ATA bus error: SError: CommWake<\/td><td><details><summary>3 שורות קרנל/);
@@ -287,6 +288,7 @@ test('builders: machine cards from /machines + /monitor + /net (model/TPM, disk 
   run("CAPTURE_TASKS=[]"); html=run('machines(0)'); balanced(html);
   assert.match(html,/אין קליטה בתהליך — &quot;\+ קליטת אימג&#39;…&quot; פותחת אחת/); assert.match(html,/אין קליטות עדיין/); assert.doesNotMatch(html,/class="pill/);
   assert.match(card(html,B2),/openCapture\('c8%3Ad9%3Ad2%3A0b%3Afe%3A34'\)\.catch\(e => toast\(e\.message\)\)">קלוט מכאן</);
+  assert.match(card(html,B2),/renameMachine\('c8%3Ad9%3Ad2%3A0b%3Afe%3A34'\)">שינוי שם<\/button>/,'stage 2 (console-full.html P.build): the builder card has a rename button');
   return run("openCapture('c8%3Ad9%3Ad2%3A0b%3Afe%3A34')").then(()=>{
     const f=run('formOptions.fields').find(x=>x.id==='mac'); assert.equal(f.value,B2,'the card preselects its machine in the capture sheet');
     run("CAPTURE_TASKS_READ=false"); const unread=run('machines(0)');

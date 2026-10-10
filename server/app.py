@@ -612,8 +612,10 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
     # ‏#1013: מתג ה-TFTP בדף הפורטים מחיל את אותם קובצי dnsmasq, דרך אותם
     # hooks, כמו לשונית ה-DHCP — מקום אחד שכותב את הקובץ.
     dhcp_hooks = {**console_dhcp.default_hooks(), **(rt.dhcp_hooks or {})}
-    include(create_dhcp_router(ctx, dhcp_hooks, deploy=rt.deploy))
-    include(create_netcfg_router(ctx, rt.netcfg_dir, rt.netcfg_hooks))
+    dhcp_router = create_dhcp_router(ctx, dhcp_hooks, deploy=rt.deploy)
+    include(dhcp_router)
+    include(create_netcfg_router(ctx, rt.netcfg_dir, rt.netcfg_hooks,
+                                 dhcp_steps=dhcp_router.dhcp_steps))   # #1263
     include(create_health_router(
         ctx, rt.server_base, health_hooks,
         dnsmasq_apply=lambda what, user_id: console_dhcp.apply_dnsmasq(

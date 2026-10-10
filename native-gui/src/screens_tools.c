@@ -305,8 +305,18 @@ static void tools_confirm_view(App *a, cairo_t *cr, double W, double H, double h
     Text err = error_make(cr, a->tool_error, inner);
     double body_h = N_PAD + warn_h + arg_h + conf_h + dmax(err.h, ERROR_MIN_H);
 
+    /* mockup 10/10, one destructive pattern: the run button opens only once
+     * what tool_run() checks is there (disk, argument, the typed machine
+     * name), red only for a destructive tool, and named after the tool. It
+     * was red and clickable while the field still said "BUILD-0". */
+    int ready = (!disk || (a->tool_disk_sel >= 0 && a->tool_disk_sel < s->ndisks)) &&
+                (disk || !has_arg || a->tool_arg[0]) &&
+                (!level || (a->tools_machine[0] ? typed_matches(a->tool_confirm, a->tools_machine) : a->tool_confirm[0] != 0));
+    char run_label[160];
+    if (level == 2 && strlen(tool->title) < 60) snprintf(run_label, sizeof run_label, "הרץ: %s", tool->title);
+    else snprintf(run_label, sizeof run_label, "הרץ");
     Text labels[2]; int kinds[2], ids[2], nb = 0;
-    labels[nb] = btn_label(cr, "הרץ"); kinds[nb] = level == 2 ? BTN_DANGER : BTN_PRIMARY; ids[nb++] = HIT_TOOL_RUN;
+    labels[nb] = btn_label(cr, run_label); kinds[nb] = !ready ? BTN_OFF : level == 2 ? BTN_DANGER : BTN_PRIMARY; ids[nb++] = HIT_TOOL_RUN;
     labels[nb] = btn_label(cr, "חזרה"); kinds[nb] = BTN_PLAIN; ids[nb++] = HIT_TOOL_LIST;
 
     Rect body, foot;

@@ -165,6 +165,7 @@ EVENTS_HE = {
     "dcui_wizard_rerun": "אשף ההתקנה הופעל מחדש ממסך השרת",
     "deploy_net_failed": "הגדרת רשת ההפצה נכשלה",
     "deploy_net_set": "רשת ההפצה הוגדרה",
+    "net_deploy_saved": "הגדרות רשת ההפצה נשמרו (כתובת השרת נגזרה מהרשת)",
     "dhcp_synced_at_startup": "תצורת DHCP/TFTP נכתבה מחדש מה-DB בעלייה",
     "disk_decision": "הכרעה על דיסק (SMART) נרשמה",
     "machine_drawer_count": "מספר המגירות של מכונה עודכן",

@@ -170,6 +170,8 @@ static void key_event(Input *in, Dev *d, int code, int value) {
     case KEY_ESC:       e.type = UIEV_KEY; e.key = KEYSYM_ESC; push(in, e); return;
     case KEY_UP:        e.type = UIEV_KEY; e.key = KEYSYM_UP; push(in, e); return;
     case KEY_DOWN:      e.type = UIEV_KEY; e.key = KEYSYM_DOWN; push(in, e); return;
+    case KEY_LEFT:      e.type = UIEV_KEY; e.key = KEYSYM_LEFT; push(in, e); return;    /* the menu grid (mockup 10/10) */
+    case KEY_RIGHT:     e.type = UIEV_KEY; e.key = KEYSYM_RIGHT; push(in, e); return;
     }
     for (size_t i = 0; i < sizeof KEYMAP / sizeof KEYMAP[0]; i++)
         if (KEYMAP[i].code == code) {

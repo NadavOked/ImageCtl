@@ -95,6 +95,10 @@ def test_the_last_admin_cannot_be_blocked(server):
 
     conn = server["ctx"].conn
     # שני מנהלים בהתקנה: `admin` מההרצה הראשונה, ו-`noc` של הפיקסטורה.
+    # ‏#1262: `admin` הוא ה-builtin ואינו ניתן להשבתה; הדגל מוסר כדי לבדוק
+    # את שומר המנהל האחרון לבדו (שומר ה-builtin: test_builtin_admin_protected).
+    conn.execute("UPDATE users SET is_builtin = 0 WHERE username = 'admin'")
+    conn.commit()
     users.set_disabled(conn, "admin", True, by="test")
     assert users.active_admin_count(conn) == 1
 

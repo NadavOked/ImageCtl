@@ -115,12 +115,13 @@ def test_progress_has_no_primary_button_ink_in_the_footer_action_area(tmp_path) 
     env = dict(os.environ)
     if (GUI / "fonts.conf").exists():
         env["FONTCONFIG_FILE"] = str(GUI / "fonts.conf")
+    # 1280x800: scale 1 (mockup 10/10 scales 1280x1024 by 1.25); footer y 736..800
     proc = subprocess.run([str(binary), "--screen", "install", "--demo", "--png",
-                           str(prefix), "--size", "1280x1024"], capture_output=True,
+                           str(prefix), "--size", "1280x800"], capture_output=True,
                           text=True, timeout=120, env=env, stdin=subprocess.DEVNULL)
     assert proc.returncode == 0, proc.stderr
     path = tmp_path / "footer-install-5c-progress-light.png"
-    _, _, colors = _size_and_ink(path, (820, 973, 1010, 1011))
+    _, _, colors = _size_and_ink(path, (820, 749, 1010, 787))
     assert colors == 1, "running progress must leave the footer action area blank"
 
 
@@ -129,19 +130,20 @@ def test_back_button_is_drawn_on_every_screen_where_escape_goes_back(tmp_path) -
     """‏#1205: Esc חוזר ממסכים 2–6, אבל כפתור "חזור" צויר רק בחלקם — במסך
     התפקיד (2) היה רק "הבא". מי שלא יודע על Esc לא מוצא את החזרה.
 
-    ב-1280: ‏"הבא" ברוחב 118 מתחיל ב-x=880, ו"חזור" נגמר 12 פיקסלים לפניו.
-    האזור 850–866 נמצא בתוך "חזור" (מסגרת + רקע) ובמסך בלי חזרה הוא רקע
-    הפס התחתון בלבד — צבע אחד."""
+    ב-1280x800 (קנה מידה 1, מוקאפ 10/10): ‏"הבא" ברוחב 118 מתחיל ב-x=880,
+    ו"חזור" נגמר 12 פיקסלים לפניו. האזור 850–866 נמצא בתוך "חזור" (מסגרת +
+    רקע) ובמסך בלי חזרה הוא רקע הפס התחתון בלבד — צבע אחד. שורת המקשים
+    נגמרת ב-768, לפני האזור."""
     binary = _build(tmp_path)
     prefix = tmp_path / "back"
     env = dict(os.environ)
     if (GUI / "fonts.conf").exists():
         env["FONTCONFIG_FILE"] = str(GUI / "fonts.conf")
     proc = subprocess.run([str(binary), "--screen", "install", "--demo", "--png",
-                           str(prefix), "--size", "1280x1024"], capture_output=True,
+                           str(prefix), "--size", "1280x800"], capture_output=True,
                           text=True, timeout=120, env=env, stdin=subprocess.DEVNULL)
     assert proc.returncode == 0, proc.stderr
-    box = (850, 968, 866, 1015)
+    box = (850, 744, 866, 791)
     with_back = ("install-1-role", "install-2-servers-net", "install-3-hostname",
                  "install-4-admin", "install-5-summary")
     without = ("install-0-disk", "install-5c-progress", "install-6-done")
@@ -182,7 +184,9 @@ def test_disk_admin_and_seven_step_controls_are_wired_into_the_live_form() -> No
     assert "HIT_INSTALL_ADMIN_USER" in forms and "s->admin_user" in forms
     assert "HIT_INSTALL_SHOW_PASSWORD" in forms and "HIT_INSTALL_SHOW_CONFIRM" in forms
     assert 'shown?"הסתר":"הצג"' in forms
-    assert "for(int i=0;i<7;i++" in frame and "שלב %d מתוך 7" in frame
+    # mockup 10/10: the footer carries the working keys; "שלב N מתוך 7" repeated the rail
+    assert "for(int i=0;i<7;i++" in frame and "install_keys_draw(a,cr,l);" in frame
+    assert "שלב %d מתוך 7" not in frame
 
 
 def test_engine_state_mapping_is_exact_and_restart_ejects_before_reboot() -> None:

@@ -120,14 +120,14 @@ test('1032: an image row always carries a (non-empty) .acts cell — the column 
   run('ME={username:"admin",role:"admin",capabilities:{}};');
   const row = run(`imageRow({id:'img1',name:'Test',folder:'',family:256,os:'windows',created:'2026-01-01T00:00:00Z',total_compressed_bytes:1})`);
   const acts = row.cells[row.cells.length - 1];
-  assert.match(acts, /^<div class="acts">/);
-  assert.match(acts, /<button/, 'not an empty reserved cell here — imageRow always renders its two buttons regardless of role');
+  assert.match(acts, /^<button type="button" class="kebab"/, 'stage 2: the last cell is the row ⋯ menu — never an empty reserved cell');
+  assert.match(acts, /data-menu="[^"]*פרטים/);
 });
 
 test('1032: a machine row always carries a non-empty .acts cell (at least "פרטים")', () => {
   const run = setupConsole();
   const row = run(`machineRowHtml({mac:'aa:bb:cc:dd:ee:ff'})`);
   const acts = row.cells[row.cells.length - 1];
-  assert.match(acts, /^<div class="acts">/);
-  assert.match(acts, /פרטים/);
+  assert.match(acts, /^<button type="button" class="kebab"/, 'stage 2: the last cell is the row ⋯ menu — never an empty reserved cell');
+  assert.match(acts, /data-menu="[^"]*פרטים/);
 });

@@ -29,69 +29,6 @@ function netLight(row) {
   return row.mismatches.length ? "bad" : "ok";
 }
 
-/* ‏#761: הטבלה המאוחדת — שורה אחת לכל כרטיס פיזי, ולא שני פאנלים
-   נפרדים. עמודות: התקן · MAC · מצב/מהירות · כתובת IP בפועל · DHCP
-   בפועל · פעולות. הכתובת/שער/DNS שהוגדרו (configured) אינם מוצגים
-   בטבלה — הם live-only כאן, ומוצגים רק בדיאלוג העריכה. */
-function speedLabel(n) {
-  const state = n.state === "up" ? "מחובר" : n.state === "down" ? "מנותק" : "לא ידוע";
-  const speed = typeof n.speed_mbps === "number" && n.speed_mbps > 0
-    ? ` · ${n.speed_mbps} Mbps` : "";
-  return `${state}${speed}`;
-}
-
-function unifiedRow(n, cfgRow, admin) {
-  const trunk = n.trunk ? ` <span class="tag warn">רשת המכללה</span>` : "";
-  const missing = n.present ? "" : ` <span class="tag warn">לא קיים במערכת</span>`;
-  const desc = n.description ? `<br><small style="color:var(--muted)">${esc(n.description)}</small>` : "";
-  const live = (cfgRow ? cfgRow.live_addresses : n.addresses) || [];
-  const gaps = cfgRow && cfgRow.mismatches && cfgRow.mismatches.length
-    ? `<br><span class="tag warn">${esc(cfgRow.mismatches.join(" · "))}</span>` : "";
-  const dhcp = nicMode(n);
-  return `<tr>
-    <td><b dir="ltr">${esc(n.name)}</b>${trunk}${missing}${desc}</td>
-    <td class="mono" dir="ltr">${esc(n.mac) || "—"}</td>
-    <td>${esc(speedLabel(n))}</td>
-    <td class="mono" dir="ltr">${esc(live.join(" · ")) || "—"}${gaps}</td>
-    <td>${dhcp.html}</td>
-    <td>${admin ? `
-      <button class="btn" data-net-edit="${esc(n.name)}">עריכת הגדרות</button>
-      <button class="btn" data-nic-edit="${esc(n.name)}">DHCP</button>
-      <button class="btn flat" data-nic-desc="${esc(n.name)}">תיאור</button>
-      <button class="btn flat" data-net-preview="${esc(n.name)}">הקובץ</button>
-      <button class="btn danger flat" data-nic-forget="${esc(n.name)}">שכחה</button>` : ""}
-    </td></tr>`;
-}
-
-function renderNetTable() {
-  if (!NETCFG) return;         // עוד לא נטען — Promise.all עדיין רץ.
-  const admin = ME.role === "admin";
-  const byName = new Map(NETCFG.interfaces.map((r) => [r.name, r]));
-  const names = [...new Set([...NICS.map((n) => n.name), ...byName.keys()])].sort();
-  const rows = names.map((name) => {
-    const n = NICS.find((x) => x.name === name)
-      || { name, mac: "", state: "unknown", addresses: [], present: byName.has(name),
-           trunk: false, description: "", enabled: false, proxy: false,
-           dhcp_live: { state: "unknown" }, dhcp_live_label: "לא ידוע",
-           dhcp_diverged: false, speed_mbps: null };
-    return unifiedRow(n, byName.get(name), admin);
-  }).join("");
-  const tbody = $("#net-table tbody");
-  if (tbody) tbody.innerHTML = rows
-    || `<tr><td colspan="6">לא נמצאו כרטיסי רשת.</td></tr>`;
-
-  document.querySelectorAll("[data-net-edit]").forEach((b) => b.onclick = () =>
-    editAddress(byName.get(b.dataset.netEdit)
-      || bodyOf({ name: b.dataset.netEdit, mode: "manual", address: "", netmask: MASKS[0],
-                  gateway: "", dns: [], routes: [] }, {})));
-  document.querySelectorAll("[data-net-preview]").forEach((b) => b.onclick = () =>
-    showFile(byName.get(b.dataset.netPreview)
-      || { name: b.dataset.netPreview, mode: "manual", address: "", netmask: MASKS[0],
-           gateway: "", dns: [], routes: [] }));
-  wireNicActions(NICS);
-  if (typeof refreshNetPages === "function") refreshNetPages();
-}
-
 /* --- הבאנר של ההחזרה: הדבר היחיד שחשוב יותר מהטבלה ------------------------ */
 
 function rollbackBanner(rb) {
@@ -131,7 +68,7 @@ function startCountdown() {
     if (left === 0) {
       clearInterval(NETCFG_TICK);
       loadNetcfg()
-        .then(() => { if (typeof renderNetTable === "function") renderNetTable(); })
+        .then(() => { if (typeof refreshNetPages === "function") refreshNetPages(); })
         .catch((error) =>
           toast("לא הצלחנו לרענן את מצב הרשת אחרי ההחזרה: " + error.message));
     }
@@ -167,7 +104,7 @@ async function confirmNetRollback() {
     toast("אושר — ההגדרה נשארת");
   } catch (error) { toast(error.message); }
   await loadNetcfg();
-  renderNetTable();
+  if (typeof refreshNetPages === "function") refreshNetPages();
 }
 
 /* --- עריכת הכתובת --------------------------------------------------------- */
@@ -187,24 +124,14 @@ async function saveAddress(name, body) {
     toast("הוחל. אשרו תוך דקה שהקונסולה עדיין נגישה, אחרת יוחזר.");
   else toast("הוחל, ואומת מול ip addr");
   await loadNetcfg();
-  renderNetTable();
+  if (typeof refreshNetPages === "function") refreshNetPages();
 }
 
-/* ‏CIDR (‏"10.44.9.10/24") ↔ כתובת+מסכה. פונקציית עזר יחידה, כדי שהצד
-   שמפרק וזה שמרכיב לא ייסחפו לשני מימושים (‏#761). */
+/* ‏"/24" → מסכה: הכתובת החיה (‏"10.44.9.10/24") ממלאת את שדות הכתובת הידנית. */
 function bitsToMask(bits) {
   const n = Math.max(0, Math.min(32, Number(bits) || 0));
   const full = 0xffffffff << (32 - n) >>> 0;
   return [24, 16, 8, 0].map((s) => (full >>> s) & 255).join(".");
-}
-
-function splitCidr(text) {
-  const [address, bits] = String(text || "").trim().split("/");
-  return { address: address || "", netmask: bits ? bitsToMask(bits) : MASKS[0] };
-}
-
-function joinCidr(address, netmask) {
-  return address ? `${address}/${maskBits(netmask)}` : "";
 }
 
 function liveReadback(row) {
@@ -216,59 +143,153 @@ function liveReadback(row) {
   return `<div class="live-readback">בפועל כעת: <b>${esc(addr) || "אין כתובת"}</b></div>`;
 }
 
-function editAddress(row) {
-  const gaps = (row.mismatches || []).length
-    ? `<div class="sheet-note">מוגדר ≠ בפועל: ${esc(row.mismatches.join(" · "))}</div>` : "";
-  sheet({
-    title: `עריכת הגדרות — ${row.name}`,
-    sub: "נכתב ל-/etc/network/interfaces.d, ולכן שורד אתחול.",
-    danger: true,
-    note: liveReadback(row) + gaps + `<div class="sheet-note danger">שינוי כתובת
-      מנתק את מי שמחובר דרך הכרטיס הזה. אם זה הכרטיס שהקונסולה מגיעה
-      דרכו, ההגדרה תוחזר אוטומטית תוך דקה אלא אם תאשרו שהחיבור עדיין חי.</div>`,
-    fields: [
-      { id: "mode", label: "", type: "radio", value: row.mode,
-        options: [{ value: "dhcp", label: "קבלת כתובת אוטומטית (DHCP)" },
-                  { value: "static", label: "כתובת סטטית" },
-                  { value: "manual", label: "לא מנוהל מהקונסולה (ברירת מחדל)" }] },
-      { id: "cidr", label: "כתובת / CIDR", dir: "ltr",
-        value: joinCidr(row.address, row.netmask || MASKS[0]),
-        placeholder: "10.44.9.10/24" },
-      { id: "gateway", label: "שער ברירת מחדל (לא חובה)", value: row.gateway, dir: "ltr" },
-      { id: "dns", label: "שרתי DNS (מופרדים בפסיק, לא חובה)",
-        value: (row.dns || []).join(", "), dir: "ltr" },
-    ],
-    verify: { label: `לשמירה הקלד את שם הכרטיס: ${row.name}`,
-              mustEqual: row.name },
-    submitLabel: "החל",
-    onSubmit: async (v) => {
-      // תצוגה מקדימה לפני החלה: מי שרואה את הטקסט תופס טעות כשהיא
-      // עדיין טקסט. ‏השרת מסרב שוב על אותן בעיות — זה לא מסך שמחליף
-      // את הבדיקה, אלא שמראה אותה מוקדם.
-      const parts = v.mode === "static" ? splitCidr(v.cidr) : { address: "", netmask: MASKS[0] };
-      const body = bodyOf(row, { mode: v.mode, address: parts.address,
-                                 netmask: parts.netmask, gateway: v.gateway,
-                                 dns: v.dns.split(",").map((s) => s.trim()).filter(Boolean) });
-      const preview = await post(
-        `/net/config/${encodeURIComponent(row.name)}/preview`, body);
-      if (preview.problems.length) throw new Error(preview.problems.join(" · "));
-      await saveAddress(row.name, body);
-    },
-  });
+/* --- ‏#1263: "הגדרת כרטיס…" — אופן הגדרה אחד מתוך שלושה -------------------
+   רשת הפצה · DHCP מהרשת · כתובת ידנית (הכרעת נדב 10/10). כרטיס הניהול
+   (נבחר בהתקנה, ‏NETCFG.management_interface) — DHCP או ידנית בלבד.
+   הגדרות רשת ההפצה עצמן (רשת, מסכה, טווח, חכירה) נערכות בחלון של לשונית
+   "רשת הפצה" (‏editDeployNet ב-net.js): כאן "רשת הפצה" מסמן את הכרטיס
+   וממשיך לשם. בלי הקלדת שם הכרטיס (נדב 10/10) — השם בכותרת, והשרת ממשיך
+   לקבל `confirm` = השם, מהמסך ולא מהמקלדת. כרטיס הניהול מוגן בהחזרה
+   האוטומטית של ‏#56 (60 שניות), שלא השתנתה. "+ כרטיס" פותח את אותו חלון
+   עם בחירה מתוך הכרטיסים שזוהו. */
+
+const NIC_MODES = [["deploy", "רשת הפצה"], ["dhcp", "DHCP מהרשת"], ["static", "כתובת ידנית"]];
+/* אופן ההגדרה כפי שהוא היום: DHCP מלא דלוק = רשת הפצה; אחרת מה שנשמר
+   בהגדרת הכתובת. ‏"manual" = לא מנוהל מהקונסולה (שרת שהגדרתו קודמת). */
+function nicModeOf(n, row) {
+  if (n && n.enabled) return "deploy";
+  if (row && (row.mode === "static" || row.mode === "dhcp")) return row.mode;
+  return "manual";
+}
+function netcfgRowOf(name) {
+  return ((NETCFG && NETCFG.interfaces) || []).find((r) => r.name === name) || null;
 }
 
-async function showFile(row) {
-  const preview = await post(
-    `/net/config/${encodeURIComponent(row.name)}/preview`, bodyOf(row, {}));
+/* בעיות הטופס בעברית — רשימה ריקה = מותר לשמור. השרת בודק שוב (ובעוד
+   דברים: חפיפה לכרטיס אחר, שער בר-השגה); זה רק כדי שהכפתור יידע. */
+function nicFormProblems(mode, v) {
+  if (mode !== "static") return [];
+  const found = [];
+  if (!validIp(v.address)) found.push("כתובת IP אינה תקינה");
+  if (!validMask(v.netmask)) found.push("מסכה אינה תקינה");
+  for (const [key, label] of [["gateway", "שער"], ["dns1", "DNS ראשי"], ["dns2", "DNS משני"]]) {
+    if (String(v[key] || "").trim() && !validIp(v[key])) found.push(`${label} אינו כתובת תקינה`);
+  }
+  return found;
+}
+
+function nicLinkText(n) {
+  const speed = typeof n.speed_mbps === "number" && n.speed_mbps > 0
+    ? (n.speed_mbps >= 1000 ? `${n.speed_mbps / 1000} Gb` : `${n.speed_mbps} Mb`) : "";
+  const state = n.state === "up" ? "מחובר" : n.state === "down" ? "מנותק" : "קישור לא נקרא";
+  return [speed, state].filter(Boolean).join(" · ");
+}
+
+/* שדות הכתובת הידנית מוצגים רק באופן "כתובת ידנית"; ההערות לפי האופן;
+   הכפתור נדלק כשהשדות תקינים, והסיבה בפס התחתון (#sf-hint). ‏`.sbody` נבנה
+   מחדש בכל sheet(), ולכן המאזינים עליו אינם מצטברים בין חלונות. כל שדה
+   יושב ב-`.n-f` (מסגרת החלונות של שלב 1) — מסתירים אותו, לא את התווית. */
+function wireNicWindow(start, now) {
+  const form = document.getElementById("sheet");
+  const body = form && form.querySelector(".sbody");
+  if (!body) return;
+  const value = (id) => { const el = document.getElementById("sf-" + id); return el ? el.value : ""; };
+  const sync = () => {
+    const picked = form.querySelector('input[name="sf-mode"]:checked');
+    const mode = picked ? picked.value : start;
+    for (const id of ["address", "netmask", "gateway", "dns1", "dns2"]) {
+      const el = document.getElementById("sf-" + id);
+      const wrap = el && (el.closest(".n-f") || el.closest("label"));
+      if (wrap) wrap.style.display = mode === "static" ? "" : "none";
+    }
+    body.querySelectorAll("[data-nic-pane]").forEach((el) => {
+      el.hidden = el.dataset.nicPane === "leave-deploy" ? mode === "deploy" : el.dataset.nicPane !== mode;
+    });
+    const values = { address: value("address"), netmask: value("netmask"), gateway: value("gateway"),
+                     dns1: value("dns1"), dns2: value("dns2") };
+    const problems = nicFormProblems(mode, values);
+    if (now === "deploy" && mode !== "deploy") problems.unshift("כבו קודם את ה-DHCP של ההפצה");
+    const submit = form.querySelector('button[type="submit"]');
+    if (submit) submit.disabled = problems.length > 0;
+    const hint = document.getElementById("sf-hint");
+    if (hint) hint.textContent = problems[0] || "";
+  };
+  body.addEventListener("input", sync);
+  body.addEventListener("change", sync);
+  sync();
+}
+
+function editNicConfig(name, { add = false } = {}) {
+  const fresh = add ? (NICS || []).filter((n) => n.present && !n.enabled && !n.proxy && !n.description) : [];
+  if (add && !fresh.length) { toast("כל הכרטיסים שמחוברים כבר מוגדרים."); return; }
+  const target = add ? fresh[0].name : name;
+  const nic = (NICS || []).find((n) => n.name === target) || { name: target, enabled: false };
+  const row = netcfgRowOf(target);
+  const now = add ? "manual" : nicModeOf(nic, row);
+  const mgmt = !add && isMgmtNic(target);
+  // כרטיס לא מנוהל: הכתובת שהוא נושא בפועל ממלאת את "כתובת ידנית" — לא שדות ריקים.
+  const [liveIp, liveBits] = (((row && row.live_addresses) || [])[0] || "").split("/");
+  const st = row && row.mode === "static" ? row
+    : { address: liveIp || "", netmask: liveBits ? bitsToMask(liveBits) : MASKS[0], gateway: "", dns: [] };
+  const start = add ? "dhcp" : now === "manual" ? (liveIp ? "static" : "dhcp") : now;
+  const seconds = (NETCFG && NETCFG.rollback && NETCFG.rollback.window_seconds) || 60;
+  const note = (mgmt ? `<div class="sheet-note">זה כרטיס הניהול — נבחר בהתקנה, ודרכו נכנסים לקונסולה. שינוי כתובת עלול לנתק אותך: אם לא תאשר תוך ${esc(seconds)} שניות, ההגדרה הקודמת תחזור.</div>` : "")
+    + (!add && now === "manual" ? `<div class="sheet-note">הכרטיס אינו מנוהל היום מהקונסולה. שמירה תכתוב לו קובץ ב-/etc/network/interfaces.d, ששורד אתחול.</div>` : "")
+    + (add ? "" : liveReadback(row || {}))
+    + `<div class="sheet-note" data-nic-pane="deploy">הגדרות רשת ההפצה — כתובת הרשת, טווח ה-DHCP והחכירה — נערכות בחלון של לשונית "רשת הפצה", שייפתח מכאן. השרת מקבל על הכרטיס את הכתובת הראשונה ברשת.</div>`
+    + `<div class="sheet-note" data-nic-pane="dhcp">הכרטיס יקבל כתובת, מסכה, שער ו-DNS מה-DHCP של הרשת שהוא מחובר אליה.</div>`
+    + (now === "deploy" ? `<div class="sheet-note danger" data-nic-pane="leave-deploy">הכרטיס מחלק היום DHCP להפצה. כדי לשנות את אופן ההגדרה, כבו קודם את ה-DHCP ("כיבוי DHCP…" בלשונית רשת הפצה).</div>` : "");
+  let added = false;
   sheet({
-    title: `הקובץ של ${row.name}`,
-    sub: "מה שנכתב היום, ומה שייכתב בשמירה הבאה",
-    note: `<p class="mono" dir="ltr" style="color:var(--muted);font-size:12px;margin:0 0 4px">${esc(preview.path)}</p>
-           <pre class="conf">${esc(preview.before || "— אין קובץ —")}</pre>
-           <p class="mono" dir="ltr" style="color:var(--muted);font-size:12px;margin:10px 0 4px">${esc(preview.resolv_path)}</p>
-           <pre class="conf">${esc(preview.resolv_after)}</pre>`,
-    submitLabel: "סגור", onSubmit: async () => {},
+    title: add ? "הוספת כרטיס" : `הגדרת כרטיס — ${target}`,
+    sub: mgmt ? "כרטיס הניהול · רשת השרתים" : "נשמר ושורד אתחול",
+    size: "mid",
+    note,
+    fields: [
+      ...(add ? [{ id: "nic", label: "כרטיס שזוהה", type: "select", value: target,
+                   options: fresh.map((n) => ({ value: n.name, label: `${n.name} — ${nicLinkText(n)}` })) },
+                 { id: "description", label: "תיאור", placeholder: "למשל: רשת כיתה 3" }] : []),
+      { id: "mode", label: "אופן הגדרה", type: "radio", value: start,
+        options: NIC_MODES.filter(([m]) => !(mgmt && m === "deploy")).map(([value, label]) => ({ value, label })) },
+      { id: "address", label: "כתובת IP", value: st.address, dir: "ltr" },
+      { id: "netmask", label: "מסכה", value: st.netmask || MASKS[0], dir: "ltr" },
+      { id: "gateway", label: "שער (לא חובה)", value: st.gateway, dir: "ltr" },
+      { id: "dns1", label: "DNS ראשי (לא חובה)", value: (st.dns || [])[0] || "", dir: "ltr" },
+      { id: "dns2", label: "DNS משני (לא חובה)", value: (st.dns || [])[1] || "", dir: "ltr" },
+    ],
+    submitLabel: add ? "הוספה והחלה" : "שמירה והחלה",
+    onSubmit: async (v) => {
+      const nicName = add ? v.nic : target;
+      const problems = nicFormProblems(v.mode, v);
+      if (problems.length) throw new Error(problems.join(" · "));
+      if (v.mode === "deploy" && isMgmtNic(nicName)) {
+        throw new Error(`${nicName} הוא כרטיס הניהול — DHCP מהרשת או כתובת ידנית בלבד`);
+      }
+      if (now === "deploy" && v.mode !== "deploy") {
+        throw new Error("כבו קודם את ה-DHCP של ההפצה על הכרטיס (\"כיבוי DHCP…\" בלשונית רשת הפצה)");
+      }
+      if (add && !added) {           // ניסיון חוזר אחרי שגיאה לא מוסיף פעמיים (409)
+        await post("/net/interfaces", { name: nicName, description: v.description });
+        added = true;
+      }
+      if (v.mode === "deploy") {
+        // החלון הזה נסגר כש-onSubmit חוזר; חלון רשת ההפצה נפתח אחריו.
+        setTimeout(() => editDeployNet(nicName), 0);
+        return;
+      }
+      const base = netcfgRowOf(nicName)
+        || { name: nicName, mode: "manual", address: "", netmask: MASKS[0], gateway: "", dns: [], routes: [] };
+      const body = v.mode === "static"
+        ? bodyOf(base, { mode: "static", address: v.address.trim(), netmask: v.netmask.trim(),
+                         gateway: v.gateway.trim(), dns: [v.dns1, v.dns2].map((s) => s.trim()).filter(Boolean) })
+        : bodyOf(base, { mode: "dhcp", address: "", netmask: MASKS[0], gateway: "", dns: [] });
+      body.confirm = nicName;
+      const preview = await post(`/net/config/${encodeURIComponent(nicName)}/preview`, body);
+      if (preview.problems.length) throw new Error(preview.problems.join(" · "));
+      await saveAddress(nicName, body);
+    },
   });
+  wireNicWindow(start, now);
 }
 
 /* --- נתיבים סטטיים (‏#57): רשימה, הוספה, ומחיקה לכל שורה ------------------ */
@@ -366,5 +387,5 @@ if (netrouteAdd) netrouteAdd.addEventListener("click", () => addRoute());
 const netRefresh = $("#net-refresh");
 if (netRefresh) netRefresh.addEventListener("click", () =>
   Promise.all([loadNet(), loadNetcfg()])
-    .then(renderNetTable)
+    .then(() => { if (typeof refreshNetPages === "function") refreshNetPages(); })
     .catch((error) => toast("רענון נכשל: " + error.message)));

@@ -109,7 +109,7 @@ static const char *status_word(const App *a,char *buf,size_t n,Rgb *dot){
     if(s->shrink_pending){*dot=a->theme->warn;return "ממתין להחלטת כיווץ";}   /* #928: the modal owns the screen */
     switch(a->screen){
     case SCREEN_LOGIN:return "ממתין לאימות";
-    case SCREEN_MENU:return "בחירת פעולה";
+    case SCREEN_MENU:return a->logout_confirming?"אישור התנתקות":"בחירת פעולה";
     case SCREEN_STANDBY:*dot=a->theme->led_idle;return "ממתין לסבב";
     case SCREEN_MESSAGE:*dot=a->theme->warn;return s->msg_title;
     case SCREEN_PICK:return "בחירת דיסק";
@@ -129,23 +129,35 @@ static const char *status_word(const App *a,char *buf,size_t n,Rgb *dot){
     return "מוכן";
 }
 
-static const char *status_keys(const App *a){
+/* mockup 10/10: the keys a screen lists are the keys main.c handle() acts on
+ * there -- nothing it ignores. */
+static const char *status_keys(const App *a,char *buf,size_t n){
     if(a->st.shrink_pending)return "1  כווץ וקלוט    2  קלוט בלי כיווץ    3 / Esc  בטל קליטה";   /* #928 */
     switch(a->screen){
-    case SCREEN_LOGIN:return "Enter  כניסה";
-    case SCREEN_MENU:return "1–4  בחירה    Enter  אישור    Esc  התנתק";
-    case SCREEN_ROOM:return "W  העֵר    N  גל הבא    Esc  עצור / חזרה";
-    case SCREEN_CLONER:return !strcmp(a->st.smart_verdict,"failed_last")
-        ? "Enter / S  המשך בלי הדיסק    R  החלף דיסק"
-        : "Enter  כתוב בכל זאת    S  דלג    R  החלף דיסק";
-    case SCREEN_RESTORE:return "1–9 / [ ]  בחירת אימג'    Tab  מעבר    Enter  מחק ושחזר    Esc  חזרה";
-    case SCREEN_STANDBY:return "דיסקים: 1 · 2 · 3    SMART";
-    case SCREEN_PICK:return "Tab  מעבר    Enter  התחלה    Esc  חזרה";
-    case SCREEN_CLASS:return "Enter  התחלה    Esc  עצור / חזרה";
+    case SCREEN_LOGIN:return "Tab  מעבר    Enter  כניסה";
+    case SCREEN_MENU:
+        if(a->logout_confirming)return "Enter  התנתק    Esc  ביטול";
+        snprintf(buf,n,"1–%d  בחירה    Enter  אישור    Esc  התנתק",
+                 (a->admin?4:3)+(a->st.menu_class?1:0));
+        return buf;
+    case SCREEN_ROOM:
+        if(!a->st.has_round)return a->mode==MODE_DIRECT?"W  העֵר    Esc  חזרה":"Tab  מעבר    W  העֵר    Esc  חזרה";
+        if(a->room_confirming)return "Enter  עצור סבב (אחרי הקלדת השם)    Esc  ביטול";
+        return a->st.wave_open?"W  העֵר שוב    N  התחל עכשיו    Esc  עצור סבב…":"W  העֵר שוב    Esc  עצור סבב…";
+    case SCREEN_CLONER:   /* mockup 10/10: the SMART keys only while a question is open */
+        if(!a->st.smart_pending)return "אין פעולה במסך הזה";
+        return !strcmp(a->st.smart_verdict,"failed_last")
+        ? "R  החלף דיסק    Enter / S  המשך בלי הדיסק"
+        : "R  החלף דיסק    S  דלג על הדיסק    Enter  כתוב בכל זאת";
+    case SCREEN_RESTORE:return "1–9 / [ ]  בחירת אימג'    Enter  מחק ושחזר    Esc  חזרה";
+    case SCREEN_STANDBY:return "אין פעולה במסך הזה";   /* "דיסקים: 1 · 2 · 3 SMART" sat where keys go */
+    case SCREEN_PICK:return a->chosen_disk>=0?"Tab / Shift-Tab  מעבר    Enter  התחלה    Esc  חזרה":"Esc  חזרה";
+    case SCREEN_CLASS:return a->st.has_session?"Enter  התחל עכשיו":"Esc  חזרה";
     case SCREEN_DONE:return "Enter  קליטה נוספת";
-    case SCREEN_TOOLS:return "Tab  מעבר    Enter  הפעלה    Esc  חזרה";
+    case SCREEN_PROGRESS:return "אין פעולה במסך הזה";   /* mockup 10/10: it said "Esc חזרה" and Esc did nothing */
+    case SCREEN_TOOLS:return a->tools_view==TOOLS_CONFIRM?"Tab / Shift-Tab  מעבר    Esc  חזרה":"Esc  חזרה";
     case SCREEN_INSTALL:return "Tab / Shift-Tab  מעבר    Enter  אישור    Esc  חזרה";
-    default:return "Esc  חזרה";
+    default:return "אין פעולה במסך הזה";   /* message: there is no way out to offer */
     }
 }
 
@@ -157,7 +169,7 @@ static void draw_status(App *a,cairo_t *cr,double W,double H){
     double rx=W-N_STATUS_PAD;
     cairo_arc(cr,rx-N_STATUS_DOT/2,bar.y+bar.h/2,N_STATUS_DOT/2,0,2*M_PI);draw_set(cr,dot);cairo_fill(cr);
     text_draw_r(cr,&w,rx-N_STATUS_DOT-N_STATUS_GAP,bar.y+(bar.h-w.h)/2,t->ink);text_free(&w);
-    Text keys=text_make(cr,FONT_SANS,12,400,status_keys(a),0,DIR_RTL);
+    char kb[200];Text keys=text_make(cr,FONT_SANS,12,400,status_keys(a,kb,sizeof kb),0,DIR_RTL);
     text_draw(cr,&keys,N_STATUS_PAD,bar.y+(bar.h-keys.h)/2,t->muted);text_free(&keys);
 }
 
@@ -206,27 +218,131 @@ void screen_login(App *a,cairo_t *cr,double W,double H,double head_h){
     text_free(&title);text_free(&lead);
 }
 
-typedef struct{const char *title,*desc,*how[3];int id,multi,admin,cls;}MenuItem;
+/* mockup 10/10 (docs/design/apple-mockups/native.html, "תפריט מחשב הבנייה"):
+ * a card is a decision -- icon, title, one line of what it does, and the
+ * flow ("a → b → c", the three how[] steps) -- at the height of its content,
+ * two to a row. warn is said after desc in the danger colour. */
+typedef struct{const char *title,*desc,*warn,*how[3];int id,icon,admin,cls;}MenuItem;
 #define MENU_N 5
 static const MenuItem MENU[MENU_N]={
- { "קליטת אימג' חדש","הדיסק של המחשב הזה נקרא, מכווץ ומועלה לספרייה כאימג' חדש או כגרסה.",{"בדיקת SMART לפני","sha256 בקליטה","שם, תיאור, תיקייה"},HIT_CAPTURE,0,1,0},
- { "שיכפול מהשרת","אימג' מהספרייה משודר במולטיקאסט לכל מחשבי השיכפול בחדר, בגלים.",{"בוחרים אימג' ויעד","החדר מתעורר ומצטרף","כל גל כותב למגירות המוכנות"},HIT_ROOM,1,0,0},
- { "שיכפול ישיר","הדיסק של המחשב הזה נקרא פעם אחת ומשודר ישירות למגירות — בלי לשמור אימג' בשרת.",{"קריאה בלבד מהדיסק הזה","סבב יחיד","למי שנבחר בלבד"},HIT_DIRECT,1,0,0},
- { "שחזור לדיסק הזה","אימג' מהספרייה נכתב על הדיסק הפנימי של המחשב הזה — כמו שיכפול בודד.",{"בוחרים אימג'","מקלידים את שם המכונה","הדיסק נמחק ונכתב"},HIT_RESTORE,0,0,0},
+ { "קליטת אימג' חדש","הדיסק של המחשב הזה נקרא, מכווץ ומועלה לספרייה.",NULL,{"SMART","sha256","שם · תיאור · תיקייה"},HIT_CAPTURE,MENU_ICON_CAPTURE,1,0},
+ { "שיכפול מהשרת","אימג' מהספרייה משודר במולטיקאסט לכל חדר השיכפול, בגלים.",NULL,{"אימג' + יעד","החדר מתעורר","גל כותב"},HIT_ROOM,MENU_ICON_SERVER,0,0},
+ { "שיכפול ישיר","הדיסק של המחשב הזה משודר למגירות שנבחרו, בלי לשמור אימג'.",NULL,{"קריאה בלבד","סבב יחיד","מי שנבחר"},HIT_DIRECT,MENU_ICON_DIRECT,0,0},
+ { "שחזור לדיסק הזה","אימג' מהספרייה נכתב על הדיסק הפנימי.","הדיסק נמחק.",{"אימג'","שם המכונה","כתיבה"},HIT_RESTORE,MENU_ICON_RESTORE,0,0},
  /* #1081: classes are v1.2 -- drawn only when the state file says menu_class=1 (absent = 0). */
- { "הפצה לכיתות","בוחרים כיתה, מחשבים ואימג' — הסבב מעיר את הכיתה ורץ בשרת.",{"בוחרים כיתה ואימג'","הכיתה מתעוררת ומצטרפת","הסבב רץ בשרת"},HIT_CLASSES,1,0,1}
+ { "הפצה לכיתות","בוחרים כיתה, מחשבים ואימג' — הסבב מעיר את הכיתה ורץ בשרת.",NULL,{"כיתה + אימג'","הכיתה מתעוררת","הסבב רץ בשרת"},HIT_CLASSES,MENU_ICON_SERVER,0,1}
 };
+
+static void hex_rgb(Rgb c,char *out,size_t n){
+    snprintf(out,n,"#%02X%02X%02X",(int)(c.r*255+.5),(int)(c.g*255+.5),(int)(c.b*255+.5));
+}
+
+/* mockup 10/10: the server pill says what the agent's last hello says
+ * (hello_rc / hello_age from guistate.sh) -- never a fixed "connected": the
+ * old pill was green on a server that was down. No hello yet is its own
+ * words, not a colour (principle 5). Returns the pill's width. */
+static double menu_server_pill(App *a,cairo_t *cr,double right,double y){
+    const State *s=&a->st;char srv[160],label[240];int kind=PILL_OFF;
+    server_label(s,srv,sizeof srv);
+    if(s->hello_rc==200&&s->hello_age>=0&&s->hello_age<=120){snprintf(label,sizeof label,"שרת %s מחובר",srv);kind=PILL_OK;}
+    else if(s->hello_rc==200){snprintf(label,sizeof label,"שרת %s · ענה לפני %d שנ'",srv,s->hello_age);kind=PILL_WARN;}
+    else if(s->hello_rc>=0){snprintf(label,sizeof label,"שרת %s לא מחובר",srv);kind=PILL_BAD;}
+    else snprintf(label,sizeof label,"שרת %s · החיבור טרם נבדק",srv);
+    return draw_pill(cr,a->theme,right,y,label,kind,kind!=PILL_OFF);
+}
+
+/* The cloners, counted from the machine= records (machines[].awake). The
+ * menu's own state carries none -- guistate.sh writes them in the room
+ * modes only -- and then there is nothing true to say, so no pill. */
+static void menu_cloner_pill(App *a,cairo_t *cr,double right,double y){
+    const State *s=&a->st;int awake=0,ready=0;
+    if(!s->nmachines)return;
+    for(int i=0;i<s->nmachines;i++)if(s->machines[i].awake){awake++;ready+=s->machines[i].fresh_drawers;}
+    char label[120];snprintf(label,sizeof label,"%d מחשבי שיכפול ערים · %d מגירות מוכנות",awake,ready);
+    draw_pill(cr,a->theme,right,y,label,PILL_INFO,0);
+}
+
+/* One card's text, measured before anything is drawn: the cards of a row
+ * share the row's height (the mockup's grid), so heights come first. */
+typedef struct{Text title,desc,flow,key,pill;double h,tw;}MenuCard;
+
+static MenuCard menu_card_make(App *a,cairo_t *cr,const MenuItem *m,int number,double cw){
+    MenuCard k;char key[12],flow[160],e[400],mk[700],bad[8];
+    snprintf(key,sizeof key,"%d",number);
+    k.key=text_make(cr,FONT_MONO,12,400,key,0,DIR_LTR);
+    k.pill=m->admin?text_make(cr,FONT_SANS,12,600,"admin",0,DIR_RTL):(Text){NULL,0,0};
+    /* padding 20 | icon 48 | gap 14 | text | gap 14 | key chip | padding 20 */
+    k.tw=cw-20-48-14-14-(k.key.w+12)-20;
+    double pill_w=m->admin?k.pill.w+20+8:0;
+    k.title=rtl_block_make(cr,18,600,m->title,k.tw-pill_w);
+    text_escape(m->desc,e,sizeof e);
+    if(m->warn){char w[120];text_escape(m->warn,w,sizeof w);hex_rgb(a->theme->danger,bad,sizeof bad);
+        snprintf(mk,sizeof mk,"%s <span foreground=\"%s\" weight=\"bold\">%s</span>",e,bad,w);}
+    else snprintf(mk,sizeof mk,"%s",e);
+    k.desc=text_make_markup(cr,FONT_SANS,13,400,mk,(int)k.tw,DIR_RTL);
+    pango_layout_set_alignment(k.desc.layout,PANGO_ALIGN_RIGHT);
+    snprintf(flow,sizeof flow,"%s → %s → %s",m->how[0],m->how[1],m->how[2]);
+    k.flow=text_make_ltr(cr,FONT_SANS,11,400,flow,(int)k.tw);
+    k.h=18+dmax(48,k.title.h+4+k.desc.h+8+k.flow.h)+18;
+    if(k.h<132)k.h=132;                       /* .act{min-height:132px} */
+    return k;
+}
+
+static void menu_card_draw(App *a,cairo_t *cr,const MenuItem *m,MenuCard *k,Rect c,int focused){
+    const Theme *t=a->theme;int hov=hovered(a,c);
+    draw_fill_rrect(cr,c,t->radius,t->surface);
+    draw_border_rrect(cr,c,t->radius,focused||hov?t->indigo:t->hair,focused?2:1);
+    if(focused)draw_focus_ring(a,cr,c);
+    double right=c.x+c.w-20,y=c.y+18;
+    Rect ic={right-48,y,48,48};draw_fill_rrect(cr,ic,6,t->indigo_soft);
+    draw_menu_icon(cr,(Rect){ic.x+12,ic.y+12,24,24},m->icon,t->action_fg);   /* on action-soft: the -fg tone reads */
+    Rect kb={c.x+20,y,k->key.w+12,20};draw_fill_rrect(cr,kb,3,t->field);draw_border_rrect(cr,kb,3,t->hair,1);
+    text_draw(cr,&k->key,kb.x+6,kb.y+(kb.h-k->key.h)/2,t->ink);
+    double tr=ic.x-14;
+    text_draw_r(cr,&k->title,tr,y,t->ink);
+    if(m->admin){PangoRectangle lg;pango_layout_get_pixel_extents(k->title.layout,NULL,&lg);
+        draw_pill(cr,t,tr-lg.width-8,y+1,"admin",PILL_WARN,0);}   /* next to the name: it never wraps the title */
+    y+=k->title.h+4;
+    text_draw_r(cr,&k->desc,tr,y,t->muted);y+=k->desc.h+8;
+    text_draw_r(cr,&k->flow,tr,y,t->muted);
+    text_free(&k->title);text_free(&k->desc);text_free(&k->flow);text_free(&k->key);text_free(&k->pill);
+}
+
+/* Esc on the menu signs out only after a yes (mockup 10/10: a stray Esc
+ * dropped the session). Modal like the shrink question: it replaces the
+ * hit table with its two buttons. */
+static void draw_logout_confirm(App *a,cairo_t *cr,double W,double H){
+    const Theme *t=a->theme;double usable=H-N_STATUS_H;
+    cairo_rectangle(cr,0,0,W,usable);draw_set_a(cr,(Rgb){0,0,0},.55);cairo_fill(cr);
+    a->nhits=0;a->clip_on=0;
+    double dw=fmin(460,W-64),inner=dw-56;
+    Text h=rtl_block_make(cr,20,600,"להתנתק?",inner);
+    Text p=rtl_block_make(cr,13,400,"המסך יחזור לכניסה. משימה שכבר רצה ממשיכה לרוץ.",inner);
+    double dh=28+h.h+6+p.h+24+N_BUTTON_H+28;
+    Rect box={(W-dw)/2,(usable-dh)/2,dw,dh};
+    draw_fill_rrect(cr,box,t->radius,t->surface);draw_border_rrect(cr,box,t->radius,t->hair,1);
+    double right=box.x+box.w-28,y=box.y+28;
+    text_draw_r(cr,&h,right,y,t->ink);y+=h.h+6;
+    text_draw_r(cr,&p,right,y,t->muted);
+    Text go=btn_label(cr,"התנתק"),no=btn_label(cr,"ביטול");
+    double gw=btn_width(&go),nw=btn_width(&no),by=box.y+box.h-28-N_BUTTON_H;
+    /* the approved window: the action at the edge, cancel next to it */
+    draw_btn(a,cr,(Rect){box.x+28,by,gw,N_BUTTON_H},&go,BTN_PRIMARY,HIT_LOGOUT_CONFIRM);
+    draw_btn(a,cr,(Rect){box.x+28+gw+N_ACTION_GAP,by,nw,N_BUTTON_H},&no,BTN_PLAIN,HIT_LOGOUT_CANCEL);
+    text_free(&h);text_free(&p);text_free(&go);text_free(&no);
+}
 
 void screen_menu(App *a,cairo_t *cr,double W,double H,double head_h){
     const Theme *t=a->theme;double right=W-N_PAD,y=head_h+28,inner=W-2*N_PAD;
     int show[MENU_N] = {1, 1, 1, 1, 1};
     Text title=rtl_block_make(cr,24,600,"מה לעשות עם המחשב הזה?",inner);
-    char ss[160];snprintf(ss,sizeof ss,"מחוברים כ־%s · מספר או Enter על הכרטיס",a->signed_user);
+    char ss[160];snprintf(ss,sizeof ss,"מחוברים כ-%s",a->signed_user);
     Text sub=rtl_block_make(cr,13,400,ss,inner);
     text_draw_r(cr,&title,right,y,t->ink);text_draw_r(cr,&sub,right,y+title.h+3,t->muted);
-    double pillr=W*.52;double pw=draw_pill(cr,t,pillr,y+3,"השרת מחובר",PILL_OK,1);
-    draw_pill(cr,t,pillr-pw-10,y+3,"מחשבי שיכפול ערים",PILL_INFO,0);
-    double line_y=y+title.h+3+sub.h+12;cairo_rectangle(cr,N_PAD,line_y,inner,1);draw_set(cr,t->hair);cairo_fill(cr);
+    double py=y+title.h+3+sub.h+10;
+    double pw=menu_server_pill(a,cr,right,py);
+    menu_cloner_pill(a,cr,right-pw-10,py);
+    double line_y=py+24+12;cairo_rectangle(cr,N_PAD,line_y,inner,1);draw_set(cr,t->hair);cairo_fill(cr);
     /* #649: the toolbox entry -- a secondary 38px button at the title row's
      * inline end (left, next to the pills), bottom-aligned to the title block
      * like the mockup's .ph (align-items:flex-end; its padding-bottom is the
@@ -238,32 +354,39 @@ void screen_menu(App *a,cairo_t *cr,double W,double H,double head_h){
     if (a->st.menu_tools) {
         Text tools_l = btn_label(cr, "כלים");
         double tools_w = btn_width(&tools_l);
-        draw_btn(a, cr, (Rect){ N_PAD, line_y - 12 - N_BUTTON_H, tools_w, N_BUTTON_H }, &tools_l, BTN_PLAIN, HIT_TOOLS);
+        Rect tools_r = { N_PAD, line_y - 12 - N_BUTTON_H, tools_w, N_BUTTON_H };
+        draw_btn(a, cr, tools_r, &tools_l, BTN_PLAIN, HIT_TOOLS);
         text_free(&tools_l);
+        /* keyboard order: the cards, "התנתק", then "כלים" (main.c menu_stops) */
+        if (a->menu_focus == (a->admin ? 4 : 3) + (a->st.menu_class ? 1 : 0) + 1) draw_focus_ring(a, cr, tools_r);
     }
-    int count=(a->admin?4:3)+(a->st.menu_class?1:0),cols=count,focus=0;double gy=line_y+19,bottom=H-N_STATUS_H-24-38-18;
-    double cw=(inner-(cols-1)*18)/cols,ch=bottom-gy;
+    /* the cards: two columns (.acts grid 1fr 1fr, gap 16), card 1 at the
+     * right, each row as tall as its tallest card -- not the screen */
+    int idx[MENU_N],count=0,cols=2;double gap=16,gy=line_y+17,bottom=H-N_STATUS_H-24-38-18;
+    for(int i=0;i<MENU_N;i++)
+        if(show[i]&&!(MENU[i].admin&&!a->admin)&&!(MENU[i].cls&&!a->st.menu_class))idx[count++]=i;
+    double cw=(inner-(cols-1)*gap)/cols;
+    MenuCard cards[MENU_N];
+    for(int k=0;k<count;k++)cards[k]=menu_card_make(a,cr,&MENU[idx[k]],k+1,cw);
     Rect body={0,line_y+1,W,bottom-line_y-1};   /* .sbody: the card grid, clipped */
     body_clip_begin(a, cr, body);
-    for(int i=0;i<MENU_N;i++){
-        if(!show[i]||(MENU[i].admin&&!a->admin)||(MENU[i].cls&&!a->st.menu_class))continue;
-        Rect c={right-cw-focus*(cw+18),gy,cw,ch};int sel=hovered(a,c)||a->menu_focus==focus;
-        draw_fill_rrect(cr,c,t->radius,t->surface);draw_border_rrect(cr,c,t->radius,sel?t->indigo:t->hair,sel?2:1);
-        double cx=c.x+26,cright=c.x+c.w-26,cy=c.y+28;
-        draw_fill_rrect(cr,(Rect){cright-52,cy,52,52},8,t->indigo_soft);
-        draw_native_icon(cr,t,(Rect){cright-40,cy+12,28,28},MENU[i].multi?ICON_NETWORK:ICON_DISK);
-        char key[12];snprintf(key,sizeof key,"%d",focus+1);Text kt=text_make(cr,FONT_MONO,13,400,key,0,DIR_LTR);
-        Rect kb={c.x+16,c.y+16,kt.w+16,24};draw_fill_rrect(cr,kb,3,t->field);draw_border_rrect(cr,kb,3,t->hair,1);text_draw(cr,&kt,kb.x+8,kb.y+(kb.h-kt.h)/2,t->ink);text_free(&kt);
-        cy+=66;if(MENU[i].admin)draw_pill(cr,t,c.x+80,cy,"admin",PILL_WARN,0);
-        Text h2=rtl_block_make(cr,22,600,MENU[i].title,MENU[i].admin?c.w-132:c.w-52);text_draw_r(cr,&h2,cright,cy,t->ink);cy+=h2.h+10;
-        Text d=rtl_block_make(cr,14,400,MENU[i].desc,c.w-52);text_draw_r(cr,&d,cright,cy,t->muted);
-        double hy=c.y+c.h-26-3*24-12;cairo_rectangle(cr,cx,hy-12,c.w-52,1);draw_set(cr,t->hair);cairo_fill(cr);
-        for(int k=0;k<3;k++){cairo_arc(cr,cright-3,hy+8+24*k,3,0,2*M_PI);draw_set(cr,t->hair);cairo_fill(cr);Text q=rtl_block_make(cr,13,400,MENU[i].how[k],c.w-70);text_draw_r(cr,&q,cright-14,hy+24*k,t->ink);text_free(&q);}
-        text_free(&h2);text_free(&d);hit_add(a,c,MENU[i].id);focus++;
+    double row_y=gy;
+    for(int k=0;k<count;k+=cols){
+        double row_h=cards[k].h;
+        for(int j=k+1;j<k+cols&&j<count;j++)row_h=dmax(row_h,cards[j].h);
+        for(int j=k;j<k+cols&&j<count;j++){
+            Rect c={right-cw-(j-k)*(cw+gap),row_y,cw,row_h};
+            menu_card_draw(a,cr,&MENU[idx[j]],&cards[j],c,a->menu_focus==j);
+            hit_add(a,c,MENU[idx[j]].id);
+        }
+        row_y+=row_h+gap;
     }
     body_clip_end(a, cr);
-    Text lo=btn_label(cr,"התנתק");double lw=btn_width(&lo);draw_btn(a,cr,(Rect){N_PAD,H-N_STATUS_H-24-38,lw,38},&lo,BTN_PLAIN,HIT_LOGOUT);text_free(&lo);
+    Text lo=btn_label(cr,"התנתק");double lw=btn_width(&lo);Rect lr={N_PAD,H-N_STATUS_H-24-38,lw,38};
+    draw_btn(a,cr,lr,&lo,BTN_PLAIN,HIT_LOGOUT);text_free(&lo);
+    if(a->menu_focus==count)draw_focus_ring(a,cr,lr);
     text_free(&title);text_free(&sub);
+    if(a->logout_confirming)draw_logout_confirm(a,cr,W,H);
 }
 
 static const char *standby_probe_warning(const State *s){
@@ -390,7 +513,13 @@ static void draw_idle_countdown(App *a,cairo_t *cr,double W,double H){
     Rect b={(W-v.w-40)/2,H-N_STATUS_H-80,v.w+40,40};draw_fill_rrect(cr,b,t->radius,t->warning_soft);draw_border_rrect(cr,b,t->radius,t->warn,2);text_draw(cr,&v,b.x+20,b.y+(b.h-v.h)/2,t->warn);text_free(&v);
 }
 
-void app_draw(App *a,cairo_t *cr,int W,int H){
+/* clamp(H/800, 1, 1.4), taken down to a quarter: a 1px line then lands on
+ * a quarter pixel at most (1080p = 1.25, 60px header, 45px status bar) --
+ * 1.35 smeared every hairline over two rows. */
+double ui_scale(int H){double s=floor(H/800.0*4)/4;return s<1?1:s>1.4?1.4:s;}
+
+/* The screen in logical pixels: W x H = the framebuffer / a->scale. */
+static void app_draw_logical(App *a,cairo_t *cr,double W,double H){
     a->nhits=0;a->clip_on=0;app_route(a);draw_station_background(cr,a->theme,W,H);
     if(a->screen==SCREEN_INSTALL){screen_install(a,cr,W,H);return;}
     double head_h=a->screen==SCREEN_LOGIN?0:draw_header(a,cr,W);
@@ -414,5 +543,15 @@ void app_draw(App *a,cairo_t *cr,int W,int H){
     draw_status(a,cr,W,H);draw_toast(a,cr,W,H);
 }
 
+/* mockup 10/10 / audit finding 4: one factor for the whole screen, so a
+ * 1080p screen is not a 1024x768 layout with more empty space. */
+void app_draw(App *a,cairo_t *cr,int W,int H){
+    double s=ui_scale(H);a->scale=s;
+    cairo_save(cr);cairo_scale(cr,s,s);
+    app_draw_logical(a,cr,W/s,H/s);
+    cairo_restore(cr);
+}
+
 void app_draw_pointer(App *a,cairo_t *cr){if(a->ptr_visible)draw_cursor(cr,a->ptr_x,a->ptr_y);}
-int app_hit(const App *a,double x,double y){for(int i=a->nhits-1;i>=0;i--)if(rect_has(a->hits[i].r,x,y))return a->hits[i].id;return HIT_NONE;}
+int app_hit(const App *a,double x,double y){double s=a->scale>0?a->scale:1;x/=s;y/=s;   /* screen pixels in, logical hits */
+    for(int i=a->nhits-1;i>=0;i--)if(rect_has(a->hits[i].r,x,y))return a->hits[i].id;return HIT_NONE;}

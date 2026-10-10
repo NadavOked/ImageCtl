@@ -18,11 +18,11 @@ static void disk_row(App *a,cairo_t *cr,Rect r,int i){
     double cx=r.x+r.w-22,cy=r.y+r.h/2;cairo_arc(cr,cx,cy,7,0,6.283);draw_set(cr,d->iso?t->muted:(selected?t->danger:t->hair));cairo_set_line_width(cr,2);cairo_stroke(cr);
     if(selected){cairo_arc(cr,cx,cy,3.5,0,6.283);draw_set(cr,t->danger);cairo_fill(cr);}
     install_text_ltr(cr,d->model[0]?d->model:d->path,13,600,r.x+r.w-285,r.y+9,220,d->iso?t->muted:t->ink);
-    install_text_ltr(cr,d->path,10,400,r.x+r.w-285,r.y+31,220,t->muted);
+    install_text_ltr(cr,d->path,11,400,r.x+r.w-285,r.y+31,220,t->muted);
     char size[32];snprintf(size,sizeof size,"%.1f GiB",d->size_bytes/1073741824.0);install_text_ltr(cr,size,12,500,r.x+r.w*.46,r.y+19,r.w*.14,d->iso?t->muted:t->ink);
     install_text_ltr(cr,d->bus[0]?d->bus:"—",12,400,r.x+r.w*.30,r.y+19,r.w*.12,t->muted);
-    install_text_r(cr,t,d->iso?"מדיית ההתקנה":(d->has[0]?d->has:"—"),11,400,r.x+r.w*.28,r.y+14,r.w*.24,t->muted);
-    if(selected)install_text_r(cr,t,"יימחק",11,600,r.x+68,r.y+18,58,t->danger);
+    install_text_r(cr,t,d->iso?"מדיית ההתקנה":(d->has[0]?d->has:"—"),11,400,r.x+r.w*.28,r.y+(selected?9:14),r.w*.24,t->muted);
+    if(selected)install_text_r(cr,t,"יימחק",11,600,r.x+r.w*.28,r.y+33,r.w*.24,t->danger);   /* ui-audit: was r.x+68, on top of "has" at 1024 */
     if(!d->iso)hit_add(a,r,HIT_INSTALL_DISK_BASE+i);
 }
 
@@ -47,7 +47,7 @@ void install_draw_disk(App *a,cairo_t *cr,InstallLayout l){
 static void result_box(App *a,cairo_t *cr,Rect r){InstallState *s=&a->install;const Theme *t=a->theme;if(!s->primary_checked)return;Rgb bg=s->primary_ok?t->success_soft:t->danger_soft,line=s->primary_ok?t->success_ink:t->danger;draw_fill_rrect(cr,r,t->radius,bg);draw_border_rrect(cr,r,t->radius,line,1);
     if(s->primary_ok){char top[220];snprintf(top,sizeof top,"✓  השרת הראשי ענה · %s · %s",s->primary_name,s->primary_version);install_text_r(cr,t,top,13,600,r.x+r.w-14,r.y+10,r.w-28,line);install_text_ltr(cr,s->primary_fingerprint,11,400,r.x+14,r.y+35,r.w-28,t->ink);}else{char failure[380];snprintf(failure,sizeof failure,"התקשרות אל %s בפורט 8443 נכשלה. ודא כי חומת האש שבין האתרים פתוחה",s->primary_url);install_text_r(cr,t,s->primary_error[0]?s->primary_error:failure,13,600,r.x+r.w-14,r.y+12,r.w-28,line);}}
 
-void install_draw_role(App *a,cairo_t *cr,InstallLayout l){InstallState *s=&a->install;const Theme *t=a->theme;double w=fmin(720,l.body.w),x=l.body.x+l.body.w-w,y=l.body.y;
+void install_draw_role(App *a,cairo_t *cr,InstallLayout l){InstallState *s=&a->install;const Theme *t=a->theme;double w=l.body.w,x=l.body.x,y=l.body.y;   /* the one column (mockup 10/10) */
     install_text_r(cr,t,"נבחר בתפריט ההתקנה",12,500,x+w,y,w,t->muted);y+=24;
     install_radio(a,cr,(Rect){x,y,w,74},"שרת ראשי","מנהל את הספרייה, השיכפול והשרתים המשניים.",!s->secondary,HIT_INSTALL_PRIMARY);y+=86;
     install_radio(a,cr,(Rect){x,y,w,74},"שרת משני","שרת באתר נוסף; הראשי יוזם אליו חיבור מאובטח בפורט 8443.",s->secondary,HIT_INSTALL_SECONDARY);y+=96;
@@ -60,7 +60,7 @@ static void table_head(cairo_t *cr,const Theme *t,Rect r){draw_fill_rrect(cr,r,0
 
 static void nic_row(App *a,cairo_t *cr,Rect r,int i){InstallState *s=&a->install;InstallNic *n=&s->nics[i];const Theme *t=a->theme;int sel=i==s->nic;draw_fill_rrect(cr,r,0,sel?t->indigo_soft:t->surface);cairo_rectangle(cr,r.x,r.y+r.h-1,r.w,1);draw_set(cr,t->hair);cairo_fill(cr);
     double cx=r.x+r.w-22,cy=r.y+r.h/2;cairo_arc(cr,cx,cy,7,0,6.283);draw_set(cr,sel?t->indigo:t->hair);cairo_set_line_width(cr,2);cairo_stroke(cr);if(sel){cairo_arc(cr,cx,cy,3.5,0,6.283);draw_set(cr,t->indigo);cairo_fill(cr);}
-    install_text_ltr(cr,n->name,13,600,r.x+r.w-210,r.y+9,145,t->ink);char model[150];snprintf(model,sizeof model,"%s · %s",n->model[0]?n->model:"כרטיס רשת",n->mac);install_text_ltr(cr,model,10,400,r.x+r.w-210,r.y+31,180,t->muted);
+    install_text_ltr(cr,n->name,13,600,r.x+r.w-210,r.y+9,145,t->ink);char model[150];snprintf(model,sizeof model,"%s · %s",n->model[0]?n->model:"כרטיס רשת",n->mac);install_text_ltr(cr,model,11,400,r.x+r.w-210,r.y+31,180,t->muted);
     install_text_r(cr,t,n->link,12,600,r.x+r.w*.56,r.y+20,r.w*.15,!strcmp(n->link,"מחובר")?t->success_ink:t->muted);
     install_text_ltr(cr,n->current[0]?n->current:"—",12,400,r.x+r.w*.21,r.y+20,r.w*.18,t->ink);
     install_text_r(cr,t,n->source[0]?n->source:"—",11,400,r.x+r.w*.19,r.y+15,r.w*.18,t->muted);if(a->focus==HIT_INSTALL_NIC_BASE+i)draw_border_rrect(cr,(Rect){r.x+3,r.y+3,r.w-6,r.h-7},4,t->indigo,2);hit_add(a,r,HIT_INSTALL_NIC_BASE+i);}

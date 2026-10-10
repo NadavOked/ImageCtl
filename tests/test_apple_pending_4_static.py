@@ -45,7 +45,7 @@ def test_secondary_columns_hide_in_a_narrow_card():
 
 def test_row_menu_destructive_item_is_red_and_separated():
     css = _css()
-    assert "var(--danger)" in _rule(css, ".row-menu button.dg")
+    assert "var(--clr-danger-fg)" in _rule(css, ".row-menu button.dg")
     assert "border-top" in _rule(css, ".row-menu hr")
     assert "position:fixed" in _rule(css, ".row-menu")
 
@@ -57,7 +57,7 @@ def test_row_menu_respects_reduced_motion():
 def test_wide_tables_use_the_kebab_pattern():
     """הרשאות, חיבורים פיזיים ופורטים: מחלקת kebab-col וכותרת sr-only לעמודת הפעולות."""
     js = _js()
-    for needle in ('cls: "kebab-col", opt: [4, 5]', 'cls: "stable kebab-col", opt: [3, 6]', 'cls: "dense kebab-col", opt: [6, 7]'):
+    for needle in ('cls: "kebab-col", opt: [4, 5]', 'cls: "stable kebab-col", opt: [4, 7]', 'cls: "dense kebab-col", opt: [6, 7]'):
         assert needle in js, needle
     assert js.count('<span class="sr">פעולות</span>') >= 3
     assert "UI.rowMenu(u.username, items)" in js
@@ -71,7 +71,7 @@ def test_tree_marks_active_node_with_a_bar_and_the_ancestor_softly():
     css = _css()
     # הפס בצד של הצומת הפעיל כבר קיים (border-inline-start) — לא נמחק
     assert "border-inline-start-color:var(--indigo)" in css
-    assert "var(--indigo)" in _rule(css, ".inventory-node.anc")
+    assert "var(--clr-action-fg)" in _rule(css, ".inventory-node.anc")
     dot = _rule(css, ".inventory-node.anc::after")
     assert 'content:""' in dot and "border-radius:50%" in dot and "margin-inline-start:auto" in dot
 

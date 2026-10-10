@@ -5,7 +5,7 @@
 
 static void kv(App *a,cairo_t *cr,Rect box,const char *key,const char *value,int ltr){const Theme *t=a->theme;install_text_r(cr,t,key,12,500,box.x+box.w-16,box.y+10,box.w*.38,t->muted);if(ltr)install_text_ltr(cr,value,12,400,box.x+16,box.y+10,box.w*.56,t->ink);else install_text_r(cr,t,value,12,400,box.x+box.w*.6,box.y+10,box.w*.55,t->ink);}
 
-static void hostname(App *a,cairo_t *cr,InstallLayout l){InstallState *s=&a->install;const Theme *t=a->theme;double w=fmin(650,l.body.w),x=l.body.x+l.body.w-w,y=l.body.y;
+static void hostname(App *a,cairo_t *cr,InstallLayout l){InstallState *s=&a->install;const Theme *t=a->theme;double w=l.body.w,x=l.body.x,y=l.body.y;   /* the one column (mockup 10/10) */
     install_field_draw(a,cr,(Rect){x,y,w,56},"שם השרת (hostname)",s->hostname,0,HIT_INSTALL_HOSTNAME,1);y+=65;
     install_text_r(cr,t,"אותיות באנגלית, ספרות ומקפים בלבד; עד 63 תווים; לא מתחיל ולא מסתיים במקף.",12,400,x+w,y,w,t->muted);y+=36;
     if(s->field_error[9][0]){install_text_r(cr,t,s->field_error[9],12,600,x+w,y,w,t->danger);y+=30;}
@@ -17,11 +17,11 @@ static void hostname(App *a,cairo_t *cr,InstallLayout l){InstallState *s=&a->ins
     install_footer(a,cr,l,"הבא",HIT_INSTALL_NEXT,1,s->hostname[0]!=0);
 }
 
-static void rule(App *a,cairo_t *cr,double right,double y,const char *label,int ok){const Theme *t=a->theme;Rgb c=ok?t->success_ink:t->muted;cairo_arc(cr,right-7,y+8,7,0,6.283);draw_set_a(cr,c,ok?1:.35);cairo_fill(cr);Text mark=text_make(cr,FONT_SANS,10,600,ok?"✓":"×",0,DIR_RTL);text_draw(cr,&mark,right-7-mark.w/2,y+8-mark.h/2,t->on_ink);text_free(&mark);install_text_r(cr,t,label,12,500,right-22,y,180,c);}
+static void rule(App *a,cairo_t *cr,double right,double y,const char *label,int ok){const Theme *t=a->theme;Rgb c=ok?t->success_ink:t->muted;cairo_arc(cr,right-7,y+8,7,0,6.283);draw_set_a(cr,c,ok?1:.35);cairo_fill(cr);Text mark=text_make(cr,FONT_SANS,11,600,ok?"✓":"×",0,DIR_RTL);text_draw(cr,&mark,right-7-mark.w/2,y+8-mark.h/2,t->on_ink);text_free(&mark);install_text_r(cr,t,label,12,500,right-22,y,180,c);}
 
 static void password_field(App *a,cairo_t *cr,Rect r,const char *label,const char *value,int field_id,int show_id,int shown){const Theme *t=a->theme;install_field_draw(a,cr,r,label,value,!shown,field_id,1);Text eye=text_make(cr,FONT_SANS,12,400,shown?"הסתר":"הצג",0,DIR_RTL);Rect er={r.x+r.w-eye.w-8,r.y+25,eye.w+8,24};text_draw(cr,&eye,er.x+4,er.y+(er.h-eye.h)/2,t->indigo);hit_add(a,er,show_id);text_free(&eye);}
 
-static void admin_screen(App *a,cairo_t *cr,InstallLayout l){InstallState *s=&a->install;const Theme *t=a->theme;double w=fmin(650,l.body.w),x=l.body.x+l.body.w-w,y=l.body.y;
+static void admin_screen(App *a,cairo_t *cr,InstallLayout l){InstallState *s=&a->install;const Theme *t=a->theme;double w=l.body.w,x=l.body.x,y=l.body.y;
     install_field_draw(a,cr,(Rect){x,y,w,56},"שם משתמש",s->admin_user,0,HIT_INSTALL_ADMIN_USER,1);y+=62;
     if(s->field_error[10][0]){install_text_r(cr,t,s->field_error[10],11,600,x+w,y,w,t->danger);y+=22;}
     else{install_text_r(cr,t,"אותיות קטנות באנגלית, ספרות והסימנים . _ -",11,400,x+w,y,w,t->muted);y+=22;}

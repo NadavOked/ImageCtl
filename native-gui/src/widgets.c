@@ -19,7 +19,8 @@ void hit_add(App *a, Rect r, int id) {
 }
 
 int hovered(const App *a, Rect r) {
-    return a->ptr_visible && rect_has(r, a->ptr_x, a->ptr_y);
+    double s = a->scale > 0 ? a->scale : 1;       /* the pointer is in screen pixels */
+    return a->ptr_visible && rect_has(r, a->ptr_x / s, a->ptr_y / s);
 }
 
 double dmax(double x, double y) { return x > y ? x : y; }
@@ -34,7 +35,8 @@ double btn_width(const Text *label) { return 2 * N_BUTTON_PAD + label->w + 2 * N
  * .danger (danger text, danger-line border), each with :hover */
 void draw_btn(App *a, cairo_t *cr, Rect b, Text *label, int kind, int id) {
     const Theme *t = a->theme;
-    int hov = hovered(a, b);
+    int hov = kind != BTN_OFF && hovered(a, b);
+    int pressed = kind != BTN_OFF && id && a->pressed_id == id;
     Rgb bg, line, fg;
     if (kind == BTN_PRIMARY) {
         bg = hov ? t->ink_hover : t->indigo; line = bg; fg = t->on_ink;
@@ -42,15 +44,25 @@ void draw_btn(App *a, cairo_t *cr, Rect b, Text *label, int kind, int id) {
         bg = t->success_btn; line = t->success_btn_line; fg = t->on_ink;
     } else if (kind == BTN_DANGER) {
         bg = t->danger; line = t->danger; fg = t->on_ink;
+    } else if (kind == BTN_WARN) {
+        bg = hov ? t->warning_soft : t->surface; line = t->warn; fg = t->warn;
+    } else if (kind == BTN_GHOST_DANGER) {
+        bg = hov ? t->danger_soft : t->porcelain; line = hov ? t->danger : bg; fg = t->danger;
+    } else if (kind == BTN_OFF) {
+        bg = t->field; line = t->hair; fg = t->muted;
     } else {
         bg = hov ? t->btn_hover : t->surface;
         line = hov ? t->indigo : t->button_line;
-        fg = t->indigo;
+        fg = t->action_fg;                        /* stage 1: text is --clr-action-fg, the fill stays --clr-action */
     }
     draw_fill_rrect(cr, b, t->radius, bg);
     draw_border_rrect(cr, b, t->radius, line, 1);
-    text_draw(cr, label, b.x + (b.w - label->w) / 2, b.y + (b.h - label->h) / 2, fg);
-    hit_add(a, b, id);
+    if (pressed) {           /* the press, one frame: darker by a step, the label 1px down */
+        int filled = kind == BTN_PRIMARY || kind == BTN_DANGER || kind == BTN_SUCCESS;
+        draw_rrect_path(cr, b, t->radius); draw_set_a(cr, (Rgb){ 0, 0, 0 }, filled ? .18 : .08); cairo_fill(cr);
+    }
+    text_draw(cr, label, b.x + (b.w - label->w) / 2, b.y + (b.h - label->h) / 2 + (pressed ? 1 : 0), fg);
+    if (kind != BTN_OFF) hit_add(a, b, id);
 }
 
 /* ---- inputs --------------------------------------------------------------- */
@@ -197,7 +209,9 @@ Text rtl_block_make(cairo_t *cr, double px, int weight,
 
 Text label_make(cairo_t *cr, const char *s, double w) { return rtl_block_make(cr, N_LABEL, 500, s, w); }
 Text sub_make(cairo_t *cr, const char *s, double w)   { return text_make(cr, FONT_SANS, N_SUB, 400, s, (int)w, DIR_RTL); }
-Text error_make(cairo_t *cr, const char *s, double w) { return text_make(cr, FONT_SANS, 12.5, 400, s, (int)w, DIR_RTL); }
+/* ui-audit: errors are drawn at the field box's left edge (text_draw), so they must be right-aligned
+ * inside it like every other RTL block (rtl_block_make); text_make alone left-aligned them. */
+Text error_make(cairo_t *cr, const char *s, double w) { return rtl_block_make(cr, 12.5, 400, s, w); }
 
 /* ---- the card ---------------------------------------------------------------- */
 
@@ -292,15 +306,84 @@ void draw_native_icon(cairo_t *cr, const Theme *t, Rect box, int kind) {
     } else if (kind == ICON_WARNING) {
         cairo_move_to(cr,.50,.25); cairo_line_to(cr,.50,.57); cairo_stroke(cr);
         cairo_arc(cr,.50,.72,.027,0,2*M_PI); cairo_fill(cr);
-    } else if (kind == ICON_NETWORK) {
-        cairo_move_to(cr,.5,.2); cairo_line_to(cr,.8,.5); cairo_line_to(cr,.5,.8);
-        cairo_line_to(cr,.2,.5); cairo_close_path(cr);
     } else {
         cairo_rectangle(cr,.25,.25,.5,.5);
         cairo_move_to(cr,.34,.43); cairo_line_to(cr,.66,.43);
         cairo_move_to(cr,.34,.60); cairo_line_to(cr,.49,.60);
     }
     cairo_stroke(cr); cairo_restore(cr);
+}
+
+/* An ellipse arc in the icon's 24-unit space. The CTM is restored before the
+ * stroke, so the line keeps one width all the way round. */
+static void icon_ellipse(cairo_t *cr, double cx, double cy, double rx, double ry,
+                         double a1, double a2, int negative) {
+    cairo_save(cr);
+    cairo_translate(cr, cx, cy); cairo_scale(cr, rx, ry);
+    if (negative) cairo_arc_negative(cr, 0, 0, 1, a1, a2);
+    else          cairo_arc(cr, 0, 0, 1, a1, a2);
+    cairo_restore(cr);
+}
+
+/* The SVGs of docs/design/apple-mockups/native.html, path by path:
+ * stroke-width 1.6, round caps and joins, viewBox 0 0 24 24. */
+void draw_menu_icon(cairo_t *cr, Rect box, int kind, Rgb c) {
+    cairo_save(cr);
+    cairo_translate(cr, box.x, box.y);
+    cairo_scale(cr, box.w / 24.0, box.h / 24.0);
+    cairo_new_path(cr);
+    draw_set(cr, c);
+    cairo_set_line_width(cr, 1.6);
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+    cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+    if (kind == MENU_ICON_CAPTURE) {
+        /* M12 11V3 M8 7l4-4 4 4: the arrow up to the library */
+        cairo_move_to(cr, 12, 11); cairo_line_to(cr, 12, 3);
+        cairo_move_to(cr, 8, 7); cairo_line_to(cr, 12, 3); cairo_line_to(cr, 16, 7);
+        /* the disk: a flat cylinder, its top an ellipse rx 8 ry 2 at y 16 */
+        cairo_new_sub_path(cr);
+        icon_ellipse(cr, 12, 16, 8, 2, 0, 2 * M_PI, 0);
+        cairo_move_to(cr, 4, 16); cairo_line_to(cr, 4, 19);
+        icon_ellipse(cr, 12, 19, 8, 2, M_PI, 0, 1);       /* the near half of the bottom */
+        cairo_line_to(cr, 20, 16);
+        cairo_stroke(cr);
+    } else if (kind == MENU_ICON_SERVER) {
+        draw_rrect_path(cr, (Rect){ 8, 2, 8, 5 }, 1);      /* the server */
+        cairo_move_to(cr, 12, 7); cairo_line_to(cr, 12, 10);
+        cairo_move_to(cr, 5, 10); cairo_line_to(cr, 19, 10);
+        cairo_move_to(cr, 5, 10); cairo_line_to(cr, 5, 15);
+        cairo_move_to(cr, 12, 10); cairo_line_to(cr, 12, 15);
+        cairo_move_to(cr, 19, 10); cairo_line_to(cr, 19, 15);
+        draw_rrect_path(cr, (Rect){ 3, 15, 4, 6 }, 1);     /* three machines */
+        draw_rrect_path(cr, (Rect){ 10, 15, 4, 6 }, 1);
+        draw_rrect_path(cr, (Rect){ 17, 15, 4, 6 }, 1);
+        cairo_stroke(cr);
+    } else if (kind == MENU_ICON_DIRECT) {
+        draw_rrect_path(cr, (Rect){ 2, 7, 7, 10 }, 1.5);   /* this disk */
+        draw_rrect_path(cr, (Rect){ 15, 7, 7, 10 }, 1.5);  /* the drawer */
+        cairo_move_to(cr, 10, 12); cairo_line_to(cr, 14, 12);
+        cairo_move_to(cr, 12, 10); cairo_line_to(cr, 14, 12); cairo_line_to(cr, 12, 14);
+        cairo_stroke(cr);
+        /* M5.5 14.5h.01 / M18.5 14.5h.01 with round caps: two LEDs */
+        cairo_arc(cr, 5.5, 14.5, 0.8, 0, 2 * M_PI); cairo_fill(cr);
+        cairo_arc(cr, 18.5, 14.5, 0.8, 0, 2 * M_PI); cairo_fill(cr);
+    } else {
+        /* M3 12a9 9 0 1 0 3-6.7L3 8: from (3,12) the long way round a circle
+         * of radius 9 centred on (12,12) to (6,5.3), then the arrow head. */
+        cairo_move_to(cr, 3, 12);
+        cairo_arc_negative(cr, 12, 12, 9, M_PI, atan2(-6.7, -6.0));
+        cairo_line_to(cr, 3, 8);
+        cairo_move_to(cr, 3, 3); cairo_line_to(cr, 3, 8); cairo_line_to(cr, 8, 8);
+        cairo_new_sub_path(cr);
+        cairo_arc(cr, 12, 12, 2.5, 0, 2 * M_PI);           /* the disk it turns round */
+        cairo_stroke(cr);
+    }
+    cairo_restore(cr);
+}
+
+void draw_focus_ring(App *a, cairo_t *cr, Rect r) {
+    Rect o = { r.x - 3, r.y - 3, r.w + 6, r.h + 6 };
+    draw_border_rrect(cr, o, a->theme->radius + 3, a->theme->indigo, 2);
 }
 
 void draw_brand_mark(cairo_t *cr, const Theme *t, Rect box) {
@@ -359,6 +442,12 @@ void draw_station_art(cairo_t *cr, const Theme *t, Rect box, double opacity) {
     }
     cairo_pop_group_to_source(cr); cairo_paint_with_alpha(cr,opacity);
     cairo_restore(cr);
+}
+
+double pill_width(cairo_t *cr, const char *label, int dot) {
+    Text v = text_make(cr, FONT_SANS, 12, 600, label, 0, DIR_RTL);
+    double w = v.w + 20 + (dot ? 13 : 0);
+    text_free(&v); return w;
 }
 
 double draw_pill(cairo_t *cr, const Theme *t, double right, double y,
@@ -482,6 +571,12 @@ void draw_metric(cairo_t *cr, const Theme *t, Rect box, const char *label, const
     draw_border_rrect(cr,box,0,t->metric_line,N_BORDER);
     Text l = rtl_block_make(cr,N_METRIC_LABEL,400,label,box.w-2*N_METRIC_PAD);
     Text v = rtl_block_make(cr,N_METRIC_VALUE,600,value,box.w-2*N_METRIC_PAD);
+    /* ui-audit: metric_height() is one line of the value. A value that wraps (1024x768, "טרם נקראו בייטים ·
+     * הסך לא ידוע" in a third of the card) ran out of its box onto the note below; the same words at 70% fit. */
+    if (v.h > text_line_height(cr,FONT_SANS,N_METRIC_VALUE) * 1.5) {
+        text_free(&v);
+        v = rtl_block_make(cr,N_METRIC_VALUE * 0.7,600,value,box.w-2*N_METRIC_PAD);
+    }
     text_draw(cr,&l,box.x+N_METRIC_PAD,box.y+N_METRIC_PAD,t->muted);
     text_draw(cr,&v,box.x+N_METRIC_PAD,box.y+N_METRIC_PAD+l.h+N_LABEL_GAP,t->ink);
     text_free(&l); text_free(&v);

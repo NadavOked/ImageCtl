@@ -52,6 +52,15 @@ class UsernameTaken(ValueError):
     """שם תפוס, כולל כפילות case-insensitive. הקורא מתרגם ל-409."""
 
 
+class BuiltinProtected(ValueError):
+    """‏#1262: המנהל שנוצר בהתקנה (``is_builtin=1``) הוא דלת החירום — בלי
+    MFA בכוונה (``builtin_no_mfa``), ולכן לא נמחק, לא מושבת ולא מורד
+    מתפקיד מנהל, **גם כשיש מנהל פעיל אחר**. הקורא מתרגם ל-409.
+
+    ‏``ValueError`` כדי שקורא ישן שתופס רק אותו עדיין יסרב ולא יקרוס.
+    """
+
+
 #: ‏#1120: תקרה. PBKDF2 עם 200K סבבים על סיסמה של מגה-בייט הוא DoS;
 #: ‏NIST 800-63B דורש להתיר ≥64, ו-128 משאיר מרווח לביטויי-סיסמה.
 MAX_PASSWORD_LEN = 128
@@ -226,6 +235,10 @@ def update(
             validate_password(password)
         elif not password:
             raise ValueError("סיסמה ריקה")
+    # ‏#1262: לפני כל כתיבה — גם הסיסמה שנשלחה באותה בקשה לא נכתבת.
+    # ‏``is_builtin`` נכתב רק ב-INSERT ואינו משתנה, ולכן קריאה כאן אינה TOCTOU.
+    if role == "deploy" and row["is_builtin"]:
+        raise BuiltinProtected("המנהל שנוצר בהתקנה אינו ניתן להורדה מתפקיד מנהל")
     # הורדת המנהל האחרון מתפקידו נועלת את כולם מחוץ לניהול.
     if role == "deploy" and row["role"] == "admin" and admin_count(conn) <= 1:
         raise ValueError("זה המנהל האחרון — אי אפשר להוריד אותו מתפקידו")
@@ -260,6 +273,9 @@ def set_disabled(conn: sqlite3.Connection, username: str, disabled: bool,
     if row is None:
         raise ValueError("משתמש לא קיים")
     username = row["username"]
+    # ‏#1262: רק הכיוון שנועל. builtin חסום ממצב ישן עדיין ניתן לשחרור.
+    if disabled and row["is_builtin"]:
+        raise BuiltinProtected("המנהל שנוצר בהתקנה אינו ניתן להשבתה")
     if disabled and row["role"] == "admin" and active_admin_count(conn) <= 1:
         raise ValueError("זה המנהל הפעיל האחרון — חסימתו תנעל את הקונסולה")
     with _write_lock, writing(conn):
@@ -294,10 +310,13 @@ def delete(conn: sqlite3.Connection, username: str, by: str) -> None:
     כאן התנאי הוא **חלק מה-DELETE**: השורה נמחקת רק אם היא אינה מנהל
     פעיל, או אם יישאר עוד אחד. ‏``rowcount == 0`` הוא **התשובה** — לא
     כישלון — והקורא מבחין בין "לא היה" ל"היה, ולא מוחקים אותו".
+
+    ‏#1262: ``is_builtin = 0`` באותו WHERE. בניגוד לשומר המנהל האחרון,
+    הוא חל גם על builtin **חסום** — דלת החירום אינה נמחקת לעולם.
     """
     with _write_lock, writing(conn):
         cur = conn.execute(
-            "DELETE FROM users WHERE username = ?"
+            "DELETE FROM users WHERE username = ? AND is_builtin = 0"
             "  AND (role != 'admin' OR disabled_at IS NOT NULL"
             "       OR (SELECT COUNT(*) FROM users"
             "           WHERE role = 'admin' AND disabled_at IS NULL) > 1)",
@@ -305,13 +324,16 @@ def delete(conn: sqlite3.Connection, username: str, by: str) -> None:
         )
         removed = cur.rowcount == 1
     if not removed:
-        # שני מצבים שונים, ואסור לקפל אותם: משתמש שאינו קיים, מול
-        # המנהל הפעיל האחרון שהשומר עצר. הקורא שואל, ולא מנחש.
+        # שלושה מצבים שונים, ואסור לקפל אותם: משתמש שאינו קיים, המנהל
+        # שנוצר בהתקנה (#1262), והמנהל הפעיל האחרון שהשומר עצר. הקורא
+        # שואל, ולא מנחש.
         row = conn.execute(
-            "SELECT role, disabled_at FROM users WHERE username = ?", (username,)
+            "SELECT is_builtin FROM users WHERE username = ?", (username,)
         ).fetchone()
         if row is None:
             raise ValueError("משתמש לא קיים")
+        if row["is_builtin"]:
+            raise BuiltinProtected("המנהל שנוצר בהתקנה אינו ניתן למחיקה")
         raise ValueError("זה המנהל האחרון — מחיקתו תנעל את הקונסולה")
     journal(conn, "user_delete", username, by)
 

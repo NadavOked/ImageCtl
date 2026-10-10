@@ -37,8 +37,22 @@ for block in re.findall(r"<style\b[^>]*>(.*?)</style>", HTML, re.S):
             CSS.setdefault(selector.strip(), {}).update(declarations)
 
 
+TOKENS_CSS = (ROOT / "server/static/design-tokens.css").read_text(encoding="utf-8")
+
+
+def token_value(prop, theme):
+    """A --clr-* token from the console's design-tokens.css (stage 1, 10/10):
+    the :root block for light, :root[data-theme="dark"] for dark."""
+    start = TOKENS_CSS.index(':root[data-theme="dark"]{' if theme == "dark" else ":root{")
+    block = TOKENS_CSS[start:TOKENS_CSS.index("\n}", start)]
+    return re.search(re.escape(prop) + r":(#[0-9a-fA-F]{3,6})\b", block).group(1)
+
+
 def css_value(selector, prop, theme="dark"):
-    """Resolve var() against dark variables with the required :root fallback."""
+    """Resolve var() against dark variables with the required :root fallback.
+    A selector "tokens ..." is read from design-tokens.css, not the mockup."""
+    if selector.startswith("tokens "):
+        return token_value(prop, theme)
     if selector == ':root[data-theme="dark"]' and theme == "light":
         selector = ":root"
     rules = CSS.get(selector, {})
@@ -135,10 +149,15 @@ def check_light_theme_preserves_readable_surface_contrast():
         assert contrast(colors, fg, bg) >= 4.5, (fg, bg)
 
 
-def check_documented_dark_action_contrast_exception_is_still_exact():
-    colors = dict(re.findall(r"\.(\w+)\s*=\s*HEX\(0x([\dA-Fa-f]+)\)", dark_body))
-    ratio = contrast(colors, "on_ink", "indigo")
-    assert 3.50 <= ratio <= 3.54  # accepted in login-mockup-2026-09-18.html (#829)
+def check_dark_action_fill_and_text_are_readable():
+    """The 3.5:1 exception of #829 (white on #4c8fbd) ended with the console's
+    stage 1 (10/10): the dark fill is #2f78a8 (4.8:1), and text in the action
+    colour is --clr-action-fg on both themes."""
+    dark = dict(re.findall(r"\.(\w+)\s*=\s*HEX\(0x([\dA-Fa-f]+)\)", dark_body))
+    light = dict(re.findall(r"\.(\w+)\s*=\s*HEX\(0x([\dA-Fa-f]+)\)", light_body))
+    assert contrast(dark, "on_ink", "indigo") >= 4.5
+    for colors in (dark, light):
+        assert contrast(colors, "action_fg", "surface") >= 4.5
 
 
 class TestNativeTheme(unittest.TestCase):
@@ -160,7 +179,7 @@ for check in [check_every_exported_dimension_has_a_mockup_binding,
               check_every_theme_color_has_a_mockup_binding,
               check_theme_radius_uses_each_roots_r_token,
               check_light_theme_preserves_readable_surface_contrast,
-              check_documented_dark_action_contrast_exception_is_still_exact]:
+              check_dark_action_fill_and_text_are_readable]:
     setattr(TestNativeTheme, check.__name__.replace("check_", "test_"), bind(check))
 
 if __name__ == "__main__":

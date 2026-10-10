@@ -90,7 +90,8 @@ test('1. list: header pill, unavailable-images note, one row per location with s
   assert.match(html, /class="dg show-acts storage"/, 'actions always visible (mockup decision), table scrolls at 375');
   const local = row(html, 'data-loc="loc_local"');
   assert.match(local, /<span class="st ok">מחובר<\/span>/);
-  assert.match(local, /312 GB \/ 926 GB/);
+  assert.match(local, /614 GB \/ 926 GB<\/bdi><span class="pct">66%<\/span>/, 'stage 2: used / total with the percent next to the bar, not free / total');
+  assert.match(local, /<div class="bar "[^>]*aria-valuenow="66"/);
   assert.match(local, /storageCheck\('loc_local'\)/);
   assert.doesNotMatch(local, /storageDisconnect|storageDelete/, 'local is not removable');
   const san = row(html, 'data-loc="loc_bbbb0002"');
@@ -417,4 +418,30 @@ test('images library: an image whose location is unreachable carries a "לא ז�
   const a = run('imageRow(IMAGES[0]).cells[1]'), b = run('imageRow(IMAGES[1]).cells[1]');
   assert.match(a, /<span class="pill err">לא זמין<\/span>/);
   assert.doesNotMatch(b, /לא זמין/);
+});
+
+test('stage 2: capacity card = used/total/percent from the summary; unmeasured is "לא נמדד", never 0%; no invented backup card', async () => {
+  const fresh = {...BASE, '/storage-locations': {locations: [LOCAL, NAS, SAN].map(l => ({...l})), summary: {...LIST.summary}}};   // not the shared LIST: earlier tests mutate it in place
+  const {run} = setup(fresh);
+  await run('loadStorage()');
+  const html = run('storagePage()');
+  assert.match(html, /<div class="card-h"><span>קיבולת הספרייה<\/span><\/div>/);
+  assert.match(html, /<b><bdi dir="ltr">2\.8 TB<\/bdi> בשימוש<\/b><span class="muted">מתוך <bdi dir="ltr">4\.9 TB<\/bdi> · 22 אימג'ים<\/span>/, 'sum of the CONNECTED locations only (local + nas)');
+  assert.match(html, /מיקום אחד לא נכלל בסכום — לא מחובר כרגע/, 'the unreachable san-lun1 is excluded, and the card says so');
+  assert.match(html, /<span class="pct">57%<\/span>/, 'percent next to the bar');
+  assert.doesNotMatch(html, /גיבוי/, 'the mockup backup card is invented — no such API');
+  assert.match(run('UI.usage(null, 5)'), /לא נמדד/); assert.match(run('UI.usage(0, 0)'), /לא נמדד/);
+  assert.doesNotMatch(run('UI.usage(null, null)'), /0%/);
+  assert.match(run('UI.usage(1000, 250)'), /750 B \/ 1000 B|750 B/);
+});
+
+test('stage 2: capacity card keeps three states apart - never measured / last check failed / measured', async () => {
+  const card = (locs, summary) => { const {run} = setup({...BASE, '/storage-locations': {locations: locs, summary: {locations: locs.length, unreachable: 0, images: 1, unavailable_images: 0, free_bytes: 0, total_bytes: 0, checked_at: null, ...summary}}}); return run('loadStorage()').then(() => run('storagePage()')); };
+  const never = await card([{...LOCAL, state: 'unchecked', state_label: 'לא נבדק', free_bytes: null, total_bytes: null}], {});
+  assert.match(never, /לא נמדד עדיין/); assert.doesNotMatch(never, /הבדיקה האחרונה לא הצליחה/);
+  const failed = await card([{...NAS, state: 'unreachable', state_label: 'לא נגיש'}], {checked_at: '2026-09-18T09:40:00+00:00'});
+  assert.match(failed, /הבדיקה האחרונה לא הצליחה — אין מיקום מחובר שנמדד כרגע \(נבדק לאחרונה 09:40\)/); assert.doesNotMatch(failed, /לא נמדד עדיין/);
+  assert.doesNotMatch(failed, /בשימוש<\/b>/, 'a stale measurement is not presented as the current usage');
+  const ok = await card([LOCAL], {checked_at: '2026-09-18T09:40:00+00:00'});
+  assert.match(ok, /614 GB<\/bdi> בשימוש/); assert.doesNotMatch(ok, /לא נכלל/, 'nothing excluded - no sub-line');
 });

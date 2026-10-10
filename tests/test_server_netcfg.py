@@ -356,6 +356,8 @@ def net_server(tmp_path: Path, images_root: Path, clock):
         "local": "10.10.10.8",      # דרך איזו כתובת הגיעה הבקשה
         "dnsmasq": [],              # מה נכתב ל-dnsmasq (לשונית ה-DHCP)
         "proxy": [],                # ומה לאינסטנס ה-proxy
+        "management": "",           # ‏#1263: כרטיס הניהול שהמתקין רשם ("" = לא ידוע)
+        "probe": dhcp.ProbeResult(True, ()),   # מי כבר עונה ל-DHCP (‏#53)
     }
 
     state_dir = tmp_path / "netstate"
@@ -387,6 +389,7 @@ def net_server(tmp_path: Path, images_root: Path, clock):
         "netcfg_now": clock,
         "netcfg_boot_id": lambda *a: "boot-A",
         "netcfg_local_address": lambda request: fake["local"],
+        "netcfg_management": lambda: fake["management"],
     }
     # שתי הלשוניות הן שני ראוטרים, ולכן **שתי** הזרקות: הבדיקה שמוודאת
     # שהצדדים מסכימים חוצה אל `/api/console/net/interfaces` — הראוטר של
@@ -396,11 +399,12 @@ def net_server(tmp_path: Path, images_root: Path, clock):
     # מוזרקת לשני הצדדים, כי זה בדיוק מה שהבדיקה טוענת עליו.
     dhcp_hooks = {
         "interfaces": lambda: [dict(n) for n in fake["interfaces"]],
-        "probe": lambda name: dhcp.ProbeResult(True, ()),
+        "probe": lambda name: fake["probe"],
         "apply": lambda text: (fake["dnsmasq"].append(text), None)[1],
         "apply_proxy": lambda text, active: (
             fake["proxy"].append((text, active)), None)[1],
         "dnsmasq_version": lambda: "Dnsmasq version 2.91\n",
+        "netcfg_management": lambda: fake["management"],
     }
     app = create_app(tmp_path / "data", images_root, "http://10.10.10.8:8080",
                      now_fn=clock, netcfg_hooks=hooks, dhcp_hooks=dhcp_hooks,
@@ -603,6 +607,208 @@ def test_a_bad_route_is_refused_in_hebrew_before_anything_is_written(net_server)
 
 # --- מה שהמכונה צריכה כדי שכל זה יעבוד ---------------------------------------
 
+
+# --- #1263: כרטיס בשלושה אופנים — רשת הפצה (כתובת נגזרת) / DHCP / ידני --------
+
+
+@pytest.mark.parametrize(("network", "netmask", "expected"), [
+    ("10.0.20.0", "255.255.255.0", "10.0.20.1"),        # הדוגמה של נדב
+    ("10.44.0.0", "255.255.254.0", "10.44.0.1"),        # ‏/23
+    ("172.16.8.0", "255.255.255.248", "172.16.8.1"),    # ‏/29
+    ("10.9.9.0", "255.255.255.252", "10.9.9.1"),        # ‏/30 — שרת + כתובת אחת
+])
+def test_the_deploy_server_address_is_the_first_host_of_the_network(network, netmask, expected):
+    assert netcfg.deploy_address(network, netmask) == (expected, [])
+
+
+@pytest.mark.parametrize(("network", "netmask", "fragment"), [
+    ("10.0.20.5", "255.255.255.0", "אינה כתובת רשת — עם המסכה 255.255.255.0 הרשת היא 10.0.20.0"),
+    ("10.0.20.0", "255.0.255.0", "מסכת רשת אינה תקינה"),
+    ("10.0.20", "255.255.255.0", "כתובת הרשת אינה תקינה"),
+    ("", "255.255.255.0", "כתובת הרשת אינה תקינה (ריק)"),
+    ("10.0.20.0", "255.255.255.254", "קטנה מדי"),       # ‏/31
+    ("10.0.20.0", "255.255.255.255", "קטנה מדי"),       # ‏/32
+])
+def test_a_deploy_network_that_is_not_a_network_is_refused_not_rounded(network, netmask, fragment):
+    """‏10.0.20.5/24 **אינו** מעוגל ל-10.0.20.0: עיגול שקט הוא ניחוש לאיזו רשת
+    המפעיל התכוון, והשרת היה מקבל כתובת שאיש לא כתב."""
+    address, found = netcfg.deploy_address(network, netmask)
+    assert address == ""
+    assert any(fragment in p for p in found), found
+
+
+DEPLOY = {"network": "10.44.20.0", "netmask": "255.255.255.0",
+          "range_start": "10.44.20.50", "range_end": "10.44.20.200", "lease": "12h"}
+
+
+def put_deploy(server, name="eth1", **over):
+    body = {**DEPLOY, "confirm": name, **over}
+    return server["admin"].put(f"{CONF}/{name}/deploy", json=body)
+
+
+def dhcp_setting(server, name="eth1") -> dhcp.InterfaceConfig:
+    from server.db import get_setting
+    return dhcp.InterfaceConfig.from_json(
+        name, get_setting(server["ctx"].conn, dhcp.SETTING_PREFIX + name))
+
+
+def test_deploy_mode_derives_the_server_address_and_configures_dhcp_in_one_request(net_server):
+    """המפעיל נותן רשת + מסכה + טווח; השרת מקבל את הכתובת הראשונה, הכרטיס
+    נכתב סטטי עליה, וה-DHCP של ההפצה מכריז בדיוק עליה — באותה בקשה."""
+    response = put_deploy(net_server)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    fake = net_server["fake"]
+    assert result["ok"] is True and result["server_ip"] == "10.44.20.1"
+    assert result["address"]["verified"] is True
+    assert "    address 10.44.20.1" in fake["confs"]["eth1"]
+    assert "    gateway" not in fake["confs"]["eth1"]      # שער ברירת מחדל שני — לא
+    saved = dhcp_setting(net_server)
+    assert saved.enabled and not saved.proxy
+    assert (saved.server_ip, saved.range_start, saved.range_end) == ("10.44.20.1", "10.44.20.50", "10.44.20.200")
+    assert "dhcp-range=set:if-eth1,10.44.20.50,10.44.20.200,255.255.255.0,12h" in fake["dnsmasq"][-1]
+    assert "option:tftp-server,10.44.20.1" in fake["dnsmasq"][-1]
+    assert any(e == "net_deploy_saved" and "server=10.44.20.1" in d for e, d in journal_events(net_server))
+
+
+def test_deploy_mode_moves_a_card_that_already_serves_dhcp_to_a_new_network(net_server):
+    """המקרה שאף סדר של שתי קריאות לא עובר בו: כתובת חדשה מול DHCP ישן
+    נדחית במסלול הכתובות, ו-DHCP חדש מול כתובת ישנה מכריז על כתובת שאינה
+    של הכרטיס. בקשה אחת — עוברת, ושני הצדדים זזים יחד."""
+    assert put_deploy(net_server).status_code == 200
+    moved = put_deploy(net_server, network="10.44.30.0", range_start="10.44.30.20",
+                       range_end="10.44.30.90")
+    assert moved.status_code == 200, moved.text
+    assert "    address 10.44.30.1" in net_server["fake"]["confs"]["eth1"]
+    assert dhcp_setting(net_server).server_ip == "10.44.30.1"
+
+
+def test_the_server_address_inside_the_range_is_refused_before_anything_is_written(net_server):
+    found = put_deploy(net_server, range_start="10.44.20.1", range_end="10.44.20.100")
+    assert found.status_code == 400
+    assert "בתוך הטווח" in found.json()["detail"]
+    fake = net_server["fake"]
+    assert fake["confs"] == {} and fake["dnsmasq"] == [] and fake["applied"] == []
+    assert dhcp_setting(net_server).enabled is False
+
+
+def test_a_range_outside_the_network_and_a_non_network_address_are_refused(net_server):
+    outside = put_deploy(net_server, range_end="10.44.21.10")
+    assert outside.status_code == 400 and "מחוץ לרשת" in outside.json()["detail"]
+    rounded = put_deploy(net_server, network="10.44.20.7")
+    assert rounded.status_code == 400 and "אינה כתובת רשת" in rounded.json()["detail"]
+    assert net_server["fake"]["confs"] == {}
+
+
+def test_a_gateway_must_sit_inside_the_deploy_network(net_server):
+    """הקונסולה אינה מציעה שער ברשת ההפצה; מי שמגיע ב-API עם שער — הוא חייב
+    להיות בתוך הרשת (‏dhcp.validate)."""
+    out = put_deploy(net_server, gateway="10.44.99.1")
+    assert out.status_code == 400 and "השער" in out.json()["detail"]
+    assert put_deploy(net_server, gateway="10.44.20.254").status_code == 200
+    assert dhcp_setting(net_server).gateway == "10.44.20.254"
+
+
+def test_saving_the_deploy_window_keeps_a_stored_gateway_and_dns(net_server):
+    """החלון של הקונסולה אינו שולח שער/DNS — הגדרה קיימת אינה נמחקת בשקט."""
+    assert put_deploy(net_server, gateway="10.44.20.254", dns=["10.44.20.2", "10.44.20.3"]).status_code == 200
+    assert put_deploy(net_server, range_end="10.44.20.150").status_code == 200
+    saved = dhcp_setting(net_server)
+    assert (saved.gateway, saved.dns, saved.range_end) == ("10.44.20.254", ["10.44.20.2", "10.44.20.3"], "10.44.20.150")
+
+
+def test_the_management_card_cannot_be_the_deploy_network(net_server):
+    net_server["fake"]["management"] = "eth1"
+    refused = put_deploy(net_server)
+    assert refused.status_code == 409
+    assert "כרטיס הניהול" in refused.json()["detail"]
+    assert net_server["fake"]["confs"] == {} and dhcp_setting(net_server).enabled is False
+
+
+def test_the_old_dhcp_path_refuses_the_management_card_too(net_server):
+    """‏`PUT /net/interfaces/{שם}` הישן (דף הפורטים, API ישיר): DHCP מלא או
+    proxy על כרטיס הניהול — 409, ושום דבר לא נכתב. כיבוי — מותר."""
+    net_server["fake"]["management"] = "eth1"
+    admin = net_server["admin"]
+    body = {"enabled": True, "range_start": "10.44.9.50", "range_end": "10.44.9.200",
+            "netmask": "255.255.255.0", "server_ip": "10.44.9.10", "confirm": "eth1",
+            "ignore_existing": True}
+    full = admin.put("/api/console/net/interfaces/eth1", json=body)
+    assert full.status_code == 409 and "כרטיס הניהול" in full.json()["detail"]
+    proxy = admin.put("/api/console/net/interfaces/eth1", json={
+        **body, "enabled": False, "proxy": True, "confirm_proxy_broken": True})
+    assert proxy.status_code == 409 and "כרטיס הניהול" in proxy.json()["detail"]
+    assert net_server["fake"]["dnsmasq"] == [] and dhcp_setting(net_server).enabled is False
+    off = admin.put("/api/console/net/interfaces/eth1", json={"enabled": False, "confirm": "eth1"})
+    assert off.status_code == 200, off.text
+    # כרטיס שאינו הניהול — אותה בקשה עוברת
+    net_server["fake"]["management"] = "eth0"
+    assert admin.put("/api/console/net/interfaces/eth1", json=body).status_code == 200
+
+
+def test_an_unverified_address_leaves_the_dhcp_untouched(net_server):
+    """כתובת שנכתבה ולא זזה (‏`applies=False`): ה-DHCP **אינו** נשמר — DHCP
+    שמכריז על כתובת שהכרטיס אינו נושא אינו "חצי הצלחה"."""
+    net_server["fake"]["applies"] = False
+    result = put_deploy(net_server).json()
+    assert result["ok"] is False and result["dhcp"] is None
+    assert "לא אומתה" in result["apply_error"] and "ה-DHCP לא שונה" in result["apply_error"]
+    assert net_server["fake"]["dnsmasq"] == []
+    assert dhcp_setting(net_server).enabled is False
+
+
+def test_the_dhcp_safety_gates_run_before_the_address_moves(net_server):
+    """שומרי ההדלקה של ראוטר ה-DHCP (‏#53 "מי כבר עונה", הקלדת השם שהמסך
+    שולח לבד) רצים **לפני** שהכתובת זזה — סירוב שם לא משאיר כרטיס בכתובת
+    חדשה."""
+    fake = net_server["fake"]
+    fake["probe"] = dhcp.ProbeResult(True, ("10.44.20.254",))
+    found = put_deploy(net_server)
+    assert found.status_code == 409 and "10.44.20.254" in found.json()["detail"]
+    fake["probe"] = dhcp.ProbeResult(False, ())
+    unknown = put_deploy(net_server)
+    assert unknown.status_code == 409 and "לא ניתן לבדוק" in unknown.json()["detail"]
+    fake["probe"] = dhcp.ProbeResult(True, ())
+    assert put_deploy(net_server, confirm="wrong").status_code == 409
+    assert fake["confs"] == {} and fake["applied"] == [] and fake["dnsmasq"] == []
+
+
+def test_dhcp_client_mode_writes_inet_dhcp(net_server):
+    result = put(net_server, mode=MODE_DHCP, address="", gateway="", dns=[])
+    assert result.status_code == 200, result.text
+    assert "iface eth1 inet dhcp" in net_server["fake"]["confs"]["eth1"]
+
+
+def test_static_mode_takes_a_primary_and_a_secondary_dns(net_server):
+    result = put(net_server, address="10.44.9.11", dns=["10.44.0.5", "10.44.0.6"])
+    assert result.status_code == 200, result.text
+    assert "nameserver 10.44.0.5\nnameserver 10.44.0.6" in net_server["fake"]["resolv"]
+
+
+def test_the_read_names_the_management_card_and_never_guesses_it(net_server):
+    """‏`management_interface` מגיע ממה שהמתקין רשם (או מסך השרת אישר) —
+    ריק = ‏null ("לא ידוע"), ולא הכרטיס הראשון שנושא כתובת."""
+    body = net_server["admin"].get(CONF).json()
+    assert body["management_interface"] is None
+    assert not any(r["management"] for r in body["interfaces"])
+    net_server["fake"]["management"] = "eth0"
+    body = net_server["admin"].get(CONF).json()
+    assert body["management_interface"] == "eth0"
+    assert {r["name"]: r["management"] for r in body["interfaces"]} == {"eth0": True, "eth1": False}
+    # מסך השרת (‏DCUI) גובר על הרישום של המתקין
+    from server.db import set_setting
+    set_setting(net_server["ctx"].conn, "dcui:management_interface", "eth1")
+    assert net_server["admin"].get(CONF).json()["management_interface"] == "eth1"
+
+
+def test_installed_management_reads_servers_if_from_the_firstboot_status(tmp_path):
+    from server.console_netcfg import installed_management
+    status = tmp_path / "firstboot.status"
+    status.write_text("state=done\nservers_if=ens18\nrole=primary\n", encoding="utf-8")
+    assert installed_management(status) == "ens18"
+    assert installed_management(tmp_path / "missing") == ""
+
+
 REPO = Path(__file__).resolve().parent.parent
 
 
@@ -692,7 +898,10 @@ def test_the_edit_dialog_uses_a_real_radio_group_not_prompt_or_confirm():
     js = (REPO / "server" / "static" / "netcfg.js").read_text(encoding="utf-8")
     assert "prompt(" not in js and "confirm(window" not in js
     assert '"radio"' in js
-    assert "לא מנוהל מהקונסולה" in js       # המצב הקיים לא אבד בשדרוג
+    # ‏#1263 (הכרעת נדב 10/10): שלושה אופנים בלבד — "לא מנוהל" אינו אפשרות
+    # בחלון; כרטיס שעדיין לא מנוהל נפתח על הכתובת שהוא נושא בפועל.
+    assert 'const NIC_MODES = [["deploy", "רשת הפצה"], ["dhcp", "DHCP מהרשת"], ["static", "כתובת ידנית"]];' in js
+    assert "לא מנוהל מהקונסולה (ברירת מחדל)" not in js
 
 
 def test_sheet_supports_a_radio_field_type():

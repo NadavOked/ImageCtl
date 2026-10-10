@@ -242,3 +242,21 @@ test('1120: wrong MFA code returns to the login screen with the server message a
   const fallback = run('mfaRejectedState({}, {username: "x"})');
   assert.equal(fallback.error, 'קוד שגוי — היכנס מחדש');
 });
+
+test('stage 2: account - the built-in admin has no MFA button and no backup-codes card; a regular admin gets backup codes only while MFA is on', () => {
+  const {run} = setup();
+  run('globalThis.drawn=""; openDrawer=(t,b)=>{ drawn=b; }; closeUserMenu=()=>{};');
+  const open = me => { run(`ME=${JSON.stringify(me)}; openAccount()`); return run('drawn'); };
+  const builtin = open({username: 'admin', role: 'admin', is_builtin: true, mfa_enabled: false});
+  assert.match(builtin, /<span class="pill ">מקומי · ללא MFA<\/span>/);
+  assert.match(builtin, /בכוונה, כדי שתמיד תהיה דרך להיכנס/, 'one explanatory line');
+  assert.doesNotMatch(builtin, /<button/, 'no MFA button, no backup-codes button');
+  assert.doesNotMatch(builtin, /קודי גיבוי|accountEnableMfa|accountNewBackupCodes/);
+  const on = open({username: 'nadav', role: 'admin', is_builtin: false, mfa_enabled: true});
+  assert.match(on, /<span>קודי גיבוי<\/span>/); assert.match(on, /accountNewBackupCodes\(\)">צור קודי גיבוי חדשים/);
+  assert.match(on, /<span class="st ok">פעיל<\/span>/); assert.doesNotMatch(on, /accountEnableMfa/);
+  const off = open({username: 'nadav', role: 'admin', is_builtin: false, mfa_enabled: false});
+  assert.match(off, /accountEnableMfa\(\)">הפעל/); assert.doesNotMatch(off, /קודי גיבוי|accountNewBackupCodes/, 'backup codes are gated on mfa_enabled');
+  const deploy = open({username: 'lab', role: 'deploy', is_builtin: false, mfa_enabled: false});
+  assert.doesNotMatch(deploy, /<button/, 'a deploy user has nothing to enable here');
+});

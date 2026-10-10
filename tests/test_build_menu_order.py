@@ -59,12 +59,12 @@ def test_deploy_never_sees_the_capture_and_keeps_the_same_order(tmp_path):
     assert text_menu(tmp_path, "deploy", True) == ["room", "direct", "self", "class"]
 
 
-def _pill_pixels(path: Path, color: tuple[int, int, int]) -> tuple[int, int]:
-    """Pixels of `color` (tolerance 6) in the right and the left half."""
+def _pill_pixels(path: Path, color: tuple[int, int, int], tol: int = 2) -> tuple[int, int]:
+    """Pixels of `color` (within `tol`) in the right and the left half."""
     w, _h, ch, px = _png_rgb(path)
     right = left = 0
     for i in range(0, len(px), ch):
-        if all(abs(px[i + k] - color[k]) <= 6 for k in range(3)):
+        if all(abs(px[i + k] - color[k]) <= tol for k in range(3)):
             if (i // ch) % w >= w // 2:
                 right += 1
             else:
@@ -80,7 +80,11 @@ def _pill_pixels(path: Path, color: tuple[int, int, int]) -> tuple[int, int]:
 def test_the_native_menu_draws_the_capture_card_first(tmp_path):
     """--png renders the menu as admin (png_setup). The amber pill
     (--clr-warning-soft) marks the capture card; it must sit in the right
-    half -- card 1, key 1 -- and nowhere in the left half."""
+    half -- card 1, key 1 -- and nowhere in the left half. The pill is a flat
+    fill, so it is matched exactly (tolerance 2): since the 10/10 mockup the
+    restore card -- bottom-left -- says "הדיסק נמחק." in red, and one
+    anti-aliased edge pixel of that text (~9% red over white) falls within 6
+    of the amber's value. That pixel is not a pill."""
     binary = _build_gui(tmp_path)
     state = tmp_path / "state.txt"
     # --png renders every card; "message" routes only with a message= record.

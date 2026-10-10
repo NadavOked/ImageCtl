@@ -353,7 +353,7 @@ function openEnrollConfirmSheet(step1, preview) {
     title: "רישום שרת משני — שלב 2 מתוך 2: אישור והקוד",
     sub: "השווה את ה-SPKI מול מה שמוצג על המשני, ורק אז הקלד את הקוד החד-פעמי שהוצג שם.",
     note: `<div class="detail-grid"><div class="detail-box"><span class="k">SPKI</span><span class="v mono" dir="ltr">${esc(preview.secondary_spki)}</span></div><div class="detail-box"><span class="k">מזהה משני</span><span class="v mono" dir="ltr">${esc(preview.node_id)}</span></div></div>`,
-    fields: [{ id: "code", label: "קוד חד-פעמי (מוצג על המשני)" }],
+    fields: [{ id: "code", label: "קוד חד-פעמי (מוצג על המשני)", dir: "ltr" }],
     submitLabel: "רשום שרת משני",
     onSubmit: async (v) => {
       await post("/storage-nodes/enroll", {

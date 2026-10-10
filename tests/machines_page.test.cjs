@@ -102,7 +102,7 @@ test('one grouped table: header counters + pills, three tabs, build → cloners 
   assert.match(html,/pill err">1 דיסק אדום</); assert.match(html,/pill warn">1 לא רשום</);
   for(const t of ['כל המחשבים','נראו ברשת \\(1\\)','דיסקים אדומים \\(1\\)']) assert.match(html,new RegExp('role="tab"[^>]*>'+t+'<'));
   assert.match(html,/onclick="openAddMachine\(\{\}\)">\+ מחשב</); assert.match(html,/addGroupSheet\(\)">\+ כיתה</); assert.match(html,/href="\/api\/console\/machines.csv" download>ייצוא CSV</);
-  assert.equal((html.match(/<table class="dg"/g)||[]).length,1,'one table, not tabs per role');
+  assert.equal((html.match(/<table class="dg kebab-col"/g)||[]).length,1,'one table, not tabs per role');
   const groups=[...html.matchAll(/<tr class="group" data-group="([^"]*)"/g)].map(m=>m[1]);
   assert.deepEqual(groups,['grp_BUILD','grp_CLONERS','grp_LAB303','grp_LAB305'],'fixed groups first, then a collapsible group per class');
   assert.match(html,/openClass\('grp_LAB303'\)">כיתה 303 — סייבר</,'the class name links to the class object');
@@ -110,7 +110,11 @@ test('one grouped table: header counters + pills, three tabs, build → cloners 
   assert.match(html,/st run">סבב פתוח — Office 2024 — סטנדרט, 2\/3</);
   assert.match(html,/קבוצה קבועה · 2 מחשבים<\/span><span class="st ok">2 מחוברים</,'cloners: connected count from /monitor/machines');
   assert.match(html,/openClass\('grp_LAB303'\)">פתח כיתה</); assert.match(html,/openAddMachine\(\{group:'grp_LAB303'\}\)">\+ מחשב לכיתה</); assert.match(html,/wakeRoom\(\)">WoL לחדר</);
-  for(const col of ['שם','MAC','IP אחרון','נראה לאחרונה','דיסקים','מצב']) assert.match(html,new RegExp('<th>'+col+'</th>'));
+  for(const col of ['שם','IP אחרון','דיסקים','מצב']) assert.match(html,new RegExp('<th>'+col+'</th>'));
+  for(const col of ['MAC','נראה לאחרונה']) assert.match(html,new RegExp('<th class="c-opt">'+col+'</th>'),'stage 2: secondary columns drop out first in a narrow card');
+  assert.match(html,/<th><span class="sr">פעולות<\/span><\/th>/);
+  const row=html.slice(html.indexOf('data-mac=')); const menu=JSON.parse(row.match(/data-menu="([^"]*)"/)[1].replaceAll('&quot;','"').replaceAll('&#39;',"'"));
+  assert.ok(menu.map(i=>i[0]).includes('פרטים')&&menu.some(i=>i[2]==='danger'&&/removeMachine/.test(i[1])),'stage 2: one ⋯ menu per machine row; removal is last, in danger, and still opens the type-the-name sheet');
   const b1=between(html,'data-mac="c8:d9:d2:0b:fe:32"','data-mac="c8:d9:d2:0b:fe:34"');
   assert.match(b1,/openMachineDetail\('c8%3Ad9%3Ad2%3A0b%3Afe%3A32'\)">בנייה 1<\/a><span class="sub">LENOVO ThinkCentre M720q · TPM 2.0</,'model from inventory.dmi');
   assert.match(b1,/<span class="mono">c8:d9:d2:0b:fe:32<\/span>/); assert.match(b1,/<span class="mono">10.44.12.20<\/span>/); assert.match(b1,/לפני 3 שע&#39;/);
@@ -257,7 +261,7 @@ test('the class as an object: crumbs, header, KPIs with meaning only, the same t
   assert.match(html,/הוספה: מספר 01–99 או INS · ייבוא בהדבקה/); assert.match(html,/openAddMachine\(\{group:'grp_LAB303',tab:1\}\)">ייבוא בהדבקה</);
   assert.match(html,/סבבים של הכיתה/); assert.match(html,/Office 2024 — סטנדרט · פתוח, 2\/3 הצטרפו/); assert.match(html,/היסטוריית סבבים לכיתה — <b[^>]*>דורש API<\/b>/);
   html=run('machines(2)'); assert.match(html,/דורש API/); assert.doesNotMatch(html,/<table class="dg"/);
-  html=run('machines(1)'); assert.equal((html.match(/<table class="dg"/g)||[]).length,1); assert.doesNotMatch(html,/class="kpi/);
+  html=run('machines(1)'); assert.equal((html.match(/<table class="dg kebab-col"/g)||[]).length,1); assert.doesNotMatch(html,/class="kpi/);
   run("deleteGroup('grp_LAB303')"); assert.equal(run('formOptions.verify.mustEqual'),'כיתה 303 — סייבר');
   run('OVERVIEW.session=null; DISK_FAILURES=null'); html=run('machines(0)');
   assert.doesNotMatch(html,/קידומת/,'prefix comes only from a session'); assert.match(html,/<div class="kpi "><div class="l">סבב פעיל<\/div><div class="v"><bdi dir="auto">אין/);

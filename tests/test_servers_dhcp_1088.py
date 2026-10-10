@@ -737,6 +737,79 @@ def test_first_dhcp_enable_completes_the_install_and_restarts(console):
     assert "deploy_net_set" in events
 
 
+def test_first_deploy_from_the_deploy_window_derives_the_address_then_completes(tmp_path, images_root, clock):
+    """‏#1263 על שרת נקי (מסירה): חלון "רשת הפצה" שולח רשת + טווח בלבד. השרת
+    גוזר את הכתובת הראשונה, כותב ומחיל אותה על הכרטיס, ורק **אחרי** שהכרטיס
+    נושא אותה — ההדלקה הראשונה משלימה את ההתקנה (‏#1088), שדורשת בדיוק את זה.
+    בעבר זה היה שני מסכים ("עריכת כתובת" ואז "DHCP") בסדר שהמפעיל היה צריך לדעת."""
+    if TestClient is None:
+        pytest.skip("fastapi is required")
+    from server import users
+    from server.app import create_app
+
+    fake = {"interfaces": [
+                {"name": "eth0", "state": "up", "mac": "aa:aa:aa:aa:aa:00", "addresses": ["10.1.2.3/24"]},
+                {"name": "eth1", "state": "up", "mac": "aa:aa:aa:aa:aa:01", "addresses": []}],
+            "confs": {}, "applied": [], "deploy_calls": []}
+
+    def ifup(name):                     # המכונה המדומה: הכתובת שבקובץ עולה על הכרטיס
+        address = re.search(r"^    address (\S+)", fake["confs"][name], re.M).group(1)
+        next(n for n in fake["interfaces"] if n["name"] == name)["addresses"] = [f"{address}/24"]
+
+    dhcp_hooks = {
+        "interfaces": lambda: [dict(n) for n in fake["interfaces"]],
+        "probe": lambda name: dhcp.ProbeResult(True, ()),
+        "apply": lambda text: fake["applied"].append(text) or None,
+        "apply_proxy": lambda text, active: None,
+        "read_active_conf": lambda: "", "service_active": lambda unit: True,
+        "dnsmasq_version": lambda: "Dnsmasq version 2.91\n",
+    }
+    netcfg_hooks = {
+        "interfaces": lambda: [dict(n) for n in fake["interfaces"]],
+        "netcfg_read_conf": lambda name, root=None: fake["confs"].get(name),
+        "netcfg_write_conf": lambda name, text, root=None: fake["confs"].__setitem__(name, text),
+        "netcfg_write_resolv": lambda text, path=None: None,
+        "netcfg_apply": lambda name: ifup(name),
+        "netcfg_state": lambda: netcfg_host.LiveState(
+            True, {n["name"]: list(n["addresses"]) for n in fake["interfaces"]}),
+        "netcfg_sourced": lambda *a: True,
+        "netcfg_timer_active": lambda *a: (True, "active"),
+        "netcfg_now": clock, "netcfg_boot_id": lambda *a: "boot-A",
+        "netcfg_local_address": lambda request: "10.1.2.3",
+        "netcfg_management": lambda: "eth0",
+    }
+    deploy_hooks = {
+        "write_grub_cfg": lambda url, root: fake["deploy_calls"].append(("grub", url)) or None,
+        "enable_dnsmasq": lambda: fake["deploy_calls"].append(("dnsmasq",)) or None,
+        "firewall": lambda repo, **kw: fake["deploy_calls"].append(("fw", kw)) or None,
+        "restart_server": lambda: fake["deploy_calls"].append(("restart",)) or None,
+    }
+    ctx = deploy_net.DeployContext(state=deploy_net.DeployState("none", None, None), agent_port=8080,
+                                   tftp_root=tmp_path / "tftp", repo_dir=REPO,
+                                   servers_interface="eth0", hooks=deploy_hooks)
+    app = create_app(tmp_path / "data", images_root, "http://127.0.0.1:8080", now_fn=clock,
+                     dhcp_hooks=dhcp_hooks, netcfg_hooks=netcfg_hooks, deploy=ctx,
+                     netcfg_state_dir=tmp_path / "netstate")
+    users.create(app.state.ctx.conn, "noc", "Admin-pass-123!", "admin", by="test")
+    client = TestClient(app)
+    client.post("/api/console/login", json={"username": "noc", "password": "Admin-pass-123!"})
+
+    r = client.put("/api/console/net/config/eth1/deploy", json={
+        "network": "10.44.9.0", "netmask": "255.255.255.0", "range_start": "10.44.9.50",
+        "range_end": "10.44.9.200", "lease": "12h", "confirm": "eth1"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["server_ip"] == "10.44.9.1"
+    assert body["deploy"]["ok"] is True and body["deploy"]["url"] == "http://10.44.9.1:8080"
+    assert [c[0] for c in fake["deploy_calls"]] == ["grub", "dnsmasq", "fw", "restart"]
+    assert deploy_net.stored(app.state.ctx.conn) == ("eth1", "http://10.44.9.1:8080")
+    assert "interface=eth1" in fake["applied"][-1]
+    # כרטיס הניהול (eth0) — אסור להיות רשת ההפצה, גם ב-API
+    refused = client.put("/api/console/net/config/eth0/deploy", json={
+        "network": "10.1.2.0", "netmask": "255.255.255.0", "range_start": "10.1.2.50",
+        "range_end": "10.1.2.90", "confirm": "eth0"})
+    assert refused.status_code == 409 and "כרטיס הניהול" in refused.json()["detail"]
+
 def test_first_dhcp_enable_that_fails_to_complete_writes_nothing_and_can_be_retried(console):
     """‏#1121: חומת האש נפלה באמצע ההשלמה → 500 בשם, **שום דבר** לא נרשם
     (לא `deploy:*`, לא `dhcp:eth1`), dnsmasq לא נכתב, השרת לא מאותחל —

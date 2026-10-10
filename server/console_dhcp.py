@@ -21,7 +21,7 @@ from typing import Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from . import auth, deploy_net, dhcp, ports
+from . import auth, console_netcfg, deploy_net, dhcp, ports
 from .api import ServerContext
 from .db import get_setting, journal, set_setting
 
@@ -156,6 +156,8 @@ def default_hooks() -> Hooks:
         "dnsmasq_version": dhcp.dnsmasq_version,
         "read_active_conf": dhcp.read_active_conf,
         "service_active": dhcp.service_active,
+        # ‏#1263: כרטיס הניהול שהמתקין רשם — אותו hook של ראוטר הכתובות.
+        "netcfg_management": console_netcfg.installed_management,
     }
 
 
@@ -316,7 +318,13 @@ def create_dhcp_router(ctx: ServerContext, hooks: Hooks | None = None,
             raise HTTPException(404, "כרטיס רשת כזה לא קיים במכונה")
 
         before = load(name)
-        cfg = dhcp.InterfaceConfig(
+        cfg = _build(name, body, before)
+        risky_proxy = _gates(name, cfg, before, body)
+        return _commit(name, cfg, before, user, live, risky_proxy)
+
+    def _build(name: str, body: dict,
+               before: dhcp.InterfaceConfig) -> dhcp.InterfaceConfig:
+        return dhcp.InterfaceConfig(
             name=name,
             enabled=bool(body.get("enabled", False)),
             proxy=bool(body.get("proxy", False)),
@@ -329,8 +337,21 @@ def create_dhcp_router(ctx: ServerContext, hooks: Hooks | None = None,
             lease=str(body.get("lease") or dhcp.DEFAULT_LEASE).strip(),
             server_ip=str(body.get("server_ip", "")).strip(),
         )
+
+    def _gates(name: str, cfg: dhcp.InterfaceConfig,
+               before: dhcp.InterfaceConfig, body: dict) -> str | None:
+        """כל השומרים שלפני הכתיבה — זורק HTTPException, או מחזיר את
+        גרסת ה-dnsmasq כשה-proxy הודלק על גרסה שלא נבדקה. ‏#1263: נקרא גם
+        מ-`PUT /net/config/{שם}/deploy` **לפני** שהכתובת של הכרטיס זזה."""
         if cfg.enabled and cfg.proxy:
             raise HTTPException(400, "DHCP מלא ו-proxy על אותו ממשק סותרים זה את זה")
+        # ‏#1263: כרטיס הניהול (נבחר בהתקנה) הוא לקוח DHCP או כתובת ידנית — לא
+        # מחלק כתובות ולא עונה ל-PXE. כיבוי (enabled=false) תמיד מותר.
+        if (cfg.enabled or cfg.proxy) and name == console_netcfg.management_interface(
+                ctx.conn, hooks["netcfg_management"]):
+            raise HTTPException(
+                409, f"{name} הוא כרטיס הניהול (נבחר בהתקנה) — אין עליו DHCP "
+                     "ואין proxy; הוא לקוח DHCP או כתובת ידנית בלבד")
 
         # שכבה 5 (‏#36): מצב proxy נשען על תכונה שבורה ב-dnsmasq המותקן.
         # ההגנה היא אישור מפורש, לא כפתור מנוטרל — במעבדה *חייבים* להיות
@@ -381,7 +402,14 @@ def create_dhcp_router(ctx: ServerContext, hooks: Hooks | None = None,
                         + ", ".join(found.servers)
                         + ". הדלקת DHCP שני תשבית את הרשת.",
                     )
+        if cfg.enabled and not before.enabled:
+            _only_the_deploy_nic_or_409(name)
+        return risky_proxy
 
+    def _commit(name: str, cfg: dhcp.InterfaceConfig,
+                before: dhcp.InterfaceConfig, user, live: dict,
+                risky_proxy: str | None) -> dict:
+        turning_on = (cfg.enabled or cfg.proxy) and not (before.enabled or before.proxy)
         # ‏#1088: הדלקת DHCP על כרטיס כשרשת ההפצה טרם הוגדרה **משלימה את
         # ההתקנה** — grub.cfg, ‏dnsmasq באתחול, חומת אש, ואתחול השרת עם
         # כתובת ההפצה. השומרים לפני הכתיבה ל-DB: הכרטיס באמת נושא את
@@ -439,6 +467,13 @@ def create_dhcp_router(ctx: ServerContext, hooks: Hooks | None = None,
             out["deploy"] = result
         return out
 
+    # ‏#1263: השלבים של ההדלקה, לשימוש `PUT /net/config/{שם}/deploy` — אותם
+    # שומרים ואותה השלמת התקנה, לא עותק שני שלהם בראוטר הכתובות.
+    router.dhcp_steps = {
+        "load": load, "build": _build, "gates": _gates, "commit": _commit,
+        "live": lambda: {i["name"]: i for i in hooks["interfaces"]()},
+    }
+
     def _only_the_deploy_nic_or_409(name: str) -> None:
         """‏#1121 ס' 4: אחרי שרשת ההפצה הוגדרה מהקונסולה, DHCP **מלא** מותר רק
         על כרטיס ההפצה — כרטיס אחר הוא רשת המכללה, ו-dnsmasq שעונה שם
@@ -465,8 +500,8 @@ def create_dhcp_router(ctx: ServerContext, hooks: Hooks | None = None,
             raise HTTPException(
                 409, f"רשת ההפצה מוגדרת כאן בפעם הראשונה: לכרטיס {name} אין את "
                      f"הכתובת {server_ip} (יש לו: {', '.join(sorted(carried)) or 'כלום'}). "
-                     "קבע לו כתובת סטטית קודם (עריכת כתובת), ואז הדלק DHCP — "
-                     "אחרת השרת לא יעלה על הכתובת הזו")
+                     "הגדר את רשת ההפצה מהלשונית \"רשת הפצה\" — היא קובעת את "
+                     "הכתובת ומדליקה DHCP יחד (#1263); אחרת השרת לא יעלה על הכתובת הזו")
         return True
 
     @router.get("/deploy")

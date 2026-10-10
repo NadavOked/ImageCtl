@@ -110,8 +110,10 @@ const UI = {
     return `<div class="obj${compact ? " compact" : ""}"><div class="crumbs">${crumbHtml}</div><div class="obj-row"><div class="obj-icon">${uiIcon(icon)}</div><div><div class="obj-name">${esc(name)}</div>${sub ? `<div class="obj-sub"${subTitle}>${sub}</div>` : ""}</div>${pill}<div class="obj-actions">${actions}</div></div>${tabHtml}</div>`;
   },
   /* KPI: מספר גדול + תווית + שורת משמעות. cls: ok/warn/err/info/"" (אפור = אין/לא נבדק). */
-  kpi({ cls = "", label, value, unit = "", sub = "", bar = null }) {
-    const barHtml = bar == null ? "" : `<div class="bar" style="margin-top:6px" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${bar}"><i style="--w:${bar}%"></i></div>`;
+  kpi({ cls = "", label, value, unit = "", sub = "", bar = null, barPct = false }) {
+    const barEl = bar == null ? "" : `<div class="bar" style="margin-top:6px" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${bar}"><i style="--w:${bar}%"></i></div>`;
+    // ‏barPct (stage 2): פס שימוש מציג גם את האחוז לידו; פס התקדמות רגיל — בלי.
+    const barHtml = barEl && barPct ? `<div class="bar-row">${barEl}<span class="pct">${bar}%</span></div>` : barEl;
     return `<div class="kpi ${cls}"><div class="l">${esc(label)}</div><div class="v"><bdi dir="auto">${esc(value)}</bdi>${unit ? ` <small>${esc(unit)}</small>` : ""}</div>${barHtml}${sub ? `<div class="s">${sub}</div>` : ""}</div>`;
   },
   card({ title, small = "", acts = "", body, cls = "c12", flush = false }) {
@@ -140,6 +142,14 @@ const UI = {
     const label = text != null ? text : (known ? w + "%" : "—");
     return `<div class="bar-row"><div class="bar ${cls}"><i style="--w:${w}%"></i></div><span class="pct">${esc(label)}</span></div>`;
   },
+  /* שימוש = פס + המספרים עצמם: כמה תפוס מתוך כמה, ואחוז לידו (console-full.html useCell).
+     total/free חסרים או total<=0 = "לא נמדד" — לא 0% (עיקרון 5). */
+  usage(total, free) {
+    const t = Number(total), f = Number(free);
+    if (total == null || free == null || !Number.isFinite(t) || !Number.isFinite(f) || t <= 0) return `<span class="muted">לא נמדד</span>`;
+    const used = Math.max(0, Math.min(t, t - f)), pct = Math.round(100 * used / t);
+    return `<div class="usecell"><div class="bar ${pct >= 90 ? "err" : pct >= 75 ? "warn" : ""}" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><i style="--w:${pct}%"></i></div><div class="usenums"><bdi dir="ltr">${esc(fmtBytes(used))} / ${esc(fmtBytes(t))}</bdi><span class="pct">${pct}%</span></div></div>`;
+  },
   kv(pairs) { return `<div class="kv">${pairs.map(([k, v]) => `<span class="k">${esc(k)}</span><span class="v">${v}</span>`).join("")}</div>`; },
   note(cls, html) { return `<div class="note ${cls}"><span aria-hidden="true">●</span><span>${html}</span></div>`; },
   /* הודעה עם שגיאת מערכת (apple-pending-4, דשבורדים): ‏raw — הטקסט הגולמי שהשרת החזיר. כשהוא לטיני בעיקרו
@@ -151,7 +161,7 @@ const UI = {
       return UI.note(cls, `${before}${after}<details class="tech"><summary>פרטים טכניים</summary><code dir="ltr">${esc(raw)}</code></details>`);
     return UI.note(cls, `${before}${hasRaw ? `: ${esc(raw)}` : ""}${after}`);
   },
-  empty(text, action = "") { return `<div class="empty">${esc(text)}${action ? `<div>${action}</div>` : ""}</div>`; },
+  empty(text, action = "", title = "") { return `<div class="empty">${title ? `<b class="et">${esc(title)}</b>` : ""}${esc(text)}${action ? `<div>${action}</div>` : ""}</div>`; },
   /* ציר-זמן: [{t, cls, text(html), who}] */
   timeline(events) {
     return `<div class="timeline">${events.map((e) => `<div class="ev"><span class="t">${esc(e.t)}</span><span class="d ${e.cls || ""}"></span><span>${e.text}</span><span class="who">${esc(e.who || "")}</span></div>`).join("")}</div>`;
@@ -261,58 +271,167 @@ function isToday(ts) {
   return String(ts || "").slice(0, 10) === new Date().toISOString().slice(0, 10);
 }
 
-/* מודאל אחיד במקום prompt/confirm — net.js/netcfg.js קוראים ל-sheet(). */
+/* ===== מסגרת החלונות האחידה (שלב 1, windows.html) =====
+   sheet() / openModalContent() / openDrawer() הם שלוש הכניסות היחידות לחלון, וכולם מציירים אותה מסגרת:
+   כותרת + שורת משנה + X תמיד, גוף בסקשנים, פס תחתון קבוע (ראשי בקצה, ביטול לידו, הרסני אדום ומופרד).
+   רוחב לפי סוג: narrow 440 · mid 600 · wide 860 (אשף). אין כאן לוגיקה עסקית — רק מסגרת. */
+const WIN_SIZES = { narrow: "n-narrow", mid: "n-mid", wide: "n-wide" };
+const winSizeClass = (size, dflt = "mid") => WIN_SIZES[size] || WIN_SIZES[dflt];
+const winIcon = (d) => `<svg class="n-ic" viewBox="0 0 24 24" aria-hidden="true">${d}</svg>`;
+const WIN_ICONS = {
+  x: winIcon('<path d="m6 6 12 12M18 6 6 18"/>'),
+  err: winIcon('<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5h.01"/>'),
+  ok: winIcon('<circle cx="12" cy="12" r="9"/><path d="m8 12.5 2.8 2.8L16.5 9.5"/>'),
+  up: winIcon('<path d="M12 16V4M7 9l5-5 5 5M5 20h14"/>'),
+};
+const winCloseBtn = (attrs) => `<button type="button" class="n-x" aria-label="סגור" ${attrs}>${WIN_ICONS.x}</button>`;
+
+/* רכיב סיסמה אחד: "הצג/הסתר" + מדיניות חיה. המדיניות זהה לשרת (server/users.py validate_password):
+   8 תווים, אותיות, ספרות, ותו מהקבוצה !@#$%^&*(),.?":{}|<> — לא "כל תו", אחרת הרשימה תהיה ירוקה והשרת יסרב. */
+const PW_RULES = [["לפחות 8 תווים", /.{8,}/], ["אותיות", /[A-Za-z]/], ["ספרות", /[0-9]/], ["תו מיוחד", /[!@#$%^&*(),.?":{}|<>]/]];
+function passwordFieldHtml({ id, label, policy = false, autocomplete = "new-password" }) {
+  const rules = policy ? `<ul class="pw-pol" aria-live="polite">${PW_RULES.map(([name], i) => `<li data-rule="${i}">${LOGIN_CHECK_ICON}${esc(name)}</li>`).join("")}</ul>` : "";
+  return `<div class="n-f" data-pwf><label for="${id}">${esc(label)}</label><div class="pw-wrap"><input class="n-in" type="password" dir="ltr" id="${id}" autocomplete="${autocomplete}"><button type="button" class="pw-eye" data-pw="${id}" aria-pressed="false">הצג</button></div>${rules}</div>`;
+}
+function passwordPolicyState(value) { return PW_RULES.map(([, re]) => re.test(value)); }
+function wirePasswordFields(root) {
+  if (!root || !root.querySelectorAll) return;
+  root.querySelectorAll("[data-pwf]").forEach((box) => {
+    const input = box.querySelector("input"), eye = box.querySelector(".pw-eye");
+    if (!input || (box.dataset && box.dataset.wired)) return;
+    if (box.dataset) box.dataset.wired = "1";
+    if (eye) eye.onclick = () => {
+      const showing = input.type === "text";
+      input.type = showing ? "password" : "text";
+      eye.textContent = showing ? "הצג" : "הסתר";
+      eye.setAttribute("aria-pressed", String(!showing));
+    };
+    const items = box.querySelectorAll(".pw-pol li");
+    if (items.length) input.addEventListener("input", () => {
+      const state = passwordPolicyState(input.value);
+      items.forEach((li, i) => { li.classList.toggle("ok", state[i]); });
+    });
+  });
+}
+
+/* רכיב העלאה אחד לכל החלונות: גרירה או לחיצה; ה-<input type=file> האמיתי נשאר (id של הקורא) ולכן
+   הקוד ששולח את הקובץ לא משתנה. */
+function dropzoneHtml({ id, accept = "", label = "גררו קובץ לכאן או לחצו לבחירה", help = "", aria = "בחירת קובץ" }) {
+  return `<div class="n-drop" data-dz role="button" tabindex="0" aria-label="${esc(aria)}"><span class="dz-i">${WIN_ICONS.up}</span><strong class="dz-t">${esc(label)}</strong>${help ? `<span class="n-help">${help}</span>` : ""}<input type="file" id="${id}" accept="${esc(accept)}" class="sr-only" tabindex="-1" aria-hidden="true"></div>`;
+}
+function wireDropzones(root) {
+  if (!root || !root.querySelectorAll) return;
+  root.querySelectorAll("[data-dz]").forEach((dz) => {
+    const input = dz.querySelector("input[type=file]");
+    if (!input || (dz.dataset && dz.dataset.wired)) return;
+    if (dz.dataset) dz.dataset.wired = "1";
+    const title = dz.querySelector(".dz-t"), idle = title ? title.textContent : "";
+    const show = () => {
+      const f = input.files && input.files[0];
+      dz.classList.toggle("has", !!f);
+      if (title) title.textContent = f ? f.name : idle;
+      let meta = dz.querySelector(".dz-m");
+      if (f) {
+        if (!meta) { meta = document.createElement("span"); meta.className = "n-help dz-m"; dz.appendChild(meta); }
+        meta.innerHTML = `${ltr(fmtBytes(f.size))} · ללחוץ כדי להחליף`;
+      } else if (meta) meta.remove();
+    };
+    dz.addEventListener("click", (e) => { if (e.target !== input) input.click(); });
+    dz.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); input.click(); } });
+    ["dragenter", "dragover"].forEach((ev) => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.add("on"); }));
+    dz.addEventListener("dragleave", () => dz.classList.remove("on"));
+    dz.addEventListener("drop", (e) => {
+      e.preventDefault(); dz.classList.remove("on");
+      const files = e.dataTransfer && e.dataTransfer.files;
+      if (files && files.length) { try { input.files = files; } catch (err) { /* דפדפן שמסרב — הבחירה בלחיצה עדיין עובדת */ } show(); }
+    });
+    input.addEventListener("change", show);
+  });
+}
+function wireWindowParts(root) { wirePasswordFields(root); wireDropzones(root); }
+
+/* רכיב האשף: צעדים בצד, גוף משתנה, אחורה/הבא. render(step, state, body) מצייר את הצעד; valid(step, state)
+   קובע אם "הבא" פעיל. נבנה על אותה מסגרת (n-wide), ובלי לוגיקה של חלון מסוים. */
+function openWizard({ title, sub = "", steps, state = {}, finishLabel = "סיום", onFinish }) {
+  let at = 0;
+  const html = `<div class="n-wiz"><ol class="n-steps" id="wz-steps">${steps.map((s, i) => `<li data-i="${i}"><span class="num"></span><span class="lbl">${esc(s.label)}</span></li>`).join("")}</ol><div class="n-wcol"><div class="n-b" id="wz-body"></div></div></div>`;
+  openModalContent(title, html, finishLabel, () => {}, false, sub, "wide");
+  const ok = document.getElementById("modalOk"), body = () => document.getElementById("wz-body");
+  const hint = document.getElementById("modalHint");
+  const back = document.createElement("button");
+  back.type = "button"; back.className = "btn"; back.id = "wz-back"; back.textContent = "הקודם";
+  if (ok.parentNode && ok.parentNode.insertBefore) ok.parentNode.insertBefore(back, ok);
+  const draw = () => {
+    document.querySelectorAll("#wz-steps li").forEach((li, i) => {
+      li.className = i < at ? "done" : i === at ? "cur" : "";
+      li.querySelector(".num").textContent = i < at ? "✓" : String(i + 1);
+    });
+    steps[at].render(body(), state);
+    const good = !steps[at].valid || steps[at].valid(state);
+    ok.disabled = !good;
+    ok.textContent = at === steps.length - 1 ? finishLabel : "הבא";
+    back.style.visibility = at ? "visible" : "hidden";
+    if (hint) hint.textContent = good ? "" : (steps[at].hint || "");
+  };
+  back.onclick = () => { at--; draw(); };
+  ok.onclick = async () => {
+    if (at < steps.length - 1) { at++; draw(); return; }
+    try { await onFinish(state); closeModal(); } catch (e) { toast(e.message); }
+  };
+  state.redraw = draw;
+  draw();
+}
+
+/* מודאל אחיד במקום prompt/confirm — net.js/netcfg.js קוראים ל-sheet().
+   אפשרויות מעבר לקודמות: size (narrow|mid|wide), hint (טקסט בפס התחתון), field.help, field.type="section". */
 function sheet({ title, sub = "", fields = [], submitLabel = "שמירה",
-                 danger = false, verify = null, note = "", onSubmit }) {
+                 danger = false, verify = null, note = "", size = "", hint = "", onSubmit }) {
   const modal = $("#modal");
   const form = $("#sheet");
-  const passwordBox = (id, placeholder = "") => `
-    <div class="pw-wrap">
-      <input type="password" id="${id}" placeholder="${esc(placeholder)}">
-      <button type="button" class="pw-eye" data-pw="${id}">הצג</button>
-    </div>`;
+  const help = (f) => (f.help ? `<div class="n-help">${esc(f.help)}</div>` : "");
   const fieldHtml = (f) => {
+    if (f.type === "section") return `<h3 class="n-sec-h">${esc(f.label)}</h3>`;
     if (f.type === "select") {
-      return `<label>${esc(f.label)}
-        <select id="sf-${f.id}">${(f.options || []).map((o) =>
-          `<option value="${esc(o.value)}" ${o.value === f.value ? "selected" : ""}>${esc(o.label)}</option>`).join("")}</select></label>`;
+      return `<div class="n-f"><label for="sf-${f.id}">${esc(f.label)}</label>
+        <select class="n-in" id="sf-${f.id}">${(f.options || []).map((o) =>
+          `<option value="${esc(o.value)}" ${o.value === f.value ? "selected" : ""}>${esc(o.label)}</option>`).join("")}</select>${help(f)}</div>`;
     }
     if (f.type === "checkbox") {
-      return `<label class="check"><input type="checkbox" id="sf-${f.id}" ${f.value ? "checked" : ""}>
-        ${esc(f.label)}</label>`;
+      return `<div class="n-f"><label class="n-sw check"><input type="checkbox" role="switch" id="sf-${f.id}" ${f.value ? "checked" : ""}><span class="track"></span><span>${esc(f.label)}</span></label>${help(f)}</div>`;
     }
     if (f.type === "radio") {
-      return `<fieldset class="radio-group" id="sf-${f.id}">
-        ${f.label ? `<legend>${esc(f.label)}</legend>` : ""}
-        ${(f.options || []).map((o) =>
-          `<label class="check"><input type="radio" name="sf-${f.id}" value="${esc(o.value)}" ${o.value === f.value ? "checked" : ""}>
-            ${esc(o.label)}</label>`).join("")}
+      return `<fieldset class="n-f radio-group" id="sf-${f.id}">
+        ${f.label ? `<legend class="n-lbl">${esc(f.label)}</legend>` : ""}
+        <div class="n-opts">${(f.options || []).map((o) =>
+          `<label class="n-opt"><input type="radio" name="sf-${f.id}" value="${esc(o.value)}" ${o.value === f.value ? "checked" : ""}><strong>${esc(o.label)}</strong>${o.hint ? `<small>${esc(o.hint)}</small>` : ""}</label>`).join("")}</div>${help(f)}
       </fieldset>`;
     }
     if (f.type === "textarea") {
-      return `<label>${esc(f.label)}
-        <textarea id="sf-${f.id}" rows="3">${esc(f.value || "")}</textarea></label>`;
+      return `<div class="n-f"><label for="sf-${f.id}">${esc(f.label)}</label>
+        <textarea class="n-in" id="sf-${f.id}" rows="3">${esc(f.value || "")}</textarea>${help(f)}</div>`;
     }
     if (f.type === "password") {
-      return `<label>${esc(f.label)}</label>${passwordBox("sf-" + f.id, f.placeholder)}`
-        + (f.confirm
-          ? `<label>${esc(f.confirm)}</label>${passwordBox("sf-" + f.id + "-confirm")}`
-          : "");
+      return passwordFieldHtml({ id: "sf-" + f.id, label: f.label, policy: f.policy === undefined ? !!f.confirm : f.policy })
+        + (f.confirm ? passwordFieldHtml({ id: "sf-" + f.id + "-confirm", label: f.confirm }) : "");
     }
-    return `<label>${esc(f.label)}
-      <input type="${f.type || "text"}" id="sf-${f.id}" value="${esc(f.value || "")}"
-        placeholder="${esc(f.placeholder || "")}" ${f.dir ? `dir="${f.dir}"` : ""}></label>`;
+    return `<div class="n-f"><label for="sf-${f.id}">${esc(f.label)}</label>
+      <input class="n-in${f.dir === "ltr" ? " n-mono" : ""}" type="${f.type || "text"}" id="sf-${f.id}" value="${esc(f.value || "")}"
+        placeholder="${esc(f.placeholder || "")}" ${f.dir ? `dir="${f.dir}"` : ""}>${help(f)}</div>`;
   };
   const verifyHtml = verify ? `
-    <label>${esc(verify.label)}
-      <input type="text" id="sf-verify" placeholder="${esc(verify.mustEqual)}"></label>` : "";
+    <div class="n-f"><label for="sf-verify">${esc(verify.label)}</label>
+      <input class="n-in n-mono" type="text" id="sf-verify" placeholder="${esc(verify.mustEqual)}" autocomplete="off">
+      <div class="n-help">הקלדה זהה לטקסט מונעת פעולה בטעות: <span class="n-name">${esc(verify.mustEqual)}</span></div></div>` : "";
+  const sizeName = size || (fields.length >= 6 ? "mid" : "narrow");
+  form.className = `sheet win ${winSizeClass(sizeName, "narrow")}`;
   form.innerHTML = `
-    <div class="shead"><h3 id="sheetTitle">${esc(title)}</h3>${sub ? `<p>${esc(sub)}</p>` : ""}</div>
-    <div class="sbody">${note}${fields.map(fieldHtml).join("")}${verifyHtml}<p class="error" id="sf-error"></p></div>
-    <div class="sfoot">
-      <button class="btn ${danger ? "danger" : "primary"}" type="submit">${esc(submitLabel)}</button>
+    <div class="n-h shead"><div><h2 id="sheetTitle">${esc(title)}</h2>${sub ? `<p>${esc(sub)}</p>` : ""}</div>${winCloseBtn('id="sf-x"')}</div>
+    <div class="n-b sbody">${note}${fields.map(fieldHtml).join("")}${verifyHtml}<p class="error n-formerr" id="sf-error" role="alert"></p></div>
+    <footer class="n-f-bar sfoot">
+      <span class="n-hint" id="sf-hint">${esc(hint)}</span>
       <button class="btn" type="button" id="sf-cancel">ביטול</button>
-    </div>`;
+      <button class="btn ${danger ? "danger" : "primary"}" type="submit" id="sf-submit">${esc(submitLabel)}</button>
+    </footer>`;
   form.classList.remove("hidden");
   openModalFrame(modal, "sheet-mode");
   const first = form.querySelector("input, textarea, select");
@@ -325,12 +444,19 @@ function sheet({ title, sub = "", fields = [], submitLabel = "שמירה",
   const onKey = (event) => { if (event.key === "Escape") close(); };
   document.addEventListener("keydown", onKey);
   $("#sf-cancel").onclick = close;
-  form.querySelectorAll(".pw-eye").forEach((eye) => eye.onclick = () => {
-    const input = document.getElementById(eye.dataset.pw);
-    const showing = input.type === "text";
-    input.type = showing ? "password" : "text";
-    eye.textContent = showing ? "הצג" : "הסתר";
-  });
+  $("#sf-x").onclick = close;
+  wireWindowParts(form);
+  if (verify) {   // עיקרון 7: הכפתור ההרסני כבוי עד שהטקסט זהה (והבדיקה בשליחה נשארת)
+    const field = $("#sf-verify"), go = $("#sf-submit");
+    const sync = () => {
+      const same = field.value === verify.mustEqual;
+      go.disabled = !same;
+      const h = $("#sf-hint");
+      if (h) h.textContent = same ? "" : (hint || "הקלידו את הטקסט כדי להפעיל");
+    };
+    field.addEventListener("input", sync);
+    sync();
+  }
   form.onsubmit = async (event) => {
     event.preventDefault();
     if (verify && $("#sf-verify").value !== verify.mustEqual) {
@@ -346,6 +472,7 @@ function sheet({ title, sub = "", fields = [], submitLabel = "שמירה",
     }
     const values = {};
     fields.forEach((f) => {
+      if (f.type === "section") return;
       if (f.type === "radio") {
         const checked = form.querySelector(`input[name="sf-${f.id}"]:checked`);
         values[f.id] = checked ? checked.value : "";
@@ -615,9 +742,9 @@ function loginFormHtml(state) {
   return `<form id="login-form">
     <h1 class="title">כניסה</h1>
     <div class="f${err}"><label for="login-user">שם משתמש</label>
-      <input id="login-user" type="text" autocomplete="username" value="${user}" autofocus></div>
+      <input id="login-user" type="text" dir="ltr" autocomplete="username" value="${user}" autofocus></div>
     <div class="f pw${err}"><label for="login-pass">סיסמה</label>
-      <input id="login-pass" type="password" autocomplete="current-password">${loginEye("login-pass")}</div>
+      <input id="login-pass" type="password" dir="ltr" autocomplete="current-password">${loginEye("login-pass")}</div>
     ${loginMsg(state.error)}
     <button class="btn" type="submit">כניסה</button>
   </form>`;
@@ -633,14 +760,14 @@ function loginChangeHtml(state) {
     <h1 class="title sub">בחר סיסמה חדשה</h1>
     <p class="lead">הסיסמה הראשונית של <span class="mono">${esc(state.username || "")}</span> חייבת להתחלף לפני הכניסה.</p>
     <div class="f pw"><label for="pw-change-current">סיסמה נוכחית</label>
-      <input id="pw-change-current" type="password" autocomplete="current-password" value="${esc(state.current || "")}">${loginEye("pw-change-current")}</div>
+      <input id="pw-change-current" type="password" dir="ltr" autocomplete="current-password" value="${esc(state.current || "")}">${loginEye("pw-change-current")}</div>
     <div class="f pw"><label for="pw-change-new">סיסמה חדשה</label>
-      <input id="pw-change-new" type="password" autocomplete="new-password" value="${esc(state.next || "")}">${loginEye("pw-change-new")}</div>
+      <input id="pw-change-new" type="password" dir="ltr" autocomplete="new-password" value="${esc(state.next || "")}">${loginEye("pw-change-new")}</div>
     <ul class="rules" id="pw-rules" aria-live="polite">
       ${row("len", "לפחות 8 תווים")}${row("alpha", "אותיות")}${row("digit", "ספרות")}${row("special", "תו מיוחד (‏!@#$…)")}
     </ul>
     <div class="f pw${mismatch ? " err" : ""}" id="pw-change-confirm-wrap"><label for="pw-change-confirm">אימות הסיסמה החדשה</label>
-      <input id="pw-change-confirm" type="password" autocomplete="new-password" value="${esc(state.confirm || "")}">${loginEye("pw-change-confirm")}</div>
+      <input id="pw-change-confirm" type="password" dir="ltr" autocomplete="new-password" value="${esc(state.confirm || "")}">${loginEye("pw-change-confirm")}</div>
     ${mismatch ? `<p class="msg" role="alert">${LOGIN_ALERT_ICON}<span>הסיסמאות אינן זהות</span></p>` : ""}
     ${loginMsg(state.error)}
     <button class="btn" type="submit" id="pw-change-go"${ready ? "" : " disabled"}>שמור והמשך</button>
@@ -650,10 +777,10 @@ function loginChangeHtml(state) {
 function loginMfaHtml(state) {
   const otp = (state.otp || otpFromPaste("")).slice(0, 6);
   const cells = otp.map((d, i) =>
-    `<input inputmode="numeric" maxlength="1" aria-label="ספרה ${i + 1}" value="${esc(d)}" data-otp="${i}">`).join("");
+    `<input dir="ltr" inputmode="numeric" maxlength="1" aria-label="ספרה ${i + 1}" value="${esc(d)}" data-otp="${i}">`).join("");
   const backup = state.otpBackup
     ? `<div class="f"><label for="mfa-backup">קוד גיבוי</label>
-         <input id="mfa-backup" class="mono" type="text" autocomplete="one-time-code" value="${esc(state.backupCode || "")}"></div>`
+         <input id="mfa-backup" class="mono" type="text" dir="ltr" autocomplete="one-time-code" value="${esc(state.backupCode || "")}"></div>`
     : `<div class="otp" id="otp" aria-label="קוד אימות בן 6 ספרות">${cells}</div>`;
   return `<form id="mfa-form">
     <h1 class="title sub">הקוד מאפליקציית האימות</h1>
@@ -676,10 +803,10 @@ function loginSetupHtml(state) {
     <h1 class="title sub">הגדרת אימות דו-שלבי</h1>
     <p class="lead">סרוק באפליקציית אימות (Google Authenticator, Microsoft Authenticator, Aegis) והקלד את הקוד שהיא מציגה.</p>
     <div class="qr-row">${qr}<div class="secret"><span>חשבון: <span class="mono">${esc(account)}</span></span>
-      <div class="f pw"><label for="setup-secret">או הקלד את הסוד ידנית</label><input id="setup-secret" class="mono" type="password" readonly value="${esc(secretBlocks(state.secret))}">${loginEye("setup-secret")}</div>
+      <div class="f pw"><label for="setup-secret">או הקלד את הסוד ידנית</label><input id="setup-secret" class="mono" type="password" dir="ltr" readonly value="${esc(secretBlocks(state.secret))}">${loginEye("setup-secret")}</div>
     </div></div>
     <div class="f"><label for="setup-code">הקוד מהאפליקציה</label>
-      <input id="setup-code" class="mono" inputmode="numeric" maxlength="6" autocomplete="one-time-code" value="${esc(state.setupCode || "")}"></div>
+      <input id="setup-code" class="mono" dir="ltr" inputmode="numeric" maxlength="6" autocomplete="one-time-code" value="${esc(state.setupCode || "")}"></div>
     ${loginMsg(state.error)}
     <button class="btn" type="submit" id="setup-verify">אימות והפעלה</button>
   </form>`;
@@ -1654,6 +1781,8 @@ async function loadHome() {
   jobs.push(loadCaptures().then(() => { delete HOME.err.tasks; }, (e) => { HOME.err.tasks = e.message; }));
   grab("net", "/net");
   grab("ports", "/ports");
+  // ‏"אימג'ים אחרונים": הסקירה קוראת את הספרייה בעצמה, וכשל נשמר כ-HOME.err.images — "לא נקרא" ≠ "עוד לא נטען".
+  jobs.push(api("/images").then((v) => { if (!Array.isArray(v)) throw new Error("תשובה לא צפויה מהשרת"); IMAGES = v; delete HOME.err.images; }).catch((e) => { HOME.err.images = e.message; }));
   if (isAdmin()) {
     jobs.push(loadHealth());
     grab("journal", "/journal?limit=50");
@@ -1721,7 +1850,7 @@ ${UI.kpi({ cls: o.images == null ? "" : "ok", label: "אימג'ים בספריי
     sub: latest ? `אחרון: ${esc(latest.name)} — ${ltr(fmtDate(latest.created))}` : "אין אימג'ים — קלוט ממחשב בנייה או העלה tar" })}
 ${hasStorage
     ? UI.kpi({ cls: st.free_bytes / st.total_bytes < 0.1 ? "warn" : "ok", label: "אחסון אימג'ים", value: fmtBytes(st.free_bytes), unit: "פנוי",
-        bar: Math.round(100 * used / st.total_bytes), sub: `${ltr(fmtBytes(used))} מתוך ${ltr(fmtBytes(st.total_bytes))} בשימוש` })
+        bar: Math.round(100 * used / st.total_bytes), sub: `${ltr(fmtBytes(used))} מתוך ${ltr(fmtBytes(st.total_bytes))} בשימוש`, barPct: true })
     : UI.kpi({ cls: "", label: "אחסון אימג'ים", value: "לא ידוע", sub: "השרת לא החזיר נתוני אחסון" })}</div>`;
 }
 
@@ -1883,30 +2012,45 @@ function homeEvents(limit) {
   return UI.card({ title: limit >= 50 ? "אירועים" : "אירועים אחרונים", small: limit >= 50 ? "50 האחרונים" : "", acts, cls: "c12", body });
 }
 
+/* ‏"השרת" כאריחי LED (console-full.html P.home): שם, נקודת מצב, ושורת משנה. אותם נתונים כמו קודם —
+   פורטים (/ports), DHCP (/net), SSH (/ssh), סניפים, עדכון; לא נקרא נשאר אפור ולא ירוק (עיקרון 5). */
 function homeServerCard() {
   const ports = Array.isArray(HOME.ports) ? HOME.ports : null;
   const port = (id) => {
-    if (!ports) return UI.status("", HOME.err.ports ? "לא נקרא: " + HOME.err.ports : "לא נקרא עדיין");
+    if (!ports) return ["", HOME.err.ports ? "לא נקרא: " + HOME.err.ports : "לא נקרא עדיין"];
     const p = ports.find((x) => x.id === id);
-    return p ? UI.status(healthStatusClass(p.state), `${healthStatusLabel(p.state)} · ${p.port}`) : UI.status("", "לא מדווח");
+    return p ? [healthStatusClass(p.state), `${healthStatusLabel(p.state)} · ${p.port}`] : ["", "לא מדווח"];
   };
   const nic = (typeof NICS !== "undefined" && Array.isArray(NICS)) ? NICS.find((n) => n.enabled) : undefined;
   const dcls = nic ? dhcpLiveClass(nic.dhcp_live && nic.dhcp_live.state) : "";
-  const dhcp = nic ? UI.status(dcls === "ok" ? "ok" : dcls === "warn" ? "warn" : "", `${nic.name} · ${nic.dhcp_live_label || ""}`)
-    : (nic === undefined ? UI.status("", "לא נקרא") : UI.status("", "לא מוגדר"));
+  const dhcp = nic ? [dcls === "ok" ? "ok" : dcls === "warn" ? "warn" : "", `${nic.name} · ${nic.dhcp_live_label || ""}`]
+    : (nic === undefined ? ["", "לא נקרא"] : ["", "לא מוגדר"]);
   const ssh = HOME.ssh && HOME.ssh.stations
-    ? UI.status(HOME.ssh.stations.enabled ? "warn" : "", HOME.ssh.stations.enabled ? "דלוק" : "כבוי")
-    : UI.status("", HOME.err.ssh ? "לא נקרא" : "לא נקרא עדיין");
-  const pairs = [["API / קונסולה", port("http_console")], ["PXE / TFTP", port("tftp")], ["DHCP הפצה", dhcp],
-    ["מולטיקאסט", port("multicast")], ["SSH לתחנות", ssh]];
+    ? [HOME.ssh.stations.enabled ? "warn" : "", HOME.ssh.stations.enabled ? "דלוק" : "כבוי"]
+    : ["", HOME.err.ssh ? "לא נקרא" : "לא נקרא עדיין"];
+  const tiles = [["API / קונסולה", ...port("http_console")], ["PXE / TFTP", ...port("tftp")], ["DHCP הפצה", ...dhcp],
+    ["מולטיקאסט", ...port("multicast")], ["SSH לתחנות", ...ssh]].map(([name, cls, text]) => [name, cls, esc(text)]);
   if (HOME.nodes) {
     const live = HOME.nodes.filter((n) => !n.disabled_at);
     const down = live.filter((n) => SECONDARY_STATUS[n.id] && !SECONDARY_STATUS[n.id].connected).length;
-    pairs.push(["סניפים", live.length ? UI.status(down ? "err" : "ok", down ? `${down} מתוך ${live.length} לא מגיב` : `${live.length} מחוברים`) : UI.status("", "אין סניפים")]);
+    tiles.push(["סניפים", live.length ? (down ? "err" : "ok") : "", esc(live.length ? (down ? `${down} מתוך ${live.length} לא מגיב` : `${live.length} מחוברים`) : "אין סניפים")]);
   }
-  pairs.push(["עדכון", HOME.update ? `${esc(HOME.update.current || "ללא תג")} · ${UI.link("בדוק", "selectPageById('health')")}` : UI.status("", "לא נקרא")]);
+  tiles.push(["עדכון", HOME.update ? "ok" : "", HOME.update ? `${esc(HOME.update.current || "ללא תג")} · ${UI.link("בדוק", "selectPageById('health')")}` : "לא נקרא"]);
   const acts = `<button class="btn sm flat" onclick="selectPageById('health')">בריאות ←</button>`;
-  return UI.card({ title: "השרת", acts, cls: "c4", body: UI.kv(pairs) });
+  const body = `<div class="tiles">${tiles.map(([name, cls, text]) => `<div class="tile"><span class="led ${cls}"></span><div><div class="tt">${esc(name)}</div><small>${text}</small></div></div>`).join("")}</div>`;
+  return UI.card({ title: "השרת", acts, cls: "c4", body });
+}
+
+/* ‏"אימג'ים אחרונים" (console-full.html P.home): 3 האחרונים לפי תאריך יצירה, מהספרייה עצמה (‏/images). */
+function homeImagesCard() {
+  const acts = `<button class="btn sm flat" onclick="selectPageById('images')">לספרייה ←</button>`;
+  if (!Array.isArray(IMAGES)) return UI.card({ title: "אימג'ים אחרונים", acts, body: HOME.err.images
+    ? UI.note("err", `לא הצלחנו לקרוא את הספרייה: ${esc(HOME.err.images)}`) : UI.note("", "טוען את הספרייה…") });
+  const rows = IMAGES.slice().sort((a, b) => String(b.created || "").localeCompare(String(a.created || ""))).slice(0, 3).map((r) => [
+    `<span class="dskico">${uiIcon("storage")}</span><a role="link" tabindex="0" class="name" onclick="openImageDetail('${encodeId(r.id)}')">${esc(r.name)}</a>`,
+    esc(imageOsLabel(r.os)), ltr(fmtBytes(r.total_compressed_bytes)), ltr(fmtDate(r.created))]);
+  return UI.card({ title: "אימג'ים אחרונים", acts, flush: true,
+    body: UI.datagrid({ columns: ["שם", "מערכת", "בשרת", "נוצר"], opt: [1], rows, empty: "אין אימג'ים בספרייה עדיין" }) });
 }
 
 /* ‏#968: "פעיל 6 ימים 3 שעות" מ-/me.uptime_seconds (המכונה, /proc/uptime);
@@ -1947,7 +2091,7 @@ function home(tab = 0) {
   if (tab === 1) body = homeNowCard(true);
   else if (tab === 2 && isAdmin()) body = homeEvents(50);
   else if (!o && !overviewError) body = `<div class="c12">${pagePlaceholder()}</div>`;
-  else body = (isAdmin() ? homeAttention() : "") + homeKpis() + homeNowCard(false) + (isAdmin() ? homeServerCard() + homeEvents(6) : "");
+  else body = (isAdmin() ? homeAttention() : "") + homeKpis() + homeNowCard(false) + (isAdmin() ? homeServerCard() : "") + homeImagesCard();
   return `<div class="page">${header}<div class="body">${stale}${body}</div></div>`;
 }
 
@@ -2343,10 +2487,11 @@ function imageRow(r) {
     attrs: `class="${sel ? "sel" : ""}" data-id="${esc(r.id)}"${drag}`,
     cells: [
       `<input type="checkbox" aria-label="בחירת ${esc(r.name)}" ${sel ? "checked" : ""} onchange="toggleImgSel('${idEnc}',this.checked)">`,
-      `<a role="link" tabindex="0" class="name" onclick="openImageDetail('${idEnc}')">${esc(r.name)}</a>${r.available === false ? ` ${UI.pill("err", "לא זמין")}` : ""}${r.description ? `<span class="sub">${esc(r.description)}</span>` : ""}`,   // ‏#1066: המיקום לא נגיש — רשום, לא נמחק
-      esc(imageOsLabel(r.os)), imgFits(r), ltr(fmtBytes(r.total_compressed_bytes)), ltr(fmtDate(r.created)), imgVerify(r),
+      `<span class="dskico">${uiIcon("storage")}</span><a role="link" tabindex="0" class="name" onclick="openImageDetail('${idEnc}')">${esc(r.name)}</a>${r.available === false ? ` ${UI.pill("err", "לא זמין")}` : ""}${r.description ? `<span class="sub">${esc(r.description)}</span>` : ""}`,   // ‏#1066: המיקום לא נגיש — רשום, לא נמחק
+      esc(imageOsLabel(r.os)), r.folder ? esc(r.folder) : `<span class="muted">ללא תיקייה</span>`, imgFits(r), ltr(fmtBytes(r.total_compressed_bytes)), ltr(fmtDate(r.created)), imgVerify(r),
       use.length ? esc(use.join(" · ")) : `<span class="muted">—</span>`,
-      UI.acts([["הפץ", `deployImage('${idEnc}')`], ["פרטים", `openImageDetail('${idEnc}')`]]),
+      UI.rowMenu(r.name, [["פרטים", `openImageDetail('${idEnc}')`], ["הפץ", `deployImage('${idEnc}')`]]
+        .concat(admin ? [["שינוי שם…", `renameImage('${idEnc}')`], ["העבר לתיקייה…", `moveImage('${idEnc}')`], ["מחיקה…", `deleteImage('${idEnc}')`, "danger"]] : [])),
     ],
   };
 }
@@ -2367,7 +2512,7 @@ function captureRowHtml(t) {
   const cancel = isAdmin() ? `<div class="acts"><button class="btn sm danger" onclick="cancelCapture(decodeURIComponent('${encodeId(t.id)}'))">בטל קליטה</button></div>` : "";
   // ‏#1254: ההתקדמות בעמודת "בשימוש" (המצב של השורה); "אימות" נשאר ל-sha256, שנבדק בכניסה לספרייה.
   const verify = `<span class="muted" title="sha256 של כל מחיצה נבדק כשהאימג' נכנס לספרייה">בסוף הקליטה</span>`;
-  return `<tr class="task"><td></td><td>${UI.name(t.name || "", sub)}</td><td>—</td><td>—</td><td>${ltr(fmtBytes(t.bytes_written))}</td><td>${ltr(fmtDate(t.created_at))}</td><td>${verify}</td><td>${waiting ? UI.status("run", "ממתין") + captureProgressCell(t) : captureProgressCell(t, "נקלט… ")}</td><td>${cancel}</td></tr>`;
+  return `<tr class="task"><td></td><td>${UI.name(t.name || "", sub)}</td><td class="c-opt">—</td><td class="c-opt">—</td><td>—</td><td>${ltr(fmtBytes(t.bytes_written))}</td><td>${ltr(fmtDate(t.created_at))}</td><td>${verify}</td><td>${waiting ? UI.status("run", "ממתין") + captureProgressCell(t) : captureProgressCell(t, "נקלט… ")}</td><td>${cancel}</td></tr>`;
 }
 function imagesSelBar(list) {
   const n = IMG.sel.size;
@@ -2391,12 +2536,12 @@ function imagesTableHtml() {
       admin ? `<button class="btn primary" onclick="openCapture().catch(e => toast(e.message))">+ קליטה ממחשב בנייה</button> <button class="btn" onclick="openImageIngest()">העלאת קובץ tar</button>` : "");
   }
   if (!list.length && !tasks.length) {
-    return UI.empty(IMG.filter ? "אין אימג'ים שתואמים לסינון" : "התיקייה ריקה — גררו אליה אימג', או בחרו אותה בקליטה הבאה");
+    return IMG.filter ? UI.empty("אין אימג'ים שתואמים לסינון") : UI.empty("גררו אליה אימג', או בחרו אותה בקליטה הבאה.", "", "התיקייה ריקה");
   }
   const allSel = list.length > 0 && list.every((r) => IMG.sel.has(r.id));
   const columns = [{ html: `<input type="checkbox" aria-label="בחירת הכול" ${allSel ? "checked" : ""} onchange="toggleImgSelAll(this.checked)">` },
-    "שם", "מערכת", "נכנס לדיסק מ-", "בשרת", "נוצר", "אימות", "בשימוש", ""];
-  return UI.datagrid({ columns, rows: list.map(imageRow).concat(tasks.map((t) => ({ html: captureRowHtml(t) }))) }) + imagesSelBar(list);
+    "שם", "מערכת", "תיקייה", "נכנס לדיסק מ-", "בשרת", "נוצר", "אימות", "בשימוש", { html: `<span class="sr">פעולות</span>` }];
+  return UI.datagrid({ columns, cls: "kebab-col", opt: [2, 3], rows: list.map(imageRow).concat(tasks.map((t) => ({ html: captureRowHtml(t) }))) }) + imagesSelBar(list);
 }
 /* ‏#954 גל 2: הדף נצבע מחדש רק כשרשימת /tasks השתנתה — אחרת הבחירה
    והסינון היו נמחקים בכל דגימה (2 שניות). */
@@ -2418,7 +2563,8 @@ function imagesFilesCard() {
     : "";
   const bar = `<div class="dg-bar"><span class="crumbs">${crumb}</span>${desc}<span class="sp"></span><input type="search" value="${esc(IMG.filter)}" placeholder="סינון…" aria-label="סינון אימג'ים" oninput="imagesFilter(this.value)" style="width:180px">${edit}</div>`;
   const warned = (CAPTURE_TASKS || []).filter((t) => t.state === "done" && t.error).map(captureWarningHtml).join("");
-  return `<div class="c12 card"><div class="split"><div class="side">${imagesTree()}</div><div><div id="capture-bar">${warned}</div>${bar}<div id="img-table">${imagesTableHtml()}</div></div></div></div>`;
+  const title = IMAGES_FOLDER == null ? "אימג'ים" : IMAGES_FOLDER === "" ? "ללא תיקייה" : IMAGES_FOLDER;
+  return `<div class="c12 card"><div class="card-h"><span>${esc(title)}</span></div><div class="split"><div class="side">${imagesTree()}</div><div><div id="capture-bar">${warned}</div>${bar}<div id="img-table">${imagesTableHtml()}</div></div></div></div>`;
 }
 
 /* לשונית "קליטות": 20 המשימות האחרונות מ-/tasks. */
@@ -2454,7 +2600,7 @@ function imagesStorageCard() {
   const all = IMAGES || [];
   const lib = all.reduce((s, r) => s + (Number(r.total_compressed_bytes) || 0), 0);
   const kpis = `<div class="c12 kpis">`
-    + UI.kpi({ cls: read ? (pct != null && pct >= 90 ? "warn" : "ok") : "", label: "פנוי בדיסק האימג'ים", value: read ? fmtBytes(free) : "—", sub: read ? `${ltr(fmtBytes(used))} בשימוש מתוך ${ltr(fmtBytes(total))}` : (OVERVIEW ? "אין נתון אחסון" : "לא נקרא"), bar: pct })
+    + UI.kpi({ cls: read ? (pct != null && pct >= 90 ? "warn" : "ok") : "", label: "פנוי בדיסק האימג'ים", value: read ? fmtBytes(free) : "—", sub: read ? `${ltr(fmtBytes(used))} בשימוש מתוך ${ltr(fmtBytes(total))}` : (OVERVIEW ? "אין נתון אחסון" : "לא נקרא"), bar: pct, barPct: true })
     + UI.kpi({ cls: "info", label: "הספרייה", value: fmtBytes(lib), sub: `${all.length} ${all.length === 1 ? "אימג'" : "אימג'ים"} · ${(FOLDERS || []).length} תיקיות` })
     + `</div>`;
   const results = Object.entries(IMG.scrub);
@@ -2733,7 +2879,7 @@ function openImageDetail(id) {
   if (!img) { toast("אימג' לא נמצא"); return; }
   openDrawer(img.name, imageDrawerHtml(img));
   const gen = drawerGeneration;
-  const redraw = () => { if (gen === drawerGeneration) document.getElementById("drawerBody").innerHTML = imageDrawerHtml(img); };
+  const redraw = () => { if (gen === drawerGeneration) setDrawerBody(imageDrawerHtml(img)); };
   // ‏#972: המניפסט נקרא בכל פתיחה (לכל משתמש) — הקודם מוצג עד שהחדש מגיע.
   api("/images/" + encodeId(img.id))
     .then((m) => { IMG.manifest[img.id] = m; })
@@ -2839,7 +2985,7 @@ function openImageIngest() {
   if (!(ME && ME.role === "admin")) { toast("אין הרשאה"); return; }
   openModalContent(
     "העלאת קובץ tar",   // כמו הכפתור שפתח אותו; "קליטת אימג׳" היא גם השם של הקליטה ממחשב בנייה
-    `<div class="form"><div class="field full"><label>קובץ tar</label><input type="file" id="imageFile" accept=".tar,application/x-tar"></div><div class="field full"><div class="form-note">הקובץ יועלה ויאומת מול ה-manifest. אימג׳ פגום לא ייכנס לספרייה.</div></div></div>`,
+    `<div class="form"><div class="field full">${dropzoneHtml({ id: "imageFile", accept: ".tar,application/x-tar", aria: "בחירת קובץ tar של אימג'" })}</div><div class="field full"><div class="form-note">הקובץ יועלה ויאומת מול ה-manifest. אימג׳ פגום לא ייכנס לספרייה.</div></div></div>`,
     "העלה",
     startImageUpload
   );
@@ -3092,15 +3238,20 @@ function mchFilter(key, value) { MCH[key] = value; redrawMachinesTable(); }
 function machineRowHtml(m) {
   const macEnc = encodeId(m.mac), net = netFor(m.mac), st = machineState(m), role = machineRole(m);
   const name = machineName(m) || m.mac, sub = machineSub(m), sel = MCH.sel.has(m.mac);
-  const acts = [];
-  acts.push(["פרטים", `openMachineDetail('${macEnc}')`]);
+  // ‏⋯ אחד לשורה (console-full.html MENUS.machine): פרטים, ובמנהל — שם / קבוצה / חריצים (שיכפול) / הסרה (עדיין הקלדת שם).
+  const items = [["פרטים", `openMachineDetail('${macEnc}')`]];
+  if (isAdmin()) {
+    items.push(["שינוי שם…", `renameMachine('${macEnc}')`], ["העבר לקבוצה…", `moveMachineSheet('${macEnc}')`]);
+    if (role === "cloner") items.push(["מספר חריצי SATA…", `editDrawerCount('${macEnc}')`]);
+    items.push(["הסרה מהרישום…", `removeMachine('${macEnc}')`, "danger"]);
+  }
   return { attrs: `data-mac="${esc(m.mac)}"${sel ? ' class="sel"' : ""}`, cells: [
     `<input type="checkbox" aria-label="בחר ${esc(name)}"${sel ? " checked" : ""} onchange="toggleMchSel('${macEnc}',this.checked)">`,
     `<a class="name" role="link" tabindex="0" onclick="openMachineDetail('${macEnc}')">${esc(name)}</a>${sub ? `<span class="sub">${esc(sub)}</span>` : ""}`,
     `<span class="mono">${esc(m.mac)}</span>`,
     net && net.ip ? `<span class="mono">${esc(net.ip)}</span>` : `<span class="muted">—</span>`,
     net && net.last_seen ? esc(ago(net.last_seen)) : `<span class="muted">${NET ? "מעולם לא" : "לא נקרא"}</span>`,
-    disksCell(m), UI.status(st.cls, st.text), UI.acts(acts)] };
+    disksCell(m), UI.status(st.cls, st.text), UI.rowMenu(name, items)] };
 }
 /* שורת הקבוצה — roll-up: שם (כיתה → אובייקט), מונה, מחוברים/סבב רק כשיש נתון, פעולות. */
 function groupRowHtml(g, kids) {
@@ -3136,7 +3287,7 @@ function machinesTableHtml() {
       : gid ? `אין מחשבים בקבוצה ${groupLabel(gid)} (${MACHINES.length} רשומים בסך הכול)` : "אין מחשבים רשומים");
   }
   const columns = [{ html: `<input type="checkbox" aria-label="בחר את כל המוצגים" onchange="toggleMchSelAll(this.checked)">` },
-    "שם", "MAC", "IP אחרון", "נראה לאחרונה", "דיסקים", "מצב", ""];
+    "שם", "MAC", "IP אחרון", "נראה לאחרונה", "דיסקים", "מצב", { html: `<span class="sr">פעולות</span>` }];
   let rows;
   if (gid) rows = sortMachinesBySuffix(list).map(machineRowHtml);
   else {
@@ -3150,7 +3301,7 @@ function machinesTableHtml() {
       if (groupOpen(g.id)) rows.push(...kids.map(machineRowHtml));
     }
   }
-  return UI.datagrid({ columns, rows }) + mchSelBar(list);
+  return UI.datagrid({ columns, rows, cls: "kebab-col", opt: [2, 4] }) + mchSelBar(list);
 }
 function mchSelBar(list) {
   const n = list.filter((m) => MCH.sel.has(m.mac)).length;
@@ -3466,7 +3617,7 @@ function clonerCardHtml(m, admin, room = false) {
   const wol = `<button class="btn sm" onclick="wakeMachine('${macEnc}')" title="WoL למכונה הזו בלבד (#984); לכל החדר — בכותרת">WoL</button>`;
   const acts = room
     ? (st.off && roomOperator() ? wol : "")
-    : admin ? `<button class="btn sm" onclick="openMachineDetail('${macEnc}')">פרטים</button>${wol}` : "";
+    : admin ? `<button class="btn sm" onclick="openMachineDetail('${macEnc}')">פרטים</button><button class="btn sm" onclick="editDrawerCount('${macEnc}')">חריצים</button>${wol}` : "";
   return `<div class="mcard${st.cls ? "" : " off"}" data-mac="${esc(m.mac)}"><div class="mcard-h"><span class="st ${st.cls}"><b>${esc(machineName(m) || m.mac)}</b></span><span class="muted">${meta}</span></div>${body}${acts ? `<div class="acts">${acts}</div>` : ""}</div>`;
 }
 function clonerLegend() {
@@ -3629,7 +3780,7 @@ function builderCardHtml(m, admin) {
     ["לפני קליטה", `<span class="muted">NTFS / בשימוש — נבדקים בקליטה (<b title="לא מדווח ב-hello">דורש API</b>)</span>`],
     ["מצב", state],
   ]);
-  const acts = admin ? `<div class="acts">${task ? "" : `<button class="btn sm primary" onclick="openCapture('${macEnc}').catch(e => toast(e.message))">קלוט מכאן</button>`}<button class="btn sm" onclick="openMachineDetail('${macEnc}')">פרטים</button><button class="btn sm" onclick="wakeMachine('${macEnc}')">WoL</button></div>` : "";
+  const acts = admin ? `<div class="acts">${task ? "" : `<button class="btn sm primary" onclick="openCapture('${macEnc}').catch(e => toast(e.message))">קלוט מכאן</button>`}<button class="btn sm" onclick="openMachineDetail('${macEnc}')">פרטים</button><button class="btn sm" onclick="renameMachine('${macEnc}')">שינוי שם</button><button class="btn sm" onclick="wakeMachine('${macEnc}')">WoL</button></div>` : "";
   const meta = [net && net.ip ? `<span class="mono">${esc(net.ip)}</span>` : "", esc(NET ? seenAgo(net && net.last_seen) : "לא נקרא")].filter(Boolean).join(" · ");
   return `<div class="mcard${st.cls ? "" : " off"}" data-mac="${esc(m.mac)}"><div class="mcard-h"><span class="st ${st.cls}"><b>${esc(machineName(m) || m.mac)}</b></span><span class="muted">${meta}</span></div>${kv}${acts}</div>`;
 }
@@ -3928,7 +4079,7 @@ function openMachineDetail(mac) {
   api("/journal?machine=" + encodeURIComponent(machineName(m) || m.mac) + "&limit=20")
     .then((rows) => { MCH.history[m.mac] = rows; })
     .catch((e) => { MCH.history[m.mac] = { error: e.message }; })
-    .then(() => { if (gen === drawerGeneration) document.getElementById("drawerBody").innerHTML = machineDrawerHtml(m); });
+    .then(() => { if (gen === drawerGeneration) setDrawerBody(machineDrawerHtml(m)); });
 }
 function groupOptions(selected) {
   return machineGroupsInOrder().map((g) => ({ value: g.id, label: g.label, selected: g.id === selected }));
@@ -3975,6 +4126,11 @@ function bulkRemoveMachines() {
 }
 
 /* ---------- + מחשב: מודאל עם שתי לשוניות — אחד / הדבקה עם תצוגה מקדימה (dry_run) ---------- */
+/* קבוצה קבועה = שדה נסתר (אותו id, כדי ש-submit לא ישתנה); אחרת בחירה. */
+function amGroupField(id, group, fixed) {
+  if (fixed) return `<input type="hidden" id="${id}" value="${esc(fixed.id)}">`;
+  return `<div class="field full"><label for="${id}">קבוצה</label><select id="${id}">${groupOptionsHtml(group)}</select></div>`;
+}
 function groupOptionsHtml(selected) {
   return machineGroupsInOrder().map((g) => `<option value="${esc(g.id)}"${g.id === selected ? " selected" : ""}>${esc(g.label)}</option>`).join("");
 }
@@ -3983,11 +4139,14 @@ function openAddMachine({ group = "", mac = "", tab = 0 } = {}) {
   try { group = decodeURIComponent(group); } catch (e) {}
   try { mac = decodeURIComponent(mac); } catch (e) {}
   MCH.amTab = tab;
+  /* הכרעת נדב: מדף "מחשבי בנייה"/"מחשבי שיכפול" הקבוצה קבועה מהדף — בלי בחירה, והכותרת אומרת איזה מחשב. */
+  const fixed = machineGroupsInOrder().find((g) => g.id === group && (g.role === "build" || g.role === "cloner")) || null;
+  const title = fixed && fixed.role === "build" ? "+ מחשב בנייה" : fixed && fixed.role === "cloner" ? "+ מחשב שיכפול" : "+ מחשב";
   const tabBtn = (i, label) => `<button type="button" class="tab${tab === i ? " on" : ""}" role="tab" aria-selected="${tab === i}" onclick="amTab(${i})">${label}</button>`;
   const body = `<div class="page drw am"><div class="tabs" role="tablist">${tabBtn(0, "מחשב אחד")}${tabBtn(1, "הדבקה — הרבה בבת אחת")}</div>
-<div id="am-one" class="form"${tab === 1 ? " hidden" : ""}><div class="field"><label for="am-group">קבוצה</label><select id="am-group">${groupOptionsHtml(group)}</select></div><div class="field"><label for="am-name">שם / סיומת</label><input id="am-name" autocomplete="off" placeholder="${classroomsOn() ? "01–99 או INS לכיתה; שם חופשי לבנייה ולשיכפול" : "שם חופשי לבנייה ולשיכפול"}"></div><div class="field full"><label for="am-mac">MAC</label><input id="am-mac" dir="ltr" value="${esc(mac)}" placeholder="b4:2e:99:07:1a:c4" autocomplete="off"></div></div>
-<div id="am-paste" class="form"${tab === 0 ? " hidden" : ""}><div class="field full"><label for="am-pgroup">קבוצה</label><select id="am-pgroup">${groupOptionsHtml(group)}</select></div><div class="field full"><label for="am-text">שורה לכל מחשב: MAC ואז סיומת/שם</label><textarea id="am-text" rows="7" dir="ltr" placeholder="b4:2e:99:07:1a:c4 01&#10;B4-2E-99-07-1A-C5 02"></textarea></div><div class="field full"><button type="button" class="btn sm" onclick="previewMachineImport()">תצוגה מקדימה</button></div><div id="am-preview" class="stack"></div></div></div>`;
-  openModalContent("+ מחשב", body, "הוסף", submitAddMachine);
+<div id="am-one" class="form"${tab === 1 ? " hidden" : ""}>${amGroupField("am-group", group, fixed)}<div class="field full"><label for="am-name">שם / סיומת</label><input id="am-name" autocomplete="off" placeholder="${classroomsOn() ? "01–99 או INS לכיתה; שם חופשי לבנייה ולשיכפול" : "שם חופשי לבנייה ולשיכפול"}"></div><div class="field full"><label for="am-mac">MAC</label><input id="am-mac" dir="ltr" value="${esc(mac)}" placeholder="b4:2e:99:07:1a:c4" autocomplete="off"></div></div>
+<div id="am-paste" class="form"${tab === 0 ? " hidden" : ""}>${amGroupField("am-pgroup", group, fixed)}<div class="field full"><label for="am-text">שורה לכל מחשב: MAC ואז סיומת/שם</label><textarea id="am-text" rows="7" dir="ltr" placeholder="b4:2e:99:07:1a:c4 01&#10;B4-2E-99-07-1A-C5 02"></textarea></div><div class="field full"><button type="button" class="btn sm" onclick="previewMachineImport()">תצוגה מקדימה</button></div><div id="am-preview" class="stack"></div></div></div>`;
+  openModalContent(title, body, "הוסף", submitAddMachine, false, fixed ? `יירשם בקבוצת ${fixed.label}` : "רישום מחשב ברשת ההפצה", "narrow");
 }
 function amTab(i) {
   MCH.amTab = i;
@@ -4279,14 +4438,18 @@ function userRowHtml(u) {
   const lastAdmin = u.role === "admin" && !u.disabled && activeAdminCount() <= 1;
   // ‏⋯ אחד לשורה (UI.rowMenu): ההרסני (מחיקה — עדיין הקלדת שם) בתחתית, באדום.
   const items = [["סיסמה…", `userPasswordSheet('${enc}')`]];
-  if (!self && !lastAdmin) {
+  // ‏#1262: המנהל שנוצר בהתקנה הוא דלת החירום — השרת מסרב (409) למחיקה,
+  // השבתה והורדה, ולכן התפריט מציע רק סיסמה וניתוק הפעלות.
+  const locked = lastAdmin || u.is_builtin;
+  if (!self && !locked) {
     items.push(["תפקיד…", `userRoleSheet('${enc}')`],
       [u.disabled ? "הפעל" : "השבת", `userDisable('${enc}', ${u.disabled ? "false" : "true"})`]);
   }
   if (!self && !u.is_builtin && u.mfa_enabled) items.push(["נתק MFA…", `userMfaDisable('${enc}')`]);
   if (!self) items.push(["נתק את כל ההפעלות…", `userRevokeSessions('${enc}')`]);
-  if (!self && !lastAdmin) items.push(["מחק משתמש…", `userDeleteSheet('${enc}')`, "danger"]);
-  const note = self ? "זה אתה" : lastAdmin ? "המנהל הפעיל האחרון — לא ניתן למחיקה, להורדה או להשבתה" : (u.is_builtin ? "מקומי · ללא MFA" : "");
+  if (!self && !locked) items.push(["מחק משתמש…", `userDeleteSheet('${enc}')`, "danger"]);
+  const note = u.is_builtin ? (self ? "זה אתה · " : "") + "נוצר בהתקנה · לא ניתן למחיקה · ללא MFA"
+    : self ? "זה אתה" : lastAdmin ? "המנהל הפעיל האחרון — לא ניתן למחיקה, להורדה או להשבתה" : "";
   return { attrs: `data-user="${esc(u.username)}"`, cells: [
     UI.name(u.username, note),
     u.role === "admin" ? UI.pill("info", "מנהל") : UI.pill("", "הפצה"),
@@ -4520,8 +4683,10 @@ function openLogDetail(i) {
    כל מקור נכשל בנפרד (NETW.err) ומוצג "לא נקרא" — לא "אין" (עיקרון 5).
    וילן = הכרטיס (1:1, "לפי הגדרה") — מודל וילן אמיתי דורש API (#705).
    כיתות = תיבה סטטית "v2" — לא נבנה מעבר לזה (v1 = בנייה/שיכפול/שרתים).
-   כל שינוי DHCP/כתובת עובר בטפסים הקיימים של net.js/netcfg.js (editNic,
-   editAddress, הקלדת שם הכרטיס, rollback) — לא נבנתה זרימת שמירה חדשה (#53). */
+   ‏#1263: כל כרטיס — אופן הגדרה אחד (רשת הפצה / DHCP מהרשת / כתובת ידנית)
+   בחלון "הגדרת כרטיס…" (editNicConfig, netcfg.js); הגדרות רשת ההפצה בחלון
+   של לשונית "רשת הפצה" (editDeployNet, net.js). כיבוי DHCP — הקלדת שם
+   הכרטיס (#53). שינוי כתובת עדיין חמוש בהחזרה של #56. */
 let NETW = { nics: null, cfg: null, ports: null, mon: null, nodes: null, sessions: null, leases: null, probe: {}, sel: null, at: "", err: {} };
 // ‏#1088: מקור כתובת ההפצה — /net/deploy: {configured, source, interface, url, hint}. null = לא נקרא.
 let NET_DEPLOY = null;
@@ -4549,7 +4714,7 @@ async function loadNetwork() {
   const focus = netDeployNic();
   if (focus) NETW.leases = await grab("leases", () => api(`/net/interfaces/${encodeId(focus.name)}/leases`));
   NET_DEPLOY = deploy && typeof deploy === "object" ? deploy : null;
-  if (cfg) NETCFG = cfg;                                   // netcfg.js (editAddress, נתיבים, rollback) קורא מכאן
+  if (cfg) NETCFG = cfg;                                   // netcfg.js (editNicConfig, נתיבים, rollback) קורא מכאן
   if (Array.isArray(net)) { NET = net; NET_ERR = ""; } else { NET = null; NET_ERR = err.net || "תשובה שאינה רשימה"; }
   SSH_STATE = ssh; sshError = err.ssh || "";               // portSshNic/sshToggle (גל 5) קוראים מכאן
   PORTS_NICS = nics; portsNicsError = err.interfaces || "";
@@ -4623,6 +4788,7 @@ function netVlanOf(n) {
 }
 function netRoleLabel(n) {
   const parts = [];
+  if (isMgmtNic(n.name)) parts.push("ניהול");   // #1263: נבחר בהתקנה (NETCFG.management_interface)
   if (n.enabled) parts.push("הפצה · DHCP");
   if (n.proxy) parts.push("PXE proxy");
   if (n.trunk) parts.push("רשת המכללה");
@@ -4634,7 +4800,8 @@ function netRoleLabel(n) {
 }
 function netLinkStatus(n) {
   if (!n.present || n.state === "missing") return UI.status("", "לא קיים במערכת");
-  if (n.state === "up") return UI.status("ok", `מחובר${typeof n.speed_mbps === "number" && n.speed_mbps > 0 ? ` · ${n.speed_mbps} Mbps` : ""}`);
+  // ‏"1000 Mbps" לטיני בתוך משפט עברי — בלי bdi ה-RTL מהפך אותו ל-"Mbps 1000".
+  if (n.state === "up") return `<span class="st ok">מחובר${typeof n.speed_mbps === "number" && n.speed_mbps > 0 ? ` · <bdi dir="ltr">${esc(n.speed_mbps)} Mbps</bdi>` : ""}</span>`;
   if (n.state === "down") return UI.status("", "מנותק");
   return UI.status("unk", "לא נקרא");
 }
@@ -4701,14 +4868,15 @@ async function netProbe(nameEnc) {
 }
 function netSelect(nameEnc) { let name = nameEnc; try { name = decodeURIComponent(nameEnc); } catch (e) {} NETW.sel = name; populateSidebarNics(); if (current === "network") renderCurrent(); }
 function netNic(nameEnc) { let name = nameEnc; try { name = decodeURIComponent(nameEnc); } catch (e) {} return (NETW.nics || []).find((n) => n.name === name) || null; }
-function netEditAddress(nameEnc) {
+function netEditNic(nameEnc) { const n = netNic(nameEnc); if (n) editNicConfig(n.name); else toast("כרטיס לא נמצא"); }
+function netEditDeploy(nameEnc) { const n = netNic(nameEnc); if (n) editDeployNet(n.name); else toast("כרטיס לא נמצא"); }
+/* ‏#1263: "כיבוי DHCP…" — בכותרת כרטיס ה-DHCP ובתפריט של כרטיס ההפצה. הקלדת שם הכרטיס (#53). */
+function netDhcpOff(nameEnc) {
   const n = netNic(nameEnc); if (!n) return;
-  editAddress(netCfgRow(n.name) || bodyOf({ name: n.name, mode: "manual", address: "", netmask: MASKS[0], gateway: "", dns: [], routes: [] }, {}));
-}
-function netEditDhcp(nameEnc) { const n = netNic(nameEnc); if (n) editNic(n); else toast("כרטיס לא נמצא"); }
-function netShowFile(nameEnc) {
-  const n = netNic(nameEnc); if (!n) return;
-  showFile(netCfgRow(n.name) || { name: n.name, mode: "manual", address: "", netmask: MASKS[0], gateway: "", dns: [], routes: [] }).catch((e) => toast(e.message));
+  sheet({ title: `כיבוי DHCP על ${n.name}`, sub: "הכרטיס מפסיק לחלק כתובות ולענות ל-PXE.", danger: true, submitLabel: "כבה",
+    note: offMeansNote(PORT_OFF_MEANS.dhcp),
+    verify: { label: `להמשך הקלד את שם הכרטיס: ${n.name}`, mustEqual: n.name },
+    onSubmit: async () => { await saveNic(n.name, nicBody(n, { enabled: false, proxy: false })); await loadNetwork(); } });
 }
 function netDescribe(nameEnc) {
   const n = netNic(nameEnc); if (!n) return;
@@ -4743,14 +4911,14 @@ function netDiagramModel() {
   const nics = NETW.nics || [];
   const lanes = nics.map((n) => {
     const led = !n.present ? "off" : n.state === "up" ? "ok" : n.state === "down" ? "off" : "warn";
-    return { nic: n, vlan: netVlanOf(n), allowed: netServicesOn(n), led, clients: [] };
+    return { nic: n, vlan: netVlanOf(n), allowed: netServicesOn(n), led, clients: [], rows: [] };
   });
   const orphans = [];
   const laneOf = (kinds) => kinds.map((k) => lanes.find((l) => l.vlan.kind === k)).find(Boolean) || null;
   const place = (client, ip, fallback) => {
     const nic = ip ? netNicFor(ip) : null;
     const lane = (nic && lanes.find((l) => l.nic === nic)) || (fallback ? fallback() : null);
-    if (lane) lane.clients.push(client); else orphans.push(client);
+    if (lane) { lane.clients.push(client); if (client.row) lane.rows.push(client.row); } else orphans.push(client);
   };
   // משכפלים ובנייה — /monitor/machines (online נקבע בשרת); בלי כתובת → וילן ההפצה (שם הם יופיעו כשיעלו)
   const roles = [["cloner", "משכפלים"], ["build", "מחשבי בנייה"]];
@@ -4767,6 +4935,7 @@ function netDiagramModel() {
     for (const [lane, ms] of byLane) {
       const on = ms.filter((m) => m.online).length;
       const ips = ms.map((m) => m.ip).filter(Boolean), tail = ` · ${on} מתוך ${ms.length} מחוברים`;
+      ms.forEach((m) => lane.rows.push({ name: m.name || m.mac, ip: m.ip || "", kind: role, ok: !!m.online }));
       lane.clients.push({ kind: role, title: `${title} — ${ms.map((m) => m.name || m.mac).join(", ")}`,
         sub: `${netAddrList(ips)}${tail}`, tip: `${ips.map(bidi).join(" · ") || "ללא כתובת"}${tail}`,
         led: on === ms.length ? "ok" : on ? "warn" : "", dashed: on === 0 });
@@ -4784,7 +4953,7 @@ function netDiagramModel() {
   for (const n of NETW.nodes || []) {
     const off = !!n.disabled_at;
     const state = off ? "מושבת" : n.connected ? "מחובר" : `לא ענה${n.error ? `: ${n.error}` : ""}`;
-    place({ kind: "branch", title: `${n.label} — שרת משני`, led: off ? "" : n.connected ? "ok" : "err", dashed: off, viaFw: true,
+    place({ kind: "branch", row: { name: n.label, ip: urlHost(n.base_url), kind: "branch", ok: off ? false : !!n.connected }, title: `${n.label} — שרת משני`, led: off ? "" : n.connected ? "ok" : "err", dashed: off, viaFw: true,
       sub: `דרך FW · 8443 בלבד · ${bidi(n.base_url || "")} · ${state}`,
       tip: `המשני מאחורי FW משלו; הראשי יוזם, רק 8443 · ${bidi(n.base_url || "")} · ${state}` },
       urlHost(n.base_url), () => laneOf(["inter", "mgmt", "trunk", "none"]));
@@ -4801,6 +4970,7 @@ function netDiagramModel() {
   }
   for (const [lane, ds] of unregByLane) {
     lane.unreg = ds.length;
+    ds.forEach((d) => lane.rows.push({ name: d.mac, ip: d.ip || "", kind: "unreg", ok: null }));
     const last = ds[0];
     lane.clients.push({ kind: "unreg", led: "warn",
       title: ds.length === 1 ? `לא רשום — ${bidi(last.mac)}` : `לא רשומים — ${ds.length} (${bidi(ds.slice(0, 2).map((d) => d.mac).join(", "))}…)`,
@@ -4815,65 +4985,85 @@ function netDiagramModel() {
   return { lanes, orphans };
 }
 
-/* --- ציור ה-SVG: ימין השרת → אמצע וילנים → שמאל מחוברים; RTL בתרשים = טקסט מיושר לימין (text-anchor=end) --- */
-const ND = { W: 1100, srvX: 820, srvW: 250, nicX: 840, nicW: 210, nicH: 72, vlX: 470, vlW: 250, vlH: 100, clX: 60, clW: 330, clH: 46, gap: 8, top: 100 };
-/* פסקה RTL: direction=rtl + text-anchor=start = הקצה הימני ב-x, ומונחים לטיניים (DHCP, SSH, ens19) נשארים במקומם במשפט העברי. */
+/* --- תרשים הרשת (שלב 1, המוקאפ המאושר): השרת למעלה, וילן לכל כרטיס מוגדר. בכל וילן הכרטיס וה-IP של השרת,
+   ואדום כשהכרטיס מנותק. לחיצה פותחת מגירה (סקירה + מחשבים). הנתונים כולם מה-API הקיים — המודל netDiagramModel;
+   וילני כיתות (proxy) לא מוצגים ב-v1 (v1.2). כרטיס ללא תפקיד ("לא מוגדר") נשאר בלשונית "חיבורים פיזיים". --- */
 /* רצף ASCII (כתובת, MAC, מהירות) בתוך משפט עברי מתהפך ב-RTL ("Mb/s 1000") — מבודדים אותו ב-LRI…PDI (כמו ltr() ב-HTML). */
 function bidi(text) { const t = String(text); return /^[\x20-\x7e]+$/.test(t) ? `⁦${t}⁩` : t; }
-function svgText(x, y, cls, text) { return `<text class="${cls}" x="${x}" y="${y}" direction="rtl" text-anchor="start">${esc(text)}</text>`; }
-/* טקסט התיבות: <foreignObject> עם div — ‏<text> ב-SVG אינו נשבר ואינו נחתך, ובמעבדה (v0.41.1) שורות ארוכות רכבו על הקווים.
-   כל שורה: nowrap + ellipsis (‏.w2 = עד שתי שורות), ו-title עם הטקסט המלא. הרוחב = רוחב התיבה פחות שוליים — הטסט בודק זאת סטטית. */
-function svgLines(x, y, w, h, lines, cls = "") {
-  const inner = lines.map((l) => `<div class="fl ${l.cls}" title="${esc(l.tip || l.text)}">${esc(l.text)}</div>`).join("");
-  return `<foreignObject x="${x}" y="${y}" width="${w}" height="${h}"><div xmlns="http://www.w3.org/1999/xhtml" class="fo${cls ? " " + cls : ""}" dir="rtl">${inner}</div></foreignObject>`;
+const clipText = (s, n) => (String(s).length > n ? String(s).slice(0, n - 1) + "…" : String(s));
+function netMapLanes(model) {
+  return model.lanes.filter((l) => l.vlan.kind !== "none" && (classroomsOn() || l.vlan.kind !== "proxy"));
 }
-function netDiagramSvg(model) {
-  const { lanes, orphans } = model;
-  let y = ND.top;
-  const parts = [];
-  for (const lane of lanes) {
-    const n = lane.nic, enc = encodeId(n.name), sel = NETW.sel === n.name;
-    const bodyH = Math.max(ND.nicH, ND.vlH, lane.clients.length * (ND.clH + ND.gap) - ND.gap);
-    const mid = y + bodyH / 2;
-    const addr = bidi(netLiveAddrs(n).join(" · ") || "אין כתובת");
-    const link = !n.present ? "לא קיים במערכת" : n.state === "up" ? bidi(n.speed_mbps ? n.speed_mbps + " Mb/s" : "מחובר") : n.state === "down" ? "אין קישור" : "קישור לא נקרא";
-    const ssh = netSshOf(n.name).text;
-    parts.push(`<g class="hit" role="button" tabindex="0" aria-label="${esc(n.name)}" onclick="netSelect('${enc}')" onkeydown="if(event.key==='Enter'||event.key===' ')netSelect('${enc}')">`
-      + `<rect class="box${sel ? " sel" : ""}" x="${ND.nicX}" y="${mid - ND.nicH / 2}" width="${ND.nicW}" height="${ND.nicH}" rx="4"${lane.led === "off" ? ' stroke-dasharray="4 4"' : ""}/>`
-      + svgLines(ND.nicX + 8, mid - ND.nicH / 2 + 6, ND.nicW - 18, ND.nicH - 12, [{ cls: "t", text: `${n.name} — ${n.description || "ללא תיאור"}` },
-        { cls: "m", text: `${addr} · ${link}` }, { cls: "m", text: `DHCP: ${n.dhcp_live_label || "לא ידוע"} · SSH לשרת: ${ssh}` }], "nic")
-      + `<circle class="led ${lane.led}" cx="${ND.nicX + 12}" cy="${mid - ND.nicH / 2 + 12}" r="6"/></g>`);
-    const allowed = lane.allowed === null ? netAllowedUnknown() : `bind: ${lane.allowed.length ? netAllowedShort(lane.allowed) : "אף שירות לא מאזין כאן"}`;
-    parts.push(`<rect class="vlan" x="${ND.vlX}" y="${mid - ND.vlH / 2}" width="${ND.vlW}" height="${ND.vlH}" rx="6"/>`
-      + svgLines(ND.vlX + 10, mid - ND.vlH / 2 + 6, ND.vlW - 20, ND.vlH - 12, [{ cls: "t", text: `${lane.vlan.label} — לפי הגדרה` },
-        { cls: "m w2", text: allowed, tip: lane.allowed === null ? allowed : `מותר (לפי bind): ${lane.allowed.join(" · ") || "אף שירות לא מאזין כאן"}` },
-        { cls: "m", text: `רשת ${bidi(netNetworkOf(n) || "—")}` },
-        { cls: "m", text: `${lane.clients.filter((c) => c.kind !== "class").length} מחוברים · ${lane.unreg || 0} לא רשומים` }]));
-    const lnCls = lane.led === "ok" ? "ok" : lane.led === "off" ? "off" : "warn";
-    parts.push(`<path class="ln ${lnCls}" d="M${ND.nicX} ${mid} H${ND.vlX + ND.vlW}"/><circle class="led ${lane.led}" cx="${(ND.nicX + ND.vlX + ND.vlW) / 2}" cy="${mid}" r="5"/>`);
-    let cy = y + (bodyH - (lane.clients.length * (ND.clH + ND.gap) - ND.gap)) / 2;
-    for (const c of lane.clients) {
-      const cmid = cy + ND.clH / 2, lc = c.led || "off";   // אדום/כתום גם כשהתיבה מקווקוה; "off" = אין ראיה
-      parts.push(`<rect class="box ${c.led || ""}" x="${ND.clX}" y="${cy}" width="${ND.clW}" height="${ND.clH}" rx="4"${c.dashed ? ' stroke-dasharray="4 4"' : ""}/>`
-        + svgLines(ND.clX + 10, cy + 6, ND.clW - 20, ND.clH - 12, [{ cls: "t", text: c.title }, { cls: "m", text: c.sub, tip: c.tip }])
-        + `<path class="ln ${lc}" d="M${ND.vlX} ${mid} H430 V${cmid} H${ND.clX + ND.clW}"${c.viaFw ? ' stroke-dasharray="4 4"' : ""}/>`
-        + (c.led ? `<circle class="led ${c.led}" cx="430" cy="${(mid + cmid) / 2}" r="5"/>` : ""));
-      cy += ND.clH + ND.gap;
-    }
-    y += bodyH + 24;
-  }
-  const H = y + 30;
-  const srv = `<rect class="server" x="${ND.srvX}" y="40" width="${ND.srvW}" height="${H - 70}" rx="6"/>`
-    + svgText(ND.srvX + ND.srvW - 20, 68, "t", ME && ME.server_name ? ME.server_name : "שרת אימג'ים")
-    + svgText(ND.srvX + ND.srvW - 20, 86, "m", `${ME && ME.version ? ME.version + " · " : ""}${lanes.length} כרטיסים · נקרא ${NETW.at}`);
+function netLaneIp(n) { const c = netLiveAddrs(n)[0]; return c ? String(c).split("/")[0] : ""; }
+function netLaneServices(lane) {
+  if (lane.allowed === null) return netBindUnread() ? "טבלת הסוקטים לא נקראה" : "מה מותר: דורש API";
+  return lane.allowed.length ? netAllowedShort(lane.allowed) : "אף שירות לא מאזין";
+}
+/* מחשבים שכתובתם מחוץ לרשת של כל כרטיס — אזהרה מתחת לתרשים (היתה ב-main; נעלמה בשכתוב של שלב 1). */
+function netOrphansNote(model) {
+  const o = model.orphans || [];
+  return o.length ? UI.note("warn", `${o.length} מחוברים עם כתובת מחוץ לרשתות הכרטיסים: ${esc(o.map((x) => x.title).join(" · "))}`) : "";
+}
+function netMapBody(model) {
+  return (netMapLanes(model).length ? netMapSvg(model)
+    : UI.note("warn", "אין כרטיס שמוגדר כוילן (הפצה, ניהול או בין-שרתי) — ראו את הלשונית \"חיבורים פיזיים\".") + netMapSvg(model)) + netOrphansNote(model);
+}
+function netMapSvg(model) {
+  const lanes = netMapLanes(model), n = lanes.length;
+  const srv = ME && ME.server_name ? ME.server_name : "שרת אימג'ים";
+  const BW = n <= 2 ? 300 : n <= 3 ? 250 : 200, GAP = 16, TW = n * BW + Math.max(0, n - 1) * GAP, W = Math.max(760, TW + 40), x0 = (W - TW) / 2;
+  const SW = 300, sx = (W - SW) / 2, T = (x, y, cls, text) => `<text class="${cls}" x="${x}" y="${y}" text-anchor="middle">${esc(text)}</text>`;
+  let wires = "", ports = "", boxes = "";
+  lanes.forEach((lane, i) => {
+    const bad = lane.led === "off", warn = lane.led === "warn", cx = x0 + i * (BW + GAP) + BW / 2;
+    const px = n === 1 ? W / 2 : sx + 30 + i * ((SW - 60) / (n - 1)), ly = 118 + Math.min(i, n - 1 - i, 2) * 14;
+    const cls = bad ? " bad" : warn ? " warn" : "";
+    wires += `<path class="nm-wire${cls}" d="M${px} 94V${ly}H${cx}V170"/>`;
+    ports += `<rect class="nm-port${cls}" x="${px - 7}" y="87" width="14" height="14" rx="3"/>`;
+    const nic = lane.nic, ip = netLaneIp(nic), enc = encodeId(nic.name);
+    const nicLine = bad ? `${nic.name} · מנותק` : warn ? `${nic.name} · קישור לא נקרא` : `${nic.name} · ${ip || "ללא כתובת"}`;
+    const chip = bad ? "מנותק" : netLaneServices(lane);
+    boxes += `<g class="nm-vl" role="button" tabindex="0" aria-label="פרטי ${esc(lane.vlan.label)}" onclick="netLaneOpen('${enc}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();netLaneOpen('${enc}')}">`
+      + `<title>${esc(`${lane.vlan.label} — ${nicLine} — ${chip}`)}</title>`
+      + `<rect class="nm-box${cls}" x="${cx - BW / 2}" y="170" width="${BW}" height="130" rx="9"/>`
+      + T(cx, 198, "nm-t" + cls, clipText(lane.vlan.label, Math.floor(BW / 8)))
+      + T(cx, 216, "nm-m", bidi(netNetworkOf(nic) || "—"))
+      + T(cx, 250, "nm-i" + cls, bidi(nicLine))
+      + `<rect class="nm-chip${cls}" x="${cx - (BW - 40) / 2}" y="266" width="${BW - 40}" height="20" rx="10"/>`
+      + T(cx, 280, "nm-c" + cls, clipText(chip, Math.floor((BW - 50) / 6.5))) + `</g>`;
+  });
+  const sub = n ? `מחובר ל-${n} וילנים` : "אין כרטיס מוגדר";
   // ‏gotcha (CLAUDE.md): SVG עם viewBox בלבד קורס ל-0 תחת max-height — width/height מפורשים.
-  return `<svg class="netdiag-svg" xmlns="http://www.w3.org/2000/svg" width="${ND.W}" height="${H}" viewBox="0 0 ${ND.W} ${H}" role="img" aria-label="תרשים הרשת: ${lanes.length} כרטיסים">${srv}${parts.join("")}</svg>`
-    + (orphans.length ? UI.note("warn", `${orphans.length} מחוברים עם כתובת מחוץ לרשתות הכרטיסים: ${esc(orphans.map((o) => o.title).join(" · "))}`) : "");
+  return `<svg class="netmap-svg" xmlns="http://www.w3.org/2000/svg" width="${W}" height="340" viewBox="0 0 ${W} 340" role="img" aria-label="תרשים הרשת: השרת ו-${n} וילנים">`
+    + `<rect class="nm-srv" x="${sx}" y="14" width="${SW}" height="80" rx="9"/>${T(W / 2, 46, "nm-st", srv)}${T(W / 2, 68, "nm-m", `${ME && ME.version ? ME.version + " · " : ""}${sub}`)}`
+    + `${wires}${ports}${boxes}${T(W / 2, 326, "nm-m", "לחיצה על וילן פותחת פרטים ורשימת מחשבים")}</svg>`;
+}
+/* מגירת הוילן: כרטיס · כתובת · שירותים (סקירה) ורשימת המחשבים — מ-lane.rows של המודל. */
+function netLaneOpen(nameEnc) {
+  let name = nameEnc; try { name = decodeURIComponent(nameEnc); } catch (e) {}
+  const lane = netDiagramModel().lanes.find((l) => l.nic.name === name);
+  if (!lane) { toast("כרטיס לא נמצא"); return; }
+  openDrawer(lane.vlan.label, netLaneDrawerHtml(lane));
+}
+function netLaneDrawerHtml(lane) {
+  const n = lane.nic, cfg = netCfgRow(n.name), up = lane.led === "ok", bad = lane.led === "off";
+  const kindOf = { cloner: "משכפל", build: "בנייה", unreg: "לא רשום", branch: "שרת משני" };
+  const note = bad ? UI.note("err", `הכרטיס ${esc(n.name)} מנותק. מחשבים בוילן לא יראו את השרת עד שהקישור יחזור.`) : lane.led === "warn" ? UI.note("warn", "מצב הקישור לא נקרא — לא ידוע אם הכרטיס מחובר.") : "";
+  const card = UI.kv([["שם", `<span class="mono">${esc(n.name)}</span>`], ["MAC", `<span class="mono">${esc(n.mac || "—")}</span>`],
+    ["מהירות", typeof n.speed_mbps === "number" && n.speed_mbps > 0 ? ltr(`${n.speed_mbps} Mbps`) : "—"], ["קישור", netLinkStatus(n)]]);
+  const addr = UI.kv([["כתובת / רשת", `<span class="mono">${esc(netLiveAddrs(n).join(" · ") || "—")}</span> · <span class="mono">${esc(netNetworkOf(n) || "—")}</span>`],
+    ["שער", `<span class="mono">${esc((cfg && cfg.gateway) || "—")}</span>`], ["DNS", `<span class="mono">${esc(((cfg && cfg.dns) || []).join(", ") || "—")}</span>`]]);
+  const svc = UI.kv([["מאזינים", lane.allowed === null ? esc(netAllowedUnknown()) : esc(lane.allowed.join(" · ") || "אף שירות לא מאזין")], ["DHCP", netDhcpCell(n)]]);
+  const rows = lane.rows || [];
+  const machines = rows.length ? UI.datagrid({ columns: ["מחשב", "IP", "סוג", "מצב"], rows: rows.map((r) => [esc(r.name), `<span class="mono">${esc(r.ip || "—")}</span>`, esc(kindOf[r.kind] || r.kind),
+    r.ok === null ? UI.status("warn", "לא רשום") : r.ok ? UI.status("ok", "מחובר") : UI.status("", "לא מחובר")]) })
+    : `<div class="muted">${up ? "אין מחשבים בוילן הזה כרגע." : "אין מחשבים זמינים כשהכרטיס מנותק."}</div>`;
+  return `<div class="page drw"><div class="obj-sub">${esc(lane.vlan.label)} · <span class="mono">${esc(netNetworkOf(n) || "—")}</span></div>${note}`
+    + `<div><div class="sec">כרטיס</div>${card}<div class="sec" style="margin-top:14px">כתובת</div>${addr}<div class="sec" style="margin-top:14px">שירותים</div>${svc}</div>`
+    + `<div><div class="sec">מחשבים (${rows.length})</div>${machines}</div>`
+    + `<div class="acts" style="display:flex;gap:6px"><button class="btn" onclick="closeDrawer()">סגירה</button><button class="btn primary" onclick="closeDrawer();openNetwork(1)">לכרטיסי הרשת</button></div></div>`;
 }
 
-function netLegend() {
-  return `<div class="legend"><span><i class="sw-ok"></i>תקין / מחובר</span><span><i class="sw-warn"></i>אזהרה / לא רשום</span><span><i class="sw-err"></i>כשל / לא עונה</span><span><i class="sw-empty"></i>לא מחובר / כבוי</span></div>`;
-}
 function netUnreadNotes() {
   const e = NETW.err, out = [];
   const T = UI.noteTech;
@@ -4912,21 +5102,6 @@ function netHeader(tab, { name, sub, pill, actions, icon = NET_TAB_ICONS[tab] ||
 }
 
 /* --- לשונית 0: התרשים --- */
-function netSelectedCard() {
-  const n = (NETW.nics || []).find((x) => x.name === NETW.sel);
-  if (!n) return "";
-  const enc = encodeId(n.name), cfg = netCfgRow(n.name), svc = netServicesOn(n), pr = netProbeStatus(n.name), ssh = netSshOf(n.name);
-  const live = netLiveAddrs(n);
-  const kv1 = UI.kv([["בפועל", netLiveChecked() || !cfg ? `<span class="mono">${esc(live.join(" · ") || "—")}</span> · ${netLinkStatus(n)}` : UI.status("unk", "לא נקרא")],
-    ["מוגדר", `<span class="mono">${esc(netConfiguredText(n))}</span>`], ["פער", netGapStatus(n)]]);
-  const kv2 = UI.kv([["DHCP", netDhcpCell(n)],
-    ["חכירה", esc(n.enabled || n.proxy ? `${n.lease || "—"} · שער ${n.gateway || "—"} · DNS ${(n.dns || []).join(", ") || "—"}` : "—")],
-    ["מי עוד עונה", UI.status(pr.cls, pr.text)]]);
-  const kv3 = UI.kv([["שירותים כאן", svc === null ? (netBindUnread() ? UI.status("unk", "טבלת הסוקטים לא נקראה") : `<span class="muted" title="דורש API (#705)">דורש API (#705)</span>`) : esc(svc.join(" · ") || "אף שירות לא מאזין כאן")],
-    ["SSH לשרת", UI.status(ssh.cls, ssh.text)],
-    ["פעולות", `<div class="acts on"><button class="btn sm" onclick="netEditAddress('${enc}')">עריכת כתובת</button><button class="btn sm" onclick="netEditDhcp('${enc}')">עריכת DHCP</button><button class="btn sm" onclick="netProbe('${enc}')">בדוק מי עונה</button></div>`]]);
-  return UI.card({ title: `${n.name} — ${n.description || "ללא תיאור"}`, small: "לחיצה על כרטיס בתרשים מחליפה", body: `<div class="kv3">${kv1}${kv2}${kv3}</div>` });
-}
 function networkDiagramTab() {
   const nics = NETW.nics;
   const deploy = netDeployNic();
@@ -4940,7 +5115,7 @@ function networkDiagramTab() {
   const dcls = deploy ? dhcpLiveClass(deploy.dhcp_live && deploy.dhcp_live.state) : "";
   const dhcpPill = nics === null ? "" : UI.pill(dcls === "ok" ? "ok" : dcls === "warn" ? "warn" : "", deploy ? `DHCP: ${deploy.name} · ${deploy.dhcp_live_label || "לא נקרא"}` : "DHCP כבוי");
   const pill = (nics === null ? UI.pill("err", "לא נקרא") : warn ? UI.pill("warn", `${warn} אזהרות`) : UI.pill("ok", "אין אזהרות")) + dhcpPill;
-  const actions = `<button class="btn" onclick="addNic()">+ כרטיס</button><button class="btn" onclick="previewDnsmasq().catch(e=>toast(e.message))">קבצי dnsmasq</button>`;
+  const actions = `<button class="btn" onclick="addNic()">+ כרטיס</button>`;
   const header = netHeader(0, { name: "רשת", sub, pill, actions });
   let body;
   if (nics === null) body = `<div class="c12">${UI.note("err", `לא הצלחתי לקרוא את כרטיסי הרשת: ${esc(NETW.err.interfaces || "")} — אין מה לצייר`)}</div>`;
@@ -4948,8 +5123,7 @@ function networkDiagramTab() {
   else {
     const model = netDiagramModel();
     body = netUnreadNotes()
-      + `<div class="c12 card"><div class="card-h"><span>מה מחובר לאן</span>${netLegend()}</div><div class="card-b netdiag">${netDiagramSvg(model)}</div></div>`
-      + netSelectedCard()
+      + `<div class="c12 card"><div class="card-h"><span>מפת הרשת</span><small>לחיצה על וילן פותחת פרטים</small></div><div class="card-b netdiag">${netMapBody(model)}</div></div>`
       + `<div class="c12 cap">נמדד: כתובות ופער — /net/config · DHCP חי — /net/interfaces · מחוברים — /monitor/machines, /net, /storage-nodes · "מה מותר" — bind של /ports בלבד. וילנים ומדיניות — דורש API (#705).${classroomsOn() ? " כיתות — v2." : ""}</div>`;
   }
   return `<div class="page">${header}<div class="body">${body}</div></div>`;
@@ -4959,14 +5133,17 @@ function networkDiagramTab() {
 function netNicRow(n) {
   const enc = encodeId(n.name), sel = NETW.sel === n.name;
   const tags = (n.trunk ? ` ${UI.pill("warn", "רשת המכללה")}` : "") + (!n.present ? ` ${UI.pill("warn", "לא קיים במערכת")}` : "");
-  const name = `${UI.nameHtml(n.name, `${esc(n.description || "ללא תיאור")} · <span class="mono">${esc(n.mac || "—")}</span>`)}${tags}`;
+  const name = `${UI.nameHtml(n.name, `<span class="mono">${esc(n.mac || "—")}</span>`)}${tags}`;
+  // ‏#1263: תיאור — עמודה משלו, נערך ב"תיאור…"; ‏"תפקיד" נגזר ואינו נערך
+  const desc = n.description ? esc(n.description) : `<span class="muted">ללא תיאור</span>`;
   const live = netLiveAddrs(n);
   const actual = (NETCFG && !netLiveChecked()) ? UI.status("unk", "לא נקרא") : `<span class="mono">${esc(live.join(" · ") || "—")}</span>`;
-  // ‏⋯ אחד לשורה: עריכת כתובת/DHCP/תצוגה מקדימה; "שכחה" (מסירת ההגדרות) הרסנית — בתחתית
-  const acts = UI.rowMenu(n.name, [["עריכת כתובת…", `netEditAddress('${enc}')`], ["DHCP…", `netEditDhcp('${enc}')`],
-    ["תצוגה מקדימה של הקובץ", `netShowFile('${enc}')`], ["שכחה…", `netForget('${enc}')`, "danger"]]);
+  // ‏⋯ אחד לשורה (#1263): הגדרת כרטיס · תיאור · כיבוי DHCP (כרטיס ההפצה) · שכחה (כרטיס שאינו במערכת)
+  const acts = UI.rowMenu(n.name, [["הגדרת כרטיס…", `netEditNic('${enc}')`], ["תיאור…", `netDescribe('${enc}')`],
+    ...(n.enabled ? [["כיבוי DHCP…", `netDhcpOff('${enc}')`, "danger"]] : []),
+    ...(n.present ? [] : [["שכחה…", `netForget('${enc}')`, "danger"]])]);
   return { attrs: `data-nic="${esc(n.name)}"${sel ? ' class="sel"' : ""} onclick="netSelect('${enc}')" tabindex="0" aria-selected="${sel}"`,
-    cells: [name, netLinkStatus(n), actual, `<span class="mono">${esc(netConfiguredText(n))}</span>`, netGapStatus(n), netDhcpCell(n, false), netRoleLabel(n), netSshSwitch(n.name), acts] };
+    cells: [name, desc, netLinkStatus(n), actual, `<span class="mono">${esc(netConfiguredText(n))}</span>`, netGapStatus(n), netDhcpCell(n, false), netRoleLabel(n), netSshSwitch(n.name), acts] };
 }
 function netRoutesCard() {
   if (!NETCFG) return UI.card({ title: "נתיבים סטטיים", cls: "c4", body: UI.note("warn", `‏/net/config לא נקרא${NETW.err.config ? `: ${esc(NETW.err.config)}` : ""}`) });
@@ -4982,7 +5159,7 @@ function netRoutesCard() {
 }
 function netNicSelectedCard() {
   const n = (NETW.nics || []).find((x) => x.name === NETW.sel);
-  if (!n) return UI.card({ title: "כרטיס", cls: "c8", body: UI.empty("בחר כרטיס בטבלה — הפרטים, הקובץ וההסבר על החזרה יופיעו כאן") });
+  if (!n) return UI.card({ title: "כרטיס", cls: "c8", body: UI.empty("בחר כרטיס בטבלה — הפרטים וההסבר על החזרה יופיעו כאן") });
   const enc = encodeId(n.name), cfg = netCfgRow(n.name), rb = NETCFG && NETCFG.rollback;
   const live = netLiveAddrs(n);
   const kv = UI.kv([
@@ -4997,7 +5174,7 @@ function netNicSelectedCard() {
   const rbNote = !rb ? UI.note("warn", "‏/net/config לא נקרא — לא ידוע אם ההחזרה האוטומטית פעילה")
     : rb.armed ? UI.note("info", `שינוי כתובת מוחל עם חלון חזרה של ${esc(rb.window_seconds)} שניות: אם הקונסולה לא מאשרת "אני עדיין רואה", ההגדרה הקודמת חוזרת לבד (${esc(rb.unit)}).`)
     : UI.note("err", `ההחזרה האוטומטית (${esc(rb.unit)}) אינה פעילה: ${esc(rb.armed_detail)} — שינוי שיכול לנתק את הקונסולה ייחסם`);
-  const btns = `<div class="acts on" style="margin-top:10px"><button class="btn sm" onclick="netShowFile('${enc}')">תצוגה מקדימה של הקובץ</button><button class="btn sm primary" onclick="netEditAddress('${enc}')">עריכת כתובת</button><button class="btn sm" onclick="netEditDhcp('${enc}')">DHCP</button><button class="btn sm danger" onclick="netForget('${enc}')">שכחה</button></div>`;
+  const btns = `<div class="acts on" style="margin-top:10px"><button class="btn sm primary" onclick="netEditNic('${enc}')">הגדרת כרטיס…</button>${n.enabled ? `<button class="btn sm danger" onclick="netDhcpOff('${enc}')">כיבוי DHCP…</button>` : ""}${n.present ? "" : `<button class="btn sm danger" onclick="netForget('${enc}')">שכחה</button>`}</div>`;
   return UI.card({ title: `${n.name} — ${n.description || "ללא תיאור"}`, small: "נבחר", cls: "c8", body: `<div class="kv2">${kv}<div>${rbNote}${btns}</div></div>` });
 }
 function networkNicsTab() {
@@ -5014,7 +5191,7 @@ function networkNicsTab() {
   let body;
   if (nics === null) body = `<div class="c12">${UI.note("err", `לא הצלחתי לקרוא את כרטיסי הרשת: ${esc(NETW.err.interfaces || "")}`)}</div>`;
   else {
-    const table = UI.datagrid({ columns: ["כרטיס", "קישור", "בפועל", "מוגדר", "פער", "DHCP", "תפקיד", "SSH לשרת", { html: `<span class="sr">פעולות</span>` }], rows: nics.map(netNicRow), cls: "stable kebab-col", opt: [3, 6],
+    const table = UI.datagrid({ columns: ["כרטיס", "תיאור", "קישור", "בפועל", "מוגדר", "פער", "DHCP", "תפקיד", "SSH לשרת", { html: `<span class="sr">פעולות</span>` }], rows: nics.map(netNicRow), cls: "stable kebab-col", opt: [4, 7],
       empty: "לא נמצאו כרטיסי רשת — השרת לא רואה אף כרטיס, ואין הגדרה שמורה" });
     body = netUnreadNotes() + `<div class="c12 card"><div class="card-b${nics.length ? " flush" : ""}">${table}</div></div>` + netNicSelectedCard() + netRoutesCard();
   }
@@ -5051,7 +5228,7 @@ function netLeasesCaption(focus) {
 function netOtherNicRow(n) {
   const enc = encodeId(n.name), pr = netProbeStatus(n.name);
   return [`${UI.nameHtml(n.name, esc(n.description || "ללא תיאור"))}${n.trunk ? ` ${UI.pill("warn", "רשת המכללה")}` : ""}`, netDhcpCell(n), esc(n.enabled ? "מופעל" : n.proxy ? "proxy" : "כבוי"),
-    `${UI.status(pr.cls, pr.text)}`, `<div class="acts on"><button class="btn sm" onclick="netProbe('${enc}')">בדוק</button><button class="btn sm" onclick="netEditDhcp('${enc}')">${n.proxy ? "עריכה" : "הגדר כרשת הפצה"}</button></div>`];
+    `${UI.status(pr.cls, pr.text)}`, `<div class="acts on"><button class="btn sm" onclick="netProbe('${enc}')">בדוק</button>${netDeployNic() || n.proxy || isMgmtNic(n.name) ? "" : `<button class="btn sm" onclick="netEditDeploy('${enc}')">הגדר כרשת הפצה</button>`}</div>`];
 }
 function networkDeployTab() {
   const nics = NETW.nics, focus = netDeployNic();
@@ -5059,14 +5236,14 @@ function networkDeployTab() {
   const inNet = focus && NET ? NET.filter((d) => d.ip && nicHasIp(focus, d.ip)).length : null;
   const liveState = focus ? (focus.dhcp_live || {}).state : "";
   const sub = nics === null ? `‏/net/interfaces לא נקרא: ${esc(NETW.err.interfaces || "")}`
-    : !focus ? (NET_DEPLOY && NET_DEPLOY.configured === false ? "רשת ההפצה לא הוגדרה — בחר כרטיס למטה, קבע לו כתובת סטטית (עריכת כתובת) ואז \"הגדר כרשת הפצה\"" : "אין כרטיס מוגדר כרשת הפצה, ואין כרטיס שמשרת DHCP כרגע — בחר כרטיס למטה")
+    : !focus ? (NET_DEPLOY && NET_DEPLOY.configured === false ? "רשת ההפצה לא הוגדרה — בחר כרטיס למטה ו\"הגדר כרשת הפצה\": כתובת השרת נגזרת מהרשת" : "אין כרטיס מוגדר כרשת הפצה, ואין כרטיס שמשרת DHCP כרגע — בחר כרטיס למטה")
     : esc([focus.name, netNetworkOf(focus) || "ללא כתובת", `dnsmasq: ${focus.dhcp_live_label}`, NET === null ? "נראו ברשת: לא נקרא" : `${inNet} נראו ברשת ההפצה`, `מי עוד עונה: ${pr.text}`].join(" · "));
   const pill = nics === null ? UI.pill("err", "לא נקרא") : !focus ? UI.pill("", "כבוי")
     : focus.dhcp_diverged ? UI.pill("warn", "לא תואם למצב הפעיל") : liveState === "serving" ? UI.pill("ok", "משרת") : liveState === "unknown" ? UI.pill("err", "לא נקרא") : UI.pill("warn", focus.dhcp_live_label);
-  const editTarget = focus || (nics || []).find((n) => n.present && !n.trunk) || (nics || [])[0];
-  const actions = (editTarget ? `<button class="btn primary" onclick="netEditDhcp('${encodeId(editTarget.name)}')">${focus ? "עריכת DHCP" : "הגדר כרשת הפצה"}</button>` : "")
-    + (focus ? `<button class="btn" onclick="netProbe('${encodeId(focus.name)}')">בדוק מי עונה</button>` : "")
-    + `<button class="btn" onclick="previewDnsmasq().catch(e=>toast(e.message))">קבצי dnsmasq</button>`;
+  // ‏#1263: כרטיס הניהול אינו יכול להיות רשת ההפצה; העריכה והכיבוי — בכותרת כרטיס ה-DHCP
+  const candidate = (nics || []).find((n) => n.present && !n.trunk && !isMgmtNic(n.name));
+  const actions = focus ? `<button class="btn" onclick="netProbe('${encodeId(focus.name)}')">בדוק מי עונה</button>`
+    : candidate ? `<button class="btn primary" onclick="netEditDeploy('${encodeId(candidate.name)}')">הגדר כרשת הפצה</button>` : "";
   const header = netHeader(2, { name: "רשת הפצה — DHCP", sub, pill, actions, icon: "deploy" });
   let body;
   if (nics === null) body = `<div class="c12">${UI.note("err", `לא הצלחתי לקרוא את כרטיסי הרשת: ${esc(NETW.err.interfaces || "")}`)}</div>`;
@@ -5075,7 +5252,9 @@ function networkDeployTab() {
     const match = !focus ? UI.status("", "אין") : !(focus.dhcp_live || {}).checked ? UI.status("unk", `${stored}המצב הפעיל לא נקרא`)
       : focus.dhcp_diverged ? UI.status("warn", `${stored}לא תואם למצב הפעיל`) : UI.status("ok", `${stored}תואם למצב הפעיל`);
     const serves = !focus ? UI.empty("אין כרטיס מוגדר כרשת הפצה — \"הגדר כרשת הפצה\" על אחד הכרטיסים למטה. DHCP הוא ההגדרה המסוכנת ביותר במערכת (#53): השרת בודק לפני ההדלקה מי כבר עונה.")
-      : UI.kv([["כרטיס", `<span class="mono">${esc(focus.name)}</span> ${esc(focus.description ? `— ${focus.description}` : "")}`], ["כתובת השרת", `<span class="mono">${esc(focus.server_ip || "—")}</span>`],
+      : UI.kv([["כרטיס", `<span class="mono">${esc(focus.name)}</span> ${esc(focus.description ? `— ${focus.description}` : "")}`],
+        ["רשת", `<span class="mono">${esc(focus.server_ip && focus.netmask ? `${networkOf(focus.server_ip, focus.netmask) || "—"}/${maskBits(focus.netmask)}` : "—")}</span>`],
+        ["כתובת השרת", `<span class="mono">${esc(focus.server_ip || "—")}</span> <span class="cap">הראשונה ברשת</span>`],
         ["טווח", `<span class="mono">${esc(focus.range_start && focus.range_end ? `${focus.range_start} – ${focus.range_end}` : "—")}</span>`], ["מסכה", `<span class="mono">${esc(focus.netmask || "—")}</span>`],
         ["שער", `<span class="mono">${esc(focus.gateway || "—")}</span>`], ["DNS", `<span class="mono">${esc((focus.dns || []).join(", ") || "—")}</span>`], ["חכירה", esc(focus.lease || "—")],
         ["בפועל", netDhcpCell(focus)], ["שמור בקונסולה", match], ["מי עוד עונה", UI.status(pr.cls, pr.text)]]);
@@ -5087,7 +5266,8 @@ function networkDeployTab() {
     const others = (nics || []).filter((n) => n !== focus && (classroomsOn() || !n.proxy));
     const othersTable = UI.datagrid({ columns: ["כרטיס", "מצב DHCP חי", "שמור בקונסולה", "מי עוד עונה", ""], rows: others.map(netOtherNicRow), cls: "stable", empty: "אין כרטיסים נוספים" });
     body = netUnreadNotes()
-      + UI.card({ title: "מה השרת מחלק", small: focus ? "כפי שנקרא מקובץ dnsmasq ומהשירות" : "", cls: "c4", body: serves })
+      + UI.card({ title: focus ? `DHCP על ${focus.name}` : "מה השרת מחלק", small: focus ? "כפי שנקרא מקובץ dnsmasq ומהשירות" : "", cls: "c4", body: serves,
+        acts: focus ? `<button class="btn sm" onclick="netEditDeploy('${encodeId(focus.name)}')">עריכה…</button><button class="btn sm danger" onclick="netDhcpOff('${encodeId(focus.name)}')">כיבוי DHCP…</button>` : "" })
       + UI.card({ title: "מי קיבל כתובת", small: `מה-hello ומ-net_devices · ${NET_ONLINE_SECONDS} שניות = "מחובר" · ${netLeasesCaption(focus)}`, cls: "c8", body: seenBody, flush: NET !== null && seenRows.length > 0 })
       + UI.card({ title: "כרטיסים אחרים", small: "DHCP הוא בדיוק על כרטיס אחד — ההפצה", cls: "c12", body: othersTable, flush: others.length > 0 });
   }
@@ -5203,9 +5383,9 @@ function portSwitchHtml(key, on, lock, cap, label) {
    שמירה מרעננים את הטבלה הזו (ה-sheet של net.js מרענן רק את דפי הרשת). */
 function portDhcpOn() {
   const list = PORTS_NICS || [];
-  const nic = list.find((n) => n.present && !n.trunk) || list[0];
+  const nic = list.find((n) => n.present && !n.trunk && !isMgmtNic(n.name)) || list.find((n) => !isMgmtNic(n.name));
   if (!nic) { toast("אין כרטיס רשת להדליק עליו DHCP — ראו חיבורים פיזיים"); return; }
-  editNic(nic);
+  editDeployNet(nic.name);
   const form = $("#sheet");
   const orig = form && form.onsubmit;
   if (typeof orig === "function") form.onsubmit = async (event) => { await orig(event); await loadPorts(); };
@@ -5952,6 +6132,19 @@ function selectInventory(el, id) {
   if (page.load) page.load();
 }
 
+/* הכרעת נדב: סגירת ענף סוגרת גם כל תת-ענף שבתוכו, כך שפתיחה מחדש מציגה רק את הרמה הראשונה סגורה.
+   המצב נקרא מה-DOM (sidebarChildOpen), ולכן גם בנייה מחדש של העץ שומרת את אותו כלל. */
+function collapseInventoryDescendants(box) {
+  if (!box || !box.querySelectorAll) return;
+  box.querySelectorAll(".inventory-children").forEach((inner) => {
+    inner.setAttribute("hidden", "");
+    const owner = inner.previousElementSibling;
+    if (!owner || !owner.classList || !owner.classList.contains("inventory-node")) return;
+    owner.setAttribute("aria-expanded", "false");
+    const a = owner.querySelector(".tree-arrow");
+    if (a) { a.dataset.open = "false"; a.textContent = "▸"; }
+  });
+}
 function toggleInventoryGroup(nodeEl, childId) {
   const box = childId ? document.getElementById(childId) : null;
   const arrow = nodeEl && nodeEl.querySelector(".tree-arrow");
@@ -5965,6 +6158,7 @@ function toggleInventoryGroup(nodeEl, childId) {
     } else {
       box.setAttribute("hidden", "");
       box.style.removeProperty("display");
+      collapseInventoryDescendants(box);
     }
   }
   if (arrow) arrow.dataset.open = String(opening);
@@ -6128,14 +6322,98 @@ function closeActionMenu() {
   if (btn) btn.setAttribute("aria-expanded", "false");
 }
 
-function openDrawer(title, body) {
+/* מגירה: רוחב קבוע, כותרת + שורת משנה + X, לשוניות, ופס פעולות קבוע בתחתית.
+   הבונים (imageDrawerHtml, machineDrawerHtml, storageDrawerHtml…) ממשיכים להחזיר מחרוזת אחת; drawerEnhance
+   מחלק אותה בדפדפן אמיתי: .obj-sub -> שורת המשנה, .acts וה-foot -> הפס הקבוע, כל .sec אחרי הראשון -> לשונית. */
+let drawerTab = 0;
+function openDrawer(title, body, opts = {}) {
   dialogRemember();
   drawerGeneration++;
+  drawerTab = 0;
   document.getElementById("drawerTitle").textContent = title;
-  document.getElementById("drawerBody").innerHTML = body;
+  const sub = document.getElementById("drawerSub");
+  if (sub) sub.textContent = opts.sub || "";
+  setDrawerBody(body);
   document.getElementById("drawer").classList.add("open");
   document.getElementById("detailBackdrop").classList.add("show");
   dialogFocusIn();
+}
+
+function setDrawerBody(html) {
+  const body = document.getElementById("drawerBody");
+  body.innerHTML = html;
+  drawerEnhance(body);
+}
+
+function drawerEnhance(body) {
+  const sub = document.getElementById("drawerSub"), tabs = document.getElementById("drawerTabs"), foot = document.getElementById("drawerFoot");
+  if (tabs) { tabs.innerHTML = ""; tabs.hidden = true; }
+  if (foot) { foot.innerHTML = ""; foot.hidden = true; }
+  const root = body && body.firstElementChild;
+  if (!root || !hasClass(root, "drw") || !body.appendChild || !tabs || !foot || !root.querySelector) return;   // לא בדפדפן אמיתי, או תוכן שאינו בונה-מגירה
+  const kids = [...root.children];
+  const objSub = kids.find((k) => hasClass(k, "obj-sub"));
+  if (objSub && sub) { sub.innerHTML = objSub.innerHTML; objSub.remove(); }
+  const acts = kids.find((k) => hasClass(k, "acts"));
+  const last = kids[kids.length - 1];
+  const tail = last && last !== acts && /border-top/.test(last.getAttribute("style") || "") ? last : null;
+  const boxes = [acts, tail].filter(Boolean);
+  const buttons = boxes.flatMap((box) => [...box.querySelectorAll("button, a.btn")]);
+  const isDanger = (b) => hasClass(b, "danger"), isPrimary = (b) => hasClass(b, "primary");
+  const ordered = [...buttons.filter(isDanger), ...buttons.filter((b) => !isDanger(b) && !isPrimary(b)), ...buttons.filter(isPrimary)];
+  ordered.forEach((b, i) => {
+    b.classList.remove("sm");
+    if (isDanger(b)) b.classList.add("ghost-dng");
+    if (i > 0 && !isDanger(b) && isDanger(ordered[i - 1])) { const sp = document.createElement("span"); sp.className = "n-hint"; foot.appendChild(sp); }
+    foot.appendChild(b);
+  });
+  // ‏לא מאבדים תוכן: מה שנשאר בקופסה אחרי שהכפתורים עברו לשורת הפעולות (הסבר, "בקרוב", תווית WoL) נשאר בגוף; רק קופסה ריקה נמחקת.
+  boxes.forEach((box) => { if (!box.children.length && !String(box.textContent || "").trim()) box.remove(); });
+  if (!ordered.length || ordered.every(isDanger)) {
+    const sp = document.createElement("span"); sp.className = "n-hint"; foot.appendChild(sp);
+    const close = document.createElement("button"); close.type = "button"; close.className = "btn primary"; close.textContent = "סגירה";
+    close.onclick = () => closeDrawer(); foot.appendChild(close);
+  }
+  foot.hidden = false;
+  const blocks = [...root.children].filter((k) => k.firstElementChild && hasClass(k.firstElementChild, "sec"));
+  const extra = blocks.slice(1);
+  if (!extra.length) return;
+  const overview = document.createElement("div");
+  overview.className = "n-pane page drw";
+  [...root.children].filter((k) => !extra.includes(k)).forEach((k) => overview.appendChild(k));
+  const panes = [overview], labels = ["סקירה"];
+  extra.forEach((blk) => {
+    const heading = blk.firstElementChild;
+    labels.push(heading.textContent.trim()); heading.remove();
+    blk.classList.add("n-pane"); panes.push(blk);
+  });
+  body.innerHTML = "";
+  panes.forEach((pn, i) => { pn.setAttribute("role", "tabpanel"); pn.id = "dpn" + i; body.appendChild(pn); });
+  labels.forEach((label, i) => {
+    const t = document.createElement("button");
+    t.type = "button"; t.className = "n-tab"; t.setAttribute("role", "tab"); t.id = "dtb" + i; t.textContent = label;
+    t.setAttribute("aria-controls", "dpn" + i);
+    t.onclick = () => selectDrawerTab(i);
+    t.onkeydown = (e) => {
+      const d = e.key === "ArrowLeft" ? 1 : e.key === "ArrowRight" ? -1 : 0;   // RTL: חץ שמאלה = הבא
+      if (!d) return;
+      e.preventDefault();
+      const n = (i + d + labels.length) % labels.length;
+      selectDrawerTab(n); document.getElementById("dtb" + n).focus();
+    };
+    tabs.appendChild(t);
+  });
+  tabs.hidden = false;
+  selectDrawerTab(Math.min(drawerTab, labels.length - 1));
+}
+
+function selectDrawerTab(i) {
+  drawerTab = i;
+  document.querySelectorAll("#drawerTabs .n-tab").forEach((t, j) => {
+    t.setAttribute("aria-selected", String(i === j)); t.tabIndex = i === j ? 0 : -1;
+    const pane = document.getElementById("dpn" + j);
+    if (pane) pane.hidden = i !== j;
+  });
 }
 
 function closeDrawer() {
@@ -6266,9 +6544,18 @@ function dhcpNotice(r) {
   return true;
 }
 
-function openModalContent(title, body, okLabel = "אישור", okFn = "closeModal()", danger = false) {
+function openModalContent(title, body, okLabel = "אישור", okFn = "closeModal()", danger = false, sub = "", size = "mid") {
   document.getElementById("modalTitle").textContent = title;
-  document.getElementById("modalBody").innerHTML = body;
+  const subEl = document.getElementById("modalSub");
+  if (subEl) { subEl.textContent = sub || ""; subEl.hidden = !sub; }
+  const hintEl = document.getElementById("modalHint");
+  if (hintEl) hintEl.textContent = "";
+  const back = document.getElementById("wz-back");   // כפתור "הקודם" של אשף קודם
+  if (back && back.remove) back.remove();
+  const bodyEl = document.getElementById("modalBody");
+  bodyEl.innerHTML = body;
+  const box = document.getElementById("modalBox");
+  if (box) box.className = `modal win ${winSizeClass(size)}`;
   const ok = document.getElementById("modalOk");
   ok.textContent = okLabel;
   ok.className = "btn " + (danger ? "danger" : "primary");   // פעולה הרסנית לא נראית כמו אישור רגיל
@@ -6277,6 +6564,7 @@ function openModalContent(title, body, okLabel = "אישור", okFn = "closeModa
   const modal = document.getElementById("modal");
   const form = document.getElementById("sheet");
   if (form) form.classList.add("hidden");
+  wireWindowParts(bodyEl);
   openModalFrame(modal, "box");
 }
 
@@ -6345,20 +6633,26 @@ function help() {
   openDrawer("עזרה מהירה", `<div class="section-title">איך משתמשים במערכת?</div><div class="list"><div class="list-row"><div class="list-main"><strong>1. קליטת אימג׳</strong><small>העלה אימג׳ ואמת manifest + SHA-256.</small></div></div><div class="list-row"><div class="list-main"><strong>2. פתיחת סבב</strong><small>בחר אימג׳, כיתה וכלל התחלה.</small></div></div><div class="list-row"><div class="list-main"><strong>3. מעקב</strong><small>עקוב אחרי הצטרפות, כתיבה וכשלים לכל תחנה.</small></div></div><div class="list-row"><div class="list-main"><strong>4. מחשב שנכשל</strong><small>בודד אותו, בדוק PXE/WoL, וטפל בו בלי לעצור את הסבב.</small></div></div></div>`);
 }
 
-function openAccount() {
-  closeUserMenu();
+/* ‏"החשבון שלי" (console-full.html P.account), על הנתונים של /me. ‏admin שנוצר בהתקנה (is_builtin) — בכוונה בלי MFA ובלי
+   קודי גיבוי: הוא דלת החירום, ולכן רק התווית "מקומי · ללא MFA" והסבר. מנהל רגיל: כרטיס MFA, וכרטיס קודי גיבוי רק כש-MFA פעיל
+   (mfa_enabled). ‏"הפעל" רק למנהל — כמו לפני כן. */
+function accountCardsHtml() {
   const name = esc(ME && ME.username || "");
   const role = ME && ME.role === "admin" ? "מנהל" : "הפצה";
-  const builtin = !!(ME && ME.is_builtin);
-  const mfaOn = !!(ME && ME.mfa_enabled);
-  let mfa;
-  if (builtin) mfa = `<span class="pill">מקומי · ללא MFA</span>`;
-  else if (mfaOn) mfa = UI.status("ok", "פעיל")
-    + ` <button class="btn sm" onclick="accountNewBackupCodes()">צור קודי גיבוי חדשים</button>`;
-  else if (ME && ME.role === "admin")
-    mfa = UI.status("", "כבוי") + ` <button class="btn sm" onclick="accountEnableMfa()">הפעל</button>`;
-  else mfa = UI.status("", "כבוי");
-  openDrawer("המשתמש שלי", `<div class="detail-grid"><div class="detail-box"><span class="k">משתמש</span><span class="v">${name}</span></div><div class="detail-box"><span class="k">תפקיד</span><span class="v">${role}</span></div><div class="detail-box"><span class="k">MFA</span><span class="v">${mfa}</span></div><div class="detail-box"><span class="k">מצב</span><span class="v success-text">מחובר</span></div></div>`);
+  const builtin = !!(ME && ME.is_builtin), mfaOn = !!(ME && ME.mfa_enabled), admin = !!(ME && ME.role === "admin");
+  const me = UI.card({ title: "חשבון", body: UI.kv([["משתמש", name], ["תפקיד", esc(role)], ["מצב", UI.status("ok", "מחובר")]]) });
+  let mfa, codes = "";
+  if (builtin) mfa = UI.pill("", "מקומי · ללא MFA")
+    + `<p class="muted" style="margin-top:8px">משתמש המנהל שנוצר בהתקנת השרת אינו משתמש ב-MFA — בכוונה, כדי שתמיד תהיה דרך להיכנס. למשתמשי מנהל אחרים MFA מופעל מכאן.</p>`;
+  else if (mfaOn) {
+    mfa = UI.status("ok", "פעיל");
+    codes = UI.card({ title: "קודי גיבוי", body: `<p class="muted" style="margin-bottom:10px">כל קוד עובד פעם אחת. יצירת קודים חדשים פוסלת את הקיימים.</p><button class="btn sm" onclick="accountNewBackupCodes()">צור קודי גיבוי חדשים</button>` });
+  } else mfa = UI.status("", "כבוי") + (admin ? ` <button class="btn sm" onclick="accountEnableMfa()">הפעל</button>` : "");
+  return me + UI.card({ title: "אימות דו-שלבי (MFA)", body: mfa }) + codes;
+}
+function openAccount() {
+  closeUserMenu();
+  openDrawer("המשתמש שלי", `<div class="page drw">${accountCardsHtml()}</div>`);
 }
 
 async function accountEnableMfa() {
@@ -6369,7 +6663,7 @@ async function accountEnableMfa() {
       sub: "הקלד את הסוד באפליקציה ואז את הקוד שהיא מציגה.",
       note: `<p class="mono" dir="ltr">${esc(secretBlocks(setup.secret || ""))}</p>`
         + (setup.otpauth_url ? `<p><a class="mono" href="${esc(setup.otpauth_url)}">${esc(setup.otpauth_url)}</a></p>` : ""),
-      fields: [{ id: "code", label: "הקוד מהאפליקציה" }],
+      fields: [{ id: "code", label: "הקוד מהאפליקציה", dir: "ltr" }],
       submitLabel: "אימות והפעלה",
       onSubmit: async (v) => {
         await post("/me/mfa/verify", { code: v.code });
@@ -6385,7 +6679,7 @@ function accountNewBackupCodes() {
   sheet({
     title: "קודי גיבוי חדשים",
     sub: "הקוד מאפליקציית האימות. הקודים הישנים יבוטלו.",
-    fields: [{ id: "code", label: "הקוד מהאפליקציה" }],
+    fields: [{ id: "code", label: "הקוד מהאפליקציה", dir: "ltr" }],
     submitLabel: "צור קודים",
     onSubmit: async (v) => {
       const en = await post("/me/mfa/enable", { code: v.code });
@@ -6772,7 +7066,7 @@ function confirmUpdateRevert(tag) {
 function openNewUser() { sheet({
   title: "משתמש חדש",
   fields: [
-    { id: "username", label: "שם משתמש" },
+    { id: "username", label: "שם משתמש", dir: "ltr" },
     {
       id: "password", label: "סיסמה (8 תווים לפחות)", type: "password",
       confirm: "אימות סיסמה",

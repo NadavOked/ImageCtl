@@ -143,6 +143,34 @@ def _valid_mask(value: str) -> bool:
     return True
 
 
+def deploy_address(network: str, netmask: str) -> tuple[str, list[str]]:
+    """כתובת השרת ברשת ההפצה — **נגזרת**, לא נבחרת (‏#1263).
+
+    המפעיל נותן רשת ומסכה, והשרת מקבל את הכתובת הראשונה בה:
+    ‏10.0.20.0/255.255.255.0 → ‏10.0.20.1. מחזיר ‏(כתובת, בעיות); כתובת
+    ריקה כשיש בעיות.
+
+    כתובת שאינה כתובת הרשת עצמה (‏10.0.20.5/24) **נדחית ואינה מעוגלת**:
+    עיגול שקט ל-10.0.20.0 הוא ניחוש לאיזו רשת המפעיל התכוון. ‏/31 ו-/32
+    נדחות — אין בהן מקום לשרת ולטווח.
+    """
+    network, netmask = (network or "").strip(), (netmask or "").strip()
+    found = []
+    if not _valid_ip(network):
+        found.append(f"כתובת הרשת אינה תקינה ({network or 'ריק'})")
+    if not _valid_mask(netmask):
+        found.append(f"מסכת רשת אינה תקינה ({netmask or 'ריק'})")
+    if found:
+        return "", found
+    net = ipaddress.IPv4Network(f"{network}/{netmask}", strict=False)
+    if str(net.network_address) != network:
+        return "", [f"{network} אינה כתובת רשת — עם המסכה {netmask} הרשת "
+                    f"היא {net.network_address}"]
+    if net.num_addresses < 4:
+        return "", [f"הרשת {net} קטנה מדי — אין בה מקום לשרת ולטווח כתובות"]
+    return str(net.network_address + 1), []
+
+
 def reachable(address: str, configs: list[NetConfig]) -> bool:
     """האם הכתובת יושבת ברשת של כרטיס סטטי כלשהו.
 

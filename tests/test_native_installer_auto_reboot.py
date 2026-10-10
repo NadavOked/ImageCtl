@@ -178,22 +178,24 @@ def test_failed_eject_is_logged_and_the_restart_still_goes_out(driver, tmp_path)
 
 @NATIVE_GUI
 def test_done_card_draws_the_countdown(tmp_path) -> None:
-    """ב-1280x1024: גוף המסך מתחיל ב-(238,105), הכרטיס נגמר ב-447, ושורת
-    הספירה ב-463–521. לפני #1250 האזור הזה היה רקע בלבד — צבע אחד."""
+    """ב-1280x800 (קנה מידה 1; 1280x1024 מוגדל פי 1.25 מאז מוקאפ 10/10): העמודה
+    האחת (760 ממורכזת) מתחילה ב-(135,105),
+    הכרטיס נגמר ב-447, ושורת הספירה ב-463–521; הטקסט נגמר ב-875 ו"בטל"
+    ב-145. לפני #1250 האזור הזה היה רקע בלבד — צבע אחד."""
     binary = _build(tmp_path)
     prefix = tmp_path / "reboot"
     env = dict(os.environ)
     if (REPO / "native-gui" / "fonts.conf").exists():
         env["FONTCONFIG_FILE"] = str(REPO / "native-gui" / "fonts.conf")
     proc = subprocess.run([str(binary), "--screen", "install", "--demo", "--png",
-                           str(prefix), "--size", "1280x1024"], capture_output=True,
+                           str(prefix), "--size", "1280x800"], capture_output=True,
                           text=True, timeout=120, env=env, stdin=subprocess.DEVNULL)
     assert proc.returncode == 0, proc.stderr
     for theme in ("light", "dark"):
         path = tmp_path / f"reboot-install-6-done-{theme}.png"
-        _, _, text = _size_and_ink(path, (700, 470, 975, 515))
+        _, _, text = _size_and_ink(path, (700, 470, 870, 515))
         assert text >= 8, f"{theme}: no countdown text in the done card ({text} colors)"
-        _, _, cancel = _size_and_ink(path, (250, 475, 290, 510))
+        _, _, cancel = _size_and_ink(path, (150, 478, 190, 508))
         assert cancel > 1, f"{theme}: no Cancel button next to the countdown"
 
 

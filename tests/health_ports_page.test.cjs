@@ -376,11 +376,11 @@ test('what could not be read is "לא נקרא", never "כבוי": /ssh, /monito
   assert.match(row(html,'>PXE<'),/class="sw unk"/);
   s.run("portSwitch('dhcp')"); assert.match(s.run('toasts.at(-1)'),/net 500/); assert.equal(s.run('sheets.length'),0);
   assert.doesNotMatch(html,/מאזינים בפורט 22/);
-  // אף כרטיס לא מחלק: שורת DHCP אחת כבויה, הדלקה פותחת את טופס ה-DHCP של net.js (הקלדת שם הכרטיס)
+  // אף כרטיס לא מחלק: שורת DHCP אחת כבויה, הדלקה פותחת את חלון רשת ההפצה של net.js (‏#1263: בלי הקלדת שם)
   s=setup({'/net/interfaces':[nic('ens18'),nic('ens19')]}); s.run('current="ports"');
   await s.run('loadPorts()'); html=s.run('ports()');
   assert.match(row(html,'>DHCP הפצה<'),/class="st ">כבוי<\/span><span class="sub">לא הודלק על אף כרטיס/);
-  s.run("portSwitch('dhcp')"); const sh=s.run('sheets.at(-1)'); assert.match(sh.title,/DHCP על ens18/); assert.equal(sh.verify.mustEqual,'ens18');
+  s.run("portSwitch('dhcp')"); const sh=s.run('sheets.at(-1)'); assert.match(sh.title,/רשת הפצה — ens18/); assert.equal(sh.verify,undefined);
   // /ports עצמו לא נקרא
   s=setup({'/ports':new Error('DB down')}); s.run('current="ports"');
   await s.run('loadPorts()'); html=s.run('ports()');

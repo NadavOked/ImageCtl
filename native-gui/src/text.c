@@ -3,7 +3,12 @@
 #include <stdio.h>
 #include "text.h"
 
+/* mockup 10/10: no text below 11px -- the 9-10px labels (SMART cells, drawer
+ * slots, disk paths) were unreadable on a 1080p screen. */
+#define TEXT_MIN_PX 11.0
+
 static PangoFontDescription *font_desc(Font font, double px, int weight) {
+    if (px < TEXT_MIN_PX) px = TEXT_MIN_PX;
     PangoFontDescription *d = pango_font_description_new();
     pango_font_description_set_family(d, font == FONT_MONO ? FONT_MONO_FAMILY
                                                            : FONT_SANS_FAMILY);
@@ -67,6 +72,16 @@ Text text_make(cairo_t *cr, Font font, double px, int weight,
     Text t = layout_new(cr, font, px, weight, dir);
     pango_layout_set_text(t.layout, utf8, -1);
     layout_finish(&t, width_px);
+    return t;
+}
+
+Text text_make_ltr(cairo_t *cr, Font font, double px, int weight,
+                   const char *utf8, int width_px) {
+    Text t = layout_new(cr, font, px, weight, DIR_LTR);
+    pango_layout_set_auto_dir(t.layout, FALSE);   /* a Hebrew-first value stays LTR */
+    pango_layout_set_text(t.layout, utf8, -1);
+    layout_finish(&t, width_px);
+    if (width_px > 0) pango_layout_set_alignment(t.layout, PANGO_ALIGN_RIGHT);
     return t;
 }
 

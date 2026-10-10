@@ -22,6 +22,11 @@
 
   --clr-action:#0079B8; --clr-action-hover:#006394; --clr-action-active:#004B70;
   --clr-action-soft:#E8F4FA;
+  /* שלב 1 (מוקאפ הקונסולה): גוון לטקסט/קישור/pill על רקע בהיר או soft. המילוי (--clr-action)
+     נשאר לכפתורים ומסגרות; הטקסט עובר ל-*-fg כדי שכל זוג יעמוד ב-4.5:1 (tests/test_contrast_tokens.py). */
+  --clr-action-fg:#006394; --clr-success-fg:#2A7300; --clr-danger-fg:#C41E00; --clr-warning-fg:#A84700;
+  --clr-danger-fill:#E12200;
+  --r-win:14px; --mat:rgb(255 255 255 / 72%);
 
   --clr-success:#318700; --clr-danger:#E12200; --clr-warning:#C25400; --clr-info:#0079B8;
   --clr-success-soft:#EAF4E5; --clr-danger-soft:#FCEDEA; --clr-warning-soft:#FFF2E3;
@@ -45,7 +50,7 @@
   --indigo:var(--clr-action); --indigo-soft:var(--clr-action-soft);
   --led-ok:var(--clr-success); --led-write:var(--clr-warning); --led-idle:#737373;
   --danger:var(--clr-danger); --danger-line:#F0B8AE;
-  --warn-soft:var(--clr-warning-soft); --warn-ink:var(--clr-warning);
+  --warn-soft:var(--clr-warning-soft); --warn-ink:var(--clr-warning-fg);
 
   --btn-hover:var(--clr-row-hover); --btn-hover-line:var(--clr-action);
   --ink-hover:var(--clr-action-hover); --on-ink:#FFFFFF; --mark-line:#9AADB8;
@@ -73,12 +78,17 @@
   --clr-text:#e7edf2; --clr-muted:#a9b4bd; --clr-border:#35414b;
   --clr-row-border:#303a42; --clr-hover:#25313a; --clr-row-hover:#202a31;
   --clr-field:#11181d;
-  --clr-action:#4c8fbd; --clr-action-hover:#64a6d2; --clr-action-active:#8dc3e6;
+  /* כחול מילוי כהה יותר: לבן עליו 4.8:1 (היה #4c8fbd = 3.5:1). טקסט/קישור על כהה — ‏--clr-action-fg הבהיר. */
+  --clr-action:#2f78a8; --clr-action-hover:#276a96; --clr-action-active:#1f5880;
   --clr-action-soft:#223e50;
+  --clr-action-fg:#7bb6dc; --clr-success-fg:#5fbd7a; --clr-danger-fg:#e88a8a; --clr-warning-fg:#e1b34f;
+  --clr-danger-fill:#c24444;
+  --clr-success-soft:#1d3326; --clr-danger-soft:#3a2321; --clr-warning-soft:#33291a; --clr-info-soft:#1d3436;
+  --r-win:8px; --mat:rgb(28 35 42 / 72%);
   --clr-header:#26343f; --clr-header-hover:#30424e;
 
   --clr-success:#5fbd7a; --clr-warning:#e1b34f; --clr-danger:#dc6b6b; --clr-info:#61b5b8;
-  --danger-line:#5e3733; --warn-soft:#33291a; --warn-ink:#e1b34f;
+  --danger-line:#5e3733; --warn-soft:#33291a;
   --shadow-strong:rgba(0,0,0,.65); --shadow-soft:rgba(0,0,0,.55);
   --shadow-card:0 10px 28px rgba(0,0,0,.28); --shadow-overlay:0 20px 60px rgba(0,0,0,.45);
   --scrim:rgba(5,9,14,.62);

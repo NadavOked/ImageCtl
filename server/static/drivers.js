@@ -162,7 +162,7 @@ function openDriverImport() {
   if (!isAdmin()) { toast("אין הרשאה"); return; }
   openModalContent(
     "ייבוא חבילת דרייברים",
-    `<div class="form"><div class="field full"><label for="driverFile">קובץ tar</label><input type="file" id="driverFile" accept=".tar,application/x-tar"></div><div class="field full"><div class="form-note">חבילה שנבנתה ב-<span dir="ltr" class="mono">tools/drivers/build-package.py</span> (‏<span dir="ltr" class="mono">docs/driver-packages.md</span>): תיקייה אחת עם manifest.json והקבצים. כל קובץ מאומת מול ה-sha256 שבמניפסט; חבילה עם קובץ חסר, עודף או שונה לא תיכנס.</div></div></div>`,
+    `<div class="form"><div class="field full">${dropzoneHtml({ id: "driverFile", accept: ".tar,application/x-tar", aria: "בחירת קובץ tar של חבילת דרייברים" })}</div><div class="field full"><div class="form-note">חבילה שנבנתה ב-<span dir="ltr" class="mono">tools/drivers/build-package.py</span> (‏<span dir="ltr" class="mono">docs/driver-packages.md</span>): תיקייה אחת עם manifest.json והקבצים. כל קובץ מאומת מול ה-sha256 שבמניפסט; חבילה עם קובץ חסר, עודף או שונה לא תיכנס.</div></div></div>`,
     "ייבוא",
     startDriverUpload
   );

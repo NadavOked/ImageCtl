@@ -62,16 +62,39 @@ static void details_toggle(App *a,cairo_t *cr,Rect r){
 }
 
 static void progress(App *a,cairo_t *cr,InstallLayout l){
-    InstallState *s=&a->install;const Theme *t=a->theme;double w=fmin(760,l.body.w),x=l.body.x+l.body.w-w,y=l.body.y;Rect bar={x,y,w,8};draw_fill_rrect(cr,bar,4,t->bar_idle);Rect fill=bar;fill.w=bar.w*s->progress_pct/100.0;draw_fill_rrect(cr,fill,4,t->indigo);
+    InstallState *s=&a->install;const Theme *t=a->theme;double w=fmin(760,l.body.w),x=l.body.x+l.body.w-w,y=l.body.y;Rect bar={x,y,w,8};draw_fill_rrect(cr,bar,4,t->bar_idle);Rect fill=bar;fill.w=bar.w*(s->progress_pct>100?100:s->progress_pct<0?0:s->progress_pct)/100.0;fill.x=bar.x+bar.w-fill.w;   /* RTL: it fills from the right (mockup 10/10) */
+    if(fill.w>0)draw_fill_rrect(cr,fill,4,t->indigo);
     char pct[16];snprintf(pct,sizeof pct,"%d%%",s->progress_pct);install_text_ltr(cr,pct,13,600,x,y+16,60,t->ink);install_text_r(cr,t,install_phase_label(s->phase),18,600,x+w,y+18,w-80,t->ink);y+=58;
     phase_rows(a,cr,(Rect){x,y,w,230},0);y+=246;details_toggle(a,cr,(Rect){x+w-210,y,210,32});y+=38;
     if(s->technical_open){if(s->title[0])install_text_ltr(cr,s->title,11,500,x,y,w,t->muted);if(s->log[0])install_text_ltr(cr,s->log,11,400,x,y+20,w,t->muted);output_box(a,cr,(Rect){x,y+44,w,180});}
     /* The running screen intentionally leaves the footer button area empty. */
 }
 
+/* mockup 10/10: the failure is said in Hebrew; the engine's code ("packages-
+ * failed: apt returned exit 100") is the second line, not the headline. A
+ * message the engine already wrote in Hebrew is shown as it is. Returns 1
+ * when the raw text belongs on the second line. */
+static int failure_he(const InstallState *s,char *out,size_t n){
+    static const struct{const char *code,*he;}KNOWN[]={
+        {"partition","חלוקת הדיסק נכשלה."},{"bootstrap","התקנת מערכת הבסיס נכשלה."},
+        {"packages","התקנת חבילות ImageCtl נכשלה."},{"bootloader","התקנת מנהל האתחול נכשלה."},
+        {"finishing","כתיבת ההגדרות נכשלה."},{"hostname","קביעת שם השרת נכשלה."},
+        {"verify","אימות ההתקנה נכשל."},{"validation","ההגדרות לא עברו בדיקה."}};
+    const char *e=s->error;
+    if(!e[0]){snprintf(out,n,"ההתקנה נכשלה.");return 0;}
+    if((unsigned char)e[0]>=0x80){snprintf(out,n,"%s",e);return 0;}      /* already in Hebrew */
+    for(size_t i=0;i<sizeof KNOWN/sizeof KNOWN[0];i++)
+        if(!strncmp(e,KNOWN[i].code,strlen(KNOWN[i].code))){snprintf(out,n,"%s",KNOWN[i].he);return 1;}
+    if(s->phase[0]&&strcmp(s->phase,"failed")){snprintf(out,n,"ההתקנה נכשלה בשלב: %s.",install_phase_label(s->phase));return 1;}
+    snprintf(out,n,"ההתקנה נכשלה.");return 1;
+}
+
 static void failed(App *a,cairo_t *cr,InstallLayout l){
     InstallState *s=&a->install;const Theme *t=a->theme;double w=fmin(760,l.body.w),x=l.body.x+l.body.w-w,y=l.body.y;Rect note={x,y,w,62};draw_fill_rrect(cr,note,t->radius,t->danger_soft);draw_border_rrect(cr,note,t->radius,t->danger,1);
-    install_text_r(cr,t,s->error[0]?s->error:"ההתקנה נכשלה.",13,600,x+w-14,y+16,w-28,t->danger);y+=76;
+    char said[320];int raw=failure_he(s,said,sizeof said);
+    install_text_r(cr,t,said,14,600,x+w-14,y+(raw?10:20),w-28,t->danger);
+    if(raw)install_text_ltr(cr,s->error,11,400,x+14,y+36,w-28,t->muted);
+    y+=76;
     install_text_r(cr,t,"פרטים טכניים",13,600,x+w,y,w,t->ink);y+=30;output_box(a,cr,(Rect){x,y,w,250});
     Text retry=btn_label(cr,"נסה שוב");double rw=btn_width(&retry);draw_btn(a,cr,(Rect){l.footer.w-32-rw,l.footer.y+13,rw,38},&retry,BTN_PRIMARY,HIT_INSTALL_RETRY);text_free(&retry);
 }

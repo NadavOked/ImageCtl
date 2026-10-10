@@ -19,6 +19,7 @@ void screen_class(App *a, cairo_t *cr, double W, double H, double head_h) {
         Text none = { NULL, 0, 0 };
         if (s->nclasses == 0) {
             none = sub_make(cr, "אין עדיין כיתות — מגדירים אותן בקונסולה, במסך המחשבים.", inner);
+            pango_layout_set_alignment(none.layout, PANGO_ALIGN_RIGHT);   /* ui-audit */
             body_h += none.h;
         }
         for (int i = 0; i < s->nclasses; i++) {
@@ -91,7 +92,9 @@ void screen_class(App *a, cairo_t *cr, double W, double H, double head_h) {
     Text cnt_v = text_make(cr, FONT_SANS, N_METRIC_LABEL, 700, joined, 0, DIR_LTR);
     Text labels[3]; int kinds[3], ids[3], nb = 0;
     if (s->sess_open) { labels[nb] = btn_label(cr, "התחל עכשיו"); kinds[nb] = BTN_PRIMARY; ids[nb++] = HIT_CLASS_START; }
-    labels[nb] = btn_label(cr, "עצור סבב"); kinds[nb] = BTN_DANGER; ids[nb++] = HIT_CLASS_CLOSE;
+    /* mockup 10/10: red words until the confirm field is open, filled red after */
+    labels[nb] = btn_label(cr, a->class_confirming ? "עצור סבב" : "עצור סבב…");
+    kinds[nb] = a->class_confirming ? BTN_DANGER : BTN_GHOST_DANGER; ids[nb++] = HIT_CLASS_CLOSE;
     labels[nb] = btn_label(cr, "חזרה");     kinds[nb] = BTN_PLAIN;  ids[nb++] = HIT_BACK;
     double cnt_h = dmax(cnt_l.h, cnt_v.h);
     double card_h = 2*N_ROUND_PAD + rid_t.h + meta_t.h + N_CHOICE_GAP + alert_height(&hint_t)

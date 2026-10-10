@@ -108,6 +108,9 @@ enum {
     HIT_INSTALL_RETRY,
     HIT_INSTALL_OUTPUT_UP,
     HIT_INSTALL_OUTPUT_DOWN,
+    /* mockup 10/10: Esc on the menu asks before it signs out */
+    HIT_LOGOUT_CONFIRM,
+    HIT_LOGOUT_CANCEL,
     HIT_INSTALL_SUMMARY_BASE = 1000,
     HIT_INSTALL_NIC_BASE = 1020,
     /* ranges: base + index */
@@ -284,7 +287,9 @@ typedef struct App {
     int signed_in;              /* station.js SIGNED_IN */
     char signed_user[64];       /* "מחוברים כ־<user>" */
     int admin;                  /* station.js: capture card only for role admin */
-    int menu_focus;             /* keyboard focus among visible cards, -1 = none */
+    int menu_focus;             /* keyboard focus, -1 = none: 0..n-1 the visible cards,
+                                   n "התנתק", n+1 "כלים" (when the menu shows it) */
+    int logout_confirming;      /* mockup 10/10: Esc asked "להתנתק?" -- Enter signs out, Esc cancels */
     Mode mode;
     int force_progress;         /* --screen progress: show it even with no task */
     int force_cloner;           /* --screen cloner: the cloning machine's own screen */
@@ -358,8 +363,17 @@ typedef struct App {
     InstallState install;
 
     /* pointer */
-    double ptr_x, ptr_y;
+    double ptr_x, ptr_y;        /* screen pixels (input.c) */
     int ptr_visible;            /* a mouse moved; touch leaves no cursor */
+    /* mockup 10/10: the button under a click is drawn pressed for a moment
+     * (input.c reports the press, not the release) -- feedback on the frame
+     * the click lands, before whatever the click does is visible. */
+    int pressed_id;             /* HIT id, 0 = none */
+    double pressed_until;       /* monotonic seconds */
+    /* mockup 10/10: one scale for the whole screen, clamp(H/800, 1, 1.4),
+     * set by app_draw. Layout is in logical pixels (screen / scale); the
+     * hit table too, and app_hit / hovered() convert the pointer. */
+    double scale;
 
     Hit hits[MAX_HITS];
     int nhits;
@@ -368,6 +382,12 @@ typedef struct App {
 
 /* Draw the whole screen into <cr> (W x H pixels) and rebuild the hit table. */
 void app_draw(App *a, cairo_t *cr, int W, int H);
+/* The screen's scale (mockup 10/10): clamp(H/800, 1, 1.4) in quarter steps --
+ * 1024x768 and 1280x800 stay 1:1, 1280x1024 and 1920x1080 are 1.25. */
+double ui_scale(int H);
+/* A typed confirmation (principle 7): equal to <want> once the spaces and
+ * tabs at both ends are ignored. An empty <want> never matches. */
+int typed_matches(const char *typed, const char *want);
 void app_draw_pointer(App *a, cairo_t *cr);
 /* Which registered element is under (x, y); topmost wins. */
 int app_hit(const App *a, double x, double y);

@@ -105,3 +105,17 @@ test('permissions: deleting a user from the ⋯ menu still opens the typed-name 
   assert.equal(run('sheets[0].danger'),true);
   assert.equal(run('sheets[0].verify.mustEqual'),'yossi','the destructive action still demands the typed name');
 });
+
+test('#1262: the builtin admin row offers only password and revoke-sessions, and says why',()=>{
+  const {run}=setup();
+  // שלושה מנהלים פעילים — שומר "המנהל האחרון" שקט, ולכן הסינון בא מ-is_builtin בלבד.
+  run('ME={username:"noc",role:"admin",capabilities:{}}; USERS=[{username:"admin",role:"admin",disabled:false,is_builtin:true},{username:"noc",role:"admin",disabled:false},{username:"tech2",role:"admin",disabled:false}];');
+  const labels=(i)=>JSON.parse(unesc(run(`userRowHtml(USERS[${i}]).cells.at(-1)`).match(/data-menu="([^"]*)"/)[1])).map((x)=>x[0]);
+  assert.deepEqual(labels(0),['סיסמה…','נתק את כל ההפעלות…']);
+  assert.match(run('userRowHtml(USERS[0]).cells[0]'),/נוצר בהתקנה · לא ניתן למחיקה · ללא MFA/);
+  // מנהל רגיל באותו מצב — עדיין עם תפקיד/השבתה/מחיקה (לא סינון-יתר).
+  assert.deepEqual(labels(2),['סיסמה…','תפקיד…','השבת','נתק את כל ההפעלות…','מחק משתמש…']);
+  // ה-builtin כשהוא המחובר: רק סיסמה (אין ניתוק הפעלות של עצמך).
+  run('ME={username:"admin",role:"admin",capabilities:{},is_builtin:true};');
+  assert.deepEqual(labels(0),['סיסמה…']);
+});

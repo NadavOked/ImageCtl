@@ -98,7 +98,7 @@ static void do_login(App *a, const char *auth_cmd, int demo) {
     a->admin = strcmp(role, "admin") == 0;
     a->signed_in = 1;
     memset(a->pass, 0, sizeof a->pass);
-    a->menu_focus = -1;
+    a->menu_focus = -1; a->logout_confirming = 0;
     a->mode = MODE_MENU;                            /* afterLogin: both roles start at the menu */
 }
 
@@ -281,6 +281,46 @@ static int visible_card_ids(const App *a, int ids[5]) {
     return n;
 }
 
+static void sign_out(App *a) {
+    a->signed_in = 0; a->mode = MODE_MENU; a->focus = HIT_USER; a->logout_confirming = 0;
+}
+
+/* mockup 10/10: while "להתנתק?" is open it is modal -- Enter or its button
+ * signs out, Esc or "ביטול" closes it, nothing else reaches the menu. */
+static int logout_modal(App *a, const Event *e) {
+    if (!a->logout_confirming || a->screen != SCREEN_MENU) return 0;
+    if (e->type == UIEV_KEY) {
+        if (e->key == KEYSYM_ENTER) sign_out(a);
+        else if (e->key == KEYSYM_ESC) a->logout_confirming = 0;
+        return 1;
+    }
+    if (e->type == UIEV_CLICK) {
+        a->ptr_x = e->x; a->ptr_y = e->y;
+        int id = app_hit(a, e->x, e->y);
+        if (id == HIT_LOGOUT_CONFIRM) sign_out(a);
+        else if (id == HIT_LOGOUT_CANCEL) a->logout_confirming = 0;
+        return 1;
+    }
+    return e->type == UIEV_CHAR;
+}
+
+/* The menu's keyboard stops, in order: the visible cards, "התנתק", and
+ * "כלים" when the menu shows it (screens.c draws a ring on the same index). */
+static int menu_stops(const App *a, int ncards) { return ncards + 1 + (a->st.menu_tools ? 1 : 0); }
+
+/* Arrows walk the two-column grid as it is drawn: card 1 at the right, so
+ * Left is the next card and Right the previous one; Up/Down are a row. From
+ * outside the grid (nothing, "התנתק", "כלים") any arrow lands on card 1. */
+static void menu_arrow(App *a, int key, int ncards) {
+    int f = a->menu_focus;
+    if (f < 0 || f >= ncards) { a->menu_focus = 0; return; }
+    if (key == KEYSYM_LEFT && f % 2 == 0 && f + 1 < ncards) f++;
+    else if (key == KEYSYM_RIGHT && f % 2 == 1) f--;
+    else if (key == KEYSYM_DOWN && f + 2 < ncards) f += 2;
+    else if (key == KEYSYM_UP && f - 2 >= 0) f -= 2;
+    a->menu_focus = f;
+}
+
 /* Returns 1 when the process should exit (after "restore"). */
 static int choose_card(App *a, int id) {
     switch (id) {
@@ -446,9 +486,16 @@ static void open_round(App *a) {
     emit_end();
 }
 
-/* Stop behind the typed image name (principle 7); the server decides (#533/#581). */
-static void close_round(App *a, int *confirming, char *typed, int focus_id, const char *token) {
+/* Stop behind the typed image name (principle 7); the server decides (#533/#581).
+ * mockup 10/10: the first press opens the field; the stop goes out only once
+ * the name matches <want> (the round's image, what the server compares) --
+ * the red button is not clickable before that. want NULL = no local check. */
+static void close_round(App *a, int *confirming, char *typed, int focus_id, const char *token, const char *want) {
     if (!*confirming) { *confirming = 1; a->focus = focus_id; return; }
+    if (want && !typed_matches(typed, want)) {
+        snprintf(a->st.room_error, sizeof a->st.room_error, "הקלידו את שם האימג' בדיוק כפי שהוא מוצג");
+        return;
+    }
     char c[96]; snprintf(c, sizeof c, "%s", typed); trim(c);
     emit(token); emit_kv("confirm", c); emit_end();
 }
@@ -552,6 +599,7 @@ static void emit_touch(App *a, int demo) {
 static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
     if (e->type == UIEV_CLICK || e->type == UIEV_CHAR || e->type == UIEV_KEY) emit_touch(a, demo);
     if (shrink_modal(a, e)) return 0;              /* #928 */
+    if (logout_modal(a, e)) return 0;              /* mockup 10/10 */
     switch (e->type) {
     case UIEV_MOVE:
         a->ptr_x = e->x; a->ptr_y = e->y; a->ptr_visible = !e->is_touch;
@@ -606,7 +654,7 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
         }
         switch (id) {
         case HIT_THEME:  a->theme = a->theme == &THEME_DARK ? &THEME_LIGHT : &THEME_DARK; break;
-        case HIT_LOGOUT: a->signed_in = 0; a->mode = MODE_MENU; a->focus = HIT_USER; break;
+        case HIT_LOGOUT: sign_out(a); break;     /* the button is the explicit choice; Esc asks */
         case HIT_USER: case HIT_PASS: case HIT_NAME: case HIT_DESC: case HIT_FOLDER_NEW:
         case HIT_ROOM_TARGET: case HIT_ROOM_CONFIRM: case HIT_CLASS_CONFIRM:
         case HIT_RESTORE_CONFIRM: case HIT_TOOL_ARG: case HIT_TOOL_CONFIRM:
@@ -627,9 +675,9 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
         case HIT_ROOM_OPEN:  open_round(a); break;
         case HIT_ROOM_WAKE:  emit1("room-wake"); break;
         case HIT_ROOM_START: emit1("room-start"); break;
-        case HIT_ROOM_CLOSE: close_round(a, &a->room_confirming, a->room_confirm, HIT_ROOM_CONFIRM, "room-close"); break;
+        case HIT_ROOM_CLOSE: close_round(a, &a->room_confirming, a->room_confirm, HIT_ROOM_CONFIRM, "room-close", a->st.round_image); break;
         case HIT_CLASS_START: if (class_gate(a)) emit1("class-start"); break;
-        case HIT_CLASS_CLOSE: if (class_gate(a)) close_round(a, &a->class_confirming, a->class_confirm, HIT_CLASS_CONFIRM, "class-close"); break;
+        case HIT_CLASS_CLOSE: if (class_gate(a)) close_round(a, &a->class_confirming, a->class_confirm, HIT_CLASS_CONFIRM, "class-close", NULL); break;
         case HIT_SMART_REPLACE: emit_smart(a, "smart-replace"); break;
         case HIT_SMART_RESCUE:  emit_smart(a, "smart-rescue");  break;
         case HIT_SMART_SKIP:    emit_smart(a, "smart-skip");    break;
@@ -688,25 +736,37 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
     case UIEV_KEY: {
         if (e->key == KEYSYM_ESC) {
             if (a->dd_open) { a->dd_open = 0; break; }
-            if (a->screen == SCREEN_MENU) { a->signed_in = 0; a->mode = MODE_MENU; a->focus = HIT_USER; break; }
-            if (a->screen == SCREEN_ROOM && a->st.has_round) { close_round(a, &a->room_confirming, a->room_confirm, HIT_ROOM_CONFIRM, "room-close"); break; }
+            if (a->screen == SCREEN_MENU) { a->logout_confirming = 1; break; }   /* asks first (mockup 10/10) */
+            /* the live round: Esc opens the stop question, and Esc again closes it --
+             * it used to send the stop with whatever was typed */
+            if (a->screen == SCREEN_ROOM && a->st.has_round && a->room_confirming) { a->room_confirming = 0; a->room_confirm[0] = 0; break; }
+            if (a->screen == SCREEN_ROOM && a->st.has_round) { close_round(a, &a->room_confirming, a->room_confirm, HIT_ROOM_CONFIRM, "room-close", a->st.round_image); break; }
+            if (a->screen == SCREEN_CLASS && !a->st.has_session) { go_menu(a); emit1("back"); break; }   /* like its "חזרה" */
             if (a->screen == SCREEN_RESTORE || a->screen == SCREEN_PICK || a->screen == SCREEN_ROOM || a->screen == SCREEN_TOOLS) { go_menu(a); emit1("back"); break; }
             break;
         }
         if (a->screen == SCREEN_MENU) {
-            int ids[5], n = visible_card_ids(a, ids);
-            if (e->key == KEYSYM_TAB)        a->menu_focus = (a->menu_focus + 1) % n;
+            int ids[5], n = visible_card_ids(a, ids), stops = menu_stops(a, n);
+            if (e->key == KEYSYM_TAB)          a->menu_focus = (a->menu_focus + 1) % stops;
+            else if (e->key == KEYSYM_BACKTAB) a->menu_focus = a->menu_focus <= 0 ? stops - 1 : a->menu_focus - 1;
+            else if (e->key == KEYSYM_UP || e->key == KEYSYM_DOWN ||
+                     e->key == KEYSYM_LEFT || e->key == KEYSYM_RIGHT) menu_arrow(a, e->key, n);
             else if (e->key == KEYSYM_ENTER && a->menu_focus >= 0 && a->menu_focus < n)
                 return choose_card(a, ids[a->menu_focus]);
+            else if (e->key == KEYSYM_ENTER && a->menu_focus == n) sign_out(a);
+            else if (e->key == KEYSYM_ENTER && a->menu_focus == n + 1 && a->st.menu_tools)
+                return choose_card(a, HIT_TOOLS);
             break;
         }
         int ids[8], n = fields_on(a, ids);
-        if (e->key == KEYSYM_TAB && n) {
-            int k = 0;
-            for (int i = 0; i < n; i++) if (ids[i] == a->focus) k = i + 1;
-            a->focus = ids[k % n];
+        if ((e->key == KEYSYM_TAB || e->key == KEYSYM_BACKTAB) && n) {
+            int k = -1;                              /* Shift-Tab walks back (mockup 10/10) */
+            for (int i = 0; i < n; i++) if (ids[i] == a->focus) k = i;
+            a->focus = e->key == KEYSYM_TAB ? ids[(k + 1) % n] : ids[k <= 0 ? n - 1 : k - 1];
         } else if (e->key == KEYSYM_ENTER) {
             if (a->screen == SCREEN_LOGIN) do_login(a, auth_cmd, demo);
+            else if (a->screen == SCREEN_ROOM && a->st.has_round && a->room_confirming)
+                close_round(a, &a->room_confirming, a->room_confirm, HIT_ROOM_CONFIRM, "room-close", a->st.round_image);
             else if (a->screen == SCREEN_RESTORE && a->restore_image_sel > 0 &&
                      !strcmp(a->restore_confirm, a->st.machine_name)) start_restore(a);
             else if (a->screen == SCREEN_CLONER && a->st.smart_pending)
@@ -829,7 +889,7 @@ static void sample_state(State *s) {
 
 static const char *PNG_CARDS[] = { "login", "menu", "pick", "progress", "done", "room", "room-live",
                                    "class", "class-live", "cloner", "standby", "message", "restore", "direct",
-                                   "tools", "tools-confirm", "tools-output", "shrink" };
+                                   "tools", "tools-confirm", "tools-output", "shrink", "logout" };
 
 /* Put the App in the state that routes to <card>; the flags that override
  * the route (message, task, round, session, done) are cleared first so a
@@ -839,7 +899,7 @@ static void png_setup(App *a, const State *base, const char *card) {
     a->st.msg_title[0] = a->st.msg_sub[0] = 0;
     a->st.task = TASK_NONE; a->st.has_round = 0; a->st.has_session = 0;
     a->showing_done = a->watching = a->force_progress = a->force_cloner = a->force_standby = 0;
-    a->signed_in = 1; a->admin = 1; a->mode = MODE_MENU;
+    a->signed_in = 1; a->admin = 1; a->mode = MODE_MENU; a->logout_confirming = 0; a->menu_focus = -1;
     a->chosen_disk = -1; a->room_confirming = a->class_confirming = 0; a->dd_open = 0;
     a->st.shrink_pending = !strcmp(card, "shrink") && base->shrink_pending;   /* #928: one card shows it */
     snprintf(a->signed_user, sizeof a->signed_user, "%s", a->user[0] ? a->user : "admin");
@@ -862,6 +922,7 @@ static void png_setup(App *a, const State *base, const char *card) {
     else if (!strcmp(card, "standby"))  { a->force_standby = 1; a->force_cloner = 1; a->st.ndrawers = 0; a->st.cloner_image[0] = 0; a->st.smart_pending = 0; }
     else if (!strcmp(card, "message"))  { snprintf(a->st.msg_title, sizeof a->st.msg_title, "%s", base->msg_title);
                                           snprintf(a->st.msg_sub, sizeof a->st.msg_sub, "%s", base->msg_sub); }
+    else if (!strcmp(card, "logout"))   { a->logout_confirming = 1; }   /* mockup 10/10: what Esc opens */
     else if (!strcmp(card, "restore"))  { a->mode = MODE_RESTORE; if (base->nimages) a->restore_image_sel = 1; }
     else if (!strncmp(card, "tools", 5)) {                                       /* #649 */
         a->mode = MODE_TOOLS; a->tools_view = TOOLS_LIST; a->tool_sel = -1; a->tool_running = 0;
@@ -905,7 +966,8 @@ static int render_png(App *a, const State *base, const char *prefix, int w, int 
                                        SCREEN_RESTORE,
                                        SCREEN_ROOM, /* "direct" (#715): the room screen in MODE_DIRECT */
                                        SCREEN_TOOLS, SCREEN_TOOLS, SCREEN_TOOLS, /* #649: list, confirm, output */
-                                       SCREEN_PROGRESS /* "shrink" (#928): the dialog over the capture */ };
+                                       SCREEN_PROGRESS, /* "shrink" (#928): the dialog over the capture */
+                                       SCREEN_MENU /* "logout": the Esc question over the menu (mockup 10/10) */ };
         /* One entry per card, or want[c] reads past the table -- that is exactly
          * what the lab saw when "direct" was added to PNG_CARDS alone. */
         _Static_assert(sizeof want / sizeof want[0] == sizeof PNG_CARDS / sizeof PNG_CARDS[0],
@@ -1036,6 +1098,7 @@ int main(int argc, char **argv) {
     struct pollfd fds[32];
     while (!stop_now && !done) {
         if (a.toast[0] && now_s() >= a.toast_until) { a.toast[0] = 0; scene_dirty = 1; }
+        if (a.pressed_id && now_s() >= a.pressed_until) { a.pressed_id = 0; scene_dirty = 1; }
         if (scene_dirty) {
             cairo_t *cr = cairo_create(scene);
             app_draw(&a, cr, W, H);
@@ -1057,6 +1120,7 @@ int main(int argc, char **argv) {
         int timeout = 2000;
         if (install_polling(&a) && timeout > 1000) timeout = 1000;
         if (a.toast[0]) { int left = (int)((a.toast_until - now_s()) * 1000) + 1; if (left < timeout) timeout = left > 0 ? left : 1; }
+        if (a.pressed_id) { int left = (int)((a.pressed_until - now_s()) * 1000) + 1; if (left < timeout) timeout = left > 0 ? left : 1; }
         if (a.tool_running) { timeout = 120; a.tool_spin += 0.4; scene_dirty = 1; }   /* #649: the spinner turns */
         if (a.screen == SCREEN_STANDBY && timeout > 500) { timeout = 500; scene_dirty = 1; }
         if (in) input_rescan(in);               /* pick up a late/hot-plugged keyboard or mouse */
@@ -1069,6 +1133,10 @@ int main(int argc, char **argv) {
             while (!done && input_next(in, &e)) {
                 if (e.type == UIEV_MOVE) moved = 1;
                 else scene_dirty = 1;           /* char/key/click change the scene */
+                if (e.type == UIEV_CLICK) {     /* mockup 10/10: the pressed frame, ~150 ms */
+                    a.pressed_id = app_hit(&a, e.x, e.y);
+                    a.pressed_until = now_s() + 0.15;
+                }
                 done = a.install.active ? install_handle(&a, &wizard, &e)
                                         : handle(&a, &e, auth_cmd, demo);
             }

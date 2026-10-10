@@ -33,7 +33,14 @@ def _reduce_to_one_active_admin(conn, keep: str) -> None:
     """מוחק כל מנהל פעיל פרט ל-``keep``, עד שנשאר אחד.
 
     לא מניח שמות ולא כמויות — קורא את המצב ופועל לפיו.
+
+    ‏#1262: המנהל שנוצר בהתקנה אינו נמחק לעולם, ולכן "נשאר מנהל פעיל
+    אחד" אפשרי רק ב-DB שאין בו builtin (התקנה ישנה). הדגל מוסר כאן כדי
+    לבדוק את שומר המנהל האחרון **לבדו**; שומר ה-builtin נבדק ב-
+    ``test_builtin_admin_protected.py``.
     """
+    conn.execute("UPDATE users SET is_builtin = 0")
+    conn.commit()
     while True:
         rows = conn.execute(
             "SELECT username FROM users"
@@ -58,7 +65,7 @@ def test_a_disabled_admin_does_not_count_as_the_one_who_would_remain(server):
     conn = server["ctx"].conn
     _reduce_to_one_active_admin(conn, keep="noc")
 
-    users.create(conn, "sleeper", "sleeper-pass-1", "admin", by="test", is_builtin=True, check_policy=False)
+    users.create(conn, "sleeper", "sleeper-pass-1", "admin", by="test", check_policy=False)
     users.set_disabled(conn, "sleeper", True, by="test")
 
     assert users.admin_count(conn) == 2          # noc + sleeper
@@ -81,8 +88,8 @@ def test_deleting_admins_one_after_another_always_leaves_one(server):
     """
     conn = server["ctx"].conn
     _reduce_to_one_active_admin(conn, keep="noc")
-    users.create(conn, "alpha", "alpha-pass-123", "admin", by="test", is_builtin=True, check_policy=False)
-    users.create(conn, "beta", "beta-pass-1234", "admin", by="test", is_builtin=True, check_policy=False)
+    users.create(conn, "alpha", "alpha-pass-123", "admin", by="test", check_policy=False)
+    users.create(conn, "beta", "beta-pass-1234", "admin", by="test", check_policy=False)
     assert users.active_admin_count(conn) == 3
 
     users.delete(conn, "alpha", by="test")

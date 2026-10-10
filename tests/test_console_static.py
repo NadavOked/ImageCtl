@@ -265,17 +265,22 @@ def test_static_includes_are_at_9_9():
     #1253/#1254 (דיסק מכווץ בקליטה פעילה, התקדמות קליטה בדף האימג'ים) = ‏11.6
     (‏11.5 תפוס בענף מקביל של ביקורת הממשק);
     #1243 (בלי "זכור" במסך הכניסה הראשון) + איחוד עם #1253/#1254 = ‏11.7;
-    ביקורת ממשק מלאה (אייקון תיקייה, כיווץ העץ, דיאלוג, סטטוס מ-/health…) = ‏11.8.
+    ביקורת ממשק מלאה (אייקון תיקייה, כיווץ העץ, דיאלוג, סטטוס מ-/health…) = ‏11.8;
+    שלב 1 של מוקאפ הקונסולה (טוקני ניגודיות, מסגרת חלונות אחידה, תרשים רשת, שורת משימות+סטטוס אחת) = ‏11.9;
+    שלב 2 (ספריית אימג'ים, אחסון, סקירה, מחשבים, חשבון) = ‏11.10 — ההשוואה כאן במחרוזות, כי float('11.10') == 11.1.
+    ‏#1262 (admin שנוצר בהתקנה מוגן) = ‏11.11.
+    שדות סיסמה LTR + "הצג" אחד, ותיקוני הגואי הנייטיבי = ‏11.12;
+    #1263 (כרטיס רשת בשלושה אופנים, חלון רשת הפצה, בלי קבצי dnsmasq) = ‏11.13.
     שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
-    versions = {float(v) for v in re.findall(r'\?v=(\d+\.\d+)"', page)}
-    assert versions == {11.8}, versions
+    versions = set(re.findall(r'\?v=(\d+\.\d+)"', page))
+    assert versions == {"11.13"}, versions
     # ביקורת 10/10: monitor.html מושך את אותם console.css ו-design-tokens.css — הם נשארו על 3.29 לנצח,
     # ולכן דפדפן שזכר אותם הציג את המוניטור בעיצוב ישן. monitor.js לבדו שומר על גרסה משלו (test_monitor).
     mon = (STATIC / "monitor.html").read_text(encoding="utf-8")
-    shared = {float(v) for v in re.findall(r'(?:design-tokens|console)\.css\?v=(\d+\.\d+)"', mon)}
-    assert shared == {11.8}, shared
+    shared = set(re.findall(r'(?:design-tokens|console)\.css\?v=(\d+\.\d+)"', mon))
+    assert shared == {"11.13"}, shared
 
 
 def test_update_apply_is_a_sheet_without_text_verification_and_revert_uses_hostname():
@@ -527,8 +532,8 @@ def test_network_is_one_object_page_with_the_diagram_nics_and_deploy_tabs():
     (תרשים SVG inline, טבלת כרטיסים בפועל/מוגדר/פער, רשת הפצה — מה מחולק בפועל
     מול השמור) + "פורטים" = הדף הקיים של גל 5, שלא נגעו בו מלבד רצועת הלשוניות.
     הדפים הישנים `nic`/`netdeploy`/`network` (כרטיס-לכל-NIC, `object-strip`,
-    "פורטיים" קבועים, 10.44.12.0/24 קשיח) נמחקו. ‏#53: כל שינוי DHCP/כתובת
-    עובר בטפסים הקיימים של net.js/netcfg.js. ‏#1032: תא הפעולות שומר מקום."""
+    "פורטיים" קבועים, 10.44.12.0/24 קשיח) נמחקו. ‏#1263: כרטיס = חלון "הגדרת
+    כרטיס" (netcfg.js), רשת ההפצה = חלון משלה (net.js). ‏#1032: תא הפעולות שומר מקום."""
     js, page, css = _console_js(), _index(), (STATIC / "console.css").read_text(encoding="utf-8")
     # העץ: הצומת "רשת" מנווט לדף; הילדים פותחים את האובייקט בלשונית; "פורטים" כמו שהיה
     assert ("""<div class="inventory-node" data-page="network" onclick="selectPageById('network')\""""
@@ -538,17 +543,19 @@ def test_network_is_one_object_page_with_the_diagram_nics_and_deploy_tabs():
     assert """<div class="inventory-node" data-page="ports" onclick="selectPageById('ports')\"""" in page
     for gone in ('data-page="nic"', 'data-page="netdeploy"', "NIC_HIGHLIGHT"):
         assert gone not in page, gone
-    for needed in ("function networkPage(", "function loadNetwork(", "function netDiagramModel(", "function netDiagramSvg(", "function networkDiagramTab(",
+    for needed in ("function networkPage(", "function loadNetwork(", "function netDiagramModel(", "function netMapSvg(", "function netLaneOpen(", "function netLaneDrawerHtml(", "function networkDiagramTab(",
                    "function networkNicsTab(", "function networkDeployTab(", "function netServicesOn(", "function netGapStatus(", "function netProbe(", "function openNetwork(",
                    'network: { crumb: "רשת", title: "רשת", tabs: NET_TABS, render: (i) => networkPage(i), load: loadNetwork, own: true }',
                    'const NET_TABS = ["תרשים", "חיבורים פיזיים", "רשת הפצה", "פורטים"];',
-                   'width="${ND.W}" height="${H}" viewBox="0 0 ${ND.W} ${H}"',   # gotcha: SVG עם height מפורש
-                   "מה מותר — דורש API (#705)", 'title: "כיתות — v2"', "`/net/interfaces/${encodeId(name)}/probe`",
-                   "editNic(n)", "editAddress(netCfgRow(n.name)", "routeDeleteSheet(", 'cls: "stable",'):
+                   'width="${W}" height="340" viewBox="0 0 ${W} 340"',   # gotcha: SVG עם height מפורש
+                   "מה מותר: דורש API", 'title: "כיתות — v2"', "`/net/interfaces/${encodeId(name)}/probe`",
+                   "editNicConfig(n.name)", "editDeployNet(n.name)", "routeDeleteSheet(", 'cls: "stable",'):
         assert needed in js, needed
     for gone in ("function renderNicCard(", "function netBannerHtml(", "function nic()", "function netdeploy()", "function network()", "function saveNetwork(",
                  "function loadNetcfgData(", "function loadNetPages(", "function editDeployNic(", "function nicUnion(", "10.44.12.0/24", "פורטיים",
-                 'netdeploy: [netdeploy]', 'nic: [nic]', "selectPageById('nic')", "selectPageById('netdeploy')"):
+                 'netdeploy: [netdeploy]', 'nic: [nic]', "selectPageById('nic')", "selectPageById('netdeploy')",
+                 # ‏#1263: "קבצי dnsmasq" ו"הקובץ של הכרטיס" הוסרו מהקונסולה
+                 "previewDnsmasq", "netShowFile", "קבצי dnsmasq", "editNic(", "editAddress("):
         assert gone not in js, gone
     block = js[js.index("/* ---------- #954 גל 8: רשת כאובייקט"):js.index("function healthCheckById(id) {")]
     assert "prompt(" not in block and "confirm(" not in block.replace("confirmSheet(", ""), "prompt/confirm חסומים — רק sheet()"
@@ -556,7 +563,7 @@ def test_network_is_one_object_page_with_the_diagram_nics_and_deploy_tabs():
     assert "function routeDeleteSheet(" in (STATIC / "netcfg.js").read_text(encoding="utf-8")
     # ‏#1032: תא הפעולות שומר מקום (visibility), לא display:none
     assert ".page .dg.stable td .acts{display:flex;visibility:hidden" in css
-    for sel in (".page .netdiag-svg{", ".page .netdiag .ln.off{stroke-dasharray:4 4}", ".page .netdiag .led.err{", ".page .kv3{"):
+    for sel in (".page .netmap-svg{", ".page .netmap-svg .bad.nm-wire{stroke:var(--clr-danger);stroke-dasharray:5 4}", ".page .netmap-svg .bad.nm-box{stroke:var(--clr-danger)", ".page .kv3{"):
         assert sel in css, sel
 
 
@@ -704,3 +711,16 @@ def test_upload_modal_title_matches_the_button_that_opens_it():
     js = _console_js()
     start = js.index("function openImageIngest")
     assert '"העלאת קובץ tar"' in js[start:start + 600]
+
+
+def test_stage2_css_defines_what_the_js_emits_and_no_invented_items():
+    """שלב 2: כל מחלקה שה-JS החדש פולט מוגדרת ב-CSS; ופריטים שהמוקאפ המציא
+    (כרטיס גיבוי, בקשות הרשאה, ממצאי ביקורת) לא נבנו כי אין להם API."""
+    css = (STATIC / "console.css").read_text(encoding="utf-8")
+    for cls in ("usecell", "usenums", "usewrap", "tiles", "tile"):
+        assert f".page .{cls}" in css or f".page .tile .{cls}" in css, cls
+    assert ".page .tile .led" in css and ".dskico" in css
+    js = _console_js() + (STATIC / "storage.js").read_text(encoding="utf-8")
+    assert 'usage(total, free)' in js and 'class="tiles"' in js and 'class="dskico"' in js
+    for invented in ("בקשות הרשאה", "ממצאי ביקורת", 'title: "גיבוי"', "<span>גיבוי</span>"):
+        assert invented not in js, invented

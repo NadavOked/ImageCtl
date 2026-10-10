@@ -262,28 +262,28 @@ function lastDecl(css, selector, prop) {
 }
 const px = (v) => { assert.match(String(v), /^(0|-?\d+(\.\d+)?px)$/, 'px value, got ' + v); return parseFloat(v); };
 
-test('S3: the fixed task dock starts above the in-flow statusbar, and the task panel above the dock', () => {
+test('S3 (stage 1): tasks and status are ONE bar — the status items live inside the dock, the dock sits on the bottom edge, the task panel on the dock', () => {
   const css = read('console.css');
   assert.equal(lastDecl(css, '.task-dock', 'position'), 'fixed');
-  const statusH = px(lastDecl(css, '.statusbar', 'height'));
-  const dockBottom = px(lastDecl(css, '.task-dock', 'bottom'));
-  const dockH = px(lastDecl(css, '.task-dock', 'height'));
-  assert.ok(dockBottom >= statusH, `dock bottom ${dockBottom}px must clear the ${statusH}px statusbar (was 0 → statusbar covered)`);
-  assert.equal(px(lastDecl(css, '.task-panel', 'bottom')), dockBottom + dockH, 'task panel rests on the dock');
+  const html = read('index.html');
+  const dock = html.slice(html.indexOf('<div class="task-dock">'), html.indexOf('<div class="user-menu"'));
+  assert.match(dock, /class="task-dock-head"[\s\S]*class="task-summary"[\s\S]*<div class="statusbar">[\s\S]*data-svc="API"[\s\S]*id="serverVersion"/, 'tasks, summary and the status line are in one dock');
+  assert.doesNotMatch(html.replace(dock, ''), /<div class="statusbar">/, 'there is no second status bar');
+  assert.equal(px(lastDecl(css, '.task-dock', 'bottom')), 0, 'the dock rests on the bottom edge (no 22px bar under it any more)');
+  assert.equal(px(lastDecl(css, '.task-panel', 'bottom')), px(lastDecl(css, '.task-dock', 'height')), 'task panel rests on the dock');
 });
 
-test('audit: the drawer ends above the dock + statusbar stack, so its action bar is never covered', () => {
+test('audit: the drawer ends above the dock, so its action bar is never covered', () => {
   const css = read('console.css');
-  const statusH = px(lastDecl(css, '.statusbar', 'height'));
-  const dockBottom = px(lastDecl(css, '.task-dock', 'bottom')), dockH = px(lastDecl(css, '.task-dock', 'height'));
-  assert.equal(px(lastDecl(css, '.drawer', 'bottom')), dockBottom + dockH, `the drawer clears the ${dockBottom + dockH}px stack (statusbar ${statusH}px + dock ${dockH}px); it was bottom:0 and the dock hid 56px of it`);
-  assert.match(narrowCss(), /\.drawer\{bottom:34px\}/, 'narrow: only the 34px dock (the statusbar is hidden)');
+  const dockH = px(lastDecl(css, '.task-dock', 'height'));
+  assert.equal(px(lastDecl(css, '.drawer', 'bottom')), dockH, `the drawer clears the ${dockH}px dock`);
+  assert.match(narrowCss(), /\.drawer\{bottom:34px\}/, 'narrow: the same 34px dock');
   assert.match(css, /\.drawer \.list-row \.status\{font-size:var\(--t-xs\)/, 'a status label in a drawer list is not larger than its 11px title');
 });
 
-test('S3: at <=740px, where the statusbar is hidden, the dock returns to the bottom edge', () => {
+test('S3: at <=740px the status items fold away and the dock stays on the bottom edge', () => {
   const narrow = narrowCss();
-  assert.match(narrow, /\.statusbar\{display:none\}/, 'precondition: statusbar hidden when narrow');
+  assert.match(narrow, /\.statusbar\{display:none\}/, 'the status items are hidden when narrow');
   assert.match(narrow, /\.task-dock\{bottom:0\}/);
   assert.match(narrow, /\.task-panel\{bottom:34px\}/);
 });
