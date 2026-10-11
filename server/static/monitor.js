@@ -384,5 +384,35 @@ document.getElementById("reconnect").addEventListener("click", () => {
   if (ws) ws.close(); connect();
 });
 
+/* מסך מלא (console-full.html): הדף כולו, כדי שחלון האישור של פעולת כוח ייראה. הסרגל צף ומוסתר, ומופיע 2.5 שניות
+   אחרי תזוזת עכבר. Esc יוצא (הדפדפן מטפל בו — הוא לא מגיע ל-canvas). דפדפן שלא מאשר מסך מלא = כפתור מנוטרל עם
+   הסבר, לא כפתור שלא עושה כלום. */
+const fsBtn = document.getElementById("fs-btn");
+let fsTimer = null;
+function inFullscreen() { return !!document.fullscreenElement; }
+function showFsBar() {
+  const root = document.documentElement;
+  root.classList.add("bar-on");
+  clearTimeout(fsTimer);
+  fsTimer = setTimeout(() => root.classList.remove("bar-on"), 2500);
+}
+function syncFullscreen() {
+  const on = inFullscreen();
+  fsBtn.textContent = on ? "יציאה ממסך מלא" : "מסך מלא";
+  if (on) { showFsBar(); canvas.focus(); }
+  else { clearTimeout(fsTimer); document.documentElement.classList.remove("bar-on"); }
+}
+if (!document.fullscreenEnabled) {
+  fsBtn.disabled = true;
+  fsBtn.title = "הדפדפן אינו מאפשר מסך מלא בדף הזה";
+} else {
+  fsBtn.addEventListener("click", () => {
+    const done = inFullscreen() ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+    Promise.resolve(done).catch((e) => setStatus("מסך מלא נדחה: " + e.message, "bad"));
+  });
+  document.addEventListener("fullscreenchange", syncFullscreen);
+  document.addEventListener("mousemove", () => { if (inFullscreen()) showFsBar(); });
+}
+
 if (!MAC) setStatus("חסר MAC בכתובת", "bad");
 else connect();

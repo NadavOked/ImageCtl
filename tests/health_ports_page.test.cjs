@@ -33,18 +33,6 @@ const PORTS_OLD=[
   port('monitor','Monitor (RFB)','5900','tcp','off','המתג monitor:stations כבוי'),
   port('ssh_stations','SSH','22','tcp','ok','שורת הקרנל אינה נושאת imagectl.debug'),
 ];
-// החוזה של #996: enabled / bind / toggle / off_means + שורות חדשות (8443, טווח דינמי)
-const PORTS_NEW=[
-  port('tftp','TFTP','69','udp','ok','dnsmasq מגיש',{enabled:true,bind:'0.0.0.0',toggle:'confirm',off_means:'התחנות לא מקבלות shim/GRUB — עולות מהדיסק המקומי'}),
-  port('http_boot','HTTP','8080','tcp','ok','uvicorn',{enabled:true,bind:'0.0.0.0',toggle:'confirm',off_means:'אין PXE ואין hello — כל סבב פעיל נכשל בגלוי'}),
-  port('http_console','HTTP','8081','tcp','ok','uvicorn',{enabled:true,bind:'10.44.10.1',toggle:'confirm',off_means:'אתה ננעל בחוץ'}),
-  port('pxe_proxy','PXE','4011','udp','off','אין hook — לא אומת'),
-  port('multicast','Multicast','9000–9001','udp','off','אין סבב רץ',{enabled:true,bind:'10.44.9.10',toggle:'none',off_means:'סבב לא יכול להתחיל לשדר'}),
-  port('monitor','Monitor (RFB)','5900','tcp','off','המתג monitor:stations כבוי'),
-  port('interserver','mTLS','8443','tcp','off','כבוי — שרת ראשי, לא משני',{enabled:false,bind:'',toggle:'api',off_means:'משני לא יכול להירשם או לקבל אימג\'ים'}),
-  port('dynamic','UDP','9002–9099','udp','unknown','לא נקרא — ss חסר',{enabled:true,bind:'',toggle:'none',off_means:'שחזור תחנה בודדת ממסך התחנה נכשל'}),
-  port('ssh_stations','SSH','22','tcp','ok','שורת הקרנל אינה נושאת imagectl.debug'),
-];
 const SSH={stations:{enabled:false,evidence:'closed',detail:'שורת הקרנל אינה נושאת imagectl.debug',confirm_word:'imagectl.debug'},
   listeners:{checked:true,addresses:['10.44.10.1'],wildcard:false,reason:'',port:22},stray:[],
   interfaces:[{name:'ens18',state:'up',addresses:['10.44.10.1/24'],enabled:true,listening:true},
@@ -119,12 +107,12 @@ test('the checks table shows all five states with their own colour — "not chec
   await run('loadHealth()');
   const html=run('health()'); balanced(html);
   assert.match(html,/<table class="dg">/); assert.match(html,/<th>בדיקה<\/th><th>מצב<\/th><th>מה נמצא<\/th>/);
-  assert.match(row(html,'השרת בכתובת ההפצה'),/class="st ok">תקין</);
-  assert.match(row(html,'מולטיקאסט (udp-sender)'),/class="st warn">אזהרה</);
-  assert.match(row(html,'פורט 69 (TFTP)'),/class="st err">תקלה</);
-  assert.match(row(html,'SSH בתחנות'),/class="st ">כבוי</);
+  assert.match(row(html,'השרת בכתובת ההפצה'),/class="pill ok">תקין</);
+  assert.match(row(html,'מולטיקאסט (udp-sender)'),/class="pill warn">אזהרה</);
+  assert.match(row(html,'פורט 69 (TFTP)'),/class="pill err">תקלה</);
+  assert.match(row(html,'SSH בתחנות'),/class="pill ">כבוי</);
   const unk=row(html,'עדכניות ה-shim');
-  assert.match(unk,/class="st unk">לא נבדק</); assert.doesNotMatch(unk,/st ok/);
+  assert.match(unk,/class="pill unk">לא נבדק</); assert.doesNotMatch(unk,/pill ok/);
   assert.equal(run('healthStatusClass("unknown")'),'unk'); assert.equal(run('healthStatusLabel("unknown")'),'לא נבדק');
   // מה נמצא — ה-detail של השרת כלשונו
   assert.match(html,/אף אחד לא מגיש TFTP — מחשבים לא יעלו ב-PXE/);
@@ -135,6 +123,49 @@ test('the checks table shows all five states with their own colour — "not chec
   // בלי מתגים ובלי הלשוניות הישנות
   assert.doesNotMatch(html,/ssh-body|class="switch|role="switch"/);
   assert.doesNotMatch(html,/role="tablist"/);
+});
+
+test('stage 3: the update card and backup are no longer on the health page (they live in settings)',async()=>{
+  const {run}=setup(); run('current="health"');
+  await run('loadHealth()');
+  const html=run('health()');
+  assert.doesNotMatch(html,/healthUpdateCheck|confirmUpdateApply|confirmSettingsBackup|עדכונים/);
+});
+
+test('stage 3: KPI row (תקינים / באזהרה / תקלות) + "לא נבדקו" tile; unchecked is its own number, never folded into ok',async()=>{
+  const {run}=setup(); run('current="health"');
+  await run('loadHealth()');
+  const html=run('health()'); balanced(html);
+  const k=cell(html,'class="c12 kpis"',2600);
+  assert.match(k,/<div class="kpi ok"><div class="l">תקינים<\/div><div class="v"><bdi dir="auto">2</);
+  assert.match(k,/<div class="kpi warn"><div class="l">באזהרה<\/div><div class="v"><bdi dir="auto">1</);
+  assert.match(k,/<div class="kpi err"><div class="l">תקלות<\/div><div class="v"><bdi dir="auto">4</);
+  assert.match(k,/<div class="l">לא נבדקו<\/div><div class="v"><bdi dir="auto">1</);
+  assert.match(k,/לא נבדק אינו תקין/);
+  assert.match(k,/<div class="l">כבויים \/ לא ישימים<\/div><div class="v"><bdi dir="auto">1</);
+  // לא נקרא — אין KPI בכלל (לא "0 תקינים")
+  const bad=setup({'/health':new Error('boom')}); bad.run('current="health"');
+  return bad.run('loadHealth()').then(()=>{ assert.doesNotMatch(bad.run('health()'),/class="c12 kpis"/); });
+});
+
+test('stage 3: "תקלות פתוחות" lists bad, warn and unknown (worst first) — empty state only when every check was checked and none failed',async()=>{
+  const {run}=setup(); run('current="health"');
+  await run('loadHealth()');
+  const html=run('health()');
+  const card=html.slice(html.indexOf('תקלות פתוחות'));
+  assert.ok(card.indexOf('פורט 69 (TFTP)')<card.indexOf('מולטיקאסט (udp-sender)'),'errors before warnings');
+  assert.ok(card.indexOf('מולטיקאסט (udp-sender)')<card.indexOf('עדכניות ה-shim'),'warnings before unchecked');
+  assert.match(cell(card,'עדכניות ה-shim',400),/pill unk">לא נבדק</);
+  assert.doesNotMatch(card,/class="empty"/);
+  assert.doesNotMatch(card,/SSH בתחנות/,'off is not an open fault');
+  // הכול תקין → מצב ריק
+  const allOk=setup({'/health':[check('server','השרת','ok','עונה'),check('x','ssh','off','כבוי')]}); allOk.run('current="health"');
+  return allOk.run('loadHealth()').then(()=>{
+    const h=allOk.run('health()'); assert.match(cell(h,'תקלות פתוחות',400),/class="empty">אין תקלות — כל הבדיקות נבדקו/);
+    // בדיקה אחת שלא נבדקה — אינה "אין תקלות"
+    const unk=setup({'/health':[check('server','השרת','ok','עונה'),check('shim','shim','unknown','לא נבדק')]}); unk.run('current="health"');
+    return unk.run('loadHealth()').then(()=>{ const h2=unk.run('health()'); assert.doesNotMatch(cell(h2,'תקלות פתוחות',600),/אין תקלות/); });
+  });
 });
 
 test('per-machine loop rows are grouped under "לולאות אתחול" right after the summary row, with a details action for a registered machine',async()=>{
@@ -184,11 +215,11 @@ test('/health that cannot be read is its own state — red note, "לא נקרא"
   assert.match(run('toasts.join("|")'),/DB down/);
 });
 
-test('update card: installed/previous/last-check, check → apply button with a plain confirm (#1192), revert behind typed name',async()=>{
-  const {run,requests}=setup(); run('current="health"');
-  await run('loadHealth()');
-  let html=run('health()');
-  const card=cell(html,'גרסה ועדכון',1500);
+test('stage 3: update card (moved to settings): installed/previous/last-check, check → apply button with a plain confirm (#1192), revert behind typed name',async()=>{
+  const {run,requests}=setup(); run('current="settings"');
+  await run('loadSettingsData()');
+  let html=run('settings()');
+  const card=cell(html,'<span>עדכונים',1500);
   assert.match(card,/מותקן<\/span><span class="v"><span class="mono">v0\.34\.0</);
   assert.match(card,/קודם<\/span><span class="v"><span class="mono">v0\.33\.0<\/span> \(חזרה זמינה\)/);
   assert.match(card,/בדיקה אחרונה<\/span><span class="v">מעולם לא נבדק בשרת הזה/,'#1000: last_check null = never checked on this server');
@@ -197,8 +228,8 @@ test('update card: installed/previous/last-check, check → apply button with a 
   assert.match(card,/confirmUpdateRevert\(UPDATE_INFO\.previous\)">חזור ל-v0\.33\.0</);
   await run('healthUpdateCheck()');
   assert.ok(requests.some((r)=>r.url==='/update/check' && r.method==='POST'));
-  html=run('health()');
-  assert.match(cell(html,'גרסה ועדכון',1800),/בדיקה אחרונה<\/span><span class="v">היום 06:00 — יש עדכון: v0\.34\.0 → v0\.35\.0/,'#1000: the time is the server `at`, not the browser clock');
+  html=run('settings()');
+  assert.match(cell(html,'<span>עדכונים',1800),/בדיקה אחרונה<\/span><span class="v">היום 06:00 — יש עדכון: v0\.34\.0 → v0\.35\.0/,'#1000: the time is the server `at`, not the browser clock');
   // ‏#1192 (נדב 21/09): עדכון = דיאלוג אישור בלבד, בלי הקלדת שם השרת (הפעולה הפיכה: "חזור ל-").
   assert.match(html,/confirmUpdateApply\(UPDATE_INFO\.latest\)">החל עדכון v0\.35\.0</);
   assert.doesNotMatch(html,/הקלדת שם השרת\)/,'#1192: no typed-name hint on the apply button');
@@ -212,33 +243,34 @@ test('update card: installed/previous/last-check, check → apply button with a 
 });
 
 test('update card: switch off → note with a link to settings and no buttons; failed check ≠ "no update"; status line; /update unreadable',async()=>{
-  let s=setup({'/update':{current:'v0.34.0',enabled:false,previous:null,server_name:'srv'}}); s.run('current="health"');
-  await s.run('loadHealth()');
-  let card=cell(s.run('health()'),'גרסה ועדכון',1500);
-  assert.match(card,/note warn.*update_enabled.*selectPageById\('settings'\)/);
+  let s=setup({'/update':{current:'v0.34.0',enabled:false,previous:null,server_name:'srv'}}); s.run('current="settings"');
+  await s.run('loadSettingsData()');
+  let card=cell(s.run('settings()'),'<span>עדכונים',1500);
+  assert.match(card,/note warn.*update_enabled/);
   // #1128: the settings-backup button does not depend on the update switch; no update buttons though
-  assert.doesNotMatch(card,/healthUpdateCheck|confirmUpdateApply|confirmUpdateRevert/); assert.match(card,/confirmSettingsBackup/);
+  assert.doesNotMatch(card,/healthUpdateCheck|confirmUpdateApply|confirmUpdateRevert/);
+  assert.match(s.run('settings()'),/<span>גיבוי<[\s\S]*confirmSettingsBackup/,'backup is its own card and never depends on the update switch');
   assert.match(card,/קודם<\/span><span class="v">—/);
   assert.ok(!s.requests.some((r)=>r.url==='/update/status'),'status is not asked while the switch is off');
-  s=setup({'/update/check':new Error('no route to github'),'/update/status':{state:'running',tag:'v0.35.0',verified:false}}); s.run('current="health"');
-  await s.run('loadHealth()'); await s.run('healthUpdateCheck()');
-  card=cell(s.run('health()'),'גרסה ועדכון',1800);
+  s=setup({'/update/check':new Error('no route to github'),'/update/status':{state:'running',tag:'v0.35.0',verified:false}}); s.run('current="settings"');
+  await s.run('loadSettingsData()'); await s.run('healthUpdateCheck()');
+  card=cell(s.run('settings()'),'<span>עדכונים',1800);
   assert.match(card,/הבדיקה נכשלה: no route to github/); assert.doesNotMatch(card,/החל עדכון|אין חדש/);
   assert.match(card,/class="st run">העדכון ל-v0\.35\.0 הופעל — ממתין לאתחול השרת/);
-  s=setup({'/update':new Error('403')}); s.run('current="health"');
-  await s.run('loadHealth()');
-  assert.match(cell(s.run('health()'),'גרסה ועדכון',600),/note err.*\/update לא נקרא: 403/);
+  s=setup({'/update':new Error('403')}); s.run('current="settings"');
+  await s.run('loadSettingsData()');
+  assert.match(cell(s.run('settings()'),'<span>עדכונים',600),/note err.*\/update לא נקרא: 403/);
 });
 
 test('#1000: "last check" comes from /update.last_check and survives a reload; a stored failure is named, not "no update"',async()=>{
-  let s=setup({'/update':{current:'v0.34.0',enabled:true,previous:null,server_name:'srv',last_check:{at:'2026-09-18T06:00:00+00:00',current:'v0.34.0',latest:'v0.34.0',available:false,reason:null}}}); s.run('current="health"');
-  await s.run('loadHealth()');
-  let card=cell(s.run('health()'),'גרסה ועדכון',1500);
+  let s=setup({'/update':{current:'v0.34.0',enabled:true,previous:null,server_name:'srv',last_check:{at:'2026-09-18T06:00:00+00:00',current:'v0.34.0',latest:'v0.34.0',available:false,reason:null}}}); s.run('current="settings"');
+  await s.run('loadSettingsData()');
+  let card=cell(s.run('settings()'),'<span>עדכונים',1500);
   assert.match(card,/בדיקה אחרונה<\/span><span class="v">18\/09\/2026 06:00 — כבר על הגרסה העדכנית \(v0\.34\.0\)/);
   assert.doesNotMatch(card,/לא נבדק בסשן/);
-  s=setup({'/update':{current:'v0.34.0',enabled:true,previous:null,server_name:'srv',last_check:{at:'2026-09-18T06:00:00+00:00',current:'v0.34.0',latest:null,available:false,reason:'הבדיקה מול x נכשלה: timeout'}}}); s.run('current="health"');
-  await s.run('loadHealth()');
-  card=cell(s.run('health()'),'גרסה ועדכון',1500);
+  s=setup({'/update':{current:'v0.34.0',enabled:true,previous:null,server_name:'srv',last_check:{at:'2026-09-18T06:00:00+00:00',current:'v0.34.0',latest:null,available:false,reason:'הבדיקה מול x נכשלה: timeout'}}}); s.run('current="settings"');
+  await s.run('loadSettingsData()');
+  card=cell(s.run('settings()'),'<span>עדכונים',1500);
   assert.match(card,/18\/09\/2026 06:00 — הבדיקה נכשלה: הבדיקה מול x נכשלה: timeout/); assert.doesNotMatch(card,/אין חדש|כבר על הגרסה/);
   assert.doesNotMatch(card,/החל עדכון/,'a stored "available" from an earlier session is not an apply button — apply needs a fresh check (UPDATE_CHECK)');
 });
@@ -253,276 +285,112 @@ test('#1000: the health header time comes from the X-Health-Checked-At header (s
   assert.equal(s.run('typeof clockNow'),'function','clockNow is still used for the ports page — but not for /health');
 });
 
-/* ---------- רשת › פורטים ---------- */
+/* ---------- רשת › פורטים — #1267: מופרדים לפי רשת, חומת אש רק בין רשתות ----------
+   נדב 10/10: כרטיס לכל רשת (הפצה / ניהול / בין שרתים). ברשת ההפצה השרת מנהל את
+   הפורטים — אין עמודת חומת אש ואין פעולות. בין רשתות: חומת אש בשרת (פתוח=ירוק,
+   חסום=אדום, לא נבדק=אפור), "מה לפתוח בחומת האש של המכללה" מה-note, ותפריט
+   "בדוק עכשיו" / "הצג פרטים" בלבד. אין "פתח/סגור" בשום מקום, ו-22/SSH לא מוצג (#1266). */
+const p1267=(id,name,p,proto,network,state,detail,extra={})=>({id,name,port:p,proto,desc:'desc '+id,target:'target '+id,state,detail,
+  note:'לפתוח ב-FW: '+proto.toUpperCase()+' '+p+' הסבר '+id,enabled:null,listening:null,bind:[],toggle:'none',toggle_url:null,confirm_word:null,confirm_when:null,
+  off_means:'',network,firewall:null,firewall_detail:null,...extra});
+const PORTS_1267=[
+  p1267('tftp','TFTP','69','udp','deploy','ok','dnsmasq מגיש',{listening:true,bind:['0.0.0.0:69'],toggle:'confirm',enabled:true}),
+  p1267('dhcp','DHCP','67','udp','deploy','ok','dnsmasq מאזין',{listening:true,bind:['0.0.0.0:67'],toggle:'confirm',enabled:true,interfaces:[{name:'ens19',enabled:true,proxy:false}]}),
+  p1267('http_boot','HTTP','8080','tcp','deploy','ok','עונה על תפריט האתחול',{listening:true,bind:['0.0.0.0:8080'],toggle:'confirm',enabled:true}),
+  p1267('http_console','HTTPS','8081','tcp','mgmt','ok','המתג דלוק ומאזין',{listening:true,bind:['10.44.10.1:8081','127.0.0.1:8081'],toggle:'confirm',enabled:true,
+    firewall:'open',firewall_detail:'כלל פתיחה בטבלת imagectl: iifname "ens18" tcp dport 8081 accept'}),
+  p1267('pxe_proxy','PXE','4011','udp','deploy','off','כבוי על ידי המפעיל — לא מאזין'),
+  p1267('multicast','Multicast','9000–9001','udp','deploy','ok','אין udp-sender חי — ואין סבב'),
+  p1267('monitor','Monitor (RFB)','5900','tcp','deploy','off','המתג monitor:stations כבוי'),
+  p1267('interserver','HTTPS (mTLS)','8443','tcp','interserver','off','לא מאזין',{listening:false,
+    firewall:'blocked',firewall_detail:'אין כלל פתיחה בטבלת imagectl, ו-policy drop חוסם חיבור מבחוץ',off_means:'שרתים משניים לא יוכלו להירשם'}),
+  p1267('ssh_stations','SSH','22','tcp','deploy','off','imagectl.debug לא בשורת הקרנל',{toggle:'confirm',enabled:false}),
+  p1267('ssh_server:ens18','SSH','22','tcp','mgmt','ok','מאזין 10.44.10.1:22 · אומת',{toggle:'confirm',enabled:true,interface:'ens18',
+    firewall:'blocked',firewall_detail:'אין כלל'}),
+  p1267('firewall','חומת אש','—','nft',null,'ok','פעילה, 9 כללים לטבלת imagectl'),
+];
+const card=(html,title)=>{const i=html.indexOf('<span>'+title); assert.ok(i>=0,'missing card: '+title); const s=html.lastIndexOf('<div class="',i); const n=html.indexOf('<div class="c12 card"',i+1); return html.slice(s,n<0?undefined:n);};
+const menuOf=(r)=>JSON.parse(r.match(/data-menu="([^"]*)"/)[1].replaceAll('&quot;','"').replaceAll('&#39;',"'"));
 
-test('ports page (old /ports contract): one table, a switch in every row, wired switches say "קיים", the rest say "דורש API" and explain on click',async()=>{
-  const {run}=setup(); run('current="ports"');
+test('#1267 ports page: three cards by network — deploy has no firewall column and no actions; management and inter-server do',async()=>{
+  const {run}=setup({'/ports':PORTS_1267}); run('current="ports"');
   assert.equal(run('ports()'),run('pagePlaceholder()'));
   await run('loadPorts()');
   const html=run('ports()'); balanced(html);
-  assert.match(html,/<th>שירות<\/th><th>פורט<\/th><th>מי מתחבר<\/th><th>על איזה כרטיס<\/th><th>מצב נמדד<\/th><th>מתג<\/th><th class="c-opt">מה קורה אם מכבים<\/th><th class="c-opt">API<\/th><th><span class="sr">פעולות<\/span><\/th>/);
-  assert.match(html,/<table class="dg dense kebab-col">/);
-  // ⋯ בכל שורה: אותה פעולה של המתג, בדיקה מחדש ופרטים (המתג עצמו נשאר בעמודה)
-  assert.equal((html.match(/class="kebab"/g)||[]).length,11);   // #1247: שורת הקיוסק (8082) הוסרה
-  const tftpMenu=JSON.parse(row(html,'>TFTP<').match(/data-menu="([^"]*)"/)[1].replaceAll('&quot;','"').replaceAll('&#39;',"'"));
-  assert.deepEqual(tftpMenu.map((i)=>i[0]),['בדוק עכשיו','הצג פרטים'],'TFTP has no switch API → no open/close item');
-  const switches=[...html.matchAll(/<button type="button" class="sw ([a-z]*)" role="switch" aria-checked="(true|false|mixed)"/g)];
-  // DHCP (ens19) + 8 שורות שרת + 3 SSH לשרת = 12, מתג בכל שורה
-  assert.equal(switches.length,11); assert.equal((html.match(/<tr><td>/g)||[]).length,11);
-  // TFTP: אין toggle בחוזה הישן → מתג "לא ידוע", "דורש API", לחיצה מסבירה
-  const tftp=row(html,'>TFTP<');
-  assert.match(tftp,/class="sw unk" role="switch" aria-checked="mixed"/); assert.match(tftp,/class="pill warn">דורש API</); assert.match(tftp,/דורש API \(#996\)/);
-  assert.match(tftp,/69\/udp/); assert.match(tftp,/לפתוח ב-FW: 69/); assert.match(tftp,/title="דורש API \(#996\): כתובת ההאזנה">—/);
-  run("portSwitch('tftp')");
-  assert.match(run('toasts.at(-1)'),/מתג לפורט 69 דורש API \(#996\)/);
-  assert.equal(run('sheets.length'),0,'no sheet for a switch that has no API');
-  assert.doesNotMatch(html,/disabled/,'no disabled buttons (README §8)');
-  // מוניטור: מתג כבוי, הדלקה מאחורי הקלדה
-  const mon=row(html,'Monitor (RFB)');
-  assert.match(mon,/class="sw " role="switch" aria-checked="false"/); assert.match(mon,/🔒 מוניטור: כבוי \(ברירת מחדל\) — הדלקה חושפת 5900/);
-  assert.match(mon,/class="pill ok">קיים<\/span> <span class="cap mono">PUT \/monitor\/settings/); assert.match(mon,/בתחנה, לא בשרת/);
-  // DHCP מ-/net/interfaces: ens19 משרת → מתג דלוק, נעול, מצב נמדד ירוק עם הטווח
-  const dhcp=row(html,'DHCP הפצה — ens19');
-  assert.match(dhcp,/class="sw on" role="switch" aria-checked="true"/); assert.match(dhcp,/🔒 דלוק · כיבוי בחלון אישור/);
-  assert.match(dhcp,/class="st ok">תקין<\/span><span class="sub">משרת · 10\.44\.9\.100–10\.44\.9\.200/);
-  // PXE proxy: דלוק על ens20
-  assert.match(row(html,'>PXE<'),/class="sw on".*דלוק על ens20/s);
-  // סיכום בכותרת
-  assert.match(html,/11 שורות · מצב האזנה כפי שנקרא מהשרת ב-\d\d:\d\d/);
-  assert.match(html,/מאזינים בפורט 22: 10\.44\.10\.1/);
-  // ‏#954 גל 8: הלשוניות הן של אובייקט הרשת — תרשים · חיבורים פיזיים · רשת הפצה · פורטים (הדף הזה, tab 3)
-  assert.match(html,/role="tab" aria-selected="false" tabindex="-1" onclick="openNetwork\(0\)">תרשים/);
-  assert.match(html,/role="tab" aria-selected="false" tabindex="-1" onclick="openNetwork\(1\)">חיבורים פיזיים/);
-  assert.match(html,/role="tab" aria-selected="true" tabindex="0" onclick="activateTab\(3\)">פורטים/);
+  const dep=card(html,'רשת הפצה'), mgmt=card(html,'רשת ניהול'), inter=card(html,'בין שרתים');
+  // הפצה: הכרטיס שמשרת DHCP (מה-/ports) + הכתובת שלו (מ-/net/interfaces)
+  assert.match(dep,/<span>רשת הפצה · ens19 · 10\.0\.0\.1</);
+  for(const p of ['67/udp','69/udp','8080/tcp','4011/udp','9000–9001/udp','5900/tcp']) assert.ok(dep.includes(p),'deploy card is missing '+p);
+  assert.match(dep,/<th>פורט<\/th><th>שירות<\/th><th>מי פונה<\/th><th>מאזין<\/th><\/tr>/,'deploy: four columns, no firewall');
+  assert.doesNotMatch(dep,/חומת אש<\/th>|מה לפתוח בחומת|class="kebab"/,'deploy: no firewall column and no row menu');
+  assert.match(dep,/השרת מנהל את רשת ההפצה ואת הפורטים שלה/);
+  // ניהול: 8081, חומת אש פתוח = ירוק, מה לפתוח = ה-note בלי הקידומת
+  assert.match(mgmt,/<span>רשת ניהול · 10\.44\.10\.1</,'the management address is the measured bind of 8081, loopback left out');
+  assert.match(mgmt,/<th>פורט<\/th><th>שירות<\/th><th>מי פונה<\/th><th>מאזין<\/th><th>חומת אש<\/th><th class="c-opt">מה לפתוח בחומת האש של המכללה<\/th>/);
+  const r8081=row(mgmt,'8081/tcp');
+  assert.match(r8081,/class="pill ok">פתוח</); assert.match(r8081,/>TCP 8081 הסבר http_console</); assert.doesNotMatch(r8081,/לפתוח ב-FW/);
+  assert.match(mgmt,/חומת האש של המכללה לא נראית מהשרת/);
+  // בין שרתים: 8443 חסום = אדום
+  assert.match(row(inter,'8443/tcp'),/class="pill err">חסום</);
+  assert.ok(!dep.includes('8081') && !dep.includes('8443') && !mgmt.includes('8443'),'each port in its own card only');
+  // מצב חומת האש של השרת כולה — מה-/ports (שורת firewall), לא כשורת פורט
+  assert.match(html,/חומת האש של השרת: פעילה, 9 כללים לטבלת imagectl/);
+  assert.doesNotMatch(html,/<span class="mono">—\/nft</);
 });
 
-test('SSH to the server: a row per interface with three measured states (listening / closed / not read) and the last-door lock',async()=>{
-  const {run}=setup(); run('current="ports"');
+test('#1267 ports page: no open/close anywhere, no switches, no typed confirmations, and 22/SSH is not shown',async()=>{
+  const {run}=setup({'/ports':PORTS_1267}); run('current="ports"');
   await run('loadPorts()');
   const html=run('ports()');
-  const a=row(html,'SSH לשרת — ens18'), b=row(html,'SSH לשרת — ens19'), c=row(html,'SSH לשרת — ens20');
-  assert.match(a,/class="st ok">תקין<\/span><span class="sub">מאזין 10\.44\.10\.1:22 · אומת/);
-  assert.match(a,/class="sw on"/); assert.match(a,/🔒 הדלת האחרונה · סגירה בחלון אישור/); assert.match(a,/אין SSH לשרת מאף רשת/);
-  assert.match(b,/class="st ">כבוי<\/span><span class="sub">סגור · אומת/); assert.match(b,/class="sw " /); assert.match(b,/🔒 סגור · פתיחה בחלון אישור/);
-  assert.match(c,/class="st unk">לא נבדק<\/span><span class="sub">טבלת הסוקטים לא נקראה/); assert.doesNotMatch(c,/סגור · אומת/);
-  assert.match(a,/PUT \/ssh\/interfaces\/ens18/);
+  assert.doesNotMatch(html,/role="switch"/,'no switch on the ports page');
+  assert.doesNotMatch(html,/22\/tcp|SSH|🔒/,'SSH rows are not shown (#1266)');
+  const kebabs=[...html.matchAll(/data-menu="([^"]*)"/g)];
+  assert.equal(kebabs.length,2,'a row menu only for 8081 and 8443');
+  for(const k of kebabs) assert.deepEqual(menuOf(k[0]).map((i)=>i[0]),['בדוק עכשיו','הצג פרטים']);
+  assert.doesNotMatch(html,/פתח…|סגור…|הקלד/);
 });
 
-test('the wired switches call the same endpoints as before: monitor, SSH stations, SSH per NIC (open + last door), DHCP off, proxy off',async()=>{
-  const {run,requests}=setup(); run('current="ports"');
+test('#1267 firewall not read → "לא נבדק", never green; the header pill says so',async()=>{
+  const unread=PORTS_1267.map((p)=>p.network==='mgmt'||p.network==='interserver'?{...p,firewall:null,firewall_detail:'nft לא נקרא — לא נבדק'}:p);
+  const {run}=setup({'/ports':unread}); run('current="ports"');
+  await run('loadPorts()');
+  const html=run('ports()');
+  const r=row(card(html,'רשת ניהול'),'8081/tcp');
+  assert.match(r,/class="pill ">לא נבדק</); assert.doesNotMatch(r,/class="pill (ok|err)"/);
+  assert.match(r,/title="nft לא נקרא — לא נבדק"/);
+  assert.match(html,/class="pill warn">חומת אש: 2 לא נבדקו</);
+});
+
+test('#1267 "בדוק עכשיו" re-reads /ports and reports what was measured; "הצג פרטים" opens a real drawer',async()=>{
+  const {run,requests}=setup({'/ports':PORTS_1267}); run('current="ports"');
   await run('loadPorts()'); run('ports()');
-  const put=(u)=>requests.filter((r)=>r.method==='PUT' && r.url===u);
-  // מוניטור — הדלקה = sheet עם imagectl.monitor → PUT /monitor/settings
-  run("portSwitch('monitor')");
-  let s=run('sheets.at(-1)'); assert.equal(s.verify,undefined,'#1270: no typed word'); assert.match(s.note,/מה קורה אם מכבים/);
-  await s.onSubmit(); assert.deepEqual(put('/monitor/settings').at(-1).body,{enabled:true,confirm:'imagectl.monitor'});
-  // SSH לתחנות — הדלקה = sheet עם imagectl.debug → PUT /ssh/stations
-  run("portSwitch('ssh_stations')");
-  s=run('sheets.at(-1)'); assert.equal(s.verify,undefined,'#1270: no typed word');
-  await s.onSubmit(); assert.deepEqual(put('/ssh/stations').at(-1).body,{enabled:true,confirm:'imagectl.debug'});
-  // SSH לשרת — פתיחת ens19 = הקלדת ens19
-  run("portSwitch('ssh_nic:ens19')");
-  s=run('sheets.at(-1)'); assert.equal(s.verify,undefined,'#1270: no typed word'); assert.match(s.title,/פתיחת SSH לשרת על ens19/);
-  await s.onSubmit(); assert.deepEqual(put('/ssh/interfaces/ens19').at(-1).body,{enabled:true,confirm:'ens19'});
-  // הדלת האחרונה — סגירת ens18 דורשת הקלדה ומזהירה
-  run("portSwitch('ssh_nic:ens18')");
-  s=run('sheets.at(-1)'); assert.equal(s.verify,undefined,'#1270: no typed word'); assert.match(s.sub,/הדלת האחרונה/); assert.match(s.note,/אין SSH לשרת מאף רשת/);
-  await s.onSubmit(); assert.deepEqual(put('/ssh/interfaces/ens18').at(-1).body,{enabled:false,confirm:'ens18'});
-  // DHCP — כיבוי = הקלדת שם הכרטיס → PUT /net/interfaces/ens19 עם enabled:false, proxy:false והשאר כמו שהיה
-  run("portSwitch('dhcp:ens19')");
-  s=run('sheets.at(-1)'); assert.equal(s.verify,undefined,'#1270: no typed word'); assert.match(s.note,/מה קורה אם מכבים: אף מכונה בוילן ההפצה/);
-  await s.onSubmit();
-  const d=put('/net/interfaces/ens19').at(-1).body;
-  assert.equal(d.enabled,false); assert.equal(d.proxy,false); assert.equal(d.confirm,'ens19'); assert.equal(d.range_start,'10.44.9.100'); assert.equal(d.server_ip,'10.44.9.10');
-  // PXE proxy — כיבוי = אישור (בלי הקלדה: לא שובר את המערכת) → proxy:false על ens20
-  run("portSwitch('pxe_proxy')");
-  s=run('sheets.at(-1)'); assert.ok(!s.verify); assert.match(s.title,/כיבוי PXE proxy על ens20/);
-  await s.onSubmit(); const p=put('/net/interfaces/ens20').at(-1).body; assert.equal(p.proxy,false); assert.equal(p.confirm,'ens20');
-  // כל toggle קורא את /ports מחדש (ראיה חוזרת)
-  assert.ok(requests.filter((r)=>r.url==='/ports').length>=6);
+  const before=requests.filter((r)=>r.url==='/ports').length;
+  await run("portCheckNow('interserver')");
+  assert.equal(requests.filter((r)=>r.url==='/ports').length,before+1,'a real re-read, not a canned toast');
+  assert.match(run('toasts.at(-1)'),/8443\/tcp: כבוי — לא מאזין · חומת אש בשרת: חסום/);
+  run("portDetail('http_console')");
+  assert.equal(run('document.getElementById("drawerTitle").textContent'),'8081/tcp · HTTPS');
+  const body=run('document.getElementById("drawerBody").innerHTML');
+  assert.match(body,/class="page drw"/); assert.match(body,/מצב שנמדד/); assert.match(body,/10\.44\.10\.1:8081/);
+  assert.ok(body.includes('iifname &quot;ens18&quot; tcp dport 8081 accept'),'the rule that opened it');
+  assert.match(body,/חומת האש של המכללה/); assert.match(body,/TCP 8081 הסבר http_console/);
+  assert.match(body,/onclick="portCheckNow\('http_console', true\)">בדוק עכשיו</);
+  assert.ok(!requests.some((r)=>r.method!=='GET'),'nothing is written');
+  assert.equal(run('sheets.length'),0,'no modal, no typed word');
+  // תוצאה שלא נקראה — הבדיקה נכשלה, לא "תקין"
+  run('api=async()=>{throw new Error("DB down")}');
+  await run("portCheckNow('http_console')");
+  assert.match(run('toasts.at(-1)'),/הבדיקה נכשלה: DB down/);
 });
 
-test('ports page (#996 contract): live switches — "api" confirms, "confirm" types the server name, "none" explains; bind and off_means from the server; new rows appear',async()=>{
-  const {run,requests}=setup({'/ports':PORTS_NEW}); run('current="ports"');
-  await run('loadPorts()');
-  const html=run('ports()'); balanced(html);
-  assert.equal((html.match(/<tr><td>/g)||[]).length,13,'DHCP + 9 server rows + 3 SSH');
-  // 🔒 confirm: הקלדת שם השרת + "מה קורה אם מכבים"
-  const boot=row(html,'>desc http_boot<');
-  assert.match(boot,/🔒 דלוק · כיבוי בחלון אישור/);
-  run("portSwitch('http_boot')");
-  let s=run('sheets.at(-1)'); assert.equal(s.verify,undefined,'#1270: no typed word'); assert.match(s.note,/מה קורה אם מכבים: אין PXE ואין hello/);
-  await s.onSubmit();
-  assert.deepEqual(requests.filter((r)=>r.method==='PUT').at(-1).body,{enabled:false,confirm:'srv'});
-  // none: מתג שמסביר
-  const dyn=row(html,'9002–9099/udp');
-  assert.match(dyn,/aria-checked="true"/); assert.match(dyn,/אין מתג — לחיצה מסבירה/); assert.match(dyn,/class="st unk">לא נבדק/);
-  const before=run('sheets.length'); run("portSwitch('dynamic')");
-  assert.equal(run('sheets.length'),before); assert.match(run('toasts.at(-1)'),/אין מתג לפורט הזה: שחזור תחנה בודדת/);
-  // 8443 חדש, כבוי, api
-  const inter=row(html,'8443/tcp'); assert.match(inter,/class="sw " role="switch" aria-checked="false"/); assert.match(inter,/>כבוי</);
-  // תג הכותרת: שתי שורות "לא נקרא" (dynamic מהשרת + SSH ens20 בלי טבלת סוקטים) — לא ירוק
-  assert.match(html,/class="pill warn">2 לא נקרא</);
-});
-
-test('what could not be read is "לא נקרא", never "כבוי": /ssh, /monitor/settings, /net/interfaces each fail on their own; /ports failure is a red note',async()=>{
-  let s=setup({'/ssh':new Error('ssh 500'),'/monitor/settings':new Error('mon 500'),'/net/interfaces':new Error('net 500')}); s.run('current="ports"');
-  await s.run('loadPorts()');
-  let html=s.run('ports()'); balanced(html);
-  const ssh=row(html,'>SSH לשרת<'); assert.match(ssh,/class="st unk">לא נבדק<\/span><span class="sub">‏\/ssh לא נקרא: ssh 500/); assert.match(ssh,/class="sw unk"/);
-  assert.doesNotMatch(html,/SSH לשרת — ens/);
-  const mon=row(html,'Monitor (RFB)'); assert.match(mon,/class="sw unk"/); assert.match(mon,/לא נקרא: mon 500/);
-  const dhcp=row(html,'>DHCP הפצה<'); assert.match(dhcp,/class="st unk">לא נבדק<\/span><span class="sub">‏\/net\/interfaces לא נקרא: net 500/); assert.match(dhcp,/class="sw unk"/);
-  assert.match(row(html,'>PXE<'),/class="sw unk"/);
-  s.run("portSwitch('dhcp')"); assert.match(s.run('toasts.at(-1)'),/net 500/); assert.equal(s.run('sheets.length'),0);
-  assert.doesNotMatch(html,/מאזינים בפורט 22/);
-  // אף כרטיס לא מחלק: שורת DHCP אחת כבויה, הדלקה פותחת את חלון רשת ההפצה של net.js (‏#1263: בלי הקלדת שם)
-  s=setup({'/net/interfaces':[nic('ens18'),nic('ens19')]}); s.run('current="ports"');
-  await s.run('loadPorts()'); html=s.run('ports()');
-  assert.match(row(html,'>DHCP הפצה<'),/class="st ">כבוי<\/span><span class="sub">לא הודלק על אף כרטיס/);
-  s.run("portSwitch('dhcp')"); const sh=s.run('sheets.at(-1)'); assert.match(sh.title,/רשת הפצה — ens18/); assert.equal(sh.verify,undefined);
-  // /ports עצמו לא נקרא
-  s=setup({'/ports':new Error('DB down')}); s.run('current="ports"');
-  await s.run('loadPorts()'); html=s.run('ports()');
-  assert.notEqual(html,s.run('pagePlaceholder()')); assert.match(html,/note err.*DB down/); assert.match(html,/class="pill err">לא נקרא</);
-  assert.doesNotMatch(html,/<table/);
-});
-
-/* ---------- #1015: החוזה האמיתי — dhcp מרוכז, ssh_server:<nic> מוכן,
-   interserver, bind כרשימה — מול PR #1015 / docs/interfaces.md §16 ---------- */
-const p1015=(id,name,p,proto,state,detail,extra={})=>({id,name,port:p,proto,desc:'desc '+id,target:'target '+id,state,detail,
-  note:'לפתוח ב-FW: '+p,enabled:null,listening:null,bind:[],toggle:'none',toggle_url:null,confirm_word:null,confirm_when:null,off_means:'',...extra});
-const PORTS_1015=[
-  p1015('tftp','TFTP','69','udp','ok','dnsmasq מגיש',{enabled:true,listening:true,bind:['0.0.0.0:69'],off_means:'אין shim/GRUB — מחשבים לא יעלו ב-PXE'}),
-  p1015('dhcp','DHCP','67','udp','ok','dnsmasq מאזין',{enabled:true,listening:true,bind:['0.0.0.0:67'],toggle:'confirm',
-    toggle_url:'/api/console/net/interfaces/{name}',confirm_when:'on',off_means:'תחנות לא יקבלו כתובת ולא dhcp-boot — אין PXE מהשרת הזה',
-    interfaces:[{name:'ens19',enabled:true,proxy:false}]}),
-  p1015('http_boot','HTTP','8080','tcp','ok','uvicorn',{enabled:true,listening:true,bind:['0.0.0.0:8080'],toggle:'confirm',
-    toggle_url:'/api/console/ports/http_boot',confirm_when:'off',off_means:'אין PXE ואין hello — כל סבב פעיל נכשל בגלוי'}),
-  p1015('http_console','HTTPS','8081','tcp','ok','uvicorn',{enabled:true,listening:true,bind:['10.44.10.1:8081'],toggle:'confirm',
-    toggle_url:'/api/console/ports/http_console',confirm_when:'off',off_means:'אתה ננעל בחוץ'}),
-  p1015('pxe_proxy','PXE','4011','udp','ok','proxy פעיל',{enabled:true,listening:true,bind:['0.0.0.0:4011'],toggle:'api',
-    toggle_url:'/api/console/net/interfaces/{name}',interfaces:[{name:'ens20',enabled:false,proxy:true}]}),
-  p1015('multicast','Multicast','9000–9001','udp','off','אין סבב רץ'),
-  p1015('monitor','Monitor (RFB)','5900','tcp','off','המתג monitor:stations כבוי',{enabled:false,toggle:'confirm',
-    toggle_url:'/api/console/monitor/settings',confirm_word:'imagectl.monitor',confirm_when:'on',off_means:'אין צפייה מרחוק'}),
-  p1015('interserver','HTTPS (mTLS)','8443','tcp','ok','uvicorn',{enabled:true,listening:true,bind:['10.44.10.1:8443'],toggle:'api',
-    toggle_url:'/api/console/ports/interserver',off_means:'משני לא יכול להירשם או לסנכרן'}),
-  p1015('ssh_stations','SSH','22','tcp','off','imagectl.debug לא בשורת הקרנל',{enabled:false,toggle:'confirm',
-    toggle_url:'/api/console/ssh/stations',confirm_word:'imagectl.debug',confirm_when:'on',off_means:'תחנות עולות בלי dropbear'}),
-  p1015('ssh_server:ens18','SSH','22','tcp','ok','מאזין 10.44.10.1:22 · אומת',{enabled:true,listening:true,bind:['10.44.10.1:22'],
-    toggle:'confirm',toggle_url:'/api/console/ssh/interfaces/ens18',confirm_word:'ens18',confirm_when:'on_or_last_off',
-    off_means:'אין SSH לשרת דרך הכרטיס הזה',interface:'ens18',addresses:['10.44.10.1/24']}),
-  p1015('ssh_server:ens19','SSH','22','tcp','off','סגור · אומת',{enabled:false,listening:false,bind:[],
-    toggle:'confirm',toggle_url:'/api/console/ssh/interfaces/ens19',confirm_word:'ens19',confirm_when:'on_or_last_off',
-    off_means:'אין SSH לשרת דרך הכרטיס הזה',interface:'ens19',addresses:['10.44.9.10/24']}),
-  p1015('ssh_server:ens20','SSH','22','tcp','unknown','טבלת הסוקטים לא נקראה',{enabled:false,listening:null,bind:null,
-    toggle:'confirm',toggle_url:'/api/console/ssh/interfaces/ens20',confirm_word:'ens20',confirm_when:'on_or_last_off',
-    off_means:'אין SSH לשרת דרך הכרטיס הזה',interface:'ens20',addresses:['10.44.11.1/24']}),
-];
-
-test('ports page (#1015 contract): rows come only from /ports — no duplicate dhcp/ssh_server rows, bind is a list, confirm follows confirm_when',async()=>{
-  const {run,requests}=setup({'/ports':PORTS_1015}); run('current="ports"');
-  await run('loadPorts()');
-  const html=run('ports()'); balanced(html);
-  // מקור אחד לכל שורה: אין עוד שורות DHCP/SSH-לשרת שהדף בונה בעצמו מ-/net/interfaces או /ssh
-  assert.equal((html.match(/desc dhcp</g)||[]).length,1,'exactly one DHCP row — no duplicate built from /net/interfaces');
-  for (const nic of ['ens18','ens19','ens20'])
-    assert.equal((html.match(new RegExp('desc ssh_server:'+nic+'<','g'))||[]).length,1,'exactly one SSH-to-server row per NIC — no duplicate built from /ssh');
-  assert.equal((html.match(/<tr><td>/g)||[]).length,PORTS_1015.length,'one row per /ports entry, nothing added, nothing dropped');
-  // bind הוא רשימה — כל הכתובות, mono, ולא "a,b" משרשור מחרוזות
-  const inter=row(html,'>desc interserver<');
-  assert.match(inter,/<span class="mono bindlist" dir="ltr">10\.44\.10\.1:8443<\/span>/);
-  // ‏#1039: ‏bind null = טבלת הסוקטים לא נקראה ≠ [] = נקראה ואף אחד לא מאזין
-  assert.match(row(html,'>desc ssh_server:ens20<'),/<span class="st unk">לא נקרא<\/span>/);
-  assert.doesNotMatch(row(html,'>desc ssh_server:ens19<'),/לא נקרא/); assert.match(row(html,'>desc ssh_server:ens19<'),/<span class="muted">—<\/span>/);
-  // interserver (8443) — toggle:"api" → PUT /ports/interserver, בלי הקלדה
-  run("portSwitch('interserver')");
-  let s=run('sheets.at(-1)'); assert.ok(!s.verify);
-  // אזהרה על כל פורט, לא רק 69 (נדב 19/09): גם מתג "api" מקבל את הבלוק האדום מה-off_means
-  assert.match(s.note,/data-testid="port-warning"/); assert.match(s.note,/מה קורה אם מכבים: משני לא יכול להירשם/);
-  await s.onSubmit();
-  assert.deepEqual(requests.filter((r)=>r.method==='PUT').at(-1),{url:'/ports/interserver',method:'PUT',body:{enabled:false}});
-  // DHCP — המתג ממשיך לפנות ל-PUT /net/interfaces/{n} (toggle_url מצביע לשם), לא ל-/ports/dhcp (409 בשרת האמיתי)
-  run("portSwitch('dhcp')");
-  s=run('sheets.at(-1)'); assert.equal(s.verify,undefined,'#1270: no typed word');
-  await s.onSubmit();
-  const dhcpPut=requests.find((r)=>r.method==='PUT' && r.url==='/net/interfaces/ens19');
-  assert.ok(dhcpPut,'DHCP switch must PUT /net/interfaces/ens19'); assert.equal(dhcpPut.body.enabled,false);
-  assert.ok(!requests.some((r)=>r.url==='/ports/dhcp'),'PUT /ports/dhcp must never be sent — the row is not a /ports/{id} switch');
-  // confirm_when="off" (8080/8081): הדלקה אינה דורשת הקלדה, רק כיבוי
-  let s2=setup({'/ports':PORTS_1015.map((p)=>p.id==='http_boot'?{...p,enabled:false}:p)}); s2.run('current="ports"');
-  await s2.run('loadPorts()'); s2.run('ports()');
-  s2.run("portSwitch('http_boot')");
-  const sb=s2.run('sheets.at(-1)');
-  assert.ok(!sb.verify,'turning ON http_boot (confirm_when=off) must not ask for typed confirmation');
-  await sb.onSubmit();
-  assert.deepEqual(s2.requests.filter((r)=>r.method==='PUT').at(-1),{url:'/ports/http_boot',method:'PUT',body:{enabled:true}});
-  // confirm_when="on" (מוניטור): הדלקה דורשת את confirm_word מהשרת, לא ניחוש בלקוח
-  run("portSwitch('monitor')");
-  s=run('sheets.at(-1)'); assert.equal(s.verify,undefined,'#1270: no typed word');
-  await s.onSubmit();
-  assert.ok(requests.some((r)=>r.method==='PUT' && r.url==='/monitor/settings' && r.body.confirm==='imagectl.monitor'));
-  // ssh_server:<nic> — confirm_when="on_or_last_off": פתיחת ens19 (סגור) דורשת הקלדה, ישירות מ-toggle_url של השורה, בלי fetch נוסף ל-/ssh
-  run("portSwitch('ssh_server:ens19')");
-  s=run('sheets.at(-1)'); assert.equal(s.verify,undefined,'#1270: no typed word'); assert.match(s.title,/פתיחת SSH לשרת על ens19/);
-  await s.onSubmit();
-  assert.ok(requests.some((r)=>r.method==='PUT' && r.url==='/ssh/interfaces/ens19' && r.body.enabled===true && r.body.confirm==='ens19'));
-  // סגירת ens18 — הדלת האחרונה הפתוחה (מחושב מתוך שורות ה-/ports עצמן) — עדיין הקלדה, עם אזהרה
-  run("portSwitch('ssh_server:ens18')");
-  s=run('sheets.at(-1)'); assert.equal(s.verify,undefined,'#1270: no typed word'); assert.match(s.sub,/הדלת האחרונה/);
-  await s.onSubmit();
-  assert.ok(requests.some((r)=>r.method==='PUT' && r.url==='/ssh/interfaces/ens18' && r.body.enabled===false && r.body.confirm==='ens18'));
-});
-
-// #1013: TFTP 69 — מתג "confirm" כמו 8080/8081, והאזהרה מהשרת (warning_he) מוצגת
-// במודאל **לפני** שדה הקלדת שם השרת (הכרעת נדב 19/09). שרת בקובץ מתקין ישן → toggle none.
-const TFTP_WARN='כיבוי 69 (TFTP) עוצר את ה-PXE: מחשבי בנייה ושיכפול לא יעלו מהשרת.';
-const PORTS_1013=PORTS_1015.map((p)=>p.id!=='tftp'?p:{...p,toggle:'confirm',toggle_url:'/api/console/ports/tftp',confirm_word:'srv',confirm_when:'off',
-  off_means:'אין shim/GRUB ותפריט — אף מחשב לא עולה ב-PXE מהשרת הזה, וסבבים לא יתחילו',warning_he:TFTP_WARN});
-
-test('ports page (#1013): the TFTP switch types the server name, sends PUT /ports/tftp, and the modal shows the warning before the typed field',async()=>{
-  const {run,requests}=setup({'/ports':PORTS_1013}); run('current="ports"');
-  await run('loadPorts()');
-  const html=run('ports()'); balanced(html);
-  const tftp=row(html,'>desc tftp<');
-  assert.match(tftp,/class="sw on" role="switch" aria-checked="true"/);
-  assert.match(tftp,/🔒 דלוק · כיבוי בחלון אישור/);
-  assert.match(tftp,/class="pill ok">קיים<\/span> <span class="cap mono">PUT \/ports\/tftp/);
-  assert.doesNotMatch(tftp,/דורש API|אין מתג/);
-  // כיבוי: הקלדת שם השרת + האזהרה של השרת (לא "מה קורה אם מכבים" הגנרי)
-  run("portSwitch('tftp')");
-  const s=run('sheets.at(-1)');
-  assert.equal(s.verify,undefined,'#1270: no typed word'); assert.match(s.title,/כיבוי TFTP 69\/udp/);
-  assert.match(s.note,/data-testid="port-warning"/); assert.ok(s.note.includes(TFTP_WARN),'warning_he verbatim');
-  assert.doesNotMatch(s.note,/מה קורה אם מכבים/);
-  await s.onSubmit();
-  assert.deepEqual(requests.filter((r)=>r.method==='PUT').at(-1),{url:'/ports/tftp',method:'PUT',body:{enabled:false,confirm:'srv'}});
-  // המודאל האמיתי (sheet, לא confirm()): האזהרה מוצגת, ואין שדה הקלדה (#1270)
-  run('realSheet(sheets.at(-1))');
-  const modal=run('document.querySelector("#sheet").innerHTML');
-  assert.ok(modal.indexOf('data-testid="port-warning"')>=0,'the warning is in the modal');
-  assert.doesNotMatch(modal,/sf-verify/); assert.match(modal,/id="sf-cancel"/); assert.match(modal,/class="btn danger"/);
-  assert.doesNotMatch(modal,/confirm\(/);
-  // הדלקה חזרה (confirm_when=off): בלי הקלדה
-  let s2=setup({'/ports':PORTS_1013.map((p)=>p.id==='tftp'?{...p,enabled:false,listening:false,state:'off'}:p)}); s2.run('current="ports"');
-  await s2.run('loadPorts()'); s2.run('ports()');
-  s2.run("portSwitch('tftp')");
-  const on=s2.run('sheets.at(-1)'); assert.ok(!on.verify,'turning TFTP back on does not ask for the name');
-  await on.onSubmit();
-  assert.deepEqual(s2.requests.filter((r)=>r.method==='PUT').at(-1),{url:'/ports/tftp',method:'PUT',body:{enabled:true}});
-});
-
-test('ports page (#1013): a server whose installer file still carries enable-tftp has no TFTP switch — the click explains, nothing is sent',async()=>{
-  const none=PORTS_1015.map((p)=>p.id!=='tftp'?p:{...p,toggle:'none',enabled:null,off_means:'אין מתג: enable-tftp עדיין יושב בקובץ המתקין (/etc/dnsmasq.d/imagectl.conf) — הריצו את המתקין מחדש'});
-  const {run,requests}=setup({'/ports':none}); run('current="ports"');
+test('#1267 /ports that could not be read is a red note, not an empty page',async()=>{
+  const {run}=setup({'/ports':new Error('DB down')}); run('current="ports"');
   await run('loadPorts()');
   const html=run('ports()');
-  const tftp=row(html,'>desc tftp<');
-  assert.match(tftp,/אין מתג — לחיצה מסבירה/); assert.match(tftp,/class="st ok">/);
-  const before=run('sheets.length'); run("portSwitch('tftp')");
-  assert.equal(run('sheets.length'),before); assert.match(run('toasts.at(-1)'),/imagectl\.conf/);
-  assert.ok(!requests.some((r)=>r.method==='PUT'),'no PUT for a row without a switch');
+  assert.notEqual(html,run('pagePlaceholder()')); assert.match(html,/note err.*DB down/); assert.match(html,/class="pill err">לא נקרא</);
+  assert.doesNotMatch(html,/<table/);
+  // ‏#954 גל 8: הלשוניות הן של אובייקט הרשת — הדף הזה הוא לשונית 3
+  assert.match(html,/role="tab" aria-selected="true" tabindex="0" onclick="activateTab\(3\)">פורטים/);
 });
 
 test('deploy role: the pages stay admin-only and no admin endpoint is requested',async()=>{
@@ -555,4 +423,65 @@ test('health header carries the TLS pill (moved from the overview): self-signed 
   run('ME.tls=null');
   assert.match(run('health()'),/class="pill ">TLS כבוי</);
   assert.doesNotMatch(run('layout(pages.home,0)'),/TLS (כבוי|תעודה)/,'the overview header no longer shows TLS');
+});
+
+/* ---------- #1267 המשך (נדב 11/10): עצירה/הפעלה של שירות עברה מדף הפורטים לדף הבריאות ----------
+   אותו API של דף הפורטים (PUT toggle_url = /ports/{id}); עצירה = חלון אישור עם השלכות וכפתור אדום,
+   בלי הקלדה; הפעלה = כפתור רגיל; מצב שלא נקרא = "לא נבדק" בלי כפתור. */
+const TFTP_SVC_WARN='כיבוי 69 (TFTP) עוצר את ה-PXE: מחשבי בנייה ושיכפול לא יעלו מהשרת.';
+const PORTS_SVC=[
+  p1267('tftp','TFTP','69','udp','deploy','ok','dnsmasq מגיש',{enabled:true,listening:true,toggle:'confirm',toggle_url:'/api/console/ports/tftp',
+    confirm_word:'srv',confirm_when:'off',warning_he:TFTP_SVC_WARN,off_means:'אין shim/GRUB'}),
+  p1267('dhcp','DHCP','67','udp','deploy','ok','dnsmasq מאזין',{enabled:true,listening:true,toggle:'confirm',toggle_url:'/api/console/net/interfaces/{name}'}),
+  p1267('http_boot','HTTP','8080','tcp','deploy','off','כבוי על ידי המפעיל — לא מאזין',{enabled:false,listening:false,toggle:'confirm',
+    toggle_url:'/api/console/ports/http_boot',confirm_word:'srv',confirm_when:'off'}),
+  p1267('http_console','HTTPS','8081','tcp','mgmt','unknown','טבלת הסוקטים לא נקראה',{enabled:true,listening:null,bind:null,toggle:'confirm',
+    toggle_url:'/api/console/ports/http_console',confirm_word:'srv',confirm_when:'off'}),
+  p1267('monitor','Monitor (RFB)','5900','tcp','deploy','off','המתג כבוי',{enabled:false,toggle:'confirm',toggle_url:'/api/console/monitor/settings'}),
+  p1267('interserver','HTTPS (mTLS)','8443','tcp','interserver','ok','המתג דלוק ומאזין',{enabled:true,listening:true,toggle:'api',
+    toggle_url:'/api/console/ports/interserver',off_means:'שרתים משניים לא יוכלו להירשם או לסנכרן מול השרת הזה'}),
+  p1267('firewall','חומת אש','—','nft',null,'ok','פעילה'),
+];
+
+test('#1267 health page: a services card with stop/start per service — stop is a red confirm with consequences and no typed word, start is a plain button',async()=>{
+  const {run,requests}=setup({'/ports':PORTS_SVC}); run('current="health"');
+  await run('loadHealth()');
+  const html=run('health()'); balanced(html);
+  const svc=card(html,'שירותים');
+  for(const p of ['69/udp','8080/tcp','8081/tcp','8443/tcp']) assert.ok(svc.includes(p),'services card is missing '+p);
+  assert.ok(!svc.includes('67/udp') && !svc.includes('5900/tcp'),'DHCP/monitor keep their own pages — their switch is not a /ports/{id} service');
+  assert.doesNotMatch(svc,/disabled/);
+  // TFTP פועל → "עצור…" → sheet אדום עם האזהרה, בלי הקלדה; נשלחת המילה שהשרת דורש, מהשורה
+  const tftp=row(svc,'69/udp');
+  assert.match(tftp,/class="btn sm danger" onclick="healthSvcStop\('tftp'\)">עצור…</);
+  run("healthSvcStop('tftp')");
+  let s=run('sheets.at(-1)');
+  assert.equal(s.danger,true); assert.equal(s.verify,undefined,'no typed word'); assert.equal(s.submitLabel,'עצור');
+  assert.ok(s.note.includes(TFTP_SVC_WARN),'the consequences are in the dialog');
+  const before=requests.filter((r)=>r.url==='/ports').length;
+  await s.onSubmit();
+  assert.deepEqual(requests.filter((r)=>r.method==='PUT').at(-1),{url:'/ports/tftp',method:'PUT',body:{enabled:false,confirm:'srv'}});
+  assert.ok(requests.filter((r)=>r.url==='/ports').length>before,'the state is re-read after the change');
+  // 8080 עצור → "הפעל" רגיל, בלי חלון
+  const boot=row(svc,'8080/tcp');
+  assert.match(boot,/class="btn sm" onclick="healthSvcStart\('http_boot'\)">הפעל</);
+  const nSheets=run('sheets.length');
+  await run("healthSvcStart('http_boot')");
+  assert.equal(run('sheets.length'),nSheets,'start has no dialog');
+  assert.deepEqual(requests.filter((r)=>r.method==='PUT').at(-1),{url:'/ports/http_boot',method:'PUT',body:{enabled:true}});
+  // 8081: מצב שלא נקרא — "לא נבדק", בלי כפתור
+  const con=row(svc,'8081/tcp');
+  assert.match(con,/class="st unk">לא נבדק</); assert.doesNotMatch(con,/<button/);
+  // 8443 (api): עצירה — אותו חלון אדום, בלי confirm בגוף
+  run("healthSvcStop('interserver')");
+  s=run('sheets.at(-1)'); assert.equal(s.danger,true); assert.equal(s.verify,undefined); assert.match(s.note,/שרתים משניים לא יוכלו להירשם/);
+  await s.onSubmit();
+  assert.deepEqual(requests.filter((r)=>r.method==='PUT').at(-1),{url:'/ports/interserver',method:'PUT',body:{enabled:false}});
+});
+
+test('#1267 health page: /ports that could not be read → services "לא נבדק", no buttons',async()=>{
+  const {run}=setup({'/ports':new Error('DB down')}); run('current="health"');
+  await run('loadHealth()');
+  const svc=card(run('health()'),'שירותים');
+  assert.match(svc,/לא נבדק/); assert.match(svc,/DB down/); assert.doesNotMatch(svc,/<button/);
 });

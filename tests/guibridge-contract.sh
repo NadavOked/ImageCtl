@@ -11,6 +11,7 @@ mkdir "$GUI_DIR"
 . "$ROOT/agent/lib/common.sh"
 . "$ROOT/agent/lib/buildmenuitems.sh"
 . "$ROOT/agent/lib/buildmenu.sh"
+. "$ROOT/agent/lib/roomflow.sh"    # room_open / room_slots_json, as gui_libs loads them
 . "$ROOT/agent/lib/guibridge.sh"
 CONSOLE_JAR=$GUI_DIR/console.jar
 SERVER=http://invalid.example

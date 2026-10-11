@@ -148,6 +148,7 @@ def ingest(conn: sqlite3.Connection, payload: dict,
         return {"ok": True}
 
     previous_targets = row["targets_json"]
+    _clean_target_drivers(targets)
     targets = stamp_movement(previous_targets, targets)
     targets = stamp_done_serials(conn, mac, previous_targets, targets)
     bytes_written = sum(_int(t.get("bytes_written")) for t in targets)
@@ -184,12 +185,33 @@ def ingest(conn: sqlite3.Connection, payload: dict,
         elif drivers and drivers["state"] == "staged":
             journal(conn, "drivers_staged",
                     f"{mac} in {session_id} — {', '.join(drivers['packages'])}")
+        # ‏#1269: מגירות של מחשב שיכפול — התוצאה לכל מגירה, פעם אחת, באותו מעבר.
+        for t in targets:
+            outcome = t.get("drivers") if isinstance(t, dict) else None
+            if outcome and outcome["state"] == "failed":
+                journal(conn, "drivers_failed", f"{mac} {t.get('dev', '?')} in {session_id}"
+                        f" — {outcome.get('error', '?')}")
+            elif outcome and outcome["state"] == "staged":
+                journal(conn, "drivers_staged", f"{mac} {t.get('dev', '?')} in {session_id}"
+                        f" — {', '.join(outcome['packages'])}")
     # ‏#874: יעד שנכשל בכתיבה נכנס לזיכרון הכשלים (סידורי + חריץ + שורות
     # ה-ATA). פעם אחת ליעד — הדיווח חוזר כל 2 שניות, ו-`record` מתעלם מכפול.
     for t in targets:
         if t.get("state") == "failed":
             disk_failures.record(conn, session_id, mac, t)
     return {"ok": True}
+
+
+def _clean_target_drivers(targets: list) -> None:
+    """‏#1269: ‏`drivers` של יעד (מגירה) עובר את אותה `well_formed_drivers`
+    כמו השדה העליון. פגום — נזנח מהיעד ואינו נשמר ב-`targets_json`."""
+    for t in targets:
+        if isinstance(t, dict) and "drivers" in t:
+            clean = well_formed_drivers(t["drivers"])
+            if clean is None:
+                del t["drivers"]
+            else:
+                t["drivers"] = clean
 
 
 def stamp_done_serials(conn: sqlite3.Connection, mac: str,

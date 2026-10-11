@@ -2,9 +2,14 @@
 
 #define HEX(v) { (((v)>>16)&255)/255.0, (((v)>>8)&255)/255.0, ((v)&255)/255.0 }
 
-/* Source: docs/design/native-gui-mockup-2026-09-18.html.
- * There is no native-only palette: every colour below is one of the console
- * tokens copied into that approved mockup (plus its --art-* / --bar-* tokens).
+/* Source: the console itself -- server/static/design-tokens.css (11/10: "the
+ * small GUI and the installer must not look different from the console").
+ * tests/test_native_console_parity.py names the console token of every colour
+ * here, in both themes, and the radii and shadows; tests/test_native_gui_theme.py
+ * binds the geometry to console.css (.win). Change a value on one side only and
+ * a test turns red. The 18/09 mockup this file was first built from drifted
+ * (danger-soft, info-soft, track, the light radius), so it no longer rules.
+ * There is no native-only palette: every colour below is one of the console tokens.
  * Repeated fields are compatibility names used by the older screen modules.
  * A binding whose selector starts with "tokens " is read from
  * server/static/design-tokens.css instead: the console's stage 1 (10/10)
@@ -15,24 +20,24 @@ const Theme THEME_LIGHT = {
  .porcelain = HEX(0xEEF1F5), .surface = HEX(0xFFFFFF),
  .ink = HEX(0x313131), .muted = HEX(0x565656), .hair = HEX(0xCDCDCD),
  .indigo = HEX(0x0079B8), .indigo_soft = HEX(0xE8F4FA),
- .led_write = HEX(0x0079B8), .led_ok = HEX(0x318700), .led_idle = HEX(0x8C8C8C),
+ .led_write = HEX(0x0079B8), .led_ok = HEX(0x318700), .led_idle = HEX(0x737373),
  .danger = HEX(0xE12200), .hover = HEX(0xF2F2F2),
- .field = HEX(0xFFFFFF), .field_line = HEX(0xCDCDCD), .track = HEX(0xDCE5EB),
+ .field = HEX(0xFFFFFF), .field_line = HEX(0xCDCDCD), .track = HEX(0xE8E8E8),
  .sunken = HEX(0xEEF1F5), .btn_hover = HEX(0xF2F2F2),
  .btn_hover_line = HEX(0x0079B8), .ink_hover = HEX(0x006394),
- .on_ink = HEX(0xFFFFFF), .danger_line = HEX(0xE12200),
+ .on_ink = HEX(0xFFFFFF), .danger_line = HEX(0xF0B8AE),
  .mark_line = HEX(0x9AADB8), .login_a = HEX(0xE4E9EF),
  .login_b = HEX(0xCBD5DE), .login_glow = HEX(0xB4C3CF),
  .choice = HEX(0xFFFFFF), .choice_line = HEX(0xCDCDCD), .selected_line = HEX(0x0079B8),
  .button = HEX(0xFFFFFF), .button_line = HEX(0xCDCDCD),
  .danger_bg = HEX(0xFCEDEA), .warning_bg = HEX(0xFFF2E3),
- .warning_line = HEX(0xC25400), .warning_ink = HEX(0xC25400),
- .success_bg = HEX(0xEAF4E5), .success_line = HEX(0x318700), .success_ink = HEX(0x318700),
+ .warning_line = HEX(0xC25400), .warning_ink = HEX(0xA84700),
+ .success_bg = HEX(0xEAF4E5), .success_line = HEX(0x318700), .success_ink = HEX(0x2A7300),
  .metric = HEX(0xFFFFFF), .metric_line = HEX(0xCDCDCD), .status_bg = HEX(0xFFFFFF),
  .header = HEX(0x25333D), .header_text = HEX(0xFFFFFF),
  .info = HEX(0x0079B8), .info_soft = HEX(0xE8F4FA),
  .success_soft = HEX(0xEAF4E5), .danger_soft = HEX(0xFCEDEA), .warning_soft = HEX(0xFFF2E3),
- .bar_done = HEX(0x318700), .bar_idle = HEX(0xB4C3CF),
+ .bar_done = HEX(0x318700), .bar_idle = HEX(0xCDCDCD),
  .art_bg = HEX(0xE4E9EF), .art_a = HEX(0xCBD5DE), .art_b = HEX(0xB4C3CF),
  .art_c = HEX(0x9AADB8), .art_line = HEX(0x7E93A1), .art_server = HEX(0x25333D),
  .disk_bg = HEX(0xFFFFFF), .disk_line = HEX(0xCDCDCD),
@@ -44,8 +49,9 @@ const Theme THEME_LIGHT = {
  .success_btn = HEX(0x318700), .success_btn_line = HEX(0x318700),
  .node_active_line = HEX(0x0079B8), .node_warn_line = HEX(0xC25400),
  .warn = HEX(0xC25400), .brand_accent = HEX(0xFFFFFF), .action_fg = HEX(0x006394),
- .shadow_strong = HEX(0x25333D), .shadow_strong_a = 0.18,
- .radius = 4,
+ .danger_fill = HEX(0xE12200), .danger_fg = HEX(0xC41E00),
+ .shadow_strong = HEX(0x000000), .shadow_strong_a = 0.18, .shadow_card_a = 0.12,
+ .radius = 9, .radius_sm = 6,
 };
 
 const Theme THEME_DARK = {
@@ -57,20 +63,20 @@ const Theme THEME_DARK = {
  .hair = HEX(0x35414B), /* css: :root[data-theme="dark"] | --clr-border | 0 */
  .indigo = HEX(0x2F78A8), /* css: tokens :root[data-theme="dark"] | --clr-action | 0 */
  .indigo_soft = HEX(0x223E50), /* css: :root[data-theme="dark"] | --clr-action-soft | 0 */
- .led_write = HEX(0x4C8FBD), /* css: :root[data-theme="dark"] | --bar-write | 0 */
+ .led_write = HEX(0x2F78A8), /* css: tokens :root[data-theme="dark"] | --clr-action | 0 */
  .led_ok = HEX(0x5FBD7A), /* css: :root[data-theme="dark"] | --clr-success | 0 */
- .led_idle = HEX(0x737373), /* css: :root[data-theme="dark"] | --clr-off | 0 */
+ .led_idle = HEX(0x737373), /* css: tokens :root[data-theme="dark"] | --led-idle | 0 */
  .danger = HEX(0xDC6B6B), /* css: :root[data-theme="dark"] | --clr-danger | 0 */
  .hover = HEX(0x25313A), /* css: :root[data-theme="dark"] | --clr-hover | 0 */
  .field = HEX(0x11181D), /* css: :root[data-theme="dark"] | --clr-field | 0 */
  .field_line = HEX(0x35414B), /* css: :root[data-theme="dark"] | --clr-border | 0 */
- .track = HEX(0x0E151A), /* css: :root[data-theme="dark"] | --bar-track | 0 */
+ .track = HEX(0x303A42), /* css: tokens :root[data-theme="dark"] | --clr-row-border | 0 */
  .sunken = HEX(0x151A1F), /* css: :root[data-theme="dark"] | --clr-bg | 0 */
  .btn_hover = HEX(0x25313A), /* css: :root[data-theme="dark"] | --clr-hover | 0 */
  .btn_hover_line = HEX(0x2F78A8), /* css: tokens :root[data-theme="dark"] | --clr-action | 0 */
  .ink_hover = HEX(0x276A96), /* css: tokens :root[data-theme="dark"] | --clr-action-hover | 0 */
  .on_ink = HEX(0xFFFFFF), /* css: :root | --clr-header-text | 0 */
- .danger_line = HEX(0xDC6B6B), /* css: :root[data-theme="dark"] | --clr-danger | 0 */
+ .danger_line = HEX(0x5E3733), /* css: tokens :root[data-theme="dark"] | --danger-line | 0 */
  .mark_line = HEX(0x33434F), /* css: :root[data-theme="dark"] | --art-c | 0 */
  .login_a = HEX(0x11181D), /* css: :root[data-theme="dark"] | --art-bg | 0 */
  .login_b = HEX(0x1C262E), /* css: :root[data-theme="dark"] | --art-a | 0 */
@@ -80,25 +86,25 @@ const Theme THEME_DARK = {
  .selected_line = HEX(0x2F78A8), /* css: tokens :root[data-theme="dark"] | --clr-action | 0 */
  .button = HEX(0x1C232A), /* css: :root[data-theme="dark"] | --clr-surface | 0 */
  .button_line = HEX(0x35414B), /* css: :root[data-theme="dark"] | --clr-border | 0 */
- .danger_bg = HEX(0x3A2323), /* css: :root[data-theme="dark"] | --clr-danger-soft | 0 */
+ .danger_bg = HEX(0x3A2321), /* css: tokens :root[data-theme="dark"] | --clr-danger-soft | 0 */
  .warning_bg = HEX(0x33291A), /* css: :root[data-theme="dark"] | --clr-warning-soft | 0 */
  .warning_line = HEX(0xE1B34F), /* css: :root[data-theme="dark"] | --clr-warning | 0 */
- .warning_ink = HEX(0xE1B34F), /* css: :root[data-theme="dark"] | --clr-warning | 0 */
- .success_bg = HEX(0x1E3325), /* css: :root[data-theme="dark"] | --clr-success-soft | 0 */
+ .warning_ink = HEX(0xE1B34F), /* css: tokens :root[data-theme="dark"] | --clr-warning-fg | 0 */
+ .success_bg = HEX(0x1D3326), /* css: tokens :root[data-theme="dark"] | --clr-success-soft | 0 */
  .success_line = HEX(0x5FBD7A), /* css: :root[data-theme="dark"] | --clr-success | 0 */
- .success_ink = HEX(0x5FBD7A), /* css: :root[data-theme="dark"] | --clr-success | 0 */
+ .success_ink = HEX(0x5FBD7A), /* css: tokens :root[data-theme="dark"] | --clr-success-fg | 0 */
  .metric = HEX(0x1C232A), /* css: :root[data-theme="dark"] | --clr-surface | 0 */
  .metric_line = HEX(0x35414B), /* css: :root[data-theme="dark"] | --clr-border | 0 */
  .status_bg = HEX(0x182028), /* css: :root[data-theme="dark"] | --clr-nav | 0 */
  .header = HEX(0x26343F), /* css: :root[data-theme="dark"] | --clr-header | 0 */
  .header_text = HEX(0xFFFFFF), /* css: :root | --clr-header-text | 0 */
  .info = HEX(0x61B5B8), /* css: :root[data-theme="dark"] | --clr-info | 0 */
- .info_soft = HEX(0x1D3440), /* css: :root[data-theme="dark"] | --clr-info-soft | 0 */
- .success_soft = HEX(0x1E3325), /* css: :root[data-theme="dark"] | --clr-success-soft | 0 */
- .danger_soft = HEX(0x3A2323), /* css: :root[data-theme="dark"] | --clr-danger-soft | 0 */
+ .info_soft = HEX(0x1D3436), /* css: tokens :root[data-theme="dark"] | --clr-info-soft | 0 */
+ .success_soft = HEX(0x1D3326), /* css: tokens :root[data-theme="dark"] | --clr-success-soft | 0 */
+ .danger_soft = HEX(0x3A2321), /* css: tokens :root[data-theme="dark"] | --clr-danger-soft | 0 */
  .warning_soft = HEX(0x33291A), /* css: :root[data-theme="dark"] | --clr-warning-soft | 0 */
  .bar_done = HEX(0x5FBD7A), /* css: :root[data-theme="dark"] | --bar-done | 0 */
- .bar_idle = HEX(0x33434F), /* css: :root[data-theme="dark"] | --bar-idle | 0 */
+ .bar_idle = HEX(0x35414B), /* css: tokens :root[data-theme="dark"] | --clr-border | 0 */
  .art_bg = HEX(0x11181D), /* css: :root[data-theme="dark"] | --art-bg | 0 */
  .art_a = HEX(0x1C262E), /* css: :root[data-theme="dark"] | --art-a | 0 */
  .art_b = HEX(0x26333D), /* css: :root[data-theme="dark"] | --art-b | 0 */
@@ -120,20 +126,20 @@ const Theme THEME_DARK = {
  .alert_ink = HEX(0xE7EDF2), /* css: .alert | color | 0 */
  .success_btn = HEX(0x5FBD7A), /* css: :root[data-theme="dark"] | --clr-success | 0 */
  .success_btn_line = HEX(0x5FBD7A), /* css: :root[data-theme="dark"] | --clr-success | 0 */
- .node_active_line = HEX(0x4C8FBD), /* css: .node.active | border-color | 0 */
+ .node_active_line = HEX(0x2F78A8), /* css: tokens :root[data-theme="dark"] | --clr-action | 0 */
  .node_warn_line = HEX(0xE1B34F), /* css: .node.warn | border-color | 0 */
  .warn = HEX(0xE1B34F), /* css: :root[data-theme="dark"] | --clr-warning | 0 */
  .brand_accent = HEX(0xFFFFFF), /* css: :root | --clr-header-text | 0 */
  .action_fg = HEX(0x7BB6DC), /* css: tokens :root[data-theme="dark"] | --clr-action-fg | 0 */
- .shadow_strong = HEX(0x26343F), /* css: :root[data-theme="dark"] | --clr-header | 0 */
- .shadow_strong_a = 0.45,
- .radius = 3,
+ .danger_fill = HEX(0xC24444), /* css: tokens :root[data-theme="dark"] | --clr-danger-fill | 0 */
+ .danger_fg = HEX(0xE88A8A), /* css: tokens :root[data-theme="dark"] | --clr-danger-fg | 0 */
+ .shadow_strong = HEX(0x000000), /* css: const | #000000 | 0 */
+ .shadow_strong_a = 0.45, .shadow_card_a = 0.28,
+ .radius = 3, .radius_sm = 3,
 };
 
 /* Geometry bindings. The engine receives W/H; only the room column count,
  * cloner percentage size, and restore image columns branch on H/W. */
-const double RADIUS_R = 3; /* css: :root[data-theme="dark"] | --r | 0 */
-const double RADIUS_SM = 3; /* css: :root[data-theme="dark"] | --r | 0 */
 const double N_PANEL_W = 600; /* css: .login | grid-template-columns | 1 */
 const double N_NARROW_W = 420; /* css: .login | grid-template-columns | 0 */
 const double N_PAD = 32; /* css: .body | padding | 1 */
@@ -149,10 +155,10 @@ const double N_LABEL = 12; /* css: .f label | font-size | 0 */
 const double N_LABEL_GAP = 2; /* css: .f label | margin-bottom | 0 */
 const double N_FORM_GAP = 22; /* css: .f | margin-bottom | 0 */
 const double N_FORM_TOP = 28; /* css: .lead | margin-bottom | 0 */
-const double N_FIELD_H = 34; /* css: .f input | height | 0 */
+const double N_FIELD_H = 36; /* css: console .win .n-in | height | 0 */
 const double N_FIELD_PAD = 4; /* css: .f input | padding | 2 */
-const double N_BUTTON_H = 38; /* css: .btn | height | 0 */
-const double N_BUTTON_PAD = 22; /* css: .btn | padding | 1 */
+const double N_BUTTON_H = 36; /* css: console .win .n-f-bar .btn | height | 0 */
+const double N_BUTTON_PAD = 16; /* css: console .win .n-f-bar .btn | padding | 1 */
 const double N_ACTION_GAP = 10; /* css: .actions | gap | 0 */
 const double N_ACTION_TOP = 18; /* css: .body | gap | 0 */
 const double N_CHOICE_GAP = 18; /* css: .cards | gap | 0 */
@@ -195,9 +201,9 @@ const double N_ROUND_PAD = 22; /* css: .panel | padding | 1 */
 const double N_BAR_SM = 6; /* css: .bar | height | 0 */
 const double N_ROUND_ID = 24; /* css: .stat .v | font-size | 0 */
 const double N_ROUND_META = 13; /* css: .ph p | font-size | 0 */
-const double N_ALERT_PAD_Y = 10; /* css: .alert | padding | 0 */
-const double N_ALERT_PAD_X = 14; /* css: .alert | padding | 1 */
-const double N_ALERT_FONT = 13; /* css: .alert | font-size | 0 */
+const double N_ALERT_PAD_Y = 10; /* css: console .win .confirm-box | padding | 0 */
+const double N_ALERT_PAD_X = 12; /* css: console .win .confirm-box | padding | 1 */
+const double N_ALERT_FONT = 12; /* css: console .win .confirm-box | font-size | 0 */
 const double N_STATUS_DOT = 8; /* css: .sb .st i | width | 0 */
 const double N_STATUS_GAP = 7; /* css: .sb .st | gap | 0 */
 const double N_BRAND_GAP = 10; /* css: .hdr .brand | gap | 0 */

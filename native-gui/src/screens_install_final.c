@@ -92,11 +92,11 @@ static int failure_he(const InstallState *s,char *out,size_t n){
 static void failed(App *a,cairo_t *cr,InstallLayout l){
     InstallState *s=&a->install;const Theme *t=a->theme;double w=fmin(760,l.body.w),x=l.body.x+l.body.w-w,y=l.body.y;Rect note={x,y,w,62};draw_fill_rrect(cr,note,t->radius,t->danger_soft);draw_border_rrect(cr,note,t->radius,t->danger,1);
     char said[320];int raw=failure_he(s,said,sizeof said);
-    install_text_r(cr,t,said,14,600,x+w-14,y+(raw?10:20),w-28,t->danger);
+    install_text_r(cr,t,said,14,600,x+w-14,y+(raw?10:20),w-28,t->danger_fg);
     if(raw)install_text_ltr(cr,s->error,11,400,x+14,y+36,w-28,t->muted);
     y+=76;
     install_text_r(cr,t,"פרטים טכניים",13,600,x+w,y,w,t->ink);y+=30;output_box(a,cr,(Rect){x,y,w,250});
-    Text retry=btn_label(cr,"נסה שוב");double rw=btn_width(&retry);draw_btn(a,cr,(Rect){l.footer.w-32-rw,l.footer.y+13,rw,38},&retry,BTN_PRIMARY,HIT_INSTALL_RETRY);text_free(&retry);
+    Text retry=btn_label(cr,"נסה שוב");double rw=btn_width(&retry);draw_btn(a,cr,(Rect){l.footer.w-32-rw,l.footer.y+(l.footer.h-N_BUTTON_H)/2,rw,N_BUTTON_H},&retry,BTN_PRIMARY,HIT_INSTALL_RETRY);text_free(&retry);
 }
 
 /* #1250: the auto restart, below the "remove the media" card so that line
@@ -107,7 +107,7 @@ static void reboot_countdown(App *a,cairo_t *cr,Rect r){
     if(s->reboot_at<=0){install_text_r(cr,t,"ההפעלה מחדש האוטומטית בוטלה. לחץ 'הפעל מחדש' כשתסיים.",13,500,r.x+r.w-20,r.y+18,r.w-40,t->muted);return;}
     draw_fill_rrect(cr,r,t->radius,t->indigo_soft);draw_border_rrect(cr,r,t->radius,t->indigo,1);
     snprintf(line,sizeof line,"הפעלה מחדש אוטומטית בעוד %d שניות",s->reboot_left);install_text_r(cr,t,line,15,600,r.x+r.w-20,r.y+18,r.w-160,t->ink);
-    Text c=btn_label(cr,"בטל");double cw=btn_width(&c);draw_btn(a,cr,(Rect){r.x+10,r.y+10,cw,38},&c,BTN_PLAIN,HIT_INSTALL_CANCEL_REBOOT);text_free(&c);
+    Text c=btn_label(cr,"בטל");double cw=btn_width(&c);draw_btn(a,cr,(Rect){r.x+10,r.y+10,cw,N_BUTTON_H},&c,BTN_PLAIN,HIT_INSTALL_CANCEL_REBOOT);text_free(&c);
 }
 
 static void done(App *a,cairo_t *cr,InstallLayout l){
@@ -117,7 +117,7 @@ static void done(App *a,cairo_t *cr,InstallLayout l){
     install_text_r(cr,t,"כתובת הקונסולה",12,500,x+w-20,y+72,190,t->muted);
     if(s->console_url[0])install_text_ltr(cr,s->console_url,18,600,x+20,y+100,w-40,t->indigo);else install_text_r(cr,t,"הכתובת תוצג במסך השרת אחרי האתחול",14,500,x+w-20,y+100,w-40,t->ink);
     install_text_r(cr,t,"משתמש",12,500,x+w-20,y+148,150,t->muted);install_text_ltr(cr,s->user[0]?s->user:s->admin_user,13,500,x+20,y+148,w-190,t->ink);
-    if(s->error[0])install_text_r(cr,t,s->error,12,600,x+w-20,y+188,w-40,t->danger);
+    if(s->error[0])install_text_r(cr,t,s->error,12,600,x+w-20,y+188,w-40,t->danger_fg);
     reboot_countdown(a,cr,(Rect){x,y+246,w,58});
     install_footer(a,cr,l,"הפעל מחדש",HIT_INSTALL_NEXT,0,1);
 }

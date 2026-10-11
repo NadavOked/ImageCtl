@@ -162,6 +162,7 @@ build_progress() {
         [ -f "$_d/crc_delta" ] && _entry="$_entry,\"crc_delta\":$(cat "$_d/crc_delta")"
         # ‏#874: יעד שנכשל נושא סידורי, חריץ ושורות ה-ATA (failmark.sh) -- הראיה, לא סיווג.
         [ -f "$_d/ata_log.json" ] && _entry="$_entry$(failure_json "$_dev")"
+        [ -s "$_d/drivers.json" ] && _entry="$_entry,\"drivers\":$(tr -d '\n' < "$_d/drivers.json")"   # #1269
         _entry="$_entry}"
         [ -n "$_targets" ] && _targets="$_targets,"
         _targets="$_targets$_entry"

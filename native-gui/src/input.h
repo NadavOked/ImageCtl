@@ -1,7 +1,9 @@
 /* Keyboard and pointer straight from evdev (/dev/input/event*): no
- * libinput, no xkbcommon. The login form takes an ASCII console account
- * name and password, so a fixed US keymap is enough; Hebrew typing is not
- * needed on these two screens and is not attempted. Keyboards are grabbed
+ * libinput, no xkbcommon. Two fixed keymaps: US, and the Israeli standard
+ * layout SI-1452 (#1245). Every character event carries both -- ch is the
+ * US character (the keys' shortcuts and the English-only fields use it),
+ * he the same key in SI-1452 -- and main.c picks by the typing language,
+ * which Alt+Shift switches (KEYSYM_LAYOUT). Keyboards are grabbed
  * (EVIOCGRAB) so the password does not also echo on the text VT. */
 #ifndef IMAGECTL_INPUT_H
 #define IMAGECTL_INPUT_H
@@ -10,7 +12,8 @@
 
 typedef enum { UIEV_NONE = 0, UIEV_CHAR, UIEV_KEY, UIEV_MOVE, UIEV_CLICK, UIEV_SCROLL } EvType;
 enum { KEYSYM_TAB = 1, KEYSYM_BACKTAB, KEYSYM_ENTER, KEYSYM_BACKSPACE, KEYSYM_ESC,
-       KEYSYM_UP, KEYSYM_DOWN, KEYSYM_LEFT, KEYSYM_RIGHT };
+       KEYSYM_UP, KEYSYM_DOWN, KEYSYM_LEFT, KEYSYM_RIGHT,
+       KEYSYM_LAYOUT /* #1245: Alt+Shift -- switch the typing language */ };
 
 typedef struct {
     EvType type;
@@ -19,6 +22,9 @@ typedef struct {
     int delta;          /* UIEV_SCROLL: positive is up */
     double x, y;        /* EV_MOVE / EV_CLICK, screen pixels */
     int is_touch;       /* absolute device: no cursor to draw */
+    int he;             /* EV_CHAR (#1245): the same key in SI-1452, a Unicode code
+                         * point -- a Hebrew letter on the base level; == ch with
+                         * Shift and on the keys the two layouts share */
 } Event;
 
 typedef struct Input Input;

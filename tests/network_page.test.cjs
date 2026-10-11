@@ -681,3 +681,91 @@ test('stage 2: devices whose address is outside every NIC subnet are named in a 
   assert.match(html,/class="note warn".*\d+ מחוברים עם כתובת מחוץ לרשתות הכרטיסים: .*de:ad:be:ef:00:09/);
   assert.match(t.run('netOrphansNote({orphans:[{title:"a"},{title:"b"}]})'),/2 מחוברים עם כתובת מחוץ לרשתות הכרטיסים: a · b/);
 });
+
+/* ---------- ‏#1264: רשת ההפצה על שני כרטיסים (bond, ‏balance-alb) ---------- */
+
+const DEPLOY_CONSOLE={configured:true,source:'console',interface:'ens19',url:'http://10.44.9.10:8080',hint:null};
+// ‏ens22 פנוי (לא מוגדר, בלי כתובת); ‏ens21 מנותק ופנוי; ‏ens18 ניהול; ‏ens20 proxy+trunk
+const NICS_FREE=[...NICS,nic('ens22',{})];
+const NETCFG_FREE={...NETCFG,interfaces:[...NETCFG.interfaces,cfgRow('ens22',{mode:'manual',mode_he:'לא מנוהל'})]};
+const BONDED_NICS=[NICS[0],nic('bond0',{addresses:['10.44.9.10/24'],enabled:true,range_start:'10.44.9.100',range_end:'10.44.9.200',server_ip:'10.44.9.10',
+    dhcp_live:{state:'serving',checked:true,detail:''},dhcp_live_label:'משרת'}),nic('ens19',{}),NICS[2],NICS[3],nic('ens22',{speed_mbps:1000})];
+const bondView=(state,members)=>({name:'bond0',mode:'balance-alb',checked:state!=='unchecked',reason:state==='unchecked'?'/proc/net/bonding/bond0: No such file':'',state,members});
+const BONDED_CFG=(bond)=>({...NETCFG,deploy_bond:bond,interfaces:[NETCFG.interfaces[0],cfgRow('bond0',{address:'10.44.9.10',live_addresses:['10.44.9.10/24'],slaves:['ens19','ens22']}),
+    cfgRow('ens19',{mode:'manual',member_of:'bond0'}),NETCFG.interfaces[2],NETCFG.interfaces[3],cfgRow('ens22',{mode:'manual',member_of:'bond0'})]});
+const bondedFixtures=(bond)=>({'/net/interfaces':BONDED_NICS,'/net/config':BONDED_CFG(bond),'/net/deploy':{...DEPLOY_CONSOLE,interface:'bond0'},
+  '/net/interfaces/bond0/probe':{interface:'bond0',checked:true,servers:[]},'/net/interfaces/bond0/leases':{...LEASES,interface:'bond0'}});
+
+test('#1264 deploy tab: "כרטיסים ברשת ההפצה" — each card, its role, link and state; one card down is "פעיל על כרטיס אחד"',async()=>{
+  const {run}=await loaded(bondedFixtures(bondView('degraded',[{name:'ens19',role:1,state:'active'},{name:'ens22',role:2,state:'down'}])));
+  const html=run('networkPage(2)'); balanced(html);
+  const cards=card(html,'כרטיסים ברשת ההפצה');
+  assert.match(cards,/<th>כרטיס<\/th><th>תפקיד<\/th><th>קישור<\/th><th>מצב<\/th>/);
+  assert.match(row(cards,'>ens19<'),/כרטיס 1.*class="pill ok">פעיל</);
+  assert.match(row(cards,'>ens22<'),/כרטיס 2.*class="pill err">מנותק</);
+  assert.match(cards,/class="pill warn">פעיל על כרטיס אחד</);
+  assert.match(cards,/שני הכרטיסים עובדים יחד על הכתובת <span class="mono">10\.44\.9\.10<\/span>/);
+  assert.match(card(html,'DHCP על bond0'),/netEditDeploy\('bond0'\)/,'the deploy network is edited on the bond');
+  // החברים אינם "כרטיסים אחרים" שאפשר להגדיר כרשת הפצה
+  const others=card(html,'כרטיסים אחרים');
+  assert.doesNotMatch(others,/class="name">ens19</); assert.doesNotMatch(others,/class="name">ens22</);
+});
+
+test('#1264 a bond state that was not read is "לא נבדק" on every card — never "פעיל"',async()=>{
+  const {run}=await loaded(bondedFixtures(bondView('unchecked',[{name:'ens19',role:1,state:'unchecked'},{name:'ens22',role:2,state:'unchecked'}])));
+  const cards=card(run('networkPage(2)'),'כרטיסים ברשת ההפצה');
+  assert.doesNotMatch(cards,/>פעיל</);
+  assert.equal((cards.match(/class="pill warn">לא נבדק</g)||[]).length,3,'two cards + the bond');
+  assert.match(cards,/\/proc\/net\/bonding\/bond0: No such file/);
+});
+
+test('#1264 one deploy card: a single "כרטיס 1" row from its live link, and how to add a second',async()=>{
+  const {run}=await loaded({'/net/deploy':DEPLOY_CONSOLE});
+  const cards=card(run('networkPage(2)'),'כרטיסים ברשת ההפצה');
+  assert.match(row(cards,'>ens19<'),/כרטיס 1.*1 Gb.*class="pill ok">פעיל</);
+  assert.equal((cards.match(/<tr>/g)||[]).length,2,'header + one card');
+  assert.match(cards,/אפשר להוסיף כרטיס שני/);
+});
+
+test('#1264 NIC table: a bond member says it is in the deploy network',async()=>{
+  const {run}=await loaded(bondedFixtures(bondView('ok',[{name:'ens19',role:1,state:'active'},{name:'ens22',role:2,state:'active'}])));
+  assert.match(run("netRoleLabel(NETW.nics.find(n=>n.name==='ens22'))"),/^הפצה · bond0( · |$)/);
+  assert.doesNotMatch(run("netRoleLabel(NETW.nics.find(n=>n.name==='ens21'))"),/bond0/);
+});
+
+test('#1264 deploy window: "כרטיסים" — card 1 fixed, card 2 only free cards; changing only card 2 sends only /second',async()=>{
+  const t=await loaded({'/net/deploy':DEPLOY_CONSOLE,'/net/interfaces':NICS_FREE,'/net/config':NETCFG_FREE});
+  t.run("netEditDeploy('ens19')");
+  const sh=sheetAt(t.run,0);
+  assert.deepEqual(sh.fields.filter(f=>f.type==='section').map(f=>f.label),['רשת ההפצה','DHCP למחשבים','כרטיסים']);
+  const c1=sh.fields.find(f=>f.id==='card1'), c2=sh.fields.find(f=>f.id==='second');
+  assert.deepEqual(c1.options.map(o=>o.value),['ens19'],'replacing the first card is a reinstall — it is shown, not chosen');
+  assert.deepEqual(c2.options.map(o=>o.value),['','ens21','ens22'],'no management, no proxy/trunk, no card that is configured or carries an address');
+  assert.equal(c2.value,''); assert.equal(c2.options[0].label,'בלי כרטיס שני');
+  assert.match(c2.help,/שני הכרטיסים עובדים יחד על אותה כתובת/);
+  t.fixtures['/net/config/ens19/second']={ok:true,interface:'bond0',server_ip:'10.44.9.10',apply_error:null,deploy:{ok:true,url:'http://10.44.9.10:8080'},bond:{state:'ok'}};
+  const v={network:'10.44.9.0',netmask:'255.255.255.0',range_start:'10.44.9.100',range_end:'10.44.9.200',lease_n:'12',lease_u:'h',card1:'ens19',second:'ens22'};
+  assert.equal(await t.run(`sheets[0].onSubmit(${JSON.stringify(v)}).then(()=>null,e=>e.message)`),null);
+  const writes=t.requests.filter(r=>r.method!=='GET');
+  assert.deepEqual(writes.map(r=>[r.url,r.body]),[['/net/config/ens19/second',{second:'ens22'}]],'the network did not change — no deploy PUT, no dnsmasq restart');
+  assert.match(t.run('toasts[toasts.length-1]'),/ens22 נוסף לרשת ההפצה — שני הכרטיסים פעילים יחד על 10\.44\.9\.10/);
+  // ההעברה לא אומתה (השרת החזיר את הקבצים) — החלון נשאר פתוח עם הסיבה
+  t.fixtures['/net/config/ens19/second']={ok:false,interface:'ens19',server_ip:'10.44.9.10',apply_error:'bond0 לא אומת: x. ההגדרה הקודמת על ens19 הוחזרה ואומתה',deploy:null,bond:null};
+  assert.match(await t.run(`sheets[0].onSubmit(${JSON.stringify(v)}).then(()=>null,e=>e.message)`),/bond0 לא אומת/);
+});
+
+test('#1264 deploy window on the bond: card 2 is selected, and "בלי כרטיס שני" removes it; first-time setup has no cards section',async()=>{
+  const t=await loaded(bondedFixtures(bondView('ok',[{name:'ens19',role:1,state:'active'},{name:'ens22',role:2,state:'active'}])));
+  t.run("netEditDeploy('bond0')");
+  const sh=sheetAt(t.run,0);
+  assert.deepEqual(sh.fields.find(f=>f.id==='card1').options.map(o=>o.value),['ens19']);
+  assert.equal(sh.fields.find(f=>f.id==='second').value,'ens22');
+  t.fixtures['/net/config/bond0/second']={ok:true,interface:'ens19',server_ip:'10.44.9.10',apply_error:null,deploy:{ok:true,url:'http://10.44.9.10:8080'},bond:null};
+  const v={network:'10.44.9.0',netmask:'255.255.255.0',range_start:'10.44.9.100',range_end:'10.44.9.200',lease_n:'12',lease_u:'h',card1:'ens19',second:''};
+  assert.equal(await t.run(`sheets[0].onSubmit(${JSON.stringify(v)}).then(()=>null,e=>e.message)`),null);
+  assert.deepEqual(t.requests.filter(r=>r.method!=='GET').map(r=>[r.url,r.body]),[['/net/config/bond0/second',{second:''}]]);
+  assert.match(t.run('toasts[toasts.length-1]'),/הכרטיס השני הוסר — רשת ההפצה על ens19 בלבד/);
+  const first=await loaded({'/net/deploy':{configured:false,source:'none',interface:null,url:null,hint:null}});
+  first.run("netEditDeploy('ens19')");
+  assert.equal(sheetAt(first.run,0).fields.some(f=>f.id==='second'),false,'the second card comes after the deploy network exists');
+});

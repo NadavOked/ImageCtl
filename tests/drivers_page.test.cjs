@@ -67,12 +67,12 @@ const BASE = {
 };
 const row = (html, needle) => { const i = html.indexOf(needle); assert.ok(i >= 0, 'missing row: ' + needle); const s = html.lastIndexOf('<tr', i); return html.slice(s, html.indexOf('</tr>', i) + 5); };
 
-test('the drivers page is wired: own page with two tabs, load + render, not a placeholder', () => {
+test('the drivers page is wired: own page with three tabs, load + render, not a placeholder', () => {
   const {run} = setup(BASE);
   assert.equal(run('typeof pages.drivers.load'), 'function');
   assert.match(run('pages.drivers.render.toString()'), /driversPage/);
   assert.equal(run('pages.drivers.own'), true);
-  assert.equal(JSON.stringify(run('pages.drivers.tabs')), JSON.stringify(['חבילות', 'כיסוי לפי מכונה']));
+  assert.equal(JSON.stringify(run('pages.drivers.tabs')), JSON.stringify(['דגמים', 'חבילות', 'כיסוי לפי מכונה']));
   assert.equal(run('driversPage()'), run('pagePlaceholder()'), 'before the first read: placeholder');
 });
 
@@ -80,7 +80,7 @@ test('packages tab: one datagrid — name+description (escaped), rules (pci / mo
   const {run, requests} = setup(BASE);
   await run('loadDrivers()');
   assert.ok(requests.some((r) => r.url === '/machines'), 'machines are read for names and coverage');
-  const html = run('driversPage(0)');
+  const html = run('driversPage(1)');
   assert.match(html, /<table class="dg acts-on">/); assert.match(html, /<th>חבילה<\/th><th>התאמה<\/th><th>קבצים<\/th><th>מתאים ל-<\/th><th>אומת<\/th>/);
   const r = row(html, 'intel-nic');
   assert.match(r, /&lt;b&gt;LM&lt;\/b&gt;/, 'description is escaped');
@@ -107,7 +107,7 @@ test('packages tab: one datagrid — name+description (escaped), rules (pci / mo
 test('coverage tab: a row per build/cloner machine — packages that will be staged (by PCI / by model), uncovered controllers, no inventory is "not checked"; classroom is v2', async () => {
   const {run} = setup(BASE);
   await run('loadDrivers()');
-  const html = run('driversPage(1)');
+  const html = run('driversPage(2)');
   assert.match(html, /<th>מכונה<\/th><th>בקרי PCI \(רשת\/אחסון\)<\/th><th>חבילות שיונחו<\/th><th>כיסוי<\/th>/);
   const b = row(html, 'בנייה 1');
   assert.match(b, /intel-nic <span class="cap">לפי PCI</);
@@ -129,12 +129,12 @@ test('coverage tab: a row per build/cloner machine — packages that will be sta
 test('an empty library says so with the build tool; a failed read is "not read" — not an empty library', async () => {
   let s = setup({...BASE, '/drivers': []});
   await s.run('loadDrivers()');
-  let html = s.run('driversPage()');
+  let html = s.run('driversPage(1)');
   assert.match(html, /class="empty">אין חבילות דרייברים — ייבוא קובץ tar שנבנה ב-tools\/drivers\/build-package\.py/);
   assert.match(html, /docs\/driver-packages\.md/);
   s = setup({...BASE, '/drivers': new Error('disk gone')});
   await s.run('loadDrivers()');
-  html = s.run('driversPage()');
+  html = s.run('driversPage(1)');
   assert.notEqual(html, s.run('pagePlaceholder()'));
   assert.match(html, /note err.*disk gone/); assert.match(html, /class="pill err">לא נקרא</);
   assert.doesNotMatch(html, /אין חבילות|<table/);
@@ -144,7 +144,7 @@ test('an empty library says so with the build tool; a failed read is "not read" 
 test('a deploy user sees the list but no import or delete (GET /drivers is current_user; upload/delete are admin_only)', async () => {
   const {run} = setup({...BASE, '/drivers': [{...PKG, matches: []}]}, 'deploy');
   await run('loadDrivers()');
-  const html = run('driversPage()');
+  const html = run('driversPage(1)');
   assert.match(html, /intel-nic/);
   assert.match(html, /אף מכונה שדיווחה/);
   assert.doesNotMatch(html, /deleteDriver/);
@@ -169,4 +169,47 @@ test('index.html loads drivers.js with the same cache version as the rest', () =
   assert.equal(versions.size, 1, [...versions].join(','));
   assert.match(page, /drivers\.js\?v=/);
   assert.match(page, /data-page="drivers"/);
+});
+
+test('stage 3: models tab (first) — a row per DMI model with machines / covered / missing / unchecked and a state pill; unreported machines are their own "not checked" row, never counted as covered', async () => {
+  const {run} = setup(BASE);
+  await run('loadDrivers()');
+  const html = run('driversPage()');
+  assert.match(html, /role="tab" aria-selected="true"[^>]*>דגמים</);
+  assert.match(html, /דגמי מחשבים שנמצאו ברשת/); assert.match(html, /הדגם נקבע מ-DMI שהמחשב מדווח ב-hello/);
+  assert.match(html, /<th>דגם<\/th><th>מחשבים<\/th><th>מכוסים<\/th><th>חסרים<\/th><th>לא נבדקו<\/th><th>מצב<\/th>/);
+  const dell = row(html, 'Dell Inc. OptiPlex 7090');
+  assert.match(dell, /<td>1<\/td><td>0<\/td><td>1<\/td><td>0<\/td><td><span class="pill warn">חלקי<\/span>/, 'a controller without a package → partial');
+  const hp = row(html, 'HP HP EliteDesk 800 G6');
+  assert.match(hp, /<td>1<\/td><td>1<\/td><td>0<\/td><td>0<\/td><td><span class="pill ok">מכוסה<\/span>/);
+  const lenovo = row(html, 'LENOVO ThinkCentre M720q');
+  assert.match(lenovo, /<td>0<\/td><td>1<\/td>/, 'a model-rule package does not cover a controller by itself');
+  const unk = row(html, 'לא דיווחו חומרה');
+  assert.match(unk, /<td>1<\/td><td>—<\/td><td>—<\/td><td>—<\/td><td><span class="pill ">לא נבדק<\/span>/, 'no inventory = not checked, with dashes — not 0 covered');
+  assert.doesNotMatch(html, /05|00:11:22:33:44:55/, 'classroom machines are v2 and are not listed');
+  assert.match(html, /openDriverImport\(\)">ייבוא חבילה \(tar\)</);
+});
+
+test('stage 3: a model with no matching package at all is "אין דרייברים" (red); a model whose machines reported no controllers is "לא נבדק", not "מכוסה"', async () => {
+  const {run} = setup({...BASE, '/drivers': [], '/machines': [
+    {mac: MAC_B, suffix: 'בנייה 1', group_id: 'grp_BUILD', inventory: {pci: ['8086:a0d3:010601'], dmi: {sys_vendor: 'Dell Inc.', product_name: 'OptiPlex 7090'}}},
+    {mac: MAC_C, suffix: 'מחשב 1', group_id: 'grp_CLONERS', inventory: {pci: [], dmi: {sys_vendor: 'HP', product_name: 'Z'}}}]});
+  await run('loadDrivers()');
+  const html = run('driversPage(0)');
+  assert.match(row(html, 'Dell Inc. OptiPlex 7090'), /pill err">אין דרייברים</);
+  assert.match(row(html, 'HP Z'), /<td>1<\/td><td>0<\/td><td>0<\/td><td>1<\/td><td><span class="pill ">לא נבדק</);
+});
+
+test('stage 3: a model row opens a drawer — each machine with its verdict and uncovered controllers, the packages that will be staged, the empty-model warning; MACHINES unread is a red note', async () => {
+  const {run} = setup(BASE);
+  await run('loadDrivers()');
+  run("openDriverModel(encodeId('Dell Inc. OptiPlex 7090'))");
+  const d = run('drawer');
+  assert.match(d, /דגם — Dell Inc\. OptiPlex 7090\|/); assert.match(d, /בנייה 1 <span class="pill warn">1 בקרים בלי חבילה<\/span> <span class="cap mono">8086:a0d3:010601/);
+  assert.match(d, /intel-nic/); assert.match(d, /openDriverImport\(\)/);
+  const s2 = setup({...BASE, '/drivers': []}); await s2.run('loadDrivers()');
+  s2.run("openDriverModel(encodeId('Dell Inc. OptiPlex 7090'))");
+  assert.match(s2.run('drawer'), /note warn[^]*רשומים, ואין להם דרייברים/); assert.match(s2.run('drawer'), /אין חבילה מתאימה/);
+  s2.run("openDriverModel(encodeId('nope'))"); assert.match(s2.toasts.join('|'), /דגם לא נמצא/);
+  s2.run('MACHINES=null'); assert.match(s2.run('driversPage(0)'), /note err[^]*רשימת המחשבים לא נקראה/);
 });

@@ -20,6 +20,13 @@
 
 # #433: the UEFI Boot#### entry rides on the same hook (see below);
 # bootentry.sh is loaded by imagectl-agent, right before this file.
+#
+# #1269: a cloner's drawers go to OTHER machines, so its own inventory says
+# nothing about them -- there is no "auto" for a drawer. The operator picks a
+# model per target disk; stage_drawer_drivers (bottom) runs the same staging
+# per drawer with DR_PORT/DR_SESSION/DR_OUT set: the server answers by the
+# chosen model, the outcome goes to targets/<dev>/drivers.json, and the
+# machine's top-level state is left alone.
 
 DRIVERS_WIN_DIR="ImageCtl/Drivers"
 DEVICE_PATH_KEY='Microsoft\Windows\CurrentVersion'
@@ -28,14 +35,15 @@ DEVICE_PATH_ENTRY='%SystemRoot%\..\ImageCtl\Drivers'
 _drivers_result() {
     # $1 = state, $2 = JSON array body of package names ("" = none),
     # $3 = error/reason text (optional). Writes drivers.json and logs.
+    _dr_out="${DR_OUT:-$RUN_DIR/drivers.json}"
     if [ -n "${3:-}" ]; then
         _key="error"; [ "$1" = "skipped" ] && _key="reason"
         printf '{"state":"%s","packages":[%s],"%s":"%s"}\n' \
-            "$1" "$2" "$_key" "$(json_escape "$3")" > "$RUN_DIR/drivers.json"
+            "$1" "$2" "$_key" "$(json_escape "$3")" > "$_dr_out"
     else
-        printf '{"state":"%s","packages":[%s]}\n' "$1" "$2" > "$RUN_DIR/drivers.json"
+        printf '{"state":"%s","packages":[%s]}\n' "$1" "$2" > "$_dr_out"
     fi
-    log "drivers: $(cat "$RUN_DIR/drivers.json")"
+    log "drivers${DR_PORT:+ (drawer $DR_PORT)}: $(cat "$_dr_out")"
 }
 
 _drivers_fail() {
@@ -124,7 +132,7 @@ stage_drivers() {
 
 _stage_drivers() {
     _dr_mnt=""; _dr_why=""
-    rm -f "$RUN_DIR/drivers.json"
+    rm -f "${DR_OUT:-$RUN_DIR/drivers.json}"
     _dr_plan="$RUN_DIR/drivers.plan"
     if ! manifest_plan "$2" > "$_dr_plan"; then
         _drivers_fail "could not read the partition plan"
@@ -139,22 +147,30 @@ _stage_drivers() {
         _drivers_fail "could not check the partition plan"
         return 0
     fi
-    echo "staging" > "$RUN_DIR/state"
+    _q="mac=$MAC"
+    if [ -n "${DR_PORT:-}" ]; then _q="$_q&session=$DR_SESSION&port=$DR_PORT"
+    else echo "staging" > "$RUN_DIR/state"; fi
 
     _ans="$RUN_DIR/drivers.answer"
-    if ! http_get "$SERVER/api/v1/agent/drivers?mac=$MAC" > "$_ans" 2>> "$LOG_FILE"; then
+    if ! http_get "$SERVER/api/v1/agent/drivers?$_q" > "$_ans" 2>> "$LOG_FILE"; then
         _drivers_fail "the server did not answer the drivers query"; return 0
     fi
     [ "$(json_get "$_ans" ".ok")" = "true" ] || { _drivers_fail "the drivers answer was not read"; return 0; }
+    if [ -n "${DR_PORT:-}" ]; then
+        # #1269: no model for this port is a skip; a model with no package is a failure (below).
+        [ "$(json_get "$_ans" ".chosen")" != "null" ] || { _drivers_result "skipped" "" "no_model"; return 0; }
     # עיקרון 5: "אין מלאי בשרת" אינו "אין חבילה תואמת" -- הראשון הוא כשל.
-    [ "$(json_get "$_ans" ".inventory")" = "true" ] || { _drivers_fail "the server has no inventory for this machine"; return 0; }
+    elif [ "$(json_get "$_ans" ".inventory")" != "true" ]; then
+        _drivers_fail "the server has no inventory for this machine"; return 0
+    fi
 
     _rows="$RUN_DIR/drivers.rows"
     json_get "$_ans" '.packages[] as $p | $p.files[] | "\($p.name)|\(.path)|\(.sha256)|\(.url)"' > "$_rows"
     _names=$(json_get "$_ans" '.packages[].name')
     case "$_names" in
         null) _drivers_fail "could not read the package list"; return 0 ;;
-        '')   _drivers_result "no_match" ""; return 0 ;;
+        '')   if [ -n "${DR_PORT:-}" ]; then _drivers_fail "the server has no driver package for the chosen model"
+              else _drivers_result "no_match" ""; fi; return 0 ;;
     esac
     _list=""
     for _n in $_names; do _list="$_list${_list:+,}\"$(json_escape "$_n")\""; done
@@ -177,5 +193,24 @@ _stage_drivers() {
     [ "$_umrc" -eq 0 ] || { _drivers_fail "could not unmount after staging (rc=$_umrc)"; return 0; }
 
     _drivers_result "staged" "$_list"
+    return 0
+}
+
+stage_drawer_drivers() {
+    # #1269: $1 = session id, $2 = manifest, $3.. = this wave's drawers. Only
+    # the ports hello listed in session.driver_ports, and only a drawer
+    # written in full (target state "done"). No list = nothing is asked: the
+    # round without drivers is the round it was. Always returns 0.
+    _dd_ses="$1"; _dd_man="$2"; shift 2
+    _dd_ports=$(json_get "$RESP" '.session.driver_ports // [] | .[]' | tr '\n' ' ')
+    case "$_dd_ports" in ''|' '|null*) return 0 ;; esac
+    for _dd in "$@"; do
+        [ "$(cat "$RUN_DIR/targets/$_dd/state" 2>/dev/null)" = "done" ] || continue
+        _dd_port=$(disk_port "$_dd")
+        case " $_dd_ports" in *" $_dd_port "*) ;; *) continue ;; esac   # tr left one trailing space
+        DR_PORT="$_dd_port"; DR_SESSION="$_dd_ses"; DR_OUT="$RUN_DIR/targets/$_dd/drivers.json"
+        _stage_drivers "$_dd" "$_dd_man"
+    done
+    DR_PORT=""; DR_SESSION=""; DR_OUT=""
     return 0
 }

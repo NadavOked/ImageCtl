@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ImageCtl — מוניטור</title>
-<link rel="stylesheet" href="design-tokens.css?v=11.15">
-<link rel="stylesheet" href="console.css?v=11.15">
+<link rel="stylesheet" href="design-tokens.css?v=11.17">
+<link rel="stylesheet" href="console.css?v=11.17">
 <script>
   (function () {
     var choice = localStorage.getItem("imagectl-theme");
@@ -35,6 +35,19 @@
      מרנדר את הסמן שלו ל-fb0), אז מסתירים את הסמן המקומי של הדפדפן כדי
      שלא יופיעו שני סמנים ("double cursor"). */
   #screen { max-width: 100%; max-height: 100%; outline: none; background: #000; cursor: none; }
+  /* מסך מלא (console-full.html #fs): הדף כולו — ולא רק .mon-wrap — עובר למסך מלא, כדי שגם חלון האישור
+     של הפעלה מחדש / כיבוי ייראה. הסרגל הופך לכדור צף שמוסתר, ומופיע 2.5 שניות אחרי תזוזת עכבר. */
+  html:fullscreen .mon-bar {
+    position: fixed; top: 14px; inset-inline: 0; margin-inline: auto; z-index: 5;
+    width: max-content; max-width: calc(100% - 24px); height: auto; padding: 6px 12px;
+    border-radius: 99px; background: rgb(28 35 42 / 80%); backdrop-filter: blur(16px);
+    opacity: 0; transform: translateY(-8px); pointer-events: none;
+    transition: opacity var(--dur-base) var(--ease), transform var(--dur-base) var(--ease);
+  }
+  html:fullscreen.bar-on .mon-bar { opacity: 1; transform: none; pointer-events: auto; }
+  html:fullscreen .mon-bar .btn { background: transparent; color: #fff; border-color: rgb(255 255 255 / 35%); }
+  html:fullscreen .mon-bar .btn:hover { background: rgb(255 255 255 / 14%); }
+  html:fullscreen .mon-screen { overflow: hidden; }
 </style>
 </head>
 <body>
@@ -46,6 +59,7 @@
     <button class="btn" id="reboot-btn" title="מפעיל מחדש את המחשב המנוטר">הפעלה מחדש</button>
     <button class="btn danger" id="poweroff-btn" title="מכבה את המחשב המנוטר">כיבוי</button>
     <button class="btn" id="reconnect">התחבר מחדש</button>
+    <button class="btn" id="fs-btn" title="מסך מלא — Esc לחזרה">מסך מלא</button>
   </div>
   <div class="mon-screen">
     <canvas id="screen" width="1024" height="768" tabindex="0"></canvas>
@@ -68,6 +82,6 @@
     </div>
   </div>
 </div>
-<script src="monitor.js?v=3.29"></script>
+<script src="monitor.js?v=3.30"></script>
 </body>
 </html>

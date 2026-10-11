@@ -11,10 +11,10 @@ const path = require('node:path');
 const vm = require('node:vm');
 const root = path.resolve(__dirname, '../server/static');
 
-function setup(search = '?mac=aa:bb:cc:dd:ee:ff&name=Cloner01') {
-  const listeners = {};
-  const stub = () => ({textContent: '', className: '', value: '', style: {}, onclick: null,
-    addEventListener(name, fn) { (listeners[name] ||= []).push(fn); }, focus() {}, getBoundingClientRect() { return {left: 0, top: 0, width: 1, height: 1}; },
+function setup(search = '?mac=aa:bb:cc:dd:ee:ff&name=Cloner01', doc = {}) {
+  const listeners = {}, docListeners = {}, timers = [];
+  const stub = () => ({textContent: '', className: '', value: '', style: {}, onclick: null, disabled: false, title: '',
+    addEventListener(name, fn) { (listeners[name] ||= []).push(fn); (this.__l ||= {})[name] = fn; }, focus() {}, getBoundingClientRect() { return {left: 0, top: 0, width: 1, height: 1}; },
     getContext() { return {fillRect() {}, createImageData(w, h) { return {data: new Uint8ClampedArray(w * h * 4)}; }, putImageData() {}, drawImage() {}}; }});
   const sockets = [];
   const fetches = [];
@@ -27,13 +27,15 @@ function setup(search = '?mac=aa:bb:cc:dd:ee:ff&name=Cloner01') {
   const ctx = vm.createContext({
     console, URLSearchParams, Uint8Array, Uint8ClampedArray, TextEncoder, TextDecoder, Promise, Math, Error, Array, JSON, Number,
     encodeURIComponent, location: {search, protocol: 'http:', host: 'srv:8081'},
-    document: {getElementById: stub, addEventListener() {}, removeEventListener() {}, title: ''},
-    WebSocket: FakeWebSocket,
+    document: {getElementById: (() => { const nodes = {}; return (id) => (nodes[id] ||= stub()); })(), title: '',
+      addEventListener(name, fn) { (docListeners[name] ||= []).push(fn); }, removeEventListener() {},
+      documentElement: {classList: {_s: new Set(), add(c) { this._s.add(c); }, remove(c) { this._s.delete(c); }, contains(c) { return this._s.has(c); }}}, ...doc},
+    WebSocket: FakeWebSocket, setTimeout: (fn, ms) => { timers.push({fn, ms}); return timers.length; }, clearTimeout() {},
     fetch: async (url, options) => { fetches.push({url, options}); return ctx.__fetchReply || {ok: true, json: async () => ({})}; },
   });
   vm.runInContext(fs.readFileSync(path.join(root, 'monitor.js'), 'utf8'), ctx);
   const run = (s) => vm.runInContext(s, ctx);
-  return {ctx, run, sockets, fetches, listeners};
+  return {ctx, run, sockets, fetches, listeners, docListeners, timers};
 }
 
 /* מזרים למחלקת ByteStream של הדף בייטים ומריץ קורוטינה של הפרסור. */
@@ -123,4 +125,37 @@ test('a 403 from the server surfaces its detail — the name check is the server
   const {run, ctx} = setup();
   ctx.__fetchReply = {ok: false, status: 403, json: async () => ({detail: 'השם שהוקלד אינו זהה לשם המחשב'})};
   await assert.rejects(run('sendPower("reboot", "wrong")'), /השם שהוקלד אינו זהה לשם המחשב/);
+});
+
+/* ---------- מסך מלא (stage 3, console-full.html) ---------- */
+test('stage 3: fullscreen button — the whole page goes fullscreen (so the power-action modal stays visible), the bar shows on mouse move and hides after 2.5s, Esc/exit restores', async () => {
+  const calls = [];
+  const root = {requestFullscreen: async () => { calls.push('enter'); }, classList: {_s: new Set(), add(c) { this._s.add(c); }, remove(c) { this._s.delete(c); }, contains(c) { return this._s.has(c); }}};
+  const doc = {fullscreenEnabled: true, fullscreenElement: null, exitFullscreen: async () => { calls.push('exit'); }, documentElement: root};
+  const {run, ctx, docListeners, timers} = setup(undefined, doc);
+  assert.equal(run("fsBtn.disabled"), false);
+  await run("fsBtn").__l.click();
+  assert.deepEqual(calls, ['enter'], 'enter = requestFullscreen on the documentElement, not on a sub-tree');
+  assert.ok(docListeners.fullscreenchange && docListeners.mousemove, 'document listeners wired');
+  // כניסה
+  ctx.document.fullscreenElement = root;
+  docListeners.fullscreenchange.forEach((f) => f());
+  assert.equal(run("fsBtn.textContent"), 'יציאה ממסך מלא');
+  assert.ok(root.classList.contains('bar-on'), 'bar visible right after entering');
+  assert.equal(timers.at(-1).ms, 2500, 'hides after 2.5s'); timers.at(-1).fn(); assert.ok(!root.classList.contains('bar-on'), 'the timer hides it');
+  // תזוזת עכבר מחזירה את הסרגל
+  root.classList.remove('bar-on'); docListeners.mousemove.forEach((f) => f());
+  assert.ok(root.classList.contains('bar-on'));
+  // מחוץ למסך מלא: תזוזה לא מציגה כלום
+  ctx.document.fullscreenElement = null; docListeners.fullscreenchange.forEach((f) => f());
+  assert.equal(run("fsBtn.textContent"), 'מסך מלא'); assert.ok(!root.classList.contains('bar-on'));
+  ctx.document.fullscreenElement = root; await run("fsBtn").__l.click();
+  assert.deepEqual(calls, ['enter', 'exit'], 'the same button leaves fullscreen');
+  ctx.document.fullscreenElement = null;
+  docListeners.mousemove.forEach((f) => f()); assert.ok(!root.classList.contains('bar-on'), 'mouse move outside fullscreen does not show the bar');
+});
+
+test('stage 3: a browser without fullscreen gets a disabled button with a reason — not a button that does nothing', () => {
+  const {run} = setup();   // fullscreenEnabled חסר = לא מאומת
+  assert.equal(run("fsBtn.disabled"), true); assert.match(run("fsBtn.title"), /אינו מאפשר מסך מלא/);
 });

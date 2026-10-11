@@ -172,15 +172,16 @@ static const char *risk_word(int level) { return level == 0 ? "קריאה בלב
 static void risk_colors(const Theme *t, int level, Rgb *bg, Rgb *line, Rgb *ink) {
     if (level == 0)      { *bg = t->metric;     *line = t->metric_line;  *ink = t->muted; }
     else if (level == 1) { *bg = t->warning_bg; *line = t->warning_line; *ink = t->warning_ink; }
-    else                 { *bg = t->danger_bg;  *line = t->danger_line;  *ink = t->danger; }
+    else                 { *bg = t->danger_bg;  *line = t->danger_line;  *ink = t->danger_fg;}
 }
 static double tag_draw(cairo_t *cr, const Theme *t, double x, double cy, const char *word, Rgb bg, Rgb line, Rgb ink) {
-    (void)t;                                  /* the triple is chosen by the caller */
-    Text w = text_make(cr, FONT_SANS, N_LABEL, 500, word, 0, DIR_RTL);
-    Rect r = { x, cy - (w.h + 2 * N_LABEL_GAP) / 2, w.w + 2 * N_ACTION_GAP, w.h + 2 * N_LABEL_GAP };
-    draw_fill_rrect(cr, r, RADIUS_SM, bg);
-    draw_border_rrect(cr, r, RADIUS_SM, line, N_BORDER);
-    text_draw(cr, &w, r.x + N_ACTION_GAP, r.y + N_LABEL_GAP, ink);
+    /* The triple is chosen by the caller; the box is the console's .tag:
+     * padding 3px 7px, 1px border, radius --r, font-size --t-xs (11px). */
+    Text w = text_make(cr, FONT_SANS, 11, 400, word, 0, DIR_RTL);
+    Rect r = { x, cy - (w.h + 8) / 2, w.w + 16, w.h + 8 };
+    draw_fill_rrect(cr, r, t->radius, bg);
+    draw_border_rrect(cr, r, t->radius, line, N_BORDER);
+    text_draw(cr, &w, r.x + 8, r.y + 4, ink);
     text_free(&w);
     return r.w;
 }
@@ -331,7 +332,7 @@ static void tools_confirm_view(App *a, cairo_t *cr, double W, double H, double h
         if (disk) {
             if (!s->ndisks) {
                 Text none = sub_make(cr, "לא נמצא דיסק במחשב הזה.", inner);
-                text_draw_r(cr, &none, x + inner, y, t->danger); text_free(&none); y += drow;
+                text_draw_r(cr, &none, x + inner, y, t->danger_fg); text_free(&none); y += drow;
             }
             for (int i = 0; i < s->ndisks; i++) {
                 const Disk *d = &s->disks[i];
@@ -353,7 +354,7 @@ static void tools_confirm_view(App *a, cairo_t *cr, double W, double H, double h
         }
         y += N_FORM_GAP;
     }
-    text_draw(cr, &err, x, y, t->danger);
+    text_draw(cr, &err, x, y, t->danger_fg);
     body_clip_end(a, cr);
     foot_draw_bg(cr, t, foot);
     foot_buttons(a, cr, foot, labels, kinds, ids, nb);
@@ -374,11 +375,11 @@ static void spinner_draw(cairo_t *cr, Rgb c, double cx, double cy, double r, dou
 static const char *rc_word(int rc, Rgb *bg, Rgb *line, Rgb *ink, const Theme *t) {
     switch (rc) {
     case 0:  *bg = t->success_bg; *line = t->success_line; *ink = t->success_ink; return "הסתיים";
-    case 1:  *bg = t->danger_bg;  *line = t->danger_line;  *ink = t->danger;      return "נמצאה בעיה";
+    case 1:  *bg = t->danger_bg;  *line = t->danger_line;  *ink = t->danger_fg;     return "נמצאה בעיה";
     case 2:  *bg = t->warning_bg; *line = t->warning_line; *ink = t->warning_ink; return "לא הצלחנו לבדוק";
-    case 3:  *bg = t->danger_bg;  *line = t->danger_line;  *ink = t->danger;      return "האישור לא תואם";
-    case 4:  *bg = t->danger_bg;  *line = t->danger_line;  *ink = t->danger;      return "כלי לא מוכר";
-    default: *bg = t->danger_bg;  *line = t->danger_line;  *ink = t->danger;      return "נכשל";
+    case 3:  *bg = t->danger_bg;  *line = t->danger_line;  *ink = t->danger_fg;     return "האישור לא תואם";
+    case 4:  *bg = t->danger_bg;  *line = t->danger_line;  *ink = t->danger_fg;     return "כלי לא מוכר";
+    default: *bg = t->danger_bg;  *line = t->danger_line;  *ink = t->danger_fg;     return "נכשל";
     }
 }
 

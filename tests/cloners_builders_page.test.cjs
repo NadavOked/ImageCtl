@@ -158,7 +158,7 @@ test('grid without a round: slots from /machines[].disks[] by drawer_count — d
   assert.match(red,/clearDiskFailure\(7\)">נקה</);
   const rounds=between(html,'<div class="c4 card">');
   assert.match(rounds,/סבבים בחדר/); assert.doesNotMatch(rounds,/דורש API/,'#980 §3: history comes from /room/history');
-  assert.equal((rounds.match(/class="ev"/g)||[]).length,3,'no active round → the three finished rounds only');
+  assert.equal((rounds.match(/<tr>/g)||[]).length-1,3,'no active round → the three finished rounds only (stage 3: a table, not a timeline)'); assert.doesNotMatch(rounds,/class="ev"/);
 });
 
 test('grid during a round: slots from /room.machines[].drawer_list — write bar per drawer, CRC warning, failed drawer red, machine "in round"; pill and KPIs from /room.round', () => {
@@ -190,7 +190,7 @@ test('cloners tabs: "drawers" is the grid alone and larger (4:3 screen next to t
   let html=run('machines(1)'); balanced(html);
   assert.match(html,/<div class="mgrid big">/); assert.doesNotMatch(html,/class="kpi/); assert.doesNotMatch(html,/<table class="dg"/); assert.equal((html.match(/class="c12 card"/g)||[]).length,1);
   html=run('machines(2)'); assert.match(html,/class="c12 card"><div class="card-h"><span>סבבים בחדר/); assert.match(html,/office365 · גל 2/); assert.doesNotMatch(html,/דורש API/); assert.doesNotMatch(html,/mgrid/);
-  assert.equal((html.match(/class="ev"/g)||[]).length,4,'the active round + three finished rounds');
+  assert.equal((html.match(/class="ev"/g)||[]).length,1,'the active round'); assert.equal((html.match(/<tr>/g)||[]).length-1,3,'+ three finished rounds');
   run('ROOM=null'); html=run('machines(0)');
   assert.match(html,/pill ">החדר לא נקרא</); assert.match(html,/<div class="kpi "><div class="l">סבב פעיל<\/div><div class="v"><bdi dir="auto">לא נקרא/);
   assert.match(html,/החדר לא נקרא — הדיסקים לפי הדיווח האחרון ב-hello/); assert.match(html,/החדר לא נקרא — הסבב הפעיל לא ידוע/);
@@ -344,13 +344,17 @@ test('the machines table links every group row to its object, fixed groups inclu
 test('#980 §3: room history from /room/history — newest first, failed red with the reason, all-written green, short of the target grey; unread ≠ none', () => {
   const {run}=setup();
   run("openClass('grp_CLONERS')"); let html=run('machines(2)'); balanced(html);
-  const ev=[...html.matchAll(/<div class="ev">([^]*?)<span class="who">([^<]*)<\/span><\/div>/g)].map(m=>m[0]);
-  assert.equal(ev.length,3);
-  assert.match(ev[0],/<span class="t">15\/09\/2026<\/span><span class="d err"><\/span><span>office365 · 1\/4 נכתבו · נכשל: send_failed/);
-  assert.match(ev[1],/<span class="d ok"><\/span><span>win11-base · 6\/6 נכתבו · נסגר/,'every declared drive written → green');
-  assert.match(ev[2],/<span class="d "><\/span><span>img_gone · 2\/6 נכתבו · נסגר/,'closed short of the target is not green');
-  assert.match(ev[2],/<span class="who">yossi<\/span>/);
-  run('ROOM_HISTORY=[]'); html=run('machines(2)'); assert.match(html,/אין סבבים קודמים בחדר/); assert.doesNotMatch(html,/class="ev"/);
+  const rows=[...html.matchAll(/<tr>([^]*?)<\/tr>/g)].map(m=>m[0]).slice(1);
+  assert.equal(rows.length,3);
+  assert.match(html,/<th>אימג(?:'|&#39;)<\/th><th>נכתבו<\/th><th>משך<\/th><th>תוצאה<\/th>/);
+  assert.match(rows[0],/office365<\/td><td>1\/4<\/td><td>20 דק(?:'|&#39;)<\/td><td><span class="pill err">נכשל<\/span><span class="sub">send_failed<\/span>/,'failed: red pill + the reason, duration from created/closed');
+  assert.match(rows[1],/win11-base<\/td><td>6\/6<\/td><td>90 דק(?:'|&#39;)<\/td><td><span class="pill ok">הצליח<\/span>/,'every declared drive written → green');
+  assert.match(rows[2],/img_gone<\/td><td>2\/6<\/td><td>40 דק(?:'|&#39;)<\/td><td><span class="pill warn">2 מתוך 6<\/span>/,'closed short of the target is not green');
+  assert.match(rows[2],/<td class="c-opt">yossi<\/td>/);
+  // משך שלא נמדד הוא "—", לא 0
+  run('ROOM_HISTORY=[{id:"x",state:"closed",image_name:"a",target_drives:2,written_drives:2,opened_by:"n",created_at:"2026-09-10T08:00:00Z",closed_at:null}]'); html=run('machines(2)');
+  assert.match(html,/<td>2\/2<\/td><td>—<\/td><td><span class="pill ok">הצליח/);
+  run('ROOM_HISTORY=[]'); html=run('machines(2)'); assert.match(html,/אין סבבים קודמים בחדר/); assert.doesNotMatch(html,/class="ev"|<th>תוצאה/);
   run('ROOM_HISTORY=null'); html=run('machines(2)'); assert.match(html,/note warn[^]*היסטוריית הסבבים לא נקראה/,'unread is said, not shown as empty');
 });
 

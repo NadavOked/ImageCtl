@@ -399,7 +399,7 @@ test('8. health: storage_<id> rows are grouped under one "אחסון" row with a
   assert.ok(group, 'a group row');
   assert.match(group.html, /אחסון — מיקומים · 2/);
   const san = parsed.find(r => Array.isArray(r) && r[0].includes('san-lun1'));
-  assert.match(san[1], /<span class="st err">תקלה<\/span>/);
+  assert.match(san[1], /<span class="pill err">תקלה<\/span>/);   // stage 3: מצב הבדיקה הוא pill (המוקאפ המאושר)
   assert.match(san[3], /selectPageById\('storage'\)">פתח באחסון/);
   const index = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
   const node = index.slice(index.indexOf('data-page="storage"') - 40, index.indexOf('data-page="storage"') + 420);

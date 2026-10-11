@@ -1035,3 +1035,19 @@ def test_journal_translates_monitor_events_to_hebrew(server):
     assert tr.translate("monitor_power", f"{MAC} poweroff")[1] == f"{who} · כיבוי"
     assert tr.translate("monitor_power", f"{MAC} reboot node=n0de")[1] == (
         f"{who} · הפעלה מחדש · node=n0de")
+
+
+def test_monitor_fullscreen_is_the_whole_page_with_a_floating_bar():
+    """stage 3 (console-full.html #fs): "מסך מלא" מעביר את **הדף כולו** (documentElement) למסך מלא — לא רק
+    את .mon-wrap — כדי שחלון האישור של כיבוי/הפעלה מחדש (מחוץ ל-.mon-wrap) ייראה; הסרגל הופך לכדור צף
+    שמוסתר עד תזוזת עכבר. דפדפן בלי fullscreenEnabled מקבל כפתור מנוטרל עם הסבר."""
+    from pathlib import Path
+
+    static = Path(__file__).resolve().parent.parent / "server" / "static"
+    page = (static / "monitor.html").read_text(encoding="utf-8")
+    js = (static / "monitor.js").read_text(encoding="utf-8")
+    assert 'id="fs-btn"' in page
+    assert "html:fullscreen .mon-bar" in page and "html:fullscreen.bar-on .mon-bar" in page
+    assert "document.documentElement.requestFullscreen()" in js
+    assert "mon-wrap.requestFullscreen" not in js and ".mon-wrap').requestFullscreen" not in js
+    assert "document.fullscreenEnabled" in js and "2500" in js

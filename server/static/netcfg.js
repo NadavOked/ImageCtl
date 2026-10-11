@@ -220,7 +220,9 @@ function wireNicWindow(start, now) {
 }
 
 function editNicConfig(name, { add = false } = {}) {
-  const fresh = add ? (NICS || []).filter((n) => n.present && !n.enabled && !n.proxy && !n.description) : [];
+  // ‏#1264: כרטיס שחבר ב-bond של רשת ההפצה אינו "כרטיס פנוי" — הוא מוסר בחלון רשת ההפצה.
+  const fresh = add ? (NICS || []).filter((n) => n.present && !n.enabled && !n.proxy && !n.description
+    && !(netcfgRowOf(n.name) || {}).member_of) : [];
   if (add && !fresh.length) { toast("כל הכרטיסים שמחוברים כבר מוגדרים."); return; }
   const target = add ? fresh[0].name : name;
   const nic = (NICS || []).find((n) => n.name === target) || { name: target, enabled: false };

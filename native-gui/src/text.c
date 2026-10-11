@@ -103,7 +103,7 @@ Text text_make_field(cairo_t *cr, const char *utf8, int width_px, int ltr) {
                                ltr ? PANGO_DIRECTION_LTR : PANGO_DIRECTION_RTL);
     pango_layout_set_auto_dir(t.layout, FALSE);
     pango_layout_context_changed(t.layout);
-    PangoFontDescription *d = font_desc(FONT_SANS, 14, 400);
+    PangoFontDescription *d = font_desc(FONT_SANS, 13, 400);        /* .win .n-in: font-size var(--t-base) */
     pango_layout_set_font_description(t.layout, d);
     pango_font_description_free(d);
     pango_layout_set_text(t.layout, utf8, -1);

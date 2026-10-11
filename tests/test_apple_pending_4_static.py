@@ -55,9 +55,10 @@ def test_row_menu_respects_reduced_motion():
 
 
 def test_wide_tables_use_the_kebab_pattern():
-    """הרשאות, חיבורים פיזיים ופורטים: מחלקת kebab-col וכותרת sr-only לעמודת הפעולות."""
+    """הרשאות, חיבורים פיזיים ופורטים: מחלקת kebab-col וכותרת sr-only לעמודת הפעולות.
+    פורטים (#1267): רק בכרטיסים שבין רשתות יש תפריט — ברשת ההפצה אין פעולות."""
     js = _js()
-    for needle in ('cls: "kebab-col", opt: [4, 5]', 'cls: "stable kebab-col", opt: [4, 7]', 'cls: "dense kebab-col", opt: [6, 7]'):
+    for needle in ('cls: "kebab-col", opt: [4, 5]', 'cls: "stable kebab-col", opt: [4, 7]', 'cls: cross ? "dense kebab-col" : "dense", opt: cross ? [5] : []'):
         assert needle in js, needle
     assert js.count('<span class="sr">פעולות</span>') >= 3
     assert "UI.rowMenu(u.username, items)" in js

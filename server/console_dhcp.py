@@ -472,6 +472,11 @@ def create_dhcp_router(ctx: ServerContext, hooks: Hooks | None = None,
     router.dhcp_steps = {
         "load": load, "build": _build, "gates": _gates, "commit": _commit,
         "live": lambda: {i["name"]: i for i in hooks["interfaces"]()},
+        # ‏#1264: הכרטיס השני — אותו "מי כבר עונה" (‏#53) על הכרטיס שמצטרף,
+        # אותה השלמת התקנה (‏deploy) ואותו dnsmasq אחרי שה-DHCP עבר ל-bond.
+        "probe": lambda name: hooks["probe"](name),
+        "deploy": lambda: deploy,
+        "apply": apply_all,
     }
 
     def _only_the_deploy_nic_or_409(name: str) -> None:

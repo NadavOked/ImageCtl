@@ -60,6 +60,7 @@ void state_parse(State *s, FILE *fp) {
     s->elapsed_s = s->eta_s = -1; s->rate_bps = -1;   /* #410: unmeasured until said */
     s->hello_age = -1;
     s->hello_rc = -1;
+    s->driver_models_read = -1;                   /* #1269: not read until said */
     int reported_long = 0, reported_disks = 0, reported_machines = 0;
     /* #928: the shrink question is all-or-nothing -- the declared count and
      * a bad row are remembered here and settled after the last line. */
@@ -138,8 +139,9 @@ void state_parse(State *s, FILE *fp) {
             if (count > MAX_DRAWERS) count = MAX_DRAWERS;
             m->drawer_count = (int)count;
         } else if (KEY("room_drawer")) {
-            /* #695: machine-index|port-or-0|serial|model|size|smart|fresh|selected */
-            if (split(val, f, 8) < 8) continue;
+            /* #695: machine-index|port-or-0|serial|model|size|smart|fresh|selected
+             * #1269: |drivers-state|drivers-detail -- optional (an older agent sends eight) */
+            if (split(val, f, 10) < 8) continue;
             unsigned long long mi, port, size;
             if (!parse_uint(f[0], &mi) ||
                 !parse_uint(f[1], &port) || port > MAX_DRAWERS ||
@@ -163,6 +165,24 @@ void state_parse(State *s, FILE *fp) {
             d->fresh = num(f[6], 0) == 1;
             d->unidentified = num(f[6], 0) < 0;
             d->selected = num(f[7], 0) != 0;
+            /* #1269: only the three words the server keeps (well_formed_drivers);
+             * anything else is "did not run", never drawn as staged. */
+            if (!strcmp(f[8], "staged") || !strcmp(f[8], "skipped") || !strcmp(f[8], "failed")) {
+                cp(d->drv_state, sizeof d->drv_state, f[8]);
+                cp(d->drv_detail, sizeof d->drv_detail, f[9]);
+            }
+        } else if (KEY("driver_models")) {
+            /* #1269: how many models the bridge read; -1 = it could not read them */
+            if (!strcmp(val, "-1")) { s->driver_models_read = -1; continue; }
+            unsigned long long n;
+            if (parse_uint(val, &n) && n <= INT_MAX) s->driver_models_read = (int)n;
+        } else if (KEY("driver_model")) {
+            /* #1269: vendor|model -- both needed, or the server could not match it */
+            if (split(val, f, 3) != 2 || !f[0][0] || !f[1][0]) continue;
+            if (s->ndriver_models >= MAX_DRIVER_MODELS) { s->hidden_models++; continue; }
+            DriverModel *dm = &s->driver_models[s->ndriver_models++];
+            cp(dm->vendor, sizeof dm->vendor, f[0]);
+            cp(dm->model, sizeof dm->model, f[1]);
         } else if (KEY("drawer") && s->ndrawers < MAX_DRAWERS) {
             int nf = split(val, f, 8);
             if (nf < 5) continue;                     /* malformed -- no phantom drawer */
@@ -319,7 +339,7 @@ void state_parse(State *s, FILE *fp) {
         fprintf(stderr, "native-gui: state: shrink question incomplete or malformed; not shown\n");
         s->nshrink = 0; s->shrink_nonce[0] = 0;
     }
-    int hidden = s->hidden_disks + s->hidden_machines;
+    int hidden = s->hidden_disks + s->hidden_machines + s->hidden_models;   /* #1269 */
     if (s->rejected_lines && hidden)
         snprintf(s->state_warning, sizeof s->state_warning,
                  "קובץ המצב חלקי: %d שורות נדחו · +%d נוספים, לא מוצגים",

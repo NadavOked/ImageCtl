@@ -90,6 +90,18 @@ gui_state() {
                     "image=" + ([.id,.name,.folder] | map(tostring | gsub("[\\r\\n|]"; " ")) | join("|")) end' \
                     "$GUI_DIR/images.json" >> "$GUI_DIR/state.next" || return 1
             fi
+            # #1269: the models the driver library has -- the "add drivers"
+            # switch. driver_models=-1 = not read: the switch says so, and an
+            # unread list is never an empty one (principle 5) nor the end of
+            # the whole room screen.
+            if gui_get room/driver-models "$GUI_DIR/driver-models.json" &&
+                jq -r 'if type != "array" then error("bad driver models") else "driver_models=\(length)",
+                    (.[] | "driver_model=" + ([.vendor, .model] | map((. // "") | tostring | gsub("[\\r\\n|]"; " ")) | join("|"))) end' \
+                    "$GUI_DIR/driver-models.json" > "$GUI_DIR/driver-models.next"; then
+                cat "$GUI_DIR/driver-models.next" >> "$GUI_DIR/state.next" || return 1
+            else
+                printf 'driver_models=-1\n' >> "$GUI_DIR/state.next" || return 1
+            fi
             jq -r '
               def clean: ((. // "") | tostring | gsub("[\\r\\n|]"; " "));
               def row: "machine=" + ([.name,.mac,(if .awake then 1 else 0 end),
@@ -114,7 +126,12 @@ gui_state() {
                       (.smart // "unchecked"),
                       # #1235: fresh null = no serial (#105) -> -1, "cannot identify".
                       (if .fresh == null then -1 elif .fresh then 1 else 0 end),
-                      (if .selected then 1 else 0 end)]
+                      (if .selected then 1 else 0 end),
+                      # #1269: the drivers outcome; "" = the step did not run.
+                      (.drivers.state // ""),
+                      (.drivers as $d | if $d == null then "" elif $d.state == "staged"
+                        then ($d.packages // [] | join(", ")) elif $d.state == "failed"
+                        then ($d.error // "") else ($d.reason // "") end)]
                      | map(clean) | join("|")))) end' \
                 "$GUI_DIR/room.json" >> "$GUI_DIR/state.next" || return 1 ;;
         classes)

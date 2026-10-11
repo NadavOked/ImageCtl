@@ -166,6 +166,8 @@ EVENTS_HE = {
     "deploy_net_failed": "הגדרת רשת ההפצה נכשלה",
     "deploy_net_set": "רשת ההפצה הוגדרה",
     "net_deploy_saved": "הגדרות רשת ההפצה נשמרו (כתובת השרת נגזרה מהרשת)",
+    "net_deploy_bond": "כרטיס שני ברשת ההפצה עודכן (bond0)",
+    "net_deploy_bond_failed": "עדכון הכרטיס השני ברשת ההפצה נכשל — ההגדרה הקודמת הוחזרה",
     "dhcp_synced_at_startup": "תצורת DHCP/TFTP נכתבה מחדש מה-DB בעלייה",
     "disk_decision": "הכרעה על דיסק (SMART) נרשמה",
     "machine_drawer_count": "מספר המגירות של מכונה עודכן",

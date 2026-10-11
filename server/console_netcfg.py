@@ -26,9 +26,9 @@ from typing import Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from . import auth, dhcp, netcfg, netcfg_host, netcfg_rollback
+from . import auth, deploy_net, dhcp, netcfg, netcfg_host, netcfg_rollback
 from .api import ServerContext
-from .db import get_setting, journal, set_setting
+from .db import get_setting, journal, set_setting, set_settings
 
 Hooks = dict[str, Callable]
 
@@ -180,18 +180,55 @@ def create_netcfg_router(ctx: ServerContext, state_dir,
         return any(f in netcfg.REACH_FIELDS
                    for f in netcfg.changed(before, after))
 
+    def bond_of(name: str) -> netcfg.NetConfig | None:
+        """‏#1264: ה-bond שהכרטיס חבר בו, או None."""
+        return next((c for c in all_configs() if name in c.slaves), None)
+
+    def gaps_of(cfg: netcfg.NetConfig, state: netcfg_host.LiveState,
+                bond: netcfg_host.BondState | None = None) -> list[str]:
+        """הקריאה החוזרת: הכתובת, ול-bond (‏#1264) גם מה שהקרנל מדווח עליו."""
+        gaps = netcfg_host.mismatches(cfg, state)
+        if cfg.slaves:
+            bond = bond if bond is not None else hooks["netcfg_bond_state"](cfg.name)
+            gaps += netcfg_host.bond_mismatches(cfg, bond, state)
+        return gaps
+
+    def bond_view(cfg: netcfg.NetConfig, bond: netcfg_host.BondState) -> dict:
+        """‏#1264: מצב רשת ההפצה על שני כרטיסים, לפי `/proc/net/bonding`.
+
+        לכל חבר: ‏`active` (חבר, ויש קישור) · ‏`down` (חבר, הכבל/הפורט נפל)
+        · ‏`missing` (אינו חבר) · ‏`unchecked` (לא נקרא — **לא** "פעיל")."""
+        members = []
+        for index, slave in enumerate(cfg.slaves):
+            if not bond.checked:
+                member = "unchecked"
+            elif slave not in bond.slaves:
+                member = "missing"
+            else:
+                member = "active" if bond.slaves[slave] == "up" else "down"
+            members.append({"name": slave, "role": index + 1, "state": member})
+        states = [m["state"] for m in members]
+        up = states.count("active")
+        overall = ("unchecked" if not bond.checked else
+                   "missing" if "missing" in states else
+                   "ok" if up == len(states) else "degraded" if up else "down")
+        return {"name": cfg.name, "mode": netcfg.BOND_MODE, "checked": bond.checked,
+                "reason": bond.reason, "state": overall, "members": members}
+
     def state_view(cfg: netcfg.NetConfig, live: dict | None,
-                   state: netcfg_host.LiveState) -> dict:
+                   state: netcfg_host.LiveState,
+                   bond: netcfg_host.BondState | None = None) -> dict:
         return {
             "name": cfg.name, "mode": cfg.mode, "mode_he": netcfg.MODES_HE[cfg.mode],
             "address": cfg.address, "netmask": cfg.netmask,
             "gateway": cfg.gateway, "dns": cfg.dns,
             "routes": [r.__dict__ for r in cfg.routes],
+            "slaves": cfg.slaves,
             "present": live is not None,
             "state": (live or {}).get("state", "missing"),
             # הראיה, ולא ההגדרה: מה ש-`ip addr` מראה עכשיו.
             "live_addresses": state.addresses.get(cfg.name, []) if state.checked else [],
-            "mismatches": netcfg_host.mismatches(cfg, state),
+            "mismatches": gaps_of(cfg, state, bond),
         }
 
     def rollback_view(now: float) -> dict:
@@ -213,12 +250,20 @@ def create_netcfg_router(ctx: ServerContext, state_dir,
         drain_crumbs(ctx, state_dir, hooks)
         live = {i["name"]: i for i in hooks["interfaces"]()}
         state = hooks["netcfg_state"]()
-        names = sorted(set(live) | {c.name for c in all_configs()})
+        configs = {c.name: c for c in all_configs()}
+        names = sorted(set(live) | set(configs))
         mgmt = management()
+        # ‏#1264: bond אחד לכל היותר (רשת ההפצה), ומצבו נקרא פעם אחת לבקשה.
+        bonded = next((c for c in configs.values() if c.slaves), None)
+        bond = hooks["netcfg_bond_state"](bonded.name) if bonded else None
+        member_of = {s: bonded.name for s in bonded.slaves} if bonded else {}
         return {
-            "interfaces": [{**state_view(load(n), live.get(n), state),
-                            "management": n == mgmt} for n in names],
+            "interfaces": [{**state_view(load(n), live.get(n), state,
+                                         bond if bonded and n == bonded.name else None),
+                            "management": n == mgmt,
+                            "member_of": member_of.get(n)} for n in names],
             "management_interface": mgmt or None,
+            "deploy_bond": bond_view(bonded, bond) if bonded else None,
             "live": {"checked": state.checked, "reason": state.reason,
                      "routes": state.routes, "nameservers": state.nameservers},
             "sourced": hooks["netcfg_sourced"](),
@@ -253,6 +298,7 @@ def create_netcfg_router(ctx: ServerContext, state_dir,
         הטקסט לפני ההחלה תופס טעות כשהיא עדיין טקסט.
         """
         cfg = build(name, await request.json())
+        cfg.slaves = load(name).slaves              # ‏#1264: נערכים רק מרשת ההפצה
         after = [c for c in all_configs() if c.name != name] + [cfg]
         return {
             "path": str(netcfg_host.conf_path(name)),
@@ -270,7 +316,15 @@ def create_netcfg_router(ctx: ServerContext, state_dir,
         live = {i["name"]: i for i in hooks["interfaces"]()}
         if name not in live and not body.get("allow_missing"):
             raise HTTPException(404, "כרטיס רשת כזה לא קיים במכונה")
+        member = bond_of(name)
+        if member is not None:
+            raise HTTPException(
+                409, f"{name} הוא כרטיס ברשת ההפצה (חבר ב-{member.name}) — מסירים "
+                     "אותו בחלון רשת ההפצה, ורק אז מגדירים אותו כאן")
         before, cfg = load(name), build(name, body)
+        # ‏#1264: חברי ה-bond אינם שדה בטופס הזה — הם נשמרים כפי שהם (נתיב
+        # סטטי על bond0, למשל), וקובעים אותם רק מ-`/second`.
+        cfg.slaves = before.slaves
         found = check(cfg)
         if found:
             raise HTTPException(400, " · ".join(found))
@@ -355,7 +409,7 @@ def create_netcfg_router(ctx: ServerContext, state_dir,
         if error is None:
             error = hooks["netcfg_apply"](name)
         state = hooks["netcfg_state"]()
-        gaps = netcfg_host.mismatches(cfg, state)
+        gaps = gaps_of(cfg, state)
         verified = not gaps
         if error or not verified:
             journal(ctx.conn, "net_config_unverified",
@@ -398,6 +452,10 @@ def create_netcfg_router(ctx: ServerContext, state_dir,
             raise HTTPException(
                 409, f"{name} הוא כרטיס הניהול (נבחר בהתקנה) — הוא יכול להיות "
                      "לקוח DHCP או כתובת ידנית, לא רשת ההפצה")
+        member = bond_of(name)
+        if member is not None:
+            raise HTTPException(
+                409, f"{name} חבר ב-{member.name} — רשת ההפצה נערכת על {member.name}")
         netmask = str(body.get("netmask") or "255.255.255.0").strip()
         network = str(body.get("network", "")).strip()
         address, found = netcfg.deploy_address(network, netmask)
@@ -407,7 +465,8 @@ def create_netcfg_router(ctx: ServerContext, state_dir,
         # השער וה-DNS של **הכרטיס** ריקים בכוונה: הם של המחשבים (ב-DHCP),
         # ושער ברירת מחדל שני על השרת היה מתחרה בזה של כרטיס הניהול.
         cfg = netcfg.NetConfig(name=name, mode=netcfg.MODE_STATIC, address=address,
-                               netmask=netmask, routes=before.routes)
+                               netmask=netmask, routes=before.routes,
+                               slaves=before.slaves)            # ‏#1264
         dhcp_before = dhcp_steps["load"](name)
         # שער ו-DNS **למחשבים**: הקונסולה אינה מציעה אותם ברשת ההפצה (רשת
         # סגורה — dnsmasq ב-port=0, השרת אינו מנתב; נדב 10/10). מי שלא שולח
@@ -448,6 +507,211 @@ def create_netcfg_router(ctx: ServerContext, state_dir,
         if "deploy" in dhcp_result:
             out["deploy"] = dhcp_result["deploy"]
         return out
+
+    # --- ‏#1264: כרטיס שני ברשת ההפצה (bond, ‏balance-alb) -------------------
+
+    @router.put("/{name}/second")
+    async def configure_second(name: str, request: Request, user=Depends(admin_only)):
+        """כרטיס שני לרשת ההפצה: ‏`{"second": "eth2"}` מוסיף, ‏`{"second": ""}` מסיר.
+
+        שני הכרטיסים פעילים יחד על **אותה** כתובת (ה-‎.1 של הרשת) — bond
+        במצב ‏balance-alb, בלי הגדרה בסוויץ'. ‏`name` הוא רשת ההפצה כפי שהיא
+        עכשיו: הכרטיס (בהוספה) או ה-bond (בהסרה).
+
+        כל מה שקשור לשם כרטיס ההפצה עובר לשם החדש: הכתובת (‏`interfaces.d`),
+        ה-DHCP (‏`dhcp:<שם>` → ‏`interface=` ב-dnsmasq), ‏`deploy:interface`,
+        חומת האש (‏`--deploy-if`), ו-udp-sender (‏`--interface`, בעליית השרת
+        שאחרי) — אותה השלמה של #1088, לשם החדש.
+
+        הסדר: כל הבדיקות **לפני** שנוגעים במשהו; אז ההעברה על המכונה עם
+        קריאה חוזרת (הכתובת, ול-bond גם ‏`/proc/net/bonding`), וכשל בה **מחזיר
+        מיד** את הקבצים הקודמים — רשת הפצה בלי כתובת אינה "חצי הצלחה". רק אחרי
+        שהמכונה אומתה — ה-DB, ההשלמה ו-dnsmasq. אין כאן זרוע החזרה של #56:
+        שינוי שמגיע דרך כרטיס ברשת ההפצה (או מכרטיס לא ידוע) **נדחה**, ומכרטיס
+        הניהול הקונסולה אינה מתנתקת.
+        """
+        if dhcp_steps is None:
+            raise HTTPException(501, "שלבי ה-DHCP לא חוברו לראוטר הזה")
+        try:
+            dhcp.validate_name(name)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        body = await request.json()
+        second = str(body.get("second") or "").strip()
+        current, deploy = load(name), dhcp_steps["deploy"]()
+        _deploy_network_or_409(name, current, deploy)
+        live = {i["name"]: i for i in hooks["interfaces"]()}
+        touched: list[str] | None = None            # None = המכונה כבר במצב הזה
+        if current.slaves and second == current.slaves[1]:
+            new = current                           # ניסיון חוזר אחרי השלמה שנכשלה
+        elif current.slaves and second:
+            raise HTTPException(
+                409, f"ברשת ההפצה כבר יש כרטיס שני ({current.slaves[1]}) — הסירו אותו "
+                     f"קודם, ואז הוסיפו את {second}")
+        elif current.slaves:
+            new = netcfg.NetConfig(name=current.slaves[0], mode=netcfg.MODE_STATIC,
+                                   address=current.address, netmask=current.netmask,
+                                   routes=current.routes)
+            touched = [name, *current.slaves]
+        elif second:
+            _second_card_or_409(second, name, live, body)
+            new = netcfg.NetConfig(name=netcfg.BOND_NAME, mode=netcfg.MODE_STATIC,
+                                   address=current.address, netmask=current.netmask,
+                                   routes=current.routes, slaves=[name, second])
+            touched = [name, second, netcfg.BOND_NAME]
+        elif deploy.state.interface != name:
+            new = current                           # ניסיון חוזר אחרי הסרה שהשלמתה נכשלה
+        else:
+            raise HTTPException(409, f"לרשת ההפצה על {name} אין כרטיס שני להסרה")
+        if touched is not None:
+            active = active_interface(request, live)
+            if active is None or active in touched:
+                raise HTTPException(
+                    409, "הבקשה הגיעה דרך כרטיס ברשת ההפצה, או שלא ניתן לקבוע דרך איזה "
+                         "כרטיס — הוספת כרטיס שני או הסרתו מורידה את רשת ההפצה לרגע, "
+                         "ואין לה החזרה אוטומטית. היכנסו דרך כרטיס הניהול.")
+            dhcp_new = dhcp.InterfaceConfig.from_json(new.name, dhcp_of(name).to_json())
+            others = [c for c in all_configs() if c.name not in touched] + [new]
+            found = netcfg.problems(new, others, dhcp_new)
+            if found:
+                raise HTTPException(400, " · ".join(found))
+            error = _switch(current, new, touched)
+            if error:
+                journal(ctx.conn, "net_deploy_bond_failed",
+                        f"{name}->{new.name} {error[:200]}", user[0])
+                return {"ok": False, "interface": name, "server_ip": current.address,
+                        "apply_error": error, "deploy": None, "bond": None}
+            set_settings(ctx.conn,
+                         {netcfg.SETTING_PREFIX + new.name: new.to_json(),
+                          dhcp.SETTING_PREFIX + new.name: dhcp_new.to_json()},
+                         remove=[p + n for n in touched if n != new.name
+                                 for p in (netcfg.SETTING_PREFIX, dhcp.SETTING_PREFIX)])
+            journal(ctx.conn, "net_deploy_bond", f"{name}->{netcfg.summary(new)}", user[0])
+        return _finish_second(new, deploy, user)
+
+    def _deploy_network_or_409(name: str, current: netcfg.NetConfig, deploy) -> None:
+        """שומרים שאינם תלויים בכרטיס השני: רשת ההפצה הוגדרה מהקונסולה והיא
+        `name`, אין סבב (ההעברה מורידה את רשת ההפצה ומאתחלת את השרת), ואין
+        שינוי רשת שממתין לאישור."""
+        state = deploy.state if deploy is not None else None
+        if state is None or state.source != "console":
+            why = ("מוגדרת ביחידת השרת (--server-url) ולא מהקונסולה"
+                   if state is not None and state.source == "cli"
+                   else "עוד לא הוגדרה — הגדירו אותה קודם על כרטיס אחד")
+            raise HTTPException(409, f"רשת ההפצה {why}; כרטיס שני נקבע רק לרשת "
+                                     "הפצה שהוגדרה מהקונסולה")
+        if state.interface not in (name, netcfg.BOND_NAME, *current.slaves):
+            raise HTTPException(409, f"{name} אינו רשת ההפצה (היא על {state.interface})")
+        if current.mode != netcfg.MODE_STATIC or not dhcp_of(name).enabled:
+            raise HTTPException(409, f"רשת ההפצה על {name} אינה מוגדרת (כתובת סטטית "
+                                     "ו-DHCP) — שמרו אותה קודם")
+        running = ctx.conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE state IN ('open', 'running')").fetchone()[0]
+        if running:
+            raise HTTPException(409, "יש סבב פעיל — הוספת כרטיס או הסרתו מורידה את רשת "
+                                     "ההפצה לרגע ומאתחלת את השרת. נסו כשאין סבב.")
+        if netcfg_rollback.read_pending(state_dir) is not None:
+            raise HTTPException(409, "שינוי רשת קודם עדיין ממתין לאישור — אשרו אותו או "
+                                     "המתינו שיוחזר, לפני שינוי נוסף")
+
+    def _second_card_or_409(second: str, primary: str, live: dict, body: dict) -> None:
+        """הכרטיס השני: קיים, אינו כרטיס הניהול, **אינו מוגדר לשום דבר**, ואיש
+        אינו מחלק עליו DHCP (‏#53 — אחרת ה-DHCP של ההפצה היה יוצא גם לשם)."""
+        try:
+            dhcp.validate_name(second)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        if second in (primary, netcfg.BOND_NAME):
+            raise HTTPException(400, f"הכרטיס השני חייב להיות כרטיס אחר מ-{primary}")
+        if second not in live:
+            raise HTTPException(404, "כרטיס רשת כזה לא קיים במכונה")
+        if second == management():
+            raise HTTPException(409, f"{second} הוא כרטיס הניהול (נבחר בהתקנה) — הוא "
+                                     "לא יכול להיות כרטיס ברשת ההפצה")
+        mode, offer = load(second).mode, dhcp_of(second)
+        taken = (netcfg.MODES_HE[mode] if mode != netcfg.MODE_MANUAL else
+                 "מחלק DHCP" if offer.enabled else "PXE proxy" if offer.proxy else "")
+        if taken:
+            raise HTTPException(409, f"{second} מוגדר היום ({taken}) — כרטיס שני חייב "
+                                     "להיות כרטיס שאינו מוגדר לשום דבר אחר")
+        if offer.trunk:
+            raise HTTPException(409, f"{second} מסומן כמחובר לרשת המכללה — ה-DHCP של "
+                                     "ההפצה היה יוצא גם דרכו")
+        carried = live[second].get("addresses") or []
+        if carried:
+            raise HTTPException(409, f"{second} נושא כתובת ({', '.join(carried)}) — הוא "
+                                     "בשימוש, ולכן אינו יכול להצטרף לרשת ההפצה")
+        defined = hooks["netcfg_main_defines"](second)
+        if defined is not False:
+            raise HTTPException(409, (
+                f"{second} מוגדר ב-{netcfg_host.INTERFACES_MAIN} — הסירו את ההגדרה שם "
+                "(שני ifup על אותו כרטיס באתחול)") if defined else (
+                f"לא ניתן לקרוא את {netcfg_host.INTERFACES_MAIN} — אי אפשר לוודא "
+                f"ש-{second} אינו מוגדר שם"))
+        if not hooks["netcfg_bond_supported"]():
+            raise HTTPException(409, f"ifenslave אינו מותקן ({netcfg_host.IFENSLAVE_HOOK} "
+                                     "חסר) — בלעדיו אין bond. התקינו: apt install ifenslave")
+        if body.get("ignore_existing"):
+            return
+        found = dhcp_steps["probe"](second)
+        if not found.checked:
+            raise HTTPException(409, f"לא ניתן לבדוק אם כבר יש DHCP על {second} — הבדיקה "
+                                     "עצמה לא רצה. לא נמצא שרת אחר — פשוט לא נבדק. אם "
+                                     "הכרטיס מחובר רק לרשת ההפצה, שלחו ignore_existing.")
+        if found.servers:
+            raise HTTPException(409, f"נמצא שרת DHCP פעיל על {second}: "
+                                     f"{', '.join(found.servers)} — חיבורו לרשת ההפצה "
+                                     "היה מחלק כתובות גם לרשת ההיא")
+
+    def _switch(old: netcfg.NetConfig, new: netcfg.NetConfig,
+                touched: list[str]) -> str | None:
+        """מעביר את כתובת ההפצה מ-`old` ל-`new` על המכונה, וקורא בחזרה.
+
+        ‏`ifdown` של הישן **לפני** שהקובץ שלו נמחק (אחרת ifdown אינו יודע מה
+        להוריד), קבצים, ‏`ifup` של החדש. כשל — ‏ifdown לחדש, הקבצים הקודמים
+        חוזרים (‏`netcfg_rollback.restore`, אותו מסלול של הזרוע) והישן עולה
+        שוב; גם ההחזרה נקראת בחזרה. מחזיר None רק כשהחדש **אומת**."""
+        before = [{"name": n, "text": hooks["netcfg_read_conf"](n, netcfg_host.INTERFACES_DIR)}
+                  for n in touched]
+        down = hooks["netcfg_down"](old.name)
+        text = netcfg.render(new, hostname=hooks["hostname"]())
+        errors = [hooks["netcfg_write_conf"](n, text if n == new.name else None,
+                                             netcfg_host.INTERFACES_DIR) for n in touched]
+        error = " · ".join(e for e in errors if e) or hooks["netcfg_apply"](new.name)
+        gaps = [] if error else gaps_of(new, hooks["netcfg_state"]())
+        if not error and not gaps:
+            return None
+        why = error or " · ".join(gaps)
+        if down:
+            why += f" (לפני כן: {down})"
+        hooks["netcfg_down"](new.name)
+        restored = netcfg_rollback.restore(netcfg_rollback.Pending(
+            interface=old.name, deadline=0, armed_at="", boot="", files=before,
+            resolv=None), hooks)
+        back = restored or gaps_of(old, hooks["netcfg_state"]())
+        return (f"{new.name} לא אומת: {why}. " + (
+            f"ההגדרה הקודמת על {old.name} הוחזרה ואומתה" if not back else
+            f"וגם ההחזרה ל-{old.name} לא אומתה: {' · '.join(back)}"))
+
+    def _finish_second(cfg: netcfg.NetConfig, deploy, user) -> dict:
+        """ההשלמה של #1088 לשם החדש — grub.cfg, ‏dnsmasq באתחול, חומת אש עם
+        ‏`--deploy-if` החדש, אתחול השרת (udp-sender), ורישום ‏`deploy:interface`
+        ‏— ואז dnsmasq מה-DB. ‏dnsmasq מוחל גם כשההשלמה נכשלה: הכתובת כבר
+        עברה, וה-DHCP חייב ללכת אחריה."""
+        result = deploy_net.complete(deploy, ctx.conn, interface=cfg.name,
+                                     server_ip=cfg.address)
+        if result["ok"]:
+            deploy.state = deploy_net.DeployState("console", cfg.name, result["url"])
+            journal(ctx.conn, "deploy_net_set", f"{cfg.name} {result['url']}", user[0])
+        else:
+            journal(ctx.conn, "deploy_net_failed",
+                    f"{cfg.name} {' · '.join(result['errors'])}", user[0])
+        dhcp_error = dhcp_steps["apply"](cfg.name, user[0])
+        errors = [*result["errors"], *([f"dnsmasq: {dhcp_error}"] if dhcp_error else [])]
+        return {"ok": not errors, "interface": cfg.name, "server_ip": cfg.address,
+                "apply_error": " · ".join(errors) or None, "deploy": result,
+                "bond": (bond_view(cfg, hooks["netcfg_bond_state"](cfg.name))
+                         if cfg.slaves else None)}
 
     @router.post("/confirm")
     async def confirm(request: Request, user=Depends(admin_only)):

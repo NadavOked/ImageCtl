@@ -60,6 +60,9 @@ EXPECTED_KIOSK_ROUTES = frozenset({
     ("POST", "/api/console/room/start"),
     ("POST", "/api/console/room/wake"),
     ("POST", "/api/console/room/close"),
+    # ‏#1269: רשימת דגמי הדרייברים — מתג "להוסיף דרייברים" בגואי של מחשב הבנייה
+    # (קריאה בלבד, current_user; ‏`drivers.models`, בלי קבצים ובלי נתיבים)
+    ("GET", "/api/console/room/driver-models"),
 })
 
 #: נתיבי התחנה (`create_station_router`) שחיים על הסוכן — הגואי הנייטיב צורך.

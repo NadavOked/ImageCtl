@@ -194,6 +194,45 @@ def match(inventory: dict | None, packages: list[dict]) -> list[dict]:
     return [{"name": name, "by": by} for _rank, name, by in sorted(found)]
 
 
+# --- דגם שנבחר ביד (#1269) ---------------------------------------------------
+
+
+def model_key(vendor: object, model: object) -> tuple[str, str]:
+    """הזהות של דגם — בלי רישיות ורווחים בקצוות, כמו ההשוואה ב-`match`."""
+    return _norm(vendor), _norm(model)
+
+
+def _model_rules(pkg: dict) -> list[dict]:
+    return [r for r in pkg.get("match", []) if "vendor" in r and "model" in r]
+
+
+def models(packages: list[dict]) -> list[dict]:
+    """הדגמים שיש להם חבילה בספרייה — ``[{"vendor", "model", "packages"}]``.
+
+    רק מ**כללי הדגם** של המניפסטים: זה מה שמישהו כתב שהחבילה שייכת לו.
+    חבילה עם כללי PCI בלבד אינה מוסיפה דגם — אין ממנה שם לבחור, ולא
+    ממציאים אחד. כפילות לפי `model_key`; התצוגה מהחבילה הראשונה לפי שם.
+    הסדר דטרמיניסטי: לפי vendor ואז model (מנורמלים).
+    """
+    found: dict[tuple[str, str], dict] = {}
+    for pkg in sorted(packages, key=lambda p: p["name"]):
+        for rule in _model_rules(pkg):
+            entry = found.setdefault(model_key(rule["vendor"], rule["model"]), {
+                "vendor": rule["vendor"].strip(), "model": rule["model"].strip(),
+                "packages": []})
+            if pkg["name"] not in entry["packages"]:
+                entry["packages"].append(pkg["name"])
+    return [found[key] for key in sorted(found)]
+
+
+def for_model(vendor: str, model: str, packages: list[dict]) -> list[str]:
+    """שמות החבילות שכלל דגם שלהן הוא בדיוק הדגם הזה, לפי שם. **רק כלל
+    דגם** — דגם שנבחר ביד אינו מלאי, ואין כאן PCI להשוות אליו."""
+    key = model_key(vendor, model)
+    return sorted(p["name"] for p in packages
+                  if any(model_key(r["vendor"], r["model"]) == key for r in _model_rules(p)))
+
+
 # --- הספרייה על הדיסק ------------------------------------------------------
 
 

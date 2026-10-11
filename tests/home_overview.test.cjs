@@ -245,7 +245,7 @@ test('"the server" card reads ports, ssh, branches and update; DHCP without net.
   assert.match(card,tile('DHCP הפצה','','לא נקרא<'));
   assert.match(card,tile('SSH לתחנות','','כבוי<'));
   assert.match(card,tile('סניפים','ok','1 מחוברים<'));
-  assert.match(card,/<div class="tt">עדכון<\/div><small>v0\.30\.0 · <a role="link" tabindex="0" onclick="selectPageById\('health'\)">בדוק<\/a>/);
+  assert.match(card,/<div class="tt">עדכון<\/div><small>v0\.30\.0 · <a role="link" tabindex="0" onclick="selectPageById\('settings'\)">בדוק<\/a>/);
 });
 test('tabs: "משימות" is the full 20-task table, "אירועים" is 50 events; activateTab keeps the header',async()=>{
   const {run}=await loaded();

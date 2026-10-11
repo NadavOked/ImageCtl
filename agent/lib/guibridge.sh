@@ -100,25 +100,25 @@ gui_dispatch() {
             case "$image" in ''|*[!A-Za-z0-9_.-]*) return 1 ;; esac
             case "$target" in ''|*[!0-9]*) return 1 ;; esac
             # room_open owns validation/body/POST; adapt only its prompts.
+            # #1275: the ticked drawers go as target_slots whenever there are any;
+            # #1269: with drivers=, their models too (room_open_extra).
+            _gx=$(room_open_extra "$slots" "$drivers") || return 1
             (room_pick_image() { printf '%s\n' "$image"; }
-             printf '%s\n' "$target" | room_open)
+             printf '%s\n' "$target" | ROOM_OPEN_EXTRA=$_gx room_open)
             ;;
         direct-open)
             # #715: the source is this machine's first non-removable disk,
             # from the server's fresh inventory (as gui_capture checks it);
             # the targets are the ticked drawers, "<mac>@<port>,<port>/<mac>@
             # <port>" (a MAC has colons of its own). Same POST as directflow.sh;
-            # the server validates every slot again (#695/#701).
-            case "$slots" in ''|*[!0-9a-f:/,@]*) return 1 ;; esac
+            # the server validates every slot again (#695/#701). #1269: drivers=.
+            _gslots=$(room_slots_json "$slots") || return 1
+            _gdm=''; [ -z "$drivers" ] || _gdm=",\"driver_models\":$(room_drivers_json "$drivers")" || return 1
             http_get "$SERVER/api/v1/agent/state?mac=$MAC" > "$RUN_DIR/gui-inventory.json" || return 1
             _gd=$(jq -er '.disks | map(select(.removable == false)) | .[0].dev' \
                 "$RUN_DIR/gui-inventory.json") || { gui_error 'No internal disk to send from'; return 1; }
-            _gslots=$(printf '%s' "$slots" | awk -v RS='/' -F@ 'NF == 2 {
-                gsub(/\n/, "", $2); if ($1 == "" || $2 == "") exit 1
-                printf "%s{\"mac\":\"%s\",\"ports\":[%s]}", (n++ ? "," : ""), $1, $2 }
-                END { if (!n) exit 1 }') || return 1
-            printf '{"source":{"kind":"build_disk","mac":"%s","disk":"%s"},"target_slots":[%s]}' \
-                "$MAC" "$_gd" "$_gslots" > "$RUN_DIR/room_open.json" || return 1
+            printf '{"source":{"kind":"build_disk","mac":"%s","disk":"%s"},"target_slots":%s%s}' \
+                "$MAC" "$_gd" "$_gslots" "$_gdm" > "$RUN_DIR/room_open.json" || return 1
             _gc=$(console_post room "$RUN_DIR/room_open.json" "$RUN_DIR/room_open_resp.json") || return 1
             [ "$_gc" = 200 ] || { gui_error "The direct round was not opened (http $_gc)"; return 1; }
             log "direct round opened from the GUI: /dev/$_gd -> $slots"
@@ -168,7 +168,7 @@ gui_dispatch() {
 
 gui_records() {
     while IFS= read -r token; do
-        dev='' name='' desc='' folder='' folder_new='' image='' target='' confirm='' group='' slots=''
+        dev='' name='' desc='' folder='' folder_new='' image='' target='' confirm='' group='' slots='' drivers=''
         _complete=0; _bad=0; _seen='|'
         while IFS= read -r line; do
             [ -n "$line" ] || { _complete=1; break; }
@@ -180,7 +180,7 @@ gui_records() {
                 folder=*) folder=$_value ;; folder_new=*) folder_new=$_value ;;
                 image=*) image=$_value ;; target=*) target=$_value ;;
                 confirm=*) confirm=$_value ;; group=*) group=$_value ;;
-                slots=*) slots=$_value ;;
+                slots=*) slots=$_value ;; drivers=*) drivers=$_value ;;   # #1269
                 *) _bad=1 ;;
             esac
         done

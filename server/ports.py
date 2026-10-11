@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import signal
 import socket
 import subprocess
@@ -601,6 +602,64 @@ def firewall_status(ruleset: str | None) -> tuple[str, str]:
     if n is None:
         return "off", "לא נטענה"
     return "ok", f"פעילה, {n} כללים לטבלת imagectl"
+
+
+#: ‏#1267: לאיזו רשת שייכת כל שורה ב-`/ports`. ברשת ההפצה השרת מנהל את
+#: הפורטים ואין חומת אש של המכללה; ‏`mgmt`/`interserver` חוצים רשתות.
+#: ‏`firewall` (מצב ה-nft כולו) אינו פורט — ‏None.
+NETWORK = {"dhcp": "deploy", "tftp": "deploy", "http_boot": "deploy",
+           "pxe_proxy": "deploy", "multicast": "deploy", "monitor": "deploy",
+           "ssh_stations": "deploy", "http_console": "mgmt",
+           "interserver": "interserver"}
+
+
+def network_of(port_id: str) -> str | None:
+    if port_id.startswith("ssh_server:"):
+        return "mgmt"
+    return NETWORK.get(port_id)
+
+
+def port_firewall(ruleset: str | None, proto: str, port: str) -> tuple[str | None, str]:
+    """‏#1267: האם טבלת `inet imagectl` של השרת מכניסה `proto`/`port`.
+
+    ‏"open" רק על ראיה: כלל `accept` עם `<proto> dport <port>` (או policy
+    accept); ‏"blocked" רק כש-policy drop ואין כלל כזה. כל השאר — nft שלא
+    נקרא, טבלה שלא נטענה, policy שלא זוהה — ‏None ("לא נבדק", עיקרון 5).
+    ‏`nft list ruleset` מדפיס פורטים כמספרים (שמות שירות רק עם ‎-S)."""
+    if ruleset is None:
+        return None, "nft לא נקרא — לא נבדק"
+    body = _imagectl_table_body(ruleset)
+    if body is None:
+        return None, "טבלת inet imagectl לא נטענה — לא נבדק"
+    pattern = re.compile(rf"\b{re.escape(proto)} dport {re.escape(port)}(?![\d-])")
+    # טווח (`8000-9000`) או קבוצה (`{ 8081, 8443 }`) — המחולל אינו כותב כאלה
+    # ל-tcp; כלל כזה שלא פוענח אינו ראיה ל"חסום".
+    opaque = re.compile(rf"\b{re.escape(proto)} dport (\{{|\d+-\d+)")
+    policy, chain, unparsed = None, None, False
+    for raw in body.splitlines():
+        line = raw.strip()
+        if line.startswith("#"):
+            continue
+        if line.startswith("chain "):
+            chain = line.split()[1]
+            continue
+        if chain != "input":
+            continue
+        if "hook input" in line:
+            found = re.search(r"policy (accept|drop)", line)
+            policy = found.group(1) if found else policy
+        words = line.split()
+        accepts = "accept" in words and not {"drop", "reject"} & set(words)
+        if pattern.search(line) and accepts:
+            return "open", f"כלל פתיחה בטבלת imagectl: {line}"
+        unparsed = unparsed or (accepts and bool(opaque.search(line)))
+    if unparsed:
+        return None, "יש בטבלת imagectl כלל טווח/קבוצה שלא פוענח — לא נבדק"
+    if policy == "drop":
+        return "blocked", "אין כלל פתיחה בטבלת imagectl, ו-policy drop חוסם חיבור מבחוץ"
+    if policy == "accept":
+        return "open", "policy accept בטבלת imagectl — אינה חוסמת"
+    return None, "אין כלל פתיחה וה-policy של input לא זוהה — לא ידוע"
 
 
 # --- ה-endpoint ---------------------------------------------------------------

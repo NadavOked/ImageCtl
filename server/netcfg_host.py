@@ -35,6 +35,11 @@ RESOLV_CONF = "/etc/resolv.conf"
 STATE_DIR = "/var/lib/imagectl/netcfg"
 #: היחידה שמחזירה הגדרה שלא אושרה — היא, ולא השרת, היא ההגנה.
 ROLLBACK_TIMER = "imagectl-netrollback.timer"
+#: ‏#1264: מצב כל bond כפי שהקרנל מדווח עליו — הראיה, לא ההגדרה.
+BONDING_DIR = "/proc/net/bonding"
+#: ‏#1264: הסקריפט של ifenslave שיוצר bond מתוך `bond-slaves` ב-ifupdown.
+#: בלעדיו `ifup bond0` נופל, ורשת ההפצה נשארת בלי כתובת.
+IFENSLAVE_HOOK = "/etc/network/if-pre-up.d/ifenslave"
 
 
 def conf_path(name: str, root: str | Path = INTERFACES_DIR) -> Path:
@@ -226,6 +231,38 @@ def apply_interface(name: str) -> str | None:
     return None
 
 
+def down_interface(name: str) -> str | None:
+    """‏`ifdown --force` לבדו (‏#1264) — לפני שהכתובת עוברת מכרטיס ל-bond
+    (או חזרה), כשהקובץ הישן עוד במקומו ו-ifdown יודע מה להוריד. מחזיר
+    הודעה או None; ההצלחה עצמה נקבעת בקריאה החוזרת שאחרי ה-ifup."""
+    code, text = _run(["ifdown", "--force", name])
+    if code is None:
+        return f"{name}: לא ניתן להריץ ifdown ({text})"
+    return None if code == 0 else f"{name}: ifdown החזיר {code}: {text[:200]}"
+
+
+def bond_supported(path: str | Path = IFENSLAVE_HOOK) -> bool:
+    """האם ifenslave מותקן (‏#1264). ‏False — גם כשלא ניתן לבדוק: "כנראה
+    מותקן" הוא בדיוק הניחוש שמשאיר את רשת ההפצה בלי כתובת."""
+    try:
+        return Path(path).is_file()
+    except OSError:
+        return False
+
+
+def main_defines(name: str, main: str | Path = INTERFACES_MAIN) -> bool | None:
+    """האם `/etc/network/interfaces` עצמו מגדיר את הכרטיס (‏`iface <שם>`).
+    ‏None = לא נקרא, ואינו "לא". כרטיס שמוגדר שם וגם חבר ב-bond הוא שני
+    ‏`ifup` על אותו כרטיס באתחול (‏#1264)."""
+    try:
+        text = Path(main).read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+    return any(line.split()[:2] == ["iface", name] for line in text.splitlines())
+
+
 def timer_active(unit: str = ROLLBACK_TIMER) -> tuple[bool, str]:
     """האם זרוע ההחזרה מותקנת ורצה — ‏(פעילה, מה נקרא).
 
@@ -355,6 +392,80 @@ def mismatches(cfg: netcfg.NetConfig, state: LiveState) -> list[str]:
     return found
 
 
+# --- ‏#1264: מצב ה-bond -------------------------------------------------------
+
+#: איך הקרנל קורא ל-balance-alb ב-`/proc/net/bonding/<bond>`.
+BOND_MODE_TEXT = "adaptive load balancing"
+
+
+@dataclass(frozen=True)
+class BondState:
+    """מה שהקרנל מדווח על bond — או למה לא נקרא.
+
+    ‏`checked=False` הוא "לא נבדק", ולעולם לא "פעיל" (עיקרון 5).
+    ‏`slaves` הוא {כרטיס: ‏"up"/"down"} — ה-MII של כל חבר, כלומר הקישור."""
+
+    checked: bool
+    mode: str = ""
+    mii: str = ""
+    slaves: dict[str, str] = field(default_factory=dict)
+    reason: str = ""
+
+
+def parse_bonding(text: str) -> BondState:
+    """פלט `/proc/net/bonding/<bond>` → ‏BondState. שורות ה-MII שלפני
+    ‏`Slave Interface` הראשון הן של ה-bond; כל אחת אחריה — של החבר האחרון."""
+    mode = mii = ""
+    slaves: dict[str, str] = {}
+    current = None
+    for line in text.splitlines():
+        key, _, value = line.partition(":")
+        key, value = key.strip(), value.strip()
+        if key == "Bonding Mode":
+            mode = value
+        elif key == "Slave Interface":
+            current = value
+            slaves[current] = ""
+        elif key == "MII Status":
+            if current is None:
+                mii = value
+            else:
+                slaves[current] = value
+    if not mode:
+        return BondState(False, reason="אין שורת Bonding Mode — זה אינו פלט של bond")
+    return BondState(True, mode, mii, slaves)
+
+
+def read_bond(name: str, root: str | Path = BONDING_DIR) -> BondState:
+    path = Path(root) / name
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return BondState(False, reason=f"{path}: {exc.strerror or exc}")
+    return parse_bonding(text)
+
+
+def bond_mismatches(cfg: netcfg.NetConfig, bond: BondState,
+                    state: LiveState) -> list[str]:
+    """מה שביקשנו מה-bond ולא נמצא. ריק = ראיה חיובית. **הקישור אינו
+    כאן**: כבל שנשלף הוא מצב (מנותק), לא הגדרה שלא תפסה."""
+    if not cfg.slaves:
+        return []
+    if not bond.checked:
+        return [f"מצב {cfg.name} לא נקרא ({bond.reason}) — אי אפשר לאשר "
+                "ששני הכרטיסים חברים בו"]
+    found = []
+    if BOND_MODE_TEXT not in bond.mode.lower():
+        found.append(f"{cfg.name} במצב '{bond.mode}' ולא {netcfg.BOND_MODE}")
+    for slave in cfg.slaves:
+        if slave not in bond.slaves:
+            found.append(f"{slave} אינו חבר ב-{cfg.name}")
+        elif state.checked and state.addresses.get(slave):
+            found.append(f"{slave} נושא כתובת משלו "
+                         f"({', '.join(state.addresses[slave])}) — מחוץ ל-{cfg.name}")
+    return found
+
+
 def default_hooks() -> dict:
     """מה שמוזרק ב-`create_app`. בבדיקות כל אלה מוחלפים, ולכן שום בדיקה
     אינה כותבת קובץ רשת ואינה מריצה `ifup` — אותה תבנית של `dhcp_hooks`."""
@@ -366,4 +477,9 @@ def default_hooks() -> dict:
         "netcfg_state": read_state,
         "netcfg_sourced": sourced,
         "netcfg_timer_active": timer_active,
+        # ‏#1264: רשת הפצה על שני כרטיסים.
+        "netcfg_down": down_interface,
+        "netcfg_bond_state": read_bond,
+        "netcfg_bond_supported": bond_supported,
+        "netcfg_main_defines": main_defines,
     }

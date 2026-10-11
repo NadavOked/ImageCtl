@@ -38,6 +38,7 @@
 #include "state.h"
 #include "text.h"
 #include "ui.h"
+#include "utf8.h"
 
 static volatile sig_atomic_t stop_now = 0;
 static void on_signal(int sig) { (void)sig; stop_now = 1; }
@@ -179,9 +180,10 @@ static void trim(char *s) {
     if (i) memmove(s, s + i, n - i + 1);
 }
 
-static void field_append(char *buf, size_t n, int ch) {
-    size_t len = strlen(buf);
-    if (len + 1 < n) { buf[len] = (char)ch; buf[len + 1] = 0; }
+/* #1245: <cp> is a code point -- a Hebrew letter is two bytes of UTF-8 --
+ * stored whole or not at all (utf8.h). */
+static void field_append(char *buf, size_t n, int cp) {
+    utf8_append(buf, n, cp);
 }
 
 static void field_backspace(char *buf) {
@@ -233,6 +235,22 @@ static int field_visible(const App *a, int id) {
     int ids[8], n = fields_on(a, ids);
     for (int i = 0; i < n; i++) if (ids[i] == id) return 1;
     return 0;
+}
+
+/* #1245 (owner, 10/10: Hebrew in every field that can take it). English
+ * only: the console account -- user and password, ASCII on the server --
+ * the room's target count (digits), and a tool's argument (handed to a
+ * shell tool as one word). The image name, description and new folder take
+ * Hebrew (images.DISPLAY_NAME_RE allows א-ת). The installer's fields are
+ * all English and never read Event.he. */
+static int field_english_only(int id) {
+    return id == HIT_USER || id == HIT_PASS || id == HIT_ROOM_TARGET || id == HIT_TOOL_ARG;
+}
+
+int app_typing_lang(const App *a) {
+    if (!field_visible(a, a->focus)) return LANG_NONE;
+    if (field_english_only(a->focus)) return LANG_EN_ONLY;
+    return a->lang_he ? LANG_HE : LANG_EN;
 }
 
 /* owner, 10/10: the folder-first image pickers. Open folder k of
@@ -332,8 +350,8 @@ static int choose_card(App *a, int id) {
     switch (id) {
     case HIT_CAPTURE: a->mode = MODE_CAPTURE; a->chosen_disk = -1; a->newfolder_shown = 0; emit1("capture"); break;
     case HIT_RESTORE: a->mode = MODE_RESTORE; a->restore_image_sel = 0; a->pick_in_folder = 0; emit1("restore"); break;
-    case HIT_ROOM:    a->mode = MODE_ROOM; a->room_target_set = 0; a->image_sel = 0; a->pick_in_folder = 0; emit1("room"); break;
-    case HIT_DIRECT:  a->mode = MODE_DIRECT; a->room_target_set = 0; a->nroom_selection = 0; emit1("direct"); break;   /* #715 */
+    case HIT_ROOM:    a->mode = MODE_ROOM; a->room_target_set = 0; a->image_sel = 0; a->pick_in_folder = 0; a->nroom_selection = 0; room_drv_reset(a); emit1("room"); break;   /* #1275: ticks are targets; #1269: drivers off */
+    case HIT_DIRECT:  a->mode = MODE_DIRECT; a->room_target_set = 0; a->nroom_selection = 0; room_drv_reset(a); emit1("direct"); break;   /* #715; #1269: drivers off */
     case HIT_CLASSES: a->mode = MODE_CLASSES; emit1("classes"); break;
     case HIT_TOOLS:                                       /* #649: ask the bridge for the list */
         a->mode = MODE_TOOLS; a->tools_view = TOOLS_LIST; a->tool_sel = -1;
@@ -462,7 +480,8 @@ static int room_effective_selected(const App *a, const Machine *m, const RoomDra
 /* #715: the chosen drawers, as the bridge's record value:
  * "<mac>@<port>,<port>/<mac>@<port>". Only present, fresh, awake drawers can
  * be selected (room_toggle_selected), so what is here is what the server
- * validates as target_slots. Returns the number of drawers, 0 when none. */
+ * validates as target_slots. Returns the number of drawers, 0 when none, and
+ * -1 when the value did not fit (#1275: never read as "none" = every drawer). */
 static int room_selection_encode(const App *a, char *out, size_t n) {
     size_t used = 0; int drawers = 0;
     out[0] = 0;
@@ -476,23 +495,29 @@ static int room_selection_encode(const App *a, char *out, size_t n) {
             int k = snprintf(out + used, n - used, "%s%s%s%d",
                              first ? (drawers ? "/" : "") : ",",
                              first ? m->mac : "", first ? "@" : "", d->port);
-            if (k < 0 || (size_t)k >= n - used) return 0;   /* truncated = no order */
+            if (k < 0 || (size_t)k >= n - used) return -1;  /* truncated = no order */
             used += (size_t)k; first = 0; drawers++;
         }
     }
     return drawers;
 }
 
+/* #1269: "<mac>|<port>|<vendor>|<model>|..." -- up to every drawer of the room. */
+static char drivers[MAX_ROOM_SELECTIONS * 232];
+
 static void open_direct(App *a) {
     char slots[MAX_ROOM_SELECTIONS * 8 + MAX_MACHINES * 24];
     int drawers = room_selection_encode(a, slots, sizeof slots);
-    if (!drawers) {
+    if (drawers <= 0) {
         snprintf(a->st.room_error, sizeof a->st.room_error, "בחרו לפחות מגירה אחת במחשב ער");
         return;
     }
+    int with_drivers = room_drv_active(a);              /* #1269: the switch, and models to pick */
+    if (with_drivers && room_drv_encode(a, drivers, sizeof drivers) < 0) return;   /* the reason is in room_error */
     a->st.room_error[0] = 0;
     emit("direct-open");
     emit_kv("slots", slots);
+    if (with_drivers) emit_kv("drivers", drivers);
     emit_end();
 }
 
@@ -503,10 +528,32 @@ static void open_round(App *a) {
         snprintf(a->st.room_error, sizeof a->st.room_error, "בחרו אימג' וקבעו יעד כוננים");
         return;
     }
+    /* #1275: the drawers ticked in the grid are the round's targets
+     * (target_slots), with or without drivers. None ticked = the record as
+     * before (every fresh drawer, #695). A selection that did not fit is
+     * refused, never dropped. */
+    char slots[MAX_ROOM_SELECTIONS * 8 + MAX_MACHINES * 24];
+    int drawers = room_selection_encode(a, slots, sizeof slots);
+    if (drawers < 0) {
+        snprintf(a->st.room_error, sizeof a->st.room_error, "בחירת המגירות לא נקראה — הסבב לא נפתח");
+        return;
+    }
+    /* #1269: drivers go only on chosen disks -- the server binds a model
+     * only to a disk chosen as a target. Switch off = no drivers= field. */
+    int with_drivers = room_drv_active(a);
+    if (with_drivers) {
+        if (!drawers) {
+            snprintf(a->st.room_error, sizeof a->st.room_error, "בחרו את דיסקי היעד — דרייברים מונחים רק על דיסקים שנבחרו");
+            return;
+        }
+        if (room_drv_encode(a, drivers, sizeof drivers) < 0) return;
+    }
     a->st.room_error[0] = 0;
     emit("room-open");
     emit_kv("image", a->st.images[a->image_sel - 1].id);
     emit_kv("target", a->room_target);
+    if (drawers > 0) emit_kv("slots", slots);
+    if (with_drivers) emit_kv("drivers", drivers);
     emit_end();
 }
 
@@ -670,6 +717,13 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
             room_toggle_selected(a, encoded / MAX_DRAWERS, encoded % MAX_DRAWERS + 1);
             break;
         }
+        /* #1269: a disk's drivers tag (pick mode): the current model, or "בלי" */
+        if (id >= HIT_ROOM_DTAG_BASE &&
+            id < HIT_ROOM_DTAG_BASE + MAX_ROOM_SELECTIONS) {
+            int encoded = id - HIT_ROOM_DTAG_BASE;
+            room_drv_tag_click(a, encoded / MAX_DRAWERS, encoded % MAX_DRAWERS + 1);
+            break;
+        }
         /* #714: machine name toggles all of that machine's disks. */
         if (id >= HIT_ROOM_MACHINE_BASE &&
             id < HIT_ROOM_MACHINE_BASE + MAX_MACHINES) {
@@ -685,6 +739,7 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
             if (a->dd_open == HIT_FOLDER) a->folder_sel = i + 1;   /* #1251: 1-based, no "no folder" row */
             else if (a->dd_open == HIT_ROOM_IMAGE) a->image_sel = i;
             else if (a->dd_open == HIT_RESTORE_IMAGE) a->restore_image_sel = i;
+            else if (a->dd_open == HIT_ROOM_DRV_MODEL) room_drv_choose(a, i);   /* #1269 */
             else if (a->screen == SCREEN_RESTORE && i < a->st.nimages) a->restore_image_sel = i + 1;
             a->dd_open = 0;
             break;
@@ -709,9 +764,14 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
         case HIT_ROOM_TARGET: case HIT_TOOL_ARG:
             a->focus = id; break;
         case HIT_EYE:    a->show_pw = !a->show_pw; break;
+        case HIT_LANG: a->lang_he = !a->lang_he; break;   /* #1245: the status bar chip; the focus stays */
         case HIT_SUBMIT: do_login(a, auth_cmd, demo); break;
         case HIT_CAPTURE: case HIT_RESTORE: case HIT_ROOM: case HIT_DIRECT: case HIT_CLASSES: case HIT_TOOLS: return choose_card(a, id);
-        case HIT_FOLDER: case HIT_ROOM_IMAGE: case HIT_RESTORE_IMAGE: a->dd_open = id; break;
+        case HIT_FOLDER: case HIT_ROOM_IMAGE: case HIT_RESTORE_IMAGE: case HIT_ROOM_DRV_MODEL: a->dd_open = id; break;
+        /* #1269: "להוסיף דרייברים" and its two modes */
+        case HIT_ROOM_DRV_SWITCH: a->drv_on = !a->drv_on; room_drv_after_reload(a); break;
+        case HIT_ROOM_DRV_ALL:    a->drv_pick = 0; break;
+        case HIT_ROOM_DRV_PICK:   a->drv_pick = 1; break;
         case HIT_NEWFOLDER:
             a->newfolder_shown = !a->newfolder_shown;
             if (a->newfolder_shown) a->focus = HIT_FOLDER_NEW;
@@ -787,10 +847,13 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
         size_t n; char *buf = field_buf(a, a->focus, &n);
         if (!buf || !field_visible(a, a->focus)) break;
         if (a->focus == HIT_ROOM_TARGET && (e->ch < '0' || e->ch > '9')) break;   /* type=number */
-        field_append(buf, n, e->ch);
+        /* #1245: the shortcuts above go by the physical key (e->ch, US) in
+         * either language; only the text typed into a field follows it */
+        field_append(buf, n, a->lang_he && !field_english_only(a->focus) ? e->he : e->ch);
         break;
     }
     case UIEV_KEY: {
+        if (e->key == KEYSYM_LAYOUT) { a->lang_he = !a->lang_he; break; }   /* #1245: Alt+Shift */
         if (e->key == KEYSYM_ESC) {
             /* inside a folder of an image picker, Esc goes back to the folders */
             if (a->pick_in_folder && (a->dd_open == HIT_ROOM_IMAGE || (a->screen == SCREEN_RESTORE && !a->dd_open))) {
@@ -864,6 +927,7 @@ static void after_reload(App *a) {
     /* #1270: a question about a round that is gone is closed */
     if ((a->confirm == CONFIRM_ROOM_STOP && !a->st.has_round) ||
         (a->confirm == CONFIRM_CLASS_STOP && !a->st.has_session)) a->confirm = CONFIRM_NONE;
+    room_drv_after_reload(a);                             /* #1269: the first model is the default */
     /* #408: rate from consecutive reads; a counter that went backwards
      * (new task) or a clock that did not move resets, not divides. */
     if (a->st.updated > a->rate_prev_updated && a->st.bytes >= a->rate_prev_bytes && a->rate_prev_updated > 0)
@@ -909,6 +973,15 @@ static void sample_state(State *s) {
     s->machines[2] = (Machine){
         .name = "CLONE-03", .mac = "3C:52:82:A1:00:23",
         .awake = 0, .drawer_count = 3, .pct = -1 };
+    /* #1269: the library's models (room-drivers card) and what the round did
+     * with the drivers of CLONE-02's two drawers (room-live card) */
+    s->driver_models_read = 2; s->ndriver_models = 2;
+    s->driver_models[0] = (DriverModel){ "HP", "HP EliteDesk 800 G6" };
+    s->driver_models[1] = (DriverModel){ "LENOVO", "ThinkCentre M70q Gen 3" };
+    snprintf(s->machines[1].room_drawers[0].drv_state, sizeof s->machines[1].room_drawers[0].drv_state, "staged");
+    snprintf(s->machines[1].room_drawers[0].drv_detail, sizeof s->machines[1].room_drawers[0].drv_detail, "m70q-chipset, m70q-nic");
+    snprintf(s->machines[1].room_drawers[1].drv_state, sizeof s->machines[1].room_drawers[1].drv_state, "skipped");
+    snprintf(s->machines[1].room_drawers[1].drv_detail, sizeof s->machines[1].room_drawers[1].drv_detail, "no_model");
     s->menu_class = 1;                        /* the sample shows every card (#880) */
     s->menu_tools = 1;                        /* and the toolbox button (v1.1) */
     s->nclasses = 3;
@@ -954,7 +1027,7 @@ static void sample_state(State *s) {
 static const char *PNG_CARDS[] = { "login", "menu", "pick", "progress", "done", "room", "room-live",
                                    "class", "class-live", "cloner", "standby", "message", "restore", "direct",
                                    "tools", "tools-confirm", "tools-output", "shrink", "logout",
-                                   "restore-folder", "room-images", "restore-confirm" };
+                                   "restore-folder", "room-images", "restore-confirm", "room-drivers", "pick-hebrew" };
 
 /* Put the App in the state that routes to <card>; the flags that override
  * the route (message, task, round, session, done) are cleared first so a
@@ -967,16 +1040,36 @@ static void png_setup(App *a, const State *base, const char *card) {
     a->signed_in = 1; a->admin = 1; a->mode = MODE_MENU; a->logout_confirming = 0; a->menu_focus = -1;
     a->chosen_disk = -1; a->confirm = CONFIRM_NONE; a->dd_open = 0;
     a->pick_in_folder = 0; a->pick_folder[0] = 0;
+    room_drv_reset(a); room_drv_after_reload(a);                               /* #1269: off, but for one card */
+    a->focus = HIT_USER; a->lang_he = 0;   /* #1245: every card starts in English (HIT_USER: what main() sets) */
     a->st.shrink_pending = !strcmp(card, "shrink") && base->shrink_pending;   /* #928: one card shows it */
     snprintf(a->signed_user, sizeof a->signed_user, "%s", a->user[0] ? a->user : "admin");
     if (!strcmp(card, "login"))         { a->signed_in = 0; }
     else if (!strcmp(card, "pick"))     { a->mode = MODE_CAPTURE; if (base->ndisks) { a->chosen_disk = 0; snprintf(a->name, sizeof a->name, "Office 2024 — סטנדרט"); a->folder_sel = base->nfolders ? 1 : 0; } }
+    else if (!strcmp(card, "pick-hebrew")) { a->mode = MODE_CAPTURE;   /* #1245: typing Hebrew into the description */
+                                             if (base->ndisks) { a->chosen_disk = 0; snprintf(a->name, sizeof a->name, "Office 2024");
+                                                                 snprintf(a->desc, sizeof a->desc, "תמונת בסיס למעבדה");
+                                                                 a->folder_sel = base->nfolders ? 1 : 0; }
+                                             a->focus = HIT_DESC; a->lang_he = 1; }
     else if (!strcmp(card, "progress")) { a->st.task = base->task == TASK_PENDING ? TASK_PENDING : TASK_RUNNING; }
     else if (!strcmp(card, "shrink"))   { a->st.task = TASK_RUNNING; }   /* #928: the question comes mid-capture */
     else if (!strcmp(card, "done"))     { a->st.task = TASK_DONE; a->watching = 1; }
     else if (!strcmp(card, "room"))     { a->mode = MODE_ROOM; a->room_target_set = 0; a->nroom_selection = 0; }
     else if (!strcmp(card, "room-live")){ a->mode = MODE_ROOM; a->st.has_round = 1; }
     else if (!strcmp(card, "direct"))   { a->mode = MODE_DIRECT; a->room_target_set = 0; a->nroom_selection = 0; }   /* #715 */
+    else if (!strcmp(card, "room-drivers")) {                                    /* #1269 */
+        /* every awake disk chosen, "לבחור דיסקים", the first machine's second disk "בלי" */
+        a->mode = MODE_ROOM; a->room_target_set = 0; a->nroom_selection = 0;
+        for (int i = 0; i < a->st.nmachines; i++)
+            for (int j = 0; a->st.machines[i].awake && j < a->st.machines[i].nroom_drawers; j++)
+                room_set_selected(a, &a->st.machines[i], a->st.machines[i].room_drawers[j].port, 1);
+        a->drv_on = 1; a->drv_pick = 1;
+        for (int i = 0; i < a->st.nmachines; i++)
+            if (a->st.machines[i].awake && a->st.machines[i].nroom_drawers > 1) {
+                room_drv_tag_click(a, i, a->st.machines[i].room_drawers[1].port);
+                break;
+            }
+    }
     else if (!strcmp(card, "class"))    { a->mode = MODE_CLASSES; }
     else if (!strcmp(card, "class-live")){ a->mode = MODE_CLASSES; a->st.has_session = 1; }
     else if (!strcmp(card, "cloner"))   { a->force_cloner = 1;
@@ -1042,7 +1135,9 @@ static int render_png(App *a, const State *base, const char *prefix, int w, int 
                                        SCREEN_MENU, /* "logout": the Esc question over the menu (mockup 10/10) */
                                        SCREEN_RESTORE, /* "restore-folder": the images of the first folder */
                                        SCREEN_ROOM, /* "room-images": the image select open on the folders */
-                                       SCREEN_RESTORE /* "restore-confirm": the #1270 dialog */ };
+                                       SCREEN_RESTORE, /* "restore-confirm": the #1270 dialog */
+                                       SCREEN_ROOM, /* "room-drivers" (#1269): the room setup, drivers on, pick mode */
+                                       SCREEN_PICK /* "pick-hebrew" (#1245): the language chip on "עב" */ };
         /* One entry per card, or want[c] reads past the table -- that is exactly
          * what the lab saw when "direct" was added to PNG_CARDS alone. */
         _Static_assert(sizeof want / sizeof want[0] == sizeof PNG_CARDS / sizeof PNG_CARDS[0],

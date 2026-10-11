@@ -26,7 +26,7 @@ enum { DEV_KEYBOARD = 1, DEV_MOUSE = 2, DEV_TOUCH = 4, DEV_ABSPTR = 8 };
 typedef struct {
     int fd, kinds;
     int abs_min_x, abs_max_x, abs_min_y, abs_max_y;
-    int shift;
+    int shift, alt;                         /* alt: #1245, the Alt+Shift chord */
     char path[32];                          /* so a rescan skips it */
 } Dev;
 
@@ -40,24 +40,33 @@ struct Input {
     int scan_done;      /* stop rescanning once a keyboard AND a mouse are here */
 };
 
-/* US keymap: {code, plain, shifted}. Enough for an ASCII account. */
-static const struct { int code; char n, s; } KEYMAP[] = {
-    {KEY_1,'1','!'},{KEY_2,'2','@'},{KEY_3,'3','#'},{KEY_4,'4','$'},{KEY_5,'5','%'},
-    {KEY_6,'6','^'},{KEY_7,'7','&'},{KEY_8,'8','*'},{KEY_9,'9','('},{KEY_0,'0',')'},
-    {KEY_MINUS,'-','_'},{KEY_EQUAL,'=','+'},
-    {KEY_Q,'q','Q'},{KEY_W,'w','W'},{KEY_E,'e','E'},{KEY_R,'r','R'},{KEY_T,'t','T'},
-    {KEY_Y,'y','Y'},{KEY_U,'u','U'},{KEY_I,'i','I'},{KEY_O,'o','O'},{KEY_P,'p','P'},
-    {KEY_LEFTBRACE,'[','{'},{KEY_RIGHTBRACE,']','}'},
-    {KEY_A,'a','A'},{KEY_S,'s','S'},{KEY_D,'d','D'},{KEY_F,'f','F'},{KEY_G,'g','G'},
-    {KEY_H,'h','H'},{KEY_J,'j','J'},{KEY_K,'k','K'},{KEY_L,'l','L'},
-    {KEY_SEMICOLON,';',':'},{KEY_APOSTROPHE,'\'','"'},{KEY_GRAVE,'`','~'},{KEY_BACKSLASH,'\\','|'},
-    {KEY_Z,'z','Z'},{KEY_X,'x','X'},{KEY_C,'c','C'},{KEY_V,'v','V'},{KEY_B,'b','B'},
-    {KEY_N,'n','N'},{KEY_M,'m','M'},{KEY_COMMA,',','<'},{KEY_DOT,'.','>'},{KEY_SLASH,'/','?'},
-    {KEY_SPACE,' ',' '},
-    {KEY_KP0,'0','0'},{KEY_KP1,'1','1'},{KEY_KP2,'2','2'},{KEY_KP3,'3','3'},{KEY_KP4,'4','4'},
-    {KEY_KP5,'5','5'},{KEY_KP6,'6','6'},{KEY_KP7,'7','7'},{KEY_KP8,'8','8'},{KEY_KP9,'9','9'},
-    {KEY_KPDOT,'.','.'},{KEY_KPMINUS,'-','-'},{KEY_KPPLUS,'+','+'},{KEY_KPASTERISK,'*','*'},
-    {KEY_KPSLASH,'/','/'},
+/* {code, US plain, US shifted, SI-1452 plain}. The fourth column is the
+ * Israeli standard layout's base level (#1245): the 27 Hebrew letters and
+ * the five punctuation marks that moved; 0 = the same as US. With Shift
+ * SI-1452 gives the Latin capitals and the US symbols, so it has no column
+ * of its own. The brackets are left as US (xkb's il mirrors [ ] and ( ),
+ * and Pango already mirrors them on screen inside an RTL run). */
+static const struct { int code; char n, s; int he; } KEYMAP[] = {
+    {KEY_1,'1','!',0},{KEY_2,'2','@',0},{KEY_3,'3','#',0},{KEY_4,'4','$',0},{KEY_5,'5','%',0},
+    {KEY_6,'6','^',0},{KEY_7,'7','&',0},{KEY_8,'8','*',0},{KEY_9,'9','(',0},{KEY_0,'0',')',0},
+    {KEY_MINUS,'-','_',0},{KEY_EQUAL,'=','+',0},
+    {KEY_Q,'q','Q','/'},{KEY_W,'w','W','\''},{KEY_E,'e','E',0x05E7},{KEY_R,'r','R',0x05E8},
+    {KEY_T,'t','T',0x05D0},{KEY_Y,'y','Y',0x05D8},{KEY_U,'u','U',0x05D5},{KEY_I,'i','I',0x05DF},
+    {KEY_O,'o','O',0x05DD},{KEY_P,'p','P',0x05E4},
+    {KEY_LEFTBRACE,'[','{',0},{KEY_RIGHTBRACE,']','}',0},
+    {KEY_A,'a','A',0x05E9},{KEY_S,'s','S',0x05D3},{KEY_D,'d','D',0x05D2},{KEY_F,'f','F',0x05DB},
+    {KEY_G,'g','G',0x05E2},{KEY_H,'h','H',0x05D9},{KEY_J,'j','J',0x05D7},{KEY_K,'k','K',0x05DC},
+    {KEY_L,'l','L',0x05DA},
+    {KEY_SEMICOLON,';',':',0x05E3},{KEY_APOSTROPHE,'\'','"',','},{KEY_GRAVE,'`','~',';'},
+    {KEY_BACKSLASH,'\\','|',0},
+    {KEY_Z,'z','Z',0x05D6},{KEY_X,'x','X',0x05E1},{KEY_C,'c','C',0x05D1},{KEY_V,'v','V',0x05D4},
+    {KEY_B,'b','B',0x05E0},{KEY_N,'n','N',0x05DE},{KEY_M,'m','M',0x05E6},
+    {KEY_COMMA,',','<',0x05EA},{KEY_DOT,'.','>',0x05E5},{KEY_SLASH,'/','?','.'},
+    {KEY_SPACE,' ',' ',0},
+    {KEY_KP0,'0','0',0},{KEY_KP1,'1','1',0},{KEY_KP2,'2','2',0},{KEY_KP3,'3','3',0},{KEY_KP4,'4','4',0},
+    {KEY_KP5,'5','5',0},{KEY_KP6,'6','6',0},{KEY_KP7,'7','7',0},{KEY_KP8,'8','8',0},{KEY_KP9,'9','9',0},
+    {KEY_KPDOT,'.','.',0},{KEY_KPMINUS,'-','-',0},{KEY_KPPLUS,'+','+',0},{KEY_KPASTERISK,'*','*',0},
+    {KEY_KPSLASH,'/','/',0},
 };
 
 static void push(Input *in, Event e) {
@@ -159,7 +168,18 @@ int input_fill_pollfds(Input *in, struct pollfd *out, int max) {
 }
 
 static void key_event(Input *in, Dev *d, int code, int value) {
-    if (code == KEY_LEFTSHIFT || code == KEY_RIGHTSHIFT) { d->shift = value != 0; return; }
+    int shift = code == KEY_LEFTSHIFT || code == KEY_RIGHTSHIFT;
+    if (shift || code == KEY_LEFTALT || code == KEY_RIGHTALT) {
+        if (shift) d->shift = value != 0; else d->alt = value != 0;
+        /* #1245: Alt+Shift switches the typing language, as on Windows -- once,
+         * on the press that completes the chord (either order). A held
+         * modifier's autorepeat (value 2) is not a second switch. */
+        if (value == 1 && d->shift && d->alt) {
+            Event e = { .type = UIEV_KEY, .key = KEYSYM_LAYOUT };
+            push(in, e);
+        }
+        return;
+    }
     if (value == 0) return;                          /* release */
     Event e = { 0 };
     switch (code) {
@@ -176,6 +196,7 @@ static void key_event(Input *in, Dev *d, int code, int value) {
     for (size_t i = 0; i < sizeof KEYMAP / sizeof KEYMAP[0]; i++)
         if (KEYMAP[i].code == code) {
             e.type = UIEV_CHAR; e.ch = d->shift ? KEYMAP[i].s : KEYMAP[i].n;
+            e.he = !d->shift && KEYMAP[i].he ? KEYMAP[i].he : e.ch;     /* #1245 */
             push(in, e); return;
         }
 }

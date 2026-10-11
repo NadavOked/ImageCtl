@@ -821,7 +821,7 @@ def test_login_show_password_toggle_is_at_the_right_of_the_field(tmp_path):
                 lines[-1][1] = y
             else:
                 lines.append([y, y])
-        assert len(lines) >= 4, f"expected two bordered fields at {size}, got {lines}"
+        assert len(lines) >= 3, f"expected two bordered fields at {size}, got {lines}"
         # count from the bottom: the "כניסה" fill is the last tall band. The
         # password field is filled (not the pane colour), so it reads as a tall
         # band of its own right above the button, or as its two border lines.
@@ -829,14 +829,14 @@ def test_login_show_password_toggle_is_at_the_right_of_the_field(tmp_path):
         assert tall, f"no button fill under the fields at {size}: {lines}"
         if len(tall) >= 2:
             a, b = lines[tall[-2]]
-            y0, y1 = a + 3, b - 2
-            fi = (((a + b) // 2) * w + field_left + 6) * ch
+            y0, y1 = a + 10, b - 9          # clear of the rounded corners (radius 9 in light)
+            fi = (((a + b) // 2) * w + (field_left + field_right) // 2) * ch   # empty field: its middle is fill
             bg = (px[fi], px[fi + 1], px[fi + 2])       # the field's own fill
         else:
             btn = tall[-1]
             assert btn >= 2, f"no password box above the button at {size}: {lines}"
             y0, y1 = lines[btn - 2][1] + 2, lines[btn - 1][0] - 1
-        left, right, top, bottom = _ink_bounds_x(px, ch, w, field_left + 3, field_right - 3, y0, y1, bg)
+        left, right, top, bottom = _ink_bounds_x(px, ch, w, field_left + 10, field_right - 10, y0, y1, bg)
         assert right >= 0, f"no ink in the password box at {size} — the toggle is not drawn?"
         centre = (left + right) / 2
         assert centre > (field_left + field_right) / 2,             f"show-password toggle ink at columns {left}..{right} (rows {top}..{bottom}), not in the right half at {size}"

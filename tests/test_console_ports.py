@@ -200,3 +200,85 @@ def test_firewall_row_three_states(ports_server):
     rows = by_id(ports_server["admin"].get("/api/console/ports").json())
     assert rows["firewall"]["state"] == "unknown"
     assert rows["firewall"]["detail"] == "לא הצלחנו לבדוק"
+
+
+# --- #1267: שיוך לרשת + חומת אש בשרת לכל פורט שבין רשתות -----------------------
+
+NFT_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "nftables"
+DEPLOY_IDS = ("dhcp", "tftp", "http_boot", "pxe_proxy", "multicast", "monitor")
+
+
+def _nft(name: str) -> str:
+    return (NFT_FIXTURES / name).read_text(encoding="utf-8").replace("\r\n", "\n")
+
+
+def test_every_port_row_names_its_network(ports_server):
+    """#1267: הקונסולה מפצלת לפי רשת — והשיוך בא מהשרת, לא מרשימה ב-JS.
+    ‏`firewall` (מצב ה-nft כולו) אינו פורט ואינו שייך לרשת."""
+    rows = by_id(ports_server["admin"].get("/api/console/ports").json())
+    for pid in DEPLOY_IDS:
+        assert rows[pid]["network"] == "deploy", pid
+    assert rows["http_console"]["network"] == "mgmt"
+    assert rows["interserver"]["network"] == "interserver"
+    assert rows["firewall"]["network"] is None
+    assert {r["network"] for r in rows.values()} <= {"deploy", "mgmt", "interserver", None}
+
+
+def test_cross_network_ports_read_the_server_firewall_per_port(ports_server):
+    """ראשי (primary.conf): 8081 פתוח על וילן השרתים, ל-8443 אין כלל
+    ו-policy drop — חסום. הראיה היא הכלל עצמו, לא היעדר שגיאה."""
+    ports_server["fake"]["nft_ruleset"] = _nft("primary.conf")
+    rows = by_id(ports_server["admin"].get("/api/console/ports").json())
+    assert rows["http_console"]["firewall"] == "open"
+    assert "tcp dport 8081 accept" in rows["http_console"]["firewall_detail"]
+    assert rows["interserver"]["firewall"] == "blocked"
+    assert "policy drop" in rows["interserver"]["firewall_detail"]
+
+    # משני: 8443 נפתח רק מכתובת הראשי — והכלל (עם הכתובת) הוא ההסבר.
+    ports_server["fake"]["nft_ruleset"] = _nft("secondary.conf")
+    rows = by_id(ports_server["admin"].get("/api/console/ports").json())
+    assert rows["interserver"]["firewall"] == "open"
+    assert "ip saddr" in rows["interserver"]["firewall_detail"]
+
+
+def test_deploy_ports_carry_no_firewall_verdict(ports_server):
+    """ברשת ההפצה אין חומת אש של המכללה — השרת מנהל אותה (נדב 10/10).
+    לכן אין שם עמודה, והשרת אינו ממציא ערך."""
+    ports_server["fake"]["nft_ruleset"] = _nft("primary.conf")
+    rows = by_id(ports_server["admin"].get("/api/console/ports").json())
+    for pid in DEPLOY_IDS:
+        assert rows[pid]["firewall"] is None, pid
+
+
+def test_firewall_that_could_not_be_read_is_not_checked_never_open(ports_server):
+    """עיקרון 5: nft שלא נקרא, טבלה שלא נטענה, או טבלה בלי policy ידוע —
+    ‏`None` ("לא נבדק"), לעולם לא "open"."""
+    for ruleset, phrase in ((None, "לא נבדק"), ("", "לא נטענה"),
+                            ("table inet imagectl {\n\tchain input {\n\t}\n}\n", "לא ידוע")):
+        ports_server["fake"]["nft_ruleset"] = ruleset
+        rows = by_id(ports_server["admin"].get("/api/console/ports").json())
+        for pid in ("http_console", "interserver"):
+            assert rows[pid]["firewall"] is None, (pid, ruleset)
+            assert phrase in rows[pid]["firewall_detail"], (pid, ruleset)
+
+
+def test_port_firewall_ignores_comments_drops_and_longer_port_numbers():
+    from server.ports import port_firewall
+    body = ("table inet imagectl {\n\tchain input {\n"
+            "\t\ttype filter hook input priority filter; policy drop;\n"
+            "\t\t# tcp dport 8081 accept — הערה, לא כלל\n"
+            "\t\tiifname \"x\" tcp dport 80810 accept\n"
+            "\t\tiifname \"x\" tcp dport 8443 drop\n"
+            "\t\tiifname \"x\" udp dport 8081 accept\n"
+            "\t}\n}\n")
+    assert port_firewall(body, "tcp", "8081")[0] == "blocked"
+    assert port_firewall(body, "tcp", "8443")[0] == "blocked"
+    assert port_firewall(body, "udp", "8081")[0] == "open"
+    accept_all = body.replace("policy drop", "policy accept")
+    assert port_firewall(accept_all, "tcp", "8081")[0] == "open"
+    # טווח/קבוצה שלא פוענחו אינם ראיה ל"חסום" — לא נבדק
+    ranged = body.replace("80810", "8000-8100")
+    assert port_firewall(ranged, "tcp", "8081") == (
+        None, "יש בטבלת imagectl כלל טווח/קבוצה שלא פוענח — לא נבדק")
+    # ‏כללי udp של ההפצה אינם נוגעים לשאלה על tcp
+    assert port_firewall(_nft("primary.conf"), "tcp", "8443")[0] == "blocked"

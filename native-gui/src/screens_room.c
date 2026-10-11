@@ -209,6 +209,8 @@ static void room_machine_draw(App *a, cairo_t *cr, const Machine *m, int mi,
         /* Empty slots and every slot on an off machine are display-only. */
         if (m->awake && d)
             hit_add(a, slot, HIT_ROOM_DISK_BASE + mi * MAX_DRAWERS + (port - 1));
+        /* #1269: a chosen disk's drivers tag in pick mode -- after the slot, so its hit wins */
+        if (m->awake && d && selected) room_drv_tag_draw(a, cr, slot, m, mi, port);
     }
 }
 
@@ -286,7 +288,7 @@ static void room_live_grid_draw(App *a, cairo_t *cr, double x, double y, double 
         if (!on) cairo_push_group(cr);                       /* .room-row.dim{opacity:.55} */
         Rect body = room_node_chrome(a, cr, item, g, m->name[0] ? m->name : m->mac, 0, 0,
                   failed ? t->danger : partial ? t->warn : on ? t->led_ok : t->hair,
-                                     failed ? t->danger_line : partial ? t->node_warn_line : on ? t->node_active_line : t->disk_line,
+                                     failed ? t->danger : partial ? t->node_warn_line : on ? t->node_active_line : t->disk_line,
                                      &small);
         text_free(&small);
         int pct = m->pct >= 0 ? m->pct : (!strcmp(m->state, "done") ? 100 : 0);
@@ -390,7 +392,11 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
         double sel_all_h = s->nmachines ? btn_h : 0;
         double ready_line_h = dmax(ready_t.h, sel_all_h);
         double fields_h = direct ? l1.h + N_FORM_GAP : l1.h + 2 + in_h + N_FORM_GAP + l2.h + 2 + in_h + N_FORM_GAP;
-        double body_h = N_PAD + fields_h + ready_line_h + N_ACTION_GAP + grid_h + N_LABEL_GAP + unid_h + err_h + N_PAD;
+        /* #1269: "להוסיף דרייברים" under the fields, its summary under the grid */
+        double drv_h = room_drv_block_height(a, cr, inner);
+        Text drv_sum = room_drv_summary_make(a, cr, inner);
+        double drv_sum_h = room_drv_summary_height(&drv_sum);
+        double body_h = N_PAD + fields_h + drv_h + ready_line_h + N_ACTION_GAP + grid_h + N_LABEL_GAP + drv_sum_h + unid_h + err_h + N_PAD;
         Text labels[3] = { btn_label(cr, direct ? "פתח סבב והער את המחשבים שנבחרו" : "פתח סבב והער את החדר"), btn_label(cr, "העֵר את מחשבי השיכפול"), btn_label(cr, "חזרה") };
         static const int kinds[3] = { BTN_PRIMARY, BTN_PLAIN, BTN_PLAIN };
         static const int ids[3] = { HIT_ROOM_OPEN, HIT_ROOM_WAKE, HIT_BACK };
@@ -412,6 +418,7 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
             draw_field(a, cr, (Rect){ x, y, inner, in_h }, a->room_target, 0, NULL, HIT_ROOM_TARGET);
             y += in_h + N_FORM_GAP;
         }
+        Rect drv_sel = room_drv_block_draw(a, cr, x, y, inner);   y += drv_h;   /* #1269 */
         /* ready count on the right; a select/clear-all button on the left (#714) */
         if (s->nmachines) {
             Text sa = btn_label(cr, "בחר / נקה הכל");
@@ -422,14 +429,22 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
         text_draw_r(cr, &ready_t, x + inner, y + (ready_line_h - ready_t.h) / 2, t->ink);
         y += ready_line_h + N_ACTION_GAP;
         room_grid_draw(a, cr, x, y, inner, &grid);       y += grid_h + N_LABEL_GAP;
+        room_drv_summary_draw(a, cr, x, y, inner, &drv_sum);   y += drv_sum_h;
         if (unid.layout) { text_draw_r(cr, &unid, x + inner, y, t->warning_ink); y += unid_h; }
-        text_draw(cr, &err, x, y, t->danger);
+        text_draw(cr, &err, x, y, t->danger_fg);
         body_clip_end(a, cr);
         foot_draw_bg(cr, t, foot);
         foot_buttons(a, cr, foot, labels, kinds, ids, 3);
         card_end(a, cr);
         if (!direct && a->dd_open == HIT_ROOM_IMAGE) draw_popup(a, cr, sel_r, opts, nopt, a->image_sel);   /* outside the card's clip, topmost */
-        text_free(&l1); text_free(&l2); text_free(&ready_t); text_free(&err); text_free(&unid);
+        if (a->dd_open == HIT_ROOM_DRV_MODEL && drv_sel.w > 0) {                                           /* #1269 */
+            const char *dopts[MAX_DRIVER_MODELS]; char dbuf[MAX_DRIVER_MODELS][200];
+            int dn = room_drv_options(a, dopts, dbuf, MAX_DRIVER_MODELS), dsel = -1;
+            for (int i = 0; i < s->ndriver_models; i++)
+                if (!strcmp(s->driver_models[i].vendor, a->drv_vendor) && !strcmp(s->driver_models[i].model, a->drv_model)) dsel = i;
+            draw_popup(a, cr, drv_sel, dopts, dn, dsel);
+        }
+        text_free(&l1); text_free(&l2); text_free(&ready_t); text_free(&err); text_free(&unid); text_free(&drv_sum);
         return;
     }
 
@@ -471,7 +486,11 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
     double err_h = dmax(err.h, ERROR_MIN_H);
     Text unid = room_unidentified_make(cr, s, inner);
     double unid_h = unid.layout ? N_LABEL_GAP + unid.h : 0;
-    double body_h = N_PAD + pl.h + N_LABEL_GAP + N_BAR_H + N_ACTION_GAP + alert_height(&hint_t) + N_CHOICE_GAP + rows_h + unid_h + N_LABEL_GAP + err_h + N_PAD;
+    /* #1269: what happened to each drawer's drivers (drawer_list[].drivers) */
+    int drv_failed = 0;
+    Text drv_res = room_drv_results_make(cr, s, inner, &drv_failed);
+    double drv_res_h = drv_res.layout ? N_LABEL_GAP + drv_res.h : 0;
+    double body_h = N_PAD + pl.h + N_LABEL_GAP + N_BAR_H + N_ACTION_GAP + alert_height(&hint_t) + N_CHOICE_GAP + rows_h + unid_h + drv_res_h + N_LABEL_GAP + err_h + N_PAD;
 
     Rect body, foot;
     card_frame(a, cr, W, H, head_h, &hd, body_h, foot_height(cr, btn_h), &body, &foot);
@@ -484,11 +503,15 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
     draw_alert(cr, t, (Rect){ x, y, inner, alert_height(&hint_t) }, &hint_t); y += alert_height(&hint_t) + N_CHOICE_GAP;
     room_live_grid_draw(a, cr, x, y, inner, &grid, s->wave_open); y += rows_h;
     if (unid.layout) { text_draw_r(cr, &unid, x + inner, y + N_LABEL_GAP, t->warning_ink); y += unid_h; }
+    if (drv_res.layout) {           /* failed = done without its drivers: orange, not red (#856) */
+        text_draw_r(cr, &drv_res, x + inner, y + N_LABEL_GAP, drv_failed ? t->warning_ink : t->ink);
+        y += drv_res_h;
+    }
     y += N_LABEL_GAP;
-    text_draw(cr, &err, x, y, t->danger);
+    text_draw(cr, &err, x, y, t->danger_fg);
     body_clip_end(a, cr);
     foot_draw_bg(cr, t, foot);
     live_footer(a, cr, foot);
     card_end(a, cr);
-    text_free(&hint_t); text_free(&err); text_free(&unid);
+    text_free(&hint_t); text_free(&err); text_free(&unid); text_free(&drv_res);
 }

@@ -81,8 +81,10 @@ room_open() {
     esac
     [ "$_target" -ge 1 ] || { echo "  At least one drive."; sleep 4; return 1; }
 
-    printf '{"image_id":"%s","target_drives":%s}' "$_img" "$_target" \
-        > "$RUN_DIR/room_open.json"
+    # ROOM_OPEN_EXTRA: the GUI's ticked drawers (#1275) and drivers (#1269),
+    # from room_open_extra; unset here.
+    printf '{"image_id":"%s","target_drives":%s%s}' "$_img" "$_target" \
+        "${ROOM_OPEN_EXTRA:-}" > "$RUN_DIR/room_open.json"
     _code=$(console_post "room" "$RUN_DIR/room_open.json" \
         "$RUN_DIR/room_open_resp.json") || return 1
     if [ "$_code" != "200" ]; then
@@ -91,6 +93,55 @@ room_open() {
     fi
     log "cloning room round opened from the build machine: $_img x$_target"
     return 0
+}
+
+# The GUI's `slots=<mac>@<port>,<port>/<mac>@<port>` record value (a MAC has
+# colons of its own) -> the target_slots JSON array. Exit 1 on anything
+# malformed, and nothing is posted: a selection that was not read is not
+# "no selection" -- that one writes every drawer (#1275, principle 4/5).
+# Was inline in guibridge.sh (#715); the library round uses it too.
+room_slots_json() {
+    case "$1" in ''|*[!0-9a-f:/,@]*) return 1 ;; esac
+    printf '%s' "$1" | awk -v RS='/' -F@ '{
+        gsub(/\n/, "", $2)
+        if (NF != 2 || $1 == "" || $2 !~ /^[0-9]+(,[0-9]+)*$/) exit 1
+        printf "%s{\"mac\":\"%s\",\"ports\":[%s]}", (n++ ? "," : "["), $1, $2 }
+        END { if (!n) exit 1; printf "]" }'
+}
+
+# #1269: the GUI's `drivers=<mac>|<port>|<vendor>|<model>|...` -- four fields
+# per disk that has a model; a disk with "no drivers" is simply not there.
+# The state file never carries `|` inside a value (guistate.sh replaces it),
+# so the fields cannot run into each other. -> the driver_models JSON array;
+# exit 1 on anything malformed. The server checks the model against the
+# library again and keeps its own spelling.
+room_drivers_json() {
+    jq -cn --arg d "$1" '$d | split("|") |
+        if length == 0 or length % 4 != 0 then error("bad drivers") else
+        [range(0; length; 4) as $i | .[$i:$i + 4] |
+         if (.[0] | test("^[0-9a-f]{2}(:[0-9a-f]{2}){5}$")) and (.[1] | test("^[1-9][0-9]?$"))
+            and .[2] != "" and .[3] != ""
+         then {mac: .[0], port: (.[1] | tonumber), vendor: .[2], model: .[3]}
+         else error("bad drivers") end] end'
+}
+
+# The extra fields of a library round opened from the GUI. #1275: the ticked
+# drawers go as target_slots whenever there is a selection, drivers or not --
+# none ticked = empty, the round exactly as before (every fresh drawer, #695).
+# #1269: driver_models only with drivers, and only on a selection: the server
+# binds a model only to a disk chosen as a target (there is no "every disk").
+room_open_extra() {
+    _rx=''
+    if [ -n "$1" ]; then
+        _rs=$(room_slots_json "$1") || return 1
+        _rx=",\"target_slots\":$_rs"
+    fi
+    if [ -n "$2" ]; then
+        [ -n "$1" ] || return 1
+        _rd=$(room_drivers_json "$2") || return 1
+        _rx="$_rx,\"driver_models\":$_rd"
+    fi
+    printf '%s' "$_rx"
 }
 
 room_action() {

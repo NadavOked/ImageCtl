@@ -16,6 +16,8 @@ const B1='c8:d9:d2:0b:fe:32', C1='a0:48:1c:8a:18:40', C2='78:ac:c0:9b:11:c2', C3
 const drawer=(dev,port,serial,extra={})=>({dev,port,serial,model:'870 EVO',size_bytes:GB256,fresh:true,selected:false,state:null,error:null,bytes_written:0,bytes_total:0,stalled_s:null,crc_delta:null,smart:'unchecked',...extra});
 const round=(extra={})=>({id:'rnd_1',image_id:'img_1',image_name:'office365',target_drives:12,written_drives:5,remaining_drives:7,wave_number:2,wave_state:'running',ready_drives:5,opened_by:'nadav',source:{kind:'library'},...extra});
 const floor={mac:C2,name:'מחשב 2',port:3,dev:'sdc',size_bytes:GB256};
+/* ‏#1269: GET /room/driver-models — הדגמים שיש להם חבילה בספרייה */
+const MODELS=[{vendor:'HP',model:'HP EliteDesk 800 G6',packages:['g6-all']},{vendor:'LENOVO',model:'ThinkCentre M70q Gen 3',packages:['m70q-nic']}];
 
 function roomIdle() {
   return {round:null,stream_stalled:false,disk_floor:floor,machines:[
@@ -64,6 +66,7 @@ function setup({room=roomIdle(),role='admin',session=null,prompts={}}={}) {
       {id:'img_3',name:'kali',description:'',folder:'',sort:3,family:'linux',os:'linux',created:'2026-09-10T10:00:00Z',source_disk_bytes:GB256,total_compressed_bytes:9e9,partitions:2,min_target_bytes:null}],
     '/overview':{images:3,machines:6,storage:null,pulls:[],room:room.round,session},
     '/room':room,
+    '/room/driver-models':MODELS,
     '/room/history':[{id:'rr_12',state:'closed',image_id:'img_9',image_name:'win11-base',source_kind:'library',target_drives:6,written_drives:6,opened_by:'nadav',created_at:'2026-09-12T08:00:00Z',closed_at:'2026-09-12T09:30:00Z',failed_reason:null}],
     '/room/wake':{sent:3,failed:0,reasons:[]},
     '/room/start':{ok:true},
@@ -158,24 +161,24 @@ test('#953: every image says "fits a disk from X GB"; one that does not fit the 
 
 test('new round: POST /room {image_id, target_drives}; a 409 fit refusal is shown in the card verbatim; #715 source sends target_slots grouped by machine from the connected drawers', async () => {
   const {run,requests,fixtures}=setup();
-  run("roomFormSet('image','img_1'); roomFormSet('target','6')");
+  run("roomFormSet('image','img_1'); roomFormSet('target','6'); roomPickAll()");   // ‏#1275: בלי בחירה אין סבב
   await run('openRoomRoundSubmit()');
   let r=requests.find(x=>x.url==='/api/console/room'&&x.options.method==='POST');
-  assert.deepEqual(JSON.parse(r.options.body),{image_id:'img_1',target_drives:6});
+  assert.deepEqual(JSON.parse(r.options.body),{image_id:'img_1',target_drives:6,target_slots:[{mac:C1,ports:[1,2]},{mac:C2,ports:[1,2,3]}]});
   assert.match(run('toasted'),/הסבב נפתח/); assert.equal(run('DEPLOY.err'),'');
   assert.ok(requests.some(x=>x.url==='/api/console/images')&&requests.some(x=>x.url==='/api/console/overview'),'loadDeploy re-reads after opening');
   fixtures['/room']={__status:409,detail:"דיסק 3 במחשב מחשב 2 הוא 256GB, האימג' צריך 300GB"};
-  run("roomFormSet('image','img_2')"); await run('openRoomRoundSubmit()');
+  run("roomPickAll(); roomFormSet('image','img_2')"); await run('openRoomRoundSubmit()');
   assert.equal(run('DEPLOY.err'),"דיסק 3 במחשב מחשב 2 הוא 256GB, האימג' צריך 300GB");
   fixtures['/room']=roomIdle(); const html=run('deploy(0)');
   assert.match(html,/<div class="note err"><span aria-hidden="true">●<\/span><span>הסבב לא נפתח: דיסק 3 במחשב מחשב 2 הוא 256GB, האימג&#39; צריך 300GB<\/span><\/div>/);
   run("DEPLOY.err=''; roomFormSet('image','')"); await run('openRoomRoundSubmit()'); assert.equal(run('DEPLOY.err'),"בחר אימג'");
   requests.length=0; run("roomFormSet('src','build_disk'); roomFormSet('disk','sda')");
-  assert.match(run('deploy(0)'),/היעד: כל המגירות המחוברות כרגע \(5\)/);
+  assert.match(run('deploy(0)'),/היעד: הדיסקים שסומנו בגריד למטה/);
   await run('openRoomRoundSubmit()');
   r=requests.find(x=>x.url==='/api/console/room'&&x.options.method==='POST');
   assert.deepEqual(JSON.parse(r.options.body),{source:{kind:'build_disk',mac:B1,disk:'sda'},target_slots:[{mac:C1,ports:[1,2]},{mac:C2,ports:[1,2,3]}]});
-  const d=setup({role:'deploy'}); d.run("roomFormSet('image','img_1')"); await d.run('openRoomRoundSubmit()');
+  const d=setup({role:'deploy'}); d.run("roomFormSet('image','img_1'); roomPickAll()"); await d.run('openRoomRoundSubmit()');
   assert.ok(d.requests.some(x=>x.url==='/api/console/room'&&x.options.method==='POST'),'deploy is a room operator');
 });
 
@@ -314,7 +317,7 @@ test('class tab: the existing session code as-is inside cards (row, start/stop, 
   // ‏#980 §3: החדר מ-/room/history; הכיתות (v2) נשארות "דורש API".
   assert.match(html,/היסטוריית הסבבים לא נקראה/,'unread history is said');
   run('ROOM_HISTORY='+JSON.stringify(fixtures['/room/history'])); html=run('deploy(2)'); balanced(html);
-  assert.match(html,/<span class="d ok"><\/span><span>win11-base · 6\/6 נכתבו · נסגר/);
+  assert.match(html,/win11-base<\/td><td>6\/6<\/td><td>90 דק(?:'|&#39;)<\/td><td><span class="pill ok">הצליח<\/span>/,'stage 3: history is a table with a result pill');
   assert.match(html,/סבבים קודמים בכיתות — <b[^>]*>דורש API<\/b>/);
 });
 
@@ -346,4 +349,151 @@ test('data: loadDeploy reads /overview, /room, /images, /machines, /groups, /dis
   run("current='images'"); requests.length=0; await run('refreshGroupLive()'); assert.equal(requests.length,0,'not on the deploy page (and no cloners object open) → no poll');
   run("ROOM=null; DEPLOY.roomErr=''"); fixtures['/room']={__status:500,detail:'boom'}; await run('loadDeploy()');
   assert.equal(run('ROOM'),null); assert.equal(run('DEPLOY.roomErr'),'boom','a failed read is "unread", not "no round"');
+});
+
+/* ‏#1269 שלב 2: "להוסיף דרייברים" בפתיחת סבב — מתג כבוי כברירת מחדל, ודגם לכל דיסק יעד.
+   אין "אוטומטי": החומרה שזוהתה היא של המשכפל, לא של המכונה שתקבל את הדיסק — דגם מפורש או "בלי". */
+const newCard=(html)=>between(html,'<div class="rnew">','המחשבים והדיסקים');
+
+test('#1269 drivers: the switch is off by default, disabled with a reason when the list is unread (null) or empty ([]) — two reasons, never "automatic"', () => {
+  const {run}=setup();
+  run('DRIVER_MODELS='+JSON.stringify(MODELS));
+  const html=run('deploy(0)'); balanced(html);
+  let form=newCard(html);
+  assert.match(form,/<input type="checkbox" id="rn-drv" onchange="roomFormSet\('drv',this\.checked\)"> להוסיף דרייברים<\/label>/,'off, enabled');
+  assert.match(form,/כבוי — לא יונחו דרייברים/);
+  assert.doesNotMatch(form,/rn-drv-all|data-drv=/,'no model choice while off');
+  run('DRIVER_MODELS=null'); form=newCard(run('deploy(0)'));
+  assert.match(form,/id="rn-drv" disabled/); assert.match(form,/רשימת הדגמים לא נקראה מהשרת/);
+  run('DRIVER_MODELS=[]'); form=newCard(run('deploy(0)'));
+  assert.match(form,/id="rn-drv" disabled/); assert.match(form,/אין בספרייה חבילת דרייברים עם דגם מחשב/);
+  run('DRIVER_MODELS=[]; DEPLOY.form.drv=true'); assert.doesNotMatch(newCard(run('deploy(0)')),/data-drv=/,'on but no models = off');
+});
+
+test('#1269 drivers on: a row per connected disk with "בלי" + the library models only; "a model for every disk" fills every row; the summary groups by machine', () => {
+  const {run}=setup();
+  run('DRIVER_MODELS='+JSON.stringify(MODELS)+"; roomFormSet('drv',true)");
+  assert.match(newCard(run('deploy(0)')),/סמנו דיסקים בגריד כדי לבחור להם דגם/,'no selection → no rows'); run('roomPickAll()');
+  const html=run('deploy(0)'); balanced(html);
+  let form=newCard(html);
+  assert.match(form,/id="rn-drv" checked/); assert.match(form,/החבילות שבשרת לדגם שנבחר יונחו על הדיסק אחרי השחזור/);
+  const rows=form.match(/<select data-drv="[^"]+"/g)||[];
+  assert.deepEqual(rows.map(r=>r.match(/data-drv="([^"]+)"/)[1]),[`${C1}@1`,`${C1}@2`,`${C2}@1`,`${C2}@2`,`${C2}@3`],'the five connected drawers, never the machine that is off');
+  const one=between(form,`data-drv="${C1}@1"`,'</select>');
+  assert.deepEqual([...one.matchAll(/<option[^>]*>([^<]*)<\/option>/g)].map(m=>m[1]),['בלי','HP HP EliteDesk 800 G6','LENOVO ThinkCentre M70q Gen 3']);
+  assert.doesNotMatch(form,/אוטומטי|אוטו|לפי החומרה/);
+  assert.match(form,/דרייברים: אף דיסק לא קיבל דגם/,'default per disk = "בלי"');
+  run("roomDrvAll('1')"); form=newCard(run('deploy(0)'));
+  assert.equal((form.match(/<option value="1" selected>LENOVO ThinkCentre M70q Gen 3<\/option>/g)||[]).length,5);
+  assert.match(form,/דרייברים: ThinkCentre M70q Gen 3 ← 2 דיסקים ב-מחשב 1 · ThinkCentre M70q Gen 3 ← 3 דיסקים ב-מחשב 2/);
+  run(`roomDrvSet('${C2}@3','')`); run(`roomDrvSet('${C1}@2','0')`); form=newCard(run('deploy(0)'));
+  assert.match(form,/דרייברים: ThinkCentre M70q Gen 3 ← דיסק אחד ב-מחשב 1 · HP EliteDesk 800 G6 ← דיסק אחד ב-מחשב 1 · ThinkCentre M70q Gen 3 ← 2 דיסקים ב-מחשב 2 · בלי ← מחשב 2/);
+  run(`roomPick('${C2}@2')`); form=newCard(run('deploy(0)'));   // ‏#1275: הדרייברים הולכים אחרי אותה בחירה
+  assert.deepEqual((form.match(/<select data-drv="[^"]+"/g)||[]).map(r=>r.match(/data-drv="([^"]+)"/)[1]),[`${C1}@1`,`${C1}@2`,`${C2}@1`,`${C2}@3`],'a cleared disk drops out of the drivers rows');
+});
+
+test('#1269 drivers: POST /room adds target_slots + driver_models (library) and driver_models (direct); no model on any disk refuses locally; switch off = the old body', async () => {
+  const {run,requests}=setup();
+  run('DRIVER_MODELS='+JSON.stringify(MODELS)+"; roomFormSet('image','img_1'); roomFormSet('target','6'); roomFormSet('drv',true); roomPickAll()");
+  await run('openRoomRoundSubmit()');
+  assert.equal(requests.filter(x=>x.url==='/api/console/room'&&x.options.method==='POST').length,0,'nothing posted');
+  assert.equal(run('DEPLOY.err'),'לא נבחר דגם לאף דיסק — בחרו דגם, או כבו את "להוסיף דרייברים"');
+  run(`roomDrvSet('${C1}@1','1'); roomDrvSet('${C2}@3','0')`);
+  await run('openRoomRoundSubmit()');
+  let r=requests.find(x=>x.url==='/api/console/room'&&x.options.method==='POST');
+  assert.deepEqual(JSON.parse(r.options.body),{image_id:'img_1',target_drives:6,
+    target_slots:[{mac:C1,ports:[1,2]},{mac:C2,ports:[1,2,3]}],
+    driver_models:[{mac:C1,port:1,vendor:'LENOVO',model:'ThinkCentre M70q Gen 3'},{mac:C2,port:3,vendor:'HP',model:'HP EliteDesk 800 G6'}]});
+  assert.equal(run('DEPLOY.form.drv'),false,'after opening the switch is off again');
+  requests.length=0; run("roomFormSet('src','build_disk'); roomFormSet('disk','sda'); roomFormSet('drv',true); roomPickAll()"); run(`roomDrvSet('${C2}@2','0')`);
+  await run('openRoomRoundSubmit()');
+  r=requests.find(x=>x.url==='/api/console/room'&&x.options.method==='POST');
+  assert.deepEqual(JSON.parse(r.options.body),{source:{kind:'build_disk',mac:B1,disk:'sda'},target_slots:[{mac:C1,ports:[1,2]},{mac:C2,ports:[1,2,3]}],
+    driver_models:[{mac:C2,port:2,vendor:'HP',model:'HP EliteDesk 800 G6'}]});
+  const s2=setup(); s2.run('DRIVER_MODELS='+JSON.stringify(MODELS)+"; roomFormSet('image','img_1'); roomFormSet('target','6'); roomPick('"+C1+"@2')");
+  await s2.run('openRoomRoundSubmit()');
+  assert.deepEqual(JSON.parse(s2.requests.find(x=>x.url==='/api/console/room'&&x.options.method==='POST').options.body),{image_id:'img_1',target_drives:6,target_slots:[{mac:C1,ports:[2]}]},'switch off: no driver_models');
+});
+
+test('#1269 drivers: loadDeploy reads /room/driver-models; a failed read is "unread" (null), not "no models"; the round shows each drawer\'s outcome in its title', async () => {
+  const {run,requests,fixtures}=setup();
+  run('DRIVER_MODELS=null; renderActivity=()=>{}; markStatusFresh=()=>{}');
+  await run('loadDeploy()');
+  assert.ok(requests.some(r=>r.url==='/api/console/room/driver-models'));
+  assert.equal(run('DRIVER_MODELS.length'),2);
+  fixtures['/room/driver-models']={__status:500,detail:'boom'}; await run('loadDeploy()');
+  assert.equal(run('DRIVER_MODELS'),null);
+  const room=roomRunning();
+  room.machines[0].drawer_list[0].drivers={state:'staged',packages:['m70q-chipset','m70q-nic']};
+  room.machines[0].drawer_list[1].drivers={state:'failed',packages:[],error:'the server has no driver package for the chosen model'};
+  room.machines[1].drawer_list[0].drivers={state:'skipped',packages:[],reason:'not_windows'};
+  const s=setup({room}); const html=s.run('deploy(0)'); const c1=card(html,C1), c2=card(html,C2);
+  assert.match(c1,/data-slot="1" title="[^"]*דרייברים הונחו: m70q-chipset, m70q-nic/);
+  assert.match(c1,/data-slot="2" title="[^"]*דרייברים לא הונחו — the server has no driver package for the chosen model/);
+  assert.match(c2,/data-slot="1" title="[^"]*דרייברים דולגו — האימג&#39; אינו Windows/);
+  assert.doesNotMatch(c2,/data-slot="2" title="[^"]*דרייברים/,'drivers null = the step did not run — nothing said');
+});
+
+/* ‏#1275: גריד בחירת הדיסקים לפתיחת סבב — כמו הגואי: בלי בחירה אין סבב; כבוי/ריק לא נבחרים; אדום כן (הצבע אומר מה יקרה) */
+const pk=(html)=>between(html,'<div class="full pk">','<div class="full">');
+const pcard=(html,mac)=>(html.split('<div class="pk-card').find(c=>c.includes(`data-mac="${mac}"`))||'').split('<div class="pk-card')[0];
+
+test('#1275 pick grid: a card per cloner, a tag per disk; nothing selected by default; the open button is disabled with the reason', () => {
+  const {run}=setup(); const html=run('deploy(0)'); balanced(html);
+  const g=pk(html);
+  assert.equal((g.match(/<div class="pk-card/g)||[]).length,3,'a card per cloner, the off one included');
+  assert.equal((g.match(/<button type="button" class="pk-slot/g)||[]).length,5,'a tag per present disk');
+  assert.doesNotMatch(g,/class="pk-slot[^"]* sel/,'no default selection'); assert.doesNotMatch(g,/aria-pressed="true"/);
+  assert.match(g,/כרגע ערים: 5 מגירות מוכנות · <b>0 נבחרו<\/b>/); assert.match(g,/בחר \/ נקה הכל/);
+  assert.match(html,/<button class="btn primary" onclick="openRoomRoundSubmit\(\)" disabled>פתח סבב<\/button> <span class="pk-need">יש לסמן לפחות דיסק אחד<\/span>/);
+  const c3=pcard(html,C3).split('<div class="full">')[0]; assert.match(c3,/כבוי/); assert.doesNotMatch(c3,/<button/,'off machine: no button at all, not even its name');
+});
+
+test('#1275 pick grid: a click toggles (ring + check + aria-pressed), the card says "N נבחרו", the machine name and "בחר / נקה הכל" select and clear', () => {
+  const {run}=setup();
+  run(`roomPick('${C2}@2')`); let html=run('deploy(0)'); balanced(html);
+  const c2=pcard(html,C2);
+  assert.match(c2,new RegExp(`class="pk-slot warn sel" data-key="${C2}@2" aria-pressed="true"[^>]*><span class="pk-ck" aria-hidden="true">✓</span>`),'selected: SMART colour kept + ✓');
+  assert.match(c2,/<b class="pk-n">1 נבחרו<\/b>/); assert.match(c2,new RegExp(`class="pk-slot ok" data-key="${C2}@1" aria-pressed="false"`),'unselected = the pale one');
+  assert.match(pk(html),/<b>1 נבחרו<\/b>/); assert.doesNotMatch(html,/openRoomRoundSubmit\(\)" disabled/,'one disk is enough to open');
+  assert.doesNotMatch(pcard(html,C1),/נבחרו/,'the other card says nothing');
+  run(`roomPick('${C2}@2')`); assert.doesNotMatch(pcard(run('deploy(0)'),C2),/ sel"/,'second click clears');
+  run(`roomPickMachine('${C2}')`); html=run('deploy(0)'); assert.match(pcard(html,C2),/class="pk-nm all"/); assert.match(pcard(html,C2),/3 נבחרו/);
+  run(`roomPickMachine('${C2}')`); assert.match(pk(run('deploy(0)')),/<b>0 נבחרו<\/b>/,'name toggles back');
+  run('roomPickAll()'); assert.match(pk(run('deploy(0)')),/<b>5 נבחרו<\/b>/,'all five connected; the off machine adds none');
+  run('roomPickAll()'); assert.match(pk(run('deploy(0)')),/<b>0 נבחרו<\/b>/,'second press clears all');
+});
+
+test('#1275 pick grid: an off machine, an empty slot and a disk without identity cannot be selected; a red disk can (like the GUI) and says so; unknown size is "לא ידוע"', () => {
+  const room=roomIdle();
+  room.machines[0].drawer_list=[drawer('sda',1,'S5Y10',{smart:'fail'}),drawer('sdb',2,null,{smart:'ok',size_bytes:null})];   // אדום; בלי serial וגודל
+  room.machines[1].drawer_list=[drawer('sda',1,'S5Y30',{smart:'ok'})];                                                         // חריצים 2,3 ריקים
+  const {run}=setup({room});
+  run(`roomPick('${C3}@1'); roomPick('${C2}@2'); roomPick('${C2}@3'); roomPick('${C1}@2')`);   // כולם נדחים
+  const html=run('deploy(0)'); balanced(html); assert.match(pk(html),/<b>0 נבחרו<\/b>/,'nothing selectable was selected');
+  const c1=pcard(html,C1);
+  assert.match(c1,new RegExp(`class="pk-slot err" data-key="${C1}@1" aria-pressed="false" onclick="roomPick\\('${C1}@1'\\)" title="[^"]*אדום: הסוכן מדלג`),'red is clickable');
+  assert.match(c1,new RegExp(`data-key="${C1}@2" aria-pressed="false" disabled`),'no serial → disabled'); assert.match(c1,/לא ידוע/);
+  assert.equal((pcard(html,C2).match(/class="pk-slot e"/g)||[]).length,2,'two empty slots, not buttons');
+  run(`roomPick('${C1}@1')`); assert.match(pk(run('deploy(0)')),/<b>1 נבחרו<\/b>/);
+});
+
+test('#1275 pick grid: the round carries the selection as target_slots (library and direct); nothing selected is refused locally with the reason and posts nothing', async () => {
+  const {run,requests}=setup();
+  run("roomFormSet('image','img_1'); roomFormSet('target','6')");
+  await run('openRoomRoundSubmit()');
+  assert.equal(requests.filter(x=>x.url==='/api/console/room'&&x.options.method==='POST').length,0); assert.equal(run('DEPLOY.err'),'יש לסמן לפחות דיסק אחד');
+  run(`roomPick('${C2}@3'); roomPick('${C1}@1'); roomPick('${C2}@1')`);
+  assert.equal(run('DEPLOY.err'),'','picking clears the message');
+  await run('openRoomRoundSubmit()');
+  let r=requests.find(x=>x.url==='/api/console/room'&&x.options.method==='POST');
+  assert.deepEqual(JSON.parse(r.options.body),{image_id:'img_1',target_drives:6,target_slots:[{mac:C1,ports:[1]},{mac:C2,ports:[1,3]}]},'grouped by machine, the GUI bridge format');
+  assert.deepEqual(JSON.parse(run('JSON.stringify(DEPLOY.form.sel)')),{},'cleared after opening');
+  requests.length=0; run(`roomFormSet('src','build_disk'); roomFormSet('disk','sda'); roomPick('${C2}@2')`);
+  await run('openRoomRoundSubmit()');
+  r=requests.find(x=>x.url==='/api/console/room'&&x.options.method==='POST');
+  assert.deepEqual(JSON.parse(r.options.body),{source:{kind:'build_disk',mac:B1,disk:'sda'},target_slots:[{mac:C2,ports:[2]}]});
+  run(`roomFormSet('src','library'); roomFormSet('image','img_1'); roomFormSet('target','1'); roomPickAll()`); requests.length=0;
+  await run('openRoomRoundSubmit()'); assert.equal(requests.filter(x=>x.options&&x.options.method==='POST').length,0); assert.match(run('DEPLOY.err'),/היעד \(1\) קטן ממספר הדיסקים שסומנו \(5\)/);
+  run("roomFormSet('target','')"); assert.match(newCard(run('deploy(0)')),/id="rn-target" min="1" value="8"/,'untyped target defaults to max(declared 8, selected 5)');
 });

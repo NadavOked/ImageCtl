@@ -51,4 +51,19 @@ void bidi_isolate(const char *in, char *out, size_t n);
 void progline_draw(cairo_t *, const Theme *, ProgLine *, double, double, double);
 void foot_buttons(App *, cairo_t *, Rect, Text *, const int *, const int *, int);
 int image_options(const App *, const char **, char (*)[168], int);
+
+/* #1269 (screens_drivers.c), the drawing half -- ui.h has the rest.
+ * room_drv_options: the rows of the model list (the library's, nothing else).
+ * room_drv_block_*: the switch row and, when on, the model + mode columns,
+ * under the setup fields; draw returns the select's rect (w = 0 when none).
+ * room_drv_tag_draw: a chosen disk's tag in pick mode. The summary and the
+ * live round's outcome lines; a Text with a NULL layout = nothing to draw. */
+int room_drv_options(const App *a, const char **opts, char (*buf)[200], int max);
+double room_drv_block_height(App *a, cairo_t *cr, double w);
+Rect room_drv_block_draw(App *a, cairo_t *cr, double x, double y, double w);
+void room_drv_tag_draw(App *a, cairo_t *cr, Rect slot, const Machine *m, int mi, int port);
+Text room_drv_summary_make(App *a, cairo_t *cr, double w);
+double room_drv_summary_height(const Text *t);
+void room_drv_summary_draw(App *a, cairo_t *cr, double x, double y, double w, Text *t);
+Text room_drv_results_make(cairo_t *cr, const State *s, double w, int *any_failed);
 #endif

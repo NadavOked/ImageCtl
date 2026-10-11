@@ -131,3 +131,73 @@ def test_checkout_failure_records_git_error_and_does_not_restart(tmp_path, bindi
     assert "reference is not a tree" in status["error"]
     assert not any(row.startswith("systemctl ") for row in calls(tmp_path))
 
+
+
+# --- ‏#1185: אחרי שה-checkout הצליח, כל כשל מחזיר את העץ לתג הקודם -----------------
+#
+# העץ הוא מה שהשרת יריץ באתחול הבא. כשל שעוצר את הסקריפט אחרי ה-checkout ולפני
+# החזרה משאיר את /opt/imagectl על התג החדש בזמן שהשירות הרץ (והיחידות וה-initrd)
+# הם של הישן — והסטטוס נשאר `running` לתמיד, כלומר "לא ידוע" שנראה כמו "בתהליך".
+
+
+def _rolled_back_to_previous(tmp_path: Path, data: Path, previous: str = "v0.48.0") -> dict:
+    status = _status(data)
+    assert status and status["state"] == "failed", status
+    assert f"הוחזר ל-{previous}" in status["error"], status["error"]
+    log = calls(tmp_path)
+    new = next(i for i, row in enumerate(log) if " checkout --detach v0.53.0" in row)
+    back = next(i for i, row in enumerate(log) if row.endswith(f"checkout --detach {previous}"))
+    assert new < back
+    return status
+
+
+def test_tree_not_on_the_tag_after_checkout_returns_to_the_previous_tag(tmp_path, bindir):
+    data = tmp_path / "data"
+    _seed_db(data)
+    repo = _fake_repo(tmp_path, live_ok=True)
+    fake_tool(bindir, "git", _git_shim().replace('echo "$FAKE_TAG"', 'echo "v0.47.9"'))
+    fake_tool(bindir, "systemctl", "exit 0")
+    fake_tool(bindir, "curl", "exit 0")
+
+    proc = _run(tmp_path, bindir, repo, data)
+
+    assert proc.returncode != 0
+    status = _rolled_back_to_previous(tmp_path, data)
+    assert "v0.47.9" in status["error"]
+
+
+def test_unit_install_failure_returns_to_the_previous_tag_in_name(tmp_path, bindir):
+    data = tmp_path / "data"
+    _seed_db(data)
+    repo = _fake_repo(tmp_path, live_ok=True)
+    fake_tool(bindir, "git", _git_shim())
+    # daemon-reload נכשל רק בפעם הראשונה — החזרה עצמה מצליחה
+    fake_tool(bindir, "systemctl",
+              'case "$1" in daemon-reload) [ -e "$FAKE_LOG.dr" ] && exit 0; '
+              'touch "$FAKE_LOG.dr"; echo "Failed to reload" >&2; exit 1 ;; esac; exit 0')
+    fake_tool(bindir, "curl", "exit 0")
+
+    proc = _run(tmp_path, bindir, repo, data)
+
+    assert proc.returncode != 0
+    status = _rolled_back_to_previous(tmp_path, data)
+    assert "daemon-reload" in status["error"]
+    assert not any(row.startswith("boot-payload-build ") for row in calls(tmp_path))
+
+
+def test_unexpected_failure_after_checkout_is_never_left_running(tmp_path, bindir):
+    """כשל שאיש לא כתב לו `|| rollback` — כאן `systemctl show` תחת pipefail
+    בגזירת כתובת הסוכן, לפני verify-boot-payload. אין ראיה = חזרה, בשם."""
+    data = tmp_path / "data"
+    _seed_db(data)
+    repo = _fake_repo(tmp_path, live_ok=True)
+    fake_tool(bindir, "git", _git_shim())
+    fake_tool(bindir, "systemctl", 'case "$1" in show) echo "no bus" >&2; exit 1 ;; esac; exit 0')
+    fake_tool(bindir, "curl", "exit 0")
+
+    proc = _run(tmp_path, bindir, repo, data)
+
+    assert proc.returncode != 0
+    status = _rolled_back_to_previous(tmp_path, data)
+    assert "נכשל בשורה" in status["error"]
+    assert not any(row.startswith("verify-boot-payload ") for row in calls(tmp_path))

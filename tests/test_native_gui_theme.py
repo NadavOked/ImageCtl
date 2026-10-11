@@ -43,14 +43,40 @@ TOKENS_CSS = (ROOT / "server/static/design-tokens.css").read_text(encoding="utf-
 def token_value(prop, theme):
     """A --clr-* token from the console's design-tokens.css (stage 1, 10/10):
     the :root block for light, :root[data-theme="dark"] for dark."""
-    start = TOKENS_CSS.index(':root[data-theme="dark"]{' if theme == "dark" else ":root{")
-    block = TOKENS_CSS[start:TOKENS_CSS.index("\n}", start)]
-    return re.search(re.escape(prop) + r":(#[0-9a-fA-F]{3,6})\b", block).group(1)
+    pattern = re.escape(prop) + r":(#[0-9a-fA-F]{3,6})\b"
+    for opener in ([':root[data-theme="dark"]{'] if theme == "dark" else []) + [":root{"]:
+        start = TOKENS_CSS.index(opener)
+        found = re.search(pattern, TOKENS_CSS[start:TOKENS_CSS.index("\n}", start)])
+        if found:               # a dark theme inherits what only :root defines
+            return found.group(1)
+    raise KeyError(prop)
+
+
+CONSOLE_CSS = (ROOT / "server/static/console.css").read_text(encoding="utf-8")
+CONSOLE = {}
+for _selectors, _body in desktop_rules(CONSOLE_CSS):
+    _declarations = dict(part.split(":", 1) for part in _body.split(";") if ":" in part)
+    for _selector in _selectors.split(","):
+        CONSOLE.setdefault(_selector.strip(), {}).update(
+            {k.strip(): v.strip() for k, v in _declarations.items()})
+
+
+def console_value(selector, prop):
+    """A geometry value of the console itself (console.css), var(--t-*) resolved
+    to px from design-tokens.css (rem * 16)."""
+    value = CONSOLE[selector][prop]
+    return re.sub(r"var\((--t-[\w-]+)\)",
+                  lambda m: str(float(re.search(re.escape(m[1]) + r":([\d.]+)rem", TOKENS_CSS)[1]) * 16) + "px",
+                  value)
 
 
 def css_value(selector, prop, theme="dark"):
     """Resolve var() against dark variables with the required :root fallback.
     A selector "tokens ..." is read from design-tokens.css, not the mockup."""
+    if selector == "const":      # a literal the console has no hex token for (black)
+        return prop
+    if selector.startswith("console "):
+        return console_value(selector[len("console "):], prop)
     if selector.startswith("tokens "):
         return token_value(prop, theme)
     if selector == ':root[data-theme="dark"]' and theme == "light":
@@ -126,11 +152,21 @@ def check_every_theme_color_has_a_mockup_binding():
     assert len(bound) >= 25
 
 
-def check_theme_radius_uses_each_roots_r_token():
-    dark = float(re.search(r"\.radius\s*=\s*([\d.]+)", dark_body)[1])
-    light = float(re.search(r"\.radius\s*=\s*([\d.]+)", light_body)[1])
-    assert dark == float(css_value(':root[data-theme="dark"]', "--r", "dark").removesuffix("px"))
-    assert light == float(css_value(":root", "--r", "light").removesuffix("px"))
+def px_token(prop, theme):
+    """--r / --r-sm of design-tokens.css (the console), dark falling back to :root."""
+    for opener in ([':root[data-theme="dark"]{'] if theme == "dark" else []) + [":root{"]:
+        start = TOKENS_CSS.index(opener)
+        found = re.search(re.escape(prop) + r":([\d.]+)px", TOKENS_CSS[start:TOKENS_CSS.index("\n}", start)])
+        if found:
+            return float(found[1])
+    raise KeyError(prop)
+
+
+def check_theme_radii_are_the_consoles_r_and_r_sm_per_theme():
+    """Not the mockup's --r (4px light): the console's, 9/6px light and 3/3px dark."""
+    for theme, body in (("dark", dark_body), ("light", light_body)):
+        assert float(re.search(r"\.radius\s*=\s*([\d.]+)", body)[1]) == px_token("--r", theme), theme
+        assert float(re.search(r"\.radius_sm\s*=\s*([\d.]+)", body)[1]) == px_token("--r-sm", theme), theme
 
 
 def contrast(colors, fg, bg):
@@ -177,7 +213,7 @@ for check, bindings in [(check_theme_colors_match_mockup, COLOR_BINDINGS),
                 bind(check, binding))
 for check in [check_every_exported_dimension_has_a_mockup_binding,
               check_every_theme_color_has_a_mockup_binding,
-              check_theme_radius_uses_each_roots_r_token,
+              check_theme_radii_are_the_consoles_r_and_r_sm_per_theme,
               check_light_theme_preserves_readable_surface_contrast,
               check_dark_action_fill_and_text_are_readable]:
     setattr(TestNativeTheme, check.__name__.replace("check_", "test_"), bind(check))

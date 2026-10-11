@@ -42,6 +42,15 @@ MODES_HE = {
     MODE_DHCP: "לקוח DHCP",
 }
 
+#: ‏#1264: רשת הפצה על שני כרטיסים — bond אחד, כתובת אחת (ה-‎.1 של הרשת).
+#: ‏balance-alb (‏mode 6): שני הכרטיסים פעילים יחד, failover שקוף, ו**בלי**
+#: הגדרה בסוויץ' (‏LACP היה דורש אותה). השם קבוע: יש לכל היותר רשת הפצה אחת.
+BOND_NAME = "bond0"
+BOND_MODE = "balance-alb"
+#: כל כמה מילישניות הקרנל בודק את הקישור של כל כרטיס — ובלי זה כבל שנשלף
+#: אינו מזוהה כלל, והתעבורה ממשיכה להישלח לכרטיס מת.
+BOND_MIIMON_MS = 100
+
 
 @dataclass(frozen=True)
 class StaticRoute:
@@ -80,6 +89,9 @@ class NetConfig:
     gateway: str = ""
     dns: list[str] = field(default_factory=list)
     routes: list[StaticRoute] = field(default_factory=list)
+    #: ‏#1264: חברי ה-bond, הראשי ראשון. ריק = כרטיס רגיל (וכך כל הגדרה
+    #: שנשמרה לפני #1264). לא ריק = `name` הוא ה-bond.
+    slaves: list[str] = field(default_factory=list)
 
     @classmethod
     def from_json(cls, name: str, raw: str | None) -> "NetConfig":
@@ -90,6 +102,7 @@ class NetConfig:
         known = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
         known["routes"] = [StaticRoute.from_any(r) for r in known.get("routes") or []]
         known["dns"] = [str(d) for d in known.get("dns") or []]
+        known["slaves"] = [str(s) for s in known.get("slaves") or []]
         return cls(name=name, **known)
 
     def to_json(self) -> str:
@@ -204,6 +217,25 @@ def problems(cfg: NetConfig, others: list[NetConfig],
     found += [f"‏DNS: כתובת לא תקינה ({d})" for d in cfg.dns if not _valid_ip(d)]
     found += _route_problems(cfg, others)
     found += _dhcp_problems(cfg, dhcp_cfg)
+    found += _bond_problems(cfg)
+    return found
+
+
+def _bond_problems(cfg: NetConfig) -> list[str]:
+    """‏#1264: bond הוא בדיוק שני כרטיסים שונים, עם כתובת סטטית."""
+    if not cfg.slaves:
+        return []
+    found = []
+    if cfg.mode != MODE_STATIC:
+        found.append(f"{cfg.name} מאחד שני כרטיסים וחייב כתובת סטטית")
+    if len(cfg.slaves) != 2 or len(set(cfg.slaves)) != 2 or cfg.name in cfg.slaves:
+        found.append(f"{cfg.name} מאחד בדיוק שני כרטיסים שונים "
+                     f"(התקבל: {', '.join(cfg.slaves)})")
+    for slave in cfg.slaves:
+        try:
+            dhcp.validate_name(slave)
+        except ValueError as exc:
+            found.append(str(exc))
     return found
 
 
@@ -358,6 +390,13 @@ def render(cfg: NetConfig, hostname: str = "") -> str:
         f"    address {cfg.address}",
         f"    netmask {cfg.netmask}",
     ]
+    if cfg.slaves:
+        # ‏#1264: ‏ifenslave (‏if-pre-up.d) יוצר את ה-bond ומצרף אליו את
+        # הכרטיסים. לחברים אין קובץ משלהם — כתובת על חבר הייתה כתובת שנייה
+        # באותה רשת, מחוץ ל-bond.
+        lines += [f"    bond-slaves {' '.join(cfg.slaves)}",
+                  f"    bond-mode {BOND_MODE}",
+                  f"    bond-miimon {BOND_MIIMON_MS}"]
     if cfg.gateway:
         lines.append(f"    gateway {cfg.gateway}")
     if cfg.dns:
@@ -402,12 +441,13 @@ REACH_FIELDS = ("gateway", "dns", "routes")
 
 def changed(before: NetConfig, after: NetConfig) -> list[str]:
     """שמות השדות שהשתנו. משמש גם לשורת היומן וגם להחלטה על החימוש."""
-    names = ("mode", "address", "netmask", "gateway", "dns", "routes")
+    names = ("mode", "address", "netmask", "gateway", "dns", "routes", "slaves")
     return [f for f in names if getattr(before, f) != getattr(after, f)]
 
 
 def summary(cfg: NetConfig) -> str:
     """תיאור קצר לשורת יומן: ‏"eth1 static 10.44.9.10/24"."""
     if cfg.mode == MODE_STATIC:
-        return f"{cfg.name} {cfg.mode} {cfg.cidr}"
+        bond = f" slaves={'+'.join(cfg.slaves)}" if cfg.slaves else ""
+        return f"{cfg.name} {cfg.mode} {cfg.cidr}{bond}"
     return f"{cfg.name} {cfg.mode}"

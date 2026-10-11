@@ -124,6 +124,8 @@ do_restore_drawers() {
     # shellcheck disable=SC2086 # the disk list is a word list on purpose
     EXPAND_OVERRIDE=$(json_get "$RESP" ".session.expand_partition") run_restore_drawers "multicast" "$SERVER" "$1" "$RUN_DIR/manifest.json" $_disks
     _rc=$?; crc_delta_measure $_disks   # #872: 199 פעם אחת אחרי הכתיבה, בהצלחה ובכשל
+    # shellcheck disable=SC2086 # #1269: drivers by the chosen model, per drawer, before the report
+    [ "$_rc" -eq 0 ] && stage_drawer_drivers "$2" "$RUN_DIR/manifest.json" $_disks
 
     if [ "$_rc" -eq 0 ]; then
         report_final "$_ppid" "$2" "$MAC" "$SERVER" \

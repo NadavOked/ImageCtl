@@ -22,7 +22,7 @@ static void disk_row(App *a,cairo_t *cr,Rect r,int i){
     char size[32];snprintf(size,sizeof size,"%.1f GiB",d->size_bytes/1073741824.0);install_text_ltr(cr,size,12,500,r.x+r.w*.46,r.y+19,r.w*.14,d->iso?t->muted:t->ink);
     install_text_ltr(cr,d->bus[0]?d->bus:"—",12,400,r.x+r.w*.30,r.y+19,r.w*.12,t->muted);
     install_text_r(cr,t,d->iso?"מדיית ההתקנה":(d->has[0]?d->has:"—"),11,400,r.x+r.w*.28,r.y+(selected?9:14),r.w*.24,t->muted);
-    if(selected)install_text_r(cr,t,"יימחק",11,600,r.x+r.w*.28,r.y+33,r.w*.24,t->danger);   /* ui-audit: was r.x+68, on top of "has" at 1024 */
+    if(selected)install_text_r(cr,t,"יימחק",11,600,r.x+r.w*.28,r.y+33,r.w*.24,t->danger_fg);   /* ui-audit: was r.x+68, on top of "has" at 1024 */
     if(!d->iso)hit_add(a,r,HIT_INSTALL_DISK_BASE+i);
 }
 
@@ -37,9 +37,9 @@ void install_draw_disk(App *a,cairo_t *cr,InstallLayout l){
     InstallState *s=&a->install;const Theme *t=a->theme;double x=l.body.x,w=l.body.w,y=l.body.y;
     Rect table={x,y,w,42+s->ndisks*58};install_card(cr,t,table);disk_head(cr,t,(Rect){x+1,y+1,w-2,40});
     for(int i=0;i<s->ndisks;i++){disk_row(a,cr,(Rect){x+1,y+41+i*58,w-2,58},i);}y+=table.h+16;
-    if(s->disk>=0&&s->disk<s->ndisks){char warning[260];snprintf(warning,sizeof warning,"כל הנתונים בדיסק %s יימחקו",s->disks[s->disk].model[0]?s->disks[s->disk].model:s->disks[s->disk].path);install_text_r(cr,t,warning,14,600,x+w,y,w,t->danger);y+=30;disk_ack(a,cr,(Rect){x+w-180,y,180,44});}
-    else{install_text_r(cr,t,"לא נמצא דיסק חוקי להתקנה.",13,600,x+w,y,w,t->danger);y+=48;}
-    if(s->field_error[0][0]){install_text_r(cr,t,s->field_error[0],12,600,x+w,y+50,w,t->danger);}
+    if(s->disk>=0&&s->disk<s->ndisks){char warning[260];snprintf(warning,sizeof warning,"כל הנתונים בדיסק %s יימחקו",s->disks[s->disk].model[0]?s->disks[s->disk].model:s->disks[s->disk].path);install_text_r(cr,t,warning,14,600,x+w,y,w,t->danger_fg);y+=30;disk_ack(a,cr,(Rect){x+w-180,y,180,44});}
+    else{install_text_r(cr,t,"לא נמצא דיסק חוקי להתקנה.",13,600,x+w,y,w,t->danger_fg);y+=48;}
+    if(s->field_error[0][0]){install_text_r(cr,t,s->field_error[0],12,600,x+w,y+50,w,t->danger_fg);}
     if(s->existing_disk>=0&&s->existing_disk<s->ndisks){InstallDisk *d=&s->disks[s->existing_disk];Rect card={x,y+58,w,72};install_card(cr,t,card);install_text_r(cr,t,"נמצאה התקנה קיימת — אתחל מהדיסק",14,600,x+w-16,card.y+14,w-220,t->ink);install_text_ltr(cr,d->model,11,400,x+180,card.y+42,w-210,t->muted);Text boot=btn_label(cr,"אתחל מהדיסק");draw_btn(a,cr,(Rect){x+16,card.y+17,150,38},&boot,BTN_PLAIN,HIT_INSTALL_BOOT_LOCAL);text_free(&boot);}
     install_footer(a,cr,l,"הבא",HIT_INSTALL_NEXT,0,s->disk>=0&&s->disk_ack);
 }
@@ -52,7 +52,7 @@ void install_draw_role(App *a,cairo_t *cr,InstallLayout l){InstallState *s=&a->i
     install_radio(a,cr,(Rect){x,y,w,74},"שרת ראשי","מנהל את הספרייה, השיכפול והשרתים המשניים.",!s->secondary,HIT_INSTALL_PRIMARY);y+=86;
     install_radio(a,cr,(Rect){x,y,w,74},"שרת משני","שרת באתר נוסף; הראשי יוזם אליו חיבור מאובטח בפורט 8443.",s->secondary,HIT_INSTALL_SECONDARY);y+=96;
     if(s->secondary){install_field_draw(a,cr,(Rect){x,y,w-150,56},"כתובת השרת הראשי",s->primary_url,0,HIT_INSTALL_PRIMARY_URL,1);Text check=btn_label(cr,"בדוק חיבור");Rect cb={x+w-138,y+19,138,36};draw_btn(a,cr,cb,&check,BTN_PLAIN,HIT_INSTALL_CHECK_PRIMARY);install_focus_ring(a,cr,cb,HIT_INSTALL_CHECK_PRIMARY);text_free(&check);y+=70;result_box(a,cr,(Rect){x,y,w,70});y+=82;}
-    if(s->error[0])install_text_r(cr,t,s->error,13,600,x+w,y,w,t->danger);
+    if(s->error[0])install_text_r(cr,t,s->error,13,600,x+w,y,w,t->danger_fg);
     install_footer(a,cr,l,"הבא",HIT_INSTALL_NEXT,1,1);
 }
 
@@ -68,6 +68,6 @@ static void nic_row(App *a,cairo_t *cr,Rect r,int i){InstallState *s=&a->install
 void install_draw_network(App *a,cairo_t *cr,InstallLayout l){InstallState *s=&a->install;const Theme *t=a->theme;double w=l.body.w,x=l.body.x,y=l.body.y;Rect table={x,y,w,42+s->nnics*58};install_card(cr,t,table);table_head(cr,t,(Rect){x+1,y+1,w-2,40});for(int i=0;i<s->nnics;i++)nic_row(a,cr,(Rect){x+1,y+41+i*58,w-2,58},i);y+=table.h+16;
     double half=(w-12)/2;install_radio(a,cr,(Rect){x+half+12,y,half,66},"לקוח DHCP (מומלץ)","הכתובת מגיעה משרת ה-DHCP של המכללה.",!s->static_mode,HIT_INSTALL_DHCP);install_radio(a,cr,(Rect){x,y,half,66},"כתובת סטטית","כשאין DHCP או כשהכתובת חייבת להישאר קבועה.",s->static_mode,HIT_INSTALL_STATIC);y+=79;
     double gap=12,fw=(w-gap)/2;install_field_draw(a,cr,(Rect){x+fw+gap,y,fw,56},"כתובת IP",s->address,0,HIT_INSTALL_ADDRESS,s->static_mode);install_field_draw(a,cr,(Rect){x,y,fw,56},"מסכת רשת",s->netmask,0,HIT_INSTALL_NETMASK,s->static_mode);y+=68;install_field_draw(a,cr,(Rect){x+fw+gap,y,fw,56},"שער (רשות)",s->gateway,0,HIT_INSTALL_GATEWAY,s->static_mode);install_field_draw(a,cr,(Rect){x,y,fw,56},"DNS (רשות)",s->dns,0,HIT_INSTALL_DNS,s->static_mode);
-    const char *err="";for(int i=3;i<=8;i++)if(s->field_error[i][0]){err=s->field_error[i];break;}if(err[0])install_text_r(cr,t,err,12,600,x+w,y+62,w,t->danger);
+    const char *err="";for(int i=3;i<=8;i++)if(s->field_error[i][0]){err=s->field_error[i];break;}if(err[0])install_text_r(cr,t,err,12,600,x+w,y+62,w,t->danger_fg);
     install_footer(a,cr,l,"הבא",HIT_INSTALL_NEXT,1,s->nic>=0);
 }

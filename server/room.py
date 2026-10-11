@@ -25,7 +25,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from . import auth, registry, reports, storage_locations
+from . import auth, drivers, registry, reports, room_drivers, storage_locations
 from .db import journal, now_iso, update_one, writing
 from .images import required_bytes, restore_refusal
 from .imagefit import validate_expand_choice
@@ -195,6 +195,9 @@ def drawer_list(conn: sqlite3.Connection, mac: str, written: set[str],
                          and port in selected_ports),
             "state": target.get("state"),
             "error": target.get("error"),
+            # ‏#1269: תוצאת הנחת הדרייברים על המגירה הזו (מנורמלת ב-ingest).
+            # ‏None = השלב לא רץ עליה — לא `no_match`.
+            "drivers": target.get("drivers"),
             # ‏#552: המפעיל ראה ‏"0 of 5 written" במשך 75 דקות. המונה
             # הזה סופר מגירות ש**סיימו**, ולכן הוא 0 גם כשהכול רץ מצוין
             # וגם כשהכול תקוע — ואי-אפשר להבחין. הבייטים הם ההבחנה.
@@ -387,8 +390,13 @@ def _validate_target_slots(conn: sqlite3.Connection, raw) -> list[dict]:
     return sorted(selected, key=lambda item: item["mac"])
 
 
+def library_packages(ctx) -> list[dict]:
+    """החבילות שבספרייה עכשיו (‏#1269). ‏`ctx.drivers` חסר בבדיקות ישנות."""
+    return list(ctx.drivers.scan().values()) if ctx.drivers is not None else []
+
+
 def open_round(ctx, image_id: str, target_drives: int, user: str,
-               target_slots=None, expand_partition=None) -> dict:
+               target_slots=None, expand_partition=None, driver_models=None) -> dict:
     manifest = ctx.library.get(image_id)
     if manifest is None:
         raise ValueError("אימג' לא קיים בספרייה")
@@ -424,6 +432,8 @@ def open_round(ctx, image_id: str, target_drives: int, user: str,
         if target_drives < selected_count:
             raise ValueError(
                 "מספר היעדים בסבב קטן ממספר הדיסקים שנבחרו לגל הראשון")
+    # ‏#1269: דגם דרייברים לכל דיסק יעד — אופציונלי; מאומת לפני כל כתיבה.
+    chosen_drivers = room_drivers.validate(driver_models, selected, library_packages(ctx))
     # ‏#953: אימג' שאינו נכנס למגירה הקטנה ביותר שדווחה אינו נפתח — לא רק
     # מושבת במסך. הסירוב נוקב במגירה ובמספרים; ‏409 כמו כל התנגשות עם מצב
     # החדר. בלי דיווח (`None`) אין סירוב — בדיקה 2.7 במכונה תסרב לה לבדה.
@@ -439,18 +449,21 @@ def open_round(ctx, image_id: str, target_drives: int, user: str,
     round_id = "room_" + secrets.token_hex(4)
     ctx.conn.execute(
         "INSERT INTO room_rounds (id, image_id, target_drives, target_slots_json,"
-        " expand_partition, state, wave_session_id, opened_by, created_at)"
-        " VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)",
+        " expand_partition, driver_models_json, state, wave_session_id, opened_by,"
+        " created_at) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)",
         (round_id, image_id, target_drives,
          json.dumps(selected, separators=(",", ":")) if selected is not None else None,
-         expand_choice, wave_id, user, now_iso()),
+         expand_choice,
+         json.dumps(chosen_drivers, ensure_ascii=False) if chosen_drivers else None,
+         wave_id, user, now_iso()),
     )
     ctx.conn.commit()
     journal(ctx.conn, "room_open",
             f"{round_id} {image_id} target={target_drives}"
             # ‏#59: אותו כלל כמו session_open — "auto" אינו נרשם, כדי
             # שסבב שלא נגע בהרחבה לא ייראה כמו החלטה שמישהו קיבל.
-            + (f" expand={expand_choice}" if expand_choice != "auto" else ""),
+            + (f" expand={expand_choice}" if expand_choice != "auto" else "")
+            + (f" drivers={len(chosen_drivers)}" if chosen_drivers else ""),
             user)
     return {"id": round_id, "wave_session_id": wave_id}
 
@@ -1093,6 +1106,8 @@ def status_view(ctx) -> dict:
             "target_slots": (json.loads(round_row["target_slots_json"])
                              if round_row["target_slots_json"] else None),
             "expand_partition": round_row["expand_partition"] or "auto",
+            # ‏#1269: דגם הדרייברים לכל דיסק יעד; ‏null = הסבב בלי דרייברים.
+            "driver_models": room_drivers.view(round_row),
             "written_drives": round_row["written_drives"],
             "remaining_drives": round_row["target_drives"] - round_row["written_drives"],
             "wave_number": round_row["wave_number"],
@@ -1161,6 +1176,12 @@ def create_room_router(ctx, wake=None) -> APIRouter:
         # Observation is never a room state-machine event (#446).
         return status_view(ctx)
 
+    @router.get("/driver-models")
+    def list_driver_models(user=Depends(current_user)):
+        """‏#1269: הדגמים שיש להם חבילת דרייברים בספרייה — הרשימה שממנה
+        המפעיל בוחר. רק מכללי הדגם של המניפסטים (‏`drivers.models`)."""
+        return drivers.models(library_packages(ctx))
+
     @router.post("")
     async def open_(request: Request, user=Depends(room_operator)):
         body = await request.json()
@@ -1171,12 +1192,14 @@ def create_room_router(ctx, wake=None) -> APIRouter:
             if isinstance(source, dict) and source.get("kind") == _direct().BUILD_DISK:
                 return _direct().open_direct_round(
                     ctx, source, body.get("target_slots"),
-                    body.get("target_drives"), user[0])
+                    body.get("target_drives"), user[0],
+                    body.get("driver_models"))     # #1269
             return open_round(
                 ctx, body.get("image_id", ""),
                 int(body.get("target_drives", 0)), user[0],
                 body.get("target_slots"),          # #695: בחירת דיסקי יעד (אופציונלי)
                 body.get("expand_partition"),      # #59: בחירת ההרחבה (אופציונלי)
+                body.get("driver_models"),         # #1269: דרייברים לכל דיסק (אופציונלי)
             )
         except SessionError as exc:       # לפני ValueError — הוא יורש ממנו
             raise HTTPException(409, str(exc))

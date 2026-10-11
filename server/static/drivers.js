@@ -119,6 +119,63 @@ function driversCoverageCard() {
     + `<div class="c12">${UI.note("info", `"הונח" אינו "הותקן": בקר אחסון שבלעדיו Windows לא עולה אינו מכוסה (v2). חבילת דגם מכסה לפי דגם ולא לפי בקר — ולכן בקר שרק היא מכסה מוצג כ"לא אומת לפי PCI".${classroom ? ` תחנות כיתה (${classroom}) — v2, לא מוצגות.` : ""}`)}</div>`;
 }
 
+/* ---------- דגמים (stage 3, console-full.html P.drivers): מבט לפי דגם — הדגם מ-DMI שהמחשב דיווח ב-hello ----------
+   אותו חישוב כיסוי של לשונית "כיסוי לפי מכונה" (driverCoverage), מקובץ לפי דגם. מכונה נספרת "מכוסה" רק כשדיווחה
+   בקרי PCI וכולם מכוסים; "חסרה" כשיש בקר בלי חבילה; "לא נבדקה" כשלא דיווחה בקרים בכלל — ולא נספרת כמכוסה (עיקרון 5).
+   מכונה שלא דיווחה חומרה כלל אין לה דגם: שורה משלה, "לא נבדק". גרסה/גודל/סוג לכל חבילה — אין בנתוני /drivers. */
+function driverModelLabel(m) {
+  if (m.inventory == null) return null;
+  const dmi = m.inventory.dmi || {};
+  return [dmi.sys_vendor, dmi.product_version || dmi.product_name].filter(Boolean).join(" ") || "דגם לא דווח";
+}
+function driverMachineVerdict(m) {
+  const pci = (m.inventory && m.inventory.pci) || [];
+  if (!pci.length) return "unchecked";
+  return driverCoverage(m).uncovered.length ? "missing" : "covered";
+}
+function driverModels() {
+  const v1 = (MACHINES || []).filter((m) => ["build", "cloner"].includes(machineRole(m)));
+  const map = new Map(), unreported = [];
+  for (const m of v1) {
+    const label = driverModelLabel(m);
+    if (label == null) { unreported.push(m); continue; }
+    const e = map.get(label) || { model: label, machines: [], covered: 0, missing: 0, unchecked: 0, pkgs: new Set() };
+    e.machines.push(m);
+    e[driverMachineVerdict(m)]++;
+    driverCoverage(m).pkgs.forEach((p) => e.pkgs.add(p.name));
+    map.set(label, e);
+  }
+  return { models: [...map.values()].sort((a, b) => a.model.localeCompare(b.model)), unreported };
+}
+function driverModelPill(e) {
+  if (e.missing && !e.pkgs.size) return UI.pill("err", "אין דרייברים");
+  if (e.missing) return UI.pill("warn", "חלקי");
+  if (e.unchecked) return UI.pill("", "לא נבדק");
+  return UI.pill("ok", "מכוסה");
+}
+function driversModelsCard() {
+  if (MACHINES == null) return UI.note("err", "רשימת המחשבים לא נקראה — אין מה לחשב.");
+  const { models, unreported } = driverModels();
+  const rows = models.map((e) => ({ attrs: `data-model="${esc(e.model)}" tabindex="0" onclick="openDriverModel('${encodeId(e.model)}')"`,
+    cells: [`<b dir="auto">${esc(e.model)}</b>`, String(e.machines.length), String(e.covered), String(e.missing), String(e.unchecked), driverModelPill(e)] }));
+  if (unreported.length) rows.push({ attrs: `data-model=""`, cells: [`<span class="muted">לא דיווחו חומרה</span>`, String(unreported.length), "—", "—", "—", UI.pill("", "לא נבדק")] });
+  const table = UI.datagrid({ cls: "acts-on", columns: ["דגם", "מחשבים", "מכוסים", "חסרים", "לא נבדקו", "מצב"], rows, empty: "אין מחשבי בנייה או שיכפול רשומים — הוסיפו אותם בדף המחשבים" });
+  return UI.card({ title: "דגמי מחשבים שנמצאו ברשת", small: "הדגם נקבע מ-DMI שהמחשב מדווח ב-hello", cls: "c12", body: table, flush: rows.length > 0 });
+}
+function openDriverModel(enc) {
+  let label = enc; try { label = decodeURIComponent(enc); } catch (e) {}
+  const e = driverModels().models.find((x) => x.model === label);
+  if (!e) { toast("דגם לא נמצא"); return; }
+  const lines = e.machines.map((m) => {
+    const v = driverMachineVerdict(m), un = v === "missing" ? driverCoverage(m).uncovered : [];
+    return `<span style="display:block">${esc(driverMachineName(m.mac))} ${v === "covered" ? UI.pill("ok", "מכוסה") : v === "missing" ? UI.pill("warn", `${un.length} בקרים בלי חבילה`) : UI.pill("", "לא נבדק")}${un.length ? ` <span class="cap mono">${esc(un.join(" · "))}</span>` : ""}</span>`;
+  }).join("");
+  const pk = [...e.pkgs].map((n) => `<span style="display:block">${esc(n)}</span>`).join("") || `<span class="muted">אין חבילה מתאימה</span>`;
+  const warn = e.missing && !e.pkgs.size ? UI.note("warn", `${e.machines.length} מחשבים מהדגם הזה רשומים, ואין להם דרייברים. אימג' שישוחזר אליהם עלול לעלות בלי דרייבר אחסון או רשת.`) : "";
+  const imp = isAdmin() ? `<div class="acts"><button class="btn primary" onclick="openDriverImport()">ייבוא חבילה (tar)</button></div>` : "";
+  openDrawer(`דגם — ${e.model}`, `<div class="page drw">${warn}${UI.kv([["מחשבים", lines], ["חבילות שיונחו", pk]])}${imp}</div>`);
+}
+
 function driversPage(tab = 0) {
   if (DRIVERS === null && !driversError) return pagePlaceholder();
   const admin = isAdmin(), list = DRIVERS || [];
@@ -128,10 +185,11 @@ function driversPage(tab = 0) {
     : `‏/drivers לא נקרא: ${esc(driversError)}`;
   const actions = (admin ? `<button class="btn primary" onclick="openDriverImport()">ייבוא חבילה (tar)</button>` : "") + `<button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>`;
   const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "תשתית" }, { label: "דרייברים" }],
-    icon: "t-drivers", name: "דרייברים", sub, pill: DRIVERS ? "" : UI.pill("err", "לא נקרא"), actions, tabs: ["חבילות", "כיסוי לפי מכונה"], tab });
+    icon: "t-drivers", name: "דרייברים", sub, pill: DRIVERS ? "" : UI.pill("err", "לא נקרא"), actions, tabs: ["דגמים", "חבילות", "כיסוי לפי מכונה"], tab });
   let body;
   if (!DRIVERS) body = UI.note("err", `לא הצלחתי לקרוא את רשימת הדרייברים: ${esc(driversError)}`);
-  else if (tab === 1) body = driversCoverageCard();
+  else if (tab === 0) body = driversModelsCard();
+  else if (tab === 2) body = driversCoverageCard();
   else {
     const table = UI.datagrid({ cls: "acts-on", columns: ["חבילה", "התאמה", "קבצים", "מתאים ל-", "אומת", ""], rows: list.map((p) => driverRowHtml(p, admin)),
       empty: "אין חבילות דרייברים — ייבוא קובץ tar שנבנה ב-tools/drivers/build-package.py (manifest.json + sha256 לכל קובץ; docs/driver-packages.md)" });

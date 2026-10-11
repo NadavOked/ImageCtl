@@ -27,6 +27,9 @@ double field_height(cairo_t *cr);                      /* 10 + line(14px) + 10 +
 void draw_field(App *a, cairo_t *cr, Rect r, const char *value, int mask,
                 const char *placeholder, int id);
 void draw_select(App *a, cairo_t *cr, Rect r, const char *shown, int id);
+/* The bordered box of an input, shared with the installer's fields: console
+ * .win .n-in (field fill, 1px border, --r-sm) and its :focus (action border + 3px ring). */
+void draw_field_box(cairo_t *cr, const Theme *t, Rect r, int focus);
 /* The open list of a <select>: drawn last so it is topmost; registers
  * HIT_OPTION_BASE + i for each row. */
 void draw_popup(App *a, cairo_t *cr, Rect anchor, const char *const *opts, int n, int sel);

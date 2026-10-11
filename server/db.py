@@ -107,6 +107,7 @@ CREATE TABLE IF NOT EXISTS room_rounds (
     written_serials TEXT NOT NULL DEFAULT '[]',  -- JSON; מגירה נספרת פעם אחת
     target_slots_json TEXT,                -- בחירת דיסקי יעד לכל מכונה; NULL=סבב ישן
     expand_partition TEXT,                 -- בחירת ההרחבה לכל גלי הסבב (#59); NULL=אוטומטי
+    driver_models_json TEXT,               -- דגם דרייברים לכל דיסק יעד (#1269); NULL=בלי דרייברים
     -- ‏#715: המקור. 'library' = udp-sender של השרת על אימג' מהספרייה;
     -- 'build_disk' = מחשב הבנייה משדר מהדיסק שלו, ו-image_id הוא מזהה
     -- חי (live_…) שהמניפסט שלו הוא live_manifest_json. סבב יחיד, בלי גלים.
@@ -588,6 +589,9 @@ ADDED_COLUMNS = [
     # בחירת דיסקי היעד לסבב, לכל מכונה. NULL = סבב ישן (התנהגות "כל הדיסקים").
     # '[]' הוא בחירה ריקה מפורשת ואינו חוקי לסבב חדש (#695).
     ("room_rounds", "target_slots_json", "TEXT"),
+    # ‏#1269: דגם הדרייברים שנבחר לכל דיסק יעד (`server/room_drivers.py`).
+    # NULL = הסבב בלי דרייברים — בדיוק ההתנהגות מלפני ה-Issue.
+    ("room_rounds", "driver_models_json", "TEXT"),
     # הדיווח האחרון כפי שהגיע, יעד-יעד. סבב החדר סופר ממנו אילו
     # מגירות (לפי serial) נכתבו בהצלחה.
     ("session_members", "targets_json", "TEXT"),
@@ -755,6 +759,7 @@ def _rebuild_state_tables(conn: sqlite3.Connection) -> None:
                     written_serials TEXT NOT NULL DEFAULT '[]',
                     target_slots_json TEXT,
                     expand_partition TEXT,
+                    driver_models_json TEXT,
                     source_kind TEXT NOT NULL DEFAULT 'library',
                     source_mac TEXT,
                     source_disk TEXT,
@@ -772,12 +777,14 @@ def _rebuild_state_tables(conn: sqlite3.Connection) -> None:
             conn.execute("""
                 INSERT INTO room_rounds_new
                     (id, image_id, target_drives, written_drives, written_serials,
-                     target_slots_json, expand_partition, source_kind, source_mac,
+                     target_slots_json, expand_partition, driver_models_json,
+                     source_kind, source_mac,
                      source_disk, source_task_id, live_manifest_json, state,
                      wave_session_id, wave_number, opened_by, created_at, closed_at,
                      failed_reason)
                 SELECT id, image_id, target_drives, written_drives, written_serials,
-                       target_slots_json, expand_partition, source_kind, source_mac,
+                       target_slots_json, expand_partition, driver_models_json,
+                       source_kind, source_mac,
                        source_disk, source_task_id, live_manifest_json, state,
                        wave_session_id, wave_number, opened_by, created_at, closed_at,
                        failed_reason
@@ -1254,15 +1261,21 @@ def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
         )
 
 
-def set_settings(conn: sqlite3.Connection, pairs: dict[str, str]) -> None:
+def set_settings(conn: sqlite3.Connection, pairs: dict[str, str],
+                 remove: tuple[str, ...] | list[str] = ()) -> None:
     """כותב כמה הגדרות ב**טרנזאקציה אחת** — הכל-או-כלום (#732).
 
     כמה קריאות ל-`set_setting` הן כמה טרנזאקציות: אם השנייה נכשלת
     (דיסק מלא, נעילה) הראשונה כבר נכתבה, והתוצאה היא מצב מעורב שנקרא
     כתצורה תקינה (עיקרון 5). כאן שתי הכתיבות באותו בלוק ``writing``,
-    וכישלון מגלגל את שתיהן. אותו מסלול נעילות של `set_setting`."""
+    וכישלון מגלגל את שתיהן. אותו מסלול נעילות של `set_setting`.
+
+    ‏`remove` (‏#1264): מפתחות שנמחקים באותה טרנזאקציה — רשת ההפצה שעוברת
+    מ-eth1 ל-bond0 היא כתיבה של אחד ומחיקה של השני, ואסור שתיעצר באמצע."""
     _settle(conn)
     with _write_lock, writing(conn):
+        for key in remove:
+            conn.execute("DELETE FROM settings WHERE key = ?", (key,))
         for key, value in pairs.items():
             conn.execute(
                 "INSERT INTO settings (key, value) VALUES (?, ?) "

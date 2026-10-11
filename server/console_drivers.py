@@ -20,10 +20,10 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from boot.grub_menu import normalize_mac as lenient_mac
 
-from . import auth, inventory
+from . import auth, inventory, room_drivers
 from .api import ServerContext, identity_gate
 from .db import journal
-from .drivers import DriverError, DriverLibrary, match
+from .drivers import DriverError, DriverLibrary, for_model, match
 
 
 def _matches_by_package(conn, library: DriverLibrary) -> dict[str, list[str]]:
@@ -87,16 +87,51 @@ def create_drivers_router(ctx: ServerContext) -> APIRouter:
     return router
 
 
+def _entry(name: str, by: str, manifest: dict) -> dict:
+    """חבילה אחת בתשובה לסוכן — הקבצים בשמם המדויק מהמניפסט."""
+    return {"name": name, "by": by,
+            "files": [{"path": f["path"], "sha256": f["sha256"],
+                       "url": f"/api/v1/agent/drivers/{name}/files/{f['path']}"}
+                      for f in manifest["files"]]}
+
+
+def _for_drawer(ctx: ServerContext, library: DriverLibrary, mac: str,
+                session: str, port: int) -> JSONResponse:
+    """‏#1269: מגירה של מחשב שיכפול — הדגם שהמפעיל בחר לחריץ הזה בסבב.
+
+    שלושה מצבים, לא שניים: ‏`chosen: null` = לא נבחר דגם לחריץ (הסוכן
+    מדלג); ‏`chosen` עם `packages: []` = נבחר דגם ואין לו עכשיו חבילה
+    בספרייה (נמחקה מאז הפתיחה) — הסוכן מדווח `failed`, לא `no_match`;
+    ואחרת החבילות. סבב שאינו גל של חדר → 404 `no_round`."""
+    row = ctx.conn.execute(
+        "SELECT driver_models_json FROM room_rounds WHERE wave_session_id = ?",
+        (session,)).fetchone()
+    if row is None:
+        return JSONResponse({"ok": False, "error": "no room round for this session",
+                             "code": "no_round"}, status_code=404)
+    chosen = room_drivers.choice(row, mac, port)
+    if chosen is None:
+        return JSONResponse({"ok": True, "chosen": None, "packages": []})
+    packages = library.scan()
+    names = for_model(chosen["vendor"], chosen["model"], list(packages.values()))
+    return JSONResponse({"ok": True, "chosen": chosen,
+                         "packages": [_entry(n, "model", packages[n]) for n in names]})
+
+
 def create_agent_drivers_router(ctx: ServerContext) -> APIRouter:
     router = APIRouter(prefix="/api/v1")
     library: DriverLibrary = ctx.drivers
 
     @router.get("/agent/drivers")
-    def agent_drivers(request: Request, mac: str = "") -> JSONResponse:
+    def agent_drivers(request: Request, mac: str = "", session: str = "",
+                      port: int | None = None) -> JSONResponse:
         """מה מתאים למכונה הזו. שלושה מצבים, לא שניים (עיקרון 5):
         ‏`inventory: false` = המכונה מעולם לא דיווחה מלאי (סוכן ישן /
         schema 1) — הסוכן מדווח `failed`, לא `no_match`; ‏`inventory:
-        true` עם `packages: []` = יש מלאי ואין חבילה תואמת."""
+        true` עם `packages: []` = יש מלאי ואין חבילה תואמת.
+
+        ‏#1269: עם `session` ו-`port` — מגירה בסבב החדר, לפי הדגם שנבחר
+        (‏`_for_drawer`); המלאי של המשכפל אינו של המכונה שתקבל את הדיסק."""
         canonical = lenient_mac(mac)
         if canonical is None:
             return JSONResponse({"ok": False, "error": "missing or malformed mac",
@@ -104,19 +139,17 @@ def create_agent_drivers_router(ctx: ServerContext) -> APIRouter:
         refused = identity_gate(ctx, canonical, request, "drivers")
         if refused is not None:
             return refused
+        if session or port is not None:
+            if not session or port is None:
+                return JSONResponse({"ok": False, "error": "session and port go together",
+                                     "code": "bad_query"}, status_code=400)
+            return _for_drawer(ctx, library, canonical, session, port)
         seen = inventory.latest(ctx.conn, canonical)
         if seen is None:
             return JSONResponse({"ok": True, "inventory": False, "packages": []})
         packages = library.scan()
-        answer = []
-        for hit in match(seen["inventory"], list(packages.values())):
-            manifest = packages[hit["name"]]
-            answer.append({
-                "name": hit["name"], "by": hit["by"],
-                "files": [{"path": f["path"], "sha256": f["sha256"],
-                           "url": f"/api/v1/agent/drivers/{hit['name']}/files/{f['path']}"}
-                          for f in manifest["files"]],
-            })
+        answer = [_entry(hit["name"], hit["by"], packages[hit["name"]])
+                  for hit in match(seen["inventory"], list(packages.values()))]
         return JSONResponse({"ok": True, "inventory": True, "packages": answer})
 
     @router.get("/agent/drivers/{name}/files/{path:path}")

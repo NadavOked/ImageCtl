@@ -820,6 +820,32 @@ button:focus-visible,[role="button"]:focus-visible,.inventory-node:focus-visible
 .page .rnew .radios label{display:inline-flex;gap:6px;align-items:center;flex-direction:row}
 .page .rnew .radios input{width:15px;height:15px;margin:0}
 .page .rnew .full{grid-column:1/-1}
+/* ‏#1275: גריד בחירת הדיסקים לסבב — כמו .slot/.nd במוקאפ native-full.html: נבחר = צבע ה-SMART מלא + טבעת + ✓; לא נבחר = אותו צבע חיוור */
+.page .pk-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px;font-size:var(--t-base)}
+.page .pk-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
+.page .pk-card{border:1px solid var(--hair);border-radius:var(--rp);background:var(--porcelain);padding:10px;min-width:0}
+.page .pk-card.hs{border-color:var(--indigo)}
+.page .pk-card.off{opacity:.7}
+.page .pk-top{display:flex;align-items:center}
+.page .pk-nm{font:inherit;font-weight:600;border:1px solid var(--hair);background:var(--surface);color:var(--ink);border-radius:var(--rp);padding:2px 8px;cursor:pointer}
+.page .pk-nm.all{background:var(--indigo);border-color:var(--indigo);color:var(--on-ink)}
+.page .pk-nm.na{border:0;background:transparent;padding:0;cursor:default}
+.page .pk-sub{font-size:var(--t-sm);color:var(--muted);margin:3px 0 6px}
+.page .pk-n{color:var(--clr-action-fg)}
+.page .pk-slot{position:relative;display:flex;align-items:center;justify-content:space-between;gap:6px;width:100%;min-height:32px;margin:3px 0;padding:0;padding-inline:28px 10px;border:2px solid var(--hair);border-radius:var(--rp);background:var(--field-line);color:var(--ink);font:inherit;font-size:var(--t-sm);cursor:pointer}
+.page .pk-slot.ok{border-color:var(--led-ok);background:color-mix(in srgb,var(--led-ok) 45%,var(--surface))}
+.page .pk-slot.warn{border-color:var(--warn-ink);background:color-mix(in srgb,var(--warn-ink) 45%,var(--surface))}
+.page .pk-slot.err{border-color:var(--danger);background:color-mix(in srgb,var(--danger) 45%,var(--surface))}
+.page .pk-slot.run{border-color:var(--indigo);background:var(--indigo-soft)}
+.page .pk-slot.sel{color:var(--on-ink);margin:5px 0;outline:3px solid var(--indigo);outline-offset:2px;font-weight:700}
+.page .pk-slot.sel.ok{background:var(--led-ok)}
+.page .pk-slot.sel.warn{background:var(--warn-ink)}
+.page .pk-slot.sel.err{background:var(--danger)}
+.page .pk-slot.sel.run,.page .pk-slot.sel.unk{background:var(--indigo)}
+.page .pk-ck{position:absolute;inset-inline-start:8px;top:50%;transform:translateY(-50%);font-weight:700}
+.page .pk-cap{direction:ltr;unicode-bidi:isolate}
+.page .pk-slot.e,.page .pk-slot:disabled{cursor:default;border:1px dashed var(--hair);background:transparent;color:var(--muted);padding:0 10px;justify-content:center}
+.page .pk-need{color:var(--clr-danger-fg)}
 .page .rnotes{display:grid;gap:8px}
 .page .note [dir="ltr"]{unicode-bidi:isolate;font-family:var(--font-mono);font-size:var(--t-sm)}
 @media(max-width:740px){.page .rnew{grid-template-columns:1fr}}
@@ -1313,3 +1339,8 @@ th,.table th,.page .dg th{letter-spacing:.02em}
 .page .dg.kebab-col tr.group td:last-child{position:static;width:auto;text-align:start;white-space:normal;padding-inline:12px;border-inline-start:0;box-shadow:none;background:var(--porcelain)}
 /* stage 2 · עמודת השם בטבלת האימג'ים לא נדחסת למילה בשורה */
 .page .split .dg td:nth-child(2){min-width:200px}
+/* stage 3 · מתג מקטעים (console-full.html .seg): ערכת נושא בהגדרות */
+.seg{display:inline-flex;padding:2px;background:var(--clr-hover);border-radius:var(--r-sm)}
+.seg button{border:0;background:transparent;padding:4px 12px;border-radius:calc(var(--r-sm) - 1px);font:inherit;font-size:var(--t-sm);font-weight:500;color:var(--clr-muted);cursor:pointer}
+.seg button[aria-pressed=true]{background:var(--clr-surface);color:var(--clr-text);box-shadow:0 1px 2px var(--shadow-soft)}
+.seg button:focus-visible{outline:2px solid var(--clr-action);outline-offset:1px}

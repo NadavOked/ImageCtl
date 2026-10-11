@@ -108,6 +108,8 @@ function editDeployNet(name) {
   const network = networkOf(nic.server_ip, netmask);
   const lease = String(nic.lease || "12h").trim().toLowerCase().match(/^(\d+)([mhd])$/) || [null, "12", "h"];
   const firstTime = typeof NET_DEPLOY !== "undefined" && NET_DEPLOY && NET_DEPLOY.configured === false && !nic.enabled;
+  const cards = deployCardsFields(name, nic);
+  const initial = { network, netmask, range_start: nic.range_start || "", range_end: nic.range_end || "", lease_n: lease[1], lease_u: lease[2] };
   sheet({
     title: `רשת הפצה — ${name}`,
     sub: "ה-DHCP למחשבי השיכפול והבנייה רץ על הכרטיס הזה",
@@ -128,17 +130,25 @@ function editDeployNet(name) {
         options: LEASE_UNITS.map(([value, label]) => ({ value, label })) },
       ...(nic.trunk && !nic.enabled ? [{ id: "confirm_trunk", type: "checkbox", value: false,
         label: "אני מבין שזו רשת המכללה ורוצה להדליק בכל זאת" }] : []),
+      ...(cards ? cards.fields : []),
     ],
     submitLabel: "שמירה והחלה",
     onSubmit: async (v) => {
       const problems = deployFormProblems(v);
       if (problems.length) throw new Error(problems.join(" · "));
-      await saveDeployNet(name, {
-        network: v.network.trim(), netmask: v.netmask.trim(),
-        range_start: v.range_start.trim(), range_end: v.range_end.trim(),
-        lease: `${Number(v.lease_n)}${v.lease_u}`,
-        confirm: name, confirm_trunk: v.confirm_trunk === true,
-      });
+      // ‏#1264: רק הכרטיס השני השתנה — רק ‏/second; הרשת לא נשמרת שוב (ואין
+      // אתחול dnsmasq מיותר). שניהם — קודם הרשת, ואז הכרטיס (שמעביר אותה ל-bond).
+      const second = cards ? String(v.second || "") : "";
+      const changedNet = Object.keys(initial).some((k) => String(v[k] || "").trim() !== String(initial[k] || "").trim());
+      if (!cards || second === cards.current || changedNet) {
+        await saveDeployNet(name, {
+          network: v.network.trim(), netmask: v.netmask.trim(),
+          range_start: v.range_start.trim(), range_end: v.range_end.trim(),
+          lease: `${Number(v.lease_n)}${v.lease_u}`,
+          confirm: name, confirm_trunk: v.confirm_trunk === true,
+        });
+      }
+      if (cards && second !== cards.current) await saveDeploySecond(name, second);
     },
   });
   // כתובת השרת מתעדכנת תוך כדי הקלדה, והכפתור נדלק כשהשדות תקינים.
@@ -159,6 +169,49 @@ function editDeployNet(name) {
   };
   body.addEventListener("input", sync);
   sync();
+}
+
+/* ‏#1264: "כרטיסים" בחלון רשת ההפצה — כרטיס 1 (מוצג; החלפתו היא התקנה מחדש) וכרטיס
+   2 (רשות). שני הכרטיסים פעילים יחד על אותה כתובת (bond, ‏balance-alb). רק אחרי
+   שרשת ההפצה הוגדרה מהקונסולה — בהגדרה הראשונה השרת מתאתחל, ואין עוד על מה לחבר.
+   כרטיס 2 = כרטיס שאינו מוגדר לשום דבר: לא ניהול, לא DHCP/proxy, לא רשת המכללה,
+   בלי כתובת ובלי הגדרה. השרת בודק שוב, ובעוד דברים (#53 "מי כבר עונה"). */
+function deployCardsFields(name, nic) {
+  const d = typeof NET_DEPLOY !== "undefined" ? NET_DEPLOY : null;
+  if (!d || d.configured !== true || d.source !== "console" || !nic.enabled) return null;
+  const bond = NETCFG && NETCFG.deploy_bond && NETCFG.deploy_bond.name === name ? NETCFG.deploy_bond : null;
+  const primary = bond ? bond.members[0].name : name;
+  const current = bond && bond.members[1] ? bond.members[1].name : "";
+  const rowOf = (n) => ((NETCFG && NETCFG.interfaces) || []).find((r) => r.name === n) || {};
+  const free = (NICS || []).filter((n) => n.present && n.name !== primary && n.name !== name && !isMgmtNic(n.name)
+    && !n.enabled && !n.proxy && !n.trunk && !(n.addresses || []).length
+    && (rowOf(n.name).mode || "manual") === "manual" && !(rowOf(n.name).slaves || []).length
+    && (!rowOf(n.name).member_of || n.name === current));
+  const label = (n) => { const nicRow = (NICS || []).find((x) => x.name === n); return nicRow ? `${n} — ${nicLinkText(nicRow)}` : n; };
+  const options = [{ value: "", label: "בלי כרטיס שני" }, ...free.map((n) => ({ value: n.name, label: label(n.name) }))];
+  if (current && !options.some((o) => o.value === current)) options.push({ value: current, label: label(current) });
+  return { current, fields: [
+    { type: "section", label: "כרטיסים" },
+    { id: "card1", label: "כרטיס 1", type: "select", value: primary, options: [{ value: primary, label: label(primary) }],
+      help: "כרטיס ההפצה — החלפתו דורשת התקנה מחדש" },
+    { id: "second", label: "כרטיס 2 (רשות)", type: "select", value: current, options,
+      help: "שני הכרטיסים עובדים יחד על אותה כתובת: התעבורה מתחלקת ביניהם, ואם אחד נופל השני ממשיך בלי שירגישו" },
+  ] };
+}
+
+async function saveDeploySecond(name, second) {
+  const result = await put(`/net/config/${encodeURIComponent(name)}/second`, { second });
+  if (typeof refreshNetPages === "function") refreshNetPages();
+  // ההעברה על המכונה לא אומתה — השרת החזיר את הקבצים הקודמים; החלון נשאר פתוח עם הסיבה.
+  if (!result.deploy) throw new Error(result.apply_error || "הכרטיסים לא הוחלפו");
+  if (result.apply_error) toast(`רשת ההפצה עברה ל-${result.interface}, אבל: ${result.apply_error}`);
+  else toast(second
+    ? `${second} נוסף לרשת ההפצה — שני הכרטיסים פעילים יחד על ${result.server_ip}. השרת מתאתחל, הקונסולה תחזור תוך כמה שניות`
+    : `הכרטיס השני הוסר — רשת ההפצה על ${result.interface} בלבד. השרת מתאתחל, הקונסולה תחזור תוך כמה שניות`);
+  if (result.deploy.ok && typeof NET_DEPLOY !== "undefined" && NET_DEPLOY) {
+    NET_DEPLOY = { ...NET_DEPLOY, interface: result.interface, url: result.deploy.url };
+  }
+  await loadNet();
 }
 
 async function saveDeployNet(name, body) {

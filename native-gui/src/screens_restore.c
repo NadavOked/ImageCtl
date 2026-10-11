@@ -36,8 +36,7 @@ static void restore_title(cairo_t *cr, const Theme *t, double W, double *y) {
 }
 
 static void disabled_button(cairo_t *cr, const Theme *t, Rect r, Text *label) {
-    draw_fill_rrect(cr, r, t->radius, t->field);
-    draw_border_rrect(cr, r, t->radius, t->hair, 1);
+    draw_fill_rrect(cr, r, t->radius_sm, t->track);     /* .btn:disabled: row-border fill, no border */
     text_draw(cr, label, r.x + (r.w - label->w) / 2,
               r.y + (r.h - label->h) / 2, t->muted);
 }
@@ -101,7 +100,7 @@ void screen_restore(App *a, cairo_t *cr, double W, double H, double head_h) {
     double dy = dest.y + pad;
     text_draw_r(cr, &dh, dest.x + dest.w - pad, dy, t->ink); dy += dh.h + 10;
     text_draw_r(cr, &dl, dest.x + dest.w - pad, dy, t->muted); dy += dl.h + 8;
-    text_draw_r(cr, &dv, dest.x + dest.w - pad, dy, target ? t->ink : t->danger);
+    text_draw_r(cr, &dv, dest.x + dest.w - pad, dy, target ? t->ink : t->danger_fg);
     dy += dv.h + 5;
     text_draw_r(cr, &di, dest.x + dest.w - pad, dy, t->muted);
 
@@ -194,18 +193,18 @@ void screen_restore(App *a, cairo_t *cr, double W, double H, double head_h) {
     int ready = target && a->restore_image_sel > 0 && a->restore_image_sel <= s->nimages;
     Text start = btn_label(cr, "מחק ושחזר…");
     double sw = btn_width(&start);
-    Rect start_box = {N_PAD, y, sw, 38};
+    Rect start_box = {N_PAD, y, sw, N_BUTTON_H};
     if (ready) draw_btn(a, cr, start_box, &start, BTN_DANGER, HIT_RESTORE_START);
     else disabled_button(cr, t, start_box, &start);
     Text back = btn_label(cr, "חזרה");
     double bw = btn_width(&back);
-    draw_btn(a, cr, (Rect){N_PAD + sw + 10, y, bw, 38}, &back, BTN_PLAIN, HIT_BACK);
+    draw_btn(a, cr, (Rect){N_PAD + sw + 10, y, bw, N_BUTTON_H}, &back, BTN_PLAIN, HIT_BACK);
     Text label = rtl_block_make(cr, 12, 400, ready ? "השחזור יתחיל אחרי אישור בחלון."
                                                   : "בחרו אימג' כדי להמשיך.", avail_w - sw - bw - 40);
-    text_draw_r(cr, &label, W - N_PAD, y + (38 - label.h) / 2, t->muted);
+    text_draw_r(cr, &label, W - N_PAD, y + (N_BUTTON_H - label.h) / 2, t->muted);
     if (s->form_error[0]) {
         Text err = error_make(cr, s->form_error, avail_w);
-        text_draw_r(cr, &err, W - N_PAD, y + 38 + 6, t->danger);
+        text_draw_r(cr, &err, W - N_PAD, y + N_BUTTON_H + 6, t->danger_fg);
         text_free(&err);
     }
 

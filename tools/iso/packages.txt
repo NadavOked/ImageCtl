@@ -35,6 +35,7 @@ nfs-common
 cifs-utils
 git                 # #1185: כפתור העדכון עובד על /opt/imagectl/.git שה-ISO נושא
 rsync               # #1128: tools/backup-server.sh — גיבוי מצטבר של האימג'ים
+ifenslave           # #1264: כרטיס שני לרשת ההפצה (bond, balance-alb) — bond-slaves ב-ifupdown
 
 # --- [initramfs] tools/build_initramfs.sh · הבסיס -------------------------
 busybox-static

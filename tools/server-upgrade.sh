@@ -99,17 +99,6 @@ if ! git_error="$(git -C "$REPO_DIR" checkout --detach "$TAG" 2>&1)"; then
     set_status failed "$why"
     die "$why"
 fi
-current=$(git describe --tags 2>&1) || {
-    why="git describe --tags נכשל אחרי checkout: $current"
-    set_status failed "$why"
-    die "$why"
-}
-if [[ "$current" != "$TAG" ]]; then
-    why="העץ ב-$REPO_DIR אינו על $TAG (הוא $current) — לא ממשיך"
-    set_status failed "$why"
-    die "$why"
-fi
-
 install_units_and_restart() {
     install -m 0644 install/*.service "$UNIT_DIR/"
     systemctl daemon-reload
@@ -118,6 +107,7 @@ install_units_and_restart() {
 
 rollback() {   # rollback <סיבה>
     local why="$1"
+    trap - ERR
     echo "--- $(date -Is) upgrade to $TAG FAILED: $why ---"
     if [[ -z "$PREV" ]]; then
         set_status failed "$why · אין תג קודם שמור — לא הוחזר"
@@ -132,9 +122,17 @@ rollback() {   # rollback <סיבה>
     die "$why — והחזרה ל-$PREV נכשלה"
 }
 
+# ‏#1185: מכאן העץ כבר על התג החדש — והוא מה שהשרת יריץ באתחול הבא. לכן
+# כל כשל מכאן והלאה חוזר לתג הקודם, גם כשל שאיש לא כתב לו `|| rollback`:
+# בלי ה-trap, ‏`set -e` היה יוצא עם העץ על החדש, השירות/היחידות/ה-initrd
+# על הישן, וסטטוס `running` לתמיד ("לא ידוע" שנראה כמו "בתהליך").
+trap 'rollback "server-upgrade.sh נכשל בשורה $LINENO (קוד $?) — הפירוט ב-$LOG"' ERR
+current=$(git describe --tags 2>&1) || rollback "git describe --tags נכשל אחרי checkout: $current"
+[[ "$current" == "$TAG" ]] || rollback "העץ ב-$REPO_DIR אינו על $TAG (הוא $current)"
+
 # 3. יחידות + 4. initrd
-install -m 0644 install/*.service "$UNIT_DIR/"
-systemctl daemon-reload
+install -m 0644 install/*.service "$UNIT_DIR/" || rollback "התקנת יחידות systemd ל-$UNIT_DIR נכשלה"
+systemctl daemon-reload || rollback "systemctl daemon-reload נכשל"
 
 # ‏#1230: "העדכון עבר והמכונות על initrd ישן" אסור — סוכן ישן מול שרת חדש.
 # הבנייה היא tools/boot-payload-build.sh, אותו קוד של firstboot: הקרנל וה-

@@ -155,7 +155,7 @@ static const char *status_keys(const App *a,char *buf,size_t n){
         ? "1–9 / [ ]  בחירת אימג'    Esc / Backspace  לתיקיות    Enter  מחק ושחזר…"
         : "1–9  בחירת תיקייה    Enter  מחק ושחזר…    Esc  חזרה";
     case SCREEN_STANDBY:return "אין פעולה במסך הזה";   /* "דיסקים: 1 · 2 · 3 SMART" sat where keys go */
-    case SCREEN_PICK:return a->chosen_disk>=0?"Tab / Shift-Tab  מעבר    Enter  התחלה    Esc  חזרה":"Esc  חזרה";
+    case SCREEN_PICK:return a->chosen_disk>=0?"Tab / Shift-Tab  מעבר    Alt+Shift  שפה    Enter  התחלה    Esc  חזרה":"Esc  חזרה";   /* #1245 */
     case SCREEN_CLASS:return a->st.has_session?"Enter  התחל עכשיו":"Esc  חזרה";
     case SCREEN_DONE:return "Enter  קליטה נוספת";
     case SCREEN_PROGRESS:return "אין פעולה במסך הזה";   /* mockup 10/10: it said "Esc חזרה" and Esc did nothing */
@@ -163,6 +163,26 @@ static const char *status_keys(const App *a,char *buf,size_t n){
     case SCREEN_INSTALL:return "Tab / Shift-Tab  מעבר    Enter  אישור    Esc  חזרה";
     default:return "אין פעולה במסך הזה";   /* message: there is no way out to offer */
     }
+}
+
+/* #1245: the typing language, at the start of the keys -- only while a text
+ * field has the focus. "עב" filled in the action colour, "EN" outlined; a
+ * click on either switches, as Alt+Shift does. On a field that takes English
+ * only it is the reason, not a switch (owner, 10/10: a field that cannot take
+ * Hebrew says why). Returns the width it took, 0 when nothing is drawn. */
+static double draw_lang_chip(App *a,cairo_t *cr,double x,Rect bar){
+    const Theme *t=a->theme;int lang=app_typing_lang(a);
+    if(lang==LANG_NONE)return 0;
+    if(lang==LANG_EN_ONLY){
+        Text n=text_make(cr,FONT_SANS,12,400,"EN · שדה באנגלית בלבד",0,DIR_RTL);
+        text_draw(cr,&n,x,bar.y+(bar.h-n.h)/2,t->muted);double w=n.w+3*N_STATUS_GAP;text_free(&n);return w;
+    }
+    int he=lang==LANG_HE;
+    Text l=text_make(cr,FONT_SANS,12,600,he?"עב":"EN",0,he?DIR_RTL:DIR_LTR);
+    Rect c={x,bar.y+(bar.h-22)/2,l.w+20,22};
+    if(he)draw_fill_rrect(cr,c,RADIUS_SM,t->indigo);else draw_border_rrect(cr,c,RADIUS_SM,t->hair,1);
+    text_draw(cr,&l,c.x+(c.w-l.w)/2,c.y+(c.h-l.h)/2,he?t->on_ink:t->ink);
+    hit_add(a,c,HIT_LANG);double w=c.w+3*N_STATUS_GAP;text_free(&l);return w;
 }
 
 static void draw_status(App *a,cairo_t *cr,double W,double H){
@@ -173,8 +193,9 @@ static void draw_status(App *a,cairo_t *cr,double W,double H){
     double rx=W-N_STATUS_PAD;
     cairo_arc(cr,rx-N_STATUS_DOT/2,bar.y+bar.h/2,N_STATUS_DOT/2,0,2*M_PI);draw_set(cr,dot);cairo_fill(cr);
     text_draw_r(cr,&w,rx-N_STATUS_DOT-N_STATUS_GAP,bar.y+(bar.h-w.h)/2,t->ink);text_free(&w);
+    double kx=N_STATUS_PAD+draw_lang_chip(a,cr,N_STATUS_PAD,bar);   /* #1245 */
     char kb[200];Text keys=text_make(cr,FONT_SANS,12,400,status_keys(a,kb,sizeof kb),0,DIR_RTL);
-    text_draw(cr,&keys,N_STATUS_PAD,bar.y+(bar.h-keys.h)/2,t->muted);text_free(&keys);
+    text_draw(cr,&keys,kx,bar.y+(bar.h-keys.h)/2,t->muted);text_free(&keys);
 }
 
 /* The owner, 10/10: the login fields as the console draws them -- the label
@@ -200,7 +221,7 @@ void screen_login(App *a,cairo_t *cr,double W,double H,double head_h){
     char lead_s[128];snprintf(lead_s,sizeof lead_s,"מחשב הבנייה %s",known(a->st.machine_name));   /* #1252 */
     Text lead=rtl_block_make(cr,13,400,lead_s,fw);
     double lab=text_line_height(cr,FONT_SANS,12)+LOGIN_LABEL_GAP;
-    double content=title.h+6+lead.h+28+lab+N_FIELD_H+18+lab+N_FIELD_H+22+38+(a->error[0]?24:0);
+    double content=title.h+6+lead.h+28+lab+N_FIELD_H+18+lab+N_FIELD_H+22+N_BUTTON_H+(a->error[0]?24:0);
     double y=(usable-content)/2;
     text_draw_r(cr,&title,x+fw,y,t->ink);y+=title.h+6;
     text_draw_r(cr,&lead,x+fw,y,t->muted);y+=lead.h+28;
@@ -215,9 +236,9 @@ void screen_login(App *a,cairo_t *cr,double W,double H,double head_h){
     text_draw(cr,&eye,er.x+8,er.y+(er.h-eye.h)/2,t->action_fg);hit_add(a,er,HIT_EYE);text_free(&eye);
     y+=N_FIELD_H+10;
     /* the error only after a failed attempt (do_login sets it), in its own row */
-    if(a->error[0]){Text e=rtl_block_make(cr,13,400,a->error,fw);text_draw_r(cr,&e,x+fw,y,t->danger);text_free(&e);y+=24;}
+    if(a->error[0]){Text e=rtl_block_make(cr,13,400,a->error,fw);text_draw_r(cr,&e,x+fw,y,t->danger_fg);text_free(&e);y+=24;}
     y+=12;
-    Text go=btn_label(cr,"כניסה");draw_btn(a,cr,(Rect){x,y,fw,38},&go,BTN_PRIMARY,HIT_SUBMIT);text_free(&go);
+    Text go=btn_label(cr,"כניסה");draw_btn(a,cr,(Rect){x,y,fw,N_BUTTON_H},&go,BTN_PRIMARY,HIT_SUBMIT);text_free(&go);
     char srv[160];server_label(&a->st,srv,sizeof srv);   /* #1252: was the mockup's fixed line */
     char foot_s[320];snprintf(foot_s,sizeof foot_s,"%s   ·   %s",srv,known(a->st.server_version));   /* 160 + 129 + separators */
     Text foot=text_make(cr,FONT_MONO,12,400,foot_s,0,DIR_LTR);text_draw(cr,&foot,pr.x+64,usable-28-foot.h,t->muted);text_free(&foot);
@@ -368,7 +389,7 @@ void screen_menu(App *a,cairo_t *cr,double W,double H,double head_h){
     }
     /* the cards: two columns (.acts grid 1fr 1fr, gap 16), card 1 at the
      * right, each row as tall as its tallest card -- not the screen */
-    int idx[MENU_N],count=0,cols=2;double gap=16,gy=line_y+17,bottom=H-N_STATUS_H-24-38-18;
+    int idx[MENU_N],count=0,cols=2;double gap=16,gy=line_y+17,bottom=H-N_STATUS_H-24-N_BUTTON_H-18;
     for(int i=0;i<MENU_N;i++)
         if(show[i]&&!(MENU[i].admin&&!a->admin)&&!(MENU[i].cls&&!a->st.menu_class))idx[count++]=i;
     double cw=(inner-(cols-1)*gap)/cols;
@@ -388,7 +409,7 @@ void screen_menu(App *a,cairo_t *cr,double W,double H,double head_h){
         row_y+=row_h+gap;
     }
     body_clip_end(a, cr);
-    Text lo=btn_label(cr,"התנתק");double lw=btn_width(&lo);Rect lr={N_PAD,H-N_STATUS_H-24-38,lw,38};
+    Text lo=btn_label(cr,"התנתק");double lw=btn_width(&lo);Rect lr={N_PAD,H-N_STATUS_H-24-N_BUTTON_H,lw,N_BUTTON_H};
     draw_btn(a,cr,lr,&lo,BTN_PLAIN,HIT_LOGOUT);text_free(&lo);
     if(a->menu_focus==count)draw_focus_ring(a,cr,lr);
     text_free(&title);text_free(&sub);
@@ -531,9 +552,9 @@ void draw_confirm_dialog(App *a,cairo_t *cr,double W,double H){
         const char *img=a->restore_image_sel>0&&a->restore_image_sel<=s->nimages?s->images[a->restore_image_sel-1].name:"";
         snprintf(title,sizeof title,"למחוק את הדיסק ולשחזר?");
         /* the disk, the machine and the image are Latin runs inside an RTL line:
-         * isolated (FSI/PDI) so "(/dev/sda)" keeps its parentheses in place */
+         * isolated (FSI/PDI); "model · /dev/sda" -- no brackets, which this renderer mirrors */
         char disk[200],disk_i[220],mach_i[120],img_i[200];
-        snprintf(disk,sizeof disk,"%s (%s)",d&&d->model[0]?d->model:"הדיסק הפנימי",d?d->dev:"—");
+        snprintf(disk,sizeof disk,"%s · %s",d&&d->model[0]?d->model:"הדיסק הפנימי",d?d->dev:"—");
         bidi_isolate(disk,disk_i,sizeof disk_i);
         bidi_isolate(known(s->machine_name),mach_i,sizeof mach_i);
         bidi_isolate(img,img_i,sizeof img_i);

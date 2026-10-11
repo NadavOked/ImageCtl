@@ -3,6 +3,10 @@
 #include <string.h>
 #include "screens_rounds.h"
 
+/* .cls-bars height (3px) above the class list; it was written as RADIUS_SM, which
+ * happened to be 3 and is now the theme's --r-sm. */
+#define CLS_BARS_H 3
+
 /* ---- #st-class --------------------------------------------------------------- */
 
 void screen_class(App *a, cairo_t *cr, double W, double H, double head_h) {
@@ -15,7 +19,7 @@ void screen_class(App *a, cairo_t *cr, double W, double H, double head_h) {
         Head hd = head_make(cr, "הפצה לכיתות", "לאיזו כיתה נפתח הסבב", inner);
         double text_w = inner - 2 * N_METRIC_PAD;
         Text cb[MAX_CLASSES], cs[MAX_CLASSES];
-        double ch[MAX_CLASSES], body_h = N_PAD + RADIUS_SM + N_ACTION_TOP;
+        double ch[MAX_CLASSES], body_h = N_PAD + CLS_BARS_H + N_ACTION_TOP;
         Text none = { NULL, 0, 0 };
         if (s->nclasses == 0) {
             none = sub_make(cr, "אין עדיין כיתות — מגדירים אותן בקונסולה, במסך המחשבים.", inner);
@@ -39,7 +43,7 @@ void screen_class(App *a, cairo_t *cr, double W, double H, double head_h) {
         card_frame(a, cr, W, H, head_h, &hd, body_h, foot_height(cr, btn_h), &body, &foot);
         body_clip_begin(a, cr, body);
         double x = body.x + N_PAD, y = body.y + N_PAD;
-        draw_cls_bars(cr, t, x, y, inner, 1);            y += RADIUS_SM + N_ACTION_TOP;
+        draw_cls_bars(cr, t, x, y, inner, 1);            y += CLS_BARS_H + N_ACTION_TOP;
         if (s->nclasses == 0) { text_draw(cr, &none, x, y, t->ink); text_free(&none); }
         for (int i = 0; i < s->nclasses; i++) {
             Rect c = { x, y, inner, ch[i] };
@@ -127,7 +131,7 @@ void screen_class(App *a, cairo_t *cr, double W, double H, double head_h) {
     y+=top_h+N_FORM_GAP;
     rows_draw(a, cr, x, y, inner, &rs);                  y += rs.h;
     y += N_LABEL_GAP;
-    text_draw(cr, &err, x, y, t->danger);
+    text_draw(cr, &err, x, y, t->danger_fg);
     body_clip_end(a, cr);
     card_end(a, cr);
     text_free(&rid_t); text_free(&meta_t); text_free(&hint_t); text_free(&cnt_l); text_free(&cnt_v); text_free(&err);

@@ -174,8 +174,8 @@ stdout is line-buffered so a record arrives as it happens.
 | `back` | חזרה on pick / room / class | — | back at the menu; stop feeding that screen |
 | `again` | קליטה נוספת | — | back at the menu after `#st-done` |
 | `capture-start` | התחל קליטה | `dev=`, `name=`, `desc=`, `folder=`, `folder_new=yes\|no` | POST `/api/console/tasks/capture` (`resolveFolder`: with `folder_new=yes` create the folder first). `folder=` is never empty (#1251: no "ללא תיקייה" -- the screen refuses before emitting, and the server answers 400 anyway). The screen stays on `#st-pick` until the file says `task=pending`/`running`; a failure goes back as `form_error=` |
-| `room-open` | פתח סבב והער את החדר | `image=<id>`, `target=<n>` | POST `/api/console/room`; answer with `round=` or `room_error=` |
-| `direct-open` | פתח סבב והער את המחשבים שנבחרו | `slots=<mac>@<port>,<port>/<mac>@<port>` | #715: POST `/api/console/room` with `source: {kind: build_disk, mac, disk}` + `target_slots`; the disk is the first non-removable one in the server inventory. Only ticked, present, fresh drawers are listed; none → `room_error=` locally |
+| `room-open` | פתח סבב והער את החדר | `image=<id>`, `target=<n>`; with "להוסיף דרייברים" on also `slots=` (as `direct-open`) and `drivers=` (#1269) | POST `/api/console/room`; answer with `round=` or `room_error=`. #1269: with drivers the body adds `target_slots` and `driver_models` — the server binds a model only to a disk chosen as a target; switch off = the body as before |
+| `direct-open` | פתח סבב והער את המחשבים שנבחרו | `slots=<mac>@<port>,<port>/<mac>@<port>` | #715: POST `/api/console/room` with `source: {kind: build_disk, mac, disk}` + `target_slots`; the disk is the first non-removable one in the server inventory. Only ticked, present, fresh drawers are listed; none → `room_error=` locally. #1269: with drivers on, also `drivers=` → `driver_models` in the same body |
 | `room-wake` | העֵר … | — | POST `/api/console/room/wake`; answer with `toast=` |
 | `room-start` | התחל עכשיו | — | POST `/api/console/room/start` |
 | `room-close` | עצור סבב… → the confirm dialog's "עצור סבב" (#1270) | `confirm=<round image>` (filled from `round=`, not typed) | POST `/api/console/room/close {confirm_name}`; the server decides (#533), answer with `room_error=` or drop `round=` |
@@ -186,6 +186,16 @@ stdout is line-buffered so a record arrives as it happens.
 | `shrink-continue\|<nonce>` · `shrink-plain\|<nonce>` · `shrink-cancel\|<nonce>` | the shrink dialog (#928): כווץ וקלוט / קלוט בלי כיווץ / בטל קליטה, or keys 1 / 2 / 3, Esc = cancel | — (the token carries the nonce of the question on screen) | `gui_shrink_dispatch` (`agent/lib/shrinkgui.sh`) writes `nonce\|<answer>` to `$GUI_DIR/shrink-decision` only for the nonce of the active `shrink-request`; no console session is needed. One answer per question; Enter answers nothing |
 | `tool-list` | the "כלים" button of the build menu (#649) | — | the bridge writes `$GUI_DIR/tools` (`tools_gui_list` in `agent/lib/tools.sh`) |
 | `tool-run\|<id>\|<arg>\|<confirm>` | הרץ on a tool's confirm view, or a `ro` row with no argument (#649) | — (the token carries the fields; `\|` and newlines never travel) | `tools_gui_run`: the framework refuses `rw`/`destroy` unless `confirm` equals the machine's registered name, runs the domain module, and writes `$GUI_DIR/tool-result` |
+
+#1269 `drivers=<mac>|<port>|<vendor>|<model>|<mac>|<port>|…` — four fields
+per chosen disk that has a model (a disk set to "בלי" is not there). `|` is
+safe as the separator because no state value carries one (`guistate.sh`
+replaces it with a space), and vendor/model are sent in the library's spelling
+from `driver_model=`. There is no "automatic": the hardware the cloner detected
+is not the target's (docs/interfaces.md §17). Refused locally, with the reason
+in `room_error`: no disk chosen, no disk with a model, or a model the library no
+longer lists; the bridge (`room_drivers_json`, `roomflow.sh`) posts nothing on
+a malformed value, and the server checks every model again.
 
 Local validation stays local, as in the HTML: "בחרו כונן ותנו שם לאימג'" and
 "בחרו אימג' וקבעו יעד כוננים" are shown without a record.
@@ -245,9 +255,15 @@ hello_rc=<HTTP status>               # response code observed for that hello
 # #st-room (GET /api/console/room) and #st-class live rows
 image=<id>|<name>|<folder>          # /api/console/images
 machine=<name>|<mac>|<awake>|<joined>|<fresh_drawers>|<state>|<pct>|<moving>|<error>
-room_drawer=<machine-index>|<port or 0>|<serial>|<model>|<size>|<smart>|<fresh>|<selected>
+room_drawer=<machine-index>|<port or 0>|<serial>|<model>|<size>|<smart>|<fresh>|<selected>|<drivers>|<detail>
                                     # #1235: fresh 1 = ready, 0 = written, -1 = no serial (GET /room
                                     # fresh:null, #105) -- shown as "לא ניתן לזהות את הכונן בחריץ N"
+                                    # #1269: drivers = staged / skipped / failed from drawer_list[].drivers,
+                                    # empty = the step did not run; detail = packages / error / reason.
+                                    # Optional: an older agent's eight fields read as "did not run"
+driver_models=<n>                   # #1269: models read from GET /api/console/room/driver-models; -1 = not read
+                                    # (absent = -1). 0 and -1 both disable "להוסיף דרייברים", with two reasons
+driver_model=<vendor>|<model>       # one per model, the library's spelling (only models with a package)
 round=<image_name>|<wave_number>|<open 0/1>|<written>|<target>|<ready>|<remaining>|<elapsed_s>|<rate_bps>|<eta_s>
                                     # #410: the last three from GET /room .round (-1 = not measured, never 0);
                                     # a seven-field record from an older agent reads as all three unmeasured
@@ -362,13 +378,13 @@ then XRGB8888 rows — is the contract in `docs/interfaces.md` §15.
 ### `--png`: every card, for comparing with the HTML
 
 ```sh
-make png                      # out/station-<card>-{light,dark}.png, 44 files, sample data
+make png                      # out/station-<card>-{light,dark}.png, 48 files, sample data
 make png STATE=/tmp/state.txt # the same cards from a real state file
 ```
 
 Cards: `login menu pick progress done room room-live class class-live
 cloner standby message restore direct tools tools-confirm tools-output
-shrink logout restore-folder room-images restore-confirm` (`logout` is the menu with the question Esc opens; `restore-folder`/`room-images` are the folder-first image pickers inside a folder and open; `restore-confirm` is the #1270 confirm dialog). Since the
+shrink logout restore-folder room-images restore-confirm room-drivers pick-hebrew` (`logout` is the menu with the question Esc opens; `restore-folder`/`room-images` are the folder-first image pickers inside a folder and open; `restore-confirm` is the #1270 confirm dialog; `room-drivers` (#1269) is the room setup with "להוסיף דרייברים" on, in pick mode, one disk set to "בלי"; `pick-hebrew` (#1245) is the capture form with the description focused and the typing-language chip on "עב"). Since the
 10/10 mockup every screen is laid out in logical pixels and drawn at
 `ui_scale(H)` = clamp(H/800, 1, 1.4) in quarter steps: 1024x768 and 1280x800
 are 1:1, 1280x1024 and 1920x1080 are 1.25 -- a test that measures pixels at
@@ -449,9 +465,11 @@ instead of rendering in a fallback face nobody would notice was wrong.
   field. The task scoped `#st-class` to the class list and the live view;
   `class-pick` is where the wizard would continue.
 * **The student / off-network flows (#396)** — not in the HTML, not designed.
-* **Hebrew typing.** `input.c` has a US keymap; an image name typed on the
-  station is ASCII (a console account name and password already were). The
-  agent can pre-fill nothing here — the name field is the operator's.
+* ~~**Hebrew typing.**~~ Built in #1245: `input.c` carries every key in US
+  and in the Israeli standard layout (SI-1452, base level; Shift stays US),
+  Alt+Shift or the status-bar chip switches, and `utf8.h` stores the
+  letter as UTF-8. English only: user, password, the room count, a tool's
+  argument — and the installer's fields; the chip says so on those fields.
 
 ## Build recipe (Debian 13, the lab VM)
 

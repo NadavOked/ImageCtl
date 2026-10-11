@@ -693,7 +693,8 @@ def ports_snapshot(ctx, hooks: dict, server_base: str) -> list[dict]:
                       "= אין SSH לשרת מאף רשת (הדלת האחרונה)",
             interface=nic["name"], addresses=nic["addresses"]))
 
-    fw_state, fw_detail = ports.firewall_status(hooks["nft_ruleset"]())
+    ruleset = hooks["nft_ruleset"]()
+    fw_state, fw_detail = ports.firewall_status(ruleset)
     entries.append(_port("firewall", "חומת אש", "—", "nft",
         "מדיניות nftables לפי וילן שהמתקין כותב (#1074)", "השרת (host)",
         fw_state, fw_detail,
@@ -703,6 +704,14 @@ def ports_snapshot(ctx, hooks: dict, server_base: str) -> list[dict]:
                   "(install/nftables-rules.sh). כיבוי = nft flush / "
                   "systemctl stop nftables — מחוץ לקונסולה"))
 
+    # ‏#1267: לכל שורה — לאיזו רשת היא שייכת; ולשורות שחוצות רשתות (ניהול,
+    # בין שרתים) — מה טבלת imagectl של השרת אומרת על הפורט הזה. ברשת ההפצה
+    # השרת מנהל את הפורטים ואין חומת אש של המכללה — אין שם ערך.
+    for row in entries:
+        row["network"] = ports.network_of(row["id"])
+        row["firewall"], row["firewall_detail"] = (
+            ports.port_firewall(ruleset, row["proto"], row["port"])
+            if row["network"] in ("mgmt", "interserver") else (None, None))
     return entries
 
 

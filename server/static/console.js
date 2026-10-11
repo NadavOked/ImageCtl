@@ -548,6 +548,16 @@ function applyServerTheme(me) {
   applyTheme(t === "light" || t === "dark" ? t : "auto");
 }
 
+/* בחירה מפורשת (כרטיס "מראה" בהגדרות): אותו מנגנון כמו הכפתור שבכותרת, ונשמרת בשרת (users.theme). */
+function setThemePref(pref) {
+  if (!THEME_CYCLE.includes(pref)) return;
+  applyTheme(pref);
+  if (!ME) return;
+  ME.theme = pref;
+  const done = put("/me/theme", { theme: pref }).catch((e) => toast(e.message));
+  if (current === "settings") renderCurrent();
+  return done;
+}
 function toggleTheme() {
   const i = Math.max(0, THEME_CYCLE.indexOf(themePref));
   const next = THEME_CYCLE[(i + 1) % THEME_CYCLE.length];
@@ -1339,11 +1349,11 @@ async function loadHealth() {
     paintServiceStatus();
     toast("טעינת הבריאות נכשלה: " + e.message);
   }
-  if (current === "health") await loadHealthUpdate();
+  if (current === "health") await loadHealthServices();   // #1267: כרטיס השירותים; העדכונים עברו להגדרות (stage 3)
   if (current === "home" || current === "health") renderCurrent();
 }
 
-/* ‏#954 גל 5: כרטיס "גרסה ועדכון" בדף הבריאות — /update ו-/update/status
+/* ‏#954 גל 5 (stage 3: עבר להגדרות): כרטיס "עדכונים" — /update ו-/update/status
    (admin). שם השרת לאישור חזרה מגיע מ-ME.server_name (/me), לא מכתובת הקונסולה. */
 async function loadHealthUpdate() {
   try {
@@ -1369,15 +1379,13 @@ async function loadPorts() {
     portsError = e.message;
     toast("טעינת הפורטים נכשלה: " + e.message);
   }
-  // ‏#954 גל 5: המתגים — SSH (/ssh), מוניטור (/monitor/settings) ו-DHCP
-  // (/net/interfaces דרך loadNet של net.js). שלוש קריאות, שלושה כשלים
-  // נפרדים: מה שלא נקרא מוצג "לא נקרא", לא "כבוי" (עיקרון 5).
+  // ‏/ssh — למתג ה-SSH לשרת בחיבורים פיזיים (sshToggle קורא לכאן אחרי שינוי);
+  // ‏/net/interfaces — הכתובת בכותרת כרטיס רשת ההפצה (#1267). כל כשל נפרד:
+  // מה שלא נקרא מוצג "לא נקרא", לא "כבוי" (עיקרון 5).
   if (isAdmin()) {
-    const [ssh, mon, net] = await Promise.allSettled([api("/ssh"), api("/monitor/settings"), loadNet()]);
+    const [ssh, net] = await Promise.allSettled([api("/ssh"), loadNet()]);
     SSH_STATE = ssh.status === "fulfilled" ? ssh.value : null;
     sshError = ssh.status === "fulfilled" ? "" : ssh.reason.message;
-    PORTS_MONITOR = mon.status === "fulfilled" ? mon.value : null;
-    portsMonitorError = mon.status === "fulfilled" ? "" : mon.reason.message;
     PORTS_NICS = net.status === "fulfilled" ? NICS : null;
     portsNicsError = net.status === "fulfilled" ? "" : net.reason.message;
   }
@@ -2016,7 +2024,7 @@ function homeServerCard() {
     const down = live.filter((n) => SECONDARY_STATUS[n.id] && !SECONDARY_STATUS[n.id].connected).length;
     tiles.push(["סניפים", live.length ? (down ? "err" : "ok") : "", esc(live.length ? (down ? `${down} מתוך ${live.length} לא מגיב` : `${live.length} מחוברים`) : "אין סניפים")]);
   }
-  tiles.push(["עדכון", HOME.update ? "ok" : "", HOME.update ? `${esc(HOME.update.current || "ללא תג")} · ${UI.link("בדוק", "selectPageById('health')")}` : "לא נקרא"]);
+  tiles.push(["עדכון", HOME.update ? "ok" : "", HOME.update ? `${esc(HOME.update.current || "ללא תג")} · ${UI.link("בדוק", "selectPageById('settings')")}` : "לא נקרא"]);
   const acts = `<button class="btn sm flat" onclick="selectPageById('health')">בריאות ←</button>`;
   const body = `<div class="tiles">${tiles.map(([name, cls, text]) => `<div class="tile"><span class="led ${cls}"></span><div><div class="tt">${esc(name)}</div><small>${text}</small></div></div>`).join("")}</div>`;
   return UI.card({ title: "השרת", acts, cls: "c4", body });
@@ -2089,7 +2097,9 @@ function home(tab = 0) {
    לעולם לא דילוג בשני המקרים; היא נענית ליד המכונה (או במוניטור), ותשובה מהקונסולה — דורש
    API. קצב הזרם ובלוקים ששודרו שוב — מ-/room.round (#989). מה שאין לו API — מספר הגלים הכולל, היסטוריה, דילוג מרחוק — טקסט,
    לא נתון מומצא (README §8, עיקרון 5). */
-const DEPLOY = { big: false, err: "", roomErr: "", busy: false, form: { image: "", src: "library", builder: "", disk: "", target: "" } };
+const DEPLOY = { big: false, err: "", roomErr: "", busy: false, form: { image: "", src: "library", builder: "", disk: "", target: "", drv: false, drvMap: {}, sel: {} } };
+/* ‏#1269: ‏GET /room/driver-models — ‏null = לא נקרא (≠ [] אין בספרייה דגם עם חבילה) */
+let DRIVER_MODELS = null;
 const WAVE_HE = { open: "ממתין להצטרפות", running: "משדר", failed: "הגל נכשל", closed: "הגל נסגר" };
 
 function deployTabs() {
@@ -2249,6 +2259,57 @@ function roomNotes(kids, st) {
   }
   return out.length ? `<div class="c12 rnotes">${out.join("")}</div>` : "";
 }
+/* ‏#1275: בחירת הדיסקים לפתיחת סבב — אותו גריד שנדב אישר במוקאפ מחשב הבנייה (native-full.html) ובגואי
+   (screens_room.c): כרטיס לכל משכפל, מלבן לכל דיסק, לחיצה מחליפה בחירה (טבעת + ‏✓), "N נבחרו",
+   "בחר / נקה הכל". ניתן לבחור רק דיסק קיים (עם port ו-serial) במכונה ערה; מכונה כבויה וחריץ ריק — לא.
+   דיסק אדום (SMART/נכשל) כן ניתן לבחירה, כמו בגואי: הצבע אומר מה יקרה (אדום = הסוכן מדלג).
+   בלי ברירת מחדל — אין סבב בלי דיסק אחד לפחות. המפתח "mac@port" הוא גם מפתח הדרייברים. */
+function roomPickSlots(kids) {
+  return kids.flatMap((m) => {
+    const rm = roomMachine(m.mac), awake = !!(rm && rm.awake);
+    return machineSlots(m).slots.map((s) => {
+      const d = s.disk, key = d && d.port != null ? `${m.mac}@${d.port}` : "";
+      return { m, s, d, awake, key, ok: awake && !!d && !!d.serial && d.port != null };
+    });
+  });
+}
+function roomSelected(kids) { return roomPickSlots(kids).filter((x) => x.ok && DEPLOY.form.sel[x.key]); }
+function roomPick(key) {
+  const x = roomPickSlots(roomMachines()).find((y) => y.ok && y.key === key);
+  if (!x) return;
+  if (DEPLOY.form.sel[key]) delete DEPLOY.form.sel[key]; else DEPLOY.form.sel[key] = true;
+  DEPLOY.err = ""; renderCurrent();
+}
+function roomPickSet(list, on) { list.forEach((x) => { if (on) DEPLOY.form.sel[x.key] = true; else delete DEPLOY.form.sel[x.key]; }); DEPLOY.err = ""; renderCurrent(); }
+function roomPickMachine(mac) {
+  const list = roomPickSlots(roomMachines()).filter((x) => x.ok && x.m.mac === mac);
+  roomPickSet(list, !list.every((x) => DEPLOY.form.sel[x.key]));
+}
+function roomPickAll() {
+  const list = roomPickSlots(roomMachines()).filter((x) => x.ok);
+  roomPickSet(list, !(list.length && list.every((x) => DEPLOY.form.sel[x.key])));
+}
+const PICK_SMART_HE = { ok: "SMART תקין", warn: "SMART אזהרה", fail: "SMART תקלה", failed_last: "נכשל בסבב הקודם", unchecked: "SMART לא נבדק" };
+function roomPickGrid(kids) {
+  const all = roomPickSlots(kids), ready = all.filter((x) => x.ok), nsel = ready.filter((x) => DEPLOY.form.sel[x.key]).length;
+  const cards = kids.map((m) => {
+    const mine = all.filter((x) => x.m.mac === m.mac), awake = mine.length ? mine[0].awake : !!(roomMachine(m.mac) || {}).awake;
+    const pick = mine.filter((x) => x.ok), n = pick.filter((x) => DEPLOY.form.sel[x.key]).length, allOn = pick.length > 0 && n === pick.length;
+    const name = awake && pick.length ? `<button type="button" class="pk-nm${allOn ? " all" : ""}" onclick="roomPickMachine('${esc(m.mac)}')" aria-pressed="${allOn}" title="בחר / נקה את כל הדיסקים של המחשב">${esc(machineName(m))}</button>` : `<span class="pk-nm na">${esc(machineName(m))}</span>`;
+    const sub = !awake ? "כבוי" : `ער · ${pick.length} מגירות מוכנות${n ? ` · <b class="pk-n">${n} נבחרו</b>` : ""}`;
+    const slots = mine.map((x) => {
+      if (!x.d || !x.awake) return `<div class="pk-slot e" aria-hidden="true">${x.d ? "" : "ריק"}</div>`;
+      const cls = slotClass({ disk: x.d, fail: null }) || "unk", on = x.ok && !!DEPLOY.form.sel[x.key];
+      const cap = x.d.size_bytes ? ltr(fmtBytes(x.d.size_bytes)) : "לא ידוע";
+      const why = !x.ok ? " — לא ניתן לזהות את הכונן, אי אפשר לבחור" : cls === "err" ? " — אדום: הסוכן מדלג עליו" : "";
+      const tip = esc(`דיסק ${x.s.n} · ${PICK_SMART_HE[x.d.smart] || "SMART לא ידוע"}${why}`);
+      return `<button type="button" class="pk-slot ${cls}${on ? " sel" : ""}" data-key="${esc(x.key)}" aria-pressed="${on}"${x.ok ? ` onclick="roomPick('${esc(x.key)}')"` : " disabled"} title="${tip}"><span class="pk-ck" aria-hidden="true">${on ? "✓" : ""}</span><b>דיסק ${x.s.n}</b><span class="pk-cap">${cap}</span></button>`;
+    }).join("");
+    return `<div class="pk-card${!awake ? " off" : ""}${n ? " hs" : ""}" data-mac="${esc(m.mac)}"><div class="pk-top">${name}</div><div class="pk-sub">${sub}</div>${slots || `<div class="pk-sub">לא דווחו מגירות</div>`}</div>`;
+  }).join("");
+  return `<div class="full pk"><div class="pk-row"><span class="pk-count" aria-live="polite">כרגע ערים: ${ready.length} מגירות מוכנות · <b>${nsel} נבחרו</b></span><button type="button" class="btn sm" onclick="roomPickAll()">בחר / נקה הכל</button></div>`
+    + (kids.length ? `<div class="pk-grid">${cards}</div>` : `<div class="muted">אין משכפלים בחדר</div>`) + `</div>`;
+}
 /* סבב חדר חדש — inline, לא מודאל: אימג' ("נכנס לדיסק מ-X GB"; #953: מה שלא נכנס למגירה
    הקטנה מושבת עם הסיבה — לא מוסתר) → מקור (ספרייה / דיסק מחשב בנייה, #715) → פתח סבב
    (‏POST /room) → ואז "התחל גל". הערכים נשמרים ב-DEPLOY.form כי הדף מצטייר מחדש כל 2 ש'. */
@@ -2264,46 +2325,107 @@ function roomNewCard(kids, st) {
   const builder = builders.find((m) => m.mac === f.builder) || builders[0] || null;
   const direct = f.src === "build_disk";
   const declared = kids.reduce((n, m) => n + (Number(m.drawer_count) || 0), 0);
-  const target = f.target !== "" ? f.target : String(Math.max(1, declared));
-  const live = kids.flatMap((m) => (m.disks || []).filter((d) => d.serial && d.port != null)).length;
+  const nsel = roomSelected(kids).length;
+  const target = f.target !== "" ? f.target : String(Math.max(1, declared, nsel));
   const source = `<div class="radios" role="radiogroup" aria-label="מקור"><label><input type="radio" name="rn-src" value="library"${direct ? "" : " checked"} onchange="roomFormSet('src',this.value)">מהשרת (הספרייה)</label>`
     + (builders.length ? `<label><input type="radio" name="rn-src" value="build_disk"${direct ? " checked" : ""} onchange="roomFormSet('src',this.value)">מדיסק מחשב בנייה (הפצה ישירה)</label>` : `<span class="muted">מדיסק מחשב בנייה — אין מחשב בנייה שדיווח על דיסקים</span>`) + `</div>`;
   const fields = direct && builder
     ? `<label>מחשב בנייה<select id="rn-builder" onchange="roomFormSet('builder',this.value)">${builders.map((m) => `<option value="${esc(m.mac)}"${m.mac === builder.mac ? " selected" : ""}>${esc(machineName(m))}</option>`).join("")}</select></label>
        <label>דיסק המקור<select id="rn-disk" onchange="roomFormSet('disk',this.value)">${builder.disks.map((d, i) => `<option value="${esc(d.dev)}"${(f.disk || builder.disks[0].dev) === d.dev ? " selected" : ""}>דיסק ${diskSlot(d, i)} · ${fmtBytes(d.size_bytes)} · ${esc(d.model || "")}</option>`).join("")}</select></label>
-       <div class="full muted">היעד: כל המגירות המחוברות כרגע (${live}) — הפצה ישירה דורשת בחירה מפורשת, ונשלחות כולן. סבב יחיד, לא מצטבר.</div>`
+       <div class="full muted">היעד: הדיסקים שסומנו בגריד למטה — הפצה ישירה דורשת בחירה מפורשת. סבב יחיד, לא מצטבר.</div>`
     : `<label>אימג'<select id="rn-image" onchange="roomFormSet('image',this.value)">${opts}</select></label>
        <label>יעד — כמה דיסקים בסך הכול (בכל הגלים)<input type="number" id="rn-target" min="1" value="${esc(target)}" oninput="roomFormSet('target',this.value)"></label>
        <div class="full muted">${floorNote}${declared ? ` ברירת המחדל = ${declared} חריצים שהוגדרו בחדר.` : ""}</div>`;
   const err = DEPLOY.err ? UI.note("err", `הסבב לא נפתח: ${esc(DEPLOY.err)}`) : "";
-  const submit = op ? `<div class="full"><button class="btn primary" onclick="openRoomRoundSubmit()"${DEPLOY.busy ? " aria-busy=\"true\"" : ""}>פתח סבב</button> <span class="muted">הפתיחה מעירה את החדר ב-WoL; "התחל גל" אחרי שהמשכפלים הצטרפו.</span></div>` : `<div class="full muted">פתיחת סבב — למנהל או למפעיל הפצה.</div>`;
-  return UI.card({ title: "סבב חדר חדש", small: "אין סבב פעיל", cls: "c12", body: `<div class="rnew">${err ? `<div class="full">${err}</div>` : ""}<div class="full">${source}</div>${fields}${submit}</div>` });
+  const submit = op ? `<div class="full"><button class="btn primary" onclick="openRoomRoundSubmit()"${nsel ? "" : " disabled"}${DEPLOY.busy ? " aria-busy=\"true\"" : ""}>פתח סבב</button> <span class="${nsel ? "muted" : "pk-need"}">${nsel ? "הפתיחה מעירה את החדר ב-WoL; \"התחל גל\" אחרי שהמשכפלים הצטרפו." : "יש לסמן לפחות דיסק אחד"}</span></div>` : `<div class="full muted">פתיחת סבב — למנהל או למפעיל הפצה.</div>`;
+  return UI.card({ title: "סבב חדר חדש", small: "אין סבב פעיל", cls: "c12", body: `<div class="rnew">${err ? `<div class="full">${err}</div>` : ""}<div class="full">${source}</div>${fields}${roomPickGrid(kids)}${roomDriversBlock(kids, direct)}${submit}</div>` });
 }
-function roomFormSet(key, value) { DEPLOY.form[key] = value; if (key === "src" || key === "builder") renderCurrent(); }
+/* ‏#1269: דרייברים לפי דגם, לכל דיסק יעד — אופציונלי, כבוי כברירת מחדל. אין "אוטומטי": החומרה
+   שזוהתה היא של המשכפל, לא של המכונה שתקבל את הדיסק (interfaces.md §17) — דגם מפורש או "בלי".
+   היעדים הם המגירות המחוברות (serial + port), כמו בהפצה ישירה: השרת קושר דגם רק לדיסק שנבחר כיעד,
+   ולכן עם דרייברים גם סבב מהספרייה נשלח עם target_slots — ונאמר במפורש. */
+function roomDriverSlots(kids) {   // ‏#1275: רק הדיסקים שנבחרו בגריד — אותה בחירה, בלי רשימה שנייה
+  return roomSelected(kids).map((x) => ({ m: x.m, port: x.d.port, key: x.key }));
+}
+function roomDriversOn() { return !!DEPLOY.form.drv && Array.isArray(DRIVER_MODELS) && DRIVER_MODELS.length > 0; }
+/* "דרייברים: X ← 2 דיסקים ב-מחשב 1 · בלי ← מחשב 2" — לפי מכונה, מקובץ לפי דגם */
+function roomDriversSummary(slots) {
+  const parts = [], byMachine = new Map();
+  slots.forEach((s) => { if (!byMachine.has(s.m.mac)) byMachine.set(s.m.mac, []); byMachine.get(s.m.mac).push(s); });
+  for (const list of byMachine.values()) {
+    const groups = new Map(), name = machineName(list[0].m);
+    list.forEach((s) => { const c = DEPLOY.form.drvMap[s.key]; const k = c ? c.model : ""; groups.set(k, (groups.get(k) || 0) + 1); });
+    for (const [model, n] of groups) parts.push(model ? `${model} ← ${n === 1 ? "דיסק אחד" : n + " דיסקים"} ב-${name}` : `בלי ← ${name}`);
+  }
+  const any = slots.some((s) => DEPLOY.form.drvMap[s.key]);
+  return `דרייברים: ${any ? parts.join(" · ") : "אף דיסק לא קיבל דגם"}`;
+}
+function roomDriversBlock(kids, direct) {
+  const models = DRIVER_MODELS;
+  const why = models == null ? "רשימת הדגמים לא נקראה מהשרת" : !models.length ? "אין בספרייה חבילת דרייברים עם דגם מחשב — מוסיפים חבילה בדף הדרייברים" : "";
+  const on = roomDriversOn();
+  const sw = `<label><input type="checkbox" id="rn-drv"${on ? " checked" : ""}${why ? " disabled" : ""} onchange="roomFormSet('drv',this.checked)"> להוסיף דרייברים</label> <span class="muted">${esc(why || (on ? "החבילות שבשרת לדגם שנבחר יונחו על הדיסק אחרי השחזור" : "כבוי — לא יונחו דרייברים"))}</span>`;
+  if (!on) return `<div class="full">${sw}</div>`;
+  const opts = (cur) => `<option value=""${cur ? "" : " selected"}>בלי</option>` + models.map((m, i) =>
+    `<option value="${i}"${cur && cur.vendor === m.vendor && cur.model === m.model ? " selected" : ""}>${esc(m.vendor + " " + m.model)}</option>`).join("");
+  const slots = roomDriverSlots(kids);
+  const all = `<label>דגם לכל הדיסקים<select id="rn-drv-all" onchange="roomDrvAll(this.value)"><option value="-" selected>— להחיל על כולם —</option>${opts({})}</select></label>`;
+  const rows = slots.map(({ m, port, key }) => `<label>${esc(machineName(m))} · דיסק ${port}<select data-drv="${esc(key)}" onchange="roomDrvSet('${esc(key)}',this.value)">${opts(DEPLOY.form.drvMap[key])}</select></label>`).join("");
+  const scope = "";
+  return `<div class="full">${sw}</div>${slots.length ? all + rows : `<div class="full muted">סמנו דיסקים בגריד כדי לבחור להם דגם</div>`}<div class="full muted">${esc(roomDriversSummary(slots))}${esc(scope)}</div>`;
+}
+function roomDrvSet(key, value) {
+  const m = value === "" ? null : (DRIVER_MODELS || [])[Number(value)];
+  if (m) DEPLOY.form.drvMap[key] = { vendor: m.vendor, model: m.model }; else delete DEPLOY.form.drvMap[key];
+  renderCurrent();
+}
+function roomDrvAll(value) {
+  if (value === "-") return;
+  roomDriverSlots(roomMachines()).forEach((s) => { const m = value === "" ? null : (DRIVER_MODELS || [])[Number(value)]; if (m) DEPLOY.form.drvMap[s.key] = { vendor: m.vendor, model: m.model }; else delete DEPLOY.form.drvMap[s.key]; });
+  renderCurrent();
+}
+/* מה שנשלח: ‏null = המתג כבוי (הגוף כמו לפני #1269); אחרת היעדים לפי מכונה והדגם לכל דיסק שקיבל אחד */
+function roomDriverChoice(kids) {
+  if (!roomDriversOn()) return null;
+  const by = new Map(), models = [];
+  for (const { m, port, key } of roomDriverSlots(kids)) {
+    if (!by.has(m.mac)) by.set(m.mac, []);
+    by.get(m.mac).push(port);
+    const c = DEPLOY.form.drvMap[key];
+    if (c) models.push({ mac: m.mac, port, vendor: c.vendor, model: c.model });
+  }
+  return { slots: [...by].map(([mac, ports]) => ({ mac, ports })), models };
+}
+function roomFormSet(key, value) { DEPLOY.form[key] = value; if (key === "src" || key === "builder" || key === "drv") renderCurrent(); }
 function toggleRoomBig() { DEPLOY.big = !DEPLOY.big; renderCurrent(); }
 async function openRoomRoundSubmit() {
   if (!roomOperator() || DEPLOY.busy) return;
   const f = DEPLOY.form; DEPLOY.err = "";
   let body;
+  const picked = roomSelected(roomMachines()), by = new Map();
+  picked.forEach((x) => { if (!by.has(x.m.mac)) by.set(x.m.mac, []); by.get(x.m.mac).push(x.d.port); });
+  const target_slots = [...by].map(([mac, ports]) => ({ mac, ports }));   // ‏#1275: כמו room_slots_json של הגואי
+  if (!target_slots.length) DEPLOY.err = "יש לסמן לפחות דיסק אחד";
   if (f.src === "build_disk") {
     const builders = (MACHINES || []).filter((m) => machineRole(m) === "build" && Array.isArray(m.disks) && m.disks.length);
     const builder = builders.find((m) => m.mac === f.builder) || builders[0];
-    const by = new Map();
-    roomMachines().forEach((m) => (m.disks || []).forEach((d) => { if (d.serial && d.port != null) { if (!by.has(m.mac)) by.set(m.mac, []); by.get(m.mac).push(d.port); } }));
-    const target_slots = [...by].map(([mac, ports]) => ({ mac, ports }));
-    if (!builder) DEPLOY.err = "אין מחשב בנייה שדיווח על דיסקים";
-    else if (!target_slots.length) DEPLOY.err = "אין מגירה מחוברת שאפשר לבחור כיעד";
+    if (!builder && !DEPLOY.err) DEPLOY.err = "אין מחשב בנייה שדיווח על דיסקים";
     body = { source: { kind: "build_disk", mac: builder ? builder.mac : "", disk: f.disk || (builder ? builder.disks[0].dev : "") }, target_slots };
   } else {
-    if (!f.image) DEPLOY.err = "בחר אימג'";
-    body = { image_id: f.image, target_drives: Number(f.target) || 0 };
+    const target = f.target !== "" ? Number(f.target) || 0 : Math.max(1, roomMachines().reduce((n, m) => n + (Number(m.drawer_count) || 0), 0), picked.length);
+    if (!f.image && !DEPLOY.err) DEPLOY.err = "בחר אימג'";
+    else if (target < picked.length && !DEPLOY.err) DEPLOY.err = `היעד (${target}) קטן ממספר הדיסקים שסומנו (${picked.length})`;
+    body = { image_id: f.image, target_drives: target, target_slots };
   }
+  const drv = DEPLOY.err ? null : roomDriverChoice(roomMachines());   // ‏#1269
+  if (drv && !drv.models.length) DEPLOY.err = 'לא נבחר דגם לאף דיסק — בחרו דגם, או כבו את "להוסיף דרייברים"';
+  else if (drv) body.driver_models = drv.models;
   if (DEPLOY.err) { renderCurrent(); return; }
   DEPLOY.busy = true;
   try {
     await post("/room", body);
     toast("הסבב נפתח — החדר הוער ב-WoL");
-    DEPLOY.form.image = ""; DEPLOY.form.target = "";
+    DEPLOY.form.image = ""; DEPLOY.form.target = ""; DEPLOY.form.drv = false; DEPLOY.form.drvMap = {}; DEPLOY.form.sel = {};
     await loadDeploy();
   } catch (e) {
     DEPLOY.err = e.message;   // ‏409: "כבר יש סבב" / fit_refusal (#953) — אותה מחרוזת שהאפשרות המושבתת מציגה
@@ -2363,6 +2485,7 @@ async function loadDeploy() {
     .catch((e) => { ROOM = null; DEPLOY.roomErr = e.message; }));
   jobs.push(api("/images").then((v) => { if (Array.isArray(v)) IMAGES = v; }).catch(() => {}));
   jobs.push(api("/room/history").then((v) => { ROOM_HISTORY = Array.isArray(v) ? v : null; }).catch(() => { ROOM_HISTORY = null; }));   // ‏#980 §3
+  jobs.push(api("/room/driver-models").then((v) => { DRIVER_MODELS = Array.isArray(v) ? v : null; }).catch(() => { DRIVER_MODELS = null; }));   // ‏#1269
   jobs.push(Promise.allSettled([api("/machines"), api("/groups"), api("/disk-failures"), api("/net")]).then(([m, g, f, n]) => {
     if (m.status === "fulfilled" && Array.isArray(m.value)) MACHINES = m.value;
     if (g.status === "fulfilled" && Array.isArray(g.value)) GROUPS = g.value;
@@ -3404,16 +3527,25 @@ function groupKpis(g, kids) {
 }
 /* ‏#980 §3: סבבי החדר שהסתיימו, מ-GET /room/history (מהחדש לישן). null = לא נקרא ≠ [] אין סבבים.
    ירוק רק כשנכתבו כל הכוננים שהוצהרו (ראיה מהשרת); סבב שנסגר לפני היעד — אפור. */
+/* ‏stage 3 (console-full.html P.deploy "היסטוריה"): טבלה — אימג', נכתבו, משך, תוצאה (פיל), נפתח ע"י, תאריך.
+   משך = closed_at − created_at, ו-"—" כשאחד מהם חסר (לא נמדד ≠ 0). תוצאה: נכשל (עם הסיבה) / הצליח כשנכתבו כל היעדים /
+   "N מתוך M" כשנסגר לפני היעד. */
+function roomRoundMinutes(h) {
+  const s = (new Date(h.closed_at).getTime() - new Date(h.created_at).getTime()) / 1000;
+  if (!h.created_at || !h.closed_at || !Number.isFinite(s) || s < 0) return "—";
+  return s < 60 ? "פחות מדקה" : `${Math.round(s / 60)} דק'`;
+}
+function roomRoundResult(h) {
+  if (h.state === "failed") return UI.pill("err", "נכשל") + `<span class="sub">${esc(h.failed_reason || "סיבה לא ידועה")}</span>`;
+  if (h.target_drives > 0 && h.written_drives >= h.target_drives) return UI.pill("ok", "הצליח");
+  return UI.pill("warn", `${h.written_drives} מתוך ${h.target_drives}`);
+}
 function roomHistoryHtml() {
   if (ROOM_HISTORY == null) return UI.note("warn", "היסטוריית הסבבים לא נקראה");
   if (!ROOM_HISTORY.length) return UI.note("info", "אין סבבים קודמים בחדר");
-  return UI.timeline(ROOM_HISTORY.map((h) => ({
-    t: isToday(h.created_at) ? fmtClock(h.created_at) : fmtDate(h.created_at),
-    cls: h.state === "failed" ? "err" : h.written_drives >= h.target_drives ? "ok" : "",
-    text: `${esc(h.image_name || h.image_id || "")} · ${h.written_drives}/${h.target_drives} נכתבו · `
-      + (h.state === "failed" ? esc(`נכשל: ${h.failed_reason || "סיבה לא ידועה"}`) : "נסגר")
-      + (h.closed_at ? ` ${ltr(fmtWhen(h.closed_at))}` : ""),
-    who: h.opened_by || "" })));
+  return UI.datagrid({ opt: [4, 5], columns: ["אימג'", "נכתבו", "משך", "תוצאה", "נפתח ע\"י", "תאריך"],
+    rows: ROOM_HISTORY.map((h) => [esc(h.image_name || h.image_id || ""), `${h.written_drives}/${h.target_drives}`, esc(roomRoundMinutes(h)), roomRoundResult(h),
+      esc(h.opened_by || "—"), `<span class="mono">${esc(h.created_at ? (isToday(h.created_at) ? fmtClock(h.created_at) : fmtDate(h.created_at)) : "—")}</span>`]) });
 }
 /* ציר הסבבים: הסבב הפעיל (כיתה — /overview.session; משכפלים — /room.round) + ההיסטוריה (משכפלים — /room/history; אחרים — "דורש API"). */
 function groupRoundsCard(g, cls) {
@@ -3543,8 +3675,16 @@ function diskTitle(m, s, d) {
   if (s.live && d.state && d.state !== "failed") parts.push(DRAWER_STATE_HE[d.state] || d.state);
   if (d.crc_delta != null && d.crc_delta > 0) parts.push(`CRC +${d.crc_delta} · לבדוק כבל`);
   if (s.live && d.state === "writing" && d.stalled_s != null && d.stalled_s >= 60) parts.push(`ללא תזוזה ${d.stalled_s} ש'`);
+  if (s.live && d.drivers) parts.push(driversOutcomeText(d.drivers));   // ‏#1269: ‏null = השלב לא רץ על המגירה
   if (!s.fail) parts.push(smartText(d));
   return parts.join(" · ");
+}
+/* ‏#1269: drawer_list[].drivers — הונחו / לא הונחו (השחזור עצמו הושלם) / דולגו */
+function driversOutcomeText(o) {
+  if (o.state === "staged") return `דרייברים הונחו: ${(o.packages || []).join(", ")}`;
+  if (o.state === "failed") return `דרייברים לא הונחו — ${o.error || "סיבה לא ידועה"}`;
+  const why = o.reason === "not_windows" ? "האימג' אינו Windows" : o.reason === "no_model" ? "לא נבחר דגם לדיסק הזה" : (o.reason || "");
+  return `דרייברים דולגו${why ? " — " + why : ""}`;
 }
 function slotHtml(m, s, admin) {
   const cls = slotClass(s), d = s.disk, title = esc(diskTitle(m, s, d));
@@ -4199,8 +4339,29 @@ function healthRow(c, grouped = false) {
     act = UI.acts([[HEALTH_GOTO[c.id][0] + " ←", HEALTH_GOTO[c.id][1]]]);
   }
   return [`<span class="name${grouped ? " grp-kid" : ""}">${esc(c.label)}</span>`,
-    UI.status(healthStatusClass(c.state), healthStatusLabel(c.state)),
+    UI.pill(healthStatusClass(c.state), healthStatusLabel(c.state)),
     `<span class="wrap">${esc(c.detail || "")}</span>`, act];
+}
+/* מה שלא תקין, מחוץ לטבלה המלאה (console-full.html "תקלות פתוחות"): תקלה, אזהרה, ו"לא נבדק" — כל אחד
+   בשמו. ריק אמיתי = כל הבדיקות נבדקו ואף אחת לא בתקלה; בדיקה שלא נבדקה אינה "אין תקלות" (עיקרון 5). */
+function healthOpenCard(checks) {
+  const open = checks.filter((c) => ["bad", "warn", "unknown"].includes(c.state));
+  const rank = { bad: 0, warn: 1, unknown: 2 };
+  const body = open.length
+    ? UI.datagrid({ columns: ["בדיקה", "מצב", "הסיבה", ""], rows: open.slice().sort((a, b) => rank[a.state] - rank[b.state]).map((c) => healthRow(c)) })
+    : UI.empty("אין תקלות — כל הבדיקות נבדקו ואף אחת לא נכשלה.");
+  return UI.card({ title: "תקלות פתוחות", small: open.length ? `${open.length} דורשות מבט` : "", body, flush: open.length > 0 });
+}
+function healthKpis(checks) {
+  const n = (s) => checks.filter((c) => c.state === s).length;
+  const idle = n("off") + n("not_applicable");
+  return `<div class="c12 kpis">` + [
+    UI.kpi({ cls: n("ok") ? "ok" : "", label: "תקינים", value: n("ok") }),
+    UI.kpi({ cls: n("warn") ? "warn" : "", label: "באזהרה", value: n("warn") }),
+    UI.kpi({ cls: n("bad") ? "err" : "", label: "תקלות", value: n("bad") }),
+    n("unknown") ? UI.kpi({ cls: "warn", label: "לא נבדקו", value: n("unknown"), sub: "לא נבדק אינו תקין" }) : "",
+    idle ? UI.kpi({ label: "כבויים / לא ישימים", value: idle }) : "",
+  ].join("") + `</div>`;
 }
 
 function healthRows(checks) {
@@ -4249,7 +4410,7 @@ function updateLastCheckText(u) {
   return `${fmtWhenShort(c.at)} — ${what}`;
 }
 
-function healthUpdateCard() {
+function updateCard() {
   let body;
   if (updateError) body = UI.note("err", `‏/update לא נקרא: ${esc(updateError)}`);
   else if (!HEALTH_UPDATE) body = UI.empty("‏/update לא נקרא עדיין");
@@ -4267,12 +4428,14 @@ function healthUpdateCard() {
       canApply ? `<button class="btn primary" onclick="confirmUpdateApply(UPDATE_INFO.latest)">החל עדכון ${esc(UPDATE_CHECK.latest)}</button>` : "",
       u.previous ? `<button class="btn danger" onclick="confirmUpdateRevert(UPDATE_INFO.previous)">חזור ל-${esc(u.previous)}</button>` : "",
     ].join("");
-    const off = u.enabled ? "" : UI.note("warn", `העדכון כבוי (update_enabled) — ${UI.link("הדלקה בהגדרות", "selectPageById('settings')")}`);
-    // ‏#1128: גיבוי ההגדרות אינו תלוי במתג העדכון — הוא זמין תמיד למנהל.
-    const backup = `<button class="btn" onclick="confirmSettingsBackup()">הורד גיבוי הגדרות</button>`;
-    body = `<div class="upd">${UI.kv(pairs)}<div class="acts">${btns}${backup}</div></div>${off}`;
+    const off = u.enabled ? "" : UI.note("warn", `העדכון כבוי (update_enabled) — הדלקה במתג "עדכון גרסה מהקונסולה" למעלה`);
+    body = `<div class="upd">${UI.kv(pairs)}<div class="acts">${btns}</div></div>${off}`;
   }
-  return UI.card({ title: "גרסה ועדכון", small: "מהתג של עץ השרת (git describe)", body });
+  return UI.card({ title: "עדכונים", small: "מהתג של עץ השרת (git describe)", cls: "c8", body });
+}
+/* ‏#1128: גיבוי ההגדרות אינו תלוי במתג העדכון — הוא זמין תמיד למנהל (כרטיס משלו, כמו במוקאפ). */
+function backupCard() {
+  return UI.card({ title: "גיבוי", cls: "c4", body: `<p class="cap" style="margin-bottom:12px">קובץ עם הגדרות השרת, לשחזור אחרי התקנה מחדש.</p><button class="btn" onclick="confirmSettingsBackup()">הורד גיבוי הגדרות</button>` });
 }
 
 /* ‏#1128: "הורד גיבוי הגדרות" — tar.gz של ה-DB (עותק עקבי) ושאר תיקיית
@@ -4304,7 +4467,7 @@ async function healthUpdateCheck() {
     UPDATE_CHECK = { at: clockNow(), available: false, latest: null, failed: true, reason: "הבדיקה נכשלה: " + e.message };
     toast(e.message);
   }
-  if (current === "health") renderCurrent();
+  if (current === "settings") renderCurrent();
 }
 
 function health() {
@@ -4323,7 +4486,7 @@ function health() {
   else if (n("not_applicable")) pill = UI.pill("", "חלק לא ישים");
   else pill = UI.pill("ok", "הכל תקין");
   const sub = HEALTH
-    ? [`${checks.length} בדיקות`, HEALTH_AT ? `נבדק ${HEALTH_AT}` : "זמן המדידה לא נמסר", ...counts, "המתגים (SSH, מוניטור, DHCP) — בעמוד הפורטים"].map(esc).join(" · ")
+    ? [`${checks.length} בדיקות`, HEALTH_AT ? `נבדק ${HEALTH_AT}` : "זמן המדידה לא נמסר", ...counts, "עצירה והפעלה של שירות — בכרטיס השירותים"].map(esc).join(" · ")
     : `‏/health לא נקרא: ${esc(healthError)}`;
   const actions = `<button class="btn primary" onclick="loadHealth()">בדוק עכשיו</button>`;
   // ‏apple-pending-4 · 4: מצב ה-TLS עבר מכותרת הסקירה לכאן (טביעת האצבע המלאה — ב"פרטי Session")
@@ -4335,7 +4498,62 @@ function health() {
     ? UI.note("err", `לא הצלחתי לקרוא את הבדיקות: ${esc(healthError)}`)
     : UI.datagrid({ columns: ["בדיקה", "מצב", "מה נמצא", ""], rows: healthRows(checks), empty: "אין בדיקות — השרת החזיר רשימה ריקה" });
   const checksCard = UI.card({ title: "בדיקות חיוניות", small: "מה שנמדד, לא מה שמוגדר — \"לא נבדק\" הוא מצב משלו", body, flush: !!HEALTH && checks.length > 0 });
-  return `<div class="page">${header}<div class="body">${checksCard}${healthUpdateCard()}</div></div>`;
+  return `<div class="page">${header}<div class="body">${HEALTH ? healthKpis(checks) : ""}${checksCard}${healthServicesCard()}${HEALTH ? healthOpenCard(checks) : ""}</div></div>`;
+}
+
+/* ---------- #1267 המשך (נדב 11/10): עצירה/הפעלה של שירות — כאן, ליד כל שירות ----------
+   אותו API שדף הפורטים קרא לו (PUT toggle_url = /ports/{id}; ‏#996/#1013) — רק שורות ‏/ports
+   שהמתג שלהן חי שם: TFTP 69, ‏8080, ‏8081, ‏8443. ‏DHCP/proxy — ברשת הפצה; מוניטור — בדף שלו.
+   עצירה = חלון אישור עם ההשלכות וכפתור אדום, בלי הקלדה (#1270); ‏toggle "confirm" — המילה
+   שהשרת דורש נשלחת מהשורה (confirm_word). הפעלה = כפתור רגיל. לא נקרא = "לא נבדק", בלי כפתור. */
+let HEALTH_SVC = null, healthSvcError = "";
+async function loadHealthServices() {
+  try {
+    const list = await api("/ports");
+    // תשובה שאינה רשימה = "לא נבדק", לא רשימה ריקה ולא קריסת ציור (עיקרון 5)
+    if (!Array.isArray(list)) throw new Error("‏/ports החזיר תשובה שאינה רשימה");
+    HEALTH_SVC = list; healthSvcError = "";
+  }
+  catch (e) { HEALTH_SVC = null; healthSvcError = e.message; }
+}
+const healthSvcList = () => (HEALTH_SVC || []).filter((p) => p.toggle && p.toggle !== "none" && String(p.toggle_url || "").startsWith("/api/console/ports/"));
+const healthSvcUnread = (p) => p.listening === null || p.listening === undefined || p.enabled === null || p.enabled === undefined;
+function healthSvcRow(p) {
+  const k = encodeId(p.id);
+  const label = healthSvcUnread(p) ? "לא נבדק" : p.enabled && p.listening ? "פועל" : !p.enabled && !p.listening ? "עצור" : healthStatusLabel(p.state);
+  const state = `${UI.status(healthSvcUnread(p) ? "unk" : healthStatusClass(p.state), label)}<span class="sub">${esc(p.detail || "")}</span>`;
+  const act = healthSvcUnread(p) ? ""
+    : p.enabled ? `<button class="btn sm danger" onclick="healthSvcStop('${k}')">עצור…</button>`
+    : `<button class="btn sm" onclick="healthSvcStart('${k}')">הפעל</button>`;
+  return [UI.nameHtml(p.name, esc(p.desc || "")), `<span class="mono">${esc(p.port)}/${esc(p.proto)}</span>`, state, act];
+}
+function healthServicesCard() {
+  const body = HEALTH_SVC === null
+    ? UI.note("", `לא נבדק — ‏/ports לא נקרא${healthSvcError ? `: ${esc(healthSvcError)}` : ""}`)
+    : UI.datagrid({ columns: ["שירות", "פורט", "מצב", ""], rows: healthSvcList().map(healthSvcRow), empty: "אין שירות שאפשר לעצור או להפעיל מכאן" });
+  return UI.card({ title: "שירותים", small: "עצירה והפעלה — מצב נמדד מ-/ports, נקרא מחדש אחרי כל שינוי", body, flush: HEALTH_SVC !== null && healthSvcList().length > 0 });
+}
+async function healthSvcSend(p, enabled) {
+  const body = { enabled };
+  if (!enabled && p.toggle === "confirm") body.confirm = p.confirm_word || ME.server_name;
+  const r = await put(p.toggle_url.replace(/^\/api\/console/, ""), body);
+  toast(r && r.ok ? `${p.name} ${p.port} — ${enabled ? "הופעל" : "נעצר"}, ואומת`
+    : `${p.name} ${p.port} — נשמר, אבל לא אומת${r && r.detail ? `: ${r.detail}` : ""}`);
+  await loadHealthServices();
+  if (current === "health") renderCurrent();
+}
+function healthSvcStop(idEnc) {
+  const id = portIdOf(idEnc), p = healthSvcList().find((x) => x.id === id);
+  if (!p || healthSvcUnread(p)) return;
+  const warn = p.warning_he || (p.off_means ? `מה קורה אם עוצרים: ${p.off_means}` : "");
+  sheet({ title: `עצירת ${p.name} ${p.port}/${p.proto}`, sub: p.desc || "", danger: true, submitLabel: "עצור",
+    note: warn ? `<div class="sheet-note danger" data-testid="svc-warning">${esc(warn)}</div>` : "",
+    onSubmit: () => healthSvcSend(p, false) });
+}
+async function healthSvcStart(idEnc) {
+  const id = portIdOf(idEnc), p = healthSvcList().find((x) => x.id === id);
+  if (!p || healthSvcUnread(p)) return;
+  try { await healthSvcSend(p, true); } catch (e) { toast(`ההפעלה נכשלה: ${e.message}`); }
 }
 
 function roleLabel(role) {
@@ -4393,6 +4611,14 @@ function userMfaLabel(u) {
   return "—";
 }
 
+/* ‏stage 3 (console-full.html P.users): עמודת MFA כפיל. המנהל שנוצר בהתקנה — "מקומי · ללא MFA" (בכוונה, דלת חירום);
+   מנהל עם MFA — "פעיל"; מנהל בלי — "כבוי" (אזהרה); משתמש הפצה אינו נכנס לקונסולה, ולכן "—" ולא "כבוי". */
+function userMfaPill(u) {
+  if (u.is_builtin) return UI.pill("info", "מקומי · ללא MFA");
+  if (u.mfa_enabled) return UI.pill("ok", "פעיל");
+  if (u.role === "deploy") return "—";
+  return UI.pill("warn", "כבוי");
+}
 function userRowHtml(u) {
   const enc = encodeId(u.username), self = !!ME && u.username === ME.username;
   const lastAdmin = u.role === "admin" && !u.disabled && activeAdminCount() <= 1;
@@ -4414,8 +4640,8 @@ function userRowHtml(u) {
   return { attrs: `data-user="${esc(u.username)}"`, cells: [
     UI.name(u.username, note),
     u.role === "admin" ? UI.pill("info", "מנהל") : UI.pill("", "הפצה"),
-    u.disabled ? UI.status("warn", "מושבת") : UI.status("ok", "פעיל"),
-    esc(userMfaLabel(u)),
+    u.disabled ? UI.pill("err", "מושבת") : UI.pill("ok", "פעיל"),
+    userMfaPill(u),
     `<span class="mono">${esc(fmtDate(u.created_at))}</span>`,
     userLastLoginHtml(u),
     items.length ? UI.rowMenu(u.username, items) : ""] };
@@ -4519,6 +4745,8 @@ function userRevokeSessions(name) {
 let LOG = { q: "", event: "", user: "", range: "", since: "", until: "", limit: 200,
             rows: null, err: "", truncated: false, events: null, total: null, more: false };
 const LOG_RANGES = [["", "כל הזמן"], ["today", "היום"], ["7d", "7 ימים"], ["30d", "30 יום"], ["custom", "טווח…"]];
+/* ‏stage 3: עמודת "חומרה" כפיל עם מילה (console-full.html logTable) — לא נקודה צבעונית לבדה. */
+const LOG_SEV_SHORT = { ok: "הושלם", info: "מידע", warn: "אזהרה", err: "שגיאה" };
 const LOG_SEV_HE = { ok: "הושלם / אושר", info: "מידע", warn: "דורש תשומת לב", err: "כשל / סירוב" };
 
 /* חותמות השרת הן UTC ISO (now_iso) — הטווח מחושב באותו ציר. */
@@ -4591,7 +4819,7 @@ function logRowHtml(r, i) {
   const t = isToday(r.ts) ? fmtHour(r.ts) : `${fmtDate(r.ts)} ${fmtHour(r.ts)}`;
   return { attrs: `onclick="openLogDetail(${i})" tabindex="0"`, cells: [
     `<span class="mono">${esc(t)}</span>`,
-    `<span class="st ${cls}" title="${esc(LOG_SEV_HE[cls] || "")}" aria-label="${esc(LOG_SEV_HE[cls] || "")}"></span>`,
+    `<span title="${esc(LOG_SEV_HE[cls] || "")}">${UI.pill(cls, LOG_SEV_SHORT[cls] || cls)}</span>`,
     `<span class="name">${esc(r.label || r.event || "")}</span>${r.text ? `<span class="sub">${esc(r.text)}</span>` : ""}`,
     esc(r.user || "המערכת"),
     `<div class="acts"><button class="btn sm" onclick="event.stopPropagation();openLogDetail(${i})">פרטים</button></div>`] };
@@ -4626,14 +4854,14 @@ function logs() {
   if (!LOG.rows) body = UI.note("err", `לא הצלחתי לקרוא את היומן: ${esc(LOG.err)}`);
   else {
     const truncated = LOG.truncated ? UI.note("warn", "החיפוש כיסה רק את השורות האחרונות ביומן — צמצמו עם טווח תאריכים או סוג אירוע.") : "";
-    const table = UI.datagrid({ cls: "acts-on", columns: ["זמן", "", "מה קרה", "מי", ""], rows: rows.map(logRowHtml),
+    const table = UI.datagrid({ cls: "acts-on", columns: ["זמן", "חומרה", "מה קרה", "מי", ""], rows: rows.map(logRowHtml),
       empty: filters.length ? "אין אירועים שתואמים לסינון" : "היומן ריק — עדיין לא נרשם אירוע" });
     const more = LOG.more
       ? `<button class="btn sm" onclick="logMore()">עוד ${LOG.limit}</button>`
       : `<span class="cap">זה הכול לסינון הזה</span>`;
     body = `<div class="c12 card">${logBarHtml(rows)}${truncated ? `<div style="padding:10px 12px 0">${truncated}</div>` : ""}<div class="card-b flush">${table}</div><div class="dg-bar foot"><span class="n">מוצגים ${rows.length}</span><span class="sp"></span>${more}</div></div>`;
   }
-  const cap = `<div class="c12 cap">לחיצה על שורה פותחת את הפרטים הטכניים (event, המזהים). הצבע = חומרת האירוע כפי שהשרת קבע (severity ב-/journal). הייצוא הוא אותו סינון, עד 20,000 שורות. עמודת "יעד" מבנית — דורש API.</div>`;
+  const cap = `<div class="c12 cap">לחיצה על שורה פותחת את הפרטים הטכניים (event, המזהים). החומרה היא כפי שהשרת קבע (severity ב-/journal). הייצוא הוא אותו סינון, עד 20,000 שורות. עמודת "יעד" מבנית — דורש API.</div>`;
   return `<div class="page">${header}<div class="body">${body}${cap}</div></div>`;
 }
 function openLogDetail(i) {
@@ -4718,6 +4946,8 @@ async function loadNetworkNodes() {
 
 /* --- עזרי נתונים (טהורים — נבדקים ב-node) --- */
 function netCfgRow(name) { return ((NETCFG && NETCFG.interfaces) || []).find((r) => r.name === name) || null; }
+/* ‏#1264: ה-bond שהכרטיס חבר בו (‏/net/config member_of), או null. */
+function netBondMember(name) { return (netCfgRow(name) || {}).member_of || null; }
 function netLiveChecked() { return !!(NETCFG && NETCFG.live && NETCFG.live.checked); }
 function netLiveAddrs(n) { const cfg = netCfgRow(n.name); return ((cfg && netLiveChecked()) ? cfg.live_addresses : n.addresses) || []; }
 function ipInt(ip) { const m = String(ip || "").match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/); return m ? (((+m[1] << 24) | (+m[2] << 16) | (+m[3] << 8) | +m[4]) >>> 0) : null; }
@@ -4769,6 +4999,7 @@ function netVlanOf(n) {
 function netRoleLabel(n) {
   const parts = [];
   if (isMgmtNic(n.name)) parts.push("ניהול");   // #1263: נבחר בהתקנה (NETCFG.management_interface)
+  if (netBondMember(n.name)) parts.push(`הפצה · ${netBondMember(n.name)}`);   // #1264: חבר ב-bond של רשת ההפצה
   if (n.enabled) parts.push("הפצה · DHCP");
   if (n.proxy) parts.push("PXE proxy");
   if (n.trunk) parts.push("רשת המכללה");
@@ -5209,6 +5440,36 @@ function netOtherNicRow(n) {
   return [`${UI.nameHtml(n.name, esc(n.description || "ללא תיאור"))}${n.trunk ? ` ${UI.pill("warn", "רשת המכללה")}` : ""}`, netDhcpCell(n), esc(n.enabled ? "מופעל" : n.proxy ? "proxy" : "כבוי"),
     `${UI.status(pr.cls, pr.text)}`, `<div class="acts on"><button class="btn sm" onclick="netProbe('${enc}')">בדוק</button>${netDeployNic() || n.proxy || isMgmtNic(n.name) ? "" : `<button class="btn sm" onclick="netEditDeploy('${enc}')">הגדר כרשת הפצה</button>`}</div>`];
 }
+/* ‏#1264: "כרטיסים ברשת ההפצה" — כל כרטיס, תפקידו, הקישור ומצבו. ב-bond המצב הוא
+   מה ש-‏/proc/net/bonding אומר (‏NETCFG.deploy_bond); לא נקרא = "לא נבדק", לעולם לא
+   "פעיל" (עיקרון 5). כרטיס יחיד — הקישור החי שלו (‏/net/interfaces). */
+const BOND_MEMBER_HE = { active: ["ok", "פעיל"], down: ["err", "מנותק"], missing: ["err", "לא חבר ב-bond"], unchecked: ["warn", "לא נבדק"] };
+const BOND_STATE_HE = { ok: ["ok", "פעיל — שני הכרטיסים"], degraded: ["warn", "פעיל על כרטיס אחד"], down: ["err", "שני הכרטיסים מנותקים"],
+  missing: ["err", "לא תואם להגדרה"], unchecked: ["warn", "לא נבדק"] };
+function netSpeedText(n) {
+  const s = n && n.speed_mbps;
+  return typeof s === "number" && s > 0 ? (s >= 1000 ? `${s / 1000} Gb` : `${s} Mb`) : "—";
+}
+function netDeployCardsCard(focus) {
+  const bond = NETCFG && NETCFG.deploy_bond && NETCFG.deploy_bond.name === focus.name ? NETCFG.deploy_bond : null;
+  const nicOf = (name) => (NETW.nics || []).find((n) => n.name === name) || null;
+  const cells = (name, role, n, [cls, label]) => [`<b dir="ltr">${esc(name)}</b>`, `כרטיס ${role}`, `<span dir="ltr">${esc(netSpeedText(n))}</span>`, UI.pill(cls, label)];
+  let rows, note, acts = "";
+  if (bond) {
+    rows = bond.members.map((m) => cells(m.name, m.role, nicOf(m.name), BOND_MEMBER_HE[m.state] || BOND_MEMBER_HE.unchecked));
+    const [cls, label] = BOND_STATE_HE[bond.state] || BOND_STATE_HE.unchecked;
+    acts = UI.pill(cls, label);
+    note = bond.checked
+      ? UI.note("info", `שני הכרטיסים עובדים יחד על הכתובת <span class="mono">${esc(focus.server_ip || "")}</span> (${esc(bond.name)}, ‏balance-alb) — התעבורה מתחלקת ביניהם, ואם אחד מתנתק השני ממשיך בלי הפסקה. לא נדרשת הגדרה בסוויץ'.`)
+      : UI.note("warn", `מצב ${esc(bond.name)} לא נקרא (${esc(bond.reason || "")}) — לא ידוע אם שני הכרטיסים פעילים`);
+  } else {
+    const st = focus.state === "up" ? ["ok", "פעיל"] : focus.state === "down" ? ["err", "מנותק"] : ["warn", "לא נקרא"];
+    rows = [cells(focus.name, 1, focus, st)];
+    note = UI.note("info", "כרטיס אחד. אפשר להוסיף כרטיס שני ב\"עריכה…\" — שני הכרטיסים יעבדו יחד על אותה כתובת, ואם אחד ייפול השני ימשיך.");
+  }
+  return UI.card({ title: "כרטיסים ברשת ההפצה", cls: "c12", acts, flush: true,
+    body: UI.datagrid({ columns: ["כרטיס", "תפקיד", "קישור", "מצב"], rows, cls: "stable" }) + note });
+}
 function networkDeployTab() {
   const nics = NETW.nics, focus = netDeployNic();
   const pr = focus ? netProbeStatus(focus.name) : null;
@@ -5242,12 +5503,13 @@ function networkDeployTab() {
     const seenRows = (NET || []).map(netSeenRow).concat(leaseOnly.map(netLeaseRow));
     const seenBody = NET === null ? UI.note("err", `‏/net לא נקרא: ${esc(NET_ERR || NETW.err.net || "")} — אין לדעת מי קיבל כתובת`)
       : UI.datagrid({ columns: ["מכונה", "MAC", "IP", "נראה", "שלב אתחול", ""], rows: seenRows, cls: "stable", empty: "אף מכונה עוד לא דיברה עם השרת — כשמחשב יעלה ב-PXE הוא יופיע כאן" });
-    const others = (nics || []).filter((n) => n !== focus && (classroomsOn() || !n.proxy));
+    const others = (nics || []).filter((n) => n !== focus && !netBondMember(n.name) && (classroomsOn() || !n.proxy));
     const othersTable = UI.datagrid({ columns: ["כרטיס", "מצב DHCP חי", "שמור בקונסולה", "מי עוד עונה", ""], rows: others.map(netOtherNicRow), cls: "stable", empty: "אין כרטיסים נוספים" });
     body = netUnreadNotes()
       + UI.card({ title: focus ? `DHCP על ${focus.name}` : "מה השרת מחלק", small: focus ? "כפי שנקרא מקובץ dnsmasq ומהשירות" : "", cls: "c4", body: serves,
         acts: focus ? `<button class="btn sm" onclick="netEditDeploy('${encodeId(focus.name)}')">עריכה…</button><button class="btn sm danger" onclick="netDhcpOff('${encodeId(focus.name)}')">כיבוי DHCP…</button>` : "" })
       + UI.card({ title: "מי קיבל כתובת", small: `מה-hello ומ-net_devices · ${NET_ONLINE_SECONDS} שניות = "מחובר" · ${netLeasesCaption(focus)}`, cls: "c8", body: seenBody, flush: NET !== null && seenRows.length > 0 })
+      + (focus ? netDeployCardsCard(focus) : "")
       + UI.card({ title: "כרטיסים אחרים", small: "DHCP הוא בדיוק על כרטיס אחד — ההפצה", cls: "c12", body: othersTable, flush: others.length > 0 });
   }
   return `<div class="page">${header}<div class="body">${body}</div></div>`;
@@ -5310,23 +5572,17 @@ function healthCheckById(id) {
   return (Array.isArray(HEALTH) ? HEALTH : []).find((c) => c.id === id) || null;
 }
 
-/* ---------- #954 גל 5/#996: רשת › פורטים — טבלה אחת, מתג בכל שורה ----------
-   docs/design/console-redesign/network-ports.md + docs/interfaces.md §16.
-   מקור אחד לכל שורה: הכול מגיע מ-/ports (id, state/detail/bind, ו-#996:
-   enabled/listening/toggle/toggle_url/confirm_word/confirm_when/off_means;
-   #1013: warning_he — TFTP 69 הוא מתג "confirm" רגיל, dnsmasq בצד השרת).
-   DHCP 67, PXE proxy 4011, מוניטור 5900 ו-SSH לתחנות ממשיכים לפנות לאותם
-   endpoints כמו קודם (net.js / monitorToggle / sshToggle) — toggle_url של
-   השורה מצביע לשם ואינו /ports/{id}, ו-PUT /ports/{id} עליהן היה מקבל 409.
-   ‏SSH לשרת × כרטיס בא היום כשורה מוכנה לכל כרטיס (id `ssh_server:<nic>`)
-   עם toggle_url אמיתי (לא תבנית) — בלי fetch נוסף. שרת ישן שלא שולח שורת
-   ‏`dhcp`/`ssh_server:*` בכלל נופל לבנייה מקומית מ-/net/interfaces ו-/ssh,
-   כמו בגל 5 (`havePortsDhcp`/`havePortsSshServer` למטה). כשהשדות חסרים
-   המתג מוצג במצב "לא ידוע" ולחיצה מסבירה — לא כפתור אפור (README §8).
-   🔒 = חלון אישור (#1270); ‏confirm_when קובע באיזה כיוון — לא ניחוש
-   בלקוח (#1015). "מה קורה אם מכבים" מהשרת (`off_means`) כשקיים. */
+/* ---------- #1267: רשת › פורטים — כרטיס לכל רשת ----------
+   מוקאפ: docs/design/apple-mockups/console-full.html (P.network ports, W.portDrawer);
+   docs/interfaces.md §16. הכול מ-/ports: השורות, `network` (לאיזו רשת שייכת השורה)
+   ו-`firewall`/`firewall_detail` (טבלת inet imagectl של השרת — רק לפורטים שבין רשתות).
+   נדב 10/10: ברשת ההפצה השרת מנהל את הפורטים — אין עמודת חומת אש ואין פעולות;
+   בניהול ובין שרתים — חומת אש (פתוח=ירוק, חסום=אדום, לא נבדק=אפור) ו"מה לפתוח
+   בחומת האש של המכללה" מה-note. אין "פתח/סגור פורט" בשום מקום — רק "בדוק עכשיו"
+   (קריאה חוזרת של /ports) ו"הצג פרטים" (מגירה). ‏22/SSH לא מוצג (#1266).
+   ‏SSH_STATE/PORT_ACTIONS/portSwitch נשארו כאן כי מתג ה-SSH לשרת בחיבורים פיזיים
+   (netSshSwitch) משתמש בהם. */
 let SSH_STATE = null, sshError = "";
-let PORTS_MONITOR = null, portsMonitorError = "";
 let PORTS_NICS = null, portsNicsError = "";
 let PORTS_AT = "";
 const PORT_ACTIONS = new Map();
@@ -5338,13 +5594,6 @@ const PORT_OFF_MEANS = {
 };
 const PORT_API_NEEDED = "דורש API (#996)";
 const offMeansNote = (text) => `<div class="sheet-note danger">מה קורה אם מכבים: ${esc(text)}</div>`;
-/* אזהרה לפני כל כיבוי (הכרעת נדב 19/09 — "על כל פורט אזהרה", לא רק 69):
-   `warning_he` מהשרת כשיש (#1013), אחרת "מה קורה אם מכבים" מה-`off_means` —
-   אותו בלוק אדום, לפני שדה ההקלדה או כפתור האישור. */
-const warningNote = (p) => {
-  const text = p.warning_he || (p.off_means ? `מה קורה אם מכבים: ${p.off_means}` : "");
-  return text ? `<div class="sheet-note danger" data-testid="port-warning">${esc(text)}</div>` : "";
-};
 
 function nicBody(n, over) {
   return { enabled: n.enabled, proxy: n.proxy, trunk: n.trunk, range_start: n.range_start, range_end: n.range_end,
@@ -5356,29 +5605,6 @@ function portSwitch(key) { const fn = PORT_ACTIONS.get(key); if (fn) fn(); }
 function portSwitchHtml(key, on, lock, cap, label) {
   const cls = on === null ? "unk" : on ? "on" : "";
   return `<span class="swrow"><button type="button" class="sw ${cls}" role="switch" aria-checked="${on === null ? "mixed" : String(!!on)}" aria-label="${esc(label)}" onclick="portSwitch(decodeURIComponent('${encodeId(key)}'))"></button><span class="cap">${lock ? "🔒 " : ""}${esc(cap)}</span></span>`;
-}
-
-/* DHCP: הדלקה = הטופס הקיים של net.js (מצב/טווח); אחרי
-   שמירה מרעננים את הטבלה הזו (ה-sheet של net.js מרענן רק את דפי הרשת). */
-function portDhcpOn() {
-  const list = PORTS_NICS || [];
-  const nic = list.find((n) => n.present && !n.trunk && !isMgmtNic(n.name)) || list.find((n) => !isMgmtNic(n.name));
-  if (!nic) { toast("אין כרטיס רשת להדליק עליו DHCP — ראו חיבורים פיזיים"); return; }
-  editDeployNet(nic.name);
-  const form = $("#sheet");
-  const orig = form && form.onsubmit;
-  if (typeof orig === "function") form.onsubmit = async (event) => { await orig(event); await loadPorts(); };
-}
-
-function portDhcpOff(n) {
-  sheet({ title: `כיבוי DHCP על ${n.name}`, sub: "הכרטיס מפסיק לחלק כתובות ולענות ל-PXE.", danger: true, submitLabel: "כבה",
-    note: offMeansNote(PORT_OFF_MEANS.dhcp),
-    onSubmit: async () => { await saveNic(n.name, nicBody(n, { enabled: false, proxy: false })); await loadPorts(); } });
-}
-
-function portProxyOff(n) {
-  confirmSheet(`כיבוי PXE proxy על ${n.name}`, PORT_OFF_MEANS.pxe_proxy, "כבה",
-    async () => { await saveNic(n.name, nicBody(n, { enabled: false, proxy: false })); await loadPorts(); });
 }
 
 function portSshNic(name) {
@@ -5393,180 +5619,6 @@ function portSshNic(name) {
     nic.enabled ? "זו הדלת האחרונה שפתוחה — אחריה אין SSH לשרת מאף רשת."
       : (classroomsOn() ? "‏sshd יאזין בוילן הזה. אם זה וילן הכיתות — הוא ייפתח לסטודנטים." : "‏sshd יאזין בוילן הזה."),
     nic.enabled ? "אין SSH לשרת מאף רשת — פתיחה מחדש רק ממסך השרת" : "");
-}
-
-function portSshStations() {
-  const st = SSH_STATE && SSH_STATE.stations;
-  if (!st) return;
-  sshToggle("/ssh/stations", !st.enabled, st.confirm_word, !st.enabled,
-    "פתיחת SSH ומעטפת טכנאי בכל התחנות",
-    "כל מחשב שיעלה יריץ dropbear. המפתח הציבורי ארוז ב-initramfs, שנמשך ב-HTTP פתוח מווילן ההפצה.",
-    "");
-}
-
-/* #996: מתג פר-פורט בשרת. "confirm" = חלון אישור, והמילה נשלחת מהקוד; "api" = אישור בלחיצה;
-   "none" = אין מתג, הלחיצה מסבירה למה. `confirm_when` קובע את הכיוון
-   שדורש הקלדה (השרת, לא ניחוש כאן): "off"/"on"/"on_or_last_off"; שרת ישן
-   בלי השדה — נשמר הכיוון הישן (הקלדה בכל כיוון, כמו לפני #1015). */
-function portConfirmDirection(p, enabling) {
-  if (p.toggle !== "confirm") return false;
-  if (p.confirm_when === "on") return enabling;
-  if (p.confirm_when === "off") return !enabling;
-  return true;   // "on_or_last_off" מטופל ייעודית ב-ssh_server:<nic>; שדה חסר = ברירת המחדל הישנה
-}
-
-function portToggleUrl(p) {
-  return p.toggle_url ? p.toggle_url.replace(/^\/api\/console/, "") : `/ports/${encodeId(p.id)}`;
-}
-
-function portServerToggle(p) {
-  const enabling = !p.enabled;
-  const word = p.confirm_word || ME.server_name;
-  const send = async (extra) => {
-    await put(portToggleUrl(p), { enabled: enabling, ...extra });
-    toast(enabling ? `${p.name} ${p.port} — הודלק` : `${p.name} ${p.port} — כובה`);
-    await loadPorts();
-  };
-  const title = `${enabling ? "הדלקת" : "כיבוי"} ${p.name} ${p.port}/${p.proto}`;
-  if (p.toggle === "none") { toast(`אין מתג לפורט הזה: ${p.off_means || p.detail || ""}`); return; }
-  if (p.toggle === "confirm" && portConfirmDirection(p, enabling)) {
-    sheet({ title, sub: p.desc || "", danger: true, submitLabel: enabling ? "הדלק" : "כבה",
-      note: enabling ? "" : warningNote(p),
-      onSubmit: () => send({ confirm: word }) });
-    return;
-  }
-  if (!enabling) {
-    sheet({ title, sub: p.desc || "", danger: true, submitLabel: "כבה", note: warningNote(p),
-      onSubmit: () => send({}) });
-    return;
-  }
-  confirmSheet(title, p.desc || "", "הדלק", () => send({}));
-}
-
-function portRows() {
-  const rows = [];
-  const havePortsDhcp = PORTS.some((p) => p.id === "dhcp");
-  const havePortsSshServer = PORTS.some((p) => p.id && p.id.startsWith("ssh_server:"));
-
-  // שרת ישן (לפני #996/#1015): /ports אינו שולח שורת dhcp כלל — נבנה
-  // מ-/net/interfaces כמו בגל 5, שורה לכל כרטיס שמשרת בפועל.
-  if (!havePortsDhcp) {
-    const dhcpBase = { name: "DHCP הפצה", desc: "dnsmasq · כתובות לוילן ההפצה", port: "67", proto: "udp",
-      who: "תחנות · משכפלים · בנייה", off: PORT_OFF_MEANS.dhcp, api: ["ok", "קיים", "PUT /net/interfaces/{n}"] };
-    const serving = (PORTS_NICS || []).filter((n) => n.enabled);
-    if (PORTS_NICS === null) {
-      rows.push({ ...dhcpBase, key: "dhcp", nic: "", state: "unknown", detail: `‏/net/interfaces לא נקרא: ${portsNicsError}`,
-        on: null, lock: true, cap: "לא נקרא", act: () => toast("רשימת הכרטיסים לא נקראה — אין על מה להפעיל את המתג: " + portsNicsError) });
-    } else if (!serving.length) {
-      rows.push({ ...dhcpBase, key: "dhcp", nic: "", state: "off", detail: "לא הודלק על אף כרטיס",
-        on: false, lock: true, cap: "כבוי · הדלקה בחלון אישור", act: portDhcpOn });
-    } else {
-      for (const n of serving) {
-        const live = n.dhcp_live ? dhcpLiveClass(n.dhcp_live.state) : "unknown";
-        rows.push({ ...dhcpBase, key: `dhcp:${n.name}`, name: `DHCP הפצה — ${n.name}`, nic: n.name,
-          state: { ok: "ok", warn: "warn", off: "off" }[live] || "unknown",
-          detail: `${n.dhcp_live_label || ""}${n.range_start ? ` · ${n.range_start}–${n.range_end}` : ""}`,
-          on: true, lock: true, cap: "דלוק · כיבוי בחלון אישור", act: () => portDhcpOff(n) });
-      }
-    }
-  }
-
-  for (const p of PORTS) {
-    // #1015: bind הוא מערך כתובות (גם ריק כשקוראים ולא מוצאים). ‏#1039: null =
-    // טבלת הסוקטים לא נקראה. שרת ישן בלי השדה כלל (undefined) — "" כמו קודם, שמראה "דורש API".
-    const r = { key: p.id, name: p.name, desc: p.desc, port: p.port, proto: p.proto, who: p.target,
-      nic: Array.isArray(p.bind) || p.bind === null ? p.bind : (p.bind || ""),
-      state: p.state, detail: p.detail, note: p.note, off: p.off_means || "", api: null, on: null, lock: false, cap: "", act: null };
-    if (p.id === "monitor") {
-      const m = PORTS_MONITOR;
-      Object.assign(r, { nic: "בתחנה, לא בשרת", off: r.off || PORT_OFF_MEANS.monitor, api: ["ok", "קיים", "PUT /monitor/settings"],
-        on: m ? !!m.enabled : null, lock: !(m && m.enabled),
-        cap: !m ? `לא נקרא: ${portsMonitorError}` : m.enabled ? "דלוק · כיבוי בלחיצה" : "מוניטור: כבוי (ברירת מחדל) — הדלקה חושפת 5900 על וילן ההפצה",
-        act: m ? () => monitorToggle(!m.enabled) : () => toast("‏/monitor/settings לא נקרא: " + portsMonitorError) });
-    } else if (p.id === "ssh_stations") {
-      const st = SSH_STATE && SSH_STATE.stations;
-      Object.assign(r, { nic: "בתחנה, לא בשרת", off: r.off || PORT_OFF_MEANS.ssh_stations, api: ["ok", "קיים", "PUT /ssh/stations"],
-        on: st ? !!st.enabled : null, lock: !(st && st.enabled),
-        cap: !st ? `לא נקרא: ${sshError}` : st.enabled ? "דלוק · כיבוי בלחיצה" : "כבוי · הדלקה בחלון אישור",
-        act: st ? portSshStations : () => toast("‏/ssh לא נקרא: " + sshError) });
-    } else if (p.id === "pxe_proxy") {
-      const nic = PORTS_NICS ? PORTS_NICS.find((n) => n.proxy) : undefined;
-      Object.assign(r, { nic: nic ? nic.name : r.nic, off: r.off || PORT_OFF_MEANS.pxe_proxy, api: ["ok", "קיים", "PUT /net/interfaces/{n} proxy"],
-        on: PORTS_NICS === null ? null : !!nic,
-        cap: PORTS_NICS === null ? `לא נקרא: ${portsNicsError}` : nic ? `דלוק על ${nic.name}` : "כבוי · הדלקה = בחירת proxy בטופס ה-DHCP של הכרטיס",
-        act: PORTS_NICS === null ? () => toast("‏/net/interfaces לא נקרא: " + portsNicsError) : nic ? () => portProxyOff(nic) : portDhcpOn });
-    } else if (p.id === "dhcp") {
-      // #1015: שורה אחת מרוכזת מ-/ports; המתג עדיין פונה ל-/net/interfaces/{n},
-      // ולכן צריך לדעת על איזה כרטיס — מ-/net/interfaces (כמו קודם).
-      const serving = PORTS_NICS === null ? null : PORTS_NICS.filter((n) => n.enabled);
-      Object.assign(r, { off: r.off || PORT_OFF_MEANS.dhcp, api: ["ok", "קיים", "PUT /net/interfaces/{n}"],
-        nic: serving && serving.length === 1 ? serving[0].name : r.nic,
-        on: serving === null ? null : !!p.enabled, lock: true,
-        cap: serving === null ? `לא נקרא: ${portsNicsError}`
-          : !p.enabled ? "כבוי · הדלקה בחלון אישור"
-          : serving.length === 1 ? "דלוק · כיבוי בחלון אישור"
-          : "דלוק · כיבוי דרך חיבורים פיזיים (כמה כרטיסים משרתים)",
-        act: serving === null ? () => toast("‏/net/interfaces לא נקרא: " + portsNicsError)
-          : !p.enabled ? portDhcpOn
-          : serving.length === 1 ? () => portDhcpOff(serving[0])
-          : () => openNetwork(1) });
-    } else if (p.id && p.id.startsWith("ssh_server:")) {
-      // #1015: שורה מוכנה לכל כרטיס — toggle_url אמיתי (לא תבנית), בלי fetch נוסף.
-      const name = p.interface || p.id.slice("ssh_server:".length);
-      const open = PORTS.filter((x) => x.id && x.id.startsWith("ssh_server:") && x.enabled)
-        .map((x) => x.interface || x.id.slice("ssh_server:".length));
-      const last = !!p.enabled && open.length === 1 && open[0] === name;
-      const needsConfirm = !p.enabled || last;
-      Object.assign(r, { who: "טכנאי → השרת", off: r.off || (last ? "אין SSH לשרת מאף רשת — פתיחה מחדש רק ממסך השרת" : "אין SSH לשרת דרך הכרטיס הזה"),
-        api: ["ok", "קיים", `PUT ${portToggleUrl(p)}`], on: !!p.enabled, lock: needsConfirm,
-        cap: p.enabled ? (last ? "הדלת האחרונה · סגירה בחלון אישור" : "פתוח · סגירה בלחיצה") : "סגור · פתיחה בחלון אישור",
-        act: () => sshToggle(portToggleUrl(p), !p.enabled, p.confirm_word || name, needsConfirm,
-          p.enabled ? `סגירת SSH לשרת על ${name}` : `פתיחת SSH לשרת על ${name}`,
-          p.enabled ? (last ? "זו הדלת האחרונה שפתוחה — אחריה אין SSH לשרת מאף רשת." : "")
-            : (classroomsOn() ? "‏sshd יאזין בוילן הזה. אם זה וילן הכיתות — הוא ייפתח לסטודנטים." : "‏sshd יאזין בוילן הזה."),
-          p.enabled && last ? "אין SSH לשרת מאף רשת — פתיחה מחדש רק ממסך השרת" : "") });
-    } else if (p.toggle) {
-      // שאר שורות /ports עם toggle ("api"/"confirm"/"none") — http_boot/
-      // http_console/kiosk/interserver: portToggleUrl(p) הולך ל-toggle_url
-      // כשהוא קיים (#1015, /api/console/ports/{id}) ואחרת ל-/ports/{id}
-      // (המסלול היחיד לפני #1015).
-      Object.assign(r, { api: ["ok", "קיים", `PUT ${portToggleUrl(p)}`], on: !!p.enabled, lock: p.toggle === "confirm",
-        cap: p.toggle === "none" ? "אין מתג — לחיצה מסבירה" : p.enabled ? (p.toggle === "confirm" ? "דלוק · כיבוי בחלון אישור" : "דלוק") : "כבוי",
-        act: () => portServerToggle(p) });
-    } else {
-      Object.assign(r, { api: ["warn", "דורש API", "#996"], on: null, lock: false, cap: PORT_API_NEEDED, off: r.off || PORT_API_NEEDED,
-        act: () => toast(`מתג לפורט ${p.port} ${PORT_API_NEEDED} — השרת הזה עדיין לא מחזיר toggle ב-/ports`) });
-    }
-    rows.push(r);
-  }
-
-  // שרת ישן: /ports אינו שולח שורת ssh_server:<nic> כלל — נבנה מ-/ssh, כמו בגל 5.
-  if (!havePortsSshServer) {
-    const sshBase = { port: "22", proto: "tcp", who: "טכנאי → השרת" };
-    if (!SSH_STATE) {
-      rows.push({ ...sshBase, key: "ssh_server", name: "SSH לשרת", desc: "sshd", nic: "", state: "unknown", detail: `‏/ssh לא נקרא: ${sshError}`,
-        on: null, lock: true, cap: "לא נקרא", off: "אין SSH לשרת מאף רשת", api: ["ok", "קיים", "PUT /ssh/interfaces/{n}"],
-        act: () => toast("‏/ssh לא נקרא: " + sshError) });
-    } else {
-      const open = SSH_STATE.interfaces.filter((n) => n.enabled).map((n) => n.name);
-      for (const n of SSH_STATE.interfaces) {
-        const last = n.enabled && open.length === 1 && open[0] === n.name;
-        const addr = (n.addresses || []).map((a) => String(a).split("/")[0]).join(", ");
-        let state, detail;
-        if (n.listening === null) { state = "unknown"; detail = "טבלת הסוקטים לא נקראה"; }
-        else if (n.enabled && n.listening) { state = "ok"; detail = `מאזין ${addr || "ללא כתובת IPv4"}:22 · אומת`; }
-        else if (n.enabled) { state = "bad"; detail = "נשמר כפתוח אבל sshd לא מאזין"; }
-        else if (n.listening) { state = "warn"; detail = "מאזין למרות שהמתג כבוי"; }
-        else { state = "off"; detail = "סגור · אומת"; }
-        rows.push({ ...sshBase, key: `ssh_nic:${n.name}`, name: `SSH לשרת — ${n.name}`, desc: `sshd · ${addr || "ללא כתובת IPv4"}`, nic: n.name,
-          state, detail, on: !!n.enabled, lock: !n.enabled || last,
-          cap: n.enabled ? (last ? "הדלת האחרונה · סגירה בחלון אישור" : "פתוח · סגירה בלחיצה") : "סגור · פתיחה בחלון אישור",
-          off: last ? "אין SSH לשרת מאף רשת — פתיחה מחדש רק ממסך השרת" : "אין SSH לשרת דרך הכרטיס הזה",
-          api: ["ok", "קיים", `PUT /ssh/interfaces/${n.name}`], act: () => portSshNic(n.name) });
-      }
-    }
-  }
-  return rows;
 }
 
 // שם כרטיס/כתובת בודדת (מחרוזת) — mono LTR; טקסט עברי ("בתחנה, לא בשרת") —
@@ -5590,63 +5642,109 @@ function portNicHtml(nic) {
   return /^[ -~]+$/.test(nic) ? `<span class="mono">${esc(nic)}</span>` : esc(nic);
 }
 
-/* ‏⋯ בשורת הפורט: המתג נשאר בעמודה שלו (הפעולה העיקרית); בתפריט — אותה פעולה, בדיקה מחדש ופרטים. */
-const PORT_ROWS = new Map();
-function portDetail(key) {
-  const r = PORT_ROWS.get(key); if (!r) return;
-  openDrawer(r.name, UI.kv([["פורט", `<span class="mono">${esc(r.port)}/${esc(r.proto)}</span>`], ["מי מתחבר", esc(r.who || "—")], ["על איזה כרטיס", portNicHtml(r.nic)],
-    ["מצב נמדד", `${UI.status(healthStatusClass(r.state), healthStatusLabel(r.state))} ${esc(r.detail || "")}`], ["אם מכבים", esc(r.off || "—")],
-    ["API", r.api ? `${UI.pill(r.api[0], r.api[1])}${r.api[2] ? ` <span class="mono">${esc(r.api[2])}</span>` : ""}` : "—"]]));
+/* הרשתות לפי הסדר במוקאפ; שורה בלי `network` מוכר נופלת לכרטיס "ללא שיוך" — לא נעלמת. */
+const PORT_NETWORKS = [
+  ["deploy", "רשת הפצה", "השרת מנהל את רשת ההפצה ואת הפורטים שלה — אין בה חומת אש ואין מה לפתוח."],
+  ["mgmt", "רשת ניהול", "חומת האש של המכללה לא נראית מהשרת — העמודה האחרונה אומרת מה לפתוח בה."],
+  ["interserver", "בין שרתים", "חומת האש של המכללה לא נראית מהשרת — העמודה האחרונה אומרת מה לפתוח בה."],
+];
+const PORT_FW = { open: ["ok", "פתוח"], blocked: ["err", "חסום"] };   // כל ערך אחר (null) = "לא נבדק", אפור (עיקרון 5)
+const portCross = (p) => p.network === "mgmt" || p.network === "interserver";
+const portHidden = (p) => p.id === "firewall" || p.id === "ssh_stations" || String(p.id).startsWith("ssh_server:");
+const portFwLabel = (p) => (PORT_FW[p.firewall] || ["", "לא נבדק"])[1];
+const portFwHtml = (p) => `<span title="${esc(p.firewall_detail || "")}">${UI.pill((PORT_FW[p.firewall] || [""])[0], portFwLabel(p))}</span>`;
+const portOpenNote = (p) => String(p.note || "").replace(/^לפתוח ב-FW:\s*/, "") || "—";
+const portStateHtml = (p) => `${UI.status(healthStatusClass(p.state), healthStatusLabel(p.state))}<span class="sub">${esc(p.detail || "")}</span>`;
+const portIdOf = (idEnc) => { try { return decodeURIComponent(idEnc); } catch (e) { return idEnc; } };
+
+/* כותרת הכרטיס: הפצה = הכרטיסים שמשרתים DHCP/proxy (מ-/ports) + הכתובת שלהם (מ-/net/interfaces,
+   אם נקרא); ניהול = הכתובות ש-8081 מאזין עליהן בפועל (bind), בלי loopback ו-link-local. */
+function portCardTitle(net, label, rows) {
+  if (net === "deploy") {
+    const dhcp = (PORTS || []).find((p) => p.id === "dhcp");
+    const names = ((dhcp && dhcp.interfaces) || []).filter((i) => i.enabled || i.proxy).map((i) => i.name);
+    return [label, ...names.map((n) => {
+      const nic = (PORTS_NICS || []).find((x) => x.name === n), ip = nic && (nic.addresses || [])[0];
+      return ip ? `${n} · ${String(ip).split("/")[0]}` : n;
+    })].join(" · ");
+  }
+  if (net === "mgmt") {
+    const c = rows.find((p) => p.id === "http_console");
+    const addrs = (c && Array.isArray(c.bind) ? c.bind : [])
+      .filter((a) => !/^(127\.|\[::1\]|\[fe80)/.test(a)).map((a) => a.replace(/:\d+$/, ""));
+    return [label, ...addrs].join(" · ");
+  }
+  return label;
 }
-function portRowMenu(r) {
-  const k = encodeId(r.key), items = [];
-  if (r.on !== null && r.act) items.push([r.on ? "סגור…" : "פתח…", `portSwitch(decodeURIComponent('${k}'))`]);
-  items.push(["בדוק עכשיו", "loadPorts()"], ["הצג פרטים", `portDetail(decodeURIComponent('${k}'))`]);
-  return UI.rowMenu(`${r.name} ${r.port}`, items);
+
+function portCells(p) {
+  const cells = [`<span class="mono">${esc(p.port)}/${esc(p.proto)}</span>`, UI.nameHtml(p.name, esc(p.desc || "")), esc(p.target || "—"), portStateHtml(p)];
+  if (!portCross(p)) return cells;
+  const k = encodeId(p.id);
+  return cells.concat([portFwHtml(p), `<span class="wrap">${esc(portOpenNote(p))}</span>`,
+    UI.rowMenu(`${p.name} ${p.port}`, [["בדוק עכשיו", `portCheckNow('${k}')`], ["הצג פרטים", `portDetail('${k}')`]])]);
 }
-function portRow(r) {
-  PORT_ACTIONS.set(r.key, r.act);
-  PORT_ROWS.set(r.key, r);
-  const nic = portNicHtml(r.nic);
-  const api = r.api ? `${UI.pill(r.api[0], r.api[1])}${r.api[2] ? ` <span class="cap mono">${esc(r.api[2])}</span>` : ""}` : "";
-  // ה-note של השרת ("לפתוח ב-FW: …") — tooltip על שם השירות, לא שורה שלישית בכל תא.
-  return [`<span${r.note ? ` title="${esc(r.note)}"` : ""}>${UI.nameHtml(r.name, esc(r.desc || ""))}</span>`,
-    `<span class="mono">${esc(r.port)}/${esc(r.proto)}</span>`, esc(r.who || "—"), nic,
-    `${UI.status(healthStatusClass(r.state), healthStatusLabel(r.state))}<span class="sub">${esc(r.detail || "")}</span>`,
-    portSwitchHtml(r.key, r.on, r.lock, r.cap, `${r.name} ${r.port}`),
-    `<span class="wrap">${esc(r.off || "")}</span>`, api, portRowMenu(r)];
+
+function portCard(net, label, explain, rows) {
+  const cross = net === "mgmt" || net === "interserver";
+  const columns = ["פורט", "שירות", "מי פונה", "מאזין"].concat(cross ? ["חומת אש", "מה לפתוח בחומת האש של המכללה", { html: `<span class="sr">פעולות</span>` }] : []);
+  const grid = UI.datagrid({ columns, rows: rows.map(portCells), cls: cross ? "dense kebab-col" : "dense", opt: cross ? [5] : [] });
+  const intro = explain ? `<p class="muted" style="padding:12px 16px 0;margin:0">${esc(explain)}</p>` : "";
+  return UI.card({ title: portCardTitle(net, label, rows), body: intro + grid, flush: true });
+}
+
+/* "הצג פרטים" — מגירה (W.portDrawer): מה נמדד בשרת, ומה לפתוח במכללה. */
+function portDetail(idEnc) {
+  const id = portIdOf(idEnc);
+  const p = (PORTS || []).find((x) => x.id === id);
+  if (!p) { toast("הפורט לא מופיע ברשימה שנקראה"); return; }
+  const measured = UI.kv([["מאזין", portStateHtml(p)], ["כתובות האזנה", portNicHtml(p.bind)],
+    ["חומת אש בשרת", `${portFwHtml(p)} ${esc(p.firewall_detail || "")}`], ["נבדק", esc(PORTS_AT || "—")]]);
+  const college = UI.kv([["מה לפתוח", esc(portOpenNote(p))]])
+    + UI.note("info", "חומת האש של המכללה לא נראית מהשרת. &quot;בדוק עכשיו&quot; בודק רק את מה שבשרת עצמו.");
+  openDrawer(`${p.port}/${p.proto} · ${p.name}`, `<div class="page drw"><div class="obj-sub">${esc(p.desc || "")} · ${esc(p.target || "")}</div>`
+    + `<div><div class="sec">מצב שנמדד</div>${measured}<div class="sec">חומת האש של המכללה</div>${college}</div>`
+    + `<div style="border-top:1px solid var(--hair);padding-top:12px;display:flex;gap:6px"><button class="btn sm primary" onclick="portCheckNow('${encodeId(p.id)}', true)">בדוק עכשיו</button></div></div>`);
+}
+
+/* "בדוק עכשיו" — קריאה חוזרת של /ports (ss + nft בשרת, קריאה בלבד) ודיווח מה נמדד. כשל = "הבדיקה נכשלה", לא "תקין". */
+async function portCheckNow(idEnc, reopen = false) {
+  const id = portIdOf(idEnc);
+  await loadPorts();
+  if (!PORTS) { toast(`הבדיקה נכשלה: ${portsError}`); return; }
+  const p = PORTS.find((x) => x.id === id);
+  if (!p) { toast("הפורט לא מופיע ברשימה שנקראה עכשיו"); return; }
+  toast(`${p.port}/${p.proto}: ${healthStatusLabel(p.state)} — ${p.detail || ""} · חומת אש בשרת: ${portFwLabel(p)}`);
+  if (reopen) portDetail(id);
 }
 
 function ports() {
   if (!PORTS && !portsError) return pagePlaceholder();
-  PORT_ACTIONS.clear(); PORT_ROWS.clear();
-  const rows = PORTS ? portRows() : [];
+  const rows = PORTS ? PORTS.filter((p) => !portHidden(p)) : [];
   const n = (s) => rows.filter((r) => r.state === s).length;
+  const fwUnread = rows.filter((r) => portCross(r) && !PORT_FW[r.firewall]).length;
   let pill;
   if (!PORTS) pill = UI.pill("err", "לא נקרא");
   else if (n("bad")) pill = UI.pill("err", `${n("bad")} לא מאזין`);
   else if (n("unknown")) pill = UI.pill("warn", `${n("unknown")} לא נקרא`);
+  else if (fwUnread) pill = UI.pill("warn", `חומת אש: ${fwUnread} לא נבדקו`);
   else pill = UI.pill("ok", "כל השורות נמדדו");
   const sub = PORTS
-    ? esc(`${rows.length} שורות · מצב האזנה כפי שנקרא מהשרת ב-${PORTS_AT} · מתג הדלקה/כיבוי לכל פורט · 🔒 = כיבוי ששובר את המערכת, מאחורי חלון אישור`)
+    ? esc(`${rows.length} פורטים · כפי שנקראו מהשרת ב-${PORTS_AT} · מופרדים לפי רשת`)
     : `‏/ports לא נקרא: ${esc(portsError)}`;
   const header = UI.objHeader({
     crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "תשתית" }, { label: "רשת" }, { label: "פורטים" }],
     icon: "t-ports", name: "פורטים", sub, pill, actions: `<button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>`,
     tabs: NET_TABS, tab: 3, tabClick: (i) => i === 3 ? "activateTab(3)" : `openNetwork(${i})`, compact: true });   // ‏#954 גל 8: לשונית של אובייקט הרשת
-  const body = !PORTS
-    ? UI.note("err", `לא הצלחתי לקרוא את רשימת הפורטים: ${esc(portsError)}`)
-    : UI.datagrid({ columns: ["שירות", "פורט", "מי מתחבר", "על איזה כרטיס", "מצב נמדד", "מתג", "מה קורה אם מכבים", "API", { html: `<span class="sr">פעולות</span>` }], rows: rows.map(portRow), cls: "dense kebab-col", opt: [6, 7] });
-  const table = UI.card({ title: "שירותים ופורטים", small: "מצב נמדד — \"כבוי\" ≠ \"לא מאזין\" ≠ \"לא נקרא\"", body, flush: !!PORTS });
-  let foot = "";
-  if (PORTS && SSH_STATE && SSH_STATE.listeners) {
-    const l = SSH_STATE.listeners;
-    foot = l.checked
-      ? `<div class="c12">${UI.note("", esc(`מאזינים בפורט ${l.port}: ${(l.addresses || []).join(", ") || "אף אחד"}`))}</div>`
-      : `<div class="c12">${UI.note("warn", esc(`טבלת הסוקטים לא נקראה (${l.reason}) — אין לדעת מה פתוח`))}</div>`;
-  }
-  const legend = `<div class="c12">${UI.note("info", `<b>כל מתג</b> = מודאל עם מה יקרה, ו-🔒 = חלון אישור עם השלכות לפני שהוא זז. ${UI.pill("ok", "קיים")} — מחובר ל-API של היום; ${UI.pill("warn", "דורש API")} — הדלקה/כיבוי פר-פורט בשרת (#996): המתג מוצג, לחיצה עליו מסבירה — לא כפתור אפור.`)}</div>`;
-  return `<div class="page">${header}<div class="body">${table}${foot}${legend}</div></div>`;
+  if (!PORTS) return `<div class="page">${header}<div class="body">${UI.note("err", `לא הצלחתי לקרוא את רשימת הפורטים: ${esc(portsError)}`)}</div></div>`;
+  const fw = PORTS.find((p) => p.id === "firewall");
+  const fwNote = `<div class="c12">${fw ? UI.note(healthStatusClass(fw.state), esc(`חומת האש של השרת: ${fw.detail}`)) : UI.note("unk", "חומת האש של השרת: לא נקרא")}</div>`;
+  const known = PORT_NETWORKS.map(([net]) => net);
+  const cards = PORT_NETWORKS.map(([net, label, explain]) => [net, label, explain, rows.filter((p) => p.network === net)])
+    .filter(([, , , list]) => list.length).map((c) => portCard(...c)).join("");
+  const other = rows.filter((p) => !known.includes(p.network));
+  const otherCard = other.length ? portCard("", "ללא שיוך לרשת", "השרת לא אמר לאיזו רשת שייכות השורות האלה.", other) : "";
+  return `<div class="page">${header}<div class="body">${fwNote}${cards}${otherCard}</div></div>`;
 }
 
 /* ---------- #954 גל 6: מוניטור — הרשימה ----------
@@ -5709,7 +5807,7 @@ const SETTING_ROWS = [
   { key: "recovery_require_login", label: "שחזור תחנה בודדת דורש כניסה", cap: "מומלץ דלוק; כיבוי רק להדגמה", type: "switch" },
   { key: "class_deploy_enabled", label: "הפצה לכיתה ממסך התחנה", cap: "כבוי במהדורת השיכפול — הכרטיס יורד מהתפריט והשרת מסרב לסבב כיתה", type: "switch" },
   { key: "session_wait_seconds", label: "המתנה מהמצטרף האחרון", cap: "סבב מתחיל לבד כשעברו כך וכך שניות בלי מצטרף חדש", type: "number", min: 30, unit: "שניות (מינימום 30)" },
-  { key: "update_enabled", label: "עדכון גרסה מהקונסולה", cap: "כבוי כברירת מחדל; החיבור היוצא לריפו הציבורי נפתח רק בזמן בדיקה/עדכון", type: "switch", link: ["כרטיס העדכון — בבריאות ושירותים", "selectPageById('health')"] },
+  { key: "update_enabled", label: "עדכון גרסה מהקונסולה", cap: "כבוי כברירת מחדל; החיבור היוצא לריפו הציבורי נפתח רק בזמן בדיקה/עדכון · הכרטיס \"עדכונים\" למטה", type: "switch" },
   { key: "identity_check", label: "בדיקת זהות מכונה", cap: "כתובת המקור של hello/דיווח חייבת להתאים לחכירת ה-DHCP של ה-MAC. דלוק כברירת מחדל; לכבות רק כשה-DHCP של וילן ההפצה אינו השרת הזה — הכיבוי נרשם ביומן", type: "switch", defaultOn: true },
 ];
 function settingRow(key) { return SETTING_ROWS.find((r) => r.key === key); }
@@ -5756,9 +5854,12 @@ function brandingCardHtml() {
   const btns = `<button class="btn sm" onclick="document.getElementById('logo-input').click()">העלאה</button>`
     + (LOGO_EXISTS ? `<button class="btn sm danger" onclick="settingsLogoClear()">הסרה</button>` : "")
     + `<input type="file" id="logo-input" class="hidden" accept="image/png,image/jpeg,image/webp,image/svg+xml" aria-label="קובץ לוגו" onchange="settingsLogoUpload(this)">`;
-  const body = `<div class="brand-row"><div class="logo-box">${img}</div><div><b>לוגו</b> ${state}<div class="cap">PNG / JPG / WEBP / SVG עד 2MB · מוצג בכותרת ובמסך הכניסה · SVG נבדק לפני הקבלה</div><div class="acts" style="margin-top:6px">${btns}</div></div></div>`
-    + `<div style="margin-top:12px">${UI.note("", "ערכת הצבעים (בהיר/כהה) היא בחירה של כל משתמש בכפתור שבכותרת — לא הגדרת שרת.")}</div>`;
+  const body = `<div class="brand-row"><div class="logo-box">${img}</div><div><b>לוגו</b> ${state}<div class="cap">PNG / JPG / WEBP / SVG עד 2MB · מוצג בכותרת ובמסך הכניסה · SVG נבדק לפני הקבלה</div><div class="acts" style="margin-top:6px">${btns}</div></div></div>`;
   return UI.card({ title: "מיתוג", cls: "c4", body });
+}
+function appearanceCard() {
+  const seg = THEME_CYCLE.map((t) => `<button type="button" onclick="setThemePref('${t}')" aria-pressed="${themePref === t}">${esc(THEME_TITLE[t])}</button>`).join("");
+  return UI.card({ title: "מראה", small: "לכל משתמש לחוד", cls: "c4", body: `<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap"><span>ערכת נושא</span><span class="seg" role="group" aria-label="ערכת נושא">${seg}</span></div>` });
 }
 function settings() {
   if (!SETTINGS && !settingsError) return pagePlaceholder();
@@ -5770,7 +5871,8 @@ function settings() {
     icon: "t-sliders", name: "הגדרות", sub, pill, actions: SETTINGS ? actions : "" });
   const body = !SETTINGS
     ? UI.note("err", `לא הצלחתי לקרוא את ההגדרות: ${esc(settingsError)}`)
-    : UI.card({ title: "כללי", small: "שורה שהשתנתה מסומנת עד השמירה", cls: "c8", body: `<div class="srows">${SETTING_ROWS.filter((r) => r.key !== "class_deploy_enabled" || classroomsOn()).map(settingRowHtml).join("")}</div>` }) + brandingCardHtml();
+    : UI.card({ title: "כללי", small: "שורה שהשתנתה מסומנת עד השמירה", cls: "c8", body: `<div class="srows">${SETTING_ROWS.filter((r) => r.key !== "class_deploy_enabled" || classroomsOn()).map(settingRowHtml).join("")}</div>` }) + brandingCardHtml()
+      + updateCard() + backupCard() + appearanceCard();
   return `<div class="page">${header}<div class="body">${body}</div></div>`;
 }
 async function saveSettings() {
@@ -5804,6 +5906,7 @@ async function loadSettingsData() {
   try { SETTINGS = await api("/settings"); settingsError = ""; }
   catch (e) { SETTINGS = null; settingsError = e.message; toast("טעינת ההגדרות נכשלה: " + e.message); }
   try { LOGO_EXISTS = await loadLogo(); } catch (e) { LOGO_EXISTS = null; }   // לא נקרא ≠ אין לוגו
+  await loadHealthUpdate();   // כרטיס העדכונים
   if (current === "settings") renderCurrent();
 }
 async function settingsLogoUpload(input) {
@@ -6007,7 +6110,7 @@ const pages = {
   permissions: { crumb: "הרשאות", title: "הרשאות", tabs: [], render: permissions, load: loadUsersData, own: true },   // ‏#954 גל 6: טבלה אחת + מטריצה
   logs: { crumb: "יומן", title: "יומן", tabs: [], render: logs, load: loadJournalData, own: true },   // ‏#954 גל 6: יומן אחד עם סינון בדף
   monitor: { crumb: "מוניטור", title: "מוניטור", tabs: [], render: monitorPage, load: loadMonitor, own: true },   // ‏#954 גל 6: הרשימה כטבלה
-  drivers: { crumb: "דרייברים", title: "דרייברים", tabs: ["חבילות", "כיסוי לפי מכונה"], render: (i) => driversPage(i), load: () => loadDrivers(), own: true },   // ‏#954 גל 6; lazily: drivers.js loads after this file
+  drivers: { crumb: "דרייברים", title: "דרייברים", tabs: ["דגמים", "חבילות", "כיסוי לפי מכונה"], render: (i) => driversPage(i), load: () => loadDrivers(), own: true },   // ‏#954 גל 6; lazily: drivers.js loads after this file
   tools: { crumb: "ארגז כלים", title: "ארגז כלים", tabs: [], render: toolsPage, load: loadTools, own: true },   // ‏#649 שלב 1: קבוצה = כרטיס, ☐ בנייה/שיכפול | ☐ תלמיד
   storage: { crumb: "אחסון", title: "אחסון", tabs: [], render: () => storagePage(), load: () => loadStorage(), own: true },   // ‏#1066 שלב ב': מיקומי הספרייה (storage.js, נטען אחרי הקובץ הזה)
   ports: { crumb: "פורטים", title: "פורטים", tabs: ["חיבורים פיזיים", "רשת הפצה", "פורטים"], render: ports, load: loadPorts, own: true },   // ‏#954 גל 5: מתג בכל שורה
@@ -7005,7 +7108,7 @@ function addFolderSheet() {
   },
 });
 }
-/* ‏#954 גל 5: מתגי ה-SSH יושבים בדף הפורטים (portSshStations / portSshNic);
+/* ‏#954 גל 5: מתג ה-SSH לשרת יושב בחיבורים פיזיים (portSshNic; דף הפורטים בלי מתגים מ-#1267);
    הלוגיקה — confirm בפתיחה ובדלת האחרונה, ראיה חיובית (verified) — לא השתנתה. */
 function sshToggle(path, enabled, word, needsConfirm, title, sub, offMeans = "") {
   const send = async (extra) => {
@@ -7039,7 +7142,7 @@ function confirmUpdateApply(tag) {
     onSubmit: async () => {
       await post("/update/apply", { tag });
       toast("העדכון הופעל — עוקבים אחרי סטטוס.");
-      if (current === "health") { await loadHealthUpdate(); renderCurrent(); }
+      if (current === "settings") { await loadHealthUpdate(); renderCurrent(); }
     },
   });
 }
@@ -7053,7 +7156,7 @@ function confirmUpdateRevert(tag) {
     onSubmit: async () => {
       await post("/update/revert", { confirm_name: hostname });
       toast("החזרה הופעלה — עוקבים אחרי סטטוס.");
-      if (current === "health") { await loadHealthUpdate(); renderCurrent(); }
+      if (current === "settings") { await loadHealthUpdate(); renderCurrent(); }
     },
   });
 }

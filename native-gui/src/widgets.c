@@ -31,8 +31,10 @@ Text btn_label(cairo_t *cr, const char *s) { return text_make(cr, FONT_SANS, N_S
 double btn_height(cairo_t *cr) { (void)cr; return N_BUTTON_H; }
 double btn_width(const Text *label) { return 2 * N_BUTTON_PAD + label->w + 2 * N_BORDER; }
 
-/* console.css .btn (border hair, surface, ink), .primary (ink/on-ink),
- * .danger (danger text, danger-line border), each with :hover */
+/* console.css .btn (border hair, surface, ink -- ink, not blue: only .primary
+ * is blue), .primary (action/on-ink), .btn.danger inside a .win (danger-fill,
+ * white), .ghost-dng (danger-fg words, no fill), :disabled (row-border fill,
+ * muted words, no border), each with :hover. Radius --r-sm, as the console. */
 void draw_btn(App *a, cairo_t *cr, Rect b, Text *label, int kind, int id) {
     const Theme *t = a->theme;
     int hov = kind != BTN_OFF && hovered(a, b);
@@ -43,23 +45,26 @@ void draw_btn(App *a, cairo_t *cr, Rect b, Text *label, int kind, int id) {
     } else if (kind == BTN_SUCCESS) {
         bg = t->success_btn; line = t->success_btn_line; fg = t->on_ink;
     } else if (kind == BTN_DANGER) {
-        bg = t->danger; line = t->danger; fg = t->on_ink;
+        bg = t->danger_fill; line = t->danger_fill; fg = t->on_ink;
     } else if (kind == BTN_WARN) {
         bg = hov ? t->warning_soft : t->surface; line = t->warn; fg = t->warn;
     } else if (kind == BTN_GHOST_DANGER) {
-        bg = hov ? t->danger_soft : t->porcelain; line = hov ? t->danger : bg; fg = t->danger;
+        bg = hov ? t->danger_soft : t->porcelain; line = bg; fg = t->danger_fg;
     } else if (kind == BTN_OFF) {
-        bg = t->field; line = t->hair; fg = t->muted;
+        bg = t->track; line = t->track; fg = t->muted;
     } else {
         bg = hov ? t->btn_hover : t->surface;
-        line = hov ? t->indigo : t->button_line;
-        fg = t->action_fg;                        /* stage 1: text is --clr-action-fg, the fill stays --clr-action */
+        line = t->button_line;                    /* :hover changes the fill only */
+        fg = t->ink;
     }
-    draw_fill_rrect(cr, b, t->radius, bg);
-    draw_border_rrect(cr, b, t->radius, line, 1);
+    draw_fill_rrect(cr, b, t->radius_sm, bg);
+    draw_border_rrect(cr, b, t->radius_sm, line, 1);
+    if (hov && kind == BTN_DANGER) {             /* .btn.danger:hover{filter:brightness(.92)} */
+        draw_rrect_path(cr, b, t->radius_sm); draw_set_a(cr, (Rgb){ 0, 0, 0 }, .08); cairo_fill(cr);
+    }
     if (pressed) {           /* the press, one frame: darker by a step, the label 1px down */
         int filled = kind == BTN_PRIMARY || kind == BTN_DANGER || kind == BTN_SUCCESS;
-        draw_rrect_path(cr, b, t->radius); draw_set_a(cr, (Rgb){ 0, 0, 0 }, filled ? .18 : .08); cairo_fill(cr);
+        draw_rrect_path(cr, b, t->radius_sm); draw_set_a(cr, (Rgb){ 0, 0, 0 }, filled ? .18 : .08); cairo_fill(cr);
     }
     text_draw(cr, label, b.x + (b.w - label->w) / 2, b.y + (b.h - label->h) / 2 + (pressed ? 1 : 0), fg);
     if (kind != BTN_OFF) hit_add(a, b, id);
@@ -69,17 +74,23 @@ void draw_btn(App *a, cairo_t *cr, Rect b, Text *label, int kind, int id) {
 
 double field_height(cairo_t *cr) { (void)cr; return N_FIELD_H; }
 
-static void field_box(App *a, cairo_t *cr, Rect r, int focus) {
-    const Theme *t = a->theme;
+/* console .win .n-in:focus{border-color:var(--clr-action);
+ * box-shadow:0 0 0 3px color-mix(in srgb,var(--clr-action) 25%,transparent)}
+ * -- the box, its 1px border in the action colour, and the 3px ring round it. */
+void draw_field_box(cairo_t *cr, const Theme *t, Rect r, int focus) {
     draw_fill_rrect(cr, r, RADIUS_SM, t->field);
     if (focus) {
-        /* outline:2px solid indigo; outline-offset:1px; border-color:transparent
-         * -> a 2px ring whose inner edge is 1px outside the box. */
-        Rect o = { r.x - 3, r.y - 3, r.w + 6, r.h + 6 };
-        draw_border_rrect(cr, o, RADIUS_SM + 3, t->indigo, 2);
+        Rect ring = { r.x - 1.5, r.y - 1.5, r.w + 3, r.h + 3 };   /* the stroke's centreline */
+        draw_rrect_path(cr, ring, RADIUS_SM + 1.5);
+        draw_set_a(cr, t->indigo, .25); cairo_set_line_width(cr, 3); cairo_stroke(cr);
+        draw_border_rrect(cr, r, RADIUS_SM, t->indigo, 1);
     } else {
         draw_border_rrect(cr, r, RADIUS_SM, t->hair, 1);
     }
+}
+
+static void field_box(App *a, cairo_t *cr, Rect r, int focus) {
+    draw_field_box(cr, a->theme, r, focus);
 }
 
 /* console.css input[type=text|password] + :focus outline; .pw-wrap input */
@@ -465,9 +476,11 @@ void draw_station_art(cairo_t *cr, const Theme *t, Rect box, double opacity) {
     cairo_restore(cr);
 }
 
+/* console .tag{padding:3px 7px;border:1px solid;border-radius:var(--r);font-size:var(--t-xs)} --
+ * .tag.blue / .green / .warn / .danger are the kinds below. 24px high as before. */
 double pill_width(cairo_t *cr, const char *label, int dot) {
-    Text v = text_make(cr, FONT_SANS, 12, 600, label, 0, DIR_RTL);
-    double w = v.w + 20 + (dot ? 13 : 0);
+    Text v = text_make(cr, FONT_SANS, 11, 500, label, 0, DIR_RTL);
+    double w = v.w + 16 + (dot ? 13 : 0);
     text_free(&v); return w;
 }
 
@@ -475,13 +488,16 @@ double draw_pill(cairo_t *cr, const Theme *t, double right, double y,
                  const char *label, int kind, int dot) {
     Rgb bg = kind == PILL_OK ? t->success_soft : kind == PILL_WARN ? t->warning_soft
            : kind == PILL_BAD ? t->danger_soft : kind == PILL_INFO ? t->info_soft : t->hover;
-    Rgb fg = kind == PILL_OK ? t->led_ok : kind == PILL_WARN ? t->warn
-           : kind == PILL_BAD ? t->danger : kind == PILL_INFO ? t->info : t->muted;
-    Text v=text_make(cr,FONT_SANS,12,600,label,0,DIR_RTL);
-    double w=v.w+20+(dot?13:0), x=right-w;
-    draw_fill_rrect(cr,(Rect){x,y,w,24},12,bg);
-    text_draw_r(cr,&v,right-10,y+(24-v.h)/2,fg);
-    if(dot){ cairo_arc(cr,x+10+3.5,y+12,3.5,0,2*M_PI); draw_set(cr,fg); cairo_fill(cr); }
+    Rgb fg = kind == PILL_OK ? t->success_ink : kind == PILL_WARN ? t->warning_ink
+           : kind == PILL_BAD ? t->danger_fg : kind == PILL_INFO ? t->action_fg : t->muted;
+    Rgb line = kind == PILL_OK ? t->success_line : kind == PILL_WARN ? t->warning_line
+             : kind == PILL_BAD ? t->danger_line : kind == PILL_INFO ? t->indigo : t->hair;
+    Text v=text_make(cr,FONT_SANS,11,500,label,0,DIR_RTL);
+    double w=v.w+16+(dot?13:0), x=right-w;
+    draw_fill_rrect(cr,(Rect){x,y,w,24},t->radius,bg);
+    draw_border_rrect(cr,(Rect){x,y,w,24},t->radius,line,1);
+    text_draw_r(cr,&v,right-8,y+(24-v.h)/2,fg);
+    if(dot){ cairo_arc(cr,x+8+3.5,y+12,3.5,0,2*M_PI); draw_set(cr,fg); cairo_fill(cr); }
     text_free(&v); return w;
 }
 
@@ -537,14 +553,15 @@ void draw_thin_bar(cairo_t *cr, const Theme *t, Rect r, int pct, Rgb fill) {
     }
 }
 
-/* .native-alert{padding:9px 11px;border:1px solid;border-radius:3px;font-size:10px} */
+/* console .win .confirm-box{padding:10px 12px;border-radius:var(--r-sm);
+ * background:var(--clr-warning-soft);color:var(--clr-text);font-size:var(--t-sm)}
+ * -- a soft fill, no border. */
 Text alert_make(cairo_t *cr, const char *s, double w) {
     return rtl_block_make(cr, N_ALERT_FONT, 400, s, w - 2 * N_ALERT_PAD_X);
 }
 double alert_height(const Text *body) { return 2 * N_ALERT_PAD_Y + body->h; }
 void draw_alert(cairo_t *cr, const Theme *t, Rect r, Text *body) {
     draw_fill_rrect(cr, r, RADIUS_SM, t->alert_bg);
-    draw_border_rrect(cr, r, RADIUS_SM, t->alert_line, N_BORDER);
     text_draw(cr, body, r.x + N_ALERT_PAD_X, r.y + N_ALERT_PAD_Y, t->alert_ink);
 }
 
@@ -588,8 +605,8 @@ double metric_height(cairo_t *cr) {
 }
 
 void draw_metric(cairo_t *cr, const Theme *t, Rect box, const char *label, const char *value) {
-    draw_fill_rrect(cr,box,0,t->metric);
-    draw_border_rrect(cr,box,0,t->metric_line,N_BORDER);
+    draw_fill_rrect(cr,box,RADIUS_SM,t->metric);     /* .statbox{border-radius:var(--r-sm)} */
+    draw_border_rrect(cr,box,RADIUS_SM,t->metric_line,N_BORDER);
     Text l = rtl_block_make(cr,N_METRIC_LABEL,400,label,box.w-2*N_METRIC_PAD);
     Text v = rtl_block_make(cr,N_METRIC_VALUE,600,value,box.w-2*N_METRIC_PAD);
     /* ui-audit: metric_height() is one line of the value. A value that wraps (1024x768, "טרם נקראו בייטים ·

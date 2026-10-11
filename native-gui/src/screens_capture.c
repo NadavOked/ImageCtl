@@ -132,7 +132,7 @@ void screen_pick(App *a, cairo_t *cr, double W, double H, double head_h) {
             y += in_h + N_FORM_GAP;
         }
         y += N_LABEL_GAP;
-        text_draw(cr, &err, x, y, t->danger);
+        text_draw(cr, &err, x, y, t->danger_fg);
         text_free(&l1); text_free(&l2); text_free(&l3); text_free(&nf); text_free(&err);
     }
     body_clip_end(a, cr);
@@ -289,7 +289,7 @@ void screen_done(App *a, cairo_t *cr, double W, double H, double head_h) {
     double block=label.h+N_LABEL_GAP+title.h+N_TITLE_GAP+sub.h+N_LOGO_GAP+mh+N_ACTION_TOP+N_BUTTON_H;
     double ch=2*N_PAD+dmax(N_DONE_ICON,block);
     Rect panel={(W-cw)/2,head_h+(H-head_h-N_STATUS_H-ch)/2,cw,ch};
-    draw_box_shadow(cr,panel,RADIUS_R,N_SHADOW_Y,N_SHADOW_BLUR,0,t->shadow_strong,t->shadow_strong_a);
+    draw_box_shadow(cr,panel,RADIUS_R,N_SHADOW_Y,N_SHADOW_BLUR,0,t->shadow_strong,t->shadow_card_a);
     draw_fill_rrect(cr,panel,RADIUS_R,t->surface);
     draw_border_rrect(cr,panel,RADIUS_R,t->hair,N_BORDER);
     double x=panel.x+N_PAD,y=panel.y+N_PAD;
@@ -318,7 +318,7 @@ void screen_message(App *a, cairo_t *cr, double W, double H, double head_h) {
     pango_layout_set_alignment(sub.layout,PANGO_ALIGN_CENTER);
     double ch = 2*N_PAD + N_MESSAGE_ICON + N_MESSAGE_GAP + title.h + N_TITLE_GAP + sub.h;
     Rect panel = {(W-cw)/2,head_h+(H-head_h-N_STATUS_H-ch)/2,cw,ch};
-    draw_box_shadow(cr,panel,RADIUS_R,N_SHADOW_Y,N_SHADOW_BLUR,0,t->shadow_strong,t->shadow_strong_a);
+    draw_box_shadow(cr,panel,RADIUS_R,N_SHADOW_Y,N_SHADOW_BLUR,0,t->shadow_strong,t->shadow_card_a);
     draw_fill_rrect(cr,panel,RADIUS_R,t->surface);
     draw_border_rrect(cr,panel,RADIUS_R,t->hair,N_BORDER);
     double y = panel.y + N_PAD;

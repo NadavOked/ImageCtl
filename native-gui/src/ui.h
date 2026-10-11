@@ -10,12 +10,14 @@
 #ifndef IMAGECTL_UI_H
 #define IMAGECTL_UI_H
 
+#include <stddef.h>
 #include <cairo.h>
 #include "draw.h"
 #include "install_state.h"
 #include "theme.h"
 
-#define MAX_HITS    320     /* #695: 30 machines x 8 disks need room-disk hit targets */
+#define MAX_HITS    640     /* #695: 30 machines x 8 disks need room-disk hit targets;
+                               #1269: and a drivers tag on each of them in pick mode */
 #define MAX_DISKS     8
 #define MAX_FOLDERS  32
 #define MAX_IMAGES   64
@@ -30,6 +32,8 @@
 /* #928: the rows of the capture's shrink question (shrinkgui.sh,
  * SHRINK_GUI_MAX_ROWS). A request with more is not drawn at all. */
 #define MAX_SHRINK_PARTS 16
+/* #1269: the models the driver library has (GET /api/console/room/driver-models). */
+#define MAX_DRIVER_MODELS 32
 
 enum {
     HIT_NONE = 0,
@@ -113,6 +117,13 @@ enum {
      * asks in a dialog: [ביטול] and the red action */
     HIT_CONFIRM_OK,
     HIT_CONFIRM_CANCEL,
+    /* #1269: drivers per target disk, on the room / direct setup screen */
+    HIT_ROOM_DRV_SWITCH,  /* "להוסיף דרייברים" */
+    HIT_ROOM_DRV_MODEL,   /* the model (select) */
+    HIT_ROOM_DRV_ALL,     /* "כל הדיסקים שנבחרו" */
+    HIT_ROOM_DRV_PICK,    /* "לבחור דיסקים" */
+    /* #1245: the typing-language chip in the status bar (EN <-> עב) */
+    HIT_LANG,
     HIT_INSTALL_SUMMARY_BASE = 1000,
     HIT_INSTALL_NIC_BASE = 1020,
     /* ranges: base + index */
@@ -129,6 +140,8 @@ enum {
     HIT_TOOL_DISK_BASE = 900,
     /* owner, 10/10: a folder of the image picker (+index from image_folders) */
     HIT_PICK_FOLDER_BASE = 950,
+    /* #1269 a disk's drivers tag in pick mode: +(machine_index * MAX_DRAWERS)+(port-1) */
+    HIT_ROOM_DTAG_BASE = 2000,
 };
 
 typedef struct { Rect r; int id; } Hit;
@@ -159,7 +172,13 @@ typedef struct {
     int port, present, fresh, selected, unidentified;   /* #1235: no serial */
     char serial[80], model[80], smart[16];
     unsigned long long size_bytes;
+    /* #1269: drawer_list[].drivers of the live round -- staged / skipped /
+     * failed, "" = the step did not run on this drawer. detail = the
+     * packages (staged), the error (failed) or the reason (skipped). */
+    char drv_state[12], drv_detail[160];
 } RoomDrawer;
+/* #1269: one model the driver library has a package for, in its spelling. */
+typedef struct { char vendor[64], model[128]; } DriverModel;
 typedef struct {
     char name[64], mac[24], state[24], error[120];
     int awake, joined, fresh_drawers, drawer_count;
@@ -239,6 +258,13 @@ typedef struct State {
     /* #1168: logo=<png path> from guistate.sh -- the college's logo in the
      * header instead of the brandmark. Empty = brandmark. */
     char logo[256];
+    /* #1269: driver_models=<n> and one driver_model=<vendor>|<model> per
+     * model, from GET /api/console/room/driver-models. driver_models_read
+     * -1 = the list was not read (also when the key is absent); 0 = read,
+     * and the library has no package with a model rule. Two reasons the
+     * switch is off, said in two different words (principle 5). */
+    DriverModel driver_models[MAX_DRIVER_MODELS]; int ndriver_models;
+    int driver_models_read, hidden_models;
 
     /* the cloner screen (clonergui.sh): image name + a pending SMART choice.
      * smart_nonce is the request's identity, drawn with the prompt and echoed
@@ -264,7 +290,11 @@ typedef struct State {
     int hidden_disks, hidden_machines, rejected_lines, stale;
     char state_warning[160];
 
-    char form_error[160], room_error[160], class_error[160], toast[160];
+    char form_error[160], class_error[160], toast[160];
+    /* #1269: 256, not 160 -- "הדגם <model> כבר אינו בספריית הדרייברים..."
+     * carries a model of up to 127 bytes (DriverModel.model); at 160 gcc
+     * warns -Wformat-truncation, and a cut would split a UTF-8 letter. */
+    char room_error[256];
 } State;
 
 /* #649: one row of $GUI_DIR/tools (id|domain|title|risk|args). risk is
@@ -288,6 +318,7 @@ typedef struct App {
     char pass[128];
     int show_pw;                /* #st-eye toggled */
     int focus;                  /* HIT id of the focused text field */
+    int lang_he;                /* #1245: typing in Hebrew (SI-1452); Alt+Shift or the chip switch */
     char error[200];            /* #st-login-error */
 
     /* session */
@@ -335,6 +366,16 @@ typedef struct App {
      * port -- outside State so a 2 s state reload does not erase clicks. */
     struct { char mac[24]; int port, selected; } room_selection[MAX_ROOM_SELECTIONS];
     int nroom_selection;
+    /* #1269: "להוסיף דרייברים" -- off on every entry (room_drv_reset).
+     * drv_pick 0 = one model for every chosen disk, 1 = per disk: a disk
+     * with no drv_map entry takes the current model, an entry with an empty
+     * vendor is "בלי". vendor/model are the library's spelling, so a 2 s
+     * reload that reorders the list does not move a choice. There is no
+     * "automatic": the cloner's hardware is not the target's. */
+    int drv_on, drv_pick;
+    char drv_vendor[64], drv_model[128];
+    struct { char mac[24]; int port; char vendor[64], model[128]; } drv_map[MAX_ROOM_SELECTIONS];
+    int ndrv_map;
 
     /* #st-class */
 
@@ -411,6 +452,11 @@ int app_hit(const App *a, double x, double y);
 /* Decide a->screen from the task, the message, the session and the mode --
  * the order of station.js poll(). Called before every draw. */
 void app_route(App *a);
+/* #1245: what the status bar's language chip says. LANG_NONE when no text
+ * field on this screen has the focus; LANG_EN_ONLY on a field that takes
+ * English only (the chip then explains instead of switching). main.c. */
+enum { LANG_NONE, LANG_EN_ONLY, LANG_EN, LANG_HE };
+int app_typing_lang(const App *a);
 
 /* The screens (one file each group); called by app_draw. */
 void screen_login(App *a, cairo_t *cr, double W, double H, double head_h);
@@ -442,5 +488,21 @@ void tools_parse(App *a, const char *text);
 int tools_risk_level(const char *risk);
 void tools_sample(App *a);
 void tool_output_set(App *a, const char *text);
+
+/* #1269 (screens_drivers.c): drivers per target disk on the room / direct
+ * setup screen; the drawing half is in screens_rounds.h (it needs Pango,
+ * and ui.h is also built without it -- the installer tests).
+ * room_drv_active: the switch is on AND the library has models.
+ * room_drv_reset: the switch off and no choice -- on every entry.
+ * room_drv_after_reload: the chosen model stays one the library has.
+ * room_drv_choose: row i of the model list; room_drv_tag_click: a disk's tag.
+ * room_drv_encode: "<mac>|<port>|<vendor>|<model>|..." for each chosen disk
+ * with a model; returns how many, or -1 with the reason in st.room_error. */
+int room_drv_active(const App *a);
+void room_drv_reset(App *a);
+void room_drv_after_reload(App *a);
+void room_drv_choose(App *a, int i);
+void room_drv_tag_click(App *a, int mi, int port);
+int room_drv_encode(App *a, char *out, size_t n);
 
 #endif

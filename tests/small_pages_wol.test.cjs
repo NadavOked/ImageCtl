@@ -79,7 +79,7 @@ test('the five pages are own pages; monitor/settings/permissions/logs without ta
   const {run}=setup();
   for(const id of ['monitor','settings','permissions','logs','drivers']) assert.equal(run(`pages.${id}.own`),true,id);
   for(const id of ['monitor','settings','permissions','logs']) assert.equal(run(`pages.${id}.tabs.length`),0,id+' has no tabs');
-  assert.equal(JSON.stringify(run('pages.drivers.tabs')),JSON.stringify(['חבילות','כיסוי לפי מכונה']));
+  assert.equal(JSON.stringify(run('pages.drivers.tabs')),JSON.stringify(['דגמים','חבילות','כיסוי לפי מכונה']));
   for(const fn of ['usersAdminPage','journalPage','settingsPage','loadUsersAdmin','loadJournal','loadJournalEvents','openRolesDrawer','openLogFilter','applyLogFilter','loadSettings','wireSettings','loadUpdateInfo','checkForUpdate','editUser','saveUser','createUser'])
     assert.equal(run('typeof '+fn),'undefined',fn+' must be deleted');
   assert.equal(run('typeof journalFilters'),'undefined');
@@ -111,11 +111,13 @@ test('settings: a row per setting in Hebrew (label + meaning | control), switche
   assert.match(srow('session_wait_seconds'),/value="300" min="30"/);
   assert.match(srow('recovery_require_login'),/class="sw on" role="switch" aria-checked="true" aria-label="שחזור תחנה בודדת דורש כניסה" onclick="settingsToggle\('recovery_require_login', this\)"/); assert.match(srow('recovery_require_login'),/מומלץ דלוק; כיבוי רק להדגמה/);
   assert.match(srow('class_deploy_enabled'),/class="sw" role="switch" aria-checked="false"/);
-  assert.match(srow('update_enabled'),/aria-checked="false"/); assert.match(srow('update_enabled'),/selectPageById\('health'\)">כרטיס העדכון — בבריאות ושירותים</,'the update card itself lives in health (wave 5)');
+  assert.match(srow('update_enabled'),/aria-checked="false"/); assert.match(srow('update_enabled'),/הכרטיס "עדכונים" למטה|הכרטיס &quot;עדכונים&quot; למטה/,'stage 3: the update card lives right here in settings (console-full.html)'); assert.match(html,/<span>עדכונים[ <]/); assert.match(html,/<span>גיבוי[ <]/); assert.match(html,/<span>מראה[ <]/);
   assert.match(srow('identity_check'),/class="sw on" role="switch" aria-checked="true"/,'#855: missing = on');
   assert.match(srow('identity_check'),/הכיבוי נרשם ביומן/);
   assert.equal((html.match(/role="switch"/g)||[]).length,4);
   assert.doesNotMatch(html,/role="tablist"/);
+  // מראה (stage 3): שלושה מצבים, אחד נלחץ — לפי themePref
+  assert.match(html,/aria-label="ערכת נושא">.*aria-pressed="true">לפי המערכת<.*aria-pressed="false">בהיר<.*aria-pressed="false">כהה</);
   // מיתוג: 204 = אין לוגו → ברירת המחדל, בלי "הסרה"
   assert.match(html,/class="logo-box"><img src="logo\.svg\?v=4\.0"/); assert.match(html,/class="st ">ברירת המחדל</); assert.doesNotMatch(html,/settingsLogoClear/);
   assert.match(html,/id="logo-input" class="hidden" accept="image\/png,image\/jpeg,image\/webp,image\/svg\+xml"/);
@@ -189,10 +191,10 @@ test('permissions: one users table (name, role pill, state, created, hover actio
   assert.equal((html.match(/<table class="dg( kebab-col)?">/g)||[]).length,2,'users + matrix'); assert.doesNotMatch(html,/role="tablist"|Add user|<th>User<\/th>|id="users-table"/);
   assert.match(html,/<th>משתמש<\/th><th>תפקיד<\/th><th>מצב<\/th><th>MFA<\/th><th class="c-opt">נוצר<\/th><th class="c-opt">כניסה אחרונה<\/th><th><span class="sr">פעולות<\/span><\/th>/);
   const a=row(html,'data-user="admin"'), y=row(html,'data-user="yossi"'), d=row(html,'data-user="deployer"');
-  assert.match(a,/<span class="name">admin<\/span><span class="sub">זה אתה<\/span>/); assert.match(a,/class="pill info">מנהל</); assert.match(a,/class="st ok">פעיל</); assert.match(a,/01\/08\/2026/);
+  assert.match(a,/<span class="name">admin<\/span><span class="sub">זה אתה<\/span>/); assert.match(a,/class="pill info">מנהל</); assert.match(a,/class="pill ok">פעיל</); assert.match(a,/01\/08\/2026/);
   // אחרי apple-pending-4: כל פעולות השורה בתפריט ⋯ אחד; ההרסנית (מחיקה — חלון אישור) אחרונה, מסומנת "danger"
   assert.doesNotMatch(a,/class="kebab"/,'self: no row actions (server refuses role/disable/reset on yourself; "שנה סיסמה" is in "החשבון שלי", #1268)');
-  assert.match(y,/class="st warn">מושבת</); assert.deepEqual(menuOf(y).map((i)=>i[0]),['תפקיד…','איפוס סיסמה…','הפעל','נתק את כל ההפעלות…','מחק משתמש…']);
+  assert.match(y,/class="pill err">מושבת</); assert.deepEqual(menuOf(y).map((i)=>i[0]),['תפקיד…','איפוס סיסמה…','הפעל','נתק את כל ההפעלות…','מחק משתמש…']);
   assert.ok(menuOf(y).some((i)=>i[1]==="userResetPassword('yossi')")); assert.doesNotMatch(y+d,/userPasswordSheet/,'#1268: no typed password for another user');
   assert.deepEqual(menuOf(y).at(-1),['מחק משתמש…',"userDeleteSheet('yossi')",'danger'],'a disabled admin is deletable — the server counts active admins');
   assert.ok(menuOf(y).some((i)=>i[1]==="userDisable('yossi', false)"));
@@ -302,14 +304,14 @@ test('logs: one table — time (hh:mm:ss today, date otherwise), severity dot fr
   const j=requests.find((r)=>r.url==='/journal'); assert.equal(new URL(j.full,'http://x').searchParams.get('limit'),'200'); assert.equal(new URL(j.full,'http://x').searchParams.get('from'),null,'no range by default');
   const html=run('logs()'); balanced(html);
   assert.match(html,/class="obj-name">יומן</); assert.match(html,/4 אירועים מוצגים \(הסך לא נמסר\) · בלי סינון — האחרונים/,'no X-Journal-Total → not a number');
-  assert.match(html,/<th>זמן<\/th><th><\/th><th>מה קרה<\/th><th>מי<\/th><th><\/th>/);
+  assert.match(html,/<th>זמן<\/th><th>חומרה<\/th><th>מה קרה<\/th><th>מי<\/th><th><\/th>/);
   assert.doesNotMatch(html,/role="tablist"|openLogFilter|<th>event<\/th>|עקרון התצוגה|Audit/);
   const r0=row(html,'LAB303-03');
-  assert.match(r0,/<span class="mono">09:44:10<\/span>/,'today → hh:mm:ss only'); assert.match(r0,/class="st warn" title="דורש תשומת לב"/); assert.match(r0,/&lt;b&gt;x&lt;\/b&gt;/,'text is escaped');
+  assert.match(r0,/<span class="mono">09:44:10<\/span>/,'today → hh:mm:ss only'); assert.match(r0,/title="דורש תשומת לב"><span class="pill warn">אזהרה</); assert.match(r0,/&lt;b&gt;x&lt;\/b&gt;/,'text is escaped');
   assert.match(r0,/<td>המערכת<\/td>/); assert.match(r0,/onclick="openLogDetail\(0\)" tabindex="0"/);
   const r2=row(html,'timeout');
-  assert.match(r2,/<span class="mono">16\/09\/2026 08:12:44<\/span>/); assert.match(r2,/class="st err"/);
-  assert.match(row(html,'Office 2024'),/class="st info"/); assert.match(row(html,'מחשב סיים לכתוב'),/class="st ok"/);
+  assert.match(r2,/<span class="mono">16\/09\/2026 08:12:44<\/span>/); assert.match(r2,/<span class="pill err">שגיאה</,'stage 3: severity is a pill WITH a word, not a colour dot alone');
+  assert.match(row(html,'Office 2024'),/pill info">מידע</); assert.match(row(html,'מחשב סיים לכתוב'),/pill ok">הושלם</); assert.doesNotMatch(html,/<span class="st (ok|info|warn|err)" title=/,'no colour-only dot');
   // שורת סינון בדף
   assert.match(html,/<div class="dg-bar"><input type="search" value="" placeholder="חיפוש בטקסט[^"]*" aria-label="חיפוש ביומן" onchange="logFilter\('q', this\.value\.trim\(\)\)"/);
   assert.match(html,/<select aria-label="סוג אירוע" onchange="logFilter\('event', this\.value\)"><option value="" selected>כל סוגי האירועים<\/option><option value="session_open">סבב נפתח</);
@@ -403,4 +405,25 @@ test('WoL: the request and the toast — "sent (N)" never "woke up"; failed → 
   assert.equal(run('toasts.at(-1)'),'WoL נכשל: שידור נכשל');
   await run("wakeMachine('zz')"); assert.equal(run('toasts.at(-1)'),'מכונה לא נמצאה');
   assert.equal(requests.filter((r)=>r.url==='/room/wake').length,0,'the per-machine path never touches the room endpoint');
+});
+
+test('stage 3: the settings "מראה" card sets the theme explicitly — applies it now and saves it on the server (PUT /me/theme); an unknown value does nothing',async()=>{
+  const {run,requests}=setup(); run('current="settings"');
+  await run('loadSettingsData()');
+  await run("setThemePref('dark')");
+  assert.equal(run('themePref'),'dark');
+  const put=requests.find((r)=>r.url==='/me/theme'); assert.ok(put,'saved on the server'); assert.equal(put.method,'PUT'); assert.deepEqual(put.body,{theme:'dark'});
+  assert.match(run('settings()'),/aria-pressed="true">כהה</);
+  const n=requests.length; run("setThemePref('rainbow')");
+  assert.equal(requests.length,n,'unknown value: no request'); assert.equal(run('themePref'),'dark');
+});
+
+test('stage 3: the users table MFA column is a pill — built-in admin "מקומי · ללא MFA", MFA on "פעיל", admin without "כבוי" (warn), a deploy user "—" (never "כבוי")',()=>{
+  const {run}=setup(); run('current="permissions"');
+  const cell=(u)=>run(`userRowHtml(${JSON.stringify(u)}).cells[3]`);
+  assert.equal(cell({username:'a',role:'admin',is_builtin:true}),'<span class="pill info">מקומי · ללא MFA</span>');
+  assert.equal(cell({username:'b',role:'admin',mfa_enabled:true}),'<span class="pill ok">פעיל</span>');
+  assert.equal(cell({username:'c',role:'admin'}),'<span class="pill warn">כבוי</span>');
+  assert.equal(cell({username:'d',role:'deploy'}),'—');
+  assert.equal(run('userMfaLabel({is_builtin:true})'),'מקומי','the account page keeps its own label');
 });

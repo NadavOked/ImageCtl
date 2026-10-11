@@ -79,12 +79,19 @@ typedef struct {
  Rgb warn;
  Rgb brand_accent;
  Rgb action_fg;      /* text and strokes in the action colour (console --clr-action-fg) */
- Rgb shadow_strong; double shadow_strong_a;
- double radius;
+ Rgb danger_fill;    /* a destructive button's fill (console --clr-danger-fill): white text on it */
+ Rgb danger_fg;      /* error text on the page (console --clr-danger-fg: 4.5:1 where --clr-danger is not) */
+ Rgb shadow_strong; double shadow_strong_a;   /* black; the alpha of --shadow-overlay (menus, toast) */
+ double shadow_card_a;                        /* the alpha of --shadow-card's soft layer (cards) */
+ double radius;      /* --r */
+ double radius_sm;   /* --r-sm */
 } Theme;
 extern const Theme THEME_LIGHT, THEME_DARK;
-extern const double RADIUS_R;
-extern const double RADIUS_SM;
+/* The console's --r and --r-sm differ per theme (light 9/6px, dark 3/3px), so the
+ * radius is read from the theme being drawn -- every drawing function already has
+ * it as <t>. Not a constant any more: a constant 3 was the dark value on both. */
+#define RADIUS_R (t->radius)
+#define RADIUS_SM (t->radius_sm)
 extern const double N_PANEL_W;
 extern const double N_NARROW_W;
 extern const double N_PAD;

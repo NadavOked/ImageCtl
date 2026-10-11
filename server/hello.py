@@ -18,7 +18,7 @@ import sqlite3
 from urllib.parse import urlsplit
 
 from . import (bootguard, capabilities, direct, disk_failures, inventory, probe,
-               registry, room, shrink_records, ssh_hostkey)
+               registry, room, room_drivers, shrink_records, ssh_hostkey)
 from .db import get_setting, journal, net_seen
 from .images import ImageLibrary
 from .sessions import SessionStore
@@ -377,8 +377,12 @@ def build_answer(
     # ‏#695: לסבב חדר, המכונה מקבלת את **הפורטים שנבחרו לכתיבה עבורה בלבד**.
     # ‏null שמור בכוונה לסבב ישן (התנהגות "כל הדיסקים"); קבוצה ריקה = לא נבחרה.
     if machine["role"] == "cloner" and session["prefix"] == "ROOM":
-        ports = room._selected_ports(room.active_round(conn), mac)
+        round_row = room.active_round(conn)
+        ports = room._selected_ports(round_row, mac)
         answer["session"]["target_ports"] = None if ports is None else sorted(ports)
+        # ‏#1269: החריצים שלה שנבחר להם דגם דרייברים. ‏null = הסבב בלי
+        # דרייברים, והסוכן אינו שואל דבר — ההתנהגות מלפני ה-Issue.
+        answer["session"]["driver_ports"] = room_drivers.ports_for(round_row, mac)
     answer["ui"] = _ui(conn, has_open_session=session["state"] == "open",
                        off_vlan=off_vlan)
     return answer

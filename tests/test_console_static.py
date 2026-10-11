@@ -276,16 +276,17 @@ def test_static_includes_are_at_9_9():
     ‏#1262 (admin שנוצר בהתקנה מוגן) = ‏11.11.
     שדות סיסמה LTR + "הצג" אחד, ותיקוני הגואי הנייטיבי = ‏11.12;
     #1263 (כרטיס רשת בשלושה אופנים, חלון רשת הפצה, בלי קבצי dnsmasq) = ‏11.13; #1268/#1270/מתאים לדיסק/בלי זכירת MFA = ‏11.15.
+    #1267 (פורטים לפי רשת, שירותים בבריאות) + #1264 (bond בהפצה) + #1269 (דרייברים לפי דיסק) + שלב 3 של המוקאפ = ‏11.16; בחירת דיסקים לסבב בקונסולה (#1275) = ‏11.17.
     שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
     versions = set(re.findall(r'\?v=(\d+\.\d+)"', page))
-    assert versions == {"11.15"}, versions
+    assert versions == {"11.17"}, versions
     # ביקורת 10/10: monitor.html מושך את אותם console.css ו-design-tokens.css — הם נשארו על 3.29 לנצח,
     # ולכן דפדפן שזכר אותם הציג את המוניטור בעיצוב ישן. monitor.js לבדו שומר על גרסה משלו (test_monitor).
     mon = (STATIC / "monitor.html").read_text(encoding="utf-8")
     shared = set(re.findall(r'(?:design-tokens|console)\.css\?v=(\d+\.\d+)"', mon))
-    assert shared == {"11.15"}, shared
+    assert shared == {"11.17"}, shared
 
 
 def test_update_apply_is_a_sheet_without_text_verification_and_revert_uses_hostname():
@@ -449,32 +450,30 @@ def test_failed_rounds_show_the_reason_and_offer_close_or_reopen():
         assert needed in js, needed
 
 
-def test_health_and_ports_pages_are_tables_from_the_api_with_a_switch_per_row():
+def test_health_and_ports_pages_are_tables_from_the_api_and_ports_have_no_switches():
     """‏#954 גל 5: בריאות = טבלת בדיקות (חמישה מצבים, "לא נבדק" אינו ירוק,
     לולאות אתחול מקובצות) + כרטיס גרסה ועדכון (הקלדת שם השרת) — בלי מתגים
-    ובלי הלשוניות הזהות "סקירה/שירותים/בדיקות" (#829 M5). פורטים = טבלה אחת
-    עם מתג בכל שורה (נדב 17/09 06:25): המתגים של היום (DHCP, proxy, מוניטור,
-    SSH לתחנות, SSH לשרת × כרטיס) קוראים לאותם endpoints; לשאר — החוזה של
-    #996 (enabled/bind/toggle/off_means, PUT /ports/{id}), ובלעדיו המתג
-    מוסבר ולא מנוטרל. הכרטיסים עם "פתיחה/סגירה/שינוי" המנוטרלים — נמחקו.
-    ‏#1015 (מקור אחד לכל שורה): portServerToggle משתמש ב-portToggleUrl(p)
-    (toggle_url של השורה, ואם חסר — /ports/{id} כמו קודם) ומכבד confirm_when."""
+    ובלי הלשוניות הזהות "סקירה/שירותים/בדיקות" (#829 M5).
+    ‏#1267 (נדב 10/10): פורטים = כרטיס לכל רשת (הפצה / ניהול / בין שרתים),
+    חומת אש רק בין רשתות, ו**אין "פתח/סגור פורט"** — רק "בדוק עכשיו" ו"הצג
+    פרטים". המתגים של #996/#1015 יצאו מהדף; מתג ה-SSH לשרת נשאר בחיבורים
+    פיזיים (portSwitchHtml/portSshNic), ומתג המוניטור בדף המוניטור."""
     js = _console_js()
-    for needed in ("function health()", "function healthRows(", "function healthUpdateCard(", "async function loadHealthUpdate(",
+    for needed in ("function health()", "function healthRows(", "function updateCard(", "async function loadHealthUpdate(",
                    'unknown: ["unk", "לא נבדק"]', 'off: ["", "כבוי"]', '["agent_loop:", "לולאות אתחול", "agent_loops"]',
-                   "function ports()", "function portRows(", "function portSwitchHtml(", "function portServerToggle(",
-                   "function portConfirmDirection(", "function portToggleUrl(",
-                   "await put(portToggleUrl(p), { enabled: enabling, ...extra })", "const word = p.confirm_word || ME.server_name",
-                   "nicBody(n, { enabled: false, proxy: false })",
-                   '"/ssh/stations"', "`/ssh/interfaces/${encodeId(nic.name)}`",
-                   'role="switch"', "דורש API (#996)", "havePortsDhcp", "havePortsSshServer",
+                   "function ports()", "function portCard(", "function portDetail(", "async function portCheckNow(",
+                   '"מה לפתוח בחומת האש של המכללה"', 'const PORT_FW = { open: ["ok", "פתוח"], blocked: ["err", "חסום"] }',
+                   "function portSwitchHtml(", "nicBody(n, { enabled: false, proxy: false })",
+                   "`/ssh/interfaces/${encodeId(nic.name)}`", 'onSubmit: () => send({ confirm: "imagectl.monitor" })',
                    'health: { crumb: "בריאות ושירותים", title: "בריאות ושירותים", tabs: [], render: health, load: loadHealth, own: true }',
                    'render: ports, load: loadPorts, own: true }'):
         assert needed in js, needed
     for gone in ('id="ssh-body"', "function loadSsh(", "function sshLight(", "SSH_LIGHT", 'title="בקרוב (נדרש endpoint)"',
-                 'tabs: ["סקירה", "שירותים", "בדיקות"]', "health: [health,", "ports: [ports]"):
+                 'tabs: ["סקירה", "שירותים", "בדיקות"]', "health: [health,", "ports: [ports]",
+                 "function portRows(", "function portServerToggle(", "function portToggleUrl(", "havePortsDhcp", "PORTS_MONITOR"):
         assert gone not in js, gone
-    block = js[js.index("/* ---------- #954 גל 5/#996: רשת › פורטים"):js.index("/* ---------- #954 גל 6: מוניטור — הרשימה")]   # גל 6: המוניטור אחרי הפורטים
+    block = js[js.index("/* ---------- #1267: רשת › פורטים"):js.index("/* ---------- #954 גל 6: מוניטור — הרשימה")]   # גל 6: המוניטור אחרי הפורטים
+    assert 'role="switch"' not in block[block.index("const PORT_NETWORKS"):], "אין מתג בדף הפורטים (#1267)"
     assert "disabled" not in block, "כפתור מנוטרל במקום 'דורש API' (README §8)"
     assert "prompt(" not in block and "confirm(" not in block.replace("confirmSheet(", ""), "prompt/confirm חסומים — רק sheet()"
     css = (STATIC / "console.css").read_text(encoding="utf-8")
@@ -499,7 +498,7 @@ def test_small_pages_are_own_tables_from_the_api_and_wol_is_per_machine():
                    'permissions: { crumb: "הרשאות", title: "הרשאות", tabs: [], render: permissions, load: loadUsersData, own: true }',
                    'logs: { crumb: "יומן", title: "יומן", tabs: [], render: logs, load: loadJournalData, own: true }',
                    'monitor: { crumb: "מוניטור", title: "מוניטור", tabs: [], render: monitorPage, load: loadMonitor, own: true }',
-                   'tabs: ["חבילות", "כיסוי לפי מכונה"], render: (i) => driversPage(i), load: () => loadDrivers(), own: true'):
+                   'tabs: ["דגמים", "חבילות", "כיסוי לפי מכונה"], render: (i) => driversPage(i), load: () => loadDrivers(), own: true'):
         assert needed in js, needed
     for gone in ("function usersAdminPage(", "function journalPage(", "function settingsPage(", "function loadUsersAdmin(", "function openRolesDrawer(",
                  "function openLogFilter(", "JOURNAL_FILTER_FIELDS", "function loadUpdateInfo(", "function checkForUpdate(", 'title:"Settings"',
@@ -726,5 +725,14 @@ def test_stage2_css_defines_what_the_js_emits_and_no_invented_items():
     assert ".page .tile .led" in css and ".dskico" in css
     js = _console_js() + (STATIC / "storage.js").read_text(encoding="utf-8")
     assert 'usage(total, free)' in js and 'class="tiles"' in js and 'class="dskico"' in js
-    for invented in ("בקשות הרשאה", "ממצאי ביקורת", 'title: "גיבוי"', "<span>גיבוי</span>"):
+    # שלב 3: כרטיס "גיבוי" כן נבנה — יש לו API (GET /update/backup, #1128) והמוקאפ המאושר מציג אותו בהגדרות.
+    for invented in ("בקשות הרשאה", "ממצאי ביקורת"):
         assert invented not in js, invented
+
+
+def test_stage3_css_defines_the_segmented_control_the_settings_page_emits():
+    """stage 3: כרטיס "מראה" פולט class="seg"; בלי כלל CSS הכפתורים נראים כברירת מחדל של הדפדפן (נמצא בבדיקה חיה)."""
+    css = (STATIC / "console.css").read_text(encoding="utf-8")
+    js = _console_js()
+    assert 'class="seg"' in js
+    assert ".seg{" in css and ".seg button[aria-pressed=true]" in css

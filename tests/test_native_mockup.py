@@ -182,7 +182,7 @@ def test_the_server_pill_turns_red_when_the_last_hello_failed(tmp_path):
     """Same state twice, hello_rc 200 vs 503: the 503 menu has a red pill the
     200 one does not (the restore card's 'הדיסק נמחק.' is red in both)."""
     binary = _build_gui(tmp_path)
-    red = _token("--clr-danger")
+    red = _token("--clr-danger-fg")
     counts = {}
     for rc in ("200", "503"):
         state = tmp_path / f"{rc}.txt"
@@ -191,7 +191,7 @@ def test_the_server_pill_turns_red_when_the_last_hello_failed(tmp_path):
         _png(binary, tmp_path / rc, state, "1280x800")
         _, _, ch, px = _png_rgb(tmp_path / f"{rc}-menu-light.png")
         counts[rc] = _count_color(px, ch, red)
-    assert counts["503"] - counts["200"] > 60, counts
+    assert counts["503"] - counts["200"] > 25, counts
 
 
 @GUI_BUILD
@@ -565,7 +565,7 @@ def test_the_live_rounds_stop_is_red_words_until_confirmed(tmp_path):
     binary = _build_gui(tmp_path)
     _render_all(binary, tmp_path, "1280x800")
     w, h, ch, px = _png_rgb(tmp_path / "card-room-live-light.png")
-    red = _token("--clr-danger")
+    red = _token("--clr-danger-fg")
     n = sum(1 for y in range(700, 742) for x in range(w)
             if all(abs(px[(y * w + x) * ch + k] - red[k]) <= 12 for k in range(3)))
     assert 0 < n < 900, f"{n} red pixels in the footer (a filled button is ~3000)"

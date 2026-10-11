@@ -29,7 +29,7 @@ import sqlite3
 
 from fastapi import APIRouter, HTTPException, Request
 
-from . import registry, room, sender as sender_module
+from . import registry, room, room_drivers, sender as sender_module
 from .db import _write_lock, journal, now_iso, writing
 from .images import restore_refusal
 from .sessions import SessionError
@@ -79,7 +79,7 @@ def _reported_devs(conn: sqlite3.Connection, mac: str) -> set[str]:
 
 
 def open_direct_round(ctx, source: dict, target_slots, target_drives,
-                      user: str) -> dict:
+                      user: str, driver_models=None) -> dict:
     """פותח סבב חדר שהמקור שלו הוא דיסק במחשב בנייה.
 
     כל הבדיקות לפני כל כתיבה (עיקרון 5/7): המקור חייב להיות מחשב
@@ -109,6 +109,9 @@ def open_direct_round(ctx, source: dict, target_slots, target_drives,
     if target_drives is not None and int(target_drives) != count:
         raise ValueError(
             f"בהפצה ישירה היעד הוא בדיוק הדיסקים שנבחרו ({count}) — סבב יחיד")
+    # ‏#1269: אותה בחירת דרייברים לכל דיסק כמו בסבב מהספרייה.
+    chosen_drivers = room_drivers.validate(driver_models, selected,
+                                           room.library_packages(ctx))
     if active_task(ctx.conn, mac) is not None:
         raise SessionError("כבר יש משימה פתוחה למחשב הבנייה הזה")
     if room.active_round(ctx.conn) is not None:
@@ -138,15 +141,17 @@ def open_direct_round(ctx, source: dict, target_slots, target_drives,
         )
         ctx.conn.execute(
             "INSERT INTO room_rounds (id, image_id, target_drives, target_slots_json,"
-            " expand_partition, state, wave_session_id, opened_by, created_at,"
-            " source_kind, source_mac, source_disk, source_task_id)"
-            " VALUES (?, ?, ?, ?, NULL, 'active', ?, ?, ?, ?, ?, ?, ?)",
+            " expand_partition, driver_models_json, state, wave_session_id, opened_by,"
+            " created_at, source_kind, source_mac, source_disk, source_task_id)"
+            " VALUES (?, ?, ?, ?, NULL, ?, 'active', ?, ?, ?, ?, ?, ?, ?)",
             (round_id, image_id, count,
              json.dumps(selected, separators=(",", ":")),
+             json.dumps(chosen_drivers, ensure_ascii=False) if chosen_drivers else None,
              wave_id, user, now, BUILD_DISK, mac, disk, task_id),
         )
     journal(ctx.conn, "room_open_direct",
-            f"{round_id} source={mac}:{disk} task={task_id} target={count}", user)
+            f"{round_id} source={mac}:{disk} task={task_id} target={count}"
+            + (f" drivers={len(chosen_drivers)}" if chosen_drivers else ""), user)
     return {"id": round_id, "wave_session_id": wave_id,
             "task_id": task_id, "image_id": image_id}
 
