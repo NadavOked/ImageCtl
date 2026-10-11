@@ -541,6 +541,7 @@ def test_an_overflowing_stall_threshold_is_rejected_not_taken_as_disabled(fanout
 # --- #427: EOF אינו ok בלי אורך ---------------------------------------------
 
 
+@needs_fanout
 def test_an_empty_stream_is_failed_not_ok(fanout, tmp_path):
     """קלט ריק, יצרן שמת, ואימג' שלם היו אותו EOF → ok. ריק נכשל בשמו."""
     sink = []
@@ -553,6 +554,7 @@ def test_an_empty_stream_is_failed_not_ok(fanout, tmp_path):
     assert b"".join(sink) == b""
 
 
+@needs_fanout
 def test_a_short_stream_fails_every_drawer_not_ok(fanout, tmp_path):
     """יצרן שנהרג באמצע: FANOUT_EXPECTED_BYTES לא הושג → failed, לא ok."""
     data = os.urandom(256 * 1024)
@@ -573,6 +575,7 @@ def test_a_short_stream_fails_every_drawer_not_ok(fanout, tmp_path):
     assert [counter_of(f) for f in fifos] == [len(data), len(data)]
 
 
+@needs_fanout
 def test_a_stream_that_matches_the_expected_length_is_still_ok(fanout, tmp_path):
     """הצד השני של #427: אורך תואם אינו תיקון-יתר שדוחה זרם שלם."""
     data = os.urandom(256 * 1024)
@@ -589,6 +592,7 @@ def test_a_stream_that_matches_the_expected_length_is_still_ok(fanout, tmp_path)
     assert counter_of(fifo) == len(data)
 
 
+@needs_fanout
 def test_an_overflowing_expected_length_is_rejected_not_taken_as_disabled(fanout, tmp_path):
     """כמו #674 על הסטול: גלישה ל-LLONG_MAX היתה הופכת כל זרם ל-short
     (או מבטלת את הבדיקה). נדחית בקול, והזרם הבריא עובר."""
@@ -606,6 +610,7 @@ def test_an_overflowing_expected_length_is_rejected_not_taken_as_disabled(fanout
     assert "ignoring invalid FANOUT_EXPECTED_BYTES" in err, err
 
 
+@needs_fanout
 def test_a_regular_file_target_is_fsynced(fanout, tmp_path):
     """יעד שאינו FIFO: fsync + close נבדקים, והבייטים על הדיסק תואמים."""
     data = os.urandom(64 * 1024)
@@ -661,3 +666,19 @@ def test_sigpipe_does_not_kill_the_whole_machine(fanout, tmp_path):
     assert code in (0, 1), "fanout was killed instead of reporting"
     assert report.get("sda") == "ok"
     assert b"".join(good) == data
+
+
+def test_every_test_that_compiles_fanout_skips_by_name_without_gcc():
+    """‏#1283: חמישה טסטים ביקשו את ה-fixture `fanout` בלי `@needs_fanout`,
+    ובווינדוס (אין gcc) הם נפלו ב-ERROR של setup — לא דילוג מוצהר
+    שנספר בשמו (וכישלון תחת ‏IMAGECTL_REQUIRE_NATIVE=1, #52), אלא רעש
+    שמסתיר כישלון אמיתי. השומר הזה רץ בכל מקום, גם בלי gcc."""
+    import inspect
+
+    unmarked = [
+        name for name, fn in sorted(globals().items())
+        if name.startswith("test_") and callable(fn)
+        and "fanout" in inspect.signature(fn).parameters
+        and needs_fanout.mark not in getattr(fn, "pytestmark", [])
+    ]
+    assert unmarked == [], f"בלי @needs_fanout: {unmarked}"

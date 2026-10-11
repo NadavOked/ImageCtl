@@ -16,10 +16,10 @@ function setup() {
       setAttribute(k,v){this.attrs[k]=String(v);},removeAttribute(k){delete this.attrs[k];},getAttribute(k){return this.attrs[k]??null;},
       closest(sel){return sel==='#netTA'&&inNet?{}:null;},hasAttribute(){return false;},style:{},dataset:{},addEventListener(){},removeEventListener(){}};
   };
-  const nodes={network:mk('network',{'data-page':'network'}),nic:mk('nicNode',{},true),dist:mk('dist',{'data-net-tab':'2'},true),
+  const nodes={network:mk('network',{'data-page':'network'}),diagram:mk('diagram',{'data-net-tab':'0'},true),nic:mk('nicNode',{},true),dist:mk('dist',{'data-net-tab':'2'},true),
     ports:mk('ports',{'data-page':'ports'},true),home:mk('home',{'data-page':'home'})};
   const all=Object.values(nodes);
-  const bySel={'#nicNode':nodes.nic,'.inventory-node[data-net-tab="2"]':nodes.dist,'.inventory-node[data-page="ports"]':nodes.ports,
+  const bySel={'.inventory-node[data-net-tab="0"]':nodes.diagram,'#nicNode':nodes.nic,'.inventory-node[data-net-tab="2"]':nodes.dist,'.inventory-node[data-page="ports"]':nodes.ports,
     '.inventory-node[data-page="network"]':nodes.network,'.inventory-node[data-page="home"]':nodes.home};
   const content={innerHTML:''};
   const generic=()=>({value:'',style:{},dataset:{},classList:{add(){},remove(){},contains:()=>false,toggle(){}},setAttribute(){},removeAttribute(){},addEventListener(){},removeEventListener(){},querySelector:()=>null,querySelectorAll:()=>[]});
@@ -37,18 +37,18 @@ function setup() {
   return {run,nodes,state};
 }
 
-test('network tab → its own tree node is active and "רשת" is the soft ancestor; the diagram tab marks "רשת" itself',()=>{
+test('network tab → its own tree node is active and "רשת" is the soft ancestor; the diagram tab marks its own "תרשים" node (mockup)',()=>{
   const {run,state}=setup();
   run('current="network"; currentTab=0; syncTreeToTab()');
-  assert.deepEqual(state(),{network:'active',nic:'',dist:'',ports:'',home:''},'diagram = the network node, no ancestor dot');
+  assert.deepEqual(state(),{network:'anc',diagram:'active',nic:'',dist:'',ports:'',home:''},'diagram = its own node (as in the mockup), "רשת" soft');
   run('activateTab(1)');
-  assert.deepEqual(state(),{network:'anc',nic:'active',dist:'',ports:'',home:''},'physical connections');
+  assert.deepEqual(state(),{network:'anc',diagram:'',nic:'active',dist:'',ports:'',home:''},'physical connections');
   run('activateTab(2)');
-  assert.deepEqual(state(),{network:'anc',nic:'',dist:'active',ports:'',home:''},'distribution network');
+  assert.deepEqual(state(),{network:'anc',diagram:'',nic:'',dist:'active',ports:'',home:''},'distribution network');
   run('activateTab(3)');
-  assert.deepEqual(state(),{network:'anc',nic:'',dist:'',ports:'active',home:''},'ports tab');
+  assert.deepEqual(state(),{network:'anc',diagram:'',nic:'',dist:'',ports:'active',home:''},'ports tab');
   run('activateTab(0)');
-  assert.deepEqual(state(),{network:'active',nic:'',dist:'',ports:'',home:''},'back to the diagram: the dot is gone');
+  assert.deepEqual(state(),{network:'anc',diagram:'active',nic:'',dist:'',ports:'',home:''},'back to the diagram node');
 });
 
 test('exactly one active node and the ancestor is never also active (no double marking)',()=>{
@@ -64,13 +64,13 @@ test('exactly one active node and the ancestor is never also active (no double m
 test('clicking a tree node marks it and its ancestor too (ports page = the ports node, network = soft)',()=>{
   const {run,state}=setup();
   run('selectPageById("ports")');
-  assert.deepEqual(state(),{network:'anc',nic:'',dist:'',ports:'active',home:''});
+  assert.deepEqual(state(),{network:'anc',diagram:'',nic:'',dist:'',ports:'active',home:''});
   run('selectPageById("home")');
-  assert.deepEqual(state(),{network:'',nic:'',dist:'',ports:'',home:'active'},'leaving the network clears the soft mark');
+  assert.deepEqual(state(),{network:'',diagram:'',nic:'',dist:'',ports:'',home:'active'},'leaving the network clears the soft mark');
 });
 
 test('a page without per-tab tree nodes is untouched by tab changes',()=>{
   const {run,state}=setup();
   run('selectPageById("home")'); run('current="home"; pages.home.tabs=["a","b"]; activateTab(1)');
-  assert.deepEqual(state(),{network:'',nic:'',dist:'',ports:'',home:'active'});
+  assert.deepEqual(state(),{network:'',diagram:'',nic:'',dist:'',ports:'',home:'active'});
 });

@@ -104,6 +104,7 @@ def ingest(conn: sqlite3.Connection, payload: dict,
         # שני מצבים שונים. קלט שאינו MAC אינו טענה על חברוּת, ולכן הוא
         # מקבל קוד משלו ואינו נרשם כדיווח-מחוץ-לסבב.
         log.warning("progress report with a malformed mac: %r",
+                    # codeql[py/log-injection] false positive: %r מבריח שורה חדשה ותווי בקרה (#291)
                     str(raw_mac)[:_RAW_SHOWN])
         return {"ok": False, "error": "missing or malformed mac", "code": "bad_mac"}
     sent_as = _sent_as(raw_mac, mac)

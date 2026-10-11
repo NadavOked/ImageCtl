@@ -336,6 +336,34 @@ def test_a_wrong_password_does_not_open_a_pull(server):
     assert overview(server)["pulls"] == []
 
 
+def test_pull_passwords_go_through_the_login_guard(server, monkeypatch):
+    """‏#1282: הסיסמה של משיכה נבדקה בלי `login_guard` — בלי השהיה ובלי
+    נעילה, בניגוד ל-`/agent/login`. אחרי 5 כשלונות גם הנכונה ממתינה."""
+    from server import login_guard
+
+    monkeypatch.setattr(login_guard, "now", lambda: 1_000_000.0)
+    lab2 = second_class(server)
+    for _ in range(login_guard.DELAY_AFTER):
+        assert pull(server, lab2["mac1"],
+                    creds={"username": "labtech", "password": "nope"}).status_code == 401
+    response = pull(server, lab2["mac1"])
+    assert response.status_code == 429, response.text
+    assert response.json()["code"] == "login_delayed"
+    assert overview(server)["pulls"] == []
+
+
+def test_a_pull_by_a_user_who_must_change_password_is_refused(server):
+    """‏#1282: ‏`/agent/login` מסרב למי שחייב להחליף סיסמה; משיכה קיבלה אותו."""
+    lab2 = second_class(server)
+    conn = server["ctx"].conn
+    conn.execute("UPDATE users SET must_change_password = 1 WHERE username = 'labtech'")
+    conn.commit()
+    response = pull(server, lab2["mac1"])
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == "password_change_required"
+    assert overview(server)["pulls"] == []
+
+
 def test_an_unregistered_machine_gets_no_pull(server):
     second_class(server)
 

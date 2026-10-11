@@ -121,10 +121,12 @@ def note(conn: sqlite3.Connection, store: SessionStore, mac: str, answer: dict,
     try:
         verdict = unexplained(conn, store, answer, off_vlan=off_vlan)
         if verdict is None:
+            # codeql[py/log-injection] false positive: ה-MAC עבר normalize_mac (hex ונקודתיים בלבד) (#291)
             log.error("cannot tell whether %s had a reason to reach the agent", mac)
             return None
         return _count(conn, mac, now or now_iso()) if verdict else None
     except Exception:  # noqa: BLE001 — ניטור לא מפיל hello
+        # codeql[py/log-injection] false positive: ה-MAC עבר normalize_mac (hex ונקודתיים בלבד) (#291)
         log.exception("agent arrival from %s was not recorded", mac)
         return None
 
@@ -163,6 +165,7 @@ def _count(conn: sqlite3.Connection, mac: str, ts: str) -> int | None:
         "SELECT hits, last_at FROM agent_loops WHERE mac = ?", (mac,)
     ).fetchone()
     if row is None or row["last_at"] != ts:
+        # codeql[py/log-injection] false positive: ה-MAC עבר normalize_mac (hex ונקודתיים בלבד) (#291)
         log.error("agent arrival from %s was not recorded", mac)
         journal(conn, "agent_loop_unverified", mac)
         return None

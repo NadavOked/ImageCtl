@@ -74,10 +74,12 @@ def note(conn: sqlite3.Connection, mac: str, scope: dict | None,
             # ‏`off_deploy_vlan` מחזיר True רק כששתי הכתובות נקראו, ולכן
             # לא אמורים להגיע לכאן. אם בכל זאת — אין מה להציג, ובפרט
             # אסור להמציא "רשת לא ידועה" ולהראות אותה כעובדה (עיקרון 5).
+            # codeql[py/log-injection] false positive: ה-MAC עבר normalize_mac (hex ונקודתיים בלבד) (#291)
             log.error("off-vlan hello from %s but its network is unreadable", mac)
             return None
         return _count(conn, mac, address, now or now_iso())
     except Exception:  # noqa: BLE001 — ניטור לא מפיל hello
+        # codeql[py/log-injection] false positive: ה-MAC עבר normalize_mac (hex ונקודתיים בלבד) (#291)
         log.exception("off-vlan contact from %s was not recorded", mac)
         return None
 
@@ -116,6 +118,7 @@ def _count(conn: sqlite3.Connection, mac: str, address: str,
         "SELECT hits, last_at FROM off_vlan_contacts WHERE mac = ?", (mac,)
     ).fetchone()
     if row is None or row["last_at"] != ts:
+        # codeql[py/log-injection] false positive: ה-MAC עבר normalize_mac (hex ונקודתיים בלבד) (#291)
         log.error("off-vlan contact from %s was not recorded", mac)
         journal(conn, "off_vlan_unverified", mac)
         return None

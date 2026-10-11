@@ -28,6 +28,7 @@ function setup() {
 }
 const task=(over={})=>({id:'tsk_749e',mac:'b4:2e:99:07:1a:c4',machine:'HP-BUILD',type:'capture',disk:'sda',name:'Office 2024',folder:'Office',state:'running',
   created_at:T0,updated_at:T0,created_by:'nadav',created_by_role:'admin',bytes_total:100,bytes_written:50,...over});
+// codeql[js/incomplete-multi-character-sanitization] false positive: test code -- strips tags from the HTML the test rendered itself, to compare cell text; never rendered (#291)
 const cells=(html)=>[...html.matchAll(/<tr>(.*?)<\/tr>/g)].map((m)=>[...m[1].matchAll(/<td[^>]*>(.*?)<\/td>/g)].map((c)=>c[1].replace(/<[^>]*>/g,'').replaceAll('&#39;',"'")));
 
 test('fmtSpan: seconds / minutes / hours; unknown or negative is null (not 0)',()=>{

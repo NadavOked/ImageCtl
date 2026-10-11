@@ -95,14 +95,14 @@ test('a server node per secondary from /storage-nodes, with the tree under it; c
   assert.match(html, /<strong class="server-name">באר שבע<\/strong>/, 'a disabled secondary is still in the tree');
   assert.doesNotMatch(html, /יוגדר בהמשך|תל אביב/);
   // #931: the row's single click navigates (overview), dblclick toggles the group, the arrow toggles alone.
-  assert.match(html, /data-secondary="n0de"[^>]*onclick="openBranchView\('n0de','overview',this\)"[^>]*ondblclick="toggleInventoryGroup\(this,'srv-n0de'\)"/);
+  assert.match(html, /data-secondary="n0de"[^>]*onclick="treeNavToggle\(this,'srv-n0de',function\(\)\{openBranchView\('n0de','overview',this\)\}\)"/);
   assert.match(html, /<span class="tree-arrow" data-open="false" onclick="event\.stopPropagation\(\);toggleInventoryGroup\(this\.closest\('\.inventory-node'\),'srv-n0de'\)">▸<\/span>/);
   assert.match(html, /<div id="srv-n0de" class="inventory-children" role="group" hidden>/, 'closed by default');
   for (const [view, label] of [['overview', 'סקירה כללית'], ['machines', 'מחשבים'], ['images', "אימג&#39;ים"], ['transfers', 'העברות'], ['health', 'בריאות ושירותים']]) {
     const re = new RegExp(`data-branch-view="${view}" data-branch-node="n0de" role="treeitem" tabindex="0" onclick="openBranchView\\('n0de','${view}',this\\)">.*?<span>${label}</span>`);
     assert.match(html, re, `child ${view}`);
   }
-  assert.match(html, /role="treeitem" tabindex="0" aria-expanded="false" onclick="openBranchView\('n0de'/, 'server node is a focusable treeitem');
+  assert.match(html, /role="treeitem" tabindex="0" aria-expanded="false" onclick="treeNavToggle\(this,'srv-n0de',function\(\)\{openBranchView\('n0de'/, 'server node is a focusable treeitem');
 });
 
 test('the status dot is measured against the secondary: green when it answered, red with the reason when not, grey when disabled', async () => {

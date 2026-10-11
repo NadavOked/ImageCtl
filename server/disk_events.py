@@ -41,6 +41,7 @@ def ingest(conn: sqlite3.Connection, payload: dict) -> dict:
 
     mac = lenient_mac(raw_mac)
     if mac is None:
+        # codeql[py/log-injection] false positive: %r מבריח שורה חדשה ותווי בקרה (#291)
         log.warning("disk_event with a malformed mac: %r", str(raw_mac)[:32])
         return {"ok": False, "error": "missing or malformed mac", "code": "bad_mac"}
 

@@ -40,6 +40,7 @@ function setup() {
     fetch: async () => ({status: 401, ok: false, headers: {get: () => null}, json: async () => ({})}),
   });
   vm.runInContext(fs.readFileSync(path.join(root, 'console.js'), 'utf8'), ctx);
+  // codeql[js/hardcoded-data-interpreted-as-code] false positive: the test harness runs console.js expressions with visible JSON fixtures in a vm sandbox (#291)
   const run = (s) => vm.runInContext(s, ctx);
   return {ctx, run, node};
 }

@@ -873,10 +873,14 @@
   יקבל את הזכות הזאת בשתיקה (#94).
 - **ושלישי (‏#880):** ההגדרה `class_deploy_enabled` כבויה (ברירת המחדל
   של v1) → `409` עם `class_deploy_disabled` והסיבה "הפצה לכיתות כבויה
-  (v1 מהדורת שיכפול)", ורישום `class_deploy_refused` ביומן. נבדק
-  **אחרי** הכניסה והתפקיד, כדי שסיסמה שגויה תישאר `401`. חל על
-  ה-endpoint הזה בלבד — `POST /api/console/sessions` (הקונסולה ומסך
-  הכיתות שלה) אינו מושפע.
+  (v1 מהדורת שיכפול)", ורישום `class_deploy_refused` ביומן. ‏#1282: נבדק
+  **לפני** הסיסמה — סיסמה נכונה ושגויה מקבלות אותה תשובה, אחרת נתיב
+  שאין מאחוריו פתיחה היה בודק סיסמאות. חל על ה-endpoint הזה בלבד —
+  ‏`POST /api/console/sessions` (הקונסולה ומסך הכיתות שלה) אינו מושפע.
+- **‏#1282: אותו שער סיסמה כמו `/agent/login`** (`api.agent_credentials`),
+  כאן וב-`/agent/pulls`: ‏`login_guard` (‏`429` `login_delayed` אחרי 5
+  כשלונות, ‏`403` `login_locked` אחרי 10) ומשתמש שחייב להחליף סיסמה →
+  ‏`403` `password_change_required`.
 - **`macs` (רשות)** — רשימת MAC לבחירת מחשבים: הסבב מיועד רק להם.
   רק הנבחרים מוערים ב-WoL ורק הם מצטרפים; מחשב שלא נבחר ועולה ב-PXE
   מקבל `session: null` — דיסק מקומי, כאילו אין סבב. בלי השדה — כל
@@ -944,7 +948,9 @@
   שהסוכן מציית לה אינה אכיפה — השרת בודק שוב.
 - **שגיאות**: `bad_mac` (400), `unknown_mac` (403 — מכונה שאינה
   רשומה לא מקבלת עבודה, גם לא משלה), `no_image` (404), `bad_login`
-  (401), `pull_conflict` (409 — לאותה מכונה כבר יש משיכה פעילה; שתי
+  (401), ‏`login_delayed` (429) / `login_locked` (403) /
+  ‏`password_change_required` (403 — ‏#1282, השער של `/agent/login`),
+  ‏`pull_conflict` (409 — לאותה מכונה כבר יש משיכה פעילה; שתי
   משיכות היו כותבות לאותו דיסק). כל סירוב נרשם ביומן (`pull_refused`).
 - **בקשה זהה שנשלחה שוב אינה סירוב** (#104): אותה מכונה, אותו אימג',
   ואיש עוד לא דיווח על המשיכה הקיימת — מחזיר **200 עם אותו
@@ -3401,6 +3407,38 @@ registered machine (manifest|files)`). **מחיר ידוע:** `curl` מהשרת 
 **לפני** `systemctl enable --now` — כדי שטביעת האצבע תודפס בסיכום
 ההתקנה ותוכל להיות מושוות בכניסה הראשונה. בלי הדגל: הקונסולה על
 loopback בלבד (הכרעת #770) ותעודה עם SAN `127.0.0.1` + שם המארח.
+
+### החלפת התעודה ושם המארח מלשונית ההגדרות (‏#153)
+
+`server/console_hostcfg.py`, ‏admin בלבד (deploy → 403). כל מגע במכונה
+דרך `host_hooks` (‏`create_app(host_hooks=…)`; ברירת מחדל אמיתית —
+`hostname` = `socket.gethostname`, ‏`set_hostname` = `hostnamectl
+set-hostname`, ‏`restart_server` = `deploy_net.restart_server_later`).
+
+- **`GET /api/console/tls`** → `{"enabled": false}` כשהקונסולה בלי TLS, אחרת
+  `{"enabled": true, "on_disk": {subject, issuer, self_signed, sans[],
+  not_before, not_after, fingerprint_sha256}, "running_fingerprint",
+  "pending_restart", "hostname", "covers_hostname"}`. ‏`pending_restart` =
+  התעודה שעל הדיסק אינה זו שהתהליך עלה איתה.
+- **`POST /api/console/tls`** `{"cert_pem", "key_pem"}` (טקסט PEM; התעודה
+  יכולה לכלול שרשרת — הראשונה היא העלה). נבדק לפני כל כתיבה: PEM, מפתח
+  **לא מוצפן**, המפתח הציבורי של המפתח = של התעודה, ‏`not_before ≤ עכשיו ≤
+  not_after`, ואז טעינה ב-`ssl.SSLContext.load_cert_chain` (מה ש-uvicorn
+  יעשה). כשל → ‏400 בשמו, יומן `console_tls_refused`, ושום קובץ לא השתנה.
+  הצלחה → הזוג הקודם מועתק ל-`console.crt.prev`/`console.key.prev`, החדש
+  נכתב (כל קובץ אטומית), יומן `console_tls_uploaded`, ואתחול מתוזמן.
+  ‏SAN שאינו כולל את שם המארח **אינו** סיבת דחייה — מוצג (`covers_hostname`).
+- **`GET /api/console/hostname`** → `{"hostname"}`.
+- **`POST /api/console/hostname`** `{"hostname"}` — מנורמל לאותיות קטנות;
+  ‏RFC 1123 (תוויות 1–63 של `[a-z0-9-]` בלי מקף בקצוות, עד 253, לא כתובת
+  IP). ‏"השתנה" רק כש-`hostname()` קורא בחזרה את השם החדש; אחרת ‏500 ויומן
+  `hostname_change_failed`. הצלחה → יומן `hostname_changed` (`ישן → חדש`)
+  ואתחול מתוזמן. התעודה **אינה** מתחלפת עם השם.
+- **הרגע הנכון לאתחול:** שני ה-POST מסרבים ב-‏409 כשיש סבב `open`/`running`
+  (אותה שאילתה של כפתור העדכון), לפני שנוגעים במשהו. אתחול שלא תוזמן הוא
+  ‏500 שאומר מה כן קרה ("נכתבה לדיסק אך אינה בשימוש"), לא הצלחה.
+- ‏`/me.tls.mode` הוא `self-signed` (מנפיק = נושא) או `ca-signed`; שורת
+  הסטטוס אומרת "תעודה עצמית"/"תעודה חתומה" בהתאם.
 
 ### מה שאסור
 

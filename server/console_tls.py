@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import os
+import shutil
 import socket
 import stat as stat_module
 from dataclasses import dataclass
@@ -57,10 +58,14 @@ class ConsoleTLS:
     fingerprint_sha256: str
     #: ה-SANs שבתעודה, כפי שנקראו ממנה (לא כפי שביקשנו).
     sans: tuple[str, ...]
+    #: ‏#153: המנפיק הוא הנושא — התעודה שנוצרה כאן, או עצמית שהועלתה.
+    #: ‏False = תעודה שהועלתה וחתומה בידי CA (של המכללה או ציבורי).
+    self_signed: bool = True
 
     def public_info(self) -> dict:
         """מה שהקונסולה מקבלת ב-``/me`` לשורת הסטטוס."""
-        return {"mode": "self-signed", "fingerprint_sha256": self.fingerprint_sha256}
+        return {"mode": "self-signed" if self.self_signed else "ca-signed",
+                "fingerprint_sha256": self.fingerprint_sha256}
 
     def uvicorn_kwargs(self) -> dict:
         """הארגומנטים ל-``uvicorn.Config`` של מאזין הקונסולה."""
@@ -150,4 +155,124 @@ def ensure_console_cert(data_dir, console_host: str,
     cert_pem = cert_path.read_bytes()
     return ConsoleTLS(cert_path=cert_path, key_path=key_path,
                       fingerprint_sha256=fingerprint_sha256(cert_pem),
-                      sans=cert_sans(cert_pem))
+                      sans=cert_sans(cert_pem), self_signed=_self_signed(cert_pem))
+
+
+# --- ‏#153: תעודה שהמפעיל מעלה מלשונית ההגדרות ---------------------------------
+
+#: גבול גודל לכל אחד מהשניים — תעודה עם שרשרת ארוכה היא כמה KB.
+MAX_PEM_BYTES = 64 * 1024
+#: העותק של הזוג הקודם, ליד הנוכחי — החזרה ידנית ב-SSH אם הדפדפן נכשל.
+PREV_SUFFIX = ".prev"
+
+
+class UploadRefused(ValueError):
+    """תעודה/מפתח שהועלו ואינם מתקבלים — ההודעה בעברית ונוקבת בסיבה."""
+
+
+def _first_cert(cert_pem: bytes):
+    from cryptography import x509
+    return x509.load_pem_x509_certificates(cert_pem)[0]
+
+
+def _self_signed(cert_pem: bytes) -> bool:
+    cert = _first_cert(cert_pem)
+    return cert.issuer == cert.subject
+
+
+def _cn(name) -> str:
+    from cryptography.x509.oid import NameOID
+    values = name.get_attributes_for_oid(NameOID.COMMON_NAME)
+    return str(values[0].value) if values else ""
+
+
+def cert_details(cert_pem: bytes) -> dict:
+    """מה שהלשונית מציגה על תעודה: נושא, מנפיק, SANs, תוקף, טביעת אצבע."""
+    cert = _first_cert(cert_pem)
+    return {
+        "subject": _cn(cert.subject),
+        "issuer": _cn(cert.issuer),
+        "self_signed": cert.issuer == cert.subject,
+        "sans": list(cert_sans(cert_pem)),
+        "not_before": cert.not_valid_before_utc.isoformat(),
+        "not_after": cert.not_valid_after_utc.isoformat(),
+        "fingerprint_sha256": fingerprint_sha256(cert_pem),
+    }
+
+
+def _ssl_loads(cert_pem: bytes, key_pem: bytes, directory: Path) -> str | None:
+    """הטעינה **שה-uvicorn עצמו יעשה** (``SSLContext.load_cert_chain``) על
+    קבצים זמניים — ראיה חיובית שהשרת יעלה עם הזוג, לא ניחוש מהפענוח."""
+    import ssl
+    import tempfile
+    directory.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=directory) as tmp:
+        cert_file, key_file = Path(tmp) / "c.pem", Path(tmp) / "k.pem"
+        cert_file.write_bytes(cert_pem)
+        write_credential_0600(key_file, key_pem.decode())
+        try:
+            ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER).load_cert_chain(
+                str(cert_file), str(key_file))
+        except (ssl.SSLError, OSError) as exc:
+            return str(exc)
+    return None
+
+
+def validate_upload(cert_pem: bytes, key_pem: bytes, now=None) -> dict:
+    """בודק זוג שהועלה: PEM, מפתח לא מוצפן, תואם, ובתוקף **עכשיו**.
+
+    מחזיר את ``cert_details`` של התעודה; כל כשל הוא ``UploadRefused``
+    בשמו. ‏SAN שאינו כולל את שם המארח **אינו** סיבת דחייה — תעודה של
+    ‏``imagectl.college.ac.il`` היא בדיוק מה שמעלים כדי לגשת בשם — אלא
+    אזהרה שהלשונית מציגה (``covers_hostname``)."""
+    import datetime
+    from cryptography.hazmat.primitives import serialization
+    if len(cert_pem) > MAX_PEM_BYTES or len(key_pem) > MAX_PEM_BYTES:
+        raise UploadRefused("קובץ גדול מ-64KB — זו אינה תעודה או מפתח PEM")
+    try:
+        cert = _first_cert(cert_pem)
+    except ValueError:
+        raise UploadRefused("קובץ התעודה אינו PEM תקין "
+                            "(מצופה -----BEGIN CERTIFICATE-----)") from None
+    try:
+        key = serialization.load_pem_private_key(key_pem, password=None)
+    except TypeError:
+        raise UploadRefused("המפתח מוצפן בסיסמה — השרת עולה בלי אדם שיקליד "
+                            "אותה, ולכן נדרש מפתח לא מוצפן") from None
+    except Exception:                                    # noqa: BLE001 — כל כשל פענוח
+        raise UploadRefused("קובץ המפתח אינו PEM תקין "
+                            "(מצופה -----BEGIN PRIVATE KEY-----)") from None
+    spki = serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    if cert.public_key().public_bytes(*spki) != key.public_key().public_bytes(*spki):
+        raise UploadRefused("המפתח אינו תואם את התעודה — "
+                            "המפתח הציבורי שבתעודה שונה מזה של המפתח")
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    if now < cert.not_valid_before_utc:
+        raise UploadRefused(f"התעודה עוד לא בתוקף — תקפה מ-"
+                            f"{cert.not_valid_before_utc:%Y-%m-%d %H:%M} UTC")
+    if now > cert.not_valid_after_utc:
+        raise UploadRefused(f"תוקף התעודה פג ב-"
+                            f"{cert.not_valid_after_utc:%Y-%m-%d %H:%M} UTC")
+    return cert_details(cert_pem)
+
+
+def install_upload(data_dir, cert_pem: bytes, key_pem: bytes) -> dict:
+    """מאמת, טוען ב-``ssl`` כמו uvicorn, ורק אז מחליף — הזוג הקודם נשמר
+    כ-``.prev``. ‏``UploadRefused`` = שום קובץ לא השתנה."""
+    info = validate_upload(cert_pem, key_pem)
+    directory = Path(data_dir) / CONSOLE_TLS_DIRNAME
+    error = _ssl_loads(cert_pem, key_pem, directory)
+    if error:
+        raise UploadRefused(f"השרת לא הצליח לטעון את הזוג ל-TLS: {error}")
+    cert_path, key_path = directory / CERT_NAME, directory / KEY_NAME
+    if cert_path.exists() and key_path.exists():
+        # העתקה ולא העברה: עד הרגע האחרון יש על הדיסק זוג שלם שהשרת יעלה איתו.
+        shutil.copy2(cert_path, cert_path.with_name(CERT_NAME + PREV_SUFFIX))
+        write_credential_0600(key_path.with_name(KEY_NAME + PREV_SUFFIX),
+                              key_path.read_text(encoding="utf-8"))
+    # כל קובץ מוחלף אטומית; בין שתי ההחלפות הזוג אינו תואם, וזה החלון היחיד.
+    write_credential_0600(key_path, key_pem.decode())
+    tmp = cert_path.with_name(f".{CERT_NAME}.tmp")
+    tmp.write_bytes(cert_pem)
+    os.replace(tmp, cert_path)
+    return info

@@ -262,6 +262,35 @@ test('update card: switch off → note with a link to settings and no buttons; f
   assert.match(cell(s.run('settings()'),'<span>עדכונים',600),/note err.*\/update לא נקרא: 403/);
 });
 
+test('#1273: while an update is running the apply and revert buttons are disabled; a verified update enables them again',async()=>{
+  let s=setup({'/update/status':{state:'running',tag:'v0.35.0',verified:false}}); s.run('current="settings"');
+  await s.run('loadSettingsData()'); await s.run('healthUpdateCheck()');
+  let card=cell(s.run('settings()'),'<span>עדכונים',2000);
+  assert.match(card,/<button class="btn primary" disabled[^>]*>החל עדכון v0\.35\.0</,'apply is disabled while running');
+  assert.match(card,/<button class="btn danger" disabled[^>]*>חזור ל-v0\.33\.0</,'revert is disabled while running');
+  assert.match(card,/<button class="btn" onclick="healthUpdateCheck\(\)">בדוק עדכון</,'checking stays available');
+  s=setup({'/update/status':{state:'done',tag:'v0.34.0',verified:true}}); s.run('current="settings"');
+  await s.run('loadSettingsData()'); await s.run('healthUpdateCheck()');
+  card=cell(s.run('settings()'),'<span>עדכונים',2000);
+  assert.doesNotMatch(card,/disabled/,'a verified update does not block the next one');
+});
+
+test('#1273: a double click on "החלת העדכון" sends one /update/apply, and a refusal lets the operator try again',async()=>{
+  const {run,requests,fixtures}=setup(); run('current="settings"');
+  await run('loadSettingsData()'); await run('healthUpdateCheck()');
+  run("confirmUpdateApply(UPDATE_INFO.latest)");
+  const s=run('sheets.at(-1)');
+  await Promise.all([s.onSubmit(), s.onSubmit()]);
+  assert.equal(requests.filter((r)=>r.url==='/update/apply').length,1,'the second click does not send a second apply');
+  fixtures['/update/apply']=new Error('עדכון ל-v0.35.0 כבר רץ');
+  run("confirmUpdateApply(UPDATE_INFO.latest)");
+  const again=run('sheets.at(-1)');
+  assert.match(await again.onSubmit().then(()=>'',(e)=>e.message),/כבר רץ/,'the 409 is shown in the window');
+  delete fixtures['/update/apply'];
+  assert.equal(await again.onSubmit().then(()=>'ok',(e)=>e.message),'ok','after a refusal the same window can send again');
+  assert.equal(requests.filter((r)=>r.url==='/update/apply').length,3);
+});
+
 test('#1000: "last check" comes from /update.last_check and survives a reload; a stored failure is named, not "no update"',async()=>{
   let s=setup({'/update':{current:'v0.34.0',enabled:true,previous:null,server_name:'srv',last_check:{at:'2026-09-18T06:00:00+00:00',current:'v0.34.0',latest:'v0.34.0',available:false,reason:null}}}); s.run('current="settings"');
   await s.run('loadSettingsData()');

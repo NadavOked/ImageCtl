@@ -31,6 +31,7 @@ from . import auth, boottrace, deploy_net, dhcp, registry
 from .api import ServerContext, create_agent_router
 from .console_api import create_console_router
 from .console_source_guard import ConsoleSourceGuard, Network
+from .console_hostcfg import create_hostcfg_router
 from .console_tls import ConsoleTLS
 from .console_storage import create_storage_router
 from .console_storage_locations import create_storage_locations_router
@@ -180,6 +181,9 @@ class ServerRuntime:
     # צריכה כדי להשלים את ההתקנה בהדלקת DHCP. ``None`` = בדיקות/קוד ישן:
     # ההדלקה מתנהגת כמו קודם, בלי השלמה.
     deploy: "deploy_net.DeployContext | None" = None
+    #: ‏#153: hooks של לשונית התעודה/שם המארח (``console_hostcfg``) —
+    #: ‏``None`` = ברירות המחדל האמיתיות; בדיקות מזריקות, כמו ``dhcp_hooks``.
+    host_hooks: dict | None = None
 
 
 async def _room_clock(rt: ServerRuntime, interval: float) -> None:
@@ -287,6 +291,8 @@ def create_runtime(
     console_tls: ConsoleTLS | None = None,
     # ‏#1088: ראו ``ServerRuntime.deploy``.
     deploy: "deploy_net.DeployContext | None" = None,
+    # ‏#153: ראו ``ServerRuntime.host_hooks``.
+    host_hooks: dict | None = None,
     # ‏#1013: בעלייה, לכתוב את קובץ ה-dnsmasq הראשי מה-DB אם הוא שונה ממה
     # שעל הדיסק (‏`console_dhcp.sync_main_conf`). ‏False כברירת מחדל מאותו
     # טעם כמו ``known_macs_hooks``: רק ``main`` מדליק; בדיקות לא נוגעות
@@ -453,7 +459,7 @@ def create_runtime(
         known_macs_hooks=known_macs_hooks,
         repo_dir=repo_dir, update_hooks=update_hooks,
         room_clock_interval=room_clock_interval,
-        console_tls=console_tls, deploy=deploy,
+        console_tls=console_tls, deploy=deploy, host_hooks=host_hooks,
     )
 
 
@@ -625,6 +631,7 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
         ctx, repo_dir, rt.server_base, rt.update_hooks,
         public_url=PUBLIC_UPDATE_URL))
     include(create_branding_router(ctx, rt.data_dir))
+    include(create_hostcfg_router(ctx, rt.data_dir, rt.console_tls, rt.host_hooks))   # #153
     # ‏#690: admin RFB proxy + settings — ה-HTTP שלו admin_only ממילא.
     app.include_router(create_monitor_router(ctx))
     include(create_console_capture_router(ctx))

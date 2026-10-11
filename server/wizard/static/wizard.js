@@ -242,7 +242,9 @@ function finish(result) {
   clearTimeout(pollTimer);
   if (result.state === "done") {
     $("#console-url").textContent = result.console_url;
+    // codeql[js/xss-through-dom] false positive: href is https://<host>:8081 (fixed scheme) or the server's value -- never HTML, never javascript: (#291)
     $("#console-url").href = result.console_url;
+    // codeql[js/xss-through-dom] false positive: same as the line above (#291)
     $("#console-button").href = result.console_url;
     $("#console-user").textContent = result.user || "admin";
     $("#fingerprint").textContent = result.fingerprint || "—";

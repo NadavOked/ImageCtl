@@ -104,7 +104,9 @@ def update_server(tmp_path: Path, images_root: Path, clock):
     calls = {"fetch": 0, "checkout": 0, "run": 0, "run_args": None}
 
     hooks = {
-        "describe": lambda repo_dir: state["current"],
+        # ‏#1273: ``on_describe`` — וו לבדיקת המרוץ (עצירה בין השומר לכתיבת הסטטוס).
+        "describe": lambda repo_dir: (state.get("on_describe") or (lambda: None))()
+                                     or state["current"],
         "ls_remote_tags": lambda url: (True, state["remote"], ""),
         # Sentinels for the removed hooks: even if a caller supplies the old
         # names, applying must never run git inside the web process (#1193).
@@ -115,7 +117,7 @@ def update_server(tmp_path: Path, images_root: Path, clock):
         "run_upgrade": lambda repo_dir, tag: (
             calls.__setitem__("run", calls["run"] + 1)
             or calls.__setitem__("run_args", (str(repo_dir), tag))
-            or (state["run_ok"], "")
+            or (state["run_ok"], state.get("run_err", ""))
         ),
     }
     app = create_app(tmp_path / "data", images_root, "http://10.44.12.10:8080",
@@ -313,3 +315,105 @@ def test_a_missing_git_binary_is_named_not_errno_2(monkeypatch):
     assert not ok and out == ""
     assert "git אינו מותקן" in err and "#1185" in err
     assert "Errno" not in err
+
+
+# --- ‏#1273: לחיצה כפולה על "החל" ---------------------------------------------
+
+#: מה ש-systemd-run מדפיס כשהיחידה הקודמת עוד חיה (systemd 257, דביאן 13; וגם
+#: הנוסח הישן "already exists").
+UNIT_EXISTS = ("Failed to start transient service unit: Unit imagectl-upgrade.service "
+               "was already loaded or has a fragment file.")
+
+
+def test_second_apply_while_running_is_409_and_the_first_stays_running(update_server):
+    """הלחיצה השנייה נדחית לפני שמגיעה ל-systemd-run, וה-running של הראשונה
+    אינו נדרס ב-failed."""
+    admin = update_server["admin"]
+    _enable(admin)
+    assert admin.post("/api/console/update/apply", json={"tag": "v0.25.0"}).status_code == 200
+    second = admin.post("/api/console/update/apply", json={"tag": "v0.25.0"})
+    assert second.status_code == 409, second.text
+    assert "v0.25.0" in second.json()["detail"]
+    assert update_server["calls"]["run"] == 1
+    status = admin.get("/api/console/update/status").json()
+    assert status["state"] == "running" and status["tag"] == "v0.25.0"
+    assert "error" not in status
+
+
+def test_revert_while_an_update_is_running_is_409(update_server):
+    admin = update_server["admin"]
+    _enable(admin)
+    admin.post("/api/console/update/apply", json={"tag": "v0.25.0"})
+    hostname = admin.get("/api/console/me").json()["server_name"]
+    r = admin.post("/api/console/update/revert", json={"confirm_name": hostname})
+    assert r.status_code == 409, r.text
+    assert update_server["calls"]["run"] == 1
+    assert admin.get("/api/console/update/status").json()["state"] == "running"
+
+
+def test_apply_after_a_verified_update_is_allowed_again(update_server):
+    """‏running שאומת (השרת עלה על התג) הוא done — לא חוסם את העדכון הבא."""
+    admin = update_server["admin"]
+    _enable(admin)
+    admin.post("/api/console/update/apply", json={"tag": "v0.25.0"})
+    update_server["state"]["current"] = "v0.25.0"
+    r = admin.post("/api/console/update/apply", json={"tag": "v0.26.0"})
+    assert r.status_code == 200, r.text
+    assert update_server["calls"]["run"] == 2
+
+
+def test_unit_already_exists_is_409_and_never_written_as_failed(update_server):
+    """יחידת שדרוג קיימת = עדכון רץ, לא עדכון שנכשל (עיקרון 5): הסטטוס חוזר
+    למה שהיה, ולא נכתב failed."""
+    admin = update_server["admin"]
+    _enable(admin)
+    update_server["state"]["run_ok"] = False
+    update_server["state"]["run_err"] = UNIT_EXISTS
+    r = admin.post("/api/console/update/apply", json={"tag": "v0.25.0"})
+    assert r.status_code == 409, r.text
+    assert update_server["calls"]["run"] == 1
+    assert admin.get("/api/console/update/status").json()["state"] != "failed"
+
+
+def test_any_other_launch_failure_is_still_failed(update_server):
+    admin = update_server["admin"]
+    _enable(admin)
+    update_server["state"]["run_ok"] = False
+    update_server["state"]["run_err"] = "Failed to connect to bus: No such file or directory"
+    admin.post("/api/console/update/apply", json={"tag": "v0.25.0"})
+    status = admin.get("/api/console/update/status").json()
+    assert status["state"] == "failed" and "Failed to connect to bus" in status["error"]
+
+
+def test_two_simultaneous_applies_start_the_script_once(update_server):
+    """שתי בקשות שמגיעות יחד (thread pool): השומר והכתיבה של running אטומיים —
+    השנייה ממתינה ומקבלת 409, ולא עוברת את השומר לפני שהראשונה כתבה."""
+    import threading
+    admin = update_server["admin"]
+    _enable(admin)
+    state = update_server["state"]
+    entered, release, calls = threading.Event(), threading.Event(), []
+
+    def on_describe():
+        calls.append(1)
+        # קריאת הגרסה הראשונה של הבקשה הראשונה — תמיד לפני כתיבת running:
+        # בתוך השומר (עם התיקון), או ישר לפני הכתיבה (בלי שומר בכלל)
+        if len(calls) == 1:
+            entered.set()
+            release.wait(10)
+    state["on_describe"] = on_describe
+    results = {}
+
+    def go(key):
+        results[key] = admin.post("/api/console/update/apply", json={"tag": "v0.25.0"}).status_code
+    first = threading.Thread(target=go, args=("first",))
+    first.start()
+    assert entered.wait(10), "the first apply never reached the version read"
+    second = threading.Thread(target=go, args=("second",))
+    second.start()
+    second.join(1.0)          # בלי נעילה השנייה כבר סיימה כאן
+    release.set()
+    first.join(10)
+    second.join(10)
+    assert results == {"first": 200, "second": 409}, results
+    assert update_server["calls"]["run"] == 1

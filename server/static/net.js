@@ -214,6 +214,28 @@ async function saveDeploySecond(name, second) {
   await loadNet();
 }
 
+/* ‏#1274: "השלם הגדרה" — אחרי שהכרטיסים הוחלפו על המכונה וההשלמה נכשלה. אותו ‏/second
+   עם אותו כרטיס: השרת מזהה שהמכונה כבר במצב הזה ומשלים בלבד (#1264). חלון אישור עם
+   ההשלכות, בלי הקלדת מילה (#1270). כשל נוסף נשאר בחלון, בשם השלב שנפל. */
+function completeDeploySecond(nameEnc, secondEnc) {
+  const name = decodeURIComponent(nameEnc), second = decodeURIComponent(secondEnc);
+  sheet({
+    title: "להשלים את הגדרת רשת ההפצה?", sub: second ? `${name} — ${second} ככרטיס שני` : `${name} — כרטיס אחד`,
+    note: impactList([["ok", "לא נוגעים בכרטיסים — הם כבר הוחלפו ואומתו"],
+      ["w", "חומת האש ו-grub.cfg ייכתבו מחדש לשם הזה"], ["w", "השרת יאותחל — הקונסולה תחזור תוך כמה שניות"]]),
+    submitLabel: "השלם הגדרה",
+    onSubmit: async () => {
+      const result = await put(`/net/config/${encodeURIComponent(name)}/second`, { second });
+      if (typeof refreshNetPages === "function") refreshNetPages();
+      if (!result.ok) throw new Error(result.apply_error || "ההשלמה לא הסתיימה");
+      if (result.deploy && result.deploy.ok && typeof NET_DEPLOY !== "undefined" && NET_DEPLOY) {
+        NET_DEPLOY = { ...NET_DEPLOY, interface: result.interface, url: result.deploy.url };
+      }
+      toast(`הגדרת רשת ההפצה על ${result.interface} הושלמה — השרת מתאתחל, הקונסולה תחזור תוך כמה שניות`);
+    },
+  });
+}
+
 async function saveDeployNet(name, body) {
   const result = await put(`/net/config/${encodeURIComponent(name)}/deploy`, body);
   if (typeof refreshNetPages === "function") refreshNetPages();

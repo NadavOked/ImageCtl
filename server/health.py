@@ -308,9 +308,6 @@ def collect(ctx, hooks: dict, server_base: str) -> list[dict]:
     elif not ss_out:
         results.append(check("tftp_port", "פורט 69 (TFTP)", "off",
                              "אי אפשר לבדוק כאן (ss לא זמין)"))
-    elif owner is None and unconfigured:
-        results.append(check("tftp_port", "פורט 69 (TFTP)", "off",
-                             "רשת ההפצה לא הוגדרה — dnsmasq יעלה כשיודלק DHCP"))
     elif owner is None:
         results.append(check("tftp_port", "פורט 69 (TFTP)", "bad",
                              "אף אחד לא מגיש TFTP — מחשבים לא יעלו ב-PXE"))

@@ -301,3 +301,29 @@ def test_negative_control_full_console_router_breaks_allowlist(kiosk_env):
                json={"username": "noc", "password": "admin-pass-123"})
     assert admin.get("/api/console/users").status_code != 404
     assert admin.get("/api/console/machines").status_code != 404
+
+
+# --- ‏#742: route רב-מתודי אינו מכניס מתודה שלא ברשימה --------------------------
+
+def test_multi_method_route_does_not_leak_an_unlisted_method():
+    """אסטרה (#742): ‏GET מותר על route שמטפל גם ב-DELETE הכניס את ה-DELETE
+    לקיוסק. היום כל ה-routes חד-מתודיים, ולכן הטסט בונה route כזה במפורש."""
+    from fastapi import APIRouter
+
+    from server.kiosk import _allowlisted
+
+    source = APIRouter()
+
+    @source.api_route("/api/console/thing", methods=["GET", "DELETE"])
+    def thing():
+        return {}
+
+    @source.get("/api/console/plain")
+    def plain():
+        return {}
+
+    allow = frozenset({("GET", "/api/console/thing"), ("GET", "/api/console/plain")})
+    picked = {(m, r.path) for r in _allowlisted(source, allow) for m in r.methods}
+    assert ("DELETE", "/api/console/thing") not in picked
+    # הצד השני: route חד-מתודי שברשימה עדיין נכנס — לא "דחה הכול".
+    assert picked == {("GET", "/api/console/plain")}

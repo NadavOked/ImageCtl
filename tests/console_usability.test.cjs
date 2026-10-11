@@ -442,22 +442,17 @@ test('S7 (follow-up): the tree scrolls without a visible scrollbar, and a double
   assert.equal(lastDecl(css, '.inventory-node', 'user-select'), 'none', 'dblclick toggles the node, it must not select its label');
 });
 
-test('S7: a single click on a group row never toggles — only navigates (or does nothing); the arrow and the row\'s dblclick still toggle', () => {
+test('S7 (reversed 11/10, like the mockup): a single click on a branch row toggles it (or navigates and opens); the arrow only toggles; no dblclick toggling', () => {
   const html = read('index.html');
-  // כל onclick על .inventory-node (רמת השורה, לא על .tree-arrow הפנימי)
-  // אסור שיקרא ל-toggleInventoryGroup — מותר לו לנווט/לבחור, או להיעדר.
-  const rowOnclicks = [...html.matchAll(/<div class="inventory-node[^>]*\bonclick="([^"]*)"/g)].map((m) => m[1]);
-  assert.ok(rowOnclicks.length >= 10, 'expected several row-level onclick handlers, got ' + rowOnclicks.length);
-  for (const onclick of rowOnclicks) {
-    assert.doesNotMatch(onclick, /toggleInventoryGroup/, `row onclick "${onclick}" must not toggle — single click only navigates/selects`);
-  }
-  // כל שורה שיש לה חץ (כלומר יש לה ילדים לטגל) חייבת ondblclick שמטגל אותה
+  assert.doesNotMatch(html, /ondblclick="[^"]*toggleInventoryGroup/, 'dblclick no longer toggles any row');
+  // כל שורה שיש לה חץ (כלומר יש לה ילדים) — הקליק על השורה פותח/סוגר (ישירות, או ניווט+פתיחה אם יש לה דף)
   const arrowRows = [...html.matchAll(/<div class="inventory-node[^>]*>(?:(?!<\/div>).)*?<span class="tree-arrow"[^>]*>/g)];
   assert.ok(arrowRows.length >= 10, 'expected group rows with an arrow, got ' + arrowRows.length);
   for (const [rowHtml] of arrowRows) {
-    assert.match(rowHtml, /ondblclick="toggleInventoryGroup\(this,'\w+'\)"/, `row must toggle on dblclick: ${rowHtml.slice(0, 90)}`);
+    assert.match(rowHtml, /<div class="inventory-node[^>]*\bonclick="(?:toggleInventoryGroup\(this,'\w+'\)|treeNavToggle\(this,'\w+',function\(\)\{[^"]*\}\))"/,
+      `row must toggle on a single click: ${rowHtml.slice(0, 90)}`);
   }
-  // והחץ עצמו עדיין מטגל בקליק בודד, כמו לפני התיקון הזה
+  // והחץ עצמו מטגל בקליק בודד ולא מנווט (stopPropagation)
   assert.doesNotMatch(html, /<span class="tree-arrow"(?![^>]*onclick=)[^>]*>/,
     'every .tree-arrow keeps its own single-click toggle');
 });
@@ -489,8 +484,8 @@ test('S7: the primary server row (the only static one since #936) has no click-t
   const rows = [...html.matchAll(/<div class="inventory-node server-node[^>]*>/g)];
   assert.equal(rows.length, 1, '#936: only the primary is static; secondaries come from /storage-nodes');
   for (const [rowTag] of rows) {
-    assert.doesNotMatch(rowTag, /\bonclick=/, 'the primary row has no navigate target — single click must do nothing');
-    assert.match(rowTag, /ondblclick="toggleInventoryGroup\(this,'\w+'\)"/, 'dblclick on the row toggles it');
+    assert.match(rowTag, /\bonclick="toggleInventoryGroup\(this,'srvTA'\)"/, 'the TA root toggles (collapses the whole tree) on a single click, like the mockup');
+    assert.doesNotMatch(rowTag, /ondblclick=/, 'no dblclick on the row itself');
   }
   const nameHandlers = [...html.matchAll(/<strong class="server-name"[^>]* ondblclick="([^"]*)">/g)].map((m) => m[1]);
   assert.equal(nameHandlers.length, 1, 'renameServer is wired on the primary .server-name only');

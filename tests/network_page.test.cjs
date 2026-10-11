@@ -769,3 +769,45 @@ test('#1264 deploy window on the bond: card 2 is selected, and "בלי כרטי�
   first.run("netEditDeploy('ens19')");
   assert.equal(sheetAt(first.run,0).fields.some(f=>f.id==='second'),false,'the second card comes after the deploy network exists');
 });
+
+/* ---------- ‏#1274: אחרי כשל השלמה — "השלם הגדרה" באותו ‏/second ---------- */
+
+const completeBtn=(cards)=>{const m=cards.match(/<button[^>]*onclick="([^"]+)"[^>]*>השלם הגדרה<\/button>/); return m ? unesc(m[1]) : null;};
+
+test('#1274 the bond is up but the completion failed (/net/deploy still on card 1): "השלם הגדרה" sends the same /second on bond0, no typed word',async()=>{
+  const t=await loaded({...bondedFixtures(bondView('ok',[{name:'ens19',role:1,state:'active'},{name:'ens22',role:2,state:'active'}])),'/net/deploy':DEPLOY_CONSOLE});
+  const cards=card(t.run('networkPage(2)'),'כרטיסים ברשת ההפצה'); balanced(cards);
+  const click=completeBtn(cards);
+  assert.ok(click,'a completion that did not finish has a way to finish it from the console');
+  assert.match(cards,/class="note warn"><span aria-hidden="true">●<\/span><span>ההגדרה לא הושלמה/);
+  t.run(click);
+  const sh=t.run('sheets.at(-1)');
+  assert.equal(sh.submitLabel,'השלם הגדרה'); assert.equal((sh.fields||[]).length,0,'a confirm window, not a typed word');
+  assert.match(sh.note,/השרת יאותחל/);
+  t.fixtures['/net/config/bond0/second']={ok:false,interface:'bond0',server_ip:'10.44.9.10',apply_error:'חומת אש: nft -c נפל',deploy:{ok:false,errors:['חומת אש: nft -c נפל']},bond:{state:'ok'}};
+  assert.match(await sh.onSubmit().then(()=>'',e=>e.message),/nft -c נפל/,'a second failure stays in the window, named');
+  t.fixtures['/net/config/bond0/second']={ok:true,interface:'bond0',server_ip:'10.44.9.10',apply_error:null,deploy:{ok:true,url:'http://10.44.9.10:8080'},bond:{state:'ok'}};
+  assert.equal(await sh.onSubmit().then(()=>'ok',e=>e.message),'ok');
+  assert.deepEqual(t.requests.filter(r=>r.method!=='GET').map(r=>[r.url,r.body]),
+    [['/net/config/bond0/second',{second:'ens22'}],['/net/config/bond0/second',{second:'ens22'}]],'the same endpoint, the same card — nothing else is sent');
+  assert.match(t.run('toasts[toasts.length-1]'),/הושלמה/);
+});
+
+test('#1274 removing card 2 whose completion failed (/net/deploy still on bond0): "השלם הגדרה" sends /second with no card on the single card',async()=>{
+  const t=await loaded({'/net/deploy':{...DEPLOY_CONSOLE,interface:'bond0'}});
+  const click=completeBtn(card(t.run('networkPage(2)'),'כרטיסים ברשת ההפצה'));
+  assert.ok(click);
+  t.run(click);
+  t.fixtures['/net/config/ens19/second']={ok:true,interface:'ens19',server_ip:'10.44.9.10',apply_error:null,deploy:{ok:true,url:'http://10.44.9.10:8080'},bond:null};
+  assert.equal(await t.run('sheets.at(-1).onSubmit()').then(()=>'ok',e=>e.message),'ok');
+  assert.deepEqual(t.requests.filter(r=>r.method!=='GET').map(r=>[r.url,r.body]),[['/net/config/ens19/second',{second:''}]]);
+});
+
+test('#1274 a completed deploy network has no "השלם הגדרה" — on the bond, on one card, and when /net/deploy was not read',async()=>{
+  for(const over of [bondedFixtures(bondView('ok',[{name:'ens19',role:1,state:'active'},{name:'ens22',role:2,state:'active'}])),
+                     {'/net/deploy':DEPLOY_CONSOLE},
+                     {...bondedFixtures(bondView('ok',[{name:'ens19',role:1,state:'active'},{name:'ens22',role:2,state:'active'}])),'/net/deploy':new Error('db')}]) {
+    const t=await loaded(over);
+    assert.equal(completeBtn(card(t.run('networkPage(2)'),'כרטיסים ברשת ההפצה')),null);
+  }
+});

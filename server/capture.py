@@ -253,6 +253,7 @@ def create_agent_capture_router(ctx: ServerContext) -> APIRouter:
             (folder / filename).unlink(missing_ok=True)
             raise HTTPException(409, "the task is no longer open")
         ctx.conn.commit()
+        # codeql[py/log-injection] false positive: task_id נמצא ב-DB, ושם הקובץ עבר SAFE_FILE (#291)
         log.info("capture %s: received %s", task_id, filename)
         return {"ok": True, "sha256": got}
 

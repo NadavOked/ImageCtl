@@ -245,6 +245,7 @@ static int open_counter(const char *path)
     if (!counter)
         return -1;
     snprintf(counter, size, "%s%s", path, COUNTER_SUFFIX);
+    /* codeql[cpp/path-injection] false positive: argv comes from the agent that runs fanout as root with fifos it created itself (#291) */
     fd = open(counter, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0644);
     if (fd < 0)
         fprintf(stderr, "fanout: no progress counter for %s: %s\n",
@@ -363,6 +364,7 @@ int main(int argc, char **argv)
             fprintf(stderr, "fanout: out of memory\n");
             return 2;
         }
+        /* codeql[cpp/path-injection] false positive: same as open_counter (#291) */
         int fd = open_output(t->path);
         if (fd < 0) {
             t->fd = -1;

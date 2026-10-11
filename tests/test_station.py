@@ -215,15 +215,55 @@ def test_a_class_round_from_the_agent_is_refused_while_the_switch_is_off(station
     assert "labtech" in refused["text"]
 
 
-def test_a_wrong_password_is_still_401_while_the_switch_is_off(station):
-    """המתג נבדק **אחרי** הכניסה: סיסמה שגויה נשארת 401 ולא נראית כמו
-    מתג כבוי — שני מצבים שונים, שני קודים."""
+def test_the_switch_off_refuses_before_the_password_is_checked(station):
+    """‏#1282: עד כאן המתג נבדק **אחרי** הסיסמה — סיסמה שגויה קיבלה 401
+    ונכונה 409. ב-v1 המתג כבוי תמיד, ולכן כל `POST /sessions` היה בודק
+    סיסמאות בלי שום נתיב פתיחה מאחוריו: ‏409 מול 401 גילה מה נכון. עכשיו
+    הסירוב קודם לסיסמה — שתי הסיסמאות מקבלות אותה תשובה, ואין ניסיון
+    שנספר."""
     ids = setup_classroom(station)
     set_setting(station["ctx"].conn, "class_deploy_enabled", "false")
-    response = station["anon"].post(
+    wrong = station["anon"].post(
         "/api/v1/agent/sessions", json=open_body(ids["mac1"], password="wrong"))
-    assert response.status_code == 401
-    assert response.json()["code"] == "bad_login"
+    right = station["anon"].post("/api/v1/agent/sessions", json=open_body(ids["mac1"]))
+    assert wrong.status_code == right.status_code == 409
+    assert wrong.json() == right.json()
+    assert station["ctx"].conn.execute(
+        "SELECT COUNT(*) AS n FROM login_attempts").fetchone()["n"] == 0
+
+
+# --- #1282: אותו שער סיסמה כמו כל כניסה אחרת ----------------------------------
+
+
+def test_round_open_passwords_go_through_the_login_guard(station, monkeypatch):
+    """‏#1282: פתיחת סבב מהתחנה בדקה סיסמה בלי `login_guard` — בלי השהיה
+    ובלי נעילה, בניגוד ל-`/agent/login` ולכניסה לקונסולה. אחרי 5 כשלונות
+    גם הסיסמה הנכונה ממתינה."""
+    from server import login_guard
+
+    monkeypatch.setattr(login_guard, "now", lambda: 1_000_000.0)
+    ids = setup_classroom(station)
+    for _ in range(login_guard.DELAY_AFTER):
+        bad = station["anon"].post(
+            "/api/v1/agent/sessions", json=open_body(ids["mac1"], password="wrong"))
+        assert bad.status_code == 401
+    response = station["anon"].post("/api/v1/agent/sessions", json=open_body(ids["mac1"]))
+    assert response.status_code == 429, response.text
+    assert response.json()["code"] == "login_delayed"
+    assert station["ctx"].conn.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()["n"] == 0
+
+
+def test_a_round_open_by_a_user_who_must_change_password_is_refused(station):
+    """‏#1282: הקיוסק ו-`/agent/login` מסרבים למי שחייב להחליף סיסמה; פתיחת
+    סבב קיבלה אותו — ובהתקנה טרייה זה admin/admin."""
+    ids = setup_classroom(station)
+    conn = station["ctx"].conn
+    conn.execute("UPDATE users SET must_change_password = 1 WHERE username = 'labtech'")
+    conn.commit()
+    response = station["anon"].post("/api/v1/agent/sessions", json=open_body(ids["mac1"]))
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == "password_change_required"
+    assert conn.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()["n"] == 0
 
 
 # --- מי רשאי לפתוח סבב, ולא רק מי שהסיסמה שלו נכונה (#94) --------------------

@@ -19,6 +19,7 @@ import json
 import logging
 import re
 import subprocess
+import threading
 from pathlib import Path
 from typing import Callable, NamedTuple
 
@@ -151,13 +152,24 @@ def _ls_remote_tags(url: str) -> tuple[bool, str, str]:
     return _run(["git", "ls-remote", "--tags", url], timeout=20)
 
 
+#: היחידה המנותקת שמריצה את השדרוג; ‏systemd-run שני נכשל עליה כל עוד היא חיה.
+UPGRADE_UNIT = "imagectl-upgrade"
+
+
+def unit_already_exists(err: str) -> bool:
+    """‏#1273: ‏systemd-run נכשל כי יחידת שדרוג **כבר רצה** — זה "עדכון רץ", לא
+    "עדכון נכשל". שני הנוסחים: "already exists" (ישן) ו-"was already loaded"
+    (‏systemd 257, דביאן 13). שם היחידה חייב להופיע — לא כל "already"."""
+    return f"{UPGRADE_UNIT}.service" in (err or "") and "already" in (err or "")
+
+
 def _run_upgrade_script(repo_dir: str | Path, tag: str) -> tuple[bool, str]:
     """מפעיל את `tools/server-upgrade.sh` **מנותק** מתהליך השרת, דרך
     `systemd-run` — כי השלב האחרון שלו הוא `systemctl restart
     imagectl-server`, שמנהל התהליך הזה. תהליך-ילד היה נהרג יחד איתו."""
     script = Path(repo_dir) / "tools" / "server-upgrade.sh"
     ok, _out, err = _run(
-        ["systemd-run", "--unit=imagectl-upgrade", "--collect",
+        ["systemd-run", f"--unit={UPGRADE_UNIT}", "--collect",
          "bash", str(script), tag, str(repo_dir)],
         timeout=15,
     )
@@ -295,7 +307,10 @@ def status_with_verification(conn, hooks: Hooks, repo_dir: str | Path) -> dict:
 
 
 def _apply_in_background(conn, hooks: Hooks, repo_dir: str | Path, tag: str,
-                         user: str) -> None:
+                         user: str) -> bool:
+    """‏``False`` = יחידת שדרוג כבר רצה (#1273): הסטטוס הקודם חוזר כמו שהיה,
+    ו-failed **אינו** נכתב — המפעיל היה רואה "נכשל" בזמן שהעדכון רץ."""
+    prior = get_status(conn)
     previous = current_version(hooks, repo_dir)
     if previous:
         try:
@@ -309,6 +324,10 @@ def _apply_in_background(conn, hooks: Hooks, repo_dir: str | Path, tag: str,
     # שבו בקשה שהתקבלה עדיין נראית idle.
     _set_status(conn, {"state": "running", "tag": tag})
     ok, err = hooks["run_upgrade"](repo_dir, tag)
+    if not ok and unit_already_exists(err):
+        _set_status(conn, prior or {"state": "idle"})
+        journal(conn, "update_apply_busy", f"{tag}: {err}", user)
+        return False
     if not ok:
         _set_status(conn, {"state": "failed", "tag": tag,
                            "error": f"הפעלת tools/server-upgrade.sh נכשלה: {err}"})
@@ -319,13 +338,14 @@ def _apply_in_background(conn, hooks: Hooks, repo_dir: str | Path, tag: str,
     # שהשרת עלה מחדש עם התג — לא כאן. ``running`` נשאר עד אז; הסקריפט
     # עצמו מחליף אותו ל-``failed`` אם אחד משלבי השדרוג נכשל.
     journal(conn, "update_apply_started", tag, user)
+    return True
 
 
-def start_apply(ctx, hooks: Hooks, repo_dir: str | Path, tag: str, user: str) -> None:
+def start_apply(ctx, hooks: Hooks, repo_dir: str | Path, tag: str, user: str) -> bool:
     """שיגור הסקריפט המנותק (שניות ספורות, לא השדרוג עצמו). ‏FastAPI
     מריץ נתיבי `def` סינכרוניים בתוך thread pool משלו, כך שזה אינו חוסם
     את ה-event loop; אין צורך ב-``threading.Thread`` נוסף."""
-    _apply_in_background(ctx.conn, hooks, repo_dir, tag, user)
+    return _apply_in_background(ctx.conn, hooks, repo_dir, tag, user)
 
 
 def _active_round(ctx) -> bool:
@@ -350,6 +370,9 @@ def create_update_router(ctx, repo_dir: str | Path, server_base: str,
     del current_user
     del server_base  # שם השרת מגיע מ-/me ומהגדרת server_name, לא מכתובת ההאזנה.
     hooks = {**default_hooks(), **(hooks or {})}
+    # ‏#1273: השומר "עדכון כבר רץ" וכתיבת running — פעולה אחת. בלעדיה שתי
+    # בקשות מה-thread pool (לחיצה כפולה) עוברות שתיהן את השומר.
+    apply_lock = threading.Lock()
 
     def _server_name() -> str:
         import socket
@@ -409,7 +432,15 @@ def create_update_router(ctx, repo_dir: str | Path, server_base: str,
             raise HTTPException(403, "השם שהוקלד אינו תואם את שם השרת")
         if _active_round(ctx):
             raise HTTPException(409, "יש סבב פתוח/רץ — לא ניתן לעדכן עכשיו")
-        start_apply(ctx, hooks, repo_dir, tag, user[0])
+        with apply_lock:
+            # ‏running שאומת כבר הוא done (status_with_verification) — לא חוסם.
+            now = status_with_verification(ctx.conn, hooks, repo_dir)
+            if now.get("state") == "running":
+                raise HTTPException(409, f"עדכון ל-{now.get('tag')} כבר רץ — ממתינים "
+                                         "שיסתיים (השרת יאותחל) לפני עדכון נוסף")
+            if not start_apply(ctx, hooks, repo_dir, tag, user[0]):
+                raise HTTPException(409, f"יחידת השדרוג ({UPGRADE_UNIT}) כבר רצה — "
+                                         "עדכון קודם עוד לא הסתיים")
         return {"ok": True, "started": True, "tag": tag}
 
     # ‏def רגיל (לא async): FastAPI מריץ אותו ב-thread pool משלו. הקריאה

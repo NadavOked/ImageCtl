@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import signal
 import socket
 import threading
 
@@ -250,5 +251,102 @@ def test_threaded_listener_is_opened_and_stopped_by_the_manager():
         mgr.stop()
         await asyncio.wait_for(task, 10)
         assert log == ["start", "stop", "start", "stop"]
+
+    asyncio.run(scenario())
+
+
+# --- ‏#742 (אודיט אסטרה על serve_all): אותות, SystemExit, תקרת המתנה ----------
+
+class _SignalGrabbingServer(_FakeServer):
+    """כמו uvicorn: ‏`serve()` מתקין handler משלו ל-SIGINT ומשחזר ביציאה."""
+
+    def _handle(self, signum, frame):
+        self.should_exit = True
+
+    async def serve(self):
+        old = signal.signal(signal.SIGINT, self._handle)
+        try:
+            await super().serve()
+        finally:
+            signal.signal(signal.SIGINT, old)
+
+
+@pytest.fixture()
+def saved_signal_handlers():
+    """טסט שנופל באמצע לא משאיר handler של מאזין מזויף לטסטים שאחריו."""
+    saved = {sig: signal.getsignal(sig) for sig in ports._SIGNALS}
+    yield
+    for sig, handler in saved.items():
+        signal.signal(sig, handler)
+
+
+def test_the_managers_signal_handler_wins_over_every_listener(saved_signal_handlers):
+    """שלושה `serve()` שכל אחד מתקין handler דורסים זה את זה; אחרי כל
+    פתיחה/סגירה ה-handler המותקן חייב להיות של המנהל — אחרת Ctrl-C/SIGTERM
+    מגיע לשרת אחד בלבד — ובסוף ה-handler המקורי חוזר.
+
+    הבדיקה הראשונה ממתינה ל-`_opening` ריק ולא רק ל-`is_open`: ‏`is_open`
+    נדלק ברגע ש-`serve()` של "b" סימן `started` — אחרי שהתקין את ה-handler
+    שלו ולפני ש-`_open` התעורר והחזיר את של המנהל. מי שהתעורר ראשון בחלון
+    הזה קבע את התוצאה (טיימרים של asyncio בהפרש של שבריר מילישנייה), וב-
+    ריצה מלאה ועמוסה על ה-Testrunner זה היה הטסט. ‏`set_open` ממתין
+    לסיום המעבר בעצמו, ולכן שתי הבדיקות שאחריו אינן צריכות זאת."""
+    original = signal.getsignal(signal.SIGINT)
+    a = _SignalGrabbingServer("wait")
+
+    async def scenario():
+        mgr = ports.Listeners()
+        mgr.add("a", [lambda: a], port=1, hosts=[])
+        # ‏Server אינו רב-פעמי — כל פתיחה של "b" מקבלת אחד חדש.
+        mgr.add("b", [lambda: _SignalGrabbingServer("wait")], port=2, hosts=[])
+        task = asyncio.ensure_future(mgr.serve(lambda pid: True))
+        await _wait(lambda: mgr.is_open("a") and mgr.is_open("b") and not mgr._opening)
+        assert signal.getsignal(signal.SIGINT) == mgr._on_signal
+        await mgr.set_open("b", False)
+        assert signal.getsignal(signal.SIGINT) == mgr._on_signal
+        await mgr.set_open("b", True)
+        assert signal.getsignal(signal.SIGINT) == mgr._on_signal
+        signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
+        await asyncio.wait_for(task, 10)
+
+    asyncio.run(scenario())
+    assert a.should_exit
+    assert signal.getsignal(signal.SIGINT) == original
+
+
+def test_uvicorn_sys_exit_on_bind_failure_at_boot_is_a_listener_error():
+    """‏uvicorn עושה `sys.exit(3)` על כשל bind — לא OSError כמו ב-_FakeServer
+    למעלה. ‏SystemExit שלא נתפס מפיל את הלולאה כולה בלי לסגור את השאר."""
+
+    class _Exits(_FakeServer):
+        async def serve(self):
+            raise SystemExit(3)
+
+    waiter = _FakeServer("wait")
+    mgr = ports.Listeners()
+    mgr.add("a", [lambda: waiter], port=1, hosts=[])
+    mgr.add("b", [lambda: _Exits("x")], port=2, hosts=[])
+    with pytest.raises(ports.ListenerError):
+        asyncio.run(mgr.serve(lambda pid: True))
+    assert waiter.should_exit
+
+
+def test_shutdown_does_not_wait_forever_on_a_listener_that_never_exits(monkeypatch):
+    """מאזין שמתעלם מ-`should_exit` (חיבור חי שלא נגמר) — הכיבוי מבטל
+    אותו אחרי CLOSE_TIMEOUT ולא נתקע לנצח."""
+    monkeypatch.setattr(ports, "CLOSE_TIMEOUT", 0.2)
+
+    class _Stubborn(_FakeServer):
+        async def serve(self):
+            self.started = True
+            await asyncio.sleep(3600)
+
+    async def scenario():
+        mgr = ports.Listeners()
+        mgr.add("a", [lambda: _Stubborn("x")], port=1, hosts=[])
+        task = asyncio.ensure_future(mgr.serve(lambda pid: True))
+        await _wait(lambda: mgr.is_open("a"))
+        mgr.stop()
+        await asyncio.wait_for(task, 5)
 
     asyncio.run(scenario())

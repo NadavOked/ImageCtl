@@ -154,6 +154,7 @@ test('existing start and stop retain endpoint payloads',async()=>{
 });
 test('every enabled script compiles together without global collisions',()=>{
   const {ctx}=setup();
+  // codeql[js/incomplete-multi-character-sanitization] false positive: test code -- the string only feeds assert.match on the repo's own files and is never rendered (#291)
   const html=fs.readFileSync(path.join(root,'index.html'),'utf8').replace(/<!--[\s\S]*?-->/g,'');
   for(const m of html.matchAll(/<script src="([^?]+)\?v=/g)) {
     if(['console.js','progress.js'].includes(m[1]))continue;
@@ -164,12 +165,14 @@ test('every enabled script compiles together without global collisions',()=>{
 test('all static includes carry the same ?v= and color literals stay in tokens',()=>{
   // #826: a fixed version number fails on every justified bump; the invariant is
   // "one cache-bust version for every include", not "the version is X".
+  // codeql[js/incomplete-multi-character-sanitization] false positive: test code -- the string only feeds assert.match on the repo's own files and is never rendered (#291)
   const html=fs.readFileSync(path.join(root,'index.html'),'utf8').replace(/<!--[\s\S]*?-->/g,'');
   const versions=[...html.matchAll(/(?:src|href)="[^"?]+\?v=([^"&]+)/g)].map(m=>m[1]);
   assert.ok(versions.length>=5,'expected the static includes to carry ?v=');
   assert.deepEqual([...new Set(versions)],[versions[0]],'includes disagree on ?v=: '+versions.join(','));
   for(const file of ['console.css','console.js','index.html']) {
     // Comments are not colors: "// #822:" is an Issue reference, not #822.
+    // codeql[js/incomplete-multi-character-sanitization] false positive: test code -- the string only feeds assert.match on the repo's own files and is never rendered (#291)
     const s=fs.readFileSync(path.join(root,file),'utf8').replace(/\/\*[\s\S]*?\*\//g,'').replace(/(^|\s)\/\/.*$/gm,'$1').replace(/<!--[\s\S]*?-->/g,'');
     const literals=s.match(/(?:[: ,]\s*#[a-f\d]{3,8}\b|rgba?\(\s*\d)/gi) || [];
     assert.deepEqual(literals,[],file+' contains literal colors');

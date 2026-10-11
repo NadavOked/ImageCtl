@@ -103,6 +103,34 @@ def source_gate(ctx: ServerContext, request: Request, where: str) -> JSONRespons
     return _identity_refusal(ctx, verdict, where)
 
 
+def agent_credentials(ctx: ServerContext, request: Request, username: str,
+                      password: str, failed_detail: str
+                      ) -> tuple[str | None, JSONResponse | None]:
+    """‏#1282: שער הסיסמה **האחד** של נתיבי הסוכן — ‏`/agent/login`,
+    ‏`/agent/pulls` ופתיחת סבב מהתחנה (`station.py`).
+
+    ‏`(role, None)` = נכנס; ‏`(None, תשובה)` = סירוב להחזיר כמו שהוא. עד
+    כאן רק `/agent/login` עבר דרך `login_guard` ובדק `must_change_password`;
+    שני האחרים קראו ל-`users.verify` ישירות — ניחוש סיסמאות בלי השהיה
+    ובלי נעילה, ו-admin/admin של התקנה טרייה נכנס לפני שהוחלף.
+    ‏`failed_detail` הוא שורת היומן של `agent_login_failed`."""
+    ip = request.client.host if request.client else "?"
+    try:
+        login_guard.check(ctx.conn, username, ip)
+    except login_guard.LoginBlocked as exc:
+        return None, _error(exc.status, exc.message,
+                            "login_locked" if exc.status == 403 else "login_delayed")
+    role = users.verify(ctx.conn, username, password)
+    if role is None:
+        login_guard.record_failure(ctx.conn, username, ip)
+        journal(ctx.conn, "agent_login_failed", failed_detail)
+        return None, _error(401, "wrong username or password", "bad_login")
+    login_guard.clear(ctx.conn, username, ip)
+    if users.flags(ctx.conn, username)["must_change_password"]:
+        return None, _error(403, "החלף סיסמה בקונסולה קודם", "password_change_required")
+    return role, None
+
+
 def create_agent_router(ctx: ServerContext,
                         server_base: str | None = None,
                         data_dir: Path | None = None) -> APIRouter:
@@ -235,6 +263,7 @@ def create_agent_router(ctx: ServerContext,
             ssh_hostkey.upsert_known_host(
                 data_dir, reported_ip or "", hw_ssh)
         log.info("hello from %s (%s): known=%s off_vlan=%s",
+                 # codeql[py/log-injection] false positive: MAC מנורמל, client_ip מה-socket, והשאר bool (#291)
                  mac, client_ip, answer["known"], off_vlan)
         # ‏hello מוכיח שהסוכן רץ. אם השרת שלח את המכונה הזאת לדיסק
         # המקומי ובכל זאת הסוכן ענה — השרשור לדיסק נכשל, וזה מה שמסך
@@ -270,21 +299,10 @@ def create_agent_router(ctx: ServerContext,
         refused = identity_gate(ctx, mac, request, "login")
         if refused is not None:
             return refused
-        ip = request.client.host if request.client else "?"
-        try:
-            login_guard.check(ctx.conn, username, ip)
-        except login_guard.LoginBlocked as exc:
-            return _error(exc.status, exc.message,
-                          "login_locked" if exc.status == 403 else "login_delayed")
-        role = users.verify(ctx.conn, username, body.get("password", ""))
-        if role is None:
-            login_guard.record_failure(ctx.conn, username, ip)
-            journal(ctx.conn, "agent_login_failed", f"{username} at {mac}")
-            return _error(401, "wrong username or password", "bad_login")
-        login_guard.clear(ctx.conn, username, ip)
-        info = users.flags(ctx.conn, username)
-        if info["must_change_password"]:
-            return _error(403, "החלף סיסמה בקונסולה קודם", "password_change_required")
+        role, refused = agent_credentials(ctx, request, username, body.get("password", ""),
+                                          f"{username} at {mac}")
+        if refused is not None:
+            return refused
         journal(ctx.conn, "agent_login", f"{username} at {mac}")
         return JSONResponse({"ok": True, "role": role})
 
@@ -338,9 +356,11 @@ def create_agent_router(ctx: ServerContext,
         username = str(body.get("username") or "").strip()
         if login_required(ctx.conn, has_open,
                           off_deploy_vlan(request.scope, server_base)):
-            if users.verify(ctx.conn, username, body.get("password", "")) is None:
-                journal(ctx.conn, "agent_login_failed", f"{username} at {mac} pull")
-                return _error(401, "wrong username or password", "bad_login")
+            _role, refused = agent_credentials(ctx, request, username,
+                                               body.get("password", ""),
+                                               f"{username} at {mac} pull")
+            if refused is not None:
+                return refused
 
         try:
             session_id = pulls.open_pull(
@@ -349,6 +369,7 @@ def create_agent_router(ctx: ServerContext,
         except SessionError as exc:
             pulls.journal_refusal(ctx.conn, mac, str(exc))
             return _error(409, str(exc), "pull_conflict")
+        # codeql[py/log-injection] false positive: MAC מנורמל, image_id קיים בספרייה, session_id נוצר בשרת (#291)
         log.info("unicast pull %s for %s (%s)", session_id, mac, image_id)
         return JSONResponse({"id": session_id, "kind": "unicast",
                              "image_id": image_id})

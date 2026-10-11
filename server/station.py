@@ -19,8 +19,8 @@ from fastapi.responses import JSONResponse
 
 from .progress_view import capture_progress
 from .agent_version import server_version
-from . import capabilities, storage_locations, users
-from .api import ServerContext, _error, identity_gate
+from . import capabilities, storage_locations
+from .api import ServerContext, _error, agent_credentials, identity_gate
 from .db import get_setting, journal
 from .hello import class_deploy_enabled
 from .images import restore_refusal
@@ -174,23 +174,25 @@ def create_station_router(ctx: ServerContext,
         if refused is not None:
             return refused
 
-        role = users.verify(ctx.conn, body.get("username", ""), body.get("password", ""))
-        if role is None:
-            journal(ctx.conn, "agent_login_failed",
-                    f'{body.get("username", "")} at station round open')
-            return _error(401, "wrong username or password", "bad_login")
-        if role not in ROUND_OPENER_ROLES:
-            journal(ctx.conn, "agent_role_refused",
-                    f'{body.get("username", "")} role={role} at station round open')
-            return _error(403, "this role may not open a round", "role_not_allowed")
         if not class_deploy_enabled(ctx.conn):
             # ‏#880: v1 "מהדורת שיכפול" — הסוכן מסתיר את הכרטיס, והשרת
-            # מסרב גם למי שלא הסתיר. אחרי הכניסה, כדי שסיסמה שגויה
-            # תישאר 401 ולא תיראה כמו מתג כבוי.
+            # מסרב גם למי שלא הסתיר. ‏#1282: **לפני** הסיסמה — אחרת נתיב
+            # שאין מאחוריו שום פתיחה היה עונה 409 לנכונה ו-401 לשגויה,
+            # כלומר בודק סיסמאות לכל מי שבוילן.
             journal(ctx.conn, "class_deploy_refused",
                     f'{body.get("username", "")} at station round open')
             return _error(409, "הפצה לכיתות כבויה (v1 מהדורת שיכפול)",
                           "class_deploy_disabled")
+        # ‏#1282: אותו שער כמו `/agent/login` — ‏login_guard + החלפה כפויה.
+        role, refused = agent_credentials(
+            ctx, request, body.get("username", ""), body.get("password", ""),
+            f'{body.get("username", "")} at station round open')
+        if refused is not None:
+            return refused
+        if role not in ROUND_OPENER_ROLES:
+            journal(ctx.conn, "agent_role_refused",
+                    f'{body.get("username", "")} role={role} at station round open')
+            return _error(403, "this role may not open a round", "role_not_allowed")
 
         group_id = body.get("group_id", "")
         group = ctx.conn.execute(

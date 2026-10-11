@@ -534,6 +534,7 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
         except (ValueError, sqlite3.IntegrityError) as exc:
             # הרשומה נכשלה אבל המשני כבר קשור — לא re-enroll שקט: מנקים את
             # הקובץ היתום ומדווחים שהשחזור הוא ניתוק מקומי על המשני.
+            # codeql[py/path-injection] false positive: שם הקובץ עבר valid_node_id (sn_<16 hex>) למעלה (#291)
             cred_path.unlink(missing_ok=True)
             raise HTTPException(
                 409, f"רישום המשני נכשל ({exc}). המשני כבר קשור — נתקו אותו "

@@ -55,11 +55,15 @@ def _allowlisted(source: APIRouter, allow: frozenset[tuple[str, str]]) -> list[A
     אותו endpoint, אותן dependencies, אותו response_model: החוזה זהה
     לזה של הקונסולה כי זה **אותו** route, לא עותק. נתיב שברשימה אך אינו
     קיים במקור פשוט לא יתווסף — הטסט של ה-allowlist תופס פער כזה בכך
-    שהוא דורש שהקבוצה הממומשת תהיה שווה לרשימה המוצהרת."""
+    שהוא דורש שהקבוצה הממומשת תהיה שווה לרשימה המוצהרת.
+
+    ‏#742: route רב-מתודי נכנס רק אם **כל** המתודות שלו ברשימה — אחרת
+    ‏GET מותר היה מכניס איתו DELETE על אותו אובייקט. ‏fail-closed: route
+    כזה נשמט כולו, והטסט של ה-allowlist נופל על ה-GET החסר — בקול."""
     picked: list[APIRoute] = []
     for route in source.routes:
-        if isinstance(route, APIRoute) and any(
-            (method, route.path) in allow for method in (route.methods or ())
+        if isinstance(route, APIRoute) and route.methods and all(
+            (method, route.path) in allow for method in route.methods
         ):
             picked.append(route)
     return picked

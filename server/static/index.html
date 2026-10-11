@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ImageCtl — קונסולה</title>
-<link rel="stylesheet" href="design-tokens.css?v=11.18">
-<link rel="stylesheet" href="console.css?v=11.18">
-<link rel="stylesheet" href="progress.css?v=11.18">
+<link rel="stylesheet" href="design-tokens.css?v=11.19">
+<link rel="stylesheet" href="console.css?v=11.19">
+<link rel="stylesheet" href="progress.css?v=11.19">
 <script>
   /* לפני הציור הראשון, אחרת המסך מהבהב בלבן לפני שהכהה נטען.
      המטמון הוא בחירה מפורשת (light/dark) בלבד; בלי מטמון — לפי המערכת. */
@@ -89,32 +89,33 @@
   <aside class="sidebar" id="sidebar">
   <div class="sidebar-head"><span class="sidebar-title">ניווט</span><button class="icon-btn nav-collapse" type="button" id="navCollapse" aria-label="כווץ את עץ הניווט" title="כווץ את עץ הניווט" aria-controls="sidebar" aria-expanded="true" onclick="navButton()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16M10 9l-3 3 3 3"/></svg></button></div>
   <div class="tree" role="tree" aria-label="עץ הניווט">
-    <div class="inventory-node server-node active" ondblclick="toggleInventoryGroup(this,'srvTA')" role="treeitem" tabindex="0" aria-expanded="true"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'srvTA')" data-open="true">▾</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/><path d="M7 7h.01M7 17h.01M11 7h6M11 17h6"/></svg></span><strong class="server-name" id="primaryServerName" ondblclick="event.stopPropagation();renameServer(this)">שרת אימג'ים</strong></div>
+    <div class="inventory-node server-node active" onclick="toggleInventoryGroup(this,'srvTA')" role="treeitem" tabindex="0" aria-expanded="true"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'srvTA')" data-open="true">▾</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/><path d="M7 7h.01M7 17h.01M11 7h6M11 17h6"/></svg></span><strong class="server-name" id="primaryServerName" ondblclick="event.stopPropagation();renameServer(this)">שרת אימג'ים</strong></div>
     <div id="srvTA" class="inventory-children" role="group">
       <div class="inventory-node" data-page="home" onclick="selectPageById('home')" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="8" height="10" rx="1.5"/><rect x="13" y="3" width="8" height="6" rx="1.5"/><rect x="13" y="11" width="8" height="10" rx="1.5"/><rect x="3" y="15" width="8" height="6" rx="1.5"/></svg></span><span>סקירה כללית</span></div>
       <div class="inventory-node" data-page="deploy" onclick="selectPageById('deploy')" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="2"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M4.9 4.9a10 10 0 0 0 0 14.2M19.1 4.9a10 10 0 0 1 0 14.2"/></svg></span><span>סבב הפצה</span></div>
-      <div class="inventory-node" ondblclick="toggleInventoryGroup(this,'invTA')" role="treeitem" tabindex="0" aria-expanded="true"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'invTA')" data-open="true">▾</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5h13M8 12h13M8 19h13M3 5h.01M3 12h.01M3 19h.01"/></svg></span><span>מלאי</span></div>
+      <div class="inventory-node" onclick="toggleInventoryGroup(this,'invTA')" role="treeitem" tabindex="0" aria-expanded="true"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'invTA')" data-open="true">▾</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5h13M8 12h13M8 19h13M3 5h.01M3 12h.01M3 19h.01"/></svg></span><span>מלאי</span></div>
       <div id="invTA" class="inventory-children" role="group">
-        <div class="inventory-node" data-page="images" onclick="selectPageById('images')" ondblclick="toggleInventoryGroup(this,'imagesTree')" role="treeitem" tabindex="0" aria-expanded="false"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'imagesTree')">▸</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg></span><span>אימג'ים</span></div>
+        <div class="inventory-node" data-page="images" onclick="treeNavToggle(this,'imagesTree',function(){selectPageById('images')})" role="treeitem" tabindex="0" aria-expanded="false"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'imagesTree')">▸</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg></span><span>אימג'ים</span></div>
         <div id="imagesTree" class="inventory-children" role="group" hidden></div>
-        <div class="inventory-node" data-page="machines" data-admin onclick="MACHINES_FILTER=null;MACHINES_CLASS=null;selectPageById('machines')" ondblclick="toggleInventoryGroup(this,'machineTree')" role="treeitem" tabindex="0" aria-expanded="false"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'machineTree')">▸</span><span data-admin style="display:contents"><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="3" width="12" height="18" rx="2"/><path d="M9 7h6M9 11h6M12 17h.01"/></svg></span><span>מחשבים</span></span></div>
+        <div class="inventory-node" data-page="machines" data-admin onclick="treeNavToggle(this,'machineTree',function(){MACHINES_FILTER=null;MACHINES_CLASS=null;selectPageById('machines')})" role="treeitem" tabindex="0" aria-expanded="false"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'machineTree')">▸</span><span data-admin style="display:contents"><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="3" width="12" height="18" rx="2"/><path d="M9 7h6M9 11h6M12 17h.01"/></svg></span><span>מחשבים</span></span></div>
         <div id="machineTree" class="inventory-children" role="group" data-admin hidden>
-          <div class="inventory-node hidden" data-cap="classrooms" onclick="selectMachinesRole('classroom')" ondblclick="toggleInventoryGroup(this,'classesTree')" role="treeitem" tabindex="0" aria-expanded="false"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'classesTree')">▸</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="1"/><path d="M3 10h18M9 4v16M15 4v16"/></svg></span><span>כיתות</span></div>
+          <div class="inventory-node hidden" data-cap="classrooms" onclick="treeNavToggle(this,'classesTree',function(){selectMachinesRole('classroom')})" role="treeitem" tabindex="0" aria-expanded="false"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'classesTree')">▸</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="1"/><path d="M3 10h18M9 4v16M15 4v16"/></svg></span><span>כיתות</span></div>
           <div id="classesTree" class="inventory-children" role="group" data-cap="classrooms" hidden></div>
-          <div class="inventory-node" onclick="selectMachinesRole('build')" ondblclick="toggleInventoryGroup(this,'buildTree')" role="treeitem" tabindex="0" aria-expanded="false"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'buildTree')">▸</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m14 5 5 5M3 21l8-8M9 3l12 12-6 6L3 9Z"/></svg></span><span>מחשבי בנייה</span></div>
+          <div class="inventory-node" onclick="treeNavToggle(this,'buildTree',function(){selectMachinesRole('build')})" role="treeitem" tabindex="0" aria-expanded="false"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'buildTree')">▸</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m14 5 5 5M3 21l8-8M9 3l12 12-6 6L3 9Z"/></svg></span><span>מחשבי בנייה</span></div>
           <div id="buildTree" class="inventory-children" role="group" hidden></div>
-          <div class="inventory-node" onclick="selectMachinesRole('cloner')" ondblclick="toggleInventoryGroup(this,'clonerTree')" role="treeitem" tabindex="0" aria-expanded="false"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'clonerTree')">▸</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="13" height="13" rx="1"/><path d="M16 8V3H3v13h5"/></svg></span><span>מחשבי שיכפול</span></div>
+          <div class="inventory-node" onclick="treeNavToggle(this,'clonerTree',function(){selectMachinesRole('cloner')})" role="treeitem" tabindex="0" aria-expanded="false"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'clonerTree')">▸</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="13" height="13" rx="1"/><path d="M16 8V3H3v13h5"/></svg></span><span>מחשבי שיכפול</span></div>
           <div id="clonerTree" class="inventory-children" role="group" hidden></div>
         </div>
       </div>
-      <div class="inventory-node" ondblclick="toggleInventoryGroup(this,'infraTA')" role="treeitem" tabindex="0" aria-expanded="false"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'infraTA')">▸</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></svg></span><span>תשתית</span></div>
+      <div class="inventory-node" onclick="toggleInventoryGroup(this,'infraTA')" role="treeitem" tabindex="0" aria-expanded="false"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'infraTA')">▸</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></svg></span><span>תשתית</span></div>
         <div id="infraTA" class="inventory-children" role="group" data-admin hidden>
           <div class="inventory-node" data-page="health" onclick="selectPageById('health')" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.5S3.5 15.4 3.5 9.3A4.8 4.8 0 0 1 12 6.6a4.8 4.8 0 0 1 8.5 2.7c0 6.1-8.5 11.2-8.5 11.2Z"/><path d="M7 12h3l1.5-2.5 2 5 1.5-2.5h2"/></svg></span><span>בריאות ושירותים</span></div>
           <!-- #1066 שלב ב': מיקומי הספרייה — תיקייה / NFS / SMB / iSCSI (storage.js); admin בלבד -->
           <div class="inventory-node" data-page="storage" data-admin onclick="selectPageById('storage')" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg></span><span>אחסון</span></div>
           <!-- #954 גל 8: "רשת" הוא דף (קליק = הדף, דאבל = פותח/סוגר); הילדים פותחים את אותו אובייקט בלשונית -->
-          <div class="inventory-node" data-page="network" onclick="selectPageById('network')" ondblclick="toggleInventoryGroup(this,'netTA')" role="treeitem" tabindex="0" aria-expanded="false"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'netTA')">▸</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3.2 3 3.2 15 0 18M12 3c-3.2 3-3.2 15 0 18"/></svg></span><span>רשת</span></div>
+          <div class="inventory-node" data-page="network" onclick="treeNavToggle(this,'netTA',function(){selectPageById('network')})" role="treeitem" tabindex="0" aria-expanded="false"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'netTA')">▸</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3.2 3 3.2 15 0 18M12 3c-3.2 3-3.2 15 0 18"/></svg></span><span>רשת</span></div>
           <div id="netTA" class="inventory-children" role="group" hidden>
+            <div class="inventory-node" data-net-tab="0" onclick="openNetwork(0,null,this)" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="5" rx="1"/><rect x="3" y="16" width="6" height="5" rx="1"/><rect x="15" y="16" width="6" height="5" rx="1"/><path d="M12 8v4M6 16v-4h12v4"/></svg></span><span>תרשים</span></div>
             <div class="inventory-node" data-net-tab="1" id="nicNode" role="treeitem" tabindex="0"><span class="tree-arrow-sp" id="nicTreeArrow"></span><span onclick="openNetwork(1,null,this.parentElement)" style="display:contents"><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="6" width="16" height="11" rx="1.5"/><path d="M8 17v3M16 17v3M8 10v3M12 10v3M16 10v3"/></svg></span><span>חיבורים פיזיים</span></span></div>
             <div id="nicTree" class="inventory-children" role="group" hidden></div>
             <div class="inventory-node" data-net-tab="2" onclick="openNetwork(2,null,this)" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h15l-4-4M20 18H5l4 4M20 6v6M4 18v-6"/></svg></span><span>רשת הפצה</span></div>
@@ -126,7 +127,7 @@
                המהדורה הראשונה יוצאת בלי ארגז הכלים (נדב 19/09): מתחיל מוסתר, ‏/me → capabilities.tools מדליק. -->
           <div class="inventory-node hidden" data-page="tools" data-admin data-cap="tools" onclick="selectPageById('tools')" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 0 0 5.4-5.4l-2.4 2.4-2.1-.6-.6-2.1Z"/></svg></span><span>ארגז כלים</span></div>
         </div>
-        <div class="inventory-node" ondblclick="toggleInventoryGroup(this,'adminTA')" role="treeitem" tabindex="0" aria-expanded="false"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'adminTA')">▸</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 6v6c0 4.5 3.4 8 8 9 4.6-1 8-4.5 8-9V6Z"/><path d="m9 12 2 2 4-4"/></svg></span><span>ניהול</span></div>
+        <div class="inventory-node" onclick="toggleInventoryGroup(this,'adminTA')" role="treeitem" tabindex="0" aria-expanded="false"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'adminTA')">▸</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 6v6c0 4.5 3.4 8 8 9 4.6-1 8-4.5 8-9V6Z"/><path d="m9 12 2 2 4-4"/></svg></span><span>ניהול</span></div>
         <div id="adminTA" class="inventory-children" role="group" data-admin hidden>
           <div class="inventory-node" data-page="permissions" onclick="selectPageById('permissions')" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M16 7l3 3M14 9l2 2"/></svg></span><span>משתמשים והרשאות</span></div>
           <div class="inventory-node" data-page="logs" onclick="selectPageById('logs')" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l4 4v14H6Z"/><path d="M14 3v5h5M9 13h7M9 17h5"/></svg></span><span>יומן</span></div>
@@ -151,14 +152,14 @@
 <div class="toast" id="toast"></div>
 </div>
 
-<script src="progress.js?v=11.18"></script>
-<script src="console.js?v=11.18"></script>
-<script src="reorder.js?v=11.18"></script>
-<script src="net.js?v=11.18"></script>
-<script src="netcfg.js?v=11.18"></script>
-<script src="storage_nodes.js?v=11.18"></script>
-<script src="drivers.js?v=11.18"></script>
-<script src="storage.js?v=11.18"></script>
-<script src="branches.js?v=11.18"></script>
+<script src="progress.js?v=11.19"></script>
+<script src="console.js?v=11.19"></script>
+<script src="reorder.js?v=11.19"></script>
+<script src="net.js?v=11.19"></script>
+<script src="netcfg.js?v=11.19"></script>
+<script src="storage_nodes.js?v=11.19"></script>
+<script src="drivers.js?v=11.19"></script>
+<script src="storage.js?v=11.19"></script>
+<script src="branches.js?v=11.19"></script>
 </body>
 </html>

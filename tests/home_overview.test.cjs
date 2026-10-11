@@ -184,6 +184,7 @@ test('home renders its own header (no generic toolbar, no "+ פעולה", no foo
   assert.match(html,/<div class="obj-name">סקירה כללית<span class="pill /,'the status pill sits in the title line (console-full.html .htxt h1)');
   assert.match(html,/imagectl-srv · <span class="mono">10\.44\.12\.1<\/span> · v0\.30\.0 · פעיל 6 ימים 4 שעות/,'#968: hostname · IP · version · uptime, all from /me');
   assert.doesNotMatch(html,/זמן פעילות — בקרוב/);
+  // codeql[js/incomplete-sanitization] false positive: test code -- a constant list with no backslash becomes a RegExp for assert.doesNotMatch (#291)
   for(const gone of ['pageActionBtn','+ פעולה','footer-note','object-strip','vcenter-tabs','>Details<','אין נתונים להצגה']) assert.doesNotMatch(html,new RegExp(gone.replace(/[+]/g,'\\+')),gone);
   assert.match(html,/onclick="selectPageById\('deploy'\)">\+ סבב הפצה</); assert.match(html,/openCapture\(\)/); assert.match(html,/refreshPage\(\)/);
 });

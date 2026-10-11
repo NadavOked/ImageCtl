@@ -280,6 +280,12 @@ def write_credential_0600(path, token: str) -> None:
     היה עוקב אחריו. שארית מריצה שקרסה מוסרת קודם ב-``unlink`` (שאינו
     עוקב אחרי קישור); אם משהו מופיע שוב בין ההסרה לפתיחה — ``O_EXCL``
     נכשל ב-``FileExistsError`` במקום לכתוב לתוכו.
+
+    ‏#291: ‏CodeQL ‏``py/path-injection`` על הפונקציה הזו הוא false positive.
+    לה שני קוראים, ושניהם בונים את הנתיב בעצמם: ‏``console_storage.enroll``
+    (‏``secondaries/sn_<16 hex>.token``, אחרי ``storage_nodes.valid_node_id``)
+    ו-``console_tls`` (שם קבוע תחת ``data_dir``). שום רכיב של הנתיב אינו
+    מחרוזת חופשית מהבקשה.
     """
     path = os.fspath(path)
     directory = os.path.dirname(os.path.abspath(path))
@@ -287,11 +293,13 @@ def write_credential_0600(path, token: str) -> None:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     flags |= getattr(os, "O_NOFOLLOW", 0)
     try:
+        # codeql[py/path-injection] false positive: הקוראים בונים את הנתיב בעצמם (docstring, #291)
         os.unlink(tmp)
     except FileNotFoundError:
         pass
     fd = None
     try:
+        # codeql[py/path-injection] false positive: הקוראים בונים את הנתיב בעצמם (docstring, #291)
         fd = os.open(tmp, flags, 0o600)
         os.write(fd, token.encode())
         os.fsync(fd)
@@ -299,9 +307,12 @@ def write_credential_0600(path, token: str) -> None:
         if fd is not None:
             os.close(fd)
     if os.name == "posix":
+        # codeql[py/path-injection] false positive: הקוראים בונים את הנתיב בעצמם (docstring, #291)
         os.chmod(tmp, 0o600)          # מכבד umask שאולי הרחיב את המצב
+    # codeql[py/path-injection] false positive: הקוראים בונים את הנתיב בעצמם (docstring, #291)
     os.replace(tmp, path)
     if os.name == "posix":
+        # codeql[py/path-injection] false positive: הקוראים בונים את הנתיב בעצמם (docstring, #291)
         dir_fd = os.open(directory, os.O_RDONLY)
         try:
             os.fsync(dir_fd)

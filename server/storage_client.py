@@ -108,6 +108,7 @@ class PinnedMTLSClient:
         # ‏socket עם timeout הוא non-blocking ל-pyOpenSSL (WantReadError ב-
         # handshake). ה-timeout שירת את ה-connect; מכאן ה-TLS חוסם רגיל.
         raw.settimeout(None)
+        # codeql[py/insecure-protocol] false positive: build_pinned_client_context קובע min=max=TLS 1.3, ונבדק שוב אחרי ה-handshake (#291)
         conn = SSL.Connection(ctx, raw)
         conn.set_connect_state()
         try:
@@ -424,6 +425,7 @@ def fetch_server_spki(host: str, port: int, *, timeout: float = 10.0) -> str:
     # במעבדה (דרך חומת האש של חיפה) זה נפל בכל preview; בטסטים המשני מקומי
     # ומהיר, ולכן לא נראה. ה-timeout שירת את ה-connect; מכאן חוסם רגיל.
     raw.settimeout(None)
+    # codeql[py/insecure-protocol] false positive: set_min/max_proto_version נועלים על TLS 1.3 למעלה (#291)
     conn = SSL.Connection(ctx, raw)
     conn.set_connect_state()
     try:

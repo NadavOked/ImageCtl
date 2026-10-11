@@ -203,6 +203,7 @@ def _try_send(mac: str, send: Callable[[bytes], None]) -> str | None:
         send(magic_packet(mac))
         return None
     except (OSError, ValueError) as exc:
+        # codeql[py/log-injection] false positive: ה-MAC נקרא מטבלת machines (מנורמל ברישום) (#291)
         log.error("wol to %s failed: %s", mac, exc)
         return str(exc)
 
@@ -278,5 +279,6 @@ def wake_group(
         if reasons:
             detail += " | " + " | ".join(reasons)
         journal(conn, "wol_failed", detail)
+    # codeql[py/log-injection] false positive: group_id קיים ב-DB ועבר grp_[A-Za-z0-9_-] (#291)
     log.info("wol %s: %d sent, %d failed", group_id, sent, len(failed))
     return WakeResult(sent, failed, reasons)

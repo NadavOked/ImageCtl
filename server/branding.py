@@ -72,13 +72,14 @@ def _svg_refusal(body: bytes) -> str | None:
     found = _ACTIVE.search(text)
     if found:
         return f"‏SVG עם תוכן פעיל ({found.group(0).strip()}) — נדחה"
-    # ‏nosemgrep: use-defused-xml -- ו-CodeQL py/xml-bomb נסגרה מאותה סיבה.
+    # ‏nosemgrep: use-defused-xml -- וכך גם CodeQL py/xml-bomb (הערה למטה, #291).
     # הבדיקה על תוכן פעיל רצה **לפני** השורה הזאת, ו-`_ACTIVE` כולל
     # ‏`<!ENTITY` — פצצת ישויות נדחית לפני שהפענוח מתחיל. נמדד:
     #   ENTITY bomb  -> נדחה   ·   DTD חיצוני -> לא נטען   ·   XXE -> ParseError
     # ‏`defusedxml` הייתה תלות שלישית בשביל בדיקה שכבר קיימת, ו-
     # ‏`requirements.txt` מצמיד בכוונה שתי תלויות בלבד.
     try:
+        # codeql[py/xml-bomb] false positive: _ACTIVE דוחה <!ENTITY לפני הפענוח, ו-expat>=2.4 חוסם הרחבת ישויות (#291)
         root = ET.fromstring(text)
     except ET.ParseError as exc:
         return f"‏SVG שאינו XML תקין ({exc.msg if hasattr(exc, 'msg') else exc})"

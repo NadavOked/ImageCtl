@@ -855,7 +855,7 @@ function paintLoginFoot() {
   const label = $("#login-foot-tls-label");
   const tls = $("#login-foot-tls");
   const fp = ME && ME.tls && ME.tls.fingerprint_sha256;
-  if (label) label.textContent = fp ? "TLS תעודה עצמית" : "";
+  if (label) label.textContent = fp ? "TLS " + tlsModeHe(ME.tls) : "";
   if (tls) {
     tls.textContent = fp ? fp.slice(0, 23) + "…" : "";
     tls.title = fp ? "SHA-256 " + fp : "";
@@ -932,7 +932,7 @@ async function showApp() {
   const tlsEl = document.getElementById("serverTls");
   if (tlsEl) {
     const fp = ME.tls && ME.tls.fingerprint_sha256;
-    tlsEl.innerHTML = fp ? `TLS תעודה עצמית · <span dir="ltr">${esc(fp.slice(0, 23))}…</span>` : "";
+    tlsEl.innerHTML = fp ? `TLS ${tlsModeHe(ME.tls)} · <span dir="ltr">${esc(fp.slice(0, 23))}…</span>` : "";
     tlsEl.title = fp ? `SHA-256 ${fp}` : "";
   }
   document.querySelectorAll("[data-admin]").forEach(
@@ -1499,7 +1499,7 @@ function populateSidebarImages() {
       const idEnc = encodeId(im.id || "");
       return `<div class="inventory-node" role="treeitem" tabindex="0" onclick="openImageDetail('${idEnc}')"><span class="tree-arrow-sp"></span><span>${uiIcon("image")}</span><span>${esc(im.name)}</span></div>`;
     }).join("");
-    return `<div class="inventory-node" role="treeitem" tabindex="0" aria-expanded="${open}" ondblclick="toggleInventoryGroup(this,'${fid}')"><span class="tree-arrow" data-open="${open}" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'${fid}')">${open ? "▾" : "▸"}</span><span>${uiIcon("t-subfolder")}</span><span>${esc(f.name)}</span></div><div id="${fid}" class="inventory-children"${open ? "" : " hidden"}>${rows}</div>`;
+    return `<div class="inventory-node" role="treeitem" tabindex="0" aria-expanded="${open}" onclick="toggleInventoryGroup(this,'${fid}')"><span class="tree-arrow" data-open="${open}" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'${fid}')">${open ? "▾" : "▸"}</span><span>${uiIcon("t-subfolder")}</span><span>${esc(f.name)}</span></div><div id="${fid}" class="inventory-children"${open ? "" : " hidden"}>${rows}</div>`;
   }).join("");
 }
 
@@ -1507,6 +1507,13 @@ function fillSidebarTree(treeId, groups, machines, icon) {
   const tree = document.getElementById(treeId);
   if (!tree) return;
   const wasOpen = sidebarChildOpen(tree);
+  const leaf = (m) => `<div class="inventory-node" role="treeitem" tabindex="0" onclick="openMachineDetail('${encodeId(m.mac)}')"><span class="tree-arrow-sp"></span><span>${uiIcon("machine")}</span><span>${esc(machineName(m) || m.mac)}</span></div>`;
+  /* owner 11/10: one group under the role is a level that says nothing —
+     "מחשבי בנייה › מחשב בניית אימג'ים › HP-BUILD"; the machines sit under the role */
+  if (groups.length === 1) {
+    tree.innerHTML = sortMachinesBySuffix(machines.filter((m) => machineGroupId(m) === groups[0].id)).map(leaf).join("");
+    return;
+  }
   tree.innerHTML = groups.map((g) => {
     const boxId = "sg-" + g.id;
     const open = !!wasOpen[boxId];
@@ -1515,12 +1522,8 @@ function fillSidebarTree(treeId, groups, machines, icon) {
     if (!kids.length) {
       return `<div class="inventory-node" role="treeitem" tabindex="0" onclick="selectMachinesGroup('${gidEnc}')"><span class="tree-arrow-sp"></span><span>${uiIcon(icon)}</span><span>${esc(g.label)}</span></div>`;
     }
-    const childHtml = kids.map((m) => {
-      const macEnc = encodeId(m.mac);
-      const label = machineName(m) || m.mac;
-      return `<div class="inventory-node" role="treeitem" tabindex="0" onclick="openMachineDetail('${macEnc}')"><span class="tree-arrow-sp"></span><span>${uiIcon("machine")}</span><span>${esc(label)}</span></div>`;
-    }).join("");
-    return `<div class="inventory-node" role="treeitem" tabindex="0" aria-expanded="${open}" onclick="selectMachinesGroup('${gidEnc}')" ondblclick="toggleInventoryGroup(this,'${esc(boxId)}')"><span class="tree-arrow" data-open="${open}" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'${esc(boxId)}')">${open ? "▾" : "▸"}</span><span style="display:contents"><span>${uiIcon(icon)}</span><span>${esc(g.label)}</span></span></div><div id="${esc(boxId)}" class="inventory-children"${open ? "" : " hidden"}>${childHtml}</div>`;
+    const childHtml = kids.map(leaf).join("");
+    return `<div class="inventory-node" role="treeitem" tabindex="0" aria-expanded="${open}" onclick="treeNavToggle(this,'${esc(boxId)}',function(){selectMachinesGroup('${gidEnc}')})"><span class="tree-arrow" data-open="${open}" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'${esc(boxId)}')">${open ? "▾" : "▸"}</span><span style="display:contents"><span>${uiIcon(icon)}</span><span>${esc(g.label)}</span></span></div><div id="${esc(boxId)}" class="inventory-children"${open ? "" : " hidden"}>${childHtml}</div>`;
   }).join("");
 }
 
@@ -1655,7 +1658,7 @@ function branchTreeHtml(n, wasOpen) {
     if (Array.isArray(x)) return leaf(x);
     const boxId = `srv-${n.id}-${x.id}`;
     const open = boxId in wasOpen ? wasOpen[boxId] : x.open;
-    return `<div class="inventory-node" role="treeitem" tabindex="0" aria-expanded="${open}" ondblclick="toggleInventoryGroup(this,'${esc(boxId)}')"><span class="tree-arrow" data-open="${open}" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'${esc(boxId)}')">${open ? "▾" : "▸"}</span><span>${uiIcon(x.icon)}</span><span>${esc(x.label)}</span></div><div id="${esc(boxId)}" class="inventory-children" role="group"${open ? "" : " hidden"}>${x.kids.map(leaf).join("")}</div>`;
+    return `<div class="inventory-node" role="treeitem" tabindex="0" aria-expanded="${open}" onclick="toggleInventoryGroup(this,'${esc(boxId)}')"><span class="tree-arrow" data-open="${open}" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'${esc(boxId)}')">${open ? "▾" : "▸"}</span><span>${uiIcon(x.icon)}</span><span>${esc(x.label)}</span></div><div id="${esc(boxId)}" class="inventory-children" role="group"${open ? "" : " hidden"}>${x.kids.map(leaf).join("")}</div>`;
   }).join("");
 }
 
@@ -1688,7 +1691,7 @@ async function populateSidebarSecondaries() {
     const idEnc = encodeId(n.id);
     const kids = branchTreeHtml(n, wasOpen);
     const title = n.disabled_at ? "מושבת" : "מצב החיבור נבדק…";
-    return `<div class="inventory-node server-node" data-secondary="${esc(n.id)}" data-conn="${n.disabled_at ? "off" : "checking"}" role="treeitem" tabindex="0" aria-expanded="${open}" onclick="openBranchView('${idEnc}','overview',this)" ondblclick="toggleInventoryGroup(this,'${esc(boxId)}')"><span class="tree-arrow" data-open="${open}" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'${esc(boxId)}')">${open ? "▾" : "▸"}</span><span>${uiIcon("server")}</span><strong class="server-name">${esc(n.label)}</strong><span class="${secondaryDotClass(n, null)}" data-secondary-status="${esc(n.id)}" title="${esc(title)}" aria-label="${esc(title)}"><i></i></span></div><div id="${esc(boxId)}" class="inventory-children" role="group"${open ? "" : " hidden"}>${kids}</div>`;
+    return `<div class="inventory-node server-node" data-secondary="${esc(n.id)}" data-conn="${n.disabled_at ? "off" : "checking"}" role="treeitem" tabindex="0" aria-expanded="${open}" onclick="treeNavToggle(this,'${esc(boxId)}',function(){openBranchView('${idEnc}','overview',this)})"><span class="tree-arrow" data-open="${open}" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'${esc(boxId)}')">${open ? "▾" : "▸"}</span><span>${uiIcon("server")}</span><strong class="server-name">${esc(n.label)}</strong><span class="${secondaryDotClass(n, null)}" data-secondary-status="${esc(n.id)}" title="${esc(title)}" aria-label="${esc(title)}"><i></i></span></div><div id="${esc(boxId)}" class="inventory-children" role="group"${open ? "" : " hidden"}>${kids}</div>`;
   }).join("");
   await Promise.all(nodes.filter((n) => !n.disabled_at).map((n) =>
     api(`/storage-nodes/${encodeId(n.id)}/machines`)
@@ -4468,10 +4471,13 @@ function updateCard() {
     const st = updateStatusHtml(UPDATE_STATUS);
     if (st) pairs.push(["מצב", st]);
     const canApply = UPDATE_CHECK && UPDATE_CHECK.available && UPDATE_CHECK.latest;
+    // ‏#1273: עדכון שרץ (ועוד לא אומת) — אין החלה/חזרה נוספת; השרת גם מחזיר 409.
+    const busy = UPDATE_STATUS && UPDATE_STATUS.state === "running" && !UPDATE_STATUS.verified
+      ? ` disabled title="עדכון ל-${esc(UPDATE_STATUS.tag || "")} רץ — ממתינים לאתחול השרת"` : "";
     const btns = !u.enabled ? "" : [
       `<button class="btn" onclick="healthUpdateCheck()">בדוק עדכון</button>`,
-      canApply ? `<button class="btn primary" onclick="confirmUpdateApply(UPDATE_INFO.latest)">החל עדכון ${esc(UPDATE_CHECK.latest)}</button>` : "",
-      u.previous ? `<button class="btn danger" onclick="confirmUpdateRevert(UPDATE_INFO.previous)">חזור ל-${esc(u.previous)}</button>` : "",
+      canApply ? `<button class="btn primary"${busy} onclick="confirmUpdateApply(UPDATE_INFO.latest)">החל עדכון ${esc(UPDATE_CHECK.latest)}</button>` : "",
+      u.previous ? `<button class="btn danger"${busy} onclick="confirmUpdateRevert(UPDATE_INFO.previous)">חזור ל-${esc(u.previous)}</button>` : "",
     ].join("");
     const off = u.enabled ? "" : UI.note("warn", `העדכון כבוי (update_enabled) — הדלקה במתג "עדכון גרסה מהקונסולה" למעלה`);
     body = `<div class="upd">${UI.kv(pairs)}<div class="acts">${btns}</div></div>${off}`;
@@ -4536,7 +4542,7 @@ function health() {
   const actions = `<button class="btn primary" onclick="loadHealth()">בדוק עכשיו</button>`;
   // ‏apple-pending-4 · 4: מצב ה-TLS עבר מכותרת הסקירה לכאן (טביעת האצבע המלאה — ב"פרטי Session")
   const tlsFp = ME && ME.tls && ME.tls.fingerprint_sha256;
-  const tlsPill = UI.pill(tlsFp ? "info" : "", tlsFp ? "TLS תעודה עצמית" : "TLS כבוי");
+  const tlsPill = UI.pill(tlsFp ? "info" : "", tlsFp ? "TLS " + tlsModeHe(ME.tls) : "TLS כבוי");
   const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "תשתית" }, { label: "בריאות ושירותים" }],
     icon: "t-health", name: "בריאות ושירותים", sub, pill: pill + tlsPill, actions, compact: true });
   const body = !HEALTH
@@ -5499,8 +5505,19 @@ function netSpeedText(n) {
   const s = n && n.speed_mbps;
   return typeof s === "number" && s > 0 ? (s >= 1000 ? `${s / 1000} Gb` : `${s} Mb`) : "—";
 }
+/* ‏#1274: הכרטיסים הוחלפו על המכונה אבל ההשלמה (חומת אש/אתחול/רישום) נכשלה — ‏/net/deploy
+   עדיין על השם הקודם: כרטיס 1 של ה-bond (בהוספה), או bond0 כשהרשת כבר על כרטיס אחד (בהסרה).
+   מחזיר את ‏second לשליחה חוזרת ל-‏/second ("" = בלי כרטיס שני), או null = אין מה להשלים.
+   ‏/net/deploy שלא נקרא = null: בלי ראיה אין כפתור (עיקרון 5). */
+function netDeployPendingSecond(focus, bond) {
+  const d = typeof NET_DEPLOY !== "undefined" ? NET_DEPLOY : null;
+  if (!d || d.source !== "console") return null;
+  if (bond) return bond.members[1] && bond.members.some((m) => m.name === d.interface) ? bond.members[1].name : null;
+  return d.interface === "bond0" ? "" : null;
+}
 function netDeployCardsCard(focus) {
   const bond = NETCFG && NETCFG.deploy_bond && NETCFG.deploy_bond.name === focus.name ? NETCFG.deploy_bond : null;
+  const pending = netDeployPendingSecond(focus, bond);
   const nicOf = (name) => (NETW.nics || []).find((n) => n.name === name) || null;
   const cells = (name, role, n, [cls, label]) => [`<b dir="ltr">${esc(name)}</b>`, `כרטיס ${role}`, `<span dir="ltr">${esc(netSpeedText(n))}</span>`, UI.pill(cls, label)];
   let rows, note, acts = "";
@@ -5515,6 +5532,10 @@ function netDeployCardsCard(focus) {
     const st = focus.state === "up" ? ["ok", "פעיל"] : focus.state === "down" ? ["err", "מנותק"] : ["warn", "לא נקרא"];
     rows = [cells(focus.name, 1, focus, st)];
     note = UI.note("info", "כרטיס אחד. אפשר להוסיף כרטיס שני ב\"עריכה…\" — שני הכרטיסים יעבדו יחד על אותה כתובת, ואם אחד ייפול השני ימשיך.");
+  }
+  if (pending !== null) {
+    acts += `<button class="btn primary sm" onclick="completeDeploySecond('${encodeId(focus.name)}','${encodeId(pending)}')">השלם הגדרה</button>`;
+    note = UI.note("warn", `ההגדרה לא הושלמה: הכרטיסים הוחלפו על המכונה, אבל השלמת רשת ההפצה (חומת אש, אתחול השרת) נכשלה — השרת עדיין רשום על ${esc(NET_DEPLOY.interface)}. "השלם הגדרה" מנסה שוב בלי לגעת בכרטיסים.`) + note;
   }
   return UI.card({ title: "כרטיסים ברשת ההפצה", cls: "c12", acts, flush: true,
     body: UI.datagrid({ columns: ["כרטיס", "תפקיד", "קישור", "מצב"], rows, cls: "stable" }) + note });
@@ -5943,7 +5964,7 @@ function settings() {
   const body = !SETTINGS
     ? UI.note("err", `לא הצלחתי לקרוא את ההגדרות: ${esc(settingsError)}`)
     : UI.card({ title: "כללי", small: "שורה שהשתנתה מסומנת עד השמירה", cls: "c8", body: `<div class="srows">${SETTING_ROWS.filter((r) => r.key !== "class_deploy_enabled" || classroomsOn()).map(settingRowHtml).join("")}</div>` }) + brandingCardHtml()
-      + updateCard() + backupCard() + appearanceCard();
+      + tlsCardHtml() + hostnameCardHtml() + updateCard() + backupCard() + appearanceCard();
   return `<div class="page">${header}<div class="body">${body}</div></div>`;
 }
 async function saveSettings() {
@@ -5978,6 +5999,7 @@ async function loadSettingsData() {
   catch (e) { SETTINGS = null; settingsError = e.message; toast("טעינת ההגדרות נכשלה: " + e.message); }
   try { LOGO_EXISTS = await loadLogo(); } catch (e) { LOGO_EXISTS = null; }   // לא נקרא ≠ אין לוגו
   await loadHealthUpdate();   // כרטיס העדכונים
+  await loadHostCfg();       // #153: תעודה ושם מארח
   if (current === "settings") renderCurrent();
 }
 async function settingsLogoUpload(input) {
@@ -5997,6 +6019,81 @@ async function settingsLogoUpload(input) {
 function settingsLogoClear() {
   confirmSheet("הסרת הלוגו", "הקונסולה תחזור לסמל ברירת המחדל.", "הסר",
     async () => { await del("/branding/logo"); toast("הלוגו הוסר"); await loadSettingsData(); });
+}
+
+/* ---------- #153: תעודת TLS ושם המארח ----------
+   שני כרטיסים באותה שפה של "מיתוג"/"עדכונים". שניהם מסתיימים באתחול
+   השרת (התעודה נטענת רק בעליית uvicorn) — ולכן חלון אישור עם ההשלכות
+   וכפתור אדום, בלי הקלדת מילה (#1270). "לא נקרא" ≠ "אין" (עיקרון 5). */
+let TLS_STATUS = null, tlsError = "", HOSTNAME = null, hostnameError = "";
+async function loadHostCfg() {
+  try { TLS_STATUS = await api("/tls"); tlsError = ""; } catch (e) { TLS_STATUS = null; tlsError = e.message; }
+  try { HOSTNAME = (await api("/hostname")).hostname; hostnameError = ""; } catch (e) { HOSTNAME = null; hostnameError = e.message; }
+}
+function tlsModeHe(tls) { return tls && tls.mode === "ca-signed" ? "תעודה חתומה" : "תעודה עצמית"; }
+function tlsExpiryHtml(iso) {
+  const days = Math.floor((Date.parse(iso) - Date.now()) / 86400000);
+  const when = `<span dir="ltr">${esc(fmtDate(iso))}</span>`;
+  if (!(days >= 0)) return `${when} ${UI.pill("err", "פג תוקף")}`;
+  return days < 30 ? `${when} ${UI.pill("warn", `עוד ${days} ימים`)}` : when;
+}
+function tlsCardHtml() {
+  let body;
+  if (!TLS_STATUS) body = UI.note("err", `‏/tls לא נקרא: ${esc(tlsError || "לא נטען")}`);
+  else if (!TLS_STATUS.enabled) body = UI.note("warn", "הקונסולה רצה בלי TLS (loopback בלבד) — אין תעודה להחליף");
+  else {
+    const c = TLS_STATUS.on_disk;
+    const fp = esc(c.fingerprint_sha256);
+    const pairs = [["סוג", c.self_signed ? "תעודה עצמית" : `חתומה בידי ${esc(c.issuer || "—")}`],
+      ["הונפקה ל", `<span class="mono" dir="ltr">${esc(c.subject || "—")}</span>`],
+      ["שמות (SAN)", c.sans.length ? `<span class="mono" dir="ltr">${c.sans.map(esc).join(", ")}</span>` : "—"],
+      ["בתוקף עד", tlsExpiryHtml(c.not_after)],
+      ["SHA-256", `<span class="mono" dir="ltr" title="${fp}">${esc(c.fingerprint_sha256.slice(0, 23))}…</span>`]];
+    const notes = (TLS_STATUS.pending_restart ? UI.note("warn", "התעודה על הדיסק שונה מזו שבשימוש — היא תיכנס לשימוש באתחול השרת") : "")
+      + (TLS_STATUS.covers_hostname ? "" : UI.note("warn", `שם המארח <span class="mono" dir="ltr">${esc(TLS_STATUS.hostname)}</span> אינו בתעודה — דפדפן שפונה בשם הזה יזהיר`));
+    body = `${UI.kv(pairs)}${notes}<div class="acts" style="margin-top:8px"><button class="btn" onclick="tlsUploadSheet()">העלאת תעודה</button></div>`;
+  }
+  return UI.card({ title: "תעודת TLS", small: "הקונסולה (8081)", cls: "c8", body });
+}
+function hostnameCardHtml() {
+  const body = HOSTNAME == null
+    ? UI.note("err", `‏/hostname לא נקרא: ${esc(hostnameError || "לא נטען")}`)
+    : `${UI.kv([["שם המארח", `<span class="mono" dir="ltr">${esc(HOSTNAME)}</span>`]])}<div class="cap">שם המכונה ברשת (hostname) — נפרד מ"שם השרת" שבעץ. גישה בשם דורשת גם רשומת DNS אצל ה-IT ושם בתעודה.</div><div class="acts" style="margin-top:8px"><button class="btn" onclick="hostnameSheet()">שינוי</button></div>`;
+  return UI.card({ title: "שם המארח", cls: "c4", body });
+}
+function tlsUploadSheet() {
+  sheet({
+    title: "העלאת תעודת TLS", sub: "תעודה ומפתח פרטי בפורמט PEM; המפתח לא מוצפן",
+    fields: [{ id: "cert", label: "תעודה (‎.crt / .pem‎, כולל שרשרת)", type: "file", dir: "ltr" },
+             { id: "key", label: "מפתח פרטי (‎.key‎)", type: "file", dir: "ltr" }],
+    note: impactList([["w", "נבדק לפני ההחלה: PEM, התאמה בין התעודה למפתח, ותוקף"],
+      ["w", "השרת יופעל מחדש והקונסולה תתנתק לכמה שניות"],
+      ["w", "הזוג הקודם נשמר ליד הנוכחי (‎console.crt.prev‎)"]]),
+    danger: true, submitLabel: "העלאה והפעלה מחדש",
+    onSubmit: async () => {
+      const cert = $("#sf-cert").files[0], key = $("#sf-key").files[0];
+      if (!cert || !key) throw new Error("יש לבחור את שני הקבצים");
+      const r = await post("/tls", { cert_pem: await cert.text(), key_pem: await key.text() });
+      toast(`התעודה הוחלפה (בתוקף עד ${fmtDate(r.certificate.not_after)}) — השרת מופעל מחדש`, 6000);
+      await loadHostCfg();
+      if (current === "settings") renderCurrent();
+    },
+  });
+}
+function hostnameSheet() {
+  sheet({
+    title: "שינוי שם המארח", sub: HOSTNAME || "",
+    fields: [{ id: "hostname", label: "שם חדש", value: HOSTNAME || "", dir: "ltr", help: "אותיות אנגליות, ספרות ומקפים; נקודות בין חלקים (RFC 1123)" }],
+    note: impactList([["w", "השם נכתב במכונה (hostnamectl) ונקרא בחזרה"], ["w", "השרת יופעל מחדש והקונסולה תתנתק לכמה שניות"],
+      ["w", "התעודה אינה מתחלפת — אם השם החדש אינו בה, הדפדפן יזהיר בגישה בשם"]]),
+    danger: true, submitLabel: "שינוי והפעלה מחדש",
+    onSubmit: async (v) => {
+      const r = await post("/hostname", { hostname: v.hostname });
+      toast(`שם המארח שונה ל-${r.hostname} — השרת מופעל מחדש`, 6000);
+      await loadHostCfg();
+      if (current === "settings") renderCurrent();
+    },
+  });
 }
 
 /* ---------- #649 שלב 1: ארגז כלים ----------
@@ -6235,7 +6332,7 @@ function markTreeAncestor(node) {
   net.classList.add("anc");
 }
 
-/* מזהה הצומת של הלשונית הנוכחית. התרשים (0) = צומת "רשת" עצמו; פורטים (3 / דף ports) = צומת הפורטים. */
+/* מזהה הצומת של הלשונית הנוכחית. התרשים (0) = צומת "תרשים" (כמו במוקאפ); פורטים (3 / דף ports) = צומת הפורטים. */
 function treeNodeForTab() {
   const q = (sel) => document.querySelector(sel);
   if (current === "ports") return q('.inventory-node[data-page="ports"]');
@@ -6243,7 +6340,7 @@ function treeNodeForTab() {
   if (currentTab === 1) return q("#nicNode");
   if (currentTab === 2) return q('.inventory-node[data-net-tab="2"]');
   if (currentTab === 3) return q('.inventory-node[data-page="ports"]');
-  return q('.inventory-node[data-page="network"]');
+  return q('.inventory-node[data-net-tab="0"]') || q('.inventory-node[data-page="network"]');
 }
 function syncTreeToTab() {
   const node = treeNodeForTab();
@@ -6316,6 +6413,19 @@ function toggleInventoryGroup(nodeEl, childId) {
   if (arrow) arrow.dataset.open = String(opening);
   if (arrow) arrow.textContent = opening ? "▾" : "▸";
   if (nodeEl && nodeEl.setAttribute) nodeEl.setAttribute("aria-expanded", String(opening));
+}
+
+/* הכרעת נדב 11/10 (כמו המוקאפ): לחיצה על שורה בעץ היא הפעולה — לא דאבל-קליק.
+   ענף שהוא גם דף: לחיצה כשאנחנו לא בו = ניווט + פתיחה; כשאנחנו כבר בו = פתיחה/סגירה.
+   .here מסמן צומת (תפקיד/קבוצה) שהניווט אליו נעשה מכאן — הוא אינו מודגש כ-active, ולכן נשמר בנפרד. */
+function treeNavToggle(node, boxId, nav) {
+  const other = document.querySelector(".inventory-node.here");
+  const here = node.classList.contains("here") || (node.classList.contains("active") && !other);
+  if (here) { toggleInventoryGroup(node, boxId); return; }
+  nav.call(node);   // כך ש-this בתוך ה-function הוא השורה (openBranchView מסמן אותה)
+  node.classList.add("here");
+  const box = document.getElementById(boxId);
+  if (box && (box.hasAttribute("hidden") || box.style.display === "none")) toggleInventoryGroup(node, boxId);
 }
 
 /* S4 (#829): ניווט מקלדת. הלשוניות: חצים (RTL — ימינה=הקודמת, שמאלה=הבאה),
@@ -6905,7 +7015,7 @@ function openSessionInfo() {
   // ‏#703: טביעת האצבע המלאה של תעודת הקונסולה — להשוואה מול "פרטי תעודה" בדפדפן.
   const fp = ME && ME.tls && ME.tls.fingerprint_sha256;
   const tls = fp
-    ? `<div class="detail-box"><span class="k">TLS</span><span class="v">תעודה עצמית · SHA-256 <span dir="ltr" style="word-break:break-all">${esc(fp)}</span></span></div>`
+    ? `<div class="detail-box"><span class="k">TLS</span><span class="v">${tlsModeHe(ME.tls)} · SHA-256 <span dir="ltr" style="word-break:break-all">${esc(fp)}</span></span></div>`
     : `<div class="detail-box"><span class="k">TLS</span><span class="v">כבוי (loopback)</span></div>`;
   openDrawer("פרטי Session", `<div class="detail-grid"><div class="detail-box"><span class="k">משתמש</span><span class="v">${name}</span></div><div class="detail-box"><span class="k">Session</span><span class="v">Authenticated</span></div>${tls}</div>`);
 }
@@ -7233,15 +7343,18 @@ let UPDATE_INFO = {};
 
 function confirmUpdateApply(tag) {
   if (!tag) return;
+  // ‏#1273: לחיצה כפולה על "החלת העדכון" — שתי הלחיצות ממתינות לאותה בקשה, ולא שולחות שתיים.
+  // סירוב (409 "כבר רץ") מוצג בחלון ומשחרר אותו לניסיון נוסף.
+  let pending = null;
   sheet({
     title: "להחיל את העדכון?", sub: tag,
     note: impactList([["w", `השרת יעבור ל-${esc(tag)} ויופעל מחדש`], ["w", "הקונסולה תתנתק לכמה שניות"]]),
     danger: true, submitLabel: "החלת העדכון",
-    onSubmit: async () => {
+    onSubmit: () => pending || (pending = (async () => {
       await post("/update/apply", { tag });
       toast("העדכון הופעל — עוקבים אחרי סטטוס.");
       if (current === "settings") { await loadHealthUpdate(); renderCurrent(); }
-    },
+    })().catch((error) => { pending = null; throw error; })),
   });
 }
 function confirmUpdateRevert(tag) {

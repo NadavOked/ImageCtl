@@ -276,17 +276,17 @@ def test_static_includes_are_at_9_9():
     ‏#1262 (admin שנוצר בהתקנה מוגן) = ‏11.11.
     שדות סיסמה LTR + "הצג" אחד, ותיקוני הגואי הנייטיבי = ‏11.12;
     #1263 (כרטיס רשת בשלושה אופנים, חלון רשת הפצה, בלי קבצי dnsmasq) = ‏11.13; #1268/#1270/מתאים לדיסק/בלי זכירת MFA = ‏11.15.
-    #1267 (פורטים לפי רשת, שירותים בבריאות) + #1264 (bond בהפצה) + #1269 (דרייברים לפי דיסק) + שלב 3 של המוקאפ = ‏11.16; בחירת דיסקים לסבב בקונסולה (#1275) = ‏11.17; יישור סופי למוקאפ + מוניטור מוטמע = ‏11.18.
+    #1267 (פורטים לפי רשת, שירותים בבריאות) + #1264 (bond בהפצה) + #1269 (דרייברים לפי דיסק) + שלב 3 של המוקאפ = ‏11.16; בחירת דיסקים לסבב בקונסולה (#1275) = ‏11.17; יישור סופי למוקאפ + מוניטור מוטמע = ‏11.18; עץ כמו במוקאפ, TLS/שם מארח, #1273/#1274 = ‏11.19.
     שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
     versions = set(re.findall(r'\?v=(\d+\.\d+)"', page))
-    assert versions == {"11.18"}, versions
+    assert versions == {"11.19"}, versions
     # ביקורת 10/10: monitor.html מושך את אותם console.css ו-design-tokens.css — הם נשארו על 3.29 לנצח,
     # ולכן דפדפן שזכר אותם הציג את המוניטור בעיצוב ישן. monitor.js לבדו שומר על גרסה משלו (test_monitor).
     mon = (STATIC / "monitor.html").read_text(encoding="utf-8")
     shared = set(re.findall(r'(?:design-tokens|console)\.css\?v=(\d+\.\d+)"', mon))
-    assert shared == {"11.18"}, shared
+    assert shared == {"11.19"}, shared
 
 
 def test_update_apply_is_a_sheet_without_text_verification_and_revert_uses_hostname():
@@ -525,8 +525,7 @@ def test_the_class_build_and_cloner_tree_nodes_open_a_role_focused_machines_page
     פותח/סוגר את הענף. הקבוצות שמתחתיהם (grp_BUILD וכו') נשארות אובייקטים."""
     page = _index()
     for role, box in (("classroom", "classesTree"), ("build", "buildTree"), ("cloner", "clonerTree")):
-        assert (f"onclick=\"selectMachinesRole('{role}')\" "
-                f"ondblclick=\"toggleInventoryGroup(this,'{box}')\"") in page, role
+        assert (f"onclick=\"treeNavToggle(this,'{box}',function(){{selectMachinesRole('{role}')}})\"") in page, role
     js = (STATIC / "console.js").read_text(encoding="utf-8")
     assert "function selectMachinesRole(role)" in js
     assert 'if (MACHINES_ROLE) return [ROLE_PAGE_HE[MACHINES_ROLE], red];' in js
@@ -540,8 +539,8 @@ def test_network_is_one_object_page_with_the_diagram_nics_and_deploy_tabs():
     כרטיס" (netcfg.js), רשת ההפצה = חלון משלה (net.js). ‏#1032: תא הפעולות שומר מקום."""
     js, page, css = _console_js(), _index(), (STATIC / "console.css").read_text(encoding="utf-8")
     # העץ: הצומת "רשת" מנווט לדף; הילדים פותחים את האובייקט בלשונית; "פורטים" כמו שהיה
-    assert ("""<div class="inventory-node" data-page="network" onclick="selectPageById('network')\""""
-            """ ondblclick="toggleInventoryGroup(this,'netTA')\"""") in page
+    assert ("""<div class="inventory-node" data-page="network" onclick="treeNavToggle(this,'netTA',"""
+            """function(){selectPageById('network')})\"""") in page
     assert 'id="nicNode"' in page and "openNetwork(1,null,this.parentElement)" in page
     assert 'data-net-tab="2" onclick="openNetwork(2,null,this)"' in page
     assert """<div class="inventory-node" data-page="ports" onclick="selectPageById('ports')\"""" in page

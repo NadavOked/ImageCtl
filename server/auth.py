@@ -189,6 +189,7 @@ def issue(conn: sqlite3.Connection, username: str, role: str,
 def attach_cookie(response, conn: sqlite3.Connection, username: str, role: str,
                   tls, purpose: str = "") -> None:
     response.set_cookie(
+        # codeql[py/cookie-injection] false positive: הערך חתום HMAC, ושם המשתמש מוגבל ל-[a-z0-9._-] (users._USERNAME_RE, #291)
         COOKIE_NAME, issue(conn, username, role, purpose=purpose),
         httponly=True, samesite="lax", max_age=TTL_SECONDS,
         secure=tls is not None,

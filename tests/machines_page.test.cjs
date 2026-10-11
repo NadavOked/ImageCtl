@@ -335,7 +335,7 @@ test('empty and unread states, and the old page is gone (machines.js, sub-tabs, 
   assert.equal(run('typeof machineAdminPage'),'undefined'); assert.equal(run('typeof loadMachinesTab'),'undefined'); assert.equal(run('typeof renderSeenDevices'),'undefined');
   assert.ok(!fs.existsSync(path.join(root,'machines.js')));
   const page=fs.readFileSync(path.join(root,'index.html'),'utf8');
-  assert.doesNotMatch(page,/machines\.js/); assert.match(page,/onclick="MACHINES_FILTER=null;MACHINES_CLASS=null;selectPageById\('machines'\)"/,'the tree node resets both the filter and the open class');
+  assert.doesNotMatch(page,/machines\.js/); assert.match(page,/onclick="treeNavToggle\(this,'machineTree',function\(\)\{MACHINES_FILTER=null;MACHINES_CLASS=null;selectPageById\('machines'\)\}\)"/,'the tree node resets both the filter and the open class');
 });
 
 test('deploy role: the page is not allowed at all, and the tree node is admin-only', () => {
