@@ -101,3 +101,28 @@ test('the panel header has the six columns, aligned from the start',()=>{
   const html=fs.readFileSync(path.join(root,'index.html'),'utf8');
   assert.match(html,/<th>משימה<\/th><th>יעד<\/th><th>התחלה<\/th><th>משך<\/th><th>מצב<\/th><th>יוזם<\/th>/);
 });
+
+test('final mockup: a row with a known percentage carries a progress bar under the task name; an unknown one carries none (never a 0% bar); a failed row is marked',()=>{
+  const {run,body}=setup();
+  run(`OVERVIEW={}; CAPTURE_TASKS=${JSON.stringify([task({bytes_total:100,bytes_written:50}),task({id:'tsk_2',name:'Lab',bytes_total:null,bytes_written:0}),task({id:'tsk_3',name:'Broken',state:'failed',error:'I/O error'})])}; renderActivity()`);
+  const rows=[...body.innerHTML.matchAll(/<tr[^>]*>.*?<\/tr>/g)].map((m)=>m[0]);
+  const byName=(n)=>rows.find((r)=>r.includes('>'+n));
+  assert.match(byName('Office 2024'),/role="progressbar"[^>]*aria-valuenow="50"/);
+  assert.doesNotMatch(byName('Lab'),/progressbar/,'no denominator: no bar');
+  assert.match(byName('Broken'),/^<tr class="fail">/,'a failed task is marked for the red name');
+});
+
+test('final mockup: opening the panel marks the body so the dock header moves above the rows, and the panel height is measured from the table (96..260px)',()=>{
+  const {run}=setup();
+  run(`globalThis.cls=new Set(); globalThis.bodyCls=new Set(); globalThis.vars={};
+    const mk=(set)=>({toggle(c){ set.has(c)?set.delete(c):set.add(c); },contains:(c)=>set.has(c)});
+    const panel={classList:mk(cls),querySelector:()=>({scrollHeight:400})};
+    document.getElementById=(id)=>id==='taskPanel'?panel:null;
+    document.body={classList:mk(bodyCls),style:{setProperty:(k,v)=>{vars[k]=v;}}};`);
+  run('toggleTaskPanel()');
+  assert.equal(run('bodyCls.has("tasks-open")'),true); assert.equal(run('vars["--task-h"]'),'260px','capped at 260');
+  run('toggleTaskPanel()');
+  assert.equal(run('bodyCls.has("tasks-open")'),false);
+  const css=fs.readFileSync(path.join(root,'console.css'),'utf8');
+  assert.match(css,/body\.tasks-open \.app>\.task-dock\{bottom:var\(--task-h/,'the dock sits above the open rows');
+});

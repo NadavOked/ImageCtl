@@ -262,9 +262,9 @@ function deleteDriver(name) {
   const p = findDriver(name);
   if (!isAdmin() || !p) return;
   sheet({
-    title: "מחיקת חבילת דרייברים",
-    sub: `החבילה "${p.name}" תימחק מהספרייה. מכונות שכבר קיבלו אותה אינן מושפעות.`,
-    danger: true, submitLabel: "מחק",
+    title: "למחוק את חבילת הדרייברים?", sub: p.name,
+    note: impactList([["b", "החבילה תימחק מהספרייה"], ["ok", "מכונות שכבר קיבלו אותה אינן מושפעות"]]),
+    danger: true, submitLabel: "מחיקת החבילה",
     onSubmit: async () => {
       await post("/drivers/" + encodeURIComponent(p.name) + "/delete", { confirm_name: p.name });
       toast("החבילה נמחקה.");

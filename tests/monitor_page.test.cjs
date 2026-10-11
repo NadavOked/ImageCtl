@@ -112,18 +112,18 @@ test('renders build/cloner machines as one table: name+MAC, role, IP, server-dec
   await run('loadMonitor()');
   const html = run('monitorPage()');
   assert.notEqual(html, run('pagePlaceholder()'));
-  assert.match(html, /<table class="dg acts-on">/, 'actions always visible'); assert.match(html, /<th>מכונה<\/th><th>תפקיד<\/th><th>IP<\/th><th>מצב<\/th><th>מה על המסך<\/th>/);
+  assert.match(html, /<table class="dg acts-on kebab-col">/, 'actions always visible'); assert.match(html, /<th>מכונה<\/th><th class="c-opt">תפקיד<\/th><th class="c-opt">IP<\/th><th>מצב<\/th><th class="c-opt">מה על המסך<\/th>/);
   const row = (n) => { const i = html.indexOf(n); const s = html.lastIndexOf('<tr', i); return html.slice(s, html.indexOf('</tr>', i)); };
   const b = row('Builder'), c = row('Cloner-1');
   assert.match(b, /<span class="name">Builder<\/span><span class="sub"><span class="mono">aa:bb:cc:dd:ee:01/);
-  assert.match(b, /<td>מחשב בנייה<\/td><td><span class="mono">10\.44\.12\.50/);
+  assert.match(b, /<td class="c-opt">מחשב בנייה<\/td><td class="c-opt"><span class="mono">10\.44\.12\.50/);
   // המצב הוא מה שהשרת אמר — לא נגזר בדפדפן
   assert.match(b, /class="st ok">מחובר</);
   assert.match(b, /class="st warn">ממתין למפעיל: כניסה</, '"what is on the screen" from prompt');
-  assert.match(b, /class="btn sm primary" onclick="monitorMachine\('aa%3Abb%3Acc%3Add%3Aee%3A01'\)">פתח מוניטור</);
+  assert.match(b, /class="btn sm primary" onclick="monitorSelect\('aa%3Abb%3Acc%3Add%3Aee%3A01'\)" aria-pressed="false">צפה</);
   assert.doesNotMatch(b, /wakeMachine/, 'online → no WoL');
   assert.match(c, /class="st ">לא מחובר · נראה לפני 3 שע&#39;</, 'last seen from /net, not from /monitor/machines');
-  assert.match(c, /<button class="btn sm" disabled title="[^"]+">פתח מוניטור</, 'not online → nothing to connect to');
+  assert.match(c, /<button class="btn sm" disabled title="[^"]+">צפה</, 'not online → nothing to connect to');
   assert.doesNotMatch(c, /monitorMachine\(/);
   assert.match(c, /wakeMachine\('aa%3Abb%3Acc%3Add%3Aee%3A02'\)">WoL</, '#984: WoL for a machine that is not connected');
   assert.match(html, /2 מכונות · 1 מחוברות עכשיו/); assert.match(html, /class="pill ok">המתג דלוק</);
@@ -178,7 +178,22 @@ test('machine drawer has NO monitor button — monitor lives only on the monitor
   assert.ok(drawer.length > 50, 'the drawer rendered');
   assert.doesNotMatch(drawer, /monitorMachine\(/, 'build machine: no monitor in the drawer');
   // ועדיין — בדף המוניטור הכפתור קיים
-  assert.match(run('monitorPage()'), /monitorMachine\(/);
+  assert.match(run('monitorPage()'), /monitorSelect\(/);
+});
+
+test('final mockup: the viewer card explains instead of an empty iframe (switch off / nothing selected / machine offline); a selected online machine gets monitor.html in an iframe plus a separate-window link', async () => {
+  const {run} = setup(base);
+  await run('loadMonitor()');
+  run('MONITOR.settings.enabled=false; MON_SEL=""');
+  let html = run('monitorPage()');
+  assert.match(html, /המוניטור כבוי/); assert.doesNotMatch(html, /<iframe/);
+  run('MONITOR.settings.enabled=true');
+  html = run('monitorPage()'); assert.match(html, /בחר מחשב לצפייה/); assert.doesNotMatch(html, /<iframe/);
+  const online = run('MONITOR.machines.find((m) => m.online)'), off = run('MONITOR.machines.find((m) => !m.online)');
+  if (off) { run(`MON_SEL=${JSON.stringify(off.mac)}`); html = run('monitorPage()'); assert.match(html, /אינה מחוברת/); assert.doesNotMatch(html, /<iframe/); }
+  assert.ok(online, 'fixture has an online machine');
+  run(`MON_SEL=${JSON.stringify(online.mac)}`); html = run('monitorPage()');
+  assert.match(html, /<iframe class="mon-frame"[^>]*src="monitor\.html\?mac=/); assert.match(html, /פתח בחלון נפרד/);
 });
 
 // --- #827: מתג "מוניטור לתחנות" בראש דף המוניטור --------------------------

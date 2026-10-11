@@ -314,9 +314,10 @@ function netDeviceDescribe(macEnc) {
 function netDeviceForget(macEnc) {
   let mac = macEnc; try { mac = decodeURIComponent(macEnc); } catch (e) {}
   confirmSheet(
-    "הסרה מהרשימה",
-    `${mac} יוסר. אם המכונה תדבר עם השרת שוב — היא תחזור לרשימה.`,
-    "הסר", async () => { await del(`/net/${encodeId(mac)}`); await loadMachines(); });
+    "להסיר מהרשימה?",
+    mac,
+    "הסרה מהרשימה", async () => { await del(`/net/${encodeId(mac)}`); await loadMachines(); },
+    [["w", "המכונה תוסר מהרשימה"], ["ok", "אם תדבר עם השרת שוב — היא תחזור לרשימה"]]);
 }
 function netDeviceAdd() {
   sheet({

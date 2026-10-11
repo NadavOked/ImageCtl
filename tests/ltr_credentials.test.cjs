@@ -36,8 +36,8 @@ test('sheet username and code fields are ltr', () => {
 });
 
 test('show toggle is on the physical right with right padding on the input', () => {
-  assert.match(css, /#login \.f \.eye,#login \.pw-eye\{[^}]*right:0;left:auto/);
-  assert.match(css, /#login \.f\.pw input\{padding-right:40px/);
+  assert.match(css, /#login \.f \.eye,#login \.pw-eye\{[^}]*right:5px;left:auto/);
+  assert.match(css, /#login \.f\.pw input\{padding-right:64px/);
   assert.match(css, /\n\.pw-eye\{position:absolute;right:5px;left:auto;top:50%;transform:translateY\(-50%\)/);
   assert.match(css, /\.pw-wrap input\{padding-right:68px/);
   assert.match(css, /\.win \.pw-wrap \.n-in\{padding-right:72px/);

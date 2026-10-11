@@ -229,7 +229,7 @@ test('permissions: the sheets call the same endpoints — role (PUT), disable (P
   assert.equal(run('typeof userPasswordSheet'),'undefined');
   run("userRoleSheet('deployer')"); let s=run('sheets.at(-1)'); assert.equal(s.fields[0].options.map((o)=>o.value).join(','),'deploy,admin');
   await s.onSubmit({role:'admin'}); assert.deepEqual(puts().at(-1).body,{role:'admin'});
-  run("userDisable('deployer', true)"); s=run('sheets.at(-1)'); assert.match(s.sub,/לא יוכל להיכנס, וסשן פתוח שלו נסגר מיד/);
+  run("userDisable('deployer', true)"); s=run('sheets.at(-1)'); assert.match(s.note,/סשן פתוח שלו נסגר מיד/);
   await s.onSubmit(); assert.deepEqual(puts().at(-1).body,{disabled:true});
   run("userDeleteSheet('deployer')"); s=run('sheets.at(-1)'); assert.equal(s.danger,true); assert.equal(s.verify,undefined,'#1270: no typed name'); assert.equal(s.fields,undefined);
   await s.onSubmit(); assert.equal(requests.filter((r)=>r.method==='DELETE').at(-1).url,'/users/deployer');
@@ -304,7 +304,7 @@ test('logs: one table — time (hh:mm:ss today, date otherwise), severity dot fr
   const j=requests.find((r)=>r.url==='/journal'); assert.equal(new URL(j.full,'http://x').searchParams.get('limit'),'200'); assert.equal(new URL(j.full,'http://x').searchParams.get('from'),null,'no range by default');
   const html=run('logs()'); balanced(html);
   assert.match(html,/class="obj-name">יומן</); assert.match(html,/4 אירועים מוצגים \(הסך לא נמסר\) · בלי סינון — האחרונים/,'no X-Journal-Total → not a number');
-  assert.match(html,/<th>זמן<\/th><th>חומרה<\/th><th>מה קרה<\/th><th>מי<\/th><th><\/th>/);
+  assert.match(html,/<th>מה קרה<\/th><th>מי<\/th><th>זמן<\/th><th>חומרה<\/th><th><\/th>/);
   assert.doesNotMatch(html,/role="tablist"|openLogFilter|<th>event<\/th>|עקרון התצוגה|Audit/);
   const r0=row(html,'LAB303-03');
   assert.match(r0,/<span class="mono">09:44:10<\/span>/,'today → hh:mm:ss only'); assert.match(r0,/title="דורש תשומת לב"><span class="pill warn">אזהרה</); assert.match(r0,/&lt;b&gt;x&lt;\/b&gt;/,'text is escaped');
@@ -426,4 +426,15 @@ test('stage 3: the users table MFA column is a pill — built-in admin "מקומ
   assert.equal(cell({username:'c',role:'admin'}),'<span class="pill warn">כבוי</span>');
   assert.equal(cell({username:'d',role:'deploy'}),'—');
   assert.equal(run('userMfaLabel({is_builtin:true})'),'מקומי','the account page keeps its own label');
+});
+
+test('final mockup: every destructive users window is a short question, the subject in the sub, consequences as an icon list, a named red button',async()=>{
+  const {run}=setup(); run('current="permissions"');
+  await run('loadUsersData()'); run('permissions()');
+  for (const [call,title,label] of [["userDeleteSheet('deployer')","למחוק את המשתמש?","מחיקת המשתמש"],["userResetPassword('deployer')","לאפס את הסיסמה?","איפוס סיסמה"],
+    ["userRevokeSessions('deployer')","לנתק את כל ההפעלות?","ניתוק ההפעלות"],["userDisable('deployer', true)","להשבית את המשתמש?","השבתת משתמש"]]) {
+    run(call); const sh=run('sheets.at(-1)');
+    assert.equal(sh.title,title,call); assert.equal(sh.sub,'deployer',call); assert.equal(sh.submitLabel,label,call); assert.equal(sh.danger,true,call);
+    assert.match(sh.note,/<ul class="n-impact">/,call); assert.equal(sh.verify,undefined,'no typed word');
+  }
 });

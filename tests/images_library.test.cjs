@@ -83,8 +83,8 @@ test('the page is the datastore browser: header, three tabs, tree with counters,
   assert.match(html,/כל האימג&#39;ים<\/span><span class="cnt">4</); assert.match(html,/Office<\/span><span class="cnt">2</);
   assert.match(html,/סייבר<\/span><span class="cnt">0</); assert.match(html,/ללא תיקייה<\/span><span class="cnt">1</);
   assert.equal((html.match(/<table class="dg kebab-col"/g)||[]).length,1);
-  for(const col of ['שם','מתאים לדיסק','בשרת','נוצר','אימות','בשימוש']) assert.match(html,new RegExp('<th>'+col+'</th>'));
-  for(const col of ['מערכת','תיקייה']) assert.match(html,new RegExp('<th class="c-opt">'+col+'</th>'),'stage 2: the folder column is in the table, secondary when the card is narrow');
+  for(const col of ['שם','מערכת','בשרת','מתאים לדיסק']) assert.match(html,new RegExp('<th>'+col+'</th>'));
+  for(const col of ['תיקייה','אימות','נוצר','בשימוש']) assert.match(html,new RegExp('<th class="c-opt">'+col+'</th>'),'console-full.html P.images: name, OS, size and fit stay; folder, state, date and use are secondary when the table is narrow');
   assert.match(html,/<div class="card-h"><span>אימג&#39;ים<\/span><\/div>/,'stage 2: the card has a title');
   assert.match(html,/<span class="dskico"><svg[^>]*><ellipse/,'stage 2: an image row carries the disk icon');
   assert.doesNotMatch(html,/כללי בטיחות|פעולות מהירות|מטא־נתונים|>Up<|>Down<|>Edit</);
@@ -155,7 +155,7 @@ test('multi-select: bar counts, move-to-folder PUTs every selected image, delete
   assert.equal(JSON.parse(puts[0].options.body).folder,'Linux'); assert.equal(run('IMG.sel.size'),0);
   run('toggleImgSel("img_7f3a91",true); toggleImgSel("img_2c8e04",true); bulkDelete()');
   assert.equal(run('formOptions.fields'),undefined,'#1270: no typed fields'); assert.equal(run('formOptions.danger'),true);
-  assert.match(run('formOptions.note'),/Office 2024 — סטנדרט/); assert.match(run('formOptions.note'),/CAD Heavy/);
+  assert.match(run('formOptions.sub'),/Office 2024 — סטנדרט/); assert.match(run('formOptions.sub'),/CAD Heavy/); assert.match(run('formOptions.note'),/class="n-impact"/,'consequences as an impact list');
   assert.ok(!requests.some(r=>r.url.endsWith('/delete')),'nothing deleted before the sheet is confirmed');
   await run('formOptions.onSubmit({})');
   const dels=requests.filter(r=>r.url.endsWith('/delete'));
@@ -194,7 +194,7 @@ test('the image drawer: header line, actions, verification note, properties, par
   assert.equal(node('#drawerTitle').textContent,'Ubuntu 24.04');
   let html=node('#drawerBody').innerHTML; balanced(html);
   assert.match(html,/class="page drw"/); assert.match(html,/Linux \/ <span class="mono">img_lnx001<\/span> · לינוקס · נוצר <bdi dir="ltr">12\/09\/2026/);
-  assert.match(html,/deployImage\('img_lnx001'\)">הפץ לכיתה…/); assert.match(html,/href="\/api\/console\/images\/img_lnx001\/download">הורדה/);
+  assert.match(html,/class="btn primary" onclick="openRoundWithImage\('img_lnx001'\)">פתח סבב עם אימג' זה/,'console-full.html S148: the primary action opens a round with this image'); assert.match(html,/onclick="renameImage\('img_lnx001'\)">שינוי שם/); assert.match(html,/class="btn sm danger" onclick="deleteImage\('img_lnx001'\)">מחיקה…/); assert.match(html,/href="\/api\/console\/images\/img_lnx001\/download">הורדה/);
   assert.match(html,/sha256 של כל מחיצה אומת בכניסה לספרייה/); assert.match(html,/scrubImage\('img_lnx001'\)">הרץ עכשיו/);
   assert.match(html,/<span class="k">תיקייה<\/span><span class="v">Linux <a[^>]*>העבר/);
   assert.match(html,/<span class="k">מחיצות<\/span><span class="v">3</);
@@ -202,7 +202,7 @@ test('the image drawer: header line, actions, verification note, properties, par
   assert.match(html,/טוען את טבלת המחיצות/,'before the manifest arrives: loading, not an empty table');
   assert.doesNotMatch(html,/דורש API/); assert.doesNotMatch(html,/Secure Boot/);
   assert.match(html,/נקלט ממחשב הבנייה בנייה 1 · sda/,'capture history from /tasks');
-  assert.match(html,/deleteImage\([^)]*\)">מחיקה</); assert.doesNotMatch(html,/הקלדת שם/);
+  assert.match(html,/deleteImage\([^)]*\)">מחיקה…</); assert.doesNotMatch(html,/הקלדת שם/);
   const j=requests.find(r=>r.url.startsWith('/api/console/journal?'));
   assert.equal(new URL(j.url,'http://x').searchParams.get('q'),'Ubuntu 24.04');
   await new Promise(r=>setImmediate(r)); await new Promise(r=>setImmediate(r));
@@ -357,4 +357,24 @@ test('#1215: an image on an unavailable location is "not checked", never "sha256
   fixtures['/images/img_7f3a91/scrub']={intact:false,images:[{id:'img_7f3a91',state:'unavailable',files:[]}]};
   await run('scrubImage("img_7f3a91")'); await tick();
   assert.match(node('#toast').textContent,/לא זמין/); assert.doesNotMatch(node('#toast').textContent,/פגום|לא תואם/);
+});
+
+test('final mockup: the delete-image window lists what happens; "in use" unknown is never presented as free (principle 5)', () => {
+  const {run}=setup();
+  const id='encodeId(IMAGES[0].id)';
+  run(`OVERVIEW=null; deleteImage(${id})`);
+  assert.equal(run('formOptions.title'),"למחוק את האימג'?"); assert.equal(run('formOptions.submitLabel'),'מחיקה'); assert.equal(run('formOptions.danger'),true);
+  const unknown=run('formOptions.note');
+  assert.match(unknown,/class="n-impact"/); assert.match(unknown,/לא נבדק אם האימג' בשימוש/); assert.doesNotMatch(unknown,/אפשר למחוק בבטחה/);
+  run(`OVERVIEW={}; deleteImage(${id})`);
+  assert.match(run('formOptions.note'),/אפשר למחוק בבטחה/,'/overview was read and the image is not in use');
+  assert.match(run('formOptions.note'),/הפעולה אינה הפיכה/);
+});
+
+test('final mockup: "פתח סבב עם אימג\' זה" selects the image in the round form and goes to the deploy page',()=>{
+  const {run}=setup();
+  run('roomOperator=()=>true; selectPageById=(p)=>{ globalThis.went=p; }; closeDrawer=()=>{}; openRoundWithImage("img_lnx001")');
+  assert.equal(run('DEPLOY.form.image'),'img_lnx001'); assert.equal(run('DEPLOY.form.src'),'library'); assert.equal(run('went'),'deploy');
+  run('roomOperator=()=>false; DEPLOY.form.image=""; went=""; openRoundWithImage("img_lnx001")');
+  assert.equal(run('DEPLOY.form.image'),''); assert.equal(run('went'),'');
 });

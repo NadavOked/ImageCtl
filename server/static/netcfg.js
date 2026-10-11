@@ -333,10 +333,10 @@ function routeDeleteSheet(nameEnc, index) {
   if (!nic || !nic.routes[index]) { toast("הנתיב לא נמצא"); return; }
   const gone = nic.routes.filter((_, i) => i !== index);
   sheet({
-    title: "מחיקת נתיב סטטי",
+    title: "למחוק את הנתיב הסטטי?",
     sub: `${nic.routes[index].destination} · ${nic.name}`,
-    danger: true, submitLabel: "מחק",
-    note: `<div class="sheet-note">הנתיב יוסר מהקובץ ומטבלת הניתוב.</div>`,
+    danger: true, submitLabel: "מחיקת הנתיב",
+    note: impactList([["b", "הנתיב יוסר מהקובץ ומטבלת הניתוב"]]),
     onSubmit: () => saveAddress(nic.name, bodyOf(nic, { routes: gone })),
   });
 }

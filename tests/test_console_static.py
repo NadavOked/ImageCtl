@@ -276,17 +276,17 @@ def test_static_includes_are_at_9_9():
     ‏#1262 (admin שנוצר בהתקנה מוגן) = ‏11.11.
     שדות סיסמה LTR + "הצג" אחד, ותיקוני הגואי הנייטיבי = ‏11.12;
     #1263 (כרטיס רשת בשלושה אופנים, חלון רשת הפצה, בלי קבצי dnsmasq) = ‏11.13; #1268/#1270/מתאים לדיסק/בלי זכירת MFA = ‏11.15.
-    #1267 (פורטים לפי רשת, שירותים בבריאות) + #1264 (bond בהפצה) + #1269 (דרייברים לפי דיסק) + שלב 3 של המוקאפ = ‏11.16; בחירת דיסקים לסבב בקונסולה (#1275) = ‏11.17.
+    #1267 (פורטים לפי רשת, שירותים בבריאות) + #1264 (bond בהפצה) + #1269 (דרייברים לפי דיסק) + שלב 3 של המוקאפ = ‏11.16; בחירת דיסקים לסבב בקונסולה (#1275) = ‏11.17; יישור סופי למוקאפ + מוניטור מוטמע = ‏11.18.
     שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
     versions = set(re.findall(r'\?v=(\d+\.\d+)"', page))
-    assert versions == {"11.17"}, versions
+    assert versions == {"11.18"}, versions
     # ביקורת 10/10: monitor.html מושך את אותם console.css ו-design-tokens.css — הם נשארו על 3.29 לנצח,
     # ולכן דפדפן שזכר אותם הציג את המוניטור בעיצוב ישן. monitor.js לבדו שומר על גרסה משלו (test_monitor).
     mon = (STATIC / "monitor.html").read_text(encoding="utf-8")
     shared = set(re.findall(r'(?:design-tokens|console)\.css\?v=(\d+\.\d+)"', mon))
-    assert shared == {"11.17"}, shared
+    assert shared == {"11.18"}, shared
 
 
 def test_update_apply_is_a_sheet_without_text_verification_and_revert_uses_hostname():
@@ -298,7 +298,7 @@ def test_update_apply_is_a_sheet_without_text_verification_and_revert_uses_hostn
     assert "sheet({" in apply
     assert "verify:" not in apply and "<input" not in apply
     assert "prompt(" not in apply and "confirm(" not in apply
-    assert "השרת יעבור ל-${tag} ויופעל מחדש. הקונסולה תתנתק לכמה שניות." in apply
+    assert "השרת יעבור ל-${esc(tag)} ויופעל מחדש" in apply and "הקונסולה תתנתק לכמה שניות" in apply   # רשימת השלכות (impactList)
     assert 'await post("/update/apply", { tag })' in apply
     assert 'status.state === "running"' in js
 
@@ -495,7 +495,7 @@ def test_small_pages_are_own_tables_from_the_api_and_wol_is_per_machine():
                    "async function wakeMachine(", "async function wakeGroup(", "function wolResultText(",
                    'key: "identity_check"', "WoL נשלח ל-", '"/api/console/journal" + logQuery(last)', 'X-Journal-Search-Truncated',
                    'settings: { crumb: "הגדרות", title: "הגדרות", tabs: [], render: settings, load: loadSettingsData, own: true }',
-                   'permissions: { crumb: "הרשאות", title: "הרשאות", tabs: [], render: permissions, load: loadUsersData, own: true }',
+                   'permissions: { crumb: "משתמשים והרשאות", title: "משתמשים והרשאות", tabs: [], render: permissions, load: loadUsersData, own: true }',
                    'logs: { crumb: "יומן", title: "יומן", tabs: [], render: logs, load: loadJournalData, own: true }',
                    'monitor: { crumb: "מוניטור", title: "מוניטור", tabs: [], render: monitorPage, load: loadMonitor, own: true }',
                    'tabs: ["דגמים", "חבילות", "כיסוי לפי מכונה"], render: (i) => driversPage(i), load: () => loadDrivers(), own: true'):

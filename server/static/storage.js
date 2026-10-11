@@ -408,7 +408,7 @@ function storageFormatSheet(id) {
   const note = UI.note("err", `<b>כל מערכות הקבצים והנתונים על הדיסק הזה יימחקו לצמיתות.</b><br><span class="mono">${esc(iqn)}</span>${d.fs_size != null ? ` · ${ltr(fmtBytes(d.fs_size))}` : ""} · ${content}. הפעולה בלתי הפיכה, וגם ה-NAS לא ישחזר אותה.`)
     + `<div style="margin:10px 0">${UI.kv([["מה ייעשה", `<span class="mono">mkfs.ext4 -L ${esc(loc.name.slice(0, 16))} ${esc(device)}</span>, ואז עיגון ב-<span class="mono">${esc(loc.mount_point)}</span>`]])}</div>`;
   sheet({
-    title: "פירמוט הדיסק — השמדת נתונים", danger: true, submitLabel: "פרמט ועגן", note: `<div class="page drw">${note}</div>`,
+    title: "לפרמט את הדיסק?", sub: "השמדת נתונים", danger: true, submitLabel: "פירמוט ועיגון", note: `<div class="page drw">${note}</div>`,
     onSubmit: async () => {
       const row = await post(`${SL}/${encodeURIComponent(loc.id)}/format`, { confirm: iqn, wipe: d.disk_status === "fs" });
       toast(`${row.name} פורמט ועוגן`);
@@ -455,12 +455,12 @@ function storageDisconnect(id) {
   try { id = decodeURIComponent(id); } catch (e) {}
   const loc = storageLoc(id) || (SV.iscsi && SV.iscsi.loc && SV.iscsi.loc.id === id ? SV.iscsi.loc : null);
   if (!loc) { toast("מיקום לא נמצא"); return; }
-  confirmSheet("ניתוק מיקום", `${loc.name} יסומן "מנותק": לא מנסים לבד עד "חבר". אימג'ים עליו יהיו "לא זמינים" (לא נמחקים).`, "נתק", async () => {
+  confirmSheet("לנתק את המיקום?", loc.name, "ניתוק המיקום", async () => {
     const row = await post(`${SL}/${encodeURIComponent(id)}/disconnect`, {});
     toast(`${row.name}: ${row.state_label}`); closeDrawer();
     if (SV.view !== "list") storageGo("list");
     await loadStorage();
-  });
+  }, [["w", 'המיקום יסומן "מנותק": לא מנסים לבד עד "חבר"'], ["w", 'אימג\'ים עליו יהיו "לא זמינים"'], ["ok", "שום דבר לא נמחק"]]);
 }
 /* הסרה — רק מיקום מנותק, מאחורי חלון אישור (#1270). הדיסק ב-NAS לא נמחק. */
 function storageDelete(id) {
@@ -469,7 +469,8 @@ function storageDelete(id) {
   if (!loc) { toast("מיקום לא נמצא"); return; }
   if (loc.state !== "disconnected") { toast("הסרה רק אחרי ניתוק"); return; }
   sheet({
-    title: "הסרת מיקום", sub: "המיקום יורד מהרשימה. הדיסק ב-NAS לא נמחק ולא מפורמט. השרת מסרב אם יש עליו אימג'ים.", danger: true, submitLabel: "הסר",
+    title: "להסיר את המיקום?", sub: loc.name, danger: true, submitLabel: "הסרת המיקום",
+    note: impactList([["w", "המיקום יורד מהרשימה"], ["ok", "הדיסק ב-NAS לא נמחק ולא מפורמט"], ["w", "השרת מסרב אם יש עליו אימג'ים"]]),
     onSubmit: async () => {
       await api(`${SL}/${encodeURIComponent(id)}`, { method: "DELETE", body: JSON.stringify({ confirm: loc.name }) });
       toast(`${loc.name} הוסר`); closeDrawer(); await loadStorage();

@@ -307,9 +307,9 @@ function removeBranchNode(idEnc) {
   const node = BRANCH_NODES.find((n) => n.id === id);
   if (!node) return;
   sheet({
-    title: "הסרת שרת משני",
-    sub: `"${node.label}" יוסר מהמרשם. הרישום מחדש דורש כתובת ואישורים.`,
-    danger: true, submitLabel: "הסר",
+    title: "להסיר את השרת המשני?", sub: node.label,
+    note: impactList([["b", "השרת יוסר מהמרשם"], ["w", "הרישום מחדש דורש כתובת ואישורים"]]),
+    danger: true, submitLabel: "הסרת השרת",
     onSubmit: async () => { await del(`/storage-nodes/${encodeId(id)}`); await loadBranchesData(); },
   });
 }

@@ -363,7 +363,7 @@ test('#980 §1: "power off all" is a danger sheet behind the typed group name, p
   run("poweroffRoom('grp_CLONERS')");
   assert.equal(run('formOptions.danger'),true);
   assert.ok(!run('formOptions.verify'),'#1270: no typed name');
-  assert.match(run('formOptions.sub'),/hello הבא/); assert.match(run('formOptions.sub'),/WoL/);
+  assert.match(run('formOptions.note'),/hello הבא/); assert.match(run('formOptions.note'),/WoL/,'console-full.html: the consequences are an impact list in the note, the sub names the group');
   await run('formOptions.onSubmit({})');
   const req=requests.find(r=>r.url==='/api/console/room/poweroff');
   assert.ok(req,'POST /room/poweroff was sent'); assert.equal(req.options.method,'POST');

@@ -113,7 +113,7 @@ def test_main_tree_has_no_duplicate_icons():
     בריאות=תשתית). עכשיו כל צומת בעץ הראשי עם אייקון משלו."""
     icons = _tree_icons()
     wanted = ["סקירה כללית", "סבב הפצה", "מלאי", "אימג'ים", "מחשבים", "תשתית", "בריאות ושירותים", "אחסון", "רשת", "חיבורים פיזיים",
-              "רשת הפצה", "פורטים", "מוניטור", "דרייברים", "ניהול", "הגדרות", "הרשאות", "יומן"]
+              "רשת הפצה", "פורטים", "מוניטור", "דרייברים", "ניהול", "הגדרות", "משתמשים והרשאות", "יומן", "החשבון שלי"]
     missing = [w for w in wanted if w not in icons]
     assert not missing, missing
     seen: dict[str, str] = {}
@@ -136,7 +136,7 @@ def test_secondary_server_tree_uses_the_same_unique_icons():
 
 def test_page_headers_use_the_icon_of_their_tree_node():
     js = _js()
-    for name, key in [("בריאות ושירותים", "t-health"), ("הרשאות", "t-key"), ("יומן", "t-log"), ("פורטים", "t-ports"),
+    for name, key in [("בריאות ושירותים", "t-health"), ("משתמשים והרשאות", "t-key"), ("החשבון שלי", "t-me"), ("יומן", "t-log"), ("פורטים", "t-ports"),
                       ("מוניטור", "t-monitor"), ("הגדרות", "t-sliders"), ("מחשבים", "t-machines")]:
         assert f'icon: "{key}", name: "{name}"' in js, name
     assert 'icon: "t-drivers", name: "דרייברים"' in (STATIC / "drivers.js").read_text(encoding="utf-8")

@@ -181,7 +181,7 @@ test('home renders its own header (no generic toolbar, no "+ פעולה", no foo
   const html=run('layout(pages.home,0)');
   balanced(html);
   assert.match(html,/^<div class="page"><div class="obj compact">/,'apple-pending-4: one compact row + one sub line');
-  assert.match(html,/<div class="obj-name">שרת אימג&#39;ים<\/div>/);
+  assert.match(html,/<div class="obj-name">סקירה כללית<span class="pill /,'the status pill sits in the title line (console-full.html .htxt h1)');
   assert.match(html,/imagectl-srv · <span class="mono">10\.44\.12\.1<\/span> · v0\.30\.0 · פעיל 6 ימים 4 שעות/,'#968: hostname · IP · version · uptime, all from /me');
   assert.doesNotMatch(html,/זמן פעילות — בקרוב/);
   for(const gone of ['pageActionBtn','+ פעולה','footer-note','object-strip','vcenter-tabs','>Details<','אין נתונים להצגה']) assert.doesNotMatch(html,new RegExp(gone.replace(/[+]/g,'\\+')),gone);
@@ -190,10 +190,12 @@ test('home renders its own header (no generic toolbar, no "+ פעולה", no foo
 test('KPIs carry their meaning line from the existing API only',async()=>{
   const {run}=await loaded();
   const html=run('home(0)');
-  assert.match(html,/<div class="kpi warn"><div class="l">בריאות השרת<\/div><div class="v"><bdi dir="auto">אזהרה<\/bdi><\/div><div class="s">1 מתוך 2 בדיקות: מולטיקאסט/);
-  assert.match(html,/<div class="kpi info"><div class="l">סבב הפצה פעיל<\/div><div class="v"><bdi dir="auto">1<\/bdi><\/div><div class="s">כיתה 303 · Office 2024 — 2\/3 מחוברים · מתחיל בעוד 4:12/);
+  assert.match(html,/<span class="pill warn">1 אזהרה<\/span>/,'server health lives in the header pill (console-full.html), not in a tile');
+  assert.doesNotMatch(html,/<div class="l">בריאות השרת<\/div>/);
+  assert.match(html,/<div class="kpi \w*"><div class="l">דיסק אדום<\/div>/,'admin sees the red-disk tile');
+  assert.match(html,/<div class="kpi warn"><div class="l">סבב הפצה פעיל<\/div><div class="v"><bdi dir="auto">1<\/bdi><\/div><div class="s">כיתה 303 · Office 2024 — 2\/3 מחוברים · מתחיל בעוד 4:12/);
   assert.match(html,/מחשבים רשומים<\/div><div class="v"><bdi dir="auto">12<\/bdi><\/div><div class="s">2 נראו ברשת היום · 1 לא רשומים/);
-  assert.match(html,/אימג&#39;ים בספרייה<\/div><div class="v"><bdi dir="auto">6<\/bdi> <small>ב-2 תיקיות<\/small><\/div><div class="s">אחרון: Kali 2026.2 — <bdi dir="ltr">12\/09\/2026<\/bdi>/);
+  assert.match(html,/אימג&#39;ים בספרייה<\/div><div class="v"><bdi dir="auto">6<\/bdi> <small>ב-2 תיקיות<\/small><\/div><div class="s">אחרון: <bdi>Kali 2026.2<\/bdi> — <bdi dir="ltr">12\/09\/2026<\/bdi>/);
   assert.match(html,/אחסון אימג&#39;ים<\/div><div class="v"><bdi dir="auto">312 GB<\/bdi> <small>פנוי<\/small><\/div>.*aria-valuenow="69".*<bdi dir="ltr">688 GB<\/bdi> מתוך <bdi dir="ltr">1000 GB<\/bdi> בשימוש/);
 });
 test('"what is happening now" lists the session, the pending capture and the failed transfer with progress and status',async()=>{
@@ -282,7 +284,7 @@ test('empty server: KPIs say "none"/"unknown" in grey, the now-table says what t
   s.run('IMAGES=[];FOLDERS=[];DISK_FAILURES=[];SHRINK_RECORDS=[]');
   await s.run('loadHome()');
   const html=s.run('home(0)');
-  assert.match(html,/<div class="kpi ok"><div class="l">בריאות השרת<\/div><div class="v"><bdi dir="auto">תקין<\/bdi><\/div><div class="s">0 בדיקות עברו/);
+  assert.match(html,/<div class="kpi ok"><div class="l">דיסק אדום<\/div><div class="v"><bdi dir="auto">0<\/bdi><\/div><div class="s">אין כשלי כתיבה/);
   assert.match(html,/<div class="kpi "><div class="l">סבב הפצה פעיל<\/div><div class="v"><bdi dir="auto">אין<\/bdi><\/div>/);
   assert.match(html,/<div class="kpi "><div class="l">אחסון אימג&#39;ים<\/div><div class="v"><bdi dir="auto">לא ידוע<\/bdi><\/div>/);
   assert.match(html,/אין אימג'ים — קלוט ממחשב בנייה או העלה tar/);
@@ -300,7 +302,7 @@ test('a source that could not be read is shown as unread — never as green or a
   s.run('DISK_FAILURES=[];SHRINK_RECORDS=[];HEALTH=null;toast=()=>{}');
   await s.run('loadHome()');
   const html=s.run('home(0)');
-  assert.match(html,/<div class="kpi "><div class="l">בריאות השרת<\/div><div class="v"><bdi dir="auto">לא נבדק<\/bdi><\/div>/);
+  assert.match(html,/<div class="kpi ok"><div class="l">דיסק אדום<\/div>/,'DISK_FAILURES was read (empty) in this test');
   assert.match(html,/<span class="pill ">לא נבדק<\/span>/);
   assert.match(html,/רשת לא נקראה: net down/);
   assert.match(html,/לא נקראו: בריאות, רשת — לא ניתן לומר שאין מה לטפל/);
@@ -354,7 +356,7 @@ test('overview header: compact (one row + one ellipsis sub-line with the full te
   const html=run('home(0)');
   assert.match(html,/<div class="obj compact">/);
   assert.match(html,/<div class="obj-sub" title="imagectl-srv · 10\.44\.12\.1 · v0\.30\.0 · פעיל 6 ימים 4 שעות">/);
-  assert.doesNotMatch(run('UI.objHeader({name:"x",sub:"y"})'),/compact|title=/,'other pages keep the old header');
+  assert.doesNotMatch(run('UI.objHeader({name:"x",sub:"y"})'),/compact/,'other pages keep the non-compact header');
   assert.doesNotMatch(html,/ id="home-attn"[^>]* open/);
   run('HOME_ATTN_OPEN=true');
   assert.match(run('home(0)'),/id="home-attn"[^>]* open/,'open stays open after a re-render');

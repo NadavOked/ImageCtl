@@ -39,10 +39,10 @@ function renderBranchGroups(groups, afterChange) {
   });
 
   document.querySelectorAll("[data-grp-del]").forEach((b) => b.onclick = () =>
-    confirmSheet("מחיקת קבוצה",
-      `"${b.dataset.name}" תימחק. ${b.dataset.count} המשניים שבה יישארו, בלי קבוצה.`,
-      "מחק את הקבוצה",
-      async () => { await del(`/storage-node-groups/${b.dataset.grpDel}`); await afterChange(); }));
+    confirmSheet("למחוק את הקבוצה?", b.dataset.name,
+      "מחיקת הקבוצה",
+      async () => { await del(`/storage-node-groups/${b.dataset.grpDel}`); await afterChange(); },
+      [["b", "הקבוצה תימחק"], ["ok", `${esc(b.dataset.count)} המשניים שבה יישארו, בלי קבוצה`]]));
 
   // סדר הקבוצות בגרירה — רק כשיש יותר מאחת.
   if (groups.length > 1) {

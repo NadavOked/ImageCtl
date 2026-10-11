@@ -273,7 +273,7 @@ test('start wave posts /room/start and a 409 is a toast with the reason; stop is
   fixtures['/room/start']={__status:409,detail:'אף מכונת שיכפול עוד לא הצטרפה לגל'};
   await run('startWave()'); assert.match(run('toasted'),/הגל לא התחיל: אף מכונת שיכפול עוד לא הצטרפה לגל/);
   run('stopRoom()');
-  assert.equal(run('formOptions.danger'),true); assert.equal(run('formOptions.verify'),undefined,'#1270: no typed name'); assert.equal(run('formOptions.submitLabel'),'עצור סבב');
+  assert.equal(run('formOptions.danger'),true); assert.equal(run('formOptions.verify'),undefined,'#1270: no typed name'); assert.equal(run('formOptions.submitLabel'),'עצירת הסבב');
   assert.ok(!requests.some(r=>r.url==='/api/console/room/close'),'nothing posted before the sheet is confirmed');
   await run('formOptions.onSubmit({})');
   const close=requests.find(r=>r.url==='/api/console/room/close'); assert.deepEqual(JSON.parse(close.options.body),{confirm_name:'office365'});

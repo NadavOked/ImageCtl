@@ -489,8 +489,8 @@ test('#1263 card-window wiring: static fields hide outside "כתובת ידני�
 test('#1263 DHCP off keeps the typed NIC name; the forget/description sheets are unchanged',async()=>{
   const {run,requests}=await loaded();
   run("netDhcpOff('ens19')");
-  assert.equal(run('sheets[0].title'),'כיבוי DHCP על ens19'); assert.equal(run('sheets[0].verify'),undefined,'#1270: no typed word'); assert.equal(run('sheets[0].danger'),true);
-  run("netForget('ens21')"); assert.match(run('sheets[1].title'),/הסרת הגדרות הכרטיס/);
+  assert.equal(run('sheets[0].title'),'לכבות את ה-DHCP?'); assert.equal(run('sheets[0].sub'),'ens19'); assert.equal(run('sheets[0].verify'),undefined,'#1270: no typed word'); assert.equal(run('sheets[0].danger'),true);
+  run("netForget('ens21')"); assert.match(run('sheets[1].title'),/להסיר את הגדרות הכרטיס/);
   run('networkPage(1)'); run("portSwitch('ssh_nic:ens19')"); assert.match(run('sheets[2].title'),/פתיחת SSH לשרת על ens19/); assert.equal(run('sheets[2].verify'),undefined,'#1270: no typed word');
   for(const fn of ['editNic','editAddress','showFile','previewDnsmasq','netShowFile','netEditDhcp','netEditAddress']) assert.equal(run(`typeof ${fn}`),'undefined',fn+' should be gone');
   assert.ok(!requests.some(r=>r.method==='PUT'),'nothing is written without the sheet being submitted');

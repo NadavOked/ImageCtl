@@ -257,6 +257,21 @@ test('stage 2: account - the built-in admin has no MFA button and no backup-code
   assert.equal((builtin.match(/<button/g) || []).length, 1, 'the built-in admin: the password button only');
 });
 
+test('final mockup: "החשבון שלי" is a page in the tree (ניהול), same cards as the drawer, two per row, no "חשבון" card (the header carries it)', () => {
+  const {run} = setup();
+  assert.match(run('pages.account.title'), /החשבון שלי/);
+  run('ME={username:"nadav",role:"admin",is_builtin:false,mfa_enabled:true}');
+  const html = run('account()');
+  assert.match(html, /<div class="obj-name">החשבון שלי<span class="pill info">מנהל<\/span><\/div>/);
+  assert.match(html, /class="obj-sub"[^>]*>nadav</);
+  assert.match(html, /openSessionInfo\(\)">פרטי Session/);
+  assert.equal((html.match(/c6 card/g) || []).length, 3, 'password, MFA and backup codes are half-width cards');
+  assert.doesNotMatch(html, /<span>חשבון<\/span>/);
+  assert.match(html, /accountChangePassword\(\)">שנה סיסמה/);
+  run('ME.is_builtin=true; ME.mfa_enabled=false');
+  assert.doesNotMatch(run('account()'), /accountEnableMfa|accountNewBackupCodes/, 'the built-in admin keeps no MFA controls');
+});
+
 test('#1268: "שנה סיסמה" in my account — current + new + confirm, POST /me/password with the current one; a weak or mismatched password never leaves the browser', async () => {
   const {run, ctx} = setup();
   const calls = [];

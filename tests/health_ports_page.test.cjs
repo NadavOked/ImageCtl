@@ -236,7 +236,7 @@ test('stage 3: update card (moved to settings): installed/previous/last-check, c
   run("confirmUpdateApply(UPDATE_INFO.latest)");
   const s=run('sheets.at(-1)');
   assert.equal(s.danger,true); assert.equal(s.verify,undefined,'#1192: no text field to type');
-  assert.match(s.sub,/v0\.35\.0 ויופעל מחדש/);
+  assert.match(s.note,/v0\.35\.0 ויופעל מחדש/,'consequences are an impact list in the note');
   await s.onSubmit();
   const apply=requests.find((r)=>r.url==='/update/apply');
   assert.deepEqual(apply.body,{tag:'v0.35.0'},'#1192: no confirm_name');
@@ -456,7 +456,7 @@ test('#1267 health page: a services card with stop/start per service — stop is
   assert.match(tftp,/class="btn sm danger" onclick="healthSvcStop\('tftp'\)">עצור…</);
   run("healthSvcStop('tftp')");
   let s=run('sheets.at(-1)');
-  assert.equal(s.danger,true); assert.equal(s.verify,undefined,'no typed word'); assert.equal(s.submitLabel,'עצור');
+  assert.equal(s.danger,true); assert.equal(s.verify,undefined,'no typed word'); assert.equal(s.submitLabel,'עצירה');
   assert.ok(s.note.includes(TFTP_SVC_WARN),'the consequences are in the dialog');
   const before=requests.filter((r)=>r.url==='/ports').length;
   await s.onSubmit();
