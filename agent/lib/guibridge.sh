@@ -100,8 +100,9 @@ gui_dispatch() {
             case "$image" in ''|*[!A-Za-z0-9_.-]*) return 1 ;; esac
             case "$target" in ''|*[!0-9]*) return 1 ;; esac
             # room_open owns validation/body/POST; adapt only its prompts.
-            # #1275: the ticked drawers go as target_slots whenever there are any;
-            # #1269: with drivers=, their models too (room_open_extra).
+            # #1275 (owner 11/10): the ticked drawers always go as target_slots,
+            # none ticked = refused; #1269: with drivers=, their models too.
+            case "$slots" in '') return 1 ;; esac
             _gx=$(room_open_extra "$slots" "$drivers") || return 1
             (room_pick_image() { printf '%s\n' "$image"; }
              printf '%s\n' "$target" | ROOM_OPEN_EXTRA=$_gx room_open)

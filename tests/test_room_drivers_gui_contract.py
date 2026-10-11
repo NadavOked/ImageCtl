@@ -174,9 +174,12 @@ def _bridge(tmp_path: Path, record: str) -> dict | None:
 
 
 @JQ
-def test_room_open_without_drivers_posts_exactly_the_old_body(tmp_path):
-    body = _bridge(tmp_path, "room-open\nimage=img_1\ntarget=6\n\n")
-    assert body == {"image_id": "img_1", "target_drives": 6}
+def test_room_open_without_drivers_posts_the_selection_only(tmp_path):
+    # #1275 (owner 11/10): no ticked disk = nothing is posted (never "every drawer")
+    assert _bridge(tmp_path, "room-open\nimage=img_1\ntarget=6\n\n") is None
+    body = _bridge(tmp_path, f"room-open\nimage=img_1\ntarget=6\nslots={MAC1}@1\n\n")
+    assert body == {"image_id": "img_1", "target_drives": 6,
+                    "target_slots": [{"mac": MAC1, "ports": [1]}]}, "switch off: no driver_models"
 
 
 @JQ

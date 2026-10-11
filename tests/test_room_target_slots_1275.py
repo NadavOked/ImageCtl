@@ -93,11 +93,15 @@ def test_two_machines_keep_their_own_ports(tmp_path):
 
 
 @bridge_tools
-def test_no_selection_posts_exactly_the_body_of_today(tmp_path):
-    """בלי בחירה — אין שדה בכלל (השרת: חסר = סבב ישן; רשימה ריקה = 400)."""
-    rc, body = _bridge(tmp_path, "room-open\nimage=img_1\ntarget=3\n\n")
-    assert rc == 0
-    assert body == '{"image_id":"img_1","target_drives":3}'
+def test_no_selection_posts_nothing(tmp_path):
+    """הכרעת נדב 11/10: "פתח סבב" בלי דיסק מסומן חסום. רשומה בלי `slots=`
+    (או ריקה) אינה נשלחת כסבב "כל המגירות" — השרת עדיין מקבל שדה חסר
+    כסבב ישן (תאימות API), ולכן החסימה כאן ובגואי."""
+    for record in ("room-open\nimage=img_1\ntarget=3\n\n",
+                   "room-open\nimage=img_1\ntarget=3\nslots=\n\n"):
+        rc, body = _bridge(tmp_path / str(len(record)), record)
+        assert body is None, (record, body)
+        assert rc != 0, record
 
 
 @bridge_tools
@@ -128,22 +132,33 @@ def test_open_round_emits_the_ticked_drawers_as_slots():
     body = function_body(MAIN_C, "open_round")
     assert "room_selection_encode(a, slots, sizeof slots)" in body
     emit = body.index('emit("room-open")')
-    kv = body.index('emit_kv("slots", slots)')
+    kv = body.index('emit_kv("slots", slots);')
     assert emit < kv < body.index("emit_end()")
-    # רק כשיש בחירה: בלי בחירה הרשומה כמו היום.
-    assert re.search(r"if \(drawers > 0\)\s*emit_kv\(\"slots\", slots\)", body)
+    # תמיד: אין יותר רשומת room-open בלי slots= (הכרעת נדב 11/10).
+    assert "if (drawers > 0) emit_kv" not in body
 
 
-def test_open_round_refuses_a_selection_that_did_not_fit():
-    """קטיעה אינה "אין בחירה": ‏-1 מסורב לפני שנשלח `room-open`."""
+NEED_ONE = "יש לסמן לפחות דיסק אחד"
+
+
+def test_open_round_refuses_no_selection_and_a_selection_that_did_not_fit():
+    """הכרעת נדב 11/10: בלי דיסק מסומן — הודעה ואין `room-open`. וקטיעה
+    (‏-1) אינה "אין בחירה" שנבלעת — גם היא מסורבת לפני השליחה."""
     body = function_body(MAIN_C, "open_round")
-    refuse = body.index("drawers < 0")
-    assert refuse < body.index('emit("room-open")')
-    assert "return;" in body[refuse:body.index('emit("room-open")')]
+    emit = body.index('emit("room-open")')
+    refuse = body.index("drawers <= 0")
+    assert refuse < emit
+    assert NEED_ONE in body[refuse:emit] and "return;" in body[refuse:emit]
     enc = function_body(MAIN_C, "room_selection_encode")
     assert "return -1;" in enc
     assert "return 0;   /* truncated" not in enc
-    assert "drawers <= 0" in function_body(MAIN_C, "open_direct")
+
+
+def test_open_direct_refuses_with_the_same_sentence():
+    body = function_body(MAIN_C, "open_direct")
+    refuse = body.index("drawers <= 0")
+    assert refuse < body.index('emit("direct-open")')
+    assert NEED_ONE in body[refuse:body.index('emit("direct-open")')]
 
 
 def test_entering_the_room_screen_starts_with_no_overrides():

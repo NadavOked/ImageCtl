@@ -509,7 +509,7 @@ static void open_direct(App *a) {
     char slots[MAX_ROOM_SELECTIONS * 8 + MAX_MACHINES * 24];
     int drawers = room_selection_encode(a, slots, sizeof slots);
     if (drawers <= 0) {
-        snprintf(a->st.room_error, sizeof a->st.room_error, "בחרו לפחות מגירה אחת במחשב ער");
+        snprintf(a->st.room_error, sizeof a->st.room_error, "יש לסמן לפחות דיסק אחד");
         return;
     }
     int with_drivers = room_drv_active(a);              /* #1269: the switch, and models to pick */
@@ -529,30 +529,25 @@ static void open_round(App *a) {
         return;
     }
     /* #1275: the drawers ticked in the grid are the round's targets
-     * (target_slots), with or without drivers. None ticked = the record as
-     * before (every fresh drawer, #695). A selection that did not fit is
-     * refused, never dropped. */
+     * (target_slots). Owner 11/10: none ticked is refused -- never sent as
+     * "every drawer"; "בחר / נקה הכל" ticks a whole room. A selection that
+     * did not fit (-1) is refused too, never dropped. */
     char slots[MAX_ROOM_SELECTIONS * 8 + MAX_MACHINES * 24];
     int drawers = room_selection_encode(a, slots, sizeof slots);
-    if (drawers < 0) {
-        snprintf(a->st.room_error, sizeof a->st.room_error, "בחירת המגירות לא נקראה — הסבב לא נפתח");
+    if (drawers <= 0) {
+        snprintf(a->st.room_error, sizeof a->st.room_error, "%s",
+                 drawers < 0 ? "בחירת המגירות לא נקראה — הסבב לא נפתח" : "יש לסמן לפחות דיסק אחד");
         return;
     }
     /* #1269: drivers go only on chosen disks -- the server binds a model
      * only to a disk chosen as a target. Switch off = no drivers= field. */
     int with_drivers = room_drv_active(a);
-    if (with_drivers) {
-        if (!drawers) {
-            snprintf(a->st.room_error, sizeof a->st.room_error, "בחרו את דיסקי היעד — דרייברים מונחים רק על דיסקים שנבחרו");
-            return;
-        }
-        if (room_drv_encode(a, drivers, sizeof drivers) < 0) return;
-    }
+    if (with_drivers && room_drv_encode(a, drivers, sizeof drivers) < 0) return;   /* the reason is in room_error */
     a->st.room_error[0] = 0;
     emit("room-open");
     emit_kv("image", a->st.images[a->image_sel - 1].id);
     emit_kv("target", a->room_target);
-    if (drawers > 0) emit_kv("slots", slots);
+    emit_kv("slots", slots);
     if (with_drivers) emit_kv("drivers", drivers);
     emit_end();
 }
