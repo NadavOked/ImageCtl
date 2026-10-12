@@ -15,16 +15,22 @@ RBAC כפול (עיקרון 5 + ההיררכיה החד-כיוונית של #655
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
+from fastapi.responses import JSONResponse
 from starlette.websockets import WebSocketDisconnect
 
-from . import (auth, interserver_auth, monitor, registry, storage_client,
-               storage_nodes, storage_transfer)
+from . import (auth, interserver_api, interserver_auth, monitor, peer_safe, registry,
+               storage_client, storage_nodes, storage_transfer)
 from .api import ServerContext
 from .db import journal, now_iso
+
+
+class _NotSent(Exception):
+    """‏#1179 שלב 2: הכתיבה לא יצאה מהראשי (אין זהות/טוקן, החיבור לא נפתח)."""
 
 
 def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
@@ -272,6 +278,151 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
                     **_contact(node, error)}
         return {"connected": True, "error": None, "machines": machines,
                 "node_id": answer.get("node_id"), **_contact(node, None)}
+
+    # --- הקונסולה של המשני דרך הראשי: GET מרשימה מותרת (#1179) ---------------
+    #
+    # הדפדפן קורא ל-``…/storage-nodes/{id}/console/<נתיב קונסולה>`` כשנבחר משני
+    # (‏``api()`` ב-console.js), והעמוד של הראשי מצייר את מה שחוזר — אותם
+    # עמודים ואותן לשוניות. רק GET ורק נתיב מ-``CONSOLE_GETS``; נתיב אחר אינו
+    # נשלח למשני. כשל חיבור/דחייה של הערוץ → 502 עם הסיבה (העמוד מציג "לא
+    # נקרא"), לא תשובה ריקה. 401/403 של המשני אינם עוברים כפי שהם — 401 היה
+    # שולח את הדפדפן לכניסה **לראשי**. כל מחרוזת עוברת ``peer_safe.defang``.
+
+    @router.get("/storage-nodes/{nid}/console/{path:path}")
+    def node_console(nid: str, path: str, request: Request,
+                     user=Depends(require_standalone)):
+        sub = "/" + path
+        kind = interserver_api.console_get_type(sub)
+        if kind is None:
+            raise HTTPException(404, "הנתיב אינו זמין דרך השרת המשני")
+        node = storage_nodes.node_row(ctx.conn, nid)
+        if node is None:
+            raise HTTPException(404, "שרת משני לא קיים")
+        label = node["label"] or "השרת המשני"
+        if node["disabled_at"]:
+            raise HTTPException(409, f"{label} מושבת — לא נשאל")
+        query = request.url.query
+        # ‏``sub`` כבר עבר את ``console_get_type`` (בלי ``%``/``\``/``..``) — עובר כפי שהוא.
+        target = "/console" + sub + (f"?{query}" if query else "")
+        try:
+            client, token = storage_nodes.node_client(ctx.conn, data_dir, node)
+            with client:
+                status, answer = client.get_answer(
+                    target, token, {"ImageCtl-Acting-User": user[0]})
+        except Exception as exc:                             # noqa: BLE001
+            error = interserver_auth.redact_secrets(str(exc))
+            _contact(node, error)
+            raise HTTPException(502, f"{label} לא ענה: {error}")
+        if status != 200:
+            error = f"הערוץ סירב ({status}): {answer.get('detail') if isinstance(answer, dict) else ''}"
+            _contact(node, error)
+            raise HTTPException(502, f"{label} לא ענה: {error}")
+        if (not isinstance(answer, dict) or not isinstance(answer.get("status"), int)
+                or isinstance(answer.get("status"), bool) or "body" not in answer):
+            _contact(node, "תשובה לא צפויה מהמשני")
+            raise HTTPException(502, f"{label}: תשובה לא צפויה מהמשני")
+        _contact(node, None)
+        inner, body = answer["status"], peer_safe.defang(answer["body"])
+        if inner == 200:
+            if not isinstance(body, kind):
+                raise HTTPException(
+                    502, f"{label}: תשובה לא צפויה מהמשני ל-{sub} (לא {kind.__name__})")
+            sent = answer.get("headers") if isinstance(answer.get("headers"), dict) else {}
+            # הכותרות האלה הן זמן ISO / true / מספר — ערך אחר אינו עובר כלל.
+            forward = {k: v for k, v in sent.items()
+                       if k in interserver_api.CONSOLE_HEADERS and isinstance(v, str)
+                       and re.fullmatch(r"[A-Za-z0-9:.+\-]{1,64}", v)}
+            return JSONResponse(body, headers=forward)
+        detail = body.get("detail") if isinstance(body, dict) else None
+        detail = detail if isinstance(detail, str) else f"שגיאה {inner}"
+        if inner in (400, 404, 409, 422):
+            raise HTTPException(inner, detail)
+        raise HTTPException(502, f"{label} החזיר {inner}: {detail}")
+
+    # --- כתיבה למשני מהראשי, מרשימה מותרת (#1179 שלב 2) ---------------------
+    #
+    # admin + standalone כמו כל הנתיבים כאן. רק ``(שיטה, נתיב)`` מ-``CONSOLE_WRITES``
+    # — אחר 404 בלי לשאול. גוף עד ``MAX_CONSOLE_WRITE_BODY``, JSON. **ערך שעבר
+    # ``defang`` אינו חוזר למשני**: גוף שנושא תו כזה → 409, גלוי (ראו ``peer_safe``).
+    # כל ניסיון נרשם ביומן הראשי (``peer_write``) עם התוצאה; המשני רושם משלו.
+    # כשל: לפני שהבקשה נכתבה במלואה (החיבור לא נפתח, או ECONNRESET בתוך ה-sendall)
+    # → 502 "לא נשלחה"; אחרי כתיבה מלאה → 502 "לא ידוע אם בוצעה" —
+    # שני מצבים שונים (עיקרון 5), לא "נכשל" אחד.
+
+    @router.api_route("/storage-nodes/{nid}/console/{path:path}",
+                      methods=["POST", "PUT", "DELETE"])
+    async def node_console_write(nid: str, path: str, request: Request,
+                                 user=Depends(require_standalone)):
+        import asyncio
+        import json
+        method, sub = request.method, "/" + path
+        if not interserver_api.console_write_allowed(method, sub):
+            raise HTTPException(404, "הפעולה אינה זמינה על השרת המשני מכאן")
+        node = storage_nodes.node_row(ctx.conn, nid)
+        if node is None:
+            raise HTTPException(404, "שרת משני לא קיים")
+        label = node["label"] or "השרת המשני"
+        what = f"{label} ({nid}): {method} {sub}"
+        if node["disabled_at"]:
+            raise HTTPException(409, f"{label} מושבת — לא נשאל")
+        raw = await request.body()
+        if len(raw) > interserver_api.MAX_CONSOLE_WRITE_BODY:
+            raise HTTPException(413, "גוף הבקשה גדול מהתקרה")
+        try:
+            body = json.loads(raw) if raw else None
+        except ValueError:
+            raise HTTPException(400, "גוף JSON לא תקין")
+        tainted = peer_safe.carries_defanged(body)
+        if tainted is not None:
+            raise HTTPException(409, (
+                "הערך כולל תו שהוחלף בתצוגה מהשרת המשני (‹ › ” ’ ˋ ＆) — שמירה מכאן הייתה "
+                f"משנה אותו בשקט במשני: \"{tainted[:80]}\". תקנו את הערך בקונסולה של {label}."))
+        query = request.url.query
+        target = "/console" + sub + (f"?{query}" if query else "")
+
+        def send() -> tuple[int, object]:
+            try:
+                client, token = storage_nodes.node_client(ctx.conn, data_dir, node)
+                client.open()
+            except Exception as exc:                         # noqa: BLE001
+                raise _NotSent(interserver_auth.redact_secrets(str(exc)))
+            try:
+                return client.send_answer(method, target, token, body,
+                                          {"ImageCtl-Acting-User": user[0]})
+            except storage_client.RequestNotSent as exc:
+                raise _NotSent(interserver_auth.redact_secrets(str(exc)))
+            finally:
+                client.close()
+
+        try:
+            status, answer = await asyncio.to_thread(send)
+        except _NotSent as exc:
+            _contact(node, str(exc))
+            journal(ctx.conn, "peer_write", f"{what} → לא נשלחה: {exc}", user[0])
+            raise HTTPException(502, f"{label} לא ענה — הפעולה לא נשלחה: {exc}")
+        except Exception as exc:                             # noqa: BLE001
+            error = interserver_auth.redact_secrets(str(exc))
+            _contact(node, error)
+            journal(ctx.conn, "peer_write", f"{what} → לא ידוע: {error}", user[0])
+            raise HTTPException(502, f"החיבור ל-{label} נפל אחרי השליחה — לא ידוע אם "
+                                     f"הפעולה בוצעה. רעננו ובדקו: {error}")
+        if status != 200 or not isinstance(answer, dict) or not isinstance(
+                answer.get("status"), int) or isinstance(answer.get("status"), bool):
+            detail = answer.get("detail") if isinstance(answer, dict) else ""
+            error = f"הערוץ סירב ({status}): {detail}" if status != 200 else "תשובה לא צפויה מהמשני"
+            _contact(node, error)
+            journal(ctx.conn, "peer_write", f"{what} → {error}", user[0])
+            raise HTTPException(502, f"{label}: {error}")
+        _contact(node, None)
+        inner, reply = answer["status"], peer_safe.defang(answer.get("body"))
+        journal(ctx.conn, "peer_write", f"{what} → {inner}", user[0])
+        if inner == 200:
+            return JSONResponse(reply)
+        detail = reply.get("detail") if isinstance(reply, dict) else None
+        detail = detail if isinstance(detail, str) else f"שגיאה {inner}"
+        if inner in (400, 404, 409, 422):
+            raise HTTPException(inner, detail)
+        raise HTTPException(502, f"{label} החזיר {inner}: {detail}")
 
     # --- מוניטור למכונה של המשני, דרך המשני (#655 v1) ------------------------
     #

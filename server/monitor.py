@@ -25,7 +25,7 @@ CMDLINE_PARAM = "imagectl.monitor=1"
 CMDLINE_PREFIX = "imagectl.monitor"
 
 #: מה שמקלידים כדי להדליק את המוניטור בכל התחנות. ‏ASCII, וזהה למה
-#: שנכנס לשורת הקרנל — מי שמקליד יודע בדיוק מה הוא מדליק, כמו מתג ה-SSH.
+#: שנכנס לשורת הקרנל — מי שמקליד יודע בדיוק מה הוא מדליק.
 MONITOR_CONFIRM = "imagectl.monitor"
 
 #: קוד סגירת ה-WebSocket כשאין cookie תקף (טרם התחברות) וכשמחובר אך
@@ -139,7 +139,7 @@ HMAC_RESPONSE_LEN = 16
 
 
 def flag_json(enabled: bool) -> str:
-    """ייצוג ההגדרה בדיוק כמו ssh_switch.flag_json — מקור יחיד לצורה."""
+    """ייצוג ההגדרה: ‏`{"enabled": bool}`, כמו מתגי `port:<id>`."""
     return json.dumps({"enabled": bool(enabled)})
 
 OpenConnection = Callable[
@@ -157,7 +157,7 @@ def stations_enabled(conn) -> bool:
 
 
 def station_cmdline(extra: tuple[str, ...], enabled: bool) -> tuple[str, ...]:
-    """Make the monitor gate single-source and independent of SSH."""
+    """Make the monitor gate single-source: the console switch only."""
     kept = tuple(item for item in extra
                  if not item.startswith(CMDLINE_PREFIX))
     return kept + ((CMDLINE_PARAM,) if enabled else ())
@@ -462,8 +462,8 @@ def create_monitor_router(
 
     @router.get("/monitor/settings")
     def read_settings(user=Depends(admin_only)):
-        """‏admin בלבד. גם הקריאה ניהולית — משתמש deploy מקבל 403, כמו
-        מתג ה-SSH: רשימת מי שאפשר להציץ אליו היא מידע ניהולי."""
+        """‏admin בלבד. גם הקריאה ניהולית — משתמש deploy מקבל 403:
+        רשימת מי שאפשר להציץ אליו היא מידע ניהולי."""
         del user
         return {"port": MONITOR_PORT, "enabled": stations_enabled(ctx.conn)}
 

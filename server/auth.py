@@ -21,6 +21,11 @@ import time
 from .db import get_setting
 
 COOKIE_NAME = "imagectl_session"
+#: ‏#1179: הזהות של בקשה שהשרת הראשי שלח בערוץ הבין-שרתי (8443) — ``(user, role)``.
+#: מפתח ב-scope של ASGI, שרק קוד בתוך התהליך יכול לשים: ‏uvicorn בונה את ה-scope
+#: מבקשת HTTP ואינו מעתיק לתוכו כותרות או עוגיות. ‏``interserver_api.run_console_get``
+#: שם אותו רק אחרי mTLS + טוקן כרוך (``authenticate_parent``).
+PEER_SCOPE_KEY = "imagectl.peer_user"
 TTL_SECONDS = 12 * 3600
 PURPOSE_PWCHANGE = "pwchange"
 PURPOSE_MFAENROLL = "mfaenroll"
@@ -72,6 +77,9 @@ def dependencies(conn: sqlite3.Connection):
     from fastapi import Depends, HTTPException, Request
 
     def current_user(request: Request) -> tuple[str, str]:
+        peer = request.scope.get(PEER_SCOPE_KEY)
+        if peer is not None:
+            return peer
         found = read_session(conn, request.cookies.get(COOKIE_NAME))
         if found is None:
             raise HTTPException(401, "לא מחובר")

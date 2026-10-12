@@ -59,7 +59,6 @@ cpio
 gzip
 gcc
 libc6-dev
-dropbear-bin
 ethtool
 smartmontools
 dmidecode
@@ -118,7 +117,7 @@ eject                  # [installer] "remove the media and restart" -- ejects th
 # --- [iso] מה שרק ה-ISO מוסיף ----------------------------------------------
 # הקרנל של דביאן — **לא** cloud: ‏build_initramfs.sh מסרב לקרנל cloud (#904).
 linux-image-amd64
-# **אין openssh-server בכוונה** — הכרעת נדב 19/09: אין SSH על השרת האמיתי;
+# **אין שרת SSH בכוונה** — הכרעת נדב 19/09: אין SSH על השרת האמיתי;
 # ‏SSH הוא כלי טכנאי במעבדה, מותקן ידנית אחרי ההתקנה, לא מה-ISO.
 # חומת האש — המתקין מתקין אותה בנפרד מ-PKGS (setup-boot-server.sh, R20-F1).
 nftables

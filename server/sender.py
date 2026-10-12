@@ -304,6 +304,10 @@ _UNIT = {"": 1, "K": 1024, "M": 1_048_576}
 PROGRESS_TAIL = 4096
 #: ‏#989: בלי שורה חדשה זמן כזה — אין "קצב עכשיו" (udp-sender מדפיס כל 0.5ש').
 PACE_STALE_S = 10.0
+#: קצב אוטומטי (11/10): כל כמה זמן השולח דוגם את שורת ההתקדמות של
+#: udp-sender בזמן שהוא ממתין לו — קריאה מקומית של לוג, בלי תעבורה. מזה
+#: נגזר הקצב הממוצע של הזרם בגל (‏`wave_outcome`). ‏udp-sender כותב כל 0.5ש'.
+PACE_POLL = 0.5
 
 
 def sender_progress(log_path: Path) -> tuple[int, int] | None:
@@ -325,6 +329,24 @@ def sender_progress(log_path: Path) -> tuple[int, int] | None:
         return None
     digits, suffix, rexmits = matches[-1]
     return int(digits.replace(" ", "") or "0") * _UNIT[suffix], int(rexmits)
+
+
+def wave_totals(logs: list[Path]) -> tuple[int, int] | None:
+    """‏(בייטים, בלוקים ששודרו שוב) — סכום על כל המחיצות של גל.
+
+    מחיצה שהלוג שלה נקרא ואין בו `Starting transfer` תורמת 0 (לא שודר
+    כלום, אז לא שודר שוב); מחיצה שהשידור בה התחיל ואין בה שורה מוכרת,
+    או לוג שלא נקרא — הסכום כולו None (עיקרון 5).
+    """
+    sent = loss = 0
+    for path in logs:
+        got = sender_progress(path)
+        if got is not None:
+            sent, loss = sent + got[0], loss + got[1]
+            continue
+        if transfer_started_in_log(path) is not False:
+            return None
+    return sent, loss
 
 
 def _reaped(process, seconds: float) -> bool:
@@ -355,6 +377,9 @@ class SendState:
     state: str = "starting"         # starting / sending / done / failed / stopped
     error: str | None = None
     commands: list[list[str]] = field(default_factory=list)
+    # קצב אוטומטי: בייטים ושניות שבהם המונה של udp-sender זז, על כל המחיצות.
+    moved_bytes: int = 0
+    moved_s: float = 0.0
 
 
 class SenderEngine:
@@ -372,6 +397,7 @@ class SenderEngine:
         max_bitrate: str | None = None,
         on_event: Callable[[str, str], None] | None = None,
         simulate: bool = False,
+        wave_bitrate: Callable[[dict], str | None] | None = None,
     ):
         self.library = library
         self.runner = runner
@@ -396,6 +422,10 @@ class SenderEngine:
         # זורק אותו ("Dropped by server"). ברשת 1G הכבל מרסן מעצמו; ברשת
         # מהירה (מעבדת VM, ‏10G) חייבים רסן מפורש בקצב שהדיסקים מעכלים (#24).
         self.max_bitrate = max_bitrate or os.environ.get("IMAGECTL_MAX_BITRATE")
+        # ‏#447 + קצב אוטומטי (11/10): הקצב לגל הזה (`drive_rates.decide`).
+        # מקבל את `max_bitrate` כגג ולעולם אינו מעליו (בלעדיו — 900m);
+        # בלי `wave_bitrate` — `max_bitrate` כמות שהוא.
+        self.wave_bitrate = wave_bitrate
         self.on_event = on_event or (lambda event, detail: None)
         self._lock = threading.Lock()
         self._state: SendState | None = None
@@ -493,25 +523,70 @@ class SenderEngine:
 
         גל שהמנוע אינו משדר (מקור מחשב בנייה, סימולציה, גל אחר) — None.
         """
-        none = {"throughput_bps": None, "loss_blocks": None}
+        logs, sending = self._wave_logs(session_id)
+        if not logs:
+            return {"throughput_bps": None, "loss_blocks": None}
+        totals = wave_totals(logs)
+        return {"throughput_bps": self._throughput(logs[-1]) if sending else None,
+                "loss_blocks": totals[1] if totals is not None else None}
+
+    def wave_outcome(self, session_id: str) -> dict:
+        """מה שהקצב האוטומטי לומד מהגל בסופו (‏`drive_rates.record_stream`).
+
+        * ‏`sent_bytes`, ‏`loss_blocks` — אותם כללים כמו `loss_blocks` של
+          `stream_stats`; ‏None בשניהם = "לא נמדד".
+        * ‏`stream_bps`, ‏`stream_s` — הקצב הממוצע של הזרם עצמו: הבייטים
+          שהמונה של udp-sender זז חלקי השניות שבהן זז, על כל המחיצות
+          (‏`_wait_sampling`). זה הקצב **בקו** — לפני פריסת הדחיסה, ולכן
+          בלי ההטיה של `bytes_written` בכוננים. ‏None = לא זז בין שתי דגימות.
+        """
+        none = {"sent_bytes": None, "loss_blocks": None,
+                "stream_bps": None, "stream_s": None}
+        logs, _ = self._wave_logs(session_id)
+        if not logs:
+            return none
+        totals = wave_totals(logs)
+        with self._lock:
+            moved_bytes, moved_s = self._state.moved_bytes, self._state.moved_s
+        return {"sent_bytes": totals[0] if totals is not None else None,
+                "loss_blocks": totals[1] if totals is not None else None,
+                "stream_bps": int(moved_bytes / moved_s) if moved_s > 0 else None,
+                "stream_s": round(moved_s, 1) if moved_s > 0 else None}
+
+    def _wait_sampling(self, process, log_path: Path) -> int:
+        """ממתין ל-udp-sender, ובינתיים דוגם את המונה שלו כל `PACE_POLL`.
+
+        נספר רק הזמן שבו המונה **זז**: מהדגימה הראשונה מעל אפס (ההמתנה
+        למקבלים לפני הבייט הראשון אינה זרם) ועד הדגימה האחרונה שבה גדל
+        (ההמתנה ל-ACK האחרון אחרי הבייט האחרון גם אינה). דגימה אחרונה גם
+        אחרי היציאה — השורה הסופית. מחיצה שזזה בדגימה אחת בלבד — לא תורמת."""
+        first = last = None
+        while True:
+            done = process.poll() is not None
+            got = sender_progress(log_path)
+            if got is not None and got[0] > 0 and (last is None or got[0] > last[1]):
+                last = (time.monotonic(), got[0])
+                first = first or last
+            if done:
+                break
+            time.sleep(PACE_POLL)
+        code = process.wait()
+        if first is not None and last[0] > first[0]:
+            with self._lock:
+                self._state.moved_bytes += last[1] - first[1]
+                self._state.moved_s += last[0] - first[0]
+        return code
+
+    def _wave_logs(self, session_id: str) -> tuple[list[Path], bool]:
+        """הלוגים הפר-מחיצתיים של הגל `session_id`, והאם הוא עדיין משדר.
+        רשימה ריקה: גל שהמנוע אינו משדר (מחשב בנייה, סימולציה, גל אחר)."""
         with self._lock:
             s = self._state
             if (self.simulate or s is None or s.session_id != session_id
                     or not s.commands):
-                return none
-            logs = [partition_log(c[c.index("--file") + 1]) for c in s.commands]
-            sending = s.state == "sending"
-        loss: int | None = 0
-        for path in logs:
-            got = sender_progress(path)
-            if got is not None:
-                loss += got[1]
-                continue
-            if transfer_started_in_log(path) is not False:
-                loss = None
-                break
-        return {"throughput_bps": self._throughput(logs[-1]) if sending else None,
-                "loss_blocks": loss}
+                return [], False
+            return ([partition_log(c[c.index("--file") + 1]) for c in s.commands],
+                    s.state == "sending")
 
     def _throughput(self, path: Path) -> int | None:
         with self._pace_lock:        # שני דפדפנים פתוחים = שתי קריאות במקביל
@@ -548,9 +623,13 @@ class SenderEngine:
         """‏`--start-timeout` למחיצות 2+ — חייב להכיל את `max_wait_later`."""
         return later_start_timeout(self.max_wait, self.start_timeout)
 
-    def command_for(self, path: Path, receivers: int, number: int = 1) -> list[str]:
+    def command_for(self, path: Path, receivers: int, number: int = 1,
+                    max_bitrate: str | None | bool = False) -> list[str]:
         # ‏number = מספר המחיצה בסדר השידור (1 = הראשונה). מהשנייה והלאה
-        # ההמתנה ארוכה יותר — ראו LATER_MAX_WAIT.
+        # ההמתנה ארוכה יותר — ראו LATER_MAX_WAIT. ‏`max_bitrate` — התקרה
+        # שנבחרה לגל (#447); ‏False = לא נבחרה, ואז התקרה הקבועה.
+        if max_bitrate is False:
+            max_bitrate = self.max_bitrate
         later = number > 1
         cmd = [
             "udp-sender",
@@ -568,8 +647,8 @@ class SenderEngine:
         ]
         if self.interface:
             cmd[1:1] = ["--interface", self.interface]
-        if self.max_bitrate:
-            cmd[1:1] = ["--max-bitrate", self.max_bitrate]
+        if max_bitrate:
+            cmd[1:1] = ["--max-bitrate", max_bitrate]
         return cmd
 
     def multicast_params(self) -> dict:
@@ -695,6 +774,8 @@ class SenderEngine:
             return
         partitions = streamed_partitions(manifest)
         receivers = max(1, int(session.get("joined") or 1))
+        bitrate = (self.wave_bitrate(session) if self.wave_bitrate is not None
+                   else self.max_bitrate)
         with self._lock:
             self._state.total = len(partitions)
         self.on_event(
@@ -714,7 +795,7 @@ class SenderEngine:
                 self._state.index = number
                 self._state.file = part["file"]
                 self._state.state = "sending"
-            cmd = self.command_for(path, receivers, number)
+            cmd = self.command_for(path, receivers, number, bitrate)
             log_path = partition_log(path)
             log.info("sending partition %s/%s: %s", number, len(partitions), part["file"])
             try:
@@ -725,7 +806,7 @@ class SenderEngine:
             with self._lock:
                 self._process = process
                 self._state.commands.append(cmd)
-            code = process.wait()
+            code = self._wait_sampling(process, log_path)
             with self._lock:
                 self._process = None
             if self._stop.is_set():

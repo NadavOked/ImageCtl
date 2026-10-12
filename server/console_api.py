@@ -20,13 +20,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import PlainTextResponse
 
 from . import (auth, capabilities, console_login, console_mfa, console_presence,
-               dhcp, disk_failures, identity, inventory, probe, registry,
-               shrink_records, ssh_hostkey,
+               dhcp, disk_failures, drive_rates, identity, inventory, probe, registry,
+               shrink_records, slot_names,
                storage_locations, storage_nodes, users)
 from .api import ServerContext
 from .db import (_write_lock, get_setting, journal, now_iso, set_setting,
                  update_one, writing)
-from .images import restore_refusal
+from .images import restore_refusal, used_bytes_total
 from .imagefit import validate_expand_choice
 from .journal_he import EVENTS_HE, JournalTranslator, severity
 from .session_view import label as session_label
@@ -41,11 +41,13 @@ WRITE_SETTINGS = {"recovery_require_login", "session_wait_seconds",
                   "server_name",
                   # ‏#855: שומר הזהות (MAC + חכירת DHCP). חסר = דלוק; "false"
                   # מפורש בלבד מכבה, ו-`setting_change` רושם מי.
-                  identity.SETTING}
+                  identity.SETTING,
+                  # ‏#447: תקרת הקצב הנלמדת. ‏"false" — התקרה הקבועה בלבד.
+                  drive_rates.SETTING}
 
 #: #406: השדות שעריכת מכונה מכירה. שדה מחוץ לרשימה = טעות של הקורא,
 #: והוא נדחה ב-400 במקום להיבלע ולהחזיר ``{"ok": True}`` שלא שינה כלום.
-EDIT_MACHINE_FIELDS = {"name", "group_id", "drawer_count"}
+EDIT_MACHINE_FIELDS = {"name", "group_id", "drawer_count", "mac"}   # mac: #977 §5
 #: ‏#1127: שדה טקסט חופשי (שם קבוצה/מכונה) — תקרת אורך, כי הוא נכנס ליומן,
 #: לתפריט GRUB ולמסך; בלי תקרה שורה של מגה-בייט היא DoS שקט על הקונסולה.
 TEXT_FIELD_MAX = 100
@@ -55,6 +57,18 @@ def _text_field_ok(value: str, what: str) -> None:
     from fastapi import HTTPException  # noqa: PLC0415 — כמו שאר הקובץ
     if len(value) > TEXT_FIELD_MAX:
         raise HTTPException(400, f"{what} ארוך מדי ({len(value)} תווים, המקסימום {TEXT_FIELD_MAX})")
+
+
+#: הכרעת נדב 11/10: כיתות כבויות במהדורה = השרת מסרב, לא רק הממשק מסתיר.
+CLASSROOMS_OFF = "כיתות אינן במהדורה זו (v1.2) — השרת אינו יוצר כיתה ואינו פותח סבב כיתה"
+
+
+def refuse_if_classrooms_off() -> None:
+    """‏409 בשם כש-`capabilities.classrooms()` כבוי. נקרא **אחרי** ההזדהות
+    (ה-Depends של הנתיב) — כך deploy בקונסולה עדיין מקבל את ה-403 שלו."""
+    from fastapi import HTTPException  # noqa: PLC0415 — כמו שאר הקובץ
+    if not capabilities.classrooms():
+        raise HTTPException(409, CLASSROOMS_OFF)
 
 
 def _csv_cell(value):
@@ -304,6 +318,8 @@ def create_console_router(
         gid, label, role = body.get("id", "").strip(), body.get("label", "").strip(), body.get("role", "")
         if not label or role not in ("build", "cloner", "classroom"):
             raise HTTPException(400, "צריך שם ותפקיד חוקי")
+        if role == "classroom":
+            refuse_if_classrooms_off()
         _text_field_ok(label, "שם הקבוצה")
         # המזהה נכנס לכתובות URL ולשורות היומן, ולכן חייב להיות ASCII —
         # אבל הוא רשות: בלעדיו הוא נגזר מהשם (שיכול להיות בכל שפה).
@@ -404,8 +420,10 @@ def create_console_router(
         # ‏#1049 שלב ב': הדגימה האחרונה של בדיקת המכונה + השערים שנגזרים ממנה.
         # null = מעולם לא דיווחה; verdicts ריק = לא נמצאה בעיה **במה שנמדד**.
         probes = probe.latest_all(ctx.conn)
-        # ‏#1080: מפתח ה-host האחרון. null = מעולם לא דיווחה (סוכן ישן / SSH כבוי).
-        hostkeys = ssh_hostkey.latest_all(ctx.conn)
+        # ‏#980 §6: "בשימוש" מהקליטה האחרונה שהסתיימה. null = לא נקלט מהמחשב.
+        last_captures = _last_captures()
+        # ‏#704: השם לכל חיבור של כונן. ‏{} = אין שמות — כל המסכים מציגים "דיסק N".
+        names = slot_names.all_by_mac(ctx.conn)
         result = []
         for r in rows:
             row = dict(r)
@@ -418,15 +436,35 @@ def create_console_router(
             row["probe"] = sample["probe"] if sample else None
             row["probe_seen_at"] = sample["sampled_at"] if sample else None
             row["probe_verdicts"] = probe.verdicts(row["probe"])
-            hk = hostkeys.get(row["mac"])
-            row["ssh_hostkey"] = hk["ssh_hostkey"] if hk else None
-            row["ssh_hostkey_seen_at"] = hk["seen_at"] if hk else None
-            row["ssh_hostkey_changed_in_boot"] = (
-                hk["changed_in_boot"] if hk else False)
-            row["ssh_hostkey_new_from_reboot"] = (
-                hk["new_from_reboot"] if hk else False)
+            row["last_capture"] = last_captures.get(row["mac"])
+            row["slot_names"] = names.get(row["mac"], {})
             result.append(row)
         return result
+
+    def _last_captures() -> dict[str, dict]:
+        """‏#980 §6: הקליטה האחרונה שהסתיימה (‏`done` — יש לה מניפסט) לכל MAC,
+        עם ה"בשימוש" של המניפסט שלה. שלושה מצבים שאסור לקפל (עיקרון 5):
+        אין קליטה = אין מפתח; ‏`in_library: false` = האימג' כבר לא בספרייה
+        (‏`used_bytes: null` — לא נקרא, לא 0); ‏`used_bytes: null` עם
+        ‏`in_library: true` = מחיצה שלא נמדדה (‏`used_bytes_total`)."""
+        latest: dict[str, sqlite3.Row] = {}
+        for r in ctx.conn.execute(
+                "SELECT id, mac, image_id, name, updated_at FROM tasks"
+                " WHERE type = 'capture' AND state = 'done'"
+                " ORDER BY updated_at DESC, rowid DESC"):
+            latest.setdefault(r["mac"], r)
+        if not latest:
+            return {}
+        library = ctx.library.scan()            # פעם אחת לכל הבקשה, ורק כשיש מה לחפש
+        out = {}
+        for mac, r in latest.items():
+            manifest = library.get(r["image_id"])
+            out[mac] = {
+                "task_id": r["id"], "image_id": r["image_id"], "name": r["name"],
+                "at": r["updated_at"], "in_library": manifest is not None,
+                "used_bytes": used_bytes_total(manifest) if manifest is not None else None,
+            }
+        return out
 
     @router.post("/machines/import")
     async def import_machines(request: Request, user=Depends(admin_only)):
@@ -472,6 +510,21 @@ def create_console_router(
         unknown = set(body) - EDIT_MACHINE_FIELDS
         if unknown:
             raise HTTPException(400, "שדות לא מוכרים: " + ", ".join(sorted(unknown)))
+        if "mac" in body:
+            # ‏#977 §5: לבד — שם לא תקין אחרי שה-MAC כבר עבר היה משאיר חצי עריכה.
+            if len(body) > 1:
+                raise HTTPException(400, "עריכת MAC נשלחת לבד, בלי שדות אחרים")
+            try:
+                new, changed = registry.change_mac(ctx.conn, mac, body["mac"], user[0])
+            except LookupError as exc:
+                raise HTTPException(404, str(exc))
+            except ValueError as exc:
+                raise HTTPException(400, str(exc))
+            except registry.MacBusy as exc:
+                raise HTTPException(409, str(exc))
+            # ‏#141: הכתובת החדשה מקבלת GRUB והישנה כבר לא — מיד, לא בעריכה הבאה.
+            return {"ok": True, "mac": new,
+                    "network": _sync_known_macs(user[0]) if changed else None}
         drawer_count = _drawer_count(body.get("drawer_count"))   # #695
         try:
             registry.update_machine(
@@ -490,6 +543,29 @@ def create_console_router(
             journal(ctx.conn, "machine_drawer_count",
                     f"{registry.normalize_mac(mac)} count={drawer_count}", user[0])
         return {"ok": True}
+
+    @router.put("/machines/{mac}/slot-names")
+    async def put_slot_name(mac: str, request: Request, user=Depends(admin_only)):
+        """‏#704: שם לחיבור אחד — ``{"slot": "sata:1", "name": "דיסק 1"}``;
+        ‏``"name": null`` מחזיר לברירת המחדל. תווית בלבד: הבחירה לפי port."""
+        body = await request.json()
+        if not isinstance(body, dict) or set(body) != {"slot", "name"}:
+            raise HTTPException(400, 'הגוף חייב להיות {"slot", "name"} בלבד')
+        try:
+            slot = slot_names.parse_key(body["slot"])
+            name = None if body["name"] is None else slot_names.clean_name(body["name"])
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        canonical = registry.normalize_mac(mac)
+        if canonical is None:
+            raise HTTPException(404, "מכונה לא רשומה")
+        try:
+            slot_names.set_name(ctx.conn, canonical, slot, name, user[0])
+        except LookupError as exc:
+            raise HTTPException(404, str(exc))
+        journal(ctx.conn, "machine_slot_name",
+                f"{canonical} {slot} " + (f'name="{name}"' if name else "cleared"), user[0])
+        return {"ok": True, "slot": slot, "name": name}
 
     @router.delete("/machines/{mac}")
     def del_machine(mac: str, user=Depends(admin_only)):
@@ -561,6 +637,7 @@ def create_console_router(
         `macs` (רשות) — בחירת מחשבים: רק הם מוערים ומצטרפים. קידומת
         ומספר מחשבים הם רשות — נגזרים מהקבוצה ומהבחירה, כמו בתחנה.
         """
+        refuse_if_classrooms_off()
         body = await request.json()
         image_id = body.get("image_id", "")
         group_id = body.get("group_id", "")

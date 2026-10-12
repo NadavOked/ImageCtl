@@ -172,10 +172,10 @@ build_progress() {
     else
         _who=$(printf '"session_id":"%s"' "$1")
     fi
-    # #720: the driver staging outcome (postdeploy.sh) -- only once it exists;
-    # absent = the stage did not run, which is not the same as no_match.
+    # #720: driver staging outcome (postdeploy.sh); absent = did not run, not no_match.
     _drivers=""
     [ -s "$RUN_DIR/drivers.json" ] && _drivers=",\"drivers\":$(tr -d '\n' < "$RUN_DIR/drivers.json")"
+    [ -n "${3:-}" ] && [ -s "$RUN_DIR/stage" ] && _drivers="$_drivers,\"stage\":\"$(json_escape "$(cat "$RUN_DIR/stage")")\""   # #980 §4: task reports only
     printf '{%s,"mac":"%s","state":"%s","targets":[%s]%s}' \
         "$_who" "$2" "$_state" "$_targets" "$_drivers"
 }

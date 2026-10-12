@@ -37,6 +37,16 @@ from .sessions import SessionError
 ROUND_OPENER_ROLES = ("admin", "deploy")
 
 
+def classrooms_off() -> JSONResponse | None:
+    """הכרעת נדב 11/10: "השרת מסרב לפקודות כיתות כל עוד הכיתות כבויות" —
+    גם בנתיבי הסוכן, ובלי תלות במתג ‏`class_deploy_enabled` (#880). ‏409
+    בשם, **לפני** כל בדיקה אחרת (MAC, זהות, סיסמה): נתיב שאין מאחוריו כלום
+    לא בודק סיסמאות (#1282). ‏`None` = הכיתות דלוקות (v1.2)."""
+    if capabilities.classrooms():
+        return None
+    return _error(409, "כיתות אינן במהדורה זו (v1.2)", "classrooms_off")
+
+
 def default_prefix(group_id: str) -> str:
     return group_id.removeprefix("grp_").upper() or "CLASS"
 
@@ -54,6 +64,9 @@ def create_station_router(ctx: ServerContext,
     def classes():
         """הכיתות, לרשימת הבחירה שבתחנה. שמות בלבד — אין כאן סודות
         שה-hello לא חושף ממילא."""
+        refused = classrooms_off()
+        if refused is not None:
+            return refused
         rows = ctx.conn.execute(
             "SELECT g.id, g.label, COUNT(m.mac) AS machines FROM groups g"
             " LEFT JOIN machines m ON m.group_id = g.id"
@@ -64,6 +77,9 @@ def create_station_router(ctx: ServerContext,
     @router.get("/groups/{group_id}/machines")
     def class_machines(group_id: str):
         """מחשבי הכיתה, לחלון בחירת המחשבים — בשמות, ה-MAC רק כמזהה."""
+        refused = classrooms_off()
+        if refused is not None:
+            return refused
         group = ctx.conn.execute(
             "SELECT role FROM groups WHERE id = ?", (group_id,)
         ).fetchone()
@@ -158,6 +174,9 @@ def create_station_router(ctx: ServerContext,
     async def open_from_station(request: Request) -> JSONResponse:
         """פתיחת סבב. תמיד עם שם וסיסמה — גם כשההצטרפות חופשית,
         פתיחה היא החלטה (סעיף 13.3: סיסמה → כיתה → אימג')."""
+        refused = classrooms_off()
+        if refused is not None:
+            return refused
         try:
             body = await request.json()
         except ValueError:

@@ -66,7 +66,7 @@ function setup() {
       {mac:'78:ac:c0:9b:11:c3',suffix:'מחשב 3',group_id:'grp_CLONERS',note:null,drawer_count:3,prompt:null,disks:null,disks_reported_at:null,inventory:null,inventory_seen_at:null,
         probe:null,probe_seen_at:null,probe_verdicts:[]}],
     '/net':[],'/disk-failures':[],'/shrink-records':[],'/monitor/machines':[],'/overview':{images:0,machines:3,storage:null,pulls:[],room:null,session:null},
-    '/journal':[],'/health':[],'/ports':[],'/ssh':{},'/update':{},
+    '/journal':[],'/health':[],'/ports':[],'/update':{},
   };
   const ctx=vm.createContext({console,URLSearchParams,URL,Date,Set,Map,Number,Math,JSON,Promise,String,Array,encodeURIComponent,decodeURIComponent,
     document:{hidden:false,querySelector:node,querySelectorAll:()=>[],getElementById:id=>node('#'+id),

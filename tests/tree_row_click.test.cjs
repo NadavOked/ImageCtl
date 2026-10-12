@@ -70,7 +70,9 @@ function fillSetup() {
   const trees = {buildTree: {innerHTML: '', querySelectorAll: () => []}};
   const ctx = vm.createContext({document: {getElementById: (id) => trees[id] || null}, trees,
     uiIcon: () => '', esc: (x) => String(x), encodeId: (x) => String(x), machineName: (m) => m.name, sortMachinesBySuffix: (a) => a,
-    machineGroupId: (m) => m.group, sidebarChildOpen: () => ({})});
+    machineGroupId: (m) => m.group, sidebarChildOpen: () => ({}),
+    // #1179: the primary's context — sideId/sideClick are the identity (secondary_context.test.cjs covers the other)
+    sideId: (x) => x, sideClick: (h) => h});
   vm.runInContext(cut('function fillSidebarTree(', 'function machineIsFailed(') + '\n;this.fill=fillSidebarTree;', ctx);
   return ctx;
 }

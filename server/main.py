@@ -360,7 +360,7 @@ def main() -> None:
                 parser.error(str(exc))
     elif deploy.source == "console":
         # הכרטיס שנרשם חייב לשאת את הכתובת שנרשמה — אחרת השרת **אינו**
-        # נופל (זה היה משאיר את המפעיל בלי קונסולה ובלי SSH) אלא חוזר
+        # נופל (זה היה משאיר את המפעיל בלי קונסולה) אלא חוזר
         # ל"לא הוגדרה", ואומר זאת ביומן ובמסך הבריאות.
         server_url, interface = deploy.url, deploy.interface
         try:
@@ -578,7 +578,8 @@ def main() -> None:
                     raise OSError(f"interserver: לכרטיס {inter_iface} אין כתובת עדיין")
                 server = interserver_api.InterserverTLSServer(
                     runtime.ctx, bind_addr, args.interserver_port,
-                    ident["cert_pem"], ident["key_pem"], data_dir=args.data_dir).start()
+                    ident["cert_pem"], ident["key_pem"], data_dir=args.data_dir,
+                    console_app=console_app).start()   # #1179
                 print(f"interserver (mTLS) on {bind_addr}:{server.port}"
                       f"  node_id {ident['node_id']}  spki {ident['server_spki'][:16]}…")
                 return server

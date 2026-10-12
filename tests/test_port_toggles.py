@@ -19,7 +19,6 @@ import pytest
 pytest.importorskip("fastapi")
 
 from server import dhcp  # noqa: E402
-from server.ssh_switch import Listeners as SshListeners  # noqa: E402
 
 try:
     from fastapi.testclient import TestClient
@@ -114,8 +113,6 @@ def _build(tmp_path: Path, images_root: Path, clock, listeners, *, base_port=80,
     fake = {"ss": SS_UDP, "http": 200,
             "interfaces": [{"name": "eth0", "state": "up", "mac": "aa",
                             "addresses": ["10.44.0.1/24"]}],
-            "listeners": SshListeners(True),
-            "menu": "linux /boot/vmlinuz ip=dhcp imagectl.server=x console=tty0",
             "udp_sender_pids": [], "ss_tcp": None,
             "nft_ruleset": None}
     hooks = {
@@ -125,12 +122,8 @@ def _build(tmp_path: Path, images_root: Path, clock, listeners, *, base_port=80,
         "unit_active": lambda name: "active",
         "http_get": lambda url: fake["http"],
         "http_size": lambda url: (200, 31_000_000),
-        "http_text": lambda url: (200, fake["menu"]),
         "interfaces": lambda: fake["interfaces"],
         "tftp_root": lambda: tftp,
-        "listeners": lambda: fake["listeners"],
-        "apply_sshd": lambda text: pytest.fail("בדיקה נגעה ב-sshd אמיתי"),
-        "settle": lambda: None,
         "udp_sender_pids": lambda: fake["udp_sender_pids"],
         # ‏#996: מנהל המאזינים מוזרק כמו כל השאר — None = אין מנהל בתהליך
         # הזה (כמו ב-create_app של הבדיקות), והמתג חייב לומר זאת.
@@ -212,13 +205,10 @@ def test_every_switch_row_warns_before_shutdown_in_the_69_wording(toggles):
 
 
 def test_the_missing_rows_are_there_now(toggles):
-    """‏DHCP 67, בין-שרתים 8443 ו-SSH לשרת × כרטיס — חסרו ב-/ports."""
+    """‏DHCP 67 ובין-שרתים 8443 — חסרו ב-/ports. (‏#1266: SSH יצא מהמוצר.)"""
     rows = rows_of(toggles)
     assert rows["dhcp"]["port"] == "67" and rows["dhcp"]["proto"] == "udp"
     assert rows["interserver"]["port"] == "8443"
-    assert rows["ssh_server:eth0"]["port"] == "22"
-    assert rows["ssh_server:eth0"]["toggle_url"] == "/api/console/ssh/interfaces/eth0"
-    assert rows["ssh_server:eth0"]["confirm_word"] == "eth0"
 
 
 def test_bind_comes_from_the_socket_table_not_from_configuration(toggles):
@@ -245,8 +235,6 @@ def test_our_ports_point_at_the_ports_api_and_say_who_needs_the_name(toggles):
     assert rows["pxe_proxy"]["toggle_url"] == "/api/console/net/interfaces/{name}"
     assert rows["monitor"]["toggle_url"] == "/api/console/monitor/settings"
     assert rows["monitor"]["confirm_word"] == "imagectl.monitor"
-    assert rows["ssh_stations"]["toggle_url"] == "/api/console/ssh/stations"
-    assert rows["ssh_stations"]["confirm_word"] == "imagectl.debug"
     # ולמי שאין מתג — אומרים למה.
     # ‏#1013: TFTP הפך למתג "confirm" (הקלדת שם השרת); מולטיקאסט נשאר בלי מתג.
     assert rows["tftp"]["toggle"] == "confirm" and rows["multicast"]["toggle"] == "none"
@@ -287,17 +275,13 @@ def test_bind_is_null_when_not_read_and_empty_only_when_read_and_not_listening(t
     קופל ל"לא מאזין", והקונסולה לא יכלה להבחין (עיקרון 5)."""
     fake = toggles["fake"]
     fake["ss"], fake["ss_tcp"] = "", ""               # ss לא רץ, בשני הפרוטוקולים
-    fake["listeners"] = SshListeners(False, reason="אין /proc/net")
     rows = rows_of(toggles)
-    for pid in ("tftp", "dhcp", "pxe_proxy", "http_boot", "http_console", "interserver",
-                "ssh_server:eth0"):
+    for pid in ("tftp", "dhcp", "pxe_proxy", "http_boot", "http_console", "interserver"):
         assert rows[pid]["bind"] is None, (pid, rows[pid]["bind"])
 
     fake["ss"], fake["ss_tcp"] = SS_HEAD, SS_HEAD     # נקרא, ואף אחד לא מאזין
-    fake["listeners"] = SshListeners(True)
     rows = rows_of(toggles)
-    for pid in ("tftp", "dhcp", "pxe_proxy", "http_boot", "http_console", "interserver",
-                "ssh_server:eth0"):
+    for pid in ("tftp", "dhcp", "pxe_proxy", "http_boot", "http_console", "interserver"):
         assert rows[pid]["bind"] == [], (pid, rows[pid]["bind"])
 
 
@@ -391,8 +375,7 @@ def test_unknown_port_is_404(toggles):
 
 def test_rows_toggled_elsewhere_refuse_here_and_point_there(toggles):
     for pid, url in (("dhcp", "/api/console/net/interfaces/{name}"),
-                     ("monitor", "/api/console/monitor/settings"),
-                     ("ssh_stations", "/api/console/ssh/stations")):
+                     ("monitor", "/api/console/monitor/settings")):
         resp = toggles["admin"].put(f"/api/console/ports/{pid}", json={"enabled": False})
         assert resp.status_code == 409, pid
         assert url in resp.json()["detail"]

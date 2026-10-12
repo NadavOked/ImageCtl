@@ -29,6 +29,7 @@ def run_idle(tmp_path: Path, setup: str, script: str) -> str:
         f'. {posix(LIB)}/idle.sh; '
         f'log() {{ printf "%s\\n" "$*"; }}; sync() {{ :; }}; '
         f'poweroff() {{ printf "POWEROFF %s\\n" "$*" >> {posix(calls)!r}; }}; '
+        f'reboot() {{ printf "REBOOT %s\\n" "$*" >> {posix(calls)!r}; }}; '
         'arm_wol() { return 0; }; '
         + setup + '; ' + script
     ), calls
@@ -120,8 +121,19 @@ def test_a_console_poweroff_without_wol_stays_on_and_says_so(tmp_path):
     assert not calls.exists()
 
 
-@pytest.mark.parametrize("value", ["", "null", "reboot", "POWEROFF"])
-def test_anything_but_poweroff_in_the_answer_is_ignored(tmp_path, value):
+# ‏#977 §4: "אתחול מרחוק" ממגירת המחשב — אותו ערוץ, ערך אחר. בלי arm_wol:
+# מכונה שמאותחלת קמה בעצמה, ואין מה להעיר אחר כך.
+def test_a_console_reboot_in_the_answer_reboots_without_arming_wol(tmp_path):
+    out, calls = run_idle(tmp_path, _since(tmp_path, 0) + "; " + _PA
+                          + '; echo reboot > "$RUN_DIR/pa"; arm_wol() { echo ARMED; return 1; }',
+                          "idle_check")
+    assert "the console asked to reboot -- rebooting" in out
+    assert "ARMED" not in out
+    assert calls.read_text(encoding="utf-8") == "REBOOT -f\n"
+
+
+@pytest.mark.parametrize("value", ["", "null", "REBOOT", "POWEROFF", "reboot now"])
+def test_anything_but_poweroff_or_reboot_in_the_answer_is_ignored(tmp_path, value):
     out, calls = run_idle(tmp_path, _since(tmp_path, 0) + "; " + _PA
                           + f'; printf %s {value!r} > "$RUN_DIR/pa"', "idle_check; echo rc=$?")
     assert "rc=0" in out and "powering off" not in out

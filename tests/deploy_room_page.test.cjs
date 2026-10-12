@@ -72,7 +72,7 @@ function setup({room=roomIdle(),role='admin',session=null,prompts={}}={}) {
     '/room/start':{ok:true},
     '/room/close':{ok:true},
   };
-  if(role==='deploy') for(const k of ['/health','/journal','/ssh','/update','/monitor/machines','/tasks']) fixtures[k]=403;
+  if(role==='deploy') for(const k of ['/health','/journal','/update','/monitor/machines','/tasks']) fixtures[k]=403;
   const ctx=vm.createContext({console,URLSearchParams,URL,Date,Set,Map,Number,Math,JSON,Promise,String,Array,Error,encodeURIComponent,decodeURIComponent,
     document:{hidden:false,querySelector:node,querySelectorAll:()=>[],getElementById:id=>node('#'+id),
       createElement:()=>{let text='';return {set textContent(v){text=String(v)},get innerHTML(){return text.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;')}}},
@@ -127,8 +127,8 @@ test('no round: header counters, "no round" pill, WoL + big-view actions, the in
   assert.doesNotMatch(html,/class="kpi/,'no KPI row without a round');
   const form=between(html,'<div class="rnew">','המחשבים והדיסקים');
   assert.match(form,/name="rn-src" value="library" checked/); assert.match(form,/name="rn-src" value="build_disk"/,'a builder that reported disks → #715 offered');
-  assert.match(form,/<select id="rn-image"/); assert.match(form,/<input type="number" id="rn-target" min="1" value="8"/,'default target = declared drawers');
-  assert.match(form,/openRoomRoundSubmit\(\)"[^>]*>פתח סבב</); assert.match(form,/ברירת המחדל = 8 חריצים/);
+  assert.match(form,/<select id="rn-image"/); assert.match(form,/<input type="number" id="rn-target" min="1" value="5"/,'default target = the ready drawers, like the GUI (5 awake)');
+  assert.match(form,/openRoomRoundSubmit\(\)"[^>]*>פתח סבב</); assert.match(form,/ברירת המחדל = 5 מגירות מוכנות/);
   assert.equal(run('typeof formOptions'),'undefined','inline — no sheet was opened');
   // הגריד עד סוף הכרטיס (`UI.card`) — לא לפי ספירת </div>: כרטיס בלי פעולות נסגר מוקדם יותר
   const grid=between(html,'<div class="mgrid">','<div class="c12 rnotes">')||between(html,'<div class="mgrid">');
@@ -147,16 +147,32 @@ test('no round: header counters, "no round" pill, WoL + big-view actions, the in
 
 test('#953: every image says "fits a disk from X GB"; one that does not fit the smallest drawer is disabled with the exact server refusal string; unknown floor → note, nothing disabled', () => {
   const {run}=setup();
+  run("roomFormSet('folder','-')");   // folder-first: the no-folder images
   let html=run('deploy(0)');
   assert.match(html,/<option value="img_1">office365 · נכנס לדיסק מ-54 GB<\/option>/);
-  assert.match(html,/<option value="img_2" disabled>מרצים \/ win512-full · נכנס לדיסק מ-300 GB — לא נכנס: דיסק 3 במחשב מחשב 2 הוא 256GB, האימג&#39; צריך 300GB<\/option>/);
   assert.match(html,/<option value="img_3">kali · גודל נדרש לא ידוע<\/option>/,'min_target_bytes null ≠ 0');
+  run("roomFormSet('folder','מרצים')"); html=run('deploy(0)');
+  assert.match(html,/<option value="img_2" disabled>win512-full · נכנס לדיסק מ-300 GB — לא נכנס: דיסק 3 במחשב מחשב 2 הוא 256GB, האימג&#39; צריך 300GB<\/option>/);
   assert.match(html,/המגירה הקטנה ביותר בחדר: 256GB \(דיסק 3 במחשב מחשב 2\)/);
   assert.equal(run("imageFitReason(IMAGES[1],ROOM.disk_floor)"),"דיסק 3 במחשב מחשב 2 הוא 256GB, האימג' צריך 300GB");
   assert.equal(run("imageFitReason(IMAGES[0],ROOM.disk_floor)"),null); assert.equal(run("imageFitReason(IMAGES[1],null)"),null);
   assert.equal(run("imageFitReason(IMAGES[1],{name:'מחשב 2',port:null,dev:'nvme0n1',size_bytes:256e9})"),"דיסק nvme0n1 במחשב מחשב 2 הוא 256GB, האימג' צריך 300GB",'no port → device name, as the server does');
   run('delete ROOM.disk_floor'); html=run('deploy(0)');
   assert.match(html,/גודל הדיסקים לא ידוע — יסורב במכונה אם לא ייכנס/); assert.doesNotMatch(html,/<option[^>]*disabled/);
+});
+
+test('folder-first image pick (like the GUI): folders with counts first, the image list is disabled until one is chosen and shows only that folder; a chosen image decides the folder; changing folder clears the image', () => {
+  const {run}=setup();
+  let html=run('deploy(0)');
+  assert.match(html,/<select id="rn-folder"[^>]*><option value="">— בחר תיקייה —<\/option><option value="-">ללא תיקייה \(2\)<\/option><option value="מרצים">מרצים \(1\)<\/option><\/select>/);
+  assert.match(html,/<select id="rn-image"[^>]*disabled><option value="">— בחר קודם תיקייה —<\/option><\/select>/,'no folder → no image list');
+  run("roomFormSet('folder','מרצים')"); html=run('deploy(0)');
+  assert.match(html,/<option value="מרצים" selected>/); assert.doesNotMatch(html,/<option value="img_1"/,'only that folder images');
+  assert.doesNotMatch(between(html,'id="rn-image"','</select>'),/disabled><option/);
+  run("roomFormSet('image','img_2'); roomFormSet('folder','-')");
+  assert.equal(run('DEPLOY.form.image'),'','another folder clears the image');
+  run("roomFormSet('image','img_1')"); run("DEPLOY.form.folder=null"); html=run('deploy(0)');
+  assert.match(html,/<option value="-" selected>ללא תיקייה/,'a chosen image decides the folder');
 });
 
 test('new round: POST /room {image_id, target_drives}; a 409 fit refusal is shown in the card verbatim; #715 source sends target_slots grouped by machine from the connected drawers', async () => {
@@ -209,6 +225,26 @@ test('running wave: throughput and re-sent blocks come from /room.round (udp-sen
   assert.match(k1,/קצב הזרם — <b[^>]*>לא נמדד<\/b> · 37 בלוקים שודרו שוב/);
 });
 
+test('#447: the wave rate line names the drive that lowered it; without wave_rate nothing is shown', () => {
+  const learned={max_bitrate:'108m',ceiling:'200m',basis:'learned',projected:false,unknown_drives:2,drives:5,
+    by:{serial:'S5Y31',model:'870 EVO',mac:C2,port:2,rate_bps:15000000}};
+  /* the whole page: kpi() keeps 600 characters, and this line comes after the stream line */
+  let k1=setup({room:roomRunning({wave_rate:learned})}).run('deploy(0)');
+  assert.match(k1,/קצב לגל: <bdi dir="ltr">108m<\/bdi> \(נקבע לפי 870 EVO <span class="mono">S5Y31<\/span> · מחשב 2 דיסק 2\) · 2 כוננים בלי היסטוריה/);
+  k1=setup({room:roomRunning({wave_rate:{...learned,basis:'start',max_bitrate:'600m',by:null,unknown_drives:0,projected:true}})}).run('deploy(0)');
+  assert.match(k1,/צפוי קצב לגל: <bdi dir="ltr">600m<\/bdi> \(קצב פתיחה — אין גל קודם עם אותם כוננים\)/);
+  assert.doesNotMatch(k1,/בלי היסטוריה/);
+  /* the automatic rate (Nadav 11/10): the reason the server moved — no new control, only the reason */
+  for (const [basis,rate,why] of [['up','700m','עלה — הגל הקודם נקי'],['down','450m','ירד — שידורים חוזרים'],
+    ['held','600m','נשאר — הגל הקודם לא הוכיח שאפשר לעלות'],['unmeasured','600m','נשאר — הגל הקודם לא נמדד'],
+    ['ceiling','900m','בתקרה — לא עולים מעליה']]) {
+    k1=setup({room:roomRunning({wave_rate:{...learned,basis,max_bitrate:rate,by:null,unknown_drives:0}})}).run('deploy(0)');
+    assert.ok(k1.includes(`קצב לגל: <bdi dir="ltr">${rate}</bdi> (${why})`),basis);
+  }
+  k1=setup({room:roomRunning()}).run('deploy(0)');
+  assert.doesNotMatch(k1,/קצב לגל/,'no wave_rate (old server, build-machine source) → no invented line');
+});
+
 test('running wave: the grid is the cloners grid in round mode — write bars, blue writing, orange CRC, red failed drawer; machine "in round · N%"; the notes say what happens without an answer', () => {
   const {run}=setup({room:roomRunning()});
   const html=run('deploy(0)');
@@ -237,7 +273,7 @@ test('the operator question (prompt) is a note in the page: orange machine → "
   const notes=between(html,'<div class="c12 rnotes">');
   const n1=between(notes,'<b>מחשב 1</b>','</div>'), n2=between(notes,'<b>מחשב 2</b>','</div>');
   assert.match(notes,/<div class="note warn"><span aria-hidden="true">●<\/span><span><b>מחשב 1<\/b> ממתין למפעיל: <span dir="ltr">Disk 2: SMART warn - write anyway\? \[y\/n\]<\/span>\. <b>כתום — בלי תשובה הסוכן ממשיך לכתוב<\/b> על מחשב 1 · דיסק 2\./);
-  assert.match(n1,/selectPageById\('monitor'\)">לענות ליד המסך — דף המוניטור</,'monitor only on the monitor page (Nadav 17/09)'); assert.doesNotMatch(n1,/monitorMachine\(/); assert.match(n1,/תשובה מהקונסולה — <b[^>]*>דורש API<\/b>/); assert.match(n1,/שיכפול תמיד עם מישהו ליד המחשבים/);
+  assert.match(n1,/selectPageById\('monitor'\)">לענות ליד המסך — דף המוניטור</,'monitor only on the monitor page (Nadav 17/09)'); assert.doesNotMatch(n1,/monitorMachine\(/); assert.match(n1,/תשובה מהקונסולה אינה זמינה לשאלה הזאת — עונים ליד המכונה/,'a prompt without an ask: the console cannot answer, and says so'); assert.match(n1,/שיכפול תמיד עם מישהו ליד המחשבים/);
   assert.doesNotMatch(n1,/מדלג/,'orange never says "skips"');
   assert.match(notes,/<div class="note err"><span aria-hidden="true">●<\/span><span><b>מחשב 2<\/b> ממתין למפעיל: <span dir="ltr">Disk 3: failed the previous clone - skip\? \[y\/n\]<\/span>\. <b>אדום — בלי תשובה הסוכן מדלג<\/b> על מחשב 2 · דיסק 3\./);
   assert.match(n2,/clearDiskFailure\(7\)">נקה אדום — מחשב 2 · דיסק 3</);
@@ -265,6 +301,87 @@ test('wave states: open → "waiting to join" pill and "start wave (N ready)"; v
   html=s.run('deploy(0)'); assert.match(html,/<span class="pill ">הגל נסגר</); assert.match(html,/נכתבו ואומתו<\/div><div class="v"><bdi dir="auto">12<\/bdi> <small>\/ 12<\/small><\/div><div class="s">היעד לסבב הושלם/);
   assert.match(card(html,C1),/<div class="disk ok" data-slot="1" title="[^"]*נכתב · SMART תקין">[^]*?<div class="bar ok"><i style="--w:100%">/);
   assert.match(html,/<span class="pill ">הגל נסגר<\/span>/); assert.doesNotMatch(html,/startWave/);
+});
+
+test('target default (like the GUI "ready || …"): untouched = the ticked disks, else the ready drawers; typed value wins; the submit uses the same number', async () => {
+  const {run}=setup();
+  assert.match(run('deploy(0)'),/id="rn-target" min="1" value="5"/,'nothing ticked → the 5 ready drawers');
+  run("roomPick('"+C1+"@1')"); assert.match(run('deploy(0)'),/id="rn-target" min="1" value="1"/,'one ticked → 1');
+  run("roomPickAll()"); assert.match(run('deploy(0)'),/id="rn-target" min="1" value="5"/);
+  run("roomFormSet('target','9')"); run("roomPick('"+C1+"@1')"); assert.match(run('deploy(0)'),/id="rn-target" min="1" value="9"/,'a typed value is never overwritten');
+  const s=setup(); s.run("roomFormSet('image','img_1'); roomPick('"+C1+"@1'); roomPick('"+C1+"@2')"); await s.run('openRoomRoundSubmit()');
+  const r=s.requests.find(x=>x.url==='/api/console/room'&&x.options.method==='POST');
+  assert.equal(JSON.parse(r.options.body).target_drives,2,'untouched target = what is ticked');
+});
+
+test('live hint (GUI parity): an open wave says how many are ready and how many more are needed; a running wave says elapsed, rate and ETA — only what was measured', () => {
+  let s=setup({room:roomRunning({wave_state:'open',ready_drives:5,remaining_drives:7,wave_number:1})});
+  let html=s.run('deploy(0)'); balanced(html);
+  assert.match(html,/הגל ממתין: 5 מגירות מוכנות, צריך עוד 2 — או "התחל גל"\. החלפתם מגירות\? הדליקו את המכונות והן יצטרפו\./);
+  s=setup({room:roomRunning({wave_state:'open',ready_drives:9,remaining_drives:7})}); assert.match(s.run('deploy(0)'),/הגל ממתין: 9 מגירות מוכנות, צריך עוד 0 — או/,'never negative');
+  s=setup({room:roomRunning({elapsed_s:125,rate_bps:98000000,eta_s:3725})}); html=s.run('deploy(0)');
+  assert.match(html,/הגל משדר — עבר 2:05 · <bdi dir="ltr">93\.5 MB\/שנ&#39;<\/bdi> · נותרו ~1:02:05\. מכונה שסיימה — מכבים, מחליפים מגירות, מדליקים\./);
+  s=setup({room:roomRunning({elapsed_s:40,rate_bps:null,eta_s:null})}); html=s.run('deploy(0)');
+  assert.match(html,/הגל משדר — עבר 0:40 · סיום לא נמדד\./,'rate null ≠ 0: not printed, ETA "not measured"'); assert.doesNotMatch(html,/MB\/שנ/);
+  s=setup({room:roomRunning()}); assert.match(s.run('deploy(0)'),/הגל משדר — זמן וקצב טרם נמדדו\./,'nothing measured → says so');
+  assert.doesNotMatch(setup().run('deploy(0)'),/הגל ממתין|הגל משדר/,'no round, no hint');
+});
+
+test('drivers outcome (GUI parity): one line per drawer in the round — placed / not placed (orange: the restore itself is done) / skipped with the Hebrew reason; none → no block', () => {
+  const s=setup({room:roomRunning()});
+  assert.doesNotMatch(s.run('deploy(0)'),/דרייברים ·/,'no outcome → no block');
+  s.run("ROOM.machines[0].drawer_list[0].drivers={state:'staged',packages:['g6-all','g6-nic']}; ROOM.machines[0].drawer_list[1].drivers={state:'skipped',reason:'no_model'}; ROOM.machines[1].drawer_list[0].drivers={state:'failed',error:'חבילה חסרה'}");
+  const html=s.run('deploy(0)'); balanced(html);
+  assert.match(html,/דרייברים · מחשב 1 · דיסק 1: הונחו — g6-all, g6-nic/);
+  assert.match(html,/דרייברים · מחשב 1 · דיסק 2: דולגו — לא נבחר דגם לדיסק הזה/);
+  assert.match(html,/<div class="note warn"[^]*דרייברים · מחשב 2 · דיסק 1: לא הונחו — חבילה חסרה/,'a failure is orange (done without its drivers), not red');
+});
+
+/* ‏#989 ס׳ 2 — תשובת SMART מהקונסולה. השאלה מגיעה מ-/room (machines[].ask), לא מ-prompt: רק מכונה
+   שהמסך שלה חי מציעה אותה. התשובה הראשונה גוברת; השנייה מקבלת 409 והקונסולה מציגה אותו כפי שהוא. */
+const askOpen=(extra={})=>({nonce:'3-2',port:2,verdict:'warn',reason:'crc 4',asked_at:minutesAgo(1),answer:null,answered_by:null,answered_at:null,...extra});
+
+test('SMART question from the console: an open question shows the disk, the verdict and three buttons; red has no "write anyway" and skip is "continue without"', () => {
+  const room=roomRunning();
+  room.machines[0].ask=askOpen(); room.machines[1].ask=askOpen({nonce:'5-3',port:3,verdict:'failed_last',reason:'cable'});
+  const {run}=setup({room,prompts:{[C1]:'Disk 2: SMART warn (crc 4)',[C2]:'Disk 3: failed the previous clone'}});
+  const html=run('deploy(0)'); balanced(html);
+  const notes=between(html,'<div class="c12 rnotes">'), n1=between(notes,'<b>מחשב 1</b>','</div></div>'), n2=between(notes,'<b>מחשב 2</b>','</div></div>');
+  assert.match(n1,/דיסק 2/); assert.match(n1,/SMART אזהרה/);
+  assert.match(n1,new RegExp(`answerSmart\\('${C1}','3-2','replace'\\)">החלף דיסק`)); assert.match(n1,new RegExp(`answerSmart\\('${C1}','3-2','rescue'\\)">כתוב בכל זאת`)); assert.match(n1,new RegExp(`answerSmart\\('${C1}','3-2','skip'\\)">דלג על הדיסק`));
+  assert.match(n1,/בלי תשובה הסוכן ממשיך לכתוב/,'orange: no answer = keeps writing');
+  assert.match(n2,/דיסק 3/); assert.match(n2,/נכשל בשיכפול הקודם/); assert.doesNotMatch(n2,/'rescue'/,'red: no write anyway');
+  assert.match(n2,new RegExp(`answerSmart\\('${C2}','5-3','skip'\\)">המשך בלעדיו`)); assert.match(n2,/בלי תשובה הסוכן מדלג/);
+  assert.doesNotMatch(notes,/דורש API<\/b>[^]{0,80}תשובה מהקונסולה|תשובה מהקונסולה — <b[^>]*>דורש API/,'the "needs API" placeholder is gone for a machine that can be answered');
+  assert.equal((notes.match(/ממתין למפעיל:/g)||[]).length,0,'one note per machine: the question replaces the generic prompt note');
+});
+
+test('SMART question: answered → who answered and what, no buttons; a prompt with no ask (text menu / old agent) says to answer at the machine', () => {
+  const room=roomRunning(); room.machines[0].ask=askOpen({answer:'skip',answered_by:'המכונה (ליד המסך)',answered_at:minutesAgo(0)});
+  const {run}=setup({room,prompts:{[C1]:'Disk 2: SMART warn (crc 4)',[C2]:'Disk 3: failed the previous clone'}});
+  const html=run('deploy(0)'), notes=between(html,'<div class="c12 rnotes">');
+  const n1=between(notes,'<b>מחשב 1</b>','</div></div>');
+  assert.match(n1,/נענתה ע&quot;י המכונה \(ליד המסך\): דלג/); assert.doesNotMatch(n1,/answerSmart/);
+  assert.match(notes,/<b>מחשב 2<\/b> ממתין למפעיל[^]*?תשובה מהקונסולה אינה זמינה לשאלה הזאת — עונים ליד המכונה/,'no ask → the console cannot answer, and says so (not a silent missing button)');
+  assert.doesNotMatch(notes,/דורש API/);
+});
+
+test('SMART answer posts {mac, nonce, answer}; replace powers the machine off and goes through a confirm sheet; a 409 shows the server text and re-reads', async () => {
+  const room=roomRunning(); room.machines[0].ask=askOpen();
+  const {run,requests,fixtures}=setup({room});
+  await run(`answerSmart('${C1}','3-2','skip')`);
+  let r=requests.filter(x=>x.url==='/api/console/room/answer').at(-1);
+  assert.deepEqual(JSON.parse(r.options.body),{mac:C1,nonce:'3-2',answer:'skip'}); assert.match(run('toasted'),/התשובה נשלחה/);
+  await run(`answerSmart('${C1}','3-2','rescue')`); assert.equal(JSON.parse(requests.filter(x=>x.url==='/api/console/room/answer').at(-1).options.body).answer,'rescue');
+  const before=requests.filter(x=>x.url==='/api/console/room/answer').length;
+  run(`formOptions=undefined; answerSmart('${C1}','3-2','replace')`);
+  assert.equal(requests.filter(x=>x.url==='/api/console/room/answer').length,before,'replace: nothing posted before the sheet is confirmed');
+  assert.equal(run('formOptions.danger'),true); assert.match(run('formOptions.note'),/יכבה/);
+  await run('formOptions.onSubmit({})'); assert.equal(JSON.parse(requests.filter(x=>x.url==='/api/console/room/answer').at(-1).options.body).answer,'replace');
+  fixtures['/room/answer']={__status:409,detail:'כבר נענה ע"י המכונה (ליד המסך)'};
+  requests.length=0; await run(`answerSmart('${C1}','3-2','skip')`);
+  assert.match(run('toasted'),/כבר נענה ע"י המכונה \(ליד המסך\)/); assert.ok(requests.some(x=>x.url==='/api/console/room'),'re-read after the refusal: the screen shows the winner');
+  run('ME=null'); requests.length=0; await run(`answerSmart('${C1}','3-2','skip')`); assert.equal(requests.length,0,'not an operator → nothing sent');
 });
 
 test('start wave posts /room/start and a 409 is a toast with the reason; stop is behind the typed image name and posts /room/close with confirm_name; WoL posts /room/wake', async () => {
@@ -495,5 +612,24 @@ test('#1275 pick grid: the round carries the selection as target_slots (library 
   assert.deepEqual(JSON.parse(r.options.body),{source:{kind:'build_disk',mac:B1,disk:'sda'},target_slots:[{mac:C2,ports:[2]}]});
   run(`roomFormSet('src','library'); roomFormSet('image','img_1'); roomFormSet('target','1'); roomPickAll()`); requests.length=0;
   await run('openRoomRoundSubmit()'); assert.equal(requests.filter(x=>x.options&&x.options.method==='POST').length,0); assert.match(run('DEPLOY.err'),/היעד \(1\) קטן ממספר הדיסקים שסומנו \(5\)/);
-  run("roomFormSet('target','')"); assert.match(newCard(run('deploy(0)')),/id="rn-target" min="1" value="8"/,'untyped target defaults to max(declared 8, selected 5)');
+  run("roomFormSet('target','')"); assert.match(newCard(run('deploy(0)')),/id="rn-target" min="1" value="5"/,'untyped target defaults to what is ticked (5)');
+});
+
+test('#989 item 3: wave progress line (wave · written of target · left) with a K-waves estimate = ceil(left / ready), or "waiting for new disks" when none are ready', () => {
+  let s=setup({room:roomRunning({wave_number:2,written_drives:15,target_drives:30,remaining_drives:15,ready_drives:6})});
+  let html=s.run('deploy(0)'); balanced(html);
+  assert.match(html,/גל 2 · נכתבו 15 מתוך 30 · נשארו 15 · משוער: עוד 3 גלים/,'ceil(15/6)=3');
+  assert.doesNotMatch(html,/הגל הסתיים/,'a running wave has not ended');
+  s=setup({room:roomRunning({wave_state:'open',wave_number:2,written_drives:15,target_drives:30,remaining_drives:15,ready_drives:0})}); html=s.run('deploy(0)');
+  assert.match(html,/נשארו 15 · ממתין לדיסקים חדשים/); assert.doesNotMatch(html,/משוער: עוד/,'no ready drawers → no estimate, never "0 waves" or Infinity');
+  s=setup({room:roomRunning({wave_state:'closed',written_drives:12,remaining_drives:0})}); assert.doesNotMatch(s.run('deploy(0)'),/משוער|ממתין לדיסקים חדשים|נכתבו 12 מתוך/,'nothing left → no progress line');
+});
+
+test('#989 item 3: end of a wave with work left says so and offers the existing WoL button (operators only); wave 1 still open has not ended', () => {
+  let s=setup({room:roomRunning({wave_state:'open',wave_number:2,written_drives:5,remaining_drives:7,ready_drives:0})});
+  let html=s.run('deploy(0)'); balanced(html);
+  assert.match(html,/הגל הסתיים — החליפו דיסקים והעירו את מחשבי השיכפול כדי להמשיך <button class="btn" onclick="wakeRoom\(\)">הער את מחשבי השיכפול<\/button>/);
+  s=setup({room:roomRunning({wave_state:'open',wave_number:1,written_drives:0,remaining_drives:12,ready_drives:4})}); assert.doesNotMatch(s.run('deploy(0)'),/הגל הסתיים/);
+  s=setup({room:roomRunning({wave_state:'open',wave_number:2,written_drives:5,remaining_drives:7,ready_drives:0})});
+  s.run('ME.role="viewer"'); html=s.run('deploy(0)'); assert.match(html,/הגל הסתיים/); assert.doesNotMatch(html,/הער את מחשבי השיכפול/,'no button without the right to wake');
 });

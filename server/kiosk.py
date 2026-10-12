@@ -20,6 +20,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 from fastapi.routing import APIRoute
 
+from . import capabilities
 from .api import ServerContext
 from .capture import create_console_capture_router
 from .console_api import create_console_router
@@ -46,6 +47,16 @@ KIOSK_CONSOLE_ROUTES = frozenset({
     ("POST", "/api/console/sessions/{session_id}/start"),
     ("POST", "/api/console/sessions/{session_id}/close"),
     ("POST", "/api/console/tasks/capture"),
+})
+
+#: הכרעת נדב 11/10: רשימת הכיתות של מסך התחנה שהוסר. כש-
+#: ``capabilities.classrooms()`` כבוי (v1) הנתיב **אינו מוגש** על פורט
+#: הסוכן — אי אפשר לסרב לו ב-route עצמו, כי אותו GET בקונסולה משרת את
+#: המנהל גם ב-v1 (קבוצות בנייה/שיכפול). ‏``POST /sessions`` נשאר ברשימה:
+#: הוא אותו route של הקונסולה, והשער (‏409) יושב בו. ‏start/close נשארים,
+#: כי גל חדר השיכפולים הוא סבב רגיל ונסגר באותו endpoint.
+KIOSK_CLASS_ONLY_ROUTES = frozenset({
+    ("GET", "/api/console/groups"),
 })
 
 
@@ -75,12 +86,14 @@ def create_kiosk_router(ctx: ServerContext, *, room_wake, version=None) -> APIRo
     ‏`room_wake` מוזרק (כמו ב-app.py) כדי ששליחת ה-WoL של החדר תהיה אותה
     פונקציה בכל המערכת וניתנת לזיוף בבדיקות."""
     router = APIRouter()
+    allow = KIOSK_CONSOLE_ROUTES if capabilities.classrooms() \
+        else KIOSK_CONSOLE_ROUTES - KIOSK_CLASS_ONLY_ROUTES
     # ‏#1073: ‏`kiosk=True` — הכניסה כאן מקבלת גם `deploy`. זו הדלת של
     # מחשב הבנייה (buildmenu.sh/ה-GUI נכנסים דרך `/api/console/login` על
     # פורט הסוכן, שנושא את אותו allowlist); הקונסולה (‎:8081) מסרבת לו.
     for source in (create_console_router(ctx, kiosk=True), create_library_router(ctx),
                    create_console_capture_router(ctx)):
-        router.routes.extend(_allowlisted(source, KIOSK_CONSOLE_ROUTES))
+        router.routes.extend(_allowlisted(source, allow))
     router.include_router(create_room_router(ctx, wake=room_wake))
     router.include_router(create_station_router(ctx, version=version))   # #1252
     return router

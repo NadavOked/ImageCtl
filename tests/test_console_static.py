@@ -276,17 +276,18 @@ def test_static_includes_are_at_9_9():
     ‏#1262 (admin שנוצר בהתקנה מוגן) = ‏11.11.
     שדות סיסמה LTR + "הצג" אחד, ותיקוני הגואי הנייטיבי = ‏11.12;
     #1263 (כרטיס רשת בשלושה אופנים, חלון רשת הפצה, בלי קבצי dnsmasq) = ‏11.13; #1268/#1270/מתאים לדיסק/בלי זכירת MFA = ‏11.15.
-    #1267 (פורטים לפי רשת, שירותים בבריאות) + #1264 (bond בהפצה) + #1269 (דרייברים לפי דיסק) + שלב 3 של המוקאפ = ‏11.16; בחירת דיסקים לסבב בקונסולה (#1275) = ‏11.17; יישור סופי למוקאפ + מוניטור מוטמע = ‏11.18; עץ כמו במוקאפ, TLS/שם מארח, #1273/#1274 = ‏11.19.
+    #1267 (פורטים לפי רשת, שירותים בבריאות) + #1264 (bond בהפצה) + #1269 (דרייברים לפי דיסק) + שלב 3 של המוקאפ = ‏11.16; בחירת דיסקים לסבב בקונסולה (#1275) = ‏11.17; יישור סופי למוקאפ + מוניטור מוטמע = ‏11.18; עץ כמו במוקאפ, TLS/שם מארח, #1273/#1274 = ‏11.19; פערי API (#977/#980), #1281 = ‏11.20; חיפוש גלובלי, זרימת הפצה, קצב לומד, שרת משני, שמות חריצים = ‏11.21.
+    #1266 (SSH יצא מהמוצר — בלי מתג, בלי שורת 22, בלי טביעת מפתח) על gate-1011g = ‏11.22; התקדמות על פני גלים (#989) = ‏11.23; קצב אוטומטי = ‏11.24.
     שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
     versions = set(re.findall(r'\?v=(\d+\.\d+)"', page))
-    assert versions == {"11.19"}, versions
+    assert versions == {"11.24"}, versions
     # ביקורת 10/10: monitor.html מושך את אותם console.css ו-design-tokens.css — הם נשארו על 3.29 לנצח,
     # ולכן דפדפן שזכר אותם הציג את המוניטור בעיצוב ישן. monitor.js לבדו שומר על גרסה משלו (test_monitor).
     mon = (STATIC / "monitor.html").read_text(encoding="utf-8")
     shared = set(re.findall(r'(?:design-tokens|console)\.css\?v=(\d+\.\d+)"', mon))
-    assert shared == {"11.19"}, shared
+    assert shared == {"11.24"}, shared
 
 
 def test_update_apply_is_a_sheet_without_text_verification_and_revert_uses_hostname():
@@ -363,13 +364,15 @@ def test_images_page_is_the_datastore_browser_from_the_api_only():
 def test_machines_page_is_one_grouped_table_from_the_api_only():
     """טבלה אחת מקובצת (בנייה, שיכפול, ואז קבוצה לכל כיתה — תיקון נדב 17/09),
     מגירה, הכיתה כאובייקט; מה-API הקיים בלבד. "דיסק N · SATA N-1" ולעולם לא
-    sd*; מה שאין לו API ("אתחול מרחוק", "עריכת MAC", היסטוריית סבבים לכיתה)
-    מוצג כ"דורש API" — לא כפתור מנוטרל ולא נתון מומצא."""
+    sd*; מה שאין לו API (היסטוריית סבבים לכיתה) מוצג כ"דורש API" — לא כפתור
+    מנוטרל ולא נתון מומצא. ‏"אתחול מרחוק" ו"עריכת MAC" קיבלו API ב-#977."""
     js = _console_js()
     for needed in ("function machines(tab = 0)", "function groupRowHtml(", "function machineRowHtml(", "function groupPage(",
                    "function machineDrawerHtml(", "function seenDevicesCard()", "function openAddMachine(", "dry_run: true",
-                   'UI.soon("אתחול מרחוק")', 'UI.soon("עריכת MAC")', "דורש API", "SATA ${n - 1}"):
+                   "rebootMachine('${macEnc}')", "editMachineMac('${macEnc}')", "דורש API", "SATA ${n - 1}"):
         assert needed in js, needed
+    for gone in ('UI.soon("אתחול מרחוק")', 'UI.soon("עריכת MAC")'):
+        assert gone not in js, gone
     block = js[js.index("/* ---------- #954 גל 3"):js.index("function healthStatusClass(")]
     assert "disabled" not in block, "כפתור מנוטרל במקום 'דורש API' (README §8)"
     assert "sda" not in block and "sdb" not in block, "שם sd* בדף המחשבים"
@@ -385,19 +388,20 @@ def test_cloners_and_builders_objects_are_built_on_group_page_from_the_api_only(
     גריד חריצים "דיסק N · SATA N-1" (לעולם לא sd*), צבע SMART ירוק רק על
     `ok`, אדום מזיכרון הכשלים עם "נקה", מגירות מ-`/room` בסבב ומ-`/machines`
     בלעדיו; מחשבי בנייה — קליטה בתהליך מ-`/tasks` עם ביטול מאחורי הקלדת שם.
-    מה שאין לו API — שלבי הקליטה, מצב הדיסק לפני קליטה (#980 §4, §6) —
-    "דורש API" בטקסט, לא כפתור מנוטרל ולא נתון מומצא. ‏#980: כיבוי כולם
-    (‏`POST /room/poweroff` מאחורי הקלדת שם הקבוצה) והיסטוריית הסבבים
-    (‏`GET /room/history`) — מה-API."""
+    ‏#980: כיבוי כולם (‏`POST /room/poweroff`), היסטוריית הסבבים
+    (‏`GET /room/history`), שלבי הקליטה (‏`/tasks.stage`) ומצב הדיסק לפני
+    קליטה (‏`/machines.last_capture` + ‏`probe.ntfs`) — מה-API, בלי "דורש API"."""
     js = _console_js()
     for needed in ("function clonersView(", "function buildersView(", "function machineSlots(", "function slotClass(",
                    "function slotHtml(", "function captureNowCard(", "function capturesTableCard(", "function cancelCaptureVerified(",
                    "function refreshGroupLive(", 'api("/room")', "drawer_list",
                    'post("/room/poweroff", { confirm_name: g.label })',
-                   'api("/room/history")',
-                   'return "SMART לא נבדק"', "SATA ${s.n - 1}", "דורש API"):
+                   'api("/room/history")', "function captureStagesHtml(", "function beforeCaptureHtml(",
+                   'return "SMART לא נבדק"', "SATA ${s.n - 1}"):
         assert needed in js, needed
     block = js[js.index("/* ---------- #954 גל 3א"):js.index("/* ---------- לשונית \"נראו ברשת\"")]
+    assert "דורש API" not in block[block.index("function captureStagesHtml("):block.index("function buildersCard(")], \
+        "#980 §4/§6: שלבים ו'לפני קליטה' מגיעים מה-API"
     assert "disabled" not in block, "כפתור מנוטרל במקום 'דורש API' (README §8)"
     assert "sda" not in block and "sdb" not in block, "שם sd* בקוד המשכפלים/הבנייה"
     assert 'd.smart === "ok"' in block and 'return ""' in block, "'לא נבדק' חייב להישאר אפור"
@@ -456,21 +460,22 @@ def test_health_and_ports_pages_are_tables_from_the_api_and_ports_have_no_switch
     ובלי הלשוניות הזהות "סקירה/שירותים/בדיקות" (#829 M5).
     ‏#1267 (נדב 10/10): פורטים = כרטיס לכל רשת (הפצה / ניהול / בין שרתים),
     חומת אש רק בין רשתות, ו**אין "פתח/סגור פורט"** — רק "בדוק עכשיו" ו"הצג
-    פרטים". המתגים של #996/#1015 יצאו מהדף; מתג ה-SSH לשרת נשאר בחיבורים
-    פיזיים (portSwitchHtml/portSshNic), ומתג המוניטור בדף המוניטור."""
+    פרטים". המתגים של #996/#1015 יצאו מהדף, ומתג המוניטור בדף המוניטור.
+    ‏#1266: SSH יצא מהמוצר — אין מתג SSH לשרת בחיבורים פיזיים ואין /ssh."""
     js = _console_js()
     for needed in ("function health()", "function healthRows(", "function updateCard(", "async function loadHealthUpdate(",
                    'unknown: ["unk", "לא נבדק"]', 'off: ["", "כבוי"]', '["agent_loop:", "לולאות אתחול", "agent_loops"]',
                    "function ports()", "function portCard(", "function portDetail(", "async function portCheckNow(",
                    '"מה לפתוח בחומת האש של המכללה"', 'const PORT_FW = { open: ["ok", "פתוח"], blocked: ["err", "חסום"] }',
-                   "function portSwitchHtml(", "nicBody(n, { enabled: false, proxy: false })",
-                   "`/ssh/interfaces/${encodeId(nic.name)}`", 'onSubmit: () => send({ confirm: "imagectl.monitor" })',
+                   "nicBody(n, { enabled: false, proxy: false })",
+                   'onSubmit: () => send({ confirm: "imagectl.monitor" })',
                    'health: { crumb: "בריאות ושירותים", title: "בריאות ושירותים", tabs: [], render: health, load: loadHealth, own: true }',
                    'render: ports, load: loadPorts, own: true }'):
         assert needed in js, needed
     for gone in ('id="ssh-body"', "function loadSsh(", "function sshLight(", "SSH_LIGHT", 'title="בקרוב (נדרש endpoint)"',
                  'tabs: ["סקירה", "שירותים", "בדיקות"]', "health: [health,", "ports: [ports]",
-                 "function portRows(", "function portServerToggle(", "function portToggleUrl(", "havePortsDhcp", "PORTS_MONITOR"):
+                 "function portRows(", "function portServerToggle(", "function portToggleUrl(", "havePortsDhcp", "PORTS_MONITOR",
+                 "function portSwitchHtml(", "function portSshNic(", "function sshToggle(", "SSH_STATE", 'api("/ssh")'):
         assert gone not in js, gone
     block = js[js.index("/* ---------- #1267: רשת › פורטים"):js.index("/* ---------- #954 גל 6: מוניטור — הרשימה")]   # גל 6: המוניטור אחרי הפורטים
     assert 'role="switch"' not in block[block.index("const PORT_NETWORKS"):], "אין מתג בדף הפורטים (#1267)"
@@ -493,7 +498,7 @@ def test_small_pages_are_own_tables_from_the_api_and_wol_is_per_machine():
     for needed in ("function monitorPage()", "function monitorRowHtml(", "function settings()", "function settingRowHtml(", "async function saveSettings()",
                    "function permissions()", "const ROLE_MATRIX = [", "function userDeleteSheet(", "function logs()", "function logBarHtml(", "function logMore()",
                    "async function wakeMachine(", "async function wakeGroup(", "function wolResultText(",
-                   'key: "identity_check"', "WoL נשלח ל-", '"/api/console/journal" + logQuery(last)', 'X-Journal-Search-Truncated',
+                   'key: "identity_check"', "WoL נשלח ל-", 'consoleUrl("/journal" + logQuery(last))', 'X-Journal-Search-Truncated',
                    'settings: { crumb: "הגדרות", title: "הגדרות", tabs: [], render: settings, load: loadSettingsData, own: true }',
                    'permissions: { crumb: "משתמשים והרשאות", title: "משתמשים והרשאות", tabs: [], render: permissions, load: loadUsersData, own: true }',
                    'logs: { crumb: "יומן", title: "יומן", tabs: [], render: logs, load: loadJournalData, own: true }',
@@ -601,19 +606,17 @@ def test_tools_page_is_an_admin_tree_node_with_two_selections_per_tool():
         assert sel in css, sel
 
 
-def test_the_machine_drawer_shows_the_ssh_hostkey_fingerprint():
-    """‏#1080: שורת SSH בכרטיס המכונה — 12 תווים, tooltip מלא, כתום רק
-    כשהמפתח השתנה באותו אתחול; אתחול = אפור 'מפתח חדש מאתחול'."""
-    js = _console_js()
-    assert "function sshHostkeyHtml(" in js
-    fn = js[js.index("function sshHostkeyHtml"):js.index("function machineDrawerHtml")]
-    assert "SHA256:" in fn and "slice(0, 12)" in fn
-    assert 'title="${esc(fp)}"' in fn
-    assert 'UI.status("warn", "השתנה באתחול הזה")' in fn
-    assert "מפתח חדש מאתחול" in fn
-    assert "לא דווח" in fn
-    drawer = js[js.index("function machineDrawerHtml"):js.index("function openMachineDetail")]
-    assert '["SSH", sshHostkeyHtml(m)]' in drawer
+def test_the_console_has_no_ssh():
+    """‏#1266 (הכרעת נדב 10/10): כל מה שקשור לפורט 22 מחוץ למוצר. אין מתג
+    SSH לתחנות או לשרת, אין שורת 22 בפורטים, אין טביעת מפתח בכרטיס המכונה
+    ואין קריאה ל-/ssh — בשום קובץ שהקונסולה מגישה."""
+    files = sorted(p for p in STATIC.iterdir() if p.suffix in (".js", ".html", ".css"))
+    assert files, "לא נמצאו קבצי קונסולה — הבדיקה לא בדקה דבר"
+    for path in files:
+        text = path.read_text(encoding="utf-8").lower()
+        # ‏"ssh" בתחילת מילה בלבד: sshToggle, /ssh, "SSH לשרת" — לא classShow.
+        for banned in (r"(?<![a-z])ssh", "dropbear", r"imagectl\.debug"):
+            assert not re.search(banned, text), f"{path.name}: {banned}"
 
 
 def test_the_machine_drawer_has_a_health_group_with_three_states_per_field():

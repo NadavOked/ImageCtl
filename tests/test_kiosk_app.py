@@ -90,6 +90,7 @@ FORBIDDEN_ON_AGENT_PORT = (
     ("POST", "/api/console/storage-locations"),
     ("POST", "/api/console/images/upload"),
     ("POST", "/api/console/folders/order"),
+    ("POST", "/api/console/room/answer"),   # #989 ס׳ 2: תשובת SMART מהקונסולה — לא על וילן ההפצה
 )
 
 
@@ -124,8 +125,12 @@ def _console_routes(app: FastAPI) -> set[tuple[str, str]]:
 
 
 @pytest.fixture()
-def kiosk_env(tmp_path: Path, images_root: Path):
+def kiosk_env(tmp_path: Path, images_root: Path, classrooms_on):
     """runtime אחד → console_app (להקמה כ-admin) + agent_app (הנבדק).
+
+    ‏`classrooms_on` (הכרעת נדב 11/10): המלאי כאן הוא של v1.2 — לפני
+    ‏`create_agent_app`, כי רשימת הכיתות נכנסת לקיוסק רק כשהיכולת דלוקה.
+    מלאי v1 נבדק ב-`test_classrooms_gate_v1.py`.
 
     ‏WoL מזויף (`wol_send`) כדי ש-`/room/wake` יעבוד בלי חומרה. סבב לא
     נפתח בהקמה, אבל השולח נבנה בכל מקרה — ריאל אחד היה מגיע ל-udp-sender

@@ -43,6 +43,15 @@ const IdleDisk *idle_for_port(const State *s, int port) {
     return NULL;
 }
 
+/* #704: "דיסק N" on the cloner screens -- or the operator's name of that SATA
+ * slot (cslot_name=, from the last hello). No name = exactly as before. */
+void cloner_slot_label(const State *s, int port, char *out, size_t n) {
+    if (port >= 1 && port <= MAX_DRAWERS && s->cslot_names[port - 1][0])
+        snprintf(out, n, "%s", s->cslot_names[port - 1]);
+    else
+        snprintf(out, n, "דיסק %d", port);
+}
+
 /* The status span, as Pango markup (room-ok / room-bad / room-warn / sub). */
 void room_status_markup(const App *a, const Machine *m, int mode, char *out, size_t n) {
     char ok[8], bad[8], warn[8], e[640], lbl[96];   /* e: 120 bytes escaped, worst case x5 */

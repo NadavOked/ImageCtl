@@ -16,6 +16,7 @@ import sqlite3
 
 from boot.grub_menu import normalize_mac as lenient_mac
 
+from . import slot_names
 from .db import _write_lock, journal, now_iso, writing
 
 log = logging.getLogger("imagectl.disk_events")
@@ -88,7 +89,8 @@ def ingest(conn: sqlite3.Connection, payload: dict) -> dict:
     # פגום הוא מה שהמפעיל צריך לראות בהיסטוריה.
     if decision is not None:
         journal(conn, "disk_decision",
-                f"{mac} {disk} ({verdict}): {decision}")
+                f"{mac} {disk} ({verdict}): {decision}"   # #704: + השם, כשיש
+                + slot_names.journal_suffix(slot_names.label(conn, mac, port=port, serial=serial)))
     return {"ok": True}
 
 
@@ -101,12 +103,15 @@ def for_session(conn: sqlite3.Connection, session_id: str) -> list[dict]:
         " FROM disk_events WHERE session_id = ? ORDER BY mac, port, disk",
         (session_id,),
     ).fetchall()
+    names = slot_names.all_by_mac(conn) if rows else {}
     out = []
     for r in rows:
         out.append({
             "mac": r["mac"],
             "disk": r["disk"],
             "disk_number": r["port"] if r["port"] is not None else None,
+            # ‏#704: השם שהמפעיל נתן לחיבור; ‏None = "דיסק N" כמו היום.
+            "slot_name": slot_names.resolve(names.get(r["mac"], {}), r["port"], r["serial"]),
             "port": r["port"],
             "serial": r["serial"],
             "verdict": r["verdict"],

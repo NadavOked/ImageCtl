@@ -532,7 +532,7 @@ def test_the_trunk_needs_a_second_confirmation(dhcp_server):
     assert r.status_code == 200
 
 
-def test_proxy_mode_does_not_hand_out_addresses(dhcp_server):
+def test_proxy_mode_does_not_hand_out_addresses(dhcp_server, classrooms_on):
     admin, fake = dhcp_server["admin"], dhcp_server["fake"]
     r = admin.put("/api/console/net/interfaces/eth1",
                   json={"proxy": True, "server_ip": "10.44.1.10",
@@ -547,7 +547,7 @@ def test_proxy_mode_does_not_hand_out_addresses(dhcp_server):
     assert preview["proxy_path"] != preview["path"]
 
 
-def test_proxy_runs_in_its_own_instance_so_a_freeze_spares_the_main_dhcp(dhcp_server):
+def test_proxy_runs_in_its_own_instance_so_a_freeze_spares_the_main_dhcp(dhcp_server, classrooms_on):
     """‏#36: ה-DHCP של וילן ההפצה וה-proxy הם שני תהליכים. הקובץ הראשי
     לא מכיל את ממשק ה-proxy, וכיבוי ה-proxy עוצר את היחידה שלו."""
     admin, fake = dhcp_server["admin"], dhcp_server["fake"]
@@ -572,7 +572,7 @@ def test_proxy_runs_in_its_own_instance_so_a_freeze_spares_the_main_dhcp(dhcp_se
     assert "dhcp-range=set:if-eth0," in fake["applied"][-1]
 
 
-def test_a_proxy_failure_is_reported_next_to_the_main_one(dhcp_server):
+def test_a_proxy_failure_is_reported_next_to_the_main_one(dhcp_server, classrooms_on):
     dhcp_server["fake"]["proxy_error"] = "imagectl-proxy לא הגיב ל-restart"
     r = dhcp_server["admin"].put("/api/console/net/interfaces/eth1",
                                  json={"proxy": True, "server_ip": "10.44.1.10",

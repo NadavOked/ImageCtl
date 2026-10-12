@@ -271,10 +271,10 @@ _probe_fresh() {
     _mem=$(probe_memory); _th=$(probe_thermal); _nic=$(probe_nic)
     _pci=$(probe_pci_without_driver); _kn=$(probe_kernel)
     _pst=$(probe_pstore); _oem=$(probe_oem_key)
-    _dk=$(probe_disks); _en=$(probe_encryption)
+    _dk=$(probe_disks); _en=$(probe_encryption); _nt=$(command -v probe_ntfs >/dev/null 2>&1 && probe_ntfs || _pn)   # #980: hibernation.sh
     _t1=$(date +%s 2>/dev/null) || _t1=""
     _sec=null; [ -n "$_t0" ] && [ -n "$_t1" ] && _sec=$((_t1 - _t0))
-    printf ',"probe":{"power":%s,"rtc":%s,"cpu":%s,"memory":%s,"thermal":%s,"nic":%s,"pci_without_driver":%s,"kernel":%s,"pstore":%s,"oem_key":%s,"disks":%s,"encryption":%s,"probe_seconds":%s}' \
+    printf ',"probe":{"power":%s,"rtc":%s,"cpu":%s,"memory":%s,"thermal":%s,"nic":%s,"pci_without_driver":%s,"kernel":%s,"pstore":%s,"oem_key":%s,"disks":%s,"encryption":%s,"ntfs":%s,"probe_seconds":%s}' \
         "$_power" "$_rtc" "$_cpu" "$_mem" "$_th" "$_nic" "$_pci" \
-        "$_kn" "$_pst" "$_oem" "$_dk" "$_en" "$_sec"
+        "$_kn" "$_pst" "$_oem" "$_dk" "$_en" "$_nt" "$_sec"
 }

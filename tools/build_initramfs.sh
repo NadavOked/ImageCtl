@@ -5,7 +5,7 @@
 #
 # Usage:
 #   sudo ./tools/build_initramfs.sh [--output FILE] [--kernel-version VER]
-#                                   [--firmware DIR]... [--ssh-key FILE]
+#                                   [--firmware DIR]...
 #                                   [--with-gui] [--installer] [--skip-apt]
 #                                   [--tools-selection FILE]
 #                                   [--source-date-epoch SECONDS]
@@ -16,9 +16,9 @@
 # SOURCE_DATE_EPOCH -- the flag, the environment variable, or the time of
 # the commit the checkout is at, in that order.
 #
-# --ssh-key packs a public key as the technician's authorized_keys. Without
-# it dropbear has nobody to let in and never listens; with it, it still
-# listens only when the kernel line carries imagectl.debug=1.
+# IMAGECTL_EXTRA_OVERLAY=<dir> (environment, optional) is the lab/site
+# overlay (#1266): files the product does not know about, copied over the
+# image just before packing -- see "site/lab overlay" near the end.
 #
 # --tools-selection packs the IT toolbox the operator chose in the console
 # (#1050): FILE is <data_dir>/tools-selection.json (interfaces.md §23). Its
@@ -39,7 +39,6 @@ KVER="$(uname -r)"
 SKIP_APT=0
 WITH_GUI=0
 WITH_INSTALLER=0
-SSH_KEY_FILE=""
 TOOLS_SELECTION_FILE=""
 SOURCE_VERSION=""
 #: `auto` (ברירת המחדל — `finish_and_stop` גוזר מהתפקיד: כיתה=reboot,
@@ -53,7 +52,6 @@ while [ $# -gt 0 ]; do
         --output)         OUTPUT="$2"; shift 2 ;;
         --kernel-version) KVER="$2"; shift 2 ;;
         --firmware)       FIRMWARE_DIRS+=("$2"); shift 2 ;;
-        --ssh-key)        SSH_KEY_FILE="$2"; shift 2 ;;
         --after-task)     AFTER_TASK="$2"; shift 2 ;;
         --with-gui)       WITH_GUI=1; shift ;;
         --installer)      WITH_INSTALLER=1; shift ;;
@@ -68,24 +66,19 @@ done
 [ "$(id -u)" -eq 0 ] || { echo "run as root (file ownership in the cpio)" >&2; exit 1; }
 [ -f "$AGENT_DIR/init" ] || { echo "agent/ not found next to tools/" >&2; exit 1; }
 
-# The ssh key is checked here, before apt and the compiles: a typo in the
-# path should cost a second, not the whole build.
-if [ -n "$SSH_KEY_FILE" ]; then
-    [ -f "$SSH_KEY_FILE" ] \
-        || { echo "ssh key file not found: $SSH_KEY_FILE" >&2; exit 1; }
-    if grep -q 'PRIVATE KEY' "$SSH_KEY_FILE"; then
-        echo "$SSH_KEY_FILE is a PRIVATE key -- pass the .pub" >&2
-        exit 1
-    fi
-    if ! grep -qE '^(ssh-|ecdsa-|sk-)' "$SSH_KEY_FILE"; then
-        echo "$SSH_KEY_FILE does not look like a public key" >&2
-        exit 1
-    fi
+# The overlay is checked here, before apt and the compiles: a typo in the
+# path should cost a second, not the whole build. Set but not a directory
+# is an error, never "no overlay" -- that would be a lab image built
+# without the lab's files and looking exactly like one built with them.
+EXTRA_OVERLAY="${IMAGECTL_EXTRA_OVERLAY:-}"
+if [ -n "$EXTRA_OVERLAY" ]; then
+    [ -d "$EXTRA_OVERLAY" ] \
+        || { echo "IMAGECTL_EXTRA_OVERLAY is not a directory: $EXTRA_OVERLAY" >&2; exit 1; }
 fi
 
 # --- the toolbox selection (--tools-selection, #1050) ---------------------------
-# Resolved here, before apt and the compiles, for the same reason as the ssh
-# key: an id the table does not know should cost a second, not a build.
+# Resolved here, before apt and the compiles, for the same reason as the
+# overlay: an id the table does not know should cost a second, not a build.
 # tools_bins_plan (agent/lib/toolbins.sh -- POSIX sh, bash sources it fine)
 # prints one binary per line and exits 1 naming every unknown id; an empty
 # "build" list is a valid answer and packs nothing.
@@ -168,8 +161,8 @@ GUI_PACKAGES=(fonts-ibm-plex fontconfig-config
 GUI_PATHS=(/usr/share/fonts/truetype/ibm-plex
            /etc/fonts                  /usr/share/fontconfig)
 
-# החבילות נבדקות כאן, לפני apt ולפני הקומפילציות, מאותו טעם כמו מפתח
-# ה-SSH למעלה. ‏`apt-get install` על חבילה שאינה בקומפוננטות המופעלות
+# החבילות נבדקות כאן, לפני apt ולפני הקומפילציות, מאותו טעם כמו תיקיית
+# ה-overlay למעלה. ‏`apt-get install` על חבילה שאינה בקומפוננטות המופעלות
 # עונה `E: Unable to locate package` ויוצא 100 — הודעה שאינה מבדילה בין
 # "אין חבילה כזאת בדביאן" לבין "היא קיימת, אבל ה-sources.list כאן לא
 # מכיל את הקומפוננטה שלה". ההבדל הוא כל התשובה: ‏`fonts-ibm-plex`
@@ -209,7 +202,6 @@ BINARIES=(curl jq zstd pv sgdisk blockdev sha256sum od hdparm ntfsresize openssl
           e2fsck resize2fs btrfs xfs_growfs
           udp-receiver udp-sender partclone.ntfs partclone.fat partclone.ext4
           partclone.btrfs partclone.dd
-          dropbear dropbearkey
           dmidecode efibootmgr)
 
 if [ "$SKIP_APT" -eq 0 ]; then
@@ -217,7 +209,7 @@ if [ "$SKIP_APT" -eq 0 ]; then
     apt-get install -y --no-install-recommends \
         busybox-static zstd partclone udpcast gdisk curl jq pv \
         ntfs-3g libhivex-dev hdparm coreutils util-linux openssl \
-        e2fsprogs btrfs-progs xfsprogs cpio gzip gcc libc6-dev dropbear-bin ethtool \
+        e2fsprogs btrfs-progs xfsprogs cpio gzip gcc libc6-dev ethtool \
         smartmontools dmidecode efibootmgr
     # #1050: the toolbox delta -- only what the selection needs, or nothing.
     if [ "${#TOOL_PKGS[@]}" -gt 0 ]; then
@@ -287,8 +279,8 @@ done
 
 # The dynamic loader and the NSS libraries curl resolves hostnames with.
 # Required, not best-effort: `cp ... 2>/dev/null || true` let a missing
-# loader or libnss build clean, and the station then failed in curl, DNS
-# and dropbear with messages that name none of them (#1125, the #33
+# loader or libnss build clean, and the station then failed in curl and
+# DNS with messages that name none of them (#1125, the #33
 # pattern). `-n` stays: the loader is in every ldd closure and copy_libs
 # has usually packed it already -- that skip exits 0 (coreutils 9.7).
 for extra in /lib64/ld-linux-x86-64.so.2 \
@@ -300,10 +292,9 @@ for extra in /lib64/ld-linux-x86-64.so.2 \
     cp -Ln "$extra" "$ROOT$extra"
     [ -s "$ROOT$extra" ] || { echo "loader/NSS library not packed: $extra" >&2; exit 1; }
 done
-# passwd/group as well as hosts: dropbear resolves the account it hands
-# the session to through NSS, and a database with no line here is the #33
-# failure mode again -- the lookup fails and the login is refused with
-# nothing useful in the log.
+# passwd/group as well as hosts: anything that resolves an account goes
+# through NSS, and a database with no line here is the #33 failure mode
+# again -- the lookup fails with nothing useful in the log.
 cat > "$ROOT/etc/nsswitch.conf" << 'EOF'
 hosts:  files dns
 passwd: files
@@ -462,17 +453,11 @@ exit 0
 EOF
 chmod 0755 "$ROOT/etc/imagectl/udhcpc.script"
 
-# --- ssh for the technician (#44) --------------------------------------------
-# The serial pipe carried two machines and will not carry twenty. dropbear
-# rides in every image, but it listens only when the agent starts it, and
-# the agent starts it only behind imagectl.debug=1 -- the same gate as the
-# technician shell -- and only if a key was packed here. A classroom
-# station therefore listens on nothing.
-
+# --- the account --------------------------------------------------------------
 # The one account in the image. Something has to answer getpwnam, and the
 # password field is locked on purpose: this file travels inside an
 # initramfs served over plain HTTP, so any password in it is a published
-# one. Authentication is by key, or not at all.
+# one. Nothing in the product image listens for a login (#1266).
 printf 'root:x:0:0:root:/root:/bin/sh\n' > "$ROOT/etc/passwd"
 printf 'root:x:0:\n'                     > "$ROOT/etc/group"
 printf 'root:*:19000:0:99999:7:::\n'     > "$ROOT/etc/shadow"
@@ -491,17 +476,6 @@ case "$AFTER_TASK" in
 esac
 echo "$AFTER_TASK" > "$ROOT/etc/imagectl/after-task"
 echo "after-task: $AFTER_TASK"
-
-if [ -n "$SSH_KEY_FILE" ]; then
-    install -m 0600 "$SSH_KEY_FILE" "$ROOT/etc/imagectl/authorized_keys"
-    echo "ssh: authorized_keys packed from $SSH_KEY_FILE"
-else
-    echo "ssh: no --ssh-key given -- dropbear will not listen at all"
-fi
-# No host key is generated here. One baked at build time would be the same
-# private key on every station, in a file anyone on the VLAN can download,
-# and it would make two runs of this script produce different images. The
-# agent makes one in the tmpfs on every boot instead (agent/lib/sshd.sh).
 
 # --- the kiosk (optional): the build machine's graphical face ----------------
 # Native Pango/Cairo rendering onto DRM/KMS, with evdev input. Apt installs
@@ -833,7 +807,7 @@ while [ "$_closure_changed" -eq 1 ]; do
             # a file, not a pipe: the flags set inside must survive the loop,
             # and the tests run this snippet under dash, so no process
             # substitution either (SC2044 on the public run, 22/09)
-            _cands=$(mktemp); find "$MODSRC" -type f -name '*.ko*' > "$_cands"
+            _cands=$(mktemp "$ROOT/module-candidates.XXXXXX"); find "$MODSRC" -type f -name '*.ko*' > "$_cands"
             while IFS= read -r _candidate; do
                 _candidate_name=$(basename "$_candidate")
                 _candidate_name=${_candidate_name%%.ko*}
@@ -858,7 +832,7 @@ while [ "$_closure_changed" -eq 1 ]; do
                 _soft_dash=$(printf '%s' "$_soft" | tr '_' '-')
                 for _alias_mod in $(awk -v a="crypto-$_soft_dash" -v b="$_soft_dash" '$1 == "alias" && ($2 == a || $2 == b) { print $3 }' "$MODSRC/modules.alias" | sort -u); do
                     _alias_mod=$(printf '%s' "$_alias_mod" | tr '-' '_')
-                    _cands=$(mktemp); find "$MODSRC" -type f -name '*.ko*' > "$_cands"
+                    _cands=$(mktemp "$ROOT/module-candidates.XXXXXX"); find "$MODSRC" -type f -name '*.ko*' > "$_cands"
                     while IFS= read -r _candidate; do
                         _candidate_name=$(basename "$_candidate"); _candidate_name=${_candidate_name%%.ko*}
                         _candidate_name=$(printf '%s' "$_candidate_name" | tr '-' '_')
@@ -975,6 +949,30 @@ if [ -n "$_no_fw" ]; then
     echo "firmware directories missing under /lib/firmware:$_no_fw" >&2
     echo "Debian 13: rtl_nic is firmware-realtek, i915 is firmware-intel-graphics." >&2
     exit 1
+fi
+
+# --- site/lab overlay (#1266) ---------------------------------------------------
+# IMAGECTL_EXTRA_OVERLAY=<dir>: a lab or a site adds to the image what the
+# product does not ship and does not know about. Two parts, both optional:
+#   * the tree under <dir> is copied over the image root (owned by root),
+#     last, so it can add or replace files. Start hooks go in
+#     <dir>/etc/imagectl/hooks.d/*.sh -- agent/lib/sitehooks.sh runs them
+#     after DHCP;
+#   * <dir>/.binaries names builder binaries, one per line, packed with
+#     their library closure exactly like BINARIES above (a missing one stops
+#     the build). The file itself is not copied into the image.
+# Unset = the product image, with nothing added.
+if [ -n "${EXTRA_OVERLAY:-}" ]; then
+    if [ -f "$EXTRA_OVERLAY/.binaries" ]; then
+        while read -r _xb; do
+            case "$_xb" in ''|'#'*) continue ;; esac
+            copy_bin "$_xb"
+        done < "$EXTRA_OVERLAY/.binaries"
+    fi
+    cp -a --no-preserve=ownership "$EXTRA_OVERLAY/." "$ROOT/" \
+        || { echo "IMAGECTL_EXTRA_OVERLAY: copying $EXTRA_OVERLAY failed" >&2; exit 1; }
+    rm -f "$ROOT/.binaries"
+    echo "overlay: $EXTRA_OVERLAY copied over the image"
 fi
 
 # --- pack --------------------------------------------------------------------

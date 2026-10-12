@@ -20,6 +20,10 @@ import json
 import re
 import sys
 
+sys.stdin.reconfigure(encoding="utf-8")
+sys.stdout.reconfigure(encoding="utf-8", newline="\n")   # jq writes LF, not CRLF
+sys.stderr.reconfigure(encoding="utf-8")
+
 
 def _raw(value) -> str:
     if value is None:
@@ -52,13 +56,16 @@ MC_KEYS = ("portbase", "min_receivers", "max_wait", "start_timeout",
 
 def main(argv: list[str]) -> int:
     args = [a for a in argv if not a.startswith("-")]
-    if len(args) != 2:
-        sys.stderr.write("jq shim: expected <filter> <file>\n")
+    if len(args) not in (1, 2):
+        sys.stderr.write("jq shim: expected <filter> [file]\n")
         return 2
-    expr, path = args
+    expr = args[0]
     try:
-        with open(path, encoding="utf-8") as handle:
-            doc = json.load(handle)
+        if len(args) == 1:
+            doc = json.load(sys.stdin)
+        else:
+            with open(args[1], encoding="utf-8") as handle:
+                doc = json.load(handle)
     except (OSError, ValueError) as exc:
         sys.stderr.write(f"jq shim: {exc}\n")
         return 2

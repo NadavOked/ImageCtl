@@ -17,10 +17,9 @@ from fastapi.responses import FileResponse, JSONResponse
 from boot.grub_menu import normalize_mac as lenient_mac
 
 from . import (agent_loops, disk_events, foreign_vlan, identity, inventory,
-               login_guard, probe, pulls, registry, reports, shrink_records, ssh_hostkey,
-               users)
+               login_guard, probe, pulls, registry, reports, shrink_records, users)
 from .db import journal
-from . import direct, room_console
+from . import direct, room_console, smart_ask
 from .hello import (build_answer, hello_payload_oversized, login_required, off_deploy_vlan,
                     well_formed_monitor_auth, well_formed_monitor_secret)
 from .images import ImageLibrary, restore_refusal
@@ -152,7 +151,7 @@ def create_agent_router(ctx: ServerContext,
         mac = lenient_mac(body.get("mac"))
         if mac is None:
             return _error(400, "missing or malformed mac", "bad_mac")
-        # ‏#1127: המלאי/ה-probe/מפתח ה-SSH נשמרים כ-JSON בלי תקרה; הסוכן
+        # ‏#1127: המלאי/ה-probe נשמרים כ-JSON בלי תקרה; הסוכן
         # שלנו לעולם לא מתקרב לזו, ומי שכן — נאמר לו, לא נשמר.
         oversized = hello_payload_oversized(body)
         if oversized:
@@ -206,9 +205,6 @@ def create_agent_router(ctx: ServerContext,
         elif raw_probe is None and "netprobe" in body:
             raw_probe = {"netprobe": body.get("netprobe")}
         hw_probe = probe.well_formed(raw_probe)
-        # ‏#1080: מפתח ה-host של dropbear. חסר/פגום → None, הגרסה הקודמת
-        # נשארת; known_hosts מתעדכן רק על ערך תקין + IP מספרי.
-        hw_ssh = ssh_hostkey.well_formed(body.get("ssh_hostkey"))
         # ‏#906: המכונה ממתינה לאדם (שאלת SMART/אדום, מסך FAILED) ואומרת
         # על מה. רק `waiting_for: "operator"` עם `prompt` מחרוזת לא-ריקה
         # נשמר (קצוץ ל-PROMPT_MAX_CHARS); כל צורה אחרת — וגם היעדר השדה,
@@ -245,7 +241,7 @@ def create_agent_router(ctx: ServerContext,
             reported_ip=reported_ip, off_vlan=off_vlan,
             all_macs=all_macs, monitor_secret=monitor_secret,
             monitor_auth=monitor_auth,
-            hw_inventory=hw_inventory, hw_probe=hw_probe, hw_ssh=hw_ssh,
+            hw_inventory=hw_inventory, hw_probe=hw_probe,
             prompt=prompt, disk_probe=disk_probe,
             firmware=firmware, secure_boot=secure_boot,
             agent_version=agent_version,
@@ -259,9 +255,13 @@ def create_agent_router(ctx: ServerContext,
             power_action = room_console.take_power_action(ctx.conn, mac)
             if power_action is not None:
                 answer["power_action"] = power_action
-        if hw_ssh is not None and data_dir is not None:
-            ssh_hostkey.upsert_known_host(
-                data_dir, reported_ip or "", hw_ssh)
+            # ‏#989 ס׳ 2: שאלת ה-SMART — נרשמת, והתשובה המנצחת (קונסולה או
+            # המכונה עצמה, הראשונה גוברת) חוזרת באותה תשובה. שדה חסר = אין מה לבצע.
+            ask_answer = smart_ask.note_hello(
+                ctx.conn, mac, smart_ask.well_formed_ask(body.get("ask")),
+                smart_ask.well_formed_claim(body.get("ask_answered")))
+            if ask_answer is not None:
+                answer["ask_answer"] = ask_answer
         log.info("hello from %s (%s): known=%s off_vlan=%s",
                  # codeql[py/log-injection] false positive: MAC מנורמל, client_ip מה-socket, והשאר bool (#291)
                  mac, client_ip, answer["known"], off_vlan)

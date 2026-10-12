@@ -13,9 +13,9 @@ import sqlite3
 
 from boot.grub_menu import normalize_mac as lenient_mac
 
-from . import disk_failures
+from . import disk_failures, slot_names
 from .db import journal, now_iso, update_one
-from .tasks import OPEN_STATES, claim_task
+from .tasks import CAPTURE_STAGES, OPEN_STATES, claim_task
 
 log = logging.getLogger("imagectl.reports")
 
@@ -110,7 +110,8 @@ def ingest(conn: sqlite3.Connection, payload: dict,
     sent_as = _sent_as(raw_mac, mac)
 
     if task_id:
-        return _ingest_task(conn, task_id, mac, state, targets, sent_as, token)
+        return _ingest_task(conn, task_id, mac, state, targets, sent_as, token,
+                            stage=payload.get("stage"))
 
     # ‏#557: סבב שנסגר אינו מקבל דיווחים. עד כאן הוא קיבל — והחזיר
     # `200 OK` — ולכן `progress_loop` בסוכן, שלולאתו אינסופית ובולעת
@@ -189,12 +190,15 @@ def ingest(conn: sqlite3.Connection, payload: dict,
         # ‏#1269: מגירות של מחשב שיכפול — התוצאה לכל מגירה, פעם אחת, באותו מעבר.
         for t in targets:
             outcome = t.get("drivers") if isinstance(t, dict) else None
+            # ‏#704: השם שהמפעיל נתן לחריץ של המגירה (‏dev → port מה-hello).
+            named = (slot_names.journal_suffix(slot_names.label(conn, mac, dev=t.get("dev")))
+                     if outcome and outcome["state"] in ("failed", "staged") else "")
             if outcome and outcome["state"] == "failed":
                 journal(conn, "drivers_failed", f"{mac} {t.get('dev', '?')} in {session_id}"
-                        f" — {outcome.get('error', '?')}")
+                        f" — {outcome.get('error', '?')}{named}")
             elif outcome and outcome["state"] == "staged":
                 journal(conn, "drivers_staged", f"{mac} {t.get('dev', '?')} in {session_id}"
-                        f" — {', '.join(outcome['packages'])}")
+                        f" — {', '.join(outcome['packages'])}{named}")
     # ‏#874: יעד שנכשל בכתיבה נכנס לזיכרון הכשלים (סידורי + חריץ + שורות
     # ה-ATA). פעם אחת ליעד — הדיווח חוזר כל 2 שניות, ו-`record` מתעלם מכפול.
     for t in targets:
@@ -294,13 +298,30 @@ def stamp_movement(previous_json: str | None, targets: list) -> list:
             t = {**t, "moved_at": before["moved_at"]}
         else:
             t = {**t, "moved_at": now_iso()}
-        stamped.append(t)
+        stamped.append(_stamp_first_movement(before, t))
     return stamped
+
+
+def _stamp_first_movement(before: dict | None, t: dict) -> dict:
+    """‏#447: ‏`first_moved_at` — הפעם הראשונה שהמונה של היעד עלה מאפס.
+
+    יחד עם `moved_at` הוא הזמן שבו המגירה באמת כתבה, בלי ההמתנה למקבלים
+    לפני הבייט הראשון (`drive_rates.record_wave`). נשמר כל עוד המונה לא
+    ירד; מונה שירד התחיל מחדש, והחותמת מתחילה איתו. חותמת השרת בלבד —
+    שדה באותו שם שהגיע מהסוכן נזרק."""
+    t = {k: v for k, v in t.items() if k != "first_moved_at"}
+    written = _int(t.get("bytes_written"))
+    if (before is not None and before.get("first_moved_at")
+            and written >= _int(before.get("bytes_written"))):
+        t["first_moved_at"] = before["first_moved_at"]
+    elif written > 0:
+        t["first_moved_at"] = now_iso()
+    return t
 
 
 def _ingest_task(conn: sqlite3.Connection, task_id: str, mac: str,
                  state: str, targets: list, sent_as: str = "",
-                 token: str | None = None) -> dict:
+                 token: str | None = None, stage: object = None) -> dict:
     """דיווח קליטה: יעד אחד — דיסק המקור — ומצב על המשימה עצמה.
 
     ‏`mac` כאן כבר קנוני (‏`ingest` מנרמל): ‏`tasks.mac` נכתב דרך
@@ -323,6 +344,8 @@ def _ingest_task(conn: sqlite3.Connection, task_id: str, mac: str,
         journal(conn, "task_token_refused", f"{task_id} progress from {mac}{sent_as}")
         return {"ok": False, "error": "this is not your task", "code": "bad_token"}
 
+    known_stage = stage if isinstance(stage, str) and stage in CAPTURE_STAGES else None
+    now = now_iso()
     written = sum(_int(t.get("bytes_written")) for t in targets)
     total = sum(_int(t.get("bytes_total")) for t in targets)
     errors = "; ".join(f"{t.get('dev', '?')}: {t['error']}"
@@ -343,11 +366,17 @@ def _ingest_task(conn: sqlite3.Connection, task_id: str, mac: str,
         conn,
         # COALESCE: דיווח failed של הסוכן בלי שגיאות-יעד לא דורס סיבה
         # שהשרת כבר רשם (דחיית מניפסט, למשל) — error נשאר עם ההסבר.
+        # ‏#980 §4: השלב — רק ערך מהרשימה; חסר/לא מוכר משאיר את הקודם (סוכן ישן
+        # אינו מוחק שלב, וקלט פגום אינו ממציא שלב). ‏`stage_started_at` זז רק
+        # כשהשלב **השתנה** — זה "כמה זמן בשלב הזה" שהקונסולה מציגה.
         "UPDATE tasks SET state = ?, bytes_written = ?, bytes_total = ?,"
-        " error = COALESCE(?, error), targets_json = ?, updated_at = ?"
+        " error = COALESCE(?, error), targets_json = ?, updated_at = ?,"
+        " stage_started_at = CASE WHEN ? IS NOT NULL AND stage IS NOT ?"
+        " THEN ? ELSE stage_started_at END,"
+        " stage = COALESCE(?, stage)"
         " WHERE id = ? AND state IN ('pending', 'running')",
         (new_state, written, total, errors or None, json.dumps(targets),
-         now_iso(), task_id),
+         now, known_stage, known_stage, now, known_stage, task_id),
     ):
         journal(conn, "report_on_closed_task", f"{mac} for {task_id}{sent_as}")
         return {"ok": False, "error": "the task is no longer open",

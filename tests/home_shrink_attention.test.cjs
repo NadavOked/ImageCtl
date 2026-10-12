@@ -32,7 +32,7 @@ function setup(tasks, records) {
   }
   const fixtures={
     '/overview':{images:1,machines:1,storage:null,session:null,room:null,pulls:[]},
-    '/tasks':tasks,'/net':[],'/ports':[],'/health':[],'/journal':[],'/ssh':{},'/update':{},
+    '/tasks':tasks,'/net':[],'/ports':[],'/health':[],'/journal':[],'/update':{},
   };
   const ctx=vm.createContext({console,URLSearchParams,URL,Date,Set,Map,Number,Math,JSON,Promise,String,encodeURIComponent,decodeURIComponent,
     document:{hidden:false,querySelector:node,querySelectorAll:()=>[],getElementById:id=>node('#'+id),

@@ -129,7 +129,10 @@ def test_agent_app_alone_serves_station_state(split):
     assert state["mac"] == mac and state["known"] is False
     assert state["disks"] == [] and state["task"] is None
     # ומה שהגואי צורך לרשימת הכיתות/ההפצה (‏guistate.sh:76-77) — גם כאן.
-    assert agent.get("/api/v1/agent/groups").status_code == 200
+    # ב-v1 (כיתות כבויות, הכרעת נדב 11/10) הנתיב מוגש ומסרב בשם — 409, לא
+    # ה-404 של #824.
+    groups = agent.get("/api/v1/agent/groups")
+    assert groups.status_code == 409 and groups.json()["code"] == "classrooms_off", groups.text
     assert agent.get("/api/v1/agent/sessions/active").json() == {"session": None}
 
 

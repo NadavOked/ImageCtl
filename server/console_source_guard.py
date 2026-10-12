@@ -23,6 +23,8 @@ import ipaddress
 import logging
 from collections.abc import Iterable
 
+from .auth import PEER_SCOPE_KEY
+
 log = logging.getLogger("imagectl.console_guard")
 
 Network = ipaddress.IPv4Network | ipaddress.IPv6Network
@@ -72,7 +74,10 @@ class ConsoleSourceGuard:
 
     async def __call__(self, scope, receive, send) -> None:
         kind = scope["type"]
-        if kind not in ("http", "websocket") or self._allowed(scope):
+        # ‏#1179: בקשה שהערוץ הבין-שרתי מריץ בתוך התהליך — אין לה peer ברשת;
+        # היא אומתה ב-mTLS + טוקן, והמפתח אינו ניתן לזיוף מבחוץ (``auth``).
+        if (kind not in ("http", "websocket") or scope.get(PEER_SCOPE_KEY) is not None
+                or self._allowed(scope)):
             await self.inner(scope, receive, send)
             return
         client = scope.get("client")

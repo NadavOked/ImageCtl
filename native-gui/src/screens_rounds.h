@@ -29,6 +29,9 @@ int smart_level(const char *smart);
 Rgb smart_color(const Theme *t, const char *smart);
 const char *smart_he(const char *smart);
 const IdleDisk *idle_for_port(const State *s, int port);
+/* #704: the cloner's label of SATA slot <port> -- its cslot_name, else
+ * "דיסק N". <out> >= SLOT_NAME_MAX + 16 bytes, or a long name is cut. */
+void cloner_slot_label(const State *s, int port, char *out, size_t n);
 /* The status span of room.js machineRows / classes.js renderLive, as Pango
  * markup (room-ok / room-bad / room-warn colours); <out> >= 640 bytes. */
 void room_status_markup(const App *a, const Machine *m, int mode, char *out, size_t n);

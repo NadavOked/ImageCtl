@@ -346,8 +346,33 @@ def server_with_sender(server: dict):
     return server, server["recorder"]
 
 
+@pytest.fixture(autouse=True)
+def _classrooms_restore():
+    """הכרעת נדב 11/10: השרת מסרב לכיתות כש-`capabilities.classrooms()` כבוי
+    (v1). ‏`setup_classroom` בודק את זרימת v1.2 ולכן מדליק את היכולת לטסט
+    הנוכחי — בלי לדרוש מכל אחד מ-40 הקוראים להעביר `monkeypatch` (הם
+    מעבירים מילונים שונים). כאן הערך חוזר אחרי כל טסט — ל**מה שהיה לפניו**,
+    ולא ל"מה שהיה כש-setup_classroom רץ": ‏autouse מתפרק אחרון, אחרי
+    ‏`monkeypatch` של `classrooms_on`, ושחזור יחסי היה משאיר True דולף."""
+    from server import capabilities                        # noqa: PLC0415
+    before = capabilities.CLASSROOMS
+    yield
+    capabilities.CLASSROOMS = before
+
+
+@pytest.fixture()
+def classrooms_on(monkeypatch):
+    """v1.2 לטסט אחד: כיתות דלוקות בשרת (‏`capabilities.CLASSROOMS`)."""
+    from server import capabilities                        # noqa: PLC0415
+    monkeypatch.setattr(capabilities, "CLASSROOMS", True)
+
+
 def setup_classroom(server: dict, expected: int = 2) -> dict:
-    """קבוצת כיתה עם שתי מכונות רשומות; מחזיר מזהים שימושיים."""
+    """קבוצת כיתה עם שתי מכונות רשומות; מחזיר מזהים שימושיים.
+
+    מדליק את הכיתות (v1.2) עד סוף הטסט — ראה ‏`_classrooms_restore`."""
+    from server import capabilities                        # noqa: PLC0415
+    capabilities.CLASSROOMS = True
     admin = server["admin"]
     assert admin.post(
         "/api/console/groups",

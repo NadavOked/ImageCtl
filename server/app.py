@@ -27,7 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from boot.grub_menu import GrubConfig
 from boot.http import create_boot_asgi, gui_initrd_path
 
-from . import auth, boottrace, deploy_net, dhcp, registry
+from . import auth, boottrace, deploy_net, dhcp, drive_rates, registry
 from .api import ServerContext, create_agent_router
 from .console_api import create_console_router
 from .console_source_guard import ConsoleSourceGuard, Network
@@ -65,7 +65,6 @@ from .room_console import create_room_console_router
 from .wake_api import create_wake_router
 from .sessions import SessionStore
 from .users import ensure_admin
-from . import ssh_switch
 from . import storage_nodes
 from . import monitor
 from .monitor import create_monitor_router
@@ -365,10 +364,14 @@ def create_runtime(
     # שאינה תלויה בכך שמישהו יזכור לנקות — פורט שאינו יכול להתנגש (#156).
     def on_sender_event(event: str, detail: str) -> None:
         journal(conn, event, detail)
-        if event != "send_failed":
-            return
         status = sender.status()
         session_id = status.get("session_id") if status else None
+        if session_id and event in ("send_done", "send_failed", "send_stopped"):
+            # קצב אוטומטי (11/10): מה ש-udp-sender ספר בגל שהסתיים — הגל הבא
+            # עולה רק על אפס שידורים חוזרים שנקראו כאן. לעולם אינו זורק.
+            drive_rates.record_stream(conn, session_id, sender.wave_outcome(session_id))
+        if event != "send_failed":
+            return
         if session_id:
             store.fail(
                 session_id, detail,
@@ -387,6 +390,11 @@ def create_runtime(
         **({"max_wait": sender_max_wait} if sender_max_wait is not None else {}),
         **({"start_timeout": sender_start_timeout}
            if sender_start_timeout is not None else {}),
+        # ‏#447 + קצב אוטומטי (11/10): הקצב לגל — מהגל הקודם עם אותם כוננים
+        # והכוננים שבו, לעולם לא מעל `max_bitrate` (בלעדיו — 900m).
+        wave_bitrate=lambda session: drive_rates.decide(
+            conn, session["id"], lambda: room.wave_drives(conn, session["id"]),
+            sender.max_bitrate),
     )
     def wake_class(group_id: str, opener_mac: str | None,
                    roster: list[str] | None = None) -> None:
@@ -404,6 +412,11 @@ def create_runtime(
         # ביומן, כדי שגל שלא יצא ייראה כמה שהוא ולא כ"המנוע לא התחיל".
         if direct.is_direct_wave(conn, session["id"]):
             journal(conn, "send_delegated", f'{session["id"]} {session["image_id"]}')
+            # קצב אוטומטי: גם הזרם ממחשב הבנייה עובר ברשת — אותה פתיחה, אותו
+            # גג וירידה לכונן איטי; ‏`task.direct.multicast.max_bitrate` מכאן.
+            drive_rates.decide(conn, session["id"],
+                               lambda: room.wave_drives(conn, session["id"]),
+                               sender.max_bitrate, direct=True)
             return
         sender.start(session)
 
@@ -463,6 +476,10 @@ def create_runtime(
     )
 
 
+#: ‏#1266: הדגל שאינו מוגש לתחנות מ-PXE, גם כשהועבר ב-`--extra-cmdline`.
+STRIPPED_CMDLINE = "imagectl.debug"
+
+
 def _boot_asgi(rt: ServerRuntime):
     """אפליקציית ה-ASGI הגולמית של ‎/boot, בנויה מ-runtime משותף.
 
@@ -471,11 +488,11 @@ def _boot_asgi(rt: ServerRuntime):
     ממקטין כותרות. ההסבר המלא ב-boot/http.py (issue #12). ‏extra_cmdline:
     תוספות מפעיל לשורת הקרנל דרך הגדרה — לא בעריכת קוד על השרת (#18).
 
-    התצורה נבנית **בכל בקשה**, כי `imagectl.debug` כבר אינו תוספת מפעיל
-    אלא מתג בקונסולה (#83): הוא פותח SSH ומעטפת טכנאי בכל תחנה שעולה,
-    וצריך להיות ניתן לכיבוי בלי לגעת ביחידת systemd ובלי להפעיל מחדש.
-    ‏`station_cmdline` גם *מסיר* את הדגל מתוספות המפעיל כשהמתג כבוי —
-    שני מקורות אמת לאותה דלת נגמרים בכך שהישן גובר בשקט."""
+    התצורה נבנית **בכל בקשה**, כי `imagectl.monitor` אינו תוספת מפעיל
+    אלא מתג בקונסולה (#690), שצריך לתפוס בלי להפעיל מחדש.
+    ‏`imagectl.debug` (מעטפת הניפוי המקומית של הסוכן) **מוסר** מתוספות
+    המפעיל תמיד: עד #1266 רק מתג ה-SSH בקונסולה הכניס אותו, והמתג יצא
+    מהמוצר — אז הדגל אינו מוגש מ-PXE לעולם (`STRIPPED_CMDLINE`)."""
     conn = rt.conn
     resolve = make_resolver(conn, rt.library, rt.store, rt.server_base)
 
@@ -506,11 +523,11 @@ def _boot_asgi(rt: ServerRuntime):
                 # תופס מיד, בלי הפעלה מחדש של השרת. הבדיקה זולה (stat
                 # אחד), ובקשת אתחול היא ממילא אירוע נדיר לכל מכונה.
                 gui_initrd_path=gui_initrd_path(rt.boot_dir),
-                # #690: chain the monitor flag onto the SSH chain -- one source
-                # of truth per gate, independent of each other (like SSH).
+                # #690: the monitor flag has one source of truth, the console
+                # switch; #1266: imagectl.debug is never served from PXE.
                 extra_cmdline=monitor.station_cmdline(
-                    ssh_switch.station_cmdline(
-                        rt.extra_cmdline, ssh_switch.stations_enabled(conn)),
+                    tuple(p for p in rt.extra_cmdline
+                          if not p.startswith(STRIPPED_CMDLINE)),
                     monitor.stations_enabled(conn)),
             ),
             boot_dir=rt.boot_dir,
@@ -571,14 +588,6 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
     שהוא גם מסך ניהול). ה-API `/api/v1/agent/*` חי על הסוכן (#824)."""
     ctx = rt.ctx
     health_hooks = dict(rt.health_hooks or {})
-    if rt.deploy is not None:
-        health_hooks["apply_ssh_firewall"] = lambda interfaces: deploy_net.regenerate_firewall(
-            rt.deploy.repo_dir,
-            deploy_if=rt.deploy.state.interface or "",
-            servers_if=rt.deploy.servers_interface,
-            primary_ip=rt.deploy.primary_ip,
-            ssh_interfaces=tuple(interfaces),
-        )
     # ‏#748: תיקיית העץ נופלת לתיקיית הקוד עצמה כשאין ``--repo-dir``
     # מפורש (בדיקות/הרצה ישירה) — ראו ``main.py``.
     repo_dir = rt.repo_dir or Path(__file__).resolve().parents[1]

@@ -38,6 +38,7 @@ GOOD = {
     "encryption": [],
     "probe_seconds": 0,
     "netprobe": None,
+    "ntfs": None,    # #980 §6
 }
 
 

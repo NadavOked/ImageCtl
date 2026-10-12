@@ -106,8 +106,10 @@ static double disk_card(App *a, cairo_t *cr, Rect card, int port,
         }
     }
 
-    /* the head: "דיסק N" at the start, the state pill at the end */
-    char disk_name[40]; snprintf(disk_name, sizeof disk_name, "דיסק %d", port);
+    /* the head: "דיסק N" -- or the operator's name of the slot (#704) -- at
+     * the start, the state pill at the end */
+    char disk_name[SLOT_NAME_MAX + 16];
+    cloner_slot_label(&a->st, port, disk_name, sizeof disk_name);
     Text name = rtl_block_make(cr, 16, 600, disk_name, w);
     if (draw) {
         const char *word = pending ? "נדרשת החלטה" : drawer_state_he(d ? d->state : "waiting");
@@ -267,9 +269,10 @@ void screen_cloner(App *a, cairo_t *cr, double W, double H, double head_h) {
         draw_fill_rrect(cr, bar, 0, t->surface);
         cairo_rectangle(cr, 0, bar.y, W, 2); draw_set(cr, t->warn); cairo_fill(cr);
         int red = !strcmp(a->st.smart_verdict, "failed_last");
-        char head[200];
+        char head[SLOT_NAME_MAX + 16 + 160], disk[SLOT_NAME_MAX + 16];
         const char *why = a->st.smart_reason[0] ? smart_reason_he(a->st.smart_reason) : smart_he(a->st.smart_verdict);
-        snprintf(head, sizeof head, "דיסק %d · %s.", a->st.smart_port, why);
+        cloner_slot_label(&a->st, a->st.smart_port, disk, sizeof disk);   /* #704 */
+        snprintf(head, sizeof head, "%s · %s.", disk, why);
         Text h1 = rtl_block_make(cr, 13, 600, head, W / 2);
         Text h2 = rtl_block_make(cr, 12, 400, "מה לעשות עם הדיסק הזה?", W / 2);
         double ty = bar.y + (bar.h - h1.h - 2 - h2.h) / 2;

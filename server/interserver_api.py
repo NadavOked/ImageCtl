@@ -16,6 +16,7 @@ terminator של pyOpenSSL (ראו ``interserver_auth`` — stdlib ssl אינו �
 """
 
 import logging
+import re
 import secrets
 import select
 import shutil
@@ -29,7 +30,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
-from . import interserver_auth, storage_nodes
+from . import auth, interserver_auth, storage_nodes
 from .db import journal, now_iso
 
 log = logging.getLogger("imagectl.interserver")
@@ -568,6 +569,197 @@ def list_machines(ctx, peer: TlsPeer, *, token: str, protocol_version: str,
             "machines": machine_rows(ctx.conn)}
 
 
+# --- הקונסולה של המשני מהאב: GET מרשימה מותרת (#1179) -------------------------
+#
+# הראשי מצייר את העמודים של המשני **באותן פונקציות** שמציירות את שלו — ולכן
+# צריך את אותן תשובות JSON של ``/api/console/…``. המשני מריץ את ה-GET בתוך
+# התהליך מול אפליקציית הקונסולה שלו, בזהות ``primary:<user>``/admin שנקבעת
+# ב-scope (``auth.PEER_SCOPE_KEY``) **אחרי** ``authenticate_parent``, ומחזיר
+# מעטפת ``{status, body, headers}``. רק GET, ורק נתיב שמתאים לשורה ב-
+# ``CONSOLE_GETS``; לכל שורה הטיפוס העליון שהנתיב מחזיר — הראשי בודק אותו.
+
+#: ‏(ביטוי לנתיב המלא אחרי ``/api/console``, הטיפוס העליון של תשובה 200).
+#: בלי ``/me``, הורדות/CSV/גיבוי, ``…/probe`` (שולח DHCP לרשת) ו-``…/disk``.
+CONSOLE_GETS: tuple[tuple[str, type], ...] = (
+    (r"/overview", dict), (r"/machines", list), (r"/groups", list),
+    (r"/disk-failures", list), (r"/shrink-records", list),
+    (r"/net", list), (r"/net/config", dict), (r"/net/deploy", dict),
+    (r"/net/interfaces", list), (r"/net/interfaces/[^/]+/leases", dict),
+    (r"/room", dict), (r"/room/history", list), (r"/room/driver-models", list),
+    (r"/images", list), (r"/images/[^/]+", dict), (r"/folders", list), (r"/tasks", list),
+    (r"/health", list), (r"/ports", list),
+    (r"/storage-locations", dict), (r"/storage-locations/[^/]+", dict),
+    (r"/drivers", list), (r"/monitor/machines", list), (r"/monitor/settings", dict),
+    (r"/users", list), (r"/journal", list), (r"/journal/events", list),
+    (r"/settings", dict), (r"/update", dict), (r"/update/status", dict),
+    # מה-gate (11/10): כרטיסי TLS ושם המארח בהגדרות, ומי מחובר לקונסולה (דף הרשת).
+    (r"/tls", dict), (r"/hostname", dict), (r"/sessions", list),
+    # המשני עונה 409 משלו (אינו מנהל ילדים) — העמוד מקבל את תשובת המשני.
+    (r"/storage-nodes", list), (r"/storage-node-groups", list), (r"/storage-transfers", list),
+)
+#: ‏#1179 שלב 2: כתיבה מהראשי — רשימה נפרדת, ‏(שיטה, ביטוי לנתיב), לפי הסדר שנקבע:
+#: משתמשים → הגדרות → רשת. **מחוץ לרשימה במכוון:** ‏``/users/{n}/reset-password``
+#: (הסיסמה החדשה חוזרת בתשובה, ו-``defang`` היה משבש בה תווים כמו ``&``), ‏``/ports/…``
+#: (כיבוי 8443 במשני מנתק אותו מהראשי — ואין דרך להדליק בחזרה מכאן), מחיקת אימג'/
+#: מכונה וכל העלאה.
+CONSOLE_WRITES: tuple[tuple[str, str], ...] = (
+    ("POST", r"/users"), ("PUT", r"/users/[^/]+"), ("DELETE", r"/users/[^/]+"),
+    ("POST", r"/settings"),
+    # רשת: כרטיסים ו-DHCP (‏/net/interfaces) וכתובות (‏/net/config). שינוי כתובת שמנתק
+    # את המשני מהראשי חוזר לבד: אישור ההחזרה (‏/net/config/confirm) לא יגיע, וה-rollback
+    # של המשני (#1263) מחזיר. ‏…/probe (שולח DHCP לרשת) אינו כאן — הוא GET שאינו ברשימה.
+    ("POST", r"/net/interfaces"), ("PUT", r"/net/interfaces/[^/]+"),
+    ("PUT", r"/net/interfaces/[^/]+/description"), ("DELETE", r"/net/interfaces/[^/]+"),
+    ("POST", r"/net/config/[^/]+/preview"), ("PUT", r"/net/config/[^/]+"),
+    ("PUT", r"/net/config/[^/]+/deploy"), ("PUT", r"/net/config/[^/]+/second"),
+    ("POST", r"/net/config/confirm"),
+)
+#: תקרה לגוף בקשת כתיבה מהראשי — טופס, לא קובץ.
+MAX_CONSOLE_WRITE_BODY = 64 * 1024
+#: כותרות תשובה שהעמודים קוראים (זמן מדידה, "החיפוש נקטע") — עוברות בשמן.
+CONSOLE_HEADERS = ("x-health-checked-at", "x-journal-search-truncated", "x-journal-total")
+_ACTING_USER = re.compile(r"^[A-Za-z0-9._@-]{1,64}$")
+#: נתיב שעובר כפי שהוא, בלי פענוח אחר-כך: בלי ``%`` (אין ``%2e%2e``/``%2f``/קידוד
+#: כפול שהופכים לנתיב אחר אחרי unquote), בלי ``\``, בלי רווח — רק תווים שאינם
+#: משתנים בפענוח. הבדיקה והבקשה רצות על **אותה** מחרוזת.
+_SAFE_PATH = re.compile(r"(?:/[A-Za-z0-9._~-]+)+")
+#: תקרה לגוף שהקונסולה של המשני מחזירה, לפני שהוא נאסף לזיכרון.
+MAX_CONSOLE_BODY = 16 * 1024 * 1024
+_QUERY = re.compile(r"^[A-Za-z0-9._~%&=+-]{0,512}$")
+
+
+def console_get_type(path: str) -> type | None:
+    """הטיפוס העליון של ``path`` אם הוא ברשימה המותרת, אחרת ``None``. נתיב עם
+    ``%``, לוכסן הפוך או מקטע ``.``/``..`` נדחה **לפני** ההתאמה — אין דרך לפענח אותו לאחר."""
+    if not _SAFE_PATH.fullmatch(path or "") or any(
+            seg in (".", "..") for seg in path.split("/")):
+        return None
+    for pattern, kind in CONSOLE_GETS:
+        if re.fullmatch(pattern, path):
+            return kind
+    return None
+
+
+def console_write_allowed(method: str, path: str) -> bool:
+    """‏``(method, path)`` ברשימת הכתיבה — אחרי אותה בדיקת נתיב של ה-GET (בלי ``%``/``..``)."""
+    if not _SAFE_PATH.fullmatch(path or "") or any(seg in (".", "..") for seg in path.split("/")):
+        return False
+    return any(method == m and re.fullmatch(p, path) for m, p in CONSOLE_WRITES)
+
+
+def run_console_get(app, path: str, query: str, user: str) -> tuple[int, dict, object]:
+    """GET אחד מול אפליקציית הקונסולה, בתוך התהליך → ``(status, headers, body)``."""
+    if console_get_type(path) is None:          # גם כאן — שום קורא אינו עוקף את הבדיקה
+        return 404, {}, {"detail": "הנתיב אינו מורשה בערוץ הבין-שרתי"}
+    return _run_console(app, "GET", path, query, user, b"")
+
+
+def run_console_write(app, method: str, path: str, query: str, user: str,
+                      body: bytes) -> tuple[int, dict, object]:
+    """‏#1179 שלב 2: כתיבה אחת מהרשימה, בתוך התהליך — אותה זהות, אותו מסלול."""
+    if not console_write_allowed(method, path):
+        return 404, {}, {"detail": "הפעולה אינה מורשית בערוץ הבין-שרתי"}
+    if len(body) > MAX_CONSOLE_WRITE_BODY:
+        return 413, {}, {"detail": "גוף הבקשה גדול מהתקרה"}
+    return _run_console(app, method, path, query, user, body)
+
+
+def _run_console(app, method: str, path: str, query: str, user: str,
+                 body: bytes) -> tuple[int, dict, object]:
+    """בקשה אחת מול אפליקציית הקונסולה, בתוך התהליך → ``(status, headers, body)``.
+
+    דרך ``app`` המלאה (ה-handlers וה-middleware של FastAPI, כמו בבקשה רגילה);
+    הזהות היא ``(user, "admin")`` ב-scope. גוף שאינו JSON → ``{"detail": …}``."""
+    import asyncio
+    import json
+    request_headers = [(b"host", b"interserver")]
+    if body:
+        request_headers += [(b"content-type", b"application/json"),
+                            (b"content-length", str(len(body)).encode("ascii"))]
+    scope = {"type": "http", "asgi": {"version": "3.0", "spec_version": "2.3"},
+             "http_version": "1.1", "method": method, "scheme": "https",
+             "path": "/api/console" + path,
+             "raw_path": ("/api/console" + path).encode("ascii"),
+             "root_path": "", "query_string": query.encode("ascii"),
+             "headers": request_headers,
+             "client": ("127.0.0.1", 0), "server": ("interserver", 0),
+             auth.PEER_SCOPE_KEY: (user, "admin")}
+    sent: list[dict] = []
+    size = [0]
+
+    async def receive():
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    async def send(message):
+        if message["type"] == "http.response.body":
+            size[0] += len(message.get("body", b""))
+            if size[0] > MAX_CONSOLE_BODY:
+                raise OverflowError("גוף התשובה גדול מהתקרה")
+        sent.append(message)
+
+    try:
+        asyncio.run(app(scope, receive, send))
+    except Exception as exc:                                 # noqa: BLE001
+        # ‏ServerErrorMiddleware שולח 500 ואז זורק שוב — התשובה כבר אצלנו.
+        log.warning("interserver: console %s %s raised — %s", method, path, exc)
+    if size[0] > MAX_CONSOLE_BODY:
+        return 500, {}, {"detail": f"תשובת הקונסולה גדולה מ-{MAX_CONSOLE_BODY} בייטים"}
+    start = next((m for m in sent if m["type"] == "http.response.start"), None)
+    if start is None:
+        return 500, {}, {"detail": "הקונסולה של המשני לא החזירה תשובה"}
+    raw = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
+    headers = {k.decode("latin-1").lower(): v.decode("latin-1")
+               for k, v in start.get("headers", [])}
+    try:
+        body = json.loads(raw) if raw else None
+    except ValueError:
+        body = {"detail": raw[:200].decode("utf-8", "replace")}
+    return start["status"], {k: headers[k] for k in CONSOLE_HEADERS if k in headers}, body
+
+
+def console_get(ctx, app, peer: TlsPeer, *, path: str, query: str, acting_user: str,
+                token: str, protocol_version: str, has_console_cookie: bool = False) -> dict:
+    """GET מהרשימה המותרת בשם ``primary:<acting_user>``. האימות **לפני** הנתיב."""
+    authenticate_parent(ctx.conn, peer, token=token, protocol_version=protocol_version,
+                        has_console_cookie=has_console_cookie)
+    if app is None:
+        raise PairError(503, "הקונסולה של המשני אינה מחוברת לערוץ הבין-שרתי")
+    if console_get_type(path) is None:
+        raise PairError(404, "הנתיב אינו מורשה בערוץ הבין-שרתי")
+    if not _QUERY.fullmatch(query or ""):
+        raise PairError(400, "פרמטרים לא תקינים")
+    if not _ACTING_USER.fullmatch(acting_user or ""):
+        raise PairError(400, "שם המשתמש בראשי חסר או לא תקין")
+    status, headers, body = run_console_get(app, path, query or "", f"primary:{acting_user}")
+    return {"node_id": storage_nodes.identity(ctx.conn)["node_id"],
+            "status": status, "headers": headers, "body": body}
+
+
+def console_write(ctx, app, peer: TlsPeer, *, method: str, path: str, query: str,
+                  acting_user: str, body: bytes, token: str, protocol_version: str,
+                  has_console_cookie: bool = False) -> dict:
+    """‏#1179 שלב 2: כתיבה מהרשימה בשם ``primary:<acting_user>``. האימות **לפני**
+    הנתיב, והתקרה **לפני** ההרצה. רשומת יומן ``peer_write`` במשני — מי (בראשי), מה,
+    ומה יצא — גם כשהנתיב עצמו אינו כותב יומן."""
+    authenticate_parent(ctx.conn, peer, token=token, protocol_version=protocol_version,
+                        has_console_cookie=has_console_cookie)
+    if app is None:
+        raise PairError(503, "הקונסולה של המשני אינה מחוברת לערוץ הבין-שרתי")
+    if not console_write_allowed(method, path):
+        raise PairError(404, "הפעולה אינה מורשית בערוץ הבין-שרתי")
+    if len(body or b"") > MAX_CONSOLE_WRITE_BODY:
+        raise PairError(413, "גוף הבקשה גדול מהתקרה")
+    if not _QUERY.fullmatch(query or ""):
+        raise PairError(400, "פרמטרים לא תקינים")
+    if not _ACTING_USER.fullmatch(acting_user or ""):
+        raise PairError(400, "שם המשתמש בראשי חסר או לא תקין")
+    who = f"primary:{acting_user}"
+    status, headers, answer = run_console_write(app, method, path, query or "", who, body or b"")
+    journal(ctx.conn, "peer_write", f"{method} {path} → {status}", who)
+    return {"node_id": storage_nodes.identity(ctx.conn)["node_id"],
+            "status": status, "headers": headers, "body": answer}
+
+
 # --- מנהרת מוניטור מהאב (#655 v1): פרוקסי-של-פרוקסי ----------------------------
 #
 # הראשי לעולם אינו רואה סוד של מכונה. הוא מבקש ``GET /monitor/{mac}`` בערוץ
@@ -1004,11 +1196,13 @@ class InterserverTLSServer:
     """
 
     def __init__(self, ctx, host: str, port: int, cert_pem: bytes, key_pem: bytes,
-                 *, data_dir=None):
+                 *, data_dir=None, console_app=None):
         import socket
         import threading
         self.ctx = ctx
         self.data_dir = data_dir
+        #: ‏#1179: אפליקציית הקונסולה של השרת הזה — ל-``GET /console/…`` בלבד.
+        self.console_app = console_app
         self.handles: dict = {}
         self._cert_pem = cert_pem
         self._key_pem = key_pem
@@ -1025,7 +1219,16 @@ class InterserverTLSServer:
         return self
 
     def stop(self) -> None:
+        import socket
         self._stop.set()
+        # ‏close() לבדו אינו מעיר accept() חסום בלינוקס: המאזין המשיך לקבל חיבור
+        # אחד, השלים TLS וסגר בלי לקרוא (ECONNRESET אצל השולח, שנראה "אחרי
+        # השליחה"). ‏shutdown מעיר אותו; בווינדוס הוא נכשל על שקע מאזין
+        # (ENOTCONN), ושם close לבדו כבר מעיר את ה-accept.
+        try:
+            self._sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
         try:
             self._sock.close()
         except OSError:
@@ -1214,6 +1417,20 @@ class InterserverTLSServer:
 
     def _dispatch(self, peer, method, path, headers, body) -> bytes:
         import json
+        bare, _, query = path.partition("?")
+        console_path = _console_path_of(bare)
+        if method in ("POST", "PUT", "DELETE") and console_path is not None:
+            # ‏#1179 שלב 2: הגוף עובר לקונסולה כפי שהוא — לא מפוענח כאן.
+            creds = {"token": _bearer(headers),
+                     "protocol_version": headers.get("imagectl-protocol-version", ""),
+                     "has_console_cookie": "imagectl_session" in headers.get("cookie", "")}
+            try:
+                return _http_response(200, console_write(
+                    self.ctx, self.console_app, peer, method=method, path=console_path,
+                    query=query, acting_user=headers.get("imagectl-acting-user", ""),
+                    body=body, **creds))
+            except PairError as exc:
+                return _http_response(exc.status, exc.payload())
         try:
             payload = json.loads(body) if body else {}
         except json.JSONDecodeError:
@@ -1237,6 +1454,12 @@ class InterserverTLSServer:
                 return _http_response(200, list_machines(self.ctx, peer, **creds))
             if method == "GET" and path == f"{_PREFIX}/images":
                 return _http_response(200, list_images(self.ctx, peer, **creds))
+            console_path, _, query = path.partition("?")
+            console_path = _console_path_of(console_path)
+            if method == "GET" and console_path is not None:
+                return _http_response(200, console_get(
+                    self.ctx, self.console_app, peer, path=console_path, query=query,
+                    acting_user=headers.get("imagectl-acting-user", ""), **creds))
             manifest_id = _image_manifest_of(path)
             if method == "GET" and manifest_id is not None:
                 return _http_response(200, image_manifest(
@@ -1300,3 +1523,11 @@ def _image_file_of(path: str) -> tuple[str, str] | None:
     if not decoded or "/" in decoded or "\\" in decoded:
         return None
     return image_id, decoded
+
+
+def _console_path_of(path: str) -> str | None:
+    """‏#1179: ‏``/…`` מ-``/api/interserver/v1/console/…`` (בלי query), או ``None``."""
+    prefix = f"{_PREFIX}/console/"
+    if not path.startswith(prefix) or len(path) == len(prefix):
+        return None
+    return "/" + path[len(prefix):]

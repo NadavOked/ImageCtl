@@ -183,11 +183,27 @@ static void room_machine_draw(App *a, cairo_t *cr, const Machine *m, int mi,
             draw_border_rrect(cr, slot, RADIUS_SM, t->hair, 1);
         }
 
+        /* #704: the operator's name of the slot -- "name · capacity" on a disk,
+         * the name alone (muted) on an empty or unreachable slot. No name =
+         * the capacity alone, exactly as before. */
+        const char *sname = m->slot_names[port - 1];
+        if (!avail && sname[0]) {
+            Text nt = text_make(cr, FONT_SANS, g->slot_h >= N_CLONE_TITLE ? N_HEADER_FONT : N_IMAGE_SUB,
+                                500, sname, 0, DIR_RTL);
+            cairo_save(cr);
+            cairo_rectangle(cr, slot.x + 2, slot.y + 1, slot.w - 4, slot.h - 2);
+            cairo_clip(cr);
+            text_draw(cr, &nt, slot.x + (slot.w - nt.w) / 2, slot.y + (slot.h - nt.h) / 2, t->muted);
+            cairo_restore(cr);
+            text_free(&nt);
+        }
         if (avail) {
-            char capacity[24];
+            char capacity[24], named[SLOT_NAME_MAX + 32] = "";
             fmt_bytes(capacity, sizeof capacity, (double)d->size_bytes);
+            if (sname[0]) snprintf(named, sizeof named, "%s · %s", sname, capacity);
             Text ct = text_make(cr, FONT_SANS, g->slot_h >= N_CLONE_TITLE ? N_HEADER_FONT : N_IMAGE_SUB,
-                                selected ? 700 : 600, capacity, 0, DIR_LTR);
+                                selected ? 700 : 600, sname[0] ? named : capacity, 0,
+                                sname[0] ? DIR_RTL : DIR_LTR);
             cairo_save(cr);
             cairo_rectangle(cr, slot.x + 2, slot.y + 1, slot.w - 4, slot.h - 2);
             cairo_clip(cr);
@@ -304,9 +320,11 @@ static void room_live_grid_draw(App *a, cairo_t *cr, double x, double y, double 
         double slot_h = body.h / slots;
         for (int k = 0; k < slots; k++) {
             const RoomDrawer *d = nfound ? found[k] : NULL;
-            char size[32] = "—", label[80], percent[16];
+            /* #704: the slot's name instead of "דיסק N" when the operator gave one */
+            char size[32] = "—", label[SLOT_NAME_MAX + 48], percent[16];
             if (d && d->size_bytes) fmt_bytes(size, sizeof size, (double)d->size_bytes);
-            if (d) snprintf(label, sizeof label, "דיסק %d  %s", d->port, size);
+            if (d && m->slot_names[d->port - 1][0]) snprintf(label, sizeof label, "%s  %s", m->slot_names[d->port - 1], size);
+            else if (d) snprintf(label, sizeof label, "דיסק %d  %s", d->port, size);
             else   snprintf(label, sizeof label, "%s", "לא דווחו דיסקים");
             snprintf(percent, sizeof percent, "%d%%", pct);
             Text lt = rtl_block_make(cr, 11, 500, label, body.w - 48);
@@ -326,6 +344,10 @@ static void room_live_grid_draw(App *a, cairo_t *cr, double x, double y, double 
 /* mockup 10/10 ("חדר + סבב חי"): "עצור סבב…" stands apart at the start as
  * red words; it opens the #1270 confirm dialog (the red "עצור סבב" is
  * there). The rest sit at the inline end, the primary last. */
+/* #989 item 3: a wave that finished with work left -- the next one is open and
+ * waiting for replaced disks. Same test as the console (roomWaveProgress). */
+static int wave_ended(const State *s) { return s->wave_open && s->wave_number > 1 && s->remaining > 0; }
+
 static void live_footer(App *a, cairo_t *cr, Rect foot) {
     const Theme *t = a->theme; const State *s = &a->st;
     double bh = btn_height(cr), by = foot.y + N_ACTION_TOP;
@@ -335,7 +357,7 @@ static void live_footer(App *a, cairo_t *cr, Rect foot) {
     text_free(&stop);
     Text labels[3]; int kinds[3], ids[3], nb = 0;     /* from the inline end: the primary first */
     if (s->wave_open) { labels[nb] = btn_label(cr, "התחל עכשיו"); kinds[nb] = BTN_PRIMARY; ids[nb++] = HIT_ROOM_START; }
-    labels[nb] = btn_label(cr, "העֵר שוב"); kinds[nb] = BTN_PLAIN; ids[nb++] = HIT_ROOM_WAKE;
+    labels[nb] = btn_label(cr, wave_ended(s) ? "הער את מחשבי השיכפול" : "העֵר שוב"); kinds[nb] = BTN_PLAIN; ids[nb++] = HIT_ROOM_WAKE;
     labels[nb] = btn_label(cr, "חזרה");     kinds[nb] = BTN_PLAIN; ids[nb++] = HIT_BACK;
     double x = foot.x + N_PAD;
     for (int i = 0; i < nb; i++) {
@@ -449,7 +471,7 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
     }
 
     /* ---- renderLive ---- */
-    char sub[300], count[48], hint[520], pace[160], age[64], image[112];
+    char sub[300], count[48], hint[1200], hint0[520], prog[300], est[96], pace[160], age[64], image[112];
     /* #410: how old this picture is, next to the wave -- a state file that
      * stopped changing shows a growing number, not a current-looking screen. */
     pace_age(s->updated, age, sizeof age);
@@ -459,15 +481,26 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
     snprintf(count, sizeof count, "%d / %d", s->written, s->target);
     if (s->wave_open) {
         int need = s->remaining - s->ready; if (need < 0) need = 0;
-        snprintf(hint, sizeof hint, "הגל ממתין: %d מגירות מוכנות, צריך עוד %d — או \"התחל עכשיו\". החלפתם מגירות? הדליקו את המכונות והן יצטרפו.",
+        snprintf(hint0, sizeof hint0, "הגל ממתין: %d מגירות מוכנות, צריך עוד %d — או \"התחל עכשיו\". החלפתם מגירות? הדליקו את המכונות והן יצטרפו.",
                  s->ready, need);
     } else {
         /* #410: elapsed, rate and ETA come from the server (round= record);
          * "לא נמדד" in words when it has nothing yet -- never a 0 rate. */
         pace_text(s->elapsed_s, s->rate_bps, s->eta_s, 0, pace, sizeof pace);
-        snprintf(hint, sizeof hint, "הגל משדר — %s. מכונה שסיימה — מכבים, מחליפים מגירות, מדליקים.",
+        snprintf(hint0, sizeof hint0, "הגל משדר — %s. מכונה שסיימה — מכבים, מחליפים מגירות, מדליקים.",
                  pace[0] ? pace : "זמן וקצב טרם נמדדו");
     }
+    /* #989 item 3: where the round stands across waves, from the round= record only;
+     * K = ceil(left / ready now), and no estimate at all when nothing is ready. */
+    prog[0] = 0;
+    if (s->remaining > 0) {
+        if (s->ready > 0) snprintf(est, sizeof est, "משוער: עוד %d גלים", (s->remaining + s->ready - 1) / s->ready);
+        else snprintf(est, sizeof est, "ממתין לדיסקים חדשים");
+        snprintf(prog, sizeof prog, "גל %d · נכתבו %d מתוך %d · נשארו %d · %s\n",
+                 s->wave_number, s->written, s->target, s->remaining, est);
+    }
+    snprintf(hint, sizeof hint, "%s%s%s", prog, hint0,
+             wave_ended(s) ? "\nהגל הסתיים — החליפו דיסקים והעירו את מחשבי השיכפול כדי להמשיך" : "");
     int pct = s->target > 0 ? (int)floor(100.0 * s->written / s->target + 0.5) : 0;
 
     Head hd = head_make(cr, "הפצה למחשבי שיכפול", sub, inner);

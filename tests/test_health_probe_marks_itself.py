@@ -1,6 +1,6 @@
 """הבדיקה העצמית של השרת אינה נרשמת כמכונה (‏#976).
 
-‏`/api/console/health` (וגם `/ports` ומתג ה-SSH) מושכים בחזרה את
+‏`/api/console/health` (וגם `/ports`) מושכים בחזרה את
 ‏`GET /boot/menu?mac=<MAC רשום>` ו-`?mac=00:00:00:00:00:00` — זו הראיה
 החיובית שהשרת מגיש תפריט בכתובת ההפצה ומה כתוב בשורת הקרנל. עד 17/09
 השרת לא הבחין בין הבדיקה של עצמו לבין GRUB של מכונה: כל כניסה לקונסולה
@@ -31,7 +31,6 @@ pytest.importorskip("fastapi")
 from conftest import hello_body, setup_classroom            # noqa: E402
 
 from server.bootguard import ATTEMPT_LIMIT                   # noqa: E402
-from server.ssh_switch import Listeners                      # noqa: E402
 
 try:
     from fastapi.testclient import TestClient
@@ -65,22 +64,14 @@ def probing_server(tmp_path: Path, images_root: Path, clock):
     def http_get(url: str) -> int | None:
         return holder["self"].get(url, headers=PROBE).status_code
 
-    def http_text(url: str) -> tuple[int | None, str]:
-        response = holder["self"].get(url, headers=PROBE)
-        return response.status_code, response.text
-
     hooks = {
         "ss": lambda: "",
         "ss_tcp": lambda: "",      # ‏#996: /ports קורא גם את טבלת ה-TCP
         "unit_active": lambda name: "active",
         "http_get": http_get,
-        "http_text": http_text,
         "http_size": lambda url: (200, 31_000_000),
         "interfaces": lambda: [],
         "tftp_root": lambda: tftp,
-        "listeners": lambda: Listeners(True),
-        "apply_sshd": lambda text: pytest.fail("בדיקה נגעה ב-sshd אמיתי"),
-        "settle": lambda: None,
         "udp_sender_pids": lambda: [],
     }
     app = create_app(tmp_path / "data", images_root, BASE,
@@ -193,26 +184,24 @@ def test_startup_removes_the_existing_all_zero_device(tmp_path):
 
 
 def test_health_leaves_the_probed_machine_evidence_alone(probing_server):
-    """‏`_probe_macs` מבקש תפריט עבור המכונה הרשומה הראשונה — וה-IP,
-    "נראה לאחרונה" ושביל הפירורים שלה נשארים מה שהיא עצמה דיווחה."""
+    """בדיקת הבריאות מושכת תפריט אתחול (עד #1266 — גם עבור המכונה הרשומה
+    הראשונה, בשביל חיווי ה-SSH) — וה-IP, "נראה לאחרונה" ושביל הפירורים
+    של המכונה נשארים מה שהיא עצמה דיווחה."""
     ids = setup_classroom(probing_server)
     before = evidence(station_boots_and_reports(probing_server, ids["mac1"]))
 
     rows = {r["id"]: r for r in
             probing_server["admin"].get("/api/console/health").json()}
-    # הראיה החיובית של הבדיקה עצמה לא נפגעה: התפריט נקרא, ושורת
-    # הקרנל של mac1 היא זו שנבדקה.
-    assert "ssh_stations" not in rows
+    assert rows["server"]["state"] == "ok"   # התפריט באמת נמשך ונקרא
 
     assert evidence(devices(probing_server)[ids["mac1"]]) == before
 
 
-def test_the_ssh_and_ports_screens_do_not_mark_either(probing_server):
-    """אותה בדיקה עצמית רצה גם מ-`/ssh` ומ-`/ports`."""
+def test_the_ports_screen_does_not_mark_either(probing_server):
+    """אותה בדיקה עצמית רצה גם מ-`/ports`."""
     ids = setup_classroom(probing_server)
     before = evidence(station_boots_and_reports(probing_server, ids["mac1"]))
     admin = probing_server["admin"]
-    assert admin.get("/api/console/ssh").status_code == 200
     assert admin.get("/api/console/ports").status_code == 200
     seen = devices(probing_server)
     assert ZERO_MAC not in seen
@@ -274,7 +263,7 @@ def test_loopback_without_the_mark_is_not_a_boot(probing_server):
 # --- ה-hooks האמיתיים שולחים את הסימון --------------------------------------
 
 
-@pytest.mark.parametrize("hook", ["http_get", "http_text", "http_size"])
+@pytest.mark.parametrize("hook", ["http_get", "http_size"])
 def test_the_default_probes_carry_the_mark(monkeypatch, hook):
     """‏`default_hooks()` הם מה שרץ בייצור — ואם הם לא שולחים את
     הכותרת, כל מה שלמעלה מגן על שום דבר."""

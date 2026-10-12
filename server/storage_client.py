@@ -13,18 +13,43 @@ TLS, וזה מה שקושר אותם ב-channel-binding בצד המשני.
 from __future__ import annotations
 
 import json
+import select
 import socket
+import time
 
 from . import interserver_auth
 from .interserver_auth import parse_interserver_url   # re-export לנוחות
 
 __all__ = ["parse_interserver_url", "PinnedMTLSClient", "fetch_server_spki",
            "pair_secondary", "ping_secondary", "InterserverClientError",
-           "InterserverIdentityMismatch", "InterserverTunnelRefused", "open_tunnel"]
+           "InterserverIdentityMismatch", "InterserverTunnelRefused", "open_tunnel",
+           "InterserverTimeout"]
+
+#: ‏#1286: תקרה **כוללת** לבקשה רגילה — ping, ‏JSON, ו-relay של הקונסולה.
+#: משני שקיבל את הבקשה ולא ענה בתוכה = "לא נקרא" (502), לא תהליכון תקוע.
+REQUEST_TIMEOUT = 15.0
+#: ‏#1286: בזרם (העברת אימג') — כמה זמן מותר **בלי בייט אחד שזז**. זו תקרה
+#: למנה ולא לכל ההעברה: זרם איטי שמתקדם אינו נחתך, זרם שעמד — נכשל.
+STREAM_IDLE_TIMEOUT = 60.0
+#: ‏#1286: אחרי שכל גוף ה-PUT יצא, המשני מחלץ את ה-tar ומאמת sha256 לפני
+#: שהוא עונה — דקות של שקט לגיטימי. התקרה לשקט הזה יחסית לגודל: קצב רצפה
+#: שנבחר (לא נמדד) כחמישית מ-106MB/s של סבב המעבדה (17/09).
+VERIFY_MIN_RATE = 20 * 1024 * 1024
 
 
 class InterserverClientError(RuntimeError):
     """כשל בשיחה הבין-שרתית מצד הראשי (חיבור, SPKI, או תשובת שגיאה)."""
+
+
+class InterserverTimeout(InterserverClientError):
+    """‏#1286: המשני לא התקדם בתוך התקרה — כשל בשם, לא המתנה בלי סוף."""
+
+
+class RequestNotSent(InterserverClientError):
+    """‏#1179: הבקשה לא נכתבה במלואה לחיבור (‏ECONNRESET/EPIPE בתוך ה-sendall).
+    המשני לא קיבל בקשה שלמה ולכן לא הריץ אותה — כותרות חלקיות או גוף קצר
+    מהמוצהר אינם מגיעים ל-dispatch (‏#1122). כשל **אחרי** כתיבה מלאה אינו
+    זה: שם לא ידוע אם הפעולה בוצעה."""
 
 
 class InterserverIdentityMismatch(InterserverClientError):
@@ -78,6 +103,61 @@ def _parse_json(raw: bytes) -> dict:
         return {"detail": raw.decode("utf-8", "replace")}
 
 
+class _TimedConn:
+    """‏#1286: חיבור pyOpenSSL על socket לא-חוסם, עם ``select`` לכל המתנה.
+
+    ‏socket עם timeout הוא non-blocking ל-pyOpenSSL (‏WantRead/WantWrite) —
+    ולכן ה-timeout הוסר פעם אחרי ה-connect, והחיבור חסם בלי תקרה. כאן כל
+    ``recv``/``sendall``/``do_handshake`` ממתין לכל היותר ``idle`` שניות
+    להתקדמות, ולא אחרי ``deadline`` (אם נקבע). כל השאר עובר לחיבור עצמו."""
+
+    def __init__(self, conn, raw):
+        self._ssl = conn
+        self._raw = raw
+        self.idle = REQUEST_TIMEOUT
+        self.deadline: float | None = None
+        self.waiting_for = "תשובה"
+
+    def limit(self, idle: float, *, total: bool, waiting_for: str) -> None:
+        self.idle = idle
+        self.deadline = time.monotonic() + idle if total else None
+        self.waiting_for = waiting_for
+
+    def _wait(self, rlist, wlist) -> None:
+        wait = self.idle
+        if self.deadline is not None:
+            wait = min(wait, self.deadline - time.monotonic())
+        if wait <= 0 or not any(select.select(rlist, wlist, [], wait)):
+            raise InterserverTimeout(
+                f"המשני לא התקדם {self.idle:g} שניות ({self.waiting_for}) — נכשל, לא ממתינים")
+
+    def _io(self, op):
+        from OpenSSL import SSL
+        while True:
+            try:
+                return op()
+            except SSL.WantReadError:
+                self._wait([self._raw], [])
+            except SSL.WantWriteError:
+                self._wait([], [self._raw])
+
+    def do_handshake(self) -> None:
+        self._io(self._ssl.do_handshake)
+
+    def recv(self, n: int) -> bytes:
+        return self._io(lambda: self._ssl.recv(n))
+
+    def sendall(self, data: bytes) -> None:
+        # ‏send חוזר על **אותו** אובייקט אחרי Want*: ‏OpenSSL דורש אותם ארגומנטים.
+        view = memoryview(data)
+        while view:
+            current = view
+            view = view[self._io(lambda: self._ssl.send(current)):]
+
+    def __getattr__(self, name):
+        return getattr(self._ssl, name)
+
+
 class PinnedMTLSClient:
     """חיבור mTLS 1.3 יחיד למשני, עם SPKI מוצמד ותעודת-לקוח של הראשי."""
 
@@ -105,14 +185,19 @@ class PinnedMTLSClient:
         ctx = interserver_auth.build_pinned_client_context(
             self.expected_spki, self._cert_pem, self._key_pem)
         raw = socket.create_connection((self.host, self.port), timeout=self.timeout)
-        # ‏socket עם timeout הוא non-blocking ל-pyOpenSSL (WantReadError ב-
-        # handshake). ה-timeout שירת את ה-connect; מכאן ה-TLS חוסם רגיל.
-        raw.settimeout(None)
+        # ‏#1286: לא-חוסם, וכל המתנה דרך ``_TimedConn`` (select) — לא
+        # ``settimeout(None)``, שבו משני שקיבל TCP ונתקע חסם לנצח.
+        raw.setblocking(False)
         # codeql[py/insecure-protocol] false positive: build_pinned_client_context קובע min=max=TLS 1.3, ונבדק שוב אחרי ה-handshake (#291)
-        conn = SSL.Connection(ctx, raw)
-        conn.set_connect_state()
+        ssl_conn = SSL.Connection(ctx, raw)
+        ssl_conn.set_connect_state()
+        conn = _TimedConn(ssl_conn, raw)
+        conn.limit(self.timeout, total=True, waiting_for="handshake")
         try:
             conn.do_handshake()
+        except InterserverTimeout:
+            raw.close()
+            raise
         except SSL.Error as exc:
             raw.close()
             # אי-התאמת SPKI מפילה את ה-handshake כאן — hard fail, לא המשך.
@@ -153,7 +238,11 @@ class PinnedMTLSClient:
         else:
             lines.append("Content-Length: 0")
         request = ("\r\n".join(lines) + "\r\n\r\n").encode() + payload
-        self._conn.sendall(request)
+        self._conn.limit(REQUEST_TIMEOUT, total=True, waiting_for=f"{method} {path}")
+        try:
+            self._conn.sendall(request)
+        except Exception as exc:                             # noqa: BLE001
+            raise RequestNotSent(f"הבקשה לא נשלחה במלואה: {exc}") from exc
         status, _resp_headers, raw_body = _read_http_response(self._conn)
         try:
             parsed = json.loads(raw_body) if raw_body else {}
@@ -213,6 +302,22 @@ class PinnedMTLSClient:
                 f"{path} נכשל ({status}): {body.get('detail')}")
         return body
 
+    def get_answer(self, path: str, token: str, headers: dict | None = None) -> tuple[int, dict]:
+        """‏#1179: GET מאומת → ``(status, body)`` בלי לזרוק על status — הקורא
+        מבחין בין "המשני דחה" לבין כשל חיבור (שכן זורק)."""
+        status, _, body = self._request("GET", path, headers={
+            "Authorization": f"Bearer {token}", **(headers or {})})
+        return status, body
+
+    def send_answer(self, method: str, path: str, token: str, body: object,
+                    headers: dict | None = None) -> tuple[int, dict]:
+        """‏#1179 שלב 2: בקשת כתיבה מאומתת → ``(status, body)`` בלי לזרוק על status.
+        זורק רק על כשל בערוץ: ``RequestNotSent`` — הבקשה לא נכתבה במלואה; כל
+        חריגה אחרת — הבקשה נכתבה והתשובה לא הגיעה (לא ידוע אם בוצעה)."""
+        status, _, answer = self._request(method, path, body=body, headers={
+            "Authorization": f"Bearer {token}", **(headers or {})})
+        return status, answer
+
     def get_stream(self, path: str, token: str, dest, *, on_progress=None) -> int:
         """‏GET של גוף בינארי לקובץ, עם ``Range`` אם היעד כבר חלקי.
 
@@ -236,6 +341,7 @@ class PinnedMTLSClient:
         ]
         if resume_from > 0:
             lines.append(f"Range: bytes={resume_from}-")
+        self._conn.limit(STREAM_IDLE_TIMEOUT, total=False, waiting_for=f"זרם {path}")
         self._conn.sendall(("\r\n".join(lines) + "\r\n\r\n").encode())
         status, headers, rest = _read_http_headers(self._conn)
         if status == 416 and resume_from > 0:
@@ -288,6 +394,8 @@ class PinnedMTLSClient:
                     got += len(chunk)
                     if on_progress is not None:
                         on_progress(already + got)
+        except InterserverTimeout as exc:
+            raise InterserverTimeout(f"{exc} — אחרי {already + got} בייטים") from exc
         except InterserverClientError:
             raise
         except Exception as exc:                                 # noqa: BLE001
@@ -320,6 +428,7 @@ class PinnedMTLSClient:
             f"Content-Length: {total}",
             "Expect: 100-continue",
         ]
+        self._conn.limit(STREAM_IDLE_TIMEOUT, total=False, waiting_for=f"זרם {path}")
         self._conn.sendall(("\r\n".join(lines) + "\r\n\r\n").encode())
         status, _headers, raw = _read_http_response(self._conn)
         if status != 100:
@@ -339,6 +448,9 @@ class PinnedMTLSClient:
         if sent != total:
             raise InterserverClientError(
                 f"המקור הניב {sent} בייטים במקום {total} — ההעברה לא הושלמה")
+        # המשני מאמת עכשיו בלי לשלוח בייט — תקרה יחסית לגודל, לא תקרת המנה.
+        self._conn.limit(max(STREAM_IDLE_TIMEOUT, total / VERIFY_MIN_RATE), total=True,
+                         waiting_for=f"אימות {total} בייטים במשני")
         status, _headers, raw = _read_http_response(self._conn)
         body = _parse_json(raw)
         if status != 200:

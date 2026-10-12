@@ -20,7 +20,6 @@ function setup() {
     '/groups':[{id:'grp_class',label:'Class',role:'classroom',machines:1},{id:'grp_BUILD',role:'build',label:'Build',machines:1}],
     '/machines':[{mac:'aa',suffix:'01',group_id:'grp_class'},{mac:'cc',suffix:'Builder',group_id:'grp_BUILD'}],
     '/net':[], '/tasks':[], '/journal/events':[{event:'capture',label:'Capture'}], '/journal':[],
-    '/ssh':{stations:{enabled:false,evidence:'closed',detail:'Closed'},interfaces:[],listeners:{checked:true,port:22,addresses:[]}},
     '/settings':{recovery_require_login:'true',session_wait_seconds:'60',console_idle_seconds:'300'},
     '/users':[{username:'admin',role:'admin',created_at:'2026-09-13'}],
   };
@@ -199,12 +198,11 @@ test("#1129: server ids inside onclick=\"fn('…')\" go through encodeId, which 
   const evil="tsk'); alert(1); ('";
   assert.doesNotMatch(run('encodeId('+JSON.stringify(evil)+')'),/'/,'encodeId must not leave a raw quote');
   assert.equal(run('decodeURIComponent(encodeId('+JSON.stringify(evil)+'))'),evil,'round-trip');
-  // The two capture-cancel buttons and the port switch carry the id encoded, not esc()'d.
+  // The two capture-cancel buttons carry the id encoded, not esc()'d (#1266: the SSH port switch is gone).
   const js=fs.readFileSync(path.join(root,'console.js'),'utf8');
   assert.doesNotMatch(js,/onclick="cancelCapture\('\$\{esc\(/);
   assert.doesNotMatch(js,/onclick="portSwitch\('\$\{esc\(/);
   assert.match(js,/cancelCapture\(decodeURIComponent\('\$\{encodeId\(t\.id\)\}'\)\)/);
-  assert.match(js,/portSwitch\(decodeURIComponent\('\$\{encodeId\(key\)\}'\)\)/);
   const br=fs.readFileSync(path.join(root,'branches.js'),'utf8');
   assert.doesNotMatch(br,/loadBranchMachines\('\$\{esc\(/);
 });

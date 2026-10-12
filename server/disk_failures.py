@@ -21,7 +21,7 @@ import json
 import logging
 import sqlite3
 
-from . import ata_cause
+from . import ata_cause, slot_names
 from .db import _write_lock, journal, now_iso, writing
 
 log = logging.getLogger("imagectl.disk_failures")
@@ -64,7 +64,9 @@ def record(conn: sqlite3.Connection, session_id: str, mac: str, target: dict) ->
         return None
     journal(conn, "disk_failure",
             f"{mac} {dev} serial={serial or '?'} port={row['port'] if row['port'] is not None else '?'}"
-            f" cause={cause}")
+            f" cause={cause}"
+            # ‏#704: השם שהמפעיל נתן לחריץ; בלי שם — השורה כמו היום.
+            + slot_names.journal_suffix(slot_names.label(conn, mac, port=row["port"], serial=serial)))
     return row
 
 

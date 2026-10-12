@@ -308,3 +308,46 @@ def test_a_library_round_still_starts_the_server_engine(room_server):
     events = [r["event"] for r in ctx.conn.execute("SELECT event FROM journal")]
     assert "send_delegated" not in events
     assert ctx.sender.status() is not None
+
+
+# --- קצב אוטומטי (הכרעת נדב 11/10): גם הזרם ממחשב הבנייה עובר ברשת -----------
+
+
+def _running_direct(room_server):
+    opened = _setup(room_server)
+    anon = room_server["anon"]
+    cloner_hello(anon, CLONER1, ["S1", "S2"])
+    assert _put_manifest(room_server, opened["task_id"]).status_code == 200
+    cloner_hello(anon, CLONER1, ["S1", "S2"])
+    assert room(room_server["admin"])["round"]["wave_state"] == "running"
+    return opened
+
+
+def test_without_a_configured_cap_the_build_machine_sends_at_600m(room_server):
+    """עד היום: בלי `IMAGECTL_MAX_BITRATE` מחשב הבנייה שידר בלי `--max-bitrate`
+    כלל. מעכשיו — קצב הפתיחה, כבר בגל הפתוח (לפני שנבחר לו קצב)."""
+    assert room_server["ctx"].sender.max_bitrate is None
+    _setup(room_server)
+    direct = _build_hello(room_server["anon"])["task"]["direct"]
+    assert direct["session_state"] == "open"
+    assert direct["multicast"]["max_bitrate"] == "600m"
+
+
+def test_the_running_direct_wave_gets_the_decided_rate_and_the_room_says_why(room_server):
+    ctx, admin = room_server["ctx"], room_server["admin"]
+    opened = _running_direct(room_server)
+    direct = _build_hello(room_server["anon"])["task"]["direct"]
+    assert direct["session_state"] == "running"
+    assert direct["multicast"]["max_bitrate"] == "600m"
+    shown = room(admin)["round"]["wave_rate"]
+    assert shown["max_bitrate"] == "600m" and shown["basis"] == "start"
+    assert shown["direct"] is True and shown["projected"] is False
+    detail = ctx.conn.execute("SELECT detail FROM journal WHERE event = 'wave_rate'"
+                              ).fetchone()["detail"]
+    assert detail.startswith(opened["wave_session_id"])
+
+
+def test_the_build_machine_respects_a_configured_cap(room_server):
+    room_server["ctx"].sender.max_bitrate = "200m"
+    _running_direct(room_server)
+    assert _build_hello(room_server["anon"])["task"]["direct"]["multicast"]["max_bitrate"] == "200m"

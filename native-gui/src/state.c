@@ -140,8 +140,9 @@ void state_parse(State *s, FILE *fp) {
             m->drawer_count = (int)count;
         } else if (KEY("room_drawer")) {
             /* #695: machine-index|port-or-0|serial|model|size|smart|fresh|selected
-             * #1269: |drivers-state|drivers-detail -- optional (an older agent sends eight) */
-            if (split(val, f, 10) < 8) continue;
+             * #1269: |drivers-state|drivers-detail -- optional (an older agent sends eight)
+             * #704: |slot-name -- optional, "" = "דיסק N" */
+            if (split(val, f, 11) < 8) continue;
             unsigned long long mi, port, size;
             if (!parse_uint(f[0], &mi) ||
                 !parse_uint(f[1], &port) || port > MAX_DRAWERS ||
@@ -171,6 +172,33 @@ void state_parse(State *s, FILE *fp) {
                 cp(d->drv_state, sizeof d->drv_state, f[8]);
                 cp(d->drv_detail, sizeof d->drv_detail, f[9]);
             }
+            /* #704: the drawer's own name (by its slot; NVMe by serial) wins
+             * over a room_slot_name= for the same port, in any order. */
+            if (f[10][0]) cp(m->slot_names[actual_port - 1], sizeof m->slot_names[0], f[10]);
+            /* A port-0 drawer only borrows the slot it is drawn in: that SATA
+             * slot's name is not its name. */
+            else if (port == 0) m->slot_names[actual_port - 1][0] = 0;
+            d->fallback = port == 0;
+        } else if (KEY("room_slot_name")) {
+            /* #704: machine-index|port|name -- a SATA slot's name, empty slots too */
+            if (split(val, f, 3) != 3 || !f[2][0]) continue;
+            unsigned long long mi, port;
+            if (!parse_uint(f[0], &mi) || !parse_uint(f[1], &port) ||
+                port < 1 || port > MAX_DRAWERS)
+                continue;
+            Machine *m = machine_at(s, mi);
+            if (!m || m->slot_names[port - 1][0]) continue;
+            int borrowed = 0;                  /* a port-0 drawer drawn in this slot */
+            for (int i = 0; i < m->nroom_drawers; i++)
+                if (m->room_drawers[i].fallback && m->room_drawers[i].port == (int)port) borrowed = 1;
+            if (borrowed) continue;
+            cp(m->slot_names[port - 1], sizeof m->slot_names[0], f[2]);
+        } else if (KEY("cslot_name")) {
+            /* #704: port|name -- the cloner's own slot names (slotnames.sh) */
+            if (split(val, f, 2) != 2 || !f[1][0]) continue;
+            unsigned long long port;
+            if (!parse_uint(f[0], &port) || port < 1 || port > MAX_DRAWERS) continue;
+            cp(s->cslot_names[port - 1], sizeof s->cslot_names[0], f[1]);
         } else if (KEY("driver_models")) {
             /* #1269: how many models the bridge read; -1 = it could not read them */
             if (!strcmp(val, "-1")) { s->driver_models_read = -1; continue; }

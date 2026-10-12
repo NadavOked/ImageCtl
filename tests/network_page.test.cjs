@@ -48,7 +48,6 @@ const PORTS=[
   port('http_console','HTTP','8081','tcp','ok','uvicorn',{enabled:true,bind:'10.44.10.1',toggle:'confirm',off_means:'x'}),
   port('multicast','Multicast','9000–9001','udp','off','אין סבב',{enabled:true,bind:['10.44.9.10'],toggle:'none',off_means:'x'}),
   port('interserver','mTLS','8443','tcp','off','כבוי',{enabled:false,bind:'',toggle:'api',off_means:'x'}),
-  port('ssh_stations','SSH','22','tcp','ok','x'),
 ];
 const PORTS_NO_BIND=PORTS.map(({bind,...p})=>p);
 // ‏#1039: מי מחובר לקונסולה, וחכירות dnsmasq של כרטיס ההפצה (C1 גם ב-/net; LEASED רק בחכירה)
@@ -56,9 +55,6 @@ const LEASED='02:00:00:00:00:77';
 const SESSIONS=[{user:'nadav',ip:'10.44.10.50',since:ago(3600),last_seen:ago(30)},{user:'tech',ip:'10.44.10.51',since:ago(600),last_seen:ago(120)}];
 const LEASES={interface:'ens19',checked:true,reason:'',path:'/var/lib/misc/dnsmasq.leases',leases:[
   {mac:C1,ip:'10.44.9.118',hostname:'cloner1',expires:'2026-09-24T10:00:00+00:00'},{mac:LEASED,ip:'10.44.9.150',hostname:null,expires:null}]};
-const SSH={stations:{enabled:false,evidence:'closed',detail:'',confirm_word:'imagectl.debug'},listeners:{checked:true,addresses:['10.44.10.1'],wildcard:false,reason:'',port:22},stray:[],
-  interfaces:[{name:'ens18',state:'up',addresses:['10.44.10.1/24'],enabled:true,listening:true},{name:'ens19',state:'up',addresses:['10.44.9.10/24'],enabled:false,listening:false},
-              {name:'ens20',state:'up',addresses:['10.44.11.2/24'],enabled:false,listening:null}]};
 const MON=[{mac:C1,name:'מחשב 1',role:'cloner',ip:'10.44.9.118',online:true},{mac:C2,name:'מחשב 2',role:'cloner',ip:'10.44.9.59',online:false},{mac:B1,name:'בנייה 1',role:'build',ip:null,online:false}];
 const NODES=[{id:'sn1',label:'סניף חיפה',base_url:'https://10.44.13.5:8443',group_id:null,node_id:'sn_1',enrolled_at:'2026-09-10T00:00:00+00:00',disabled_at:null,group_label:null},
              {id:'sn2',label:'סניף ישן',base_url:'https://10.44.10.77:8443',group_id:null,node_id:'sn_2',enrolled_at:'2026-09-01T00:00:00+00:00',disabled_at:'2026-09-02T00:00:00+00:00',group_label:null}];
@@ -72,7 +68,7 @@ function setup(over={},me={}) {
     return nodes.get(key);
   }
   const fixtures={'/net/interfaces':NICS,'/net/proxy-support':{read:true,version:'2.91',verified:false,broken:true,reason:'dnsmasq 2.91 — proxy שבור'},
-    '/net/config':NETCFG,'/net':NET,'/ports':PORTS,'/ssh':SSH,'/monitor/machines':MON,'/storage-nodes':NODES,
+    '/net/config':NETCFG,'/net':NET,'/ports':PORTS,'/monitor/machines':MON,'/storage-nodes':NODES,
     '/storage-nodes/sn1/machines':{connected:false,error:'timeout',machines:[],node_id:'sn_1'},
     '/net/interfaces/ens19/probe':{interface:'ens19',checked:true,servers:[]},
     '/net/interfaces/ens18/probe':{interface:'ens18',checked:false,servers:[]},
@@ -136,11 +132,11 @@ test('network is one own page with four tabs (ports = the wave-5 page); the old 
 test('loadNetwork reads every source once, sets the shared globals for net.js/netcfg.js/ports, and selects the deploy NIC',async()=>{
   const {run,requests,node}=await loaded();
   const urls=requests.map(r=>r.url);
-  for(const u of ['/net/interfaces','/net/config','/net','/ports','/ssh','/monitor/machines','/storage-nodes','/storage-nodes/sn1/machines','/sessions','/net/interfaces/ens19/leases']) assert.equal(urls.filter(x=>x===u).length,1,u);
+  for(const u of ['/net/interfaces','/net/config','/net','/ports','/monitor/machines','/storage-nodes','/storage-nodes/sn1/machines','/sessions','/net/interfaces/ens19/leases']) assert.equal(urls.filter(x=>x===u).length,1,u);
   assert.ok(!urls.includes('/net/interfaces/ens18/leases'),'leases of the deploy NIC only (#1039)');
   assert.ok(!urls.includes('/storage-nodes/sn2/machines'),'a disabled secondary is not asked');
   assert.equal(run('NETW.nics.length'),4); assert.equal(run('NETCFG.live.checked'),true); assert.equal(run('NET.length'),3);
-  assert.equal(run('SSH_STATE.interfaces.length'),3); assert.equal(run('NETW.sel'),'ens19','the DHCP NIC is selected by default');
+  assert.ok(!urls.includes('/ssh'),'#1266: no SSH endpoint'); assert.equal(run('NETW.sel'),'ens19','the DHCP NIC is selected by default');
   assert.equal(run('JSON.stringify(NETW.err)'),'{}');
   assert.equal(run('globalThis.rendered'),1);
   // העץ: כרטיס לכל NIC פותח את האובייקט בלשונית 1 עם הכרטיס נבחר
@@ -236,7 +232,7 @@ test('network map: the services chip is the visible "bind" only — same-name se
   const ens19=vlans(svg).find(l=>l.nic==='ens19').inner;
   assert.match(ens19,/TFTP 69 · HTTP 8080 · Multicast 9000–9001|TFTP 69 · HTTP 8080 · Multicast 9000…|TFTP 69 · HTTP 8080 · Multica…/);
   assert.match(ens19,/<title>[^<]*TFTP 69 · HTTP 8080 · Multicast 9000–9001<\/title>/,'the full text is the tooltip');
-  assert.equal(run('netAllowedShort(["SSH 22","HTTP 8082","HTTP 8080","DHCP 67"])'),'SSH 22 · HTTP 8082/8080 · DHCP 67','the lab line from the screenshot');
+  assert.equal(run('netAllowedShort(["HTTPS 8443","HTTP 8082","HTTP 8080","DHCP 67"])'),'HTTPS 8443 · HTTP 8082/8080 · DHCP 67','same-name ports fold into one chip');
   assert.equal(run('netAddrList([])'),'ללא כתובת'); assert.equal(run('netAddrList(["10.0.0.1"])'),'⁦10.0.0.1⁩'); assert.equal(run('netAddrList(["1.1.1.1","2.2.2.2","3.3.3.3"])'),'⁦1.1.1.1⁩ · ⁦2.2.2.2⁩ · ⁦+1⁩','each address isolated on its own — " · " is not ASCII');
 });
 
@@ -246,9 +242,9 @@ test('network map: without bind the chip says "דורש API", with bind null "ט
   const html=plain(run('networkPage(0)')); assert.match(mapOf(html),/מה מותר: דורש API/); assert.doesNotMatch(mapOf(html),/TFTP 69/);
   assert.match(run('networkPage(1)'),/title="דורש API \(#705\): מודל וילן \/ bind">— דורש API/);
   const server=[port('tftp','TFTP','69','udp','ok','',{bind:[]}),port('http_console','HTTP','8081','tcp','ok','',{bind:['10.44.10.1/24:8081']}),
-    port('ssh_server:ens18','SSH לשרת — ens18','22','tcp','ok','',{bind:['10.44.10.1/24:22']}),port('multicast','Multicast','9000–9001','udp','off','',{bind:['[::]:9000']})];
+    port('interserver','HTTPS (mTLS)','8443','tcp','ok','',{bind:['10.44.10.1/24:8443']}),port('multicast','Multicast','9000–9001','udp','off','',{bind:['[::]:9000']})];
   let t=await loaded({'/ports':server});
-  assert.equal(t.run('JSON.stringify(netServicesOn(NETW.nics[0]))'),JSON.stringify(['HTTP 8081','SSH לשרת — ens18 22','Multicast 9000–9001']));
+  assert.equal(t.run('JSON.stringify(netServicesOn(NETW.nics[0]))'),JSON.stringify(['HTTP 8081','HTTPS (mTLS) 8443','Multicast 9000–9001']));
   assert.equal(t.run('JSON.stringify(netServicesOn(NETW.nics[1]))'),JSON.stringify(['Multicast 9000–9001']),'only the wildcard');
   t=await loaded({'/ports':server.map(p=>({...p,bind:[]}))});
   assert.equal(t.run('JSON.stringify(netServicesOn(NETW.nics[0]))'),'[]','every bind [] = read, and nothing listens here');
@@ -311,10 +307,10 @@ test('empty and unread are messages, not an empty drawing: no NICs → empty sta
 
 /* ---------- לשונית 1: חיבורים פיזיים ---------- */
 
-test('NICs table: actual / configured / gap side by side, DHCP live + stored, role from bind, SSH switch per NIC, actions cell in every row (#1032)',async()=>{
+test('NICs table: actual / configured / gap side by side, DHCP live + stored, role from bind, actions cell in every row (#1032; #1266: no SSH column)',async()=>{
   const {run}=await loaded();
   const html=run('networkPage(1)'); balanced(html);
-  assert.match(html,/<table class="dg stable kebab-col"><thead><tr><th>כרטיס<\/th><th>תיאור<\/th><th>קישור<\/th><th>בפועל<\/th><th class="c-opt">מוגדר<\/th><th>פער<\/th><th>DHCP<\/th><th class="c-opt">תפקיד<\/th><th>SSH לשרת<\/th><th><span class="sr">פעולות<\/span><\/th>/);
+  assert.match(html,/<table class="dg stable kebab-col"><thead><tr><th>כרטיס<\/th><th>תיאור<\/th><th>קישור<\/th><th>בפועל<\/th><th class="c-opt">מוגדר<\/th><th>פער<\/th><th>DHCP<\/th><th class="c-opt">תפקיד<\/th><th><span class="sr">פעולות<\/span><\/th>/);
   const r18=row(html,'data-nic="ens18"'), r19=row(html,'data-nic="ens19"'), r20=row(html,'data-nic="ens20"'), r21=row(html,'data-nic="ens21"');
   for(const r of [r18,r20,r21]) { const n=r.match(/data-nic="(ens\d\d)"/)[1];   // ‏#1263: ⋯ = הגדרת כרטיס · תיאור; בלי "הקובץ"
     assert.deepEqual(menuOf(r),[['הגדרת כרטיס…',`netEditNic('${n}')`],['תיאור…',`netDescribe('${n}')`]]); }
@@ -325,12 +321,11 @@ test('NICs table: actual / configured / gap side by side, DHCP live + stored, ro
   assert.match(r21,/<td><span class="muted">ללא תיאור<\/span><\/td>/);
   assert.match(r18,/class="st ok">מחובר · <bdi dir="ltr">1000 Mbps<\/bdi><\/span>/); assert.match(r18,/class="mono">10\.44\.10\.1\/24</); assert.match(r18,/static 10\.44\.10\.1\/24 · gw 10\.44\.10\.254/); assert.match(r18,/class="st ok">תואם</);
   assert.match(r18,/class="st ">כבוי<\/span><span class="sub">שמור: כבוי</); assert.match(r18,/<td class="c-opt">ניהול · TFTP 69 · HTTP 8080 · HTTP 8081<\/td>/,'#1263: the management NIC is named');
-  assert.match(r18,/class="sw on" role="switch" aria-checked="true" aria-label="SSH לשרת ens18" onclick="portSwitch\(decodeURIComponent\('ssh_nic%3Aens18'\)\)"><\/button><span class="cap">🔒 פתוח · מאזין/,'last open door → typing the name');
+  assert.doesNotMatch(html,/SSH|ssh_nic|role="switch"/,'#1266: no SSH switch per NIC');
   assert.match(r19,/class="st ok">משרת<\/span><span class="sub">שמור: מופעל</,'the range lives in the deploy tab and the selected card, not in the 9-column table'); assert.match(r19,/<td class="c-opt">הפצה · DHCP · TFTP 69 · HTTP 8080 · Multicast 9000–9001<\/td>/);
-  assert.match(r19,/class="sw " role="switch" aria-checked="false".*🔒 סגור/,'opening = typing the name');
   assert.match(r20,/class="st err">כתובת: מוגדר 10\.44\.11\.1\/24, בפועל 10\.44\.11\.2\/24</,'gap is a state, red'); assert.match(r20,/class="mono">10\.44\.11\.2\/24</); assert.match(r20,/class="pill warn">רשת המכללה</);
-  assert.match(r20,/class="st ok">proxy פעיל</); assert.match(r20,/class="sw unk" role="switch" aria-checked="mixed".*סגור · לא נקרא/,'listening null → unknown, not off');
-  assert.match(r21,/class="st ">מנותק</); assert.match(r21,/class="mono">—</); assert.match(r21,/class="mono">לא מנוהל</); assert.match(r21,/class="st ">לא מנוהל</); assert.match(r21,/aria-checked="mixed".*לא ברשימת \/ssh/);
+  assert.match(r20,/class="st ok">proxy פעיל</);
+  assert.match(r21,/class="st ">מנותק</); assert.match(r21,/class="mono">—</); assert.match(r21,/class="mono">לא מנוהל</); assert.match(r21,/class="st ">לא מנוהל</);
   // כותרת + תג
   assert.match(html,/4 כרטיסים · 3 מוגדרים · מצב בפועל נקרא \d\d:\d\d · נתיבים: default via 10\.44\.10\.254 · 10\.44\.13\.0\/24 via 10\.44\.10\.254 · DNS 10\.44\.10\.2/);
   assert.match(html,/class="pill err">1 לא תואמים</); assert.match(html,/onclick="addNic\(\)">\+ כרטיס/); assert.match(html,/onclick="addRoute\(\)">\+ נתיב סטטי/);
@@ -491,7 +486,6 @@ test('#1263 DHCP off keeps the typed NIC name; the forget/description sheets are
   run("netDhcpOff('ens19')");
   assert.equal(run('sheets[0].title'),'לכבות את ה-DHCP?'); assert.equal(run('sheets[0].sub'),'ens19'); assert.equal(run('sheets[0].verify'),undefined,'#1270: no typed word'); assert.equal(run('sheets[0].danger'),true);
   run("netForget('ens21')"); assert.match(run('sheets[1].title'),/להסיר את הגדרות הכרטיס/);
-  run('networkPage(1)'); run("portSwitch('ssh_nic:ens19')"); assert.match(run('sheets[2].title'),/פתיחת SSH לשרת על ens19/); assert.equal(run('sheets[2].verify'),undefined,'#1270: no typed word');
   for(const fn of ['editNic','editAddress','showFile','previewDnsmasq','netShowFile','netEditDhcp','netEditAddress']) assert.equal(run(`typeof ${fn}`),'undefined',fn+' should be gone');
   assert.ok(!requests.some(r=>r.method==='PUT'),'nothing is written without the sheet being submitted');
 });

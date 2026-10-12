@@ -293,6 +293,17 @@ def test_install_firewall_loads_after_a_syntax_check_and_enables_the_unit(tmp_pa
     assert list(tmp_path.glob("nftables.conf.pre-imagectl.*"))          # גיבוי גם כאן
 
 
+def test_failed_install_firewall_leaves_tmpdir_empty(tmp_path, bindir):
+    """גם rollback מוחק את עותק ה-ruleset ששימש לשחזור."""
+    temp = tmp_path / "tmp"
+    temp.mkdir()
+    _firewall_fakes(bindir, enable_fails=True)
+    proc = run_bash(_firewall_script(tmp_path), tmp_path, bindir,
+                    env={"TMPDIR": posix(temp)})
+    assert proc.returncode != 0
+    assert list(temp.iterdir()) == []
+
+
 def test_install_firewall_failure_restores_the_previous_ruleset_and_file(tmp_path, bindir):
     """‏`systemctl enable --now nftables` נכשל → ה-ruleset הקודם נטען חזרה,
     הקובץ הקודם חוזר מהגיבוי, והשגיאה נאמרת בלי `|| true` שמסתיר."""

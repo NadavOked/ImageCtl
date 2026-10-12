@@ -13,7 +13,6 @@ import pytest
 pytest.importorskip("fastapi")
 
 from server.health import port_owner
-from server.ssh_switch import Listeners
 
 try:
     from fastapi.testclient import TestClient
@@ -52,14 +51,10 @@ def health_server(tmp_path: Path, images_root: Path, clock):
 
     fake = {"ss": SS_DNSMASQ, "active": "active", "http": 200,
             "interfaces": [{"name": "eth0", "state": "up", "mac": "aa", "addresses": []}],
-            # שתי דלתות ה-SSH (#83) — גם הן מוזרקות, כדי ששום בדיקה
-            # לא תקרא את /proc של המכונה שהיא רצה עליה ולא תיגע ב-sshd.
-            "listeners": Listeners(True),
             # ‏vmlinuz ו-initrd.img כפי שהתחנה מושכת אותם (#333): קוד
             # וגודל, כי 404 של ‎/boot הוא גוף בן תשעה בייטים (#332).
             "assets": {"vmlinuz": (200, 9_000_000),
                        "initrd.img": (200, 31_000_000)},
-            "menu": "linux /boot/vmlinuz ip=dhcp imagectl.server=x console=tty0",
             # ריק = לא רץ. ‏None = הבדיקה לא רצה. לא סורקים /proc של
             # המכונה שהטסט רץ עליה (#439).
             "udp_sender_pids": [],
@@ -79,12 +74,8 @@ def health_server(tmp_path: Path, images_root: Path, clock):
         "http_get": lambda url: fake["http"],
         "http_size": lambda url: fake["assets"].get(url.rsplit("/", 1)[-1],
                                                     (404, 9)),
-        "http_text": lambda url: (200, fake["menu"]),
         "interfaces": lambda: fake["interfaces"],
         "tftp_root": lambda: tftp,
-        "listeners": lambda: fake["listeners"],
-        "apply_sshd": lambda text: pytest.fail("בדיקה נגעה ב-sshd אמיתי"),
-        "settle": lambda: None,
         "udp_sender_pids": lambda: fake["udp_sender_pids"],
     }
     app = create_app(tmp_path / "data", images_root, "http://10.44.12.10:8080",
@@ -112,9 +103,8 @@ def test_a_healthy_server_is_all_green(health_server):
     assert rows["nics"]["state"] == "ok"
     # DHCP עוד לא הודלק מהקונסולה — וזה נאמר, לא מוסתר.
     assert "לא הודלק" in rows["nics"]["detail"]
-    # המתגים כבויים ברירת-מחדל, ולכן SSH אינו בדיקת בריאות שדורשת טיפול.
-    assert "ssh_stations" not in rows
-    assert "ssh_server" not in rows
+    # ‏#1266: SSH יצא מהמוצר — אין לו בדיקת בריאות בכלל.
+    assert not any(k.startswith("ssh") for k in rows), rows.keys()
     assert rows["udp_sender"]["state"] == "ok"
     assert rows["firewall"]["state"] == "ok"
     assert "פעילה" in rows["firewall"]["detail"]
@@ -216,21 +206,6 @@ def test_where_checks_cannot_run_the_light_is_grey_not_red(health_server):
     assert rows["dnsmasq"]["state"] == "off"
 
 
-def test_ssh_check_is_only_health_attention_while_the_switch_is_on(health_server):
-    """ההפך המכוון של הבדיקה שמעליה. פורט 67 שלא נבדק משאיר PXE שלא
-    עובד — ורואים את זה מיד. דלת SSH שלא נבדקה נראית *בדיוק* כמו דלת
-    סגורה, ולכן אפור כאן היה שקר מרגיע (#83)."""
-    from server import ssh_switch
-    from server.db import set_setting
-    set_setting(health_server["admin"].app.state.ctx.conn, ssh_switch.STATION_KEY,
-                ssh_switch.flag_json(True))
-    health_server["fake"]["menu"] += " imagectl.debug=1"
-    rows = by_id(health_server["admin"].get("/api/console/health").json())
-    assert rows["ssh_stations"]["state"] == "warn"
-    assert rows["ssh_stations"]["detail"].startswith("פתוח — ")  # הראיה, לא המתג
-    assert "ssh_server" not in rows
-
-
 def test_health_is_admin_only(health_server):
     assert health_server["deploy"].get("/api/console/health").status_code == 403
 
@@ -253,13 +228,10 @@ def _shim(server, tmp_path, src_bytes, tftp_bytes):
     # אותה. ‏hostguard תופס בדיוק את זה (#113).
     hooks = {**health.default_hooks(),
              "ss": lambda: SS_DNSMASQ, "unit_active": lambda n: "active",
-             "http_get": lambda u: 200, "http_text": lambda u: (200, ""),
+             "http_get": lambda u: 200,
              "http_size": lambda u: (200, 31_000_000),
              "interfaces": lambda: [{"name": "eth0", "state": "up",
                                      "mac": "aa", "addresses": []}],
-             "listeners": lambda: Listeners(True),
-             "apply_sshd": lambda t: pytest.fail("נגעה ב-sshd אמיתי"),
-             "settle": lambda: None,
              "tftp_root": lambda: tftp, "shim_src": lambda: src}
     ctx = server["admin"].app.state.ctx
     rows = health.collect(ctx, hooks, "http://x")

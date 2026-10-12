@@ -29,7 +29,7 @@ import sqlite3
 
 from fastapi import APIRouter, HTTPException, Request
 
-from . import registry, room, room_drivers, sender as sender_module
+from . import drive_rates, registry, room, room_drivers, sender as sender_module
 from .db import _write_lock, journal, now_iso, writing
 from .images import restore_refusal
 from .sessions import SessionError
@@ -252,6 +252,9 @@ def task_block(conn: sqlite3.Connection, store, task: dict,
     receivers = store.joined_count(wave["id"]) if wave is not None else 0
     params = dict(multicast or default_multicast())
     params["min_receivers"] = max(1, receivers)
+    # קצב אוטומטי: מה שנבחר לגל כשיצא, ולפני כן קצב הפתיחה — לא "בלי תקרה".
+    params["max_bitrate"] = drive_rates.direct_bitrate(
+        conn, wave["id"] if wave is not None else None, params.get("max_bitrate"))
     return {
         "session_id": wave["id"] if wave is not None else None,
         "session_state": wave["state"] if wave is not None else "closed",

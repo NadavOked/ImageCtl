@@ -103,15 +103,14 @@ installer_boot() {
     installer_note "install mode (kernel line), starting"
     ip link set lo up 2>/dev/null
     installer_dhcp_all || installer_note "temporary DHCP step failed to start"
-    # Technician door, same gate as the agent (imagectl.debug=1 on the kernel
-    # line, #44/#1080): dropbear with the packed key, never on a college ISO
-    # (build-iso adds the flag only with --debug-ssh). Named either way.
-    if [ "${IMAGECTL_DEBUG:-0}" = 1 ] && [ -f "$LIB_DIR/sshd.sh" ]; then
-        . "$LIB_DIR/sshd.sh"
-        RUN_DIR="${RUN_DIR:-/run/imagectl}"; export RUN_DIR
-        # ssh_start binds one address, never 0.0.0.0 (R20-F7): the first lease.
+    # Site/lab overlay hooks (#1266), with the same contract as in the agent:
+    # $IP is the first lease. The product ships none; named if it is missing.
+    if [ -f "$LIB_DIR/sitehooks.sh" ]; then
+        . "$LIB_DIR/sitehooks.sh"
         IP=$(cat "$DHCP_DIR"/* 2>/dev/null | sed -n 's/^address=\([0-9.]*\).*/\1/p' | head -n 1); export IP
-        if ssh_start; then installer_note "debug: dropbear listening (technician key)"; else installer_note "debug: dropbear did not start"; fi
+        run_site_hooks
+    else
+        installer_note "image without sitehooks.sh -- overlay hooks not run"
     fi
     installer_mount_media || installer_note "continuing without media: the installer will say so on screen"
     [ -x "$INSTALLER_BIN" ] || fail "installer image without $INSTALLER_BIN"

@@ -426,7 +426,7 @@ def test_the_module_default_never_touches_the_network_in_tests():
 
 
 @pytest.fixture()
-def server(tmp_path: Path, images_root):
+def server(tmp_path: Path, images_root, classrooms_on):
     """שרת אמיתי עם WoL נתפס, ושתי קבוצות: כיתה ומחשבי שיכפול."""
     from fastapi.testclient import TestClient
 

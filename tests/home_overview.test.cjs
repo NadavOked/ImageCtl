@@ -31,7 +31,6 @@ function setup() {
     '/health':[{id:'server',label:'השרת בכתובת ההפצה',state:'ok',detail:'עונה'},{id:'udp_sender',label:'מולטיקאסט',state:'warn',detail:'udp-sender לא נמצא'}],
     '/journal':[{ts:today+'T09:41:00Z',user:'nadav',event:'session_open',label:'סבב הפצה נפתח לכיתה 303',severity:'info'},
                 {ts:'2026-09-16T08:12:00Z',user:'server',event:'transfer_failed',label:'העברה נכשלה',severity:'err'}],
-    '/ssh':{stations:{enabled:false,evidence:'closed',detail:'סגור'}},
     '/update':{current:'v0.30.0',enabled:true},
     '/storage-nodes':[{id:'haifa',label:'סניף חיפה',disabled_at:null}],
     '/storage-transfers':[{id:'x1',node_id:'haifa',node_label:'סניף חיפה',image_name:'Ubuntu 24.04',state:'failed',bytes_sent:38,bytes_total:100,error:'הסניף לא ענה',created_at:today+'T08:10:00Z',started_by:'nadav'}],
@@ -71,7 +70,7 @@ function balanced(html) {
 async function loaded(role='admin') {
   const s=setup(); s.run(`ME.role="${role}"`);
   for(const [name,key] of [['IMAGES','/images'],['FOLDERS','/folders'],['MACHINES','/machines'],['DISK_FAILURES','/disk-failures'],['SHRINK_RECORDS','/shrink-records']]) s.run(name+'='+JSON.stringify(s.fixtures[key]));   // נטענים ב-showApp, לא ב-loadHome
-  if(role==='deploy') for(const k of ['/health','/journal','/ssh','/update','/storage-nodes','/storage-transfers']) s.fixtures[k]=403;
+  if(role==='deploy') for(const k of ['/health','/journal','/update','/storage-nodes','/storage-transfers']) s.fixtures[k]=403;
   await s.run('loadHome()');
   return s;
 }
@@ -236,7 +235,7 @@ test('events come from /journal (dd/mm for older days, severity from the server)
   assert.match(html,/<span class="t">16\/09\/2026<\/span><span class="d err"><\/span><span>העברה נכשלה<\/span>/);
   assert.match(html,/selectPageById\('logs'\)">ליומן המלא/);
 });
-test('"the server" card reads ports, ssh, branches and update; DHCP without net.js is "not read", not off',async()=>{
+test('"the server" card reads ports, branches and update; DHCP without net.js is "not read", not off; no SSH tile (#1266)',async()=>{
   const {run}=await loaded();
   run('SECONDARY_STATUS={haifa:{connected:true}}');
   const html=run('home(0)');
@@ -246,7 +245,7 @@ test('"the server" card reads ports, ssh, branches and update; DHCP without net.
   assert.match(card,tile('API / קונסולה','ok','תקין · 8081<'));
   assert.match(card,tile('מולטיקאסט','warn','אזהרה · 9000–9001<'));
   assert.match(card,tile('DHCP הפצה','','לא נקרא<'));
-  assert.match(card,tile('SSH לתחנות','','כבוי<'));
+  assert.doesNotMatch(card,/SSH/,'#1266: SSH is not part of the product');
   assert.match(card,tile('סניפים','ok','1 מחוברים<'));
   assert.match(card,/<div class="tt">עדכון<\/div><small>v0\.30\.0 · <a role="link" tabindex="0" onclick="selectPageById\('settings'\)">בדוק<\/a>/);
 });
@@ -262,7 +261,8 @@ test('tabs: "משימות" is the full 20-task table, "אירועים" is 50 eve
 test('loadHome reads every source once and re-renders; the summary polls only /overview and /tasks',async()=>{
   const {requests,node}=await loaded();
   const urls=requests.map(r=>r.url.replace('/api/console',''));
-  for(const u of ['/overview','/tasks','/net','/ports','/health','/journal?limit=50','/ssh','/update','/storage-nodes','/storage-transfers']) assert.ok(urls.includes(u),u);
+  for(const u of ['/overview','/tasks','/net','/ports','/health','/journal?limit=50','/update','/storage-nodes','/storage-transfers']) assert.ok(urls.includes(u),u);
+  assert.ok(!urls.includes('/ssh'),'#1266: no SSH endpoint');
   assert.match(node('#content').innerHTML,/class="kpi/);
 });
 
@@ -322,7 +322,7 @@ test('a failed /overview read marks the page stale instead of pretending',async(
 test('deploy sees the summary without attention, events and server cards; two tabs; the first KPI is the round state',async()=>{
   const {run,requests}=await loaded('deploy');
   const urls=requests.map(r=>r.url.replace('/api/console',''));
-  for(const u of ['/health','/journal?limit=50','/ssh','/update']) assert.ok(!urls.includes(u),u+' must not be requested by deploy');
+  for(const u of ['/health','/journal?limit=50','/update']) assert.ok(!urls.includes(u),u+' must not be requested by deploy');
   const html=run('layout(pages.home,0)');
   assert.equal((html.match(/role="tab"/g)||[]).length,2);
   assert.doesNotMatch(html,/דורש טיפול|אירועים אחרונים|>השרת<|openCapture/);

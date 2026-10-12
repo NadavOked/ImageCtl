@@ -48,7 +48,6 @@ def write_leases(path: Path, pairs: dict[str, str]) -> Path:
 def _health_hooks(tmp_path: Path) -> dict:
     """הבדיקות המזויפות של מסך הבריאות (‏test_server_health) — כדי ש-/health
     יענה בלי לגעת ב-ss/systemctl של המכונה שהטסט רץ עליה."""
-    from server.ssh_switch import Listeners
     tftp = tmp_path / "tftp"
     (tftp / "grub").mkdir(parents=True)
     for name in ("bootx64.efi", "grubx64.efi", "grub/grub.cfg"):
@@ -57,11 +56,8 @@ def _health_hooks(tmp_path: Path) -> dict:
         "ss": lambda: "", "unit_active": lambda name: "active",
         "http_get": lambda url: 200,
         "http_size": lambda url: (200, 9_000_000),
-        "http_text": lambda url: (200, "linux /boot/vmlinuz"),
         "interfaces": lambda: [], "tftp_root": lambda: tftp,
-        "listeners": lambda: Listeners(True),
-        "apply_sshd": lambda text: pytest.fail("בדיקה נגעה ב-sshd אמיתי"),
-        "settle": lambda: None, "udp_sender_pids": lambda: [],
+        "udp_sender_pids": lambda: [],
     }
 
 

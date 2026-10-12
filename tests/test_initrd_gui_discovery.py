@@ -183,7 +183,7 @@ def registered_server(tmp_path, *, with_gui: bool):
     return TestClient(app)
 
 
-def test_a_registered_classroom_station_really_gets_the_gui_from_the_server(tmp_path):
+def test_a_registered_classroom_station_really_gets_the_gui_from_the_server(tmp_path, classrooms_on):
     """הדרישה מקצה לקצה: ‏GRUB שואל, והשרת עונה בנתיב הגרפי.
 
     הכשל כשמסירים את החיווט מ-`server/app.py`:
@@ -196,7 +196,7 @@ def test_a_registered_classroom_station_really_gets_the_gui_from_the_server(tmp_
     assert f"initrd (http,10.44.12.10:8080)/boot/{GUI_INITRD_NAME}" in text
 
 
-def test_a_registered_cloner_really_gets_the_gui_initramfs_from_the_server(tmp_path):
+def test_a_registered_cloner_really_gets_the_gui_initramfs_from_the_server(tmp_path, classrooms_on):
     """מאז שמחשב השיכפול קיבל מסך (#679, הכרעת הבעלים), הוא ב-
     ‏ROLES_WITH_GUI — ולכן אותו שרת, אותו רגע, מחזיר לו את ה-initramfs
     הגרפי, בדיוק כמו לתחנת כיתה. זה הטסט שקידד את ההחלטה **הישנה**
@@ -211,7 +211,7 @@ def test_a_registered_cloner_really_gets_the_gui_initramfs_from_the_server(tmp_p
     assert "initrd (http,10.44.12.10:8080)/boot/initrd.img\n" not in text
 
 
-def test_without_the_gui_file_the_classroom_station_falls_back(tmp_path):
+def test_without_the_gui_file_the_classroom_station_falls_back(tmp_path, classrooms_on):
     """אותה תחנה בדיוק, על שרת שלא נבנה בו initramfs גרפי. היא עולה —
     בטקסט. זו ההתנהגות שמפרידה בין "בלי גואי" לבין "לא עולה"."""
     client = registered_server(tmp_path, with_gui=False)

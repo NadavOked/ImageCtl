@@ -34,6 +34,9 @@
 #define MAX_SHRINK_PARTS 16
 /* #1269: the models the driver library has (GET /api/console/room/driver-models). */
 #define MAX_DRIVER_MODELS 32
+/* #704: the operator's name of a slot -- the server allows 24 characters
+ * (server/slot_names.py NAME_MAX); 4 UTF-8 bytes each at most, + NUL. */
+#define SLOT_NAME_MAX 100
 
 enum {
     HIT_NONE = 0,
@@ -170,6 +173,7 @@ typedef struct { char id[64], name[96], folder[64]; } Image;
  * legacy/null-port fallback assigned by state_parse(). */
 typedef struct {
     int port, present, fresh, selected, unidentified;   /* #1235: no serial */
+    int fallback;       /* #704: port 0 -- drawn in a borrowed slot, not that slot's name */
     char serial[80], model[80], smart[16];
     unsigned long long size_bytes;
     /* #1269: drawer_list[].drivers of the live round -- staged / skipped /
@@ -186,6 +190,9 @@ typedef struct {
     int moving;         /* bytes_written > 0 -- distinguishes the two unknown states */
     RoomDrawer room_drawers[MAX_DRAWERS];
     int nroom_drawers;
+    /* #704: [port-1] = the operator's name of that slot (room_drawer field
+     * 11, else room_slot_name=); "" = drawn as "דיסק N" as before. */
+    char slot_names[MAX_DRAWERS][SLOT_NAME_MAX];
 } Machine;
 typedef struct { char id[64], label[80]; int machines; } ClassGroup;
 /* One tray of a cloning machine. Labelled/sorted by SATA port, not device
@@ -270,6 +277,8 @@ typedef struct State {
      * smart_nonce is the request's identity, drawn with the prompt and echoed
      * back on the click so the bridge binds it to the exact request. */
     char cloner_image[96];
+    /* #704: cslot_name=<port>|<name> -- [port-1], "" = "דיסק N" */
+    char cslot_names[MAX_DRAWERS][SLOT_NAME_MAX];
     int smart_pending, smart_port;
     char smart_nonce[32], smart_verdict[16], smart_reason[96];
 

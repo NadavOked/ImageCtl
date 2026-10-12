@@ -54,7 +54,7 @@ def test_a_plain_server_base_still_passes():
 
 
 def test_an_oversized_hello_field_is_refused_with_413(server):
-    """‏R39: ‏hw_inventory/hw_probe/hw_ssh נשמרו בלי תקרת גודל/עומק."""
+    """‏R39: ‏hw_inventory/hw_probe נשמרו בלי תקרת גודל/עומק."""
     from conftest import hello_body  # noqa: PLC0415
     anon = server["anon"]
     body = hello_body("b4:2e:99:07:1a:c4")

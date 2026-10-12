@@ -43,7 +43,11 @@ def test_console_js_builds_secondaries_from_the_api_and_names_from_me():
     assert 'api("/storage-nodes")' in js
     assert "ME.server_name" in js
     assert "imagectl-server-names" not in js, "שם השרת נשמר בשרת, לא ב-localStorage"
-    assert 'post("/settings", { server_name: name })' in js
+    # ‏#1179: שינוי שם הראשי נשלח תמיד לראשי (`primary: true`) — גם כשהקונסולה
+    # בהקשר של משני; בלי הדגל `consoleUrl` היה מנתב אותו להגדרות **המשני**.
+    # ה-API עצמו לא השתנה: ‏POST /settings עם `server_name`.
+    assert ('api("/settings", { method: "POST", body: JSON.stringify({ server_name: name }), '
+            'primary: true })') in js
 
 
 def test_me_reports_a_server_name_for_every_user(server):

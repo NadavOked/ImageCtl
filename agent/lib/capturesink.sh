@@ -71,8 +71,16 @@ capture_space_preflight() {
     esac
 }
 
+capture_stage() {
+    # #980 section 4: the stage the console shows (ntfs_check, shrink, stream,
+    # restore_size, verify); build_progress carries it in the task report.
+    printf '%s\n' "$1" > "$RUN_DIR/stage"
+}
+
 upload_manifest() {
-    # $1 = task id, $2 = manifest path.
+    # $1 = task id, $2 = manifest path. The server checks every sha256 inside
+    # this PUT -- that wait is the "verify" stage.
+    capture_stage verify
     curl -sfS -X PUT -H "Content-Type: application/json" \
         -H "X-Imagectl-Task-Token: ${TASK_TOKEN:-}" \
         --data-binary "@$2" \

@@ -243,7 +243,7 @@ gui_libs() {
     . "$LIB_DIR/sysinfo.sh"   # disk_port, for the cloner state producer
     . "$LIB_DIR/progress.sh"  # target_bytes, the per-drawer local truth
     . "$LIB_DIR/smart.sh"     # smart_hello_field: the cached verdict per cdisk (#834)
-    . "$LIB_DIR/failmark.sh"  # disk_failure_cause: the server's memory per cdisk (#867/#874)
+    . "$LIB_DIR/failmark.sh"; . "$LIB_DIR/slotnames.sh"   # the server's memory per cdisk (#874); slot names (#704)
     . "$LIB_DIR/clonergui.sh"; . "$LIB_DIR/tools.sh"   # #649: the toolbox (tool-list / tool-run); tools_load pulls toolbins.sh + tools_*.sh itself (#1050)
 }
 

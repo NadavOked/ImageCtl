@@ -110,6 +110,7 @@ function balanced(html) {
 }
 const between=(html,a,b)=>html.slice(html.indexOf(a),b?html.indexOf(b,html.indexOf(a)):undefined);
 const CARD=/<div class="mcard(?: off)?"/g;
+const after=(html,a,b)=>{ const i=html.indexOf(a); assert.ok(i>=0,'missing: '+a); const from=i+a.length, j=html.indexOf(b,from); assert.ok(j>=0,'missing: '+b); return html.slice(from,j); };
 const card=(html,mac)=>html.slice(html.indexOf(`data-mac="${mac}"`)).split(/<div class="mcard(?: off)?"/)[0];
 
 test('cloners object from the tree: header counters, round pill, actions, three tabs, KPIs with meaning', () => {
@@ -259,7 +260,9 @@ test('builders: "capture in progress" lists both active captures with progress, 
   assert.match(b,/<b>Kali 2026.2 — סייבר<\/b><span class="st run">נקלט מבנייה 2 · 40% · מחיצה 3 \(בלוקים\)<\/span>/);
   assert.match(b,/<span class="k">מחשב · דיסק<\/span><span class="v">בנייה 2 · <span class="mono">sda<\/span><\/span>/,'machine never reported disks → the chosen device as-is, not an invented slot');
   assert.match(b,/role="progressbar"[^>]*aria-valuenow="40"/); assert.match(b,/<span class="k">נקראו<\/span><span class="v"><bdi dir="ltr">18.6 GB<\/bdi>/); assert.match(b,/<span class="k">משך<\/span><span class="v">8:00<\/span>/);
-  assert.match(b,/בדיקת NTFS → כיווץ → זרם \+ sha256 → החזרת הגודל → אימות — <b[^>]*>דורש API<\/b>/);
+  assert.match(b,/<span class="k">שלבים<\/span><span class="v"><span class="muted">השלב לא דווח \(סוכן ישן\)<\/span>/,'#980 §4: a running task without a stage is an old agent, not "first stage"');
+  assert.match(a,/<span class="k">שלבים<\/span><span class="v"><span class="muted">PXE — ממתין שהמחשב יעלה<\/span>/,'pending = the PXE step, before the agent took the task');
+  assert.doesNotMatch(now,/דורש API/);
   assert.match(b,/cancelCaptureVerified\('tsk_b2'\)">בטל קליטה</); assert.match(b,/wakeMachine\('[^']+'\)">WoL ל-בנייה 2</,'#984');
   run("cancelCaptureVerified('tsk_b2')"); assert.ok(!run('formOptions.verify'),'#1270: no typed name'); assert.equal(run('formOptions.danger'),true);
   return run('formOptions.onSubmit({})').then(()=>{
@@ -280,7 +283,8 @@ test('builders: machine cards from /machines + /monitor + /net (model/TPM, disk 
   assert.match(b1,/<span class="k">דגם<\/span><span class="v">LENOVO ThinkCentre M720q · TPM 2.0<\/span>/);
   assert.match(b1,/<span class="k">דיסק 1<\/span><span class="v"><bdi dir="ltr">238 GB<\/bdi> · 870 EVO · <span class="mono" title="S5YB1">S5YB1<\/span><\/span>/);
   assert.match(b1,/<span class="k">מצב<\/span><span class="v"><span class="st warn"><span class="clamp" title="ממתין למפעיל: תפריט">ממתין למפעיל: תפריט<\/span><\/span> <span class="pill warn">קליטה ממתינה<\/span>/);
-  assert.match(b1,/לפני קליטה<\/span><span class="v"><span class="muted">NTFS \/ בשימוש — נבדקים בקליטה \(<b[^>]*>דורש API<\/b>\)/);
+  assert.match(b1,/לפני קליטה<\/span><span class="v"><span class="muted">לא נקלט מהמחשב הזה<\/span> · <span class="muted">NTFS לא נבדק<\/span>/,'#980 §6: no last_capture, no probe — said, not invented');
+  assert.doesNotMatch(cards,/דורש API/);
   assert.doesNotMatch(b1,/קלוט מכאן/,'a machine with an open capture gets no second one (server would 409)');
   assert.doesNotMatch(b1,/monitorMachine\(/,'monitor only on the monitor page'); assert.match(b1,/openMachineDetail\(/); assert.match(b1,/wakeMachine\('[^']+'\)">WoL</,'#984: per-machine WoL on the builder card');
   assert.match(b2,/<span class="st ok"><b>בנייה 2<\/b>/); assert.match(b2,/<span class="k">דגם<\/span><span class="v"><span class="muted">לא דיווח/); assert.match(b2,/<span class="k">דיסק<\/span><span class="v"><span class="muted">לא דיווח/);
@@ -380,4 +384,37 @@ test('#968: the recent captures table shows the folder from /tasks — "" is the
   assert.match(r('tsk_a1'),/<\/td><td>Office<\/td><td>בנייה 1/);
   assert.match(r('tsk_b2'),/<\/td><td><span class="muted">שורש הספרייה<\/span><\/td>/);
   assert.match(r('tsk_c3'),/<\/td><td><span class="muted">—<\/span><\/td><td>בנייה 1/);
+});
+
+test('#980 §4: the capture stage chain from /tasks — done stages plain, the current one bold with its time, the rest grey; an unknown stage is not guessed', () => {
+  const {run}=setup();
+  const stages=()=>{ run("openClass('grp_BUILD')"); const html=run('machines(0)'); balanced(html); return after(between(html,'data-task="tsk_b2"'),'<span class="k">שלבים</span><span class="v">','</span></div>'); };
+  run("CAPTURE_TASKS[1].stage='stream'; CAPTURE_TASKS[1].stage_started_at=new Date(Date.parse(CAPTURE_TASKS[1].updated_at)-125000).toISOString()");
+  let s=stages();
+  assert.match(s,/^בדיקת NTFS → כיווץ → <b>זרם \+ sha256<\/b> <span class="cap">\(2:05\)<\/span> → <span class="muted">החזרת הגודל<\/span> → <span class="muted">אימות<\/span>$/);
+  run("CAPTURE_TASKS[1].stage='verify'; CAPTURE_TASKS[1].stage_started_at=null"); s=stages();
+  assert.match(s,/החזרת הגודל → <b>אימות<\/b>$/,'no start time → no invented duration');
+  run("CAPTURE_TASKS[1].stage='dance'"); s=stages();
+  assert.match(s,/השלב לא דווח \(סוכן ישן\)/);
+});
+
+test('#980 §6: "before capture" — used from the last finished capture, NTFS from the machine probe; never captured / image gone / unmeasured / unchecked are separate texts', () => {
+  const {run}=setup();
+  const cell=()=>{ run("openClass('grp_BUILD')"); const html=run('machines(0)'); return after(card(between(html,'<div class="card-h"><span>המחשבים','קליטות אחרונות'),B1),'לפני קליטה</span><span class="v">','</span><span class="k">'); };
+  const set=(f)=>run(`Object.assign(MACHINES.find(m=>m.mac===${JSON.stringify(B1)}),${JSON.stringify(f)})`);
+  set({last_capture:{task_id:'tsk_c3',image_id:'img_c3',name:'Office 2024 — מרצה',at:'2026-09-10T11:08:15Z',in_library:true,used_bytes:84825604096},
+       probe:{ntfs:[{node:'/dev/sda3',state:'clean'}]}});
+  let c=cell();
+  assert.match(c,/בשימוש <bdi dir="ltr">79.0 GB<\/bdi> <span class="cap">\(מהקליטה האחרונה, 10\/09\/2026\)<\/span>/); assert.match(c,/<span class="st ok">NTFS נקי<\/span>/);
+  set({probe:{ntfs:[{node:'/dev/sda1',state:'clean'},{node:'/dev/sda3',state:'hibernated'}]}}); c=cell();
+  assert.match(c,/<span class="st warn">NTFS מהובר — כבו את Windows כיבוי מלא<\/span>/,'one hibernated partition is enough to refuse a capture');
+  set({probe:{ntfs:[{node:'/dev/sda3',state:'dirty'}]}}); assert.match(cell(),/<span class="st warn">NTFS dirty — chkdsk ב-Windows<\/span>/);
+  set({probe:{ntfs:[{node:'/dev/sda3',error:'ntfs-3g.probe rc 21'}]}}); assert.match(cell(),/<span class="st warn">NTFS: לא הצלחנו לבדוק \/dev\/sda3<\/span>/);
+  set({probe:{ntfs:[]}}); assert.match(cell(),/<span class="muted">אין מחיצת NTFS<\/span>/);
+  set({probe:{ntfs:{error:'blkid rc 4'}}}); assert.match(cell(),/לא הצלחנו לבדוק: blkid rc 4/);
+  set({probe:{ntfs:null}}); assert.match(cell(),/<span class="muted">NTFS לא נבדק<\/span>/);
+  set({last_capture:{task_id:'tsk_c3',image_id:'img_c3',name:'x',at:'2026-09-10T11:08:15Z',in_library:false,used_bytes:null}});
+  assert.match(cell(),/<span class="muted">בשימוש — האימג׳ של הקליטה האחרונה כבר לא בספרייה<\/span>/);
+  set({last_capture:{task_id:'tsk_c3',image_id:'img_c3',name:'x',at:'2026-09-10T11:08:15Z',in_library:true,used_bytes:null}});
+  assert.match(cell(),/<span class="muted">בשימוש לא נמדד בקליטה האחרונה<\/span>/);
 });

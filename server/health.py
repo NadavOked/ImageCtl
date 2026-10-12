@@ -20,8 +20,8 @@ from fastapi import APIRouter, Depends, Response
 
 import hashlib
 
-from . import (agent_loops, auth, console_ssh, dhcp, foreign_vlan, hello,
-               identity, monitor, ports, ssh_switch)
+from . import (agent_loops, auth, dhcp, foreign_vlan, hello,
+               identity, monitor, ports)
 from .db import now_iso
 
 #: ‏#1000: מתי `/health` נמדד — כותרת HTTP (ISO, שעון השרת), כי הגוף הוא
@@ -78,7 +78,6 @@ def default_hooks() -> dict:
         "unit_active": lambda name: _run(["systemctl", "is-active", name]).strip(),
         "http_get": _http_probe,
         "http_size": _http_size,
-        "http_text": _http_body,
         "interfaces": dhcp.list_interfaces,
         "tftp_root": lambda: Path("/srv/tftp"),
         "udp_sender_pids": live_udp_sender_pids,
@@ -130,18 +129,6 @@ def _http_probe(url: str) -> int | None:
         return exc.code
     except Exception:
         return None
-
-
-def _http_body(url: str) -> tuple[int | None, str]:
-    """קוד *וגם* גוף. חיווי ה-SSH של התחנות נשען על מה שבאמת נכתב
-    בתפריט שהשרת מגיש, ולכן קוד תשובה לבדו אינו מספיק לו."""
-    try:
-        with urllib.request.urlopen(_probe_request(url), timeout=3) as response:
-            return response.status, response.read(65536).decode("ascii", "replace")
-    except urllib.error.HTTPError as exc:
-        return exc.code, ""
-    except Exception:
-        return None, ""
 
 
 def _http_size(url: str) -> tuple[int | None, int | None]:
@@ -426,9 +413,6 @@ def collect(ctx, hooks: dict, server_base: str) -> list[dict]:
     from . import storage_locations as _storage_locations
     results.extend(_storage_locations.health_checks(ctx))
 
-    # שתי דלתות ה-SSH (#83) — לפי מה שנקרא בחזרה, לא לפי ההגדרה.
-    results.extend(console_ssh.ssh_checks(console_ssh.snapshot(ctx, hooks, server_base)))
-
     # ‏#855: שומר הזהות — מתג כבוי הוא מצב מוצהר שנאמר כאן, וקובץ חכירות
     # שאינו נקרא הוא "כל hello מסורב", לא שקט.
     if unconfigured:
@@ -486,7 +470,7 @@ def _port(port_id: str, name: str, port: str, proto: str, desc: str,
     נקראה ≠ ‏`[]` = נקראה ואף אחד לא מאזין; שורה בלי סוקט בשרת לא מעבירה
     ומקבלת `[]`), ‏`toggle` (`api`/`confirm`/
     ‏`none`), ‏`toggle_url` (איפה המתג חי), ‏`confirm_word`/`confirm_when`
-    (מה מקלידים ומתי: `on`/`off`/`on_or_last_off`), ‏`off_means`."""
+    (מה מקלידים ומתי: `on`/`off`), ‏`off_means`."""
     # אזהרה לפני כיבוי לכל פורט עם מתג (נדב 19/09) — מהטבלה, אלא אם השורה
     # הביאה משלה (TFTP במצב שדרוג, למשל).
     extra.setdefault("warning_he", ports.warning_for(port_id) if toggle != "none" else None)
@@ -545,7 +529,7 @@ def ports_snapshot(ctx, hooks: dict, server_base: str) -> list[dict]:
 
     ‏#996: לכל שורה מתג — ‏`enabled`/`bind`/`toggle`/`toggle_url`/
     ‏`off_means` (ראה `_port`) — והשורות שחסרו: DHCP 67, בין-שרתים
-    8443, ‏SSH לשרת × כרטיס. ‏`listening` ו-`bind` באים מ-`ss` (‏udp
+    8443. ‏`listening` ו-`bind` באים מ-`ss` (‏udp
     ו-tcp), לא מההגדרה."""
     ss_out = hooks["ss"]()
     ss_tcp = hooks["ss_tcp"]()
@@ -652,44 +636,6 @@ def ports_snapshot(ctx, hooks: dict, server_base: str) -> list[dict]:
         desc="רישום וסנכרון של שרתים משניים (#740)", target="שרת ראשי/משני",
         note="לפתוח ב-FW: TCP 8443 בין השרתים בלבד"))
 
-    ssh_state = console_ssh.snapshot(ctx, hooks, server_base)
-    stations_check = next(
-        c for c in console_ssh.ssh_checks(ssh_state, include_disabled=True)
-        if c["id"] == "ssh_stations")
-    entries.append(_port("ssh_stations", "SSH", str(ssh_switch.SSH_PORT), "tcp",
-        "מעטפת טכנאי + dropbear בתחנות שעולות עם imagectl.debug",
-        "תחנות", stations_check["state"], stations_check["detail"],
-        f"לפתוח ב-FW: TCP {ssh_switch.SSH_PORT} מתחנת הטכנאי לתחנות — רק "
-        "בזמן איתור תקלה, לא כברירת מחדל",
-        enabled=ssh_state["stations"]["enabled"], toggle="confirm",
-        toggle_url=ports.ELSEWHERE["ssh_stations"],
-        confirm_word=ssh_state["stations"]["confirm_word"], confirm_when="on",
-        off_means="תחנות עולות בלי dropbear ובלי מעטפת טכנאי — אין SSH אליהן"))
-
-    # ‏SSH לשרת — שורה לכל כרטיס: וילן ההפצה ווילן הכיתות אינם אותו סיכון.
-    for nic in ssh_state["interfaces"]:
-        listening = nic["listening"]
-        if not ssh_state["listeners"]["checked"]:
-            s_state, s_detail = "unknown", (
-                f"טבלת הסוקטים לא נקראה ({ssh_state['listeners']['reason']})")
-        elif ssh_state["listeners"]["wildcard"]:
-            s_state, s_detail = "bad", "sshd מאזין על כל הממשקים (0.0.0.0/::) — כולל כאן"
-        else:
-            s_state, s_detail = ports.measured_state(nic["enabled"], bool(listening))
-        entries.append(_port(f"ssh_server:{nic['name']}", "SSH", str(ssh_switch.SSH_PORT),
-            "tcp", f"sshd של השרת על {nic['name']}", "טכנאי (למכונת השרת)",
-            s_state, s_detail,
-            f"לפתוח ב-FW: TCP {ssh_switch.SSH_PORT} מתחנת הניהול לשרת — לא מוילן הכיתות",
-            enabled=nic["enabled"],
-            listening=None if listening is None else bool(listening),
-            bind=(None if listening is None else
-                  [f"{a}:{ssh_switch.SSH_PORT}" for a in nic["addresses"]] if listening else []),
-            toggle="confirm", toggle_url=f"/api/console/ssh/interfaces/{nic['name']}",
-            confirm_word=nic["name"], confirm_when="on_or_last_off",
-            off_means=f"אין SSH לשרת מהכרטיס {nic['name']}; סגירת הכרטיס האחרון "
-                      "= אין SSH לשרת מאף רשת (הדלת האחרונה)",
-            interface=nic["name"], addresses=nic["addresses"]))
-
     ruleset = hooks["nft_ruleset"]()
     fw_state, fw_detail = ports.firewall_status(ruleset)
     entries.append(_port("firewall", "חומת אש", "—", "nft",
@@ -720,10 +666,7 @@ def create_health_router(ctx, server_base: str, hooks: dict | None = None,
     ‏#1159: מחזיר ``update.VersionRead`` — ``update.read_version``."""
     router = APIRouter(prefix="/api/console")
     current_user, admin_only = auth.dependencies(ctx.conn)
-    # מתגי ה-SSH חולקים את אותו מנגנון הזרקה: בבדיקות אף פעולה אינה
-    # נוגעת ב-sshd אמיתי, בדיוק כמו ב-dhcp_hooks.
-    hooks = {**default_hooks(), **ssh_switch.default_hooks(), **(hooks or {})}
-    hooks.setdefault("apply_ssh_firewall", lambda _interfaces: None)
+    hooks = {**default_hooks(), **(hooks or {})}
 
     @router.get("/health/live")
     def live():
@@ -753,7 +696,6 @@ def create_health_router(ctx, server_base: str, hooks: dict | None = None,
         del user
         return ports_snapshot(ctx, hooks, server_base)
 
-    router.include_router(console_ssh.create_ssh_router(ctx, hooks, server_base))
     # ‏#996: המתג לכל פורט — אותם hooks (ss/ss_tcp/port_listeners) כמו החיווי.
     router.include_router(ports.create_ports_router(
         ctx, lambda: ports_snapshot(ctx, hooks, server_base),

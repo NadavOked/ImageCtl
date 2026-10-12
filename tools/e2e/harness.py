@@ -218,7 +218,13 @@ def start_server(workdir: Path) -> tuple[subprocess.Popen, Path, Path]:
     # ו-PIPE שאיש לא קורא מתמלא — והשרת נחסם על הכתיבה ומפסיק לענות.
     log = (workdir / "server.log").open("wb")
     server = subprocess.Popen(
-        [sys.executable, "-m", "server.main", "--server-url", BASE,
+        # הכרעת נדב 11/10: השרת מסרב לכיתות כש-`capabilities.classrooms()`
+        # כבוי (v1). שלבי הכיתה (6-8) בודקים את זרימת v1.2, ולכן השרת כאן
+        # עולה עם היכולת דלוקה — המקבילה של monkeypatch לתהליך-בן.
+        [sys.executable, "-c",
+         "import server.capabilities as c; c.CLASSROOMS = True; "
+         "from server.main import main; main()",
+         "--server-url", BASE,
          "--data-dir", str(data_dir), "--images", str(images),
          "--host", "127.0.0.1", "--port", str(PORT),
          # ‏#731: פורט נפרד לקונסולה, כמו בייצור.

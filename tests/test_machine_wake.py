@@ -18,6 +18,10 @@ import pytest
 
 pytest.importorskip("fastapi")
 
+#: הכרעת נדב 11/10: השרת מסרב לכיתות ב-v1. הבדיקות כאן יוצרות קבוצת
+#: כיתה ובודקות את זרימת v1.2 — ולכן מדליקות את היכולת (`classrooms_on`).
+pytestmark = pytest.mark.usefixtures("classrooms_on")
+
 from fastapi.testclient import TestClient
 
 BUILD = "b4:2e:99:07:1a:c4"

@@ -13,7 +13,7 @@
 על מכונת דביאן (שרת האתחול עצמו מתאים):
 
 ```bash
-sudo ./tools/build_initramfs.sh --ssh-key tools/lab/imagectl-lab.pub
+sudo ./tools/build_initramfs.sh
 cp imagectl-initramfs.cpio.gz /srv/imagectl/boot/initrd.img
 cp /boot/vmlinuz-$(uname -r)  /srv/imagectl/boot/vmlinuz
 ```
@@ -143,49 +143,35 @@ swap לא נקרא בקליטה ולא משודר — `mkswap` בשחזור לפ
 מחיצה גדולה לוקחת זמן). ‏`timeout(1)` לא בשימוש: הוא אינו ברשימת
 הבינאריים של הבנאי, וההמתנה ממומשת ב-`kill -0` ולולאת `sleep`.
 
-## כניסה לטכנאי — מעטפת ו-SSH
+## כניסה לטכנאי — מעטפת מקומית, ו-overlay של מעבדה
 
-יש **שער אחד** לכל הכניסות, ‏`imagectl.debug=1` בשורת הקרנל (המפעיל
-מוסיף אותו במחולל התפריט). בלעדיו תחנת תלמיד לא פותחת מעטפת ולא מאזינה
-לשום פורט; אין פרמטר קרנל שני, כי שורת הקרנל נשארת נקייה.
+**מעטפת מקומית** — ‏`imagectl.debug=1` בשורת הקרנל פותח מעטפת על `tty2`
+(‏Alt+F2) ועל `ttyS0` (הקונסולה הטורית — אמין בווירטואליזציה). השרת
+**אינו מגיש** את הדגל לעולם (גם לא מ-`--extra-cmdline`, ‏#1266): טכנאי
+מול המכונה מוסיף אותו בעריכת שורת ה-GRUB. בלעדיו התחנה לא פותחת מעטפת.
 
-| מאחורי השער | איפה |
-|---|---|
-| מעטפת על `tty2` | ‏Alt+F2 על המסך עצמו |
-| מעטפת על `ttyS0` | הקונסולה הטורית — אמין בווירטואליזציה |
-| ‏SSH ‏(dropbear) | הרשת — ‏[`agent/lib/sshd.sh`](../agent/lib/sshd.sh) |
+**‏SSH אינו חלק מהמוצר** (‏#1266, הכרעת נדב 10/10). האימג' אינו אורז
+dropbear ולא מפתח, ולא מאזין לשום פורט.
 
-הצינור הסריאלי הספיק לשתי מכונות בלילה הראשון של המעבדה ולא מספיק
-ל-20 (‏#44), ולכן `dropbear`. שלושה כללים:
+**overlay של מעבדה/אתר** — הדרך הכללית להוסיף לאימג' מה שהמוצר אינו
+מכיר, בלי שהמוצר יידע מה זה:
 
-**מפתח ציבורי בלבד, בלי סיסמאות.** ‏ה-initramfs נמשך ב-HTTP פתוח מכל
-מי שמגיע לוילן ההפצה — סיסמה בתוכו היא סיסמה מפורסמת. הבנאי מקבל
-`--ssh-key <קובץ.pub>` ואורז אותו כ-`/etc/imagectl/authorized_keys`;
-בלי הדגל אין למי להכניס, ו-dropbear לא עולה גם עם `imagectl.debug=1`.
-המשתמש הוא `root` (החשבון היחיד בתמונה), והדמון רץ עם `-s -g` (אין
-אימות סיסמה) ו-`-j -k` (בלי מנהור יציאות — זו קונסולה, לא מנהרה לוילן).
-
-**מפתח ה-host נוצר בעלייה, לא בבנייה.** מפתח שנארז בבנאי היה אותו
-מפתח פרטי בכל תחנה במכללה, בתוך קובץ שכל אחד יכול להוריד, והיה הופך
-את הבנאי ללא-דטרמיניסטי. במקום זה `dropbearkey` יוצר אחד ב-tmpfs בכל
-אתחול. הטביעה משתנה בכל עלייה — והסוכן שולח אותה ב-hello (`ssh_hostkey`,
-#1080): השרת מצמיד אותה ב-`<data_dir>/ssh/known_hosts` ובודק
-`StrictHostKeyChecking=yes` בכל חיבור שהוא פותח, והקונסולה מציגה
-`SHA256:…` בכרטיס המכונה. מחשב טכנאי שעדיין מתחבר ידנית משווה לכרטיס:
-
-```sh
-ssh -i ~/.ssh/imagectl-lab -o StrictHostKeyChecking=accept-new \
-    root@<כתובת התחנה>
+```bash
+sudo env IMAGECTL_EXTRA_OVERLAY=/path/to/overlay ./tools/build_initramfs.sh
 ```
 
-‏(‏`~/.ssh/imagectl-lab` הוא המפתח **הפרטי**, אצל הטכנאי בלבד; בריפו
-יושב רק הציבורי, `tools/lab/imagectl-lab.pub`, וזה מה שנכנס לבנאי.) את כתובת התחנה
-לוקחים מטבלת המכונות בקונסולה — היא מגיעה בשדה `ip` של hello.
+- העץ שתחת התיקייה מועתק מעל שורש האימג' (בבעלות root), אחרון — כך
+  שאפשר להוסיף או להחליף קבצים.
+- ‏`<dir>/.binaries` — בינאריים מהבונה, שורה לכל אחד, נארזים עם הספריות
+  שלהם בדיוק כמו `BINARIES` בבנאי (חסר = הבנייה נעצרת). הקובץ עצמו אינו
+  נכנס לאימג'.
+- ‏`<dir>/etc/imagectl/hooks.d/*.sh` — ‏hooks שרצים אחרי DHCP
+  (‏[`agent/lib/sitehooks.sh`](../agent/lib/sitehooks.sh)), בסוכן ובמתקין
+  החי, כל אחד ב-subshell, עם `$IFACE`/`$IP`/`$RUN_DIR`/`$LOG_FILE` ו-`log()`.
+  קוד יציאה ≠ 0 נרשם ביומן בשמו ואינו עוצר את הסוכן.
+- משתנה שהוגדר ואינו תיקייה = שגיאה **לפני apt**, לא "בלי overlay".
 
-**‏dropbear צריך חשבון אמיתי.** הוא מחפש את `root` דרך NSS, ולכן
-הבנאי כותב `/etc/passwd`, ‏`/etc/group` ושורות `passwd:`/`group:`
-ב-`/etc/nsswitch.conf`. חסרה שורה — הכניסה נדחית בלי הסבר בלוג, בדיוק
-כמו ה-gconv החסר של #33. שדה הסיסמה נעול (`*`) בכוונה.
+ה-overlay של המעבדה (dropbear + מפתח הטכנאי) יושב מחוץ לריפו המוצר.
 
 ## מה הסוכן מצפה מהשרת
 
@@ -290,11 +276,7 @@ no persistent local reboot counter on these diskless machines: repeated
 real hangs still depend on the server's existing boot guard. Long operations
 outside the instrumented wait loops have a 600-second budget as well.
 
-Technician SSH retains the `imagectl.debug=1` and public-key gates. Its
-independent `setsid` shell runs foreground dropbear, logs each exit status,
-and restarts it after five seconds. Previously `setsid` only detached the
-single dropbear process; there was no respawn. Agent process-group exit or
-hang should not kill the detached supervisor, but this cannot guarantee SSH
-during kernel hangs, NIC failure, OOM, or explicit system-wide kills. Software
-recovery also requires a schedulable kernel; actual TCO reset behavior, driver
-availability, and the cause of the observed SSH outage need hardware testing.
+Technician SSH is no longer part of the product (#1266); a lab overlay
+that starts a daemon from a site hook owns its own supervision. Software
+recovery requires a schedulable kernel; actual TCO reset behavior and driver
+availability need hardware testing.

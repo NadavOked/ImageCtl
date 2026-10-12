@@ -131,8 +131,13 @@ gui_state() {
                       (.drivers.state // ""),
                       (.drivers as $d | if $d == null then "" elif $d.state == "staged"
                         then ($d.packages // [] | join(", ")) elif $d.state == "failed"
-                        then ($d.error // "") else ($d.reason // "") end)]
-                     | map(clean) | join("|")))) end' \
+                        then ($d.error // "") else ($d.reason // "") end),
+                      # #704: the operator name of the slot of this drawer; "" = "disk N".
+                      (.slot_name // "")]
+                     | map(clean) | join("|"))),
+                # #704: names of the SATA slots, empty ones included.
+                (($m.slot_names // {}) | to_entries[] | select(.key | test("^sata:[1-9][0-9]?$")) |
+                  "room_slot_name=" + ([$mi, (.key | ltrimstr("sata:")), .value] | map(clean) | join("|")))) end' \
                 "$GUI_DIR/room.json" >> "$GUI_DIR/state.next" || return 1 ;;
         classes)
             http_get "$SERVER/api/v1/agent/groups" > "$GUI_DIR/classes.json" || return 1

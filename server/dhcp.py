@@ -249,8 +249,20 @@ def _tftp_lines(tftp_root: str | None) -> list[str]:
     return ["# TFTP off (#1013): switched off in the console (ports page) -- no PXE.", ""]
 
 
+def _pinned(lines: list[str], tftp_root: str | None, pin_tftp: bool) -> str:
+    """‏#1078-S / R20-F5: dnsmasq בלי אף `interface=` מאזין על **כל**
+    הכרטיסים (חוץ מ-`except-interface`). כש-`pin_tftp` (אין קובץ אחר
+    שנושא את כרטיס ההפצה) וה-TFTP דלוק בלי שם — loopback בלבד."""
+    if pin_tftp and tftp_root and not any(l.startswith("interface=") for l in lines):
+        if "bind-interfaces" not in lines:
+            lines.append("bind-interfaces")
+        lines += ["# No interface is named (#1078): TFTP on loopback only, not every NIC.",
+                  "interface=lo", ""]
+    return "\n".join(lines) + "\n"
+
+
 def render(configs: list[InterfaceConfig], tftp_root: str | None = None,
-           deploy_interface: str | None = None) -> str:
+           deploy_interface: str | None = None, pin_tftp: bool = False) -> str:
     """הקובץ של האינסטנס הראשי — ‏DEFAULT_CONF, בתוך /etc/dnsmasq.d.
 
     dnsmasq קורא את כל /etc/dnsmasq.d; קובץ ההתקנה (imagectl.conf) נותן את
@@ -270,6 +282,9 @@ def render(configs: list[InterfaceConfig], tftp_root: str | None = None,
     ‏`deploy_interface` (‏#1088): כרטיס ההפצה שהוגדר **מהקונסולה** — אז
     ‏`imagectl.conf` של המתקין אינו נושא `interface=`, והשורה שמצמידה את
     ה-TFTP לכרטיס ההפצה בלבד (R20-F1) נכתבת כאן, גם כשאף DHCP אינו דלוק.
+
+    ‏`pin_tftp` (‏#1078): הקובץ הזה הוא היחיד שיכול לשאת `interface=` (מקור
+    ההפצה אינו `cli`) — ואם אין בו אף שם, ה-TFTP נצמד ל-loopback (`_pinned`).
     """
     lines = _head("DHCP per interface")
     full, proxied = full_dhcp(configs), proxy_only(configs)
@@ -281,7 +296,7 @@ def render(configs: list[InterfaceConfig], tftp_root: str | None = None,
     lines += _tftp_lines(tftp_root)
     if not full and not proxied:
         lines.append("# No interface has DHCP or proxy enabled.")
-        return "\n".join(lines) + "\n"
+        return _pinned(lines, tftp_root, pin_tftp)
     if "bind-interfaces" not in lines:
         lines += ["bind-interfaces", ""]
     if proxied:
@@ -289,7 +304,7 @@ def render(configs: list[InterfaceConfig], tftp_root: str | None = None,
         lines += [f"except-interface={c.name}" for c in proxied] + [""]
     if not full:
         lines.append("# No interface hands out addresses -- TFTP only.")
-        return "\n".join(lines) + "\n"
+        return _pinned(lines, tftp_root, pin_tftp)
     lines += _ARCH_MATCH
     for cfg in full:
         tag = f"if-{cfg.name}"

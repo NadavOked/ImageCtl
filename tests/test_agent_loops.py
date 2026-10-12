@@ -24,7 +24,6 @@ from conftest import hello_body, setup_classroom              # noqa: E402
 
 from server import agent_loops                                # noqa: E402
 from server.agent_loops import loop_checks                    # noqa: E402
-from server.ssh_switch import Listeners                       # noqa: E402
 
 try:
     from fastapi.testclient import TestClient
@@ -65,12 +64,8 @@ def loop_server(tmp_path: Path, images_root: Path, clock):
         # ‏/boot/vmlinuz ו-/boot/initrd.img (#333) — מוזרקים כאן כדי
         # שהבדיקה לא תפנה לרשת אמיתית.
         "http_size": lambda url: (200, 31_000_000),
-        "http_text": lambda url: (200, "linux /boot/vmlinuz imagectl.server=x"),
         "interfaces": lambda: [],
         "tftp_root": lambda: tftp,
-        "listeners": lambda: Listeners(True),
-        "apply_sshd": lambda text: pytest.fail("בדיקה נגעה ב-sshd אמיתי"),
-        "settle": lambda: None,
     }
     app = create_app(tmp_path / "data", images_root, "http://10.44.12.10:8080",
                      now_fn=clock, health_hooks=hooks,

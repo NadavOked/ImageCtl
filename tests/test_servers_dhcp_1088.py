@@ -27,7 +27,6 @@ uvicorn = pytest.importorskip("uvicorn")
 import server.app
 import server.main
 from server import deploy_net, dhcp, health, ifaddr, netcfg, netcfg_host, ports
-from server.ssh_switch import Listeners as SshListeners
 
 try:
     from fastapi.testclient import TestClient
@@ -527,7 +526,7 @@ def _complete_hooks(calls, *, fw="", restart=None):
     return {
         "write_grub_cfg": lambda url, root: calls.append(("grub", url, root)) or None,
         "enable_dnsmasq": lambda: calls.append(("dnsmasq",)) or None,
-        "firewall": lambda repo, deploy_if, servers_if, primary_ip, ssh_interfaces=(): calls.append(
+        "firewall": lambda repo, deploy_if, servers_if, primary_ip: calls.append(
             ("fw", deploy_if, servers_if, primary_ip)) or (fw or None),
         "restart_server": lambda: calls.append(("restart",)) or restart,
     }
@@ -664,6 +663,57 @@ def test_render_adds_the_deploy_interface_line_when_set_from_the_console():
         dhcp.render([], deploy_interface="eth1\ninterface=eth0")
 
 
+def test_render_pins_tftp_to_loopback_when_no_file_names_an_interface():
+    """‏#1078-S / R20-F5: dnsmasq בלי אף `interface=` מאזין על **כל**
+    הכרטיסים חוץ מה-`except-interface` — ו-`restart` (שהקונסולה מריצה)
+    מעלה גם יחידה כבויה. ‏`pin_tftp` = אין קובץ אחר שנושא את כרטיס ההפצה
+    (‏source ≠ cli), ולכן בלי שם — loopback בלבד, לא כרטיס השרתים."""
+    proxied = dhcp.InterfaceConfig("eth1", proxy=True, server_ip="10.44.9.10")
+    good = dhcp.InterfaceConfig("eth1", enabled=True, range_start="10.44.9.50",
+                                range_end="10.44.9.200", server_ip="10.44.9.10")
+    # רשת ההפצה טרם הוגדרה, ו-69 הודלק בדף הפורטים
+    text = dhcp.render([], tftp_root="/srv/tftp", pin_tftp=True)
+    assert "enable-tftp" in text
+    assert "interface=lo" in text.splitlines() and "bind-interfaces" in text
+    # כרטיס ההפצה במצב proxy: הראשי מוציא אותו, ולא מאזין על השאר
+    text = dhcp.render([proxied], tftp_root="/srv/tftp", deploy_interface="eth1",
+                       pin_tftp=True)
+    assert "except-interface=eth1" in text and "interface=lo" in text.splitlines()
+    # שומרים: כרטיס בשם — אין צורך ב-lo, והתוכן כמו קודם
+    for named in (dhcp.render([], tftp_root="/srv/tftp", deploy_interface="eth1",
+                              pin_tftp=True),
+                  dhcp.render([good], tftp_root="/srv/tftp", pin_tftp=True)):
+        assert "interface=lo" not in named.splitlines()
+    assert "interface=" not in dhcp.render([], pin_tftp=True)         # 69 כבוי
+    assert "interface=" not in dhcp.render([], tftp_root="/srv/tftp")  # cli — כמו קודם
+
+
+@pytest.mark.parametrize("source,pinned", [("none", True), ("console", True),
+                                            ("cli", False)])
+def test_render_dnsmasq_pins_tftp_unless_the_unit_names_the_deploy_nic(
+        tmp_path, images_root, clock, source, pinned):
+    """‏cli = המתקין כתב `interface=<הפצה>` ב-imagectl.conf (המעבדה) — לא
+    נוגעים בנתיב שעובד. ‏console/none = הקובץ של הקונסולה הוא היחיד, ובלי
+    שם בו dnsmasq היה מגיש TFTP על כרטיס השרתים."""
+    from server import console_dhcp
+    from server.app import create_app
+    from server.db import set_setting
+    app = create_app(tmp_path / "data", images_root, "http://127.0.0.1:8080",
+                     now_fn=clock)
+    conn = app.state.ctx.conn
+    set_setting(conn, dhcp.SETTING_PREFIX + "eth1",
+                dhcp.InterfaceConfig("eth1", proxy=True, server_ip="10.44.9.10").to_json())
+    named = source != "none"
+    deploy = deploy_net.DeployContext(
+        state=deploy_net.DeployState(source, "eth1" if named else None,
+                                     "http://10.44.9.10:8080" if named else None),
+        agent_port=8080, tftp_root=Path("/srv/tftp"), repo_dir=REPO)
+    main_text, _proxy_text = console_dhcp.render_dnsmasq(app.state.ctx, deploy)
+    conn.close()
+    assert "enable-tftp" in main_text
+    assert ("interface=lo" in main_text.splitlines()) is pinned
+
+
 GOOD = dict(
     enabled=True, range_start="10.44.9.50", range_end="10.44.9.200",
     netmask="255.255.255.0", gateway="10.44.9.1", dns=["10.44.0.5"],
@@ -727,8 +777,7 @@ def test_first_dhcp_enable_completes_the_install_and_restarts(console):
                               "errors": [], "restarting": True, "recorded": True}
     assert deploy_net.stored(ctx.conn) == ("eth1", "http://10.44.9.10:8080")
     assert [c[0] for c in fake["deploy_calls"]] == ["grub", "dnsmasq", "fw", "restart"]
-    assert fake["deploy_calls"][2][1] == {"deploy_if": "eth1", "servers_if": "eth0", "primary_ip": None,
-                                          "ssh_interfaces": ()}
+    assert fake["deploy_calls"][2][1] == {"deploy_if": "eth1", "servers_if": "eth0", "primary_ip": None}
     # קובץ ה-dnsmasq שנכתב נושא את כרטיס ההפצה (R20-F1 במסירה).
     assert "interface=eth1" in fake["applied"][-1]
     assert len(fake["applied"]) == 1                       # כתיבה אחת, לא שתיים
@@ -836,7 +885,7 @@ def test_first_dhcp_enable_that_fails_to_complete_writes_nothing_and_can_be_retr
     assert [c[0] for c in fake["deploy_calls"]][3:] == ["grub", "dnsmasq", "fw", "restart"]
 
 
-def test_full_dhcp_on_another_nic_after_console_deploy_is_409(console):
+def test_full_dhcp_on_another_nic_after_console_deploy_is_409(console, classrooms_on):
     """‏#1121 ס' 4: אחרי `source=console` על eth1, DHCP **מלא** על eth0 (רשת
     המכללה) נדחה בשם — ושום דבר לא נכתב; ‏proxy על eth0 מותר."""
     from server.db import get_setting
@@ -909,15 +958,10 @@ def _health_hooks(deploy_state, servers_nic=None, tftp_root=None):
         "ss_tcp": lambda: "",
         "unit_active": lambda name: "inactive",
         "http_get": lambda url: None, "http_size": lambda url: (None, None),
-        "http_text": lambda url: (None, ""),
         "interfaces": lambda: [{"name": "eth0", "state": "up"}],
         "tftp_root": lambda: tftp_root or Path("/nonexistent-tftp"),
         "udp_sender_pids": lambda: [], "nft_ruleset": lambda: None,
         "shim_src": lambda: "/nonexistent-shim",
-        # שתי דלתות ה-SSH (#83) — מוזרקות, כדי לא לקרוא /proc של המכונה.
-        "listeners": lambda: SshListeners(True),
-        "apply_sshd": lambda text: pytest.fail("בדיקה נגעה ב-sshd אמיתי"),
-        "settle": lambda: None,
         "deploy": (lambda: deploy_state) if deploy_state is not None else None,
         "servers_nic": (lambda: servers_nic) if servers_nic is not None else None,
     })
@@ -940,7 +984,7 @@ def test_health_says_deploy_not_configured_instead_of_red_pxe_rows(health_ctx):
     assert all(rows[name]["state"] == "not_applicable" for name in dependent)
     assert all(rows[name]["detail"] == "לא ישים עד שתוגדר רשת ההפצה"
                for name in dependent)
-    assert "ssh_stations" not in rows and "ssh_server" not in rows
+    assert not any(k.startswith("ssh") for k in rows)   # #1266
 
 
 def test_health_keeps_the_red_rows_when_deploy_is_configured(health_ctx):

@@ -37,6 +37,7 @@ EVENTS_HE = {
     "mac_import": "ייבוא טבלת MAC",
     "machine_add": "מכונה נוספה",
     "machine_edit": "מכונה עודכנה",
+    "machine_mac_edit": "כתובת ה-MAC של המכונה שונתה",   # #977 §5
     "machine_delete": "מכונה נמחקה",
     "session_open": "סבב נפתח",
     "session_start_auto": "השידור התחיל — ההמתנה הסתיימה",
@@ -61,10 +62,14 @@ EVENTS_HE = {
     "room_done": "סבב חדר השיכפולים הושלם",
     "room_close": "סבב חדר השיכפולים נסגר",
     # ‏#980: כיבוי החדר עובר דרך הסוכן (hello) — בקשה, מסירה, או פקיעה.
+    # ‏#977 §4: אותו ערוץ לאתחול מחשב אחד; הפעולה עצמה בטקסט (כיבוי/אתחול).
     "room_poweroff": "התבקש כיבוי כל מחשבי השיכפול",
-    "power_delivered": "בקשת הכיבוי נמסרה לסוכן",
-    "power_expired": "בקשת הכיבוי פגה — המכונה לא ענתה בזמן, ולא נכבתה",
+    "machine_reboot": "התבקש אתחול מרחוק",
+    "power_delivered": "בקשה מהקונסולה נמסרה לסוכן",
+    "power_expired": "בקשה מהקונסולה פגה — המכונה לא ענתה בזמן, והבקשה בוטלה",
     "send_start": "השידור יצא לדרך",
+    "wave_rate": "נקבע קצב לגל",
+    "drive_rates_failed": "קצב אוטומטי: בחירה או רישום נכשלו — בחירה שנכשלה יוצאת בקצב הפתיחה",
     "send_done": "השידור הסתיים",
     "send_failed": "השידור נכשל",
     "send_stopped": "השידור נעצר",
@@ -148,9 +153,6 @@ EVENTS_HE = {
     "net_confirmed": "שינוי הרשת אושר — החיבור עדיין חי",
     "net_rollback": "הוחזרה תצורת רשת קודמת, השינוי לא אושר",
     "net_rollback_unreadable": "הוחזרה תצורת רשת, הפרטים לא ניתנים לקריאה",
-    "ssh_stations": "מתג ה-SSH בתחנות שונה",
-    "ssh_server": "מתג ה-SSH של השרת שונה על כרטיס רשת",
-    "ssh_unverified": "שינוי SSH לא אומת מול המצב בפועל",
     # ‏#292: 55 אירועים שנכתבו בפועל ולא היו כאן — הגיעו למסך כמפתח באנגלית.
     # ‏tests/test_journal_events_he.py מצליב מעכשיו כל `journal(conn, "…")` מול הטבלה.
     "admin_password_reset_dcui": "סיסמת המנהל אופסה ממסך השרת (DCUI)",
@@ -177,6 +179,7 @@ EVENTS_HE = {
     "dhcp_synced_at_startup": "תצורת DHCP/TFTP נכתבה מחדש מה-DB בעלייה",
     "disk_decision": "הכרעה על דיסק (SMART) נרשמה",
     "machine_drawer_count": "מספר המגירות של מכונה עודכן",
+    "machine_slot_name": "שם של חיבור כונן במכונה עודכן",
     "monitor_stations": "מתג המוניטור בתחנות שונה",
     "net_config_refused": "שינוי רשת נדחה",
     "off_vlan_contact": "מכונה פנתה לשרת מחוץ לוילן ההפצה",
@@ -205,6 +208,8 @@ EVENTS_HE = {
     "storage_pairing_open": "צימוד שרת משני נפתח",
     "storage_parent_cert_renewed": "תעודת השרת הראשי חודשה במשני",
     "storage_parent_unbind": "השרת המשני נותק מהראשי",
+    "peer_write": "פעולת כתיבה בשרת משני מהקונסולה של הראשי",   # #1179
+    "smart_answered": "שאלת SMART על דיסק נענתה",               # #989
     "task_token_refused": "אסימון משימה נדחה",
     "settings_backup_downloaded": "גיבוי ההגדרות הורד",
     "update_apply_busy": "החלת עדכון נדחתה — יחידת השדרוג כבר רצה",
@@ -233,11 +238,11 @@ _SEVERITY_ERR = {
     "known_macs_apply_failed",
 }
 _SEVERITY_WARN = {
-    "unknown_mac", "boot_loop_local", "boot_loop_unverified", "agent_loop",
+    "unknown_mac", "drive_rates_failed", "boot_loop_local", "boot_loop_unverified", "agent_loop",
     "agent_loop_unverified", "report_from_nonmember", "identity_unverifiable",
     "capture_cancel", "direct_cancel", "send_stopped", "dhcp_proxy_risk",
     "net_config_unverified", "net_rollback_armed", "net_rollback",
-    "net_rollback_unreadable", "ssh_unverified", "work_area_kept",
+    "net_rollback_unreadable", "work_area_kept",
     "storage_node_disable",
     "room_drawer_changed", "room_drawer_unidentified",
     "power_expired",
@@ -265,6 +270,7 @@ SETTINGS_HE = {
     "session_wait_seconds": "המתנה מהמצטרף האחרון (שניות)",
     "console_idle_seconds": "ניתוק אוטומטי בחוסר פעילות (שניות)",
     "class_deploy_enabled": "הפצה לכיתות ממחשב הבנייה",
+    "learned_rate_enabled": "קצב שידור אוטומטי",
 }
 
 ROLES_HE = {"classroom": "כיתה", "cloner": "חדר שיכפולים", "build": "מחשב בנייה"}
@@ -437,6 +443,12 @@ class JournalTranslator:
                 name = SETTINGS_HE.get(m.group(1), m.group(1))
                 value = {"true": "פעיל", "false": "כבוי"}.get(m.group(2), m.group(2))
                 text = f"{name}: {value}"
+        elif event in ("power_delivered", "power_expired"):
+            # ‏"<mac> <poweroff|reboot>" — המכונה בשמה, הפעולה בעברית.
+            m = re.match(r"(\S+) (\S+)$", detail)
+            if m:
+                action = {"poweroff": "כיבוי", "reboot": "אתחול"}.get(m.group(2), m.group(2))
+                text = f"{self._machines.get(m.group(1), m.group(1))} · {action}"
         elif event in ("monitor_closed", "monitor_power"):
             # ‏#1129: "<mac> <סיבה/פעולה>[ node=<nid>]" — המילה השנייה מתורגמת.
             words = {"browser": "הדפדפן סגר", "machine": "המכונה סגרה",
@@ -448,6 +460,11 @@ class JournalTranslator:
                 part for part in (self._machines.get(m.group(1), m.group(1)),
                                   words.get(m.group(2), m.group(2)),
                                   m.group(3).strip()) if part)
+        elif event == "machine_mac_edit":
+            # ‏#977 §5: "<ישן> -> <חדש>" — שתי הכתובות, כי הישנה היא שההיסטוריה עליה.
+            m = re.search(r"([0-9a-f:]{17}) -> ([0-9a-f:]{17})", detail)
+            if m:
+                text = f"{m.group(1)} הוחלפה ב-{m.group(2)}"
         elif event in ("machine_add", "machine_edit", "machine_delete"):
             m = re.search(r"([0-9a-f:]{17})(?: name=(\S+))?(?: group=(\S+))?", detail)
             if m:

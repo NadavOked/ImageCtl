@@ -20,7 +20,8 @@ from fastapi.testclient import TestClient
 from starlette.routing import Mount
 
 from server.app import create_agent_app, create_console_app
-from server.kiosk import KIOSK_CONSOLE_ROUTES
+from server import capabilities
+from server.kiosk import KIOSK_CLASS_ONLY_ROUTES, KIOSK_CONSOLE_ROUTES
 
 #: נתיבים ציבוריים במכוון — בלי כניסה בכלל, ולכן גם deploy רואה אותם:
 #: הלוגו של מסך הכניסה (#1168) והכניסה עצמה (שמשיבה ל-deploy 403 ממילא).
@@ -85,19 +86,23 @@ def test_deploy_gets_403_on_every_console_route(server):
     assert not leaks, "נתיבי קונסולה שמשיבים ל-deploy משהו שאינו 403:\n" + "\n".join(leaks)
 
 
-def test_the_kiosk_allowlist_is_exactly_what_deploy_can_reach(server):
+@pytest.mark.parametrize("classrooms", [False, True], ids=["v1", "v1.2"])
+def test_the_kiosk_allowlist_is_exactly_what_deploy_can_reach(server, monkeypatch, classrooms):
+    # הכרעת נדב 11/10: ב-v1 (כיתות כבויות) רשימת הכיתות אינה מוגשת בקיוסק.
+    monkeypatch.setattr(capabilities, "CLASSROOMS", classrooms)
+    allow = set(KIOSK_CONSOLE_ROUTES) - (set() if classrooms else set(KIOSK_CLASS_ONLY_ROUTES))
     rt = server["app"].state.runtime
     kiosk = TestClient(create_agent_app(rt))
     kiosk.cookies.update(_deploy_cookie(rt))
     served = set(_routes(kiosk.app))
     # the allowlisted console routes, plus the kiosk's own room routes (#738) -- nothing else
-    assert set(KIOSK_CONSOLE_ROUTES) <= served, set(KIOSK_CONSOLE_ROUTES) - served
-    extra = served - set(KIOSK_CONSOLE_ROUTES)
+    assert allow <= served, allow - served
+    extra = served - allow
     assert all(path.startswith("/api/console/room") for _, path in extra), extra
     # the row-level matrix (#555): what deploy may do from the build machine.
     # The allowlist also serves the admin there -- capture and new folders
     # stay admin-only ("deploy: images and rounds only", CLAUDE.md).
-    for method, path in sorted(set(KIOSK_CONSOLE_ROUTES)):
+    for method, path in sorted(allow):
         if (method, path) == ("POST", "/api/console/login"):
             continue
         body = {} if method in ("POST", "PUT") else None

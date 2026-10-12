@@ -47,7 +47,13 @@ power_check() {
     # (power_action) at the same rate -- no new polling. Same rule as the
     # idle power-off: only after the wake-on-LAN read-back (#587), or the room
     # could not be woken again. The server hands it out once.
-    [ "$(json_get "$RESP" ".power_action")" = "poweroff" ] || return 0
+    # #977 section 4: "reboot" from the machine drawer, same channel. No
+    # arm_wol: a rebooted machine comes back by itself.
+    case "$(json_get "$RESP" ".power_action")" in
+        poweroff) ;;
+        reboot) log "power: the console asked to reboot -- rebooting"; sync; reboot -f; return ;;
+        *) return 0 ;;
+    esac
     if ! arm_wol; then log "power: wol not armed -- staying powered on"; return 1; fi
     log "power: the console asked to power off -- powering off"
     sync; poweroff -f

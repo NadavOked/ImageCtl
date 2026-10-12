@@ -54,7 +54,12 @@ def test_a_failed_check_is_recorded_as_failed_not_as_no_update(update_server):
         update_mod.check_update({"describe": lambda d: "v0.24.0", **hooks_fail},
                                 "/repo", "https://example/pub.git"))
     assert doc["available"] is False and doc["latest"] is None
-    assert "no route to github" in doc["reason"]
+    # ‏#1281: הכשל נרשם ככשל בשם (`failed` — "no route to github" אינו
+    # סמן רשת), הפלט הגולמי נשמר כפי שהוא ב-`detail`, והעברית ב-`message`
+    # נושאת אותו. כשל אינו מתקפל ל"אין עדכון" (`reason=None`).
+    assert doc["reason"] == "failed"
+    assert doc["detail"] == "no route to github"
+    assert "no route to github" in doc["message"]
     assert admin.get("/api/console/update").json()["last_check"] == doc
 
 

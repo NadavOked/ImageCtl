@@ -514,243 +514,126 @@ def test_cmdline_reads_only_server_and_mode(tmp_path):
     assert "ses_a91f" not in vars_dump
 
 
-# --- SSH לטכנאי (#44) --------------------------------------------------------
-# עשרים תחנות על צינור סריאלי אחד לא עובד. ה-SSH נכנס מאחורי אותו שער
-# בדיוק של מעטפת הניפוי — imagectl.debug=1 — ובלי סיסמאות: ה-initramfs
-# מוגש ב-HTTP פתוח, כך שכל סיסמה בתוכו היא סיסמה מפורסמת.
+# --- hooks של overlay מעבדה/אתר (#1266) ----------------------------------------
+# ‏SSH יצא מהמוצר. הגישה לטכנאי במעבדה היא overlay מחוץ לריפו; המוצר נותן
+# רק מנגנון כללי: ‏IMAGECTL_EXTRA_OVERLAY בבנאי, ו-hooks שרצים אחרי DHCP.
 
 
-#: טבלת הסוקטים של הקרנל, כפי שהיא נראית באמת. ‏0016 = 22, ‏0A = LISTEN.
-PROC_HEADER = ("  sl  local_address rem_address   st tx_queue rx_queue tr "
-               "tm->when retrnsmt   uid  timeout inode\n")
-PROC_LISTENING = PROC_HEADER + (
-    "   0: 00000000:0016 00000000:0000 0A 00000000:00000000 "
-    "00:00000000 00000000 0 0 1\n")
-
-
-#: מפתח ed25519 קנוני לזיוף dropbearkey -y — blob של 51 בייט, טביעת
-#: SHA256 כפי ש-OpenSSH מחשב. הסוכן מחשב את אותה טביעה מ-openssl.
-SSH_PUB_A = ("ssh-ed25519 "
-             "AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f")
-SSH_FP_A = "SHA256:ZkAslGjFiUHdGf/WUL8rQvkib4PTvQatUV0OUQSncCA"
-
-
-def run_ssh_start(tmp_path, key_text=None, with_dropbear=True, listening="yes",
-                  ip="10.44.12.187"):
-    """מריץ ssh_start בארגז חול: dropbear/dropbearkey מזויפים ובית זמני.
-
-    ‏_ssh_spawn נדרס אחרי ה-source כדי ללכוד את שורת הפקודה בלי להשאיר
-    דמון רץ — הבדיקה בודקת במה הדמון מופעל, לא שהוא עלה.
-
-    ‏`listening` שולט במה שהקרנל *יגיד*: ‏"yes" מאזין, ‏"no" הטבלה
-    נקראה ואין שם כלום, ‏"unreadable" אין טבלה בכלל. הטבלה חייבת
-    להיות מזויפת — בלעדיה בדיקה שרצה על מכונה ש-sshd פעיל בה הייתה
-    מוצאת את פורט 22 שלה ומדווחת הצלחה (אותו לקח של SSH_DROPBEAR)."""
-    box = tmp_path / "box"
-    stub_dir = box / "stubs"
-    stub_dir.mkdir(parents=True)
-    proc_net = box / "procnet"
-    if listening != "unreadable":
-        proc_net.mkdir()
-        (proc_net / "tcp").write_text(
-            PROC_LISTENING if listening == "yes" else PROC_HEADER)
-    # הזיופים נכתבים מתוך bash ולא מ-python: ב-Git Bash קובץ שנוצר
-    # מווינדוס אינו נחשב בר-הרצה, ואז command -v לא מוצא אותו. ב-CI
-    # ‏(Linux) ההפך הוא הנכון — שם `cat >` יוצר קובץ בלי סיבית הרצה,
-    # ולכן ה-chmod חייב להיות כאן: בלעדיו הבדיקה עוברת בווינדוס ונופלת
-    # על Linux בלבד.
-    make_stubs = ""
-    if with_dropbear:
-        make_stubs = (
-            f"cat > {posix(stub_dir)}/dropbear <<'STUB'\n"
-            "#!/bin/sh\nexit 0\n"
-            "STUB\n"
-            f"cat > {posix(stub_dir)}/dropbearkey <<'STUB'\n"
-            "#!/bin/sh\n"
-            "y=0; file=\n"
-            'while [ $# -gt 0 ]; do\n'
-            '    case "$1" in\n'
-            '        -y) y=1 ;;\n'
-            '        -f) file=$2; shift ;;\n'
-            "    esac\n"
-            "    shift\n"
-            "done\n"
-            'if [ "$y" = 1 ]; then\n'
-            "    echo 'Public key portion is:'\n"
-            f"    echo '{SSH_PUB_A}'\n"
-            "    echo 'Fingerprint: md5 aa:bb'\n"
-            "    exit 0\n"
-            "fi\n"
-            '[ -n "$file" ] && printf fake-host-key > "$file"\n'
-            "STUB\n"
-            f"chmod 0755 {posix(stub_dir)}/dropbear {posix(stub_dir)}/dropbearkey\n"
-        )
-    keys = box / "packed-authorized_keys"
-    if key_text is not None:
-        keys.write_text(key_text)
-    run = box / "run"
+def run_site_hooks_in(tmp_path, hooks: dict[str, str] | None):
+    """מריץ run_site_hooks מול תיקיית hooks זמנית; ‏None = אין תיקייה בכלל.
+    מחזיר (stdout, תוכן היומן, תיקיית הריצה)."""
+    run = tmp_path / "run"
     run.mkdir()
-    home = box / "home"
-    spawned = box / "spawned"
+    hooks_dir = tmp_path / "hooks.d"
+    if hooks is not None:
+        hooks_dir.mkdir()
+        for name, body in hooks.items():
+            (hooks_dir / name).write_text(body, encoding="utf-8", newline="\n")
     out = sh(
-        make_stubs
-        # ‏PATH חייב נתיבי POSIX: ‏"C:/..." נחתך על הנקודתיים בשמו של
-        # הכונן, ואז command -v לא מוצא כלום.
-        + f'export PATH="$(cd {posix(stub_dir)!r} && pwd):$PATH"; '
-        f'export RUN_DIR={posix(run)!r} SSH_HOME={posix(home)!r} '
-        f'SSH_KEYS={posix(keys)!r} SSH_PROC_NET={posix(proc_net)!r} '
-        f'IP={ip!r} SSH_VERIFY_TRIES=1; '
-        # ‏PATH לבדו אינו מבודד: על מכונה ש-dropbear מותקן בה (שרת
-        # המעבדה) `command -v dropbear` מצא את זה של המערכת, והמקרה
-        # השלילי "עבר" רק במקומות שבהם הוא לא מותקן.
-        + ("" if with_dropbear else "export SSH_DROPBEAR=imagectl-absent-dropbear; ")
-        + f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/sshd.sh; '
-        f'_ssh_spawn() {{ printf "%s\\n" "$*" > {posix(spawned)!r}; }}; '
-        f'ssh_start >/dev/null 2>&1; echo "rc=$?"'
+        f'export RUN_DIR={posix(run)!r} SITE_HOOKS_DIR={posix(hooks_dir)!r} '
+        f'IFACE=eth0 IP=10.44.12.187; '
+        f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/sitehooks.sh; '
+        f'run_site_hooks; echo "rc=$?"'
     )
-    return out.strip(), spawned, home, run
+    log = run / "agent.log"
+    return out, (log.read_text(encoding="utf-8") if log.exists() else ""), run
 
 
-LAB_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIylM5T imagectl-lab\n"
+def test_site_hooks_run_with_the_network_and_a_failure_is_named_not_fatal(tmp_path):
+    """כל hook רץ, עם `$IP` של הסוכן; hook שנכשל נרשם ביומן בקוד היציאה
+    שלו, וה-hook שאחריו עדיין רץ — overlay הוא תוספת, לא תנאי לעבודה."""
+    out, log, run = run_site_hooks_in(tmp_path, {
+        "10-fails.sh": "exit 3\n",
+        "20-marks.sh": 'printf "%s %s\\n" "$IFACE" "$IP" > "$RUN_DIR/marker"\n',
+    })
+    assert out.strip().endswith("rc=0")
+    assert (run / "marker").exists(), "the second hook did not run"
+    assert (run / "marker").read_text(encoding="utf-8").strip() == "eth0 10.44.12.187"
+    assert "site hook" in log and "10-fails.sh exited 3" in log
+    assert "20-marks.sh exited" not in log
 
 
-def test_ssh_does_not_listen_without_a_packed_key(tmp_path):
-    """בלי authorized_keys אין ברירת מחדל של סיסמה — פשוט לא מאזינים."""
-    rc, spawned, _home, _run = run_ssh_start(tmp_path, key_text=None)
-    assert rc == "rc=1"
-    assert not spawned.exists()
+def test_no_overlay_means_no_hook_and_no_noise(tmp_path):
+    """האימג' של המוצר: אין `hooks.d` — לא רץ דבר ולא נרשם דבר."""
+    out, log, _run = run_site_hooks_in(tmp_path, None)
+    assert out.strip() == "rc=0"
+    assert "site hook" not in log
 
 
-def test_ssh_does_not_listen_without_dropbear_in_the_image(tmp_path):
-    rc, spawned, _home, _run = run_ssh_start(
-        tmp_path, key_text=LAB_KEY, with_dropbear=False
-    )
-    assert rc == "rc=1"
-    assert not spawned.exists()
-
-
-def test_ssh_runs_dropbear_with_passwords_disabled(tmp_path):
-    rc, spawned, home, _run = run_ssh_start(tmp_path, key_text=LAB_KEY)
-    assert rc == "rc=0"
-    argv = spawned.read_text().split()
-    assert argv[0] == "dropbear"
-    # ‏-s אין סיסמאות, ‏-g גם לא ל-root, ‏-j/-k בלי מנהור יציאות.
-    for flag in ("-s", "-g", "-j", "-k"):
-        assert flag in argv, f"dropbear רץ בלי {flag}"
-    assert "-r" in argv
-    installed = home / ".ssh" / "authorized_keys"
-    assert installed.read_text() == LAB_KEY
-
-
-def test_dropbear_binds_the_deployment_ip_not_wildcard(tmp_path):
-    """R20-F7 / #1080: ‏-p <IP>:22, לא 0.0.0.0 ולא פורט בלי כתובת."""
-    rc, spawned, _home, _run = run_ssh_start(tmp_path, key_text=LAB_KEY)
-    assert rc == "rc=0"
-    argv = spawned.read_text().split()
-    assert "-p" in argv
-    assert argv[argv.index("-p") + 1] == "10.44.12.187:22"
-    assert "0.0.0.0" not in spawned.read_text()
-
-
-def test_ssh_does_not_listen_without_a_deployment_ip(tmp_path):
-    """בלי $IP אין האזנה על 0.0.0.0 — הכיוון הבטוח הוא לא לפתוח דלת."""
-    rc, spawned, _home, run = run_ssh_start(tmp_path, key_text=LAB_KEY, ip="")
-    assert rc == "rc=1"
-    assert not spawned.exists()
-    assert "0.0.0.0" in (run / "agent.log").read_text(encoding="utf-8")
-
-
-def test_a_daemon_that_never_bound_the_port_is_reported_as_not_listening(tmp_path):
-    """הבאג שהיה כאן עד #83: ‏ssh_start כתב "dropbear on port 22"
-    מיד אחרי ההרצה. ‏dropbear יוצא על מפתח host פגום, על פורט תפוס
-    ועל חשבון ש-NSS לא מוצא — וכל אחד מאלה נראה בדיוק כמו הצלחה.
-    היעדר סימן כישלון אינו ראיה (עיקרון 5)."""
-    rc, spawned, _home, run = run_ssh_start(tmp_path, key_text=LAB_KEY,
-                                            listening="no")
-    assert rc == "rc=1"
-    assert spawned.exists()                 # הופעל — פשוט לא תפס פורט
-    log = (run / "agent.log").read_text(encoding="utf-8")
-    assert "did not bind" in log
-    assert "listening on port" not in log
-
-
-def test_a_socket_table_that_cannot_be_read_is_not_a_closed_port(tmp_path):
-    """שלושה מצבים, לא שניים: "לא הצלחנו לבדוק" נאמר במפורש."""
-    rc, _spawned, _home, run = run_ssh_start(tmp_path, key_text=LAB_KEY,
-                                             listening="unreadable")
-    assert rc == "rc=1"
-    assert "cannot read" in (run / "agent.log").read_text(encoding="utf-8")
-
-
-def test_a_listener_the_kernel_confirms_is_the_only_success(tmp_path):
-    _rc, _spawned, _home, run = run_ssh_start(tmp_path, key_text=LAB_KEY)
-    assert "listening on port 22" in (run / "agent.log").read_text(encoding="utf-8")
-
-
-def test_ssh_makes_its_host_key_at_boot_not_at_build(tmp_path):
-    """מפתח host שנארז בבנייה היה אותו מפתח פרטי בכל תחנה במכללה,
-    ובקובץ שמוגש ב-HTTP פתוח. הוא נוצר בעלייה, ב-tmpfs."""
-    _rc, spawned, _home, run = run_ssh_start(tmp_path, key_text=LAB_KEY)
-    hostkey = spawned.read_text().split()[-1]
-    assert hostkey.startswith(posix(run)), "מפתח ה-host לא ב-RUN_DIR"
-    assert Path(hostkey).read_text() == "fake-host-key"
-    # הבנאי אורז את dropbearkey (הסוכן צריך אותו בעלייה) אבל לעולם
-    # לא מריץ אותו — הרצה כזו הייתה צורבת מפתח פרטי לתוך התוצר.
-    builder = (REPO / "tools" / "build_initramfs.sh").read_text(encoding="utf-8")
-    assert not re.search(r"dropbearkey\s+-", builder), \
-        "הבנאי מייצר מפתח host — אותו מפתח פרטי בכל תחנה, ובנייה לא דטרמיניסטית"
-
-
-def test_ssh_only_starts_behind_the_debug_gate():
-    """אותו שער של מעטפת הטכנאי, לא שער שני. תחנת תלמיד רגילה
-    לא מאזינה לשום פורט. אחרי $IP, כי ה-bind הוא לכתובת ההפצה (#1080)."""
+def test_the_agent_runs_site_hooks_once_after_the_network_is_known():
+    """אחרי ש-net.conf נטען (‏$IP ידוע) ולפני ה-hello הראשון."""
     text = (AGENT / "imagectl-agent").read_text(encoding="utf-8")
-    assert text.count("ssh_start") == 1
-    assert '[ "$IMAGECTL_DEBUG" = "1" ] && ssh_start' in text
-    assert text.index("ssh_start") > text.index(". \"$NET_FILE\"")
+    calls = [ln for ln in text.splitlines()
+             if ln.strip().startswith("run_site_hooks")]
+    assert len(calls) == 1
+    assert text.index("run_site_hooks") > text.index('. "$NET_FILE"')
+    assert text.index("run_site_hooks") < text.index("send_hello()")
 
 
-def test_sshd_json_reads_the_pubkey_into_hello(tmp_path):
-    """ה-fingerprint וה-pubkey מגיעים ל-hello; בלי מפתח — השדה נעדר."""
-    rc, _spawned, _home, run = run_ssh_start(tmp_path, key_text=LAB_KEY)
-    assert rc == "rc=0"
-    sysroot = tmp_path / "sysroot"
-    (sysroot / "proc/sys/kernel/random").mkdir(parents=True)
-    (sysroot / "proc/sys/kernel/random/boot_id").write_text(
-        "11111111-2222-3333-4444-555555555555\n")
-    frag = sh(
-        f'export PATH="$(cd {posix(tmp_path / "box" / "stubs")!r} && pwd):$PATH" '
-        f'RUN_DIR={posix(run)!r} SYSROOT={posix(sysroot)!r}; '
-        f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/sshd.sh; '
-        f'printf "{{\\"x\\":0%s}}" "$(sshd_json)"'
-    )
-    body = json.loads(frag)
-    assert body["ssh_hostkey"]["type"] == "ed25519"
-    assert body["ssh_hostkey"]["pubkey"] == SSH_PUB_A
-    assert body["ssh_hostkey"]["fingerprint"] == SSH_FP_A
-    assert body["ssh_hostkey"]["boot_id"] == "11111111-2222-3333-4444-555555555555"
+def test_the_live_installer_runs_the_same_hooks():
+    text = (AGENT / "lib" / "installer_boot.sh").read_text(encoding="utf-8")
+    assert '. "$LIB_DIR/sitehooks.sh"' in text and "run_site_hooks" in text
 
 
-def test_hello_without_sshd_has_no_ssh_hostkey_field(fake_machine):
-    hello = json.loads(sh(
-        f'export SYSROOT={posix(fake_machine["sysroot"])!r} '
-        f'DEVROOT={posix(fake_machine["dev"])!r} '
-        f'RUN_DIR={posix(fake_machine["run"])!r} IFACE=eth0 IP=10.44.12.187; '
-        f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/sysinfo.sh; '
-        f'build_hello'
-    ))
-    assert "ssh_hostkey" not in hello
+# --- המוצר אינו אורז SSH (#1266) ---------------------------------------------
+
+#: מה שאסור שיופיע בקוד שנכנס לאימג' ובכלי הבנייה שלו. "ssh" בתחילת
+#: מילה בלבד, כדי ש-`_ssha` (משתנה ב-expand.sh) לא ייתפס.
+NO_SSH = re.compile(r"(?<![A-Za-z_])ssh|dropbear|authorized_keys|imagectl_deploy",
+                    re.IGNORECASE)
 
 
-def test_the_builder_takes_the_authorized_keys_as_an_argument():
+def _code_lines(text: str) -> list[str]:
+    """שורות קוד בלבד — הערה שמסבירה ש-SSH הוסר אינה אריזה שלו."""
+    return [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
+
+
+def test_the_product_image_packs_no_ssh():
+    """הבנאי, רשימת החבילות של ה-ISO וקוד הסוכן — בלי dropbear, בלי
+    מפתח טכנאי ובלי `--ssh-key`. בדיקה שלילית: מה שעבר כאן ב-#44 נכשל."""
     builder = (REPO / "tools" / "build_initramfs.sh").read_text(encoding="utf-8")
-    assert "--ssh-key" in builder
-    assert "authorized_keys" in builder
+    assert not (builder_binaries() & {"dropbear", "dropbearkey"})
+    files = {"tools/build_initramfs.sh": builder,
+             "tools/iso/packages.txt": (REPO / "tools" / "iso" / "packages.txt").read_text(encoding="utf-8"),
+             "tools/iso/build-iso.sh": (REPO / "tools" / "iso" / "build-iso.sh").read_text(encoding="utf-8")}
+    files.update({str(p.relative_to(REPO)): p.read_text(encoding="utf-8") for p in SH_FILES})
+    hits = [f"{name}: {ln.strip()}" for name, text in files.items()
+            for ln in _code_lines(text) if NO_SSH.search(ln)]
+    assert not hits, "\n".join(hits)
 
 
-def test_the_builder_packs_the_account_dropbear_hands_the_session_to():
-    """‏dropbear מחפש את החשבון דרך NSS. ‏/etc/passwd חסר או שורת
-    ‏passwd חסרה ב-nsswitch = כניסה נדחית בשקט — הלקח מ-#33 שוב."""
+def test_the_builder_copies_the_overlay_and_packs_its_binaries(tmp_path):
+    """הקטע של IMAGECTL_EXTRA_OVERLAY, מורץ לבדו: העץ מועתק מעל השורש,
+    ‏`.binaries` נארז דרך copy_bin (הערות ושורות ריקות מדולגות) ואינו
+    נכנס לאימג' בעצמו."""
+    builder = (REPO / "tools" / "build_initramfs.sh").read_text(encoding="utf-8")
+    start = builder.index("# --- site/lab overlay (#1266)")
+    block = builder[start:builder.index("# --- pack ---", start)]
+    overlay, root = tmp_path / "overlay", tmp_path / "root"
+    (overlay / "etc" / "imagectl" / "hooks.d").mkdir(parents=True)
+    (overlay / "etc" / "imagectl" / "hooks.d" / "10-lab.sh").write_text("true\n", encoding="utf-8")
+    (overlay / ".binaries").write_text("# lab\nfoo\n\nbar\n", encoding="utf-8")
+    root.mkdir()
+    (tmp_path / "block.sh").write_text(block, encoding="utf-8", newline="\n")
+    sh(f'set -euo pipefail; ROOT={posix(root)!r}; EXTRA_OVERLAY={posix(overlay)!r}; '
+       f'copy_bin() {{ echo "$1" >> {posix(tmp_path / "bins")!r}; }}; '
+       f'. {posix(tmp_path / "block.sh")!r}')
+    assert (root / "etc" / "imagectl" / "hooks.d" / "10-lab.sh").is_file()
+    assert not (root / ".binaries").exists()
+    assert (tmp_path / "bins").read_text(encoding="utf-8").split() == ["foo", "bar"]
+
+
+def test_an_overlay_path_that_is_not_a_directory_stops_the_build_early():
+    """הוגדר ואינו תיקייה = שגיאה לפני apt — לא אימג' בלי ה-overlay
+    שנראה בדיוק כמו אימג' איתו."""
+    builder = (REPO / "tools" / "build_initramfs.sh").read_text(encoding="utf-8")
+    check = builder.index("IMAGECTL_EXTRA_OVERLAY is not a directory")
+    assert check < builder.index("apt-get install")
+
+
+def test_the_builder_packs_the_account_nss_resolves():
+    """חשבון root נעול ושורת passwd ב-nsswitch — כל מה שמחפש חשבון דרך
+    NSS נכשל בשקט בלעדיהם (הלקח מ-#33)."""
     builder = (REPO / "tools" / "build_initramfs.sh").read_text(encoding="utf-8")
     assert "/etc/passwd" in builder
     assert "passwd: files" in builder
@@ -1449,7 +1332,7 @@ def run_expand(tmp_path, plan, disk_sectors, override=None):
     """מריץ expand_last מול sgdisk מזויף ומחזיר (rc, שורות הפקודה, סימון).
 
     ‏manifest_plan נדרס אחרי ה-source כדי לא לדרוש jq בסביבת הבדיקה —
-    אותו דפוס שבו נבדק _ssh_spawn.
+    אותו דפוס של דריסת פונקציה אחרי ה-source.
 
     ‏`override` = ``EXPAND_OVERRIDE`` (#59) — הבחירה מהקונסולה, שמגיעה
     ל-`_expand_candidate` בדיוק כפי ש-`imagectl-agent` מציב אותה לפני
@@ -2055,8 +1938,6 @@ REAL_BINARIES_USED = {
     "xfs_growfs",
     "partclone.ntfs", "partclone.fat", "partclone.ext4", "partclone.btrfs",
     "partclone.dd",
-    # ‏SSH לטכנאי (#44) — נארז תמיד, מאזין רק מאחורי imagectl.debug=1.
-    "dropbear", "dropbearkey",
     # ‏#85 — קריאת החותם של מטעני האתחול שעל ה-ESP בזמן הקליטה. הוא גם
     # אחד מארבעת הכלים החסרים שרשומים ב-#86 (הכשרת מכונה בזמן שחזור).
     "openssl",

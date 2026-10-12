@@ -1,6 +1,6 @@
 """Dead-man tests use a fake monotonic clock, fake reboot and regular pet file.
 
-No watchdog device, SSH daemon, server, or reboot is ever invoked.
+No watchdog device, server, or reboot is ever invoked.
 """
 import subprocess
 
@@ -189,21 +189,3 @@ def test_interactive_and_classroom_modes_do_not_arm(tmp_path, role, mode):
     assert out.stdout.strip() == "active=0"
 
 
-def test_ssh_supervisor_retries_exit_without_a_daemon(tmp_path):
-    out = run(tmp_path, f'''
-        . {AGENT.as_posix()!r}/lib/sshd.sh
-        LOG_FILE="$RUN_DIR/ssh.log"
-        # Run the real setsid command payload in the foreground with shell
-        # functions replacing the daemon and delay. No actual listener.
-        setsid() {{
-            shift 2
-            payload=$1; shift
-            sh -c 'n=0; sleep() {{ n=$((n+1)); [ "$n" -lt 2 ] || exit 0; }}; '"$payload" "$@"
-        }}
-        _ssh_spawn sh -c 'echo fake-dropbear; exit 7'
-        wait
-    ''')
-    assert out.returncode == 0, out.stderr
-    log = (tmp_path / "ssh.log").read_text()
-    assert log.count("fake-dropbear") == 2
-    assert log.count("exited (rc=7); restarting in 5s") == 2

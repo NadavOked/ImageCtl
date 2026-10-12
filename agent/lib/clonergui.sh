@@ -75,6 +75,9 @@ cloner_gui_state() {
     case "$_cg_name" in null) _cg_name= ;; esac
     printf 'cloner=%s\n' "$_cg_name" >> "$_cg_next" || return 1
     gui_server_addr >> "$_cg_next" || return 1   # #1252: the header's server (guistate.sh)
+    # #704: the operator's slot names (slotnames.sh); a failed read keeps the last file.
+    slot_names_refresh || :
+    slot_names_records >> "$_cg_next" || return 1
 
     _cg_any=0
     for _cg_dir in "$RUN_DIR"/targets/*/; do
@@ -204,6 +207,12 @@ gui_smart_choice() {
             if [ "$_gsc_dnonce" = "$_gsc_nonce" ]; then
                 case "$_gsc_dec" in
                     replace|rescue|skip)
+                        # #989 item 2: the server settles who answered first
+                        # (console or this screen) and returns the winner.
+                        # Before the request is cleared: the beat still asks.
+                        if command -v attended_claim >/dev/null 2>&1; then
+                            _gsc_dec=$(attended_claim "$_gsc_nonce" "$_gsc_dec")
+                        fi
                         rm -f "$GUI_DIR/smart-request" "$GUI_DIR/smart-decision"
                         printf '%s\n' "$_gsc_dec"
                         return 0

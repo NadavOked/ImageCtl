@@ -21,7 +21,7 @@ from typing import Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from . import auth, console_netcfg, deploy_net, dhcp, ports
+from . import auth, capabilities, console_netcfg, deploy_net, dhcp, ports
 from .api import ServerContext
 from .db import get_setting, journal, set_setting
 
@@ -66,8 +66,11 @@ def render_dnsmasq(ctx: ServerContext,
     # ‏as_posix: זה נתיב בקובץ dnsmasq של השרת (לינוקס) — לא נתיב של המכונה
     # שהקוד רץ עליה (תחנת הפיתוח היא ווינדוס, ו-str(Path) שם נותן לוכסן הפוך).
     root = (Path(deploy.tftp_root).as_posix() if deploy is not None else dhcp.DEFAULT_TFTP_ROOT)         if ports.enabled(ctx.conn, "tftp") else None
+    # ‏#1078: רק `cli` נושא `interface=<הפצה>` בקובץ המתקין — בכל מקור אחר
+    # הקובץ הזה הוא היחיד, ובלי שם בו TFTP נצמד ל-loopback (`dhcp._pinned`).
+    pin = deploy is not None and deploy.state.source != "cli"
     return (dhcp.render(configs, tftp_root=root,
-                        deploy_interface=console_deploy_interface(deploy)),
+                        deploy_interface=console_deploy_interface(deploy), pin_tftp=pin),
             dhcp.render_proxy(configs, tftp_root=root))
 
 
@@ -345,6 +348,12 @@ def create_dhcp_router(ctx: ServerContext, hooks: Hooks | None = None,
         מ-`PUT /net/config/{שם}/deploy` **לפני** שהכתובת של הכרטיס זזה."""
         if cfg.enabled and cfg.proxy:
             raise HTTPException(400, "DHCP מלא ו-proxy על אותו ממשק סותרים זה את זה")
+        # הכרעת נדב 11/10: ‏proxy קיים בשביל תחנות כיתה שמקבלות כתובת מה-DHCP
+        # של המכללה — כלומר הוא חלק מהכיתות. כשהן כבויות (v1) השרת מסרב, לא
+        # רק הממשק מסתיר. כיבוי (proxy=false) תמיד מותר.
+        if cfg.proxy and not capabilities.classrooms():
+            raise HTTPException(
+                409, "PXE proxy שייך לכיתות, וכיתות אינן במהדורה זו (v1.2)")
         # ‏#1263: כרטיס הניהול (נבחר בהתקנה) הוא לקוח DHCP או כתובת ידנית — לא
         # מחלק כתובות ולא עונה ל-PXE. כיבוי (enabled=false) תמיד מותר.
         if (cfg.enabled or cfg.proxy) and name == console_netcfg.management_interface(

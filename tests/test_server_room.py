@@ -528,7 +528,7 @@ def test_an_agent_without_the_port_field_still_works(room_server):
     assert machine["drawers"] == 2 and machine["fresh_drawers"] == 2
 
 
-def test_room_round_respects_the_single_session_invariant(room_server):
+def test_room_round_respects_the_single_session_invariant(room_server, classrooms_on):
     admin, deploy = room_server["admin"], room_server["deploy"]
 
     # סבב כיתה פעיל תופס את החריץ היחיד — סבב חדר נדחה, בגלוי.
@@ -932,3 +932,48 @@ def test_a_writing_machine_reporting_progress_is_not_shown_asleep(room_server):
     machine = next(m for m in room(deploy)["machines"] if m["mac"] == CLONER1)
     assert machine["state"] == "writing"          # אכן כותבת
     assert machine["awake"] is True               # #449: כותבת ⇒ ערה
+
+
+def test_989_new_serials_rejoin_the_open_round_and_same_serials_do_not_until_the_target(room_server):
+    """‏#989 סעיף 3: סבב 7 על שתי מכונות (2+3 מגירות). הגל הראשון כותב 5; מכונה שחזרה
+    עם אותם דיסקים לא נכתבת שנית (‏`fresh_serials`, #695); מכונה שחזרה עם serials חדשים
+    מצטרפת לאותו סבב ל**גל הבא**, נכתבת עד 7, והסבב נסגר."""
+    deploy, anon = room_server["deploy"], room_server["anon"]
+
+    assert deploy.post("/api/console/room",
+                       json={"image_id": "img_7f3a91", "target_drives": 7}).status_code == 200
+    wave1 = cloner_hello(anon, CLONER1, ["S1", "S2"])["session"]["id"]
+    cloner_hello(anon, CLONER2, ["S3", "S4", "S5"])
+    heartbeat(room_server)
+    first = room(deploy)["round"]
+    assert first["wave_state"] == "open"        # 5 מוכנים מול 7 — לא יוצא לבד
+    assert deploy.post("/api/console/room/start").status_code == 200
+    report(anon, wave1, CLONER1, {"sda": "done", "sdb": "done"})
+    report(anon, wave1, CLONER2, {"sda": "done", "sdb": "done", "sdc": "done"})
+
+    heartbeat(room_server)
+    view = room(deploy)["round"]
+    assert view["id"] == first["id"]
+    assert (view["written_drives"], view["remaining_drives"], view["wave_number"]) == (5, 2, 2)
+    assert view["wave_state"] == "open" and view["ready_drives"] == 0      # הדיסקים הישנים אינם "מוכנים"
+
+    # אותם דיסקים — לא מצטרפים ולא נכתבים שנית, ושום מוכן לא נוסף
+    assert cloner_hello(anon, CLONER1, ["S1", "S2"])["session"] is None
+    assert cloner_hello(anon, CLONER2, ["S3", "S4", "S5"])["session"] is None
+    heartbeat(room_server)
+    view = room(deploy)["round"]
+    assert view["written_drives"] == 5 and view["ready_drives"] == 0 and view["wave_state"] == "open"
+
+    # דיסקים חדשים (serials חדשים) — מצטרפים לאותו סבב, שני מוכנים מכסים את היתרה
+    wave2 = cloner_hello(anon, CLONER1, ["S6", "S7"])["session"]["id"]
+    assert wave2 != wave1
+    view = room(deploy)["round"]
+    assert view["id"] == first["id"] and view["ready_drives"] == 2 and view["wave_number"] == 2
+    heartbeat(room_server)
+    assert room(deploy)["round"]["wave_state"] == "running"
+    report(anon, wave2, CLONER1, {"sda": "done", "sdb": "done"})
+    heartbeat(room_server)
+    assert room(deploy)["round"] is None                          # 7 מתוך 7 — נסגר
+    row = room_server["ctx"].conn.execute(
+        "SELECT state, written_drives, wave_number FROM room_rounds").fetchone()
+    assert (row["state"], row["written_drives"], row["wave_number"]) == ("closed", 7, 2)

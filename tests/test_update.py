@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -68,16 +69,35 @@ def test_check_update_not_available_when_up_to_date():
     assert result["available"] is False
 
 
-def test_check_update_network_failure_is_not_no_versions():
-    """‏עיקרון 5: הרצה שנכשלה אינה 'אין גרסאות' — שני מסלולים נבדלים."""
-    hooks = {
-        "describe": lambda repo_dir: "v0.24.0",
-        "ls_remote_tags": lambda url: (False, "", "Could not resolve host"),
-    }
-    result = update_mod.check_update(hooks, "/repo", "https://example/pub.git")
+def test_check_update_timeout_is_classified_as_no_network(monkeypatch):
+    def timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(["git", "ls-remote"], 20)
+
+    monkeypatch.setattr(subprocess, "run", timeout)
+    hooks = {"describe": lambda repo_dir: "v0.24.0",
+             "ls_remote_tags": update_mod._ls_remote_tags}
+    result = update_mod.check_update(hooks, "/repo", update_mod.PUBLIC_UPDATE_URL)
     assert result["available"] is False
     assert result["latest"] is None
-    assert "נכשלה" in result["reason"]
+    assert result["reason"] == "no_network"
+    assert result["message"] == update_mod.NO_NETWORK_MESSAGE
+    assert "timed out after 20 seconds" in result["detail"]
+
+
+def test_check_update_dns_failure_is_classified_as_no_network(monkeypatch):
+    """‏עיקרון 5: הרצה שנכשלה אינה 'אין גרסאות' — שני מסלולים נבדלים."""
+    def dns_failure(cmd, **_kwargs):
+        return subprocess.CompletedProcess(cmd, 128, "", "fatal: unable to access: Could not resolve host: github.com")
+
+    monkeypatch.setattr(subprocess, "run", dns_failure)
+    hooks = {"describe": lambda repo_dir: "v0.24.0",
+             "ls_remote_tags": update_mod._ls_remote_tags}
+    result = update_mod.check_update(hooks, "/repo", update_mod.PUBLIC_UPDATE_URL)
+    assert result["available"] is False
+    assert result["latest"] is None
+    assert result["reason"] == "no_network"
+    assert result["message"] == update_mod.NO_NETWORK_MESSAGE
+    assert "Could not resolve host" in result["detail"]
 
 
 def test_check_update_no_tags_at_all_is_a_named_case():

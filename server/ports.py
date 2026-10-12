@@ -1,7 +1,7 @@
 """מתג הדלקה/כיבוי לכל פורט של השרת — **בזמן ריצה** (‏#996).
 
 הכרעת נדב (17/09): "לכל אחד אמור להיות דונגל הדלקה וכיבוי לפורט". עד
-כאן היה מתג ל-DHCP/proxy/מוניטור/SSH, ולמאזינים של השרת עצמו — סוכן
+כאן היה מתג ל-DHCP/proxy/מוניטור, ולמאזינים של השרת עצמו — סוכן
 ‏8080, קונסולה 8081, בין-שרתים 8443 — לא היה כלום.
 
 שני חלקים:
@@ -29,7 +29,7 @@
 כולם, כמו ב-`serve_all` הישן.
 
 **מה נשאר במקום אחר, בכוונה.** ‏DHCP 67 ו-proxy 4011 (`PUT /net/interfaces/
-{n}`), מוניטור 5900 (`PUT /monitor/settings`) ושתי דלתות ה-SSH (`/ssh/…`)
+{n}`) ומוניטור 5900 (`PUT /monitor/settings`)
 כבר יש להם מתג עם הראיה שלהם — ‏`/ports` **מצביע** אליהם (`toggle_url`) ואינו
 משכפל. ‏TFTP 69 (‏#1013) הוא dnsmasq: המתג נשמר כמו כל פורט (`port:tftp`)
 ומוחל דרך ה-render של הקונסולה (`console_dhcp.apply_dnsmasq` — ‏`enable-tftp`
@@ -405,7 +405,7 @@ class Listeners:
 
 #: המאזינים של השרת עצמו: ‏(toggle, מה קורה אם מכבים). ‏"confirm" = כיבוי
 #: מאחורי הקלדת שם השרת (עיקרון 7), כי הוא שובר את המערכת; ‏"api" = מתג
-#: רגיל. ‏8081 מסורב בנוסף כשהבקשה מגיעה דרכו (הדלת האחרונה, כמו SSH).
+#: רגיל. ‏8081 מסורב בנוסף כשהבקשה מגיעה דרכו (הדלת האחרונה).
 OWN = {
     "http_boot": ("confirm",
                   "אין תפריט אתחול, קרנל ו-hello — תחנות לא יעלו מהרשת ויפלו "
@@ -441,17 +441,11 @@ WARNINGS_HE = {
                     "מול השרת הזה."),
     "monitor": ("כיבוי המוניטור עוצר צפייה ושליטה מרחוק במחשבי בנייה ושיכפול; "
                 "אף תחנה לא מקבלת חיבור 5900."),
-    "ssh_stations": ("כיבוי SSH לתחנות תופס באתחול הבא: תחנות עולות בלי dropbear "
-                     "ובלי מעטפת טכנאי — אין SSH אליהן."),
 }
 
 
-def warning_for(port_id: str, **fmt) -> str | None:
-    """האזהרה לשורה; ‏`ssh_server:<nic>` נבנית לפי שם הכרטיס."""
-    if port_id.startswith("ssh_server:"):
-        nic = fmt.get("nic") or port_id.split(":", 1)[1]
-        return (f"כיבוי SSH על הכרטיס {nic} מנתק את הניהול מהכרטיס הזה; סגירת "
-                "הכרטיס האחרון = אין SSH לשרת מאף רשת.")
+def warning_for(port_id: str) -> str | None:
+    """האזהרה לשורה, או None."""
     return WARNINGS_HE.get(port_id)
 
 
@@ -490,7 +484,6 @@ ELSEWHERE = {
     "dhcp": "/api/console/net/interfaces/{name}",
     "pxe_proxy": "/api/console/net/interfaces/{name}",
     "monitor": "/api/console/monitor/settings",
-    "ssh_stations": "/api/console/ssh/stations",
 }
 
 
@@ -609,13 +602,10 @@ def firewall_status(ruleset: str | None) -> tuple[str, str]:
 #: ‏`firewall` (מצב ה-nft כולו) אינו פורט — ‏None.
 NETWORK = {"dhcp": "deploy", "tftp": "deploy", "http_boot": "deploy",
            "pxe_proxy": "deploy", "multicast": "deploy", "monitor": "deploy",
-           "ssh_stations": "deploy", "http_console": "mgmt",
-           "interserver": "interserver"}
+           "http_console": "mgmt", "interserver": "interserver"}
 
 
 def network_of(port_id: str) -> str | None:
-    if port_id.startswith("ssh_server:"):
-        return "mgmt"
     return NETWORK.get(port_id)
 
 
@@ -669,9 +659,9 @@ def create_ports_router(ctx, snapshot: Callable[[], list[dict]],
                         listeners, dnsmasq_apply: Callable[[str, object], str | None] | None = None,
                         ) -> APIRouter:
     """‏`PUT /api/console/ports/{id}` — ‏admin בלבד. נתלה בראוטר הבריאות
-    (`/api/console`), כמו `/ssh`, כי המתג והחיווי הם אותם hooks.
+    (`/api/console`), כי המתג והחיווי הם אותם hooks.
 
-    ‏`def` ולא `async def`, בכוונה (אותו לקח כמו console_ssh): המעבר עצמו
+    ‏`def` ולא `async def`, בכוונה: המעבר עצמו
     רץ על לולאת האירועים דרך `Listeners.request`, ו-endpoint אסינכרוני
     היה חוסם את הלולאה שהוא ממתין לה.
 
@@ -690,10 +680,6 @@ def create_ports_router(ctx, snapshot: Callable[[], list[dict]],
         if port_id in ELSEWHERE:
             raise HTTPException(
                 409, f"המתג של השורה הזו חי ב-PUT {ELSEWHERE[port_id]} — לא כאן")
-        if port_id.startswith("ssh_server:"):
-            raise HTTPException(
-                409, "המתג של השורה הזו חי ב-PUT /api/console/ssh/interfaces/"
-                     f"{port_id.split(':', 1)[1]} — לא כאן")
         row = next((r for r in snapshot() if r["id"] == port_id), None)
         if row is None:
             raise HTTPException(404, "אין פורט כזה")

@@ -32,6 +32,34 @@ capture_ntfs_hibernation_reason() {
     return 0
 }
 
+# #980 section 6: the NTFS state the build machine card shows before a capture.
+# The same read-only ntfs-3g.probe as the gate above, for every NTFS partition
+# blkid sees -- a field of the machine probe (probe.sh, which owns _have/_pn/
+# _pe/_js and BLKID). null = a tool is not packed; {"error"} = blkid failed;
+# [] = no NTFS; else per partition: clean (0) | hibernated (14) | dirty (15),
+# or error with the rc.
+NTFSPROBE="${NTFSPROBE:-ntfs-3g.probe}"
+probe_ntfs() {
+    { _have "$BLKID" && _have "$NTFSPROBE"; } || { _pn; return; }
+    _nraw=$("$BLKID" 2>/dev/null); _nrc=$?
+    [ "$_nrc" = 0 ] || [ "$_nrc" = 2 ] || { _pe "blkid rc $_nrc"; return; }
+    printf '['
+    printf '%s\n' "$_nraw" | awk '/TYPE="ntfs"/ { n = $1; sub(/:$/, "", n); print n }' | {
+    _nsep=""
+    while read -r _nn; do
+        "$NTFSPROBE" --readwrite "$_nn" >/dev/null 2>&1 < /dev/null; _nrc=$?
+        case "$_nrc" in
+            0) _nst='"state":"clean"' ;;
+            14) _nst='"state":"hibernated"' ;;
+            15) _nst='"state":"dirty"' ;;
+            *) _nst="\"error\":\"ntfs-3g.probe rc $_nrc\"" ;;
+        esac
+        printf '%s{"node":%s,%s}' "$_nsep" "$(_js "$_nn")" "$_nst"; _nsep=","
+    done
+    }
+    printf ']'
+}
+
 _bitlocker_reason() {
     # $1=idx $2=fs $3=node. FOG -FVE-FS-; empty=ok, text=refuse (#671).
     case "$2" in *[Bb]it[Ll]ocker*) echo "מחיצה $1 מוצפנת ב-BitLocker — כבו את BitLocker לפני הקליטה"; return ;; esac

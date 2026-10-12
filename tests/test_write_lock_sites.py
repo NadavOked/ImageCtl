@@ -223,7 +223,7 @@ def test_machine_writes_do_not_starve_each_other(tmp_path):
 def test_a_failed_set_setting_leaves_the_connection_usable(tmp_path):
     """‏`set_setting` הוא מסלול הכתיבה של **כל** מסכי ההגדרות.
 
-    ‏DHCP, כתובות, מתג ה-SSH ורשימת התיקיות עוברים כאן. חיבור מורעל
+    ‏DHCP, כתובות, מתגים ורשימת התיקיות עוברים כאן. חיבור מורעל
     כאן הוא קונסולה שהפסיקה לשמור — ולפי עיקרון 5, "שמירה שלא הצליחה
     להיבדק" אינה "נשמר".
     """

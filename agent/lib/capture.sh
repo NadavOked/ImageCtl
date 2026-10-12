@@ -31,6 +31,7 @@ capture_disk() {
     # $1 = task id, $2 = disk name. Emits the manifest path on success.
     _task="$1"; _disk="$2"
     _node_base="$DEVROOT/$_disk"
+    capture_stage ntfs_check   # #980 §4: the source checks (GPT, partitions, NTFS hibernation)
 
     # ‏target_init לפני הבדיקה הראשונה: על יעד שלא נרשם אין לאן לכתוב סיבה,
     # וארבעת הסירובים שלמטה קורים לפני שבייט אחד זז — עד #106 הם הגיעו
@@ -88,6 +89,7 @@ capture_disk() {
     done < "$_parts"
     # ‏#87: אחרי שער המהובר ולפני חישוב הפריסה — הכיווץ משכתב את $_parts,
     # וכל מה שלמטה (הרצפה, השער החמישי, המניפסט) רואה את הפריסה המצומצמת.
+    capture_stage shrink
     capture_space_preflight "$_task" "$_disk" "$_parts" "$_sector_size" \
         || { _capture_failed "$_disk" "$CAPTURE_SPACE_ERROR"; return 1; }
     shrink_before_capture "$_disk" "$_parts" "$_sector_size" \
@@ -138,6 +140,7 @@ capture_disk() {
         _floor_json="$CAPTURE_TARGET_BYTES"
     fi
 
+    capture_stage stream
     _json_parts=""
     _total=0
     # ‏#85: ה-ESP נקרא שוב אחרי הלולאה, לגזירת החותם של מטעני האתחול.
@@ -248,6 +251,7 @@ capture_disk() {
         _json_parts="$_json_parts{\"index\":$_idx,\"type_guid\":\"$_guid\",\"unique_guid\":\"$_uguid\",\"attrs\":\"$_attrs\",\"role\":\"$_role\",\"fs\":\"$_fs\",\"start_sector\":$_first,\"size_bytes\":$((_sizesec * _sector_size)),\"used_bytes\":$_used,\"file\":\"$_file\",\"sha256\":\"$_sha\",\"expandable\":false$(shrink_json_extra "$_idx" "$_first" "$_sizesec" "$_sector_size")},"
     done < "$_parts"
     # ‏#87: הבייטים עברו; מחשב הבנייה מקבל את מחיצתו בחזרה. כשל = אזהרה בלבד.
+    capture_stage restore_size
     shrink_restore_source "$_disk"
 
     _json_parts=${_json_parts%,}

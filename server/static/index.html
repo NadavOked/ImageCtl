@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ImageCtl — קונסולה</title>
-<link rel="stylesheet" href="design-tokens.css?v=11.19">
-<link rel="stylesheet" href="console.css?v=11.19">
-<link rel="stylesheet" href="progress.css?v=11.19">
+<link rel="stylesheet" href="design-tokens.css?v=11.24">
+<link rel="stylesheet" href="console.css?v=11.24">
+<link rel="stylesheet" href="progress.css?v=11.24">
 <script>
   /* לפני הציור הראשון, אחרת המסך מהבהב בלבן לפני שהכהה נטען.
      המטמון הוא בחירה מפורשת (light/dark) בלבד; בלי מטמון — לפי המערכת. */
@@ -76,7 +76,7 @@
 <header class="topbar">
   <button class="icon-btn nav-toggle" type="button" aria-label="הצג את עץ הניווט" title="הצג את עץ הניווט" aria-controls="sidebar" aria-expanded="false" onclick="navButton()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
   <div class="brand"><span class="brandmark"><span class="mark"></span></span><span class="brand-name">שרת אימג'ים</span></div>
-  <div class="search"><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="7"/><path d="m15 15 6 6"/></svg></span><input id="globalSearch" type="search" placeholder="חיפוש בעמוד הנוכחי" aria-label="חיפוש בעמוד הנוכחי" autocomplete="off" /></div>
+  <div class="search"><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="7"/><path d="m15 15 6 6"/></svg></span><input id="globalSearch" type="search" placeholder="חיפוש במערכת" aria-label="חיפוש במערכת" role="combobox" aria-expanded="false" aria-controls="gsPanel" aria-autocomplete="list" autocomplete="off" /><div id="gsPanel" class="gs-panel" role="listbox" aria-label="תוצאות חיפוש" hidden></div></div>
   <div class="top-actions">
     <button class="icon-btn" title="רענן" onclick="refreshPage()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7a9 9 0 1 0 1 7M20 2v6h-6"/></svg></button>
     <button class="icon-btn" title="התראות" onclick="topNotifications()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17h16l-2-3V8a6 6 0 0 0-12 0v6ZM9 21h6"/></svg> <span id="alertBadge" class="tag" style="margin-inline-start:3px" hidden></span></button>
@@ -152,14 +152,14 @@
 <div class="toast" id="toast"></div>
 </div>
 
-<script src="progress.js?v=11.19"></script>
-<script src="console.js?v=11.19"></script>
-<script src="reorder.js?v=11.19"></script>
-<script src="net.js?v=11.19"></script>
-<script src="netcfg.js?v=11.19"></script>
-<script src="storage_nodes.js?v=11.19"></script>
-<script src="drivers.js?v=11.19"></script>
-<script src="storage.js?v=11.19"></script>
-<script src="branches.js?v=11.19"></script>
+<script src="progress.js?v=11.24"></script>
+<script src="console.js?v=11.24"></script>
+<script src="reorder.js?v=11.24"></script>
+<script src="net.js?v=11.24"></script>
+<script src="netcfg.js?v=11.24"></script>
+<script src="storage_nodes.js?v=11.24"></script>
+<script src="drivers.js?v=11.24"></script>
+<script src="storage.js?v=11.24"></script>
+<script src="branches.js?v=11.24"></script>
 </body>
 </html>

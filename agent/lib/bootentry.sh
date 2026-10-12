@@ -28,8 +28,8 @@
 # (the restore IS complete, and a top-level `failed` would re-offer the
 # round on the next hello -- hello.py member_done -- i.e. a restore loop)
 # but carries the reason in its `error` field, exactly like the hostname
-# (#856). The outcome also lands in $RUN_DIR/bootentry.json for the SSH
-# technician (tmpfs, local only).
+# (#856). The outcome also lands in $RUN_DIR/bootentry.json for a
+# technician at the machine (tmpfs, local only).
 
 BOOTENTRY_LABEL="Windows Boot Manager"
 BOOTENTRY_LOADER='\EFI\Microsoft\Boot\bootmgfw.efi'

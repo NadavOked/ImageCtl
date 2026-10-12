@@ -1,7 +1,8 @@
 // #936 — השרתים המשניים בעץ הניווט נבנים מ-GET /storage-nodes (כמו vCenter):
 // צומת שרת לכל משני עם נקודת מצב (ירוק מחובר / אדום לא ענה / אפור מושבת),
-// ומתחתיו אותו עץ כמו הראשי (#1179) — סקירה כללית · סבב הפצה · מלאי ▸ · תשתית ▸ —
-// שכל עלה בו מנתב לדף `branch` (branches.js) עם המשני והעמוד שנבחרו.
+// ומתחתיו אותו עץ כמו הראשי (#1179) — סקירה כללית · סבב הפצה · מלאי ▸ · תשתית ▸ · ניהול ▸ —
+// שכל עלה בו הוא העמוד של הראשי בהקשר המשני (secondary_context.test.cjs), ו"העברות"
+// הוא דף `branch` (branches.js).
 // קליק = מציג, דאבל-קליק = פותח/סוגר (#931).
 // console.js + branches.js רצים ב-vm עם fetch מזויף, כמו branches_page.test.cjs.
 const {test} = require('node:test');
@@ -54,6 +55,7 @@ function setup(fixtures, me = {}, slow = null) {
   });
   vm.runInContext(fs.readFileSync(path.join(root, 'progress.js'), 'utf8'), ctx);
   vm.runInContext(fs.readFileSync(path.join(root, 'console.js'), 'utf8'), ctx);
+  vm.runInContext(fs.readFileSync(path.join(root, 'drivers.js'), 'utf8'), ctx);   // before branches.js, as in index.html
   vm.runInContext(fs.readFileSync(path.join(root, 'branches.js'), 'utf8'), ctx);
   const run = s => vm.runInContext(s, ctx);
   ctx.__toasts = toasts;
@@ -94,15 +96,16 @@ test('a server node per secondary from /storage-nodes, with the tree under it; c
   assert.match(html, /<strong class="server-name">חיפה<\/strong>/);
   assert.match(html, /<strong class="server-name">באר שבע<\/strong>/, 'a disabled secondary is still in the tree');
   assert.doesNotMatch(html, /יוגדר בהמשך|תל אביב/);
-  // #931: the row's single click navigates (overview), dblclick toggles the group, the arrow toggles alone.
-  assert.match(html, /data-secondary="n0de"[^>]*onclick="treeNavToggle\(this,'srv-n0de',function\(\)\{openBranchView\('n0de','overview',this\)\}\)"/);
+  // #931 + the gate's tree (owner 11/10): one click opens the secondary's overview (in its context), the next toggles; the arrow toggles alone.
+  assert.match(html, /data-secondary="n0de"[^>]*onclick="treeNavToggle\(this,'srv-n0de',function\(\)\{openSecondaryPage\('n0de','home',this\)\}\)"/);
   assert.match(html, /<span class="tree-arrow" data-open="false" onclick="event\.stopPropagation\(\);toggleInventoryGroup\(this\.closest\('\.inventory-node'\),'srv-n0de'\)">▸<\/span>/);
   assert.match(html, /<div id="srv-n0de" class="inventory-children" role="group" hidden>/, 'closed by default');
-  for (const [view, label] of [['overview', 'סקירה כללית'], ['machines', 'מחשבים'], ['images', "אימג&#39;ים"], ['transfers', 'העברות'], ['health', 'בריאות ושירותים']]) {
-    const re = new RegExp(`data-branch-view="${view}" data-branch-node="n0de" role="treeitem" tabindex="0" onclick="openBranchView\\('n0de','${view}',this\\)">.*?<span>${label}</span>`);
-    assert.match(html, re, `child ${view}`);
+  for (const [page, label] of [['home', 'סקירה כללית'], ['machines', 'מחשבים'], ['images', "אימג&#39;ים"], ['health', 'בריאות ושירותים'], ['permissions', 'משתמשים והרשאות']]) {
+    const re = new RegExp(`data-branch-page="${page}" data-branch-node="n0de" role="treeitem" tabindex="0"(?: aria-expanded="(?:true|false)")? onclick="(?:treeNavToggle\\(this,'srv-n0de-[A-Za-z]+',function\\(\\)\\{)?openSecondaryPage\\('n0de','${page}',this\\)[^"]*"[^>]*>.*?<span>${label}</span>`);
+    assert.match(html, re, `child ${page}`);
   }
-  assert.match(html, /role="treeitem" tabindex="0" aria-expanded="false" onclick="treeNavToggle\(this,'srv-n0de',function\(\)\{openBranchView\('n0de'/, 'server node is a focusable treeitem');
+  assert.match(html, /data-branch-view="transfers" data-branch-node="n0de" role="treeitem" tabindex="0" onclick="openBranchView\('n0de','transfers',this\)">.*?<span>העברות<\/span>/);
+  assert.match(html, /role="treeitem" tabindex="0" aria-expanded="false" onclick="treeNavToggle\(this,'srv-n0de',function\(\)\{openSecondaryPage\('n0de'/, 'server node is a focusable treeitem');
 });
 
 test('the status dot is measured against the secondary: green when it answered, red with the reason when not, grey when disabled', async () => {
@@ -155,101 +158,71 @@ test('the primary server node takes its name from /me (server_name), and renameS
   assert.doesNotMatch(fs.readFileSync(path.join(root, 'console.js'), 'utf8'), /imagectl-server-names/, 'no localStorage-only rename');
 });
 
-test('openBranchView routes to the branch page with the chosen secondary and page (a tree leaf, not a tab)', async () => {
+test('"העברות" is a primary page about the secondary: openBranchView leaves the secondary context and opens the branch page', async () => {
   const {run} = setup(base);
   assert.equal(run('pageAllowed("branch")'), true);
-  assert.equal(JSON.stringify(run('pages.branch.tabs')), '[]', 'the pages are leaves in the tree, like the primary');
-  run('closeSidebar=()=>{}; openBranchView("n0de", "machines", null)');
+  assert.equal(JSON.stringify(run('pages.branch.tabs')), '[]');
+  run('closeSidebar=()=>{}; setServerContext("n0de", "חיפה"); openBranchView("n0de", "transfers", null)');
+  assert.equal(run('SERVER_CTX'), null, 'the branch page talks to the primary');
   assert.equal(run('current'), 'branch');
-  assert.equal(run('BRANCH_VIEW'), 'machines');
   assert.equal(run('BRANCH_NODE'), 'n0de');
-  assert.match(run('tabRender("branch", 0)'), /id="branch-view" class="stack" data-view="machines"/);
-  run('openBranchView("n0de", "no-such-page", null)');
-  assert.equal(run('BRANCH_VIEW'), 'overview', 'an unknown page falls back to the overview');
+  assert.match(run('tabRender("branch", 0)'), /id="branch-view" class="stack" data-view="transfers"/);
 });
 
-test('the branch page tabs reuse branches.js: overview measures the connection, machines lists them with monitor, images = secondary library + pull + completed transfers, transfers = the log', async () => {
+test('the transfers page: the secondary library with "העבר לראשי", "העבר אימג\'" and the transfers log', async () => {
   const {run, node} = setup(base);
   run('BRANCH_NODE="n0de"; current="branch"');
-  await run('loadBranchView("overview")');
-  let html = node('#branch-view').innerHTML;
-  assert.match(html, /חיפה/);
-  assert.match(html, /10\.30\.0\.8:8443/);
-  assert.match(html, /2026-09-16 09:00:00/);
-  assert.equal(node(`#branch-status-${NODE}`).className, 'status ok');
-  assert.equal(node('#branch-node-id').textContent, 'sn_0123456789abcdef');
-  assert.equal(node('#branch-online-count').textContent, '1 מתוך 2');
-  assert.equal(node('[data-secondary-status="n0de"]').className, 'status ok', 'the tree dot follows the measurement');
-
-  await run('loadBranchView("machines")');
-  const machines = node(`#branch-machines-${NODE}`).innerHTML;
-  assert.match(machines, /Builder-H/);
-  assert.match(machines, /data-branch-monitor="aa:bb:cc:dd:ee:01"/);
-  assert.match(machines, /data-branch-monitor="aa:bb:cc:dd:ee:02"[^>]*disabled/);
-
-  await run('loadBranchView("images")');
-  html = node('#branch-view').innerHTML;
+  await run('loadBranchView()');
+  const html = node('#branch-view').innerHTML;
   assert.match(html, /id="branch-view-transfer"/);
   assert.match(html, /ספריית האימג'ים של המשני/);
   assert.match(html, /Haifa Local/);
   assert.match(html, /העבר לראשי/);
-  assert.match(html, /קיים בראשי/);
-  assert.equal((html.match(/Office 365/g) || []).length, 2, 'push history once + library row once');
-  assert.doesNotMatch(html, /\bOld\b/, 'a failed transfer is not an image the secondary has');
-  assert.doesNotMatch(html, /בודק חיבור/, 'no unmeasured connection state on this tab');
-
-  await run('loadBranchView("transfers")');
+  assert.match(html, /class="status ok"><i><\/i>מחובר/);
   const log = node(`#branch-transfers-${NODE}`).innerHTML;
   assert.match(log, /Office 365/);
   assert.match(log, /נכשל/);
   assert.match(log, /sha256 לא תואם/);
 });
 
-test('a disconnected secondary on the overview shows the reason, not an empty page', async () => {
-  const {run, node} = setup({...base, [`/storage-nodes/${NODE}/machines`]: {connected: false, error: 'timed out', machines: []}});
+test('a secondary that does not answer: the transfers page says "חיפה לא ענה" with the reason, and the branch turns red', async () => {
+  const reason = 'connect timed out';
+  const {run, node} = setup({...base, [`/storage-nodes/${NODE}/images`]: {connected: false, error: reason, images: []}});
+  await run('populateSidebarSecondaries()');
   run('BRANCH_NODE="n0de"; current="branch"');
-  await run('loadBranchView("overview")');
-  assert.equal(node(`#branch-status-${NODE}`).className, 'status err');
-  assert.match(node('#branch-connect-note').innerHTML, /לא ענה: timed out/);
-  assert.equal(node('[data-secondary-status="n0de"]').className, 'status err');
+  await run('loadBranchView()');
+  assert.match(node('#branch-view').innerHTML, /חיפה לא ענה: connect timed out/);
+  assert.equal(node('[data-secondary="n0de"]').attrs['data-conn'], 'err');
 });
 
-test('a stale load (tab switched during the await) does not write into a DOM that is gone — measured live: "Cannot set properties of null"', async () => {
-  // the secondary answers /machines slowly, so the overview's write lands after the transfers tab rendered.
-  const {run, node, toasts} = setup(base, {}, '/machines');
+test('when the request to the primary fails, the transfers page says "לא נבדק" — not that the secondary did not answer (5א)', async () => {
+  const {run, node} = setup({...base, [`/storage-nodes/${NODE}/images`]: new Error('500')});
+  run('BRANCH_NODE="n0de"; current="branch"');
+  await run('loadBranchView()');
+  assert.match(node('#branch-view').innerHTML, /לא נבדק אם חיפה עונה — הבקשה לראשי נכשלה: אסור/);
+  assert.doesNotMatch(node('#branch-view').innerHTML, /חיפה לא ענה/);
+});
+
+test('a stale load (another secondary chosen during the await) does not write into a DOM that is gone', async () => {
+  const {run, node, toasts} = setup(base, {}, '/storage-nodes/n0de/images');
   run('closeSidebar=()=>{}');
-  // the operator clicks the overview and then the transfers leaf; both loads are in
-  // flight, and the overview must give up.
-  run('openBranchView("n0de", "overview", null); openBranchView("n0de", "transfers", null)');
+  run('openBranchView("n0de", "transfers", null); openBranchView("off1", "transfers", null)');
   await new Promise((r) => setTimeout(r, 120));
   assert.equal(toasts.length, 0, 'no error toast: ' + JSON.stringify(toasts));
-  assert.equal(run('BRANCH_VIEW'), 'transfers');
-  assert.doesNotMatch(node('#branch-view').innerHTML, /מחשבים מחוברים/, 'the overview did not overwrite the transfers tab');
-  assert.match(node('#branch-view').innerHTML, /branch-transfers-n0de/);
+  assert.doesNotMatch(node('#branch-view').innerHTML, /Haifa Local/, 'the slow load did not overwrite the newer page');
 });
 
-test('"התחל העברה" from the images page lands on the transfers page (which polls) — measured live: the images tab re-rendered "עוד לא הועבר" while the transfer was running', async () => {
+test('"התחל העברה" and "העבר לראשי" start the transfer and stay on the transfers page', async () => {
   const {run, node, calls} = setup(base);
-  run('BRANCH_NODE="n0de"; BRANCH_VIEW="images"; current="branch"; closeSidebar=()=>{}; __submit=null; sheet=(o)=>{ __submit=o.onSubmit; }');
-  await run('loadBranchView("images")');
+  run('BRANCH_NODE="n0de"; current="branch"; closeSidebar=()=>{}; __submit=null; sheet=(o)=>{ __submit=o.onSubmit; }');
+  await run('loadBranchView()');
   run('document.querySelector("#branch-view-transfer").onclick()');
-  assert.equal(run('typeof __submit'), 'function');
   await run('__submit({image_id: "img_7f3a91"})');
-  const post = calls.find((c) => c.method === 'POST' && c.url.endsWith('/storage-nodes/n0de/transfer'));
-  assert.ok(post && post.body.image_id === 'img_7f3a91', 'the transfer was started');
-  assert.equal(run('BRANCH_VIEW'), 'transfers', 'the transfers page is now active');
-  await new Promise((r) => setTimeout(r, 20));
-  assert.match(node('#branch-view').innerHTML, /branch-transfers-n0de/, 'the transfers log is on screen, not the images list');
-});
-
-test('"העבר לראשי" from the secondary library starts a pull and lands on the transfers page', async () => {
-  const {run, node, calls} = setup(base);
-  run('BRANCH_NODE="n0de"; BRANCH_VIEW="images"; current="branch"; closeSidebar=()=>{};');
-  await run('loadBranchView("images")');
+  const push = calls.find((c) => c.method === 'POST' && c.url.endsWith('/storage-nodes/n0de/transfer'));
+  assert.ok(push && push.body.image_id === 'img_7f3a91', 'the transfer was started');
   await run('startPullFromSecondary("n0de","img_c0ffee")');
-  const post = calls.find((c) => c.method === 'POST' && c.url.endsWith('/storage-nodes/n0de/pull'));
-  assert.ok(post && post.body.image_id === 'img_c0ffee', 'the pull was started');
-  assert.equal(run('BRANCH_VIEW'), 'transfers', 'the transfers page is now active');
+  const pull = calls.find((c) => c.method === 'POST' && c.url.endsWith('/storage-nodes/n0de/pull'));
+  assert.ok(pull && pull.body.image_id === 'img_c0ffee', 'the pull was started');
   await new Promise((r) => setTimeout(r, 20));
   assert.match(node('#branch-view').innerHTML, /branch-transfers-n0de/);
 });
@@ -286,88 +259,34 @@ function readTree(html) {
 }
 
 // The tree down to the page level: groups with their pages. Under a page (image
-// folders, machine roles, NICs) is that page's own content, not the tree. "ניהול"
-// is out (Nadav's open decision: global or per server), and so is what starts
-// hidden behind a capability (ארגז כלים in v1).
-const skeleton = (nodes, depth = 2) => nodes.filter((x) => !x.hidden && x.label !== 'ניהול')
+// folders, machine roles, NICs) is that page's own content, not the tree. What starts
+// hidden behind a capability (ארגז כלים in v1) is out.
+const skeleton = (nodes, depth = 2) => nodes.filter((x) => !x.hidden)
   .map((x) => depth > 1 && x.kids.length ? [x.label, skeleton(x.kids, depth - 1)] : x.label);
 
-test('the secondary\'s tree is the primary\'s tree — same groups, same pages, same order — apart from the server label (+ its transfers under מלאי)', async () => {
+test('the secondary\'s tree is the primary\'s tree — same groups, pages and sub-nodes, same order — apart from the server label (+ its transfers; ניהול without the primary-only pages)', async () => {
   const index = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
   const sidebar = index.slice(index.indexOf('<div class="tree" role="tree"'), index.indexOf('<div id="secondaryServers"'));
   const [primary] = readTree(sidebar);
-  const want = ['סקירה כללית', 'סבב הפצה', ['מלאי', ["אימג'ים", 'מחשבים']],
-    ['תשתית', ['בריאות ושירותים', 'אחסון', 'רשת', 'מוניטור', 'דרייברים']]];
-  assert.equal(JSON.stringify(skeleton(primary.kids)), JSON.stringify(want), 'the reader sees the primary tree (a parser that sees nothing proves nothing)');
+  // down to the sub-nodes (Nadav: the same tree): מחשבים ▸ בנייה/שיכפול, רשת ▸ תרשים/חיבורים פיזיים/רשת הפצה/פורטים.
+  const want = ['סקירה כללית', 'סבב הפצה', ['מלאי', ["אימג'ים", ['מחשבים', ['מחשבי בנייה', 'מחשבי שיכפול']]]],
+    ['תשתית', ['בריאות ושירותים', 'אחסון', ['רשת', ['תרשים', 'חיבורים פיזיים', 'רשת הפצה', 'פורטים']], 'מוניטור', 'דרייברים']],
+    ['ניהול', ['משתמשים והרשאות', 'יומן', 'הגדרות', 'החשבון שלי']]];   // סניפים starts hidden (capability)
+  assert.equal(JSON.stringify(skeleton(primary.kids, 3)), JSON.stringify(want), 'the reader sees the primary tree (a parser that sees nothing proves nothing)');
 
   const {run, node} = setup(base);
   await run('populateSidebarSecondaries()');
   const [haifa, beersheva] = readTree(node('#secondaryServers').innerHTML);
   assert.equal(haifa.label, 'חיפה');
   assert.notEqual(haifa.label, primary.label, 'the label is the only difference');
-  const expected = skeleton(primary.kids).map((x) => Array.isArray(x) && x[0] === 'מלאי' ? [x[0], [...x[1], 'העברות']] : x);
-  assert.equal(JSON.stringify(skeleton(haifa.kids)), JSON.stringify(expected));
-  assert.equal(JSON.stringify(skeleton(beersheva.kids)), JSON.stringify(expected), 'a disabled secondary has the same tree');
-  assert.doesNotMatch(node('#secondaryServers').innerHTML, /ניהול|הרשאות|יומן/, 'ניהול waits for Nadav\'s decision');
-  // like the primary: מלאי starts open, תשתית closed.
+  // "סניפים" (a secondary has no children) and "החשבון שלי" (the primary user's) are not the server's pages.
+  const expected = skeleton(primary.kids, 3).map((x) => !Array.isArray(x) ? x
+    : x[0] === 'מלאי' ? [x[0], [...x[1], 'העברות']]
+    : x[0] === 'ניהול' ? [x[0], x[1].filter((k) => k !== 'סניפים' && k !== 'החשבון שלי')] : x);
+  assert.equal(JSON.stringify(skeleton(haifa.kids, 3)), JSON.stringify(expected));
+  assert.equal(JSON.stringify(skeleton(beersheva.kids, 3)), JSON.stringify(expected), 'a disabled secondary has the same tree');
+  // like the primary: מלאי starts open, תשתית and ניהול closed.
   assert.match(node('#secondaryServers').innerHTML, /<div id="srv-n0de-inv" class="inventory-children" role="group">/);
   assert.match(node('#secondaryServers').innerHTML, /<div id="srv-n0de-infra" class="inventory-children" role="group" hidden>/);
-});
-
-test('a page with no relay path today is in the tree and says "דורש API דרך 8443 (#1179)" — it asks the secondary nothing but the connection check and invents no data', async () => {
-  const {run, node, calls} = setup(base);
-  run('BRANCH_NODE="n0de"; current="branch"');
-  const stubs = run('BRANCH_VIEWS.filter((v) => !v[3]).map((v) => v[0])');
-  assert.equal(JSON.stringify(stubs), JSON.stringify(['deploy', 'health', 'storage', 'network', 'drivers']));
-  for (const view of stubs) {
-    const before = calls.length;
-    await run(`loadBranchView("${view}")`);
-    const html = node('#branch-view').innerHTML;
-    assert.match(html, /דורש API דרך 8443 \(#1179\)/, view);
-    assert.match(html, /class="status ok"><i><\/i>מחובר/, `${view}: the connection is measured, not assumed`);
-    assert.doesNotMatch(html, /לא ענה/, view);
-    const asked = calls.slice(before).map((c) => c.url.replace('/api/console', ''));
-    assert.equal(JSON.stringify(asked), JSON.stringify(['/storage-nodes', `/storage-nodes/${NODE}/machines`]), view);
-  }
-  for (const view of run('BRANCH_VIEWS.filter((v) => v[3]).map((v) => v[0])')) {
-    await run(`loadBranchView("${view}")`);
-    assert.doesNotMatch(node('#branch-view').innerHTML, /דורש API/, `${view} has real data through the relay`);
-  }
-});
-
-test('a secondary that does not answer: the branch turns red and every page says "חיפה לא ענה" with the reason — never an empty page', async () => {
-  const reason = 'connect timed out';
-  const down = {...base,
-    [`/storage-nodes/${NODE}/machines`]: {connected: false, error: reason, machines: []},
-    [`/storage-nodes/${NODE}/images`]: {connected: false, error: reason, images: []}};
-  const {run, node} = setup(down);
-  await run('populateSidebarSecondaries()');
-  assert.equal(node('[data-secondary="n0de"]').attrs['data-conn'], 'err', 'the branch itself is red, not only the dot');
-  assert.equal(node('[data-secondary-status="n0de"]').className, 'status err');
-  assert.match(fs.readFileSync(path.join(root, 'console.css'), 'utf8'), /\.server-node\[data-conn="err"\] \.server-name\{color:var\(--clr-danger-fg\)\}/);
-  run('BRANCH_NODE="n0de"; current="branch"');
-  const views = run('BRANCH_VIEWS.map((v) => v[0])');
-  assert.equal(views.length, 10);
-  const inner = (id) => (node(id) || {innerHTML: ''}).innerHTML;
-  for (const view of views) {
-    await run(`loadBranchView("${view}")`);
-    const shown = inner('#branch-view') + inner('#branch-connect-note') + inner(`#branch-machines-${NODE}`);
-    assert.match(shown, /חיפה לא ענה: connect timed out/, view);
-  }
-});
-
-test('when the request to the primary itself fails, a page says "לא נבדק" — not that the secondary did not answer (5א) — and the dot is not painted red', async () => {
-  const {run, node} = setup({...base, [`/storage-nodes/${NODE}/machines`]: new Error('500')});
-  run('BRANCH_NODE="n0de"; current="branch"');
-  await run('loadBranchView("health")');
-  const html = node('#branch-view').innerHTML;
-  assert.match(html, /לא נבדק אם חיפה עונה — הבקשה לראשי נכשלה: אסור/);
-  assert.doesNotMatch(html, /חיפה לא ענה/);
-  assert.notEqual(node('[data-secondary-status="n0de"]').className, 'status err');
-
-  const off = setup(base);
-  off.run('BRANCH_NODE="off1"; current="branch"');
-  await off.run('loadBranchView("drivers")');
-  assert.match(off.node('#branch-view').innerHTML, /השרת מושבת — לא נשאל/);
-  assert.ok(!off.calls.some((c) => c.url.includes('/storage-nodes/off1/')), 'a disabled secondary is not asked');
+  assert.match(node('#secondaryServers').innerHTML, /<div id="srv-n0de-admin" class="inventory-children" role="group" hidden>/);
 });

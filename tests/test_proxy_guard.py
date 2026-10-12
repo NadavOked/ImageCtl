@@ -28,6 +28,10 @@ import pytest
 
 pytest.importorskip("fastapi")
 
+#: הכרעת נדב 11/10: ‏proxy מסורב בשרת כשהכיתות כבויות (v1). השומר של #36
+#: נבדק כאן על v1.2 — ולכן היכולת דלוקה (`classrooms_on`).
+pytestmark = pytest.mark.usefixtures("classrooms_on")
+
 from server import dhcp, dhcp_host
 from server.journal_he import EVENTS_HE
 

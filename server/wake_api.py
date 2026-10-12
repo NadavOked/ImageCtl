@@ -10,6 +10,9 @@
 התשובה זהה ל-`/room/wake`: ‏`{sent, failed, reasons}` — ‏`sent` ולא
 ‏`woken`, כי חבילת WoL היא UDP בלי ACK ואין ראיה שהמכונה קמה (#528).
 השולח מוזרק מ-`app.py` (‏`wol_send`) כמו בחדר, כדי שהטסטים לא ישדרו.
+
+‏#977 §4: גם "אתחול מרחוק" למכונה אחת יושב כאן — אותה בדיקת תפקיד (כיתה = v2)
+וערוץ הבקשות של כיבוי החדר (‏`room_console.request_power`).
 """
 
 from __future__ import annotations
@@ -18,15 +21,16 @@ from typing import Callable
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from . import auth, wol
+from . import auth, room_console, wol
 from .api import ServerContext
 from .db import journal
 from .registry import normalize_mac
-from .room import ROOM_OPERATOR_ROLES
+from .room import CLONERS_GROUP, ROOM_OPERATOR_ROLES, visible_round
 
 #: מי מתעורר מהקונסולה ב-v1 — מחשבי בנייה ושיכפול. ‏classroom = v2.
 WAKEABLE_ROLES = ("build", "cloner")
 CLASSROOM_V2 = "WoL לתחנות כיתה — v2"
+CLASSROOM_REBOOT_V2 = "אתחול מרחוק לתחנות כיתה — v2"
 
 
 def _result(sent: wol.WakeResult) -> dict:
@@ -42,7 +46,7 @@ def create_wake_router(
     """‏`send` מוזרק מ-app.py (‏`rt.wol_send`) — אותו שולח כמו בחדר.
     ‏None = ברירת המחדל של המודול (שידור לפי טבלת הניתוב)."""
     router = APIRouter(prefix="/api/console")
-    current_user, _admin_only = auth.dependencies(ctx.conn)
+    current_user, admin_only = auth.dependencies(ctx.conn)
     send_kw = {"send": send} if send else {}
 
     def room_operator(user=Depends(current_user)) -> tuple[str, str]:
@@ -69,6 +73,38 @@ def create_wake_router(
         if sent:
             journal(ctx.conn, "wol_sent", f"{canonical} count={int(sent)}", user[0])
         return _result(sent)
+
+    @router.post("/machines/{mac}/reboot")
+    def reboot_machine(mac: str, body: dict, user=Depends(admin_only)):
+        """‏#977 §4: "אתחול מרחוק" ממגירת המחשב — **בקשה** שנוסעת ב-hello הבא
+        של המכונה (‏`power_action: "reboot"`), באותו ערוץ כמו כיבוי החדר
+        (‏`room_console.py`). הסוכן מאתחל רק כשהוא ממתין (‏`poll_sleep`), ולכן
+        מכונה שעובדת מסורבת כאן — "תאותחל כשתסיים" אינו מה שהמפעיל ביקש.
+        ‏`confirm_name` = שם המחשב: הקונסולה שולחת אותו מחלון האישור (#1270),
+        והוא שומר ה-API מפני קריאה עיוורת — כמו `POST /monitor/{mac}/power`."""
+        canonical = normalize_mac(mac)
+        if canonical is None:
+            raise HTTPException(400, "MAC לא תקין")
+        row = ctx.conn.execute(
+            "SELECT m.suffix, m.group_id, g.role FROM machines m"
+            " JOIN groups g ON g.id = m.group_id WHERE m.mac = ?", (canonical,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "מכונה לא רשומה")
+        if row["role"] not in WAKEABLE_ROLES:
+            raise HTTPException(403, CLASSROOM_REBOOT_V2)
+        if body.get("confirm_name") != row["suffix"]:
+            raise HTTPException(400, "השם שנשלח אינו שם המחשב")
+        if ctx.conn.execute(
+                "SELECT 1 FROM tasks WHERE mac = ? AND state IN ('pending', 'running')",
+                (canonical,)).fetchone():
+            raise HTTPException(409, "למחשב יש משימה פתוחה — בטלו אותה לפני אתחול")
+        shown = visible_round(ctx.conn)
+        if (row["group_id"] == CLONERS_GROUP and shown is not None
+                and shown["state"] in ("active", "closing")):
+            raise HTTPException(409, "יש סבב חדר פעיל — עצרו אותו לפני אתחול משכפל")
+        count = room_console.request_power(ctx.conn, [canonical], room_console.REBOOT, user[0])
+        journal(ctx.conn, "machine_reboot", canonical, user[0])
+        return {"requested": count, "ttl_s": room_console.POWEROFF_TTL_SECONDS}
 
     @router.post("/groups/{gid}/wake")
     def wake_group(gid: str, user=Depends(room_operator)):

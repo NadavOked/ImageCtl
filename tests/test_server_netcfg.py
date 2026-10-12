@@ -725,7 +725,7 @@ def test_the_management_card_cannot_be_the_deploy_network(net_server):
     assert net_server["fake"]["confs"] == {} and dhcp_setting(net_server).enabled is False
 
 
-def test_the_old_dhcp_path_refuses_the_management_card_too(net_server):
+def test_the_old_dhcp_path_refuses_the_management_card_too(net_server, classrooms_on):
     """‏`PUT /net/interfaces/{שם}` הישן (דף הפורטים, API ישיר): DHCP מלא או
     proxy על כרטיס הניהול — 409, ושום דבר לא נכתב. כיבוי — מותר."""
     net_server["fake"]["management"] = "eth1"

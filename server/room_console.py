@@ -22,13 +22,14 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from . import auth
+from . import auth, smart_ask
 from .db import _write_lock, journal, now_iso, writing
-from .room import CLONERS_GROUP, round_label, visible_round
+from .room import CLONERS_GROUP, ROOM_OPERATOR_ROLES, round_label, visible_round
 
-#: הפעולה היחידה שהשרת מבקש מסוכן דרך ה-hello. ‏reboot לא נפתח — אין לו
-#: צרכן, ו"כמו poweroff" אינו נימוק.
+#: מה שהשרת מבקש מסוכן דרך ה-hello. ‏reboot — "אתחול מרחוק" ממגירת המחשב
+#: (‏#977 §4, ‏`wake_api.py`): הצרכן שחסר כש-#980 פתח רק את הכיבוי.
 POWEROFF = "poweroff"
+REBOOT = "reboot"
 #: כמה זמן בקשת כיבוי ממתינה ל-hello של המכונה. ה-hello של משכפל ממתין
 #: מגיע לכל המאוחר כל `POLL_MAX` (15 ש', ‏`agent/lib/poll.sh`); ‏120 ש' הם
 #: שמונה פעימות — ומעבר לזה מכונה שלא ענתה אינה "תכבה אחר כך".
@@ -48,6 +49,12 @@ def request_poweroff(conn: sqlite3.Connection, user: str) -> int:
     כמה נכבו: הראיה לכיבוי היא שה-hello נפסק (`awake` ב-`/room`)."""
     macs = [r["mac"] for r in conn.execute(
         "SELECT mac FROM machines WHERE group_id = ?", (CLONERS_GROUP,))]
+    return request_power(conn, macs, POWEROFF, user)
+
+
+def request_power(conn: sqlite3.Connection, macs: list[str], action: str,
+                  user: str) -> int:
+    """בקשה אחת לכל MAC (בקשה קודמת שעוד ממתינה — נדרסת). מחזיר כמה נרשמו."""
     at = now_iso()
     with _write_lock, writing(conn):
         for mac in macs:
@@ -56,13 +63,13 @@ def request_poweroff(conn: sqlite3.Connection, user: str) -> int:
                 " VALUES (?, ?, ?, ?) ON CONFLICT (mac) DO UPDATE SET"
                 " action = excluded.action, requested_at = excluded.requested_at,"
                 " requested_by = excluded.requested_by",
-                (mac, POWEROFF, at, user))
+                (mac, action, at, user))
     return len(macs)
 
 
 def take_power_action(conn: sqlite3.Connection, mac: str,
                       now: datetime | None = None) -> str | None:
-    """מה שה-hello של `mac` נושא ב-`power_action`: ‏`"poweroff"` או None.
+    """מה שה-hello של `mac` נושא ב-`power_action`: ‏`"poweroff"`, ‏`"reboot"` או None.
 
     הבקשה נמחקת בקריאה — נמסרת פעם אחת. סוכן שלא הצליח לדרוך WoL נשאר
     דולק ואומר זאת, ואינו מקבל את הבקשה שוב בכל פעימה. בקשה שפגה נמחקת
@@ -119,6 +126,31 @@ def create_room_console_router(ctx) -> APIRouter:
         if limit < 1:
             raise HTTPException(400, "limit חייב להיות לפחות 1")
         return round_history(ctx, min(limit, HISTORY_MAX))
+
+    @router.post("/answer")
+    async def answer_question(request: Request, user=Depends(current_user)):
+        """‏#989 ס׳ 2: תשובת מפעיל לשאלת ה-SMART של משכפל — מהקונסולה.
+        התשובה הראשונה גוברת (ליד המכונה או כאן); השנייה מקבלת 409
+        "כבר נענה ע"י …". מפעיל סבבים בלבד, כמו שאר פעולות החדר."""
+        if user[1] not in ROOM_OPERATOR_ROLES:
+            journal(ctx.conn, "room_role_denied", f"{user[0]} ({user[1]})")
+            raise HTTPException(403, "פעולה למפעיל סבבים בלבד")
+        try:
+            body = await request.json()
+        except Exception:                              # noqa: BLE001
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        mac = body.get("mac")
+        known = isinstance(mac, str) and ctx.conn.execute(
+            "SELECT 1 FROM machines WHERE mac = ? AND group_id = ?", (mac, CLONERS_GROUP)).fetchone()
+        if not known:
+            raise HTTPException(404, "מחשב שיכפול לא מוכר")
+        try:
+            return smart_ask.answer_from_console(
+                ctx.conn, mac, body.get("nonce"), body.get("answer"), user[0])
+        except smart_ask.AskError as exc:
+            raise HTTPException(exc.status, exc.detail)
 
     @router.post("/poweroff")
     async def poweroff(request: Request, user=Depends(admin_only)):

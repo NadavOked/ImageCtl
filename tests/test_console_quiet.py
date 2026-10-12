@@ -28,15 +28,10 @@ def test_the_drop_log_rule_is_info_not_warning():
     assert 'log prefix "imagectl-drop " limit rate' not in nft, "כלל log בלי level = warning = מודפס על הקונסולה"
 
 
-def test_a_server_that_has_sshd_is_closed_to_loopback_at_install_time():
-    """‏#729: ה-ISO בא בלי sshd (#1148); שרת שיש בו sshd האזין על כל הכרטיסים עד
-    שמישהו נגע במתג. ההתקנה כותבת את אותו drop-in שהמתג מנהל, ריק מכתובות =
-    לולאה מקומית בלבד (`ssh_switch.render_sshd_conf([])`), ומטעינה מחדש."""
+def test_the_installer_does_not_touch_sshd():
+    """‏#1266: SSH אינו חלק מהמוצר — המתקין אינו כותב drop-in ל-sshd ואינו
+    טוען אותו מחדש (עד #1266 הוא סגר sshd קיים ללולאה המקומית, #729)."""
     setup = SETUP.read_text(encoding="utf-8")
-    assert 'if [[ -d /etc/ssh/sshd_config.d ]]; then' in setup
-    assert "ssh_switch.render_sshd_conf([])" in setup
-    assert "> /etc/ssh/sshd_config.d/imagectl-ssh.conf" in setup
-    assert 'systemctl reload ssh || warn' in setup
-    from server import ssh_switch
-    conf = ssh_switch.render_sshd_conf([])
-    assert "ListenAddress 127.0.0.1" in conf and conf.count("ListenAddress") == 1
+    assert "/etc/ssh" not in setup
+    assert "systemctl reload ssh" not in setup
+    assert "ssh_switch" not in setup

@@ -1,4 +1,4 @@
-# monitor.sh -- supervised RFB monitor, independently gated from SSH.
+# monitor.sh -- supervised RFB monitor, behind its own kernel-line gate.
 # POSIX sh (busybox ash).
 
 MONITOR_PORT="${MONITOR_PORT:-5900}"

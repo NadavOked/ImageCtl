@@ -145,12 +145,18 @@ def test_without_deploy_if_only_the_servers_vlan_opens() -> None:
 
 
 @needs_bash
-def test_server_ssh_rule_follows_the_interface_switch() -> None:
-    off = generate(*PRIMARY_ARGS)
-    on = generate(*PRIMARY_ARGS, "--ssh-if", "eth-srv")
-    assert "tcp dport 22" not in off
-    assert 'iifname "eth-srv" tcp dport 22 accept' in on
-    assert 'iifname "eth-deploy" tcp dport 22' not in on
+def test_no_ruleset_can_open_ssh() -> None:
+    """‏#1266: SSH יצא מהמוצר — אין דגל שפותח 22, ואין כלל 22 בשום תצורה.
+    ‏`--ssh-if` (המתג שהיה) נדחה בשם, ולא מתעלמים ממנו בשקט."""
+    for args in (PRIMARY_ARGS, ("--servers-if", "eth-srv"),
+                 (*PRIMARY_ARGS, "--primary-ip", "10.0.0.1")):
+        assert "dport 22" not in generate(*args), args
+    proc = subprocess.run(
+        [BASH, str(GEN), *PRIMARY_ARGS, "--ssh-if", "eth-srv"],
+        capture_output=True, text=True, encoding="utf-8", stdin=subprocess.DEVNULL,
+    )
+    assert proc.returncode == 2
+    assert "unknown option: --ssh-if" in proc.stderr
 
 
 @needs_bash

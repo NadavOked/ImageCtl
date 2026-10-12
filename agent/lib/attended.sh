@@ -21,6 +21,8 @@
 #: Same rate as HOLD_BEAT_S -- the other wait-for-a-person -- and never
 #: faster than the idle poll ladder's first rung (poll.sh).
 ATTENDED_BEAT_S="${ATTENDED_BEAT_S:-10}"
+#: #989 item 2: the beat while a SMART question is on the GUI.
+ATTENDED_ASK_BEAT_S="${ATTENDED_ASK_BEAT_S:-3}"
 
 attended_hello() {
     # $1 = the question on the screen ("" = plain heartbeat, as hold_beat
@@ -31,8 +33,53 @@ attended_hello() {
     if [ -n "${1:-}" ]; then
         _ah_body="${_ah_body%\}},\"waiting_for\":\"operator\",\"prompt\":\"$(json_escape "$1")\"}"
     fi
+    # #989 item 2: a SMART question on the cloner's GUI (smart-request) is also
+    # offered to the console: `ask`. Without a live request -- a text menu,
+    # nothing here would read the answer -- there is no `ask`.
+    _ah_req="${GUI_DIR:-/nonexistent}/smart-request"
+    _ah_nonce=""
+    if [ -s "$_ah_req" ]; then
+        IFS='|' read -r _ah_nonce _ah_port _ah_verdict _ah_reason < "$_ah_req" || _ah_nonce=""
+        case "$_ah_nonce$_ah_port" in *[!0-9-]*|'') _ah_nonce="" ;; esac
+    fi
+    if [ -n "$_ah_nonce" ]; then
+        _ah_body="${_ah_body%\}},\"ask\":{\"nonce\":\"$_ah_nonce\",\"port\":${_ah_port:-0},\"verdict\":\"$(json_escape "$_ah_verdict")\",\"reason\":\"$(json_escape "$_ah_reason")\"}}"
+    fi
     printf '%s' "$_ah_body" > "$RUN_DIR/attended.json" || return 1
-    http_post_json "$SERVER/api/v1/agent/hello" "$RUN_DIR/attended.json" > /dev/null
+    http_post_json "$SERVER/api/v1/agent/hello" "$RUN_DIR/attended.json" > "$RUN_DIR/attended.resp" || return 1
+    [ -n "$_ah_nonce" ] || return 0
+    # The console answered: hand it to the GUI wait loop as if the button was
+    # pressed -- same file, same nonce binding (clonergui.sh gui_smart_choice).
+    # A local click already there wins; the claim in gui_smart_choice settles it.
+    _ah_ans=$(smart_ask_answer "$RUN_DIR/attended.resp" "$_ah_nonce") || return 0
+    [ ! -e "${GUI_DIR}/smart-decision" ] || return 0
+    printf '%s|%s\n' "$_ah_nonce" "$_ah_ans" > "${GUI_DIR}/smart-decision.next" &&
+        mv "${GUI_DIR}/smart-decision.next" "${GUI_DIR}/smart-decision"
+}
+
+smart_ask_answer() {
+    # $1 = a hello response, $2 = the nonce asked. Prints the answer the
+    # server says won for exactly that question; non-zero when there is none.
+    jq -er --arg n "$2" '.ask_answer | select(.nonce == $n) | .answer
+        | select(. == "replace" or . == "rescue" or . == "skip")' "$1" 2>/dev/null
+}
+
+attended_claim() {
+    # $1 = nonce, $2 = what the person at the machine chose. The server settles
+    # who answered first (console or here) and its reply carries the WINNING
+    # answer: that is what gets done. No reply -- the server is down or the
+    # reply is unreadable -- the local choice stands, said out loud on stderr:
+    # a cloner does not stop because the server did (principle 1), but this is
+    # not "the server agreed".
+    _ac_body=$(build_hello false) &&
+        _ac_body="${_ac_body%\}},\"ask_answered\":{\"nonce\":\"$1\",\"answer\":\"$2\"}}" &&
+        printf '%s' "$_ac_body" > "$RUN_DIR/attended-claim.json" &&
+        http_post_json "$SERVER/api/v1/agent/hello" "$RUN_DIR/attended-claim.json" \
+            > "$RUN_DIR/attended-claim.resp" &&
+        _ac_win=$(smart_ask_answer "$RUN_DIR/attended-claim.resp" "$1") &&
+        { printf '%s\n' "$_ac_win"; return 0; }
+    log "smart: the server did not confirm the answer -- keeping the local choice ($2)" >&2
+    printf '%s\n' "$2"
 }
 
 #: The questions being waited on, innermost first, one per line -- a
@@ -54,7 +101,15 @@ attended_start() {
         while :; do
             if command -v watchdog_beat >/dev/null; then watchdog_beat; fi
             attended_hello "$1" || :
-            sleep "$ATTENDED_BEAT_S"
+            # A SMART question on the GUI is answerable from the console
+            # (#989 item 2), so its beat is faster: the answer is on screen
+            # within ATTENDED_ASK_BEAT_S of the click, not 10 s.
+            _at_t=0
+            while [ "$_at_t" -lt "$ATTENDED_BEAT_S" ]; do
+                sleep 1; _at_t=$((_at_t + 1))
+                [ -s "${GUI_DIR:-/nonexistent}/smart-request" ] &&
+                    [ $((_at_t % ATTENDED_ASK_BEAT_S)) = 0 ] && break
+            done
         done
     ) < /dev/null > /dev/null 2>&1 &
     ATTENDED_PID=$!

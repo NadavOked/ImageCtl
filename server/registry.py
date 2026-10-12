@@ -222,6 +222,50 @@ def update_machine(
     journal(conn, "machine_edit", f"{mac} name={name} group={target_group}", user)
 
 
+class MacBusy(Exception):
+    """עריכת MAC שנדחתה כי הכתובת תפוסה או שהמכונה עובדת עכשיו — 409."""
+
+
+def change_mac(conn: sqlite3.Connection, mac_raw: str, new_raw: object,
+               user: str) -> tuple[str, bool]:
+    """‏#977 §5: כרטיס רשת שהוחלף. השורה עוברת לכתובת החדשה — שם, קבוצה
+    וחריצים נשארים. מחזיר ``(new_mac, changed)``.
+
+    ההיסטוריה (‏`net_devices`, מלאי, יומן) נשארת על הכתובת הישנה: היא של
+    הכרטיס הישן, והחדש עוד לא נראה. מכונה עם משימה פתוחה או חברות בסבב
+    פתוח נשארת עם הכתובת שלה — שניהם כתובים ל-MAC, והסוכן שעובד עכשיו
+    היה מאבד את העבודה שלו.
+
+    ‏ValueError = 400, ‏LookupError = 404, ‏MacBusy = 409."""
+    mac = normalize_mac(mac_raw)
+    if mac is None or conn.execute(
+            "SELECT 1 FROM machines WHERE mac = ?", (mac,)).fetchone() is None:
+        raise LookupError("מכונה לא רשומה")
+    new = normalize_mac(new_raw) if isinstance(new_raw, str) else None
+    if new is None:
+        raise ValueError("MAC לא תקין")
+    if new == mac:
+        return mac, False
+    if conn.execute("SELECT 1 FROM machines WHERE mac = ?", (new,)).fetchone():
+        raise MacBusy("הכתובת כבר רשומה למכונה אחרת")
+    if conn.execute(
+            "SELECT 1 FROM tasks WHERE mac = ? AND state IN ('pending', 'running')",
+            (mac,)).fetchone():
+        raise MacBusy("למכונה יש משימה פתוחה — סיימו או בטלו אותה קודם")
+    if conn.execute(
+            "SELECT 1 FROM session_members sm JOIN sessions s ON s.id = sm.session_id"
+            " WHERE sm.mac = ? AND s.state IN ('open', 'running')", (mac,)).fetchone():
+        raise MacBusy("המכונה בסבב פתוח — עצרו אותו קודם")
+    try:
+        with _write_lock, writing(conn):
+            conn.execute("UPDATE machines SET mac = ? WHERE mac = ?", (new, mac))
+    except sqlite3.IntegrityError:
+        # נרשמה בין הבדיקה לכתיבה — אותה תשובה, לא 500.
+        raise MacBusy("הכתובת כבר רשומה למכונה אחרת") from None
+    journal(conn, "machine_mac_edit", f"{mac} -> {new}", user)
+    return new, True
+
+
 def lookup(
     conn: sqlite3.Connection,
     mac: str,

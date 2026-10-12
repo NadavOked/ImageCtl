@@ -12,7 +12,7 @@ from server.db import connect
 
 from . import actions
 from .data import (DATA_DIR, NicInfo, Snapshot, collect_snapshot,
-                   demo_snapshot, run_argv)
+                   demo_snapshot)
 
 WIDTH = 80
 HEIGHT = 25
@@ -21,7 +21,6 @@ MENU_ITEMS = (
     "Restart Management Network",
     "Restart Services",
     "Display TLS Certificate",
-    "Re-run Initial Setup Wizard",
 )
 
 
@@ -221,9 +220,9 @@ def render_reset(stage: str = "confirm", typed: str = "", failures: int = 0,
             canvas.put(14 + index, 6, detail, 70)
         return canvas.lines()
     cursor = "_"
-    word = typed if stage == "confirm" else actions.RESET_WORD
-    canvas.put(11, 4, f"Type {actions.RESET_WORD} to confirm:   "
-                      f"[ {word[:24]:<24}{cursor if stage == 'confirm' else ' '} ]")
+    if stage == "confirm":
+        # #1270: no typed word -- this screen and <Enter> are the confirmation.
+        canvas.put(11, 4, "Press <Enter> to choose a new password, or <Esc> to cancel.")
     if stage in ("password", "repeat"):
         first = "*" * min(len(typed), 24) if stage == "password" else "*" * 8
         canvas.put(13, 4, f"New password:            [ {first:<24}"
@@ -261,7 +260,6 @@ def render_menu(snapshot: Snapshot, selected: int = 0, seconds: int = 90) -> lis
          "Live state is read back before success."),
         ("Restart Services", "Restarts imagectl-server and dnsmasq only", "when dnsmasq is enabled, then reads back", "each service state."),
         ("Display TLS Certificate", "Shows SHA-256, certificate SANs and", "the not-after date read from the cert."),
-        ("Re-run Initial Setup Wizard", "Starts imagectl-wizard-rerun.service.", "The wizard is shown on HTTPS 8081."),
     )
     for row, line in enumerate(descriptions[selected], start=4):
         canvas.put(row, 38, line, 39)
@@ -306,11 +304,14 @@ def render_network(snapshot: Snapshot, interfaces: list[NicInfo], form: dict[str
     return canvas.lines()
 
 
-def render_power(snapshot: Snapshot, choice: str = "restart", typed: str = "",
+def render_power(snapshot: Snapshot, choice: str = "restart",
                  seconds: int = 90, message: str = "") -> list[str]:
+    # #1270: no typed hostname -- this screen (behind the admin password) and
+    # <Enter> are the confirmation; <Esc> runs nothing.
+    action = "Restart" if choice == "restart" else "Shut down"
     canvas = Canvas(
         _title("Restart / Shut Down", f"admin  (auto-logout in {seconds} s)"),
-        "<Enter> Confirm (only when the name matches)       <Esc> Cancel",
+        f"<Enter> {action} now   <Up/Down> Change choice   <Esc> Cancel",
     )
     canvas.put(5, 9, "+----------------------------------------------------------+")
     for row in range(6, 18):
@@ -327,13 +328,13 @@ def render_power(snapshot: Snapshot, choice: str = "restart", typed: str = "",
         canvas.put(13, 12, "Restarting now fails active targets; warn only, do not block.", 55)
     else:
         canvas.put(11, 12, "No running deploy round was found.")
-    canvas.put(15, 12, "Type the hostname to confirm:")
-    canvas.put(16, 14, f"{snapshot.hostname}:  [ {typed[:24]:<24}_ ]")
+    canvas.put(15, 12, f"Server: {snapshot.hostname}", 55)
+    canvas.put(16, 12, f"<Enter> runs '{action}' immediately.", 55)
     if snapshot.rollback_interface:
         canvas.put(20, 9, f"Network rollback pending on {snapshot.rollback_interface} "
                           f"({snapshot.rollback_seconds} s left).", 62)
     else:
-        canvas.put(20, 9, message or "The exact hostname is required before the command can run.", 62)
+        canvas.put(20, 9, message or "Every web session and deploy client loses the server.", 62)
     return canvas.lines()
 
 
@@ -376,7 +377,7 @@ def render_demo() -> str:
     screens = [
         render_main(snapshot), render_auth(1, 0, 11), render_menu(snapshot),
         render_network(snapshot, interfaces, form, rollback_seconds=47),
-        render_power(snapshot, typed="imagectl-t"),
+        render_power(snapshot),
     ]
     return "\n\n".join("\n".join(screen) for screen in screens)
 
@@ -396,7 +397,6 @@ class Runtime:
     message: str = ""
     result: actions.ActionResult | None = None
     power_choice: str = "restart"
-    typed_hostname: str = ""
     form: dict[str, str] = field(default_factory=dict)
     form_field: int = 0
     interfaces: list[NicInfo] = field(default_factory=list)
@@ -464,14 +464,9 @@ def _current_lines(runtime: Runtime, now: float) -> list[str]:
                               runtime.form_field, seconds, rollback_seconds=left,
                               error=runtime.message)
     if runtime.screen == "power":
-        return render_power(runtime.snapshot, runtime.power_choice,
-                            runtime.typed_hostname, seconds, runtime.message)
+        return render_power(runtime.snapshot, runtime.power_choice, seconds, runtime.message)
     if runtime.screen == "tls":
         return render_tls(runtime.snapshot, seconds)
-    if runtime.screen == "wizard_confirm":
-        return render_message("Re-run Initial Setup Wizard",
-                              "Press Y to start imagectl-wizard-rerun.service; Esc cancels.",
-                              (f"URL: {runtime.snapshot.console_url}",), seconds)
     result = runtime.result or actions.ActionResult(False, runtime.message or "No result.")
     return render_message("Action Result", result.message, result.details, seconds)
 
@@ -513,11 +508,10 @@ def _start_reset(runtime: Runtime) -> None:
 def _reset_enter(runtime: Runtime) -> None:
     typed, runtime.reset_typed = runtime.reset_typed, ""
     if runtime.reset_stage == "confirm":
-        if typed == actions.RESET_WORD:
-            runtime.reset_stage, runtime.message = "password", ""
-            return
-        reason, problem = "confirmation word", f"Type {actions.RESET_WORD} exactly, in capital letters."
-    elif runtime.reset_stage == "password":
+        # #1270: <Enter> on the warning screen is the confirmation -- no word.
+        runtime.reset_stage, runtime.message = "password", ""
+        return
+    if runtime.reset_stage == "password":
         problem = actions.password_problem(typed)
         if problem is None:
             runtime.reset_first, runtime.reset_stage, runtime.message = typed, "repeat", ""
@@ -551,6 +545,8 @@ def _reset_key(runtime: Runtime, key: object, enter: bool, escape: bool,
         _leave_reset(runtime, "Admin password reset cancelled; nothing was changed.")
     elif enter:
         _reset_enter(runtime)
+    elif runtime.reset_stage == "confirm":
+        return                                  # #1270: nothing is typed to confirm
     elif key in (8, 127, "\b", "\x7f", curses_module.KEY_BACKSPACE):
         runtime.reset_typed = runtime.reset_typed[:-1]
     elif isinstance(key, str) and key.isprintable() and len(key) == 1:
@@ -574,8 +570,6 @@ def _open_menu_item(runtime: Runtime) -> None:
     elif item == 3:
         actions.note_tls_display(runtime.conn)
         runtime.screen = "tls"
-    else:
-        runtime.screen = "wizard_confirm"
 
 
 def _network_key(runtime: Runtime, key: object) -> None:
@@ -720,18 +714,8 @@ def _handle_key(runtime: Runtime, key: object, curses_module) -> bool:
         if key in (curses_module.KEY_UP, curses_module.KEY_DOWN, " "):
             runtime.power_choice = "shutdown" if runtime.power_choice == "restart" else "restart"
         elif enter:
-            runtime.result = actions.power_action(
-                runtime.conn, runtime.power_choice, runtime.typed_hostname,
-                runtime.snapshot.hostname)
+            runtime.result = actions.power_action(runtime.conn, runtime.power_choice)
             runtime.screen = "result"
-        elif key in (8, 127, curses_module.KEY_BACKSPACE):
-            runtime.typed_hostname = runtime.typed_hostname[:-1]
-        elif isinstance(key, str) and key.isprintable() and len(key) == 1:
-            runtime.typed_hostname += key
-    elif runtime.screen == "wizard_confirm" and key in ("y", "Y"):
-        runtime.result = actions.start_wizard(
-            runtime.conn, runtime.snapshot.console_url, run_argv)
-        runtime.screen = "result"
     elif runtime.screen in {"result", "tls"} and enter:
         runtime.screen = "menu"
     return True

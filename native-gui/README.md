@@ -261,6 +261,12 @@ room_drawer=<machine-index>|<port or 0>|<serial>|<model>|<size>|<smart>|<fresh>|
                                     # #1269: drivers = staged / skipped / failed from drawer_list[].drivers,
                                     # empty = the step did not run; detail = packages / error / reason.
                                     # Optional: an older agent's eight fields read as "did not run"
+                                    # #704: |<slot name> -- an 11th field, drawer_list[].slot_name (the
+                                    # operator's name of the slot; NVMe by serial). Empty / absent = "דיסק N"
+room_slot_name=<machine-index>|<port>|<name>
+                                    # #704: the name of a SATA slot (GET /room slot_names "sata:<port>"),
+                                    # empty slots too. A drawer's own field-11 name wins. Label only:
+                                    # selection and slots= stay by port
 driver_models=<n>                   # #1269: models read from GET /api/console/room/driver-models; -1 = not read
                                     # (absent = -1). 0 and -1 both disable "להוסיף דרייברים", with two reasons
 driver_model=<vendor>|<model>       # one per model, the library's spelling (only models with a package)
@@ -274,6 +280,9 @@ updated=<epoch seconds>             # #410: when the agent wrote this snapshot -
 drawer=<port>|<dev>|<state>|<bytes>|<total>|<error>|<rate_bps>|<eta_s>
                                     # #410: fields 7-8 measured by the kiosk on the local counter; -1 / absent
                                     # (a six-field record) = not measured -- the line shows bytes only
+cslot_name=<port>|<name>            # #704: the operator's name of SATA slot <port>, from the last hello's
+                                    # slot_names (slotnames.sh). Drawn instead of "דיסק N" on the cloner
+                                    # cards, its SMART question and the standby list; absent = "דיסק N"
 
 # #st-class
 class=<id>|<label>|<machines>       # /api/console/groups, role classroom

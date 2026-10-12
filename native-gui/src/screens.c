@@ -474,7 +474,7 @@ void screen_standby(App *a,cairo_t *cr,double W,double H,double head_h){
         y+=before_list;
         if(probe){Text w=text_make(cr,FONT_SANS,13,600,probe,0,DIR_RTL);text_draw(cr,&w,center-w.w/2,y,t->warn);text_free(&w);y+=list_h;}
         else if(cloner)for(int port=1;port<=rows;port++){
-            const IdleDisk *d=idle_for_port(s,port);char label[32];snprintf(label,sizeof label,"דיסק %d",port);
+            const IdleDisk *d=idle_for_port(s,port);char label[SLOT_NAME_MAX+16];cloner_slot_label(s,port,label,sizeof label);   /* #704 */
             standby_disk_row(cr,t,center,y,fmin(760,W-2*N_PAD),label,d&&d->model[0]?d->model:"לא זוהה",d?d->size:0,d?d->smart:"unchecked",!d);
             y+=32;
         }else for(int i=0;i<rows;i++){

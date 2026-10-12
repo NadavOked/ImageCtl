@@ -405,10 +405,9 @@ def test_extra_cmdline_reaches_the_boot_menu(tmp_path, images_root, clock):
     """תוספות מפעיל לשורת הקרנל (קונסולה טורית) עוברות כהגדרה — לא
     בעריכת קוד על השרת, שהולידה fork חי (#18).
 
-    ‏`imagectl.debug` יוצא מן הכלל מאז #83: הוא פותח SSH ומעטפת טכנאי
-    בכל תחנה, ולכן הוא מתג בקונסולה ולא תוספת מפעיל. גם כשהמפעיל מעביר
-    אותו כאן — הוא אינו נכנס לשורת הקרנל כל עוד המתג כבוי, אחרת היו שני
-    מקורות אמת לאותה דלת והישן היה גובר בשקט."""
+    ‏`imagectl.debug` יוצא מן הכלל: מעטפת הניפוי של הסוכן אינה מוגשת
+    מ-PXE לעולם. עד #1266 רק מתג ה-SSH בקונסולה הכניס אותו; המתג יצא
+    מהמוצר, והדגל נשאר מוסר גם כשהמפעיל מעביר אותו כאן."""
     from fastapi.testclient import TestClient
 
     from server import users
@@ -626,7 +625,7 @@ def test_journal_filter_by_date_range_excludes_out_of_range_rows(server):
     assert any(r["ts"] == newest_ts for r in after)
 
 
-def test_journal_machine_filter_matches_the_display_name_not_the_raw_id(server):
+def test_journal_machine_filter_matches_the_display_name_not_the_raw_id(server, classrooms_on):
     """המלכודת ב-#115: מפעיל מחפש את מה שהוא רואה על המסך (שם הכיתה),
     לא את המזהה הגולמי (grp_...) שכתוב בפועל בשורת ה-DB."""
     admin = server["admin"]

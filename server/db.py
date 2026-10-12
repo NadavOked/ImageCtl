@@ -129,9 +129,25 @@ CREATE TABLE IF NOT EXISTS room_rounds (
 -- שורה אחת למכונה; נמחקת כשנמסרה או כשפגה. אין שורה = אין בקשה.
 CREATE TABLE IF NOT EXISTS power_requests (
     mac          TEXT PRIMARY KEY,
-    action       TEXT NOT NULL CHECK (action IN ('poweroff')),
+    action       TEXT NOT NULL CHECK (action IN ('poweroff', 'reboot')),   -- reboot: #977 §4
     requested_at TEXT NOT NULL,
     requested_by TEXT NOT NULL
+);
+
+-- ‏#989 ס׳ 2: שאלת ה-SMART של משכפל (`smart_ask.py`) — שורה אחת למכונה, והתשובה
+-- הראשונה (הקונסולה או המכונה עצמה) נכתבת ב-UPDATE מותנה. `closed` = המכונה כבר
+-- שלחה hello בלי השאלה; nonce חוזר אחרי אתחול, ושורה סגורה אינה שאלה חדשה.
+CREATE TABLE IF NOT EXISTS smart_asks (
+    mac         TEXT PRIMARY KEY,
+    nonce       TEXT NOT NULL,
+    port        INTEGER NOT NULL,
+    verdict     TEXT NOT NULL,
+    reason      TEXT NOT NULL,
+    asked_at    TEXT NOT NULL,
+    answer      TEXT CHECK (answer IN ('replace', 'rescue', 'skip')),
+    answered_by TEXT,
+    answered_at TEXT,
+    closed      INTEGER NOT NULL DEFAULT 0
 );
 
 -- ‏#972: תוצאת האימות החוזר (scrub) האחרונה לכל אימג'. אין לה ייצוג
@@ -325,6 +341,20 @@ CREATE TABLE IF NOT EXISTS disk_events (
     PRIMARY KEY (session_id, mac, disk)
 );
 
+-- ‏#704: השם שהמפעיל נתן לכל חיבור של כונן במכונה ("דיסק 1", "דיסק מיוחד").
+-- ‏`slot` הוא החיבור ולא הדיסק: ‏`sata:<port>` (ה-ataN מ-hello), או
+-- ‏`serial:<serial>` לכונן בלי port (‏NVMe/USB — אין מזהה חיבור ב-hello).
+-- תווית בלבד: הבחירה ו-target_slots נשארים לפי port (`server/slot_names.py`).
+-- ‏CASCADE: עריכת MAC (#977 §5) מעבירה את השמות, הסרת המכונה מוחקת אותם.
+CREATE TABLE IF NOT EXISTS machine_slot_names (
+    mac    TEXT NOT NULL REFERENCES machines(mac) ON UPDATE CASCADE ON DELETE CASCADE,
+    slot   TEXT NOT NULL,
+    name   TEXT NOT NULL,
+    set_at TEXT NOT NULL,
+    set_by TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (mac, slot)
+);
+
 -- זיכרון כשלי כתיבה (#874): במקום סימון על הדיסק (#845, נפסל) השרת זוכר
 -- **איזה דיסק (סידורי) ואיזה חריץ (מכונה+פורט)** נכשלו, ומה הקרנל אמר.
 -- הסוכן שולח את שורות ה-ATA; הסיווג (cable/disk/unclassified) נעשה כאן
@@ -403,19 +433,6 @@ CREATE TABLE IF NOT EXISTS machine_probe (
     probe_json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS machine_probe_mac ON machine_probe (mac, id);
-
--- מפתח ה-host של dropbear בתחנה, מ-hello (#1080). **מגורסת** כמו
--- machine_inventory: שורה חדשה רק כשה-JSON הקנוני השתנה; seen_at =
--- מתי הגרסה הזו נראתה לראשונה. השורה האחרונה לכל MAC היא המפתח
--- הנוכחי, וממנה נכתב <data_dir>/ssh/known_hosts. boot_id בתוך ה-JSON
--- מבחין בין אתחול (מפתח חדש לגיטימי) לבין שינוי בתוך אותו אתחול.
-CREATE TABLE IF NOT EXISTS machine_ssh_hostkey (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    mac          TEXT NOT NULL,        -- קנוני: lowercase עם נקודתיים
-    seen_at      TEXT NOT NULL,
-    hostkey_json TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS machine_ssh_hostkey_mac ON machine_ssh_hostkey (mac, id);
 
 -- Storage Nodes (#655, tracer 1.1 / #723): רישום המשניים שהראשי מחזיק,
 -- וקבוצות האחסון שמשייכות אותם. קיים על **כל** בסיס לצורך עקביות
@@ -530,6 +547,35 @@ CREATE TABLE IF NOT EXISTS storage_locations (
     last_images_json TEXT NOT NULL DEFAULT '[]',
     last_df_json     TEXT
 );
+
+-- ‏#447: הקצב שכל כונן באמת כתב בגל שהסתיים (`server/drive_rates.py`).
+-- זהות = דגם + סידורי (הכונן נודד בין מגירות). ‏`cap_bps` הוא תקרת הגל
+-- שבו נמדד — בלעדיה אי-אפשר לדעת אם הכונן הגביל את הזרם או רק עמד בו.
+-- שורה אחת לכל (גל, סידורי); בייטים לשנייה, כמו `rate_bps` במסך החדר.
+CREATE TABLE IF NOT EXISTS drive_rates (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    serial     TEXT NOT NULL,
+    model      TEXT,
+    session_id TEXT NOT NULL,
+    rate_bps   INTEGER NOT NULL,
+    cap_bps    INTEGER NOT NULL,
+    bytes      INTEGER NOT NULL,
+    seconds    INTEGER NOT NULL,
+    at         TEXT NOT NULL,
+    UNIQUE (session_id, serial)
+);
+
+-- ‏#447: התקרה שנבחרה לגל לפני שיצא, ולמה (JSON של `drive_rates.choose`).
+-- טבלה נפרדת ולא עמודה ב-`sessions`: ‏`_rebuild_state_tables` מעתיק את
+-- `sessions` לפי רשימת עמודות מפורשת, ועמודה חדשה הייתה נמחקת שם.
+-- ‏`stream` — מה ש-udp-sender ספר בסוף הגל (`drive_rates.record_stream`):
+-- ‏JSON של `sent_bytes` ו-`loss_blocks`; ‏NULL = השולח לא דיווח.
+CREATE TABLE IF NOT EXISTS wave_rates (
+    session_id TEXT PRIMARY KEY,
+    decision   TEXT NOT NULL,
+    at         TEXT NOT NULL,
+    stream     TEXT
+);
 """
 
 #: הקבוצות הקבועות: חדר שיכפולים ומחשב הבנייה הם יחידים במערכת —
@@ -550,6 +596,10 @@ DEFAULT_SETTINGS = {
     # ‏#880: v1 "מהדורת שיכפול" — הפצה לכיתות ממחשב הבנייה כבויה כברירת
     # מחדל. הקוד נשאר (v2); המתג בקונסולה, מסך ההגדרות.
     "class_deploy_enabled": "false",
+    # ‏#447 + הכרעת נדב 11/10: קצב אוטומטי לכל גל — עולה על גל נקי, יורד על
+    # שידורים חוזרים וכוננים איטיים, לעולם לא מעל `IMAGECTL_MAX_BITRATE`
+    # (בלעדיו 900m). ‏"false" = קצב הפתיחה (600m), קבוע.
+    "learned_rate_enabled": "true",
 }
 
 
@@ -637,6 +687,10 @@ ADDED_COLUMNS = [
     # הלא-דחוס (בלוקי partclone), שאין לו ייצוג בעמודות bytes_* הדחוסות.
     # ‏NULL בשורות שקדמו למיגרציה, כלומר "אין דיווח מפורט", לא "אפס".
     ("tasks", "targets_json", "TEXT"),
+    # ‏#980 §4: שלב הקליטה שהסוכן דיווח (‏`tasks.CAPTURE_STAGES`) ומתי נכנס
+    # אליו. NULL = לא דווח (סוכן ישן, או משימה שטרם החלה) — לא "שלב ראשון".
+    ("tasks", "stage", "TEXT"),
+    ("tasks", "stage_started_at", "TEXT"),
     # ‏#740: חומר האמון הבין-שרתי על הראשי. NULL בשורות משני שקדמו ל-#740
     # (נרשמו לפני שכבת ה-mTLS) — הן תצוגה בלבד עד שנרשמות מחדש. שורה
     # חדשה מ-``enroll_node`` ממלאת את כולן.
@@ -671,6 +725,9 @@ ADDED_COLUMNS = [
     ("storage_nodes", "last_seen_at", "TEXT"),
     ("storage_nodes", "last_error", "TEXT"),
     ("storage_nodes", "last_error_at", "TEXT"),
+    # קצב אוטומטי (הכרעת נדב 11/10): מה ש-udp-sender ספר בסוף הגל. NULL בשורות
+    # שקדמו למיגרציה = "לא נמדד" — הקצב אינו עולה מהן.
+    ("wave_rates", "stream", "TEXT"),
 ]
 
 
@@ -706,7 +763,10 @@ def _rebuild_state_tables(conn: sqlite3.Connection) -> None:
     sessions = not _state_check_has(conn, "sessions", "failed")
     rooms = (not _state_check_has(conn, "room_rounds", "failed")
              or not _state_check_has(conn, "room_rounds", "closing"))
-    if not sessions and not rooms:
+    # ‏#977 §4: ‏`power_requests.action` מכיר גם `reboot`. אין לטבלה מפתחות
+    # זרים, והבקשות שממתינות מועתקות כמו כל שורה אחרת כאן.
+    power = not _state_check_has(conn, "power_requests", "reboot")
+    if not sessions and not rooms and not power:
         return
 
     # אי-אפשר לשנות foreign_keys בתוך טרנזאקציה. ה-ALTER-ים שלמעלה
@@ -792,6 +852,19 @@ def _rebuild_state_tables(conn: sqlite3.Connection) -> None:
             """)
             conn.execute("DROP TABLE room_rounds")
             conn.execute("ALTER TABLE room_rounds_new RENAME TO room_rounds")
+        if power:
+            conn.execute("""
+                CREATE TABLE power_requests_new (
+                    mac          TEXT PRIMARY KEY,
+                    action       TEXT NOT NULL CHECK (action IN ('poweroff', 'reboot')),
+                    requested_at TEXT NOT NULL,
+                    requested_by TEXT NOT NULL
+                )
+            """)
+            conn.execute("INSERT INTO power_requests_new (mac, action, requested_at, requested_by)"
+                         " SELECT mac, action, requested_at, requested_by FROM power_requests")
+            conn.execute("DROP TABLE power_requests")
+            conn.execute("ALTER TABLE power_requests_new RENAME TO power_requests")
         conn.commit()
     except BaseException:
         conn.rollback()
@@ -916,6 +989,12 @@ def _initialize(conn: sqlite3.Connection) -> None:
     # #1178: בדיקת boot מקומית ישנה נרשמה כתחנה. הניקוי אידמפוטנטי
     # ורץ לפני שהקונסולה יכולה לקרוא את net_devices.
     conn.execute("DELETE FROM net_devices WHERE lower(mac) = '00:00:00:00:00:00'")
+    # ‏#1266: SSH יצא מהמוצר. מתגי ה-SSH שהתקנה ותיקה השאירה (‏`ssh:stations`,
+    # ‏`ssh:iface:<nic>`) וטבלת מפתחות ה-host של התחנות אין להם משמעות בלי
+    # הקוד שקרא אותם. הניקוי אידמפוטנטי, כמו #1178 שמעליו.
+    conn.execute("DELETE FROM settings WHERE key = 'ssh:stations'"
+                 " OR key LIKE 'ssh:iface:%'")
+    conn.execute("DROP TABLE IF EXISTS machine_ssh_hostkey")
     _add_missing_columns(conn)
     _rebuild_state_tables(conn)
     conn.execute(
@@ -1248,7 +1327,7 @@ def get_setting(conn: sqlite3.Connection, key: str) -> str | None:
 
 
 def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
-    """מסלול הכתיבה של **כל** מסכי ההגדרות — DHCP, כתובות, מתג SSH,
+    """מסלול הכתיבה של **כל** מסכי ההגדרות — DHCP, כתובות, מתגים,
     רשימת התיקיות. ‏`_write_lock` ו-`writing` מאותה סיבה כמו ב-`net_seen`
     (#313): כתיבה שנכשלה כאן משאירה את החיבור בטרנזאקציה, ומשם הקונסולה
     מפסיקה לשמור עד אתחול השרת. ‏`_settle` — סדר הנעילות של #457."""

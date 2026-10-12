@@ -1492,3 +1492,15 @@ body.tasks-open .app>.task-dock{bottom:var(--task-h,220px);border-top:1px solid 
 .page .mon-bar{display:flex;align-items:center;gap:10px;padding:8px 16px;border-bottom:1px solid var(--clr-row-border)}
 .page .mon-bar .sp{flex:1}
 .page .mon-frame{display:block;width:100%;height:min(420px,60vh);border:0;background:var(--clr-field)}
+
+/* ‏#554: רשימת התוצאות של החיפוש הגלובלי — תחת השורה, RTL, בלי פס גלילה (הגלילה עובדת). */
+.search{position:relative}
+.gs-panel{position:absolute;top:calc(100% + 4px);inset-inline:0;max-height:min(420px,70vh);overflow-y:auto;scrollbar-width:none;background:var(--surface);color:var(--ink);border:1px solid var(--hair);border-radius:var(--r-sm);box-shadow:var(--shadow-overlay);z-index:90;padding:4px;direction:rtl;text-align:start}
+.gs-panel::-webkit-scrollbar{display:none}
+.gs-panel[hidden]{display:none}
+.gs-group{padding:8px 8px 3px;font-size:var(--t-xs);font-weight:600;color:var(--muted)}
+.gs-item{display:flex;align-items:baseline;gap:8px;padding:6px 8px;border-radius:var(--r-sm);cursor:pointer;font-size:var(--t-sm)}
+.gs-item:hover,.gs-item.active{background:var(--indigo-soft)}
+.gs-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gs-sub{color:var(--muted);font-size:var(--t-xs);direction:ltr;unicode-bidi:plaintext;white-space:nowrap}
+.gs-empty{padding:8px;color:var(--muted);font-size:var(--t-xs)}

@@ -151,8 +151,8 @@ parse_cmdline() {
                 IMAGECTL_DEBUG="1"
                 ;;
             imagectl.monitor=1)
-                # מוניטור מרחוק (#690): שירות RFB על /dev/fb0, מגודר מ-SSH
-                # בדיוק כמו imagectl.debug. השרת מוסיף אותו לשורת הקרנל רק
+                # מוניטור מרחוק (#690): שירות RFB על /dev/fb0, מגודר בשער
+                # משלו בשורת הקרנל. השרת מוסיף אותו לשורת הקרנל רק
                 # כשהמתג בקונסולה דלוק (monitor.py:station_cmdline).
                 IMAGECTL_MONITOR="1"
                 ;;

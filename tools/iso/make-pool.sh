@@ -63,11 +63,19 @@ done
 
 die() { printf 'make-pool: %s\n' "$*" >&2; exit 1; }
 
+tmp_plain=""
+rel_tmp=""
+cleanup() {
+    [[ -z "$tmp_plain" ]] || rm -f "$tmp_plain" "$tmp_plain.err"
+    [[ -z "$rel_tmp" ]] || rm -f "$rel_tmp"
+}
+trap cleanup EXIT
+
 # ---------------------------------------------------------------------------
 # אינדקס: Packages.gz לכל רכיב + Release אחד עם גיבוב לכל קובץ ב-dists
 # ---------------------------------------------------------------------------
 write_index() {
-    local root="$1" comp packages_dir tmp_plain
+    local root="$1" comp packages_dir
     [[ -d "$root/pool" ]] || die "אין $root/pool — אין מה לאנדקס"
     command -v dpkg-scanpackages >/dev/null || die "חסר dpkg-scanpackages (חבילת dpkg-dev)"
     for comp_dir in "$root"/pool/*/; do
@@ -82,6 +90,7 @@ write_index() {
             || { cat "$tmp_plain.err" >&2; die "dpkg-scanpackages נכשל על pool/$comp"; }
         gzip -9 -n -c "$tmp_plain" > "$packages_dir/Packages.gz"
         rm -f "$tmp_plain" "$tmp_plain.err"
+        tmp_plain=""
         [[ -f "$packages_dir/Release" ]] || cat > "$packages_dir/Release" <<EOF
 Archive: stable
 Origin: Debian
@@ -93,7 +102,7 @@ EOF
             "$(zcat "$packages_dir/Packages.gz" | grep -c '^Package: ')"
     done
 
-    local dists="$root/dists/$SUITE" comps rel rel_tmp
+    local dists="$root/dists/$SUITE" comps rel
     comps=$(cd "$dists" && find . -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | tr '\n' ' ')
     rel="$dists/Release"
     # נכתב מחוץ ל-dists: קובץ זמני בתוכו היה נכנס לרשימת הגיבובים של עצמו.
@@ -119,6 +128,7 @@ EOF
         done
     } > "$rel_tmp"
     mv "$rel_tmp" "$rel"
+    rel_tmp=""
     # חתימה ישנה מעל אינדקס חדש היא שגיאה, לא "לא חתום" — מסירים אותה.
     rm -f "$dists/Release.gpg" "$dists/InRelease"
     printf 'index: %s נכתב (%s)\n' "$rel" "${comps% }"

@@ -52,7 +52,6 @@ SOURCE=""
 ROOT_PASSWORD="${IMAGECTL_ROOT_PASSWORD:-}"
 LIVE_INITRD=""
 VOLID="IMAGECTL_INSTALL"
-DEBUG_SSH=0
 CDIMAGE_URL="https://cdimage.debian.org/debian-cd/current/amd64/iso-cd"
 
 usage() {
@@ -72,8 +71,6 @@ ImageCtl — בניית ISO ההתקנה.
   --root-password PW   סיסמת root הראשונית (מוחלפת בכניסה הראשונה); או IMAGECTL_ROOT_PASSWORD
   --live-initrd FILE   ה-initramfs של המתקין החי (build_initramfs.sh --installer --with-gui);
                        הקרנל ל-/live נלקח מ-linux-image של ה-pool ומושווה למודולים שבו
-  --debug-ssh          **מעבדה בלבד**: imagectl.debug=1 בשורת הקרנל — dropbear במתקין החי
-                       עם המפתח שנארז ב-initramfs (--ssh-key). שם ה-ISO מקבל -debug
 EOF
 }
 
@@ -87,7 +84,6 @@ while [[ $# -gt 0 ]]; do
         --public-url)    PUBLIC_URL="${2:?}"; shift 2 ;;
         --root-password) ROOT_PASSWORD="${2:?}"; shift 2 ;;
         --live-initrd)   LIVE_INITRD="${2:?}"; shift 2 ;;
-        --debug-ssh)     DEBUG_SSH=1; shift ;;
         -h|--help)       usage; exit 0 ;;
         *) printf 'unknown option: %s  (try --help)\n' "$1" >&2; exit 2 ;;
     esac
@@ -178,6 +174,7 @@ cp -a "$POOL/pool/." "$ISO_TREE/pool/"
 mapfile -t PKGS < <(sed 's/#.*//' "$SCRIPT_DIR/packages.txt" | tr -s ' \t' '\n' | grep -v '^$' | LC_ALL=C sort -u)
 (( ${#PKGS[@]} )) || die "packages.txt ריק"
 POOL_PACKAGES=$(mktemp "$WORK/pool-packages.XXXXXX")
+trap 'rm -f "${POOL_PACKAGES:-}"' EXIT
 while IFS= read -r -d '' deb; do
     dpkg-deb -f "$deb" Package >> "$POOL_PACKAGES" \
         || die "לא ניתן לקרוא Package מתוך $deb"
@@ -188,6 +185,7 @@ for p in "${PKGS[@]}"; do
     grep -Fxq "$p" "$POOL_PACKAGES" || missing+=("$p")
 done
 rm -f "$POOL_PACKAGES"
+POOL_PACKAGES=""
 if (( ${#missing[@]} )); then
     die "חבילות מ-packages.txt חסרות מה-pool הממוזג: ${missing[*]}"
 fi
@@ -268,7 +266,6 @@ rm -rf "$ISO_TREE/install.amd" "$ISO_TREE/preseed.cfg"
 # ב-PXE, בלי פרטי משימה); אין תפריט — ה-ISO עולה ישר למתקין החי, ומחיקת
 # הדיסק מאושרת בגואי. ‏DI_ARGS הוא השם ההיסטורי של הפרמטרים בתבניות.
 DI_ARGS="imagectl.mode=installer"
-if (( DEBUG_SSH )); then DI_ARGS="$DI_ARGS imagectl.debug=1"; say "אזהרה: --debug-ssh — ISO של מעבדה עם dropbear במתקין; לא למכללה"; fi
 [[ -f "$SCRIPT_DIR/imagectl.cfg.in" ]] || die "חסרה תבנית imagectl.cfg.in"
 [[ -f "$SCRIPT_DIR/isolinux-menu.cfg.in" ]] || die "חסרה תבנית isolinux-menu.cfg.in"
 [[ -f "$ISO_TREE/isolinux/menu.cfg" ]] || die "חסר isolinux/menu.cfg ב-netinst"
@@ -342,9 +339,7 @@ PY
 find "$ISO_TREE" -exec touch -h -d "@$EPOCH" {} +
 
 # --- ה-ISO עצמו --------------------------------------------------------------
-ISO_SUFFIX=""
-if (( DEBUG_SSH )); then ISO_SUFFIX="-debug"; fi
-ISO="$OUT/imagectl-$TAG-amd64$ISO_SUFFIX.iso"
+ISO="$OUT/imagectl-$TAG-amd64.iso"
 rm -f "$ISO"
 say "בונה $ISO (replay של ציוד האתחול מה-netinst)"
 xorriso -indev "$NETINST" -outdev "$ISO" \

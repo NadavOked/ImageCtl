@@ -227,7 +227,7 @@ def test_folder_order_is_saved_and_served(server):
                                  json={"names": []}).status_code == 403
 
 
-def test_group_id_is_optional_and_derived_from_the_name(server):
+def test_group_id_is_optional_and_derived_from_the_name(server, classrooms_on):
     """שם קבוצה חופשי — עברית, אנגלית או מספרים. המזהה נגזר כשלא הוקלד."""
     admin = server["admin"]
 

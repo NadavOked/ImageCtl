@@ -36,7 +36,10 @@ UNIT_DIR="${IMAGECTL_UNIT_DIR:-/etc/systemd/system}"
 FLAGS_FILE="${IMAGECTL_INITRD_FLAGS:-/etc/imagectl/initrd.flags}"
 ISO_MANIFEST="${IMAGECTL_ISO_MANIFEST:-/etc/imagectl/iso-release.json}"
 HTTP_ROOT="${IMAGECTL_HTTP_ROOT:-/srv/imagectl/boot}"
-INITRD_NOTE=""   # נקבע רק אחרי שה-initrd החדש הוחלף בפועל
+INITRD_NOTE=""   # נקבע בחזרה — האם המטען הקודם הוחזר
+# ‏#1287: עותק המטען הקודם (initrd/vmlinuz) — מוחזר יחד עם הקוד בחזרה.
+PAYLOAD_SAVE="$HTTP_ROOT/.pre-upgrade"
+PAYLOAD_SAVED=0  # 1 רק אחרי שהעותק של **הריצה הזו** הושלם
 LOG="${IMAGECTL_UPGRADE_LOG:-/var/log/imagectl/server-upgrade.log}"
 CONSOLE_URL="${IMAGECTL_CONSOLE_URL:-https://127.0.0.1:8081}"
 LIVE_WAIT="${IMAGECTL_LIVE_WAIT:-90}"
@@ -105,6 +108,51 @@ install_units_and_restart() {
     systemctl restart imagectl-server
 }
 
+# ‏#1287: הקבצים שהבנייה מחליפה — ה-vmlinuz וכל --output, באותו פענוח של
+# tools/boot-payload-build.sh (שורה לבנייה, ‏# ושורה ריקה מדולגות). כאן ולא
+# שם: יעד ישן שאין לו מצב "רשימה" היה חוסם חזרה לגרסה ישנה.
+payload_files() {
+    echo "$HTTP_ROOT/vmlinuz"
+    if [[ "${payload_args[0]}" == --iso-default ]]; then
+        printf '%s\n' "$HTTP_ROOT/initrd.img" "$HTTP_ROOT/initrd.img.gui"
+        return
+    fi
+    local line words i
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ -n "$line" && "$line" != \#* ]] || continue
+        read -r -a words <<<"$line"
+        for i in "${!words[@]}"; do
+            if [[ "${words[$i]}" == --output ]]; then echo "${words[$((i + 1))]:-}"; fi
+        done
+    done < "$FLAGS_FILE"   # קובץ שלא נקרא = סטטוס לא-אפס, לא רשימה חלקית
+}
+
+# מעתיק כל קובץ קיים ל-$PAYLOAD_SAVE/<n>, ורושם "<n> <נתיב>" ב-list. נקרא
+# כ-`save_payload || rollback`, ושם `set -e` כבוי — לכן כל צעד נבדק בשמו.
+save_payload() {
+    local n=0 path files
+    files="$(payload_files)" || return 1
+    rm -rf "$PAYLOAD_SAVE" && mkdir -p "$PAYLOAD_SAVE" && : > "$PAYLOAD_SAVE/list" || return 1
+    while IFS= read -r path; do
+        [[ -n "$path" && -e "$path" ]] || continue
+        cp -p "$path" "$PAYLOAD_SAVE/$n" && echo "$n $path" >> "$PAYLOAD_SAVE/list" || return 1
+        n=$((n + 1))
+    done <<<"$files"
+    PAYLOAD_SAVED=1
+    echo "המטען הקודם נשמר ב-$PAYLOAD_SAVE ($n קבצים)"
+}
+
+# מחזיר כל קובץ במקומו (העתקה ל-.restore ואז mv — מכונה שמורידה לא תקבל
+# חצי קובץ) ומאמת ב-cmp. כל כשל = 1, והעותק נשאר לשחזור ידני.
+restore_payload() {
+    local n path
+    while read -r n path; do
+        cp -p "$PAYLOAD_SAVE/$n" "$path.restore" && mv -f "$path.restore" "$path" \
+            && cmp -s "$PAYLOAD_SAVE/$n" "$path" || return 1
+    done < "$PAYLOAD_SAVE/list" || return 1
+    rm -rf "$PAYLOAD_SAVE"
+}
+
 rollback() {   # rollback <סיבה>
     local why="$1"
     trap - ERR
@@ -114,9 +162,20 @@ rollback() {   # rollback <סיבה>
         die "$why (אין תג קודם — לא הוחזר)"
     fi
     echo "מחזיר ל-$PREV"
-    if git checkout --detach "$PREV" && install_units_and_restart; then
-        set_status failed "$why · הוחזר ל-$PREV$INITRD_NOTE"
-        die "$why — הוחזר ל-$PREV"
+    if git checkout --detach "$PREV"; then
+        # המטען חוזר לפני ה-restart: השרת הישן עולה כבר מול ה-initrd שלו.
+        if [[ "$PAYLOAD_SAVED" == 1 ]]; then
+            if restore_payload; then
+                INITRD_NOTE=" (וה-initrd הקודם הוחזר)"
+            else
+                INITRD_NOTE=" (החזרת ה-initrd הקודם נכשלה — העותק ב-$PAYLOAD_SAVE)"
+            fi
+            echo "מטען האתחול:$INITRD_NOTE"
+        fi
+        if install_units_and_restart; then
+            set_status failed "$why · הוחזר ל-$PREV$INITRD_NOTE"
+            die "$why — הוחזר ל-$PREV"
+        fi
     fi
     set_status failed "$why · והחזרה ל-$PREV נכשלה גם היא"
     die "$why — והחזרה ל-$PREV נכשלה"
@@ -150,9 +209,9 @@ elif [[ -e "$ISO_MANIFEST" ]]; then
 else
     rollback "$FLAGS_FILE חסר ואין $ISO_MANIFEST — לא ידוע אילו initrd לבנות, והמכונות היו נשארות על initrd ישן"
 fi
+save_payload || rollback "שמירת עותק של המטען הקודם ב-$PAYLOAD_SAVE נכשלה — לא בונים בלי דרך חזרה"
 bash tools/boot-payload-build.sh --http-root "$HTTP_ROOT" --manifest "$ISO_MANIFEST" "${payload_args[@]}" \
     || rollback "בניית ה-initrd נכשלה (הפירוט ב-$LOG)"
-INITRD_NOTE=" (ה-initrd שנבנה מ-$TAG נשאר)"
 
 # 5. restart + ראיה חיובית
 systemctl restart imagectl-server || rollback "systemctl restart imagectl-server נכשל"
@@ -178,3 +237,7 @@ bash install/verify-boot-payload.sh --app-dir "$REPO_DIR" --http-root "$HTTP_ROO
     || rollback "verify-boot-payload.sh נכשל מול $AGENT_URL"
 
 echo "--- $(date -Is) upgrade to $TAG done and verified ---"
+# אחרי האימות בלבד. כשל כאן אינו כשל שדרוג (השרת החדש רץ ואומת) — נרשם
+# בלוג, והריצה הבאה מוחקת את העותק לפני שהיא שומרת חדש (PAYLOAD_SAVED).
+trap - ERR
+rm -rf "$PAYLOAD_SAVE" || echo "server-upgrade: לא נמחק $PAYLOAD_SAVE — העותק נשאר על הדיסק"

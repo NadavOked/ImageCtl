@@ -25,7 +25,8 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from . import auth, drivers, registry, reports, room_drivers, storage_locations
+from . import (auth, drive_rates, drivers, registry, reports, room_drivers,
+               slot_names, smart_ask, storage_locations)
 from .db import journal, now_iso, update_one, writing
 from .images import required_bytes, restore_refusal
 from .imagefit import validate_expand_choice
@@ -131,10 +132,39 @@ def fresh_serials(conn: sqlite3.Connection, mac: str, written: set[str],
     לפי serial, וכונן שנספר כאן כ"טרי" היה מצרף את המכונה לכל גל וכותב
     אותו שוב ושוב בלי שייספר לעולם. הוא אינו נעלם: `drawer_list` מחזיר
     לו `fresh: None`, והמסך אומר "לא ניתן לזהות את הכונן" בחריץ שלו."""
+    return [d["serial"] for d in _fresh_disks(conn, mac, written, selected_ports)]
+
+
+def _fresh_disks(conn: sqlite3.Connection, mac: str, written: set[str],
+                 selected_ports: set[int] | None) -> list[dict]:
     return [
-        d["serial"] for d in _disks(conn, mac)
+        d for d in _disks(conn, mac)
         if isinstance(d, dict) and d.get("serial") and d["serial"] not in written
         and (selected_ports is None or d.get("port") in selected_ports)
+    ]
+
+
+def wave_drives(conn: sqlite3.Connection, session_id: str) -> list[dict]:
+    """‏#447: הכוננים שהגל הזה יכתוב — לפיהם נבחרת תקרת הקצב שלו.
+
+    אותן מגירות ש-`ready_drives` סופר: טריות, ובפורטים שנבחרו, של המכונות
+    שהצטרפו. גל שאינו גל של סבב חדר פעיל — רשימה ריקה, והגל יוצא בקצב
+    הפתיחה (`drive_rates.choose`)."""
+    round_row = conn.execute(
+        "SELECT * FROM room_rounds WHERE wave_session_id = ? AND state = 'active'",
+        (session_id,),
+    ).fetchone()
+    if round_row is None:
+        return []
+    written = _written(round_row)
+    return [
+        {"serial": d["serial"], "model": d.get("model") or None,
+         "mac": member["mac"], "port": d.get("port")}
+        for member in conn.execute(
+            "SELECT mac FROM session_members WHERE session_id = ? ORDER BY mac",
+            (session_id,))
+        for d in _fresh_disks(conn, member["mac"], written,
+                              _selected_ports(round_row, member["mac"]))
     ]
 
 
@@ -810,7 +840,9 @@ def _resume(conn: sqlite3.Connection, store: SessionStore,
     """
     total, written = round_row["written_drives"], _written(round_row)
     if wave is not None:
-        total, written = _tally(conn, round_row, store.members(wave["id"]))
+        members = store.members(wave["id"])
+        drive_rates.record_wave(conn, wave["id"], members)      # ‏#447
+        total, written = _tally(conn, round_row, members)
         if not update_one(
             conn,
             "UPDATE room_rounds SET written_drives = ?, written_serials = ?,"
@@ -908,6 +940,9 @@ def _finish_wave(conn: sqlite3.Connection, store: SessionStore,
     if (current is None or current["state"] != "active"
             or current["wave_session_id"] != round_row["wave_session_id"]):
         return
+    # ‏#447: מה שכל מגירה כתבה, לפני הספירה. חוזר על עצמו בבטחה ולעולם
+    # אינו זורק — זיכרון שנכשל אינו עוצר את סיום הגל.
+    drive_rates.record_wave(conn, round_row["wave_session_id"], members)
     total, written = _tally(conn, round_row, members)
 
     # ‏#715: מדיסק חי הגל היחיד הוא הסבב כולו (ראו `_resume`).
@@ -1056,6 +1091,7 @@ def status_view(ctx) -> dict:
     started_at = wave["started_at"] if wave and wave["state"] == "running" else None
 
     machines = []
+    all_names = slot_names.all_by_mac(ctx.conn)   # #704
     for row in ctx.conn.execute(
         "SELECT m.mac, m.suffix, m.drawer_count, d.last_seen, d.disk_probe"
         " FROM machines m"
@@ -1065,6 +1101,11 @@ def status_view(ctx) -> dict:
         member = member_of.get(row["mac"])
         drawers = drawer_list(ctx.conn, row["mac"], written, member,
                               _selected_ports(round_row, row["mac"]), started_at)
+        # ‏#704: השם של כל מגירה (לפי החריץ; NVMe לפי סידורי) — תווית בלבד,
+        # ‏`selected`/`port` לא זזים. ‏None = אין שם, המסך מציג "דיסק N".
+        names = all_names.get(row["mac"], {})
+        for d in drawers:
+            d["slot_name"] = slot_names.resolve(names, d["port"], d["serial"])
         # ‏#710: כל עוד #704 (הגדרת מגירות במסוף) לא נבנה, העמודה NULL —
         # ואז ברירת המחדל היא מספר הדיסקים שהמכונה מדווחת בפועל (הפורט
         # הגבוה ביותר, או הספירה כשאין פורטים), כדי שהגריד לא יסתיר דיסק.
@@ -1083,6 +1124,9 @@ def status_view(ctx) -> dict:
             "disk_probe": row["disk_probe"],
             "fresh_drawers": sum(1 for d in drawers if d["fresh"]),
             "drawer_list": drawers,
+            "ask": smart_ask.view(ctx.conn, row["mac"]),   # ‏#989 ס׳ 2: שאלת SMART פתוחה/שנענתה
+            # ‏#704: כל השמות של המכונה, גם של חריץ ריק (‏sata:3 בלי דיסק).
+            "slot_names": names,
             "joined": member is not None,
             "state": member["state"] if member else None,
             "bytes_written": member["bytes_written"] if member else 0,
@@ -1124,8 +1168,32 @@ def status_view(ctx) -> dict:
             **(ctx.sender.stream_stats(round_row["wave_session_id"])
                if ctx.sender is not None and round_row["wave_session_id"]
                else {"throughput_bps": None, "loss_blocks": None}),
+            # ‏#447: באיזו תקרה הגל יוצא (או יצא), ולפי איזה כונן.
+            "wave_rate": _wave_rate(ctx, round_row, wave),
         }
     return view
+
+
+def _wave_rate(ctx, round_row: sqlite3.Row, wave: sqlite3.Row | None) -> dict | None:
+    """‏#447: מה שנבחר לגל כשיצא; לגל `open` — מה שייבחר לפי מי שהצטרף עד
+    עכשיו (‏`projected`). גם כשהמשדר הוא מחשב בנייה (#715, ‏`direct: true`)
+    — הקצב שלו נקבע כאן. ‏None: גל רץ/סגור שלא נשמרה לו בחירה — "לא ידוע",
+    לא התקרה."""
+    session_id = round_row["wave_session_id"]
+    if not session_id:
+        return None
+    direct = _direct().is_build_disk(round_row)
+    stored = drive_rates.decision(ctx.conn, session_id)
+    if stored is not None:
+        # ‏`roster` (הכוננים כשהגל יצא) הוא לזיכרון בשרת, לא למסך.
+        return {**{k: v for k, v in stored.items() if k != "roster"},
+                "projected": False}
+    if wave is None or wave["state"] != "open" or round_row["state"] != "active":
+        return None
+    ceiling = ctx.sender.max_bitrate if ctx.sender is not None else None
+    return {**drive_rates.choose(ctx.conn, wave_drives(ctx.conn, session_id), ceiling,
+                                 session_id, direct=direct),
+            "projected": True}
 
 
 def _wave_pace(started_at: str | None, machines: list[dict]) -> dict:

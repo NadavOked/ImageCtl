@@ -16,7 +16,7 @@ const HEALTH=[
   check('server','השרת בכתובת ההפצה','ok','http://10.44.9.10:8080 עונה על תפריט האתחול'),
   check('udp_sender','מולטיקאסט (udp-sender)','warn','udp-sender לא נמצא ב-PATH'),
   check('tftp_port','פורט 69 (TFTP)','bad','אף אחד לא מגיש TFTP — מחשבים לא יעלו ב-PXE'),
-  check('ssh_stations','SSH בתחנות','off','imagectl.debug לא בשורת הקרנל'),
+  check('identity','זהות מכונה','off','שומר הזהות כבוי'),
   check('shim_fresh','עדכניות ה-shim','unknown','לא ניתן לקרוא /usr/lib/shim — לא נבדק'),
   check('agent_loops','מחשבים שנופלים לסוכן','bad','2 מחשבים בעשר הדקות האחרונות'),
   check('agent_loop:'+MAC1,'מחשבי שיכפול מחשב 1','bad','3 פעמים · נראה לאחרונה לפני 2 דק\''),
@@ -31,13 +31,7 @@ const PORTS_OLD=[
   port('pxe_proxy','PXE','4011','udp','off','אין hook — לא אומת'),
   port('multicast','Multicast','9000–9001','udp','off','אין udp-sender חי — ואין סבב'),
   port('monitor','Monitor (RFB)','5900','tcp','off','המתג monitor:stations כבוי'),
-  port('ssh_stations','SSH','22','tcp','ok','שורת הקרנל אינה נושאת imagectl.debug'),
 ];
-const SSH={stations:{enabled:false,evidence:'closed',detail:'שורת הקרנל אינה נושאת imagectl.debug',confirm_word:'imagectl.debug'},
-  listeners:{checked:true,addresses:['10.44.10.1'],wildcard:false,reason:'',port:22},stray:[],
-  interfaces:[{name:'ens18',state:'up',addresses:['10.44.10.1/24'],enabled:true,listening:true},
-              {name:'ens19',state:'up',addresses:['10.44.9.10/24'],enabled:false,listening:false},
-              {name:'ens20',state:'up',addresses:['10.44.11.1/24'],enabled:false,listening:null}]};
 const nic=(name,extra={})=>({name,mac:'00:11:22:33:44:'+name.slice(-2),state:'up',present:true,addresses:['10.0.0.1/24'],enabled:false,proxy:false,trunk:false,
   range_start:'',range_end:'',netmask:'255.255.255.0',gateway:'',dns:[],lease:'12h',server_ip:'',description:'',
   dhcp_live:{state:'off'},dhcp_live_label:'כבוי',dhcp_diverged:false,...extra});
@@ -55,7 +49,7 @@ function setup(over={}) {
   }
   const fixtures={'/health':HEALTH,'/update':{current:'v0.34.0',enabled:true,previous:'v0.33.0',server_name:'srv'},'/update/status':{state:'idle'},
     '/update/check':{at:`${new Date().toISOString().slice(0,10)}T06:00:00+00:00`,current:'v0.34.0',latest:'v0.35.0',available:true,reason:''},   // "היום" = תאריך UTC של היום, לא תאריך קשיח (נפל ב-20/09 על 19/09)
-    '/ports':PORTS_OLD,'/ssh':SSH,'/monitor/settings':{port:5900,enabled:false},'/net/interfaces':NICS,'/net/proxy-support':{read:true,version:'2.90',verified:false,broken:true,reason:'dnsmasq 2.90 — proxy שבור'},
+    '/ports':PORTS_OLD,'/monitor/settings':{port:5900,enabled:false},'/net/interfaces':NICS,'/net/proxy-support':{read:true,version:'2.90',verified:false,broken:true,reason:'dnsmasq 2.90 — proxy שבור'},
     '/machines':[{mac:MAC1,suffix:'מחשב 1',group_id:'grp_CLONERS',disks:null}],'/groups':[{id:'grp_CLONERS',label:'מחשבי שיכפול',role:'cloner',sort:1}],
     ...over};
   const ctx=vm.createContext({console,URLSearchParams,URL,Date,Set,Map,Number,Math,JSON,Promise,String,Array,Object,encodeURIComponent,decodeURIComponent,
@@ -110,7 +104,6 @@ test('the checks table shows all five states with their own colour — "not chec
   assert.match(row(html,'השרת בכתובת ההפצה'),/class="pill ok">תקין</);
   assert.match(row(html,'מולטיקאסט (udp-sender)'),/class="pill warn">אזהרה</);
   assert.match(row(html,'פורט 69 (TFTP)'),/class="pill err">תקלה</);
-  assert.match(row(html,'SSH בתחנות'),/class="pill ">כבוי</);
   const unk=row(html,'עדכניות ה-shim');
   assert.match(unk,/class="pill unk">לא נבדק</); assert.doesNotMatch(unk,/pill ok/);
   assert.equal(run('healthStatusClass("unknown")'),'unk'); assert.equal(run('healthStatusLabel("unknown")'),'לא נבדק');
@@ -304,6 +297,19 @@ test('#1000: "last check" comes from /update.last_check and survives a reload; a
   assert.doesNotMatch(card,/החל עדכון/,'a stored "available" from an earlier session is not an apply button — apply needs a fresh check (UPDATE_CHECK)');
 });
 
+test('#1281: update network failure shows guidance first and technical detail as secondary text',async()=>{
+  const message='השרת לא הצליח להגיע ל-github.com בפורט 443 (חומת אש או DNS). כדי לעדכן, בקשו לפתוח בחומת האש של המכללה: השרת ← github.com:443.';
+  const detail="Command ['git', 'ls-remote'] timed out after 20 seconds";
+  const s=setup({'/update':{current:'v0.34.0',enabled:true,previous:null,last_check:{at:'2026-09-18T06:00:00+00:00',current:'v0.34.0',latest:null,available:false,reason:'no_network',message,detail}}});
+  s.run('current="settings"'); await s.run('loadSettingsData()');
+  const card=cell(s.run('settings()'),'<span>עדכונים',2200);
+  assert.ok(card.includes(message));
+  const escapedDetail="Command [&#39;git&#39;, &#39;ls-remote&#39;] timed out after 20 seconds";
+  assert.match(card,/class="muted"[^>]*>Command \[&#39;git&#39;, &#39;ls-remote&#39;\] timed out after 20 seconds<\/small>/);
+  assert.ok(card.indexOf(message) < card.indexOf(escapedDetail),'guidance is the main line before technical detail');
+  assert.doesNotMatch(card,/החל עדכון/,'a failed check never enables apply');
+});
+
 test('#1000: the health header time comes from the X-Health-Checked-At header (server clock), read by a direct fetch',async()=>{
   const s=setup({__headers:{'/health':{'X-Health-Checked-At':'2026-09-19T09:41:00+00:00'}}}); s.run('current="health"');
   await s.run('loadHealth()');
@@ -333,9 +339,6 @@ const PORTS_1267=[
   p1267('monitor','Monitor (RFB)','5900','tcp','deploy','off','המתג monitor:stations כבוי'),
   p1267('interserver','HTTPS (mTLS)','8443','tcp','interserver','off','לא מאזין',{listening:false,
     firewall:'blocked',firewall_detail:'אין כלל פתיחה בטבלת imagectl, ו-policy drop חוסם חיבור מבחוץ',off_means:'שרתים משניים לא יוכלו להירשם'}),
-  p1267('ssh_stations','SSH','22','tcp','deploy','off','imagectl.debug לא בשורת הקרנל',{toggle:'confirm',enabled:false}),
-  p1267('ssh_server:ens18','SSH','22','tcp','mgmt','ok','מאזין 10.44.10.1:22 · אומת',{toggle:'confirm',enabled:true,interface:'ens18',
-    firewall:'blocked',firewall_detail:'אין כלל'}),
   p1267('firewall','חומת אש','—','nft',null,'ok','פעילה, 9 כללים לטבלת imagectl'),
 ];
 const card=(html,title)=>{const i=html.indexOf('<span>'+title); assert.ok(i>=0,'missing card: '+title); const s=html.lastIndexOf('<div class="',i); const n=html.indexOf('<div class="c12 card"',i+1); return html.slice(s,n<0?undefined:n);};
@@ -423,11 +426,11 @@ test('#1267 /ports that could not be read is a red note, not an empty page',asyn
 });
 
 test('deploy role: the pages stay admin-only and no admin endpoint is requested',async()=>{
-  const {run,requests}=setup({'/health':403,'/ssh':403,'/monitor/settings':403,'/update':403});
+  const {run,requests}=setup({'/health':403,'/monitor/settings':403,'/update':403});
   run('ME={username:"mafitz",role:"deploy",server_name:"srv",capabilities:{}}; current="ports"');
   assert.equal(run('pageAllowed("health")'),false); assert.equal(run('pageAllowed("ports")'),false);
   await run('loadPorts()');
-  for(const u of ['/ssh','/monitor/settings','/net/interfaces']) assert.ok(!requests.some((r)=>r.url===u),u+' must not be requested by deploy');
+  for(const u of ['/monitor/settings','/net/interfaces']) assert.ok(!requests.some((r)=>r.url===u),u+' must not be requested by deploy');
 });
 
 // --- נדב 17/09: שורת TFTP עם 8 כתובות האזנה מתחה את הטבלה מעבר למסך ---------------

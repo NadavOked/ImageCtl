@@ -58,6 +58,11 @@ def line(total: int, rexmits: int, clients: int = 2) -> str:
     return f"bytes={long_num(total)} re-xmits={rexmits:07d} (  0.0%) slice=0112 - {clients:3d}\r"
 
 
+def _counts(outcome: dict) -> dict:
+    """שני המונים מתוך `wave_outcome` (קצב הזרם נבדק בטסטים משלו)."""
+    return {k: outcome[k] for k in ("sent_bytes", "loss_blocks")}
+
+
 def write_log(path: Path, text: str, mtime: float | None = None) -> None:
     path.write_text(text, newline="")
     if mtime is not None:
@@ -187,8 +192,69 @@ def test_a_simulated_sender_measures_nothing(tmp_path):
     try:
         assert wait_for(lambda: engine.status()["state"] == "sending")
         assert engine.stream_stats("ses_1") == {"throughput_bps": None, "loss_blocks": None}
+        assert _counts(engine.wave_outcome("ses_1")) == {"sent_bytes": None, "loss_blocks": None}
     finally:
         engine.stop()
+
+
+# --- סוף הגל: מה שהקצב האוטומטי לומד ממנו ---------------------------------------
+
+
+def test_the_wave_outcome_sums_bytes_and_resends_over_the_partitions(engine_env):
+    """הקצב האוטומטי (הכרעת נדב 11/10) עולה רק על אפס שידורים חוזרים —
+    ולכן צריך את שני המונים של **כל** הגל, לא של המחיצה האחרונה."""
+    engine, recorder = engine_env
+    engine.start({"id": "ses_1", "image_id": "img_7f3a91", "joined": 2})
+    assert wait_for(lambda: len(recorder.processes) == 1)
+    write_log(current_log(recorder), "Starting transfer: f\n" + line(5_000, 7))
+    recorder.processes[0].release()
+    assert wait_for(lambda: len(recorder.processes) == 2)
+    write_log(current_log(recorder), "Starting transfer: f\n" + line(9_000, 0))
+    assert _counts(engine.wave_outcome("ses_1")) == {"sent_bytes": 14_000, "loss_blocks": 7}
+    assert _counts(engine.wave_outcome("ses_other")) == {"sent_bytes": None, "loss_blocks": None}
+
+
+def test_the_stream_rate_is_the_bytes_moved_over_the_time_they_moved(engine_env, monkeypatch):
+    """התנאי השני לעלייה (המתאם, 11/10): הקצב בקו, מהמונה של udp-sender עצמו.
+    השולח דוגם אותו בזמן שהוא ממתין לתהליך — ההמתנה למקבלים (מונה 0)
+    אינה זרם, ולכן הספירה מתחילה בדגימה הראשונה שמעל אפס."""
+    monkeypatch.setattr(sender_module, "PACE_POLL", 0.05)
+    engine, recorder = engine_env
+    engine.start({"id": "ses_1", "image_id": "img_7f3a91", "joined": 2})
+    assert wait_for(lambda: len(recorder.processes) == 1)
+    write_log(current_log(recorder), "Starting transfer: f\n" + line(0, 0))
+    time.sleep(0.3)                                  # ממתין למקבלים — לא נספר
+    write_log(current_log(recorder), "Starting transfer: f\n" + line(1_000_000, 0))
+    time.sleep(0.5)
+    write_log(current_log(recorder), "Starting transfer: f\n" + line(6_000_000, 0))
+    time.sleep(0.2)
+    recorder.processes[0].release()
+    assert wait_for(lambda: len(recorder.processes) == 2)
+    got = engine.wave_outcome("ses_1")
+    assert got["stream_s"] is not None and 0.3 <= got["stream_s"] <= 1.5, got
+    # ‏5MB זזו (מ-1MB ל-6MB); ‏`stream_s` מעוגל לעשירית, ולכן בקירוב
+    assert abs(got["stream_bps"] * got["stream_s"] - 5_000_000) < 1_000_000, got
+
+
+def test_a_partition_that_never_moved_between_samples_has_no_stream_rate(engine_env):
+    """מונה שנראה פעם אחת בלבד — אין שני זמנים, אין קצב. ‏None, לא אפס."""
+    engine, recorder = engine_env
+    engine.start({"id": "ses_1", "image_id": "img_7f3a91", "joined": 2})
+    assert wait_for(lambda: len(recorder.processes) == 1)
+    write_log(current_log(recorder), "Starting transfer: f\n" + line(5_000, 0))
+    recorder.processes[0].release()
+    assert wait_for(lambda: len(recorder.processes) == 2)
+    got = engine.wave_outcome("ses_1")
+    assert got["stream_bps"] is None and got["stream_s"] is None
+
+
+def test_a_started_partition_without_a_line_makes_the_outcome_unknown(engine_env):
+    """עיקרון 5: מחיצה ששודרה ואין לה מונה — כל הגל "לא נמדד", לא אפס."""
+    engine, recorder = engine_env
+    engine.start({"id": "ses_1", "image_id": "img_7f3a91", "joined": 2})
+    assert wait_for(lambda: engine.status()["state"] == "sending")
+    write_log(current_log(recorder), "Starting transfer: f\nsomething else\r")
+    assert _counts(engine.wave_outcome("ses_1")) == {"sent_bytes": None, "loss_blocks": None}
 
 
 # --- ‏GET /api/console/room ----------------------------------------------------

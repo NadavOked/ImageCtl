@@ -176,19 +176,14 @@ def env(tmp_path: Path, images_root: Path, clock, monkeypatch):
     (tftp / "grub").mkdir(parents=True)
     for name in ("bootx64.efi", "grubx64.efi", "grub/grub.cfg"):
         (tftp / name).write_bytes(b"x")
-    from server.ssh_switch import Listeners
     health_hooks = {
         "ss": lambda: "",
         "unit_active": lambda name: "",
         "http_get": lambda url: 200,
         "http_size": lambda url: (200, 9_000_000),
-        "http_text": lambda url: (200, ""),
         "interfaces": lambda: list(fake.interfaces),
         "tftp_root": lambda: tftp,
         "udp_sender_pids": lambda: [],
-        "listeners": lambda: Listeners(True),
-        "apply_sshd": lambda text: None,
-        "settle": lambda: None,
     }
     app = create_app(
         tmp_path / "data", images_root, "http://10.44.12.10:8080",

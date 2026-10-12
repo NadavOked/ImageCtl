@@ -18,7 +18,7 @@ import sqlite3
 from urllib.parse import urlsplit
 
 from . import (bootguard, capabilities, direct, disk_failures, inventory, probe,
-               registry, room, room_drivers, shrink_records, ssh_hostkey)
+               registry, room, room_drivers, shrink_records, slot_names)
 from .db import get_setting, journal, net_seen
 from .images import ImageLibrary
 from .sessions import SessionStore
@@ -76,11 +76,11 @@ def off_deploy_vlan(scope: dict | None, server_base: str | None) -> bool:
 PROBE_HEADER = b"x-imagectl-probe"
 
 
-#: ‏#1127: תקרת גודל ועומק לשדות ה-hello שנשמרים כ-JSON (מלאי, probe, מפתח
-#: SSH). ‏64KB/שדה ועומק 8 — הסוכן שלנו שולח קילובייטים בודדים ועומק 3.
+#: ‏#1127: תקרת גודל ועומק לשדות ה-hello שנשמרים כ-JSON (מלאי, probe).
+#: ‏64KB/שדה ועומק 8 — הסוכן שלנו שולח קילובייטים בודדים ועומק 3.
 HELLO_FIELD_MAX_BYTES = 64 * 1024
 HELLO_FIELD_MAX_DEPTH = 8
-HELLO_CAPPED_FIELDS = ("inventory", "probe", "netprobe", "ssh_hostkey")
+HELLO_CAPPED_FIELDS = ("inventory", "probe", "netprobe")
 
 
 def _json_depth(value: object, depth: int = 1) -> int:
@@ -231,7 +231,6 @@ def build_answer(
     monitor_auth: str | None = None,
     hw_inventory: dict | None = None,
     hw_probe: dict | None = None,
-    hw_ssh: dict | None = None,
     multicast: dict | None = None,
     prompt: str | None = None,
     record_journal: bool = True,
@@ -265,10 +264,6 @@ def build_answer(
         # פותח גרסה.
         if hw_probe is not None:
             probe.record(conn, mac, hw_probe)
-        # ‏#1080: מפתח ה-host של dropbear. None = לא נשלח/פגום, הגרסה
-        # הקודמת נשארת. known_hosts נכתב ב-api.py — כאן רק ה-DB.
-        if hw_ssh is not None:
-            ssh_hostkey.record(conn, mac, hw_ssh)
 
     machine = registry.lookup(conn, mac, all_macs)
     if machine is None:
@@ -305,6 +300,9 @@ def build_answer(
         # ‏#926: דיסק שכווץ בקליטה ולא הוחזר לגודלו — לפי הסידורי שהמכונה
         # שלחה. מחשב הבנייה מציע להחזיר (‏shrinkmem.sh); סוכן ישן מתעלם.
         "shrink_open": shrink_records.open_for(conn, disks),
+        # ‏#704: השמות שהמפעיל נתן לחיבורים של המכונה הזו (‏{"sata:1": "דיסק 1"}).
+        # מסך מחשב השיכפול מצייר אותם במקום "דיסק N"; ‏{} = אין שמות.
+        "slot_names": slot_names.for_mac(conn, mac),
     }
 
     # משימה גוברת על סבב: היא מופנית למכונה הזו, לא לקבוצה.

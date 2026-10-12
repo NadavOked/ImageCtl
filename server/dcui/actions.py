@@ -25,8 +25,6 @@ from .data import CommandResult, Runner, run_argv
 LOCKOUT_ATTEMPTS = 3
 LOCKOUT_SECONDS = 30
 AUTH_IDLE_SECONDS = 90
-WIZARD_UNIT = "imagectl-wizard-rerun.service"
-RESET_WORD = "RESET"
 # users.validate_password decides; its messages are Hebrew and tty1 is ASCII.
 PASSWORD_POLICY = "Use 8-128 characters with letters, digits and a special character."
 PASSWORD_SPECIALS = 'Special characters: ! @ # $ % ^ & * ( ) , . ? " : { } | < >'
@@ -158,40 +156,15 @@ def restart_services(conn, runner: Runner = run_argv) -> ActionResult:
                         tuple(states + failures))
 
 
-def start_wizard(conn, console_url: str, runner: Runner = run_argv) -> ActionResult:
-    """Start the dedicated unit whose ExecStart carries ``--rerun``."""
-    stopped = runner(["systemctl", "stop", "imagectl-server"])
-    if stopped.returncode != 0:
-        journal(conn, "dcui_wizard_rerun", "imagectl-server stop failed", "dcui")
-        return ActionResult(False, "The web server could not release HTTPS port 8081.",
-                            (_text(stopped) or "systemctl returned no detail",))
-    result = runner(["systemctl", "start", WIZARD_UNIT])
-    active = runner(["systemctl", "is-active", WIZARD_UNIT]) \
-        if result.returncode == 0 else CommandResult(result.returncode, "", "")
-    ok = result.returncode == 0 and active.stdout.strip() == "active"
-    if not ok:
-        # A failed rerun must not strand the ordinary console offline.
-        runner(["systemctl", "start", "imagectl-server"])
-    journal(conn, "dcui_wizard_rerun", f"unit={WIZARD_UNIT} ok={str(ok).lower()}",
-            "dcui")
-    if ok:
-        return ActionResult(True, f"Initial setup wizard started at {console_url}.")
-    return ActionResult(False, "Initial setup wizard did not start.",
-                        (_text(result) or _text(active) or
-                         "systemctl did not read the wizard back as active",))
-
-
 def note_tls_display(conn) -> None:
     journal(conn, "dcui_tls_display", "console certificate", "dcui")
 
 
-def power_action(conn, choice: str, typed_hostname: str, hostname: str,
-                 runner: Runner = run_argv) -> ActionResult:
+def power_action(conn, choice: str, runner: Runner = run_argv) -> ActionResult:
+    """#1270 (Nadav, 10/10): no typed word confirms anything -- not the hostname
+    either. The F12 screen behind the admin password, then <Enter>, is the
+    confirmation."""
     command = "reboot" if choice == "restart" else "poweroff"
-    if typed_hostname != hostname:
-        journal(conn, "dcui_power_refused", f"action={command} hostname mismatch",
-                "dcui")
-        return ActionResult(False, "The hostname does not match exactly.")
     journal(conn, "dcui_power_action", command, "dcui")
     result = runner(["systemctl", command])
     if result.returncode == 0:

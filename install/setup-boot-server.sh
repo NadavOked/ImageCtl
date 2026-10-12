@@ -3,7 +3,7 @@
 # ImageCtl — התקנה מלאה על שרת דביאן: שרשרת האתחול, השרת והקונסולה.
 #
 # הרצה אחת, כמה שאלות, וזהו:
-#   1. איזה כרטיס לוילן השרתים (קונסולה/SSH) — ברירת המחדל: לקוח DHCP
+#   1. איזה כרטיס לוילן השרתים (קונסולה) — ברירת המחדל: לקוח DHCP
 #      של המכללה (#1088); סטטי = בחירה, אותן שאלות כמו בקונסולה
 #   2. איזה כרטיס להפצה — או "לא עכשיו" (ברירת המחדל במסירה, #1088):
 #      המנהל בוחר אותו מהקונסולה (דף הרשת: כתובת → DHCP), וזה משלים
@@ -261,9 +261,9 @@ write_file() {
         warn "backed up existing $path -> $LAST_BACKUP"
     fi
     tmp="$(mktemp "${path}.XXXXXX")"
-    printf '%s\n' "$content" > "$tmp"
-    chmod "$mode" "$tmp"
-    mv -f "$tmp" "$path"
+    printf '%s\n' "$content" > "$tmp" || { rm -f "$tmp"; return 1; }
+    chmod "$mode" "$tmp" || { rm -f "$tmp"; return 1; }
+    mv -f "$tmp" "$path" || { rm -f "$tmp"; return 1; }
 }
 
 # ‏#1131 ס' 8: שם כרטיס = תווים בטוחים בלבד, וקיים במכונה. השם נכנס
@@ -726,12 +726,14 @@ fi
 # nftables — שרת קיים לא ינותק. --no-firewall מדלג עם אזהרה ביומן.
 #
 # רצה **אחרי** שהשרת עלה ועונה: policy drop לפני התעודה/DB/השירות, עם
-# `--servers-if` שגוי, השאירה שרת עם חומת אש ובלי SSH מהוילן הנכון —
+# `--servers-if` שגוי, השאירה שרת עם חומת אש ובלי קונסולה מהוילן הנכון —
 # ובלי דרך פנימה לתקן. כשל בתוך הצעד הזה מחזיר את ה-ruleset הקודם
-# (trap), כך ש-SSH שעבד לפני המתקין עובד גם אחרי כשל שלו.
+# (trap), כך שמה שעבד לפני המתקין עובד גם אחרי כשל שלו.
 
 NFT_CONF="${NFT_CONF:-/etc/nftables.conf}"
 NFT_PREV=""
+NFT_TMP=""
+NFT_ROLLBACK=0
 NFT_CONF_BACKUP=""
 firewall_rollback() {
     warn "המתקין נכשל אחרי הפעלת חומת האש — מחזיר את ה-ruleset הקודם"
@@ -744,6 +746,15 @@ firewall_rollback() {
     if [[ -n "$NFT_CONF_BACKUP" ]]; then
         mv -f "$NFT_CONF_BACKUP" "$NFT_CONF" || warn "החזרת $NFT_CONF נכשלה"
     fi
+}
+firewall_exit() {
+    local rc=$?
+    if (( rc != 0 && NFT_ROLLBACK )); then
+        firewall_rollback
+    fi
+    [[ -z "$NFT_TMP" ]] || rm -f "$NFT_TMP"
+    [[ -z "$NFT_PREV" ]] || rm -f "$NFT_PREV"
+    return "$rc"
 }
 
 install_firewall() {
@@ -787,22 +798,22 @@ install_firewall() {
             "$DIM" "$OFF"
         return 0
     fi
-    local tmp
-    tmp="$(mktemp)"
-    sh "$NFT_GEN" "${NFT_ARGS[@]}" > "$tmp" \
-        || { rm -f "$tmp"; die "מחולל חומת האש נכשל"; }
-    nft -c -f "$tmp" || {
-        cat "$tmp" >&2 || warn "לא הצלחתי להדפיס את הקובץ שנכשל"
-        rm -f "$tmp"
+    NFT_TMP="$(mktemp)"
+    trap firewall_exit EXIT
+    sh "$NFT_GEN" "${NFT_ARGS[@]}" > "$NFT_TMP" \
+        || die "מחולל חומת האש נכשל"
+    nft -c -f "$NFT_TMP" || {
+        cat "$NFT_TMP" >&2 || warn "לא הצלחתי להדפיס את הקובץ שנכשל"
         die "תחביר חומת האש אינו תקין (nft -c). המתקין עוצר."
     }
     # מכאן נוגעים בקרנל: שומרים את מה שרץ עכשיו, וכל יציאה ≠0 מחזירה אותו.
     NFT_PREV="$(mktemp)"
     nft list ruleset > "$NFT_PREV" || die "nft list ruleset נכשל — לא נוגעים בחומת האש"
-    trap 'rc=$?; if (( rc != 0 )); then firewall_rollback; fi' EXIT
-    write_file "$NFT_CONF" < "$tmp"
+    NFT_ROLLBACK=1
+    write_file "$NFT_CONF" < "$NFT_TMP"
     NFT_CONF_BACKUP="$LAST_BACKUP"
-    rm -f "$tmp"
+    rm -f "$NFT_TMP"
+    NFT_TMP=""
     systemctl enable --now nftables || {
         journalctl -u nftables -n 20 --no-pager >&2 || warn "journalctl -u nftables נכשל — הסיבה אינה זמינה כאן"
         die "nftables לא עלה. תקן ונסה שוב, או --no-firewall."
@@ -810,6 +821,8 @@ install_firewall() {
     systemctl is-active --quiet nftables || die "nftables אינו active אחרי enable --now"
     trap - EXIT
     rm -f "$NFT_PREV"
+    NFT_PREV=""
+    NFT_ROLLBACK=0
 }
 
 # מצב proxy רץ באינסטנס dnsmasq נפרד ‏(#36): ‏dnsmasq 2.91 קופא על בקשת
@@ -940,20 +953,6 @@ run install -m 0644 "$APP_DIR/install/imagectl-installer-gui.service" \
 run install -m 0644 "$APP_DIR/install/90-imagectl-console.conf" /etc/sysctl.d/90-imagectl-console.conf
 if (( ! DRY_RUN )); then
     sysctl -q -p /etc/sysctl.d/90-imagectl-console.conf || warn "sysctl kernel.printk לא הוחל עכשיו — ייכנס באתחול הבא"
-fi
-# ‏#729: שרת הייצור בא בלי sshd בכלל (#1148). שרת שיש בו sshd (מעבדה, התקנה
-# ידנית) האזין על **כל** הכרטיסים עד שמישהו נגע במתג בקונסולה — כאן
-# הדלת נסגרת ללולאה המקומית כבר בהתקנה, באותו drop-in שהמתג מנהל
-# (`server/ssh_switch.py`), והמתג פותח ממשק רק כשמדליקים אותו.
-if [[ -d /etc/ssh/sshd_config.d ]]; then
-    say "sshd קיים — ‏ListenAddress ללולאה המקומית בלבד עד שמתג SSH יודלק (#729)"
-    run install -d -m 0755 /etc/ssh/sshd_config.d
-    if (( ! DRY_RUN )); then
-        python3 -c "import sys; sys.path.insert(0, '$APP_DIR'); from server import ssh_switch; print(ssh_switch.render_sshd_conf([]), end='')"             > /etc/ssh/sshd_config.d/imagectl-ssh.conf || die "כתיבת ה-drop-in של sshd נכשלה"
-        if systemctl is-active --quiet ssh; then
-            systemctl reload ssh || warn "sshd לא נטען מחדש — ה-ListenAddress ייכנס באתחול הבא"
-        fi
-    fi
 fi
 run install -m 0644 "$APP_DIR/install/imagectl-wizard.service" \
     /etc/systemd/system/imagectl-wizard.service

@@ -230,6 +230,7 @@ function startDriverUpload() {
   const input = document.getElementById("driverFile");
   const file = input && input.files && input.files[0];
   if (!file) { toast("בחר קובץ לפני הייבוא"); return; }
+  if (secondaryReadOnly()) { toast(SECONDARY_READ_ONLY); return; }   // ‏#1179: XHR עוקף את api()
   const body = document.getElementById("modalBody");
   const ok = document.getElementById("modalOk");
   if (ok) ok.disabled = true;

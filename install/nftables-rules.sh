@@ -6,14 +6,15 @@
 #
 # מודל האתר: שלושה וילנים. הכיתות (v2) אינן נפתחות כאן כלל.
 #   הפצה  — DHCP/TFTP/סוכן/מולטיקאסט. WoL יוצא ב-output (לא נחסם).
-#   שרתים — קונסולה HTTPS ו-SSH ניהול. 8443 רק במשני, ורק מכתובת הראשי.
+#   שרתים — קונסולה HTTPS. 8443 רק במשני, ורק מכתובת הראשי.
+#   אין כלל TCP 22 בשום מצב (#1266).
 #   כיתות — כלום.
 #
 # שימוש:
 #   nftables-rules.sh --deploy-if <if> --servers-if <if> \
 #     [--primary-ip <ip>] [--mcast-ports a-b] \
 #     [--console-port 8081] [--agent-port 8080] \
-#     [--interserver-port 8443] [--ssh-if IF]
+#     [--interserver-port 8443]
 
 set -eu
 
@@ -24,7 +25,6 @@ MCAST_PORTS="9000-9001"
 CONSOLE_PORT="8081"
 AGENT_PORT="8080"
 INTERSERVER_PORT="8443"
-SSH_IFS=""
 
 die() { printf '%s\n' "nftables-rules: $*" >&2; exit 2; }
 
@@ -40,7 +40,6 @@ Usage: nftables-rules.sh --servers-if IF [--deploy-if IF] [options]
   --console-port N        קונסולה (ברירת מחדל 8081)
   --agent-port N          סוכן (ברירת מחדל 8080)
   --interserver-port N    בין-שרתים (ברירת מחדל 8443)
-  --ssh-if IF             פתח TCP 22 על ממשק שמתג ssh:iface:<IF> שלו דלוק
 EOF
 }
 
@@ -53,14 +52,6 @@ while [ $# -gt 0 ]; do
         --console-port)     CONSOLE_PORT="${2:?}"; shift 2 ;;
         --agent-port)       AGENT_PORT="${2:?}"; shift 2 ;;
         --interserver-port) INTERSERVER_PORT="${2:?}"; shift 2 ;;
-        --ssh-if)
-            SSH_IF="${2:?}"
-            case "$SSH_IF" in
-                *[!A-Za-z0-9_.:-]*|*"'"*|*"\""*) die "SSH interface name is not safe for nftables" ;;
-            esac
-            SSH_IFS="$SSH_IFS $SSH_IF"
-            shift 2
-            ;;
         -h|--help)          usage; exit 0 ;;
         *)                  die "unknown option: $1" ;;
     esac
@@ -89,15 +80,6 @@ if [ -n "$PRIMARY_IP" ]; then
         [0-9]*.[0-9]*.[0-9]*.[0-9]*) ;;
         *) die "--primary-ip must be an IPv4 address (got: $PRIMARY_IP)" ;;
     esac
-fi
-
-SSH_RULES="		# SSH לשרת כבוי — אין כלל TCP 22 על אף ממשק."
-if [ -n "$SSH_IFS" ]; then
-    SSH_RULES="		# SSH לשרת — רק ממשקים שהמתג שלהם דלוק."
-    for SSH_IF in $SSH_IFS; do
-        SSH_RULES="${SSH_RULES}
-		iifname \"${SSH_IF}\" tcp dport 22 accept"
-    done
 fi
 
 # ‏#1088: כללי וילן ההפצה רק כשיש כרטיס הפצה. בלעדיו — הערה במקומם, וההפצה
@@ -156,7 +138,6 @@ ${DEPLOY_RULES}
 		# --- וילן השרתים (${SERVERS_IF}) ---
 		# קונסולה HTTPS — לא על כרטיס ההפצה.
 		iifname "${SERVERS_IF}" tcp dport ${CONSOLE_PORT} accept
-${SSH_RULES}
 ${INTERSERVER_RULE}
 
 		# כל השאר: יומן מצומצם ואז drop (ה-policy). כיתות = v2, לא נפתח כאן.

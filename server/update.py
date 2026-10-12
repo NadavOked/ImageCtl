@@ -9,7 +9,7 @@
 release API — הריפו הציבורי עדיין בלי releases. גרסה נוכחית: `git
 describe --tags` על עץ השרת (`--repo-dir`, ברירת מחדל תיקיית הקוד עצמה).
 
-כמו ב-`ssh_switch.py`: ההגדרה (`update_enabled`) קובעת רק מה *מותר
+ההגדרה (`update_enabled`) קובעת רק מה *מותר
 לנסות*; המצב בפועל (הגרסה שרצה) נקרא תמיד מחדש, לא מונח.
 """
 
@@ -48,6 +48,10 @@ LAST_CHECK_KEY = "update_last_check"
 #: הריפו הציבורי — הוא שער ה-CI (CLAUDE.md, "ארבעת הריפואים"). הבדיקה
 #: אף פעם אינה מול הפרטי: שם `tests` לא רץ ואין ראיה שהתג ירוק.
 PUBLIC_UPDATE_URL = "https://github.com/NadavOked/ImageCtl.git"
+NO_NETWORK_MESSAGE = (
+    "השרת לא הצליח להגיע ל-github.com בפורט 443 (חומת אש או DNS). "
+    "כדי לעדכן, בקשו לפתוח בחומת האש של המכללה: השרת ← github.com:443."
+)
 
 _TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 _REMOTE_TAG_RE = re.compile(r"refs/tags/(v\d+\.\d+\.\d+)(\^\{\})?$")
@@ -239,8 +243,18 @@ def check_update(hooks: Hooks, repo_dir: str | Path, public_url: str) -> dict:
     except Exception as exc:                            # noqa: BLE001
         ok, out, err = False, "", str(exc)
     if not ok:
+        detail = err or "הפקודה נכשלה בלי פלט שגיאה"
+        low = detail.lower()
+        no_network = any(marker in low for marker in (
+            "timed out", "timeout", "connection refused", "could not resolve host",
+            "couldn't resolve host", "network is unreachable", "network unreachable",
+            "no route to host",
+        ))
         return {"current": current, "latest": None, "available": False,
-                "reason": f"הבדיקה מול {public_url} נכשלה: {err}"}
+                "reason": "no_network" if no_network else "failed",
+                "message": NO_NETWORK_MESSAGE if no_network
+                else f"הבדיקה מול {public_url} נכשלה: {detail}",
+                "detail": detail}
     tags = parse_remote_tags(out)
     if not tags:
         return {"current": current, "latest": None, "available": False,
@@ -293,7 +307,7 @@ def get_last_check(conn) -> dict | None:
 def status_with_verification(conn, hooks: Hooks, repo_dir: str | Path) -> dict:
     """מצב ההרצה האחרונה + הראיה החיובית: האם הגרסה שרצה בפועל, עכשיו,
     היא התג שביקשנו. "לא ידוע עדיין" (השרת עוד לא עלה מחדש) שונה מפורשות
-    מ"נכשל" — עיקרון 5, אותה משפחה כמו ``ssh_switch.Listeners``."""
+    מ"נכשל" — עיקרון 5."""
     doc = get_status(conn) or {"state": "idle"}
     current = current_version(hooks, repo_dir)
     result = {**doc, "current": current}

@@ -35,7 +35,6 @@ from pathlib import Path
 from typing import Callable
 
 from .db import get_setting, set_settings
-from . import ssh_switch
 
 SETTING_INTERFACE = "deploy:interface"
 SETTING_URL = "deploy:url"
@@ -161,7 +160,6 @@ def firewall_installed(conf: str | Path = NFTABLES_CONF) -> bool | None:
 
 def regenerate_firewall(repo_dir: str | Path, *, deploy_if: str, servers_if: str | None,
                         primary_ip: str | None = None,
-                        ssh_interfaces: tuple[str, ...] = (),
                         conf: str | Path = NFTABLES_CONF) -> str | None:
     """מריץ שוב את `install/nftables-rules.sh` עם שני הכרטיסים, בודק תחביר
     (`nft -c`), כותב ומטעין. חומת אש שלא הותקנה — לא נוגעים; הותקנה
@@ -178,8 +176,6 @@ def regenerate_firewall(repo_dir: str | Path, *, deploy_if: str, servers_if: str
     args = ["sh", str(gen), "--deploy-if", deploy_if, "--servers-if", servers_if]
     if primary_ip:
         args += ["--primary-ip", primary_ip]
-    for name in ssh_interfaces:
-        args += ["--ssh-if", name]
     ok, ruleset, err = _run(args)
     if not ok or not ruleset.strip():
         return f"מחולל חומת האש נכשל: {err or 'פלט ריק'}"
@@ -268,8 +264,7 @@ def complete(ctx: DeployContext, conn, *, interface: str, server_ip: str) -> dic
     ]
     steps.append(("חומת אש", lambda: hooks["firewall"](
         ctx.repo_dir, deploy_if=interface, servers_if=ctx.servers_interface,
-        primary_ip=ctx.primary_ip,
-        ssh_interfaces=tuple(ssh_switch.enabled_interfaces(conn)))))
+        primary_ip=ctx.primary_ip)))
     for label, call in steps:
         err = call()
         if err:

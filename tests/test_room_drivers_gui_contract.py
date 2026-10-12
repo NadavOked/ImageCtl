@@ -139,9 +139,10 @@ def test_room_drawer_carries_the_drivers_outcome_of_each_drawer(tmp_path):
     rows = {r[1]: r for r in (line.split("=", 1)[1].split("|")
                               for line in lines if line.startswith("room_drawer="))}
     assert len(rows) == 3, rows
-    assert rows["1"][8:] == ["staged", "m70q-chipset, m70q-nic"]
-    assert rows["2"][8:] == ["failed", "the server has no driver package for the chosen model"]
-    assert rows["3"][8:] == ["", ""], "drivers null = the step did not run -- never no_match"
+    # [8:10]: field 11 is the slot name (#704, test_slot_names_704_gui.py)
+    assert rows["1"][8:10] == ["staged", "m70q-chipset, m70q-nic"]
+    assert rows["2"][8:10] == ["failed", "the server has no driver package for the chosen model"]
+    assert rows["3"][8:10] == ["", ""], "drivers null = the step did not run -- never no_match"
     assert rows["1"][:8] == ["0", "1", "S1", "870 EVO", "256060514304", "passed", "1", "1"], \
         "the first eight fields keep their meaning"
 

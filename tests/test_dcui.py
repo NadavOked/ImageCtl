@@ -11,6 +11,7 @@ from server import netcfg_host, netcfg_rollback, users
 from server.db import connect, get_setting
 from server.dcui import actions
 from server.dcui import app as dcui_app
+from server.dcui import data as dcui_data
 from server.dcui.app import (Runtime, _current_lines, _handle_key, render_auth,
                              render_main, render_menu, render_network,
                              render_power, render_preinstall,
@@ -48,8 +49,8 @@ def test_all_approved_screens_are_pure_80x25_ascii():
         (render_menu(snapshot), ("Configure Management Network", "Not available here")),
         (render_network(snapshot, list(snapshot.interfaces), form, rollback_seconds=47),
          ("Prefix / Mask:", "Apply (60 s window)", "auto-rollback")),
-        (render_power(snapshot, typed="imagectl-t"),
-         ("Restart / Shut Down", "Type the hostname", "deploy round is running")),
+        (render_power(snapshot),
+         ("Restart / Shut Down", "<Enter> Restart", "deploy round is running")),
         (render_preinstall(replace(snapshot, pre_install=True)),
          ("- installation", "Addresses obtained by DHCP:", "F2  Set a static address")),
         (render_preinstall_network(list(snapshot.interfaces), {
@@ -80,7 +81,7 @@ def test_f2_menu_has_no_admin_admin_reset(tmp_path, monkeypatch):
     """הכרעת נדב 10/10 (#1249): האיפוס ל-admin/admin מתפריט F2 הוסר — רק F9.
     כל פריט בתפריט נפתח (גם עם "y"), והסיסמה לא זזה."""
     conn = _db(tmp_path)
-    for name in ("restart_services", "restart_management_network", "start_wizard"):
+    for name in ("restart_services", "restart_management_network"):
         monkeypatch.setattr(actions, name,
                             lambda *a, **k: actions.ActionResult(True, "stub"))
     monkeypatch.setattr(actions, "note_tls_display", lambda conn: None)
@@ -96,7 +97,9 @@ def test_f2_menu_has_no_admin_admin_reset(tmp_path, monkeypatch):
     assert users.flags(conn, "admin")["must_change_password"] is False
 
 
-def test_power_action_requires_exact_hostname_before_runner(tmp_path):
+def test_power_action_runs_the_choice_without_a_typed_name(tmp_path):
+    """הכרעת נדב 10/10 (#1270): אין הקלדת מילה לאישור בשום מקום — גם לא
+    שם המארח ב-F12. האישור הוא מסך F12 עצמו (אחרי סיסמת admin) ו-Enter."""
     conn = _db(tmp_path)
     calls = []
 
@@ -104,12 +107,35 @@ def test_power_action_requires_exact_hostname_before_runner(tmp_path):
         calls.append(argv)
         return CommandResult(0, "", "")
 
-    refused = actions.power_action(conn, "restart", "imagectl-T", "imagectl-ta", fake)
-    assert not refused.ok
-    assert calls == []
-    accepted = actions.power_action(conn, "shutdown", "imagectl-ta", "imagectl-ta", fake)
-    assert accepted.ok
+    assert actions.power_action(conn, "shutdown", fake).ok
     assert calls == [["systemctl", "poweroff"]]
+    assert actions.power_action(conn, "restart", fake).ok
+    assert calls[-1] == ["systemctl", "reboot"]
+    assert _count(conn, "SELECT COUNT(*) FROM journal"
+                        " WHERE event = 'dcui_power_action'") == 2
+
+
+def test_f12_enter_confirms_without_typing_and_esc_runs_nothing(tmp_path, monkeypatch):
+    """#1270 במסך השרת: F12 → סיסמת admin → Enter מבצע את הבחירה. אין שדה
+    הקלדה על המסך, ו-Esc לא מריץ כלום."""
+    conn = _db(tmp_path)
+    calls = []
+    real = actions.power_action
+    monkeypatch.setattr(actions, "power_action", lambda conn, choice: real(
+        conn, choice, lambda argv: calls.append(argv) or CommandResult(0, "", "")))
+    runtime = _runtime(tmp_path, conn)
+    _press(runtime, KEYS.KEY_F12)
+    _type(runtime, "before")
+    assert runtime.screen == "power", runtime.message
+    screen = "\n".join(_current_lines(runtime, time.monotonic()))
+    assert "Type" not in screen and "[ " not in screen
+    _press(runtime, "\x1b")
+    assert runtime.screen == "main" and calls == []
+    _press(runtime, KEYS.KEY_F12)
+    _type(runtime, "before")
+    _press(runtime, KEYS.KEY_DOWN, "\n")
+    assert calls == [["systemctl", "poweroff"]]
+    assert runtime.screen == "result" and runtime.result.ok
 
 
 def test_network_form_validation_reports_each_bad_field():
@@ -197,23 +223,32 @@ def test_restart_services_only_restarts_enabled_dnsmasq(tmp_path):
     assert ["systemctl", "restart", "dnsmasq"] not in calls
 
 
-def test_wizard_rerun_releases_8081_and_starts_the_dedicated_unit(tmp_path):
+def test_f2_menu_has_no_wizard_rerun(tmp_path, monkeypatch):
+    """הכרעת נדב 11/10 (#1190): אשף ה-web הוא רק לשרת **בלי מסך**. לשרת
+    שיש לו מסך אין "Re-run Initial Setup Wizard" ב-F2 — לא בתפריט, לא
+    בתיאור, ושום פריט (גם עם "y") לא מגיע ל-systemctl של יחידת האשף.
+    היחידה עצמה (`imagectl-wizard-rerun.service`) נשארת לשרת בלי מסך."""
     conn = _db(tmp_path)
     calls = []
-
-    def fake(argv):
-        calls.append(argv)
-        if argv == ["systemctl", "is-active", "imagectl-wizard-rerun.service"]:
-            return CommandResult(0, "active\n", "")
-        return CommandResult(0, "", "")
-
-    result = actions.start_wizard(conn, "https://192.0.2.10:8081", fake)
-    assert result.ok
-    assert calls[:2] == [
-        ["systemctl", "stop", "imagectl-server"],
-        ["systemctl", "start", "imagectl-wizard-rerun.service"],
-    ]
-    assert all("environment" not in arg for call in calls for arg in call)
+    # כל פקודה של מסך השרת עוברת ב-`data.run_argv` → `subprocess.run`.
+    monkeypatch.setattr(dcui_data.subprocess, "run", lambda argv, **kw: calls.append(argv)
+                        or SimpleNamespace(returncode=0, stdout="", stderr=""))
+    for name in ("restart_services", "restart_management_network"):
+        monkeypatch.setattr(actions, name,
+                            lambda *a, **k: actions.ActionResult(True, "stub"))
+    monkeypatch.setattr(actions, "note_tls_display", lambda conn: None)
+    assert not any("Wizard" in item for item in dcui_app.MENU_ITEMS)
+    assert not hasattr(actions, "start_wizard")
+    snapshot = demo_snapshot()
+    for index in range(len(dcui_app.MENU_ITEMS)):
+        screen = "\n".join(render_menu(snapshot, selected=index))
+        assert "Wizard" not in screen and "wizard-rerun" not in screen
+        runtime = _runtime(tmp_path, conn)
+        runtime.screen, runtime.menu_index = "menu", index
+        _press(runtime, "\n", "y")
+        shown = "\n".join(_current_lines(runtime, time.monotonic()))
+        assert "Wizard" not in shown, dcui_app.MENU_ITEMS[index]
+    assert not [c for c in calls if any("wizard" in arg for arg in c)], calls
 
 
 def test_demo_snapshot_exposes_real_picker_shape():
@@ -371,9 +406,14 @@ def test_f9_reset_needs_no_old_password_and_returns_to_main_not_menu(tmp_path):
     _press(runtime, KEYS.KEY_F9)
     assert runtime.screen == "reset"                    # לא "auth" — אין סיסמה ישנה
     screen = "\n".join(_current_lines(runtime, time.monotonic()))
-    assert "WARNING:" in screen and "Type RESET to confirm" in screen
-    _press(runtime, *"RESETX", "\x7f", "\n")            # Backspace של tty1 = "\x7f"
+    assert "WARNING:" in screen and "<Enter>" in screen
+    assert "Type" not in screen                         # #1270: בלי מילת אישור
+    _press(runtime, *"RESET")                           # הקלדה בשלב האישור לא נאספת
+    assert runtime.reset_typed == ""
+    _press(runtime, "\n")                               # Enter הוא האישור
     assert runtime.reset_stage == "password", runtime.message
+    _press(runtime, *"x", "\x7f")                       # Backspace של tty1 = "\x7f"
+    assert runtime.reset_typed == ""
     _type(runtime, NEW_PW)
     _type(runtime, NEW_PW)
     assert runtime.result is not None and runtime.result.ok, runtime.result
@@ -383,13 +423,13 @@ def test_f9_reset_needs_no_old_password_and_returns_to_main_not_menu(tmp_path):
     assert runtime.screen == "main"                     # בלי אימות — לא לתפריט F2
 
 
-def test_reset_word_must_be_exact_and_three_misses_lock_for_30_seconds(tmp_path):
+def test_reset_three_bad_passwords_lock_for_30_seconds(tmp_path):
     conn = _db(tmp_path)
     runtime = _runtime(tmp_path, conn)
-    _press(runtime, KEYS.KEY_F9)
-    for word in ("reset", "RESE", "yes"):
-        assert runtime.screen == "reset"
-        _type(runtime, word)
+    _press(runtime, KEYS.KEY_F9, "\n")
+    for weak in ("reset", "RESE", "yes"):
+        assert runtime.screen == "reset" and runtime.reset_stage == "password"
+        _type(runtime, weak)
     assert runtime.screen == "main"
     assert runtime.reset_guard.seconds_left(time.time()) > 0
     assert "locked" in runtime.message
@@ -405,8 +445,8 @@ def test_reset_mismatch_or_weak_password_changes_nothing(tmp_path):
     runtime = _runtime(tmp_path, conn)
     _press(runtime, KEYS.KEY_F9)
     assert runtime.screen == "reset"
-    _type(runtime, "RESET")
-    _type(runtime, "abcdefgh")                          # בלי ספרה ותו מיוחד
+    _press(runtime, "\n")
+    _type(runtime, "abcdefgh")                        # בלי ספרה ותו מיוחד
     assert runtime.reset_stage == "password"
     _type(runtime, NEW_PW)
     _type(runtime, NEW_PW + "x")                        # האימות לא תואם
@@ -422,9 +462,9 @@ def test_reset_screens_are_80x25_ascii_and_main_offers_f9():
     _assert_screen(render_main(demo_snapshot()), ("<F9> Reset Password", "<F2>", "<F12>"))
     render_reset = dcui_app.render_reset         # בתוך הטסט: בקרה שלילית אינה ImportError
     for stage in ("confirm", "password", "repeat"):
-        _assert_screen(render_reset(stage, "RES" if stage == "confirm" else "abc"),
-                       ("Reset Admin Password", "WARNING:", "Type RESET to confirm",
-                        "special character"))
+        lines = render_reset(stage, "abc")
+        _assert_screen(lines, ("Reset Admin Password", "WARNING:", "special character"))
+        assert "Type" not in "\n".join(lines)           # #1270: בלי מילת אישור
     done = render_reset("done", result=actions.ActionResult(True, "Admin password reset."))
     _assert_screen(done, ("Admin password reset.", "Back to main screen"))
     assert "abc" not in "\n".join(render_reset("password", "abc"))   # סיסמה לא מוצגת

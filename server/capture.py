@@ -421,6 +421,8 @@ def create_console_capture_router(ctx: ServerContext) -> APIRouter:
                 # ‏"" = שורש הספרייה (בלי תיקייה), לא "לא ידוע".
                 "folder": r["folder"],
                 "state": r["state"], "error": r["error"],
+                # ‏#980 §4: השלב שהסוכן דיווח ומתי נכנס אליו; ‏None = לא דווח.
+                "stage": r["stage"], "stage_started_at": r["stage_started_at"],
                 # ‏#435: ‏bytes_* דחוסים, ‏source_progress בציר הבלוקים —
                 # ‏`capture_progress` מקפל אפס-מכנה ל-`None` (לא ל-`0%`).
                 **capture_progress(r),

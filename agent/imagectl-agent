@@ -21,13 +21,13 @@ LIB_DIR="${LIB_DIR:-/usr/lib/imagectl}"
 . "$LIB_DIR/pull.sh"   # אחרי progress.sh: pull_close קורא ל-report_final (#562)
 . "$LIB_DIR/restore.sh"; . "$LIB_DIR/diskfit.sh"   # #1217: check 2.7, split from restore.sh
 . "$LIB_DIR/expand.sh"; . "$LIB_DIR/grow.sh"   # ההרחבה: לפני הזרם ואחריו (#478)
-. "$LIB_DIR/drawers.sh"; . "$LIB_DIR/verdict.sh"; . "$LIB_DIR/failmark.sh"   # הזרם, הפסק עליו (#520), והראיה על כשל (#874)
+. "$LIB_DIR/drawers.sh"; . "$LIB_DIR/verdict.sh"; . "$LIB_DIR/failmark.sh"; . "$LIB_DIR/slotnames.sh"   # (#704 slot names) הזרם, הפסק עליו (#520), והראיה על כשל (#874)
 . "$LIB_DIR/manifest.sh"
 . "$LIB_DIR/bootca.sh"; . "$LIB_DIR/hibernation.sh"; . "$LIB_DIR/shrinkplan.sh"; . "$LIB_DIR/shrink.sh"; . "$LIB_DIR/shrinkmem.sh"; . "$LIB_DIR/shrinkoffer.sh"   # לפני capture.sh: capture_disk קורא להם (#85, #651, #87, #926, #929)
 . "$LIB_DIR/capture.sh"; . "$LIB_DIR/capturesink.sh"; . "$LIB_DIR/directsend.sh"   # #715: pass 1 is capture_disk with the sink discarded; #1217: the sink split from capture.sh
 . "$LIB_DIR/classround.sh"
 . "$LIB_DIR/hostname.sh"; . "$LIB_DIR/hostname_linux.sh"; . "$LIB_DIR/bootentry.sh"; . "$LIB_DIR/postdeploy.sh"   # #720: driver staging, after the name; #433: Boot#### before it
-. "$LIB_DIR/sshd.sh"
+. "$LIB_DIR/sitehooks.sh"   # #1266: a site/lab overlay's start hooks; the product ships none
 . "$LIB_DIR/watchdog.sh"; . "$LIB_DIR/monitor.sh"; . "$LIB_DIR/installer_boot.sh"   # #690: RFB, role+flag gated; #1190: init-only (inert here, load gate #84)
 . "$LIB_DIR/ui.sh"
 . "$LIB_DIR/attended.sh"; . "$LIB_DIR/smart.sh"; . "$LIB_DIR/smartgate.sh"; . "$LIB_DIR/crcdelta.sh"   # hello בזמן המתנה לאדם (#906); שער SMART בצד השחזור (#652) והפרש CRC בסבב (#872); אחרי ui.sh/progress.sh
@@ -47,7 +47,8 @@ LIB_DIR="${LIB_DIR:-/usr/lib/imagectl}"
 mkdir -p "$RUN_DIR/targets"
 parse_cmdline
 
-# מעטפת ניפוי — רק כשהשרת ביקש במפורש בשורת הקרנל: על tty2 (Alt+F2),
+# מעטפת ניפוי — רק עם imagectl.debug=1 בשורת הקרנל, שהשרת אינו מגיש לעולם
+# (#1266) ורק טכנאי מול המכונה מוסיף בעריכת ה-GRUB: על tty2 (Alt+F2),
 # ואם יש יציאה טורית — גם עליה. בווירטואליזציה הטורית היא לרוב הדרך
 # היחידה פנימה (named pipe), וההזרקה למקלדת אינה אמינה (מעבדה, #12).
 if [ "$IMAGECTL_DEBUG" = "1" ]; then
@@ -57,7 +58,6 @@ if [ "$IMAGECTL_DEBUG" = "1" ]; then
         log "debug shell on ttyS0"
         setsid sh -c 'while :; do sh < /dev/ttyS0 > /dev/ttyS0 2>&1; done' &
     fi
-    # SSH starts after DHCP -- it binds $IP, not 0.0.0.0 (#1080).
 fi
 
 SERVER="$IMAGECTL_SERVER"
@@ -73,7 +73,7 @@ NET_FILE="${NET_FILE:-$RUN_DIR/net.conf}"
 . "$NET_FILE"
 [ -n "$IFACE" ] && [ -n "$IP" ] || die_local "incomplete network configuration"
 MAC=$(cat "$SYSROOT/sys/class/net/$IFACE/address" 2>/dev/null)
-[ "$IMAGECTL_DEBUG" = "1" ] && ssh_start   # #44/#1080: same gate, after $IP
+run_site_hooks   # #1266: after $IP, before the first hello
 RESP="$RUN_DIR/response.json"; trace_step agent-start   # #400, see common.sh
 
 send_hello() {
