@@ -8,6 +8,7 @@ BOOT_CA_PREFLIGHT_STATE=""
 BOOT_CA_PREFLIGHT_REASON=""
 
 _bc_u32() { # file, byte offset -- little-endian uint32
+    # shellcheck disable=SC2046 # word splitting is the point: four bytes -> $1..$4
     set -- $(od -An -j "$2" -N 4 -tu1 "$1" 2>/dev/null) || return 1
     [ "$#" -eq 4 ] || return 1
     echo $(($1 + ($2 * 256) + ($3 * 65536) + ($4 * 16777216)))

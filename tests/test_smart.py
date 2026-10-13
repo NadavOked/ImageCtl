@@ -602,16 +602,16 @@ FAKE_HELLO = (
 def test_hello_keeps_going_while_the_operator_is_asked(tmp_path):
     """נמדד 16/09 על מחשב 2: בזמן `smart_choice` אף hello לא יצא, ‏`last_seen`
     קפא והמוניטור נחסם (403) בדיוק כשהמפעיל צריך לראות את השאלה. כאן
-    ‏`http_post_json` מזויף רושם כל גוף שנשלח; התשובה מגיעה אחרי ~4 פעימות
-    (‏ATTENDED_BEAT_S קצר לבדיקה בלבד), ולכן חייבים להיספר ≥2 hello — כל
+    ‏`http_post_json` מזויף רושם כל גוף שנשלח; התשובה מגיעה אחרי ~2.5 פעימות
+    (‏ATTENDED_BEAT_S=1 — שניות שלמות, #1333), ולכן חייבים להיספר ≥2 hello — כל
     אחד עם `waiting_for: operator`, השאלה ב-`prompt`, ו-`joining: false`
     (ממתין אינו מצטרף לגל). בקרה שלילית: על main נספרים 0."""
     run = tmp_path / "run"; run.mkdir()
     dev = tmp_path / "dev"; dev.mkdir(); (dev / "sda").write_bytes(bytes(1))
     out = sh(env(run, dev) + PRELUDE + FAKE_HELLO
-             + 'export ATTENDED_BEAT_S=0.3; '
-             + 'http_post_json() { cat "$2" >> "$RUN_DIR/hellos"; echo >> "$RUN_DIR/hellos"; }; '
-             + 'gui_smart_choice() { sleep 1.3; echo skip; }; '
+             + 'export ATTENDED_BEAT_S=1; '
+             + 'http_post_json() { printf "%s\\n" "$(cat "$2")" >> "$RUN_DIR/hellos"; }; '
+             + 'gui_smart_choice() { sleep 2.5; echo skip; }; '
              + "smart_choice 'Disk 1' 'SMART fail (x)' sda fail x rescue")
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == "skip", out.stdout          # ההכרעה עצמה לא נפגעה
@@ -632,7 +632,7 @@ def test_the_beat_stops_with_the_answer(tmp_path):
     run = tmp_path / "run"; run.mkdir()
     dev = tmp_path / "dev"; dev.mkdir(); (dev / "sda").write_bytes(bytes(1))
     out = sh(env(run, dev) + PRELUDE + FAKE_HELLO
-             + 'export ATTENDED_BEAT_S=0.2; '
+             + 'export ATTENDED_BEAT_S=1; '
              + 'http_post_json() { echo hello >> "$RUN_DIR/hellos"; }; '
              + 'gui_smart_choice() { echo replace; }; '
              + "_dec=$(smart_choice 'Disk 1' 'ctx' sda fail x rescue); "
@@ -677,6 +677,47 @@ def test_a_question_inside_a_question_beats_once_and_hands_back(tmp_path):
     outer_count = prompts.count("outer")
     assert inner_count >= 2 and outer_count >= 2, prompts
     assert prompts == ["inner"] * inner_count + ["outer"] * outer_count, prompts
+
+
+@pytest.mark.parametrize("beat", ["0.2", "0", "abc", "-1", ""])
+def test_a_beat_that_is_not_whole_seconds_is_named_not_a_hello_storm(tmp_path, beat):
+    """#1333: הלולאה של #989 סופרת שניות שלמות ב-`[ -lt ]`. על "0.2" זה אינו
+    false אלא שגיאה (rc=2), הלולאה לא ישנה אף פעם, והפעימה הפכה ל-hello רציף
+    — בדיוק מה ש-server-must-not-congest-network אוסר. ערך שאינו מספר שלם
+    חיובי נאמר ב-stderr, וברירת המחדל (10 ש') נשארת: ב-2 ש' יוצא hello אחד.
+    בקרה שלילית: `attended.sh` של הבסיס → עשרות hello, ושום מילה ב-stderr."""
+    run = tmp_path / "run"; run.mkdir()
+    dev = tmp_path / "dev"; dev.mkdir()
+    out = sh(env(run, dev) + PRELUDE + FAKE_HELLO
+             + f"export ATTENDED_BEAT_S='{beat}'; "
+             + 'http_post_json() { echo hello >> "$RUN_DIR/hellos"; }; '
+             + 'attended q sleep 2')
+    assert out.returncode == 0, out.stderr
+    hellos = (run / "hellos").read_text().splitlines()
+    assert len(hellos) == 1, len(hellos)
+    assert f"ATTENDED_BEAT_S='{beat}' is not a whole number of seconds" in out.stderr, out.stderr
+    assert out.stdout == "", out.stdout          # stdout של העוטף נשאר נקי
+
+
+@pytest.mark.parametrize("ask", ["0.5", "0"])
+def test_an_ask_beat_that_is_not_whole_seconds_does_not_kill_the_beat(tmp_path, ask):
+    """#1333: אותה משפחה ב-ATTENDED_ASK_BEAT_S — בזמן שאלת SMART על הגואי
+    הלולאה מחשבת `$((t % ask))`, ועל "0.5" או "0" זו שגיאה אריתמטית שהורגת
+    את תת-המעטפת בשקט (stderr שלה הוא /dev/null): הפעימה מתה, וזה #906
+    מחדש. נדרש: נאמר ב-stderr, וברירת המחדל (3) — כאן ATTENDED_BEAT_S=2
+    קצר ממנה, ולכן יוצאים hello ב-0 וב-2. בבסיס: hello אחד ומוות שקט."""
+    run = tmp_path / "run"; run.mkdir()
+    dev = tmp_path / "dev"; dev.mkdir()
+    gui = tmp_path / "gui"; gui.mkdir()
+    (gui / "smart-request").write_text("3-2|2|fail|x\n")
+    out = sh(env(run, dev) + PRELUDE + FAKE_HELLO
+             + f"export GUI_DIR='{posix(gui)}' ATTENDED_BEAT_S=2 ATTENDED_ASK_BEAT_S='{ask}'; "
+             + 'http_post_json() { echo hello >> "$RUN_DIR/hellos"; }; '
+             + 'attended q sleep 3.2')
+    assert out.returncode == 0, out.stderr
+    hellos = (run / "hellos").read_text().splitlines()
+    assert len(hellos) == 2, len(hellos)
+    assert f"ATTENDED_ASK_BEAT_S='{ask}' is not a whole number of seconds" in out.stderr, out.stderr
 
 
 def test_a_plain_beat_carries_no_prompt(tmp_path):

@@ -87,6 +87,22 @@ attended_claim() {
 ATTENDED_NL='
 '
 
+attended_secs() {
+    # $1 = the variable's name, $2 = its value, $3 = the default. Prints the
+    # beat in whole seconds. The loop below counts seconds with `[ -lt ]` and
+    # `%`: on "0.2" `[ -lt ]` is not false but an error (rc=2), so the loop
+    # never slept and the beat became a hello storm (#1333); "0" did the
+    # same, and a bad ask beat killed the beat at its first `%`. Anything but
+    # a positive whole number is said on stderr (stdout may be the caller's
+    # `$( )`), and the default -- the production rate -- is used.
+    case "$2" in
+        ''|0*|*[!0-9]*)
+            log "attended: $1='$2' is not a whole number of seconds -- using $3" >&2
+            echo "$3" ;;
+        *) echo "$2" ;;
+    esac
+}
+
 attended_start() {
     # $1 = the question. A failed beat is not retried faster and not logged
     # per beat: the screen the person is reading must not scroll.
@@ -97,6 +113,8 @@ attended_start() {
     # the one that started first would outlive both stops as an orphan
     # (measured 16/09: 6 hellos for 0.7 s of waiting, 3 more after the end).
     attended_stop
+    _at_beat=$(attended_secs ATTENDED_BEAT_S "$ATTENDED_BEAT_S" 10)
+    _at_ask=$(attended_secs ATTENDED_ASK_BEAT_S "$ATTENDED_ASK_BEAT_S" 3)
     (
         while :; do
             if command -v watchdog_beat >/dev/null; then watchdog_beat; fi
@@ -105,10 +123,10 @@ attended_start() {
             # (#989 item 2), so its beat is faster: the answer is on screen
             # within ATTENDED_ASK_BEAT_S of the click, not 10 s.
             _at_t=0
-            while [ "$_at_t" -lt "$ATTENDED_BEAT_S" ]; do
+            while [ "$_at_t" -lt "$_at_beat" ]; do
                 sleep 1; _at_t=$((_at_t + 1))
                 [ -s "${GUI_DIR:-/nonexistent}/smart-request" ] &&
-                    [ $((_at_t % ATTENDED_ASK_BEAT_S)) = 0 ] && break
+                    [ $((_at_t % _at_ask)) = 0 ] && break
             done
         done
     ) < /dev/null > /dev/null 2>&1 &

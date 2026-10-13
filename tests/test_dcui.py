@@ -7,6 +7,8 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from server import netcfg_host, netcfg_rollback, users
 from server.db import connect, get_setting
 from server.dcui import actions
@@ -523,3 +525,58 @@ def test_wizard_units_separate_first_boot_from_explicit_rerun():
     assert "--rerun" not in unit and "$IMAGECTL_WIZARD_MODE" not in unit
     assert "ConditionPathExists" not in rerun
     assert "python3 -m server.wizard --rerun" in rerun
+
+
+#: #1258: every form a key reaches _handle_key in -- get_wch() on tty1 gives
+#: str for ordinary keys, keypad mode and the GUI (server/dcui/gui.py) give int.
+BACKSPACES = ("\x7f", "\b", 127, 8, KEYS.KEY_BACKSPACE)
+ENTERS = ("\n", "\r", 10, 13, KEYS.KEY_ENTER)
+ESCAPES = ("\x1b", 27)
+
+
+@pytest.mark.parametrize("backspace", BACKSPACES, ids=repr)
+def test_backspace_erases_in_every_text_field_as_str_and_int(tmp_path, backspace):
+    """#1258: Backspace erases one character in all four places that take
+    typing -- the F2/F12 password, the F9 reset, the network form and the
+    pre-install address -- whatever form the key arrives in."""
+    conn = _db(tmp_path)
+    runtime = _runtime(tmp_path, conn)
+    _press(runtime, KEYS.KEY_F2, "a", "b", backspace)
+    assert runtime.screen == "auth" and runtime.password == "a"
+    _press(runtime, "\x1b", KEYS.KEY_F9, "\n", "x", "y", backspace)
+    assert runtime.screen == "reset" and runtime.reset_typed == "x"
+
+    runtime.screen, runtime.form_field = "network", 2           # Address
+    runtime.form = {"interface": "ens18", "mode": "static", "address": "10.0.0.1",
+                    "netmask": "24", "gateway": "", "dns": ""}
+    _press(runtime, backspace)
+    assert runtime.form["address"] == "10.0.0."
+
+    runtime = _runtime(tmp_path, conn, pre_install=True)
+    _press(runtime, KEYS.KEY_F2, "\t")                          # address / prefix
+    assert runtime.screen == "preinstall_network" and runtime.form_field == 1
+    runtime.form["address"] = "10.0.0.9/24"
+    _press(runtime, backspace)
+    assert runtime.form["address"] == "10.0.0.9/2"
+
+
+@pytest.mark.parametrize("enter", ENTERS, ids=repr)
+def test_enter_submits_the_password_as_str_and_int(tmp_path, enter):
+    """#1258: Enter is "\\n" from get_wch() on tty1, 10/13/KEY_ENTER elsewhere."""
+    conn = _db(tmp_path)
+    runtime = _runtime(tmp_path, conn)
+    _press(runtime, KEYS.KEY_F2, *"before", enter)
+    assert runtime.screen == "menu", runtime.message
+
+
+@pytest.mark.parametrize("escape", ESCAPES, ids=repr)
+def test_escape_leaves_every_screen_as_str_and_int(tmp_path, escape):
+    """#1258: Esc is "\\x1b" from get_wch() on tty1 and 27 elsewhere."""
+    conn = _db(tmp_path)
+    runtime = _runtime(tmp_path, conn)
+    _press(runtime, KEYS.KEY_F2, escape)
+    assert runtime.screen == "main"
+    _press(runtime, KEYS.KEY_F9, escape)
+    assert runtime.screen == "main"
+    _press(runtime, KEYS.KEY_F2, *"before", "\n", escape)
+    assert runtime.screen == "main"

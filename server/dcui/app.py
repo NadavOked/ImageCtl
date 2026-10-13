@@ -491,6 +491,13 @@ def _typable(key: object) -> bool:
             and key.isprintable())
 
 
+def _is_backspace(key: object, curses_module) -> bool:
+    """#1258: Backspace in every form it reaches us -- get_wch() on tty1 gives
+    "\x7f" (or "\b") as str, keypad mode gives KEY_BACKSPACE, and the GUI
+    (server/dcui/gui.py) sends KEY_BACKSPACE as well."""
+    return key in (8, 127, "\b", "\x7f", curses_module.KEY_BACKSPACE)
+
+
 def _authenticate(runtime: Runtime) -> None:
     if runtime.auth.authenticate(runtime.conn, runtime.password):
         runtime.screen = runtime.auth_target
@@ -568,7 +575,7 @@ def _reset_key(runtime: Runtime, key: object, enter: bool, escape: bool,
         _reset_enter(runtime)
     elif runtime.reset_stage == "confirm":
         return                                  # #1270: nothing is typed to confirm
-    elif key in (8, 127, "\b", "\x7f", curses_module.KEY_BACKSPACE):
+    elif _is_backspace(key, curses_module):
         runtime.reset_typed = runtime.reset_typed[:-1]
     elif _typable(key):
         runtime.reset_typed += key
@@ -593,7 +600,7 @@ def _open_menu_item(runtime: Runtime) -> None:
         runtime.screen = "tls"
 
 
-def _network_key(runtime: Runtime, key: object) -> None:
+def _network_key(runtime: Runtime, key: object, curses_module) -> None:
     if key in (9, "\t"):
         runtime.form_field = (runtime.form_field + 1) % 6
         return
@@ -608,13 +615,13 @@ def _network_key(runtime: Runtime, key: object) -> None:
     field_names = ("address", "netmask", "gateway", "dns")
     if 2 <= runtime.form_field <= 5:
         field = field_names[runtime.form_field - 2]
-        if key in (8, 127, "KEY_BACKSPACE"):
+        if _is_backspace(key, curses_module):
             runtime.form[field] = runtime.form[field][:-1]
         elif isinstance(key, str) and len(key) == 1 and key in "0123456789.,":
             runtime.form[field] += key
 
 
-def _preinstall_network_key(runtime: Runtime, key: object) -> None:
+def _preinstall_network_key(runtime: Runtime, key: object, curses_module) -> None:
     if key in (9, "\t"):
         runtime.form_field = (runtime.form_field + 1) % 3
         return
@@ -626,7 +633,7 @@ def _preinstall_network_key(runtime: Runtime, key: object) -> None:
         return
     if runtime.form_field in (1, 2):
         field = "address" if runtime.form_field == 1 else "gateway"
-        if key in (8, 127, "KEY_BACKSPACE"):
+        if _is_backspace(key, curses_module):
             runtime.form[field] = runtime.form[field][:-1]
         elif isinstance(key, str) and len(key) == 1 and key in "0123456789./":
             runtime.form[field] += key
@@ -672,7 +679,7 @@ def _handle_key(runtime: Runtime, key: object, curses_module) -> bool:
             runtime.screen = "main"
         elif enter:
             _authenticate(runtime)
-        elif key in (8, 127, curses_module.KEY_BACKSPACE):
+        elif _is_backspace(key, curses_module):
             runtime.password = runtime.password[:-1]
         elif _typable(key):
             runtime.password += key
@@ -692,7 +699,7 @@ def _handle_key(runtime: Runtime, key: object, curses_module) -> bool:
                 runtime.screen = "main"
                 _refresh(runtime)
         else:
-            _preinstall_network_key(runtime, key)
+            _preinstall_network_key(runtime, key, curses_module)
         return True
     if escape:
         if runtime.screen == "network_confirm":
@@ -723,7 +730,7 @@ def _handle_key(runtime: Runtime, key: object, curses_module) -> bool:
             else:
                 runtime.message = runtime.result.message
         else:
-            _network_key(runtime, key)
+            _network_key(runtime, key, curses_module)
     elif runtime.screen == "network_confirm":
         if key in ("c", "C"):
             runtime.result = actions.confirm_network(runtime.conn, runtime.data_dir)
