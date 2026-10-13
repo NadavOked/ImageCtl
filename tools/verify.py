@@ -41,7 +41,7 @@ GROUPS: dict[str, list[str]] = {
         "tests/test_server_net.py", "tests/test_server_dhcp.py",
         "tests/test_server_users.py", "tests/test_server_library.py",
         "tests/test_server_room.py", "tests/test_server_order.py",
-        "tests/test_server_health.py", "tests/test_branding.py",
+        "tests/test_server_health.py", "tests/test_console_brand.py",
         "tests/test_archive.py", "tests/test_capture.py", "tests/test_station.py",
         "tests/test_wol.py", "tests/test_server_streams.py",
         "tests/test_concurrency.py",

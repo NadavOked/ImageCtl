@@ -262,9 +262,6 @@ typedef struct State {
      * /api/v1/agent/state, server_addr= from imagectl.server. Empty = not
      * known, drawn as "לא ידוע" -- never the mockup's numbers. */
     char server_name[64], server_addr[64], server_version[129];
-    /* #1168: logo=<png path> from guistate.sh -- the college's logo in the
-     * header instead of the brandmark. Empty = brandmark. */
-    char logo[256];
     /* #1269: driver_models=<n> and one driver_model=<vendor>|<model> per
      * model, from GET /api/console/room/driver-models. driver_models_read
      * -1 = the list was not read (also when the key is absent); 0 = read,
@@ -478,6 +475,12 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h);
 void screen_class(App *a, cairo_t *cr, double W, double H, double head_h);
 void screen_cloner(App *a, cairo_t *cr, double W, double H, double head_h);
 void screen_standby(App *a, cairo_t *cr, double W, double H, double head_h);
+/* #1304 (screens_standby.c): the connection the last hello proves --
+ * UNKNOWN before the first one finished, OK on a 200 at most 120 s old,
+ * OFF otherwise -- and the status bar's IP / MAC / hello, drawn from <left>. */
+enum { STANDBY_UNKNOWN, STANDBY_OK, STANDBY_OFF };
+int standby_conn(const State *s);
+void standby_status_info(App *a, cairo_t *cr, double left, double cy);
 void screen_restore(App *a, cairo_t *cr, double W, double H, double head_h);
 void screen_tools(App *a, cairo_t *cr, double W, double H, double head_h);
 void screen_install(App *a, cairo_t *cr, double W, double H);

@@ -75,6 +75,12 @@ cloner_gui_state() {
     case "$_cg_name" in null) _cg_name= ;; esac
     printf 'cloner=%s\n' "$_cg_name" >> "$_cg_next" || return 1
     gui_server_addr >> "$_cg_next" || return 1   # #1252: the header's server (guistate.sh)
+    _cg_count=$(json_get "$RUN_DIR/response.json" ".drawer_count")
+    case "$_cg_count" in [1-8]) printf 'drawer_count=%s\n' "$_cg_count" >> "$_cg_next" || return 1 ;; esac
+    # #1304: the standby screen's connection line. A hello.state the reader
+    # rejects writes nothing -- the screen then says "not known", never
+    # "connected" -- and must not freeze the drawers' progress with it.
+    gui_hello_state >> "$_cg_next" || :
     # #704: the operator's slot names (slotnames.sh); a failed read keeps the last file.
     slot_names_refresh || :
     slot_names_records >> "$_cg_next" || return 1

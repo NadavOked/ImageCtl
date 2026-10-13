@@ -123,9 +123,22 @@ native-gui/
   src/backend.{h,c}    DRM dumb buffer / fbdev / mem (a framebuffer file, #835), VT to graphics mode and back
   src/input.{h,c}      evdev keyboard (US map), mouse, touch; keyboards grabbed
   src/main.c           event loop, --auth-cmd, stdout records, --png renderer
+  src/dcui.{h,c}       #1203: --screen dcui, the server's own screen -- frames in, keys out;
+                       the state machine stays in server/dcui (Python, root)
+  src/screens_dcui.c   #1203: its drawing, from the approved mockup (design-approved/dcui)
   tools/run-smoke.sh   build + run the smoke test
   tools/measure-size.sh  the initramfs cost, measured the way build_initramfs.sh packs
 ```
+
+## The server screen (#1203)
+
+`--screen dcui` is a different program in the same binary: it paints the
+frames `server/dcui/gui.py` writes to its stdin and writes one token per key
+to its stdout (`dcui.h`; the records are docs/interfaces.md s31). It opens
+`drm`, then `fbdev`, never `mem`, and every character it sends is the US
+layout -- the fields there are English only. `--png PREFIX --state FRAME`
+renders one frame file in both themes; `python3 -m server.dcui --gui-frames DIR`
+writes the mockup's states as frame files (`server/dcui/samples.py`).
 
 ## Contract with the agent (POSIX sh)
 
@@ -248,7 +261,11 @@ server_version=<git tag>
 shrink_prompt=<nonce>|<count 1..16>
 shrink_partition=<idx>|<old bytes>|<new bytes>   # one per row, <count> rows
 
-# #1090 standby heartbeat (positive evidence from the latest hello)
+# #1090 standby heartbeat (positive evidence from the latest hello). Written by
+# guistate.sh and, since #1304, by clonergui.sh too (gui_hello_state) -- the
+# cloner's standby screen draws "connected" / "server not answering" from them.
+# A hello.state the reader rejects writes neither line on the cloner: the
+# screen then says "not known yet", and the drawers keep updating.
 hello_age=<seconds>                  # age of the last completed hello
 hello_rc=<HTTP status>               # response code observed for that hello
 
@@ -404,6 +421,31 @@ the routing rule. The sample data has two disks (one chosen, the form open
 with a name typed), two folders, two images, three cloner machines (one
 writing at 42%, one done, one off), three classes (one with no machines,
 drawn dim), a wave-2 round 7/24 and a class round 3/14 opening in 4:32.
+
+### #1304: the cloner's standby — mockup A, "חזית המארז"
+
+`src/screens_standby.c`, built 1:1 from `docs/design/native/standby-a/`
+(`standby-a.html`, `?f=empty|two|off|two-dark`, and the four PNGs). One
+status line, the drawer cage (drawer 1 on top), IP / MAC / hello in the
+status bar, no background art. What each part is drawn from:
+
+| on screen | source |
+|---|---|
+| green dot "מחובר. ממתין לסבב." / red X "השרת לא עונה" / grey dot "ממתין לתשובה מהשרת" | `hello_rc`/`hello_age`: 200 at most 120 s old / anything else / no hello yet |
+| "מחובר אל imagectl-ta" | `server_name=`, else `server_addr=` (#1252) |
+| "מאז 12:41" (server down) | only when the last code was a 200 that went stale -- `hello.state` keeps the last *attempt*, so after a failed one the last success is not known and the line is left out |
+| bay name, "דיסק N · SATA N-1" | `cslot_name=` (#704), else "דיסק N"; SATA = port − 1 |
+| size, model | `cdisk=` fields 3–4; the size in market units (500107862016 → "500 GB") |
+| SMART chip, its colour, the bar on the bay, the orange/red line under the cage | `cdisk=` field 5 by the #872 rule: `failed_last` red, `fail` (and an old agent's `warn`) orange, the rest green; `unchecked` says "SMART לא נבדק" |
+| the reason under the name | `fail` → "בדיקת הבריאות של הדיסק נכשלה" (smart.sh classifies fail only on health FAILED); `failed_last` → field 6, the server's cause (כבל/חריץ, הדיסק) |
+| IP, MAC | `--ip` / `--mac` (the kiosk's) |
+
+Not in the data, so not drawn: the mockup's sample reason "12 סקטורים
+הועברו (5)" (the agent sends the verdict, not the counters -- and since
+#872 the counters do not colour a disk), and the number of drawers: the
+console's `drawer_count` (#695) does not reach the cloner, so the cage is
+three bays (#1170) or up to the highest port with a disk or a slot name. A
+two-drawer cloner shows an empty third bay until that count is sent.
 
 ### #1090: the approved mockup and console tokens are the design source
 

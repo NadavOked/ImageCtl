@@ -104,7 +104,7 @@ def test_new_admin_must_enroll_mfa(server):
     setup = c.post("/api/console/me/mfa/setup")
     assert setup.status_code == 200
     secret = setup.json()["secret"]
-    assert setup.json()["otpauth_url"].startswith("otpauth://totp/ImageCtl:")
+    assert setup.json()["otpauth_url"].startswith("otpauth://totp/ImageSrv:")
     code = totp.totp_code(secret)
     assert c.post("/api/console/me/mfa/verify", json={"code": code}).status_code == 200
     en = c.post("/api/console/me/mfa/enable", json={"code": totp.totp_code(secret)})
@@ -148,7 +148,7 @@ def test_mfa_setup_returns_inline_svg_qr(server):
     assert svg.startswith("<svg")
     assert "<path" in svg
     assert "<?xml" not in svg and "DOCTYPE" not in svg
-    assert body["otpauth_url"].startswith("otpauth://totp/ImageCtl:qr?")
+    assert body["otpauth_url"].startswith("otpauth://totp/ImageSrv:qr?")
 
 
 def test_mfa_setup_svg_encodes_the_otpauth_url(server):

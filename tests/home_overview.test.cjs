@@ -21,7 +21,7 @@ function setup() {
   const fixtures={
     '/overview':{images:6,machines:12,storage:{total_bytes:1000*1024**3,free_bytes:312*1024**3},
       session:{id:'s1',group_id:'grp_303',group_label:'כיתה 303',image_name:'Office 2024',state:'open',joined:2,expected_clients:3,starts_in_seconds:252,members:[]},
-      room:null,pulls:[]},
+      room:null,pulls:[],now:today+'T09:45:00Z'},
     '/tasks':[{id:'t1',name:'Office 2024 v3',machine:'בנייה 1',disk:'sda',folder:'Office',state:'pending',created_at:today+'T09:40:00Z'},
               {id:'t0',name:'Kali',machine:'בנייה 1',disk:'sda',state:'done',error:null,created_at:'2026-09-12T09:40:00Z'}],
     '/net':[{mac:'de:ad:be:ef:00:01',ip:'10.44.12.199',registered:false,last_seen:today+'T09:38:00Z'},
@@ -39,6 +39,8 @@ function setup() {
     '/machines':[{mac:'cc:cc:cc:cc:cc:cc',suffix:'2',group_id:'grp_CLONERS'}],'/groups':[],
     '/disk-failures':[{id:1,mac:'cc:cc:cc:cc:cc:cc',disk_number:3,serial:'S5Y2NX0R',cause:'כבל/חריץ SATA 2'}],
     '/shrink-records':[],
+    // ‏#1300: "מחובר" — מ-/monitor/machines (admin_only); אחד מתוך שניים מחובר
+    '/monitor/machines':[{mac:'cc:cc:cc:cc:cc:cc',online:true},{mac:'aa:aa:aa:aa:aa:aa',online:false}],
   };
   const ctx=vm.createContext({console,URLSearchParams,URL,Date,Set,Map,Number,Math,JSON,Promise,String,encodeURIComponent,decodeURIComponent,
     document:{hidden:false,querySelector:node,querySelectorAll:()=>[],getElementById:id=>node('#'+id),
@@ -70,7 +72,7 @@ function balanced(html) {
 async function loaded(role='admin') {
   const s=setup(); s.run(`ME.role="${role}"`);
   for(const [name,key] of [['IMAGES','/images'],['FOLDERS','/folders'],['MACHINES','/machines'],['DISK_FAILURES','/disk-failures'],['SHRINK_RECORDS','/shrink-records']]) s.run(name+'='+JSON.stringify(s.fixtures[key]));   // נטענים ב-showApp, לא ב-loadHome
-  if(role==='deploy') for(const k of ['/health','/journal','/update','/storage-nodes','/storage-transfers']) s.fixtures[k]=403;
+  if(role==='deploy') for(const k of ['/health','/journal','/update','/storage-nodes','/storage-transfers','/monitor/machines']) s.fixtures[k]=403;
   await s.run('loadHome()');
   return s;
 }
@@ -179,75 +181,145 @@ test('home renders its own header (no generic toolbar, no "+ פעולה", no foo
   const {run}=await loaded();
   const html=run('layout(pages.home,0)');
   balanced(html);
-  assert.match(html,/^<div class="page"><div class="obj compact">/,'apple-pending-4: one compact row + one sub line');
+  // ‏#1300: ‏.aligned — כותרת דביקה וצל לכרטיסים (console-full.html), רק בדפים שהוכרעו
+  assert.match(html,/^<div class="page aligned"><div class="obj compact">/,'apple-pending-4: one compact row + one sub line');
   assert.match(html,/<div class="obj-name">סקירה כללית<span class="pill /,'the status pill sits in the title line (console-full.html .htxt h1)');
-  assert.match(html,/imagectl-srv · <span class="mono">10\.44\.12\.1<\/span> · v0\.30\.0 · פעיל 6 ימים 4 שעות/,'#968: hostname · IP · version · uptime, all from /me');
+  // ‏#1300: משנה הכותרת = סיכום; זהות השרת (#968) עברה לכרטיס השירותים
+  assert.match(html,/<div class="obj-sub"[^>]*>6 אימג&#39;ים · 12 מחשבים \(1 מחוברים\) · עודכן 09:45<\/div>/);
+  assert.match(html,/<div class="svc-who">imagectl-srv · <span class="mono">10\.44\.12\.1<\/span> · v0\.30\.0 · פעיל 6 ימים 4 שעות<\/div>/,'#968: hostname · IP · version · uptime, all from /me');
   assert.doesNotMatch(html,/זמן פעילות — בקרוב/);
   // codeql[js/incomplete-sanitization] false positive: test code -- a constant list with no backslash becomes a RegExp for assert.doesNotMatch (#291)
   for(const gone of ['pageActionBtn','+ פעולה','footer-note','object-strip','vcenter-tabs','>Details<','אין נתונים להצגה']) assert.doesNotMatch(html,new RegExp(gone.replace(/[+]/g,'\\+')),gone);
-  assert.match(html,/onclick="selectPageById\('deploy'\)">\+ סבב הפצה</); assert.match(html,/openCapture\(\)/); assert.match(html,/refreshPage\(\)/);
+  assert.match(html,/onclick="selectPageById\('deploy'\)"><svg[^]*?<\/svg> סבב חדש</); assert.match(html,/refreshPage\(\)/);
+  assert.doesNotMatch(html,/openCapture\(\)/,'#1300: like the mockup — capture lives on the images page');
 });
-test('KPIs carry their meaning line from the existing API only',async()=>{
+test('#1300 (option C, Nadav 12/10): three KPIs — images, connected machines, storage; no red-disk or round tiles',async()=>{
   const {run}=await loaded();
   const html=run('home(0)');
   assert.match(html,/<span class="pill warn">1 אזהרה<\/span>/,'server health lives in the header pill (console-full.html), not in a tile');
-  assert.doesNotMatch(html,/<div class="l">בריאות השרת<\/div>/);
-  assert.match(html,/<div class="kpi \w*"><div class="l">דיסק אדום<\/div>/,'admin sees the red-disk tile');
-  assert.match(html,/<div class="kpi warn"><div class="l">סבב הפצה פעיל<\/div><div class="v"><bdi dir="auto">1<\/bdi><\/div><div class="s">כיתה 303 · Office 2024 — 2\/3 מחוברים · מתחיל בעוד 4:12/);
-  assert.match(html,/מחשבים רשומים<\/div><div class="v"><bdi dir="auto">12<\/bdi><\/div><div class="s">2 נראו ברשת היום · 1 לא רשומים/);
-  assert.match(html,/אימג&#39;ים בספרייה<\/div><div class="v"><bdi dir="auto">6<\/bdi> <small>ב-2 תיקיות<\/small><\/div><div class="s">אחרון: <bdi>Kali 2026.2<\/bdi> — <bdi dir="ltr">12\/09\/2026<\/bdi>/);
-  assert.match(html,/אחסון אימג&#39;ים<\/div><div class="v"><bdi dir="auto">312 GB<\/bdi> <small>פנוי<\/small><\/div>.*aria-valuenow="69".*<bdi dir="ltr">688 GB<\/bdi> מתוך <bdi dir="ltr">1000 GB<\/bdi> בשימוש/);
+  assert.equal((html.match(/<div class="kpi /g)||[]).length,3,'images · machines · storage');
+  assert.match(html,/<div class="kpi info"><div class="l">אימג&#39;ים<\/div><div class="v"><bdi dir="auto">6<\/bdi><\/div><\/div>/);
+  assert.match(html,/<div class="kpi ok"><div class="l">מחשבים מחוברים<\/div><div class="v"><bdi dir="auto">\u20661 \/ 12\u2069<\/bdi><\/div><\/div>/,'LRI…PDI keeps "1 / 12" in reading order inside RTL');
+  assert.doesNotMatch(html,/<div class="l">דיסק אדום<\/div>|<div class="l">סבב פעיל<\/div>|<div class="l">סבב נכשל<\/div>/,'the red disk is in "needs attention", the round in its card and the dock');
+  assert.doesNotMatch(html,/<div class="s">/,'no meaning lines under the numbers (console-full.html .kpi)');
 });
-test('"what is happening now" lists the session, the pending capture and the failed transfer with progress and status',async()=>{
+test('#1300: the storage card is ESXi-style — free, a bar with the percent, used and capacity — from /overview.storage',async()=>{
+  const {run}=await loaded();
+  const card=run('homeStorageKpi()');
+  // 312 פנוי מתוך 1000 → 69% בשימוש — מתחת לסף: כחול
+  assert.match(card,/^<div class="kpi kpi-store info"><div class="v"><bdi dir="ltr">312 GB<\/bdi> <small>פנוי<\/small><\/div><div class="l">אחסון אימג&#39;ים<\/div>/);
+  assert.match(card,/<div class="bar " role="progressbar" aria-label="שימוש באחסון" aria-valuemin="0" aria-valuemax="100" aria-valuenow="69"><i style="--w:69%"><\/i><\/div><span class="pct">69%<\/span>/);
+  assert.match(card,/<span>בשימוש <bdi dir="ltr">688 GB<\/bdi><\/span><span>קיבולת <bdi dir="ltr">1000 GB<\/bdi><\/span>/);
+  balanced(card);
+  assert.ok(run('home(0)').includes(card),'the card sits in the KPI row');
+});
+test('#1300: storage thresholds — orange from 90%, red from 95%, and a "needs attention" row from 90%',async()=>{
+  const {run}=await loaded();
+  const at=(free)=>{ run(`OVERVIEW={...OVERVIEW,storage:{total_bytes:100*1024**3,free_bytes:${free}*1024**3}}`); return run('home(0)'); };
+  let html=at(11);   // 89%
+  assert.match(html,/kpi kpi-store info/); assert.doesNotMatch(html,/אחסון האימג'ים כמעט מלא/);
+  html=at(10);       // 90%
+  assert.match(html,/kpi kpi-store warn/); assert.match(html,/<div class="bar warn" role="progressbar"/);
+  assert.match(html,/<li class="attn-i warn"><span class="dot" aria-hidden="true"><\/span><div class="b"><b>אחסון האימג'ים כמעט מלא<\/b> — <bdi dir="ltr">90%<\/bdi> בשימוש, נשארו <bdi dir="ltr">10.0 GB<\/bdi> פנויים\.<\/div><button class="btn sm flat" onclick="selectPageById\('storage'\)">לאחסון<\/button><\/li>/);
+  html=at(5);        // 95%
+  assert.match(html,/kpi kpi-store err/); assert.match(html,/<li class="attn-i err">.*אחסון האימג'ים כמעט מלא/);
+});
+test('#1300: storage the server could not read is "unknown" — never 0 and never coloured (principle 5)',async()=>{
+  const {run}=await loaded();
+  run('OVERVIEW={...OVERVIEW,storage:null}');
+  const card=run('homeStorageKpi()');
+  assert.match(card,/<div class="kpi kpi-store "><div class="v">לא ידוע<\/div>.*השרת לא החזיר נתוני אחסון/);
+  assert.doesNotMatch(card,/progressbar|0%/);
+  run('OVERVIEW=null');
+  assert.match(run('homeStorageKpi()'),/<div class="v">—<\/div>/,'not read yet = a dash');
+});
+test('#1300: an unread /monitor/machines is "registered", never "0 connected" (principle 5)',async()=>{
+  const s=setup(); s.fixtures['/monitor/machines']=new Error('down');
+  s.run('DISK_FAILURES=[];SHRINK_RECORDS=[];toast=()=>{}');
+  await s.run('loadHome()');
+  const html=s.run('home(0)');
+  assert.match(html,/<div class="kpi "><div class="l">מחשבים רשומים<\/div><div class="v"><bdi dir="auto">12<\/bdi>/);
+  assert.match(html,/12 מחשבים · עודכן/,'the header does not claim a connected count it did not read');
+  assert.doesNotMatch(html,/מחוברים\)|0 מחוברים/);
+});
+test('#1300: the "active round" card — image, bar, machines; the now-table moved to the tasks tab',async()=>{
   const {run}=await loaded();
   const html=run('home(0)');
-  assert.match(html,/מה קורה עכשיו/);
-  assert.match(html,/סבב הפצה — Office 2024<\/span><span class="sub">כיתה 303 · פתוח<\/span>.*3 תחנות.*>2\/3<.*<span class="st run">ממתין להצטרפות<\/span>.*startRound\(\).*openRoundDetail\(\)/);
-  assert.match(html,/קליטת אימג&#39; — Office 2024 v3<\/span><span class="sub">בנייה 1 · <bdi dir="ltr">sda<\/bdi> · <bdi dir="ltr">\d\d\/\d\d\/\d{4} 09:40<\/bdi>.*<td>תיקיית Office<\/td>.*<span class="st warn">ממתין שהמחשב יעלה ב-PXE<\/span>/,'#968: the target column is the capture folder from /tasks');
-  assert.doesNotMatch(html,/ספריית האימג'ים<\/td>/,'no generic "library" target when the folder is known');
-  assert.doesNotMatch(html.slice(0,html.indexOf('אירועים אחרונים')),/קליטת אימג' — Kali/,'a finished capture is not "now"');
-  assert.match(html,/העברה לסניף סניף חיפה — Ubuntu 24.04.*bar err.*--w:38%.*<span class="st err">נכשל — הסניף לא ענה<\/span>/);
+  assert.doesNotMatch(html,/מה קורה עכשיו/,'console-full.html P.home: a round card, not an activity table');
+  const card=html.slice(html.indexOf('<span>סבב פעיל'),html.indexOf('<span>שירותים'));
+  assert.match(card,/onclick="openRoundDetail\(\)">פרטים<\/button>/);
+  assert.match(card,/<div class="rh"><b>Office 2024<\/b><span class="pct">—<\/span><\/div>/,'no member progress yet = a dash, not 0%');
+  assert.match(card,/<p class="rm">ממתין להצטרפות · כיתה 303 · 2\/3 מחשבים · מתחיל בעוד 4:12<\/p>/);
+  assert.match(card,/onclick="startRound\(\)">התחל עכשיו/);
+  const tasks=run('layout(pages.home,1)');
+  assert.match(tasks,/קליטת אימג&#39; — Office 2024 v3<\/span><span class="sub">בנייה 1 · <bdi dir="ltr">sda<\/bdi> · <bdi dir="ltr">\d\d\/\d\d\/\d{4} 09:40<\/bdi>.*<td>תיקיית Office<\/td>.*<span class="st warn">ממתין שהמחשב יעלה ב-PXE<\/span>/,'#968: the target column is the capture folder from /tasks');
+  assert.match(tasks,/העברה לסניף סניף חיפה — Ubuntu 24.04.*bar err.*--w:38%.*<span class="st err">נכשל — הסניף לא ענה<\/span>/);
 });
-test('"needs attention" lists the red disk, the unregistered machine, the unreachable branch and the health warning — each with an action',async()=>{
+test('#1300: a cloning round shows written/target drives and the stream rate; unmeasured rate is not shown',async()=>{
+  const {run}=await loaded();
+  run('OVERVIEW={...OVERVIEW,session:null,room:{state:"active",image_name:"Office 2024",target_drives:4,written_drives:1,wave_state:"running",target_slots:[{mac:"a"},{mac:"b"}],throughput_bps:111149056}}');
+  let card=run('homeRoundCard()');
+  assert.match(card,/<b>Office 2024<\/b><span class="pct">25%<\/span>/);
+  assert.match(card,/2 מחשבים · 1\/4 דיסקים נכתבו · <bdi dir="ltr">106 MB\/s<\/bdi>/);
+  assert.match(card,/selectPageById\('deploy'\)">לחדר המשכפלים/);
+  run('OVERVIEW.room.throughput_bps=null');
+  assert.doesNotMatch(run('homeRoundCard()'),/MB\/s/);
+  run('OVERVIEW={...OVERVIEW,room:null}');
+  assert.match(run('homeRoundCard()'),/אין סבב פעיל.*selectPageById\('deploy'\)">התחל סבב</,'empty = a start button');
+});
+test('"needs attention" lists the red disk, the unregistered machine, the unreachable branch and the health warning — each with an action button',async()=>{
   const {run}=await loaded();
   run('SECONDARY_STATUS={haifa:{connected:false,error:"timeout"}}');
   const html=run('home(0)');
   const card=html.slice(html.indexOf('id="home-attn"'),html.indexOf('</ul>',html.indexOf('id="home-attn"')));
-  assert.match(card,/<summary>.*דורש טיפול<\/span><span class="cnt">4<\/span><\/summary>/,'folded row with a counter');
-  assert.doesNotMatch(card,/ open[ >]/,'closed by default');
+  assert.match(card,/<summary>.*דורש טיפול<\/span><span class="cnt">4<\/span><\/summary>/,'a row with a counter');
+  assert.match(html,/id="home-attn" open/,'#1300: open by default (console-full.html)');
   assert.ok(html.indexOf('id="home-attn"')<html.indexOf('<div class="kpi '),'the row sits between the header and the numbers');
-  assert.match(card,/<b>דיסק אדום<\/b> — 2 · דיסק 3 \(<span class="mono">S5Y2NX0R<\/span>\) נכשל בכתיבה, סיבה: כבל\/חריץ SATA 2.*selectPageById\('machines'\)/);
-  assert.match(card,/<b>מכונה לא רשומה<\/b> ברשת ההפצה — <span class="mono">de:ad:be:ef:00:01<\/span> קיבלה <bdi dir="ltr">10.44.12.199<\/bdi>.*openNewMachine\(\)/);
+  // ‏#1300: הפעולה — כפתור בעמודה נפרדת בסוף השורה, לא קישור בתוך הטקסט
+  const btn=(label,fn)=>new RegExp(`<\\/div><button class="btn sm flat" onclick="${fn}">${label}<\\/button><\\/li>`);
+  assert.match(card,/<b>דיסק אדום<\/b> — 2 · דיסק 3 \(<span class="mono">S5Y2NX0R<\/span>\) נכשל בכתיבה, סיבה: כבל\/חריץ SATA 2\./);
+  assert.match(card,btn('נקה אחרי החלפה',"selectPageById\\('machines'\\)"));
+  assert.match(card,/<b>מכונה לא רשומה<\/b> ברשת ההפצה — <span class="mono">de:ad:be:ef:00:01<\/span> קיבלה <bdi dir="ltr">10.44.12.199<\/bdi>/);
+  assert.match(card,btn('רשום','openNewMachine\\(\\)'));
   // טקסט גולמי באנגלית (שגיאת מערכת מהשרת) לא בגוף הפריט — מאחורי "פרטים טכניים"
-  assert.match(card,/<b>סניף סניף חיפה לא מגיב<\/b>\. <a[^>]*selectPageById\('branches'\)[^<]*<\/a><details class="tech"><summary>פרטים טכניים<\/summary><code dir="ltr">timeout<\/code>/);
-  assert.match(card,/<b>מולטיקאסט<\/b>\. <a[^>]*selectPageById\('health'\)[^<]*<\/a><details class="tech"><summary>פרטים טכניים<\/summary><code dir="ltr">udp-sender לא נמצא/);
+  assert.match(card,/<b>סניף סניף חיפה לא מגיב<\/b>\.<details class="tech"><summary>פרטים טכניים<\/summary><code dir="ltr">timeout<\/code><\/details><\/div><button class="btn sm flat" onclick="selectPageById\('branches'\)">פרטי הסניף<\/button>/);
+  assert.match(card,/<b>מולטיקאסט<\/b>\.<details class="tech"><summary>פרטים טכניים<\/summary><code dir="ltr">udp-sender לא נמצא<\/code><\/details><\/div><button class="btn sm flat" onclick="selectPageById\('health'\)">לבריאות<\/button>/);
+  assert.doesNotMatch(card,/<div class="b">[^<]*<a /,'no inline link inside the item text');
   assert.doesNotMatch(card.replace(/<details class="tech">.*?<\/details>/g,''),/timeout|udp-sender/,'no raw English outside the technical details');
   assert.doesNotMatch(card,/השרת בכתובת ההפצה/,'ok checks are not attention items');
 });
-test('events come from /journal (dd/mm for older days, severity from the server) and link to the journal — on the events tab; the summary carries recent images instead (stage 2)',async()=>{
+test('events come from /journal (dd/mm for older days, severity from the server) and link to the journal — on the events tab; no recent-images card on the summary (#1300)',async()=>{
   const {run,requests}=await loaded();
   assert.ok(requests.some(r=>r.url==='/api/console/journal?limit=50'));
   const summary=run('home(0)');
   assert.doesNotMatch(summary,/class="timeline"/,'console-full.html P.home: the summary has no event list');
-  assert.match(summary,/<span>אימג&#39;ים אחרונים<\/span>/); assert.match(summary,/selectPageById\('images'\)">לספרייה/);
+  assert.doesNotMatch(summary,/אימג&#39;ים אחרונים|openImageDetail/,'#1300 (Nadav 12/10): "recent images" is gone');
   const html=run('layout(pages.home,2)');
   assert.match(html,/<span class="t">09:41<\/span><span class="d info"><\/span><span>סבב הפצה נפתח לכיתה 303<\/span><span class="who">nadav<\/span>/);
   assert.match(html,/<span class="t">16\/09\/2026<\/span><span class="d err"><\/span><span>העברה נכשלה<\/span>/);
   assert.match(html,/selectPageById\('logs'\)">ליומן המלא/);
 });
-test('"the server" card reads ports, branches and update; DHCP without net.js is "not read", not off; no SSH tile (#1266)',async()=>{
+test('#1300: the "services" card — four short tiles (one word each), detail in the tile title; no SSH tile (#1266)',async()=>{
   const {run}=await loaded();
-  run('SECONDARY_STATUS={haifa:{connected:true}}');
   const html=run('home(0)');
-  const card=html.slice(html.indexOf('>השרת<'));
-  const tile=(n,cls,t)=>new RegExp('<span class="led '+cls+'"></span><div><div class="tt">'+n+'</div><small>'+t);
+  const card=html.slice(html.indexOf('<span>שירותים'),html.indexOf('<span>סניפים'));
+  const tile=(n,cls,word,title)=>new RegExp('<div class="tile" title="'+title+'"><span class="led '+cls+'"></span><div><div class="tt">'+n+'</div><small>'+word+'</small>');
   assert.match(card,/<div class="tiles">/);
-  assert.match(card,tile('API / קונסולה','ok','תקין · 8081<'));
-  assert.match(card,tile('מולטיקאסט','warn','אזהרה · 9000–9001<'));
-  assert.match(card,tile('DHCP הפצה','','לא נקרא<'));
+  assert.equal((card.match(/<div class="tile"/g)||[]).length,4);
+  assert.match(card,tile('שרת','ok','פעיל','תקין · 8081'));
+  assert.match(card,tile('פורט TFTP','ok','פעיל','תקין · 69'));
+  assert.match(card,tile('מולטיקאסט','warn','דורש בדיקה','אזהרה · 9000–9001'));
+  assert.match(card,tile('DHCP הפצה','','לא נבדק','לא נקרא'),'DHCP without net.js is "not checked", not off');
   assert.doesNotMatch(card,/SSH/,'#1266: SSH is not part of the product');
-  assert.match(card,tile('סניפים','ok','1 מחוברים<'));
-  assert.match(card,/<div class="tt">עדכון<\/div><small>v0\.30\.0 · <a role="link" tabindex="0" onclick="selectPageById\('settings'\)">בדוק<\/a>/);
+  assert.match(card,/selectPageById\('health'\)">לבריאות</);
+});
+test('#1300: services — an unread /ports is grey "not checked", never green',async()=>{
+  const s=setup(); s.fixtures['/ports']=new Error('ports down');
+  s.run('DISK_FAILURES=[];SHRINK_RECORDS=[];toast=()=>{}');
+  await s.run('loadHome()');
+  const card=s.run('homeServerCard()');
+  assert.match(card,/<div class="tile" title="לא נקרא: ports down"><span class="led "><\/span><div><div class="tt">שרת<\/div><small>לא נבדק<\/small>/);
+  assert.doesNotMatch(card,/led ok/);
 });
 test('tabs: "משימות" is the full 20-task table, "אירועים" is 50 events; activateTab keeps the header',async()=>{
   const {run}=await loaded();
@@ -261,7 +333,9 @@ test('tabs: "משימות" is the full 20-task table, "אירועים" is 50 eve
 test('loadHome reads every source once and re-renders; the summary polls only /overview and /tasks',async()=>{
   const {requests,node}=await loaded();
   const urls=requests.map(r=>r.url.replace('/api/console',''));
-  for(const u of ['/overview','/tasks','/net','/ports','/health','/journal?limit=50','/update','/storage-nodes','/storage-transfers']) assert.ok(urls.includes(u),u);
+  for(const u of ['/overview','/tasks','/net','/ports','/health','/journal?limit=50','/monitor/machines','/storage-nodes','/storage-transfers']) assert.ok(urls.includes(u),u);
+  assert.ok(!urls.includes('/images'),'#1300: no recent-images card — the overview does not read the library');
+  assert.ok(!urls.includes('/update'),'#1300: the update tile is gone from the overview — /update is read on the settings page');
   assert.ok(!urls.includes('/ssh'),'#1266: no SSH endpoint');
   assert.match(node('#content').innerHTML,/class="kpi/);
 });
@@ -279,22 +353,20 @@ test('the 2-second re-render keeps the scroll position of the page',async()=>{
 
 // ---- מצבים ריקים ולא-נקראים ---------------------------------------------------
 
-test('empty server: KPIs say "none"/"unknown" in grey, the now-table says what to do, attention is an honest empty',async()=>{
+test('empty server: KPIs say 0 in their colours, the round card offers to start one, attention is an honest empty',async()=>{
   const s=setup();
-  Object.assign(s.fixtures,{'/overview':{images:0,machines:0,storage:null,session:null,room:null,pulls:[]},'/tasks':[],'/images':[],'/net':[],'/health':[],'/journal':[],'/storage-nodes':[],'/storage-transfers':[],'/disk-failures':[]});
+  Object.assign(s.fixtures,{'/overview':{images:0,machines:0,storage:null,session:null,room:null,pulls:[]},'/tasks':[],'/images':[],'/net':[],'/health':[],'/journal':[],'/storage-nodes':[],'/storage-transfers':[],'/disk-failures':[],'/monitor/machines':[]});
   s.run('IMAGES=[];FOLDERS=[];DISK_FAILURES=[];SHRINK_RECORDS=[]');
   await s.run('loadHome()');
   const html=s.run('home(0)');
-  assert.match(html,/<div class="kpi ok"><div class="l">דיסק אדום<\/div><div class="v"><bdi dir="auto">0<\/bdi><\/div><div class="s">אין כשלי כתיבה/);
-  assert.match(html,/<div class="kpi "><div class="l">סבב הפצה פעיל<\/div><div class="v"><bdi dir="auto">אין<\/bdi><\/div>/);
-  assert.match(html,/<div class="kpi "><div class="l">אחסון אימג&#39;ים<\/div><div class="v"><bdi dir="auto">לא ידוע<\/bdi><\/div>/);
-  assert.match(html,/אין אימג'ים — קלוט ממחשב בנייה או העלה tar/);
-  assert.match(html,/<div class="empty">אין פעילות עכשיו — פתח סבב הפצה או קלוט אימג&#39;<\/div>/);
+  assert.match(html,/<div class="kpi kpi-store "><div class="v">לא ידוע<\/div>/,'storage:null is unknown, not 0');
+  assert.match(html,/<div class="kpi "><div class="l">מחשבים מחוברים<\/div><div class="v"><bdi dir="auto">\u20660 \/ 0\u2069<\/bdi>/);
+  assert.match(html,/<div class="empty"><b class="et">אין סבב פעיל<\/b>/);
   assert.match(html,/<div class="c12 attn-none">אין פריטים לטיפול<\/div>/,'a clean server says so (no folded row, no counter)');
   assert.doesNotMatch(html,/id="home-attn"/);
   assert.match(s.run('layout(pages.home,2)'),/<div class="empty">אין אירועים עדיין<\/div>/);
-  assert.match(html,/<div class="empty">אין אימג&#39;ים בספרייה עדיין<\/div>/,'stage 2: the recent-images card is honest about an empty library');
-  assert.match(html,/<span class="pill ok">תקין<\/span>/);
+  assert.doesNotMatch(html,/<span>סניפים<\/span>/,'#1300: no branches configured = no branches card at all');
+  assert.match(html,/<span class="pill ok">שרת פעיל<\/span>/,'#1300: all checks ok = "server running" (console-full.html)');
   balanced(html);
 });
 test('a source that could not be read is shown as unread — never as green or as "nothing to do" (principle 5)',async()=>{
@@ -303,9 +375,7 @@ test('a source that could not be read is shown as unread — never as green or a
   s.run('DISK_FAILURES=[];SHRINK_RECORDS=[];HEALTH=null;toast=()=>{}');
   await s.run('loadHome()');
   const html=s.run('home(0)');
-  assert.match(html,/<div class="kpi ok"><div class="l">דיסק אדום<\/div>/,'DISK_FAILURES was read (empty) in this test');
   assert.match(html,/<span class="pill ">לא נבדק<\/span>/);
-  assert.match(html,/רשת לא נקראה: net down/);
   assert.match(html,/לא נקראו: בריאות, רשת — לא ניתן לומר שאין מה לטפל/);
   assert.doesNotMatch(html,/אין פריטים לטיפול/);
   assert.match(s.run('layout(pages.home,2)'),/היומן לא נקרא: no journal/,'the events tab says it is unread');
@@ -319,23 +389,20 @@ test('a failed /overview read marks the page stale instead of pretending',async(
 
 // ---- תפקיד deploy --------------------------------------------------------------
 
-test('deploy sees the summary without attention, events and server cards; two tabs; the first KPI is the round state',async()=>{
+test('deploy sees the summary without attention, events and services; two tabs; no red-disk KPI; the round card is full width',async()=>{
   const {run,requests}=await loaded('deploy');
   const urls=requests.map(r=>r.url.replace('/api/console',''));
-  for(const u of ['/health','/journal?limit=50','/update']) assert.ok(!urls.includes(u),u+' must not be requested by deploy');
+  for(const u of ['/health','/journal?limit=50','/monitor/machines']) assert.ok(!urls.includes(u),u+' must not be requested by deploy');
   const html=run('layout(pages.home,0)');
   assert.equal((html.match(/role="tab"/g)||[]).length,2);
-  assert.doesNotMatch(html,/דורש טיפול|אירועים אחרונים|>השרת<|openCapture/);
-  assert.match(html,/<div class="kpi info"><div class="l">מצב הסבב<\/div><div class="v"><bdi dir="auto">פתוח<\/bdi><\/div><div class="s">2 מתוך 3 מחוברים/);
-  assert.match(html,/<div class="c12 card"><div class="card-h"><span>מה קורה עכשיו/,'deploy has no attention card beside it — full width');
+  assert.doesNotMatch(html,/דורש טיפול|אירועים אחרונים|>שירותים<|openCapture|דיסק אדום/);
+  assert.equal((html.match(/<div class="kpi /g)||[]).length,3,'images · machines · storage');
+  assert.doesNotMatch(html,/<span>סניפים<\/span>/,'deploy cannot list branches — no card');
+  assert.match(html,/<div class="kpi "><div class="l">מחשבים רשומים<\/div>/,'deploy cannot read /monitor/machines — no connected count');
+  assert.match(html,/<div class="c12 card"><div class="card-h"><span>סבב פעיל/,'deploy has no services card beside it — full width');
   assert.match(html,/<span class="pill info">פתוח<\/span>/);
   assert.match(run('layout(pages.home,2)'),/class="kpi/,'an events tab index falls back to the summary for deploy');
 });
-
-// ---- הסרגל: אייקון תיקייה לאימג'ים ------------------------------------------
-
-// 17/09 נדב: צומת האימג'ים עם אייקון תיקייה — והחלפתו לשכבות ב-apple-pending-4 בוטלה (הכרעה, 10/10).
-// כדי שלא תהיה כפילות עם תיקיות המשנה, הן מקבלות וריאנט קטן ודק (t-subfolder).
 test('the images tree node is the folder icon (Nadav, 17/09); its sub-folders carry a smaller thinner variant',()=>{
   const {run,node}=setup();
   const index=fs.readFileSync(path.join(root,'index.html'),'utf8');
@@ -352,16 +419,16 @@ test('the images tree node is the folder icon (Nadav, 17/09); its sub-folders ca
 });
 
 // apple-pending-4 · 4: כותרת הסקירה — שורה אחת, שורת משנה אחת, האזהרות מקופלות
-test('overview header: compact (one row + one ellipsis sub-line with the full text in title); the attention row keeps its open state across the 2s refresh',async()=>{
+test('overview header: compact (one row + one ellipsis sub-line with the full text in title); the attention row keeps its state across the 2s refresh',async()=>{
   const {run}=await loaded();
   const html=run('home(0)');
   assert.match(html,/<div class="obj compact">/);
-  assert.match(html,/<div class="obj-sub" title="imagectl-srv · 10\.44\.12\.1 · v0\.30\.0 · פעיל 6 ימים 4 שעות">/);
+  assert.match(html,/<div class="obj-sub" title="6 אימג&#39;ים · 12 מחשבים \(1 מחוברים\) · עודכן 09:45">/);
   assert.doesNotMatch(run('UI.objHeader({name:"x",sub:"y"})'),/compact/,'other pages keep the non-compact header');
-  assert.doesNotMatch(html,/ id="home-attn"[^>]* open/);
-  run('HOME_ATTN_OPEN=true');
-  assert.match(run('home(0)'),/id="home-attn"[^>]* open/,'open stays open after a re-render');
+  assert.match(html,/ id="home-attn"[^>]* open/);
   run('HOME_ATTN_OPEN=false');
+  assert.doesNotMatch(run('home(0)'),/id="home-attn"[^>]* open/,'closed stays closed after a re-render');
+  run('HOME_ATTN_OPEN=true');
 });
 test('raw technical text goes to "technical details"; a Hebrew sentence that mentions SATA stays in the body',()=>{
   const {run}=setup();
@@ -386,27 +453,69 @@ test('UI.noteTech: raw Latin error text goes behind "technical details"; a Hebre
   assert.match(run(`UI.noteTech("warn","a","<script>alert(1)</script>")`),/&lt;script&gt;/,'escaped');
 });
 
-test('stage 2: the overview reads /images itself; a failed read is a red "could not read", not "loading" forever',async()=>{
-  const s=setup();
-  s.fixtures['/images']=new Error('images down');
-  s.run('OVERVIEW='+JSON.stringify(s.fixtures['/overview'])+';IMAGES=null;FOLDERS=[];DISK_FAILURES=[];SHRINK_RECORDS=[];toast=()=>{}');
-  const before=s.run('home(0)');
-  assert.match(before,/טוען את הספרייה/,'before any attempt it is loading');
-  await s.run('loadHome()');
-  assert.ok(s.requests.some(r=>r.url==='/api/console/images'),'loadHome requests /images');
+// ---- #1300: סניפים ודוק המשימות -------------------------------------------------
+test('#1300: branches card — one tile per configured secondary: status dot, last seen, version (read from the secondary; never read = not checked)',async()=>{
+  const s=await loaded();
+  s.run(`HOME.nodes=[{id:'haifa',label:'סניף חיפה',disabled_at:null,last_seen_at:'${today}T09:44:00Z',server_version:'v0.72.0',server_version_at:'${today}T09:44:00Z'},{id:'bs',label:'באר שבע',disabled_at:null,last_seen_at:null},{id:'old',label:'ישן',disabled_at:'2026-09-01T00:00:00Z',server_version:null,server_version_at:'2026-08-30T00:00:00Z'}]`);
+  s.run('SECONDARY_STATUS={haifa:{connected:true},bs:{connected:false,error:"timeout"}}');
   const html=s.run('home(0)');
-  assert.match(html,/class="note err"[^>]*>.*לא הצלחנו לקרוא את הספרייה: images down/);
-  assert.doesNotMatch(html,/טוען את הספרייה/);
-  s.fixtures['/images']=[{id:'i9',name:'Fresh',folder:'',created:'2026-10-01T10:00:00Z',total_compressed_bytes:1e9}];
-  await s.run('loadHome()');
-  const ok=s.run('home(0)');
-  assert.match(ok,/Fresh/); assert.doesNotMatch(ok,/לא הצלחנו לקרוא את הספרייה/,'a later success clears the failure');
+  const card=html.slice(html.indexOf('<span>סניפים</span>'));
+  assert.ok(html.indexOf('<span>שירותים')<html.indexOf('<span>סניפים</span>'),'after the services card');
+  assert.equal((card.match(/<div class="tile"/g)||[]).length,3);
+  assert.match(card,/<span class="led ok"><\/span><div><div class="tt">סניף חיפה<\/div><small>מחובר · נראה לאחרונה \d\d:\d\d · גרסה v0.72.0<\/small>/);
+  assert.match(card,/title="לא מגיב · לא נראה עדיין · גרסה לא נבדקה — timeout"><span class="led err"><\/span>/);
+  assert.match(card,/<span class="led "><\/span><div><div class="tt">ישן<\/div><small>מושבת · [^<]*גרסה לא ידועה<\/small>/);
+  assert.match(card,/selectPageById\('branches'\)">לסניפים</);
+  balanced(html);
+  s.run('SECONDARY_STATUS={}');
+  assert.match(s.run('homeBranchesCard()'),/<span class="led "><\/span><div><div class="tt">סניף חיפה<\/div><small>לא נבדק · /,'unmeasured is grey "not checked", never green');
+});
+test('#1300: branches — none configured = nothing; an unread list is said, not hidden (principle 5)',async()=>{
+  const s=await loaded();
+  s.run('HOME.nodes=[]');
+  assert.equal(s.run('homeBranchesCard()'),'');
+  s.run('HOME.nodes=null;HOME.err.nodes="db locked"');
+  assert.match(s.run('homeBranchesCard()'),/<span>סניפים<\/span>.*<div class="note warn">.*רשימת הסניפים לא נקראה — db locked/);
+});
+test('#1300: the task dock ("what is happening now") opens by itself when activity starts — once, not against a manual close',async()=>{
+  const s=setup();
+  let open=false, toggles=0;
+  s.node('#taskPanel').classList={contains:(c)=>c==='open'&&open,toggle(){},add(){},remove(){}};
+  s.run('DISK_FAILURES=[];SHRINK_RECORDS=[];toast=()=>{}');
+  s.run('(f)=>{toggleTaskPanel=f}')(()=>{toggles++;open=!open;});
+  s.run('OVERVIEW={images:1,machines:1,storage:null,session:null,room:null,pulls:[]};CAPTURE_TASKS=[];HOME_DOCK_HAD=false');
+  s.run('home(0)'); assert.equal(toggles,0,'no activity = the dock stays closed');
+  s.run('OVERVIEW.session={id:"s1",image_name:"Office",state:"open",joined:0,expected_clients:2,members:[]}');
+  s.run('home(0)'); assert.equal(toggles,1,'activity starts = the dock opens');
+  s.run('home(0)'); assert.equal(toggles,1,'already open = untouched');
+  open=false; s.run('home(0)'); assert.equal(toggles,1,'closed by the operator mid-activity = stays closed');
+  s.run('OVERVIEW.session=null'); s.run('home(0)');
+  s.run('OVERVIEW.session={id:"s2",image_name:"Office",state:"open",joined:0,expected_clients:2,members:[]}'); s.run('home(0)');
+  assert.equal(toggles,2,'a new activity opens it again');
 });
 
-test('stage 2: a non-list /images answer is a read failure, not a crash of the overview',async()=>{
+test('#1300: an active cloner round and inter-site transfers are dock activity too — they open it by themselves; done/failed ones do not',async()=>{
   const s=setup();
-  s.fixtures['/images']={detail:'not a list'};
-  s.run('OVERVIEW='+JSON.stringify(s.fixtures['/overview'])+';IMAGES=null;FOLDERS=[];DISK_FAILURES=[];SHRINK_RECORDS=[];toast=()=>{}');
-  await s.run('loadHome()');
-  assert.match(s.run('home(0)'),/לא הצלחנו לקרוא את הספרייה: תשובה לא צפויה/);
+  s.run('ME.role="admin";CAPTURE_TASKS=[];HOME.transfers=null');
+  s.run('OVERVIEW={images:1,machines:1,storage:null,session:null,pulls:[],room:{state:"active",image_name:"Office 2024",target_drives:4,written_drives:1,wave_state:"running",opened_by:"nadav"}}');
+  let rows=s.run('activityRows().rows');
+  assert.equal(rows.length,1,'the round is a row');
+  assert.equal(rows[0].name,'Office 2024'); assert.equal(rows[0].target,'1/4 דיסקים'); assert.equal(rows[0].pct,25); assert.equal(rows[0].by,'nadav');
+  s.run('OVERVIEW.room.state="failed"'); assert.equal(s.run('activityRows().rows.length'),0,'a failed round is not activity');
+  s.run('OVERVIEW.room=null');
+  s.run(`HOME.transfers=[{id:'a',node_label:'חיפה',image_name:'Linux',state:'sending',bytes_sent:25,bytes_total:100,started_by:'nadav',created_at:'${today}T09:00:00Z'},{id:'b',node_label:'חיפה',image_name:'Old',state:'done'},{id:'c',node_label:'חיפה',image_name:'Bad',state:'failed'},{id:'d',node_label:'באר שבע',image_name:'Q',state:'queued'}]`);
+  rows=s.run('activityRows().rows');
+  assert.deepEqual(JSON.parse(JSON.stringify(rows.map(r=>[r.name,r.target,r.label,r.pct]))),[['Linux','חיפה','שולח',25],['Q','באר שבע','ממתין בתור',null]]);
+  // הדוק נפתח מעצמו גם להן — ולא נגד סגירה ידנית
+  let open=false, toggles=0;
+  s.node('#taskPanel').classList={contains:(c)=>c==='open'&&open,toggle(){},add(){},remove(){}};
+  s.run('(f)=>{toggleTaskPanel=f}')(()=>{toggles++;open=!open;});
+  s.run('DISK_FAILURES=[];SHRINK_RECORDS=[];HOME.transfers=[];HOME_DOCK_HAD=false');
+  s.run('home(0)'); assert.equal(toggles,0);
+  s.run(`HOME.transfers=[{id:'a',node_label:'חיפה',image_name:'Linux',state:'sending',bytes_sent:1,bytes_total:100}]`);
+  s.run('home(0)'); assert.equal(toggles,1,'a transfer opens the dock');
+  open=false; s.run('home(0)'); assert.equal(toggles,1,'closed mid-transfer = stays closed');
+  s.run('HOME.transfers=[]'); s.run('home(0)');
+  s.run('OVERVIEW.room={state:"active",image_name:"X",target_drives:2,written_drives:0,wave_state:"running"}');
+  s.run('home(0)'); assert.equal(toggles,2,'a cloner round opens it');
 });

@@ -16,6 +16,8 @@ from .core import WizardConfig, WizardState, check_primary, validate_config
 
 STATIC = Path(__file__).with_name("static")
 DESIGN_TOKENS = Path(__file__).parents[1] / "static" / "design-tokens.css"
+#: ‏#1302: ה-favicon של ImageSrv — אותם קבצים שהקונסולה מגישה.
+FAVICONS = {f"/{name}": Path(__file__).parents[1] / "static" / name for name in ("favicon.svg", "favicon.ico")}
 
 
 class WizardHTTPServer(ThreadingHTTPServer):
@@ -105,6 +107,8 @@ class WizardHandler(BaseHTTPRequestHandler):
             self._file(STATIC / "wizard.js")
         elif path == "/design-tokens.css":
             self._file(DESIGN_TOKENS)
+        elif path in FAVICONS:
+            self._file(FAVICONS[path])
         elif path == "/api/wizard/state":
             self._json(HTTPStatus.OK, {"ok": True, **self.app.wizard.initial(self.app.nic_fact, self.app.role_fact)})
         elif path == "/api/wizard/progress":

@@ -25,6 +25,20 @@ pytestmark = pytest.mark.skipif(SH is None or JQ is None or os.name == "nt",
                                 reason="sh + jq on Linux (Testrunner) — the bridge is busybox-sh with jq")
 
 
+# #1310: curl as the bridge calls it -- `-o BODY -w '%{http_code}\n%{certs}'`.
+# The test decides the exit code, stderr, HTTP code, body and certificate;
+# the default (exit 7, "no route") is what an unreachable primary gives.
+FAKE_CURL = """printf 'curl %s\\n' "$*" >> {calls}
+out=
+while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift 2 ;; *) shift ;; esac; done
+[ -n "${{FAKE_CURL_ERR:-}}" ] && printf '%s\\n' "$FAKE_CURL_ERR" >&2
+[ "${{FAKE_CURL_RC:-7}}" = 0 ] || exit "${{FAKE_CURL_RC:-7}}"
+cat "$FAKE_CURL_BODY" > "$out"
+printf '%s\\n' "${{FAKE_CURL_CODE:-200}}"
+cat "$FAKE_CURL_PEM"
+"""
+
+
 def _machine(tmp_path: Path) -> dict:
     root = tmp_path / "root"
     for nic, mac, oper, carrier in (("ens33", "00:50:56:01:02:01", "up", "1"), ("ens34", "00:50:56:01:02:02", "down", "")):
@@ -53,7 +67,7 @@ printf 'state=partitioning\\npct=5\\ntitle=partitioning\\n' > "$4"
     for tool, body in (("eject", f"printf 'eject %s\\n' \"$@\" >> {calls}; exit ${{EJECT_RC:-0}}\n"),
                        ("reboot", f"printf 'reboot %s\\n' \"$@\" >> {calls}\n"),
                        ("umount", "exit 0\n"), ("sync", "exit 0\n"),
-                       ("ip", "exit 0\n"), ("curl", "exit 7\n")):
+                       ("ip", "exit 0\n"), ("curl", FAKE_CURL.format(calls=calls))):
         p = bin_dir / tool; p.write_text("#!/bin/sh\n" + body); p.chmod(0o755)
     return {"root": root, "run": run, "bin": bin_dir, "calls": calls, "engine": engine}
 
@@ -151,13 +165,264 @@ def test_eject_failure_is_reported_and_reboot_only_after_eject(tmp_path):
     assert calls.index("eject /dev/sr0") < calls.index("reboot -f")
 
 
-def test_check_primary_failure_uses_the_mockup_text(tmp_path):
+# --- #1310: "בדוק חיבור" — ירוק רק על ראיה חיובית, וחוסם את "הבא" ----------
+
+ALIVE = "/api/interserver/v1/alive"
+SECONDARY = {**FORM, "role": "secondary", "hostname": "imagectl-haifa", "primary_url": "192.168.68.250"}
+
+
+def _primary_cert(tmp_path: Path, name: str = "primary") -> tuple[Path, str]:
+    """תעודה אמיתית (כמו זהות הראשי) ו-SHA-256 של ה-SPKI שלה."""
+    from server import interserver_auth
+    cert, _key = interserver_auth.generate_self_signed(name, ip_sans=["127.0.0.1"])
+    pem = tmp_path / f"{name}.pem"
+    pem.write_bytes(cert)
+    return pem, interserver_auth.spki_sha256(cert)
+
+
+def _answer(m: dict, tmp_path: Path, body, *, code: str = "200", pem: Path | None = None,
+            form: dict | None = None) -> tuple[dict, str]:
+    """check-primary מול curl שענה 0 עם הגוף/התעודה שהטסט מכתיב."""
+    body_file = tmp_path / "body.json"
+    body_file.write_text(body if isinstance(body, str) else json.dumps(body))
+    if pem is None:
+        pem, _ = _primary_cert(tmp_path)
+    rc, out, err = bridge(m, "check-primary", form or {"primary_url": "192.168.68.250"},
+                          FAKE_CURL_RC="0", FAKE_CURL_CODE=code,
+                          FAKE_CURL_BODY=str(body_file), FAKE_CURL_PEM=str(pem))
+    assert rc == 0, err
+    return out, err
+
+
+def _curl_urls(m: dict) -> list[str]:
+    calls = m["calls"].read_text() if m["calls"].exists() else ""
+    return [w for line in calls.splitlines() if line.startswith("curl ")
+            for w in line.split() if w.startswith("https://")]
+
+
+@pytest.mark.parametrize("typed", [
+    "192.168.68.250", " 192.168.68.250 ", "192.168.68.250:8443",
+    "https://192.168.68.250:8443", "https://192.168.68.250:8443/",
+])
+def test_check_primary_takes_a_bare_ip_and_asks_the_alive_path_on_8443(tmp_path, typed):
+    """נדב 12/10: "למה לכתוב את כל זה ולא רק את ה-IP?" — כל הצורות מגיעות
+    לאותה כתובת, וזו השאלה היחידה שהמשני שולח לראשי."""
     m = _machine(tmp_path)
-    rc, out, _ = bridge(m, "check-primary", {"primary_url": "https://10.10.10.8:8443"})
+    rc, out, _ = bridge(m, "check-primary", {"primary_url": typed})
     assert rc == 0 and out["ok"] == ["0"]
-    assert out["error"] == ["התקשרות אל 10.10.10.8:8443 בפורט 8443 נכשלה. ודא כי חומת האש שבין האתרים פתוחה."]
-    rc, out, _ = bridge(m, "check-primary", {"primary_url": "http://x"})
-    assert out["ok"] == ["0"] and "https://HOST:8443" in out["error"][0]
+    assert _curl_urls(m) == ["https://192.168.68.250:8443" + ALIVE]
+
+
+def test_check_primary_takes_a_host_name_too(tmp_path):
+    m = _machine(tmp_path)
+    bridge(m, "check-primary", {"primary_url": "imagectl-ta.college.ac.il"})
+    assert _curl_urls(m) == ["https://imagectl-ta.college.ac.il:8443" + ALIVE]
+
+
+@pytest.mark.parametrize("typed", ["", "http://192.168.68.250", "192.168.68.250:9443",
+                                   "https://192.168.68.250:8443/x", "192.168 .68.250", "-x"])
+def test_an_address_that_is_not_one_is_red_without_asking_anyone(tmp_path, typed):
+    m = _machine(tmp_path)
+    rc, out, _ = bridge(m, "check-primary", {"primary_url": typed})
+    assert rc == 0 and out["ok"] == ["0"] and "כתובת לא תקינה" in out["error"][0]
+    assert _curl_urls(m) == []
+
+
+@pytest.mark.parametrize(("curl_rc", "stderr", "reason"), [
+    ("7", "curl: (7) Failed to connect to 192.168.68.250 port 8443: Connection refused", "(refused)"),
+    ("7", "curl: (7) Failed to connect to 192.168.68.250 port 8443: No route to host", "אין נתיב"),
+    ("28", "curl: (28) Connection timed out after 5001 milliseconds", "(timeout)"),
+    ("35", "curl: (35) TLS connect error", "TLS"),
+    ("6", "curl: (6) Could not resolve host", "(DNS)"),
+    ("52", "curl: (52) Empty reply from server", "סגר את החיבור"),
+    ("99", "", "(curl 99)"),
+])
+def test_a_real_failure_is_red_with_its_reason(tmp_path, curl_rc, stderr, reason):
+    m = _machine(tmp_path)
+    rc, out, _ = bridge(m, "check-primary", {"primary_url": "192.168.68.250"},
+                        FAKE_CURL_RC=curl_rc, FAKE_CURL_ERR=stderr)
+    assert rc == 0 and out["ok"] == ["0"], out
+    assert reason in out["error"][0], out["error"]
+    assert "name" not in out and "fingerprint" not in out
+    assert not (m["run"] / "primary-check").exists()
+
+
+def test_green_shows_name_version_fingerprint_and_records_the_check(tmp_path):
+    m = _machine(tmp_path)
+    pem, spki = _primary_cert(tmp_path)
+    out, _ = _answer(m, tmp_path, {"name": "imagectl-ta", "version": "v0.60.0", "fingerprint": spki},
+                     pem=pem)
+    assert out["ok"] == ["1"] and out["name"] == ["imagectl-ta"]
+    assert out["version"] == ["v0.60.0"] and out["fingerprint"] == [spki]
+    record = (m["run"] / "primary-check").read_text()
+    assert record == f"url=https://192.168.68.250:8443\nfingerprint={spki}\n", \
+        "the record holds what the answers need, nothing the primary chose to say"
+
+
+def test_a_display_name_in_hebrew_is_still_green(tmp_path):
+    """‏`name` הוא השם שבראש העץ בקונסולה — טקסט חופשי, יכול להיות עברית."""
+    m = _machine(tmp_path)
+    pem, spki = _primary_cert(tmp_path)
+    out, _ = _answer(m, tmp_path, {"name": "שרת תל אביב", "version": None, "fingerprint": spki}, pem=pem)
+    assert out["ok"] == ["1"] and out["name"] == ["שרת תל אביב"] and out["version"] == [""]
+
+
+@pytest.mark.parametrize("field", ["name", "version"])
+def test_a_line_break_in_name_or_version_cannot_plant_a_fingerprint(tmp_path, field):
+    """סקירת אבטחה (#1310): משיב זדוני שם `\\nfingerprint=<שלו>` בשם או
+    בגרסה. לפני התיקון השורה המוזרקת נכתבה לרשומה **לפני** הטביעה האמיתית,
+    ו-`sed | head -n1` של write_answers בחר בה — המתקין היה מצמיד מפתח של
+    התוקף. עכשיו: אדום, אין רשומה, ובתשובות אין טביעה."""
+    m = _machine(tmp_path)
+    pem, spki = _primary_cert(tmp_path)
+    _, planted = _primary_cert(tmp_path, "attacker")
+    body = {"name": "imagectl-ta", "version": "v1", "fingerprint": spki}
+    body[field] = f"x\nfingerprint={planted}"
+    out, _ = _answer(m, tmp_path, body, pem=pem)
+    assert out["ok"] == ["0"], out
+    assert not (m["run"] / "primary-check").exists()
+    bridge(m, "validate", {**SECONDARY, "step": "2"})
+    seen = (tmp_path / "answers.seen").read_text()
+    assert planted not in seen and "primary_fingerprint=\n" in seen
+
+
+@pytest.mark.parametrize("record", [
+    "url=https://192.168.68.250:8443\nfingerprint={bad}\nfingerprint={good}\n",
+    "url=https://192.168.68.250:8443\nname=x\nfingerprint={good}\n",
+    "fingerprint={good}\nurl=https://192.168.68.250:8443\n",
+    "url=https://192.168.68.250:8443\nfingerprint={good}x\n",
+])
+def test_a_record_of_any_other_shape_is_not_a_green_check(tmp_path, record):
+    """שכבה שנייה: גם רשומה שמישהו אחר כתב (או גרסה ישנה) אינה מכניסה טביעה
+    לתשובות אלא אם היא בדיוק url= ואז fingerprint= של 64 hex."""
+    m = _machine(tmp_path)
+    (m["run"] / "primary-check").write_text(record.format(good="ab" * 32, bad="cd" * 32))
+    bridge(m, "validate", {**SECONDARY, "step": "2"})
+    assert "primary_fingerprint=\n" in (tmp_path / "answers.seen").read_text()
+
+
+def test_the_exact_record_is_what_puts_the_fingerprint_in(tmp_path):
+    """הצד החיובי של הטסט הקודם — אחרת "אף פעם לא" היה עובר אותו."""
+    m = _machine(tmp_path)
+    (m["run"] / "primary-check").write_text(f"url=https://192.168.68.250:8443\nfingerprint={'ab' * 32}\n")
+    bridge(m, "validate", {**SECONDARY, "step": "2"})
+    assert f"primary_fingerprint={'ab' * 32}\n" in (tmp_path / "answers.seen").read_text()
+
+
+@pytest.mark.parametrize(("code", "body", "reason"), [
+    ("404", {"detail": "Not Found"}, "HTTP 404"),
+    ("200", {"ok": True, "version": "v0.60.0", "version_error": None}, "לא בתשובת השרת הראשי"),
+    ("200", "<html>router login</html>", "לא בתשובת השרת הראשי"),
+    ("200", {"name": "", "version": "v1", "fingerprint": "ab" * 32}, "לא בתשובת השרת הראשי"),
+    ("200", {"name": "x", "version": "v1", "fingerprint": "ab" * 32, "token": "s"}, "לא בתשובת השרת הראשי"),
+    ("200", {"name": "x", "version": "v1", "fingerprint": "AB" * 32}, "לא בתשובת השרת הראשי"),
+])
+def test_another_product_on_8443_is_red_not_green(tmp_path, code, body, reason):
+    m = _machine(tmp_path)
+    out, _ = _answer(m, tmp_path, body, code=code)
+    assert out["ok"] == ["0"] and reason in out["error"][0], out
+    assert not (m["run"] / "primary-check").exists()
+
+
+def test_a_fingerprint_that_is_not_the_key_tls_showed_is_red(tmp_path):
+    """תשובה "נכונה" מכתובת שהציגה מפתח אחר — לא ירוק: הטביעה היא מה
+    שהמפעיל ישווה, והיא חייבת להיות של מי שענה."""
+    m = _machine(tmp_path)
+    _, other_spki = _primary_cert(tmp_path, "someone-else")
+    pem, _ = _primary_cert(tmp_path, "the-one-that-answered")
+    out, _ = _answer(m, tmp_path, {"name": "imagectl-ta", "version": None, "fingerprint": other_spki},
+                     pem=pem)
+    assert out["ok"] == ["0"] and "טביעת האצבע" in out["error"][0]
+
+
+def test_a_certificate_that_cannot_be_read_is_not_verified(tmp_path):
+    m = _machine(tmp_path)
+    junk = tmp_path / "junk.pem"
+    junk.write_text("Cert:\n")
+    out, _ = _answer(m, tmp_path, {"name": "x", "version": None, "fingerprint": "ab" * 32}, pem=junk)
+    assert out["ok"] == ["0"] and "לא אומת" in out["error"][0]
+
+
+def test_answers_carry_the_fingerprint_only_from_a_green_check_of_the_same_address(tmp_path):
+    """המנוע מסרב למשני בלי טביעה (test_installer_engine). כאן: הגשר כותב
+    אותה רק מהבדיקה הירוקה שלו — לא מהטופס — ורק לאותה כתובת מנורמלת."""
+    m = _machine(tmp_path)
+    seen = tmp_path / "answers.seen"
+    bridge(m, "validate", {**SECONDARY, "step": "2"})
+    assert "primary_url=https://192.168.68.250:8443\n" in seen.read_text()
+    assert "primary_fingerprint=\n" in seen.read_text(), "not checked = no fingerprint"
+
+    pem, spki = _primary_cert(tmp_path)
+    out, _ = _answer(m, tmp_path, {"name": "imagectl-ta", "version": "v1", "fingerprint": spki}, pem=pem)
+    assert out["ok"] == ["1"]
+    bridge(m, "validate", {**SECONDARY, "primary_url": "https://192.168.68.250:8443/", "step": "2",
+                           "primary_fingerprint": "ff" * 32})
+    assert f"primary_fingerprint={spki}\n" in seen.read_text(), "the check, never the form"
+
+    bridge(m, "validate", {**SECONDARY, "primary_url": "192.168.68.251", "step": "2"})
+    assert "primary_fingerprint=\n" in seen.read_text(), "another address was never checked"
+
+    bridge(m, "check-primary", {"primary_url": "192.168.68.250"})   # red now (curl exit 7)
+    bridge(m, "validate", {**SECONDARY, "step": "2"})
+    assert "primary_fingerprint=\n" in seen.read_text(), "a red check forgets the green one"
+
+
+def test_standalone_answers_have_no_primary(tmp_path):
+    m = _machine(tmp_path)
+    bridge(m, "validate", {**FORM, "step": "2"})
+    seen = (tmp_path / "answers.seen").read_text()
+    assert "primary_url=\n" in seen and "primary_fingerprint=\n" in seen
+
+
+def test_engine_refusal_lands_on_the_address_field(tmp_path):
+    """‏[primary-unverified] מהמנוע → errors.primary_url, כמו כל קוד אחר."""
+    m = _machine(tmp_path)
+    engine = m["engine"]
+    engine.write_text(engine.read_text().replace(
+        "if [ \"$2\" = --dry-run ]",
+        "if grep -q '^primary_fingerprint=$' \"$1\" && grep -q '^role=secondary$' \"$1\"; then "
+        "printf 'installer: [primary-unverified] the primary was not verified\\n' >&2; exit 2; fi\n"
+        "if [ \"$2\" = --dry-run ]"))
+    rc, out, _ = bridge(m, "validate", {**SECONDARY, "step": "2"})
+    assert rc == 0 and out["errors.primary_url"] == ["the primary was not verified"]
+
+
+def test_check_primary_green_end_to_end_against_the_real_listener(tmp_path):
+    """הראשי האמיתי (‏`server.primary_alive` + זהות + uvicorn TLS) על
+    כתובת loopback משלו בפורט 8443, ו-curl/openssl/jq **אמיתיים**: ירוק,
+    והטביעה היא זהות הראשי."""
+    import socket
+    import threading
+    uvicorn = pytest.importorskip("uvicorn")
+    if not shutil.which("openssl"):
+        pytest.fail("openssl is part of the installer image; the test host must have it too")
+    from server import db, primary_alive, storage_nodes
+    host = "127.13.10.8"
+    with socket.socket() as probe:
+        probe.bind((host, 8443))      # free? a busy port fails here, by name -- not a skip
+    conn = db.connect(tmp_path / "p.db")
+    ident = storage_nodes.ensure_identity(conn, tmp_path / "data", host_sans=[host])
+    app = primary_alive.create_alive_app(name=lambda: "imagectl-ta", version=lambda: "v0.60.0",
+                                         fingerprint=ident["server_spki"])
+    server = uvicorn.Server(primary_alive.server_config(app, ident, host, 8443))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    try:
+        for _ in range(100):
+            if server.started:
+                break
+            thread.join(0.05)
+        assert server.started
+        m = _machine(tmp_path)
+        (m["bin"] / "curl").unlink()          # the real curl from here on
+        rc, out, err = bridge(m, "check-primary", {"primary_url": host})
+        assert rc == 0, err
+        assert out["ok"] == ["1"], out
+        assert out["name"] == ["imagectl-ta"] and out["version"] == ["v0.60.0"]
+        assert out["fingerprint"] == [ident["server_spki"]]
+    finally:
+        server.should_exit = True
+        thread.join(5)
 
 
 def test_bridge_is_posix_sh_and_under_the_line_wall():

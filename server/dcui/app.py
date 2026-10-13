@@ -79,7 +79,7 @@ def _fingerprint_lines(value: str) -> tuple[str, str]:
 
 def render_main(snapshot: Snapshot, message: str = "") -> list[str]:
     canvas = Canvas(
-        _title("ImageCtl Server Operations Console",
+        _title("ImageSrv Server Operations Console",
                f"{snapshot.version}  {snapshot.storage_role}"),
         "<F2> Customize  <F9> Reset Password  <F12> Restart/Shutdown  <F5> Refresh",
     )
@@ -132,7 +132,7 @@ def render_main(snapshot: Snapshot, message: str = "") -> list[str]:
 
 def render_preinstall(snapshot: Snapshot, message: str = "") -> list[str]:
     canvas = Canvas(
-        _title(f"ImageCtl {snapshot.version} - installation"),
+        _title(f"ImageSrv {snapshot.version} - installation"),
         "F2  Set a static address       F5  Refresh",
     )
     canvas.put(4, 4, "Management network is not configured yet.")
@@ -179,7 +179,7 @@ def render_preinstall_network(interfaces: list[NicInfo], form: dict[str, str],
 def render_auth(failures: int = 0, lockout_seconds: int = 0,
                 password_length: int = 0, message: str = "") -> list[str]:
     canvas = Canvas(
-        _title("ImageCtl Server Operations Console", "Authentication Required"),
+        _title("ImageSrv Server Operations Console", "Authentication Required"),
         "<Enter> OK                    <Esc> Cancel (back to main screen)",
     )
     canvas.put(5, 9, "+----------------------------------------------------------+")
@@ -305,13 +305,14 @@ def render_network(snapshot: Snapshot, interfaces: list[NicInfo], form: dict[str
 
 
 def render_power(snapshot: Snapshot, choice: str = "restart",
-                 seconds: int = 90, message: str = "") -> list[str]:
+                 seconds: int = 90, message: str = "",
+                 focus: str = "cancel") -> list[str]:
     # #1270: no typed hostname -- this screen (behind the admin password) and
     # <Enter> are the confirmation; <Esc> runs nothing.
     action = "Restart" if choice == "restart" else "Shut down"
     canvas = Canvas(
         _title("Restart / Shut Down", f"admin  (auto-logout in {seconds} s)"),
-        f"<Enter> {action} now   <Up/Down> Change choice   <Esc> Cancel",
+        "<Arrows> Choice  <Tab> Switch button  <Enter> Run marked button  <Esc> Cancel",
     )
     canvas.put(5, 9, "+----------------------------------------------------------+")
     for row in range(6, 18):
@@ -329,7 +330,10 @@ def render_power(snapshot: Snapshot, choice: str = "restart",
     else:
         canvas.put(11, 12, "No running deploy round was found.")
     canvas.put(15, 12, f"Server: {snapshot.hostname}", 55)
-    canvas.put(16, 12, f"<Enter> runs '{action}' immediately.", 55)
+    # #1203: the focus starts on Cancel; <Tab> moves it to the action.
+    cancel = ">> <Cancel>" if focus != "act" else "   <Cancel>"
+    act = f">> <{action} now>" if focus == "act" else f"   <{action} now>"
+    canvas.put(16, 12, f"{cancel}    {act}", 55)
     if snapshot.rollback_interface:
         canvas.put(20, 9, f"Network rollback pending on {snapshot.rollback_interface} "
                           f"({snapshot.rollback_seconds} s left).", 62)
@@ -405,6 +409,12 @@ class Runtime:
     reset_typed: str = ""
     reset_first: str = ""
     reset_guard: actions.AuthGuard = field(default_factory=actions.AuthGuard)
+    # #1203: the graphical screen. power_focus starts on "cancel" so a stray
+    # <Enter> in F12 runs nothing; caps is the keyboard's Caps Lock (the GUI
+    # reports it); extras are the facts only the graphical screen shows.
+    power_focus: str = "cancel"
+    caps: bool = False
+    extras: object = None
 
     def seconds(self, now: float) -> int:
         return max(0, actions.AUTH_IDLE_SECONDS - int(now - self.last_key_at))
@@ -464,16 +474,25 @@ def _current_lines(runtime: Runtime, now: float) -> list[str]:
                               runtime.form_field, seconds, rollback_seconds=left,
                               error=runtime.message)
     if runtime.screen == "power":
-        return render_power(runtime.snapshot, runtime.power_choice, seconds, runtime.message)
+        return render_power(runtime.snapshot, runtime.power_choice, seconds,
+                            runtime.message, runtime.power_focus)
     if runtime.screen == "tls":
         return render_tls(runtime.snapshot, seconds)
     result = runtime.result or actions.ActionResult(False, runtime.message or "No result.")
     return render_message("Action Result", result.message, result.details, seconds)
 
 
+def _typable(key: object) -> bool:
+    """#1203: passwords are English only -- a Hebrew letter (a tty keymap, or
+    anything the GUI did not force to US) is not typed into a password."""
+    return (isinstance(key, str) and len(key) == 1 and key.isascii()
+            and key.isprintable())
+
+
 def _authenticate(runtime: Runtime) -> None:
     if runtime.auth.authenticate(runtime.conn, runtime.password):
         runtime.screen = runtime.auth_target
+        runtime.power_choice, runtime.power_focus = "restart", "cancel"
         runtime.last_key_at = time.monotonic()
         runtime.authenticated_at = runtime.last_key_at
         runtime.message = ""
@@ -549,7 +568,7 @@ def _reset_key(runtime: Runtime, key: object, enter: bool, escape: bool,
         return                                  # #1270: nothing is typed to confirm
     elif key in (8, 127, "\b", "\x7f", curses_module.KEY_BACKSPACE):
         runtime.reset_typed = runtime.reset_typed[:-1]
-    elif isinstance(key, str) and key.isprintable() and len(key) == 1:
+    elif _typable(key):
         runtime.reset_typed += key
 
 
@@ -653,7 +672,7 @@ def _handle_key(runtime: Runtime, key: object, curses_module) -> bool:
             _authenticate(runtime)
         elif key in (8, 127, curses_module.KEY_BACKSPACE):
             runtime.password = runtime.password[:-1]
-        elif isinstance(key, str) and key.isprintable() and len(key) == 1:
+        elif _typable(key):
             runtime.password += key
         return True
     if runtime.screen == "reset":
@@ -711,11 +730,18 @@ def _handle_key(runtime: Runtime, key: object, curses_module) -> bool:
             runtime.result = actions.request_network_rollback(runtime.conn, runtime.data_dir)
             runtime.screen = "result"
     elif runtime.screen == "power":
-        if key in (curses_module.KEY_UP, curses_module.KEY_DOWN, " "):
+        if key in (curses_module.KEY_UP, curses_module.KEY_DOWN, curses_module.KEY_LEFT,
+                   curses_module.KEY_RIGHT, " "):
             runtime.power_choice = "shutdown" if runtime.power_choice == "restart" else "restart"
-        elif enter:
+        elif key in (9, "\t", curses_module.KEY_BTAB):
+            runtime.power_focus = "act" if runtime.power_focus == "cancel" else "cancel"
+        elif enter and runtime.power_focus == "act":
             runtime.result = actions.power_action(runtime.conn, runtime.power_choice)
             runtime.screen = "result"
+        elif enter:
+            # #1203: the focus starts on Cancel -- a stray <Enter> runs nothing.
+            runtime.screen = "main"
+            runtime.message = "Restart/shutdown cancelled; nothing was done."
     elif runtime.screen in {"result", "tls"} and enter:
         runtime.screen = "menu"
     return True
@@ -745,14 +771,8 @@ def _draw(stdscr, lines: list[str], curses_module) -> None:
     stdscr.refresh()
 
 
-def curses_main(stdscr, data_dir: Path = DATA_DIR) -> None:
-    import curses
-    curses.curs_set(0)
-    stdscr.keypad(True)
-    stdscr.timeout(200)
-    if curses.has_colors():
-        curses.start_color()
-        curses.init_pair(1, curses.COLOR_RED, curses.COLOR_BLACK)
+def new_runtime(data_dir: Path) -> Runtime:
+    """The state both screens start from (text and graphical, #1203)."""
     db_path = data_dir / "imagectl.db"
     conn = connect(db_path) if db_path.is_file() else None
     snapshot = collect_snapshot(data_dir, conn=conn)
@@ -760,22 +780,43 @@ def curses_main(stdscr, data_dir: Path = DATA_DIR) -> None:
                       last_key_at=time.monotonic(), last_refresh=time.monotonic())
     runtime.form = _initial_form(snapshot)
     runtime.interfaces = list(snapshot.interfaces or (snapshot.management,))
+    return runtime
+
+
+def tick(runtime: Runtime, now: float) -> None:
+    """The clock-driven part of the loop, shared by both screens: the 5 s
+    refresh, the 90 s auto-logout and the end of a network rollback window."""
+    if runtime.screen == "main" and now - runtime.last_refresh >= 5:
+        _refresh(runtime)
+    if runtime.screen not in {"main", "auth"} and runtime.seconds(now) <= 0:
+        runtime.screen = "main"
+        runtime.message = "Session expired after 90 seconds without a key."
+    if (runtime.screen == "network_confirm"
+            and netcfg_rollback.read_pending(runtime.data_dir / "netcfg") is None):
+        active, detail = actions.netcfg_host.timer_active()
+        runtime.result = actions.ActionResult(
+            active,
+            "The pending marker is gone; the timed rollback has completed.",
+            (str(detail),),
+        )
+        runtime.screen = "result"
+
+
+def curses_main(stdscr, data_dir: Path = DATA_DIR, why_text: str = "") -> None:
+    import curses
+    curses.curs_set(0)
+    stdscr.keypad(True)
+    stdscr.timeout(200)
+    if curses.has_colors():
+        curses.start_color()
+        curses.init_pair(1, curses.COLOR_RED, curses.COLOR_BLACK)
+    runtime = new_runtime(data_dir)
+    if why_text:
+        # #1203: the text screen is the fallback -- say why, do not just appear.
+        runtime.message = f"Graphic screen unavailable: {why_text}"[:72]
     while True:
         now = time.monotonic()
-        if runtime.screen == "main" and now - runtime.last_refresh >= 5:
-            _refresh(runtime)
-        if runtime.screen not in {"main", "auth"} and runtime.seconds(now) <= 0:
-            runtime.screen = "main"
-            runtime.message = "Session expired after 90 seconds without a key."
-        if (runtime.screen == "network_confirm"
-                and netcfg_rollback.read_pending(runtime.data_dir / "netcfg") is None):
-            active, detail = actions.netcfg_host.timer_active()
-            runtime.result = actions.ActionResult(
-                active,
-                "The pending marker is gone; the timed rollback has completed.",
-                (str(detail),),
-            )
-            runtime.screen = "result"
+        tick(runtime, now)
         _draw(stdscr, _current_lines(runtime, now), curses)
         try:
             key = stdscr.get_wch()
@@ -784,6 +825,13 @@ def curses_main(stdscr, data_dir: Path = DATA_DIR) -> None:
         _handle_key(runtime, key, curses)
 
 
-def run(data_dir: Path = DATA_DIR) -> None:
+def run(data_dir: Path = DATA_DIR, text_only: bool = False) -> None:
+    """#1203: the graphical screen first; the 80x25 text screen only when the
+    graphical one cannot run (no DRM/fbdev, no binary, no fonts) or stops."""
     import curses
-    curses.wrapper(curses_main, data_dir)
+    import sys
+
+    from . import gui
+    why = "text screen requested (--text)" if text_only else gui.run(data_dir)
+    print(f"imagectl-dcui: text screen: {why}", file=sys.stderr, flush=True)
+    curses.wrapper(curses_main, data_dir, why)

@@ -30,7 +30,6 @@ from boot.http import create_boot_asgi, gui_initrd_path
 from . import auth, boottrace, deploy_net, dhcp, drive_rates, registry
 from .api import ServerContext, create_agent_router
 from .console_api import create_console_router
-from .console_source_guard import ConsoleSourceGuard, Network
 from .console_hostcfg import create_hostcfg_router
 from .console_tls import ConsoleTLS
 from .console_storage import create_storage_router
@@ -45,7 +44,6 @@ from .console_library import create_library_router
 from .console_drivers import create_agent_drivers_router, create_drivers_router   # #720
 from .console_tools import create_tools_router   # #649 שלב 1
 from .drivers import DriverLibrary
-from .branding import create_branding_router
 from .capture import create_agent_capture_router, create_console_capture_router
 from .console_net import create_net_router
 from . import console_dhcp
@@ -167,11 +165,6 @@ class ServerRuntime:
     #: הקצב של שעון-הרקע של החדר (#456). ברירת המחדל היא הייצור; בדיקות
     #: מעבירות ערך קצר כדי שהלולאה תדגום מהר בלי להמתין 5ש'.
     room_clock_interval: float = ROOM_CLOCK_SECONDS
-    # ‏#151: רשתות מותרות ל-`/console` ו-`/api/console` לפי כתובת מקור —
-    # שכבה בתוך השרת, לא תלויה בחומת אש חיצונית. ``None``/ריק = השומר
-    # אינו פעיל (התנהגות היום — ‎--console-host בלבד), בדיוק כמו
-    # ‏`storage_role`: לא לשבור פריסה קיימת שלא ביקשה את השכבה הזו.
-    console_allowed_networks: tuple[Network, ...] | None = None
     # ‏#703 (tracer 5): זהות ה-TLS של הקונסולה, כשהיא מוגשת ב-HTTPS. ``None``
     # = ‏``--console-tls off`` (loopback) או בדיקות — ואז העוגייה בלי
     # ``Secure`` ו-``/me`` מדווח ``tls: null``. ‏main מעביר ערך אמיתי.
@@ -280,9 +273,6 @@ def create_runtime(
     # standalone), וזו הכתיבה בהפעלה.
     storage_role: str | None = None,
     primary_url: str | None = None,
-    # ‏#151: ``None``/ריק = השומר אינו מותקן. ``main`` מעביר את הערך של
-    # ‎--console-allow-from (מפוענח ומאומת שם); הבדיקות מעבירות ישירות.
-    console_allowed_networks: tuple[Network, ...] | None = None,
     # ‏#456: הקצב של שעון-הרקע של החדר. ברירת המחדל היא הייצור; בדיקות
     # מעבירות ערך קצר כדי שהלולאה תדגום מהר.
     room_clock_interval: float = ROOM_CLOCK_SECONDS,
@@ -468,7 +458,6 @@ def create_runtime(
         storage_hooks=storage_hooks,
         storage_check_interval=storage_check_interval,
         netcfg_hooks=netcfg_hooks,
-        console_allowed_networks=console_allowed_networks,
         known_macs_hooks=known_macs_hooks,
         repo_dir=repo_dir, update_hooks=update_hooks,
         room_clock_interval=room_clock_interval,
@@ -477,6 +466,7 @@ def create_runtime(
 
 
 #: ‏#1266: הדגל שאינו מוגש לתחנות מ-PXE, גם כשהועבר ב-`--extra-cmdline`.
+#: הסוכן כבר אינו מכיר אותו (#1303); ההסרה נשארת בשביל initramfs ישן.
 STRIPPED_CMDLINE = "imagectl.debug"
 
 
@@ -639,7 +629,6 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
     include(create_update_router(
         ctx, repo_dir, rt.server_base, rt.update_hooks,
         public_url=PUBLIC_UPDATE_URL))
-    include(create_branding_router(ctx, rt.data_dir))
     include(create_hostcfg_router(ctx, rt.data_dir, rt.console_tls, rt.host_hooks))   # #153
     # ‏#690: admin RFB proxy + settings — ה-HTTP שלו admin_only ממילא.
     app.include_router(create_monitor_router(ctx))
@@ -650,12 +639,6 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
     # ‏#980: כיבוי החדר + היסטוריית סבבים — קונסולה בלבד, לא בסוכן.
     include(create_room_console_router(ctx))
     app.mount("/console", StaticFiles(directory=STATIC_DIR, html=True), name="console")
-    # ‏#151: השומר לפי כתובת מקור, כשמוגדר — נרשם **לפני** ConsoleNoStaleCache
-    # (‏add_middleware ראשון = השכבה החיצונית ביותר, נבדקת ראשונה, כדי
-    # שבקשה חסומה לא תעבור אפילו דרך עיבוד התשובה של הקונסולה).
-    # ‏None/ריק משאיר את ההתנהגות של היום (‎--console-host בלבד).
-    if rt.console_allowed_networks:
-        app.add_middleware(ConsoleSourceGuard, networks=rt.console_allowed_networks)
     app.add_middleware(ConsoleNoStaleCache)
 
     @app.get("/")
@@ -684,6 +667,16 @@ def create_console_app(rt: ServerRuntime) -> FastAPI:
     # בייצור, והחדר הוא ממילא מסך ניהול. אפליקציה **אחת** בכל תהליך.
     _install_room_clock(app, rt)
     return app
+
+
+def create_alive_app(rt: ServerRuntime, fingerprint: str) -> FastAPI:
+    """‏#1310: המאזין "אתה שם?" של הראשי על 8443 — אפליקציה **נפרדת**, בלי
+    אף ראוטר של הקונסולה או הסוכן. השם הוא השם שהקונסולה מציגה בראש העץ,
+    והגרסה מאותו מקור כמו `/me` (‏`_server_version`)."""
+    from . import ports, primary_alive
+    return primary_alive.create_alive_app(
+        name=lambda: ports.server_name(rt.conn), version=_server_version(rt),
+        fingerprint=fingerprint)
 
 
 def create_app(

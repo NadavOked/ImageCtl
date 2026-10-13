@@ -26,7 +26,8 @@ function ctxWith(state) {
     pill: (cls, text) => `<pill ${cls}>${text}</pill>`,
   };
   const ctx = vm.createContext({UI, Date, Math, ...state});
-  for (const name of ['esc', 'fmtDate', 'tlsModeHe', 'tlsExpiryHtml', 'tlsCardHtml', 'hostnameCardHtml']) {
+  // ‏#1300: הכרטיסים בונים שורות dl.kv של המוקאפ (settingsKv) ופעולה קטנה כקישור (ghostBtn)
+  for (const name of ['esc', 'fmtDate', 'tlsModeHe', 'tlsExpiryHtml', 'tlsCardHtml', 'hostnameCardHtml', 'settingsKv', 'ghostBtn']) {
     vm.runInContext(functionSource(name), ctx);
   }
   vm.runInContext('const ESC_MAP = { "&": "&amp;", "<": "&lt;", ">": "&gt;", \'"\': "&quot;", "\'": "&#39;", "`": "&#96;" };', ctx);
@@ -52,7 +53,7 @@ test('unread /tls differs from a console that runs without TLS', () => {
 test('the card shows the expiry date, the issuer and an upload button', () => {
   const html = ctxWith({TLS_STATUS: {enabled: true, on_disk: cert(), pending_restart: false,
     covers_hostname: true, hostname: 'imagectl'}}).tlsCardHtml();
-  assert.match(html, /\[בתוקף עד=<span dir="ltr">\d\d\/\d\d\/\d{4}<\/span>\]/);
+  assert.match(html, /<dt>בתוקף עד<\/dt><dd><span dir="ltr">\d\d\/\d\d\/\d{4}<\/span><\/dd>/);
   assert.match(html, /חתומה בידי College CA/);
   assert.match(html, /onclick="tlsUploadSheet\(\)"/);
   assert.doesNotMatch(html, /<note/);
@@ -78,8 +79,7 @@ test('hostname card: unread differs from a value, and the value is LTR', () => {
   const unread = ctxWith({HOSTNAME: null, hostnameError: 'שגיאה 500'}).hostnameCardHtml();
   const ok = ctxWith({HOSTNAME: 'imagectl-ta', hostnameError: ''}).hostnameCardHtml();
   assert.match(unread, /<note err>.*לא נקרא/);
-  assert.match(ok, /<span class="mono" dir="ltr">imagectl-ta<\/span>/);
-  assert.match(ok, /onclick="hostnameSheet\(\)"/);
+  assert.match(ok, /<dt[^>]*>שם המארח<\/dt><dd[^>]*><span class="mono" dir="ltr">imagectl-ta<\/span> <button class="btn sm flat" type="button" onclick="hostnameSheet\(\)">שינוי<\/button><\/dd>/,'#1300: one kv row with a small action, like "TA  שינוי שם"');
 });
 
 test('the footer names a CA-signed certificate as such', () => {

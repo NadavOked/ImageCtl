@@ -55,14 +55,15 @@ function setup(tasks, records) {
 async function home(tasks, records=[record()]) {
   const s=setup(tasks, records);
   await s.run('loadHome()');
-  return {...s, html:s.run('home(0)')};
+  // ‏#1300: "מה קורה עכשיו" עבר מהסיכום ללשונית "משימות" — שתיהן נבדקות
+  return {...s, html:s.run('home(0)')+s.run('home(1)')};
 }
 const attention=html=>{
   const at=html.indexOf('id="home-attn"');
   if(at<0) return html.slice(0,html.indexOf('<div class="kpi '));   // "אין פריטים לטיפול" / "לא נקראו"
   return html.slice(at,html.indexOf('</details>',html.indexOf('</ul>',at)));
 };
-const nowCard=html=>html.slice(html.indexOf('מה קורה עכשיו'));
+const nowCard=html=>html.slice(html.indexOf('<span>משימות'));
 
 test('#1253: a capture that is still running is not "needs attention" — its shrunk disk is named next to it in "now"',async()=>{
   for(const state of ['running','pending']) {
@@ -75,7 +76,8 @@ test('#1253: a capture that is still running is not "needs attention" — its sh
 test('#1253: a capture that finished or failed with the record still open keeps the existing warning, word for word',async()=>{
   for(const state of ['done','failed','cancelled']) {
     const {html}=await home([capture({state})]);
-    assert.match(attention(html),/<b>דיסק מכווץ<\/b> — HP-BUILD · דיסק 2 כווץ לקליטה ולא הוחזר לגודלו\. .*selectPageById\(&#39;machines&#39;\)|<b>דיסק מכווץ<\/b> — HP-BUILD · דיסק 2 כווץ לקליטה ולא הוחזר לגודלו\. .*selectPageById\('machines'\)/,state);
+    // ‏#1300: הפעולה — כפתור בעמודה נפרדת, לא קישור בתוך הטקסט
+    assert.match(attention(html),/<b>דיסק מכווץ<\/b> — HP-BUILD · דיסק 2 כווץ לקליטה ולא הוחזר לגודלו\.<\/div><button class="btn sm flat" onclick="selectPageById\('machines'\)">למחשבים<\/button>/,state);
     assert.doesNotMatch(html,/יוחזר בסוף הקליטה/,state);
   }
 });

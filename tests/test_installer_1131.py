@@ -412,6 +412,9 @@ def _fake_repo(tmp_path: Path, *, live_ok: bool, payload_ok: bool = True) -> Pat
     (repo / "tools" / "boot-payload-build.sh").write_text(
         '#!/usr/bin/env bash\nprintf "boot-payload-build %s\\n" "$*" >> "$FAKE_LOG"\n',
         encoding="utf-8", newline="\n")
+    # ‏#1277: אימות החתימה נבדק ב-test_release_signing_1277; כאן — תג "חתום".
+    (repo / "tools" / "verify-release-tag.py").write_text(
+        'print("signed: stub SHA256:stub")\n', encoding="utf-8", newline="\n")
     return repo
 
 

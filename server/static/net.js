@@ -293,22 +293,7 @@ function ago(iso) {
   return iso.slice(0, 10);
 }
 
-/* #400 — "איפה המכונה הזאת עכשיו באתחול".
-
-   מחשב שיכפול חסר-ראש שנתקע בין תפריט ה-GRUB ל-hello לא השאיר עד היום
-   שום עקבה, ו"נראה לאחרונה" לבדו אמר רק שהוא דיבר פעם. העמודה הזאת
-   נוקבת ב**שלב האחרון שהגיע**, וכשהוא תקוע — בשם השלב ש**לא** הגיע. */
-function bootWhere(b) {
-  if (!b) return `<span style="color:var(--muted)">—</span>`;
-  const when = b.seconds === null
-    ? ` <span class="tag warn">זמן לא נקרא</span>`
-    : ` <small style="color:var(--muted)">· ${esc(sinceSeconds(b.seconds))}</small>`;
-  const stuck = b.stalled
-    ? `<br><span class="tag warn">נעצר לפני: ${esc(b.next_label)}</span>` : "";
-  return `<b>${esc(b.label)}</b>
-    <small style="color:var(--muted)">(${b.index}/${b.total})</small>${when}${stuck}`;
-}
-
+/* #400 — "כמה זמן עבר" לשלב האתחול האחרון (שלב האתחול — במגירת המחשב, ‏bootCell). */
 function sinceSeconds(seconds) {
   if (seconds < 90) return `לפני ${Math.round(seconds)} שנ'`;
   if (seconds < 3600) return `לפני ${Math.round(seconds / 60)} דק'`;

@@ -13,7 +13,10 @@
 typedef enum { UIEV_NONE = 0, UIEV_CHAR, UIEV_KEY, UIEV_MOVE, UIEV_CLICK, UIEV_SCROLL } EvType;
 enum { KEYSYM_TAB = 1, KEYSYM_BACKTAB, KEYSYM_ENTER, KEYSYM_BACKSPACE, KEYSYM_ESC,
        KEYSYM_UP, KEYSYM_DOWN, KEYSYM_LEFT, KEYSYM_RIGHT,
-       KEYSYM_LAYOUT /* #1245: Alt+Shift -- switch the typing language */ };
+       KEYSYM_LAYOUT /* #1245: Alt+Shift -- switch the typing language */,
+       KEYSYM_CAPS,  /* #1203: Caps Lock pressed; Event.caps is the new state */
+       KEYSYM_F1, KEYSYM_F2, KEYSYM_F3, KEYSYM_F4, KEYSYM_F5, KEYSYM_F6,   /* #1203: the */
+       KEYSYM_F7, KEYSYM_F8, KEYSYM_F9, KEYSYM_F10, KEYSYM_F11, KEYSYM_F12 /* server screen */ };
 
 typedef struct {
     EvType type;
@@ -25,6 +28,9 @@ typedef struct {
     int he;             /* EV_CHAR (#1245): the same key in SI-1452, a Unicode code
                          * point -- a Hebrew letter on the base level; == ch with
                          * Shift and on the keys the two layouts share */
+    int caps;           /* #1203: Caps Lock when the event was read (1 = on). ch is
+                         * NOT changed by it -- the station screens ignore Caps Lock
+                         * as before; the server screen applies it (dcui_token) */
 } Event;
 
 typedef struct Input Input;
@@ -42,6 +48,8 @@ int input_fill_pollfds(Input *in, struct pollfd *out, int max);
 /* Read whatever is ready; then drain with input_next(). */
 void input_pump(Input *in, const struct pollfd *fds, int n);
 int input_next(Input *in, Event *out);
+/* #1203: Caps Lock now (1 = on), from the LED at open and every press since. */
+int input_caps(const Input *in);
 void input_close(Input *in);
 
 #endif

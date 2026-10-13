@@ -514,6 +514,43 @@ def test_cmdline_reads_only_server_and_mode(tmp_path):
     assert "ses_a91f" not in vars_dump
 
 
+def test_debug_flag_is_an_unknown_parameter(tmp_path):
+    """‏#1303: מעטפת הניפוי `imagectl.debug=1` נמחקה מהמוצר. מי שמוסיף
+    אותה בעריכת GRUB ליד המחשב מקבל את מה שמקבל כל פרמטר imagectl לא
+    מוכר — אזהרה ביומן, ושום משתנה סביבה שקוד כלשהו יכול להישען עליו."""
+    cmdline = tmp_path / "cmdline"
+    cmdline.write_text("quiet imagectl.server=10.0.0.1:8080 imagectl.debug=1\n")
+    run = tmp_path / "run"
+    run.mkdir()
+    out = sh(
+        f'export CMDLINE_FILE={posix(cmdline)!r} RUN_DIR={posix(run)!r}; '
+        f'. {posix(AGENT)}/lib/common.sh; parse_cmdline; '
+        f'set | grep "^IMAGECTL_" || true'
+    )
+    assert "ignoring unknown kernel parameter: imagectl.debug=1" in out
+    assert "IMAGECTL_DEBUG" not in out
+
+
+# מעטפת שקוראת פקודות ממסוף: `sh < /dev/tty2`, ‏`ash </dev/ttyS0`, או getty.
+TERMINAL_SHELL = re.compile(
+    r"\b(?:ba|a|da)?sh\b[^|;&\n]*<\s*/dev/tty|\bgetty\b|\bcttyhack\b")
+
+
+def test_agent_offers_no_shell_on_any_terminal():
+    """‏#1303: הסוכן רץ כ-root על מכונה שעומדת בכיתה. אף קובץ של הסוכן
+    שנארז ל-initramfs אינו פותח מעטפת על מסוף — לא מאחורי דגל בשורת
+    הקרנל ולא בלעדיו (עיקרון 2: שורת הקרנל נושאת רק את השרת ואת מצב
+    השחזור). ‏`init` ו-`imagectl-agent` נכללים ברשימה."""
+    agent_files = [p for p in SH_FILES if p.is_relative_to(AGENT)]
+    assert {p.name for p in agent_files} >= {"init", "imagectl-agent", "common.sh"}
+    offenders = [
+        f"{p.relative_to(REPO).as_posix()}: {m.group(0)}"
+        for p in agent_files
+        for m in TERMINAL_SHELL.finditer(p.read_text(encoding="utf-8"))
+    ]
+    assert offenders == []
+
+
 # --- hooks של overlay מעבדה/אתר (#1266) ----------------------------------------
 # ‏SSH יצא מהמוצר. הגישה לטכנאי במעבדה היא overlay מחוץ לריפו; המוצר נותן
 # רק מנגנון כללי: ‏IMAGECTL_EXTRA_OVERLAY בבנאי, ו-hooks שרצים אחרי DHCP.

@@ -16,10 +16,14 @@ function setup() {
       setAttribute(k,v){this.attrs[k]=String(v);},removeAttribute(k){delete this.attrs[k];},getAttribute(k){return this.attrs[k]??null;},
       closest(sel){return sel==='#netTA'&&inNet?{}:null;},hasAttribute(){return false;},style:{},dataset:{},addEventListener(){},removeEventListener(){}};
   };
-  const nodes={network:mk('network',{'data-page':'network'}),diagram:mk('diagram',{'data-net-tab':'0'},true),nic:mk('nicNode',{},true),dist:mk('dist',{'data-net-tab':'2'},true),
+  const nodes={network:mk('network',{'data-page':'network'}),diagram:mk('diagram',{'data-net-tab':'0'},true),nic:mk('nic',{'data-net-tab':'1'},true),dist:mk('dist',{'data-net-tab':'2'},true),
     ports:mk('ports',{'data-page':'ports'},true),home:mk('home',{'data-page':'home'})};
+  // ‏#1300: הסימון הרך הולך במעלה העץ האמיתי (box.inventory-children → השורה שלפניו), לא "#netTA" קשיח
+  const netTA={classList:{contains:(c)=>c==='inventory-children'},previousElementSibling:nodes.network,parentElement:null,hasAttribute:()=>false,style:{}};
+  for(const k of ['diagram','nic','dist','ports']) nodes[k].parentElement=netTA;
+  nodes.network.cls.add('inventory-node');
   const all=Object.values(nodes);
-  const bySel={'.inventory-node[data-net-tab="0"]':nodes.diagram,'#nicNode':nodes.nic,'.inventory-node[data-net-tab="2"]':nodes.dist,'.inventory-node[data-page="ports"]':nodes.ports,
+  const bySel={'.inventory-node[data-net-tab="0"]':nodes.diagram,'.inventory-node[data-net-tab="1"]':nodes.nic,'.inventory-node[data-net-tab="2"]':nodes.dist,'.inventory-node[data-page="ports"]':nodes.ports,
     '.inventory-node[data-page="network"]':nodes.network,'.inventory-node[data-page="home"]':nodes.home};
   const content={innerHTML:''};
   const generic=()=>({value:'',style:{},dataset:{},classList:{add(){},remove(){},contains:()=>false,toggle(){}},setAttribute(){},removeAttribute(){},addEventListener(){},removeEventListener(){},querySelector:()=>null,querySelectorAll:()=>[]});

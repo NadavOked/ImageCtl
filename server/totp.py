@@ -52,7 +52,7 @@ def verify_totp(secret: str, code: str, *, window: int = WINDOW,
     return None
 
 
-def otpauth_url(username: str, secret: str, issuer: str = "ImageCtl") -> str:
+def otpauth_url(username: str, secret: str, issuer: str = "ImageSrv") -> str:
     from urllib.parse import quote
     label = f"{quote(issuer)}:{quote(username)}"
     return f"otpauth://totp/{label}?secret={secret}&issuer={quote(issuer)}"

@@ -92,8 +92,8 @@ def paired(server, secondary, tmp_path):
 def _wait(admin, nid, tid, timeout=30.0) -> dict:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        rows = admin.get(f"/api/console/storage-nodes/{nid}/transfers").json()
-        row = next(r for r in rows if r["id"] == tid)
+        rows = admin.get("/api/console/storage-transfers").json()
+        row = next(r for r in rows if r["id"] == tid and r["node_id"] == nid)
         if row["state"] in ("done", "failed"):
             return row
         time.sleep(0.1)

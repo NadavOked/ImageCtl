@@ -52,7 +52,7 @@ def test_a_user_is_created_on_the_secondary_and_journaled_on_both_sides(server, 
     resp = _write(server, paired, "POST", "/users",
                   {"username": "haifa-op", "password": "Haifa!pass#12345", "role": "deploy"})
     assert resp.status_code == 200, resp.text
-    assert users.flags(secondary["conn"], "haifa-op") is not None
+    assert users.lookup(secondary["conn"], "haifa-op") is not None
     assert all(u["username"] != "haifa-op" for u in users.list_users(server["ctx"].conn)), \
         "הראשי לא נגע במשתמשים שלו"
     primary_rows = _journal(server["ctx"].conn)
@@ -68,7 +68,7 @@ def test_a_user_is_edited_and_deleted_on_the_secondary(server, secondary, paired
     users.create(secondary["conn"], "temp", "Temp-pass-12345", "deploy", by="test",
                  check_policy=False)
     assert _write(server, paired, "PUT", "/users/temp", {"role": "admin"}).status_code == 200
-    assert users.flags(secondary["conn"], "temp") is not None
+    assert users.lookup(secondary["conn"], "temp") is not None
     assert next(u for u in users.list_users(secondary["conn"]) if u["username"] == "temp")["role"] == "admin"
     assert _write(server, paired, "DELETE", "/users/temp").status_code == 200
     assert all(u["username"] != "temp" for u in users.list_users(secondary["conn"]))

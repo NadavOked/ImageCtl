@@ -41,10 +41,10 @@ function setup() {
     '/net':[
       {mac:'c8:d9:d2:0b:fe:32',ip:'10.44.12.20',description:'',first_seen:'2026-09-01T08:00:00Z',last_seen:minutesAgo(180),registered:true,name:'בנייה 1',group_id:'grp_BUILD',group_label:'מחשבי בנייה',role:'build',boot:{step:'agent-hello',label:'לפני ה-hello הראשון',index:9,total:9,seconds:10800,next_step:null,next_label:'hello לשרת',stalled:false}},
       {mac:'a0:48:1c:8a:18:40',ip:'10.44.12.118',description:'',first_seen:'2026-09-01T08:00:00Z',last_seen:minutesAgo(9),registered:true,name:'מחשב 1',group_id:'grp_CLONERS',group_label:'מחשבי שיכפול',role:'cloner',boot:null},
-      {mac:'78:ac:c0:9b:11:c2',ip:'10.44.12.59',description:'',first_seen:'2026-09-01T08:00:00Z',last_seen:minutesAgo(9),registered:true,name:'מחשב 2',group_id:'grp_CLONERS',group_label:'מחשבי שיכפול',role:'cloner',boot:{step:'entry',label:'GRUB נכנס לערך ImageCtl',index:2,total:9,seconds:540,next_step:'http-ok',next_label:'מודול ה-HTTP נטען',stalled:true}},
+      {mac:'78:ac:c0:9b:11:c2',ip:'10.44.12.59',description:'',first_seen:'2026-09-01T08:00:00Z',last_seen:minutesAgo(9),registered:true,name:'מחשב 2',group_id:'grp_CLONERS',group_label:'מחשבי שיכפול',role:'cloner',boot:{step:'entry',label:'GRUB נכנס לערך ImageSrv',index:2,total:9,seconds:540,next_step:'http-ok',next_label:'מודול ה-HTTP נטען',stalled:true}},
       {mac:'b4:2e:99:07:1a:c1',ip:'10.44.12.101',description:'',first_seen:'2026-09-01T08:00:00Z',last_seen:minutesAgo(1),registered:true,name:'01',group_id:'grp_LAB303',group_label:'כיתה 303 — סייבר',role:'classroom',boot:null},
       {mac:'b4:2e:99:07:1a:c2',ip:'10.44.12.102',description:'',first_seen:'2026-09-01T08:00:00Z',last_seen:minutesAgo(1),registered:true,name:'02',group_id:'grp_LAB303',group_label:'כיתה 303 — סייבר',role:'classroom',boot:null},
-      {mac:'de:ad:be:ef:00:01',ip:'10.44.12.187',description:'מדפסת?',first_seen:today+'T07:00:00Z',last_seen:minutesAgo(30),registered:false,name:null,group_id:null,group_label:null,role:null,boot:{step:'menu',label:'תפריט האתחול נמסר',index:1,total:9,seconds:1800,next_step:'entry',next_label:'GRUB נכנס לערך ImageCtl',stalled:true}}],
+      {mac:'de:ad:be:ef:00:01',ip:'10.44.12.187',description:'מדפסת?',first_seen:today+'T07:00:00Z',last_seen:minutesAgo(30),registered:false,name:null,group_id:null,group_label:null,role:null,boot:{step:'menu',label:'תפריט האתחול נמסר',index:1,total:9,seconds:1800,next_step:'entry',next_label:'GRUB נכנס לערך ImageSrv',stalled:true}}],
     '/disk-failures':[{id:7,session_id:'r15',mac:'78:ac:c0:9b:11:c2',dev:'sdc',serial:'S5Y2NX0R12345',port:3,disk_number:3,ata_port:'ata3',at:'2026-09-15T10:00:00Z',cause:'cable',error:'ATA timeout',ata_log:['ata3.00: exception Emask','ata3: hard resetting link','ata3.00: failed command: WRITE FPDMA QUEUED']}],
     '/shrink-records':[],
     '/monitor/machines':[
@@ -193,19 +193,24 @@ test('the machine drawer: header line, actions (monitor, WoL for the room, "requ
   run("openMachineDetail('78%3Aac%3Ac0%3A9b%3A11%3Ac2')");
   assert.equal(node('#drawerTitle').textContent,'מחשב 2');
   let html=node('#drawerBody').innerHTML; balanced(html);
-  assert.match(html,/class="page drw"/); assert.match(html,/מחשב שיכפול · מחשבי שיכפול · <span class="mono">78:ac:c0:9b:11:c2<\/span> · <span class="mono">10.44.12.59<\/span> · נראה לפני 9 דק&#39;/);
-  assert.doesNotMatch(html,/monitorMachine\(/,'no monitor in the drawer — only on the monitor page'); assert.match(html,/wakeMachine\('78%3Aac%3Ac0%3A9b%3A11%3Ac2'\)">WoL</,'#984: per-machine WoL in the cloner drawer'); assert.doesNotMatch(html,/wakeRoom/);
-  assert.match(html,/renameMachine\(/); assert.match(html,/rebootMachine\('78%3Aac%3Ac0%3A9b%3A11%3Ac2'\)">אתחול מרחוק</,'#977 §4'); assert.match(html,/editMachineMac\('78%3Aac%3Ac0%3A9b%3A11%3Ac2'\)">עריכת MAC</,'#977 §5');
+  // ‏#1300 (console-full.html W.machDrawer): משנה קצרה (תפקיד · IP · MAC) ותגיות — מצב, דיסקים, אדום
+  assert.match(html,/class="page drw"/); assert.match(html,/<div class="obj-sub">מחשב שיכפול · <span class="mono">10.44.12.59<\/span> · <span class="mono">78:ac:c0:9b:11:c2<\/span><span class="n-meta"><span class="n-chip ">מחובר<\/span><span class="n-chip n">3 דיסקים<\/span><span class="n-chip d">דיסק אדום<\/span><\/span><\/div>/);
+  // הפרטים מקובצים (לא רשימה אחת): מצב עכשיו · זיהוי ורשת · מערכת וחומרה · בריאות המכונה
+  for(const g of ['זיהוי ורשת','מערכת וחומרה','בריאות המכונה']) assert.match(html,new RegExp('<div class="mgrp"><div class="grp">'+g));
+  assert.match(html,/<span class="k">קבוצה<\/span><span class="v">מחשבי שיכפול <a[^>]*moveMachineSheet\(/); assert.match(html,/<span class="k">נראה לאחרונה<\/span><span class="v">לפני 9 דק&#39;/);
+  assert.match(html,/class="btn primary" (onclick="monitorMachine\('78%3Aac%3Ac0%3A9b%3A11%3Ac2'\)"|disabled title="[^"]+")>פתח במוניטור</,'#1300 (Nadav 12/10): the primary opens the machine viewer, or says why it cannot');
+  assert.match(html,/<div class="grp-acts"><button class="btn sm" onclick="wakeMachine\('78%3Aac%3Ac0%3A9b%3A11%3Ac2'\)">WoL</,'#984: per-machine WoL in the cloner drawer, next to its state'); assert.doesNotMatch(html,/wakeRoom/);
+  assert.match(html,/renameMachine\(/); assert.match(html,/rebootMachine\('78%3Aac%3Ac0%3A9b%3A11%3Ac2'\)">אתחול מרחוק</,'#977 §4'); assert.match(html,/editMachineMac\('78%3Aac%3Ac0%3A9b%3A11%3Ac2'\)">עריכה</,'#977 §5 — next to the MAC');
   assert.doesNotMatch(html,/בקרוב/,'#977: nothing in the drawer is "soon" any more');
   assert.match(html,/<span class="k">קושחה<\/span><span class="v"><span class="muted">לא דווח<\/span>/,'#977 §7: old agent / no field = not reported, not "off"');
   assert.match(html,/<span class="k">סוכן<\/span><span class="v"><span class="muted">לא דווח<\/span>/);
   assert.match(html,/note err"[^]*<b>דיסק 3 אדום<\/b> — <span class="mono">S5Y2NX0R12345<\/span> נכשל בכתיבה .*סיבה: כבל\/חריץ SATA 2 \(ATA timeout\)/);
   assert.match(html,/clearDiskFailure\(7\)">נקה אחרי החלפה</); assert.match(html,/<summary>3 שורות קרנל<\/summary><pre class="ata-log">ata3.00: exception Emask/);
   assert.match(html,/<span class="k">מה המכונה עושה<\/span><span class="v"><span class="st ok">מחובר</);
-  assert.match(html,/שלב אתחול אחרון<\/span><span class="v"><span class="st warn">GRUB נכנס לערך ImageCtl \(2\/9\) · לפני 9 דק&#39;<\/span><span class="sub">נעצר לפני: מודול ה-HTTP נטען/);
+  assert.match(html,/שלב אתחול אחרון<\/span><span class="v"><span class="st warn">GRUB נכנס לערך ImageSrv \(2\/9\) · לפני 9 דק&#39;<\/span><span class="sub">נעצר לפני: מודול ה-HTTP נטען/);
   assert.match(html,/<span class="k">הערה<\/span><span class="v">ליד הדלת/);
   assert.doesNotMatch(html,/SSH|SHA256:/,'#1266: no SSH host-key row in the drawer');
-  assert.match(html,/דיסקים \(דיווח אחרון, לפני 9 דק&#39;\)/);
+  assert.match(html,/<div class="sec" data-cnt="3">דיסקים<\/div><div class="cap">דיווח אחרון לפני 9 דק&#39;<\/div>/,'#1300: the disks tab carries its count');
   assert.match(html,/<div class="disk ok"><b>דיסק 1<\/b><span>SATA 0<\/span><span><bdi dir="ltr">238 GB<\/bdi><\/span><span class="cap">870 EVO · <span class="mono">S5Y30<\/span><\/span><span class="cap">SMART תקין</);
   assert.match(html,/<div class="disk "><b>דיסק 2<\/b><span>SATA 1<\/span>[^]*SMART לא נבדק/,'no SMART = grey, not green');
   assert.match(html,/<div class="disk err"><b>דיסק 3<\/b><span>SATA 2<\/span>[^]*אדום — כבל\/חריץ SATA 2/);
@@ -226,8 +231,8 @@ test('the machine drawer: header line, actions (monitor, WoL for the room, "requ
   run("openMachineDetail('a0:48:1c:8a:18:40')"); html=node('#drawerBody').innerHTML;
   assert.match(html,/המכונה דיווחה — ואין בה אף כונן/); assert.match(html,/2 חריצים מוגדרים/);
   run("openMachineDetail('b4:2e:99:07:1a:c3')"); html=node('#drawerBody').innerHTML;
-  assert.match(html,/title="v2">WoL — לתחנות כיתה ב-v2</,'classroom: WoL is v2 (#984), not a button'); assert.doesNotMatch(html,/monitorMachine/); assert.match(html,/st warn">חסר בסבב</);
-  assert.match(html,/title="v2">אתחול מרחוק — לתחנות כיתה ב-v2</,'classroom: reboot is v2 too'); assert.doesNotMatch(html,/rebootMachine\(/);
+  assert.match(html,/title="v2">WoL ואתחול מרחוק — לתחנות כיתה ב-v2</,'classroom: WoL (#984) and reboot are v2, not buttons'); assert.doesNotMatch(html,/monitorMachine|openMachineMonitor/); assert.match(html,/st warn">חסר בסבב</);
+  assert.doesNotMatch(html,/rebootMachine\(|wakeMachine\(/);
 });
 
 test('#977 §7: firmware, Secure Boot and the agent version from /machines in "what now" — measured, unknown and not reported are three texts', () => {
@@ -317,7 +322,7 @@ test('"seen on the network" tab: /net as a datagrid with "register" as the prima
   assert.equal((html.match(/<table class="dg"/g)||[]).length,1);
   const unreg=between(html,'data-mac="de:ad:be:ef:00:01"');
   assert.match(unreg,/pill warn">לא רשום</); assert.match(unreg,/btn sm primary" onclick="openAddMachine\(\{mac:'de%3Aad%3Abe%3Aef%3A00%3A01'\}\)">רשום</);
-  assert.match(unreg,/netDeviceDescribe\(/); assert.match(unreg,/netDeviceForget\(/); assert.match(unreg,/st warn">תפריט האתחול נמסר \(1\/9\) · לפני 30 דק&#39;<\/span><span class="sub">נעצר לפני: GRUB נכנס לערך ImageCtl/);
+  assert.match(unreg,/netDeviceDescribe\(/); assert.match(unreg,/netDeviceForget\(/); assert.match(unreg,/st warn">תפריט האתחול נמסר \(1\/9\) · לפני 30 דק&#39;<\/span><span class="sub">נעצר לפני: GRUB נכנס לערך ImageSrv/);
   const reg=between(html,'data-mac="c8:d9:d2:0b:fe:32"','data-mac="a0:48:1c:8a:18:40"');
   assert.match(reg,/name">בנייה 1<\/span><span class="sub">מחשבי בנייה</); assert.match(reg,/openMachineDetail\(/); assert.doesNotMatch(reg,/>רשום</);
   assert.match(html,/netDeviceAdd\(\)">\+ הוספה ידנית</);
@@ -362,7 +367,7 @@ test('empty and unread states, and the old page is gone (machines.js, sub-tabs, 
   assert.equal(run('typeof machineAdminPage'),'undefined'); assert.equal(run('typeof loadMachinesTab'),'undefined'); assert.equal(run('typeof renderSeenDevices'),'undefined');
   assert.ok(!fs.existsSync(path.join(root,'machines.js')));
   const page=fs.readFileSync(path.join(root,'index.html'),'utf8');
-  assert.doesNotMatch(page,/machines\.js/); assert.match(page,/onclick="treeNavToggle\(this,'machineTree',function\(\)\{MACHINES_FILTER=null;MACHINES_CLASS=null;selectPageById\('machines'\)\}\)"/,'the tree node resets both the filter and the open class');
+  assert.doesNotMatch(page,/machines\.js/); assert.match(page,/onclick="treeNavToggle\(this,'machineTree',function\(\)\{MACHINES_FILTER=null;MACHINES_CLASS=null;MACHINES_ROLE=null;selectPageById\('machines'\)\}\)"/,'the tree node resets the filter, the open class and the role (#1300: from "מחשבי בנייה" a click on מחשבים shows all machines)');
 });
 
 test('deploy role: the page is not allowed at all, and the tree node is admin-only', () => {
@@ -370,7 +375,10 @@ test('deploy role: the page is not allowed at all, and the tree node is admin-on
   assert.equal(run('pageAllowed("machines")'),false);
   const page=fs.readFileSync(path.join(root,'index.html'),'utf8');
   assert.match(page,/data-page="machines"[^>]*>[^]*?<span data-admin/);
-  assert.match(page,/id="machineTree" class="inventory-children" role="group" data-admin hidden/);
+  assert.match(page,/id="machineTree" class="inventory-children" role="group" data-admin>/,'#1300: open by default, like console-full.html (S.open[id] !== false)');
+  // ‏#1300: "מחשבי בנייה" / "מחשבי שיכפול" הם עלים — בלי חץ ובלי תת-עץ, לחיצה = הדף המסונן, והעלה עצמו מודגש
+  for (const role of ['build','cloner']) assert.match(page,new RegExp(`data-role="${role}" onclick="selectMachinesRole\\('${role}',this\\)" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span>`),role);
+  assert.doesNotMatch(page,/id="(buildTree|clonerTree|classesTree|imagesTree|nicTree)"/,'no sub-trees under leaves');
 });
 
 // --- נדב 17/09: צומת-אב בעץ = דף המחשבים ממוקד לתפקיד, בלי "נראו ברשת" ---------

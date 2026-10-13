@@ -202,6 +202,15 @@ git -C "$REPO" archive --format=tar --prefix=imagectl-src/ --mtime="@$EPOCH" "$C
     | tar -x -C "$ISO_TREE" || die "git archive נכשל"
 [[ -f "$ISO_TREE/imagectl-src/server/main.py" && -f "$ISO_TREE/imagectl-src/install/setup-boot-server.sh" ]] \
     || die "imagectl-src חסר את server/main.py או install/setup-boot-server.sh"
+# ‏#1277: כפתור העדכון מסרב לכל תג שאינו חתום במפתח שב-install/release-signers
+# של העץ המותקן. ISO בלי מפתח שם = שרת שלא יתעדכן לעולם — עוצרים כאן ולא שם.
+signer_keys=0
+while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*(#|$) ]] || signer_keys=$((signer_keys + 1))
+done < "$ISO_TREE/imagectl-src/install/release-signers" \
+    || die "imagectl-src/install/release-signers לא נקרא — שרת מה-ISO לא יוכל לאמת אף עדכון"
+((signer_keys > 0)) || die "אין מפתח ב-install/release-signers של $TAG — שרת מה-ISO היה מסרב לכל עדכון (docs/server-install.md, חתימה על גרסאות)"
+say "release-signers: $signer_keys מפתחות חתימה — כפתור העדכון יאמת מולם"
 # ‏#1185: כפתור העדכון (server/update.py) הוא `git describe` / `git fetch --tags`
 # / `git checkout <tag>` על /opt/imagectl. עץ מ-`git archive` הוא עץ בלי
 # ‏.git — השרת הראשון שהותקן מה-ISO (20/09) הציג "לא ידועה (אין תגית git
@@ -244,7 +253,9 @@ grep -q '^\$6\$' "$ISO_TREE/imagectl/root-password.hash" || die "גיבוב ה-r
 
 # הקרנל: מה-linux-image שב-pool (זה שהמותקן יקבל), והמודולים ב-initramfs
 # חייבים להיות שלו — מודול של קרנל אחר לא נטען, וזה נראה כמו "אין דיסקים".
-kdeb=$(find "$ISO_TREE/pool" -name 'linux-image-6*-amd64_*.deb' | LC_ALL=C sort | tail -n1)
+# הגבוה לפי גרסה, לא לפי נתיב: ה-netinst מביא קרנל ישן ב-pool/main/l/, ו-pool
+# שלנו מביא חדש יותר ב-pool/main/imagectl/ — מיון נתיבים בחר את הישן (12/10).
+kdeb=$(find "$ISO_TREE/pool" -name 'linux-image-6*-amd64_*.deb' -printf '%f\t%p\n' | sort -V | tail -n1 | cut -f2)
 [[ -n "$kdeb" ]] || die "אין linux-image-6.*-amd64 ב-pool — packages.txt מבקש linux-image-amd64?"
 KTMP="$WORK/kernel"; rm -rf "$KTMP"; install -d "$KTMP"
 dpkg-deb -x "$kdeb" "$KTMP" || die "dpkg-deb -x $kdeb נכשל"
@@ -293,7 +304,7 @@ PY
 n_grub=$(grep -c '^menuentry ' "$ISO_TREE/boot/grub/grub.cfg" || true)
 [[ "$n_grub" == 1 ]] || die "GRUB: $n_grub ערכים במקום אחד — רק המתקין החי (#1190)"
 grep -q '^set timeout=0$' "$ISO_TREE/boot/grub/grub.cfg" || die "GRUB אינו עולה ישר למתקין (#1190)"
-grep -q "ImageCtl $TAG installer" "$ISO_TREE/boot/grub/grub.cfg" || die "כותרת ImageCtl חסרה מ-GRUB"
+grep -q "ImageSrv $TAG installer" "$ISO_TREE/boot/grub/grub.cfg" || die "כותרת ImageSrv חסרה מ-GRUB"
 grep -q '^ *linux */live/vmlinuz imagectl.mode=installer' "$ISO_TREE/boot/grub/grub.cfg" || die "GRUB אינו מעלה את /live/vmlinuz במצב installer"
 if grep -q 'install.amd\|preseed' "$ISO_TREE/boot/grub/grub.cfg" "$ISO_TREE/isolinux/imagectl.cfg"; then die "שרידי מתקין דביאן בתפריטים"; fi
 if grep -qE 'Graphical install|Advanced options|Accessible dark contrast' "$ISO_TREE/boot/grub/grub.cfg"; then

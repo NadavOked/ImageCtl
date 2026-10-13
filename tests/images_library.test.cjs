@@ -74,7 +74,7 @@ const dragEvent=(data)=>({preventDefault(){},currentTarget:{classList:{add(){},r
 
 test('the page is the datastore browser: header, three tabs, tree with counters, one datagrid', () => {
   const {run}=setup(); const html=run('images(0)'); balanced(html);
-  assert.match(html,/class="page"/); assert.match(html,/ספריית אימג&#39;ים/);
+  assert.match(html,/class="page aligned"/,'#1300: sticky header + card shadow'); assert.match(html,/ספריית אימג&#39;ים/);
   assert.match(html,/4 אימג'ים · 3 תיקיות/);
   assert.match(html,/688 GB<\/bdi> בשימוש · <bdi dir="ltr">312 GB<\/bdi> פנוי/);
   for(const t of ['קבצים','קליטות','אחסון']) assert.match(html,new RegExp('role="tab"[^>]*>'+t+'<'));
@@ -83,8 +83,12 @@ test('the page is the datastore browser: header, three tabs, tree with counters,
   assert.match(html,/כל האימג&#39;ים<\/span><span class="cnt">4</); assert.match(html,/Office<\/span><span class="cnt">2</);
   assert.match(html,/סייבר<\/span><span class="cnt">0</); assert.match(html,/ללא תיקייה<\/span><span class="cnt">1</);
   assert.equal((html.match(/<table class="dg kebab-col"/g)||[]).length,1);
-  for(const col of ['שם','מערכת','בשרת','מתאים לדיסק']) assert.match(html,new RegExp('<th>'+col+'</th>'));
-  for(const col of ['תיקייה','אימות','נוצר','בשימוש']) assert.match(html,new RegExp('<th class="c-opt">'+col+'</th>'),'console-full.html P.images: name, OS, size and fit stay; folder, state, date and use are secondary when the table is narrow');
+  // ‏#1300 (console-full.html imgCols): שם · מערכת · גודל · מתאים לדיסק · תיקייה · מצב · נקלט; מערכת, תיקייה ונקלט — משניות
+  for(const col of ['שם','גודל','מתאים לדיסק','מצב']) assert.match(html,new RegExp('<th>'+col+'</th>'));
+  for(const col of ['מערכת','תיקייה','נקלט']) assert.match(html,new RegExp('<th class="c-opt">'+col+'</th>'),'console-full.html P.images: OS, folder and date are secondary when the table is narrow');
+  assert.doesNotMatch(html,/<th[^>]*>(בשימוש|בשרת|אימות|נוצר)<\/th>/,'#1300: the old column set is gone; "in use" is in the image drawer');
+  assert.match(html,/<span class="fcrumb"><b>כל האימג'ים<\/b><\/span>/,'#1300: a prominent table title, not a tiny breadcrumb');
+  assert.match(html,/placeholder="חיפוש אימג'"/);
   assert.match(html,/<div class="card-h"><span>אימג&#39;ים<\/span><\/div>/,'stage 2: the card has a title');
   assert.match(html,/<span class="dskico"><svg[^>]*><ellipse/,'stage 2: an image row carries the disk icon');
   assert.doesNotMatch(html,/כללי בטיחות|פעולות מהירות|מטא־נתונים|>Up<|>Down<|>Edit</);
@@ -92,13 +96,17 @@ test('the page is the datastore browser: header, three tabs, tree with counters,
 
 test('rows: market disk fit includes the decimal requirement, null is a dash not 0, usage comes from /overview only', () => {
   const {run}=setup(); const html=run('images(0)');
-  assert.match(html,/title="254908301312 bytes"><bdi dir="ltr">256GB<\/bdi><\/span><span class="sub muted">נדרש לפחות 255 GB/);
-  assert.match(html,/title="255000000000 bytes"><bdi dir="ltr">256GB<\/bdi><\/span><span class="sub muted">נדרש לפחות 255 GB/);
+  // ‏#1300: "256 GB ומעלה" בשורה אחת (console-full.html fitsDisk)
+  assert.match(html,/title="254908301312 bytes"><b><bdi dir="ltr">256 GB<\/bdi><\/b> ומעלה<\/span><span class="sub muted">נדרש לפחות <bdi dir="ltr">255 GB<\/bdi>/);
+  assert.match(html,/title="255000000000 bytes"><b><bdi dir="ltr">256 GB<\/bdi><\/b> ומעלה<\/span><span class="sub muted">נדרש לפחות <bdi dir="ltr">255 GB<\/bdi>/);
+  assert.doesNotMatch(html,/<span class="sub">Windows 11 \+ Office<\/span>/,'#1300: low rows — no description under the name (it is in the drawer)');
   const teacher=html.slice(html.indexOf('img_a1b2c3'),html.indexOf('img_2c8e04'));
   assert.match(teacher,/class="muted">—<\/span>/); assert.doesNotMatch(teacher,/>0 GB</);
   const cad=html.slice(html.indexOf('img_2c8e04'),html.indexOf('img_lnx001'));
   assert.match(cad,/class="muted">—<\/span>/,'field absent (pre-#953 server) is unknown, not invented');
-  assert.match(html,/סבב פתוח · כיתה 303/); assert.match(html,/סבב שיכפול · גל 2/);
+  assert.doesNotMatch(html,/סבב פתוח · כיתה 303|סבב שיכפול · גל 2/,'#1300: usage is not a table column any more');
+  run('openImageDetail("img_7f3a91")');
+  assert.match(run('document.getElementById("drawerBody").innerHTML'),/<span class="n-chip n">בשימוש: סבב פתוח · כיתה 303<\/span>/,'usage comes from /overview only — now a chip at the top of the drawer');
   assert.equal((html.match(/st ok">sha256 אומת</g)||[]).length,4,'every image in the library was verified on entry');
   assert.doesNotMatch(html,/st ok">sha256 תקין/,'"תקין now" only after a scrub in this session');
   assert.match(html,/02\/09\/2026/); assert.match(html,/54\.0 GB/);
@@ -193,12 +201,15 @@ test('the image drawer: header line, actions, verification note, properties, par
   run('openImageDetail("img_lnx001")');
   assert.equal(node('#drawerTitle').textContent,'Ubuntu 24.04');
   let html=node('#drawerBody').innerHTML; balanced(html);
-  assert.match(html,/class="page drw"/); assert.match(html,/Linux \/ <span class="mono">img_lnx001<\/span> · לינוקס · נוצר <bdi dir="ltr">12\/09\/2026/);
+  // ‏#1300 (console-full.html W.imgDrawer): משנה קצרה (מערכת · גודל · נקלט מ-) ותגיות sha256 / בשימוש
+  assert.match(html,/class="page drw"/); assert.match(html,/<div class="obj-sub">לינוקס · <bdi dir="ltr">[^<]+<\/bdi> · נקלט <bdi dir="ltr">12\/09\/2026<\/bdi> מ-בנייה 1<span class="n-meta"><span class="n-chip ">sha256 אומת<\/span><span class="n-chip n">בשימוש: סבב שיכפול · גל 2<\/span><\/span><\/div>/);
+  assert.match(html,/<span class="k">מזהה<\/span><span class="v"><span class="mono">img_lnx001<\/span>/);
+  assert.ok(html.indexOf('<div class="sec">פרטים</div>')<html.indexOf('sha256 של כל מחיצה אומת'),'the sha256 note sits under the details (bottom of the overview)');
   assert.match(html,/class="btn primary" onclick="openRoundWithImage\('img_lnx001'\)">פתח סבב עם אימג' זה/,'console-full.html S148: the primary action opens a round with this image'); assert.match(html,/onclick="renameImage\('img_lnx001'\)">שינוי שם/); assert.match(html,/class="btn sm danger" onclick="deleteImage\('img_lnx001'\)">מחיקה…/); assert.match(html,/href="\/api\/console\/images\/img_lnx001\/download">הורדה/);
   assert.match(html,/sha256 של כל מחיצה אומת בכניסה לספרייה/); assert.match(html,/scrubImage\('img_lnx001'\)">הרץ עכשיו/);
   assert.match(html,/<span class="k">תיקייה<\/span><span class="v">Linux <a[^>]*>העבר/);
-  assert.match(html,/<span class="k">מחיצות<\/span><span class="v">3</);
-  assert.match(html,/<span class="k">שימוש<\/span><span class="v">סבב שיכפול · גל 2/);
+  assert.match(html,/<div class="sec" data-cnt="3">מחיצות<\/div>/,'#1300: the partition count is the tab counter');
+  assert.doesNotMatch(html,/<span class="k">(מחיצות|שימוש|נכנס לדיסק מ-)<\/span>/,'#1300: the overview is ~5 rows + "minimal drive"');
   assert.match(html,/טוען את טבלת המחיצות/,'before the manifest arrives: loading, not an empty table');
   assert.doesNotMatch(html,/דורש API/); assert.doesNotMatch(html,/Secure Boot/);
   assert.match(html,/נקלט ממחשב הבנייה בנייה 1 · sda/,'capture history from /tasks');
@@ -310,11 +321,14 @@ test('#972: the saved scrub result drives the column and the drawer; a scrub in 
 
 test('#972: rounds in the last 30 days — a number, "none" for a measured 0, and unknown for null or a server without the field', () => {
   const {run,node}=setup();
-  const usage=()=>node('#drawerBody').innerHTML.match(/<span class="k">שימוש<\/span><span class="v">(.*?)<\/span>(?:<span class="k">|<\/div>)/)[1];
+  // ‏#1300: הספירה — שורת "סבבים" בלשונית ההיסטוריה; "בשימוש עכשיו" — תגית בראש המגירה
+  const usage=()=>node('#drawerBody').innerHTML.match(/<span class="k">סבבים<\/span><span class="v">(.*?)<\/span><\/div>/)[1];
   run('IMAGES[3].rounds_30d=4; openImageDetail("img_lnx001")');
-  assert.match(usage(),/^סבב שיכפול · גל 2 · 4 סבבים ב-30 הימים האחרונים$/);
+  assert.match(usage(),/^4 סבבים ב-30 הימים האחרונים$/);
+  assert.match(node('#drawerBody').innerHTML,/n-chip n">בשימוש: סבב שיכפול · גל 2</);
   run('IMAGES[2].rounds_30d=0; openImageDetail("img_2c8e04")');
-  assert.match(usage(),/לא בסבב פעיל<\/span> · אין סבבים ב-30 הימים האחרונים$/);
+  assert.match(usage(),/^אין סבבים ב-30 הימים האחרונים$/);
+  assert.match(node('#drawerBody').innerHTML,/n-chip n">לא בסבב פעיל</);
   run('IMAGES[2].rounds_30d=1; openImageDetail("img_2c8e04")'); assert.match(usage(),/סבב אחד ב-30 הימים האחרונים/);
   run('IMAGES[2].rounds_30d=null; openImageDetail("img_2c8e04")'); assert.match(usage(),/לא ידוע/); assert.doesNotMatch(usage(),/אין סבבים|0 סבבים/);
   run('delete IMAGES[1].rounds_30d; openImageDetail("img_a1b2c3")'); assert.match(usage(),/לא ידוע/);
@@ -330,7 +344,7 @@ test('the capture list re-renders the page only when the tasks actually changed 
 test('the pages table owns the new page and the old renderer entry is gone', () => {
   const {run}=setup();
   assert.equal(run('pages.images.own'),true); assert.equal(JSON.stringify(run('pages.images.tabs')),JSON.stringify(['קבצים','קליטות','אחסון']));
-  assert.match(run('layout(pages.images,1)'),/class="page"/);
+  assert.match(run('layout(pages.images,1)'),/class="page aligned"/);
   assert.equal(run('typeof filterImagesFolder'),'undefined'); assert.equal(run('typeof reorderImage'),'undefined');
 });
 

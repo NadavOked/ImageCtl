@@ -10,8 +10,8 @@
   הדיווח (‏`build_progress`) מצרף אותם ליעד `failed` כמות שהם — הסיווג
   (כבל/דיסק) הוא של השרת, לא של הסוכן.
 * **באתחול**: ‏`disk_failures_refresh` קורא את `disk_failures` מתשובת
-  ה-hello (זיכרון השרת, לפי סידורי או חריץ), ו-`disk_failure_cause` /
-  ‏`last_clone_failed` עונים ממנו למסך הממתין ולשער — בלי `sgdisk -p`.
+  ה-hello (זיכרון השרת, לפי סידורי או חריץ), ו-`disk_failure_cause`
+  עונה ממנו למסך הממתין ולשער — בלי `sgdisk -p`.
 
 ‏jq אינו קיים בתחנת הפיתוח, ולכן ‏`json_get_join` (המקום היחיד שנוגע
 ב-jq) מזויף כאן ומדפיס מה ש-jq היה מדפיס; הביטוי עצמו רץ ב-`requires_jq`.
@@ -362,8 +362,8 @@ def test_a_disk_with_an_open_record_is_red_by_serial_or_by_slot(tmp_path):
         'disk_failures_refresh; echo "refresh=$?"; '
         'disk_port() { case "$1" in sda) printf 1 ;; sdb) printf 2 ;; sdc) printf 3 ;; esac; }; '
         'echo "a=$(disk_failure_cause sda)/$?"; echo "b=$(disk_failure_cause sdb)/$?"; '
-        'echo "c=$(disk_failure_cause sdc)/$?"; last_clone_failed sda; echo "red=$?"; '
-        'last_clone_failed sdc; echo "clean=$?"',
+        'echo "c=$(disk_failure_cause sdc)/$?"; disk_failure_cause sda >/dev/null; echo "red=$?"; '
+        'disk_failure_cause sdc >/dev/null; echo "clean=$?"',
         fake_jq("S3TWNE0JB04745||cable", "OTHER|2|disk"))
     assert "refresh=0" in out, out
     assert "a=cable/0" in out and "b=disk/0" in out and "c=/1" in out, out
@@ -388,7 +388,7 @@ def test_an_unreadable_answer_keeps_the_previous_memory_not_an_empty_one(tmp_pat
 def test_no_memory_at_all_is_not_red(tmp_path):
     run, out, _ = memory_run(
         tmp_path, None,
-        'disk_failures_refresh; echo "refresh=$?"; last_clone_failed sda; echo "red=$?"',
+        'disk_failures_refresh; echo "refresh=$?"; disk_failure_cause sda >/dev/null; echo "red=$?"',
         fake_jq())
     assert "refresh=1" in out and "red=1" in out, out
 
@@ -396,7 +396,7 @@ def test_no_memory_at_all_is_not_red(tmp_path):
 def test_an_answer_without_failures_is_read_as_clean(tmp_path):
     run, out, _ = memory_run(
         tmp_path, hello_answer(),
-        'disk_failures_refresh; echo "refresh=$?"; last_clone_failed sda; echo "red=$?"',
+        'disk_failures_refresh; echo "refresh=$?"; disk_failure_cause sda >/dev/null; echo "red=$?"',
         fake_jq())
     assert "refresh=0" in out and "red=1" in out, out
 

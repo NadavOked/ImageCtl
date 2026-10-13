@@ -100,19 +100,19 @@ test('the checks table shows all five states with their own colour — "not chec
   const {run}=setup(); run('current="health"');
   await run('loadHealth()');
   const html=run('health()'); balanced(html);
-  assert.match(html,/<table class="dg">/); assert.match(html,/<th>בדיקה<\/th><th>מצב<\/th><th>מה נמצא<\/th>/);
+  assert.match(html,/<table class="dg">/); assert.match(html,/<th>בדיקה<\/th><th>מצב<\/th><th>פירוט<\/th>/,'#1300: console-full.html P.health');
   assert.match(row(html,'השרת בכתובת ההפצה'),/class="pill ok">תקין</);
   assert.match(row(html,'מולטיקאסט (udp-sender)'),/class="pill warn">אזהרה</);
   assert.match(row(html,'פורט 69 (TFTP)'),/class="pill err">תקלה</);
   const unk=row(html,'עדכניות ה-shim');
   assert.match(unk,/class="pill unk">לא נבדק</); assert.doesNotMatch(unk,/pill ok/);
   assert.equal(run('healthStatusClass("unknown")'),'unk'); assert.equal(run('healthStatusLabel("unknown")'),'לא נבדק');
-  // מה נמצא — ה-detail של השרת כלשונו
-  assert.match(html,/אף אחד לא מגיש TFTP — מחשבים לא יעלו ב-PXE/);
-  // הכותרת: מונים ותג
-  assert.match(html,/9 בדיקות · זמן המדידה לא נמסר · 2 תקינות · 1 אזהרות · 4 תקלות · 1 כבויות · 1 לא נבדקו/,'#1000: no X-Health-Checked-At header → named, not the browser clock');
+  // פירוט — ‏#1300: שורה קצרה (עד " — " הראשון); ה-detail של השרת כלשונו נשאר מאחורי "פרטים"
+  assert.match(row(html,'פורט 69 (TFTP)'),/<span class="wrap">אף אחד לא מגיש TFTP<\/span><details class="tech"><summary>פרטים<\/summary><div>אף אחד לא מגיש TFTP — מחשבים לא יעלו ב-PXE<\/div><\/details>/);
+  // הכותרת: כמה בדיקות ומתי (הספירה לפי מצב — ב-KPI)
+  assert.match(html,/<div class="obj-sub"[^>]*>9 בדיקות · זמן המדידה לא נמסר<\/div>/,'#1000: no X-Health-Checked-At header → named, not the browser clock');
   assert.match(html,/class="pill err">תקלה</);
-  assert.match(html,/onclick="loadHealth\(\)">בדוק עכשיו</);
+  assert.match(html,/onclick="refreshPage\(\)"><svg[^]*?<\/svg> רענון</,'refreshPage runs pages.health.load (loadHealth) with feedback');
   // בלי מתגים ובלי הלשוניות הישנות
   assert.doesNotMatch(html,/ssh-body|class="switch|role="switch"/);
   assert.doesNotMatch(html,/role="tablist"/);
@@ -133,9 +133,11 @@ test('stage 3: KPI row (תקינים / באזהרה / תקלות) + "לא נבד
   assert.match(k,/<div class="kpi ok"><div class="l">תקינים<\/div><div class="v"><bdi dir="auto">2</);
   assert.match(k,/<div class="kpi warn"><div class="l">באזהרה<\/div><div class="v"><bdi dir="auto">1</);
   assert.match(k,/<div class="kpi err"><div class="l">תקלות<\/div><div class="v"><bdi dir="auto">4</);
-  assert.match(k,/<div class="l">לא נבדקו<\/div><div class="v"><bdi dir="auto">1</);
-  assert.match(k,/לא נבדק אינו תקין/);
-  assert.match(k,/<div class="l">כבויים \/ לא ישימים<\/div><div class="v"><bdi dir="auto">1</);
+  assert.match(k,/<div class="kpi warn"><div class="l">לא נבדקו<\/div><div class="v"><bdi dir="auto">1</,'#1300: three KPIs like the mockup — plus "not checked" whenever there is one (principle 5)');
+  assert.doesNotMatch(k,/כבויים \/ לא ישימים/,'#1300: off / n/a stay in their rows, not a tile');
+  const clean=setup({'/health':[check('server','השרת','ok','עונה'),check('x','ssh','off','כבוי')]}); clean.run('current="health"');
+  await clean.run('loadHealth()');
+  assert.equal((clean.run('health()').match(/<div class="kpi /g)||[]).length,3,'nothing unchecked → exactly the three KPIs of the mockup');
   // לא נקרא — אין KPI בכלל (לא "0 תקינים")
   const bad=setup({'/health':new Error('boom')}); bad.run('current="health"');
   return bad.run('loadHealth()').then(()=>{ assert.doesNotMatch(bad.run('health()'),/class="c12 kpis"/); });
@@ -145,7 +147,7 @@ test('stage 3: "תקלות פתוחות" lists bad, warn and unknown (worst firs
   const {run}=setup(); run('current="health"');
   await run('loadHealth()');
   const html=run('health()');
-  const card=html.slice(html.indexOf('תקלות פתוחות'));
+  const card=html.slice(html.indexOf('תקלות פתוחות'),html.indexOf('<span>שירותים'));
   assert.ok(card.indexOf('פורט 69 (TFTP)')<card.indexOf('מולטיקאסט (udp-sender)'),'errors before warnings');
   assert.ok(card.indexOf('מולטיקאסט (udp-sender)')<card.indexOf('עדכניות ה-shim'),'warnings before unchecked');
   assert.match(cell(card,'עדכניות ה-shim',400),/pill unk">לא נבדק</);
@@ -213,16 +215,15 @@ test('stage 3: update card (moved to settings): installed/previous/last-check, c
   await run('loadSettingsData()');
   let html=run('settings()');
   const card=cell(html,'<span>עדכונים',1500);
-  assert.match(card,/מותקן<\/span><span class="v"><span class="mono">v0\.34\.0</);
-  assert.match(card,/קודם<\/span><span class="v"><span class="mono">v0\.33\.0<\/span> \(חזרה זמינה\)/);
-  assert.match(card,/בדיקה אחרונה<\/span><span class="v">מעולם לא נבדק בשרת הזה/,'#1000: last_check null = never checked on this server');
+  // ‏#1300 (console-full.html P.settings "עדכונים"): הודעת מידע אחת — מה מותקן ומה מצאה הבדיקה — ושורת כפתורים
+  assert.match(card,/class="note info"><span aria-hidden="true">●<\/span><span>מותקן <b class="mono">v0\.34\.0<\/b> · בדיקה אחרונה: מעולם לא נבדק בשרת הזה<\/span>/,'#1000: last_check null = never checked on this server');
   assert.match(card,/onclick="healthUpdateCheck\(\)">בדוק עדכון</);
   assert.doesNotMatch(card,/החל עדכון/,'no apply before a check found something');
   assert.match(card,/confirmUpdateRevert\(UPDATE_INFO\.previous\)">חזור ל-v0\.33\.0</);
   await run('healthUpdateCheck()');
   assert.ok(requests.some((r)=>r.url==='/update/check' && r.method==='POST'));
   html=run('settings()');
-  assert.match(cell(html,'<span>עדכונים',1800),/בדיקה אחרונה<\/span><span class="v">היום 06:00 — יש עדכון: v0\.34\.0 → v0\.35\.0/,'#1000: the time is the server `at`, not the browser clock');
+  assert.match(cell(html,'<span>עדכונים',1800),/קיימת גרסה חדשה: <b class="mono">v0\.35\.0<\/b> · נבדק היום 06:00/,'#1000: the time is the server `at`, not the browser clock');
   // ‏#1192 (נדב 21/09): עדכון = דיאלוג אישור בלבד, בלי הקלדת שם השרת (הפעולה הפיכה: "חזור ל-").
   assert.match(html,/confirmUpdateApply\(UPDATE_INFO\.latest\)">החל עדכון v0\.35\.0</);
   assert.doesNotMatch(html,/הקלדת שם השרת\)/,'#1192: no typed-name hint on the apply button');
@@ -239,11 +240,12 @@ test('update card: switch off → note with a link to settings and no buttons; f
   let s=setup({'/update':{current:'v0.34.0',enabled:false,previous:null,server_name:'srv'}}); s.run('current="settings"');
   await s.run('loadSettingsData()');
   let card=cell(s.run('settings()'),'<span>עדכונים',1500);
-  assert.match(card,/note warn.*update_enabled/);
+  // ‏#1300: המתג "עדכון גרסה מהקונסולה" יושב בכרטיס הזה עצמו — לא הערה שמפנה "למעלה"
+  assert.match(card,/<label class="msw" id="srow-update_enabled"[^>]*><input type="checkbox" role="switch" aria-label="עדכון גרסה מהקונסולה" onchange=/,'#1300: label.sw of the mockup, off = not checked');
   // #1128: the settings-backup button does not depend on the update switch; no update buttons though
   assert.doesNotMatch(card,/healthUpdateCheck|confirmUpdateApply|confirmUpdateRevert/);
   assert.match(s.run('settings()'),/<span>גיבוי<[\s\S]*confirmSettingsBackup/,'backup is its own card and never depends on the update switch');
-  assert.match(card,/קודם<\/span><span class="v">—/);
+  assert.doesNotMatch(card,/חזור ל-/,'no previous version → no revert');
   assert.ok(!s.requests.some((r)=>r.url==='/update/status'),'status is not asked while the switch is off');
   s=setup({'/update/check':new Error('no route to github'),'/update/status':{state:'running',tag:'v0.35.0',verified:false}}); s.run('current="settings"');
   await s.run('loadSettingsData()'); await s.run('healthUpdateCheck()');
@@ -253,6 +255,28 @@ test('update card: switch off → note with a link to settings and no buttons; f
   s=setup({'/update':new Error('403')}); s.run('current="settings"');
   await s.run('loadSettingsData()');
   assert.match(cell(s.run('settings()'),'<span>עדכונים',600),/note err.*\/update לא נקרא: 403/);
+});
+
+test('#1277: the check shows the new tag as signed / unsigned / not checked — an unsigned tag disables apply, "not checked" never reads as signed',async()=>{
+  const check=(signature)=>({at:`${new Date().toISOString().slice(0,10)}T06:00:00+00:00`,current:'v0.34.0',latest:'v0.35.0',available:true,reason:null,...(signature?{signature}:{})});
+  const card=async(signature)=>{
+    const s=setup({'/update/check':check(signature)}); s.run('current="settings"');
+    await s.run('loadSettingsData()'); await s.run('healthUpdateCheck()');
+    return cell(s.run('settings()'),'<span>עדכונים',2400);
+  };
+  let c=await card({state:'signed',detail:'imagectl-release SHA256:abc'});
+  // ‏#1300: הכרטיס אומר "קיימת גרסה חדשה" (לא "יש עדכון: א → ב"); החתימה חייבת להופיע גם בו.
+  assert.match(c,/קיימת גרסה חדשה: <b class="mono">v0\.35\.0<\/b>[^<]* · חתימה: חתום</);
+  assert.match(c,/class="muted"[^>]*>imagectl-release SHA256:abc<\/small>/,'the signer fingerprint is the secondary line');
+  assert.match(c,/<button class="btn primary" onclick="confirmUpdateApply\(UPDATE_INFO\.latest\)">החל עדכון v0\.35\.0</);
+  c=await card({state:'unsigned',detail:'unsigned: חתום במפתח שאינו ב-release-signers (SHA256:zzz)'});
+  assert.match(c,/חתימה: לא חתום</); assert.match(c,/SHA256:zzz/);
+  assert.match(c,/<button class="btn primary" disabled title="התג v0\.35\.0 אינו חתום[^"]*"[^>]*>החל עדכון v0\.35\.0</,'the server would refuse it — so the button does too');
+  c=await card({state:'unchecked',detail:'הורדת התג v0.35.0 נכשלה: timeout'});
+  assert.match(c,/חתימה: לא נבדק</); assert.doesNotMatch(c,/חתימה: חתום/);
+  assert.doesNotMatch(c,/primary" disabled/,'"not checked" stays clickable — server-upgrade.sh decides');
+  c=await card(null);
+  assert.match(c,/חתימה: לא נבדק</,'a stored check from before #1277 has no signature — "not checked", never "signed"');
 });
 
 test('#1273: while an update is running the apply and revert buttons are disabled; a verified update enables them again',async()=>{
@@ -288,7 +312,7 @@ test('#1000: "last check" comes from /update.last_check and survives a reload; a
   let s=setup({'/update':{current:'v0.34.0',enabled:true,previous:null,server_name:'srv',last_check:{at:'2026-09-18T06:00:00+00:00',current:'v0.34.0',latest:'v0.34.0',available:false,reason:null}}}); s.run('current="settings"');
   await s.run('loadSettingsData()');
   let card=cell(s.run('settings()'),'<span>עדכונים',1500);
-  assert.match(card,/בדיקה אחרונה<\/span><span class="v">18\/09\/2026 06:00 — כבר על הגרסה העדכנית \(v0\.34\.0\)/);
+  assert.match(card,/בדיקה אחרונה: 18\/09\/2026 06:00 — כבר על הגרסה העדכנית \(v0\.34\.0\)/);
   assert.doesNotMatch(card,/לא נבדק בסשן/);
   s=setup({'/update':{current:'v0.34.0',enabled:true,previous:null,server_name:'srv',last_check:{at:'2026-09-18T06:00:00+00:00',current:'v0.34.0',latest:null,available:false,reason:'הבדיקה מול x נכשלה: timeout'}}}); s.run('current="settings"');
   await s.run('loadSettingsData()');
@@ -315,7 +339,7 @@ test('#1000: the health header time comes from the X-Health-Checked-At header (s
   await s.run('loadHealth()');
   assert.match(s.run('HEALTH_AT'),/^(היום|19\/09\/2026) 09:41$/);
   const html=s.run('health()');
-  assert.match(html,/9 בדיקות · נבדק (היום|19\/09\/2026) 09:41 · 2 תקינות/);
+  assert.match(html,/9 בדיקות · נבדק (היום|19\/09\/2026) 09:41</);
   assert.ok(Array.isArray(s.run('HEALTH')),'the body is still the array');
   assert.equal(s.run('typeof clockNow'),'function','clockNow is still used for the ports page — but not for /health');
 });
@@ -365,8 +389,11 @@ test('#1267 ports page: three cards by network — deploy has no firewall column
   // בין שרתים: 8443 חסום = אדום
   assert.match(row(inter,'8443/tcp'),/class="pill err">חסום</);
   assert.ok(!dep.includes('8081') && !dep.includes('8443') && !mgmt.includes('8443'),'each port in its own card only');
-  // מצב חומת האש של השרת כולה — מה-/ports (שורת firewall), לא כשורת פורט
-  assert.match(html,/חומת האש של השרת: פעילה, 9 כללים לטבלת imagectl/);
+  // מצב חומת האש של השרת כולה — מה-/ports (שורת firewall), לא כשורת פורט; ‏#1300: הודעה רק כשאינה תקינה (כמו המוקאפ — רק הכרטיסים)
+  assert.doesNotMatch(html,/חומת האש של השרת: פעילה/);
+  const bad=setup({'/ports':PORTS_1267.map((p)=>p.id==='firewall'?{...p,state:'bad',detail:'לא פעילה'}:p)}); bad.run('current="ports"');
+  await bad.run('loadPorts()');
+  assert.match(bad.run('ports()'),/class="note err"[^]*חומת האש של השרת: לא פעילה/);
   assert.doesNotMatch(html,/<span class="mono">—\/nft</);
 });
 
@@ -388,9 +415,10 @@ test('#1267 firewall not read → "לא נבדק", never green; the header pill 
   await run('loadPorts()');
   const html=run('ports()');
   const r=row(card(html,'רשת ניהול'),'8081/tcp');
-  assert.match(r,/class="pill ">לא נבדק</); assert.doesNotMatch(r,/class="pill (ok|err)"/);
-  assert.match(r,/title="nft לא נקרא — לא נבדק"/);
-  assert.match(html,/class="pill warn">חומת אש: 2 לא נבדקו</);
+  assert.match(r,/<span title="nft לא נקרא — לא נבדק"><span class="pill ">לא נבדק<\/span><\/span>/,'the firewall cell: not checked, never green or red');
+  assert.doesNotMatch(r,/class="pill err"/);
+  // ‏#1300 (console-full.html P.network "ports"): עמודת "מאזין" היא פיל אחד; מה שנמדד — ב-title
+  assert.match(r,/<span title="המתג דלוק ומאזין"><span class="pill ok">מאזין<\/span><\/span>/);
 });
 
 test('#1267 "בדוק עכשיו" re-reads /ports and reports what was measured; "הצג פרטים" opens a real drawer',async()=>{
@@ -419,10 +447,11 @@ test('#1267 /ports that could not be read is a red note, not an empty page',asyn
   const {run}=setup({'/ports':new Error('DB down')}); run('current="ports"');
   await run('loadPorts()');
   const html=run('ports()');
-  assert.notEqual(html,run('pagePlaceholder()')); assert.match(html,/note err.*DB down/); assert.match(html,/class="pill err">לא נקרא</);
-  assert.doesNotMatch(html,/<table/);
-  // ‏#954 גל 8: הלשוניות הן של אובייקט הרשת — הדף הזה הוא לשונית 3
-  assert.match(html,/role="tab" aria-selected="true" tabindex="0" onclick="activateTab\(3\)">פורטים/);
+  assert.notEqual(html,run('pagePlaceholder()')); assert.match(html,/note err.*לא הצלחתי לקרוא את רשימת הפורטים: DB down/);
+  assert.doesNotMatch(html,/<table/); assert.doesNotMatch(html,/port-state|כל השורות נמדדו/,'nothing measured is claimed');
+  // ‏#954 גל 8: הלשוניות הן של אובייקט הרשת — הדף הזה הוא לשונית 3; ‏#1300: אותה כותרת "רשת" כמו שאר הלשוניות
+  assert.match(html,/<div class="obj-name">רשת</);
+  assert.match(html,/role="tab" aria-selected="true" tabindex="0" onclick="selectPageById\('ports'\)">פורטים/);
 });
 
 test('deploy role: the pages stay admin-only and no admin endpoint is requested',async()=>{
@@ -447,14 +476,26 @@ test('a long bind list renders one address per line, IPv6 link-local folded into
 });
 
 // apple-pending-4 · 4: פיל ה-TLS עבר מכותרת הסקירה לדף הבריאות
-test('health header carries the TLS pill (moved from the overview): self-signed → info, off → grey; the overview header has none',async()=>{
+// ‏#1300 (הכרעת נדב 12/10, "כמו המוקאפ"): בכותרת הבריאות פיל מצב אחד — בלי פיל TLS. מצב התעודה המלא
+// נשאר בהגדרות (כרטיס "תעודת TLS") ובפרטי ה-Session.
+test('#1300: the health header has one state pill and no TLS pill; TLS lives in settings',async()=>{
   const {run}=setup(); run('current="health"');
   await run('loadHealth()');
-  run('ME.tls={fingerprint_sha256:"AB:CD"}');
-  assert.match(run('health()'),/class="pill info">TLS תעודה עצמית</);
-  run('ME.tls=null');
-  assert.match(run('health()'),/class="pill ">TLS כבוי</);
-  assert.doesNotMatch(run('layout(pages.home,0)'),/TLS (כבוי|תעודה)/,'the overview header no longer shows TLS');
+  for(const tls of ['{fingerprint_sha256:"AB:CD"}','null']) {
+    run('ME.tls='+tls);
+    assert.doesNotMatch(run('health()'),/TLS (כבוי|תעודה)/,tls);
+  }
+  assert.doesNotMatch(run('layout(pages.home,0)'),/TLS (כבוי|תעודה)/,'the overview header does not show TLS either');
+  assert.equal(typeof run('tlsCardHtml'),'function','the TLS card is still on the settings page');
+});
+test('#1300: raw English detail never sits in a health row — a short Hebrew line, the text behind "פרטים"',async()=>{
+  const {run}=setup({'/health':[check('boot','קבצי האתחול','bad','missing in /srv/tftp: bootx64.efi, grubx64.efi, grub/grub.cfg'),check('fw','חומת אש','unknown','nft: command not found')]}); run('current="health"');
+  await run('loadHealth()');
+  const html=run('health()');
+  const visible=html.replace(/<details class="tech">[^]*?<\/details>/g,'');
+  assert.doesNotMatch(visible,/srv\/tftp|bootx64|command not found/,'no raw text outside "פרטים"');
+  assert.match(row(html,'קבצי האתחול'),/<span class="wrap">נמצאה תקלה<\/span><details class="tech"><summary>פרטים<\/summary><code dir="ltr">missing in \/srv\/tftp: bootx64\.efi/);
+  assert.match(row(html,'חומת אש'),/<span class="wrap">לא נבדק<\/span><details class="tech">/);
 });
 
 /* ---------- #1267 המשך (נדב 11/10): עצירה/הפעלה של שירות עברה מדף הפורטים לדף הבריאות ----------

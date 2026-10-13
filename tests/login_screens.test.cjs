@@ -99,7 +99,7 @@ test('1085: five screens from fixed JSON — login, error, change, mfa, setup/co
 
   const stEn = run('loginStateFromResponse(200, ' + JSON.stringify(FIX.enroll) + ', null, {username:"nadav"})');
   assert.equal(stEn.screen, 'setup');
-  const setupHtml = run('loginHtml(' + JSON.stringify({screen: 'setup', username: 'nadav', secret: 'JBSWY3DPEHPK3PXP', otpauth: 'otpauth://totp/ImageCtl:nadav?secret=JBSWY3DPEHPK3PXP'}) + ')');
+  const setupHtml = run('loginHtml(' + JSON.stringify({screen: 'setup', username: 'nadav', secret: 'JBSWY3DPEHPK3PXP', otpauth: 'otpauth://totp/ImageSrv:nadav?secret=JBSWY3DPEHPK3PXP'}) + ')');
   assert.match(setupHtml, /הגדרת אימות דו-שלבי/);
   // #1177: the otpauth URI is never shown; the manual secret sits behind "הצג"
   assert.doesNotMatch(setupHtml, /otpauth:\/\//);

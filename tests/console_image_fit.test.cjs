@@ -66,8 +66,9 @@ test('an unknown requirement is a dash and never a number', () => {
 
 test('market disk fit uses decimal sold sizes and unknown stays a dash', () => {
   const run = setup();
-  for (const [bytes, want] of [[100e9, '128GB'], [128e9, '128GB'], [129e9, '256GB'],
-    [501e9, '512GB'], [3e12, '4TB'], [5e12, '> 4TB'], [0, '—']]) {
+  // ‏#1300: "256 GB" עם רווח, כמו המוקאפ (console-full.html DISK_CLASSES)
+  for (const [bytes, want] of [[100e9, '128 GB'], [128e9, '128 GB'], [129e9, '256 GB'],
+    [501e9, '512 GB'], [3e12, '4 TB'], [5e12, '> 4 TB'], [0, '—']]) {
     assert.equal(run(`fitsDisk(${bytes})`), want);
   }
   assert.match(fs.readFileSync(path.join(root, 'console.js'), 'utf8'), /"מתאים לדיסק"/);
@@ -79,10 +80,13 @@ test('the library table and the image drawer both use it', () => {
   // ‏#954 גל 2: הטבלה החדשה — גודל שוק, הבייטים ב-title, הערך LTR.
   const table = run('images()');
   assert.match(table, /<th>מתאים לדיסק<\/th>/);
-  assert.match(table, /<span title="229556000000 bytes"><bdi dir="ltr">256GB<\/bdi><\/span><span class="sub muted">נדרש לפחות 230 GB<\/span>/);
+  // ‏#1300: "256 GB ומעלה" בשורה אחת, הדרישה מתחת
+  assert.match(table, /<span class="fit" title="229556000000 bytes"><b><bdi dir="ltr">256 GB<\/bdi><\/b> ומעלה<\/span><span class="sub muted">נדרש לפחות <bdi dir="ltr">230 GB<\/bdi><\/span>/);
   const drawer = run(`imageDrawerHtml(${JSON.stringify(IMAGE)})`);
-  assert.match(drawer, /נכנס לדיסק מ-/);
-  assert.match(drawer, /230 GB/);
+  // ‏#1300 (נדב): שורה ברורה "כונן מינימלי" — הכונן הקטן ביותר שהאימג' נכנס אליו, מאותה לוגיקה (imgFits)
+  assert.match(drawer, /<span class="k">כונן מינימלי<\/span><span class="v"><span class="fit" title="229556000000 bytes"><b><bdi dir="ltr">256 GB<\/bdi><\/b><\/span><span class="sub muted">נדרש לפחות <bdi dir="ltr">230 GB<\/bdi><\/span>/);
+  assert.doesNotMatch(drawer, /נכנס לדיסק מ-/);
+  assert.match(run(`imageDrawerHtml(${JSON.stringify({...IMAGE, min_target_bytes: null})})`), /כונן מינימלי<\/span><span class="v"><span class="muted">לא ידוע<\/span>/, 'unknown is named, not a dash or a number');
   assert.match(drawer, /בשימוש במקור/);
   assert.match(run(`imageDrawerHtml(${JSON.stringify({...IMAGE, used_bytes: null})})`), /בשימוש במקור<\/[^>]+><[^>]+><span class="muted">לא ידוע/);
 });

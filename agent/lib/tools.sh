@@ -215,6 +215,9 @@ tools_gui_run() {
     # one is id|rc|<path>|<seq>, seq strictly increasing per kiosk session.
     # Returns 0 whenever a result was written -- a tool's own rc is a result,
     # not a failed action (gui_records would toast it as one).
+    # #1303: the GUI hides the button on menu_tools=0, but a record can still
+    # arrive; the gate is here. Off (v1) or unreadable = no run, no result.
+    tools_on || { log "tool-run refused: the toolbox is off in this edition"; return 1; }
     _tok=$1
     IFS='|' read -r _ _id _arg _confirm _ <<EOF
 $_tok

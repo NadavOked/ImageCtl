@@ -304,6 +304,8 @@ def build_answer(
         # מסך מחשב השיכפול מצייר אותם במקום "דיסק N"; ‏{} = אין שמות.
         "slot_names": slot_names.for_mac(conn, mac),
     }
+    if machine["role"] == "cloner" and machine["drawer_count"] is not None:
+        answer["drawer_count"] = machine["drawer_count"]
 
     # משימה גוברת על סבב: היא מופנית למכונה הזו, לא לקבוצה.
     if answer["task"] is not None:

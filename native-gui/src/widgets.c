@@ -418,15 +418,6 @@ void draw_focus_ring(App *a, cairo_t *cr, Rect r) {
     draw_border_rrect(cr, o, a->theme->radius + 3, a->theme->indigo, 2);
 }
 
-void draw_brand_mark(cairo_t *cr, const Theme *t, Rect box) {
-    Rgb bg = t->header;
-    draw_fill_rrect(cr, box, box.w * .19, bg);
-    if (t == &THEME_DARK) draw_border_rrect(cr, box, box.w * .19, t->art_server, 1);
-    double x = box.x + box.w * .27, w = box.w * .46;
-    draw_fill_rrect(cr, (Rect){x, box.y + box.h * .31, w, box.h * .115}, 3, t->art_c);
-    draw_fill_rrect(cr, (Rect){x + w * .45, box.y + box.h * .58, w * .55, box.h * .115}, 3, t->warn);
-}
-
 /* The approved login illustration, expressed in Cairo rather than SVG: the
  * same 800x900 coordinate system, server, multicast branches and machines. */
 void draw_station_art(cairo_t *cr, const Theme *t, Rect box, double opacity) {

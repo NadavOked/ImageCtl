@@ -38,6 +38,8 @@ struct Input {
     Event q[QUEUE]; int qh, qt;
     time_t last_rescan;
     int scan_done;      /* stop rescanning once a keyboard AND a mouse are here */
+    int caps;           /* #1203: Caps Lock -- the grab hides it from the kernel's
+                         * keyboard handler, so it is tracked (and its LED set) here */
 };
 
 /* {code, US plain, US shifted, SI-1452 plain}. The fourth column is the
@@ -70,6 +72,7 @@ static const struct { int code; char n, s; int he; } KEYMAP[] = {
 };
 
 static void push(Input *in, Event e) {
+    e.caps = in->caps;
     int next = (in->qt + 1) % QUEUE;
     if (next == in->qh) return;                    /* full: drop, never block */
     in->q[in->qt] = e; in->qt = next;
@@ -83,7 +86,9 @@ static int is_open(Input *in, const char *path) {
 
 static int probe(Input *in, const char *path) {
     if (is_open(in, path)) return -1;              /* rescan: already grabbed */
-    int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    /* read-write when allowed: the Caps Lock LED is written back (#1203) */
+    int fd = open(path, O_RDWR | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) return -1;
     unsigned long ev[NBITS(EV_MAX)] = { 0 }, key[NBITS(KEY_MAX)] = { 0 };
     unsigned long rel[NBITS(REL_MAX)] = { 0 }, abs_[NBITS(ABS_MAX)] = { 0 };
@@ -108,6 +113,10 @@ static int probe(Input *in, const char *path) {
         }
     }
     if (!d.kinds) { close(fd); return -1; }
+    if (d.kinds & DEV_KEYBOARD) {                  /* #1203: start from the LED the kernel set */
+        unsigned long led[NBITS(LED_MAX)] = { 0 };
+        if (ioctl(fd, EVIOCGLED(sizeof led), led) >= 0 && test_bit(LED_CAPSL, led)) in->caps = 1;
+    }
     if (ioctl(fd, EVIOCGRAB, 1) < 0)
         fprintf(stderr, "native-gui: %s: EVIOCGRAB: %s (keys will also reach the text console)\n", path, strerror(errno));
     snprintf(d.path, sizeof d.path, "%s", path);
@@ -167,6 +176,19 @@ int input_fill_pollfds(Input *in, struct pollfd *out, int max) {
     return n;
 }
 
+/* The grab keeps the kernel from lighting the LED, so it is set here; a
+ * device opened read-only just keeps its LED (the screen still says it). */
+static void caps_led(Input *in) {
+    for (int i = 0; i < in->ndev; i++) {
+        if (!(in->dev[i].kinds & DEV_KEYBOARD)) continue;
+        struct input_event ev[2];
+        memset(ev, 0, sizeof ev);
+        ev[0].type = EV_LED; ev[0].code = LED_CAPSL; ev[0].value = in->caps;
+        ev[1].type = EV_SYN; ev[1].code = SYN_REPORT;
+        if (write(in->dev[i].fd, ev, sizeof ev) < 0) { /* read-only: no LED, not an error */ }
+    }
+}
+
 static void key_event(Input *in, Dev *d, int code, int value) {
     int shift = code == KEY_LEFTSHIFT || code == KEY_RIGHTSHIFT;
     if (shift || code == KEY_LEFTALT || code == KEY_RIGHTALT) {
@@ -182,6 +204,14 @@ static void key_event(Input *in, Dev *d, int code, int value) {
     }
     if (value == 0) return;                          /* release */
     Event e = { 0 };
+    if (code == KEY_CAPSLOCK) {
+        if (value != 1) return;                      /* autorepeat is not a second toggle */
+        in->caps = !in->caps;
+        caps_led(in);
+        e.type = UIEV_KEY; e.key = KEYSYM_CAPS; push(in, e); return;
+    }
+    if (code >= KEY_F1 && code <= KEY_F10) { e.type = UIEV_KEY; e.key = KEYSYM_F1 + (code - KEY_F1); push(in, e); return; }
+    if (code == KEY_F11 || code == KEY_F12) { e.type = UIEV_KEY; e.key = code == KEY_F11 ? KEYSYM_F11 : KEYSYM_F12; push(in, e); return; }
     switch (code) {
     case KEY_TAB:       e.type = UIEV_KEY; e.key = d->shift ? KEYSYM_BACKTAB : KEYSYM_TAB; push(in, e); return;
     case KEY_ENTER: case KEY_KPENTER:
@@ -284,6 +314,8 @@ int input_next(Input *in, Event *out) {
     *out = in->q[in->qh]; in->qh = (in->qh + 1) % QUEUE;
     return 1;
 }
+
+int input_caps(const Input *in) { return in ? in->caps : 0; }
 
 void input_close(Input *in) {
     if (!in) return;

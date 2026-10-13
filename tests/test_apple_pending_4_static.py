@@ -58,7 +58,7 @@ def test_wide_tables_use_the_kebab_pattern():
     """הרשאות, חיבורים פיזיים ופורטים: מחלקת kebab-col וכותרת sr-only לעמודת הפעולות.
     פורטים (#1267): רק בכרטיסים שבין רשתות יש תפריט — ברשת ההפצה אין פעולות."""
     js = _js()
-    for needle in ('cls: "kebab-col", opt: [4, 5]', 'cls: "stable kebab-col", opt: [4, 7]', 'cls: cross ? "dense kebab-col" : "dense", opt: cross ? [5] : []'):
+    for needle in ('cls: "kebab-col", opt: [2]', 'columns: ["כרטיס", "תיאור", "MAC", "קישור", "כתובת", "תפקיד", { html: `<span class="sr">פעולות</span>` }], rows: nics.map(netNicRow), cls: "kebab-col", opt: [2]', 'cls: cross ? "kebab-col" : "", opt: cross ? [5] : []'):
         assert needle in js, needle
     assert js.count('<span class="sr">פעולות</span>') >= 3
     assert "UI.rowMenu(u.username, items)" in js
@@ -136,7 +136,7 @@ def test_secondary_server_tree_uses_the_same_unique_icons():
 
 def test_page_headers_use_the_icon_of_their_tree_node():
     js = _js()
-    for name, key in [("בריאות ושירותים", "t-health"), ("משתמשים והרשאות", "t-key"), ("החשבון שלי", "t-me"), ("יומן", "t-log"), ("פורטים", "t-ports"),
+    for name, key in [("בריאות ושירותים", "t-health"), ("משתמשים והרשאות", "t-key"), ("החשבון שלי", "t-me"), ("יומן", "t-log"), ("רשת", "t-network"),
                       ("מוניטור", "t-monitor"), ("הגדרות", "t-sliders"), ("מחשבים", "t-machines")]:
         assert f'icon: "{key}", name: "{name}"' in js, name
     assert 'icon: "t-drivers", name: "דרייברים"' in (STATIC / "drivers.js").read_text(encoding="utf-8")
@@ -212,9 +212,9 @@ def test_dashboard_pages_share_the_compact_header():
     """סקירה, בריאות, אחסון, רשת (כל הלשוניות כולל פורטים), מוניטור וחדר ההפצה: אותה כותרת — שורה אחת + שורת משנה."""
     js = _js()
     for needle in ('actions, tabs, tab, compact: true });',                       # סקירה
-                   'pill: pill + tlsPill, actions, compact: true });',            # בריאות
+                   'name: "בריאות ושירותים", sub, pill, actions, compact: true });',            # בריאות
                    'tabs: NET_TABS, tab, tabClick: netTabClick, compact: true });',  # רשת
-                   '`openNetwork(${i})`, compact: true });',                       # פורטים
+                   'const header = netHeader(3);',                                  # פורטים — ‏#1300: אותה כותרת "רשת"
                    'רענון</button>`, compact: true });',                           # מוניטור
                    'pill: tab === 0 ? pill : "", actions, tabs, tab, compact: true });'):  # חדר ההפצה
         assert needle in js, needle
@@ -229,6 +229,6 @@ def test_numbers_are_tabular_across_the_page_and_notes_share_the_technical_detai
 
 def test_network_banners_hide_raw_system_text():
     js = _js()
-    fn = js[js.index("function netUnreadNotes()"):js.index("function netWarnCount()")]
+    fn = js[js.index("function netUnreadNotes()"):js.index("const NET_TABS =")]   # ‏#1300: netWarnCount ירדה (הפיל שלה ירד מהכותרת)
     assert fn.count("T(") >= 9 and "${esc(e." not in fn, "אין עוד שגיאה גולמית בגוף ההודעה"
     assert "UI.noteTech(" in (STATIC / "netcfg.js").read_text(encoding="utf-8")

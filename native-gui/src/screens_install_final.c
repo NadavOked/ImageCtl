@@ -27,7 +27,7 @@ static void summary(App *a,cairo_t *cr,InstallLayout l){
     summary_row(a,cr,(Rect){x+1,y+145,w-2,48},"שם השרת",s->hostname,3);snprintf(value,sizeof value,"%s · הסיסמה הוגדרה",s->admin_user);summary_row(a,cr,(Rect){x+1,y+193,w-2,48},"משתמש הניהול",value,4);
     console_guess(s,url,sizeof url);install_text_r(cr,t,"הקונסולה תהיה ב־",12,500,x+w-16,y+258,160,t->muted);install_text_ltr(cr,url,13,500,x+24,y+258,w-210,t->indigo);y+=292;
     Rect seq={x,y,fmin(760,w),112};install_card(cr,t,seq);install_text_r(cr,t,"מה יקרה בלחיצה על \"החל התקנה\"",14,600,seq.x+seq.w-16,y+14,seq.w-32,t->ink);
-    install_text_r(cr,t,"מחיקת הדיסק ← מערכת בסיס ← חבילות ImageCtl ← מנהל אתחול ← הגדרות",13,500,seq.x+seq.w-16,y+50,seq.w-32,t->ink);
+    install_text_r(cr,t,"מחיקת הדיסק ← מערכת בסיס ← חבילות ImageSrv ← מנהל אתחול ← הגדרות",13,500,seq.x+seq.w-16,y+50,seq.w-32,t->ink);
     char after[192];snprintf(after,sizeof after,"בסיום תתבקש להסיר את מדיית ההתקנה; השרת יופעל מחדש אוטומטית אחרי %d שניות.",INSTALL_AUTO_REBOOT_S);install_text_r(cr,t,after,12,400,seq.x+seq.w-16,y+78,seq.w-32,t->muted);
     install_footer(a,cr,l,"החל התקנה",HIT_INSTALL_NEXT,1,1);
 }
@@ -77,7 +77,7 @@ static void progress(App *a,cairo_t *cr,InstallLayout l){
 static int failure_he(const InstallState *s,char *out,size_t n){
     static const struct{const char *code,*he;}KNOWN[]={
         {"partition","חלוקת הדיסק נכשלה."},{"bootstrap","התקנת מערכת הבסיס נכשלה."},
-        {"packages","התקנת חבילות ImageCtl נכשלה."},{"bootloader","התקנת מנהל האתחול נכשלה."},
+        {"packages","התקנת חבילות ImageSrv נכשלה."},{"bootloader","התקנת מנהל האתחול נכשלה."},
         {"finishing","כתיבת ההגדרות נכשלה."},{"hostname","קביעת שם השרת נכשלה."},
         {"verify","אימות ההתקנה נכשל."},{"validation","ההגדרות לא עברו בדיקה."}};
     const char *e=s->error;

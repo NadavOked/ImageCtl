@@ -130,7 +130,6 @@ parse_cmdline() {
     _file="${CMDLINE_FILE:-/proc/cmdline}"
     IMAGECTL_SERVER=""
     IMAGECTL_MODE="normal"
-    IMAGECTL_DEBUG="0"
     IMAGECTL_MONITOR="0"
     for _word in $(cat "$_file" 2>/dev/null); do
         case "$_word" in
@@ -145,11 +144,6 @@ parse_cmdline() {
                 # למתקין החי במקום לסוכן. ‏PXE מהשרת לעולם אינו שולח את זה.
                 IMAGECTL_MODE="installer"
                 ;;
-            imagectl.debug=1)
-                # מעטפת ניפוי לטכנאי (ראו imagectl-agent). לא ברירת מחדל:
-                # המכונות עומדות בכיתות.
-                IMAGECTL_DEBUG="1"
-                ;;
             imagectl.monitor=1)
                 # מוניטור מרחוק (#690): שירות RFB על /dev/fb0, מגודר בשער
                 # משלו בשורת הקרנל. השרת מוסיף אותו לשורת הקרנל רק
@@ -162,7 +156,7 @@ parse_cmdline() {
         esac
     done
     unset _word _file
-    export IMAGECTL_SERVER IMAGECTL_MODE IMAGECTL_DEBUG IMAGECTL_MONITOR
+    export IMAGECTL_SERVER IMAGECTL_MODE IMAGECTL_MONITOR
 }
 
 # --- HTTP --------------------------------------------------------------------

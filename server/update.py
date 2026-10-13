@@ -19,6 +19,8 @@ import json
 import logging
 import re
 import subprocess
+import sys
+import tempfile
 import threading
 from pathlib import Path
 from typing import Callable, NamedTuple
@@ -180,11 +182,49 @@ def _run_upgrade_script(repo_dir: str | Path, tag: str) -> tuple[bool, str]:
     return ok, err
 
 
+#: ‏#1277: מצבי החתימה של תג בבדיקת-עדכון — "לא נבדק" אינו "לא חתום", ושניהם
+#: אינם "חתום" (עיקרון 5). השער עצמו הוא ``tools/server-upgrade.sh``; כאן
+#: המנהל רואה את התוצאה **לפני** שהוא לוחץ "החל".
+SIGNATURE_STATES = ("signed", "unsigned", "unchecked")
+
+
+def _verify_remote_tag(url: str, tag: str, repo_dir: str | Path) -> dict:
+    """‏#1277: מוריד את התג בלבד (clone חלקי ורדוד לתיקייה זמנית — לא לעץ
+    הקוד, שתהליך ה-web אינו כותב אליו, #1193) ומריץ עליו את אותו מאמת
+    ש-``server-upgrade.sh`` מריץ, מול ``install/release-signers`` של העץ
+    המותקן. קוד יציאה 0 **וגם** שורת ``signed:`` = חתום; 1 = לא חתום; כל
+    השאר = לא נבדק."""
+    tool = Path(repo_dir) / "tools" / "verify-release-tag.py"
+    signers = Path(repo_dir) / "install" / "release-signers"
+    with tempfile.TemporaryDirectory(prefix="imagectl-tagcheck-") as tmp:
+        git_dir = str(Path(tmp) / "tag.git")
+        ok, _out, err = _run(["git", "clone", "--quiet", "--bare", "--depth=1",
+                              "--filter=blob:none", "--single-branch", "--branch", tag,
+                              url, git_dir], timeout=60)
+        if not ok:
+            return {"state": "unchecked", "detail": f"הורדת התג {tag} נכשלה: {err}"}
+        try:
+            done = subprocess.run([sys.executable, "-I", str(tool), git_dir, tag, str(signers)],
+                                  capture_output=True, text=True, encoding="utf-8",
+                                  errors="replace", timeout=60, check=False,
+                                  stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return {"state": "unchecked", "detail": f"המאמת לא רץ: {exc}"}
+    out, err = done.stdout.strip(), done.stderr.strip()
+    if done.returncode == 0 and out.startswith("signed: "):
+        return {"state": "signed", "detail": out[len("signed: "):]}
+    if done.returncode == 1:
+        return {"state": "unsigned", "detail": err or out}
+    return {"state": "unchecked",
+            "detail": err or out or f"המאמת יצא {done.returncode} בלי פלט"}
+
+
 def default_hooks() -> Hooks:
     return {
         "describe": _describe,
         "ls_remote_tags": _ls_remote_tags,
         "run_upgrade": _run_upgrade_script,
+        "verify_tag": _verify_remote_tag,
     }
 
 
@@ -262,7 +302,22 @@ def check_update(hooks: Hooks, repo_dir: str | Path, public_url: str) -> dict:
     latest = tags[-1]
     base = _base_version(current)
     available = base is None or (semver_key(latest) or ()) > (semver_key(base) or ())
-    return {"current": current, "latest": latest, "available": available, "reason": None}
+    result = {"current": current, "latest": latest, "available": available, "reason": None}
+    if available:
+        result["signature"] = tag_signature(hooks, public_url, latest, repo_dir)
+    return result
+
+
+def tag_signature(hooks: Hooks, public_url: str, tag: str, repo_dir: str | Path) -> dict:
+    """‏``{state, detail}`` מתוך ``SIGNATURE_STATES``. כשל של הבדיקה עצמה —
+    חריגה, או תשובה שאינה אחד המצבים — הוא ``unchecked``, לעולם לא ``signed``."""
+    try:
+        doc = hooks["verify_tag"](public_url, tag, repo_dir)
+    except Exception as exc:                            # noqa: BLE001
+        return {"state": "unchecked", "detail": f"בדיקת החתימה נכשלה: {exc!r}"}
+    if not isinstance(doc, dict) or doc.get("state") not in SIGNATURE_STATES:
+        return {"state": "unchecked", "detail": f"תשובה לא מוכרת מבדיקת החתימה: {doc!r}"}
+    return {"state": doc["state"], "detail": str(doc.get("detail") or "")}
 
 
 def _set_status(conn, doc: dict) -> None:

@@ -47,19 +47,6 @@ LIB_DIR="${LIB_DIR:-/usr/lib/imagectl}"
 mkdir -p "$RUN_DIR/targets"
 parse_cmdline
 
-# מעטפת ניפוי — רק עם imagectl.debug=1 בשורת הקרנל, שהשרת אינו מגיש לעולם
-# (#1266) ורק טכנאי מול המכונה מוסיף בעריכת ה-GRUB: על tty2 (Alt+F2),
-# ואם יש יציאה טורית — גם עליה. בווירטואליזציה הטורית היא לרוב הדרך
-# היחידה פנימה (named pipe), וההזרקה למקלדת אינה אמינה (מעבדה, #12).
-if [ "$IMAGECTL_DEBUG" = "1" ]; then
-    log "debug shell on tty2"
-    setsid sh -c 'while :; do sh < /dev/tty2 > /dev/tty2 2>&1; done' &
-    if [ -c /dev/ttyS0 ]; then
-        log "debug shell on ttyS0"
-        setsid sh -c 'while :; do sh < /dev/ttyS0 > /dev/ttyS0 2>&1; done' &
-    fi
-fi
-
 SERVER="$IMAGECTL_SERVER"
 [ -n "$SERVER" ] || die_local "no imagectl.server on the kernel command line"
 case "$SERVER" in

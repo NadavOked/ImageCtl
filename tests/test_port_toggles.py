@@ -220,7 +220,7 @@ def test_bind_comes_from_the_socket_table_not_from_configuration(toggles):
     assert rows["dhcp"]["bind"] == ["0.0.0.0:67"]
 
 
-def test_our_ports_point_at_the_ports_api_and_say_who_needs_the_name(toggles):
+def test_our_ports_point_at_the_ports_api_and_say_who_needs_the_name(toggles, classrooms_on):   # ‏#1303: 4011 — v1.2
     rows = rows_of(toggles)
     name = server_name(toggles)
     for pid in ("http_boot", "http_console"):
@@ -270,7 +270,7 @@ def test_socket_table_unreadable_is_unknown_never_green(toggles):
         assert "לא נקרא" in rows[pid]["detail"]
 
 
-def test_bind_is_null_when_not_read_and_empty_only_when_read_and_not_listening(toggles):
+def test_bind_is_null_when_not_read_and_empty_only_when_read_and_not_listening(toggles, classrooms_on):   # ‏#1303: 4011 — v1.2
     """‏#1039: ‏`bind` הגיע כ-`[]` גם כשטבלת הסוקטים לא נקראה — "לא נקרא"
     קופל ל"לא מאזין", והקונסולה לא יכלה להבחין (עיקרון 5)."""
     fake = toggles["fake"]

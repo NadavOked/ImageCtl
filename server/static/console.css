@@ -15,7 +15,7 @@ button{cursor:pointer}
 .brand{display:flex;align-items:center;gap:9px;min-width:190px;font-weight:600;letter-spacing:.01em}
 .brand-mark{width:26px;height:26px;border:1px solid var(--header-mark-border,var(--clr-action-hover));border-radius:var(--r-sm);display:grid;place-items:center;background:var(--header-mark-bg,var(--clr-header-hover))}
 .brand-mark svg{width:17px;height:17px}
-.brand-name{font-size:var(--t-md)}
+.brand-lockup{height:24px;width:auto;display:block}
 .top-actions{display:flex;align-items:center;gap:8px;margin-inline-start:auto}
 .icon-btn,.tool-btn{height:30px;min-width:30px;border:1px solid transparent;background:transparent;border-radius:var(--r-sm);color:var(--clr-header-text);padding:0 8px}
 .icon-btn:hover,.tool-btn:hover{background:var(--clr-header-hover);border-color:var(--clr-header-hover)}
@@ -28,8 +28,6 @@ button{cursor:pointer}
 .avatar{width:26px;height:26px;border-radius:50%;background:var(--clr-header-hover);display:grid;place-items:center;font-size:var(--t-sm);font-weight:700}
 .main{min-height:0;display:grid;grid-template-columns:292px minmax(0,1fr);direction:rtl}
 .sidebar{direction:rtl;background:var(--clr-nav,var(--surface));border-inline-end:1px solid var(--hair);min-width:0;display:flex;flex-direction:column;overflow:hidden}
-.sidebar-head{height:48px;padding:0 12px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--hair)}
-.sidebar-title{font-size:var(--t-sm);font-weight:600;color:var(--ink)}
 .tree{padding:8px 6px;overflow-y:auto;overflow-x:hidden;flex:1}
 /* #931: גלילה בלי פס גלילה נראה (נדב 16/09), והשורה לא נבחרת בדאבל-קליק */
 .tree{scrollbar-width:none}.tree::-webkit-scrollbar{display:none}
@@ -70,7 +68,7 @@ button{cursor:pointer}
 .toast{position:fixed;inset-inline-end:18px;bottom:18px;background:var(--surface);border:1px solid var(--hair);color:var(--ink);padding:10px 13px;border-radius:var(--r-sm);box-shadow:0 8px 28px var(--shadow-soft);display:block;z-index:120}
 .toast.show{display:block}
 @media (max-width:1000px){.main{grid-template-columns:238px minmax(0,1fr)}.search{width:220px}.span-8,.span-6{grid-column:span 12}.span-4,.span-3{grid-column:span 6}.kpis{grid-template-columns:repeat(2,1fr)}}
-@media (max-width:740px){body{overflow:auto}.app{height:auto;min-height:100vh}.topbar{position:sticky;top:0}.main{grid-template-columns:1fr;direction:rtl}.sidebar{display:none}.search{display:none}.toolbar{flex-direction:column}.toolbar-actions{width:100%;overflow:auto}.tabs{overflow:auto}.tab{white-space:nowrap}.span-4,.span-3{grid-column:span 12}.kpis{grid-template-columns:1fr 1fr}.scroll{overflow:visible}.form{grid-template-columns:1fr}}
+@media (max-width:740px){body{overflow:auto}.app{height:auto;min-height:100vh}.topbar{position:sticky;top:0}.main{grid-template-columns:1fr;direction:rtl}.search{display:none}.toolbar{flex-direction:column}.toolbar-actions{width:100%;overflow:auto}.tabs{overflow:auto}.tab{white-space:nowrap}.span-4,.span-3{grid-column:span 12}.kpis{grid-template-columns:1fr 1fr}.scroll{overflow:visible}.form{grid-template-columns:1fr}}
 
 /* Interactive UI additions */
 .clickable{cursor:pointer}.clickable:hover{background:var(--hover)}.row-selected td{background:var(--indigo-soft)!important}.muted{color:var(--muted)}.danger-text{color:var(--clr-danger-fg)}.success-text{color:var(--clr-success-fg)}.action-strip{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}.detail-backdrop{position:fixed;inset:0;background:var(--scrim);display:none;z-index:95}.drawer{position:fixed;top:48px;bottom:0;inset-inline-end:0;width:min(440px,92vw);background:var(--surface);border-inline-start:1px solid var(--hair);box-shadow:20px 0 50px var(--shadow-strong);transform:translateX(-105%);transition:transform var(--dur-sheet) var(--ease);z-index:96;display:flex;flex-direction:column;direction:rtl}.drawer.open{transform:none}.drawer-head{min-height:52px;padding:0 14px;border-bottom:1px solid var(--hair);display:flex;align-items:center;justify-content:space-between}.drawer-body{overflow:auto;padding:14px;flex:1}.detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.detail-box{background:var(--hover);border:1px solid var(--hair);padding:9px}.detail-box .k{display:block;color:var(--muted);font-size:var(--t-xs);margin-bottom:4px}.detail-box .v{font-size:var(--t-sm)}.section-title{font-size:var(--t-xs);font-weight:600;color:var(--ink);margin:16px 0 8px}.notice{padding:9px 10px;border:1px solid var(--hair);background:var(--hover);color:var(--muted);font-size:var(--t-xs);border-radius:var(--r-sm)}.notice.warn{border-color:var(--warn-ink);background:var(--warn-soft);color:var(--warn-ink)}.notice.err{border-color:var(--danger-line);background:color-mix(in srgb,var(--danger) 12%,var(--surface));color:var(--clr-danger-fg)}.action-menu{position:absolute;top:44px;inset-inline-start:0;min-width:190px;background:var(--surface);border:1px solid var(--hair);box-shadow:0 10px 28px var(--shadow-strong);z-index:80;padding:5px;border-radius:var(--r-sm);display:none}.action-menu button{display:block;width:100%;border:0;background:transparent;text-align:start;padding:8px 10px;color:var(--ink);border-radius:var(--r-sm)}.action-menu button:hover{background:var(--hover)}.rel{position:relative}.selectable-file{display:none}.form-note{font-size:var(--t-xs);color:var(--muted);margin-top:4px}.toast strong{font-weight:600}.modal-wide{width:min(760px,calc(100vw - 30px))}.confirm-box{line-height:1.6;color:var(--ink);font-size:var(--t-xs)}.danger-confirm{border:1px solid var(--danger-line);background:color-mix(in srgb,var(--danger) 12%,var(--surface));padding:10px;margin:10px 0;color:var(--clr-danger-fg);border-radius:var(--r-sm)}@media(max-width:740px){.drawer{width:100%;top:48px}.detail-grid{grid-template-columns:1fr}}
@@ -83,13 +81,10 @@ button{cursor:pointer}
 #login .art{position:relative;background:var(--art-bg);overflow:hidden;border-inline-start:1px solid var(--clr-border)}
 #login .art svg{position:absolute;inset:0;width:100%;height:100%}
 #login .brand{display:flex;align-items:center;gap:10px;font-size:var(--t-xl);font-weight:600;letter-spacing:.01em;color:var(--clr-text)}
-#login .brand > span:last-child{direction:ltr;unicode-bidi:isolate}
-#login .brandmark{height:30px;display:inline-flex;align-items:center}
-#login .brandmark img{height:30px;width:auto;max-width:150px;object-fit:contain}
-#login .mark{width:30px;height:30px;border-radius:6px;background:var(--ink);position:relative;flex:none}
-#login .mark::before,#login .mark::after{content:"";position:absolute;inset-inline:8px;height:3px;border-radius:3px;background:var(--mark-line)}
-#login .mark::before{top:10px}#login .mark::after{top:17px;background:var(--led-write);width:9px;inset-inline-end:auto;inset-inline-start:8px}
-:root[data-theme="dark"] #login .mark{background:var(--header-mark-bg);border:1px solid var(--header-mark-border)}
+/* ‏#1302: לוגו ImageSrv קבוע — גרסה בהירה וכהה לפי ערכת הנושא (data-theme נקבע תמיד ב-index.html). */
+#login .lockup{height:52px;width:auto;display:block}
+:root[data-theme="dark"] #login .lockup-light{display:none}
+:root:not([data-theme="dark"]) #login .lockup-dark{display:none}
 #login h1.title{font-size:var(--t-xl);font-weight:600;line-height:1.2;letter-spacing:-.015em;margin:0 0 24px;color:var(--clr-text)}
 #login h1.title.sub{margin-bottom:8px}
 #login .lead{color:var(--clr-muted);font-size:var(--t-base);margin-bottom:20px}
@@ -160,17 +155,6 @@ button{cursor:pointer}
 .mono{font-family:var(--font-mono);direction:ltr}
 .hidden{display:none !important}
 
-.mark{
-  width:34px; height:34px; border-radius:var(--r); flex:none;
-  background:var(--ink); position:relative;
-}
-.mark::before,.mark::after{
-  content:""; position:absolute; inset-inline-end:8px; inset-inline-start:8px; height:3px;
-  border-radius:var(--r-sm); background:var(--mark-line);
-}
-.mark::before{top:11px}
-.mark::after{top:19px; background:var(--led-write); width:9px; inset-inline-start:8px; inset-inline-end:auto}
-
 label{display:block; font-size:var(--t-sm); color:var(--muted); margin-bottom:6px; font-weight:500}
 input[type=text],input[type=password],input[type=number],select,textarea{
   width:100%; padding:10px 13px; border:1px solid var(--hair); border-radius:var(--r-sm);
@@ -181,13 +165,7 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--indigo); outline
 .btn.flat{background:transparent; border-color:transparent; color:var(--ink)}
 .btn.icon{padding:7px 11px; font-size:var(--t-md); line-height:1}
 
-.brandmark{display:inline-flex; align-items:center; flex:none}
-.brandmark img{height:34px; width:auto; max-width:150px; object-fit:contain; display:block}
 .hbrand .brandmark img{height:30px; max-width:130px}
-.logo-row{display:flex; align-items:center; gap:16px}
-.logo-preview{width:64px; height:64px; border:1px solid var(--hair); border-radius:var(--r-sm);
-  display:grid; place-items:center; background:var(--field); flex:none; padding:6px}
-.logo-preview img{width:100%; height:auto; max-height:100%; object-fit:contain}
 .error{color:var(--clr-danger-fg); font-size:var(--t-sm); min-height:18px; margin-top:6px}
 .ok{color:var(--clr-success-fg); font-size:var(--t-sm); min-height:18px; margin-top:6px}
 
@@ -580,12 +558,12 @@ fieldset.radio-group .check input{margin:0}
 .form-grid{padding:16px}
 #branches-body .panel{overflow:auto}
 button:focus-visible,[role="button"]:focus-visible,.inventory-node:focus-visible{outline:2px solid var(--indigo);outline-offset:2px}
-@media(max-width:740px){.content{overflow:visible}.topbar{gap:8px;padding-inline:8px}.brand{min-width:0}.brand-name{display:none}.top-actions{gap:4px}.card-h{align-items:flex-start}.split,.detail-grid{grid-template-columns:1fr}.form-grid .row .a-mac{flex:1 1 160px}.task-panel{overflow:auto}}
+@media(max-width:740px){.content{overflow:visible}.topbar{gap:8px;padding-inline:8px}.brand{min-width:0}.top-actions{gap:4px}.card-h{align-items:flex-start}.split,.detail-grid{grid-template-columns:1fr}.form-grid .row .a-mac{flex:1 1 160px}.task-panel{overflow:auto}}
 /* S2 (#829): ב-≤740px הסיידבר מוסתר, והמבורגר בכותרת פותח אותו כשכבה מעל
    התוכן (דפוס .drawer). נסגר בלחיצה על הרקע, ב-Esc, ובניווט. */
 .nav-toggle{display:none}
 .sidebar-backdrop{position:fixed;inset:48px 0 0 0;background:var(--scrim);z-index:97;display:none}
-@media(max-width:740px){.nav-toggle{display:inline-flex}.sidebar.open{display:flex;position:fixed;top:48px;bottom:0;inset-inline-start:0;width:min(292px,85vw);z-index:98;box-shadow:0 0 40px var(--shadow-strong);overflow:auto}.sidebar-backdrop.open{display:block}}
+@media(max-width:740px){.nav-toggle{display:inline-flex}}
 /* S3 (#829): שורת הסטטוס (22px, בזרימה) הייתה מכוסה תמיד על-ידי ה-dock
    הקבוע. ה-dock והפאנל מתחילים מעל שורת הסטטוס; ב-≤740px היא מוסתרת
    (כלל קיים) ולכן שם ה-dock חוזר לתחתית. */
@@ -865,7 +843,6 @@ button:focus-visible,[role="button"]:focus-visible,.inventory-node:focus-visible
 .page .sw:focus-visible{outline:2px solid var(--indigo);outline-offset:2px}
 .page .swrow{display:inline-flex;align-items:center;gap:8px;white-space:nowrap}
 .page .cap{font-size:var(--t-sm);color:var(--muted)}
-.page .upd{display:flex;gap:24px;align-items:center;flex-wrap:wrap}.page .upd .kv{flex:1;min-width:240px}.page .upd .acts{display:flex;gap:6px;flex-wrap:wrap}
 /* טבלת הפורטים — צפופה (network-ports.md): 12px, עמודות קצרות בלי שבירה, מתג קטן, endpoint בשורה משלו */
 .page .dg.dense td{padding:5px 10px;font-size:var(--t-sm)}.page .dg.dense .sub,.page .dg.dense .cap{font-size:var(--t-sm)}
 .page .dg.dense td:nth-child(2),.page .dg.dense td:nth-child(3),.page .dg.dense td:nth-child(4){white-space:nowrap}
@@ -874,19 +851,6 @@ button:focus-visible,[role="button"]:focus-visible,.inventory-node:focus-visible
 @media(max-width:740px){.page .swrow{white-space:normal}.page .dg.dense td:nth-child(3),.page .dg.dense td:nth-child(4){white-space:normal}}
 /* ---------- #954 גל 6: מוניטור, דרייברים, הגדרות, הרשאות, יומן ---------- */
 /* הגדרות: שורה = שם + מה זה אומר | שליטה; שורה שהשתנתה מסומנת עד השמירה */
-.page .srows{display:grid}
-.page .srow{display:grid;grid-template-columns:minmax(180px,260px) minmax(0,1fr);gap:16px;align-items:start;padding:10px 0;border-bottom:1px solid var(--field-line);border-inline-start:3px solid transparent;padding-inline-start:10px;margin-inline-start:-10px}
-.page .srow:last-child{border-bottom:0}
-.page .srow.changed{border-inline-start-color:var(--warn-ink);background:color-mix(in srgb,var(--warn-ink) 6%,transparent)}
-.page .srow b{font-size:var(--t-md)}
-.page .srow .ctl{min-width:0}
-.page .srow input[type="text"],.page .srow input[type="number"]{height:30px;border:1px solid var(--hair);border-radius:var(--rp);padding:0 8px;background:var(--surface);color:var(--ink);font:inherit;font-size:var(--t-base)}
-.page .srow input[type="text"]{width:min(320px,100%)}
-.page .srow input[type="number"]{width:100px}
-.page .brand-row{display:flex;gap:12px;align-items:center;min-width:0}
-.page .brand-row > div:last-child{min-width:0}
-.page .logo-box{width:64px;height:64px;border:1px solid var(--hair);border-radius:var(--rp);display:grid;place-items:center;overflow:hidden;flex:none;background:var(--porcelain)}
-.page .logo-box img{max-width:56px;max-height:56px;display:block}
 /* יומן: נקודת חומרה בלי טקסט, שורה לחיצה, סינון בשורה */
 .page .dg td .st:empty{gap:0;vertical-align:middle}
 .page .dg tr[onclick]{cursor:pointer}
@@ -895,7 +859,7 @@ button:focus-visible,[role="button"]:focus-visible,.inventory-node:focus-visible
 /* טבלאות קצרות (מוניטור, דרייברים, הרשאות, יומן): הפעולה הראשית גלויה תמיד, לא רק ב-hover */
 .page .dg.acts-on td .acts{visibility:visible}
 .page .dg td .name + .sub{white-space:normal}
-@media(max-width:740px){.page .srow{grid-template-columns:1fr;gap:8px}.page .srow input[type="text"]{width:100%}.page .dg-bar input[type="datetime-local"]{width:100%}}
+@media(max-width:740px){.page .dg-bar input[type="datetime-local"]{width:100%}}
 /* #1015 bind: שורה לכתובת, בלי למתוח את הטבלה */
 .page .dg .bindlist{display:inline-block;white-space:normal;line-height:1.35;unicode-bidi:isolate}
 .page .dg.dense td:has(.bindlist){max-width:190px}
@@ -991,8 +955,6 @@ button:focus-visible,[role="button"]:focus-visible,.inventory-node:focus-visible
 .page .disk-state{display:grid;grid-template-columns:minmax(0,1fr) 250px;gap:16px;align-items:start}
 .page .big-choice{display:flex;flex-direction:column;gap:8px;min-width:0}
 .page .big-choice .btn{justify-content:center}
-.page .legend-states{display:flex;gap:18px;flex-wrap:wrap;font-size:var(--t-sm);color:var(--muted);padding:8px 12px;border-top:1px solid var(--field-line)}
-.page .legend-states .st{white-space:normal;font-size:var(--t-sm)}
 .page .dg.storage td .sub.mono{direction:ltr;text-align:start}
 .page .dg.storage .name{white-space:nowrap}
 .sheet .sbody .page.drw{margin-bottom:12px}
@@ -1094,6 +1056,10 @@ th,.table th,.page .dg th{letter-spacing:.02em}
    .anc = הצומת האב (רשת): צבע רך + נקודה בקצה — "באיזה אזור אני", בלי לתפוס את ההדגשה. */
 .inventory-node.active{font-weight:600}
 .inventory-node.anc{color:var(--clr-action-fg);font-weight:600}
+/* ‏#1300 (console-full.html .tn.group): ענף בלי דף — מלאי / תשתית / ניהול — מודגש */
+.sidebar .inventory-node.group{font-weight:600}
+/* ‏#1300: כותרת דף בלי לשוניות (הגדרות, משתמשים) נסגרת בקו, כמו במוקאפ */
+.page:not(.drw)>.obj:not(:has(.tabs)){border-bottom:1px solid var(--clr-border);padding-bottom:12px}
 .inventory-node.anc::after{content:"";flex:none;width:6px;height:6px;border-radius:50%;background:var(--indigo);margin-inline-start:auto;opacity:.65}
 .inventory-node.active .ui-icon,.inventory-node.anc .ui-icon{color:var(--clr-action-fg)}
 /* ---------- apple-pending-4 · 4: כותרת הסקירה ----------
@@ -1108,7 +1074,6 @@ th,.table th,.page .dg th{letter-spacing:.02em}
 .page .attn>summary .ui-icon{width:16px;height:16px;color:var(--warn-ink)}
 .page .attn.err>summary .ui-icon{color:var(--clr-danger-fg)}
 .page .attn>summary .cnt{background:var(--warn-ink);color:var(--surface);border-radius:99px;padding:0 7px;font-size:var(--t-xs);font-variant-numeric:tabular-nums;font-weight:600;line-height:1.6}
-.page .attn.err>summary .cnt{background:var(--danger)}
 .page .attn>summary::after{content:"‹";margin-inline-start:auto;color:var(--muted);transition:transform var(--dur-base) var(--ease)}
 .page .attn[open]>summary::after{transform:rotate(-90deg)}
 .page .attn>ul{margin:0;padding:0;list-style:none;border-top:1px solid var(--hair)}
@@ -1151,15 +1116,6 @@ th,.table th,.page .dg th{letter-spacing:.02em}
 .page .note .tech summary{cursor:pointer;font-size:var(--t-xs)}
 .page .note .tech code{display:block;margin-top:4px;padding:6px 8px;border-radius:var(--rp);background:var(--surface);font-family:var(--font-mono);font-size:var(--t-xs);white-space:pre-wrap;overflow-wrap:anywhere;text-align:start;color:var(--ink)}
 
-/* כיווץ עץ הניווט (כמו vCenter): העמודה מתכווצת ל-0 בתנועת --dur-base; כפתור ההצגה חוזר בכותרת העליונה.
-   רק במסך רחב — במסך צר העץ הוא שכבה (S2). */
-@media (min-width:741px){
-  .main{transition:grid-template-columns var(--dur-base) var(--ease)}
-  .app.nav-collapsed .main{grid-template-columns:0 minmax(0,1fr)}
-  .app.nav-collapsed .sidebar{visibility:hidden;border-inline-end-width:0}
-  .app.nav-collapsed .nav-toggle{display:inline-flex}
-}
-@media (prefers-reduced-motion:reduce){.main{transition:none}}
 
 /* שורת הסטטוס: הנקודה נגזרת מ-/health (ביקורת 10/10) — ירוק רק כשהבדיקה אמרה "תקין". */
 .statusbar-item.svc-warn i{background:var(--clr-warning)}
@@ -1339,6 +1295,11 @@ th,.table th,.page .dg th{letter-spacing:.02em}
 .page .tile small{display:block;color:var(--muted);font-size:var(--t-sm);overflow-wrap:anywhere}
 .page .tile .led{width:8px;height:8px;border-radius:50%;background:var(--led-idle);flex:none;margin-top:6px}
 .page .tile .led.ok{background:var(--led-ok)}.page .tile .led.warn{background:var(--warn-ink)}.page .tile .led.err{background:var(--danger)}.page .tile .led.unk{background:color-mix(in srgb,var(--warn-ink) 55%,var(--led-idle))}
+/* ‏#1300 סקירה (הצעה ג'): כרטיס האחסון ברוחב שני KPI — פנוי בגדול, פס עם אחוז, בשימוש · קיבולת (כמו ESXi) */
+.page .kpi.kpi-store{grid-column:span 2}
+.page .kpi-store .bar-row{margin-top:6px}
+.page .kpi-store .store-nums{order:4;display:flex;justify-content:space-between;gap:12px;margin-top:4px;font-size:var(--t-xs);color:var(--clr-muted);font-variant-numeric:tabular-nums}
+.page .kpi-store .store-nums bdi{color:var(--clr-text);font-weight:600}
 /* stage 2 · מחשבים: שורת קבוצה (colspan) היא td אחרון — לא עמודת ⋯ דביקה */
 .page .dg.kebab-col tr.group td:last-child{position:static;width:auto;text-align:start;white-space:normal;padding-inline:12px;border-inline-start:0;box-shadow:none;background:var(--porcelain)}
 /* stage 2 · עמודת השם בטבלת האימג'ים לא נדחסת למילה בשורה */
@@ -1363,12 +1324,9 @@ th,.table th,.page .dg th{letter-spacing:.02em}
 .topbar .search:focus-within{background:color-mix(in srgb,var(--clr-header-text) 16%,transparent);border-color:color-mix(in srgb,var(--clr-header-text) 55%,transparent)}
 .topbar .search input::placeholder{color:color-mix(in srgb,var(--clr-header-text) 66%,transparent)}
 .topbar .brand{min-width:0;margin-inline-end:8px;gap:8px;letter-spacing:-.01em;white-space:nowrap}
-.topbar .brand-name{font-size:var(--t-base);font-weight:600}
 
-@media (min-width:741px){.main{grid-template-columns:var(--inventory-width) minmax(0,1fr)}}
-.sidebar-head{display:none}
 .sidebar .tree{padding:8px 0 16px;font-size:var(--t-base)}
-.sidebar .inventory-node{font-size:var(--t-base);gap:8px;padding:7px 14px;min-height:0;border-radius:0;border-inline-start:0;position:relative}
+.sidebar .inventory-node{font-size:var(--t-base);gap:8px;padding:7px 14px;min-height:0;border-radius:0;border-inline-start:0;position:relative;line-height:18px}   /* #1300: שורה של 32px כמו .tn במוקאפ */
 .sidebar .inventory-node:hover{background:var(--clr-hover)}
 .sidebar .inventory-node .ui-icon{width:18px;height:18px;color:var(--clr-muted)}
 .sidebar .inventory-node>.tree-arrow{order:9;margin-inline-start:auto;flex:0 0 14px;color:var(--clr-muted)}
@@ -1382,7 +1340,7 @@ th,.table th,.page .dg th{letter-spacing:.02em}
 .sidebar .inventory-node.active{background:var(--clr-action-soft);color:var(--clr-action-fg);font-weight:600}
 .sidebar .inventory-node.active .ui-icon{color:var(--clr-action-fg)}
 .sidebar .inventory-node.active::before{content:"";position:absolute;inset-block:5px;inset-inline-start:0;width:3px;border-radius:3px 0 0 3px;background:var(--clr-action)}
-.sidebar .inventory-node.anc::after{margin-inline-start:0;order:8}
+.sidebar .inventory-node.anc::after{margin-inline-start:0;order:10}   /* #1300: הנקודה אחרי החץ, בקצה — כמו .tn.anc::after במוקאפ */
 .sidebar .tree-foot{margin:12px 14px 14px;padding:10px 12px;border:1px solid var(--clr-row-border);border-radius:var(--r-sm);font-size:var(--t-sm);color:var(--clr-muted)}
 
 /* ---------- סבב סופי מול המוקאפ · כותרת העמוד, לשוניות ופילים (.ph / .hico / .tabs / .pill) ----------
@@ -1504,3 +1462,168 @@ body.tasks-open .app>.task-dock{bottom:var(--task-h,220px);border-top:1px solid 
 .gs-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .gs-sub{color:var(--muted);font-size:var(--t-xs);direction:ltr;unicode-bidi:plaintext;white-space:nowrap}
 .gs-empty{padding:8px;color:var(--muted);font-size:var(--t-xs)}
+
+/* ---------- #1300: סקירה כללית, אימג'ים ומגירת אימג' כמו console-full.html (הכרעת נדב 12/10) ----------
+   ‏.page.aligned — רק בשני הדפים שהוכרעו; שאר הדפים ממתינים להכרעה ולא משתנים. */
+.page.aligned>.obj{position:sticky;top:0;z-index:12}
+@media(max-width:740px){.page.aligned>.obj{position:static}}
+.page.aligned .card{box-shadow:var(--shadow-card)}
+/* "דורש טיפול": כפתור הפעולה בעמודה נפרדת בקצה השורה; המונה כתום תמיד (גם כשיש פריט אדום) */
+.page .attn-i>.btn{flex:none;align-self:center}
+/* כרטיס "סבב פעיל": שם + אחוז, פס, שורת משנה */
+.page .round .rh{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:8px}
+.page .round .rh .pct{font-family:var(--font-mono);direction:ltr;unicode-bidi:isolate;color:var(--clr-text)}
+.page .round>.bar{display:block;min-width:0}
+.page .round .rm{margin:8px 0 0;color:var(--clr-muted);font-size:var(--t-sm)}
+.page .round .acts{display:flex;gap:6px;margin-top:10px}
+.page .round+.round{margin-top:16px;padding-top:16px;border-top:1px solid var(--clr-row-border)}
+.page .tile small{font-size:var(--t-xs)}
+.page .dg tr.clk{cursor:pointer}
+/* ספריית אימג'ים: כותרת "כל האימג'ים" בולטת, שורות נמוכות, "מתאים לדיסק" ופיל sha256 בלי שבירה */
+.page .dg-bar .fcrumb{font-size:var(--t-md);color:var(--clr-text);display:flex;gap:6px;align-items:baseline}
+.page .dg-bar .fcrumb b{font-weight:600}
+.page .dg-bar .fcrumb a{color:var(--clr-action-fg);cursor:pointer;font-weight:400}
+.page .ftree .f{border-inline-start:0;border-radius:8px}
+.page .ftree .f.on{border-inline-start-color:transparent}
+.page #img-table .dg td .st,.page #img-table .dg td .fit{white-space:nowrap}
+.page #img-table .dg td .sub{white-space:nowrap}
+.page #img-table .dg td .name{font-weight:600}
+/* מגירת אימג': תגיות בראש, מונים בלשוניות */
+#drawerSub .n-meta{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.n-chip{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:99px;font-size:var(--t-xs);font-weight:600;background:var(--clr-success-soft);color:var(--clr-success-fg)}
+.n-chip.n{background:var(--clr-hover);color:var(--clr-muted)}
+.n-chip.w{background:var(--clr-warning-soft);color:var(--clr-warning-fg)}
+.n-chip.d{background:var(--clr-danger-soft);color:var(--clr-danger-fg)}
+.n-tab small{color:var(--clr-muted);font-weight:400;margin-inline-start:4px}
+.page.drw .kv+.dg,.page.drw .kv+.note,.page.drw .kv+.timeline,.page.drw .kv+.muted{margin-top:14px}
+/* ‏#1300: "נקלט" לא נחתך ברוחב 1280 — תאים צרים יותר בטבלת הספרייה (גם השם, שאין תחתיו תיאור) */
+.page #img-table .dg th,.page #img-table .dg td{padding-inline:8px}
+.page.aligned .split #img-table .dg td:nth-child(2){min-width:150px}
+.page .svc-who{margin-top:12px;font-size:var(--t-xs);color:var(--clr-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* ‏#1300: מגירת מחשב — קבוצות בתוך "סקירה", פעולות ליד המצב, לשוניות בלי שבירת שורה */
+.n-tab{white-space:nowrap}
+.page.drw .grp{font-size:var(--t-xs);font-weight:600;letter-spacing:.02em;color:var(--clr-muted);margin-bottom:8px}
+.page.drw .grp small{font-weight:400}
+.page.drw .mgrp{padding-top:14px;border-top:1px solid var(--clr-row-border)}
+.page.drw .grp-acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+/* ‏#1300: בריאות — פירוט קצר, הטקסט המלא מאחורי "פרטים" */
+.page .dg td .tech{margin-top:2px;color:var(--clr-muted);font-size:var(--t-xs);white-space:normal}
+.page .dg td .tech summary{cursor:pointer}
+.page .dg td .tech code,.page .dg td .tech div{display:block;margin-top:4px;padding:6px 8px;border-radius:var(--r-sm);background:var(--clr-field);font-size:var(--t-xs);white-space:pre-wrap;overflow-wrap:anywhere;max-width:520px}
+.page .dg td .tech code{font-family:var(--font-mono)}
+/* ‏#1300: משתמשים — "הרשאות מפורטות" מקופל */
+.page details.perm-more>summary{list-style:none;cursor:pointer;border-bottom:0}
+.page details.perm-more>summary::-webkit-details-marker{display:none}
+.page details.perm-more>summary::after{content:"‹";color:var(--clr-muted);transition:transform var(--dur-base) var(--ease)}
+.page details.perm-more[open]>summary::after{transform:rotate(-90deg)}
+.page details.perm-more[open]>summary{border-bottom:1px solid var(--clr-row-border)}
+.page .card-b>p.cap{margin:0;font-size:var(--t-sm);color:var(--clr-muted)}
+/* ‏#1300: מוניטור — רשימת מחשבים מחוברים ככפתורים (שם + IP), מצב ריק עם סמל */
+.page .mon-list{display:grid;gap:8px}
+.page .btn.mon-pick{justify-content:space-between;height:auto;min-height:32px;padding:6px 14px;text-align:start;white-space:normal}
+.page .btn.mon-pick.on{border-color:var(--clr-action);background:var(--clr-action-soft)}
+.page .btn.mon-pick .mn{display:flex;flex-direction:column;gap:2px}
+.page .btn.mon-pick .mono{color:var(--clr-muted)}
+.page .mon-rest{margin-top:16px;padding-top:12px;border-top:1px solid var(--clr-row-border)}
+.page .mon-rest .grp{font-size:var(--t-xs);font-weight:600;color:var(--clr-muted);margin-bottom:6px}
+.page .mon-off{display:flex;align-items:center;gap:10px;padding:6px 0;font-size:var(--t-sm)}
+.page .mon-off .mn{flex:1;min-width:0}
+.page .empty .eic{width:48px;height:48px;border-radius:50%;background:var(--clr-hover);display:grid;place-items:center;margin:0 auto 12px;color:var(--clr-muted)}
+.page .empty .eic .ui-icon{width:22px;height:22px}
+.page .empty b.et{display:block;font-size:var(--t-md);font-weight:600;color:var(--clr-text);margin-bottom:4px}
+.page .mon-off .sub{color:var(--clr-muted);font-size:var(--t-xs)}
+/* ‏#1300 (console-full.html P.settings, אחד-לאחד): ‏dl.kv — תווית 150px וערך, קו בין שורות; ‏label.sw — המתג בראש
+   השורה, הטקסט אחריו, הצבע הכחול של הפעולה. ‏.mkv/.msw — כדי לא להתנגש ב-.kv (span) וב-.sw (כפתור) של שאר הדפים. */
+.page dl.mkv{display:grid;grid-template-columns:minmax(150px,max-content) 1fr;margin:0;font-size:var(--t-base)}
+.page dl.mkv dt,.page dl.mkv dd{margin:0;padding:8px 0;border-bottom:1px solid var(--clr-row-border)}
+.page dl.mkv dt{color:var(--clr-muted);padding-inline-end:24px}
+.page dl.mkv dd{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+.page dl.mkv dd .btn.sm.flat{height:24px;padding:0 6px}
+.page .msws{display:grid;gap:14px}
+.page dl.mkv+.msws{margin-top:16px}
+.page label.msw{position:relative;display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-size:var(--t-sm);white-space:nowrap;justify-self:start}
+.page label.msw input{position:absolute;opacity:0;width:1px;height:1px}
+.page label.msw .track{flex:none;position:relative;width:34px;height:20px;border-radius:99px;background:var(--clr-border);transition:background var(--dur-fast)}
+.page label.msw .track::after{content:"";position:absolute;top:2px;inset-inline-start:2px;width:16px;height:16px;border-radius:50%;background:var(--on-ink);box-shadow:0 1px 2px var(--shadow-strong);transition:inset-inline-start var(--dur-fast) var(--ease)}
+.page label.msw input:checked+.track{background:var(--clr-action)}
+.page label.msw input:checked+.track::after{inset-inline-start:16px}
+.page label.msw input:focus-visible+.track{outline:2px solid var(--clr-action);outline-offset:2px}
+.page label.msw.changed{color:var(--clr-warning-fg)}
+.page p.mcap{margin:0 0 12px;color:var(--clr-muted);font-size:var(--t-sm)}
+.page .macts{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+.page .mupd .note{margin-bottom:0}
+.page .msws+.mupd{margin-top:16px}
+.page .mupd-st{margin-top:10px}
+@media(max-width:560px){.page dl.mkv{grid-template-columns:110px 1fr}.page label.msw{white-space:normal}}
+.page.settings .note{border:0;border-radius:var(--r-sm);padding:10px 12px}
+.page .dg b.uname{font-weight:600}
+.page .dg td b.uname+.sub,.page .dg td .pill+.sub{display:block}
+/* ‏#1300 (console-full.html P.network "ports"): משפט פתיחה בראש כרטיס */
+.page p.port-intro{padding:12px 16px 0;margin:0;color:var(--clr-muted);font-size:var(--t-sm)}
+.page .card-b.flush>.note{margin:12px 16px;border-radius:var(--r-sm)}
+.page.drw .mon-why{margin-top:8px}
+/* ‏#1300 (נדב 13/10, אושר — design-approved/rail/rail.html): עמודת ניווט אחת שהרוחב שלה מונפש — עץ מלא ↔ פס
+   אייקונים. מעבר רוחב ב-CSS ניתן לקטיעה: לחיצה שנייה באמצע מתהפכת מהערך הנוכחי, לא קופצת. העץ נחתך עם
+   הרוחב ונמוג מהר; הפס נכנס כשהרוחב כבר קרוב ליעד. עד 900px הפס הוא ברירת המחדל, ו-☰ פותח את העץ המלא
+   כמגירה מעל התוכן (.sidebar.open + .sidebar-backdrop.open). */
+:root{--rail-w:56px;--tile:40px}
+.main{grid-template-columns:var(--inventory-width) minmax(0,1fr);transition:grid-template-columns var(--dur-sheet) var(--ease)}
+.app[data-nav="rail"] .main{grid-template-columns:var(--rail-w) minmax(0,1fr)}
+.sidebar{display:flex;position:relative;overflow:hidden}
+.sidebar .nav-full{position:absolute;inset-block:0;inset-inline-start:0;width:var(--inventory-width);display:flex;flex-direction:column;background:var(--clr-nav);transition:opacity 160ms var(--ease) 60ms,visibility 0s}
+.sidebar .nav-full .tree{flex:1;min-height:0;overflow:auto}
+.sidebar .rail{position:absolute;inset-block:0;inset-inline-start:0;width:var(--rail-w);display:flex;flex-direction:column;align-items:center;padding:8px 0 42px;overflow-y:auto;overflow-x:hidden;scrollbar-width:none;opacity:0;visibility:hidden;transition:opacity 120ms var(--ease),visibility 0s 120ms}
+.sidebar .rail::-webkit-scrollbar{display:none}
+.app[data-nav="rail"] .sidebar .nav-full{opacity:0;visibility:hidden;transition:opacity 110ms var(--ease),visibility 0s 110ms}
+.app[data-nav="rail"] .sidebar .rail{opacity:1;visibility:visible;transition:opacity 180ms var(--ease) 130ms,visibility 0s}
+/* הפס: הקבוצות בלי דף הן מפרידים; הנבחר מלא בצבע הפעולה (כמו המשבצת הכהה ב-ESXi) */
+.rail .rgrp{display:flex;flex-direction:column;gap:4px;align-items:center}
+.rail .rsep{width:24px;height:1px;background:var(--clr-border);margin:8px 0;flex:none}
+.rail .ri{width:var(--tile);height:var(--tile);flex:none;border-radius:var(--r-sm);border:1px solid var(--clr-row-border);background:var(--clr-surface);color:var(--clr-muted);display:grid;place-items:center;cursor:pointer;position:relative;padding:0;
+  transition:background var(--dur-fast),border-color var(--dur-fast),color var(--dur-fast),transform var(--dur-press) var(--ease)}
+.rail .ri .ui-icon{width:20px;height:20px}
+.rail .ri:hover{background:var(--clr-hover);border-color:var(--clr-border);color:var(--clr-text)}
+.rail .ri:active{transform:scale(.94)}
+.rail .ri.cur{background:var(--clr-action);border-color:var(--clr-action);color:var(--on-ink)}
+.rail .ri.cur:hover{background:var(--clr-action-hover)}
+/* צומת עם ילדים: משולש קטן בפינה הפונה אל התפריט הצף */
+.rail .ri.kids::after{content:"";position:absolute;inset-inline-end:3px;bottom:3px;border:4px solid transparent;border-bottom-color:currentColor;border-inline-end-color:currentColor;opacity:.75}
+.rail .ri[aria-expanded="true"]:not(.cur){background:var(--clr-hover);border-color:var(--clr-border);color:var(--clr-text)}
+.rail .ri:focus-visible{outline:2px solid var(--clr-action);outline-offset:2px}
+.rail .rfoot{margin-top:auto;padding-top:12px}
+.rail .rled{width:var(--tile);height:28px;display:grid;place-items:center}
+.rail .rled .led{width:8px;height:8px;border-radius:50%;background:var(--led-idle)}
+.rail .rled .led.ok{background:var(--led-ok)}.rail .rled .led.warn{background:var(--warn-ink)}.rail .rled .led.err{background:var(--danger)}
+/* tooltip ותפריט צף — חומר צף, מעוגן לאייקון שהוליד אותו */
+.nav-tip{position:fixed;z-index:160;background:var(--clr-header);border:1px solid color-mix(in srgb,var(--on-ink) 14%,transparent);color:var(--on-ink);font-size:var(--t-sm);font-weight:500;padding:5px 10px;border-radius:var(--r-sm);white-space:nowrap;
+  opacity:0;transform:translateX(4px);transition:opacity 120ms var(--ease),transform 120ms var(--ease);visibility:hidden}
+.nav-tip.show{opacity:1;transform:none;visibility:visible}
+.nav-tip small{opacity:.72;margin-inline-start:6px;font-weight:400}
+.nav-tip kbd{font:inherit;font-size:var(--t-xs);border:1px solid color-mix(in srgb,var(--on-ink) 35%,transparent);border-radius:4px;padding:0 4px;margin-inline-start:6px;opacity:.8}
+.nav-fly{position:fixed;z-index:155;min-width:208px;background:var(--clr-surface);border:1px solid var(--clr-border);border-radius:var(--r);box-shadow:var(--shadow-overlay);padding:6px;direction:rtl;
+  opacity:0;transform:scale(.96);visibility:hidden;transition:opacity 140ms var(--ease),transform 180ms var(--ease),visibility 0s 180ms}
+.nav-fly.show{opacity:1;transform:none;visibility:visible;transition:opacity 140ms var(--ease),transform 220ms var(--ease),visibility 0s}
+.nav-fly .fh{font-size:var(--t-xs);color:var(--clr-muted);padding:4px 10px 2px;font-weight:600}
+.nav-fly .fi{display:flex;align-items:center;gap:10px;width:100%;border:0;background:none;padding:7px 10px;border-radius:var(--r-sm);cursor:pointer;text-align:start;font:inherit;font-size:var(--t-base);color:var(--clr-text);white-space:nowrap}
+.nav-fly .fi .ui-icon{width:18px;height:18px;color:var(--clr-muted)}
+.nav-fly .fi:hover,.nav-fly .fi:focus-visible{background:var(--clr-hover)}
+.nav-fly .fi:focus-visible{outline:2px solid var(--clr-action);outline-offset:-2px}
+.nav-fly .fi.parent{font-weight:600}
+.nav-fly .fi[aria-current]{background:var(--clr-action-soft);color:var(--clr-action-fg);font-weight:600}
+.nav-fly .fi[aria-current] .ui-icon{color:var(--clr-action-fg)}
+.nav-fly .fi .ck{margin-inline-start:auto;font-size:var(--t-xs);color:var(--clr-action-fg)}
+.nav-fly hr{border:0;border-top:1px solid var(--clr-row-border);margin:4px 2px}
+/* מסך צר: הפס הוא ברירת המחדל; ☰ פותח את העץ המלא כמגירה מעל התוכן, עם מסך מעומעם */
+.app.narrow .sidebar .nav-full{position:fixed;inset-block:48px 0;inset-inline-start:0;z-index:112;box-shadow:var(--shadow-overlay);border-inline-end:1px solid var(--clr-border);
+  opacity:1;visibility:hidden;transform:translateX(105%);transition:transform var(--dur-sheet) var(--ease),visibility 0s var(--dur-sheet)}
+.app.narrow .sidebar.open .nav-full{visibility:visible;transform:none;transition:transform var(--dur-sheet) var(--ease),visibility 0s}
+.app.narrow .sidebar-backdrop.open{display:block;z-index:111}   /* מעל דוק המשימות (110), כמו המוקאפ */
+@media (max-width:900px){.main{grid-template-columns:var(--rail-w) minmax(0,1fr)}}
+/* תנועה מופחתת: בלי שינוי רוחב מונפש ובלי החלקה — רק דהייה קצרה */
+@media (prefers-reduced-motion:reduce){
+  .main{transition:none}
+  .app.narrow .sidebar .nav-full,.app.narrow .sidebar.open .nav-full{transform:none;opacity:0;transition:opacity 150ms,visibility 0s 150ms}
+  .app.narrow .sidebar.open .nav-full{opacity:1;transition:opacity 150ms,visibility 0s}
+  .nav-fly,.nav-fly.show,.nav-tip,.nav-tip.show{transform:none}
+}
+@media (prefers-reduced-transparency:reduce){.nav-tip{border-color:var(--clr-header)}}

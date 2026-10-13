@@ -51,7 +51,7 @@ TTY_PROGRESS=1
 log() {
     printf 'imagectl-firstboot: %s\n' "$*"
     if [[ "$TTY_PROGRESS" == 1 ]]; then
-        printf 'ImageCtl: %s\n' "$*" > "$FIRSTBOOT_TTY"
+        printf 'ImageSrv: %s\n' "$*" > "$FIRSTBOOT_TTY"
     fi
 }
 fail() {
@@ -61,7 +61,7 @@ fail() {
     install -d "$ETC"
     printf 'state=%s\ntimestamp=%s\nmessage=%s\n' "$state" "$(date -u +%FT%TZ)" "$message" > "$STATUS"
     printf 'imagectl-firstboot: [%s] %s\n' "$state" "$message" >&2
-    printf '\nImageCtl: first boot failed [%s]\n%s\nPress Alt+F2 to log in on tty2.\n' \
+    printf '\nImageSrv: first boot failed [%s]\n%s\nPress Alt+F2 to log in on tty2.\n' \
         "$state" "$message" > "$FIRSTBOOT_TTY"
     exit 1
 }

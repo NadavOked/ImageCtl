@@ -315,7 +315,6 @@ void state_parse(State *s, FILE *fp) {
         else if (KEY("server_name")) cp(s->server_name, sizeof s->server_name, val);         /* #1252 */
         else if (KEY("server_addr")) cp(s->server_addr, sizeof s->server_addr, val);         /* #1252 */
         else if (KEY("server_version")) cp(s->server_version, sizeof s->server_version, val); /* #1252 */
-        else if (KEY("logo")) cp(s->logo, sizeof s->logo, val);   /* #1168 */
         else if (KEY("hello_age")) {
             unsigned long long v;
             if (parse_uint(val, &v) && v <= INT_MAX) s->hello_age = (int)v;

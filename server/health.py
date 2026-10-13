@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, Response
 
 import hashlib
 
-from . import (agent_loops, auth, dhcp, foreign_vlan, hello,
+from . import (agent_loops, auth, capabilities, dhcp, foreign_vlan, hello,
                identity, monitor, ports)
 from .db import now_iso
 
@@ -506,11 +506,12 @@ def _own_row(ctx, hooks: dict, port_id: str, ss_tcp: str, *,
     listening = None if bind is None else bool(bind)
     toggle, off_means = ports.OWN[port_id]
     if port_id == "interserver" and not registered:
-        # ‏8443 עולה רק על משני עם --interserver-host; בלעדיו אין מה לכבות.
+        # ‏8443 עולה על משני עם --interserver-host, ועל ראשי שהקונסולה שלו על
+        # כרטיס שרתים ("אתה שם?" בלבד, #1310); בלעדיהם אין מה לכבות.
         state, detail = ports.measured_state(None, listening)
         return _port(port_id, name, str(port), "tcp", desc, target, state,
-                     detail + " · לא מוגדר בשרת הזה (עולה רק על משני עם "
-                     "--interserver-host)", note,
+                     detail + " · לא מוגדר בשרת הזה (משני: עם --interserver-host; "
+                     "ראשי: כשהקונסולה על כרטיס שרתים, #1310)", note,
                      listening=listening, bind=bind, off_means=off_means)
     flag = ports.enabled(ctx.conn, port_id)
     state, detail = ports.measured_state(flag, listening)
@@ -600,16 +601,19 @@ def ports_snapshot(ctx, hooks: dict, server_base: str) -> list[dict]:
         desc="קונסולת הניהול (TLS, תעודה עצמית)", target="דפדפן (מנהל)",
         note="לפתוח ב-FW: TCP 8081 (HTTPS) מתחנת הניהול בלבד — לא לוילן הכיתות"))
 
-    proxy_bind = ports.bind_addresses(ss_out, 4011)
-    proxy_on = any(f["proxy"] for f in dhcp_flags)
-    p_state, p_detail = ports.measured_state(
-        proxy_on, None if proxy_bind is None else bool(proxy_bind))
-    entries.append(_port("pxe_proxy", "PXE", "4011", "udp", "PXE proxy",
-        "תחנות", p_state, p_detail, "לפתוח ב-FW: UDP 4011 מוילן ההפצה לשרת",
-        enabled=proxy_on, listening=None if proxy_bind is None else bool(proxy_bind),
-        bind=proxy_bind, toggle="api", toggle_url=ports.ELSEWHERE["pxe_proxy"],
-        off_means="ברשת עם DHCP זר תחנות לא יקבלו הפניית PXE מהשרת הזה",
-        interfaces=dhcp_flags))
+    # ‏#1303 (נדב 12/10): ‏PXE proxy שייך לכיתות (v1.2) — ‏`PUT /net/interfaces` מסרב לו ב-409
+    # כשהן כבויות. ב-v1 אין שורת 4011 בדף הפורטים (שארית מוצגת של יכולת שאין).
+    if capabilities.classrooms():
+        proxy_bind = ports.bind_addresses(ss_out, 4011)
+        proxy_on = any(f["proxy"] for f in dhcp_flags)
+        p_state, p_detail = ports.measured_state(
+            proxy_on, None if proxy_bind is None else bool(proxy_bind))
+        entries.append(_port("pxe_proxy", "PXE", "4011", "udp", "PXE proxy",
+            "תחנות", p_state, p_detail, "לפתוח ב-FW: UDP 4011 מוילן ההפצה לשרת",
+            enabled=proxy_on, listening=None if proxy_bind is None else bool(proxy_bind),
+            bind=proxy_bind, toggle="api", toggle_url=ports.ELSEWHERE["pxe_proxy"],
+            off_means="ברשת עם DHCP זר תחנות לא יקבלו הפניית PXE מהשרת הזה",
+            interfaces=dhcp_flags))
 
     sender = sender_check(_hook_pids(hooks), _send_in_progress(ctx))
     entries.append(_port("multicast", "Multicast", "9000–9001", "udp",

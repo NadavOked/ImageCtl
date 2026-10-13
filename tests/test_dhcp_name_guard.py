@@ -175,7 +175,6 @@ def test_the_config_file_never_grows_a_line_nobody_asked_for(dhcp_server):
     text = fake["applied"][-1]
     assert len([ln for ln in text.splitlines() if ln.startswith("dhcp-range=")]) == 1
     assert "10.0.0.200" not in text
-    assert admin.get("/api/console/net/dnsmasq").status_code == 200
 
 
 # --- המסלול השלישי, שנשאר מאחור (#130) ---------------------------------------

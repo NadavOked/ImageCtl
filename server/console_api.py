@@ -967,7 +967,11 @@ def create_console_router(
 
     @router.get("/settings")
     def read_settings(user=Depends(admin_only)):
-        return {key: get_setting(ctx.conn, key) for key in sorted(WRITE_SETTINGS)}
+        values = {key: get_setting(ctx.conn, key) for key in sorted(WRITE_SETTINGS)}
+        # ‏#1300: בלי הגדרה השרת משתמש בשם המארח (‏/me, ‏ports.server_name) — השדה
+        # בהגדרות מציג את אותו שם, לא ריק.
+        values["server_name"] = values["server_name"] or socket.gethostname()
+        return values
 
     @router.post("/settings")
     async def write_settings(request: Request, user=Depends(admin_only)):

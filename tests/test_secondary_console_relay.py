@@ -318,29 +318,6 @@ def test_the_peer_identity_cannot_come_from_an_http_request(secondary):
     assert anon.get("/api/console/users").status_code == 401
 
 
-def test_the_source_guard_lets_only_the_in_process_peer_through():
-    import asyncio
-    import ipaddress
-    from server.auth import PEER_SCOPE_KEY
-    from server.console_source_guard import ConsoleSourceGuard
-    reached = []
-
-    async def inner(scope, receive, send):
-        reached.append(scope["path"])
-
-    sent = []
-
-    async def send(message):
-        sent.append(message)
-
-    guard = ConsoleSourceGuard(inner, [ipaddress.ip_network("10.10.10.0/24")])
-    base = {"type": "http", "path": "/api/console/users", "client": ("10.99.0.1", 5)}
-    asyncio.run(guard(dict(base), None, send))
-    assert reached == [] and sent[0]["status"] == 403
-    asyncio.run(guard({**base, PEER_SCOPE_KEY: ("primary:noc", "admin")}, None, send))
-    assert reached == ["/api/console/users"]
-
-
 def test_main_hands_the_console_app_to_the_interserver_listener():
     """‏main.py אינו נבדק ב-pytest; בלי זה כל GET דרך הערוץ עונה 503."""
     source = (ROOT / "server" / "main.py").read_text(encoding="utf-8")

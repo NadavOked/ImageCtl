@@ -7,6 +7,7 @@
 
 #include "ui.h"
 #include "text.h"
+#include "brand.h"
 
 void hit_add(App *a, Rect r, int id);
 int hovered(const App *a, Rect r);
@@ -73,7 +74,6 @@ void draw_menu_icon(cairo_t *cr, Rect box, int kind, Rgb c);
 /* A visible keyboard-focus ring: 2px in the action colour, 3px outside <r>
  * (the console's outline:2px; outline-offset). */
 void draw_focus_ring(App *a, cairo_t *cr, Rect r);
-void draw_brand_mark(cairo_t *cr, const Theme *t, Rect box);
 void draw_station_art(cairo_t *cr, const Theme *t, Rect box, double opacity);
 enum { PILL_OK, PILL_WARN, PILL_BAD, PILL_INFO, PILL_OFF };
 double draw_pill(cairo_t *cr, const Theme *t, double right, double y,

@@ -18,8 +18,9 @@ SH = shutil.which("sh")
 pytestmark = pytest.mark.skipif(SH is None, reason="a POSIX sh is required")
 LINUX_ONLY = pytest.mark.skipif(os.name == "nt", reason="executable shims and block-device flow are Linux-only")
 
+FP = "3fa3221ea017f9ce3493fe0fe0c180aaa5ea6293a2a399b0f14977280a074915"
 KEYS = (
-    "disk", "role", "primary_url", "servers_if", "servers_mac", "servers_mode",
+    "disk", "role", "primary_url", "primary_fingerprint", "servers_if", "servers_mac", "servers_mode",
     "servers_addr", "servers_mask", "servers_gw", "servers_dns", "hostname", "admin_user", "admin_pass",
 )
 
@@ -71,7 +72,7 @@ def _machine(tmp_path: Path) -> dict[str, Path | dict[str, str]]:
 
 def _answers(path: Path, **changes: str) -> Path:
     data = {
-        "disk": "/dev/sda", "role": "standalone", "primary_url": "",
+        "disk": "/dev/sda", "role": "standalone", "primary_url": "", "primary_fingerprint": "",
         "servers_if": "ens33", "servers_mac": "00:50:56:01:02:01",
         "servers_mode": "dhcp", "servers_addr": "", "servers_mask": "",
         "servers_gw": "", "servers_dns": "", "hostname": "imagectl-ta",
@@ -137,7 +138,13 @@ def test_each_missing_answer_is_named_and_no_disk_command_runs(tmp_path, missing
     ({"disk": "/dev/sda1"}, "invalid-disk"),
     ({"role": "primary"}, "invalid-role"),
     ({"primary_url": "https://main.example:8443"}, "invalid-primary-url"),
-    ({"role": "secondary", "primary_url": "http://main:8443"}, "invalid-primary-url"),
+    ({"role": "secondary", "primary_url": "http://main:8443", "primary_fingerprint": FP}, "invalid-primary-url"),
+    ({"role": "secondary", "primary_url": "main:9443", "primary_fingerprint": FP}, "invalid-primary-url"),
+    ({"primary_fingerprint": FP}, "invalid-primary-url"),
+    # #1310: a secondary whose primary never answered green is refused
+    ({"role": "secondary", "primary_url": "192.168.68.250"}, "primary-unverified"),
+    ({"role": "secondary", "primary_url": "192.168.68.250", "primary_fingerprint": "ab" * 31}, "primary-unverified"),
+    ({"role": "secondary", "primary_url": "192.168.68.250", "primary_fingerprint": "AB" * 32}, "primary-unverified"),
     ({"hostname": "-bad"}, "invalid-hostname"),
     ({"servers_if": "ens99"}, "invalid-interface"),
     ({"servers_mac": "bad"}, "invalid-mac"),
@@ -167,6 +174,38 @@ def test_bad_answers_are_named_before_any_disk_command(tmp_path, changes, code):
     got = _run(box, _answers(tmp_path / "answers", **changes), "--dry-run")
     assert got.returncode == 2 and f"[{code}]" in got.stderr
     assert not calls.exists(), calls.read_text(encoding="utf-8") if calls.exists() else ""
+
+
+@pytest.mark.parametrize("typed", ["192.168.68.250", "https://192.168.68.250:8443", "imagectl-ta:8443"])
+@LINUX_ONLY
+def test_a_secondary_with_a_verified_primary_passes_in_any_typed_form(tmp_path, typed):
+    """#1310: the IP alone is enough -- and the fingerprint of a green check
+    is what lets the secondary install at all."""
+    box = _machine(tmp_path)
+    _command_shims(tmp_path, box["env"])
+    got = _run(box, _answers(tmp_path / "answers", role="secondary", primary_url=typed,
+                             primary_fingerprint=FP), "--dry-run")
+    assert got.returncode == 0, got.stderr
+
+
+@pytest.mark.parametrize(("typed", "stored"), [
+    ("192.168.68.250", "https://192.168.68.250:8443"),
+    ("  192.168.68.250 ", "https://192.168.68.250:8443"),
+    ("192.168.68.250:8443", "https://192.168.68.250:8443"),
+    ("https://192.168.68.250:8443/", "https://192.168.68.250:8443"),
+    ("imagectl-ta.college.ac.il", "https://imagectl-ta.college.ac.il:8443"),
+    ("http://192.168.68.250", None), ("192.168.68.250:9443", None), ("", None),
+    ("https://x:8443/api", None), ("a b", None), ("-x", None),
+])
+def test_normalize_primary_url_has_one_stored_form(typed, stored):
+    """One rule for the GUI bridge and the engine (installer/lib/answers.sh)."""
+    got = subprocess.run([SH, "-c", '. "$1"; normalize_primary_url "$2"', "_",
+                          str(INSTALLER / "lib" / "answers.sh"), typed],
+                         text=True, capture_output=True, stdin=subprocess.DEVNULL)
+    if stored is None:
+        assert got.returncode != 0 and got.stdout == "", got.stdout
+    else:
+        assert got.returncode == 0 and got.stdout == stored
 
 
 @LINUX_ONLY

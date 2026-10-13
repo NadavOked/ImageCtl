@@ -71,7 +71,7 @@ void screen_restore(App *a, cairo_t *cr, double W, double H, double head_h) {
 
     double pad = 22;
     Text sh = rtl_block_make(cr, 15, 600, "מקור", source.w - 2 * pad);
-    Text sl = rtl_block_make(cr, 12, 400, "ספריית ImageCtl", source.w - 2 * pad);
+    Text sl = rtl_block_make(cr, 12, 400, "ספריית ImageSrv", source.w - 2 * pad);
     const char *selected = "טרם נבחר אימג'";
     if (a->restore_image_sel > 0 && a->restore_image_sel <= s->nimages)
         selected = s->images[a->restore_image_sel - 1].name;

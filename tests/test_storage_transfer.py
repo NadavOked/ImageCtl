@@ -95,8 +95,8 @@ def _wait(admin, nid, tid, timeout=30.0) -> dict:
     """ממתין עד שההעברה יוצאת ממצב פעיל, ומחזיר את השורה."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        rows = admin.get(f"/api/console/storage-nodes/{nid}/transfers").json()
-        row = next(r for r in rows if r["id"] == tid)
+        rows = admin.get("/api/console/storage-transfers").json()
+        row = next(r for r in rows if r["id"] == tid and r["node_id"] == nid)
         if row["state"] in ("done", "failed"):
             return row
         time.sleep(0.1)
@@ -231,11 +231,10 @@ def test_transfer_route_guards(server, paired):
     admin, deploy = server["admin"], server["deploy"]
     path = f"/api/console/storage-nodes/{paired}/transfer"
     assert deploy.post(path, json={"image_id": IMAGE}).status_code == 403
-    assert deploy.get(f"/api/console/storage-nodes/{paired}/transfers").status_code == 403
+    assert deploy.get("/api/console/storage-transfers").status_code == 403
     assert admin.post("/api/console/storage-nodes/nope/transfer",
                       json={"image_id": IMAGE}).status_code == 404
     assert admin.post(path, json={"image_id": "img_zzzzzz"}).status_code == 404
-    assert admin.get("/api/console/storage-nodes/nope/transfers").status_code == 404
     storage_nodes.set_node_disabled(server["ctx"].conn, paired, True, ("noc", "admin"))
     assert admin.post(path, json={"image_id": IMAGE}).status_code == 409
 

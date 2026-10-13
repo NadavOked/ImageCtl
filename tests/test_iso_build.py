@@ -207,10 +207,14 @@ def test_build_iso_proves_every_requested_package_is_in_the_merged_pool() -> Non
 def test_grub_template_boots_the_live_installer_only() -> None:
     grub = GRUB_TEMPLATE.read_text(encoding="utf-8")
     entries = re.findall(r"^menuentry .*", grub, re.MULTILINE)
-    assert entries == ["menuentry --hotkey=m 'ImageCtl server install' {"]
+    assert entries == ["menuentry --hotkey=m 'ImageSrv server install' {"]   # #1302
     assert "set timeout=0" in grub, "‏#1190: ישר למתקין, בלי תפריט"
     assert "set default=0" in grub
-    assert "ImageCtl @TAG@ installer" in grub
+    assert "ImageSrv @TAG@ installer" in grub
+    shown = [line for line in grub.splitlines() if not line.lstrip().startswith("#")]
+    assert not [line for line in shown if "ImageCtl" in line], "#1302: no old name on the boot screen"
+    entry = ISOLINUX_ENTRY_TEMPLATE.read_text(encoding="utf-8")
+    assert "menu label I^mageSrv server install" in entry.splitlines()[1]   # BIOS: the same name
     assert "set color_normal=white/black" in grub and "background_color '#1b2a41'" in grub
     assert all(word not in grub for word in ("Graphical", "Advanced", "Accessible", "install.amd", "secondary"))
     assert "linux    /live/vmlinuz @DI_ARGS@ --- quiet" in grub
@@ -274,7 +278,8 @@ def test_firstboot_owns_tty1_shows_progress_and_leaves_failure_visible() -> None
 
     code = FIRSTBOOT.read_text(encoding="utf-8")
     assert "FIRSTBOOT_TTY=/dev/tty1" in code, "firstboot progress is not directed to tty1"
-    assert 'printf \'ImageCtl: %s\\n\' "$*" > "$FIRSTBOOT_TTY"' in code
+    assert 'printf \'ImageSrv: %s\\n\' "$*" > "$FIRSTBOOT_TTY"' in code
+    assert "ImageSrv: first boot failed" in code, "#1302: the visible name on tty1"
     assert "Stage A: building boot files (several minutes)" in code
     assert code.count("preparing the server - Stage B:") == 2
     failure = code[code.index("fail() {"):code.index("[[ -f \"$STAMP\" ]]")]

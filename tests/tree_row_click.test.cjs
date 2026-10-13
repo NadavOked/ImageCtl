@@ -21,8 +21,9 @@ function box(hidden) {
     setAttribute(k) { if (k === 'hidden') this.hidden = true; }, removeAttribute(k) { if (k === 'hidden') this.hidden = false; },
     querySelectorAll: () => []};
 }
-function navSetup(boxes, hereNode) {
-  const ctx = vm.createContext({document: {getElementById: (id) => boxes[id] || null, querySelector: () => hereNode || null}});
+function navSetup(boxes, hereNode, current = 'home') {
+  const ctx = vm.createContext({current, document: {getElementById: (id) => boxes[id] || null, querySelector: () => hereNode || null},
+    hasClass: (el, c) => !!(el && el.classList && el.classList.contains(c))});
   vm.runInContext(cut('function collapseInventoryDescendants(', '/* S4 (#829)') + '\n;this.api={treeNavToggle};', ctx);
   return ctx.api;
 }
@@ -45,18 +46,33 @@ test('a branch that is also a page: click when already on it = toggle only, no n
 
 test('navigating to an already-open branch keeps it open (a click never closes a branch you are leaving for)', () => {
   const n = node(), b = box(false);
-  navSetup({buildTree: b}).treeNavToggle(n, 'buildTree', () => {});
+  navSetup({machineTree: b}).treeNavToggle(n, 'machineTree', () => {});
   assert.equal(b.hidden, false);
-  assert.ok(n.set.has('here'), 'the role node remembers it is the current target');
+  assert.ok(!n.set.has('here'), '#1300: no sticky ".here" mark is left on the row');
 });
 
-test('a role node already targeted ("here") toggles; the page node above it navigates again', () => {
-  const role = node(['here']), b = box(false); let navs = 0;
-  navSetup({buildTree: b}).treeNavToggle(role, 'buildTree', () => { navs++; });
+// ‏#1300 (נדב 12/10, הבאג): "אני לוחץ על מחשבים — הוא רק נפתח, לא מכניס אותי לדף". הסימון הדביק ‏.here נשאר
+// על "מחשבים" אחרי מעבר לדף אחר, והלחיצה הבאה רק פתחה/סגרה. כמו המוקאפ (console-full.html #tree click):
+// "on it" = הדף של הצומת הוא הנוכחי — רק אז פתיחה/סגירה.
+test('#1300: a page branch you were on before and left is a navigation again (the "only expands" bug)', () => {
+  const machines = node(['here']), b = box(false); let navs = 0;   // שארית של הסימון הישן — אינה "כבר בו"
+  navSetup({machineTree: b}).treeNavToggle(machines, 'machineTree', () => { navs++; });
+  assert.equal(navs, 1, 'one click on מחשבים enters the Machines page');
+  assert.equal(b.hidden, false, 'and leaves it open');
+});
+
+test('#1300: "רשת" while one of its tabs is open (anc) toggles, like the mockup (S.page === "network")', () => {
+  const net = node(['anc']), b = box(false); let navs = 0;
+  net.dataset = {page: 'network'};
+  navSetup({netTA: b}, null, 'network').treeNavToggle(net, 'netTA', () => { navs++; });
   assert.equal(navs, 0); assert.equal(b.hidden, true);
-  const machines = node(['active']), mb = box(false);   // הדף "מחשבים" פעיל, אבל היעד הנוכחי הוא תפקיד
-  navSetup({machineTree: mb}, role).treeNavToggle(machines, 'machineTree', () => { navs++; });
-  assert.equal(navs, 1, 'leaving the role view for all machines is a navigation');
+});
+
+test('#1300: מחשבים marked soft (anc) above an active "מחשבי בנייה" is NOT "on it" — the click enters all machines (mockup: page "build" !== "machines")', () => {
+  const machines = node(['anc']), b = box(false); let navs = 0;
+  machines.dataset = {page: 'machines'};
+  navSetup({machineTree: b}, null, 'machines').treeNavToggle(machines, 'machineTree', () => { navs++; });
+  assert.equal(navs, 1); assert.equal(b.hidden, false);
 });
 
 test('no tree row toggles on dblclick any more (only the server-name rename keeps it)', () => {

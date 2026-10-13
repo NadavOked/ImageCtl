@@ -75,6 +75,7 @@ def test_migration_adds_the_contact_columns_to_an_older_table(tmp_path):
     conn = db.connect(path)
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(storage_nodes)")}
     assert {"last_seen_at", "last_error", "last_error_at"} <= cols
+    assert {"server_version", "server_version_at"} <= cols, "#1300"
     assert storage_nodes.contact_fields(conn, "n1") == {
         "last_seen_at": None, "last_error": None, "last_error_at": None}
 
@@ -137,3 +138,45 @@ def test_check_guards(server, paired):
     assert body["last_error"] is None, "a disabled secondary is not asked, so it is not 'unanswered'"
     db.set_setting(server["ctx"].conn, storage_nodes.ROLE_KEY, "secondary")
     assert admin.post(f"/api/console/storage-nodes/{paired}/check").status_code == 409
+
+
+# --- ‏#1300: גרסת המשני לכרטיס "סניפים" בסקירה ---------------------------------
+
+def test_record_version_only_when_the_field_was_in_the_answer(tmp_path):
+    conn = db.connect(tmp_path / "v.db")
+    conn.execute(
+        "INSERT INTO storage_nodes (id, label, base_url, credential_ref, enrolled_at)"
+        " VALUES ('n1', 'a', 'https://x:8443/api/interserver/v1', 'c', ?)",
+        (db.now_iso(),))
+    conn.commit()
+    row = lambda: dict(conn.execute(  # noqa: E731
+        "SELECT server_version, server_version_at FROM storage_nodes WHERE id='n1'").fetchone())
+    storage_nodes.record_version(conn, "n1", {"ok": True})       # משני ישן — בלי השדה
+    assert row() == {"server_version": None, "server_version_at": None}, "not read = not checked"
+    storage_nodes.record_version(conn, "n1", {"server_version": "v0.72.0"})
+    r = row()
+    assert r["server_version"] == "v0.72.0" and ISO.match(r["server_version_at"])
+    storage_nodes.record_version(conn, "n1", {"ok": True})
+    assert row()["server_version"] == "v0.72.0", "an answer without the field does not erase it"
+    storage_nodes.record_version(conn, "n1", {"server_version": None})
+    r = row()
+    assert r["server_version"] is None and ISO.match(r["server_version_at"]), "read, unknown"
+    storage_nodes.record_version(conn, "n1", {"server_version": 72})
+    assert row()["server_version"] is None, "a non-string is unknown, not a guess"
+
+
+def test_check_and_machines_record_the_secondary_version_and_the_list_returns_it(
+        server, secondary, paired, monkeypatch):
+    from server import agent_version
+    admin = server["admin"]
+    assert _row(server, paired)["server_version_at"] is None, "never read = not checked"
+    monkeypatch.setattr(agent_version, "server_version", lambda: "v9.8.7")
+    assert admin.post(f"/api/console/storage-nodes/{paired}/check").json()["connected"] is True
+    row = _row(server, paired)
+    assert row["server_version"] == "v9.8.7" and ISO.match(row["server_version_at"])
+    monkeypatch.setattr(agent_version, "server_version", lambda: "v9.8.8")
+    assert admin.get(f"/api/console/storage-nodes/{paired}/machines").json()["connected"] is True
+    assert _row(server, paired)["server_version"] == "v9.8.8", "/machines (the tree, every load) records it too"
+    secondary["server"].stop()
+    admin.get(f"/api/console/storage-nodes/{paired}/machines")
+    assert _row(server, paired)["server_version"] == "v9.8.8", "a failed contact keeps the last version read"

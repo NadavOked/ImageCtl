@@ -202,11 +202,13 @@ def test_buffers_are_sized_for_the_longest_name():
     assert "named[SLOT_NAME_MAX + 32]" in room and "label[SLOT_NAME_MAX + 48]" in room
     cloner = _src("screens_cloner.c")
     assert "disk_name[SLOT_NAME_MAX + 16]" in cloner and "head[SLOT_NAME_MAX + 16 + 160]" in cloner
-    assert "label[SLOT_NAME_MAX+16]" in _src("screens.c")
+    standby = _src("screens_standby.c")   # #1304: the standby moved out of screens.c
+    assert "name[SLOT_NAME_MAX + 16], sub[SLOT_NAME_MAX + 48]" in standby
+    assert "label[SLOT_NAME_MAX + 16], msg[SLOT_NAME_MAX + 120]" in standby
 
 
 def test_every_disk_label_on_the_cloner_screens_goes_through_the_name():
-    for name in ("screens_cloner.c", "screens.c"):
+    for name in ("screens_cloner.c", "screens_standby.c"):   # #1304: the standby moved out of screens.c
         text = _src(name)
         assert "cloner_slot_label(" in text, name
         assert not re.search(r'"דיסק %d"', text), f"{name}: a bare 'דיסק %d' skips the name"

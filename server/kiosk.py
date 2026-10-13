@@ -29,13 +29,16 @@ from .room import create_room_router
 from .station import create_station_router
 
 #: רשימת-ההיתר הקשיחה לנתיבי ``/api/console`` שמחשב הבנייה צורך — (method, path).
-#: נמדדה (#738) מקוד ה-JS של מסך התחנה שהוסר, וצרכני הסוכן קוראים אותה:
-#:  - login  — כניסה (station.js)
-#:  - groups — רשימת הכיתות לבחירה (classes.js)
-#:  - images — רשימת האימג'ים לקליטה/סבב (classes.js, room.js)
-#:  - folders (GET+POST) — בחירת/יצירת תיקייה לפני קליטה (station.js)
-#:  - sessions (+start/close) — פתיחה/התחלה/סגירה של סבב כיתה (classes.js)
-#:  - tasks/capture — הזמנת קליטה (station.js)
+#: נמדדה (#738) מקוד ה-JS של מסך התחנה בדפדפן, שהוסר (#1247). הצרכנים
+#: היום הם הסוכן והקיוסק (`agent/lib`, דרך `console_get`/`console_post`):
+#:  - login — כניסה (`buildmenu.sh`)
+#:  - images — רשימת האימג'ים לסבב (`roomflow.sh`, ‏`guistate.sh`)
+#:  - folders (GET+POST) — בחירת/יצירת תיקייה לפני קליטה (`buildcapture.sh`, ‏`guistate.sh`)
+#:  - tasks/capture — הזמנת קליטה (`buildcapture.sh`)
+#:  - sessions/{id}/start|close — סבב כיתה מהגואי (`guibridge.sh`, ‏class-start/class-close)
+#:  - groups ו-POST sessions — **אין להם היום צרכן בסוכן** (זרימת הכיתה שלו
+#:    עוברת ב-`/api/v1/agent/groups` ו-`/api/v1/agent/sessions`); groups אינו
+#:    מוגש ב-v1 (‏`KIOSK_CLASS_ONLY_ROUTES`), ו-POST sessions מסרב 409 בלי כיתות.
 #: כל נתיב ניהול אחר באותם ראוטרים **אינו** נכנס.
 KIOSK_CONSOLE_ROUTES = frozenset({
     ("POST", "/api/console/login"),

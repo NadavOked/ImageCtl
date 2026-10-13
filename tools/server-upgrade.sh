@@ -8,7 +8,7 @@
 # מה שהוא עושה, בסדר הזה, ולמה בסדר הזה (‏#1131 ס' 5–6):
 #   0. סבב פתוח/רץ = לא משדרגים (גם כשמופעל ידנית, לא רק מהקונסולה).
 #   1. התג הקודם — מה ש-update.py שמר (update_previous) — הוא יעד החזרה.
-#   2. fetch + checkout לתג המבוקש — מחוץ לארגז החול של שרת ה-web.
+#   2. fetch, אימות חתימת התג (#1277), checkout — מחוץ לארגז החול של שרת ה-web.
 #   3. יחידות systemd — קודם, כדי ש-daemon-reload יראה כל שינוי בהן.
 #   4. initrd (#1230) — tools/boot-payload-build.sh לפי הדגלים השמורים, מול
 #      הקרנל שנגזר עכשיו. בלי דגלים ובלי ראיה שזה שרת ISO — חזרה, לא דילוג.
@@ -94,6 +94,20 @@ PYEOF
 # ולפני שנגענו ביחידות, ב-initrd או בשירות הרץ.
 if ! git_error="$(git -C "$REPO_DIR" fetch --tags 2>&1)"; then
     why="git fetch --tags נכשל: $git_error"
+    set_status failed "$why"
+    die "$why"
+fi
+# ‏#1277: התג חתום במפתח שהעץ **המותקן** סומך עליו — לפני ה-checkout, כלומר
+# לפני שקוד מהתג רץ. המאמת וקובץ המפתחות נקראים מהעץ הנוכחי (ה-fetch אינו
+# נוגע בעץ העבודה): גרסה שנחתמה במפתח זר אינה מביאה איתה את המפתח שיאשר
+# אותה. "לא נבדק" (2) הוא סירוב בדיוק כמו "לא חתום" (1), והצלחה דורשת ראיה
+# חיובית — קוד 0 **וגם** שורת `signed:` (עיקרון 5).
+SIGNERS="$REPO_DIR/install/release-signers"
+if sig="$(python3 -I "$REPO_DIR/tools/verify-release-tag.py" "$REPO_DIR" "$TAG" "$SIGNERS" 2>&1)" \
+        && [[ "$sig" == "signed: "* ]]; then
+    echo "חתימה: $TAG $sig"
+else
+    why="התג $TAG לא אומת כחתום — העדכון נדחה, העץ לא הוחלף: ${sig:-המאמת לא החזיר דבר}"
     set_status failed "$why"
     die "$why"
 fi

@@ -24,8 +24,8 @@ from server import capabilities
 from server.kiosk import KIOSK_CLASS_ONLY_ROUTES, KIOSK_CONSOLE_ROUTES
 
 #: נתיבים ציבוריים במכוון — בלי כניסה בכלל, ולכן גם deploy רואה אותם:
-#: הלוגו של מסך הכניסה (#1168) והכניסה עצמה (שמשיבה ל-deploy 403 ממילא).
-PUBLIC = {("GET", "/api/console/branding/logo"), ("POST", "/api/console/login")}
+#: הכניסה עצמה (שמשיבה ל-deploy 403 ממילא). לוגו מסך הכניסה (#1168) הוסר ב-#1302.
+PUBLIC = {("POST", "/api/console/login")}
 #: על הקיוסק deploy מקבל 403 בדיוק כאן — קליטה ותיקיות הן של המנהל.
 DEPLOY_KIOSK_DENIED = {("POST", "/api/console/folders"), ("POST", "/api/console/tasks/capture")}
 DUMMY = {"username": "noc", "gid": "grp_x", "name": "x", "image_id": "img_x", "session_id": "ses_x",
@@ -122,6 +122,9 @@ def test_an_anonymous_client_gets_401_not_403_on_the_console(server):
             continue
         body = {} if method in ("POST", "PUT", "PATCH") else None
         resp = console.request(method, _url(path), json=body)
-        # v1 ships without the toolbox: /tools/* answers 404 to everyone (v1.1 turns it on)
-        allowed = {401, 404} if path.startswith("/api/console/tools") else {401}
+        # v1 ships without the toolbox: /tools/* answers 404 to everyone (v1.1 turns it on);
+        # #1303: the same for the PXE proxy read path while classrooms are off (v1.2)
+        edition_gated = (path.startswith("/api/console/tools")
+                         or path == "/api/console/net/proxy-support")
+        allowed = {401, 404} if edition_gated else {401}
         assert resp.status_code in allowed, f"{method} {path} -> {resp.status_code} בלי כניסה"

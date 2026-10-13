@@ -725,6 +725,11 @@ ADDED_COLUMNS = [
     ("storage_nodes", "last_seen_at", "TEXT"),
     ("storage_nodes", "last_error", "TEXT"),
     ("storage_nodes", "last_error_at", "TEXT"),
+    # ‏#1300: גרסת התוכנה שהמשני דיווח (`server_version` בתשובת /ping ו-/machines),
+    # ומתי נקראה. NULL ב-`server_version_at` = "לא נבדקה"; נקראה ו-NULL = המשני
+    # לא יודע את הגרסה שלו (אין תג). נכתבות ב-`storage_nodes.record_version`.
+    ("storage_nodes", "server_version", "TEXT"),
+    ("storage_nodes", "server_version_at", "TEXT"),
     # קצב אוטומטי (הכרעת נדב 11/10): מה ש-udp-sender ספר בסוף הגל. NULL בשורות
     # שקדמו למיגרציה = "לא נמדד" — הקצב אינו עולה מהן.
     ("wave_rates", "stream", "TEXT"),

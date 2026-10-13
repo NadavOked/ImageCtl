@@ -90,8 +90,10 @@ test('packages tab: one datagrid — name+description (escaped), rules (pci / mo
   assert.match(r, /class="st ok">sha256 בייבוא</);
   assert.match(r, /openDriverDetail\('intel-nic'\)">פרטים</); assert.match(r, /class="btn sm danger" onclick="deleteDriver\('intel-nic'\)">מחיקה</);
   assert.match(row(html, 'hp-800-g6'), /PCI אחד מ-4: <span class="mono">8086:15fa \| 10ec:8168 \| 8086:a0a0<\/span> …/);
-  assert.match(html, /2 חבילות · מונחות על הדיסק/); assert.match(html, /4 מכונות דיווחו חומרה/);
-  assert.match(html, /openDriverImport\(\)">ייבוא חבילה \(tar\)</);
+  // ‏#1300 (console-full.html P.drivers): משנה = דגמים · מחשבים · מכוסים; מונים בלשוניות; "העלאת דרייבר"
+  assert.match(html, /<div class="obj-sub"[^>]*>\d+ דגמים · \d+ מחשבים · \d+ מכוסים<\/div>/);
+  assert.match(html, /role="tab"[^>]*>חבילות<small>2<\/small>/, 'the packages tab stays (no other place in the mockup), with its count');
+  assert.match(html, /openDriverImport\(\)">העלאת דרייבר</);
   assert.match(html, /role="tab" aria-selected="true"[^>]*>חבילות</); assert.match(html, /role="tab" aria-selected="false"[^>]*>כיסוי לפי מכונה</);
   assert.doesNotMatch(html, /class="table"|title="[^"]*">מתאים ל-\d+ מכונות/, 'the old table and the tooltip-only names are gone');
   // מחיקה — חלון אישור (#1270) → POST /drivers/{name}/delete עם confirm_name
@@ -177,17 +179,20 @@ test('stage 3: models tab (first) — a row per DMI model with machines / covere
   const html = run('driversPage()');
   assert.match(html, /role="tab" aria-selected="true"[^>]*>דגמים</);
   assert.match(html, /דגמי מחשבים שנמצאו ברשת/); assert.match(html, /הדגם נקבע מ-DMI שהמחשב מדווח ב-hello/);
-  assert.match(html, /<th>דגם<\/th><th>מחשבים<\/th><th>מכוסים<\/th><th>חסרים<\/th><th>לא נבדקו<\/th><th>מצב<\/th>/);
+  // ‏#1300: עמודת "לא נבדקו" ירדה — מה שלא נבדק נאמר בפיל המצב; תפריט ⋯ לכל דגם
+  assert.match(html, /<th>דגם<\/th><th>מחשבים<\/th><th>מכוסים<\/th><th>חסרים<\/th><th>מצב<\/th><th><span class="sr">פעולות<\/span><\/th>/);
+  assert.match(html, /role="tab" aria-selected="true"[^>]*>דגמים<small>\d+<\/small>/);
   const dell = row(html, 'Dell Inc. OptiPlex 7090');
-  assert.match(dell, /<td>1<\/td><td>0<\/td><td>1<\/td><td>0<\/td><td><span class="pill warn">חלקי<\/span>/, 'a controller without a package → partial');
+  assert.match(dell, /<td>1<\/td><td>0<\/td><td>1<\/td><td><span class="pill warn">חלקי<\/span>/, 'a controller without a package → partial');
+  assert.match(dell, /data-menu=/);
   const hp = row(html, 'HP HP EliteDesk 800 G6');
-  assert.match(hp, /<td>1<\/td><td>1<\/td><td>0<\/td><td>0<\/td><td><span class="pill ok">מכוסה<\/span>/);
+  assert.match(hp, /<td>1<\/td><td>1<\/td><td>0<\/td><td><span class="pill ok">מכוסה<\/span>/);
   const lenovo = row(html, 'LENOVO ThinkCentre M720q');
   assert.match(lenovo, /<td>0<\/td><td>1<\/td>/, 'a model-rule package does not cover a controller by itself');
   const unk = row(html, 'לא דיווחו חומרה');
-  assert.match(unk, /<td>1<\/td><td>—<\/td><td>—<\/td><td>—<\/td><td><span class="pill ">לא נבדק<\/span>/, 'no inventory = not checked, with dashes — not 0 covered');
+  assert.match(unk, /<td>1<\/td><td>—<\/td><td>—<\/td><td><span class="pill ">לא נבדק<\/span>/, 'no inventory = not checked, with dashes — not 0 covered');
   assert.doesNotMatch(html, /05|00:11:22:33:44:55/, 'classroom machines are v2 and are not listed');
-  assert.match(html, /openDriverImport\(\)">ייבוא חבילה \(tar\)</);
+  assert.match(html, /openDriverImport\(\)">העלאת דרייבר</);
 });
 
 test('stage 3: a model with no matching package at all is "אין דרייברים" (red); a model whose machines reported no controllers is "לא נבדק", not "מכוסה"', async () => {
@@ -197,7 +202,9 @@ test('stage 3: a model with no matching package at all is "אין דרייברי
   await run('loadDrivers()');
   const html = run('driversPage(0)');
   assert.match(row(html, 'Dell Inc. OptiPlex 7090'), /pill err">אין דרייברים</);
-  assert.match(row(html, 'HP Z'), /<td>1<\/td><td>0<\/td><td>0<\/td><td>1<\/td><td><span class="pill ">לא נבדק</);
+  assert.match(row(html, 'HP Z'), /<td>1<\/td><td>0<\/td><td>0<\/td><td><span class="pill ">לא נבדק</, 'all unchecked → "not checked" (the count used to be its own column)');
+  // ‏#1300: חלק נבדק וחלק לא — הפיל אומר כמה לא נבדקו, לא "מכוסה"
+  assert.equal(run(`driverModelPill({missing:0,pkgs:new Set(),unchecked:1,machines:[1,2]})`), '<span class="pill ">1 לא נבדקו</span>');
 });
 
 test('stage 3: a model row opens a drawer — each machine with its verdict and uncovered controllers, the packages that will be staged, the empty-model warning; MACHINES unread is a red note', async () => {

@@ -49,6 +49,20 @@ def load_configs(conn) -> list[dhcp.InterfaceConfig]:
     ]
 
 
+def proxy_configs(configs: list[dhcp.InterfaceConfig]) -> list[dhcp.InterfaceConfig]:
+    """מה שאינסטנס ה-proxy רשאי לראות. הכרעת נדב 11/10: ‏proxy שייך לכיתות —
+    כשהן כבויות (v1) גם רשומת proxy=true שנשמרה לפני הגידור אינה מוחלת
+    (‏#1303), ולא רק ה-PUT מסרב לכתוב חדשה."""
+    return configs if capabilities.classrooms() else []
+
+
+def _proxy_gate() -> None:
+    """‏v1 בלי proxy: נתיבי הקריאה שלו אינם קיימים — 404 לכל קורא, לפני
+    auth, כמו ארגז הכלים (`console_tools._edition_gate`)."""
+    if not capabilities.classrooms():
+        raise HTTPException(404, "PXE proxy שייך לכיתות, וכיתות אינן במהדורה זו (v1.2)")
+
+
 def console_deploy_interface(deploy: "deploy_net.DeployContext | None") -> str | None:
     """כרטיס ההפצה **שהוגדר מהקונסולה** — ורק הוא נכנס לקובץ ה-dnsmasq
     שהקונסולה כותבת (‏`imagectl.conf` של המתקין אינו נושא אותו)."""
@@ -71,7 +85,7 @@ def render_dnsmasq(ctx: ServerContext,
     pin = deploy is not None and deploy.state.source != "cli"
     return (dhcp.render(configs, tftp_root=root,
                         deploy_interface=console_deploy_interface(deploy), pin_tftp=pin),
-            dhcp.render_proxy(configs, tftp_root=root))
+            dhcp.render_proxy(proxy_configs(configs), tftp_root=root))
 
 
 def apply_dnsmasq(ctx: ServerContext, hooks: Hooks,
@@ -88,7 +102,8 @@ def apply_dnsmasq(ctx: ServerContext, hooks: Hooks,
         return str(exc)
     errors = [
         hooks["apply"](text),
-        hooks["apply_proxy"](proxy_text, bool(dhcp.proxy_only(load_configs(ctx.conn)))),
+        hooks["apply_proxy"](proxy_text,
+                             bool(dhcp.proxy_only(proxy_configs(load_configs(ctx.conn))))),
     ]
     error = " · ".join(e for e in errors if e) or None
     if error:
@@ -297,7 +312,7 @@ def create_dhcp_router(ctx: ServerContext, hooks: Hooks | None = None,
         return {"interface": name, "checked": True, "reason": "", "path": path,
                 "leases": mine}
 
-    @router.get("/proxy-support")
+    @router.get("/proxy-support", dependencies=[Depends(_proxy_gate)])
     def proxy_support(user=Depends(admin_only)):
         """מה גרסת ה-dnsmasq המותקנת אומרת על מצב proxy (‏#36).
 
@@ -583,18 +598,6 @@ def create_dhcp_router(ctx: ServerContext, hooks: Hooks | None = None,
         journal(ctx.conn, "nic_forget", name, user[0])
         error = apply_all(name, user[0]) if (was.enabled or was.proxy) else None
         return {"ok": error is None, "apply_error": error}
-
-    @router.get("/dnsmasq")
-    def preview(user=Depends(admin_only)):
-        """הקבצים שייכתבו — לעין, לפני ואחרי. שניים, כי ה-proxy רץ
-        באינסטנס נפרד (‏#36)."""
-        try:
-            text, proxy_text = render_dnsmasq(ctx, deploy)
-        except ValueError as exc:      # רשומה פסולה שנשמרה לפני #102
-            raise HTTPException(500, str(exc))
-        return {"text": text, "path": dhcp.DEFAULT_CONF,
-                "proxy_text": proxy_text,
-                "proxy_path": dhcp.PROXY_CONF, "proxy_unit": dhcp.PROXY_UNIT}
 
     return router
 

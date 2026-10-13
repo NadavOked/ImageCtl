@@ -1,5 +1,5 @@
 label imagectl
-	menu label I^mageCtl server install
+	menu label I^mageSrv server install
 	menu default
 	kernel /live/vmlinuz
 	append initrd=/live/initrd.img @DI_ARGS@ --- quiet

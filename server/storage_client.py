@@ -532,14 +532,17 @@ def fetch_server_spki(host: str, port: int, *, timeout: float = 10.0) -> str:
     ctx.set_max_proto_version(SSL.TLS1_3_VERSION)
     ctx.set_verify(SSL.VERIFY_NONE, lambda *a: True)
     raw = socket.create_connection((host, port), timeout=timeout)
-    # אותו מוקש כמו ב-``open``: socket עם timeout הוא non-blocking ל-pyOpenSSL,
-    # ו-``do_handshake`` זורק ``WantReadError`` ברגע שה-ServerHello מתעכב —
-    # במעבדה (דרך חומת האש של חיפה) זה נפל בכל preview; בטסטים המשני מקומי
-    # ומהיר, ולכן לא נראה. ה-timeout שירת את ה-connect; מכאן חוסם רגיל.
-    raw.settimeout(None)
+    # ‏#902: socket עם timeout הוא non-blocking ל-pyOpenSSL, ו-``do_handshake``
+    # זרק ``WantReadError`` כשה-ServerHello התעכב. התיקון אז היה
+    # ``settimeout(None)`` — וזה בדיוק המוקש של #1286: משני שמקבל TCP ונתקע
+    # תקע את ה-preview לנצח (#1292). כאן, כמו ב-``open``: לא-חוסם, וכל
+    # המתנה דרך ``_TimedConn`` (select) עם תקרה כוללת ל-handshake.
+    raw.setblocking(False)
     # codeql[py/insecure-protocol] false positive: set_min/max_proto_version נועלים על TLS 1.3 למעלה (#291)
-    conn = SSL.Connection(ctx, raw)
-    conn.set_connect_state()
+    ssl_conn = SSL.Connection(ctx, raw)
+    ssl_conn.set_connect_state()
+    conn = _TimedConn(ssl_conn, raw)
+    conn.limit(timeout, total=True, waiting_for="handshake")
     try:
         conn.do_handshake()
         return interserver_auth.spki_sha256(conn.get_peer_certificate())

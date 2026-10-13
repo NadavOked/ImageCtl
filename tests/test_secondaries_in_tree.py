@@ -79,3 +79,13 @@ def test_server_name_is_saved_through_settings_and_read_back_from_me(server):
     assert deploy.get("/api/console/me").status_code == 403
     assert deploy.post("/api/console/settings",
                        json={"server_name": "x"}).status_code == 403
+
+
+def test_settings_reports_the_same_server_name_the_tree_shows(server):
+    """‏#1300: שדה "שם השרת" בהגדרות הופיע ריק, בזמן שהעץ והכותרת הראו את
+    שם המארח (`/me` נופל אליו כשאין הגדרה, ‏`/settings` החזיר None). השדה
+    מציג את מה שהשרת באמת משתמש בו — אותו ערך כמו `/me`."""
+    admin = server["admin"]
+    shown = admin.get("/api/console/me").json()["server_name"]
+    assert shown == socket.gethostname()
+    assert admin.get("/api/console/settings").json()["server_name"] == shown

@@ -833,7 +833,7 @@ int main(int argc, char **argv) {
     screen = rfbGetScreen(&argc, argv, var.xres, var.yres, 8, 3, 4);
     if (!screen)
         fatal("rfbGetScreen");
-    screen->desktopName = "ImageCtl monitor";
+    screen->desktopName = "ImageSrv monitor";
     screen->frameBuffer = rfb_framebuffer;
     /* The pixels are copied untouched, so the format the clients are told
      * is the framebuffer's own (#850; pixel_format_error() vetted it). */

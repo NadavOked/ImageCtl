@@ -123,7 +123,7 @@ def test_the_machines_filter_is_visible_and_clearable():
     (וגם את הכיתה הפתוחה כאובייקט, גל 3), והדף מציג את הקבוצה המסוננת עם
     ביטול וריק שמבחין בין המצבים."""
     js, page = _console_js(), _index()
-    assert "MACHINES_FILTER=null;MACHINES_CLASS=null;selectPageById('machines')" in page
+    assert "MACHINES_FILTER=null;MACHINES_CLASS=null;MACHINES_ROLE=null;selectPageById('machines')" in page
     fn = js[js.index("function machinesTableCard("):js.index("function machinesTabs()")]
     assert "clearMachinesFilter()" in fn
     assert "מוצגת קבוצה" in fn
@@ -198,7 +198,9 @@ def test_uptime_and_deploy_ip_come_from_me_and_null_is_named():
     js = _console_js()
     fn = js[js.index("function home("):js.index("function deploy(")]
     assert 'UI.soon("זמן פעילות")' not in fn
-    assert "homeUptime()" in fn and "homeDeployIp()" in fn
+    # ‏#1300: משנה הכותרת היא סיכום; זהות השרת (כולל זמן פעילות וכתובת ההפצה) — בכרטיס "שירותים"
+    card = js[js.index("function homeServerCard("):js.index("function homeBranchWhen(")]
+    assert "homeUptime()" in card and "homeDeployIp()" in card
     assert "ME.uptime_seconds" in js and "ME.deploy_ip" in js
     assert "זמן פעילות לא נבדק" in js and "רשת הפצה לא הוגדרה" in js
     assert "function journalSeverity" not in js
@@ -277,17 +279,17 @@ def test_static_includes_are_at_9_9():
     שדות סיסמה LTR + "הצג" אחד, ותיקוני הגואי הנייטיבי = ‏11.12;
     #1263 (כרטיס רשת בשלושה אופנים, חלון רשת הפצה, בלי קבצי dnsmasq) = ‏11.13; #1268/#1270/מתאים לדיסק/בלי זכירת MFA = ‏11.15.
     #1267 (פורטים לפי רשת, שירותים בבריאות) + #1264 (bond בהפצה) + #1269 (דרייברים לפי דיסק) + שלב 3 של המוקאפ = ‏11.16; בחירת דיסקים לסבב בקונסולה (#1275) = ‏11.17; יישור סופי למוקאפ + מוניטור מוטמע = ‏11.18; עץ כמו במוקאפ, TLS/שם מארח, #1273/#1274 = ‏11.19; פערי API (#977/#980), #1281 = ‏11.20; חיפוש גלובלי, זרימת הפצה, קצב לומד, שרת משני, שמות חריצים = ‏11.21.
-    #1266 (SSH יצא מהמוצר — בלי מתג, בלי שורת 22, בלי טביעת מפתח) על gate-1011g = ‏11.22; התקדמות על פני גלים (#989) = ‏11.23; קצב אוטומטי = ‏11.24.
+    #1266 (SSH יצא מהמוצר — בלי מתג, בלי שורת 22, בלי טביעת מפתח) על gate-1011g = ‏11.22; התקדמות על פני גלים (#989) = ‏11.23; קצב אוטומטי = ‏11.24; חתימת גרסאות בבדיקת העדכון (#1277) = ‏11.25; סקירה/אימג'ים/מגירות/בריאות/הגדרות/משתמשים כמו המוקאפ (#1300) = ‏11.26; הגדרות/משתמשים/רשת אחד-לאחד + מוניטור מהמגירה (#1300, אחרי הדחיפה) = ‏11.27; פס האייקונים (#1300) = ‏11.29; הסקירה לפי הצעה ג' (#1300) = ‏11.27 בענף המקביל feat/1300-overview; איחוד gate-1013a (#1311/#1309/#1303/#1277/#1302/#1304/#1300) + לוגו ImageSrv בקונסולה (#1302 שלב ב׳) = ‏11.30.
     שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
     versions = set(re.findall(r'\?v=(\d+\.\d+)"', page))
-    assert versions == {"11.24"}, versions
+    assert versions == {"11.30"}, versions
     # ביקורת 10/10: monitor.html מושך את אותם console.css ו-design-tokens.css — הם נשארו על 3.29 לנצח,
     # ולכן דפדפן שזכר אותם הציג את המוניטור בעיצוב ישן. monitor.js לבדו שומר על גרסה משלו (test_monitor).
     mon = (STATIC / "monitor.html").read_text(encoding="utf-8")
     shared = set(re.findall(r'(?:design-tokens|console)\.css\?v=(\d+\.\d+)"', mon))
-    assert shared == {"11.24"}, shared
+    assert shared == {"11.30"}, shared
 
 
 def test_update_apply_is_a_sheet_without_text_verification_and_revert_uses_hostname():
@@ -329,7 +331,7 @@ def test_mfa_setup_hides_the_manual_secret_and_never_renders_otpauth_url():
     js = _console_js()
     fn = js[js.index("function loginSetupHtml("):js.index("function loginCodesHtml(")]
     assert "otpauth://" not in fn and "state.otpauth" not in fn
-    assert "ImageCtl:${state.username" in fn
+    assert "ImageSrv:${state.username" in fn       # #1302: כמו ה-issuer ב-server/totp.py
     assert 'id="setup-secret"' in fn and 'type="password"' in fn
     assert 'loginEye("setup-secret")' in fn
 
@@ -374,7 +376,10 @@ def test_machines_page_is_one_grouped_table_from_the_api_only():
     for gone in ('UI.soon("אתחול מרחוק")', 'UI.soon("עריכת MAC")'):
         assert gone not in js, gone
     block = js[js.index("/* ---------- #954 גל 3"):js.index("function healthStatusClass(")]
-    assert "disabled" not in block, "כפתור מנוטרל במקום 'דורש API' (README §8)"
+    # ‏#1300 (נדב 12/10): "פתח במוניטור" במגירה מנוטרל רק כשאין למה להתחבר — עם הסיבה (title + שורה), לא "דורש API"
+    mon = '<button class="btn primary" disabled title="${esc(block)}">פתח במוניטור</button>'
+    assert mon in block
+    assert "disabled" not in block.replace(mon, ""), "כפתור מנוטרל במקום 'דורש API' (README §8)"
     assert "sda" not in block and "sdb" not in block, "שם sd* בדף המחשבים"
     css = (STATIC / "console.css").read_text(encoding="utf-8")
     for sel in (".page .dg tr.group td .grp{", ".page .disks{", ".page .disk.err{", ".page .dg-bar select{"):
@@ -482,7 +487,7 @@ def test_health_and_ports_pages_are_tables_from_the_api_and_ports_have_no_switch
     assert "disabled" not in block, "כפתור מנוטרל במקום 'דורש API' (README §8)"
     assert "prompt(" not in block and "confirm(" not in block.replace("confirmSheet(", ""), "prompt/confirm חסומים — רק sheet()"
     css = (STATIC / "console.css").read_text(encoding="utf-8")
-    for sel in (".page .st.unk::before{", ".page .sw{", ".page .sw.unk{", ".page .upd{"):
+    for sel in (".page .st.unk::before{", ".page .sw{", ".page .sw.unk{", ".page dl.mkv{", ".page label.msw{"):   # ‏#1300: ‏.upd → dl.kv/label.sw של המוקאפ
         assert sel in css, sel
 
 
@@ -495,7 +500,7 @@ def test_small_pages_are_own_tables_from_the_api_and_wol_is_per_machine():
     ו"אין WoL למחשב יחיד" הוחלפו ב-`wakeMachine` / `wakeGroup`; "נשלח" ≠
     "התעוררה". מתג זהות המכונה (#855) נשאר בהגדרות."""
     js, drivers, page = _console_js(), (STATIC / "drivers.js").read_text(encoding="utf-8"), _index()
-    for needed in ("function monitorPage()", "function monitorRowHtml(", "function settings()", "function settingRowHtml(", "async function saveSettings()",
+    for needed in ("function monitorPage()", "function monitorRowHtml(", "function settings()", "function settingSwitchHtml(", "function settingsValueSheet(", "async function saveSettings()",
                    "function permissions()", "const ROLE_MATRIX = [", "function userDeleteSheet(", "function logs()", "function logBarHtml(", "function logMore()",
                    "async function wakeMachine(", "async function wakeGroup(", "function wolResultText(",
                    'key: "identity_check"', "WoL נשלח ל-", 'consoleUrl("/journal" + logQuery(last))', 'X-Journal-Search-Truncated',
@@ -519,7 +524,7 @@ def test_small_pages_are_own_tables_from_the_api_and_wol_is_per_machine():
     block = js[js.index("/* ---------- #954 גל 6: הרשאות"):js.index("/* ---------- #954 גל 8: רשת כאובייקט")]   # גל 8 החליף את "כרטיסי רשת / רשת הפצה"
     assert "prompt(" not in block and "confirm(" not in block.replace("confirmSheet(", ""), "prompt/confirm חסומים — רק sheet()"
     css = (STATIC / "console.css").read_text(encoding="utf-8")
-    for sel in (".page .srow{", ".page .srow.changed{", ".page .logo-box{"):
+    for sel in (".page dl.mkv dt,.page dl.mkv dd{", ".page label.msw.changed{"):   # ‏#1300: dl.kv / label.sw של המוקאפ
         assert sel in css, sel
 
 
@@ -529,10 +534,13 @@ def test_the_class_build_and_cloner_tree_nodes_open_a_role_focused_machines_page
     בלי לשונית נראו ברשת". קליק = הדף הממוקד (selectMachinesRole), דאבל =
     פותח/סוגר את הענף. הקבוצות שמתחתיהם (grp_BUILD וכו') נשארות אובייקטים."""
     page = _index()
+    # ‏#1300 (נדב 12/10, "כמו המוקאפ"): ב-console-full.html "מחשבי בנייה" / "מחשבי שיכפול" הם עלים —
+    # קליק = הדף הממוקד, העלה עצמו מודגש; בלי חץ ובלי תת-עץ קבוצות/מחשבים
     for role, box in (("classroom", "classesTree"), ("build", "buildTree"), ("cloner", "clonerTree")):
-        assert (f"onclick=\"treeNavToggle(this,'{box}',function(){{selectMachinesRole('{role}')}})\"") in page, role
+        assert f"data-role=\"{role}\" onclick=\"selectMachinesRole('{role}',this)\"" in page, role
+        assert f'id="{box}"' not in page, box
     js = (STATIC / "console.js").read_text(encoding="utf-8")
-    assert "function selectMachinesRole(role)" in js
+    assert "function selectMachinesRole(role, el)" in js
     assert 'if (MACHINES_ROLE) return [ROLE_PAGE_HE[MACHINES_ROLE], red];' in js
 def test_network_is_one_object_page_with_the_diagram_nics_and_deploy_tabs():
     """‏#954 גל 8: "רשת" בעץ הוא דף (קליק = הדף, דאבל = פותח/סוגר), ושלוש
@@ -546,7 +554,8 @@ def test_network_is_one_object_page_with_the_diagram_nics_and_deploy_tabs():
     # העץ: הצומת "רשת" מנווט לדף; הילדים פותחים את האובייקט בלשונית; "פורטים" כמו שהיה
     assert ("""<div class="inventory-node" data-page="network" onclick="treeNavToggle(this,'netTA',"""
             """function(){selectPageById('network')})\"""") in page
-    assert 'id="nicNode"' in page and "openNetwork(1,null,this.parentElement)" in page
+    # ‏#1300: "חיבורים פיזיים" הוא עלה כמו ב-console-full.html — בלי תת-עץ כרטיסים
+    assert 'data-net-tab="1" onclick="openNetwork(1,null,this)"' in page and 'id="nicNode"' not in page and 'id="nicTree"' not in page
     assert 'data-net-tab="2" onclick="openNetwork(2,null,this)"' in page
     assert """<div class="inventory-node" data-page="ports" onclick="selectPageById('ports')\"""" in page
     for gone in ('data-page="nic"', 'data-page="netdeploy"', "NIC_HIGHLIGHT"):
@@ -624,7 +633,7 @@ def test_the_machine_drawer_has_a_health_group_with_three_states_per_field():
     בשלושה מצבים: null = "לא נבדק" (אפור), {error} = "לא הצלחנו לבדוק" (כתום),
     ערך = מוצג. בעמוד הבית: כל verdict הוא UI.note ב"דורש טיפול"."""
     js = _console_js()
-    assert 'class="sec">בריאות המכונה' in js
+    assert 'grp(`בריאות המכונה' in js   # ‏#1300: קבוצה בלשונית "סקירה" (‏.grp), לא לשונית משלה
     assert "machineVerdictsHtml(m)" in js and "machineHealthHtml(m)" in js
     health = js[js.index("function machineHealthHtml"):js.index("function machineDrawerHtml")]
     for label in ("חשמל", "שעון", "מעבד", "זיכרון", "טמפ' מקס'", "רשת",
@@ -674,13 +683,13 @@ def test_storage_page_is_an_admin_tree_node_with_all_eight_mockup_screens():
                    "function storageFormatSheet(id)", "function storageDelete(id)", "function storageDisconnect(id)",
                    'post(SL + "/scan", body)', 'post(SL + "/test", { type: storageType(), params: storageParams() })',
                    "tested: true", "/iscsi-login`", "/disk`", "/mount`", "/format`", "/check`", "/disconnect`", "/connect`", 'method: "DELETE"',
-                   'disabled title="נדלק רק אחרי בדיקה מוצלחת"',                   'unknown: אין כפתור פירמוט כלל', "}, 30000);", "legend-states", "show-acts storage"):
+                   'disabled title="נדלק רק אחרי בדיקה מוצלחת"',                   'unknown: אין כפתור פירמוט כלל', "}, 30000);", "STORAGE_STATE_HELP", "kebab-col storage"):   # ‏#1300: המקרא = title של פיל המצב; פעולות ב-⋯
         assert needed in storage, needed
     assert "prompt(" not in storage and "confirm(" not in storage.replace("confirmSheet(", ""), "prompt/confirm חסומים — רק sheet()"
     css = (STATIC / "console.css").read_text(encoding="utf-8")
     for sel in (".page .dg.show-acts td .acts{visibility:visible}", ".page .types{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))",
                 ".page .picklist{", ".page .steps{", ".page .disk-state{display:grid;grid-template-columns:minmax(0,1fr) 250px",
-                ".page .big-choice{", ".page .legend-states{", ".page .btn:disabled{"):
+                ".page .big-choice{", ".page .btn:disabled{"):
         assert sel in css, sel
     narrow = css[css.index("#1066 שלב ב'"):]
     assert "grid-template-columns:1fr" not in narrow, "1fr לבדו = minmax(auto,1fr) וגולש ב-375 (הלקח מהמוקאפ)"

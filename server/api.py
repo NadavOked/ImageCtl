@@ -493,19 +493,6 @@ def create_agent_router(ctx: ServerContext,
             return _error(404, "no open shrink record for this serial", "not_open")
         return JSONResponse({"ok": True})
 
-    @router.get("/agent/branding/logo")
-    def branding_logo():
-        """‏#1168: הלוגו שהועלה בקונסולה, על פורט הסוכן — הגואי הקטן במחשבי
-        הבנייה/השיכפול מושך אותו בעלייה. ‏204 = אין לוגו, הגואי מצייר את
-        ה-brandmark הקבוע. קריאה בלבד, כמו המניפסטים."""
-        from fastapi.responses import Response  # noqa: PLC0415
-        from .branding import SERVE_HEADERS, TYPES, find_logo  # noqa: PLC0415
-        path = find_logo(data_dir) if data_dir is not None else None
-        if path is None:
-            return Response(status_code=204)
-        media = next(t for t, s in TYPES.items() if s == path.suffix)
-        return FileResponse(path, media_type=media, headers=SERVE_HEADERS)
-
     @router.get("/images/{image_id}/manifest")
     def image_manifest(image_id: str, request: Request):
         refused = source_gate(ctx, request, "manifest")      # #997

@@ -1,4 +1,4 @@
-/* Shared chrome and the #1090 login/menu/standby screens. The remaining
+/* Shared chrome and the #1090 login/menu screens (standby: screens_standby.c). The remaining
  * flows keep their existing state machine but use the same full-screen frame
  * from widgets.c. */
 #include <math.h>
@@ -6,20 +6,6 @@
 #include <string.h>
 #include <time.h>
 #include "screens_rounds.h"
-
-/* #1168: the college's logo (PNG) in place of the brandmark. Decoded once
- * per path and kept; a file that does not decode falls back to the brandmark
- * (cairo's status is the evidence, not the file's existence). */
-static cairo_surface_t *logo_surface(const char *path) {
-    static char cached[256]; static cairo_surface_t *surf=NULL;
-    if (strcmp(path,cached)) {
-        if (surf) { cairo_surface_destroy(surf); surf=NULL; }
-        snprintf(cached,sizeof cached,"%s",path);
-        if (path[0]) { surf=cairo_image_surface_create_from_png(path);
-            if (cairo_surface_status(surf)!=CAIRO_STATUS_SUCCESS) { cairo_surface_destroy(surf); surf=NULL; } }
-    }
-    return surf;
-}
 
 /* #1252: a value the state file did not carry is said as unknown -- the
  * header once showed the mockup's server, address and version
@@ -36,21 +22,9 @@ static double draw_header(App *a, cairo_t *cr, double W) {
     const Theme *t=a->theme;
     Rect bar={0,0,W,N_HEADER_H}; draw_fill_rrect(cr,bar,0,t->header);
     double right=W-N_HEADER_PAD;
-    cairo_surface_t *logo=logo_surface(a->st.logo);
-    if (logo) {
-        double lh=26, sw=cairo_image_surface_get_width(logo), sh=cairo_image_surface_get_height(logo);
-        double lw=sh>0?sw*lh/sh:lh; if (lw>220) { lw=220; lh=sw>0?sh*lw/sw:lh; }
-        cairo_save(cr); cairo_translate(cr,right-lw,(N_HEADER_H-lh)/2);
-        if (sw>0&&sh>0) cairo_scale(cr,lw/sw,lh/sh);
-        cairo_set_source_surface(cr,logo,0,0); cairo_paint(cr); cairo_restore(cr);
-        right-=lw+22;
-    } else {
-        Rect mark={right-26,(N_HEADER_H-26)/2,26,26};
-        draw_brand_mark(cr,t,mark); right=mark.x-10;
-        Text brand=text_make(cr,FONT_SANS,16,600,"ImageCtl",0,DIR_LTR);
-        text_draw_r(cr,&brand,right,(N_HEADER_H-brand.h)/2,t->header_text); right-=brand.w+22;
-        text_free(&brand);
-    }
+    /* #1302: the compact dark lockup (lockup-dark-32.png: 5px cells) on the header in both
+     * themes -- always: an uploaded college logo is no longer drawn (Nadav 12/10) */
+    right=draw_brand_lockup_r(cr,right,(N_HEADER_H-brand_symbol_height(5))/2,5,1,0)-22;
 
     const int clone=a->force_cloner||a->force_standby||a->screen==SCREEN_CLONER||a->screen==SCREEN_STANDBY;
     const char *role=clone?"מחשב שיכפול":"מחשב בנייה";   /* #1252: the "2" was the mockup's */
@@ -110,7 +84,10 @@ static const char *status_word(const App *a,char *buf,size_t n,Rgb *dot){
     switch(a->screen){
     case SCREEN_LOGIN:return "ממתין לאימות";
     case SCREEN_MENU:return a->logout_confirming?"אישור התנתקות":"בחירת פעולה";
-    case SCREEN_STANDBY:*dot=a->theme->led_idle;return "ממתין לסבב";
+    case SCREEN_STANDBY:   /* #1304: what the last hello proves (screens_standby.c) */
+        if(standby_conn(s)==STANDBY_OFF){*dot=a->theme->danger;return "אין קשר לשרת";}
+        if(standby_conn(s)==STANDBY_UNKNOWN)*dot=a->theme->led_idle;
+        return "ממתין לסבב";
     case SCREEN_MESSAGE:*dot=a->theme->warn;return s->msg_title;
     case SCREEN_PICK:return "בחירת דיסק";
     case SCREEN_PROGRESS:return s->task==TASK_PENDING?"ממתין לסוכן":"משימה פעילה";
@@ -193,6 +170,7 @@ static void draw_status(App *a,cairo_t *cr,double W,double H){
     double rx=W-N_STATUS_PAD;
     cairo_arc(cr,rx-N_STATUS_DOT/2,bar.y+bar.h/2,N_STATUS_DOT/2,0,2*M_PI);draw_set(cr,dot);cairo_fill(cr);
     text_draw_r(cr,&w,rx-N_STATUS_DOT-N_STATUS_GAP,bar.y+(bar.h-w.h)/2,t->ink);text_free(&w);
+    if(a->screen==SCREEN_STANDBY){standby_status_info(a,cr,N_STATUS_PAD,bar.y+bar.h/2);return;}   /* #1304: IP · MAC · hello */
     double kx=N_STATUS_PAD+draw_lang_chip(a,cr,N_STATUS_PAD,bar);   /* #1245 */
     char kb[200];Text keys=text_make(cr,FONT_SANS,12,400,status_keys(a,kb,sizeof kb),0,DIR_RTL);
     text_draw(cr,&keys,kx,bar.y+(bar.h-keys.h)/2,t->muted);text_free(&keys);
@@ -213,9 +191,7 @@ void screen_login(App *a,cairo_t *cr,double W,double H,double head_h){
     double pane=fmin(600,fmax(420,W*.32)); Rect pr={W-pane,0,pane,usable}, ar={0,0,W-pane,usable};
     draw_fill_rrect(cr,pr,0,t->surface);draw_station_art(cr,t,ar,1);
     cairo_rectangle(cr,pr.x,0,1,usable);draw_set(cr,t->hair);cairo_fill(cr);
-    double right=W-64; Rect mark={right-30,48,30,30};draw_brand_mark(cr,t,mark);
-    Text brand=text_make(cr,FONT_SANS,20,600,"ImageCtl",0,DIR_LTR);
-    text_draw_r(cr,&brand,mark.x-10,48+(30-brand.h)/2,t->ink);text_free(&brand);
+    draw_brand_lockup_r(cr,W-64,56,6,t==&THEME_DARK,1);   /* #1302: the full lockup, as on the console's login */
     double fw=fmin(400,pane-128),x=pr.x+(pane-fw)/2;
     Text title=rtl_block_make(cr,24,600,"כניסה",fw);
     char lead_s[128];snprintf(lead_s,sizeof lead_s,"מחשב הבנייה %s",known(a->st.machine_name));   /* #1252 */
@@ -414,81 +390,6 @@ void screen_menu(App *a,cairo_t *cr,double W,double H,double head_h){
     if(a->menu_focus==count)draw_focus_ring(a,cr,lr);
     text_free(&title);text_free(&sub);
     if(a->logout_confirming)draw_logout_confirm(a,cr,W,H);
-}
-
-static const char *standby_probe_warning(const State *s){
-    if(!strcmp(s->disk_probe,"no_ports"))return "אין פורטי SATA בקושחה";
-    if(!strcmp(s->disk_probe,"no_disks"))return "לא חוברו דיסקים";
-    if(!strcmp(s->disk_probe,"unchecked"))return "הדיסקים לא נבדקו";
-    return NULL;
-}
-
-static void standby_disk_row(cairo_t *cr,const Theme *t,double center,double y,double row_w,
-                             const char *label,const char *model,unsigned long long bytes,
-                             const char *smart,int empty){
-    Rect row={center-row_w/2,y,row_w,28};
-    draw_fill_rrect(cr,row,4,t->surface);draw_border_rrect(cr,row,4,t->hair,1);
-    Text name=text_make(cr,FONT_SANS,13,600,label,0,DIR_RTL);
-    Text sep=text_make(cr,FONT_SANS,13,400,"·",0,DIR_RTL);
-    Text detail=text_make(cr,FONT_SANS,13,400,empty?"ריק":model,0,DIR_LTR);
-    char size[32];fmt_bytes(size,sizeof size,(double)bytes);
-    Text sz=text_make(cr,FONT_MONO,13,400,size,0,DIR_LTR);
-    Text health=text_make(cr,FONT_SANS,13,600,smart_he(smart),0,DIR_RTL);
-    double gap=9,total=name.w+gap+sep.w+gap+detail.w;
-    if(!empty)total+=gap+sep.w+gap+sz.w+gap+sep.w+gap+health.w;
-    double right=center+total/2,ty=y+(row.h-name.h)/2;
-    text_draw_r(cr,&name,right,ty,t->ink);right-=name.w+gap;
-    text_draw_r(cr,&sep,right,ty,t->muted);right-=sep.w+gap;
-    text_draw_r(cr,&detail,right,ty,empty?t->muted:t->ink);
-    if(!empty){
-        right-=detail.w+gap;text_draw_r(cr,&sep,right,ty,t->muted);right-=sep.w+gap;
-        text_draw_r(cr,&sz,right,ty,t->ink);right-=sz.w+gap;
-        text_draw_r(cr,&sep,right,ty,t->muted);right-=sep.w+gap;
-        text_draw_r(cr,&health,right,ty,smart_color(t,smart));
-    }
-    text_free(&name);text_free(&sep);text_free(&detail);text_free(&sz);text_free(&health);
-}
-
-void screen_standby(App *a,cairo_t *cr,double W,double H,double head_h){
-    const Theme *t=a->theme;const State *s=&a->st;Rect area={0,head_h,W,H-head_h-N_STATUS_H};draw_station_art(cr,t,area,.5);
-    int cloner=a->force_cloner,compact=W<=1280,rows=0;
-    const char *probe=standby_probe_warning(s);
-    if(probe)rows=1;else if(cloner)rows=3;else rows=s->ndisks<5?s->ndisks:5;
-    double list_h=rows?probe?20:rows*28+(rows-1)*4:0;
-    double after_mark=compact?16:22,after_sub=compact?16:26,before_list=compact?12:18,after_list=compact?14:22;
-    Text h=text_make(cr,FONT_SANS,30,600,"ממתין לשרת",0,DIR_RTL);
-    Text p=text_make(cr,FONT_SANS,15,400,"אין סבב פתוח. המחשב יצטרף לבד כשייפתח סבב.",0,DIR_RTL);
-    char srv[160];server_label(s,srv,sizeof srv);   /* #1252 */
-    char addr[256];snprintf(addr,sizeof addr,"%s     %s     %s",a->ip[0]?a->ip:"—",a->mac[0]?a->mac:"—",srv);
-    Text ad=text_make(cr,FONT_MONO,22,400,addr,0,DIR_LTR);
-    char hello[160];
-    if(s->hello_age>=0&&s->hello_rc>=0)snprintf(hello,sizeof hello,"hello אחרון לפני %d שניות · השרת ענה %d",s->hello_age,s->hello_rc);
-    else snprintf(hello,sizeof hello,"טרם התקבלה ראיית hello מהסוכן");
-    Text he=text_make(cr,FONT_SANS,13,400,hello,0,DIR_RTL);
-    double content_h=72+after_mark+h.h+8+p.h+after_sub+ad.h+(rows?before_list+list_h:0)+after_list+32;
-    double center=W/2,y=head_h+(area.h-content_h)/2;Rect mark={center-36,y,72,72};draw_brand_mark(cr,t,mark);y+=72+after_mark;
-    text_draw(cr,&h,center-h.w/2,y,t->ink);y+=h.h+8;
-    text_draw(cr,&p,center-p.w/2,y,t->muted);y+=p.h+after_sub;
-    text_draw(cr,&ad,center-ad.w/2,y,t->ink);y+=ad.h;
-    if(rows){
-        y+=before_list;
-        if(probe){Text w=text_make(cr,FONT_SANS,13,600,probe,0,DIR_RTL);text_draw(cr,&w,center-w.w/2,y,t->warn);text_free(&w);y+=list_h;}
-        else if(cloner)for(int port=1;port<=rows;port++){
-            const IdleDisk *d=idle_for_port(s,port);char label[SLOT_NAME_MAX+16];cloner_slot_label(s,port,label,sizeof label);   /* #704 */
-            standby_disk_row(cr,t,center,y,fmin(760,W-2*N_PAD),label,d&&d->model[0]?d->model:"לא זוהה",d?d->size:0,d?d->smart:"unchecked",!d);
-            y+=32;
-        }else for(int i=0;i<rows;i++){
-            const Disk *d=&s->disks[i];
-            standby_disk_row(cr,t,center,y,fmin(760,W-2*N_PAD),d->removable?"מגירה":"דיסק פנימי",d->model[0]?d->model:d->dev,d->size_bytes,"unchecked",0);
-            y+=32;
-        }
-    }
-    y+=after_list;
-    Rect hb={center-(he.w+48)/2,y,he.w+48,32};draw_fill_rrect(cr,hb,16,t->surface);draw_border_rrect(cr,hb,16,t->hair,1);
-    struct timespec ts; double pulse=9;
-    if(!a->fixed_clock&&timespec_get(&ts,TIME_UTC)==TIME_UTC) pulse=8+2*(.5+.5*sin((ts.tv_sec+ts.tv_nsec/1e9)*4));   /* --png: a still frame, no wall-clock pulse */
-    draw_led(cr,hb.x+18,hb.y+16,pulse,s->hello_rc==200?t->led_ok:t->warn);text_draw_r(cr,&he,hb.x+hb.w-14,hb.y+(hb.h-he.h)/2,t->muted);
-    text_free(&h);text_free(&p);text_free(&ad);text_free(&he);
 }
 
 static void draw_cursor(cairo_t *cr,double x,double y){

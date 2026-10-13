@@ -117,6 +117,7 @@ source=/etc/imagectl/answers
 "
     write_target 0644 /etc/imagectl/installer-role "role=$ANSWER_ROLE
 primary=$ANSWER_PRIMARY_URL
+primary_fingerprint=$ANSWER_PRIMARY_FINGERPRINT
 "
     must_run iso-manifest "could not copy imagectl-iso.json" cp "$CDROM/imagectl-iso.json" "$TARGET/etc/imagectl/iso-release.json"
 }

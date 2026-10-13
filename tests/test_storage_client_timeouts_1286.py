@@ -278,3 +278,25 @@ def test_put_whose_verify_never_answers_fails_at_the_ceiling(
     _, error, elapsed = _run_bounded(push)
     assert isinstance(error, storage_client.InterserverTimeout), error
     assert elapsed < 4
+
+
+# --- #1292: ה-preview של ה-SPKI בהוספת משני — אותו מוקש, אותה תקרה ---------------
+
+def test_fetch_server_spki_fails_in_name_when_the_secondary_accepts_and_stays_silent(
+        secondaries):
+    """‏``fetch_server_spki`` הוריד את ה-timeout אחרי ה-connect כמו ``open``
+    לפני #1286 — משני שמקבל TCP ולא שולח ServerHello תקע את ה-preview לנצח."""
+    sec = secondaries(_hold, tls=False)
+    _, error, elapsed = _run_bounded(
+        lambda: storage_client.fetch_server_spki("127.0.0.1", sec.port, timeout=0.5))
+    assert isinstance(error, storage_client.InterserverTimeout), error
+    assert "handshake" in str(error)
+    assert elapsed < 3
+
+
+def test_fetch_server_spki_still_reads_a_prompt_secondary(secondaries):
+    sec = secondaries(_hold)
+    value, error, _ = _run_bounded(
+        lambda: storage_client.fetch_server_spki("127.0.0.1", sec.port, timeout=0.5))
+    assert error is None, error
+    assert value == sec.spki

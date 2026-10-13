@@ -133,10 +133,23 @@ def test_unverified_ports_say_so_and_are_not_painted_green(ports_server):
     for pid in ("http_console",):
         assert rows[pid]["state"] == "unknown"
         assert rows[pid]["listening"] is None
+        assert rows[pid]["state"] != "ok"
+
+
+def test_pxe_proxy_4011_is_not_a_v1_row(ports_server):
+    """‏#1303 (נדב 12/10): ‏PXE proxy שייך לכיתות (v1.2) — ‏`PUT /net/interfaces`
+    כבר מסרב לו ב-409 כשהכיתות כבויות. שורת 4011 בדף הפורטים הייתה שארית
+    מוצגת של יכולת שאין ב-v1, ולכן היא לא נשלחת."""
+    rows = by_id(ports_server["admin"].get("/api/console/ports").json())
+    assert "pxe_proxy" not in rows
+    assert all(r["port"] != "4011" for r in rows.values())
+
+
+def test_pxe_proxy_4011_row_is_back_with_classrooms(ports_server, classrooms_on):
+    """v1.2: עם כיתות השורה חוזרת — נקראת מטבלת ה-UDP, ובלי proxy דלוק זה off, לא ok."""
+    rows = by_id(ports_server["admin"].get("/api/console/ports").json())
     assert rows["pxe_proxy"]["state"] == "off"
     assert rows["pxe_proxy"]["listening"] is False
-    for pid in ("http_console", "pxe_proxy"):
-        assert rows[pid]["state"] != "ok"
 
 
 def test_a_stranger_on_tftp_is_red(ports_server):
@@ -185,7 +198,7 @@ def test_firewall_row_three_states(ports_server):
 # --- #1267: שיוך לרשת + חומת אש בשרת לכל פורט שבין רשתות -----------------------
 
 NFT_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "nftables"
-DEPLOY_IDS = ("dhcp", "tftp", "http_boot", "pxe_proxy", "multicast", "monitor")
+DEPLOY_IDS = ("dhcp", "tftp", "http_boot", "multicast", "monitor")   # ‏#1303: ‏pxe_proxy — רק עם כיתות (v1.2)
 
 
 def _nft(name: str) -> str:
@@ -205,14 +218,14 @@ def test_every_port_row_names_its_network(ports_server):
 
 
 def test_cross_network_ports_read_the_server_firewall_per_port(ports_server):
-    """ראשי (primary.conf): 8081 פתוח על וילן השרתים, ל-8443 אין כלל
-    ו-policy drop — חסום. הראיה היא הכלל עצמו, לא היעדר שגיאה."""
+    """ראשי (primary.conf): 8081 פתוח על וילן השרתים, וגם 8443 — ‏#1310,
+    "אתה שם?" של מתקין משני. הראיה היא הכלל עצמו, לא היעדר שגיאה."""
     ports_server["fake"]["nft_ruleset"] = _nft("primary.conf")
     rows = by_id(ports_server["admin"].get("/api/console/ports").json())
     assert rows["http_console"]["firewall"] == "open"
     assert "tcp dport 8081 accept" in rows["http_console"]["firewall_detail"]
-    assert rows["interserver"]["firewall"] == "blocked"
-    assert "policy drop" in rows["interserver"]["firewall_detail"]
+    assert rows["interserver"]["firewall"] == "open"
+    assert "tcp dport 8443 accept" in rows["interserver"]["firewall_detail"]
 
     # משני: 8443 נפתח רק מכתובת הראשי — והכלל (עם הכתובת) הוא ההסבר.
     ports_server["fake"]["nft_ruleset"] = _nft("secondary.conf")
@@ -260,5 +273,6 @@ def test_port_firewall_ignores_comments_drops_and_longer_port_numbers():
     ranged = body.replace("80810", "8000-8100")
     assert port_firewall(ranged, "tcp", "8081") == (
         None, "יש בטבלת imagectl כלל טווח/קבוצה שלא פוענח — לא נבדק")
-    # ‏כללי udp של ההפצה אינם נוגעים לשאלה על tcp
-    assert port_firewall(_nft("primary.conf"), "tcp", "8443")[0] == "blocked"
+    # ‏כללי udp של ההפצה אינם נוגעים לשאלה על tcp (‏#1310: בראשי 8443 פתוח)
+    assert port_firewall(_nft("primary.conf"), "tcp", "8443")[0] == "open"
+    assert port_firewall(_nft("primary.conf"), "tcp", "4444")[0] == "blocked"

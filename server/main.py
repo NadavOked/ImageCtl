@@ -167,19 +167,6 @@ def build_parser() -> argparse.ArgumentParser:
                         help="TLS לקונסולה (8081). off מותר רק עם "
                              "--console-host על loopback (127.0.0.1) — "
                              "פיתוח/e2e; ברירת מחדל on")
-    # ‏#151: שומר לפי כתובת מקור בתוך אפליקציית הקונסולה — שכבה שלא תלויה
-    # בחומת אש חיצונית. רשת/כתובת אחת לכל דגל (CIDR או כתובת בודדת),
-    # ‏ניתן להעביר כמה פעמים (למשל MGMT ו-DEPLOY בנפרד). ברירת המחדל
-    # ``None`` משאירה את ההתנהגות של היום — הגבול היחיד הוא ‎--console-host
-    # (#770) — כדי לא לשבור פריסה קיימת שלא ביקשה את השכבה הנוספת.
-    # **הרשימה אינה מקודדת קשיח**: ערכי המעבדה (10.10.10.1, 10.44.0.0/24)
-    # אינם ברירת מחדל בקוד — המפעיל מזין אותם דרך היחידה, כמו כל שאר
-    # ההבדלים בין מעבדה למכללה.
-    parser.add_argument("--console-allow-from", action="append", default=None,
-                        metavar="CIDR",
-                        help="רשת/כתובת מותרת לגישה לקונסולה (‎/console, "
-                             "‎/api/console); חוזר על עצמו לכמה רשתות. "
-                             "ברירת מחדל: השומר אינו פעיל")
     # ‏#201: הפורט שהשידור תופס בפועל (וגם portbase+1). בייצור לא נוגעים
     # בו — udpcast של הסוכן מצפה ל-9000, וזה מה שהמתקין והיחידה מריצים.
     # הדגל קיים בשביל מי שמריץ שרת אמיתי במקום שאסור לו להתנגש בהפצה:
@@ -207,7 +194,8 @@ def build_parser() -> argparse.ArgumentParser:
                              "ב-standalone")
     # ‏#740 (tracer 2.1): מאזין ה-enrollment הבין-שרתי — **נפרד** מהסוכן/
     # קונסולה/קיוסק, TLS 1.3 + mTLS בלבד, וללא נתיבי ניהול או עוגיות. עולה
-    # רק כשמסופק ‏--interserver-host/port והשרת הוא secondary. ‏--interserver-url
+    # רק כשמסופק ‏--interserver-host/port והשרת הוא secondary (‏#1313: משני
+    # בלי הדגל — על ‏--console-host שאינו loopback). ‏--interserver-url
     # הוא הכתובת המפורשת שהמשני מציג (מאומתת קפדנית: https+פורט מפורש).
     parser.add_argument("--interserver-host", default=None,
                         help="כתובת ה-bind של מאזין ה-enrollment הבין-שרתי — "
@@ -253,6 +241,32 @@ def _resolve_bind_host(parser, flag: str, value: str | None) -> tuple[str | None
     except ifaddr.AddressLookupError as exc:
         parser.error(f"{flag} {value}: {exc}")
     return None, None                                    # pragma: no cover
+
+
+def _primary_alive(runtime, args, hostname: str):
+    """‏#1310: יצרן המאזין "אתה שם?" של הראשי — ``None`` במשני (שם 8443 הוא
+    ה-mTLS, ובלעדיו אינו נפתח כלל). אחרת פונקציה ``כתובת → (יצרנים,
+    כתובות)``, כמו ``console_servers``: ‏#1088 בונה מחדש בחילוף כתובת, ובלי
+    כתובת עדיין — אין מאזין, לא loopback (אין מה לשאול מקומית).
+
+    הזהות הבין-שרתית נוצרת כאן אם אין — אותה זהות שה-pairing היה יוצר
+    מאוחר יותר, ולכן הטביעה שהמתקין של המשני מציג היא המפתח שהמשני יצמיד."""
+    import uvicorn
+
+    from . import primary_alive, storage_nodes
+    from .app import create_alive_app
+    if storage_nodes.role(runtime.conn) == "secondary":
+        return None
+    ident = storage_nodes.ensure_identity(runtime.conn, args.data_dir,
+                                          host_sans=[h for h in (hostname,) if h])
+    app = create_alive_app(runtime, ident["server_spki"])
+
+    def servers(addr: str | None) -> tuple[list, list[str]]:
+        if not addr:
+            return [], []
+        config = primary_alive.server_config(app, ident, addr, args.interserver_port)
+        return [lambda: uvicorn.Server(config)], [addr]
+    return servers
 
 
 def main() -> None:
@@ -303,17 +317,6 @@ def main() -> None:
             parse_interserver_url(args.interserver_url)
         except InterserverURLError as exc:
             parser.error(str(exc))
-
-    # ‏#151: פרסור ואימות רשתות הקונסולה כאן, לפני הרמת השרת — כמו כל
-    # אימות אחר בבלוק הזה (עיקרון 5: ``CIDR`` שגוי נדחה בגלוי, לא נופל
-    # לברירת מחדל שקטה שפותחת או סוגרת הכול).
-    console_allowed_networks = None
-    if args.console_allow_from:
-        from .console_source_guard import parse_networks
-        try:
-            console_allowed_networks = parse_networks(args.console_allow_from)
-        except ValueError as exc:
-            parser.error(f"--console-allow-from: {exc}")
 
     # ‏#1088: ‏--console-host כשם כרטיס — הכתובת נפתרת עכשיו; ‏None = הכרטיס
     # קיים בלי כתובת (lease שעוד לא הגיע), והקונסולה עולה על loopback עד
@@ -464,7 +467,6 @@ def main() -> None:
                              # קוראת את קובץ המכונה בכל הרצת pytest.
                              identity_hooks={"leases": identity.LeaseFile(args.dhcp_leases)},
                              extra_cmdline=tuple(args.extra_cmdline.split()),
-                             console_allowed_networks=console_allowed_networks,
                              repo_dir=args.repo_dir,
                              console_tls=console_tls,
                              health_hooks={"port_listeners": listeners,
@@ -525,6 +527,19 @@ def main() -> None:
     else:
         print("console TLS: off (loopback only)")
 
+    # ‏#1310: הראשי עונה על 8443 ל"אתה שם?" בלבד — על כרטיס השרתים, שהוא
+    # כרטיס הקונסולה. קונסולה על loopback בלבד = אין כרטיס שרתים = אין מאזין.
+    alive_servers = None
+    if console_iface or (console_addr and not is_loopback(console_addr)):
+        alive_servers = _primary_alive(runtime, args, machine_hostname)
+    if alive_servers is not None:
+        alive_factories, alive_hosts = alive_servers(console_addr)
+        listeners.add("interserver", alive_factories,
+                      port=args.interserver_port, hosts=alive_hosts)
+        print(f"primary alive (#1310) on "
+              f"{alive_hosts[0] if alive_hosts else console_iface}:{args.interserver_port}"
+              "  (GET only, one path)")
+
     watchers = []
 
     def watch(iface: str, current: str | None, rebind) -> None:
@@ -550,6 +565,9 @@ def main() -> None:
         def rebind_console(new: str | None) -> None:
             factories, hosts = console_servers(new)
             listeners.request_rebind("http_console", hosts=hosts, factories=factories)
+            if alive_servers is not None:
+                factories, hosts = alive_servers(new)
+                listeners.request_rebind("interserver", hosts=hosts, factories=factories)
             if new and console_tls is not None and new not in console_tls.sans:
                 journal(runtime.conn, "console_tls_by_name_only",
                         f"הכתובת השתנתה ל-{new} — התעודה תקפה לפי שם "
@@ -557,15 +575,26 @@ def main() -> None:
         watch(console_iface, console_addr, rebind_console)
 
     # ‏#740: מאזין ה-enrollment הבין-שרתי (mTLS 1.3) עולה רק על משני, וכשניתן
-    # ‏--interserver-host. הוא threaded (pyOpenSSL terminator) לצד ה-uvicorn —
+    # ‏--interserver-host (או, ב-#1313, ‏--console-host של משני). הוא threaded
+    # (pyOpenSSL terminator) לצד ה-uvicorn —
     # ‏#996: גם הוא במנהל המאזינים, כמתג `interserver` (start/stop של ה-thread).
     from . import storage_nodes
-    if args.interserver_host and storage_nodes.role(runtime.conn) == "secondary":
+    inter_host = args.interserver_host
+    if (not inter_host and args.storage_role == "secondary"
+            and args.console_host and not is_loopback(args.console_host)):
+        # ‏#1313: משני שהותקן לפני התיקון — ה-override שלו (שהשדרוג אינו
+        # כותב מחדש) בלי ‏--interserver-host, והמאזין לא עלה מעולם. המתקין
+        # שם את שניהם על כרטיס השרתים, ולכן ‏--console-host הוא הכרטיס הנכון.
+        # רק כשה-unit עצמו אומר secondary (לא תפקיד שמור פגום, #746), ולא
+        # על loopback — לשם הראשי לעולם לא יגיע.
+        inter_host, inter_addr, inter_iface = args.console_host, console_addr, console_iface
+        print(f"interserver: no --interserver-host — using --console-host {inter_host} (#1313)")
+    if inter_host and storage_nodes.role(runtime.conn) == "secondary":
         from . import interserver_api
         if inter_iface:
             host_sans = [h for h in (inter_addr, machine_hostname) if h]
         else:
-            host_sans = [args.interserver_host]
+            host_sans = [inter_host]
         if args.interserver_url:
             from .interserver_auth import parse_interserver_url
             host_sans.append(parse_interserver_url(args.interserver_url)[0])
@@ -588,7 +617,7 @@ def main() -> None:
         listeners.add_threaded("interserver", start=make_interserver_start(inter_addr),
                                stop=lambda server: server.stop(),
                                port=args.interserver_port,
-                               hosts=[inter_addr or args.interserver_host])
+                               hosts=[inter_addr or inter_host])
         if inter_iface:
             watch(inter_iface, inter_addr, lambda new: listeners.request_rebind(
                 "interserver", hosts=[new or inter_iface],

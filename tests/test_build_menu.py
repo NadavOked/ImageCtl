@@ -238,7 +238,7 @@ STUBS = (
 
 
 def run_screen(tmp_path: Path, server: str, answers, *, stubs: str = "",
-               answer: dict = ANSWER, env: str = "") -> dict:
+               answer: dict = ANSWER, env: str = "", before_last=None) -> dict:
     run = tmp_path / "run"
     run.mkdir(parents=True, exist_ok=True)
     (run / "resp.json").write_text(json.dumps(answer), encoding="utf-8")
@@ -251,7 +251,9 @@ def run_screen(tmp_path: Path, server: str, answers, *, stubs: str = "",
     # מספר בין התשובות הוא השהיה בשניות — האדם שעדיין לא ענה (#908). בלי
     # השהיה ה-stdin הוא קובץ; איתה — צינור בתוך bash, שבו `command sleep`
     # עוקף את ה-stub.
-    if any(not isinstance(a, str) for a in answers):
+    if before_last is not None:
+        feed, stdin = "", ""
+    elif any(not isinstance(a, str) for a in answers):
         feed = "{ " + "; ".join(
             f"command sleep {a}" if not isinstance(a, str)
             else f"printf '%s\\n' {shlex.quote(a)}" for a in answers) + "; } | "
@@ -277,11 +279,34 @@ def run_screen(tmp_path: Path, server: str, answers, *, stubs: str = "",
     )
     with out_file.open("w", encoding="utf-8") as sink:
         try:
-            subprocess.run(
-                [BASH, "-c", 'export PATH="/usr/bin:$PATH"; ' + script],
-                stdout=sink, stderr=subprocess.STDOUT, text=True, cwd=str(REPO),
-                stdin=subprocess.DEVNULL, timeout=RUN_TIMEOUT_S,
-            )
+            if before_last is None:
+                subprocess.run(
+                    [BASH, "-c", 'export PATH="/usr/bin:$PATH"; ' + script],
+                    stdout=sink, stderr=subprocess.STDOUT, text=True, cwd=str(REPO),
+                    stdin=subprocess.DEVNULL, timeout=RUN_TIMEOUT_S,
+                )
+            else:
+                proc = subprocess.Popen(
+                    [BASH, "-c", 'export PATH="/usr/bin:$PATH"; ' + script],
+                    stdout=sink, stderr=subprocess.STDOUT, text=True, cwd=str(REPO),
+                    stdin=subprocess.PIPE,
+                )
+                assert proc.stdin is not None
+                try:
+                    for item in answers[:-1]:
+                        if isinstance(item, str):
+                            proc.stdin.write(item + "\n")
+                            proc.stdin.flush()
+                        else:
+                            time.sleep(item)
+                    before_last()
+                    proc.stdin.write(answers[-1] + "\n")
+                    proc.stdin.close()
+                    proc.wait(timeout=RUN_TIMEOUT_S)
+                except BaseException:
+                    proc.kill()
+                    proc.wait()
+                    raise
         except subprocess.TimeoutExpired:
             raise AssertionError(
                 f"המסך לא סיים תוך {RUN_TIMEOUT_S}s. הפלט עד כה:\n"
@@ -690,6 +715,15 @@ def hellos(console: Console) -> list[dict]:
     return posted(console, "/api/v1/agent/hello")
 
 
+def wait_for_hello(console: Console, prompt: str, timeout: float = 10.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if any(h["prompt"] == prompt for h in hellos(console)):
+            return
+        time.sleep(0.1)
+    raise AssertionError(f"no hello with prompt={prompt!r} within {timeout}s: {hellos(console)}")
+
+
 @native_tools
 def test_hello_keeps_going_while_the_menu_waits_for_a_choice(tmp_path, console):
     """ממצא צדדי מ-#906: `build_menu` עומד על `read` ואף hello לא יוצא —
@@ -735,7 +769,8 @@ def test_hello_keeps_going_while_the_sign_in_waits(tmp_path, console):
     המשתמש רק אחרי ~3 פעימות (‏ATTENDED_BEAT_S=0.3), ולכן חייבים להיספר ≥2
     hello עם `prompt: signin` **לפני** הראשון עם `prompt: menu` — פעימה
     אחת בכל רגע, לא שתיים במקביל. בקרה שלילית: `recovery.sh` של main → 0."""
-    result = run_screen(tmp_path, url_of(console), [0.9, "admin", "pw", "0"])
+    result = run_screen(tmp_path, url_of(console), [0.9, "admin", "pw", "0"],
+                        before_last=lambda: wait_for_hello(console, "menu"))
 
     assert "Standing by" in result["out"], result["out"]
     prompts = [h["prompt"] for h in hellos(console)]

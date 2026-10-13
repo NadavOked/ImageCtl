@@ -44,13 +44,15 @@ def test_all_approved_screens_are_pure_80x25_ascii():
             "netmask": "255.255.255.0", "gateway": "10.44.9.254",
             "dns": "10.44.9.2"}
     cases = [
-        (render_main(snapshot), ("Hostname:", "Certificate:", "<F2>", "<F12>")),
-        (render_auth(1, 0, 8), ("Login Name:", "Password:", "30 s lockout")),
+        (render_main(snapshot), ("ImageSrv Server Operations Console",   # #1302
+                                 "Hostname:", "Certificate:", "<F2>", "<F12>")),
+        (render_auth(1, 0, 8), ("ImageSrv Server Operations Console",
+                                "Login Name:", "Password:", "30 s lockout")),
         (render_menu(snapshot), ("Configure Management Network", "Not available here")),
         (render_network(snapshot, list(snapshot.interfaces), form, rollback_seconds=47),
          ("Prefix / Mask:", "Apply (60 s window)", "auto-rollback")),
-        (render_power(snapshot),
-         ("Restart / Shut Down", "<Enter> Restart", "deploy round is running")),
+        (render_power(snapshot),   # #1203: the focus starts on Cancel
+         ("Restart / Shut Down", ">> <Cancel>", "<Restart now>", "deploy round is running")),
         (render_preinstall(replace(snapshot, pre_install=True)),
          ("- installation", "Addresses obtained by DHCP:", "F2  Set a static address")),
         (render_preinstall_network(list(snapshot.interfaces), {
@@ -133,9 +135,41 @@ def test_f12_enter_confirms_without_typing_and_esc_runs_nothing(tmp_path, monkey
     assert runtime.screen == "main" and calls == []
     _press(runtime, KEYS.KEY_F12)
     _type(runtime, "before")
-    _press(runtime, KEYS.KEY_DOWN, "\n")
+    # #1203: the focus starts on Cancel -- Tab moves it to the action first.
+    _press(runtime, KEYS.KEY_DOWN, "\t", "\n")
     assert calls == [["systemctl", "poweroff"]]
     assert runtime.screen == "result" and runtime.result.ok
+
+
+def test_f12_a_stray_enter_runs_nothing_until_tab_marks_the_action(tmp_path, monkeypatch):
+    """#1203 (Nadav 12/10): the F12 dialog opens with the focus on Cancel, so
+    an Enter that was meant for something else restarts nothing; Tab moves
+    the focus to the action, and only then does Enter run it."""
+    conn = _db(tmp_path)
+    calls = []
+    real = actions.power_action
+    monkeypatch.setattr(actions, "power_action", lambda conn, choice: real(
+        conn, choice, lambda argv: calls.append(argv) or CommandResult(0, "", "")))
+    runtime = _runtime(tmp_path, conn)
+    _press(runtime, KEYS.KEY_F12)
+    _type(runtime, "before")
+    _press(runtime, "\n")
+    assert calls == [] and runtime.screen == "main"
+    _press(runtime, KEYS.KEY_F12)
+    _type(runtime, "before")
+    _press(runtime, "\t", "\n")
+    assert calls == [["systemctl", "reboot"]]
+
+
+def test_hebrew_letters_never_reach_a_password(tmp_path):
+    """#1203: passwords are English only, in the F2/F12 password and in the
+    F9 reset -- a Hebrew letter from a keymap is dropped, not typed."""
+    conn = _db(tmp_path)
+    runtime = _runtime(tmp_path, conn)
+    _press(runtime, KEYS.KEY_F2, "a", "ש", "ב", "1")
+    assert runtime.screen == "auth" and runtime.password == "a1"
+    _press(runtime, "\x1b", KEYS.KEY_F9, "\n", "Z", "ד", "!")
+    assert runtime.screen == "reset" and runtime.reset_typed == "Z!"
 
 
 def test_network_form_validation_reports_each_bad_field():
@@ -293,7 +327,7 @@ def test_preinstall_snapshot_uses_status_without_creating_a_database(tmp_path):
     assert snapshot.pre_install
     assert not (data_dir / "imagectl.db").exists()
     screen = "\n".join(render_preinstall(snapshot))
-    assert "ImageCtl v0.52.0 - installation" in screen
+    assert "ImageSrv v0.52.0 - installation" in screen   # #1302: the product name, not the repo's
     assert "ens33   00:50:56:01:02:01   10.10.10.8/24" in screen
     assert "ens34   00:50:56:01:02:02   -" in screen
     assert "https://10.10.10.8:8081" in screen
@@ -322,7 +356,8 @@ def test_preinstall_static_address_is_temporary_ip_state_only():
 
 #: מקשי curses בלי curses — ‏get_wch מחזיר int למקשי פונקציה ו-str לתווים.
 KEYS = SimpleNamespace(KEY_ENTER=343, KEY_F2=266, KEY_F5=269, KEY_F9=273,
-                       KEY_F12=276, KEY_BACKSPACE=263, KEY_UP=259, KEY_DOWN=258)
+                       KEY_F12=276, KEY_BACKSPACE=263, KEY_UP=259, KEY_DOWN=258,
+                       KEY_LEFT=260, KEY_RIGHT=261, KEY_BTAB=353)   # #1203: F12's keys
 NEW_PW = "Nn12345!"
 
 

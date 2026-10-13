@@ -46,8 +46,8 @@ WS_IDLE = 4408
 IDLE_SECONDS = 600
 
 #: ‏#1129: ‏Origin זר (דף באתר אחר שפתח WebSocket עם ה-cookie של המנהל —
-#: ‏SameSite=lax אינו מגן על WS בכל הדפדפנים) נסגר **לפני** accept, כמו
-#: ‏ConsoleSourceGuard: תוקף לא מקבל 101 ולא הסבר.
+#: ‏SameSite=lax אינו מגן על WS בכל הדפדפנים) נסגר **לפני** accept:
+#: תוקף לא מקבל 101 ולא הסבר.
 ORIGIN_REFUSED = "Origin אינו תואם לשרת"
 
 #: ‏RFC 6455 §5.5.1: מסגרת close נושאת עד 125 בייט — 2 לקוד ו-123 לסיבה.
@@ -120,9 +120,7 @@ async def accept_browser(websocket: WebSocket) -> None:
     (‏wsproto/websockets), והדפדפן רואה 1006 בלי קוד ובלי סיבה: 4401,
     ‏4403, ‏4404, ‏4409, ‏4502 ו-4512 כולם נראו "החיבור נסגר". ה-accept אינו
     שולח בייט אחד של RFB ואינו נוגע במכונה — השער (cookie/admin) עדיין
-    סוגר לפני TCP, וזו הבקרה השלילית של #859. **החריג:** ‏`ConsoleSourceGuard`
-    (‏#859, כתובת מקור) ממשיך לסגור לפני accept — peer מרשת אסורה לא
-    מקבל 101 כלל, בדיוק כמו שהוא לא מקבל 200 ב-HTTP."""
+    סוגר לפני TCP, וזו הבקרה השלילית של #859."""
     offered = websocket.headers.get("sec-websocket-protocol", "")
     protocol = "binary" if "binary" in {
         item.strip() for item in offered.split(",")
@@ -537,7 +535,7 @@ def create_monitor_router(
         mac: str,
     ):
         # ‏#1129: ‏Origin זר נסגר לפני accept — דף באתר אחר שמנצל את ה-cookie
-        # אינו מקבל 101, בדיוק כמו ConsoleSourceGuard. הלקוח הלגיטימי
+        # אינו מקבל 101. הלקוח הלגיטימי
         # (monitor.js) שולח Origin של השרת עצמו.
         if not origin_allowed(websocket.headers):
             await websocket.close(code=WS_FORBIDDEN, reason=ORIGIN_REFUSED)

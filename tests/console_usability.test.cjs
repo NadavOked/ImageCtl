@@ -27,6 +27,11 @@ function el(tag, attrs = {}, children = []) {
       };
     },
     get id() { return this.attrs.id || ''; },
+    get tagName() { return String(this.tag).toUpperCase(); },
+    get nextElementSibling() { const p = this.parentElement; if (!p) return null; const i = p.children.indexOf(this); return i >= 0 && i < p.children.length - 1 ? p.children[i + 1] : null; },
+    get outerHTML() { return this.tag === 'svg' ? `<svg class="ui-icon" data-k="${this.attrs['data-k'] || ''}"></svg>` : ''; },
+    getBoundingClientRect() { return {top: 100, left: 1200, height: 40, width: 40}; }, offsetHeight: 30,
+    matches(sel) { return sel === ':hover' || sel === ':focus-visible' ? false : matches(this, sel); },
     get dataset() { const d = {}; for (const [k, v] of Object.entries(this.attrs)) if (k.startsWith('data-')) d[k.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = v; return d; },
     hasAttribute(k) { return k in this.attrs; },
     getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
@@ -49,6 +54,8 @@ function all(e) { const out = []; (function walk(n) { for (const c of n.children
 function matches(e, selector) {
   return selector.split(',').some((part) => {
     part = part.trim();
+    const tag = (part.match(/^([a-z]+)/) || [])[1];
+    if (tag && e.tag !== tag) return false;
     const classes = [...part.matchAll(/\.([\w-]+)/g)].map((m) => m[1]);
     const ids = [...part.matchAll(/#([\w-]+)/g)].map((m) => m[1]);
     const attrs = [...part.matchAll(/\[([\w-]+)(?:="([^"]*)")?\]/g)];
@@ -73,9 +80,9 @@ function buildTree() {
   return el('div', {id: 'app'}, [el('header', {class: 'topbar'}, [toggle]), sidebar, el('div', {class: 'sidebar-backdrop', id: 'sidebarBackdrop'})]);
 }
 
-function setup() {
+function setup(build = buildTree) {
   focused = null;
-  const tree = buildTree();
+  const tree = build();
   const byId = new Map();
   const stub = (id) => { if (!byId.has(id)) byId.set(id, el('div', {id})); return byId.get(id); };
   const document = {
@@ -90,7 +97,7 @@ function setup() {
   };
   const ctx = vm.createContext({
     console, URLSearchParams, URL, Date, Set, Map, Number, Math, JSON, Promise, encodeURIComponent, decodeURIComponent,
-    document, window: {addEventListener() {}, matchMedia: () => ({matches: false}), open() {}},
+    document, window: {addEventListener() {}, matchMedia: () => ({matches: false}), open() {}, innerWidth: 1280, innerHeight: 800},
     localStorage: {getItem: () => null, setItem() {}}, CSS: {escape: (x) => x},
     setInterval: () => 1, clearInterval() {}, setTimeout: () => 1, clearTimeout() {},
     fetch: async () => ({status: 200, ok: true, headers: {get: () => null}, json: async () => ({})}),
@@ -143,68 +150,82 @@ function narrowCss() {
   return [...css.matchAll(/@media\s*\(max-width:\s*740px\)\s*\{((?:[^{}]*\{[^{}]*\})*)\s*\}/g)].map((m) => m[1]).join('\n');
 }
 
-test('S2: the topbar has a hamburger that controls the sidebar, shown only at <=740px', () => {
+test('S2 (#1300 rail): the topbar ☰ controls the sidebar — expanded = the full tree is showing; the aside is the main navigation landmark', () => {
   const html = read('index.html');
-  assert.match(html, /<button class="icon-btn nav-toggle"[^>]*aria-controls="sidebar"[^>]*aria-expanded="false"/, 'hamburger with aria-controls/aria-expanded');
-  assert.match(html, /<aside class="sidebar" id="sidebar">/);
-  const css = read('console.css');
-  assert.match(css, /\.nav-toggle\{display:none\}/, 'hidden on wide screens');
-  const narrow = narrowCss();
-  assert.match(narrow, /\.nav-toggle\{display:inline-flex\}/, 'visible at <=740px');
-  assert.match(narrow, /\.sidebar\.open\{[^}]*display:flex[^}]*position:fixed/, 'the open sidebar is a fixed overlay, overriding .sidebar{display:none}');
+  assert.match(html, /<button class="icon-btn nav-toggle" type="button" aria-label="כיווץ לפס אייקונים" title="כיווץ לפס אייקונים" aria-controls="sidebar" aria-expanded="true" onclick="navButton\(\)">/);
+  assert.match(html, /<aside class="sidebar" id="sidebar" aria-label="ניווט ראשי">\n  <div class="nav-full" id="navFull">\n  <div class="tree" role="tree"/);
+  assert.match(html, /<div class="rail" id="rail" aria-label="ניווט מצומצם"><\/div>/);
+  assert.match(html, /<div id="app" class="app hidden" data-nav="full">/);
+  assert.match(html, /<div class="nav-tip" id="navTip" role="tooltip"><\/div>/); assert.match(html, /<div class="nav-fly" id="navFly" role="menu"><\/div>/);
+  assert.doesNotMatch(html, /id="navCollapse"|sidebar-head/, 'one control — ☰ in the header (rail.html), not a second button in the panel');
+  assert.match(read('console.css'), /\.topbar \.nav-toggle\{display:inline-flex/);
 });
-
-test('S2: toggleSidebar opens/closes with aria-expanded; navigation and Escape close it', () => {
+test('S2 (#1300 rail): on a narrow screen toggleSidebar is the drawer — aria-expanded follows it; navigation and Escape close it', () => {
   const {run, tree, document} = setup();
+  run('window.matchMedia=()=>({matches:true})');
   const side = tree.querySelector('#sidebar'), btn = tree.querySelector('.nav-toggle');
   run('toggleSidebar()');
   assert.ok(side.classList.contains('open'));
-  assert.equal(btn.getAttribute('aria-expanded'), 'true');
+  assert.equal(btn.getAttribute('aria-expanded'), 'true'); assert.equal(btn.getAttribute('aria-label'), 'סגירת העץ המלא');
   run('selectPageById("deploy")');
-  assert.ok(!side.classList.contains('open'), 'navigating from the overlay closes it');
-  assert.equal(btn.getAttribute('aria-expanded'), 'false');
+  assert.ok(!side.classList.contains('open'), 'navigating from the drawer closes it');
+  assert.equal(btn.getAttribute('aria-expanded'), 'false'); assert.equal(btn.getAttribute('aria-label'), 'פתיחת העץ המלא');
   run('init()');
   run('toggleSidebar()');
   for (const fn of document.listeners.keydown) fn({key: 'Escape', target: side});
-  assert.ok(!side.classList.contains('open'), 'Escape closes the overlay');
+  assert.ok(!side.classList.contains('open'), 'Escape closes the drawer');
 });
-
-// ---- ביקורת ממשק 10/10: ☰ בעץ = כיווץ/הרחבת העץ, לא מגירת טקסט בצד הנגדי ------------------
-
-test('audit: the tree-head button collapses/expands the tree (wide) — it no longer opens a text drawer on the far side', () => {
-  const html = read('index.html'), js = read('console.js');
-  assert.doesNotMatch(js, /toggleSidebarInfo/, 'the info-drawer handler is gone');
-  assert.doesNotMatch(html, /toggleSidebarInfo/);
-  assert.match(html, /id="navCollapse"[^>]*aria-expanded="true"[^>]*onclick="navButton\(\)"/, 'the tree-head button is wired to navButton');
+test('#1300 rail: on a wide screen ☰ toggles full tree ↔ icon rail, and the choice is remembered (localStorage, try/catch)', () => {
   const {run, tree, document} = setup();
+  run('globalThis.__st={}; localStorage={getItem:(k)=>__st[k]??null,setItem:(k,v)=>{__st[k]=String(v);}}');
   const app = document.getElementById('app'), top = tree.querySelector('.nav-toggle');
-  tree.querySelector('.topbar').children.push(el('button', {id: 'navCollapse', 'aria-expanded': 'true'}));
+  run('restoreNav()');
+  assert.equal(app.getAttribute('data-nav'), 'full', 'nothing stored = the full tree');
   run('navButton()');
-  assert.ok(app.classList.contains('nav-collapsed'), 'wide: the click collapses the tree');
-  assert.equal(top.getAttribute('aria-expanded'), 'false');
+  assert.equal(app.getAttribute('data-nav'), 'rail', 'wide: the click makes it a rail');
+  assert.equal(top.getAttribute('aria-expanded'), 'false'); assert.equal(top.getAttribute('aria-label'), 'הצגת העץ המלא');
+  assert.equal(run('__st["imagectl.nav"]'), 'rail', 'remembered');
   run('navButton()');
-  assert.ok(!app.classList.contains('nav-collapsed'), 'a second click expands it again');
-  assert.equal(top.getAttribute('aria-expanded'), 'true');
+  assert.equal(app.getAttribute('data-nav'), 'full', 'a second click brings the tree back');
+  assert.equal(top.getAttribute('aria-expanded'), 'true'); assert.equal(top.getAttribute('aria-label'), 'כיווץ לפס אייקונים');
+  assert.equal(run('__st["imagectl.nav"]'), 'full');
+  run('__st["imagectl.nav"]="rail"; NAV_PREF="full"; restoreNav()');
+  assert.equal(app.getAttribute('data-nav'), 'rail', 'a stored rail is restored after a reload');
+  run('localStorage={getItem(){throw new Error("blocked")},setItem(){throw new Error("blocked")}}; NAV_PREF="rail"; restoreNav()');
+  assert.equal(app.getAttribute('data-nav'), 'full', 'unreadable storage = the full tree, no crash');
+  run('navButton()'); assert.equal(app.getAttribute('data-nav'), 'rail', 'and toggling still works without storage');
+  assert.doesNotMatch(read('console.js'), /nav-collapsed|setNavCollapsed|NAV_COLLAPSE_KEY|restoreNavCollapsed/, 'the old hide-the-tree collapse is gone');
 });
-
-test('audit: narrow screens keep the overlay behaviour, and Escape never collapses the wide tree', () => {
+test('#1300 rail: up to 900px the rail is the default whatever is stored; ☰ opens the full tree as a drawer and does not change the stored choice; Escape never touches the wide choice', () => {
   const {run, tree, document} = setup();
-  const side = tree.querySelector('#sidebar'), app = document.getElementById('app');
-  run('window.matchMedia=()=>({matches:true}); navButton()');
-  assert.ok(side.classList.contains('open') && !app.classList.contains('nav-collapsed'), 'narrow: overlay opens, no collapse class');
-  run('window.matchMedia=()=>({matches:false}); setNavCollapsed(false,false)');
+  run('globalThis.__st={"imagectl.nav":"full"}; localStorage={getItem:(k)=>__st[k]??null,setItem:(k,v)=>{__st[k]=String(v);}}');
+  const side = tree.querySelector('#sidebar'), app = document.getElementById('app'), back = document.getElementById('sidebarBackdrop');
+  run('window.matchMedia=()=>({matches:true}); restoreNav()');
+  assert.equal(app.getAttribute('data-nav'), 'rail'); assert.ok(app.classList.contains('narrow'));
+  run('navButton()');
+  assert.ok(side.classList.contains('open') && back.classList.contains('open'), 'narrow: ☰ opens the drawer and the scrim');
+  assert.equal(app.getAttribute('data-nav'), 'rail', 'the rail stays under the drawer');
+  assert.equal(run('__st["imagectl.nav"]'), 'full', 'the drawer is not a stored choice');
+  run('closeSidebarFromScrim()'); assert.ok(!side.classList.contains('open'), 'the scrim closes it');
+  run('window.matchMedia=()=>({matches:false}); applyNavMode(false)');
+  assert.equal(app.getAttribute('data-nav'), 'full', 'back to wide: the stored choice again'); assert.ok(!app.classList.contains('narrow'));
+  run('init()');
   for (const fn of document.listeners.keydown || []) fn({key: 'Escape', target: side});
-  assert.ok(!app.classList.contains('nav-collapsed'), 'Escape does not collapse the tree');
+  assert.equal(app.getAttribute('data-nav'), 'full', 'Escape does not collapse the tree');
 });
-
-test('audit: the collapsed state is a css rule on the grid column, wide screens only, with reduced motion honoured', () => {
+test('#1300 rail: the width is one animated grid column (264↔56, reversible), the layers cross-fade, the narrow drawer slides; reduced motion is honoured', () => {
   const css = read('console.css');
-  assert.match(css, /@media \(min-width:741px\)\{[^@]*\.app\.nav-collapsed \.main\{grid-template-columns:0 minmax\(0,1fr\)\}/);
-  assert.match(css, /\.app\.nav-collapsed \.sidebar\{visibility:hidden/);
-  assert.match(css, /\.app\.nav-collapsed \.nav-toggle\{display:inline-flex\}/);
-  assert.match(css, /prefers-reduced-motion:reduce\)\{\.main\{transition:none\}\}/);
+  assert.match(css, /\.main\{grid-template-columns:var\(--inventory-width\) minmax\(0,1fr\);transition:grid-template-columns var\(--dur-sheet\) var\(--ease\)\}/);
+  assert.match(css, /\.app\[data-nav="rail"\] \.main\{grid-template-columns:var\(--rail-w\) minmax\(0,1fr\)\}/);
+  assert.match(css, /:root\{--rail-w:56px;--tile:40px\}/);
+  assert.match(css, /\.app\[data-nav="rail"\] \.sidebar \.nav-full\{opacity:0;visibility:hidden/, 'the hidden layer leaves the Tab order (visibility)');
+  assert.match(css, /\.app\[data-nav="rail"\] \.sidebar \.rail\{opacity:1;visibility:visible/);
+  assert.match(css, /\.app\.narrow \.sidebar \.nav-full\{position:fixed;inset-block:48px 0;[^}]*visibility:hidden;transform:translateX\(105%\)/);
+  assert.match(css, /\.app\.narrow \.sidebar\.open \.nav-full\{visibility:visible;transform:none/);
+  assert.match(css, /@media \(prefers-reduced-motion:reduce\)\{\s*\.main\{transition:none\}/);
+  assert.match(css, /@media \(prefers-reduced-transparency:reduce\)/);
+  assert.doesNotMatch(css, /nav-collapsed/);
 });
-
 test('audit: the login footer draws a separator only between values that exist (no orphan dots before sign-in)', () => {
   const {run, document} = setup();
   assert.match(read('index.html'), /id="login-foot-sep1" hidden/);
@@ -420,8 +441,7 @@ test('S7: .sidebar clips to its grid row (overflow:hidden), so .tree\'s own vert
   // height:100% on .sidebar was tried and rejected: it over-constrains the
   // <=740px overlay (.sidebar.open{position:fixed;top:48px;bottom:0}),
   // which would push the overlay 48px past the viewport bottom.
-  const narrow = narrowCss();
-  assert.match(narrow, /\.sidebar\.open\{[^}]*bottom:0/, 'precondition: the mobile overlay still pins to the viewport bottom');
+  assert.match(css, /\.app\.narrow \.sidebar \.nav-full\{position:fixed;inset-block:48px 0/, '#1300: the narrow drawer pins to the viewport bottom');
 });
 
 /* #931 — תיקון ספק מנדב אחרי בדיקה במעבדה (16/09 21:30): הסמנטיקה
@@ -447,7 +467,12 @@ test('S7 (reversed 11/10, like the mockup): a single click on a branch row toggl
   assert.doesNotMatch(html, /ondblclick="[^"]*toggleInventoryGroup/, 'dblclick no longer toggles any row');
   // כל שורה שיש לה חץ (כלומר יש לה ילדים) — הקליק על השורה פותח/סוגר (ישירות, או ניווט+פתיחה אם יש לה דף)
   const arrowRows = [...html.matchAll(/<div class="inventory-node[^>]*>(?:(?!<\/div>).)*?<span class="tree-arrow"[^>]*>/g)];
-  assert.ok(arrowRows.length >= 10, 'expected group rows with an arrow, got ' + arrowRows.length);
+  // ‏#1300: בדיוק הענפים של console-full.html (TREE): השרת, מלאי, מחשבים, תשתית, רשת, ניהול. אימג'ים, מחשבי
+  // בנייה/שיכפול וחיבורים פיזיים — עלים (בלי חץ ובלי תת-עץ)
+  assert.equal(arrowRows.length, 6, 'expected exactly the mockup branches, got ' + arrowRows.length);
+  // ענף בלי דף (מלאי / תשתית / ניהול) — .group, מודגש כמו .tn.group במוקאפ
+  for (const box of ['invTA', 'infraTA', 'adminTA']) assert.match(html, new RegExp(`<div class="inventory-node group" onclick="toggleInventoryGroup\\(this,'${box}'\\)"`), box);
+  assert.match(read('console.css'), /\.sidebar \.inventory-node\.group\{font-weight:600\}/);
   for (const [rowHtml] of arrowRows) {
     assert.match(rowHtml, /<div class="inventory-node[^>]*\bonclick="(?:toggleInventoryGroup\(this,'\w+'\)|treeNavToggle\(this,'\w+',function\(\)\{[^"]*\}\))"/,
       `row must toggle on a single click: ${rowHtml.slice(0, 90)}`);
@@ -493,4 +518,205 @@ test('S7: the primary server row (the only static one since #936) has no click-t
     assert.match(handler, /event\.stopPropagation\(\)/, 'must stop the dblclick from also reaching the row\'s toggle');
     assert.match(handler, /renameServer\(this\)/);
   }
+});
+
+// ---- #1300: חלון צר עד 900px כמו המוקאפ — העץ שכבה סגורה, ונסגר בכל כניסה לעמוד ------------------
+
+test('#1300 rail: up to 900px the column is the rail (not hidden — the content keeps its navigation); navIsNarrow is the mockup breakpoint', () => {
+  const css = read('console.css');
+  assert.match(css, /@media \(max-width:900px\)\{\.main\{grid-template-columns:var\(--rail-w\) minmax\(0,1fr\)\}\}/);
+  assert.doesNotMatch(css, /\.sidebar\{display:none\}/, 'the sidebar is never removed — narrow shows the rail');
+  assert.doesNotMatch(css, /\.sidebar\.open\{[^}]*position:fixed/, 'the old whole-sidebar overlay is gone');
+  assert.match(read('console.js'), /function navIsNarrow\(\) \{ return window\.matchMedia\("\(max-width:900px\)"\)\.matches; \}/);
+});
+test('#1300: every way into a page or a drawer from the tree closes the overlay', () => {
+  const {run, tree} = setup();
+  const side = tree.querySelector('#sidebar');
+  const open = () => { run('toggleSidebar(true)'); assert.ok(side.classList.contains('open')); };
+  open(); run('selectInventory(null,"images")'); assert.ok(!side.classList.contains('open'), 'selectInventory (sub-nodes)');
+  open(); run('IMAGES=[{id:"i1",name:"x"}]; IMG.manifest={}; api=()=>new Promise(()=>{}); openImageDetail("i1")'); assert.ok(!side.classList.contains('open'), 'a drawer opened from a tree leaf');
+  open(); run('toggleInventoryGroup(document.querySelector("#infraTA"),"infraTA")'); assert.ok(side.classList.contains('open'), 'opening/closing a group is not navigation — the overlay stays');
+});
+
+// ‏#1303: "אימות ספרייה" בתפריט "+ פעולה" הציג "בקרוב" למרות ש-POST /images/scrub קיים — מחובר ל-scrubLibrary();
+// ה-stubs המתים של soon() נמחקו (כלל נדב 11/10: מה שבוטל — נמחק, לא מוסתר).
+test('#1303: the library-verify action is the real scrub, and the soon() stubs are gone', () => {
+  const js = read('console.js');
+  assert.match(js, /\["אימות ספרייה", "scrubLibrary\(\)"\]/);
+  for (const dead of ['function soon()', 'function createImage()', 'function openNewImage()', 'function verifyLibrary()', 'function exportRounds()',
+    'function runHealthCheck()', 'function openServicesDrawer()', 'function testNetwork()', 'function rollbackNetwork()']) assert.ok(!js.includes(dead), dead);
+  assert.doesNotMatch(js, /\bsoon\(\)/, 'nothing calls soon() any more');
+});
+
+/* ‏#1300 (נדב 12/10, עדיפות גבוהה — "העץ לא מתנהג כמו המוקאפ"): רצפי לחיצה מלאים מול ה-onclick האמיתי
+   של index.html, לפי console-full.html (#tree click): ענף עם דף — לא בו = ניווט + פתיחה; בו = פתיחה/סגירה;
+   ענף בלי דף = פתיחה/סגירה (וסגירה סוגרת גם את מה שמתחתיו); עלה = ניווט. */
+test('#1300: tree click sequences are the mockup\'s — מחשבים navigates from anywhere, toggles only on its own page; leaves navigate; a group toggles', () => {
+  const {run, tree} = setup();
+  const html = read('index.html');
+  const onclickOf = (re) => { const m = html.match(re); assert.ok(m, String(re)); return m[1].replace(/&quot;/g, '"'); };
+  const machinesClick = onclickOf(/data-page="machines" data-admin onclick="([^"]+)"/);
+  const buildClick = onclickOf(/data-role="build" onclick="([^"]+)"/);
+  // מחשבים בצורת index.html: ענף פתוח כברירת מחדל, ו"מחשבי בנייה" עלה תחתיו
+  const machines = tree.querySelector('[data-page="machines"]');
+  machines.attrs['aria-expanded'] = 'true';
+  const build = el('div', {class: 'inventory-node', 'data-role': 'build', tabindex: '0'});
+  const mbox = el('div', {id: 'machineTree', class: 'inventory-children'}, [build]);
+  const inv = tree.querySelector('#invTA');
+  inv.children.push(mbox); mbox.parentElement = inv;
+  const click = (n, code) => run(`(function(){${code}}).call(document.querySelector('${n}'))`);
+  const page = () => run('current'), active = () => tree.querySelectorAll('.inventory-node.active').map((n) => n.attrs['data-page'] || n.attrs['data-role']);
+  const open = () => !mbox.hasAttribute('hidden');
+
+  run('selectPageById("home")');
+  click('[data-page="machines"]', machinesClick);                      // 1. מהסקירה: ניווט, נשאר פתוח
+  assert.equal(page(), 'machines'); assert.deepEqual(active(), ['machines']); assert.ok(open());
+  click('[data-page="machines"]', machinesClick);                      // 2. שוב, כשכבר בו: סגירה בלבד
+  assert.equal(page(), 'machines'); assert.ok(!open(), 'on its own page a click closes it');
+  click('[data-page="machines"]', machinesClick);                      // 3. ושוב: פתיחה
+  assert.ok(open());
+  click('[data-role="build"]', buildClick);                            // 4. עלה: הדף המסונן, העלה מודגש
+  assert.equal(run('MACHINES_ROLE'), 'build'); assert.deepEqual(active(), ['build']);
+  // ‏hasCur של המוקאפ: כל צומת-אב מסומן רך — "מחשבים" ו"מלאי"; שורת השרת (root) לא
+  assert.ok(machines.classList.contains('anc')); assert.ok(inv.previousElementSibling.classList.contains('anc'));
+  assert.ok(!tree.querySelector('.server-node').classList.contains('anc'), 'the server row is the root, never an ancestor mark');
+  click('[data-page="machines"]', machinesClick);                      // 5. מ"מחשבי בנייה": ניווט לכל המחשבים
+  assert.equal(run('MACHINES_ROLE'), null, 'all machines, not the build filter'); assert.deepEqual(active(), ['machines']); assert.ok(open());
+  run('selectPageById("health")');                                     // 6. הבאג: אחרי ביקור קודם ודף אחר
+  click('[data-page="machines"]', machinesClick);
+  assert.equal(page(), 'machines', 'מחשבים enters its page — it does not "only expand"'); assert.ok(open());
+  run('toggleInventoryGroup(document.getElementById("invTA").previousElementSibling, "invTA")');   // 7. "מלאי": סגירה סוגרת גם את מחשבים
+  assert.ok(inv.hasAttribute('hidden')); assert.ok(!open(), 'closing a branch closes what is under it (mockup toggle())');
+  assert.equal(page(), 'machines', 'a group toggle is not navigation');
+});
+
+/* ---- #1300: פס האייקונים (rail.html, אושר 13/10) — נבנה מהעץ, שטוח, לחיצה מנווטת, תפריט צף למחשבים ולרשת ---- */
+function buildRailTree() {
+  const ico = (k) => el('span', {}, [el('svg', {'data-k': k})]);
+  const lbl = (t) => { const x = el('span'); x.textContent = t; return x; };
+  const leaf = (attrs, k, t, extra = {}) => el('div', {class: 'inventory-node', tabindex: '0', ...attrs, ...extra}, [el('span', {class: 'tree-arrow-sp'}), ico(k), lbl(t)]);
+  const branch = (attrs, k, t) => el('div', {class: 'inventory-node', tabindex: '0', 'aria-expanded': 'true', ...attrs}, [el('span', {class: 'tree-arrow'}), ico(k), lbl(t)]);
+  const group = (k, t) => el('div', {class: 'inventory-node group', tabindex: '0', 'aria-expanded': 'true'}, [el('span', {class: 'tree-arrow'}), ico(k), lbl(t)]);
+  const box = (id, kids, extra = {}) => el('div', {id, class: 'inventory-children', ...extra}, kids);
+  const srv = box('srvTA', [
+    leaf({'data-page': 'home'}, 'home', 'סקירה כללית'), leaf({'data-page': 'deploy'}, 'deploy', 'סבב הפצה'),
+    group('list', 'מלאי'), box('invTA', [leaf({'data-page': 'images'}, 'folder', "אימג'ים"), branch({'data-page': 'machines'}, 'machines', 'מחשבים'),
+      box('machineTree', [leaf({'data-role': 'classroom'}, 'group', 'כיתות', {class: 'inventory-node hidden'}), leaf({'data-role': 'build'}, 'build', 'מחשבי בנייה'), leaf({'data-role': 'cloner'}, 'copy', 'מחשבי שיכפול')])]),
+    group('infra', 'תשתית'), box('infraTA', [leaf({'data-page': 'health'}, 'health', 'בריאות ושירותים'), branch({'data-page': 'network'}, 'network', 'רשת'),
+      box('netTA', [leaf({'data-net-tab': '0'}, 'diagram', 'תרשים'), leaf({'data-net-tab': '1'}, 'nic', 'חיבורים פיזיים'), leaf({'data-net-tab': '2'}, 'sync', 'רשת הפצה'), leaf({'data-page': 'ports'}, 'ports', 'פורטים')]),
+      leaf({'data-page': 'tools'}, 'tools', 'ארגז כלים', {class: 'inventory-node hidden'})]),
+    group('admin', 'ניהול'), box('adminTA', [leaf({'data-page': 'permissions'}, 'key', 'משתמשים והרשאות'), leaf({'data-page': 'settings'}, 'sliders', 'הגדרות')]),
+  ]);
+  const foot = el('span', {id: 'treeFootStatus', class: 'status ok'}); foot.textContent = 'כל השירותים פעילים';
+  const navFull = el('div', {class: 'nav-full', id: 'navFull'}, [el('div', {class: 'tree'}, [srv]), el('div', {class: 'tree-foot'}, [foot])]);
+  const side = el('aside', {class: 'sidebar', id: 'sidebar'}, [navFull, el('div', {class: 'rail', id: 'rail'})]);
+  const toggle = el('button', {class: 'icon-btn nav-toggle', 'aria-expanded': 'true'});
+  return el('div', {id: 'app', 'data-nav': 'full'}, [el('header', {class: 'topbar'}, [toggle]), side, el('div', {class: 'sidebar-backdrop', id: 'sidebarBackdrop'}),
+    el('div', {id: 'navTip', class: 'nav-tip'}), el('div', {id: 'navFly', class: 'nav-fly'})]);
+}
+const railButtons = (html) => [...html.matchAll(/<button type="button" class="ri([^"]*)" data-ri="(\d+)" tabindex="(-?\d)" aria-label="([^"]*)"([^>]*)>(<svg[^>]*><\/svg>)<\/button>/g)]
+  .map(([, cls, i, tab, label, rest, svg]) => ({cls: cls.trim(), i: +i, tab: +tab, label, rest, k: (svg.match(/data-k="([^"]*)"/) || [])[1]}));
+
+test('#1300 rail: flat like ESXi — the groups without a page become separators, every page is an icon (same icon as its tree node), hidden nodes stay out', () => {
+  const {run, tree} = setup(buildRailTree);
+  run('markTreeSelection(null,"home")');
+  const html = tree.querySelector('#rail').innerHTML;
+  const groups = [...html.matchAll(/<div class="rgrp" role="group" aria-label="([^"]*)">/g)].map((m) => m[1]);
+  assert.deepEqual(groups, ['ראשי', 'מלאי', 'תשתית', 'ניהול']);
+  assert.equal((html.match(/<div class="rsep" aria-hidden="true"><\/div>/g) || []).length, 3, 'a thin separator between groups');
+  const b = railButtons(html);
+  assert.deepEqual(b.map((x) => x.label), ['סקירה כללית', 'סבב הפצה', 'אימג&#39;ים', 'מחשבים', 'בריאות ושירותים', 'רשת', 'משתמשים והרשאות', 'הגדרות'], 'no group rows, no third level, no hidden (capability) node');
+  assert.deepEqual(b.map((x) => x.k), ['home', 'deploy', 'folder', 'machines', 'health', 'network', 'key', 'sliders'], 'the tree node\'s own icon');
+  assert.deepEqual(b.filter((x) => /\bkids\b/.test(x.cls)).map((x) => x.label), ['מחשבים', 'רשת'], 'only the nodes with a third level carry the flyout hint');
+  for (const x of b.filter((y) => /\bkids\b/.test(y.cls))) assert.match(x.rest, /aria-haspopup="menu" aria-expanded="false" aria-controls="navFly"/);
+  assert.equal(b[0].cls, 'cur'); assert.match(b[0].rest, /aria-current="page"/);
+  assert.deepEqual(b.map((x) => x.tab), [0, -1, -1, -1, -1, -1, -1, -1], 'one Tab stop — the current icon');
+  assert.match(html, /<div class="rfoot"><span class="rled" role="img" aria-label="כל השירותים פעילים" data-tipx="כל השירותים פעילים"><span class="led ok"><\/span><\/span><\/div>/, 'the services light moves to the bottom');
+});
+
+test('#1300 rail: on a sub-page the visible parent carries the mark — "רשת, נבחר: פורטים" with aria-current=location; a build-machines leaf marks מחשבים', () => {
+  const {run, tree} = setup(buildRailTree);
+  run('markTreeSelection(null,"ports")');
+  let b = railButtons(tree.querySelector('#rail').innerHTML);
+  const net = b.find((x) => x.k === 'network');
+  assert.equal(net.cls, 'cur kids'); assert.equal(net.label, 'רשת, נבחר: פורטים'); assert.match(net.rest, /aria-current="location"/);
+  assert.equal(b.filter((x) => /\bcur\b/.test(x.cls)).length, 1);
+  run('markTreeSelection(document.querySelector(\'[data-role="build"]\'),"machines")');
+  b = railButtons(tree.querySelector('#rail').innerHTML);
+  const m = b.find((x) => x.k === 'machines');
+  assert.equal(m.label, 'מחשבים, נבחר: מחשבי בנייה'); assert.equal(m.tab, 0, 'the marked icon is the Tab stop');
+  run('markTreeSelection(null,"health")');
+  b = railButtons(tree.querySelector('#rail').innerHTML);
+  assert.equal(b.find((x) => x.k === 'health').label, 'בריאות ושירותים'); assert.match(b.find((x) => x.k === 'health').rest, /aria-current="page"/);
+});
+
+test('#1300 rail: a click always navigates — מחשבים = all machines (role cleared), רשת = its first tab, a leaf = its tree action', () => {
+  const {run, tree} = setup(buildRailTree);
+  run('selectPageById=(id)=>{current=id;}; markTreeSelection(null,"home"); MACHINES_ROLE="build"');
+  run('railGo(RAIL_NODES[3])');
+  assert.equal(run('current'), 'machines'); assert.equal(run('MACHINES_ROLE'), null, 'all machines, not the build filter');
+  run('markTreeSelection(null,"machines")');
+  run('railGo(RAIL_NODES[3])'); assert.equal(run('current'), 'machines', 'on its own page it stays a navigation (never a toggle)');
+  run('globalThis.__net=[]; openNetwork=(t)=>{__net.push(t);}; railGo(RAIL_NODES[5])');
+  assert.deepEqual(JSON.parse(run('JSON.stringify(__net)')), [0]);
+  let clicked = 0; tree.querySelector('[data-page="images"]').click = () => { clicked++; };
+  run('railGo(RAIL_NODES[2])'); assert.equal(clicked, 1, 'a leaf runs its own onclick from the tree');
+});
+
+test('#1300 rail: the flyout (מחשבים, רשת) lists the third level — "כל המחשבים" first for machines, "כאן" on the current child; ← opens it, a child navigates, Escape/→ close it back to the icon', () => {
+  const {run, tree} = setup(buildRailTree);
+  run('init()');
+  run('markTreeSelection(document.querySelector(\'[data-role="cloner"]\'),"machines")');
+  const fly = tree.querySelector('#navFly'), rail = tree.querySelector('#rail');
+  const owner = el('button', {id: 'ownerBtn', class: 'ri kids', 'data-ri': '3', 'aria-expanded': 'false'});
+  let back = 0; owner.focus = () => { back++; };
+  rail.children.push(owner); owner.parentElement = rail;
+  // ← על אייקון עם ילדים פותח את התפריט (RTL: ← = פנימה)
+  let prevented = 0;
+  for (const fn of rail.listeners.keydown) fn({key: 'ArrowLeft', target: owner, preventDefault() { prevented++; }, stopPropagation() {}});
+  assert.equal(prevented, 1); assert.ok(fly.classList.contains('show')); assert.equal(owner.getAttribute('aria-expanded'), 'true');
+  const items = [...fly.innerHTML.matchAll(/<button type="button" class="fi([^"]*)" role="menuitem" tabindex="-1" data-fi="(\d)"([^>]*)><svg[^>]*><\/svg><span>([^<]*)<\/span>(<span class="ck">כאן<\/span>)?<\/button>/g)]
+    .map(([, cls, i, rest, label, here]) => ({cls: cls.trim(), i: +i, current: /aria-current="page"/.test(rest), label, here: !!here}));
+  assert.match(fly.innerHTML, /^<div class="fh" aria-hidden="true">מחשבים<\/div>/);
+  assert.deepEqual(items.map((x) => x.label), ['כל המחשבים', 'מחשבי בנייה', 'מחשבי שיכפול'], 'the parent row, then the visible children (classrooms hidden)');
+  assert.equal(items[0].cls, 'parent');
+  assert.deepEqual(items.map((x) => x.here), [false, false, true], '"כאן" on the current child');
+  assert.ok(items[2].current);
+  // לחיצה על ילד = הפעולה שלו בעץ; התפריט נסגר
+  let clicked = 0; tree.querySelector('[data-role="build"]').click = () => { clicked++; };
+  const fi = (n) => { const b = el('button', {class: 'fi', 'data-fi': String(n)}); return b; };
+  for (const fn of fly.listeners.click) fn({target: fi(1), detail: 1});
+  assert.equal(clicked, 1); assert.ok(!fly.classList.contains('show')); assert.equal(owner.getAttribute('aria-expanded'), 'false');
+  // Escape / → בתוך התפריט — נסגר והפוקוס חוזר לאייקון
+  for (const key of ['Escape', 'ArrowRight']) {
+    run('openNavFly(document.getElementById("ownerBtn"))'); assert.ok(fly.classList.contains('show'));
+    const b0 = back;
+    for (const fn of fly.listeners.keydown) fn({key, target: fi(0), preventDefault() {}, stopPropagation() {}});
+    assert.ok(!fly.classList.contains('show'), key); assert.equal(back, b0 + 1, key + ' returns focus to the icon');
+  }
+  // רשת: בלי שורת "כל ה…" — הלשוניות בלבד
+  owner.attrs['data-ri'] = '5';
+  run('openNavFly(document.getElementById("ownerBtn"))');
+  assert.match(fly.innerHTML, /^<div class="fh" aria-hidden="true">רשת<\/div><button type="button" class="fi" role="menuitem" tabindex="-1" data-fi="0">/);
+  assert.doesNotMatch(fly.innerHTML, /כל הרשת|class="fi parent"/);
+  assert.equal((fly.innerHTML.match(/role="menuitem"/g) || []).length, 4);
+  run('closeNavFly()');
+});
+
+test('#1300 rail: the tooltip names the icon (and "› child" on a marked parent); a hover on מחשבים/רשת opens the flyout after 250ms, not at once', () => {
+  const {run, tree} = setup(buildRailTree);
+  const timers = [];
+  run('init()');
+  run('markTreeSelection(null,"ports")');
+  const rail = tree.querySelector('#rail'), tip = tree.querySelector('#navTip'), fly = tree.querySelector('#navFly');
+  const net = el('button', {id: 'netBtn', class: 'ri cur kids', 'data-ri': '5', 'aria-expanded': 'false'});
+  rail.children.push(net); net.parentElement = rail;
+  run('showNavTip(document.getElementById("netBtn"), true)');
+  assert.ok(tip.classList.contains('show')); assert.equal(tip.innerHTML, 'רשת<small>› פורטים</small>');
+  run('hideNavTip()'); assert.ok(!tip.classList.contains('show'));
+  run('globalThis.__t=[]; setTimeout=(f,ms)=>{__t.push(ms); return __t.length;}');
+  for (const fn of rail.listeners.pointerover) fn({target: net, pointerType: 'mouse'});
+  assert.ok(run('__t.includes(250)'), 'the flyout waits 250ms (intent), it does not open on a pass-by');
+  assert.ok(!fly.classList.contains('show'));
+  void timers;
 });

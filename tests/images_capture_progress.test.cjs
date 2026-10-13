@@ -37,14 +37,15 @@ function capture(over={}) {
   return {id:'tsk_749e',type:'capture',name:'Vm',machine:'HP-BUILD',mac:'cc',disk:'sdb',state:'running',
     bytes_written:50.8*GB,bytes_total:null,source_progress:null,created_at:'2026-10-10T13:25:59Z',...over};
 }
-/* תאי שורת הקליטה, לפי סדר העמודות (console-full.html P.images): ‏["", שם, מערכת, בשרת, מתאים לדיסק, תיקייה, אימות, נוצר, בשימוש, פעולות].
-   ההתקדמות יושבת מתחת לשם (תא 1) — כך היא נשארת גלויה גם כשהעמודות המשניות (תיקייה/אימות/נוצר/בשימוש) מוסתרות בטבלה צרה. */
+/* תאי שורת הקליטה, לפי סדר העמודות (console-full.html imgCols, ‏#1300): ‏["", שם, מערכת, גודל, מתאים לדיסק, תיקייה, מצב, נקלט, פעולות].
+   ‏"בשימוש" ירדה מהטבלה (#1300 — היא בראש מגירת האימג'). ההתקדמות יושבת מתחת לשם (תא 1) — כך היא נשארת
+   גלויה גם כשהעמודות המשניות (מערכת/תיקייה/נקלט) מוסתרות בטבלה צרה. "אימות" = עמודת "מצב" (sha256). */
 function cells(task) {
   const html=setup([task])('images(0)');
   const row=html.match(/<tr class="task">([^]*?)<\/tr>/);
   assert.ok(row,'the capture row is in the table');
   const out=row[1].split(/<td[^>]*>/).slice(1).map(c=>c.replace(/<\/td>$/,''));
-  assert.equal(out.length,10,row[1]);
+  assert.equal(out.length,9,row[1]);
   return {verify:out[6],state:out[1]};
 }
 

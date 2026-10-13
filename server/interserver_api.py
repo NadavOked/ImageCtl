@@ -277,8 +277,16 @@ def ping(conn, peer: TlsPeer, *, token: str, protocol_version: str,
         "node_id": storage_nodes.identity(conn)["node_id"],
         "role": storage_nodes.ROLE_SECONDARY,
         "parent_id": cred["parent_id"],
+        "server_version": _own_version(),   # #1300: הראשי מציג אותו בכרטיס הסניפים
         "ok": True,
     }
+
+
+def _own_version() -> str | None:
+    """גרסת התוכנה של השרת הזה (תג git), כפי ש-/me מדווח. ‏None = אין תג —
+    הראשי מציג "לא ידועה", לא מספר שאין לו מקור."""
+    from .agent_version import server_version
+    return server_version()
 
 
 # --- קליטת אימג' מהאב (#655 v1, העברה ראשי→משני) -----------------------------
@@ -566,6 +574,7 @@ def list_machines(ctx, peer: TlsPeer, *, token: str, protocol_version: str,
     authenticate_parent(ctx.conn, peer, token=token, protocol_version=protocol_version,
                         has_console_cookie=has_console_cookie)
     return {"node_id": storage_nodes.identity(ctx.conn)["node_id"],
+            "server_version": _own_version(),   # #1300
             "machines": machine_rows(ctx.conn)}
 
 

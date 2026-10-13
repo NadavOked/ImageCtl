@@ -673,6 +673,8 @@
 ### כללים
 
 - **`role`** — `build` / `cloner` / `classroom` / `unknown`. נגזר מהחברות בקבוצה, לא משדה ידני.
+- **`drawer_count`** — מספר מגירות ה-SATA שהוגדר בקונסולה למכונת **שיכפול**.
+  מופיע רק בתשובת hello של משכפל ורק כשהערך מוגדר; שדה חסר אינו מספר משוער.
 - **`disk_failures`** — **הזיכרון בשרת במקום סימון על הדיסק** (‏#874, הכרעת
   נדב 16/09: ‏#845 נפסל — הסוכן אינו כותב על דיסק מחוץ לשיכפול). הרשומות
   **הפתוחות** (בלי `cleared_at`) מטבלת `disk_failures` שתואמות למכונה הזאת
@@ -1508,10 +1510,11 @@ udp-receiver | zstd -d | partclone.<fs> --restore --output /dev/<מחיצת הי
 - **‏DB:** בעלייה השרת מוחק את `ssh:stations` ואת `ssh:iface:*` מ-`settings`
   ומפיל את הטבלה `machine_ssh_hostkey` — בשקט, באופן אידמפוטנטי (‏`db._initialize`).
 
-**שורת הקרנל:** ‏`imagectl.debug` (מעטפת הניפוי המקומית של הסוכן, ‏tty2 /
-טורי) **מוסר** מתוספות המפעיל (`--extra-cmdline`) תמיד — אין עוד מתג
-שמכניס אותו, והשרת אינו מגיש אותו לעולם. טכנאי מול המכונה מוסיף אותו
-בעריכת שורת ה-GRUB. שאר עקרון 2 לא השתנה.
+**שורת הקרנל:** ‏`imagectl.debug` **מוסר** מתוספות המפעיל (`--extra-cmdline`)
+תמיד, והשרת אינו מגיש אותו לעולם. מעטפת הניפוי שהוא פתח בסוכן (‏tty2 /
+טורי) נמחקה ב-#1303: הסוכן מתייחס אליו כפרמטר `imagectl.*` לא מוכר
+(אזהרה ביומן), וההסרה בשרת נשארת בשביל initramfs ישן שעוד נושא את
+המעטפת. שאר עקרון 2 לא השתנה.
 
 **גישת טכנאי במעבדה** היא overlay של מעבדה מחוץ למוצר: ‏`build_initramfs.sh`
 מקבל `IMAGECTL_EXTRA_OVERLAY=<dir>` — עץ קבצים שמועתק מעל האימג' לפני
@@ -1735,10 +1738,12 @@ trunk; נושא כתובת; מוגדר ב-`/etc/network/interfaces` (או שהק
 ושורת ה-bond ב-`interfaces` נושאת אז `mismatches` לא ריק. כבל שנשלף אינו
 mismatch: זה מצב (`down`), לא הגדרה שלא תפסה.
 
-**שני מסלולי ה-API הקודמים נשארים** (`PUT /net/interfaces/{שם}` עם
-`proxy`, ‏`GET /net/dnsmasq`): דף הפורטים (מתג PXE proxy 4011) והכיבוי
-משתמשים בהם, ו-proxy שמור לרשת כיתות (v1.2). הקונסולה אינה מציגה עוד את
-"קבצי dnsmasq שנוצרים" ואת "הקובץ של הכרטיס".
+**‏`PUT /net/interfaces/{שם}` עם `proxy` נשאר** — ‏proxy שמור לרשת כיתות
+(v1.2), ובמהדורה בלי כיתות השרת מסרב להדליק אותו (409), אינו מחיל רשומת
+proxy ישנה מה-DB (‏`console_dhcp.proxy_configs`), ו-`GET /net/proxy-support`
+עונה 404 (‏#1303). ‏`GET /net/dnsmasq` (תצוגה מקדימה של הקבצים) **הוסר**
+ב-#1303 — לא היה לו קורא; הקונסולה אינה מציגה עוד את "קבצי dnsmasq
+שנוצרים" ואת "הקובץ של הכרטיס".
 
 ### ההחזרה האוטומטית (‏#56)
 
@@ -1933,7 +1938,7 @@ mismatch: זה מצב (`down`), לא הגדרה שלא תפסה.
 לכל התקן נוסף השדה `boot`, או `null` כשאין שביל:
 
 ```json
-{"step": "entry", "label": "GRUB נכנס לערך ImageCtl", "index": 2,
+{"step": "entry", "label": "GRUB נכנס לערך ImageSrv", "index": 2,
  "total": 9, "at": "2026-09-05T11:15:49+00:00", "seconds": 421,
  "next_step": "http-ok", "next_label": "מודול ה-HTTP נטען", "stalled": true}
 ```
@@ -2065,12 +2070,6 @@ mismatch: זה מצב (`down`), לא הגדרה שלא תפסה.
 הקובץ ש-`imagectl-station-gui --state` קורא נשאר תמונה מלאה של המצב,
 `key=value` ושורה חדשה אחרי כל רשומה. למסך ההמתנה נוספו שני מפתחות:
 
-- **`logo=<path>`** (‏#1168) — נתיב ל-PNG של לוגו המכללה שהועלה בקונסולה
-  (branding). ‏`gui_fetch_logo` מושך אותו פעם אחת בעלייה מ-`GET
-  /api/v1/agent/branding/logo` (פורט הסוכן; ‏204 = אין לוגו) ל-`$GUI_DIR/logo.png`,
-  ורק אם הוא PNG (ארבעת הבייטים הראשונים); אחרת השורה **אינה נכתבת** והגואי
-  מצייר את ה-brandmark הקבוע. הגואי מפענח פעם אחת לכל נתיב; קובץ שאינו
-  נפענח = brandmark. בכותרת: גובה 26px, רוחב עד 220px, יחס נשמר.
 - **`idle_poweroff_at=<epoch>`** (‏#434) — נכתב רק בזמן הספירה לאחור לכיבוי:
   ‏`agent/lib/idle.sh` מצא שהמכונה **ממתינה** (‏`poll_sleep`) בלי פעילות
   ‏`IDLE_POWEROFF_S` שניות (ברירת מחדל 300; ‏0 מבטל) וכתב את רגע הכיבוי
@@ -2100,6 +2099,9 @@ mismatch: זה מצב (`down`), לא הגדרה שלא תפסה.
 - **`hello_age=<seconds>`** — מספר השניות מאז ה-hello האחרון שהסתיים. חסר
   פירושו "לא נמסרה מדידה", לא אפס. הסוכן כותב `hello_age=` ריק לפני
   שניסיון hello ראשון הסתיים.
+  ‏#1304: גם קובץ המצב של מחשב השיכפול (‏`clonergui.sh`) נושא את שתי
+  הרשומות (‏`gui_hello_state`); ‏hello.state פגום שם = בלי שתיהן, לא כשל
+  של כל הקובץ.
 - **`agent_version=<version>` / `server_version=<version>`** (‏#1257) — חותמת
   ה-initrd המקומית, וערך `server_version` מתשובת ה-state; חסר/`null` מוצג
   "לא ידוע". הכותרת בגואי מציגה `סוכן vX · שרת vY` (‏`v` מוביל אינו מוכפל).
@@ -2186,10 +2188,7 @@ subprotocol `binary`; המסגרות הן **בייטי RFB גולמיים** לש
 המימושים, ‏wsproto ו-websockets), והדפדפן רואה 1006 בלי קוד ובלי סיבה.
 לכן השרת מקבל תחילה (בלי לשלוח בייט RFB ובלי לגעת במכונה) ורק אז סוגר,
 כך ש-`event.code` ו-`event.reason` (העברית שבטבלה) מגיעים ל-`monitor.js`.
-הסיבה קצוצה ל-123 בייט UTF-8 (‏`monitor.close_reason`, ‏RFC 6455). **חריג
-מכוון:** ‏`ConsoleSourceGuard` (‏#859, כתובת מקור) ממשיך לסגור 4403 **לפני**
-‏accept — peer מרשת אסורה אינו מקבל 101, כשם שאינו מקבל 200 ב-HTTP; בדפדפן
-זה נראה "החיבור נסגר", וזה המצב הרצוי לשומר שאינו אמור להסביר את עצמו.
+הסיבה קצוצה ל-123 בייט UTF-8 (‏`monitor.close_reason`, ‏RFC 6455).
 
 | קוד | מתי |
 |---|---|
@@ -2212,8 +2211,8 @@ ServerInit מהמכונה → …). **‏`monitor.js` אינו משתנה ואי
 **‏#1129 — ארבעה שומרים על הגשר:**
 
 - **‏Origin.** ‏`Origin` חייב להתאים ל-`Host` של הבקשה או להיעדר (לקוח שאינו
-  דפדפן). ‏Origin זר — כולל `null` — נסגר `4403` **לפני** accept, כמו
-  ‏`ConsoleSourceGuard`: ‏`SameSite=lax` אינו מגן על WebSocket cross-site
+  דפדפן). ‏Origin זר — כולל `null` — נסגר `4403` **לפני** accept:
+  ‏`SameSite=lax` אינו מגן על WebSocket cross-site
   בכל הדפדפנים, ודף זר עם ה-cookie של המנהל אינו מקבל 101. חל גם על
   `WebSocket /storage-nodes/{nid}/monitor/{mac}`.
 - **הכיוון דפדפן→מכונה עובר בגבולות הודעה** (‏RFB 3.8 לקוח→שרת: סוגים
@@ -2373,10 +2372,10 @@ ServerInit מהמכונה → …). **‏`monitor.js` אינו משתנה ואי
 | `dhcp` | 67/udp | `confirm` (`on`) | `PUT /net/interfaces/{name}` `enabled` (+`confirm`=שם הכרטיס) | `ss` על 67 (proxy גם מאזין שם); `enabled` = כרטיס עם DHCP מלא או proxy; `interfaces[]` = `{name, enabled, proxy}` |
 | `http_boot` | 8080/tcp | `confirm` (`off`) | `PUT /ports/http_boot` | `ss -ltnp` על פורט הסוכן; כשמאזין ודלוק — גם `GET /boot/menu` כמו קודם |
 | `http_console` | 8081/tcp (**HTTPS**, סעיף 22) | `confirm` (`off`) | `PUT /ports/http_console` | `ss -ltnp` (כרטיס הניהול + loopback, ‏#904) |
-| `pxe_proxy` | 4011/udp | `api` | `PUT /net/interfaces/{name}` `proxy` — **‏409 כש-`capabilities.classrooms()` כבוי** (v1; הכרעת נדב 11/10 — proxy שייך לכיתות). כיבוי (`proxy: false`) תמיד מותר | `ss` על 4011; `enabled` = כרטיס ב-proxy |
+| `pxe_proxy` | 4011/udp | `api` | `PUT /net/interfaces/{name}` `proxy` — **‏409 כש-`capabilities.classrooms()` כבוי** (v1; הכרעת נדב 11/10 — proxy שייך לכיתות). כיבוי (`proxy: false`) תמיד מותר. **‏#1303: השורה נשלחת ב-`/ports` רק כש-`capabilities.classrooms()` דלוק** — ב-v1 אין שורת 4011 | `ss` על 4011; `enabled` = כרטיס ב-proxy |
 | `multicast` | 9000–9001/udp | `none` | — | `sender_check` — udp-sender של סבב, לא מאזין קבוע; הכיבוי הוא עצירת סבב |
 | `monitor` | 5900/tcp | `confirm` (`on`) | `PUT /monitor/settings` | המתג `monitor:stations` בלבד (RFB בתחנות, לא בשרת) |
-| `interserver` | 8443/tcp | `api` / `none` | `PUT /ports/interserver` | `ss -ltnp`; `none` כשאין מאזין רשום (עולה רק על משני עם `--interserver-host`) |
+| `interserver` | 8443/tcp | `api` / `none` | `PUT /ports/interserver` | `ss -ltnp`; `none` כשאין מאזין רשום (במשני: ה-mTLS — `--interserver-host`, ובלעדיו `--console-host` שאינו loopback כשה-unit אומר `--storage-role secondary`, ‏#1313; בראשי/standalone עם קונסולה על כרטיס: "אתה שם?" בלבד, ‏#1310 — לעולם לא שניהם, `tests/test_secondary_interserver_1313.py`) |
 | `firewall` | nftables | `none` | — | `nft list ruleset` (timeout, `ports.py`): `"פעילה, N כללים לטבלת imagectl"` / `"לא נטענה"` / `"לא הצלחנו לבדוק"` (#1074) |
 
 **מה אין, בכוונה:** "טווח דינמי 9002–9099" שבמוקאפ אינו קיים בקוד —
@@ -2452,7 +2451,8 @@ nftables — שרת קיים לא ינותק.
 | כל הכרטיסים | established/related; ICMP echo; ICMPv6 echo+ND (+PMTU) | תשובות, אבחון, שכנות IPv6 |
 | הפצה (`--deploy-if`) | UDP 67, 69; TCP 8080; UDP מולטיקאסט (ברירת מחדל 9000–9001 מ-`server/sender.py`) | DHCP/TFTP/סוכן/שידור. WoL UDP 9 הוא **יוצא** — output לא נחסם, אין כלל כניסה |
 | שרתים (`--servers-if`) | TCP 8081 | קונסולה HTTPS. **אין TCP 22 בשום מצב** (‏#1266; ‏`--ssh-if` נדחה) |
-| שרתים, **משני בלבד** | TCP 8443 מ-`--primary-ip` בלבד (`ip saddr`) | הראשי יוזם; בראשי 8443 אינו נפתח כלל |
+| שרתים, **משני** | TCP 8443 מ-`--primary-ip` בלבד (`ip saddr`) | הראשי יוזם; ‏mTLS מעל זה |
+| שרתים, **ראשי** | TCP 8443, בלי `ip saddr` | ‏#1310: רק "אתה שם?" מאזין שם; הראשי אינו יודע מראש את המשניים, ו-FW האתר מגביל את המקור |
 | כל השאר | drop + `log prefix "imagectl-drop "` `limit rate 5/minute` | כיתות = v2 |
 
 TFTP בקובץ המתקין (`/etc/dnsmasq.d/imagectl.conf`): `interface=<deploy-if>`
@@ -2485,6 +2485,7 @@ imagectl"` / `"לא נטענה"` / `"לא הצלחנו לבדוק"`. אין מת
 | 12 / host | ניהול → השרת | TCP 22 | allow בוילן השרתים |
 | 13 / יציאה | השרת → שידור וילן ההפצה | UDP 9 | allow יוצא (WoL); אין כלל כניסה |
 | 14 / משני | `PRIMARY_S` → `SECONDARY_S` | TCP 8443 | allow חיבורים חדשים שהראשי יזם בלבד |
+| 14ב / ראשי | `SECONDARY_S` → `PRIMARY_S` | TCP 8443 | allow ל-`GET /api/interserver/v1/alive` בלבד (‏#1310) |
 | 17 / כל השאר | כיתות/הפצה/שרתים/אתר אחר | any | deny עם יומן מצומצם |
 
 ---
@@ -2648,7 +2649,8 @@ PCI קודמות ברשימה (ואז לפי שם). **אין התאמה = רשי
 שרת `standalone` יכול להחזיק **משניים** (`secondary`) — שרת ImageCtl מלא
 בסניף אחר, עם ספרייה, סבבים ומכונות משלו. **היוזם תמיד הראשי** (הכרעת
 נדב 18/09, ‏#1071): המשני לעולם אינו פותח חיבור אל הראשי — ה-FW של ת"א
-סגור לכיוון הזה — אבל **הנתונים בשני הכיוונים**. Push (ראשי→משני) הוא
+סגור לכיוון הזה, **חוץ מ"אתה שם?" של מתקין המשני** (‏#1310, למטה) — אבל
+**הנתונים בשני הכיוונים**. Push (ראשי→משני) הוא
 `PUT /images/{id}`; pull (משני→ראשי) הוא שלושת ה-GET למטה, יזום מקונסולת
 הראשי. משני אינו רואה את הראשי ואינו מחזיק ילדים (היקף v1: העברה + צפייה
 + מוניטור; ISO — #404 — לגרסה הבאה).
@@ -2687,6 +2689,60 @@ exporter). גוף JSON מוגבל ל-1MiB; גוף אימג' **זורם לקוב�
 `Content-Length` — קצר (החיבור נסגר באמצע) → `400` וסגירה; בייטים מעבר
 לאורך → הבקשה נענית והחיבור נסגר, לא נשארים בצנרת לבקשה הבאה.
 
+**הצד של הלקוח בראשי (‏#1286, ‏#1292):** ‏`storage_client` אינו מוריד את
+ה-timeout אחרי ה-connect — ה-socket לא-חוסם וכל המתנה עוברת דרך
+`_TimedConn` (select). גם ה-preview של ה-SPKI בהוספת משני
+(`POST /storage-nodes/enroll/preview` → `fetch_server_spki`) כפוף לתקרה
+כוללת של 10 שניות ל-handshake: משני שמקבל TCP ושותק → ‏`502` "לא ניתן
+לקרוא את תעודת המשני: … (handshake)" — לא בקשה שנתקעת לנצח.
+
+### "אתה שם?" — החריג היחיד לכיוון (‏#1310, הכרעת נדב 12/10)
+
+מתקין המשני שואל את הראשי **שאלה אחת**, כדי ש"בדוק חיבור" במסך התפקיד
+יוכל להיות **ירוק** — ו"הבא" מושבת עד אז. זה **אינו** ערוץ ניהול: push,
+pull, pairing וכל קריאה אחרת נשארים ביוזמת הראשי, על המאזין ה-mTLS של
+המשני. לפני #1310 הגשר שאל `https://<ראשי>:8443/health/live` — נתיב שלא
+היה קיים (`/health/live` חי רק תחת `/api/console` על 8081, ובראשי 8443 לא
+האזין), ולכן הבדיקה נכשלה תמיד, גם בתצורה הנכונה.
+
+**בראשי** (`server/primary_alive.py`): מאזין **נפרד** — אפליקציה עם נתיב
+אחד, בלי אף ראוטר של הקונסולה או הסוכן ובלי `/docs`/`/openapi.json` —
+על כרטיס השרתים (כתובת `--console-host`, ובחילוף כתובת הוא נקשר מחדש
+יחד עם הקונסולה, ‏#1088), בפורט `--interserver-port` (8443). ‏TLS מקובצי
+הזהות הבין-שרתית (`storage_identity`), כך שהמפתח שה-handshake מציג הוא
+המפתח שהמשני יצמיד ב-pairing. עולה רק כשהתפקיד **אינו** `secondary`
+ורק כשהקונסולה על כרטיס (לא loopback בלבד). בדף הפורטים זו שורת
+`interserver` של הראשי (אותו מתג).
+
+```
+GET /api/interserver/v1/alive          ← ללא הזדהות, ללא עוגייה
+200 {"name": "imagectl-ta", "version": "v0.60.0",
+     "fingerprint": "<sha256 hex של ה-SPKI, 64 תווים>"}
+```
+
+| שדה | מקור | הערה |
+|---|---|---|
+| `name` | `ports.server_name` — השם שבראש העץ בקונסולה | |
+| `version` | `git describe` (אותו מקור כמו `/me`) | `null` = לא נקראה — לא מחרוזת ריקה |
+| `fingerprint` | `storage_identity.server_spki` | המתקין משווה אותו ל-SPKI של התעודה שהוצגה |
+
+**אין שום שדה נוסף**, וכל נתיב אחר = 404, כל שיטה אחרת = 405
+(`tests/test_primary_alive.py`). ‏HTTP פשוט אינו נענה.
+
+**במתקין** (`installer/gui-bridge.sh check-primary`): השדה מקבל IP או שם,
+וגם `HOST:8443` ו-`https://HOST:8443[/]`; הצורה השמורה היא תמיד
+`https://HOST:8443` (`normalize_primary_url`, אחת למנוע ולגשר). ירוק =
+‏HTTP 200 **וגם** גוף של בדיוק שלושת השדות **וגם** `fingerprint` = ‏SHA-256
+של ה-SPKI שה-TLS הציג (curl `%{certs}` + openssl). כל השאר אדום עם הסיבה:
+DNS · ‏refused · אין נתיב · timeout (5 ש') · ‏TLS · חיבור שנסגר · HTTP אחר ·
+גוף של מוצר אחר · טביעה שאינה של התעודה · תעודה שלא נקראה. כל בדיקה
+מוחקת קודם את הירוק הקודם (`/run/imagectl/primary-check`); רק הקובץ הזה
+— לא הטופס — מכניס `primary_fingerprint` לקובץ התשובות, ורק לאותה כתובת
+מנורמלת. **המנוע מסרב** למשני בלי טביעה תקינה (`[primary-unverified]`,
+סעיף 32): מסלול שעוקף את הגואי אינו מתקין משני שלא אומת. ההכרעה: סירוב
+ולא "רישום הסיבה והמשך" — משני שהותקן מול ראשי שלא ענה הוא בדיוק
+ה"אדום שאפשר לדלג עליו" שנדב פסל.
+
 ### חידוש תעודה בראשי (‏#1122) — ‏TOFU על המפתח, לא על התעודה
 
 הכריכה של הטוקן (RFC 8705) נרשמת ב-pairing כטביעת **התעודה** של הראשי
@@ -2716,16 +2772,18 @@ exporter). גוף JSON מוגבל ל-1MiB; גוף אימג' **זורם לקוב�
 
 | FW | נכנס | יוצא |
 |---|---|---|
-| תל אביב (ראשי) | **כלום** מחיפה | ‏`8443/tcp` מכתובת השרת הראשי אל כתובת שרת חיפה — **בלבד** |
-| חיפה (משני) | ‏`8443/tcp` מכתובת השרת הראשי — **בלבד** | **כלום** אל תל אביב |
+| תל אביב (ראשי) | ‏`8443/tcp` מכתובת אתר חיפה, ב-DNAT אל השרת הראשי — **בלבד** (‏#1310, "אתה שם?") | ‏`8443/tcp` מכתובת השרת הראשי אל כתובת שרת חיפה — **בלבד** |
+| חיפה (משני) | ‏`8443/tcp` מכתובת השרת הראשי — **בלבד** | ‏`8443/tcp` משרת חיפה אל כתובת אתר ת"א — **בלבד** (‏#1310) |
 | שניהם | ‏`8081` (קונסולה) ו-`22` (SSH) **אינם** נפתחים בין האתרים. ה-pairing החד-פעמי נפתח **מקומית** על חיפה (`127.0.0.1`, ‏`require_local`, #904) — לא דרך ה-FW | |
 
 שלוש הערות:
 
 1. **הטבלה נגזרת מ"הראשי יוזם"** (#740, #655): כל קריאה בערוץ יוצאת
-   מהראשי אל המשני, ולכן ל-FW של חיפה יש בדיוק חוק נכנס אחד, ול-FW של תל
-   אביב אין אף חוק נכנס. המשני "אינו רואה את הראשי" לא רק בקוד (אין לו את
-   כתובתו) אלא גם ברשת — אין נתיב ממנו לתל אביב.
+   מהראשי אל המשני, ולכן ל-FW של חיפה יש חוק נכנס אחד. ‏**‏#1310** מוסיף
+   בדיוק זוג אחד בכיוון ההפוך — יוצא מחיפה ונכנס לת"א, ‏8443 בלבד — ושם
+   הראשי עונה על `GET /api/interserver/v1/alive` בלבד; שום נתיב ניהול אינו
+   נגיש משם. במעבדה: `tools/lab/fw-ta`, ‏`tools/lab/fw-haifa`
+   (`tests/test_lab_firewalls.py`).
 2. **בתרשים הרשת** (`netDiagramModel`, קונסולה) המשני מצויר על וילן
    השרתים בקו **מקווקו** ועם `דרך FW · 8443 בלבד` — הוא מעבר ל-FW, לא
    לקוח על הוילן; צבע התיבה נשאר לפי `connected` הנמדד.
@@ -2818,7 +2876,6 @@ exporter). גוף JSON מוגבל ל-1MiB; גוף אימג' **זורם לקוב�
 `InterserverTLSServer(console_app=…)`, מ-`main.py`) בזהות
 `("primary:<user>", "admin")` שנקבעת ב-scope של ASGI (`auth.PEER_SCOPE_KEY`)
 — מפתח ש-uvicorn אינו בונה מבקשת HTTP, ולכן כותרת/עוגייה בשם הזה אינה זהות.
-‏`ConsoleSourceGuard` (#151) מעביר בקשה עם המפתח (אין לה peer ברשת).
 
 → `200 {"node_id", "status", "headers", "body"}` — ‏`status`/`body` של הקונסולה
 של המשני כפי שהם; `headers` רק מתוך `CONSOLE_HEADERS`
@@ -2877,7 +2934,7 @@ TLS היא זרם RFB גולמי דו-כיווני, החל מ-ClientInit (כמו
 | `POST …/pull` גוף `{"image_id"}` | משיכה מהמשני לראשי (`direction: pull`). ‏409 האימג' כבר בספריית הראשי (לא דריסה) · 409 משני מושבת · 400 מזהה · 404 משני |
 | `GET …/images` | פרוקסי ל-`GET /images` של המשני: `{"connected", "error", "images"}`. משני שלא ענה = `connected:false` עם הסיבה — **200, לא 5xx** |
 | `POST/PUT/DELETE …/console/{path}` | ‏#1179 שלב 2: כתיבה על המשני — רק `(שיטה, נתיב)` מ-`CONSOLE_WRITES` (אחר → 404 **בלי** לשאול). גוף JSON עד 64KiB (413). **גוף שנושא תו של `defang` (‹ › ” ’ ˋ ＆) → 409** — טופס שהתמלא מתשובה של המשני היה כותב בחזרה ‹ במקום <, שינוי שקט של ערך שהמפעיל לא נגע בו; הסירוב גלוי והתיקון נעשה בקונסולה של המשני (נבחר על פני "טעינה מחדש של הערך הגולמי", שהייתה דורשת ערוץ לא-מסונן לכל טופס). כל ניסיון נרשם ביומן הראשי: `peer_write`, המשתמש בראשי, `"<שם> (<id>): <שיטה> <נתיב> → <תוצאה>"`. כשל לפני השליחה → 502 "לא ענה — הפעולה לא נשלחה"; אחרי השליחה → 502 "לא ידוע אם הפעולה בוצעה" (שני מצבים, לא "נכשל" אחד). 400/404/409/422 של המשני עוברים; אחר (כולל 401) → 502 |
-| `GET …/transfers` · `GET /api/console/storage-transfers` | ההעברות האחרונות (20, חדשה ראשונה) — שורות `storage_transfers` + `node_label` + `direction` |
+| `GET /api/console/storage-transfers` | ההעברות האחרונות (20, חדשה ראשונה, כל המשניים) — שורות `storage_transfers` + `node_id` + `node_label` + `direction`. ‏`GET …/transfers` למשני אחד הוסר ב-#1303 (לא היה לו קורא) |
 | `POST /api/console/storage-transfers/{id}/cancel` | ביטול pull פעיל. ‏409 אם אינו pull או אינו פעיל. ה-worker מוחק את `.incoming` ומסיים `failed`/"בוטל" |
 | `GET …/machines` | `{"connected": bool, "error", "machines", "node_id"}`. משני שלא ענה = `connected:false` עם הסיבה — **200, לא 5xx ולא רשימה ריקה** (לא-הצלחנו-לשאול ≠ אין מכונות) |
 | `GET …/console/{path}` | ‏#1179: הקונסולה של המשני — `{path}` מ-`CONSOLE_GETS` (אחר → 404 **בלי** לשאול). 200 = הגוף של המשני, בטיפוס העליון של הנתיב (אחר → 502 "תשובה לא צפויה"), אחרי `peer_safe.defang`: **אף מחרוזת** (ערך או מפתח) אינה נושאת `<>"'`&` — הם מוחלפים בדומים לעין (‹ › ” ’ ˋ ＆), כי המשני אינו מקור אמין לדפדפן והפונקציות שמציירות אינן מבריחות כל אינטרפולציה. כותרות מ-`CONSOLE_HEADERS` עוברות רק כשהן `[A-Za-z0-9:.+-]{1,64}`. לא ענה / SPKI / סירוב הערוץ → **502** "‹שם› לא ענה: ‹סיבה›" (+ שדות המגע). תשובת המשני 400/404/409/422 עוברת עם ה-detail; כל status אחר (כולל 401/403) → 502 — ‏401 היה שולח את הדפדפן לכניסה **לראשי**. משני מושבת → 409, לא נשאל |
@@ -2926,7 +2983,7 @@ M בייטים"/הסיבה — ומתחילים מחדש בגלוי; אין חי
 
 | מסלול | ראשי / admin | ראשי / deploy | משני / admin | משני / deploy |
 |---|---|---|---|---|
-| `GET /storage-nodes` · `/storage-node-groups` · `/storage-transfers` · `/storage-nodes/{id}/transfers` · `/storage-nodes/{id}/machines` · `/storage-nodes/{id}/images` · `/storage-nodes/{id}/console/{path}` · `POST /storage-nodes/{id}/check` | 200 | **403** | **409** | **403** |
+| `GET /storage-nodes` · `/storage-node-groups` · `/storage-transfers` · `/storage-nodes/{id}/machines` · `/storage-nodes/{id}/images` · `/storage-nodes/{id}/console/{path}` · `POST /storage-nodes/{id}/check` | 200 | **403** | **409** | **403** |
 | `POST /storage-nodes/{id}/pull` · `POST /storage-transfers/{id}/cancel` | 200/4xx | **403** | **409** | **403** |
 | `POST /storage-nodes/enroll/preview` · `/enroll` | 200/400 | **403** | **409** | **403** |
 | `GET /storage-pairing-window` (loopback בלבד) | 409 | **403** | 200 | **403** |
@@ -2987,7 +3044,8 @@ deploy (403) ושרת משני (409) — אין צמתים, לא שגיאה. מ�
 **שם השרת הראשי** בצומת העליון: `GET /api/console/me` מחזיר `server_name`
 (לכל משתמש מחובר) — ההגדרה `server_name` אם המנהל קבע אחת (‏`POST
 /settings`, admin בלבד; שינוי שם מהעץ נשמר שם, לא ב-DOM), אחרת
-`socket.gethostname()` של השרת. לעולם לא ריק.
+`socket.gethostname()` של השרת. לעולם לא ריק. ‏`GET /settings` מחזיר
+`server_name` באותה נפילה (‏#1300) — שדה "שם השרת" בהגדרות הראה ריק כשלא נקבע.
 
 ### מה שאין כאן (במכוון, v1)
 
@@ -3027,7 +3085,7 @@ deploy (403) ושרת משני (409) — אין צמתים, לא שגיאה. מ�
 | `/update` | GET | `{current, enabled, previous, server_name, last_check}` — תמיד, גם כשהמתג כבוי. ‏`last_check` (‏#1000, סעיף 29): המסמך של הבדיקה האחרונה או `null` |
 | `/me` | GET | (‏#915, **לכל משתמש מחובר**, לא רק admin) מחזיר גם `server_name` (‏#936, סעיף 18) ו-`version` — אותו ערך כמו `current` למעלה, נקרא מחדש בכל קריאה; `null` = אין תג על העץ, והקונסולה לא מציגה מספר. זה מקור הגרסה בשורת הסטטוס של הקונסולה — לא מחרוזת ב-HTML. גם `theme` (‏#1093, סעיף 24), ו-`uptime_seconds`/`deploy_ip` (‏#968, סעיף 29) |
 | `/update/status` | GET | מצב ההרצה האחרונה + `verified` (ראו למטה) |
-| `/update/check` | POST | `{at, current, latest, available, reason, message?, detail?}` — נשמר ב-`settings.update_last_check` (‏#1000). בכשל רשת `reason="no_network"`, ‏`message` הוא הנחיית חומת-האש בעברית ו-`detail` הוא פלט git/החריגה; בכשל אחר `reason="failed"`, והטקסט הקודם נשמר ב-`message` לצד `detail`. כשל תמיד מחזיר `available=false` ו-`latest=null`. **404** אם `update_enabled` כבוי |
+| `/update/check` | POST | `{at, current, latest, available, reason, message?, detail?, signature?}` — נשמר ב-`settings.update_last_check` (‏#1000). בכשל רשת `reason="no_network"`, ‏`message` הוא הנחיית חומת-האש בעברית ו-`detail` הוא פלט git/החריגה; בכשל אחר `reason="failed"`, והטקסט הקודם נשמר ב-`message` לצד `detail`. כשל תמיד מחזיר `available=false` ו-`latest=null`. ‏**`signature`** (‏#1277) — רק כש-`available=true`: `{state, detail}` על התג `latest`, ‏`state` ∈ `signed` (‏`detail` = `<principal> SHA256:<טביעה>`) · ‏`unsigned` (נבדק ואינו חתום במפתח מ-`install/release-signers`; ‏`detail` = הסיבה) · ‏`unchecked` (הבדיקה לא רצה — הורדת התג, המאמת, או תשובה לא מוכרת; ‏`detail` = הסיבה). ‏`signature` חסר ב-`available=true` (בדיקה שנשמרה לפני #1277) = "לא נבדק", **לא** "חתום". **404** אם `update_enabled` כבוי |
 | `/update/apply` | POST | `{tag}` (בלי הקלדת שם — עדכון הפיך, ‏#1192); **400** תג לא תקין · **404** כבוי · **409** סבב פתוח/רץ |
 | `/update/revert` | POST | `{confirm_name}` לגרסה ב-`update_previous`; **404** אם אין גרסה קודמת |
 | `/update/backup` | GET | (‏#1128) `application/gzip`, ‏`Content-Disposition: attachment; filename="imagectl-settings-<ts>.tar.gz"`, ‏`Cache-Control: no-store`. תוכן: `data/imagectl.db` (עותק עקבי דרך backup API, ‏`integrity_check`=ok, ‏journal_mode=DELETE), שאר `data_dir` תחת `data/` (בלי `imagectl.db*`, ‏`storage/`, ‏`storage-test/`), ‏`MANIFEST.txt` (‏`version=`, ‏`created=`, ‏`warning=`), ‏`SHA256SUMS`. **בלי אימג'ים.** **לא תלוי** ב-`update_enabled`. יומן: `settings_backup_downloaded`. **503** כשלשרת אין `data_dir` (בדיקות בלבד) |
@@ -3052,8 +3110,9 @@ deploy (403) ושרת משני (409) — אין צמתים, לא שגיאה. מ�
    יחד איתו לפני שהגיע לשם. כשל השיגור עצמו → `failed` מיד.
 3. בתוך הסקריפט (‏#1131): **קודם** בדיקת סבב פתוח/רץ (אותה שאילתה של
    `_active_round`; גם בהפעלה ידנית) וקריאת התג הקודם מ-`update_previous`;
-   אז `git fetch --tags` ו-`git checkout --detach <tag>` (‏#1193) — כשל של
-   אחד מהם נכתב ל-`failed` כלשונו, לפני שנגענו ביחידות או בשירות;
+   אז `git fetch --tags`, **אימות החתימה** (‏#1277, למטה) ו-`git checkout
+   --detach <tag>` (‏#1193) — כשל של אחד מהם נכתב ל-`failed` כלשונו, לפני
+   שנגענו ביחידות או בשירות;
    `git describe --tags` חייב להחזיר **בדיוק** את התג;
    יחידות systemd (`install install/*.service` + `daemon-reload`), בניית
    initrd דרך `tools/boot-payload-build.sh` (‏#1230 — אותו קוד ש-firstboot
@@ -3072,6 +3131,49 @@ deploy (403) ושרת משני (409) — אין צמתים, לא שגיאה. מ�
    לו טיפול בשם (‏`trap ... ERR` — "נכשל בשורה N (קוד X)") — כולם עוברים
    באותה חזרה לתג הקודם, ו-`update_status` = `failed` עם הסיבה. סטטוס
    `running` שנשאר לתמיד, עם העץ על החדש והשירות על הישן, אינו מצב.
+
+### חתימת התג (‏#1277) — `install/release-signers` + `tools/verify-release-tag.py`
+
+**`install/release-signers`** — המפתחות שהשרת סומך עליהם, בפורמט
+allowed_signers של git: שורה לכל מפתח,
+`<principal> [namespaces="git"] <ssh-ed25519|ssh-rsa> <base64> [הערה]`; ‏`#`
+ושורה ריקה מדולגות. כל אפשרות אחרת (`valid-after`, ‏`cert-authority`…) =
+"לא נבדק". נקרא **מהעץ המותקן** — לפני ה-checkout, ולכן תג שמגיע לא יכול
+להחליף את המפתח שמאמת אותו. החלפת מפתח = גרסה שנחתמה בישן ומוסיפה את החדש.
+
+**`tools/verify-release-tag.py <repo|git-dir> <tag> <allowed-signers>`** —
+המאמת היחיד; שלושת המקבלים (`server-upgrade.sh`, בדיקת העדכון,
+`tools/git/release-sign.sh` בפרסום) מריצים אותו, ולא עותק שלו:
+
+| יציאה | מצב | פלט |
+|---|---|---|
+| `0` | חתום | stdout: `signed: <principal> SHA256:<טביעת המפתח>` |
+| `1` | נבדק ואינו חתום במפתח מוכר | stderr: `unsigned: <סיבה>` — תג קל, תג בלי חתימה, חתימת PGP, מפתח שאינו בקובץ, חתימה שאינה תקפה (התג שונה), או `tag` באובייקט שאינו התג המבוקש (חתימה ישנה תחת שם חדש) |
+| `2` | לא נבדק | stderr: `unchecked: <סיבה>` — הקובץ חסר/בלי מפתח/פגום, התג לא נמצא, git או `cryptography` חסרים, חריגה במאמת |
+
+הבדיקה עצמה: חתימת SSH (‏SSHSIG v1) האחרונה בתג, namespace `git`, ‏hash
+‏sha512/sha256, המפתח בחתימה זהה בבייטים לשורה בקובץ, ואז אימות
+ed25519 / RSA (‏`rsa-sha2-512/256`) ב-`cryptography`. ‏**לא** `git
+verify-tag`: הוא מפעיל `ssh-keygen`, וזה היה מחייב את חבילת לקוח ה-SSH על
+השרת (‏#1266). התאימות ל-`git tag -s` נבדקת מול חתימות אמיתיות.
+
+**ב-`server-upgrade.sh`:** הצלחה = יציאה `0` **וגם** פלט שמתחיל ב-`signed: `.
+כל דבר אחר — `update_status` = `failed` עם "התג `<tag>` לא אומת כחתום —
+העדכון נדחה, העץ לא הוחלף: `<פלט המאמת>`", בלי checkout, בלי יחידות ובלי
+restart. ‏`revert` עובר את אותה בדיקה (חזרה לגרסה לא חתומה נדחית); החזרה
+האוטומטית אחרי כשל אינה עוברת בה — היא חוזרת לקוד שכבר היה מותקן.
+
+**בבדיקת העדכון** (`update._verify_remote_tag`): ‏`git clone --bare
+--depth=1 --filter=blob:none --single-branch --branch <tag>` לתיקייה זמנית
+(לא לעץ הקוד, ‏#1193), והמאמת של העץ המותקן עליו → `signature` של
+`/update/check`. ‏`0`+`signed:` → `signed`; ‏`1` → `unsigned`; כל השאר →
+`unchecked`.
+
+**בפרסום** (`tools/git/release-sign.sh`, ‏[private]): `publish` דורש
+`--ref vX.Y.Z` ו-`IMAGECTL_RELEASE_KEY`, דורש שהמפתח יופיע ב-
+`install/release-signers` של העץ שמתפרסם, חותם (`git tag -s`, ‏`gpg.format=ssh`),
+מריץ את המאמת על התג **לפני** הדחיפה, ודוחף `main` והתג ב-`--atomic`.
+כל כשל — לא נדחף כלום.
 
 ### `/etc/imagectl/initrd.flags` (‏#1230)
 
@@ -3444,7 +3546,8 @@ registered machine (manifest|files)`). **מחיר ידוע:** `curl` מהשרת 
 |---|---|---|---|
 | `8080/tcp` | סוכן: `/api/v1/agent/*`, `/boot/*`, `/api/v1/images/*` | **HTTP** (ה-GRUB החתום נבנה בלי TLS — לא משתנה) | כתובת כרטיס ההפצה (`--interface`); `0.0.0.0` רק במפורש (#1074) |
 | `8081/tcp` | קונסולה/ניהול: `/console/`, `/api/console/*` | **HTTPS בלבד** — תעודה חתומה-עצמית | `--console-host` (כרטיס הניהול — כתובת **או שם כרטיס**, ‏#1088 סעיף 27) + `127.0.0.1` (#904) |
-| `8443/tcp` | בין-שרתי (`/api/interserver/v1/*`) | mTLS 1.3, pyOpenSSL (סעיף 18 — לא משתנה) | `--interserver-host` |
+| `8443/tcp` | בין-שרתי (`/api/interserver/v1/*`) | mTLS 1.3, pyOpenSSL (סעיף 18 — לא משתנה) | `--interserver-host` — המתקין נותן למשני את כרטיס השרתים **לפי שם** (‏#1313), הכרטיס שבו חומת האש פותחת 8443 מהראשי; משני שהותקן לפני כן (override בלי הדגל, שהשדרוג אינו כותב מחדש) — `--console-host`. ‏standalone — אף פעם. הראשי מצמיד SPKI ואינו בודק שם, ולכן `--interserver-url` אינו נדרש לחיבור |
+| `8443/tcp` **בראשי** | "אתה שם?" בלבד (`GET /api/interserver/v1/alive`, ‏#1310) | TLS (uvicorn) עם מפתח הזהות הבין-שרתית; בלי תעודת לקוח | כתובת `--console-host` (כרטיס השרתים) |
 | `5900/tcp` | מוניטור RFB **במכונה** (סעיף 14) | דרך ה-WebSocket של הקונסולה — יורש את ה-TLS שלה (`wss://`) | — |
 
 ### התעודה
@@ -4219,7 +4322,7 @@ SPKI+thumbprint של תעודת-הלקוח — ‏`TlsPeer` אינו נושא כ
 
 | נתיב | מה | `null` / היעדר פירושו |
 |---|---|---|
-| `POST /api/console/update/check` | מחזיר **ושומר** `{at, current, latest, available, reason, message?, detail?}` ב-`settings.update_last_check`. ‏`at` = `now_iso()` של השרת ברגע הבדיקה. timeout, סירוב חיבור, כשל DNS או network unreachable מסווגים `reason="no_network"`; הקונסולה מציגה את `message` בעברית כשורה הראשית ואת `detail` הטכני כשורה משנית ומוחלשת. כשל אחר הוא `reason="failed"`. | — |
+| `POST /api/console/update/check` | מחזיר **ושומר** `{at, current, latest, available, reason, message?, detail?, signature?}` ב-`settings.update_last_check` (‏`signature` — ‏#1277, ראו סעיף 18; הקונסולה: "חתימה: חתום / לא חתום / לא נבדק", ו"החל" כבוי על `unsigned`). ‏`at` = `now_iso()` של השרת ברגע הבדיקה. timeout, סירוב חיבור, כשל DNS או network unreachable מסווגים `reason="no_network"`; הקונסולה מציגה את `message` בעברית כשורה הראשית ואת `detail` הטכני כשורה משנית ומוחלשת. כשל אחר הוא `reason="failed"`. | — |
 | `GET /api/console/update` → `current_error` (‏#1159) | למה `current` הוא `null`: הסיבה המלאה של `git describe` (נתיב + stderr). ‏admin בלבד; ל-`/health/live` ללא הזדהות מגיעה רק הקטגוריה | `null` = הגרסה נקראה |
 | `GET /api/console/update` → `last_check` | אותו מסמך, כפי שנשמר — הדף מציג "בדיקה אחרונה: היום 06:00 — אין חדש" גם אחרי רענון ובכל דפדפן. ‏`reason` שאינו `null` = **הבדיקה נכשלה**, לא "אין חדש" | `null` = מעולם לא נבדק בשרת הזה (או רשומה פגומה — נקראת כ-`null`, לא כקריסה) |
 | `GET /api/console/health` → כותרת `X-Health-Checked-At` | ‏ISO של השרת, נחתם **אחרי** שהבדיקות רצו. **כותרת ולא מעטפת**: הגוף נשאר מערך `[{id,label,state,detail}]` שכל הקוראים הקיימים (`HOME`, ‏`updateAlertBadge`, טסטי node, `test_server_health`) תלויים בו | כותרת חסרה = "זמן המדידה לא נמסר" — הקונסולה **לא** נופלת לשעון הדפדפן |
@@ -4239,11 +4342,18 @@ SPKI+thumbprint של תעודת-הלקוח — ‏`TlsPeer` אינו נושא כ
 | `last_seen_at` | בכל קריאה בין-שרתית **שהמשני ענה לה** — `/check`, `/machines`, `/images`, ותחילת push/pull (התשובה הראשונה). כתיבה מוצלחת גם **מנקה** `last_error`/`last_error_at` | מעולם לא ענה (או לפני #1017) — "לא נמדד", לא "לא ענה" |
 | `last_error` · `last_error_at` | קריאה בין-שרתית שנכשלה **בערוץ**: חיבור/TLS/תשובה שאינה 200/תשובה לא שמישה (`interserver_auth.redact_secrets`). `last_seen_at` **נשאר** — "לא ענה 08:12 · ענתה לאחרונה 07:30". כשל לוגי של העברה (אימג' כבר קיים, sha256) **אינו** כשל ערוץ | הקריאה האחרונה הצליחה |
 
-הכותב: `storage_nodes.record_contact(conn, id, error=None|str)`;
+| `server_version` · `server_version_at` (‏#1300) | בתשובה **מוצלחת** של המשני ל-`/check` (‏`/ping`) או ל-`/machines`, **רק כשהשדה `server_version` נכח בתשובה** (המשני מדווח את תג ה-git שלו, כמו `/me.version`; `null` = אין תג). משני ישן בלי השדה אינו נרשם ואינו מוחק ערך קודם | `server_version_at` ריק = הגרסה **לא נבדקה**; נבדקה ו-`server_version` ריק = **לא ידועה** |
+
+הכותב: `storage_nodes.record_contact(conn, id, error=None|str)` (וגרסה:
+`storage_nodes.record_version(conn, id, answer)`);
 הקורא: `storage_nodes.contact_fields(conn, id)`. משני **מושבת** אינו נשאל
 ולכן אינו נרשם כ"לא ענה".
 
-**מה מוחזר:** `GET /storage-nodes` — שלוש העמודות על כל שורה (כדי שהטבלה
+**הצד של המשני:** `GET /api/interserver/v1/ping` ו-`GET …/machines` מחזירים
+גם `"server_version": str|null` (‏#1300) — שדה נוסף, לקוח ישן מתעלם ממנו.
+
+**מה מוחזר:** `GET /storage-nodes` — שלוש העמודות על כל שורה, ועוד
+`server_version`/`server_version_at` (‏#1300; כרטיס "סניפים" בסקירה) (כדי שהטבלה
 תציג "ענתה לאחרונה HH:MM" עוד לפני שהדף בדק בעצמו, וגם כשלא היה בפוקוס);
 `POST …/check`, `GET …/machines`, `GET …/images` — אותן שלוש, כפי שנרשמו
 **אחרי** הקריאה הזו, בנוסף לשדות הקיימים.
@@ -4415,7 +4525,7 @@ SPKI+thumbprint של תעודת-הלקוח — ‏`TlsPeer` אינו נושא כ
 
 `python3 -m server.dcui` הוא תהליך root עצמאי על `tty1`; הוא אינו קורא
 HTTP ולכן אימות ואיפוס `admin` עובדים גם כש-`imagectl-server` אינו פעיל.
-הרינדור מקבל snapshot טהור של הנתונים ומפיק ASCII בגודל 80×25.
+הרינדור מקבל snapshot טהור של הנתונים; מסך הטקסט מפיק ASCII בגודל 80×25, והמסך הגרפי בעברית (#1203) — פריימים ל-native-gui (למטה).
 
 **קריאות:** טבלת `users` דרך `users.verify`/`users.flags`; מפתחות
 `settings` מסוג `netcfg:<interface>`, ‏`deploy:interface`, ‏`deploy:url`,
@@ -4436,7 +4546,7 @@ admin מתאפס (‏`mfa_enabled=0`, הסוד, `mfa_enrolled_at`, `mfa_last_ste
 מבטל כל session, דפדפן זכור ואתגר MFA. ההצלחה נקבעת בקריאה חוזרת
 (‏`users.verify` עם הסיסמה החדשה + הדגלים). שלושה כשלים (סיסמה
 שאינה עומדת במדיניות, אימות שאינו תואם) נועלים את F9 ל-30 שניות. ‏F12
-(הפעלה מחדש/כיבוי, אחרי סיסמת admin) מבצע ב-Enter, בלי הקלדת שם השרת (#1270). רשת הניהול כותבת `netcfg:<interface>`, קובץ
+(הפעלה מחדש/כיבוי, אחרי סיסמת admin) מבצע ב-Enter על הכפתור המסומן, בלי הקלדת שם השרת (#1270); המיקוד מתחיל על ביטול ו-Tab מעביר לביצוע (#1203). רשת הניהול כותבת `netcfg:<interface>`, קובץ
 `interfaces.d`, ‏`resolv.conf` וסמן `netcfg/pending.json` דרך אותם
 `netcfg`/`netcfg_host`/`netcfg_rollback` של הקונסולה. אישור מוחק רק את
 הסמן וכותב `dcui:management_interface`; Esc או פקיעה משאירים אותו
@@ -4452,6 +4562,68 @@ console (DCUI); verified=…"), ‏`dcui_reset_failure`
 `dcui_net_confirm_refused`,
 ובמסלול הרשת המשותף גם `net_config`, ‏`net_config_unverified`,
 `net_config_refused`, ‏`net_rollback_armed` ו-`net_confirmed`.
+
+### המסך הגרפי בעברית (#1203)
+
+**התהליך ב-Python נשאר root ומכונת המצבים היחידה** (סיסמה, נעילה אחרי 3,
+יציאה אחרי 90 שניות, חלון 60 השניות של הרשת, כל הפעולות דרך `actions.py`).
+הוא מפעיל ילד: `imagectl-station-gui --screen dcui --theme light`
+(`/opt/imagectl/native-gui/` שבונה `build_initramfs.sh`, או `/usr/bin/`), ששם
+רק מצייר וקורא מקלדת. הקוד: `server/dcui/view.py` (המצב → פריים),
+`server/dcui/gui.py` (הצינור), `native-gui/src/dcui.[ch]` + `screens_dcui.c`.
+
+**אל ה-GUI (stdin):** פריים = שורות `type<TAB>field…`, ושורה ריקה בסופו.
+ערכים אינם מכילים TAB/שורה חדשה (`view.clean`). שדות שמסומנים `_m` הם
+Pango markup, וכל ערך דינמי בתוכם עובר `esc`; ערך לטיני בתוך משפט עברי
+עטוף FSI…PDI (`view.iso` — בלי זה "10 Gb/s" יוצא "Gb/s 10").
+
+| רשומה | שדות |
+|---|---|
+| `frame` | `main` \| `settings` — פותח פריים |
+| `hdr` | role, host, url, version, clock, admin (ריק = אין שבב מנהל) |
+| `hero` | kind (`ok`\|`bad`\|`wait`), title, sub_m, meta_label, meta_value |
+| `prob` | sev (`bad`\|`warn`), n, title, what, todo_m, keycap, keylabel |
+| `tile` | title, pill_kind, pill — השורות שאחריה שייכות לו |
+| `row` / `prow` | label, label_style, value, value_style (`mono`\|`strong-mono`), sub, pill_kind, pill, tone (`bad`\|`warn`) |
+| `fprow` | label, sublabel, fp1, fp2, sub, pill_kind, pill, tone |
+| `ttl`, `item`, `na`, `pane`, `pnote` | מסך ההגדרות (F2): כותרת, פריט (icon, title, sub, selected), "לא זמין כאן", הסבר, הערה |
+| `sb` | dot, word, rest — שורת המצב |
+| `lang` | טקסט ליד שבב EN (שדה אנגלית בלבד) |
+| `key` | caps (כמה, מופרדים ברווח), label, lock (1 = דורש סיסמת מנהל) |
+| `notice` | kind, text — הודעה מעל שורת המצב |
+| `dlg` | kind (`plain`\|`danger`), width, title, lead — ואחריו `d.*` לפי הסדר |
+| `d.field` | label, value, mode (`ro`\|`text`\|`unused`\|`password`\|`password-done`), focused, en |
+| `d.hint` · `d.note` · `d.p` · `d.alert` · `d.bullet` · `d.error` | טקסט (markup חוץ מ-`d.error`); ל-`d.hint` גם cap ו-right |
+| `d.opt` / `d.radio` | title, sub, selected, focused |
+| `d.kv` | label, value, mono |
+| `d.btn` | label, cap, kind (`pri`\|`plain`\|`danger`), focused |
+
+**הסיסמה אינה עוברת בצינור:** ב-`d.field` מסוג `password` הערך הוא **האורך**
+בלבד, וה-GUI מצייר נקודות.
+
+**מה-GUI (stdout):** `READY WxH` כשהמסך פתוח; ואז שורה לכל מקש —
+`KEY F2|F5|F9|F12|ENTER|ESC|TAB|BACKTAB|BACKSPACE|UP|DOWN|LEFT|RIGHT`,
+`CHAR <hex>` ו-`CAPS 0|1`. ‏`CHAR` הוא תמיד הפריסה האמריקאית — **המקלדת
+נעולה על אנגלית** במסך הזה, ו-Caps Lock הופך אות (הוא נעקב ב-`input.c`
+כי ה-grab מסתיר אותו מהקרנל); Python מסרב בנוסף לאות לא-ASCII בשדות
+הסיסמה (`app._typable`). ‏`gui.KEYS` הם המספרים של curses, כך ש-`_handle_key`
+אחד משרת את שני המסכים.
+
+**F12:** המיקוד מתחיל על "ביטול" — Enter בלי Tab חוזר למסך הראשי בלי
+לבצע; Tab מעביר לכפתור האדום; חצים מחליפים אתחול/כיבוי (גם במסך הטקסט).
+
+**מתי מסך הטקסט (80×25, אנגלית):** רק כשהגרפי אינו יכול לרוץ — אין בינארי,
+אין `/dev/dri/card*` ואין `/dev/fb0` (שרת בלי מסך, קונסולה טורית/IPMI), ה-GUI
+לא שלח `READY` תוך 15 שניות (למשל פונטים חסרים), או שנעצר באמצע. ה-GUI
+פותח `drm` ואז `fbdev` בלבד — **אף פעם לא `mem`**, שהיה "מצליח" לצייר לקובץ
+ומשאיר את tty1 ריק. הסיבה נכתבת ליומן היחידה וגם בשורת ההודעה של מסך
+הטקסט ("Graphic screen unavailable: …"). `python3 -m server.dcui --text`
+כופה את מסך הטקסט.
+
+**לא מוצג כי אין נתון:** זמן העצירה וסיבת הכישלון של שירות (רק מצב
+systemd), זמן סנכרון אחרון ומספר אימג'ים של משני, שם הראשי (רק הכתובת מתוך
+`storage:primary_url`), "מחכה מאז" של משני, וזמן משוער לסיום סבב.
+"פועל ברציפות" הוא `/proc/uptime`.
 
 ## 32. מתקין ה-live — חוזי מנוע/GUI (#1190)
 
@@ -4469,6 +4641,7 @@ UTF-8, שורת `key=value` אחת לכל מפתח, בלי quoting ובלי מפ
 disk=/dev/sda
 role=standalone
 primary_url=
+primary_fingerprint=
 servers_if=ens33
 servers_mac=00:50:56:01:02:01
 servers_mode=dhcp
@@ -4481,10 +4654,15 @@ admin_user=admin
 admin_pass=...
 ```
 
-כל 13 המפתחות חובה ומופיעים פעם אחת. `disk` הוא נתיב `/dev/` של כונן
+כל 14 המפתחות חובה ומופיעים פעם אחת. `disk` הוא נתיב `/dev/` של כונן
 שלם שמופיע ברשימת `agent/lib/sysinfo.sh::list_disks`; כונן שמכיל את
 `/cdrom` (או דווח על ידי iso-scan) נדחה. `role` הוא `standalone` או
-`secondary`; בראשון `primary_url` ריק ובשני הוא `https://HOST:8443`.
+`secondary`; בראשון `primary_url` ו-`primary_fingerprint` ריקים. בשני
+`primary_url` הוא IP או שם (גם `HOST:8443` ו-`https://HOST:8443`), והמנוע
+מנרמל ל-`https://HOST:8443` — הצורה שנכתבת למערכת המותקנת. ‏
+`primary_fingerprint` (‏#1310) הוא SHA-256 hex (64 תווים קטנים) של ה-SPKI
+שהראשי הציג בבדיקה הירוקה; ריק או פגום = `[primary-unverified]`, והמשני
+אינו מותקן. הוא נכתב גם ל-`installer-role` (`primary_fingerprint=`).
 `hostname` הוא label יחיד לפי RFC 1123, עד 63 תווים. `servers_if` חייב
 להתקיים בזמן ההתקנה, וה-MAC הקנוני ב-`servers_mac` חייב להיות ה-MAC שלו.
 ב-`dhcp` ארבעת שדות ה-static ריקים; ב-`static` כולם כתובות IPv4 תקינות,

@@ -126,7 +126,9 @@ def test_monitor_is_off_by_default_and_cmdline_flag_follows_the_switch():
 def test_settings_page_warns_that_enabling_exposes_5900():
     js = (Path(__file__).resolve().parent.parent
           / "server" / "static" / "console.js").read_text(encoding="utf-8")
-    assert "מוניטור: כבוי (ברירת מחדל) — הדלקה חושפת 5900 על וילן ההפצה" in js
+    # ‏#1300: האזהרה עברה מהערה בראש הדף ל-title של המתג ולכרטיס הצפייה (console-full.html P.monitor)
+    assert "כבוי כברירת מחדל — הדלקה חושפת 5900 על וילן ההפצה" in js
+    assert "הדלקה חושפת 5900 על וילן ההפצה ותופסת באתחול הבא של כל מכונה" in js
 
 
 def test_enabling_monitor_requires_explicit_confirmation(server):
@@ -759,7 +761,7 @@ def journal_rows(server, event: str) -> list[tuple[str, str]]:
 def test_foreign_origin_is_refused_before_accept_and_before_tcp(server, origin):
     """‏SameSite=lax אינו מגן על WebSocket cross-site בכל הדפדפנים: דף זר
     עם ה-cookie של המנהל היה מקבל 101 ואת ה-RFB. ‏Origin שאינו ה-Host
-    נסגר 4403 **לפני** accept (כמו ConsoleSourceGuard) — ה-TestClient
+    נסגר 4403 **לפני** accept — ה-TestClient
     זורק כבר בכניסה ל-with — ולפני TCP. הבקרה השלילית: main בלי
     `origin_allowed` מגיע ל-4404 אחרי accept (המכונה אינה רשומה)."""
     called = False

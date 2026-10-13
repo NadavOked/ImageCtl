@@ -11,7 +11,8 @@
 #   validate       the form (+ step) -> errors.<field>=... or nothing
 #   apply          writes the answers (0600), starts the engine, job=
 #   progress       the engine's state file, plus output= for the log tail
-#   check-primary  https://<primary>/health/live within 5 s
+#   check-primary  GET https://<primary>:8443/api/interserver/v1/alive (#1310);
+#                  green only with name + fingerprint of the key TLS showed
 #   finish         what the done screen shows after a reboot-less handoff
 #   eject          eject the install medium (reported, never fatal)
 #   reboot         reboot -f -- only the GUI's "restart" (button or the done
@@ -33,6 +34,12 @@ ENGINE_LOG="${ENGINE_LOG:-$RUN_DIR/install.log}"
 DHCP_DIR="${DHCP_DIR:-$RUN_DIR/dhcp}"
 SYSROOT="${SYSROOT:-}"
 MEDIA_FILE="${MEDIA_FILE:-$RUN_DIR/install-media}"
+# #1310: the last GREEN check (url/name/version/fingerprint). Only this file
+# puts primary_fingerprint into the answers -- never the form the GUI sent.
+PRIMARY_CHECK="${PRIMARY_CHECK:-$RUN_DIR/primary-check}"
+PRIMARY_ALIVE_PATH=/api/interserver/v1/alive
+# shellcheck source=installer/lib/answers.sh
+. "$BRIDGE_DIR/lib/answers.sh"   # normalize_primary_url -- one rule, engine and GUI
 
 ACTION=${1:-}; [ -n "$ACTION" ] || { echo 'usage: gui-bridge.sh <action> < form.json' >&2; exit 2; }
 INPUT=$(cat)
@@ -40,7 +47,8 @@ INPUT=$(cat)
 command -v jq >/dev/null 2>&1 || { echo 'gui-bridge: jq is missing from this image' >&2; exit 3; }
 
 field() { printf '%s' "$INPUT" | jq -r --arg k "$1" '.[$k] // "" | tostring' 2>/dev/null; }
-emit() { printf '%s=%s\n' "$1" "$2"; }
+# One line per key, always: a value never carries a line break to the GUI (#1310).
+emit() { printf '%s=%s\n' "$1" "$(printf '%s' "$2" | tr '\r\n' '  ')"; }
 
 # --- NIC rows: name|model|mac|link|current|source|address|netmask|gateway|dns --
 nic_model() {
@@ -95,7 +103,18 @@ write_answers() {
     {
         emit disk "$(field disk)"
         emit role "$(field role)"
-        emit primary_url "$(field primary_url)"
+        _wa_purl=; _wa_pfp=
+        if [ "$(field role)" = secondary ]; then
+            _wa_purl=$(normalize_primary_url "$(field primary_url)") || _wa_purl=$(field primary_url)
+            # The record is exactly two lines, url= then fingerprint=; an extra
+            # or repeated key is not a green check (#1310).
+            [ "$(wc -l < "$PRIMARY_CHECK" 2>/dev/null)" = 2 ] && [ "$(sed -n 1p "$PRIMARY_CHECK")" = "url=$_wa_purl" ] \
+                && _wa_pfp=$(sed -n '2s/^fingerprint=\([0-9a-f]\{64\}\)$/\1/p' "$PRIMARY_CHECK")
+        else
+            _wa_purl=$(field primary_url)
+        fi
+        emit primary_url "$_wa_purl"
+        emit primary_fingerprint "$_wa_pfp"
         emit servers_if "$_wa_if"
         emit servers_mac "$_wa_mac"
         emit servers_mode "$(field mode)"
@@ -119,7 +138,7 @@ write_answers() {
 field_for_code() {
     case "$1" in
         invalid-disk|iso-target|missing-key) printf disk ;;
-        invalid-role) printf role ;; invalid-primary-url) printf primary_url ;;
+        invalid-role) printf role ;; invalid-primary-url|primary-unverified) printf primary_url ;;
         invalid-interface|invalid-mac|mac-mismatch|interface-check) printf interface ;;
         invalid-network-mode) printf mode ;; invalid-address) printf address ;;
         invalid-netmask) printf netmask ;; invalid-gateway) printf gateway ;; invalid-dns) printf dns ;;
@@ -192,14 +211,56 @@ do_progress() {
     return 0
 }
 
+# #1310 (Nadav 12/10, option A): the secondary's one call to the primary --
+# "are you there?". Green = HTTP 200 + exactly {name, version, fingerprint}
+# + that fingerprint is the SHA-256 of the key TLS showed. Anything else is
+# red with its reason, never green (principle 5); each check first forgets
+# the previous green.
+check_fail() { rm -f "$_cp_tmp".*; emit ok 0; emit error "$1"; return 0; }
+
 do_check_primary() {
-    _cp_url=$(field primary_url)
-    case "$_cp_url" in https://*:8443) ;; *) emit ok 0; emit error 'כתובת הראשי חייבת להיות https://HOST:8443'; return 0 ;; esac
-    _cp_body=$(curl -k -s --max-time 5 "$_cp_url/health/live" 2>/dev/null) || {
-        emit ok 0; emit error "התקשרות אל ${_cp_url#https://} בפורט 8443 נכשלה. ודא כי חומת האש שבין האתרים פתוחה."; return 0; }
-    _cp_ver=$(printf '%s' "$_cp_body" | jq -r '.version // ""' 2>/dev/null)
-    _cp_name=$(printf '%s' "$_cp_body" | jq -r '.hostname // .name // ""' 2>/dev/null)
-    _cp_fp=$(printf '%s' "$_cp_body" | jq -r '.fingerprint // ""' 2>/dev/null)
+    rm -f "$PRIMARY_CHECK"
+    _cp_url=$(normalize_primary_url "$(field primary_url)") || {
+        emit ok 0; emit error 'כתובת לא תקינה: הקלד את כתובת ה-IP (או השם) של השרת הראשי'; return 0; }
+    _cp_host=${_cp_url#https://}; _cp_host=${_cp_host%:8443}
+    mkdir -p "$RUN_DIR" || { echo 'gui-bridge: cannot create the run dir' >&2; return 4; }
+    _cp_tmp="$RUN_DIR/check.$$"
+    curl -k -sS --max-time 5 -o "$_cp_tmp.body" -w '%{http_code}\n%{certs}' \
+        "$_cp_url$PRIMARY_ALIVE_PATH" > "$_cp_tmp.meta" 2> "$_cp_tmp.err"
+    _cp_rc=$?
+    case "$_cp_rc" in
+        0) _cp_why= ;;
+        6) _cp_why="השם $_cp_host לא נפתר לכתובת (DNS). הקלד את כתובת ה-IP של השרת הראשי" ;;
+        7) _cp_why="אין נתיב אל $_cp_host בפורט 8443: בדוק את הכתובת, ושחומת האש של אתר זה מתירה יציאה אליה"
+           grep -qi refused "$_cp_tmp.err" && _cp_why="$_cp_host דחה את החיבור בפורט 8443 (refused): השרת הראשי אינו מאזין שם, או שחומת האש של האתר הראשי אינה מעבירה את 8443 אליו" ;;
+        28) _cp_why="אין תשובה מ-$_cp_host בפורט 8443 תוך 5 שניות (timeout): חומת אש חוסמת בשקט, או שהכתובת שגויה" ;;
+        35|53|54|58|59|60|66|80|83|90|91) _cp_why="מו\"מ ה-TLS עם $_cp_host:8443 נכשל (curl $_cp_rc): בפורט הזה עונה משהו שאינו השרת הראשי" ;;
+        52|56) _cp_why="$_cp_host:8443 סגר את החיבור בלי תשובה: זה אינו שרת ImageSrv ראשי" ;;
+        *) _cp_why="בדיקת החיבור אל $_cp_host:8443 נכשלה (curl $_cp_rc)" ;;
+    esac
+    [ -z "$_cp_why" ] || { check_fail "$_cp_why"; return 0; }
+    _cp_code=$(head -n1 "$_cp_tmp.meta")
+    [ "$_cp_code" = 200 ] || { check_fail "$_cp_host:8443 ענה HTTP $_cp_code: זה אינו שרת ImageSrv ראשי (או גרסה ישנה בלי בדיקת חיבור)"; return 0; }
+    jq -e '(type | IN("object")) and (keys | IN(["fingerprint", "name", "version"]))
+           and (.name | type | IN("string")) and (.name | test("^.{1,63}$") and (test("[[:cntrl:]]") | not))
+           and (.fingerprint | type | IN("string")) and (.fingerprint | test("^[0-9a-f]{64}$"))
+           and (.version | type | IN("string", "null")) and ((.version // "v") | test("^[A-Za-z0-9._+-]{1,64}$"))' "$_cp_tmp.body" >/dev/null 2>&1 \
+        || { check_fail "$_cp_host:8443 ענה, אבל לא בתשובת השרת הראשי (name/version/fingerprint): זה אינו שרת ImageSrv ראשי"; return 0; }
+    _cp_name=$(jq -r '.name' "$_cp_tmp.body"); _cp_ver=$(jq -r '.version // ""' "$_cp_tmp.body")
+    _cp_fp=$(jq -r '.fingerprint' "$_cp_tmp.body")
+    # The key TLS really showed (the first certificate curl printed). Each
+    # step is checked: a failed openssl must not hash an empty input.
+    sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p' "$_cp_tmp.meta" > "$_cp_tmp.pem"
+    openssl x509 -in "$_cp_tmp.pem" -pubkey -noout > "$_cp_tmp.pub" 2> "$_cp_tmp.err" \
+        && openssl pkey -pubin -in "$_cp_tmp.pub" -outform DER -out "$_cp_tmp.der" 2> "$_cp_tmp.err" \
+        && _cp_seen=$(sha256sum < "$_cp_tmp.der") \
+        || { check_fail "לא ניתן לקרוא את התעודה ש-$_cp_host:8443 הציג (openssl), ולכן החיבור לא אומת"; return 0; }
+    _cp_seen=${_cp_seen%% *}
+    [ "${#_cp_seen}" -eq 64 ] && [ "$_cp_seen" = "$_cp_fp" ] \
+        || { check_fail "טביעת האצבע בתשובה אינה של התעודה ש-$_cp_host:8443 הציג: זה אינו השרת הראשי"; return 0; }
+    printf 'url=%s\nfingerprint=%s\n' "$_cp_url" "$_cp_fp" > "$PRIMARY_CHECK" \
+        || { check_fail 'לא ניתן לשמור את תוצאת הבדיקה'; return 0; }
+    rm -f "$_cp_tmp".*
     emit ok 1; emit name "$_cp_name"; emit version "$_cp_ver"; emit fingerprint "$_cp_fp"
 }
 

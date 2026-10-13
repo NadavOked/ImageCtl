@@ -73,6 +73,7 @@ UUID=$_wh_esp_uuid /boot/efi vfat umask=0077 0 1
     write_target 0600 /etc/imagectl/answers "disk=$ANSWER_DISK
 role=$ANSWER_ROLE
 primary_url=$ANSWER_PRIMARY_URL
+primary_fingerprint=$ANSWER_PRIMARY_FINGERPRINT
 servers_if=$ANSWER_SERVERS_IF
 servers_mac=$ANSWER_SERVERS_MAC
 servers_mode=$ANSWER_SERVERS_MODE

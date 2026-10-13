@@ -33,6 +33,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include "backend.h"
+#include "dcui.h"
 #include "input.h"
 #include "install.h"
 #include "state.h"
@@ -47,11 +48,13 @@ static const char *USAGE =
 "usage: imagectl-station-gui [--mac AA:BB:CC:DD:EE:FF] [--ip 10.0.0.5] [--title T]\n"
 "                            [--theme light|dark] [--backend auto|drm|fbdev|mem] [--fb-file PATH]\n"
 "                            [--auth-cmd CMD | --demo] [--state FILE] [--no-input]\n"
-"                            [--screen progress|class|cloner|standby|install] [--signed-in USER [--role admin|deploy]]\n"
+"                            [--screen progress|class|cloner|standby|install|dcui] [--signed-in USER [--role admin|deploy]]\n"
 "                            [--install-cmd CMD] [--install-cwd DIR] (legacy: --wizard-cmd/--wizard-cwd)\n"
 "       imagectl-station-gui --png PREFIX [--size WxH] [--state FILE] [--mac ..] [--ip ..] [--user NAME]\n"
 "  --png renders every card, both themes, to PREFIX-<card>-{light,dark}.png and exits\n"
 "  (no display needed). Without --state it uses built-in sample data.\n"
+"  --screen dcui is the server's own screen (#1203): frames on stdin, keys on stdout\n"
+"  (dcui.h); with --png it renders the --state frame file in both themes.\n"
 "  --backend mem draws into --fb-file (default /run/imagectl/fb.mem) for the remote\n"
 "  monitor when the machine has no display (#835); auto falls back to it last.\n";
 
@@ -1158,7 +1161,7 @@ int main(int argc, char **argv) {
     snprintf(a.title, sizeof a.title, "מחשב בניית אימג'ים");
     const char *auth_cmd = NULL, *png = NULL, *backend = "auto", *fb_file = NULL, *screen = NULL, *role = "deploy";
     InstallBridge wizard = { "python3 -m server.wizard.bridge", "/opt/imagectl-src", 0 };
-    int install_screen = 0;
+    int install_screen = 0, dcui_screen = 0;
     StateFile sf_state; memset(&sf_state, 0, sizeof sf_state);
     int demo = 0, no_input = 0, pw = 1280, ph = 800;
 
@@ -1193,7 +1196,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(screen, "cloner")) a.force_cloner = 1;
         else if (!strcmp(screen, "standby")) { a.force_standby = 1; a.force_cloner = 1; }
         else if (!strcmp(screen, "install")) install_screen = 1;
-        else { fprintf(stderr, "native-gui: --screen must be progress, class, cloner, standby or install\n%s", USAGE); return 2; }
+        else if (!strcmp(screen, "dcui")) dcui_screen = 1;
+        else { fprintf(stderr, "native-gui: --screen must be progress, class, cloner, standby, install or dcui\n%s", USAGE); return 2; }
     }
     setvbuf(stdout, NULL, _IOLBF, 0);               /* records reach the agent's pipe as they happen */
 
@@ -1207,6 +1211,11 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    if (dcui_screen) {                              /* #1203: its own loop, see dcui.h */
+        if (!png) return dcui_main(a.theme);
+        if (!sf_state.path[0]) { fputs("native-gui: --screen dcui --png needs --state FRAME\n", stderr); return 2; }
+        return dcui_render_png(png, sf_state.path, pw, ph);
+    }
     if (png) {
         if (install_screen) {
             install_demo(&a, INSTALL_ROLE);

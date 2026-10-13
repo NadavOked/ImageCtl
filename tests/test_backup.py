@@ -56,6 +56,9 @@ def test_archive_has_db_manifest_sums_and_no_images(tmp_path: Path):
     (data / "netcfg").mkdir()
     (data / "netcfg" / "servers.conf").write_text("iface=ens33\n")
     (data / "console.pem").write_bytes(b"-----KEY-----")
+    # ‏#1302: לוגו מוסד שהועלה לפני שהיכולת הוסרה — שארית, לא הגדרה.
+    (data / "branding").mkdir()
+    (data / "branding" / "logo.png").write_bytes(b"PNG")
     (data / "imagectl.db-wal").write_bytes(b"wal")
     conn = sqlite3.connect(data / "imagectl.db")
     conn.execute("CREATE TABLE settings (k TEXT, v TEXT)")

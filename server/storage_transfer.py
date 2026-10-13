@@ -75,18 +75,16 @@ def _node(conn, node_id: str):
         " FROM storage_nodes WHERE id = ?", (node_id,)).fetchone()
 
 
-def list_transfers(conn, user: tuple[str, str], *, node_id: str | None = None,
+def list_transfers(conn, user: tuple[str, str], *,
                    limit: int = LIST_LIMIT) -> list[dict]:
-    """ההעברות האחרונות (חדשה ראשונה), לכל המשניים או לאחד."""
+    """ההעברות האחרונות (חדשה ראשונה), לכל המשניים."""
     storage_nodes.assert_can_manage_nodes(conn, user)
-    where = "WHERE t.node_id = ?" if node_id else ""
-    params: tuple = (node_id, limit) if node_id else (limit,)
     rows = conn.execute(
         "SELECT t.id, t.node_id, n.label AS node_label, t.image_id, t.image_name,"
         " t.state, t.bytes_sent, t.bytes_total, t.error, t.started_by,"
         " t.created_at, t.updated_at, t.direction"
-        f" FROM storage_transfers t JOIN storage_nodes n ON n.id = t.node_id {where}"
-        " ORDER BY t.created_at DESC, t.id LIMIT ?", params).fetchall()
+        " FROM storage_transfers t JOIN storage_nodes n ON n.id = t.node_id"
+        " ORDER BY t.created_at DESC, t.id LIMIT ?", (limit,)).fetchall()
     return [dict(r) for r in rows]
 
 

@@ -26,7 +26,7 @@ STALL_SECONDS = 60
 #: מה שהמפעיל רואה. עברית, כי זו הקונסולה; הצד של GRUB נשאר ASCII.
 STEP_LABELS: dict[str, str] = {
     "menu": "תפריט האתחול נמסר",
-    "entry": "GRUB נכנס לערך ImageCtl",
+    "entry": "GRUB נכנס לערך ImageSrv",
     "http-ok": "מודול ה-HTTP נטען",
     "pre-linux": "לפני משיכת הקרנל",
     "pre-initrd": "הקרנל נטען",

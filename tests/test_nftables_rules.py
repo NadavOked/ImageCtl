@@ -74,10 +74,14 @@ def test_custom_mcast_ports_snapshot_matches_fixture() -> None:
 
 
 @needs_bash
-def test_primary_does_not_open_8443() -> None:
-    """הראשי יוזם — אין כלל כניסה ל-8443, רק הערה."""
+def test_primary_opens_8443_on_the_servers_card_only() -> None:
+    """‏#1310: בראשי 8443 עונה ל"אתה שם?" של מתקין משני — על כרטיס השרתים
+    בלבד (לא על ההפצה), בלי `ip saddr`: הראשי אינו יודע מראש את המשניים,
+    ו-FW האתר מגביל את המקור. לפני #1310 לא היה כאן כלל כלל, והבדיקה
+    במתקין נכשלה תמיד בתצורה הנכונה."""
     got = generate(*PRIMARY_ARGS)
-    assert "tcp dport 8443" not in got
+    assert 'iifname "eth-srv" tcp dport 8443 accept' in got
+    assert 'iifname "eth-deploy" tcp dport 8443' not in got
     assert "ip saddr" not in got
     assert "policy drop" in got
 

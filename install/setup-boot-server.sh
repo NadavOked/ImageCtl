@@ -984,6 +984,13 @@ fi
 if [[ -n "$CONSOLE_HOST" ]]; then
     STORAGE_ARGS+=" --console-host $CONSOLE_HOST"
 fi
+# ‏#1313: משני — מאזין 8443 (mTLS, #740) על כרטיס השרתים **לפי שם**, כמו
+# הקונסולה; זה הכרטיס שחומת האש פותחת בו 8443 מכתובת הראשי
+# (nftables-rules.sh). בלי הדגל המאזין לא עלה, והראשי קיבל connection refused.
+# ‏standalone אינו מקבל אותו — הראשי יוזם, ואין לו מה להאזין.
+if [[ "$STORAGE_ROLE" == "secondary" ]]; then
+    STORAGE_ARGS+=" --interserver-host $SERVERS_IF"
+fi
 write_file /etc/systemd/system/imagectl-server.service.d/override.conf <<EOF
 # ImageCtl — נכתב על ידי המתקין: הכתובת שנגזרה מהכרטיס שנבחר
 # (ריק = רשת ההפצה תוגדר מהקונסולה, #1088).

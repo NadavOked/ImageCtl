@@ -542,9 +542,6 @@ def test_proxy_mode_does_not_hand_out_addresses(dhcp_server, classrooms_on):
     assert active is True
     assert "dhcp-range=set:if-eth1,10.44.1.10,proxy" in text
     assert "option:router" not in text
-    preview = admin.get("/api/console/net/dnsmasq").json()
-    assert preview["text"] == fake["applied"][-1] and preview["proxy_text"] == text
-    assert preview["proxy_path"] != preview["path"]
 
 
 def test_proxy_runs_in_its_own_instance_so_a_freeze_spares_the_main_dhcp(dhcp_server, classrooms_on):
@@ -613,7 +610,6 @@ def test_dhcp_is_admin_only(dhcp_server):
     assert deploy.put("/api/console/net/interfaces/eth0",
                       json={**GOOD, "confirm": "eth0"}).status_code == 403
     assert deploy.get("/api/console/net/interfaces/eth0/probe").status_code == 403
-    assert deploy.get("/api/console/net/dnsmasq").status_code == 403
 
 
 def test_an_unknown_interface_is_refused(dhcp_server):

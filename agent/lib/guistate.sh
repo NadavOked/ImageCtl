@@ -50,18 +50,7 @@ gui_state() {
     # #1257: this initrd's stamp is known even before its first hello reaches the server.
     printf 'agent_version=%s\n' "${AGENT_VERSION:-unknown}" >> "$GUI_DIR/state.next" || return 1
     gui_shrink_state >> "$GUI_DIR/state.next" || return 1   # #928: the capture's shrink question
-    # #1168: the college's logo, fetched once by gui_fetch_logo; the line is
-    # written only when the file is there, so the GUI falls back by itself.
-    [ -s "$GUI_DIR/logo.png" ] && { printf 'logo=%s\n' "$GUI_DIR/logo.png" >> "$GUI_DIR/state.next" || return 1; }
-    _hello_age=""; _hello_rc=""; _now=$(date +%s) || return 1
-    if [ -f "$RUN_DIR/hello.state" ]; then
-        IFS='|' read -r _hello_at _hello_rc < "$RUN_DIR/hello.state" || return 1
-        case "$_hello_at" in ''|*[!0-9]*) printf 'native-gui: invalid hello timestamp\n' >&2; return 1 ;; esac
-        case "$_hello_rc" in ''|[0-9][0-9][0-9]) ;; *) printf 'native-gui: invalid hello HTTP code\n' >&2; return 1 ;; esac
-        [ "$_now" -ge "$_hello_at" ] || { printf 'native-gui: hello timestamp is in the future\n' >&2; return 1; }
-        _hello_age=$((_now - _hello_at))
-    fi
-    printf 'hello_age=%s\nhello_rc=%s\n' "$_hello_age" "$_hello_rc" >> "$GUI_DIR/state.next" || return 1
+    gui_hello_state >> "$GUI_DIR/state.next" || return 1
     # #434: the power-off countdown -- the epoch idle.sh wrote; absent = none.
     [ -s "$RUN_DIR/idle.warn" ] && { printf 'idle_poweroff_at=%s\n' "$(cat "$RUN_DIR/idle.warn")" >> "$GUI_DIR/state.next" || return 1; }
     _sm=$(cat "$GUI_DIR/mode") || return 1
@@ -165,30 +154,28 @@ gui_state() {
     mv "$GUI_DIR/state.next" "$GUI_DIR/state"
 }
 
-# #1168: the logo uploaded in the console (branding), once per boot. Only
-# PNG is drawn (cairo); anything else -- or no logo, or a failed fetch --
-# is said in the log and the GUI keeps the fixed brandmark. Never fatal.
-gui_fetch_logo() {
-    mkdir -p "$GUI_DIR" || return 0
-    rm -f "$GUI_DIR/logo.png"
-    if ! http_get "$SERVER/api/v1/agent/branding/logo" > "$GUI_DIR/logo.bin" 2>>"$LOG_FILE"; then
-        log "branding: logo fetch failed -- brandmark"; rm -f "$GUI_DIR/logo.bin"; return 0
-    fi
-    if [ ! -s "$GUI_DIR/logo.bin" ]; then log "branding: no logo on the server -- brandmark"; rm -f "$GUI_DIR/logo.bin"; return 0; fi
-    if [ "$(head -c 4 "$GUI_DIR/logo.bin" | od -An -tx1 | tr -d ' \n')" != "89504e47" ]; then
-        log "branding: logo is not PNG -- brandmark (upload a PNG for the station screens)"
-        rm -f "$GUI_DIR/logo.bin"; return 0
-    fi
-    mv "$GUI_DIR/logo.bin" "$GUI_DIR/logo.png" && log "branding: logo fetched ($(wc -c < "$GUI_DIR/logo.png") bytes)"
-    return 0
-}
-
 gui_server_addr() {
     # #1252: server_addr=<host of $SERVER> -- imagectl.server, which init
     # normalised to a URL. Known without the server, so the failure snapshot
     # and the cloner screen carry it too. Empty $SERVER = empty = unknown.
     _ga=${SERVER:-}; _ga=${_ga#*://}; _ga=${_ga%%/*}; _ga=${_ga%:*}
     printf 'server_addr=%s\n' "$(printf '%s' "$_ga" | tr '\r\n|' '   ')"
+}
+
+gui_hello_state() {
+    # hello_age=/hello_rc= from $RUN_DIR/hello.state (hello.sh): the age of
+    # the last hello attempt and its HTTP code, empty = no response. No file
+    # = both empty = "not known yet". One printf at the end: a failure prints
+    # nothing, never half a pair. #1304: the cloner's standby reads it too.
+    _hello_age=""; _hello_rc=""; _now=$(date +%s) || return 1
+    if [ -f "$RUN_DIR/hello.state" ]; then
+        IFS='|' read -r _hello_at _hello_rc < "$RUN_DIR/hello.state" || return 1
+        case "$_hello_at" in ''|*[!0-9]*) printf 'native-gui: invalid hello timestamp\n' >&2; return 1 ;; esac
+        case "$_hello_rc" in ''|[0-9][0-9][0-9]) ;; *) printf 'native-gui: invalid hello HTTP code\n' >&2; return 1 ;; esac
+        [ "$_now" -ge "$_hello_at" ] || { printf 'native-gui: hello timestamp is in the future\n' >&2; return 1; }
+        _hello_age=$((_now - _hello_at))
+    fi
+    printf 'hello_age=%s\nhello_rc=%s\n' "$_hello_age" "$_hello_rc"
 }
 
 gui_shrink_state() {

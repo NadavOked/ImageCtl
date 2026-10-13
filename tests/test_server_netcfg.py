@@ -862,7 +862,11 @@ def _nic_card_source():
     `netNicSelectedCard` + שורת הטבלה `netNicRow`, במקום `renderNicCard`).
     הדרישה של #761 (פאנל אחד, לא שניים) נשמרת: כתובת בפועל מול מוגדר, DHCP
     מהמצב החי — בכרטיס אחד, וכתובת השרת בכרטיס ההפצה (`networkDeployTab`)."""
-    return _js_function("netNicRow") + _js_function("netNicSelectedCard")
+    # ‏#1300 (console-full.html P.network, אחד-לאחד): בלי כרטיס "נבחר" — השורה עצמה נושאת הכול: הכתובת
+    # בפועל (netAddrText, המוגדר ב-title ופער = פיל אדום) והתפקיד (netRolePill, DHCP מהמצב החי);
+    # מצב ה-DHCP המלא — בכרטיס רשת ההפצה (networkDeployTab, netDhcpCell).
+    return (_js_function("netNicRow") + _js_function("netAddrText") + _js_function("netRolePill")
+            + _js_function("networkDeployTab"))
 
 
 def test_the_network_tab_has_one_nic_panel_not_two():
@@ -884,7 +888,7 @@ def test_the_unified_nic_card_shows_the_operator_data_points():
     (netDhcpCell -> dhcpLiveClass) ולכן לעולם אינו 'כבוי' כשלא אומת (עיקרון 5)."""
     card = _nic_card_source()
     assert "n.mac" in card                        # כתובת MAC (בכותרת השורה)
-    assert "בפועל" in card                        # כתובת IP בפועל
+    assert "netLiveAddrs" in card                 # כתובת IP בפועל
     assert "מוגדר" in card                        # מול המוגדר
     assert "DHCP" in card and "netDhcpCell" in card   # מצב DHCP מהמצב החי
     assert "dhcpLiveClass" in _js_function("netDhcpCell")

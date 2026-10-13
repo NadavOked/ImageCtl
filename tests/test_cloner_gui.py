@@ -95,10 +95,12 @@ PORTS = 'disk_port() { case "$1" in sda) echo 1;; sdb) echo 2;; sdc) echo 3;; *)
 # --- cloner_gui_state: קובץ המצב מהאמת המקומית --------------------------------
 
 
-def state_lines(tmp_path: Path, smart_request: str | None = None) -> list[str]:
+def state_lines(tmp_path: Path, smart_request: str | None = None,
+                hello: str = '{"schema":1}') -> list[str]:
     run = tmp_path / "run"; run.mkdir()
     gui = tmp_path / "gui"; gui.mkdir()
     (run / "manifest.json").write_text('{"name":"Office 2024"}', newline="\n")
+    (run / "response.json").write_text(hello, newline="\n")
     target(run, "sda", "writing", 100, 40, "5")     # base 40 + cur 5 = 45
     target(run, "sdb", "waiting", 100, 0, "")
     if smart_request is not None:
@@ -111,6 +113,21 @@ def state_lines(tmp_path: Path, smart_request: str | None = None) -> list[str]:
 @requires_native("jq", why="json_get קורא ל-jq לשם האימג' מהמניפסט")
 def test_state_carries_the_image_name(tmp_path):
     assert "cloner=Office 2024" in state_lines(tmp_path)
+
+
+@requires_native("jq", why="drawer_count is read from the cached hello reply")
+def test_state_carries_drawer_count_from_the_hello_reply(tmp_path):
+    assert "drawer_count=2" in state_lines(tmp_path, hello='{"drawer_count":2}')
+
+
+@pytest.mark.parametrize("hello", [
+    '{}', '{"drawer_count":null}', '{"drawer_count":"garbage"}',
+    '{"drawer_count":0}', '{"drawer_count":9}',
+])
+@requires_native("jq", why="drawer_count is read from the cached hello reply")
+def test_state_omits_a_missing_or_invalid_drawer_count(tmp_path, hello):
+    assert not any(line.startswith("drawer_count=")
+                   for line in state_lines(tmp_path, hello=hello))
 
 
 def test_a_drawer_record_reports_the_local_bytes_and_port(tmp_path):
@@ -775,10 +792,11 @@ def test_standby_shows_connected_disks_and_empty_cloner_port(tmp_path):
     ink = _token("--clr-text")
     assert _count_color(px1, ch1, ink, tol=6) > _count_color(px0, ch0, ink, tol=6)
 
-    source = (GUI / "src" / "screens.c").read_text(encoding="utf-8")
-    for wording in ("ריק", "אין פורטי SATA בקושחה", "לא חוברו דיסקים",
-                    "הדיסקים לא נבדקו"):
-        assert wording in source
+    # #1304: the cage (screens_standby.c) says an empty port in words. The
+    # disk_probe sentences went with the old list: the cloner's state file
+    # never carried disk_probe= (clonergui.sh), so they were never drawn there.
+    source = (GUI / "src" / "screens_standby.c").read_text(encoding="utf-8")
+    assert "ריק — אפשר להכניס דיסק" in source
 
 
 @requires_native(

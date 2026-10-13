@@ -26,6 +26,8 @@ int install_handle(App *a, InstallBridge *bridge, const Event *event);
 int install_tick(App *a, InstallBridge *bridge);
 int install_polling(const App *a);
 int install_password_ready(const InstallState *s);
+/* #1310: "next" on the role screen -- a secondary only after a GREEN check */
+int install_role_ready(const InstallState *s);
 const char *install_phase_label(const char *phase);
 void screen_install(App *a, cairo_t *cr, double W, double H);
 int install_render_png(App *a, const char *prefix, int w, int h);

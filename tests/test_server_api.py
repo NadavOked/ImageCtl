@@ -43,6 +43,20 @@ def test_known_machine_without_a_session_boots_locally(server):
     assert answer["role"] == "classroom"
     assert answer["group"] == {"id": "grp_LAB1", "label": "כיתה LAB1", "suffix": "05"}
     assert answer["task"] is None and answer["session"] is None
+    assert "drawer_count" not in answer
+
+
+def test_cloner_hello_carries_its_configured_drawer_count(server):
+    admin = server["admin"]
+    # the cloner group is a fixed group that already exists (409 on create)
+    assert admin.post("/api/console/machines", json={
+        "mac": "b4:2e:99:07:1a:c1", "name": "Cloner 1", "group_id": "grp_CLONERS",
+    }).status_code == 200
+    assert admin.put("/api/console/machines/b4:2e:99:07:1a:c1", json={
+        "drawer_count": 2,
+    }).status_code == 200
+
+    assert hello(server, "b4:2e:99:07:1a:c1")["drawer_count"] == 2
 
 
 def test_hello_identifies_a_machine_by_any_reported_mac(server):
@@ -570,7 +584,7 @@ def test_the_console_settings_screen_wires_the_class_deploy_switch():
     js = (static / "console.js").read_text(encoding="utf-8")
     # ‏#954 גל 6: מסך ההגדרות הוא טבלת שורות (`SETTING_ROWS`); המתג הוא שורה
     # מסוג switch, הקריאה/כתיבה משותפות לכל המתגים ("true"/"false" כמחרוזת).
-    assert '{ key: "class_deploy_enabled", label:' in js
+    assert '{ key: "class_deploy_enabled", card: "general", label:' in js
     rows = js[js.index("const SETTING_ROWS"):js.index("];", js.index("const SETTING_ROWS"))]
     assert 'key: "class_deploy_enabled"' in rows and 'type: "switch"' in rows
     assert 'if (r.type === "switch") return r.defaultOn ? v !== "false" : v === "true";' in js

@@ -64,7 +64,7 @@ sudo IMAGECTL_ROOT_PASSWORD='...' tools/iso/build-iso.sh      --out /srv/iso/out
 
 * ‏`xorriso -report_el_torito`: שני קטעי אתחול (BIOS `isolinux.bin`, ‏UEFI
   `efi.img`), ‏MBR/GPT/APM שוחזרו מה-netinst.
-* ‏BIOS: התפריט עולה, "ImageCtl server install" מסומן, **אין טיימר**. שני
+* ‏BIOS: התפריט עולה, "ImageSrv server install" מסומן, **אין טיימר**. שני
   דברים ב-netinst של דביאן 13 היו מונעים זאת ו-`build-iso.sh` מסיר אותם:
   ‏`gtk.cfg` נושא `menu default` משלו (האחרון מנצח), ו-`spkgtk.cfg` מפעיל
   **התקנה קולית אינטראקטיבית אחרי 30 שניות** בלי מגע (`timeout 300` +

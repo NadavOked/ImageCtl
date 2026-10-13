@@ -685,9 +685,9 @@ def _entry_agent(config: GrubConfig, *, recovery: bool, gui: bool = False) -> st
     # ‏#503: pre-initrd/pre-boot נשלחים רק אחרי שהפקודה הקודמת הצליחה.
     # ‏`if [ "$?" = "0" ]` סביב **הפירור**, לא סביב linux/initrd: && היה
     # הופך כשל של ‎/boot/step למכונה שאינה עולה.
-    return f"""menuentry "ImageCtl" --id imagectl {{
+    return f"""menuentry "ImageSrv" --id imagectl {{
     {grub_call("entry")}
-    echo "Loading ImageCtl..."
+    echo "Loading ImageSrv..."
     insmod http
     {grub_call("http-ok")}
     if [ "$grub_platform" = "efi" ]; then insmod efinet; fi

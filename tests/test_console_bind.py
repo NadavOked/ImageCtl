@@ -64,6 +64,8 @@ def run_main(tmp_path: Path, monkeypatch, *extra_argv: str) -> dict[str, list[di
     monkeypatch.setattr(uvicorn, "Config", fake_config)
     monkeypatch.setattr(uvicorn, "Server", lambda config: object())
     monkeypatch.setattr(server.main, "serve_all", lambda servers: None)
+    # #1310: the primary alive listener has its own test (test_primary_alive.py)
+    monkeypatch.setattr(server.main, "_primary_alive", lambda *a, **k: None)
     monkeypatch.setattr(asyncio, "run", lambda coro=None: None)
     monkeypatch.setattr(server.main, "_interface_for", lambda url: None)
     monkeypatch.setattr("sys.argv", [
@@ -149,3 +151,17 @@ def test_host_all_interfaces_only_when_explicit_and_warns(
     out = capsys.readouterr().out
     assert "0.0.0.0" in out
     assert "R20-F1" in out
+
+
+def test_console_source_allowlist_flag_is_gone_and_refused_by_name(capsys) -> None:
+    """‏#1303: השומר לפי כתובת מקור (#151) נמחק — ההפרדה היא בחומת האש
+    בלבד (`install/firewall-rules.md`). יחידה ישנה שעוד מעבירה את הדגל
+    נעצרת בעלייה ואומרת את שמו; אחרת היה נראה כאילו הקונסולה מוגבלת."""
+    import pytest
+
+    with pytest.raises(SystemExit):
+        server.main.build_parser().parse_args([
+            "--server-url", "http://10.44.12.10:8080",
+            "--console-allow-from", "10.10.10.0/24",
+        ])
+    assert "--console-allow-from" in capsys.readouterr().err

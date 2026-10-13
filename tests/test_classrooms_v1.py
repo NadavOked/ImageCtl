@@ -44,7 +44,7 @@ def test_agent_state_carries_classrooms_false(server):
 def test_index_html_gates_the_classrooms_tree_node_behind_data_cap():
     page = (STATIC / "index.html").read_text(encoding="utf-8")
     assert 'data-cap="classrooms"' in page
-    assert "selectMachinesRole('classroom')" in page
+    assert "selectMachinesRole('classroom',this)" in page   # ‏#1300: עלה כמו במוקאפ — העלה עצמו מודגש
     # מתחיל מוסתר — כמו סניפים — עד ש-/me אומר true.
     assert 'class="inventory-node hidden" data-cap="classrooms"' in page
 

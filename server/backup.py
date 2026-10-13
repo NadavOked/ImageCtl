@@ -4,7 +4,7 @@
 מועתקים ב-rsync כתיקיות, ומאומתים ב-`tools/verify-images.py`. כאן: ה-DB
 (מכונות, משתמשים, סודות TOTP, ‏`console_secret`, מיקומי אחסון) דרך
 ‏`sqlite3.Connection.backup()` — עותק עקבי גם תחת WAL, בניגוד ל-`cp` בזמן
-ריצה (R40 #8) — ושאר `data_dir` (תעודת הקונסולה, branding, netcfg,
+ריצה (R40 #8) — ושאר `data_dir` (תעודת הקונסולה, netcfg,
 known_hosts). ‏`MANIFEST.txt` אומר איזו גרסה ומתי; ‏`SHA256SUMS` על כל
 קובץ. הארכיון **מכיל סודות** — מי שמוריד אותו מקבל אזהרה בקונסולה.
 """
@@ -20,9 +20,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 #: קבצים שאינם נכנסים לארכיון: ה-DB עצמו (נכנס דרך `.backup`), קובצי ה-WAL
-#: שלו, ומה שאינו הגדרה (בדיקות אחסון זמניות).
+#: שלו, ומה שאינו הגדרה (בדיקות אחסון זמניות; ‏`branding/` — לוגו מוסד
+#: שהועלה לפני שהיכולת הוסרה, #1302 — שארית שאיש אינו קורא).
 SKIP_NAMES = {"imagectl.db", "imagectl.db-wal", "imagectl.db-shm", "imagectl.db-journal"}
-SKIP_DIRS = {"storage-test", "storage"}
+SKIP_DIRS = {"storage-test", "storage", "branding"}
 BACKUP_WARNING = "מכיל סודות: סיסמאות מגובבות, סודות MFA, מפתח התעודה. לשמור כמו סיסמה."
 
 

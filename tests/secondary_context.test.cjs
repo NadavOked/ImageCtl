@@ -152,7 +152,7 @@ test('in the secondary\'s context every console GET goes through the relay; /me 
   assert.equal(t.run('consoleUrl("/storage-nodes", true)'), '/api/console/storage-nodes', 'the sidebar asks the primary');
 });
 
-test('post / put / del in the secondary\'s context go to the relay — never to the primary\'s own routes; files (XHR, logo, backup, download) are blocked', async () => {
+test('post / put / del in the secondary\'s context go to the relay — never to the primary\'s own routes; files (XHR, backup, download) are blocked', async () => {
   const t = setup(both());
   t.run(`setServerContext("${NODE}", "חיפה")`);
   for (const call of ['post("/users", {username: "x"})', 'put("/settings", {a: 1})', 'del("/users/x")',
@@ -166,10 +166,9 @@ test('post / put / del in the secondary\'s context go to the relay — never to 
   const before = t.calls.length;
   t.run('uploadImage({name: "a.tar", size: 1})');
   t.run('IMG.sel = new Set(["img_1"]); bulkDownload()');
-  await t.run('settingsLogoUpload({files: [{type: "image/png"}], value: ""})');
   t.run('document.getElementById("driverFile").files = [{name: "d.tar"}]; startDriverUpload()');
   assert.equal(t.calls.length, before, 'no file left the browser: ' + JSON.stringify(t.calls.slice(before)));
-  assert.ok(t.toasts.filter((m) => /קבצים/.test(m)).length >= 4, JSON.stringify(t.toasts));
+  assert.ok(t.toasts.filter((m) => /קבצים/.test(m)).length >= 3, JSON.stringify(t.toasts));
   // back on the primary, the same call goes to the primary's own route
   t.run('setServerContext(null)');
   await t.run('post("/users", {username: "x"})');
@@ -305,7 +304,8 @@ test('#1008: the primary\'s monitor lists each secondary\'s machines with the se
   const html = await draw(t, 'monitor', 0, false);
   assert.match(html, /data-mac="aa:bb:cc:dd:ee:01"/, 'the local machine is still there');
   assert.match(html, /data-mac="aa:bb:cc:dd:ee:21" data-node="n0de"/);
-  assert.match(html, /H21<\/span><span class="sub"><span class="mono">aa:bb:cc:dd:ee:21<\/span> · <span data-server>חיפה<\/span>/);
+  // ‏#1300: מחובר = כפתור (שם · שרת · IP), כמו המוקאפ
+  assert.match(html, /<b>H21<\/b> <span class="muted" data-server>· חיפה<\/span><\/span><span class="mono">10\.30\.0\.21<\/span>/);
   assert.match(html, /data-node="dn" data-unread>.*?אילת.*?לא נקרא<\/span><span class="sub">connect timed out/);
   assert.match(html, /data-node="off1" data-unread>.*?באר שבע.*?השרת מושבת — לא נשאל/);
   assert.ok(!t.calls.some((c) => c.url.includes('/storage-nodes/off1/')), 'a disabled secondary is not asked');

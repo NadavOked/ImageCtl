@@ -278,7 +278,8 @@ def lookup(
     עדיין מזוהה (#524).
     """
     sql = (
-        "SELECT m.mac, m.suffix, m.note, g.id AS group_id, g.label, g.role "
+        "SELECT m.mac, m.suffix, m.note, m.drawer_count, "
+        "g.id AS group_id, g.label, g.role "
         "FROM machines m JOIN groups g ON g.id = m.group_id WHERE m.mac = ?"
     )
     candidates = [mac]

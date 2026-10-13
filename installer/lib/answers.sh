@@ -13,6 +13,7 @@ answer_set() {
         servers_gw) ANSWER_SERVERS_GW=$_as_value ;; servers_dns) ANSWER_SERVERS_DNS=$_as_value ;;
         hostname) ANSWER_HOSTNAME=$_as_value ;; admin_pass) ANSWER_ADMIN_PASS=$_as_value ;;
         admin_user) ANSWER_ADMIN_USER=$_as_value ;;
+        primary_fingerprint) ANSWER_PRIMARY_FINGERPRINT=$_as_value ;;
         *) fail unknown-key "unknown answer: $_as_key" ;;
     esac
 }
@@ -26,10 +27,22 @@ parse_answers() {
         case "$_pa_key" in ''|*[!a-z_]*) fail invalid-key "invalid answer key: $_pa_key" ;; esac
         answer_set "$_pa_key" "$_pa_value"
     done < "$_pa_file"
-    for _pa_key in disk role primary_url servers_if servers_mac servers_mode \
+    for _pa_key in disk role primary_url primary_fingerprint servers_if servers_mac servers_mode \
         servers_addr servers_mask servers_gw servers_dns hostname admin_user admin_pass; do
         case " $ANSWER_KEYS " in *" $_pa_key "*) ;; *) fail missing-key "missing answer: $_pa_key" ;; esac
     done
+}
+
+# #1310: the primary's address as the person types it -- an IP or a name,
+# optionally HOST:8443 or https://HOST:8443[/] -- printed in the one stored
+# form, https://HOST:8443. Anything else (http://, another port, a path,
+# a space inside) is refused, not "fixed": the inter-site port is 8443.
+normalize_primary_url() {
+    _np=$1
+    while :; do case "$_np" in ' '*) _np=${_np# } ;; *' ') _np=${_np% } ;; *) break ;; esac; done
+    _np=${_np#https://}; _np=${_np%/}; _np=${_np%:8443}
+    case "$_np" in ''|*[!A-Za-z0-9.-]*|.*|-*) return 1 ;; esac
+    printf 'https://%s:8443' "$_np"
 }
 
 valid_ipv4() {
@@ -66,11 +79,16 @@ validate_answers() {
     case "$DISK_NAME" in ''|*/*) fail invalid-disk "disk is not a whole-disk path: $ANSWER_DISK" ;; esac
     whole_disk_exists "$DISK_NAME" || fail invalid-disk "disk does not exist or is not a whole disk: $ANSWER_DISK"
     disk_is_iso "$DISK_NAME" && fail iso-target "refusing the disk that contains /cdrom: $ANSWER_DISK"
-    case "$ANSWER_ROLE" in standalone) [ -z "$ANSWER_PRIMARY_URL" ] || fail invalid-primary-url "standalone requires an empty primary_url" ;;
+    case "$ANSWER_ROLE" in standalone)
+            [ -z "$ANSWER_PRIMARY_URL" ] || fail invalid-primary-url "standalone requires an empty primary_url"
+            [ -z "$ANSWER_PRIMARY_FINGERPRINT" ] || fail invalid-primary-url "standalone requires an empty primary_fingerprint" ;;
         secondary)
-            case "$ANSWER_PRIMARY_URL" in https://*:8443) ;; *) fail invalid-primary-url "secondary requires https://HOST:8443" ;; esac
-            _va_primary=${ANSWER_PRIMARY_URL#https://}; _va_primary=${_va_primary%:8443}
-            case "$_va_primary" in ''|*[!A-Za-z0-9.-]*) fail invalid-primary-url "secondary requires https://HOST:8443" ;; esac
+            ANSWER_PRIMARY_URL=$(normalize_primary_url "$ANSWER_PRIMARY_URL") \
+                || fail invalid-primary-url "secondary requires the primary's IP or name (or https://HOST:8443)"
+            # #1310: no secondary without a primary that answered -- the GUI
+            # bridge writes the fingerprint only from its own green check.
+            case "$ANSWER_PRIMARY_FINGERPRINT" in *[!0-9a-f]*|'') fail primary-unverified "the primary was not verified (no green connection check)" ;; esac
+            [ "${#ANSWER_PRIMARY_FINGERPRINT}" -eq 64 ] || fail primary-unverified "the primary was not verified (no green connection check)"
             ;;
         *) fail invalid-role "role must be standalone or secondary" ;; esac
     case "$ANSWER_HOSTNAME" in ''|*[!A-Za-z0-9-]*|-*|*-) fail invalid-hostname "hostname must be an RFC-1123 label" ;; esac
@@ -95,7 +113,7 @@ validate_answers() {
     case "$ANSWER_ADMIN_USER" in ''|*[!a-z0-9._-]*|-*) fail invalid-admin-user "admin_user must be lowercase letters, digits, . _ - and not start with -" ;; esac
     [ "${#ANSWER_ADMIN_USER}" -le 32 ] || fail invalid-admin-user "admin_user is longer than 32 characters"
     [ -n "$ANSWER_ADMIN_PASS" ] || fail invalid-admin-password "admin_pass must not be empty"
-    export DISK_NAME ANSWER_DISK ANSWER_ROLE ANSWER_PRIMARY_URL ANSWER_SERVERS_IF
+    export DISK_NAME ANSWER_DISK ANSWER_ROLE ANSWER_PRIMARY_URL ANSWER_PRIMARY_FINGERPRINT ANSWER_SERVERS_IF
     export ANSWER_SERVERS_MAC ANSWER_SERVERS_MODE ANSWER_SERVERS_ADDR ANSWER_SERVERS_MASK
     export ANSWER_SERVERS_GW ANSWER_SERVERS_DNS ANSWER_HOSTNAME ANSWER_ADMIN_USER ANSWER_ADMIN_PASS
 }

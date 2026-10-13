@@ -316,3 +316,14 @@ def test_native_bridge_progress_404_uses_local_finish_evidence(monkeypatch, caps
     monkeypatch.setattr(bridge.sys, "stdin", io.StringIO("{}"))
     assert bridge.main(["progress"]) == 0
     assert capsys.readouterr().out.splitlines() == ["state=done", "fingerprint=AA:BB"]
+
+
+def test_the_wizard_header_is_the_imagesrv_logo() -> None:
+    """#1302: the web installer shows ImageSrv -- the compact lockup inline
+    (an explicit height: a viewBox-only SVG collapses), not the old "I" mark."""
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    assert "<title>ImageSrv — אשף התקנה</title>" in html
+    header = html[html.index('<header class="top">'):html.index("</header>")]
+    assert 'aria-label="ImageSrv"' in header and 'height="28"' in header
+    assert '<g fill="#0079B8"><rect x="0" y="26.78" width="9" height="9" rx="1"/>' in header
+    assert "ImageCtl" not in html

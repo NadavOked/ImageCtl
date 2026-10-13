@@ -51,13 +51,56 @@ def test_base_version_strips_describe_suffix():
 
 
 def test_check_update_reports_available_when_remote_is_newer():
+    seen = []
     hooks = {
         "describe": lambda repo_dir: "v0.24.0",
         "ls_remote_tags": lambda url: (True, "x\trefs/tags/v0.25.0\n", ""),
+        "verify_tag": lambda url, tag, repo_dir: seen.append((url, tag, repo_dir))
+        or {"state": "signed", "detail": "imagectl-release SHA256:abc"},
     }
     result = update_mod.check_update(hooks, "/repo", "https://example/pub.git")
     assert result == {"current": "v0.24.0", "latest": "v0.25.0",
-                      "available": True, "reason": None}
+                      "available": True, "reason": None,
+                      "signature": {"state": "signed", "detail": "imagectl-release SHA256:abc"}}
+    assert seen == [("https://example/pub.git", "v0.25.0", "/repo")]
+
+
+# --- #1277: חתימת התג החדש — שלושה מצבים, ו"לא נבדק" אינו "חתום" ------------------
+
+
+def _check_with(verify_tag):
+    hooks = {"describe": lambda repo_dir: "v0.24.0",
+             "ls_remote_tags": lambda url: (True, "x\trefs/tags/v0.25.0\n", ""),
+             "verify_tag": verify_tag}
+    return update_mod.check_update(hooks, "/repo", "https://example/pub.git")
+
+
+@pytest.mark.parametrize("state", ["signed", "unsigned", "unchecked"])
+def test_check_update_carries_each_signature_state_as_is(state):
+    result = _check_with(lambda *_: {"state": state, "detail": "d"})
+    assert result["signature"] == {"state": state, "detail": "d"}
+    assert result["available"] is True          # החתימה אינה מסתירה את הגרסה — השער הוא הסקריפט
+
+
+def test_a_verifier_that_raised_is_unchecked_not_signed():
+    def boom(*_):
+        raise RuntimeError("cannot run")
+    signature = _check_with(boom)["signature"]
+    assert signature["state"] == "unchecked" and "cannot run" in signature["detail"]
+
+
+@pytest.mark.parametrize("answer", [None, {}, {"state": "ok"}, {"state": "SIGNED"}, "signed"])
+def test_an_unknown_verifier_answer_is_unchecked(answer):
+    assert _check_with(lambda *_: answer)["signature"]["state"] == "unchecked"
+
+
+def test_no_signature_is_checked_when_there_is_nothing_to_install():
+    def never(*_):
+        raise AssertionError("verify_tag ran with no newer tag")
+    hooks = {"describe": lambda repo_dir: "v0.25.0",
+             "ls_remote_tags": lambda url: (True, "x\trefs/tags/v0.25.0\n", ""),
+             "verify_tag": never}
+    assert "signature" not in update_mod.check_update(hooks, "/repo", "https://example/pub.git")
 
 
 def test_check_update_not_available_when_up_to_date():
@@ -134,6 +177,8 @@ def update_server(tmp_path: Path, images_root: Path, clock):
                                         or (True, "")),
         "checkout": lambda repo_dir, tag: (calls.__setitem__("checkout", calls["checkout"] + 1)
                                            or (True, "")),
+        # ‏#1277: בלי זה, ההוק האמיתי היה משכפל מהרשת בכל בדיקה שמוצאת גרסה.
+        "verify_tag": lambda url, tag, repo_dir: {"state": "signed", "detail": "test"},
         "run_upgrade": lambda repo_dir, tag: (
             calls.__setitem__("run", calls["run"] + 1)
             or calls.__setitem__("run_args", (str(repo_dir), tag))
@@ -201,7 +246,8 @@ def test_check_returns_available_once_enabled(update_server):
     # ‏#1000: התשובה היא המסמך שנשמר — עם חותמת `at` של השרת.
     assert result.pop("at")
     assert result == {"current": "v0.24.0", "latest": "v0.25.0",
-                      "available": True, "reason": None}
+                      "available": True, "reason": None,
+                      "signature": {"state": "signed", "detail": "test"}}
 
 
 def test_apply_rejects_bad_tag_format(update_server):

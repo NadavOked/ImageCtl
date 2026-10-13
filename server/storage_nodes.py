@@ -303,7 +303,8 @@ def list_nodes(conn, user: tuple[str, str]) -> list[dict]:
     rows = conn.execute(
         "SELECT n.id, n.label, n.base_url, n.group_id, n.tls_fingerprint,"
         " n.node_id, n.enrolled_at, n.disabled_at, g.label AS group_label,"
-        " n.last_seen_at, n.last_error, n.last_error_at"
+        " n.last_seen_at, n.last_error, n.last_error_at,"
+        " n.server_version, n.server_version_at"
         " FROM storage_nodes n"
         " LEFT JOIN storage_node_groups g ON g.id = n.group_id"
         " ORDER BY n.label, n.id"
@@ -613,6 +614,20 @@ def record_contact(conn, node_id: str, *, error: str | None) -> None:
             conn.execute(
                 "UPDATE storage_nodes SET last_error = ?, last_error_at = ?"
                 " WHERE id = ?", (error, now, node_id))
+
+
+def record_version(conn, node_id: str, answer) -> None:
+    """‏#1300: גרסת המשני מתשובה מוצלחת שלו (`/ping`, `/machines`). רק כשהשדה
+    **נכח** בתשובה — משני ישן בלי השדה אינו מוחק גרסה שנקראה, ואינו נרשם
+    כ"נבדק". ערך שאינו מחרוזת = "לא ידועה" (NULL עם זמן), לא ניחוש."""
+    if not isinstance(answer, dict) or "server_version" not in answer:
+        return
+    value = answer["server_version"]
+    value = value[:64] if isinstance(value, str) and value else None
+    with _write_lock, writing(conn):
+        conn.execute(
+            "UPDATE storage_nodes SET server_version = ?, server_version_at = ?"
+            " WHERE id = ?", (value, now_iso(), node_id))
 
 
 def contact_fields(conn, node_id: str) -> dict:

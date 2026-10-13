@@ -139,7 +139,7 @@ def test_backup_server_writes_a_consistent_db_data_dir_and_verified_images(tmp_p
     assert copy.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     assert copy.execute("SELECT count(*) FROM machines").fetchone()[0] == 1
     assert copy.execute("SELECT count(*) FROM users WHERE username='noc'").fetchone()[0] == 1
-    assert (dest / "data" / "branding" / "logo.png").read_bytes() == b"\x89PNG"
+    assert not (dest / "data" / "branding").exists()             # #1302: שארית, לא הגדרה
     assert not (dest / "data" / "imagectl.db").exists()          # רק דרך db/
     assert not (dest / "data" / "storage-test").exists()
     assert (dest / "images" / "win-a" / "manifest.json").exists()

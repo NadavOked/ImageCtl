@@ -85,8 +85,6 @@ ROWS = [
      (200, 403, 409, 403)),
     ("/api/console/storage-transfers", "get", _http,
      (200, 403, 409, 403)),
-    (f"/api/console/storage-nodes/{NODE}/transfers", "get", _http,
-     (200, 403, 409, 403)),
     (f"/api/console/storage-nodes/{NODE}/machines", "get", _http,
      (200, 403, 409, 403)),
     (f"/api/console/storage-nodes/{NODE}/images", "get", _http,

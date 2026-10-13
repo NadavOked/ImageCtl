@@ -121,18 +121,22 @@ def write_selection(tmp_path: Path, build: list[str]) -> Path:
 
 def setup(tmp_path: Path, modules: dict[str, str] | None = None,
           fakes: dict[str, str] | None = None,
-          selection: list[str] | None = None) -> tuple[Path, Path, Path, str]:
+          selection: list[str] | None = None,
+          tools: bool = True) -> tuple[Path, Path, Path, str]:
     """LIB_DIR מזויף עם המודולים, RUN_DIR, GUI_DIR, ו-PATH עם כלים מזויפים.
 
     ‏PATH מתחיל בתיקייה **ריקה** של כלים מזויפים כדי ש-`dmidecode`/`smartctl`
     של התחנה לא יזלגו פנימה: המובנים מופיעים רק כשהבינארי שלהם ארוז.
-    ‏`selection` — מזהי ה-build בקובץ הבחירה; ברירת המחדל כולם (#1050)."""
+    ‏`selection` — מזהי ה-build בקובץ הבחירה; ברירת המחדל כולם (#1050).
+    ‏`tools` — היכולת ב-hello (‏`tools_on`, ‏#1303); ברירת המחדל דלוקה (v1.1)."""
     lib = tmp_path / "lib"; lib.mkdir()
     run = tmp_path / "run"; run.mkdir()
     gui = tmp_path / "gui"; gui.mkdir()
     fake = tmp_path / "bin"; fake.mkdir()
     shutil.copy(AGENT / "lib" / "toolbins.sh", lib / "toolbins.sh")
     sel = write_selection(tmp_path, ALL_FAKE_IDS if selection is None else selection)
+    (run / "response.json").write_text(json.dumps({"role": "build", "tools": tools}),
+                                       encoding="utf-8", newline="\n")
     for name, body in (modules or {}).items():
         (lib / f"tools_{name}.sh").write_text(body, encoding="utf-8", newline="\n")
     for name, body in (fakes or {}).items():
@@ -148,7 +152,8 @@ def setup(tmp_path: Path, modules: dict[str, str] | None = None,
     prelude = (
         f"export PATH={path!r} LIB_DIR={posix(lib)!r} RUN_DIR={posix(run)!r} "
         f"GUI_DIR={posix(gui)!r} TOOLS_SELECTION={posix(sel)!r} IMAGECTL_TEST=1; "
-        f". {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/tools.sh; "
+        f". {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/jsonq.sh; "
+        f". {posix(AGENT)}/lib/buildmenuitems.sh; . {posix(AGENT)}/lib/tools.sh; "
     )
     return lib, run, gui, prelude
 
@@ -436,10 +441,23 @@ def test_the_bridge_takes_the_name_from_station_json_not_from_the_gui(tmp_path):
     assert not (run / "called").exists()
 
 
+@requires_native("jq", why="tools_on קורא את היכולת מה-hello עם jq")
 def test_a_second_run_gets_a_new_sequence_number(tmp_path):
     _, _, gui, pre = setup(tmp_path, {"disk": DISK_MODULE})
     sh(pre + "tools_gui_run 'tool-run|lsblk||'; tools_gui_run 'tool-run|lsblk||'")
     assert (gui / "tool-result").read_text().strip().endswith("|2")
+
+
+def test_tool_run_is_refused_while_the_toolbox_is_off(tmp_path):
+    """‏#1303: הגואי מסתיר את הכפתור לפי `menu_tools`, אבל רשומת `tool-run`
+    שמגיעה בכל זאת (גואי ישן, כתיבה ידנית ל-fifo) הריצה את הכלי — גם
+    במהדורה בלי ארגז הכלים. הגשר עצמו הוא השער: יכולת כבויה, או כזו שלא
+    נקראה, = אין ריצה ואין רשומת תוצאה. ‏lsblk הוא ro, כדי שרק השער יעצור."""
+    _, run, gui, pre = setup(tmp_path, {"disk": DISK_MODULE}, tools=False)
+    out = sh(pre + "tools_gui_run 'tool-run|lsblk||'; echo rc=$?")
+    assert last(out) == "rc=1", out.stdout
+    assert not (gui / "tool-result").exists()
+    assert not (run / "called").exists()
 
 
 @pytest.mark.parametrize("token", ["tool-run|lsblk|a b|", "tool-run|../x||", "tool-run|lsblk|$(id)|"])

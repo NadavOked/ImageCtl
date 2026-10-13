@@ -14,9 +14,9 @@ if loadfont $prefix/font.pf2 ; then
     insmod gfxterm
     terminal_output gfxterm
 fi
-echo 'ImageCtl @TAG@ installer'
+echo 'ImageSrv @TAG@ installer'
 
-menuentry --hotkey=m 'ImageCtl server install' {
+menuentry --hotkey=m 'ImageSrv server install' {
     set background_color='#1b2a41'
     linux    /live/vmlinuz @DI_ARGS@ --- quiet
     initrd   /live/initrd.img

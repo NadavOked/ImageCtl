@@ -13,9 +13,10 @@
 #                         ‏`PRAGMA integrity_check` = ok הוא הראיה שהעותק
 #                         קריא, לא רק שנכתב (עיקרון 5). ‏sqlite3 (ה-CLI)
 #                         אינו מותקן על השרת — python3 כן, ואותו API.
-#   data/                 שאר תיקיית הנתונים: תעודת הקונסולה, branding,
-#                         netcfg, known_hosts — בלי imagectl.db* ובלי
-#                         נקודות העיגון של האחסון (‏storage/, ‏storage-test/).
+#   data/                 שאר תיקיית הנתונים: תעודת הקונסולה, netcfg,
+#                         known_hosts — בלי imagectl.db*, בלי נקודות העיגון
+#                         של האחסון (‏storage/, ‏storage-test/), ובלי branding/
+#                         (לוגו מוסד מלפני #1302 — שארית, לא הגדרה).
 #   system/<ts>/          קובצי המערכת של ImageCtl: dnsmasq, nftables,
 #                         interfaces.d, ‏/etc/imagectl, שורות ImageCtl
 #                         ב-fstab, יחידות ה-systemd וה-drop-ins שלהן.
@@ -136,7 +137,7 @@ PYEOF
 # --- 2. שאר תיקיית הנתונים -----------------------------------------------
 say "data_dir → $DEST/data/"
 sync_dir "$DATA_DIR" "$DEST/data" 'imagectl.db' 'imagectl.db-wal' 'imagectl.db-shm' \
-    'imagectl.db-journal' 'storage' 'storage-test'
+    'imagectl.db-journal' 'storage' 'storage-test' 'branding'
 
 # --- 3. קובצי המערכת של ImageCtl ------------------------------------------
 SYS="$DEST/system/$TS"

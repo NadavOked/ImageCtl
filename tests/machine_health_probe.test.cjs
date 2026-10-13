@@ -93,14 +93,15 @@ function balanced(html) {
   }
   assert.deepEqual(stack,[],'Unclosed tags');
 }
-const section=(html)=>html.slice(html.indexOf('<div class="sec">בריאות המכונה'),html.indexOf('<div class="sec">היסטוריה'));
+// ‏#1300: "בריאות המכונה" היא קבוצה בתוך לשונית "סקירה" (‏.grp), ואחריה לשונית "דיסקים"
+const section=(html)=>html.slice(html.indexOf('<div class="grp">בריאות המכונה'),html.indexOf('<div class="sec" data-cnt',html.indexOf('<div class="grp">בריאות המכונה')));
 
 test('a clean measured probe: the health group shows every field, green only where measured, grey "not checked" for null, no verdicts', () => {
   const {run,node}=setup();
   run("openMachineDetail('a0:48:1c:8a:18:40')");
   const html=node('#drawerBody').innerHTML; balanced(html);
   const h=section(html);
-  assert.match(h,/בריאות המכונה \(נדגם לפני 3 דק&#39;\)/,'sampled-ago in the group header');
+  assert.match(h,/<div class="grp">בריאות המכונה <small>\(נדגם לפני 3 דק&#39;\)<\/small><\/div>/,'sampled-ago in the group header');
   assert.doesNotMatch(h,/class="note (err|warn)"/,'no verdicts on a clean probe');
   assert.match(h,/<span class="k">חשמל<\/span><span class="v"><span class="st ok">חשמל \(AC\)</);
   assert.match(h,/<span class="k">שעון<\/span><span class="v"><span class="st ok">סטייה 12 שנ&#39;</);
@@ -144,7 +145,7 @@ test('a machine that never reported a probe says so — not an empty green group
   const {run,node}=setup();
   run("openMachineDetail('78:ac:c0:9b:11:c3')");
   const h=section(node('#drawerBody').innerHTML);
-  assert.match(h,/<div class="sec">בריאות המכונה<\/div>/,'no "sampled" suffix without a sample');
+  assert.match(h,/<div class="grp">בריאות המכונה<\/div>/,'no "sampled" suffix without a sample');
   assert.match(h,/המכונה מעולם לא דיווחה בדיקת מכונה \(סוכן ישן\)/);
   assert.doesNotMatch(h,/class="kv"/); assert.doesNotMatch(h,/st ok/);
 });
@@ -169,7 +170,7 @@ test('home "needs attention": every verdict is a note with the machine name and 
   run('HOME.net=[]; HOME.nodes=[]; HOME.err={};');
   const html=run('homeAttention()'); balanced(html);
   assert.equal((html.match(/class="attn-i (err|warn)"/g)||[]).length,6,'six verdicts of מחשב 2, none for מחשב 1/3');
-  assert.match(html,/attn-i err"[^]*<b>מחשב 2<\/b> — המחשב על סוללה — שיכפול\/קליטה עלולים להיקטע\. <a role="link" tabindex="0" onclick="openMachineDetail\('78%3Aac%3Ac0%3A9b%3A11%3Ac2'\)">פרטי המכונה</);
+  assert.match(html,/attn-i err"[^]*<b>מחשב 2<\/b> — המחשב על סוללה — שיכפול\/קליטה עלולים להיקטע\.<\/div><button class="btn sm flat" onclick="openMachineDetail\('78%3Aac%3Ac0%3A9b%3A11%3Ac2'\)">פרטי המכונה</,'#1300: the action is a button in its own column');
   assert.match(html,/attn-i warn"[^]*<b>מחשב 2<\/b> — 7 שגיאות CRC על eth0/);
   assert.doesNotMatch(html,/מחשב 1|מחשב 3/);
   assert.match(html,/<span class="cnt">6<\/span>/);

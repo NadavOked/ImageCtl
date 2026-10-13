@@ -392,7 +392,7 @@ def test_installer_progress_bar_fills_from_the_right():
 def test_installer_failure_is_said_in_hebrew_with_the_code_below():
     final = _src("screens_install_final.c")
     he = body(final, "failure_he")
-    assert '{"packages","התקנת חבילות ImageCtl נכשלה."}' in he
+    assert '{"packages","התקנת חבילות ImageSrv נכשלה."}' in he   # #1302
     assert "(unsigned char)e[0]>=0x80" in he                # a Hebrew message stays as it is
     failed = body(final, "failed")
     assert "install_text_r(cr,t,s->error[0]?s->error" not in failed   # the raw code was the headline

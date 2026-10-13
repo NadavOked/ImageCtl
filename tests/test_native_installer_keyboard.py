@@ -86,8 +86,9 @@ static const char *focus_name(const App *a) {
 
 static void show(const App *a, const char *tok) {
     const InstallState *s = &a->install;
-    printf("%%s view=%%d focus=%%s secondary=%%d nic=%%d static=%%d disk=%%d ack=%%d\n", tok,
-           s->view, focus_name(a), s->secondary, s->nic, s->static_mode, s->disk, s->disk_ack);
+    printf("%%s view=%%d focus=%%s secondary=%%d nic=%%d static=%%d disk=%%d ack=%%d ok=%%d checked=%%d\n", tok,
+           s->view, focus_name(a), s->secondary, s->nic, s->static_mode, s->disk, s->disk_ack,
+           s->primary_ok, s->primary_checked);
 }
 
 static App app;
@@ -106,12 +107,15 @@ int main(int argc, char **argv) {
         Event e = { 0 };
         if (!strcmp(t, "only-disk-0")) { a->install.disks[1].iso = 1; show(a, t); continue; }
         if (!strcmp(t, "technical-open")) { a->install.technical_open = 1; show(a, t); continue; }
+        if (!strcmp(t, "unchecked")) { a->install.primary_ok = a->install.primary_checked = 0; show(a, t); continue; }
+        if (!strcmp(t, "CHAR1")) { e.type = UIEV_CHAR; e.ch = '1'; install_handle(a, &b, &e); show(a, t); continue; }
         if (!strcmp(t, "SPACE")) { e.type = UIEV_CHAR; e.ch = ' '; }
         else {
             e.type = UIEV_KEY;
             e.key = !strcmp(t, "UP") ? KEYSYM_UP : !strcmp(t, "DOWN") ? KEYSYM_DOWN
                   : !strcmp(t, "TAB") ? KEYSYM_TAB : !strcmp(t, "BTAB") ? KEYSYM_BACKTAB
-                  : !strcmp(t, "ENTER") ? KEYSYM_ENTER : !strcmp(t, "ESC") ? KEYSYM_ESC : 0;
+                  : !strcmp(t, "ENTER") ? KEYSYM_ENTER : !strcmp(t, "ESC") ? KEYSYM_ESC
+                  : !strcmp(t, "BKSP") ? KEYSYM_BACKSPACE : 0;
             if (!e.key) { fprintf(stderr, "unknown token %%s\n", t); return 2; }
         }
         install_handle(a, &b, &e);
@@ -229,3 +233,37 @@ def test_escape_goes_back_and_enter_validates_forward_unchanged(driver, tmp_path
     states, bridge = _press(driver, tmp_path, ROLE, "ESC", "ENTER", "ENTER")
     assert _col(states, "view") == [str(ROLE), str(DISK), str(ROLE), str(NETWORK)]
     assert bridge == ["validate", "validate"]
+
+
+@NATIVE
+def test_next_on_the_role_screen_waits_for_a_green_check(driver, tmp_path):
+    """‏#1310 (נדב 12/10: "זה לא תקין אם זה לא ירוק"): משני עובר את מסך
+    התפקיד רק אחרי בדיקה ירוקה. Enter הוא הדרך היחידה ב-ESXi — הכפתור
+    המושבת לבדו לא היה עוצר אותו."""
+    states, bridge = _press(driver, tmp_path, ROLE, "ENTER")      # the demo is green
+    assert bridge == ["validate"] and states[-1]["view"] == str(NETWORK)
+
+    states, bridge = _press(driver, tmp_path, ROLE, "unchecked", "ENTER")
+    assert bridge == [] and states[-1]["view"] == str(ROLE), "not checked is not ok"
+
+    states, bridge = _press(driver, tmp_path, ROLE, "UP", "UP", "ENTER")   # primary: no check
+    assert _col(states, "secondary")[2] == "0" and bridge == ["validate"]
+
+
+@NATIVE
+@pytest.mark.parametrize("edit", ["CHAR1", "BKSP"])
+def test_editing_the_address_forgets_the_green_check(driver, tmp_path, edit):
+    states, bridge = _press(driver, tmp_path, ROLE, edit, "ENTER")
+    assert states[0]["focus"] == "primary_url"
+    assert (states[1]["ok"], states[1]["checked"]) == ("0", "0")
+    assert bridge == [] and states[-1]["view"] == str(ROLE)
+
+
+@NATIVE
+def test_a_check_turns_green_only_on_ok_1_from_the_bridge(driver, tmp_path):
+    """הגשר כאן עונה בלי `ok=` כלל. לפני #1310 ה-ok הקודם (ירוק) נשאר —
+    "לא נבדק" נקרא כ"תקין"."""
+    states, bridge = _press(driver, tmp_path, ROLE, "DOWN", "SPACE", "ENTER")
+    assert bridge == ["check-primary"]
+    assert (states[2]["ok"], states[2]["checked"]) == ("0", "1")
+    assert states[-1]["view"] == str(ROLE)

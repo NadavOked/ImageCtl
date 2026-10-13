@@ -63,6 +63,8 @@ const BASE = {'/storage-locations': LIST, '/images': [
   {id: 'office365-v2', name: 'office365 v2', location_id: SAN.id, available: false, total_compressed_bytes: 20e9, created: '2026-09-12T10:00:00+00:00'},
   {id: 'ubuntu', name: 'ubuntu', location_id: LOCAL.id, available: true, total_compressed_bytes: 5e9, created: '2026-09-10T10:00:00+00:00'},
 ]};
+// ‏#1300: פעולות השורה בתפריט ⋯ (UI.rowMenu) — הפריטים מתוך data-menu
+const menuOf = (r) => { const m = r.match(/data-menu="([^"]*)"/); assert.ok(m, 'row has a ⋯ menu'); return JSON.parse(m[1].replaceAll('&quot;', '"').replaceAll('&#39;', "'").replaceAll('&amp;', '&')); };
 const row = (html, needle) => { const i = html.indexOf(needle); assert.ok(i >= 0, 'missing row: ' + needle); const s = html.lastIndexOf('<tr', i); return html.slice(s, html.indexOf('</tr>', i) + 5); };
 const tick = () => new Promise(r => setImmediate(r));
 const settle = async () => { for (let i = 0; i < 8; i++) await tick(); };
@@ -76,43 +78,40 @@ test('the storage page is wired: own admin page, load + render, placeholder befo
   assert.equal(run('pageAllowed("storage")'), true);
 });
 
-test('1. list: header pill, unavailable-images note, one row per location with state/space/images and always-visible actions, legend', async () => {
+test('1. list (#1300, console-full.html P.storage): short header, unavailable-images note, one row per location (name · type · address · usage · state) with a ⋯ menu; the state legend is the pill title', async () => {
   const {run, requests} = setup(BASE);
   await run('loadStorage()');
   assert.deepEqual(requests.map(r => r.method + ' ' + r.url), ['GET /storage-locations']);
   const html = run('storagePage()');
-  assert.match(html, /<span class="pill err">3 מיקומים · 1 לא נגיש<\/span>/);
-  assert.match(html, /22 אימג&#39;ים/);
-  assert.match(html, /נבדק 09:40 \(כל 60 שניות\)/);
+  assert.match(html, /<span class="pill err">1 לא נגיש<\/span>/, 'a pill only when something is wrong');
+  assert.match(html, /<div class="obj-sub"[^>]*>מיקומי האימג&#39;ים והקיבולת · נבדק 09:40 \(כל 60 שניות\)<\/div>/);
+  assert.match(html, /onclick="storageGo\('add'\)"><svg[^]*?<\/svg> מיקום אחסון</);
+  assert.match(html, /<span>מיקומי אחסון<\/span><div class="acts"><button class="btn sm" onclick="storageCheckAll\(\)">בדוק הכול</);
   assert.match(html, /2 אימג'ים לא זמינים כרגע/, 'the note names the count');
   assert.match(html, /san-lun1<\/span> \(לא נגיש מאז 09:12\)/, 'and the location behind it');
   assert.match(html, /storageOpenDrawer\('loc_bbbb0002'\)/, 'פרטים opens the drawer');
-  assert.match(html, /class="dg show-acts storage"/, 'actions always visible (mockup decision), table scrolls at 375');
+  assert.match(html, /<th>שם<\/th><th>סוג<\/th><th class="c-opt">כתובת<\/th><th>שימוש<\/th><th>מצב<\/th>/);
   const local = row(html, 'data-loc="loc_local"');
-  assert.match(local, /<span class="st ok">מחובר<\/span>/);
+  assert.match(local, /title="דיסק השרת · ברירת המחדל לקליטה">מקומי</, 'the subtitle moved to the name title');
+  assert.match(local, /<span class="st ok" title="מחובר — מעוגן ונקרא בבדיקה האחרונה">מחובר<\/span>/);
   assert.match(local, /614 GB \/ 926 GB<\/bdi><span class="pct">66%<\/span>/, 'stage 2: used / total with the percent next to the bar, not free / total');
   assert.match(local, /<div class="bar "[^>]*aria-valuenow="66"/);
-  assert.match(local, /storageCheck\('loc_local'\)/);
-  assert.doesNotMatch(local, /storageDisconnect|storageDelete/, 'local is not removable');
+  assert.deepEqual(menuOf(local).map(i => i[0]), ['פרטים', 'בדוק'], 'local is not removable');
   const san = row(html, 'data-loc="loc_bbbb0002"');
-  assert.match(san, /<span class="st err">לא נגיש <span class="muted">· מאז 09:12<\/span><\/span>/);
+  assert.match(san, /<span class="st err" title="לא נגיש[^"]*">לא נגיש <span class="muted">· מאז 09:12<\/span><\/span>/);
   assert.match(san, /נמדד לאחרונה/, 'stale df is labelled, not shown as live');
-  assert.match(san, /2 <span class="muted">לא זמינים<\/span>/);
-  assert.match(san, /storageDisconnect\('loc_bbbb0002'\)/);
-  assert.doesNotMatch(san, /storageDelete/, 'remove only after disconnect');
+  assert.match(san, /<span class="muted">האימג&#39;ים לא זמינים<\/span>|<span class="muted">האימג'ים לא זמינים<\/span>/);
+  assert.deepEqual(menuOf(san).map(i => i[1]), ["storageOpenDrawer('loc_bbbb0002')", "storageCheck('loc_bbbb0002')", "storageDisconnect('loc_bbbb0002')"], 'remove only after disconnect');
   assert.match(san, /<span class="sub mono">10\.44\.3\.75:3260<\/span>/, 'portal under the IQN');
-  assert.match(html, /legend-states/);
-  assert.match(html, /מנותק — המפעיל ניתק; לא מנסים עד "חבר"/);
+  assert.doesNotMatch(html, /legend-states/, 'the legend is the title of each state pill');
 });
-
 test('list: a disconnected location offers חבר + הסר; delete is a confirm sheet (#1270) and sends DELETE with confirm = the known name', async () => {
   const fixtures = {...BASE, '/storage-locations': {locations: [LOCAL, OFF], summary: {locations: 2, unreachable: 0, images: 6, unavailable_images: 0, free_bytes: 1, total_bytes: 2, checked_at: null}},
     'DELETE /storage-locations/loc_cccc0003': {ok: true}};
   const {run, requests} = setup(fixtures);
   await run('loadStorage()');
   const off = row(run('storagePage()'), 'data-loc="loc_cccc0003"');
-  assert.match(off, /storageConnect\('loc_cccc0003'\)/);
-  assert.match(off, /class="btn sm danger" onclick="storageDelete\('loc_cccc0003'\)">הסר</);
+  assert.deepEqual(menuOf(off).slice(-2), [['חבר', "storageConnect('loc_cccc0003')"], ['הסר', "storageDelete('loc_cccc0003')", 'danger']], 'destructive last, marked danger');
   run(`storageDelete('loc_cccc0003')`);
   assert.equal(run('sheets.length'), 1);
   assert.equal(run('sheets[0].danger'), true);

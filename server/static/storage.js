@@ -88,35 +88,41 @@ function storageCrumbs(...tail) {
   if (!tail.length) return base.concat([{ label: "אחסון" }]);
   return base.concat([{ label: "אחסון", onclick: "storageGo('list')" }], tail);
 }
+/* ‏#1300: מה כל מצב אומר — ב-title של הפיל (המקרא שהיה מתחת לטבלה). */
+const STORAGE_STATE_HELP = { connected: "מחובר — מעוגן ונקרא בבדיקה האחרונה", unreachable: "לא נגיש — מעוגן, אבל הבדיקה נכשלה; מנסים שוב כל 60 שניות",
+  disconnected: "מנותק — המפעיל ניתק; לא מנסים עד \"חבר\"", unchecked: "לא נבדק — נשמר ועדיין לא הורצה בדיקה" };
 function storageStateHtml(l) {
   const cls = STORAGE_STATE_CLS[l.state] ?? "";
   const since = (l.state === "unreachable" || l.state === "disconnected") && l.state_since ? ` <span class="muted">· מאז ${esc(fmtClock(l.state_since))}</span>` : "";
-  return `<span class="st ${cls}">${esc(l.state_label || l.state)}${since}</span>`;
+  const help = STORAGE_STATE_HELP[l.state];
+  return `<span class="st ${cls}"${help ? ` title="${esc(help)}"` : ""}>${esc(l.state_label || l.state)}${since}</span>`;
 }
 function storageSpaceHtml(l) {
   if (l.free_bytes == null) return `<span class="muted">—</span>`;
   return l.state === "connected" ? UI.usage(l.total_bytes, l.free_bytes) : `<span class="muted">— (נמדד לאחרונה ${ltr(fmtBytes(l.free_bytes))} פנוי)</span>`;
 }
+/* ‏#1300 (console-full.html P.storage): פעולות השורה בתפריט ⋯ אחד; ההרסנית (הסר) אחרונה, באדום. */
 function storageRowActs(l) {
-  const id = encodeId(l.id), b = (label, fn, cls = "") => `<button class="btn sm${cls ? " " + cls : ""}" onclick="${fn}('${id}')">${label}</button>`;
-  const acts = [b("בדוק", "storageCheck")];
+  const id = encodeId(l.id), it = (label, fn, cls) => [label, `${fn}('${id}')`].concat(cls ? [cls] : []);
+  const items = [it("פרטים", "storageOpenDrawer"), it("בדוק", "storageCheck")];
   if (l.removable) {
-    if (l.state === "disconnected") acts.push(b("חבר", "storageConnect"), b("הסר", "storageDelete", "danger"));
+    if (l.state === "disconnected") items.push(it("חבר", "storageConnect"), it("הסר", "storageDelete", "danger"));
     else {
-      if (l.type === "iscsi" && l.state === "unchecked") acts.unshift(b("המשך הגדרה", "storageResumeIscsi", "primary"));
-      acts.push(b("נתק", "storageDisconnect"));
+      if (l.type === "iscsi" && l.state === "unchecked") items.splice(1, 0, it("המשך הגדרה", "storageResumeIscsi"));
+      items.push(it("נתק", "storageDisconnect"));
     }
   }
-  return `<div class="acts">${acts.join("")}</div>`;
+  return UI.rowMenu(l.name, items);
 }
 function storageRow(l) {
   const id = encodeId(l.id);
   const target = l.type === "iscsi" && l.params && l.params.portal
     ? `<span class="mono">${esc(l.target)}</span><span class="sub mono">${esc(l.params.portal)}</span>` : `<span class="mono">${esc(l.target)}</span>`;
-  const images = `${l.images}${l.unavailable_images ? ` <span class="muted">${l.unavailable_images === l.images ? "לא זמינים" : `${l.unavailable_images} לא זמינים`}</span>` : ""}`;
+  // אימג'ים שאינם זמינים כאן — ליד השם (הספירה המלאה במגירה); התיאור (subtitle) — ב-title של השם.
+  const unavailable = l.unavailable_images ? ` <span class="muted">${l.unavailable_images === l.images ? "האימג'ים לא זמינים" : `${l.unavailable_images} אימג'ים לא זמינים`}</span>` : "";
   return { attrs: `data-loc="${esc(l.id)}"`, cells: [
-    `<a role="link" tabindex="0" class="name" onclick="storageOpenDrawer('${id}')">${esc(l.name)}</a>${l.subtitle ? `<span class="sub">${esc(l.subtitle)}</span>` : ""}`,
-    esc(l.type_label), target, storageStateHtml(l), `<span class="usewrap">${storageSpaceHtml(l)}</span>`, `<span class="num">${images}</span>`, storageRowActs(l)] };
+    `<a role="link" tabindex="0" class="name" onclick="storageOpenDrawer('${id}')"${l.subtitle ? ` title="${esc(l.subtitle)}"` : ""}>${esc(l.name)}</a>${unavailable}`,
+    esc(l.type_label), target, `<span class="usewrap">${storageSpaceHtml(l)}</span>`, storageStateHtml(l), storageRowActs(l)] };
 }
 /* ‏"קיבולת הספרייה" = סכום המיקומים **המחוברים** שנמדדו. מיקום שאינו מחובר (לא נגיש / מנותק / לא נבדק) אינו נספר — המדידה
    שלו ישנה — והכרטיס אומר כמה לא נכללו. שלושה מצבים נפרדים (עיקרון 5): לא נמדד מעולם · הבדיקה האחרונה לא הצליחה · נמדד. */
@@ -134,15 +140,17 @@ function storageCapacityCard(list, s) {
   }
   return `<div class="c12 card"><div class="card-h"><span>קיבולת הספרייה</span></div><div class="card-b">${body}</div></div>`;
 }
+/* ‏#1300 (console-full.html P.storage): משנה קצרה, "+ מיקום אחסון" ורענון בכותרת; פיל רק כשמשהו לא בסדר;
+   "בדוק הכול" עבר לכרטיס המיקומים, ליד "+ מיקום אחסון". */
 function storageListView() {
   const s = (STORAGE && STORAGE.summary) || {}, list = (STORAGE && STORAGE.locations) || [];
   const sub = STORAGE
-    ? ["הספרייה מאחדת את כל המיקומים", `${s.images ?? 0} אימג'ים`, s.free_bytes ? `${fmtBytes(s.free_bytes)} פנוי בסך הכול` : "פנוי: לא נמדד",
-       s.checked_at ? `נבדק ${fmtClock(s.checked_at)} (כל 60 שניות)` : "עדיין לא נבדק"].map(esc).join(" · ")
+    ? ["מיקומי האימג'ים והקיבולת", s.checked_at ? `נבדק ${fmtClock(s.checked_at)} (כל 60 שניות)` : "עדיין לא נבדק"].map(esc).join(" · ")
     : `‏/storage-locations לא נקרא: ${esc(storageError)}`;
   const pill = !STORAGE ? UI.pill("err", "לא נקרא")
-    : s.unreachable ? UI.pill("err", `${s.locations} מיקומים · ${s.unreachable} לא נגיש`) : UI.pill("ok", `${s.locations} ${s.locations === 1 ? "מיקום" : "מיקומים"}`);
-  const actions = `<button class="btn primary" onclick="storageGo('add')">+ הוסף מיקום</button><button class="btn" onclick="storageCheckAll()"${SV.busy ? " disabled" : ""}>בדוק הכול</button><button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>`;
+    : s.unreachable ? UI.pill("err", `${s.unreachable} לא נגיש`) : "";
+  const add = (cls) => `<button class="btn primary${cls}" onclick="storageGo('add')">${uiIcon("plus")} מיקום אחסון</button>`;
+  const actions = add("") + `<button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>`;
   const header = UI.objHeader({ crumbs: storageCrumbs(), icon: "storage", name: "אחסון", sub, pill, actions, compact: true });
   let body;
   if (!STORAGE) body = UI.note("err", `לא הצלחתי לקרוא את מיקומי האחסון: ${esc(storageError)}`);
@@ -150,13 +158,12 @@ function storageListView() {
     const bad = list.filter((l) => l.state !== "connected" && l.unavailable_images);
     const note = s.unavailable_images
       ? `<div class="c12">${UI.note("err", `<b>${s.unavailable_images} ${s.unavailable_images === 1 ? "אימג' לא זמין" : "אימג'ים לא זמינים"} כרגע</b> — ${bad.length ? `על ${bad.map((l) => `<span class="mono">${esc(l.name)}</span> (${esc(l.state_label)}${l.state_since ? ` מאז ${esc(fmtClock(l.state_since))}` : ""})`).join(", ")}. ` : ""}${s.unavailable_images === 1 ? "הוא רשום בספרייה ולא נמחק; סבב שיבחר בו יסרב להתחיל." : "הם רשומים בספרייה ולא נמחקו; סבב שיבחר בהם יסרב להתחיל."}${bad.length ? ` ${UI.link("פרטים", `storageOpenDrawer('${encodeId(bad[0].id)}')`)}` : ""}`)}</div>` : "";
-    const table = UI.datagrid({ cls: "show-acts storage", columns: ["שם", "סוג", "יעד", "מצב", "שימוש", "אימג'ים", ""], rows: list.map(storageRow), empty: "אין מיקומים — גם 'מקומי' חסר; השרת לא יצר אותו בעלייה" });
-    const legend = `<div class="legend-states"><span class="st ok">מחובר — מעוגן ונקרא בבדיקה האחרונה</span><span class="st err">לא נגיש — מעוגן, אבל הבדיקה נכשלה; מנסים שוב כל 60 שניות</span><span class="st">מנותק — המפעיל ניתק; לא מנסים עד "חבר"</span><span class="st">לא נבדק — נשמר ועדיין לא הורצה בדיקה</span></div>`;
-    // לא UI.card: ה-small מוברח, ו-"--images" בלי .mono מתהפך ל-"images--" ב-RTL.
+    const table = UI.datagrid({ cls: "kebab-col storage", opt: [2], columns: ["שם", "סוג", "כתובת", "שימוש", "מצב", { html: `<span class="sr">פעולות</span>` }], rows: list.map(storageRow), empty: "אין מיקומים — גם 'מקומי' חסר; השרת לא יצר אותו בעלייה" });
+    const acts = `<div class="acts"><button class="btn sm" onclick="storageCheckAll()"${SV.busy ? " disabled" : ""}>בדוק הכול</button>${add(" sm")}</div>`;
     const cap = storageCapacityCard(list, s);
-    body = note + cap + `<div class="c12 card"><div class="card-h"><span>מיקומים <small>"מקומי" הוא המיקום המובנה (<span class="mono">--images</span>) — תמיד ראשון, לא ניתן להסרה</small></span></div><div class="card-b${list.length ? " flush" : ""}">${table}${legend}</div></div>`;
+    body = note + cap + `<div class="c12 card"><div class="card-h"><span>מיקומי אחסון</span>${acts}</div><div class="card-b${list.length ? " flush" : ""}">${table}</div></div>`;
   }
-  return `<div class="page">${header}<div class="body">${body}</div></div>`;
+  return `<div class="page aligned">${header}<div class="body">${body}</div></div>`;
 }
 
 /* ---------- 2. הוסף מיקום — בחירת סוג ---------- */

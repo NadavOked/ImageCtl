@@ -147,19 +147,22 @@ function driverModels() {
   }
   return { models: [...map.values()].sort((a, b) => a.model.localeCompare(b.model)), unreported };
 }
+/* ‏#1300: עמודת "לא נבדקו" ירדה (console-full.html) — מה שלא נבדק נאמר בפיל עצמו, לא נבלע ב"מכוסה". */
 function driverModelPill(e) {
   if (e.missing && !e.pkgs.size) return UI.pill("err", "אין דרייברים");
   if (e.missing) return UI.pill("warn", "חלקי");
-  if (e.unchecked) return UI.pill("", "לא נבדק");
+  if (e.unchecked) return UI.pill("", e.unchecked === e.machines.length ? "לא נבדק" : `${e.unchecked} לא נבדקו`);
   return UI.pill("ok", "מכוסה");
 }
 function driversModelsCard() {
   if (MACHINES == null) return UI.note("err", "רשימת המחשבים לא נקראה — אין מה לחשב.");
   const { models, unreported } = driverModels();
-  const rows = models.map((e) => ({ attrs: `data-model="${esc(e.model)}" tabindex="0" onclick="openDriverModel('${encodeId(e.model)}')"`,
-    cells: [`<b dir="auto">${esc(e.model)}</b>`, String(e.machines.length), String(e.covered), String(e.missing), String(e.unchecked), driverModelPill(e)] }));
-  if (unreported.length) rows.push({ attrs: `data-model=""`, cells: [`<span class="muted">לא דיווחו חומרה</span>`, String(unreported.length), "—", "—", "—", UI.pill("", "לא נבדק")] });
-  const table = UI.datagrid({ cls: "acts-on", columns: ["דגם", "מחשבים", "מכוסים", "חסרים", "לא נבדקו", "מצב"], rows, empty: "אין מחשבי בנייה או שיכפול רשומים — הוסיפו אותם בדף המחשבים" });
+  // ‏#1300 (console-full.html P.drivers): דגם · מחשבים · מכוסים · חסרים · מצב · ⋯
+  const menu = (e) => UI.rowMenu(e.model, [["פרטים", `openDriverModel('${encodeId(e.model)}')`]].concat(isAdmin() ? [["העלאת דרייבר", "openDriverImport()"]] : []));
+  const rows = models.map((e) => ({ attrs: `class="clk" data-model="${esc(e.model)}" tabindex="0" onclick="openDriverModel('${encodeId(e.model)}')"`,
+    cells: [`<b dir="auto">${esc(e.model)}</b>`, String(e.machines.length), String(e.covered), String(e.missing), driverModelPill(e), menu(e)] }));
+  if (unreported.length) rows.push({ attrs: `data-model=""`, cells: [`<span class="muted">לא דיווחו חומרה</span>`, String(unreported.length), "—", "—", UI.pill("", "לא נבדק"), ""] });
+  const table = UI.datagrid({ cls: "kebab-col", columns: ["דגם", "מחשבים", "מכוסים", "חסרים", "מצב", { html: `<span class="sr">פעולות</span>` }], rows, empty: "אין מחשבי בנייה או שיכפול רשומים — הוסיפו אותם בדף המחשבים" });
   return UI.card({ title: "דגמי מחשבים שנמצאו ברשת", small: "הדגם נקבע מ-DMI שהמחשב מדווח ב-hello", cls: "c12", body: table, flush: rows.length > 0 });
 }
 function openDriverModel(enc) {
@@ -172,20 +175,25 @@ function openDriverModel(enc) {
   }).join("");
   const pk = [...e.pkgs].map((n) => `<span style="display:block">${esc(n)}</span>`).join("") || `<span class="muted">אין חבילה מתאימה</span>`;
   const warn = e.missing && !e.pkgs.size ? UI.note("warn", `${e.machines.length} מחשבים מהדגם הזה רשומים, ואין להם דרייברים. אימג' שישוחזר אליהם עלול לעלות בלי דרייבר אחסון או רשת.`) : "";
-  const imp = isAdmin() ? `<div class="acts"><button class="btn primary" onclick="openDriverImport()">ייבוא חבילה (tar)</button></div>` : "";
+  const imp = isAdmin() ? `<div class="acts"><button class="btn primary" onclick="openDriverImport()">העלאת דרייבר לדגם הזה</button></div>` : "";
   openDrawer(`דגם — ${e.model}`, `<div class="page drw">${warn}${UI.kv([["מחשבים", lines], ["חבילות שיונחו", pk]])}${imp}</div>`);
 }
 
 function driversPage(tab = 0) {
   if (DRIVERS === null && !driversError) return pagePlaceholder();
   const admin = isAdmin(), list = DRIVERS || [];
-  const reported = (MACHINES || []).filter((m) => m.inventory != null).length;
+  // ‏#1300 (console-full.html P.drivers): משנה = דגמים · מחשבים · מכוסים; "העלאת דרייבר"; מונה בלשונית "דגמים".
+  // לשונית "חבילות" (רשימת החבילות, פרטים ומחיקה) נשארת — אין לה מקום אחר במוקאפ.
+  const dm = MACHINES ? driverModels() : null;
+  const machines = dm ? dm.models.reduce((n, e) => n + e.machines.length, 0) + dm.unreported.length : null;
+  const covered = dm ? dm.models.reduce((n, e) => n + e.covered, 0) : null;
   const sub = DRIVERS
-    ? [`${list.length} ${list.length === 1 ? "חבילה" : "חבילות"}`, "מונחות על הדיסק אחרי שחזור Windows, מותקנות בעלייה הראשונה", MACHINES ? `${reported} מכונות דיווחו חומרה` : "מכונות: לא נקרא"].map(esc).join(" · ")
+    ? (dm ? [`${dm.models.length} דגמים`, `${machines} מחשבים`, `${covered} מכוסים`] : ["מכונות: לא נקרא"]).map(esc).join(" · ")
     : `‏/drivers לא נקרא: ${esc(driversError)}`;
-  const actions = (admin ? `<button class="btn primary" onclick="openDriverImport()">ייבוא חבילה (tar)</button>` : "") + `<button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>`;
+  const actions = (admin ? `<button class="btn primary" onclick="openDriverImport()">העלאת דרייבר</button>` : "") + `<button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>`;
   const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "תשתית" }, { label: "דרייברים" }],
-    icon: "t-drivers", name: "דרייברים", sub, pill: DRIVERS ? "" : UI.pill("err", "לא נקרא"), actions, tabs: ["דגמים", "חבילות", "כיסוי לפי מכונה"], tab });
+    icon: "t-drivers", name: "דרייברים", sub, pill: DRIVERS ? "" : UI.pill("err", "לא נקרא"), actions,
+    tabs: [dm ? ["דגמים", String(dm.models.length)] : "דגמים", DRIVERS ? ["חבילות", String(list.length)] : "חבילות", "כיסוי לפי מכונה"], tab });
   let body;
   if (!DRIVERS) body = UI.note("err", `לא הצלחתי לקרוא את רשימת הדרייברים: ${esc(driversError)}`);
   else if (tab === 0) body = driversModelsCard();
@@ -196,7 +204,7 @@ function driversPage(tab = 0) {
     body = `<div class="c12 card"><div class="card-b${list.length ? " flush" : ""}">${table}${!list.length && admin ? `<div style="text-align:center;padding-top:10px"><button class="btn primary" onclick="openDriverImport()">ייבוא חבילה (tar)</button></div>` : ""}</div></div>`
       + `<div class="c12">${UI.note("info", `"הונח" אינו "הותקן": הסוכן מניח את החבילות התואמות ב-<span dir="ltr">\\ImageCtl\\Drivers</span> ורושם אותן ב-DevicePath — Windows סורק אותן בעלייה הראשונה. בקר אחסון שבלעדיו Windows לא עולה אינו מכוסה (v2). הלשונית "כיסוי לפי מכונה" הופכת את הטבלה — לכל מכונה, אילו חבילות יונחו ואילו בקרים בלי כיסוי.`)}</div>`;
   }
-  return `<div class="page">${header}<div class="body">${body}</div></div>`;
+  return `<div class="page aligned">${header}<div class="body">${body}</div></div>`;
 }
 
 function findDriver(name) {

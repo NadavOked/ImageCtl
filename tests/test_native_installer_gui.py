@@ -48,6 +48,11 @@ def _build(tmp_path: Path) -> Path:
 
 
 def _size_and_ink(path: Path, box: tuple[int, int, int, int] | None = None) -> tuple[int, int, int]:
+    width, height, colors = _colors(path, box)
+    return width, height, len(colors)
+
+
+def _colors(path: Path, box: tuple[int, int, int, int] | None = None) -> tuple[int, int, set]:
     raw = path.read_bytes()
     assert raw[:8] == b"\x89PNG\r\n\x1a\n"
     pos = 8; width = height = channels = 0; packed = b""
@@ -81,13 +86,14 @@ def _size_and_ink(path: Path, box: tuple[int, int, int, int] | None = None) -> t
     x0, y0, x1, y1 = box or (0, 0, width, height)
     colors = {bytes(rows[y][x:x + 3]) for y in range(y0, y1)
               for x in range(x0 * channels, x1 * channels, channels)}
-    return width, height, len(colors)
+    return width, height, colors
 
 
 @NATIVE
 def test_every_installer_screen_renders_with_visible_ink_at_both_target_sizes(tmp_path) -> None:
     binary = _build(tmp_path)
-    names = ("install-0-disk", "install-1-role", "install-2-servers-net", "install-3-hostname",
+    names = ("install-0-disk", "install-1-role", "install-1b-role-unchecked", "install-1c-role-failed",
+             "install-2-servers-net", "install-3-hostname",
              "install-4-admin", "install-5-summary", "install-5c-progress",
              "install-5b-apply-failed", "install-6-done")
     env = dict(os.environ)
@@ -153,6 +159,28 @@ def test_back_button_is_drawn_on_every_screen_where_escape_goes_back(tmp_path) -
             assert colors > 1, f"{name}: no Back button where Escape goes back"
         else:
             assert colors == 1, f"{name}: Back drawn where there is no way back"
+
+
+@NATIVE
+def test_role_next_is_disabled_until_the_check_is_green(tmp_path) -> None:
+    """‏#1310: שלושת המצבים של מסך התפקיד. ב-1280x800 (קנה מידה 1) "הבא"
+    מתחיל ב-x=880; הנקודה 884,767 היא מילוי הכפתור (שמאל לטקסט). ירוק =
+    מילוי של כפתור ראשי; לא-נבדק ונכשל = מילוי של כפתור מושבת, זהה בשניהם."""
+    binary = _build(tmp_path)
+    prefix = tmp_path / "role"
+    env = dict(os.environ)
+    if (GUI / "fonts.conf").exists():
+        env["FONTCONFIG_FILE"] = str(GUI / "fonts.conf")
+    proc = subprocess.run([str(binary), "--screen", "install", "--demo", "--png",
+                           str(prefix), "--size", "1280x800"], capture_output=True,
+                          text=True, timeout=120, env=env, stdin=subprocess.DEVNULL)
+    assert proc.returncode == 0, proc.stderr
+    for theme in ("light", "dark"):
+        def fill(name: str) -> set:
+            return _colors(tmp_path / f"role-install-{name}-{theme}.png", (884, 767, 885, 768))[2]
+        green, unchecked, failed = fill("1-role"), fill("1b-role-unchecked"), fill("1c-role-failed")
+        assert green != unchecked, f"{theme}: Next looks the same before any check"
+        assert unchecked == failed, f"{theme}: a failed check must not enable Next"
 
 
 def test_role_radios_register_hit_boxes_and_dispatch_to_distinct_values() -> None:

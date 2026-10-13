@@ -11,7 +11,7 @@ class El {
   constructor(tag,cls='',style='',text=''){this.tag=tag;this.cls=new Set(cls.split(' ').filter(Boolean));this.style=style;this.text=text;this.children=[];this.parent=null;this.hidden=false;this.dataset={};
     const self=this; this.classList={contains:c=>self.cls.has(c),add:c=>self.cls.add(c),remove:c=>self.cls.delete(c)};}
   get firstElementChild(){return this.children[0]||null;}
-  getAttribute(k){return k==='style'?this.style:null;}
+  getAttribute(k){return k==='style'?this.style:(this.attrs&&this.attrs[k])??null;}
   setAttribute(){} addEventListener(){} removeEventListener(){}
   appendChild(c){if(c.parent)c.remove();c.parent=this;this.children.push(c);return c;}
   remove(){if(this.parent){this.parent.children=this.parent.children.filter(x=>x!==this);this.parent=null;}}
@@ -60,4 +60,17 @@ test('drawerEnhance still removes an acts box that held only buttons (no empty s
   const body=el('div'); body.appendChild(rootEl);
   ctx.__body=body; run('drawerEnhance(__body)');
   assert.equal(rootEl.children.length,1); assert.ok(!rootEl.children.includes(acts));
+});
+
+// ‏#1300 (console-full.html: "מחיצות 3", "היסטוריה 4"): ‏data-cnt על כותרת ה-.sec הופך למונה בלשונית; בלי — בלי מונה.
+test('drawerEnhance puts a .sec data-cnt into its tab as a small counter',()=>{
+  const {nodes,ctx,run}=load();
+  const sec=(text,cnt)=>{const h=el('div','sec','',text); if(cnt!=null) h.attrs={'data-cnt':cnt}; return h;};
+  const rootEl=el('div','page drw','','',[el('div','','','',[sec('פרטים'),el('div','','','גוף')]),
+    el('div','','','',[sec('מחיצות','3'),el('div','','','טבלה')]),el('div','','','',[sec('היסטוריה',''),el('div','','','יומן')])]);
+  const body=el('div'); body.appendChild(rootEl);
+  ctx.__body=body; run('drawerEnhance(__body)');
+  const tabs=nodes.drawerTabs.children;
+  assert.deepEqual(tabs.map(t=>t.text),['סקירה','מחיצות','היסטוריה']);
+  assert.deepEqual(tabs.map(t=>t.children.map(c=>c.tag+':'+c.text)),[[],['small:3'],[]],'empty data-cnt = no counter');
 });

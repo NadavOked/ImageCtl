@@ -106,31 +106,28 @@ test('monitor page is wired to a real renderer, not the placeholder; own page wi
   assert.equal(run('pages.monitor.own'), true); assert.equal(run('pages.monitor.tabs.length'), 0, 'no tabs — one question');
 });
 
-test('renders build/cloner machines as one table: name+MAC, role, IP, server-decided state with last-seen from /net, prompt, monitor button only when online, WoL when not', async () => {
+test('#1300 (console-full.html P.monitor): connected machines are buttons (name + IP) that pick the viewer; the rest stay listed with last-seen and WoL', async () => {
   const {run} = setup(base);
   assert.equal(run('monitorPage()'), run('pagePlaceholder()'), 'before load: placeholder');
   await run('loadMonitor()');
   const html = run('monitorPage()');
   assert.notEqual(html, run('pagePlaceholder()'));
-  assert.match(html, /<table class="dg acts-on kebab-col">/, 'actions always visible'); assert.match(html, /<th>מכונה<\/th><th class="c-opt">תפקיד<\/th><th class="c-opt">IP<\/th><th>מצב<\/th><th class="c-opt">מה על המסך<\/th>/);
-  const row = (n) => { const i = html.indexOf(n); const s = html.lastIndexOf('<tr', i); return html.slice(s, html.indexOf('</tr>', i)); };
-  const b = row('Builder'), c = row('Cloner-1');
-  assert.match(b, /<span class="name">Builder<\/span><span class="sub"><span class="mono">aa:bb:cc:dd:ee:01/);
-  assert.match(b, /<td class="c-opt">מחשב בנייה<\/td><td class="c-opt"><span class="mono">10\.44\.12\.50/);
-  // המצב הוא מה שהשרת אמר — לא נגזר בדפדפן
-  assert.match(b, /class="st ok">מחובר</);
-  assert.match(b, /class="st warn">ממתין למפעיל: כניסה</, '"what is on the screen" from prompt');
-  assert.match(b, /class="btn sm primary" onclick="monitorSelect\('aa%3Abb%3Acc%3Add%3Aee%3A01'\)" aria-pressed="false">צפה</);
-  assert.doesNotMatch(b, /wakeMachine/, 'online → no WoL');
-  assert.match(c, /class="st ">לא מחובר · נראה לפני 3 שע&#39;</, 'last seen from /net, not from /monitor/machines');
-  assert.match(c, /<button class="btn sm" disabled title="[^"]+">צפה</, 'not online → nothing to connect to');
-  assert.doesNotMatch(c, /monitorMachine\(/);
-  assert.match(c, /wakeMachine\('aa%3Abb%3Acc%3Add%3Aee%3A02'\)">WoL</, '#984: WoL for a machine that is not connected');
-  assert.match(html, /2 מכונות · 1 מחוברות עכשיו/); assert.match(html, /class="pill ok">המתג דלוק</);
-  assert.doesNotMatch(html, /המתג כבוי|מוניטור: כבוי \(ברירת מחדל\)/, 'switch on: no warning');
+  assert.doesNotMatch(html, /<table/, 'no table — a list of buttons like the mockup');
+  const pick = html.slice(html.indexOf('<button type="button" class="btn mon-pick'), html.indexOf('</button>', html.indexOf('mon-pick')));
+  assert.match(pick, /data-mac="aa:bb:cc:dd:ee:01" onclick="monitorSelect\('aa%3Abb%3Acc%3Add%3Aee%3A01'\)" aria-pressed="false"><span class="mn"><b>Builder<\/b>/);
+  assert.match(pick, /<span class="mono">10\.44\.12\.50<\/span>/);
+  // המצב הוא מה שהשרת אמר — לא נגזר בדפדפן; "מה על המסך" מ-prompt
+  assert.match(pick, /class="st warn">ממתין למפעיל: כניסה</, '"what is on the screen" from prompt');
+  assert.doesNotMatch(pick, /wakeMachine/, 'online → no WoL');
+  const off = html.slice(html.indexOf('<div class="mon-rest">'));
+  assert.match(off, /<div class="grp">לא מחוברים · 1<\/div>/);
+  assert.match(off, /Cloner-1[^]*class="st ">לא מחובר · נראה לפני 3 שע&#39;</, 'last seen from /net, not from /monitor/machines');
+  assert.doesNotMatch(off, /monitorSelect\(|monitorMachine\(/, 'not online → nothing to connect to');
+  assert.match(off, /wakeMachine\('aa%3Abb%3Acc%3Add%3Aee%3A02'\)">WoL</, '#984: WoL for a machine that is not connected');
+  assert.match(html, /<div class="obj-sub"[^>]*>צפייה בתחנות מרחוק · 1 מתוך 2 מחוברות<\/div>/);
+  assert.doesNotMatch(html, /המתג כבוי|המתג דלוק|class="note warn"/, '#1300: no state pill and no note — the switch itself');
   assert.doesNotMatch(html, /role="tablist"|detail-grid|class="switch/, 'no tabs, no per-machine cards, no old switch');
 });
-
 test('a machine that never talked and /net that could not be read are two different states', async () => {
   let s = setup({...base, '/net': []});
   await s.run('loadMonitor()');
@@ -152,9 +149,10 @@ test('switch off shows the warning; empty list is an empty state, not an error',
   const {run} = setup({...base, '/monitor/settings': {port: 5900, enabled: false}, '/monitor/machines': []});
   await run('loadMonitor()');
   const html = run('monitorPage()');
-  assert.match(html, /note warn.*מוניטור: כבוי \(ברירת מחדל\) — הדלקה חושפת 5900/);
-  assert.match(html, /class="pill warn">המתג כבוי</);
-  assert.match(html, /class="empty">אין מחשבי בנייה או שיכפול רשומים/);
+  // ‏#1300: ההסבר עבר לכרטיס הצפייה ול-title של המתג (בלי הערה בראש הדף ובלי פיל)
+  assert.match(html, /<b class="et">המוניטור כבוי<\/b>[^<]*הדלקה חושפת 5900 על וילן ההפצה/);
+  assert.match(html, /title="כבוי כברירת מחדל — הדלקה חושפת 5900/);
+  assert.match(html, /class="muted">אין מחשבי בנייה או שיכפול רשומים/);
   assert.doesNotMatch(html, /note err/);
 });
 
@@ -168,17 +166,26 @@ test('read failure is a distinct error state, not an empty list (principle 5)', 
   assert.equal(toasts.length, 1);
 });
 
-test('machine drawer has NO monitor button — monitor lives only on the monitor page (Nadav 14/09, reaffirmed 17/09 after wave 3)', async () => {
-  const {run, ctx} = setup(base);
+// ‏#1300 (הכרעת נדב 12/10 — מחליפה את "אין מוניטור במגירה" של 14/09 ו-17/09): "פתח במוניטור" במגירת המחשב
+// פותח את המציג של אותה מכונה — monitor.html, בדיוק כמו "פתח בחלון נפרד" בדף המוניטור (monitorMachine) — לא מנווט לדף.
+test('#1300: the machine drawer "פתח במוניטור" opens that machine\'s viewer (monitor.html) — disabled with the reason when there is nothing to connect to', async () => {
+  const {run, ctx, opened} = setup(base);
   await run('loadMonitor()');
   run('DISK_FAILURES=[]; SHRINK_RECORDS=[]');   // the stub fetch answers {} for endpoints this file does not model
   let drawer = '';
   ctx.openDrawer = (_title, body) => { drawer = body; };
-  run("openMachineDetail('aa%3Abb%3Acc%3Add%3Aee%3A01')");
-  assert.ok(drawer.length > 50, 'the drawer rendered');
-  assert.doesNotMatch(drawer, /monitorMachine\(/, 'build machine: no monitor in the drawer');
-  // ועדיין — בדף המוניטור הכפתור קיים
-  assert.match(run('monitorPage()'), /monitorSelect\(/);
+  run("openMachineDetail('aa%3Abb%3Acc%3Add%3Aee%3A01')");   // Builder: online, switch on
+  assert.match(drawer, /<button class="btn primary" onclick="monitorMachine\('aa%3Abb%3Acc%3Add%3Aee%3A01'\)">פתח במוניטור<\/button>/);
+  assert.doesNotMatch(drawer, /openMachineMonitor|selectPageById\('monitor'\)/, 'it does not navigate to the monitor page');
+  run("monitorMachine('aa%3Abb%3Acc%3Add%3Aee%3A01')");
+  assert.match(opened.at(-1)[0], /^monitor\.html\?mac=aa%3Abb%3Acc%3Add%3Aee%3A01&name=Builder$/, 'the same viewer the monitor page opens');
+  run("openMachineDetail('aa%3Abb%3Acc%3Add%3Aee%3A02')");   // Cloner-1: not connected
+  assert.match(drawer, /<button class="btn primary" disabled title="המחשב לא מחובר — אין למה להתחבר">פתח במוניטור<\/button>/);
+  assert.match(drawer, /<div class="cap mon-why">מוניטור: המחשב לא מחובר — אין למה להתחבר<\/div>/);
+  run('MONITOR.settings.enabled=false'); run("openMachineDetail('aa%3Abb%3Acc%3Add%3Aee%3A01')");
+  assert.match(drawer, /disabled title="המוניטור כבוי — מדליקים אותו בדף המוניטור">פתח במוניטור</);
+  run('MONITOR=null; MON_SETTINGS=null; api=()=>new Promise(()=>{})'); run("openMachineDetail('aa%3Abb%3Acc%3Add%3Aee%3A01')");
+  assert.match(drawer, /disabled title="מצב המוניטור לא נקרא עדיין">/, 'unread is not "enabled" (principle 5)');
 });
 
 test('final mockup: the viewer card explains instead of an empty iframe (switch off / nothing selected / machine offline); a selected online machine gets monitor.html in an iframe plus a separate-window link', async () => {
@@ -211,7 +218,7 @@ test('the switch renders at the top of the page, reflecting server state', async
   await run2('loadMonitor()');
   const htmlOff = run2('monitorPage()');
   assert.match(htmlOff, /class="sw" role="switch" aria-checked="false"[^>]*onclick="monitorToggle\(true\)"/);
-  assert.match(htmlOff, /מוניטור לתחנות · כבוי \(ברירת מחדל\) — הדלקה חושפת 5900/);   // #1077: הכיתוב החדש, בלי 🔒 (אין הקלדה במתג הזה)
+  assert.match(htmlOff, /<span class="swrow" title="כבוי כברירת מחדל — הדלקה חושפת 5900 על וילן ההפצה[^"]*">/);   // #1077 → ‏#1300: ההסבר ב-title, המתג לבד
 });
 
 test('turning off sends PUT with no confirm word and no sheet() prompt', async () => {

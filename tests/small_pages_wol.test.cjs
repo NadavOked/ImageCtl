@@ -33,7 +33,6 @@ function setup(over={}) {
     return nodes.get(key);
   }
   const fixtures={'/settings':SETTINGS,'/users':USERS,'/journal':JOURNAL,'/journal/events':[{event:'session_open',label:'סבב נפתח'},{event:'login',label:'כניסה לקונסולה'}],
-    '/branding/logo':204,
     '/machines':[{mac:MAC_B,suffix:'בנייה 1',group_id:'grp_BUILD',disks:[]},{mac:MAC_C,suffix:'מחשב 1',group_id:'grp_CLONERS',disks:[]},{mac:MAC_S,suffix:'05',group_id:'grp_LAB1',disks:[]}],
     '/groups':[{id:'grp_BUILD',label:'מחשבי בנייה',role:'build'},{id:'grp_CLONERS',label:'מחשבי שיכפול',role:'cloner'},{id:'grp_LAB1',label:'כיתה 1',role:'classroom'}],
     ['/machines/'+encodeURIComponent(MAC_B)+'/wake']:wake(1),['/machines/'+encodeURIComponent(MAC_C)+'/wake']:wake(0,1,['אין MAC ברשומה']),'/groups/grp_BUILD/wake':wake(2),
@@ -98,86 +97,75 @@ test('deploy role: the five pages stay admin-only (pageAllowed); WoL is refused 
 
 /* ---------- הגדרות ---------- */
 
-test('settings: a row per setting in Hebrew (label + meaning | control), switches with role="switch", identity_check on when missing (#855), save/cancel disabled until a change',async()=>{
+test('settings (#1300, console-full.html P.settings 1:1): a value is ONE dl.kv row with a small link action ("שם השרת  NadavPC  שינוי שם"), a switch is label.sw with the switch first and the text after it; save/cancel in the header, cancel first',async()=>{
   const {run,requests}=setup(); run('current="settings"');
   await run('loadSettingsData()');
-  assert.ok(requests.some((r)=>r.url==='/settings')); assert.ok(requests.some((r)=>r.url==='/branding/logo'),'logo state is read');
+  assert.ok(requests.some((r)=>r.url==='/settings')); assert.ok(!requests.some((r)=>/branding/.test(r.url)),'#1302: no institution logo to read');
   const html=run('settings()'); balanced(html);
   assert.match(html,/class="obj-name">הגדרות</); assert.doesNotMatch(html,/>Settings<|Console policy|form-grid|set-login/);
-  assert.match(html,/id="set-save" onclick="saveSettings\(\)" disabled>שמור</); assert.match(html,/id="set-cancel" onclick="cancelSettings\(\)" disabled>בטל שינויים</);
-  const srow=(k)=>{const i=html.indexOf(`id="srow-${k}"`); assert.ok(i>=0,k); const j=html.indexOf('<div class="srow',i+10); return html.slice(i,j>0?j:html.indexOf('</div></div></div>',i));};
-  assert.match(srow('server_name'),/<b>שם השרת<\/b>/); assert.match(srow('server_name'),/type="text" id="set-server_name" value="שרת המכללה"/);
-  assert.match(srow('console_idle_seconds'),/type="number" id="set-console_idle_seconds" value="600" min="60"/); assert.match(srow('console_idle_seconds'),/שניות \(מינימום 60\)/);
-  assert.match(srow('session_wait_seconds'),/value="300" min="30"/);
-  assert.match(srow('recovery_require_login'),/class="sw on" role="switch" aria-checked="true" aria-label="שחזור תחנה בודדת דורש כניסה" onclick="settingsToggle\('recovery_require_login', this\)"/); assert.match(srow('recovery_require_login'),/מומלץ דלוק; כיבוי רק להדגמה/);
-  assert.match(srow('class_deploy_enabled'),/class="sw" role="switch" aria-checked="false"/);
-  assert.match(srow('update_enabled'),/aria-checked="false"/); assert.match(srow('update_enabled'),/הכרטיס "עדכונים" למטה|הכרטיס &quot;עדכונים&quot; למטה/,'stage 3: the update card lives right here in settings (console-full.html)'); assert.match(html,/<span>עדכונים[ <]/); assert.match(html,/<span>גיבוי[ <]/); assert.match(html,/<span>מראה[ <]/);
-  assert.match(srow('identity_check'),/class="sw on" role="switch" aria-checked="true"/,'#855: missing = on');
-  assert.match(srow('identity_check'),/הכיבוי נרשם ביומן/);
-  assert.equal((html.match(/role="switch"/g)||[]).length,4);
+  assert.match(html,/<div class="obj-actions"><button class="btn" id="set-cancel" onclick="cancelSettings\(\)" disabled>ביטול<\/button><button class="btn primary" id="set-save" onclick="saveSettings\(\)" disabled>שמירה<\/button><\/div>/);
+  for(const c of ['כללי','אבטחה','גיבוי','עדכונים','מראה','תעודת TLS','שם המארח']) assert.match(html,new RegExp('<div class="c12 card"><div class="card-h"><span>'+c+'<'),c);
+  const cardOf=(c)=>{const i=html.indexOf('<span>'+c+'<'); return html.slice(i,html.indexOf('<div class="c12 card">',i+5));};
+  // ערכים: dl.kv — תווית, ערך, ופעולה קטנה (חלון שנשמר מיד), לא שדה פתוח בדף
+  assert.match(cardOf('כללי'),/<dl class="mkv"><dt title="[^"]*">שם השרת<\/dt><dd title="[^"]*">שרת המכללה <button class="btn sm flat" type="button" onclick="settingsValueSheet\('server_name'\)">שינוי שם<\/button><\/dd>/);
+  assert.match(cardOf('כללי'),/<dt[^>]*>המתנה מהמצטרף האחרון<\/dt><dd[^>]*>5 דקות <button[^>]*settingsValueSheet\('session_wait_seconds'\)">שינוי</);
+  assert.match(cardOf('אבטחה'),/<dt[^>]*>ניתוק הפעלות לא פעילות<\/dt><dd[^>]*>10 דקות <button[^>]*settingsValueSheet\('console_idle_seconds'\)">שינוי</);
+  assert.doesNotMatch(html,/<input type="(text|number)"/,'no wide input boxes on the page');
+  // מתגים: label.sw — המתג קודם, הטקסט אחריו; ההסבר ב-title
+  const sw=(k)=>{const m=html.match(new RegExp(`<label class="msw" id="srow-${k}"[^>]*>.*?</label>`)); assert.ok(m,k); return m[0];};
+  assert.match(sw('recovery_require_login'),/^<label class="msw" id="srow-recovery_require_login" title="מומלץ דלוק; כיבוי רק להדגמה"><input type="checkbox" role="switch" aria-label="שחזור תחנה בודדת דורש כניסה" checked onchange="settingsSwitch\('recovery_require_login', this\)"><span class="track"><\/span><span>שחזור תחנה בודדת דורש כניסה<\/span><\/label>$/);
+  assert.match(sw('identity_check'),/ checked /,'#855: missing = on'); assert.match(sw('identity_check'),/title="כתובת המקור של hello\/דיווח חייבת להתאים לחכירת ה-DHCP של ה-MAC/);
+  assert.doesNotMatch(sw('update_enabled'),/ checked /);
+  assert.ok(cardOf('אבטחה').includes('id="srow-recovery_require_login"')&&cardOf('אבטחה').includes('id="srow-identity_check"'));
+  assert.ok(cardOf('עדכונים').includes('id="srow-update_enabled"'),'the switch sits in the update card itself');
+  // ‏#1303: מתג הקצב הנלמד — בכרטיס "כללי"; חסר = אוטומטי (דלוק)
+  assert.ok(cardOf('כללי').includes('id="srow-learned_rate_enabled"')); assert.match(sw('learned_rate_enabled'),/ checked onchange="settingsSwitch\('learned_rate_enabled', this\)"><span class="track"><\/span><span>קצב שידור אוטומטי/);
+  run('SETTINGS.learned_rate_enabled="false"'); assert.equal(run('settingCurrent("learned_rate_enabled")'),false,'"false" is the only off');
+  assert.equal((html.match(/role="switch"/g)||[]).length,run('classroomsOn()')?5:4,'learned rate · recovery · identity · update (+ class deploy with classrooms)');
+  assert.doesNotMatch(html,/class="srow|<b>שם השרת<\/b>|<span class="cap">(דלוק|כבוי)<\/span>/,'#1300: not the old two-column form');
   assert.doesNotMatch(html,/role="tablist"/);
-  // מראה (stage 3): שלושה מצבים, אחד נלחץ — לפי themePref
+  // מראה: שלושה מצבים, אחד נלחץ — לפי themePref
   assert.match(html,/aria-label="ערכת נושא">.*aria-pressed="true">לפי המערכת<.*aria-pressed="false">בהיר<.*aria-pressed="false">כהה</);
-  // מיתוג: 204 = אין לוגו → ברירת המחדל, בלי "הסרה"
-  assert.match(html,/class="logo-box"><img src="logo\.svg\?v=4\.0"/); assert.match(html,/class="st ">ברירת המחדל</); assert.doesNotMatch(html,/settingsLogoClear/);
-  assert.match(html,/id="logo-input" class="hidden" accept="image\/png,image\/jpeg,image\/webp,image\/svg\+xml"/);
+  // ‏#1302 (נדב 12/10): אין אפשרות להחליף לוגו — אין כרטיס "מיתוג", אין העלאה ואין הסרה.
+  assert.doesNotMatch(html,/<span>מיתוג<|logo-input|settingsLogo|branding/);
 });
-
-test('settings: a change marks the row and enables save; save posts only the changed keys as strings, applies idle/server name locally, and reloads; cancel drops the draft',async()=>{
+test('settings: a switch marks itself and enables save; save posts only the changed switches as "true"/"false" and reloads; cancel drops the draft',async()=>{
   const {run,requests,node}=setup(); run('current="settings"');
   await run('loadSettingsData()'); run('settings()');
-  run("settingsSet('console_idle_seconds','900')");
+  run("settingsSwitch('recovery_require_login', {checked:false})");
   assert.equal(node('#set-save').disabled,false); assert.equal(node('#set-cancel').disabled,false);
-  assert.match(run('settings()'),/class="srow changed" id="srow-console_idle_seconds"/); assert.match(run('settings()'),/class="pill warn">שינויים לא נשמרו</);
-  run("settingsSet('console_idle_seconds','600')");   // חזרה לערך המקורי = לא שינוי
+  assert.match(run('settings()'),/<label class="msw changed" id="srow-recovery_require_login"/);
+  run("settingsSwitch('recovery_require_login', {checked:true})");   // חזרה לערך המקורי = לא שינוי
   assert.equal(run('settingsDirty()'),false); assert.equal(node('#set-save').disabled,true);
-  // מתג: הופך את הערך ומעדכן את הכפתור עצמו
-  const btn=node('#sw'); btn.classList.toggle=function(c,on){ this.on=on; }; btn.nextElementSibling=node('#swcap');
-  run("settingsToggle('recovery_require_login', document.querySelector('#sw'))");
-  assert.equal(run('SETTINGS_DRAFT.recovery_require_login'),false); assert.equal(btn['@aria-checked'],'false'); assert.equal(node('#swcap').textContent,'כבוי');
-  run("settingsSet('server_name','  שרת חדש '); settingsSet('console_idle_seconds','900'); settingsSet('identity_check', false)");
+  run("settingsSwitch('recovery_require_login', {checked:false}); settingsSwitch('identity_check', {checked:false})");
   await run('saveSettings()');
   const p=requests.find((r)=>r.url==='/settings'&&r.method==='POST');
-  assert.deepEqual(p.body,{server_name:'שרת חדש',console_idle_seconds:'900',recovery_require_login:'false',identity_check:'false'},'only the changed keys, strings, trimmed');
-  assert.equal(run('ME.idle_seconds'),900); assert.equal(run('idleRestarted'),1); assert.equal(run('ME.server_name'),'שרת חדש');
-  assert.equal(run('settingsDirty()'),false); assert.match(run('toasts.at(-1)'),/נשמר — 4 הגדרות/);
+  assert.deepEqual(p.body,{recovery_require_login:'false',identity_check:'false'},'only the changed keys, as strings');
+  assert.equal(run('settingsDirty()'),false); assert.match(run('toasts.at(-1)'),/נשמר — 2 הגדרות/);
   assert.equal(requests.filter((r)=>r.url==='/settings'&&r.method==='GET').length,2,'re-read after save');
-  // ביטול
-  run("settingsSet('session_wait_seconds','30'); cancelSettings()");
+  run("settingsSwitch('update_enabled', {checked:true}); cancelSettings()");
   assert.equal(run('settingsDirty()'),false);
 });
 
-test('settings: validation refuses below the minimum and an empty server name without a request; /settings unreadable is a red note, not defaults',async()=>{
+test('settings: a value is changed in its own small window and saved at once — idle and server name apply locally; below the minimum / empty is refused without a request',async()=>{
   const {run,requests}=setup(); run('current="settings"');
   await run('loadSettingsData()');
-  run("settingsSet('console_idle_seconds','30')"); await run('saveSettings()');
-  assert.match(run('toasts.at(-1)'),/ניתוק אוטומטי בחוסר פעילות: מספר שלם, 60 לפחות/);
-  run("SETTINGS_DRAFT={}; settingsSet('server_name','   ')"); await run('saveSettings()');
-  assert.match(run('toasts.at(-1)'),/שם השרת: לא יכול להיות ריק/);
+  run("settingsValueSheet('console_idle_seconds')");
+  let sh=run('sheets.at(-1)'); assert.match(sh.title,/ניתוק הפעלות לא פעילות/); assert.equal(sh.fields[0].value,'600');
+  await assert.rejects(()=>sh.onSubmit({v:'30'}),/ניתוק הפעלות לא פעילות: מספר שלם, 60 לפחות/);
   assert.ok(!requests.some((r)=>r.url==='/settings'&&r.method==='POST'),'nothing was posted');
+  await sh.onSubmit({v:' 900 '});
+  assert.deepEqual(requests.filter((r)=>r.url==='/settings'&&r.method==='POST').at(-1).body,{console_idle_seconds:'900'});
+  assert.equal(run('ME.idle_seconds'),900); assert.equal(run('idleRestarted'),1);
+  run("settingsValueSheet('server_name')"); sh=run('sheets.at(-1)');
+  await assert.rejects(()=>sh.onSubmit({v:'   '}),/שם השרת: לא יכול להיות ריק/);
+  await sh.onSubmit({v:'  שרת חדש '});
+  assert.deepEqual(requests.filter((r)=>r.url==='/settings'&&r.method==='POST').at(-1).body,{server_name:'שרת חדש'}); assert.equal(run('ME.server_name'),'שרת חדש');
   const s=setup({'/settings':new Error('403')}); s.run('current="settings"');
   await s.run('loadSettingsData()');
   const html=s.run('settings()');
   assert.notEqual(html,s.run('pagePlaceholder()')); assert.match(html,/class="pill err">לא נקרא</); assert.match(html,/note err.*403/);
   assert.doesNotMatch(html,/role="switch"|id="set-save"/,'no controls over values we do not have');
-});
-
-test('settings: logo upload posts the file with its type and reloads; a refused SVG is a toast with the reason; removal is behind confirmSheet → DELETE',async()=>{
-  const {run,requests,fixtures}=setup({'/branding/logo':{}}); run('current="settings"');   // 200 = יש לוגו
-  await run('loadSettingsData()');
-  let html=run('settings()');
-  assert.match(html,/class="st ok">לוגו מותאם</); assert.match(html,/settingsLogoClear\(\)">הסרה</); assert.match(html,/<img src="\/api\/console\/branding\/logo\?t=\d+" alt="לוגו">/);
-  await run('settingsLogoUpload({files:[{type:"image/png",name:"l.png"}],value:"x"})');
-  const up=requests.find((r)=>r.url==='/branding/logo'&&r.method==='POST'); assert.ok(up,'POST /branding/logo');
-  assert.match(run('toasts.at(-1)'),/הלוגו הוחלף/);
-  fixtures['/branding/logo']=new Error('SVG עם script נדחה');
-  await run('settingsLogoUpload({files:[{type:"image/svg+xml",name:"l.svg"}],value:"x"})');
-  assert.match(run('toasts.at(-1)'),/הלוגו נדחה: SVG עם script נדחה/);
-  fixtures['/branding/logo']={};
-  run('settingsLogoClear()');
-  const sh=run('sheets.at(-1)'); assert.match(sh.title,/הסרת הלוגו/);
-  await sh.onSubmit();
-  assert.ok(requests.some((r)=>r.url==='/branding/logo'&&r.method==='DELETE'));
 });
 
 /* ---------- הרשאות ---------- */
@@ -186,28 +174,34 @@ test('permissions: one users table (name, role pill, state, created, hover actio
   const {run,requests}=setup(); run('current="permissions"');
   await run('loadUsersData()');
   const html=run('permissions()'); balanced(html);
-  assert.match(html,/3 משתמשים · 1 מנהלים פעילים · 1 מפעילי הפצה · המנהל האחרון אינו ניתן למחיקה או להורדה/);
-  assert.match(html,/onclick="openNewUser\(\)">\+ משתמש</);
+  assert.match(html,/<div class="obj-sub"[^>]*>3 משתמשים · תפקידים: מנהל, הפצה<\/div>/,'#1300: console-full.html P.users sub-line');
+  assert.match(html,/onclick="openNewUser\(\)"><svg[^]*?<\/svg> משתמש</);
   assert.equal((html.match(/<table class="dg( kebab-col)?">/g)||[]).length,2,'users + matrix'); assert.doesNotMatch(html,/role="tablist"|Add user|<th>User<\/th>|id="users-table"/);
-  assert.match(html,/<th>משתמש<\/th><th>תפקיד<\/th><th>מצב<\/th><th>MFA<\/th><th class="c-opt">נוצר<\/th><th class="c-opt">כניסה אחרונה<\/th><th><span class="sr">פעולות<\/span><\/th>/);
+  // ‏#1300 (console-full.html P.users): משתמש · תפקיד · נראה לאחרונה · MFA; כרטיס לכל תפקיד; המטריצה — מקופלת
+  assert.match(html,/<th>משתמש<\/th><th>תפקיד<\/th><th class="c-opt">נראה לאחרונה<\/th><th>MFA<\/th><th><span class="sr">פעולות<\/span><\/th>/);
+  assert.match(html,/<div class="c6 card"><div class="card-h"><span>מנהל<\/span><\/div><div class="card-b"><p class="cap">גישה מלאה/);
+  assert.match(html,/<div class="c6 card"><div class="card-h"><span>הפצה<\/span><\/div><div class="card-b"><p class="cap">[^<]*אין לו כניסה לקונסולה/);
+  assert.match(html,/<details class="c12 card perm-more"><summary class="card-h"><span>הרשאות מפורטות/,'the permission matrix is still on the page, folded');
+  assert.match(html,/המנהל הפעיל האחרון אינו ניתן למחיקה או להורדה/,'the rule moved from the header to the matrix note');
   const a=row(html,'data-user="admin"'), y=row(html,'data-user="yossi"'), d=row(html,'data-user="deployer"');
-  assert.match(a,/<span class="name">admin<\/span><span class="sub">זה אתה<\/span>/); assert.match(a,/class="pill info">מנהל</); assert.match(a,/class="pill ok">פעיל</); assert.match(a,/01\/08\/2026/);
+  assert.match(a,/<b class="uname" title="נוצר 01\/08\/2026">admin<\/b><span class="sub">זה אתה<\/span>/); assert.match(a,/<td>מנהל<\/td>/); assert.doesNotMatch(a,/מושבת/);
   // אחרי apple-pending-4: כל פעולות השורה בתפריט ⋯ אחד; ההרסנית (מחיקה — חלון אישור) אחרונה, מסומנת "danger"
-  assert.doesNotMatch(a,/class="kebab"/,'self: no row actions (server refuses role/disable/reset on yourself; "שנה סיסמה" is in "החשבון שלי", #1268)');
-  assert.match(y,/class="pill err">מושבת</); assert.deepEqual(menuOf(y).map((i)=>i[0]),['תפקיד…','איפוס סיסמה…','הפעל','נתק את כל ההפעלות…','מחק משתמש…']);
+  // ‏#1300: כל שורה עם ⋯ (כמו המוקאפ); לעצמך — רק "שנה סיסמה" שמוביל ל"החשבון שלי" (השרת מסרב לתפקיד/השבתה/איפוס של עצמך, #1268)
+  assert.deepEqual(menuOf(a),[['שנה סיסמה (החשבון שלי)','openAccountPage()']]);
+  assert.match(y,/class="pill err">מושבת</); assert.deepEqual(menuOf(y).map((i)=>i[0]),['שנה תפקיד…','איפוס סיסמה…','הפעל משתמש','נתק את כל ההפעלות…','מחק משתמש…'],'#1300: the wording of MENUS.user');
   assert.ok(menuOf(y).some((i)=>i[1]==="userResetPassword('yossi')")); assert.doesNotMatch(y+d,/userPasswordSheet/,'#1268: no typed password for another user');
   assert.deepEqual(menuOf(y).at(-1),['מחק משתמש…',"userDeleteSheet('yossi')",'danger'],'a disabled admin is deletable — the server counts active admins');
   assert.ok(menuOf(y).some((i)=>i[1]==="userDisable('yossi', false)"));
-  assert.match(d,/class="pill ">הפצה</); assert.ok(menuOf(d).some((i)=>i[1]==="userRoleSheet('deployer')")); assert.ok(menuOf(d).some((i)=>i[0]==='השבת'&&i[1]==="userDisable('deployer', true)")); assert.deepEqual(menuOf(d).at(-1),['מחק משתמש…',"userDeleteSheet('deployer')",'danger']);
+  assert.match(d,/<td>הפצה<\/td>/); assert.ok(menuOf(d).some((i)=>i[1]==="userRoleSheet('deployer')")); assert.ok(menuOf(d).some((i)=>i[0]==='השבת משתמש…'&&i[1]==="userDisable('deployer', true)")); assert.deepEqual(menuOf(d).at(-1),['מחק משתמש…',"userDeleteSheet('deployer')",'danger']);
   assert.doesNotMatch(y+a+d,/class="btn sm/,'no inline buttons left in the table cells');
   // ‏#1008: כניסה אחרונה מ-/users; null = "לא נרשמה", לא תאריך מומצא
-  assert.match(a,/17\/09\/2026 08:05<\/span> · <span class="mono">10\.44\.10\.55</);
+  assert.match(a,/<span title="17\/09\/2026 08:05"><bdi dir="ltr">10\.44\.10\.55<\/bdi> · 17\/09<\/span>/,'#1300: "address · when" like the mockup, the full time in the title');
   assert.match(y,/class="muted"[^>]*>לא נרשמה</); assert.doesNotMatch(html,/דורש API/);
   // המטריצה: שורות מהקוד. ‏#1073: deploy — "לא" לכניסה לקונסולה, "ממחשב הבנייה" למה שהקיוסק מגיש
-  assert.match(html,/<span>מה כל תפקיד רואה/); assert.match(html,/<th><\/th><th>מנהל<\/th><th>הפצה<\/th>/);
-  assert.match(row(html,'כניסה לקונסולה'),/class="st ok">כן<\/span><\/td><td><span class="st ">לא</);
+  assert.match(html,/מה כל תפקיד רואה/); assert.match(html,/<th><\/th><th>מנהל<\/th><th>הפצה<\/th>/);
+  assert.match(row(html,'כניסה לקונסולה (ניהול'),/class="st ok">כן<\/span><\/td><td><span class="st ">לא</);
   assert.match(row(html,'חדר המשכפלים: סבב, גל, WoL'),/class="st ok">כן<\/span><\/td><td><span class="st ok">ממחשב הבנייה</);
-  assert.match(row(html,'הרשאות, הגדרות, יומן, לוגו'),/class="st ok">כן<\/span><\/td><td><span class="st ">לא</);
+  assert.doesNotMatch(html,/לוגו|branding/,'#1302'); assert.match(row(html,'הרשאות, הגדרות, יומן'),/class="st ok">כן<\/span><\/td><td><span class="st ">לא</);
   assert.match(row(html,'דרייברים: צפייה, ייבוא ומחיקה'),/class="st ">לא</);
   assert.doesNotMatch(html,/צפייה בלבד/,'#1073: no console at all for deploy — nothing is "view only"');
   assert.match(html,/title="[^"]*room_operator[^"]*"/,'the endpoint dependency is visible on hover');
@@ -216,7 +210,7 @@ test('permissions: one users table (name, role pill, state, created, hover actio
   // עם מנהל פעיל נוסף — admin כבר לא "האחרון" אבל עדיין "זה אתה": רק סיסמה; yossi הפעיל מקבל הכול
   run('USERS[1].disabled=false');
   const h2=run('permissions()');
-  assert.deepEqual(menuOf(row(h2,'data-user="yossi"')).map((i)=>i[0]),['תפקיד…','איפוס סיסמה…','השבת','נתק את כל ההפעלות…','מחק משתמש…']);
+  assert.deepEqual(menuOf(row(h2,'data-user="yossi"')).map((i)=>i[0]),['שנה תפקיד…','איפוס סיסמה…','השבת משתמש…','נתק את כל ההפעלות…','מחק משתמש…']);
   assert.doesNotMatch(row(h2,'data-user="admin"'),/userDeleteSheet/);
   assert.ok(!requests.some((r)=>r.method!=='GET'),'rendering sends nothing');
 });
@@ -292,7 +286,7 @@ test('permissions: /users that cannot be read is its own state (red note, "לא 
   assert.notEqual(html,s.run('pagePlaceholder()')); assert.match(html,/class="pill err">לא נקרא</); assert.match(html,/note err.*DB locked/); assert.doesNotMatch(html,/אין משתמשים/);
   s=setup({'/users':[]}); s.run('current="permissions"');
   await s.run('loadUsersData()'); html=s.run('permissions()');
-  assert.match(html,/class="empty">אין משתמשים/); assert.match(html,/0 משתמשים · 0 מנהלים פעילים/);
+  assert.match(html,/class="empty">אין משתמשים/); assert.match(html,/<div class="obj-sub"[^>]*>0 משתמשים<\/div>/);
 });
 
 /* ---------- יומן ---------- */
@@ -381,7 +375,7 @@ test('WoL: builder card, cloner card (object and room), capture card, drawer, bu
   assert.match(bv.actions,/onclick="wakeGroup\('grp_BUILD'\)">הער את כולם \(WoL\)</); assert.doesNotMatch(bv.actions,/בקרוב/);
   const dB=run(`machineDrawerHtml(findMachine('${MAC_B}'))`), dC=run(`machineDrawerHtml(findMachine('${MAC_C}'))`), dS=run(`machineDrawerHtml(findMachine('${MAC_S}'))`);
   assert.match(dB,/wakeMachine\(/); assert.match(dC,/wakeMachine\(/); assert.doesNotMatch(dC,/wakeRoom/);
-  assert.match(dS,/title="v2">WoL — לתחנות כיתה ב-v2</); assert.doesNotMatch(dS,/wakeMachine|בקרוב">Wake/);
+  assert.match(dS,/title="v2">WoL ואתחול מרחוק — לתחנות כיתה ב-v2</); assert.doesNotMatch(dS,/wakeMachine|בקרוב">Wake/);
   run("MCH.history={}; MCH.sel=new Set()");
   const g=run("groupRowHtml(GROUPS[0], [findMachine('"+MAC_B+"')]).html");
   assert.match(g,/wakeGroup\('grp_BUILD'\)">WoL לבנייה</);

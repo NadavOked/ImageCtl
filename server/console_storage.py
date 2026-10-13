@@ -152,13 +152,6 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
             raise HTTPException(exc.status, exc.detail)
         return {"id": tid}
 
-    @router.get("/storage-nodes/{nid}/transfers")
-    def node_transfers(nid: str, user=Depends(require_standalone)):
-        if ctx.conn.execute("SELECT 1 FROM storage_nodes WHERE id = ?",
-                            (nid,)).fetchone() is None:
-            raise HTTPException(404, "שרת משני לא קיים")
-        return storage_transfer.list_transfers(ctx.conn, user, node_id=nid)
-
     @router.get("/storage-transfers")
     def all_transfers(user=Depends(require_standalone)):
         return storage_transfer.list_transfers(ctx.conn, user)
@@ -220,6 +213,7 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
             return {"connected": False, "error": error, "checked_at": now_iso(),
                     "node_id": None, "protocol_version": None,
                     **_contact(node, error)}
+        storage_nodes.record_version(ctx.conn, node["id"], answer)   # #1300
         return {"connected": True, "error": None, "checked_at": now_iso(),
                 "node_id": answer.get("node_id"),
                 "protocol_version": answer.get("protocol_version"),
@@ -276,6 +270,7 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
             error = "תשובה לא צפויה מהמשני"
             return {"connected": False, "error": error, "machines": [],
                     **_contact(node, error)}
+        storage_nodes.record_version(ctx.conn, node["id"], answer)   # #1300
         return {"connected": True, "error": None, "machines": machines,
                 "node_id": answer.get("node_id"), **_contact(node, None)}
 
