@@ -2,13 +2,14 @@
 # POSIX sh (busybox ash).
 #
 # The cloning machine now has a screen (owner decision): it shows per-drawer
-# progress and a graphical SMART choice, replacing the text menu of #666 when
-# the GUI is up. Two rules never bend:
+# progress and the graphical SMART choice -- the only one since the text menu
+# of #666 was removed (owner, 11/10: GUI only). Two rules never bend:
 #   * A display that will not draw NEVER stops the write. gui_cloner_parent
 #     always returns 0 -- do_restore_drawers must run headless all the same.
-#   * A display failure is NEVER an approval to write (principle 5). If the
-#     GUI vanishes while a SMART choice is pending, gui_smart_choice fails and
-#     the text menu takes over, where EOF still means "skip".
+#   * A display failure is NEVER an approval of the operator's (principle 5).
+#     If the GUI vanishes while a SMART choice is pending, gui_smart_choice
+#     fails and smart_ask takes the no-answer default of the colour (16/09):
+#     orange writes, red skips.
 
 # Both processes agree on one directory: the agent (gui_smart_choice) and the
 # kiosk (cloner_gui_state) exchange smart-request/smart-decision here, and it
@@ -19,7 +20,7 @@ gui_cloner_parent() {
     [ "$D_ROLE" = cloner ] || return 0
     gui_parent || {
         [ "${_cloner_gui_failed_logged:-0}" = 1 ] ||
-            log 'cloner: native GUI unavailable -- continuing with text display'
+            log 'cloner: native GUI unavailable -- the write runs headless'
         _cloner_gui_failed_logged=1
         return 0
     }
@@ -28,7 +29,7 @@ gui_cloner_parent() {
 gui_restore_parent() {
     case "$D_ROLE" in
         classroom)
-            gui_parent || log 'restore: using text display'
+            gui_parent || log 'restore: native GUI unavailable -- the write runs headless'
             ;;
         cloner)
             gui_cloner_parent
@@ -115,7 +116,7 @@ cloner_gui_state() {
 
     # Idle -- no round targets yet: list the physically connected disks so the
     # screen shows what is plugged in (count, slot, brand, size), not a bare
-    # "waiting". The record is cdisk=port|dev|model|size|smart|cause -- NOT "disk=", which
+    # "waiting". The record is cdisk=port|dev|model|size|smart|cause|link|link_max (#432) -- NOT "disk=", which
     # the build machine already uses for its local disk list (#688).
     # ‏#867: ממוין לפי מספר הדיסק (השדה הראשון), לא לפי סדר הגילוי של
     # list_disks -- במחשב 2 sda הוא דיסק 3, והמסך הציג "3, 1, 2". השורות
@@ -141,8 +142,9 @@ cloner_gui_state() {
             # או חריץ) עובר SMART. השדה השישי הוא הסיבה שהשרת סיווג (cable/disk),
             # ריק כשירוק. ‏disk_failure_cause יושב ב-failmark.sh: גם השער קורא אותו.
             _cg_dcause=$(disk_failure_cause "$_cg_d") && _cg_dsmart=failed_last
-            printf '%s|%s|%s|%s|%s|%s|%s\n' "$_cg_last" "$_cg_dport" "$_cg_d" \
-                "$_cg_dmodel" "$_cg_dsize" "$_cg_dsmart" "$_cg_dcause" >> "$_cg_idle" || return 1
+            _cg_link=$(disk_link "$_cg_d")   # #432: "<speed> <max>", null = not read -- fields 7/8
+            printf '%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$_cg_last" "$_cg_dport" "$_cg_d" \
+                "$_cg_dmodel" "$_cg_dsize" "$_cg_dsmart" "$_cg_dcause" "${_cg_link% *}" "${_cg_link#* }" >> "$_cg_idle" || return 1
         done
         sort -t'|' -k1,1n -k2,2n "$_cg_idle" > "$_cg_idle.sorted" || return 1
         sed 's/^[01]|/cdisk=/' "$_cg_idle.sorted" >> "$_cg_next" || return 1
@@ -167,7 +169,9 @@ cloner_gui_state() {
 
 cloner_gui_state_loop() {
     while :; do
-        if ! cloner_gui_state; then
+        if lc_gui_active; then   # #1322: the boot choice / local clone own the screen
+            lc_gui_state || printf 'native-gui: local clone state could not be verified\n' >&2
+        elif ! cloner_gui_state; then
             printf 'native-gui: cloner state could not be verified\n' >&2
         fi
         sleep 1
@@ -177,7 +181,8 @@ cloner_gui_state_loop() {
 gui_smart_choice() {
     # $1=disk, $2=verdict, $3=reason. stdout is the decision (replace/rescue/
     # skip). Returns non-zero when the GUI cannot answer -- the caller then
-    # falls back to the text menu. A display failure is never an approval.
+    # takes the no-answer default (smart_ask). A display failure is never an
+    # approval.
     #
     # ‏**כל בקשה נושאת nonce ייחודי**, וההחלטה מתקבלת רק אם היא כבולה
     # לאותו nonce. בלי זה קליק מושהה/כפול על דיסק אחד היה מאושר לדיסק

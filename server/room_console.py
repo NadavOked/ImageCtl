@@ -90,7 +90,22 @@ def take_power_action(conn: sqlite3.Connection, mac: str,
         journal(conn, "power_expired", f"{mac} {row['action']}")
         return None
     journal(conn, "power_delivered", f"{mac} {row['action']}")
+    if row["action"] == POWEROFF:
+        _leave_open_wave(conn, mac)
     return row["action"]
+
+
+def _leave_open_wave(conn: sqlite3.Connection, mac: str) -> None:
+    """‏#65: מכונה שנאמר לה לכבות יוצאת מהגל **הפתוח** — באותו hello שמוסר
+    את הכיבוי (ה-hello הזה עצמו כבר צירף אותה מחדש). אחרת המגירות שדיווחה
+    לפני שכבתה נספרות ב-`ready_drives`, ו"התחל בכל זאת" היה משגר גל עם
+    מכונה כבויה. כשתעלה אחרי החלפת המגירות — ה-hello שלה מצרף אותה שוב.
+    גל שכבר רץ אינו נוגע כאן: לא מכבים מכונה באמצע כתיבה (‏`/room/poweroff`
+    ו-`/missing/{mac}/poweroff` מסרבים לזה)."""
+    with _write_lock, writing(conn):
+        conn.execute(
+            "DELETE FROM session_members WHERE mac = ? AND session_id IN"
+            " (SELECT id FROM sessions WHERE state = 'open')", (mac,))
 
 
 def round_history(ctx, limit: int) -> list[dict]:

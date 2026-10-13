@@ -306,8 +306,13 @@ async def authenticate_machine(reader, writer, secret: str) -> None:
         raise MachineAuthError(f"המוניטור דחה את סוד השרת: {await _reason(reader)}")
 
 
+#: ‏#1334: הודעות קלט של RFB — מקלדת (4) ועכבר (5). צופה בלבד אינו שולח אותן.
+RFB_INPUT_TYPES = (4, 5)
+
+
 async def bridge_browser(websocket: WebSocket, reader, writer, *,
-                         idle_seconds: float = IDLE_SECONDS) -> str:
+                         idle_seconds: float = IDLE_SECONDS,
+                         allow_input: Callable[[], bool] | None = None) -> str:
     """מגשר WebSocket שכבר התקבל (‏`accept_browser`) לזרם RFB שכבר עבר
     אימות מול המכונה.
 
@@ -396,6 +401,12 @@ async def bridge_browser(websocket: WebSocket, reader, writer, *,
                                           reason=POWER_OVER_WS_REFUSED)
                     outcome = "refused"
                     return
+                # ‏#1334: צופה בלבד — מקלדת ועכבר נזרקים כאן, בשרת; שאר
+                # ההודעות (בקשות עדכון מסך, קידודים) עוברות כרגיל.
+                if (allow_input is not None and buf[0] in RFB_INPUT_TYPES
+                        and not allow_input()):
+                    del buf[:length]
+                    continue
                 writer.write(bytes(buf[:length]))
                 del buf[:length]
             await writer.drain()
@@ -556,6 +567,15 @@ def create_monitor_router(
         if found[1] != "admin":
             await websocket.close(code=WS_FORBIDDEN, reason="פעולה למנהל בלבד")
             return
+        # ‏#705: המוניטור עובר בפורט הקונסולה — אין לו מאזין לסגור, ולכן "כבוי
+        # בכרטיס" נאכף כאן, לפי הכתובת המקומית של החיבור, **לפני** כל TCP למכונה.
+        gate = getattr(ctx, "nic_services", None)
+        if gate is not None:
+            local = (websocket.scope.get("server") or ("", 0))[0]
+            why = await asyncio.to_thread(gate.refused, "monitor", local)
+            if why:
+                await websocket.close(code=WS_FORBIDDEN, reason=close_reason(why))
+                return
 
         canonical = registry.normalize_mac(mac)
         if canonical is None:

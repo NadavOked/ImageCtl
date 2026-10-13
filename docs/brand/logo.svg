@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <title>ImageSrv</title>
+  <style>.k{fill:#0079B8}@media (prefers-color-scheme:dark){.k{fill:#3FA4DA}}</style>
+  <g class="k"><rect x="6" y="20" width="6" height="6" rx="0.75"/><rect x="14" y="20" width="6" height="6" rx="0.75"/><rect x="14" y="28" width="6" height="6" rx="0.75"/><rect x="22" y="28" width="6" height="6" rx="0.75"/><rect x="6" y="36" width="6" height="6" rx="0.75"/><rect x="22" y="36" width="6" height="6" rx="0.75"/><rect x="36" y="20" width="6" height="6" rx="0.75"/><rect x="44" y="20" width="6" height="6" rx="0.75"/><rect x="44" y="28" width="6" height="6" rx="0.75"/><rect x="52" y="28" width="6" height="6" rx="0.75"/><rect x="36" y="36" width="6" height="6" rx="0.75"/><rect x="52" y="36" width="6" height="6" rx="0.75"/></g>
+</svg>

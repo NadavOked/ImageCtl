@@ -253,6 +253,13 @@ def fake_jq(*records: dict) -> str:
     return 'json_get_join() { [ -s "$1" ] || return 1; ' + body + ' }; '
 
 
+GUI_ASK_STUB = (
+    'gui_ask_choice() { echo "ASK $1 $2" >&2; '
+    'while IFS= read -r _r; do echo "ROW $_r" >&2; done < "$3"; '
+    '_a=$(cat "$RUN_DIR/gui_answer"); [ -n "$_a" ] || return 1; echo "$_a"; }; '
+)
+
+
 def offer_run(tmp_path, *, answer_records: list[dict] | None, keys: str = "",
               disk_sectors: int = SHRUNK_SECTORS, prelude: str = "", calls: int = 1,
               extra_stubs: dict | None = None, sizes: str | None = None):
@@ -283,16 +290,22 @@ def offer_run(tmp_path, *, answer_records: list[dict] | None, keys: str = "",
         stub["jq"] = JQ_STUB
     libs = " ".join(f". {posix(AGENT)}/lib/{n}.sh;" for n in (
         "common", "sysinfo", "waits", "jsonq", "restore", "ui", "attended",
-        "shrinkplan", "shrink", "shrinkmem", "shrinkoffer"))   # ‏#929: ההצעה באתחול ב-shrinkoffer.sh
+        "shrinkplan", "shrink", "shrinkmem", "shrinkoffer", "askgui"))   # ‏#929: ההצעה באתחול ב-shrinkoffer.sh
     # קלט מקובץ ולא מצינור: פונקציה בצינור רצה בתת-מעטפת, ו-`_shrink_offered`
     # (פעם אחת לאתחול) לא היה שורד — בסוכן הקריאה ישירה, כמו כאן.
     (run / "keys.txt").write_text(keys, encoding="utf-8", newline="\n")
     keys_sh = f"< {posix(run / 'keys.txt')!r} "
+    # ‏11/10 (GUI בלבד): השאלה היא דיאלוג של הגואי (askgui.sh). ‏`keys` הוא
+    # כעת **תשובת הגואי** — "1" = restore, "2" = leave, ריק = אין תשובה —
+    # והמקשים עצמם נשארים ב-stdin, שהקוד אינו קורא. הזיוף מדפיס את הבקשה
+    # (ASK/ROW) — הראיה החיובית שהשאלה הוצגה ומה היה בה.
+    (run / "gui_answer").write_text({"1": "restore", "2": "leave"}.get(keys[:1], ""),
+                                    encoding="utf-8", newline="\n")
     out = run_sh(
         make_stubs(box / "stubs", stub)
         + f"export IMAGECTL_TEST=1 RUN_DIR={posix(run)!r} DEVROOT={posix(box / 'dev')!r} "
         f"SYSROOT={posix(box)!r} SERVER=http://s MAC=b4:2e:99:07:1a:c4; "
-        + libs + " attended_hello() { :; }; " + prelude
+        + libs + " attended_hello() { :; }; " + GUI_ASK_STUB + prelude
         + " ".join(f"{keys_sh}shrink_offer_pending; echo \"rc=$?\";" for _ in range(calls))
     )
     return box, run, out
@@ -304,7 +317,7 @@ def test_a_pending_record_asks_and_one_grows_the_partition_back(tmp_path):
     דגלים), ואז ntfsresize -f -f, ‏ntfsfix -d, ואז shrink-close עם ה-id."""
     box, run, out = offer_run(tmp_path, answer_records=[record()], keys="1\n", prelude=fake_jq(record()))
     assert "rc=0" in out, out
-    assert "was shrunk for a capture" in out and "[1] Grow it back" in out, out
+    assert "ASK growback sda" in out and "|table" in out, out
     (call,) = rewrites(run)
     assert call.startswith("-a 1 -d 3 -n 3:"), call
     assert f"-n 3:{WIN_START}:{WIN_START + WIN_SECTORS - 1} -t 3:{WIN_GUID} -u 3:{WIN_UGUID} -c 3:Basic data partition -A 3:=:0x0000000000000000" in call, call
@@ -328,7 +341,7 @@ def test_leave_and_no_answer_write_nothing(tmp_path, keys):
     עיקרון 1, שום כתיבה על דיסק בלי אדם שאמר כן."""
     box, run, out = offer_run(tmp_path, answer_records=[record()], keys=keys, prelude=fake_jq(record()))
     assert "rc=0" in out, out
-    assert "[1] Grow it back" in out, "השאלה כן הוצגה"
+    assert "ASK growback sda" in out, "השאלה כן הוצגה"
     assert rewrites(run) == []
     assert not [s for s in order(run) if s.startswith(("ntfsresize", "ntfsfix", "blockdev"))]
     assert sent(run, "shrink_close") == []
@@ -380,17 +393,17 @@ def test_a_failed_grow_back_at_boot_shows_the_error_and_keeps_the_record(tmp_pat
 
 def test_the_question_is_asked_once_per_boot_and_nothing_pending_asks_nobody(tmp_path):
     box, run, out = offer_run(tmp_path, answer_records=[record()], keys="2\n", prelude=fake_jq(record()), calls=3)
-    assert out.count("[1] Grow it back") == 1, out
+    assert out.count("ASK growback") == 1, out
     assert out.count("rc=0") == 3
 
     box, run, out = offer_run(tmp_path / "none", answer_records=[], keys="1\n", prelude=fake_jq())
-    assert "rc=0" in out and "[1] Grow it back" not in out
+    assert "rc=0" in out and "ASK growback" not in out
     assert rewrites(run) == [] and sent(run, "shrink_close") == []
 
     # תשובה שלא נקראה (jq נפל) אינה "אין רשומות": לא שואלים, ולא מכריזים על נקי.
     box, run, out = offer_run(tmp_path / "unreadable", answer_records=[record()], keys="1\n",
                               prelude='json_get_join() { return 5; }; ')
-    assert "rc=0" in out and "[1] Grow it back" not in out
+    assert "rc=0" in out and "ASK growback" not in out
     assert not (run / "shrink_open").exists() and not (run / "shrink_open.next").exists()
 
 
@@ -398,7 +411,7 @@ def test_a_disk_with_another_serial_is_not_the_one(tmp_path):
     """הרשומה על S-OTHER; הדיסק כאן S926 — לא מציעים ולא נוגעים."""
     rec = record(serial="S-OTHER")
     box, run, out = offer_run(tmp_path, answer_records=[rec], keys="1\n", prelude=fake_jq(rec))
-    assert "rc=0" in out and "[1] Grow it back" not in out, out
+    assert "rc=0" in out and "ASK growback" not in out, out
     assert rewrites(run) == [] and sent(run, "shrink_close") == []
 
 
@@ -429,7 +442,7 @@ def test_a_full_partition_with_a_small_filesystem_is_offered_a_grow_not_closed_s
     box, run, out = offer_run(tmp_path, answer_records=[record()], keys="1\n", disk_sectors=WIN_SECTORS,
                               prelude=fake_jq(record()), extra_stubs={"ntfsresize": NTFSRESIZE_SMALL_FS})
     assert "rc=0" in out, out
-    assert "[1] Grow the filesystem" in out and "smaller than its partition" in out, out
+    assert "ASK growback" in out and "|fs" in out and "|table" not in out, out
     assert rewrites(run) == [], "הטבלה כבר נכונה — לא נכתבת שוב"
     steps = order(run)
     node = f"{posix(box / 'dev')}/sda3"
@@ -447,7 +460,7 @@ def test_a_full_partition_with_a_small_filesystem_is_offered_a_grow_not_closed_s
 def test_leaving_a_small_filesystem_keeps_the_record_open(tmp_path, keys):
     box, run, out = offer_run(tmp_path, answer_records=[record()], keys=keys, disk_sectors=WIN_SECTORS,
                               prelude=fake_jq(record()), extra_stubs={"ntfsresize": NTFSRESIZE_SMALL_FS})
-    assert "rc=0" in out and "[1] Grow the filesystem" in out, out
+    assert "rc=0" in out and "ASK growback" in out and "|fs" in out, out
     assert not [s for s in order(run) if s.startswith(("ntfsresize -f", "ntfsfix", "blockdev"))]
     assert sent(run, "shrink_close") == [] and rewrites(run) == []
     assert "stays open" in log_of(run)
@@ -472,7 +485,7 @@ def test_a_filesystem_size_that_cannot_be_read_is_not_a_fit(tmp_path):
     לא שואלים על מתיחה (אין מספר להציג), אזהרה ביומן והרשומה נשארת."""
     box, run, out = offer_run(tmp_path, answer_records=[record()], keys="1\n", disk_sectors=WIN_SECTORS,
                               prelude=fake_jq(record()), extra_stubs={"ntfsresize": NTFSRESIZE_INFO_BLIND})
-    assert "rc=0" in out and "[1]" not in out, out
+    assert "rc=0" in out and "ASK growback" not in out, out
     assert sent(run, "shrink_close") == [] and rewrites(run) == []
     assert not [s for s in order(run) if s.startswith(("ntfsresize -f", "ntfsfix"))]
     assert "could not read the NTFS volume size" in log_of(run) and "stays open" in log_of(run)
@@ -499,7 +512,7 @@ def test_two_disks_with_the_same_serial_are_ambiguous_and_neither_is_touched(tmp
     twin = ('mkdir -p "$SYSROOT/sys/block/sdb/device"; echo S926 > "$SYSROOT/sys/block/sdb/device/serial"; '
             'cp "$DEVROOT/sda" "$DEVROOT/sdb"; ')
     box, run, out = offer_run(tmp_path, answer_records=[record()], keys="1\n", prelude=fake_jq(record()) + twin)
-    assert "rc=0" in out and "[1] Grow it back" not in out, out
+    assert "rc=0" in out and "ASK growback" not in out, out
     assert rewrites(run) == [] and sent(run, "shrink_close") == []
     assert not [s for s in order(run) if s.startswith(("ntfsresize", "ntfsfix", "blockdev"))]
     assert "same serial" in log_of(run) and "S926" in log_of(run) and "nothing changed" in log_of(run)
@@ -520,7 +533,7 @@ def test_the_real_jq_expression_reads_the_hello_answer(tmp_path):
     assert lines[1:3] == record_lines(two_part_record())
     assert lines[3] == "9|Z|3|1085440|998244352|" + WIN_GUID + "|||0000000000000000|" + str(WIN_SECTORS * 512) + "|2026-09-16T20:00:00+00:00"
     assert len(lines) == 4
-    assert "[1] Grow it back" in out, "והרשומה של S926 אכן זוהתה מהשורה שנקראה"
+    assert "ASK growback" in out, "והרשומה של S926 אכן זוהתה מהשורה שנקראה"
 
 
 # --- ‏#929: רשומה אחת לדיסק עם כמה מחיצות — ההצעה מחזירה את כולן ------------------
@@ -557,8 +570,8 @@ def test_a_two_partition_record_asks_once_and_grows_both_back_in_reverse(tmp_pat
     טבלה → מתיחה → fix — ו-shrink-close אחד, אחרי ששתיהן חזרו."""
     box, run, out = two_part_run(tmp_path, sizes=f"3={SHRUNK_SECTORS}\n4={SHRUNK_D_SECTORS}\n")
     assert "rc=0" in out, out
-    assert out.count("[1] Grow it back") == 1, out
-    assert "partition 3: now" in out and "partition 4: now" in out, out
+    assert out.count("ASK growback") == 1, out
+    assert "ROW 3|" in out and "ROW 4|" in out and out.count("|table") == 2, out
     calls = rewrites(run)
     assert [c.split(" -d ")[1].split(" ")[0] for c in calls] == ["4", "3"], calls
     assert f"-n 4:{DATA_START}:{DATA_START + DATA_SECTORS - 1} -t 4:{WIN_GUID} -u 4:{DATA_UGUID} -c 4:Data -A 4:=:0x0000000000000000" in calls[0], calls[0]
@@ -580,7 +593,7 @@ def test_a_partition_that_is_already_back_is_skipped_and_the_other_is_offered(tm
     נסגרת אחרי ש-D: חזרה."""
     box, run, out = two_part_run(tmp_path, sizes=f"3={WIN_SECTORS}\n4={SHRUNK_D_SECTORS}\n")
     assert "rc=0" in out, out
-    assert "partition 4: now" in out and "partition 3:" not in out, out
+    assert "ROW 4|" in out and "ROW 3|" not in out, out
     assert [c.split(" -d ")[1].split(" ")[0] for c in rewrites(run)] == ["4"], rewrites(run)
     assert "partition 3 is already" in log_of(run)
     (body,) = sent(run, "shrink_close")
@@ -608,8 +621,8 @@ def test_the_record_closes_only_when_every_partition_is_back(tmp_path):
     box, run, out = two_part_run(tmp_path, sizes=f"3={WIN_SECTORS}\n4={SHRUNK_D_SECTORS}\n",
                                  prelude="export NTFSRESIZE_SMALL_3=1 NTFSRESIZE_GROW_FAIL_ON=4; ")
     assert "rc=0" in out, out
-    assert "partition 3:" in out and "smaller than its partition" in out and "partition 4: now" in out, out
-    assert out.count("[1]") == 1, out
+    assert "ROW 3|" in out and "|fs" in out and "ROW 4|" in out, out
+    assert out.count("ASK growback") == 1, out
     dev = posix(box / "dev")
     steps = order(run)
     assert [c.split(" -d ")[1].split(" ")[0] for c in rewrites(run)] == ["4"], "הטבלה של C: כבר נכונה — לא נכתבת"
@@ -650,12 +663,13 @@ def test_the_open_runs_after_the_operator_said_yes_and_before_the_resize():
     assert "shrink_close_record" in src[src.index("shrink_restore_source()"):]
 
 
-def test_the_agent_loads_shrinkmem_after_shrink_and_offers_before_the_gui():
+def test_the_agent_loads_shrinkmem_after_shrink_and_offers_after_the_gui():
     src = (AGENT / "imagectl-agent").read_text(encoding="utf-8")
     assert src.index('"$LIB_DIR/shrinkplan.sh"') < src.index('"$LIB_DIR/shrink.sh"') < src.index('"$LIB_DIR/shrinkmem.sh"') \
         < src.index('"$LIB_DIR/shrinkoffer.sh"') < src.index('"$LIB_DIR/capture.sh"')
     body = src[src.index("build_console_screen()"):src.index("do_restore_drawers()")]   # #1217: do_task -> task.sh
-    assert body.index("shrink_offer_pending") < body.index("gui_parent")
+    # 11/10: the grow-back is a GUI dialog -- the GUI comes up first, then the offer.
+    assert body.index("gui_parent") < body.index("shrink_offer_pending")
 
 
 @pytest.mark.parametrize("name", ["shrinkmem.sh", "shrinkoffer.sh"])

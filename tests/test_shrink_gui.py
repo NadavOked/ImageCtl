@@ -1,6 +1,6 @@
 """#928: the capture's shrink question as a dialog of the native GUI.
 
-Until #928 the kiosk was stopped before the question (`shrink_gui_release`)
+Until #928 the kiosk was stopped before the question (it was stopped by a helper since removed)
 and the operator answered on the text console. Now the agent publishes the
 plan through the same handshake as the cloner's SMART choice:
 
@@ -209,34 +209,19 @@ shrink_ask "$RUN_DIR/shrink.plan"
     assert "capture cancelled" in out.stderr
 
 
-def test_without_a_gui_the_text_menu_still_asks(tmp_path):
-    pre, gui = ask_setup(tmp_path)
-    out = run_with_stdin(pre + 'shrink_ask "$RUN_DIR/shrink.plan"', "2\n")
-    assert out.stdout.strip() == "plain", out.stdout + out.stderr
-    assert "Shrink and capture" in out.stderr
-    assert not (gui / "shrink-request").exists()
-
-
-def test_the_text_menu_puts_shrink_first_and_explains_plain(tmp_path):
-    """The same decision on the text screen: [1] is the recommended answer,
-    the hint sits under [2] and before [3], and the numbers keep their
-    answers -- habits and callers depend on 1/2/3."""
-    for key, answer in (("1", "continue"), ("2", "plain"), ("3", "cancel")):
+def test_without_a_gui_the_capture_is_cancelled_and_no_key_is_read(tmp_path):
+    """11/10 (GUI only): the text menu that asked here was removed. With no
+    GUI the question cannot be asked, and nothing shrinks without a yes --
+    "cancel", even with "2" ("plain" on the old menu) waiting on stdin.
+    Negative control: the old code reads the "2" and answers "plain"."""
+    for key in ("1", "2", "3"):
         sub = tmp_path / key; sub.mkdir()
         pre, gui = ask_setup(sub)
         out = run_with_stdin(pre + 'shrink_ask "$RUN_DIR/shrink.plan"', key + "\n")
-        assert out.stdout.strip() == answer, (key, out.stdout + out.stderr)
-    menu = [ln.strip() for ln in out.stderr.splitlines() if ln.strip()]
-    for line in ("[1] Shrink and capture (recommended)", "[2] Capture without shrinking",
-                 "[3] Cancel the capture"):
-        assert line in menu, (line, menu)
-    one = menu.index("[1] Shrink and capture (recommended)")
-    two = menu.index("[2] Capture without shrinking")
-    three = menu.index("[3] Cancel the capture")
-    assert one < two < three, menu
-    hint = " ".join(menu[two + 1:three])
-    assert hint == ("only if shrinking failed, or every target disk is larger than "
-                    "the source -- the image will not fit smaller disks"), menu
+        assert out.stdout.strip() == "cancel", (key, out.stdout + out.stderr)
+        assert "Shrink and capture" not in out.stderr
+        assert "capture cancelled" in out.stderr
+        assert not (gui / "shrink-request").exists()
 
 
 def test_the_capture_keeps_the_gui_and_asks_it(tmp_path):
@@ -270,7 +255,8 @@ kill $G 2>/dev/null; true
 
 
 STATE_PRE = (f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/jsonq.sh; '
-             f'. {posix(AGENT)}/lib/buildmenuitems.sh; . {posix(AGENT)}/lib/guistate.sh; ')
+             f'. {posix(AGENT)}/lib/buildmenuitems.sh; . {posix(AGENT)}/lib/guistate.sh; '
+             f'. {posix(AGENT)}/lib/askgui.sh; ')
 
 
 def test_gui_shrink_state_copies_the_request(tmp_path):

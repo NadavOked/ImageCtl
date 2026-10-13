@@ -8,7 +8,6 @@
 - ‏`manifest_plan` (‏restore.sh): ‏`.partitions[] | [...] | join("|")`.
 - ‏`.partitions | length`.
 - בלוק המולטיקאסט (‏directsend.sh): ‏`.task.direct.multicast | [...] | map(tostring) | join("|")`.
-- בחירת היעדים (‏directflow.sh): ‏`.machines | to_entries[] | .value as $m | select($m.awake) …`.
 
 כל ביטוי אחר → קוד יציאה 5, כמו jq על שגיאת קומפילציה — לא פלט ריק
 שנראה כמו תשובה (עיקרון 5). זה **לא** jq: אין כאן פרסר של השפה.
@@ -89,16 +88,6 @@ def main(argv: list[str]) -> int:
         row = [_raw(block.get(k)) for k in MC_KEYS]
         row.append(_raw(block.get("max_bitrate") or ""))
         print("|".join(row))
-        return 0
-    if flat.startswith(".machines | to_entries[] | .value as $m | select($m.awake)"):
-        # ‏directflow.sh: mac|name|ports של מכונות ערות עם מגירה טרייה בעלת חריץ.
-        for m in doc.get("machines", []):
-            if not m.get("awake"):
-                continue
-            ports = sorted(d["port"] for d in m.get("drawer_list", [])
-                           if d.get("fresh") and d.get("port") is not None)
-            if ports:
-                print(f"{m.get('mac')}|{m.get('name')}|{','.join(str(p) for p in ports)}")
         return 0
     if re.fullmatch(r"(\.[A-Za-z_][A-Za-z0-9_]*)+", flat):
         print(_raw(_path(doc, flat)))

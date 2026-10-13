@@ -281,7 +281,7 @@ def create_agent_capture_router(ctx: ServerContext) -> APIRouter:
             _fail(ctx.conn, task_id, f"manifest is not valid JSON: {snippet}")
             raise HTTPException(400, "manifest is not valid JSON")
 
-        problem = _validate(manifest, folder, row)
+        problem = validate_manifest_files(manifest, folder)
         if problem:
             _fail(ctx.conn, task_id, problem)
             shutil.rmtree(folder, ignore_errors=True)
@@ -322,79 +322,85 @@ def create_agent_capture_router(ctx: ServerContext) -> APIRouter:
                 f'{row["image_id"]} "{row["name"]}"', row["created_by"])
         return {"ok": True, "image_id": row["image_id"]}
 
-    def _validate(manifest: object, folder: Path, row) -> str | None:
-        if not isinstance(manifest, dict) or manifest.get("schema") != 1:
-            return "manifest schema must be 1"
-        parts = manifest.get("partitions")
-        if not isinstance(parts, list) or not parts:
-            return "manifest has no partitions"
-        for part in parts:
-            if not has_partition_geometry(part):
-                index = part.get("index") if isinstance(part, dict) else None
-                return (f"partition {index!r} has malformed geometry:"
-                        " start_sector and size_bytes must both be positive")
-        if manifest.get("family") not in (256, 500):
-            return "family must be 256 or 500"
-        # בלי דרישת גודל אין החלטה "האם האימג' נכנס לכונן", והאימג' היה
-        # נכנס לספרייה כדי להידלג שם בשקט בכל סריקה. נתפס כאן, בשמו.
-        if required_bytes(manifest) is None:
-            return "cannot determine how much room the image needs"
-        # אימג' Windows קושר את ה-BCD ל-GUID של הדיסק — בלעדיו כל מחשב
-        # משוחזר עולה ל-winload.efi 0xc000000e (#26, #571). ‏disk_guid ריק
-        # אינו "אין צורך ב-GUID" אלא "הקליטה לא הצליחה לקרוא אותו": הסוכן
-        # גוזר אותו מ-`sgdisk -p`, וכשל קריאה יוצא מחרוזת ריקה. נתפס כאן,
-        # בקליטה, ולא מול כיתה (עיקרון 6) — אימג' פגום אינו נכנס לספרייה,
-        # במקום שהשחזור ידלג עליו בשקט ויגיע ל-done. לינוקס פטור: ‏GRUB
-        # מאתר לפי UUID של מערכת הקבצים, ולכן הוא נקלט בלי disk_guid כרגיל.
-        if image_os(manifest) == "windows" and not has_disk_guid(manifest):
-            return ("a windows image needs its source disk_guid (the BCD binds"
-                    " to it) but the manifest has none -- capture did not read it")
-        expandable = [p for p in parts if p.get("expandable")]
-        if len(expandable) > 1:
-            return "at most one expandable partition"
-        if expandable:
-            # אחרי המחיצה המורחבת מותרת כל מחיצה שאינה windows/linux (‏#58,
-            # מרחיב את #46). הסוכן מעביר את כל הזנב הזה לסוף הכונן לפני
-            # שנכתב בייט: ‏swap נבראת שם מחדש (אפיון סעיף 14) וכל השאר —
-            # ‏recovery של Windows 11, למשל — נכתבת שם מקובץ הזרם שלה.
-            # הכלל הישן ("רק swap") אמר שאף אימג' Windows לא יורחב לעולם.
-            # מה שנשאר אסור הוא מחיצת מערכת אחרי המורחבת: אז המועמד אינו
-            # האחרון על הדיסק, ולמתוח אותו היה דורס אותה.
-            #
-            # ההשוואה לפי start_sector ולא לפי סדר הרשימה — הרשימה בסדר
-            # אינדקסים, ובאימג' ענן השורש הוא מחיצה 1 שרשומה ראשונה
-            # ויושבת אחרונה. אותו כלל בדיוק שהסוכן מסמן לפיו.
-            start = expandable[0].get("start_sector") or 0
-            after = [p for p in parts if (p.get("start_sector") or 0) > start]
-            if any(p.get("role") in ("windows", "linux") for p in after):
-                return "no system partition may follow the expandable partition"
-        for part in parts:
-            # הפטור מקובץ נשען על `fs` ולא על `role` (#424): הסוכן מכריע
-            # לפי `fs` בלבד, ורשומה עם `role: "swap"` ו-`fs: "ntfs"` עברה
-            # כאן **בלי שום בדיקה** ואז קיבלה `mkswap` על מחיצת ווינדוס.
-            if not carries_a_stream_file(part):
-                if part.get("fs") == "swap":
-                    continue                  # swap: recorded, never uploaded
-                return (f"partition {part.get('index')} ({part.get('fs')}) has no"
-                        " file, and only a swap partition may have none")
-            name = part["file"]
-            if not SAFE_FILE.match(name):
-                return f"unexpected partition file name: {name}"
-            path = folder / name
-            if not path.is_file():
-                return f"partition file was never uploaded: {name}"
-            if _sha256(path) != part.get("sha256"):
-                return f"sha256 mismatch on {name}"
-        return None
-
-    def _sha256(path: Path) -> str:
-        digest = hashlib.sha256()
-        with path.open("rb") as handle:
-            while chunk := handle.read(CHUNK):
-                digest.update(chunk)
-        return digest.hexdigest()
-
     return router
+
+
+def validate_manifest_files(manifest: object, folder: Path) -> str | None:
+    """המניפסט וקבצי המחיצות שבתיקייה, לפני כניסה לספרייה — או הסיבה.
+
+    בשימוש הקליטה מהסוכן וגם שמירת גרסה מ-VM (#1334): שני המסלולים
+    מכניסים אימג' לספרייה, ושער אחד מכריע לשניהם — כל sha256 נקרא שוב
+    מהדיסק (עיקרון 6)."""
+    if not isinstance(manifest, dict) or manifest.get("schema") != 1:
+        return "manifest schema must be 1"
+    parts = manifest.get("partitions")
+    if not isinstance(parts, list) or not parts:
+        return "manifest has no partitions"
+    for part in parts:
+        if not has_partition_geometry(part):
+            index = part.get("index") if isinstance(part, dict) else None
+            return (f"partition {index!r} has malformed geometry:"
+                    " start_sector and size_bytes must both be positive")
+    if manifest.get("family") not in (256, 500):
+        return "family must be 256 or 500"
+    # בלי דרישת גודל אין החלטה "האם האימג' נכנס לכונן", והאימג' היה
+    # נכנס לספרייה כדי להידלג שם בשקט בכל סריקה. נתפס כאן, בשמו.
+    if required_bytes(manifest) is None:
+        return "cannot determine how much room the image needs"
+    # אימג' Windows קושר את ה-BCD ל-GUID של הדיסק — בלעדיו כל מחשב
+    # משוחזר עולה ל-winload.efi 0xc000000e (#26, #571). ‏disk_guid ריק
+    # אינו "אין צורך ב-GUID" אלא "הקליטה לא הצליחה לקרוא אותו": הסוכן
+    # גוזר אותו מ-`sgdisk -p`, וכשל קריאה יוצא מחרוזת ריקה. נתפס כאן,
+    # בקליטה, ולא מול כיתה (עיקרון 6) — אימג' פגום אינו נכנס לספרייה,
+    # במקום שהשחזור ידלג עליו בשקט ויגיע ל-done. לינוקס פטור: ‏GRUB
+    # מאתר לפי UUID של מערכת הקבצים, ולכן הוא נקלט בלי disk_guid כרגיל.
+    if image_os(manifest) == "windows" and not has_disk_guid(manifest):
+        return ("a windows image needs its source disk_guid (the BCD binds"
+                " to it) but the manifest has none -- capture did not read it")
+    expandable = [p for p in parts if p.get("expandable")]
+    if len(expandable) > 1:
+        return "at most one expandable partition"
+    if expandable:
+        # אחרי המחיצה המורחבת מותרת כל מחיצה שאינה windows/linux (‏#58,
+        # מרחיב את #46). הסוכן מעביר את כל הזנב הזה לסוף הכונן לפני
+        # שנכתב בייט: ‏swap נבראת שם מחדש (אפיון סעיף 14) וכל השאר —
+        # ‏recovery של Windows 11, למשל — נכתבת שם מקובץ הזרם שלה.
+        # הכלל הישן ("רק swap") אמר שאף אימג' Windows לא יורחב לעולם.
+        # מה שנשאר אסור הוא מחיצת מערכת אחרי המורחבת: אז המועמד אינו
+        # האחרון על הדיסק, ולמתוח אותו היה דורס אותה.
+        #
+        # ההשוואה לפי start_sector ולא לפי סדר הרשימה — הרשימה בסדר
+        # אינדקסים, ובאימג' ענן השורש הוא מחיצה 1 שרשומה ראשונה
+        # ויושבת אחרונה. אותו כלל בדיוק שהסוכן מסמן לפיו.
+        start = expandable[0].get("start_sector") or 0
+        after = [p for p in parts if (p.get("start_sector") or 0) > start]
+        if any(p.get("role") in ("windows", "linux") for p in after):
+            return "no system partition may follow the expandable partition"
+    for part in parts:
+        # הפטור מקובץ נשען על `fs` ולא על `role` (#424): הסוכן מכריע
+        # לפי `fs` בלבד, ורשומה עם `role: "swap"` ו-`fs: "ntfs"` עברה
+        # כאן **בלי שום בדיקה** ואז קיבלה `mkswap` על מחיצת ווינדוס.
+        if not carries_a_stream_file(part):
+            if part.get("fs") == "swap":
+                continue                  # swap: recorded, never uploaded
+            return (f"partition {part.get('index')} ({part.get('fs')}) has no"
+                    " file, and only a swap partition may have none")
+        name = part["file"]
+        if not SAFE_FILE.match(name):
+            return f"unexpected partition file name: {name}"
+        path = folder / name
+        if not path.is_file():
+            return f"partition file was never uploaded: {name}"
+        if _sha256(path) != part.get("sha256"):
+            return f"sha256 mismatch on {name}"
+    return None
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(CHUNK):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def create_console_capture_router(ctx: ServerContext) -> APIRouter:

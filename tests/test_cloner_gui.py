@@ -65,8 +65,10 @@ PRELUDE = (
     f'. {posix(AGENT)}/lib/common.sh; '
     f'. {posix(AGENT)}/lib/jsonq.sh; '
     f'. {posix(AGENT)}/lib/sysinfo.sh; '
+    f'. {posix(AGENT)}/lib/disklink.sh; '   # #432: disk_link -- gui_libs loads it too
     f'. {posix(AGENT)}/lib/progress.sh; '
     f'. {posix(AGENT)}/lib/guistate.sh; '   # #1252: gui_server_addr -- gui_libs loads it first too
+    f'. {posix(AGENT)}/lib/askgui.sh; '   # 11/10: gui_ask_state, as gui_libs loads it
     f'. {posix(AGENT)}/lib/slotnames.sh; '   # #704: slot names -- gui_libs loads it too
     f'. {posix(AGENT)}/lib/clonergui.sh; '
 )
@@ -233,7 +235,8 @@ def test_the_kiosk_load_chain_carries_the_cached_smart_verdict(tmp_path):
     assert "not found" not in out.stderr, out.stderr
     lines = (gui / "state").read_text().splitlines()
     # ‏#874: השדה השישי (הסיבה מזיכרון השרת) ריק על דיסק ירוק.
-    assert any(l.startswith("cdisk=") and l.endswith("|passed|") for l in lines), lines
+    # ‏#432: 7/8 = הקישור — ‏null כשהדיסק אינו מאחורי libata (כאן: תיקייה, לא קישור).
+    assert any(l.startswith("cdisk=") and l.endswith("|passed||null|null") for l in lines), lines
 
 
 # --- ‏#867/#874: המלאי הממתין — ממוין לפי מספר הדיסק, ונושא את זיכרון השרת ----
@@ -310,8 +313,8 @@ def test_a_disk_the_server_remembers_reports_failed_last_with_its_cause(tmp_path
     לצדו נשאר `passed` בלי סיבה. ‏sgdisk אינו נקרא. בקרה שלילית: על main
     שניהם `passed` (הזיוף לא מדפיס טבלה), ו-`sgdisk -p` נקרא."""
     lines = idle_state(tmp_path, {"sda": "1", "sdb": "2"}, failed={"sda": "cable"})
-    assert lines[0] == "cdisk=1|sda|Model sda|512000|failed_last|cable", lines
-    assert lines[1] == "cdisk=2|sdb|Model sdb|512000|passed|", lines
+    assert lines[0] == "cdisk=1|sda|Model sda|512000|failed_last|cable|null|null", lines
+    assert lines[1] == "cdisk=2|sdb|Model sdb|512000|passed||null|null", lines
 
 
 def test_the_memory_is_read_from_the_last_hello_every_second(tmp_path):
@@ -319,7 +322,7 @@ def test_the_memory_is_read_from_the_last_hello_every_second(tmp_path):
     האחרונה — "נקה" בקונסולה מגיע למסך בלי ריבוט. שתי ריצות: האדום נשאר
     אדום כל עוד הרשומה בתשובה."""
     lines = idle_state(tmp_path, {"sda": "1", "sdb": "2"}, failed={"sdb": "disk"}, runs=2)
-    assert lines[1].endswith("|failed_last|disk"), lines
+    assert "|failed_last|disk|" in lines[1], lines
 
 
 # --- gui_smart_choice: חוסם עד החלטה תקינה, ולעולם לא מוותר לכתיבה ------------
@@ -464,9 +467,9 @@ def bridge_setup(tmp_path: Path, screen: str) -> tuple[str, Path]:
              f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/jsonq.sh; '
              f'. {posix(AGENT)}/lib/waits.sh; . {posix(AGENT)}/lib/buildmenuitems.sh; '
              f'. {posix(AGENT)}/lib/buildmenu.sh; '
-             f'. {posix(AGENT)}/lib/buildcapture.sh; . {posix(AGENT)}/lib/roomdraw.sh; '
+             f'. {posix(AGENT)}/lib/buildcapture.sh; '
              f'. {posix(AGENT)}/lib/roomflow.sh; '
-             f'. {posix(AGENT)}/lib/guistate.sh; . {posix(AGENT)}/lib/sysinfo.sh; '
+             f'. {posix(AGENT)}/lib/guistate.sh; . {posix(AGENT)}/lib/askgui.sh; . {posix(AGENT)}/lib/sysinfo.sh; '
              f'. {posix(AGENT)}/lib/progress.sh; . {posix(AGENT)}/lib/clonergui.sh; '
              f'. {posix(AGENT)}/lib/guibridge.sh; '
              'gui_role() { echo GUI_ROLE_CALLED >&2; return 1; }; ')

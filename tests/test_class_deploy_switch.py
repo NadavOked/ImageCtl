@@ -43,7 +43,7 @@ PRELUDE = (
     f'. {posix(AGENT)}/lib/common.sh; '
     f'. {posix(AGENT)}/lib/jsonq.sh; '
     f'. {posix(AGENT)}/lib/buildmenuitems.sh; . {posix(AGENT)}/lib/buildmenu.sh; '
-    f'. {posix(AGENT)}/lib/guistate.sh; '
+    f'. {posix(AGENT)}/lib/guistate.sh; . {posix(AGENT)}/lib/askgui.sh; '
 )
 
 

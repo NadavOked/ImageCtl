@@ -156,7 +156,7 @@ def test_room_drawer_carries_the_slot_name_as_field_eleven(tmp_path):
     lines = _room_records(tmp_path, ROOM)
     rows = [l.split("=", 1)[1].split("|") for l in lines if l.startswith("room_drawer=")]
     assert [(r[1], r[10]) for r in rows] == [("1", "עליונה"), ("0", "דיסק מיוחד"), ("2", "")], rows
-    assert all(len(r) == 11 for r in rows)
+    assert all(len(r) == 12 for r in rows)   # #432: field 12 = link state, after the name
 
 
 @JQ
@@ -185,7 +185,8 @@ def test_an_older_server_without_names_writes_empty_fields(tmp_path):
 def test_the_parser_reads_all_three_records():
     state_c = _src("state.c")
     assert 'KEY("room_slot_name")' in state_c and 'KEY("cslot_name")' in state_c
-    assert "split(val, f, 11) < 8" in state_c, "room_drawer: field 11 optional (an older agent sends 8-10)"
+    # #432 added field 12 (link state) after the name; the floor is still 8
+    assert "split(val, f, 12) < 8" in state_c, "room_drawer: fields 11-12 optional (an older agent sends 8-11)"
     assert "m->slot_names[actual_port - 1]" in state_c
     assert re.search(r"fallback.*port == \(int\)port", state_c), \
         "a port-0 drawer drawn in a borrowed slot must not take that slot's name"

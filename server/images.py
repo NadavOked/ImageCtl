@@ -210,6 +210,37 @@ def restore_refusal(manifest: dict, macs: list[str] | None) -> str | None:
             f"היעד שנבחר הוא {asked}")
 
 
+def lineage_of(manifest: dict) -> str:
+    """השושלת של האימג' — מזהה הגרסה הראשונה (‏#1334). גרסה שנשמרה מ-VM
+    נושאת `lineage`; אימג' שלא נגזר מאף אחד הוא השושלת של עצמו."""
+    value = manifest.get("lineage")
+    return value if isinstance(value, str) and valid_image_id(value) else manifest["id"]
+
+
+def version_of(manifest: dict) -> int:
+    """`version` — מספר שלם מ-1; חסר או פגום = 1 (כל מה שנקלט לפני #1334)."""
+    value = manifest.get("version")
+    return value if type(value) is int and value >= 1 else 1
+
+
+def default_versions(images: dict[str, dict], pointers: dict[str, str]) -> dict[str, str]:
+    """{שושלת: מזהה ברירת המחדל}. ההצבעה שנקבעה בקונסולה גוברת — אם היא
+    מצביעה על גרסה שקיימת **באותה שושלת**; אחרת הגרסה הגבוהה ביותר (ובשוויון
+    — החדשה ביותר לפי `created`). כך שמירה מ-VM הופכת את הגרסה החדשה לברירת
+    המחדל, ו"קבע כברירת מחדל" מחזיר אחורה בלי למחוק דבר (הכרעה 2)."""
+    by_lineage: dict[str, list[dict]] = {}
+    for manifest in images.values():
+        by_lineage.setdefault(lineage_of(manifest), []).append(manifest)
+    result = {}
+    for lineage, members in by_lineage.items():
+        ids = {m["id"] for m in members}
+        chosen = pointers.get(lineage)
+        if chosen not in ids:
+            chosen = max(members, key=lambda m: (version_of(m), str(m.get("created", ""))))["id"]
+        result[lineage] = chosen
+    return result
+
+
 def streamed_partitions(manifest: dict) -> list[dict]:
     """המחיצות שיש להן קובץ בזרם. swap מתועד במניפסט אבל לא נשמר ולא
     משודר (אפיון סעיף 14) — הסוכן יוצר אותו מחדש; `file` שלו הוא null."""
@@ -327,6 +358,18 @@ class ImageLibrary:
         # #1066: מיקומים נוספים (NFS/SMB/iSCSI). None = רק `--images`,
         # כמו לפני המיקומים — בדיקות יחידה של הספרייה עצמה.
         self._locations = None
+        # ‏#1334: הצבעות "ברירת המחדל" לכל שושלת (טבלת settings). None = בלי
+        # הצבעות — הגרסה הגבוהה ביותר.
+        self._default_pointers = None
+
+    def bind_defaults(self, provider) -> None:
+        """מזרים את הצבעות ברירת המחדל מה-DB (‏`image_versions.pointers`)."""
+        self._default_pointers = provider
+
+    def defaults(self, images: dict[str, dict] | None = None) -> dict[str, str]:
+        found = images if images is not None else self.scan()
+        pointers = self._default_pointers() if self._default_pointers else {}
+        return default_versions(found, pointers or {})
 
     def bind_locations(self, provider) -> None:
         """מזרים את רשימת המיקומים מה-DB. נקרא פעם אחת ב-create_runtime."""
@@ -491,8 +534,13 @@ class ImageLibrary:
 
         הסוכן רק מציג, הוא לא מסנן בעצמו (כלל ממשק 3).
         """
-        images = {iid: m for iid, m in self.scan().items()
-                  if m.get("_available", True)}
+        scanned = self.scan()
+        # ‏#1334: למכונה מוצעת **ברירת המחדל** של כל שושלת בלבד — סבב חדש
+        # מקבל את הגרסה העדכנית (או זו שנקבעה); סבב פתוח ממשיך עם המזהה
+        # שלו, כי הוא נשמר בסבב ולא נבחר מכאן.
+        chosen = set(self.defaults(scanned).values())
+        images = {iid: m for iid, m in scanned.items()
+                  if m.get("_available", True) and iid in chosen}
         if not disks:
             return sorted(images)
         internal = [
@@ -521,7 +569,9 @@ class ImageLibrary:
         הסדר בתוך תיקייה: קודם `sort` (שהקונסולה עורכת), ואז שם.
         """
         result = []
-        for manifest in self.scan().values():
+        scanned = self.scan()
+        chosen = set(self.defaults(scanned).values())
+        for manifest in scanned.values():
             result.append(
                 {
                     "id": manifest["id"],
@@ -551,6 +601,10 @@ class ImageLibrary:
                     # #1066: באיזה מיקום האימג' יושב, והאם המיקום נגיש.
                     "location_id": manifest.get("_location_id") or "loc_local",
                     "available": manifest.get("_available", True),
+                    # ‏#1334: גרסאות — השושלת, מספר הגרסה, והאם היא ברירת המחדל.
+                    "lineage": lineage_of(manifest),
+                    "version": version_of(manifest),
+                    "is_default": manifest["id"] in chosen,
                 }
             )
         return sorted(result, key=lambda m: (m["folder"], m["sort"], m["name"]))

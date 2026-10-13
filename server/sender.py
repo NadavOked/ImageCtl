@@ -427,6 +427,9 @@ class SenderEngine:
         # בלי `wave_bitrate` — `max_bitrate` כמות שהוא.
         self.wave_bitrate = wave_bitrate
         self.on_event = on_event or (lambda event, detail: None)
+        #: ‏#705: ‏`gate(interface)` → סיבת סירוב או None — השידור כבוי בכרטיס
+        #: (רשת ← חיבורים פיזיים ← שירותים). ‏`create_runtime` מתקין.
+        self.gate: Callable[[str | None], str | None] | None = None
         self._lock = threading.Lock()
         self._state: SendState | None = None
         self._process: subprocess.Popen | None = None
@@ -763,6 +766,11 @@ class SenderEngine:
                 " על פורט, והסיבה אינה ידועה")
 
     def _run(self, session: dict) -> None:
+        if self.gate is not None:
+            refused = self.gate(self.interface)
+            if refused:
+                self._fail(refused)
+                return
         if self.simulate:
             self._run_simulated(session)
             return

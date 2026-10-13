@@ -432,7 +432,8 @@ def _upgrade_env(tmp_path: Path, repo: Path, data: Path) -> dict:
 
 
 def _upgrade_fakes(bindir: Path, *, restart_fails: bool = False) -> None:
-    fake_tool(bindir, "git", 'case "$1" in describe) echo "$FAKE_TAG" ;; checkout) exit 0 ;; esac')
+    fake_tool(bindir, "git", 'case "$1" in describe) echo "$FAKE_TAG" ;; checkout) exit 0 ;; '
+                             'rev-parse) echo "commit-of-$FAKE_TAG" ;; rev-list) echo "commit-of-$4" ;; esac')
     restart = 'echo restart failed >&2; exit 1' if restart_fails else "exit 0"
     fake_tool(bindir, "systemctl",
               f'case "$1" in restart) {restart} ;; show) echo "IMAGECTL_URL=http://10.10.10.8:8080 X=y" ;; esac')

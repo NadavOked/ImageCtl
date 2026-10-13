@@ -14,6 +14,7 @@
 #include <cairo.h>
 #include "draw.h"
 #include "install_state.h"
+#include "localclone.h"   /* #1322 */
 #include "theme.h"
 
 #define MAX_HITS    640     /* #695: 30 machines x 8 disks need room-disk hit targets;
@@ -32,8 +33,16 @@
 /* #928: the rows of the capture's shrink question (shrinkgui.sh,
  * SHRINK_GUI_MAX_ROWS). A request with more is not drawn at all. */
 #define MAX_SHRINK_PARTS 16
+/* 11/10 (GUI only): the rows of a question dialog (askgui.sh, ASK_GUI_MAX_ROWS) --
+ * the grow-back of a disk left shrunk. A request with more is not drawn. */
+#define MAX_ASK_ROWS 16
+/* 11/10: the kinds of question the agent asks through the dialog (ask_prompt=) */
+enum { ASK_NONE, ASK_GROWBACK, ASK_CAPTURE_END };
 /* #1269: the models the driver library has (GET /api/console/room/driver-models). */
 #define MAX_DRIVER_MODELS 32
+/* #432/#65: round.precheck (room_warn=) and round.missing (room_missing=)
+ * lines on the live room screen; more than this are said, not cut silently. */
+#define MAX_ROOM_NOTES 32
 /* #704: the operator's name of a slot -- the server allows 24 characters
  * (server/slot_names.py NAME_MAX); 4 UTF-8 bytes each at most, + NUL. */
 #define SLOT_NAME_MAX 100
@@ -127,6 +136,12 @@ enum {
     HIT_ROOM_DRV_PICK,    /* "לבחור דיסקים" */
     /* #1245: the typing-language chip in the status bar (EN <-> עב) */
     HIT_LANG,
+    /* 11/10 (GUI only): the agent's question dialog (screens_ask.c) */
+    HIT_ASK_PRIMARY,
+    HIT_ASK_SECONDARY,
+    /* #1322: the boot choice and the local clone */
+    HIT_LC_BOOT_SERVER, HIT_LC_BOOT_LOCAL, HIT_LC_BACK, HIT_LC_NEXT, HIT_LC_GO, HIT_LC_CANCEL,
+    HIT_LC_STOP, HIT_LC_STOP_GO, HIT_LC_STOP_NO, HIT_LC_OFF, HIT_LC_AGAIN,
     HIT_INSTALL_SUMMARY_BASE = 1000,
     HIT_INSTALL_NIC_BASE = 1020,
     /* ranges: base + index */
@@ -145,6 +160,11 @@ enum {
     HIT_PICK_FOLDER_BASE = 950,
     /* #1269 a disk's drivers tag in pick mode: +(machine_index * MAX_DRAWERS)+(port-1) */
     HIT_ROOM_DTAG_BASE = 2000,
+    /* #65 "כבה אותו" on a missing machine: +index into st.room_missing */
+    HIT_ROOM_POWEROFF_BASE = 2400,
+    /* #1322: a drawer of the local clone (+disk index), its role buttons
+     * (+index * 3 + LCR_*), and "הוצא את דיסק N מהשיכפול" (+index) */
+    HIT_LC_BAY_BASE = 3000, HIT_LC_ROLE_BASE = 3100, HIT_LC_DROP_BASE = 3200,
 };
 
 typedef struct { Rect r; int id; } Hit;
@@ -153,7 +173,9 @@ typedef enum {
     SCREEN_LOGIN, SCREEN_MENU, SCREEN_PICK, SCREEN_PROGRESS, SCREEN_DONE,
     SCREEN_ROOM, SCREEN_CLASS, SCREEN_CLONER, SCREEN_STANDBY, SCREEN_MESSAGE, SCREEN_RESTORE,
     SCREEN_TOOLS,       /* #649 */
-    SCREEN_INSTALL      /* #1188 */
+    SCREEN_INSTALL,     /* #1188 */
+    SCREEN_LCBOOT,      /* #1322: "מהשרת" or "שיכפול מקומי", on a cloner's boot */
+    SCREEN_LOCAL        /* #1322: the local clone -- source, progress, result */
 } Screen;
 
 /* station.js MODE: null (menu) / "capture" / "room" / "classes"; #706 adds restore */
@@ -164,7 +186,9 @@ typedef enum { MODE_MENU, MODE_CAPTURE, MODE_ROOM, MODE_CLASSES, MODE_RESTORE, M
 typedef enum { TASK_NONE, TASK_PENDING, TASK_RUNNING, TASK_DONE, TASK_FAILED } TaskState;
 
 /* #1270: what the confirm dialog is about to do */
-enum { CONFIRM_NONE, CONFIRM_RESTORE, CONFIRM_ROOM_STOP, CONFIRM_CLASS_STOP, CONFIRM_TOOL };
+enum { CONFIRM_NONE, CONFIRM_RESTORE, CONFIRM_ROOM_STOP, CONFIRM_CLASS_STOP, CONFIRM_TOOL,
+       CONFIRM_ROOM_START_WARN,   /* #432: start a wave that has a precheck warning */
+       CONFIRM_ROOM_POWEROFF };   /* #65: power off one missing cloner */
 
 typedef struct { char dev[32], model[80]; unsigned long long size_bytes; int has_data, removable; } Disk;
 typedef struct { char id[64], name[96], folder[64]; } Image;
@@ -180,6 +204,7 @@ typedef struct {
      * failed, "" = the step did not run on this drawer. detail = the
      * packages (staged), the error (failed) or the reason (skipped). */
     char drv_state[12], drv_detail[160];
+    int link_slow;      /* #432: room_drawer field 12 = link_state "slow" -- orange like a SMART warning */
 } RoomDrawer;
 /* #1269: one model the driver library has a package for, in its spelling. */
 typedef struct { char vendor[64], model[128]; } DriverModel;
@@ -208,7 +233,8 @@ typedef struct {
 /* A physically connected disk shown on the cloner's IDLE screen (no round yet),
  * so the operator sees what is plugged in before a broadcast starts. */
 typedef struct { int port; char model[48]; unsigned long long size; char smart[16];
-                 char cause[16]; /* #874: cable|disk|unclassified for failed_last, else "" */ } IdleDisk;
+                 char cause[16]; /* #874: cable|disk|unclassified for failed_last, else "" */
+                 char link[8], link_max[8]; /* #432: "6.0" Gb/s; "" = not read, never "fine" */ } IdleDisk;
 
 /* Everything the --state file can say. See README "The --state file". */
 typedef struct State {
@@ -287,6 +313,14 @@ typedef struct State {
     char shrink_nonce[32];
     struct { int idx; unsigned long long old_bytes, new_bytes; } shrink[MAX_SHRINK_PARTS];
 
+    /* 11/10 (GUI only): a question the agent used to ask on the text console
+     * (askgui.sh via guistate.sh): ask_prompt=<nonce>|<kind>|<count>|<subject>
+     * and, for the grow-back, one ask_row=<idx>|<now bytes>|<orig bytes>|
+     * <table|fs> per row. All-or-nothing, like the shrink question. */
+    int ask_pending, ask_kind, nask;
+    char ask_nonce[32], ask_subject[32];
+    struct { int idx, fs_only; unsigned long long now_bytes, orig_bytes; } ask[MAX_ASK_ROWS];
+
     /* #1090: positive evidence from the agent's latest hello. -1 means the
      * key was absent, which is different from a measured zero seconds/HTTP 0. */
     int hello_age, hello_rc;
@@ -301,6 +335,17 @@ typedef struct State {
      * carries a model of up to 127 bytes (DriverModel.model); at 160 gcc
      * warns -Wformat-truncation, and a cut would split a UTF-8 letter. */
     char room_error[256];
+
+    /* #432: round.precheck of an open wave -- room_warn=<text>, one per
+     * drawer the wave would write on a slow link or a risen CRC. Orange: a
+     * warning before "התחל", never a block. #65: round.missing --
+     * room_missing=<mac>|<name>|<reason>|<can_poweroff>|<text>. The texts
+     * come from the server, the same words the console shows. */
+    char room_warn[MAX_ROOM_NOTES][320]; int nroom_warn, hidden_room_warn;
+    struct { char mac[24], name[64], reason[16], text[320]; int can_poweroff; } room_missing[MAX_ROOM_NOTES];
+    int nroom_missing, hidden_room_missing;
+    /* #1322: the boot choice and the local clone (lcgui.sh) */
+    LcState lc;
 } State;
 
 /* #649: one row of $GUI_DIR/tools (id|domain|title|risk|args). risk is
@@ -338,6 +383,9 @@ typedef struct App {
      * Enter confirms, Esc cancels; the token the bridge/server still checks
      * (machine name, round image) is filled from the known value. */
     int confirm;
+    /* #65: the machine CONFIRM_ROOM_POWEROFF is about -- copied at the click,
+     * so a reload that reorders the list cannot retarget the dialog. */
+    char poweroff_mac[24], poweroff_name[64];
     Mode mode;
     int force_progress;         /* --screen progress: show it even with no task */
     int force_cloner;           /* --screen cloner: the cloning machine's own screen */
@@ -415,8 +463,11 @@ typedef struct App {
     double toast_until;         /* monotonic seconds */
 
     char shrink_sent[32];       /* #928: the nonce already answered -- one answer per question */
+    char ask_sent[32];          /* 11/10: the same, for the question dialog */
 
     State st;
+
+    LcUi lcu;                   /* #1322: what the person chose on the local clone screens */
 
     /* #1188: local UI state; validation and apply remain in wizard/core.py. */
     InstallState install;
@@ -487,6 +538,10 @@ void screen_install(App *a, cairo_t *cr, double W, double H);
 /* #928 (screens_shrink.c): the shrink question, modal over any screen while
  * st.shrink_pending -- it replaces the hit table with its three buttons. */
 void draw_shrink_dialog(App *a, cairo_t *cr, double W, double H);
+/* 11/10 (screens_ask.c): the agent's question (grow-back / end of capture),
+ * modal like the shrink question and drawn in its style; the shrink question
+ * wins if both are pending. */
+void draw_ask_dialog(App *a, cairo_t *cr, double W, double H);
 /* #1270 (screens.c): the confirm dialog of a->confirm, modal like the shrink
  * question -- it replaces the hit table with [ביטול] and the red action. */
 void draw_confirm_dialog(App *a, cairo_t *cr, double W, double H);

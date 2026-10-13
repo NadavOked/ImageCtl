@@ -162,7 +162,7 @@ def _bridge(tmp_path: Path, record: str) -> dict | None:
         f'export RUN_DIR={posix(run)!r} GUI_DIR={posix(gui)!r} LOG_FILE={posix(run / "log")!r} '
         f'SERVER=http://127.0.0.1:9 MAC=c8:d9:d2:0b:fe:32 IMAGECTL_TEST=1; '
         f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/jsonq.sh; '
-        f'. {posix(AGENT)}/lib/roomdraw.sh; . {posix(AGENT)}/lib/roomflow.sh; '
+        f'. {posix(AGENT)}/lib/roomflow.sh; '
         f'. {posix(AGENT)}/lib/guibridge.sh; '
         'gui_role() { GUI_ROLE=admin; }; '
         'http_get() { printf \'{"disks":[{"dev":"sda","removable":false}]}\'; }; '

@@ -13,10 +13,19 @@ import json
 import os
 import socket
 import subprocess
+import sys
 import urllib.parse
 from pathlib import Path
 
 from . import deploy_net, identity
+
+
+def _configure_stdio() -> None:
+    """Keep startup messages printable on non-UTF-8 Windows consoles."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(errors="backslashreplace")
 
 
 class InterfaceDetectionError(RuntimeError):
@@ -243,6 +252,61 @@ def _resolve_bind_host(parser, flag: str, value: str | None) -> tuple[str | None
     return None, None                                    # pragma: no cover
 
 
+class _ServerGroup(list):
+    """‏#705: כמה מאזיני mTLS (אחד לכל כרטיס) כאובייקט אחד למנהל המאזינים."""
+
+    @property
+    def port(self):
+        return self[0].port if self else None
+
+    def stop(self) -> None:
+        for server in self:
+            server.stop()
+
+
+def _raise(error: str | None) -> None:
+    if error:
+        raise RuntimeError(error)
+
+
+def ifaddr_current(name: str) -> str | None:
+    """הכתובת הנוכחית של כרטיס לדוגם — None כשאין או כשלא נקרא (הדוגם ינסה)."""
+    from . import ifaddr
+    try:
+        return ifaddr.read_ipv4(name)
+    except ifaddr.AddressLookupError:
+        return None
+
+
+def _nic_baseline(nic, args, runtime, console_iface, console_addr, inter_iface, inter_addr) -> None:
+    """‏#705: על איזה כרטיס כל מאזין נקשר **היום** — אותם תנאים בדיוק כמו
+    הקשירה למטה (‏#1310 ראשי על כרטיס הקונסולה, ‏#1313 משני בלי הדגל)."""
+    from . import storage_nodes
+    from .interserver_auth import is_loopback
+    if console_iface is None and console_addr and not is_loopback(console_addr):
+        nic.base.console = _owner_nic(console_addr)
+    if storage_nodes.role(runtime.conn) == "secondary":
+        if args.interserver_host:
+            nic.base.interserver = inter_iface or _owner_nic(inter_addr or args.interserver_host)
+        elif (args.storage_role == "secondary" and args.console_host
+              and not is_loopback(args.console_host)):
+            nic.base.interserver = nic.base.console
+    elif console_iface or (console_addr and not is_loopback(console_addr)):
+        nic.base.interserver = nic.base.console
+
+
+def _owner_nic(address: str | None) -> str | None:
+    """הכרטיס שנושא את הכתובת — או None (כולל כשלא ניתן לקרוא)."""
+    from . import dhcp, nic_services
+    if not address:
+        return None
+    try:
+        found = nic_services.via(address, dhcp.list_interfaces())
+    except OSError:
+        return None
+    return found if found not in (None, "lo") else None
+
+
 def _primary_alive(runtime, args, hostname: str):
     """‏#1310: יצרן המאזין "אתה שם?" של הראשי — ``None`` במשני (שם 8443 הוא
     ה-mTLS, ובלעדיו אינו נפתח כלל). אחרת פונקציה ``כתובת → (יצרנים,
@@ -270,6 +334,7 @@ def _primary_alive(runtime, args, hostname: str):
 
 
 def main() -> None:
+    _configure_stdio()
     parser = build_parser()
     args = parser.parse_args()
 
@@ -480,6 +545,15 @@ def main() -> None:
     # (‏uvicorn.Server אינו רב-פעמי), ולכן המנהל מקבל **יצרנים**.
     agent_config = uvicorn.Config(
         agent_app, host=args.host, port=args.port, log_level="info")
+    configs: dict[tuple[str, str], object] = {("agent", args.host): agent_config}
+
+    def agent_factory(h: str):
+        """‏#705: יצרן לכל כתובת — הסוכן נקשר לכל כרטיס שבו "אתחול מהרשת" דלוק."""
+        if ("agent", h) not in configs:
+            configs[("agent", h)] = uvicorn.Config(agent_app, host=h, port=args.port,
+                                                   log_level="info")
+        cfg = configs[("agent", h)]
+        return lambda: uvicorn.Server(cfg)
     # ‏#770: הקונסולה על כרטיס הניהול (`--console-host`) בלבד — לא `--host`.
     # ‏#703 (tracer 5): ‏`ssl_certfile`/`ssl_keyfile` של uvicorn (stdlib ssl)
     # על **כל** מאזין קונסולה — ורק עליהם; הסוכן נשאר http.
@@ -500,21 +574,41 @@ def main() -> None:
         מרחיב את החשיפה (אותה מכונה בלבד), ולכן אינו שובר את fail-closed
         של #770. בלי כתובת על הכרטיס (#1088) — loopback בלבד, עד שתגיע.
         """
-        hosts = [addr] if addr else []
-        if not addr or not is_loopback(addr):
-            hosts.append("127.0.0.1")
-        configs = [uvicorn.Config(console_app, host=h, port=args.console_port,
-                                  log_level="info", **console_ssl) for h in hosts]
-        return [(lambda cfg=cfg: uvicorn.Server(cfg)) for cfg in configs], hosts
+        hosts = with_loopback([addr] if addr else [])
+        return [console_factory(h) for h in hosts], hosts
 
-    console_factories, console_hosts = console_servers(console_addr)
+    def with_loopback(hosts: list[str]) -> list[str]:
+        return hosts if any(is_loopback(h) for h in hosts) else [*hosts, "127.0.0.1"]
+
+    def console_factory(h: str):
+        if ("console", h) not in configs:
+            configs[("console", h)] = uvicorn.Config(
+                console_app, host=h, port=args.console_port, log_level="info", **console_ssl)
+        cfg = configs[("console", h)]
+        return lambda: uvicorn.Server(cfg)
+
+    # ‏#705: מאז שהמפעיל ערך שירותים לכרטיס — הכתובות נגזרות מהשירותים של כל
+    # כרטיס. עד אז (`edited` = ‏False) הכול נקשר בדיוק כמו קודם: שדרוג אינו משנה.
+    # runtime מזויף (בדיקות של main) אינו נושא אותו — ואז הכול כמו קודם.
+    nic = getattr(getattr(runtime, "ctx", None), "nic_services", None)
+    if nic is not None:
+        _nic_baseline(nic, args, runtime, console_iface, console_addr, inter_iface, inter_addr)
+    nic_plan = nic.current_plan() if nic is not None and nic.edited() else None
+    if nic_plan is not None:
+        agent_hosts = nic_plan["hosts"]["http_boot"] or [deploy_net.UNCONFIGURED_HOST]
+        console_hosts = with_loopback(nic_plan["hosts"]["http_console"])
+        console_factories = [console_factory(h) for h in console_hosts]
+        print("per-NIC services (#705): binds follow the console's choice per interface")
+    else:
+        agent_hosts = [args.host]
+        console_factories, console_hosts = console_servers(console_addr)
     console_binds = " + ".join(f"{console_scheme}://{h}:{args.console_port}"
                                for h in console_hosts)
-    listeners.add("http_boot", [lambda: uvicorn.Server(agent_config)],
-                  port=args.port, hosts=[args.host])
+    listeners.add("http_boot", [agent_factory(h) for h in agent_hosts],
+                  port=args.port, hosts=agent_hosts)
     listeners.add("http_console", console_factories,
                   port=args.console_port, hosts=console_hosts)
-    print(f"agent on {args.host}:{args.port}"
+    print(f"agent on {' + '.join(agent_hosts)}:{args.port}"
           f"  console on {console_binds}")
     if console_iface:
         print(f"console interface: {console_iface} "
@@ -530,10 +624,13 @@ def main() -> None:
     # ‏#1310: הראשי עונה על 8443 ל"אתה שם?" בלבד — על כרטיס השרתים, שהוא
     # כרטיס הקונסולה. קונסולה על loopback בלבד = אין כרטיס שרתים = אין מאזין.
     alive_servers = None
-    if console_iface or (console_addr and not is_loopback(console_addr)):
+    if console_iface or (console_addr and not is_loopback(console_addr)) or nic_plan is not None:
         alive_servers = _primary_alive(runtime, args, machine_hostname)
     if alive_servers is not None:
         alive_factories, alive_hosts = alive_servers(console_addr)
+        if nic_plan is not None:
+            alive_hosts = nic_plan["hosts"]["interserver"]
+            alive_factories = [f for h in alive_hosts for f in alive_servers(h)[0]]
         listeners.add("interserver", alive_factories,
                       port=args.interserver_port, hosts=alive_hosts)
         print(f"primary alive (#1310) on "
@@ -563,6 +660,9 @@ def main() -> None:
 
     if console_iface:
         def rebind_console(new: str | None) -> None:
+            if nic is not None and nic.edited():   # ‏#705: הכתובות נגזרות מהשירותים
+                _raise(apply_listeners(nic))
+                return
             factories, hosts = console_servers(new)
             listeners.request_rebind("http_console", hosts=hosts, factories=factories)
             if alive_servers is not None:
@@ -589,6 +689,7 @@ def main() -> None:
         # על loopback — לשם הראשי לעולם לא יגיע.
         inter_host, inter_addr, inter_iface = args.console_host, console_addr, console_iface
         print(f"interserver: no --interserver-host — using --console-host {inter_host} (#1313)")
+    interserver_rebind = None
     if inter_host and storage_nodes.role(runtime.conn) == "secondary":
         from . import interserver_api
         if inter_iface:
@@ -614,14 +715,94 @@ def main() -> None:
                 return server
             return start_interserver
 
-        listeners.add_threaded("interserver", start=make_interserver_start(inter_addr),
-                               stop=lambda server: server.stop(),
-                               port=args.interserver_port,
-                               hosts=[inter_addr or inter_host])
-        if inter_iface:
+        def make_interserver_group(hosts: list[str]):
+            """‏#705: מאזין mTLS לכל כרטיס שבו "בין-שרתים" דלוק."""
+            def start_group():
+                group = _ServerGroup()
+                try:
+                    for h in hosts:
+                        group.append(make_interserver_start(h)())
+                except OSError:
+                    group.stop()
+                    raise
+                return group
+            return start_group
+
+        def interserver_rebind(hosts: list[str]) -> None:
+            listeners.request_rebind("interserver", hosts=hosts,
+                                     start=make_interserver_group(hosts))
+        if nic_plan is not None:
+            listeners.add_threaded("interserver",
+                                   start=make_interserver_group(nic_plan["hosts"]["interserver"]),
+                                   stop=lambda server: server.stop(),
+                                   port=args.interserver_port,
+                                   hosts=nic_plan["hosts"]["interserver"])
+        else:
+            listeners.add_threaded("interserver", start=make_interserver_start(inter_addr),
+                                   stop=lambda server: server.stop(),
+                                   port=args.interserver_port,
+                                   hosts=[inter_addr or inter_host])
+        if inter_iface and nic_plan is None:
             watch(inter_iface, inter_addr, lambda new: listeners.request_rebind(
                 "interserver", hosts=[new or inter_iface],
                 start=make_interserver_start(new)))
+
+    watched: set[str] = {console_iface} | ({inter_iface} if nic_plan is None else set())
+    watched.discard(None)
+
+    def watch_plan(p: dict) -> None:
+        """‏#705: כל כרטיס שמאזין נקשר אליו נדגם — כתובת שהתחלפה = אכיפה מחדש."""
+        for name in p["nics"]["console"] + p["nics"]["netboot"] + p["nics"]["interserver"]:
+            if name not in watched:
+                watched.add(name)
+                watch(name, ifaddr_current(name),
+                      lambda _new: _raise(apply_listeners(nic)))
+
+    def apply_listeners(nic_services) -> str | None:
+        """‏#705: שלב האכיפה של המאזינים — כל מאזין נקשר בדיוק לכתובות של
+        הכרטיסים שבהם השירות שלו דלוק (מצטבר: כתובת שנשארת אינה נסגרת)."""
+        p = nic_services.current_plan()
+        hosts = p["hosts"]
+        errors = []
+
+        def run(label, call):
+            try:
+                call()
+            except Exception as exc:                                # noqa: BLE001
+                errors.append(f"{label}: {exc or type(exc).__name__}")
+        run("קונסולה", lambda: listeners.request_retarget(
+            "http_console", hosts=with_loopback(hosts["http_console"]),
+            factory_for=console_factory))
+        run("סוכן", lambda: listeners.request_retarget(
+            "http_boot", hosts=hosts["http_boot"] or [deploy_net.UNCONFIGURED_HOST],
+            factory_for=agent_factory))
+        if "interserver" not in listeners.ids():
+            if hosts["interserver"]:
+                errors.append("בין-שרתים: אין מאזין 8443 בתהליך הזה — בראשי: אתחול "
+                              "השרת יעלה אותו לפי השירותים; במשני: נדרש "
+                              "‎--interserver-host ביחידה")
+        elif alive_servers is not None:
+            run("בין-שרתים", lambda: listeners.request_retarget(
+                "interserver", hosts=hosts["interserver"],
+                factory_for=lambda h: alive_servers(h)[0][0]))
+        elif interserver_rebind is not None:
+            run("בין-שרתים", lambda: interserver_rebind(hosts["interserver"]))
+        watch_plan(p)
+        return " · ".join(errors) or None
+
+    if nic is not None:
+        nic.hooks["listeners"] = apply_listeners
+        nic.hooks["bound"] = lambda: {pid: [h for h, _p in listeners.bound(pid)]
+                                      for pid in listeners.ids()}
+        deploy_ctx.services = nic.firewall_services
+    if nic_plan is not None:
+        watch_plan(nic_plan)
+    if nic is not None and nic.reverted_at_startup and nic.hooks.get("firewall"):
+        # שינוי שפג בזמן שהשרת לא רץ חזר ב-DB; ה-dnsmasq כבר נכתב מחדש בעלייה
+        # (`sync_main_conf`), וחומת האש — כאן.
+        error = nic.hooks["firewall"](nic)
+        if error:
+            print(f"per-NIC services: firewall after startup revert failed: {error}")
 
     # המצב השמור (‏`port:<id>` ב-DB) קובע מה נקשר בעלייה.
     listeners.want_open = lambda port_id: ports.enabled(runtime.conn, port_id)

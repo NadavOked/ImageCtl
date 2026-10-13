@@ -120,16 +120,25 @@ def test_the_sources_were_actually_parsed() -> None:
     assert "python3-fastapi" in installer_pkgs()
 
 
+def vmupdate_pkgs() -> set[str]:
+    """‏#1334: install/vmupdate-packages.txt — המקור היחיד של חבילות עדכון ה-VM
+    (ההתקנה והעדכון מהכפתור מתקינים ממנו דרך install/vmupdate-host.sh)."""
+    text = (REPO / "install" / "vmupdate-packages.txt").read_text(encoding="utf-8")
+    return set(_strip_comments(text).split())
+
+
 def test_packages_txt_is_the_union_of_every_apt_list() -> None:
     have = packages_txt()
-    sources = {"setup-boot-server.sh PKGS": set(installer_pkgs()), **initramfs_lists()}
+    sources = {"setup-boot-server.sh PKGS": set(installer_pkgs()), **initramfs_lists(),
+               "install/vmupdate-packages.txt": vmupdate_pkgs()}
     missing = {name: sorted(pkgs - have) for name, pkgs in sources.items() if pkgs - have}
     assert not missing, f"חסר ב-tools/iso/packages.txt (ההתקנה offline תיכשל עליהן): {missing}"
 
 
 def test_every_package_in_packages_txt_has_a_source() -> None:
     """הכיוון ההפוך: שורה ב-packages.txt שאין לה מקור היא רשימה שנסחפה."""
-    known = set().union(*initramfs_lists().values(), installer_pkgs(), ISO_ONLY, FIRMWARE_PACKAGE.values())
+    known = set().union(*initramfs_lists().values(), installer_pkgs(), vmupdate_pkgs(), ISO_ONLY,
+                        FIRMWARE_PACKAGE.values())
     orphans = sorted(packages_txt() - known)
     assert not orphans, f"ב-packages.txt בלי מקור ובלי הצהרה ב-ISO_ONLY: {orphans}"
 

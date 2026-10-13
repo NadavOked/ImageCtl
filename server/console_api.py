@@ -104,7 +104,7 @@ def _drawer_count(raw):
 
 def create_console_router(
     ctx: ServerContext, known_macs_hooks: dict | None = None,
-    version: Callable[[], str | None] | None = None,
+    version: Callable[[], object] | None = None,
     tls=None,
     kiosk: bool = False,
     uptime: Callable[[], int | None] | None = None,
@@ -185,6 +185,9 @@ def create_console_router(
         # standalone, ורק כשיש משני פעיל אחד לפחות. הדגל הוא הנראות;
         # האכיפה עצמה יושבת בשכבת ה-route (שלבים הבאים ב-#655).
         info = users.flags(ctx.conn, user[0])
+        version_info = version() if version else None
+        shown_version = getattr(version_info, "version", version_info)
+        version_verified = getattr(version_info, "verified", False)
         return {
             "username": user[0],
             "role": user[1],
@@ -195,7 +198,8 @@ def create_console_router(
             # ‏#915: גרסת השרת (תג git, ‏`update.current_version`) לשורת
             # הסטטוס — לכל משתמש מחובר, לא רק admin. ‏None = אין תג על
             # העץ, והקונסולה לא מציגה מספר שאין לו מקור.
-            "version": version() if version else None,
+            "version": shown_version,
+            "version_verified": version_verified,
             # ‏#703 (tracer 5): מצב ה-TLS של הקונסולה וטביעת האצבע (SHA-256
             # של התעודה, כמו בדפדפן) לשורת הסטטוס — כדי שהאישור החד-פעמי
             # של התעודה יהיה השוואה, לא לחיצה. ‏null = בלי TLS (loopback).

@@ -9,6 +9,7 @@
  * not send is not drawn -- see the README section of this screen. */
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include "screens_rounds.h"
@@ -40,7 +41,7 @@ static int standby_bays(const State *s) {
 }
 
 /* Market size, as on the disk's label: 500107862016 -> "500 GB". */
-static void disk_size(unsigned long long b, char *out, size_t n) {
+void disk_size(unsigned long long b, char *out, size_t n) {
     double v = (double)b;
     if (v >= 999.5e9) snprintf(out, n, "%.3g TB", v / 1e12);
     else              snprintf(out, n, "%.3g GB", v / 1e9);
@@ -69,7 +70,7 @@ static void clock_ago(const App *a, int age, char *out, size_t n) {
 }
 
 /* .led: a dot with a 4px ring in the soft tone; ring 0 = the idle dot. */
-static void sb_led(cairo_t *cr, double cx, double cy, double d, Rgb c, Rgb soft, int ring, double alpha) {
+void sb_led(cairo_t *cr, double cx, double cy, double d, Rgb c, Rgb soft, int ring, double alpha) {
     if (ring) { cairo_arc(cr, cx, cy, d / 2 + 4, 0, 2 * M_PI); draw_set_a(cr, soft, alpha); cairo_fill(cr); }
     cairo_arc(cr, cx, cy, d / 2, 0, 2 * M_PI); draw_set_a(cr, c, alpha); cairo_fill(cr);
 }
@@ -107,8 +108,14 @@ static const char *reason_he(const IdleDisk *d) {
     return NULL;
 }
 
+/* #432: the drawer negotiated below its port's speed. Both read, or it is
+ * not "slow" -- and not "fine" either: the sub line says "לא ידוע". */
+static int link_slow(const IdleDisk *d) {
+    return d->link[0] && d->link_max[0] && atof(d->link) < atof(d->link_max);
+}
+
 /* .pill: 24px, fully round, 12/600, a 7px dot at the start (the right). Right edge in, width out. */
-static double sb_pill(cairo_t *cr, double right, double cy, const char *label, Rgb fg, Rgb bg) {
+double sb_pill(cairo_t *cr, double right, double cy, const char *label, Rgb fg, Rgb bg) {
     Text v = text_make(cr, FONT_SANS, 12, 600, label, 0, DIR_RTL);
     double w = 10 + 7 + 6 + v.w + 10;
     Rect r = { right - w, cy - 12, w, 24 };
@@ -119,7 +126,7 @@ static double sb_pill(cairo_t *cr, double right, double cy, const char *label, R
 }
 
 /* The empty slot: repeating-linear-gradient(135deg, slot 0 10px, sunken 10px 20px). */
-static void sb_hatch(cairo_t *cr, const Theme *t, Rect r) {
+void sb_hatch(cairo_t *cr, const Theme *t, Rect r) {
     int dark = t == &THEME_DARK;
     cairo_save(cr);
     cairo_rectangle(cr, r.x, r.y, r.w, r.h); cairo_clip(cr);
@@ -143,6 +150,9 @@ static void sb_bay(App *a, cairo_t *cr, Rect b, int port) {
     const IdleDisk *d = idle_for_port(s, port);
     int lvl = d ? smart_level(d->smart) : 0;
     Rgb col = d ? smart_color(t, d->smart) : t->led_idle;
+    int slow = d && !lvl && link_slow(d);          /* #432: orange like a SMART warning, below it */
+    int acc = lvl ? lvl : slow;
+    Rgb acol = lvl ? col : t->warn;
     Rgb line = t == &THEME_DARK ? t->art_line : t->art_c;   /* --mark-line: #9AADB8 / #4A5D6B */
     double cy = b.y + b.h / 2;
 
@@ -154,9 +164,9 @@ static void sb_bay(App *a, cairo_t *cr, Rect b, int port) {
     cairo_rectangle(cr, b.x + b.w - SB_NUM_W, b.y, 1, b.h);   /* .num border-inline-end */
     cairo_rectangle(cr, b.x + SB_GRIP_W, b.y, 1, b.h);        /* .grip border-inline-start */
     draw_set(cr, t->hair); cairo_fill(cr);
-    if (lvl) { cairo_rectangle(cr, b.x + b.w - 4, b.y, 4, b.h); draw_set(cr, col); cairo_fill(cr); }
+    if (acc) { cairo_rectangle(cr, b.x + b.w - 4, b.y, 4, b.h); draw_set(cr, acol); cairo_fill(cr); }
     cairo_restore(cr);
-    draw_border_rrect(cr, b, 4, lvl ? col : t->hair, 1);
+    draw_border_rrect(cr, b, 4, acc ? acol : t->hair, 1);
 
     /* .num: the drawer's number, big, and "מגירה" */
     char num[8]; snprintf(num, sizeof num, "%d", port);
@@ -178,17 +188,25 @@ static void sb_bay(App *a, cairo_t *cr, Rect b, int port) {
      * model (or "ריק") at the left end */
     double fr = face.x + face.w - 26, fl = face.x + 26;
     char name[SLOT_NAME_MAX + 16], sub[SLOT_NAME_MAX + 48];
+    char lk[40] = "", slow_why[96] = "";   /* #432: the link on the sub line, the slow reason */
     cloner_slot_label(s, port, name, sizeof name);
-    if (s->cslot_names[port - 1][0]) snprintf(sub, sizeof sub, "דיסק %d · SATA %d", port, port - 1);
-    else snprintf(sub, sizeof sub, "SATA %d", port - 1);
+    /* #432: the link on the sub line -- the speed, or "לא ידוע", never blank */
+    if (d && d->link[0]) snprintf(lk, sizeof lk, " · %s Gb/s", d->link);
+    else if (d) snprintf(lk, sizeof lk, " · קישור לא ידוע");
+    if (s->cslot_names[port - 1][0]) snprintf(sub, sizeof sub, "דיסק %d · SATA %d%s", port, port - 1, lk);
+    else snprintf(sub, sizeof sub, "SATA %d%s", port - 1, lk);
     const char *why = d ? reason_he(d) : NULL;
+    if (!why && slow) {
+        snprintf(slow_why, sizeof slow_why, "קישור %s מתוך %s Gb/s — לבדוק כבל", d->link, d->link_max);
+        why = slow_why;
+    }
     Text tn = text_make(cr, FONT_SANS, 18, 600, name, 0, DIR_RTL);
     Text ts = text_make(cr, FONT_SANS, 12, 400, sub, 0, DIR_RTL);
     Text tw = why ? text_make(cr, FONT_SANS, 12, 400, why, 0, DIR_RTL) : (Text){ NULL, 0, 0 };
     double bh = tn.h + 3 + ts.h + (why ? 3 + tw.h : 0), by = cy - bh / 2;
     text_draw_r(cr, &tn, fr, by, t->ink); by += tn.h + 3;
     text_draw_r(cr, &ts, fr, by, t->muted); by += ts.h + 3;
-    if (why) text_draw_r(cr, &tw, fr, by, col);
+    if (why) text_draw_r(cr, &tw, fr, by, slow && why == slow_why ? t->warn : col);
     double names_w = fmax(tn.w, fmax(ts.w, tw.w));
     text_free(&tn); text_free(&ts); if (why) text_free(&tw);
 
@@ -257,14 +275,20 @@ void screen_standby(App *a, cairo_t *cr, double W, double H, double head_h) {
     y = floor(y + row + 26 + .5);
 
     /* .note lines under the cage, measured first: the bays shrink to leave them room */
-    Text notes[MAX_DRAWERS]; int nn = 0; double notes_h = 0;
-    for (int p = 1; p <= n && nn < MAX_DRAWERS; p++) {
+    Text notes[2 * MAX_DRAWERS]; Rgb note_c[2 * MAX_DRAWERS]; int note_l[2 * MAX_DRAWERS];
+    int nn = 0; double notes_h = 0;
+    for (int kind = 0; kind < 2; kind++)
+    for (int p = 1; p <= n && nn < 2 * MAX_DRAWERS; p++) {
         const IdleDisk *d = idle_for_port(s, p);
-        if (!d || !smart_level(d->smart)) continue;
-        char label[SLOT_NAME_MAX + 16], msg[SLOT_NAME_MAX + 120];
+        if (!d || (kind == 0 ? !smart_level(d->smart) : !link_slow(d))) continue;
+        char label[SLOT_NAME_MAX + 16], msg[SLOT_NAME_MAX + 120], lmsg[SLOT_NAME_MAX + 200];
         cloner_slot_label(s, p, label, sizeof label);
-        snprintf(msg, sizeof msg, RLM "%s: %s — לפני כתיבה אליו תופיע שאלה.", label, chip_he(d->smart));
-        notes[nn] = text_make(cr, FONT_SANS, 13, 400, msg, (int)(cw - 18), DIR_RTL);
+        if (kind == 0) snprintf(msg, sizeof msg, RLM "%s: %s — לפני כתיבה אליו תופיע שאלה.", label, chip_he(d->smart));
+        else snprintf(lmsg, sizeof lmsg, RLM "%s: קישור SATA %s מתוך %s Gb/s — לבדוק כבל או מגירה. לפני התחלת סבב תופיע אזהרה.",
+                      label, d->link, d->link_max);
+        notes[nn] = text_make(cr, FONT_SANS, 13, 400, kind == 0 ? msg : lmsg, (int)(cw - 18), DIR_RTL);
+        note_c[nn] = kind == 0 ? smart_color(t, d->smart) : t->warn;
+        note_l[nn] = kind == 0 ? smart_level(d->smart) : 1;
         notes_h += (nn ? 6 : 14) + notes[nn].h; nn++;
     }
 
@@ -293,14 +317,11 @@ void screen_standby(App *a, cairo_t *cr, double W, double H, double head_h) {
     text_free(&lr); text_free(&ll);
 
     y = cage.y + cage.h;
-    for (int i = 0, p = 1; i < nn; p++) {
-        const IdleDisk *d = idle_for_port(s, p);
-        if (!d || !smart_level(d->smart)) continue;
+    for (int i = 0; i < nn; i++) {
         y += i ? 6 : 14;
-        Rgb c = smart_color(t, d->smart);
-        sb_led(cr, xr - 5, y + notes[i].h / 2.0, 10, c, soft_of(t, smart_level(d->smart)), 1, 1);
-        text_draw_r(cr, &notes[i], xr - 18, y, c);
-        y += notes[i].h; text_free(&notes[i]); i++;
+        sb_led(cr, xr - 5, y + notes[i].h / 2.0, 10, note_c[i], soft_of(t, note_l[i]), 1, 1);
+        text_draw_r(cr, &notes[i], xr - 18, y, note_c[i]);
+        y += notes[i].h; text_free(&notes[i]);
     }
 }
 

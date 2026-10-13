@@ -10,11 +10,20 @@
 #   אין כלל TCP 22 בשום מצב (#1266).
 #   כיתות — כלום.
 #
+# ‏#705 — מצב "לפי כרטיס" (‎--per-nic / ‎--service): המפעיל בחר בקונסולה
+# אילו שירותים השרת נותן דרך כל כרטיס, והכללים נגזרים מזה בלבד — במקום
+# שני התפקידים הקבועים למעלה. בלי הדגלים הפלט זהה בית-בבית לקודם.
+#   console     — tcp קונסולה (המוניטור עובר בה, אין לו פורט משלו)
+#   netboot     — udp 67 + udp 69 + tcp סוכן
+#   multicast   — udp טווח udpcast
+#   interserver — tcp 8443 (במשני: רק מכתובת הראשי)
+#
 # שימוש:
 #   nftables-rules.sh --deploy-if <if> --servers-if <if> \
 #     [--primary-ip <ip>] [--mcast-ports a-b] \
 #     [--console-port 8081] [--agent-port 8080] \
 #     [--interserver-port 8443]
+#   nftables-rules.sh --per-nic [--service IF:svc,svc]... [options]
 
 set -eu
 
@@ -25,6 +34,8 @@ MCAST_PORTS="9000-9001"
 CONSOLE_PORT="8081"
 AGENT_PORT="8080"
 INTERSERVER_PORT="8443"
+PER_NIC=""
+SERVICE_SPECS=""
 
 die() { printf '%s\n' "nftables-rules: $*" >&2; exit 2; }
 
@@ -40,6 +51,9 @@ Usage: nftables-rules.sh --servers-if IF [--deploy-if IF] [options]
   --console-port N        קונסולה (ברירת מחדל 8081)
   --agent-port N          סוכן (ברירת מחדל 8080)
   --interserver-port N    בין-שרתים (ברירת מחדל 8443)
+  --per-nic               (#705) כללים לפי כרטיס בלבד — בלי --deploy-if/--servers-if
+  --service IF:LIST       (#705) מה הכרטיס נותן: console,monitor,multicast,netboot,interserver
+                          (חוזר לכל כרטיס; מפעיל --per-nic)
 EOF
 }
 
@@ -52,12 +66,15 @@ while [ $# -gt 0 ]; do
         --console-port)     CONSOLE_PORT="${2:?}"; shift 2 ;;
         --agent-port)       AGENT_PORT="${2:?}"; shift 2 ;;
         --interserver-port) INTERSERVER_PORT="${2:?}"; shift 2 ;;
+        --per-nic)          PER_NIC=1; shift ;;
+        --service)          SERVICE_SPECS="${SERVICE_SPECS}${2:?}
+"; PER_NIC=1; shift 2 ;;
         -h|--help)          usage; exit 0 ;;
         *)                  die "unknown option: $1" ;;
     esac
 done
 
-[ -n "$SERVERS_IF" ] || die "--servers-if is required"
+[ -n "$SERVERS_IF" ] || [ -n "$PER_NIC" ] || die "--servers-if is required"
 
 # שמות כרטיסים נכנסים ל-nft כמחרוזת מצוטטת. תו שיכול לשבור את הציטוט
 # או את הדקדוק — סירוב, לא "ניקוי" בשקט.
@@ -80,6 +97,62 @@ if [ -n "$PRIMARY_IP" ]; then
         [0-9]*.[0-9]*.[0-9]*.[0-9]*) ;;
         *) die "--primary-ip must be an IPv4 address (got: $PRIMARY_IP)" ;;
     esac
+fi
+
+# ‏#705: הכללים לפי כרטיס. כל שם כרטיס נבדק כמו --deploy-if, וכל שירות
+# חייב להיות מוכר — שירות שלא זוהה הוא סירוב, לא כלל שנשמט בשקט.
+PER_NIC_RULES="		# --- לפי כרטיס (#705): מה שהשרת נותן דרך כל כרטיס, מהקונסולה ---"
+add_rule() { PER_NIC_RULES="${PER_NIC_RULES}
+		$1"; }
+if [ -n "$PER_NIC" ]; then
+    specs_left="$SERVICE_SPECS"
+    any_spec=""
+    while [ -n "$specs_left" ]; do
+        spec="${specs_left%%
+*}"
+        specs_left="${specs_left#*
+}"
+        [ -n "$spec" ] || continue
+        case "$spec" in
+            *:*) ;;
+            *) die "--service must be IF:LIST (got: $spec)" ;;
+        esac
+        nic="${spec%%:*}"
+        list="${spec#*:}"
+        case "$nic" in
+            ""|*[!A-Za-z0-9_.:-]*) die "interface name is not safe for nftables" ;;
+        esac
+        case "$list" in
+            *[!a-z,]*) die "--service list may hold only service names (got: $list)" ;;
+        esac
+        any_spec=1
+        add_rule "# ${nic}: ${list:-אף שירות}"
+        old_ifs="$IFS"; IFS=","
+        for svc in $list; do
+            case "$svc" in
+                console)
+                    add_rule "iifname \"${nic}\" tcp dport ${CONSOLE_PORT} accept" ;;
+                monitor)
+                    add_rule "# monitor: rides the console port (${CONSOLE_PORT}) -- no rule of its own" ;;
+                netboot)
+                    add_rule "iifname \"${nic}\" udp dport 67 accept"
+                    add_rule "iifname \"${nic}\" udp dport 69 accept"
+                    add_rule "iifname \"${nic}\" tcp dport ${AGENT_PORT} accept" ;;
+                multicast)
+                    add_rule "iifname \"${nic}\" udp dport ${MCAST_PORTS} accept" ;;
+                interserver)
+                    if [ -n "$PRIMARY_IP" ]; then
+                        add_rule "iifname \"${nic}\" ip saddr ${PRIMARY_IP} tcp dport ${INTERSERVER_PORT} accept"
+                    else
+                        add_rule "iifname \"${nic}\" tcp dport ${INTERSERVER_PORT} accept"
+                    fi ;;
+                "") ;;
+                *) IFS="$old_ifs"; die "unknown service: $svc" ;;
+            esac
+        done
+        IFS="$old_ifs"
+    done
+    [ -n "$any_spec" ] || add_rule "# no interface offers any service -- everything is closed except loopback"
 fi
 
 # ‏#1088: כללי וילן ההפצה רק כשיש כרטיס הפצה. בלעדיו — הערה במקומם, וההפצה
@@ -114,6 +187,17 @@ else
 		iifname \"${SERVERS_IF}\" tcp dport ${INTERSERVER_PORT} accept"
 fi
 
+if [ -z "$PER_NIC" ]; then
+    MIDDLE="${DEPLOY_RULES}
+
+		# --- וילן השרתים (${SERVERS_IF}) ---
+		# קונסולה HTTPS — לא על כרטיס ההפצה.
+		iifname \"${SERVERS_IF}\" tcp dport ${CONSOLE_PORT} accept
+${INTERSERVER_RULE}"
+else
+    MIDDLE="${PER_NIC_RULES}"
+fi
+
 cat <<EOF
 #!/usr/sbin/nft -f
 # ImageCtl — נוצר על ידי install/nftables-rules.sh. אל תערוך ביד.
@@ -137,12 +221,7 @@ table inet imagectl {
 		icmp type { echo-request, echo-reply, destination-unreachable, time-exceeded } accept
 		icmpv6 type { echo-request, echo-reply, destination-unreachable, packet-too-big, time-exceeded, nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } accept
 
-${DEPLOY_RULES}
-
-		# --- וילן השרתים (${SERVERS_IF}) ---
-		# קונסולה HTTPS — לא על כרטיס ההפצה.
-		iifname "${SERVERS_IF}" tcp dport ${CONSOLE_PORT} accept
-${INTERSERVER_RULE}
+${MIDDLE}
 
 		# כל השאר: יומן מצומצם ואז drop (ה-policy). כיתות = v2, לא נפתח כאן.
 		# ‏level info: לא warning — אחרת השורה מודפסת על הקונסולה מעל ה-DCUI (#1195)

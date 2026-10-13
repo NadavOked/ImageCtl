@@ -185,9 +185,9 @@ build_disk_entry() {
         _smart="unchecked"
     fi
 
-    printf '{"dev":"%s","size_bytes":%s,"model":"%s","serial":%s,"removable":%s,"scheme":"%s","has_data":%s,"port":%s,"smart":"%s"}' \
+    printf '{"dev":"%s","size_bytes":%s,"model":"%s","serial":%s,"removable":%s,"scheme":"%s","has_data":%s,"port":%s,"smart":"%s"%s}' \
         "$_name" "$_size" "$(json_escape "$_model")" "$_serial_json" \
-        "$_removable" "$_scheme" "$_has" "$_port_json" "$_smart"
+        "$_removable" "$_scheme" "$_has" "$_port_json" "$_smart" "$(command -v disk_link_json >/dev/null 2>&1 && disk_link_json "$_name")"   # #432
 }
 
 list_disks() {

@@ -18,8 +18,9 @@ from boot.grub_menu import normalize_mac as lenient_mac
 
 from . import (agent_loops, disk_events, foreign_vlan, identity, inventory,
                login_guard, probe, pulls, registry, reports, shrink_records, users)
+from .auth import COOKIE_NAME, read_session
 from .db import journal
-from . import direct, room_console, smart_ask
+from . import direct, gui_failure, local_clone_report, room_console, smart_ask
 from .hello import (build_answer, hello_payload_oversized, login_required, off_deploy_vlan,
                     well_formed_monitor_auth, well_formed_monitor_secret)
 from .images import ImageLibrary, restore_refusal
@@ -50,6 +51,9 @@ class ServerContext:
     leases: object | None = None
     #: ‏#1128: תיקיית הנתונים — לגיבוי ההגדרות מהקונסולה; None בבדיקות ישנות.
     data_dir: Path | None = None
+    #: ‏#705: השירותים לכל כרטיס (`nic_services.NicServices`) — ‏`create_runtime`
+    #: מתקין תמיד; None = בדיקות שבונות ctx ביד, ואז אין שער (ההתנהגות של היום).
+    nic_services: object | None = None
 
 
 def _error(status: int, message: str, code: str) -> JSONResponse:
@@ -274,6 +278,10 @@ def create_agent_router(ctx: ServerContext,
         # צריך לראות, בין אם הוא עומד ליד המחשב בכוונה ובין אם המחשב
         # חובר לשקע הלא נכון. התראה, לא שער: התשובה למעלה כבר נבנתה.
         foreign_vlan.note(ctx.conn, mac, request.scope, off_vlan=off_vlan)
+        # 11/10: "the GUI did not come up" -- the agent's one hello before it
+        # reboots to the local disk. An alert in the journal, never a gate.
+        if "gui_failed" in body:
+            gui_failure.note(ctx.conn, mac, body.get("gui_failed"), known=bool(answer["known"]))
         return JSONResponse(answer)
 
     @router.post("/agent/login")
@@ -354,8 +362,19 @@ def create_agent_router(ctx: ServerContext,
         has_open = (session is not None and session["state"] == "open"
                     and ctx.store.in_roster(session, mac))
         username = str(body.get("username") or "").strip()
-        if login_required(ctx.conn, has_open,
-                          off_deploy_vlan(request.scope, server_base)):
+        # 11/10 (Nadav: "הכול גואי"): the GUI restore carries the console
+        # session the operator signed in with on the build machine's GUI.
+        # A live, plain session of an existing account is the authorization
+        # -- and the pull is opened in that user's name, so the console can
+        # follow it -- without a second password. A cookie that does not read
+        # back as a session is no session: the password road below decides.
+        gui_session = read_session(ctx.conn, request.cookies.get(COOKIE_NAME))
+        if gui_session is not None and gui_session.purpose:
+            gui_session = None     # mid password change / MFA enrollment: not a session for work
+        if gui_session is not None:
+            username = gui_session.username
+        elif login_required(ctx.conn, has_open,
+                            off_deploy_vlan(request.scope, server_base)):
             _role, refused = agent_credentials(ctx, request, username,
                                                body.get("password", ""),
                                                f"{username} at {mac} pull")
@@ -418,6 +437,30 @@ def create_agent_router(ctx: ServerContext,
                 return refused
         result = disk_events.ingest(ctx.conn, body)
         return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+
+    @router.post("/agent/local-clone")
+    async def agent_local_clone(request: Request) -> JSONResponse:
+        """#1322 D: a cloning machine's report of a local clone -- one
+        journal line, labelled as the machine's own. Best effort from the
+        agent's side; the copy never passed through the server."""
+        try:
+            body = await request.json()
+        except ValueError:
+            return _error(400, "body is not JSON", "bad_json")
+        if not isinstance(body, dict):
+            return _error(400, "body is not an object", "bad_json")
+        mac = lenient_mac(body.get("mac"))
+        if mac is None:
+            return _error(400, "missing or malformed mac", "bad_mac")
+        refused = identity_gate(ctx, mac, request, "local-clone")
+        if refused is not None:
+            return refused
+        try:
+            line = local_clone_report.journal_line(body)
+        except local_clone_report.BadReport as exc:
+            return _error(400, str(exc), "bad_report")
+        journal(ctx.conn, "local_clone", f"{mac}: {line}")
+        return JSONResponse({"ok": True})
 
     @router.post("/agent/shrink-open")
     async def agent_shrink_open(request: Request) -> JSONResponse:

@@ -39,7 +39,8 @@ target_init() {
     : > "$_t/bytes.raw"
     echo "$_t/bytes.raw" > "$_t/counter"
     echo "$2" > "$_t/total"
-    rm -f "$_t/error" "$_t/crc_delta" "$_t/ata_log" "$_t/ata_log.json" "$_t/ident"
+    rm -f "$_t/error" "$_t/crc_delta" "$_t/ata_log" "$_t/ata_log.json" "$_t/ident" \
+        "$_t/boot_ca_state" "$_t/boot_ca_reason"
     # ‏#874: מאיפה dmesg נספר בכשל -- ריק (אין /proc/uptime) = מההתחלה.
     cut -d' ' -f1 "$SYSROOT/proc/uptime" > "$_t/since" 2>/dev/null
 }
@@ -160,6 +161,9 @@ build_progress() {
         fi
         # ‏#872: הפרש ה-CRC של הסבב -- רק כשנמדד; חסר = לא נקרא, לא 0 (עיקרון 5).
         [ -f "$_d/crc_delta" ] && _entry="$_entry,\"crc_delta\":$(cat "$_d/crc_delta")"
+        if [ -s "$_d/boot_ca_state" ] && [ -s "$_d/boot_ca_reason" ]; then
+            _entry="$_entry,\"boot_ca_preflight\":{\"state\":\"$(json_escape "$(cat "$_d/boot_ca_state")")\",\"reason\":\"$(json_escape "$(cat "$_d/boot_ca_reason")")\"}"
+        fi
         # ‏#874: יעד שנכשל נושא סידורי, חריץ ושורות ה-ATA (failmark.sh) -- הראיה, לא סיווג.
         [ -f "$_d/ata_log.json" ] && _entry="$_entry$(failure_json "$_dev")"
         [ -s "$_d/drivers.json" ] && _entry="$_entry,\"drivers\":$(tr -d '\n' < "$_d/drivers.json")"   # #1269

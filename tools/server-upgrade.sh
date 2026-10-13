@@ -16,8 +16,16 @@
 #      שמדווח בדיוק את התג + verify-boot-payload.sh.
 #   6. כשל בראיה → checkout לתג הקודם, יחידות, restart, וסטטוס `failed`
 #      עם הסיבה ב-DB (דרך update._set_status) — הקונסולה מציגה אותו.
+#   ‏#1301: כל מעבר שלב נכתב לסטטוס (stage + חותמת ב-stages), וכשל נושא reason
+#      שמכונה קוראת — מסך העדכון בקונסולה מציג לפיהם, לא לפי הטקסט העברי.
 #
-# ‏#1074: שדרוג אינו מתקין ואינו מפעיל nftables. שרת קיים לא ינותק.
+# ‏#1074: שדרוג אינו מפעיל את חומת האש הראשית. שרת קיים לא ינותק. (‏#1334:
+# חבילת nftables מותקנת בצעד 3ב — הטבלה של ה-VM בלבד, לא ה-ruleset הראשי.)
+#
+# ‏#1334, צעד 3ב: install/vmupdate-host.sh של התג החדש (חבילות + המשתמש
+# imagectl-vm). כשל **אינו** מפיל את העדכון — השרת מתעדכן, ו"עדכון ב-VM"
+# לא זמין — וגם אינו נבלע: הסיבה נכתבת לסטטוס (`warning`), והקונסולה מציגה
+# "אומת — אבל …". המנוע עצמו מסרב בשם (missing_tool/vm_user) עד שזה יתוקן.
 #
 # משתני סביבה (לבדיקות — בייצור ברירות המחדל): IMAGECTL_DATA_DIR,
 # IMAGECTL_UNIT_DIR, IMAGECTL_INITRD_FLAGS, IMAGECTL_ISO_MANIFEST,
@@ -36,6 +44,7 @@ UNIT_DIR="${IMAGECTL_UNIT_DIR:-/etc/systemd/system}"
 FLAGS_FILE="${IMAGECTL_INITRD_FLAGS:-/etc/imagectl/initrd.flags}"
 ISO_MANIFEST="${IMAGECTL_ISO_MANIFEST:-/etc/imagectl/iso-release.json}"
 HTTP_ROOT="${IMAGECTL_HTTP_ROOT:-/srv/imagectl/boot}"
+PREV=""         # התג הקודם — נקרא בשלב 1; ריק עד אז (set_status קורא אותו)
 INITRD_NOTE=""   # נקבע בחזרה — האם המטען הקודם הוחזר
 # ‏#1287: עותק המטען הקודם (initrd/vmlinuz) — מוחזר יחד עם הקוד בחזרה.
 PAYLOAD_SAVE="$HTTP_ROOT/.pre-upgrade"
@@ -52,20 +61,66 @@ echo "--- $(date -Is) upgrading to $TAG in $REPO_DIR ---"
 
 cd "$REPO_DIR" || die "no such repo dir: $REPO_DIR"
 
-# סטטוס לקונסולה — אותו מפתח ואותה פונקציה של update.py, לא עותק.
-set_status() {   # set_status <state> [<error>]
-    python3 - "$REPO_DIR" "$DB" "$TAG" "$1" "${2:-}" <<'PYEOF' || echo "server-upgrade: כתיבת הסטטוס ל-DB נכשלה"
-import sys
-repo, db, tag, state, error = sys.argv[1:6]
+# ‏#1301: הריצה הזו — מתי התחילה. אם update.py כתב זה עתה `running` לאותו תג
+# (עם started_at/by/from), זו אותה ריצה והשעון בקונסולה ממשיך ממנו; אחרת
+# (הפעלה ידנית) — עכשיו. כשל הקריאה אינו עוצר שדרוג: השעה מ-date.
+RUN_STARTED="$(python3 - "$REPO_DIR" "$DB" "$TAG" <<'PYEOF'
+import json, sys
+repo, db, tag = sys.argv[1:4]
 sys.path.insert(0, repo)
-from server.db import connect
+from server.db import connect, get_setting, now_iso
 from server import update
-doc = {"state": state, "tag": tag}
-if error:
-    doc["error"] = error
-update._set_status(connect(db), doc)
+try:
+    old = json.loads(get_setting(connect(db), update.STATUS_KEY) or "null")
+except ValueError:
+    old = None
+ok = isinstance(old, dict) and old.get("state") == "running" and old.get("tag") == tag
+print(old["started_at"] if ok and old.get("started_at") else now_iso())
+PYEOF
+)" || RUN_STARTED=""
+[[ -n "$RUN_STARTED" ]] || RUN_STARTED="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
+STAGE=""   # fetch | verify | install | restart | done — נכתב ב-stage()
+# ‏#1334: אזהרה של הריצה (‏"עדכון ב-VM לא זמין: …") — נקבעת בצעד 3ב ועוברת בכל
+# כתיבה מכאן והלאה, כך ש-stage()/done אינם מוחקים אותה. ריק = אין.
+UPGRADE_WARNING=""
+
+# סטטוס לקונסולה — אותו מפתח ואותה פונקציה של update.py, לא עותק.
+# ‏#1301: בכל כתיבה — השלב, ‏started_at וחותמת לכל שלב (‏stages), ובכשל `reason`
+# (‏round|fetch|signature|install|timeout|rollback) ו-`detail` (סיבת הכשל בלבד, בלי
+# תוצאת החזרה). ‏`error` נשאר הטקסט המלא כמו קודם. רק ‏API יציב של server/ (db,
+# ‏update.STATUS_KEY/_set_status): אחרי חזרה ה-python הוא של התג הקודם.
+set_status() {   # set_status <state> [<error>] [<reason>] [<detail>]
+    python3 - "$REPO_DIR" "$DB" "$TAG" "$PREV" "$RUN_STARTED" "$STAGE" "$1" "${2:-}" "${3:-}" "${4:-}" "$UPGRADE_WARNING" <<'PYEOF' || echo "server-upgrade: כתיבת הסטטוס ל-DB נכשלה"
+import json, sys
+repo, db, tag, prev, started, stage, state, error, reason, detail, warning = sys.argv[1:12]
+sys.path.insert(0, repo)
+from server.db import connect, get_setting, journal, now_iso
+from server import update
+conn = connect(db)
+try:
+    old = json.loads(get_setting(conn, update.STATUS_KEY) or "null")
+except ValueError:
+    old = None
+same = isinstance(old, dict) and old.get("started_at") == started and old.get("tag") == tag
+stages = dict(old.get("stages") or {}) if same else {}
+if stage and stage not in stages:
+    stages[stage] = now_iso()
+doc = {"state": state, "tag": tag, "started_at": started, "stages": stages,
+       "from": (old.get("from") if same else None) or prev or None,
+       "by": old.get("by") if same else None}
+if stage:
+    doc["stage"] = stage
+for key, value in (("error", error), ("reason", reason), ("detail", detail), ("warning", warning)):
+    if value:
+        doc[key] = value
+update._set_status(conn, doc)
+if state in ("failed", "done"):
+    journal(conn, "update_apply_" + state,
+            f"{tag}: {reason or stage}" + (f" — {error}" if error else ""),
+            doc["by"] or "server-upgrade")
 PYEOF
 }
+stage() { STAGE=$1; set_status running; }
 
 # 0. סבב פתוח/רץ? — אותה שאילתה של update._active_round; DB שלא נקרא = לא
 # יודעים = לא משדרגים (עיקרון 5: "לא הצלחנו לבדוק" אינו "אין סבב").
@@ -76,7 +131,7 @@ row = conn.execute("SELECT 1 FROM sessions WHERE state IN ('open', 'running') LI
 print("open" if row else "none")
 PYEOF
 )" || die "לא הצלחתי לבדוק אם יש סבב פתוח ($DB) — לא משדרגים"
-[[ "$ROUND" == "none" ]] || { set_status failed "יש סבב פתוח/רץ — השדרוג לא התחיל"; die "יש סבב פתוח/רץ — לא משדרגים"; }
+[[ "$ROUND" == "none" ]] || { set_status failed "יש סבב פתוח/רץ — השדרוג לא התחיל" round "יש סבב פתוח/רץ — השדרוג לא התחיל"; die "יש סבב פתוח/רץ — לא משדרגים"; }
 
 # 1. התג הקודם — יעד החזרה. update.py שומר אותו לפני ה-checkout.
 PREV="$(python3 - "$REPO_DIR" "$DB" <<'PYEOF'
@@ -92,9 +147,10 @@ PYEOF
 
 # 2. רק היחידה המנותקת רשאית לכתוב לעץ. כשל git נכתב לסטטוס כלשונו,
 # ולפני שנגענו ביחידות, ב-initrd או בשירות הרץ.
+stage fetch
 if ! git_error="$(git -C "$REPO_DIR" fetch --tags 2>&1)"; then
     why="git fetch --tags נכשל: $git_error"
-    set_status failed "$why"
+    set_status failed "$why" fetch "$why"
     die "$why"
 fi
 # ‏#1277: התג חתום במפתח שהעץ **המותקן** סומך עליו — לפני ה-checkout, כלומר
@@ -103,17 +159,19 @@ fi
 # אותה. "לא נבדק" (2) הוא סירוב בדיוק כמו "לא חתום" (1), והצלחה דורשת ראיה
 # חיובית — קוד 0 **וגם** שורת `signed:` (עיקרון 5).
 SIGNERS="$REPO_DIR/install/release-signers"
+stage verify
 if sig="$(python3 -I "$REPO_DIR/tools/verify-release-tag.py" "$REPO_DIR" "$TAG" "$SIGNERS" 2>&1)" \
         && [[ "$sig" == "signed: "* ]]; then
     echo "חתימה: $TAG $sig"
 else
     why="התג $TAG לא אומת כחתום — העדכון נדחה, העץ לא הוחלף: ${sig:-המאמת לא החזיר דבר}"
-    set_status failed "$why"
+    set_status failed "$why" signature "$why"
     die "$why"
 fi
+stage install
 if ! git_error="$(git -C "$REPO_DIR" checkout --detach "$TAG" 2>&1)"; then
     why="git checkout --detach $TAG נכשל: $git_error"
-    set_status failed "$why"
+    set_status failed "$why" install "$why"
     die "$why"
 fi
 install_units_and_restart() {
@@ -167,12 +225,15 @@ restore_payload() {
     rm -rf "$PAYLOAD_SAVE"
 }
 
-rollback() {   # rollback <סיבה>
-    local why="$1"
+# ‏#1301: <סוג> = ה-reason כשלא חזרנו — install (ברירת מחדל) או timeout (השרת החדש
+# לא ענה בזמן). חזרה שהצליחה היא reason=rollback, כי זה מה שהמפעיל צריך לדעת: השרת
+# עובד, על הגרסה הקודמת.
+rollback() {   # rollback <סיבה> [<סוג>]
+    local why="$1" cause="${2:-install}"
     trap - ERR
     echo "--- $(date -Is) upgrade to $TAG FAILED: $why ---"
     if [[ -z "$PREV" ]]; then
-        set_status failed "$why · אין תג קודם שמור — לא הוחזר"
+        set_status failed "$why · אין תג קודם שמור — לא הוחזר" "$cause" "$why"
         die "$why (אין תג קודם — לא הוחזר)"
     fi
     echo "מחזיר ל-$PREV"
@@ -187,11 +248,11 @@ rollback() {   # rollback <סיבה>
             echo "מטען האתחול:$INITRD_NOTE"
         fi
         if install_units_and_restart; then
-            set_status failed "$why · הוחזר ל-$PREV$INITRD_NOTE"
+            set_status failed "$why · הוחזר ל-$PREV$INITRD_NOTE" rollback "$why"
             die "$why — הוחזר ל-$PREV"
         fi
     fi
-    set_status failed "$why · והחזרה ל-$PREV נכשלה גם היא"
+    set_status failed "$why · והחזרה ל-$PREV נכשלה גם היא" "$cause" "$why"
     die "$why — והחזרה ל-$PREV נכשלה"
 }
 
@@ -200,12 +261,33 @@ rollback() {   # rollback <סיבה>
 # בלי ה-trap, ‏`set -e` היה יוצא עם העץ על החדש, השירות/היחידות/ה-initrd
 # על הישן, וסטטוס `running` לתמיד ("לא ידוע" שנראה כמו "בתהליך").
 trap 'rollback "server-upgrade.sh נכשל בשורה $LINENO (קוד $?) — הפירוט ב-$LOG"' ERR
-current=$(git describe --tags 2>&1) || rollback "git describe --tags נכשל אחרי checkout: $current"
-[[ "$current" == "$TAG" ]] || rollback "העץ ב-$REPO_DIR אינו על $TAG (הוא $current)"
+current=$(git rev-parse HEAD 2>&1) || rollback "git rev-parse HEAD נכשל אחרי checkout: $current"
+target=$(git rev-list -n 1 "$TAG" 2>&1) || rollback "git rev-list נכשל עבור $TAG אחרי checkout: $target"
+# שתי תשובות ריקות אינן "אותו קומיט" -- ראיה חיובית בלבד (עיקרון 5).
+[[ -n "$current" && "$current" == "$target" ]] \
+    || rollback "העץ ב-$REPO_DIR אינו על $TAG (HEAD הוא ${current:-ריק}, התג הוא ${target:-ריק})"
 
 # 3. יחידות + 4. initrd
 install -m 0644 install/*.service "$UNIT_DIR/" || rollback "התקנת יחידות systemd ל-$UNIT_DIR נכשלה"
 systemctl daemon-reload || rollback "systemctl daemon-reload נכשל"
+
+# 3ב. ‏#1334 — עדכון ב-VM. גרסה בלי הסקריפט = גרסה בלי היכולת (חזרה לתג ישן),
+# לא כשל. ה-`if` מנטרל את ה-trap של ERR: הכשל כאן נרשם, לא מחזיר אחורה.
+VMU_HOST="install/vmupdate-host.sh"
+if [[ -f "$VMU_HOST" ]]; then
+    if vmu_out="$(bash "$VMU_HOST" 2>&1)"; then
+        echo "$vmu_out"
+    else
+        vmu_rc=$?
+        echo "$vmu_out"
+        vmu_why="עדכון ב-VM לא זמין: $(printf '%s\n' "$vmu_out" | tail -n 1) (install/vmupdate-host.sh, קוד $vmu_rc)"
+        echo "server-upgrade: $vmu_why"
+        UPGRADE_WARNING="$vmu_why"
+        set_status running
+    fi
+else
+    echo "$VMU_HOST אינו בתג $TAG — גרסה בלי עדכון ב-VM"
+fi
 
 # ‏#1230: "העדכון עבר והמכונות על initrd ישן" אסור — סוכן ישן מול שרת חדש.
 # הבנייה היא tools/boot-payload-build.sh, אותו קוד של firstboot: הקרנל וה-
@@ -228,10 +310,11 @@ bash tools/boot-payload-build.sh --http-root "$HTTP_ROOT" --manifest "$ISO_MANIF
     || rollback "בניית ה-initrd נכשלה (הפירוט ב-$LOG)"
 
 # 5. restart + ראיה חיובית
+stage restart
 systemctl restart imagectl-server || rollback "systemctl restart imagectl-server נכשל"
 systemctl is-active --quiet imagectl-server || rollback "imagectl-server אינו active אחרי restart"
 bash install/console-live.sh "$CONSOLE_URL" "$TAG" "$LIVE_WAIT" "$CERT" \
-    || rollback "השרת לא ענה ב-/health/live עם הגרסה $TAG תוך $LIVE_WAIT ש'"
+    || rollback "השרת לא ענה ב-/health/live עם הגרסה $TAG תוך $LIVE_WAIT ש'" timeout
 
 # כתובת הסוכן ל-verify-boot-payload: ‏IMAGECTL_URL מהיחידה (cli — המעבדה),
 # אחרת מה שהקונסולה רשמה (deploy:url), אחרת loopback (רשת הפצה שטרם
@@ -251,6 +334,8 @@ bash install/verify-boot-payload.sh --app-dir "$REPO_DIR" --http-root "$HTTP_ROO
     || rollback "verify-boot-payload.sh נכשל מול $AGENT_URL"
 
 echo "--- $(date -Is) upgrade to $TAG done and verified ---"
+STAGE=done
+set_status done
 # אחרי האימות בלבד. כשל כאן אינו כשל שדרוג (השרת החדש רץ ואומת) — נרשם
 # בלוג, והריצה הבאה מוחקת את העותק לפני שהיא שומרת חדש (PAYLOAD_SAVED).
 trap - ERR

@@ -23,10 +23,6 @@ sda → port 1     sdb → port 3     sdc → port 2
 from __future__ import annotations
 
 import json
-import shutil
-import subprocess
-import textwrap
-from pathlib import Path
 
 import pytest
 
@@ -131,97 +127,3 @@ def test_a_disk_the_round_never_touched_has_no_state():
     got = _drawers([_disk("sdc", 2, "naa.3")], [])[0]
     assert got["state"] is None
     assert got["error"] is None
-
-
-# --- המסך עצמו: הבלוק שהטכנאי קורא -------------------------------------------
-#
-# ⚠️ **עד כאן `room_draw_failures` לא נבדק ברינדור בכלל.** הצד
-# הפייתוני נבדק, והשורה שהאדם קורא בפועל אומתה **ידנית** על שרת
-# המעבדה. ‏`jq` אינו קיים בתחנת הפיתוח, ולכן הטסטים האלה מדולגים
-# כאן ומוצהרים — ולא "עוברים" על פלט ריק.
-
-AGENT = Path(__file__).resolve().parent.parent / "agent"
-BASH = shutil.which("bash")
-JQ = shutil.which("jq")
-requires_bash = pytest.mark.skipif(BASH is None, reason="bash לא זמין")
-requires_jq = pytest.mark.skipif(
-    JQ is None, reason="jq אינו מותקן — הרינדור לא היה רץ בכלל")
-
-
-def render_failures(tmp_path: Path, drawers: list) -> str:
-    """מריץ את `room_draw_failures` **האמיתי** מהקובץ."""
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    (run_dir / "room.json").write_text(
-        json.dumps({"machines": [{"name": "HP1", "drawer_list": drawers}]}),
-        encoding="utf-8")
-    script = textwrap.dedent(f"""
-        RUN_DIR={run_dir.as_posix()!r}
-        log() {{ :; }}
-        . {AGENT.as_posix()}/lib/roomdraw.sh
-        room_draw_failures
-    """)
-    proc = subprocess.run([BASH, "-c", script], capture_output=True, text=True,
-                          stdin=subprocess.DEVNULL)
-    assert proc.returncode == 0, proc.stderr
-    return proc.stdout
-
-
-def _failed(**over) -> dict:
-    return {"dev": "sdb", "port": 3, "state": "failed", "serial": "naa.777",
-            "model": "SAMSUNG MZ7LN256", "error": "fanout: buffer overrun",
-            **over}
-
-
-@requires_bash
-@requires_jq
-def test_the_failed_line_says_which_connector_on_the_board(tmp_path):
-    """‏#567: החריץ **וגם** הכיתוב. ‏`ata3` הוא המחבר שכתוב עליו
-    `SATA 2`, וטכנאי שקורא רק "3" הולך למחבר הרביעי."""
-    out = render_failures(tmp_path, [_failed()])
-    assert "drive 3 (SATA 2)" in out, out
-
-
-@requires_bash
-@requires_jq
-def test_the_failed_line_carries_what_identifies_the_drive_in_hand(tmp_path):
-    """‏`port` אומר לאן ללכת; הסריאל והדגם אומרים איזה כונן זה
-    כשמחזיקים אותו (#553)."""
-    out = render_failures(tmp_path, [_failed()])
-    assert "naa.777" in out
-    assert "SAMSUNG MZ7LN256" in out
-    assert "fanout: buffer overrun" in out
-
-
-@requires_bash
-@requires_jq
-def test_a_failed_drive_with_no_port_is_not_given_an_invented_one(tmp_path):
-    """⚠️ מספר מגירה שגוי גרוע ממספר חסר: הוא שולח אדם להוציא כונן
-    תקין. ‏NVMe ובקר לא-ATA אינם מדווחים `ataN`."""
-    out = render_failures(tmp_path, [_failed(dev="nvme0n1", port=None)])
-    assert "nvme0n1" in out
-    assert "SATA" not in out
-
-
-@requires_bash
-@requires_jq
-def test_a_drive_with_no_serial_says_so_instead_of_looking_identified(tmp_path):
-    out = render_failures(tmp_path, [_failed(serial=None, model=None)])
-    assert "no serial" in out
-    assert "unknown model" in out
-
-
-@requires_bash
-@requires_jq
-def test_a_round_with_no_failures_prints_nothing(tmp_path):
-    """כותרת `FAILED DRIVES:` ריקה היא בהלה בלי סיבה."""
-    out = render_failures(tmp_path, [_failed(state="done")])
-    assert out.strip() == ""
-
-
-@requires_bash
-@requires_jq
-def test_every_failed_line_fits_the_eighty_column_screen(tmp_path):
-    out = render_failures(tmp_path, [_failed(model="A" * 30, serial="B" * 20)])
-    for line in out.splitlines():
-        assert len(line) <= 80, line

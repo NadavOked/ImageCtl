@@ -79,11 +79,15 @@ TWO = ("cslot_name=1|מגירה עליונה\n"
 
 
 def _render(tmp_path: Path, name: str, body: str, size: str = "1280x800"):
-    state = tmp_path / f"{name}.txt"
-    state.write_text(HEAD + body, encoding="utf-8", newline="\n")
     binary = tmp_path / "gui-bin"
     if not binary.exists():
         _build_gui(tmp_path)
+    # the state is written after the build: a file older than 10 s is drawn
+    # with the "הסוכן לא מעדכן מצב" toast (state.c stale), and the build now
+    # takes about that long (#1322 added five sources) -- the IP/MAC test's
+    # second render then differed by the toast, not by the address
+    state = tmp_path / f"{name}.txt"
+    state.write_text(HEAD + body, encoding="utf-8", newline="\n")
     _png(binary, tmp_path / name, state, size)
     return {t: _png_rgb(tmp_path / f"{name}-standby-{t}.png") for t in ("light", "dark")}
 

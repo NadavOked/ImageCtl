@@ -83,8 +83,14 @@ def render_dnsmasq(ctx: ServerContext,
     # ‏#1078: רק `cli` נושא `interface=<הפצה>` בקובץ המתקין — בכל מקור אחר
     # הקובץ הזה הוא היחיד, ובלי שם בו TFTP נצמד ל-loopback (`dhcp._pinned`).
     pin = deploy is not None and deploy.state.source != "cli"
+    # ‏#705: "אתחול מהרשת" לכל כרטיס — רק כשהמפעיל ערך שירותים (אחרת None,
+    # והקובץ זהה לקודם). כרטיס שבו הוא כבוי מוחרג גם כשה-DHCP שלו דלוק.
+    gate = getattr(ctx, "nic_services", None)
+    netboot = gate.netboot() if gate is not None else None
+    per_nic = ({"netboot": netboot[0], "nics": netboot[1]} if netboot is not None else {})
     return (dhcp.render(configs, tftp_root=root,
-                        deploy_interface=console_deploy_interface(deploy), pin_tftp=pin),
+                        deploy_interface=console_deploy_interface(deploy), pin_tftp=pin,
+                        **per_nic),
             dhcp.render_proxy(proxy_configs(configs), tftp_root=root))
 
 

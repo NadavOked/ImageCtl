@@ -208,7 +208,7 @@ compose_hostname() {
 # בדיוק נגד הפתרון הקל — ‏#478 "נפתר" בכך שהחציה הועברה לקובץ אחר —
 # ולכן הפיצול כאן ולא דחיסת שורות. המקום נבחר כי `compose_hostname`
 # ו-`write_hostname` כבר כאן, ו-`RESP` כבר נקרא ב-libs אחרים
-# (`classround.sh`, `ui.sh`). האתר שקורא לה נשאר במסלול השחזור.
+# (`task.sh`, `buildmenuitems.sh`). האתר שקורא לה נשאר במסלול השחזור.
 name_this_machine() {
     # $1 = disk, $2 = session id. Never fatal: an image that boots with the
     # wrong name is fixable in a minute; one that does not boot is not.

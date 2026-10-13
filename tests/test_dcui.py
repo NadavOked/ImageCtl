@@ -327,7 +327,7 @@ def test_preinstall_snapshot_uses_status_without_creating_a_database(tmp_path):
     assert snapshot.pre_install
     assert not (data_dir / "imagectl.db").exists()
     screen = "\n".join(render_preinstall(snapshot))
-    assert "ImageSrv v0.52.0 - installation" in screen   # #1302: the product name, not the repo's
+    assert "ImageSrv v0.52.0 [UNVERIFIED] - installation" in screen
     assert "ens33   00:50:56:01:02:01   10.10.10.8/24" in screen
     assert "ens34   00:50:56:01:02:02   -" in screen
     assert "https://10.10.10.8:8081" in screen

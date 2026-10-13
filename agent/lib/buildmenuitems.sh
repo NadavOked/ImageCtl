@@ -1,36 +1,14 @@
-# buildmenuitems.sh -- what the build machine's menu offers: the items, their
-# labels, and the gates (role, classrooms, tools). POSIX sh (busybox ash).
-# Split out of buildmenu.sh (#1073) the way roomdraw.sh was split from
-# roomflow.sh (#418): buildmenu.sh runs the menu, this file says what is on
-# it. Both the text menu (build_menu) and the GUI (guistate.sh, menu_class=)
-# read the same gates here, so v1 and v2 differ in ONE place.
-
-#: Which roles may use this menu at all. An allow-list, like
-#: station.py:ROUND_OPENER_ROLES -- "we could not tell what this account may
-#: do" is a refusal, not permission (rule 5).
-BUILD_MENU_ROLES="admin deploy"
-
-build_menu_options() {
-    # The menu is built from the role. Hiding is not permission -- the
-    # server enforces admin_only on the capture either way -- but a menu
-    # that offers what it would refuse is a menu that lies to the operator.
-    # #1244: capture first for admin, then room, direct and restore.
-    # The class card (v2) stays last, as on the native GUI.
-    rm -f "$RUN_DIR/build_menu.txt"
-    [ "$BUILD_ROLE" = "admin" ] && echo "capture" >> "$RUN_DIR/build_menu.txt"
-    echo "room" >> "$RUN_DIR/build_menu.txt"
-    echo "direct" >> "$RUN_DIR/build_menu.txt"   # #715: always, like room
-    echo "self" >> "$RUN_DIR/build_menu.txt"     # #1073 (c): this server's image onto this disk
-    # #880: v1 is the cloning edition -- the class option is offered only
-    # when the last hello said the server has it switched on. The server
-    # refuses the round either way (409); a missing field reads as off.
-    if class_deploy_on; then echo "class" >> "$RUN_DIR/build_menu.txt"; fi
-}
+# buildmenuitems.sh -- the gates of the build machine's GUI menu: the class
+# card (v2) and the toolbox (v1.1). POSIX sh (busybox ash).
+# guistate.sh reads them into menu_class= / menu_tools=, and the GUI hides a
+# card on 0, so v1 and v2 differ in ONE place. The text menu that read the
+# same gates was removed with the rest of the text screens (owner, 11/10:
+# GUI only).
 
 class_deploy_on() {
-    # The hello answer is the one place the switch is read from, on both
-    # the text menu and the GUI state (guistate.sh). $RESP is the agent's
-    # name for it; the kiosk has only $RUN_DIR.
+    # The hello answer is the one place the switch is read from, for the
+    # GUI state (guistate.sh). $RESP is the agent's name for it; the kiosk
+    # has only $RUN_DIR.
     # #1081: classrooms is a server edition flag (hello /state). Missing =
     # off (principle 1). v2 turns it on. The operator switch sits on top.
     _hello="${RESP:-$RUN_DIR/response.json}"
@@ -54,14 +32,3 @@ tools_on() {
     fi
     [ "$_flag" = true ]
 }
-
-build_menu_label() {
-    case "$1" in
-        capture) echo "Upload an image to the server (capture this disk)" ;;
-        room)    echo "Deploy to the cloning machines" ;;
-        direct)  echo "Deploy THIS disk directly to the cloning machines" ;;
-        self)    echo "Restore an image from the server onto THIS disk" ;;
-        class)   echo "Deploy to a classroom" ;;
-    esac
-}
-

@@ -29,13 +29,23 @@ pull_body() {
 pull_post() {
     # $1 = server, $2 = body file, $3 = response file. Prints the HTTP code.
     #
-    # Deliberately not http_post_json, for the reason login_post gives: `curl
-    # -f` collapses every answer from 400 up into exit 22, and the two answers
+    # Deliberately not http_post_json: `curl -f` collapses every answer
+    # from 400 up into exit 22, and the two answers
     # that matter most here are opposite diagnoses. 404 means this server is
     # older than the endpoint and the restore should simply go on unwatched;
     # 503 means the server that the restore is about to pull 40GB *from* is
     # falling over. Folding them into "the pull failed" sends a technician
     # after the wrong fault.
+    #
+    # $PULL_JAR (11/10): the GUI's console session -- sent as the cookie, it
+    # is the authorization the server accepts instead of a password.
+    if [ -n "${PULL_JAR:-}" ] && [ -s "$PULL_JAR" ]; then
+        curl -sS --max-time "$HTTP_TIMEOUT" --retry "$HTTP_RETRIES" \
+            -b "$PULL_JAR" -o "$3" -w '%{http_code}' \
+            -H "Content-Type: application/json" \
+            --data-binary "@$2" "$1/api/v1/agent/pulls" 2>/dev/null
+        return
+    fi
     curl -sS --max-time "$HTTP_TIMEOUT" --retry "$HTTP_RETRIES" \
         -o "$3" -w '%{http_code}' \
         -H "Content-Type: application/json" \

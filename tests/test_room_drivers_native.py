@@ -76,8 +76,8 @@ def test_the_parser_reads_the_models_and_says_unread_by_default():
     assert "s->driver_models_read = -1;" in parse, "absent = not read, never 'no models'"
     assert 'KEY("driver_models")' in parse and 'KEY("driver_model")' in parse
     # שדות 9–10 של room_drawer: מצב ופירוט; מצב לא מוכר אינו מוצג כאילו הונח.
-    # ‏#704: שדה 11 (שם החריץ) נוסף אחריהם — עדיין אופציונלי מ-8.
-    assert "split(val, f, 11) < 8" in parse
+    # ‏#704: שדה 11 (שם החריץ) נוסף אחריהם, ו-#432 שדה 12 (מצב הקישור) — עדיין אופציונלי מ-8.
+    assert "split(val, f, 12) < 8" in parse
     assert 'strcmp(f[8], "staged")' in parse and 'strcmp(f[8], "failed")' in parse
 
 

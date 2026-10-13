@@ -6,6 +6,8 @@
 #include <time.h>
 #include "state.h"
 
+int lc_state_line(State *s, const char *key, char *val);   /* #1322, lc_state.c */
+
 static char EMPTY[1] = "";
 
 /* "a|b||d" -> f[0..3], missing fields are "" -- never NULL. */
@@ -65,6 +67,8 @@ void state_parse(State *s, FILE *fp) {
     /* #928: the shrink question is all-or-nothing -- the declared count and
      * a bad row are remembered here and settled after the last line. */
     unsigned long long shrink_declared = 0; int shrink_seen = 0, shrink_bad = 0;
+    /* 11/10: the agent's question dialog is all-or-nothing the same way. */
+    unsigned long long ask_declared = 0; int ask_seen = 0, ask_bad = 0;
     char line[4096];
     while (fgets(line, sizeof line, fp)) {
         size_t len = strlen(line);
@@ -90,6 +94,7 @@ void state_parse(State *s, FILE *fp) {
         *eq = 0;
         const char *key = line;
         char *val = eq + 1, *f[12];
+        if (lc_state_line(s, key, val)) continue;   /* #1322: lc_* records */
 #define KEY(k) (strcmp(key, k) == 0)
         if (KEY("disk")) {
             if (s->ndisks >= MAX_DISKS) {
@@ -141,8 +146,9 @@ void state_parse(State *s, FILE *fp) {
         } else if (KEY("room_drawer")) {
             /* #695: machine-index|port-or-0|serial|model|size|smart|fresh|selected
              * #1269: |drivers-state|drivers-detail -- optional (an older agent sends eight)
-             * #704: |slot-name -- optional, "" = "דיסק N" */
-            if (split(val, f, 11) < 8) continue;
+             * #704: |slot-name -- optional, "" = "דיסק N"
+             * #432: |link-state -- optional; only "slow" colours the slot */
+            if (split(val, f, 12) < 8) continue;
             unsigned long long mi, port, size;
             if (!parse_uint(f[0], &mi) ||
                 !parse_uint(f[1], &port) || port > MAX_DRAWERS ||
@@ -179,6 +185,22 @@ void state_parse(State *s, FILE *fp) {
              * slot's name is not its name. */
             else if (port == 0) m->slot_names[actual_port - 1][0] = 0;
             d->fallback = port == 0;
+            d->link_slow = !strcmp(f[11], "slow");
+        } else if (KEY("room_warn")) {
+            /* #432: one line of round.precheck; an empty one is not a warning */
+            if (!val[0]) continue;
+            if (s->nroom_warn >= MAX_ROOM_NOTES) { s->hidden_room_warn++; continue; }
+            cp(s->room_warn[s->nroom_warn++], sizeof s->room_warn[0], val);
+        } else if (KEY("room_missing")) {
+            /* #65: mac|name|reason|can_poweroff|text -- all five, or no row */
+            if (split(val, f, 6) != 5 || !f[0][0] || !f[4][0]) continue;
+            if (s->nroom_missing >= MAX_ROOM_NOTES) { s->hidden_room_missing++; continue; }
+            int i = s->nroom_missing++;
+            cp(s->room_missing[i].mac, sizeof s->room_missing[i].mac, f[0]);
+            cp(s->room_missing[i].name, sizeof s->room_missing[i].name, f[1]);
+            cp(s->room_missing[i].reason, sizeof s->room_missing[i].reason, f[2]);
+            s->room_missing[i].can_poweroff = !strcmp(f[3], "1");
+            cp(s->room_missing[i].text, sizeof s->room_missing[i].text, f[4]);
         } else if (KEY("room_slot_name")) {
             /* #704: machine-index|port|name -- a SATA slot's name, empty slots too */
             if (split(val, f, 3) != 3 || !f[2][0]) continue;
@@ -236,7 +258,7 @@ void state_parse(State *s, FILE *fp) {
              * first (#688). The 5th field (#709) and the 6th (#874: the
              * server's cause for failed_last) are optional so an older agent
              * still parses. */
-            int nf = split(val, f, 6);
+            int nf = split(val, f, 8);
             if (nf < 4) continue;
             unsigned long long port, size;
             if (!parse_uint(f[0], &port) || port > INT_MAX) continue;
@@ -258,6 +280,13 @@ void state_parse(State *s, FILE *fp) {
             const char *cause = (nf >= 6 && !strcmp(sm, "failed_last")) ? f[5] : "";
             if (strcmp(cause, "cable") && strcmp(cause, "disk")) cause = "";
             cp(id->cause, sizeof id->cause, cause);
+            /* #432: fields 7/8 (link, port max), "6.0"-shaped or not read --
+             * "null", an older agent's absent field and junk all mean unknown */
+            for (int k = 0; k < 2; k++) {
+                const char *v = nf >= 7 + k ? f[6 + k] : "";
+                int ok = strlen(v) == 3 && v[0] >= '0' && v[0] <= '9' && v[1] == '.' && v[2] >= '0' && v[2] <= '9';
+                cp(k ? id->link_max : id->link, sizeof id->link, ok ? v : "");
+            }
         } else if (KEY("disk_probe")) {
             if (!strcmp(val, "drives") || !strcmp(val, "no_disks") ||
                 !strcmp(val, "no_ports") || !strcmp(val, "unchecked"))
@@ -295,6 +324,40 @@ void state_parse(State *s, FILE *fp) {
             s->shrink[s->nshrink].old_bytes = old_b;
             s->shrink[s->nshrink].new_bytes = new_b;
             s->nshrink++;
+        } else if (KEY("ask_prompt")) {
+            /* nonce|kind|count|subject (11/10). The nonce is echoed back, so
+             * only digits and '-'; the subject (a disk, or seconds) is drawn,
+             * so only [A-Za-z0-9._/-]. growback has 1..MAX_ASK_ROWS rows,
+             * capture-end none. */
+            unsigned long long n;
+            int kind = ASK_NONE;
+            if (ask_seen++ || split(val, f, 5) != 4) { ask_bad = 1; continue; }
+            if (!strcmp(f[1], "growback")) kind = ASK_GROWBACK;
+            else if (!strcmp(f[1], "capture-end")) kind = ASK_CAPTURE_END;
+            if (kind == ASK_NONE || !f[0][0] ||
+                strspn(f[0], "0123456789-") != strlen(f[0]) ||
+                strlen(f[0]) >= sizeof s->ask_nonce ||
+                strspn(f[3], "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/-") != strlen(f[3]) ||
+                strlen(f[3]) >= sizeof s->ask_subject ||
+                !parse_uint(f[2], &n) || n > MAX_ASK_ROWS ||
+                (kind == ASK_GROWBACK && n < 1) || (kind == ASK_CAPTURE_END && n != 0)) { ask_bad = 1; continue; }
+            cp(s->ask_nonce, sizeof s->ask_nonce, f[0]);
+            cp(s->ask_subject, sizeof s->ask_subject, f[3]);
+            s->ask_kind = kind;
+            ask_declared = n;
+        } else if (KEY("ask_row")) {
+            /* idx|now bytes|orig bytes|table|fs -- the grow-back makes a
+             * partition (or its filesystem) bigger again: now < orig */
+            unsigned long long idx, now_b, orig_b;
+            if (split(val, f, 5) != 4 || !parse_uint(f[0], &idx) || idx < 1 || idx > INT_MAX ||
+                !parse_uint(f[1], &now_b) || !parse_uint(f[2], &orig_b) ||
+                now_b < 1 || now_b >= orig_b || s->nask >= MAX_ASK_ROWS ||
+                (strcmp(f[3], "table") && strcmp(f[3], "fs"))) { ask_bad = 1; continue; }
+            s->ask[s->nask].idx = (int)idx;
+            s->ask[s->nask].now_bytes = now_b;
+            s->ask[s->nask].orig_bytes = orig_b;
+            s->ask[s->nask].fs_only = !strcmp(f[3], "fs");
+            s->nask++;
         } else if (KEY("class") && s->nclasses < MAX_CLASSES) {
             split(val, f, 3);
             ClassGroup *g = &s->classes[s->nclasses++];
@@ -366,6 +429,13 @@ void state_parse(State *s, FILE *fp) {
         fprintf(stderr, "native-gui: state: shrink question incomplete or malformed; not shown\n");
         s->nshrink = 0; s->shrink_nonce[0] = 0;
     }
+    s->ask_pending = ask_seen && !ask_bad && s->ask_kind != ASK_NONE &&
+                     (unsigned long long)s->nask == ask_declared;
+    int ask_broken = (ask_seen || s->nask) && !s->ask_pending;
+    if (ask_broken) {
+        fprintf(stderr, "native-gui: state: question incomplete or malformed; not shown\n");
+        s->nask = 0; s->ask_nonce[0] = 0; s->ask_subject[0] = 0; s->ask_kind = ASK_NONE;
+    }
     int hidden = s->hidden_disks + s->hidden_machines + s->hidden_models;   /* #1269 */
     if (s->rejected_lines && hidden)
         snprintf(s->state_warning, sizeof s->state_warning,
@@ -382,6 +452,10 @@ void state_parse(State *s, FILE *fp) {
     if (shrink_broken && !s->state_warning[0])
         snprintf(s->state_warning, sizeof s->state_warning,
                  "שאלת הכיווץ הגיעה פגומה ולא מוצגת — הקליטה תבוטל");
+    /* 11/10: the same for the question dialog -- no answer is the safe one */
+    if (ask_broken && !s->state_warning[0])
+        snprintf(s->state_warning, sizeof s->state_warning,
+                 "שאלה מהסוכן הגיעה פגומה ולא מוצגת — בלי תשובה נבחרת ברירת המחדל הבטוחה");
 }
 
 int state_poll(StateFile *f, State *s) {

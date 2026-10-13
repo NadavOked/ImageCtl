@@ -1,30 +1,25 @@
-"""תפריט הטקסט של מחשב הבנייה — ‏issue #135.
+"""מסך מחשב הבנייה — מאז 11/10 גואי בלבד (‏#135, ‏#1073, הכרעת נדב 11/10).
 
-מחשב הבנייה הציג מסך סטטי בלי תפריט: "הזמינו קליטה מהקונסולה". נדב עומד
-מול המחשב ורוצה להזמין אותה **משם** — ולכן: כניסה, ואז שתיים או שלוש
-אפשרויות לפי התפקיד שהשרת החזיר.
+עד 11/10 הקובץ הזה בדק את **תפריט הטקסט** של מחשב הבנייה: כניסה בטקסט,
+ארבע-חמש אפשרויות ממוספרות לפי התפקיד, בחירת תיקייה, "Type this computer's
+name" ו-standby. נדב הכריע: אין מסך טקסט חלופי במכונות — רק הגואי — והקוד
+נמחק. הבדיקות של התפריט נמחקו איתו, והשומר שהוא לא חוזר הוא
+‏`tests/test_gui_only_no_text_fallback.py`.
 
-מה שנבדק כאן הוא התנהגות מול שרת HTTP אמיתי בתהליכון, בדיוק כמו
-‏`test_final_report.py`: הפונקציה `build_console_screen` נחתכת מתוך
-‏`agent/imagectl-agent` ורצה, ה-curl שבתוכה מדבר עם השרת המזויף, וכל
-בקשה שהגיעה נשמרת. ארבע הבדיקות הן בקרה שלילית — **על הקוד שלפני
-התיקון כולן נופלות על התנהגות**, כי המסך הישן אינו מבקש סיסמה, אינו
-מציג תפריט ואינו שולח POST. הספריות החדשות נטענות **רק אם הן קיימות**,
-כדי שהכישלון יהיה על מה שהמסך עשה ולא על קובץ חסר.
+מה שנשאר כאן הוא מה שהגואי עצמו עובר דרכו, מול שרת HTTP אמיתי בתהליכון
+(כמו `test_final_report.py`):
 
-1. מנהל רואה ארבע אפשרויות (#1073: חדר, ישירה, שחזור לדיסק הזה, קליטה —
-   אותו סדר כמו ב-GUI).
-2. משתמש deploy רואה שלוש — בלי קליטה, שהיא `admin_only` בשרת. "כיתה"
-   מוסתרת ב-v1 (‏`classrooms` חסר/false ב-hello, ‏`buildmenuitems.sh`) ונבדקת
-   כמסלול v2 עם הדגל דלוק.
-3. הקליטה מגיעה ל-`POST /api/console/tasks/capture` עם ה-`folder` הנכון —
-   גם לתיקייה קיימת וגם לתיקייה חדשה שנוצרה בדרך.
-4. ‏`unverified` (השרת לא ענה) אינו מתנהג כמו `rejected` (השרת בדק ואמר
-   לא): אין "שם משתמש או סיסמה שגויים", אין שלושה ניסיונות, והיומן אומר
-   שהסיסמה **לא נבדקה**. זו ההבחנה של עיקרון 5 במקום שהיא נולדה בו.
+1. ‏`build_console_screen` בלי גואי — הודעה ואתחול מהדיסק המקומי, **בלי**
+   כניסה, בלי בקשה אחת לקונסולה ובלי לקרוא את המקשים שחיכו ב-stdin.
+   בקרה שלילית: על הקוד הישן היא נכנסת לכניסה בטקסט ושולחת
+   ‏`POST /api/v1/agent/login`.
+2. הקליטה מהגואי (‏`gui_capture`, ‏`guibridge.sh`) מגיעה ל-
+   ‏`POST /api/console/tasks/capture` עם הגוף של הקונסולה, ה-cookie,
+   והתיקייה — קיימת, או חדשה שנוצרת קודם. שם בעברית אינו מגיע לשרת.
+3. ‏`gui_role` קורא את התפקיד מתשובת הכניסה (#947).
 
-הפלט של כל הרצה הולך לקובץ ולא ל-PIPE, וה-stdin מגיע מקובץ תשובות
-(‏`capture_output` ממתין לסגירת הצינור, לא ליציאת התהליך).
+הפלט של כל הרצה הולך לקובץ ולא ל-PIPE (‏`capture_output` ממתין לסגירת
+הצינור, לא ליציאת התהליך).
 """
 
 from __future__ import annotations
@@ -33,7 +28,6 @@ import json
 import shlex
 import subprocess
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -45,53 +39,24 @@ from test_final_report import cut_function
 
 REPO = Path(__file__).resolve().parent.parent
 
-#: ‏curl הוא המנגנון שנבדק (קוד התשובה וה-cookie הם הראיה החיובית),
-#: ו-jq קורא את רשימות התיקיות והאימג'ים. בלעדיהם אין מה לבדוק, ובמקום
-#: שבו הם אמורים להיות זה כישלון ולא דילוג (#52).
+#: ‏curl הוא המנגנון שנבדק (קוד התשובה וה-cookie הם הראיה החיובית), ו-jq
+#: קורא את מצב המכונה. בלעדיהם אין מה לבדוק, ובמקום שבו הם אמורים להיות
+#: זה כישלון ולא דילוג (#52).
 native_tools = requires_native(("bash", BASH), "curl", "jq")
 
 MAC = "b4:2e:99:07:1a:c4"
-#: ‏#880: ‏`class_deploy_enabled` דלוק כאן במפורש — הבדיקות של התפריט
-#: המלא הן בדיקות של v2. ברירת המחדל של השרת היא כבוי, ושדה חסר = כבוי.
 ANSWER = {"schema": 1, "known": True, "role": "build", "task": None,
-          "session": None, "allowed_images": [], "ui": {"require_login": True},
-          "class_deploy_enabled": True}
+          "session": None, "allowed_images": [], "ui": {"require_login": True}}
 
 FOLDERS = [
     {"name": "Lab", "description": "", "images": 2},
     {"name": "Classrooms", "description": "", "images": 5},
 ]
 
-#: חמש התוויות של התפריט, כפי שהן על המסך (‏#715 הוסיף את הישירה,
-#: ‏#1073 את השחזור לדיסק הזה; הכיתה מוסתרת ב-v1).
-CAPTURE_LABEL = "Upload an image to the server"
-ROOM_LABEL = "Deploy to the cloning machines"
-DIRECT_LABEL = "Deploy THIS disk directly to the cloning machines"
-SELF_LABEL = "Restore an image from the server onto THIS disk"
-CLASS_LABEL = "Deploy to a classroom"
-
-#: ‏#1081: hello של v2 — `classrooms: true` רק בבדיקות שבודקות את מסלול הכיתה.
-V2_ANSWER = {**ANSWER, "classrooms": True}
-
-#: מצב המכונה מ-`/api/v1/agent/state` (#706): השם הרשום והאימג'ים
-#: **מספריית השרת הזה** שמתאימים לדיסק — מהם בוחרים ב"שחזור לדיסק הזה".
+#: מצב המכונה מ-`/api/v1/agent/state` — ‏`gui_capture` בודק מולו את הדיסק.
 STATE = {"mac": MAC, "known": True, "role": "build", "name": "BUILD-01",
-         "disks": [{"dev": "sda", "removable": False}],
-         "allowed_images": [{"id": "img_1", "name": "Win11", "folder": "Lab"},
-                            {"id": "img_2", "name": "Office", "folder": ""}],
-         "task": None}
-
-#: חדר עם משכפל ער ושתי מגירות טריות — מה שהזרימה הישירה צריכה כדי להציע יעד.
-ROOM_AWAKE = {"round": None, "machines": [
-    {"mac": "aa:bb:cc:00:00:21", "name": "shich-1", "awake": True, "joined": False,
-     "drawers": 2, "fresh_drawers": 2, "drawer_count": 3,
-     "drawer_list": [{"dev": "sda", "port": 1, "fresh": True, "state": None},
-                     {"dev": "sdb", "port": 2, "fresh": True, "state": None},
-                     {"dev": "sdc", "port": None, "fresh": True, "state": None}]},
-    {"mac": "aa:bb:cc:00:00:22", "name": "shich-2", "awake": False, "joined": False,
-     "drawers": 1, "fresh_drawers": 1, "drawer_count": 3,
-     "drawer_list": [{"dev": "sda", "port": 1, "fresh": True, "state": None}]},
-]}
+         "disks": [{"dev": "/dev/sda", "removable": False}],
+         "allowed_images": [], "task": None}
 
 RUN_TIMEOUT_S = 90
 
@@ -102,7 +67,6 @@ RUN_TIMEOUT_S = 90
 class Console(HTTPServer):
     """מחזיר את מה שהוגדר לו, וזוכר כל בקשה שהגיעה."""
 
-    agent_login_status = 200
     role = "admin"
     folders: list[dict] = []
     requests: list[dict] = []
@@ -132,14 +96,8 @@ class Handler(BaseHTTPRequestHandler):
         self._record()
         if self.path == "/api/console/folders":
             self._send(200, self.server.folders)
-        elif self.path == "/api/console/images":
-            # לא מה ש"שחזור לדיסק הזה" קורא: הרשימה שלו היא allowed_images
-            # מהמצב, ולכן השם כאן שונה בכוונה — אם הוא מופיע, נקרא המקור הלא נכון.
-            self._send(200, [{"id": "img_9", "name": "LibraryOnly", "family": 256}])
         elif self.path.startswith("/api/v1/agent/state?mac="):
             self._send(200, self.server.state)
-        elif self.path == "/api/console/room":
-            self._send(200, self.server.room)
         else:
             self._send(404, {"detail": "no such path"})
 
@@ -153,13 +111,8 @@ class Handler(BaseHTTPRequestHandler):
         self._record(body)
 
         if self.path == "/api/v1/agent/hello":
-            # #908: the attended beat while the menu waits. Recorded like any request.
             self._send(200, ANSWER)
         elif self.path == "/api/v1/agent/login":
-            status = self.server.agent_login_status
-            if status != 200:
-                self._send(status, {"error": "no"})
-                return
             self._send(200, {"ok": True, "role": self.server.role})
         elif self.path == "/api/console/login":
             token = f"u|{self.server.role}|9999999999|deadbeef"
@@ -170,9 +123,6 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"ok": True})
         elif self.path == "/api/console/tasks/capture":
             self._send(200, {"id": "tsk_01", "image_id": "img_01"})
-        elif self.path == "/api/console/room":
-            self._send(200, {"id": "room_01", "wave_session_id": "ses_01",
-                             "task_id": "tsk_02", "image_id": "live_00000001"})
         else:
             self._send(404, {"detail": "no such path"})
 
@@ -186,8 +136,6 @@ def console():
     httpd.requests = []
     httpd.folders = [dict(f) for f in FOLDERS]
     httpd.role = "admin"
-    httpd.agent_login_status = 200
-    httpd.room = {"round": None, "machines": []}
     httpd.state = json.loads(json.dumps(STATE))
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -204,613 +152,168 @@ def url_of(httpd: HTTPServer) -> str:
     return f"http://{host}:{port}"
 
 
-# --- הרצת המסך האמיתי --------------------------------------------------------
-#
-# ‏`build_console_screen` נחתכת מ-`imagectl-agent` — היא קיימת **בשתי**
-# הגרסאות, לפני התיקון ואחריו, ולכן הבקרה השלילית נופלת על מה שהמסך עשה.
-# הספריות של #135 נטענות רק אם הן קיימות, מאותה סיבה בדיוק.
-
-NEW_LIBS = ("buildmenuitems.sh", "buildmenu.sh", "buildcapture.sh", "roomdraw.sh",
-            "roomflow.sh", "directflow.sh", "selfrestore.sh")
-
-
-def sourced_libs() -> str:
-    # ‏attended.sh (#906/#908) רק אם קיים: הבקרה השלילית מחזירה קובץ ל-main,
-    # והכישלון חייב להיות על ההתנהגות ולא על `.` של קובץ חסר.
-    names = ["common.sh", "jsonq.sh", "ui.sh", "recovery.sh", "classround.sh",
-             "hold.sh", "attended.sh", *NEW_LIBS]
-    return "".join(f". {posix(AGENT)}/lib/{n}; "
-                   for n in names if (AGENT / "lib" / n).exists())
-
-
-#: ‏`sleep` בשניות שלמות הוא המתנה לאדם, לא תזמון שנבדק — בלעדיו הבדיקה
-#: מחכה דקות על מסכי הודעה. ‏`sleep` שברי הוא **הפעימה** (‏ATTENDED_BEAT_S,
-#: ‏#908) והוא אמיתי — אחרת הפעימה הייתה לולאה צפופה. ‏`pick_internal_disk`
-#: קורא את /sys של המכונה המריצה. ‏`build_hello` מזויף כמו ב-test_smart.py:
-#: ‏sysinfo.sh אינו נטען כאן, והבדיקה היא על *מה שנוסף* לגוף ועל הקצב.
-STUBS = (
-    'sleep() { case "$1" in *.*) command sleep "$1" ;; esac; }; '
-    'build_hello() { printf %s "{\\"schema\\":2,\\"mac\\":\\"$MAC\\",\\"joining\\":$1}"; }; '
-    'pick_internal_disk() { echo sda; }; '
-    'class_round_flow() { echo "CLASS-ROUND-OPENED"; return 0; }; '
-    'single_restore_run() { echo "SINGLE-RESTORE $1"; return 0; }; '
-)
-
-
-def run_screen(tmp_path: Path, server: str, answers, *, stubs: str = "",
-               answer: dict = ANSWER, env: str = "", before_last=None) -> dict:
-    run = tmp_path / "run"
-    run.mkdir(parents=True, exist_ok=True)
-    (run / "resp.json").write_text(json.dumps(answer), encoding="utf-8")
-
-    body = cut_function("build_console_screen")
-    assert body is not None, "‏build_console_screen אינה מוגדרת ב-imagectl-agent"
-    funcs = tmp_path / "screen.sh"
-    funcs.write_text(body, encoding="utf-8")
-
-    # מספר בין התשובות הוא השהיה בשניות — האדם שעדיין לא ענה (#908). בלי
-    # השהיה ה-stdin הוא קובץ; איתה — צינור בתוך bash, שבו `command sleep`
-    # עוקף את ה-stub.
-    if before_last is not None:
-        feed, stdin = "", ""
-    elif any(not isinstance(a, str) for a in answers):
-        feed = "{ " + "; ".join(
-            f"command sleep {a}" if not isinstance(a, str)
-            else f"printf '%s\\n' {shlex.quote(a)}" for a in answers) + "; } | "
-        stdin = ""
-    else:
-        stdin_file = tmp_path / "answers.txt"
-        stdin_file.write_text("".join(f"{a}\n" for a in answers), encoding="utf-8",
-                              newline="\n")   # לא CRLF בווינדוס: "4\r" אינה בחירה
-        feed, stdin = "", f" < {shlex.quote(posix(stdin_file))}"
-    out_file = tmp_path / "out.txt"
-
-    script = (
-        f"export RUN_DIR={shlex.quote(posix(run))} MAC={MAC!r} "
-        f"SERVER={shlex.quote(server)} "
-        f'RESP={shlex.quote(posix(run / "resp.json"))} '
-        f"IMAGECTL_TEST=1 HTTP_RETRIES=0 HTTP_TIMEOUT=4 ATTENDED_BEAT_S=0.3 {env}; "
-        + sourced_libs()
-        + STUBS
-        + stubs
-        + f". {posix(funcs)}; "
-        + f"{feed}build_console_screen{stdin}; "
-        + 'echo "RETURNED rc=$?"'
-    )
-    with out_file.open("w", encoding="utf-8") as sink:
-        try:
-            if before_last is None:
-                subprocess.run(
-                    [BASH, "-c", 'export PATH="/usr/bin:$PATH"; ' + script],
-                    stdout=sink, stderr=subprocess.STDOUT, text=True, cwd=str(REPO),
-                    stdin=subprocess.DEVNULL, timeout=RUN_TIMEOUT_S,
-                )
-            else:
-                proc = subprocess.Popen(
-                    [BASH, "-c", 'export PATH="/usr/bin:$PATH"; ' + script],
-                    stdout=sink, stderr=subprocess.STDOUT, text=True, cwd=str(REPO),
-                    stdin=subprocess.PIPE,
-                )
-                assert proc.stdin is not None
-                try:
-                    for item in answers[:-1]:
-                        if isinstance(item, str):
-                            proc.stdin.write(item + "\n")
-                            proc.stdin.flush()
-                        else:
-                            time.sleep(item)
-                    before_last()
-                    proc.stdin.write(answers[-1] + "\n")
-                    proc.stdin.close()
-                    proc.wait(timeout=RUN_TIMEOUT_S)
-                except BaseException:
-                    proc.kill()
-                    proc.wait()
-                    raise
-        except subprocess.TimeoutExpired:
-            raise AssertionError(
-                f"המסך לא סיים תוך {RUN_TIMEOUT_S}s. הפלט עד כה:\n"
-                + out_file.read_text(encoding="utf-8")
-            ) from None
-    log = run / "agent.log"
-    # ‏jq.exe בווינדוס מסיים כל שורה ב-CRLF ו-`read -r` שומר את ה-\r —
-    # "[Lab\r]" על המסך. ארטיפקט של תחנת הפיתוח, לא של הסוכן (jq של
-    # busybox במעבדה מדפיס LF) — הטקסט מושווה בלעדיו.
-    return {
-        # ‏newline="" — אחרת Python מתרגם \r בודד ל-\n לפני ה-strip (‏Path.read_text
-        # מקבל newline= רק מ-3.13, והתחנה על 3.12).
-        "out": out_file.open(encoding="utf-8", newline="").read().replace("\r", ""),
-        "log": log.read_text(encoding="utf-8") if log.exists() else "",
-    }
-
-
 def posted(console: Console, path: str) -> list[dict]:
     return [r["body"] for r in console.requests
             if r["method"] == "POST" and r["path"] == path]
 
 
-# --- 1+2: התפריט נגזר מהתפקיד ------------------------------------------------
+#: הספריות שהמסך והגשר טוענים (‏gui_libs ב-guibridge.sh, והסוכן).
+LIBS = ("common.sh", "jsonq.sh", "waits.sh", "ui.sh", "hold.sh", "attended.sh",
+        "buildmenuitems.sh", "buildmenu.sh", "buildcapture.sh", "roomflow.sh",
+        "localboot.sh", "guiparent.sh", "guibridge.sh")
+
+
+def run_shell(tmp_path: Path, server: str, body: str, stdin_text: str = "") -> dict:
+    run = tmp_path / "run"
+    run.mkdir(parents=True, exist_ok=True)
+    (run / "resp.json").write_text(json.dumps(ANSWER), encoding="utf-8")
+    keys = tmp_path / "keys.txt"
+    keys.write_text(stdin_text, encoding="utf-8", newline="\n")
+    out_file = tmp_path / "out.txt"
+    script = (
+        f"export RUN_DIR={shlex.quote(posix(run))} MAC={MAC!r} "
+        f"SERVER={shlex.quote(server)} "
+        f'RESP={shlex.quote(posix(run / "resp.json"))} '
+        f'LOG_FILE={shlex.quote(posix(run / "agent.log"))} '
+        "IMAGECTL_TEST=1 HTTP_RETRIES=0 HTTP_TIMEOUT=4; "
+        # The Windows shell would rewrite "/dev/sda" into a Windows path on
+        # the way to jq.exe; a development-station artifact, not the agent's.
+        "export MSYS2_ARG_CONV_EXCL='*'; "
+        + "".join(f". {posix(AGENT)}/lib/{n}; " for n in LIBS)
+        + 'sleep() { :; }; '
+        + body
+    )
+    with out_file.open("w", encoding="utf-8") as sink, keys.open("rb") as feed:
+        try:
+            subprocess.run(
+                [BASH, "-c", 'export PATH="/usr/bin:$PATH"; ' + script],
+                stdout=sink, stderr=subprocess.STDOUT, text=True, cwd=str(REPO),
+                stdin=feed, timeout=RUN_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            raise AssertionError(
+                f"לא הסתיים תוך {RUN_TIMEOUT_S}s. הפלט עד כה:\n"
+                + out_file.read_text(encoding="utf-8")
+            ) from None
+    log = run / "agent.log"
+    return {
+        "out": out_file.open(encoding="utf-8", newline="").read().replace("\r", ""),
+        "log": log.read_text(encoding="utf-8") if log.exists() else "",
+    }
+
+
+# --- 1: בלי גואי — דיסק מקומי, בלי כניסה ובלי תפריט ----------------------------
 
 
 @native_tools
-def test_an_admin_is_offered_all_four_actions(tmp_path, console):
-    """מנהל (#1073, סדר אחיד עם ה-GUI): חדר שיכפול, הפצה ישירה מהדיסק הזה
-    (#715), שחזור אימג' מהשרת לדיסק הזה, ואחרונה הקליטה. ארבע, ממוספרות
-    1-4 — ובלי "כיתה", גם כשה-hello אומר שהמתג דלוק (ANSWER): כיתות = v2."""
-    console.role = "admin"
+def test_the_build_screen_without_a_gui_boots_local_and_asks_nothing(tmp_path, console):
+    if Path("/usr/bin/imagectl-kiosk").exists():
+        pytest.fail("/usr/bin/imagectl-kiosk קיים על המכונה המריצה — הטסט מניח גואי חסר")
+    screen = cut_function("build_console_screen")
+    assert screen is not None, "‏build_console_screen אינה מוגדרת ב-imagectl-agent"
+    result = run_shell(
+        tmp_path, url_of(console),
+        # 11/10: no efivars here -- BootNext "skipped", the host untouched.
+        f"export SYSROOT={shlex.quote(posix(tmp_path / 'sysroot'))}; "
+        'build_hello() { printf %s "{\\"mac\\":\\"$MAC\\",\\"joining\\":$1}"; }; '
+        "shrink_offer_pending() { :; }; " + screen
+        + '\nbuild_console_screen; echo "RETURNED rc=$?"; '
+        'IFS= read -r _left && echo "STDIN-UNTOUCHED $_left"',
+        stdin_text="admin\npw\n1\n")
 
-    result = run_screen(tmp_path, url_of(console), ["admin", "pw", "0"])
-
-    assert "Username:" in result["out"], "המסך לא ביקש כניסה בכלל"
-    assert f"1) {CAPTURE_LABEL}" in result["out"]
-    assert f"2) {ROOM_LABEL}" in result["out"]
-    assert f"3) {DIRECT_LABEL}" in result["out"]
-    assert f"4) {SELF_LABEL}" in result["out"]
-    assert CLASS_LABEL not in result["out"], "כיתה הוצעה ב-v1"
-    assert "Choose [1-4]" in result["out"]
-
-
-@native_tools
-def test_a_deploy_user_is_offered_exactly_three_actions(tmp_path, console):
-    """משתמש deploy (#1073, הכרעת נדב 18/09): **בדיוק** שלוש — חדר, ישירה,
-    שחזור לדיסק הזה. בלי קליטה (`admin_only` בשרת — תפריט שמציע מה
-    שיחזור 403 משקר למפעיל) ובלי כיתה (v2)."""
-    console.role = "deploy"
-
-    result = run_screen(tmp_path, url_of(console), ["deployer", "pw", "0"])
-
-    assert CAPTURE_LABEL not in result["out"], "משתמש deploy קיבל קליטה"
-    assert CLASS_LABEL not in result["out"], "כיתה הוצעה ב-v1"
-    assert f"1) {ROOM_LABEL}" in result["out"]
-    assert f"2) {DIRECT_LABEL}" in result["out"]
-    assert f"3) {SELF_LABEL}" in result["out"]
-    assert "Choose [1-3]" in result["out"]
-    assert "4)" not in result["out"]
+    out = result["out"]
+    assert "TEST-REBOOT: native GUI unavailable (build screen)" in out, out
+    assert "The graphical interface did not start." in out
+    assert "RETURNED" not in out
+    assert "Sign in" not in out and "Username" not in out
+    # 11/10: the one request is the hello that says the GUI did not come up
+    # -- no sign-in, nothing from the console API.
+    assert [(r["method"], r["path"]) for r in console.requests] == [("POST", "/api/v1/agent/hello")], console.requests
+    assert console.requests[0]["body"]["gui_failed"]["screen"] == "build"
+    assert console.requests[0]["body"]["joining"] is False
 
 
-@native_tools
-def test_with_the_v2_gate_open_the_class_option_returns_as_the_fifth(
-        tmp_path, console):
-    """‏#1081 ידליק את השער — ואז הכיתה חוזרת, אחרונה, בלי שאיש יכתוב
-    אותה מחדש. ‏ANSWER אומר שהמתג בשרת דלוק."""
-    console.role = "admin"
-
-    result = run_screen(tmp_path, url_of(console), ["admin", "pw", "0"],
-                        answer=V2_ANSWER)
-
-    assert f"5) {CLASS_LABEL}" in result["out"], result["out"]
-    assert "Choose [1-5]" in result["out"]
+# --- 2: הקליטה מהגואי מגיעה ל-POST עם התיקייה הנכונה ------------------------
 
 
-# --- #880: "הפצה לכיתות" רק כשה-hello אמר שהמתג דלוק -----------------------
+def gui_capture_call(name: str, folder: str, folder_new: str, desc: str = "") -> str:
+    """הפעולה `capture-start` כפי שהגשר מריץ אותה: כניסה, תפקיד, ואז
+    ‏`gui_capture` עם שדות הרשומה."""
+    return (
+        "RECOVERY_USER=admin RECOVERY_PASS=pw; console_signin || exit 11; "
+        "gui_role || exit 12; "
+        f"dev=/dev/sda name={shlex.quote(name)} folder={shlex.quote(folder)} "
+        f"folder_new={folder_new} desc={shlex.quote(desc)}; "
+        'gui_capture; echo "CAPTURE rc=$?"'
+    )
 
 
 @native_tools
-def test_the_class_option_is_hidden_when_the_server_switched_it_off(
-        tmp_path, console):
-    """‏v1 מהדורת שיכפול: ‏`class_deploy_enabled: false` ב-hello → בלי
-    "Deploy to a classroom", והמספור מתכווץ ל-[1-3] (קליטה, חדר, ישירה
-    של #715 — שתמיד מוצגת כמו החדר). השרת מסרב ממילא
-    (409) — תפריט שמציע מה שהשרת יסרב לו הוא תפריט שמשקר. **בקרה
-    שלילית:** על main האפשרות מוצגת תמיד (`echo "class"` ללא תנאי)."""
-    console.role = "admin"
-    answer = {**V2_ANSWER, "class_deploy_enabled": False}
-
-    result = run_screen(tmp_path, url_of(console), ["admin", "pw", "0"],
-                        answer=answer)
-
-    assert CLASS_LABEL not in result["out"], "הכיתה הוצעה כשהמתג כבוי"
-    assert f"1) {CAPTURE_LABEL}" in result["out"]
-    assert f"2) {ROOM_LABEL}" in result["out"]
-    assert f"3) {DIRECT_LABEL}" in result["out"]
-    assert f"4) {SELF_LABEL}" in result["out"]
-    assert "Choose [1-4]" in result["out"]
-
-
-@native_tools
-def test_a_hello_without_the_switch_field_hides_the_class_option(
-        tmp_path, console):
-    """שדה חסר = כבוי (שרת ישן, או תשובה שלא נקראה). הסוכן החדש תמיד
-    מקבל את השדה ממחשב הבנייה; היעדרו אינו "דלוק" (עיקרון 1)."""
-    console.role = "deploy"
-    answer = {k: v for k, v in V2_ANSWER.items() if k != "class_deploy_enabled"}
-
-    result = run_screen(tmp_path, url_of(console), ["deployer", "pw", "0"],
-                        answer=answer)
-
-    assert CLASS_LABEL not in result["out"], "שדה חסר נקרא כדלוק"
-    assert f"1) {ROOM_LABEL}" in result["out"]
-    assert f"2) {DIRECT_LABEL}" in result["out"]
-    assert f"3) {SELF_LABEL}" in result["out"]
-    assert "Choose [1-3]" in result["out"]
-
-
-@native_tools
-def test_the_role_comes_from_the_answer_the_login_already_stored(
-        tmp_path, console):
-    """התפקיד נקרא מ-`login_resp.json` — אין קריאה נוספת לשרת בשבילו."""
-    console.role = "deploy"
-
-    run_screen(tmp_path, url_of(console), ["deployer", "pw", "0"])
-
-    logins = [r for r in console.requests if r["path"] == "/api/v1/agent/login"]
-    assert len(logins) == 1, "הכניסה נשלחה יותר מפעם אחת"
-    assert not [r for r in console.requests if r["path"].endswith("/me")]
-
-
-# --- 3: זרימת הקליטה מגיעה ל-POST עם התיקייה הנכונה --------------------------
-
-
-@native_tools
-def test_a_capture_into_an_existing_folder_carries_that_folder(
-        tmp_path, console):
-    """תיקייה קיימת: בחירה מהרשימה, ואותו שם הולך ב-`folder`."""
-    answers = ["admin", "pw", "1", "2", "Win11 lab", "y"]
-
-    result = run_screen(tmp_path, url_of(console), answers)
-
-    assert "Lab" in result["out"] and "Classrooms" in result["out"]
+def test_a_gui_capture_into_an_existing_folder_carries_that_folder(tmp_path, console):
+    result = run_shell(tmp_path, url_of(console),
+                       gui_capture_call("Win11 lab", "Classrooms", "no"))
+    assert "CAPTURE rc=0" in result["out"], result["out"]
     captures = posted(console, "/api/console/tasks/capture")
-    assert len(captures) == 1, f"לא נשלחה בקשת קליטה אחת: {console.requests}"
-    assert captures[0] == {"mac": MAC, "name": "Win11 lab", "disk": "sda",
-                           "folder": "Classrooms", "description": ""}
-    # לא נוצרה תיקייה — נבחרה קיימת.
+    assert captures == [{"mac": MAC, "name": "Win11 lab", "disk": "sda",
+                         "folder": "Classrooms", "description": ""}]
     assert posted(console, "/api/console/folders") == []
 
 
 @native_tools
-def test_a_capture_into_a_new_folder_creates_it_first(tmp_path, console):
-    """תיקייה חדשה: נוצרת בשרת, ואז נושאת את הקליטה.
-
-    הסדר הוא של האפיון (סעיף 26): רשימת התיקיות, בחירה מתוכן או חדשה,
-    ואז שם האימג' והדיסק.
-    """
-    answers = ["admin", "pw", "1", "3", "New Course", "Win11 lab", "y"]
-
-    result = run_screen(tmp_path, url_of(console), answers)
-
+def test_a_gui_capture_into_a_new_folder_creates_it_first(tmp_path, console):
+    result = run_shell(tmp_path, url_of(console),
+                       gui_capture_call("Win11 lab", "New Course", "yes", "desc"))
+    assert "CAPTURE rc=0" in result["out"], result["out"]
     assert posted(console, "/api/console/folders") == [{"name": "New Course"}]
     captures = posted(console, "/api/console/tasks/capture")
-    assert len(captures) == 1, result["out"]
+    assert len(captures) == 1
     assert captures[0]["folder"] == "New Course"
-    assert captures[0]["name"] == "Win11 lab"
+    assert captures[0]["description"] == "desc"
+    order = [r["path"] for r in console.requests if r["method"] == "POST"]
+    assert order.index("/api/console/folders") < order.index("/api/console/tasks/capture")
 
 
 @native_tools
 def test_a_hebrew_folder_name_never_reaches_the_server(tmp_path, console):
-    """שם שהקונסולה הזאת אינה יכולה להציג נדחה במקלדת, לא בכיתה.
-
-    ‏(הכרעת נדב, 30/08: שמות תיקיות ואימג'ים באנגלית או מספרים.)
-    """
-    answers = ["admin", "pw", "1", "3", "מעבדה", "מעבדה", "מעבדה"]
-
-    result = run_screen(tmp_path, url_of(console), answers)
-
+    """‏(הכרעת נדב, 30/08: שמות תיקיות ואימג'ים באנגלית או מספרים.)"""
+    result = run_shell(tmp_path, url_of(console),
+                       gui_capture_call("Win11 lab", "מעבדה", "yes"))
+    assert "CAPTURE rc=1" in result["out"], result["out"]
     assert posted(console, "/api/console/folders") == []
-    assert "cannot display Hebrew" in result["out"]
+    assert posted(console, "/api/console/tasks/capture") == []
 
 
 @native_tools
-def test_the_capture_body_is_the_one_the_console_sends(tmp_path, console):
-    """‏`{mac,name,disk,folder,description}` — שדות `POST /tasks/capture`.
-
-    ‏`description` נוסף עם הגואי הנייטיב (#327): הקונסולה שולחת אותו
-    (library.js), והשרת מקבל אותו (capture.py). זרימת הטקסט שולחת ריק.
-    """
-    run_screen(tmp_path, url_of(console),
-               ["admin", "pw", "1", "1", "Base", "y"])
-
-    body = posted(console, "/api/console/tasks/capture")[0]
-    assert sorted(body) == ["description", "disk", "folder", "mac", "name"]
-    assert body["folder"] == "Lab"
-
-
-@native_tools
-def test_the_capture_request_carries_the_console_session_cookie(
-        tmp_path, console):
+def test_the_capture_request_carries_the_console_session_cookie(tmp_path, console):
     """הקליטה היא `admin_only` — היא חייבת לנסוע עם ה-cookie של הקונסולה."""
-    run_screen(tmp_path, url_of(console),
-               ["admin", "pw", "1", "1", "Base", "y"])
-
+    run_shell(tmp_path, url_of(console), gui_capture_call("Base", "Lab", "no"))
     sent = [r for r in console.requests
-            if r["path"] == "/api/console/tasks/capture"][0]
-    assert "imagectl_session=" in sent["cookie"]
-
-
-# --- 4: unverified אינו rejected ---------------------------------------------
+            if r["path"] == "/api/console/tasks/capture"]
+    assert sent and "imagectl_session=" in sent[0]["cookie"]
 
 
 @native_tools
-def test_an_unanswered_login_is_not_a_wrong_password(tmp_path, console):
-    """**עיקרון 5 במקום שהוא נולד בו.**
-
-    השרת לא ענה — הסיסמה לא נבדקה. אסור שזה ייראה כמו "סיסמה שגויה":
-    טכנאי שנשלח לחפש הקלדה שגויה כשהתקלה היא כבל או שרת מחפש במקום
-    הלא נכון.
-    """
-    console.agent_login_status = 503
-
-    result = run_screen(tmp_path, url_of(console), ["admin", "pw"])
-
-    assert "was not checked" in result["out"], result["out"]
-    assert "Wrong username or password" not in result["out"]
-    assert "TEST-REBOOT: the server never checked the password" in result["out"]
-    assert "no verdict from the server" in result["log"]
-    # ניסיון אחד ולא שלושה: הקלדה חוזרת אינה מתקנת כבל.
-    logins = [r for r in console.requests if r["path"] == "/api/v1/agent/login"]
-    assert len(logins) == 1
-
-
-@native_tools
-def test_a_rejected_login_says_so_and_is_retried(tmp_path, console):
-    """הצד השני של אותה הבחנה: השרת **כן** בדק ואמר לא."""
-    console.agent_login_status = 401
-
-    result = run_screen(tmp_path, url_of(console), ["admin", "no", "admin",
-                                                    "no", "admin", "no"])
-
-    assert "Wrong username or password" in result["out"]
-    assert "was not checked" not in result["out"]
-    assert "TEST-REBOOT: login failed" in result["out"]
-    logins = [r for r in console.requests if r["path"] == "/api/v1/agent/login"]
-    assert len(logins) == 3, "שלושת הניסיונות של recovery_login לא רצו"
-
-
-@native_tools
-def test_a_role_the_menu_does_not_know_gets_nothing(tmp_path, console):
-    """רשימת-היתר, כמו `station.py`: תפקיד שלישי אינו נולד עם זכויות."""
-    console.role = "auditor"
-
-    result = run_screen(tmp_path, url_of(console), ["watcher", "pw", "0"])
-
-    assert CAPTURE_LABEL not in result["out"]
-    assert ROOM_LABEL not in result["out"]
-    assert CLASS_LABEL not in result["out"]
-    assert "may not capture or deploy" in result["out"]
-
-
-# --- הזרימות האחרות עדיין מגיעות למקום הנכון ---------------------------------
-
-
-@native_tools
-def test_the_class_option_uses_the_existing_class_round_flow(
-        tmp_path, console):
-    """הפצה לכיתה אינה נכתבת מחדש — `classround.sh` כבר עושה את זה.
-    (‏v2: השער פתוח; ב-v1 הפריט אינו קיים.)"""
-    result = run_screen(tmp_path, url_of(console), ["admin", "pw", "5"],
-                        answer=V2_ANSWER)
-
-    assert "CLASS-ROUND-OPENED" in result["out"]
-    assert "not part of the class" in result["out"], \
-        "המסך השאיר את ההבטחה של מסך התחנה ('will join automatically')"
-
-
-@native_tools
-def test_the_room_option_reads_the_room_before_it_offers_anything(
-        tmp_path, console):
-    """הפצה למחשבי שיכפול: קודם קוראים את מצב החדר מהשרת."""
-    run_screen(tmp_path, url_of(console), ["admin", "pw", "2", "0"])
-
-    assert any(r["method"] == "GET" and r["path"] == "/api/console/room"
-               for r in console.requests), console.requests
-
-
-@native_tools
-def test_the_direct_option_posts_this_disk_as_the_source_with_chosen_targets(
-        tmp_path, console):
-    """‏#715: בלי בורר אימג' — המקור הוא הדיסק של המכונה; היעדים הם המכונות
-    שנבחרו, וכל מגירה טרייה **עם חריץ** בהן. המכונה הישנה (2) אינה מוצעת;
-    המגירה בלי `port` אינה נשלחת."""
-    console.room = ROOM_AWAKE
-    result = run_screen(tmp_path, url_of(console), ["admin", "pw", "3", "1", "y"])
-
-    assert "1) shich-1  drawers 1,2" in result["out"], result["out"]
-    assert "shich-2" not in result["out"]
-    assert "read only" in result["out"]
-    bodies = posted(console, "/api/console/room")
-    assert bodies == [{
-        "source": {"kind": "build_disk", "mac": MAC, "disk": "sda"},
-        "target_slots": [{"mac": "aa:bb:cc:00:00:21", "ports": [1, 2]}],
-    }], bodies
-    assert "Direct deployment ordered" in result["out"]
-    assert "RETURNED rc=0" in result["out"]
-
-
-@native_tools
-def test_the_direct_option_with_no_awake_machine_posts_nothing(tmp_path, console):
-    result = run_screen(tmp_path, url_of(console), ["admin", "pw", "3", "0"])
-    assert "No awake cloning machine" in result["out"], result["out"]
-    assert posted(console, "/api/console/room") == []
-
-
-# --- #1073 (ג): שחזור אימג' מהשרת הזה לדיסק של מחשב הבנייה --------------------
-
-
-@native_tools
-def test_self_restore_lists_this_servers_images_from_the_machine_state(
-        tmp_path, console):
-    """הרשימה היא `allowed_images` מ-`/api/v1/agent/state` — ספריית **השרת
-    הזה**, מסוננת לדיסק (#706) — ולא `/api/console/images`. בחיפה זו ספריית
-    חיפה; אימג' שבת"א וטרם הועבר אינו ברשימה (הכרעת נדב 18/09)."""
-    result = run_screen(tmp_path, url_of(console), ["admin", "pw", "4", "0"])
-
-    assert "1) Win11  [Lab]" in result["out"], result["out"]
-    assert "2) Office" in result["out"]
-    assert "LibraryOnly" not in result["out"], "נקרא /api/console/images במקום המצב"
-    assert any(r["method"] == "GET" and r["path"].startswith("/api/v1/agent/state?mac=")
-               for r in console.requests), console.requests
-    assert "SINGLE-RESTORE" not in result["out"]
-
-
-@native_tools
-def test_self_restore_writes_only_after_the_machine_name_is_typed(
-        tmp_path, console):
-    """עיקרון 7: הפעולה מוחקת את דיסק מחשב הבנייה, והאישור הוא **שם
-    המכונה** הרשום — לא ERASE. עם השם הנכון הכתיבה המשותפת (#706,
-    `single_restore_run`) נקראת עם מזהה האימג' שנבחר; deploy רשאי (זה
-    פריט 3 שלו)."""
+def test_a_deploy_session_cannot_capture(tmp_path, console):
+    """‏`gui_capture` הוא admin בלבד — גם כשהשרת היה מסרב ממילא."""
     console.role = "deploy"
-
-    result = run_screen(tmp_path, url_of(console),
-                        ["deployer", "pw", "3", "2", "BUILD-01"])
-
-    assert "(BUILD-01)" in result["out"], "השם לא הוצג למפעיל"
-    assert "ERASED" in result["out"]
-    assert "SINGLE-RESTORE img_2" in result["out"], result["out"]
-    assert "Done." in result["out"]
-
-
-@native_tools
-def test_self_restore_with_the_wrong_name_writes_nothing(tmp_path, console):
-    """שם שגוי (וגם ERASE, המילה של אשף השחזור) → מסורב, `single_restore_run`
-    לא נקראת, והתפריט חוזר. **בקרה שלילית:** בלי ההשוואה ל-SELF_NAME
-    הכתיבה יוצאת והטסט נופל על SINGLE-RESTORE בפלט."""
-    result = run_screen(tmp_path, url_of(console),
-                        ["admin", "pw", "4", "1", "ERASE", "0"])
-
-    assert "did not match" in result["out"], result["out"]
-    assert "Nothing was written" in result["out"]
-    assert "SINGLE-RESTORE" not in result["out"]
-    assert "name did not match -- nothing written" in result["log"]
-    assert "Standing by" in result["out"], "התפריט לא חזר אחרי הסירוב"
-
-
-@native_tools
-def test_self_restore_refuses_a_machine_without_a_registered_name(
-        tmp_path, console):
-    """בלי שם במרשם אין מה להקליד — מסרבים, לא משווים ריק לריק (עיקרון 5)."""
-    console.state = {**STATE, "name": None}
-
-    result = run_screen(tmp_path, url_of(console), ["admin", "pw", "4", "0"])
-
-    assert "no name in the server's registry" in result["out"], result["out"]
-    assert "SINGLE-RESTORE" not in result["out"]
-    assert "Choose an image" not in result["out"]
-
-
-@native_tools
-def test_self_restore_with_no_fitting_image_offers_nothing(tmp_path, console):
-    console.state = {**STATE, "allowed_images": []}
-
-    result = run_screen(tmp_path, url_of(console), ["admin", "pw", "4", "0"])
-
-    assert "No image in this server's library fits" in result["out"], result["out"]
-    assert "SINGLE-RESTORE" not in result["out"]
-
-
-@native_tools
-def test_standby_hands_the_machine_back_to_the_poll_loop(tmp_path, console):
-    """‏0 אינו יציאה למקום שאין: מחשב בנייה אין לו מערכת מקומית."""
-    result = run_screen(tmp_path, url_of(console), ["admin", "pw", "0"])
-
-    assert "Standing by" in result["out"]
-    assert "RETURNED rc=0" in result["out"], "המסך לא חזר ללולאה"
-    assert "TEST-REBOOT" not in result["out"]
-
-
-# --- #908: hello ממשיך בזמן שהתפריט ממתין למפעיל ------------------------------
-
-
-def hellos(console: Console) -> list[dict]:
-    return posted(console, "/api/v1/agent/hello")
-
-
-def wait_for_hello(console: Console, prompt: str, timeout: float = 10.0) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if any(h["prompt"] == prompt for h in hellos(console)):
-            return
-        time.sleep(0.1)
-    raise AssertionError(f"no hello with prompt={prompt!r} within {timeout}s: {hellos(console)}")
-
-
-@native_tools
-def test_hello_keeps_going_while_the_menu_waits_for_a_choice(tmp_path, console):
-    """ממצא צדדי מ-#906: `build_menu` עומד על `read` ואף hello לא יוצא —
-    מחשב בנייה שעומד בתפריט נראה בקונסולה "לא נראתה" אחרי ONLINE_SECONDS,
-    והמוניטור אליו נחסם. כאן המפעיל עונה על הבחירה רק אחרי ~4 פעימות
-    (‏ATTENDED_BEAT_S=0.3 לבדיקה בלבד), ולכן חייבים להיספר ≥2 hello בזמן
-    ההמתנה — כל אחד דופק (`joining: false`), ‏`waiting_for: operator`
-    ו-`prompt: menu`. בקרה שלילית: `buildmenu.sh` של main → 0.
-    (‏#912: הכניסה שלפני התפריט שולחת `prompt: signin` — נספרים כאן רק
-    ה-`menu`.)"""
-    result = run_screen(tmp_path, url_of(console), ["admin", "pw", 1.3, "0"])
-
-    assert "Standing by" in result["out"], result["out"]
-    beats = [h for h in hellos(console) if h["prompt"] == "menu"]
-    assert len(beats) >= 2, (hellos(console), result["out"])
-    for h in beats:
-        assert h["waiting_for"] == "operator"
-        assert h["joining"] is False
-        assert h["mac"] == MAC
-
-
-@native_tools
-def test_the_beat_stops_when_the_menu_hands_back(tmp_path, console):
-    """אחרי 0 (standby) הפעימה נעצרת: המכונה חוזרת ללולאה ששולחת hello
-    בעצמה, ופעימה שנשארת מאחור הייתה כותבת `prompt: menu` על מכונה שכבר
-    אינה בתפריט. הראיה: מספר ה-hello אינו גדל אחרי שהמסך חזר."""
-    result = run_screen(tmp_path, url_of(console), ["admin", "pw", 0.7, "0"])
-
-    assert "RETURNED rc=0" in result["out"], result["out"]
-    before = len(hellos(console))
-    assert before >= 1, result["out"]
-    time.sleep(1.0)
-    assert len(hellos(console)) == before
-
-
-# --- #912: וגם מסך הכניסה שלפני התפריט ----------------------------------------
-
-
-@native_tools
-def test_hello_keeps_going_while_the_sign_in_waits(tmp_path, console):
-    """ממצא צדדי מ-#908: התפריט נעטף, שער הכניסה לא — מחשב בנייה שעומד על
-    "Username:" שעות נראה בקונסולה "לא נראתה". כאן המפעיל מקליד את שם
-    המשתמש רק אחרי ~3 פעימות (‏ATTENDED_BEAT_S=0.3), ולכן חייבים להיספר ≥2
-    hello עם `prompt: signin` **לפני** הראשון עם `prompt: menu` — פעימה
-    אחת בכל רגע, לא שתיים במקביל. בקרה שלילית: `recovery.sh` של main → 0."""
-    result = run_screen(tmp_path, url_of(console), [0.9, "admin", "pw", "0"],
-                        before_last=lambda: wait_for_hello(console, "menu"))
-
-    assert "Standing by" in result["out"], result["out"]
-    prompts = [h["prompt"] for h in hellos(console)]
-    assert prompts.count("signin") >= 2, prompts
-    assert "menu" in prompts, prompts
-    assert prompts.index("menu") > max(i for i, p in enumerate(prompts) if p == "signin"),         "פעימת signin אחרי שהתפריט כבר עלה — שתי פעימות במקביל"
-    for h in hellos(console):
-        assert h["waiting_for"] == "operator" and h["joining"] is False
-        assert h["mac"] == MAC
-
-
-@native_tools
-def test_a_refused_sign_in_leaves_no_beat_behind(tmp_path, console):
-    """הסיבה ש-#908 לא עטף את השער: כניסה שנדחתה מסתיימת ב-`die_local`.
-    הפעימה חייבת להיעצר **לפני** — אחרת נשאר תהליך יתום שכותב `signin` על
-    מכונה שכבר אתחלה. הראיה: אחרי TEST-REBOOT מספר ה-hello אינו גדל."""
-    console.agent_login_status = 401
-
-    result = run_screen(tmp_path, url_of(console),
-                        [0.4, "admin", "no", "admin", "no", "admin", "no"])
-
-    assert "TEST-REBOOT: login failed" in result["out"], result["out"]
-    beats = hellos(console)
-    assert beats and all(h["prompt"] == "signin" for h in beats), beats
-    before = len(beats)
-    time.sleep(1.0)
-    assert len(hellos(console)) == before
+    result = run_shell(tmp_path, url_of(console), gui_capture_call("Base", "Lab", "no"))
+    assert "CAPTURE rc=1" in result["out"], result["out"]
+    assert posted(console, "/api/console/tasks/capture") == []
 
 
 # --- הכלל הסטטי: אין עברית על המסך של הסוכן ---------------------------------
 
 
-@pytest.mark.parametrize("name", NEW_LIBS)
-def test_the_new_agent_screens_print_no_hebrew(name):
+@pytest.mark.parametrize("name", ("buildmenuitems.sh", "buildmenu.sh",
+                                  "buildcapture.sh", "roomflow.sh", "guiparent.sh"))
+def test_the_agent_libs_print_no_hebrew(name):
     """לקונסולת Linux אין פונט עברי ואין RTL — ‏0 שורות עברית, כמו ui.sh."""
     path = AGENT / "lib" / name
     assert path.exists(), f"‏{name} חסר"
     hebrew = [line for line in path.read_text(encoding="utf-8").splitlines()
               if any("֐" <= ch <= "ת" for ch in line)]
     assert hebrew == []
+
 
 @native_tools
 def test_gui_role_comes_from_the_login_answer_not_from_me(tmp_path):

@@ -258,7 +258,7 @@ test('running wave: the grid is the cloners grid in round mode — write bars, b
   assert.match(c2,/<div class="disk err" data-slot="3" title="[^"]*נכשל בסבב — queue overflow: target lost bytes[^"]*">[^]*?<div class="bar err">/);
   assert.doesNotMatch(c2,/<div class="disk ok" data-slot="3"/,'a failed drawer is never green');
   const notes=between(html,'<div class="c12 rnotes">');
-  assert.match(notes,/<div class="note warn">[^]*?<b>מחשב 2 · דיסק 2<\/b> — SMART אזהרה \/ CRC: <b>הסוכן ממשיך לכתוב<\/b> \(כתום = כותב\)[^]*?דילוג מרחוק — <b[^>]*>דורש API<\/b>/);
+  assert.match(notes,/<div class="note warn">[^]*?<b>מחשב 2 · דיסק 2<\/b> — SMART אזהרה \/ CRC \/ קישור איטי: <b>הסוכן ממשיך לכתוב<\/b> \(כתום = כותב\)[^]*?דילוג מרחוק — <b[^>]*>דורש API<\/b>/);
   assert.match(notes,/<div class="note err">[^]*?<b>מחשב 2 · דיסק 3<\/b> — אדום: <b>הסוכן מדלג<\/b> \(אדום = מדלג\)/);
   assert.doesNotMatch(notes,/דלג בשניהם|onclick="[^"]*skip/,'never "skip both", never an invented skip endpoint');
 });
@@ -632,4 +632,60 @@ test('#989 item 3: end of a wave with work left says so and offers the existing 
   s=setup({room:roomRunning({wave_state:'open',wave_number:1,written_drives:0,remaining_drives:12,ready_drives:4})}); assert.doesNotMatch(s.run('deploy(0)'),/הגל הסתיים/);
   s=setup({room:roomRunning({wave_state:'open',wave_number:2,written_drives:5,remaining_drives:7,ready_drives:0})});
   s.run('ME.role="viewer"'); html=s.run('deploy(0)'); assert.match(html,/הגל הסתיים/); assert.doesNotMatch(html,/הער את מחשבי השיכפול/,'no button without the right to wake');
+});
+
+/* ‏#432: קישור ה-SATA לפני "התחל" — כתום שואל, לא חוסם; ‏#65: מי חסר בגל, וכבה אותו / התחל בכל זאת / בטל. */
+const WARN_TEXT='מחשב 2 · דיסק 2: קישור 1.5 מתוך 6.0 Gb/s — לבדוק כבל או מגירה';
+function roomOpenWave(extra={}) {
+  const r=roomRunning({wave_state:'open',wave_number:1,written_drives:0,remaining_drives:6,ready_drives:4,...extra});
+  r.machines[0]={...r.machines[0],drawer_list:[drawer('sda',1,'S5Y10',{smart:'ok',link_gbps:6,link_max_gbps:6,link_state:'ok'}),drawer('sdb',2,'S5Y11',{smart:'ok',link_gbps:null,link_max_gbps:null,link_state:'unknown'})]};
+  r.machines[1]={...r.machines[1],drawer_list:[drawer('sda',1,'S5Y30',{smart:'ok',link_gbps:6,link_max_gbps:6,link_state:'ok'}),drawer('sdb',2,'S5Y31',{smart:'ok',link_gbps:1.5,link_max_gbps:6,link_state:'slow',crc_rise:12})]};
+  return r;
+}
+
+test('#432: a slow drawer is orange with the link and CRC rise in its tooltip; an unread link says "unknown" and is never called fine', () => {
+  const {run}=setup({room:roomOpenWave()});
+  const html=run('deploy(0)'); balanced(html);
+  assert.match(card(html,C2),/<div class="disk warn" data-slot="2" title="[^"]*קישור 1\.5 מתוך 6\.0 Gb\/s · לבדוק כבל או מגירה · CRC \+12 מאז הסבב הקודם · SMART תקין">/);
+  assert.match(card(html,C1),/<div class="disk ok" data-slot="1" title="[^"]*קישור 6\.0 מתוך 6\.0 Gb\/s · SMART תקין">/);
+  assert.match(card(html,C1),/<div class="disk ok" data-slot="2" title="[^"]*קישור SATA לא ידוע · SMART תקין">/,'unknown is said, not hidden');
+  assert.doesNotMatch(card(html,C1),/לא ידוע · לבדוק כבל/);
+  assert.equal(run("linkSlow({link_gbps:3,link_max_gbps:6})"),true,'/machines carries only the numbers');
+  assert.equal(run("linkSlow({link_gbps:3,link_max_gbps:null})"),false,'an unknown max is not "slow" either');
+});
+
+test('#432: an open wave with a precheck warning shows it in orange; "start" asks first, and only "start anyway" posts', async () => {
+  const s=setup({room:roomOpenWave({precheck:[{mac:C2,machine:'מחשב 2',port:2,serial:'S5Y31',slot_name:null,link_gbps:1.5,link_max_gbps:6,crc_rise:null,text_he:WARN_TEXT}]})});
+  const html=s.run('deploy(0)'); balanced(html);
+  assert.match(html,/<div class="note warn">[^]*?לפני ההתחלה — מגירה אחת בגל עם קישור חשוד[^]*?מחשב 2 · דיסק 2: קישור 1\.5 מתוך 6\.0 Gb\/s[^]*?אזהרה, לא חסימה/);
+  s.requests.length=0; await s.run('startWave()');
+  assert.equal(s.requests.filter(x=>x.options.method==='POST').length,0,'no POST before the operator chose');
+  assert.equal(s.run('formOptions.submitLabel'),'התחל בכל זאת'); assert.match(s.run('formOptions.note'),/קישור 1\.5 מתוך 6\.0/);
+  await s.run('formOptions.onSubmit({})');
+  assert.ok(s.requests.some(x=>x.url==='/api/console/room/start'&&x.options.method==='POST'));
+  const clean=setup({room:roomOpenWave({precheck:[]})});
+  assert.doesNotMatch(clean.run('deploy(0)'),/לפני ההתחלה/);
+  await clean.run('startWave()'); assert.ok(clean.requests.some(x=>x.url==='/api/console/room/start'),'no warning → straight to start');
+  assert.equal(clean.run('typeof formOptions'),'undefined');
+});
+
+test('#65: the missing machines are named with the three actions; power-off only for one that can hear, behind a confirm window', async () => {
+  const miss=[{mac:C2,name:'מחשב 2',reason:'drawers',ports:[3],awake:true,joined:true,can_poweroff:true,text_he:'מחשב 2: אין דיסק חדש בדיסק 3'},
+              {mac:C3,name:'מחשב 3',reason:'off',ports:[1,2],awake:false,joined:false,can_poweroff:false,text_he:'מחשב 3 כבוי או לא מחובר — לא הצטרף לגל (דיסק 1, דיסק 2)'}];
+  const s=setup({room:roomOpenWave({missing:miss})});
+  const html=s.run('deploy(0)'); balanced(html);
+  const note=between(html,'חסרים בגל','</div></span></div>');
+  assert.match(note,/חסרים בגל: 2 מחשבים<\/b> — 4 מגירות מוכנות/);
+  assert.match(note,/מחשב 2: אין דיסק חדש בדיסק 3 <button type="button" class="btn sm" onclick="poweroffMissing\('78:ac:c0:9b:11:c2'\)">כבה אותו<\/button>/);
+  assert.match(note,/מחשב 3 כבוי או לא מחובר[^<]*<\/span>/,'an off machine gets no power-off button');
+  assert.equal((note.match(/כבה אותו/g)||[]).length,1);
+  assert.match(note,/onclick="startWave\(\)">התחל בכל זאת \(4 מוכנים\)<\/button><button type="button" class="btn danger" onclick="stopRoom\(\)">בטל את הסבב<\/button>/);
+  s.run(`poweroffMissing('${C2}')`);
+  assert.equal(s.run('formOptions.danger'),true); assert.equal(s.run('formOptions.submitLabel'),'כיבוי');
+  s.requests.length=0; await s.run('formOptions.onSubmit({})');
+  const r=s.requests.find(x=>x.options.method==='POST');
+  assert.equal(r.url,`/api/console/room/missing/${encodeURIComponent(C2)}/poweroff`); assert.deepEqual(JSON.parse(r.options.body),{confirm_name:'מחשב 2'});
+  const v=setup({room:roomOpenWave({missing:miss})}); v.run('ME.role="viewer"');
+  const vh=v.run('deploy(0)'); assert.match(vh,/חסרים בגל/); assert.doesNotMatch(vh,/כבה אותו|התחל בכל זאת|בטל את הסבב/,'actions only for room operators');
+  const run2=setup({room:roomRunning({missing:miss})}); assert.doesNotMatch(run2.run('deploy(0)'),/חסרים בגל/,'a running wave has nothing missing to act on');
 });

@@ -1,0 +1,1084 @@
+"""עדכון אימג' בתוך VM על השרת — המנוע (‏#1334).
+
+מחזור החיים של VM **אחד**: אימג' → דיסק עבודה (`vmdisk.build_disk`) →
+‏QEMU/KVM → כיבוי → שמירה כגרסה חדשה (`vmdisk.capture_disk`) או ביטול.
+העיצוב, ולמה כך: `docs/vm-update.md`. החוזה: `docs/interfaces.md` סעיף 33.
+
+**הדיסק הוא מקור האמת** (עיקרון 3): כל מה שצריך כדי להמשיך אחרי אתחול
+השרת יושב ב-`<ספרייה>/.vmupdate/` — ‏`state.json`, ‏`source-manifest.json`,
+‏`disk.raw`. השרת שעולה וממצא שם VM "רץ" יודע שהוא **אינו** רץ (‏QEMU הוא
+בן של השרת ומת איתו), ומסמן `interrupted` — הדיסק נשאר, מדליקים שוב או
+מבטלים.
+
+**הכרעות נדב 13/10** (‏#1334): מנהל בלבד · הגרסה החדשה = ברירת המחדל לסבב
+חדש (`image_versions`) · אחרי כיבוי בכוח מדליקים שוב ומשיכים · 15 דק' לכיבוי
+מסודר ואז מוצע כוח · דיסק שלא הוכרע נשמר 7 ימים ונמחק עם שורת יומן ·
+מנהל שני צופה בלבד, ו"קח שליטה" היא **בקשה** שהשולט מאשר (60 ש' בלי תשובה
+= סירוב; שולט שלא נראה 2 דק' = אישור אוטומטי) · כל גרסה יכולה להיות מקור.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import json
+import logging
+import os
+
+import re
+import secrets
+import shutil
+import socket
+import subprocess
+import threading
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable
+
+from . import vmdisk, vmnet
+from .capture import validate_manifest_files
+from .db import get_setting, journal, now_iso, set_settings
+from .images import (
+    ImageLibrary, image_os, lineage_of, streamed_partitions, validate_display_name,
+)
+
+log = logging.getLogger("imagectl.vmupdate")
+
+WORK_AREA = ".vmupdate"
+GIB = 1 << 30
+#: מה שנשאר לשרת עצמו מעבר לזיכרון ה-VM — השידור לכיתה, ה-DB, ה-page cache.
+RAM_RESERVE_MIB = 4096
+#: מרווח הגדילה של דיסק העבודה בזמן העדכון (Windows Update מוריד ופורס).
+GROWTH_RESERVE_BYTES = 30 * GIB
+#: הגרסה החדשה נכתבת לצד הישנה; הדחוס שלה ≈ של המקור, ועוד מרווח.
+NEW_VERSION_FACTOR = 1.5
+#: הכרעה 4: אחרי כמה זמן בכיבוי מסודר מוצע כיבוי בכוח.
+SHUTDOWN_GRACE_S = 15 * 60
+#: הכרעה 5: כמה זמן נשמר דיסק עבודה שאיש לא הכריע עליו.
+KEEP_UNDECIDED_S = 7 * 24 * 3600
+#: הכרעה 6: שולט שלא נראה (‏status/מסך) כל כך הרבה — "איננו".
+CONTROLLER_GONE_S = 120
+#: הכרעה 6: בקשת שליטה שלא נענתה — סירוב.
+REQUEST_TIMEOUT_S = 60
+#: כל כמה זמן רץ הניקיון (תפוגת בקשות, תפוגת 7 הימים).
+MAINTENANCE_S = 30
+
+#: ‏(מפתח הגדרה, ברירת מחדל, מינימום, מקסימום).
+SETTINGS = {
+    "memory_mib": ("vmupdate:memory_mib", 16384, 1024, 1 << 20),
+    "cpus": ("vmupdate:cpus", 4, 1, 256),
+}
+
+OVMF_DIR = Path("/usr/share/OVMF")
+OVMF = {
+    False: ("OVMF_CODE_4M.fd", "OVMF_VARS_4M.fd"),
+    True: ("OVMF_CODE_4M.secboot.fd", "OVMF_VARS_4M.ms.fd"),
+}
+#: MAC קבוע: Windows רואה את אותו כרטיס בכל פתיחה, ולא צובר "Ethernet 7".
+VM_MAC = "52:54:00:13:34:01"
+
+#: מצבים שבהם יש תהליך או תהליכון שעובד — אין לגעת בדיסק.
+BUSY = ("preparing", "running", "stopping", "saving")
+#: מצבים שבהם ה-VM כבוי, הדיסק קיים, ומחכים להכרעה.
+UNDECIDED = ("stopped", "failed")
+
+
+class Refusal(Exception):
+    """סירוב בשם: ‏HTTP status, ‏`reason` למכונה, `message` לאדם, ומספרים."""
+
+    def __init__(self, status: int, reason: str, message: str, **numbers):
+        super().__init__(message)
+        self.status = status
+        self.reason = reason
+        self.message = message
+        self.numbers = numbers
+
+
+# --- המכונה: מה שנבדק לפני הפעלה. בדיקות מחליפות ---------------------------------
+
+
+class Machine:
+    """שאלות על המארח. כל אחת מחזירה `None` כש**לא ניתן לבדוק** — וזה סירוב
+    אצל הקורא, לא "בסדר" (עיקרון 5)."""
+
+    def kvm(self) -> str | None:
+        """None = ‏/dev/kvm קיים ונפתח לקריאה-כתיבה; אחרת הסיבה."""
+        try:
+            fd = os.open("/dev/kvm", os.O_RDWR | os.O_CLOEXEC)
+        except FileNotFoundError:
+            return "אין /dev/kvm — הווירטואליזציה כבויה ב-BIOS או שהמעבד אינו תומך"
+        except OSError as exc:
+            return f"/dev/kvm לא נפתח: {exc.strerror}"
+        os.close(fd)
+        return None
+
+    def mem_available_mib(self) -> int | None:
+        try:
+            for line in Path("/proc/meminfo").read_text().splitlines():
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024
+        except (OSError, ValueError, IndexError):
+            return None
+        return None
+
+    def cpu_count(self) -> int | None:
+        return os.cpu_count()
+
+    def free_bytes(self, path: Path) -> int | None:
+        try:
+            stat = os.statvfs(path)
+        except (OSError, AttributeError):
+            return None
+        return stat.f_bavail * stat.f_frsize
+
+    def which(self, name: str) -> str | None:
+        return shutil.which(name, path=os.environ.get("PATH", "") + ":/usr/sbin:/sbin")
+
+    def exists(self, path: Path) -> bool:
+        return path.exists()
+
+    def guestfs(self) -> bool:
+        return importlib.util.find_spec("guestfs") is not None
+
+    def vm_user(self) -> vmdisk.VmUser | None:
+        try:
+            import pwd   # noqa: PLC0415 — POSIX בלבד; תחנת הפיתוח היא ווינדוס
+            entry = pwd.getpwnam(vmnet.VM_USER)
+        except ImportError:
+            return None
+        except KeyError:
+            return None
+        return vmdisk.VmUser(entry.pw_uid, entry.pw_gid)
+
+    def resolvers(self) -> list[str]:
+        return vmnet.resolvers()
+
+    def firewall(self, uid: int, egress_if: str, dns: list[str]) -> str | None:
+        return vmnet.apply(uid, egress_if, dns)
+
+    def egress(self) -> tuple[str | None, str | None]:
+        """(הכרטיס שחיבור לאינטרנט יוצא דרכו, None) או (None, למה לא נקבע)."""
+        try:
+            proc = subprocess.run(["ip", "-o", "route", "get", "1.1.1.1"], capture_output=True,
+                                  text=True, timeout=5, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return None, f"ip route get נכשל: {exc}"
+        match = re.search(r"\bdev\s+(\S+)", proc.stdout)
+        if proc.returncode != 0 or match is None:
+            return None, (proc.stderr.strip() or "אין נתיב לאינטרנט")
+        return match.group(1), None
+
+
+# --- QEMU ---------------------------------------------------------------------
+
+
+def secure_boot_for(manifest: dict) -> bool:
+    """‏SB כבוי רק כשיש **ראיה** שהמטענים אינם חתומים (`boot_ca == []`).
+    ‏`null` ("לא נגזר") ורשימה — דלוק: אימג' Windows נבנה למכונה עם SB."""
+    return manifest.get("boot_ca") != []
+
+
+#: ‏`elevateprivileges` אינו כאן בכוונה: ‏`-run-with user=` מוריד הרשאות **אחרי**
+#: שהסינון נטען, ו-`deny` חוסם את ה-setuid עצמו (נמדד ב-Testrunner: SIGSYS).
+SANDBOX = "on,obsolete=deny,spawn=deny,resourcecontrol=deny"
+
+
+def qemu_argv(*, workdir: Path, memory_mib: int, cpus: int, accel: str,
+              secure_boot: bool, ovmf_dir: Path = OVMF_DIR,
+              run_as: str = vmnet.VM_USER) -> list[str]:
+    """שורת הפקודה. **אין** `bridge`/`tap`, ‏`hostfwd`/`guestfwd`/`smb`, ואין
+    `-vnc` על TCP. ‏QEMU רץ כ-`run_as` — ה-uid שחומת האש (`vmnet`) מגבילה."""
+    code, _vars = OVMF[secure_boot]
+    machine = f"q35,accel={accel}" + (",smm=on" if secure_boot else "")
+    argv = [
+        "qemu-system-x86_64",
+        "-name", "imagectl-vmupdate,process=imagectl-vmupdate",
+        "-nodefaults", "-no-user-config",
+        "-machine", machine,
+        "-cpu", "host" if accel == "kvm" else "max",
+        "-smp", str(cpus), "-m", str(memory_mib),
+        "-rtc", "base=localtime",
+    ]
+    if secure_boot:
+        argv += ["-global", "driver=cfi.pflash01,property=secure,value=on"]
+    argv += [
+        "-drive", f"if=pflash,format=raw,unit=0,readonly=on,file={ovmf_dir / code}",
+        "-drive", f"if=pflash,format=raw,unit=1,file={workdir / 'vars.fd'}",
+        "-drive", f"file={workdir / 'disk.raw'},format=raw,if=none,id=disk0,"
+                  "discard=unmap,detect-zeroes=unmap",
+        "-device", "ide-hd,drive=disk0,bus=ide.0,bootindex=1",
+        "-netdev", "user,id=net0,ipv6=off",
+        # ‏romfile= ריק: בלי ROM של PXE. ‏Windows אינו צריך אותו, ו-OVMF לא
+        # ינסה אתחול רשת (דקות של המתנה, ו-DHCP/TFTP מול slirp בלי טעם).
+        "-device", f"e1000e,netdev=net0,mac={VM_MAC},romfile=",
+        "-vga", "std",
+        "-device", "qemu-xhci", "-device", "usb-tablet",
+        # ‏force-shared: כמה צופים (השולט + מנהלים שצופים) על אותו מסך.
+        "-vnc", f"unix:{workdir / 'vnc.sock'},share=force-shared",
+        "-qmp", f"unix:{workdir / 'qmp.sock'},server=on,wait=off",
+        "-run-with", f"user={run_as}",
+        "-sandbox", SANDBOX,
+    ]
+    return argv
+
+
+class QmpError(Exception):
+    pass
+
+
+def qmp(path: Path, command: str, timeout: float = 5.0) -> dict:
+    """פקודת QMP אחת: greeting → ‏qmp_capabilities → הפקודה. אירועים
+    באמצע מדולגים. כל כשל — QmpError בשם."""
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            sock.connect(str(path))
+            stream = sock.makefile("rwb")
+
+            def reply() -> dict:
+                while True:
+                    line = stream.readline()
+                    if not line:
+                        raise QmpError("QMP סגר את החיבור")
+                    msg = json.loads(line)
+                    if "return" in msg or "error" in msg or "QMP" in msg:
+                        return msg
+
+            reply()
+            for cmd in ("qmp_capabilities", command):
+                stream.write(json.dumps({"execute": cmd}).encode() + b"\n")
+                stream.flush()
+                msg = reply()
+                if "error" in msg:
+                    raise QmpError(f"{cmd}: {msg['error'].get('desc', msg['error'])}")
+            return msg
+    except (OSError, ValueError) as exc:
+        raise QmpError(f"QMP לא ענה: {exc}") from exc
+
+
+# --- הגדרות -----------------------------------------------------------------------
+
+
+def read_settings(conn) -> dict[str, int]:
+    out = {}
+    for name, (key, default, low, high) in SETTINGS.items():
+        raw = get_setting(conn, key)
+        try:
+            value = int(raw) if raw is not None else default
+        except ValueError:
+            value = default
+        out[name] = value if low <= value <= high else default
+    return out
+
+
+def write_settings(conn, body: dict) -> dict[str, int]:
+    pairs = {}
+    for name, value in body.items():
+        if name not in SETTINGS:
+            raise ValueError(f"הגדרה לא מוכרת: {name}")
+        key, _default, low, high = SETTINGS[name]
+        if type(value) is not int or not low <= value <= high:
+            raise ValueError(f"{name} חייב להיות מספר שלם בין {low} ל-{high}")
+        pairs[key] = str(value)
+    set_settings(conn, pairs)
+    return read_settings(conn)
+
+
+def _gb(n: int | float) -> str:
+    return f"{n / 1e9:.1f} GB"
+
+
+@dataclass
+class _Progress:
+    stage: str = ""
+    done_bytes: int = 0
+    total_bytes: int | None = None
+    partition: int = 0
+    partitions: int = 0
+
+
+# --- המנוע ----------------------------------------------------------------------
+
+
+class VmUpdate:
+    """VM אחד בכל פעם. כל המתודות הציבוריות בטוחות לקריאה מכל תהליכון."""
+
+    def __init__(self, conn, library: ImageLibrary, *, host: vmdisk.Host | None = None,
+                 machine: Machine | None = None,
+                 deploy_interface: Callable[[], str | None] = lambda: None,
+                 allow_tcg: bool = False, ovmf_dir: Path = OVMF_DIR,
+                 ram_reserve_mib: int = RAM_RESERVE_MIB,
+                 growth_reserve_bytes: int = GROWTH_RESERVE_BYTES,
+                 popen: Callable[..., subprocess.Popen] = subprocess.Popen,
+                 qmp_call: Callable[[Path, str], dict] = qmp,
+                 now: Callable[[], float] = time.time,
+                 maintenance_every: float | None = MAINTENANCE_S):
+        self.conn = conn
+        self.library = library
+        self.host = host or vmdisk.Host()
+        self.machine = machine or Machine()
+        self.deploy_interface = deploy_interface
+        #: ‏TCG (אמולציה, פי 10–50 איטי) — דגל בדיקות בלבד, לא נגיש מה-API.
+        self.allow_tcg = allow_tcg
+        self.ovmf_dir = Path(ovmf_dir)
+        self.ram_reserve_mib = ram_reserve_mib
+        self.growth_reserve_bytes = growth_reserve_bytes
+        self._popen = popen
+        self._qmp = qmp_call
+        self._now = now
+        self._lock = threading.RLock()
+        self._proc: subprocess.Popen | None = None
+        self._threads: list[threading.Thread] = []
+        self._progress = _Progress()
+        #: הכרעה 6 — מתי כל מנהל נראה לאחרונה (‏status/מסך). בזיכרון בלבד:
+        #: נוכחות אינה שורדת אתחול, ושולט שלא נראה מאז האתחול "איננו".
+        self._seen: dict[str, float] = {}
+        #: מי צופה עכשיו במסך (חיבור WebSocket פתוח) — לפס "גם X צופה ב-VM".
+        self._viewers: dict[str, dict] = {}
+        #: ביטול בזמן ההכנה — נבדק בין מחיצות ובכל חתיכה של הזרם.
+        self._cancel = False
+        self._every = maintenance_every
+        self._ticker: threading.Thread | None = None
+        self._guarded_at = 0.0
+        self._state = self._recover()
+        self.maintenance()
+        self._ensure_ticker()
+
+    # -- מצב ----------------------------------------------------------------
+
+    @property
+    def workdir(self) -> Path:
+        return self.library.root / WORK_AREA
+
+    def _idle(self) -> dict:
+        return {"state": "idle"}
+
+    def _recover(self) -> dict:
+        """מה שעל הדיסק אחרי אתחול. ‏QEMU מת עם השרת — "רץ" אינו רץ."""
+        path = self.workdir / "state.json"
+        if not self.workdir.exists():
+            return self._idle()
+        try:
+            state = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(state, dict) or "state" not in state:
+                raise ValueError("no state")
+        except (OSError, ValueError) as exc:
+            return {"state": "failed", "disk_ready": False, "decided_at_ts": None,
+                    "undecided_since_ts": self._now(),
+                    "error": {"reason": "state_unreadable",
+                              "message": f"אזור העבודה {WORK_AREA} קיים אבל מצבו לא נקרא ({exc}) — בטלו"}}
+        was = state["state"]
+        if was in BUSY:
+            state.update({
+                "state": "failed",
+                # הדיסק שלם רק אם ה-VM עצמו נקטע; הכנה ושמירה שנקטעו — לא ידוע.
+                "disk_ready": was in ("running", "stopping"),
+                "undecided_since_ts": self._now(),
+                "control_request": None,
+                "error": {"reason": "interrupted",
+                          "message": f"השרת הופעל מחדש כשהעדכון היה במצב '{was}'"},
+            })
+            try:
+                self._qmp(self.workdir / "qmp.sock", "quit")   # QEMU שנשאר יתום
+            except QmpError:
+                pass   # הצפוי: ‏QEMU מת עם השרת. המצב כבר אומר "נקטע".
+            self._save_state(state)
+        return state
+
+    def _save_state(self, state: dict) -> None:
+        if not self.workdir.exists():
+            return
+        tmp = self.workdir / "state.json.tmp"
+        tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(self.workdir / "state.json")
+
+    def _set(self, **changes) -> None:
+        with self._lock:
+            self._state.update(changes)
+            if self._state.get("state") in UNDECIDED and not self._state.get("undecided_since_ts"):
+                self._state["undecided_since_ts"] = self._now()
+            if self._state.get("state") not in UNDECIDED:
+                self._state["undecided_since_ts"] = None
+            self._save_state(self._state)
+
+    def touch(self, user: str) -> None:
+        """המנהל הזה נמצא כאן (‏status, מסך) — הכרעה 6."""
+        with self._lock:
+            self._seen[user] = self._now()
+
+    def viewer_join(self, user: str, address: str) -> str:
+        """מסך נפתח: מי, מאיפה, ומתי. מחזיר אסימון ל-`viewer_leave`."""
+        token = secrets.token_hex(8)
+        with self._lock:
+            self._viewers[token] = {"user": user, "address": address, "since": now_iso()}
+        self.touch(user)
+        return token
+
+    def viewer_leave(self, token: str) -> None:
+        with self._lock:
+            self._viewers.pop(token, None)
+
+    def _viewer_list(self, user: str | None) -> list[dict]:
+        """מי צופה: ‏`id` אטום (גיבוב של האסימון — לא האסימון עצמו), ‏`you` למי
+        ששואל, ‏`controller` לשולט. השולט ראשון, אחר כך לפי שעת ההצטרפות."""
+        controller = self._state.get("controller")
+        rows = [{"id": hashlib.sha256(token.encode()).hexdigest()[:12], **v,
+                 "controller": v["user"] == controller, "you": bool(user) and v["user"] == user}
+                for token, v in self._viewers.items()]
+        return sorted(rows, key=lambda v: (not v["controller"], v["since"], v["user"]))
+
+    def status(self, user: str | None = None) -> dict:
+        if user:
+            self.touch(user)
+        self.maintenance()
+        now = self._now()
+        with self._lock:
+            state = dict(self._state)
+            prog = self._progress
+            state["viewers"] = (self._viewer_list(user)
+                                if state.get("state") in ("running", "stopping") else [])
+        running = state.get("state") in ("running", "stopping")
+        booted = state.pop("booted_at_ts", None)
+        stopped = state.pop("stopped_at_ts", None)
+        asked = state.pop("shutdown_requested_ts", None)
+        since = state.pop("undecided_since_ts", None)
+        state.pop("decided_at_ts", None)
+        state["runtime_seconds"] = (int((now if running or not stopped else stopped) - booted)
+                                    if booted else None)
+        state["force_offered"] = bool(state.get("state") == "stopping" and asked
+                                      and now - asked >= SHUTDOWN_GRACE_S)
+        state["shutdown_waited_seconds"] = (int(now - asked)
+                                            if state.get("state") == "stopping" and asked else None)
+        state["expires_in_seconds"] = (max(0, int(since + KEEP_UNDECIDED_S - now))
+                                       if since and state.get("state") in UNDECIDED else None)
+        request = state.get("control_request")
+        if request:
+            state["control_request"] = {"by": request["by"],
+                                        "seconds_left": max(0, int(request["at"] + REQUEST_TIMEOUT_S - now))}
+        controller = state.get("controller")
+        state["controller_present"] = (controller is not None
+                                       and now - self._seen.get(controller, -1e18) < CONTROLLER_GONE_S)
+        state["you_control"] = bool(user and controller == user)
+        state["progress"] = ({"stage": prog.stage, "done_bytes": prog.done_bytes,
+                              "total_bytes": prog.total_bytes, "partition": prog.partition,
+                              "partitions": prog.partitions}
+                             if state.get("state") in ("preparing", "saving") else None)
+        if state.get("state") != "idle":
+            disk = self.workdir / "disk.raw"
+            try:
+                allocated = disk.stat().st_blocks * 512 if disk.exists() else None
+            except (OSError, AttributeError):
+                allocated = None
+            state["resources"] = {"memory_mib": state.get("memory_mib"),
+                                  "cpus": state.get("cpus"), "accel": state.get("accel"),
+                                  "disk_bytes": state.get("disk_bytes"),
+                                  "disk_allocated_bytes": allocated}
+        return state
+
+    # -- תחזוקה: בקשות שליטה שפגו, ‏7 ימים ----------------------------------
+
+    def _ensure_ticker(self) -> None:
+        """לולאת התחזוקה רצה רק כשיש עדכון פתוח, ונגמרת כשאין — שרת בלי
+        VM (וכל טסט שבונה אפליקציה) אינו מחזיק תהליכון שמתעורר לחינם."""
+        with self._lock:
+            if (not self._every or self._state.get("state") == "idle"
+                    or (self._ticker is not None and self._ticker.is_alive())):
+                return
+            self._ticker = threading.Thread(target=self._tick, args=(self._every,),
+                                            daemon=True, name="vmupdate-maintenance")
+            self._ticker.start()
+
+    def _tick(self, every: float) -> None:   # pragma: no cover — לולאת רקע
+        while True:
+            time.sleep(every)
+            with self._lock:
+                if self._state.get("state") in ("idle", "saved"):
+                    self._ticker = None
+                    return
+            try:
+                self.maintenance(guard=True)
+            except Exception:   # noqa: BLE001 — הלולאה אינה מתה על כשל אחד
+                log.exception("vmupdate maintenance failed")
+
+    def _guard_network(self, force: bool = False) -> None:
+        """בזמן שה-VM רץ, הבידוד נטען שוב בכל סבב תחזוקה. ‏`nft -f` של חומת
+        האש הראשית (המתקין, הקונסולה כשמדליקים DHCP) מתחיל ב-`flush ruleset`
+        ומוחק גם את הטבלה שלנו — וה-VM היה ממשיך לרוץ בלי גבולות. טבלה שלא
+        נטענה מחדש = ה-VM נכבה בכוח, בשם (עיקרון 5)."""
+        with self._lock:
+            if self._state.get("state") not in ("running", "stopping"):
+                return
+            # לא בכל `status` (הממשק שואל כל שתי שניות): פעם בסבב תחזוקה.
+            if not force and self._now() - self._guarded_at < MAINTENANCE_S:
+                return
+            self._guarded_at = self._now()
+            egress = self._state.get("egress_interface")
+            user = self.machine.vm_user()
+            proc = self._proc
+        why = ("אין כרטיס יציאה רשום" if not egress else
+               "משתמש ה-VM אינו קיים" if user is None else
+               self.machine.firewall(user.uid, egress, self.machine.resolvers()))
+        if why is None:
+            return
+        journal(self.conn, "vmupdate_firewall_lost",
+                f"{self._state.get('image_id')}: {why} — ה-VM נכבה")
+        with self._lock:
+            self._set(forced=True, state="stopping")
+            self._state["warnings"] = list(self._state.get("warnings") or []) + [
+                f"ה-VM נכבה בכוח: בידוד הרשת לא נטען מחדש ({why})"]
+        try:
+            self._qmp(self.workdir / "qmp.sock", "quit")
+        except QmpError:
+            if proc is not None:
+                proc.kill()
+
+    def maintenance(self, *, guard: bool = False) -> None:
+        """‏`guard=True` — טעינת הבידוד מחדש עכשיו, בלי לחכות לסבב (לולאת
+        הרקע ובדיקות)."""
+        self._guard_network(force=guard)
+        now = self._now()
+        with self._lock:
+            request = self._state.get("control_request")
+            if request and now - request["at"] >= REQUEST_TIMEOUT_S:
+                self._state["control_request"] = None
+                self._state["control_last"] = {"by": request["by"], "outcome": "timeout"}
+                journal(self.conn, "vmupdate_control_timeout",
+                        f"{request['by']} ← {self._state.get('controller')}", request["by"])
+                self._save_state(self._state)
+            since = self._state.get("undecided_since_ts")
+            if (self._state.get("state") in UNDECIDED and since
+                    and now - since >= KEEP_UNDECIDED_S and self.workdir.exists()):
+                image = self._state.get("image_id", "")
+                try:
+                    disk = self.workdir / "disk.raw"
+                    if disk.exists():
+                        vmdisk.detach_all(self.host, disk)
+                    shutil.rmtree(self.workdir, ignore_errors=True)
+                except vmdisk.DiskError as exc:
+                    log.warning("expired work disk not removed: %s", exc.message)
+                    return
+                if self.workdir.exists():
+                    return
+                journal(self.conn, "vmupdate_expired",
+                        f"{image} — דיסק עבודה שלא הוכרע 7 ימים נמחק")
+                self._state = self._idle()
+
+    # -- שליטה (הכרעה 6) ---------------------------------------------------
+
+    def _require_control(self, user: str) -> None:
+        controller = self._state.get("controller")
+        if controller is not None and controller != user:
+            raise Refusal(403, "view_only",
+                          f"{controller} עובד ב-VM — אתם בצפייה בלבד. בקשו שליטה כדי לפעול")
+
+    def controls(self, user: str) -> bool:
+        with self._lock:
+            return self._state.get("controller") == user
+
+    def request_control(self, user: str) -> dict:
+        now = self._now()
+        with self._lock:
+            if self._state.get("state") == "idle":
+                raise Refusal(409, "state", "אין עדכון פתוח")
+            controller = self._state.get("controller")
+            if controller == user:
+                return self.status(user)
+            if self._state.get("control_request"):
+                raise Refusal(409, "control_pending",
+                              f"{self._state['control_request']['by']} כבר ביקש שליטה")
+            present = (controller is not None
+                       and now - self._seen.get(controller, -1e18) < CONTROLLER_GONE_S)
+            if not present:
+                self._state.update(controller=user, controller_since=now_iso(),
+                                   control_request=None,
+                                   control_last={"by": user, "outcome": "auto"})
+                journal(self.conn, "vmupdate_control_auto",
+                        f"{user} ← {controller} (לא נראה {CONTROLLER_GONE_S} ש')", user)
+            else:
+                self._state["control_request"] = {"by": user, "at": now}
+                journal(self.conn, "vmupdate_control_request", f"{user} → {controller}", user)
+            self._save_state(self._state)
+        self.touch(user)
+        return self.status(user)
+
+    def answer_control(self, user: str, approve: bool) -> dict:
+        with self._lock:
+            request = self._state.get("control_request")
+            if self._state.get("controller") != user:
+                raise Refusal(403, "view_only", "רק מי שעובד ב-VM עונה על בקשת שליטה")
+            if not request:
+                raise Refusal(409, "control_pending", "אין בקשת שליטה ממתינה")
+            self._state["control_request"] = None
+            if approve:
+                self._state.update(controller=request["by"], controller_since=now_iso(),
+                                   control_last={"by": request["by"], "outcome": "approved"})
+                journal(self.conn, "vmupdate_control_granted", f"{user} → {request['by']}", user)
+            else:
+                self._state["control_last"] = {"by": request["by"], "outcome": "denied"}
+                journal(self.conn, "vmupdate_control_denied", f"{user} ✗ {request['by']}", user)
+            self._save_state(self._state)
+        return self.status(user)
+
+    # -- תנאים מוקדמים ----------------------------------------------------
+
+    def _tools(self, manifest: dict | None, secure_boot: bool) -> None:
+        need = ["qemu-system-x86_64", "losetup", "sgdisk", "blockdev", "blkid", "zstd", "jq",
+                "ntfsresize", "ntfsfix", "partclone.dd", "sh", "ip", "nft", "setpriv", "chown"]
+        if manifest is not None:
+            need += sorted({vmdisk.partclone_for_fs(p.get("fs") or "")
+                            for p in streamed_partitions(manifest)})
+        missing = [t for t in dict.fromkeys(need) if self.machine.which(t) is None]
+        missing += [str(self.ovmf_dir / f) for f in OVMF[secure_boot]
+                    if not self.machine.exists(self.ovmf_dir / f)]
+        if not self.machine.guestfs():
+            missing.append("python3-guestfs")
+        if missing:
+            raise Refusal(503, "missing_tool", "חסרים בשרת כלים להפעלת VM: " + ", ".join(missing),
+                          missing=missing)
+        if self.machine.vm_user() is None:
+            raise Refusal(503, "vm_user", f"משתמש המערכת {vmnet.VM_USER} אינו קיים — "
+                                          "ה-VM רץ רק תחתיו (המתקין יוצר אותו)")
+
+    def _check_vm(self, settings: dict[str, int]) -> tuple[str, str]:
+        """‏KVM, זיכרון, ליבות, רשת. מחזיר (accel, כרטיס היציאה)."""
+        why = self.machine.kvm()
+        if why is not None:
+            if not self.allow_tcg:
+                raise Refusal(503, "no_kvm", f"אין תמיכה בווירטואליזציה בשרת: {why}")
+            accel = "tcg"
+        else:
+            accel = "kvm"
+        avail = self.machine.mem_available_mib()
+        if avail is None:
+            raise Refusal(503, "memory", "לא ניתן לקרוא כמה זיכרון פנוי בשרת")
+        need = settings["memory_mib"] + self.ram_reserve_mib
+        if avail < need:
+            raise Refusal(
+                503, "memory",
+                f"אין מספיק זיכרון: ה-VM צריך {settings['memory_mib'] / 1024:.1f} GB ועוד "
+                f"{self.ram_reserve_mib / 1024:.1f} GB לשרת, זמינים {avail / 1024:.1f} GB",
+                vm_mib=settings["memory_mib"], reserve_mib=self.ram_reserve_mib,
+                available_mib=avail)
+        cores = self.machine.cpu_count()
+        if cores is None:
+            raise Refusal(503, "cpus", "לא ניתן לקרוא כמה ליבות יש בשרת")
+        if settings["cpus"] >= cores:
+            raise Refusal(503, "cpus", f"ל-VM הוגדרו {settings['cpus']} ליבות ובשרת {cores} — "
+                                       "נדרשת לפחות ליבה אחת לשרת", vm_cpus=settings["cpus"],
+                          server_cpus=cores)
+        dev, why = self.machine.egress()
+        if dev is None:
+            raise Refusal(503, "no_egress", f"אין נתיב לאינטרנט מהשרת ({why}) — עדכון בלי "
+                                            "אינטרנט אינו עדכון")
+        deploy = self.deploy_interface()
+        if deploy and dev == deploy:
+            raise Refusal(409, "egress_on_deploy",
+                          f"החיבור לאינטרנט יוצא דרך כרטיס ההפצה ({dev}) — ה-VM לא יופעל: "
+                          "התעבורה שלו חייבת לצאת מכרטיס הניהול", interface=dev)
+        if not self.machine.resolvers():
+            raise Refusal(503, "no_dns", "אין שרת שמות (nameserver) בשרת — ל-VM לא יהיה DNS")
+        return accel, dev
+
+    def _check_space(self, manifest: dict) -> None:
+        free = self.machine.free_bytes(self.library.root)
+        if free is None:
+            raise Refusal(503, "disk_space", "לא ניתן לקרוא כמה מקום פנוי בספרייה")
+        used = 0
+        for part in streamed_partitions(manifest):
+            value = part.get("used_bytes")
+            used += value if isinstance(value, int) and value >= 0 else int(part.get("size_bytes") or 0)
+        compressed = int(manifest.get("total_compressed_bytes") or 0)
+        need = used + self.growth_reserve_bytes + int(compressed * NEW_VERSION_FACTOR)
+        if free < need:
+            raise Refusal(
+                507, "disk_space",
+                f"אין מקום בשרת: נדרשים {_gb(need)} (תפוס במחיצות {_gb(used)} + מרווח לעדכונים "
+                f"{_gb(self.growth_reserve_bytes)} + גרסה חדשה {_gb(compressed * NEW_VERSION_FACTOR)}), "
+                f"פנויים {_gb(free)}", need_bytes=need, free_bytes=free)
+
+    def _firewall(self, egress_if: str) -> None:
+        """הבידוד (`vmnet`) — לפני **כל** הדלקה, עם הכרטיס של עכשיו."""
+        user = self.machine.vm_user()
+        if user is None:
+            raise Refusal(503, "vm_user", f"משתמש המערכת {vmnet.VM_USER} אינו קיים")
+        why = self.machine.firewall(user.uid, egress_if, self.machine.resolvers())
+        if why is not None:
+            raise Refusal(503, "firewall", f"בידוד הרשת של ה-VM לא נטען — ה-VM לא יודלק: {why}")
+        self._guarded_at = self._now()
+
+    # -- פעולות -----------------------------------------------------------
+
+    def start(self, image_id: str, user: str) -> dict:
+        settings = read_settings(self.conn)
+        with self._lock:
+            if self._state.get("state") not in ("idle", "saved") or self.workdir.exists():
+                raise Refusal(409, "busy",
+                              f"כבר פתוח עדכון של {self._state.get('image_name') or 'אימג'} "
+                              f"({self._state.get('state')}) — שמרו או בטלו אותו קודם",
+                              image_id=self._state.get("image_id"),
+                              controller=self._state.get("controller"))
+            manifest = self.library.get(image_id)
+            if manifest is None:
+                raise Refusal(404, "image", "אין אימג' כזה בספרייה")
+            if not manifest.get("_available", True) or not manifest.get("_dir"):
+                raise Refusal(409, "image", "האימג' לא זמין — המיקום שלו אינו נגיש")
+            try:
+                vmdisk.check_openable(manifest)
+            except vmdisk.DiskError as exc:
+                raise Refusal(400, exc.reason, exc.message) from exc
+            secure_boot = secure_boot_for(manifest)
+            self._tools(manifest, secure_boot)
+            accel, egress = self._check_vm(settings)
+            self._check_space(manifest)
+            self.workdir.mkdir(parents=True)
+            self._cancel = False
+            self._progress = _Progress(stage="disk")
+            self._state = {
+                "state": "preparing", "image_id": image_id, "image_name": manifest["name"],
+                "image_version": manifest.get("version") or 1,
+                "lineage": lineage_of(manifest), "started_by": user,
+                "controller": user, "controller_since": now_iso(), "control_request": None,
+                "control_last": None, "created_at": now_iso(), "accel": accel,
+                "egress_interface": egress, "secure_boot": secure_boot,
+                "memory_mib": settings["memory_mib"], "cpus": settings["cpus"],
+                "disk_ready": False, "forced": False, "warnings": [], "error": None,
+                "result": None,
+            }
+            self._save_state(self._state)
+            journal(self.conn, "vmupdate_start", f"{image_id} accel={accel}", user)
+            self._spawn(self._prepare, manifest, user)
+            self._ensure_ticker()
+        self.touch(user)
+        return self.status(user)
+
+    def _spawn(self, target, *args) -> None:
+        thread = threading.Thread(target=target, args=args, daemon=True,
+                                  name=f"vmupdate-{target.__name__}")
+        self._threads.append(thread)
+        thread.start()
+
+    def _bytes(self, n: int) -> None:
+        with self._lock:
+            if self._cancel:
+                raise vmdisk.DiskError("cancelled", "ההכנה בוטלה")
+            self._progress.done_bytes += n
+
+    def _prepare(self, manifest: dict, user: str) -> None:
+        total = sum(self._file_size(manifest, p) for p in streamed_partitions(manifest))
+        with self._lock:
+            self._progress = _Progress(stage="disk", total_bytes=total or None,
+                                       partitions=len(streamed_partitions(manifest)))
+        try:
+            built = vmdisk.build_disk(self.host, manifest, Path(manifest["_dir"]), self.workdir,
+                                      self._bytes)
+            template = self.ovmf_dir / OVMF[self._state["secure_boot"]][1]
+            shutil.copyfile(template, self.workdir / "vars.fd")
+            self._set(disk_bytes=built.disk_bytes, warnings=built.warnings, disk_ready=True)
+            self._firewall(self._state["egress_interface"])
+            self._boot(user)
+        except Refusal as exc:
+            self._fail(exc.reason, exc.message, disk_ready=True, user=user)
+        except vmdisk.DiskError as exc:
+            if exc.reason == "cancelled":
+                self._finish_cancel(user)
+            else:
+                self._fail(exc.reason, exc.message, disk_ready=False, user=user)
+        except Exception as exc:   # noqa: BLE001 — כל כשל נרשם בשם, לא נבלע
+            log.exception("vmupdate prepare failed")
+            self._fail("internal", f"הכנת הדיסק נכשלה: {exc}", disk_ready=False, user=user)
+
+    @staticmethod
+    def _file_size(manifest: dict, part: dict) -> int:
+        try:
+            return (Path(manifest["_dir"]) / part["file"]).stat().st_size
+        except (OSError, KeyError, TypeError):
+            return 0
+
+    def _fail(self, reason: str, message: str, *, disk_ready: bool, user: str = "") -> None:
+        with self._lock:
+            journal(self.conn, "vmupdate_failed",
+                    f"{self._state.get('image_id')} {reason}: {message}", user)
+            self._set(state="failed", error={"reason": reason, "message": message},
+                      disk_ready=disk_ready)
+
+    def _boot(self, user: str) -> None:
+        argv = qemu_argv(workdir=self.workdir, memory_mib=self._state["memory_mib"],
+                         cpus=self._state["cpus"], accel=self._state["accel"],
+                         secure_boot=self._state["secure_boot"], ovmf_dir=self.ovmf_dir)
+        for stale in ("qmp.sock", "vnc.sock"):
+            (self.workdir / stale).unlink(missing_ok=True)
+        logfile = (self.workdir / "qemu.log").open("ab")
+        try:
+            proc = self._popen(argv, stdin=subprocess.DEVNULL, stdout=logfile, stderr=logfile,
+                               preexec_fn=_lower_priority if os.name == "posix" else None,
+                               close_fds=True)
+        finally:
+            logfile.close()
+        with self._lock:
+            self._proc = proc
+            self._state.update(state="running", booted_at=now_iso(), booted_at_ts=self._now(),
+                               stopped_at=None, stopped_at_ts=None, forced=False, error=None,
+                               shutdown_requested_ts=None)
+            self._set()
+        journal(self.conn, "vmupdate_running", f"{self._state['image_id']}", user)
+        self._spawn(self._watch, proc)
+
+    def _watch(self, proc: subprocess.Popen) -> None:
+        rc = proc.wait()
+        with self._lock:
+            if self._proc is not proc:
+                return
+            self._proc = None
+            was = self._state.get("state")
+            forced = self._state.get("forced")
+            self._state.update(stopped_at=now_iso(), stopped_at_ts=self._now())
+            if rc != 0 and not forced and was == "running":
+                tail = self._qemu_log_tail()
+                self._state.update(state="failed", disk_ready=True,
+                                   error={"reason": "qemu_exit",
+                                          "message": f"QEMU יצא בקוד {rc}: {tail}"})
+            else:
+                self._state.update(state="stopped")
+            # היומן לפני שהמצב נראה החוצה: מי שראה "stopped" ומיד שמר, רואה
+            # ביומן את הכיבוי לפני השמירה.
+            journal(self.conn, "vmupdate_stopped",
+                    f"{self._state.get('image_id')} rc={rc}" + (" forced" if forced else ""))
+            self._set()
+
+    def _qemu_log_tail(self) -> str:
+        try:
+            lines = (self.workdir / "qemu.log").read_text(encoding="utf-8",
+                                                          errors="replace").strip().splitlines()
+        except OSError:
+            return "(אין יומן QEMU)"
+        return lines[-1] if lines else "(יומן QEMU ריק)"
+
+    def _require(self, allowed: tuple[str, ...], what: str) -> None:
+        state = self._state.get("state")
+        if state not in allowed:
+            raise Refusal(409, "state", f"לא ניתן {what} כשהעדכון במצב '{state}'")
+
+    def shutdown(self, user: str) -> dict:
+        with self._lock:
+            self._require_control(user)
+            self._require(("running",), "לכבות")
+            try:
+                self._qmp(self.workdir / "qmp.sock", "system_powerdown")
+            except QmpError as exc:
+                raise Refusal(502, "qmp", f"בקשת הכיבוי לא הגיעה ל-VM: {exc}") from exc
+            self._set(state="stopping", shutdown_requested_ts=self._now())
+        journal(self.conn, "vmupdate_shutdown", self._state.get("image_id", ""), user)
+        return self.status(user)
+
+    def force_off(self, user: str) -> dict:
+        with self._lock:
+            self._require_control(user)
+            self._require(("running", "stopping"), "לכבות בכוח")
+            proc = self._proc
+            self._set(forced=True, state="stopping")
+            try:
+                self._qmp(self.workdir / "qmp.sock", "quit")
+                how = "qmp"
+            except QmpError:
+                if proc is not None:
+                    proc.kill()
+                how = "kill"
+        journal(self.conn, "vmupdate_force_off", f"{self._state.get('image_id', '')} {how}", user)
+        if proc is not None:
+            try:
+                proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        return self.status(user)
+
+    def boot(self, user: str) -> dict:
+        """הדלקה חוזרת על אותו דיסק — גם אחרי כיבוי בכוח (הכרעה 3) וגם
+        כשחוזרים לדיסק שלא הוכרע (הכרעה 5)."""
+        with self._lock:
+            self._require_control(user)
+            state = self._state.get("state")
+            if not (state == "stopped" or (state == "failed" and self._state.get("disk_ready"))):
+                raise Refusal(409, "state", f"לא ניתן להדליק כשהעדכון במצב '{state}'")
+            secure_boot = bool(self._state.get("secure_boot"))
+            self._tools(None, secure_boot)
+            accel, egress = self._check_vm({"memory_mib": self._state["memory_mib"],
+                                            "cpus": self._state["cpus"]})
+            self._firewall(egress)
+            self._state.update(accel=accel, egress_interface=egress)
+            if not (self.workdir / "vars.fd").exists():
+                shutil.copyfile(self.ovmf_dir / OVMF[secure_boot][1], self.workdir / "vars.fd")
+            journal(self.conn, "vmupdate_boot", self._state.get("image_id", ""), user)
+            self._boot(user)
+        return self.status(user)
+
+    def save(self, user: str, name: str, description: str = "") -> dict:
+        name = validate_display_name(name, "שם הגרסה")
+        if not isinstance(description, str) or len(description) > 500:
+            raise Refusal(400, "description", "התיאור חייב להיות טקסט עד 500 תווים")
+        with self._lock:
+            self._require_control(user)
+            state = self._state.get("state")
+            if not (state == "stopped" or (state == "failed" and self._state.get("disk_ready"))):
+                raise Refusal(409, "state", f"לא ניתן לשמור כשהעדכון במצב '{state}' — כבו קודם")
+            user_ids = self.machine.vm_user()
+            if user_ids is None:
+                raise Refusal(503, "vm_user", f"משתמש המערכת {vmnet.VM_USER} אינו קיים")
+            self._progress = _Progress(stage="capture")
+            self._set(state="saving", error=None)
+        journal(self.conn, "vmupdate_save", f"{self._state.get('image_id')} \"{name}\"", user)
+        self._spawn(self._save, user, name, description, user_ids)
+        return self.status(user)
+
+    #: כשל שמירה לפני שהדיסק שונה — הדיסק שלם, אפשר להדליק שוב ולתקן.
+    _BEFORE_CHANGE = ("hibernated", "unchecked", "bitlocker", "table", "loop", "layout",
+                      "fs_changed", "appliance", "missing_tool", "verify", "disk_space")
+
+    def _save(self, user: str, name: str, description: str, ids: vmdisk.VmUser) -> None:
+        out = self.workdir / "out"
+        shutil.rmtree(out, ignore_errors=True)
+        try:
+            source = json.loads((self.workdir / "source-manifest.json").read_text(encoding="utf-8"))
+
+            def on_partition(count: int, total: int) -> None:
+                with self._lock:
+                    self._progress.stage = "stream"
+                    self._progress.partition, self._progress.partitions = count, total
+
+            captured = vmdisk.capture_disk(self.host, self.workdir, out, self._bytes,
+                                           on_partition, user=ids)
+            new_id = self._new_id()
+            manifest = vmdisk.compose_manifest(source, captured, new_id=new_id, name=name,
+                                               description=description, user=user, now=now_iso())
+            with self._lock:
+                self._progress.stage = "verify"
+            problem = validate_manifest_files(manifest, out) or ImageLibrary._validate(manifest)
+            if problem:
+                raise vmdisk.DiskError("verify", f"הגרסה החדשה לא עברה את בדיקות הקליטה: {problem}")
+            (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2),
+                                               encoding="utf-8")
+            target = self.library.root / new_id
+            with self._lock:
+                if target.exists() or self.library.get(new_id) is not None:
+                    raise vmdisk.DiskError("verify", f"המזהה {new_id} כבר קיים בספרייה")
+                out.rename(target)
+            result = {"image_id": new_id, "name": name, "version": manifest["version"],
+                      "previous_id": manifest["previous_id"], "lineage": manifest["lineage"],
+                      "os": image_os(manifest)}
+            journal(self.conn, "vmupdate_saved",
+                    f"{new_id} \"{name}\" v{manifest['version']} from {manifest['previous_id']}", user)
+            with self._lock:
+                shutil.rmtree(self.workdir, ignore_errors=True)
+                gone = not self.workdir.exists()
+                self._state = {"state": "saved", "image_id": source.get("id"),
+                               "image_name": source.get("name"), "result": result,
+                               "warnings": ([] if gone else
+                                            [f"דיסק העבודה לא נמחק — {WORK_AREA} נשאר בספרייה"]),
+                               "error": None}
+        except vmdisk.DiskError as exc:
+            shutil.rmtree(out, ignore_errors=True)
+            self._fail(exc.reason, exc.message, disk_ready=exc.reason in self._BEFORE_CHANGE,
+                       user=user)
+        except Exception as exc:   # noqa: BLE001
+            log.exception("vmupdate save failed")
+            shutil.rmtree(out, ignore_errors=True)
+            self._fail("internal", f"השמירה נכשלה: {exc}", disk_ready=False, user=user)
+
+    def _new_id(self) -> str:
+        existing = set(self.library.scan())
+        for _ in range(64):
+            candidate = "img_" + secrets.token_hex(3)
+            if candidate not in existing and not (self.library.root / candidate).exists():
+                return candidate
+        raise vmdisk.DiskError("verify", "לא נמצא מזהה פנוי לגרסה החדשה")
+
+    def _finish_cancel(self, user: str) -> None:
+        """ההכנה בוטלה: הדיסק החלקי נמחק, והמצב חוזר ל-idle. כלום לא נגע באימג'."""
+        disk = self.workdir / "disk.raw"
+        try:
+            if disk.exists():
+                vmdisk.detach_all(self.host, disk)
+        except vmdisk.DiskError as exc:
+            self._fail(exc.reason, exc.message, disk_ready=False, user=user)
+            return
+        shutil.rmtree(self.workdir, ignore_errors=True)
+        with self._lock:
+            image = self._state.get("image_id", "")
+            self._cancel = False
+            if self.workdir.exists():
+                self._set(state="failed", disk_ready=False,
+                          error={"reason": "discard", "message": "דיסק העבודה לא נמחק במלואו"})
+                return
+            self._state = self._idle()
+        journal(self.conn, "vmupdate_discard", f"{image} (בוטל בהכנה)", user)
+
+    def precheck(self, image_id: str) -> dict:
+        """מה ש-`start` היה מסרב לו — בלי להתחיל (חלון ההתחלה: אין KVM, אין
+        מקום, VM אחר פתוח). ‏{"ok": true} או הסירוב בשמו ובמספריו."""
+        try:
+            with self._lock:
+                if self._state.get("state") not in ("idle", "saved") or self.workdir.exists():
+                    raise Refusal(409, "busy", "כבר פתוח עדכון של "
+                                  f"{self._state.get('image_name') or 'אימג'}",
+                                  image_id=self._state.get("image_id"),
+                                  image_name=self._state.get("image_name"),
+                                  controller=self._state.get("controller"),
+                                  state=self._state.get("state"))
+            manifest = self.library.get(image_id)
+            if manifest is None:
+                raise Refusal(404, "image", "אין אימג' כזה בספרייה")
+            try:
+                vmdisk.check_openable(manifest)
+            except vmdisk.DiskError as exc:
+                raise Refusal(400, exc.reason, exc.message) from exc
+            settings = read_settings(self.conn)
+            self._tools(manifest, secure_boot_for(manifest))
+            accel, egress = self._check_vm(settings)
+            self._check_space(manifest)
+        except Refusal as exc:
+            return {"ok": False, "code": exc.reason, "error": exc.message, "details": exc.numbers}
+        return {"ok": True, "accel": accel, "egress_interface": egress,
+                "secure_boot": secure_boot_for(manifest),
+                "disk_bytes": vmdisk.disk_bytes_for(manifest), **settings}
+
+    def discard(self, user: str) -> dict:
+        with self._lock:
+            self._require_control(user)
+            state = self._state.get("state")
+            if state == "preparing":
+                # ‏"ביטול" בחלון ההכנה (המוקאפ): התהליכון עוצר בחתיכה הבאה.
+                self._cancel = True
+                return self.status(user)
+            if state in BUSY:
+                raise Refusal(409, "state", f"לא ניתן לבטל כשהעדכון במצב '{state}' — כבו קודם")
+            image = self._state.get("image_id", "")
+            if self.workdir.exists():
+                disk = self.workdir / "disk.raw"
+                if disk.exists():
+                    try:
+                        vmdisk.detach_all(self.host, disk)
+                    except vmdisk.DiskError as exc:
+                        raise Refusal(500, exc.reason, exc.message) from exc
+                shutil.rmtree(self.workdir, ignore_errors=True)
+                if self.workdir.exists():
+                    raise Refusal(500, "discard", f"דיסק העבודה לא נמחק במלואו ({WORK_AREA})")
+            self._state = self._idle()
+        journal(self.conn, "vmupdate_discard", image, user)
+        return self.status(user)
+
+    def vnc_socket(self) -> Path | None:
+        with self._lock:
+            if self._state.get("state") not in ("running", "stopping"):
+                return None
+        path = self.workdir / "vnc.sock"
+        return path if path.exists() else None
+
+    def join(self, timeout: float = 30) -> None:
+        """לבדיקות: ממתין לתהליכוני הרקע."""
+        for thread in list(self._threads):
+            thread.join(timeout)
+
+
+def _lower_priority() -> None:   # pragma: no cover — רץ בתהליך הבן
+    """‏nice 10 ל-QEMU: השרת והשידור לכיתה קודמים לו."""
+    os.nice(10)

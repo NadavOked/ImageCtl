@@ -165,6 +165,8 @@ if [ "$1" = -C ]; then shift 2; fi
 case "$1" in
   fetch|checkout) exit 0 ;;
   describe) echo "$FAKE_TAG" ;;
+  rev-parse) echo "commit-of-$FAKE_TAG" ;;
+  rev-list) echo "commit-of-$4" ;;
   log) echo {GIT_EPOCH} ;;
   *) echo "unexpected git $*" >&2; exit 64 ;;
 esac''')

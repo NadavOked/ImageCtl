@@ -77,11 +77,19 @@ static RoomGrid room_grid_make(cairo_t *cr, double w, int n, int max_slots,
     return g;
 }
 
-/* Any present disk of the machine that is not green (#872: fail or failed_last)? */
+/* Any present disk of the machine that is not green (#872: fail or failed_last;
+ * #432: a link slower than its port)? */
 static int room_machine_has_warn(const Machine *m) {
     for (int i = 0; i < m->nroom_drawers; i++)
-        if (m->room_drawers[i].present && smart_level(m->room_drawers[i].smart)) return 1;
+        if (m->room_drawers[i].present && (smart_level(m->room_drawers[i].smart) || m->room_drawers[i].link_slow)) return 1;
     return 0;
+}
+
+/* #432: the slot's colour -- SMART first (red wins), then a slow link is
+ * orange like a SMART warning: it asks, it does not block. */
+static Rgb room_drawer_color(const Theme *t, const RoomDrawer *d) {
+    if (!smart_level(d->smart) && d->link_slow) return t->warn;
+    return smart_color(t, d->smart);
 }
 
 /* The node's box, its .top row (name, dot) and small line; returns the
@@ -168,7 +176,7 @@ static void room_machine_draw(App *a, cairo_t *cr, const Machine *m, int mi,
          * the start. Available but not picked = the same colour lightened
          * (45% surface) inside a border of the colour itself -- the SMART
          * meaning (green ok / orange warn / red failed_last) stays. */
-        Rgb smart = avail ? smart_color(t, d->smart) : t->led_idle;
+        Rgb smart = avail ? room_drawer_color(t, d) : t->led_idle;
         Rgb light = { smart.r * .55 + t->surface.r * .45, smart.g * .55 + t->surface.g * .45,
                       smart.b * .55 + t->surface.b * .45 };
         if (avail && selected) {
@@ -333,7 +341,7 @@ static void room_live_grid_draw(App *a, cairo_t *cr, double x, double y, double 
             text_draw_r(cr, &lt, body.x + body.w, sy, t->ink);
             text_draw(cr, &pt, body.x, sy, t->muted);
             Rgb bar = failed ? t->danger : partial ? t->warn :
-                      d ? smart_color(t, d->smart) : t->bar_done;
+                      d ? room_drawer_color(t, d) : t->bar_done;
             draw_thin_bar(cr, t, (Rect){body.x, sy + 15, body.w, N_BAR_SM}, pct, bar);
             text_free(&lt); text_free(&pt);
         }
@@ -372,6 +380,94 @@ static void live_footer(App *a, cairo_t *cr, Rect foot) {
         text_draw_r(cr, &h, sx - 12, by + (bh - h.h) / 2, t->muted);
         text_free(&h);
     }
+}
+
+/* #432 + #65: what an open wave says before it starts, in one orange box
+ * (the standby note's language: warning_soft, a warn line, orange dots).
+ *   - round.precheck: a drawer on a slow link or a risen CRC -- a warning,
+ *     never a block; "התחל" then asks (CONFIRM_ROOM_START_WARN).
+ *   - round.missing: who the wave is waiting for, with "כבה אותו" for one
+ *     that still answers, and the other two choices of the spec: "התחל בכל
+ *     זאת" (room-start) and "בטל את הסבב" (the #1270 stop dialog).
+ * The lines are the server's text_he, the same words as the console.
+ * draw = 0 measures only (no hits), so the card can be sized first. */
+static double room_pre_block(App *a, cairo_t *cr, double x, double y, double w, int draw) {
+    const Theme *t = a->theme; const State *s = &a->st;
+    if (!s->wave_open || (!s->nroom_warn && !s->nroom_missing)) return 0;
+    double pad = N_ALERT_PAD_X, inner = w - 2 * pad - 14, cy = y + N_ALERT_PAD_Y, bh = btn_height(cr);
+    double right = x + w - pad;
+    if (draw) {
+        double h = room_pre_block(a, cr, x, y, w, 0);
+        Rect box = { x, y, w, h };
+        draw_fill_rrect(cr, box, RADIUS_SM, t->warning_soft);
+        draw_border_rrect(cr, box, RADIUS_SM, t->warn, 1);
+    }
+    char line[400];
+    if (s->nroom_warn) {
+        snprintf(line, sizeof line, "לפני ההתחלה — %d %s בגל עם קישור חשוד",
+                 s->nroom_warn + s->hidden_room_warn, s->nroom_warn + s->hidden_room_warn == 1 ? "מגירה" : "מגירות");
+        Text h = rtl_block_make(cr, N_SUB, 600, line, inner + 14);
+        if (draw) text_draw_r(cr, &h, right, cy, t->warning_ink);
+        cy += h.h + 6; text_free(&h);
+        for (int i = 0; i < s->nroom_warn; i++) {
+            char rl[sizeof s->room_warn[0] + 4];     /* RLM: "CLONE-01 · ..." stays an RTL line */
+            snprintf(rl, sizeof rl, RLM "%s", s->room_warn[i]);
+            Text l = rtl_block_make(cr, N_SUB, 400, rl, inner);
+            if (draw) {
+                cairo_arc(cr, right - 4, cy + l.h / 2, 4, 0, 2 * M_PI); draw_set(cr, t->warn); cairo_fill(cr);
+                text_draw_r(cr, &l, right - 14, cy, t->warning_ink);
+            }
+            cy += l.h + 4; text_free(&l);
+        }
+        if (s->hidden_room_warn) {
+            snprintf(line, sizeof line, "ועוד %d — ראו בקונסולה", s->hidden_room_warn);
+            Text l = rtl_block_make(cr, N_SUB, 400, line, inner);
+            if (draw) text_draw_r(cr, &l, right - 14, cy, t->warning_ink);
+            cy += l.h + 4; text_free(&l);
+        }
+        Text f = rtl_block_make(cr, N_SUB, 400, "הגל ייכתב גם כך — אזהרה, לא חסימה. התחלה עם האזהרה נרשמת ביומן.", inner + 14);
+        if (draw) text_draw_r(cr, &f, right, cy, t->muted);
+        cy += f.h + (s->nroom_missing ? N_ACTION_GAP : 0); text_free(&f);
+    }
+    if (s->nroom_missing) {
+        int n = s->nroom_missing + s->hidden_room_missing;
+        if (n == 1) snprintf(line, sizeof line, "חסרים בגל: מחשב אחד — %d מגירות מוכנות, והגל לא יוצא מקוצר מעצמו.", s->ready);
+        else snprintf(line, sizeof line, "חסרים בגל: %d מחשבים — %d מגירות מוכנות, והגל לא יוצא מקוצר מעצמו.", n, s->ready);
+        Text h = rtl_block_make(cr, N_SUB, 600, line, inner + 14);
+        if (draw) text_draw_r(cr, &h, right, cy, t->warning_ink);
+        cy += h.h + 6; text_free(&h);
+        for (int i = 0; i < s->nroom_missing; i++) {
+            Text off = btn_label(cr, "כבה אותו");
+            double ow = s->room_missing[i].can_poweroff ? btn_width(&off) : 0;
+            char rl[sizeof s->room_missing[0].text + 4];
+            snprintf(rl, sizeof rl, RLM "%s", s->room_missing[i].text);
+            Text l = rtl_block_make(cr, N_SUB, 400, rl, inner - (ow ? ow + N_ACTION_GAP : 0));
+            double row = ow ? fmax(l.h, bh) : l.h;
+            if (draw) {
+                cairo_arc(cr, right - 4, cy + row / 2, 4, 0, 2 * M_PI); draw_set(cr, t->warn); cairo_fill(cr);
+                text_draw_r(cr, &l, right - 14, cy + (row - l.h) / 2, t->warning_ink);
+                if (ow) draw_btn(a, cr, (Rect){ x + pad, cy, ow, bh }, &off, BTN_GHOST_DANGER, HIT_ROOM_POWEROFF_BASE + i);
+            }
+            cy += row + 4; text_free(&l); text_free(&off);
+        }
+        if (s->hidden_room_missing) {
+            snprintf(line, sizeof line, "ועוד %d — ראו בקונסולה", s->hidden_room_missing);
+            Text l = rtl_block_make(cr, N_SUB, 400, line, inner);
+            if (draw) text_draw_r(cr, &l, right - 14, cy, t->warning_ink);
+            cy += l.h + 4; text_free(&l);
+        }
+        /* the spec's other two choices, at the inline end: start anyway, cancel */
+        cy += 4;
+        if (draw) {
+            Text go = btn_label(cr, "התחל בכל זאת"), no = btn_label(cr, "בטל את הסבב…");
+            double gw = btn_width(&go), nw = btn_width(&no);
+            draw_btn(a, cr, (Rect){ x + pad, cy, gw, bh }, &go, BTN_WARN, HIT_ROOM_START);
+            draw_btn(a, cr, (Rect){ x + pad + gw + 8, cy, nw, bh }, &no, BTN_GHOST_DANGER, HIT_ROOM_CLOSE);
+            text_free(&go); text_free(&no);
+        }
+        cy += bh;
+    }
+    return cy + N_ALERT_PAD_Y - y;
 }
 
 void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
@@ -523,7 +619,9 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
     int drv_failed = 0;
     Text drv_res = room_drv_results_make(cr, s, inner, &drv_failed);
     double drv_res_h = drv_res.layout ? N_LABEL_GAP + drv_res.h : 0;
-    double body_h = N_PAD + pl.h + N_LABEL_GAP + N_BAR_H + N_ACTION_GAP + alert_height(&hint_t) + N_CHOICE_GAP + rows_h + unid_h + drv_res_h + N_LABEL_GAP + err_h + N_PAD;
+    double pre_h = room_pre_block(a, cr, 0, 0, inner, 0);       /* #432/#65 */
+    double pre_gap = pre_h > 0 ? N_ACTION_GAP : 0;
+    double body_h = N_PAD + pl.h + N_LABEL_GAP + N_BAR_H + N_ACTION_GAP + alert_height(&hint_t) + pre_gap + pre_h + N_CHOICE_GAP + rows_h + unid_h + drv_res_h + N_LABEL_GAP + err_h + N_PAD;
 
     Rect body, foot;
     card_frame(a, cr, W, H, head_h, &hd, body_h, foot_height(cr, btn_h), &body, &foot);
@@ -533,7 +631,9 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
     text_draw_r(cr, &pl.small, x + inner - pl.big.w - 10, y + pl.drop, t->ink);
     text_free(&pl.big); text_free(&pl.small);             y += pl.h + N_LABEL_GAP;
     draw_big_bar(cr, t, (Rect){ x, y, inner, N_BAR_H }, pct, 0); y += N_BAR_H + N_ACTION_GAP;
-    draw_alert(cr, t, (Rect){ x, y, inner, alert_height(&hint_t) }, &hint_t); y += alert_height(&hint_t) + N_CHOICE_GAP;
+    draw_alert(cr, t, (Rect){ x, y, inner, alert_height(&hint_t) }, &hint_t); y += alert_height(&hint_t);
+    if (pre_h > 0) { y += pre_gap; room_pre_block(a, cr, x, y, inner, 1); y += pre_h; }   /* #432/#65 */
+    y += N_CHOICE_GAP;
     room_live_grid_draw(a, cr, x, y, inner, &grid, s->wave_open); y += rows_h;
     if (unid.layout) { text_draw_r(cr, &unid, x + inner, y + N_LABEL_GAP, t->warning_ink); y += unid_h; }
     if (drv_res.layout) {           /* failed = done without its drivers: orange, not red (#856) */

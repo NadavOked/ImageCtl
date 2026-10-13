@@ -20,48 +20,25 @@ smart_disk_label() {
 smart_choice() { attended "$1: $2" smart_ask "$@"; }   # #906: hello keeps going while a person is asked (attended.sh)
 smart_ask() {
     # $1 = label (Disk N), $2 = context line, $3 = disk, $4 = verdict,
-    # $5 = reason, $6 = ברירת המחדל בלי תשובה. מצייר תפריט ASCII (כמו
-    # buildmenu.sh) ומחזיר את ההכרעה: replace / rescue / skip. הקלט נקרא
-    # מ-stdin, ולכן הפונקציה נבדקת בהזרקת מקש.
+    # $5 = reason, $6 = ברירת המחדל בלי תשובה. מחזיר את ההכרעה: replace /
+    # rescue / skip.
     #
-    # ‏#872: לדיסק **אדום** (‏failed_last -- נכשל בכתיבה הקודמת, הוכח) אין
-    # "כתוב בכל זאת": החלף, או המשך בלעדיו (= דלג). בלי תשובה (EOF, מסך
-    # שנעלם) -- "המשך" של אותו צבע: כתום כותב, אדום מדלג; הברירה מגיעה
-    # מהקורא (‏$6), וריק = skip. ‏#666: כשיש מסך cloner חי ההכרעה נלקחת
-    # ממנו -- מסלול קלט אחד; נעלם המסך, gui_smart_choice נכשל והתפריט נכנס.
+    # ההכרעה נלקחת **רק** מהמסך הגרפי של מחשב השיכפול (#666, gui_smart_choice).
+    # תפריט הטקסט שהיה כאן הוסר (נדב 11/10: GUI בלבד, בלי מסך טקסט חלופי).
+    # בלי מסך, או מסך שנעלם/לא ענה -- "המשך" של אותו צבע, בדיוק מה שתפריט
+    # הטקסט עשה על EOF (נדב 16/09): כתום כותב, אדום מדלג; הברירה מגיעה מהקורא
+    # (‏$6), וריק = skip.
+    # ‏#872: לדיסק **אדום** (‏failed_last) אין "כתוב בכל זאת" -- מסך ישן
+    # שהציע אותו לא מתקבל, מדלגים.
     _sc_red=0; [ "${4:-}" = failed_last ] && _sc_red=1
     if [ "$#" -ge 5 ] &&
             _sc_gui=$(gui_smart_choice "$3" "$4" "$5"); then
-        # מסך ישן שהציע "כתוב בכל זאת" על אדום: לא מתקבל, מדלגים.
         [ "$_sc_red" = 1 ] && [ "$_sc_gui" = rescue ] && _sc_gui=skip
         printf '%s\n' "$_sc_gui"
         return 0
     fi
-    while :; do
-        # הציור הולך ל-stderr, וההכרעה בלבד ל-stdout: הקורא לוכד את
-        # הפלט ב-`$( )`, ותפריט על stdout היה נבלע לתוך ההכרעה.
-        {
-            ui_clear; ui_header
-            echo "  $1: $2"
-            echo
-            echo "    [1] Power off, swap the disk, power on"
-            if [ "$_sc_red" = 1 ]; then
-                echo "    [2] Continue without this disk"
-            else
-                echo "    [2] Write anyway (rescue)"
-                echo "    [3] Skip this disk"
-            fi
-            echo
-            printf "  Choose [1-%d]: " $((3 - _sc_red))
-        } >&2
-        read -r _sc_c || { echo "${6:-skip}"; return; }
-        case "$_sc_c$_sc_red" in
-            1?)    echo replace; return ;;
-            20)    echo rescue;  return ;;
-            21|30) echo skip;    return ;;
-            *) ;;   # קלט לא-חוקי: מציירים שוב, לא בוחרים בשקט
-        esac
-    done
+    log "$1: no answer from the GUI -- the default for ${4:-this verdict}: ${6:-skip}" >&2
+    printf '%s\n' "${6:-skip}"
 }
 
 smart_event_json() {

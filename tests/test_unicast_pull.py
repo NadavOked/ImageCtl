@@ -246,7 +246,9 @@ LOOP_STUB = 'progress_loop() { echo "LOOP $1" >> "$RUN_DIR/trace"; }; '
 #: מה שהוא מונע בפועל הוא שורת JSON חתוכה ב-`posts.jsonl` — דיווח אחרון
 #: של לולאה שנהרגה שנוחת בזמן שפייתון כבר קורא — כשל שהיה נראה כמו באג
 #: בבניית הדיווח. הוא **אינו** מה שתיקן את ה-flake עצמו; ראו RESTORE_STUB.
-FLOW = "single_station_flow; wait"
+#: ‏11/10: אשף הטקסט (`single_station_flow`) הוסר — GUI בלבד. מה שנשאר הוא
+#: הכתיבה שמאחורי מסך השחזור הגרפי, `single_restore_run`, והיא שנבדקת.
+FLOW = f'single_restore_run {IMAGE}; echo "RC=$?"; wait'
 
 #: תקרה על הריצה כולה — רשת ביטחון ולא כוונון תזמון: הדרך היחידה להגיע
 #: אליה היא תהליך רקע שלא נסגר, וזה באג שצריך להיראות בשמו ולא כתלייה.
@@ -261,10 +263,8 @@ def run_flow(script: str, keys: tuple[str, ...], out_file: Path) -> None:
     """
     with out_file.open("w", encoding="utf-8") as sink:
         try:
-            # ‏input בבייטים ולא ב-text: עם `text=True` ווינדוס מתרגם כל `\n`
-            # שנכתב לצינור ל-`\r\n`, ו-`read -r _c` ב-`single_station_flow`
-            # מקבל `1\r` — ‏`*[!0-9]*` מתאים, והאשף מת ב-`invalid choice`
-            # (#491, אותו כשל כמו #479). הפלט ממילא הולך ל-`sink` ולא לצינור.
+            # ‏input בבייטים ולא ב-text (#491): ‏`single_restore_run` אינו קורא
+            # stdin, ומקשים שמחכים שם חייבים להישאר שם (GUI בלבד, 11/10).
             subprocess.run(
                 [BASH, "-c", 'export PATH="/usr/bin:$PATH"; ' + script],
                 stdout=sink, stderr=subprocess.STDOUT, cwd=str(REPO),
@@ -319,7 +319,8 @@ def station(tmp_path, *, pull_code: str = "200",
             pull_answer: str = '{"id":"ses_pull01","kind":"unicast"}',
             restore: str = "ok", real_loop: bool = False,
             keys: tuple[str, ...] = ("1", "ERASE", "")) -> dict:
-    """מריץ את `single_station_flow` האמיתי מקצה לקצה עם תפרים מזויפים.
+    """מריץ את `single_restore_run` האמיתי מקצה לקצה עם תפרים מזויפים.
+    ‏`keys` הם מקשים שמחכים ב-stdin — הכתיבה אינה קוראת אותם (GUI בלבד).
 
     התפרים הם בדיוק הגבולות של המערכת: הרשת (`pull_post`,
     `http_post_json`, `http_get`), הדיסק (`pick_internal_disk`) והכתיבה
@@ -356,8 +357,8 @@ def station(tmp_path, *, pull_code: str = "200",
         f"AWAIT_TEXT={shlex.quote(await_text)}; "
         f". {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/jsonq.sh; "
         f". {posix(AGENT)}/lib/progress.sh; . {posix(AGENT)}/lib/pull.sh; "
-        f". {posix(AGENT)}/lib/ui.sh; . {posix(AGENT)}/lib/recovery.sh; "
-        f". {posix(AGENT)}/lib/single_restore.sh; "   # #706: the shared write path
+        f". {posix(AGENT)}/lib/ui.sh; "
+        f". {posix(AGENT)}/lib/single_restore.sh; "   # #706: the GUI restore's write
         'pick_internal_disk() { echo sda; }; '
         'http_get() { cat "$RUN_DIR/manifest.src.json"; }; '
         'pull_post() { cp "$2" "$RUN_DIR/sent.json"; '
@@ -410,13 +411,15 @@ def test_the_reporter_gets_the_session_the_server_returned(tmp_path):
     assert "unicast pull registered as ses_pull01" in result["log"]
 
 
-def test_the_credentials_of_the_wizard_reach_the_pull(tmp_path):
-    """אותה כניסה של שער השחזור — לא מסך שני, ולא בקשה בלי אישורים
-    שהשרת ידחה ב-401 מחוץ לוילן ההפצה (#42)."""
+def test_the_gui_restore_opens_the_pull_without_credentials(tmp_path):
+    """‏11/10 (GUI בלבד): הכניסה בטקסט שסיפקה את האישורים הוסרה, והסיסמה
+    שהוקלדה בגואי אינה יוצאת מתהליך הכניסה של הקיוסק. המשיכה נפתחת עם
+    אישורים ריקים — גם כש-RECOVERY_* מוגדרים בסביבה (שאריות, לא כניסה).
+    בקרה שלילית: הקוד הישן שולח labtech/pass."""
     result = station(tmp_path)
 
-    assert result["sent"]["username"] == "labtech"
-    assert result["sent"]["password"] == "pass"
+    assert result["sent"]["username"] == ""
+    assert result["sent"]["password"] == ""
 
 
 def test_an_old_server_does_not_cancel_the_restore(tmp_path):
@@ -426,7 +429,7 @@ def test_an_old_server_does_not_cancel_the_restore(tmp_path):
                      pull_answer='{"detail":"Not Found"}')
 
     assert result["trace"] == ["PULL", "RESTORE unicast"]
-    assert "Done." in result["out"]
+    assert "RC=0" in result["out"]
     assert "no /api/v1/agent/pulls" in result["log"]
     assert result["posts"] == []
 
@@ -436,7 +439,7 @@ def test_a_server_that_fell_over_does_not_cancel_the_restore_either(tmp_path):
     result = station(tmp_path, pull_code="503", pull_answer="down")
 
     assert result["trace"] == ["PULL", "RESTORE unicast"]
-    assert "Done." in result["out"]
+    assert "RC=0" in result["out"]
     assert "http 503" in result["log"] and "older" not in result["log"]
 
 

@@ -558,6 +558,11 @@ say "מתקין חבילות: ${PKGS[*]}"
 run env DEBIAN_FRONTEND=noninteractive apt-get update -qq
 run env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${PKGS[@]}"
 
+# ‏#1334: עדכון אימג' ב-VM — החבילות (install/vmupdate-packages.txt, המקור
+# היחיד) ומשתמש המערכת imagectl-vm. אותו סקריפט מריץ העדכון מהכפתור
+# (tools/server-upgrade.sh), כך ששרת ותיק מקבל בדיוק אותו דבר.
+run bash "$SCRIPT_DIR/vmupdate-host.sh" || die "הכנת המארח לעדכון ב-VM נכשלה (install/vmupdate-host.sh)"
+
 if [[ -f "$SCRIPT_DIR/../server/main.py" ]]; then
     SRC="$(cd "$SCRIPT_DIR/.." && pwd)"
     if [[ "$SRC" != "$APP_DIR" ]]; then

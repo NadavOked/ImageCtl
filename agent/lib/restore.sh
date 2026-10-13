@@ -193,6 +193,14 @@ run_restore() {
         return 1
     fi
 
+    # Firmware trust is checked before apply_gpt touches the target. Unchecked
+    # follows the existing SMART rule: report and continue; mismatch refuses.
+    if ! boot_ca_preflight "$5" "$2"; then
+        target_set "$2" "failed" "$BOOT_CA_PREFLIGHT_REASON"
+        echo "failed" > "$RUN_DIR/state"
+        return 1
+    fi
+
     # הטבלה נקבעת עד תומה לפני שהנתונים מגיעים — כולל ההרחבה, כי היא זו
     # שמעבירה swap נגררת לזנב, וה-mkswap של הלולאה חייב לנחות על המקום
     # הסופי. הרחבה שנכשלה באמצע חוזרת לטבלת המניפסט ומשחזרת בגודל המקורי:

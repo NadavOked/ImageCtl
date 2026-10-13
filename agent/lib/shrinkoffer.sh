@@ -2,7 +2,7 @@
 # POSIX sh (busybox ash).
 #
 # פוצל מ-shrinkmem.sh ב-#929: שם נשאר ה-HTTP -- הרשומה בשרת -- וכאן מה
-# שקורה במחשב הבנייה לפני התפריט כשה-hello הביא רשומה פתוחה. הרשומה
+# שקורה במחשב הבנייה כשה-hello הביא רשומה פתוחה (דיאלוג בגואי, 11/10). הרשומה
 # היא **לדיסק, עם רשימת מחיצות** (‏#929): כל כניסה נקראת **מהדיסק**
 # (‏sgdisk -i) ומושווית לרשומה לפני שמוצע דבר, ואחת שאינה תואמת עוצרת את
 # כל ההצעה -- שום דבר לא נכתב ולא נסגר. שאלה **אחת** לכל מה שצריך
@@ -14,29 +14,17 @@
 shrink_restore_ask() {
     # $1 disk $2 = summary file: idx|kind|partition_bytes|now_bytes. ‏kind =
     # table (המחיצה עצמה קטנה) / fs (הטבלה בגודלה, רק מערכת הקבצים קטנה).
-    # ההכרעה לבדה ל-stdout: restore / leave. בלי תשובה (EOF) -- leave.
-    while :; do
-        {
-            ui_clear; ui_header
-            echo "  /dev/$1 was shrunk for a capture and never fully grown back"
-            echo "  (a power loss or a reboot before the capture ended):"
-            _ra_table=0
-            while IFS='|' read -r _ra_i _ra_k _ra_p _ra_n; do
-                [ -n "$_ra_i" ] || continue
-                if [ "$_ra_k" = fs ]; then
-                    echo "    partition $_ra_i: the filesystem ($(_shrink_gb "$_ra_n")) is smaller than its partition ($(_shrink_gb "$_ra_p")) -- table restored, filesystem not"
-                else _ra_table=1; echo "    partition $_ra_i: now $(_shrink_gb "$_ra_n"), originally $(_shrink_gb "$_ra_p")"; fi
-            done < "$2"
-            echo
-            if [ "$_ra_table" = 1 ]; then echo "    [1] Grow it back to its original size (recommended)"
-            else echo "    [1] Grow the filesystem to fill the partition (recommended)"; fi
-            echo "    [2] Leave it as it is"
-            echo
-            printf "  Choose [1-2]: "
-        } >&2
-        read -r _ra_c || { echo leave; return; }
-        case "$_ra_c" in 1) echo restore; return ;; 2) echo leave; return ;; esac
-    done
+    # ההכרעה לבדה ל-stdout: restore / leave.
+    # ‏11/10 (נדב: "הכול גואי"): השאלה היא דיאלוג במסך הגרפי, בסגנון שאלת
+    # הכיווץ (askgui.sh, ‏screens_ask.c) -- שאלת הטקסט נמחקה. בלי מסך, גשר
+    # שנכשל או בלי תשובה עד WAIT_SHRINK_GUI_S -- leave: שום דבר לא נכתב על
+    # דיסק בלי אדם שאמר כן.
+    awk -F'|' 'NF == 4 { print $1 "|" $4 "|" $3 "|" $2 }' "$2" > "$RUN_DIR/targets/$1/shrunk.rows" || { echo leave; return; }
+    if _ra_gui=$(gui_ask_choice growback "$1" "$RUN_DIR/targets/$1/shrunk.rows" "$WAIT_SHRINK_GUI_S"); then
+        case "$_ra_gui" in restore|leave) printf '%s\n' "$_ra_gui"; return ;; esac
+    fi
+    printf 'native GUI: the grow-back question was not answered -- left as it is\n' >&2
+    echo leave
 }
 
 shrink_fs_bytes() {
@@ -107,7 +95,6 @@ shrink_offer_disk() {
         echo "$_od_id" > "$_od_t/shrink_id"; shrink_close_record "$1" || :
         return 0
     fi
-    shrink_gui_release
     _od_list=$(awk -F'|' '{ s = s (s ? ", " : "") $1 } END { print s }' "$_od_t/shrunk.ask")
     _od_q="מחיצה $_od_list בדיסק $1 כווצה לקליטה ולא הוחזרה לגודלה — החזר/השאר"
     case "$(attended "$_od_q" shrink_restore_ask "$1" "$_od_t/shrunk.ask")" in
@@ -135,16 +122,15 @@ shrink_offer_disk() {
 }
 
 _shrink_offer_screen() {
-    # $1 disk $2 rc $3 what succeeded. המסך אחרי ההחזרה.
-    ui_clear; ui_header
-    if [ "$2" -eq 0 ]; then echo "  /dev/$1: $3."
-    else echo "  FAILED: $(cat "$RUN_DIR/targets/$1/error" 2>/dev/null)"; echo; echo "  The record stays in the console. Contact IT."; fi
-    [ "${IMAGECTL_TEST:-0}" = 1 ] || sleep 8
+    # $1 disk $2 rc $3 what succeeded. התוצאה -- ליומן; הכשל עצמו כבר בשרת
+    # (shrink_note_record) ובקונסולה. ‏11/10: לא מסך טקסט מאחורי הגואי.
+    if [ "$2" -eq 0 ]; then log "$1: $3"
+    else log "$1: grow-back FAILED: $(cat "$RUN_DIR/targets/$1/error" 2>/dev/null). The record stays in the console."; fi
 }
 
 shrink_offer_pending() {
-    # מלולאת מחשב הבנייה, לפני שהמסך הגרפי תופס את התצוגה. שואל פעם אחת
-    # לאתחול; 0 תמיד -- ההצעה אינה עוצרת את המכונה.
+    # מלולאת מחשב הבנייה, **אחרי** שהמסך הגרפי עלה (11/10: השאלה היא דיאלוג
+    # שלו). שואל פעם אחת לאתחול; 0 תמיד -- ההצעה אינה עוצרת את המכונה.
     [ "${_shrink_offered:-0}" = 0 ] || return 0
     shrink_records_refresh || return 0
     _op_all=$(list_disks)

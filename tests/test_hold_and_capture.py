@@ -115,7 +115,9 @@ def test_a_capture_powers_off_once_the_server_took_the_report(tmp_path, reports)
     result = run_capture(tmp_path, url_of(reports))
 
     assert "TEST-HOLD" not in result["out"]
-    assert "Capture complete. The image is in the library." in result["out"]
+    # The text screen that said so (#409's question) was removed on 11/10
+    # (GUI only); the journal line is the evidence now.
+    assert "capture complete -- powering off" in result["log"]
     assert "RETURNED" not in result["out"], "המסלול לא הגיע לכיבוי"
     assert len(reports.received) == 1
     report = reports.received[0]

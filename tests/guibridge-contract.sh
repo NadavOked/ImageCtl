@@ -53,7 +53,7 @@ for record in 'capture-start\nname=a\nname=b\n\n' 'capture-start\nname=a\n'; do
 done
 [ "$(wc -l < "$RUN_DIR/dispatch" | tr -d ' ')" = 1 ]
 echo 'PASS record boundaries, duplicate/partial rejection, literal shell text'
-# #715 direct-open: ticked drawers -> the same POST directflow.sh sends; the
+# #715 direct-open: ticked drawers -> the same POST the console sends; the
 # source disk comes from the server inventory; a malformed value posts nothing.
 . "$ROOT/agent/lib/guibridge.sh"   # the real gui_dispatch again (stubbed above)
 gui_role() { GUI_ROLE='admin'; }
@@ -76,11 +76,14 @@ http_get() { printf '%s' "$state_json"; }
 jq() { case "$state_json" in *BUILD-01*) printf 'BUILD-01\n' ;; *) return 1 ;; esac; }
 state_json='{"name":"BUILD-01","allowed_images":[{"id":"img_1"}]}'
 rm -f "$GUI_DIR/handoff"
+# The live session goes along with the handoff (guiparent.sh re-checks it).
+printf 'localhost\tFALSE\t/\tFALSE\t0\timagectl_session\tticket\n' > "$CONSOLE_JAR"
 # `|| true`: a hand-off is gui_dispatch returning 2, which set -e would read as a failure.
 printf 'restore-start\nimage=img_1\nconfirm=BUILD-01\n\n' | gui_records || true
 [ "$(cat "$GUI_DIR/handoff")" = 'restore-start
 img_1' ] || { echo 'FAIL restore-start with the right name did not hand off'; exit 1; }
-rm -f "$GUI_DIR/handoff"
+[ -s "$GUI_DIR/handoff.jar" ] || { echo 'FAIL restore-start handed off without the session'; exit 1; }
+rm -f "$GUI_DIR/handoff" "$GUI_DIR/handoff.jar"
 for bad in 'restore-start\nimage=img_1\nconfirm=ERASE\n\n' 'restore-start\nimage=img_1\nconfirm=build-01\n\n' 'restore-start\nimage=img_1\nconfirm=\n\n' 'restore-start\nimage=../x\nconfirm=BUILD-01\n\n'; do
     printf '%b' "$bad" | gui_records || true
     [ ! -e "$GUI_DIR/handoff" ] || { echo 'FAIL restore-start handed off on a wrong confirmation'; exit 1; }
@@ -89,3 +92,15 @@ state_json='{"name":null,"allowed_images":[{"id":"img_1"}]}'
 printf 'restore-start\nimage=img_1\nconfirm=\n\n' | gui_records || true
 [ ! -e "$GUI_DIR/handoff" ] || { echo 'FAIL restore-start handed off on an unnamed machine'; exit 1; }
 echo 'PASS restore-start hands off only on the registered machine name (#1073)'
+# GUI only (11/10): room-open passes the image and the count to room_open as
+# arguments -- no prompt adapter, nothing read from stdin.
+printf 'room-open\nimage=img_1\ntarget=2\nslots=aa:bb:cc:00:00:21@1\n\n' | gui_records
+[ "$(cat "$RUN_DIR/posted.json")" = '{"image_id":"img_1","target_drives":2,"target_slots":[{"mac":"aa:bb:cc:00:00:21","ports":[1]}]}' ] \
+    || { echo 'FAIL room-open body'; cat "$RUN_DIR/posted.json"; exit 1; }
+echo 'PASS room-open posts image and count as arguments'
+# GUI only (11/10): the class round after a pick was a text flow and was
+# removed -- the pick is refused and hands nothing off to the agent.
+rm -f "$GUI_DIR/handoff"
+printf 'class-pick\ngroup=grp_1\n\n' | gui_records || true
+[ ! -e "$GUI_DIR/handoff" ] || { echo 'FAIL class-pick handed off to a text flow'; exit 1; }
+echo 'PASS class-pick is refused, no hand-off'

@@ -12,12 +12,16 @@
  *   stdout           one record per operator action: a token line
  *                    (capture | restore | room | classes | back | again |
  *                    capture-start | room-open | room-wake | room-start |
- *                    room-close | class-pick | class-start | class-close |
+ *                    room-close | room-poweroff (#65, cloner= confirm=) |
+ *                    class-pick | class-start | class-close |
  *                    smart-replace | smart-rescue | smart-skip |
  *                    shrink-continue|<nonce> | shrink-plain|<nonce> |
  *                    shrink-cancel|<nonce>  (#928) |
  *                    tool-list | tool-run|<id>|<arg>|<confirm>  (#649) |
- *                    touch  (#434: a key press -- the idle clock's activity)),
+ *                    touch  (#434: a key press -- the idle clock's activity) |
+ *                    logout  (11/10: sign-out; the bridge drops the session) |
+ *                    ask-<answer>|<nonce>  (11/10: the question dialog --
+ *                    ask-restore / ask-leave, ask-poweroff / ask-menu)),
  *                    then key=value detail lines, then an empty line.
  *   exit 0           after "restore" (the agent takes the disk);
  *   exit 1           could not start / render, or stopped by a signal.
@@ -40,6 +44,7 @@
 #include "text.h"
 #include "ui.h"
 #include "utf8.h"
+#include "lcui.h"   /* #1322 */
 
 static volatile sig_atomic_t stop_now = 0;
 static void on_signal(int sig) { (void)sig; stop_now = 1; }
@@ -132,6 +137,45 @@ static void emit_shrink(App *a, const char *action) {
     snprintf(line, sizeof line, "%s|%s", action, a->st.shrink_nonce);
     snprintf(a->shrink_sent, sizeof a->shrink_sent, "%s", a->st.shrink_nonce);
     emit1(line);
+}
+
+/* 11/10: the question dialog's answer echoes its nonce, one per question,
+ * exactly like the shrink answer. */
+static void emit_ask(App *a, const char *answer) {
+    if (!a->st.ask_pending || !strcmp(a->ask_sent, a->st.ask_nonce)) return;
+    char line[64];
+    snprintf(line, sizeof line, "ask-%s|%s", answer, a->st.ask_nonce);
+    snprintf(a->ask_sent, sizeof a->ask_sent, "%s", a->st.ask_nonce);
+    emit1(line);
+}
+
+/* 11/10: modal like the shrink question. 1 = the primary answer, 2 = the
+ * secondary one, Esc = the safe default (leave the disk / power off), Enter
+ * nothing. The shrink question, if both are pending, is the one on screen. */
+static int ask_modal(App *a, const Event *e) {
+    if (!a->st.ask_pending || a->st.shrink_pending) return 0;
+    const int grow = a->st.ask_kind == ASK_GROWBACK;
+    const char *first = grow ? "restore" : "poweroff";
+    const char *second = grow ? "leave" : "menu";
+    const char *safe = grow ? "leave" : "poweroff";
+    switch (e->type) {
+    case UIEV_CHAR:
+        if (e->ch == '1') emit_ask(a, first);
+        else if (e->ch == '2') emit_ask(a, second);
+        return 1;
+    case UIEV_KEY:
+        if (e->key == KEYSYM_ESC) emit_ask(a, safe);
+        return 1;
+    case UIEV_CLICK:
+        a->ptr_x = e->x; a->ptr_y = e->y;
+        switch (app_hit(a, e->x, e->y)) {
+        case HIT_ASK_PRIMARY:   emit_ask(a, first);  break;
+        case HIT_ASK_SECONDARY: emit_ask(a, second); break;
+        }
+        return 1;
+    default:
+        return 0;                                 /* pointer moves still move the cursor */
+    }
 }
 
 /* #928: while the shrink question is open it is modal. Only its answers get
@@ -310,6 +354,7 @@ static int visible_card_ids(const App *a, int ids[5]) {
 
 static void sign_out(App *a) {
     a->signed_in = 0; a->mode = MODE_MENU; a->focus = HIT_USER; a->logout_confirming = 0;
+    emit1("logout");   /* 11/10: the bridge drops the console session too */
 }
 
 /* mockup 10/10: while "להתנתק?" is open it is modal -- Enter or its button
@@ -562,11 +607,32 @@ static void stop_round(const char *token, const char *name) {
     emit(token); emit_kv("confirm", name); emit_end();
 }
 
+/* #432: "התחל" on a wave with a precheck warning asks first -- orange, a
+ * question and not a block; a clean wave starts at once, as before. */
+static void room_start(App *a) {
+    if (a->st.has_round && a->st.wave_open && a->st.nroom_warn) a->confirm = CONFIRM_ROOM_START_WARN;
+    else emit1("room-start");
+}
+
+/* #65: is the machine the power-off dialog was opened for still missing,
+ * still answering, and the wave still open? Anything else closes it. */
+static int poweroff_target_live(const App *a) {
+    if (!a->st.has_round || !a->st.wave_open) return 0;
+    for (int i = 0; i < a->st.nroom_missing; i++)
+        if (!strcmp(a->st.room_missing[i].mac, a->poweroff_mac)) return a->st.room_missing[i].can_poweroff;
+    return 0;
+}
+
 /* #1270: what the confirm dialog's OK does. */
 static void confirm_do(App *a) {
     int what = a->confirm;
     a->confirm = CONFIRM_NONE;
     if (what == CONFIRM_RESTORE) start_restore(a);
+    else if (what == CONFIRM_ROOM_START_WARN && a->st.has_round && a->st.wave_open) emit1("room-start");
+    else if (what == CONFIRM_ROOM_POWEROFF && poweroff_target_live(a)) {
+        /* the server checks again: still missing, wave open, the machine's name */
+        emit("room-poweroff"); emit_kv("cloner", a->poweroff_mac); emit_kv("confirm", a->poweroff_name); emit_end();
+    }
     else if (what == CONFIRM_ROOM_STOP && a->st.has_round) stop_round("room-close", a->st.round_image);
     else if (what == CONFIRM_CLASS_STOP && a->st.has_session && class_gate(a)) stop_round("class-close", a->st.sess_image);
     else if (what == CONFIRM_TOOL) tool_run(a);
@@ -689,7 +755,14 @@ static void emit_touch(App *a, int demo) {
 
 static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
     if (e->type == UIEV_CLICK || e->type == UIEV_CHAR || e->type == UIEV_KEY) emit_touch(a, demo);
+    if (a->screen == SCREEN_LCBOOT || a->screen == SCREEN_LOCAL) {   /* #1322: its own keys and clicks */
+        if (e->type == UIEV_MOVE || e->type == UIEV_CLICK) { a->ptr_x = e->x; a->ptr_y = e->y; }
+        if (e->type == UIEV_MOVE) a->ptr_visible = !e->is_touch;
+        lc_handle(a, e);
+        return 0;
+    }
     if (shrink_modal(a, e)) return 0;              /* #928 */
+    if (ask_modal(a, e)) return 0;                 /* 11/10 */
     if (logout_modal(a, e)) return 0;              /* mockup 10/10 */
     if (confirm_modal(a, e)) return 0;             /* #1270 */
     switch (e->type) {
@@ -720,6 +793,17 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
             id < HIT_ROOM_DTAG_BASE + MAX_ROOM_SELECTIONS) {
             int encoded = id - HIT_ROOM_DTAG_BASE;
             room_drv_tag_click(a, encoded / MAX_DRAWERS, encoded % MAX_DRAWERS + 1);
+            break;
+        }
+        /* #65 "כבה אותו": asks first (#1270); the machine's name is the confirmation */
+        if (id >= HIT_ROOM_POWEROFF_BASE && id < HIT_ROOM_POWEROFF_BASE + MAX_ROOM_NOTES) {
+            int i = id - HIT_ROOM_POWEROFF_BASE;
+            if (i < a->st.nroom_missing && a->st.room_missing[i].can_poweroff) {
+                snprintf(a->poweroff_mac, sizeof a->poweroff_mac, "%s", a->st.room_missing[i].mac);
+                snprintf(a->poweroff_name, sizeof a->poweroff_name, "%s",
+                         a->st.room_missing[i].name[0] ? a->st.room_missing[i].name : a->st.room_missing[i].mac);
+                a->confirm = CONFIRM_ROOM_POWEROFF;
+            }
             break;
         }
         /* #714: machine name toggles all of that machine's disks. */
@@ -781,7 +865,7 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
         case HIT_ROOM_SELECT_ALL: room_select_range(a, 0, a->st.nmachines); break;
         case HIT_ROOM_OPEN:  open_round(a); break;
         case HIT_ROOM_WAKE:  emit1("room-wake"); break;
-        case HIT_ROOM_START: emit1("room-start"); break;
+        case HIT_ROOM_START: room_start(a); break;   /* #432: asks first on a warning */
         case HIT_ROOM_CLOSE: if (a->st.has_round) a->confirm = CONFIRM_ROOM_STOP; break;   /* #1270 */
         case HIT_CLASS_START: if (class_gate(a)) emit1("class-start"); break;
         case HIT_CLASS_CLOSE: if (class_gate(a)) a->confirm = CONFIRM_CLASS_STOP; break;   /* #1270 */
@@ -837,7 +921,7 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
             break;
         }
         if (a->screen == SCREEN_ROOM && (e->ch == 'w' || e->ch == 'W')) { emit1("room-wake"); break; }
-        if (a->screen == SCREEN_ROOM && (e->ch == 'n' || e->ch == 'N')) { emit1("room-start"); break; }
+        if (a->screen == SCREEN_ROOM && (e->ch == 'n' || e->ch == 'N')) { room_start(a); break; }
         if (a->screen == SCREEN_CLONER && a->st.smart_pending) {
             if (e->ch == 's' || e->ch == 'S') { emit_smart(a, "smart-skip"); break; }
             if (e->ch == 'r' || e->ch == 'R') { emit_smart(a, "smart-replace"); break; }
@@ -924,8 +1008,11 @@ static void after_reload(App *a) {
     if (a->image_sel > a->st.nimages) a->image_sel = 0;
     /* #1270: a question about a round that is gone is closed */
     if ((a->confirm == CONFIRM_ROOM_STOP && !a->st.has_round) ||
-        (a->confirm == CONFIRM_CLASS_STOP && !a->st.has_session)) a->confirm = CONFIRM_NONE;
+        (a->confirm == CONFIRM_CLASS_STOP && !a->st.has_session) ||
+        (a->confirm == CONFIRM_ROOM_START_WARN && (!a->st.has_round || !a->st.wave_open)) ||   /* #432 */
+        (a->confirm == CONFIRM_ROOM_POWEROFF && !poweroff_target_live(a))) a->confirm = CONFIRM_NONE;   /* #65 */
     room_drv_after_reload(a);                             /* #1269: the first model is the default */
+    lc_after_reload(a);                                   /* #1322: default roles, the source to measure */
     /* #408: rate from consecutive reads; a counter that went backwards
      * (new task) or a clock that did not move resets, not divides. */
     if (a->st.updated > a->rate_prev_updated && a->st.bytes >= a->rate_prev_bytes && a->rate_prev_updated > 0)
@@ -1012,6 +1099,13 @@ static void sample_state(State *s) {
     snprintf(s->shrink_nonce, sizeof s->shrink_nonce, "3-0");
     s->shrink[0].idx = 3; s->shrink[0].old_bytes = 499000000000ULL; s->shrink[0].new_bytes = 146000000000ULL;
     s->shrink[1].idx = 4; s->shrink[1].old_bytes = 1000000000ULL;   s->shrink[1].new_bytes = 700000000ULL;
+    /* 11/10: the grow-back question -- drawn on the "growback" card only
+     * ("capture-end" sets its own kind in png_setup) */
+    s->ask_pending = 1; s->ask_kind = ASK_GROWBACK; s->nask = 2;
+    snprintf(s->ask_nonce, sizeof s->ask_nonce, "4-0");
+    snprintf(s->ask_subject, sizeof s->ask_subject, "sda");
+    s->ask[0].idx = 3; s->ask[0].fs_only = 0; s->ask[0].now_bytes = 146000000000ULL; s->ask[0].orig_bytes = 499000000000ULL;
+    s->ask[1].idx = 4; s->ask[1].fs_only = 1; s->ask[1].now_bytes = 700000000ULL;   s->ask[1].orig_bytes = 1000000000ULL;
     snprintf(s->msg_title, sizeof s->msg_title, "המחשב אינו רשום");
     snprintf(s->msg_sub, sizeof s->msg_sub, "רשמו אותו בקונסולה כמחשב בניית אימג'ים ורעננו.");
     snprintf(s->machine_name, sizeof s->machine_name, "BUILD-01");   /* #1073: the restore card's confirm field */
@@ -1025,13 +1119,16 @@ static void sample_state(State *s) {
 static const char *PNG_CARDS[] = { "login", "menu", "pick", "progress", "done", "room", "room-live",
                                    "class", "class-live", "cloner", "standby", "message", "restore", "direct",
                                    "tools", "tools-confirm", "tools-output", "shrink", "logout",
-                                   "restore-folder", "room-images", "restore-confirm", "room-drivers", "pick-hebrew" };
+                                   "restore-folder", "room-images", "restore-confirm", "room-drivers", "pick-hebrew",
+                                   "room-start-warn", "room-poweroff",
+                                   "growback", "capture-end" };
 
 /* Put the App in the state that routes to <card>; the flags that override
  * the route (message, task, round, session, done) are cleared first so a
  * user-supplied --state file renders every card, not just its own. */
 static void png_setup(App *a, const State *base, const char *card) {
     a->st = *base;
+    memset(&a->st.lc, 0, sizeof a->st.lc); memset(&a->lcu, 0, sizeof a->lcu);   /* #1322: its own cards below */
     a->st.msg_title[0] = a->st.msg_sub[0] = 0;
     a->st.task = TASK_NONE; a->st.has_round = 0; a->st.has_session = 0;
     a->showing_done = a->watching = a->force_progress = a->force_cloner = a->force_standby = 0;
@@ -1041,6 +1138,18 @@ static void png_setup(App *a, const State *base, const char *card) {
     room_drv_reset(a); room_drv_after_reload(a);                               /* #1269: off, but for one card */
     a->focus = HIT_USER; a->lang_he = 0;   /* #1245: every card starts in English (HIT_USER: what main() sets) */
     a->st.shrink_pending = !strcmp(card, "shrink") && base->shrink_pending;   /* #928: one card shows it */
+    /* 11/10: the question dialog on its two cards only. A state file that
+     * carries a question of its own is shown on its card; the sample's
+     * grow-back is turned into the end-of-capture question for that card. */
+    a->st.ask_pending = 0; a->ask_sent[0] = 0;
+    if (!strcmp(card, "growback") && base->ask_pending && base->ask_kind == ASK_GROWBACK) a->st.ask_pending = 1;
+    if (!strcmp(card, "capture-end") && base->ask_pending) {
+        a->st.ask_pending = 1;
+        if (base->ask_kind != ASK_CAPTURE_END) {
+            a->st.ask_kind = ASK_CAPTURE_END; a->st.nask = 0;
+            snprintf(a->st.ask_subject, sizeof a->st.ask_subject, "20");
+        }
+    }
     snprintf(a->signed_user, sizeof a->signed_user, "%s", a->user[0] ? a->user : "admin");
     if (!strcmp(card, "login"))         { a->signed_in = 0; }
     else if (!strcmp(card, "pick"))     { a->mode = MODE_CAPTURE; if (base->ndisks) { a->chosen_disk = 0; snprintf(a->name, sizeof a->name, "Office 2024 — סטנדרט"); a->folder_sel = base->nfolders ? 1 : 0; } }
@@ -1051,6 +1160,7 @@ static void png_setup(App *a, const State *base, const char *card) {
                                              a->focus = HIT_DESC; a->lang_he = 1; }
     else if (!strcmp(card, "progress")) { a->st.task = base->task == TASK_PENDING ? TASK_PENDING : TASK_RUNNING; }
     else if (!strcmp(card, "shrink"))   { a->st.task = TASK_RUNNING; }   /* #928: the question comes mid-capture */
+    else if (!strcmp(card, "capture-end")) { a->st.task = TASK_RUNNING; }   /* 11/10: over the finished capture */
     else if (!strcmp(card, "done"))     { a->st.task = TASK_DONE; a->watching = 1; }
     else if (!strcmp(card, "room"))     { a->mode = MODE_ROOM; a->room_target_set = 0; a->nroom_selection = 0; }
     else if (!strcmp(card, "room-live")){ a->mode = MODE_ROOM; a->st.has_round = 1; }
@@ -1084,6 +1194,16 @@ static void png_setup(App *a, const State *base, const char *card) {
                                                 pick_open_folder(a, 0); }   /* owner 10/10: inside a folder */
     else if (!strcmp(card, "restore-confirm")) { a->mode = MODE_RESTORE; if (base->nimages) a->restore_image_sel = 1;
                                                  a->confirm = CONFIRM_RESTORE; }   /* #1270 */
+    else if (!strcmp(card, "room-start-warn")) { a->mode = MODE_ROOM; a->st.has_round = 1; a->st.wave_open = 1;
+                                                 a->confirm = CONFIRM_ROOM_START_WARN; }   /* #432 */
+    else if (!strcmp(card, "room-poweroff")) {                                    /* #65 */
+        a->mode = MODE_ROOM; a->st.has_round = 1; a->st.wave_open = 1;
+        const char *mac = base->nroom_missing ? base->room_missing[0].mac : "3c:52:82:a1:00:22";
+        const char *name = base->nroom_missing && base->room_missing[0].name[0] ? base->room_missing[0].name : "CLONE-02";
+        snprintf(a->poweroff_mac, sizeof a->poweroff_mac, "%s", mac);
+        snprintf(a->poweroff_name, sizeof a->poweroff_name, "%s", name);
+        a->confirm = CONFIRM_ROOM_POWEROFF;
+    }
     else if (!strcmp(card, "room-images")) { a->mode = MODE_ROOM; a->room_target_set = 0; a->nroom_selection = 0;
                                              a->dd_open = HIT_ROOM_IMAGE; }   /* the picker, on the folders */
     else if (!strcmp(card, "restore"))  { a->mode = MODE_RESTORE; if (base->nimages) a->restore_image_sel = 1; }
@@ -1135,12 +1255,36 @@ static int render_png(App *a, const State *base, const char *prefix, int w, int 
                                        SCREEN_ROOM, /* "room-images": the image select open on the folders */
                                        SCREEN_RESTORE, /* "restore-confirm": the #1270 dialog */
                                        SCREEN_ROOM, /* "room-drivers" (#1269): the room setup, drivers on, pick mode */
-                                       SCREEN_PICK /* "pick-hebrew" (#1245): the language chip on "עב" */ };
+                                       SCREEN_PICK, /* "pick-hebrew" (#1245): the language chip on "עב" */
+                                       SCREEN_ROOM, /* "room-start-warn" (#432): the orange start question */
+                                       SCREEN_ROOM, /* "room-poweroff" (#65): "כבה אותו" asks first */
+                                       SCREEN_MENU, /* "growback" (11/10): the dialog over the menu, at boot */
+                                       SCREEN_PROGRESS /* "capture-end" (11/10): the dialog over the capture */ };
         /* One entry per card, or want[c] reads past the table -- that is exactly
          * what the lab saw when "direct" was added to PNG_CARDS alone. */
         _Static_assert(sizeof want / sizeof want[0] == sizeof PNG_CARDS / sizeof PNG_CARDS[0],
                        "want[] must have one Screen per PNG_CARDS entry");
         if (a->screen != want[c]) { fprintf(stderr, "native-gui: %s routed to screen %d, not %d\n", path, a->screen, want[c]); return 1; }
+        printf("wrote %s\n", path);
+    }
+    /* #1322: the boot choice and the local clone, one card per mockup state.
+     * A --state file that carries lc_ records is drawn as it is (tests). */
+    for (int c = 0; c < LC_PNG_NCARDS; c++) for (int t = 0; t < 2; t++) {
+        a->theme = themes[t];
+        png_setup(a, base, LC_PNG_CARDS[c]);
+        if (base->lc.screen) { a->st.lc = base->lc; a->force_cloner = 1; memset(&a->lcu, 0, sizeof a->lcu); lc_after_reload(a); }
+        else lc_png_setup(a, LC_PNG_CARDS[c]);
+        cairo_surface_t *sf = cairo_image_surface_create(CAIRO_FORMAT_RGB24, w, h);
+        cairo_t *cr = cairo_create(sf);
+        app_draw(a, cr, w, h);
+        cairo_destroy(cr);
+        char path[512];
+        snprintf(path, sizeof path, "%s-%s-%s.png", prefix, LC_PNG_CARDS[c], themes[t]->id);
+        cairo_status_t st = cairo_surface_write_to_png(sf, path);
+        cairo_surface_destroy(sf);
+        if (st != CAIRO_STATUS_SUCCESS) { fprintf(stderr, "native-gui: %s: %s\n", path, cairo_status_to_string(st)); return 1; }
+        Screen want = a->st.lc.screen == LC_SCREEN_BOOT ? SCREEN_LCBOOT : SCREEN_LOCAL;
+        if (a->screen != want) { fprintf(stderr, "native-gui: %s routed to screen %d, not %d\n", path, a->screen, want); return 1; }
         printf("wrote %s\n", path);
     }
     return 0;
@@ -1297,6 +1441,8 @@ int main(int argc, char **argv) {
         if (a.pressed_id) { int left = (int)((a.pressed_until - now_s()) * 1000) + 1; if (left < timeout) timeout = left > 0 ? left : 1; }
         if (a.tool_running) { timeout = 120; a.tool_spin += 0.4; scene_dirty = 1; }   /* #649: the spinner turns */
         if (a.screen == SCREEN_STANDBY && timeout > 500) { timeout = 500; scene_dirty = 1; }
+        if (a.screen == SCREEN_LCBOOT && timeout > 200) { timeout = 200; scene_dirty = 1; }    /* #1322: the count */
+        if (a.screen == SCREEN_LOCAL && timeout > 1000) { timeout = 1000; scene_dirty = 1; }
         if (in) input_rescan(in);               /* pick up a late/hot-plugged keyboard or mouse */
         int n = in ? input_fill_pollfds(in, fds, 32) : 0;
         int r = poll(n ? fds : NULL, n, timeout);

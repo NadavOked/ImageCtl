@@ -1,28 +1,24 @@
-"""אחרי קליטה — לחזור לתפריט או לכבות, במקום כיבוי אוטומטי בלבד (#409).
+"""אחרי קליטה — "כבה" (ברירת המחדל) או "חזרה לתפריט", בדיאלוג של הגואי (#409).
 
-נדב, 05/09, בקליטה הראשונה מחומרה: "צריך להוסיף שבסוף, כשהוא מסיים,
-**לחזור לתפריט הראשי** — אולי אני רוצה להפיץ לכיתה? או לכבות." עד כאן
-‏`do_task` ישן 20 שניות וכיבה, בלי לשאול.
+נדב, 05/09 (#409): "בסוף, כשהוא מסיים, לחזור לתפריט הראשי — או לכבות."
+זה נבנה כשאלה על **מסך הטקסט**; ב-11/10 מסכי הטקסט נמחקו, ונדב הכריע
+"הכול גואי": השאלה היא דיאלוג קטן בגואי (askgui.sh, ‏kind capture-end).
+"כבה" הוא ברירת המחדל: בלי גואי, או בלי תשובה עד `CAPTURE_END_ASK_S` —
+כיבוי, ההגנה שהייתה כאן לפני #409 (מי שקלט ויצא מהחדר מוצא מכונה כבויה).
 
-ההכרעה (תגובת ההיקף ב-Issue): **רק מחשב הבנייה** משתנה — תלמיד מאתחל
-ומחשב שיכפול מכבה, ושניהם נכונים ואינם נוגעים כאן. והברירה בלי תשובה
-נקבעה ב-Issue עצמו: **כיבוי אחרי פסק זמן**, ההגנה הקיימת — מי שקלט ויצא
-מהחדר מקבל מכונה כבויה והדיסק נשלף ממכונה כבויה.
+מה נבדק, על הפונקציות האמיתיות מול שרת דיווח אמיתי בתהליכון. הגואי מזויף
+בגבול שלו — `gui_ask_choice` מחזיר את התשובה שהוגדרה (`CE_ANSWER`), ריק =
+אין תשובה:
 
-מה נבדק, על הפונקציות האמיתיות מול שרת דיווח אמיתי בתהליכון:
-
-* **‏`1` חוזר לתפריט** — ‏`do_task` חוזר ללולאה, ו-`_build_standby`
-  מתאפס כדי ש-`build_console_screen` יצייר את `build_menu_flow` שוב
-  (הקליטה הוזמנה מהתפריט, ו-`build_standby` הדליק אותו).
-* **‏`2` מכבה מיד** — בלי ה-`sleep 20` שהיה.
-* **שומרים — עוברים בשני המצבים:** אין מסך (EOF) → כיבוי; מסך שאיש
-  אינו עונה בו (צינור פתוח ושקט) → כיבוי אחרי התקרה, לא המתנה לנצח.
-* **השאלה עוברת במנגנון הקיים** — ‏`attended` (‏hello עם `prompt`, #906)
-  ושחרור המסך הגרפי כמו לשאלת הכיווץ (`shrink_gui_release`).
+* **"חזרה לתפריט"** — ‏`do_task` חוזר ללולאה ו-`_build_standby` מתאפס.
+* **"כבה"** — כיבוי מיד, בלי המתנה.
+* **בלי תשובה** — כיבוי; ומקש "1" שמחכה ב-stdin (בטקסט הישן "תפריט") אינו
+  נקרא.
+* **השאלה עוברת במנגנון הקיים** — ‏`attended` (‏hello עם `prompt`, #906).
+* **הגואי מופעל לפני הקריאה** — שאלת הכיווץ היא דיאלוג גרפי בלבד (#928).
 
 הכיבוי מזויף כ-`exit 0` (כמו `poweroff -f`: אינו חוזר), ו-`sleep` מזויף
-כרישום — כך "מכבה מיד" נמדד בעקבה ולא בשעון. ‏`IMAGECTL_TEST=0`: ה-`exit 0`
-של מצב הטסט יושב לפני הכיבוי, ולא לפניו אין מה לבדוק.
+כרישום. ‏`IMAGECTL_TEST=0`: ה-`exit 0` של מצב הטסט יושב לפני הכיבוי.
 
 הפלט הולך לקובץ ולא ל-PIPE (גוטצ'ה ב-`CLAUDE.md`); ה-stdin הוא צינור
 משלנו ולא ירושה (‏#14).
@@ -53,14 +49,16 @@ from test_hold_and_capture import CAPTURE_STUBS, TASK_ANSWER
 
 END_STUBS = (
     'attended() { echo "ASKED $1" >> "$RUN_DIR/trace"; shift; "$@"; }; '
-    'shrink_gui_release() { echo "GUI-RELEASE" >> "$RUN_DIR/trace"; }; '
+    'gui_parent() { echo "GUI-START" >> "$RUN_DIR/trace"; return 1; }; '
+    'gui_ask_choice() { echo "DIALOG $*" >> "$RUN_DIR/trace"; '
+    '[ -n "${CE_ANSWER:-}" ] || return 1; echo "$CE_ANSWER"; }; '
     'finish_and_stop() { echo "POWEROFF" >> "$RUN_DIR/trace"; exit 0; }; '
     'sleep() { echo "SLEEP $1" >> "$RUN_DIR/trace"; }; '
 )
 
 
 def run_end(tmp_path: Path, server: str, *, answer: str | None,
-            keep_open: bool = False, ask_s: int = 20) -> dict:
+            keep_open: bool = False, gui: str = "") -> dict:
     """מריץ קליטה מוצלחת עד סופה. ‏`answer` נכתב ל-stdin ואז הוא נסגר;
     ‏`keep_open` משאיר אותו פתוח ושקט עד שהמעטפת יוצאת — מסך בלי אדם."""
     run = tmp_path / "run"
@@ -74,11 +72,9 @@ def run_end(tmp_path: Path, server: str, *, answer: str | None,
         f"SERVER={shlex.quote(server)} "
         f'RESP={shlex.quote(posix(run / "resp.json"))} '
         f"IMAGECTL_TEST=0 HTTP_RETRIES=0 HTTP_TIMEOUT=4 PROGRESS_INTERVAL_S=0.2 "
-        f"FINAL_REPORT_TRIES=2 FINAL_REPORT_GAP_S=0 D_ROLE=build "
-        f"CAPTURE_END_ASK_S={ask_s}; "
+        f"FINAL_REPORT_TRIES=2 FINAL_REPORT_GAP_S=0 D_ROLE=build CE_ANSWER={gui!r}; "
         + sourced_libs() + STUBS + CAPTURE_STUBS + END_STUBS + LOOP_STUB
         + f". {posix(funcs)}; "
-        # הקליטה הוזמנה מהתפריט: ‏build_standby הדליק את הדגל.
         + '_build_standby=1; do_task; '
         + 'echo "RETURNED rc=$? standby=$_build_standby"'
     )
@@ -118,88 +114,73 @@ def waited(trace: list[str]) -> list[str]:
     return [t for t in trace if t.startswith("SLEEP ") and t != "SLEEP 0"]
 
 
-# --- הבחירה ---------------------------------------------------------------
+# --- אין שאלה: כיבוי ---------------------------------------------------------
 
 
 @native_tools
-def test_one_returns_to_the_build_menu(tmp_path, reports):
-    """**לב #409.** ‏`1` — המכונה נשארת דלוקה וחוזרת לתפריט, כדי להפיץ
-    לכיתה מיד אחרי הקליטה. הקוד הישן ישן 20 שניות וכיבה בכל מקרה."""
-    result = run_end(tmp_path, url_of(reports), answer="1\n")
-
+def test_menu_on_the_dialog_returns_to_the_menu(tmp_path, reports):
+    """**לב #409.** "חזרה לתפריט" — המכונה נשארת דלוקה וחוזרת ללולאה."""
+    result = run_end(tmp_path, url_of(reports), answer=None, gui="menu")
     assert "POWEROFF" not in result["trace"], "המכונה כבתה למרות שהמפעיל בחר תפריט"
-    assert "RETURNED rc=0 standby=0" in result["out"], (
-        "‏do_task לא חזר ללולאה, או שהתפריט יישאר מוסתר (‏_build_standby)")
+    assert "RETURNED rc=0 standby=0" in result["out"], result["out"]
     assert "back to the menu" in result["log"]
-    # הדיווח נשלח לפני השאלה — הקליטה סגורה בשרת גם כשלא מכבים.
     assert len(reports.received) == 1 and reports.received[0]["state"] == "done"
 
 
 @native_tools
-def test_two_powers_off_at_once(tmp_path, reports):
-    """‏`2` — כיבוי **מיד**, בלי ההמתנה של 20 שניות שהייתה לפניו."""
-    result = run_end(tmp_path, url_of(reports), answer="2\n")
-
+def test_poweroff_on_the_dialog_powers_off_at_once(tmp_path, reports):
+    result = run_end(tmp_path, url_of(reports), answer=None, gui="poweroff")
     assert "POWEROFF" in result["trace"]
-    assert waited(result["trace"]) == [], f"המתנה לפני הכיבוי: {waited(result['trace'])}"
+    assert waited(result["trace"]) == []
     assert "RETURNED" not in result["out"]
 
 
 @native_tools
-def test_the_screen_says_there_is_a_choice(tmp_path, reports):
-    """ההודעה אומרת שאפשר לבחור, ומה יקרה בלי תשובה — לא "You can power
-    off", משפט שנשמע כמו הוראה."""
-    result = run_end(tmp_path, url_of(reports), answer="2\n")
-
-    assert "Capture complete. The image is in the library." in result["out"]
-    assert "[1] Back to the menu" in result["out"]
-    assert "[2] Power off" in result["out"]
-    assert "Powering off in 20 seconds" in result["out"]
+def test_no_answer_powers_off_and_no_key_is_read(tmp_path, reports):
+    """בלי גואי/בלי תשובה — כיבוי. "1" ב-stdin היה "תפריט" בטקסט הישן."""
+    result = run_end(tmp_path, url_of(reports), answer="1\n")
+    assert "POWEROFF" in result["trace"], result["out"]
+    assert "RETURNED" not in result["out"]
+    assert "Back to the menu" not in result["out"]
+    assert "capture complete -- powering off" in result["log"]
 
 
 @native_tools
-def test_the_question_goes_through_the_existing_mechanism(tmp_path, reports):
-    """‏`attended` — ה-hello נושא את השאלה לקונסולה בזמן ההמתנה (#906) —
-    והמסך הגרפי משוחרר לפני השאלה, כמו לשאלת הכיווץ: שאלה על מסך הטקסט
-    מאחורי הקיוסק לא נראית ולא נענית."""
-    result = run_end(tmp_path, url_of(reports), answer="2\n")
-
+def test_the_question_is_the_gui_dialog_through_attended(tmp_path, reports):
+    """‏`attended` נושא את השאלה לקונסולה (#906); השאלה עצמה היא הדיאלוג
+    capture-end, עם השניות של CAPTURE_END_ASK_S כ-subject וכתקרה."""
+    result = run_end(tmp_path, url_of(reports), answer=None, gui="poweroff")
     asked = [t for t in result["trace"] if t.startswith("ASKED ")]
-    assert asked == ["ASKED Capture complete: back to the menu, or power off"]
-    trace = result["trace"]
-    assert "GUI-RELEASE" in trace
-    assert trace.index("GUI-RELEASE") < trace.index(asked[0])
+    assert asked == ["ASKED Capture complete: power off, or back to the menu"]
+    assert "DIALOG capture-end 20  20" in result["trace"], result["trace"]
 
 
 @native_tools
-def test_an_invalid_key_is_not_a_choice(tmp_path, reports):
-    """קלט לא חוקי מצייר שוב ואינו בוחר בשקט; הבחירה הבאה היא שקובעת."""
-    result = run_end(tmp_path, url_of(reports), answer="x\n\n1\n")
-
-    assert "POWEROFF" not in result["trace"]
-    assert "RETURNED rc=0 standby=0" in result["out"]
-
-
-# --- בלי תשובה: כיבוי — שומרים שעוברים גם על הקוד שלפני #409 --------------------
-
-
-@native_tools
-def test_no_screen_powers_off(tmp_path, reports):
-    """EOF — אין מסך, או שהוא נסגר — הוא "אין תשובה", והברירה היא כיבוי."""
+def test_no_wait_before_the_power_off(tmp_path, reports):
+    """אין 20 השניות של השאלה."""
     result = run_end(tmp_path, url_of(reports), answer=None)
 
     assert "POWEROFF" in result["trace"]
-    assert "RETURNED" not in result["out"]
+    assert waited(result["trace"]) == [], f"המתנה לפני הכיבוי: {waited(result['trace'])}"
 
 
 @native_tools
-def test_nobody_at_the_keyboard_powers_off_after_the_ceiling(tmp_path, reports):
-    """מסך פתוח שאיש אינו עונה בו: כיבוי אחרי התקרה, לא המתנה לנצח.
-
-    הצינור נשאר פתוח ושקט עד שהמעטפת יוצאת; בלי תקרה ‏`read` היה חוסם
-    והריצה הייתה נופלת על `RUN_TIMEOUT_S`."""
-    result = run_end(tmp_path, url_of(reports), answer=None,
-                     keep_open=True, ask_s=1)
+def test_the_report_is_sent_before_the_power_off(tmp_path, reports):
+    result = run_end(tmp_path, url_of(reports), answer=None)
 
     assert "POWEROFF" in result["trace"]
-    assert "RETURNED" not in result["out"]
+    assert len(reports.received) == 1 and reports.received[0]["state"] == "done"
+
+
+@native_tools
+def test_the_gui_is_started_before_the_capture_reads(tmp_path, reports):
+    """שאלת הכיווץ היא דיאלוג גרפי בלבד (#928, 11/10). קליטה שהוזמנה
+    מהקונסולה מגיעה לפעמים לפני שהגואי עלה — ‏`do_task` מפעיל אותו לפני
+    הקריאה, ולא נופל למסך טקסט."""
+    result = run_end(tmp_path, url_of(reports), answer=None)
+
+    trace = result["trace"]
+    capture = next((t for t in trace if t.startswith("CAPTURE ")), None)
+    assert "GUI-START" in trace and capture, trace
+    assert trace.index("GUI-START") < trace.index(capture)
+    assert "a shrink question will cancel the capture" in result["log"]

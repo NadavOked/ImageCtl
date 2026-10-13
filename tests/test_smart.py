@@ -343,7 +343,22 @@ def fake_memory(failed: dict[str, str]) -> str:
             'json_get_join() {{ [ -s "$1" ] || return 1; echo ok; {lines} }}; ').format(lines=lines)
 
 
-def preflight(tmp_path, body, keys, disks="sda", failed=(), extra=""):
+#: ‏11/10 (GUI בלבד): תפריט ה-SMART בטקסט הוסר, וההכרעה מגיעה **רק** מהמסך
+#: הגרפי (‏gui_smart_choice). הזיוף כאן הוא הגבול הזה: תור תשובות בקובץ,
+#: אחת לכל שאלה, וכל שאלה נרשמת ב-`asked` (הראיה החיובית שנשאלה). תור ריק
+#: = אין גואי (return 1) — ואז ברירת "אין תשובה" של הצבע.
+GUI_STUB = (
+    'gui_smart_choice() { echo "$1" >> "$RUN_DIR/asked"; '
+    '_q=$(sed -n 1p "$RUN_DIR/gui_answers" 2>/dev/null); '
+    '[ -n "$_q" ] || return 1; '
+    'sed -n \'2,$p\' "$RUN_DIR/gui_answers" > "$RUN_DIR/gui_answers.n"; '
+    'mv "$RUN_DIR/gui_answers.n" "$RUN_DIR/gui_answers"; echo "$_q"; }; '
+)
+
+
+def preflight(tmp_path, body, gui=(), disks="sda", failed=(), extra="", keys="1\n"):
+    """‏`gui` = התשובות שהמסך הגרפי נותן, לפי הסדר. ‏`keys` הם מקשים שמחכים
+    ב-stdin — הם **אינם** נקראים יותר (בקוד הישן "1" היה "החלף")."""
     run = tmp_path / "run"; run.mkdir(exist_ok=True)
     dev = tmp_path / "dev"; dev.mkdir(exist_ok=True)
     box = tmp_path / "box"; (box / "bin").mkdir(parents=True, exist_ok=True)
@@ -352,62 +367,64 @@ def preflight(tmp_path, body, keys, disks="sda", failed=(), extra=""):
     # ‏#874: `failed` הוא dev → cause (מחרוזת = cable); הרשומה מגיעה מהשרת.
     failed = {d: "cable" for d in failed} if not isinstance(failed, dict) else failed
     (run / "response.json").write_text('{"schema":1}', newline="\n")
-    extra = fake_memory(failed) + extra
+    (run / "gui_answers").write_text("".join(f"{a}\n" for a in gui), newline="\n")
+    extra = fake_memory(failed) + GUI_STUB + extra
     (box / "bin" / "sgdisk").write_text(GATE_SGDISK.format(box=posix(box)), newline="\n")
     sc = make_smartctl(tmp_path, body)
-    # המקשים מוזרקים ב-`printf` בתוך הסקריפט (‏\n נקי): stdin של פייתון
-    # בווינדוס הופך \n ל-\r\n, וה-`read` היה מקבל "2\r" (מלכודת ה-CR של
-    # CONTRIBUTING). על ה-TTY האמיתי (לינוקס) אין CR.
     keys_printf = keys.replace("\n", "\\n")
     out = sh(f'chmod +x {posix(box)}/bin/sgdisk; export PATH="$(cd {posix(box)}/bin && pwd):$PATH"; '
              + env(run, dev, smartctl=sc) + PRELUDE + extra
              + f"printf '{keys_printf}' | smart_preflight sess1 {disks}")
     assert out.returncode == 0, out.stderr
-    # ‏stderr חוזר גם הוא: התפריט מצויר עליו, ו-"Choose [" שם הוא הראיה
-    # החיובית שנשאלה שאלה — היעדרו הוא הראיה שלא נשאלה.
     return out.stdout.strip(), run, out.stderr
 
 
+def asked(run: Path) -> list[str]:
+    f = run / "asked"
+    return f.read_text().split() if f.exists() else []
+
+
 def test_skip_removes_the_disk_from_the_write_list(tmp_path):
-    written, run, _ = preflight(tmp_path, full(HEALTH_FAIL), "3\n")
+    written, run, _ = preflight(tmp_path, full(HEALTH_FAIL), gui=["skip"])
     assert written == ""
     assert (run / "targets/sda/state").read_text().strip() == "skipped"
 
 
 def test_rescue_keeps_the_disk(tmp_path):
-    written, _, err = preflight(tmp_path, full(HEALTH_FAIL), "2\n")
+    written, run, _ = preflight(tmp_path, full(HEALTH_FAIL), gui=["rescue"])
     assert written == "sda"
-    assert "Choose [" in err
+    assert asked(run) == ["sda"]
 
 
 def test_a_disk_with_bad_counters_but_passed_health_is_written_without_asking(tmp_path):
-    """‏#872: 5/197/198/199 אינם עוצרים. הראיה החיובית: התפריט לא צויר
-    ("Choose [" אינו ב-stderr) והדיסק ברשימת הכתיבה. בקרה שלילית: על main
-    הדיסק הזה הוא `fail uncorrectable`, התפריט מצויר וה-EOF מדלג עליו."""
+    """‏#872: 5/197/198/199 אינם עוצרים. הראיה החיובית: לא נשאלה שאלה
+    (‏`asked` ריק) והדיסק ברשימת הכתיבה."""
     written, run, err = preflight(tmp_path, full(HEALTH_OK, realloc=8, pending=4,
-                                                 uncorr=2, crc=55242), "")
+                                                 uncorr=2, crc=55242))
     assert written == "sda"
-    assert "Choose [" not in err, err
+    assert asked(run) == [], err
 
 
 def test_replace_removes_the_disk_and_flags_awaiting(tmp_path):
-    written, run, _ = preflight(tmp_path, full(HEALTH_FAIL), "1\n")
+    written, run, _ = preflight(tmp_path, full(HEALTH_FAIL), gui=["replace"])
     assert written == ""
     assert (run / "smart/awaiting_replace").read_text().strip() == "sda"
     assert (run / "targets/sda/state").read_text().strip() == "replacing"
 
 
-def test_bad_key_reprompts_then_takes_the_choice(tmp_path):
-    # קלט לא-חוקי אינו בחירה שקטה: התפריט מצויר שוב עד מקש תקין.
-    written, _, _ = preflight(tmp_path, full(HEALTH_FAIL), "9\nx\n2\n")
+def test_without_a_gui_the_keyboard_is_never_read(tmp_path):
+    """‏11/10: אין תפריט טקסט. "1" שמחכה ב-stdin היה "החלף" בקוד הישן;
+    עכשיו — ברירת הכתום (כותב), והמקש נשאר במקומו."""
+    written, run, err = preflight(tmp_path, full(HEALTH_FAIL), keys="1\n")
     assert written == "sda"
+    assert not (run / "smart/awaiting_replace").exists()
+    assert "Choose [" not in err
 
 
 def test_a_failing_disk_does_not_stop_a_healthy_sibling(tmp_path):
     # מגירה אחת מדולגת, השנייה נכתבת -- כשל דיסק אחד לא מפיל את הסבב.
-    # שתי המגירות מקבלות אותו פלט smartctl (fake יחיד), ולכן הראשונה
-    # מדולגת (מקש 3) והשנייה ניצלת (מקש 2).
-    written, _, _ = preflight(tmp_path, full(HEALTH_FAIL), "3\n2\n", disks="sda sdb")
+    written, _, _ = preflight(tmp_path, full(HEALTH_FAIL), gui=["skip", "rescue"],
+                              disks="sda sdb")
     assert written == "sdb"
 
 
@@ -415,32 +432,20 @@ def test_a_failing_disk_does_not_stop_a_healthy_sibling(tmp_path):
 
 def test_a_disk_that_failed_the_previous_clone_is_asked_replace_or_continue(tmp_path):
     """‏#872 (נדב 16/09): זיכרון השרת (#874: לפי סידורי) גובר על SMART נקי.
-    הדיסק האדום נכנס לאותה שאלה, אבל בלי "כתוב בכל זאת" — שתי אפשרויות
-    בלבד, ו"המשך" (מקש 2) = מדלג. השכן הבריא נכתב בלי שאלה, והסבב ממשיך.
-    הסיבה שהשרת סיווג (cable) היא ה-reason. ‏sgdisk אינו נקרא (#845 הוסר).
-    בקרה שלילית: על main הסוכן קורא `sgdisk -p` (הזיוף כאן מדפיס כלום →
-    "לא נקרא"), sda נכתב בלי שאלה, ו-sgdisk.calls אינו ריק."""
-    written, run, err = preflight(tmp_path, full(HEALTH_OK), "2\n",
+    הדיסק האדום נשאל, "המשך" = מדלג; השכן הבריא נכתב בלי שאלה, והסבב
+    ממשיך. הסיבה שהשרת סיווג (cable) היא ה-reason. ‏sgdisk אינו נקרא."""
+    written, run, err = preflight(tmp_path, full(HEALTH_OK), gui=["skip"],
                                   disks="sda sdb", failed=("sda",))
     assert written == "sdb"
     assert (run / "targets/sda/state").read_text().strip() == "skipped"
     assert "failed_last: cable" in (run / "targets/sda/error").read_text()
     assert not (tmp_path / "box" / "sgdisk.calls").exists()
-    assert "[2] Continue without this disk" in err, err
-    assert "Write anyway" not in err and "[3]" not in err, err
-    assert err.count("Choose [1-2]") == 1, err   # השכן הבריא לא נשאל
-
-
-def test_a_red_disk_has_no_key_3_and_reprompts(tmp_path):
-    # מקש 3 אינו אפשרות על אדום: התפריט מצויר שוב; ואז EOF -> ברירת האדום = דלג.
-    written, run, err = preflight(tmp_path, full(HEALTH_OK), "3\n", failed=("sda",))
-    assert written == ""
-    assert (run / "targets/sda/state").read_text().strip() == "skipped"
-    assert err.count("Choose [1-2]") == 2, err
+    assert asked(run) == ["sda"], err   # השכן הבריא לא נשאל
 
 
 def test_replace_on_a_red_disk_powers_off_for_the_swap(tmp_path):
-    written, run, _ = preflight(tmp_path, full(HEALTH_OK), "1\n", failed={"sda": "disk"})
+    written, run, _ = preflight(tmp_path, full(HEALTH_OK), gui=["replace"],
+                                failed={"sda": "disk"})
     assert written == ""
     assert (run / "smart/awaiting_replace").read_text().strip() == "sda"
     assert "awaiting disk swap (failed_last: disk)" in (run / "targets/sda/error").read_text()
@@ -450,11 +455,11 @@ def test_a_red_disk_by_slot_is_red_even_with_a_new_serial(tmp_path):
     """‏#874: הרשומה לפי החריץ (מכונה+פורט) — הדיסק הוחלף, הכבל לא. הסידורי
     כאן אחר (S-sda מול הרשומה על X), והחריץ 1 תואם → אדום, כמו לפי סידורי."""
     written, run, err = preflight(
-        tmp_path, full(HEALTH_OK), "2\n",
+        tmp_path, full(HEALTH_OK), gui=["skip"],
         extra='disk_port() { printf 1; }; json_get_join() { echo ok; echo "X|1|cable"; }; ')
     assert written == ""
     assert "failed_last: cable" in (run / "targets/sda/error").read_text()
-    assert "Choose [1-2]" in err, err
+    assert asked(run) == ["sda"], err
 
 
 def test_the_memory_is_refreshed_from_the_last_hello_before_the_gate(tmp_path):
@@ -462,14 +467,14 @@ def test_the_memory_is_refreshed_from_the_last_hello_before_the_gate(tmp_path):
     בקונסולה (איננה בתשובה) אינה צובעת עוד. הקובץ הישן מהאתחול נדרס."""
     run = tmp_path / "run"; run.mkdir()
     (run / "disk_failures").write_text("ok\nS-sda||cable\n", newline="\n")
-    written, run, err = preflight(tmp_path, full(HEALTH_OK), "")   # התשובה: בלי כשלים
+    written, run, err = preflight(tmp_path, full(HEALTH_OK))   # התשובה: בלי כשלים
     assert written == "sda"
-    assert "Choose [" not in err, err
+    assert asked(run) == [], err
 
 
 def test_a_screen_that_offers_rescue_on_a_red_disk_is_not_obeyed(tmp_path):
     # מסך ישן (3 כפתורים) שהחזיר rescue על failed_last: לא מתקבל -- מדלגים.
-    written, run, _ = preflight(tmp_path, full(HEALTH_OK), "", failed=("sda",),
+    written, run, _ = preflight(tmp_path, full(HEALTH_OK), failed=("sda",),
                                 extra='gui_smart_choice() { echo rescue; }; ')
     assert written == ""
     assert (run / "targets/sda/state").read_text().strip() == "skipped"
@@ -478,16 +483,16 @@ def test_a_screen_that_offers_rescue_on_a_red_disk_is_not_obeyed(tmp_path):
 # --- #872: בלי תשובה — "המשך" של אותו צבע: כתום כותב, אדום מדלג ---------------
 
 def test_no_answer_on_an_orange_disk_writes_it(tmp_path):
-    """‏EOF על fail (כתום) = המשך = כותב. בקרה שלילית: על main EOF = דלג
-    בשני הצבעים, והדיסק אינו ברשימת הכתיבה."""
-    written, run, err = preflight(tmp_path, full(HEALTH_FAIL), "")
-    assert "Choose [1-3]" in err, err
+    """בלי גואי / בלי תשובה על fail (כתום) = המשך = כותב."""
+    written, run, err = preflight(tmp_path, full(HEALTH_FAIL))
+    assert asked(run) == ["sda"], err
+    assert "no answer from the GUI" in err, err
     assert written == "sda"
 
 
 def test_no_answer_on_a_red_disk_skips_it(tmp_path):
-    written, run, err = preflight(tmp_path, full(HEALTH_OK), "", failed=("sda",))
-    assert "Choose [1-2]" in err, err
+    written, run, err = preflight(tmp_path, full(HEALTH_OK), failed=("sda",))
+    assert asked(run) == ["sda"], err
     assert written == ""
     assert (run / "targets/sda/state").read_text().strip() == "skipped"
 
@@ -526,8 +531,9 @@ def test_smart_gate_returns_1_when_all_disks_are_skipped(tmp_path):
     for d in ("sda", "sdb"):
         (dev / d).write_bytes(b"\x00")
     sc = make_smartctl(tmp_path, full(HEALTH_FAIL))
-    out = sh(env(run, dev, smartctl=sc) + PRELUDE
-             + "printf '3\\n3\\n' | smart_gate sess1 sda sdb; echo \"rc=$?\"")
+    (run / "gui_answers").write_text("skip\nskip\n", newline="\n")
+    out = sh(env(run, dev, smartctl=sc) + PRELUDE + GUI_STUB
+             + 'smart_gate sess1 sda sdb; echo "rc=$?"')
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == "rc=1", out.stdout   # לא נכתב דבר, השער עצר
     assert (run / "targets/sda/state").read_text().strip() == "skipped"
@@ -605,7 +611,8 @@ def test_hello_keeps_going_while_the_operator_is_asked(tmp_path):
     out = sh(env(run, dev) + PRELUDE + FAKE_HELLO
              + 'export ATTENDED_BEAT_S=0.3; '
              + 'http_post_json() { cat "$2" >> "$RUN_DIR/hellos"; echo >> "$RUN_DIR/hellos"; }; '
-             + "(sleep 1.3; printf '3\n') | smart_choice 'Disk 1' 'SMART fail (x)' sda fail x rescue")
+             + 'gui_smart_choice() { sleep 1.3; echo skip; }; '
+             + "smart_choice 'Disk 1' 'SMART fail (x)' sda fail x rescue")
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == "skip", out.stdout          # ההכרעה עצמה לא נפגעה
     lines = (run / "hellos").read_text().splitlines() if (run / "hellos").exists() else []
@@ -627,7 +634,8 @@ def test_the_beat_stops_with_the_answer(tmp_path):
     out = sh(env(run, dev) + PRELUDE + FAKE_HELLO
              + 'export ATTENDED_BEAT_S=0.2; '
              + 'http_post_json() { echo hello >> "$RUN_DIR/hellos"; }; '
-             + "_dec=$(printf '1\n' | smart_choice 'Disk 1' 'ctx' sda fail x rescue); "
+             + 'gui_smart_choice() { echo replace; }; '
+             + "_dec=$(smart_choice 'Disk 1' 'ctx' sda fail x rescue); "
              + 'sleep 0.8; echo "dec=$_dec"; _n=$(wc -l < "$RUN_DIR/hellos"); '
              + 'sleep 0.8; echo "grew=$(( $(wc -l < "$RUN_DIR/hellos") - _n ))"')
     assert out.returncode == 0, out.stderr
@@ -645,21 +653,30 @@ def test_a_question_inside_a_question_beats_once_and_hands_back(tmp_path):
     run = tmp_path / "run"; run.mkdir()
     dev = tmp_path / "dev"; dev.mkdir()
     out = sh(env(run, dev) + PRELUDE + FAKE_HELLO
-             + 'export ATTENDED_BEAT_S=0.2; '
-             + 'http_post_json() { cat "$2" >> "$RUN_DIR/hellos"; echo >> "$RUN_DIR/hellos"; }; '
-             + 'inner() { sleep 0.7; echo INNER-END >> "$RUN_DIR/hellos"; }; '
-             + 'outer() { attended inner inner; sleep 0.7; echo OUTER-END >> "$RUN_DIR/hellos"; }; '
-             + 'attended outer outer; _n=$(wc -l < "$RUN_DIR/hellos"); sleep 0.8; '
-             + 'echo "grew=$(( $(wc -l < "$RUN_DIR/hellos") - _n ))"')
+             + 'export ATTENDED_BEAT_S=1; '
+             + 'http_post_json() { printf "%s\\n" "$(cat "$2")" >> "$RUN_DIR/hellos"; }; '
+             + 'wait_for_hellos() { _p=$1; _n=$2; _i=0; '
+             + 'while :; do _seen=$(grep -c "\\\"prompt\\\":\\\"$_p\\\"" '
+             + '"$RUN_DIR/hellos" 2>/dev/null) || _seen=${_seen:-0}; '
+             + '[ "$_seen" -lt "$_n" ] || break; [ "$_i" -lt 50 ] || return 1; '
+             + 'sleep 0.1; _i=$((_i + 1)); done; }; '
+             + 'inner() { wait_for_hellos inner 2 || return 1; : > "$RUN_DIR/inner-end"; }; '
+             + 'outer() { attended inner inner || return 1; wait_for_hellos outer 2 || return 1; '
+             + ': > "$RUN_DIR/outer-end"; }; '
+             + 'attended outer outer; _rc=$?; _n=$(wc -l < "$RUN_DIR/hellos"); _i=0; '
+             + 'while [ "$_i" -lt 5 ]; do sleep 0.1; '
+             + '[ "$(wc -l < "$RUN_DIR/hellos")" -eq "$_n" ] || break; _i=$((_i + 1)); done; '
+             + 'echo "grew=$(( $(wc -l < "$RUN_DIR/hellos") - _n ))"; exit "$_rc"')
     assert out.returncode == 0, out.stderr
     assert "grew=0" in out.stdout, out.stdout
-    lines = [ln for ln in (run / "hellos").read_text().splitlines() if ln]
-    tags = [ln if ln.endswith("-END") else json.loads(ln)["prompt"] for ln in lines]
-    inner_end, outer_end = tags.index("INNER-END"), tags.index("OUTER-END")
-    during_inner = tags[:inner_end]
-    after_inner = tags[inner_end + 1:outer_end]
-    assert during_inner.count("inner") >= 2 and "outer" not in during_inner, tags
-    assert after_inner.count("outer") >= 2 and "inner" not in after_inner, tags
+    assert (run / "inner-end").exists() and (run / "outer-end").exists()
+    raw = (run / "hellos").read_bytes()
+    lines = [ln for ln in raw.split(b"\n")[:-1] if ln]  # ignore a partial final append
+    prompts = [json.loads(line)["prompt"] for line in lines]
+    inner_count = prompts.count("inner")
+    outer_count = prompts.count("outer")
+    assert inner_count >= 2 and outer_count >= 2, prompts
+    assert prompts == ["inner"] * inner_count + ["outer"] * outer_count, prompts
 
 
 def test_a_plain_beat_carries_no_prompt(tmp_path):

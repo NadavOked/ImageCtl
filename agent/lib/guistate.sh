@@ -50,6 +50,7 @@ gui_state() {
     # #1257: this initrd's stamp is known even before its first hello reaches the server.
     printf 'agent_version=%s\n' "${AGENT_VERSION:-unknown}" >> "$GUI_DIR/state.next" || return 1
     gui_shrink_state >> "$GUI_DIR/state.next" || return 1   # #928: the capture's shrink question
+    gui_ask_state >> "$GUI_DIR/state.next" || return 1      # 11/10: grow-back / end of capture (askgui.sh)
     gui_hello_state >> "$GUI_DIR/state.next" || return 1
     # #434: the power-off countdown -- the epoch idle.sh wrote; absent = none.
     [ -s "$RUN_DIR/idle.warn" ] && { printf 'idle_poweroff_at=%s\n' "$(cat "$RUN_DIR/idle.warn")" >> "$GUI_DIR/state.next" || return 1; }
@@ -103,6 +104,10 @@ gui_state() {
                   .written_drives,.target_drives,.ready_drives,.remaining_drives,
                   (.elapsed_s // -1),(.rate_bps // -1),(.eta_s // -1)] |
                   map(tostring|gsub("[\\r\\n|]";" "))|join("|")) end),
+              # #432: the orange lines before "start"; #65: who the wave waits for.
+              (if .round == null then empty else (.round.precheck // [])[] | "room_warn=" + (.text_he | clean) end),
+              (if .round == null then empty else (.round.missing // [])[] | "room_missing=" +
+                ([.mac, .name, .reason, (if .can_poweroff then 1 else 0 end), .text_he] | map(clean) | join("|")) end),
               (.machines[] | row),
               (.machines | to_entries[] |
                 .key as $mi | .value as $m |
@@ -122,7 +127,9 @@ gui_state() {
                         then ($d.packages // [] | join(", ")) elif $d.state == "failed"
                         then ($d.error // "") else ($d.reason // "") end),
                       # #704: the operator name of the slot of this drawer; "" = "disk N".
-                      (.slot_name // "")]
+                      (.slot_name // ""),
+                      # #432: ok / slow / unknown ("" = an older server); only slow colours.
+                      (.link_state // "")]
                      | map(clean) | join("|"))),
                 # #704: names of the SATA slots, empty ones included.
                 (($m.slot_names // {}) | to_entries[] | select(.key | test("^sata:[1-9][0-9]?$")) |
@@ -195,7 +202,7 @@ gui_state_loop() {
         if ! gui_state; then
             printf 'native-gui: state could not be verified\n' >&2
             { printf 'message=State could not be verified|Check connection; see agent log\n' &&
-                gui_server_addr && gui_shrink_state; } > "$GUI_DIR/state.next" &&
+                gui_server_addr && gui_shrink_state && gui_ask_state; } > "$GUI_DIR/state.next" &&
                 mv "$GUI_DIR/state.next" "$GUI_DIR/state" || return 1
         fi
         sleep 2

@@ -11,6 +11,7 @@ import json
 import re
 import socket
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -94,6 +95,7 @@ class Snapshot:
     console_url: str
     no_address: bool
     fingerprint: str
+    version_verified: bool = True
     address_lookup_failed: bool = False
     certificate_sans: tuple[str, ...] = ()
     certificate_not_after: str = "unknown"
@@ -260,16 +262,43 @@ def _round(conn) -> DeployRound | None:
     )
 
 
+_VERSION_CACHE: dict[tuple[str, str], tuple[str, bool]] = {}
+
+
 def _version(runner: Runner, repo_dir: Path,
-             manifest_file: Path = ISO_MANIFEST) -> str:
+             manifest_file: Path = ISO_MANIFEST) -> tuple[str, bool]:
+    head_result = runner(["git", "-C", str(repo_dir), "rev-parse", "HEAD"])
+    head = _command_text(head_result) if head_result.returncode == 0 else ""
+    cache_key = (str(repo_dir), head)
+    if head and cache_key in _VERSION_CACHE:
+        return _VERSION_CACHE[cache_key]
+    tags = runner(["git", "-C", str(repo_dir), "tag", "--points-at", "HEAD"])
+    candidates = []
+    if tags.returncode == 0:
+        from server.update import semver_key
+        candidates = sorted((tag for tag in tags.stdout.splitlines() if semver_key(tag)),
+                            key=semver_key, reverse=True)
+    for tag in candidates:
+        checked = runner([
+            sys.executable, "-I", str(repo_dir / "tools" / "verify-release-tag.py"),
+            str(repo_dir), tag, str(repo_dir / "install" / "release-signers"),
+        ])
+        if checked.returncode == 0 and checked.stdout.startswith("signed: "):
+            value = (tag, True)
+            if head:
+                _VERSION_CACHE[cache_key] = value
+            return value
     result = runner(["git", "-C", str(repo_dir), "describe", "--tags", "--always"])
     if result.returncode == 0 and _command_text(result):
-        return _command_text(result)
+        value = (_command_text(result), False)
+        if head:
+            _VERSION_CACHE[cache_key] = value
+        return value
     try:
         manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, TypeError):
-        return "unknown"
-    return str(manifest.get("imagectl_tag") or "unknown")
+        return "unknown", False
+    return str(manifest.get("imagectl_tag") or "unknown"), False
 
 
 def is_pre_install(data_dir: Path = DATA_DIR,
@@ -294,9 +323,10 @@ def _preinstall_snapshot(rows: list[dict], runner: Runner, sys_net: Path,
         ))
     addressed = next((nic for nic in interfaces if nic.address), None)
     address = addressed.address.split("/")[0] if addressed else ""
+    version, version_verified = _version(runner, repo_dir, manifest_file)
     return Snapshot(
         hostname=socket.gethostname(),
-        version=_version(runner, repo_dir, manifest_file),
+        version=version, version_verified=version_verified,
         console_url=f"https://{address}:8081" if address else "",
         no_address=not bool(address), fingerprint="not created",
         management=addressed or (interfaces[0] if interfaces else NicInfo("unknown")),
@@ -356,8 +386,10 @@ def collect_snapshot(data_dir: Path = DATA_DIR, *, runner: Runner = run_argv,
     seconds = max(0, int(marker.deadline - current.timestamp())) if marker else 0
     services = {name: service_state(name, runner) for name in (
         "imagectl-server", "dnsmasq", "nftables")}
+    version, version_verified = _version(runner, repo_dir)
     return Snapshot(
-        hostname=socket.gethostname(), version=_version(runner, repo_dir),
+        hostname=socket.gethostname(), version=version,
+        version_verified=version_verified,
         console_url=console_url, no_address=not bool(address),
         address_lookup_failed=not management.address_checked,
         fingerprint=fingerprint, certificate_sans=certificate_sans,

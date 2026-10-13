@@ -19,7 +19,7 @@ gui_role() {
 }
 
 gui_auth() {
-    rm -f "$CONSOLE_JAR" || return 1
+    rm -f "$CONSOLE_JAR" "$RUN_DIR/console_login.json" || return 1
     IFS= read -r RECOVERY_USER && IFS= read -r RECOVERY_PASS || return 1
     [ -n "$SERVER" ] && [ -n "$RECOVERY_USER" ] && [ -n "$RECOVERY_PASS" ] || return 1
     # stdout belongs exclusively to the role; never persist the password.
@@ -29,7 +29,7 @@ gui_auth() {
         return 0
     fi
     unset RECOVERY_PASS
-    rm -f "$CONSOLE_JAR"
+    rm -f "$CONSOLE_JAR" "$RUN_DIR/console_login.json"   # a stale role must not pass gui_role
     gui_error 'Login was refused or could not be verified; see agent log' >&2
 }
 
@@ -43,9 +43,7 @@ gui_capture() {
         "$RUN_DIR/gui-inventory.json" >/dev/null || return 1
     case "$folder_new" in
         yes)
-            build_name_ok "$folder" || return 1
-            # Reuse the text flow with its input adapter in a subshell.
-            (build_ask_name() { printf '%s\n' "$folder"; }; build_new_folder) || return 1
+            build_new_folder "$folder" >/dev/null || return 1
             ;;
         no) ;;
         *) return 1 ;;
@@ -59,7 +57,9 @@ gui_dispatch() {
     # would fail with no session) does not swallow the decision. Only on the
     # cloner screen, and only the three valid tokens.
     case "$token" in
-        shrink-*) gui_shrink_dispatch; return $? ;;
+        shrink-*) gui_shrink_dispatch; return $? ;;   ask-*) gui_ask_dispatch; return $? ;;   # 11/10: askgui.sh
+        logout) rm -f "$CONSOLE_JAR" "$RUN_DIR/console_login.json"; return $? ;;   # GUI sign-out ends the session here too
+        boot-*|lc-*) [ "${GUI_SCREEN:-}" = cloner ] || return 1; lc_gui_dispatch; return $? ;;   # #1322, lcgui.sh
         touch)
             # #434: a key press in the GUI -- the idle clock's activity, and
             # what cancels the power-off countdown. Before gui_role: it needs
@@ -99,19 +99,18 @@ gui_dispatch() {
         room-open)
             case "$image" in ''|*[!A-Za-z0-9_.-]*) return 1 ;; esac
             case "$target" in ''|*[!0-9]*) return 1 ;; esac
-            # room_open owns validation/body/POST; adapt only its prompts.
+            # room_open owns validation/body/POST.
             # #1275 (owner 11/10): the ticked drawers always go as target_slots,
             # none ticked = refused; #1269: with drivers=, their models too.
             case "$slots" in '') return 1 ;; esac
             _gx=$(room_open_extra "$slots" "$drivers") || return 1
-            (room_pick_image() { printf '%s\n' "$image"; }
-             printf '%s\n' "$target" | ROOM_OPEN_EXTRA=$_gx room_open)
+            ROOM_OPEN_EXTRA=$_gx room_open "$image" "$target"
             ;;
         direct-open)
             # #715: the source is this machine's first non-removable disk,
             # from the server's fresh inventory (as gui_capture checks it);
             # the targets are the ticked drawers, "<mac>@<port>,<port>/<mac>@
-            # <port>" (a MAC has colons of its own). Same POST as directflow.sh;
+            # <port>" (a MAC has colons of its own). The same POST the console sends;
             # the server validates every slot again (#695/#701). #1269: drivers=.
             _gslots=$(room_slots_json "$slots") || return 1
             _gdm=''; [ -z "$drivers" ] || _gdm=",\"driver_models\":$(room_drivers_json "$drivers")" || return 1
@@ -124,8 +123,8 @@ gui_dispatch() {
             [ "$_gc" = 200 ] || { gui_error "The direct round was not opened (http $_gc)"; return 1; }
             log "direct round opened from the GUI: /dev/$_gd -> $slots"
             ;;
-        room-wake) room_action wake ;;
-        room-start) room_action start ;;
+        room-wake|room-start) room_action "${token#room-}" ;;
+        room-poweroff) room_poweroff "$cloner" "$confirm" ;;   # #65 "כבה אותו" (roomflow.sh)
         room-close|class-start|class-close)
             if [ "$token" = room-close ]; then
                 _gp=room/close
@@ -141,11 +140,11 @@ gui_dispatch() {
             [ "$_gc" = 200 ] && jq -e '.ok == true' "$RUN_DIR/gui-result.json" >/dev/null
             ;;
         class-pick)
-            case "$group" in ''|*[!A-Za-z0-9_.-]*) return 1 ;; esac
-            printf '%s\n%s\n' "$token" "$group" > "$GUI_DIR/handoff.next" &&
-                mv "$GUI_DIR/handoff.next" "$GUI_DIR/handoff" || return 1
-            return 2
-            ;;
+            # The class round after the pick was a text flow (sign-in again,
+            # machines, image) and went with the text screens (owner, 11/10:
+            # GUI only). Classrooms are v1.2 and hidden in v1 (#1081); until a
+            # GUI round screen exists the pick is refused, visibly.
+            gui_error 'Class rounds are not available on this screen' ;;
         restore-start)
             # #706: erase+write one image onto THIS machine. The GUI already
             # confirmed; re-check it here, and validate the id syntax. The
@@ -159,6 +158,8 @@ gui_dispatch() {
             _gn=$(jq -er '.name | select(type == "string" and length > 0)' \
                 "$RUN_DIR/gui-restore-name.json") || return 1
             [ "$confirm" = "$_gn" ] || return 1
+            # The session goes along; guiparent.sh re-checks it before erasing.
+            [ -s "$CONSOLE_JAR" ] && cp "$CONSOLE_JAR" "$GUI_DIR/handoff.jar" || return 1
             printf 'restore-start\n%s\n' "$image" > "$GUI_DIR/handoff.next" &&
                 mv "$GUI_DIR/handoff.next" "$GUI_DIR/handoff" || return 1
             return 2
@@ -169,7 +170,7 @@ gui_dispatch() {
 
 gui_records() {
     while IFS= read -r token; do
-        dev='' name='' desc='' folder='' folder_new='' image='' target='' confirm='' group='' slots='' drivers=''
+        dev='' name='' desc='' folder='' folder_new='' image='' target='' confirm='' group='' slots='' drivers='' cloner=''
         _complete=0; _bad=0; _seen='|'
         while IFS= read -r line; do
             [ -n "$line" ] || { _complete=1; break; }
@@ -181,7 +182,7 @@ gui_records() {
                 folder=*) folder=$_value ;; folder_new=*) folder_new=$_value ;;
                 image=*) image=$_value ;; target=*) target=$_value ;;
                 confirm=*) confirm=$_value ;; group=*) group=$_value ;;
-                slots=*) slots=$_value ;; drivers=*) drivers=$_value ;;   # #1269
+                slots=*) slots=$_value ;; drivers=*) drivers=$_value ;; cloner=*) cloner=$_value ;;   # #1269; #65
                 *) _bad=1 ;;
             esac
         done
@@ -205,9 +206,9 @@ gui_cleanup() {
         wait_pid "$_pid" "$WAIT_HELPER_S" "native GUI process $_pid" || true
     done
     # A stale click must never authorize the next disk (principle 5).
-    rm -f "$CONSOLE_JAR" "$GUI_DIR/actions" \
+    rm -f "$CONSOLE_JAR" "$RUN_DIR/console_login.json" "$GUI_DIR/actions" \
         "$GUI_DIR/smart-request" "$GUI_DIR/smart-decision" \
-        "$GUI_DIR/shrink-request" "$GUI_DIR/shrink-decision"
+        "$GUI_DIR/shrink-request" "$GUI_DIR/shrink-decision" "$GUI_DIR/ask-request" "$GUI_DIR/ask-decision"
 }
 
 # The framebuffer device; monitor.sh tests the same one (#835).
@@ -232,19 +233,17 @@ gui_libs() {
     # The kiosk's own load chain: imagectl-kiosk is a separate process, so
     # nothing imagectl-agent sourced is here unless listed. A lib missing
     # from this list is "<fn>: not found" on the metal, once a second (#834).
-    . "$LIB_DIR/common.sh"
-    . "$LIB_DIR/jsonq.sh"
-    . "$LIB_DIR/waits.sh"
+    . "$LIB_DIR/common.sh"; . "$LIB_DIR/jsonq.sh"; . "$LIB_DIR/waits.sh"
     . "$LIB_DIR/buildmenuitems.sh"; . "$LIB_DIR/buildmenu.sh"   # #1073: items + gates, then the menu
     . "$LIB_DIR/buildcapture.sh"
-    . "$LIB_DIR/roomdraw.sh"; . "$LIB_DIR/roomflow.sh"   # #418: draw split from flow
+    . "$LIB_DIR/roomflow.sh"   # #418: the room round (open/wake/start)
     . "$LIB_DIR/guistate.sh"
-    . "$LIB_DIR/shrinkgui.sh"
-    . "$LIB_DIR/sysinfo.sh"   # disk_port, for the cloner state producer
+    . "$LIB_DIR/shrinkgui.sh"; . "$LIB_DIR/askgui.sh"   # 11/10: the question dialog
+    . "$LIB_DIR/sysinfo.sh"; . "$LIB_DIR/disklink.sh"   # disk_port + disk_link (#432), for the cloner state producer
     . "$LIB_DIR/progress.sh"  # target_bytes, the per-drawer local truth
     . "$LIB_DIR/smart.sh"     # smart_hello_field: the cached verdict per cdisk (#834)
     . "$LIB_DIR/failmark.sh"; . "$LIB_DIR/slotnames.sh"   # the server's memory per cdisk (#874); slot names (#704)
-    . "$LIB_DIR/clonergui.sh"; . "$LIB_DIR/tools.sh"   # #649: the toolbox (tool-list / tool-run); tools_load pulls toolbins.sh + tools_*.sh itself (#1050)
+    . "$LIB_DIR/lcinv.sh"; . "$LIB_DIR/lcgui.sh"; . "$LIB_DIR/clonergui.sh"; . "$LIB_DIR/tools.sh"   # #649: the toolbox (tool-list / tool-run); tools_load pulls toolbins.sh + tools_*.sh itself (#1050)
 }
 
 gui_main() {
@@ -255,7 +254,8 @@ gui_main() {
     [ "${1:-}" = --auth ] && { gui_auth; return $?; }
     umask 077
     mkdir -p "$GUI_DIR" || return 1
-    rm -f "$GUI_DIR/handoff" "$GUI_DIR/error" "$CONSOLE_JAR" "$GUI_DIR/actions" || return 1
+    rm -f "$GUI_DIR/handoff" "$GUI_DIR/handoff.jar" "$GUI_DIR/error" "$CONSOLE_JAR" \
+        "$RUN_DIR/console_login.json" "$GUI_DIR/actions" || return 1
     if [ "${GUI_SCREEN:-}" = class ]; then _initial=classes; else _initial=menu; fi
     printf '%s\n' "$_initial" > "$GUI_DIR/mode" || return 1
     printf 'message=Connecting to server|Waiting for verified station state\n' > "$GUI_DIR/state" || return 1

@@ -28,6 +28,11 @@ do_task() {
 
     progress_loop "" "$MAC" "$SERVER" "$_tid" &
     _ppid=$!
+    # The shrink question is a GUI dialog only (#928; owner 11/10: no text
+    # screens). A capture ordered from the web console can land before the
+    # GUI was ever started -- start it now. No GUI = the question cannot be
+    # asked, and shrink_ask cancels the capture (nothing shrinks without a yes).
+    gui_parent || log "capture: native GUI unavailable -- a shrink question will cancel the capture"
 
     # Both roads out of here end at report_final (#127). `sleep 4; kill` was
     # the same gamble #101 took out of the round and the drawers, and on this
@@ -39,15 +44,17 @@ do_task() {
             echo "done" > "$RUN_DIR/state"
             report_final "$_ppid" "" "$MAC" "$SERVER" "$_tid" \
                 || { hold_unheard "" "$_tid"; return 1; }
-            # ‏#409: המפעיל בוחר -- תפריט (להפיץ מיד) או כיבוי. בלי תשובה:
-            # כיבוי, ההגנה שהייתה כאן -- מי שיצא מהחדר מוצא מכונה כבויה.
-            shrink_gui_release "the end-of-capture question"
-            case "$(attended "Capture complete: back to the menu, or power off" capture_end_ask)" in
+            # ‏#409: "power off, or back to the menu?" -- a GUI dialog since
+            # 11/10 (askgui.sh). Power off is the default: no GUI, no answer
+            # within CAPTURE_END_ASK_S -- the drive is pulled from a machine
+            # that is off, the protection that was here before #409.
+            case "$(attended "Capture complete: power off, or back to the menu" \
+                    gui_ask_choice capture-end "${CAPTURE_END_ASK_S:-20}" "" "${CAPTURE_END_ASK_S:-20}")" in
                 menu)
                     log "capture complete -- back to the menu (operator's choice)"
-                    _build_standby=0; return 0 ;;   # build_console_screen draws the menu again
+                    _build_standby=0; return 0 ;;
                 poweroff) log "capture complete -- powering off (operator's choice)" ;;
-                *) log "capture complete -- no answer in ${CAPTURE_END_ASK_S:-20}s, powering off" ;;
+                *) log "capture complete -- powering off" ;;
             esac
             [ "${IMAGECTL_TEST:-0}" = "1" ] && exit 0
             finish_and_stop
@@ -70,41 +77,11 @@ do_task() {
 task_done_stays_on() {
     # $1 = what completed. A finished task on a machine that could not be
     # armed for Wake-on-LAN: say so on the screen and go back to the loop.
-    # _build_standby keeps this screen up instead of the menu (build_standby).
+    # _build_standby keeps this screen up: build_console_screen does not boot
+    # the machine to its local disk for want of a GUI after a finished task.
     log "task complete -- wol not armed, staying powered on"
     ui_clear; ui_header
     echo "  $1"
     echo "  Wake-on-LAN could not be armed, so this computer stays on."
     _build_standby=1
-}
-
-capture_end_ask() {
-    # ‏#409: the end of a capture on the build machine. The screen goes to
-    # stderr and only the answer to stdout (the caller reads it in `$( )`,
-    # like smart_ask/shrink_ask): menu / poweroff / none.
-    #
-    # ‏`read -t` on any stdin, not only a tty (roomflow.sh reads it only on
-    # a tty): busybox returns 1 on the timeout AND on EOF (Debian 1.37,
-    # measured 19/09), and here both mean the same thing -- nobody answered
-    # -- so a closed console and a silent one both end in the power-off.
-    _ce_s="${CAPTURE_END_ASK_S:-20}"
-    while :; do
-        {
-            ui_clear; ui_header
-            echo "  Capture complete. The image is in the library."
-            echo
-            echo "    [1] Back to the menu"
-            echo "    [2] Power off (then remove the drive safely)"
-            echo
-            echo "  Powering off in $_ce_s seconds if nothing is chosen."
-            printf "  Choose [1-2]: "
-        } >&2
-        # shellcheck disable=SC3045 # busybox ash has read -t; see above
-        read -r -t "$_ce_s" _ce_c || { echo none; return 0; }
-        case "$_ce_c" in
-            1) echo menu; return 0 ;;
-            2) echo poweroff; return 0 ;;
-            *) ;;   # not a choice: draw again, never pick silently
-        esac
-    done
 }

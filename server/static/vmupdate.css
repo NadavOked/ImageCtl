@@ -1,0 +1,177 @@
+/* ‏#1334: עדכון אימג' ב-VM — לפי המוקאפ המאושר (vmupdate.html, 13/10). הטוקנים
+   של design-tokens.css בלבד; ה-prefix ‏vmu- כדי לא להתנגש בשמות של console.css. */
+
+:root { --vmu-stage: #0d1419; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --vmu-stage: #0a0f13; } }
+:root[data-theme="dark"] { --vmu-stage: #0a0f13; }
+
+/* פס גלובלי "VM רץ" — בכל עמוד חוץ מעמוד ה-VM */
+#vmuGlobal:empty { display: none; }
+.vmu-pend { display: flex; align-items: center; gap: 12px; padding: 8px 20px; background: var(--clr-info-soft);
+  border-bottom: 1px solid color-mix(in srgb, var(--clr-action) 25%, transparent); color: var(--clr-text);
+  font-size: var(--t-base); flex-wrap: wrap; }
+.vmu-pend .tx { flex: 1 1 300px; min-width: 0; }
+.vmu-pend .tx b { font-weight: 600; }
+.vmu-pend .m { color: var(--clr-muted); }
+.vmu-thumb { width: 44px; height: 28px; border-radius: 4px; flex: none;
+  background: linear-gradient(135deg, #7fb4e6, #2c6fb8 60%, #1d4f8f); box-shadow: inset 0 -5px 0 rgb(255 255 255 / 55%); }
+
+/* העמוד */
+.vmu-card { overflow: hidden; padding: 0; }
+.vmu-tool { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--clr-row-border);
+  flex-wrap: wrap; background: color-mix(in srgb, var(--clr-bg) 35%, var(--clr-surface)); }
+.vmu-tool .grp { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.vmu-tool .chips { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; min-width: 0; justify-content: flex-end; }
+.vmu-chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 99px;
+  background: var(--clr-hover); font-size: var(--t-xs); color: var(--clr-muted); white-space: nowrap; }
+.vmu-chip b { color: var(--clr-text); font-weight: 600; }
+.vmu-led { width: 8px; height: 8px; border-radius: 50%; background: var(--clr-success); display: inline-block; }
+.vmu-sep { width: 1px; height: 22px; background: var(--clr-border); margin-inline: 2px; }
+.vmu-tool .ui-icon { width: 15px; height: 15px; }
+.vmu-stage { position: relative; background: var(--vmu-stage); display: grid; grid-template-columns: minmax(0, 1fr);
+  place-items: center; padding: 14px; min-height: 420px; }
+.vmu-stage.cardmode { min-height: 520px; padding: 28px 16px;
+  background: radial-gradient(120% 90% at 50% 0%, color-mix(in srgb, var(--clr-action) 14%, var(--vmu-stage)), var(--vmu-stage)); }
+.vmu-stage:fullscreen { padding: 0; }
+.vmu-screen { width: 100%; height: min(72vh, 900px); outline: 0; direction: ltr; }
+.vmu-stage.cardmode .vmu-screen { display: none; }
+.vmu-stage:fullscreen .vmu-screen { height: 100vh; }
+.vmu-lay { position: absolute; inset: 14px; display: grid; place-items: center; pointer-events: none; }
+.vmu-stage.cardmode .vmu-lay { position: static; }
+.vmu-lay > * { pointer-events: auto; }
+.vmu-foot { display: flex; gap: 16px; align-items: center; padding: 8px 14px; font-size: var(--t-xs); color: var(--clr-muted);
+  flex-wrap: wrap; border-top: 1px solid var(--clr-row-border); }
+.vmu-foot .sp { flex: 1; }
+.vmu-foot kbd { font: 600 10px var(--font-mono); border: 1px solid currentColor; border-radius: 4px; padding: 0 4px; opacity: .8; }
+.vmu-pillmsg { position: absolute; top: 16px; inset-inline: 0; margin-inline: auto; width: max-content; max-width: calc(100% - 32px);
+  display: flex; gap: 10px; align-items: center; padding: 8px 14px; border-radius: 99px; background: rgb(28 35 42 / 86%);
+  backdrop-filter: blur(14px); color: #fff; font-size: var(--t-sm); box-shadow: var(--shadow-overlay); }
+.vmu-pillmsg .btn { background: transparent; color: #fff; border-color: rgb(255 255 255 / 35%); }
+
+/* פס השליטה (צפייה בלבד) */
+.vmu-ctl { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border: 1px solid var(--clr-row-border);
+  border-radius: var(--r-sm); background: var(--clr-warning-soft); color: var(--clr-text); font-size: var(--t-sm); flex-wrap: wrap; }
+.vmu-ctl .tx { flex: 1 1 240px; min-width: 0; }
+.vmu-ctl .m { color: var(--clr-muted); }
+#vmuStrips { display: grid; gap: 8px; }
+#vmuStrips:empty { display: none; }
+
+/* פס הנוכחות — המבנה של #1339 (presence.js), כאן לצופים ב-VM */
+.prs { display: flex; align-items: center; gap: 10px; padding: 8px 14px; font-size: var(--t-sm); line-height: 1.4;
+  border: 1px solid var(--clr-row-border); border-radius: var(--r-sm); background: var(--clr-surface); color: var(--clr-muted);
+  flex-wrap: wrap; position: relative; }
+.prs > .ui-icon { color: var(--clr-muted); }
+.prs-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--clr-success); flex: none; }
+.prs-tx { flex: 1 1 240px; min-width: 0; color: var(--clr-text); }
+.prs-tx b { font-weight: 600; }
+.prs .mono { font-family: var(--font-mono); direction: ltr; unicode-bidi: isolate; }
+.prs-chip { border: 1px solid var(--clr-border); background: var(--clr-hover); color: var(--clr-text); border-radius: 99px;
+  height: 24px; padding: 0 10px; font-size: var(--t-xs); font-weight: 600; cursor: pointer; }
+.prs-pop { position: absolute; inset-inline-start: 14px; top: 100%; margin-top: 4px; z-index: 40; min-width: 300px;
+  background: var(--clr-surface); border: 1px solid var(--clr-border); border-radius: var(--r); box-shadow: var(--shadow-overlay); padding: 6px; }
+.prs-pop h3 { margin: 6px 10px 4px; font-size: var(--t-xs); font-weight: 600; color: var(--clr-muted); }
+.prs-r { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: var(--r-sm); font-size: var(--t-sm); color: var(--clr-text); }
+.prs-n { font-weight: 600; }
+.prs-m { color: var(--clr-muted); margin-inline-start: auto; white-space: nowrap; }
+.prs-you { font-size: var(--t-xs); background: var(--clr-action-soft); color: var(--clr-action-fg); border-radius: 99px; padding: 0 8px; }
+
+/* כרטיס מצב על הבמה (הכנה / שמירה / כשל / נשמר) — שפת מסך העדכון (#1301) */
+.vmu-uc { width: min(560px, 100%); background: var(--clr-surface); color: var(--clr-text); border-radius: calc(var(--r-win, 14px) + 4px);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--clr-border) 60%, transparent), 0 30px 80px -20px rgb(0 0 0 / 50%);
+  overflow: hidden; animation: vmuIn var(--dur-sheet, 320ms) var(--ease, ease); }
+.vmu-uc.still { animation: none; }
+@keyframes vmuIn { from { opacity: 0; transform: translateY(8px) scale(.98); } to { opacity: 1; transform: none; } }
+.vmu-uc .uh { display: flex; gap: 14px; align-items: flex-start; padding: 22px 24px 14px; }
+.vmu-uc .ubadge { flex: none; width: 46px; height: 46px; border-radius: 12px; display: grid; place-items: center;
+  background: var(--clr-action-soft); color: var(--clr-action-fg); }
+.vmu-uc .ubadge svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.vmu-uc .ubadge.ok { background: var(--clr-success-soft); color: var(--clr-success-fg); }
+.vmu-uc .ubadge.bad { background: var(--clr-danger-soft); color: var(--clr-danger); }
+.vmu-uc .utxt { flex: 1; min-width: 0; }
+.vmu-uc .utxt h2 { font-size: 1.25rem; font-weight: 600; letter-spacing: -.018em; line-height: 1.25; outline: 0; margin: 0; }
+.vmu-uc .utxt p { color: var(--clr-muted); font-size: var(--t-sm); margin: 3px 0 0; }
+.vmu-uc .ubody { padding: 4px 24px; font-size: var(--t-base); display: grid; gap: 8px; }
+.vmu-uc > .uhint:last-child { padding-bottom: 20px; }
+.vmu-uc .uhint { padding: 12px 24px 0; font-size: var(--t-xs); color: var(--clr-muted); margin: 0; }
+.vmu-uc .ufoot { display: flex; align-items: center; gap: 8px; padding: 14px 24px 18px; margin-top: 14px;
+  border-top: 1px solid var(--clr-row-border); flex-wrap: wrap; }
+.vmu-uc .ufoot .sp, .vmu-uc .ufoot .n-hint { flex: 1; }
+.vmu-us { list-style: none; margin: 0; padding: 2px 24px 6px; }
+.vmu-us li { display: grid; grid-template-columns: 26px 1fr auto; gap: 12px; align-items: start; padding: 8px 0; position: relative; color: var(--clr-muted); }
+.vmu-us li + li::before { content: ""; position: absolute; inset-inline-start: 12px; top: -8px; height: 16px; width: 2px; border-radius: 2px; background: var(--clr-border); }
+.vmu-us li.done + li::before { background: var(--clr-action); }
+.vmu-us .si { width: 26px; height: 26px; border-radius: 50%; border: 2px solid var(--clr-border); background: var(--clr-surface);
+  display: grid; place-items: center; position: relative; z-index: 1; }
+.vmu-us .si svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.vmu-us .stt { display: block; font-size: var(--t-base); font-weight: 500; line-height: 26px; }
+.vmu-us .sd { display: block; font-size: var(--t-xs); line-height: 1.4; margin-top: -2px; }
+.vmu-us .sdur { font: 500 var(--t-sm)/26px var(--font-mono); direction: ltr; }
+.vmu-us li.done { color: var(--clr-text); }
+.vmu-us li.done .si { border-color: var(--clr-action); color: var(--clr-action-fg); }
+.vmu-us li.cur { color: var(--clr-text); }
+.vmu-us li.cur .stt { font-weight: 600; }
+.vmu-us li.cur .si { border-color: var(--clr-action); }
+.vmu-us li.cur .si::after { content: ""; position: absolute; inset: -2px; border-radius: 50%; border: 2px solid transparent;
+  border-top-color: var(--clr-action); border-inline-start-color: var(--clr-action); animation: vmuRot 1s linear infinite; }
+.vmu-us li.cur .si i { width: 8px; height: 8px; border-radius: 50%; background: var(--clr-action); }
+.vmu-us li.bad .si { border-color: var(--clr-danger); color: var(--clr-danger); background: var(--clr-danger-soft); }
+@keyframes vmuRot { to { transform: rotate(360deg); } }
+.vmu-bar { display: block; height: 6px; border-radius: 99px; background: var(--clr-row-border); overflow: hidden; margin-top: 7px; max-width: 320px; }
+.vmu-bar > i { display: block; height: 100%; background: var(--clr-action); border-radius: 99px; transition: width var(--dur-sheet, 320ms) var(--ease, ease); }
+.vmu-tech { border: 1px solid var(--clr-row-border); border-radius: var(--r-sm); }
+.vmu-tech summary { cursor: pointer; padding: 8px 12px; font-size: var(--t-sm); color: var(--clr-muted); }
+.vmu-tech pre { margin: 0; padding: 10px 12px; border-top: 1px solid var(--clr-row-border); font: var(--t-xs)/1.6 var(--font-mono);
+  direction: ltr; text-align: left; white-space: pre-wrap; word-break: break-word; }
+
+/* חלונות */
+.sheet .n-sec + .n-sec, .sheet .vmu-note + .n-sec, .sheet .n-sec + .vmu-note { margin-top: 18px; }
+#sheet .n-sec > h3, #sheet .n-sec > h3:first-child { font-size: var(--t-xs); font-weight: 600; letter-spacing: .02em; color: var(--clr-muted); margin: 0 0 10px; }
+.vmu-note { display: flex; gap: 10px; padding: 10px 12px; border-radius: var(--r-sm); background: var(--clr-warning-soft);
+  color: var(--clr-text); font-size: var(--t-sm); line-height: 1.45; border-inline-start: 3px solid var(--clr-warning); }
+.vmu-note + .vmu-note { margin-top: 8px; }
+.vmu-note.info { background: var(--clr-info-soft); border-inline-start-color: var(--clr-action); }
+.vmu-note.ok { background: var(--clr-success-soft); border-inline-start-color: var(--clr-success); }
+.vmu-note.bad { background: var(--clr-danger-soft); border-inline-start-color: var(--clr-danger); }
+.vmu-note a { cursor: pointer; color: var(--clr-action-fg); text-decoration: underline; }
+.n-hic { flex: none; width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center;
+  background: var(--clr-action-soft); color: var(--clr-action-fg); }
+.n-hic.d { background: var(--clr-danger-soft); color: var(--clr-danger); }
+.n-hic .ui-icon { width: 20px; height: 20px; }
+.n-dl { display: grid; grid-template-columns: 130px 1fr; margin: 0; }
+.n-dl dt, .n-dl dd { padding: 7px 0; margin: 0; font-size: var(--t-base); border-bottom: 1px solid var(--clr-row-border); }
+.n-dl dt { color: var(--clr-muted); }
+.n-dl dd:last-of-type, .n-dl dt:last-of-type { border-bottom: 0; }
+.vmu-ghost-dng { border-color: transparent !important; background: transparent !important; color: var(--clr-danger) !important; }
+.vmu-ghost-dng:hover { background: var(--clr-danger-soft) !important; }
+.sfoot .sp { flex: 1; }
+.vmu-vsel { display: grid; gap: 6px; grid-template-columns: minmax(0, 1fr); }
+.vmu-vopt { position: relative; display: flex; gap: 10px; align-items: center; padding: 9px 12px; border: 1px solid var(--clr-border);
+  border-radius: var(--r-sm); cursor: pointer; }
+.vmu-vopt input { position: absolute; opacity: 0; }
+.vmu-vopt .rd { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--clr-border); flex: none; display: grid; place-items: center; }
+.vmu-vopt:has(input:checked) { border-color: var(--clr-action); background: var(--clr-action-soft); }
+.vmu-vopt:has(input:checked) .rd { border-color: var(--clr-action); }
+.vmu-vopt:has(input:checked) .rd::after { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--clr-action); }
+.vmu-vopt:has(input:focus-visible) { outline: 2px solid var(--clr-action); outline-offset: 2px; }
+.vmu-vopt .vt { flex: 1; min-width: 0; }
+.vmu-vopt .l1 { display: flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; overflow: hidden; }
+.vmu-vopt .l1 .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.vmu-vopt small { display: block; font-size: var(--t-xs); color: var(--clr-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vmu-res { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.vmu-res .rt { border: 1px solid var(--clr-row-border); border-radius: var(--r-sm); padding: 10px 12px; }
+.vmu-res .rt b { display: block; font-size: var(--t-md); font-weight: 600; }
+.vmu-res .rt small { display: block; font-size: var(--t-xs); color: var(--clr-muted); }
+.vmu-ol { margin: 0; padding-inline-start: 20px; display: grid; gap: 4px; }
+
+/* מגירת האימג' */
+.vmu-dcard { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--clr-row-border);
+  border-radius: var(--r-sm); font-size: var(--t-sm); }
+.vmu-dcard > span { flex: 1; min-width: 0; }
+.vmu-vers { margin-top: 8px; }
+
+@media (max-width: 760px) {
+  .vmu-tool .chips .opt { display: none; }
+  .vmu-res { grid-template-columns: 1fr; }
+  .vmu-screen { height: 56vh; }
+  .vmu-pend { padding: 8px 12px; }
+}

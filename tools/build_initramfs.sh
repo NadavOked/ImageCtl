@@ -198,7 +198,7 @@ fi
 # copy_bin pulls libefiboot/libefivar/libpopt through ldd and stops the
 # build if one is missing.
 BINARIES=(curl jq zstd pv sgdisk blockdev sha256sum od hdparm ntfsresize openssl
-          ntfs-3g ntfs-3g.probe ntfsfix umount blkid df mount stty ethtool smartctl
+          ntfs-3g ntfs-3g.probe ntfsfix umount blkid df mount ethtool smartctl
           e2fsck resize2fs btrfs xfs_growfs
           udp-receiver udp-sender partclone.ntfs partclone.fat partclone.ext4
           partclone.btrfs partclone.dd

@@ -230,7 +230,7 @@ test('stage 3: update card (moved to settings): installed/previous/last-check, c
   run("confirmUpdateApply(UPDATE_INFO.latest)");
   const s=run('sheets.at(-1)');
   assert.equal(s.danger,true); assert.equal(s.verify,undefined,'#1192: no text field to type');
-  assert.match(s.note,/v0\.35\.0 ויופעל מחדש/,'consequences are an impact list in the note');
+  assert.match(s.note,/<ul class="n-impact">[^]*השרת יופעל מחדש/,'consequences are an impact list in the note (#1301: the approved window)');
   await s.onSubmit();
   const apply=requests.find((r)=>r.url==='/update/apply');
   assert.deepEqual(apply.body,{tag:'v0.35.0'},'#1192: no confirm_name');

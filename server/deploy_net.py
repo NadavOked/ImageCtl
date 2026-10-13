@@ -158,22 +158,33 @@ def firewall_installed(conf: str | Path = NFTABLES_CONF) -> bool | None:
         return None
 
 
-def regenerate_firewall(repo_dir: str | Path, *, deploy_if: str, servers_if: str | None,
+def regenerate_firewall(repo_dir: str | Path, *, deploy_if: str | None, servers_if: str | None,
                         primary_ip: str | None = None,
-                        conf: str | Path = NFTABLES_CONF) -> str | None:
+                        conf: str | Path = NFTABLES_CONF,
+                        services: list[tuple[str, list[str]]] | None = None) -> str | None:
     """מריץ שוב את `install/nftables-rules.sh` עם שני הכרטיסים, בודק תחביר
     (`nft -c`), כותב ומטעין. חומת אש שלא הותקנה — לא נוגעים; הותקנה
-    וכרטיס השרתים אינו ידוע — שגיאה בשם (הכללים לוילן ההפצה לא ייכתבו)."""
+    וכרטיס השרתים אינו ידוע — שגיאה בשם (הכללים לוילן ההפצה לא ייכתבו).
+
+    ‏`services` (‏#705): ‏[(כרטיס, [שירותים])] — המפעיל בחר שירותים לכל כרטיס,
+    והכללים נגזרים מהם בלבד (‏`--per-nic`); אז שני הכרטיסים אינם נדרשים."""
     installed = firewall_installed(conf)
     if installed is None:
         return f"לא ניתן לקרוא את {conf} — חומת האש לא עודכנה"
     if not installed:
         return None
-    if not servers_if:
+    gen = Path(repo_dir) / "install" / "nftables-rules.sh"
+    if services is not None:
+        args = ["sh", str(gen), "--per-nic"]
+        for nic, names in services:
+            args += ["--service", f"{nic}:{','.join(names)}"]
+    elif not servers_if:
         return ("כרטיס השרתים אינו ידוע (‎--console-host אינו שם כרטיס) — "
                 "הכללים לוילן ההפצה לא נוספו")
-    gen = Path(repo_dir) / "install" / "nftables-rules.sh"
-    args = ["sh", str(gen), "--deploy-if", deploy_if, "--servers-if", servers_if]
+    else:
+        args = ["sh", str(gen), "--servers-if", servers_if]
+        if deploy_if:
+            args[2:2] = ["--deploy-if", deploy_if]
     if primary_ip:
         args += ["--primary-ip", primary_ip]
     ok, ruleset, err = _run(args)
@@ -243,6 +254,10 @@ class DeployContext:
     servers_interface: str | None = None
     primary_ip: str | None = None
     hooks: Hooks | None = None
+    #: ‏#705: ‏`services(deploy_if)` → ‏[(כרטיס, [שירותים])] כשהמפעיל ערך שירותים
+    #: לכרטיסים, או None (ההתנהגות של היום). בלעדיו ההשלמה הייתה כותבת חומת
+    #: אש לפי שני תפקידים — ודורסת בשקט את מה שהמפעיל בחר לכל כרטיס.
+    services: Callable[[str], list | None] | None = None
 
 
 def complete(ctx: DeployContext, conn, *, interface: str, server_ip: str) -> dict:
@@ -262,9 +277,11 @@ def complete(ctx: DeployContext, conn, *, interface: str, server_ip: str) -> dic
         ("grub.cfg", lambda: hooks["write_grub_cfg"](url, ctx.tftp_root)),
         ("dnsmasq", hooks["enable_dnsmasq"]),
     ]
+    per_nic = ctx.services(interface) if ctx.services is not None else None
     steps.append(("חומת אש", lambda: hooks["firewall"](
         ctx.repo_dir, deploy_if=interface, servers_if=ctx.servers_interface,
-        primary_ip=ctx.primary_ip)))
+        primary_ip=ctx.primary_ip,
+        **({"services": per_nic} if per_nic is not None else {}))))
     for label, call in steps:
         err = call()
         if err:

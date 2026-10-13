@@ -105,6 +105,11 @@ def server_name(conn) -> str:
 # --- מנהל המאזינים -------------------------------------------------------------
 
 
+def _server_host(server) -> str | None:
+    """הכתובת שמאזין uvicorn נקשר אליה — מה-`Config` שלו (‏#705)."""
+    return getattr(getattr(server, "config", None), "host", None)
+
+
 async def _guarded(port_id: str, server) -> None:
     """‏uvicorn עושה `sys.exit(3)` על כשל bind. ‏SystemExit בתוך משימה של
     asyncio אינו נשאר בה — הלולאה כולה נופלת איתו (`Task.__step` מגלגל
@@ -143,6 +148,9 @@ class Listeners:
         self._exit: asyncio.Event | None = None
         self._lock: asyncio.Lock | None = None
         self._rebind_gen: dict[str, int] = {}
+        #: ‏#705: משימות של מאזין שה-retarget פותח או סוגר בכוונה — סיומן
+        #: אינו "יציאה לא צפויה" שמפילה את כל השאר.
+        self._retiring: set[asyncio.Task] = set()
 
     # -- רישום (לפני serve) --
 
@@ -296,6 +304,79 @@ class Listeners:
             self._loop)
         future.result(timeout or (OPEN_TIMEOUT + CLOSE_TIMEOUT))
 
+    async def retarget(self, port_id: str, *, hosts: list[str],
+                       factory_for: Callable[[str], Callable[[], object]]) -> None:
+        """‏#705: אותו פורט, **קבוצת כתובות** אחרת — לפי השירותים של כל כרטיס.
+
+        בניגוד ל-`rebind` זה מצטבר: שרת שהכתובת שלו נשארת **אינו נסגר**
+        (חיבור הקונסולה שדרכו המפעיל שומר את השינוי חי עליו); כתובת חדשה
+        נפתחת ומחכה ל-`started` (ראיה חיובית), ורק אחר כך נסגרות הכתובות
+        שהוסרו. פתיחה שנכשלה סוגרת את מה שנפתח בניסיון הזה ומעלה
+        `ListenerError` — הכתובות הקיימות נשארות כמו שהיו (עיקרון 5).
+        פורט שהמפעיל כיבה בדף הפורטים אינו נפתח: רק היצרנים מתעדכנים.
+        """
+        if port_id not in self._specs or port_id in self._threaded:
+            raise KeyError(port_id)
+        assert self._lock is not None, "serve() לא רץ"
+        hosts = list(dict.fromkeys(hosts))
+        async with self._lock:
+            factories = [factory_for(h) for h in hosts]
+            if port_id not in self._wanted:
+                self._factories[port_id] = factories
+                self._specs[port_id]["hosts"] = hosts
+                return
+            pairs = list(zip(self._servers.get(port_id, []), self._tasks.get(port_id, [])))
+            have = {_server_host(s) for s, _t in pairs}
+            keep = [(s, t) for s, t in pairs if _server_host(s) in hosts]
+            drop = [(s, t) for s, t in pairs if _server_host(s) not in hosts]
+            new = [factory_for(h)() for h in hosts if h not in have]
+            new_tasks = [asyncio.ensure_future(_guarded(port_id, s)) for s in new]
+            self._retiring.update(new_tasks)        # עד started — כשל bind, לא קריסה
+            for task in new_tasks:
+                task.add_done_callback(lambda t, p=port_id: self._task_done(p, t))
+            try:
+                deadline = self._loop.time() + OPEN_TIMEOUT
+                while not all(s.started for s in new):
+                    if any(t.done() for t in new_tasks) or self._loop.time() > deadline:
+                        for s in new:
+                            s.should_exit = True
+                        await asyncio.wait(new_tasks, timeout=CLOSE_TIMEOUT)
+                        cause = next((t.exception() for t in new_tasks
+                                      if t.done() and not t.cancelled() and t.exception()), None)
+                        raise ListenerError(
+                            f"{port_id}: כתובת חדשה לא עלתה ({cause or 'לא דיווח started בזמן'})"
+                        ) from cause
+                    await asyncio.sleep(0.01)
+            finally:
+                self._retiring.difference_update(new_tasks)
+                self._install_signal_handlers()
+            dropping = [t for _s, t in drop]
+            self._retiring.update(dropping)
+            for s, _t in drop:
+                s.should_exit = True
+            if dropping:
+                _done, pending = await asyncio.wait(dropping, timeout=CLOSE_TIMEOUT)
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    await asyncio.wait(pending, timeout=1)
+            self._retiring.difference_update(dropping)
+            self._servers[port_id] = [s for s, _t in keep] + new
+            self._tasks[port_id] = [t for _s, t in keep] + new_tasks
+            self._factories[port_id] = factories
+            self._specs[port_id]["hosts"] = hosts
+            self._install_signal_handlers()
+
+    def request_retarget(self, port_id: str, *, hosts: list[str],
+                         factory_for: Callable[[str], Callable[[], object]],
+                         timeout: float | None = None) -> None:
+        """‏`retarget` מתהליכון אחר (ה-endpoint של #705 רץ במאגר של uvicorn)."""
+        if self._loop is None:
+            raise ListenerError("מנהל המאזינים אינו רץ")
+        future = asyncio.run_coroutine_threadsafe(
+            self.retarget(port_id, hosts=hosts, factory_for=factory_for), self._loop)
+        future.result(timeout or (OPEN_TIMEOUT + CLOSE_TIMEOUT + 2))
+
     # -- פנימי --
 
     async def _open(self, port_id: str) -> None:
@@ -364,7 +445,7 @@ class Listeners:
     def _task_done(self, port_id: str, task: asyncio.Task) -> None:
         """משימה שנגמרה בזמן שהפורט עדיין "רצוי" = יציאה שלא ביקשנו.
         באמצע פתיחה זה כשל bind, ו-`_open` מדווח אותו למי שביקש."""
-        if port_id not in self._wanted or port_id in self._opening:
+        if port_id not in self._wanted or port_id in self._opening or task in self._retiring:
             return
         self._wanted.discard(port_id)
         if not task.cancelled() and task.exception() is not None:

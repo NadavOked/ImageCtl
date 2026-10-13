@@ -80,8 +80,7 @@ poll_off_deploy_vlan() {
     # vlan waives the login -- that is what saves the 29 sign-ins -- while
     # off the vlan the login is always required. So "a round is open and the
     # server still wants a login" is exactly "not on the deployment vlan".
-    # recovery_gate in ui.sh already reads the same field with the same
-    # meaning.
+    # The server enforces the same rule when a pull opens (pull.sh).
     #
     # Positive evidence only: "false", a missing field and "null" all keep
     # today's behaviour, which is to poll. Wrongly stopping a real station

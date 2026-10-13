@@ -269,8 +269,8 @@ def test_no_idle_branch_sleeps_a_flat_two_seconds():
     בנתיב הכישלון של send_hello — ניסיון חוזר, לא סקירת סרק.
 
     ארבעה `poll_sleep`: wait_open, wait_poll, build_console, ומסלול
-    ה-recovery כשהגואי הנייטיב פעיל — אז לולאת ה-hello ממשיכה לרוץ
-    במקום להיחסם ב-recovery_flow הטקסטואלי (feat/native-gui)."""
+    ה-recovery כשהגואי הנייטיב פעיל — אז לולאת ה-hello ממשיכה לרוץ.
+    בלי גואי ה-recovery מסתיים בדיסק המקומי (11/10, אין אשף טקסט)."""
     source = (AGENT / "imagectl-agent").read_text(encoding="utf-8")
     flat = [ln.strip() for ln in source.splitlines() if ln.strip() == "sleep 2"]
     assert len(flat) == 1, f"נשארו {len(flat)} השהיות קבועות של שתי שניות"

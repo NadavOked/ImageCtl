@@ -78,9 +78,10 @@ def _fingerprint_lines(value: str) -> tuple[str, str]:
 
 
 def render_main(snapshot: Snapshot, message: str = "") -> list[str]:
+    shown_version = snapshot.version + (" [UNVERIFIED]" if not snapshot.version_verified else "")
     canvas = Canvas(
         _title("ImageSrv Server Operations Console",
-               f"{snapshot.version}  {snapshot.storage_role}"),
+               f"{shown_version}  {snapshot.storage_role}"),
         "<F2> Customize  <F9> Reset Password  <F12> Restart/Shutdown  <F5> Refresh",
     )
     fp1, fp2 = _fingerprint_lines(snapshot.fingerprint)
@@ -131,8 +132,9 @@ def render_main(snapshot: Snapshot, message: str = "") -> list[str]:
 
 
 def render_preinstall(snapshot: Snapshot, message: str = "") -> list[str]:
+    shown_version = snapshot.version + (" [UNVERIFIED]" if not snapshot.version_verified else "")
     canvas = Canvas(
-        _title(f"ImageSrv {snapshot.version} - installation"),
+        _title(f"ImageSrv {shown_version} - installation"),
         "F2  Set a static address       F5  Refresh",
     )
     canvas.put(4, 4, "Management network is not configured yet.")

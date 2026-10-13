@@ -532,7 +532,8 @@ def _header(frame: Frame, snapshot: Snapshot, clock: str, admin_seconds: int | N
     admin = (f"מנהל · יציאה אוטומטית בעוד {admin_seconds} שנ׳"
              if admin_seconds is not None else "")
     url = snapshot.console_url if not snapshot.no_address else ""
-    frame.add("hdr", role_label(snapshot), snapshot.hostname, url, snapshot.version,
+    shown_version = snapshot.version + (" · לא מאומת" if not snapshot.version_verified else "")
+    frame.add("hdr", role_label(snapshot), snapshot.hostname, url, shown_version,
               clock, admin)
 
 

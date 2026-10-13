@@ -203,6 +203,8 @@ def build_box(tmp_path, *, plan=PLAN, count=None, plan_cut=None, nodes=None,
         f'. {posix(AGENT)}/lib/jsonq.sh; . {posix(AGENT)}/lib/progress.sh; '
         f'. {posix(AGENT)}/lib/restore.sh; . {posix(AGENT)}/lib/expand.sh; . {posix(AGENT)}/lib/grow.sh; . {posix(AGENT)}/lib/failmark.sh; '
         f'. {posix(AGENT)}/lib/diskfit.sh; '   # #1217: disk_fits, split from restore.sh
+        # ‏#672: ‏boot_ca_preflight. ‏SYSROOT היא הקופסה ואין בה efivars -- unchecked, ממשיך.
+        f'. {posix(AGENT)}/lib/bootcadb.sh; '
         # ‏#1212: ‏verify_table קורא בחזרה את GUID המחיצות דרך manifest.sh.
         f'. {posix(AGENT)}/lib/manifest.sh; '
         # הבדיקה היחידה שאי אפשר לזייף בלי root: התקן בלוקים אמיתי.

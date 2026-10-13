@@ -181,7 +181,7 @@ def grow_station(tmp_path, *, fs="ntfs", stubs=None, mark=True) -> tuple[Path, s
         f". {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/waits.sh; "
         f". {posix(AGENT)}/lib/progress.sh; . {posix(AGENT)}/lib/restore.sh; "
         f". {posix(AGENT)}/lib/expand.sh; . {posix(AGENT)}/lib/grow.sh; "
-        "disk_fits() { return 0; }; apply_gpt() { return 0; }; "
+        "disk_fits() { return 0; }; boot_ca_preflight() { return 0; }; apply_gpt() { return 0; }; "
         "expand_last() { return 0; }; "
         "manifest_plan() { echo '1|G|win|ntfs|2048|1024|p1.zst|sha|false|UG|'; }; "
         "restore_partition() { return 0; }; "

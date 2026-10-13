@@ -190,7 +190,8 @@ stdout is line-buffered so a record arrives as it happens.
 | `room-open` | פתח סבב והער את החדר | `image=<id>`, `target=<n>`; with "להוסיף דרייברים" on also `slots=` (as `direct-open`) and `drivers=` (#1269) | POST `/api/console/room`; answer with `round=` or `room_error=`. #1269: with drivers the body adds `target_slots` and `driver_models` — the server binds a model only to a disk chosen as a target; switch off = the body as before |
 | `direct-open` | פתח סבב והער את המחשבים שנבחרו | `slots=<mac>@<port>,<port>/<mac>@<port>` | #715: POST `/api/console/room` with `source: {kind: build_disk, mac, disk}` + `target_slots`; the disk is the first non-removable one in the server inventory. Only ticked, present, fresh drawers are listed; none → `room_error=` locally. #1269: with drivers on, also `drivers=` → `driver_models` in the same body |
 | `room-wake` | העֵר … | — | POST `/api/console/room/wake`; answer with `toast=` |
-| `room-start` | התחל עכשיו | — | POST `/api/console/room/start` |
+| `room-start` | התחל עכשיו (with `room_warn=` lines: after the orange "התחל בכל זאת" of the confirm dialog, #432) · "התחל בכל זאת" of the missing-machines box (#65) | — | POST `/api/console/room/start` |
+| `room-poweroff` | "כבה אותו" on a line of the missing-machines box → the confirm dialog's "כבה אותו" (#65, #1270) | `cloner=<mac>`, `confirm=<machine name>` (both from `room_missing=`, not typed) | `room_poweroff` (`roomflow.sh`): POST `/api/console/room/missing/<mac>/poweroff {confirm_name}`; the server checks again that the machine is missing, can hear and the wave is open; a refusal → `room_error=` |
 | `room-close` | עצור סבב… → the confirm dialog's "עצור סבב" (#1270) | `confirm=<round image>` (filled from `round=`, not typed) | POST `/api/console/room/close {confirm_name}`; the server decides (#533), answer with `room_error=` or drop `round=` |
 | `class-pick` | a class card | `group=<id>` | the operator chose a class. **Steps 2–3 of the wizard (machine grid, image list) are not built** — see "Not built" |
 | `class-start` | התחל עכשיו | — | POST `/api/console/sessions/<id>/start` |
@@ -280,6 +281,14 @@ room_drawer=<machine-index>|<port or 0>|<serial>|<model>|<size>|<smart>|<fresh>|
                                     # Optional: an older agent's eight fields read as "did not run"
                                     # #704: |<slot name> -- an 11th field, drawer_list[].slot_name (the
                                     # operator's name of the slot; NVMe by serial). Empty / absent = "דיסק N"
+                                    # #432: |<link state> -- a 12th field, drawer_list[].link_state:
+                                    # ok / slow / unknown; only "slow" colours the slot orange (SMART red wins)
+room_warn=<text>                    # #432: one line of round.precheck (an open wave only): a drawer the wave
+                                    # would write on a link below its port, or with a risen CRC. Orange box
+                                    # above the grid; "התחל" asks first. The server's text_he, as the console
+room_missing=<mac>|<name>|<reason>|<can_poweroff 0/1>|<text>
+                                    # #65: one line of round.missing -- who the open wave waits for (off /
+                                    # not_joined / drawers). "כבה אותו" only with can_poweroff 1
 room_slot_name=<machine-index>|<port>|<name>
                                     # #704: the name of a SATA slot (GET /room slot_names "sata:<port>"),
                                     # empty slots too. A drawer's own field-11 name wins. Label only:
@@ -438,6 +447,7 @@ status bar, no background art. What each part is drawn from:
 | size, model | `cdisk=` fields 3–4; the size in market units (500107862016 → "500 GB") |
 | SMART chip, its colour, the bar on the bay, the orange/red line under the cage | `cdisk=` field 5 by the #872 rule: `failed_last` red, `fail` (and an old agent's `warn`) orange, the rest green; `unchecked` says "SMART לא נבדק" |
 | the reason under the name | `fail` → "בדיקת הבריאות של הדיסק נכשלה" (smart.sh classifies fail only on health FAILED); `failed_last` → field 6, the server's cause (כבל/חריץ, הדיסק) |
+| the link, "· 6.0 Gb/s" after SATA N-1, and its orange line (#432) | `cdisk=` fields 7–8 (`disk_link`: the speed and the port's maximum, `null` = not read → "קישור לא ידוע", never blank and never green). Below the maximum: the bay's bar and border orange, "קישור 1.5 מתוך 6.0 Gb/s — לבדוק כבל" under the name (when SMART has no reason of its own), and a line under the cage. The SMART chip and LED stay SMART |
 | IP, MAC | `--ip` / `--mac` (the kiosk's) |
 
 Not in the data, so not drawn: the mockup's sample reason "12 סקטורים

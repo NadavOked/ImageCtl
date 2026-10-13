@@ -61,6 +61,17 @@ def test_invalid_version_is_explicitly_unknown(server, value):
     assert state.get("agent_version") == "unknown"
 
 
+def _no_verified_tag(monkeypatch, update) -> None:
+    """#1297: the shown version prefers a *signed* tag at HEAD over describe.
+    The public CI runs on exactly such a commit, so a test that injects
+    ``describe`` must also say "no verified tag here" -- or the repo's own
+    release tag answers instead of the injected value. A fresh cache too:
+    it is per (repo, HEAD) for the process, and an earlier test filled it."""
+    monkeypatch.setattr(update, "_tags_at_head", lambda _repo: [])
+    monkeypatch.setattr(update, "_verify_installed_tag", lambda _repo, _tag: False)
+    monkeypatch.setattr(update, "_DISPLAY_VERSION_CACHE", {}, raising=False)
+
+
 @pytest.mark.parametrize("version", ["v0.59.0", None])
 def test_state_reads_server_version_once_even_if_unavailable(request, monkeypatch, version):
     from server import update
@@ -76,6 +87,7 @@ def test_state_reads_server_version_once_even_if_unavailable(request, monkeypatc
             raise OSError("git unavailable")
         return version
     monkeypatch.setattr(update, "_describe", describe)
+    _no_verified_tag(monkeypatch, update)
     try:
         server = request.getfixturevalue("server")
         mac = setup_build_machine(server)
@@ -89,6 +101,32 @@ def test_state_reads_server_version_once_even_if_unavailable(request, monkeypatc
         cached = sys.modules.get("server.agent_version")
         if cached:
             cached.server_version.cache_clear()
+
+
+GIT = shutil.which("git")
+
+
+@requires_native(("git", GIT))
+def test_isolation_holds_on_a_head_with_a_verified_tag(tmp_path, monkeypatch):
+    """The CI case, staged: HEAD carries a tag the verifier accepts. Without
+    the isolation that tag is the answer; with it, the injected describe is."""
+    from server import update
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for argv in (["init", "-q"],
+                 ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q",
+                  "--allow-empty", "-m", "release"],
+                 ["tag", "v9.9.9"]):
+        subprocess.run([GIT, "-C", str(repo), *argv], check=True,
+                       stdin=subprocess.DEVNULL, capture_output=True)
+    monkeypatch.setattr(update, "_describe", lambda _repo: "v0.59.0")
+
+    monkeypatch.setattr(update, "_verify_installed_tag", lambda _repo, tag: tag == "v9.9.9")
+    monkeypatch.setattr(update, "_DISPLAY_VERSION_CACHE", {}, raising=False)
+    assert update.current_version(update.default_hooks(), repo) == "v9.9.9"
+
+    _no_verified_tag(monkeypatch, update)
+    assert update.current_version(update.default_hooks(), repo) == "v0.59.0"
 
 
 def shell(tmp_path, script):
@@ -191,6 +229,7 @@ def test_gui_snapshot_carries_local_and_server_versions(tmp_path):
     result = shell(tmp_path, f'''
 RUN_DIR={posix(tmp_path)!r}; GUI_DIR=$RUN_DIR
 . {posix(AGENT / 'lib/guistate.sh')!r}
+. {posix(AGENT / 'lib/askgui.sh')!r}
 AGENT_VERSION=v0.58.0
 http_get() {{ cat {posix(state)!r}; }}
 class_deploy_on() {{ return 1; }}

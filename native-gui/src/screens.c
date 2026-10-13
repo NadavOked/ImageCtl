@@ -6,6 +6,7 @@
 #include <string.h>
 #include <time.h>
 #include "screens_rounds.h"
+#include "lcui.h"   /* #1322 */
 
 /* #1252: a value the state file did not carry is said as unknown -- the
  * header once showed the mockup's server, address and version
@@ -26,7 +27,7 @@ static double draw_header(App *a, cairo_t *cr, double W) {
      * themes -- always: an uploaded college logo is no longer drawn (Nadav 12/10) */
     right=draw_brand_lockup_r(cr,right,(N_HEADER_H-brand_symbol_height(5))/2,5,1,0)-22;
 
-    const int clone=a->force_cloner||a->force_standby||a->screen==SCREEN_CLONER||a->screen==SCREEN_STANDBY;
+    const int clone=a->force_cloner||a->force_standby||a->screen==SCREEN_CLONER||a->screen==SCREEN_STANDBY||a->screen==SCREEN_LCBOOT||a->screen==SCREEN_LOCAL;
     const char *role=clone?"מחשב שיכפול":"מחשב בנייה";   /* #1252: the "2" was the mockup's */
     Text rt=text_make(cr,FONT_SANS,12,400,role,0,DIR_RTL);
     Rect pill={right-rt.w-18,(N_HEADER_H-20)/2,rt.w+18,20};
@@ -39,7 +40,8 @@ static double draw_header(App *a, cairo_t *cr, double W) {
     char srv[160]; server_label(&a->st,srv,sizeof srv);
     const char *keys[]={"מכונה","שרת"};
     const char *vals[]={known(a->st.machine_name),srv};
-    for(int i=0;i<2;i++){
+    const int local=a->screen==SCREEN_LOCAL;   /* #1322: no server in this flow -- said, in the server's place */
+    for(int i=0;i<(local?1:2);i++){
         Text k=text_make(cr,FONT_SANS,13,400,keys[i],0,DIR_RTL);
         Text v=text_make(cr,FONT_MONO,13,400,vals[i],0,DIR_LTR);
         text_draw_r(cr,&k,right,(N_HEADER_H-k.h)/2,(Rgb){1,1,1});
@@ -47,6 +49,12 @@ static double draw_header(App *a, cairo_t *cr, double W) {
         text_draw_r(cr,&v,right,(N_HEADER_H-v.h)/2,(Rgb){.8,.84,.87});
         right-=v.w+18;
         text_free(&k);text_free(&v);
+    }
+    if(local){
+        Text m=text_make(cr,FONT_SANS,12,600,"שיכפול מקומי · בלי שרת",0,DIR_RTL);
+        Rect mp={right-m.w-18,(N_HEADER_H-20)/2,m.w+18,20};
+        draw_fill_rrect(cr,mp,10,t==&THEME_DARK?(Rgb){.76,.33,0}:(Rgb){.76,.33,0});
+        text_draw_r(cr,&m,right-9,mp.y+(20-m.h)/2,(Rgb){1,1,1});right=mp.x-22;text_free(&m);
     }
     const char *av=a->st.agent_version, *sv=a->st.server_version;
     /* empty, "unknown" (the agent's stamp) and "לא ידוע" are all "not known" */
@@ -81,6 +89,8 @@ static double draw_header(App *a, cairo_t *cr, double W) {
 static const char *status_word(const App *a,char *buf,size_t n,Rgb *dot){
     const State *s=&a->st; *dot=a->theme->led_ok;
     if(s->shrink_pending){*dot=a->theme->warn;return "ממתין להחלטת כיווץ";}   /* #928: the modal owns the screen */
+    if(s->ask_pending){*dot=a->theme->warn;return s->ask_kind==ASK_GROWBACK?"ממתין להחלטה על הדיסק":"הקליטה הסתיימה";}   /* 11/10 */
+    if(a->screen==SCREEN_LCBOOT||a->screen==SCREEN_LOCAL)return lc_status_word(a,dot);   /* #1322 */
     switch(a->screen){
     case SCREEN_LOGIN:return "ממתין לאימות";
     case SCREEN_MENU:return a->logout_confirming?"אישור התנתקות":"בחירת פעולה";
@@ -102,6 +112,7 @@ static const char *status_word(const App *a,char *buf,size_t n,Rgb *dot){
     case SCREEN_RESTORE:*dot=a->theme->warn;return "בחירת אימג' לשחזור";
     case SCREEN_TOOLS:return a->tool_running?"מריץ כלי":"ארגז הכלים";
     case SCREEN_INSTALL:return "אשף התקנה";
+    case SCREEN_LCBOOT: case SCREEN_LOCAL: break;   /* #1322: answered above */
     }
     return "מוכן";
 }
@@ -110,7 +121,9 @@ static const char *status_word(const App *a,char *buf,size_t n,Rgb *dot){
  * there -- nothing it ignores. */
 static const char *status_keys(const App *a,char *buf,size_t n){
     if(a->st.shrink_pending)return "1  כווץ וקלוט    2  קלוט בלי כיווץ    3 / Esc  בטל קליטה";   /* #928 */
+    if(a->st.ask_pending)return a->st.ask_kind==ASK_GROWBACK?"1  החזר לגודל    2 / Esc  השאר":"1 / Esc  כבה    2  חזרה לתפריט";   /* 11/10 */
     if(a->confirm)return "Enter  אישור    Esc  ביטול";   /* #1270: the confirm dialog */
+    if(a->screen==SCREEN_LCBOOT||a->screen==SCREEN_LOCAL)return lc_status_keys(a);   /* #1322 */
     switch(a->screen){
     case SCREEN_LOGIN:return "Tab  מעבר    Enter  כניסה";
     case SCREEN_MENU:
@@ -401,6 +414,8 @@ static void draw_cursor(cairo_t *cr,double x,double y){
 void app_route(App *a){
     const State *s=&a->st;
     if(a->install.active){a->screen=SCREEN_INSTALL;return;}
+    /* #1322: the boot choice and the local clone own a cloner's screen while the agent says so */
+    if((a->force_cloner||a->force_standby)&&s->lc.screen){a->screen=s->lc.screen==LC_SCREEN_BOOT?SCREEN_LCBOOT:SCREEN_LOCAL;return;}
     if(a->force_standby){a->screen=SCREEN_STANDBY;return;}
     if(a->force_cloner){a->screen=(s->ndrawers||s->cloner_image[0]||s->smart_pending)?SCREEN_CLONER:SCREEN_STANDBY;return;}
     if(s->msg_title[0]){a->screen=SCREEN_MESSAGE;return;}
@@ -447,8 +462,26 @@ static void draw_idle_countdown(App *a,cairo_t *cr,double W,double H){
 void draw_confirm_dialog(App *a,cairo_t *cr,double W,double H){
     if(!a->confirm)return;
     const Theme *t=a->theme;const State *s=&a->st;double usable=H-N_STATUS_H;
-    char title[200],what[800],ok[120];
-    if(a->confirm==CONFIRM_RESTORE){
+    char title[200],what[1400],ok[120];
+    if(a->confirm==CONFIRM_ROOM_START_WARN){
+        /* #432: orange -- a question, not a block; the server's own lines */
+        snprintf(title,sizeof title,"להתחיל את הגל למרות האזהרה?");
+        size_t u=0;what[0]=0;
+        for(int i=0;i<s->nroom_warn&&i<4;i++){
+            int k=snprintf(what+u,sizeof what-u,"%s" RLM "%s",u?"\n":"",s->room_warn[i]);
+            if(k<0||(size_t)k>=sizeof what-u)break;
+            u+=(size_t)k;
+        }
+        if(s->nroom_warn>4&&u<sizeof what)snprintf(what+u,sizeof what-u,"\nועוד %d מגירות",s->nroom_warn-4);
+        u=strlen(what);
+        snprintf(what+u,sizeof what-u,"\nקישור איטי או CRC שעלה הם בדרך כלל כבל או מגירה. ההתחלה תירשם ביומן עם האזהרה.");
+        snprintf(ok,sizeof ok,"התחל בכל זאת");
+    }else if(a->confirm==CONFIRM_ROOM_POWEROFF){
+        char name_i[100];bidi_isolate(a->poweroff_name,name_i,sizeof name_i);
+        snprintf(title,sizeof title,"לכבות את %s?",name_i);
+        snprintf(what,sizeof what,"המחשב נכבה דרך הסוכן ויוצא מהגל הפתוח — כדי להחליף בו מגירות. אחרי ההחלפה מדליקים אותו (או מעירים), והוא מצטרף לגל לבד.");
+        snprintf(ok,sizeof ok,"כבה אותו");
+    }else if(a->confirm==CONFIRM_RESTORE){
         const Disk *d=NULL;for(int i=0;i<s->ndisks;i++)if(!s->disks[i].removable){d=&s->disks[i];break;}
         const char *img=a->restore_image_sel>0&&a->restore_image_sel<=s->nimages?s->images[a->restore_image_sel-1].name:"";
         snprintf(title,sizeof title,"למחוק את הדיסק ולשחזר?");
@@ -489,7 +522,9 @@ void draw_confirm_dialog(App *a,cairo_t *cr,double W,double H){
     Text go=btn_label(cr,ok),no=btn_label(cr,"ביטול");
     double gw=btn_width(&go),nw=btn_width(&no),by=box.y+box.h-28-N_BUTTON_H;
     /* the approved window: the action at the inline end, cancel next to it */
-    draw_btn(a,cr,(Rect){box.x+28,by,gw,N_BUTTON_H},&go,BTN_DANGER,HIT_CONFIRM_OK);
+    /* #432: the start question is a warning (orange, BTN_WARN); every destructive OK stays red */
+    if(a->confirm==CONFIRM_ROOM_START_WARN)draw_btn(a,cr,(Rect){box.x+28,by,gw,N_BUTTON_H},&go,BTN_WARN,HIT_CONFIRM_OK);
+    else draw_btn(a,cr,(Rect){box.x+28,by,gw,N_BUTTON_H},&go,BTN_DANGER,HIT_CONFIRM_OK);
     draw_btn(a,cr,(Rect){box.x+28+gw+N_ACTION_GAP,by,nw,N_BUTTON_H},&no,BTN_PLAIN,HIT_CONFIRM_CANCEL);
     text_free(&h);text_free(&p);text_free(&go);text_free(&no);
 }
@@ -517,10 +552,13 @@ static void app_draw_logical(App *a,cairo_t *cr,double W,double H){
     case SCREEN_MESSAGE:  screen_message(a, cr, W, H, head_h); break;
     case SCREEN_RESTORE:  screen_restore(a, cr, W, H, head_h); break;
     case SCREEN_TOOLS:    screen_tools(a, cr, W, H, head_h); break;     /* #649 */
+    case SCREEN_LCBOOT:   screen_lcboot(a, cr, W, H, head_h); break;   /* #1322 */
+    case SCREEN_LOCAL:    screen_local(a, cr, W, H, head_h); break;
     case SCREEN_INSTALL:  break;
     }
     draw_state_warning(a,cr,W,H);draw_idle_countdown(a,cr,W,H);
     draw_shrink_dialog(a,cr,W,H);   /* #928: modal, over every screen but the status bar */
+    draw_ask_dialog(a,cr,W,H);      /* 11/10: the agent's question, the same way */
     draw_confirm_dialog(a,cr,W,H);  /* #1270 */
     draw_status(a,cr,W,H);draw_toast(a,cr,W,H);
 }

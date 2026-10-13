@@ -47,6 +47,39 @@ def test_base_version_strips_describe_suffix():
     assert update_mod._base_version(None) is None
 
 
+def test_display_version_prefers_highest_verifying_tag_at_head_and_caches():
+    verified = []
+    hooks = {
+        "head": lambda _repo: "abc",
+        "tags_at_head": lambda _repo: ["v9.0.0", "v8.0.0"],
+        "verify_installed_tag": lambda _repo, tag: verified.append(tag) or tag == "v8.0.0",
+        "describe": lambda _repo: "v9.0.0",
+    }
+    assert update_mod.display_version(hooks, "/repo") == ("v8.0.0", True)
+    assert update_mod.display_version(hooks, "/repo") == ("v8.0.0", True)
+    assert verified == ["v9.0.0", "v8.0.0"]
+
+
+def test_display_version_falls_back_to_unsigned_describe_result():
+    hooks = {
+        "head": lambda _repo: "abc",
+        "tags_at_head": lambda _repo: ["v9.0.0"],
+        "verify_installed_tag": lambda _repo, _tag: False,
+        "describe": lambda _repo: "v9.0.0",
+    }
+    assert update_mod.display_version(hooks, "/repo") == ("v9.0.0", False)
+    assert update_mod.current_version(hooks, "/repo") == "v9.0.0"
+
+
+def test_display_version_without_tags_keeps_existing_error_result():
+    def no_tag(_repo):
+        raise update_mod.VersionError("no-tag", "none")
+
+    hooks = {"head": lambda _repo: "abc", "tags_at_head": lambda _repo: [],
+             "verify_installed_tag": lambda *_: False, "describe": no_tag}
+    assert update_mod.display_version(hooks, "/repo") == (None, False)
+
+
 # --- check_update: הראיה תמיד מוזרקת -----------------------------------------
 
 
@@ -205,6 +238,7 @@ def test_me_reports_the_server_version_from_the_same_source_as_update(update_ser
     from server import users
     admin, app, state = update_server["admin"], update_server["app"], update_server["state"]
     assert admin.get("/api/console/me").json()["version"] == "v0.24.0"
+    assert admin.get("/api/console/me").json()["version_verified"] is False
     state["current"] = "v0.25.0-2-gabc123"          # העץ זז — נקרא מחדש, לא מונח
     assert admin.get("/api/console/me").json()["version"] == "v0.25.0-2-gabc123"
     users.create(app.state.ctx.conn, "dep", "deploy-pass-123", "deploy", by="test", check_policy=False)

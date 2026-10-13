@@ -51,6 +51,13 @@ void bidi_isolate(const char *in, char *out, size_t n);
 /* U+200F RIGHT-TO-LEFT MARK: put first in a line that may start with a Latin
  * value, so auto-dir still resolves the paragraph RTL. */
 #define RLM "\xE2\x80\x8F"
+/* #1304 pieces the local clone's drawers share (screens_standby.c, #1322):
+ * a disk's market size ("500 GB"), the .led dot with its ring, the .pill with
+ * its dot at the start, and the hatched face of an empty / blocked slot. */
+void disk_size(unsigned long long b, char *out, size_t n);
+void sb_led(cairo_t *cr, double cx, double cy, double d, Rgb c, Rgb soft, int ring, double alpha);
+double sb_pill(cairo_t *cr, double right, double cy, const char *label, Rgb fg, Rgb bg);
+void sb_hatch(cairo_t *cr, const Theme *t, Rect r);
 void progline_draw(cairo_t *, const Theme *, ProgLine *, double, double, double);
 void foot_buttons(App *, cairo_t *, Rect, Text *, const int *, const int *, int);
 int image_options(const App *, const char **, char (*)[168], int);

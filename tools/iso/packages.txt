@@ -12,6 +12,7 @@
 #   [gui]        GUI_PACKAGES=(...)      tools/build_initramfs.sh (--with-gui)
 #   [gui-build]  make pkg-config *-dev   tools/build_initramfs.sh (--with-gui)
 #   [toolbox]    TOOL_PKG=(...)          tools/build_initramfs.sh (--tools-selection)
+#   [vmupdate]   שורה לחבילה             install/vmupdate-packages.txt (#1334)
 #   [iso]        מה שרק ה-ISO מוסיף — ראה הסבר ליד כל אחת
 #
 # שורה = חבילה אחת. `#` פותח הערה. ‏make-pool.sh מוריד את כולן **עם
@@ -36,6 +37,11 @@ cifs-utils
 git                 # #1185: כפתור העדכון עובד על /opt/imagectl/.git שה-ISO נושא
 rsync               # #1128: tools/backup-server.sh — גיבוי מצטבר של האימג'ים
 ifenslave           # #1264: כרטיס שני לרשת ההפצה (bond, balance-alb) — bond-slaves ב-ifupdown
+
+# --- [vmupdate] install/vmupdate-packages.txt (#1334) — המדידה שם -----------
+qemu-system-x86
+ovmf
+python3-guestfs
 
 # --- [initramfs] tools/build_initramfs.sh · הבסיס -------------------------
 busybox-static

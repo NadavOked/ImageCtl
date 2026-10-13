@@ -318,27 +318,19 @@ def test_capture_without_shrinking_is_still_offered(tmp_path):
     assert not rewrites(run)
 
 
-def test_the_text_menu_maps_keys_and_eof(tmp_path):
-    """‏shrink_ask עצמו: 1/2/3 → continue/plain/cancel, EOF → cancel, קלט
-    לא-חוקי מצייר שוב ולא בוחר בשקט. ‏#929: שאלה **אחת** על קובץ תוכנית —
-    שורה למחיצה — והמסך מציג את כולן."""
+def test_without_a_gui_no_key_shrinks_anything(tmp_path):
+    """‏shrink_ask עצמו, בלי גואי: מסך הטקסט שמיפה 1/2/3 הוסר (11/10, GUI
+    בלבד). כל מקש שמחכה ב-stdin, וגם EOF — cancel; שום דבר לא מכווץ בלי
+    אדם שאמר כן בדיאלוג הגרפי (#928)."""
     plan = tmp_path / "shrink.plan"
-    plan.write_text(f"3|{WIN_GUID}|{WIN_UGUID}|{WIN_START}|{WIN_SECTORS}|512000000000|110000000000\n"
-                    f"4|{WIN_GUID}|{DATA_UGUID}|{DATA_START}|{DATA_SECTORS}|53687091200|22548578304\n",
+    plan.write_text(f"3|{WIN_GUID}|{WIN_UGUID}|{WIN_START}|{WIN_SECTORS}|512000000000|110000000000\n",
                     encoding="utf-8", newline="\n")
 
-    def ask(keys: str) -> tuple[str, str]:
-        out = sh(f"export IMAGECTL_TEST=1; . {posix(AGENT)}/lib/ui.sh; . {posix(AGENT)}/lib/shrinkplan.sh; "
-                 f"printf '{keys}' | shrink_ask {posix(plan)!r} 2> {posix(tmp_path / 'screen')!r}").strip()
-        return out, (tmp_path / "screen").read_text(encoding="utf-8", errors="replace")
-    assert ask("1\\n")[0] == "continue"
-    assert ask("2\\n")[0] == "plain"
-    assert ask("3\\n")[0] == "cancel"
-    assert ask("")[0] == "cancel"
-    decision, screen = ask("x\\n9\\n1\\n")
-    assert decision == "continue"
-    assert "partition 3: 512.0 GB -> 110.0 GB" in screen and "partition 4: 53.7 GB -> 22.5 GB" in screen, screen
-    assert screen.count("[1] Shrink and capture") == 3, "מסך אחד לשלושת הניסיונות, לא שאלה למחיצה"
+    def ask(keys: str) -> str:
+        return sh(f"export IMAGECTL_TEST=1; . {posix(AGENT)}/lib/ui.sh; . {posix(AGENT)}/lib/shrinkplan.sh; "
+                  f"printf '{keys}' | shrink_ask {posix(plan)!r} 2>/dev/null").strip()
+    for keys in ("1\\n", "2\\n", "3\\n", ""):
+        assert ask(keys) == "cancel", keys
 
 
 # --- כשל בכל צעד = הקליטה נכשלת בגלוי, והמקור מוחזר -----------------------------

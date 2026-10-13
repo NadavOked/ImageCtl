@@ -6,8 +6,9 @@
 העדכון עצמם — לא חיבור קבוע.
 
 מקור הגרסה החדשה: `tag` אחרון ב-remote (‏`git ls-remote --tags`), לא
-release API — הריפו הציבורי עדיין בלי releases. גרסה נוכחית: `git
-describe --tags` על עץ השרת (`--repo-dir`, ברירת מחדל תיקיית הקוד עצמה).
+release API — הריפו הציבורי עדיין בלי releases. גרסה נוכחית: תג semver
+מאומת שמצביע על HEAD, עם fallback מסומן ל-`git describe --tags` בהתקנה
+ישנה (`--repo-dir`, ברירת מחדל תיקיית הקוד עצמה).
 
 ההגדרה (`update_enabled`) קובעת רק מה *מותר
 לנסות*; המצב בפועל (הגרסה שרצה) נקרא תמיד מחדש, לא מונח.
@@ -32,6 +33,7 @@ from .db import get_setting, journal, now_iso, set_setting
 log = logging.getLogger("imagectl.update")
 
 Hooks = dict[str, Callable]
+_DISPLAY_VERSION_CACHE: dict[tuple[str, str], "DisplayVersion"] = {}
 
 #: מפתח המתג ב-``WRITE_SETTINGS`` (console_api.py) — כבוי כברירת מחדל,
 #: כמו כל דגל אחר שם: ``get_setting`` שמחזיר ``None`` נקרא "כבוי".
@@ -152,6 +154,37 @@ def _describe(repo_dir: str | Path) -> str:
     return out.strip()
 
 
+def _head(repo_dir: str | Path) -> str:
+    ok, out, err = _run(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], timeout=10)
+    if not ok or not out.strip():
+        raise VersionError(_describe_error(err),
+                           f"git rev-parse HEAD על {repo_dir} נכשל: {err or 'בלי פלט שגיאה'}")
+    return out.strip()
+
+
+def _tags_at_head(repo_dir: str | Path) -> list[str]:
+    ok, out, err = _run(
+        ["git", "-C", str(repo_dir), "tag", "--points-at", "HEAD"], timeout=10)
+    if not ok:
+        raise VersionError(_describe_error(err),
+                           f"git tag --points-at HEAD על {repo_dir} נכשל: {err or 'בלי פלט שגיאה'}")
+    return sorted((tag for tag in out.splitlines() if semver_key(tag)),
+                  key=semver_key, reverse=True)
+
+
+def _verify_installed_tag(repo_dir: str | Path, tag: str) -> bool:
+    tool = Path(repo_dir) / "tools" / "verify-release-tag.py"
+    signers = Path(repo_dir) / "install" / "release-signers"
+    try:
+        done = subprocess.run(
+            [sys.executable, "-I", str(tool), str(repo_dir), tag, str(signers)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=60, check=False, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0 and done.stdout.startswith("signed: ")
+
+
 def _ls_remote_tags(url: str) -> tuple[bool, str, str]:
     # חד-פעמי, 20 שניות: זה החיבור היוצא היחיד שהבדיקה פותחת (סעיף 4
     # בתגובת נדב) — אין polling ואין חיבור קבוע לציבורי.
@@ -222,6 +255,10 @@ def _verify_remote_tag(url: str, tag: str, repo_dir: str | Path) -> dict:
 def default_hooks() -> Hooks:
     return {
         "describe": _describe,
+        "head": _head,
+        "tags_at_head": _tags_at_head,
+        "verify_installed_tag": _verify_installed_tag,
+        "_display_version_cache": _DISPLAY_VERSION_CACHE,
         "ls_remote_tags": _ls_remote_tags,
         "run_upgrade": _run_upgrade_script,
         "verify_tag": _verify_remote_tag,
@@ -239,10 +276,45 @@ def enabled(conn) -> bool:
 
 
 def current_version(hooks: Hooks, repo_dir: str | Path) -> str | None:
+    return display_version(hooks, repo_dir).version
+
+
+class DisplayVersion(NamedTuple):
+    version: str | None
+    verified: bool
+
+
+def display_version(hooks: Hooks, repo_dir: str | Path) -> DisplayVersion:
+    """Highest trusted semver tag at HEAD, cached for that commit.
+
+    Older installations and injected test hooks do not have the new verifier
+    hooks.  They deliberately retain the old ``git describe`` value, marked
+    unverified.  A checkout changes HEAD and therefore misses the cache.
+    """
+    cache = hooks.setdefault("_display_version_cache", {})
     try:
-        return hooks["describe"](repo_dir)
+        head = hooks["head"](repo_dir) if "head" in hooks else None
     except Exception:                                  # noqa: BLE001
-        return None
+        head = None
+    key = (str(Path(repo_dir).resolve()), head)
+    if head is not None and key in cache:
+        return cache[key]
+    if head is not None and "tags_at_head" in hooks and "verify_installed_tag" in hooks:
+        try:
+            for tag in hooks["tags_at_head"](repo_dir):
+                if hooks["verify_installed_tag"](repo_dir, tag):
+                    result = DisplayVersion(tag, True)
+                    cache[key] = result
+                    return result
+        except Exception:                              # noqa: BLE001
+            pass
+    try:
+        result = DisplayVersion(hooks["describe"](repo_dir), False)
+    except Exception:                                  # noqa: BLE001
+        result = DisplayVersion(None, False)
+    if head is not None:
+        cache[key] = result
+    return result
 
 
 class VersionRead(NamedTuple):
@@ -259,6 +331,9 @@ def read_version(hooks: Hooks, repo_dir: str | Path) -> VersionRead:
     נפילה לתג של ה-ISO: אחרי עדכון הוא כבר לא נכון). גרסה שלא נקראה
     נכתבת גם ליומן, כי ``/health/live`` נשאל בדיוק ברגעים שבהם היא
     קובעת — סוף ההתקנה וסוף השדרוג."""
+    shown = display_version(hooks, repo_dir)
+    if shown.version:
+        return VersionRead(shown.version, None, None)
     try:
         version = hooks["describe"](repo_dir)
     except VersionError as exc:
@@ -362,16 +437,22 @@ def get_last_check(conn) -> dict | None:
 def status_with_verification(conn, hooks: Hooks, repo_dir: str | Path) -> dict:
     """מצב ההרצה האחרונה + הראיה החיובית: האם הגרסה שרצה בפועל, עכשיו,
     היא התג שביקשנו. "לא ידוע עדיין" (השרת עוד לא עלה מחדש) שונה מפורשות
-    מ"נכשל" — עיקרון 5."""
+    מ"נכשל" — עיקרון 5.
+
+    ‏#1301: ``now`` — שעון השרת ברגע הקריאה, כדי שהקונסולה תחשב "זמן שעבר"
+    מ-``started_at``/``stages`` בלי להסתמך על שעון הדפדפן. ‏``done`` שהסקריפט
+    כתב בעצמו מאומת באותה השוואה."""
     doc = get_status(conn) or {"state": "idle"}
     current = current_version(hooks, repo_dir)
-    result = {**doc, "current": current}
+    result = {**doc, "current": current, "now": now_iso()}
     if doc.get("state") == "running" and doc.get("tag"):
         if current == doc["tag"]:
             result["verified"] = True
             result["state"] = "done"
         else:
             result["verified"] = False
+    elif doc.get("state") == "done" and doc.get("tag"):
+        result["verified"] = current == doc["tag"]
     return result
 
 
@@ -391,7 +472,10 @@ def _apply_in_background(conn, hooks: Hooks, repo_dir: str | Path, tag: str,
     # לעץ הקוד. ה-fetch וה-checkout נעשים בתוך server-upgrade.sh, ביחידה
     # המנותקת שמחוץ לארגז החול. הסטטוס נכתב לפני השיגור כדי שלא יהיה חלון
     # שבו בקשה שהתקבלה עדיין נראית idle.
-    _set_status(conn, {"state": "running", "tag": tag})
+    # ‏#1301: ‏started_at/by/from — הסקריפט ממשיך את אותה ריצה (אותו שעון ואותו
+    # מפעיל), ומסך העדכון בקונסולה מציג אותם גם אחרי רענון.
+    _set_status(conn, {"state": "running", "tag": tag, "started_at": now_iso(),
+                       "by": user, "from": previous})
     ok, err = hooks["run_upgrade"](repo_dir, tag)
     if not ok and unit_already_exists(err):
         _set_status(conn, prior or {"state": "idle"})

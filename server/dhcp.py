@@ -261,8 +261,40 @@ def _pinned(lines: list[str], tftp_root: str | None, pin_tftp: bool) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _netboot_gate(netboot, nics, full, deploy_interface):
+    """‏#705: "אתחול מהרשת" כבוי בכרטיס = dnsmasq אינו משרת אותו כלל.
+
+    מחזיר (שורות, ה-DHCP המלא שנשאר, כרטיס ההפצה שנשאר). כרטיס כבוי מקבל
+    ‏`except-interface=` — הוא גובר גם על `interface=` בקובץ המתקין, ולכן
+    גם הפצה מ-`cli` נסגרת באמת. כרטיס דלוק בלי DHCP מוגדר מקבל
+    ‏`interface=` (‏TFTP בלבד; טווח כתובות עדיין רק מלשונית ה-DHCP, ‏#53).
+    ותמיד יש לפחות `interface=` אחד — בלעדיו dnsmasq מאזין על **כל** מי
+    שלא הוחרג (R20-F5)."""
+    allowed = set(netboot)
+    named = {c.name for c in full} | ({deploy_interface} if deploy_interface else set())
+    shut = sorted((set(nics) | named) - allowed)
+    for name in shut:
+        validate_name(name)
+    full = [c for c in full if c.name in allowed]
+    if deploy_interface not in allowed:
+        deploy_interface = None
+    served = {c.name for c in full} | ({deploy_interface} if deploy_interface else set())
+    extra = sorted(allowed - served)
+    for name in extra:
+        validate_name(name)
+    lines = ["# Per-NIC services (#705): network boot is set per interface in the console.",
+             "bind-interfaces"]
+    lines += [f"except-interface={n}" for n in shut]
+    lines += [f"interface={n}" for n in extra]
+    if not served and not extra:
+        lines += ["# No interface offers network boot -- loopback only, not every NIC.",
+                  "interface=lo"]
+    return lines + [""], full, deploy_interface
+
+
 def render(configs: list[InterfaceConfig], tftp_root: str | None = None,
-           deploy_interface: str | None = None, pin_tftp: bool = False) -> str:
+           deploy_interface: str | None = None, pin_tftp: bool = False,
+           netboot: list[str] | None = None, nics: list[str] = ()) -> str:
     """הקובץ של האינסטנס הראשי — ‏DEFAULT_CONF, בתוך /etc/dnsmasq.d.
 
     dnsmasq קורא את כל /etc/dnsmasq.d; קובץ ההתקנה (imagectl.conf) נותן את
@@ -285,14 +317,22 @@ def render(configs: list[InterfaceConfig], tftp_root: str | None = None,
 
     ‏`pin_tftp` (‏#1078): הקובץ הזה הוא היחיד שיכול לשאת `interface=` (מקור
     ההפצה אינו `cli`) — ואם אין בו אף שם, ה-TFTP נצמד ל-loopback (`_pinned`).
+
+    ‏`netboot` (‏#705): הכרטיסים שבהם "אתחול מהרשת" דלוק, כשהמפעיל ערך
+    שירותים לכרטיסים (`None` = ההתנהגות של היום, והפלט זהה בית-בבית);
+    ‏`nics` — כל הכרטיסים שהשרת רואה, כדי שהכבויים יוחרגו בשם.
     """
     lines = _head("DHCP per interface")
     full, proxied = full_dhcp(configs), proxy_only(configs)
     _guard_names(full + proxied)
+    if netboot is not None:
+        gate, full, deploy_interface = _netboot_gate(netboot, nics, full, deploy_interface)
+        lines += gate
     if deploy_interface and deploy_interface not in {c.name for c in full + proxied}:
         validate_name(deploy_interface)
         lines += ["# Deploy interface, set from the console (#1088): TFTP on it only.",
-                  "bind-interfaces", f"interface={deploy_interface}", ""]
+                  *([] if "bind-interfaces" in lines else ["bind-interfaces"]),
+                  f"interface={deploy_interface}", ""]
     lines += _tftp_lines(tftp_root)
     if not full and not proxied:
         lines.append("# No interface has DHCP or proxy enabled.")

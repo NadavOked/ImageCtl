@@ -104,7 +104,7 @@ def test_station_router_on_agent_not_console(split):
     # `/api/v1/agent/{groups,state,sessions}`) חולץ מהקונסולה — ואפליקציית
     # הניהול אינה מאזינה בוילן ההפצה. ‏#1247: אפליקציית הקיוסק (:8082) הוסרה.
     # ‏#824: אותם נתיבים הם גם ה-API שהסוכן על המכונה צורך (‏guistate.sh,
-    # ‏guibridge.sh, ‏guiparent.sh, ‏classround.sh) דרך `$SERVER` = פורט
+    # ‏guibridge.sh, ‏guiparent.sh) דרך `$SERVER` = פורט
     # הסוכן — ולכן הם חיים גם על הסוכן. על הקונסולה — לא.
     rt, agent_app, console_app = split
     agent, console = TestClient(agent_app), TestClient(console_app)

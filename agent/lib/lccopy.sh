@@ -1,0 +1,210 @@
+# lccopy.sh -- #1322 local clone: the copy itself. The source is read ONCE
+# per partition and fanned out to every target in parallel -- the drawers
+# pipeline of a round (drawers.sh), with partclone reading a local partition
+# where a round has udp-receiver. POSIX sh (busybox ash).
+#
+#   partclone -c <source part> > src.fifo          (used blocks only; an
+#     unknown filesystem goes through partclone.dd -- the whole partition)
+#   pv < src.fifo | tee <sha fifo> | fanout <buffer> t1/feed t2/feed ...
+#   per target: tee <its sha fifo> < feed | partclone -r -O <target part>
+#
+# The evidence for one target and one partition is four records, all of
+# which must agree (the lesson of verdict.sh, #440/#520/#527): fanout said
+# "ok", partclone exited 0, the target's tee exited 0, and the sha256 of what
+# the target pipeline consumed equals the sha256 of what was read from the
+# source. A failing target fails alone; the source failing fails every one.
+# No full read-back of the data (owner, 13/10): it would double the time.
+
+LC_STALL_S="${LC_STALL_S:-${WAIT_STREAM_STALL_S:-300}}"
+
+lc_prepare_target() {
+    # $1 = target, $2 = manifest. The table exactly as on the source (GUIDs
+    # included), grown to a larger disk -- run_restore_drawers' own sequence.
+    target_set "$1" writing
+    disk_fits "$1" "$2" || return 1
+    if ! apply_gpt "$1" "$2"; then
+        fail_written_target "$1" "${PLAN_ERROR:-טבלת המחיצות לא נכתבה}"; return 1
+    fi
+    if ! EXPAND_OVERRIDE=auto expand_last "$1" "$2"; then
+        log "WARNING: expansion failed on $1 -- writing at the source's own size"
+        apply_gpt "$1" "$2" || { fail_written_target "$1" "${PLAN_ERROR:-טבלת המחיצות לא נכתבה}"; return 1; }
+    fi
+    lc_set_names "$1" || { fail_written_target "$1" "שמות המחיצות לא נכתבו (sgdisk -c)"; return 1; }
+    blockdev --rereadpt "$DEVROOT/$1" >> "$LOG_FILE" 2>&1 \
+        || { fail_written_target "$1" "הקרנל לא קרא את הטבלה החדשה"; return 1; }
+}
+
+_lc_target_pipeline() {
+    # $1 = target, $2 = fs, $3 = idx. Reads its fifo, hashes what it takes,
+    # writes the partition. Every exit code is caught on its own: busybox ash
+    # has no pipefail (#527).
+    _lt_t="$RUN_DIR/targets/$1"; _lt_node=$(partition_node "$1" "$3"); _lt_pcl=$(partclone_for_fs "$2")
+    (
+        sha256sum < "$_lt_t/shafifo" > "$_lt_t/sha.out" 2>> "$LOG_FILE" &
+        _lt_sp=$!
+        # shellcheck disable=SC2046 # partclone_mode flags are a word list
+        { tee "$_lt_t/shafifo" < "$_lt_t/feed"; echo "$?" > "$_lt_t/tee.rc"; } \
+            | "$_lt_pcl" $(partclone_mode "$_lt_pcl" -r) -s - -O "$_lt_node" \
+                -L "$_lt_t/partclone.log" 2>> "$LOG_FILE"
+        echo "$?" > "$_lt_t/pipeline.rc"
+        wait_pid "$_lt_sp" "$WAIT_HELPER_S" "sha256 של מה שהיעד $1 לקח"
+    ) &
+    echo "$!" > "$_lt_t/pipeline.pid"
+}
+
+_lc_wait_stream() {
+    # $1 = pid of the stream. Watches the source counter: a slow disk delays,
+    # a stopped stream ends here. A stop request (Esc → "עצור") ends the
+    # source reader; everything downstream then sees EOF. 2 = stopped,
+    # 1 = stalled, 0 = the stream ended by itself.
+    _lw_seen=""; _lw_still=0; _lw_rc=0
+    while kill -0 "$1" 2>/dev/null; do
+        if command -v watchdog_beat >/dev/null 2>&1; then watchdog_beat; fi
+        sleep 1
+        if [ -f "$LC/stop.req" ] && [ "$_lw_rc" = 0 ]; then
+            log "local clone: stop requested -- ending the source reader"
+            kill "$(cat "$LC/run/src.pid" 2>/dev/null)" 2>/dev/null; _lw_rc=2
+        fi
+        _lw_now=$(_last_number "$LC/run/bytes.raw")
+        if [ "$_lw_now" != "$_lw_seen" ]; then _lw_seen=$_lw_now; _lw_still=0; continue; fi
+        _lw_still=$((_lw_still + 1))
+        if [ "$_lw_still" -ge "$LC_STALL_S" ] && [ "$_lw_rc" = 0 ]; then
+            log "local clone: no progress for $LC_STALL_S s -- ending the source reader"
+            kill "$(cat "$LC/run/src.pid" 2>/dev/null)" 2>/dev/null; _lw_rc=1
+        fi
+    done
+    wait_pid "$1" "$WAIT_HELPER_S" "הזרם של המחיצה"
+    return "$_lw_rc"
+}
+
+lc_stream() {
+    # $1 = idx, $2 = fs, $3 = source, $4.. = targets. 0 = at least one target
+    # took the partition, 1 = none did, 2 = stopped.
+    _ls_i="$1"; _ls_fs="$2"; _ls_src="$3"; shift 3
+    _ls_r="$LC/run"; _ls_pcl=$(partclone_for_fs "$_ls_fs"); _ls_feeds=""
+    for _ls_t in "$@"; do
+        _ls_d="$RUN_DIR/targets/$_ls_t"
+        [ "$(cat "$_ls_d/state")" = failed ] && continue
+        rm -f "$_ls_d/feed" "$_ls_d/feed.bytes" "$_ls_d/shafifo" "$_ls_d/sha.out" \
+              "$_ls_d/pipeline.rc" "$_ls_d/tee.rc" "$_ls_d/pipeline.pid"
+        mkfifo "$_ls_d/feed" "$_ls_d/shafifo" || { fail_written_target "$_ls_t" "מחיצה $_ls_i: mkfifo נכשל"; continue; }
+        target_counter "$_ls_t" "$_ls_d/feed.bytes"
+        echo "$_ls_i" > "$_ls_d/lc_part"
+        _lc_target_pipeline "$_ls_t" "$_ls_fs" "$_ls_i"
+        _ls_feeds="$_ls_feeds $_ls_d/feed"
+    done
+    [ -n "$_ls_feeds" ] || return 1
+    rm -f "$_ls_r/src.fifo" "$_ls_r/shafifo" "$_ls_r/sha.out" "$_ls_r/src.rc" "$_ls_r/fanout.rc" "$_ls_r/fanout.out" "$_ls_r/partclone.err"
+    : > "$_ls_r/bytes.raw"; echo "$_ls_i|copy" > "$_ls_r/cur"
+    mkfifo "$_ls_r/src.fifo" "$_ls_r/shafifo" || return 1
+    sha256sum < "$_ls_r/shafifo" > "$_ls_r/sha.out" 2>> "$LOG_FILE" &
+    _ls_sp=$!
+    # ntfs: -I, as in capture -- the read is read-only, and an identical copy
+    # carries the source's own state (a fast-started Windows resumes the same).
+    _ls_ign=""; [ "$_ls_fs" = ntfs ] && _ls_ign="-I"
+    (
+        # shellcheck disable=SC2046 # partclone_mode flags are a word list
+        "$_ls_pcl" $(partclone_mode "$_ls_pcl" -c) $_ls_ign -s "$(partition_node "$_ls_src" "$_ls_i")" \
+            -L "$_ls_r/partclone.log" > "$_ls_r/src.fifo" 2>> "$_ls_r/partclone.err" &
+        echo "$!" > "$_ls_r/src.pid"; wait "$!"; echo "$?" > "$_ls_r/src.rc"
+    ) &
+    # shellcheck disable=SC2086 # the feed list is a word list on purpose
+    ( pv -n -b -i 1 < "$_ls_r/src.fifo" 2>> "$_ls_r/bytes.raw" | tee "$_ls_r/shafifo" \
+        | fanout "$(_fanout_buffer "$(echo "$_ls_feeds" | wc -w)")" $_ls_feeds > "$_ls_r/fanout.out" 2>> "$LOG_FILE"
+      echo "$?" > "$_ls_r/fanout.rc" ) &
+    _lc_wait_stream "$!"; _ls_w=$?
+    # The stream is over: a target whose fifo never got a writer (fanout that
+    # did not start, #49) is released now, not after a drawer's ceiling.
+    for _ls_f in $_ls_feeds; do unblock_fifo "$_ls_f"; done
+    for _ls_t in "$@"; do
+        _ls_pf="$RUN_DIR/targets/$_ls_t/pipeline.pid"
+        [ -f "$_ls_pf" ] || continue
+        wait_pid "$(cat "$_ls_pf")" "$WAIT_DRAWER_S" "יעד $_ls_t (מחיצה $_ls_i)" && continue
+        unblock_fifo "$RUN_DIR/targets/$_ls_t/feed"
+        fail_written_target "$_ls_t" "מחיצה $_ls_i: פג הזמן — היעד הפסיק לכתוב"
+    done
+    wait_pid "$_ls_sp" "$WAIT_HELPER_S" "sha256 של מחיצה $_ls_i במקור"
+    [ ! -f "$_ls_r/partclone.err" ] || cat "$_ls_r/partclone.err" >> "$LOG_FILE"
+    _ls_b=$(_last_number "$_ls_r/bytes.raw"); _ls_b0=$(_last_number "$_ls_r/src.base")
+    echo $(( ${_ls_b0:-0} + ${_ls_b:-0} )) > "$_ls_r/src.base"; : > "$_ls_r/bytes.raw"
+    _ls_src_rc=$(cat "$_ls_r/src.rc" 2>/dev/null); _ls_sha=$(awk '{print $1}' "$_ls_r/sha.out" 2>/dev/null)
+    _ls_why=""
+    if [ "$_ls_w" = 2 ]; then _ls_why="השיכפול נעצר באמצע מחיצה $_ls_i — היעד אינו שמיש"
+    elif [ "$_ls_w" = 1 ]; then _ls_why="מחיצה $_ls_i: המקור לא התקדם $LC_STALL_S שניות"
+    elif [ "$_ls_src_rc" != 0 ]; then _ls_why="מחיצה $_ls_i: קריאת המקור נכשלה (partclone rc=${_ls_src_rc:-לא נרשם}) — המקור לא שונה"
+    elif ! is_sha256 "$_ls_sha"; then _ls_why="מחיצה $_ls_i: ה-sha256 של המקור לא חושב — אין ראיה למה שנקרא"
+    fi
+    if [ -n "$_ls_why" ]; then
+        _fail_alive "$*" "$_ls_why"; echo "$_ls_i|failed" > "$_ls_r/cur"
+        [ "$_ls_w" = 2 ] && return 2
+        return 1
+    fi
+    echo "$_ls_i|$_ls_sha" >> "$_ls_r/source.sha"
+    for _ls_t in "$@"; do lc_judge "$_ls_t" "$_ls_i" "$_ls_sha"; done
+    echo "$_ls_i|done" > "$_ls_r/cur"
+    _any_alive "$*"
+}
+
+lc_judge() {
+    # $1 = target, $2 = idx, $3 = the source's sha256. The four records.
+    _lj_d="$RUN_DIR/targets/$1"
+    [ "$(cat "$_lj_d/state")" = failed ] && return 0
+    _lj_line=$(grep -F "$_lj_d/feed " "$LC/run/fanout.out" 2>/dev/null)
+    _lj_rc=$(cat "$_lj_d/pipeline.rc" 2>/dev/null); _lj_tee=$(cat "$_lj_d/tee.rc" 2>/dev/null)
+    _lj_sha=$(awk '{print $1}' "$_lj_d/sha.out" 2>/dev/null)
+    _lj_at=$(awk -v b="$(target_bytes "$1")" 'BEGIN { printf "%.1f GB", b / 1e9 }')
+    _lj_log=$(tail -n 1 "$_lj_d/partclone.log" 2>/dev/null | tr -d '\r')
+    case "$_lj_line" in
+        *" ok") ;;
+        *" failed "*) fail_written_target "$1" "מחיצה $2: שגיאת כתיבה אחרי $_lj_at$LC_RLM — ${_lj_line#* failed }${_lj_log:+ · $_lj_log}"; return 0 ;;
+        *) fail_written_target "$1" "מחיצה $2: אין דיווח מהפיצול לאחר $_lj_at$LC_RLM — אין ראיה שנכתב"; return 0 ;;
+    esac
+    if [ "$_lj_rc" != 0 ] || [ "$_lj_tee" != 0 ]; then
+        fail_written_target "$1" "מחיצה $2: הכתיבה נכשלה אחרי $_lj_at$LC_RLM (partclone rc=${_lj_rc:-לא נרשם}, tee rc=${_lj_tee:-לא נרשם})${_lj_log:+ · $_lj_log}"
+    elif ! is_sha256 "$_lj_sha"; then
+        fail_written_target "$1" "מחיצה $2: ה-sha256 של מה שהיעד קיבל לא חושב — אין ראיה"
+    elif [ "$_lj_sha" != "$3" ]; then
+        fail_written_target "$1" "מחיצה $2: sha256 של מה שהיעד קיבל ($(printf '%.12s' "$_lj_sha")) שונה מהמקור ($(printf '%.12s' "$3"))"
+    else
+        target_partition_done "$1"; echo "$2" >> "$_lj_d/lc_ok"
+    fi
+}
+
+lc_copy() {
+    # $1 = manifest, $2 = source, $3.. = targets. 0 = every partition was
+    # streamed (some targets may have failed on the way), 1 = no target
+    # left, 2 = stopped.
+    _lk_m="$1"; _lk_src="$2"; shift 2
+    manifest_plan "$_lk_m" > "$LC/run/copy.plan" || { _fail_alive "$*" "לא הצלחנו לקרוא את תוכנית המחיצות"; return 1; }
+    while IFS='|' read -r _lk_i _lk_g _lk_r _lk_fs _lk_s _lk_z _lk_f _lk_sha _lk_x _lk_u _lk_uuid _lk_a <&3; do
+        [ -f "$LC/stop.req" ] && { _fail_alive "$*" "השיכפול נעצר לפני מחיצה $_lk_i — היעד אינו שמיש"; return 2; }
+        if is_swap_partition "$_lk_fs"; then
+            for _lk_t in "$@"; do
+                [ "$(cat "$RUN_DIR/targets/$_lk_t/state")" = failed ] && continue
+                if make_swap "$(partition_node "$_lk_t" "$_lk_i")" "$_lk_uuid"; then echo "$_lk_i" >> "$RUN_DIR/targets/$_lk_t/lc_ok"
+                else fail_written_target "$_lk_t" "מחיצה $_lk_i: mkswap נכשל"; fi
+            done
+            echo "$_lk_i|done" >> "$LC/run/swaps"
+        else
+            log "local clone: partition $_lk_i ($_lk_r, $_lk_fs) -> $*"
+            lc_stream "$_lk_i" "$_lk_fs" "$_lk_src" "$@"; _lk_rc=$?
+            [ "$_lk_rc" = 2 ] && return 2
+        fi
+        _any_alive "$*" || return 1
+    done 3< "$LC/run/copy.plan"
+}
+
+lc_finish() {
+    # $1 = manifest, $2.. = targets. The table read back, then the grown
+    # filesystem follows its partition (finish_grow, best-effort as in a round).
+    _lf_m="$1"; shift
+    for _lf_t in "$@"; do
+        [ "$(cat "$RUN_DIR/targets/$_lf_t/state")" = failed ] && continue
+        target_set "$_lf_t" verifying
+        if ! lc_table_check "$_lf_t" "$_lf_m"; then
+            fail_written_target "$_lf_t" "טבלת המחיצות שנקראה בחזרה מהיעד אינה זהה למקור: $LC_ERROR"
+            continue
+        fi
+        finish_grow "$_lf_t"
+    done
+}

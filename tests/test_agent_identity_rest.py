@@ -346,7 +346,8 @@ def test_the_agent_sends_a_mac_on_every_gated_post_and_none_on_manifest_gets():
     root = Path(__file__).resolve().parents[1] / "agent" / "lib"
     common = (root / "common.sh").read_text(encoding="utf-8")
     assert "http_get() {" in common and "mac" not in common.split("http_get() {")[1].split("}")[0].lower()
-    for name, needle in (("recovery.sh", '"mac":"%s"'), ("pull.sh", '"mac":"%s"'),
-                         ("classround.sh", '"mac":"%s"'), ("smartgate.sh", '"mac":"%s"'),
+    # recovery.sh and classround.sh (the text login and the text class round)
+    # were removed on 11/10 -- GUI only; their POSTs went with them.
+    for name, needle in (("pull.sh", '"mac":"%s"'), ("smartgate.sh", '"mac":"%s"'),
                          ("shrinkmem.sh", '"mac":"%s"')):
         assert needle in (root / name).read_text(encoding="utf-8"), name

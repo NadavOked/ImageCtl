@@ -85,57 +85,16 @@ shrink_question() {
 }
 
 shrink_ask() {
-    # $1 = plan file. הציור ל-stderr, ההכרעה בלבד ל-stdout (הקורא לוכד
-    # ב-`$( )`): continue / plain / cancel. שאלה **אחת** עם הטבלה של כל
-    # המחיצות -- לא שאלה למחיצה. בלי תשובה (EOF, מסך שנעלם) -- cancel: שום
-    # דבר לא מכווץ בלי אדם שאמר כן.
-    # ‏#928: כשהמסך הגרפי מחזיק את התצוגה, השאלה היא דיאלוג שלו
-    # (‏shrinkgui.sh) ולא מסך טקסט מאחוריו. גשר שנכשל, מסך שמת או פקיעה
-    # -- cancel, ולעולם לא נפילה למסך טקסט שאיש לא רואה.
-    if [ -n "${_gui_pid:-}" ]; then
-        if _sa_gui=$(gui_shrink_choice "$1"); then
-            case "$_sa_gui" in continue|plain|cancel) printf '%s\n' "$_sa_gui"; return ;; esac
-        fi
-        printf 'native GUI: the shrink question was not answered -- capture cancelled\n' >&2
-        echo cancel; return
+    # $1 = plan file. ההכרעה בלבד ל-stdout (הקורא לוכד ב-`$( )`): continue /
+    # plain / cancel. שאלה **אחת** עם הטבלה של כל המחיצות -- לא שאלה למחיצה.
+    # ‏#928: השאלה היא דיאלוג של המסך הגרפי (‏shrinkgui.sh), ורק שם (נדב 11/10:
+    # GUI בלבד -- מסך הטקסט שהיה כאן הוסר). אין מסך, גשר שנכשל, מסך שמת או
+    # פקיעה -- cancel: שום דבר לא מכווץ בלי אדם שאמר כן.
+    if [ -n "${_gui_pid:-}" ] && _sa_gui=$(gui_shrink_choice "$1"); then
+        case "$_sa_gui" in continue|plain|cancel) printf '%s\n' "$_sa_gui"; return ;; esac
     fi
-    while :; do
-        {
-            ui_clear; ui_header
-            [ -z "${CAPTURE_SPACE_WARNING:-}" ] || printf '  %s\n' "$CAPTURE_SPACE_WARNING"
-            echo "  The capture will shrink these partitions on THIS computer:"
-            while IFS='|' read -r _sa_i _sa_g _sa_u _sa_s _sa_z _sa_cur _sa_new; do
-                [ -n "$_sa_i" ] && echo "    partition $_sa_i: $(_shrink_gb "$_sa_cur") -> $(_shrink_gb "$_sa_new")"
-            done < "$1"
-            echo "  They are grown back when the capture ends. Windows boots either way."
-            echo
-            # ‏#928, הכרעת נדב 10/10: 1 הוא ברירת המחדל, 2 משני ועם ההסבר מתי.
-            echo "    [1] Shrink and capture (recommended)"
-            echo "    [2] Capture without shrinking"
-            echo "        only if shrinking failed, or every target disk is larger than"
-            echo "        the source -- the image will not fit smaller disks"
-            echo "    [3] Cancel the capture"
-            echo
-            printf "  Choose [1-3]: "
-        } >&2
-        read -r _sa_c || { echo cancel; return; }
-        case "$_sa_c" in 1) echo continue; return ;; 2) echo plain; return ;; 3) echo cancel; return ;; esac
-    done
-}
-
-shrink_gui_release() {
-    # המסך הגרפי (‏imagectl-kiosk) תופס את התצוגה ואת המקלדת (EVIOCGRAB):
-    # שאלה על מסך הטקסט מאחוריו לא נראית ולא נענית -- והקליטה הייתה
-    # ממתינה לנצח. הוא נעצר כמו ב-handoff (gui_cleanup מחזיר את הקונסולה),
-    # והשאלה נשאלת על מסך הטקסט כפי שעבדה לפני שהיה מסך גרפי. שאלת הכיווץ
-    # עצמה כבר דיאלוג גרפי (‏#928, ‏shrinkgui.sh); כאן נשארו שאלת ההחזרה
-    # (‏shrinkoffer.sh) ושאלת סוף הקליטה (#409).
-    # ‏$1 = איזו שאלה (ליומן); ריק = שאלת ההחזרה של הכיווץ.
-    [ -n "${_gui_pid:-}" ] && kill -0 "$_gui_pid" 2>/dev/null || return 0
-    log "native GUI stopped for ${1:-the shrink question} -- the text screen takes over"
-    kill "$_gui_pid" 2>/dev/null
-    wait_pid "$_gui_pid" "$WAIT_HELPER_S" "native GUI before ${1:-the shrink question}" || :
-    _gui_pid=""; _gui_disabled=1
+    printf 'native GUI: the shrink question was not answered -- capture cancelled\n' >&2
+    echo cancel
 }
 
 shrink_unshrinkable_hint() {

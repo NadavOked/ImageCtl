@@ -24,6 +24,7 @@ EVENTS_HE = {
     "mfa_disabled": "MFA נוטרל",
     "sessions_revoked": "הפעלות בוטלו",
     "agent_login": "כניסה ממסך תחנה",
+    "local_clone": "שיכפול מקומי במחשב שיכפול (דיווח המחשב)",   # #1322
     "agent_login_failed": "ניסיון כניסה כושל במסך תחנה",
     "agent_role_refused": "פתיחת סבב נדחתה — התפקיד אינו רשאי",
     "class_deploy_refused": "פתיחת סבב כיתה נדחתה — הפצה לכיתות כבויה",
@@ -65,6 +66,10 @@ EVENTS_HE = {
     # ‏#977 §4: אותו ערוץ לאתחול מחשב אחד; הפעולה עצמה בטקסט (כיבוי/אתחול).
     "room_poweroff": "התבקש כיבוי כל מחשבי השיכפול",
     "machine_reboot": "התבקש אתחול מרחוק",
+    # ‏#65: "כבה אותו" — מחשב שיכפול אחד שחסר בגל הפתוח, כדי להחליף בו מגירות.
+    "room_missing_poweroff": "התבקש כיבוי מחשב שיכפול שחסר בגל",
+    # ‏#432: הגל יצא לדרך כשמגירה בו התחברה מתחת למהירות הפורט או שה-CRC שלה עלה.
+    "room_precheck_warned": "הגל יצא לדרך למרות אזהרת קישור/CRC על מגירה",
     "power_delivered": "בקשה מהקונסולה נמסרה לסוכן",
     "power_expired": "בקשה מהקונסולה פגה — המכונה לא ענתה בזמן, והבקשה בוטלה",
     "send_start": "השידור יצא לדרך",
@@ -86,6 +91,7 @@ EVENTS_HE = {
     "boot_loop_local": "מחשב אתחל שוב ושוב — נשלח לדיסק המקומי",
     "boot_loop_unverified": "ספירת האתחולים נכשלה — המחשב נשלח לדיסק המקומי",
     "agent_loop": "מחשב הגיע לסוכן בלי משימה ובלי סבב",
+    "gui_failed": "הגואי לא עלה",   # 11/10: gui_failure.py
     "agent_loop_unverified": "ספירת ההגעות לסוכן נכשלה",
     "report_from_nonmember": "דיווח ממחשב שאינו בסבב",
     # ‏#855: שומר הזהות — MAC מוצהר מול חכירת ה-DHCP.
@@ -109,6 +115,28 @@ EVENTS_HE = {
     "monitor_connected": "מוניטור נפתח למכונה",
     "monitor_closed": "מוניטור נסגר",
     "monitor_power": "פקודת כוח דרך המוניטור",
+    # ‏#1334: עדכון אימג' בתוך VM על השרת.
+    "vmupdate_start": "עדכון ב-VM: הדיסק נבנה מהאימג'",
+    "vmupdate_running": "עדכון ב-VM: ה-VM הודלק",
+    "vmupdate_failed": "עדכון ב-VM נכשל",
+    "vmupdate_stopped": "עדכון ב-VM: ה-VM כבה",
+    "vmupdate_shutdown": "עדכון ב-VM: בקשת כיבוי (ACPI)",
+    "vmupdate_force_off": "עדכון ב-VM: כיבוי בכוח",
+    "vmupdate_boot": "עדכון ב-VM: הדלקה חוזרת",
+    "vmupdate_save": "עדכון ב-VM: השמירה כגרסה חדשה התחילה",
+    "vmupdate_saved": "עדכון ב-VM: נשמרה גרסה חדשה של האימג'",
+    "vmupdate_discard": "עדכון ב-VM: דיסק העבודה נמחק",
+    "vmupdate_settings": "הגדרות ה-VM לעדכון שונו",
+    "vmupdate_viewer_open": "מסך ה-VM נפתח",
+    "vmupdate_viewer_closed": "מסך ה-VM נסגר",
+    "vmupdate_expired": "עדכון ב-VM: דיסק עבודה שלא הוכרע 7 ימים נמחק",
+    "vmupdate_firewall_lost": "עדכון ב-VM: בידוד הרשת נמחק ולא נטען מחדש — ה-VM נכבה",
+    "vmupdate_control_request": "עדכון ב-VM: בקשת שליטה",
+    "vmupdate_control_granted": "עדכון ב-VM: השליטה הועברה באישור",
+    "vmupdate_control_denied": "עדכון ב-VM: בקשת שליטה נדחתה",
+    "vmupdate_control_timeout": "עדכון ב-VM: בקשת שליטה פגה בלי תשובה",
+    "vmupdate_control_auto": "עדכון ב-VM: השליטה הועברה — השולט לא נמצא",
+    "image_default_set": "גרסת ברירת המחדל של אימג' שונתה",
     "logo_set": "לוגו הוחלף",
     "logo_refused": "העלאת לוגו נדחתה",
     "logo_clear": "הלוגו הוסר",
@@ -153,6 +181,12 @@ EVENTS_HE = {
     "net_confirmed": "שינוי הרשת אושר — החיבור עדיין חי",
     "net_rollback": "הוחזרה תצורת רשת קודמת, השינוי לא אושר",
     "net_rollback_unreadable": "הוחזרה תצורת רשת, הפרטים לא ניתנים לקריאה",
+    # ‏#705: שירותים לכל כרטיס רשת
+    "nic_services_set": "השירותים של כרטיס רשת שונו",
+    "nic_services_armed": "כיבוי הקונסולה בכרטיס ממתין לאישור — בלעדיו יחזור",
+    "nic_services_confirmed": "השינוי בשירותי הכרטיס אושר מהכתובת האחרת",
+    "nic_services_reverted": "השירותים של כרטיס רשת חזרו להגדרה הקודמת",
+    "nic_services_apply_failed": "החלת השירותים של כרטיס רשת נכשלה — ההגדרה הקודמת הוחזרה",
     # ‏#292: 55 אירועים שנכתבו בפועל ולא היו כאן — הגיעו למסך כמפתח באנגלית.
     # ‏tests/test_journal_events_he.py מצליב מעכשיו כל `journal(conn, "…")` מול הטבלה.
     "admin_password_reset_dcui": "סיסמת המנהל אופסה ממסך השרת (DCUI)",
@@ -234,24 +268,24 @@ _SEVERITY_ERR = {
     "session_image_bound", "pull_refused", "client_failed", "wol_failed",
     "room_wave_lost", "send_failed", "direct_failed", "disk_failure",
     "session_orphaned", "identity_refused", "storage_transfer_failed", "logo_refused",
-    "capture_failed", "drivers_failed", "dhcp_apply_failed",
-    "known_macs_apply_failed",
+    "capture_failed", "drivers_failed", "dhcp_apply_failed", "nic_services_apply_failed",
+    "known_macs_apply_failed", "vmupdate_failed", "vmupdate_firewall_lost",
 }
 _SEVERITY_WARN = {
     "unknown_mac", "drive_rates_failed", "boot_loop_local", "boot_loop_unverified", "agent_loop",
     "agent_loop_unverified", "report_from_nonmember", "identity_unverifiable",
     "capture_cancel", "direct_cancel", "send_stopped", "dhcp_proxy_risk",
     "net_config_unverified", "net_rollback_armed", "net_rollback",
-    "net_rollback_unreadable", "work_area_kept",
+    "net_rollback_unreadable", "work_area_kept", "nic_services_armed", "nic_services_reverted",
     "storage_node_disable",
     "room_drawer_changed", "room_drawer_unidentified",
-    "power_expired",
+    "power_expired", "gui_failed", "vmupdate_force_off", "vmupdate_expired", "vmupdate_control_auto",
 }
 _SEVERITY_OK = {
     "login", "capture_done", "client_done", "pull_done", "room_done",
-    "send_done", "direct_done", "storage_transfer_done", "net_confirmed",
+    "send_done", "direct_done", "storage_transfer_done", "net_confirmed", "nic_services_confirmed",
     "disk_failure_cleared", "drivers_staged", "storage_image_received",
-    "wol_sent",
+    "wol_sent", "vmupdate_saved",
 }
 
 

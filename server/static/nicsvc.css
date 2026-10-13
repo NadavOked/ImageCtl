@@ -1,0 +1,94 @@
+/* ‏#705 — שירותים לכל כרטיס רשת (המוקאפ המאושר nicperm.html, 13/10). אותם טוקנים
+   של design-tokens.css; קידומת ns- כדי שלא תתנגש בשמות של console.css. */
+
+/* פס "ממתין לאישור" יושב בין הסרגל העליון לגוף — שורה משלו בגריד של #app (min-content: ריק = גובה 0,
+   ושורת auto הייתה נמתחת ובולעת חצי מסך;
+   לא display:none, אחרת .main היה יורד לשורה הזאת) */
+#app{grid-template-rows:var(--header-height) min-content minmax(0,1fr)}
+.ns-pend-slot{min-width:0}
+
+/* טבלה: עמודת "שירותים" */
+.ns-svcs{display:flex;flex-wrap:wrap;gap:4px;min-width:0}
+.ns-sc{display:inline-flex;align-items:center;gap:4px;font-size:var(--t-xs);font-weight:600;padding:1px 8px 1px 9px;border-radius:99px;background:var(--clr-action-soft);color:var(--clr-action-fg);white-space:nowrap}
+.ns-sc svg{width:12px;height:12px;stroke-width:1.9}
+.ns-sc.w{background:var(--clr-warning-soft);color:var(--clr-warning-fg)}
+.ns-sc.unset{background:transparent;color:var(--clr-muted);font-weight:500;outline:1px dashed var(--clr-border);outline-offset:-1px}
+.ns-sc.none{background:transparent;color:var(--clr-muted);font-weight:500;box-shadow:inset 0 0 0 1px var(--clr-border)}
+.ns-nm{display:flex;flex-direction:column;gap:1px}
+.ns-nm small{font-size:var(--t-xs);color:var(--clr-muted);font-weight:400;display:inline-flex;align-items:center;gap:4px}
+.ns-nm small i{width:6px;height:6px;border-radius:50%;background:var(--clr-success)}
+tr[data-nic]{cursor:pointer}
+tr.ns-new td{background:color-mix(in srgb,var(--clr-info-soft) 55%,transparent)}
+.ns-help{color:var(--clr-muted);font-weight:400;font-size:var(--t-xs);margin-inline-start:4px}
+
+/* פס ממתין / חזר */
+.ns-pend{display:flex;align-items:center;gap:14px;padding:10px 20px;background:var(--clr-warning-soft);border-bottom:1px solid color-mix(in srgb,var(--clr-warning) 30%,transparent);color:var(--clr-text);font-size:var(--t-base);flex-wrap:wrap}
+.ns-pend.info{background:var(--clr-info-soft);border-bottom-color:color-mix(in srgb,var(--clr-action) 25%,transparent)}
+.ns-pend.bad{background:var(--clr-danger-soft);border-bottom-color:color-mix(in srgb,var(--clr-danger) 25%,transparent)}
+.ns-pend>svg{width:22px;height:22px;flex:none;color:var(--clr-action-fg)}
+.ns-pend .tx{flex:1 1 320px;min-width:0;line-height:1.45}
+.ns-pend .tx b{font-weight:600}
+.ns-pend .tx p{margin:0;color:var(--clr-muted);font-size:var(--t-sm)}
+.ns-pend .acts{display:flex;gap:8px;flex-wrap:wrap}
+.ns-pend .x{border:0;background:transparent;color:var(--clr-muted);width:30px;height:30px;border-radius:99px;cursor:pointer;display:grid;place-items:center}
+.ns-pend .x:hover{background:var(--clr-hover)}
+.ns-pend .x svg{width:16px;height:16px}
+.ns-ring{--p:1;position:relative;width:40px;height:40px;flex:none;display:grid;place-items:center;font:700 var(--t-sm)/1 var(--font-ui);font-variant-numeric:tabular-nums;color:var(--clr-warning-fg)}
+.ns-ring svg{position:absolute;inset:0;width:100%;height:100%;transform:rotate(-90deg) scaleY(-1)}
+.ns-ring circle{fill:none;stroke-width:3.5}
+.ns-ring .bg{stroke:color-mix(in srgb,var(--clr-warning) 22%,transparent)}
+.ns-ring .fg{stroke:var(--clr-warning);stroke-linecap:round;stroke-dasharray:100.5;stroke-dashoffset:calc(100.5 * (1 - var(--p)));transition:stroke-dashoffset 1s linear}
+.ns-ring.big{width:96px;height:96px;font-size:1.75rem;letter-spacing:-.02em}
+.ns-ring.big .lbl2{position:absolute;bottom:22px;font-size:var(--t-xs);font-weight:500;color:var(--clr-muted)}
+.ns-ring.big b{margin-top:-8px}
+.ns-ring.big circle{stroke-width:3}
+
+/* המגירה */
+.ns-svl{list-style:none;margin:0;padding:0;border:1px solid var(--clr-row-border);border-radius:var(--r)}
+.ns-svr{padding:12px 14px;border-top:1px solid var(--clr-row-border)}
+.ns-svr:first-child{border-top:0}
+.ns-svr .rw{display:grid;grid-template-columns:32px minmax(0,1fr) auto;gap:12px;align-items:start}
+.ns-svr .ico{width:32px;height:32px;border-radius:8px;display:grid;place-items:center;background:var(--clr-hover);color:var(--clr-muted);transition:background var(--dur-fast),color var(--dur-fast)}
+.ns-svr .ico svg{width:18px;height:18px}
+.ns-svr.on .ico{background:var(--clr-action-soft);color:var(--clr-action-fg)}
+.ns-svr .t{min-width:0}
+.ns-svr .t label{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;font-weight:600;cursor:pointer}
+.ns-svr .t .pt{font:400 var(--t-xs)/1.4 var(--font-mono);color:var(--clr-muted);direction:ltr;unicode-bidi:isolate}
+.ns-svr .t p{font-size:var(--t-sm);color:var(--clr-muted);line-height:1.45;margin:2px 0 0}
+.ns-st{font-size:var(--t-xs);font-weight:600;margin-top:4px;display:inline-flex;gap:4px;align-items:center}
+.ns-st svg{width:12px;height:12px}
+.ns-st.on{color:var(--clr-success-fg)}
+.ns-st.off{color:var(--clr-muted)}
+.ns-st.chg{color:var(--clr-action-fg)}
+.ns-st.w{color:var(--clr-warning-fg)}
+.win .ns-svr .n-sw{margin-top:6px;gap:6px}
+.win .ns-svr .n-sw[aria-disabled=true]{cursor:not-allowed}
+.ns-svr .ns-lock{width:14px;height:14px;color:var(--clr-muted)}
+.ns-msg{display:flex;gap:8px;align-items:flex-start;margin:10px 0 0;margin-inline-start:44px;padding:8px 10px;border-radius:var(--r-sm);font-size:var(--t-sm);line-height:1.45;background:var(--clr-warning-soft);color:var(--clr-warning-fg)}
+.ns-msg svg{width:14px;height:14px;flex:none;margin-top:2px}
+.ns-msg span{color:var(--clr-text)}
+.ns-msg.info{background:var(--clr-info-soft);color:var(--clr-action-fg)}
+.ns-msg.bad{background:var(--clr-danger-soft);color:var(--clr-danger-fg)}
+.ns-note{display:flex;gap:8px;align-items:flex-start;margin:0 0 14px;padding:10px 12px;border-radius:var(--r-sm);font-size:var(--t-sm);line-height:1.45;background:var(--clr-info-soft);color:var(--clr-action-fg)}
+.ns-note svg{width:14px;height:14px;flex:none;margin-top:2px}
+.ns-note span{color:var(--clr-text)}
+.ns-sec h3{font-size:var(--t-sm);font-weight:600;color:var(--clr-muted);margin:6px 0 8px}
+.ns-chg{font-size:var(--t-sm);margin-top:16px;padding:10px 12px;border-radius:var(--r-sm);background:var(--clr-hover)}
+.ns-chg b{font-weight:600}
+.ns-chg ul{margin:4px 0 0;padding-inline-start:18px}
+.ns-fixed{font-size:var(--t-sm);color:var(--clr-muted);margin-top:16px;line-height:1.5}
+.ns-addr{display:inline-block;font-family:var(--font-mono);direction:ltr;unicode-bidi:isolate;background:var(--clr-hover);padding:0 6px;border-radius:4px;font-size:.95em}
+.win .n-impact b{font-weight:600}
+.win .n-impact .clk .n-ic{color:var(--clr-warning-fg)}
+.win .n-impact .und .n-ic{color:var(--clr-success-fg)}
+
+/* מסך המסירה — לפני שהחיבור נופל */
+.ns-hand{display:flex;flex-direction:column;align-items:center;text-align:center;gap:14px;padding:16px 8px 4px}
+.ns-hand h3{font-size:var(--t-lg);font-weight:600;letter-spacing:-.01em;margin:0}
+.ns-hand p{color:var(--clr-muted);font-size:var(--t-sm);max-width:36ch;margin:0}
+.ns-hand .go{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:center}
+.ns-hand .go a{text-decoration:none;display:inline-flex;align-items:center;gap:6px}
+.ns-hand .go svg{width:14px;height:14px}
+.ns-hand .later{font-size:var(--t-xs);color:var(--clr-muted);border-top:1px solid var(--clr-row-border);padding-top:12px;width:100%;max-width:none}
+@media (max-width:560px){.ns-msg{margin-inline-start:0}.ns-pend{padding:10px 12px}}
+@media (prefers-reduced-motion:reduce){.ns-ring .fg{transition:none}}

@@ -213,7 +213,7 @@ def _state_records(tmp_path: Path, hello: dict | None, station: dict = STATION) 
         f'export RUN_DIR={posix(run)!r} GUI_DIR={posix(gui)!r} '
         f'SERVER=http://127.0.0.1:9 MAC=aa:bb:cc:dd:ee:ff IMAGECTL_TEST=1; '
         f'. {a}/lib/common.sh; . {a}/lib/jsonq.sh; . {a}/lib/buildmenuitems.sh; . {a}/lib/buildmenu.sh; '
-        f'. {a}/lib/guistate.sh; '
+        f'. {a}/lib/guistate.sh; . {a}/lib/askgui.sh; '
         + f'http_get() {{ cat {posix(run / "station.json")!r}; }}; gui_state'
     )
     out = sh(script)

@@ -34,13 +34,18 @@ def bindir(tmp_path: Path) -> Path:
     return path
 
 
-def _git_shim(fetch: str = "exit 0", checkout: str = "exit 0") -> str:
+def _git_shim(fetch: str = "exit 0", checkout: str = "exit 0",
+              head: str = "fake-commit-for-$FAKE_TAG",
+              tag_commit: str = "fake-commit-for-$4") -> str:
+    """``rev-parse HEAD`` answers ``head``; ``rev-list -n 1 <tag>`` maps the
+    tag it was asked about to its commit -- by default the two agree."""
     return f'''\
 if [ "$1" = -C ]; then shift 2; fi
 case "$1" in
   fetch) {fetch} ;;
   checkout) {checkout} ;;
-  describe) echo "$FAKE_TAG" ;;
+  rev-parse) echo "{head}" ;;
+  rev-list) echo "{tag_commit}" ;;
   *) echo "unexpected git $*" >&2; exit 64 ;;
 esac
 '''
@@ -155,7 +160,7 @@ def test_tree_not_on_the_tag_after_checkout_returns_to_the_previous_tag(tmp_path
     data = tmp_path / "data"
     _seed_db(data)
     repo = _fake_repo(tmp_path, live_ok=True)
-    fake_tool(bindir, "git", _git_shim().replace('echo "$FAKE_TAG"', 'echo "v0.47.9"'))
+    fake_tool(bindir, "git", _git_shim(head="fake-commit-for-v0.47.9"))
     fake_tool(bindir, "systemctl", "exit 0")
     fake_tool(bindir, "curl", "exit 0")
 
@@ -163,7 +168,23 @@ def test_tree_not_on_the_tag_after_checkout_returns_to_the_previous_tag(tmp_path
 
     assert proc.returncode != 0
     status = _rolled_back_to_previous(tmp_path, data)
-    assert "v0.47.9" in status["error"]
+    assert "v0.53.0" in status["error"] and "fake-commit-for-v0.47.9" in status["error"]
+
+
+def test_empty_commit_answers_are_not_the_same_commit(tmp_path, bindir):
+    """Principle 5: ``""`` == ``""`` is the absence of evidence, not a match."""
+    data = tmp_path / "data"
+    _seed_db(data)
+    repo = _fake_repo(tmp_path, live_ok=True)
+    fake_tool(bindir, "git", _git_shim(head="", tag_commit=""))
+    fake_tool(bindir, "systemctl", "exit 0")
+    fake_tool(bindir, "curl", "exit 0")
+
+    proc = _run(tmp_path, bindir, repo, data)
+
+    assert proc.returncode != 0
+    status = _rolled_back_to_previous(tmp_path, data)
+    assert "v0.53.0" in status["error"]
 
 
 def test_unit_install_failure_returns_to_the_previous_tag_in_name(tmp_path, bindir):

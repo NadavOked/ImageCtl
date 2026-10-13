@@ -84,7 +84,7 @@ def test_restore_plan_count_failure_is_named_before_any_partition_stream(tmp_pat
     script = (
         f'RUN_DIR={posix(run)!r}; LOG_FILE={posix(run / "agent.log")!r}; '
         f'. {posix(AGENT)}/lib/restore.sh; '
-        'target_set() { :; }; disk_fits() { return 0; }; apply_gpt() { return 0; }; '
+        'target_set() { :; }; disk_fits() { return 0; }; boot_ca_preflight() { return 0; }; apply_gpt() { return 0; }; '
         'expand_last() { return 0; }; manifest_plan() { echo "1|g|linux|ext4|1|512|p|s"; }; '
         'awk() { return 7; }; restore_partition() { echo STREAMED; return 0; }; '
         'fail_written_target() { echo "$2" > "$RUN_DIR/failure"; }; '

@@ -63,6 +63,9 @@ EXPECTED_KIOSK_ROUTES = frozenset({
     # ‏#1269: רשימת דגמי הדרייברים — מתג "להוסיף דרייברים" בגואי של מחשב הבנייה
     # (קריאה בלבד, current_user; ‏`drivers.models`, בלי קבצים ובלי נתיבים)
     ("GET", "/api/console/room/driver-models"),
+    # ‏#65 (הכרעת נדב 05/09: הבחירה במחשב הבנייה): "כבה אותו" — מכונה **אחת**
+    # שהגל הפתוח מראה כחסרה. כיבוי כל החדר (`/room/poweroff`) נשאר בקונסולה בלבד.
+    ("POST", "/api/console/room/missing/{mac}/poweroff"),
 })
 
 #: נתיבי התחנה (`create_station_router`) שחיים על הסוכן — הגואי הנייטיב צורך.
@@ -91,6 +94,7 @@ FORBIDDEN_ON_AGENT_PORT = (
     ("POST", "/api/console/images/upload"),
     ("POST", "/api/console/folders/order"),
     ("POST", "/api/console/room/answer"),   # #989 ס׳ 2: תשובת SMART מהקונסולה — לא על וילן ההפצה
+    ("POST", "/api/console/room/poweroff"),   # #980: כיבוי כל החדר — רק "כבה אותו" של #65 על הסוכן
 )
 
 

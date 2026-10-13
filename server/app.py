@@ -46,13 +46,14 @@ from .console_tools import create_tools_router   # #649 שלב 1
 from .drivers import DriverLibrary
 from .capture import create_agent_capture_router, create_console_capture_router
 from .console_net import create_net_router
+from .nic_services import create_nic_services_router
 from . import console_dhcp
 from .console_dhcp import create_dhcp_router
 from .console_netcfg import create_netcfg_router, drain_crumbs
 from .db import connect
 from .health import create_health_router
 from .health import default_hooks as health_default_hooks
-from .update import (PUBLIC_UPDATE_URL, create_update_router, current_version,
+from .update import (PUBLIC_UPDATE_URL, create_update_router, current_version, display_version,
                      default_hooks as default_update_hooks, read_version)
 from .hello import make_resolver, off_deploy_vlan, self_probe
 from .images import ImageLibrary
@@ -66,6 +67,9 @@ from .users import ensure_admin
 from . import storage_nodes
 from . import monitor
 from .monitor import create_monitor_router
+from .vmupdate import VmUpdate
+from .vmupdate_api import create_vmupdate_router, create_vmupdate_viewer_router
+from . import image_versions
 from .reconcile import reconcile_on_start
 from .work_areas import sweep as sweep_work_areas
 
@@ -176,6 +180,8 @@ class ServerRuntime:
     #: ‏#153: hooks של לשונית התעודה/שם המארח (``console_hostcfg``) —
     #: ‏``None`` = ברירות המחדל האמיתיות; בדיקות מזריקות, כמו ``dhcp_hooks``.
     host_hooks: dict | None = None
+    #: ‏#1334: עדכון אימג' ב-VM — מנוע אחד לתהליך (VM אחד בכל פעם).
+    vmupdate: "VmUpdate | None" = None
 
 
 async def _room_clock(rt: ServerRuntime, interval: float) -> None:
@@ -287,6 +293,12 @@ def create_runtime(
     # טעם כמו ``known_macs_hooks``: רק ``main`` מדליק; בדיקות לא נוגעות
     # ב-dnsmasq של המכונה שהן רצות עליה.
     sync_dnsmasq: bool = False,
+    # ‏#705: שלבי האכיפה של השירותים לכל כרטיס (‏`nic_services.NicServices`)
+    # ועוד hooks שלו — בדיקות מזריקות; ‏`main` מוסיף את המאזינים אחרי שהם קיימים.
+    nic_hooks: dict | None = None,
+    # ‏#1334: מנוע עדכון ה-VM. ‏None = המנוע האמיתי מול המארח; בדיקות
+    # מזריקות מנוע עם זיופים (כמו ``dhcp_hooks``).
+    vmupdate_engine: "VmUpdate | None" = None,
 ) -> ServerRuntime:
     """בונה את המצב המשותף פעם אחת ומריץ את האתחול החד-פעמי.
 
@@ -307,6 +319,8 @@ def create_runtime(
     storage_locations.ensure_local(conn, library.root)
     library.bind_locations(
         lambda: storage_locations.library_roots(conn, library.root))
+    # ‏#1334: ברירת המחדל לכל שושלת גרסאות — מה שמחשב בנייה מקבל לסבב חדש.
+    library.bind_defaults(lambda: image_versions.pointers(conn))
 
     # ‏#88: מה שקליטה שהשרת מת באמצעה השאירה בשורש הספרייה נסחף כאן —
     # אבל רק מה שטבלת המשימות מוכיחה שהוא יתום. ההנמקה המלאה, כולל למה
@@ -429,6 +443,12 @@ def create_runtime(
                         leases=(identity_hooks or {}).get("leases"),
                         data_dir=data_dir)
     drain_crumbs(ctx, netcfg_dir)
+    # ‏#705: השירותים לכל כרטיס — **לפני** ה-render של dnsmasq בעלייה, כי הוא
+    # קורא אותם; ‏`startup` מחזיר שינוי שפג בזמן שהשרת לא רץ.
+    ctx.nic_services = _nic_services(ctx, interface, deploy, dhcp_hooks, sync_dnsmasq,
+                                     nic_hooks, netcfg_hooks, health_hooks)
+    ctx.nic_services.startup()
+    sender.gate = ctx.nic_services.multicast_refused
 
     # בהתקנה טרייה: admin/admin עם החלפה כפויה (#1085). אם כבר יש מנהל — לא נוגעים.
     password = ensure_admin(conn)
@@ -462,7 +482,51 @@ def create_runtime(
         repo_dir=repo_dir, update_hooks=update_hooks,
         room_clock_interval=room_clock_interval,
         console_tls=console_tls, deploy=deploy, host_hooks=host_hooks,
+        vmupdate=vmupdate_engine or VmUpdate(
+            conn, library,
+            # ‏ה-VM לעולם אינו יוצא לאינטרנט דרך כרטיס ההפצה (docs/vm-update.md).
+            deploy_interface=lambda: deploy.state.interface if deploy else None),
     )
+
+
+def _nic_services(ctx, interface, deploy, dhcp_hooks, sync_dnsmasq, nic_hooks,
+                  netcfg_hooks=None, health_hooks=None):
+    """‏#705: ‏`NicServices` עם הבסיס של היום (כרטיס הניהול מה-`DeployContext`,
+    כרטיס ההפצה של השולח) ושני שלבי אכיפה שחיים כאן — dnsmasq וחומת האש.
+    ‏dnsmasq מחובר רק כשיש hooks מפורשים או ‏`sync_dnsmasq` (‏main): ברירות
+    המחדל האמיתיות כותבות ל-/etc ומפעילות שירות, ובדיקה אסור לה."""
+    from . import nic_services
+
+    hooks = dict(nic_hooks or {})
+    # ‏#113: אותה רשימת כרטיסים שהוזרקה לשאר הלשוניות — בדיקה לא קוראת את המכונה
+    injected = next((h["interfaces"] for h in (dhcp_hooks, netcfg_hooks, health_hooks)
+                     if h and "interfaces" in h), None)
+    if "interfaces" not in hooks and injected is not None:
+        hooks["interfaces"] = injected
+    if "dnsmasq" not in hooks and (dhcp_hooks is not None or sync_dnsmasq):
+        merged = {**console_dhcp.default_hooks(), **(dhcp_hooks or {})}
+
+        def dnsmasq_step(_nic):
+            # רשת הפצה שטרם הוגדרה (#1088): dnsmasq כבוי — אין מה לשער.
+            if deploy is None or not deploy.state.configured:
+                return None
+            return console_dhcp.apply_dnsmasq(ctx, merged, deploy, "nic services", "")
+        hooks["dnsmasq"] = dnsmasq_step
+    if "firewall" not in hooks and deploy is not None:
+        def firewall_step(nic):
+            regenerate = (deploy.hooks or {}).get("firewall", deploy_net.regenerate_firewall)
+            per = nic.firewall_services()
+            if per is None:      # חזרנו ל"היום" — הכללים לפי שני התפקידים
+                return regenerate(deploy.repo_dir, deploy_if=deploy.state.interface,
+                                  servers_if=deploy.servers_interface,
+                                  primary_ip=deploy.primary_ip)
+            return regenerate(deploy.repo_dir, deploy_if=None, servers_if=None,
+                              primary_ip=deploy.primary_ip, services=per)
+        hooks["firewall"] = firewall_step
+    base = nic_services.Baseline(
+        console=deploy.servers_interface if deploy is not None else None,
+        deploy=interface or (deploy.state.interface if deploy is not None else None))
+    return nic_services.NicServices(ctx.conn, base, hooks)
 
 
 #: ‏#1266: הדגל שאינו מוגש לתחנות מ-PXE, גם כשהועבר ב-`--extra-cmdline`.
@@ -581,10 +645,13 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
     # ‏#748: תיקיית העץ נופלת לתיקיית הקוד עצמה כשאין ``--repo-dir``
     # מפורש (בדיקות/הרצה ישירה) — ראו ``main.py``.
     repo_dir = rt.repo_dir or Path(__file__).resolve().parents[1]
-    # ‏#915: הגרסה שמוצגת בקונסולה נקראת מאותו מקור כמו כפתור "עדכן"
-    # (‏`git describe`, לא מחרוזת קשיחה ב-HTML) — ונקראת מחדש בכל
-    # ‏`/me`, כי אחרי ``apply`` העץ כבר על תג אחר.
+    # ‏#915/#1297: הגרסה שמוצגת בקונסולה נקראת מאותו מקור כמו כפתור
+    # "עדכן". ההכרעה נשמרת לפי HEAD, ולכן בקשות /me אינן מריצות שוב את
+    # המאמת; checkout מחליף את מפתח המטמון.
     update_hooks = {**default_update_hooks(), **(rt.update_hooks or {})}
+    # ‏#1297: warm the per-HEAD cache at application startup.  Requests reuse
+    # it; a checkout changes HEAD and therefore computes a fresh value.
+    display_version(update_hooks, repo_dir)
     # ‏#1073: למשתמש הפצה אין קונסולה — `deploy` מקבל 403 על **כל** נתיב
     # ניהול, גם עם עוגייה שפורט הסוכן הנפיק (אותו סוד). ה-dependency נוסף
     # כאן, בהרכבה, ולא בתוך הראוטרים: ‏`kiosk.py` בונה מהם עותקים משלו
@@ -602,7 +669,7 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
     uptime_hook = {**health_default_hooks(), **(rt.health_hooks or {})}["uptime"]
     include(create_console_router(
         ctx, rt.known_macs_hooks,
-        version=lambda: current_version(update_hooks, repo_dir),
+        version=lambda: display_version(update_hooks, repo_dir),
         tls=rt.console_tls,
         uptime=uptime_hook,
         deploy_ip=lambda: deploy_net.deploy_ip(
@@ -621,6 +688,7 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
     include(dhcp_router)
     include(create_netcfg_router(ctx, rt.netcfg_dir, rt.netcfg_hooks,
                                  dhcp_steps=dhcp_router.dhcp_steps))   # #1263
+    include(create_nic_services_router(ctx))   # #705
     include(create_health_router(
         ctx, rt.server_base, health_hooks,
         dnsmasq_apply=lambda what, user_id: console_dhcp.apply_dnsmasq(
@@ -632,6 +700,12 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
     include(create_hostcfg_router(ctx, rt.data_dir, rt.console_tls, rt.host_hooks))   # #153
     # ‏#690: admin RFB proxy + settings — ה-HTTP שלו admin_only ממילא.
     app.include_router(create_monitor_router(ctx))
+    # ‏#1334: ה-HTTP דרך include (console_only: deploy מקבל את הסירוב של #1073),
+    # וה-WebSocket — כמו המוניטור — מחוץ לו, וסוגר בעצמו כל מי שאינו admin.
+    if rt.vmupdate is not None:
+        include(create_vmupdate_router(ctx, rt.vmupdate))
+        app.include_router(create_vmupdate_viewer_router(ctx, rt.vmupdate))
+    include(image_versions.create_versions_router(ctx))   # #1334: גרסאות + ברירת מחדל
     include(create_console_capture_router(ctx))
     include(create_room_router(ctx, wake=_kiosk_room_wake(rt)))
     # ‏#984: מכונה בודדת / grp_BUILD — אותו שולח מוזרק כמו בחדר.

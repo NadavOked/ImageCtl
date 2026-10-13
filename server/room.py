@@ -26,7 +26,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from . import (auth, drive_rates, drivers, registry, reports, room_drivers,
-               slot_names, smart_ask, storage_locations)
+               room_precheck, slot_names, smart_ask, storage_locations)
 from .db import journal, now_iso, update_one, writing
 from .images import required_bytes, restore_refusal
 from .imagefit import validate_expand_choice
@@ -249,6 +249,9 @@ def drawer_list(conn: sqlite3.Connection, mac: str, written: set[str],
             # ‏#710: הגודל שהסוכן דיווח (sysinfo.sh), כדי שהגריד יראה קיבולת
             # אמיתית לכל דיסק ולא 0. חסר => 0, לא נחסם (עיקרון 5).
             "size_bytes": _int(disk.get("size_bytes")),
+            # ‏#432: קישור ה-SATA (מהירות/מקסימום/מצב) ועליית מונה ה-CRC מאז
+            # הסבב הקודם של הדיסק. ‏None/`unknown` = לא נקרא — לא "תקין".
+            **room_precheck.drawer_fields(conn, disk),
         })
     return drawers
 
@@ -314,6 +317,44 @@ def ready_drives(conn: sqlite3.Connection, store: SessionStore,
                           _selected_ports(round_row, member["mac"])))
         for member in store.members(round_row["wave_session_id"])
     )
+
+
+def precheck_now(conn: sqlite3.Connection, store: SessionStore,
+                 round_row: sqlite3.Row) -> list[dict]:
+    """‏#432: אותן אזהרות ש-`status_view` מציג, על חברי הגל הפתוח — ברגע
+    שהוא יוצא לדרך, ביד או לבד."""
+    written = _written(round_row)
+    names = slot_names.all_by_mac(conn)
+    machines = []
+    for member in store.members(round_row["wave_session_id"]):
+        mac = member["mac"]
+        row = conn.execute("SELECT suffix FROM machines WHERE mac = ?", (mac,)).fetchone()
+        drawers = drawer_list(conn, mac, written, None, _selected_ports(round_row, mac))
+        for d in drawers:
+            d["slot_name"] = slot_names.resolve(names.get(mac, {}), d["port"], d["serial"])
+        machines.append({"mac": mac, "name": row["suffix"] if row else None, "joined": True,
+                         "drawer_list": drawers, "slot_names": names.get(mac, {})})
+    return room_precheck.warnings(machines, round_row["target_slots_json"] is not None)
+
+
+def journal_precheck(conn: sqlite3.Connection, round_row: sqlite3.Row,
+                     warned: list[dict], user: str) -> None:
+    """‏#432: "סבב שהתחיל בכל זאת חייב לרשום שהאזהרה הייתה שם". שורה אחת
+    לגל, רק כשהייתה אזהרה; ‏`user` ריק = הגל יצא לבד (המגירות כיסו את היתרה)."""
+    if not warned:
+        return
+    items = []
+    for w in warned:
+        item = f"{w['mac']}:{w['port'] if w['port'] is not None else w['serial']}"
+        if room_precheck.link_state(w["link_gbps"], w["link_max_gbps"]) == "slow":
+            item += f" link={w['link_gbps']:.1f}/{w['link_max_gbps']:.1f}"
+        if w["crc_rise"]:
+            item += f" crc+{w['crc_rise']}"
+        items.append(item)
+    # שורה אחת, בלי תקרת `_one_line`: תשע מגירות לא ייחתכו באמצע (סידורי מה-hello
+    # הוא קלט חיצוני — רק שבירות השורה מוחלפות).
+    detail = f"{round_row['id']} wave={round_row['wave_number']} " + ", ".join(items)
+    journal(conn, "room_precheck_warned", " ".join(detail.splitlines()), user)
 
 
 #: ‏#953: "‏256GB" על מדבקת כונן הוא 256×10⁹ — הקונסולה מדברת באותן יחידות.
@@ -655,7 +696,9 @@ def tick(conn: sqlite3.Connection, store: SessionStore) -> None:
         # לו מול מה לאמת, ו-`GET …/manifest` שלו היה נענה 404.
         from . import direct             # noqa: PLC0415
         if 0 < remaining <= ready and direct.source_ready(round_row):
+            warned = precheck_now(conn, store, round_row)     # #432
             store.start_auto(wave["id"])
+            journal_precheck(conn, round_row, warned, "")
     elif wave["state"] == "running":
         members = store.members(wave["id"])
         # ‏#450: מכונה שנעלמה (כובתה, איבדה רשת, קרסה) לעולם אינה מדווחת
@@ -1042,8 +1085,8 @@ def _is_awake(*stamps: str | None) -> bool:
 
 
 #: מעל כמה שניות בלי תנועה מגירה נחשבת עצורה. נגזר מ-1,896 דגימות
-#: של סבב 08/09: מגירה בריאה עצרה עד 120 שניות. אותו מספר כמו
-#: ‏`ROOM_STALL_S` בסוכן, וכאן הוא משמש רק להכרעה שלמטה.
+#: של סבב 08/09: מגירה בריאה עצרה עד 120 שניות. היה זהה ל-`ROOM_STALL_S`
+#: של מסך הטקסט בסוכן, שהוסר ב-11/10 (GUI בלבד); כאן הוא משמש להכרעה שלמטה.
 STALL_SECONDS = 180
 
 
@@ -1140,6 +1183,12 @@ def status_view(ctx) -> dict:
             # רצפה בדיוק שהשרת מסרב לפיה, ממקום אחד. ‏null = אין דיווח.
             "disk_floor": disk_floor(ctx.conn)}
     if round_row is not None:
+        slots = (json.loads(round_row["target_slots_json"])
+                 if round_row["target_slots_json"] else None)
+        ready = (ready_drives(ctx.conn, ctx.store, round_row)
+                 if round_row["state"] == "active" else 0)
+        open_wave = (round_row["state"] == "active" and wave is not None
+                     and wave["state"] == "open")
         view["round"] = {
             "id": round_row["id"],
             "state": round_row["state"],
@@ -1147,8 +1196,7 @@ def status_view(ctx) -> dict:
             "image_id": round_row["image_id"],
             "image_name": round_label(ctx, round_row),
             "target_drives": round_row["target_drives"],
-            "target_slots": (json.loads(round_row["target_slots_json"])
-                             if round_row["target_slots_json"] else None),
+            "target_slots": slots,
             "expand_partition": round_row["expand_partition"] or "auto",
             # ‏#1269: דגם הדרייברים לכל דיסק יעד; ‏null = הסבב בלי דרייברים.
             "driver_models": room_drivers.view(round_row),
@@ -1156,8 +1204,14 @@ def status_view(ctx) -> dict:
             "remaining_drives": round_row["target_drives"] - round_row["written_drives"],
             "wave_number": round_row["wave_number"],
             "wave_state": wave["state"] if wave else "closed",
-            "ready_drives": (ready_drives(ctx.conn, ctx.store, round_row)
-                             if round_row["state"] == "active" else 0),
+            "ready_drives": ready,
+            # ‏#432: האזהרות הכתומות לפני "התחל" — רק לגל פתוח; אזהרה, לא חסימה.
+            "precheck": (room_precheck.warnings(machines, slots is not None)
+                         if open_wave else []),
+            # ‏#65: מי חסר בגל הפתוח ולמה — כבה אותו / התחל בכל זאת / בטל.
+            "missing": (room_precheck.missing(
+                machines, round_row["target_drives"] - round_row["written_drives"],
+                slots, ready) if open_wave else []),
             "opened_by": round_row["opened_by"],
             # ‏#715: מאיפה הבייטים — ספרייה (השרת משדר) או מחשב בנייה.
             "source": _direct().source_view(ctx.conn, round_row),
@@ -1282,11 +1336,46 @@ def create_room_router(ctx, wake=None) -> APIRouter:
         if not _direct().source_ready(round_row):
             raise HTTPException(
                 409, "מחשב הבנייה עדיין קורא את הדיסק — המניפסט טרם הגיע")
+        warned = precheck_now(ctx.conn, ctx.store, round_row)   # #432
         try:
             ctx.store.start_now(round_row["wave_session_id"], user[0])
         except SessionError as exc:
             raise HTTPException(409, str(exc))
-        return {"ok": True}
+        journal_precheck(ctx.conn, round_row, warned, user[0])
+        return {"ok": True, "warned": len(warned)}
+
+    @router.post("/missing/{mac}/poweroff")
+    async def poweroff_missing(mac: str, request: Request, user=Depends(room_operator)):
+        """‏#65 "כבה אותו": כיבוי **מכונה אחת** שהגל הפתוח מראה כחסרה — כדי
+        להחליף בה מגירות. רק לגל `open` (כיבוי באמצע כתיבה מפיל אותה), רק
+        למכונה שב-`missing` ושעונה ב-hello (הכיבוי נמסר בתשובתו, דרך הסוכן
+        ו-`arm_wol`, #587). ‏`confirm_name` = שם המחשב, מחלון האישור (#1270).
+        על פורט הסוכן כי זו הכרעת נדב (05/09): הפלט והבחירה — במחשב הבנייה."""
+        try:
+            body = await request.json()
+        except Exception:                              # noqa: BLE001
+            body = {}
+        typed = body.get("confirm_name", "") if isinstance(body, dict) else ""
+        canon = registry.normalize_mac(mac)
+        if canon is None:
+            raise HTTPException(400, "MAC לא תקין")
+        view = status_view(ctx)["round"]
+        if view is None or view["state"] != "active":
+            raise HTTPException(409, "אין סבב חדר פעיל")
+        if view["wave_state"] != "open":
+            raise HTTPException(409, "הגל כבר יצא לדרך — כיבוי עכשיו מפיל כתיבה חיה")
+        entry = next((m for m in view["missing"] if m["mac"] == canon), None)
+        if entry is None:
+            raise HTTPException(409, "המחשב אינו חסר בגל הזה")
+        if not entry["can_poweroff"]:
+            raise HTTPException(409, "המחשב אינו מחובר — אין למי לשלוח כיבוי")
+        name = entry["name"] or canon
+        if typed != name:
+            raise HTTPException(400, "השם שנשלח אינו שם המחשב")
+        from . import room_console           # noqa: PLC0415 — room_console מייבא את room
+        room_console.request_power(ctx.conn, [canon], room_console.POWEROFF, user[0])
+        journal(ctx.conn, "room_missing_poweroff", f"{canon} ({name})", user[0])
+        return {"requested": 1, "ttl_s": room_console.POWEROFF_TTL_SECONDS}
 
     @router.post("/wake")
     def wake_room(user=Depends(room_operator)):

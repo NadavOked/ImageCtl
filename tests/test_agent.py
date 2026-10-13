@@ -17,7 +17,6 @@ import os
 import re
 import shutil
 import subprocess
-import time
 from pathlib import Path
 
 import pytest
@@ -676,248 +675,18 @@ def test_the_builder_packs_the_account_nss_resolves():
     assert "passwd: files" in builder
 
 
-# --- אשף השחזור: כניסה לפני התפריט (#80) ------------------------------------
+# --- אשף השחזור בטקסט וסבב הכיתה בטקסט — הוסרו (11/10) ---------------------
+#
+# כאן ישבו הבדיקות של `recovery_flow` (כניסה לפני התפריט, #80; שלושת מצבי
+# הכניסה; ‏#912) ושל `classround.sh` (גוף הפתיחה, ‏#96). נדב, 11/10: GUI בלבד,
+# בלי מסך טקסט חלופי — והקוד נמחק. השומר: test_gui_only_no_text_fallback.py.
+# התכונה של #96 — הסיסמה לא נוגעת במערכת הקבצים — עברה לכניסה של הגואי
+# (‏`console_signin`), ונבדקת כאן עליה.
 
 
-def wizard(tmp_path, keys, require_login="true", codes=("200",), delay=0.0):
-    """מריץ את `recovery_flow` עם קלט מוקלד ומחזיר (פלט, קוד יציאה).
-    ‏`delay` > 0 = האדם מקליד רק אחרי כל כך הרבה שניות (#912) — הקלט מגיע
-    אז מצינור בתוך bash ולא מ-`input=`; ‏`build_hello`/`http_post_json`
-    מזויפים ופעימת ה-hello נרשמת ל-`hellos`. ‏attended.sh נטען רק אם הוא
-    קיים, כדי שהבקרה השלילית תיפול על ההתנהגות ולא על `.` של קובץ חסר.
-
-    שלושה זיופים, כולם על תפרים שהקוד כבר מגדיר:
-
-    * ‏`json_get` — jsonq.sh קיים כדי ש"תסתפקו בזיוף פונקציה אחת במקום
-      לשלוח jq לכל סביבה". כאן זה גם מה שמאפשר לבדוק `require_login`
-      חסר, מצב שאי אפשר לבטא בקובץ JSON תקין.
-    * ‏`login_post` — מחזיר קוד HTTP מתור. זה כל העניין של #80 מבחינת
-      עיקרון 5: ‏401 ("בדקנו — שגוי") ו-000/503 ("לא בדקנו") חייבים
-      להיות שני מצבים, ולא "כישלון".
-    * ‏`single_station_flow` / `class_round_flow` — עקבות בלבד. מה
-      שנבדק כאן הוא הסדר והשער, לא השחזור עצמו.
-    """
-    run = tmp_path / "run"
-    run.mkdir(exist_ok=True)
-    (run / "codes.txt").write_text("\n".join(codes) + "\n", encoding="utf-8")
-    (run / "code_n").write_text("0\n", encoding="utf-8")
-    attended = AGENT / "lib" / "attended.sh"
-    feed = ""
-    if delay:
-        feed = ("{ command sleep " + str(delay) + "; printf '"
-                + "".join(f"{k}\\n" for k in keys) + "'; } | ")
-    script = (
-        f'export RUN_DIR={posix(run)!r} MAC="b4:2e:99:07:1a:c4" '
-        f'SERVER="http://127.0.0.1:1" RESP={posix(run / "resp.json")!r} '
-        f'IMAGECTL_TEST=1 HTTP_RETRIES=0 HTTP_TIMEOUT=1 ATTENDED_BEAT_S=0.3 '
-        f'REQUIRE_LOGIN={require_login!r}; '
-        f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/jsonq.sh; '
-        f'. {posix(AGENT)}/lib/classround.sh; . {posix(AGENT)}/lib/ui.sh; . {posix(AGENT)}/lib/recovery.sh; '
-        + (f'. {posix(attended)}; ' if attended.exists() else "")
-        + 'build_hello() { printf %s "{\\"mac\\":\\"$MAC\\",\\"joining\\":$1}"; }; '
-        'http_post_json() { cat "$2" >> "$RUN_DIR/hellos"; echo >> "$RUN_DIR/hellos"; }; '
-        'json_get() { case "$2" in .ui.require_login) echo "$REQUIRE_LOGIN" ;; '
-        '*) echo null ;; esac; }; '
-        'login_post() { _n=$(cat "$RUN_DIR/code_n"); _n=$((_n + 1)); '
-        'echo "$_n" > "$RUN_DIR/code_n"; echo "{}" > "$2"; '
-        'sed -n "${_n}p" "$RUN_DIR/codes.txt"; }; '
-        'single_station_flow() { echo "STUB-SINGLE user=${RECOVERY_USER:-}"; }; '
-        'class_round_flow() { echo "STUB-CLASS user=${RECOVERY_USER:-}"; }; '
-        + feed + 'recovery_flow'
-    )
-    # ‏input בבייטים ולא ב-text: עם `text=True` ווינדוס מתרגם כל `\n`
-    # שנכתב לצינור ל-`\r\n`, ‏`read -r` במעטפת מקבל `0\r`, וה-`case`
-    # לא מתאים — התשובה היא `invalid choice -- rebooting`. חמישה טסטים
-    # נפלו כך על סיבה שאינה מה שהם בודקים (#479). הפלט נשאר text.
-    proc = subprocess.run(
-        [BASH, "-c", 'export PATH="/usr/bin:$PATH"; ' + script],
-        capture_output=True, cwd=str(REPO),
-        input=b"" if delay else "".join(f"{k}\n" for k in keys).encode("utf-8"),
-    )
-    return proc.stdout.decode("utf-8", "replace"), proc.returncode
-
-
-def wizard_hellos(tmp_path) -> list[dict]:
-    path = tmp_path / "run" / "hellos"
-    if not path.exists():
-        return []
-    return [json.loads(line) for line in path.read_text().splitlines() if line]
-
-
-MENU = "Deployment type:"
-PROMPT = "  Username: "
-WRONG = "Wrong username or password."
-
-
-def test_the_login_screen_comes_before_the_menu(tmp_path):
-    """הלב של #80: מי שנכשל בשלוש הכניסות לא ראה תפריט בכלל — כולל
-    את עצם קיומו של מצב "סבב כיתה", שהוא מידע על מה שהשרת יודע לעשות."""
-    out, code = wizard(tmp_path, ["a", "b"] * 3, codes=("401",) * 3)
-    assert MENU not in out and "Class round" not in out
-    assert out.count(PROMPT) == 3 and out.count(WRONG) == 3
-    assert "TEST-REBOOT: login failed" in out and code == 86
-
-
-def test_a_good_login_opens_the_menu_once(tmp_path):
-    """כניסה תקינה → תפריט. הסדר נבדק כסדר, לא כנוכחות."""
-    out, code = wizard(tmp_path, ["labtech", "pass", "0"])
-    assert out.index(PROMPT) < out.index(MENU)
-    assert out.count(PROMPT) == 1
-    assert "TEST-REBOOT: user cancelled" in out and code == 86
-
-
-def test_the_menu_choice_reaches_the_flow_with_the_credentials(tmp_path):
-    out, _ = wizard(tmp_path, ["labtech", "pass", "1"])
-    assert "STUB-SINGLE user=labtech" in out
-
-
-def test_a_class_round_no_longer_asks_a_second_time(tmp_path):
-    """הכניסה של השער היא הכניסה של הסבב — לא מסך שני אחרי הבחירה."""
-    out, _ = wizard(tmp_path, ["labtech", "pass", "2"])
-    assert out.count(PROMPT) == 1
-    assert "STUB-CLASS user=labtech" in out
-
-
-# --- #912: hello ממשיך בזמן שמסך הכניסה ממתין למפעיל --------------------------
-
-
-def test_hello_keeps_going_while_the_recovery_sign_in_waits(tmp_path):
-    """אותו דפוס כמו #906/#908, על אשף השחזור: תחנה שעומדת על "Username:"
-    נראית בקונסולה "לא נראתה" אחרי ONLINE_SECONDS. כאן האדם מקליד רק אחרי
-    ~3 פעימות (‏ATTENDED_BEAT_S=0.3), ולכן ≥2 hello עם `prompt: signin`,
-    ‏`waiting_for: operator` ו-`joining: false`. בקרה שלילית: `recovery.sh`
-    של main → 0."""
-    out, _ = wizard(tmp_path, ["labtech", "pass", "1"], delay=0.9)
-    assert "STUB-SINGLE user=labtech" in out, out
-    beats = wizard_hellos(tmp_path)
-    assert len(beats) >= 2, (beats, out)
-    for h in beats:
-        assert h["waiting_for"] == "operator" and h["prompt"] == "signin"
-        assert h["joining"] is False and h["mac"] == "b4:2e:99:07:1a:c4"
-
-
-def test_a_refused_recovery_sign_in_leaves_no_beat_behind(tmp_path):
-    """‏`recovery_gate` מסתיים ב-`die_local` כשהכניסה נדחתה (#80). הפעימה
-    נעצרת לפני כן — אחרי TEST-REBOOT מספר ה-hello אינו גדל, אחרת נשאר
-    תהליך יתום שכותב `signin` על תחנה שכבר אתחלה."""
-    out, code = wizard(tmp_path, ["a", "b"] * 3, codes=("401",) * 3, delay=0.4)
-    assert "TEST-REBOOT: login failed" in out and code == 86
-    beats = wizard_hellos(tmp_path)
-    assert beats and all(h["prompt"] == "signin" for h in beats), (beats, out)
-    before = len(beats)
-    time.sleep(1.0)
-    assert len(wizard_hellos(tmp_path)) == before
-
-
-# --- שלושת המצבים: נדרשת / מוותרים / לא נאמר --------------------------------
-
-
-def test_the_deployment_vlan_station_never_sees_a_login_screen(tmp_path):
-    """‏#42: בוילן ההפצה `require_login` הוא false ואין שם מסך כניסה.
-    הזזת הכניסה קדימה אסור שתמציא מסך במקום שלא היה בו."""
-    out, _ = wizard(tmp_path, ["1"], require_login="false")
-    assert PROMPT not in out
-    assert MENU in out and "STUB-SINGLE user=" in out
-
-
-def test_a_class_round_still_authenticates_where_the_login_was_waived(tmp_path):
-    """ויתור על הכניסה הוא ויתור על שחזור בודד, לא על פתיחת סבב:
-    פתיחת סבב היא החלטה, והשרת ידחה גוף בלי אישורים."""
-    out, _ = wizard(tmp_path, ["2", "labtech", "pass"], require_login="false")
-    assert out.index(MENU) < out.index(PROMPT)
-    assert "STUB-CLASS user=labtech" in out
-
-
-def test_a_server_that_did_not_say_is_not_a_server_that_waived(tmp_path):
-    """עיקרון 5 על השדה עצמו: "לא נאמר" אינו "לא צריך סיסמה". שדה חסר
-    מסתיים בדיסק המקומי — בלי תפריט ובלי מסך כניסה."""
-    out, code = wizard(tmp_path, ["1"], require_login="null")
-    assert MENU not in out and PROMPT not in out
-    assert "TEST-REBOOT: the server did not say whether recovery needs a login" in out
-    assert code == 86
-
-
-# --- שלושת המצבים של הכניסה עצמה --------------------------------------------
-
-
-@pytest.mark.parametrize("http_code", ["000", "503", "500"])
-def test_a_server_that_never_answered_is_not_a_wrong_password(tmp_path, http_code):
-    """‏http=000 שנספר כתשובה הוא הדפוס של עיקרון 5, וכאן הוא היה
-    מוצג לטכנאי כ"סיסמה שגויה" — שולח אותו לתקן את הדבר הלא נכון.
-    הכישלון גם לא מנסה שוב: הקלדה חוזרת לא מתקנת כבל."""
-    out, code = wizard(tmp_path, ["labtech", "pass"], codes=(http_code,) * 3)
-    assert WRONG not in out
-    assert "The server did not answer -- the password was not checked." in out
-    assert out.count(PROMPT) == 1
-    assert "TEST-REBOOT: the server never checked the password" in out
-    assert MENU not in out and code == 86
-
-
-def test_a_wrong_password_is_still_three_tries(tmp_path):
-    """המצב השלישי לא נבלע: 401 הוא תשובה, ומותר לנסות שוב."""
-    out, _ = wizard(tmp_path, ["a", "b", "c", "d", "labtech", "pass", "0"],
-                    codes=("401", "401", "200"))
-    assert out.count(WRONG) == 2 and out.count(PROMPT) == 3
-    assert out.index(WRONG) < out.index(MENU)
-
-
-# --- כניסה ממסך השחזור -------------------------------------------------------
-
-
-def test_the_login_body_survives_hostile_passwords(tmp_path):
-    """סיסמה עם גרשיים ולוכסנים חייבת לצאת JSON תקין — נבנית ביד."""
-    run = tmp_path / "run"
-    run.mkdir()
-    out = sh(
-        f'export RUN_DIR={posix(run)!r} MAC="b4:2e:99:07:1a:c4"; '
-        f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/jsonq.sh; '
-        f'. {posix(AGENT)}/lib/sysinfo.sh; . {posix(AGENT)}/lib/restore.sh; '
-        f'. {posix(AGENT)}/lib/progress.sh; . {posix(AGENT)}/lib/ui.sh; . {posix(AGENT)}/lib/recovery.sh; '
-        'login_body "nadav" "pa\\"ss\\\\word"'
-    )
-    body = json.loads(out)
-    assert body == {"username": "nadav", "password": 'pa"ss\\word',
-                    "mac": "b4:2e:99:07:1a:c4"}
-
-
-def test_the_open_round_body_matches_the_station_endpoint(tmp_path):
-    run = tmp_path / "run"
-    run.mkdir()
-    out = sh(
-        f'export RUN_DIR={posix(run)!r} MAC="b4:2e:99:07:1a:c4" '
-        f'RECOVERY_USER="labtech" RECOVERY_PASS=\'p"ss\'; '
-        f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/classround.sh; '
-        f'open_round_body grp_LAB1 img_7f3a91'
-    )
-    body = json.loads(out)
-    assert body == {
-        "username": "labtech", "password": 'p"ss', "mac": "b4:2e:99:07:1a:c4",
-        "group_id": "grp_LAB1", "image_id": "img_7f3a91",
-    }
-
-
-def test_the_open_round_body_carries_the_chosen_machines(tmp_path):
-    """בחירת מחשבים בתחנה: הרשימה עוברת בשדה `macs`; בלעדיה — כל הכיתה."""
-    run = tmp_path / "run"
-    run.mkdir()
-    out = sh(
-        f'export RUN_DIR={posix(run)!r} MAC="b4:2e:99:07:1a:c4" '
-        f'RECOVERY_USER="labtech" RECOVERY_PASS="pass"; '
-        f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/classround.sh; '
-        'open_round_body grp_LAB1 img_7f3a91 '
-        '\'["b4:2e:99:07:1a:c5","b4:2e:99:07:1a:c6"]\''
-    )
-    body = json.loads(out)
-    assert body["macs"] == ["b4:2e:99:07:1a:c5", "b4:2e:99:07:1a:c6"]
-    assert body["group_id"] == "grp_LAB1"
-
-
-# --- הסיסמה בפתיחת סבב לא נוגעת במערכת הקבצים (#96) --------------------------
-
-
-def run_open_round_post(tmp_path):
-    """מריץ `open_round_post` מול curl מזויף שרושם את הארגומנטים ואת
-    מה שקיבל ב-stdin. מחזיר (argv, גוף-שהתקבל, תיקיית ה-RUN)."""
+def test_the_gui_sign_in_leaves_no_password_on_tmpfs(tmp_path):
+    """‏#96 על הכניסה של הגואי: הגוף עם הסיסמה מגיע ל-curl בצינור
+    (‏`--data-binary @-`) ואינו נכתב לשום קובץ ב-`$RUN_DIR`."""
     box = tmp_path / "box"
     stub_dir = box / "bin"
     stub_dir.mkdir(parents=True)
@@ -928,62 +697,28 @@ def run_open_round_post(tmp_path):
         "#!/bin/sh\n"
         f'printf "%s\\n" "$*" > {posix(argv_file)}\n'
         f"cat > {posix(stdin_file)}\n"
-        # התשובה של השרת נכתבת לקובץ שביקשו ב--o, כמו curl אמיתי.
-        'while [ $# -gt 0 ]; do\n'
-        '  [ "$1" = "-o" ] && { printf \'{"prefix":"LAB1"}\' > "$2"; }\n'
-        "  shift\ndone\n"
+        "printf 401\n"
     )
     out = sh(
         f'export PATH="$(cd {posix(stub_dir)!r} && pwd):$PATH"; '
-        f'export RUN_DIR={posix(run)!r} MAC="b4:2e:99:07:1a:c4" '
-        f'SERVER="http://10.44.12.10:8080" '
+        f'export RUN_DIR={posix(run)!r} SERVER="http://10.44.12.10:8080" '
+        f'HTTP_TIMEOUT=1 HTTP_RETRIES=0 '
         f'RECOVERY_USER="labtech" RECOVERY_PASS="s3cret-in-the-classroom"; '
         f'chmod 0755 {posix(stub_dir)}/curl; '
-        f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/classround.sh; '
-        f'open_round_post grp_LAB1 img_7f3a91 "" {posix(run)!r}/open_resp.json; '
-        'echo "rc=$?"'
+        f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/jsonq.sh; '
+        f'. {posix(AGENT)}/lib/buildmenu.sh; '
+        'console_signin; echo "rc=$?"'
     )
-    assert out.strip().endswith("rc=0"), out
-    return argv_file.read_text(), stdin_file.read_text(encoding="utf-8"), run
-
-
-def test_the_round_body_reaches_curl_over_a_pipe(tmp_path):
-    """הגוף נשלח מ-stdin, לא מקובץ — ‏`--data-binary @-`."""
-    argv, body, _run = run_open_round_post(tmp_path)
-    assert "--data-binary @-" in argv
-    assert json.loads(body)["password"] == "s3cret-in-the-classroom"
-    assert json.loads(body)["group_id"] == "grp_LAB1"
-
-
-def test_opening_a_round_leaves_no_password_on_tmpfs(tmp_path):
-    """הבקרה השלילית של #96, בצורתה המדידה: אחרי הפעולה אין שום קובץ
-    ב-`$RUN_DIR` שהסיסמה נמצאת בו."""
-    _argv, _body, run = run_open_round_post(tmp_path)
+    assert out.strip().endswith("rc=1"), out
+    assert "--data-binary @-" in argv_file.read_text()
+    assert json.loads(stdin_file.read_text(encoding="utf-8"))["password"] \
+        == "s3cret-in-the-classroom"
     leaked = [
         p.name for p in run.rglob("*")
         if p.is_file() and "s3cret-in-the-classroom" in p.read_text(
             encoding="utf-8", errors="replace")
     ]
     assert leaked == []
-
-
-def test_the_class_round_flow_never_writes_the_body_to_a_file(tmp_path):
-    """הבקרה השלילית של #96 על הזרימה עצמה.
-
-    לפני התיקון `class_round_flow` הפנה את `open_round_body` לתוך
-    `$RUN_DIR/open.json` וסמך על `rm -f` אחרי ה-POST — מחיקה שרצה רק
-    אם `curl` חזר. ניקוי שצריך להצליח כדי שהתיקון יחזיק אינו תיקון,
-    ולכן הדרישה היא שהגוף לא ייכתב מלכתחילה.
-    """
-    source = (AGENT / "lib" / "classround.sh").read_text(encoding="utf-8")
-    # ההערות מדברות על הכשל הישן בשמו, ולכן נבדק הקוד בלבד.
-    code = "\n".join(
-        line for line in source.splitlines() if not line.lstrip().startswith("#")
-    )
-    flow = code[code.index("class_round_flow() {"):]
-    assert "open_round_body" not in flow, \
-        "גוף הפתיחה (עם הסיסמה) נבנה שוב בתוך הזרימה במקום לזרום ל-curl"
-    assert "open.json" not in code
 
 
 # --- כתיבת שם המחשב (ממשק 5) -------------------------------------------------
@@ -1966,7 +1701,7 @@ def builder_binaries() -> set[str]:
 REAL_BINARIES_USED = {
     "curl", "jq", "zstd", "pv", "sgdisk", "blockdev", "sha256sum", "od",
     "hdparm", "ntfsresize", "ntfs-3g", "ntfs-3g.probe", "ntfsfix", "umount",
-    "blkid", "df", "mount", "stty", "udp-receiver",
+    "blkid", "df", "mount", "udp-receiver",
     # ‏#715 — מחשב הבנייה משדר מהדיסק שלו ישירות למחשבי השיכפול
     # (‏directsend.sh); אותה חבילה (udpcast) כמו udp-receiver.
     "udp-sender",

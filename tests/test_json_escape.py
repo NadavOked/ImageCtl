@@ -76,7 +76,7 @@ json_escape_pre_fix "$1"
 """
 
 LIBS = ("common.sh", "jsonq.sh", "sysinfo.sh", "restore.sh", "progress.sh", "ui.sh",
-        "recovery.sh")
+        "pull.sh")
 
 
 def source_line(*names: str) -> str:
@@ -272,38 +272,38 @@ def test_a_long_field_is_escaped_whole(tmp_path):
 # --- שלושת האתרים שהבאג נראה בהם --------------------------------------------
 
 
-def test_the_login_body_survives_a_password_with_a_quote(tmp_path):
-    """קצה לקצה על `login_body` — הנתיב שהחזיר 400 על הלנובו הפיזי.
-
-    אותה בדיקה קיימת ב-`test_agent.py` תחת bash, ועברה. כאן, תחת
-    busybox, היא נכשלה לפני התיקון."""
+def test_the_console_sign_in_body_survives_a_password_with_a_quote(tmp_path):
+    """קצה לקצה על גוף הכניסה של הגואי (‏`console_signin`, ‏buildmenu.sh) —
+    הסיסמה הולכת ל-curl בצינור, ו-curl מזויף כאן רושם את מה שקיבל.
+    (עד 11/10 נבדקו כאן `login_body` ו-`open_round_body`, של הכניסה בטקסט
+    ושל סבב הכיתה בטקסט — שניהם הוסרו, GUI בלבד.)"""
     run = tmp_path / "run"
     run.mkdir()
     out = bb(
         tmp_path,
-        f'export RUN_DIR="{run}" MAC="b4:2e:99:07:1a:c4"\n'
-        + source_line(*LIBS)
-        + 'login_body "$1" "$2"\n',
-        "nadav", 'pa"ss\\word',
+        f'export RUN_DIR="{run}" MAC="b4:2e:99:07:1a:c4" SERVER=http://x '
+        'HTTP_TIMEOUT=1 HTTP_RETRIES=0\n'
+        'RECOVERY_USER="nadav"; RECOVERY_PASS="$1"\n'
+        + source_line("common.sh", "jsonq.sh", "buildmenu.sh")
+        + 'curl() { cat > "$RUN_DIR/body"; printf 401; }\n'
+        'console_signin >/dev/null; cat "$RUN_DIR/body"\n',
+        'pa"ss\\word',
     )
-    assert json.loads(out) == {
-        "username": "nadav", "password": 'pa"ss\\word',
-        "mac": "b4:2e:99:07:1a:c4",
-    }
+    assert json.loads(out) == {"username": "nadav", "password": 'pa"ss\\word'}
 
 
-def test_the_open_round_body_survives_a_password_with_a_quote(tmp_path):
+def test_the_pull_body_survives_a_quote(tmp_path):
     run = tmp_path / "run"
     run.mkdir()
     out = bb(
         tmp_path,
-        f'export RUN_DIR="{run}" MAC="b4:2e:99:07:1a:c4"\n'
-        'RECOVERY_USER="labtech"; RECOVERY_PASS=\'p"a\\ss\'\n'
-        + source_line("common.sh", "classround.sh")
-        + "open_round_body grp_LAB1 img_7f3a91\n",
+        f'export RUN_DIR="{run}"\n'
+        + source_line("common.sh", "pull.sh")
+        + 'pull_body b4:2e:99:07:1a:c4 img_7f3a91 "$1" ""\n',
+        'lab"tech',
     )
     body = json.loads(out)
-    assert body["username"] == "labtech" and body["password"] == 'p"a\\ss'
+    assert body["username"] == 'lab"tech' and body["password"] == ""
 
 
 def test_the_failure_reason_reaches_the_console_intact(tmp_path):

@@ -2,23 +2,20 @@
 
 Nadav's order for "מה לעשות עם המחשב הזה?": 1 capture a new image, 2 clone
 from the server, 3 direct clone, 4 restore onto this disk; the class card
-(hidden in v1) last. The same list is drawn in three places, and each is
-checked here by behaviour, not by reading the source:
+(hidden in v1) last. Checked by behaviour, not by reading the source:
 
-* the text menu (`agent/lib/buildmenuitems.sh:build_menu_options`) -- the
-  file the numbered menu is printed from, for both roles;
 * the native GUI (`native-gui/src/screens.c` MENU + `main.c` visible_card_ids)
   -- rendered with ``--png``: the capture card is the only one with the amber
   "admin" pill, so the pill's pixels say which end of the row it is at. The
   cards are laid out right to left (RTL), card 1 = key 1 at the right edge.
 
-The web station page (`server/static/station/index.html`) already lists
-capture first and has no direct/restore cards; it is not part of the change.
-`tests/test_build_menu.py` drives the text menu end to end (labels, numbers
-and the capture taken on "1").
+The text menu that printed the same list (`build_menu_options`) was removed
+on 11/10 with the rest of the text screens (GUI only); its three tests went
+with it. The web station page (`server/static/station/index.html`) already
+lists capture first and has no direct/restore cards.
 
-Negative control: on origin/main the text menu prints capture last and the
-pill is in the left half of the row; both tests fail there.
+Negative control: on origin/main before #1244 the pill is in the left half of
+the row, and the test fails there.
 """
 
 from __future__ import annotations
@@ -27,36 +24,11 @@ import shutil
 from pathlib import Path
 
 from native import requires_native
-from test_cloner_gui import (BASH, _build_gui, _pkgconfig, _png, _png_rgb, _token,
-                             posix, sh)
+from test_cloner_gui import BASH, _build_gui, _pkgconfig, _png, _png_rgb, _token
 
 REPO = Path(__file__).resolve().parent.parent
 
 pytestmark = requires_native(("bash", BASH))
-
-
-def text_menu(tmp_path: Path, role: str, classes: bool) -> list[str]:
-    out = sh(
-        f"RUN_DIR={posix(tmp_path)!r}; BUILD_ROLE={role}; "
-        ". agent/lib/buildmenuitems.sh; "
-        f"class_deploy_on() {{ {'true' if classes else 'false'}; }}; "
-        'build_menu_options && cat "$RUN_DIR/build_menu.txt"')
-    assert out.returncode == 0, out.stderr
-    return out.stdout.split()
-
-
-def test_the_text_menu_offers_capture_first_for_admin(tmp_path):
-    assert text_menu(tmp_path, "admin", False) == ["capture", "room", "direct", "self"]
-
-
-def test_the_class_option_stays_last(tmp_path):
-    assert text_menu(tmp_path, "admin", True) == ["capture", "room", "direct", "self", "class"]
-
-
-def test_deploy_never_sees_the_capture_and_keeps_the_same_order(tmp_path):
-    """The role gate is unchanged: `deploy` gets 1 room, 2 direct, 3 restore."""
-    assert text_menu(tmp_path, "deploy", False) == ["room", "direct", "self"]
-    assert text_menu(tmp_path, "deploy", True) == ["room", "direct", "self", "class"]
 
 
 def _pill_pixels(path: Path, color: tuple[int, int, int], tol: int = 2) -> tuple[int, int]:
