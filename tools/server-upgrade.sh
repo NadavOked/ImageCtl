@@ -334,8 +334,8 @@ bash install/verify-boot-payload.sh --app-dir "$REPO_DIR" --http-root "$HTTP_ROO
     || rollback "verify-boot-payload.sh נכשל מול $AGENT_URL"
 
 echo "--- $(date -Is) upgrade to $TAG done and verified ---"
-STAGE=done
-set_status done
+STAGE="done"
+set_status "done"
 # אחרי האימות בלבד. כשל כאן אינו כשל שדרוג (השרת החדש רץ ואומת) — נרשם
 # בלוג, והריצה הבאה מוחקת את העותק לפני שהיא שומרת חדש (PAYLOAD_SAVED).
 trap - ERR
