@@ -269,7 +269,8 @@ KVER=${kvmlinuz##*/vmlinuz-}
 ikver=$( (zstd -dc "$LIVE_INITRD" 2>/dev/null || gzip -dc "$LIVE_INITRD" 2>/dev/null || cat "$LIVE_INITRD") \
     | cpio -t 2>/dev/null | grep -m1 -o '^lib/modules/[^/]*' | cut -d/ -f3 || true)
 [[ -n "$ikver" ]] || die "ב-$LIVE_INITRD אין lib/modules/<kver> — זה לא initramfs של build_initramfs.sh?"
-lab_overlay=$(bash "$SCRIPT_DIR/initrd-lab-gate.sh" "$LIVE_INITRD" $($LAB && printf '%s' --lab)) \
+lab_flag=(); if $LAB; then lab_flag=(--lab); fi   # מערך ולא $(…) לא מצוטט (SC2046)
+lab_overlay=$(bash "$SCRIPT_DIR/initrd-lab-gate.sh" "$LIVE_INITRD" "${lab_flag[@]}") \
     || die "initrd של מעבדה דורש --lab מפורש"
 [[ "$ikver" == "$KVER" ]] || die "אי-התאמה: המודולים ב-initramfs הם של $ikver והקרנל ב-pool הוא $KVER — בנה את ה-initramfs מול linux-image-amd64 של ה-pool"
 install -m 0644 "$kvmlinuz" "$ISO_TREE/live/vmlinuz"
