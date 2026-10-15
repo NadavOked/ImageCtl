@@ -120,7 +120,7 @@ test('one grouped table: header counters + pills, three tabs, build → cloners 
   assert.match(b1,/st warn">ממתין למפעיל: תפריט</,'prompt beats everything');
   assert.doesNotMatch(b1,/monitorMachine\(/,'monitor lives only on the monitor page (Nadav 17/09: "במקום החדש שביקשתי ורק שם")');
   const c2=between(html,'data-mac="78:ac:c0:9b:11:c2"','data-mac="b4:2e:99:07:1a:c1"');
-  assert.match(c2,/3 חריצי SATA/); assert.match(c2,/3 · <bdi dir="ltr">238 GB<\/bdi> <span class="pill err">דיסק 3 אדום</);
+  assert.match(c2,/3 חריצי SATA/); assert.match(c2,/3 · <bdi dir="ltr">256GB<\/bdi> <span class="pill err">דיסק 3 אדום</);
   assert.doesNotMatch(c2,/sd[abc]/,'never sd*'); assert.match(c2,/st ok">מחובר</);
   const l1=between(html,'data-mac="b4:2e:99:07:1a:c1"','data-mac="b4:2e:99:07:1a:c2"');
   assert.match(l1,/st run">בסבב · ממתין להתחלה</); assert.doesNotMatch(l1,/monitorMachine/,'classroom rows: no monitor (server allows build/cloner only)');
@@ -210,10 +210,10 @@ test('the machine drawer: header line, actions (monitor, WoL for the room, "requ
   assert.match(html,/שלב אתחול אחרון<\/span><span class="v"><span class="st warn">GRUB נכנס לערך ImageSrv \(2\/9\) · לפני 9 דק&#39;<\/span><span class="sub">נעצר לפני: מודול ה-HTTP נטען/);
   assert.match(html,/<span class="k">הערה<\/span><span class="v">ליד הדלת/);
   assert.doesNotMatch(html,/SSH|SHA256:/,'#1266: no SSH host-key row in the drawer');
-  assert.match(html,/<div class="sec" data-cnt="3">דיסקים<\/div><div class="cap">דיווח אחרון לפני 9 דק&#39;<\/div>/,'#1300: the disks tab carries its count');
-  assert.match(html,/<div class="disk ok"><b>דיסק 1<\/b><span>SATA 0<\/span><span><bdi dir="ltr">238 GB<\/bdi><\/span><span class="cap">870 EVO · <span class="mono">S5Y30<\/span><\/span><span class="cap">SMART תקין</);
-  assert.match(html,/<div class="disk "><b>דיסק 2<\/b><span>SATA 1<\/span>[^]*SMART לא נבדק/,'no SMART = grey, not green');
-  assert.match(html,/<div class="disk err"><b>דיסק 3<\/b><span>SATA 2<\/span>[^]*אדום — כבל\/חריץ SATA 2/);
+  assert.match(html,/<div class="sec" data-cnt="3">דיסקים<\/div>/,'#1300: the disks tab carries its count');
+  assert.doesNotMatch(html,/דיווח אחרון/,'the compact disk list omits the report caption');
+  assert.match(html,/<tr data-slot="sata%3A1"><td><b>דיסק 1<\/b><\/td><td><span class="mono">SATA 0<\/span><\/td><td>870 <bdi dir="ltr">256GB<\/bdi><\/td>/);
+  assert.doesNotMatch(html,/S5Y30|SMART תקין|SMART לא נבדק/,'serials and non-bad SMART are absent from the disk list');
   assert.doesNotMatch(html,/sd[abc]/,'never sd*');
   assert.match(html,/3 חריצים מוגדרים · <a[^>]*editDrawerCount\(/);
   assert.match(html,/<span class="k">דגם<\/span><span class="v">LENOVO M720q</); assert.match(html,/<span class="k">TPM<\/span><span class="v">לא נבדק</); assert.match(html,/דף הדרייברים לא נטען/);
@@ -229,7 +229,8 @@ test('the machine drawer: header line, actions (monitor, WoL for the room, "requ
   run("openMachineDetail('c8%3Ad9%3Ad2%3A0b%3Afe%3A34')"); html=node('#drawerBody').innerHTML; balanced(html);
   assert.match(html,/המכונה מעולם לא דיווחה על כוננים/); assert.match(html,/המכונה מעולם לא דיווחה על חומרה/); assert.doesNotMatch(html,/חריצים מוגדרים/,'slots are a cloner thing');
   run("openMachineDetail('a0:48:1c:8a:18:40')"); html=node('#drawerBody').innerHTML;
-  assert.match(html,/המכונה דיווחה — ואין בה אף כונן/); assert.match(html,/2 חריצים מוגדרים/);
+  assert.match(html,/2 חריצים מוגדרים/);
+  assert.match(html,/data-slot="sata%3A1"[^]*SATA 0[^]*ריק[^]*data-slot="sata%3A2"[^]*SATA 1[^]*ריק/,'reported-empty cloner renders its configured slots as empty rows');
   run("openMachineDetail('b4:2e:99:07:1a:c3')"); html=node('#drawerBody').innerHTML;
   assert.match(html,/title="v2">WoL ואתחול מרחוק — לתחנות כיתה ב-v2</,'classroom: WoL (#984) and reboot are v2, not buttons'); assert.doesNotMatch(html,/monitorMachine|openMachineMonitor/); assert.match(html,/st warn">חסר בסבב</);
   assert.doesNotMatch(html,/rebootMachine\(|wakeMachine\(/);
@@ -359,6 +360,26 @@ test('"+ machine": one modal, two tabs — single (POST /machines) and paste wit
   await run('formOptions.onSubmit({label:"כיתה 307",id:""})'); assert.deepEqual(JSON.parse(requests.find(r=>r.url==='/api/console/groups').options.body),{id:'',label:'כיתה 307',role:'classroom'});
 });
 
+test('build/cloner role pages fix the add dialog group; the generic machines page keeps the group dropdown', () => {
+  const {run,node}=setup();
+  run("openAddMachine({role:'cloner'})");
+  assert.equal(node('#modalTitle').textContent,'+ מחשב שיכפול');
+  assert.equal(node('#modalSub').textContent,'יירשם בקבוצת מחשבי שיכפול');
+  assert.doesNotMatch(node('#modalBody').innerHTML,/<select id="am-(?:p)?group"/);
+  assert.match(node('#modalBody').innerHTML,/<input type="hidden" id="am-group" value="grp_CLONERS">/);
+
+  run("openAddMachine({role:'build',tab:1})");
+  assert.equal(node('#modalTitle').textContent,'+ מחשב בנייה');
+  assert.equal(node('#modalSub').textContent,'יירשם בקבוצת מחשבי בנייה');
+  assert.doesNotMatch(node('#modalBody').innerHTML,/<select id="am-(?:p)?group"/);
+  assert.match(node('#modalBody').innerHTML,/<input type="hidden" id="am-pgroup" value="grp_BUILD">/);
+
+  run('openAddMachine({})');
+  assert.equal(node('#modalTitle').textContent,'+ מחשב');
+  assert.equal(node('#modalSub').textContent,'רישום מחשב ברשת ההפצה');
+  assert.match(node('#modalBody').innerHTML,/<select id="am-group"><option value="grp_BUILD">/,'generic page retains the existing first-option behaviour');
+});
+
 test('empty and unread states, and the old page is gone (machines.js, sub-tabs, per-group forms)', () => {
   const {run}=setup();
   run('MACHINES=[]'); let html=run('machines(0)'); assert.match(html,/אין מחשבים רשומים — הוסיפו את הראשון/); assert.match(html,/openAddMachine\(\{\}\)/);
@@ -383,7 +404,7 @@ test('deploy role: the page is not allowed at all, and the tree node is admin-on
 
 // --- נדב 17/09: צומת-אב בעץ = דף המחשבים ממוקד לתפקיד, בלי "נראו ברשת" ---------
 test('a parent tree node opens the machines page focused on one role, without the seen-on-network tab', () => {
-  const {run}=setup();
+  const {run,ctx,fixtures}=setup();
   run("selectMachinesRole('build')");
   assert.equal(run('MACHINES_ROLE'),'build'); assert.equal(run('MACHINES_CLASS'),null); assert.equal(run('MACHINES_FILTER'),null);
   let html=run('machines(0)'); balanced(html);
@@ -391,10 +412,19 @@ test('a parent tree node opens the machines page focused on one role, without th
   assert.match(html,/2 רשומים/); assert.doesNotMatch(html,/2 כיתות · 2 מחשבי בנייה/,'counters are for this role only');
   assert.doesNotMatch(html,/role="tab"[^>]*>נראו ברשת/,'no seen-on-network tab');
   assert.match(html,/role="tab"[^>]*>מחשבי בנייה</); assert.match(html,/role="tab"[^>]*>דיסקים אדומים \(1\)</);
+  assert.match(html,/openAddMachine\(\{role:'build'\}\)">\+ מחשב/);
+  assert.doesNotMatch(html,/ייבוא בהדבקה|ייצוא CSV/,'role pages use cards instead of filtered-table controls');
+  assert.match(html,/class="mgrid wide"/); assert.match(html,/>קליטה<\/button>/);
   assert.doesNotMatch(html,/data-mac="78:ac:c0:9b:11:c2"/,'cloners are not in the build page');
   assert.match(html,/data-mac="c8:d9:d2:0b:fe:32"/,'the build machine is');
+  run('MACHINES=[]'); html=run('machines(0)');
+  assert.match(html,/openAddMachine\(\{role:'build'\}\)">\+ מחשב/,'the zero-machine role page keeps the fixed build group');
+  ctx.MACHINES=fixtures.machines;
   // הלשונית השנייה של הדף הממוקד היא דיסקים אדומים (לא "נראו ברשת")
   html=run('machines(1)'); assert.match(html,/clearDiskFailure|דיסקים אדומים/); assert.doesNotMatch(html,/renderSeenDevices|לא רשום — רשום/);
+  run("selectMachinesRole('cloner')"); html=run('machines(0)');
+  assert.match(html,/openAddMachine\(\{role:'cloner'\}\)">\+ מחשב/);
+  assert.doesNotMatch(html,/ייבוא בהדבקה|ייצוא CSV/); assert.match(html,/wakeRoom\(\)">הער את כולם \(WoL\)/); assert.match(html,/poweroffRoom\('grp_CLONERS'\)">כיבוי כולם/);
   run("selectMachinesRole('classroom')"); html=run('machines(0)');
   assert.match(html,/obj-name">כיתות</); assert.match(html,/2 כיתות/);
   assert.doesNotMatch(html,/data-mac="c8:d9:d2:0b:fe:32"/);

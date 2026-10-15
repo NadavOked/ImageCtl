@@ -124,7 +124,8 @@ gui_dispatch() {
             log "direct round opened from the GUI: /dev/$_gd -> $slots"
             ;;
         room-wake|room-start) room_action "${token#room-}" ;;
-        room-poweroff) room_poweroff "$cloner" "$confirm" ;;   # #65 "כבה אותו" (roomflow.sh)
+        room-poweroff) room_poweroff "$cloner" "$confirm" "$local_copy" ;;   # #65/#1367
+        room-poweroff-all) room_poweroff_all "$confirm" "$local_copy" ;;      # #1367
         room-close|class-start|class-close)
             if [ "$token" = room-close ]; then
                 _gp=room/close
@@ -170,7 +171,7 @@ gui_dispatch() {
 
 gui_records() {
     while IFS= read -r token; do
-        dev='' name='' desc='' folder='' folder_new='' image='' target='' confirm='' group='' slots='' drivers='' cloner=''
+        dev='' name='' desc='' folder='' folder_new='' image='' target='' confirm='' group='' slots='' drivers='' cloner='' local_copy=''
         _complete=0; _bad=0; _seen='|'
         while IFS= read -r line; do
             [ -n "$line" ] || { _complete=1; break; }
@@ -182,7 +183,7 @@ gui_records() {
                 folder=*) folder=$_value ;; folder_new=*) folder_new=$_value ;;
                 image=*) image=$_value ;; target=*) target=$_value ;;
                 confirm=*) confirm=$_value ;; group=*) group=$_value ;;
-                slots=*) slots=$_value ;; drivers=*) drivers=$_value ;; cloner=*) cloner=$_value ;;   # #1269; #65
+                slots=*) slots=$_value ;; drivers=*) drivers=$_value ;; cloner=*) cloner=$_value ;; local_copy=*) local_copy=$_value ;;   # #1269; #65/#1367
                 *) _bad=1 ;;
             esac
         done

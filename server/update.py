@@ -434,7 +434,8 @@ def get_last_check(conn) -> dict | None:
     return _get_json_setting(conn, LAST_CHECK_KEY)
 
 
-def status_with_verification(conn, hooks: Hooks, repo_dir: str | Path) -> dict:
+def status_with_verification(conn, hooks: Hooks, repo_dir: str | Path,
+                             vm_warning: Callable[[], str | None] | None = None) -> dict:
     """מצב ההרצה האחרונה + הראיה החיובית: האם הגרסה שרצה בפועל, עכשיו,
     היא התג שביקשנו. "לא ידוע עדיין" (השרת עוד לא עלה מחדש) שונה מפורשות
     מ"נכשל" — עיקרון 5.
@@ -453,6 +454,14 @@ def status_with_verification(conn, hooks: Hooks, repo_dir: str | Path) -> dict:
             result["verified"] = False
     elif doc.get("state") == "done" and doc.get("tag"):
         result["verified"] = current == doc["tag"]
+    # ‏#1372: עדכון שהסתיים ואומת על הגרסה שרצה — אבל המארח של "עדכון ב-VM" אינו
+    # מוכן. נקרא עכשיו ולא נשמר: הסקריפט של התג הישן כותב `done` בלי אזהרה **אחרי**
+    # שהשרת החדש עלה, וכשההכנה ברקע מסתיימת האזהרה נעלמת בלי לכתוב דבר.
+    if (vm_warning is not None and result.get("state") == "done" and result.get("verified")
+            and not result.get("warning")):
+        warning = vm_warning()
+        if warning:
+            result["warning"] = warning
     return result
 
 
@@ -515,7 +524,8 @@ def _active_round(ctx) -> bool:
 
 def create_update_router(ctx, repo_dir: str | Path, server_base: str,
                          hooks: Hooks | None = None,
-                         public_url: str = PUBLIC_UPDATE_URL) -> APIRouter:
+                         public_url: str = PUBLIC_UPDATE_URL,
+                         vm_warning: Callable[[], str | None] | None = None) -> APIRouter:
     from . import auth
 
     router = APIRouter(prefix="/api/console/update")
@@ -566,7 +576,7 @@ def create_update_router(ctx, repo_dir: str | Path, server_base: str,
     @router.get("/status")
     def status(user=Depends(admin_only)):
         del user
-        return status_with_verification(ctx.conn, hooks, repo_dir)
+        return status_with_verification(ctx.conn, hooks, repo_dir, vm_warning)
 
     @router.post("/check")
     def check(user=Depends(admin_only)):

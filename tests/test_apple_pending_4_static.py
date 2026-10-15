@@ -201,7 +201,9 @@ def test_long_state_text_is_clamped_to_three_lines_and_the_serial_is_one_ellipsi
     mono = _rule(css, ".page .mcard .kv .v .mono")
     assert "text-overflow:ellipsis" in mono and "white-space:nowrap" in mono and "max-width:100%" in mono
     js = _js()
-    assert '<span class="mono" title="${esc(d0.serial)}">' in js, "serial מלא ב-title"
+    assert '<span class="cap mono" title="${esc(d.serial)}">${esc(d.serial)}</span>' in js, "serial מלא ב-title"
+    drive_mono = _rule(css, ".page .mcard .machine-drives td .mono")
+    assert "text-overflow:ellipsis" in drive_mono and "white-space:nowrap" in drive_mono and "max-width:100%" in drive_mono
     assert 'class="mgrid wide">${sortMachinesBySuffix(kids).map((m) => builderCardHtml' in js
     assert '<span class="clamp" title="${esc(st.text)}">' in js
 

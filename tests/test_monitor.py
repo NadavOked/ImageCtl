@@ -843,6 +843,30 @@ def test_power_token_over_the_websocket_is_refused_and_never_reaches_the_machine
     assert journal_rows(server, "monitor_closed") == [(f"{MAC} refused", "noc")]
 
 
+@pytest.mark.parametrize("header", [
+    b"\x06\x00\x00\x00" + struct.pack(">I", 1 << 30),     # רגיל: 1GB "בדרך"
+    b"\x06\x00\x00\x00" + struct.pack(">i", -(1 << 30)),  # מורחב, ענק
+])
+def test_client_cut_text_is_refused_on_its_header_not_after_its_body(server, header):
+    """‏#1392: ההחלטה על ClientCutText נופלת כשהאורך ידוע (8 בייטים), ולא
+    אחרי שכל הגוף הגיע — אורך שמבטיח 1GB אינו משאיר את הגשר ממתין ובולע
+    (רגיל → ‏4403 כמו תמיד; מורחב ענק → ‏1009 בשם)."""
+    machine = prepare_secret_machine(server)
+
+    async def connector(_host, _port):
+        return machine, machine
+
+    client = monitor_client(server, "admin", connector)
+    with client.websocket_connect(f"/api/console/monitor/{MAC}") as websocket:
+        browser_handshake(websocket)
+        assert websocket.receive_bytes() == SERVER_INIT
+        websocket.send_bytes(header)
+    # לא `receive_bytes` — בלי התיקון הגשר אינו סוגר והקריאה הייתה נתקעת.
+    # היומן מכריע: "refused" = הגשר סגר; "browser" = הדפדפן יצא והגשר עוד חיכה.
+    assert journal_rows(server, "monitor_closed") == [(f"{MAC} refused", "noc")]
+    assert not any(w.startswith(b"\x06") for w in machine.writes)
+
+
 def test_client_messages_are_forwarded_whole_even_when_split_across_frames(server):
     """הגשר מצרף מסגרות: הודעה שהגיעה בשני חלקים נכתבת למכונה כיחידה
     אחת, ושתי הודעות במסגרת אחת נכתבות בנפרד. סוג לא מוכר → 1002."""
@@ -877,6 +901,27 @@ def test_client_message_length_table():
     assert monitor.client_message_length(monitor.power_frame("reboot")) == 8 + len(b"imagectl-power:reboot")
     with pytest.raises(ValueError):
         monitor.client_message_length(b"\x63")
+
+
+def test_client_message_length_knows_what_novnc_1_6_sends():
+    """‏#1392: noVNC 1.6 (מסך ה-VM, #1334) שולח הודעות ש-monitor.js לא שלח
+    מעולם. כל אחת בגבול הנכון — אחרת הגשר ממתין לבייטים שלא יגיעו ובולע
+    את כל מה שאחריה, בלי לסגור (המסך קופא, המקלדת לא עוברת)."""
+    # ClientCutText מורחב (Extended Clipboard): אורך **שלילי** כ-s32. noVNC
+    # עונה כך ל-caps ש-QEMU 10 שולח מיד אחרי SetEncodings. ‏-8 אינו 4GB.
+    caps = b"\x06\x00\x00\x00" + struct.pack(">i", -8) + b"\x1f\x00\x00\x01" + b"\x00" * 4
+    assert monitor.client_message_length(caps) == 16
+    # QEMU Extended Key Event (255, תת-סוג 0) — כל מקש אחרי ש-QEMU אישר -258.
+    shift = b"\xff\x00\x00\x01" + struct.pack(">II", 0xffe1, 0x2a)
+    assert monitor.client_message_length(shift) == 12
+    assert monitor.client_message_length(b"\xff") is None
+    with pytest.raises(ValueError):
+        monitor.client_message_length(b"\xff\x01\x00\x00")   # QEMU audio — לא נשלח
+    # ClientFence (248): ‏9 בייטים + מטען באורך הבייט התשיעי.
+    assert monitor.client_message_length(b"\xf8\x00\x00\x00\x00\x00\x00\x00") is None
+    assert monitor.client_message_length(b"\xf8" + b"\x00" * 7 + b"\x05") == 14
+    # EnableContinuousUpdates (150): קבוע.
+    assert monitor.client_message_length(b"\x96") == 10
 
 
 def test_power_frame_is_client_cut_text_with_the_token():

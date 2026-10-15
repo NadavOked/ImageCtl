@@ -24,7 +24,7 @@ pytest.importorskip("fastapi")
 #: כיתה ובודקות את זרימת v1.2 — ולכן מדליקות את היכולת (`classrooms_on`).
 pytestmark = pytest.mark.usefixtures("classrooms_on")
 
-from conftest import hello_body, setup_classroom
+from conftest import hello_body, room_slots, setup_classroom
 
 #: הכתובת שאיתה נוצר השרת ב-conftest — וילן ההפצה.
 VLAN = "http://10.44.12.10:8080"
@@ -118,9 +118,10 @@ def test_a_room_wave_still_takes_the_slot_from_a_class_round(server):
         "/api/console/machines",
         json={"mac": "b4:2e:99:07:3a:01", "name": "01", "group_id": "grp_CLONERS"},
     ).status_code == 200
-    assert server["deploy"].post(
-        "/api/console/room", json={"image_id": "img_7f3a91", "target_drives": 4},
-    ).status_code == 200
+    assert server["deploy"].post("/api/console/room", json={
+        "image_id": "img_7f3a91", "target_drives": 4,
+        "target_slots": room_slots(server["ctx"].conn, {"b4:2e:99:07:3a:01": ["S1", "S2"]}),
+    }).status_code == 200
 
     assert open_round(server, lab1["group"]).status_code == 409
 

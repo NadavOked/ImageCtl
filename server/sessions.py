@@ -473,6 +473,17 @@ class SessionStore:
             (session_id,),
         ).fetchone()["n"]
 
+    def live_count(self, session_id: str) -> int:
+        """‏#1430: חברים שעוד יכולים לקבל זרם — כל מי שאינו במצב סופי.
+
+        מכונה שמגירה אחת שלה נכשלה עדיין `writing` ונספרת; מכונה שכל
+        המגירות שלה נכשלו מדווחת `failed` ואינה מתחברת עוד לשולח."""
+        return self.conn.execute(
+            "SELECT COUNT(*) AS n FROM session_members WHERE session_id = ?"
+            " AND state NOT IN ('done', 'failed', 'partial', 'lost')",
+            (session_id,),
+        ).fetchone()["n"]
+
     def is_member(self, session_id: str, mac: str) -> bool:
         return (
             self.conn.execute(

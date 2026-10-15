@@ -264,12 +264,16 @@ def test_cloner_smart_answers_are_ordered_by_risk():
 
 
 def test_cloner_and_standby_status_bars_list_only_working_keys():
-    said = status_line("SCREEN_CLONER")
-    assert said.strip() == '"אין פעולה במסך הזה"'          # no SMART question, no keys
     keys = code(body(_src("screens.c"), "status_keys"))
     cloner = keys[keys.index("case SCREEN_CLONER:"):keys.index("case SCREEN_RESTORE:")]
     assert "if(!a->st.smart_pending)" in cloner
+    assert 'return "אין פעולה במסך הזה"' in cloner          # no SMART question, no keys
     assert "דיסקים: 1 · 2 · 3" not in keys
+
+
+def test_cloner_explains_a_wave_lost_to_server_restart():
+    screens = _src("screens.c")
+    assert "השרת אותחל באמצע הגל — המחשב יצטרף לבד לגל הבא" in screens
 
 
 def test_live_round_draws_a_bar_per_reported_disk():

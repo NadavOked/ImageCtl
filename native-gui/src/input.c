@@ -40,6 +40,7 @@ struct Input {
     int scan_done;      /* stop rescanning once a keyboard AND a mouse are here */
     int caps;           /* #1203: Caps Lock -- the grab hides it from the kernel's
                          * keyboard handler, so it is tracked (and its LED set) here */
+    int suspended;      /* #1362: another VT is in front -- not grabbed, events dropped */
 };
 
 /* {code, US plain, US shifted, SI-1452 plain}. The fourth column is the
@@ -142,7 +143,8 @@ Input *input_open(int screen_w, int screen_h) {
 }
 
 void input_rescan(Input *in) {
-    if (!in || in->scan_done) return;              /* stop once kbd+mouse are here */
+    if (!in || in->scan_done || in->suspended) return;   /* stop once kbd+mouse are here;
+                                                    * #1362: never grab while another VT is in front */
     time_t now = time(NULL);
     if (now == in->last_rescan) return;            /* at most once a second */
     in->last_rescan = now;
@@ -209,6 +211,12 @@ static void key_event(Input *in, Dev *d, int code, int value) {
         in->caps = !in->caps;
         caps_led(in);
         e.type = UIEV_KEY; e.key = KEYSYM_CAPS; push(in, e); return;
+    }
+    int fn = code >= KEY_F1 && code <= KEY_F10 ? code - KEY_F1 + 1
+           : code == KEY_F11 ? 11 : code == KEY_F12 ? 12 : 0;
+    if (fn && d->alt) {                              /* #1362: Alt+Fn and Ctrl+Alt+Fn */
+        if (value != 1) return;                      /* a held chord is one switch */
+        e.type = UIEV_KEY; e.key = KEYSYM_VT; e.vt = fn; push(in, e); return;
     }
     if (code >= KEY_F1 && code <= KEY_F10) { e.type = UIEV_KEY; e.key = KEYSYM_F1 + (code - KEY_F1); push(in, e); return; }
     if (code == KEY_F11 || code == KEY_F12) { e.type = UIEV_KEY; e.key = code == KEY_F11 ? KEYSYM_F11 : KEYSYM_F12; push(in, e); return; }
@@ -302,7 +310,10 @@ void input_pump(Input *in, const struct pollfd *fds, int n) {
                 in->dev[j] = in->dev[--in->ndev]; /* compact; this slot now holds the last dev */
                 in->scan_done = 0;                /* a device left -- look again */
             } else if (fds[i].revents & POLLIN) {
-                read_dev(in, &in->dev[j]);
+                if (in->suspended) {                 /* #1362: typed on another VT -- not ours */
+                    struct input_event drop[32];
+                    while (read(in->dev[j].fd, drop, sizeof drop) > 0) {}
+                } else read_dev(in, &in->dev[j]);
             }
             break;
         }
@@ -316,6 +327,19 @@ int input_next(Input *in, Event *out) {
 }
 
 int input_caps(const Input *in) { return in ? in->caps : 0; }
+
+void input_suspend(Input *in, int on) {
+    if (!in) return;
+    in->suspended = on;
+    for (int i = 0; i < in->ndev; i++) {
+        ioctl(in->dev[i].fd, EVIOCGRAB, on ? 0 : 1);
+        in->dev[i].shift = in->dev[i].alt = 0;      /* Alt was down when we left */
+        if (!on && (in->dev[i].kinds & DEV_KEYBOARD)) {  /* Caps may have changed meanwhile */
+            unsigned long led[NBITS(LED_MAX)] = { 0 };
+            if (ioctl(in->dev[i].fd, EVIOCGLED(sizeof led), led) >= 0) in->caps = test_bit(LED_CAPSL, led);
+        }
+    }
+}
 
 void input_close(Input *in) {
     if (!in) return;

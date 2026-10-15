@@ -28,6 +28,14 @@ REQUIRED_PARTITION_FIELDS = ("index", "file", "sha256")
 #: הוא הגבול בין "מזהה" לבין "נתיב". מניפסט מגיע גם מבחוץ (ייבוא ארכיון),
 #: ומזהה כמו `../evil` בו הוא בקשה לכתוב אל מחוץ לספרייה (‏#110).
 IMAGE_ID = re.compile(r"img_[0-9a-f]{6}")
+GUID_RE = re.compile(r"[0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12}")
+UUID_RE = re.compile(r"(?:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|[0-9A-F]{4}-[0-9A-F]{4}|[0-9A-F]{16})")
+ATTRS_RE = re.compile(r"[0-9A-F]{16}")
+PARTITION_ROLES = {"esp", "msr", "windows", "recovery", "linux", "swap", "data"}
+# "" / "unknown" = מחיצה בלי מערכת קבצים (MSR, ‏BIOS boot) — הסוכן מזרים אותה ב-partclone.dd
+# (#1419). ‏"unknown" הוא מה ש-_fs_of (manifest.sh) כותב כש-blkid יוצא ≠0 — וזה בדיוק מה
+# ש-blkid עושה על מחיצה בלי חתימה.
+FILESYSTEMS = {"ntfs", "vfat", "ext4", "btrfs", "swap", "", "unknown"}
 
 MIB = 1 << 20
 #: מה שהכונן חייב להחזיק **אחרי** סוף הפריסה: עותק הגיבוי של ה-GPT.
@@ -72,6 +80,37 @@ def inside(path: Path, root: Path) -> Path | None:
         log.warning("cannot resolve %s under %s: %s", path, root, exc)
         return None
     return resolved if resolved.is_relative_to(base) else None
+
+
+def safe_partition_filename(value: object) -> bool:
+    """True only for a non-special, single-component partition filename."""
+    return (isinstance(value, str) and bool(value) and value not in (".", "..")
+            and "/" not in value and "\\" not in value and "\0" not in value)
+
+
+def _unsafe_agent_string(value: object) -> bool:
+    if isinstance(value, str):
+        return any(ord(ch) < 32 or ch == "|" for ch in value)
+    if isinstance(value, dict):
+        return any(_unsafe_agent_string(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_unsafe_agent_string(item) for item in value)
+    return False
+
+
+def guarded_image_path(image_dir: str | Path, filename: object) -> Path | None:
+    """Resolve one image file without following a symlink or leaving its directory."""
+    if not safe_partition_filename(filename):
+        return None
+    root = Path(image_dir)
+    candidate = root / filename
+    try:
+        if candidate.is_symlink():
+            return None
+    except OSError:
+        return None
+    resolved = inside(candidate, root)
+    return resolved if resolved is not None and resolved.is_file() else None
 
 
 def disk_family(size_bytes: int) -> int:
@@ -361,6 +400,18 @@ class ImageLibrary:
         # ‏#1334: הצבעות "ברירת המחדל" לכל שושלת (טבלת settings). None = בלי
         # הצבעות — הגרסה הגבוהה ביותר.
         self._default_pointers = None
+        self._invalid_reporter = None
+        self._reported_invalid: set[tuple[str, str]] = set()
+
+    def bind_invalid_reporter(self, reporter) -> None:
+        """Report each rejected on-disk manifest once to the operator journal."""
+        self._invalid_reporter = reporter
+
+    def _report_invalid(self, path: Path, reason: str) -> None:
+        key = (str(path), reason)
+        if self._invalid_reporter is not None and key not in self._reported_invalid:
+            self._reported_invalid.add(key)
+            self._invalid_reporter(path, reason)
 
     def bind_defaults(self, provider) -> None:
         """מזרים את הצבעות ברירת המחדל מה-DB (‏`image_versions.pointers`)."""
@@ -401,10 +452,12 @@ class ImageLibrary:
                 manifest = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError) as exc:
                 log.warning("skipping unreadable manifest %s: %s", path, exc)
+                self._report_invalid(path, f"unreadable JSON: {exc}")
                 continue
             problem = self._validate(manifest)
             if problem:
                 log.warning("skipping manifest %s: %s", path, problem)
+                self._report_invalid(path, problem)
                 continue
             image_id = manifest["id"]
             if image_id in found or image_id in ambiguous:
@@ -468,31 +521,83 @@ class ImageLibrary:
         return list(self._locations() or [])
 
     @staticmethod
-    def _validate(manifest: object) -> str | None:
+    def _validate(manifest: object, *, require_library_fields: bool = True) -> str | None:
         if not isinstance(manifest, dict):
             return "not an object"
         if manifest.get("schema") != 1:
             return f"unknown schema: {manifest.get('schema')!r}"
-        for field in REQUIRED_FIELDS:
+        required = REQUIRED_FIELDS if require_library_fields else ("family", "min_target_bytes", "partitions")
+        for field in required:
             if field not in manifest:
                 return f"missing field: {field}"
+        if _unsafe_agent_string(manifest):
+            return "a string field contains a control or agent delimiter character"
+        if require_library_fields and (not valid_image_id(manifest["id"])
+                                       or not isinstance(manifest["name"], str)
+                                       or not manifest["name"]):
+            return "image id or name is malformed"
         # שני השדות שההחלטה "האם האימג' נכנס לכונן" נשענת עליהם. מניפסט
         # שהם פגומים בו נדחה כאן, ולא מגיע להשוואה שתשווה מחרוזת למספר.
         if manifest["family"] not in (256, 500):
             return f"family must be 256 or 500, not {manifest['family']!r}"
-        if _whole(manifest["min_target_bytes"]) is None:
+        if not (_whole(manifest["min_target_bytes"]) or 0) > 0:
             return "min_target_bytes must be a whole number of bytes"
+        for field in ("source_disk_bytes", "total_compressed_bytes"):
+            if field in manifest and _whole(manifest[field]) is None:
+                return f"{field} must be a whole number of bytes"
+        if manifest.get("scheme", "gpt") != "gpt" or manifest.get("sector_size", 512) != 512:
+            return "only a GPT manifest with 512-byte sectors is supported"
         if not isinstance(manifest["partitions"], list) or not manifest["partitions"]:
             return "partitions must be a non-empty list"
+        for field in ("disk_guid",):
+            value = manifest.get(field)
+            if value is not None and (not isinstance(value, str) or GUID_RE.fullmatch(value) is None):
+                return f"{field} must be a canonical GUID"
+        indexes: set[int] = set()
+        geometry: list[tuple[int, int, int]] = []
         for part in manifest["partitions"]:
             for field in REQUIRED_PARTITION_FIELDS:
                 if not isinstance(part, dict) or field not in part:
                     return f"partition missing field: {field}"
+            index = _whole(part["index"])
+            if index is None or not 1 <= index <= 128 or index in indexes:
+                return f"partition index must be unique and between 1 and 128: {part['index']!r}"
+            indexes.add(index)
+            if part.get("role") not in PARTITION_ROLES or part.get("fs") not in FILESYSTEMS:
+                return f"partition {index} has an unsupported role or filesystem"
+            for field in ("type_guid", "unique_guid"):
+                value = part.get(field)
+                if field == "type_guid" or value not in (None, ""):
+                    if not isinstance(value, str) or GUID_RE.fullmatch(value) is None:
+                        return f"partition {index} has malformed {field}"
+            uuid = part.get("uuid")
+            if uuid not in (None, "") and (not isinstance(uuid, str) or UUID_RE.fullmatch(uuid) is None):
+                return f"partition {index} has malformed uuid"
+            attrs = part.get("attrs")
+            if attrs not in (None, "") and (not isinstance(attrs, str) or ATTRS_RE.fullmatch(attrs) is None):
+                return f"partition {index} has malformed attrs"
+            used = part.get("used_bytes")
+            size = _whole(part.get("size_bytes"))
+            if used is not None and (_whole(used) is None or size is None or used > size):
+                return f"partition {index} has malformed used_bytes"
+            if not isinstance(part.get("expandable", False), bool):
+                return f"partition {index} has malformed expandable flag"
+            for field in ("role", "fs", "file", "sha256", "unique_guid", "uuid", "attrs"):
+                value = part.get(field)
+                if isinstance(value, str) and any(ord(ch) < 32 or ch in "|" for ch in value):
+                    return f"partition {index} field {field} contains a control or delimiter character"
             if carries_a_stream_file(part) and not has_sha256(part):
                 return f"partition {part['index']} has malformed sha256"
+            if carries_a_stream_file(part) and not safe_partition_filename(part.get("file")):
+                return f"partition {part['index']} has an unsafe file name"
             if not has_partition_geometry(part):
                 return (f"partition {part.get('index')!r} has malformed geometry:"
                         " start_sector and size_bytes must both be positive")
+            start = part["start_sector"] * 512
+            end = start + part["size_bytes"]
+            if part["size_bytes"] % 512 or end > manifest["min_target_bytes"]:
+                return f"partition {index} geometry is outside the target disk or not sector-aligned"
+            geometry.append((start, end, index))
             # מי שפטור מקובץ הוא **`fs == "swap"`**, ולא `role == "swap"`:
             # הסוכן מחליט לפי `fs` בלבד, ורשומה ששני השדות אינם מסכימים
             # בה עברה כאן בשלמותה והגיעה שם ל-`mkswap` (#424). מחיצה
@@ -503,6 +608,9 @@ class ImageLibrary:
                         " and only a swap partition may have none")
         if not streamed_partitions(manifest):
             return "no partition carries data"
+        ordered = sorted(geometry)
+        if any(right[0] < left[1] for left, right in zip(ordered, ordered[1:])):
+            return "partition geometry overlaps"
         return None
 
     def get(self, image_id: str) -> dict | None:
@@ -518,8 +626,7 @@ class ImageLibrary:
         declared = {part["file"] for part in streamed_partitions(manifest)}
         if filename not in declared:
             return None
-        path = Path(manifest["_dir"]) / filename
-        return path if path.is_file() else None
+        return guarded_image_path(manifest["_dir"], filename)
 
     def allowed_for_disks(self, disks: list[dict] | None) -> list[str]:
         """מזהי האימג'ים שמתאימים לדיסקים שדווחו ב-hello.
@@ -563,11 +670,14 @@ class ImageLibrary:
                 allowed.append(image_id)
         return sorted(allowed)
 
-    def public_list(self) -> list[dict]:
+    def public_list(self, min_free_gb: int = 0) -> list[dict]:
         """מה שהקונסולה מציגה — בלי נתיבי דיסק פנימיים.
 
         הסדר בתוך תיקייה: קודם `sort` (שהקונסולה עורכת), ואז שם.
+        ‏`min_free_gb` (‏#1354) — ההגדרה, כדי ש"נכנס לדיסק מ-X" יכלול אותה.
         """
+        # ייבוא מקומי: ‏minfree ← imagefit ← images. במעלה הקובץ זה מעגל.
+        from .minfree import min_disk_bytes
         result = []
         scanned = self.scan()
         chosen = set(self.defaults(scanned).values())
@@ -585,7 +695,11 @@ class ImageLibrary:
                     "source_disk_bytes": manifest.get("source_disk_bytes"),
                     # ‏#953: "נכנס לדיסק מ-X" — הדרישה **הנגזרת** (`required_bytes`,
                     # מה שבדיקה 2.7 אוכפת), לא השדה הגולמי; ‏None = לא ניתן לקבוע.
-                    "min_target_bytes": required_bytes(manifest),
+                    # ‏#1354: כולל המינימום הפנוי במחיצת המערכת; ‏None גם כשה-
+                    # `used_bytes` שלה לא נמדד. ‏`layout_bytes` — הפריסה לבדה.
+                    "min_target_bytes": min_disk_bytes(manifest, min_free_gb),
+                    "layout_bytes": required_bytes(manifest),
+                    "min_free_gb": min_free_gb,
                     "used_bytes": used_bytes_total(manifest),
                     "total_compressed_bytes": manifest.get("total_compressed_bytes", 0),
                     "partitions": len(manifest.get("partitions") or []),

@@ -62,7 +62,7 @@ def probe_of(sysroot: Path, extra: str = "", stubs: Path | None = None,
                 env += f"export {var}={posix(p)!r}; "
     out = sh(
         env + extra
-        + f". {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/probe.sh; "
+        + f". {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/waits.sh; . {posix(AGENT)}/lib/probe.sh; "   # #1367: capped_run
         r'printf "{\"x\":0%s}" "$(probe_json)"'
     )
     return json.loads(out)["probe"]
@@ -73,7 +73,7 @@ def _agent_hello(fake_machine, libs: str) -> dict:
         f'export SYSROOT={posix(fake_machine["sysroot"])!r} '
         f'DEVROOT={posix(fake_machine["dev"])!r} '
         f'RUN_DIR={posix(fake_machine["run"])!r} IFACE=eth0 IP=10.44.12.187; '
-        f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/sysinfo.sh; '
+        f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/waits.sh; . {posix(AGENT)}/lib/sysinfo.sh; '
         f'{libs} build_hello'
     ))
 
@@ -320,6 +320,17 @@ exit 0
     disks = {d["name"]: d for d in probe_of(sysroot, stubs=stubs,
                                             devroot=fake_machine["dev"])["disks"]}
     assert "could not open" in disks["sda"]["smart_errors"]["error"]
+
+
+def test_nvme_smart_log_is_capped(fake_machine, tmp_path):
+    sysroot = fake_machine["sysroot"]
+    (sysroot / "sys/block/nvme0n1").mkdir(parents=True)
+    stubs = tmp_path / "stubs"; stubs.mkdir()
+    _stub(stubs, "nvme", "sleep 20\n")
+    disk = next(d for d in probe_of(
+        sysroot, extra="NVME_MAX_S=1; ", stubs=stubs,
+        devroot=fake_machine["dev"])["disks"] if d["name"] == "nvme0n1")
+    assert disk["nvme_smart"] == {"error": "nvme smart-log did not answer"}
 
 
 def test_encryption_luks_and_bitlocker(fake_machine, tmp_path):

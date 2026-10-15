@@ -60,7 +60,38 @@ def well_formed_drivers(value: object) -> dict | None:
     for key in ("error", "reason"):
         if isinstance(value.get(key), str):
             out[key] = value[key][:300]
+    boot = _well_formed_boot(value.get("boot"))
+    if boot is not None:
+        out["boot"] = boot
     return out
+
+
+#: ‏#1331: דרייבר האחסון ה-in-box של הדיסק שנכתב (`agent/lib/bootstorage.sh`).
+#: ‏`enabled` = נכתב ונקרא חזרה · ‏`already` = כבר boot-start · ‏`skipped` =
+#: סוג דיסק שאין לו מיפוי · ‏`failed` = ניסינו ולא הצלחנו (הסיבה ב-`error`).
+BOOT_STATES = frozenset({"enabled", "already", "skipped", "failed"})
+
+
+def _well_formed_boot(value: object) -> dict | None:
+    """‏`drivers.boot` בצורתו התקנית, או ``None``. פגום נזנח לבדו —
+    תוצאת ה-staging שסביבו נשמרת."""
+    if not isinstance(value, dict) or value.get("state") not in BOOT_STATES:
+        return None
+    out: dict = {"state": value["state"]}
+    for key, cap in (("service", 32), ("error", 300), ("reason", 300)):
+        if isinstance(value.get(key), str):
+            out[key] = value[key][:cap]
+    return out
+
+
+def _journal_boot(conn: sqlite3.Connection, outcome: dict | None, where: str,
+                  named: str = "") -> None:
+    """‏#1331: דרייבר אחסון שלא הוגדר לעלייה — שורת יומן, פעם אחת, עם
+    המעבר הטרמינלי. ‏`enabled`/`already` אינם נרשמים: אין בהם מה לעשות."""
+    boot = outcome.get("boot") if outcome else None
+    if boot and boot["state"] == "failed":
+        journal(conn, "boot_storage_failed",
+                f"{where} — {boot.get('service', '?')}: {boot.get('error', '?')}{named}")
 
 #: ‏`lost` — השרת קבע שחבר לא דיווח כלל מעל הספָּף. ‏**לא** `done` (אין
 #: ראיה שכתב) ו**לא** `failed` (הוא מעולם לא דיווח כישלון): פשוט לא ידוע
@@ -187,6 +218,7 @@ def ingest(conn: sqlite3.Connection, payload: dict,
         elif drivers and drivers["state"] == "staged":
             journal(conn, "drivers_staged",
                     f"{mac} in {session_id} — {', '.join(drivers['packages'])}")
+        _journal_boot(conn, drivers, f"{mac} in {session_id}")
         # ‏#1269: מגירות של מחשב שיכפול — התוצאה לכל מגירה, פעם אחת, באותו מעבר.
         for t in targets:
             outcome = t.get("drivers") if isinstance(t, dict) else None
@@ -199,6 +231,7 @@ def ingest(conn: sqlite3.Connection, payload: dict,
             elif outcome and outcome["state"] == "staged":
                 journal(conn, "drivers_staged", f"{mac} {t.get('dev', '?')} in {session_id}"
                         f" — {', '.join(outcome['packages'])}{named}")
+            _journal_boot(conn, outcome, f"{mac} {t.get('dev', '?')} in {session_id}", named)
     # ‏#874: יעד שנכשל בכתיבה נכנס לזיכרון הכשלים (סידורי + חריץ + שורות
     # ה-ATA). פעם אחת ליעד — הדיווח חוזר כל 2 שניות, ו-`record` מתעלם מכפול.
     for t in targets:

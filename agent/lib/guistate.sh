@@ -36,19 +36,7 @@ gui_state() {
     # (buildmenuitems.sh), always written for the same reason as menu_class.
     if tools_on; then _mt=1; else _mt=0; fi
     printf 'menu_tools=%s\n' "$_mt" >> "$GUI_DIR/state.next" || return 1
-    # #1073: the machine's registered name -- the restore screen's typed
-    # confirmation (principle 7). Always written; empty when the registry
-    # has none, and then the screen refuses to start instead of guessing.
-    _mn=$(jq -r '.name // "" | tostring | gsub("[\\r\\n|]"; " ")' "$GUI_DIR/station.json") || return 1
-    printf 'machine_name=%s\n' "$_mn" >> "$GUI_DIR/state.next" || return 1
-    # #1252: the header's server -- name and version from /state (null = not
-    # read -> empty -> "unknown" on screen), the address from imagectl.server.
-    jq -r 'def c: (. // "") | tostring | gsub("[\\r\\n|]"; " ");
-        "server_name=\(.server_name | c)", "server_version=\(.server_version | c)"' \
-        "$GUI_DIR/station.json" >> "$GUI_DIR/state.next" || return 1
-    gui_server_addr >> "$GUI_DIR/state.next" || return 1
-    # #1257: this initrd's stamp is known even before its first hello reaches the server.
-    printf 'agent_version=%s\n' "${AGENT_VERSION:-unknown}" >> "$GUI_DIR/state.next" || return 1
+    gui_header_state "$GUI_DIR/station.json" >> "$GUI_DIR/state.next" || return 1
     gui_shrink_state >> "$GUI_DIR/state.next" || return 1   # #928: the capture's shrink question
     gui_ask_state >> "$GUI_DIR/state.next" || return 1      # 11/10: grow-back / end of capture (askgui.sh)
     gui_hello_state >> "$GUI_DIR/state.next" || return 1
@@ -97,8 +85,9 @@ gui_state() {
               def row: "machine=" + ([.name,.mac,(if .awake then 1 else 0 end),
                 (if .joined then 1 else 0 end),.fresh_drawers,.state,
                 (if (.bytes_total // 0)>0 then (100*.bytes_written/.bytes_total|floor) else -1 end),0,
-                (.error // "")] | map(clean) | join("|"));
+                (.error // ""),(if .local_copy == true then 1 else 0 end)] | map(clean) | join("|"));
               if (.machines|type) != "array" then error("bad room") else
+              "room_label=" + (.group_label | clean),
               (if .round == null then empty else .round |
                 "round=" + ([.image_name,.wave_number,(if .wave_state == "open" then 1 else 0 end),
                   .written_drives,.target_drives,.ready_drives,.remaining_drives,
@@ -107,7 +96,8 @@ gui_state() {
               # #432: the orange lines before "start"; #65: who the wave waits for.
               (if .round == null then empty else (.round.precheck // [])[] | "room_warn=" + (.text_he | clean) end),
               (if .round == null then empty else (.round.missing // [])[] | "room_missing=" +
-                ([.mac, .name, .reason, (if .can_poweroff then 1 else 0 end), .text_he] | map(clean) | join("|")) end),
+                ([.mac, .name, .reason, (if .can_poweroff then 1 else 0 end), .text_he,
+                  (if .local_copy == true then 1 else 0 end)] | map(clean) | join("|")) end),
               (.machines[] | row),
               (.machines | to_entries[] |
                 .key as $mi | .value as $m |
@@ -129,7 +119,9 @@ gui_state() {
                       # #704: the operator name of the slot of this drawer; "" = "disk N".
                       (.slot_name // ""),
                       # #432: ok / slow / unknown ("" = an older server); only slow colours.
-                      (.link_state // "")]
+                      (.link_state // ""),
+                      # #1366: the CRC count when over crc_warn_threshold, "" = not (or unread).
+                      (if .crc_suspect == true then (.crc // "") else "" end)]
                      | map(clean) | join("|"))),
                 # #704: names of the SATA slots, empty ones included.
                 (($m.slot_names // {}) | to_entries[] | select(.key | test("^sata:[1-9][0-9]?$")) |
@@ -167,6 +159,20 @@ gui_server_addr() {
     # and the cloner screen carry it too. Empty $SERVER = empty = unknown.
     _ga=${SERVER:-}; _ga=${_ga#*://}; _ga=${_ga%%/*}; _ga=${_ga%:*}
     printf 'server_addr=%s\n' "$(printf '%s' "$_ga" | tr '\r\n|' '   ')"
+}
+
+gui_header_state() {
+    # The build state and cached cloner hello carry the same header identity.
+    # Missing/null stays empty: the screen says unknown rather than guessing.
+    if [ -r "$1" ]; then
+        jq -r 'def c: (. // "") | tostring | gsub("[\\r\\n|]"; " ");
+            "machine_name=\(.name | c)", "server_name=\(.server_name | c)",
+            "server_version=\(.server_version | c)"' "$1" || return 1
+    else
+        printf 'machine_name=\nserver_name=\nserver_version=\n'
+    fi
+    gui_server_addr || return 1
+    printf 'agent_version=%s\n' "${AGENT_VERSION:-unknown}"
 }
 
 gui_hello_state() {

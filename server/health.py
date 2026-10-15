@@ -23,6 +23,7 @@ import hashlib
 from . import (agent_loops, auth, capabilities, dhcp, foreign_vlan, hello,
                identity, monitor, ports)
 from .db import now_iso
+from . import auto_reboot
 
 #: ‏#1000: מתי `/health` נמדד — כותרת HTTP (ISO, שעון השרת), כי הגוף הוא
 #: מערך ש-`HOME`, ‏`updateAlertBadge` וטסטי node קוראים כמות שהוא; מעטפת
@@ -76,6 +77,8 @@ def default_hooks() -> dict:
         "installer_conf": dhcp.read_installer_conf,
         "shim_src": lambda: "/usr/lib/shim/shimx64.efi.signed",
         "unit_active": lambda name: _run(["systemctl", "is-active", name]).strip(),
+        "time_synchronized": lambda: _run(
+            ["timedatectl", "show", "-p", "NTPSynchronized", "--value"]).strip(),
         "http_get": _http_probe,
         "http_size": _http_size,
         "interfaces": dhcp.list_interfaces,
@@ -89,6 +92,9 @@ def default_hooks() -> dict:
         # לא הוזרק — אין שורה, לא "הכול בסדר". ‏main מזריק את שניהם.
         "deploy": None,
         "servers_nic": None,
+        # ‏#1372: המארח של "עדכון ב-VM" — ‏`(state, detail)` מ-`vmhost.VmHost.health`.
+        # ‏None = לא הוזרק (בדיקות, הרצה ישירה) — אין שורה; ‏main מזריק.
+        "vm_host": None,
         # ‏#968: זמן הפעילות של **המכונה** (‏`/proc/uptime`), ל-`/me`. ‏None =
         # לא נקרא (ווינדוס, קובץ חסר) — הקונסולה מציגה "לא נבדק", לא 0.
         "uptime": read_uptime,
@@ -181,6 +187,17 @@ def check(check_id: str, label: str, state: str, detail: str) -> dict:
     return {"id": check_id, "label": label, "state": state, "detail": detail}
 
 
+def time_sync_check(service: str, synchronized: str) -> dict:
+    if synchronized == "yes" and service == "active":
+        return check("time_sync", "סנכרון שעון", "ok", "NTP פעיל והשעון מסונכרן")
+    if not synchronized and not service:
+        return check("time_sync", "סנכרון שעון", "off",
+                     "לא ניתן לבדוק timedatectl/systemd-timesyncd")
+    detail = ("שירות systemd-timesyncd אינו פעיל" if service != "active"
+              else "NTP פעיל אך השעון עדיין אינו מסונכרן")
+    return check("time_sync", "סנכרון שעון", "warn", detail)
+
+
 def live_udp_sender_pids() -> list[int] | None:
     """PIDs של udp-sender חיים. ‏None = לא הצלחנו לסרוק (#439)."""
     root = Path("/proc")
@@ -253,7 +270,15 @@ def sender_check(pids: list[int] | None, live_round: bool) -> dict:
 
 def collect(ctx, hooks: dict, server_base: str) -> list[dict]:
     results = []
+    reboot_detail = auto_reboot.health_detail(ctx)
+    results.append(check("auto_reboot", "הפעלה מחדש הבאה",
+                         "bad" if reboot_detail == "המתזמן אינו רץ" else "not_applicable",
+                         reboot_detail))
     ss_out = hooks["ss"]()
+
+    sync = hooks["time_synchronized"]() if hooks.get("time_synchronized") else ""
+    sync_service = hooks["unit_active"]("systemd-timesyncd")
+    results.append(time_sync_check(sync_service, sync))
 
     # ‏#1088: רשת ההפצה — טרם הוגדרה היא מצב **מוצהר** אחרי התקנה נקייה,
     # לא כשל: השורה אומרת מה לעשות, ובדיקות ה-PXE שתלויות בה (TFTP,
@@ -408,6 +433,10 @@ def collect(ctx, hooks: dict, server_base: str) -> list[dict]:
     # ‏#1074: חומת האש שהמתקין כותב — שלושה מצבים, לא "חסר = כבוי".
     fw_state, fw_detail = ports.firewall_status(hooks["nft_ruleset"]())
     results.append(check("firewall", "חומת אש", fw_state, fw_detail))
+
+    # ‏#1372: מארח שאינו מוכן ל-VM הוא אזהרה בשם — לא שקט ירוק אחרי עדכון.
+    if hooks.get("vm_host"):
+        results.append(check("vm_host", "עדכון ב-VM", *hooks["vm_host"]()))
 
     # #1066: שורה לכל מיקום אחסון — מחובר / לא נגיש / מנותק / לא נבדק.
     from . import storage_locations as _storage_locations

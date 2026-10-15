@@ -82,6 +82,7 @@ hold_watch() {
     _beat_fails=0
     _beat_out="$RUN_DIR/beat.err"
     while :; do
+        attended_power_check
         if command -v watchdog_beat >/dev/null 2>&1; then watchdog_beat; fi
         if [ -n "${1:-}" ]; then
             if "$1" > "$_beat_out" 2>&1; then

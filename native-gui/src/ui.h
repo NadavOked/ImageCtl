@@ -80,6 +80,7 @@ enum {
     HIT_ROOM_WAKE,      /* #room-wake */
     HIT_ROOM_START,     /* #room-start */
     HIT_ROOM_CLOSE,     /* #room-close */
+    HIT_ROOM_POWEROFF_ALL, /* #1367: shut down every cloner */
     HIT_ROOM_SELECT_ALL,/* #714: select/clear every disk in the room */
     /* #st-class (classes.js) */
     HIT_CLASS_START,    /* #cls-start */
@@ -188,7 +189,8 @@ typedef enum { TASK_NONE, TASK_PENDING, TASK_RUNNING, TASK_DONE, TASK_FAILED } T
 /* #1270: what the confirm dialog is about to do */
 enum { CONFIRM_NONE, CONFIRM_RESTORE, CONFIRM_ROOM_STOP, CONFIRM_CLASS_STOP, CONFIRM_TOOL,
        CONFIRM_ROOM_START_WARN,   /* #432: start a wave that has a precheck warning */
-       CONFIRM_ROOM_POWEROFF };   /* #65: power off one missing cloner */
+       CONFIRM_ROOM_POWEROFF,     /* #65: power off one missing cloner */
+       CONFIRM_ROOM_POWEROFF_ALL }; /* #1367: power off the room */
 
 typedef struct { char dev[32], model[80]; unsigned long long size_bytes; int has_data, removable; } Disk;
 typedef struct { char id[64], name[96], folder[64]; } Image;
@@ -205,12 +207,13 @@ typedef struct {
      * packages (staged), the error (failed) or the reason (skipped). */
     char drv_state[12], drv_detail[160];
     int link_slow;      /* #432: room_drawer field 12 = link_state "slow" -- orange like a SMART warning */
+    long crc_suspect;   /* #1366: field 13 -- the CRC count over crc_warn_threshold, orange; 0 = no */
 } RoomDrawer;
 /* #1269: one model the driver library has a package for, in its spelling. */
 typedef struct { char vendor[64], model[128]; } DriverModel;
 typedef struct {
     char name[64], mac[24], state[24], error[120];
-    int awake, joined, fresh_drawers, drawer_count;
+    int awake, joined, fresh_drawers, drawer_count, local_copy;
     int pct;            /* 0..100, or -1 when the total is unknown (Progress.view) */
     int moving;         /* bytes_written > 0 -- distinguishes the two unknown states */
     RoomDrawer room_drawers[MAX_DRAWERS];
@@ -234,7 +237,8 @@ typedef struct {
  * so the operator sees what is plugged in before a broadcast starts. */
 typedef struct { int port; char model[48]; unsigned long long size; char smart[16];
                  char cause[16]; /* #874: cable|disk|unclassified for failed_last, else "" */
-                 char link[8], link_max[8]; /* #432: "6.0" Gb/s; "" = not read, never "fine" */ } IdleDisk;
+                 char link[8], link_max[8]; /* #432: "6.0" Gb/s; "" = not read, never "fine" */
+                 long crc_suspect; /* #1366: field 9 -- the CRC count over crc_warn_threshold; 0 = not over / not read */ } IdleDisk;
 
 /* Everything the --state file can say. See README "The --state file". */
 typedef struct State {
@@ -261,6 +265,7 @@ typedef struct State {
 
     /* room.js round */
     int has_round; char round_image[96];
+    char room_label[80];
     int wave_number, wave_open, written, target, ready, remaining;
     /* #410: round=...|elapsed_s|rate_bps|eta_s from the server (room.py
      * _wave_pace); -1 = not measured. updated= is the epoch the agent wrote
@@ -300,6 +305,7 @@ typedef struct State {
      * smart_nonce is the request's identity, drawn with the prompt and echoed
      * back on the click so the bridge binds it to the exact request. */
     char cloner_image[96];
+    int server_restarted_wave;       /* #1377: closed report after server restart */
     /* #704: cslot_name=<port>|<name> -- [port-1], "" = "דיסק N" */
     char cslot_names[MAX_DRAWERS][SLOT_NAME_MAX];
     int smart_pending, smart_port;
@@ -339,10 +345,10 @@ typedef struct State {
     /* #432: round.precheck of an open wave -- room_warn=<text>, one per
      * drawer the wave would write on a slow link or a risen CRC. Orange: a
      * warning before "התחל", never a block. #65: round.missing --
-     * room_missing=<mac>|<name>|<reason>|<can_poweroff>|<text>. The texts
+     * room_missing=<mac>|<name>|<reason>|<can_poweroff>|<text>|<local_copy>. The texts
      * come from the server, the same words the console shows. */
     char room_warn[MAX_ROOM_NOTES][320]; int nroom_warn, hidden_room_warn;
-    struct { char mac[24], name[64], reason[16], text[320]; int can_poweroff; } room_missing[MAX_ROOM_NOTES];
+    struct { char mac[24], name[64], reason[16], text[320]; int can_poweroff, local_copy; } room_missing[MAX_ROOM_NOTES];
     int nroom_missing, hidden_room_missing;
     /* #1322: the boot choice and the local clone (lcgui.sh) */
     LcState lc;
@@ -385,7 +391,7 @@ typedef struct App {
     int confirm;
     /* #65: the machine CONFIRM_ROOM_POWEROFF is about -- copied at the click,
      * so a reload that reorders the list cannot retarget the dialog. */
-    char poweroff_mac[24], poweroff_name[64];
+    char poweroff_mac[24], poweroff_name[64]; int poweroff_local_copy;
     Mode mode;
     int force_progress;         /* --screen progress: show it even with no task */
     int force_cloner;           /* --screen cloner: the cloning machine's own screen */

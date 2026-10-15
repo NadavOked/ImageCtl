@@ -27,6 +27,7 @@ import pytest
 pytest.importorskip("fastapi")
 
 from server import room
+from conftest import room_slots
 from test_server_room import (  # noqa: F401 — ה-fixture עצמו
     CLONER1, cloner_hello, report, room as room_view, room_server,
 )
@@ -101,12 +102,19 @@ def _open(deploy, **extra) -> dict:
     return response
 
 
+def _open_on_s1(room_server):
+    """‏#1410: הסבב נפתח על בחירה מפורשת — חריץ 1 של shich-1, שזוהה (S1)
+    כשנבחר. ה-hello שאחריו הוא מה שהטסט בודק."""
+    return _open(room_server["deploy"],
+                 target_slots=room_slots(room_server["ctx"].conn, {CLONER1: ["S1"]}))
+
+
 def test_a_cloner_with_only_an_unidentifiable_drawer_is_shown_not_hidden(room_server):
     """המצב מה-Issue: מגירות מחוברות, "0 טריות", ואף מילה למה. עכשיו
     ‏`drawer_list` נושא `fresh: null` בחריץ שלו — המסך יודע להגיד."""
     deploy, anon = room_server["deploy"], room_server["anon"]
-    assert _open(deploy).status_code == 200
-    answer = cloner_hello(anon, CLONER1, [None])
+    assert _open_on_s1(room_server).status_code == 200
+    answer = cloner_hello(anon, CLONER1, [None])     # אותו חריץ, וה-serial לא נקרא
     assert answer["session"] is None          # לא מצטרף — לא נכתב שוב ושוב
 
     machine = room_view(deploy)["machines"][0]
@@ -118,7 +126,7 @@ def test_a_cloner_with_only_an_unidentifiable_drawer_is_shown_not_hidden(room_se
 
 def test_a_mixed_machine_joins_for_its_identified_drawer_only(room_server):
     deploy, anon = room_server["deploy"], room_server["anon"]
-    assert _open(deploy).status_code == 200
+    assert _open_on_s1(room_server).status_code == 200
     answer = cloner_hello(anon, CLONER1, ["S1", None])
     assert answer["session"] is not None
     drawers = {d["dev"]: d for d in room_view(deploy)["machines"][0]["drawer_list"]}
@@ -131,7 +139,7 @@ def test_a_written_drawer_with_no_serial_is_journaled_as_unidentified(room_serve
     היה מדלג על כונן ריק בגל הבא) — וגם אינו אומר "המגירה הוחלפה", כי
     היא לא הוחלפה. היא פשוט לא ניתנת לזיהוי."""
     deploy, anon, ctx = room_server["deploy"], room_server["anon"], room_server["ctx"]
-    opened = _open(deploy).json()
+    opened = _open_on_s1(room_server).json()
     wave = cloner_hello(anon, CLONER1, ["S1", None])["session"]["id"]
     assert deploy.post("/api/console/room/start").status_code == 200
     report(anon, wave, CLONER1, {"sda": "done", "sdb": "done"})

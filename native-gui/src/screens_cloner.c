@@ -70,9 +70,13 @@ static Rgb drawer_accent(const Theme *t, const Drawer *d, int pending) {
  * code as-is rather than hiding it. */
 static const char *smart_reason_he(const char *reason) {
     if (!reason || !reason[0] || !strcmp(reason, "ok")) return "";
-    if (!strcmp(reason, "health_failed")) return "בדיקת הבריאות של הדיסק נכשלה";
+    /* #1366: the three reasons of fail -- what stops an HP BIOS on "press F1" */
+    if (!strcmp(reason, "health_failed")) return "ה-BIOS יעצור ב-F1 — SMART: בדיקת הבריאות נכשלה";
+    if (!strcmp(reason, "pending_sectors")) return "ה-BIOS יעצור ב-F1 — SMART: סקטורים ממתינים (197)";
+    if (!strcmp(reason, "uncorrectable")) return "ה-BIOS יעצור ב-F1 — SMART: סקטורים שלא ניתנים לתיקון (198)";
     if (!strcmp(reason, "no_health")) return "הדיסק אינו מדווח על בריאות";
     if (!strcmp(reason, "no_smartctl")) return "smartctl חסר ב-initramfs";
+    if (!strcmp(reason, "timeout")) return "smartctl לא ענה בזמן — לא נבדק";   /* #1367 */
     if (!strcmp(reason, "pending")) return "ממתין להכרעה";
     return reason;
 }

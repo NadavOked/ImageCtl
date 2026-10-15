@@ -114,6 +114,9 @@ def test_an_image_the_library_would_reject_is_refused_on_import(tmp_path):
 def test_zero_partition_geometry_is_refused_on_import(tmp_path, field):
     parts = json.loads(json.dumps(MANIFEST_256["partitions"]))
     parts[0][field] = 0
+    # ‏used_bytes > size_bytes נפסל לפני הגיאומטריה (#1407); הוא מוסר כאן כדי
+    # שהטסט ימשיך לבדוק את מה שבשמו — גיאומטריה אפסית.
+    parts[0].pop("used_bytes")
     raw = tar_with_manifest(tmp_path, {"partitions": parts})
     target = tmp_path / "target"
     target.mkdir()
@@ -307,7 +310,9 @@ def test_a_manifest_id_that_is_not_an_id_is_refused_by_name(tmp_path, bad_id):
     target = tmp_path / "target"
     target.mkdir()
 
-    with pytest.raises(ArchiveError, match="מזהה אימג' לא תקין"):
+    # מאז #1407 ‏`_validate` של הספרייה דוחה את המזהה בשמו, לפני הבדיקה
+    # הנפרדת של archive.py — התכונה (נדחה, ושום דבר לא נכתב) לא השתנתה.
+    with pytest.raises(ArchiveError, match="מניפסט לא תקין: 'image id or name is malformed'"):
         import_bytes(raw, target)
 
     # לא רק שנזרקה חריגה: שום דבר לא נכתב, לא בשורש ולא מחוצה לו.
@@ -346,7 +351,7 @@ def test_a_partition_path_that_leaves_the_image_folder_is_never_read(tmp_path,
     touched = []
     monkeypatch.setattr(archive, "_sha256", lambda path: touched.append(path) or "")
 
-    with pytest.raises(ArchiveError, match="נתיב קובץ מחיצה לא בטוח"):
+    with pytest.raises(ArchiveError, match="unsafe file name"):
         import_bytes(raw, target)
 
     assert touched == []                       # הקובץ שמחוץ לתיקייה לא נקרא
@@ -361,7 +366,7 @@ def test_every_shape_of_an_escaping_partition_path_is_refused(tmp_path, name):
     raw = tar_with_manifest(tmp_path, {"partitions": [outside_part(name)]})
     target = tmp_path / "target"
     target.mkdir()
-    with pytest.raises(ArchiveError, match="נתיב קובץ מחיצה לא בטוח"):
+    with pytest.raises(ArchiveError, match="unsafe file name"):
         import_bytes(raw, target)
     assert list(target.iterdir()) == []
 
@@ -377,8 +382,9 @@ def test_the_refusal_says_the_same_thing_whether_the_file_is_there_or_not(tmp_pa
         target.mkdir()
         with pytest.raises(ArchiveError) as caught:
             import_bytes(raw, target)
-        said.append(str(caught.value).split(":")[0])
-    assert said[0] == said[1] == "נתיב קובץ מחיצה לא בטוח במניפסט"
+        said.append(str(caught.value))
+    # מאז #1407 הדחייה היא של `_validate`, והיא אינה מצטטת את השם כלל
+    assert said[0] == said[1] == "מניפסט לא תקין: 'partition 1 has an unsafe file name'"
 
 
 def test_a_well_formed_import_is_untouched_by_the_new_rules(tmp_path):

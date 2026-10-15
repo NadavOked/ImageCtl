@@ -64,11 +64,17 @@ def _run(tmp_path: Path, bindir: Path, repo: Path, data: Path, tag: str = "v0.53
 
 def _success_tools(bindir: Path) -> None:
     fake_tool(bindir, "git", _git_shim())
-    fake_tool(
-        bindir,
-        "systemctl",
-        'case "$1" in show) echo "IMAGECTL_URL=http://10.10.10.8:8080 X=y" ;; esac; exit 0',
-    )
+    # #1361: the server screen's unit answers for itself; FAKE_DCUI_* pick the
+    # case (default: an ISO server whose screen is running).
+    fake_tool(bindir, "systemctl", r'''
+case "$1" in
+  show) case "$*" in
+    *imagectl-dcui*) printf "LoadState=%s\nActiveState=%s\n" "${FAKE_DCUI_LOAD-loaded}" "${FAKE_DCUI_ACTIVE-active}" ;;
+    *) echo "IMAGECTL_URL=http://10.10.10.8:8080 X=y" ;;
+  esac ;;
+  is-active) case "$*" in *imagectl-dcui*) [ -z "${FAKE_DCUI_DEAD:-}" ] || exit 3 ;; esac ;;
+esac
+exit 0''')
     fake_tool(bindir, "curl", "exit 0")
 
 

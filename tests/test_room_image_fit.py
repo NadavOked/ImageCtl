@@ -40,8 +40,8 @@ def _manifest(image_id: str, name: str, windows_bytes: int) -> dict:
 
 # סוף הפריסה = 1085440×512 + size + 1MiB → 229.56GB ו-299.56GB, כלומר
 # "צריך 230GB" ו"צריך 300GB" אחרי עיגול כלפי מעלה.
-IMAGE_230 = _manifest("img_fit230", "Fits 256", 229 * GB)
-IMAGE_300 = _manifest("img_fit300", "Needs 300", 299 * GB)
+IMAGE_230 = _manifest("img_f17230", "Fits 256", 229 * GB)
+IMAGE_300 = _manifest("img_f17300", "Needs 300", 299 * GB)
 
 
 @pytest.fixture()
@@ -84,7 +84,19 @@ def hello_with_disks(client, mac: str, sizes: list[int]) -> None:
     assert client.post("/api/v1/agent/hello", json=body).status_code == 200
 
 
+def reported_slots(client) -> list[dict]:
+    """‏#1410: כל מגירה מזוהה שמסך החדר מציג — "בחר הכול" של המפעיל."""
+    slots = []
+    for m in client.get("/api/console/room").json()["machines"]:
+        ports = sorted(d["port"] for d in m["drawer_list"] if d["serial"] and d["port"])
+        if ports:
+            slots.append({"mac": m["mac"], "ports": ports})
+    return slots
+
+
 def open_round(client, image_id: str, **extra):
+    """פתיחת סבב; בלי `target_slots` מפורש — כל המגירות שדווחו."""
+    extra.setdefault("target_slots", reported_slots(client))
     return client.post("/api/console/room",
                        json={"image_id": image_id, "target_drives": 4, **extra})
 
@@ -94,7 +106,7 @@ def test_an_image_bigger_than_the_smallest_drawer_is_refused_with_the_reason(fit
     hello_with_disks(anon, CLONER1, [DISK_500, DISK_500])
     hello_with_disks(anon, CLONER2, [DISK_500, DISK_256])   # דיסק 2 במחשב 2
 
-    r = open_round(admin, "img_fit300")
+    r = open_round(admin, "img_f17300")
 
     assert r.status_code == 409
     assert r.json()["detail"] == "דיסק 2 במחשב 2 הוא 256GB, האימג' צריך 300GB"
@@ -106,15 +118,17 @@ def test_an_image_that_fits_the_smallest_drawer_opens(fit_server):
     hello_with_disks(anon, CLONER1, [DISK_500, DISK_500])
     hello_with_disks(anon, CLONER2, [DISK_500, DISK_256])
 
-    assert open_round(admin, "img_fit230").status_code == 200
+    assert open_round(admin, "img_f17230").status_code == 200
 
 
-def test_without_any_disk_report_the_server_does_not_refuse(fit_server):
-    """מכונות כבויות שטרם דיווחו — אין רצפה, אין סירוב; המסך מקבל
-    ‏`disk_floor: null` ומציג "גודל הדיסקים לא ידוע"."""
+def test_without_any_disk_report_there_is_no_floor_and_nothing_to_select(fit_server):
+    """מכונות כבויות שטרם דיווחו — אין רצפה: המסך מקבל ‏`disk_floor: null`
+    ומציג "גודל הדיסקים לא ידוע". מאז #1410 גם אין מה לבחור, ולכן הסבב
+    נדחה על הבחירה (‏400) — לא על הגודל (‏409)."""
     admin = fit_server["admin"]
     assert admin.get("/api/console/room").json()["disk_floor"] is None
-    assert open_round(admin, "img_fit300").status_code == 200
+    r = open_round(admin, "img_f17300")
+    assert r.status_code == 400 and r.json()["detail"] == "יש לבחור לפחות דיסק יעד אחד"
 
 
 def test_a_drawer_without_a_size_is_not_a_floor(fit_server):
@@ -122,7 +136,7 @@ def test_a_drawer_without_a_size_is_not_a_floor(fit_server):
     admin, anon = fit_server["admin"], fit_server["anon"]
     hello_with_disks(anon, CLONER1, [DISK_500, 0])
     assert admin.get("/api/console/room").json()["disk_floor"]["size_bytes"] == DISK_500
-    assert open_round(admin, "img_fit300").status_code == 200
+    assert open_round(admin, "img_f17300").status_code == 200
 
 
 def test_the_status_view_names_the_floor_the_screen_compares_against(fit_server):
@@ -142,12 +156,12 @@ def test_selected_slots_that_exclude_the_small_drawer_let_the_image_through(fit_
     hello_with_disks(anon, CLONER1, [DISK_500, DISK_500])
     hello_with_disks(anon, CLONER2, [DISK_500, DISK_256])
 
-    refused = open_round(admin, "img_fit300",
+    refused = open_round(admin, "img_f17300",
                          target_slots=[{"mac": CLONER2, "ports": [1, 2]}])
     assert refused.status_code == 409
     assert refused.json()["detail"].startswith("דיסק 2 במחשב 2 הוא 256GB")
 
-    assert open_round(admin, "img_fit300",
+    assert open_round(admin, "img_f17300",
                       target_slots=[{"mac": CLONER2, "ports": [1]}]).status_code == 200
 
 
@@ -156,7 +170,7 @@ def test_the_library_list_exposes_the_derived_requirement_and_used_bytes(tmp_pat
 
     write_image(tmp_path, IMAGE_300)
     unmeasured = {
-        **IMAGE_230, "id": "img_nomount", "name": "Hibernated",
+        **IMAGE_230, "id": "img_dead00", "name": "Hibernated",
         "partitions": [IMAGE_230["partitions"][0],
                        {**IMAGE_230["partitions"][1], "used_bytes": None}],
     }
@@ -164,9 +178,9 @@ def test_the_library_list_exposes_the_derived_requirement_and_used_bytes(tmp_pat
 
     by_id = {img["id"]: img for img in ImageLibrary(tmp_path).public_list()}
 
-    fit300 = by_id["img_fit300"]
+    fit300 = by_id["img_f17300"]
     assert fit300["min_target_bytes"] == required_bytes(IMAGE_300)
     assert 299 * GB < fit300["min_target_bytes"] <= 300 * GB    # הנגזר, לא 320GB המוצהר
     assert fit300["used_bytes"] == 31457280 + 84509376512
     # מחיצה שלא נמדדה ("would not mount", #84) — "לא ידוע", לא 0 ולא סכום חלקי.
-    assert by_id["img_nomount"]["used_bytes"] is None
+    assert by_id["img_dead00"]["used_bytes"] is None

@@ -34,7 +34,8 @@ static int verdict_of(const char *v) {
 int lc_state_line(State *s, const char *key, char *val) {
     LcState *l = &s->lc; char *f[16];
     if (strncmp(key, "lc_", 3)) return 0;
-    if (!strcmp(key, "lc_screen")) l->screen = !strcmp(val, "boot") ? LC_SCREEN_BOOT : !strcmp(val, "local") ? LC_SCREEN_LOCAL : LC_SCREEN_NONE;
+    if (!strcmp(key, "lc_round")) l->round_open = !strcmp(val, "open");   /* #1367: anything else draws nothing */
+    else if (!strcmp(key, "lc_screen")) l->screen = !strcmp(val, "boot") ? LC_SCREEN_BOOT : !strcmp(val, "local") ? LC_SCREEN_LOCAL : LC_SCREEN_NONE;
     else if (!strcmp(key, "lc_boot")) { lc_split(val, f, 3); l->boot_deadline = ll(f[0]); l->boot_paused = atoi(f[1]) == 1; l->boot_now = ll(f[2]); }
     else if (!strcmp(key, "lc_inv")) l->inv_done = !strcmp(val, "done");
     else if (!strcmp(key, "lc_phase")) cpy(l->phase, sizeof l->phase, val);

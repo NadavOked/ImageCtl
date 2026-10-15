@@ -263,6 +263,119 @@ def test_a_viewer_who_does_not_control_cannot_type(server, vm, monkeypatch):
     assert key not in sent and pointer not in sent   # אבל המקלדת והעכבר לא עוברים
 
 
+# --- #1392: מה ש-noVNC 1.6 שולח בפועל מול QEMU 10 -----------------------------
+#
+# נמדד 13/10 על שרת ת"א (QEMU 10.0.13, ‏rfbprobe מול vnc.sock): אחרי
+# SetEncodings של noVNC, ‏QEMU שולח ServerCutText **מורחב** (caps, אורך -8)
+# ומאשר את -258 (QEMU Extended Key Event). noVNC 1.6 עונה ל-caps ב-ClientCutText
+# מורחב (אורך -8 כ-s32), ומאז כל מקש נשלח כהודעה 255 ולא 4. הגשר קרא את -8
+# כ-4GB: כל בקשת עדכון, עכבר ומקש אחריו נבלעו, והחיבור לא נסגר — מסך שחור
+# בחיבור שנפתח עם ההדלקה (התמונה הראשונה הייתה שחורה), ובלי קלט אחרי רענון.
+
+PIXEL_FORMAT = b"\x00\x00\x00\x00" + bytes([32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0])
+NOVNC_ENCODINGS = [7, 21, 16, 6, 5, 1, 0, -32 + 6, -256 + 2, -223, -224, -258, -261,
+                   -308, -309, -312, -313, -307, 0xC0A1E5CE - (1 << 32), -316, -240, -239]
+SET_ENCODINGS = (b"\x02\x00" + len(NOVNC_ENCODINGS).to_bytes(2, "big")
+                 + b"".join(e.to_bytes(4, "big", signed=True) for e in NOVNC_ENCODINGS))
+FULL_UPDATE = b"\x03\x00\x00\x00\x00\x00\x05\x00\x03\x20"           # 1280x800
+CLIPBOARD_CAPS = (b"\x06\x00\x00\x00" + (-8).to_bytes(4, "big", signed=True)
+                  + b"\x1f\x00\x00\x01" + b"\x00\x00\x00\x00")      # extendedClipboardCaps
+NEXT_UPDATE = b"\x03\x01\x00\x00\x00\x00\x05\x00\x03\x20"           # incremental
+MOUSE = b"\x05\x00\x02\x80\x01\x90"
+SHIFT_DOWN = b"\xff\x00\x00\x01" + (0xFFE1).to_bytes(4, "big") + (0x2A).to_bytes(4, "big")
+SHIFT_UP = b"\xff\x00\x00\x00" + (0xFFE1).to_bytes(4, "big") + (0x2A).to_bytes(4, "big")
+
+
+def novnc_session(server, vm, monkeypatch, *, controls: bool):
+    sock = vm["engine"].workdir / "vnc.sock"
+    monkeypatch.setattr(vm["engine"], "vnc_socket", lambda: sock)
+    monkeypatch.setattr(vm["engine"], "controls", lambda user: controls)
+    writer = Writer()
+
+    async def connector(path):
+        return QemuReader(), writer
+
+    client = viewer_client(server, vm["engine"], "admin", connector)
+    with client.websocket_connect(BASE + "/viewer") as ws:
+        ws.receive_bytes()
+        ws.send_bytes(b"RFB 003.008\n")
+        ws.receive_bytes()
+        ws.send_bytes(b"\x01")
+        ws.receive_bytes()
+        # noVNC שולח כל הודעה במסגרת משלה (`sock.flush()` אחרי כל הודעה).
+        for frame in (b"\x01", PIXEL_FORMAT, SET_ENCODINGS, FULL_UPDATE, CLIPBOARD_CAPS,
+                      NEXT_UPDATE, MOUSE, SHIFT_DOWN, SHIFT_UP, NEXT_UPDATE):
+            ws.send_bytes(frame)
+    closed = [r["detail"] for r in server["ctx"].conn.execute(
+        "SELECT detail FROM journal WHERE event = 'vmupdate_viewer_closed'")]
+    return writer.writes[3:], closed   # אחרי גרסה, None ו-ClientInit
+
+
+def test_novnc_1_6_sequence_reaches_qemu_and_the_bridge_stays_open(server, vm, monkeypatch):
+    writes, closed = novnc_session(server, vm, monkeypatch, controls=True)
+    # כל הודעה כיחידה, בסדר — חוץ מה-ClientCutText, שאינו עובר לעולם (#1129).
+    assert writes == [PIXEL_FORMAT, SET_ENCODINGS, FULL_UPDATE,
+                      NEXT_UPDATE, MOUSE, SHIFT_DOWN, SHIFT_UP, NEXT_UPDATE]
+    # הדפדפן הוא שסגר, לא הגשר (‏refused = ‏1002 על 255 / ‏4403 על ה-caps).
+    assert closed == ["browser"]
+
+
+def test_novnc_1_6_keys_and_mouse_are_dropped_for_a_viewer_who_does_not_control(
+        server, vm, monkeypatch):
+    writes, closed = novnc_session(server, vm, monkeypatch, controls=False)
+    assert writes == [PIXEL_FORMAT, SET_ENCODINGS, FULL_UPDATE,
+                      NEXT_UPDATE, NEXT_UPDATE]
+    assert closed == ["browser"]
+
+
+# --- #1394: רק ביטול ש-viewer_sessions עשה הוא "ההתחברות בוטלה" ----------------
+#
+# ‏7b5a51f2 קרא לכל CancelledError ‏session_revoked. אבל ה-endpoint מבוטל גם
+# בפירוק החיבור (#725 — ראו ה-except החיצוני), ואז היומן אמר "ההתחברות בוטלה"
+# על צופה שאיש לא ביטל. נמדד: ‏TestClient מבטל את המשימה מיד אחרי ה-disconnect,
+# ובלינוקס הביטול הקדים אותו — ‏['session_revoked'] במקום ['browser'].
+
+
+def _closed_details(server):
+    return [r["detail"] for r in server["ctx"].conn.execute(
+        "SELECT detail FROM journal WHERE event = 'vmupdate_viewer_closed'")]
+
+
+@pytest.mark.parametrize("revoked", [True, False])
+def test_only_a_revocation_is_journaled_as_a_revoked_session(server, vm, monkeypatch, revoked):
+    import time
+    from server import viewer_sessions
+
+    sock = vm["engine"].workdir / "vnc.sock"
+    monkeypatch.setattr(vm["engine"], "vnc_socket", lambda: sock)
+
+    async def connector(path):
+        return QemuReader(), Writer()
+
+    client = viewer_client(server, vm["engine"], "admin", connector)
+    token = client.cookies.get(auth.COOKIE_NAME)
+    with client.websocket_connect(BASE + "/viewer") as ws:
+        ws.receive_bytes()
+        ws.send_bytes(b"RFB 003.008\n")
+        ws.receive_bytes()
+        ws.send_bytes(b"\x01")
+        ws.receive_bytes()
+        ws.send_bytes(b"\x01")                    # ClientInit — הגשר פתוח
+        if revoked:
+            assert viewer_sessions.revoke(token) is True
+            with pytest.raises(WebSocketDisconnect) as gone:
+                ws.receive_bytes()
+            assert gone.value.code == 4401
+        else:
+            # ביטול שאינו מ-viewer_sessions: מה שהשרת עושה בפירוק החיבור.
+            _user, loop, task = viewer_sessions._tasks[token]
+            loop.call_soon_threadsafe(task.cancel)
+        deadline = time.monotonic() + 5
+        while not _closed_details(server) and time.monotonic() < deadline:
+            time.sleep(0.1)
+    assert _closed_details(server) == (["session_revoked"] if revoked else ["browser"])
+
+
 # --- הכרעה 2: גרסאות וברירת מחדל -------------------------------------------------
 
 

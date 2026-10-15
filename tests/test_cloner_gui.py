@@ -98,16 +98,23 @@ PORTS = 'disk_port() { case "$1" in sda) echo 1;; sdb) echo 2;; sdc) echo 3;; *)
 
 
 def state_lines(tmp_path: Path, smart_request: str | None = None,
-                hello: str = '{"schema":1}') -> list[str]:
+                hello: str = '{"schema":1}', agent_version: str = "",
+                restarted: bool = False) -> list[str]:
     run = tmp_path / "run"; run.mkdir()
     gui = tmp_path / "gui"; gui.mkdir()
     (run / "manifest.json").write_text('{"name":"Office 2024"}', newline="\n")
     (run / "response.json").write_text(hello, newline="\n")
+    if restarted:
+        (run / "server-restarted-wave").write_text("session-1\n")
     target(run, "sda", "writing", 100, 40, "5")     # base 40 + cur 5 = 45
     target(run, "sdb", "waiting", 100, 0, "")
     if smart_request is not None:
         (gui / "smart-request").write_text(smart_request + "\n", newline="\n")
-    out = sh(env(run, gui) + PRELUDE + PORTS + "cloner_gui_state")
+    version = ""
+    if agent_version:  # common.sh reads the stamp from AGENT_VERSION_FILE, like the initramfs
+        (tmp_path / "agent-version").write_text(agent_version + "\n", newline="\n")
+        version = f"export AGENT_VERSION_FILE='{(tmp_path / 'agent-version').as_posix()}'; "
+    out = sh(env(run, gui) + version + PRELUDE + PORTS + "cloner_gui_state")
     assert out.returncode == 0, out.stderr
     return (gui / "state").read_text().splitlines()
 
@@ -117,9 +124,35 @@ def test_state_carries_the_image_name(tmp_path):
     assert "cloner=Office 2024" in state_lines(tmp_path)
 
 
+def test_state_records_a_wave_lost_when_the_server_restarted(tmp_path):
+    assert "server_restarted_wave=1" in state_lines(tmp_path, restarted=True)
+
+
 @requires_native("jq", why="drawer_count is read from the cached hello reply")
 def test_state_carries_drawer_count_from_the_hello_reply(tmp_path):
     assert "drawer_count=2" in state_lines(tmp_path, hello='{"drawer_count":2}')
+
+
+@requires_native("jq", why="the shared GUI header reads the cached hello reply")
+def test_state_carries_the_registered_and_version_header(tmp_path):
+    lines = state_lines(
+        tmp_path,
+        hello='{"name":"CLONER-02","server_name":"imagectl-ta","server_version":"v1.2.3"}',
+        agent_version="v1.2.2",
+    )
+    assert "machine_name=CLONER-02" in lines
+    assert "server_name=imagectl-ta" in lines
+    assert "server_version=v1.2.3" in lines
+    assert "agent_version=v1.2.2" in lines
+
+
+@requires_native("jq", why="missing hello identity must become explicit empty records")
+def test_state_writes_empty_unknown_header_values(tmp_path):
+    lines = state_lines(tmp_path, hello='{"name":null,"server_version":null}')
+    assert "machine_name=" in lines
+    assert "server_name=" in lines
+    assert "server_version=" in lines
+    assert "agent_version=unknown" in lines
 
 
 @pytest.mark.parametrize("hello", [
@@ -236,7 +269,7 @@ def test_the_kiosk_load_chain_carries_the_cached_smart_verdict(tmp_path):
     lines = (gui / "state").read_text().splitlines()
     # ‏#874: השדה השישי (הסיבה מזיכרון השרת) ריק על דיסק ירוק.
     # ‏#432: 7/8 = הקישור — ‏null כשהדיסק אינו מאחורי libata (כאן: תיקייה, לא קישור).
-    assert any(l.startswith("cdisk=") and l.endswith("|passed||null|null") for l in lines), lines
+    assert any(l.startswith("cdisk=") and l.endswith("|passed||null|null|") for l in lines)   # #1366: field 9, no CRC colour, lines
 
 
 # --- ‏#867/#874: המלאי הממתין — ממוין לפי מספר הדיסק, ונושא את זיכרון השרת ----
@@ -313,8 +346,8 @@ def test_a_disk_the_server_remembers_reports_failed_last_with_its_cause(tmp_path
     לצדו נשאר `passed` בלי סיבה. ‏sgdisk אינו נקרא. בקרה שלילית: על main
     שניהם `passed` (הזיוף לא מדפיס טבלה), ו-`sgdisk -p` נקרא."""
     lines = idle_state(tmp_path, {"sda": "1", "sdb": "2"}, failed={"sda": "cable"})
-    assert lines[0] == "cdisk=1|sda|Model sda|512000|failed_last|cable|null|null", lines
-    assert lines[1] == "cdisk=2|sdb|Model sdb|512000|passed||null|null", lines
+    assert lines[0] == "cdisk=1|sda|Model sda|512000|failed_last|cable|null|null|", lines
+    assert lines[1] == "cdisk=2|sdb|Model sdb|512000|passed||null|null|", lines
 
 
 def test_the_memory_is_read_from_the_last_hello_every_second(tmp_path):

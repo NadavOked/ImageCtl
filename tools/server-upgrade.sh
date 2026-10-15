@@ -14,6 +14,7 @@
 #      הקרנל שנגזר עכשיו. בלי דגלים ובלי ראיה שזה שרת ISO — חזרה, לא דילוג.
 #   5. restart, ואז **ראיה חיובית** שהחדש רץ: is-active + `/health/live`
 #      שמדווח בדיוק את התג + verify-boot-payload.sh.
+#   5ב. ‏#1361: restart למסך השרת (imagectl-dcui) — אחרי האימות; כשל = אזהרה.
 #   6. כשל בראיה → checkout לתג הקודם, יחידות, restart, וסטטוס `failed`
 #      עם הסיבה ב-DB (דרך update._set_status) — הקונסולה מציגה אותו.
 #   ‏#1301: כל מעבר שלב נכתב לסטטוס (stage + חותמת ב-stages), וכשל נושא reason
@@ -332,6 +333,34 @@ PYEOF
 fi
 bash install/verify-boot-payload.sh --app-dir "$REPO_DIR" --http-root "$HTTP_ROOT" --server-url "$AGENT_URL" \
     || rollback "verify-boot-payload.sh נכשל מול $AGENT_URL"
+
+# 5ב. ‏#1361: מסך השרת (imagectl-dcui על tty1) הוא תהליך python נפרד, והוא
+# מריץ את הקוד שנטען באתחול — בלי restart המפעיל רואה את המסך הישן עד
+# האתחול הבא. אחרי האימות בלבד: כשל כאן אינו כשל שדרוג (השרת החדש רץ
+# ואומת), ולכן אינו מחזיר אחורה — אבל גם אינו נבלע: הוא נכתב לאזהרה.
+# שלושה מצבים, כל אחד בשם: אין יחידה (שרת שלא הותקן מה-ISO) · עצורה
+# בכוונה (inactive) · כל השאר → restart + ראיה חיובית (is-active).
+# "לא הצלחנו לבדוק" אינו "אין מסך" (עיקרון 5).
+DCUI_UNIT=imagectl-dcui.service
+dcui_warn() {
+    echo "server-upgrade: $1"
+    UPGRADE_WARNING="${UPGRADE_WARNING:+$UPGRADE_WARNING · }$1"
+}
+dcui_show="$(systemctl show -p LoadState -p ActiveState "$DCUI_UNIT" 2>&1)" \
+    || dcui_show="systemctl show נכשל: $dcui_show"
+dcui_load="$(sed -n 's/^LoadState=//p' <<<"$dcui_show")"
+dcui_active="$(sed -n 's/^ActiveState=//p' <<<"$dcui_show")"
+if [[ "$dcui_load" == not-found ]]; then
+    echo "$DCUI_UNIT אינו מותקן בשרת הזה — אין מסך שרת להפעיל מחדש"
+elif [[ "$dcui_load" != loaded || -z "$dcui_active" ]]; then
+    dcui_warn "מסך השרת לא הופעל מחדש — לא נבדק אם הוא קיים: ${dcui_show:-systemctl show לא החזיר דבר}"
+elif [[ "$dcui_active" == inactive ]]; then
+    echo "$DCUI_UNIT עצור (inactive) — לא מופעל מחדש"
+elif systemctl restart "$DCUI_UNIT" && systemctl is-active --quiet "$DCUI_UNIT"; then
+    echo "מסך השרת ($DCUI_UNIT) הופעל מחדש על $TAG"
+else
+    dcui_warn "מסך השרת לא הופעל מחדש: $DCUI_UNIT אינו active אחרי restart — הוא מציג את הגרסה הקודמת עד אתחול"
+fi
 
 echo "--- $(date -Is) upgrade to $TAG done and verified ---"
 STAGE="done"

@@ -159,10 +159,104 @@ test('paste is typing on a US layout: ASCII and Enter/Tab only', () => {
   assert.throws(() => run('vmuType("שלום")'), /רק תווים באנגלית/);
 });
 
+test('viewer disconnect stops reconnecting when the live status says auth was lost', async () => {
+  const {run} = setup();
+  run('current = "vmupdate"; let reconnects = 0; setTimeout = () => { reconnects++ };'
+    + ' apiFetch = async () => ({status: 401, ok: false}); showLogin = () => {}; toast = (m) => { VMU.err = m }');
+  await run('vmuReconnectAfterDisconnect()');
+  assert.equal(run('reconnects'), 0);
+  assert.equal(run('VMU.rfbState'), 'auth-closed');
+  assert.match(run('VMU.err'), /להתחבר מחדש/);
+});
+
+test('viewer disconnect reconnects only after a positive running status', async () => {
+  const {run} = setup();
+  run('current = "vmupdate"; let reconnects = 0; setTimeout = () => { reconnects++ };'
+    + ' apiFetch = async () => ({status: 200, ok: true, json: async () => ({state: "running"})})');
+  await run('vmuReconnectAfterDisconnect()');
+  assert.equal(run('reconnects'), 1);
+});
+
 test('a stage card of the same step is updated in place, not rebuilt (the flicker fix)', () => {
   const {run} = setup();
   const prep = (done) => run(`vmuPrepCard(${st({state: 'preparing', progress: {stage: 'disk', done_bytes: done, total_bytes: 100e9, partitions: 3}})})`);
   assert.match(prep(10e9), /data-card="prep"/);
   assert.match(prep(10e9), /data-k="prepbar" style="width:10%"/);
   assert.match(prep(55e9), /data-k="prepbar" style="width:55%"/);
+});
+
+// #1391 (Nadav 13/10): "צמצם" while the disk is prepared -- the work goes on in the
+// background, its progress is a row in the task dock and in the global strip, the row
+// opens the VM page, and the operator is told when the VM is up.
+const PREP = {state: 'preparing', created_at: '2026-10-13T09:00:00+03:00', started_by: 'nadav',
+  progress: {stage: 'disk', done_bytes: 27.8e9, total_bytes: 44.9e9, partitions: 3}};
+
+test('the prep card has a minimize button -- for the controller and for a viewer', () => {
+  const {run} = setup();
+  assert.match(run(`vmuPrepCard(${st(PREP)})`), /data-testid="vmu-minimize" onclick="vmuMinimize\(\)">צמצם</);
+  assert.match(run(`vmuPrepCard(${st({...PREP, you_control: false})})`), /onclick="vmuMinimize\(\)"/);
+});
+
+test('minimize goes back to where the operator came from and opens the task dock', () => {
+  const {run} = setup();
+  run('globalThis.WENT = []; selectPageById = (id) => WENT.push(id); selectPage = () => {}; globalThis.TOGGLED = 0; toggleTaskPanel = () => { TOGGLED++; }');
+  run('current = "machines"; vmuOpen(); current = "vmupdate"; vmuMinimize()');
+  assert.deepEqual(Array.from(run('WENT')), ['machines']);
+  assert.equal(run('TOGGLED'), 1);
+  // opened straight on the VM page (no page before it): the images page
+  run('WENT.length = 0; VMU.back = undefined; vmuMinimize()');
+  assert.deepEqual(Array.from(run('WENT')), ['images']);
+});
+
+test('the dock shows the preparation as a task: target, start, state with percent, initiator; the row opens the VM', () => {
+  const {run} = setup();
+  run(`VMU.st = ${st(PREP)}`);
+  const vm = Array.from(run('activityRows().rows')).find((r) => r.open === 'vmuOpen()');
+  assert.ok(vm, 'no VM row in the task dock');
+  // the dock is text (esc), not <bdi>: the name and the sizes ride in Unicode isolates
+  assert.equal(vm.name, 'עדכון ב-VM: ⁨Office 2024 v3⁩');
+  assert.equal(vm.target, 'דיסק זמני · ⁦27.8 GB / 44.9 GB⁩');
+  assert.equal(vm.label, 'מכין דיסק · 62%');
+  assert.equal(vm.pct, 62);
+  assert.equal(vm.by, 'nadav');
+  assert.equal(vm.start, PREP.created_at);
+  const html = run(`activityRowHtml(${JSON.stringify(vm)})`);
+  assert.match(html, /<tr class="go" tabindex="0" onclick="vmuOpen\(\)"/);
+  assert.match(html, /aria-valuenow="62"/);
+  // running, and gone when the VM is closed
+  run(`VMU.st = ${st({})}`);
+  assert.match(Array.from(run('activityRows().rows')).find((r) => r.open).label, /^רץ · 23:14$/);
+  run(`VMU.st = ${st({state: 'idle'})}`);
+  assert.equal(Array.from(run('activityRows().rows')).filter((r) => r.open).length, 0);
+});
+
+test('the global strip carries the preparation progress', () => {
+  const {run} = setup();
+  run('current = "images"');
+  const html = run(`vmuGlobalHtml(${st(PREP)})`);
+  assert.match(html, /מכין דיסק ל-VM:<\/b> Office 2024 <span class="m">62% · <bdi dir="ltr">27.8 GB \/ 44.9 GB<\/bdi><\/span>/);
+  // before the server knows the total: no number, not 0%
+  assert.doesNotMatch(run(`vmuGlobalHtml(${st({...PREP, progress: {stage: 'disk', done_bytes: 0, total_bytes: null}})})`), /%/);
+});
+
+test('when the prepared VM comes up on another page, the operator is told -- once, and not on the VM page', () => {
+  const {run} = setup();
+  run('globalThis.TOASTS = []; toast = (m, ms, kind) => TOASTS.push([m, kind])');
+  run(`current = "images"; vmuReadyNotice("preparing", ${st({})})`);
+  assert.equal(run('TOASTS.length'), 1);
+  assert.match(run('TOASTS[0][0]'), /ה-VM מוכן — Office 2024 v3 עלה/);
+  assert.equal(run('TOASTS[0][1]'), 'ok');
+  run(`vmuReadyNotice("running", ${st({})})`);              // already running: nothing new
+  run(`vmuReadyNotice(undefined, ${st({})})`);              // first sample: not "now ready"
+  run(`current = "vmupdate"; vmuReadyNotice("preparing", ${st({})})`);   // the screen is right there
+  assert.equal(run('TOASTS.length'), 1);
+});
+
+test('the status poll refreshes the dock row and announces the VM that came up', async () => {
+  const {run} = setup();
+  run('globalThis.TOASTS = []; toast = (m) => TOASTS.push(m); globalThis.PAINTED = 0; renderActivity = () => { PAINTED++; }; vmuGlobal = () => {}');
+  run(`current = "images"; VMU.st = ${st(PREP)}; VMU.last = 0; vmuCall = async () => (${st({})})`);
+  await run('vmuTick(true)');
+  assert.equal(run('PAINTED'), 1);
+  assert.equal(run('TOASTS.length'), 1);
 });

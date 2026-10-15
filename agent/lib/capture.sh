@@ -152,6 +152,7 @@ capture_disk() {
         _why=$(_bitlocker_reason "$_idx" "$_fs" "$_node")
         [ -n "$_why" ] && { _capture_failed "$_disk" "$_why"; return 1; }
         _role=$(_partition_role "$_guid")
+        [ "$_role" = windows ] && { _role=$(_system_role "$_idx" "$_node" "$_fs") || { _capture_failed "$_disk" "$_role"; return 1; }; }   # #1369
         # A generic linux-data GUID holding swap is still swap; a swap GUID
         # is swap regardless of what blkid says.
         [ "$_fs" = "swap" ] && _role="swap"

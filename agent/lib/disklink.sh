@@ -70,7 +70,7 @@ disk_link_json() {
     _dl_crc=null
     if command -v smart_field >/dev/null 2>&1; then
         case "$(smart_field "$1" 2)" in
-            ok|health_failed|no_health)
+            ok|health_failed|uncorrectable|pending_sectors|no_health)   # #1366: the F1 reasons read it too
                 _dl_crc=$(smart_field "$1" 6)
                 case "$_dl_crc" in ''|*[!0-9]*) _dl_crc=null ;; esac ;;
         esac

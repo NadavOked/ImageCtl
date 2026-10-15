@@ -17,10 +17,12 @@ import re
 import sqlite3
 from urllib.parse import urlsplit
 
-from . import (bootguard, capabilities, direct, disk_failures, inventory, probe,
+from . import (bootguard, capabilities, crcwarn, direct, disk_failures, inventory, minfree, probe,
                registry, room, room_drivers, shrink_records, slot_names)
+from .agent_version import server_version
 from .db import get_setting, journal, net_seen
 from .images import ImageLibrary
+from .ports import server_name
 from .sessions import SessionStore
 from .tasks import active_task
 
@@ -201,6 +203,9 @@ def _unknown(conn: sqlite3.Connection, mac: str, client_ip: str | None,
     return {
         "schema": 1,
         "known": False,
+        "name": None,
+        "server_name": server_name(conn),
+        "server_version": server_version(),
         "role": "unknown",
         "group": None,
         "task": None,
@@ -238,6 +243,7 @@ def build_answer(
     firmware: str | None = None,
     secure_boot: int | None = None,
     agent_version: str | None = None,
+    local_clone: str | None = None,
 ) -> dict:
     # כל מגע של המכונה נרשם ברשימת ההתקנים, גם של מכונה שאינה רשומה
     # בטבלה — ככה מתגלה MAC לא מוכר, וזה חלק מעיקרון 1. ‏hello הוא POST
@@ -254,7 +260,8 @@ def build_answer(
                  disks_json=json.dumps(disks) if disks is not None else None,
                  monitor_secret=monitor_secret, monitor_auth=monitor_auth,
                  prompt=prompt, disk_probe=disk_probe,
-                 firmware=firmware, secure_boot=secure_boot, agent_version=agent_version)
+                 firmware=firmware, secure_boot=secure_boot, agent_version=agent_version,
+                 local_clone=local_clone)
         # ‏#720: המלאי החומרתי (schema 2) נשמר מגורסת — שורה חדשה רק כשהשתנה.
         # ‏None = הסוכן לא שלח (schema 1) או שלח פגום: הגרסה הקודמת נשארת.
         if hw_inventory is not None:
@@ -283,6 +290,9 @@ def build_answer(
         "tools": capabilities.tools(),
         "schema": 1,
         "known": True,
+        "name": machine["suffix"],
+        "server_name": server_name(conn),
+        "server_version": server_version(),
         "role": machine["role"],
         "group": {
             "id": machine["group_id"],
@@ -303,6 +313,12 @@ def build_answer(
         # ‏#704: השמות שהמפעיל נתן לחיבורים של המכונה הזו (‏{"sata:1": "דיסק 1"}).
         # מסך מחשב השיכפול מצייר אותם במקום "דיסק N"; ‏{} = אין שמות.
         "slot_names": slot_names.for_mac(conn, mac),
+        # ‏#1366: סף ה-CRC המוחלט (הגדרה בקונסולה) — המסך הממתין של מחשב
+        # השיכפול צובע ממנו כתום לפני שיש סבב. ‏0 = כבוי.
+        "crc_warn_threshold": crcwarn.threshold(conn),
+        # ‏#1354: המינימום הפנוי במחיצת המערכת אחרי שחזור (הגדרה בקונסולה).
+        # בכל תשובה ולא רק בסבב: השיכפול המקומי (בלי שרת) משתמש באחרון שהגיע.
+        "min_free_gb": minfree.min_free_gb(conn),
     }
     if machine["role"] == "cloner" and machine["drawer_count"] is not None:
         answer["drawer_count"] = machine["drawer_count"]

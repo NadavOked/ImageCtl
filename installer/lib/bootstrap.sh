@@ -77,34 +77,55 @@ bind_target_filesystems() {
     must_run mount-cdrom "could not bind /cdrom" mount --bind "$CDROM" "$TARGET/cdrom"; MOUNT_CDROM=1
 }
 
+# The local repository is the ISO's pool and dists/ **together** (#1371).
+# dists/ indexes the merged pool -- netinst's own debs (dbus-user-session
+# and the rest) next to pool/*/imagectl -- so copying only
+# pool/*/imagectl published ~500 packages whose files were not there
+# ("File not found" on the first install that needed one, 13/10). Success is
+# positive evidence: every Filename in every binary index is a file here.
 copy_local_repo() {
-    must_run repo-dirs "could not create the local apt repository" mkdir -p "$TARGET/var/lib/imagectl/apt-repo/pool"
+    _cr_repo="$TARGET/var/lib/imagectl/apt-repo"
+    must_run repo-dirs "could not create the local apt repository" mkdir -p "$_cr_repo"
     _cr_seen=0
     for _cr_comp in "$CDROM"/pool/*/imagectl; do
-        [ -d "$_cr_comp" ] || continue
-        _cr_name=${_cr_comp#"$CDROM/pool/"}; _cr_name=${_cr_name%%/*}
-        must_run repo-component "could not create apt component $_cr_name" mkdir -p "$TARGET/var/lib/imagectl/apt-repo/pool/$_cr_name"
-        must_run repo-copy "could not copy apt component $_cr_name" cp -a "$_cr_comp" "$TARGET/var/lib/imagectl/apt-repo/pool/$_cr_name/"
-        _cr_seen=$((_cr_seen + 1))
+        [ -d "$_cr_comp" ] && _cr_seen=$((_cr_seen + 1))
     done
     if [ "$DRY_RUN" -eq 0 ]; then [ "$_cr_seen" -gt 0 ] || fail apt-repo-missing "the ISO contains no imagectl package pool"; fi
-    must_run repo-index "could not copy apt indexes" cp -a "$CDROM/dists" "$TARGET/var/lib/imagectl/apt-repo/"
+    must_run repo-copy "could not copy the package pool" cp -a "$CDROM/pool" "$_cr_repo/"
+    must_run repo-index "could not copy apt indexes" cp -a "$CDROM/dists" "$_cr_repo/"
     if [ "$DRY_RUN" -eq 1 ]; then
-        printf '+ verify-package-pool %s/pool %s/var/lib/imagectl/apt-repo/pool\n' "$CDROM" "$TARGET"
-    else
-        _cr_dir=${BOOTSTRAP_LOG%/*}
-        find "$CDROM/pool" -path '*/imagectl/*.deb' -print > "$_cr_dir/packages.source" \
-            || fail apt-repo-check "could not enumerate packages on the ISO"
-        find "$TARGET/var/lib/imagectl/apt-repo/pool" -name '*.deb' -print > "$_cr_dir/packages.target" \
-            || fail apt-repo-check "could not enumerate copied packages"
-        _cr_src=$(wc -l < "$_cr_dir/packages.source") || fail apt-repo-check "could not count ISO packages"
-        _cr_dst=$(wc -l < "$_cr_dir/packages.target") || fail apt-repo-check "could not count copied packages"
-        case "$_cr_src:$_cr_dst" in *[!0-9:]*) fail apt-repo-check "invalid package counts" ;; esac
-        [ "$_cr_src" -gt 0 ] && [ "$_cr_dst" -eq "$_cr_src" ] ||
-            fail apt-repo-check "package pool copy failed ($_cr_dst of $_cr_src files)"
-        rm -f "$_cr_dir/packages.source" "$_cr_dir/packages.target" \
-            || fail apt-repo-check "could not remove package count files"
+        printf '+ verify-package-pool %s/pool %s\n' "$CDROM" "$_cr_repo"
+        return
     fi
+    _cr_dir=${BOOTSTRAP_LOG%/*}
+    find "$CDROM/pool" -name '*.deb' -print > "$_cr_dir/packages.source" \
+        || fail apt-repo-check "could not enumerate packages on the ISO"
+    find "$_cr_repo/pool" -name '*.deb' -print > "$_cr_dir/packages.target" \
+        || fail apt-repo-check "could not enumerate copied packages"
+    _cr_src=$(wc -l < "$_cr_dir/packages.source") || fail apt-repo-check "could not count ISO packages"
+    _cr_dst=$(wc -l < "$_cr_dir/packages.target") || fail apt-repo-check "could not count copied packages"
+    case "$_cr_src:$_cr_dst" in *[!0-9:]*) fail apt-repo-check "invalid package counts" ;; esac
+    [ "$_cr_src" -gt 0 ] && [ "$_cr_dst" -eq "$_cr_src" ] ||
+        fail apt-repo-check "package pool copy failed ($_cr_dst of $_cr_src files)"
+    : > "$_cr_dir/packages.listed" || fail apt-repo-check "could not create the index file list"
+    for _cr_index in "$_cr_repo"/dists/*/*/binary-*/Packages.gz; do
+        [ -f "$_cr_index" ] || continue
+        gzip -dc "$_cr_index" > "$_cr_dir/packages.index" \
+            || fail apt-repo-check "could not read ${_cr_index#"$_cr_repo/"}"
+        sed -n 's/^Filename: *//p' "$_cr_dir/packages.index" >> "$_cr_dir/packages.listed" \
+            || fail apt-repo-check "could not list files in ${_cr_index#"$_cr_repo/"}"
+    done
+    _cr_listed=0; _cr_missing=0; _cr_first=
+    while IFS= read -r _cr_file; do
+        _cr_listed=$((_cr_listed + 1))
+        [ -f "$_cr_repo/$_cr_file" ] && continue
+        _cr_missing=$((_cr_missing + 1)); [ -n "$_cr_first" ] || _cr_first=$_cr_file
+    done < "$_cr_dir/packages.listed"
+    [ "$_cr_listed" -gt 0 ] || fail apt-repo-check "the copied indexes list no packages"
+    [ "$_cr_missing" -eq 0 ] ||
+        fail apt-repo-check "$_cr_missing of $_cr_listed indexed packages are not in the local repository (first: $_cr_first)"
+    rm -f "$_cr_dir/packages.source" "$_cr_dir/packages.target" "$_cr_dir/packages.index" "$_cr_dir/packages.listed" \
+        || fail apt-repo-check "could not remove package count files"
 }
 
 write_installer_facts() {

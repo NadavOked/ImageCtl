@@ -23,6 +23,19 @@ pytest.importorskip("fastapi")
 from server import dhcp, netcfg, netcfg_host
 from server.netcfg import MODE_DHCP, MODE_MANUAL, MODE_STATIC, NetConfig, StaticRoute
 
+
+def test_apply_brings_an_admin_down_interface_up_before_ifup(monkeypatch):
+    calls = []
+
+    def run(argv):
+        calls.append(argv)
+        return 0, ""
+
+    monkeypatch.setattr(netcfg_host, "_run", run)
+    assert netcfg_host.apply_interface("ens35") is None
+    assert calls == [["ip", "link", "set", "dev", "ens35", "up"],
+                     ["ifdown", "--force", "ens35"], ["ifup", "ens35"]]
+
 try:
     from fastapi.testclient import TestClient
 except ImportError:                                   # pragma: no cover

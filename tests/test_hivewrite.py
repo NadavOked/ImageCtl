@@ -185,3 +185,45 @@ def test_x_alone_is_a_usage_error(hivewrite, hive):
     assert result.returncode != 0 and "usage" in result.stderr
     result = run(hivewrite, "-x", "-g", hive, PARAMS, "DevicePath")
     assert result.returncode != 0 and "usage" in result.stderr
+
+# --- #1331: -d כותב REG_DWORD — ‏Start של שירות אחסון in-box ------------------
+
+STORAHCI = r"ControlSet001\Services\storahci"
+
+
+def test_d_writes_a_dword_and_every_sibling_survives(hivewrite, hive):
+    """‏Start=0 בתוך מפתח שמחזיק גם Type/ErrorControl/Group/ImagePath —
+    אותה סיבה כמו ב-#33: ‏setval של hivexsh היה מוחק את השכנים."""
+    before = value_listing(hive, STORAHCI)
+    assert any(line.startswith('"Start"=dword:00000003') for line in before), before
+    result = run(hivewrite, "-d", hive, STORAHCI, "Start", "0")
+    assert result.returncode == 0, result.stderr
+    after = value_listing(hive, STORAHCI)
+    assert sorted(line for line in before if not line.startswith('"Start"')) == sorted(
+        line for line in after if not line.startswith('"Start"'))
+    assert '"Start"=dword:00000000' in after, after
+    back = run(hivewrite, "-g", hive, STORAHCI, "Start")
+    assert back.returncode == 0 and back.stdout.strip() == "0", back.stderr
+
+
+def test_d_writes_a_value_named_zero_under_start_override(hivewrite, hive):
+    key = STORAHCI + r"\StartOverride"
+    assert run(hivewrite, "-g", hive, key, "0").stdout.strip() == "3"
+    assert run(hivewrite, "-d", hive, key, "0", "0").returncode == 0
+    assert run(hivewrite, "-g", hive, key, "0").stdout.strip() == "0"
+    assert '"0"=dword:00000000' in lsval(hive, key)
+
+
+@pytest.mark.parametrize("bad", ["-1", "0x10", " 7", "+3", "", "4294967296", "12345678901"])
+def test_d_refuses_anything_but_a_plain_decimal_dword_before_commit(hivewrite, hive, bad):
+    original = FIXTURE.read_bytes()
+    result = run(hivewrite, "-d", hive, STORAHCI, "Start", bad)
+    assert result.returncode != 0
+    assert hive.read_bytes() == original
+
+
+def test_d_alone_and_d_with_g_are_usage_errors(hivewrite, hive):
+    result = run(hivewrite, "-d", hive, STORAHCI, "Start")
+    assert result.returncode != 0 and "usage" in result.stderr
+    result = run(hivewrite, "-d", "-g", hive, STORAHCI, "Start")
+    assert result.returncode != 0 and "usage" in result.stderr

@@ -43,12 +43,25 @@ install_bootloader() {
         umount "$TARGET/sys/firmware/efi/efivars" || fail efivars-unmount "could not unmount efivarfs from the target"
     fi
     must_run grub-bios "BIOS grub-install failed" chroot "$TARGET" grub-install --target=i386-pc "$ANSWER_DISK"
-    # Nadav, 23/09 (#1208): the server boots straight through like ESXi and
-    # Esc opens the menu. hidden needs a timeout above 0: with 0 there is
-    # no window in which to press Esc. Written before update-grub reads it.
+    # Boot straight through like ESXi, while leaving a short Esc/Shift window.
+    # Written before update-grub reads it.
     write_target 0644 /etc/default/grub.d/imagectl.cfg "GRUB_TIMEOUT_STYLE=hidden
-GRUB_TIMEOUT=2
+GRUB_TIMEOUT=3
 "
+    # A deterministic recovery path that does not depend on Debian's optional
+    # recovery submenu. grub-probe runs when update-grub generates grub.cfg, so
+    # both BIOS and UEFI installations use the installed root filesystem UUID.
+    write_target 0755 /etc/grub.d/41_imagectl_recovery '#!/bin/sh
+set -eu
+root_uuid=$(grub-probe --target=fs_uuid /)
+cat <<EOF
+menuentry "ImageCtl recovery (text console)" {
+    search --no-floppy --fs-uuid --set=root $root_uuid
+    linux /vmlinuz root=UUID=$root_uuid ro nomodeset systemd.unit=multi-user.target
+    initrd /initrd.img
+}
+EOF
+'
     must_run grub-config "update-grub failed" chroot "$TARGET" update-grub
 }
 
@@ -70,6 +83,11 @@ UUID=$_wh_esp_uuid /boot/efi vfat umask=0077 0 1
 127.0.1.1 $ANSWER_HOSTNAME
 ::1 localhost ip6-localhost ip6-loopback
 "
+    # Journal ordering, TLS validity, and session expiry all depend on a sane
+    # clock. The package is in the offline ISO pool; enabling it here makes
+    # synchronization start on the first installed-system boot.
+    must_run time-sync "could not enable systemd-timesyncd" \
+        chroot "$TARGET" systemctl enable systemd-timesyncd.service
     write_target 0600 /etc/imagectl/answers "disk=$ANSWER_DISK
 role=$ANSWER_ROLE
 primary_url=$ANSWER_PRIMARY_URL

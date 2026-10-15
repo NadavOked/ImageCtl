@@ -16,7 +16,9 @@ enum { KEYSYM_TAB = 1, KEYSYM_BACKTAB, KEYSYM_ENTER, KEYSYM_BACKSPACE, KEYSYM_ES
        KEYSYM_LAYOUT /* #1245: Alt+Shift -- switch the typing language */,
        KEYSYM_CAPS,  /* #1203: Caps Lock pressed; Event.caps is the new state */
        KEYSYM_F1, KEYSYM_F2, KEYSYM_F3, KEYSYM_F4, KEYSYM_F5, KEYSYM_F6,   /* #1203: the */
-       KEYSYM_F7, KEYSYM_F8, KEYSYM_F9, KEYSYM_F10, KEYSYM_F11, KEYSYM_F12 /* server screen */ };
+       KEYSYM_F7, KEYSYM_F8, KEYSYM_F9, KEYSYM_F10, KEYSYM_F11, KEYSYM_F12, /* server screen */
+       KEYSYM_VT     /* #1362: Alt+Fn / Ctrl+Alt+Fn -- switch to VT Event.vt; the
+                      * grab hides the chord from the kernel, so it is asked for here */ };
 
 typedef struct {
     EvType type;
@@ -31,6 +33,7 @@ typedef struct {
     int caps;           /* #1203: Caps Lock when the event was read (1 = on). ch is
                          * NOT changed by it -- the station screens ignore Caps Lock
                          * as before; the server screen applies it (dcui_token) */
+    int vt;             /* KEYSYM_VT: 1..12 */
 } Event;
 
 typedef struct Input Input;
@@ -50,6 +53,10 @@ void input_pump(Input *in, const struct pollfd *fds, int n);
 int input_next(Input *in, Event *out);
 /* #1203: Caps Lock now (1 = on), from the LED at open and every press since. */
 int input_caps(const Input *in);
+/* #1362: on=1 while another VT is in front -- the keyboards are let go so
+ * the kernel types into that VT (and sees Alt+F1 back), and whatever is read
+ * meanwhile is dropped, never turned into keys here. on=0 grabs them again. */
+void input_suspend(Input *in, int on);
 void input_close(Input *in);
 
 #endif

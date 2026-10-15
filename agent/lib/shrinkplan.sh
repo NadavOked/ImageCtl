@@ -18,6 +18,17 @@
 # בה, או שאינה NTFS (‏ext4 הוא מסלול נפרד עם e2fsck, לא כאן), פשוט אינה
 # בתוכנית; כשהאימג' עדיין גדול מהיעד, ‏shrink_unshrinkable_hint אומר זאת.
 
+# ‏#1202 (הכרעת נדב 22/09, "כמו FOG"): "256GB" של יצרן אחד קטן במגה-בייטים
+# מזה של אחר (‏1,744,896 בייט, נמדד על ברזל 20/09). כש-C: כמעט מלאה הכיווץ
+# הרגיל (מרווח 10%/2GiB) לא מזיז כלום, והפריסה נגמרת בסוף דיסק המקור. לכן
+# הפריסה חייבת להיגמר **לפחות** כך וכך לפני סוף דיסק המקור: מה שחסר נלקח
+# מהמחיצה האחרונה (לפי start_sector) שנשאר בה אחרי כן לפחות אותו סכום פנוי
+# מעבר למינימום של ntfsresize, וכל מה שאחריה (‏recovery, ‏MSR) זז אחורה
+# במניפסט בלבד (‏_shrink_compact) -- על המקור אף מחיצה אינה זזה ואינה נכתבת
+# מלבד זו שמתכווצת. אין מחיצה עם מקום -- אין זנב, והשחזור נפסל בשם ובכמה
+# (‏disk_fits). כפולה של MiB; ‏0 מכבה.
+SHRINK_TAIL_BYTES="${SHRINK_TAIL_BYTES:-67108864}"
+
 _shrink_gb() { awk -v b="$1" 'BEGIN { printf "%.1f GB", b / 1e9 }'; }
 
 _shrink_candidates() {
@@ -54,7 +65,7 @@ shrink_plan() {
     # מחיצת NTFS שלא ניתן למדוד, SHRINK_ERROR אומר איזו. ‏--info קורא בלבד
     # ומריץ 100% מהחישוב ("You might resize at N bytes"); בלי -f: ווליום
     # מלוכלך או עם סקטורים פגומים נעצר כאן, בהודעה של הכלי.
-    _sp="$RUN_DIR/shrink.plan"; : > "$_sp"
+    _sp="$RUN_DIR/shrink.plan"; : > "$_sp"; _sp_m="$RUN_DIR/shrink.meas"; : > "$_sp_m"
     _shrink_candidates "$2" > "$RUN_DIR/shrink.cand"
     while IFS='|' read -r _sp_idx _sp_guid _sp_uguid _sp_start _sp_size <&3; do
         [ -n "$_sp_idx" ] || continue
@@ -68,9 +79,36 @@ shrink_plan() {
             return 1 ;;
         esac
         _sp_new=$(_shrink_target "$_sp_min" "$_sp_cur")
-        [ "$_sp_new" -lt "$_sp_cur" ] || { log "partition $_sp_idx: $_sp_cur bytes, minimum $_sp_min -- nothing to shrink"; continue; }
-        printf '%s|%s|%s|%s|%s|%s|%s\n' "$_sp_idx" "$_sp_guid" "$_sp_uguid" "$_sp_start" "$_sp_size" "$_sp_cur" "$_sp_new" >> "$_sp"
+        [ "$_sp_new" -lt "$_sp_cur" ] || log "partition $_sp_idx: $_sp_cur bytes, minimum $_sp_min -- nothing to shrink"
+        printf '%s|%s|%s|%s|%s|%s|%s|%s\n' "$_sp_idx" "$_sp_guid" "$_sp_uguid" "$_sp_start" "$_sp_size" "$_sp_cur" "$_sp_new" "$_sp_min" >> "$_sp_m"
     done 3< "$RUN_DIR/shrink.cand"
+    # ‏#1202: הזנב. כמה כבר פנוי אחרי הפריסה בסוף דיסק המקור; כונן שלא נמדד
+    # נחשב 0 -- הכיוון הבטוח: כיווץ קטן ששואלים עליו, לא פסילה מול כיתה.
+    _sp_disk=$(cat "$SYSROOT/sys/block/$1/size" 2>/dev/null)
+    case "$_sp_disk" in ''|*[!0-9]*) log "$1: disk size unknown -- the tail allowance assumes no room after the layout"; _sp_disk=0 ;; esac
+    _sp_slack=$(awk -F'|' -v d="$_sp_disk" -v ss="$3" '{ e = ($4 + $5) * ss; if (e > end) end = e }
+        END { s = d * 512 - end; printf "%.0f\n", (d > 0 && s > 0) ? s : 0 }' "$2")
+    _shrink_tail "$_sp_m" "${_sp_slack:-0}" > "$_sp" || return 1
+    [ ! -s "$RUN_DIR/shrink.tail" ] \
+        || log "partition $(cut -d'|' -f1 "$RUN_DIR/shrink.tail"): $(cut -d'|' -f2 "$RUN_DIR/shrink.tail") more bytes, so the layout ends $SHRINK_TAIL_BYTES before the disk end (#1202)"
+}
+
+_shrink_tail() {
+    # $1 = המדידות (idx|guid|uguid|start|size|cur|new|min, לפי start), $2 = כמה
+    # כבר פנוי אחרי הפריסה. ל-stdout: התוכנית -- השורות שבאמת מתכווצות. החסר עד
+    # SHRINK_TAIL_BYTES (מעוגל למעלה ל-MiB, כדי שהזנב יישאר מיושר) נוסף למחיצה
+    # האחרונה שנשאר בה אחריו לפחות SHRINK_TAIL_BYTES מעל המינימום; אין כזו --
+    # התוכנית כמו בלי הזנב. ‏$RUN_DIR/shrink.tail = idx|bytes כשנלקח, ריק כשלא.
+    awk -F'|' -v t="$SHRINK_TAIL_BYTES" -v slack="$2" -v rec="$RUN_DIR/shrink.tail" '
+        { id[NR] = $1; a[NR] = $1 "|" $2 "|" $3 "|" $4 "|" $5; cur[NR] = $6; nw[NR] = $7; mn[NR] = $8; tot += $6 - $7 }
+        END { printf "" > rec
+              need = t - slack - tot
+              if (need > 0) {
+                  need = int((need + 1048575) / 1048576) * 1048576
+                  for (i = NR; i >= 1; i--) if (nw[i] - need - mn[i] >= t) {
+                      nw[i] -= need; printf "%s|%.0f\n", id[i], need > rec; break }
+              }
+              for (i = 1; i <= NR; i++) if (nw[i] < cur[i]) printf "%s|%.0f|%.0f\n", a[i], cur[i], nw[i] }' "$1"
 }
 
 shrink_question() {

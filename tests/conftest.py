@@ -201,7 +201,7 @@ RECOVERY_GUID = "DE94BBA4-06D1-4D40-A16A-BFD50179D6AC"
 #: אימג' Linux (אפיון סעיף 14): ESP, שורש ext4, ו-swap שמתועד אבל לא נשמר.
 MANIFEST_LINUX = {
     **MANIFEST_256,
-    "id": "img_lnx001",
+    "id": "img_4c0de1",
     "name": "Ubuntu 24.04 Linux Course",
     "folder": "Linux",
     "os": "linux",
@@ -300,6 +300,7 @@ def _build_server(tmp_path: Path, images_root: Path, clock: Clock, recorder) -> 
     app = create_app(
         tmp_path / "data", images_root, "http://10.44.12.10:8080",
         now_fn=clock, sender_runner=recorder,
+        health_hooks={"interfaces": lambda: []},
     )
     ctx = app.state.ctx
     # סיסמאות הפיקסטורה קדמו לנוהל #1085; check_policy=False רק לזרע הבדיקות.
@@ -421,3 +422,29 @@ def hello_body(mac: str, disk_bytes: int = 256060514304) -> dict:
             }
         ],
     }
+
+
+def room_slots(conn, drawers: dict[str, list[str]],
+               size_bytes: int | None = 256060514304) -> list[dict]:
+    """‏#1410: סבב חדר נפתח רק על בחירה מפורשת של מגירות שהמשכפל כבר דיווח.
+
+    רושם את `drawers` (‏mac → serials, ‏serial i בחריץ i+1) כדיווח ה-hello
+    האחרון של כל מכונה — אותה צורה ש-`cloner_hello` שולח — ומחזיר את
+    ‏`target_slots` שבוחר את כולן. ‏`size_bytes=None` הוא כונן שלא דיווח
+    גודל. ה-hello האמיתי שהטסט שולח אחר כך דורס את הדיווח הזה כרגיל.
+    """
+    for mac, serials in drawers.items():
+        disks = [
+            {"dev": f"sd{chr(ord('a') + i)}", "model": "Drawer SSD",
+             "serial": serial, "removable": False, "scheme": "gpt",
+             "has_data": False, "port": i + 1,
+             **({"size_bytes": size_bytes} if size_bytes is not None else {})}
+            for i, serial in enumerate(serials)
+        ]
+        conn.execute(
+            "INSERT INTO net_devices (mac, disks_json) VALUES (?, ?) "
+            "ON CONFLICT (mac) DO UPDATE SET disks_json = excluded.disks_json",
+            (mac, json.dumps(disks)))
+    conn.commit()
+    return [{"mac": mac, "ports": list(range(1, len(serials) + 1))}
+            for mac, serials in drawers.items()]

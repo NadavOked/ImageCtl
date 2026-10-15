@@ -249,6 +249,11 @@ def create_dhcp_router(ctx: ServerContext, hooks: Hooks | None = None,
             "mac": (live or {}).get("mac", ""),
             "addresses": (live or {}).get("addresses", []),
             "present": live is not None,
+            "admin_up": (live or {}).get("admin_up"),
+            "link_up": (live or {}).get("link_up"),
+            "add_refused_reason": (
+                f"הכרטיס {cfg.name} מושבת מנהלית; שמירת רשת ההפצה תנסה להפעיל אותו"
+                if live is not None and (live or {}).get("admin_up") is False else None),
             # מהירות הכרטיס — ‏None כשלא נקרא; לעולם לא ניחוש לפי השם (‏#762).
             "speed_mbps": (live or {}).get("speed_mbps"),
             "dhcp_configured": cfg.enabled,

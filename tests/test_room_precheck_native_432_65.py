@@ -46,11 +46,12 @@ ROOM = {"round": {"image_name": "img", "wave_number": 1, "wave_state": "open",
                               {"mac": "3c:52:82:a1:00:23", "name": None, "reason": "off", "ports": [],
                                "awake": False, "joined": False, "can_poweroff": False,
                                "text_he": "CLONE-03 כבוי | או לא מחובר"}]},
-        "machines": [
+        "group_label": "מחשבי שיכפול", "machines": [
             {"name": "CLONE-01", "mac": C1, "awake": True, "joined": True, "fresh_drawers": 2,
              "state": "waiting", "drawer_count": 2,
              "drawer_list": [_drawer(1, "S1"), _drawer(2, "S2", "slow")]},
             {"name": "CLONE-02", "mac": C2, "awake": True, "joined": True, "fresh_drawers": 2,
+             "local_copy": True,
              "state": "waiting", "drawer_count": 3,
              "drawer_list": [_drawer(1, "S3", "unknown"), _drawer(2, "S4")]}]}
 
@@ -76,9 +77,11 @@ def test_gui_state_carries_the_warnings_the_missing_and_the_link(tmp_path):
     lines = gui_state_lines(tmp_path)
     assert f"room_warn={WARN}" in lines, lines
     missing = [l for l in lines if l.startswith("room_missing=")]
-    assert missing[0] == f"room_missing={C2}|CLONE-02|drawers|1|{MISSING}", missing
+    assert missing[0] == f"room_missing={C2}|CLONE-02|drawers|1|{MISSING}|0", missing
     # ‏null שם → ריק; ‏"|" בטקסט אינו שובר את הרשומה
-    assert missing[1] == "room_missing=3c:52:82:a1:00:23||off|0|CLONE-03 כבוי   או לא מחובר", missing
+    assert missing[1] == "room_missing=3c:52:82:a1:00:23||off|0|CLONE-03 כבוי   או לא מחובר|0", missing
+    machine = next(l for l in lines if l.startswith(f"machine=CLONE-02|{C2}|"))
+    assert machine.endswith("|1"), machine
     states = {l.split("|")[1]: l.split("|")[11] for l in lines if l.startswith("room_drawer=0|")}
     assert states == {"1": "ok", "2": "slow"}, lines
 
@@ -121,7 +124,26 @@ def _bridge(tmp_path: Path, record: str) -> tuple[int, str | None, str | None]:
 def test_the_bridge_posts_power_off_for_the_missing_machine(tmp_path):
     rc, path, body = _bridge(tmp_path, f"room-poweroff\ncloner={C2}\nconfirm=CLONE-02\n\n")
     assert rc == 0 and path == f"room/missing/{C2}/poweroff", (rc, path)
-    assert json.loads(body) == {"confirm_name": "CLONE-02"}
+    assert json.loads(body) == {"confirm_name": "CLONE-02", "confirm_local_copy": False}
+
+
+@requires_native(("bash", BASH), "jq", "awk")
+def test_the_bridge_marks_only_an_explicit_local_copy_confirmation(tmp_path):
+    record = f"room-poweroff\ncloner={C2}\nconfirm=CLONE-02\nlocal_copy=1\n\n"
+    rc, path, body = _bridge(tmp_path, record)
+    assert rc == 0 and path == f"room/missing/{C2}/poweroff", (rc, path)
+    assert json.loads(body) == {"confirm_name": "CLONE-02", "confirm_local_copy": True}
+
+    rc, path, _ = _bridge(tmp_path / "bad", record.replace("local_copy=1", "local_copy=true"))
+    assert rc != 0 and path is None
+
+
+@requires_native(("bash", BASH), "jq", "awk")
+def test_the_bridge_can_confirm_room_poweroff_over_local_copies(tmp_path):
+    record = "room-poweroff-all\nconfirm=מחשבי שיכפול\nlocal_copy=1\n\n"
+    rc, path, body = _bridge(tmp_path, record)
+    assert rc == 0 and path == "room/poweroff", (rc, path)
+    assert json.loads(body) == {"confirm_name": "מחשבי שיכפול", "confirm_local_copy": True}
 
 
 @requires_native(("bash", BASH), "jq", "awk")
@@ -157,8 +179,11 @@ BASE = (f"machine=CLONE-01|{C1}|1|1|2|waiting|-1|0|\n"
         "round=img|1|1|0|5|4|5|-1|-1|-1\n"
         "message=x|y\n")
 EXTRA = (f"room_warn={WARN}\n"
-         f"room_missing={C2}|CLONE-02|drawers|1|{MISSING}\n"
-         "room_missing=3c:52:82:a1:00:23|CLONE-03|off|0|CLONE-03 כבוי או לא מחובר — לא הצטרף לגל\n")
+         f"room_missing={C2}|CLONE-02|drawers|1|{MISSING}|0\n"
+         "room_missing=3c:52:82:a1:00:23|CLONE-03|off|0|CLONE-03 כבוי או לא מחובר — לא הצטרף לגל|0\n")
+
+LOCAL_COPY = ("room_label=מחשבי שיכפול\n"
+              f"room_missing={C2}|CLONE-02|drawers|1|{MISSING}|1\n")
 
 
 def _render(binary: Path, state_text: str, prefix: Path, size: str = "1280x800") -> None:
@@ -220,6 +245,38 @@ def test_the_two_dialogs_route_and_carry_their_colours(tmp_path):
         off = tmp_path / f"d-room-poweroff-{theme}.png"
         assert _count(off, "--clr-danger-fill", theme) - _count(start, "--clr-danger-fill", theme) > 400, theme
         assert _count(start, "--clr-warning", theme) > _count(off, "--clr-warning", theme), theme
+
+
+def test_local_copy_poweroff_uses_the_owner_words_and_sends_confirmation():
+    root = Path(__file__).resolve().parent.parent
+    screens = (root / "native-gui" / "src" / "screens.c").read_text(encoding="utf-8")
+    main = (root / "native-gui" / "src" / "main.c").read_text(encoding="utf-8")
+    state = (root / "native-gui" / "src" / "state.c").read_text(encoding="utf-8")
+    warning = "המחשב באמצע שיכפול מקומי — כיבוי עכשיו ישאיר את דיסק היעד שבור ולא שמיש. לכבות בכל זאת?"
+    plural = "%d מחשבים באמצע שיכפול מקומי — הדיסקים שלהם יישארו שבורים. לכבות בכל זאת?"
+    assert warning in screens and 'snprintf(ok,sizeof ok,"כבה בכל זאת")' in screens
+    assert plural in screens and "CONFIRM_ROOM_POWEROFF_ALL" in screens
+    assert "BTN_DANGER,HIT_CONFIRM_OK" in screens
+    assert 'emit_kv("local_copy", "1")' in main
+    assert 'm->local_copy = !strcmp(f[9], "1")' in state
+    assert 's->room_missing[i].local_copy = nf == 6' in state
+
+
+@_GUI
+def test_local_copy_power_dialogs_render_the_red_owner_warning(tmp_path):
+    """The normal and dangerous states differ visibly, and both dangerous
+    dialogs keep the destructive red action used by the native confirm pattern."""
+    binary = _build_gui(tmp_path)
+    state = BASE.format(link="ok") + LOCAL_COPY
+    _render(binary, state, tmp_path / "copy")
+    for theme in ("light", "dark"):
+        normal = tmp_path / f"copy-room-poweroff-{theme}.png"
+        single = tmp_path / f"copy-room-poweroff-local-copy-{theme}.png"
+        plural = tmp_path / f"copy-room-poweroff-all-{theme}.png"
+        assert normal.read_bytes() != single.read_bytes(), theme
+        assert single.read_bytes() != plural.read_bytes(), theme
+        for warning in (single, plural):
+            assert _count(warning, "--clr-danger-fill", theme) > 400, (theme, warning)
 
 
 STANDBY = ("hello_age=4\nhello_rc=200\nmachine_name=CLONE-01\nserver_name=imagectl-ta\n"

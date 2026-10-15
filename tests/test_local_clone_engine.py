@@ -67,6 +67,10 @@ set -u
 F=$1; TARGETS=$2; SHRINK=$3
 export RUN_DIR=$F/run LIB_DIR=%(lib)s IMAGECTL_TEST=1 MAC=aa:bb:cc:dd:ee:ff
 rm -rf "$RUN_DIR"; mkdir -p "$RUN_DIR"
+# #1354: the fixture's disks are MiB-sized, so no target could keep 20 GB free.
+# 0 = the console's "rule off" -- the copy itself is what this file checks;
+# the rule has its own tests (test_min_free_1354.py, lc_verdict_for).
+echo 0 > "$RUN_DIR/min_free_gb"
 # DEVROOT is the test's own directory (test_tests_never_touch_host_dev): links
 # to the fixture's loop devices and their partitions, and nothing else -- the
 # engine cannot reach a disk of the host.
@@ -83,8 +87,12 @@ lc_inventory
 lc_measure "$SRC"
 for n in $TARGETS; do echo "verdict $n $(lc_verdict_for "$SRC" "$(dev "$n")")"; done
 T=""; for n in $TARGETS; do T="$T $(dev "$n")"; done
-[ -z "${STOP_AT:-}" ] || ( while :; do [ "$(cat "$LC/run/cur" 2>/dev/null)" = "$STOP_AT|copy" ] && { touch "$LC/stop.req"; exit 0; }; sleep 0.2; done ) &
+# המשגיח: תקרה (600 x 0.2s) ונהרג אחרי lc_run — lc_run שנכשל לפני "copy" השאיר
+# אותו חי, מחזיק את הצינור, והטסט נתקע עד timeout=1500 (15/10, אחרי #1433)
+_stopper=""
+[ -z "${STOP_AT:-}" ] || { ( i=0; while [ $i -lt 600 ]; do [ "$(cat "$LC/run/cur" 2>/dev/null)" = "$STOP_AT|copy" ] && { touch "$LC/stop.req"; exit 0; }; i=$((i + 1)); sleep 0.2; done ) & _stopper=$!; }
 lc_run "$SRC" "$T" "$SHRINK"
+[ -z "$_stopper" ] || kill "$_stopper" 2>/dev/null || :
 echo "phase $(cat "$LC/phase")"
 for n in $TARGETS; do d=$(dev "$n"); t=$RUN_DIR/targets/$d
   echo "target $n|$(cat "$t/state")|$(cat "$t/error" 2>/dev/null | tr '\n' ' ')|$(cat "$t/lc_ok" 2>/dev/null | tr '\n' ' ')|$(cat "$t/lc_table" 2>/dev/null)"; done

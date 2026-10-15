@@ -152,8 +152,8 @@ def test_each_breadcrumb_sits_between_the_commands_it_dates():
     where = {line.split()[1]: i for i, line in enumerate(lines)
              if line.startswith(trace.GRUB_FUNCTION_NAME + " ")}
     insmod = next(i for i, line in enumerate(lines) if line == "insmod http")
-    linux = next(i for i, line in enumerate(lines) if line.startswith("linux "))
-    initrd = next(i for i, line in enumerate(lines) if line.startswith("initrd "))
+    linux = next(i for i, line in enumerate(lines) if line.startswith(("linux ", "if linux ")))
+    initrd = next(i for i, line in enumerate(lines) if line.startswith(("initrd ", "if initrd ")))
     assert where["entry"] < insmod < where["http-ok"]
     assert where["http-ok"] < where["pre-linux"] < linux
     assert linux < where["pre-initrd"] < initrd < where["pre-boot"]
@@ -232,22 +232,23 @@ def test_a_failed_linux_does_not_claim_the_kernel_loaded():
     חייבת להפיל את הטסט הזה.
     """
     lines = agent_entry(render(CLONER, CONFIG))
-    _, happy = play_entry(lines)
-    assert happy == list(trace.GRUB_STEPS)
-
-    ran, seen = play_entry(lines, fail=frozenset({"linux"}))
-    assert "pre-linux" in seen
-    assert "pre-initrd" not in seen
-    assert "initrd" in ran
+    linux = next(i for i, line in enumerate(lines) if line.startswith("if linux "))
+    loaded = lines.index("set imagectl_kernel_loaded=y")
+    failure = lines.index('if [ -z "$imagectl_kernel_loaded" ]; then')
+    pre_initrd = lines.index(f"{trace.GRUB_FUNCTION_NAME} pre-initrd")
+    assert linux < loaded < failure < pre_initrd
+    assert lines[linux + 1] == "then"         # `then` בשורה משלו מאז 54223f94
 
 
 def test_a_failed_initrd_does_not_claim_the_initramfs_loaded():
     """אותו מסלול ל-pre-boot אחרי initrd שנכשל."""
     lines = agent_entry(render(CLONER, CONFIG))
-    ran, seen = play_entry(lines, fail=frozenset({"initrd"}))
-    assert "pre-initrd" in seen
-    assert "pre-boot" not in seen
-    assert "linux" in ran
+    initrd = next(i for i, line in enumerate(lines) if line.startswith("if initrd "))
+    loaded = lines.index("set imagectl_initrd_loaded=y")
+    failure = lines.index('if [ -z "$imagectl_initrd_loaded" ]; then')
+    pre_boot = lines.index(f"{trace.GRUB_FUNCTION_NAME} pre-boot")
+    assert initrd < loaded < failure < pre_boot
+    assert lines[initrd + 1] == "then"         # `then` בשורה משלו מאז 54223f94
 
 
 def test_a_breadcrumb_never_guards_a_boot_command():
@@ -288,7 +289,7 @@ def test_a_file_with_no_agent_entry_has_no_trace_function():
 def test_the_kernel_command_line_gained_nothing():
     """עיקרון 2. שביל הפירורים עובר ב-HTTP, ולא בשורת הפקודה."""
     line = next(l for l in agent_entry(render(CLONER, CONFIG))
-                if l.startswith("linux "))
+                if l.startswith("if linux "))
     assert "step" not in line and "trace" not in line
 
 

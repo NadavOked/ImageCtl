@@ -25,7 +25,7 @@ import pytest
 from server import room as room_mod
 
 from test_server_room import (           # noqa: F401 — ‏room_server הוא fixture
-    CLONER1, CLONER2, cloner_hello, heartbeat, report, room, room_server,
+    CLONER1, CLONER2, cloner_hello, room_body, heartbeat, report, room, room_server,
 )
 
 pytest.importorskip("fastapi")
@@ -38,9 +38,10 @@ _AGE = getattr(room_mod, "LOST_SECONDS", 180) + 60
 # --- עזרים -------------------------------------------------------------------
 
 
-def _open(room_server, target: int) -> None:
+def _open(room_server, target: int, drawers=None) -> None:
+    """‏#1410: בחירה מפורשת — ברירת המחדל: כל מגירות שני המשכפלים."""
     opened = room_server["deploy"].post(
-        "/api/console/room", json={"image_id": "img_7f3a91", "target_drives": target})
+        "/api/console/room", json=room_body(room_server, target, drawers or {CLONER1: ["S1", "S2"], CLONER2: ["S3", "S4"]}))
     assert opened.status_code == 200, opened.text
 
 

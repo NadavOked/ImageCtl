@@ -53,6 +53,20 @@ esac
 #: יוצאת 9 — ‏REG_SZ היה שובר את %SystemRoot%, ולכן הזיוף מסרב לה.
 HIVEWRITE = r'''
 echo "$*" >> "$FAKE_SERVER/hivewrite.calls"
+case "$2" in */SYSTEM)
+  # #1331: SYSTEM is a tree of files -- SYSTEM.d/<key, \ as />/<value>. -g of a
+  # missing value is 3, like hivewrite; -d writes into an existing key only;
+  # any other write to SYSTEM is refused (a DWORD written as a string is a bug).
+  f="$2.d/$(printf '%s' "$3" | tr '\\' '/')/$4"
+  case "$1" in
+    -g) [ -z "${FAKE_SYS_GET_RC:-}" ] || exit "$FAKE_SYS_GET_RC"
+        [ -f "$f" ] || exit 3; cat "$f"; exit 0 ;;
+    -d) [ "${FAKE_SYS_RC:-0}" = 0 ] || exit "$FAKE_SYS_RC"
+        [ -d "${f%/*}" ] || exit 3
+        [ -n "${FAKE_SYS_NOOP:-}" ] || printf '%s\n' "$5" > "$f"; exit 0 ;;
+    *)  echo "SYSTEM write without -d refused" >&2; exit 9 ;;
+  esac ;;
+esac
 if [ "$1" = "-g" ]; then
   [ "$4" = "DevicePath" ] || exit 3
   cat "$2"; exit 0
@@ -62,6 +76,19 @@ fi
 [ "$4" = "DevicePath" ] || exit 3
 printf '%s\n' "$5" > "$2"
 '''
+
+
+#: ‏#1331: ה-SYSTEM של אימג' שנקלט ממכונה שהותקנה במצב RAID — ‏storahci
+#: ‏Start=3 עם ‏StartOverride\0=3, ‏stornvme ‏Start=3. ‏ControlSet002 קיים כדי
+#: שכתיבה ל-ControlSet001 הקבוע (במקום Select\Current) תיתפס.
+SYSTEM_RAID = {
+    "Select/Current": "2",
+    "ControlSet001/Services/storahci/Start": "3",
+    "ControlSet002/Services/storahci/Start": "3",
+    "ControlSet002/Services/storahci/StartOverride/0": "3",
+    "ControlSet002/Services/stornvme/Start": "3",
+}
+SVC = "ControlSet002/Services"
 
 
 def answer_for(packages: dict[str, dict[str, bytes]], inventory=True, tamper: str | None = None) -> dict:
@@ -81,7 +108,8 @@ def answer_for(packages: dict[str, dict[str, bytes]], inventory=True, tamper: st
 class Box:
     def __init__(self, tmp_path: Path, packages=FILES, *, answer: dict | None = None,
                  plan: str = WIN_PLAN, device_path: str | None = STOCK,
-                 stubs: dict[str, str] | None = None, env: str = "", plan_rc: int = 0):
+                 stubs: dict[str, str] | None = None, env: str = "", plan_rc: int = 0,
+                 system: dict[str, str] | None = SYSTEM_RAID):
         self.run = tmp_path / "run"
         self.win = self.run / "win"
         self.server = tmp_path / "server"
@@ -89,6 +117,13 @@ class Box:
         self.hive = self.win / "Windows/System32/config/SOFTWARE"
         if device_path is not None:
             self.hive.write_text(device_path + "\n", encoding="utf-8")
+        self.system = self.win / "Windows/System32/config/SYSTEM"
+        if system is not None:
+            self.system.write_text("fake SYSTEM hive\n", encoding="utf-8")
+            for key, value in system.items():
+                target = self.win / "Windows/System32/config/SYSTEM.d" / key
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(value + "\n", newline="\n")
         self.answer = answer or answer_for(packages)
         (self.server / "pkgs").mkdir(parents=True)
         for name, files in packages.items():
@@ -118,7 +153,7 @@ class Box:
             f'SERVER=http://10.44.12.10:8080 MAC=b4:2e:99:07:1a:c4 {env}; '
             f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/jsonq.sh; '
             f'. {posix(AGENT)}/lib/restore.sh; . {posix(AGENT)}/lib/hostname.sh; '
-            f'. {posix(AGENT)}/lib/postdeploy.sh; '
+            f'. {posix(AGENT)}/lib/bootstorage.sh; . {posix(AGENT)}/lib/postdeploy.sh; '
             f'manifest_plan() {{ printf \'%s\\n\' {plan!r}; return {plan_rc}; }}; '
             f'partition_node() {{ echo /dev/fake; }}; '
             f'json_get() {{ case "$2" in ".ok") echo {str(self.answer.get("ok", False)).lower()};; '
@@ -127,10 +162,10 @@ class Box:
             f'*files*) cat "$FAKE_SERVER/rows";; *) echo null;; esac; }}; '
         )
 
-    def stage(self) -> tuple[subprocess.CompletedProcess, dict]:
+    def stage(self, disk: str = "sda") -> tuple[subprocess.CompletedProcess, dict]:
         out = subprocess.run(
             [BASH, "-c", 'export PATH="/usr/bin:$PATH"; ' + self.script
-             + 'stage_drivers sda /dev/null; echo "rc=$?"'],
+             + f'stage_drivers {disk} /dev/null; echo "rc=$?"'],
             capture_output=True, text=True, encoding="utf-8",
             cwd=str(AGENT.parent), stdin=subprocess.DEVNULL,
         )
@@ -146,6 +181,10 @@ class Box:
         path = self.server / "hivewrite.calls"
         return path.read_text().splitlines() if path.exists() else []
 
+    def sysval(self, key: str) -> str | None:
+        path = self.win / "Windows/System32/config/SYSTEM.d" / key
+        return path.read_text().strip() if path.exists() else None
+
     def staged_files(self) -> dict[str, bytes]:
         root = self.win / "ImageCtl/Drivers"
         return {p.relative_to(root).as_posix(): p.read_bytes()
@@ -155,7 +194,8 @@ class Box:
 def test_matched_packages_land_on_the_disk_and_device_path_keeps_the_stock_entry(tmp_path):
     box = Box(tmp_path)
     _, result = box.stage()
-    assert result == {"state": "staged", "packages": ["intel-nic", "ahci-fix"]}
+    assert result == {"state": "staged", "packages": ["intel-nic", "ahci-fix"],
+                      "boot": {"state": "enabled", "service": "storahci"}}
     assert box.state() == "done"
     assert box.staged_files() == {f"{n}/{p}": d for n, fs in FILES.items() for p, d in fs.items()}
     assert box.hive.read_text().strip() == f"{STOCK};{ENTRY}"

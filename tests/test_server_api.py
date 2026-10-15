@@ -23,8 +23,23 @@ def hello(server, mac, **kwargs):
 # --- hello -------------------------------------------------------------------
 
 
+def test_hello_carries_registered_name_and_server_identity(server):
+    ids = setup_classroom(server)
+    answer = hello(server, ids["mac1"])
+    assert answer["name"]
+    assert answer["server_name"]
+    assert "server_version" in answer
+
+    unknown = hello(server, "de:ad:be:ef:00:01")
+    assert unknown["known"] is False and unknown["name"] is None
+
+
 def test_unknown_mac_gets_nothing_and_raises_an_alert(server):
     answer = hello(server, "aa:aa:aa:aa:aa:aa")
+    assert answer.pop("name") is None
+    assert answer.pop("server_name")
+    assert "server_version" in answer
+    answer.pop("server_version")
     assert answer == {
         "schema": 1, "known": False, "role": "unknown", "group": None,
         "task": None, "session": None, "allowed_images": [],
@@ -57,6 +72,34 @@ def test_cloner_hello_carries_its_configured_drawer_count(server):
     }).status_code == 200
 
     assert hello(server, "b4:2e:99:07:1a:c1")["drawer_count"] == 2
+
+
+def test_cloner_registration_defaults_drawers_from_last_hello(server):
+    mac = "b4:2e:99:07:1a:c2"
+    body = hello_body(mac)
+    first = {**body["disks"][0], "port": 1}
+    body["disks"] = [first, {**first, "dev": "sdb", "serial": "S2", "port": 2}]
+    assert server["anon"].post("/api/v1/agent/hello", json=body).status_code == 200
+
+    response = server["admin"].post("/api/console/machines", json={
+        "mac": mac, "name": "Cloner 2", "group_id": "grp_CLONERS",
+    })
+    assert response.status_code == 200
+    assert hello(server, mac)["drawer_count"] == 2
+
+
+def test_explicit_cloner_drawer_count_wins_over_last_hello(server):
+    mac = "b4:2e:99:07:1a:c3"
+    body = hello_body(mac)
+    first = {**body["disks"][0], "port": 1}
+    body["disks"] = [first, {**first, "dev": "sdb", "serial": "S2", "port": 2}]
+    server["anon"].post("/api/v1/agent/hello", json=body)
+
+    response = server["admin"].post("/api/console/machines", json={
+        "mac": mac, "name": "Cloner 3", "group_id": "grp_CLONERS", "drawer_count": 4,
+    })
+    assert response.status_code == 200
+    assert hello(server, mac)["drawer_count"] == 4
 
 
 def test_hello_identifies_a_machine_by_any_reported_mac(server):

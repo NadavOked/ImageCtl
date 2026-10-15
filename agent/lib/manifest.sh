@@ -30,6 +30,46 @@ _uuid_of() {
     blkid -o value -s UUID "$1" 2>/dev/null || echo ""
 }
 
+_probe_mount() {
+    # $1 = node, $2 = fs, $3 = options (always ro), $4 = mount point.
+    # ‏NTFS דרך ntfs-3g (‏FUSE, ‏built-in בקרנל) ולא `mount -t ntfs`: בקרנל
+    # דביאן 13 אין סוג `ntfs` (‏CONFIG_NTFS_FS כבוי, ‏ntfs3 לא נארז), ו-mount
+    # של busybox אינו מפעיל mount.ntfs. נמדד 13/10 בתוך ה-initramfs עצמו:
+    # ‏"No such device", ‏used_bytes=null בכל מחיצת NTFS (#1368). ‏ntfs-3g הוא
+    # אותה ספרייה שכבר כותבת את שם המחשב (hostname.sh) ובודקת שינה.
+    case "$2" in
+        ntfs|ntfs-3g) ntfs-3g -o "$3" "$1" "$4" 2>>"$LOG_FILE" ;;
+        *) mount -t "$2" -o "$3" "$1" "$4" 2>>"$LOG_FILE" \
+               || mount -o "$3" "$1" "$4" 2>>"$LOG_FILE" ;;
+    esac
+}
+
+_system_role() {
+    # $1 = index, $2 = node, $3 = fs; called for a partition whose GUID says
+    # windows. stdout: windows | data. rc 1: not checked, stdout = the reason.
+    # ‏#1369: ה-GUID של Basic Data משותף למחיצת המערכת ולכל מחיצת נתונים/OEM,
+    # ושתי מחיצות "windows" שלחו את כתיבת השם ואת #1354 אל מחיצת 3GB ריקה.
+    # ‏windows רק על ראיה — ‏Windows\System32 במחיצה, בעיגון לקריאה בלבד.
+    # ‏Windows עולה רק מ-NTFS, ולכן מערכת קבצים אחרת היא data בלי עיגון.
+    case "$3" in
+        ntfs|ntfs-3g) ;;
+        *) log "partition $1: $3, not NTFS -- data, not a system partition" >&2
+           echo data; return 0 ;;
+    esac
+    _sm="$RUN_DIR/sysprobe"
+    mkdir -p "$_sm"
+    _probe_mount "$2" ntfs ro "$_sm" || {
+        echo "מחיצה $1: לא הצלחנו לעגן לקריאה ולבדוק אם היא מחיצת המערכת (Windows\\System32)"
+        return 1; }
+    _sr=data
+    [ -d "$_sm/Windows/System32" ] && _sr=windows
+    # עיגון שנשאר אינו "נבדק" — הקריאה של partclone הייתה רצה מול כרך חי.
+    umount "$_sm" 2>>"$LOG_FILE" || {
+        echo "מחיצה $1: הניתוק אחרי בדיקת מחיצת המערכת נכשל"; return 1; }
+    log "partition $1: $_sr (Windows\\System32 checked read-only)" >&2
+    echo "$_sr"
+}
+
 _used_bytes() {
     # $1 = node, $2 = fs. Mounted read-only just to measure; a partition that
     # will not mount is reported as null (not measured) rather than guessed --
@@ -45,8 +85,7 @@ _used_bytes() {
     # המודול. כל עוד עץ kernel/fs לא נארז בכלל שני המסלולים נכשלו, וכל
     # המחיצות דיווחו used_bytes=0 (#84). ‏stderr ליומן ולא ל-/dev/null:
     # "לא הצלחנו לעגן" ו"עגנו וזה ריק" הם שני מצבים שונים, והסיבה מבדילה.
-    if mount -t "$2" -o "$_probe_opts" "$1" "$_m" 2>>"$LOG_FILE" \
-       || mount -o "$_probe_opts" "$1" "$_m" 2>>"$LOG_FILE"; then
+    if _probe_mount "$1" "$2" "$_probe_opts" "$_m"; then
         # ‏-kP ולא -B1: ה-df של busybox לא מכיר ‎-B, וכל המחיצות דווחו
         # בשקט used_bytes=0 (נתפס באימג' הראשון של המעבדה, #12).
         _used=""

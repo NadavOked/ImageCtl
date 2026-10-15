@@ -20,7 +20,7 @@ pytest.importorskip("fastapi")
 
 from server import room as room_mod  # noqa: E402
 from test_server_room import (  # noqa: E402,F401
-    CLONER1, CLONER2, cloner_hello, room, room_server,
+    CLONER1, CLONER2, cloner_hello, room, room_body, room_server,
 )
 
 T0 = "2026-09-19T10:00:00+00:00"
@@ -91,8 +91,8 @@ def test_the_numbers_reach_the_room_screen_from_a_real_wave(room_server):
     ו-ETA בראש ולכל מגירה. ‏`started_at` מוזז 100 שניות אחורה: בטסט הגל
     יוצא והדיווח מגיע באותה שנייה, ואפס שניות הוא בצדק "לא נמדד"."""
     admin, anon, ctx = room_server["admin"], room_server["anon"], room_server["ctx"]
-    assert admin.post("/api/console/room",
-                      json={"image_id": "img_7f3a91", "target_drives": 4}).status_code == 200
+    assert admin.post("/api/console/room", json=room_body(
+        room_server, 4, {CLONER1: ["S1", "S2"]})).status_code == 200
     cloner_hello(anon, CLONER1, ["S1", "S2"])
     cloner_hello(anon, CLONER2, ["S3", "S4"])
     assert admin.post("/api/console/room/start").status_code == 200
@@ -123,8 +123,8 @@ def test_the_numbers_reach_the_room_screen_from_a_real_wave(room_server):
 
 def test_before_the_wave_runs_nothing_is_measured(room_server):
     admin, anon = room_server["admin"], room_server["anon"]
-    assert admin.post("/api/console/room",
-                      json={"image_id": "img_7f3a91", "target_drives": 4}).status_code == 200
+    assert admin.post("/api/console/room", json=room_body(
+        room_server, 4, {CLONER1: ["S1"]})).status_code == 200
     cloner_hello(anon, CLONER1, ["S1"])
     rnd = room(admin)["round"]
     assert rnd["wave_state"] == "open"

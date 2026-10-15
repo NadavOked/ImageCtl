@@ -77,7 +77,7 @@ def drawer_run(tmp_path, script_tail: str, stubs: dict, disks=("sda", "sdb"),
         source = f'stream_source() {{ cat {posix(payload)!r}; }}; '
     out = run_sh(
         make_stubs(box / "stubs", stubs)
-        + f"export TMPDIR={posix(tmp_path)!r} RUN_DIR={posix(run)!r} DEVROOT={posix(box)!r} "
+        + f"export TMPDIR={posix(tmp_path)!r} RUN_DIR={posix(run)!r} DEVROOT={posix(box)}/dev "
         "WAIT_POLL_S=1 WAIT_DRAWER_S=3 WAIT_HELPER_S=3 "
         "WAIT_STREAM_START_S=20 WAIT_STREAM_STALL_S=20; "
         f". {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/waits.sh; "

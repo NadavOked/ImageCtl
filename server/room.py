@@ -25,7 +25,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from . import (auth, drive_rates, drivers, registry, reports, room_drivers,
+from . import (auth, drive_rates, drivers, minfree, registry, reports, room_drivers,
                room_precheck, slot_names, smart_ask, storage_locations)
 from .db import journal, now_iso, update_one, writing
 from .images import required_bytes, restore_refusal
@@ -228,6 +228,9 @@ def drawer_list(conn: sqlite3.Connection, mac: str, written: set[str],
             # ‏#1269: תוצאת הנחת הדרייברים על המגירה הזו (מנורמלת ב-ingest).
             # ‏None = השלב לא רץ עליה — לא `no_match`.
             "drivers": target.get("drivers"),
+            # ‏#1366: MB/s של בדיקת הכתיבה לפני הזרם (מדוח הסוכן). ‏None = לא נמדד —
+            # לא 0 (עיקרון 5ב). דיסק איטי כבר נכשל בשמו (`error`): זה המספר עצמו.
+            "write_mbps": _write_mbps(target),
             # ‏#552: המפעיל ראה ‏"0 of 5 written" במשך 75 דקות. המונה
             # הזה סופר מגירות ש**סיימו**, ולכן הוא 0 גם כשהכול רץ מצוין
             # וגם כשהכול תקוע — ואי-אפשר להבחין. הבייטים הם ההבחנה.
@@ -246,6 +249,9 @@ def drawer_list(conn: sqlite3.Connection, mac: str, written: set[str],
             # שהמפעיל יראה "מגירה N: SMART אזהרה" **לפני** שהוא משגר סבב.
             # ‏`unchecked` = לא-נבדק, לא כשל (עיקרון 5).
             "smart": disk.get("smart") or "unchecked",
+            # ‏#1366: למה `fail` (‏health_failed / pending_sectors / uncorrectable) —
+            # "ה-BIOS יעצור ב-F1". ‏None = סוכן ישן או דיסק ירוק.
+            "smart_reason": disk.get("smart_reason") or None,
             # ‏#710: הגודל שהסוכן דיווח (sysinfo.sh), כדי שהגריד יראה קיבולת
             # אמיתית לכל דיסק ולא 0. חסר => 0, לא נחסם (עיקרון 5).
             "size_bytes": _int(disk.get("size_bytes")),
@@ -254,6 +260,12 @@ def drawer_list(conn: sqlite3.Connection, mac: str, written: set[str],
             **room_precheck.drawer_fields(conn, disk),
         })
     return drawers
+
+
+def _write_mbps(target: dict) -> int | None:
+    pre = target.get("write_preflight")
+    mbps = pre.get("mbps") if isinstance(pre, dict) else None
+    return mbps if isinstance(mbps, int) and not isinstance(mbps, bool) and mbps > 0 else None
 
 
 def _int(value) -> int:
@@ -350,6 +362,8 @@ def journal_precheck(conn: sqlite3.Connection, round_row: sqlite3.Row,
             item += f" link={w['link_gbps']:.1f}/{w['link_max_gbps']:.1f}"
         if w["crc_rise"]:
             item += f" crc+{w['crc_rise']}"
+        if w.get("crc_suspect"):
+            item += f" crc={w['crc']}"   # #1366: the absolute count over the threshold
         items.append(item)
     # שורה אחת, בלי תקרת `_one_line`: תשע מגירות לא ייחתכו באמצע (סידורי מה-hello
     # הוא קלט חיצוני — רק שבירות השורה מוחלפות).
@@ -398,19 +412,26 @@ def disk_floor(conn: sqlite3.Connection, selected: list[dict] | None = None
     return floor
 
 
-def fit_refusal(manifest: dict, floor: dict | None) -> str | None:
+def fit_refusal(manifest: dict, floor: dict | None, min_free_gb: int = 0) -> str | None:
     """הסיבה שהאימג' אינו נכנס לרצפה — או `None` כשהוא נכנס, או כשאין
     רצפה ידועה. **אותה מחרוזת בדיוק** שמסך החדר מציג על האימג' המושבת
-    (‏`imageFitReason` ב-`station/room.js`), כדי שהמפעיל יראה סיבה אחת
+    (‏`imageFitReason` ב-`console.js`), כדי שהמפעיל יראה סיבה אחת
     משני הצדדים: "דיסק 2 במחשב 2 הוא 256GB, האימג' צריך 300GB".
+
+    ‏#1354: "צריך" כולל את המינימום הפנוי במחיצת המערכת (‏`min_disk_bytes`),
+    וכשזה מה שהוסיף — המשפט אומר זאת. ‏`None` (‏`used_bytes` לא נמדד) אינו
+    סירוב כאן: הסוכן מסרב לו בשמו ("לא נבדק"), כמו דרישה שאינה ידועה.
     """
-    need = required_bytes(manifest)
+    need = minfree.min_disk_bytes(manifest, min_free_gb)
     if floor is None or need is None or need <= floor["size_bytes"]:
         return None
     slot = (f"דיסק {floor['port']}" if floor["port"] is not None
             else f"דיסק {floor['dev'] or '?'}")
+    layout = required_bytes(manifest)
+    extra = (f" (כולל {min_free_gb}GB פנויים במחיצת המערכת)"
+             if layout is not None and need > layout else "")
     return (f"{slot} במחשב {floor['name']} הוא {round(floor['size_bytes'] / GB)}GB, "
-            f"האימג' צריך {-(-need // GB)}GB")
+            f"האימג' צריך {-(-need // GB)}GB{extra}")
 
 
 # --- מחזור החיים -------------------------------------------------------------
@@ -493,22 +514,20 @@ def open_round(ctx, image_id: str, target_drives: int, user: str,
     if active_round(ctx.conn) is not None:
         raise SessionError("כבר יש סבב חדר פעיל")
 
-    # ‏#695: בחירת דיסקי יעד (אופציונלית — סבב ישן בלי בחירה כותב לכל
-    # הדיסקים). כשנבחרו — מאמתים לפני שנוגעים בשום דבר, ומוודאים שיש מספיק
-    # יעדים בסבב לגל הראשון.
-    selected = None
-    if target_slots is not None:
-        selected = _validate_target_slots(ctx.conn, target_slots)
-        selected_count = sum(len(item["ports"]) for item in selected)
-        if target_drives < selected_count:
-            raise ValueError(
-                "מספר היעדים בסבב קטן ממספר הדיסקים שנבחרו לגל הראשון")
+    # ‏#1410: בחירת דיסקי היעד מפורשת וחובה. מאמתים אותה לפני שנוגעים
+    # בשום דבר; אין fallback לכתיבה לכל המגירות.
+    selected = _validate_target_slots(ctx.conn, target_slots)
+    selected_count = sum(len(item["ports"]) for item in selected)
+    if target_drives < selected_count:
+        raise ValueError(
+            "מספר היעדים בסבב קטן ממספר הדיסקים שנבחרו לגל הראשון")
     # ‏#1269: דגם דרייברים לכל דיסק יעד — אופציונלי; מאומת לפני כל כתיבה.
     chosen_drivers = room_drivers.validate(driver_models, selected, library_packages(ctx))
     # ‏#953: אימג' שאינו נכנס למגירה הקטנה ביותר שדווחה אינו נפתח — לא רק
     # מושבת במסך. הסירוב נוקב במגירה ובמספרים; ‏409 כמו כל התנגשות עם מצב
     # החדר. בלי דיווח (`None`) אין סירוב — בדיקה 2.7 במכונה תסרב לה לבדה.
-    refusal = fit_refusal(manifest, disk_floor(ctx.conn, selected))
+    refusal = fit_refusal(manifest, disk_floor(ctx.conn, selected),
+                          minfree.min_free_gb(ctx.conn))   # #1354
     if refusal is not None:
         raise SessionError(refusal)
 
@@ -523,7 +542,7 @@ def open_round(ctx, image_id: str, target_drives: int, user: str,
         " expand_partition, driver_models_json, state, wave_session_id, opened_by,"
         " created_at) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)",
         (round_id, image_id, target_drives,
-         json.dumps(selected, separators=(",", ":")) if selected is not None else None,
+         json.dumps(selected, separators=(",", ":")),
          expand_choice,
          json.dumps(chosen_drivers, ensure_ascii=False) if chosen_drivers else None,
          wave_id, user, now_iso()),
@@ -1072,6 +1091,13 @@ def _fresh(stamp: str | None) -> bool:
     return timedelta(0) <= age <= timedelta(seconds=AWAKE_SECONDS)
 
 
+def local_copy_now(local_clone: str | None, last_seen: str | None) -> bool:
+    """‏#1367 (נדב 14/10): המכונה באמצע שיכפול מקומי **עכשיו** — ה-hello האחרון
+    אמר `local_clone: copying`, והוא טרי (`AWAKE_SECONDS`; ה-beat של הסוכן כל
+    10 ש'). מכונה ששתקה אינה "כותבת": אין ראיה לכך — ואין למי לשלוח אזהרה."""
+    return local_clone == "copying" and _fresh(last_seen)
+
+
 def _is_awake(*stamps: str | None) -> bool:
     """ערה אם דיברה איתנו בחלון האחרון — ב-hello **או** בדיווח progress.
 
@@ -1136,7 +1162,7 @@ def status_view(ctx) -> dict:
     machines = []
     all_names = slot_names.all_by_mac(ctx.conn)   # #704
     for row in ctx.conn.execute(
-        "SELECT m.mac, m.suffix, m.drawer_count, d.last_seen, d.disk_probe"
+        "SELECT m.mac, m.suffix, m.drawer_count, d.last_seen, d.disk_probe, d.local_clone"
         " FROM machines m"
         " LEFT JOIN net_devices d ON d.mac = m.mac"
         " WHERE m.group_id = ? ORDER BY m.suffix", (CLONERS_GROUP,)
@@ -1171,13 +1197,16 @@ def status_view(ctx) -> dict:
             # ‏#704: כל השמות של המכונה, גם של חריץ ריק (‏sata:3 בלי דיסק).
             "slot_names": names,
             "joined": member is not None,
+            # ‏#1367: שיכפול מקומי כותב עכשיו — "כבה אותו" שואל לפני
+            "local_copy": local_copy_now(row["local_clone"], row["last_seen"]),
             "state": member["state"] if member else None,
             "bytes_written": member["bytes_written"] if member else 0,
             "bytes_total": member["bytes_total"] if member else 0,
             "error": member["error"] if member else None,
         })
 
-    view = {"round": None, "machines": machines,
+    label = ctx.conn.execute("SELECT label FROM groups WHERE id = ?", (CLONERS_GROUP,)).fetchone()
+    view = {"round": None, "machines": machines, "group_label": label["label"] if label else "",
             "stream_stalled": _stream_stalled(machines),
             # ‏#953: הרצפה שהמסך משווה אליה כל אימג' לפני פתיחת סבב — אותה
             # רצפה בדיוק שהשרת מסרב לפיה, ממקום אחד. ‏null = אין דיווח.
@@ -1319,7 +1348,7 @@ def create_room_router(ctx, wake=None) -> APIRouter:
             return open_round(
                 ctx, body.get("image_id", ""),
                 int(body.get("target_drives", 0)), user[0],
-                body.get("target_slots"),          # #695: בחירת דיסקי יעד (אופציונלי)
+                body.get("target_slots"),          # #1410: explicit, non-empty selection is required
                 body.get("expand_partition"),      # #59: בחירת ההרחבה (אופציונלי)
                 body.get("driver_models"),         # #1269: דרייברים לכל דיסק (אופציונלי)
             )
@@ -1372,9 +1401,13 @@ def create_room_router(ctx, wake=None) -> APIRouter:
         name = entry["name"] or canon
         if typed != name:
             raise HTTPException(400, "השם שנשלח אינו שם המחשב")
+        # ‏#1367 (נדב 14/10): אישור מעל אזהרת "באמצע שיכפול מקומי" — מהחלון
+        # של הקונסולה. רק `true` ממש; בלעדיו הסוכן זורק בקשה שמגיעה בזמן העתקה.
+        confirmed = isinstance(body, dict) and body.get("confirm_local_copy") is True
         from . import room_console           # noqa: PLC0415 — room_console מייבא את room
-        room_console.request_power(ctx.conn, [canon], room_console.POWEROFF, user[0])
-        journal(ctx.conn, "room_missing_poweroff", f"{canon} ({name})", user[0])
+        room_console.request_power(ctx.conn, [canon], room_console.POWEROFF, user[0], confirmed=confirmed)
+        journal(ctx.conn, "room_missing_poweroff",
+                f"{canon} ({name})" + (" local copy confirmed" if confirmed else ""), user[0])
         return {"requested": 1, "ttl_s": room_console.POWEROFF_TTL_SECONDS}
 
     @router.post("/wake")

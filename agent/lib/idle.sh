@@ -35,11 +35,7 @@ idle_exempt() {
 }
 
 idle_poweroff() {
-    # The same rule as finish_and_stop's power-off branch: only after the
-    # wake-on-LAN read-back. A machine that cannot be woken stays on, named.
-    if ! arm_wol; then log "idle: wol not armed -- staying powered on"; idle_reset; return 1; fi
-    log "idle: no activity for ${IDLE_POWEROFF_S}s -- powering off"
-    sync; poweroff -f
+    safe_poweroff "idle: no activity for ${IDLE_POWEROFF_S}s" || { idle_reset; return 1; }
 }
 
 power_check() {
@@ -54,9 +50,7 @@ power_check() {
         reboot) log "power: the console asked to reboot -- rebooting"; sync; reboot -f; return ;;
         *) return 0 ;;
     esac
-    if ! arm_wol; then log "power: wol not armed -- staying powered on"; return 1; fi
-    log "power: the console asked to power off -- powering off"
-    sync; poweroff -f
+    safe_poweroff "power: the console asked to power off"
 }
 
 idle_check() {

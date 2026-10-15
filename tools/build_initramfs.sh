@@ -746,6 +746,18 @@ for _mod in "${REQUIRED_MODULES[@]}" "${REQUIRED_FS_MODULES[@]}"; do
         cp -a "$_hit" "$ROOT/lib/modules/$KVER/$_rel"
     fi
 done
+# ‏FUSE: ‏ntfs-3g רץ עליו — מדידת used_bytes ובדיקת מחיצת המערכת בקליטה
+# (#1368, ‏#1369) וכתיבת שם המחשב (hostname.sh). בקרנל דביאן 13 הוא built-in
+# (‏kernel/fs/fuse/fuse.ko ב-modules.builtin, נמדד 13/10) ואין .ko לארוז;
+# קרנל שבו אינו built-in עוצר כאן, ולא מתגלה מול מחשב בנייה כ-used_bytes=null.
+# ‏grep: ‏0 = built-in, ‏1 = אינו, ‏2 = הקובץ לא נקרא — והשניים האחרונים עוצרים.
+_fuse_rc=0
+grep -qx 'kernel/fs/fuse/fuse.ko' "$MODSRC/modules.builtin" || _fuse_rc=$?
+case "$_fuse_rc" in
+    0) ;;
+    1) _missing="$_missing fuse(not-built-in)" ;;
+    *) _missing="$_missing fuse(modules.builtin-unreadable)" ;;
+esac
 if [ -n "$_missing" ] || [ -n "$_missing_sub" ]; then
     [ -z "$_missing_sub" ] || echo "missing module trees under $MODSRC:$_missing_sub" >&2
     [ -z "$_missing" ] || echo "missing required modules:$_missing" >&2

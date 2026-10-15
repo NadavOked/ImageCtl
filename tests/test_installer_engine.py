@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -265,10 +266,10 @@ def test_dry_run_prints_the_exact_command_sequence_and_redacts_secrets(tmp_path)
         "mkdir", "mount", "mkdir", "mount", "debootstrap", "mkdir",
         "mount", "mount", "mount", "mount", "write-target", "rm",
         "chroot", "chroot", "cp", "cp", "chmod", "cp", "chroot", "chroot",
-        "mkdir", "mkdir", "cp", "cp", "verify-package-pool", "write-target",
+        "mkdir", "cp", "cp", "verify-package-pool", "write-target",
         "write-target", "write-target", "write-target", "cp", "printf",
-        "chroot", "chroot", "chroot", "write-target", "chroot", "blkid", "blkid",
-        "write-target", "write-target", "write-target", "write-target",
+        "chroot", "chroot", "chroot", "write-target", "write-target", "chroot", "blkid", "blkid",
+        "write-target", "write-target", "write-target", "chroot", "write-target",
         "write-target-secret", "umount", "umount", "umount", "umount",
         "umount", "umount", "sync",
     ]
@@ -277,14 +278,18 @@ def test_dry_run_prints_the_exact_command_sequence_and_redacts_secrets(tmp_path)
     assert "+ chroot <target> grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=debian --force-extra-removable" in lines
     assert "--removable --force-extra-removable" not in got.stdout
     assert "+ chroot <target> grub-install --target=i386-pc /dev/sda" in lines
+    time_sync = "+ chroot <target> systemctl enable systemd-timesyncd.service"
+    answers = "+ write-target mode=0600 <target>/etc/imagectl/answers"
+    assert lines.index(time_sync) + 1 == lines.index(answers)
     grub_cfg = "+ write-target mode=0644 <target>/etc/default/grub.d/imagectl.cfg"
-    assert lines.index(grub_cfg) + 1 == lines.index("+ chroot <target> update-grub")
+    recovery = "+ write-target mode=0755 <target>/etc/grub.d/41_imagectl_recovery"
+    assert lines.index(grub_cfg) < lines.index(recovery) < lines.index("+ chroot <target> update-grub")
     assert lines[-7:] == [
         "+ umount <target>/cdrom", "+ umount <target>/sys", "+ umount <target>/proc",
         "+ umount <target>/dev", "+ umount <target>/boot/efi", "+ umount <target>", "+ sync",
     ]
     assert "correct horse" not in got.stdout + got.stderr
-    assert "reboot" not in got.stdout
+    assert re.search(r"(?m)^\+\s+reboot(?:\s|$)", got.stdout) is None
     for state in ("partitioning", "bootstrap", "packages", "bootloader", "finishing", "done"):
         assert f"state={state} " in got.stderr
     assert box["state"].read_text(encoding="utf-8").splitlines()[:3] == [
@@ -326,7 +331,16 @@ install_bootloader
     cfg = (target / "etc" / "default" / "grub.d" / "imagectl.cfg").read_text(encoding="utf-8")
     settings = [line for line in cfg.splitlines() if line and not line.startswith("#")]
     # hidden with 0 would leave no window in which to press Esc
-    assert settings == ["GRUB_TIMEOUT_STYLE=hidden", "GRUB_TIMEOUT=2"]
+    assert settings == ["GRUB_TIMEOUT_STYLE=hidden", "GRUB_TIMEOUT=3"]
+
+    recovery = target / "etc" / "grub.d" / "41_imagectl_recovery"
+    text = recovery.read_text(encoding="utf-8")
+    assert 'menuentry "ImageCtl recovery (text console)"' in text
+    assert "root_uuid=$(grub-probe --target=fs_uuid /)" in text
+    assert "root=UUID=$root_uuid ro nomodeset systemd.unit=multi-user.target" in text
+    assert log.index("write-target 0755 /etc/grub.d/41_imagectl_recovery") < log.index(
+        f"chroot {target.as_posix()} update-grub"
+    )
 
 
 @LINUX_ONLY
@@ -421,6 +435,65 @@ def test_removing_the_iso_guard_makes_the_destructive_dry_run_reachable(tmp_path
     got = _run(box, _answers(tmp_path / "answers"), "--dry-run", engine=mutated / "imagectl-install")
     assert got.returncode == 0, got.stderr
     assert "+ sgdisk --zap-all" in got.stdout
+
+
+def _copy_repo(tmp_path: Path, packages: dict[str, str], on_cd: tuple[str, ...]):
+    """‏copy_local_repo עצמו (לא dry-run) מול ‏/cdrom מדומה: ‏pool של ה-netinst
+    (‏pool/main/o/...) לצד pool/main/imagectl, ו-dists/ שמאנדקס את שניהם — כמו
+    ה-ISO אחרי `make-pool.sh --index-only` (‏#1371)."""
+    import gzip
+    cdrom, target = tmp_path / "cdrom", tmp_path / "target"
+    for rel in on_cd:
+        (cdrom / rel).parent.mkdir(parents=True, exist_ok=True)
+        (cdrom / rel).write_bytes(b"deb")
+    index = cdrom / "dists" / "trixie" / "main" / "binary-amd64" / "Packages.gz"
+    index.parent.mkdir(parents=True)
+    index.write_bytes(gzip.compress("".join(
+        f"Package: {name}\nFilename: {rel}\n\n" for name, rel in packages.items()).encode()))
+    target.mkdir()
+    harness = tmp_path / "harness.sh"
+    harness.write_text(
+        "DRY_RUN=0\n"
+        'must_run() { _c=$1; _m=$2; shift 2; "$@" || fail "$_c" "$_m"; }\n'
+        "fail() { printf 'FAIL [%s] %s\\n' \"$1\" \"$2\"; exit 2; }\n"
+        f'. "{(INSTALLER / "lib" / "bootstrap.sh").as_posix()}"\n'
+        "copy_local_repo\n", newline="\n")
+    env = {**os.environ, "CDROM": cdrom.as_posix(), "TARGET": target.as_posix(),
+           "BOOTSTRAP_LOG": (tmp_path / "debootstrap.log").as_posix()}
+    got = subprocess.run([SH, str(harness)], text=True, capture_output=True, env=env,
+                         cwd=tmp_path, stdin=subprocess.DEVNULL)
+    return got, target / "var" / "lib" / "imagectl" / "apt-repo"
+
+
+NETINST_AND_OURS = {
+    "qemu-system-x86": "pool/main/imagectl/qemu-system-x86_1_amd64.deb",
+    "fonts-ibm-plex": "pool/contrib/imagectl/fonts-ibm-plex_1_all.deb",
+    "openssh-server": "pool/main/o/openssh/openssh-server_10.0p1-7+deb13u4_amd64.deb",
+    "dbus-user-session": "pool/main/d/dbus/dbus-user-session_1.16.2-2_amd64.deb",
+}
+
+
+def test_the_local_repo_has_every_package_its_index_lists(tmp_path):
+    """שרת ת"א 13/10: ‏495 מתוך 1134 החבילות באינדקס היו בלי קובץ (openssh-server,
+    ‏dbus-user-session) — רק pool/*/imagectl הועתק, ו-dists/ כולו."""
+    import gzip
+    got, repo = _copy_repo(tmp_path, NETINST_AND_OURS, tuple(NETINST_AND_OURS.values()))
+    assert got.returncode == 0, got.stdout + got.stderr
+    text = gzip.decompress((repo / "dists/trixie/main/binary-amd64/Packages.gz").read_bytes()).decode()
+    listed = [line.split(": ", 1)[1] for line in text.splitlines() if line.startswith("Filename: ")]
+    assert len(listed) == len(NETINST_AND_OURS)
+    missing = [rel for rel in listed if not (repo / rel).is_file()]
+    assert missing == [], f"the local repo publishes packages it does not have: {missing}"
+
+
+def test_an_index_entry_without_a_file_fails_the_install_by_name(tmp_path):
+    """ראיה חיובית (עיקרון 5): אינדקס שמונה קובץ שאינו על הדיסק — ההתקנה נעצרת
+    בשם, ולא שרת שנופל ב-"File not found" בעדכון הראשון."""
+    on_cd = tuple(rel for name, rel in NETINST_AND_OURS.items() if name != "openssh-server")
+    got, _repo = _copy_repo(tmp_path, NETINST_AND_OURS, on_cd)
+    assert got.returncode == 2
+    assert "FAIL [apt-repo-check] 1 of 4 indexed packages are not in the local repository" in got.stdout
+    assert "openssh-server_10.0p1-7+deb13u4_amd64.deb" in got.stdout
 
 
 def test_installed_system_reserves_tty1_before_enabling_firstboot():

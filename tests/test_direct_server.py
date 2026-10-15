@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 
 import pytest
-from conftest import hello_body
+from conftest import hello_body, room_slots
 from test_server_room import CLONER1, CLONER2, cloner_hello, report, room, room_server  # noqa: F401
 
 from server.tasks import TOKEN_HEADER
@@ -292,7 +292,8 @@ def test_stopping_the_round_needs_the_source_label_and_cancels_the_task(room_ser
     assert _build_hello(anon)["task"] is None
     # אחרי שהסבב נסגר אפשר לפתוח סבב מספרייה רגיל — והמקור שלו הוא הספרייה.
     assert admin.post("/api/console/room", json={
-        "image_id": "img_7f3a91", "target_drives": 2}).status_code == 200
+        "image_id": "img_7f3a91", "target_drives": 2,
+        "target_slots": room_slots(ctx.conn, {CLONER1: ["S1", "S2"]})}).status_code == 200
     assert room(admin)["round"]["source"] == {"kind": "library"}
 
 
@@ -301,7 +302,8 @@ def test_a_library_round_still_starts_the_server_engine(room_server):
     admin, anon, ctx = room_server["admin"], room_server["anon"], room_server["ctx"]
     cloner_hello(anon, CLONER1, ["S1", "S2"])
     assert admin.post("/api/console/room", json={
-        "image_id": "img_7f3a91", "target_drives": 2}).status_code == 200
+        "image_id": "img_7f3a91", "target_drives": 2,
+        "target_slots": [{"mac": CLONER1, "ports": [1, 2]}]}).status_code == 200
     cloner_hello(anon, CLONER1, ["S1", "S2"])          # מצטרף
     cloner_hello(anon, CLONER1, ["S1", "S2"])          # הדופק שמוציא את הגל
     assert room(admin)["round"]["wave_state"] == "running"

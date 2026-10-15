@@ -219,6 +219,55 @@ def test_agent_config_loads_kernel_and_initrd_from_the_server():
     assert "imagectl.server=http://10.44.12.10:8080" in text
 
 
+@pytest.mark.parametrize(
+    "a",
+    [
+        answer(),
+        answer(role="build"),
+        answer(role="cloner"),
+        answer(task={"id": "tsk_1"}),
+        answer(session=OPEN_SESSION),
+    ],
+)
+def test_every_network_entry_retries_kernel_and_initrd_three_times(a):
+    text = render(a, CFG)
+    entry = text.split('menuentry "ImageSrv" --id imagectl {', 1)[1].split("\n}", 1)[0]
+    assert entry.count("for attempt in 1 2 3; do") == 2
+    assert 'if linux (http,10.44.12.10:8080)/boot/vmlinuz ' in entry
+    # ‏`then` בשורה משלו מאז 54223f94 ("Fix GRUB retry command boundaries")
+    assert 'if initrd (http,10.44.12.10:8080)/boot/initrd.img\n        then\n' in entry
+    assert 'echo "Loading kernel over HTTP (attempt $attempt of 3)..."' in entry
+    assert 'echo "Loading initrd over HTTP (attempt $attempt of 3)..."' in entry
+
+
+def test_network_load_failure_reaches_the_existing_safe_fallback():
+    classroom = render(answer(task={"id": "tsk_1"}), CFG)
+    assert classroom.count('echo "Falling back after a short delay."') == 2
+    assert classroom.count("sleep --interruptible 3") == 2
+    assert classroom.count("        try_local") == 2
+
+    cloner = render(answer(role="cloner", task={"id": "tsk_1"}), CFG)
+    assert "try_local" not in cloner
+    assert cloner.count("This Legacy BIOS cloning machine has no local system") == 2
+    assert cloner.count("while [ \"$stay_on\" = \"y\" ]; do") == 2
+
+
+def test_retry_keeps_the_kernel_command_line_clean_and_the_menu_ascii():
+    text = render(answer(task={"id": "tsk_1"}), CFG)
+    linux = next(line for line in text.splitlines() if line.strip().startswith("if linux "))
+    imagectl_args = [word for word in linux.split() if word.startswith("imagectl.")]
+    assert imagectl_args == ["imagectl.server=http://10.44.12.10:8080"]
+    assert "imagectl.mode=recovery" not in linux
+    text.encode("ascii")
+
+    recovery = render(answer(), CFG)
+    recovery_linux = next(line for line in recovery.splitlines()
+                          if line.strip().startswith("if linux "))
+    recovery_args = [word for word in recovery_linux.split() if word.startswith("imagectl.")]
+    assert recovery_args == ["imagectl.server=http://10.44.12.10:8080",
+                             "imagectl.mode=recovery"]
+
+
 def test_agent_config_leaks_nothing_from_the_answer():
     """הפרטים מגיעים לסוכן מ-hello, לא מ-GRUB."""
     text = render(answer(task={"id": "tsk_0091"}, session=OPEN_SESSION), CFG)

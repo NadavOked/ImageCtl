@@ -235,9 +235,13 @@ def test_list_interfaces_reads_sysfs_and_skips_loopback(tmp_path):
         d.mkdir()
         (d / "operstate").write_text(state)
         (d / "address").write_text("b4:2e:99:07:1a:c4\n")
+        (d / "flags").write_text("0x1003\n" if name == "eth0" else "0x1002\n")
+        (d / "carrier").write_text("1\n" if name == "eth0" else "0\n")
     found = dhcp.list_interfaces(tmp_path)
     assert [i["name"] for i in found] == ["eth0", "eth1"]
     assert found[0]["state"] == "up" and found[0]["mac"] == "b4:2e:99:07:1a:c4"
+    assert found[0]["admin_up"] is True and found[0]["link_up"] is True
+    assert found[1]["admin_up"] is False and found[1]["link_up"] is False
 
 
 def test_apply_reports_an_unwritable_path_instead_of_raising(tmp_path):

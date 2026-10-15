@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import sqlite3
 
+from . import crcwarn
+
 #: ‏verdict של disk_event שבו מונה ה-CRC נקרא באמת (‏`smart.sh`). ‏`unchecked`
 #: נקרא רק כשהסיבה היא `no_health` — ‏smartctl פתח את הדיסק וקרא מאפיינים.
 #: ‏`failed_last` דורס את ה-reason בסיבת השרת, ולכן אינו בסיס.
@@ -71,6 +73,9 @@ def drawer_fields(conn: sqlite3.Connection, disk: dict) -> dict:
         # ‏None = לא נמדד (אין מונה עכשיו, או אין סבב קודם שקרא אותו) — לא 0.
         # שלילי (דיסק אחר עם אותו סידורי, מונה שאופס) אינו "עלה".
         "crc_rise": max(0, crc - base) if base is not None else None,
+        # ‏#1366: המונה המוחלט מעל `crc_warn_threshold` — כתום גם בגל ראשון,
+        # שבו אין "עלייה". ‏None = המונה לא נקרא (לא "תקין").
+        "crc_suspect": crcwarn.suspect(crc, crcwarn.threshold(conn)) if crc is not None else None,
     }
 
 
@@ -101,7 +106,8 @@ def warnings(machines: list[dict], selection: bool) -> list[dict]:
                 continue
             slow = d.get("link_state") == "slow"
             rise = d.get("crc_rise") or 0
-            if not slow and rise <= 0:
+            suspect = d.get("crc_suspect") is True    # #1366
+            if not slow and rise <= 0 and not suspect:
                 continue
             parts = []
             if slow:
@@ -109,13 +115,15 @@ def warnings(machines: list[dict], selection: bool) -> list[dict]:
             if rise > 0:
                 # עברית לפני "CRC": אחרת "6.0 Gb/s · CRC +12" הוא ריצת LTR אחת והסדר מתהפך
                 parts.append(f"מונה CRC עלה ב-{rise} מאז הסבב הקודם")
+            text = " · ".join(parts) + " — לבדוק כבל או מגירה" if parts else ""
+            if suspect:
+                text = " · ".join(x for x in (crcwarn.text_he(d["crc"]), text) if x)
             out.append({
                 "mac": m["mac"], "machine": m.get("name"), "port": d.get("port"),
                 "serial": d.get("serial"), "slot_name": d.get("slot_name"),
                 "link_gbps": d.get("link_gbps"), "link_max_gbps": d.get("link_max_gbps"),
-                "crc_rise": d.get("crc_rise"),
-                "text_he": f"{m.get('name') or m['mac']} · {_slot(m, d.get('port'), d)}: "
-                           + " · ".join(parts) + " — לבדוק כבל או מגירה",
+                "crc_rise": d.get("crc_rise"), "crc": d.get("crc"), "crc_suspect": suspect,
+                "text_he": f"{m.get('name') or m['mac']} · {_slot(m, d.get('port'), d)}: {text}",
             })
     return out
 
@@ -163,5 +171,7 @@ def missing(machines: list[dict], remaining: int, slots: list[dict] | None,
                     "awake": bool(m.get("awake")), "joined": bool(m.get("joined")),
                     # הכיבוי נמסר ב-hello (`power_action`): מכונה שאינה עונה לא תקבל אותו.
                     "can_poweroff": bool(m.get("awake")),
+                    # ‏#1367: באמצע שיכפול מקומי — הכיבוי ישבור את היעד; הקונסולה מזהירה
+                    "local_copy": bool(m.get("local_copy")),
                     "text_he": text})
     return out

@@ -22,7 +22,7 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from conftest import MANIFEST_256, hello_body, setup_classroom
+from conftest import MANIFEST_256, hello_body, room_slots, setup_classroom
 
 from server.imagefit import validate_expand_choice
 from test_server_room import (CLONER1, CLONER2, cloner_hello, heartbeat,
@@ -148,6 +148,8 @@ def test_the_room_round_choice_survives_into_the_second_wave(room_server):
     assert deploy.post("/api/console/room", json={
         "image_id": "img_7f3a91", "target_drives": 6,
         "expand_partition": "none",
+        "target_slots": room_slots(room_server["ctx"].conn, {
+            CLONER1: ["S1", "S2"], CLONER2: ["S3", "S4"]}),
     }).status_code == 200
     wave1 = cloner_hello(anon, CLONER1, ["S1", "S2"])["session"]
     assert wave1["expand_partition"] == "none"
@@ -169,6 +171,7 @@ def test_a_room_round_with_no_choice_reads_back_as_auto(room_server):
     deploy, anon = room_server["deploy"], room_server["anon"]
     assert deploy.post("/api/console/room", json={
         "image_id": "img_7f3a91", "target_drives": 2,
+        "target_slots": room_slots(room_server["ctx"].conn, {CLONER1: ["S1", "S2"]}),
     }).status_code == 200
     answer = cloner_hello(anon, CLONER1, ["S1", "S2"])
     assert answer["session"]["expand_partition"] == "auto"

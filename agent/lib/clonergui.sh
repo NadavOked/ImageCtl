@@ -75,7 +75,8 @@ cloner_gui_state() {
         _cg_name=$(json_get "$RUN_DIR/manifest.json" ".name")
     case "$_cg_name" in null) _cg_name= ;; esac
     printf 'cloner=%s\n' "$_cg_name" >> "$_cg_next" || return 1
-    gui_server_addr >> "$_cg_next" || return 1   # #1252: the header's server (guistate.sh)
+    [ -s "$RUN_DIR/server-restarted-wave" ] && printf 'server_restarted_wave=1\n' >> "$_cg_next"
+    gui_header_state "$RUN_DIR/response.json" >> "$_cg_next" || return 1
     _cg_count=$(json_get "$RUN_DIR/response.json" ".drawer_count")
     case "$_cg_count" in [1-8]) printf 'drawer_count=%s\n' "$_cg_count" >> "$_cg_next" || return 1 ;; esac
     # #1304: the standby screen's connection line. A hello.state the reader
@@ -116,7 +117,7 @@ cloner_gui_state() {
 
     # Idle -- no round targets yet: list the physically connected disks so the
     # screen shows what is plugged in (count, slot, brand, size), not a bare
-    # "waiting". The record is cdisk=port|dev|model|size|smart|cause|link|link_max (#432) -- NOT "disk=", which
+    # "waiting". The record is cdisk=port|dev|model|size|smart|cause|link|link_max|crc (#432, #1366) -- NOT "disk=", which
     # the build machine already uses for its local disk list (#688).
     # ‏#867: ממוין לפי מספר הדיסק (השדה הראשון), לא לפי סדר הגילוי של
     # list_disks -- במחשב 2 sda הוא דיסק 3, והמסך הציג "3, 1, 2". השורות
@@ -126,6 +127,8 @@ cloner_gui_state() {
         _cg_idle="$GUI_DIR/cdisk.unsorted"
         : > "$_cg_idle" || return 1
         disk_failures_refresh || :   # #874: זיכרון השרת מה-hello האחרון; כשל = הקובץ הקודם
+        # ‏#1366: סף ה-CRC המוחלט מה-hello (הגדרה בקונסולה); ריק = שרת ישן — לא צובעים.
+        _cg_crcmax=$(json_get "$RUN_DIR/response.json" ".crc_warn_threshold" 2>/dev/null)
         for _cg_d in $(list_disks); do
             _cg_dport=$(disk_port "$_cg_d")
             case "$_cg_dport" in ''|*[!0-9]*) _cg_dport=0 ;; esac
@@ -142,9 +145,13 @@ cloner_gui_state() {
             # או חריץ) עובר SMART. השדה השישי הוא הסיבה שהשרת סיווג (cable/disk),
             # ריק כשירוק. ‏disk_failure_cause יושב ב-failmark.sh: גם השער קורא אותו.
             _cg_dcause=$(disk_failure_cause "$_cg_d") && _cg_dsmart=failed_last
+            [ "$_cg_dsmart" = fail ] && _cg_dcause=$(smart_field "$_cg_d" 2)   # #1366: why F1 -- field 6
+            # #1366: 199 only when smartctl read it (disk_link_json's rule), over the hello's threshold
+            _cg_crc=$(disk_link_json "$_cg_d" | sed -n 's/.*"crc":\([0-9][0-9]*\).*/\1/p')
+            case "$_cg_crcmax" in ''|0|*[!0-9]*) _cg_crc= ;; *) [ -n "$_cg_crc" ] && [ "$_cg_crc" -gt "$_cg_crcmax" ] || _cg_crc= ;; esac
             _cg_link=$(disk_link "$_cg_d")   # #432: "<speed> <max>", null = not read -- fields 7/8
-            printf '%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$_cg_last" "$_cg_dport" "$_cg_d" \
-                "$_cg_dmodel" "$_cg_dsize" "$_cg_dsmart" "$_cg_dcause" "${_cg_link% *}" "${_cg_link#* }" >> "$_cg_idle" || return 1
+            printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$_cg_last" "$_cg_dport" "$_cg_d" \
+                "$_cg_dmodel" "$_cg_dsize" "$_cg_dsmart" "$_cg_dcause" "${_cg_link% *}" "${_cg_link#* }" "$_cg_crc" >> "$_cg_idle" || return 1
         done
         sort -t'|' -k1,1n -k2,2n "$_cg_idle" > "$_cg_idle.sorted" || return 1
         sed 's/^[01]|/cdisk=/' "$_cg_idle.sorted" >> "$_cg_next" || return 1
@@ -208,6 +215,7 @@ gui_smart_choice() {
     mv "$GUI_DIR/smart-request.next" "$GUI_DIR/smart-request" || return 1
 
     while kill -0 "$_gui_pid" 2>/dev/null; do
+        attended_power_check
         if [ -s "$GUI_DIR/smart-decision" ]; then
             IFS='|' read -r _gsc_dnonce _gsc_dec < "$GUI_DIR/smart-decision" || {
                 rm -f "$GUI_DIR/smart-request" "$GUI_DIR/smart-decision"
@@ -244,13 +252,12 @@ gui_smart_choice() {
 # ‏#695: קובע את $_disks לרשימת המגירות שנבחרו לסבב. סבב עם בחירה
 # (‏session.target_ports הוא מערך) כותב **רק** לפורטים האלה, וכל פורט
 # חייב למפות לדיוק דיסק אחד — אחרת die_local, בלי נפילה ל"כל הדיסקים"
-# (עיקרון 4/5/7). סבב ישן (null) שומר על ההתנהגות הישנה (כל המגירות).
+# (עיקרון 4/5/7). null אינו אישור לכתוב לכל המגירות (#1410).
 # מריץ בשל המעטפת של הסוכן (לא בתת-מעטפת), כדי ש-die_local יעצור באמת.
 resolve_target_drawers() {
     _rt_ports=$(json_get "$RESP" ".session.target_ports")
     if [ "$_rt_ports" = "null" ]; then
-        _disks=$(list_drawers)
-        return 0
+        die_local "room target selection is missing"
     fi
     _disks=""
     _rt_list=$(jq -er '.session.target_ports

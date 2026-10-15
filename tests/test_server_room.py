@@ -11,7 +11,7 @@ from pathlib import Path
 import json
 
 import pytest
-from conftest import Clock, hello_body, write_image, MANIFEST_256
+from conftest import Clock, hello_body, write_image, MANIFEST_256, room_slots
 
 try:
     from fastapi.testclient import TestClient
@@ -63,6 +63,12 @@ def room_server(tmp_path: Path, monkeypatch):
     yield {"app": app, "ctx": ctx, "admin": admin, "deploy": deploy,
            "anon": TestClient(app), "woken": woken, "recorder": recorder}
     ctx.sender.stop()
+
+
+def room_body(room_server, target: int, drawers: dict[str, list[str]]) -> dict:
+    """גוף פתיחת סבב עם בחירה מפורשת (#1410) של כל המגירות ב-`drawers`."""
+    return {"image_id": "img_7f3a91", "target_drives": target,
+            "target_slots": room_slots(room_server["ctx"].conn, drawers)}
 
 
 def cloner_hello(client, mac: str, serials: list[str], *, ports: bool = True,
@@ -137,7 +143,7 @@ def test_round_wakes_room_and_autostarts_when_drives_cover_target(room_server):
 
     # משתמש הפצה פותח — זו בדיוק ההרשאה שלו (אפיון סעיף 11).
     opened = deploy.post("/api/console/room",
-                         json={"image_id": "img_7f3a91", "target_drives": 4})
+                         json=room_body(room_server, 4, {CLONER1: ["S1", "S2"], CLONER2: ["S3", "S4"]}))
     assert opened.status_code == 200
     assert len(room_server["woken"]) == 2          # WoL לכל החדר עם הפתיחה
 
@@ -164,7 +170,7 @@ def test_room_start_with_no_members_is_refused_and_wave_stays_open(room_server):
     """
     deploy, anon, ctx = room_server["deploy"], room_server["anon"], room_server["ctx"]
     assert deploy.post("/api/console/room",
-                       json={"image_id": "img_7f3a91", "target_drives": 4},
+                       json=room_body(room_server, 4, {CLONER1: ["S1", "S2"]}),
                        ).status_code == 200
     refused = deploy.post("/api/console/room/start")
     assert refused.status_code == 409, refused.text
@@ -191,7 +197,7 @@ def test_sender_failure_stops_room_until_operator_opens_it_again(room_server):
     room_server["recorder"].code = 3
     opened = deploy.post(
         "/api/console/room",
-        json={"image_id": "img_7f3a91", "target_drives": 2},
+        json=room_body(room_server, 2, {CLONER1: ["S1"]}),
     ).json()
     wave = cloner_hello(anon, CLONER1, ["S1"])["session"]["id"]
     assert deploy.post("/api/console/room/start").status_code == 200
@@ -216,7 +222,7 @@ def test_sender_failure_stops_room_until_operator_opens_it_again(room_server):
     room_server["recorder"].code = 0
     reopened = deploy.post(
         "/api/console/room",
-        json={"image_id": "img_7f3a91", "target_drives": 2},
+        json=room_body(room_server, 2, {CLONER1: ["S1"]}),
     )
     assert reopened.status_code == 200, reopened.text
     assert reopened.json()["id"] != opened["id"]
@@ -232,7 +238,7 @@ def test_tally_requires_the_serial_that_was_present_at_done(room_server):
     deploy, anon, ctx = room_server["deploy"], room_server["anon"], room_server["ctx"]
     opened = deploy.post(
         "/api/console/room",
-        json={"image_id": "img_7f3a91", "target_drives": 2},
+        json=room_body(room_server, 2, {CLONER1: ["S1"]}),
     ).json()
     wave = cloner_hello(anon, CLONER1, ["S1"])["session"]["id"]
     assert deploy.post("/api/console/room/start").status_code == 200
@@ -265,7 +271,7 @@ def test_close_marks_closing_before_sender_stop_so_tick_opens_no_wave(
     deploy, ctx = room_server["deploy"], room_server["ctx"]
     opened = deploy.post(
         "/api/console/room",
-        json={"image_id": "img_7f3a91", "target_drives": 2},
+        json=room_body(room_server, 2, {CLONER1: ["S1"]}),
     ).json()
     before = ctx.conn.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()["n"]
     observed = []
@@ -296,7 +302,7 @@ def test_waves_accumulate_by_serial_until_target(room_server):
     deploy, anon, ctx = room_server["deploy"], room_server["anon"], room_server["ctx"]
 
     assert deploy.post("/api/console/room",
-                       json={"image_id": "img_7f3a91", "target_drives": 6},
+                       json=room_body(room_server, 6, {CLONER1: ["S1", "S2"], CLONER2: ["S3", "S4"]}),
                        ).status_code == 200
     wave1 = cloner_hello(anon, CLONER1, ["S1", "S2"])["session"]["id"]
     cloner_hello(anon, CLONER2, ["S3", "S4"])
@@ -338,7 +344,7 @@ def test_failed_drawer_is_not_counted_and_retries_next_wave(room_server):
     deploy, anon = room_server["deploy"], room_server["anon"]
 
     deploy.post("/api/console/room",
-                json={"image_id": "img_7f3a91", "target_drives": 2})
+                json=room_body(room_server, 2, {CLONER1: ["S1", "S2"]}))
     wave1 = cloner_hello(anon, CLONER1, ["S1", "S2"])["session"]["id"]
     heartbeat(room_server)
     assert room(deploy)["round"]["wave_state"] == "running"
@@ -368,7 +374,7 @@ def test_a_machine_that_lost_one_drawer_is_partial_and_not_done(room_server):
     deploy, anon, ctx = room_server["deploy"], room_server["anon"], room_server["ctx"]
 
     deploy.post("/api/console/room",
-                json={"image_id": "img_7f3a91", "target_drives": 6})
+                json=room_body(room_server, 6, {CLONER1: ["S1", "S2", "S3"], CLONER2: ["S4", "S5"]}))
     wave1 = cloner_hello(anon, CLONER1, ["S1", "S2", "S3"])["session"]["id"]
     cloner_hello(anon, CLONER2, ["S4", "S5"])
     assert deploy.post("/api/console/room/start").status_code == 200
@@ -414,7 +420,7 @@ def test_an_old_agent_that_still_says_done_keeps_working(room_server):
     deploy, anon, ctx = room_server["deploy"], room_server["anon"], room_server["ctx"]
 
     deploy.post("/api/console/room",
-                json={"image_id": "img_7f3a91", "target_drives": 4})
+                json=room_body(room_server, 4, {CLONER1: ["S1", "S2"]}))
     wave1 = cloner_hello(anon, CLONER1, ["S1", "S2"])["session"]["id"]
     assert deploy.post("/api/console/room/start").status_code == 200
 
@@ -453,7 +459,7 @@ def test_the_drawer_slot_travels_from_hello_to_the_console(room_server):
     deploy, anon = room_server["deploy"], room_server["anon"]
 
     deploy.post("/api/console/room",
-                json={"image_id": "img_7f3a91", "target_drives": 3})
+                json=room_body(room_server, 3, {CLONER1: ["S1", "S2", "S3"]}))
     wave = cloner_hello(anon, CLONER1, ["S1", "S2", "S3"])["session"]["id"]
 
     heartbeat(room_server)
@@ -495,7 +501,7 @@ def test_the_crc_rise_of_the_round_reaches_the_drawer_and_absence_is_not_zero(ro
     main השדה אינו קיים ב-`drawer_list` כלל."""
     deploy, anon = room_server["deploy"], room_server["anon"]
     deploy.post("/api/console/room",
-                json={"image_id": "img_7f3a91", "target_drives": 2})
+                json=room_body(room_server, 2, {CLONER1: ["S1", "S2"]}))
     wave = cloner_hello(anon, CLONER1, ["S1", "S2"])["session"]["id"]
     assert anon.post("/api/v1/agent/progress", json={
         "session_id": wave, "mac": CLONER1, "state": "done",
@@ -512,20 +518,23 @@ def test_the_crc_rise_of_the_round_reaches_the_drawer_and_absence_is_not_zero(ro
     assert by_port[2]["crc_delta"] is None
 
 
-def test_an_agent_without_the_port_field_still_works(room_server):
-    """סוכן ישן: אין `port`, אין מספר חריץ — והכול ממשיך כרגיל."""
+def test_an_agent_without_the_port_field_is_shown_and_not_written(room_server):
+    """סוכן ישן: אין `port`, אין מספר חריץ. מאז #1410 הבחירה היא לפי חריץ
+    ואין "כל הדיסקים", ולכן מגירה בלי חריץ אינה יעד — המכונה אינה מצטרפת
+    לגל (עיקרון 1), אבל נשארת נראית בקונסולה לפי שם ההתקן."""
     deploy, anon = room_server["deploy"], room_server["anon"]
 
-    deploy.post("/api/console/room",
-                json={"image_id": "img_7f3a91", "target_drives": 2})
-    assert cloner_hello(anon, CLONER1, ["S1", "S2"],
-                        ports=False)["session"]["state"] in ("open", "running")
+    assert deploy.post("/api/console/room", json=room_body(
+        room_server, 2, {CLONER1: ["S1", "S2"]})).status_code == 200
+    assert cloner_hello(anon, CLONER1, ["S1", "S2"], ports=False)["session"] is None
 
     heartbeat(room_server)
     machine = next(m for m in room(deploy)["machines"] if m["mac"] == CLONER1)
     assert [d["port"] for d in machine["drawer_list"]] == [None, None]
     assert [d["dev"] for d in machine["drawer_list"]] == ["sda", "sdb"]
     assert machine["drawers"] == 2 and machine["fresh_drawers"] == 2
+    assert [d["selected"] for d in machine["drawer_list"]] == [False, False]
+    assert room(deploy)["round"]["wave_state"] == "open"
 
 
 def test_room_round_respects_the_single_session_invariant(room_server, classrooms_on):
@@ -544,7 +553,7 @@ def test_room_round_respects_the_single_session_invariant(room_server, classroom
     }).status_code == 200
 
     denied = deploy.post("/api/console/room",
-                         json={"image_id": "img_7f3a91", "target_drives": 2})
+                         json=room_body(room_server, 2, {CLONER1: ["S1"]}))
     assert denied.status_code == 409
 
 
@@ -560,7 +569,7 @@ def test_close_round_mid_wave_and_bad_requests(room_server):
                        ).status_code == 400
 
     deploy.post("/api/console/room",
-                json={"image_id": "img_7f3a91", "target_drives": 8})
+                json=room_body(room_server, 8, {CLONER1: ["S1", "S2"]}))
     cloner_hello(anon, CLONER1, ["S1", "S2"])
     assert deploy.post("/api/console/room/close",
                        json={"confirm_name": "Office 2024 Standard"},
@@ -569,7 +578,7 @@ def test_close_round_mid_wave_and_bad_requests(room_server):
     assert room(deploy)["round"] is None
     # החריץ התפנה — אפשר לפתוח סבב חדש.
     assert deploy.post("/api/console/room",
-                       json={"image_id": "img_7f3a91", "target_drives": 2},
+                       json=room_body(room_server, 2, {CLONER1: ["S1", "S2"]}),
                        ).status_code == 200
 
 
@@ -598,8 +607,7 @@ def test_a_held_machine_beats_without_joining_the_wave(room_server):
     """
     deploy, anon = room_server["deploy"], room_server["anon"]
     assert deploy.post("/api/console/room",
-                       json={"image_id": "img_7f3a91",
-                             "target_drives": 4}).status_code == 200
+                       json=room_body(room_server, 4, {CLONER1: ["S1", "S2"], CLONER2: ["S3", "S4"]})).status_code == 200
 
     # ארבע מגירות טריות — די והותר ליעד — אבל כולן בדופק בלבד.
     cloner_hello(anon, CLONER1, ["S1", "S2"], joining=False)
@@ -625,8 +633,7 @@ def test_an_agent_that_omits_joining_still_joins(room_server):
     """סוכן ישן אינו שולח `joining` — והיעדרו נשאר "מצטרף"."""
     deploy, anon = room_server["deploy"], room_server["anon"]
     assert deploy.post("/api/console/room",
-                       json={"image_id": "img_7f3a91",
-                             "target_drives": 2}).status_code == 200
+                       json=room_body(room_server, 2, {CLONER1: ["S1", "S2"]})).status_code == 200
 
     cloner_hello(anon, CLONER1, ["S1", "S2"], joining=None)
     heartbeat(room_server)
@@ -642,8 +649,7 @@ def test_a_wave_closes_when_the_reports_come_in_another_mac_form(room_server):
     """
     deploy, anon = room_server["deploy"], room_server["anon"]
     assert deploy.post("/api/console/room",
-                       json={"image_id": "img_7f3a91",
-                             "target_drives": 6}).status_code == 200
+                       json=room_body(room_server, 6, {CLONER1: ["S1", "S2"], CLONER2: ["S3", "S4"]})).status_code == 200
 
     wave1 = cloner_hello(anon, CLONER1, ["S1", "S2"])["session"]["id"]
     cloner_hello(anon, CLONER2, ["S3", "S4"])
@@ -717,8 +723,7 @@ def test_close_without_typing_the_image_name_does_not_stop_the_round(room_server
     deploy, anon = room_server["deploy"], room_server["anon"]
 
     assert deploy.post("/api/console/room",
-                       json={"image_id": "img_7f3a91",
-                             "target_drives": 8}).status_code == 200
+                       json=room_body(room_server, 8, {CLONER1: ["S1", "S2"]})).status_code == 200
     cloner_hello(anon, CLONER1, ["S1", "S2"])
 
     # ‏1. גוף ריק — זו בדיוק הקריאה שסגרה סבב לפני #533.
@@ -749,8 +754,7 @@ def test_a_round_whose_image_was_deleted_can_still_be_stopped(room_server):
                            room_server["anon"])
 
     assert deploy.post("/api/console/room",
-                       json={"image_id": "img_7f3a91",
-                             "target_drives": 8}).status_code == 200
+                       json=room_body(room_server, 8, {CLONER1: ["S1", "S2"]})).status_code == 200
     cloner_hello(anon, CLONER1, ["S1", "S2"])
     # #784: the console refuses to delete an image a live round uses.
     assert admin.post("/api/console/images/img_7f3a91/delete",
@@ -796,6 +800,15 @@ def test_target_slots_rejects_out_of_range_duplicate_and_unknown(room_server):
     assert _open_with_slots(admin, []).status_code == 400   # אין fallback לכל-הדיסקים
 
 
+def test_room_without_explicit_target_slots_is_rejected_without_a_row(room_server):
+    response = room_server["deploy"].post("/api/console/room", json={
+        "image_id": "img_7f3a91", "target_drives": 4})
+    assert response.status_code == 400
+    assert response.json()["detail"] == "יש לבחור לפחות דיסק יעד אחד"
+    assert room_server["ctx"].conn.execute(
+        "SELECT COUNT(*) FROM room_rounds").fetchone()[0] == 0
+
+
 def test_target_slots_stored_and_hello_returns_only_this_machines_ports(room_server):
     admin, anon = room_server["admin"], room_server["anon"]
     cloner_hello(anon, CLONER1, ["S1", "S2"])
@@ -806,16 +819,6 @@ def test_target_slots_stored_and_hello_returns_only_this_machines_ports(room_ser
     # כל מכונה מקבלת רק את הפורטים שלה.
     assert cloner_hello(anon, CLONER1, ["S1", "S2"])["session"]["target_ports"] == [1]
     assert cloner_hello(anon, CLONER2, ["S3", "S4"])["session"]["target_ports"] == [2]
-
-
-def test_legacy_round_without_selection_reports_null_target_ports(room_server):
-    """סבב שנפתח בלי בחירה (סוכן/קוד ישן) — target_ports=null, התנהגות
-    'כל הדיסקים' נשמרת (backward-compat)."""
-    deploy, anon = room_server["deploy"], room_server["anon"]
-    assert deploy.post("/api/console/room",
-                       json={"image_id": "img_7f3a91", "target_drives": 4}
-                       ).status_code == 200
-    assert cloner_hello(anon, CLONER1, ["S1", "S2"])["session"]["target_ports"] is None
 
 
 def test_drawer_list_marks_selected_and_filters_fresh(room_server):
@@ -908,7 +911,7 @@ def test_a_writing_machine_reporting_progress_is_not_shown_asleep(room_server):
                          room_server["ctx"])
 
     deploy.post("/api/console/room",
-                json={"image_id": "img_7f3a91", "target_drives": 2})
+                json=room_body(room_server, 2, {CLONER1: ["S1", "S2"]}))
     wave = cloner_hello(anon, CLONER1, ["S1", "S2"])["session"]["id"]
 
     # המכונה כותבת ומדווחת progress — updated_at של החבר נדחף לעכשיו.
@@ -941,7 +944,7 @@ def test_989_new_serials_rejoin_the_open_round_and_same_serials_do_not_until_the
     deploy, anon = room_server["deploy"], room_server["anon"]
 
     assert deploy.post("/api/console/room",
-                       json={"image_id": "img_7f3a91", "target_drives": 7}).status_code == 200
+                       json=room_body(room_server, 7, {CLONER1: ["S1", "S2"], CLONER2: ["S3", "S4", "S5"]})).status_code == 200
     wave1 = cloner_hello(anon, CLONER1, ["S1", "S2"])["session"]["id"]
     cloner_hello(anon, CLONER2, ["S3", "S4", "S5"])
     heartbeat(room_server)

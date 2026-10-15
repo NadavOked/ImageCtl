@@ -134,7 +134,9 @@ def test_an_old_database_accepts_a_reboot_request_and_keeps_pending_rows(tmp_pat
 
     legacy = db_module.SCHEMA.replace("CHECK (action IN ('poweroff', 'reboot'))",
                                       "CHECK (action IN ('poweroff'))")
-    assert "('poweroff', 'reboot')" not in legacy
+    # ‏#1367: גם `confirmed` לא היה אז -- הוא נוסף בעמודה, והבנייה מחדש שומרת אותו
+    legacy = legacy.replace(",\n    confirmed    INTEGER NOT NULL DEFAULT 0   -- #1367: אושר מעל אזהרת שיכפול מקומי", "")
+    assert "('poweroff', 'reboot')" not in legacy and "confirmed    INTEGER" not in legacy
     path = tmp_path / "old.db"
     raw = sqlite3.connect(path)
     raw.executescript(legacy)
@@ -142,8 +144,9 @@ def test_an_old_database_accepts_a_reboot_request_and_keeps_pending_rows(tmp_pat
     raw.commit()
     raw.close()
     conn = db_module.connect(path)
-    conn.execute("INSERT INTO power_requests VALUES ('aa:bb:cc:00:00:22', 'reboot', 't', 'noc')")
+    conn.execute("INSERT INTO power_requests (mac, action, requested_at, requested_by, confirmed)"
+                 " VALUES ('aa:bb:cc:00:00:22', 'reboot', 't', 'noc', 1)")
     conn.commit()
     assert [tuple(r) for r in conn.execute(
-        "SELECT mac, action FROM power_requests ORDER BY mac")] == [
-        ("aa:bb:cc:00:00:21", "poweroff"), ("aa:bb:cc:00:00:22", "reboot")]
+        "SELECT mac, action, confirmed FROM power_requests ORDER BY mac")] == [
+        ("aa:bb:cc:00:00:21", "poweroff", 0), ("aa:bb:cc:00:00:22", "reboot", 1)]   # #1367: נשמר בבנייה

@@ -283,6 +283,8 @@ room_drawer=<machine-index>|<port or 0>|<serial>|<model>|<size>|<smart>|<fresh>|
                                     # operator's name of the slot; NVMe by serial). Empty / absent = "דיסק N"
                                     # #432: |<link state> -- a 12th field, drawer_list[].link_state:
                                     # ok / slow / unknown; only "slow" colours the slot orange (SMART red wins)
+                                    # #1366: |<crc> -- a 13th field, the CRC count when drawer_list[].crc_suspect
+                                    # (over crc_warn_threshold); empty = not over / not read. Orange like slow
 room_warn=<text>                    # #432: one line of round.precheck (an open wave only): a drawer the wave
                                     # would write on a link below its port, or with a risen CRC. Orange box
                                     # above the grid; "התחל" asks first. The server's text_he, as the console
@@ -446,7 +448,8 @@ status bar, no background art. What each part is drawn from:
 | bay name, "דיסק N · SATA N-1" | `cslot_name=` (#704), else "דיסק N"; SATA = port − 1 |
 | size, model | `cdisk=` fields 3–4; the size in market units (500107862016 → "500 GB") |
 | SMART chip, its colour, the bar on the bay, the orange/red line under the cage | `cdisk=` field 5 by the #872 rule: `failed_last` red, `fail` (and an old agent's `warn`) orange, the rest green; `unchecked` says "SMART לא נבדק" |
-| the reason under the name | `fail` → "בדיקת הבריאות של הדיסק נכשלה" (smart.sh classifies fail only on health FAILED); `failed_last` → field 6, the server's cause (כבל/חריץ, הדיסק) |
+| the reason under the name | `fail` → "ה-BIOS יעצור ב-F1 — SMART: …" by field 6, the SMART reason (#1366: `health_failed` / `pending_sectors` 197 / `uncorrectable` 198); `failed_last` → field 6, the server's cause (כבל/חריץ, הדיסק) |
+| the CRC line (#1366) | `cdisk=` field 9: the CRC count when over the hello's `crc_warn_threshold` (empty = not over, not read, or an older server). The bay orange like a slow link, "כבל או מגירה חשודים — N שגיאות" under the name (when SMART and the link have no reason of their own), and a line under the cage |
 | the link, "· 6.0 Gb/s" after SATA N-1, and its orange line (#432) | `cdisk=` fields 7–8 (`disk_link`: the speed and the port's maximum, `null` = not read → "קישור לא ידוע", never blank and never green). Below the maximum: the bay's bar and border orange, "קישור 1.5 מתוך 6.0 Gb/s — לבדוק כבל" under the name (when SMART has no reason of its own), and a line under the cage. The SMART chip and LED stay SMART |
 | IP, MAC | `--ip` / `--mac` (the kiosk's) |
 

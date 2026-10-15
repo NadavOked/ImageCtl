@@ -55,6 +55,7 @@ def sh(script: str) -> subprocess.CompletedProcess:
 # הרכיבים ש-smart.sh נשען עליהם, וחסימת ה-HTTP כך שהבדיקה אינה נוגעת ברשת.
 PRELUDE = (
     f'. {posix(AGENT)}/lib/common.sh; '
+    f'. {posix(AGENT)}/lib/waits.sh; '   # #1367: capped_run, the smartctl ceiling
     f'. {posix(AGENT)}/lib/sysinfo.sh; '
     f'. {posix(AGENT)}/lib/jsonq.sh; '
     f'. {posix(AGENT)}/lib/ui.sh; '
@@ -130,8 +131,11 @@ CLASSIFY = [
     # (15/09) והם משכפלים מושלם. מונה מצטבר מספר על הכבלים, לא על הדיסק.
     ("PASSED", 0, 0, 0, 0, "ok ok"),
     ("FAILED", 0, 0, 0, 0, "fail health_failed"),
-    ("PASSED", 0, 0, 1, 0, "ok ok"),                # uncorrectable אינו צובע
-    ("PASSED", 0, 4, 0, 0, "ok ok"),                # pending אינו צובע
+    # ‏#1366 (נדב 13/10): 198/197 מעל 0 עוצרים BIOS של HP על "press F1" —
+    # ‏`fail`, כתום (שואל, ובלי תשובה כותב). 5 ו-199 עדיין אינם צובעים.
+    ("PASSED", 0, 0, 1, 0, "fail uncorrectable"),
+    ("PASSED", 0, 4, 0, 0, "fail pending_sectors"),
+    ("PASSED", 0, 4, 2, 0, "fail uncorrectable"),   # שניהם: 198 הוא הסיבה שנאמרת
     ("PASSED", 2, 0, 0, 0, "ok ok"),                # reallocated אינו צובע
     ("PASSED", 0, 0, 0, 55242, "ok ok"),            # CRC — מחשב 2 דיסק 2, 15/09
     ("unknown", 0, 0, 0, 0, "unchecked no_health"), # לא PASSED ולא FAILED
@@ -168,10 +172,10 @@ def test_probe_failed_health_is_fail_even_with_nonzero_exit(tmp_path):
     assert probe(tmp_path, full(HEALTH_FAIL), rc=8) == "fail"
 
 
-def test_probe_pending_sectors_are_ok_and_recorded(tmp_path):
-    # ‏#872: 197 אינו צובע — אבל הערך נשמר במטמון (מידע ל-hello ולאירוע).
-    assert probe(tmp_path, full(HEALTH_OK, pending=4)) == "ok"
-    assert (tmp_path / "run/smart/sda.v").read_text().split() == ["ok", "ok", "0", "4", "0", "0"]
+def test_probe_pending_sectors_are_the_f1_stop_and_recorded(tmp_path):
+    # ‏#1366: 197 מעל 0 = ה-BIOS יעצור ב-F1 — `fail` (כתום), והערך נשמר במטמון.
+    assert probe(tmp_path, full(HEALTH_OK, pending=4)) == "fail"
+    assert (tmp_path / "run/smart/sda.v").read_text().split() == ["fail", "pending_sectors", "0", "4", "0", "0"]
 
 
 def test_probe_reallocated_is_ok_and_recorded(tmp_path):
@@ -396,13 +400,22 @@ def test_rescue_keeps_the_disk(tmp_path):
     assert asked(run) == ["sda"]
 
 
-def test_a_disk_with_bad_counters_but_passed_health_is_written_without_asking(tmp_path):
-    """‏#872: 5/197/198/199 אינם עוצרים. הראיה החיובית: לא נשאלה שאלה
+def test_a_disk_with_bad_cable_counters_but_passed_health_is_written_without_asking(tmp_path):
+    """‏#872: 5 ו-199 אינם עוצרים. הראיה החיובית: לא נשאלה שאלה
     (‏`asked` ריק) והדיסק ברשימת הכתיבה."""
-    written, run, err = preflight(tmp_path, full(HEALTH_OK, realloc=8, pending=4,
-                                                 uncorr=2, crc=55242))
+    written, run, err = preflight(tmp_path, full(HEALTH_OK, realloc=8, crc=55242))
     assert written == "sda"
     assert asked(run) == [], err
+
+
+@pytest.mark.parametrize("pending, uncorr", [(4, 0), (0, 2)])
+def test_the_f1_counters_are_orange_asked_and_written_without_an_answer(tmp_path, pending, uncorr):
+    """‏#1366 (נדב 13/10): 197/198 מעל 0 — ה-BIOS יעצור ב-F1. **כתום**: נשאל,
+    ובלי תשובה מהמסך (אין מסך כאן) — נכתב, כמו Clonezilla במכללה."""
+    written, run, err = preflight(tmp_path, full(HEALTH_OK, pending=pending, uncorr=uncorr))
+    assert written == "sda", err
+    assert asked(run) == ["sda"], err              # asked first (orange), then the default
+    assert (run / "smart/sda.v").read_text().split()[:2] ==         ["fail", "uncorrectable" if uncorr else "pending_sectors"]
 
 
 def test_replace_removes_the_disk_and_flags_awaiting(tmp_path):

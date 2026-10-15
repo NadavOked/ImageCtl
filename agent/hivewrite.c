@@ -11,6 +11,7 @@
  * Usage:
  *   hivewrite HIVE KEY\PATH NAME VALUE [NAME VALUE]...   write values
  *   hivewrite -x HIVE KEY\PATH NAME VALUE [NAME VALUE]...   as REG_EXPAND_SZ
+ *   hivewrite -d HIVE KEY\PATH NAME VALUE [NAME VALUE]...   as REG_DWORD
  *   hivewrite -g HIVE KEY\PATH NAME                      print one value
  *
  * All pairs are written into the same key and committed atomically at
@@ -26,6 +27,12 @@
  * REG_SZ would keep the text and silently break every entry in it,
  * including the stock one -- so the type is an explicit flag, and the
  * caller that stages drivers (agent/lib/postdeploy.sh) always passes it.
+ *
+ * -d (#1331) writes REG_DWORD: an in-box storage miniport (storahci,
+ * stornvme) is made boot-start with Services\<svc>\Start=0 -- a DWORD in
+ * a key that also holds Type, ErrorControl, Group and ImagePath, which
+ * must survive. VALUE is plain decimal 0..4294967295; anything else is
+ * refused before the commit (the same all-or-nothing rule).
  *
  * -g exists because the packaged readers cannot run in the initramfs:
  * hivexget is a shell wrapper around hivexsh, and both broke there for
@@ -93,6 +100,37 @@ static int set_ascii_sz(hive_h *h, hive_node_h node,
     return 0;
 }
 
+static int set_dword(hive_h *h, hive_node_h node,
+                     const char *name, const char *text)
+{
+    /* REG_DWORD is four bytes, little-endian. Digits only: strtoull by
+     * itself would accept "-1", " 7" or "+3" without a word. */
+    size_t digits = strlen(text);
+    int ok = digits > 0 && digits <= 10
+             && strspn(text, "0123456789") == digits;
+    unsigned long long n = ok ? strtoull(text, NULL, 10) : 0;
+    char le[4];
+    hive_set_value val;
+
+    if (!ok || n > 0xffffffffULL) {
+        fprintf(stderr, "hivewrite: value for '%s' is not a decimal "
+                        "DWORD\n", name);
+        return -1;
+    }
+    for (int i = 0; i < 4; i++)
+        le[i] = (char)((n >> (8 * i)) & 0xff);
+    val.key = (char *)name;
+    val.t = hive_t_REG_DWORD;
+    val.len = sizeof le;
+    val.value = le;
+    if (hivex_node_set_value(h, node, &val, 0) == -1) {
+        fprintf(stderr, "hivewrite: setting '%s' failed: %s\n",
+                name, strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
 static int get_value(const char *file, const char *path, const char *name)
 {
     hive_h *h = hivex_open(file, 0);
@@ -148,10 +186,14 @@ int main(int argc, char **argv)
         type = hive_t_REG_EXPAND_SZ;
         argv++;
         argc--;
+    } else if (argc > 1 && strcmp(argv[1], "-d") == 0) {
+        type = hive_t_REG_DWORD;
+        argv++;
+        argc--;
     }
     if (argc < 5 || (argc - 3) % 2 != 0 || argv[1][0] == '-') {
         fprintf(stderr,
-                "usage: hivewrite [-x] HIVE KEY\\PATH NAME VALUE [NAME VALUE]...\n"
+                "usage: hivewrite [-x|-d] HIVE KEY\\PATH NAME VALUE [NAME VALUE]...\n"
                 "       hivewrite -g HIVE KEY\\PATH NAME\n");
         return 1;
     }
@@ -171,7 +213,10 @@ int main(int argc, char **argv)
     }
 
     for (int i = 3; i < argc; i += 2) {
-        if (set_ascii_sz(h, node, argv[i], argv[i + 1], type) != 0) {
+        int rc = type == hive_t_REG_DWORD
+                     ? set_dword(h, node, argv[i], argv[i + 1])
+                     : set_ascii_sz(h, node, argv[i], argv[i + 1], type);
+        if (rc != 0) {
             hivex_close(h);   /* no commit -- the file is untouched */
             return 4;
         }

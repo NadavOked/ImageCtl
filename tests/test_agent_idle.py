@@ -26,7 +26,7 @@ def run_idle(tmp_path: Path, setup: str, script: str) -> str:
     calls = tmp_path / "calls"
     return sh(
         f'export RUN_DIR={posix(run)!r} IDLE_POWEROFF_S=2 IDLE_WARN_S=1; '
-        f'. {posix(LIB)}/idle.sh; '
+        f'. {posix(LIB)}/common.sh; . {posix(LIB)}/idle.sh; '
         f'log() {{ printf "%s\\n" "$*"; }}; sync() {{ :; }}; '
         f'poweroff() {{ printf "POWEROFF %s\\n" "$*" >> {posix(calls)!r}; }}; '
         f'reboot() {{ printf "REBOOT %s\\n" "$*" >> {posix(calls)!r}; }}; '
@@ -42,8 +42,8 @@ def _since(tmp_path: Path, ago: int) -> str:
 def test_idle_past_the_threshold_warns_then_powers_off(tmp_path):
     out, calls = run_idle(tmp_path, _since(tmp_path, 10), "idle_check")
     assert "power-off in 1s unless a key is pressed" in out
-    assert "no activity for 2s -- powering off" in out
-    assert calls.read_text(encoding="utf-8") == "POWEROFF -f\n"
+    assert "no activity for 2s: powering off with wake-on-LAN armed" in out
+    assert calls.read_text(encoding="utf-8") == "POWEROFF \n"
 
 
 def test_a_key_press_during_the_countdown_cancels_it(tmp_path):
@@ -78,7 +78,7 @@ def test_a_changed_hello_answer_is_activity(tmp_path):
 
 def test_without_wol_the_machine_stays_on_and_says_so(tmp_path):
     out, calls = run_idle(tmp_path, _since(tmp_path, 10) + "; arm_wol() { return 1; }", "idle_check; echo rc=$?")
-    assert "wol not armed -- staying powered on" in out and "rc=1" in out
+    assert "not all supported wired interfaces were armed -- not powering off" in out and "rc=1" in out
     assert not calls.exists()
 
 
@@ -109,15 +109,15 @@ def test_a_console_poweroff_in_the_answer_powers_off_a_busy_waiting_machine(tmp_
     # השעון טרי (הייתה פעילות לפני רגע) — ובכל זאת נכבית: זו בקשה, לא המתנה.
     out, calls = run_idle(tmp_path, _since(tmp_path, 0) + "; " + _PA
                           + '; echo poweroff > "$RUN_DIR/pa"', "idle_check")
-    assert "the console asked to power off -- powering off" in out
-    assert calls.read_text(encoding="utf-8") == "POWEROFF -f\n"
+    assert "the console asked to power off: powering off with wake-on-LAN armed" in out
+    assert calls.read_text(encoding="utf-8") == "POWEROFF \n"
 
 
 def test_a_console_poweroff_without_wol_stays_on_and_says_so(tmp_path):
     out, calls = run_idle(tmp_path, _since(tmp_path, 0) + "; " + _PA
                           + '; echo poweroff > "$RUN_DIR/pa"; arm_wol() { return 1; }',
                           "idle_check; echo rc=$?")
-    assert "power: wol not armed -- staying powered on" in out and "rc=1" in out
+    assert "not all supported wired interfaces were armed -- not powering off" in out and "rc=1" in out
     assert not calls.exists()
 
 

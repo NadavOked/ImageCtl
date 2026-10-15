@@ -111,6 +111,12 @@ class Session:
                 break
             if line is None:
                 return f"imagectl-station-gui exited before opening the screen ({self.exit_code()})"
+            if line.startswith("FAIL "):
+                # #1362: the GUI could not show its first frame, or could not
+                # confirm it is on the screen, and says why -- that reason is
+                # what the text screen shows, not a bare exit code.
+                self.stop()
+                return line[5:].strip() or "imagectl-station-gui failed without a reason"
             token = parse_token(line)
             if token and token[0] == "ready":
                 return ""

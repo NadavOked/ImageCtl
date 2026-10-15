@@ -19,12 +19,12 @@ from typing import Callable
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import PlainTextResponse
 
-from . import (auth, capabilities, console_login, console_mfa, console_presence,
-               dhcp, disk_failures, drive_rates, identity, inventory, probe, registry,
+from . import (auth, capabilities, console_login, console_mfa, console_presence, crcwarn, minfree,
+               dhcp, disk_failures, drive_rates, identity, inventory, probe, registry, room,
                shrink_records, slot_names,
                storage_locations, storage_nodes, users)
 from .api import ServerContext
-from .db import (_write_lock, get_setting, journal, now_iso, set_setting,
+from .db import (_write_lock, get_setting, journal, now_iso, set_settings,
                  update_one, writing)
 from .images import restore_refusal, used_bytes_total
 from .imagefit import validate_expand_choice
@@ -32,6 +32,7 @@ from .journal_he import EVENTS_HE, JournalTranslator, severity
 from .session_view import label as session_label
 from .sessions import SessionError
 from .station import ROUND_OPENER_ROLES
+from . import auto_reboot
 
 WRITE_SETTINGS = {"recovery_require_login", "session_wait_seconds",
                   "console_idle_seconds", "class_deploy_enabled",
@@ -43,7 +44,12 @@ WRITE_SETTINGS = {"recovery_require_login", "session_wait_seconds",
                   # מפורש בלבד מכבה, ו-`setting_change` רושם מי.
                   identity.SETTING,
                   # ‏#447: תקרת הקצב הנלמדת. ‏"false" — התקרה הקבועה בלבד.
-                  drive_rates.SETTING}
+                  drive_rates.SETTING,
+                  # ‏#1366: סף CRC מוחלט — מעליו המגירה כתומה (0 = כבוי).
+                  crcwarn.SETTING,
+                  # ‏#1354: מינימום GB פנויים במחיצת המערכת אחרי שחזור (0–500).
+                  minfree.SETTING,
+                  auto_reboot.MODE, auto_reboot.TIME, auto_reboot.WEEKDAY}
 
 #: #406: השדות שעריכת מכונה מכירה. שדה מחוץ לרשימה = טעות של הקורא,
 #: והוא נדחה ב-400 במקום להיבלע ולהחזיר ``{"ok": True}`` שלא שינה כלום.
@@ -92,6 +98,27 @@ def _drawer_count(raw):
     if not 1 <= n <= 8:
         raise HTTPException(400, "מספר המגירות חייב להיות בין 1 ל־8")
     return n
+
+
+def _reported_drawer_count(conn, mac: str) -> int | None:
+    """Use the last positive hello inventory as a registration default."""
+    import json
+    canonical = registry.normalize_mac(mac)
+    if canonical is None:
+        return None
+    row = conn.execute("SELECT disks_json FROM net_devices WHERE mac = ?", (canonical,)).fetchone()
+    if row is None or row["disks_json"] is None:
+        return None
+    try:
+        disks = json.loads(row["disks_json"])
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(disks, list):
+        return None
+    ports = {disk.get("port") for disk in disks
+             if isinstance(disk, dict) and isinstance(disk.get("port"), int)}
+    count = len(ports) if ports else len(disks)
+    return count if 1 <= count <= 8 else None
 
 #: כל כתיבה כאן עוברת ב-``with _write_lock, writing(ctx.conn)`` — שני
 #: המנגנונים של `db.py`, מאותה סיבה שבגללה `net_seen` קיבל אותם (#272,
@@ -165,7 +192,10 @@ def create_console_router(
 
     @router.post("/logout")
     def logout(request: Request, response: Response, user=Depends(current_user)):
-        console_presence.forget(ctx.conn, request.cookies.get(auth.COOKIE_NAME))
+        token = request.cookies.get(auth.COOKIE_NAME)
+        console_presence.forget(ctx.conn, token)
+        from . import viewer_sessions
+        viewer_sessions.revoke(token)
         response.delete_cookie(auth.COOKIE_NAME)
         return {"ok": True}
 
@@ -413,7 +443,8 @@ def create_console_router(
             " d.prompt,"   # #906: מה המכונה ממתינה עליו לאדם (NULL = לא ממתינה)
             " d.disk_probe,"   # #402: למה אפס דיסקים (NULL = סוכן ישן)
             " d.firmware, d.secure_boot,"   # #500: כפי שהסוכן מדד (NULL = לא דווח)
-            " d.agent_version"   # #1257: גרסת ה-initrd מה-hello האחרון (NULL = לא דווח)
+            " d.agent_version,"   # #1257: גרסת ה-initrd מה-hello האחרון (NULL = לא דווח)
+            " d.local_clone"   # #1367: שיכפול מקומי כותב (נגזר ל-local_copy למטה)
             " FROM machines m LEFT JOIN net_devices d ON d.mac = m.mac"
             + (" WHERE m.group_id = ?" if group else "")
             + " ORDER BY m.group_id, m.suffix"
@@ -428,11 +459,18 @@ def create_console_router(
         last_captures = _last_captures()
         # ‏#704: השם לכל חיבור של כונן. ‏{} = אין שמות — כל המסכים מציגים "דיסק N".
         names = slot_names.all_by_mac(ctx.conn)
+        crc_limit = crcwarn.threshold(ctx.conn)   # #1366
         result = []
         for r in rows:
             row = dict(r)
             disks_json = row.pop("disks_json")
             row["disks"] = json.loads(disks_json) if disks_json is not None else None
+            # ‏#1366: מונה ה-CRC המוחלט מעל הסף — אותו דגל כמו במסך החדר.
+            for d in row["disks"] if isinstance(row["disks"], list) else []:
+                if isinstance(d, dict):
+                    crc = d.get("crc")
+                    read = isinstance(crc, int) and not isinstance(crc, bool) and crc >= 0
+                    d["crc_suspect"] = crcwarn.suspect(crc if read else None, crc_limit)
             seen = inventories.get(row["mac"])
             row["inventory"] = seen["inventory"] if seen else None
             row["inventory_seen_at"] = seen["seen_at"] if seen else None
@@ -442,6 +480,8 @@ def create_console_router(
             row["probe_verdicts"] = probe.verdicts(row["probe"])
             row["last_capture"] = last_captures.get(row["mac"])
             row["slot_names"] = names.get(row["mac"], {})
+            # ‏#1367: באמצע שיכפול מקומי עכשיו — "אתחל" שואל לפני (room.local_copy_now)
+            row["local_copy"] = room.local_copy_now(row.pop("local_clone"), row["disks_reported_at"])
             result.append(row)
         return result
 
@@ -489,6 +529,8 @@ def create_console_router(
     async def add_machine(request: Request, user=Depends(admin_only)):
         body = await request.json()
         drawer_count = _drawer_count(body.get("drawer_count"))   # #695
+        if drawer_count is None and body.get("group_id") == "grp_CLONERS":
+            drawer_count = _reported_drawer_count(ctx.conn, body.get("mac", ""))
         try:
             mac = registry.add_machine(
                 ctx.conn, body.get("mac", ""), body.get("name", ""),
@@ -975,19 +1017,57 @@ def create_console_router(
         # ‏#1300: בלי הגדרה השרת משתמש בשם המארח (‏/me, ‏ports.server_name) — השדה
         # בהגדרות מציג את אותו שם, לא ריק.
         values["server_name"] = values["server_name"] or socket.gethostname()
+        # ‏#1366: הערך שבתוקף — ברירת המחדל כשלא נקבע, לא "לא נקבע".
+        values[crcwarn.SETTING] = str(crcwarn.threshold(ctx.conn))
+        # ‏#1354: הערך שבתוקף — ברירת המחדל כשלא נקבע, לא "לא נקבע".
+        values[minfree.SETTING] = str(minfree.min_free_gb(ctx.conn))
+        mode, at, weekday = auto_reboot.settings(ctx.conn)
+        values.update({auto_reboot.MODE: mode, auto_reboot.TIME: at,
+                       auto_reboot.WEEKDAY: str(weekday)})
         return values
 
     @router.post("/settings")
     async def write_settings(request: Request, user=Depends(admin_only)):
         body = await request.json()
+        if not isinstance(body, dict):
+            raise HTTPException(400, "ההגדרות חייבות להיות אובייקט JSON")
+        unknown = next((key for key in body if key not in WRITE_SETTINGS), None)
+        if unknown is not None:
+            raise HTTPException(400, f"הגדרה לא מוכרת: {unknown}")
+        # #1406: validate the complete request before writing any key.
+        if isinstance(body, dict) and auto_reboot.MODE in body:
+            if body[auto_reboot.MODE] not in auto_reboot.MODES:
+                raise HTTPException(400, "הפעלה מחדש אוטומטית: מצב לא מוכר")
+        if isinstance(body, dict) and auto_reboot.TIME in body:
+            if auto_reboot.parse_time(body[auto_reboot.TIME]) is None:
+                raise HTTPException(400, "שעת הפעלה מחדש: נדרש HH:MM")
+        if isinstance(body, dict) and auto_reboot.WEEKDAY in body:
+            day = auto_reboot.parse_weekday(body[auto_reboot.WEEKDAY])
+            if day is None:
+                raise HTTPException(400, "יום הפעלה מחדש: מספר שלם 0–6")
+            body[auto_reboot.WEEKDAY] = str(day)
+        # ‏#1366: הסף נבדק **לפני** שנכתב דבר — גם לא מפתח אחר מאותה בקשה.
+        if isinstance(body, dict) and crcwarn.SETTING in body:
+            limit = crcwarn.parse(body[crcwarn.SETTING])
+            if limit is None:
+                raise HTTPException(400, f"סף CRC: מספר שלם 0–{crcwarn.MAXIMUM}")
+            body[crcwarn.SETTING] = str(limit)
+        # ‏#1354: הערך שהסוכן יקבל נבדק **לפני** שנכתב דבר — גם לא מפתח אחר מאותה בקשה.
+        if isinstance(body, dict) and minfree.SETTING in body:
+            gb = minfree.parse_gb(body[minfree.SETTING])
+            if gb is None:
+                raise HTTPException(
+                    400, f"מינימום מקום פנוי: מספר שלם 0–{minfree.MIN_FREE_GB_MAX}")
+            body[minfree.SETTING] = str(gb)
+        normalized = {}
         for key, value in body.items():
-            if key not in WRITE_SETTINGS:
-                raise HTTPException(400, f"הגדרה לא מוכרת: {key}")
             if isinstance(value, bool):
                 # ‏JSON true → "True", שנקרא ככבוי (עיקרון 5): מנרמלים
                 # למה שהקוראים משווים אליו — "true"/"false".
                 value = "true" if value else "false"
-            set_setting(ctx.conn, key, str(value))
+            normalized[key] = str(value)
+        set_settings(ctx.conn, normalized)
+        for key, value in normalized.items():
             journal(ctx.conn, "setting_change", f"{key}={value}", user[0])
         return {"ok": True}
 

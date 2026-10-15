@@ -71,6 +71,7 @@ gui_ask_choice() {
     mv "$GUI_DIR/ask-request.next" "$GUI_DIR/ask-request" || { gui_ask_clear; return 1; }
     _ag_waited=0
     while kill -0 "$_gui_pid" 2>/dev/null; do
+        attended_power_check
         if [ -s "$GUI_DIR/ask-decision" ]; then
             IFS='|' read -r _ag_nonce_back _ag_answer < "$GUI_DIR/ask-decision" || {
                 gui_ask_clear; return 1;

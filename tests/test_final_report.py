@@ -58,7 +58,9 @@ MANIFEST = {"id": IMAGE, "name": "Windows 11 Lab", "family": 256,
             "total_compressed_bytes": 40960}
 ANSWER = {"schema": 1, "known": True, "role": "classroom",
           "session": {"id": SESSION, "state": "running", "image_id": IMAGE,
-                      "prefix": "LAB1"},
+                      "prefix": "LAB1",
+                      # ‏#1410: סבב חדר בלי בחירת מגירות מפורשת נעצר ב-die_local
+                      "target_ports": [1, 2]},
           "group": {"suffix": "05"}}
 
 #: תקרה על הריצה כולה — רשת ביטחון ולא כוונון תזמון. הדרך היחידה להגיע
@@ -183,7 +185,7 @@ def sourced_libs() -> str:
     """ספריות הסוכן שהמסלולים צריכים. ‏`hold.sh` נטענת **רק אם היא
     קיימת**: בקרה שלילית ש-`git stash` הוריד בה את קוד הסוכן חייבת
     ליפול על ההתנהגות ולא על קובץ חסר."""
-    names = ["common.sh", "jsonq.sh", "progress.sh", "pull.sh",
+    names = ["common.sh", "waits.sh", "jsonq.sh", "progress.sh", "pull.sh",   # waits: capped_run (#1367)
              "ui.sh", "hold.sh", "clonergui.sh",   # #708: resolve_target_drawers (#701) lives here
              "smart.sh", "crcdelta.sh"]   # #872: crc_delta_after sits on the write line of do_restore
     names += ["attended.sh", "shrinkplan.sh"]   # attended beats; the capture's shrink plan
@@ -212,6 +214,8 @@ STUBS = (
     'smart_gate() { shift; echo "$@"; }; '
     'pick_internal_disk() { echo sda; }; '
     'list_drawers() { echo "sdb sdc"; }; '
+    # ‏#1410: resolve_target_drawers ממפה כל פורט שנבחר לדיסק אחד בדיוק
+    'disk_port() { case "$1" in sdb) echo 1 ;; sdc) echo 2 ;; esac; }; '
     'http_get() { cat "$RUN_DIR/manifest.src.json"; }; '
     'name_this_machine() { echo "NAMED" >> "$RUN_DIR/trace"; '
     'echo done > "$RUN_DIR/state"; }; '
@@ -393,7 +397,8 @@ def report_final_probe(tmp_path: Path, sender: str, *, tries: int = 2) -> dict:
     script = (
         f"export RUN_DIR={shlex.quote(posix(run))} IMAGECTL_TEST=1 "
         f"FINAL_REPORT_TRIES={tries} FINAL_REPORT_GAP_S=0; "
-        f". {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/progress.sh; "
+        f". {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/jsonq.sh; "
+        f". {posix(AGENT)}/lib/progress.sh; "
         + sender
         + 'sleep 45 > /dev/null 2>&1 & _pid=$!; '
         f'if report_final "$_pid" {SESSION} {MAC} "http://x"; '
@@ -431,6 +436,17 @@ def test_a_report_the_server_refused_is_not_a_report_that_arrived(tmp_path):
     assert "LOOP-STOPPED" in result["out"]
     assert "WARNING" in result["log"]
     assert "did not acknowledge the final report after 2 tries" in result["log"]
+
+
+@native_tools
+def test_a_final_report_for_an_already_closed_task_is_sent_once(tmp_path):
+    sender = ('http_post_json() { echo POST >> "$RUN_DIR/trace"; '
+              'echo \'{"code":"not_open"}\' > "$RUN_DIR/progress.reply"; return 22; }; ')
+    result = report_final_probe(tmp_path, sender, tries=8)
+
+    assert "SENT" in result["out"]
+    assert (tmp_path / "run/trace").read_text().splitlines() == ["POST"]
+    assert "server says the task is closed" in result["log"]
 
 
 @native_tools

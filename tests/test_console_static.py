@@ -279,17 +279,17 @@ def test_static_includes_are_at_9_9():
     שדות סיסמה LTR + "הצג" אחד, ותיקוני הגואי הנייטיבי = ‏11.12;
     #1263 (כרטיס רשת בשלושה אופנים, חלון רשת הפצה, בלי קבצי dnsmasq) = ‏11.13; #1268/#1270/מתאים לדיסק/בלי זכירת MFA = ‏11.15.
     #1267 (פורטים לפי רשת, שירותים בבריאות) + #1264 (bond בהפצה) + #1269 (דרייברים לפי דיסק) + שלב 3 של המוקאפ = ‏11.16; בחירת דיסקים לסבב בקונסולה (#1275) = ‏11.17; יישור סופי למוקאפ + מוניטור מוטמע = ‏11.18; עץ כמו במוקאפ, TLS/שם מארח, #1273/#1274 = ‏11.19; פערי API (#977/#980), #1281 = ‏11.20; חיפוש גלובלי, זרימת הפצה, קצב לומד, שרת משני, שמות חריצים = ‏11.21.
-    #1266 (SSH יצא מהמוצר — בלי מתג, בלי שורת 22, בלי טביעת מפתח) על gate-1011g = ‏11.22; התקדמות על פני גלים (#989) = ‏11.23; קצב אוטומטי = ‏11.24; חתימת גרסאות בבדיקת העדכון (#1277) = ‏11.25; סקירה/אימג'ים/מגירות/בריאות/הגדרות/משתמשים כמו המוקאפ (#1300) = ‏11.26; הגדרות/משתמשים/רשת אחד-לאחד + מוניטור מהמגירה (#1300, אחרי הדחיפה) = ‏11.27; פס האייקונים (#1300) = ‏11.29; הסקירה לפי הצעה ג' (#1300) = ‏11.27 בענף המקביל feat/1300-overview; איחוד gate-1013a (#1311/#1309/#1303/#1277/#1302/#1304/#1300) + לוגו ImageSrv בקונסולה (#1302 שלב ב׳) = ‏11.30; מסך העדכון (#1301) ובדיקת מהירות קישור (#432) = ‏11.31 בענפים מקבילים; שירותים לכל כרטיס רשת (#705) = ‏11.32.
+    #1266 (SSH יצא מהמוצר — בלי מתג, בלי שורת 22, בלי טביעת מפתח) על gate-1011g = ‏11.22; התקדמות על פני גלים (#989) = ‏11.23; קצב אוטומטי = ‏11.24; חתימת גרסאות בבדיקת העדכון (#1277) = ‏11.25; סקירה/אימג'ים/מגירות/בריאות/הגדרות/משתמשים כמו המוקאפ (#1300) = ‏11.26; הגדרות/משתמשים/רשת אחד-לאחד + מוניטור מהמגירה (#1300, אחרי הדחיפה) = ‏11.27; פס האייקונים (#1300) = ‏11.29; הסקירה לפי הצעה ג' (#1300) = ‏11.27 בענף המקביל feat/1300-overview; איחוד gate-1013a (#1311/#1309/#1303/#1277/#1302/#1304/#1300) + לוגו ImageSrv בקונסולה (#1302 שלב ב׳) = ‏11.30; מסך העדכון (#1301) ובדיקת מהירות קישור (#432) = ‏11.31 בענפים מקבילים; שירותים לכל כרטיס רשת (#705) = ‏11.32; בדיקת הכתיבה לפני הגל, F1 כתום וסף CRC (#1366) = ‏11.34 (‏11.33 תפוס ב-#1357 המקביל); מינימום מקום פנוי אחרי שחזור (#1354) + איחוד gate-1014a = ‏11.35; gate-1014b (סבב חדש, מוניטור מנוטרל עם סיבה, #1417–#1422) = ‏11.36.
     שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
     versions = set(re.findall(r'\?v=(\d+\.\d+)"', page))
-    assert versions == {"11.32"}, versions
+    assert versions == {"11.36"}, versions
     # ביקורת 10/10: monitor.html מושך את אותם console.css ו-design-tokens.css — הם נשארו על 3.29 לנצח,
     # ולכן דפדפן שזכר אותם הציג את המוניטור בעיצוב ישן. monitor.js לבדו שומר על גרסה משלו (test_monitor).
     mon = (STATIC / "monitor.html").read_text(encoding="utf-8")
     shared = set(re.findall(r'(?:design-tokens|console)\.css\?v=(\d+\.\d+)"', mon))
-    assert shared == {"11.32"}, shared
+    assert shared == {"11.36"}, shared
 
 
 def test_update_apply_is_a_sheet_without_text_verification_and_revert_uses_hostname():
@@ -428,7 +428,7 @@ def test_deploy_page_is_the_cloners_room_from_the_api_only():
     (סבבים / הצטרפות חיה, בקרת סבב, המגירה) איננו."""
     js = _console_js()
     for needed in ("function deploy(tab = 0)", "function loadDeploy(", "function roomKpis(", "function roomGridCard(", "function roomNotes(",
-                   "function roomNewCard(", "function stopRoom(", "function startWave(", "function imageFitReason(", "function deployClassView(",
+                   "function roomNewWindow(", "function stopRoom(", "function startWave(", "function imageFitReason(", "function deployClassView(",
                    'post("/room", body)', 'post("/room/start")', 'post("/room/close", { confirm_name: name })',
                    "clonerCardHtml(m, admin, true)", "בלי תשובה הסוכן ממשיך לכתוב", "בלי תשובה הסוכן מדלג", "r.throughput_bps != null", "r.loss_blocks != null", "דורש API",
                    'deploy: { crumb: "סבב הפצה", title: "סבב הפצה", tabs: deployTabs(), render: deploy, load: loadDeploy, own: true }'):
@@ -692,7 +692,7 @@ def test_storage_page_is_an_admin_tree_node_with_all_eight_mockup_screens():
                 ".page .picklist{", ".page .steps{", ".page .disk-state{display:grid;grid-template-columns:minmax(0,1fr) 250px",
                 ".page .big-choice{", ".page .btn:disabled{"):
         assert sel in css, sel
-    narrow = css[css.index("#1066 שלב ב'"):]
+    narrow = css[css.index("#1066 שלב ב'"):css.index("/* ===== משוב ותנועה", css.index("#1066 שלב ב'"))]
     assert "grid-template-columns:1fr" not in narrow, "1fr לבדו = minmax(auto,1fr) וגולש ב-375 (הלקח מהמוקאפ)"
     assert ".page table.dg.storage{min-width:760px}" in narrow
 

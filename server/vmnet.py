@@ -73,9 +73,16 @@ def ruleset(uid: int, egress_if: str, dns: list[str]) -> str:
         f"add table inet {TABLE}",
         f"delete table inet {TABLE}",
         f"table inet {TABLE} {{",
+        # #1405: positive match only. An orphaned socket (the server closed it while
+        # data is still queued -- every Connection: close boot download) has no
+        # owner, so `skuid != uid` does NOT match it and the old chain fell through
+        # to `oifname != ... drop`: GRUB's kernel/initrd tails were dropped while a
+        # VM update was loaded. Only packets that ARE the VM user's go to `vm`.
         "  chain out {",
         "    type filter hook output priority 0; policy accept;",
-        f"    meta skuid != {uid} accept",
+        f"    meta skuid {uid} jump vm",
+        "  }",
+        "  chain vm {",
         "    meta nfproto ipv6 drop",
     ]
     if dns:
@@ -107,7 +114,7 @@ def apply(uid: int, egress_if: str, dns: list[str], *, run=subprocess.run) -> st
     if back.returncode != 0:
         return f"הטבלה לא נקראה בחזרה (rc={back.returncode}): {back.stderr.strip()}"
     listed = back.stdout
-    for evidence in (f"skuid != {uid}", f'oifname != "{egress_if}" drop', "10.0.0.0/8"):
+    for evidence in (f"skuid {uid} jump vm", f'oifname != "{egress_if}" drop', "10.0.0.0/8"):
         if evidence not in listed:
             return f"הטבלה נקראה בחזרה בלי '{evidence}' — לא ידוע מה נטען"
     return None

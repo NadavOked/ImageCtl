@@ -24,6 +24,19 @@ int backend_width(const Backend *b);
 int backend_height(const Backend *b);
 cairo_surface_t *backend_surface(Backend *b);     /* offscreen RGB24 */
 void backend_present(Backend *b);
+/* #1362: 0 when the kernel confirms the last frame is on the screen (DRM:
+ * the CRTC scans our framebuffer, DirtyFB accepted); -1 + why otherwise.
+ * fbdev/mem have nothing to read back and return 0. */
+int backend_verify(Backend *b, char *err, size_t n);
+/* #1362: the VT backend_open puts in graphics mode (NULL = /dev/tty0, the
+ * one in front). Call before backend_open. */
+void backend_set_tty(const char *path);
+/* #1362: VT_PROCESS mode -- relsig/acqsig arrive on a switch away / back;
+ * answer them with backend_vt_release / backend_vt_acquire. */
+int backend_vt_take(Backend *b, int relsig, int acqsig);
+int backend_vt_activate(Backend *b, int vt);
+void backend_vt_release(Backend *b);
+int backend_vt_acquire(Backend *b);
 /* Puts the display back as it was (saved CRTC / text-mode VT). */
 void backend_close(Backend *b);
 

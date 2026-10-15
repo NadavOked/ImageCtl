@@ -206,6 +206,8 @@ def run_subdirs(tmp_path: Path, *, hide: tuple[str, ...] = ()):
     for sub in declared_subdirs():
         if sub not in hide:
             (src / sub).mkdir(parents=True, exist_ok=True)
+    # ‏FUSE built-in, כמו בקרנל דביאן 13 — אחרת שער ה-FUSE (#1368) עוצר.
+    (src / "modules.builtin").write_text("kernel/fs/fuse/fuse.ko\n", encoding="utf-8")
     (root / "lib" / "modules" / KVER).mkdir(parents=True)
     done = run(tmp_path, f"ROOT={bash_path(root)!r}\nKVER={KVER!r}\n"
                f"MODSRC={bash_path(src)!r}\nWITH_GUI=0\nWITH_INSTALLER=0\n{subdirs_snippet()}\n")

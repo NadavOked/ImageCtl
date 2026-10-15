@@ -438,13 +438,23 @@ def required_snippet() -> str:
     return "\n".join(lines[start:end + 1])
 
 
-def run_required(tmp_path: Path, present, kver: str = KVER):
-    """מריץ את ההעתקה-לפי-שם האמיתית על עץ שבו קיימים רק `present`."""
+#: ‏modules.builtin של קרנל דביאן 13 — ‏FUSE built-in (נמדד 13/10, #1368).
+BUILTIN_FUSE = "kernel/fs/fuse/fuse.ko\nkernel/fs/fuse/virtiofs.ko\n"
+
+
+def run_required(tmp_path: Path, present, kver: str = KVER,
+                 builtin: str | None = BUILTIN_FUSE):
+    """מריץ את ההעתקה-לפי-שם האמיתית על עץ שבו קיימים רק `present`.
+
+    ‏`builtin` = תוכן modules.builtin; ‏None = הקובץ אינו קיים."""
     src, root = tmp_path / "src", tmp_path / "root"
     for mod in present:
         directory = src / LAYOUT[mod]
         directory.mkdir(parents=True, exist_ok=True)
         (directory / f"{mod}.ko.xz").write_bytes(b"")
+    src.mkdir(exist_ok=True)
+    if builtin is not None:
+        (src / "modules.builtin").write_text(builtin, encoding="utf-8")
     (root / "lib" / "modules" / kver).mkdir(parents=True)
 
     script = (f"ROOT={root.as_posix()!r}\nKVER={kver!r}\n"
@@ -580,6 +590,29 @@ def test_a_declared_filesystem_module_is_packed_even_from_a_tree_nobody_listed(
         assert (packed / where / f"{mod}.ko.xz").is_file(), f"{mod} לא נארז"
 
 
+# --- ‏FUSE: ‏ntfs-3g רץ עליו (#1368) -------------------------------------------
+
+
+@requires_native("bash", why="REQUIRED_FS_MODULES הוא מערך bash")
+@pytest.mark.parametrize(("builtin", "named"), [
+    ("kernel/fs/ext4/ext4.ko\n", "fuse(not-built-in)"),
+    (None, "fuse(modules.builtin-unreadable)"),
+])
+def test_the_build_stops_when_fuse_is_not_built_in(tmp_path: Path, builtin, named):
+    """בלי FUSE אין ntfs-3g: ‏used_bytes של NTFS, בדיקת מחיצת המערכת וכתיבת
+    השם נופלים כולם — ומתגלים מול מחשב בנייה כ-null. כאן הבנייה עוצרת.
+    ‏modules.builtin שלא נקרא אינו "built-in" (עיקרון 5)."""
+    done, _ = run_required(tmp_path, list(LAYOUT), builtin=builtin)
+    assert done.returncode != 0, "FUSE חסר והבנייה הצליחה"
+    assert named in done.stderr, done.stderr
+
+
+@requires_native("bash", why="REQUIRED_FS_MODULES הוא מערך bash")
+def test_a_kernel_with_fuse_built_in_builds(tmp_path: Path):
+    done, _ = run_required(tmp_path, list(LAYOUT))
+    assert done.returncode == 0, done.stderr
+
+
 def test_the_declared_filesystems_are_exactly_the_ones_in_the_load_list(tmp_path: Path):
     """מודול שנארז ולא נטען הוא מודול שלא קיים, ולהפך.
 
@@ -664,7 +697,7 @@ def init_module_block() -> str:
 
 
 def run_init_block(tmp_path: Path, modules: list[str], required: list[str],
-                   fail: list[str]) -> str:
+                   fail: list[str], dmi: str = "", hypervisor: bool = False) -> str:
     """מריץ את קטע הטעינה עם `modprobe` מזויף שנכשל על `fail`."""
     moddir = tmp_path / "etc" / "imagectl"
     moddir.mkdir(parents=True)
@@ -675,6 +708,11 @@ def run_init_block(tmp_path: Path, modules: list[str], required: list[str],
     (moddir / "modules.required").write_text(
         "\n".join(required) + "\n", encoding="utf-8", newline="\n")
     block = init_module_block().replace("/etc/imagectl", moddir.as_posix())
+    block = block.replace(
+        'cat /sys/class/dmi/id/sys_vendor /sys/class/dmi/id/product_name 2>/dev/null',
+        f'printf %s {dmi!r}').replace(
+        "grep -q '[[:space:]]hypervisor\\([[:space:]]\\|$\\)' /proc/cpuinfo 2>/dev/null",
+        "true" if hypervisor else "false")
     stub = ('modprobe() { for _f in $FAIL; do '
             '[ "$_f" = "$1" ] && return 1; done; return 0; }\n')
     # ‏`:` בסוף — הקטע יושב באמצע `agent/init`, אחריו יש עוד קוד ואין
@@ -701,6 +739,7 @@ def test_init_names_required_and_platform_failures_on_separate_lines(tmp_path: P
         modules=["hv_netvsc", "vmxnet3", "ext4", "vfat", "r8169"],
         required=FS_REQUIRED,
         fail=["hv_netvsc", "vmxnet3", "ext4"],
+        dmi="Microsoft Hyper-V VMware",
     )
     err = [l for l in out.splitlines() if "ERROR required modules" in l]
     opt = [l for l in out.splitlines() if "expected on this hardware" in l]
@@ -713,6 +752,19 @@ def test_init_names_required_and_platform_failures_on_separate_lines(tmp_path: P
     assert not re.search(r"\d+ modules did not load", out), (
         f"ההודעה השטוחה הישנה חזרה: {out!r}")
     assert (tmp_path / "run/modules.failed").read_text().splitlines() == ["ext4"]
+
+
+def test_only_detected_virtual_platform_failures_are_warned(tmp_path: Path):
+    out = run_init_block(tmp_path, ["hv_vmbus", "xen-blkfront", "vmxnet3"], [],
+                         ["hv_vmbus", "xen-blkfront", "vmxnet3"],
+                         dmi="Microsoft Hyper-V")
+    assert "ImageSrv: platform modules absent" in out
+    assert "hv_vmbus" in out
+    assert "xen-blkfront" not in out and "vmxnet3" not in out
+
+
+def test_init_has_no_old_user_visible_prefix():
+    assert "imagectl init:" not in INIT.read_text(encoding="utf-8")
 
 
 def test_a_required_module_failure_is_named_not_a_silent_count(tmp_path: Path):
@@ -738,8 +790,6 @@ def test_platform_drivers_absent_on_bare_metal_are_not_an_error(tmp_path: Path):
     out = run_init_block(tmp_path, modules=platform + ["ext4"],
                          required=FS_REQUIRED, fail=platform)
     assert "ERROR" not in out, f"מודול פלטפורמה סווג בטעות ככשל: {out!r}"
-    for mod in platform:
-        assert mod in out, f"{mod} לא נקוב בשם: {out!r}"
-    assert "expected on this hardware" in out
+    assert "expected on this hardware" not in out
     assert not re.search(r"\d+ modules did not load", out), (
         f"ההודעה השטוחה הישנה חזרה: {out!r}")

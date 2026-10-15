@@ -69,7 +69,7 @@ def test_poweroff_arms_before_stopping(tmp_path, after):
     out = finish_probe(tmp_path, after=after)
     assert "LOG wol: eth1 armed" in out, out
     assert out.index("LOG wol: eth1 armed") < out.index("SYNC")
-    assert out.index("SYNC") < out.index("POWEROFF -f")
+    assert out.index("SYNC") < out.index("POWEROFF ")
     assert "eth0 armed" not in out
     assert "REBOOT" not in out
 
@@ -82,7 +82,7 @@ def test_arming_failure_keeps_the_machine_powered_on(tmp_path, mode):
     out = finish_probe(tmp_path, mode=mode)
     assert "POWEROFF" not in out and "SYNC" not in out, out
     assert "RETURNED:1" in out, out
-    assert "no interface armed -- staying powered on" in out, out
+    assert "not all supported wired interfaces were armed -- not powering off" in out, out
     assert "LOG wol: eth1 armed" not in out
 
 
@@ -108,7 +108,7 @@ def test_cloner_role_arms_and_powers_off(tmp_path):
     """בלי override, תפקיד cloner נגזר ל-poweroff — וחומש WoL קודם."""
     out = finish_probe(tmp_path, after=None, role="cloner")
     assert "LOG wol: eth1 armed" in out, out
-    assert out.index("LOG wol: eth1 armed") < out.index("POWEROFF -f")
+    assert out.index("LOG wol: eth1 armed") < out.index("POWEROFF ")
     assert "REBOOT" not in out
 
 

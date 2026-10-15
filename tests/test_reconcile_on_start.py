@@ -64,8 +64,14 @@ def _events(ctx) -> list[str]:
 def _running_wave(first) -> str:
     """סבב חדר עם גל `running`: מכונה 1 כותבת, מכונה 2 כבר סיימה."""
     admin, anon = first["admin"], first["anon"]
-    assert admin.post("/api/console/room",
-                      json={"image_id": "img_7f3a91", "target_drives": 4}).status_code == 200
+    # ‏#1410: בחירת המגירות מפורשת וחובה, והיא נבדקת מול מגירות מחוברות —
+    # ולכן hello ראשון לפני הפתיחה, והשני מצרף לגל.
+    cloner_hello(anon, CLONER1, ["S1", "S2"])
+    cloner_hello(anon, CLONER2, ["S3", "S4"])
+    assert admin.post("/api/console/room", json={
+        "image_id": "img_7f3a91", "target_drives": 4,
+        "target_slots": [{"mac": CLONER1, "ports": [1, 2]},
+                         {"mac": CLONER2, "ports": [1, 2]}]}).status_code == 200
     cloner_hello(anon, CLONER1, ["S1", "S2"])
     cloner_hello(anon, CLONER2, ["S3", "S4"])
     assert admin.post("/api/console/room/start").status_code == 200
@@ -138,8 +144,10 @@ def test_the_room_round_survives_and_the_next_pulse_opens_a_fresh_wave(tmp_path,
 
 def test_an_open_session_waiting_for_joiners_is_not_touched(tmp_path, monkeypatch):
     first = _boot(tmp_path, monkeypatch, seed=True)
-    assert first["admin"].post("/api/console/room",
-                               json={"image_id": "img_7f3a91", "target_drives": 4}).status_code == 200
+    cloner_hello(first["anon"], CLONER1, ["S1"])       # ‏#1410: המגירה מחוברת לפני הבחירה
+    assert first["admin"].post("/api/console/room", json={
+        "image_id": "img_7f3a91", "target_drives": 4,
+        "target_slots": [{"mac": CLONER1, "ports": [1]}]}).status_code == 200
     cloner_hello(first["anon"], CLONER1, ["S1"])       # מוכנות 1 מול יעד 4 — הגל נשאר open
     wave = first["ctx"].conn.execute("SELECT wave_session_id FROM room_rounds").fetchone()[0]
     assert first["ctx"].conn.execute("SELECT state FROM sessions WHERE id = ?", (wave,)).fetchone()["state"] == "open"

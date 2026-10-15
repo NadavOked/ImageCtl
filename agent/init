@@ -7,7 +7,7 @@
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 
 fail() {
-    echo "imagectl init: $1 -- rebooting in 5s"
+    echo "ImageSrv: $1 -- rebooting in 5s"
     sleep 5
     sync
     reboot -f
@@ -40,24 +40,36 @@ MOD_DIR="${MOD_DIR:-/etc/imagectl}"
 _required=" $(tr '\n' ' ' < "$MOD_DIR/modules.required" 2>/dev/null) "
 _req_fail=""
 _opt_fail=""
+_dmi="$(cat /sys/class/dmi/id/sys_vendor /sys/class/dmi/id/product_name 2>/dev/null)"
+_hypervisor=0
+grep -q '[[:space:]]hypervisor\([[:space:]]\|$\)' /proc/cpuinfo 2>/dev/null && _hypervisor=1
+platform_module_expected() {
+    case "$1:$_dmi" in
+        hv_*:*Microsoft*|hv_*:*Hyper-V*) return 0 ;;
+        vmw_*:*VMware*|vmxnet3:*VMware*) return 0 ;;
+        xen-*:*Xen*) return 0 ;;
+        virtio_*:*) [ "$_hypervisor" = 1 ]; return ;;
+    esac
+    return 1
+}
 if [ -f "$MOD_DIR/modules" ]; then
     while read -r _m; do
         [ -n "$_m" ] || continue
         modprobe "$_m" 2>/dev/null && continue
         case "$_required" in
             *" $_m "*) _req_fail="$_req_fail$_m " ;;
-            *)         _opt_fail="$_opt_fail$_m " ;;
+            *) platform_module_expected "$_m" && _opt_fail="$_opt_fail$_m " ;;
         esac
     done < "$MOD_DIR/modules"
 fi
 [ -n "$_opt_fail" ] && \
-    echo "imagectl init: platform modules absent, expected on this hardware: $_opt_fail"
+    echo "ImageSrv: platform modules absent, expected on this hardware: $_opt_fail"
 if [ -n "$_req_fail" ]; then
     printf '%s\n' "$_req_fail" | tr ' ' '\n' | awk 'NF' > "$RUN_DIR/modules.failed.next" \
         || fail "could not write the required-module failure list"
     mv "$RUN_DIR/modules.failed.next" "$RUN_DIR/modules.failed" \
         || fail "could not publish the required-module failure list"
-    echo "imagectl init: ERROR required modules did not load, restore may corrupt: $_req_fail"
+    echo "ImageSrv: ERROR required modules did not load, restore may corrupt: $_req_fail"
 else
     rm -f "$RUN_DIR/modules.failed"
 fi
@@ -72,7 +84,7 @@ fi
 if [ -d /sys/firmware/efi ]; then
     mkdir -p /sys/firmware/efi/efivars
     mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null \
-        || echo "imagectl init: efivarfs would not mount -- SecureBoot state unknown"
+        || echo "ImageSrv: efivarfs would not mount -- SecureBoot state unknown"
 fi
 
 # Give USB/PCI enumeration a moment before looking for NICs and disks.
@@ -126,7 +138,7 @@ IP=$(ip -4 addr show "$IFACE" 2>/dev/null \
 [ -n "$IP" ] || fail "DHCP succeeded but no address on $IFACE"
 
 printf 'IFACE=%s\nIP=%s\n' "$IFACE" "$IP" > /run/imagectl/net.conf
-echo "imagectl init: network up on $IFACE ($IP)"
+echo "ImageSrv: network up on $IFACE ($IP)"
 
 # --- boot trace (#400) --------------------------------------------------------
 # The first thing this machine can say for itself. It proves three things at

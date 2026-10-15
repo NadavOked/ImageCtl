@@ -137,6 +137,7 @@ static const char *status_keys(const App *a,char *buf,size_t n){
         if(!a->st.has_round)return a->mode==MODE_DIRECT?"W  העֵר    Esc  חזרה":"Tab  מעבר    W  העֵר    Esc  חזרה";
         return a->st.wave_open?"W  העֵר שוב    N  התחל עכשיו    Esc  עצור סבב…":"W  העֵר שוב    Esc  עצור סבב…";
     case SCREEN_CLONER:   /* mockup 10/10: the SMART keys only while a question is open */
+        if(a->st.server_restarted_wave)return "השרת אותחל באמצע הגל — המחשב יצטרף לבד לגל הבא";
         if(!a->st.smart_pending)return "אין פעולה במסך הזה";
         return !strcmp(a->st.smart_verdict,"failed_last")
         ? "R  החלף דיסק    Enter / S  המשך בלי הדיסק"
@@ -479,8 +480,19 @@ void draw_confirm_dialog(App *a,cairo_t *cr,double W,double H){
     }else if(a->confirm==CONFIRM_ROOM_POWEROFF){
         char name_i[100];bidi_isolate(a->poweroff_name,name_i,sizeof name_i);
         snprintf(title,sizeof title,"לכבות את %s?",name_i);
-        snprintf(what,sizeof what,"המחשב נכבה דרך הסוכן ויוצא מהגל הפתוח — כדי להחליף בו מגירות. אחרי ההחלפה מדליקים אותו (או מעירים), והוא מצטרף לגל לבד.");
-        snprintf(ok,sizeof ok,"כבה אותו");
+        if(a->poweroff_local_copy){
+            snprintf(what,sizeof what,"המחשב באמצע שיכפול מקומי — כיבוי עכשיו ישאיר את דיסק היעד שבור ולא שמיש. לכבות בכל זאת?");
+            snprintf(ok,sizeof ok,"כבה בכל זאת");
+        }else{
+            snprintf(what,sizeof what,"המחשב נכבה דרך הסוכן ויוצא מהגל הפתוח — כדי להחליף בו מגירות. אחרי ההחלפה מדליקים אותו (או מעירים), והוא מצטרף לגל לבד.");
+            snprintf(ok,sizeof ok,"כבה אותו");
+        }
+    }else if(a->confirm==CONFIRM_ROOM_POWEROFF_ALL){
+        int n=0;for(int i=0;i<s->nmachines;i++)n+=s->machines[i].local_copy;
+        snprintf(title,sizeof title,"לכבות את כל החדר?");
+        if(n)snprintf(what,sizeof what,"%d מחשבים באמצע שיכפול מקומי — הדיסקים שלהם יישארו שבורים. לכבות בכל זאת?",n);
+        else snprintf(what,sizeof what,"כל מחשבי השיכפול שממתינים ייכבו דרך הסוכן.");
+        snprintf(ok,sizeof ok,"%s",n?"כבה בכל זאת":"כבה את כל החדר");
     }else if(a->confirm==CONFIRM_RESTORE){
         const Disk *d=NULL;for(int i=0;i<s->ndisks;i++)if(!s->disks[i].removable){d=&s->disks[i];break;}
         const char *img=a->restore_image_sel>0&&a->restore_image_sel<=s->nimages?s->images[a->restore_image_sel-1].name:"";

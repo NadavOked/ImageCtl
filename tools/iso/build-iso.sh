@@ -51,6 +51,7 @@ PUBLIC_URL="${IMAGECTL_PUBLIC_URL:-https://github.com/NadavOked/ImageCtl.git}"
 SOURCE=""
 ROOT_PASSWORD="${IMAGECTL_ROOT_PASSWORD:-}"
 LIVE_INITRD=""
+LAB=false
 VOLID="IMAGECTL_INSTALL"
 CDIMAGE_URL="https://cdimage.debian.org/debian-cd/current/amd64/iso-cd"
 
@@ -71,6 +72,7 @@ ImageCtl — בניית ISO ההתקנה.
   --root-password PW   סיסמת root הראשונית (מוחלפת בכניסה הראשונה); או IMAGECTL_ROOT_PASSWORD
   --live-initrd FILE   ה-initramfs של המתקין החי (build_initramfs.sh --installer --with-gui);
                        הקרנל ל-/live נלקח מ-linux-image של ה-pool ומושווה למודולים שבו
+  --lab                אפשר initrd עם גישת מעבדה; שם ה-ISO והמניפסט יסומנו ב--lab
 EOF
 }
 
@@ -84,6 +86,7 @@ while [[ $# -gt 0 ]]; do
         --public-url)    PUBLIC_URL="${2:?}"; shift 2 ;;
         --root-password) ROOT_PASSWORD="${2:?}"; shift 2 ;;
         --live-initrd)   LIVE_INITRD="${2:?}"; shift 2 ;;
+        --lab)           LAB=true; shift ;;
         -h|--help)       usage; exit 0 ;;
         *) printf 'unknown option: %s  (try --help)\n' "$1" >&2; exit 2 ;;
     esac
@@ -121,6 +124,7 @@ else
 fi
 COMMIT=$(git -C "$REPO" rev-parse --verify "$REF^{commit}") || die "ref לא מוכר: $REF"
 TAG=$(git -C "$REPO" describe --tags --always "$COMMIT")
+$LAB && TAG="$TAG-lab"
 EPOCH=$(git -C "$REPO" log -1 --format=%ct "$COMMIT")
 export SOURCE_DATE_EPOCH="$EPOCH"
 say "קוד: $TAG ($COMMIT), SOURCE_DATE_EPOCH=$EPOCH"
@@ -265,6 +269,8 @@ KVER=${kvmlinuz##*/vmlinuz-}
 ikver=$( (zstd -dc "$LIVE_INITRD" 2>/dev/null || gzip -dc "$LIVE_INITRD" 2>/dev/null || cat "$LIVE_INITRD") \
     | cpio -t 2>/dev/null | grep -m1 -o '^lib/modules/[^/]*' | cut -d/ -f3 || true)
 [[ -n "$ikver" ]] || die "ב-$LIVE_INITRD אין lib/modules/<kver> — זה לא initramfs של build_initramfs.sh?"
+lab_overlay=$(bash "$SCRIPT_DIR/initrd-lab-gate.sh" "$LIVE_INITRD" $($LAB && printf '%s' --lab)) \
+    || die "initrd של מעבדה דורש --lab מפורש"
 [[ "$ikver" == "$KVER" ]] || die "אי-התאמה: המודולים ב-initramfs הם של $ikver והקרנל ב-pool הוא $KVER — בנה את ה-initramfs מול linux-image-amd64 של ה-pool"
 install -m 0644 "$kvmlinuz" "$ISO_TREE/live/vmlinuz"
 install -m 0644 "$LIVE_INITRD" "$ISO_TREE/live/initrd.img"
@@ -313,7 +319,7 @@ fi
 
 # --- המניפסט (R61) --------------------------------------------------------------
 say "כותב imagectl-iso.json"
-KVER="$KVER" SOURCE_GIT="$([[ -z "$SOURCE" ]] && echo true || echo false)" python3 - "$ISO_TREE" "$OUT/imagectl-iso.json" "$TAG" "$COMMIT" "$EPOCH" "$(basename "$NETINST")" "$NETINST_SHA" "${PKGS[*]}" <<'PY'
+KVER="$KVER" LAB_OVERLAY="$lab_overlay" SOURCE_GIT="$([[ -z "$SOURCE" ]] && echo true || echo false)" python3 - "$ISO_TREE" "$OUT/imagectl-iso.json" "$TAG" "$COMMIT" "$EPOCH" "$(basename "$NETINST")" "$NETINST_SHA" "${PKGS[*]}" <<'PY'
 import hashlib, json, os, subprocess, sys
 tree, out, tag, commit, epoch, netinst, netinst_sha, pkgs = sys.argv[1:9]
 debs = []
@@ -335,6 +341,7 @@ manifest = {
     "xorriso": subprocess.run(["xorriso", "-version"], capture_output=True, text=True).stdout.splitlines()[0],
     "requested_packages": pkgs.split(),
     "live_kernel": os.environ.get("KVER", ""),
+    "lab_overlay": os.environ.get("LAB_OVERLAY", "false") == "true",
     # false only for a --source (lab) build: the engine then tolerates the missing .git
     "source_git": os.environ.get("SOURCE_GIT", "true") == "true",
     "live_initrd_sha256": hashlib.sha256(open(os.path.join(tree, "live", "initrd.img"), "rb").read()).hexdigest(),

@@ -81,14 +81,15 @@ static RoomGrid room_grid_make(cairo_t *cr, double w, int n, int max_slots,
  * #432: a link slower than its port)? */
 static int room_machine_has_warn(const Machine *m) {
     for (int i = 0; i < m->nroom_drawers; i++)
-        if (m->room_drawers[i].present && (smart_level(m->room_drawers[i].smart) || m->room_drawers[i].link_slow)) return 1;
+        if (m->room_drawers[i].present && (smart_level(m->room_drawers[i].smart) || m->room_drawers[i].link_slow
+                                           || m->room_drawers[i].crc_suspect)) return 1;   /* #1366 */
     return 0;
 }
 
 /* #432: the slot's colour -- SMART first (red wins), then a slow link is
  * orange like a SMART warning: it asks, it does not block. */
 static Rgb room_drawer_color(const Theme *t, const RoomDrawer *d) {
-    if (!smart_level(d->smart) && d->link_slow) return t->warn;
+    if (!smart_level(d->smart) && (d->link_slow || d->crc_suspect)) return t->warn;   /* #1366: CRC over the threshold */
     return smart_color(t, d->smart);
 }
 
@@ -363,6 +364,10 @@ static void live_footer(App *a, cairo_t *cr, Rect foot) {
     double sw = btn_width(&stop), sx = foot.x + foot.w - N_PAD - sw;
     draw_btn(a, cr, (Rect){ sx, by, sw, bh }, &stop, BTN_GHOST_DANGER, HIT_ROOM_CLOSE);
     text_free(&stop);
+    if(a->admin){
+        Text all=btn_label(cr,"כבה את כל החדר");double aw=btn_width(&all);sx-=aw+8;
+        draw_btn(a,cr,(Rect){sx,by,aw,bh},&all,BTN_GHOST_DANGER,HIT_ROOM_POWEROFF_ALL);text_free(&all);
+    }
     Text labels[3]; int kinds[3], ids[3], nb = 0;     /* from the inline end: the primary first */
     if (s->wave_open) { labels[nb] = btn_label(cr, "התחל עכשיו"); kinds[nb] = BTN_PRIMARY; ids[nb++] = HIT_ROOM_START; }
     labels[nb] = btn_label(cr, wave_ended(s) ? "הער את מחשבי השיכפול" : "העֵר שוב"); kinds[nb] = BTN_PLAIN; ids[nb++] = HIT_ROOM_WAKE;

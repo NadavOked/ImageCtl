@@ -7,8 +7,9 @@
 # \ImageCtl\Drivers\<package>\ on the restored NTFS, and that folder is
 # added to DevicePath (SOFTWARE hive, REG_EXPAND_SZ -- hivewrite -x) so
 # that Windows searches it on first boot when it meets a device without a
-# driver. "staged" is not "installed"; a storage driver Windows needs in
-# order to boot at all is out of scope until the WinPE stage (v2).
+# driver. "staged" is not "installed". A storage driver Windows needs in
+# order to boot at all: the in-box one is made boot-start by bootstorage.sh
+# (#1331); a third-party one is still out of scope.
 #
 # Never fatal, never silent (עיקרון 5): the restore is complete and a
 # machine that boots without its NIC driver is fixable in a minute. The
@@ -35,13 +36,15 @@ DEVICE_PATH_ENTRY='%SystemRoot%\..\ImageCtl\Drivers'
 _drivers_result() {
     # $1 = state, $2 = JSON array body of package names ("" = none),
     # $3 = error/reason text (optional). Writes drivers.json and logs.
+    # #1331: the boot-storage outcome (bootstorage.sh), when that step ran.
     _dr_out="${DR_OUT:-$RUN_DIR/drivers.json}"
+    _boot=""; [ -n "${_dr_boot:-}" ] && _boot=",\"boot\":$_dr_boot"
     if [ -n "${3:-}" ]; then
         _key="error"; [ "$1" = "skipped" ] && _key="reason"
-        printf '{"state":"%s","packages":[%s],"%s":"%s"}\n' \
-            "$1" "$2" "$_key" "$(json_escape "$3")" > "$_dr_out"
+        printf '{"state":"%s","packages":[%s],"%s":"%s"%s}\n' \
+            "$1" "$2" "$_key" "$(json_escape "$3")" "$_boot" > "$_dr_out"
     else
-        printf '{"state":"%s","packages":[%s]}\n' "$1" "$2" > "$_dr_out"
+        printf '{"state":"%s","packages":[%s]%s}\n' "$1" "$2" "$_boot" > "$_dr_out"
     fi
     log "drivers${DR_PORT:+ (drawer $DR_PORT)}: $(cat "$_dr_out")"
 }
@@ -131,7 +134,7 @@ stage_drivers() {
 }
 
 _stage_drivers() {
-    _dr_mnt=""; _dr_why=""
+    _dr_mnt=""; _dr_why=""; _dr_boot=""
     rm -f "${DR_OUT:-$RUN_DIR/drivers.json}"
     _dr_plan="$RUN_DIR/drivers.plan"
     if ! manifest_plan "$2" > "$_dr_plan"; then
@@ -187,6 +190,10 @@ _stage_drivers() {
     for _n in $_names; do rm -rf "${_dr_mnt:?}/${DRIVERS_WIN_DIR:?}/$_n"; done   # SC2115: לעולם לא "/"
     _drivers_copy "$_dr_mnt" "$_rows" || { _drivers_fail "$_dr_why"; return 0; }
     _device_path_add "$_hive" || { _drivers_fail "$_dr_why"; return 0; }
+    # #1331: only once the packages are on the disk -- every earlier failure
+    # leaves the disk untouched. Never fails the staging: "staged" with
+    # boot.state "failed" is what gets reported.
+    boot_storage_enable "$1" "$_dr_mnt"
     _umount_checked "$_dr_mnt"
     _umrc=$?
     _dr_mnt=""

@@ -28,7 +28,7 @@ from server.sender import SenderEngine
 
 from conftest import MANIFEST_256, write_image
 from test_sender import Recorder, wait_for
-from test_server_room import CLONER1, cloner_hello, room, room_server  # noqa: F401
+from test_server_room import CLONER1, cloner_hello, room, room_body, room_server  # noqa: F401
 
 
 def long_num(x: int) -> str:
@@ -265,8 +265,8 @@ def test_the_room_round_carries_the_stream_numbers(room_server, tmp_path, monkey
     (tmp_path / "logs").mkdir()
     admin, anon, recorder = room_server["admin"], room_server["anon"], room_server["recorder"]
     recorder.block = True
-    assert admin.post("/api/console/room",
-                      json={"image_id": "img_7f3a91", "target_drives": 2}).status_code == 200
+    assert admin.post("/api/console/room", json=room_body(
+        room_server, 2, {CLONER1: ["S1", "S2"]})).status_code == 200
     rnd = room(admin)["round"]
     assert rnd.get("throughput_bps") is None and rnd.get("loss_blocks") is None, "הגל פתוח — לא משדר"
     cloner_hello(anon, CLONER1, ["S1", "S2"])

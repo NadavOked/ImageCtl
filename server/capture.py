@@ -29,7 +29,7 @@ from .images import validate_display_name
 from .db import _write_lock, journal, now_iso, update_one, writing
 from .progress_view import capture_progress
 from .images import (
-    MACHINE_MAC, carries_a_stream_file, has_disk_guid, has_partition_geometry,
+    ImageLibrary, MACHINE_MAC, carries_a_stream_file, has_disk_guid, has_partition_geometry,
     image_os, inside, required_bytes, valid_image_id,
 )
 # ⚠️ **לא `from . import tasks`.** יש כאן endpoint בשם `tasks`
@@ -313,9 +313,15 @@ def create_agent_capture_router(ctx: ServerContext) -> APIRouter:
             raise HTTPException(409, "image already exists")
         folder.rename(target)
 
+        # ‏#1370: המכנה של פס ההתקדמות. בזמן הקליטה הגודל הדחוס לא ידוע
+        # ו-bytes_total נשאר 0 (#435); כאן המניפסט אומר כמה עבר. ערך שאינו
+        # מספר שלם אי-שלילי אינו מנוחש — bytes_total נשאר כמו שהיה.
+        total = manifest.get("total_compressed_bytes")
+        known = type(total) is int and 0 <= total < 2 ** 63
         ctx.conn.execute(
-            "UPDATE tasks SET state = 'done', updated_at = ? WHERE id = ?",
-            (now_iso(), task_id),
+            "UPDATE tasks SET state = 'done', updated_at = ?,"
+            " bytes_total = COALESCE(?, bytes_total) WHERE id = ?",
+            (now_iso(), total if known else None, task_id),
         )
         ctx.conn.commit()
         journal(ctx.conn, "capture_done",
@@ -331,8 +337,9 @@ def validate_manifest_files(manifest: object, folder: Path) -> str | None:
     בשימוש הקליטה מהסוכן וגם שמירת גרסה מ-VM (#1334): שני המסלולים
     מכניסים אימג' לספרייה, ושער אחד מכריע לשניהם — כל sha256 נקרא שוב
     מהדיסק (עיקרון 6)."""
-    if not isinstance(manifest, dict) or manifest.get("schema") != 1:
-        return "manifest schema must be 1"
+    problem = ImageLibrary._validate(manifest, require_library_fields=False)
+    if problem:
+        return problem
     parts = manifest.get("partitions")
     if not isinstance(parts, list) or not parts:
         return "manifest has no partitions"

@@ -377,7 +377,8 @@ def _render_decision(decision: Decision, config: GrubConfig) -> str:
         # רשימת נתיבי האתחול שמאחוריו — והדרישה היא שלא תהיה שם דרך אל
         # הכוננים, לא שקשה להגיע אליה.
         entries = [_entry_agent(config, recovery=decision.recovery_mode,
-                                gui=decision.gui_screen)]
+                                gui=decision.gui_screen,
+                                fallback_local=decision.offer_local)]
         if decision.offer_local:
             entries.append(_entry_local())
         return _assemble(
@@ -396,7 +397,8 @@ def _render_decision(decision: Decision, config: GrubConfig) -> str:
     entries = [_entry_local()]
     if decision.offer_agent or decision.offer_recovery:
         entries.append(_entry_agent(config, recovery=decision.offer_recovery,
-                                    gui=decision.gui_screen))
+                                    gui=decision.gui_screen,
+                                    fallback_local=True))
 
     # שני מצבים בלבד, ושניהם נגזרים מההחלטה — לא מהתצורה:
     #
@@ -657,7 +659,32 @@ def _entry_local() -> str:
 }"""
 
 
-def _entry_agent(config: GrubConfig, *, recovery: bool, gui: bool = False) -> str:
+def _retry_load(command: str, label: str, *, fallback_local: bool) -> str:
+    """GRUB 2.12-compatible retry loop for one HTTP boot payload."""
+    failure = """        try_local""" if fallback_local else (
+        """        echo "This Legacy BIOS cloning machine has no local system to start."
+        echo "Nothing will be started. Fix the server or network, then power-cycle it."
+""" + _STAY_POWERED_ON)
+    variable = f"imagectl_{label}_loaded"
+    return f"""    unset {variable}
+    for attempt in 1 2 3; do
+        echo "Loading {label} over HTTP (attempt $attempt of 3)..."
+        if {command}
+        then
+            set {variable}=y
+            break
+        fi
+    done
+    if [ -z "${variable}" ]; then
+        echo "ImageCtl: {label} could not be loaded after 3 attempts."
+        echo "Falling back after a short delay."
+        sleep --interruptible 3
+{failure}
+    fi"""
+
+
+def _entry_agent(config: GrubConfig, *, recovery: bool, gui: bool = False,
+                 fallback_local: bool = True) -> str:
     """ערך ה-ImageCtl. יש בדיוק אחד כזה בכל קובץ, ולכן שמו פשוט (#144).
 
     השם "ImageCtl - recovery / imaging" היה מובן רק כשהוא הופיע ליד
@@ -675,6 +702,16 @@ def _entry_agent(config: GrubConfig, *, recovery: bool, gui: bool = False) -> st
     # קיים על השרת — גם תפקיד עם מסך נופל לטקסטואלי. ראו gui_initrd_path.
     initrd = (config.gui_initrd_path if gui and config.gui_initrd_path
               else config.initrd_path)
+    linux_load = _retry_load(
+        f"linux (http,{host}){config.kernel_path} {cmdline}",
+        "kernel",
+        fallback_local=fallback_local,
+    )
+    initrd_load = _retry_load(
+        f"initrd (http,{host}){initrd}",
+        "initrd",
+        fallback_local=fallback_local,
+    )
     # ‏#400: חמישה פירורים, כל אחד בשורה משל עצמו. הם **בין** הפקודות
     # ולא עוטפים אותן: פקודה שנכשלת בתוך menuentry ממשיכה לבאה אחריה,
     # ולכן שרת שאינו עונה על ‎/boot/step מייצר שגיאה על המסך — ולא
@@ -682,9 +719,10 @@ def _entry_agent(config: GrubConfig, *, recovery: bool, gui: bool = False) -> st
     # ‏entry (נכנסנו) · http-ok (המודול נטען) · pre-linux (לפני הקרנל) ·
     # ‏pre-initrd (הקרנל נטען) · pre-boot (ה-initramfs נטען).
     #
-    # ‏#503: pre-initrd/pre-boot נשלחים רק אחרי שהפקודה הקודמת הצליחה.
-    # ‏`if [ "$?" = "0" ]` סביב **הפירור**, לא סביב linux/initrd: && היה
-    # הופך כשל של ‎/boot/step למכונה שאינה עולה.
+    # ‏#503/#1405: pre-initrd/pre-boot נשלחים רק אחרי שלולאת הטעינה
+    # הצליחה. כשל סופי אינו ממשיך לפירור: הוא נכנס למסלול המילוט הבטוח,
+    # שאינו חוזר. הפירור עצמו נשאר פקודה עצמאית, ולכן כשל של ‎/boot/step
+    # אינו יכול למנוע את פקודת הטעינה שאחריו.
     return f"""menuentry "ImageSrv" --id imagectl {{
     {grub_call("entry")}
     echo "Loading ImageSrv..."
@@ -692,14 +730,10 @@ def _entry_agent(config: GrubConfig, *, recovery: bool, gui: bool = False) -> st
     {grub_call("http-ok")}
     if [ "$grub_platform" = "efi" ]; then insmod efinet; fi
     {grub_call("pre-linux")}
-    linux (http,{host}){config.kernel_path} {cmdline}
-    if [ "$?" = "0" ]; then
-        {grub_call("pre-initrd")}
-    fi
-    initrd (http,{host}){initrd}
-    if [ "$?" = "0" ]; then
-        {grub_call("pre-boot")}
-    fi
+{linux_load}
+    {grub_call("pre-initrd")}
+{initrd_load}
+    {grub_call("pre-boot")}
 }}"""
 
 

@@ -37,6 +37,7 @@ import pytest
 
 from server import room, sessions
 
+from conftest import room_slots
 from test_server_room import (          # noqa: F401 — ‏room_server הוא fixture
     CLONER1, CLONER2, cloner_hello, report, room_server,
 )
@@ -67,9 +68,12 @@ def _events(ctx, event: str) -> int:
     ).fetchone()["n"]
 
 
-def _open_round(room_server, target: int) -> None:
-    opened = room_server["deploy"].post(
-        "/api/console/room", json={"image_id": IMAGE, "target_drives": target})
+def _open_round(room_server, target: int, drawers=None) -> None:
+    """‏#1410: הסבב נפתח על בחירה מפורשת — כאן כל מגירות שני המשכפלים."""
+    drawers = drawers or {CLONER1: ["S1", "S2"], CLONER2: ["S3", "S4"]}
+    opened = room_server["deploy"].post("/api/console/room", json={
+        "image_id": IMAGE, "target_drives": target,
+        "target_slots": room_slots(room_server["ctx"].conn, drawers)})
     assert opened.status_code == 200, opened.text
 
 
@@ -378,7 +382,7 @@ def test_hello_never_starts_a_room_wave(room_server):
     גם כשהמצטרפים מכסים את המספר שהוצהר וגם כשהטיימר פקע.
     """
     ctx = room_server["ctx"]
-    _open_round(room_server, target=2)
+    _open_round(room_server, target=2, drawers={CLONER1: ["S1", "S2"]})
     cloner_hello(room_server["anon"], CLONER1, ["S1", "S2"])
     wave = ctx.store.active()
     assert wave is not None and wave["state"] == "open"

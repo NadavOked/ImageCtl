@@ -145,11 +145,13 @@ def test_a_bad_choice_is_refused_by_name_and_no_round_opens(room_server, chosen,
 
 
 def test_drivers_per_disk_need_a_disk_selection(room_server):
+    """מאז #1410 הבחירה עצמה חובה, ולכן הסירוב מגיע ממנה — לפני הדרייברים."""
     _two_cloners(room_server)
     answer = room_server["deploy"].post("/api/console/room", json={
         "image_id": "img_7f3a91", "target_drives": 4,
         "driver_models": [{"mac": CLONER1, "port": 1, **M70Q}]})
-    assert answer.status_code == 400 and "דיסקי יעד" in answer.json()["detail"]
+    assert answer.status_code == 400
+    assert answer.json()["detail"] == "יש לבחור לפחות דיסק יעד אחד"
     assert room(room_server["deploy"])["round"] is None
 
 

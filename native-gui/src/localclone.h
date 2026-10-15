@@ -35,6 +35,7 @@ typedef struct {
 
 typedef struct {
     int screen;                                  /* LC_SCREEN_* */
+    int round_open;                              /* #1367: lc_round=open -- a round waits on the server */
     long long boot_deadline, boot_now; int boot_paused;
     int inv_done; char phase[16];                /* idle|shrinking|copying|verifying|restoring|done|stopped */
     LcDisk disks[LC_MAX_DISKS]; int ndisks;

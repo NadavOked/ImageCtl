@@ -9,6 +9,7 @@
 #include <sys/mman.h>
 #include <linux/fb.h>
 #include <linux/kd.h>
+#include <linux/vt.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 #include "backend.h"
@@ -45,17 +46,26 @@ struct Backend {
     uint32_t fb_id, handle, conn_id, crtc_id;
     drmModeModeInfo mode;
     drmModeCrtc *saved;
+    int dirty_rc;                               /* #1362: drmModeDirtyFB of the last present */
     /* vt */
     int tty_fd, tty_mode;                       /* KDGETMODE fills an int */
+    int vt_process;                             /* #1362: VT_SETMODE VT_PROCESS is ours */
     /* fbdev flush */
     struct fb_var_screeninfo fbvar;             /* for FBIOPAN_DISPLAY */
 };
 
 /* ---- VT: keep the kernel console from drawing over us --------------------- */
 
+/* #1362: the server screen names its VT (tty1, the unit's TTYPath) instead of
+ * /dev/tty0, which is whichever VT is in front when the GUI starts -- after an
+ * upgrade restart that can be the operator's tty2. NULL = /dev/tty0. */
+static const char *tty_path = NULL;
+void backend_set_tty(const char *path) { tty_path = path; }
+
 static void vt_graphics(Backend *b) {
-    b->tty_fd = open("/dev/tty0", O_RDWR | O_CLOEXEC);
-    if (b->tty_fd < 0) { fprintf(stderr, "native-gui: /dev/tty0: %s (console may draw over the screen)\n", strerror(errno)); return; }
+    const char *path = tty_path ? tty_path : "/dev/tty0";
+    b->tty_fd = open(path, O_RDWR | O_CLOEXEC);
+    if (b->tty_fd < 0) { fprintf(stderr, "native-gui: %s: %s (console may draw over the screen)\n", path, strerror(errno)); return; }
     if (ioctl(b->tty_fd, KDGETMODE, &b->tty_mode) < 0) b->tty_mode = KD_TEXT;
     if (ioctl(b->tty_fd, KDSETMODE, KD_GRAPHICS) < 0)
         fprintf(stderr, "native-gui: KDSETMODE KD_GRAPHICS: %s (console may draw over the screen)\n", strerror(errno));
@@ -63,6 +73,10 @@ static void vt_graphics(Backend *b) {
 
 static void vt_restore(Backend *b) {
     if (b->tty_fd < 0) return;
+    if (b->vt_process) {                        /* the kernel switches VTs on its own again */
+        struct vt_mode m = { .mode = VT_AUTO };
+        ioctl(b->tty_fd, VT_SETMODE, &m);
+    }
     ioctl(b->tty_fd, KDSETMODE, b->tty_mode);
     close(b->tty_fd);
     b->tty_fd = -1;
@@ -254,6 +268,70 @@ void backend_present(Backend *b) {
         msync(b->map, b->map_len, MS_SYNC);     /* no-op on i915; flushes a defio shadow elsewhere */
         ioctl(b->fd, FBIOPAN_DISPLAY, &b->fbvar);
     }
+    /* #1362: a virtual GPU does not scan the dumb buffer out -- the host
+     * copies it to the screen only for the damage it is told about. vmwgfx
+     * (ESXi's SVGA) kept showing the black buffer of drmModeSetCrtc while
+     * every frame sat in memory; virtio-gpu, qxl and udl work the same way.
+     * A driver that does scan the buffer out has no dirty hook: -ENOSYS. */
+    if (b->kind == KIND_DRM) b->dirty_rc = drmModeDirtyFB(b->fd, b->fb_id, NULL, 0);
+}
+
+/* #1362: principle 5 -- the screen is "up" on positive evidence read back
+ * from the kernel, not because nothing returned an error: the CRTC scans out
+ * our framebuffer in a valid mode, and the last frame's damage was accepted
+ * (or the driver needs none). fbdev and mem have nothing to read back. */
+int backend_verify(Backend *b, char *err, size_t n) {
+    if (b->kind != KIND_DRM) return 0;
+    drmModeCrtc *c = drmModeGetCrtc(b->fd, b->crtc_id);
+    if (!c) { snprintf(err, n, "drm: CRTC %u not readable: %s", b->crtc_id, strerror(errno)); return -1; }
+    int ok = c->mode_valid && c->buffer_id == b->fb_id;
+    if (!ok) snprintf(err, n, "drm: CRTC %u shows fb %u, not ours (%u)", b->crtc_id, c->buffer_id, b->fb_id);
+    drmModeFreeCrtc(c);
+    if (!ok) return -1;
+    if (b->dirty_rc && b->dirty_rc != -ENOSYS) {
+        snprintf(err, n, "drm: DirtyFB refused: %s", strerror(-b->dirty_rc));
+        return -1;
+    }
+    return 0;
+}
+
+/* ---- #1362: VT switching while the screen is ours ---------------------------------
+ * The keyboard is grabbed (input.c), so the kernel never sees Alt+F2: the GUI
+ * asks for the switch itself (backend_vt_activate). And a DRM master keeps the
+ * CRTC even on tty2 -- fbcon cannot restore its mode while a master exists. So
+ * the VT is put in VT_PROCESS mode: the kernel asks before switching away
+ * (relsig -> drop master, release) and says when it is back (acqsig). */
+int backend_vt_take(Backend *b, int relsig, int acqsig) {
+    if (b->tty_fd < 0) return -1;
+    struct vt_mode m = { .mode = VT_PROCESS, .relsig = (short)relsig, .acqsig = (short)acqsig };
+    if (ioctl(b->tty_fd, VT_SETMODE, &m) < 0) {
+        fprintf(stderr, "native-gui: VT_SETMODE VT_PROCESS: %s (Alt+Fn cannot leave this screen)\n", strerror(errno));
+        return -1;
+    }
+    b->vt_process = 1;
+    return 0;
+}
+
+int backend_vt_activate(Backend *b, int vt) {
+    if (b->tty_fd < 0) return -1;
+    return ioctl(b->tty_fd, VT_ACTIVATE, vt);
+}
+
+void backend_vt_release(Backend *b) {
+    if (b->kind == KIND_DRM) drmDropMaster(b->fd);     /* fbcon may set its own mode now */
+    if (b->tty_fd >= 0) ioctl(b->tty_fd, VT_RELDISP, 1);
+}
+
+int backend_vt_acquire(Backend *b) {
+    int rc = 0;
+    if (b->tty_fd >= 0) ioctl(b->tty_fd, VT_RELDISP, VT_ACKACQ);
+    if (b->kind == KIND_DRM) {
+        if (drmSetMaster(b->fd)) { fprintf(stderr, "native-gui: drmSetMaster: %s\n", strerror(errno)); rc = -1; }
+        else if (drmModeSetCrtc(b->fd, b->crtc_id, b->fb_id, 0, 0, &b->conn_id, 1, &b->mode)) {
+            fprintf(stderr, "native-gui: drmModeSetCrtc on return: %s\n", strerror(errno)); rc = -1;
+        }
+    }
+    return rc;
 }
 
 void backend_close(Backend *b) {

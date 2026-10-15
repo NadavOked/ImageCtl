@@ -109,13 +109,15 @@ room_action() {
 
 # #65 "power it off": one cloner the open wave shows as missing, so its drawers
 # can be swapped. $1 = its MAC, $2 = its name (the GUI's confirm window,
-# #1270). The server checks all of it again -- still missing, the wave still
-# open, the name the machine's -- and the agent powers off on its next hello,
+# #1270). $3 = 1 only after the local-copy warning was confirmed. The server
+# checks all of it again -- still missing, the wave still open, the name the
+# machine's -- and the agent powers off on its next hello,
 # after arm_wol (#587). "Requested" is not "powered off": the evidence is
 # the hello that stops.
 room_poweroff() {
     case "$1" in ''|*[!0-9a-f:]*) return 1 ;; esac
-    jq -n --arg c "$2" '{confirm_name:$c}' > "$RUN_DIR/room_poweroff.json" || return 1
+    case "$3" in '') _lc=false ;; 1) _lc=true ;; *) return 1 ;; esac
+    jq -n --arg c "$2" --argjson lc "$_lc" '{confirm_name:$c,confirm_local_copy:$lc}' > "$RUN_DIR/room_poweroff.json" || return 1
     _code=$(console_post "room/missing/$1/poweroff" "$RUN_DIR/room_poweroff.json" \
         "$RUN_DIR/room_action.json") || return 1
     if [ "$_code" != "200" ]; then
@@ -123,4 +125,11 @@ room_poweroff() {
         return 1
     fi
     log "cloning room: power-off requested for the missing cloner $1"
+}
+
+room_poweroff_all() {
+    case "$2" in '') _lc=false ;; 1) _lc=true ;; *) return 1 ;; esac
+    jq -n --arg c "$1" --argjson lc "$_lc" '{confirm_name:$c,confirm_local_copy:$lc}' > "$RUN_DIR/room_poweroff.json" || return 1
+    _code=$(console_post "room/poweroff" "$RUN_DIR/room_poweroff.json" "$RUN_DIR/room_action.json") || return 1
+    [ "$_code" = 200 ] || { console_say "$_code" "The room was not asked to power off"; return 1; }
 }

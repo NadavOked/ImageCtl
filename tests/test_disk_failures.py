@@ -60,6 +60,10 @@ def test_the_lines_measured_on_cloner_2_disk_1_are_a_cable():
     assert ata_cause.classify(CABLE_LINES) == "cable"
 
 
+def test_a_crc_counter_without_agent_reported_ata_link_errors_is_not_cable():
+    assert ata_cause.classify(["UDMA_CRC_Error_Count 667 (unchanged)"]) == "unclassified"
+
+
 def test_unc_and_media_error_without_a_line_error_is_the_disk():
     assert ata_cause.classify(DISK_LINES) == "disk"
 
@@ -230,4 +234,3 @@ def test_a_failure_without_a_port_on_this_machine_needs_a_serial_to_match(conn):
     disk_failures.record(conn, "ses1", "b4:2e:99:07:1a:c4", failed_target(serial=None, port=None))
     assert disk_failures.open_for(conn, "b4:2e:99:07:1a:c4", [{"serial": "S1"}]) == []
     assert len(disk_failures.list_open(conn)) == 1
-

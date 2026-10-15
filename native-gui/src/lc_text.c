@@ -38,7 +38,27 @@ static int failed_targets(const App *a) {
     return f;
 }
 
+/* #1367: the agent's beat heard that a round is open on the server while
+ * this machine is here and not in it. The screen says so and what to do;
+ * nothing joins by itself -- a person is at the machine. */
+const char *lc_round_note(const App *a) {
+    if (!a->st.lc.round_open) return NULL;
+    if (a->screen == SCREEN_LCBOOT) return "נפתח סבב בשרת. כדי שהמחשב יצטרף אליו — בחרו 'מהשרת'.";
+    if (lc_view(a) == LCVIEW_SOURCE) return "נפתח סבב בשרת. כדי שהמחשב יצטרף אליו — 'חזרה' ואז 'מהשרת'.";
+    return "נפתח סבב בשרת";
+}
+
+static const char *lc_status_base(const App *a, Rgb *dot);
+
 const char *lc_status_word(const App *a, Rgb *dot) {
+    static char with_round[160]; const char *w = lc_status_base(a, dot);
+    /* during the copy and on its result the note rides the status bar (#1367) */
+    if (a->screen != SCREEN_LOCAL || lc_view(a) == LCVIEW_SOURCE || !lc_round_note(a)) return w;
+    snprintf(with_round, sizeof with_round, "%s · %s", w, lc_round_note(a)); *dot = a->theme->warn;
+    return with_round;
+}
+
+static const char *lc_status_base(const App *a, Rgb *dot) {
     static char buf[96]; const Theme *t = a->theme; const LcState *l = &a->st.lc;
     *dot = t->led_write;
     if (a->screen == SCREEN_LCBOOT) {
@@ -77,7 +97,7 @@ const char *lc_status_keys(const App *a) {
 
 const char *const LC_PNG_CARDS[] = { "lcboot", "lcboot-paused", "lcsource", "lcsource-measuring", "lcsource-blocked",
                                      "lcsource-shrink", "lcconfirm", "lcconfirm-shrink", "lcprogress", "lcprogress-fail",
-                                     "lcstop", "lcdone", "lcdone-ok" };
+                                     "lcstop", "lcdone", "lcdone-ok", "lcboot-round", "lcsource-round" };   /* -round: #1367 */
 const int LC_PNG_NCARDS = (int)(sizeof LC_PNG_CARDS / sizeof LC_PNG_CARDS[0]);
 
 static void disk(LcState *l, int port, const char *dev, const char *model, unsigned long long size, const char *smart,
@@ -108,9 +128,10 @@ static void tgt(LcState *l, const char *dev, const char *st, long long bytes, in
 void lc_sample(State *s, const char *card) {
     LcState *l = &s->lc; memset(l, 0, sizeof *l);
     snprintf(s->machine_name, sizeof s->machine_name, "CLONER-02");
+    l->round_open = strstr(card, "-round") != NULL;   /* #1367: a round opened on the server meanwhile */
     if (!strncmp(card, "lcboot", 6)) {
         l->screen = LC_SCREEN_BOOT; l->boot_now = 1000; l->boot_deadline = 1017;
-        l->boot_paused = !strcmp(card, "lcboot-paused");
+        l->boot_paused = !strcmp(card, "lcboot-paused") || l->round_open;
         return;
     }
     l->screen = LC_SCREEN_LOCAL; l->inv_done = 1; snprintf(l->phase, sizeof l->phase, "idle");
@@ -149,7 +170,7 @@ int lc_png_setup(App *a, const char *card) {
     lc_sample(&a->st, card);
     memset(&a->lcu, 0, sizeof a->lcu);
     a->force_cloner = 1;
-    if (!strcmp(card, "lcboot-paused")) { a->lcu.boot_focus = 1; a->lcu.pause_sent = 1; }
+    if (!strcmp(card, "lcboot-paused") || !strcmp(card, "lcboot-round")) { a->lcu.boot_focus = 1; a->lcu.pause_sent = 1; }
     if (a->st.lc.screen != LC_SCREEN_LOCAL) return 1;
     lc_after_reload(a);
     LcUi *u = &a->lcu;

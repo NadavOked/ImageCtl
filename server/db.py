@@ -131,7 +131,8 @@ CREATE TABLE IF NOT EXISTS power_requests (
     mac          TEXT PRIMARY KEY,
     action       TEXT NOT NULL CHECK (action IN ('poweroff', 'reboot')),   -- reboot: #977 §4
     requested_at TEXT NOT NULL,
-    requested_by TEXT NOT NULL
+    requested_by TEXT NOT NULL,
+    confirmed    INTEGER NOT NULL DEFAULT 0   -- #1367: אושר מעל אזהרת שיכפול מקומי
 );
 
 -- ‏#989 ס׳ 2: שאלת ה-SMART של משכפל (`smart_ask.py`) — שורה אחת למכונה, והתשובה
@@ -628,6 +629,12 @@ ADDED_COLUMNS = [
     # ‏#906: השאלה שהמכונה ממתינה עליה לאדם (‏hello עם `waiting_for`).
     # NULL = לא ממתינה; כל hello בלי השדה מנקה אותה.
     ("net_devices", "prompt", "TEXT"),
+    # ‏#1367 (נדב 14/10): ``copying`` = שיכפול מקומי כותב במכונה עכשיו (hello
+    # עם `local_clone`). NULL = לא; נכתב תמיד, כמו prompt — hello בלי השדה מנקה.
+    ("net_devices", "local_clone", "TEXT"),
+    # ‏#1367: בקשת כוח שהמפעיל אישר מעל אזהרת "באמצע שיכפול מקומי". רק היא
+    # מכבה מכונה שכותבת; בקשה בלי אישור נזרקת אצל הסוכן ונרשמת ביומן שלו.
+    ("power_requests", "confirmed", "INTEGER NOT NULL DEFAULT 0"),
     # ‏#402: מה הסוכן מצא כשספר אפס דיסקים — `drives` / `no_disks` /
     # `no_ports` / `unchecked` (ממשק 2). בלי זה "מגירות=0" קיפל "לא חובר
     # כונן" ו"בקר ה-SATA מנוטרל בקושחה" — פעולה הפוכה — לאותו מספר.
@@ -863,11 +870,13 @@ def _rebuild_state_tables(conn: sqlite3.Connection) -> None:
                     mac          TEXT PRIMARY KEY,
                     action       TEXT NOT NULL CHECK (action IN ('poweroff', 'reboot')),
                     requested_at TEXT NOT NULL,
-                    requested_by TEXT NOT NULL
+                    requested_by TEXT NOT NULL,
+                    confirmed    INTEGER NOT NULL DEFAULT 0
                 )
             """)
-            conn.execute("INSERT INTO power_requests_new (mac, action, requested_at, requested_by)"
-                         " SELECT mac, action, requested_at, requested_by FROM power_requests")
+            # ‏#1367: `confirmed` נוסף ב-_add_missing_columns, שרץ לפני הבנייה הזו
+            conn.execute("INSERT INTO power_requests_new (mac, action, requested_at, requested_by, confirmed)"
+                         " SELECT mac, action, requested_at, requested_by, confirmed FROM power_requests")
             conn.execute("DROP TABLE power_requests")
             conn.execute("ALTER TABLE power_requests_new RENAME TO power_requests")
         conn.commit()
@@ -1224,7 +1233,8 @@ def _net_seen_unchanged(row: sqlite3.Row, ip: str | None,
                         disk_probe: str | None = None,
                         firmware: str | None = None,
                         secure_boot: int | None = None,
-                        agent_version: str | None = None) -> bool:
+                        agent_version: str | None = None,
+                        local_clone: str | None = None) -> bool:
     """האם השורה כבר אומרת בדיוק את מה שהכתיבה הזו הייתה כותבת.
 
     ראיה חיובית בלבד (עיקרון 5): חותמת שאי אפשר לפענח, חותמת בלי אזור
@@ -1241,6 +1251,8 @@ def _net_seen_unchanged(row: sqlite3.Row, ip: str | None,
     if monitor_secret is not None and (row["monitor_auth"] or None) != (monitor_auth or None):
         return False
     if prompt != row["prompt"]:   # #906: גם המעבר שאלה→אין-שאלה נכתב
+        return False
+    if local_clone != row["local_clone"]:   # #1367: גם הסוף שלו נכתב
         return False
     if disk_probe is not None and disk_probe != row["disk_probe"]:   # #402
         return False
@@ -1270,6 +1282,7 @@ def net_seen(
     firmware: str | None = None,
     secure_boot: int | None = None,
     agent_version: str | None = None,
+    local_clone: str | None = None,
 ) -> None:
     """כל מגע של מכונה עם השרת — hello או תפריט אתחול — נרשם כאן.
 
@@ -1292,12 +1305,13 @@ def net_seen(
     now = datetime.now(timezone.utc)
     row = conn.execute(
         "SELECT ip, last_seen, disks_json, monitor_secret, monitor_auth, prompt,"
-        " disk_probe, firmware, secure_boot, agent_version FROM net_devices WHERE mac = ?", (mac,)
+        " disk_probe, firmware, secure_boot, agent_version, local_clone FROM net_devices WHERE mac = ?", (mac,)
     ).fetchone()
     if row is not None and _net_seen_unchanged(row, ip, disks_json, now,
                                                monitor_secret, monitor_auth,
                                                prompt, disk_probe,
-                                               firmware, secure_boot, agent_version):
+                                               firmware, secure_boot, agent_version,
+                                               local_clone=local_clone):
         return
 
     ts = now.isoformat(timespec="seconds")
@@ -1309,20 +1323,22 @@ def net_seen(
     with _write_lock, writing(conn):
         conn.execute(
             "INSERT INTO net_devices (mac, ip, first_seen, last_seen, disks_json,"
-            " monitor_secret, monitor_auth, prompt, disk_probe, firmware, secure_boot, agent_version)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            " monitor_secret, monitor_auth, prompt, disk_probe, firmware, secure_boot, agent_version,"
+            " local_clone)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (mac) DO UPDATE SET ip = COALESCE(excluded.ip, ip),"
             " last_seen = ?, disks_json = COALESCE(excluded.disks_json, disks_json),"
             " monitor_secret = COALESCE(excluded.monitor_secret, monitor_secret),"
             " monitor_auth = CASE WHEN excluded.monitor_secret IS NOT NULL"
             " THEN excluded.monitor_auth ELSE monitor_auth END,"
             " prompt = excluded.prompt,"
+            " local_clone = excluded.local_clone,"   # #1367: always, like prompt
             " disk_probe = COALESCE(excluded.disk_probe, disk_probe),"
             " firmware = COALESCE(excluded.firmware, firmware),"
             " secure_boot = COALESCE(excluded.secure_boot, secure_boot),"
             " agent_version = COALESCE(excluded.agent_version, agent_version)",
             (mac, ip, ts, ts, disks_json, monitor_secret, monitor_auth, prompt,
-             disk_probe, firmware, secure_boot, agent_version, ts),
+             disk_probe, firmware, secure_boot, agent_version, local_clone, ts),
         )
 
 

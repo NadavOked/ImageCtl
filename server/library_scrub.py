@@ -6,7 +6,7 @@ import hashlib
 from pathlib import Path
 
 from .db import _settle, _write_lock, now_iso, writing
-from .images import ImageLibrary, inside, streamed_partitions, valid_image_id
+from .images import ImageLibrary, guarded_image_path, streamed_partitions, valid_image_id
 
 CHUNK = 1024 * 1024
 
@@ -31,20 +31,15 @@ def _scrub_image(manifest: dict) -> dict:
     folder = Path(manifest["_dir"])
     for part in streamed_partitions(manifest):
         expected = part["sha256"]
-        candidate = folder / part["file"]
-        path = inside(candidate, folder)
+        path = guarded_image_path(folder, part["file"])
         result = {
             "index": part["index"],
             "file": part["file"],
             "expected_sha256": expected,
         }
         try:
-            if not candidate.exists():
+            if path is None:
                 result["state"] = "missing"
-            elif path is None:
-                result["state"] = "unreadable"
-            elif not path.is_file():
-                result["state"] = "unreadable"
             else:
                 actual = _sha256(path)
                 result["actual_sha256"] = actual

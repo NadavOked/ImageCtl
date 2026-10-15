@@ -558,7 +558,7 @@ static void text_event(char *str, int len, rfbClientPtr client) {
     } else if (len == (int)strlen(POWER_POWEROFF) &&
                !memcmp(str, POWER_POWEROFF, (size_t)len)) {
         char *argv[] = {(char *)"/bin/sh", (char *)"-c",
-            (char *)". /usr/lib/imagectl/common.sh && arm_wol || echo 'imagectl-monitor: Wake-on-LAN arming failed -- continuing shutdown' >&2; sync; poweroff -f", NULL};
+                (char *)". /usr/lib/imagectl/common.sh && safe_poweroff 'monitor: remote request'", NULL};
         fprintf(stderr, "imagectl-monitor: remote poweroff requested\n");
         run_power(argv);
     }

@@ -14,6 +14,7 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import urllib.parse
 from pathlib import Path
 
@@ -408,10 +409,9 @@ def main() -> None:
     except ConsoleTLSError as exc:
         parser.error(str(exc))
     if console_tls is not None and console_addr and console_addr not in console_tls.sans:
-        # התעודה נשארת (הדפדפן כבר אישר אותה); הפער נאמר, לא מתוקן בשקט.
+        # תעודה שהמפעיל העלה לעולם אינה מוחלפת אוטומטית.
         print(f"warning: console TLS certificate SANs {list(console_tls.sans)} "
-              f"do not include --console-host {console_addr}; remove "
-              f"{console_tls.cert_path.parent} to issue a new one")
+              f"do not include --console-host {console_addr}; upload a matching certificate")
 
     # ‏#1088: כתובת ההפצה וכרטיסה — מהדגל (המעבדה, שרת שהותקן עם כרטיס
     # הפצה), ממה שנרשם מהקונסולה, או "לא הוגדרה". שלושת המקורות נאמרים.
@@ -537,7 +537,21 @@ def main() -> None:
                              health_hooks={"port_listeners": listeners,
                                            "deploy": lambda: deploy_ctx.state,
                                            "servers_nic": servers_nic_status},
-                             deploy=deploy_ctx)
+                             deploy=deploy_ctx,
+                             # ‏#1372: המארח של עדכון ה-VM — שואל, ומכין אם חסר.
+                             vm_host=True)
+    # ‏#1372: עדכון מהכפתור רץ בסקריפט של התג **הישן**, ולכן ההכנה של הגרסה
+    # הזו אינה תלויה בו: מארח שאינו מוכן — install/vmupdate-host.sh שלנו, ברקע.
+    # ‏getattr: בדיקות של main מחליפות את create_runtime ברשומה משלהן.
+    vm_host = getattr(runtime, "vm_host", None)
+    if vm_host is not None:
+        threading.Thread(target=vm_host.ensure, daemon=True, name="vmhost-ensure").start()
+    if console_tls is not None and console_tls.regenerated:
+        # ‏#1417: נרשם רק כאן — לפני create_runtime אין runtime, וכל שימוש
+        # מוקדם יותר קרס (UnboundLocalError) בעלייה הראשונה אחרי ההחלפה
+        journal(runtime.conn, "console_tls_regenerated", console_addr or "127.0.0.1",
+                f"old_sha256={console_tls.previous_fingerprint_sha256} "
+                f"new_sha256={console_tls.fingerprint_sha256}")
     agent_app = create_agent_app(runtime)
     console_app = create_console_app(runtime)
 

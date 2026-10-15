@@ -28,7 +28,14 @@ def test_the_ruleset_confines_only_the_vm_user_and_only_to_the_mgmt_card():
     text = vmnet.ruleset(999, "eno1", ["10.0.0.53", "127.0.0.53"])
     lines = [ln.strip() for ln in text.splitlines()]
     order = lambda needle: next(i for i, ln in enumerate(lines) if needle in ln)  # noqa: E731
-    assert "meta skuid != 999 accept" in lines            # שאר השרת אינו מושפע
+    assert "meta skuid 999 jump vm" in lines              # שאר השרת אינו מושפע
+    # #1405: no negative uid match -- an orphaned socket (no owner) must never fall
+    # into the drop rules; it stays on the hook chain's accept policy
+    assert not any("skuid !=" in ln for ln in lines)
+    hook = lines.index("chain out {")
+    assert lines[hook + 1].startswith("type filter hook output") and "policy accept" in lines[hook + 1]
+    assert lines[hook + 3] == "}" and "chain vm {" in lines         # every drop lives in `vm`
+    assert order("chain vm {") < order('oifname != "eno1" drop')
     assert "meta nfproto ipv6 drop" in lines
     assert 'oifname != "eno1" drop' in lines              # רק כרטיס הניהול
     assert "fib daddr type { local, broadcast, multicast, anycast } drop" in lines
@@ -71,7 +78,7 @@ def test_apply_loads_and_reads_the_table_back():
     good = vmnet.ruleset(999, "eno1", []).replace("add table", "").replace("delete table", "")
     run, calls = _runner(good)
     assert vmnet.apply(999, "eno1", [], run=run) is None
-    assert calls[0][0] == ["nft", "-f", "-"] and "skuid != 999" in calls[0][1]
+    assert calls[0][0] == ["nft", "-f", "-"] and "skuid 999 jump vm" in calls[0][1]
 
 
 def test_a_table_that_did_not_come_back_is_a_refusal_not_a_pass():
@@ -179,7 +186,8 @@ def test_another_disks_guid_is_refused(tmp_path):
     ("disk_guid", "0E239172-A515-D8B4-92A1-AD790E23917`id`"),
     ("start", "1048576; true"),
     ("start", 1000),            # לא כפולה של 512
-    ("attrs", -1),
+    ("attrs", 1 << 64),        # ‏-1 הוא int64 חוקי (כל הביטים, #1421) — מחוץ לטווח הוא 2**64
+    ("attrs", -(1 << 63) - 1),
 ])
 def test_values_read_from_the_disk_are_validated_before_use(tmp_path, field, value):
     guest = FakeGuest()
@@ -365,3 +373,18 @@ def test_a_vars_file_planted_as_a_fifo_does_not_hang_the_server(tmp_path):
     got = agent_shell.call("true", run_dir=tmp_path / "run", runner=runner,
                            as_user=(os.getuid(), os.getgid()))
     assert got.errors == {} and time.monotonic() - started < 5
+
+
+@pytest.mark.parametrize("raw,hexed", [
+    (-(1 << 63), "8000000000000000"),          # ‏ESP של Windows (#1421)
+    (-(1 << 63) + 1, "8000000000000001"),      # ‏Recovery
+    (0, "0000000000000000"),
+])
+def test_gpt_attributes_come_back_as_signed_int64_and_are_read_as_bits(tmp_path, raw, hexed):
+    """‏#1421: ‏libguestfs מחזיר את ה-attrs כ-int64 עם סימן; ביט 63 = שלילי.
+    זה לא ערך זדוני — זה כל ESP ו-Recovery של Windows."""
+    guest = FakeGuest(attrs=raw)
+    disk = tmp_path / "disk.raw"
+    disk.write_bytes(b"")
+    _guid, parts = vmdisk.Appliance(disk, factory=lambda: guest).table()
+    assert {p["attrs"] for p in parts} == {hexed}

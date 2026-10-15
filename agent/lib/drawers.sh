@@ -106,7 +106,7 @@ restore_partition_drawers() {
 
     # ברקע, עם עין על מונה ה-pv: זרם שלא הזיז בייט חייב להסתיים בדיווח.
     # shellcheck disable=SC2086 # word splitting of the fifo list is wanted
-    rm -f "$RUN_DIR/fanout.rc" "$RUN_DIR/source.rc"
+    rm -f "$RUN_DIR/fanout.rc" "$RUN_DIR/source.rc" "$RUN_DIR/bytes.raw"  # #1430: old count != 1st byte
     next_stream_ceiling   # #957: המחיצה הראשונה ממתינה למפעיל, הבאות לחדר
     (
         # ה-rc של המקור נלכד לחוד: ב-POSIX sh ‏$? של צינור הוא של האחרון
@@ -212,16 +212,15 @@ run_restore_drawers() {
     _disks="$*"
 
     echo "writing" > "$RUN_DIR/state"
+    # אותה בדיקה 2.7 של התחנה הבודדת, לכל מגירה בנפרד: מגירה קטנה מדי
+    # נפסלת **לפני** ה---zap-all של apply_gpt, ובשמה (עד כאן "could not write
+    # the partition table" על כונן קטן נראה כמו תקלת חומרה). ‏#1366: ואחריה
+    # בדיקת הכתיבה והמהירות (writecheck.sh) — כל ההכרעות לפני הטבלה הראשונה.
+    # רק מגירות הסבב מגיעות לכאן (#1275). מגירה שנפסלה אינה עוצרת את השאר.
+    # shellcheck disable=SC2086 # the disk list is a word list on purpose
+    write_check_round "$_manifest" $_disks
     for _d in $_disks; do
-        target_set "$_d" "writing"
-        # אותה בדיקה 2.7 של התחנה הבודדת, לכל מגירה בנפרד: מגירה קטנה
-        # מדי נפסלת **לפני** ה---zap-all של apply_gpt, ובשמה. עד כאן
-        # היא נמחקה ואז דיווחה "could not write the partition table",
-        # ו"הכונן קטן מדי" נראה כמו תקלת חומרה. מגירה אחת שנפסלה אינה
-        # עוצרת את השאר — continue, כמו כל כשל אחר בלולאה הזו.
-        if ! disk_fits "$_d" "$_manifest"; then
-            continue
-        fi
+        [ "$(cat "$RUN_DIR/targets/$_d/state")" = "failed" ] && continue
         if ! apply_gpt "$_d" "$_manifest"; then
             fail_written_target "$_d" "${PLAN_ERROR:-could not write the partition table}"
             continue

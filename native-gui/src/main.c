@@ -12,7 +12,9 @@
  *   stdout           one record per operator action: a token line
  *                    (capture | restore | room | classes | back | again |
  *                    capture-start | room-open | room-wake | room-start |
- *                    room-close | room-poweroff (#65, cloner= confirm=) |
+ *                    room-close | room-poweroff (#65/#1367, cloner= confirm=
+ *                    [local_copy=1]) | room-poweroff-all (#1367, confirm=
+ *                    [local_copy=1]) |
  *                    class-pick | class-start | class-close |
  *                    smart-replace | smart-rescue | smart-skip |
  *                    shrink-continue|<nonce> | shrink-plain|<nonce> |
@@ -616,11 +618,19 @@ static void room_start(App *a) {
 
 /* #65: is the machine the power-off dialog was opened for still missing,
  * still answering, and the wave still open? Anything else closes it. */
-static int poweroff_target_live(const App *a) {
+static int poweroff_target_live(App *a) {
     if (!a->st.has_round || !a->st.wave_open) return 0;
     for (int i = 0; i < a->st.nroom_missing; i++)
-        if (!strcmp(a->st.room_missing[i].mac, a->poweroff_mac)) return a->st.room_missing[i].can_poweroff;
+        if (!strcmp(a->st.room_missing[i].mac, a->poweroff_mac)) {
+            a->poweroff_local_copy = a->st.room_missing[i].local_copy;
+            return a->st.room_missing[i].can_poweroff;
+        }
     return 0;
+}
+
+static int room_local_copies(const State *s) {
+    int n = 0; for (int i = 0; i < s->nmachines; i++) n += s->machines[i].local_copy;
+    return n;
 }
 
 /* #1270: what the confirm dialog's OK does. */
@@ -631,7 +641,14 @@ static void confirm_do(App *a) {
     else if (what == CONFIRM_ROOM_START_WARN && a->st.has_round && a->st.wave_open) emit1("room-start");
     else if (what == CONFIRM_ROOM_POWEROFF && poweroff_target_live(a)) {
         /* the server checks again: still missing, wave open, the machine's name */
-        emit("room-poweroff"); emit_kv("cloner", a->poweroff_mac); emit_kv("confirm", a->poweroff_name); emit_end();
+        emit("room-poweroff"); emit_kv("cloner", a->poweroff_mac); emit_kv("confirm", a->poweroff_name);
+        if (a->poweroff_local_copy) emit_kv("local_copy", "1");
+        emit_end();
+    }
+    else if (what == CONFIRM_ROOM_POWEROFF_ALL && a->st.room_label[0]) {
+        emit("room-poweroff-all"); emit_kv("confirm", a->st.room_label);
+        if (room_local_copies(&a->st)) emit_kv("local_copy", "1");
+        emit_end();
     }
     else if (what == CONFIRM_ROOM_STOP && a->st.has_round) stop_round("room-close", a->st.round_image);
     else if (what == CONFIRM_CLASS_STOP && a->st.has_session && class_gate(a)) stop_round("class-close", a->st.sess_image);
@@ -802,6 +819,7 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
                 snprintf(a->poweroff_mac, sizeof a->poweroff_mac, "%s", a->st.room_missing[i].mac);
                 snprintf(a->poweroff_name, sizeof a->poweroff_name, "%s",
                          a->st.room_missing[i].name[0] ? a->st.room_missing[i].name : a->st.room_missing[i].mac);
+                a->poweroff_local_copy = a->st.room_missing[i].local_copy;
                 a->confirm = CONFIRM_ROOM_POWEROFF;
             }
             break;
@@ -867,6 +885,7 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
         case HIT_ROOM_WAKE:  emit1("room-wake"); break;
         case HIT_ROOM_START: room_start(a); break;   /* #432: asks first on a warning */
         case HIT_ROOM_CLOSE: if (a->st.has_round) a->confirm = CONFIRM_ROOM_STOP; break;   /* #1270 */
+        case HIT_ROOM_POWEROFF_ALL: if (a->admin && a->st.room_label[0]) a->confirm = CONFIRM_ROOM_POWEROFF_ALL; break;
         case HIT_CLASS_START: if (class_gate(a)) emit1("class-start"); break;
         case HIT_CLASS_CLOSE: if (class_gate(a)) a->confirm = CONFIRM_CLASS_STOP; break;   /* #1270 */
         case HIT_SMART_REPLACE: emit_smart(a, "smart-replace"); break;
@@ -1120,7 +1139,8 @@ static const char *PNG_CARDS[] = { "login", "menu", "pick", "progress", "done", 
                                    "class", "class-live", "cloner", "standby", "message", "restore", "direct",
                                    "tools", "tools-confirm", "tools-output", "shrink", "logout",
                                    "restore-folder", "room-images", "restore-confirm", "room-drivers", "pick-hebrew",
-                                   "room-start-warn", "room-poweroff",
+                                   "room-start-warn", "room-poweroff", "room-poweroff-local-copy",
+                                   "room-poweroff-all",
                                    "growback", "capture-end" };
 
 /* Put the App in the state that routes to <card>; the flags that override
@@ -1196,13 +1216,21 @@ static void png_setup(App *a, const State *base, const char *card) {
                                                  a->confirm = CONFIRM_RESTORE; }   /* #1270 */
     else if (!strcmp(card, "room-start-warn")) { a->mode = MODE_ROOM; a->st.has_round = 1; a->st.wave_open = 1;
                                                  a->confirm = CONFIRM_ROOM_START_WARN; }   /* #432 */
-    else if (!strcmp(card, "room-poweroff")) {                                    /* #65 */
+    else if (!strcmp(card, "room-poweroff") || !strcmp(card, "room-poweroff-local-copy")) { /* #65/#1367 */
         a->mode = MODE_ROOM; a->st.has_round = 1; a->st.wave_open = 1;
         const char *mac = base->nroom_missing ? base->room_missing[0].mac : "3c:52:82:a1:00:22";
         const char *name = base->nroom_missing && base->room_missing[0].name[0] ? base->room_missing[0].name : "CLONE-02";
         snprintf(a->poweroff_mac, sizeof a->poweroff_mac, "%s", mac);
         snprintf(a->poweroff_name, sizeof a->poweroff_name, "%s", name);
+        a->poweroff_local_copy = !strcmp(card, "room-poweroff-local-copy");
         a->confirm = CONFIRM_ROOM_POWEROFF;
+    }
+    else if (!strcmp(card, "room-poweroff-all")) {                                /* #1367 */
+        a->mode = MODE_ROOM;
+        if (!a->st.room_label[0]) snprintf(a->st.room_label, sizeof a->st.room_label, "מחשבי שיכפול");
+        if (!a->st.nmachines) a->st.nmachines = 1;
+        if (!room_local_copies(&a->st)) a->st.machines[0].local_copy = 1;
+        a->confirm = CONFIRM_ROOM_POWEROFF_ALL;
     }
     else if (!strcmp(card, "room-images")) { a->mode = MODE_ROOM; a->room_target_set = 0; a->nroom_selection = 0;
                                              a->dd_open = HIT_ROOM_IMAGE; }   /* the picker, on the folders */
@@ -1258,6 +1286,8 @@ static int render_png(App *a, const State *base, const char *prefix, int w, int 
                                        SCREEN_PICK, /* "pick-hebrew" (#1245): the language chip on "עב" */
                                        SCREEN_ROOM, /* "room-start-warn" (#432): the orange start question */
                                        SCREEN_ROOM, /* "room-poweroff" (#65): "כבה אותו" asks first */
+                                       SCREEN_ROOM, /* "room-poweroff-local-copy" (#1367): disk-break warning */
+                                       SCREEN_ROOM, /* "room-poweroff-all" (#1367): plural disk-break warning */
                                        SCREEN_MENU, /* "growback" (11/10): the dialog over the menu, at boot */
                                        SCREEN_PROGRESS /* "capture-end" (11/10): the dialog over the capture */ };
         /* One entry per card, or want[c] reads past the table -- that is exactly

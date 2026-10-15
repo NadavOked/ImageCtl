@@ -39,6 +39,7 @@ void lc_draw_progress(App *a, cairo_t *cr, double W, double H, double head_h);
 void lc_draw_stop(App *a, cairo_t *cr, double W, double H);
 void lc_draw_done(App *a, cairo_t *cr, double W, double H, double head_h);
 const char *lc_status_word(const App *a, Rgb *dot);
+const char *lc_round_note(const App *a);          /* #1367: a round is open on the server; NULL = say nothing */
 const char *lc_status_keys(const App *a);
 /* shared pieces (screens_local.c) */
 double lc_btn(App *a, cairo_t *cr, double right, double y, double h, const char *label, const char *key,

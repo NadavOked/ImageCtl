@@ -168,4 +168,5 @@ def test_the_cloner_standby_record_carries_the_link(tmp_path):
     assert out.returncode == 0, out.stderr
     assert "not found" not in out.stderr, out.stderr
     (line,) = [l for l in (gui / "state").read_text().splitlines() if l.startswith("cdisk=")]
-    assert line.split("|")[6:] == ["1.5", "6.0"], line
+    assert line.split("|")[6:8] == ["1.5", "6.0"], line
+    assert line.split("|")[8] == "", line     # #1366: no threshold in this hello -- no CRC colour

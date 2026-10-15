@@ -398,6 +398,7 @@ class SenderEngine:
         on_event: Callable[[str, str], None] | None = None,
         simulate: bool = False,
         wave_bitrate: Callable[[dict], str | None] | None = None,
+        live_receivers: Callable[[str], int] | None = None,
     ):
         self.library = library
         self.runner = runner
@@ -426,6 +427,11 @@ class SenderEngine:
         # מקבל את `max_bitrate` כגג ולעולם אינו מעליו (בלעדיו — 900m);
         # בלי `wave_bitrate` — `max_bitrate` כמות שהוא.
         self.wave_bitrate = wave_bitrate
+        # ‏#1430: כמה חברים בגל עוד יכולים לקבל — נשאל לפני **כל** מחיצה.
+        # חבר שדיווח `failed` לא יתחבר לעולם, ו-`--min-receivers` שסופר
+        # אותו מבזבז את כל `--max-wait` (600ש' במחיצה 2+) על מכונה מתה —
+        # עד שהמכונה התקינה פוקעת. בלעדיו — הצילום של `joined` מתחילת הגל.
+        self.live_receivers = live_receivers
         self.on_event = on_event or (lambda event, detail: None)
         #: ‏#705: ‏`gate(interface)` → סיבת סירוב או None — השידור כבוי בכרטיס
         #: (רשת ← חיבורים פיזיים ← שירותים). ‏`create_runtime` מתקין.
@@ -483,20 +489,39 @@ class SenderEngine:
             process = self._process
             if self._state is not None and self._state.state in ("starting", "sending"):
                 self._state.state = "stopped"
-        if process is None or process.poll() is not None:
+        if process is None:
+            return None
+        if process.poll() is not None:
+            # poll() reports that the child exited, but wait() is the explicit
+            # ownership boundary: every Popen we create is reaped here or by
+            # the worker, including an exit racing with cancellation/shutdown.
+            process.wait()
+            with self._lock:
+                if self._process is process:
+                    self._process = None
             return None
         process.terminate()
         if _reaped(process, STOP_TERM_WAIT):
+            process.wait()
             return None
         try:
             process.kill()
         except OSError:
             pass
         if _reaped(process, STOP_KILL_WAIT):
+            process.wait()
             return None
         pid = getattr(process, "pid", None)
         log.error("sender: udp-sender still alive after SIGKILL (PID %s)", pid)
         return pid if pid is not None else -1
+
+    def close(self) -> int | None:
+        """Stop the current child and wait for the sender worker on shutdown."""
+        left = self.stop()
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(STOP_TERM_WAIT + STOP_KILL_WAIT + 1.0)
+        return left
 
     def status(self) -> dict | None:
         with self._lock:
@@ -765,6 +790,21 @@ class SenderEngine:
         return ("הפורטים נבדקו כעת ושניהם פנויים — הכישלון אינו התנגשות"
                 " על פורט, והסיבה אינה ידועה")
 
+    def _receivers(self, session_id: str, joined: int) -> int:
+        """‏`--min-receivers` למחיצה שעומדת לצאת: החברים החיים, לא פחות מ-1.
+
+        בדיקה שנכשלה אינה "אף אחד לא חי" (עיקרון 5): נשארים על הצילום
+        של `joined` — ההתנהגות שלפני #1430, שממתינה יותר אך אינה מפילה
+        מקבל חי — ואומרים את זה ביומן."""
+        if self.live_receivers is None:
+            return joined
+        try:
+            return max(1, int(self.live_receivers(session_id)))
+        except Exception as exc:          # noqa: BLE001 — חריגה כאן הורגת את התהליכון
+            log.warning("sender: live receivers of %s unreadable (%s);"
+                        " keeping the wave's %s", session_id, exc, joined)
+            return joined
+
     def _run(self, session: dict) -> None:
         if self.gate is not None:
             refused = self.gate(self.interface)
@@ -781,7 +821,7 @@ class SenderEngine:
             self._fail(f"אימג' {session['image_id']} לא נמצא בספרייה")
             return
         partitions = streamed_partitions(manifest)
-        receivers = max(1, int(session.get("joined") or 1))
+        joined = max(1, int(session.get("joined") or 1))
         bitrate = (self.wave_bitrate(session) if self.wave_bitrate is not None
                    else self.max_bitrate)
         with self._lock:
@@ -795,15 +835,16 @@ class SenderEngine:
             if self._stop.is_set():
                 self.on_event("send_stopped", session["id"])
                 return
-            path = Path(manifest["_dir"]) / part["file"]
-            if not path.is_file():
+            path = self.library.file_path(session["image_id"], part["file"])
+            if path is None:
                 self._fail(f"קובץ מחיצה חסר: {part['file']}")
                 return
             with self._lock:
                 self._state.index = number
                 self._state.file = part["file"]
                 self._state.state = "sending"
-            cmd = self.command_for(path, receivers, number, bitrate)
+            cmd = self.command_for(path, self._receivers(session["id"], joined),
+                                   number, bitrate)
             log_path = partition_log(path)
             log.info("sending partition %s/%s: %s", number, len(partitions), part["file"])
             try:

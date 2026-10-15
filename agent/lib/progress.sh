@@ -39,10 +39,18 @@ target_init() {
     : > "$_t/bytes.raw"
     echo "$_t/bytes.raw" > "$_t/counter"
     echo "$2" > "$_t/total"
-    rm -f "$_t/error" "$_t/crc_delta" "$_t/ata_log" "$_t/ata_log.json" "$_t/ident" \
-        "$_t/boot_ca_state" "$_t/boot_ca_reason"
+    rm -f "$_t/error" "$_t/crc_delta" "$_t/ata_log" "$_t/ata_log.json" "$_t/ident" "$_t/evidence_only" \
+        "$_t/boot_ca_state" "$_t/boot_ca_reason" "$_t/write_check_state" "$_t/write_check_reason" "$_t/write_check_mbps" \
+        "$_t/write_started"
     # ‏#874: מאיפה dmesg נספר בכשל -- ריק (אין /proc/uptime) = מההתחלה.
     cut -d' ' -f1 "$SYSROOT/proc/uptime" > "$_t/since" 2>/dev/null
+}
+
+target_write_started() {
+    # The serial binds later failure cleanup to the disk this run wrote.
+    _tw_s=$(disk_serial "$1")
+    [ -n "$_tw_s" ] || log "$1: no serial -- a failure here keeps its GPT (#1427)"   # loop/VM: no wipe without identity
+    mkdir -p "$RUN_DIR/targets/$1" && printf '%s\n' "$_tw_s" > "$RUN_DIR/targets/$1/write_started"
 }
 
 target_counter() {
@@ -164,6 +172,8 @@ build_progress() {
         if [ -s "$_d/boot_ca_state" ] && [ -s "$_d/boot_ca_reason" ]; then
             _entry="$_entry,\"boot_ca_preflight\":{\"state\":\"$(json_escape "$(cat "$_d/boot_ca_state")")\",\"reason\":\"$(json_escape "$(cat "$_d/boot_ca_reason")")\"}"
         fi
+        _wm=$(cat "$_d/write_check_mbps" 2>/dev/null); case "$_wm" in ''|*[!0-9]*) _wm=null ;; esac   # #1366: null = not measured, never 0
+        [ -s "$_d/write_check_state" ] && _entry="$_entry,\"write_preflight\":{\"state\":\"$(json_escape "$(cat "$_d/write_check_state")")\",\"reason\":\"$(json_escape "$(cat "$_d/write_check_reason" 2>/dev/null)")\",\"mbps\":$_wm}"
         # ‏#874: יעד שנכשל נושא סידורי, חריץ ושורות ה-ATA (failmark.sh) -- הראיה, לא סיווג.
         [ -f "$_d/ata_log.json" ] && _entry="$_entry$(failure_json "$_dev")"
         [ -s "$_d/drivers.json" ] && _entry="$_entry,\"drivers\":$(tr -d '\n' < "$_d/drivers.json")"   # #1269
@@ -272,6 +282,11 @@ report_final() {
         _f_try=$((_f_try + 1))
         if progress_send "$2" "$3" "$4" "${5:-}"; then
             [ "$_f_try" -gt 1 ] && log "the final report got through on try $_f_try"
+            return 0
+        fi
+        if progress_refused_for_good; then
+            [ -n "$2" ] && printf '%s\n' "$2" > "$RUN_DIR/server-restarted-wave"
+            log "the final report was not repeated: the server says the task is closed"
             return 0
         fi
         [ "$_f_try" -ge "$FINAL_REPORT_TRIES" ] && break

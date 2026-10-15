@@ -241,8 +241,8 @@ def test_vm_may_not_take_every_core(lab):
 def test_disk_space_refusal_names_every_number(lab):
     exc = refusal(lab["make"](FakeMachine(free=50 * 10**9)))
     assert (exc.status, exc.reason) == (507, "disk_space")
-    # תפוס 31457280+84509376512, מרווח 30GiB, גרסה חדשה 1.5×57982058496
-    need = 31457280 + 84509376512 + 30 * (1 << 30) + int(57982058496 * 1.5)
+    # תפוס 31457280+84509376512, מרווח 30GiB, גרסה חדשה = הדחוס 57982058496 (‏#1390)
+    need = 31457280 + 84509376512 + 30 * (1 << 30) + 57982058496
     assert exc.numbers == {"need_bytes": need, "free_bytes": 50 * 10**9}
     assert "פנויים 50.0 GB" in exc.message
 

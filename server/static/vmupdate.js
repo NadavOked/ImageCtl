@@ -72,6 +72,7 @@ async function vmuTick(force = false) {
   if (VMU.busy || (!force && VMU.last && Date.now() - VMU.last < gap)) return;
   VMU.busy = true;
   VMU.last = Date.now();
+  const was = VMU.st && VMU.st.state;
   try {
     VMU.st = await vmuCall("GET", "/status");
     VMU.err = "";
@@ -81,8 +82,17 @@ async function vmuTick(force = false) {
     VMU.busy = false;
   }
   vmuGlobal();
+  if (typeof renderActivity === "function") renderActivity();   // #1391: שורת ה-VM בדוק המשימות
+  vmuReadyNotice(was, VMU.st);
   if (current === "vmupdate") vmuPaint();
   vmuDialogs();
+}
+
+/* ‏#1391: ההכנה הסתיימה בזמן שהמפעיל בעמוד אחר ("צמצם") — התראה. מעבר
+   preparing → running בלבד: דגימה ראשונה (אין מצב קודם) אינה "עכשיו מוכן". */
+function vmuReadyNotice(was, st) {
+  if (was !== "preparing" || !st || st.state !== "running" || current === "vmupdate") return;
+  toast(`ה-VM מוכן — ${vmuName(st)} ${vmuVersion(st)} עלה. "חזור ל-VM" בפס העליון או בדוק המשימות`.replace(/\s+/g, " "), 10000, "ok");
 }
 
 /* ---------- עזרים ---------- */
@@ -105,6 +115,11 @@ function vmuMine(st) { return !!st && st.you_control; }
 /* הודעה בתוך חלון — UI.note מעוצב רק בתוך ‏.page, החלונות יושבים מחוצה לו. */
 function vmuNote(kind, html) { return `<div class="n-note vmu-note ${kind}"><span>${html}</span></div>`; }
 function vmuPct(done, total) { return total ? Math.max(0, Math.min(100, Math.round(100 * done / total))) : null; }
+/* ‏#1391: "62% · 27.8 / 44.9 GB" — רק כשהשרת כבר יודע את הגודל הכולל; לפני כן כלום, לא 0%. */
+function vmuPrepProgress(st, before = "", after = "") {
+  const p = (st && st.progress) || {}, pct = vmuPct(p.done_bytes, p.total_bytes);
+  return pct == null ? "" : `${before}${pct}% · <bdi dir="ltr">${vmuGB(p.done_bytes)} / ${vmuGB(p.total_bytes)}</bdi>${after}`;
+}
 
 /* ---------- הפס הגלובלי ("VM רץ") — בכל עמוד חוץ מעמוד ה-VM ---------- */
 
@@ -127,7 +142,7 @@ function vmuGlobalHtml(st) {
   const who = st.controller ? ` · ${esc(st.controller)}` : "";
   const what = running
     ? `<b>VM רץ:</b> ${esc(vmuName(st))} <span class="m">${vmuVersion(st)} · <bdi dir="ltr">${vmuClock(st.runtime_seconds)}</bdi>${who}</span>`
-    : st.state === "preparing" ? `<b>מכין דיסק ל-VM:</b> ${esc(vmuName(st))}`
+    : st.state === "preparing" ? `<b>מכין דיסק ל-VM:</b> ${esc(vmuName(st))}${vmuPrepProgress(st, " <span class=\"m\">", "</span>")}`
     : st.state === "saving" ? `<b>שומר גרסה חדשה:</b> ${esc(vmuName(st))}`
     : `<b>עדכון ב-VM ממתין להחלטה:</b> ${esc(vmuName(st))}`
       + (st.expires_in_seconds != null ? ` <span class="m">· הדיסק הזמני יימחק בעוד ${vmuDays(st.expires_in_seconds)}</span>` : "");
@@ -144,8 +159,36 @@ function vmuGlobal() {
 /* ---------- העמוד ---------- */
 
 function vmuOpen() {
+  if (current !== "vmupdate") VMU.back = current;   // ‏#1391: לאן "צמצם" מחזיר
   if (typeof selectPage === "function") selectPage(null, "vmupdate");
   vmuTick(true);
+}
+
+/* ‏#1391 (נדב 13/10): "צמצם" — ההכנה ממשיכה בשרת; חוזרים לעמוד שממנו באו (אחרת
+   אימג'ים), וההתקדמות בדוק המשימות ובפס הגלובלי. כשה-VM עולה — התראה (vmuReadyNotice). */
+function vmuMinimize() {
+  const back = VMU.back && VMU.back !== "vmupdate" ? VMU.back : "images";
+  if (typeof selectPageById === "function") selectPageById(back);
+  if (typeof renderActivity === "function") renderActivity();
+  const panel = document.getElementById("taskPanel");
+  if (panel && panel.classList && !panel.classList.contains("open") && typeof toggleTaskPanel === "function") toggleTaskPanel();
+}
+
+/* ‏#1391: שורת ה-VM בדוק המשימות (activityRows) — כמו המוקאפ המאושר (console-full.html:
+   משימה · יעד · התחלה · משך · מצב · מי התחיל). לחיצה — חזרה לעמוד ה-VM. */
+const VMU_DOCK_LABEL = { preparing: "מכין דיסק", running: "רץ", stopping: "נכבה", stopped: "כבוי — ממתין להחלטה",
+  saving: "שומר גרסה חדשה", failed: "נכשל — ממתין להחלטה" };
+function vmuActivityRow(st = VMU.st) {
+  if (!vmuActive(st)) return null;
+  const p = st.progress || {};
+  const pct = st.state === "preparing" || st.state === "saving" ? vmuPct(p.done_bytes, p.total_bytes) : null;
+  const label = VMU_DOCK_LABEL[st.state] + (pct != null ? ` · ${pct}%` : st.state === "running" ? ` · ${vmuClock(st.runtime_seconds)}` : "");
+  // הדוק מציג טקסט (esc) ולא <bdi> — שם האימג' והגדלים מבודדים בתווי בידוד (FSI/LRI…PDI),
+  // אחרת "27.8 GB / 44.9 GB" ו-"Office 2024 v3" מתערבבים עם העברית שסביבם.
+  const target = st.state === "preparing" && p.total_bytes ? `דיסק זמני · ⁦${vmuGB(p.done_bytes)} / ${vmuGB(p.total_bytes)}⁩` : "VM בשרת";
+  return { name: `עדכון ב-VM: ⁨${`${vmuName(st)} ${vmuVersion(st)}`.trim()}⁩`, target, start: st.created_at, end: null, label,
+    cls: st.state === "failed" ? "err" : st.state === "stopped" ? "" : "info", by: st.started_by || "",
+    pct, open: "vmuOpen()" };
 }
 
 function vmuPageHtml() {
@@ -271,7 +314,8 @@ function vmuPrepCard(st) {
   ]);
   return vmuCard({ key: "prep", title: "מכין את הדיסק…", sub: `בונה דיסק וירטואלי מ-${esc(vmuName(st))} ${vmuVersion(st)}`, body,
     hint: `האימג' המקורי (${vmuVersion(st)}) לא נפתח לכתיבה — ה-VM עובד על עותק זמני. אפשר לצאת מהעמוד; ההכנה ממשיכה בשרת.`,
-    foot: `<span class="n-hint">ביטול עכשיו לא משנה דבר באימג'.</span>${st.you_control ? `<button class="btn" type="button" onclick="vmuCancelPrep()">ביטול</button>` : ""}` });
+    foot: `<span class="n-hint">ביטול עכשיו לא משנה דבר באימג'.</span>${st.you_control ? `<button class="btn" type="button" onclick="vmuCancelPrep()">ביטול</button>` : ""}`
+      + `<button class="btn primary" type="button" data-testid="vmu-minimize" onclick="vmuMinimize()">צמצם</button>` });
 }
 
 const VMU_SAVE_STAGES = [["capture", "כיווץ ובדיקה", "BitLocker, מצב שינה, כיווץ NTFS — בתוך appliance נפרד"],
@@ -407,6 +451,33 @@ function vmuDisconnect() {
   VMU.rfb = null; VMU.rfbEl = null; VMU.rfbState = "";
   if (rfb) { try { rfb.disconnect(); } catch (e) { /* כבר סגור */ } }
 }
+async function vmuReconnectAfterDisconnect() {
+  if (current !== "vmupdate") return;
+  let response;
+  try {
+    response = await apiFetch("/api/console/vmupdate/status", {credentials: "same-origin"});
+  } catch (e) {
+    setTimeout(() => vmuScreen(VMU.st || {}), 2000);
+    return;
+  }
+  if ([401, 403, 409].includes(response.status)) {
+    const reasons = {401: "החיבור למסך נסגר: יש להתחבר מחדש",
+                     403: "החיבור למסך נסגר: אין הרשאה לצפייה",
+                     409: "החיבור למסך נסגר: המסך פתוח בחיבור אחר"};
+    VMU.rfbState = "auth-closed";
+    toast(reasons[response.status]);
+    if (response.status === 401) showLogin();
+    return;
+  }
+  if (!response.ok) {
+    setTimeout(() => vmuScreen(VMU.st || {}), 2000);
+    return;
+  }
+  const latest = await response.json();
+  VMU.st = latest;
+  if (latest && (latest.state === "running" || latest.state === "stopping"))
+    setTimeout(() => vmuScreen(latest), 2000);
+}
 async function vmuScreen(st) {
   const el = document.getElementById("vmuScreen");
   const live = st && (st.state === "running" || st.state === "stopping");
@@ -426,7 +497,7 @@ async function vmuScreen(st) {
   rfb.addEventListener("connect", () => { VMU.rfbState = "on"; });
   rfb.addEventListener("disconnect", () => {
     if (VMU.rfb === rfb) { VMU.rfb = null; VMU.rfbEl = null; VMU.rfbState = ""; }
-    if (current === "vmupdate") setTimeout(() => vmuScreen(VMU.st || {}), 2000);   // ‏VM חי — מתחברים שוב
+    vmuReconnectAfterDisconnect();
   });
   VMU.rfb = rfb; VMU.rfbEl = el;
 }

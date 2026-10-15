@@ -38,6 +38,7 @@ from server.console_storage import create_storage_router
 from server.console_api import create_console_router
 
 from conftest import setup_classroom
+from test_server_room import cloner_hello  # noqa: E402
 
 
 #: מלאי נתיבי `/api/console` על אפליקציית הסוכן — (method, path). כל שינוי
@@ -267,8 +268,11 @@ def test_capture_workflow(kiosk_env):
 def test_room_workflow(kiosk_env):
     admin = _login_kiosk(kiosk_env)
     assert admin.get("/api/console/room").status_code == 200
-    opened = admin.post("/api/console/room",
-                        json={"image_id": "img_7f3a91", "target_drives": 2})
+    # ‏#1410: בחירת מגירות מפורשת וחובה, מול מגירה שמחוברת כרגע.
+    cloner_hello(kiosk_env["anon"], "aa:bb:cc:00:00:20", ["S1"])
+    opened = admin.post("/api/console/room", json={
+        "image_id": "img_7f3a91", "target_drives": 2,
+        "target_slots": [{"mac": "aa:bb:cc:00:00:20", "ports": [1]}]})
     assert opened.status_code == 200, opened.text
     woke = admin.post("/api/console/room/wake")
     assert woke.status_code == 200

@@ -218,6 +218,11 @@ def apply_interface(name: str) -> str | None:
     ‏**None כאן פירושו "הפקודות רצו", ולא "הכתובת השתנתה".** את זה
     קובעת רק `read_state()`.
     """
+    link_code, link_text = _run(["ip", "link", "set", "dev", name, "up"])
+    if link_code is None:
+        return f"{name}: לא ניתן להפעיל את הכרטיס (ip link: {link_text})"
+    if link_code != 0:
+        return f"{name}: הפעלת הכרטיס נכשלה (ip link rc={link_code}: {link_text[:200]})"
     down_code, down_text = _run(["ifdown", "--force", name])
     up_code, up_text = _run(["ifup", name])
     if up_code is None:

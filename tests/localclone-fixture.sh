@@ -3,7 +3,8 @@
 # on, as sparse image files on loop devices. Root (the Testrunner's sudo -n).
 #
 #   localclone-fixture.sh setup <dir>      source + targets; "<name> <dev>" in <dir>/devs
-#   localclone-fixture.sh files <dev> <dir> sha256 of every file on <dev>, by partition
+#   localclone-fixture.sh setup-tail <dir> <fill MiB>  #1202: a full C:, a 2M-smaller target
+#   localclone-fixture.sh files <dev> <dir> [idx:fs ...]  sha256 of every file on <dev>, by partition
 #   localclone-fixture.sh teardown <dir>   loops detached, mounts released
 #
 # The source is a Windows-like disk with a Linux root at the end:
@@ -56,10 +57,35 @@ setup)
         && mkimg small 3328M "$dir" > /dev/null && mkimg tiny 2048M "$dir" > /dev/null || exit 1
     mount -t tmpfs -o size=96m lcfull "$dir/full" && mkimg full 4608M "$dir/full" > /dev/null || exit 1
     ;;
+setup-tail)
+    # #1202: the drives of 20/09 in miniature -- ESP, MSR, C: (NTFS 256M with
+    # $3 MiB of data), Recovery (NTFS) to the very last usable sector; and a
+    # target 2M smaller ("near"). 100 leaves C: room for the 64MiB tail; 170
+    # does not (packed).
+    fill=${3:-100}
+    mkdir -p "$dir" && : > "$dir/devs" || exit 1
+    src=$(mkimg src 400M "$dir") || exit 1
+    sgdisk -n 1:2048:+64M -t 1:ef00 -c 1:"EFI system partition" \
+           -n 2:0:+16M -t 2:0c01 -c 2:"Microsoft reserved partition" \
+           -n 3:0:+256M -t 3:0700 -c 3:"Basic data partition" \
+           -n 4:0:0 -t 4:2700 -c 4:"Recovery" -A 4:set:0 -A 4:set:63 "$src" > /dev/null || exit 1
+    blockdev --rereadpt "$src"; udevadm settle 2>/dev/null; sleep 1
+    mkfs.vfat -F 32 -s 1 -n EFI "${src}p1" > /dev/null || exit 1
+    head -c 16777216 /dev/urandom > "${src}p2" || exit 1
+    mkntfs -Q -q -L Windows "${src}p3" || exit 1
+    mkntfs -Q -q -L Recovery "${src}p4" || exit 1
+    put "${src}p1" vfat esp && put "${src}p4" ntfs-3g recovery || exit 1
+    mkdir -p "$dir/m"; mount -t ntfs-3g "${src}p3" "$dir/m" && mkdir -p "$dir/m/data" \
+        && head -c $((fill * 1048576)) /dev/urandom > "$dir/m/data/fill.bin" \
+        && printf 'tail shift\n' > "$dir/m/data/hello.txt" && sync && umount "$dir/m" || exit 1
+    mkimg near 398M "$dir" > /dev/null || exit 1
+    ;;
 files)
-    # $2 = disk, $3 = dir. "<idx> <sha256> <path>" for the file partitions.
+    # $2 = disk, $3 = dir, $4 = the file partitions (idx:fs ..., the default
+    # is the setup layout). "<idx> <sha256> <path>" for each of them.
     node=$2; dir=$3; mkdir -p "$dir/m"
-    for _p in 1:vfat 3:ntfs-3g 4:ntfs-3g 5:ext4; do
+    # shellcheck disable=SC2086 # the list is split on purpose
+    for _p in ${4:-1:vfat 3:ntfs-3g 4:ntfs-3g 5:ext4}; do
         _i=${_p%%:*}; _t=${_p#*:}; _o=ro; [ "$_t" = ext4 ] && _o=ro,noload
         mount -t "$_t" -o "$_o" "${node}p$_i" "$dir/m" || { echo "$_i mount-failed"; continue; }
         (cd "$dir/m" && find data etc -type f 2>/dev/null | sort | while read -r _f; do

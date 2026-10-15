@@ -90,8 +90,13 @@ lc_inv_disk() {
         _li_n=$(awk 'END { print NR }' "$LC/inv/$1.parts")
         _li_need=$(lc_layout_need "$LC/inv/$1.parts" "$_li_size" 512) || _li_need=-1
         : > "$LC/inv/$1.used"   # idx|bytes a copy moves -- the progress denominator
+        : > "$LC/inv/$1.roles"  # idx|role -- windows only with Windows\System32 on it (#1369)
         while IFS='|' read -r _li_i _li_t _li_u _li_f _li_z; do
             _li_pn=$(partition_node "$1" "$_li_i"); _li_fs=$(_fs_of "$_li_pn"); _li_role=$(_partition_role "$_li_t")
+            if [ "$_li_role" = windows ]; then   # #1354: the system partition is the capture's (#1369)
+                _li_role=$(_system_role "$_li_i" "$_li_pn" "$_li_fs" 2>/dev/null) || _li_role=unchecked
+            fi
+            echo "$_li_i|$_li_role" >> "$LC/inv/$1.roles"
             [ "$_li_fs" = swap ] && { echo "$_li_i|0" >> "$LC/inv/$1.used"; continue; }
             case "$_li_role" in
                 windows) [ -n "$_li_os" ] || _li_os=Windows ;;
@@ -126,6 +131,13 @@ lc_inventory() {
         lc_inv_disk "$_lv_d" > "$LC/inv/$_lv_d.next" && mv "$LC/inv/$_lv_d.next" "$LC/inv/$_lv_d.line"
     done
     echo "done" > "$LC/inv.state"
+}
+
+lc_role() {
+    # $1 = source, $2 = idx, $3 = type GUID. The inventory's role (System32
+    # checked, #1369), else the GUID's. "unchecked" = the check itself failed.
+    _lrl_x=$(awk -F'|' -v i="$2" '$1 == i { print $2; exit }' "$LC/inv/$1.roles" 2>/dev/null)
+    [ -n "$_lrl_x" ] && echo "$_lrl_x" || _partition_role "$3"
 }
 
 lc_inv_field() {
@@ -205,5 +217,41 @@ lc_verdict_for() {
     IFS='|' read -r _lf_st _lf_min _lf_why <<EOF
 $_lf_m
 EOF
-    lc_verdict "$(lc_inv_field "$2" 5)" "$(lc_inv_field "$1" 11)" "$_lf_st" "$_lf_min" "$_lf_why"
+    _lf_v=$(lc_verdict "$(lc_inv_field "$2" 5)" "$(lc_inv_field "$1" 11)" "$_lf_st" "$_lf_min" "$_lf_why")
+    # #1354: "fits" and "fits with a shrink" also leave the minimum free in the
+    # system partition -- the layout the target would get, the same check as
+    # disk_fits. Not measured = unchecked, never fits.
+    case "${_lf_v%%|*}" in
+        fits) _lf_p="$LC/inv/$1.parts" ;;
+        shrink) _lf_p="$LC/measure/$1.compact" ;;
+        *) echo "$_lf_v"; return ;;
+    esac
+    _lf_f=$(lc_min_free "$1" "$(lc_inv_field "$2" 5)" "$_lf_p")
+    _lf_n=${_lf_v#*|}; _lf_n=${_lf_n%%|*}
+    case "$_lf_f" in
+        ok) echo "$_lf_v" ;;
+        short\|*) echo "short|$_lf_n|${_lf_f#*|}" ;;
+        *) echo "unchecked||${_lf_f#*|}" ;;
+    esac
+}
+
+lc_min_free() {
+    # $1 = source, $2 = target bytes, $3 = the parts file of the layout the
+    # target gets (original or compacted). min_free_check's answer, on a
+    # manifest built from the inventory: roles as the inventory checked them (lc_role), used bytes
+    # from inv/<src>.used (an unread one stays null -- unchecked).
+    _fm_m="$LC/fit.json"; _fm_p=""
+    [ "$(min_free_gb)" -gt 0 ] || { echo ok; return 0; }   # 0 = the rule is off
+    [ -s "$3" ] || { echo "unchecked|לא הצלחנו לקרוא את פריסת המקור"; return 0; }
+    while IFS='|' read -r _fm_i _fm_t _fm_u _fm_f _fm_s; do
+        _fm_b=$(awk -F'|' -v i="$_fm_i" '$1 == i { print $2; exit }' "$LC/inv/$1.used" 2>/dev/null)
+        case "$_fm_b" in ''|*[!0-9]*) _fm_b=null ;; esac
+        _fm_r=$(lc_role "$1" "$_fm_i" "$_fm_t")
+        [ "$_fm_r" != unchecked ] || { echo "unchecked|מחיצה $_fm_i: לא הצלחנו לבדוק אם היא מחיצת המערכת"; return 0; }
+        _fm_p="$_fm_p{\"index\":$_fm_i,\"type_guid\":\"$_fm_t\",\"role\":\"$_fm_r\",\"fs\":null,\"start_sector\":$_fm_f,\"size_bytes\":$((_fm_s * 512)),\"used_bytes\":$_fm_b,\"file\":null,\"sha256\":null,\"expandable\":false},"
+    done < "$3"
+    printf '{"sector_size":512,"partitions":[%s]}\n' "${_fm_p%,}" > "$_fm_m"
+    _fm_n=$(required_bytes "$_fm_m")
+    case "$_fm_n:$2" in *[!0-9:]*|:*|*:) echo "unchecked|לא הצלחנו לחשב את הפריסה"; return 0 ;; esac
+    min_free_check "$_fm_m" "$2" "$_fm_n"
 }

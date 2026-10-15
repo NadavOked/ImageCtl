@@ -225,6 +225,9 @@ def create_agent_router(ctx: ServerContext,
         disk_probe = body.get("disk_probe")
         if disk_probe not in DISK_PROBE_VALUES:
             disk_probe = None
+        # ‏#1367 (נדב 14/10): שיכפול מקומי כותב במכונה עכשיו. רק "copying" נשמר;
+        # כל צורה אחרת, וגם היעדר, היא "לא" — ומנקה (net_seen כותב תמיד).
+        local_clone = "copying" if body.get("local_clone") == "copying" else None
         # ‏#500: הקושחה (uefi/bios) ומצב ה-Secure Boot כפי שהסוכן קרא מה-EFI
         # var. רק הצורה המדויקת נשמרת; כל דבר אחר = None והשורה שומרת את
         # הערך הקודם (COALESCE) — "לא דווח" אינו "כבוי".
@@ -248,7 +251,7 @@ def create_agent_router(ctx: ServerContext,
             hw_inventory=hw_inventory, hw_probe=hw_probe,
             prompt=prompt, disk_probe=disk_probe,
             firmware=firmware, secure_boot=secure_boot,
-            agent_version=agent_version,
+            agent_version=agent_version, local_clone=local_clone,
             # ‏#715: פרמטרי השידור למקור שהוא מחשב בנייה — של המנוע, אם יש.
             multicast=ctx.sender.multicast_params() if ctx.sender is not None else None,
         )
@@ -256,9 +259,12 @@ def create_agent_router(ctx: ServerContext,
         # polling חדש. רק ב-hello האמיתי (לא בתפריט האתחול), ורק למכונה
         # רשומה; השדה חסר כשאין בקשה, וסוכן ישן מתעלם ממנו.
         if answer["known"]:
-            power_action = room_console.take_power_action(ctx.conn, mac)
+            power_action, power_confirmed = room_console.take_power(ctx.conn, mac)
             if power_action is not None:
                 answer["power_action"] = power_action
+                # ‏#1367: רק בקשה שאושרה מעל אזהרת השיכפול המקומי מכבה מכונה שכותבת
+                if power_confirmed:
+                    answer["power_confirmed"] = True
             # ‏#989 ס׳ 2: שאלת ה-SMART — נרשמת, והתשובה המנצחת (קונסולה או
             # המכונה עצמה, הראשונה גוברת) חוזרת באותה תשובה. שדה חסר = אין מה לבצע.
             ask_answer = smart_ask.note_hello(
@@ -282,6 +288,8 @@ def create_agent_router(ctx: ServerContext,
         # reboots to the local disk. An alert in the journal, never a gate.
         if "gui_failed" in body:
             gui_failure.note(ctx.conn, mac, body.get("gui_failed"), known=bool(answer["known"]))
+        if body.get("wol_armed") is False and answer["known"]:
+            journal(ctx.conn, "wol_arm_failed", mac)
         return JSONResponse(answer)
 
     @router.post("/agent/login")

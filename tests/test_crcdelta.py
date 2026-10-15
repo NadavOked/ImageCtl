@@ -22,6 +22,7 @@ pytestmark = requires_native(("bash", BASH))
 
 PRELUDE = (
     f'. {posix(AGENT)}/lib/common.sh; '
+    f'. {posix(AGENT)}/lib/waits.sh; '   # #1367: capped_run, the smartctl ceiling
     f'. {posix(AGENT)}/lib/sysinfo.sh; '
     f'. {posix(AGENT)}/lib/progress.sh; '
     f'. {posix(AGENT)}/lib/smart.sh; '

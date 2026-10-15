@@ -60,8 +60,18 @@ def list_interfaces(sys_root: str | Path = "/sys/class/net") -> list[dict]:
             mac = (entry / "address").read_text().strip()
         except OSError:
             mac = ""
+        try:
+            flags = int((entry / "flags").read_text().strip(), 16)
+            admin_up = bool(flags & 1)  # IFF_UP
+        except (OSError, ValueError):
+            admin_up = None
+        try:
+            link_up = (entry / "carrier").read_text().strip() == "1"
+        except OSError:
+            link_up = None
         found.append({"name": entry.name, "state": state, "mac": mac,
-                      "addresses": _addresses(entry.name)})
+                      "addresses": _addresses(entry.name),
+                      "admin_up": admin_up, "link_up": link_up})
     return found
 
 

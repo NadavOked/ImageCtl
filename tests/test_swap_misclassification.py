@@ -117,7 +117,7 @@ def test_an_ntfs_partition_without_a_file_never_reaches_mkswap(tmp_path, row, sh
     סיימה ב-`done` — מחיצת ווינדוס מפורמטת, ודיווח של הצלחה מלאה.
 
     אחרי התיקון אין `mkswap`, אין `sgdisk` (כלומר הטבלה כלל לא נמחקה),
-    והיעד נכשל בשם המחיצה.
+    והיעד נכשל בגלוי — מאז #1408 בשער התוכנית, לפני שנגעו בדיסק.
     """
     box, run, prelude = build_box(tmp_path, plan=[row])
     live_nodes(box, 3)
@@ -128,9 +128,9 @@ def test_an_ntfs_partition_without_a_file_never_reaches_mkswap(tmp_path, row, sh
     assert state_of(run) == "failed"
     assert calls(box, "mkswap") == "", f"‏mkswap רץ על מחיצת NTFS ({shape})"
     assert calls(box, "sgdisk") == "", "הדיסק נגע לפני שהמניפסט נבדק"
-    error = target_error(run)
-    assert "3" in error and "ntfs" in error, \
-        f"ההודעה אינה נוקבת במחיצה ובסיבה: {error!r}"
+    # ‏#1408 (77557596): `validate_restore_plan` דוחה את השורה לפני
+    # ‏`--zap-all`, בהודעה הקבועה ש-test_restore_plan_1418 נועל.
+    assert target_error(run) == "malformed restore plan -- disk untouched"
 
 
 @requires_bash
@@ -244,7 +244,7 @@ def test_a_real_swap_image_still_enters_the_library(server, images_root):
 
     write_image(images_root, MANIFEST_LINUX)
     assert ImageLibrary._validate(MANIFEST_LINUX) is None
-    assert "img_lnx001" in library_ids(server)
+    assert MANIFEST_LINUX["id"] in library_ids(server)
 
 
 def test_capture_refuses_a_manifest_whose_ntfs_partition_carries_no_file(server):

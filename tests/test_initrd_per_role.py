@@ -63,8 +63,9 @@ def answer(**overrides) -> dict:
 
 def initrd_lines(text: str) -> list[str]:
     """שורות ה-`initrd` בקובץ. הן היחידות שקובעות מה נטען בפועל."""
-    return [line.strip() for line in text.splitlines()
-            if line.strip().startswith("initrd ")]
+    return [line.strip().removeprefix("if ").removesuffix("; then")
+            for line in text.splitlines()
+            if line.strip().startswith(("initrd ", "if initrd "))]
 
 
 #: כל מסלול שבו נוצר ערך `menuentry "ImageCtl"` — כלומר כל מסלול שבו
@@ -164,7 +165,8 @@ def test_the_gui_path_never_reaches_the_kernel_command_line():
     """שורת הפקודה נשארת נקייה (עיקרון 2). הבחירה מתבטאת בשורת ה-initrd
     בלבד — לא בפרמטר קרנל חדש שהסוכן היה צריך לפרש."""
     text = render(answer(role="build"), CFG)
-    linux_line = [ln for ln in text.splitlines() if ln.strip().startswith("linux ")][0]
+    linux_line = [ln for ln in text.splitlines()
+                  if ln.strip().startswith("if linux ")][0]
     assert "gui" not in linux_line
     assert "initrd" not in linux_line
 

@@ -16,15 +16,21 @@ crc_delta_measure() {
         # המטמון נושא 199 רק כש-smartctl באמת קרא את הדיסק -- לא על unchecked
         # מכשל פתיחה / אין smartctl / אין SMART, שם ה-0 שנשמר אינו מדידה.
         case "$(smart_field "$_cd_d" 2)" in
-            ok|health_failed|no_health) ;;
+            ok|health_failed|uncorrectable|pending_sectors|no_health) ;;   # #1366: the F1 reasons read it too
             *) log "$_cd_d: crc delta not measured (no baseline)"; continue ;;
         esac
         _cd_out="$RUN_DIR/smart/$_cd_d.after"
-        "$SMARTCTL" -A -n never "$DEVROOT/$_cd_d" > "$_cd_out" 2>>"$LOG_FILE"
-        # bit 1 (rc & 2) = פתיחה נכשלה -> דרך SAT, אותו כלל כמו smart_probe.
-        # ה-`[ ]` שנכשל משאיר $?=1, ו-1 אינו bit 1 -- הפתיחה הראשונה נחשבת.
-        [ "$(($? / 2 % 2))" -eq 1 ] && "$SMARTCTL" -d sat -A -n never "$DEVROOT/$_cd_d" > "$_cd_out" 2>>"$LOG_FILE"
-        if [ "$(($? / 2 % 2))" -eq 1 ]; then
+        # ‏#1367: בתקרה (waits.sh) -- אחרי הכתיבה ולפני הדוח, דיסק תקוע אינו
+        # עוצר את report_final. bit 1 (rc & 2) = פתיחה נכשלה -> דרך SAT, אותו
+        # כלל כמו smart_probe.
+        capped_run "$SMARTCTL_MAX_S" "$_cd_out" "$SMARTCTL" -A -n never "$DEVROOT/$_cd_d"; _cd_rc=$?
+        [ "$CAPPED_TIMED_OUT" = 0 ] && [ "$((_cd_rc / 2 % 2))" -eq 1 ] &&
+            { capped_run "$SMARTCTL_MAX_S" "$_cd_out" "$SMARTCTL" -d sat -A -n never "$DEVROOT/$_cd_d"; _cd_rc=$?; }
+        if [ "$CAPPED_TIMED_OUT" = 1 ]; then
+            log "$_cd_d: crc delta not measured (smartctl did not answer within ${SMARTCTL_MAX_S}s)"
+            continue
+        fi
+        if [ "$((_cd_rc / 2 % 2))" -eq 1 ]; then
             log "$_cd_d: crc delta not measured (smartctl could not open the disk)"
             continue
         fi

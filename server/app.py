@@ -27,7 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from boot.grub_menu import GrubConfig
 from boot.http import create_boot_asgi, gui_initrd_path
 
-from . import auth, boottrace, deploy_net, dhcp, drive_rates, registry
+from . import auth, auto_reboot, boottrace, deploy_net, dhcp, drive_rates, registry
 from .api import ServerContext, create_agent_router
 from .console_api import create_console_router
 from .console_hostcfg import create_hostcfg_router
@@ -67,6 +67,7 @@ from .users import ensure_admin
 from . import storage_nodes
 from . import monitor
 from .monitor import create_monitor_router
+from .vmhost import VmHost
 from .vmupdate import VmUpdate
 from .vmupdate_api import create_vmupdate_router, create_vmupdate_viewer_router
 from . import image_versions
@@ -182,6 +183,11 @@ class ServerRuntime:
     host_hooks: dict | None = None
     #: ‏#1334: עדכון אימג' ב-VM — מנוע אחד לתהליך (VM אחד בכל פעם).
     vmupdate: "VmUpdate | None" = None
+    #: ‏#1372: המארח של עדכון ה-VM — אזהרה בסטטוס העדכון ובבריאות, וההכנה
+    #: בעלייה. ‏None = לא הודלק (בדיקות); ‏main מדליק.
+    vm_host: "VmHost | None" = None
+    auto_reboot_hook: object = auto_reboot.default_reboot
+    auto_reboot_interval: float = auto_reboot.CHECK_SECONDS
 
 
 async def _room_clock(rt: ServerRuntime, interval: float) -> None:
@@ -224,15 +230,34 @@ def _install_room_clock(app: FastAPI, rt: ServerRuntime) -> None:
     """
     interval = rt.room_clock_interval
 
+    # הקונסולה מוגשת ב-uvicorn.Server אחד **לכל כתובת** (loopback + כרטיס
+    # השרתים), וכל אחד מריץ את ה-lifespan: שני שעונים, שני מתזמני ריסטרט
+    # ושתי סגירות שולח. כולם על לולאה אחת (ports.py) — ולכן מונה: הראשון
+    # שנכנס מפעיל, האחרון שיוצא עוצר. מאזין בודד שנסגר (#996) אינו עוצר.
+    live = {"n": 0, "tasks": ()}
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        task = asyncio.create_task(_room_clock(rt, interval))
+        live["n"] += 1
+        if live["n"] == 1:
+            task = asyncio.create_task(_room_clock(rt, interval))
+            reboot_task = asyncio.create_task(
+                auto_reboot.run(rt, rt.auto_reboot_hook, rt.auto_reboot_interval))
+            rt.ctx.auto_reboot_task = reboot_task
+            live["tasks"] = (task, reboot_task)
         try:
             yield
         finally:
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
+            live["n"] -= 1
+            if live["n"] == 0:
+                for running in live["tasks"]:
+                    running.cancel()
+                for running in live["tasks"]:
+                    with suppress(asyncio.CancelledError):
+                        await running
+                live["tasks"] = ()
+                # ‏#1426: השולח יושב על ctx; ל-ServerRuntime אין `sender`
+                await asyncio.to_thread(rt.ctx.sender.close)
 
     app.router.lifespan_context = lifespan
 
@@ -247,6 +272,8 @@ def create_runtime(
     sender_portbase: int | None = None,
     # ‏e2e_simulation בלבד: שולח מדומה (ראו sender.Sender.simulate).
     sender_simulate: bool = False,
+    auto_reboot_hook=None,
+    auto_reboot_interval: float = auto_reboot.CHECK_SECONDS,
     # שתי תקרות ההמתנה של udpcast. ‏None = ברירת המחדל של `sender.py`
     # (כמו `sender_portbase`): הערך בייצור אינו זז, ומי שצריך תקרה קצרה —
     # מעבדה, טסט, ‏e2e — מעביר אותה כאן במקום לחכות דקות (#341).
@@ -299,6 +326,9 @@ def create_runtime(
     # ‏#1334: מנוע עדכון ה-VM. ‏None = המנוע האמיתי מול המארח; בדיקות
     # מזריקות מנוע עם זיופים (כמו ``dhcp_hooks``).
     vmupdate_engine: "VmUpdate | None" = None,
+    # ‏#1372: ראו ``ServerRuntime.vm_host``. ‏False כברירת מחדל מאותו טעם כמו
+    # ``sync_dnsmasq``: רק ``main`` שואל את המארח שהוא רץ עליו.
+    vm_host: bool = False,
 ) -> ServerRuntime:
     """בונה את המצב המשותף פעם אחת ומריץ את האתחול החד-פעמי.
 
@@ -308,6 +338,7 @@ def create_runtime(
     data_dir.mkdir(parents=True, exist_ok=True)
 
     conn = connect(data_dir / "imagectl.db")
+    auto_reboot.consume_marker(conn, data_dir)
 
     # ‏#655/#723: תצורת ה-Storage Node נכתבת בהפעלה כשהיא הועברה (main).
     # ‏None = לא הועבר — משאירים את ההגדרה הקיימת; התפקיד נקרא ממילא
@@ -316,6 +347,10 @@ def create_runtime(
         storage_nodes.persist_config(conn, storage_role, primary_url)
 
     library = ImageLibrary(images_root)
+    library.bind_invalid_reporter(
+        lambda path, reason: journal(
+            conn, "image_manifest_rejected",
+            f"המניפסט {path} הוצא מהספרייה: {reason}", ""))
     storage_locations.ensure_local(conn, library.root)
     library.bind_locations(
         lambda: storage_locations.library_roots(conn, library.root))
@@ -399,6 +434,9 @@ def create_runtime(
         wave_bitrate=lambda session: drive_rates.decide(
             conn, session["id"], lambda: room.wave_drives(conn, session["id"]),
             sender.max_bitrate),
+        # ‏#1430: `store` נבנה למטה (הוא צריך את `sender.stop`); הקריאה
+        # היא מתהליכון השולח, הרבה אחרי שהפונקציה הזו סיימה.
+        live_receivers=lambda session_id: store.live_count(session_id),
     )
     def wake_class(group_id: str, opener_mac: str | None,
                    roster: list[str] | None = None) -> None:
@@ -470,6 +508,14 @@ def create_runtime(
         console_dhcp.sync_main_conf(
             ctx, {**console_dhcp.default_hooks(), **(dhcp_hooks or {})}, deploy)
 
+    engine = vmupdate_engine or VmUpdate(
+        conn, library,
+        # ‏ה-VM לעולם אינו יוצא לאינטרנט דרך כרטיס ההפצה (docs/vm-update.md).
+        deploy_interface=lambda: deploy.state.interface if deploy else None)
+    host = (VmHost(engine.host_problem, repo_dir or Path(__file__).resolve().parents[1])
+            if vm_host else None)
+    if host is not None:
+        health_hooks = {**(health_hooks or {}), "vm_host": host.health}
     return ServerRuntime(
         ctx=ctx, conn=conn, library=library, store=store,
         server_base=server_base, data_dir=data_dir, netcfg_dir=netcfg_dir,
@@ -482,10 +528,9 @@ def create_runtime(
         repo_dir=repo_dir, update_hooks=update_hooks,
         room_clock_interval=room_clock_interval,
         console_tls=console_tls, deploy=deploy, host_hooks=host_hooks,
-        vmupdate=vmupdate_engine or VmUpdate(
-            conn, library,
-            # ‏ה-VM לעולם אינו יוצא לאינטרנט דרך כרטיס ההפצה (docs/vm-update.md).
-            deploy_interface=lambda: deploy.state.interface if deploy else None),
+        vmupdate=engine, vm_host=host,
+        auto_reboot_hook=auto_reboot_hook or auto_reboot.default_reboot,
+        auto_reboot_interval=auto_reboot_interval,
     )
 
 
@@ -696,7 +741,8 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
         version=lambda: read_version(update_hooks, repo_dir)))   # #1159
     include(create_update_router(
         ctx, repo_dir, rt.server_base, rt.update_hooks,
-        public_url=PUBLIC_UPDATE_URL))
+        public_url=PUBLIC_UPDATE_URL,
+        vm_warning=rt.vm_host.warning if rt.vm_host else None))   # #1372
     include(create_hostcfg_router(ctx, rt.data_dir, rt.console_tls, rt.host_hooks))   # #153
     # ‏#690: admin RFB proxy + settings — ה-HTTP שלו admin_only ממילא.
     app.include_router(create_monitor_router(ctx))

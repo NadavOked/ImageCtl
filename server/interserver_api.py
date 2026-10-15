@@ -371,7 +371,7 @@ def _decoded_filename(name: str) -> str | None:
 def list_images(ctx, peer: TlsPeer, *, token: str, protocol_version: str,
                 has_console_cookie: bool = False) -> list:
     """רשימת האימג'ים בספריית המשני — מהדיסק (עיקרון 3), לא מטבלה."""
-    from .images import image_os, streamed_partitions
+    from .images import guarded_image_path, image_os, streamed_partitions
     authenticate_parent(ctx.conn, peer, token=token, protocol_version=protocol_version,
                         has_console_cookie=has_console_cookie)
     rows = []
@@ -385,7 +385,9 @@ def list_images(ctx, peer: TlsPeer, *, token: str, protocol_version: str,
             name = part["file"]
             sha[name] = part.get("sha256") or ""
             try:
-                size += (directory / name).stat().st_size
+                path = guarded_image_path(directory, name)
+                if path is not None:
+                    size += path.stat().st_size
             except OSError:
                 pass
         rows.append({

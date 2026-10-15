@@ -19,13 +19,13 @@ LIB_DIR="${LIB_DIR:-/usr/lib/imagectl}"
 . "$LIB_DIR/decide.sh"
 . "$LIB_DIR/progress.sh"
 . "$LIB_DIR/pull.sh"   # אחרי progress.sh: pull_close קורא ל-report_final (#562)
-. "$LIB_DIR/bootcadb.sh"; . "$LIB_DIR/restore.sh"; . "$LIB_DIR/diskfit.sh"   # #672/#1217: restore preflights
-. "$LIB_DIR/expand.sh"; . "$LIB_DIR/grow.sh"   # ההרחבה: לפני הזרם ואחריו (#478)
+. "$LIB_DIR/expand.sh"; . "$LIB_DIR/grow.sh"   # ההרחבה: לפני הזרם ואחריו (#478); diskfit calls _expand_candidate (#1354)
+. "$LIB_DIR/bootcadb.sh"; . "$LIB_DIR/restore.sh"; . "$LIB_DIR/diskfit.sh"; . "$LIB_DIR/writecheck.sh"   # #672/#1217/#1366: restore preflights
 . "$LIB_DIR/drawers.sh"; . "$LIB_DIR/verdict.sh"; . "$LIB_DIR/failmark.sh"; . "$LIB_DIR/slotnames.sh"   # (#704 slot names) הזרם, הפסק עליו (#520), והראיה על כשל (#874)
 . "$LIB_DIR/manifest.sh"
 . "$LIB_DIR/bootca.sh"; . "$LIB_DIR/hibernation.sh"; . "$LIB_DIR/shrinkplan.sh"; . "$LIB_DIR/shrink.sh"; . "$LIB_DIR/shrinkmem.sh"; . "$LIB_DIR/shrinkoffer.sh"   # לפני capture.sh: capture_disk קורא להם (#85, #651, #87, #926, #929)
 . "$LIB_DIR/capture.sh"; . "$LIB_DIR/capturesink.sh"; . "$LIB_DIR/directsend.sh"   # #715: pass 1 is capture_disk with the sink discarded; #1217: the sink split from capture.sh
-. "$LIB_DIR/hostname.sh"; . "$LIB_DIR/hostname_linux.sh"; . "$LIB_DIR/bootentry.sh"; . "$LIB_DIR/postdeploy.sh"   # #720: driver staging, after the name; #433: Boot#### before it
+. "$LIB_DIR/hostname.sh"; . "$LIB_DIR/hostname_linux.sh"; . "$LIB_DIR/bootentry.sh"; . "$LIB_DIR/bootstorage.sh"; . "$LIB_DIR/postdeploy.sh"   # #720: driver staging, after the name; #433: Boot#### before it; #1331: boot-start storage
 . "$LIB_DIR/sitehooks.sh"   # #1266: a site/lab overlay's start hooks; the product ships none
 . "$LIB_DIR/watchdog.sh"; . "$LIB_DIR/monitor.sh"; . "$LIB_DIR/installer_boot.sh"   # #690: RFB, role+flag gated; #1190: init-only (inert here, load gate #84)
 . "$LIB_DIR/ui.sh"
@@ -38,7 +38,7 @@ LIB_DIR="${LIB_DIR:-/usr/lib/imagectl}"
 . "$LIB_DIR/poll.sh"; . "$LIB_DIR/idle.sh"   # #434: idle power-off, beats inside poll_sleep
 . "$LIB_DIR/guiparent.sh"; . "$LIB_DIR/localboot.sh"   # 11/10: no GUI -> BootNext to the local disk + told to the server
 . "$LIB_DIR/clonergui.sh"
-. "$LIB_DIR/lcinv.sh"; . "$LIB_DIR/lcplan.sh"; . "$LIB_DIR/lccopy.sh"; . "$LIB_DIR/localclone.sh"; . "$LIB_DIR/lcgui.sh"   # #1322: local clone (lcgui.sh runs in the kiosk)
+. "$LIB_DIR/lcinv.sh"; . "$LIB_DIR/lcplan.sh"; . "$LIB_DIR/lccopy.sh"; . "$LIB_DIR/localclone.sh"; . "$LIB_DIR/lcwait.sh"; . "$LIB_DIR/lcgui.sh"   # #1322: local clone (lcgui.sh runs in the kiosk)
 . "$LIB_DIR/shrinkgui.sh"; . "$LIB_DIR/askgui.sh"   # #928: the shrink question; 11/10: grow-back / end-of-capture dialogs
 . "$LIB_DIR/guibridge.sh"   # run in imagectl-kiosk; sourced here for the load gate
 . "$LIB_DIR/guistate.sh"; . "$LIB_DIR/tools.sh"; . "$LIB_DIR/toolbins.sh"; . "$LIB_DIR/tools_disk.sh"; . "$LIB_DIR/tools_windows.sh"; . "$LIB_DIR/tools_boot.sh"; . "$LIB_DIR/tools_hw.sh"   # #649/#1050: toolbox framework, id→binaries table and the four modules (run in the kiosk; here for the load gate)
@@ -65,7 +65,8 @@ RESP="$RUN_DIR/response.json"; trace_step agent-start   # #400, see common.sh
 send_hello() {
     build_hello > "$RUN_DIR/hello.json" || return 1
     [ -n "$_traced_hello" ] || { trace_step agent-hello; _traced_hello=1; }
-    hello_post "$SERVER/api/v1/agent/hello" "$RUN_DIR/hello.json" "$RESP"
+    hello_post "$SERVER/api/v1/agent/hello" "$RUN_DIR/hello.json" "$RESP" || return 1
+    rm -f "$RUN_DIR/wol_armed"
 }
 
 read_answer() {
@@ -78,6 +79,7 @@ read_answer() {
     D_MODE="$IMAGECTL_MODE"
     D_SESSION_ID=$(json_get "$RESP" ".session.id")     # for poll.sh (#136)
     D_REQUIRE_LOGIN=$(json_get "$RESP" ".ui.require_login")
+    min_free_take "$RESP"   # #1354: the console's minimum free space; the local clone keeps the last one
 }
 
 build_console_screen() {
@@ -90,6 +92,7 @@ build_console_screen() {
 do_restore_drawers() {
     # $1 = image id, $2 = session id. Cloning room: 2-3 drawers at once.
     resolve_target_drawers          # #695: sets $_disks; die_local on a bad mapping
+    rm -f "$RUN_DIR/server-restarted-wave"
     [ -n "$_disks" ] || { log "no drawers detected -- waiting"; sleep 5; return 0; }
 
     http_get "$SERVER/api/v1/images/$1/manifest" > "$RUN_DIR/manifest.json" \

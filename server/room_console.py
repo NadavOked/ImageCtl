@@ -53,46 +53,57 @@ def request_poweroff(conn: sqlite3.Connection, user: str) -> int:
 
 
 def request_power(conn: sqlite3.Connection, macs: list[str], action: str,
-                  user: str) -> int:
-    """בקשה אחת לכל MAC (בקשה קודמת שעוד ממתינה — נדרסת). מחזיר כמה נרשמו."""
+                  user: str, confirmed: bool = False) -> int:
+    """בקשה אחת לכל MAC (בקשה קודמת שעוד ממתינה — נדרסת). מחזיר כמה נרשמו.
+
+    ‏#1367 (נדב 14/10): ``confirmed`` = המפעיל אישר מעל האזהרה "המחשב באמצע
+    שיכפול מקומי". רק בקשה כזו מכבה מכונה שכותבת; בלעדיו הסוכן זורק אותה."""
     at = now_iso()
     with _write_lock, writing(conn):
         for mac in macs:
             conn.execute(
-                "INSERT INTO power_requests (mac, action, requested_at, requested_by)"
-                " VALUES (?, ?, ?, ?) ON CONFLICT (mac) DO UPDATE SET"
+                "INSERT INTO power_requests (mac, action, requested_at, requested_by, confirmed)"
+                " VALUES (?, ?, ?, ?, ?) ON CONFLICT (mac) DO UPDATE SET"
                 " action = excluded.action, requested_at = excluded.requested_at,"
-                " requested_by = excluded.requested_by",
-                (mac, action, at, user))
+                " requested_by = excluded.requested_by, confirmed = excluded.confirmed",
+                (mac, action, at, user, 1 if confirmed else 0))
     return len(macs)
 
 
 def take_power_action(conn: sqlite3.Connection, mac: str,
                       now: datetime | None = None) -> str | None:
+    """הפעולה בלבד (‏`take_power`), לקוראים שלא צריכים את האישור."""
+    return take_power(conn, mac, now)[0]
+
+
+def take_power(conn: sqlite3.Connection, mac: str,
+               now: datetime | None = None) -> tuple[str | None, bool]:
     """מה שה-hello של `mac` נושא ב-`power_action`: ‏`"poweroff"`, ‏`"reboot"` או None.
 
     הבקשה נמחקת בקריאה — נמסרת פעם אחת. סוכן שלא הצליח לדרוך WoL נשאר
     דולק ואומר זאת, ואינו מקבל את הבקשה שוב בכל פעימה. בקשה שפגה נמחקת
     ואינה נמסרת (ראו `POWEROFF_TTL_SECONDS`)."""
     row = conn.execute(
-        "SELECT action, requested_at FROM power_requests WHERE mac = ?",
+        "SELECT action, requested_at, confirmed FROM power_requests WHERE mac = ?",
         (mac,)).fetchone()
     if row is None:
-        return None
+        return None, False
     with _write_lock, writing(conn):
         conn.execute("DELETE FROM power_requests WHERE mac = ?", (mac,))
     try:
         at = datetime.fromisoformat(row["requested_at"])
     except (TypeError, ValueError):
-        return None                       # חותמת שאינה נקראת — לא מכבים
+        return None, False                # חותמת שאינה נקראת — לא מכבים
     age = (now or datetime.now(timezone.utc)) - at
     if age > timedelta(seconds=POWEROFF_TTL_SECONDS) or age < timedelta(0):
         journal(conn, "power_expired", f"{mac} {row['action']}")
-        return None
-    journal(conn, "power_delivered", f"{mac} {row['action']}")
+        return None, False
+    confirmed = bool(row["confirmed"])
+    journal(conn, "power_delivered",
+            f"{mac} {row['action']}" + (" (confirmed over a local copy)" if confirmed else ""))
     if row["action"] == POWEROFF:
         _leave_open_wave(conn, mac)
-    return row["action"]
+    return row["action"], confirmed
 
 
 def _leave_open_wave(conn: sqlite3.Connection, mac: str) -> None:
@@ -182,8 +193,12 @@ def create_room_console_router(ctx) -> APIRouter:
         if shown is not None and shown["state"] in ("active", "closing"):
             # כיבוי באמצע גל מפיל כתיבה חיה — הסבב נעצר קודם, בהקלדה משלו.
             raise HTTPException(409, "יש סבב חדר פעיל — עצרו אותו לפני כיבוי החדר")
-        count = request_poweroff(ctx.conn, user[0])
-        journal(ctx.conn, "room_poweroff", f"requested={count}", user[0])
+        confirmed = isinstance(body, dict) and body.get("confirm_local_copy") is True
+        macs = [r["mac"] for r in ctx.conn.execute(
+            "SELECT mac FROM machines WHERE group_id = ?", (CLONERS_GROUP,))]
+        count = request_power(ctx.conn, macs, POWEROFF, user[0], confirmed=confirmed)
+        journal(ctx.conn, "room_poweroff", f"requested={count}" +
+                (" local copy confirmed" if confirmed else ""), user[0])
         return {"requested": count, "ttl_s": POWEROFF_TTL_SECONDS}
 
     return router

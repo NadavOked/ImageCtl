@@ -296,7 +296,7 @@ def test_a_linux_image_with_swap_is_served_like_any_other(server, images_root):
     """swap מתועד במניפסט בלי קובץ — הספרייה מקבלת את זה, לא נופלת עליו."""
     write_image(images_root, MANIFEST_LINUX)
     listing = server["admin"].get("/api/console/images").json()
-    mine = next(m for m in listing if m["id"] == "img_lnx001")
+    mine = next(m for m in listing if m["id"] == MANIFEST_LINUX["id"])
     assert mine["os"] == "linux"
     assert mine["partitions"] == 3
     # אימג' Windows שנקלט לפני שהשדה נוסף עדיין מזוהה — מתפקידי המחיצות.
@@ -306,19 +306,18 @@ def test_a_linux_image_with_swap_is_served_like_any_other(server, images_root):
 
 def test_a_swap_partition_is_never_a_downloadable_file(server, images_root):
     write_image(images_root, MANIFEST_LINUX)
-    ok = server["admin"].get("/api/v1/images/img_lnx001/files/p3.linux.pcl.zst")
+    ok = server["admin"].get(f"/api/v1/images/{MANIFEST_LINUX['id']}/files/p3.linux.pcl.zst")
     assert ok.status_code == 200
-    none = server["admin"].get("/api/v1/images/img_lnx001/files/None")
+    none = server["admin"].get(f"/api/v1/images/{MANIFEST_LINUX['id']}/files/None")
     assert none.status_code == 404
 
 
 def test_swap_round_trips_through_export_and_import(server, images_root, tmp_path):
     """הורדה כקובץ יחיד והעלאה חזרה — הבדיקה שמאמתת sha256 מדלגת על swap.
 
-    המזהה כאן אינו `img_lnx001` שבנתוני הבדיקה: מאז #110 הייבוא מקבל רק
-    מזהה בצורה שהשרת מקצה (`img_` ושש ספרות הקסה), ו-`lnx001` אינו כזה.
-    הנושא כאן הוא ה-swap, ולכן האימג' נכתב עם מזהה אמיתי — הנתונים
-    הישנים היו מכשילים את הבדיקה על משהו שאינו נבדק בה.
+    מאז #110 הייבוא מקבל רק מזהה בצורה שהשרת מקצה (`img_` ושש ספרות הקסה).
+    נתוני הבדיקה החזיקו פעם `img_lnx001`, שאינו כזה; מאז #1407 גם הספרייה
+    דוחה אותו, ו-`MANIFEST_LINUX` עבר למזהה תקין. הנושא כאן הוא ה-swap.
     """
     linux = {**MANIFEST_LINUX, "id": "img_1c0de5"}
     write_image(images_root, linux)
@@ -338,7 +337,9 @@ def test_an_archive_whose_id_is_not_an_id_is_refused_through_the_console(server,
     raw = b"".join(tar_stream(source / "img_lnx001", "img_lnx001"))
     response = server["admin"].post("/api/console/images/upload", content=raw)
     assert response.status_code == 400
-    assert "מזהה אימג' לא תקין" in response.json()["detail"]
+    # ‏#1407 (77557596): בדיקת המזהה עברה ל-`ImageLibrary._validate`, ולכן
+    # הסירוב מגיע משם — לפני הבדיקה הנפרדת ב-archive.py.
+    assert "image id or name is malformed" in response.json()["detail"]
 
 
 def test_an_image_still_being_imported_is_offered_to_nobody(server, images_root):
@@ -353,8 +354,9 @@ def test_an_image_still_being_imported_is_offered_to_nobody(server, images_root)
         return listing, answer["allowed_images"]
 
     listed, allowed = offered()
-    assert "img_lnx001" not in listed and "img_lnx001" not in allowed
+    image_id = MANIFEST_LINUX["id"]
+    assert image_id not in listed and image_id not in allowed
 
-    (images_root / ".import-4b1e77a2" / "img_lnx001").rename(images_root / "img_lnx001")
+    (images_root / ".import-4b1e77a2" / image_id).rename(images_root / image_id)
     listed, allowed = offered()
-    assert "img_lnx001" in listed and "img_lnx001" in allowed
+    assert image_id in listed and image_id in allowed

@@ -102,8 +102,12 @@ def create_wake_router(
         if (row["group_id"] == CLONERS_GROUP and shown is not None
                 and shown["state"] in ("active", "closing")):
             raise HTTPException(409, "יש סבב חדר פעיל — עצרו אותו לפני אתחול משכפל")
-        count = room_console.request_power(ctx.conn, [canonical], room_console.REBOOT, user[0])
-        journal(ctx.conn, "machine_reboot", canonical, user[0])
+        # ‏#1367 (נדב 14/10): אושר מעל אזהרת "באמצע שיכפול מקומי" — רק `true` ממש
+        confirmed = body.get("confirm_local_copy") is True
+        count = room_console.request_power(ctx.conn, [canonical], room_console.REBOOT, user[0],
+                                           confirmed=confirmed)
+        journal(ctx.conn, "machine_reboot",
+                canonical + (" local copy confirmed" if confirmed else ""), user[0])
         return {"requested": count, "ttl_s": room_console.POWEROFF_TTL_SECONDS}
 
     @router.post("/groups/{gid}/wake")

@@ -48,6 +48,7 @@ gui_shrink_choice() {
     mv "$GUI_DIR/shrink-request.next" "$GUI_DIR/shrink-request" || { gui_shrink_clear; return 1; }
     _sg_waited=0
     while kill -0 "$_gui_pid" 2>/dev/null; do
+        attended_power_check
         if [ -s "$GUI_DIR/shrink-decision" ]; then
             IFS='|' read -r _sg_answer_nonce _sg_answer < "$GUI_DIR/shrink-decision" || {
                 gui_shrink_clear; return 1;

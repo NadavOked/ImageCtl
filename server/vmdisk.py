@@ -368,8 +368,9 @@ def build_disk(host: Host, manifest: dict, image_dir: Path, workdir: Path,
                 continue
             if not carries_a_stream_file(part):
                 raise DiskError("image", f"מחיצה {part['index']} בלי קובץ ואינה swap — מניפסט פגום")
-            src = image_dir / part["file"]
-            if not src.is_file():
+            from .images import guarded_image_path
+            src = guarded_image_path(image_dir, part["file"])
+            if src is None:
                 raise DiskError("image", f"קובץ המחיצה {part['file']} חסר בספרייה")
             restore_partition(host, part, src, target, run_dir, progress)
         grow = host.agent("grow_expanded", loop, run_dir=run_dir)
@@ -481,8 +482,10 @@ class Appliance:
             attrs = g.part_get_gpt_attributes(self.DEV, index)
             if not GUID_RE.fullmatch(type_guid) or not (unique == "" or GUID_RE.fullmatch(unique)):
                 raise DiskError("table", f"מחיצה {index}: GUID שאינו GUID")
-            if type(attrs) is not int or not 0 <= attrs < 1 << 64:
+            # ‏#1421: libguestfs מחזיר int64 עם סימן — ביט 63 (ESP/Recovery) שלילי
+            if type(attrs) is not int or not -(1 << 63) <= attrs < 1 << 64:
                 raise DiskError("table", f"מחיצה {index}: דגלים לא תקינים")
+            attrs &= (1 << 64) - 1
             parts.append({"index": index, "type_guid": type_guid.upper(),
                           "unique_guid": unique.upper(), "attrs": f"{attrs:016X}",
                           "first": start // SECTOR, "sectors": size // SECTOR})
@@ -738,6 +741,8 @@ def capture_disk(host: Host, workdir: Path, out_dir: Path, progress: Progress,
         mark.write_text("", encoding="utf-8")
         original = [dict(p) for p in table]
         shrunk: list[int] = []
+        measured = run_dir / "shrink.meas"
+        candidates = []
         for part in sorted(table, key=lambda p: p["first"]):
             if partition_role(part["type_guid"]) not in ("windows", "linux"):
                 continue
@@ -749,14 +754,32 @@ def capture_disk(host: Host, workdir: Path, out_dir: Path, progress: Progress,
             new = target.out.strip()
             if not target.ok or not new.isdigit():
                 raise DiskError("shrink", f"לא ניתן לחשב יעד כיווץ למחיצה {part['index']}")
-            if int(new) >= current:
+            candidates.append((part, current, minimum, int(new)))
+        measured.write_text("".join(
+            f"{part['index']}|{part['type_guid']}|{part['unique_guid']}|{part['first']}|"
+            f"{part['sectors']}|{current}|{new}|{minimum}\n"
+            for part, current, minimum, new in candidates), encoding="utf-8", newline="\n")
+        layout_end = max((p["first"] + p["sectors"]) * SECTOR for p in table)
+        slack = max(0, disk.stat().st_size - layout_end)
+        tail = host.agent("_shrink_tail", str(measured), str(slack), run_dir=run_dir)
+        if not tail.ok:
+            raise DiskError("shrink", "לא ניתן לחשב את זנב הפריסה לשמירה מה-VM")
+        planned = {}
+        for line in tail.out.splitlines():
+            fields = line.split("|")
+            if len(fields) != 7 or not fields[0].isdigit() or not fields[6].isdigit():
+                raise DiskError("shrink", "תוכנית זנב הפריסה של הסוכן אינה תקינה")
+            planned[int(fields[0])] = int(fields[6])
+        for part, current, _minimum, _ordinary in candidates:
+            new = planned.get(part["index"], current)
+            if new >= current:
                 continue
-            box.shrink(part["index"], part["first"], int(new), part)
+            box.shrink(part["index"], part["first"], new, part)
             with mark.open("a", encoding="utf-8", newline="\n") as fh:
                 fh.write(f"{part['index']}|{part['first']}|{part['sectors']}|"
-                         f"{int(new) // SECTOR}|{part['type_guid']}|{part['unique_guid']}||"
+                         f"{new // SECTOR}|{part['type_guid']}|{part['unique_guid']}||"
                          f"{part['attrs']}\n")
-            part["sectors"] = int(new) // SECTOR
+            part["sectors"] = new // SECTOR
             shrunk.append(part["index"])
         esp = next((p for p in table if partition_role(p["type_guid"]) == "esp"), None)
         boot_dir = (boot_files(box, esp["index"], _boot_paths(host, run_dir), run_dir)

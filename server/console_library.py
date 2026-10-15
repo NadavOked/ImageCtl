@@ -15,7 +15,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from . import auth
+from . import auth, minfree
 from .api import ServerContext
 from .images import validate_display_name
 from .library_scrub import forget_scrub, last_scrubs, scrub_library
@@ -81,7 +81,7 @@ def create_library_router(ctx: ServerContext) -> APIRouter:
         # ‏#972: שני שדות מה-DB לצד מה שמהדיסק — ‏`last_scrub` (‏null = לא
         # אומת מאז הכניסה) ו-`rounds_30d` (‏null = לא ניתן לספור).
         scrubs, rounds = last_scrubs(ctx.conn), recent_rounds(ctx.conn)
-        listed = ctx.library.public_list()
+        listed = ctx.library.public_list(minfree.min_free_gb(ctx.conn))   # #1354
         for image in listed:
             image["last_scrub"] = scrubs.get(image["id"])
             image["rounds_30d"] = rounds.get(image["id"], 0)

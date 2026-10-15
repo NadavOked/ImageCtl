@@ -71,6 +71,10 @@ def sgdisk_calls(box: Path) -> list[str]:
     return path.read_text(encoding="utf-8").splitlines() if path.exists() else []
 
 
+def zap_calls(box: Path) -> list[str]:
+    return [c for c in sgdisk_calls(box) if c.startswith("--zap-all ")]
+
+
 def rename_calls(box: Path) -> list[str]:
     """קריאות שמשנות **שם** מחיצה (`-c`) — מה ש-#845 עשה. ‏`-n`/`-t`/`-e`
     הן של apply_gpt, לפני הזרם, ונשארות."""
@@ -93,7 +97,7 @@ LIBS = (f". {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/jsonq.sh; . {posi
 
 
 def fail_run(tmp_path, *, script, state="writing", error="", since="300", dmesg=DMESG,
-             sysroot_uptime: str | None = None):
+             sysroot_uptime: str | None = None, write_started=True):
     box = tmp_path / "box"
     run = box / "run"
     (run / "targets" / "sda").mkdir(parents=True)
@@ -102,6 +106,8 @@ def fail_run(tmp_path, *, script, state="writing", error="", since="300", dmesg=
         (run / "targets" / "sda" / "error").write_text(error + "\n", encoding="utf-8", newline="\n")
     if since is not None:
         (run / "targets" / "sda" / "since").write_text(since + "\n", newline="\n")
+    if write_started:
+        (run / "targets" / "sda" / "write_started").write_text("S3TWNE0JB04745\n", newline="\n")
     sysroot = box / "sysroot"
     (sysroot / "proc").mkdir(parents=True)
     if sysroot_uptime is not None:
@@ -121,14 +127,50 @@ def fail_run(tmp_path, *, script, state="writing", error="", since="300", dmesg=
 # --- הכשל: ראיה בלי לגעת בדיסק ------------------------------------------------
 
 
-def test_a_failed_target_never_calls_sgdisk(tmp_path):
+def test_a_failed_target_wipes_the_gpt_after_recording_failure(tmp_path):
     """הבקרה המרכזית של #874: אחרי כשל **אין** קריאה ל-sgdisk כלל. בקרה
     שלילית: על main (#845) ‏sgdisk.calls מכיל `-p` ואז `-c 1:IMAGECTL-FAILED`."""
     box, run, out = fail_run(tmp_path, script='fail_written_target sda "partition 3: stream cut"; echo "rc=$?"')
     assert out.strip().endswith("rc=0"), out
-    assert sgdisk_calls(box) == [], sgdisk_calls(box)
+    assert zap_calls(box) == [f"--zap-all {posix(box)}/dev/sda"]
     assert (run / "targets" / "sda" / "state").read_text().strip() == "failed"
     assert error_of(run, "sda") == "partition 3: stream cut"
+
+
+def test_a_target_rejected_before_writing_is_failed_without_any_wipe(tmp_path):
+    box, run, _ = fail_run(tmp_path, write_started=False,
+                           script='fail_written_target sda "serial changed — not written"')
+    assert sgdisk_calls(box) == []
+    assert error_of(run, "sda") == "serial changed — not written"
+    # ‏#1429: לא נוסתה כתיבה → אין ראיית כונן, והשרת אינו רושם disk_failure
+    assert not (run / "targets" / "sda" / "ata_log.json").exists()
+
+
+def test_write_start_is_recorded_on_the_vm_path_where_targets_does_not_exist(tmp_path):
+    """‏#1427 (פתיחה מחדש): במסלול ה-VM אין `targets/loop0/` — ה-redirect נכשל."""
+    _box, run, out = fail_run(tmp_path, write_started=False, script=(
+        'disk_serial() { :; }; target_write_started loop0; echo "ws=$?"'))
+    assert "ws=0" in out, out
+    assert (run / "targets" / "loop0" / "write_started").exists()
+
+
+def test_a_disk_without_a_serial_is_written_and_never_wiped_on_failure(tmp_path):
+    """‏#1427: ל-loop של ה-VM (ולדיסקים וירטואליים אחרים) אין serial. השער של
+    ‏#1409 סירב לכתוב אליהם בכלל — כל עדכון VM נכשל. הזהות נדרשת רק לניקוי
+    שאחרי כשל, ולכן: הכתיבה ממשיכה, והניקוי לא קורה בלי זהות."""
+    box, run, out = fail_run(tmp_path, write_started=False, script=(
+        'disk_serial() { :; }; target_write_started sda; echo "ws=$?"; '
+        'fail_written_target sda "stream cut"'))
+    assert "ws=0" in out, out
+    assert sgdisk_calls(box) == [], "GPT נמחק בלי זהות יעד"
+    assert (run / "targets" / "sda" / "ata_log.json").exists(), "נכתב ונכשל — הראיה נאספת"
+    assert error_of(run, "sda") == "stream cut"
+
+
+def test_a_written_target_is_not_wiped_after_its_serial_changes(tmp_path):
+    box, _, _ = fail_run(tmp_path,
+                         script='disk_serial() { printf REPLACEMENT; }; fail_written_target sda "gone"')
+    assert sgdisk_calls(box) == []
 
 
 def test_the_kernel_lines_of_the_targets_port_since_target_init_are_kept(tmp_path):
@@ -270,6 +312,11 @@ def test_ata_port_of_reads_the_ata_component_of_the_device_link(tmp_path):
 # --- חדר השיכפולים: המגירה שנכשלה בלבד, ובלי sgdisk ----------------------------
 
 
+#: ‏apply_gpt (שהטסטים כאן עוקפים) רושם write_started לפני הזרם — בלעדיו אין
+#: ראיה ואין ניקוי, כי לא נוסתה כתיבה (#1429).
+WRITTEN = "target_write_started sda; target_write_started sdb; "
+
+
 def test_only_the_drawer_that_failed_carries_evidence_and_no_disk_is_renamed(tmp_path):
     """הטופולוגיה של #440/#520: ‏sda שרדה, ‏sdb נפלה בכתיבה. הראיה על sdb
     בלבד, ואף מחיצה — של אף דיסק — אינה משנה שם (#845 הוסר)."""
@@ -278,7 +325,7 @@ def test_only_the_drawer_that_failed_carries_evidence_and_no_disk_is_renamed(tmp
     box = tmp_path / "box"
     run, out = drawer_run(
         tmp_path, IDENT + 'dmesg() { echo "[ 99999999.0] ata2.00: error: { UNC }"; }; '
-        + call(GOOD_SHA, disks=("sda", "sdb")),
+        + WRITTEN + call(GOOD_SHA, disks=("sda", "sdb")),
         {"fanout": MIXED_FANOUT, "sgdisk": stub_for(box)},
         disks=("sda", "sdb"),
     )
@@ -318,8 +365,21 @@ def test_a_station_whose_second_partition_failed_carries_evidence_and_is_not_ren
                              + '[ "$5" = 2 ] && return 1; return 0'))
     assert out.strip().endswith("rc=1"), out
     assert rename_calls(box) == [], sgdisk_calls(box)
+    assert zap_calls(box) == [f"--zap-all {posix(box)}/dev/sda"]
     assert error_of(run, "sda") == "wrote 1 of 3 partitions"
     assert (run / "targets" / "sda" / "ata_log").read_text().strip() == "[ 99999999.0] ata1: SError: { ICRC }"
+
+
+def test_only_the_failed_drawer_has_its_gpt_wiped(tmp_path):
+    box = tmp_path / "box"
+    run, out = drawer_run(
+        tmp_path, IDENT + WRITTEN + call(GOOD_SHA, disks=("sda", "sdb")),
+        {"fanout": MIXED_FANOUT, "sgdisk": stub_for(box)}, disks=("sda", "sdb"))
+    assert out.strip().endswith("rc=0"), out
+    zaps = zap_calls(box)
+    # ‏apply_gpt אינו רץ בטסט הזה (הזרם בלבד) — המחיקה היחידה היא של הכשל
+    assert zaps == [f"--zap-all {posix(box)}/dev/sdb"], zaps
+    assert (run / "targets/sdb/ata_log").exists()
 
 
 # --- באתחול: אדום מזיכרון השרת, לא מהדיסק ------------------------------------------

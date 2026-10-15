@@ -5,6 +5,8 @@
 # המחיצות, ה-ESP מאבדת את סוגה). הכרעת נדב 16/09: נפסל — הסוכן אינו משנה
 # דיסק מחוץ לשיכפול, ואין "בדיקת כתיבה" של כמה MB. ולראיה: הדיסק שנכשל
 # ב-07:03 נעלם מהקו לפני שנכתבה טבלה, ולא היה מה לסמן.
+# ‏#1366 (נדב 13/10) הפך את חצי ה"בדיקת כתיבה" — **רק לדיסק שכבר נבחר לסבב**,
+# לפני הזרם (writecheck.sh). סימון על הדיסק עדיין אין.
 #
 # במקום זה, שני דברים:
 #
@@ -93,7 +95,23 @@ fail_written_target() {
     # ‏capture.sh נשאר על target_set: דיסק המקור של קליטה אינו יעד.
     _was=$(cat "$RUN_DIR/targets/$1/state" 2>/dev/null)
     target_set "$1" "failed" "$2"
-    [ "$_was" = "failed" ] || ata_capture "$1"
+    # ‏#1429: בלי write_started לא נוסתה כתיבה — כשל תוכנה (תוכנית שנדחתה),
+    # לא של הכונן. בלי ראיה השרת אינו רושם disk_failure נגד כונן תקין.
+    [ "$_was" = "failed" ] || [ ! -f "$RUN_DIR/targets/$1/write_started" ] || ata_capture "$1"
+    # #1388: once the tmpfs failure record and ATA evidence exist, make a
+    # partly restored disk visibly non-bootable too.  The device name is the
+    # failed target passed by its own restore path; never enumerate drawers.
+    _written_serial=$(cat "$RUN_DIR/targets/$1/write_started" 2>/dev/null)
+    _current_serial=$(disk_serial "$1")
+    if [ "$_was" != "failed" ] && [ ! -f "$RUN_DIR/targets/$1/evidence_only" ] \
+            && [ -n "$_written_serial" ] && [ "$_current_serial" = "$_written_serial" ]; then
+        if sgdisk --zap-all "$DEVROOT/$1" >> "$LOG_FILE" 2>&1; then
+            blockdev --rereadpt "$DEVROOT/$1" >> "$LOG_FILE" 2>&1 || :
+            log "$1: wiped primary and backup GPT after restore failure"
+        else
+            log "WARNING: $1: failed to wipe GPT after restore failure"
+        fi
+    fi
     return 0
 }
 

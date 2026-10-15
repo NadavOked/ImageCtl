@@ -86,7 +86,9 @@ class Drawers(Box):
 def test_only_the_drawer_with_a_chosen_model_is_staged_and_the_machine_state_stays(tmp_path):
     box = Drawers(tmp_path, ports=[2])
     box.stage_drawers()
-    assert box.outcome("sdb") == {"state": "staged", "packages": ["intel-nic", "ahci-fix"]}
+    # ‏#1331: מגירת SATA — ‏storahci הוא boot-start על הדיסק שיצא מהמגירה.
+    assert box.outcome("sdb") == {"state": "staged", "packages": ["intel-nic", "ahci-fix"],
+                                  "boot": {"state": "enabled", "service": "storahci"}}
     assert box.outcome("sda") is None, "חריץ 1 לא נבחר — השלב לא רץ עליו"
     assert len(box.queries()) == 1
     assert "mac=b4:2e:99:07:1a:c4&session=ses_1&port=2" in box.queries()[0]

@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .images import (
-    ImageLibrary, inside, streamed_partitions, valid_image_id,
+    ImageLibrary, guarded_image_path, inside, streamed_partitions, valid_image_id,
 )
 
 log = logging.getLogger("imagectl.archive")
@@ -72,7 +72,12 @@ def tar_size(directory: Path) -> int:
     """אורך ה-tar ש-``tar_stream`` ינפיק — לכותרת ``Content-Length`` של
     העברה בין שרתים (#655). אותם קבצים, אותו סדר, אותו ריפוד."""
     total = 0
-    for path in sorted(p for p in directory.iterdir() if p.is_file()):
+    for entry in sorted(directory.iterdir()):
+        path = guarded_image_path(directory, entry.name)
+        if path is None:
+            if entry.is_symlink():
+                raise ArchiveError(f"symbolic link is forbidden in an image archive: {entry.name}")
+            continue
         size = path.stat().st_size
         total += BLOCK + size + (-size % BLOCK)
     return total + BLOCK * 2
@@ -80,7 +85,12 @@ def tar_size(directory: Path) -> int:
 
 def tar_stream(directory: Path, arcname: str) -> Iterator[bytes]:
     """מזרים את תוכן התיקייה כ-tar. קבצים רגילים בלבד, ללא רקורסיה."""
-    for path in sorted(p for p in directory.iterdir() if p.is_file()):
+    for entry in sorted(directory.iterdir()):
+        path = guarded_image_path(directory, entry.name)
+        if path is None:
+            if entry.is_symlink():
+                raise ArchiveError(f"symbolic link is forbidden in an image archive: {entry.name}")
+            continue
         size = path.stat().st_size
         yield _header(f"{arcname}/{path.name}", size, int(path.stat().st_mtime))
         with path.open("rb") as handle:

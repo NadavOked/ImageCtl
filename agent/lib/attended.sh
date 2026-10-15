@@ -45,8 +45,14 @@ attended_hello() {
     if [ -n "$_ah_nonce" ]; then
         _ah_body="${_ah_body%\}},\"ask\":{\"nonce\":\"$_ah_nonce\",\"port\":${_ah_port:-0},\"verdict\":\"$(json_escape "$_ah_verdict")\",\"reason\":\"$(json_escape "$_ah_reason")\"}}"
     fi
+    # #1367 (Nadav 14/10): a local copy writing on this machine is said, so the
+    # console warns before a power-off that would leave the targets broken.
+    if [ -f "${LC:-/nonexistent}/screen" ] && lc_copy_busy; then
+        _ah_body="${_ah_body%\}},\"local_clone\":\"copying\"}"
+    fi
     printf '%s' "$_ah_body" > "$RUN_DIR/attended.json" || return 1
     http_post_json "$SERVER/api/v1/agent/hello" "$RUN_DIR/attended.json" > "$RUN_DIR/attended.resp" || return 1
+    attended_keep "$RUN_DIR/attended.resp"
     [ -n "$_ah_nonce" ] || return 0
     # The console answered: hand it to the GUI wait loop as if the button was
     # pressed -- same file, same nonce binding (clonergui.sh gui_smart_choice).
@@ -55,6 +61,34 @@ attended_hello() {
     [ ! -e "${GUI_DIR}/smart-decision" ] || return 0
     printf '%s|%s\n' "$_ah_nonce" "$_ah_ans" > "${GUI_DIR}/smart-decision.next" &&
         mv "${GUI_DIR}/smart-decision.next" "${GUI_DIR}/smart-decision"
+}
+
+attended_keep() {
+    # #1367: $1 = the beat's answer. Two things in it outlive the beat:
+    # * power_action (#980) is handed out ONCE -- this answer is the only one
+    #   that will carry it. Kept whole in power.resp for whoever waits to act
+    #   on it (localclone.sh); the waits that do not read it lose nothing they
+    #   did not lose before.
+    # * the round's state, for the screen in front of the person (lcgui.sh):
+    #   attended.round, "" when it cannot be read -- never "none" by default.
+    case "$(jq -r '.power_action // empty' "$1" 2>/dev/null)" in
+        poweroff|reboot) cp "$1" "$RUN_DIR/power.resp.next" && mv "$RUN_DIR/power.resp.next" "$RUN_DIR/power.resp"
+            # a copy blocks the screen's loop: a power request the operator
+            # CONFIRMED over it is carried out from here (localclone.sh)
+            if [ "$(jq -r '.power_confirmed // false' "$1" 2>/dev/null)" = true ] && lc_copy_busy; then
+                lc_power_during_copy
+            fi ;;
+    esac
+    _ak_s=$(jq -er '.session.state // "none"' "$1" 2>/dev/null) || _ak_s=""
+    printf '%s\n' "$_ak_s" > "$RUN_DIR/attended.round.next" && mv "$RUN_DIR/attended.round.next" "$RUN_DIR/attended.round"
+}
+
+attended_power_check() {
+    [ -s "$RUN_DIR/power.resp" ] || return 0
+    mv "$RUN_DIR/power.resp" "$RUN_DIR/power.taken" 2>/dev/null || return 0
+    _ap_resp="${RESP:-}"; RESP="$RUN_DIR/power.taken"
+    power_check || log "power: request received during an attended wait but not executed"
+    RESP="$_ap_resp"
 }
 
 smart_ask_answer() {

@@ -93,7 +93,7 @@ void state_parse(State *s, FILE *fp) {
         if (!eq) continue;
         *eq = 0;
         const char *key = line;
-        char *val = eq + 1, *f[12];
+        char *val = eq + 1, *f[16];   /* #1366: room_drawer= has 13 fields */
         if (lc_state_line(s, key, val)) continue;   /* #1322: lc_* records */
 #define KEY(k) (strcmp(key, k) == 0)
         if (KEY("disk")) {
@@ -125,13 +125,14 @@ void state_parse(State *s, FILE *fp) {
                 }
                 continue;
             }
-            split(val, f, 9);
+            split(val, f, 10);
             Machine *m = &s->machines[s->nmachines++];
             cp(m->name, sizeof m->name, f[0]); cp(m->mac, sizeof m->mac, f[1]);
             m->awake = num(f[2], 0); m->joined = num(f[3], 0); m->fresh_drawers = num(f[4], 0);
             cp(m->state, sizeof m->state, f[5]);
             m->pct = num(f[6], -1); m->moving = num(f[7], 0);
             cp(m->error, sizeof m->error, f[8]);
+            m->local_copy = !strcmp(f[9], "1");
         } else if (KEY("machine_drawers")) {
             /* #695: machine-index|drawer_count (separate record so the 9-field
              * machine= format stays compatible). */
@@ -147,8 +148,9 @@ void state_parse(State *s, FILE *fp) {
             /* #695: machine-index|port-or-0|serial|model|size|smart|fresh|selected
              * #1269: |drivers-state|drivers-detail -- optional (an older agent sends eight)
              * #704: |slot-name -- optional, "" = "דיסק N"
-             * #432: |link-state -- optional; only "slow" colours the slot */
-            if (split(val, f, 12) < 8) continue;
+             * #432: |link-state -- optional; only "slow" colours the slot
+             * #1366: |crc -- optional; the count when over the threshold, "" = not */
+            if (split(val, f, 13) < 8) continue;
             unsigned long long mi, port, size;
             if (!parse_uint(f[0], &mi) ||
                 !parse_uint(f[1], &port) || port > MAX_DRAWERS ||
@@ -186,14 +188,20 @@ void state_parse(State *s, FILE *fp) {
             else if (port == 0) m->slot_names[actual_port - 1][0] = 0;
             d->fallback = port == 0;
             d->link_slow = !strcmp(f[11], "slow");
+            unsigned long long crc;
+            d->crc_suspect = parse_uint(f[12], &crc) && crc > 0 && crc < 100000000ULL ? (long)crc : 0;
         } else if (KEY("room_warn")) {
             /* #432: one line of round.precheck; an empty one is not a warning */
             if (!val[0]) continue;
             if (s->nroom_warn >= MAX_ROOM_NOTES) { s->hidden_room_warn++; continue; }
             cp(s->room_warn[s->nroom_warn++], sizeof s->room_warn[0], val);
+        } else if (KEY("room_label")) {
+            cp(s->room_label, sizeof s->room_label, val);
         } else if (KEY("room_missing")) {
-            /* #65: mac|name|reason|can_poweroff|text -- all five, or no row */
-            if (split(val, f, 6) != 5 || !f[0][0] || !f[4][0]) continue;
+            /* #65/#1367: mac|name|reason|can_poweroff|text|local_copy.
+             * Five fields remain valid for an older agent and mean no copy. */
+            int nf = split(val, f, 6);
+            if ((nf != 5 && nf != 6) || !f[0][0] || !f[4][0]) continue;
             if (s->nroom_missing >= MAX_ROOM_NOTES) { s->hidden_room_missing++; continue; }
             int i = s->nroom_missing++;
             cp(s->room_missing[i].mac, sizeof s->room_missing[i].mac, f[0]);
@@ -201,6 +209,7 @@ void state_parse(State *s, FILE *fp) {
             cp(s->room_missing[i].reason, sizeof s->room_missing[i].reason, f[2]);
             s->room_missing[i].can_poweroff = !strcmp(f[3], "1");
             cp(s->room_missing[i].text, sizeof s->room_missing[i].text, f[4]);
+            s->room_missing[i].local_copy = nf == 6 && !strcmp(f[5], "1");
         } else if (KEY("room_slot_name")) {
             /* #704: machine-index|port|name -- a SATA slot's name, empty slots too */
             if (split(val, f, 3) != 3 || !f[2][0]) continue;
@@ -258,7 +267,7 @@ void state_parse(State *s, FILE *fp) {
              * first (#688). The 5th field (#709) and the 6th (#874: the
              * server's cause for failed_last) are optional so an older agent
              * still parses. */
-            int nf = split(val, f, 8);
+            int nf = split(val, f, 9);   /* #1366: field 9, the CRC count over the threshold */
             if (nf < 4) continue;
             unsigned long long port, size;
             if (!parse_uint(f[0], &port) || port > INT_MAX) continue;
@@ -277,8 +286,11 @@ void state_parse(State *s, FILE *fp) {
                 && strcmp(sm, "failed_last"))
                 sm = "unchecked";
             cp(id->smart, sizeof id->smart, sm);
-            const char *cause = (nf >= 6 && !strcmp(sm, "failed_last")) ? f[5] : "";
-            if (strcmp(cause, "cable") && strcmp(cause, "disk")) cause = "";
+            /* #1366: on fail the 6th field is the SMART reason of the F1 stop */
+            const char *cause = (nf >= 6 && (!strcmp(sm, "failed_last") || !strcmp(sm, "fail"))) ? f[5] : "";
+            if (!strcmp(sm, "failed_last") ? strcmp(cause, "cable") && strcmp(cause, "disk")
+                    : strcmp(cause, "health_failed") && strcmp(cause, "pending_sectors") && strcmp(cause, "uncorrectable"))
+                cause = "";
             cp(id->cause, sizeof id->cause, cause);
             /* #432: fields 7/8 (link, port max), "6.0"-shaped or not read --
              * "null", an older agent's absent field and junk all mean unknown */
@@ -287,6 +299,8 @@ void state_parse(State *s, FILE *fp) {
                 int ok = strlen(v) == 3 && v[0] >= '0' && v[0] <= '9' && v[1] == '.' && v[2] >= '0' && v[2] <= '9';
                 cp(k ? id->link_max : id->link, sizeof id->link, ok ? v : "");
             }
+            unsigned long long crc;
+            id->crc_suspect = nf >= 9 && parse_uint(f[8], &crc) && crc > 0 && crc < 100000000ULL ? (long)crc : 0;
         } else if (KEY("disk_probe")) {
             if (!strcmp(val, "drives") || !strcmp(val, "no_disks") ||
                 !strcmp(val, "no_ports") || !strcmp(val, "unchecked"))
@@ -295,6 +309,8 @@ void state_parse(State *s, FILE *fp) {
                 cp(s->disk_probe, sizeof s->disk_probe, "unchecked");
         } else if (KEY("cloner")) {
             cp(s->cloner_image, sizeof s->cloner_image, val);
+        } else if (KEY("server_restarted_wave")) {
+            s->server_restarted_wave = !strcmp(val, "1");
         } else if (KEY("smart_prompt")) {
             if (split(val, f, 4) < 4) continue;       /* nonce|port|verdict|reason */
             unsigned long long port;

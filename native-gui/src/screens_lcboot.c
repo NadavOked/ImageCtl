@@ -100,9 +100,10 @@ void screen_lcboot(App *a, cairo_t *cr, double W, double H, double head_h) {
     double y = head_h + (H - N_STATUS_H - head_h - 20 - total) / 2;
     Text h1 = text_make(cr, FONT_SANS, 30, 600, "איך להפעיל את המחשב?", 0, DIR_RTL);
     text_draw(cr, &h1, (W - h1.w) / 2, y + (34.5 - h1.h) / 2, t->ink); y += 34.5 + 8; text_free(&h1);
-    Text lead = text_make(cr, FONT_SANS, 14, 400, paused ? "הספירה נעצרה. בחרו אחת מהאפשרויות."
+    const char *rnote = lc_round_note(a);   /* #1367: a round opened on the server -- said in the lead's place */
+    Text lead = text_make(cr, FONT_SANS, 14, rnote ? 600 : 400, rnote ? rnote : paused ? "הספירה נעצרה. בחרו אחת מהאפשרויות."
                                                          : "אם לא תבחרו — המחשב יעבוד מהשרת, כרגיל.", 0, DIR_RTL);
-    text_draw(cr, &lead, (W - lead.w) / 2, y + (18.2 - lead.h) / 2, t->muted); y += 18.2 + 34; text_free(&lead);
+    text_draw(cr, &lead, (W - lead.w) / 2, y + (18.2 - lead.h) / 2, rnote ? t->warn : t->muted); y += 18.2 + 34; text_free(&lead);
     lb_card(a, cr, (Rect){ x0 + cw - cardw, y, cardw, LB_CARD_H }, 0, paused, a->lcu.boot_focus == 0);
     lb_card(a, cr, (Rect){ x0, y, cardw, LB_CARD_H }, 1, paused, a->lcu.boot_focus == 1);
     y += LB_CARD_H + 20;

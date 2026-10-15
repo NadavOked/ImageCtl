@@ -77,7 +77,7 @@ def test_the_parser_reads_the_models_and_says_unread_by_default():
     assert 'KEY("driver_models")' in parse and 'KEY("driver_model")' in parse
     # שדות 9–10 של room_drawer: מצב ופירוט; מצב לא מוכר אינו מוצג כאילו הונח.
     # ‏#704: שדה 11 (שם החריץ) נוסף אחריהם, ו-#432 שדה 12 (מצב הקישור) — עדיין אופציונלי מ-8.
-    assert "split(val, f, 12) < 8" in parse
+    assert "split(val, f, 13) < 8" in parse   # #1366: a 13th field, the CRC count
     assert 'strcmp(f[8], "staged")' in parse and 'strcmp(f[8], "failed")' in parse
 
 

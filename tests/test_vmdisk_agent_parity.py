@@ -148,6 +148,20 @@ def test_the_shrink_target_is_the_agents_own(tmp_path, minimum, current):
     assert got.isdigit() and int(got) <= current and int(got) % (1 << 20) == current % (1 << 20)
 
 
+def test_the_vm_save_tail_rule_is_the_agents_own(tmp_path):
+    mib = 1 << 20
+    measured = tmp_path / "measured"
+    measured.write_text(
+        f"3|windows|guid|2048|999999|{10 * mib}|{10 * mib}|{8 * mib}\n"
+        f"4|windows|guid|999999|1000|{300 * mib}|{290 * mib}|{100 * mib}\n",
+        encoding="utf-8")
+    got = call(tmp_path, "_shrink_tail", posix(measured), "0")
+    rows = [line.split("|") for line in got.out.splitlines()]
+    assert got.ok
+    assert rows[-1][0] == "4"
+    assert int(rows[-1][6]) == 236 * mib
+
+
 def test_the_boot_paths_come_from_bootca_sh(tmp_path):
     """הרשימה שמורידים מה-ESP היא `BOOTCA_PATHS` של הסוכן, לא עותק."""
     class Host:

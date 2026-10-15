@@ -11,7 +11,13 @@
  *           "KEY F2|F5|F9|F12|ENTER|ESC|TAB|BACKTAB|BACKSPACE|UP|DOWN|LEFT|RIGHT",
  *           "CHAR <hex>" (always the US layout: every field here is English
  *           only -- the keyboard is forced to English), "CAPS 0|1".
+ *           "FAIL <why>" (#1362) instead of READY when the screen could not
+ *           be opened or its first frame was not confirmed on the display.
  *   exit 0  stdin closed (the backend is gone); 1 = could not open a screen.
+ *
+ * The screen lives on tty1 (imagectl-dcui.service's TTYPath). Alt+Fn and
+ * Ctrl+Alt+Fn switch VT (#1362): the keyboards are let go and DRM master is
+ * dropped while another VT is in front, and both are taken back on return.
  *
  * Only drm or fbdev: never the "mem" backend -- a server screen drawn into a
  * file is a blank tty1, and the backend must learn that and fall back to text. */

@@ -80,22 +80,42 @@ test('a name is escaped, never HTML', () => {
   assert.match(slot(card(html,C2),1),/<b>a&lt;b&gt;&amp;&quot;<\/b>/);
 });
 
-test('drawer card "חריצים וכוננים": SATA by port incl. empty, NVMe and USB by connection type, name or default, rename only for admin', () => {
+test('drawer disk list: one compact row per SATA/NVMe/USB slot, rename only for admin', () => {
   const {run}=setup();
   run(`openMachineDetail('${C2}')`); const html=run('drawerHtml');
-  const sec=html.slice(html.indexOf('חריצים וכוננים'));
-  assert.ok(html.includes('חריצים וכוננים'),'the card is there');
+  const sec=html.slice(html.indexOf('<div class="sec" data-cnt="4">דיסקים</div>'));
+  assert.doesNotMatch(html,/חריצים וכוננים|דיווח אחרון|ברירת מחדל|>S-1<|>S-3<|>NV-1</);
   const rows=[...sec.matchAll(/<tr data-slot="([^"]*)">([^]*?)<\/tr>/g)].map(m=>[decodeURIComponent(m[1]),m[2]]);
   assert.deepEqual(rows.map(r=>r[0]),['sata:1','sata:2','sata:3','serial:NV-1',''],'SATA 0..2 by port (2 empty), then NVMe, then the USB stick that has no serial');
   const [s0,s1,s2,nv,usb]=rows.map(r=>r[1]);
-  assert.match(s0,/SATA 0/); assert.match(s0,/870 EVO/); assert.match(s0,/S-1/); assert.match(s0,/<span class="muted">דיסק 1 \(ברירת מחדל\)<\/span>/);
-  assert.match(s1,/SATA 1/); assert.match(s1,/ריק/); assert.match(s1,/<b>האמצעית<\/b>/);
-  assert.match(s2,/SATA 2/); assert.match(s2,/S-3/);
-  assert.match(nv,/NVMe 0/); assert.match(nv,/<b>דיסק מיוחד<\/b>/); assert.match(nv,/צמוד לכונן/,'NVMe: the name follows the drive — said, not hidden');
-  assert.match(usb,/USB/); assert.match(usb,/אין מזהה יציב/); assert.doesNotMatch(usb,/renameSlot/,'no key → no rename');
+  assert.match(s0,/<b>דיסק 1<\/b>/); assert.match(s0,/SATA 0/); assert.match(s0,/870 [^]*256GB/);
+  assert.match(s1,/<b>האמצעית<\/b>/); assert.match(s1,/SATA 1/); assert.match(s1,/ריק/);
+  assert.match(s2,/<b>דיסק 3<\/b>/); assert.match(s2,/SATA 2/); assert.match(s2,/870 [^]*256GB/);
+  assert.match(nv,/<b>דיסק מיוחד<\/b>/); assert.match(nv,/NVMe 0/); assert.match(nv,/870 [^]*256GB/);
+  assert.match(usb,/USB/); assert.match(usb,/Usb [^]*256GB/); assert.doesNotMatch(usb,/renameSlot/,'no stable key → no rename');
   assert.match(s1,new RegExp(`renameSlot\\('${encodeURIComponent(C2)}','sata%3A2'\\)`));
   assert.match(nv,/renameSlot\('[^']+','serial%3ANV-1'\)/);
-  assert.match(sec,/הסוכן מדווח רק כוננים מחוברים/,'empty slots come from the declared count — said so');
+});
+
+test('drawer disk marketing label normalises vendor and size; SMART appears only when bad', () => {
+  const {run}=setup();
+  run(`MACHINES[1].disks=[
+    {dev:'sda',port:1,serial:'a',model:'SAMSUNG MZ7LN256',size_bytes:238*1024**3,smart:'ok'},
+    {dev:'sdb',port:2,serial:'b',model:'WESTERN WD500',size_bytes:466*1024**3,smart:'warn'},
+    {dev:'sdc',port:3,serial:'c',model:'KINGSTON X',size_bytes:931*1024**3,smart:'fail'}];`);
+  const html=run(`machineDrawerHtml(findMachine('${C2}'))`);
+  assert.match(html,/Samsung [^]*?256GB/); assert.doesNotMatch(html,/SMART תקין/);
+  assert.match(html,/Western [^]*?500GB[^]*SMART אזהרה/);
+  assert.match(html,/Kingston [^]*?1TB[^]*SMART תקלה/);
+});
+
+test('build machines use the same compact rows without slot rename controls', () => {
+  const {run}=setup();
+  run(`GROUPS[0].role='build'`);
+  const html=run(`machineDrawerHtml(findMachine('${C2}'))`);
+  assert.match(html,/<th>שם<\/th><th>חריץ<\/th><th>כונן<\/th>/);
+  assert.match(html,/SATA 0/); assert.match(html,/870 [^]*256GB/);
+  assert.doesNotMatch(html,/renameSlot|חריצים מוגדרים|דיווח אחרון|חריצים וכוננים/);
 });
 
 test('rename sheet: PUTs {slot, name}; empty clears to the default with null', async () => {
@@ -120,7 +140,7 @@ test('rename sheet: PUTs {slot, name}; empty clears to the default with null', a
 test('the drawer for a non-admin has no rename link', () => {
   const {run}=setup({admin:false});
   const html=run(`machineDrawerHtml(findMachine('${C2}'))`);
-  assert.ok(html.includes('חריצים וכוננים'));
+  assert.ok(html.includes('דיסקים'));
   assert.doesNotMatch(html,/renameSlot/);
   run(`renameSlot('${encodeURIComponent(C2)}','sata%3A1')`);
   assert.equal(run('globalThis.formOptions'),undefined,'no sheet for a non-admin');

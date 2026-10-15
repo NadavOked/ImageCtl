@@ -125,6 +125,8 @@ static void verdict_text(App *a, const LcDisk *d, const LcDisk *src, char *out, 
         *c = t->warn; snprintf(out, n, "נכנס עם כיווץ זמני של המקור · צריך %s, יש %s", need, have); return;
     case LCV_SHORT: {
         *c = t->danger;
+        /* #1354: too little room left in the system partition -- the agent says how much. */
+        if (f->reason[0]) { snprintf(out, n, "%s. לא ישמש כיעד.", f->reason); return; }
         long long gb = (long long)ceil(((double)f->need - (double)d->size) / 1e9);
         char g1[24]; snprintf(g1, sizeof g1, "%lld GB", gb < 1 ? 1 : gb); bidi_isolate(g1, miss, sizeof miss);
         snprintf(out, n, "לא נכנס — חסרים %s גם אחרי כיווץ המקור. לא ישמש כיעד.", miss); return; }
@@ -257,7 +259,8 @@ void lc_draw_source(App *a, cairo_t *cr, double W, double H, double head_h) {
     int si = lc_source_index(a), idx[LC_MAX_DISKS], nt = lc_targets(a, idx, LC_MAX_DISKS);
     const LcDisk *src = si >= 0 ? &l->disks[si] : NULL;
     Text h1 = text_make(cr, FONT_SANS, 26, 600, "שיכפול מקומי", 0, DIR_RTL);
-    Text p = text_make(cr, FONT_SANS, 14, 400, "בחרו איזה דיסק הוא המקור. היעדים יקבלו עותק זהה שלו — כל מה שעליהם יימחק.", (int)(cw - 330), DIR_RTL);
+    const char *rnote = lc_round_note(a);   /* #1367: a round opened on the server -- said in the lead's place */
+    Text p = text_make(cr, FONT_SANS, 14, rnote ? 600 : 400, rnote ? rnote : "בחרו איזה דיסק הוא המקור. היעדים יקבלו עותק זהה שלו — כל מה שעליהם יימחק.", (int)(cw - 330), DIR_RTL);
     char s1[200] = "", s2[160], sl[48];
     if (src && nt) {
         lc_disk_label(src, sl, sizeof sl); int k = snprintf(s1, sizeof s1, "מ%s אל ", sl);
@@ -272,7 +275,7 @@ void lc_draw_source(App *a, cairo_t *cr, double W, double H, double head_h) {
     } else { snprintf(s1, sizeof s1, "אין יעד"); snprintf(s2, sizeof s2, "בחרו לפחות יעד אחד"); }
     Text m1 = text_make(cr, FONT_SANS, 12, 400, s1, 0, DIR_RTL), m2 = text_make(cr, FONT_SANS, 16, 600, s2, 0, DIR_RTL);
     double hh = fmax(h1.h + 4 + p.h, m1.h + m2.h);
-    text_draw_r(cr, &h1, xr, y + hh - (h1.h + 4 + p.h), t->ink); text_draw_r(cr, &p, xr, y + hh - p.h, t->muted);
+    text_draw_r(cr, &h1, xr, y + hh - (h1.h + 4 + p.h), t->ink); text_draw_r(cr, &p, xr, y + hh - p.h, rnote ? t->warn : t->muted);
     text_draw(cr, &m1, x0, y + hh - m1.h - m2.h, t->muted); text_draw(cr, &m2, x0, y + hh - m2.h, t->ink);
     text_free(&h1); text_free(&p); text_free(&m1); text_free(&m2);
     y += hh + 16;

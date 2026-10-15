@@ -165,7 +165,7 @@ def test_a_work_area_is_not_part_of_the_library(tmp_path):
     assert set(library.scan()) == {"img_7f3a91"}
     assert [image["id"] for image in library.public_list()] == ["img_7f3a91"]
     assert library.get("img_2c8e04") is None
-    assert library.file_path("img_lnx001", "p1.esp.pcl.zst") is None
+    assert library.file_path(MANIFEST_LINUX["id"], "p1.esp.pcl.zst") is None
     assert library.allowed_for_disks(None) == ["img_7f3a91"]
 
 
@@ -192,6 +192,75 @@ def test_file_serving_is_a_whitelist(tmp_path):
     assert library.file_path("img_7f3a91", "secret.txt") is None
     assert library.file_path("img_7f3a91", "../secret.txt") is None
     assert library.file_path("img_7f3a91", "manifest.json") is None
+
+
+@pytest.mark.parametrize("filename", ["", ".", "..", "../secret", "a/b", "a\\b", "bad\0name"])
+def test_unsafe_partition_filenames_exclude_the_manifest(tmp_path, filename):
+    # אימג' תקין על הדיסק, ורק המניפסט מצביע על השם המסוכן — write_image עצמו
+    # אינו יכול ליצור קובץ בשם ".." או "a/b" (וזה בדיוק העניין)
+    write_image(tmp_path, MANIFEST_256)
+    path = tmp_path / MANIFEST_256["id"] / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["partitions"][0]["file"] = filename
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    assert ImageLibrary(tmp_path).get(manifest["id"]) is None
+
+
+def test_a_symlink_partition_file_is_never_served(tmp_path):
+    write_image(tmp_path, MANIFEST_256)
+    folder = tmp_path / MANIFEST_256["id"]
+    name = MANIFEST_256["partitions"][0]["file"]
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(b"secret")
+    (folder / name).unlink()
+    (folder / name).symlink_to(outside)
+
+    assert ImageLibrary(tmp_path).file_path(MANIFEST_256["id"], name) is None
+
+
+def _invalid_manifest(mutator):
+    manifest = json.loads(json.dumps(MANIFEST_256))
+    mutator(manifest)
+    return ImageLibrary._validate(manifest)
+
+
+@pytest.mark.parametrize("mutator", [
+    lambda m: m["partitions"][0].update(index=0),
+    lambda m: m["partitions"][1].update(index=1),
+    lambda m: m["partitions"][1].update(start_sector=2048),
+    lambda m: m["partitions"][1].update(size_bytes=m["min_target_bytes"]),
+    lambda m: m["partitions"][0].update(type_guid="not-a-guid"),
+    lambda m: m["partitions"][0].update(unique_guid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+    lambda m: m["partitions"][0].update(uuid="not-a-uuid"),
+    lambda m: m["partitions"][0].update(attrs="1"),
+    lambda m: m["partitions"][0].update(role="root"),
+    lambda m: m["partitions"][0].update(fs="xfs"),
+    lambda m: m["partitions"][0].update(role="esp|windows"),
+    lambda m: m["partitions"][0].update(uuid="BAD\nUUID"),
+])
+def test_each_strict_manifest_schema_violation_is_rejected(mutator):
+    assert _invalid_manifest(mutator) is not None
+
+
+def test_invalid_manifest_is_excluded_and_reported_with_its_reason(tmp_path):
+    manifest = json.loads(json.dumps(MANIFEST_256))
+    manifest["partitions"][0]["role"] = "bad|role"
+    write_image(tmp_path, manifest)
+    reported = []
+    library = ImageLibrary(tmp_path)
+    library.bind_invalid_reporter(lambda path, reason: reported.append((path, reason)))
+
+    assert library.scan() == {}
+    assert len(reported) == 1 and "delimiter" in reported[0][1]
+
+
+def test_legacy_duplicate_windows_roles_and_unknown_used_bytes_stay_valid():
+    manifest = json.loads(json.dumps(MANIFEST_256))
+    manifest["partitions"][0].update(role="windows", fs="ntfs", used_bytes=None)
+    manifest["partitions"][1]["used_bytes"] = None
+
+    assert ImageLibrary._validate(manifest) is None
 
 
 @pytest.mark.parametrize("bad_sha256", [
@@ -392,3 +461,13 @@ def test_short_passwords_are_refused(tmp_path):
     conn = connect(tmp_path / "u.db")
     with pytest.raises(ValueError, match="8 תווים"):
         users.create(conn, "xy", "short", "deploy", by="t")
+
+
+def test_a_partition_without_a_filesystem_msr_or_bios_boot_stays_valid():
+    """‏#1419: הסוכן רושם `fs=""` למחיצה בלי מערכת קבצים (MSR בכל Windows,
+    ‏BIOS boot בלינוקס) ומזרים אותה ב-partclone.dd. דחייה שלה העלימה את
+    האימג' מהספרייה ודחתה כל קליטה כזו."""
+    manifest = json.loads(json.dumps(MANIFEST_256))
+    for fs in ("", "unknown"):       # ‏"unknown" = _fs_of כש-blkid יצא ≠0 (manifest.sh)
+        manifest["partitions"][0].update(role="msr", fs=fs)
+        assert ImageLibrary._validate(manifest) is None, fs

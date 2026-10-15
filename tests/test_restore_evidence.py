@@ -31,13 +31,14 @@ from test_agent import AGENT, BASH, posix, sh
 pytestmark = pytest.mark.skipif(BASH is None, reason="bash is required")
 
 #: תוכנית שחזור של שלוש מחיצות, בפורמט של manifest_plan (ממשק 1).
+SHA_A, SHA_B, SHA_C = "aa" * 32, "bb" * 32, "cc" * 32
 PLAN = [
     "1|C12A7328-F81F-11D2-BA4B-00A0C93EC93B|esp|vfat|2048|104857600"
-    "|p1.esp.pcl.zst|aa|false|11111111-1111-1111-1111-111111111111|",
+    f"|p1.esp.pcl.zst|{SHA_A}|false|11111111-1111-1111-1111-111111111111|",
     "2|EBD0A0A2-B9E5-4433-87C0-68B6B72699C7|windows|ntfs|206848|53687091200"
-    "|p2.windows.pcl.zst|bb|true|22222222-2222-2222-2222-222222222222|",
-    "3|DE94BBA4-06D1-4D40-A16A-BFD50179D6AC|recovery|ntfs|105060352|838860800"
-    "|p3.recovery.pcl.zst|cc|false|33333333-3333-3333-3333-333333333333|",
+    f"|p2.windows.pcl.zst|{SHA_B}|true|22222222-2222-2222-2222-222222222222|",
+    "3|DE94BBA4-06D1-4D40-A16A-BFD50179D6AC|recovery|ntfs|105064448|838860800"
+    f"|p3.recovery.pcl.zst|{SHA_C}|false|33333333-3333-3333-3333-333333333333|",
 ]
 
 #: ‏jq מזויף. כל שאילתה שהסוכן באמת שולח מקבלת כאן תשובה מקובץ בקופסה,
@@ -77,6 +78,7 @@ esac
 SGDISK_STUB = """#!/bin/sh
 B="{box}"
 printf '%s\\n' "$*" >> "$B/sgdisk.calls"
+case " $* " in *" --pretend "*) exit 0 ;; esac
 if [ -f "$B/sgdisk.fail" ]; then
     while read -r pat; do
         # shellcheck disable=SC2254 -- התבנית מהקובץ היא glob בכוונה
@@ -119,6 +121,7 @@ exit 0
 BLOCKDEV_STUB = """#!/bin/sh
 B="{box}"
 case "$1" in
+    --getsz) awk '{{print int($1 / 512)}}' "$B/disksize"; exit 0 ;;
     --getsize64) cat "$B/disksize"; exit 0 ;;
     --getss)
         printf '%s\\n' "$*" >> "$B/blockdev.calls"
@@ -159,6 +162,10 @@ def build_box(tmp_path, *, plan=PLAN, count=None, plan_cut=None, nodes=None,
     (run / "targets" / "sda" / "state").write_text("writing\n")
     (run / "targets" / "sda" / "base").write_text("0\n")
     (run / "targets" / "sda" / "bytes.raw").write_text("")
+    # #1354: the minimum free space needs a real manifest, and jq here is a stub
+    # that answers the plan only -- 0 = the console's "rule off". The rule has
+    # its own tests on real jq (test_min_free_1354.py).
+    (run / "min_free_gb").write_text("0\n")
 
     (box / "plan").write_text("\n".join(plan) + "\n" if plan else "")
     (box / "count").write_text(f"{len(plan) if count is None else count}\n")
@@ -205,6 +212,8 @@ def build_box(tmp_path, *, plan=PLAN, count=None, plan_cut=None, nodes=None,
         f'. {posix(AGENT)}/lib/diskfit.sh; '   # #1217: disk_fits, split from restore.sh
         # ‏#672: ‏boot_ca_preflight. ‏SYSROOT היא הקופסה ואין בה efivars -- unchecked, ממשיך.
         f'. {posix(AGENT)}/lib/bootcadb.sh; '
+        # ‏#1366: ‏write_check. ‏DEVROOT/sda בקופסה אינו התקן בלוק -- unchecked, ממשיך, ולא נכתב דבר.
+        f'. {posix(AGENT)}/lib/writecheck.sh; '
         # ‏#1212: ‏verify_table קורא בחזרה את GUID המחיצות דרך manifest.sh.
         f'. {posix(AGENT)}/lib/manifest.sh; '
         # הבדיקה היחידה שאי אפשר לזייף בלי root: התקן בלוקים אמיתי.
@@ -343,6 +352,22 @@ def test_a_whole_plan_is_read_exactly_as_before(tmp_path):
     out = sh(prelude + 'manifest_plan m.json; echo "rc=$?"')
     assert rc_of(out) == "rc=0", out
     assert out.strip().splitlines()[:3] == PLAN
+
+
+@pytest.mark.parametrize("bad_line", [
+    PLAN[0].replace("|esp|", "|esp|garbage|"),
+    PLAN[0].replace("|vfat|", "|badfs|"),
+    PLAN[0].replace("|2048|", "|not-a-sector|"),
+])
+def test_a_malformed_full_plan_fails_the_named_target_without_zapping(tmp_path, bad_line):
+    box, run, prelude = build_box(tmp_path, plan=[bad_line, *PLAN[1:]])
+    out = sh(restore_run(prelude))
+
+    assert rc_of(out) == "rc=1", out
+    assert (run / "targets" / "sda" / "state").read_text().strip() == "failed"
+    assert "disk untouched" in (run / "targets" / "sda" / "error").read_text()
+    calls = (box / "sgdisk.calls").read_text() if (box / "sgdisk.calls").exists() else ""
+    assert not any("--zap-all" in line and "--pretend" not in line for line in calls.splitlines())
 
 
 def restore_run(prelude, extra=""):

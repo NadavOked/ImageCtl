@@ -17,7 +17,7 @@ pytest.importorskip("fastapi")
 
 from test_sender import wait_for  # noqa: E402
 from test_server_room import (  # noqa: E402,F401
-    CLONER1, CLONER2, cloner_hello, heartbeat, room, room_server,
+    CLONER1, CLONER2, cloner_hello, heartbeat, room, room_body, room_server,
 )
 
 MB = 1_000_000
@@ -36,8 +36,8 @@ def _history(ctx, serial, rate_bps, cap_bps=25 * MB, model="Drawer SSD"):
 
 def _open_and_join(room_server):
     admin, anon = room_server["admin"], room_server["anon"]
-    assert admin.post("/api/console/room",
-                      json={"image_id": "img_7f3a91", "target_drives": 4}).status_code == 200
+    assert admin.post("/api/console/room", json=room_body(room_server, 4, {
+        CLONER1: ["S1", "S2"], CLONER2: ["S3", "S4"]})).status_code == 200
     wave = cloner_hello(anon, CLONER1, ["S1", "S2"])["session"]["id"]
     cloner_hello(anon, CLONER2, ["S3", "S4"])
     return wave

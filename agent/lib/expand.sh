@@ -102,6 +102,7 @@ apply_gpt() {
     # נושא את הסיבה אל `targets/<dev>/error`, כי "לא הצלחנו לכתוב טבלה"
     # אינו אומר לטכנאי איזו מחיצה ולמה (עיקרון 4).
     manifest_plan "$2" > "$RUN_DIR/gate.plan" || return 1
+    validate_restore_plan "$1" "$2" || return 1
     _bad=$(awk -F'|' '$4 != "swap" && ($7 == "" || $7 == "null") {
         printf "%s%s (%s)", (n++ ? ", " : ""), $1, $4 }' "$RUN_DIR/gate.plan")
     if [ -n "$_bad" ]; then
@@ -110,6 +111,7 @@ apply_gpt() {
         return 1
     fi
 
+    target_write_started "$1" || { PLAN_ERROR="could not record the target identity before writing"; return 1; }
     sgdisk --zap-all "$DEVROOT/$1" >> "$LOG_FILE" 2>&1 || return 1
     manifest_plan "$2" | while IFS='|' read -r _idx _guid _role _fs _start _size _f _sha _exp _uguid _uuid _attrs; do
         _end=$((_start + _size / 512 - 1))

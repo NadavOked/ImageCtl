@@ -121,6 +121,8 @@ PARTCLONE_LOGGED = ('#!/bin/sh\necho "partclone $*" >> "$RUN_DIR/order.log"\n'
 #: מאושר — הוא נבדק ב-test_capture_hibernation.py; כאן הוא לא הנושא.
 FS_MAP = ('_fs_of() { case "$1" in *3|*4) echo ntfs ;; *) echo vfat ;; esac; }; '
           'capture_ntfs_hibernation_reason() { return 0; }; '
+          # ‏#1369: מחיצה 3 היא C: — יש בה Windows\System32 (נבדק ב-test_capture_measure_1368).
+          '_system_role() { echo windows; }; '
           # ‏#926: לדיסק יש סידורי — בלעדיו הרשומה בשרת מסורבת והכיווץ לא מתחיל.
           'disk_serial() { printf S926; }; disk_port() { printf 1; }; ')
 SAY_YES = 'shrink_ask() { echo continue; }; '
@@ -582,6 +584,8 @@ PARTCLONE_FAILS_ON_4 = ('#!/bin/sh\necho "partclone $*" >> "$RUN_DIR/order.log"\
 
 FS_MAP_C_D = ('_fs_of() { case "$1" in *3|*4) echo ntfs ;; *) echo vfat ;; esac; }; '
               'capture_ntfs_hibernation_reason() { return 0; }; '
+              # ‏#1369: ‏C: היא המערכת; ‏D: — אותו GUID, בלי Windows\System32 — היא data.
+              '_system_role() { case "$2" in *3) echo windows ;; *) echo data ;; esac; }; '
               'disk_serial() { printf S926; }; disk_port() { printf 1; }; ')
 FS_MAP_C_EXT4 = FS_MAP_C_D.replace("*3|*4) echo ntfs", "*3) echo ntfs ;; *4) echo ext4")
 
@@ -663,10 +667,14 @@ def test_the_source_gpt_reads_back_exactly_what_it_was(tmp_path):
         [f"4:{DATA_START}:{DATA_START + DATA_SECTORS - 1}", f"3:{WIN_START}:{WIN_START + WIN_SECTORS - 1}"]
 
 
-def test_the_manifest_compacts_both_and_marks_only_the_last_expandable(tmp_path):
+def test_the_manifest_compacts_both_and_marks_the_system_expandable(tmp_path):
     """היעד מקבל את הפריסה הצפופה: ‏C: בגודלה החדש במקומה; ‏D: זזה אחורה
     בהפרש של C: (‏source_start_sector זוכר את מקומה האמיתי) ובגודלה החדש;
-    ‏expandable על D: בלבד; והרצפה היא סכום המינימומים ומחיצות המערכת."""
+    והרצפה היא סכום המינימומים ומחיצות המערכת.
+
+    ‏expandable על **C:** — מאז #1369 ‏D: היא `data` (אותו GUID, בלי
+    Windows/System32), ו-expand_last בוחר את מחיצת המערכת האחרונה. עד
+    #1369 ‏D: הייתה "windows" מתוך ה-GUID, ולכן היא זו שנמתחה."""
     box, run, out = capture_run(tmp_path, stubs=two_stubs(), shell_pre=FS_MAP_C_D + SAY_YES)
     assert out.strip().endswith("rc=0"), out
     m = manifest(run)
@@ -675,14 +683,14 @@ def test_the_manifest_compacts_both_and_marks_only_the_last_expandable(tmp_path)
     win = part(m, 3)
     assert win["size_bytes"] == new_c and win["shrunk_from_bytes"] == WIN_SECTORS * 512
     assert win["start_sector"] == WIN_START and "source_start_sector" not in win
-    assert win["expandable"] is False, "רק האחרונה נמתחת על היעד (expand_last)"
+    assert win["expandable"] is True, "מחיצת המערכת היא שנמתחת על היעד (#1369)"
 
     data = part(m, 4)
     assert data["size_bytes"] == new_d and data["shrunk_from_bytes"] == DATA_SECTORS * 512
     assert data["start_sector"] == DATA_START - delta_c
     assert data["source_start_sector"] == DATA_START
     assert data["start_sector"] % 2048 == 0
-    assert data["expandable"] is True
+    assert data["role"] == "data" and data["expandable"] is False
 
     for idx in (1, 2):
         assert "shrunk_from_bytes" not in part(m, idx) and "source_start_sector" not in part(m, idx)
@@ -806,9 +814,10 @@ def test_the_old_refusal_is_unchanged_when_the_last_partition_is_the_big_one(tmp
     assert reason.endswith("בייט לפני הקליטה"), reason
 
 
-def test_on_the_target_only_the_last_partition_is_stretched(tmp_path):
+def test_on_the_target_c_is_stretched_and_d_moves_to_the_tail(tmp_path):
     """הצד השני, על היעד: ‏apply_gpt/expand_last על המניפסט המצומצם —
-    ‏D: (האחרונה) נמתחת עד סוף הכונן, ‏C: נשארת בגודלה המכווץ, במקומה."""
+    ‏D: (‏data מאז #1369) עוברת לסוף הכונן בגודלה המכווץ, ו-C: נמתחת
+    במקומה עד תחילתה. עד #1369 ‏D: נמתחה ו-C: נשארה מכווצת."""
     from test_agent import run_expand
     box, run, out = capture_run(tmp_path, stubs=two_stubs(), shell_pre=FS_MAP_C_D + SAY_YES)
     assert out.strip().endswith("rc=0"), out
@@ -818,9 +827,12 @@ def test_on_the_target_only_the_last_partition_is_stretched(tmp_path):
             for p in m["partitions"]]
     rc, calls, marker = run_expand(tmp_path / "target", plan, disk_sectors=976773168)
     assert rc == "rc=0", (rc, calls)
-    assert marker == "4|ntfs", marker
-    assert len(calls) == 1 and calls[0].startswith(f"-d 4 -n 4:{part(m, 4)['start_sector']}:0 "), calls
-    assert not [c for c in calls if c.startswith("-d 3")], "‏C: אינה נמתחת ואינה זזה"
+    assert marker == "3|ntfs", marker
+    d_sectors = part(m, 4)["size_bytes"] // 512
+    assert calls[0].startswith("-d 4 "), calls
+    assert calls[1].startswith(f"-n 4:-{d_sectors}:0 "), "‏D: נבראת בזנב, בגודל שהמניפסט מצהיר"
+    assert calls[2].startswith(f"-d 3 -n 3:{WIN_START}:0 "), "‏C: נשארת בתחילתה ונמתחת"
+    assert len(calls) == 3, calls
 
 
 # --- הנעילות המבניות ------------------------------------------------------------

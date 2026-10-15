@@ -62,7 +62,10 @@ def source_disk(type_guid: str, *, uguid_line: str = UGUID_LINE, i_rc: int = 0) 
 
 
 def capture(tmp_path, stub):
-    return capture_run(tmp_path, stubs={"sgdisk": stub, "curl": CURL_SINK})
+    # ‏#1369: מחיצת ה-Windows כאן היא קובץ ריק בלי מערכת קבצים; מה שנבדק
+    # הוא ה-GUID, ולכן היא "מכילה" מערכת (התפקיד נבדק ב-test_capture_measure_1368).
+    return capture_run(tmp_path, stubs={"sgdisk": stub, "curl": CURL_SINK},
+                       shell_pre="_system_role() { echo windows; }; ")
 
 
 def manifest_of(run):
@@ -191,10 +194,13 @@ def test_a_partition_without_a_guid_in_the_manifest_is_logged_not_checked(tmp_pa
 
 
 def test_the_readback_ignores_the_case_of_the_hex_digits(tmp_path):
+    """‏#1408: המניפסט נושא GUID קנוני (אותיות גדולות) — ‏validate_restore_plan
+    דוחה אחר לפני --zap-all. הדיסק הוא שמחזיר כאן אותיות קטנות, וההשוואה
+    עדיין אינה תלויה ברישיות."""
     fields = PLAN[1].split("|")
-    fields[9] = "abcdef00-1111-2222-3333-444444444444"
+    fields[9] = "ABCDEF00-1111-2222-3333-444444444444"
     box, run, prelude = build_box(tmp_path, plan=[PLAN[0], "|".join(fields), PLAN[2]])
-    (box / "uguid.lie.2").write_text("ABCDEF00-1111-2222-3333-444444444444\n", newline="\n")
+    (box / "uguid.lie.2").write_text("abcdef00-1111-2222-3333-444444444444\n", newline="\n")
     out = sh(restore_run(prelude))
     assert rc_of(out) == "rc=0", out
     assert state_of(run) == "done"

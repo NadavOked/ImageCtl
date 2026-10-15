@@ -54,6 +54,7 @@ EVENTS_HE = {
     "client_failed": "כתיבה נכשלה במחשב",
     "wol_sent": "המחשבים הוערו (WoL)",
     "wol_failed": "הערת WoL נכשלה",
+    "wol_arm_failed": "המחשב לא הצליח לדרוך Wake-on-LAN לפני כיבוי",
     "room_open": "סבב חדר שיכפולים נפתח",
     "room_wave": "גל חדש בחדר השיכפולים",
     "room_wave_lost": "הגל של סבב החדר נסגר לפני הזמן — ממתין לגל הבא",
@@ -98,6 +99,7 @@ EVENTS_HE = {
     "identity_refused": "פנייה בשם מחשב מכתובת שאינה שלו — סורבה",
     "identity_unverifiable": "זהות מחשב לא ניתנת לבדיקה — סורבה",
     "setting_change": "הגדרה שונתה",
+    "auto_reboot": "הפעלה מחדש אוטומטית",
     "storage_group_create": "קבוצת סניפים נוצרה",
     "storage_group_edit": "שם קבוצת סניפים שונה",
     "storage_group_reorder": "סדר קבוצות הסניפים שונה",
@@ -143,6 +145,7 @@ EVENTS_HE = {
     "console_tls_uploaded": "תעודת TLS לקונסולה הועלתה",
     "console_tls_refused": "העלאת תעודת TLS נדחתה",
     "console_tls_restart_failed": "תעודת TLS נכתבה אך אתחול השרת לא תוזמן",
+    "console_tls_regenerated": "תעודת TLS של הקונסולה חודשה עבור שם השרת",
     "hostname_changed": "שם המארח של השרת שונה",
     "hostname_change_failed": "שינוי שם המארח נכשל",
     "hostname_restart_failed": "שם המארח שונה אך אתחול השרת לא תוזמן",
@@ -162,6 +165,7 @@ EVENTS_HE = {
     "tools_selection": "בחירת ארגז הכלים נשמרה",   # #649
     "drivers_staged": "דרייברים הונחו על הדיסק המשוחזר",
     "drivers_failed": "השחזור הושלם, דרייברים לא הונחו",
+    "boot_storage_failed": "השחזור הושלם, דרייבר האחסון לא הוגדר לעלייה",   # #1331
     "folder_create": "תיקייה נוצרה",
     "folder_reorder": "סדר התיקיות שונה",
     "folder_edit": "תיקייה עודכנה",
@@ -268,7 +272,7 @@ _SEVERITY_ERR = {
     "session_image_bound", "pull_refused", "client_failed", "wol_failed",
     "room_wave_lost", "send_failed", "direct_failed", "disk_failure",
     "session_orphaned", "identity_refused", "storage_transfer_failed", "logo_refused",
-    "capture_failed", "drivers_failed", "dhcp_apply_failed", "nic_services_apply_failed",
+    "capture_failed", "drivers_failed", "boot_storage_failed", "dhcp_apply_failed", "nic_services_apply_failed",
     "known_macs_apply_failed", "vmupdate_failed", "vmupdate_firewall_lost",
 }
 _SEVERITY_WARN = {
@@ -279,7 +283,7 @@ _SEVERITY_WARN = {
     "net_rollback_unreadable", "work_area_kept", "nic_services_armed", "nic_services_reverted",
     "storage_node_disable",
     "room_drawer_changed", "room_drawer_unidentified",
-    "power_expired", "gui_failed", "vmupdate_force_off", "vmupdate_expired", "vmupdate_control_auto",
+    "power_expired", "gui_failed", "wol_arm_failed", "vmupdate_force_off", "vmupdate_expired", "vmupdate_control_auto",
 }
 _SEVERITY_OK = {
     "login", "capture_done", "client_done", "pull_done", "room_done",
@@ -305,6 +309,11 @@ SETTINGS_HE = {
     "console_idle_seconds": "ניתוק אוטומטי בחוסר פעילות (שניות)",
     "class_deploy_enabled": "הפצה לכיתות ממחשב הבנייה",
     "learned_rate_enabled": "קצב שידור אוטומטי",
+    "crc_warn_threshold": "סף שגיאות CRC לאזהרה",   # #1366
+    "min_free_gb": "מינימום מקום פנוי אחרי שחזור (GB)",   # #1354
+    "auto_reboot": "הפעלה מחדש אוטומטית",
+    "auto_reboot_time": "שעה",
+    "auto_reboot_weekday": "יום",
 }
 
 ROLES_HE = {"classroom": "כיתה", "cloner": "חדר שיכפולים", "build": "מחשב בנייה"}

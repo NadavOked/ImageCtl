@@ -66,9 +66,21 @@ WAIT_HELPER_S="${WAIT_HELPER_S:-30}"
 # הקליטה **מבוטלת** בגלוי, ושום דבר לא כווץ -- לעולם לא "כווץ" בשקט.
 WAIT_SHRINK_GUI_S="${WAIT_SHRINK_GUI_S:-1800}"
 
+# בדיקת הכתיבה לפני הגל (#1366, writecheck.sh), לכל דיסק: 3×4MiB כתיבה ישירה
+# עם fsync וקריאה חוזרת — שנייה על דיסק תקין, גם על 15 MB/s פחות מ-2ש'. חצי
+# דקה בלי סיום = דיסק שלא מקבל כתיבה בפועל, והוא נכשל בשמו. המגירות נבדקות
+# בזו אחר זו, ולכן זה גם הגג לכל המכונה כפול מספר המגירות.
+WAIT_WRITECHECK_S="${WAIT_WRITECHECK_S:-30}"
+
 # קוד היציאה שמסמן "פג הזמן" בהמשך הזרימה. אותו 124 של timeout(1) —
 # ‏rc שאינו 0 ואינו קוד אמיתי של אף כלי בצינור.
 WAIT_TIMED_OUT=124
+
+# ‏smartctl אחד (‏#1367). דיסק בריא עונה בפחות משנייה; דיסק שה-ioctl שלו
+# נתקע בקרנל לא עונה לעולם, ובלי תקרה הוא משתיק את ה-hello של מחשב שיכפול
+# שלם — ה-probe רץ **בתוך** build_hello. מעבר לתקרה: "לא נבדק", בשמו.
+SMARTCTL_MAX_S="${SMARTCTL_MAX_S:-30}"
+NVME_MAX_S="${NVME_MAX_S:-30}"
 
 # --- איזו תקרה למחיצה הבאה -------------------------------------------------
 
@@ -101,6 +113,30 @@ next_stream_ceiling() {
 # שהמכונה תהיה נקייה. בפועל היתומים נגמרים מעצמם ברגע שהמקור מת — ולכן
 # ‏udp-receiver ו-curl קיבלו תקרות משלהם, ולכן unblock_fifo קיים: הם
 # מטפלים בשורש, וההריגה כאן היא רשת הביטחון האחרונה.
+
+capped_run() {
+    # $1 = תקרה בשניות, $2 = קובץ ל-stdout של הפקודה, $3.. = הפקודה (‏stderr
+    # ללוג). מחזיר את קוד היציאה של הפקודה עצמה; כשלא הסתיימה בזמן --
+    # ‏CAPPED_TIMED_OUT=1, שורת לוג ו-$WAIT_TIMED_OUT. הקורא בודק את
+    # ‏CAPPED_TIMED_OUT ולא את הקוד: אצל smartctl כל קוד 0-255 הוא תשובה.
+    # ‏**בלי wait אחרי ההריגה**: תהליך שתקוע ב-ioctl (מצב D) אינו מת מ-kill -9,
+    # ו-wait עליו הוא בדיוק הקפיאה שהפונקציה הזו קיימת כדי לסיים (#1367).
+    _cr_max="$1"; _cr_out="$2"; shift 2; CAPPED_TIMED_OUT=0; _cr_t=0
+    # a log that cannot be opened must not stop the command itself (a redirect
+    # that fails runs nothing): no log directory (host, tests) = no stderr
+    _cr_err="${LOG_FILE:-/dev/null}"; [ -d "${_cr_err%/*}" ] || _cr_err=/dev/null
+    "$@" > "$_cr_out" 2>> "$_cr_err" < /dev/null &
+    _cr_pid=$!
+    while kill -0 "$_cr_pid" 2>/dev/null; do
+        if [ "$_cr_t" -ge "$_cr_max" ]; then
+            log "פג הזמן: $1 לא ענה תוך $_cr_max שניות -- נעזב, לא נבדק" >&2
+            kill -9 "$_cr_pid" 2>/dev/null; CAPPED_TIMED_OUT=1
+            return "$WAIT_TIMED_OUT"
+        fi
+        sleep 1; _cr_t=$((_cr_t + 1))
+    done
+    wait "$_cr_pid"
+}
 
 wait_pid() {
     # $1 = pid, $2 = תקרה בשניות, $3 = על מה מחכים (לשורת הלוג).
@@ -143,7 +179,9 @@ wait_progress() {
         # והשקר היה שקט.
         _p_now=$(tr -d '\r' < "$_p_file" 2>/dev/null \
             | awk '/^[0-9]+$/ { n = $0 } END { if (n != "") print n }')
-        if [ "$_p_now" != "$_p_seen" ]; then
+        # ‏"0" אינו בייט ראשון (#1430): ‏pv -n מדפיס אותו בכל פעימה לפני
+        # שהגיע בייט, ושינוי ""→"0" החליף את תקרת ההתחלה בתקרת השקט.
+        if [ "$_p_now" != "$_p_seen" ] && [ "$_p_now" != 0 ]; then
             _p_seen="$_p_now"
             _p_still=0
             _p_max="$_p_stall"

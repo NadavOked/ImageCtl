@@ -68,8 +68,9 @@ lc_manifest() {
     _mf_dg=$(sgdisk -p "$DEVROOT/$1" 2>> "$LOG_FILE" | awk -F': ' '/Disk identifier/ { print $2 }' | awk '{print $1}')
     valid_guid "$_mf_dg" || { LC_ERROR="לא הצלחנו לקרוא את ה-GUID של דיסק המקור"; return 1; }
     while IFS='|' read -r _mf_i _mf_t _mf_u _mf_f _mf_s; do
-        _mf_n=$(partition_node "$1" "$_mf_i"); _mf_fs=$(_fs_of "$_mf_n"); _mf_role=$(_partition_role "$_mf_t")
+        _mf_n=$(partition_node "$1" "$_mf_i"); _mf_fs=$(_fs_of "$_mf_n"); _mf_role=$(lc_role "$1" "$_mf_i" "$_mf_t")   # #1369/#1354: as the inventory checked it
         [ "$_mf_fs" = swap ] && _mf_role=swap
+        [ "$_mf_role" != unchecked ] || { LC_ERROR="מחיצה $_mf_i: לא הצלחנו לבדוק אם היא מחיצת המערכת"; return 1; }
         _mf_uuid=$(_uuid_of "$_mf_n"); if [ -n "$_mf_uuid" ]; then _mf_uuid="\"$_mf_uuid\""; else _mf_uuid=null; fi
         _mf_file="\"local:p$_mf_i\""; [ "$_mf_role" = swap ] && _mf_file=null
         _mf_used=$(awk -F'|' -v i="$_mf_i" '$1 == i { print $2; exit }' "$LC/inv/$1.used" 2>/dev/null)

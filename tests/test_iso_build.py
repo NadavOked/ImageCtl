@@ -41,6 +41,7 @@ WIZARD_RERUN_SERVICE = REPO / "install" / "imagectl-wizard-rerun.service"
 INSTALLER_GUI_SERVICE = REPO / "install" / "imagectl-installer-gui.service"
 FIRSTBOOT_SERVICE = ISO_DIR / "imagectl-firstboot.service"
 BUILD_ISO = ISO_DIR / "build-iso.sh"
+LAB_GATE = ISO_DIR / "initrd-lab-gate.sh"
 GRUB_TEMPLATE = ISO_DIR / "grub.cfg.in"
 ISOLINUX_MENU_TEMPLATE = ISO_DIR / "isolinux-menu.cfg.in"
 ISOLINUX_ENTRY_TEMPLATE = ISO_DIR / "imagectl.cfg.in"
@@ -194,6 +195,26 @@ def test_build_iso_ships_the_live_installer_and_no_debian_installer() -> None:
     assert "-boot_image any replay" in build, "בלי replay ה-shim/GRUB החתומים לא נשמרים (R57)"
     assert "-report_el_torito" in build
     assert not (ISO_DIR / "preseed.cfg").exists() and not (ISO_DIR / "late-command.sh").exists()
+
+
+@requires_native("bash", "cpio", "gzip")
+def test_lab_initrd_requires_flag_and_is_marked(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    hook = root / "etc" / "imagectl"
+    hook.mkdir(parents=True)
+    (hook / "authorized_keys").write_text("lab-key\n", encoding="utf-8")
+    initrd = tmp_path / "lab.img"
+    command = 'find . -print | cpio -o -H newc 2>/dev/null | gzip -n > "$1"'
+    subprocess.run(["bash", "-c", command, "build", str(initrd)], cwd=root, check=True,
+                   stdin=subprocess.DEVNULL)
+    refused = subprocess.run(["bash", str(LAB_GATE), str(initrd)],
+                             capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    assert refused.returncode != 0 and "--lab" in refused.stderr
+    allowed = subprocess.run(["bash", str(LAB_GATE), str(initrd), "--lab"],
+                             capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    assert allowed.returncode == 0 and allowed.stdout.strip() == "true"
+    build = BUILD_ISO.read_text(encoding="utf-8")
+    assert 'TAG="$TAG-lab"' in build and '"lab_overlay":' in build
 
 
 def test_build_iso_proves_every_requested_package_is_in_the_merged_pool() -> None:

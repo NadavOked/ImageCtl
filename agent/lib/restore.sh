@@ -45,6 +45,40 @@ manifest_plan() {
     cat "$_pf"
 }
 
+validate_restore_plan() {
+    # $1=disk, $2=manifest. Validate every row and ask sgdisk to parse the
+    # complete table without writing it; this must run before --zap-all.
+    _vp="$RUN_DIR/preflight.plan"
+    _vdisk=$1; _vman=$2   # ‏#1418: `set --` למטה דורס את $1/$2
+    manifest_plan "$2" > "$_vp" || { PLAN_ERROR="malformed restore plan -- disk untouched"; return 1; }
+    _vsectors=$(blockdev --getsz "$DEVROOT/$1" 2>> "$LOG_FILE")
+    case "$_vsectors" in ''|*[!0-9]*) PLAN_ERROR="target size unavailable -- disk untouched"; return 1 ;; esac
+    awk -F'|' -v cap="$_vsectors" '
+        BEGIN { n = 0 }
+        NF < 11 || NF > 12 { exit 1 }
+        $1 !~ /^[0-9]+$/ || $1 < 1 || $1 > 128 || seen[$1]++ { exit 1 }
+        $2 !~ /^[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}$/ { exit 1 }
+        $3 !~ /^(esp|msr|windows|recovery|linux|swap|data)$/ { exit 1 }
+        $4 !~ /^(ntfs|vfat|ext4|btrfs|swap|unknown)?$/ { exit 1 }
+        $5 !~ /^[0-9]+$/ || $6 !~ /^[0-9]+$/ || $5 < 1 || $6 < 512 || $6 % 512 { exit 1 }
+        $5 + $6 / 512 > cap { exit 1 }
+        { for (i=0; i<n; i++) if ($5 < e[i] && $5 + $6/512 > s[i]) exit 1; s[n]=$5; e[n++]=$5+$6/512 }
+        { bare = ($4 == "swap" && $7 == "" && $8 == "") || ($7 ~ /^local:p[0-9]+$/ && $8 == "") }   # ‏#1433: swap בלי קובץ; שיכפול מקומי בלי sha
+        (!bare && ($7 == "" || index($7, "/") || index($7, "\\") || $7 ~ /[[:cntrl:]]/ || length($8) != 64 || $8 !~ /^[0-9a-f]+$/)) || $9 !~ /^(true|false)$/ { exit 1 }
+        $10 != "" && $10 !~ /^[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}$/ { exit 1 }
+        $11 ~ /[[:cntrl:]|]/ || ($11 != "" && $11 !~ /^([0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}|[0-9A-F]{4}-[0-9A-F]{4}|[0-9A-F]{16})$/) { exit 1 }
+        $12 !~ /^([0-9A-F]{16})?$/ { exit 1 }
+        END { if (NR < 1) exit 1 }' "$_vp" || { PLAN_ERROR="malformed restore plan -- disk untouched"; return 1; }
+    set -- sgdisk --pretend --clear   # ‏#1434: --zap-all בהדמיה משאיר את הטבלה הקיימת בזיכרון
+    while IFS='|' read -r _i _g _r _fs _s _z _f _h _e _u _uuid _a; do
+        _last=$((_s + _z / 512 - 1)); set -- "$@" -n "$_i:$_s:$_last" -t "$_i:$_g"
+        [ -z "$_u" ] || set -- "$@" -u "$_i:$_u"
+        [ -z "$_a" ] || set -- "$@" -A "$_i:=:0x$_a"
+    done < "$_vp"
+    _dg=$(json_get "$_vman" ".disk_guid"); [ -z "$_dg" ] || [ "$_dg" = null ] || set -- "$@" -U "$_dg"
+    "$@" "$DEVROOT/$_vdisk" >> "$LOG_FILE" 2>&1 || { PLAN_ERROR="sgdisk rejected restore plan -- disk untouched"; return 1; }
+}
+
 partclone_for_fs() {
     case "$1" in
         ntfs)                 echo "partclone.ntfs" ;;
@@ -186,6 +220,9 @@ run_restore() {
     # $4 = image id, $5 = manifest file.
     echo "writing" > "$RUN_DIR/state"
     target_set "$2" "writing"
+    # A classroom station records the failed target and its ATA evidence.  It
+    # does not perform the drawer-only post-failure GPT invalidation (#1388).
+    : > "$RUN_DIR/targets/$2/evidence_only"
 
     # A too-small disk is rejected by name before its table is touched (#12).
     if ! disk_fits "$2" "$5"; then
@@ -200,6 +237,8 @@ run_restore() {
         echo "failed" > "$RUN_DIR/state"
         return 1
     fi
+    # #1366: a disk that does not take a write, or writes below the floor, fails here by name.
+    { write_check "$2" && write_speed_verdict "$2"; } || { echo "failed" > "$RUN_DIR/state"; return 1; }
 
     # הטבלה נקבעת עד תומה לפני שהנתונים מגיעים — כולל ההרחבה, כי היא זו
     # שמעבירה swap נגררת לזנב, וה-mkswap של הלולאה חייב לנחות על המקום
@@ -215,7 +254,13 @@ run_restore() {
         fi
     fi
     if [ "$_table" -ne 1 ]; then
-        fail_written_target "$2" "${PLAN_ERROR:-could not write the partition table}"
+        case "$PLAN_ERROR" in
+            *"corrupt manifest"|*"disk untouched")
+                # The manifest gate is before --zap-all: report the named refusal
+                # without turning a deliberately untouched disk into a failed write.
+                target_set "$2" "failed" "$PLAN_ERROR" ;;
+            *)  fail_written_target "$2" "${PLAN_ERROR:-could not write the partition table}" ;;
+        esac
         echo "failed" > "$RUN_DIR/state"
         return 1
     fi

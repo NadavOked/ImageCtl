@@ -202,6 +202,28 @@ def test_a_stream_that_never_starts_uses_the_start_ceiling(tmp_path):
     assert "0 בייטים" in log_of(box)
 
 
+def test_pv_zero_ticks_before_the_first_byte_keep_the_start_ceiling(tmp_path):
+    """‏#1430: ‏`pv -n` מדפיס "0" בכל פעימה עוד לפני שהגיע בייט (גם הזיוף
+    ב-STUBS מחקה את זה). השינוי ""→"0" נקרא כאן כ"הזרם התחיל", ותקרת
+    השקט (300) החליפה את תקרת ההתחלה (900) — בעוד השולח רשאי להמתין
+    עד 780. כאן: "0" במשך 5 שניות, תקרת שקט 2 ותקרת התחלה 20, ואז הזרם
+    מגיע. **בקרה שלילית:** על הקוד הישן הפקיעה אחרי ~3 שניות, ‏rc=1."""
+    box = tmp_path / "box"
+    counter = box / "bytes.raw"
+    box.mkdir(parents=True)
+    counter.write_text("")
+    out = run_sh(
+        waits_prelude(box, WAIT_POLL_S=1)
+        + f'( i=0; while [ $i -lt 10 ]; do i=$((i + 1)); '
+        f'echo 0 >> {posix(counter)!r}; sleep 0.5; done; '
+        f'echo 65536 >> {posix(counter)!r} ) & '
+        f'wait_progress $! {posix(counter)!r} 20 2 "room-still-waiting"; '
+        'echo "rc=$?"'
+    )
+    assert out.strip().endswith("rc=0"), out + log_of(box)
+    assert "פג הזמן" not in log_of(box)
+
+
 def test_stream_timeout_releases_a_fifo_reader_left_by_the_pipeline_wrapper(tmp_path):
     """#1130 negative control: killing the wrapper alone left sha/zstd children alive."""
     box = tmp_path / "box"; box.mkdir(parents=True)
@@ -443,6 +465,60 @@ def test_the_second_stream_waits_longer_for_its_first_byte_than_the_first(tmp_pa
     assert ceilings == [str(first), str(later)], ceilings
     # תקרת השקט אינה חלק מזה — היא על זרם שכבר התחיל, ונשארת אחידה.
     assert {_flag(b, "--receive-timeout") for b in blocks} == {"20"}
+
+
+#: ‏pv שאינו מדפיס דבר עד הבייט הראשון — כך הקובץ מכיל רק את מה שנשאר
+#: מהמחיצה הקודמת, וזה מה ש-wait_progress קורא בסקירה הראשונה (‏pv -i 2
+#: מדפיס את ה-"0" הראשון רק אחרי שתי שניות; הסקירה היא אחרי אחת).
+PV_SILENT_UNTIL_DATA = '#!/bin/sh\ncat\necho 65536 >&2\n'
+
+
+@pytest.mark.parametrize(
+    "pv", [pytest.param(None, id="pv-ticks-zero"),
+           pytest.param(PV_SILENT_UNTIL_DATA, id="previous-partition-count")])
+def test_a_drawer_room_waits_out_a_late_second_partition_instead_of_the_stall_ceiling(
+        tmp_path, pv):
+    """‏#1430 (מעבדת ה-VM, 15/10): ‏p1 נכתב, והשולח המתין למכונה שכבר
+    נכשלה לפני ששידר את p14. המכונה התקינה פקעה אחרי ~361ש' — 300 של
+    תקרת השקט ועוד ההמתנות למגירות — ולא אחרי 900 של תקרת ההתחלה.
+    השורש: ‏`$RUN_DIR/bytes.raw` של החדר אינו מתאפס בין מחיצות, והמונה
+    הסופי של p1 נקרא ב-p14 כ"בייט ראשון" (ו-"0" של pv — באותה דרך).
+
+    כאן: הזרם השני שותק 5 שניות — יותר מתקרת השקט (2), פחות מתקרת
+    ההתחלה של מחיצה 2+ (20) — ואז מגיע. **בקרה שלילית:** על הקוד הישן
+    המחיצה השנייה נכשלת "פג הזמן -- הזרם לא הגיע". שני הזיופים של pv
+    מכסים את שני המנגנונים: המונה של המחיצה הקודמת (drawers.sh) וה-"0"
+    שלפני הבייט הראשון (waits.sh) — כל אחד נופל כשרק התיקון שלו חסר."""
+    box = tmp_path / "box"
+    run = box / "run"
+    payload = box / "part.bin"
+    box.mkdir(parents=True)
+    payload.write_bytes(b"imagectl" * 512)
+    sha = hashlib.sha256(payload.read_bytes()).hexdigest()
+    target = run / "targets" / "sda"
+    target.mkdir(parents=True)
+    (target / "state").write_text("writing\n")
+    out = run_sh(
+        make_stubs(box / "stubs", {"fanout": FEED_ONE, **({"pv": pv} if pv else {})})
+        + f"export RUN_DIR={posix(run)!r} DEVROOT={posix(box)!r} "
+        "WAIT_POLL_S=1 WAIT_DRAWER_S=10 WAIT_HELPER_S=10 WAIT_STREAM_STALL_S=2 "
+        "WAIT_STREAM_START_S=20 WAIT_STREAM_START_LATER_S=20; "
+        f". {posix(AGENT)}/lib/common.sh; . {posix(WAITS)}; "
+        f". {posix(AGENT)}/lib/progress.sh; . {posix(AGENT)}/lib/restore.sh; "
+        f". {posix(AGENT)}/lib/drawers.sh; . {posix(AGENT)}/lib/verdict.sh; . {posix(AGENT)}/lib/failmark.sh; "
+        # השולח ממתין לחדר לפני המחיצה השנייה: שקט ארוך מתקרת השקט.
+        f'stream_source() {{ [ "$4" = p3.zst ] && sleep 5; cat {posix(payload)!r}; }}; '
+        "target_init sda 4096; STREAMED_PARTITIONS=0; "
+        f"restore_partition_drawers multicast http://s img 2 dd p2.zst {sha} '' sda "
+        f"> {posix(box)}/pipe.out 2>&1; r1=$?; "
+        f"restore_partition_drawers multicast http://s img 3 dd p3.zst {sha} '' sda "
+        f">> {posix(box)}/pipe.out 2>&1; r2=$?; "
+        'echo "rc=$r1$r2"'
+    )
+    log = log_of(run)
+    assert out.strip().endswith("rc=00"), out + log
+    assert (target / "state").read_text().strip() != "failed", log
+    assert "פג הזמן" not in log
 
 
 def test_the_later_ceiling_outlasts_the_senders_later_wait():

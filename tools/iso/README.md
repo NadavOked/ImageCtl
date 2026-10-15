@@ -46,7 +46,10 @@ sudo IMAGECTL_ROOT_PASSWORD='...' tools/iso/build-iso.sh      --out /srv/iso/out
    (רשימה + אישור מחיקה) → תפקיד → רשת ניהול → שם → admin → סיכום →
    התקדמות. ‏`installer/gui-bridge.sh` מפעיל את המנוע `imagectl-install`:
    ‏GPT, debootstrap מ-`/cdrom`, ‏`packages.txt` מה-pool, ‏GRUB לשתי הקושחות,
-   ‏`/etc/imagectl/answers` (+ `answers.secret` 0600), ‏`iso-release.json`.
+   ‏`/etc/imagectl/answers` (+ `answers.secret` 0600), ‏`iso-release.json`,
+   והמאגר המקומי `/var/lib/imagectl/apt-repo` — ‏`pool/` **כולו** ו-`dists/`
+   (‏#1371: האינדקס מונה גם את חבילות ה-netinst; ההעתקה נבדקת — לכל `Filename`
+   יש קובץ, אחרת ההתקנה נעצרת ב-`apt-repo-check`).
 4. "הסר את מדיית ההתקנה והפעל מחדש" → eject + reboot.
 5. אתחול ראשון: ‏`imagectl-firstboot` בונה את שני ה-initrd (שלב א'), ואז —
    כשיש `answers` — `firstboot-answers.sh` מריץ את `setup-boot-server.sh`

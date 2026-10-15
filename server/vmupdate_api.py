@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, WebSocket
 from fastapi.responses import JSONResponse
 from starlette.websockets import WebSocketDisconnect
 
-from . import auth, monitor
+from . import auth, monitor, viewer_sessions
 from .api import ServerContext
 from .db import journal
 from .vmupdate import Refusal, VmUpdate, read_settings, write_settings
@@ -182,6 +182,8 @@ def create_vmupdate_viewer_router(ctx: ServerContext, engine: VmUpdate, *,
             await websocket.close(code=WS_NO_VM, reason="אין VM רץ")
             return
         name = found[0]
+        token = websocket.cookies.get(auth.COOKIE_NAME) or ""
+        task = asyncio.current_task()
         async with lock:
             # צופה אחד לכל מנהל; כמה מנהלים — כן (‏share=force-shared). מי
             # שאינו השולט רואה בלבד: הקלט שלו נזרק בגשר (הכרעה 6).
@@ -189,6 +191,8 @@ def create_vmupdate_viewer_router(ctx: ServerContext, engine: VmUpdate, *,
                 await websocket.close(code=WS_NO_VM, reason="כבר פתוח אצלך מסך ל-VM")
                 return
             viewers.add(name)
+        if task is not None:
+            viewer_sessions.register(token, name, task)
         engine.touch(name)
         writer = None
         try:
@@ -207,7 +211,16 @@ def create_vmupdate_viewer_router(ctx: ServerContext, engine: VmUpdate, *,
                 outcome = await monitor.bridge_browser(
                     websocket, reader, writer, idle_seconds=monitor.IDLE_SECONDS,
                     allow_input=lambda: engine.controls(name))
-            except (WebSocketDisconnect, asyncio.CancelledError):
+            except asyncio.CancelledError:
+                # ‏#1394: רק ביטול ש-viewer_sessions עשה הוא ביטול התחברות.
+                # כל ביטול אחר הוא פירוק החיבור (#725) — כמו לפני #1394.
+                if task is None or not viewer_sessions.was_revoked(task):
+                    outcome = "browser"
+                    raise
+                outcome = "session_revoked"
+                await websocket.close(code=monitor.WS_UNAUTHENTICATED,
+                                      reason="ההתחברות הסתיימה")
+            except WebSocketDisconnect:
                 outcome = "browser"
                 raise
             finally:
@@ -224,5 +237,7 @@ def create_vmupdate_viewer_router(ctx: ServerContext, engine: VmUpdate, *,
                     pass
             async with lock:
                 viewers.discard(name)
+            if task is not None:
+                viewer_sessions.forget(token, task)
 
     return router

@@ -57,33 +57,55 @@ arm_wol() {
         log "wol: ethtool unavailable -- no interface armed"
         return 1
     }
-    _wol_armed=0
+    _wol_supported=0
+    _wol_failed=0
     for _wol_path in "${SYSROOT:-}/sys/class/net/"*; do
         [ -e "$_wol_path" ] || continue
         _wol_n=${_wol_path##*/}
         [ "$_wol_n" = lo ] && continue
+        [ -d "$_wol_path/wireless" ] && continue
         if ! _wol_info=$(ethtool "$_wol_n" 2>/dev/null); then
             log "wol: $_wol_n -- cannot read capabilities"
+            _wol_failed=$((_wol_failed + 1))
             continue
         fi
         case "$(printf '%s\n' "$_wol_info" | awk '/Supports Wake-on:/ {print $3}')" in
-            *g*) ;;
+            *g*) _wol_supported=$((_wol_supported + 1)) ;;
             *) log "wol: $_wol_n -- MagicPacket unsupported"; continue ;;
         esac
         if ! ethtool -s "$_wol_n" wol g >/dev/null 2>&1; then
             log "wol: $_wol_n -- arming command failed"
+            _wol_failed=$((_wol_failed + 1))
             continue
         fi
         if ! _wol_info=$(ethtool "$_wol_n" 2>/dev/null); then
             log "wol: $_wol_n -- cannot read back arming"
+            _wol_failed=$((_wol_failed + 1))
             continue
         fi
         case "$(printf '%s\n' "$_wol_info" | awk '/^[[:space:]]*Wake-on:/ {print $2}')" in
-            *g*) log "wol: $_wol_n armed"; _wol_armed=$((_wol_armed + 1)) ;;
-            *) log "wol: $_wol_n -- arming did not take" ;;
+            *g*) log "wol: $_wol_n armed" ;;
+            *) log "wol: $_wol_n -- arming did not take"; _wol_failed=$((_wol_failed + 1)) ;;
         esac
     done
-    [ "$_wol_armed" -gt 0 ]
+    [ "$_wol_supported" -gt 0 ] && [ "$_wol_failed" -eq 0 ]
+}
+
+safe_poweroff() {
+    # Every S5 path ends here. Failure is persisted before the last hello;
+    # staying on leaves the ordinary heartbeat another chance if it fails.
+    if ! arm_wol; then
+        printf '%s\n' false > "$RUN_DIR/wol_armed"
+        log "wol: not all supported wired interfaces were armed -- not powering off"
+        command -V send_hello >/dev/null 2>&1 && send_hello || :
+        return 1
+    fi
+    rm -f "$RUN_DIR/wol_armed"
+    if [ -n "${2:-}" ]; then "$2" || return 1; fi
+    log "${1:-power}: powering off with wake-on-LAN armed"
+    if [ "${IMAGECTL_TEST:-0}" = 1 ]; then echo "TEST-POWEROFF"; return 0; fi
+    sync
+    poweroff
 }
 
 finish_and_stop() {
@@ -114,13 +136,7 @@ finish_and_stop() {
             sync; reboot -f
             ;;
         *)
-            # A remote poweroff is safe only after wake-on-LAN read-back.
-            if ! arm_wol; then
-                log "wol: no interface armed -- staying powered on"
-                return 1
-            fi
-            log "task complete -- powering off"
-            sync; poweroff -f
+            safe_poweroff "task complete"
             ;;
     esac
 }

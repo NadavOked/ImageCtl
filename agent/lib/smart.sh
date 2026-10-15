@@ -28,8 +28,17 @@ smart_classify() {
     # המונים 5/197/198/199 נקראים ונשמרים (מידע) ואינם צובעים: על 6 דיסקי
     # הכיתה CRC הוא 137–55,242 והם משכפלים מושלם — מונה מצטבר מספר על
     # ההיסטוריה של הכבלים, ושאלה שנשאלת על 6/6 דיסקים אינה אומרת כלום.
+    #
+    # ‏#1366 (נדב 13/10): **מה שעוצר BIOS של HP על "SMART error, press F1"**
+    # הוא `fail` — שורת הבריאות FAILED, או 198/197 מעל 0 בדיסק ש-PASSED.
+    # ‏`fail` הוא **כתום** (שואל; בלי תשובה כותב — כמו Clonezilla במכללה,
+    # וחלק מהדיסקים האלה ממשיכים לעבוד), לא אדום. 5 ו-199 עדיין אינם צובעים.
     if [ "$1" = "FAILED" ]; then echo "fail health_failed"; return; fi
-    if [ "$1" = "PASSED" ]; then echo "ok ok"; return; fi
+    if [ "$1" = "PASSED" ]; then
+        [ "${4:-0}" -gt 0 ] && { echo "fail uncorrectable"; return; }
+        [ "${3:-0}" -gt 0 ] && { echo "fail pending_sectors"; return; }
+        echo "ok ok"; return
+    fi
     # ‏-H לא PASSED ולא FAILED = לא קראנו בריאות; **אינו** `ok` (עיקרון 5).
     echo "unchecked no_health"
 }
@@ -78,12 +87,16 @@ smart_probe() {
         _smart_store "$1" unchecked no_smartctl; echo unchecked; return
     fi
     _sp_out="$RUN_DIR/smart/$1.out"
-    "$SMARTCTL" -H -A -n never "$_sp_dev" > "$_sp_out" 2>>"$LOG_FILE"; _sp_rc=$?
+    # ‏#1367: בתקרה (waits.sh). דיסק שלא ענה הוא `timeout` -- "לא נבדק", נשמר
+    # במטמון כמו כל תשובה: עוד 30 שניות על אותו דיסק תקוע לא יביאו ראיה.
+    capped_run "$SMARTCTL_MAX_S" "$_sp_out" "$SMARTCTL" -H -A -n never "$_sp_dev"; _sp_rc=$?
+    [ "$CAPPED_TIMED_OUT" = 1 ] && { _smart_store "$1" unchecked timeout; echo unchecked; return; }
     # bit 1 (rc & 2) = פתיחת ההתקן נכשלה. רק אז מנסים דרך שכבת ה-SAT
     # (גשר USB-SATA); שאר הסיביות (בעיקר bit 3 = הדיסק נכשל) הן תשובה.
     if [ "$((_sp_rc / 2 % 2))" -eq 1 ]; then
-        "$SMARTCTL" -d sat -H -A -n never "$_sp_dev" > "$_sp_out" 2>>"$LOG_FILE"
+        capped_run "$SMARTCTL_MAX_S" "$_sp_out" "$SMARTCTL" -d sat -H -A -n never "$_sp_dev"
         _sp_rc=$?
+        [ "$CAPPED_TIMED_OUT" = 1 ] && { _smart_store "$1" unchecked timeout; echo unchecked; return; }
         if [ "$((_sp_rc / 2 % 2))" -eq 1 ]; then
             _smart_store "$1" unchecked open_failed; echo unchecked; return
         fi
@@ -105,8 +118,12 @@ smart_probe() {
     _sp_pe=$(_smart_int "$_sp_out" 197 Current_Pending_Sector)
     _sp_un=$(_smart_int "$_sp_out" 198 Offline_Uncorrectable Media_and_Data_Integrity_Errors)
     _sp_cr=$(_smart_int "$_sp_out" 199 UDMA_CRC_Error_Count)
+    # ‏#1366: 198 עוצר BIOS על F1 ב-ATA. ב-NVMe המונה הזה הוא `Media and Data
+    # Integrity Errors` — נשמר, אבל אינו צובע: שם ה-BIOS נשען על Critical
+    # Warning, שהוא כבר שורת הבריאות (FAILED!).
+    _sp_unv=$_sp_un; grep -q 'Media and Data Integrity Errors' "$_sp_out" 2>/dev/null && _sp_unv=0
     # shellcheck disable=SC2046 # פיצול המילים מכוון — ל-$1/$2
-    set -- $(smart_classify "$_sp_h" "$_sp_re" "$_sp_pe" "$_sp_un" "$_sp_cr")
+    set -- $(smart_classify "$_sp_h" "$_sp_re" "$_sp_pe" "$_sp_unv" "$_sp_cr")
     _smart_store "$_sp_d" "$1" "$2" "$_sp_re" "$_sp_pe" "$_sp_un" "$_sp_cr"
     echo "$1"
 }

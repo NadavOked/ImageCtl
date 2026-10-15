@@ -6,26 +6,33 @@ import json
 import server.library_scrub as library_scrub
 from server.images import ImageLibrary
 from server.library_scrub import scrub_library
+from conftest import ESP_GUID, LINUX_GUID, SWAP_GUID
 
 
 def _write_image(root, image_id="img_abc123"):
     folder = root / image_id
     folder.mkdir()
     contents = {"p1.esp.pcl.zst": b"esp", "p2.root.pcl.zst": b"root"}
+    # ‏role/type_guid/fs מהקבוצות הקבועות, ו-min_target_bytes שמחזיק את
+    # הפריסה — אחרת `_validate` דוחה את המניפסט מאז #1407 והספרייה ריקה.
+    kinds = [("esp", ESP_GUID, "vfat"), ("linux", LINUX_GUID, "ext4")]
     partitions = [
-        {"index": index, "fs": "vfat", "start_sector": index * 2048,
+        {"index": index, "type_guid": guid, "role": role, "fs": fs,
+         "start_sector": index * 2048,
          "size_bytes": 1024, "file": name,
          "sha256": hashlib.sha256(data).hexdigest()}
-        for index, (name, data) in enumerate(contents.items(), 1)
+        for index, ((name, data), (role, guid, fs))
+        in enumerate(zip(contents.items(), kinds), 1)
     ]
-    partitions.append({"index": 3, "fs": "swap", "start_sector": 6144,
+    partitions.append({"index": 3, "type_guid": SWAP_GUID, "role": "swap",
+                       "fs": "swap", "start_sector": 6144,
                        "size_bytes": 1024, "file": None, "sha256": None})
     manifest = {
         "schema": 1,
         "id": image_id,
         "name": "Test image",
         "family": 256,
-        "min_target_bytes": 1,
+        "min_target_bytes": 4 * 1024 * 1024,
         "partitions": partitions,
     }
     (folder / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")

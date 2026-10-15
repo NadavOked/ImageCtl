@@ -72,6 +72,33 @@ def test_second_start_loads_the_same_cert_not_a_new_one(tmp_path: Path):
     assert second.cert_path.read_bytes() == cert_bytes
 
 
+def test_self_signed_cert_is_extended_when_console_address_changes(tmp_path: Path):
+    first = console_tls.ensure_console_cert(tmp_path / "data", "10.0.0.1", "srv")
+    second = console_tls.ensure_console_cert(tmp_path / "data", "10.0.0.2", "srv")
+
+    assert second.regenerated is True
+    assert second.previous_fingerprint_sha256 == first.fingerprint_sha256
+    assert second.fingerprint_sha256 != first.fingerprint_sha256
+    assert set(second.sans) == {"10.0.0.2", "srv"}
+    assert second.cert_path.with_name("console.crt.prev").read_bytes() != second.cert_path.read_bytes()
+    assert second.key_path.with_name("console.key.prev").is_file()
+
+
+def test_uploaded_self_signed_cert_is_never_regenerated_for_a_new_host(tmp_path: Path):
+    from server.interserver_auth import generate_self_signed
+
+    data = tmp_path / "data"
+    cert, key = generate_self_signed("operator-cert", dns_sans=["imagectl.college.local"])
+    console_tls.install_upload(data, cert, key)
+    before = console_tls.fingerprint_sha256(cert)
+
+    loaded = console_tls.ensure_console_cert(data, "10.0.0.8", "srv")
+
+    assert loaded.fingerprint_sha256 == before
+    assert loaded.regenerated is False
+    assert not loaded.cert_path.with_name(console_tls.GENERATED_MARKER).exists()
+
+
 def test_half_an_identity_is_refused_not_regenerated(tmp_path: Path):
     """תעודה בלי מפתח: יצירה מחדש שקטה הייתה מחליפה תעודה שדפדפנים כבר
     אישרו; הכשל נאמר בשמו."""

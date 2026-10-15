@@ -19,23 +19,40 @@ _mount_windows() {
     # לוכד את הפלט ב-`$( )`, ולכן כל `log` כאן (ובכל עוזרת של write_hostname)
     # הולך ל-stderr -- אחרת שורת היומן נכנסת לערך.
     if [ -n "${3:-}" ]; then
-        _idx=$(awk -F'|' '$3 == "windows" { print $1; exit }' "$3") || return 1
+        _mount_plan="$3"
     else
         _mount_plan="$RUN_DIR/mount-windows.plan"
         manifest_plan "$2" > "$_mount_plan" || return 1
-        _idx=$(awk -F'|' '$3 == "windows" { print $1; exit }' "$_mount_plan") || return 1
     fi
-    [ -n "$_idx" ] || { log "no windows partition in the manifest" >&2; return 1; }
-    _node=$(partition_node "$1" "$_idx")
+    _idxs=$(awk -F'|' '$3 == "windows" { print $1 }' "$_mount_plan") || return 1
+    [ -n "$_idxs" ] || { log "no windows partition in the manifest" >&2; return 1; }
     _mnt="$RUN_DIR/win"
     mkdir -p "$_mnt"
+    # ‏#1369: מניפסט שנקלט לפני התיקון מסמן כל מחיצת Basic Data כ-windows —
+    # גם מחיצת OEM/נתונים שיושבת לפני C:, ו"הראשונה" היא אז מחיצה בלי
+    # מערכת. נבחרת זו ש-Windows\System32 יושבת בה; אין כזו — הראשונה, כמו
+    # קודם, והקורא אומר בשמו מה חסר (no_hive). מניפסט חדש: מועמדת אחת.
+    _first=""
+    for _idx in $_idxs; do
+        [ -n "$_first" ] || _first="$_idx"
+        _mount_windows_one "$1" "$_idx" || return 1
+        [ -d "$_mnt/Windows/System32" ] && { echo "$_mnt"; return 0; }
+        log "partition $_idx: no Windows\\System32 -- not the system partition" >&2
+        _umount_checked "$_mnt" >&2 || return 1
+    done
+    _mount_windows_one "$1" "$_first" || return 1
+    echo "$_mnt"
+}
+
+_mount_windows_one() {
+    # $1 = disk, $2 = partition index; mounts it on $_mnt.
+    _node=$(partition_node "$1" "$2")
     # remove_hiberfile: an image captured from a hibernated machine leaves the
     # volume "dirty", and ntfs-3g would mount it read-only.
     if ! ntfs-3g -o remove_hiberfile "$_node" "$_mnt" >> "$LOG_FILE" 2>&1; then
         log "could not mount $_node" >&2
         return 1
     fi
-    echo "$_mnt"
 }
 
 _umount_checked() {

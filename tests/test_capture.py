@@ -238,8 +238,10 @@ def test_a_manifest_whose_size_requirement_is_unknowable_is_refused(server):
     assert response.status_code == 400
     # ‏#780: בדיקת הגיאומטריה תופסת size_bytes חסר קודם ("malformed geometry");
     # ‏size_bytes קיים אך min_target שאינו ניתן לחישוב עדיין נדחה ב-"how much room".
+    # מאז #1407 ‏`_validate` דורש min_target_bytes עוד לפני שתי אלה, ודוחה בשמו.
     detail = response.json()["detail"]
-    assert "how much room" in detail or "malformed geometry" in detail
+    assert ("missing field: min_target_bytes" in detail or "how much room" in detail
+            or "malformed geometry" in detail)
 
 
 @pytest.mark.parametrize("field", ["start_sector", "size_bytes"])
@@ -248,6 +250,9 @@ def test_zero_partition_geometry_is_refused_at_capture(server, field):
     created = make_task(server, mac).json()
     malformed = manifest_for()
     malformed["partitions"][0][field] = 0
+    # ‏used_bytes > size_bytes נפסל לפני הגיאומטריה (#1407) — מוסר כדי
+    # שהטסט ימשיך לבדוק גיאומטריה אפסית.
+    malformed["partitions"][0].pop("used_bytes")
 
     response = do_capture(server, created["id"], manifest=malformed)
 
@@ -417,9 +422,11 @@ def test_a_root_followed_only_by_swap_is_still_expandable(server):
     mac = setup_build_machine(server)
     created = make_task(server, mac).json()
     parts = manifest_for()["partitions"]
+    # ‏512MiB ולא 4GiB: מאז #1407 מחיצה שנגמרת אחרי min_target_bytes נפסלת,
+    # וזנב הדיסק כאן הוא 668MiB (כך גם בשני הטסטים הבאים).
     parts.append({"index": 4, "type_guid": SWAP_GUID, "role": "swap",
                   "fs": "swap", "start_sector": 498888704,
-                  "size_bytes": 4294967296, "used_bytes": 0,
+                  "size_bytes": 536870912, "used_bytes": 0,
                   "file": None, "sha256": None, "expandable": False})
     response = do_capture(server, created["id"], manifest=manifest_for(parts))
     assert response.status_code == 200, response.text
@@ -437,7 +444,7 @@ def test_a_recovery_partition_after_the_expandable_one_is_accepted(server):
     parts = manifest_for()["partitions"]
     parts.append({"index": 4, "type_guid": RECOVERY_GUID, "role": "recovery",
                   "fs": "ntfs", "start_sector": 498888704,
-                  "size_bytes": 1073741824, "used_bytes": 524288000,
+                  "size_bytes": 536870912, "used_bytes": 524288000,
                   "file": "p4.recovery.pcl.zst", "sha256": sha(PART_A),
                   "expandable": False})
     response = do_capture(
@@ -456,7 +463,7 @@ def test_a_system_partition_after_the_expandable_one_is_still_refused(server):
     parts = manifest_for()["partitions"]
     parts.append({"index": 4, "type_guid": WINDOWS_GUID, "role": "windows",
                   "fs": "ntfs", "start_sector": 498888704,
-                  "size_bytes": 1073741824, "used_bytes": 524288000,
+                  "size_bytes": 536870912, "used_bytes": 524288000,
                   "file": "p4.windows.pcl.zst", "sha256": sha(PART_A),
                   "expandable": False})
     response = do_capture(server, created["id"], manifest=manifest_for(parts))

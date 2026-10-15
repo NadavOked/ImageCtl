@@ -540,3 +540,12 @@ def test_upgrade_without_a_saved_previous_tag_fails_in_name_without_rollback(tmp
     assert not [c for c in calls(tmp_path) if c.startswith("git checkout")]
     status = _status(data)
     assert status and status["state"] == "failed" and "אין תג קודם" in status["error"]
+
+
+def test_console_live_rereads_the_pinned_cert_on_every_attempt():
+    """‏#1417: השרת מחליף את התעודה בעלייה הראשונה (#1380); בודק שקרא את
+    ה-cafile פעם אחת נשאר מצמיד את הישנה ונכשל — והשדרוג נחזר."""
+    text = LIVE.read_text(encoding="utf-8")
+    loop = text.index("while True:")
+    assert "create_default_context(cafile=" not in text[:text.index("def context()")]
+    assert "context=context()" in text[loop:], "ה-context נבנה פעם אחת מחוץ ללולאה"

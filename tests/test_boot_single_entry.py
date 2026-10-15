@@ -143,7 +143,7 @@ def test_the_entry_carries_nothing_but_the_server_and_the_mode():
     """עיקרון 2 — שורת הקרנל נקייה. ‏`imagectl.mode=recovery` הוא החריג
     היחיד המותר, וצמצום התפריט אינו תירוץ להוסיף עוד."""
     body = agent_entry(render(answer(), CFG))
-    line = next(part for part in body.splitlines() if part.strip().startswith("linux "))
+    line = next(part for part in body.splitlines() if part.strip().startswith("if linux "))
     for leak in ["classroom", "grp_LAB1", "img_7f3a91", "LAB1", "role=", "task"]:
         assert leak not in line
     flags = [word for word in line.split() if word.startswith("imagectl.")]

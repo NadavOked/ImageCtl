@@ -54,9 +54,17 @@ ORIGIN_REFUSED = "Origin אינו תואם לשרת"
 CLOSE_REASON_MAX_BYTES = 123
 
 #: ‏#1129: הודעות לקוח→שרת של RFB 3.8 שהדפדפן רשאי לשלוח, ואורכן הקבוע.
-#: ‏SetEncodings (2) ו-ClientCutText (6) משתני-אורך ונפתרים ב-`client_message_length`.
+#: ‏SetEncodings (2), ‏ClientCutText (6), ‏ClientFence (248) ו-QEMU (255) משתני-
+#: אורך ונפתרים ב-`client_message_length`. ‏#1392: ‏150 (EnableContinuousUpdates),
+#: ‏248 ו-255 הם מה ש-noVNC 1.6 (מסך ה-VM) מוסיף על monitor.js.
 RFB_CLIENT_CUT_TEXT = 6
-RFB_CLIENT_FIXED_LENGTHS = {0: 20, 3: 10, 4: 8, 5: 6}
+RFB_CLIENT_FIXED_LENGTHS = {0: 20, 3: 10, 4: 8, 5: 6, 150: 10}
+RFB_CLIENT_FENCE = 248
+RFB_QEMU = 255
+#: ‏#1392: תקרה להודעת לקוח אחת. הגדולה הלגיטימית היא SetEncodings מלא
+#: (‏4+4·65535). אורך שמבטיח יותר — נסגר בשם, ולא ממתינים לו ובולעים כל מה
+#: שאחריו (כך -8 של Extended Clipboard נקרא 4GB והמסך קפא בלי סגירה).
+RFB_CLIENT_MESSAGE_MAX = 1 << 20
 POWER_PREFIX = "imagectl-power:"
 POWER_ACTIONS = ("reboot", "poweroff")
 POWER_OVER_WS_REFUSED = "פקודת כוח אינה עוברת ב-WebSocket — רק POST …/power"
@@ -83,11 +91,27 @@ def client_message_length(buf: bytes) -> int | None:
         if len(buf) < 4:
             return None
         return 4 + 4 * struct.unpack(">H", buf[2:4])[0]
-    if kind == RFB_CLIENT_CUT_TEXT:               # pad(3), u32 length
+    if kind == RFB_CLIENT_CUT_TEXT:               # pad(3), s32 length
         if len(buf) < 8:
             return None
-        return 8 + struct.unpack(">I", buf[4:8])[0]
+        # ‏Extended Clipboard: אורך שלילי = |אורך| בייטים מורחבים (‏#1392).
+        return 8 + abs(struct.unpack(">i", buf[4:8])[0])
+    if kind == RFB_CLIENT_FENCE:                  # pad(3), u32 flags, u8 len
+        if len(buf) < 9:
+            return None
+        return 9 + buf[8]
+    if kind == RFB_QEMU:                          # u8 sub-type
+        if len(buf) < 2:
+            return None
+        if buf[1] == 0:                           # Extended Key Event
+            return 12
     raise ValueError(kind)
+
+
+def cut_text_extended(buf: bytes) -> bool:
+    """‏ClientCutText (שכבר ידוע שיש בו 8 בייטים) באורך שלילי — Extended
+    Clipboard. noVNC 1.6 שולח כזה מעצמו, כתשובה ל-caps של QEMU 10."""
+    return struct.unpack(">i", buf[4:8])[0] < 0
 
 
 def power_frame(action: str) -> bytes:
@@ -307,7 +331,8 @@ async def authenticate_machine(reader, writer, secret: str) -> None:
 
 
 #: ‏#1334: הודעות קלט של RFB — מקלדת (4) ועכבר (5). צופה בלבד אינו שולח אותן.
-RFB_INPUT_TYPES = (4, 5)
+#: ‏#1392: וגם מקש QEMU (255) — noVNC שולח כך כל מקש אחרי ש-QEMU אישר -258.
+RFB_INPUT_TYPES = (4, 5, RFB_QEMU)
 
 
 async def bridge_browser(websocket: WebSocket, reader, writer, *,
@@ -324,7 +349,8 @@ async def bridge_browser(websocket: WebSocket, reader, writer, *,
     ביטול/ניתוק מטופלים אצל הקורא.
 
     ‏#1129: הכיוון דפדפן→מכונה עובר **בגבולות הודעה** (RFB 3.8, סוגים
-    0/2/3/4/5), ו-ClientCutText (6) נדחה בשם — עד כאן פקודת הכוח
+    0/2/3/4/5; ‏#1392: וגם 150/248/255 של noVNC 1.6), ו-ClientCutText (6)
+    נדחה בשם (המורחב — תשובת caps של noVNC — נזרק) — עד כאן פקודת הכוח
     ‏`imagectl-power:` נסעה בו, והאישור בהקלדת שם היה UI בלבד; עכשיו היא
     עוברת רק ב-`POST …/power` שמאמת את השם **בשרת**. סוג לא מוכר נסגר
     1002. הכיוון מכונה→דפדפן נשאר גולמי — הפרסור שלו בדפדפן, עם תקרות.
@@ -394,13 +420,26 @@ async def bridge_browser(websocket: WebSocket, reader, writer, *,
                                           reason=f"הודעת RFB לא מוכרת: {exc}")
                     outcome = "refused"
                     return
-                if length is None or len(buf) < length:
+                if length is None:
                     break
-                if buf[0] == RFB_CLIENT_CUT_TEXT:
+                # ‏ClientCutText רגיל נסגר כבר על הכותרת — לא ממתינים לגוף.
+                # מורחב (Extended Clipboard, ‏#1392) נזרק במכוון: noVNC 1.6 שולח
+                # אותו מעצמו בכל חיבור ל-QEMU, וגם הוא אינו מגיע למכונה לעולם.
+                if (buf[0] == RFB_CLIENT_CUT_TEXT
+                        and not cut_text_extended(buf)):
                     await websocket.close(code=WS_FORBIDDEN,
                                           reason=POWER_OVER_WS_REFUSED)
                     outcome = "refused"
                     return
+                if length > RFB_CLIENT_MESSAGE_MAX:
+                    await websocket.close(code=1009, reason="הודעת RFB גדולה מדי")
+                    outcome = "refused"
+                    return
+                if len(buf) < length:
+                    break
+                if buf[0] == RFB_CLIENT_CUT_TEXT:
+                    del buf[:length]
+                    continue
                 # ‏#1334: צופה בלבד — מקלדת ועכבר נזרקים כאן, בשרת; שאר
                 # ההודעות (בקשות עדכון מסך, קידודים) עוברות כרגיל.
                 if (allow_input is not None and buf[0] in RFB_INPUT_TYPES

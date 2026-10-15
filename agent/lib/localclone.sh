@@ -18,6 +18,10 @@
 # stop.req, end.req (poweroff|again|back).
 
 LC_BOOT_S="${LC_BOOT_S:-20}"
+#: #1367: a choice nobody makes is not a wait for ever. No touch on the screen
+#: for this long -- the paused choice, the local screen, its result -- and the
+#: machine goes on from the server, as the count does. Not while a copy runs.
+LC_QUIET_S="${LC_QUIET_S:-600}"
 
 lc_gui_alive() { [ -n "${_gui_pid:-}" ] && kill -0 "$_gui_pid" 2>/dev/null; }
 
@@ -42,6 +46,12 @@ local_clone_offer() {
         rm -f "$LC/screen"; return 0
     fi
     LC_PAUSED=0
+    # #1367: the screens below wait for a person, and nothing else said hello
+    # meanwhile -- the server drew the machine as off, a round opened without
+    # it and the console's power-off was never delivered. The beat (attended.sh)
+    # says hello all along; what it brings back is read in the loops.
+    _lq_max=$(attended_secs LC_QUIET_S "$LC_QUIET_S" 600)
+    rm -f "$RUN_DIR/power.resp" "$RUN_DIR/attended.round"
     while :; do
         lc_boot_choice
         [ "$LC_CHOICE" = local ] || break
@@ -49,7 +59,8 @@ local_clone_offer() {
         [ "$LC_END" = back ] || break
         LC_PAUSED=1      # back from the source screen: the choice, not counting
     done
-    rm -f "$LC/screen" "$LC/boot"
+    attended_stop
+    rm -f "$LC/screen" "$LC/boot" "$RUN_DIR/attended.round"
     log "local clone: going on from the server"
 }
 
@@ -63,18 +74,23 @@ lc_boot_choice() {
     else _bc_dl=$(( $(date +%s) + LC_BOOT_S )); echo "$_bc_dl|0" > "$LC/boot"; fi
     echo boot > "$LC/screen"
     log "local clone: boot choice on screen (${LC_BOOT_S}s to the server unless touched)"
+    attended_start "Local clone screen: from the server, or a local clone"; lc_quiet_reset
     while :; do
         if command -v watchdog_beat >/dev/null 2>&1; then watchdog_beat; fi
         lc_gui_alive || { log "local clone: the GUI is gone -- from the server"; return 0; }
+        lc_power_check
         _bc_d=""; [ -f "$LC/boot.decision" ] && { _bc_d=$(cat "$LC/boot.decision"); rm -f "$LC/boot.decision"; }
         case "$_bc_d" in
             server) log "local clone: 'from the server' chosen"; return 0 ;;
             local) log "local clone: 'local clone' chosen"; LC_CHOICE=local; return 0 ;;
             pause) [ "$LC_PAUSED" = 1 ] || log "local clone: touched -- the countdown stops"
-                   LC_PAUSED=1; echo "0|1" > "$LC/boot" ;;
+                   LC_PAUSED=1; echo "0|1" > "$LC/boot"; lc_quiet_reset ;;
         esac
         if [ "$LC_PAUSED" != 1 ] && [ "$(date +%s)" -ge "$_bc_dl" ]; then
             log "local clone: no touch for ${LC_BOOT_S}s -- from the server"; return 0
+        fi
+        if [ "$LC_PAUSED" = 1 ] && lc_quiet_over; then
+            log "local clone: no touch for ${_lq_max}s on the paused choice -- from the server"; return 0
         fi
         sleep 1
     done
@@ -86,17 +102,25 @@ lc_session() {
     LC_END=""
     rm -rf "$LC/run"; rm -f "$LC/measure.req" "$LC/start.req" "$LC/stop.req" "$LC/end.req"
     echo idle > "$LC/phase"; echo local > "$LC/screen"
-    lc_inventory
+    attended_start "Local clone at the machine -- not from the server"
+    lc_inventory; lc_quiet_reset
     while :; do
         if command -v watchdog_beat >/dev/null 2>&1; then watchdog_beat; fi
         lc_gui_alive || { log "local clone: the GUI is gone -- leaving the local flow"; LC_END=back; return 0; }
+        lc_power_check
         if [ -f "$LC/measure.req" ]; then
-            _ss_m=$(cat "$LC/measure.req"); rm -f "$LC/measure.req"
+            _ss_m=$(cat "$LC/measure.req"); rm -f "$LC/measure.req"; lc_quiet_reset
             if [ -f "$LC/inv/$_ss_m.line" ]; then echo "$_ss_m" > "$LC/source"; lc_measure "$_ss_m"; fi
         fi
         if [ -f "$LC/start.req" ]; then
             IFS='|' read -r _ss_s _ss_t _ss_k < "$LC/start.req"; rm -f "$LC/start.req"
             lc_run "$_ss_s" "$(printf '%s' "$_ss_t" | tr ',' ' ')" "$_ss_k"
+            # #1367: a machine that was writing is not powered off from afar, not
+            # even after: a request that came during the copy is dropped, aloud.
+            # One the operator confirmed over the warning is carried out during
+            # the copy by the beat (lc_power_during_copy); this one was not.
+            [ -s "$RUN_DIR/power.resp" ] && { log "local clone: a power request came during the copy, not confirmed -- not carried out"; rm -f "$RUN_DIR/power.resp"; }
+            lc_quiet_reset   # the count starts when the result is on the screen
             # stopped (the mockup: back to choosing): the drawers are read again --
             # what is on the targets now is half a copy, and the screen must say so
             if [ "$(cat "$LC/phase")" = stopped ]; then
@@ -106,12 +130,16 @@ lc_session() {
             fi
         fi
         if [ -f "$LC/end.req" ]; then
-            _ss_e=$(cat "$LC/end.req"); rm -f "$LC/end.req"
+            _ss_e=$(cat "$LC/end.req"); rm -f "$LC/end.req"; lc_quiet_reset
             case "$_ss_e" in
                 poweroff) lc_poweroff ;;
                 again) rm -rf "$LC/run"; rm -f "$LC/stop.req"; echo idle > "$LC/phase"; lc_inventory ;;
                 back) LC_END=back; rm -rf "$LC/run"; echo idle > "$LC/phase"; return 0 ;;
             esac
+        fi
+        if lc_quiet_over; then
+            log "local clone: no touch for ${_lq_max}s on the local clone screen -- from the server"
+            LC_END=quiet; rm -rf "$LC/run"; echo idle > "$LC/phase"; return 0
         fi
         sleep 1
     done
@@ -148,7 +176,7 @@ EOF
             fits) ;;
             shrink) if [ "$_lr_k" = 1 ]; then _lr_small="$_lr_small $_lr_t"
                     else fail_written_target "$_lr_t" "נדרש כיווץ זמני של המקור, וחלון האישור לא הציג אותו — לא נכתב"; fi ;;
-            short) fail_written_target "$_lr_t" "לא נכנס: חסרים $(lc_gb_short "$_lr_n" "$(lc_inv_field "$_lr_t" 5)") — לא נכתב" ;;
+            short) fail_written_target "$_lr_t" "${_lr_w:-לא נכנס: חסרים $(lc_gb_short "$_lr_n" "$(lc_inv_field "$_lr_t" 5)")} — לא נכתב" ;;   # #1354: the reason when it is the free space
             *) fail_written_target "$_lr_t" "לא נבדק אם נכנס${_lr_w:+: $_lr_w} — לא נכתב" ;;
         esac
     done
@@ -217,8 +245,5 @@ lc_report() {
 lc_poweroff() {
     # "כבה את המחשב": the person asked. Wake-on-LAN first when it can be
     # armed (#587: a remote power-on needs it), then off -- by request.
-    log "local clone: powering off at the operator's request"
-    arm_wol || log "local clone: wake-on-LAN not armed -- powering off anyway (asked at the machine)"
-    [ "${IMAGECTL_TEST:-0}" = 1 ] && { echo "TEST-POWEROFF"; exit 0; }
-    sync; poweroff -f
+    safe_poweroff "local clone: operator request"
 }

@@ -41,6 +41,7 @@ CERT_NAME = "console.crt"
 KEY_NAME = "console.key"
 #: ה-CN של התעודה; מה שהדפדפן מציג ב"הונפק ל".
 COMMON_NAME = "imagectl-console"
+GENERATED_MARKER = "generated.sha256"
 
 
 class ConsoleTLSError(RuntimeError):
@@ -61,6 +62,8 @@ class ConsoleTLS:
     #: ‏#153: המנפיק הוא הנושא — התעודה שנוצרה כאן, או עצמית שהועלתה.
     #: ‏False = תעודה שהועלתה וחתומה בידי CA (של המכללה או ציבורי).
     self_signed: bool = True
+    regenerated: bool = False
+    previous_fingerprint_sha256: str | None = None
 
     def public_info(self) -> dict:
         """מה שהקונסולה מקבלת ב-``/me`` לשורת הסטטוס."""
@@ -122,9 +125,9 @@ def ensure_console_cert(data_dir, console_host: str,
                         hostname: str | None = None) -> ConsoleTLS:
     """מחזיר את זהות הקונסולה — יוצר אותה **פעם אחת** אם אין.
 
-    ‏SAN = ‏``console_host`` (IP או DNS) + שם המארח. תעודה קיימת נטענת כמות
-    שהיא (גם אם ``console_host`` השתנה מאז — היא לא מתחלפת מאחורי הגב
-    של הדפדפן שכבר אישר אותה; מדפיסים אזהרה ב-``main``, לא מחליפים).
+    ‏SAN = ‏``console_host`` (IP או DNS) + שם המארח. רק תעודה שהשרת יצר
+    וסימן בטביעת האצבע שלה מתחדשת כשכתובת הקונסולה השתנתה. תעודה שהמפעיל
+    העלה לעולם אינה מוחלפת אוטומטית, גם אם היא חתומה-עצמית.
     חצי זהות (תעודה בלי מפתח או להפך) היא כשל בשמו, לא יצירה מחדש
     שקטה שהייתה מחליפה תעודה שדפדפנים כבר מכירים (עיקרון 5).
     """
@@ -136,6 +139,22 @@ def ensure_console_cert(data_dir, console_host: str,
             f"זהות הקונסולה חלקית ב-{directory}: "
             f"{'תעודה בלי מפתח' if have_cert else 'מפתח בלי תעודה'} — "
             f"הסר את שני הקבצים כדי שתיווצר זהות חדשה")
+    regenerated = False
+    previous_fingerprint = None
+    if have_cert:
+        existing_pem = cert_path.read_bytes()
+        existing_sans = cert_sans(existing_pem)
+        generated = directory / GENERATED_MARKER
+        generated_fingerprint = generated.read_text(encoding="ascii").strip() \
+            if generated.is_file() else ""
+        if (console_host not in existing_sans and _self_signed(existing_pem)
+                and generated_fingerprint == fingerprint_sha256(existing_pem)):
+            previous_fingerprint = fingerprint_sha256(existing_pem)
+            shutil.copy2(cert_path, cert_path.with_name(CERT_NAME + PREV_SUFFIX))
+            write_credential_0600(key_path.with_name(KEY_NAME + PREV_SUFFIX),
+                                  key_path.read_text(encoding="utf-8"))
+            have_cert = have_key = False
+            regenerated = True
     if not have_cert:
         directory.mkdir(parents=True, exist_ok=True)
         hostname = hostname or socket.gethostname()
@@ -147,6 +166,8 @@ def ensure_console_cert(data_dir, console_host: str,
             COMMON_NAME, ip_sans=ip_sans, dns_sans=dns_sans)
         write_credential_0600(key_path, key_pem.decode())
         cert_path.write_bytes(cert_pem)
+        (directory / GENERATED_MARKER).write_text(
+            fingerprint_sha256(cert_pem) + "\n", encoding="ascii")
     elif os.name == "posix":
         # המפתח הוא שלנו — מצב רחב מדי (umask, העתקה ביד) מוחזר ל-0600.
         mode = stat_module.S_IMODE(os.stat(key_path).st_mode)
@@ -155,7 +176,9 @@ def ensure_console_cert(data_dir, console_host: str,
     cert_pem = cert_path.read_bytes()
     return ConsoleTLS(cert_path=cert_path, key_path=key_path,
                       fingerprint_sha256=fingerprint_sha256(cert_pem),
-                      sans=cert_sans(cert_pem), self_signed=_self_signed(cert_pem))
+                      sans=cert_sans(cert_pem), self_signed=_self_signed(cert_pem),
+                      regenerated=regenerated,
+                      previous_fingerprint_sha256=previous_fingerprint)
 
 
 # --- ‏#153: תעודה שהמפעיל מעלה מלשונית ההגדרות ---------------------------------
@@ -275,4 +298,5 @@ def install_upload(data_dir, cert_pem: bytes, key_pem: bytes) -> dict:
     tmp = cert_path.with_name(f".{CERT_NAME}.tmp")
     tmp.write_bytes(cert_pem)
     os.replace(tmp, cert_path)
+    (directory / GENERATED_MARKER).unlink(missing_ok=True)
     return info

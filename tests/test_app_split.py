@@ -192,3 +192,38 @@ def test_startup_sweep_runs_once_per_runtime(tmp_path, images_root, monkeypatch)
         assert len(calls) == 1
     finally:
         rt.ctx.sender.stop()
+
+
+def test_the_real_lifespan_shutdown_closes_the_sender(split, monkeypatch):
+    """‏#1426: ה-lifespan קרא ל-`rt.sender.close`, ול-ServerRuntime אין
+    ‏`sender` — כל עצירה נגמרה ב-"Application shutdown failed" והשולח לא
+    נסגר. ה-runtime כאן הוא האמיתי (`create_runtime`), לא מדומה."""
+    rt, _agent_app, console_app = split
+    closed = []
+    real_close = rt.ctx.sender.close
+    monkeypatch.setattr(rt.ctx.sender, "close", lambda: closed.append(1) or real_close())
+    with TestClient(console_app):
+        pass
+    assert closed == [1]
+
+
+def test_two_listeners_on_one_console_app_run_one_clock_and_close_once(split, monkeypatch):
+    """הקונסולה מוגשת בשרת uvicorn לכל כתובת; כל אחד מריץ lifespan. היו שני
+    מתזמני ריסטרט (דחייה נרשמה פעמיים באותה שנייה) ושתי סגירות שולח."""
+    import asyncio                                                 # noqa: PLC0415
+    rt, _agent_app, console_app = split
+    started, closed = [], []
+    monkeypatch.setattr(app_module.auto_reboot, "run",
+                        lambda *_a: started.append(1) or asyncio.sleep(3600))
+    real_close = rt.ctx.sender.close
+    monkeypatch.setattr(rt.ctx.sender, "close", lambda: closed.append(1) or real_close())
+    life = console_app.router.lifespan_context
+
+    async def two_listeners():
+        async with life(console_app):
+            async with life(console_app):
+                await asyncio.sleep(0)
+            assert closed == [], "מאזין אחד נסגר — השני עדיין חי"
+        assert started == [1] and closed == [1]
+
+    asyncio.run(two_listeners())

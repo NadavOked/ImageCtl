@@ -178,7 +178,7 @@ def test_one_partition_without_geometry_disqualifies_the_whole_layout():
 def library_with(tmp_path, *manifests):
     for i, image in enumerate(manifests):
         copy = json.loads(json.dumps(image))
-        copy["id"] = f"img_{i}"
+        copy["id"] = f"img_{i:06x}"           # ‏#1407: מזהה תקין, אחרת `_validate` מדלג
         write_image(tmp_path, copy)
     return ImageLibrary(tmp_path)
 
@@ -186,8 +186,9 @@ def library_with(tmp_path, *manifests):
 def test_the_golden_vm_image_is_offered_to_the_physical_lenovo(tmp_path):
     """קצה-לקצה של הסינון, מול הכונן שעליו נשבר #82."""
     library = library_with(tmp_path, GOLDEN_FROM_VM, TINY11)
+    assert sorted(library.scan()) == ["img_000000", "img_000001"]   # שניהם בספרייה
     assert library.allowed_for_disks(
-        [{"size_bytes": NVME_256, "removable": False}]) == ["img_0"]
+        [{"size_bytes": NVME_256, "removable": False}]) == ["img_000000"]
 
 
 def test_a_five_hundred_image_is_still_refused_on_a_smaller_drive(tmp_path):
@@ -196,11 +197,12 @@ def test_a_five_hundred_image_is_still_refused_on_a_smaller_drive(tmp_path):
     small_500 = json.loads(json.dumps(GOLDEN_FROM_VM))
     small_500["family"] = 500
     library = library_with(tmp_path, small_500)
+    assert sorted(library.scan()) == ["img_000000"]
     assert required_bytes(small_500) < NVME_256, "הגיאומטריה כאן דווקא נכנסת"
     assert library.allowed_for_disks(
         [{"size_bytes": NVME_256, "removable": False}]) == []
     assert library.allowed_for_disks(
-        [{"size_bytes": 500107862016, "removable": False}]) == ["img_0"]
+        [{"size_bytes": 500107862016, "removable": False}]) == ["img_000000"]
 
 
 def test_the_family_alone_would_have_admitted_an_image_that_does_not_fit(tmp_path):
@@ -210,6 +212,7 @@ def test_the_family_alone_would_have_admitted_an_image_that_does_not_fit(tmp_pat
     והשחזור היה מת על הדיסק. המשפחה היא תווית בת שתי מחלקות, לא מידה.
     """
     library = library_with(tmp_path, TINY11)
+    assert sorted(library.scan()) == ["img_000000"]   # נדחה בגודל, לא כמניפסט פגום
     assert TINY11["family"] == disk_family(NVME_256) == 256
     assert library.allowed_for_disks(
         [{"size_bytes": NVME_256, "removable": False}]) == []
@@ -345,12 +348,14 @@ def test_both_restore_paths_check_before_they_write_the_table():
     הסדר נמדד על הקריאות בפועל: שורות הערה שמזכירות את שני השמות אינן
     עדות על מה שרץ קודם.
     """
-    for name, entry in (("restore.sh", "run_restore() {"),
-                        ("drawers.sh", "run_restore_drawers() {")):
+    # ‏#1366: the cloning room asks disk_fits through write_check_round (writecheck.sh),
+    # which asks it first -- before the write check, and both before any table.
+    for name, entry, check, then in (("restore.sh", "run_restore() {", "disk_fits", "apply_gpt"),
+                                      ("drawers.sh", "run_restore_drawers() {", "write_check_round", "apply_gpt"),
+                                      ("writecheck.sh", "write_check_round() {", "disk_fits", 'write_check "')):
         source = (AGENT / "lib" / name).read_text(encoding="utf-8")
         body = source[source.index(entry):]
         calls = [ln.strip() for ln in body.splitlines()
                  if not ln.lstrip().startswith("#")]
-        first = {call: next(i for i, ln in enumerate(calls) if call in ln)
-                 for call in ("disk_fits", "apply_gpt")}
-        assert first["disk_fits"] < first["apply_gpt"], name
+        text = "\n".join(calls[1:])          # the order on the code itself, the entry line aside
+        assert text.index(check) < text.index(then), name

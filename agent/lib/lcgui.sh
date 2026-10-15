@@ -19,7 +19,11 @@ lc_gui_state() {
     # Written by the kiosk every second instead of cloner_gui_state while
     # $LC/screen exists. One file, renamed into place: never half a picture.
     _gs_n="$GUI_DIR/state.next"; _gs_scr=$(cat "$LC/screen" 2>/dev/null)
-    { printf 'lc_screen=%s\n' "$_gs_scr"; gui_server_addr; gui_hello_state || :; } > "$_gs_n" || return 1
+    { printf 'lc_screen=%s\n' "$_gs_scr"; gui_header_state "$RUN_DIR/response.json";
+        gui_hello_state || :; } > "$_gs_n" || return 1
+    # #1367: the round on the server as the agent's beat last heard it
+    # (attended.sh). Only "open" draws anything; empty = not known.
+    printf 'lc_round=%s\n' "$(cat "$RUN_DIR/attended.round" 2>/dev/null)" >> "$_gs_n" || return 1
     if [ "$_gs_scr" = boot ]; then
         IFS='|' read -r _gs_dl _gs_p < "$LC/boot" 2>/dev/null || { _gs_dl=0; _gs_p=0; }
         printf 'lc_boot=%s|%s|%s\n' "${_gs_dl:-0}" "${_gs_p:-0}" "$(date +%s)" >> "$_gs_n"

@@ -26,17 +26,21 @@ import json, ssl, sys, time, urllib.request
 
 url, want, wait, cert = (sys.argv[1] + "/api/console/health/live", sys.argv[2],
                          float(sys.argv[3]), sys.argv[4])
-ctx = ssl.create_default_context(cafile=cert or None)
-# השם בתעודה הוא כרטיס השרתים/שם המארח, לא 127.0.0.1 — מאמתים את התעודה
-# (pinned) ולא את השם. בלי cert: loopback בלבד, בלי אימות.
-ctx.check_hostname = False
-if not cert:
-    ctx.verify_mode = ssl.CERT_NONE
+def context():
+    # ‏#1417: נבנה מחדש בכל ניסיון — השרת עשוי להחליף את התעודה בעלייה
+    # הראשונה (#1380), והבודק חייב להצמיד את הקובץ **כפי שהוא עכשיו**.
+    ctx = ssl.create_default_context(cafile=cert or None)
+    # השם בתעודה הוא כרטיס השרתים/שם המארח, לא 127.0.0.1 — מאמתים את התעודה
+    # (pinned) ולא את השם. בלי cert: loopback בלבד, בלי אימות.
+    ctx.check_hostname = False
+    if not cert:
+        ctx.verify_mode = ssl.CERT_NONE
+    return ctx
 deadline = time.monotonic() + wait
 last = "לא נשלחה אף בקשה"
 while True:
     try:
-        with urllib.request.urlopen(url, timeout=3, context=ctx) as resp:
+        with urllib.request.urlopen(url, timeout=3, context=context()) as resp:
             body = json.loads(resp.read().decode("utf-8"))
             version = body.get("version") or ""
             if resp.status == 200 and body.get("ok") is True and (not want or version == want):

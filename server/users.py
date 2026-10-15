@@ -440,6 +440,8 @@ def bump_auth_epoch(conn: sqlite3.Connection, username: str) -> None:
             (stored,),
         )
         conn.execute("DELETE FROM mfa_challenges WHERE username = ?", (stored,))
+    from . import viewer_sessions
+    viewer_sessions.revoke_user(stored)
 
 
 def ensure_admin(conn: sqlite3.Connection, password: str | None = None) -> str | None:

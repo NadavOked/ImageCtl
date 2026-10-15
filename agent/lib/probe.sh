@@ -218,18 +218,18 @@ probe_disks() {
         _nv=null
         case "$_n" in nvme*)
             if _have "$NVME"; then
-                _jsn=$("$NVME" smart-log -o json "$DEVROOT/$_n" 2>/dev/null) && [ -n "$_jsn" ] \
+                _nf="${TMPDIR:-/tmp}/probe.$$.$_n.nvme"; [ -d "${RUN_DIR:-}" ] && _nf="$RUN_DIR/probe.$_n.nvme"; capped_run "$NVME_MAX_S" "$_nf" "$NVME" smart-log -o json "$DEVROOT/$_n"; _nrc=$?; _jsn=$(cat "$_nf" 2>/dev/null); [ "$CAPPED_TIMED_OUT" != 1 ] && [ "$_nrc" = 0 ] && [ -n "$_jsn" ] \
                     && _cw=$(_jint "$_jsn" critical_warning) && _pu=$(_jint "$_jsn" percentage_used) \
                     && _me=$(_jint "$_jsn" media_errors) && _us=$(_jint "$_jsn" unsafe_shutdowns) \
                     && [ -n "$_cw" ] && [ -n "$_pu" ] && [ -n "$_me" ] && [ -n "$_us" ] \
                     && _nv=$(printf '{"critical_warning":%s,"percentage_used":%s,"media_errors":%s,"unsafe_shutdowns":%s}' \
-                        "$_cw" "$_pu" "$_me" "$_us") || _nv=$(_pe "nvme smart-log failed")
+                        "$_cw" "$_pu" "$_me" "$_us") || { [ "$CAPPED_TIMED_OUT" = 1 ] && _nv=$(_pe "nvme smart-log did not answer") || _nv=$(_pe "nvme smart-log failed"); }
             fi ;;
         esac
         _se=null
         if _have "$SMARTCTL"; then
-            _sj=$("$SMARTCTL" -l error -j "$DEVROOT/$_n" 2>/dev/null); _rc=$?
-            if [ $((_rc & 2)) -ne 0 ]; then _se=$(_pe "smartctl could not open $_n")
+            _sf="${TMPDIR:-/tmp}/probe.$$.$_n.smart"; [ -d "${RUN_DIR:-}" ] && _sf="$RUN_DIR/probe.$_n.smart"; capped_run "$SMARTCTL_MAX_S" "$_sf" "$SMARTCTL" -l error -j "$DEVROOT/$_n"; _rc=$?; _sj=$(cat "$_sf" 2>/dev/null)   # #1367: in build_hello -- capped
+            if [ "$CAPPED_TIMED_OUT" = 1 ]; then _se=$(_pe "smartctl did not answer within ${SMARTCTL_MAX_S}s on $_n"); elif [ $((_rc & 2)) -ne 0 ]; then _se=$(_pe "smartctl could not open $_n")
             else
                 _cnt=$(_jint "$_sj" count); [ -z "$_cnt" ] && _cnt=$(_jint "$_sj" error_count)
                 [ -n "$_cnt" ] && _se=$(printf '{"count":%s}' "$_cnt") \

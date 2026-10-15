@@ -14,7 +14,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from conftest import hello_body
+from conftest import hello_body, room_slots
 from test_server_room import CLONER1, CLONER2, room, room_server  # noqa: F401 — fixture
 
 
@@ -110,7 +110,7 @@ def _open(client, target=2, slots=None):
 
 def test_an_open_wave_warns_on_a_slow_drawer_and_not_on_the_others(room_server):
     deploy, anon = room_server["deploy"], room_server["anon"]
-    _open(deploy, target=4)
+    _open(deploy, target=4, slots=room_slots(room_server["ctx"].conn, {CLONER1: ["S1", "S2"], CLONER2: ["S3", "S4"]}))
     drawers_hello(anon, CLONER1, [disk("S1", 1), disk("S2", 2, link=1.5)])
     drawers_hello(anon, CLONER2, [disk("S3", 1, link=None), disk("S4", 2, link=3.0, top=3.0)])
     warn = room(deploy)["round"]["precheck"]
@@ -121,7 +121,7 @@ def test_an_open_wave_warns_on_a_slow_drawer_and_not_on_the_others(room_server):
 def test_a_crc_rise_warns_too(room_server):
     deploy, anon, ctx = room_server["deploy"], room_server["anon"], room_server["ctx"]
     _disk_event(ctx, "S1", 100)
-    _open(deploy, target=4)
+    _open(deploy, target=4, slots=room_slots(room_server["ctx"].conn, {CLONER1: ["S1"]}))
     drawers_hello(anon, CLONER1, [disk("S1", 1, crc=112)])
     (w,) = room(deploy)["round"]["precheck"]
     assert w["crc_rise"] == 12 and "מונה CRC עלה ב-12" in w["text_he"]
@@ -131,7 +131,7 @@ def test_no_round_and_a_clean_wave_have_no_warning(room_server):
     deploy, anon = room_server["deploy"], room_server["anon"]
     drawers_hello(anon, CLONER1, [disk("S1", 1, link=1.5)])
     assert room(deploy)["round"] is None
-    _open(deploy, target=4)
+    _open(deploy, target=4, slots=room_slots(room_server["ctx"].conn, {CLONER1: ["S1"]}))
     drawers_hello(anon, CLONER1, [disk("S1", 1)])
     assert room(deploy)["round"]["precheck"] == []
 
@@ -147,7 +147,7 @@ def test_a_drawer_outside_the_selection_does_not_warn(room_server):
 def test_start_is_a_warning_not_a_block_and_the_journal_keeps_it(room_server):
     """ה-Issue: "סבב שהתחיל בכל זאת חייב לרשום שהאזהרה הייתה שם"."""
     deploy, anon, ctx = room_server["deploy"], room_server["anon"], room_server["ctx"]
-    _open(deploy, target=4)
+    _open(deploy, target=4, slots=room_slots(room_server["ctx"].conn, {CLONER1: ["S1", "S2"]}))
     drawers_hello(anon, CLONER1, [disk("S1", 1), disk("S2", 2, link=1.5)])
     r = deploy.post("/api/console/room/start")
     assert r.status_code == 200 and r.json()["warned"] == 1, r.text
@@ -158,7 +158,7 @@ def test_start_is_a_warning_not_a_block_and_the_journal_keeps_it(room_server):
 
 def test_a_clean_start_writes_no_warning_line(room_server):
     deploy, anon, ctx = room_server["deploy"], room_server["anon"], room_server["ctx"]
-    _open(deploy, target=4)
+    _open(deploy, target=4, slots=room_slots(room_server["ctx"].conn, {CLONER1: ["S1"]}))
     drawers_hello(anon, CLONER1, [disk("S1", 1)])
     assert deploy.post("/api/console/room/start").json()["warned"] == 0
     assert journal(ctx, "room_precheck_warned") == []
@@ -166,7 +166,7 @@ def test_a_clean_start_writes_no_warning_line(room_server):
 
 def test_a_wave_that_starts_by_itself_keeps_the_warning_too(room_server):
     deploy, anon, ctx = room_server["deploy"], room_server["anon"], room_server["ctx"]
-    _open(deploy, target=1)
+    _open(deploy, target=1, slots=room_slots(room_server["ctx"].conn, {CLONER1: ["S1"]}))
     drawers_hello(anon, CLONER1, [disk("S1", 1, link=3.0)])
     drawers_hello(anon, CLONER1, [disk("S1", 1, link=3.0)])   # tick: 1 מוכנה מול יתרה 1
     assert room(deploy)["round"]["wave_state"] == "running"
@@ -224,9 +224,11 @@ def test_nothing_is_missing_when_the_ready_drawers_cover_the_wave(room_server):
     assert r["missing"] == [], r["missing"]        # גל של 2 מתוך יעד 5 — לא חסר בו דבר
 
 
-def test_a_round_without_a_selection_lists_the_cloners_that_did_not_join(room_server):
+def test_a_selected_cloner_that_never_said_hello_is_listed_as_off(room_server):
+    """‏#1410: אין עוד סבב בלי בחירה — משכפל שנבחר ולא הגיע מופיע כחסר."""
     deploy, anon, ctx = room_server["deploy"], room_server["anon"], room_server["ctx"]
-    _open(deploy, target=4)
+    _open(deploy, target=4, slots=room_slots(ctx.conn, {
+        CLONER1: ["S1", "S2"], CLONER2: ["S3", "S4"]}))
     drawers_hello(anon, CLONER1, [disk("S1", 1), disk("S2", 2)])
     (m,) = room(deploy)["round"]["missing"]
     assert (m["mac"], m["reason"]) == (CLONER2, "off")

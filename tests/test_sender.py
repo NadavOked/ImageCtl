@@ -48,6 +48,7 @@ class FakeProcess:
         self.code = code
         self.terminated = False
         self.killed = False
+        self.wait_calls = 0
         self.delay = delay          # כמה זמן `wait` באמת לוקח (#341)
         self.ignore_term = ignore_term
         self.ignore_kill = ignore_kill
@@ -59,6 +60,7 @@ class FakeProcess:
             self._gate.set()
 
     def wait(self):
+        self.wait_calls += 1
         if self.delay:
             threading.Event().wait(self.delay)
         self._gate.wait(timeout=5)
@@ -572,6 +574,70 @@ def test_the_round_starts_the_sender_and_closing_stops_it(server_with_sender, fr
     assert wait_for(lambda: recorder.processes[0].terminated)
 
 
+def test_a_member_that_failed_is_not_waited_for_in_the_next_partition(
+    server_with_sender, free_ports,
+):
+    """‏#1430 (מעבדת ה-VM, 15/10, ‏`ses_989ab0ed`): מכונה אחת מתוך שתיים
+    דיווחה `failed` (שתי המגירות שלה נפסלו בבדיקת הכתיבה), והשולח המשיך
+    לבקש **2** מקבלים: 120ש' במחיצה 1, ו-600ש' במחיצה 2 — שבהן המכונה
+    התקינה פקעה. כשל במכונה אחת עצר את השנייה.
+
+    כאן: שני חברים, השידור של מחיצה 1 יצא עם 2, ואחד מהם מדווח `failed`
+    לפני שמחיצה 2 יוצאת — ומחיצה 2 מבקשת מקבל אחד.
+
+    **בקרה שלילית:** על הקוד הישן ‏`receivers` נקבע פעם אחת מ-`joined`,
+    ומחיצה 2 יוצאת עם `--min-receivers 2`."""
+    server, recorder = server_with_sender
+    ids = setup_classroom(server)
+    session = server["deploy"].post(
+        "/api/console/sessions",
+        json={"group_id": ids["group"], "image_id": "img_7f3a91",
+              "prefix": "LAB1", "expected_clients": 2},
+    ).json()["id"]
+    recorder.block = True       # מחיצה 1 "משדרת" עד שהטסט משחרר אותה
+
+    for mac in (ids["mac1"], ids["mac2"], ids["mac1"]):
+        server["anon"].post("/api/v1/agent/hello", json=hello_body(mac))
+    assert recorder.spawned.wait(timeout=5)
+    first = recorder.commands[0]
+    assert first[first.index("--min-receivers") + 1] == "2"
+
+    assert server["anon"].post("/api/v1/agent/progress", json={
+        "session_id": session, "mac": ids["mac2"], "state": "failed",
+        "targets": [{"dev": "sda", "bytes_written": 0, "bytes_total": 1,
+                     "state": "failed", "error": "איטי"}],
+    }).json()["ok"]
+    recorder.processes[0].release()
+
+    assert wait_for(lambda: len(recorder.commands) >= 2)
+    second = recorder.commands[1]
+    assert second[second.index("--min-receivers") + 1] == "1", second
+    # ההמתנה הארוכה של #957 נשארת — רק מי שממתינים לו השתנה.
+    assert second[second.index("--max-wait") + 1] == "600"
+    recorder.processes[1].release()
+
+
+def test_an_unreadable_live_count_keeps_the_waves_count(library, free_ports):
+    """‏#1430, עיקרון 5: ספירה שנכשלה אינה "אף אחד לא חי" ואינה 1 — היא
+    הצילום של הגל, כמו לפני התיקון. **ושומר:** ספירה תקינה כן מגיעה לפקודה."""
+    recorder = Recorder()
+
+    def broken(_session_id):
+        raise RuntimeError("database is locked")
+
+    engine = SenderEngine(library, runner=recorder, live_receivers=broken)
+    engine.start({"id": "ses_1", "image_id": "img_7f3a91", "joined": 3})
+    assert wait_for(lambda: engine.status()["state"] == "done")
+    assert {c[c.index("--min-receivers") + 1] for c in recorder.commands} == {"3"}
+
+    recorder = Recorder()
+    engine = SenderEngine(library, runner=recorder,
+                          live_receivers=lambda _session_id: 0)
+    engine.start({"id": "ses_2", "image_id": "img_7f3a91", "joined": 3})
+    assert wait_for(lambda: engine.status()["state"] == "done")
+    assert {c[c.index("--min-receivers") + 1] for c in recorder.commands} == {"1"}
+
+
 def test_sender_failure_is_a_terminal_round_and_member_boots_local(
     server_with_sender, free_ports,
 ):
@@ -747,6 +813,17 @@ def test_stop_with_no_session_id_still_stops_unconditionally(library, free_ports
     engine.stop()
     assert wait_for(lambda: recorder.processes[0].terminated)
     assert wait_for(lambda: engine.status()["state"] == "stopped")
+
+
+def test_shutdown_reaps_a_sender_that_has_already_exited(library):
+    """#1382: an exited udp-sender is still our child and must be waited."""
+    process = FakeProcess(["udp-sender"])
+    engine = SenderEngine(library, runner=lambda _cmd: process)
+    with engine._lock:
+        engine._process = process
+
+    assert engine.close() is None
+    assert process.wait_calls == 1
 
 
 def test_a_simulated_sender_never_runs_udp_sender_and_never_fails(library, monkeypatch):

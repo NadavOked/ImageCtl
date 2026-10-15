@@ -102,7 +102,11 @@ static const char *chip_he(const char *smart) {
  * ever health_failed (smart.sh smart_classify); failed_last carries the
  * server's cause (#874, the console's FAILURE_CAUSE_HE words). */
 static const char *reason_he(const IdleDisk *d) {
-    if (!strcmp(d->smart, "fail")) return "בדיקת הבריאות של הדיסק נכשלה";
+    /* #1366 (Nadav 13/10): fail is what stops an HP BIOS on "press F1" -- orange, cloned */
+    if (!strcmp(d->smart, "fail"))
+        return !strcmp(d->cause, "pending_sectors") ? "ה-BIOS יעצור ב-F1 — SMART: סקטורים ממתינים (197)"
+             : !strcmp(d->cause, "uncorrectable") ? "ה-BIOS יעצור ב-F1 — SMART: סקטורים שלא ניתנים לתיקון (198)"
+             : "ה-BIOS יעצור ב-F1 — SMART: בדיקת הבריאות נכשלה";
     if (!strcmp(d->smart, "failed_last"))
         return !strcmp(d->cause, "cable") ? "סיבה: כבל/חריץ" : !strcmp(d->cause, "disk") ? "סיבה: הדיסק" : "סיבה: לא סווגה";
     return NULL;
@@ -150,7 +154,7 @@ static void sb_bay(App *a, cairo_t *cr, Rect b, int port) {
     const IdleDisk *d = idle_for_port(s, port);
     int lvl = d ? smart_level(d->smart) : 0;
     Rgb col = d ? smart_color(t, d->smart) : t->led_idle;
-    int slow = d && !lvl && link_slow(d);          /* #432: orange like a SMART warning, below it */
+    int slow = d && !lvl && (link_slow(d) || d->crc_suspect);   /* #432/#1366: orange like a SMART warning, below it */
     int acc = lvl ? lvl : slow;
     Rgb acol = lvl ? col : t->warn;
     Rgb line = t == &THEME_DARK ? t->art_line : t->art_c;   /* --mark-line: #9AADB8 / #4A5D6B */
@@ -197,7 +201,8 @@ static void sb_bay(App *a, cairo_t *cr, Rect b, int port) {
     else snprintf(sub, sizeof sub, "SATA %d%s", port - 1, lk);
     const char *why = d ? reason_he(d) : NULL;
     if (!why && slow) {
-        snprintf(slow_why, sizeof slow_why, "קישור %s מתוך %s Gb/s — לבדוק כבל", d->link, d->link_max);
+        if (link_slow(d)) snprintf(slow_why, sizeof slow_why, "קישור %s מתוך %s Gb/s — לבדוק כבל", d->link, d->link_max);
+        else snprintf(slow_why, sizeof slow_why, "כבל או מגירה חשודים — %ld שגיאות", d->crc_suspect);   /* #1366 */
         why = slow_why;
     }
     Text tn = text_make(cr, FONT_SANS, 18, 600, name, 0, DIR_RTL);
@@ -280,12 +285,14 @@ void screen_standby(App *a, cairo_t *cr, double W, double H, double head_h) {
     for (int kind = 0; kind < 2; kind++)
     for (int p = 1; p <= n && nn < 2 * MAX_DRAWERS; p++) {
         const IdleDisk *d = idle_for_port(s, p);
-        if (!d || (kind == 0 ? !smart_level(d->smart) : !link_slow(d))) continue;
+        if (!d || (kind == 0 ? !smart_level(d->smart) : !link_slow(d) && !d->crc_suspect)) continue;
         char label[SLOT_NAME_MAX + 16], msg[SLOT_NAME_MAX + 120], lmsg[SLOT_NAME_MAX + 200];
         cloner_slot_label(s, p, label, sizeof label);
         if (kind == 0) snprintf(msg, sizeof msg, RLM "%s: %s — לפני כתיבה אליו תופיע שאלה.", label, chip_he(d->smart));
-        else snprintf(lmsg, sizeof lmsg, RLM "%s: קישור SATA %s מתוך %s Gb/s — לבדוק כבל או מגירה. לפני התחלת סבב תופיע אזהרה.",
+        else if (link_slow(d)) snprintf(lmsg, sizeof lmsg, RLM "%s: קישור SATA %s מתוך %s Gb/s — לבדוק כבל או מגירה. לפני התחלת סבב תופיע אזהרה.",
                       label, d->link, d->link_max);
+        else snprintf(lmsg, sizeof lmsg, RLM "%s: כבל או מגירה חשודים — %ld שגיאות. לפני התחלת סבב תופיע אזהרה.",
+                      label, d->crc_suspect);   /* #1366 */
         notes[nn] = text_make(cr, FONT_SANS, 13, 400, kind == 0 ? msg : lmsg, (int)(cw - 18), DIR_RTL);
         note_c[nn] = kind == 0 ? smart_color(t, d->smart) : t->warn;
         note_l[nn] = kind == 0 ? smart_level(d->smart) : 1;

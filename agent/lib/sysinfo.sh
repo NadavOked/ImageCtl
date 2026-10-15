@@ -179,15 +179,14 @@ build_disk_entry() {
     # השחזור ובהמתנת מחשב השיכפול, לא כאן: אחרת כל אתחול של תחנת כיתה
     # שעולה לדיסק מקומי היה משלם שנייה על smartctl מיותר. בלי smart.sh
     # (או בלי ריצת probe) הערך `unchecked` — לא-נבדק, לא נכשל (עיקרון 5).
-    if command -v smart_hello_field >/dev/null 2>&1; then
-        _smart=$(smart_hello_field "$_name")
-    else
-        _smart="unchecked"
+    _smart="unchecked"; _smart_r=""
+    if command -v smart_hello_field >/dev/null 2>&1; then   # #1366: the reason of a fail (F1), else ""
+        _smart=$(smart_hello_field "$_name"); [ "$_smart" = fail ] && _smart_r=$(smart_field "$_name" 2)
     fi
 
-    printf '{"dev":"%s","size_bytes":%s,"model":"%s","serial":%s,"removable":%s,"scheme":"%s","has_data":%s,"port":%s,"smart":"%s"%s}' \
+    printf '{"dev":"%s","size_bytes":%s,"model":"%s","serial":%s,"removable":%s,"scheme":"%s","has_data":%s,"port":%s,"smart":"%s","smart_reason":"%s"%s}' \
         "$_name" "$_size" "$(json_escape "$_model")" "$_serial_json" \
-        "$_removable" "$_scheme" "$_has" "$_port_json" "$_smart" "$(command -v disk_link_json >/dev/null 2>&1 && disk_link_json "$_name")"   # #432
+        "$_removable" "$_scheme" "$_has" "$_port_json" "$_smart" "$(json_escape "$_smart_r")" "$(command -v disk_link_json >/dev/null 2>&1 && disk_link_json "$_name")"   # #432
 }
 
 list_disks() {
@@ -271,9 +270,10 @@ build_hello() {
     fi
 
     # #720+#1049+#1048: inventory, probe, netprobe fragments (each with a leading comma).
-    printf '{"schema":2,"mac":"%s","all_macs":[%s],"ip":"%s","hostname_current":null,"uuid":%s,"firmware":"%s","secure_boot":%s,"agent_version":"%s","memory_bytes":%s,"joining":%s,"disks":[%s],"disk_probe":"%s"%s%s}' \
+    _wol=""; [ "$(cat "$RUN_DIR/wol_armed" 2>/dev/null)" = false ] && _wol=',"wol_armed":false'
+    printf '{"schema":2,"mac":"%s","all_macs":[%s],"ip":"%s","hostname_current":null,"uuid":%s,"firmware":"%s","secure_boot":%s,"agent_version":"%s","memory_bytes":%s,"joining":%s,"disks":[%s],"disk_probe":"%s"%s%s%s}' \
         "$_mac" "$_all" "$IP" "$_uuid_json" \
         "$(detect_firmware)" "$(detect_secure_boot)" "$AGENT_VERSION" \
         "$(detect_memory_bytes)" "$_joining" "$_disks" "$(disk_probe)" \
-        "$_msecret" "$(command -v inventory_json >/dev/null 2>&1 && inventory_json)$(command -v probe_json >/dev/null 2>&1 && probe_json)$(command -v netprobe_json >/dev/null 2>&1 && netprobe_json)"
+        "$_msecret" "$(command -v inventory_json >/dev/null 2>&1 && inventory_json)$(command -v probe_json >/dev/null 2>&1 && probe_json)$(command -v netprobe_json >/dev/null 2>&1 && netprobe_json)" "$_wol"
 }

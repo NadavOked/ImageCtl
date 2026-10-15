@@ -51,8 +51,6 @@ GIB = 1 << 30
 RAM_RESERVE_MIB = 4096
 #: מרווח הגדילה של דיסק העבודה בזמן העדכון (Windows Update מוריד ופורס).
 GROWTH_RESERVE_BYTES = 30 * GIB
-#: הגרסה החדשה נכתבת לצד הישנה; הדחוס שלה ≈ של המקור, ועוד מרווח.
-NEW_VERSION_FACTOR = 1.5
 #: הכרעה 4: אחרי כמה זמן בכיבוי מסודר מוצע כיבוי בכוח.
 SHUTDOWN_GRACE_S = 15 * 60
 #: הכרעה 5: כמה זמן נשמר דיסק עבודה שאיש לא הכריע עליו.
@@ -640,6 +638,22 @@ class VmUpdate:
             raise Refusal(503, "vm_user", f"משתמש המערכת {vmnet.VM_USER} אינו קיים — "
                                           "ה-VM רץ רק תחתיו (המתקין יוצר אותו)")
 
+    def host_problem(self) -> str | None:
+        """‏#1372: האם המארח מוכן ל-VM — אותן בדיקות שההפעלה מסרבת לפיהן
+        (`_tools`, לשני מצבי Secure Boot), בלי אימג'. ‏None = מוכן; אחרת מה חסר,
+        במשפט אחד. לעליית השרת, למסך הבריאות ולסטטוס העדכון (`server/vmhost.py`)."""
+        missing: list[str] = []
+        for secure_boot in (False, True):
+            try:
+                self._tools(None, secure_boot)
+            except Refusal as exc:
+                if exc.reason == "missing_tool":
+                    missing += [m for m in exc.numbers.get("missing", []) if m not in missing]
+        problems = ["חסרים בשרת כלים להפעלת VM: " + ", ".join(missing)] if missing else []
+        if self.machine.vm_user() is None:
+            problems.append(f"משתמש המערכת {vmnet.VM_USER} אינו קיים")
+        return " · ".join(problems) or None
+
     def _check_vm(self, settings: dict[str, int]) -> tuple[str, str]:
         """‏KVM, זיכרון, ליבות, רשת. מחזיר (accel, כרטיס היציאה)."""
         why = self.machine.kvm()
@@ -681,21 +695,38 @@ class VmUpdate:
         return accel, dev
 
     def _check_space(self, manifest: dict) -> None:
+        """‏#1390: מה הפתיחה והשמירה **תופסות בפועל**, לא הגודל הלוגי.
+
+        ‏`disk.raw` דליל: ‏partclone כותב רק בלוקים בשימוש, ולכן הוא תופס את
+        ‏`used_bytes` של המחיצות (ועוד מה ש-Windows Update יכתוב — המרווח), לא את
+        גודל הדיסק (נמדד 13/10: לוגי 500.1GB, ‏26GB תפוסים אחרי 9GB שחזור).
+        הגרסה החדשה נכתבת לצד הישנה, דחוסה — כגודל המקור הדחוס.
+
+        מחיצה בלי `used_bytes` (‏#1368: ‏null ב-NTFS) — לא ממציאים מספר: נספר
+        גודל המחיצה המלא, וההודעה אומרת שזו הערכה שמרנית ובאילו מחיצות."""
         free = self.machine.free_bytes(self.library.root)
         if free is None:
             raise Refusal(503, "disk_space", "לא ניתן לקרוא כמה מקום פנוי בספרייה")
-        used = 0
+        used, unmeasured = 0, []
         for part in streamed_partitions(manifest):
             value = part.get("used_bytes")
-            used += value if isinstance(value, int) and value >= 0 else int(part.get("size_bytes") or 0)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                used += value
+            else:
+                used += int(part.get("size_bytes") or 0)
+                unmeasured.append(f"p{part.get('index', '?')}")
         compressed = int(manifest.get("total_compressed_bytes") or 0)
-        need = used + self.growth_reserve_bytes + int(compressed * NEW_VERSION_FACTOR)
+        need = used + self.growth_reserve_bytes + compressed
         if free < need:
+            label = "גודל המחיצות" if unmeasured else "תפוס במחיצות"
+            note = (f" · ב-{', '.join(unmeasured)} לא נמדד כמה תפוס — נספר גודל המחיצה המלא "
+                    "(הערכה שמרנית: הדיסק הזמני דליל ותופס רק מה שנכתב)") if unmeasured else ""
             raise Refusal(
                 507, "disk_space",
-                f"אין מקום בשרת: נדרשים {_gb(need)} (תפוס במחיצות {_gb(used)} + מרווח לעדכונים "
-                f"{_gb(self.growth_reserve_bytes)} + גרסה חדשה {_gb(compressed * NEW_VERSION_FACTOR)}), "
-                f"פנויים {_gb(free)}", need_bytes=need, free_bytes=free)
+                f"אין מקום בשרת: נדרשים {_gb(need)} ({label} {_gb(used)} + מרווח לעדכונים "
+                f"{_gb(self.growth_reserve_bytes)} + גרסה חדשה {_gb(compressed)}), "
+                f"פנויים {_gb(free)}{note}", need_bytes=need, free_bytes=free,
+                **({"unmeasured_partitions": unmeasured} if unmeasured else {}))
 
     def _firewall(self, egress_if: str) -> None:
         """הבידוד (`vmnet`) — לפני **כל** הדלקה, עם הכרטיס של עכשיו."""
@@ -791,7 +822,9 @@ class VmUpdate:
     @staticmethod
     def _file_size(manifest: dict, part: dict) -> int:
         try:
-            return (Path(manifest["_dir"]) / part["file"]).stat().st_size
+            from .images import guarded_image_path
+            path = guarded_image_path(manifest["_dir"], part["file"])
+            return path.stat().st_size if path is not None else 0
         except (OSError, KeyError, TypeError):
             return 0
 

@@ -27,7 +27,7 @@ pytestmark = requires_native(("bash", BASH))
 
 LIBS = ("common", "jsonq", "waits", "sysinfo", "progress", "restore", "diskfit", "expand", "grow",
         "drawers", "verdict", "failmark", "manifest", "hibernation", "shrinkplan", "shrink",
-        "shrinkmem", "smart", "guistate", "lcinv", "lcplan", "lccopy", "localclone", "lcgui")
+        "shrinkmem", "smart", "guistate", "attended", "lcinv", "lcplan", "lccopy", "localclone", "lcwait", "idle", "lcgui")   # attended, lcwait, idle: #1367
 
 
 def run(tmp_path: Path, script: str, timeout: int = 60, **env) -> subprocess.CompletedProcess:
@@ -181,7 +181,10 @@ def test_any_missing_or_wrong_record_fails_the_target(tmp_path, line, rc, tee, s
 # --- the screen's records (lcgui.sh lc_gui_state) ------------------------------------
 
 def test_the_state_file_carries_the_verdicts_against_the_measured_source(tmp_path):
-    out = run(tmp_path, 'export GUI_DIR=$RUN_DIR/gui; mkdir -p "$GUI_DIR" "$LC/inv" "$LC/measure"; '
+    # #1354's rule needs the source's partitions, which this plumbing check has none of: 0 = off.
+    out = run(tmp_path, 'export GUI_DIR=$RUN_DIR/gui; mkdir -p "$GUI_DIR" "$LC/inv" "$LC/measure"; echo 0 > "$RUN_DIR/min_free_gb"; '
+              'echo \'{"name":"CLONER-02","server_name":"imagectl-ta","server_version":"v1.2.3"}\' > "$RUN_DIR/response.json"; '
+              'export AGENT_VERSION=v1.2.2; '
               'echo local > "$LC/screen"; echo done > "$LC/inv.state"; echo idle > "$LC/phase"; '
               'echo "1|sda|A|s1|250000000000|ok|ok||0|0|-1|0|אין עליו טבלת מחיצות" > "$LC/inv/sda.line"; '
               'echo "3|sdc|C|s3|480000000000|ok|ok|Windows|4|1|480000000000|1|" > "$LC/inv/sdc.line"; '
@@ -192,6 +195,8 @@ def test_the_state_file_carries_the_verdicts_against_the_measured_source(tmp_pat
     lines = out.stdout.splitlines()
     disks = [l for l in lines if l.startswith("lc_disk=")]
     assert [l.split("|")[0] for l in disks] == ["lc_disk=1", "lc_disk=2", "lc_disk=3"], disks   # by port
+    assert {"machine_name=CLONER-02", "server_name=imagectl-ta", "server_version=v1.2.3",
+            "agent_version=v1.2.2"} <= set(lines)
     assert "lc_src=sdc|done" in lines
     assert "lc_fit=sda|shrink|200000000000|" in lines and "lc_fit=sdb|fits|480000000000|" in lines
 
@@ -210,7 +215,7 @@ def test_the_choice_wraps_the_idle_cloner_and_nothing_else():
 
 def test_the_kernel_command_line_is_not_read():
     """Principle 2: nothing of the local clone travels on the command line."""
-    for name in ("lcinv", "lcplan", "lccopy", "localclone", "lcgui"):
+    for name in ("lcinv", "lcplan", "lccopy", "localclone", "lcwait", "lcgui"):
         text = (LIB / f"{name}.sh").read_text(encoding="utf-8")
         assert "/proc/cmdline" not in text and "imagectl.mode" not in text and "parse_cmdline" not in text, name
 
