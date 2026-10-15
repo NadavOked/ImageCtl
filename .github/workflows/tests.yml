@@ -86,7 +86,7 @@ jobs:
       - name: Run the test suite (fanout included)
         run: |
           set -o pipefail
-          python -m pytest tests -q -p no:cacheprovider -m "not uinput" 2>&1 | tee pytest.log
+          python -m pytest tests -q -p no:cacheprovider -m "not uinput and not vm_it" 2>&1 | tee pytest.log
       # ‏#949: חמשת טסטי evdev כותבים ל-/dev/uinput וקוראים /dev/input/event*
       # — במעבדה root, כאן sudo עם אותו אינטרפרטר (אותם site-packages).
       # ‏`-m uinput` בלי טסטים = יציאה 5 של pytest = כישלון, לא "עבר".
