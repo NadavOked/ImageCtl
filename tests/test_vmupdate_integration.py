@@ -55,11 +55,11 @@ if not vmupdate.Machine().guestfs():
 if os.name != "nt" and vmupdate.Machine().vm_user() is None:
     MISSING.append("the imagectl-vm system user")
 
-pytestmark = pytest.mark.skipif(
+pytestmark = [pytest.mark.vm_it, pytest.mark.skipif(
     os.environ.get("IMAGECTL_VM_IT") != "1" or os.name == "nt"
     or getattr(os, "geteuid", lambda: 1)() != 0 or bool(MISSING),
     reason="opt-in (IMAGECTL_VM_IT=1), Linux, root, and the server's tools"
-           + (f" — missing: {', '.join(MISSING)}" if MISSING else ""))
+           + (f" — missing: {', '.join(MISSING)}" if MISSING else ""))]
 
 MIB = 1 << 20
 GIB = 1 << 30

@@ -47,6 +47,12 @@ def pytest_configure(config) -> None:
     config.addinivalue_line(
         "markers", "uinput: דורש /dev/uinput כתיב וקריאת /dev/input — root או sudo"
     )
+    # ‏#1334: אינטגרציית ה-VM (‏qemu, ‏ovmf, ‏guestfs, ‏root) — opt-in במעבדה בלבד.
+    # ב-CI הציבורי היא **מוסרת במפורש** (-m "not vm_it"), לא "מדולגת": דילוג
+    # תחת REQUIRE_NATIVE=1 הוא כישלון, וזה מה שהפיל את tests מאז v0.73.2.
+    config.addinivalue_line(
+        "markers", "vm_it: אינטגרציית עדכון ה-VM — IMAGECTL_VM_IT=1, root וכלי השרת"
+    )
     hygiene.block_real_processes()
     # ‏portbase גבוה ואקראי לכל הריצה: יתום של ריצה שנקטעה לא ינקה איש,
     # ולכן ההגנה היא שלא יהיה לו במה להתנגש (#156).

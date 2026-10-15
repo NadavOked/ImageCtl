@@ -181,7 +181,7 @@ def make_manifest(source_bytes: int, files: dict[str, bytes]) -> dict:
         "schema": 1, "family": 256 if source_bytes == GB256 else 500,
         "source_disk_bytes": source_bytes, "min_target_bytes": source_bytes,
         "scheme": "gpt", "sector_size": 512,
-        "disk_guid": "b8a3c1d2-4e5f-6a7b-8c9d-0e1f2a3b4c5d",
+        "disk_guid": "B8A3C1D2-4E5F-6A7B-8C9D-0E1F2A3B4C5D",   # קנוני (#1407)
         "partitions": [
             {"index": 1, "type_guid": ESP_GUID, "role": "esp", "fs": "vfat",
              "start_sector": 2048, "size_bytes": 104857600,

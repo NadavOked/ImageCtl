@@ -45,8 +45,10 @@ def run(ctx) -> None:
           slots == {1: "sdb", 2: "sdc", 3: "sda"},
           str(view["machines"][0]["drawer_list"]))
 
+    # ‏#1410: בחירה מפורשת — כל שלוש המגירות של המכונה
     status, opened = ctx.deploy.json("POST", "/api/console/room",
-                                     {"image_id": ctx.image_a, "target_drives": 3})
+                                     {"image_id": ctx.image_a, "target_drives": 3,
+                                      "target_slots": [{"mac": ctx.cloner.mac, "ports": [1, 2, 3]}]})
     check("סבב חדר נפתח (יעד: 3 כוננים)", status == 200, str(opened))
 
     # הגל הראשון: המכונה מצטרפת, המגירות הטריות מכסות את היתרה — יוצא.
