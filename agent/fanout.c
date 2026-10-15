@@ -20,7 +20,11 @@
  * only be a failed target. A drive that is quietly short a few megabytes in
  * the middle is far worse than one that visibly failed.
  *
- * Usage:  fanout <bytes-per-target-buffer> <out1> [out2] [out3] ...
+ * Usage:  fanout [-H hash-file] [-P progress-file]
+ *                <bytes-per-target-buffer> <out1> [out2] [out3] ...
+ *         fanout --xxh64
+ * -H writes the stream's XXH64 after a clean EOF; -P appends input bytes.
+ * --xxh64 hashes stdin and writes the 16-digit lowercase digest to stdout.
  * Input:  stdin.
  * Output: one line per finished target on stdout: "<path> ok" | "<path> failed <reason>"
  *         plus, for each target, a running byte count appended to "<path>.bytes".
@@ -46,6 +50,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -78,6 +83,7 @@
 #define STALL_EVICT_MS 150000   /* full drawer, no FIFO write progress; override for tests */
 #define COUNTER_SUFFIX ".bytes" /* the per-target progress counter, next to the fifo */
 #define COUNTER_MS 1000         /* how often it is refreshed (the report goes out every 2s) */
+#define PIPE_BYTES (1 << 20)
 
 #define OPEN_NO_READER (-2)     /* the fifo is there, nobody ever opened it */
 
@@ -102,6 +108,135 @@ static long long expected_bytes;          /* 0 = unknown; FANOUT_EXPECTED_BYTES 
 static char stream_reason[96];            /* short/long stream, one string for all */
 
 static long long now_ms(void);
+
+/* Portable XXH64, seed zero, from the public xxHash algorithm description.
+ * Byte assembly keeps it correct on both endian orders and unaligned input. */
+struct xxh64 {
+    uint64_t total, v1, v2, v3, v4;
+    unsigned char tail[32];
+    size_t tail_len;
+};
+
+#define XXH_P1 UINT64_C(11400714785074694791)
+#define XXH_P2 UINT64_C(14029467366897019727)
+#define XXH_P3 UINT64_C(1609587929392839161)
+#define XXH_P4 UINT64_C(9650029242287828579)
+#define XXH_P5 UINT64_C(2870177450012600261)
+
+static uint64_t rotl64(uint64_t x, unsigned n) { return (x << n) | (x >> (64 - n)); }
+
+static uint64_t get64(const unsigned char *p)
+{
+    uint64_t v = 0;
+    for (int i = 7; i >= 0; i--)
+        v = (v << 8) | p[i];
+    return v;
+}
+
+static uint32_t get32(const unsigned char *p)
+{
+    return (uint32_t)p[0] | (uint32_t)p[1] << 8 |
+           (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+}
+
+static uint64_t xxh_round(uint64_t acc, uint64_t input)
+{
+    acc += input * XXH_P2;
+    acc = rotl64(acc, 31);
+    return acc * XXH_P1;
+}
+
+static void xxh_init(struct xxh64 *h)
+{
+    h->total = h->tail_len = 0;
+    h->v1 = XXH_P1 + XXH_P2;
+    h->v2 = XXH_P2;
+    h->v3 = 0;
+    h->v4 = 0 - XXH_P1;
+}
+
+static void xxh_block(struct xxh64 *h, const unsigned char *p)
+{
+    h->v1 = xxh_round(h->v1, get64(p));
+    h->v2 = xxh_round(h->v2, get64(p + 8));
+    h->v3 = xxh_round(h->v3, get64(p + 16));
+    h->v4 = xxh_round(h->v4, get64(p + 24));
+}
+
+static void xxh_update(struct xxh64 *h, const void *data, size_t n)
+{
+    const unsigned char *p = data;
+    h->total += n;
+    if (h->tail_len) {
+        size_t take = 32 - h->tail_len;
+        if (take > n) take = n;
+        memcpy(h->tail + h->tail_len, p, take);
+        h->tail_len += take; p += take; n -= take;
+        if (h->tail_len == 32) { xxh_block(h, h->tail); h->tail_len = 0; }
+    }
+    while (n >= 32) { xxh_block(h, p); p += 32; n -= 32; }
+    if (n) { memcpy(h->tail, p, n); h->tail_len = n; }
+}
+
+static uint64_t xxh_digest(const struct xxh64 *h)
+{
+    uint64_t x;
+    const unsigned char *p = h->tail, *end = p + h->tail_len;
+    if (h->total >= 32) {
+        x = rotl64(h->v1, 1) + rotl64(h->v2, 7) +
+            rotl64(h->v3, 12) + rotl64(h->v4, 18);
+        x ^= xxh_round(0, h->v1); x = x * XXH_P1 + XXH_P4;
+        x ^= xxh_round(0, h->v2); x = x * XXH_P1 + XXH_P4;
+        x ^= xxh_round(0, h->v3); x = x * XXH_P1 + XXH_P4;
+        x ^= xxh_round(0, h->v4); x = x * XXH_P1 + XXH_P4;
+    } else {
+        x = XXH_P5;
+    }
+    x += h->total;
+    while (p + 8 <= end) { x ^= xxh_round(0, get64(p)); x = rotl64(x, 27) * XXH_P1 + XXH_P4; p += 8; }
+    if (p + 4 <= end) { x ^= (uint64_t)get32(p) * XXH_P1; x = rotl64(x, 23) * XXH_P2 + XXH_P3; p += 4; }
+    while (p < end) { x ^= (uint64_t)*p++ * XXH_P5; x = rotl64(x, 11) * XXH_P1; }
+    x ^= x >> 33; x *= XXH_P2; x ^= x >> 29; x *= XXH_P3; x ^= x >> 32;
+    return x;
+}
+
+static void widen_pipe(int fd, const char *name)
+{
+    struct stat st;
+    if (fstat(fd, &st) == 0 && S_ISFIFO(st.st_mode) &&
+        fcntl(fd, F_SETPIPE_SZ, PIPE_BYTES) < 0)
+        fprintf(stderr, "fanout: could not enlarge pipe %s: %s\n", name, strerror(errno));
+}
+
+static int append_count(int fd, long long count, const char *name)
+{
+    char line[32];
+    int n = snprintf(line, sizeof line, "%lld\n", count);
+    if (n <= 0 || write(fd, line, (size_t)n) != n) {
+        fprintf(stderr, "fanout: progress counter for %s stopped: %s\n", name, strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
+static int hash_only(void)
+{
+    unsigned char buf[READ_CHUNK];
+    struct xxh64 h;
+    xxh_init(&h);
+    widen_pipe(STDIN_FILENO, "stdin");
+    for (;;) {
+        ssize_t n = read(STDIN_FILENO, buf, sizeof buf);
+        if (n > 0) { xxh_update(&h, buf, (size_t)n); continue; }
+        if (n == 0) break;
+        if (errno == EINTR) continue;
+        fprintf(stderr, "fanout: read error: %s\n", strerror(errno));
+        return 2;
+    }
+    if (printf("%016llx\n", (unsigned long long)xxh_digest(&h)) < 0 || fflush(stdout) != 0)
+        return 2;
+    return 0;
+}
 
 /* Opening a fifo for writing fails with ENXIO until a reader arrives, and
  * the per-drawer pipelines are started moments earlier by the shell. Rather
@@ -321,11 +456,26 @@ static void make_room(size_t n)
 
 int main(int argc, char **argv)
 {
+    const char *hash_path = NULL, *progress_path = NULL;
+    int progress_fd = -1, argi = 1, reached_eof = 0;
+    long long progress_last = 0;
+    struct xxh64 hash;
     /* Writing to a pipe whose reader has gone raises SIGPIPE, and the default
      * action would kill this process outright -- taking down every healthy
      * drawer because one drive died. Ignoring it turns that into the EPIPE
      * that the write path already reports as a single failed target. */
     signal(SIGPIPE, SIG_IGN);
+
+    if (argc == 2 && strcmp(argv[1], "--xxh64") == 0)
+        return hash_only();
+    while (argi < argc && (strcmp(argv[argi], "-H") == 0 || strcmp(argv[argi], "-P") == 0)) {
+        const char **slot = strcmp(argv[argi], "-H") == 0 ? &hash_path : &progress_path;
+        if (++argi >= argc) {
+            fprintf(stderr, "usage: fanout [-H file] [-P file] <buffer-bytes> <out> [out...]\n");
+            return 2;
+        }
+        *slot = argv[argi++];
+    }
 
     /* The stall ceiling is a production constant; the env var exists so the
      * negative-control tests can trip eviction in milliseconds instead of
@@ -335,16 +485,16 @@ int main(int argc, char **argv)
     stall_evict_ms = env_ll("FANOUT_STALL_EVICT_MS", STALL_EVICT_MS);
     expected_bytes = env_ll("FANOUT_EXPECTED_BYTES", 0);
 
-    if (argc < 3) {
-        fprintf(stderr, "usage: fanout <buffer-bytes> <out> [out...]\n");
+    if (argc - argi < 2) {
+        fprintf(stderr, "usage: fanout [-H file] [-P file] <buffer-bytes> <out> [out...]\n");
         return 2;
     }
-    long long cap = atoll(argv[1]);
+    long long cap = atoll(argv[argi]);
     if (cap < READ_CHUNK) {
         fprintf(stderr, "fanout: buffer must be at least %d bytes\n", READ_CHUNK);
         return 2;
     }
-    target_count = argc - 2;
+    target_count = argc - argi - 1;
     if (target_count > MAX_TARGETS) {
         fprintf(stderr, "fanout: at most %d targets\n", MAX_TARGETS);
         return 2;
@@ -352,7 +502,7 @@ int main(int argc, char **argv)
 
     for (int i = 0; i < target_count; i++) {
         struct target *t = &targets[i];
-        t->path = argv[i + 2];
+        t->path = argv[argi + i + 1];
         t->cap = (size_t)cap;
         t->buf = malloc(t->cap);
         t->head = t->len = 0;
@@ -374,7 +524,17 @@ int main(int argc, char **argv)
             continue;
         }
         t->fd = fd;
+        widen_pipe(t->fd, t->path);
         t->last_progress_ms = now_ms();   /* stall clock starts at open (#674) */
+    }
+
+    widen_pipe(STDIN_FILENO, "stdin");
+    xxh_init(&hash);
+    if (progress_path) {
+        progress_fd = open(progress_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (progress_fd < 0)
+            fprintf(stderr, "fanout: no stream progress counter for %s: %s\n",
+                    progress_path, strerror(errno));
     }
 
     char *chunk = malloc(READ_CHUNK);
@@ -388,8 +548,10 @@ int main(int argc, char **argv)
         if (alive_count() == 0)
             break;                        /* nobody left to write to */
         ssize_t got = read(STDIN_FILENO, chunk, READ_CHUNK);
-        if (got == 0)
+        if (got == 0) {
+            reached_eof = 1;
             break;                        /* end of stream */
+        }
         if (got < 0) {
             if (errno == EINTR)
                 continue;
@@ -398,6 +560,14 @@ int main(int argc, char **argv)
             return 2;
         }
         stdin_got += (long long)got;
+        xxh_update(&hash, chunk, (size_t)got);
+        if (progress_fd >= 0 && now_ms() - progress_last >= COUNTER_MS) {
+            progress_last = now_ms();
+            if (append_count(progress_fd, stdin_got, progress_path) < 0) {
+                close(progress_fd);
+                progress_fd = -1;
+            }
+        }
         make_room((size_t)got);
         for (int i = 0; i < target_count; i++) {
             enqueue(&targets[i], chunk, (size_t)got);
@@ -406,6 +576,30 @@ int main(int argc, char **argv)
         write_counters(0);
     }
     free(chunk);
+
+    if (progress_fd >= 0 && reached_eof) {
+        append_count(progress_fd, stdin_got, progress_path);
+        close(progress_fd);
+        progress_fd = -1;
+    }
+    if (hash_path && reached_eof) {
+        char line[18];
+        int fd = open(hash_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        int n = snprintf(line, sizeof line, "%016llx\n",
+                         (unsigned long long)xxh_digest(&hash));
+        if (fd < 0 || write(fd, line, (size_t)n) != n) {
+            int saved = errno;
+            if (fd >= 0) close(fd);
+            fprintf(stderr, "fanout: could not write stream hash %s: %s\n",
+                    hash_path, strerror(saved));
+            return 2;
+        }
+        if (close(fd) != 0) {
+            fprintf(stderr, "fanout: could not write stream hash %s: %s\n",
+                    hash_path, strerror(errno));
+            return 2;
+        }
+    }
 
     /* EOF: drain every byte still queued, on a slow drawer too. A drawer that
      * has stopped taking bytes entirely for stall_evict_ms is failed by the

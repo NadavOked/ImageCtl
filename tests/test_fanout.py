@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -51,6 +52,54 @@ LAGGARD_BYTES = 4 * 1024 * 1024
 LAGGARD_PEER_DELAY_S = 0.05
 LAGGARD_DELAY_S = 0.25
 LAGGARD_TIMEOUT_S = 180
+
+
+def xxh64_reference(data: bytes) -> str:
+    """Small seed-zero implementation of the public XXH64 specification."""
+    mask = (1 << 64) - 1
+    p1, p2 = 11400714785074694791, 14029467366897019727
+    p3, p4, p5 = 1609587929392839161, 9650029242287828579, 2870177450012600261
+
+    def rol(value, bits):
+        return ((value << bits) | (value >> (64 - bits))) & mask
+
+    def rnd(acc, value):
+        return rol((acc + value * p2) & mask, 31) * p1 & mask
+
+    def merge(acc, value):
+        return ((acc ^ rnd(0, value)) * p1 + p4) & mask
+
+    offset = 0
+    if len(data) >= 32:
+        v1, v2, v3, v4 = (p1 + p2) & mask, p2, 0, (-p1) & mask
+        while offset <= len(data) - 32:
+            words = [int.from_bytes(data[offset + i:offset + i + 8], "little") for i in range(0, 32, 8)]
+            v1, v2, v3, v4 = [rnd(v, word) for v, word in zip((v1, v2, v3, v4), words)]
+            offset += 32
+        value = (rol(v1, 1) + rol(v2, 7) + rol(v3, 12) + rol(v4, 18)) & mask
+        for lane in (v1, v2, v3, v4):
+            value = merge(value, lane)
+    else:
+        value = p5
+    value = (value + len(data)) & mask
+    while offset <= len(data) - 8:
+        value ^= rnd(0, int.from_bytes(data[offset:offset + 8], "little"))
+        value = (rol(value, 27) * p1 + p4) & mask
+        offset += 8
+    if offset <= len(data) - 4:
+        value ^= (int.from_bytes(data[offset:offset + 4], "little") * p1) & mask
+        value = (rol(value, 23) * p2 + p3) & mask
+        offset += 4
+    while offset < len(data):
+        value ^= (data[offset] * p5) & mask   # wraps at 64 bits, like C
+        value = rol(value, 11) * p1 & mask
+        offset += 1
+    value ^= value >> 33
+    value = value * p2 & mask
+    value ^= value >> 29
+    value = value * p3 & mask
+    value ^= value >> 32
+    return f"{value:016x}"
 
 
 def reader(path: Path, sink: list, delay: float = 0.0, stop_after: int | None = None):
@@ -116,13 +165,13 @@ def pausing_reader(path: Path, sink: list, pause_s: float, pause_after: int = 0)
     return thread
 
 
-def run_fanout(fanout, fifos, data, buffer=BUFFER, env=None, timeout=60):
+def run_fanout(fanout, fifos, data, buffer=BUFFER, env=None, timeout=60, flags=()):
     """`env` מתמזג ל-os.environ (למשל FANOUT_STALL_EVICT_MS לטסטי הבידוד).
     בפקיעת המתנה הורגים את התהליך לפני ש-raise — אחרת fanout תקוע (הקוד
     הישן ב-#674) נשאר חי אחרי הטסט ומדליף תהליך על ה-fifo."""
     full_env = {**os.environ, **env} if env else None
     process = subprocess.Popen(
-        [str(fanout), buffer, *[str(f) for f in fifos]],
+        [str(fanout), *[str(a) for a in flags], buffer, *[str(f) for f in fifos]],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         env=full_env,
     )
@@ -145,6 +194,105 @@ def make_fifo(tmp_path, name):
     fifo = folder / "feed"
     os.mkfifo(fifo)
     return fifo
+
+
+@pytest.mark.parametrize("data, expected", [
+    (b"", "ef46db3751d8e999"),
+    (b"a", "d24ec4f1a98c6e5b"),
+    (b"abc", "44bc2cf5ad770999"),
+])
+@needs_fanout
+def test_xxh64_mode_matches_official_vectors(fanout, data, expected):
+    result = subprocess.run([str(fanout), "--xxh64"], input=data, capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == f"{expected}\n".encode()
+
+
+@needs_fanout
+def test_xxh64_mode_matches_python_reference_for_large_input(fanout):
+    data = os.urandom(5 * 1024 * 1024 + 17)
+    result = subprocess.run([str(fanout), "--xxh64"], input=data, capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == f"{xxh64_reference(data)}\n".encode()
+
+
+@needs_fanout
+def test_hash_and_stream_progress_cover_every_input_byte(fanout, tmp_path):
+    data = os.urandom(3 * 1024 * 1024 + 19)
+    hash_file, progress = tmp_path / "stream.xxh64", tmp_path / "stream.bytes"
+    output = tmp_path / "target" / "feed"
+    output.parent.mkdir()
+    output.write_bytes(b"")
+    code, report, _ = run_fanout(
+        fanout, [output], data,
+        flags=("-H", hash_file, "-P", progress),
+    )
+    assert code == 0 and report == {"target": "ok"}, report
+    assert hash_file.read_text() == f"{xxh64_reference(data)}\n"
+    lines = progress.read_text().splitlines()
+    assert lines and all(line.isdecimal() for line in lines)
+    assert int(lines[-1]) == len(data)
+
+
+@needs_fanout
+def test_read_error_never_creates_hash_evidence(fanout, tmp_path):
+    hash_file = tmp_path / "must-not-exist"
+    output = tmp_path / "target" / "feed"
+    output.parent.mkdir()
+    output.write_bytes(b"")
+    input_fd = os.open(tmp_path, os.O_RDONLY)
+    try:
+        result = subprocess.run(
+            [str(fanout), "-H", str(hash_file), BUFFER, str(output)],
+            stdin=input_fd, capture_output=True, timeout=30,
+        )
+    finally:
+        os.close(input_fd)
+    assert result.returncode == 2
+    assert not hash_file.exists()
+
+
+@needs_fanout
+def test_xxh64_read_error_prints_no_digest(fanout, tmp_path):
+    input_fd = os.open(tmp_path, os.O_RDONLY)
+    try:
+        result = subprocess.run(
+            [str(fanout), "--xxh64"], stdin=input_fd,
+            capture_output=True, timeout=30,
+        )
+    finally:
+        os.close(input_fd)
+    assert result.returncode == 2
+    assert result.stdout == b""
+
+
+@needs_fanout
+@pytest.mark.parametrize("size", [3, 31, 33, 100, 3 * 1024 * 1024 + 19])
+def test_xxh64_low_word_matches_zstd_frame_checksum(fanout, size):
+    """Independent of xxh64_reference: a zstd frame ends with the low 32 bits of
+    the official XXH64 of its content. The Python reference once skipped the
+    64-bit wrap in the tail steps and disagreed with fanout on random bytes."""
+    zstd = shutil.which("zstd")
+    if zstd is None:
+        pytest.skip("zstd is required for the independent XXH64 check")
+    data = os.urandom(size)
+    frame = subprocess.run([zstd, "-q", "-c", "--check"], input=data, capture_output=True,
+                           check=True, timeout=60).stdout
+    ours = subprocess.run([str(fanout), "--xxh64"], input=data, capture_output=True,
+                          check=True, timeout=60).stdout.decode().strip()
+    assert ours[8:] == frame[-4:][::-1].hex()
+    assert ours == xxh64_reference(data)
+
+
+@needs_fanout
+def test_original_positional_interface_remains_unchanged(fanout, tmp_path):
+    data = b"old interface" * 10000
+    output = tmp_path / "target" / "feed"
+    output.parent.mkdir()
+    output.write_bytes(b"")
+    code, report, _ = run_fanout(fanout, [output], data)
+    assert code == 0 and report == {"target": "ok"}
+    assert output.read_bytes() == data
 
 
 # --- המקרה הרגיל -------------------------------------------------------------

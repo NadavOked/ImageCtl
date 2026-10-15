@@ -5,13 +5,14 @@
 #
 #   partclone -c <source part> > src.fifo          (used blocks only; an
 #     unknown filesystem goes through partclone.dd -- the whole partition)
-#   pv < src.fifo | tee <sha fifo> | fanout <buffer> t1/feed t2/feed ...
-#   per target: tee <its sha fifo> < feed | partclone -r -O <target part>
+#   fanout -H sha.out -P bytes.raw <buffer> t1/feed t2/feed ... < src.fifo
+#   per target: fanout -H <its sha.out> <buf> relay < feed  (hashes, forwards; 1MiB pipe)
+#               partclone -r -O <target part> < relay
 #
 # The evidence for one target and one partition is four records, all of
 # which must agree (the lesson of verdict.sh, #440/#520/#527): fanout said
-# "ok", partclone exited 0, the target's tee exited 0, and the sha256 of what
-# the target pipeline consumed equals the sha256 of what was read from the
+# "ok", partclone exited 0, the target relay (fanout) exited 0, and the xxh64 of what
+# the target pipeline consumed equals the xxh64 of what was read from the
 # source. A failing target fails alone; the source failing fails every one.
 # No full read-back of the data (owner, 13/10): it would double the time.
 
@@ -34,20 +35,32 @@ lc_prepare_target() {
         || { fail_written_target "$1" "הקרנל לא קרא את הטבלה החדשה"; return 1; }
 }
 
+# ‏#1438: ‏xxh64 בתוך fanout, לא md5sum/sha256sum בתהליך משלו. על מחשב שיכפול 2
+# (i5-650) הצינור pv|tee|md5sum|fanout נתן 84MB/s על 4GiB: ה-CPU ‏21% פנוי
+# ו-34% sys, כל תהליך 5-10% — המחיר הוא מספר התהליכים והקפיצות בין צינורות,
+# לא הגיבוב (גיבוב יחיד: 87; ‏partclone -c לבדו: 170). לכן fanout מגבב
+# ומונה בעצמו (‏-H, ‏-P). הגיבוב משווה את מה שנקרא למה שכל יעד לקח (שגיאת
+# העברה), לא מגן מתוקף. ראיה = 16 תווי hex קטנים בדיוק; כל דבר אחר = לא חושב.
+_lc_hash_ok() { case "$1" in *[!0-9a-f]*|'') return 1 ;; esac; [ "${#1}" -eq 16 ]; }
+
 _lc_target_pipeline() {
     # $1 = target, $2 = fs, $3 = idx. Reads its fifo, hashes what it takes,
     # writes the partition. Every exit code is caught on its own: busybox ash
     # has no pipefail (#527).
     _lt_t="$RUN_DIR/targets/$1"; _lt_node=$(partition_node "$1" "$3"); _lt_pcl=$(partclone_for_fs "$2")
     (
-        sha256sum < "$_lt_t/shafifo" > "$_lt_t/sha.out" 2>> "$LOG_FILE" &
-        _lt_sp=$!
+        # ‏#1438: fanout מגבב ומעביר ל-partclone (צינור 1MB) במקום tee של busybox,
+        # שמעתיק 1KB בכל קריאה. נמדד במחשב שיכפול 2: ‏195 → 246MB/s (בלי גיבוב: 258).
         # shellcheck disable=SC2046 # partclone_mode flags are a word list
-        { tee "$_lt_t/shafifo" < "$_lt_t/feed"; echo "$?" > "$_lt_t/tee.rc"; } \
-            | "$_lt_pcl" $(partclone_mode "$_lt_pcl" -r) -s - -O "$_lt_node" \
-                -L "$_lt_t/partclone.log" 2>> "$LOG_FILE"
-        echo "$?" > "$_lt_t/pipeline.rc"
-        wait_pid "$_lt_sp" "$WAIT_HELPER_S" "sha256 של מה שהיעד $1 לקח"
+        { "$_lt_pcl" $(partclone_mode "$_lt_pcl" -r) -s - -O "$_lt_node" \
+            -L "$_lt_t/partclone.log" < "$_lt_t/relay" 2>> "$LOG_FILE"
+          echo "$?" > "$_lt_t/pipeline.rc"; } &
+        _lt_pp=$!
+        fanout -H "$_lt_t/sha.out" 16777216 "$_lt_t/relay" < "$_lt_t/feed" \
+            > "$_lt_t/relay.out" 2>> "$LOG_FILE"
+        echo "$?" > "$_lt_t/tee.rc"   # ‏rc של הממסר: 0 רק אם partclone לקח הכול
+        wait_pid "$_lt_pp" "$WAIT_DRAWER_S" "partclone של יעד $1 (מחיצה $3)" \
+            || echo "$WAIT_TIMED_OUT" > "$_lt_t/pipeline.rc"
     ) &
     echo "$!" > "$_lt_t/pipeline.pid"
 }
@@ -85,32 +98,36 @@ lc_stream() {
     for _ls_t in "$@"; do
         _ls_d="$RUN_DIR/targets/$_ls_t"
         [ "$(cat "$_ls_d/state")" = failed ] && continue
-        rm -f "$_ls_d/feed" "$_ls_d/feed.bytes" "$_ls_d/shafifo" "$_ls_d/sha.out" \
-              "$_ls_d/pipeline.rc" "$_ls_d/tee.rc" "$_ls_d/pipeline.pid"
-        mkfifo "$_ls_d/feed" "$_ls_d/shafifo" || { fail_written_target "$_ls_t" "מחיצה $_ls_i: mkfifo נכשל"; continue; }
+        rm -f "$_ls_d/feed" "$_ls_d/feed.bytes" "$_ls_d/relay" "$_ls_d/relay.bytes" "$_ls_d/relay.out" \
+              "$_ls_d/sha.out" "$_ls_d/pipeline.rc" "$_ls_d/tee.rc" "$_ls_d/pipeline.pid"
+        mkfifo "$_ls_d/feed" "$_ls_d/relay" || { fail_written_target "$_ls_t" "מחיצה $_ls_i: mkfifo נכשל"; continue; }
         target_counter "$_ls_t" "$_ls_d/feed.bytes"
         echo "$_ls_i" > "$_ls_d/lc_part"
         _lc_target_pipeline "$_ls_t" "$_ls_fs" "$_ls_i"
         _ls_feeds="$_ls_feeds $_ls_d/feed"
     done
     [ -n "$_ls_feeds" ] || return 1
-    rm -f "$_ls_r/src.fifo" "$_ls_r/shafifo" "$_ls_r/sha.out" "$_ls_r/src.rc" "$_ls_r/fanout.rc" "$_ls_r/fanout.out" "$_ls_r/partclone.err"
+    rm -f "$_ls_r/src.fifo" "$_ls_r/sha.out" "$_ls_r/src.rc" "$_ls_r/fanout.rc" "$_ls_r/fanout.out" "$_ls_r/partclone.err"
     : > "$_ls_r/bytes.raw"; echo "$_ls_i|copy" > "$_ls_r/cur"
-    mkfifo "$_ls_r/src.fifo" "$_ls_r/shafifo" || return 1
-    sha256sum < "$_ls_r/shafifo" > "$_ls_r/sha.out" 2>> "$LOG_FILE" &
-    _ls_sp=$!
+    mkfifo "$_ls_r/src.fifo" || return 1
     # ntfs: -I, as in capture -- the read is read-only, and an identical copy
     # carries the source's own state (a fast-started Windows resumes the same).
     _ls_ign=""; [ "$_ls_fs" = ntfs ] && _ls_ign="-I"
+    # ‏#1438: בלי checksum של partclone (‏-a0) — ה-xxh64 כבר משווה מקור ליעד. נמדד
+    # על מחשב שיכפול 2: ‏108 → 157MB/s. ה-r- קורא את מצב ה-checksum מהכותרת.
+    # חוצץ 512KB (‏-z): ‏160 → 170MB/s, ‏1MB נמדד פעמיים (160/160); 4MB ‏114, ‏16MB ‏106.
+    [ "$_ls_pcl" = partclone.dd ] || _ls_ign="$_ls_ign -a0 -z 524288"
     (
         # shellcheck disable=SC2046 # partclone_mode flags are a word list
         "$_ls_pcl" $(partclone_mode "$_ls_pcl" -c) $_ls_ign -s "$(partition_node "$_ls_src" "$_ls_i")" \
             -L "$_ls_r/partclone.log" > "$_ls_r/src.fifo" 2>> "$_ls_r/partclone.err" &
         echo "$!" > "$_ls_r/src.pid"; wait "$!"; echo "$?" > "$_ls_r/src.rc"
     ) &
+    # ‏#1438: fanout מגבב (‏-H, רק בסוף זרם שנקרא כולו) ומונה (‏-P, פורמט pv -n)
+    # בעצמו. sha.out נמחק למעלה — קובץ ממחיצה קודמת היה ראיה כוזבת.
     # shellcheck disable=SC2086 # the feed list is a word list on purpose
-    ( pv -n -b -i 1 < "$_ls_r/src.fifo" 2>> "$_ls_r/bytes.raw" | tee "$_ls_r/shafifo" \
-        | fanout "$(_fanout_buffer "$(echo "$_ls_feeds" | wc -w)")" $_ls_feeds > "$_ls_r/fanout.out" 2>> "$LOG_FILE"
+    ( fanout -H "$_ls_r/sha.out" -P "$_ls_r/bytes.raw" "$(_fanout_buffer "$(echo "$_ls_feeds" | wc -w)")" \
+        $_ls_feeds < "$_ls_r/src.fifo" > "$_ls_r/fanout.out" 2>> "$LOG_FILE"
       echo "$?" > "$_ls_r/fanout.rc" ) &
     _lc_wait_stream "$!"; _ls_w=$?
     # The stream is over: a target whose fifo never got a writer (fanout that
@@ -123,7 +140,6 @@ lc_stream() {
         unblock_fifo "$RUN_DIR/targets/$_ls_t/feed"
         fail_written_target "$_ls_t" "מחיצה $_ls_i: פג הזמן — היעד הפסיק לכתוב"
     done
-    wait_pid "$_ls_sp" "$WAIT_HELPER_S" "sha256 של מחיצה $_ls_i במקור"
     [ ! -f "$_ls_r/partclone.err" ] || cat "$_ls_r/partclone.err" >> "$LOG_FILE"
     _ls_b=$(_last_number "$_ls_r/bytes.raw"); _ls_b0=$(_last_number "$_ls_r/src.base")
     echo $(( ${_ls_b0:-0} + ${_ls_b:-0} )) > "$_ls_r/src.base"; : > "$_ls_r/bytes.raw"
@@ -132,7 +148,7 @@ lc_stream() {
     if [ "$_ls_w" = 2 ]; then _ls_why="השיכפול נעצר באמצע מחיצה $_ls_i — היעד אינו שמיש"
     elif [ "$_ls_w" = 1 ]; then _ls_why="מחיצה $_ls_i: המקור לא התקדם $LC_STALL_S שניות"
     elif [ "$_ls_src_rc" != 0 ]; then _ls_why="מחיצה $_ls_i: קריאת המקור נכשלה (partclone rc=${_ls_src_rc:-לא נרשם}) — המקור לא שונה"
-    elif ! is_sha256 "$_ls_sha"; then _ls_why="מחיצה $_ls_i: ה-sha256 של המקור לא חושב — אין ראיה למה שנקרא"
+    elif ! _lc_hash_ok "$_ls_sha"; then _ls_why="מחיצה $_ls_i: ה-xxh64 של המקור לא חושב — אין ראיה למה שנקרא"
     fi
     if [ -n "$_ls_why" ]; then
         _fail_alive "$*" "$_ls_why"; echo "$_ls_i|failed" > "$_ls_r/cur"
@@ -146,7 +162,7 @@ lc_stream() {
 }
 
 lc_judge() {
-    # $1 = target, $2 = idx, $3 = the source's sha256. The four records.
+    # $1 = target, $2 = idx, $3 = the source's xxh64. The four records.
     _lj_d="$RUN_DIR/targets/$1"
     [ "$(cat "$_lj_d/state")" = failed ] && return 0
     _lj_line=$(grep -F "$_lj_d/feed " "$LC/run/fanout.out" 2>/dev/null)
@@ -160,11 +176,11 @@ lc_judge() {
         *) fail_written_target "$1" "מחיצה $2: אין דיווח מהפיצול לאחר $_lj_at$LC_RLM — אין ראיה שנכתב"; return 0 ;;
     esac
     if [ "$_lj_rc" != 0 ] || [ "$_lj_tee" != 0 ]; then
-        fail_written_target "$1" "מחיצה $2: הכתיבה נכשלה אחרי $_lj_at$LC_RLM (partclone rc=${_lj_rc:-לא נרשם}, tee rc=${_lj_tee:-לא נרשם})${_lj_log:+ · $_lj_log}"
-    elif ! is_sha256 "$_lj_sha"; then
-        fail_written_target "$1" "מחיצה $2: ה-sha256 של מה שהיעד קיבל לא חושב — אין ראיה"
+        fail_written_target "$1" "מחיצה $2: הכתיבה נכשלה אחרי $_lj_at$LC_RLM (partclone rc=${_lj_rc:-לא נרשם}, ממסר rc=${_lj_tee:-לא נרשם})${_lj_log:+ · $_lj_log}"
+    elif ! _lc_hash_ok "$_lj_sha"; then
+        fail_written_target "$1" "מחיצה $2: ה-xxh64 של מה שהיעד קיבל לא חושב — אין ראיה"
     elif [ "$_lj_sha" != "$3" ]; then
-        fail_written_target "$1" "מחיצה $2: sha256 של מה שהיעד קיבל ($(printf '%.12s' "$_lj_sha")) שונה מהמקור ($(printf '%.12s' "$3"))"
+        fail_written_target "$1" "מחיצה $2: xxh64 של מה שהיעד קיבל ($(printf '%.12s' "$_lj_sha")) שונה מהמקור ($(printf '%.12s' "$3"))"
     else
         target_partition_done "$1"; echo "$2" >> "$_lj_d/lc_ok"
     fi

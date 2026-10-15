@@ -8,6 +8,7 @@ Testrunner); the native screen is ``test_native_local_clone.py``.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -148,7 +149,7 @@ def test_a_start_names_inventoried_disks_only(tmp_path):
 
 # --- one partition's evidence (lccopy.sh lc_judge) ----------------------------------
 
-SHA = "a" * 64
+SHA = "a" * 16   # xxh64, as fanout -H / --xxh64 write it (#1438)
 
 
 def _judge(tmp_path, line: str, rc: str, tee: str, sha: str) -> str:
@@ -166,16 +167,93 @@ def test_a_partition_counts_only_when_all_four_records_agree(tmp_path):
 
 
 @pytest.mark.parametrize("line,rc,tee,sha,why", [
-    ("ok", 0, 0, "b" * 64, "שונה מהמקור"),                 # what the target took is not what was read
+    ("ok", 0, 0, "b" * 16, "שונה מהמקור"),                 # what the target took is not what was read
+    ("ok", 0, 0, "a" * 32, "לא חושב"),                    # an md5-shaped value is not an xxh64 (#1438)
+    ("ok", 0, 0, "a" * 15, "לא חושב"),                    # one digit short: not a whole hash
+    ("ok", 0, 0, "A" * 16, "לא חושב"),                    # fanout writes lowercase; anything else is not its output
     ("ok", 0, 0, "", "לא חושב"),                          # no hash = no evidence
     ("ok", 1, 0, SHA, "partclone rc=1"),
-    ("ok", 0, 1, SHA, "tee rc=1"),
+    ("ok", 0, 1, SHA, "ממסר rc=1"),
     ("failed write: Input/output error", 0, 0, SHA, "שגיאת כתיבה"),
     ("", 0, 0, SHA, "אין דיווח"),
 ])
 def test_any_missing_or_wrong_record_fails_the_target(tmp_path, line, rc, tee, sha, why):
     out = _judge(tmp_path, line, rc, tee, sha)
     assert "state=failed" in out and why in out, out
+
+
+# --- one partition through the pipeline (lccopy.sh lc_stream) --------------------
+#
+# fanout's own -H/-P/--xxh64 (#1438) are stubbed here with the same contract:
+# the stand-in hash is the first 16 hex digits of md5 -- the shape of an
+# XXH64, so the wiring is checked; the real XXH64 is tests/test_fanout.py's.
+
+STREAM_STUBS = {
+    "fanout": r'''#!/bin/sh
+if [ "$1" = --xxh64 ]; then h=$(md5sum | cut -c1-16) || exit 2; echo "$h"; exit 0; fi
+H=; P=
+while :; do case "$1" in -H) H=$2; shift 2 ;; -P) P=$2; shift 2 ;; *) break ;; esac; done
+shift
+data="$STUB_BOX/stream.$$"; cat > "$data"
+for f in "$@"; do
+    case "$f" in *"/${STUB_CORRUPT:-none}/"*) { cat "$data"; echo x; } > "$f" ;; *) cat "$data" > "$f" ;; esac
+    echo "$f ok"
+done
+[ -z "$P" ] || wc -c < "$data" | tr -d ' ' >> "$P"
+[ -z "$H" ] || [ -n "$STUB_NO_HASH" ] || md5sum < "$data" | cut -c1-16 > "$H"
+''',
+    "partclone.dd": r'''#!/bin/sh
+src=; out=
+while [ $# -gt 0 ]; do case "$1" in -s) src=$2; shift 2 ;; -O) out=$2; shift 2 ;; *) shift ;; esac; done
+if [ "$src" = - ]; then cat > "$out"; else cat "$src"; fi
+''',
+    # The pipeline before #1438 ran pv; present only so a negative control on
+    # that code fails on the evidence and not on a missing tool.
+    "pv": '#!/bin/sh\ncat\n',
+}
+
+
+def _stream(tmp_path: Path, **env) -> tuple[str, Path]:
+    box = tmp_path / "box"; stubs = box / "stubs"; dev = box / "dev"
+    dev.mkdir(parents=True)
+    (dev / "sdc1").write_bytes(b"imagectl" * 4096)
+    make = [f"mkdir -p {posix(stubs)!r}"]
+    for name, body in STREAM_STUBS.items():   # from bash: a Windows-made file is not executable in Git Bash
+        make += [f"cat > {posix(stubs)}/{name} <<'STUB'\n{body}STUB", f"chmod 0755 {posix(stubs)}/{name}"]
+    t = "\n".join(make) + "\n"
+    t += f'export PATH="$(cd {posix(stubs)!r} && pwd):$PATH" STUB_BOX={posix(box)!r} DEVROOT={posix(dev)!r}; '
+    t += 'mkdir -p "$LC/run"; ata_capture() { :; }; target_init sda 100; target_init sdb 100; '
+    t += f'lc_stream 1 dd sdc sda sdb > {posix(box)}/stream.log 2>&1; echo "rc=$?"; '
+    t += 'for d in sda sdb; do echo "$d=$(cat $RUN_DIR/targets/$d/state)|$(cat $RUN_DIR/targets/$d/lc_ok 2>/dev/null)|$(cat $RUN_DIR/targets/$d/error 2>/dev/null)"; done; '
+    t += 'echo "sha=$(cat "$LC/run/source.sha" 2>/dev/null)"; echo "base=$(cat "$LC/run/src.base" 2>/dev/null)"'
+    out = run(tmp_path, t, timeout=120, WAIT_HELPER_S="20", WAIT_DRAWER_S="20", **env)
+    assert out.returncode == 0, out.stderr
+    return out.stdout, dev
+
+
+def test_the_stream_takes_fanouts_hash_and_count_and_each_targets_own(tmp_path):
+    out, dev = _stream(tmp_path)
+    data = (dev / "sdc1").read_bytes()
+    want = hashlib.md5(data).hexdigest()[:16]
+    assert "rc=0" in out and "sda=waiting|1|" in out and "sdb=waiting|1|" in out, out
+    assert f"\nsha=1|{want}\n" in out, out                       # the source hash is fanout -H's file, whole
+    assert f"base={len(data)}" in out, out                       # the counter is fanout -P's file
+    assert (dev / "sda1").read_bytes() == data == (dev / "sdb1").read_bytes()
+
+
+def test_a_target_that_took_other_bytes_fails_alone(tmp_path):
+    out, _ = _stream(tmp_path, STUB_CORRUPT="sdb")
+    assert "rc=0" in out and "sda=waiting|1|" in out, out
+    assert "sdb=failed||" in out and "שונה מהמקור" in out, out
+
+
+def test_no_source_hash_is_no_evidence_for_any_target(tmp_path):
+    """fanout -H writes nothing on a read error: "not computed", never a pass."""
+    out, _ = _stream(tmp_path, STUB_NO_HASH="1")
+    assert "rc=1" in out and "sha=\n" in out, out
+    for d in ("sda", "sdb"):
+        assert f"{d}=failed||" in out, out
+    assert out.count("ה-xxh64 של המקור לא חושב") == 2, out
 
 
 # --- the screen's records (lcgui.sh lc_gui_state) ------------------------------------
