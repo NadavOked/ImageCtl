@@ -408,8 +408,8 @@ void lc_draw_confirm(App *a, cairo_t *cr, double W, double H) {
     Text shr = shrink ? text_make(cr, FONT_SANS, 13, 400, "כדי שהנתונים ייכנסו ליעד הקטן, מחיצות ה-NTFS של המקור יכווצו במקומן לפני ההעתקה ויוחזרו לגודלן בסוף. אם ההחזרה תיכשל — הנתונים במקור נשארים שלמים, והמחיצה פשוט קטנה יותר.", (int)(inner - 40), DIR_RTL)
                       : (Text){ NULL, 0, 0 };
     char u[48], meta[300]; lc_gb(u, sizeof u, (double)src->used);
-    snprintf(meta, sizeof meta, src->used < 0 ? "כמה בשימוש במקור: לא נמדד · כל יעד ייבדק בסוף מול המקור (sha256 לכל מחיצה, וטבלת המחיצות נקראת בחזרה)."
-                                              : RLM "%s יועתקו · כל יעד ייבדק בסוף מול המקור (sha256 לכל מחיצה, וטבלת המחיצות נקראת בחזרה).", u);
+    snprintf(meta, sizeof meta, src->used < 0 ? "כמה בשימוש במקור: לא נמדד · כל יעד ייבדק בסוף מול המקור (md5 לכל מחיצה, וטבלת המחיצות נקראת בחזרה)."
+                                              : RLM "%s יועתקו · כל יעד ייבדק בסוף מול המקור (md5 לכל מחיצה, וטבלת המחיצות נקראת בחזרה).", u);
     Text tm = text_make(cr, FONT_SANS, 12, 400, meta, (int)inner, DIR_RTL);
     double srh = fmax(sr.h, ss.h) + 20, shh = shrink ? shr.h + 20 + 10 : 0;
     double h = 26 + fmax(30, th.h) + 6 + tlh.h + 16 + srh + 10 + shh + rows + 2 + 12 + tm.h + 20 + 44 + 24;
