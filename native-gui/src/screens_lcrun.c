@@ -1,7 +1,7 @@
 /* #1322: the local clone running and done -- mockup states 4 and 5
  * (localclone.html .ptop/.mets/.parts/.tg and .res). Every number is what
  * the agent measured (lcgui.sh lc_run/lc_part/lc_tgt): the bytes read from
- * the source, the bytes each target took, the partitions whose sha256 came
+ * the source, the bytes each target took, the partitions whose md5 came
  * back equal. Speed and time left are those bytes over the time passed --
  * there is no estimate before the copy starts. */
 #include <math.h>
@@ -100,7 +100,7 @@ static void tbay(App *a, cairo_t *cr, Rect b, const LcTgt *g) {
     if (bad) snprintf(line, sizeof line, "נכשל: %s", g->error);
     else if (ok) snprintf(line, sizeof line, "הושלם · נבדק");
     else if (!strcmp(g->state, "verifying")) snprintf(line, sizeof line, "בודק את טבלת המחיצות שנכתבה…");
-    else if (cp) snprintf(line, sizeof line, "כותב מחיצה %d · %s · sha256 תואם ב-%d מתוך %d", cp->idx, cp->label, g->ok, a->st.lc.nparts);
+    else if (cp) snprintf(line, sizeof line, "כותב מחיצה %d · %s · md5 תואם ב-%d מתוך %d", cp->idx, cp->label, g->ok, a->st.lc.nparts);
     else snprintf(line, sizeof line, "מכין את טבלת המחיצות…");
     Text tp = text_make(cr, FONT_MONO, 14, 600, pct, 0, DIR_LTR);
     Text tl = text_make(cr, FONT_SANS, 12, bad ? 600 : 400, line, (int)(pw - tp.w - 10), DIR_RTL);
@@ -216,7 +216,7 @@ static double res_card(App *a, cairo_t *cr, double x, double y, double w, const 
         char gb[48]; lc_gb(gb, sizeof gb, (double)g->grown_bytes);
         if (g->has_table && g->grown_idx > 0) snprintf(h3, sizeof h3, "%s · זהה למקור · המחיצה האחרונה הוגדלה ל-%s", name, gb);
         else snprintf(h3, sizeof h3, "%s · זהה למקור", name);
-        snprintf(li[n], sizeof li[n], "%d מחיצות הועתקו · sha256 של כל מחיצה תואם למה שנקרא מהמקור", g->ok); mk[n++] = 1;
+        snprintf(li[n], sizeof li[n], "%d מחיצות הועתקו · md5 של כל מחיצה תואם למה שנקרא מהמקור", g->ok); mk[n++] = 1;
         snprintf(li[n], sizeof li[n], "טבלת המחיצות נקראה בחזרה מהדיסק — זהה למקור, כולל מזהי GUID"); mk[n++] = 1;
         if (g->has_table && g->grown_idx > 0) {
             char was[48]; lc_gb(was, sizeof was, (double)g->src_bytes);
