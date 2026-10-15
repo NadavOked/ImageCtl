@@ -148,7 +148,7 @@ def test_a_start_names_inventoried_disks_only(tmp_path):
 
 # --- one partition's evidence (lccopy.sh lc_judge) ----------------------------------
 
-SHA = "a" * 64
+SHA = "a" * 32   # md5 (#1438)
 
 
 def _judge(tmp_path, line: str, rc: str, tee: str, sha: str) -> str:
@@ -166,7 +166,8 @@ def test_a_partition_counts_only_when_all_four_records_agree(tmp_path):
 
 
 @pytest.mark.parametrize("line,rc,tee,sha,why", [
-    ("ok", 0, 0, "b" * 64, "שונה מהמקור"),                 # what the target took is not what was read
+    ("ok", 0, 0, "b" * 32, "שונה מהמקור"),                 # what the target took is not what was read
+    ("ok", 0, 0, "a" * 64, "לא חושב"),                    # a sha256-shaped value is not an md5 (#1438)
     ("ok", 0, 0, "", "לא חושב"),                          # no hash = no evidence
     ("ok", 1, 0, SHA, "partclone rc=1"),
     ("ok", 0, 1, SHA, "tee rc=1"),
