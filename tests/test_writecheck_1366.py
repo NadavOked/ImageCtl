@@ -56,7 +56,7 @@ pytestmark = requires_native(
 )
 
 # expand: diskfit calls _expand_candidate since #1354 (2b195230), as imagectl-agent sources it.
-LIBS = ("common", "jsonq", "waits", "sysinfo", "progress", "failmark", "verdict", "expand", "diskfit",
+LIBS = ("common", "jsonq", "waits", "sysinfo", "progress", "failmark", "verdict", "ntfsboot", "expand", "diskfit",
         "bootcadb", "restore", "drawers", "clonergui", "writecheck")
 
 SETUP = r'''

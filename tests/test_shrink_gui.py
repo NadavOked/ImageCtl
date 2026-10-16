@@ -256,7 +256,8 @@ kill $G 2>/dev/null; true
 
 STATE_PRE = (f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/jsonq.sh; '
              f'. {posix(AGENT)}/lib/buildmenuitems.sh; . {posix(AGENT)}/lib/guistate.sh; '
-             f'. {posix(AGENT)}/lib/askgui.sh; ')
+             f'. {posix(AGENT)}/lib/askgui.sh; '
+             'disk_slot_records() { :; }; ')   # #1495: disk numbering is test_drawer_map_gui_1495's
 
 
 def test_gui_shrink_state_copies_the_request(tmp_path):
@@ -293,8 +294,8 @@ def test_the_failure_snapshot_keeps_the_question(tmp_path):
     (gui / "shrink-request").write_text("4-0|1\n3|1000|500\n", newline="\n")
     out = sh(f'GUI_DIR={posix(gui)!r}; ' + STATE_PRE +
              '( gui_state() { return 1; }; sleep() { exit 0; }; gui_state_loop )')
-    lines = (gui / "state").read_text().splitlines()
-    assert lines[0].startswith("message=State could not be verified"), lines
+    lines = (gui / "state").read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "message=לא ניתן לאמת את מצב התחנה|בדקו את החיבור לשרת. הפרטים ביומן הסוכן", lines
     assert "shrink_prompt=4-0|1" in lines, (lines, out.stderr)
 
 

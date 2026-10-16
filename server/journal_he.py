@@ -11,6 +11,7 @@ import re
 import sqlite3
 
 from .images import ImageLibrary
+from .journal_he_detail import he_detail
 
 EVENTS_HE = {
     "login": "כניסה לקונסולה",
@@ -56,6 +57,8 @@ EVENTS_HE = {
     "wol_failed": "הערת WoL נכשלה",
     "wol_arm_failed": "המחשב לא הצליח לדרוך Wake-on-LAN לפני כיבוי",
     "room_open": "סבב חדר שיכפולים נפתח",
+    "room_open_cloner": "סבב חדר נפתח ממסך מחשב שיכפול (המגירות שלו בלבד)",   # 16/10
+    "cloner_round_refused": "פתיחת סבב ממסך מחשב שיכפול נדחתה",   # 16/10
     "room_wave": "גל חדש בחדר השיכפולים",
     "room_wave_lost": "הגל של סבב החדר נסגר לפני הזמן — ממתין לגל הבא",
     "room_drawer_changed": "המגירה הוחלפה אחרי סיום הכתיבה",
@@ -75,6 +78,7 @@ EVENTS_HE = {
     "power_expired": "בקשה מהקונסולה פגה — המכונה לא ענתה בזמן, והבקשה בוטלה",
     "send_start": "השידור יצא לדרך",
     "wave_rate": "נקבע קצב לגל",
+    "machine_nic_speed": "מהירות כרטיס הרשת של מכונה נקבעה ידנית",
     "drive_rates_failed": "קצב אוטומטי: בחירה או רישום נכשלו — בחירה שנכשלה יוצאת בקצב הפתיחה",
     "send_done": "השידור הסתיים",
     "send_failed": "השידור נכשל",
@@ -133,6 +137,11 @@ EVENTS_HE = {
     "vmupdate_viewer_closed": "מסך ה-VM נסגר",
     "vmupdate_expired": "עדכון ב-VM: דיסק עבודה שלא הוכרע 7 ימים נמחק",
     "vmupdate_firewall_lost": "עדכון ב-VM: בידוד הרשת נמחק ולא נטען מחדש — ה-VM נכבה",
+    "vmupdate_network_set": "כרטיס לעדכוני VM שונה",
+    "vmupdate_mac_created": "נוצר MAC ל-VM לעדכון — צריך לו כתובת שמורה ב-DHCP",
+    "vmupdate_lease": "ה-VM לעדכון קיבל כתובת מה-DHCP",
+    "vmupdate_no_lease": "ה-VM לעדכון לא קיבל כתובת — ה-VM נכבה",
+    "vmupdate_net_teardown_failed": "פירוק הרשת של ה-VM לעדכון לא הושלם",
     "vmupdate_control_request": "עדכון ב-VM: בקשת שליטה",
     "vmupdate_control_granted": "עדכון ב-VM: השליטה הועברה באישור",
     "vmupdate_control_denied": "עדכון ב-VM: בקשת שליטה נדחתה",
@@ -151,7 +160,10 @@ EVENTS_HE = {
     "hostname_restart_failed": "שם המארח שונה אך אתחול השרת לא תוזמן",
     "image_edit": "אימג' עודכן",
     "image_delete": "אימג' נמחק",
+    "image_used_bytes_derived": "נפח בשימוש של אימג' ישן הושלם מכותרת partclone",   # #1494
+    "image_used_bytes_underived": "נפח בשימוש של אימג' ישן לא הושלם",               # #1494
     "capture_start": "קליטת אימג' הוזמנה",
+    "capture_verifying": "אימג' התקבל — מאמת לפני הכניסה לספרייה",
     "capture_done": "אימג' נקלט",
     "capture_failed": "קליטת אימג' נכשלה",
     "capture_space_warning": "אזהרת מקום בקליטה — יחס הדחיסה אינו ידוע",
@@ -204,6 +216,7 @@ EVENTS_HE = {
     "dcui_net_confirm_refused": "אישור שינוי רשת ממסך השרת נדחה — אין שינוי ממתין",
     "dcui_net_rollback_requested": "התבקשה החזרת רשת ממסך השרת",
     "dcui_power_action": "כיבוי/הפעלה מחדש ממסך השרת",
+    "dcui_advertised_url": "הכתובת שהראשי רואה נשמרה במסך השרת",       # 16/10
     "dcui_power_refused": "כיבוי/הפעלה מחדש ממסך השרת נדחו — שם השרת לא תאם",
     "dcui_reset_failure": "ניסיון כושל לאפס את סיסמת המנהל ממסך השרת (DCUI)",
     "dcui_services_restart": "השירותים הופעלו מחדש ממסך השרת",
@@ -217,6 +230,7 @@ EVENTS_HE = {
     "dhcp_synced_at_startup": "תצורת DHCP/TFTP נכתבה מחדש מה-DB בעלייה",
     "disk_decision": "הכרעה על דיסק (SMART) נרשמה",
     "machine_drawer_count": "מספר המגירות של מכונה עודכן",
+    "machine_drawer_slots": "מיפוי חיבורי הדיסקים של מכונה עודכן",
     "machine_slot_name": "שם של חיבור כונן במכונה עודכן",
     "monitor_stations": "מתג המוניטור בתחנות שונה",
     "net_config_refused": "שינוי רשת נדחה",
@@ -244,6 +258,7 @@ EVENTS_HE = {
     "storage_location_unreachable": "מיקום אחסון אינו נגיש",
     "storage_monitor_tunnel_closed": "מנהרת מוניטור למכונה בסניף נסגרה",
     "storage_pairing_open": "צימוד שרת משני נפתח",
+    "storage_pairing_closed": "קוד הצימוד בוטל במסך השרת",            # DCUI F4, 16/10
     "storage_parent_cert_renewed": "תעודת השרת הראשי חודשה במשני",
     "storage_parent_unbind": "השרת המשני נותק מהראשי",
     "peer_write": "פעולת כתיבה בשרת משני מהקונסולה של הראשי",   # #1179
@@ -269,11 +284,12 @@ SEVERITY_LEVELS = ("info", "ok", "warn", "err")
 _SEVERITY_ERR = {
     "login_failed", "login_refused_console", "login_lockout",
     "agent_login_failed", "agent_role_refused", "class_deploy_refused",
-    "session_image_bound", "pull_refused", "client_failed", "wol_failed",
+    "session_image_bound", "pull_refused", "cloner_round_refused", "client_failed", "wol_failed",
     "room_wave_lost", "send_failed", "direct_failed", "disk_failure",
     "session_orphaned", "identity_refused", "storage_transfer_failed", "logo_refused",
     "capture_failed", "drivers_failed", "boot_storage_failed", "dhcp_apply_failed", "nic_services_apply_failed",
     "known_macs_apply_failed", "vmupdate_failed", "vmupdate_firewall_lost",
+    "vmupdate_no_lease", "vmupdate_net_teardown_failed",
 }
 _SEVERITY_WARN = {
     "unknown_mac", "drive_rates_failed", "boot_loop_local", "boot_loop_unverified", "agent_loop",
@@ -284,12 +300,13 @@ _SEVERITY_WARN = {
     "storage_node_disable",
     "room_drawer_changed", "room_drawer_unidentified",
     "power_expired", "gui_failed", "wol_arm_failed", "vmupdate_force_off", "vmupdate_expired", "vmupdate_control_auto",
+    "vmupdate_mac_created",
 }
 _SEVERITY_OK = {
     "login", "capture_done", "client_done", "pull_done", "room_done",
     "send_done", "direct_done", "storage_transfer_done", "net_confirmed", "nic_services_confirmed",
     "disk_failure_cleared", "drivers_staged", "storage_image_received",
-    "wol_sent", "vmupdate_saved",
+    "wol_sent", "vmupdate_saved", "vmupdate_lease",
 }
 
 
@@ -311,6 +328,7 @@ SETTINGS_HE = {
     "learned_rate_enabled": "קצב שידור אוטומטי",
     "crc_warn_threshold": "סף שגיאות CRC לאזהרה",   # #1366
     "min_free_gb": "מינימום מקום פנוי אחרי שחזור (GB)",   # #1354
+    "intersite_rate_cap_mbps": "הגבלת קצב בין אתרים (Mb/s)",   # #1473
     "auto_reboot": "הפעלה מחדש אוטומטית",
     "auto_reboot_time": "שעה",
     "auto_reboot_weekday": "יום",
@@ -520,4 +538,4 @@ class JournalTranslator:
         else:
             text = self._names(detail)
 
-        return label, text
+        return label, he_detail(event, text)

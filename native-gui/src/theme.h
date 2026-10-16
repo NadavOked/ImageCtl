@@ -87,6 +87,13 @@ typedef struct {
  double radius_sm;   /* --r-sm */
 } Theme;
 extern const Theme THEME_LIGHT, THEME_DARK;
+#include <stddef.h>
+/* #1499 (Nadav 16/10): one saved theme per user (users.theme), shared with the
+ * console. theme_saved: "light"/"dark" are that theme; "auto", empty or anything
+ * else is <fallback> -- the GUI's default (light). theme_login_answer splits the
+ * --auth-cmd output: line 1 the role, line 2 the saved theme (absent = ""). */
+const Theme *theme_saved(const char *saved, const Theme *fallback);
+void theme_login_answer(const char *out, char *role, size_t rn, char *saved, size_t sn);
 /* The console's --r and --r-sm differ per theme (light 9/6px, dark 3/3px), so the
  * radius is read from the theme being drawn -- every drawing function already has
  * it as <t>. Not a constant any more: a constant 3 was the dark value on both. */

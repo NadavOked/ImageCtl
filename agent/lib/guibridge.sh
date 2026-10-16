@@ -2,9 +2,9 @@
 # gui_main runs inside imagectl-kiosk. imagectl-agent also sources this file
 # (function defs only, inert there) so the load gate (#84) sees every lib.
 gui_error() {
-    printf 'native-gui bridge: %s\n' "$*" >&2
+    printf 'native-gui bridge: %s\n' "${2:-$1}" >&2   # $1 Hebrew for the screen, $2 English for the log
     printf 'toast=%s\nform_error=%s\nroom_error=%s\nclass_error=%s\n' \
-        "$*" "$*" "$*" "$*" > "$GUI_DIR/error.next" &&
+        "$1" "$1" "$1" "$1" > "$GUI_DIR/error.next" &&
         mv "$GUI_DIR/error.next" "$GUI_DIR/error"
     return 1
 }
@@ -22,15 +22,15 @@ gui_auth() {
     rm -f "$CONSOLE_JAR" "$RUN_DIR/console_login.json" || return 1
     IFS= read -r RECOVERY_USER && IFS= read -r RECOVERY_PASS || return 1
     [ -n "$SERVER" ] && [ -n "$RECOVERY_USER" ] && [ -n "$RECOVERY_PASS" ] || return 1
-    # stdout belongs exclusively to the role; never persist the password.
+    # stdout: the role, then the saved theme (#1499); never persist the password.
     if console_signin >&2 && gui_role; then
         unset RECOVERY_PASS
-        printf '%s\n' "$GUI_ROLE"
+        printf '%s\n%s\n' "$GUI_ROLE" "$(gui_saved_theme)"
         return 0
     fi
     unset RECOVERY_PASS
     rm -f "$CONSOLE_JAR" "$RUN_DIR/console_login.json"   # a stale role must not pass gui_role
-    gui_error 'Login was refused or could not be verified; see agent log' >&2
+    gui_error 'הכניסה נדחתה או שלא ניתן היה לאמת אותה' 'Login was refused or could not be verified' >&2
 }
 
 gui_capture() {
@@ -89,13 +89,13 @@ gui_dispatch() {
             return $?
             ;;
     esac
-    gui_role || { gui_error 'Session/role could not be verified; restart and sign in'; return 1; }
+    gui_role || { gui_error 'לא ניתן לאמת את ההתחברות — התחברו מחדש' 'Session/role could not be verified; restart and sign in'; return 1; }
     case "$token" in
         capture|room|classes|restore|direct) printf '%s\n' "$token" > "$GUI_DIR/mode" ;;
         tool-list) tools_gui_list ;;                                    # #649: writes $GUI_DIR/tools
         "tool-run|"*) tools_gui_run "$token" ;;                          # #649: guarded in tools.sh; result in $GUI_DIR/tool-result
         back|again) printf 'menu\n' > "$GUI_DIR/mode" ;;
-        capture-start) gui_capture ;;
+        capture-start) gui_capture ;;   theme-light|theme-dark) gui_theme_save "${token#theme-}" ;;   # #1499: buildmenu.sh
         room-open)
             case "$image" in ''|*[!A-Za-z0-9_.-]*) return 1 ;; esac
             case "$target" in ''|*[!0-9]*) return 1 ;; esac
@@ -116,11 +116,11 @@ gui_dispatch() {
             _gdm=''; [ -z "$drivers" ] || _gdm=",\"driver_models\":$(room_drivers_json "$drivers")" || return 1
             http_get "$SERVER/api/v1/agent/state?mac=$MAC" > "$RUN_DIR/gui-inventory.json" || return 1
             _gd=$(jq -er '.disks | map(select(.removable == false)) | .[0].dev' \
-                "$RUN_DIR/gui-inventory.json") || { gui_error 'No internal disk to send from'; return 1; }
+                "$RUN_DIR/gui-inventory.json") || { gui_error 'אין דיסק פנימי לשליחה' 'No internal disk to send from'; return 1; }
             printf '{"source":{"kind":"build_disk","mac":"%s","disk":"%s"},"target_slots":%s%s}' \
                 "$MAC" "$_gd" "$_gslots" "$_gdm" > "$RUN_DIR/room_open.json" || return 1
             _gc=$(console_post room "$RUN_DIR/room_open.json" "$RUN_DIR/room_open_resp.json") || return 1
-            [ "$_gc" = 200 ] || { gui_error "The direct round was not opened (http $_gc)"; return 1; }
+            [ "$_gc" = 200 ] || { gui_error "סבב ההפצה הישירה לא נפתח (http $_gc)" "The direct round was not opened (http $_gc)"; return 1; }
             log "direct round opened from the GUI: /dev/$_gd -> $slots"
             ;;
         room-wake|room-start) room_action "${token#room-}" ;;
@@ -145,7 +145,7 @@ gui_dispatch() {
             # machines, image) and went with the text screens (owner, 11/10:
             # GUI only). Classrooms are v1.2 and hidden in v1 (#1081); until a
             # GUI round screen exists the pick is refused, visibly.
-            gui_error 'Class rounds are not available on this screen' ;;
+            gui_error 'סבבי כיתה אינם זמינים במסך הזה' 'Class rounds are not available on this screen' ;;
         restore-start)
             # #706: erase+write one image onto THIS machine. The GUI already
             # confirmed; re-check it here, and validate the id syntax. The
@@ -165,7 +165,7 @@ gui_dispatch() {
                 mv "$GUI_DIR/handoff.next" "$GUI_DIR/handoff" || return 1
             return 2
             ;;
-        *) gui_error "Unknown action: $token" ;;
+        *) gui_error "פעולה לא מוכרת: $token" "Unknown action: $token" ;;
     esac
 }
 
@@ -187,12 +187,12 @@ gui_records() {
                 *) _bad=1 ;;
             esac
         done
-        [ "$_complete" = 1 ] && [ "$_bad" = 0 ] || { gui_error 'Malformed/incomplete action record'; return 1; }
+        [ "$_complete" = 1 ] && [ "$_bad" = 0 ] || { gui_error 'בקשת הפעולה מהמסך פגומה או חסרה' 'Malformed/incomplete action record'; return 1; }
         rm -f "$GUI_DIR/error" || return 1
         gui_dispatch
         _gr=$?
         [ "$_gr" = 2 ] && return 0
-        [ "$_gr" = 0 ] || gui_error "Action $token failed; no success confirmed (see agent log)"
+        [ "$_gr" = 0 ] || gui_error "הפעולה נכשלה ולא אושרה הצלחה ($token)" "Action $token failed; no success confirmed (see agent log)"
     done
 }
 
@@ -227,6 +227,7 @@ gui_backend_args() {
     fi
     printf '%s %s' --backend "$_gba"
     [ "$_gba" = mem ] && printf ' %s %s' --fb-file "$RUN_DIR/fb.mem"
+    [ "$_gba" != mem ] && [ "${IMAGECTL_MONITOR:-0}" = 1 ] && printf ' %s %s' --fb-mirror "$RUN_DIR/fb.mem"  # #1475
     printf '\n'
 }
 
@@ -241,10 +242,10 @@ gui_libs() {
     . "$LIB_DIR/guistate.sh"
     . "$LIB_DIR/shrinkgui.sh"; . "$LIB_DIR/askgui.sh"   # 11/10: the question dialog
     . "$LIB_DIR/sysinfo.sh"; . "$LIB_DIR/disklink.sh"   # disk_port + disk_link (#432), for the cloner state producer
-    . "$LIB_DIR/progress.sh"  # target_bytes, the per-drawer local truth
+    . "$LIB_DIR/progress.sh"; . "$LIB_DIR/diskfit.sh"; . "$LIB_DIR/expand.sh"  # target_bytes, the per-drawer local truth; #1484: lc_verdict_for's min-free rule
     . "$LIB_DIR/smart.sh"     # smart_hello_field: the cached verdict per cdisk (#834)
     . "$LIB_DIR/failmark.sh"; . "$LIB_DIR/slotnames.sh"   # the server's memory per cdisk (#874); slot names (#704)
-    . "$LIB_DIR/lcinv.sh"; . "$LIB_DIR/lcgui.sh"; . "$LIB_DIR/clonergui.sh"; . "$LIB_DIR/tools.sh"   # #649: the toolbox (tool-list / tool-run); tools_load pulls toolbins.sh + tools_*.sh itself (#1050)
+    . "$LIB_DIR/lcinv.sh"; . "$LIB_DIR/lcgui.sh"; . "$LIB_DIR/clonergui.sh"; . "$LIB_DIR/drawers.sh"; . "$LIB_DIR/lcpull.sh"; . "$LIB_DIR/tools.sh"   # #649: the toolbox (tool-list / tool-run); tools_load pulls toolbins.sh + tools_*.sh itself (#1050)
 }
 
 gui_main() {
@@ -259,7 +260,7 @@ gui_main() {
         "$RUN_DIR/console_login.json" "$GUI_DIR/actions" || return 1
     if [ "${GUI_SCREEN:-}" = class ]; then _initial=classes; else _initial=menu; fi
     printf '%s\n' "$_initial" > "$GUI_DIR/mode" || return 1
-    printf 'message=Connecting to server|Waiting for verified station state\n' > "$GUI_DIR/state" || return 1
+    printf 'message=מתחבר לשרת|ממתין למצב תחנה מאומת\n' > "$GUI_DIR/state" || return 1
     mkfifo "$GUI_DIR/actions" || return 1
     trap gui_cleanup EXIT
     trap 'exit 1' HUP INT TERM
@@ -272,8 +273,8 @@ gui_main() {
     set --
     [ "${GUI_SCREEN:-}" = class ] && set -- --screen class
     [ "${GUI_SCREEN:-}" = cloner ] && set -- --screen cloner
-    # shellcheck disable=SC2046 # --backend/--fb-file are intentionally words.
-    /usr/bin/imagectl-station-gui "$@" $(gui_backend_args) --mac "$MAC" --ip "$IP" \
+    # shellcheck disable=SC2046 # --backend/--fb-file are words. nice: data path wins the CPU (#1493)
+    /usr/bin/nice -n 10 /usr/bin/imagectl-station-gui "$@" $(gui_backend_args) --mac "$MAC" --ip "$IP" \
         --state "$GUI_DIR/state" --auth-cmd '/usr/bin/imagectl-kiosk --auth' > "$GUI_DIR/actions" &
     GUI_PID=$!
     gui_records < "$GUI_DIR/actions"

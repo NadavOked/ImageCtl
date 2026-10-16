@@ -4,6 +4,28 @@ gui_get() {
     [ "$_sc" = 200 ] || { printf 'GUI GET %s: HTTP %s\n' "$1" "$_sc" >&2; return 1; }
 }
 
+# 16/10 (Nadav): the SMART of THIS machine's own disks, for the capture and
+# the restore screens -- a warned disk is written or read only after the SMART
+# warning window (native-gui smartdlg.c). One dsmart=dev|verdict|reason|serial|port
+# per non-removable disk of the state, from the agent's own probe (smart.sh:
+# one smartctl per disk, cached; a failed read is `unchecked`, which asks
+# nothing -- the restore side's rule). The line is kept per disk too, so the
+# serial (hdparm on some disks, #30) is not read again every second.
+gui_disk_smart() {
+    _gds_list=$(jq -r '.disks[] | select(.removable == false) | .dev' "$GUI_DIR/station.json") || return 1
+    mkdir -p "$RUN_DIR/smart" || return 1   # the line is kept here before smart_probe ever ran
+    for _gds_d in $_gds_list; do
+        case "$_gds_d" in ''|*[!A-Za-z0-9_]*) continue ;; esac   # a device name, nothing else reaches smartctl
+        _gds_f="$RUN_DIR/smart/$_gds_d.gui"
+        if [ ! -s "$_gds_f" ]; then
+            _gds_v=$(smart_probe "$_gds_d") || return 1
+            printf 'dsmart=%s|%s|%s|%s|%s\n' "$_gds_d" "$_gds_v" "$(smart_field "$_gds_d" 2)" \
+                "$(disk_serial "$_gds_d" | tr '|\n' '  ')" "$(disk_port "$_gds_d")" > "$_gds_f" || return 1
+        fi
+        cat "$_gds_f" || return 1
+    done
+}
+
 gui_state() {
     http_get "$SERVER/api/v1/agent/state?mac=$MAC" > "$GUI_DIR/station.json" || return 1
     # Delimiters cannot be represented by the GUI's record format.
@@ -11,7 +33,7 @@ gui_state() {
     jq -er '
       def clean: tostring | gsub("[\\r\\n|]"; " ");
       if (.known | type) != "boolean" or (.disks | type) != "array" then error("bad station state") else . end |
-      if .known == false then "message=Machine is not registered|Contact IT"
+      if .known == false then "message=המחשב אינו רשום במערכת|פנו לצוות ה-IT"
       else
         (.disks[] | select(.removable == false) |
           "disk=" + ([.dev,.model,.size_bytes,(if .has_data then 1 else 0 end),0] | map(clean) | join("|"))),
@@ -27,6 +49,8 @@ gui_state() {
            elif (.bytes_total // 0) > 0 then "pct=\((100 * .bytes_written / .bytes_total)|floor)"
            else "pct=-1" end) end)
       end' "$GUI_DIR/station.json" > "$GUI_DIR/state.next" || return 1
+    # #1495: each local disk's drawer by the mapping -- the capture list's "דיסק N"
+    disk_slot_records >> "$GUI_DIR/state.next" || return 1
     # #880: menu_class=0|1 -- the class card only when the last hello said
     # so (class_deploy_on, buildmenu.sh). Always written: an absent record
     # reads as 0 in state.c, so the card never shows by omission.
@@ -43,6 +67,7 @@ gui_state() {
     # #434: the power-off countdown -- the epoch idle.sh wrote; absent = none.
     [ -s "$RUN_DIR/idle.warn" ] && { printf 'idle_poweroff_at=%s\n' "$(cat "$RUN_DIR/idle.warn")" >> "$GUI_DIR/state.next" || return 1; }
     _sm=$(cat "$GUI_DIR/mode") || return 1
+    case "$_sm" in restore|capture) gui_disk_smart >> "$GUI_DIR/state.next" || return 1 ;; esac   # 16/10
     case "$_sm" in
         restore)
             # #706: the images allowed for THIS machine (server-filtered, in
@@ -82,6 +107,9 @@ gui_state() {
             fi
             jq -r '
               def clean: ((. // "") | tostring | gsub("[\\r\\n|]"; " "));
+              # #1495: a connection as the console writes it (console.js connText)
+              def conn: if test("^sata:[0-9]+$") then "SATA \((ltrimstr("sata:") | tonumber) - 1)"
+                elif startswith("nvme:") then "NVMe \(ltrimstr("nvme:") | ltrimstr("0000:"))" else "" end;
               def row: "machine=" + ([.name,.mac,(if .awake then 1 else 0 end),
                 (if .joined then 1 else 0 end),.fresh_drawers,.state,
                 (if (.bytes_total // 0)>0 then (100*.bytes_written/.bytes_total|floor) else -1 end),0,
@@ -121,8 +149,17 @@ gui_state() {
                       # #432: ok / slow / unknown ("" = an older server); only slow colours.
                       (.link_state // ""),
                       # #1366: the CRC count when over crc_warn_threshold, "" = not (or unread).
-                      (if .crc_suspect == true then (.crc // "") else "" end)]
+                      (if .crc_suspect == true then (.crc // "") else "" end),
+                      # #1495: the drawer by the mapping (null = not in it -> 0; an
+                      # older server without the field -> "" = by port), and the connection.
+                      (if has("drawer") then (.drawer // 0) else "" end),
+                      (if (.port | type) == "number" then "sata:\(.port)"
+                       elif (.pci | type) == "string" then "nvme:\(.pci)" else "" end | conn)]
                      | map(clean) | join("|"))),
+                # #1495: every drawer of the mapping, empty ones too, with its slot name.
+                (($m.drawer_slots // []) | to_entries[] | .value as $k |
+                  "room_slot=" + ([$mi, (.key + 1), ($k | conn), (($m.slot_names // {})[$k] // "")]
+                   | map(clean) | join("|"))),
                 # #704: names of the SATA slots, empty ones included.
                 (($m.slot_names // {}) | to_entries[] | select(.key | test("^sata:[1-9][0-9]?$")) |
                   "room_slot_name=" + ([$mi, (.key | ltrimstr("sata:")), .value] | map(clean) | join("|")))) end' \
@@ -167,9 +204,9 @@ gui_header_state() {
     if [ -r "$1" ]; then
         jq -r 'def c: (. // "") | tostring | gsub("[\\r\\n|]"; " ");
             "machine_name=\(.name | c)", "server_name=\(.server_name | c)",
-            "server_version=\(.server_version | c)"' "$1" || return 1
+            "server_version=\(.server_version | c)", "tz=\(.tz | c)"' "$1" || return 1
     else
-        printf 'machine_name=\nserver_name=\nserver_version=\n'
+        printf 'machine_name=\nserver_name=\nserver_version=\ntz=\n'
     fi
     gui_server_addr || return 1
     printf 'agent_version=%s\n' "${AGENT_VERSION:-unknown}"
@@ -189,6 +226,9 @@ gui_hello_state() {
         _hello_age=$((_now - _hello_at))
     fi
     printf 'hello_age=%s\nhello_rc=%s\n' "$_hello_age" "$_hello_rc"
+    # #1483: a power-off that came back (safe_poweroff) -- on every screen, said
+    [ -s "$RUN_DIR/power.fail" ] && printf 'toast=%s\n' "$(tr -d '\r\n|' < "$RUN_DIR/power.fail")"
+    return 0
 }
 
 gui_shrink_state() {
@@ -207,7 +247,7 @@ gui_state_loop() {
     while :; do
         if ! gui_state; then
             printf 'native-gui: state could not be verified\n' >&2
-            { printf 'message=State could not be verified|Check connection; see agent log\n' &&
+            { printf 'message=לא ניתן לאמת את מצב התחנה|בדקו את החיבור לשרת. הפרטים ביומן הסוכן\n' &&
                 gui_server_addr && gui_shrink_state && gui_ask_state; } > "$GUI_DIR/state.next" &&
                 mv "$GUI_DIR/state.next" "$GUI_DIR/state" || return 1
         fi

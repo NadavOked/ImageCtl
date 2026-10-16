@@ -109,6 +109,7 @@ int dcui_feed(DcuiFrame *f, char *line) {
             {"d.p", DEL_P}, {"d.field", DEL_FIELD}, {"d.hint", DEL_HINT}, {"d.note", DEL_NOTE},
             {"d.opt", DEL_OPT}, {"d.radio", DEL_RADIO}, {"d.alert", DEL_ALERT},
             {"d.bullet", DEL_BULLET}, {"d.kv", DEL_KV}, {"d.error", DEL_ERROR}, {"d.btn", DEL_BTN},
+            {"d.code", DEL_CODE},
         };
         for (size_t i = 0; i < sizeof T / sizeof T[0]; i++) {
             if (strcmp(k, T[i].name)) continue;
@@ -126,6 +127,10 @@ int dcui_feed(DcuiFrame *f, char *line) {
                 COPY(e->b, c[1]); COPY(e->a, c[2]); e->f1 = atoi(c[3]); break;
             case DEL_BTN:    /* label cap kind focused */
                 COPY(e->a, c[1]); COPY(e->c, c[2]); COPY(e->d, c[3]); e->f1 = atoi(c[4]); break;
+            case DEL_CODE:   /* code timer_label timer timer_kind (16/10: F4 on a secondary) */
+                COPY(e->a, c[1]); COPY(e->b, c[2]); COPY(e->c, c[3]); COPY(e->d, c[4]); break;
+            case DEL_ALERT:  /* text_m kind ("" = danger, "warn" = yellow) */
+                COPY(e->a, c[1]); COPY(e->c, c[2]); break;
             default:         /* p note alert bullet error: one text */
                 COPY(e->a, c[1]); break;
             }
@@ -160,7 +165,8 @@ int dcui_token(const Event *ev, int caps, char *out, size_t n) {
     }
     if (ev->type != UIEV_KEY) return 0;
     static const struct { int key; const char *name; } K[] = {
-        {KEYSYM_F2, "F2"}, {KEYSYM_F5, "F5"}, {KEYSYM_F9, "F9"}, {KEYSYM_F12, "F12"},
+        {KEYSYM_F2, "F2"}, {KEYSYM_F4, "F4"}, {KEYSYM_F5, "F5"}, {KEYSYM_F9, "F9"},
+        {KEYSYM_F12, "F12"},
         {KEYSYM_ENTER, "ENTER"}, {KEYSYM_ESC, "ESC"}, {KEYSYM_TAB, "TAB"}, {KEYSYM_BACKTAB, "BACKTAB"},
         {KEYSYM_BACKSPACE, "BACKSPACE"}, {KEYSYM_UP, "UP"}, {KEYSYM_DOWN, "DOWN"},
         {KEYSYM_LEFT, "LEFT"}, {KEYSYM_RIGHT, "RIGHT"},

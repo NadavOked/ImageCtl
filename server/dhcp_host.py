@@ -17,12 +17,15 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import secrets
 import socket
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 DEFAULT_CONF = "/etc/dnsmasq.d/imagectl-dhcp.conf"
 #: קובץ המתקין (‏#1013) — נקרא כאן כדי לדעת אם `enable-tftp` עדיין יושב בו.
@@ -280,7 +283,10 @@ def _write(text: str, conf_path: str | Path) -> str | None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
     except OSError as exc:
-        return f"לא ניתן לכתוב את {path}: {exc.strerror or exc}"
+        # הטקסט הגולמי של מערכת ההפעלה (אנגלית, תלוי-שפה) הולך ללוג בלבד;
+        # המשתמש מקבל משפט בעברית עם הנתיב (#1016).
+        log.warning("dhcp_host: write %s failed: %s", path, exc)
+        return f"לא ניתן לכתוב את {path} — בדקו הרשאות; הפרטים ביומן השרת"
     return None
 
 
@@ -291,10 +297,12 @@ def _systemctl(action: str, unit: str) -> str | None:
             capture_output=True, text=True, timeout=20, check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        return f"{unit}: הפקודה systemctl {action} נכשלה ({exc})"
+        log.warning("dhcp_host: systemctl %s %s failed: %s", action, unit, exc)
+        return f"שירות הרשת {unit} לא עודכן ({action}) — הפרטים ביומן השרת"
     if result.returncode != 0:
-        return (f"{unit} לא הגיב ל-{action}: "
-                f"{(result.stderr or result.stdout).strip()[:300]}")
+        log.warning("dhcp_host: systemctl %s %s rc=%s: %s", action, unit,
+                    result.returncode, (result.stderr or result.stdout).strip()[:300])
+        return f"שירות הרשת {unit} לא הגיב ל-{action} — הפרטים ביומן השרת"
     return None
 
 

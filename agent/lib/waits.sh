@@ -114,6 +114,12 @@ next_stream_ceiling() {
 # ‏udp-receiver ו-curl קיבלו תקרות משלהם, ולכן unblock_fifo קיים: הם
 # מטפלים בשורש, וההריגה כאן היא רשת הביטחון האחרונה.
 
+# One poll tick (#1450). Sets _tk to the tenths actually slept. Debian's
+# busybox is built with FLOAT_DURATION, but one built without it refuses
+# `sleep 0.1` at once -- and a refused tick must cost a real second, never
+# zero: a hot loop would call every smartctl "timed out" within milliseconds.
+poll_tick() { if sleep 0.1 2>/dev/null; then _tk=1; else sleep 1; _tk=10; fi; }
+
 capped_run() {
     # $1 = תקרה בשניות, $2 = קובץ ל-stdout של הפקודה, $3.. = הפקודה (‏stderr
     # ללוג). מחזיר את קוד היציאה של הפקודה עצמה; כשלא הסתיימה בזמן --
@@ -121,19 +127,19 @@ capped_run() {
     # ‏CAPPED_TIMED_OUT ולא את הקוד: אצל smartctl כל קוד 0-255 הוא תשובה.
     # ‏**בלי wait אחרי ההריגה**: תהליך שתקוע ב-ioctl (מצב D) אינו מת מ-kill -9,
     # ו-wait עליו הוא בדיוק הקפיאה שהפונקציה הזו קיימת כדי לסיים (#1367).
-    _cr_max="$1"; _cr_out="$2"; shift 2; CAPPED_TIMED_OUT=0; _cr_t=0
+    _cr_max="$1"; _cr_limit=$((_cr_max * 10)); _cr_out="$2"; shift 2; CAPPED_TIMED_OUT=0; _cr_t=0
     # a log that cannot be opened must not stop the command itself (a redirect
     # that fails runs nothing): no log directory (host, tests) = no stderr
     _cr_err="${LOG_FILE:-/dev/null}"; [ -d "${_cr_err%/*}" ] || _cr_err=/dev/null
     "$@" > "$_cr_out" 2>> "$_cr_err" < /dev/null &
     _cr_pid=$!
     while kill -0 "$_cr_pid" 2>/dev/null; do
-        if [ "$_cr_t" -ge "$_cr_max" ]; then
+        if [ "$_cr_t" -ge "$_cr_limit" ]; then
             log "פג הזמן: $1 לא ענה תוך $_cr_max שניות -- נעזב, לא נבדק" >&2
             kill -9 "$_cr_pid" 2>/dev/null; CAPPED_TIMED_OUT=1
             return "$WAIT_TIMED_OUT"
         fi
-        sleep 1; _cr_t=$((_cr_t + 1))
+        poll_tick; _cr_t=$((_cr_t + _tk))
     done
     wait "$_cr_pid"
 }
@@ -162,17 +168,32 @@ wait_progress() {
     # $1 = pid, $2 = קובץ מונה שגדל כל עוד יש התקדמות (הפלט של pv -n -b),
     # $3 = תקרה עד הבייט הראשון, $4 = תקרת שקט אחריו, $5 = על מה מחכים.
     # $6.. = fifos whose blocked readers must be released after a timeout.
+    # WAIT_STARTED_LOG + WAIT_STARTED_TEXT optionally delay the quiet clock
+    # until explicit start evidence appears (#1497); they are one-shot.
     #
     # כל עוד המונה זז ממתינים בלי שום הגבלה — זו כל הנקודה: כונן איטי
     # מעכב, הוא לא נתקע. השעון מתחיל לרוץ רק כשהמונה עומד, והתקרה
     # מתחלפת ברגע שהבייט הראשון הגיע: "השידור עוד לא התחיל" ו"השידור
     # נפסק באמצע" הם שני מצבים שונים עם סבלנות שונה.
     _p_pid="$1"; _p_file="$2"; _p_max="$3"; _p_stall="$4"; _p_what="$5"
+    _p_glog="${WAIT_STARTED_LOG:-}"; _p_gtxt="${WAIT_STARTED_TEXT:-}"
+    WAIT_STARTED_LOG=""; WAIT_STARTED_TEXT=""
+    _p_gopen=1
+    [ -n "$_p_glog" ] && [ -n "$_p_gtxt" ] && _p_gopen=0
     shift 5
     _p_seen=""; _p_still=0
     while kill -0 "$_p_pid" 2>/dev/null; do
         if command -v watchdog_beat >/dev/null 2>&1; then watchdog_beat; fi
         sleep "$WAIT_POLL_S"
+        # Missing text (grep 1) and a log not written yet or unreadable (grep 2,
+        # its message dropped: it is this branch, not a lost one) both keep the
+        # bounded START ceiling -- never success: the caller judges that.
+        if [ "$_p_gopen" -eq 0 ] && grep -qF -- "$_p_gtxt" "$_p_glog" 2>/dev/null; then
+            _p_gopen=1
+            _p_still=0
+            _p_max="$_p_stall"
+            continue
+        fi
         # רק שורות מספריות: שורת שגיאה של `pv` היא שינוי בקובץ, והיא
         # נראתה כאן כמו "התקדמות" — כלומר איפסה את שעון התקיעה בדיוק
         # ברגע שבו הזרם נשבר (#100). ההשוואה מחרוזתית ולכן לא התפוצצה,
@@ -184,7 +205,7 @@ wait_progress() {
         if [ "$_p_now" != "$_p_seen" ] && [ "$_p_now" != 0 ]; then
             _p_seen="$_p_now"
             _p_still=0
-            _p_max="$_p_stall"
+            [ "$_p_gopen" -eq 0 ] || _p_max="$_p_stall"
             continue
         fi
         _p_still=$((_p_still + WAIT_POLL_S))

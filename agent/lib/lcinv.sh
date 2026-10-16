@@ -145,13 +145,6 @@ lc_inv_field() {
     awk -F'|' -v i="$2" '{ print $i; exit }' "$LC/inv/$1.line" 2>/dev/null
 }
 
-lc_server_up() {
-    # The server answers right now -- positive evidence, a 200. #926: a source
-    # is shrunk only after the server has recorded its original layout.
-    _su=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "${SERVER:-http://0.0.0.0}/api/v1/agent/state?mac=${MAC:-}" 2>/dev/null)
-    [ "$_su" = 200 ]
-}
-
 lc_measure() {
     # $1 = source disk. $LC/measure/$1: state|need_min|reason. state: none (no
     # drawer is smaller than the layout -- nothing to measure), done (need_min
@@ -179,6 +172,8 @@ lc_measure() {
     if ! shrink_plan "$1" "$LC/measure/$1.parts" 512; then
         echo "failed||$(_lc_clean "$SHRINK_ERROR")" > "$_lm_out"; return 1
     fi
+    # #1466 P2: the run reuses this plan (lc_shrink_plan) on the same disk and table.
+    cp "$RUN_DIR/shrink.plan" "$LC/measure/$1.plan" && _lc_clean "$(disk_serial "$1")" > "$LC/measure/$1.serial" || rm -f "$LC/measure/$1.plan"
     if [ ! -s "$RUN_DIR/shrink.plan" ]; then
         echo "done|$_lm_need|אין מה לכווץ במקור" > "$_lm_out"; return 0
     fi
@@ -188,10 +183,10 @@ lc_measure() {
     _shrink_compact "$LC/measure/$1.mark" "$_lm_parts" > "$LC/measure/$1.compact" \
         && _lm_min=$(lc_layout_need "$LC/measure/$1.compact" "$(lc_inv_field "$1" 5)" 512) \
         || { echo "failed||לא הצלחנו לחשב את הפריסה המכווצת" > "$_lm_out"; return 1; }
-    if ! lc_server_up; then
-        echo "failed|$_lm_min|כיווץ זמני של המקור דורש שהשרת ירשום את הפריסה המקורית (#926), והשרת לא עונה" > "$_lm_out"
-        return 1
-    fi
+    # #1478: no server here. The run shrinks a RAM view and never writes the
+    # source (#1466), so there is no original layout to record (#926 is the
+    # capture's in-place shrink). A view that cannot be had is refused in
+    # lc_run by name, before a byte reaches the target.
     echo "done|$_lm_min|" > "$_lm_out"
 }
 
@@ -241,7 +236,10 @@ lc_min_free() {
     # manifest built from the inventory: roles as the inventory checked them (lc_role), used bytes
     # from inv/<src>.used (an unread one stays null -- unchecked).
     _fm_m="$LC/fit.json"; _fm_p=""
-    [ "$(min_free_gb)" -gt 0 ] || { echo ok; return 0; }   # 0 = the rule is off
+    # #1484: a value that is not a number is "not checked", never "ok" -- in the
+    # kiosk min_free_gb was "not found", "bad number" fell through to ok.
+    _fm_g=$(min_free_gb); case "$_fm_g" in ''|*[!0-9]*) echo "unchecked|לא הצלחנו לקרוא כמה מקום פנוי נדרש"; return 0 ;; esac
+    [ "$_fm_g" -gt 0 ] || { echo ok; return 0; }   # 0 = the rule is off
     [ -s "$3" ] || { echo "unchecked|לא הצלחנו לקרוא את פריסת המקור"; return 0; }
     while IFS='|' read -r _fm_i _fm_t _fm_u _fm_f _fm_s; do
         _fm_b=$(awk -F'|' -v i="$_fm_i" '$1 == i { print $2; exit }' "$LC/inv/$1.used" 2>/dev/null)

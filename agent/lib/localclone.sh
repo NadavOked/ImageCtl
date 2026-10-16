@@ -14,8 +14,8 @@
 #
 # The GUI talks through files in $LC, one per question, written by the
 # kiosk's bridge (lcgui.sh) and consumed here: boot.decision (server|local|
-# pause), measure.req (<dev>), start.req (<src>|<t1,t2>|<shrink 0/1>),
-# stop.req, end.req (poweroff|again|back).
+# pull|pause), measure.req (<dev>), start.req (<src>|<t1,t2>|<shrink 0/1>),
+# stop.req, end.req (poweroff|again|back), pull.req (lcpull.sh, 16/10).
 
 LC_BOOT_S="${LC_BOOT_S:-20}"
 #: #1367: a choice nobody makes is not a wait for ever. No touch on the screen
@@ -28,13 +28,14 @@ lc_gui_alive() { [ -n "${_gui_pid:-}" ] && kill -0 "$_gui_pid" 2>/dev/null; }
 local_clone_arm() {
     # Before the GUI starts on the first idle hello: the boot screen is the
     # first thing it draws, never a flash of the standby screen. Only a cloner,
-    # only once a boot, only with two disks or more (owner: one disk = nothing
-    # to copy to, the choice is not shown).
+    # only once a boot, only with a disk. 16/10: one disk is still a target for
+    # "restore from the server"; the local clone needs two (boot.local).
     [ "$D_ROLE" = cloner ] && [ -z "${_lc_armed:-}" ] || return 0
-    _lc_armed=1
-    [ "$(list_drawers | wc -l)" -ge 2 ] || { log "local clone: fewer than two disks -- no boot choice"; return 0; }
+    _lc_armed=1; _lc_n=$(list_drawers | wc -l)
+    [ "$_lc_n" -ge 1 ] || { log "local clone: no disks -- no boot choice"; return 0; }
     mkdir -p "$LC" || return 0
-    rm -f "$LC/boot.decision" "$LC/measure.req" "$LC/start.req" "$LC/stop.req" "$LC/end.req"
+    rm -f "$LC/boot.decision" "$LC/measure.req" "$LC/start.req" "$LC/stop.req" "$LC/end.req" "$LC/pull.req"
+    if [ "$_lc_n" -ge 2 ]; then echo 1; else echo 0; fi > "$LC/boot.local"
     echo "0|0" > "$LC/boot"; echo boot > "$LC/screen"
 }
 
@@ -54,8 +55,7 @@ local_clone_offer() {
     rm -f "$RUN_DIR/power.resp" "$RUN_DIR/attended.round"
     while :; do
         lc_boot_choice
-        [ "$LC_CHOICE" = local ] || break
-        lc_session
+        case "$LC_CHOICE" in local) lc_session ;; pull) lc_pull_session ;; *) break ;; esac
         [ "$LC_END" = back ] || break
         LC_PAUSED=1      # back from the source screen: the choice, not counting
     done
@@ -65,7 +65,7 @@ local_clone_offer() {
 }
 
 lc_boot_choice() {
-    # Sets LC_CHOICE (server|local). The countdown is the agent's: the GUI
+    # Sets LC_CHOICE (server|local|pull). The countdown is the agent's: the GUI
     # only draws the deadline written here, so a frozen screen cannot hold
     # the machine -- it is the server when the time is up.
     LC_CHOICE=server
@@ -82,7 +82,9 @@ lc_boot_choice() {
         _bc_d=""; [ -f "$LC/boot.decision" ] && { _bc_d=$(cat "$LC/boot.decision"); rm -f "$LC/boot.decision"; }
         case "$_bc_d" in
             server) log "local clone: 'from the server' chosen"; return 0 ;;
-            local) log "local clone: 'local clone' chosen"; LC_CHOICE=local; return 0 ;;
+            local) [ "$(cat "$LC/boot.local" 2>/dev/null)" = 1 ] || { log "local clone: 'local clone' refused -- one disk"; continue; }
+                   log "local clone: 'local clone' chosen"; LC_CHOICE=local; return 0 ;;
+            pull) log "local clone: 'restore an image from the server' chosen"; LC_CHOICE=pull; return 0 ;;
             pause) [ "$LC_PAUSED" = 1 ] || log "local clone: touched -- the countdown stops"
                    LC_PAUSED=1; echo "0|1" > "$LC/boot"; lc_quiet_reset ;;
         esac
@@ -145,14 +147,22 @@ lc_session() {
     done
 }
 
+lc_run_total() {
+    # $1 = manifest. The bytes the copy reads: the used blocks, swap 0. #1440: one
+    # partition not measured makes the total not known (null) -- its size is not
+    # what partclone reads, and a total built on it ran the time left 2.5x long.
+    jq -r 'if any(.partitions[]; .fs != "swap" and .used_bytes == null) then null
+        else [.partitions[] | if .fs == "swap" then 0 else .used_bytes end] | add end' "$1"
+}
+
 lc_run() {
     # $1 = source, $2 = targets (words), $3 = 1 when the confirm dialog showed
     # and the person accepted a temporary shrink of the source.
     _lr_src="$1"; _lr_k="$3"; _lr_r="$LC/run"
     rm -rf "$_lr_r" "$LC/stop.req"; mkdir -p "$_lr_r"; : > "$_lr_r/targets"
     # The cloner's dead-man (watchdog.sh, 600 s) must not reboot the machine
-    # in the middle of ntfsresize on the SOURCE: shrinking a big volume or
-    # growing it back has no byte counter to beat on. A person started this
+    # in the middle of ntfsresize on the source's RAM view (#1466): shrinking
+    # a big volume has no byte counter to beat on. A person started this
     # and is at the machine; the copy's own waits still end a stalled stream.
     ( while :; do if command -v watchdog_beat >/dev/null 2>&1; then watchdog_beat; fi; sleep 20; done ) < /dev/null > /dev/null 2>&1 &
     _lr_beat=$!
@@ -185,39 +195,42 @@ EOF
     rm -f "$RUN_DIR/parts.orig.txt" "$RUN_DIR/targets/$_lr_src/shrunk"
     if [ -n "$_lr_small" ]; then
         echo shrinking > "$LC/phase"
-        if lc_shrink_source "$_lr_src"; then echo 1 > "$_lr_r/shrunk"
-        else for _lr_t in $_lr_small; do fail_written_target "$_lr_t" "המקור לא כווץ, ולכן היעד לא נכתב: $LC_ERROR"; done; fi
+        lc_shrink_source "$_lr_src" \
+            || for _lr_t in $_lr_small; do fail_written_target "$_lr_t" "המקור לא כווץ, ולכן היעד לא נכתב: $LC_ERROR"; done
         echo copying > "$LC/phase"
     fi
     _any_alive "$_lr_all" || { lc_end; return 1; }
     lc_manifest "$_lr_src" "$_lr_r/parts.txt" || { _fail_alive "$_lr_all" "${LC_ERROR:-לא הצלחנו לתאר את המקור}"; lc_end; return 1; }
-    jq -r '[.partitions[] | if .fs == "swap" then 0 elif .used_bytes != null then .used_bytes else .size_bytes end] | add' \
-        "$_lr_r/manifest.json" > "$_lr_r/total" 2>> "$LOG_FILE"
+    lc_run_total "$_lr_r/manifest.json" > "$_lr_r/total" 2>> "$LOG_FILE"
     for _lr_t in $_lr_all; do
         [ "$(cat "$RUN_DIR/targets/$_lr_t/state")" = failed ] && continue
         cp "$_lr_r/total" "$RUN_DIR/targets/$_lr_t/total"
         lc_prepare_target "$_lr_t" "$_lr_r/manifest.json"
     done
     # shellcheck disable=SC2086 # the target list is a word list on purpose
-    lc_copy "$_lr_r/manifest.json" "$_lr_src" $_lr_all; _lr_rc=$?
+    _lr_c0=$(date +%s); lc_copy "$_lr_r/manifest.json" "$_lr_src" $_lr_all; _lr_rc=$?; echo $(( $(date +%s) - _lr_c0 )) > "$_lr_r/copy_s"
     # shellcheck disable=SC2086
-    [ "$_lr_rc" = 2 ] || { echo verifying > "$LC/phase"; lc_finish "$_lr_r/manifest.json" $_lr_all; }
+    [ "$_lr_rc" = 2 ] || { echo verifying > "$LC/phase"; _lr_c0=$(date +%s); lc_finish "$_lr_r/manifest.json" $_lr_all
+                           echo $(( $(date +%s) - _lr_c0 )) > "$_lr_r/verify_s"; }
     [ "$_lr_rc" = 2 ] && echo 1 > "$_lr_r/stopped"
     lc_end
 }
 
 lc_end() {
-    # Whatever happened: the source back to its size, the result, the report.
-    if [ -f "$RUN_DIR/targets/$_lr_src/shrunk" ]; then
-        echo restoring > "$LC/phase"
-        if shrink_restore_source "$_lr_src"; then echo ok > "$_lr_r/source_restore"
-        else printf 'הנתונים במקור שלמים, אבל הוא נשאר קטן מגודלו המקורי: %s\n' \
-                 "$(_lc_clean "$(cat "$RUN_DIR/targets/$_lr_src/error" 2>/dev/null)")" > "$_lr_r/source_restore"; fi
+    # Whatever happened: the RAM views released (read back), the result, the
+    # report. The source was never written (#1466 option B): nothing to grow back.
+    _le_t0=$(date +%s)
+    if [ -d "$_lr_r/snap" ] && ! lc_snap_teardown; then
+        printf 'המקור לא נכתב, אבל העותק בזיכרון לא שוחרר (%s) — אתחלו את המחשב לפני שיכפול נוסף\n' "$(_lc_clean "$LC_SNAP_TD")" > "$_lr_r/source_restore"
     fi
+    [ ! -f "$_lr_r/shrink_path" ] || echo $(( $(date +%s) - _le_t0 )) > "$_lr_r/restore_s"
     date +%s > "$_lr_r/ended"
-    if [ -f "$_lr_r/stopped" ]; then echo stopped > "$LC/phase"; else echo "done" > "$LC/phase"; fi
     lc_report
     kill "$_lr_beat" 2>/dev/null; wait_pid "$_lr_beat" "$WAIT_HELPER_S" "local clone watchdog beat"
+    # #1483: the result -- and its "כבה את המחשב" -- last: the loop that reads
+    # end.req runs next. Before the report (curl, up to 10 s) the key waited
+    # behind it, unseen, and the screen said "not reported" before it was tried.
+    if [ -f "$_lr_r/stopped" ]; then echo stopped > "$LC/phase"; else echo "done" > "$LC/phase"; fi
 }
 
 lc_gb_short() { awk -v n="$1" -v h="$2" 'BEGIN { printf "%d GB", int((n - h + 999999999) / 1e9) }'; }
@@ -231,11 +244,17 @@ lc_report() {
         _rp_s=$(cat "$RUN_DIR/targets/$_rp_d/state" 2>/dev/null); _rp_e=$(cat "$RUN_DIR/targets/$_rp_d/error" 2>/dev/null)
         _rp_t="$_rp_t${_rp_t:+,}{\"dev\":\"$_rp_d\",\"port\":$(_lc_num "$(disk_port "$_rp_d")"),\"serial\":\"$(json_escape "$(disk_serial "$_rp_d")")\",\"state\":\"$_rp_s\",\"error\":\"$(json_escape "$_rp_e")\"}"
     done
-    printf '{"mac":"%s","source":{"dev":"%s","port":%s,"serial":"%s"},"targets":[%s],"shrunk":%s,"source_restore":"%s","stopped":%s,"bytes":%s,"elapsed_s":%s}\n' \
+    # #1466: which shrink ran, the view's release, and the stage times (P1) --
+    # null = not measured, never 0.
+    _rp_p=$(cat "$_rp_r/shrink_path" 2>/dev/null); case "$_rp_p" in snapshot|refused) _rp_p="\"$_rp_p\"" ;; *) _rp_p=null ;; esac
+    _rp_x=""; for _rp_k in info_s resize_s relocations_mb copy_s verify_s restore_s; do
+        _rp_x="$_rp_x,\"$_rp_k\":$(_lc_num "$(cat "$_rp_r/$_rp_k" 2>/dev/null)")"; done
+    printf '{"mac":"%s","source":{"dev":"%s","port":%s,"serial":"%s"},"targets":[%s],"shrunk":%s,"source_restore":"%s","stopped":%s,"bytes":%s,"elapsed_s":%s,"shrink_path":%s,"snapshot_teardown":"%s"%s}\n' \
         "${MAC:-}" "$_lr_src" "$(_lc_num "$(disk_port "$_lr_src")")" "$(json_escape "$(disk_serial "$_lr_src")")" "$_rp_t" \
         "$([ -f "$_rp_r/shrunk" ] && echo true || echo false)" "$(json_escape "$(cat "$_rp_r/source_restore" 2>/dev/null)")" \
         "$([ -f "$_rp_r/stopped" ] && echo true || echo false)" "$(_lc_num "$(cat "$_rp_r/total" 2>/dev/null)")" \
-        "$(( $(cat "$_rp_r/ended") - $(cat "$_rp_r/started") ))" > "$_rp_r/report.json"
+        "$(( $(cat "$_rp_r/ended") - $(cat "$_rp_r/started") ))" "$_rp_p" \
+        "$(json_escape "$(cat "$_rp_r/snap_teardown" 2>/dev/null)")" "$_rp_x" > "$_rp_r/report.json"
     _rp_c=$(curl -s -o "$_rp_r/report.resp" -w '%{http_code}' --max-time 10 -H "Content-Type: application/json" \
         --data-binary "@$_rp_r/report.json" "${SERVER:-http://0.0.0.0}/api/v1/agent/local-clone" 2>/dev/null)
     if [ "$_rp_c" = 200 ]; then echo sent > "$_rp_r/report"; log "local clone: reported to the server journal"
@@ -245,5 +264,13 @@ lc_report() {
 lc_poweroff() {
     # "כבה את המחשב": the person asked. Wake-on-LAN first when it can be
     # armed (#587: a remote power-on needs it), then off -- by request.
-    safe_poweroff "local clone: operator request"
+    # #1483: never a key that does nothing. Arming and sync take a while (a
+    # dead disk), so the screen says so first; a refusal says why, and stays.
+    _lc_req run/notice "מכבה את המחשב…"
+    safe_poweroff "local clone: operator request" && return 0
+    if [ "$POWEROFF_WHY" = wol ]; then
+        _lc_req run/notice "המחשב לא כובה: Wake-on-LAN לא נדרך בכרטיס הרשת, ובלעדיו אי אפשר להדליק אותו מרחוק. כבו אותו בכפתור ההפעלה."
+    else
+        _lc_req run/notice "המחשב לא כובה: פקודת הכיבוי חזרה והמחשב עדיין דולק. כבו אותו בכפתור ההפעלה."
+    fi
 }

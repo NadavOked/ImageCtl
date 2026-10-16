@@ -269,7 +269,7 @@ def drive(driver: Path, tmp_path: Path, state: str, *events: str) -> list[str]:
     return [l for l in run.stdout.splitlines() if l]
 
 
-BOOT = "lc_screen=boot\nlc_boot=2000000000|0|1999999990\n"
+BOOT = "lc_screen=boot\nlc_boot=2000000000|0|1999999990\nlc_local=1\n"   # 16/10: two disks or more -- the local card is on
 DISKS = ("lc_screen=local\nlc_inv=done\nlc_phase=idle\n"
          "lc_disk=1|sda|Samsung|S1|500107862016|ok|ok|Windows|3|212000000000|500107862016|1|\n"
          "lc_disk=2|sdb|WDC|S2|500107862016|fail|health_failed|Ubuntu|2|38000000000|500107862016|1|\n"

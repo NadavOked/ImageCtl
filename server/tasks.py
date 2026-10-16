@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import os
+import re
 import secrets
 import sqlite3
 from pathlib import Path
@@ -35,9 +37,28 @@ CAPTURE_STAGES = ("ntfs_check", "shrink", "stream", "restore_size", "verify")
 TOKEN_HEADER = "X-Imagectl-Task-Token"
 
 
+#: מזהה משימה כרכיב נתיב: אותה מחלקת תווים כמו `work_areas.CAPTURE_AREA`.
+#: השרת מייצר `tsk_<hex>`; הכלל רחב מזה בכוונה (מזהי בדיקה) — מה שהוא
+#: אוסר הוא מה שחשוב: נקודה, לוכסן, לוכסן הפוך, נקודתיים ובייט אפס.
+TASK_ID = re.compile(r"[A-Za-z0-9_-]+")
+
+
 def staging_dir(library_root: Path, task_id: str) -> Path:
-    """איפה נאספים קבצי הקליטה עד שהמניפסט מאומת."""
-    return library_root / f".capture-{task_id}"
+    """איפה נאספים קבצי הקליטה עד שהמניפסט מאומת.
+
+    ‏`task_id` מגיע בנתיב ה-URL. ‏`capture.task_for` כבר דורש שהוא קיים
+    ב-DB, אבל הנתיב נבנה כאן — ולכן כאן הגבול: מזהה שאינו רכיב יחיד
+    נדחה בשמו (‏ValueError), ולא "מתוקן". אחריו, הנתיב שנפתר (‏realpath)
+    חייב להיות ילד ישיר של שורש הספרייה — הצורה ש-CodeQL מזהה כמנקה
+    ‏(py/path-injection), והחגורה השנייה אם הכלל למעלה יורחב מחר.
+    """
+    if not isinstance(task_id, str) or not TASK_ID.fullmatch(task_id):
+        raise ValueError(f"task id is not a single path component: {task_id!r}")
+    root = os.path.realpath(library_root)
+    full = os.path.realpath(os.path.join(root, f".capture-{task_id}"))
+    if not full.startswith(root + os.sep) or os.path.dirname(full) != root:
+        raise ValueError(f"staging folder of {task_id!r} falls outside the library root")
+    return Path(full)
 
 
 def active_task(conn: sqlite3.Connection, mac: str) -> dict | None:

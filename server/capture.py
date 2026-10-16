@@ -12,13 +12,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import errno
 import hashlib
 import json
 import logging
+import os
 import re
 import secrets
 import shutil
+import threading
+import time
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -27,6 +31,7 @@ from . import auth, registry, storage_locations
 from .api import ServerContext, identity_gate
 from .images import validate_display_name
 from .db import _write_lock, journal, now_iso, update_one, writing
+from . import capture_detail
 from .progress_view import capture_progress
 from .images import (
     ImageLibrary, MACHINE_MAC, carries_a_stream_file, has_disk_guid, has_partition_geometry,
@@ -53,9 +58,46 @@ log = logging.getLogger("imagectl.capture")
 SAFE_FILE = re.compile(r"^p\d+\.[a-z]+\.pcl\.zst$")
 CHUNK = 1024 * 1024
 
+#: ‏#1470: ה-sha256 שהשרת חישב **בזמן הקבלה** של כל קובץ מחיצה, ליד הקובץ
+#: באזור הביניים (`p3.windows.pcl.zst.upload-sha256`). הדיסק הוא מקור האמת
+#: (עיקרון 3), ולכן הוא שורד אתחול כמו הקבצים עצמם. אינו תואם `SAFE_FILE`,
+#: ונמחק לפני שהתיקייה נכנסת לספרייה.
+UPLOAD_SHA = ".upload-sha256"
+
+#: כל כמה שניות האימות ברקע כותב את ההתקדמות שלו (`tasks.verify_bytes`).
+VERIFY_PROGRESS_EVERY_S = 1.0
+
+
+def staged_file(folder: Path, name: str) -> Path:
+    """‏`folder/name` — רק כש-`name` הוא שם קובץ מחיצה ונוחת ישירות בתוך `folder`.
+
+    השם מגיע ממכונה ברשת הלימודית (נתיב ה-URL של ההעלאה, או שדה `file`
+    במניפסט שהיא שלחה). ‏`SAFE_FILE` הוא הרשימה הלבנה ונבדק אצל הקורא עם
+    הודעה בשמה; כאן הוא נבדק שוב, ואחריו הנתיב שנפתר (‏realpath) חייב להיות
+    ילד ישיר של התיקייה — הצורה ש-CodeQL מזהה כמנקה (py/path-injection).
+    שם שאינו עובר — ‏ValueError, לא "תיקון" (עיקרון 5)."""
+    if not isinstance(name, str) or not SAFE_FILE.fullmatch(name):
+        raise ValueError(f"unexpected partition file name: {name!r}")
+    base = os.path.realpath(folder)
+    full = os.path.realpath(os.path.join(base, name))
+    if not full.startswith(base + os.sep) or os.path.dirname(full) != base:
+        raise ValueError(f"partition file {name!r} falls outside its staging folder")
+    return Path(full)
+
+
+def _write_and_hash(handle, digest, data: bytes) -> None:
+    """‏#1488: אצווה אחת של ההעלאה — רצה בתהליכון (`asyncio.to_thread`)."""
+    digest.update(data)
+    handle.write(data)
+
 
 class _DiskFull(Exception):
     """אזל המקום באזור הביניים תוך כדי זרם. הסיבה נוקבת בשם הקובץ."""
+
+
+class _StagingGone(Exception):
+    """‏#1470+#532: תיקיית הביניים נמחקה מתחת לזרם (ביטול, בלינוקס) — לרשומת
+    ה-sha256 אין לאן להיכתב. מצב המשימה מכריע: מבוטלת = 409, פתוחה = כשל בשם."""
 
 
 def _free_bytes(folder: Path) -> int:
@@ -132,17 +174,36 @@ def create_agent_capture_router(ctx: ServerContext) -> APIRouter:
 
     async def stream_to(request: Request, path: Path) -> str:
         digest = hashlib.sha256()
+        # ‏#1470: רשומה ישנה של העלאה קודמת לאותו שם אינה ראיה על הבייטים האלה.
+        record = upload_sha_path(path)
+        record.unlink(missing_ok=True)
         try:
             with path.open("wb") as handle:
+                # ‏#1488: הכתיבה והגיבוב בתהליכון, באצוות של CHUNK — לא על
+                # הלולאה שמשותפת לסוכנים ולקונסולה. ה-await על כל אצווה הוא
+                # הלחץ-החוזר: הזרם אינו נקרא הלאה לפני שהדיסק קיבל את הקודמת,
+                # ולכן הזיכרון תחום לאצווה אחת (‏#15) כמו קודם.
+                batch = bytearray()
                 async for chunk in request.stream():
-                    digest.update(chunk)
-                    handle.write(chunk)
+                    batch += chunk
+                    if len(batch) >= CHUNK:
+                        await asyncio.to_thread(_write_and_hash, handle, digest, bytes(batch))
+                        batch.clear()
+                if batch:
+                    await asyncio.to_thread(_write_and_hash, handle, digest, bytes(batch))
+            # ‏#1470: מה שהתקבל נשמר ליד הקובץ — ‏finish_capture משווה אותו
+            # למניפסט, כבדיקה נוספת על הקריאה החוזרת מהדיסק (עיקרון 6).
+            try:
+                record.write_text(digest.hexdigest(), encoding="ascii")
+            except FileNotFoundError as exc:
+                raise _StagingGone(f"תיקיית הביניים של {path.name} נמחקה בזמן ההעלאה") from exc
         except OSError as exc:
             # ‏#411: דיסק שהתמלא תוך כדי זרם הוא כשל גלוי (עיקרון 4), לא 500
             # באמצע עם קובץ חלקי שנשאר. שאר ה-OSError ממשיכים כשהיו.
             if exc.errno != errno.ENOSPC:
                 raise
             path.unlink(missing_ok=True)
+            record.unlink(missing_ok=True)
             raise _DiskFull(
                 f"אזל המקום בשרת בזמן כתיבת {path.name} — הדיסק התמלא") from exc
         return digest.hexdigest()
@@ -217,10 +278,11 @@ def create_agent_capture_router(ctx: ServerContext) -> APIRouter:
         if refused is not None:
             return refused
         # רשימה לבנה על שם הקובץ: הוא מגיע ממכונה ברשת הלימודית.
-        if not SAFE_FILE.match(filename):
+        if not SAFE_FILE.fullmatch(filename):
             raise HTTPException(400, "unexpected partition file name")
         folder = staging_dir(ctx.library.root, task_id)
         folder.mkdir(parents=True, exist_ok=True)
+        path = staged_file(folder, filename)
         # ‏#411: הזמנת מקום לפני הבייט הראשון. ההעלאה מזרימה ב-chunked (‏`curl
         # -T` על fifo, כדי לא להיחנק ב-OOM — ‏agent/lib/capture.sh), ולכן לרוב
         # אין Content-Length; כשיש, מקום פנוי שאינו מכיל אותו נדחה כאן ומספרי,
@@ -234,11 +296,14 @@ def create_agent_capture_router(ctx: ServerContext) -> APIRouter:
                       f" בייט, פנויים {free} בלבד")
             _fail(ctx.conn, task_id, reason)
             raise HTTPException(507, reason)
+        gone = None
         try:
-            got = await stream_to(request, folder / filename)
+            got = await stream_to(request, path)
         except _DiskFull as exc:
             _fail(ctx.conn, task_id, str(exc))
             raise HTTPException(507, str(exc))
+        except _StagingGone as exc:
+            gone = str(exc)   # ‏#1470+#532: מצב המשימה למטה מכריע — ביטול = 409
         # ‏#532: תביעת מצב ב-`WHERE`. ‏`task_for` בדק **לפני** ההזרמה,
         # וההזרמה של מחיצה נמשכת דקות — מנהל שביטל בינתיים קיבל
         # `ok: true`, והשורה הזו החזירה את המשימה ל-`running`.
@@ -250,14 +315,23 @@ def create_agent_capture_router(ctx: ServerContext) -> APIRouter:
             " WHERE id = ? AND state IN ('pending', 'running')",
             (now_iso(), task_id),
         ):
-            (folder / filename).unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
+            upload_sha_path(path).unlink(missing_ok=True)
             raise HTTPException(409, "the task is no longer open")
         ctx.conn.commit()
+        if gone is not None:
+            # המשימה פתוחה ובכל זאת התיקייה איננה: אין ראיה לבייטים — כשל בשם, לא "ok".
+            _fail(ctx.conn, task_id, gone)
+            raise HTTPException(500, gone)
         # codeql[py/log-injection] false positive: task_id נמצא ב-DB, ושם הקובץ עבר SAFE_FILE (#291)
         log.info("capture %s: received %s", task_id, filename)
         return {"ok": True, "sha256": got}
 
-    @router.put("/{task_id}/manifest")
+    # ‏#1470 (הכרעת נדב 16/10): ‏202 — המניפסט התקבל והבדיקות הזולות עברו,
+    # ומחשב הבנייה משתחרר. הקריאה החוזרת של כל קובץ מהדיסק (עיקרון 6) רצה
+    # ברקע, בתהליכון ולא על לולאת האירועים (#1461), והאימג' נכנס לספרייה
+    # רק כשהיא עוברת.
+    @router.put("/{task_id}/manifest", status_code=202)
     async def finish_capture(task_id: str, request: Request):
         row = task_for(task_id, request)
         refused = identity_gate(ctx, row["mac"], request, "capture-manifest")
@@ -281,7 +355,9 @@ def create_agent_capture_router(ctx: ServerContext) -> APIRouter:
             _fail(ctx.conn, task_id, f"manifest is not valid JSON: {snippet}")
             raise HTTPException(400, "manifest is not valid JSON")
 
-        problem = validate_manifest_files(manifest, folder)
+        # ‏#1470: כאן רק מה שזול — המבנה, שכל קובץ הגיע, ושה-sha256 שחושב
+        # בזמן הקבלה תואם את המניפסט. הקריאה החוזרת מהדיסק — ברקע, למטה.
+        problem = manifest_problem(manifest, folder) or upload_sha_problem(manifest, folder)
         if problem:
             _fail(ctx.conn, task_id, problem)
             shutil.rmtree(folder, ignore_errors=True)
@@ -311,22 +387,34 @@ def create_agent_capture_router(ctx: ServerContext) -> APIRouter:
         if target.exists():
             _fail(ctx.conn, task_id, "an image with this id already exists")
             raise HTTPException(409, "image already exists")
-        folder.rename(target)
 
         # ‏#1370: המכנה של פס ההתקדמות. בזמן הקליטה הגודל הדחוס לא ידוע
         # ו-bytes_total נשאר 0 (#435); כאן המניפסט אומר כמה עבר. ערך שאינו
         # מספר שלם אי-שלילי אינו מנוחש — bytes_total נשאר כמו שהיה.
         total = manifest.get("total_compressed_bytes")
         known = type(total) is int and 0 <= total < 2 ** 63
-        ctx.conn.execute(
-            "UPDATE tasks SET state = 'done', updated_at = ?,"
-            " bytes_total = COALESCE(?, bytes_total) WHERE id = ?",
-            (now_iso(), total if known else None, task_id),
-        )
-        ctx.conn.commit()
-        journal(ctx.conn, "capture_done",
-                f'{row["image_id"]} "{row["name"]}"', row["created_by"])
-        return {"ok": True, "image_id": row["image_id"]}
+        verify_total = sum(staged_file(folder, name).stat().st_size
+                           for name, _ in stream_files(manifest))
+        now = now_iso()
+        # ‏#1470: ‏`verifying` אינו מצב פתוח — ‏hello כבר לא מוסר את המשימה,
+        # והדיווח הסופי של הסוכן מקבל `not_open` כמו אחרי `done`. השלב
+        # `verify` נכתב כאן בשרת: הדיווח של הסוכן עליו הגיע (אם בכלל) לפני.
+        with _write_lock, writing(ctx.conn):
+            opened = update_one(
+                ctx.conn,
+                "UPDATE tasks SET state = 'verifying', updated_at = ?,"
+                " bytes_total = COALESCE(?, bytes_total),"
+                " stage_started_at = CASE WHEN stage IS 'verify' THEN stage_started_at ELSE ? END,"
+                " stage = 'verify', verify_bytes = 0, verify_total = ?"
+                " WHERE id = ? AND state IN ('pending', 'running')",
+                (now, total if known else None, now, verify_total, task_id),
+            )
+        if not opened:
+            raise HTTPException(409, "the task is no longer open")
+        journal(ctx.conn, "capture_verifying",
+                f'{task_id} {row["image_id"]} "{row["name"]}" {verify_total} bytes')
+        start_verification(ctx.conn, ctx.library.root, task_id)
+        return {"ok": True, "image_id": row["image_id"], "state": "verifying"}
 
     return router
 
@@ -336,7 +424,50 @@ def validate_manifest_files(manifest: object, folder: Path) -> str | None:
 
     בשימוש הקליטה מהסוכן וגם שמירת גרסה מ-VM (#1334): שני המסלולים
     מכניסים אימג' לספרייה, ושער אחד מכריע לשניהם — כל sha256 נקרא שוב
-    מהדיסק (עיקרון 6)."""
+    מהדיסק (עיקרון 6). ‏#1470: הקליטה מהסוכן מריצה את שני החצאים בנפרד —
+    ‏`manifest_problem` בתוך ה-PUT, ‏`reread_problem` ברקע."""
+    return manifest_problem(manifest, folder) or reread_problem(manifest, folder)
+
+
+def stream_files(manifest: dict) -> list[tuple[str, object]]:
+    """‏(שם קובץ, sha256 מהמניפסט) לכל מחיצה שנושאת קובץ זרם. אחרי
+    ‏`manifest_problem` בלבד — הוא מוודא שהמבנה תקין ושהשמות בטוחים."""
+    return [(part["file"], part.get("sha256"))
+            for part in manifest["partitions"] if carries_a_stream_file(part)]
+
+
+def upload_sha_path(path: Path) -> Path:
+    return path.with_name(path.name + UPLOAD_SHA)
+
+
+def upload_sha_problem(manifest: dict, folder: Path) -> str | None:
+    """‏#1470: ה-sha256 שהשרת חישב בזמן הקבלה, מול המניפסט — או הסיבה.
+
+    בדיקה **נוספת** ולא תחליף לקריאה החוזרת (עיקרון 6 נשאר): היא תופסת כל
+    שגיאת העברה מיד, בתוך ה-PUT, אבל לא כתיבה פגומה לדיסק השרת. רשומה
+    חסרה היא "לא הצלחנו לבדוק" — כישלון, לא ויתור (עיקרון 5)."""
+    for name, expected in stream_files(manifest):
+        try:
+            got = upload_sha_path(staged_file(folder, name)).read_text(encoding="ascii").strip()
+        except OSError:
+            return (f"the sha256 computed while receiving {name} was not recorded"
+                    " -- the upload cannot be checked")
+        if got != expected:
+            return f"sha256 mismatch on {name} (the bytes the server received)"
+    return None
+
+
+def reread_problem(manifest: dict, folder: Path, on_bytes=None) -> str | None:
+    """כל קובץ זרם נקרא שוב מהדיסק ומגובב מול המניפסט — עיקרון 6."""
+    for name, expected in stream_files(manifest):
+        if _sha256(staged_file(folder, name), on_bytes) != expected:
+            return f"sha256 mismatch on {name}"
+    return None
+
+
+def manifest_problem(manifest: object, folder: Path) -> str | None:
+    """כל מה ש-`validate_manifest_files` בודק **חוץ מהגיבוב** — זול, ובלי
+    לקרוא את קבצי המחיצות (‏#1470)."""
     problem = ImageLibrary._validate(manifest, require_library_fields=False)
     if problem:
         return problem
@@ -393,21 +524,156 @@ def validate_manifest_files(manifest: object, folder: Path) -> str | None:
             return (f"partition {part.get('index')} ({part.get('fs')}) has no"
                     " file, and only a swap partition may have none")
         name = part["file"]
-        if not SAFE_FILE.match(name):
+        if not isinstance(name, str) or not SAFE_FILE.fullmatch(name):
             return f"unexpected partition file name: {name}"
-        path = folder / name
+        path = staged_file(folder, name)
         if not path.is_file():
             return f"partition file was never uploaded: {name}"
-        if _sha256(path) != part.get("sha256"):
-            return f"sha256 mismatch on {name}"
     return None
 
-def _sha256(path: Path) -> str:
+def _sha256(path: Path, on_bytes=None) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         while chunk := handle.read(CHUNK):
             digest.update(chunk)
+            if on_bytes is not None:
+                on_bytes(len(chunk))
     return digest.hexdigest()
+
+
+# --- #1470: האימות ברקע ------------------------------------------------------
+#
+# הכרעת נדב 16/10: מחשב הבנייה משתחרר מיד אחרי ההעלאה, והקריאה החוזרת של
+# כל קובץ מדיסק השרת רצה כאן, בתהליכון. האימג' נשאר באזור הביניים — שם
+# שמתחיל בנקודה, שהספרייה מדלגת עליו (לא ברשימה, לא נמשך, לא משוחזר) —
+# עד שכל sha256 נקרא שוב ותאם. כישלון = `failed` בשם, ביומן ובקונסולה.
+# ‏#1461: עד כאן הגיבוב רץ בתוך `finish_capture` על לולאת האירועים, והשרת
+# כולו — hello, דיווחים, קונסולה — לא ענה למשך כל האימות.
+
+#: המשימות שהאימות שלהן רץ **בתהליך הזה**. מונע אימות כפול של אותה משימה.
+_VERIFYING: dict[str, threading.Thread] = {}
+_VERIFYING_LOCK = threading.Lock()
+
+
+def start_verification(conn, library_root: Path, task_id: str) -> threading.Thread | None:
+    """מפעיל את האימות ברקע — או ``None`` כשהוא כבר רץ למשימה הזו.
+
+    ‏daemon: שרת שנעצר באמצע אינו ממתין לקריאה של 100GB. המשימה נשארת
+    ‏`verifying`, ו-`reconcile_on_start` מריץ את האימות מחדש בעלייה הבאה."""
+    with _VERIFYING_LOCK:
+        live = _VERIFYING.get(task_id)
+        if live is not None and live.is_alive():
+            return None
+        thread = threading.Thread(target=run_verification,
+                                  args=(conn, Path(library_root), task_id),
+                                  name=f"verify-{task_id}", daemon=True)
+        _VERIFYING[task_id] = thread
+        thread.start()
+    return thread
+
+
+def run_verification(conn, library_root: Path, task_id: str) -> str:
+    """האימות עצמו, סינכרוני. מחזיר `done`, ‏`failed`, או `gone` (המשימה
+    כבר אינה `verifying`). כל חריגה היא כישלון בשם — אימות שקרס לא עבר."""
+    try:
+        return _verify(conn, library_root, task_id)
+    except Exception as exc:  # noqa: BLE001 — עיקרון 5: "לא בדקנו" אינו "עבר"
+        log.exception("capture %s: verification crashed", task_id)
+        return _verify_failed(conn, library_root, task_id,
+                              f"the verification on the server crashed: {exc!r}")
+    finally:
+        with _VERIFYING_LOCK:
+            if _VERIFYING.get(task_id) is threading.current_thread():
+                del _VERIFYING[task_id]
+
+
+def _verify(conn, library_root: Path, task_id: str) -> str:
+    row = conn.execute(
+        "SELECT id, image_id, name, created_by FROM tasks"
+        " WHERE id = ? AND state = 'verifying'", (task_id,)).fetchone()
+    if row is None:
+        return "gone"
+    folder = staging_dir(library_root, task_id)
+    try:
+        manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return _verify_failed(conn, library_root, task_id,
+                              f"the staged manifest could not be read: {exc}")
+    problem = manifest_problem(manifest, folder)
+    if problem:
+        return _verify_failed(conn, library_root, task_id, problem)
+    files = stream_files(manifest)
+    total = sum(staged_file(folder, name).stat().st_size for name, _ in files)
+    # מאפס: אימות שרץ מחדש אחרי אתחול מתחיל מאפס, לא מהמונה של הקודם.
+    _verify_progress(conn, task_id, 0, total)
+    started = time.monotonic()
+    seen = {"bytes": 0, "at": started}
+
+    def tick(count: int) -> None:
+        seen["bytes"] += count
+        now = time.monotonic()
+        if now - seen["at"] >= VERIFY_PROGRESS_EVERY_S:
+            seen["at"] = now
+            _verify_progress(conn, task_id, seen["bytes"], total)
+
+    problem = reread_problem(manifest, folder, tick)
+    if problem:
+        return _verify_failed(
+            conn, library_root, task_id,
+            f"{problem} -- the file read back from the server disk differs from the"
+            " manifest; the image did not enter the library")
+    target = inside(library_root / row["image_id"], library_root)
+    if target is None:
+        return _verify_failed(conn, library_root, task_id,
+                              "image target falls outside the library root")
+    if target.exists():
+        return _verify_failed(conn, library_root, task_id,
+                              "an image with this id already exists")
+    for name, _ in files:
+        upload_sha_path(staged_file(folder, name)).unlink(missing_ok=True)
+    folder.rename(target)
+    # ‏rename ואז UPDATE, כמו קודם: נפילה ביניהם = אימג' מאומת בספרייה עם
+    # משימה `verifying`, ו-`reconcile_on_start` סוגר אותה כ-`done` (#411).
+    with _write_lock, writing(conn):
+        closed = update_one(
+            conn,
+            "UPDATE tasks SET state = 'done', verify_bytes = ?, updated_at = ?"
+            " WHERE id = ? AND state = 'verifying'",
+            (total, now_iso(), task_id),
+        )
+    if not closed:
+        log.warning("capture %s: verified and in the library, but the task was no"
+                    " longer 'verifying'", task_id)
+    seconds = time.monotonic() - started
+    journal(conn, "capture_done",
+            f'{row["image_id"]} "{row["name"]}" verified {total} bytes in {seconds:.1f}s',
+            row["created_by"])
+    return "done"
+
+
+def _verify_progress(conn, task_id: str, done: int, total: int) -> None:
+    with _write_lock, writing(conn):
+        conn.execute(
+            "UPDATE tasks SET verify_bytes = ?, verify_total = ?, updated_at = ?"
+            " WHERE id = ? AND state = 'verifying'",
+            (done, total, now_iso(), task_id))
+
+
+def _verify_failed(conn, library_root: Path, task_id: str, reason: str) -> str:
+    """‏`verifying` → ‏`failed` בשם, ואזור הביניים נמחק — האימג' נשאר בחוץ.
+    רק אם המשימה עדיין `verifying`: אחרת מישהו אחר כבר הכריע, ולא נוגעים."""
+    with _write_lock, writing(conn):
+        changed = update_one(
+            conn,
+            "UPDATE tasks SET state = 'failed', error = ?, updated_at = ?"
+            " WHERE id = ? AND state = 'verifying'",
+            (reason, now_iso(), task_id),
+        )
+    if not changed:
+        return "gone"
+    shutil.rmtree(staging_dir(library_root, task_id), ignore_errors=True)
+    journal(conn, "capture_failed", f"{task_id} {reason}")
+    return "failed"
 
 
 def create_console_capture_router(ctx: ServerContext) -> APIRouter:
@@ -439,6 +705,11 @@ def create_console_capture_router(ctx: ServerContext) -> APIRouter:
                 # ‏#435: ‏bytes_* דחוסים, ‏source_progress בציר הבלוקים —
                 # ‏`capture_progress` מקפל אפס-מכנה ל-`None` (לא ל-`0%`).
                 **capture_progress(r),
+                # ‏#1470: האימות ברקע — כמה נקרא שוב מהדיסק מתוך כמה. ‏None =
+                # המשימה לא הגיעה לאימות (לא "0 מתוך 0").
+                "verify_bytes": r["verify_bytes"], "verify_total": r["verify_total"],
+                # ‏#1505: פירוט חי — מחיצות, קצב, ETA; ‏None = הסוכן לא דיווח טבלה.
+                "capture_detail": capture_detail.view(r),
                 "created_at": r["created_at"], "updated_at": r["updated_at"],
                 # ‏#1255: מי יצר את המשימה (עמודת "יוזם" בפאנל "משימות אחרונות"), ותפקידו —
                 # משתמש הפצה אינו נכנס לקונסולה (#1073), לכן קליטה שלו הופעלה ממחשב הבנייה.

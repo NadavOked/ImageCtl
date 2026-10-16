@@ -39,7 +39,7 @@ attended_hello() {
     _ah_req="${GUI_DIR:-/nonexistent}/smart-request"
     _ah_nonce=""
     if [ -s "$_ah_req" ]; then
-        IFS='|' read -r _ah_nonce _ah_port _ah_verdict _ah_reason < "$_ah_req" || _ah_nonce=""
+        IFS='|' read -r _ah_nonce _ah_port _ah_verdict _ah_reason _ < "$_ah_req" || _ah_nonce=""   # 16/10: model|serial follow
         case "$_ah_nonce$_ah_port" in *[!0-9-]*|'') _ah_nonce="" ;; esac
     fi
     if [ -n "$_ah_nonce" ]; then

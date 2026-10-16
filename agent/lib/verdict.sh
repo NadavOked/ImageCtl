@@ -23,7 +23,8 @@ _write_fail() {
 
 _read_fanout_report() {
     # דוח fanout + קודי הצינור → מצב המגירה. ‏done רק כשכולם הסכימו.
-    _idx="$1"; shift
+    # $1 = index, $2 = fs, $3.. = disks.
+    _idx="$1"; _fs="$2"; shift 2
     for _d in "$@"; do
         _t="$RUN_DIR/targets/$_d"
         [ "$(cat "$_t/state")" = "failed" ] && continue
@@ -36,7 +37,9 @@ _read_fanout_report() {
                 _rc=$(cat "$_t/pipeline.rc" 2>/dev/null)
                 _zrc=$(cat "$_t/zstd.rc" 2>/dev/null)
                 if [ "$_rc" = "0" ] && [ "$_zrc" = "0" ]; then
-                    target_partition_done "$_d"
+                    # #1487: partclone -r leaves the NTFS backup boot sector unwritten.
+                    if ntfs_boot_target "$_d" "$_idx" "$_fs"; then target_partition_done "$_d"
+                    else fail_written_target "$_d" "$NTFS_BOOT_ERROR"; fi
                 elif [ "$_rc" = "0" ] && [ -z "$_zrc" ]; then
                     # אין קובץ = לא נמדד. זה אינו "zstd הצליח" ואינו
                     # כישלון של partclone — מצב שלישי בשם (עיקרון 5).

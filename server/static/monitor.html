@@ -4,13 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ImageSrv — מוניטור</title>
-<link rel="icon" type="image/svg+xml" href="favicon.svg?v=11.36">
-<link rel="icon" href="favicon.ico?v=11.36" sizes="any">
-<link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png?v=11.36">
-<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png?v=11.36">
-<link rel="apple-touch-icon" href="apple-touch-icon.png?v=11.36">
-<link rel="stylesheet" href="design-tokens.css?v=11.36">
-<link rel="stylesheet" href="console.css?v=11.36">
+<link rel="icon" type="image/svg+xml" href="favicon.svg?v=11.47">
+<link rel="icon" href="favicon.ico?v=11.47" sizes="any">
+<link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png?v=11.47">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png?v=11.47">
+<link rel="apple-touch-icon" href="apple-touch-icon.png?v=11.47">
+<link rel="stylesheet" href="design-tokens.css?v=11.47">
+<link rel="stylesheet" href="console.css?v=11.47">
 <script>
   (function () {
     var choice = localStorage.getItem("imagectl-theme");
@@ -38,7 +38,8 @@
   /* ‏canvas עם רקע שחור עד הפריים הראשון; ממוקד כדי ללכוד מקלדת.
      ‏cursor:none — הסמן המרוחק כבר מצויר לתוך ה-framebuffer (native-gui
      מרנדר את הסמן שלו ל-fb0), אז מסתירים את הסמן המקומי של הדפדפן כדי
-     שלא יופיעו שני סמנים ("double cursor"). */
+     שלא יופיעו שני סמנים ("double cursor"). ‏#1475: נדב 16/10 — סמן אחד
+     משותף; מי שליד המכונה רואה איפה המפעיל מצביע. */
   #screen { max-width: 100%; max-height: 100%; outline: none; background: #000; cursor: none; }
   /* מסך מלא (console-full.html #fs): הדף כולו — ולא רק .mon-wrap — עובר למסך מלא, כדי שגם חלון האישור
      של הפעלה מחדש / כיבוי ייראה. הסרגל הופך לכדור צף שמוסתר, ומופיע 2.5 שניות אחרי תזוזת עכבר. */
@@ -87,6 +88,6 @@
     </div>
   </div>
 </div>
-<script src="monitor.js?v=3.30"></script>
+<script src="monitor.js?v=3.32"></script>
 </body>
 </html>

@@ -119,17 +119,24 @@ def test_every_surface_draws_the_new_logo_and_the_old_mark_is_gone():
 
 def test_the_gui_never_shows_the_old_product_name():
     """User-facing strings say ImageSrv. Internal names (paths, units,
-    imagectl-*) stay; the one "ImageCtl" literal left recognises an older
-    installation's disk label."""
+    imagectl-*) stay; two "ImageCtl" literals are left: one recognises an
+    older installation's disk label, and one is the kernel name of the
+    monitor's uinput device (#1475) -- matched against agent/monitor.c's
+    UINPUT_NAME, never drawn."""
+    internal = ('strstr(d->has,"ImageCtl")', "#define MONITOR_UINPUT_NAME ")
     shown = []
     for path in sorted(SRC.glob("*.c")):
         code = re.sub(r"/\*.*?\*/", "", path.read_text(encoding="utf-8"), flags=re.S)
         for line in code.splitlines():
             for literal in re.findall(r'"(?:[^"\\]|\\.)*"', line):
-                if "ImageCtl" in literal and 'strstr(d->has,"ImageCtl")' not in line:
+                if "ImageCtl" in literal and not any(name in line for name in internal):
                     shown.append(f"{path.name}: {literal}")
     assert shown == []
     assert '{"packages", "מתקין את חבילות ImageSrv"}' in (SRC / "install.c").read_text(encoding="utf-8")
+    # the exemption holds only while the two names are the same device (#1475)
+    gui = re.search(r'#define MONITOR_UINPUT_NAME (".*?")', (SRC / "input.c").read_text(encoding="utf-8"))
+    agent = re.search(r'#define UINPUT_NAME (".*?")', (SRC.parents[1] / "agent" / "monitor.c").read_text(encoding="utf-8"))
+    assert gui and agent and gui.group(1) == agent.group(1), (gui, agent)
 
 
 _NEEDS_GUI = requires_native(

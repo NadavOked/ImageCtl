@@ -357,7 +357,7 @@ def test_preinstall_static_address_is_temporary_ip_state_only():
 
 
 #: מקשי curses בלי curses — ‏get_wch מחזיר int למקשי פונקציה ו-str לתווים.
-KEYS = SimpleNamespace(KEY_ENTER=343, KEY_F2=266, KEY_F5=269, KEY_F9=273,
+KEYS = SimpleNamespace(KEY_ENTER=343, KEY_F2=266, KEY_F4=268, KEY_F5=269, KEY_F9=273,
                        KEY_F12=276, KEY_BACKSPACE=263, KEY_UP=259, KEY_DOWN=258,
                        KEY_LEFT=260, KEY_RIGHT=261, KEY_BTAB=353)   # #1203: F12's keys
 NEW_PW = "Nn12345!"

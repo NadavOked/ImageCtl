@@ -4,13 +4,16 @@
 "אני לא נוגע בזה, והשרת לבד מחליט". לפני כל גל:
 
     פתיחה = min(START_BITRATE, גג)    גג = IMAGECTL_MAX_BITRATE, ובלעדיו TOP_BITRATE
+    (15/10: כשמהירות כרטיס ההפצה נקראה — גג 90% ממנה ופתיחה 60%; ראו `read_link`;
+     ולעולם לא מעל 90%/60% ממחשב השיכפול האיטי בגל — `nic_speed`, הנחת 1G כשלא ידוע)
 
-    קצב = מהגל האחרון עם אותם כוננים (כל כונן של הגל הזה היה בו):
+    קצב = המינימום על **מחשבי השיכפול** בגל (#1471, הכרעת נדב 16/10) — לכל
+          מכונה (MAC), מהגל האחרון שהיא הייתה בו:
           ‏+STEP_UP      — שידורים חוזרים = 0 **וגם** כל כונן שלו עמד בקצב
                           **וגם** הזרם עצמו רץ ב-KEEP_UP מהקצב לפחות
           ‏× DOWN_FACTOR — שידורים חוזרים מעל LOSS_DOWN_RATIO מהבלוקים
           כמות שהוא    — כל השאר, כולל "לא נמדד" (עיקרון 5)
-          אין גל כזה   — פתיחה
+          מכונה בלי גל כזה (חדשה / הוחלפה) — **כל הגל** בפתיחה (`_from_previous`)
     קצב = min(קצב, הכונן האיטי המוכר × MARGIN)        (#447, למטה)
     קצב = בין FLOOR_RATIO × פתיחה לבין הגג
 
@@ -59,8 +62,10 @@ import logging
 import re
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 
+from . import nic_speed
 from .db import _write_lock, get_setting, journal, now_iso, writing
 
 log = logging.getLogger("imagectl.drive_rates")
@@ -107,8 +112,76 @@ LOSS_DOWN_RATIO = 0.001
 #: גודל הבלוק של udpcast (‏`--blocksize`; ברירת המחדל לפי ה-man page, והשרת
 #: אינו מעביר אותו) — המכנה של `LOSS_DOWN_RATIO`. לא נמדד על ברזל.
 UDPCAST_BLOCK = 1456
-#: כמה גלים אחרונים סורקים כדי למצוא גל עם אותם כוננים.
+#: כמה גלים אחרונים סורקים כדי למצוא את הגל האחרון של כל מכונה (#1471).
 MEMORY_SCAN = 50
+
+#: ‏הכרעת נדב 15/10: "הכי מהר שאפשר, והשרת מגביל לפי כרטיס הרשת שלו".
+#: כשמהירות הקישור של כרטיס ההפצה נקראה (‏`read_link`), במקום 600m/900m:
+#:     גג    = ‏LINK_CEILING_PER_MBPS × מהירות   (90% — מקום ל-ACK ולשידור חוזר)
+#:     פתיחה = ‏LINK_START_PER_MBPS × מהירות    (60% — שני שלישים מהגג)
+#: ב-ביטים לשנייה לכל Mb/s. על 1GbE זה **בדיוק** 900m/600m — ההתנהגות של
+#: היום; על 10GbE ‏9000m/6000m. ‏`IMAGECTL_MAX_BITRATE`, כשהוגדר, נשאר גג
+#: — הנמוך מבין השניים. הרצפה **אינה** גדלה עם הקישור (`_floor`).
+LINK_CEILING_PER_MBPS = TOP_BITRATE // 1000
+LINK_START_PER_MBPS = START_BITRATE // 1000
+SYS_NET = Path("/sys/class/net")
+#: דרייברים של כרטיס וירטואלי: המהירות שלהם היא מה שהמארח **מצהיר**
+#: (‏vmxnet3 תמיד 10000), לא הקו הפיזי — עיקרון 5א. בלי ראיה — ההתנהגות
+#: של היום.
+VIRTUAL_DRIVERS = frozenset({"vmxnet3", "virtio_net", "hv_netvsc", "xen_netfront"})
+
+
+def read_link(interface: str | None, sys_net: Path = SYS_NET) -> dict:
+    """מהירות הקישור של כרטיס ההפצה מ-`/sys/class/net/<if>/speed`.
+
+    ‏`{"interface", "speed_mbps", "why"}`: ‏`speed_mbps` מספר חיובי ו-`why`
+    ‏None — נקרא; אחרת `speed_mbps` ‏None ו-`why` אומר למה (עיקרון 5: "לא
+    נקרא" אינו 1GbE): ‏`no_interface` · ‏`absent` (אין כרטיס/קובץ) ·
+    ‏`unreadable` (‏OSError — לינוקס מחזיר EINVAL כשהקישור למטה) · ‏`unknown`
+    ‏(‏-1 או לא מספר) · ‏`virtual` (‏`VIRTUAL_DRIVERS`). ‏bond — הסלייב
+    האיטי: זרם מולטיקאסט אחד יוצא בסלייב אחד. לעולם אינו זורק."""
+    view = {"interface": interface or None, "speed_mbps": None, "why": None}
+    if not interface:
+        return {**view, "why": "no_interface"}
+    try:
+        mbps, why = _link_speed(Path(sys_net), interface)
+    except OSError:
+        mbps, why = None, "unreadable"
+    return {**view, "speed_mbps": mbps, "why": why}
+
+
+def _link_speed(sys_net: Path, name: str) -> tuple[int | None, str | None]:
+    entry = sys_net / name
+    if not entry.is_dir():
+        return None, "absent"
+    slaves = entry / "bonding" / "slaves"
+    if slaves.exists():
+        got = [_link_speed(sys_net, s) for s in slaves.read_text().split()]
+        if not got:
+            return None, "unknown"
+        why = next((w for m, w in got if m is None), None)
+        return (None, why) if why else (min(m for m, _ in got), None)
+    uevent = entry / "device" / "uevent"
+    if uevent.exists() and any(
+            line.strip() in {f"DRIVER={d}" for d in VIRTUAL_DRIVERS}
+            for line in uevent.read_text().splitlines()):
+        return None, "virtual"
+    speed = entry / "speed"
+    if not speed.exists():
+        return None, "absent"
+    try:
+        mbps = int(speed.read_text().strip())
+    except ValueError:
+        return None, "unknown"
+    return (mbps, None) if mbps > 0 else (None, "unknown")
+
+
+def _link_bounds(link: dict | None) -> tuple[int, int] | None:
+    """(גג, פתיחה) בביטים מהקישור; ‏None — המהירות לא נקראה."""
+    mbps = (link or {}).get("speed_mbps")
+    if not isinstance(mbps, int) or isinstance(mbps, bool) or mbps <= 0:
+        return None
+    return mbps * LINK_CEILING_PER_MBPS, mbps * LINK_START_PER_MBPS
 
 _BITRATE = re.compile(r"^(\d+(?:\.\d+)?)([kmg]?)$")
 _UNIT = {"": 1, "k": 10 ** 3, "m": 10 ** 6, "g": 10 ** 9}
@@ -167,13 +240,52 @@ def _all_kept_up(conn: sqlite3.Connection, session_id: str, roster: list) -> boo
     return serials <= kept
 
 
+def _next_from(conn: sqlite3.Connection, session_id: str, past: dict, stream: dict,
+               rate: int, roster: list) -> tuple[int, str, dict]:
+    """(הקצב שהגל הבא יורש מהגל הזה, ‏basis, ‏previous) — לפי מה שהגל הזה
+    עצמו הוכיח: ‏`up`/‏`down`/‏`held`/‏`unmeasured` (ראו `choose`)."""
+    loss, sent = stream.get("loss_blocks"), stream.get("sent_bytes")
+    bps, secs = stream.get("stream_bps"), stream.get("stream_s")
+    previous = {"session_id": session_id, "max_bitrate": past["max_bitrate"],
+                "loss_blocks": loss, "sent_bytes": sent, "stream_bps": bps}
+    if not isinstance(loss, int) or not isinstance(sent, int) or sent <= 0:
+        return rate, "unmeasured", previous         # עיקרון 5: לא נמדד ≠ נקי
+    if loss > LOSS_DOWN_RATIO * -(-sent // UDPCAST_BLOCK):
+        return int(rate * DOWN_FACTOR), "down", previous
+    if loss != 0 or not _all_kept_up(conn, session_id, roster):
+        return rate, "held", previous
+    # התנאי השני לעלייה: הזרם עצמו רץ בקצב הגל. ‏`bytes_written` של כונן
+    # נספר אחרי פריסת הדחיסה — כונן שהאט את הזרם עלול להיראות "עמד".
+    if (not isinstance(bps, int) or not isinstance(secs, (int, float))
+            or secs < MIN_SAMPLE_S):
+        return rate, "unmeasured", previous
+    if bps < KEEP_UP * rate / 8:
+        return rate, "held", previous
+    return rate + STEP_UP, "up", previous
+
+
 def _from_previous(conn: sqlite3.Connection, drives: list[dict], start: int,
                    exclude: str | None) -> tuple[int, str, dict | None]:
-    """(הקצב לפני הכוננים והגבולות, ‏basis, הגל הקודם) — מהגל האחרון שכל
-    כונן של הגל הזה היה בו. בלי גל כזה — הפתיחה."""
-    serials = {d["serial"] for d in drives}
-    if not serials:
+    """(הקצב לפני הכוננים והגבולות, ‏basis, הגל הקודם) — **לפי מחשבי השיכפול**.
+
+    ‏#1471, הכרעת נדב 16/10: בחדר מחליפים מגירות בכל גל, ולכן "הגל האחרון
+    שכל הכוננים האלה היו בו" כמעט לא קיים, וכמעט כל גל יצא בפתיחה (60%).
+    הזיכרון הוא לכל **מכונה** (‏MAC — מכונה שהוחלפה היא MAC חדש):
+
+        לכל MAC בגל: הגל האחרון (לא ישיר, עם קצב) שהמכונה הייתה ב-`roster`
+                     שלו, והקצב שהגל ההוא מוריש (`_next_from`: ‏+STEP_UP על
+                     גל נקי, ×DOWN_FACTOR על שידורים חוזרים, אחרת כמות שהוא)
+        קצב = המינימום על המכונות; ‏`previous` = הגל של המכונה שקבעה, ו-`mac` שלה
+        מכונה אחת בלי גל כזה (או כונן בלי MAC) → **כל הגל** בפתיחה
+
+    הגל יוצא, נמדד, ובפעם הבאה המכונה החדשה כבר מוכרת. ההגנות לכל כונן
+    אינן משתנות: הכונן האיטי המוכר (`_limit_of`) מוריד אחרי זה, בדיקת
+    הכתיבה בסוכן פוסלת מגירה איטית, ו"עלייה" עדיין דורשת שכל כונן של הגל
+    הקודם עמד בקצב והזרם רץ בו (`_next_from`)."""
+    macs = {d.get("mac") for d in drives}
+    if not macs or None in macs:
         return start, "start", None
+    found: dict[str, tuple[int, str, dict]] = {}
     for row in conn.execute(
             "SELECT session_id, decision, stream FROM wave_rates"
             " WHERE session_id IS NOT ? ORDER BY rowid DESC LIMIT ?",
@@ -185,37 +297,30 @@ def _from_previous(conn: sqlite3.Connection, drives: list[dict], start: int,
             continue
         roster = past.get("roster") or []
         rate = parse_bitrate(past.get("max_bitrate"))
-        if past.get("direct") or rate is None or not serials <= {d.get("serial") for d in roster
-                                          if isinstance(d, dict)}:
+        if past.get("direct") or rate is None:
             continue
-        loss, sent = stream.get("loss_blocks"), stream.get("sent_bytes")
-        bps, secs = stream.get("stream_bps"), stream.get("stream_s")
-        previous = {"session_id": row["session_id"], "max_bitrate": past["max_bitrate"],
-                    "loss_blocks": loss, "sent_bytes": sent, "stream_bps": bps}
-        if not isinstance(loss, int) or not isinstance(sent, int) or sent <= 0:
-            return rate, "unmeasured", previous     # עיקרון 5: לא נמדד ≠ נקי
-        if loss > LOSS_DOWN_RATIO * -(-sent // UDPCAST_BLOCK):
-            return int(rate * DOWN_FACTOR), "down", previous
-        if loss != 0 or not _all_kept_up(conn, row["session_id"], roster):
-            return rate, "held", previous
-        # התנאי השני לעלייה: הזרם עצמו רץ בקצב הגל. ‏`bytes_written` של כונן
-        # נספר אחרי פריסת הדחיסה — כונן שהאט את הזרם עלול להיראות "עמד".
-        if (not isinstance(bps, int) or not isinstance(secs, (int, float))
-                or secs < MIN_SAMPLE_S):
-            return rate, "unmeasured", previous
-        if bps < KEEP_UP * rate / 8:
-            return rate, "held", previous
-        return rate + STEP_UP, "up", previous
-    return start, "start", None
+        hits = (macs - found.keys()) & {d.get("mac") for d in roster if isinstance(d, dict)}
+        if not hits:
+            continue
+        outcome = _next_from(conn, row["session_id"], past, stream, rate, roster)
+        for mac in hits:
+            found[mac] = outcome
+        if found.keys() >= macs:
+            break
+    if found.keys() < macs:
+        return start, "start", None                 # מכונה שלא נראתה — פתיחה
+    mac, (bits, basis, previous) = min(found.items(), key=lambda kv: (kv[1][0], kv[0]))
+    return bits, basis, {**previous, "mac": mac}
 
 
 def choose(conn: sqlite3.Connection, drives: list[dict],
            ceiling_raw: str | None, session_id: str | None = None,
-           direct: bool = False) -> dict:
+           direct: bool = False, link: dict | None = None) -> dict:
     """הקצב לגל של `drives` (‏`serial`, ‏`model`, ‏`mac`, ‏`port`) — קריאה בלבד.
 
     ‏`max_bitrate` הוא מה שעובר ל-udp-sender, ו-`basis` אומר למה: ‏`start`
-    (אין גל קודם עם אותם כוננים) · ‏`up` (הגל הקודם נקי — ב-`previous`) ·
+    (מכונה בגל שאין לה גל קודם — #1471) · ‏`up` (הגל הקודם של המכונה שקבעה
+    נקי — ב-`previous`, עם ה-`mac` שלה) ·
     ‏`down` (שידורים חוזרים בגל הקודם) · ‏`held` (הגל הקודם לא הוכיח שאפשר
     לעלות) · ‏`unmeasured` (המונה של הגל הקודם לא נקרא — נשאר) · ‏`learned`
     (כונן מוכר הוריד, והוא ב-`by`) · ‏`ceiling` (הגג עצר) · ‏`disabled` (המתג
@@ -227,16 +332,48 @@ def choose(conn: sqlite3.Connection, drives: list[dict],
     נמצא במחשב הבנייה ולא בשרת, ובלעדיו אין ראיה לגל נקי (עיקרון 5); וגל
     כזה אינו "הגל הקודם" של אף גל ואינו מלמד את הכוננים (`record_wave`) —
     המקור עצמו (דיסק חי + דחיסה) יכול להיות האיטי, והייחוס לכוננים היה שקר.
+
+    ‏`link` — מה ש-`read_link` קרא על כרטיס ההפצה (הכרעת נדב 15/10): גג
+    ופתיחה לפי מהירות הקישור (`LINK_CEILING_PER_MBPS`). מהירות שלא נקראה —
+    600m/900m של היום, והסיבה ב-`link.why`. **לא** לגל ישיר: הזרם יוצא
+    מהכרטיס של מחשב הבנייה, לא מזה של השרת.
     """
     ceiling = parse_bitrate(ceiling_raw) if ceiling_raw else TOP_BITRATE
+    configured = ceiling if ceiling_raw else None
+    server = None if direct or ceiling is None else _link_bounds(link)
+    # ‏15/10 (ב): המקבלים — מחשב השיכפול האיטי בגל (ידני / מדווח / הנחת 1G).
+    # גם בגל ישיר: המקבלים אותם מקבלים.
+    cloner = (nic_speed.slowest(conn, [d.get("mac") for d in drives])
+              if ceiling is not None else None)
+    receivers = _link_bounds(cloner)
+    # שרת שלא נקרא — הגג של היום (‏`IMAGECTL_MAX_BITRATE` או 900m) והפתיחה 600m.
+    base = server or (ceiling, START_BITRATE)
+    bounds = server
+    if receivers is not None:
+        bounds = (min(base[0], receivers[0]), min(base[1], receivers[1]))
+    start_at = START_BITRATE
+    if bounds is not None:
+        # ‏`IMAGECTL_MAX_BITRATE` שהוגדר נשאר גג — הנמוך מבין השניים.
+        ceiling = min(ceiling, bounds[0]) if ceiling_raw else bounds[0]
+        start_at = bounds[1]
+    # מי קבע את התקרה — למסך. ‏None = 900m של היום (שום דבר לא נקרא).
+    if configured is not None and (bounds is None or configured <= bounds[0]):
+        cap_by = "configured"
+    elif receivers is not None and receivers[0] <= base[0] \
+            and (server is None or receivers[0] < server[0]):
+        cap_by = "cloner"
+    else:
+        cap_by = "server" if server is not None else None
     result = {"max_bitrate": ceiling_raw or None,
-              "ceiling": ceiling_raw or _fmt(TOP_BITRATE), "start": None,
-              "basis": "start", "by": None, "previous": None,
-              "drives": len(drives), "unknown_drives": 0,
-              **({"direct": True} if direct else {})}
+              "ceiling": _fmt(ceiling) if bounds else ceiling_raw or _fmt(TOP_BITRATE),
+              "start": None, "basis": "start", "by": None, "previous": None,
+              "drives": len(drives), "unknown_drives": 0, "cap_by": cap_by,
+              **({"direct": True} if direct else {}),
+              **({"link": {**link, "applied": server is not None}} if link else {}),
+              **({"cloner": cloner} if cloner else {})}
     if ceiling is None:
         return {**result, "basis": "bad_ceiling"}
-    start = min(START_BITRATE, ceiling)
+    start = min(start_at, ceiling)
     result = {**result, "max_bitrate": _fmt(start), "start": _fmt(start)}
     if not enabled(conn):
         return {**result, "basis": "disabled"}
@@ -257,7 +394,10 @@ def choose(conn: sqlite3.Connection, drives: list[dict],
               "rate_bps": rate}
     if bits > ceiling:
         bits, basis, by = ceiling, "ceiling", None
-    bits = max(bits, int(start * FLOOR_RATIO))
+    # הרצפה מקצב הפתיחה **של 1GbE לכל היותר** (150m): כרטיס 10G של השרת אינו
+    # אומר שהמקבלים ב-10G, ורצפה של 1500m הייתה נועלת חדר של מקבלים ב-1G
+    # מעל מה שהם מסוגלים לקבל.
+    bits = max(bits, int(min(start, START_BITRATE) * FLOOR_RATIO))
     return {**result, "max_bitrate": _fmt(bits), "basis": basis, "by": by,
             "previous": previous}
 
@@ -276,16 +416,19 @@ def decision(conn: sqlite3.Connection, session_id: str | None) -> dict | None:
 
 def decide(conn: sqlite3.Connection, session_id: str,
            drives: Callable[[], list[dict]], ceiling_raw: str | None,
-           direct: bool = False) -> str | None:
+           direct: bool = False,
+           link: Callable[[], dict] | None = None) -> str | None:
     """נקרא כשהגל יוצא: בוחר, שומר, רושם ביומן, ומחזיר את `--max-bitrate`.
     ‏`direct` — המשדר הוא מחשב בנייה (#715, ‏`app.on_running`), ראו `choose`.
+    ‏`link` — קורא את כרטיס ההפצה (`SenderEngine.link`); נקרא פעם אחת לגל.
 
     לעולם אינו זורק: כשל כאן הוא "לא נלמד" — נרשם ביומן, והגל יוצא בקצב
     הפתיחה. הלמידה אינה סיבה שהשידור לא ייצא.
     """
     try:
         wave = drives()
-        chosen = choose(conn, wave, ceiling_raw, session_id, direct=direct)
+        chosen = choose(conn, wave, ceiling_raw, session_id, direct=direct,
+                        link=link() if link is not None else None)
         # הכוננים שהגל יצא אליהם, כפי שהשרת ראה אותם **לפני** הגל — רק מהם
         # נלמד בסופו (`record_wave`), ולא ממה שמדווח בסוף.
         stored = {**chosen, "roster": [
@@ -296,18 +439,33 @@ def decide(conn: sqlite3.Connection, session_id: str,
                 "INSERT OR REPLACE INTO wave_rates (session_id, decision, at)"
                 " VALUES (?, ?, ?)",
                 (session_id, json.dumps(stored, ensure_ascii=False), now_iso()))
-        by, previous = chosen["by"], chosen["previous"]
+        by, previous, nic = chosen["by"], chosen["previous"], chosen.get("link")
         journal(conn, "wave_rate",
                 f"{session_id} {chosen['max_bitrate']}"
                 f" basis={chosen['basis']}"
                 + (f" by={by['model'] or '?'} {by['serial']}" if by else "")
                 + (f" from={previous['session_id']} {previous['max_bitrate']}"
-                   f" rexmits={previous['loss_blocks']}" if previous else ""))
+                   f" rexmits={previous['loss_blocks']} mac={previous.get('mac')}"
+                   if previous else "")
+                + (f" link={nic['interface']}"
+                   f" {str(nic['speed_mbps']) + 'Mb/s' if nic['applied'] else nic['why'] or 'unused'}"
+                   f" ceiling={chosen['ceiling']}" if nic else "")
+                + _cloner_note(chosen.get("cloner"), chosen.get("cap_by")))
         return chosen["max_bitrate"]
     except Exception as exc:      # noqa: BLE001 — הלמידה אינה מפילה גל
         log.exception("wave rate for %s failed; using the start rate", session_id)
         _failed(conn, f"{session_id} decide — {exc}")
         return _fallback(ceiling_raw)
+
+
+def _cloner_note(cloner: dict | None, cap_by: str | None) -> str:
+    """ליומן: מחשב השיכפול האיטי ומאיפה המהירות — ‏`assumed_1g(<why>)` כשהונחה."""
+    if not cloner:
+        return ""
+    source = (f"assumed_1g({cloner['why']})" if cloner["source"] == "assumed"
+              else cloner["source"])
+    return (f" cloner={cloner['mac']} {cloner['speed_mbps']}Mb/s {source}"
+            f" assumed={len(cloner['assumed'])} cap_by={cap_by}")
 
 
 def direct_bitrate(conn: sqlite3.Connection, session_id: str | None,
