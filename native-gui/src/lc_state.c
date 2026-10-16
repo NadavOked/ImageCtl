@@ -40,13 +40,21 @@ int lc_state_line(State *s, const char *key, char *val) {
     else if (!strcmp(key, "lc_inv")) l->inv_done = !strcmp(val, "done");
     else if (!strcmp(key, "lc_phase")) cpy(l->phase, sizeof l->phase, val);
     else if (!strcmp(key, "lc_disk") && l->ndisks < LC_MAX_DISKS) {
-        if (lc_split(val, f, 13) < 13) return 1;
+        int nf = lc_split(val, f, 15);
+        if (nf < 13) return 1;
         LcDisk *d = &l->disks[l->ndisks++];
         d->port = atoi(f[0]); cpy(d->dev, sizeof d->dev, f[1]); cpy(d->model, sizeof d->model, f[2]);
         cpy(d->serial, sizeof d->serial, f[3]); d->size = strtoull(f[4], NULL, 10);
         cpy(d->smart, sizeof d->smart, f[5]); cpy(d->smart_reason, sizeof d->smart_reason, f[6]);
         cpy(d->os, sizeof d->os, f[7]); d->nparts = atoi(f[8]); d->used = f[9][0] ? ll(f[9]) : -1;
         d->need = f[10][0] ? ll(f[10]) : -1; d->usable = atoi(f[11]) == 1; cpy(d->why, sizeof d->why, f[12]);
+        if (nf >= 14 && f[13][0]) {
+            char *end = NULL; long drawer = strtol(f[13], &end, 10);
+            size_t digits = strspn(f[13], "0123456789");
+            d->drawer = digits == strlen(f[13]) && end && *end == 0 &&
+                        drawer >= 1 && drawer <= MAX_DRAWERS ? (int)drawer : -1;
+        }
+        if (nf >= 15) cpy(d->conn, sizeof d->conn, f[14]);
     } else if (!strcmp(key, "lc_src")) { lc_split(val, f, 2); cpy(l->src, sizeof l->src, f[0]); cpy(l->src_measure, sizeof l->src_measure, f[1]); }
     else if (!strcmp(key, "lc_fit") && l->nfits < LC_MAX_DISKS) {
         lc_split(val, f, 4);
@@ -178,7 +186,7 @@ static int smart_skip(const LcDisk *d) { return smart_level(d->smart) > 0; }
 static void default_roles(App *a) {
     const LcState *l = &a->st.lc; int src = -1;
     a->lcu.nroles = 0; a->lcu.measured[0] = 0;
-    for (int i = 0; i < l->ndisks; i++) if (l->disks[i].port == 3 && l->disks[i].usable) src = i;    /* SATA 2 = drawer 3 */
+    for (int i = 0; i < l->ndisks; i++) if (eff_drawer(l->disks[i].drawer, l->disks[i].port) == 3 && l->disks[i].usable) src = i;    /* drawer 3 */
     for (int i = 0; src < 0 && i < l->ndisks; i++) if (l->disks[i].usable && l->disks[i].os[0]) src = i;
     for (int i = 0; src < 0 && i < l->ndisks; i++) if (l->disks[i].usable) src = i;
     for (int i = 0; i < l->ndisks; i++)
@@ -189,6 +197,7 @@ static void default_roles(App *a) {
 void lc_after_reload(App *a) {
     LcState *l = &a->st.lc;
     if (l->screen != LC_SCREEN_BOOT) a->lcu.pause_sent = 0;
+    if (l->has_run) lc_rate_sample(&a->lcu, l->elapsed, l->copied); else a->lcu.rate_n = 0;   /* #1437 */
     if (l->screen != LC_SCREEN_LOCAL) { a->lcu.nroles = 0; a->lcu.last_phase[0] = 0; a->lcu.start_sent = 0; return; }
     if (!strcmp(a->lcu.last_phase, "done") && !strcmp(l->phase, "idle")) a->lcu.nroles = 0;   /* "שכפול נוסף" */
     if (strcmp(l->phase, "idle")) a->lcu.start_sent = 0;
@@ -310,7 +319,7 @@ static int local_handle(App *a, const Event *e) {
     }
     if (view == LCVIEW_SOURCE) {
         if (e->type == UIEV_CHAR && e->ch >= '1' && e->ch <= '9') {
-            for (int i = 0; i < a->st.lc.ndisks; i++) if (a->st.lc.disks[i].port == e->ch - '0') { u->bay = i; u->focus = LCF_BAY; set_source(a, i); }
+            for (int i = 0; i < a->st.lc.ndisks; i++) if (eff_drawer(a->st.lc.disks[i].drawer, a->st.lc.disks[i].port) == e->ch - '0') { u->bay = i; u->focus = LCF_BAY; set_source(a, i); }
         } else if (e->type == UIEV_KEY) {
             if (e->key == KEYSYM_ESC) back(a);
             else if (e->key == KEYSYM_UP && u->bay > 0) { u->bay--; u->focus = LCF_BAY; }

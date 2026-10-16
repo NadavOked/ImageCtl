@@ -1161,6 +1161,12 @@ def run_expand(tmp_path, plan, disk_sectors, override=None):
     )
 
 
+
+def tail_n(idx, sectors, end=976773168 - 34):
+    """#1467: `_move_to_tail` -- start aligned down to 2048, size exact."""
+    start = (end - sectors + 1) // 2048 * 2048
+    return f"-a 1 -n {idx}:{start}:{start + sectors - 1}", start
+
 def test_a_trailing_swap_is_rebuilt_at_the_tail_and_the_root_takes_the_rest(tmp_path):
     """‏256→500 עם swap אחרונה: ה-swap נמחקת, נבראת מחדש בזנב בגודל
     שהמניפסט מצהיר, והשורש נמתח עד תחילתה (#46)."""
@@ -1170,11 +1176,11 @@ def test_a_trailing_swap_is_rebuilt_at_the_tail_and_the_root_takes_the_rest(tmp_
     # ‏-<סקטורים> = כך וכך סקטורים לפני סוף השטח הפנוי; ‏0 = סופו. ערך
     # שלילי ולא סקטור מפורש כדי לא לעקוף את יישור ה-2048 של sgdisk.
     assert calls[1] == (
-        f"-n 3:-{SWAP_SECTORS}:0 -t 3:0657FD6D-A4AB-43C4-84E5-0933C84B4F4F "
+        f"{tail_n(3, SWAP_SECTORS)[0]} -t 3:0657FD6D-A4AB-43C4-84E5-0933C84B4F4F "
         f"-u 3:33333333-3333-3333-3333-333333333333 {test_dev(tmp_path)}/sda"
     )
     assert calls[2] == (
-        "-d 2 -n 2:206848:0 -t 2:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
+        "-a 1 -d 2 -n 2:206848:0 -t 2:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
         f"-u 2:22222222-2222-2222-2222-222222222222 {test_dev(tmp_path)}/sda"
     )
     assert len(calls) == 3
@@ -1206,7 +1212,7 @@ def test_expansion_without_swap_leaves_the_old_path_alone(tmp_path):
     rc, calls, marker = run_expand(tmp_path, plan, disk_sectors=976773168)
     assert rc == "rc=0"
     assert calls == [
-        "-d 2 -n 2:206848:0 -t 2:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
+        "-a 1 -d 2 -n 2:206848:0 -t 2:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
         f"-u 2:22222222-2222-2222-2222-222222222222 {test_dev(tmp_path)}/sda"
     ]
     assert marker == "2|ext4"
@@ -1228,7 +1234,7 @@ def test_an_unmarked_debian_manifest_is_expanded_all_the_same(tmp_path):
     assert rc == "rc=0"
     assert calls[0] == f"-d 3 {test_dev(tmp_path)}/sda"
     assert calls[2] == (
-        "-d 2 -n 2:206848:0 -t 2:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
+        "-a 1 -d 2 -n 2:206848:0 -t 2:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
         f"-u 2:22222222-2222-2222-2222-222222222222 {test_dev(tmp_path)}/sda"
     )
     assert marker == "2|ext4"
@@ -1241,7 +1247,7 @@ def test_an_unmarked_windows_manifest_picks_the_system_partition(tmp_path):
                                    disk_sectors=976773168)
     assert rc == "rc=0"
     assert calls[0] == f"-d 4 {test_dev(tmp_path)}/sda"
-    assert calls[2].startswith("-d 3 -n 3:649216:0 ")
+    assert calls[2].startswith("-a 1 -d 3 -n 3:649216:0 ")
     assert marker == "3|ntfs"
 
 
@@ -1252,7 +1258,7 @@ def test_an_unmarked_cloud_manifest_picks_the_root_that_is_first_in_the_list(tmp
                                    disk_sectors=976773168)
     assert rc == "rc=0"
     assert calls == [
-        "-d 1 -n 1:2099200:0 -t 1:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
+        "-a 1 -d 1 -n 1:2099200:0 -t 1:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
         f"-u 1:dddddddd-dddd-dddd-dddd-dddddddddddd {test_dev(tmp_path)}/sda"
     ]
     assert marker == "1|ext4"
@@ -1280,7 +1286,7 @@ def test_a_manifest_that_marks_exactly_one_partition_overrides_the_choice(tmp_pa
     assert marker == "2|ext4", "הסימון המפורש לא גבר על הבחירה האוטומטית"
     assert calls[0] == f"-d 3 {test_dev(tmp_path)}/sda"
     assert calls[2] == (
-        "-d 2 -n 2:616448:0 -t 2:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
+        "-a 1 -d 2 -n 2:616448:0 -t 2:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
         f"-u 2:22222222-2222-2222-2222-222222222222 {test_dev(tmp_path)}/sda"
     )
 
@@ -1334,7 +1340,7 @@ def test_a_manual_override_picks_a_different_partition_than_auto_would(tmp_path)
     assert marker == "2|ext4"
     assert calls[0] == f"-d 3 {test_dev(tmp_path)}/sda"
     assert calls[2] == (
-        "-d 2 -n 2:616448:0 -t 2:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
+        "-a 1 -d 2 -n 2:616448:0 -t 2:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
         f"-u 2:22222222-2222-2222-2222-222222222222 {test_dev(tmp_path)}/sda"
     )
 
@@ -1358,9 +1364,9 @@ def test_a_trailing_recovery_moves_to_the_tail_and_windows_takes_the_rest(tmp_pa
     assert rc == "rc=0"
     assert calls == [
         f"-d 4 {test_dev(tmp_path)}/sda",
-        f"-n 4:-{RECOVERY_SECTORS}:0 -t 4:DE94BBA4-06D1-4D40-A16A-BFD50179D6AC "
+        f"{tail_n(4, RECOVERY_SECTORS)[0]} -t 4:DE94BBA4-06D1-4D40-A16A-BFD50179D6AC "
         f"-u 4:44444444-4444-4444-4444-444444444444 {test_dev(tmp_path)}/sda",
-        "-d 3 -n 3:649216:0 -t 3:EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "
+        "-a 1 -d 3 -n 3:649216:0 -t 3:EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "
         f"-u 3:33333333-3333-3333-3333-333333333333 {test_dev(tmp_path)}/sda",
     ]
     assert marker == "3|ntfs"
@@ -1390,11 +1396,11 @@ def test_the_tail_keeps_its_order_on_the_disk_not_its_order_in_the_list(tmp_path
     # על הדיסק — נבראת ראשונה, ורק אחריה ה-swap שלפניה.
     assert sorted(calls[:2]) == [f"-d 4 {test_dev(tmp_path)}/sda", f"-d 5 {test_dev(tmp_path)}/sda"]
     assert calls[2] == (
-        f"-n 4:-{RECOVERY_SECTORS}:0 -t 4:DE94BBA4-06D1-4D40-A16A-BFD50179D6AC "
+        f"{tail_n(4, RECOVERY_SECTORS)[0]} -t 4:DE94BBA4-06D1-4D40-A16A-BFD50179D6AC "
         f"-u 4:44444444-4444-4444-4444-444444444444 {test_dev(tmp_path)}/sda"
     )
     assert calls[3] == (
-        f"-n 5:-{4294967296 // 512}:0 -t 5:0657FD6D-A4AB-43C4-84E5-0933C84B4F4F "
+        f"{tail_n(5, 4294967296 // 512, end=tail_n(4, RECOVERY_SECTORS)[1] - 1)[0]} -t 5:0657FD6D-A4AB-43C4-84E5-0933C84B4F4F "
         f"-u 5:55555555-5555-5555-5555-555555555555 {test_dev(tmp_path)}/sda"
     )
     assert marker == "3|ntfs"
@@ -1414,7 +1420,7 @@ def test_the_cloud_root_is_stretched_although_it_is_first_in_the_list(tmp_path):
     rc, calls, marker = run_expand(tmp_path, CLOUD_PLAN, disk_sectors=976773168)
     assert rc == "rc=0"
     assert calls == [
-        "-d 1 -n 1:2099200:0 -t 1:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
+        "-a 1 -d 1 -n 1:2099200:0 -t 1:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
         f"-u 1:dddddddd-dddd-dddd-dddd-dddddddddddd {test_dev(tmp_path)}/sda"
     ]
     assert marker == "1|ext4"

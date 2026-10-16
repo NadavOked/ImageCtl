@@ -1,6 +1,6 @@
 """‏#833: המוניטור ב-view-only חייב לשרוד לקוח ששולח קלט.
 
-‏`monitor.sh` נותן `--input` רק למחשב הבנייה; משכפל רץ view-only. שם
+‏`monitor.sh` נותן `--input` לבנייה ולמשכפל (#1454); view-only נשאר מצב של monitor.c. שם
 ‏`agent/monitor.c` השאיר את ‏`kbdAddEvent`/`ptrAddEvent` כ-`NULL`,
 ‏ו-LibVNCServer קורא להם **בלי בדיקה** — הלקוח של הקונסולה שולח
 ‏PointerEvent מיד אחרי ה-handshake, והתהליך קפץ לכתובת 0 (‏`segfault at 0

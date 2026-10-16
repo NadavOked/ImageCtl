@@ -18,17 +18,28 @@
 
 LC_STALL_S="${LC_STALL_S:-${WAIT_STREAM_STALL_S:-300}}"
 
+_lc_gpt_why() {
+    # #1455: apply_gpt's own steps (zap, -n, -U, -e, rereadpt) log their cause
+    # but set no PLAN_ERROR; the card then said only "not written". The log's
+    # last lines name the step and sgdisk's/blockdev's own words.
+    [ -n "${PLAN_ERROR:-}" ] && { printf '%s
+' "$PLAN_ERROR"; return; }
+    printf 'טבלת המחיצות לא נכתבה: %s
+' "$(tail -n 3 "$LOG_FILE" 2>/dev/null | tr '
+' ' ' | cut -c1-240)"
+}
+
 lc_prepare_target() {
     # $1 = target, $2 = manifest. The table exactly as on the source (GUIDs
     # included), grown to a larger disk -- run_restore_drawers' own sequence.
     target_set "$1" writing
     disk_fits "$1" "$2" || return 1
     if ! apply_gpt "$1" "$2"; then
-        fail_written_target "$1" "${PLAN_ERROR:-טבלת המחיצות לא נכתבה}"; return 1
+        fail_written_target "$1" "$(_lc_gpt_why)"; return 1
     fi
     if ! EXPAND_OVERRIDE=auto expand_last "$1" "$2"; then
         log "WARNING: expansion failed on $1 -- writing at the source's own size"
-        apply_gpt "$1" "$2" || { fail_written_target "$1" "${PLAN_ERROR:-טבלת המחיצות לא נכתבה}"; return 1; }
+        apply_gpt "$1" "$2" || { fail_written_target "$1" "$(_lc_gpt_why)"; return 1; }
     fi
     lc_set_names "$1" || { fail_written_target "$1" "שמות המחיצות לא נכתבו (sgdisk -c)"; return 1; }
     blockdev --rereadpt "$DEVROOT/$1" >> "$LOG_FILE" 2>&1 \

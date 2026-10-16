@@ -279,17 +279,17 @@ def test_static_includes_are_at_9_9():
     שדות סיסמה LTR + "הצג" אחד, ותיקוני הגואי הנייטיבי = ‏11.12;
     #1263 (כרטיס רשת בשלושה אופנים, חלון רשת הפצה, בלי קבצי dnsmasq) = ‏11.13; #1268/#1270/מתאים לדיסק/בלי זכירת MFA = ‏11.15.
     #1267 (פורטים לפי רשת, שירותים בבריאות) + #1264 (bond בהפצה) + #1269 (דרייברים לפי דיסק) + שלב 3 של המוקאפ = ‏11.16; בחירת דיסקים לסבב בקונסולה (#1275) = ‏11.17; יישור סופי למוקאפ + מוניטור מוטמע = ‏11.18; עץ כמו במוקאפ, TLS/שם מארח, #1273/#1274 = ‏11.19; פערי API (#977/#980), #1281 = ‏11.20; חיפוש גלובלי, זרימת הפצה, קצב לומד, שרת משני, שמות חריצים = ‏11.21.
-    #1266 (SSH יצא מהמוצר — בלי מתג, בלי שורת 22, בלי טביעת מפתח) על gate-1011g = ‏11.22; התקדמות על פני גלים (#989) = ‏11.23; קצב אוטומטי = ‏11.24; חתימת גרסאות בבדיקת העדכון (#1277) = ‏11.25; סקירה/אימג'ים/מגירות/בריאות/הגדרות/משתמשים כמו המוקאפ (#1300) = ‏11.26; הגדרות/משתמשים/רשת אחד-לאחד + מוניטור מהמגירה (#1300, אחרי הדחיפה) = ‏11.27; פס האייקונים (#1300) = ‏11.29; הסקירה לפי הצעה ג' (#1300) = ‏11.27 בענף המקביל feat/1300-overview; איחוד gate-1013a (#1311/#1309/#1303/#1277/#1302/#1304/#1300) + לוגו ImageSrv בקונסולה (#1302 שלב ב׳) = ‏11.30; מסך העדכון (#1301) ובדיקת מהירות קישור (#432) = ‏11.31 בענפים מקבילים; שירותים לכל כרטיס רשת (#705) = ‏11.32; בדיקת הכתיבה לפני הגל, F1 כתום וסף CRC (#1366) = ‏11.34 (‏11.33 תפוס ב-#1357 המקביל); מינימום מקום פנוי אחרי שחזור (#1354) + איחוד gate-1014a = ‏11.35; gate-1014b (סבב חדש, מוניטור מנוטרל עם סיבה, #1417–#1422) = ‏11.36.
+    #1266 (SSH יצא מהמוצר — בלי מתג, בלי שורת 22, בלי טביעת מפתח) על gate-1011g = ‏11.22; התקדמות על פני גלים (#989) = ‏11.23; קצב אוטומטי = ‏11.24; חתימת גרסאות בבדיקת העדכון (#1277) = ‏11.25; סקירה/אימג'ים/מגירות/בריאות/הגדרות/משתמשים כמו המוקאפ (#1300) = ‏11.26; הגדרות/משתמשים/רשת אחד-לאחד + מוניטור מהמגירה (#1300, אחרי הדחיפה) = ‏11.27; פס האייקונים (#1300) = ‏11.29; הסקירה לפי הצעה ג' (#1300) = ‏11.27 בענף המקביל feat/1300-overview; איחוד gate-1013a (#1311/#1309/#1303/#1277/#1302/#1304/#1300) + לוגו ImageSrv בקונסולה (#1302 שלב ב׳) = ‏11.30; מסך העדכון (#1301) ובדיקת מהירות קישור (#432) = ‏11.31 בענפים מקבילים; שירותים לכל כרטיס רשת (#705) = ‏11.32; בדיקת הכתיבה לפני הגל, F1 כתום וסף CRC (#1366) = ‏11.34 (‏11.33 תפוס ב-#1357 המקביל); מינימום מקום פנוי אחרי שחזור (#1354) + איחוד gate-1014a = ‏11.35; gate-1014b (סבב חדש, מוניטור מנוטרל עם סיבה, #1417–#1422) = ‏11.36; תקרת קצב לפי כרטיס ההפצה (15/10) = ‏11.37; מהירות כרטיס לכל מכונה ותקרה לפי המשכפל האיטי (15/10 ב׳) = ‏11.38; דפי משכפלים/בנייה לפי המוקאפ ומיפוי חיבורי הדיסקים (#1485) = ‏11.39.
     שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
     versions = set(re.findall(r'\?v=(\d+\.\d+)"', page))
-    assert versions == {"11.36"}, versions
+    assert versions == {"11.39"}, versions
     # ביקורת 10/10: monitor.html מושך את אותם console.css ו-design-tokens.css — הם נשארו על 3.29 לנצח,
     # ולכן דפדפן שזכר אותם הציג את המוניטור בעיצוב ישן. monitor.js לבדו שומר על גרסה משלו (test_monitor).
     mon = (STATIC / "monitor.html").read_text(encoding="utf-8")
     shared = set(re.findall(r'(?:design-tokens|console)\.css\?v=(\d+\.\d+)"', mon))
-    assert shared == {"11.36"}, shared
+    assert shared == {"11.39"}, shared
 
 
 def test_update_apply_is_a_sheet_without_text_verification_and_revert_uses_hostname():
@@ -372,7 +372,7 @@ def test_machines_page_is_one_grouped_table_from_the_api_only():
     js = _console_js()
     for needed in ("function machines(tab = 0)", "function groupRowHtml(", "function machineRowHtml(", "function groupPage(",
                    "function machineDrawerHtml(", "function seenDevicesCard()", "function openAddMachine(", "dry_run: true",
-                   "rebootMachine('${macEnc}')", "editMachineMac('${macEnc}')", "דורש API", "SATA ${n - 1}"):
+                   "rebootMachine('${macEnc}')", "editMachineMac('${macEnc}')", "דורש API", "SATA ${n - 1}", "function connText("):
         assert needed in js, needed
     for gone in ('UI.soon("אתחול מרחוק")', 'UI.soon("עריכת MAC")'):
         assert gone not in js, gone
@@ -398,13 +398,18 @@ def test_cloners_and_builders_objects_are_built_on_group_page_from_the_api_only(
     (‏`GET /room/history`), שלבי הקליטה (‏`/tasks.stage`) ומצב הדיסק לפני
     קליטה (‏`/machines.last_capture` + ‏`probe.ntfs`) — מה-API, בלי "דורש API"."""
     js = _console_js()
+    # ‏#1485: הדפים לפי console-full.html (‏P.cloners / P.build) — כרטיס .mach עם שורות "דיסק N"
+    # לפי מיפוי החיבורים (‏drawer_slots), כרטיס בנייה עם kv, ולשונית "דיסקים" עם עורך המיפוי.
     for needed in ("function clonersView(", "function buildersView(", "function machineSlots(", "function slotClass(",
-                   "function slotHtml(", "function captureNowCard(", "function capturesTableCard(", "function cancelCaptureVerified(",
+                   "function slotHtml(", "function capturesTableCard(", "function cancelCaptureVerified(",
                    "function refreshGroupLive(", 'api("/room")', "drawer_list",
                    'post("/room/poweroff", { confirm_name: g.label })',
                    'api("/room/history")', "function captureStagesHtml(", "function beforeCaptureHtml(",
-                   'return "SMART לא נבדק"', "SATA ${s.n - 1}"):
+                   'return "SMART לא נבדק"', "function driveRows(", "function diskMapHtml(", "function clonerMachHtml(",
+                   "function builderCardHtml(", "drawer_slots: SLOT_EDIT.slots", "(לא ממופה)"):
         assert needed in js, needed
+    assert "function captureNowCard(" not in js and "function editDrawerCount(" not in js, \
+        "#1485: the capture is on the build card; the count dialog moved into the disks tab"
     block = js[js.index("/* ---------- #954 גל 3א"):js.index("/* ---------- לשונית \"נראו ברשת\"")]
     assert "דורש API" not in block[block.index("function captureStagesHtml("):block.index("function buildersCard(")], \
         "#980 §4/§6: שלבים ו'לפני קליטה' מגיעים מה-API"
@@ -413,7 +418,8 @@ def test_cloners_and_builders_objects_are_built_on_group_page_from_the_api_only(
     assert 'd.smart === "ok"' in block and 'return ""' in block, "'לא נבדק' חייב להישאר אפור"
     assert "function groupPage(g, tab = 0)" in js and js.count("function groupPage(") == 1, "אובייקט אחד לכל הקבוצות"
     css = (STATIC / "console.css").read_text(encoding="utf-8")
-    for sel in (".page .mgrid{", ".page .mgrid.big{", ".page .slots{", ".page .disk.run{", ".page .disk.empty{", ".page .legend i.sw-err{", ".page .cap-now{"):
+    for sel in (".page .mgrid{", ".page .slots{", ".page .disk.run{", ".page .disk.empty{", ".page .legend i.sw-err{",   # the deploy room
+                ".page .rgrid{", ".page .mach{", ".page .mach .dsk{", ".page .grid2{", ".page dl.kvd{", ".n-tbl{", ".win .n-seg{"):
         assert sel in css, sel
 
 

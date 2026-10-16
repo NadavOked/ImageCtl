@@ -25,7 +25,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from . import (auth, drive_rates, drivers, minfree, registry, reports, room_drivers,
+from . import (auth, drawer_slots, drive_rates, drivers, minfree, registry, reports, room_drivers,
                room_precheck, slot_names, smart_ask, storage_locations)
 from .db import journal, now_iso, update_one, writing
 from .images import required_bytes, restore_refusal
@@ -208,6 +208,9 @@ def drawer_list(conn: sqlite3.Connection, mac: str, written: set[str],
             "dev": disk.get("dev"),
             "port": port if isinstance(port, int) and not isinstance(port, bool)
             else None,
+            # ‏#1495: כתובת ה-PCI של בקר NVMe (‏hello, ‏#1485) — בלעדיה `drawer` של
+            # כונן NVMe היה תמיד None, גם כשהוא ממופה כדיסק N.
+            "pci": disk.get("pci") if isinstance(disk.get("pci"), str) else None,
             # ‏#553: הסריאל והדגם הם מה שמזהה כונן **ביד**. ‏`port` אומר
             # לאיזו מגירה ללכת; הסריאל אומר איזה כונן זה כשמחזיקים
             # אותו — וכשאין `port` (‏NVMe, ‏VM, בקר לא-ATA) הוא כל מה
@@ -454,14 +457,16 @@ def _validate_target_slots(conn: sqlite3.Connection, raw) -> list[dict]:
         if mac is None or mac in seen_macs or not isinstance(ports, list):
             raise ValueError("בחירת דיסקי היעד אינה תקינה")
         row = conn.execute(
-            "SELECT drawer_count FROM machines WHERE mac = ? AND group_id = ?",
+            "SELECT drawer_count, drawer_slots FROM machines WHERE mac = ? AND group_id = ?",
             (mac, CLONERS_GROUP),
         ).fetchone()
         if row is None:
             raise ValueError("נבחר מחשב שאינו שייך לחדר השכפול")
+        allowed_ports = drawer_slots.sata_ports(
+            drawer_slots.effective(row["drawer_count"], row["drawer_slots"]))
         if (not ports or len(set(ports)) != len(ports) or any(
                 isinstance(p, bool) or not isinstance(p, int)
-                or p < 1 or p > row["drawer_count"] for p in ports)):
+                or p not in allowed_ports for p in ports)):
             raise ValueError(f"בחירת המגירות של {mac} אינה תקינה")
         disks = [d for d in _disks(conn, mac) if isinstance(d, dict)]
         live = {d.get("port") for d in disks if d.get("serial")}
@@ -1162,7 +1167,8 @@ def status_view(ctx) -> dict:
     machines = []
     all_names = slot_names.all_by_mac(ctx.conn)   # #704
     for row in ctx.conn.execute(
-        "SELECT m.mac, m.suffix, m.drawer_count, d.last_seen, d.disk_probe, d.local_clone"
+        "SELECT m.mac, m.suffix, m.drawer_count, m.drawer_slots,"
+        " d.last_seen, d.disk_probe, d.local_clone"
         " FROM machines m"
         " LEFT JOIN net_devices d ON d.mac = m.mac"
         " WHERE m.group_id = ? ORDER BY m.suffix", (CLONERS_GROUP,)
@@ -1173,8 +1179,10 @@ def status_view(ctx) -> dict:
         # ‏#704: השם של כל מגירה (לפי החריץ; NVMe לפי סידורי) — תווית בלבד,
         # ‏`selected`/`port` לא זזים. ‏None = אין שם, המסך מציג "דיסק N".
         names = all_names.get(row["mac"], {})
+        slots = drawer_slots.effective(row["drawer_count"], row["drawer_slots"])
         for d in drawers:
             d["slot_name"] = slot_names.resolve(names, d["port"], d["serial"])
+            d["drawer"] = drawer_slots.drawer_of(slots, d)
         # ‏#710: כל עוד #704 (הגדרת מגירות במסוף) לא נבנה, העמודה NULL —
         # ואז ברירת המחדל היא מספר הדיסקים שהמכונה מדווחת בפועל (הפורט
         # הגבוה ביותר, או הספירה כשאין פורטים), כדי שהגריד לא יסתיר דיסק.
@@ -1184,6 +1192,7 @@ def status_view(ctx) -> dict:
             "mac": row["mac"],
             "name": row["suffix"],
             "drawer_count": _count,   # #695 הוגדר במסוף / #710 ברירת מחדל לפי הדיסקים
+            "drawer_slots": slots,
             "awake": _is_awake(row["last_seen"],
                                member["updated_at"] if member else None),
             "drawers": len(drawers),
@@ -1274,8 +1283,11 @@ def _wave_rate(ctx, round_row: sqlite3.Row, wave: sqlite3.Row | None) -> dict | 
     if wave is None or wave["state"] != "open" or round_row["state"] != "active":
         return None
     ceiling = ctx.sender.max_bitrate if ctx.sender is not None else None
+    # כרטיס ההפצה (15/10) — רק כשהשרת הוא המשדר; גל ישיר יוצא מהכרטיס של
+    # מחשב הבנייה.
+    link = ctx.sender.link() if ctx.sender is not None and not direct else None
     return {**drive_rates.choose(ctx.conn, wave_drives(ctx.conn, session_id), ceiling,
-                                 session_id, direct=direct),
+                                 session_id, direct=direct, link=link),
             "projected": True}
 
 

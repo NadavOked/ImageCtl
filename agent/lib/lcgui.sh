@@ -29,9 +29,14 @@ lc_gui_state() {
         printf 'lc_boot=%s|%s|%s\n' "${_gs_dl:-0}" "${_gs_p:-0}" "$(date +%s)" >> "$_gs_n"
     else
         printf 'lc_inv=%s\nlc_phase=%s\n' "$(cat "$LC/inv.state" 2>/dev/null)" "$(cat "$LC/phase" 2>/dev/null)" >> "$_gs_n"
-        # by port, a disk with no slot last (#867)
-        for _gs_f in "$LC"/inv/*.line; do [ -f "$_gs_f" ] && cat "$_gs_f"; done \
-            | awk -F'|' '{ print ($1 == 0 ? 1 : 0) "|" $0 }' | sort -t'|' -k1,1n -k2,2n | sed 's/^[01]|/lc_disk=/' >> "$_gs_n"
+        # by the drawer of the mapping, a disk not in it last, then by port (#867).
+        # #1495: fields 14-15 = disk_drawer (slotnames.sh), "<drawer>|<connection>".
+        drawer_slots_refresh || :
+        for _gs_f in "$LC"/inv/*.line; do
+            [ -f "$_gs_f" ] || continue
+            IFS='|' read -r _gs_p _gs_d _gs_x < "$_gs_f"; _gs_m=$(disk_drawer "$_gs_d" "${_gs_p:-0}")
+            printf '%s|%s|%s|%s\n' "$([ "${_gs_m%%|*}" = 0 ] && echo 1 || echo 0)" "${_gs_m%%|*}" "$(cat "$_gs_f")" "$_gs_m"
+        done | sort -t'|' -k1,1n -k2,2n -k3,3n | sed 's/^[01]|[0-9]*|/lc_disk=/' >> "$_gs_n"
         _gs_src=$(cat "$LC/source" 2>/dev/null)
         if [ -n "$_gs_src" ]; then
             printf 'lc_src=%s|%s\n' "$_gs_src" "$(cut -d'|' -f1 "$LC/measure/$_gs_src" 2>/dev/null)" >> "$_gs_n"
@@ -63,7 +68,9 @@ lc_gui_run() {
         "$(cat "$_gr_r/report" 2>/dev/null | cut -d'|' -f1)" "${_gr_cur%%|*}" \
         "$(_lc_clean "$(cat "$_gr_r/source_restore" 2>/dev/null)")"
     if [ -f "$_gr_r/manifest.json" ]; then
-        jq -r '.partitions[] | "\(.index)|\(.role)|\(.fs)|\(if .fs == "swap" then 0 elif .used_bytes != null then .used_bytes else .size_bytes end)|\(.size_bytes)"' \
+        # #1440: a used_bytes that was not measured is -1, said "לא נמדד" -- never the
+        # partition's size under the word "בשימוש" (496 GB shown, 203 GB in use).
+        jq -r '.partitions[] | "\(.index)|\(.role)|\(.fs)|\(if .fs == "swap" then 0 elif .used_bytes != null then .used_bytes else -1 end)|\(.size_bytes)"' \
             "$_gr_r/manifest.json" 2>/dev/null | while IFS='|' read -r _gr_i _gr_role _gr_fs _gr_b _gr_z; do
             _gr_st="wait"
             if cat "$_gr_r/source.sha" "$_gr_r/swaps" 2>/dev/null | awk -F'|' -v i="$_gr_i" '$1 == i { f = 1 } END { exit !f }'; then _gr_st="done"

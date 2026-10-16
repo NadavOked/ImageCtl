@@ -91,9 +91,14 @@ def test_a_configured_cap_below_600m_is_where_it_opens(conn):
 
 
 def test_a_configured_cap_above_900m_raises_the_roof_not_the_start(conn):
+    # ‏15/10 (ב): מחשב שיכפול שמהירותו לא ידועה מונח 1Gb/s — ואז הגג 900m גם
+    # מתחת ל-"1g". כשהמקבל הוגדר 10G — הגג המוגדר הוא שקובע, כמו קודם.
+    from server import nic_speed                                # noqa: PLC0415
+    assert _next(conn, ceiling="1g")["ceiling"] == "900m"
+    nic_speed.set_manual(conn, _drive("S1")["mac"], 10000)
     got = _next(conn, ceiling="1g")
     assert got["max_bitrate"] == "600m"
-    assert got["ceiling"] == "1g"
+    assert got["ceiling"] == "1000m" and got["cap_by"] == "configured"
 
 
 # --- למעלה: רק על ראיה --------------------------------------------------------

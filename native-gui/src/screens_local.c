@@ -89,7 +89,7 @@ void lc_dialog_head(App *a, cairo_t *cr, Rect box, const char *title, const char
 /* ---- words ----------------------------------------------------------------------- */
 
 static void sata_of(const LcDisk *d, char *out, size_t n) {
-    if (d->port > 0) snprintf(out, n, "SATA %d", d->port - 1); else snprintf(out, n, "%s", d->dev);
+    conn_text(d->conn, d->port, d->dev, out, n);
 }
 
 static const char *smart_reason_he(const LcDisk *d) {
@@ -189,7 +189,8 @@ static void bay(App *a, cairo_t *cr, Rect b, int i, const LcDisk *src) {
     hit_add(a, b, HIT_LC_BAY_BASE + i);
     double alpha = blk ? .8 : role == LCR_SKIP ? .55 : 1;
     cairo_push_group(cr);
-    char num[16]; snprintf(num, sizeof num, "%d", d->port > 0 ? d->port : i + 1);
+    int drawer = eff_drawer(d->drawer, d->port);
+    char num[16]; if (drawer > 0) snprintf(num, sizeof num, "%d", drawer); else snprintf(num, sizeof num, "%s", "—");
     Text nb = text_make(cr, FONT_MONO, 40, 600, num, 0, DIR_LTR), nl = text_make(cr, FONT_SANS, 11, 400, "מגירה", 0, DIR_RTL);
     double nr = b.x + b.w - 18, ny = cy - (40 + 6 + nl.h) / 2;
     text_draw_r(cr, &nb, nr, ny + (40 - nb.h) / 2, t->ink); text_draw_r(cr, &nl, nr, ny + 46, t->muted);
@@ -327,7 +328,8 @@ void lc_draw_source(App *a, cairo_t *cr, double W, double H, double head_h) {
 static double wrow(App *a, cairo_t *cr, double x, double y, double w, int i, const LcDisk *src, int draw) {
     const Theme *t = a->theme; const LcDisk *d = &a->st.lc.disks[i];
     char num[16], head[200], has[200], sz[32], z[600], v[300], mk[1400], e[600], col[8], sata[32];
-    snprintf(num, sizeof num, "%d", d->port > 0 ? d->port : i + 1);
+    int drawer = eff_drawer(d->drawer, d->port);
+    if (drawer > 0) snprintf(num, sizeof num, "%d", drawer); else snprintf(num, sizeof num, "%s", "—");
     char lb[48]; lc_disk_label(d, lb, sizeof lb); sata_of(d, sata, sizeof sata);
     char model_i[96]; bidi_isolate(d->model[0] ? d->model : d->dev, model_i, sizeof model_i);
     snprintf(head, sizeof head, "%s · %s", lb, model_i);

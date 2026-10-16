@@ -84,8 +84,8 @@ cloner_gui_state() {
     # "connected" -- and must not freeze the drawers' progress with it.
     gui_hello_state >> "$_cg_next" || :
     # #704: the operator's slot names (slotnames.sh); a failed read keeps the last file.
-    slot_names_refresh || :
-    slot_names_records >> "$_cg_next" || return 1
+    slot_names_refresh || :; drawer_slots_refresh || :   # #1495: the drawer mapping, the same way
+    { slot_names_records && drawer_slots_records; } >> "$_cg_next" || return 1
 
     _cg_any=0
     for _cg_dir in "$RUN_DIR"/targets/*/; do
@@ -108,20 +108,20 @@ cloner_gui_state() {
         _cg_error=$(printf '%s' "$_cg_error" | tr '\r\n|' '   ')
         # #410: fields 7-8 are rate (bytes/s) and ETA (s); -1 = not measured.
         cloner_gui_pace "$_cg_dev" "$_cg_state" "$_cg_bytes" "$_cg_total"
-        printf 'drawer=%s|%s|%s|%s|%s|%s|%s|%s\n' \
+        printf 'drawer=%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
             "$_cg_port" "$_cg_dev" "$_cg_state" \
             "$_cg_bytes" "$_cg_total" "$_cg_error" \
-            "$_cg_rate" "$_cg_eta" >> "$_cg_next" ||
+            "$_cg_rate" "$_cg_eta" "$(disk_drawer "$_cg_dev" "$_cg_port")" >> "$_cg_next" ||
             return 1
     done
 
     # Idle -- no round targets yet: list the physically connected disks so the
     # screen shows what is plugged in (count, slot, brand, size), not a bare
-    # "waiting". The record is cdisk=port|dev|model|size|smart|cause|link|link_max|crc (#432, #1366) -- NOT "disk=", which
+    # "waiting". The record is cdisk=port|dev|model|size|smart|cause|link|link_max|crc|drawer|conn (#432, #1366, #1495) -- NOT "disk=", which
     # the build machine already uses for its local disk list (#688).
-    # ‏#867: ממוין לפי מספר הדיסק (השדה הראשון), לא לפי סדר הגילוי של
+    # ‏#867/#1495: ממוין לפי מספר הדיסק במיפוי ואז הפורט, לא לפי סדר הגילוי של
     # list_disks -- במחשב 2 sda הוא דיסק 3, והמסך הציג "3, 1, 2". השורות
-    # נאספות בלי הקידומת, עם דגל "אין חריץ" לפניהן (port 0 מגיע אחרון ולא
+    # נאספות בלי הקידומת, עם "לא ממופה" ומספר הדיסק לפניהן (לא ממופה מגיע אחרון ולא
     # ראשון), ממוינות לקובץ, ורק אז מקבלות cdisk=.
     if [ "$_cg_any" = 0 ]; then
         _cg_idle="$GUI_DIR/cdisk.unsorted"
@@ -132,7 +132,7 @@ cloner_gui_state() {
         for _cg_d in $(list_disks); do
             _cg_dport=$(disk_port "$_cg_d")
             case "$_cg_dport" in ''|*[!0-9]*) _cg_dport=0 ;; esac
-            _cg_last=0; [ "$_cg_dport" = 0 ] && _cg_last=1
+            _cg_dn=$(disk_drawer "$_cg_d" "$_cg_dport"); _cg_last=0; [ "${_cg_dn%%|*}" = 0 ] && _cg_last=1
             _cg_sect=$(cat "$SYSROOT/sys/block/$_cg_d/size" 2>/dev/null)
             case "$_cg_sect" in ''|*[!0-9]*) _cg_sect=0 ;; esac
             _cg_dsize=$((_cg_sect * 512))
@@ -150,11 +150,11 @@ cloner_gui_state() {
             _cg_crc=$(disk_link_json "$_cg_d" | sed -n 's/.*"crc":\([0-9][0-9]*\).*/\1/p')
             case "$_cg_crcmax" in ''|0|*[!0-9]*) _cg_crc= ;; *) [ -n "$_cg_crc" ] && [ "$_cg_crc" -gt "$_cg_crcmax" ] || _cg_crc= ;; esac
             _cg_link=$(disk_link "$_cg_d")   # #432: "<speed> <max>", null = not read -- fields 7/8
-            printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$_cg_last" "$_cg_dport" "$_cg_d" \
-                "$_cg_dmodel" "$_cg_dsize" "$_cg_dsmart" "$_cg_dcause" "${_cg_link% *}" "${_cg_link#* }" "$_cg_crc" >> "$_cg_idle" || return 1
+            printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$_cg_last" "${_cg_dn%%|*}" "$_cg_dport" "$_cg_d" \
+                "$_cg_dmodel" "$_cg_dsize" "$_cg_dsmart" "$_cg_dcause" "${_cg_link% *}" "${_cg_link#* }" "$_cg_crc" "$_cg_dn" >> "$_cg_idle" || return 1
         done
-        sort -t'|' -k1,1n -k2,2n "$_cg_idle" > "$_cg_idle.sorted" || return 1
-        sed 's/^[01]|/cdisk=/' "$_cg_idle.sorted" >> "$_cg_next" || return 1
+        sort -t'|' -k1,1n -k2,2n -k3,3n "$_cg_idle" > "$_cg_idle.sorted" || return 1
+        sed 's/^[01]|[0-9]*|/cdisk=/' "$_cg_idle.sorted" >> "$_cg_next" || return 1
     fi
 
     if [ -f "$GUI_DIR/smart-request" ]; then

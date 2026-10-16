@@ -76,11 +76,8 @@ monitor_start() {
         kill -0 "$_monitor_pid" 2>/dev/null && return 0
 
     case "${D_ROLE:-}" in
-        build)
+        build|cloner)   # #1454: a cloner has a keyboard and mouse too (owner 16/10)
             _monitor_input=--input
-            ;;
-        cloner)
-            _monitor_input=
             ;;
         classroom)
             # Deliberate future gate: classroom monitoring is not built.
