@@ -81,8 +81,41 @@ test('the branches page has three tabs: שרתים, העברות, קבוצות',
   const {run} = setup(base);
   assert.equal(JSON.stringify(run('pages.branches.tabs')), JSON.stringify(['שרתים', 'העברות', 'קבוצות']));
   assert.equal(run('pageAllowed("branches")'), true);
+  // 16/10: a primary/standalone without an active secondary still gets the page (to register the first)
   run('ME.capabilities.interbranch_transfer=false');
-  assert.equal(run('pageAllowed("branches")'), false, 'no secondaries (or a secondary server): no tab');
+  assert.equal(run('pageAllowed("branches")'), true, 'enroll_secondary alone opens the page');
+  run('ME.capabilities.enroll_secondary=false');
+  assert.equal(run('pageAllowed("branches")'), false, 'a secondary server (neither capability): no page');
+  run('ME.capabilities.enroll_secondary=true; ME.role="deploy"');
+  assert.equal(run('pageAllowed("branches")'), false, 'deploy: no page');
+});
+
+test('16/10: with no secondary yet the page is an empty state with a prominent register button, no transfers', async () => {
+  const {run, calls} = setup({...base, '/storage-nodes': [], '/storage-transfers': []},
+    {capabilities: {interbranch_transfer: false, enroll_secondary: true}});
+  await run('loadBranchesData()');
+  assert.equal(run('pageAllowed("branches")'), true);
+  for (const tab of [0, 1, 2]) {
+    const html = run(`branchesPage(${tab})`);
+    assert.match(html, /data-testid="branches-empty"/);
+    assert.match(html, /אין עדיין שרת משני/);
+    assert.match(html, /data-testid="enroll-first" onclick="openEnrollSheet\(\)">\+ רישום שרת משני</);
+    assert.doesNotMatch(html, /העברות/, 'no transfers tab while there is no secondary');
+    assert.doesNotMatch(html, /הגבלת קצב בין אתרים/);
+  }
+  run('__opened=null; sheet=(o)=>{ __opened=o; };');
+  run('openEnrollSheet()');
+  assert.match(run('__opened.title'), /רישום שרת משני — שלב 1/);
+  assert.ok(calls.find((c) => c.url.endsWith('/storage-nodes')));
+});
+
+test('16/10: once a secondary exists the page has its three tabs and the transfers come back', async () => {
+  const {run} = setup(base, {capabilities: {interbranch_transfer: true, enroll_secondary: true}});
+  await run('loadBranchesData()');
+  const html = run('branchesPage(1)');
+  assert.doesNotMatch(html, /data-testid="branches-empty"/);
+  assert.match(html, /העברות/);
+  assert.match(html, /הגבלת קצב בין אתרים/);
 });
 
 test('the servers tab lists each secondary with a measured connection, not a frozen "checking…"', async () => {
@@ -216,23 +249,91 @@ test('the groups tab reuses storage_nodes.js: create, rename, delete a group', a
   assert.match(html, /1 משניים/);
 });
 
+const PREVIEW = {secondary_spki: 'a1b2c3d4e5f607189c3e5d27b04f8a61e2d7c93b5a0f14e8d6b27c39a5e01f84', node_id: 'sn_a1b2c3d4e5f60718'};
+
+// 16/10 (מוקאפ #1525, ג׳1–ג׳3): תיבות קוד מזויפות — ערך, מחלקות ומאזינים — כדי
+// שהחיווט (wireEnrollCode) וה-onSubmit יקראו את מה שהמפעיל "הקליד".
+function fakeCodeForm(run, chars = '') {
+  run(`__boxes = Array.from({length: 8}, (_, i) => { const cls = new Set(), on = {};
+    return {value: ${JSON.stringify(chars)}[i] || '', focused: false, cls, on,
+      classList: {add: (c) => cls.add(c), remove: (c) => cls.delete(c)},
+      addEventListener: (t, fn) => { on[t] = fn; }, focus() { this.focused = true; }}; });
+    __submit = {disabled: false};
+    __form = document.querySelector('#sheet');
+    __form.querySelectorAll = (sel) => sel === '.enroll-c' ? __boxes : [];
+    __form.querySelector = (sel) => sel === '#sf-submit' ? __submit : null;`);
+}
+
 test('registering a secondary: address → SPKI preview → code (enroll/preview then enroll)', async () => {
-  const fixtures = {...base, '/storage-nodes/enroll/preview': {secondary_spki: 'sha256/AbCdEf==', node_id: 'sn_deadbeefcafebabe'}};
+  const fixtures = {...base, '/storage-nodes/enroll/preview': PREVIEW};
   const {run, calls} = setup(fixtures);
   await run('loadBranchesData()');
   run('__step1=null; __step2=null; let n=0; sheet=(o)=>{ n++; if(n===1) __step1=o; else __step2=o; };');
   run('openEnrollSheet()');
-  await run('__step1.onSubmit({url: "https://10.50.0.9:8443/api/interserver/v1", label: "צפת", group_id: ""})');
+  await run('__step1.onSubmit({url: "https://203.0.113.40:8443", label: "צפת", group_id: ""})');
   const preview = calls.find((c) => c.url.endsWith('/storage-nodes/enroll/preview'));
-  assert.ok(preview && preview.body.url === 'https://10.50.0.9:8443/api/interserver/v1');
+  assert.ok(preview && preview.body.url === 'https://203.0.113.40:8443');
   assert.equal(run('typeof __step2.onSubmit'), 'function', 'a second sheet asks for the code, with the previewed SPKI shown');
-  assert.match(run('__step2.note'), /AbCdEf/);
-  await run('__step2.onSubmit({code: "123456"})');
+  const note = run('__step2.note');
+  // the four groups the secondary shows as "זהות השרת", highlighted; then the whole SPKI in groups
+  assert.match(note, /<span class="enroll-hl">A1B2<\/span> <span class="enroll-hl">C3D4<\/span> <span class="enroll-hl">E5F6<\/span> <span class="enroll-hl">0718<\/span><\/div>/);
+  assert.match(note, />A1B2 C3D4 E5F6 0718 9C3E 5D27 B04F 8A61 E2D7 C93B 5A0F 14E8 D6B2 7C39 A5E0 1F84</);
+  assert.match(note, /sn_a1b2c3d4e5f60718/);
+  assert.match(note, /https:\/\/203\.0\.113\.40:8443/, 'the address that was checked');
+  assert.equal((note.match(/class="enroll-c"/g) || []).length, 8, 'eight code boxes');
+  assert.equal(run('__step2.fields'), undefined, 'no free-text code field any more');
+  fakeCodeForm(run, 'K7M4X9QD');
+  await run('__step2.onSubmit({})');
   const enroll = calls.find((c) => c.method === 'POST' && c.url.endsWith('/storage-nodes/enroll'));
   assert.ok(enroll);
-  assert.equal(enroll.body.expected_secondary_spki, 'sha256/AbCdEf==');
-  assert.equal(enroll.body.code, '123456');
+  assert.equal(enroll.body.expected_secondary_spki, PREVIEW.secondary_spki);
+  assert.equal(enroll.body.code, 'K7M4-X9QD');
   assert.equal(enroll.body.label, 'צפת');
+});
+
+test('the register button stays off until all eight boxes hold a code character', () => {
+  const {run} = setup(base);
+  fakeCodeForm(run);
+  run('wireEnrollCode(__form)');
+  assert.equal(run('__submit.disabled'), true, 'empty: off');
+  const type = (i, text) => run(`__boxes[${i}].value = ${JSON.stringify(text)}; __boxes[${i}].on.input();`);
+  'k7m4x9q'.split('').forEach((c, i) => type(i, c));
+  assert.equal(run('__boxes.map((b) => b.value).join("")'), 'K7M4X9Q', 'upper-cased as typed');
+  assert.equal(run('__submit.disabled'), true, 'seven of eight: still off');
+  type(7, '0');
+  assert.equal(run('__boxes[7].value'), '', '0/O/1/I are not in the code alphabet');
+  assert.equal(run('__submit.disabled'), true);
+  type(7, 'd');
+  assert.equal(run('__submit.disabled'), false, 'eight valid characters: on');
+  // a whole code pasted into the first box spreads over the eight
+  fakeCodeForm(run);
+  run('wireEnrollCode(__form)');
+  type(0, 'k7m4-x9qd');
+  assert.equal(run('__boxes.map((b) => b.value).join("")'), 'K7M4X9QD');
+  assert.equal(run('__submit.disabled'), false);
+});
+
+test('a refused code marks the boxes and says to take a new one on the secondary (F5)', async () => {
+  const fixtures = {...base, '/storage-nodes/enroll/preview': PREVIEW, '/storage-nodes/enroll': new Error('502')};
+  const {run} = setup(fixtures);
+  await run('loadBranchesData()');
+  run('__step2=null; let n=0; sheet=(o)=>{ n++; if(n===2) __step2=o; else __step1=o; };');
+  run('openEnrollSheet()');
+  await run('__step1.onSubmit({url: "https://203.0.113.40:8443", label: "צפת", group_id: ""})');
+  fakeCodeForm(run, 'K7M4X9QB');
+  await assert.rejects(run('__step2.onSubmit({})'), /F5 ← קוד חדש/);
+  assert.equal(run('__boxes.every((b) => b.cls.has("err"))'), true);
+});
+
+test('a code that is not eight characters is not sent', async () => {
+  const fixtures = {...base, '/storage-nodes/enroll/preview': PREVIEW};
+  const {run, calls} = setup(fixtures);
+  run('__step2=null; let n=0; sheet=(o)=>{ n++; if(n===2) __step2=o; else __step1=o; };');
+  run('openEnrollSheet()');
+  await run('__step1.onSubmit({url: "https://203.0.113.40:8443", label: "צפת", group_id: ""})');
+  fakeCodeForm(run, 'K7M4');
+  await assert.rejects(run('__step2.onSubmit({})'), /8 התווים/);
+  assert.ok(!calls.find((c) => c.method === 'POST' && c.url.endsWith('/storage-nodes/enroll')));
 });
 
 test('removing a secondary requires typing its name', async () => {
@@ -286,4 +387,46 @@ test('after login the console holds the /me capabilities, so the branches tab is
   await listeners.submit({preventDefault() {}, target: {id: 'login-form'}});
   assert.equal(run('ME && ME.capabilities && ME.capabilities.interbranch_transfer'), true);
   assert.equal(run('pageAllowed("branches")'), true);
+});
+
+// #1473 (נדב 16/10): הגבלת קצב בין אתרים — אופציונלית, ברירת מחדל ללא הגבלה, ליד ההעברות.
+test('#1473: the transfers tab shows the inter-site rate cap in force; unlimited by default; unread is said', async () => {
+  let {run} = setup({...base, '/settings': {intersite_rate_cap_mbps: '0'}});
+  await run('loadBranchesData()');
+  let html = run('branchesPage(1)');
+  assert.match(html, /הגבלת קצב בין אתרים: <b>ללא הגבלה<\/b>/);
+  assert.match(html, /onclick="transferCapSheet\(\)"/, 'admin can change it from here');
+  ({run} = setup({...base, '/settings': {intersite_rate_cap_mbps: '200'}}));
+  await run('loadBranchesData()');
+  html = run('branchesPage(1)');
+  assert.match(html, /עד <bdi dir="ltr">200 Mb\/s<\/bdi> \(<bdi dir="ltr">25 MB\/s<\/bdi>\) לכל העברה/);
+  ({run} = setup({...base, '/settings': new Error('500')}));
+  await run('loadBranchesData()');
+  html = run('branchesPage(1)');
+  assert.match(html, /הגבלת קצב בין אתרים: <b>לא נקרא: /, 'an unread setting is never shown as "unlimited"');
+  assert.doesNotMatch(html, /ללא הגבלה/);
+  assert.doesNotMatch(html, /transferCapSheet/, 'no change button on a value that was not read');
+});
+
+test('#1473: the change sheet posts the whole number to /settings and refuses anything else', async () => {
+  const {run, calls} = setup({...base, '/settings': {intersite_rate_cap_mbps: '0'}});
+  await run('loadBranchesData()');
+  run('__sheet=null; sheet=(o)=>{ __sheet=o; };');
+  run('transferCapSheet()');
+  assert.equal(run('__sheet.fields[0].value'), '0');
+  for (const bad of ['-1', '1.5', 'abc', '', '100001']) {
+    await assert.rejects(run(`__sheet.onSubmit({v: ${JSON.stringify(bad)}})`), /מספר שלם 0–100000/);
+  }
+  assert.ok(!calls.some((c) => c.method === 'POST' && c.url.endsWith('/settings')), 'nothing posted for a bad value');
+  await run('__sheet.onSubmit({v: "50"})');
+  const post = calls.find((c) => c.method === 'POST' && c.url.endsWith('/settings'));
+  assert.deepEqual(post.body, {intersite_rate_cap_mbps: 50});
+});
+
+test('#1473: a deploy user sees the cap but has no change button', async () => {
+  const {run} = setup({...base, '/settings': {intersite_rate_cap_mbps: '100'}}, {role: 'deploy'});
+  await run('loadBranchesData()');
+  const html = run('branchesTransfersTab()');
+  assert.match(html, /עד <bdi dir="ltr">100 Mb\/s<\/bdi>/);
+  assert.doesNotMatch(html, /transferCapSheet/);
 });

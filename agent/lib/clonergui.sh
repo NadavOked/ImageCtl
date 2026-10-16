@@ -84,8 +84,8 @@ cloner_gui_state() {
     # "connected" -- and must not freeze the drawers' progress with it.
     gui_hello_state >> "$_cg_next" || :
     # #704: the operator's slot names (slotnames.sh); a failed read keeps the last file.
-    slot_names_refresh || :
-    slot_names_records >> "$_cg_next" || return 1
+    slot_names_refresh || :; drawer_slots_refresh || :   # #1495: the drawer mapping, the same way
+    { slot_names_records && drawer_slots_records; } >> "$_cg_next" || return 1
 
     _cg_any=0
     for _cg_dir in "$RUN_DIR"/targets/*/; do
@@ -108,53 +108,16 @@ cloner_gui_state() {
         _cg_error=$(printf '%s' "$_cg_error" | tr '\r\n|' '   ')
         # #410: fields 7-8 are rate (bytes/s) and ETA (s); -1 = not measured.
         cloner_gui_pace "$_cg_dev" "$_cg_state" "$_cg_bytes" "$_cg_total"
-        printf 'drawer=%s|%s|%s|%s|%s|%s|%s|%s\n' \
+        printf 'drawer=%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
             "$_cg_port" "$_cg_dev" "$_cg_state" \
             "$_cg_bytes" "$_cg_total" "$_cg_error" \
-            "$_cg_rate" "$_cg_eta" >> "$_cg_next" ||
+            "$_cg_rate" "$_cg_eta" "$(disk_drawer "$_cg_dev" "$_cg_port")" >> "$_cg_next" ||
             return 1
     done
 
-    # Idle -- no round targets yet: list the physically connected disks so the
-    # screen shows what is plugged in (count, slot, brand, size), not a bare
-    # "waiting". The record is cdisk=port|dev|model|size|smart|cause|link|link_max|crc (#432, #1366) -- NOT "disk=", which
-    # the build machine already uses for its local disk list (#688).
-    # ‏#867: ממוין לפי מספר הדיסק (השדה הראשון), לא לפי סדר הגילוי של
-    # list_disks -- במחשב 2 sda הוא דיסק 3, והמסך הציג "3, 1, 2". השורות
-    # נאספות בלי הקידומת, עם דגל "אין חריץ" לפניהן (port 0 מגיע אחרון ולא
-    # ראשון), ממוינות לקובץ, ורק אז מקבלות cdisk=.
+    # Idle -- no round targets yet: what is plugged in, not a bare "waiting".
     if [ "$_cg_any" = 0 ]; then
-        _cg_idle="$GUI_DIR/cdisk.unsorted"
-        : > "$_cg_idle" || return 1
-        disk_failures_refresh || :   # #874: זיכרון השרת מה-hello האחרון; כשל = הקובץ הקודם
-        # ‏#1366: סף ה-CRC המוחלט מה-hello (הגדרה בקונסולה); ריק = שרת ישן — לא צובעים.
-        _cg_crcmax=$(json_get "$RUN_DIR/response.json" ".crc_warn_threshold" 2>/dev/null)
-        for _cg_d in $(list_disks); do
-            _cg_dport=$(disk_port "$_cg_d")
-            case "$_cg_dport" in ''|*[!0-9]*) _cg_dport=0 ;; esac
-            _cg_last=0; [ "$_cg_dport" = 0 ] && _cg_last=1
-            _cg_sect=$(cat "$SYSROOT/sys/block/$_cg_d/size" 2>/dev/null)
-            case "$_cg_sect" in ''|*[!0-9]*) _cg_sect=0 ;; esac
-            _cg_dsize=$((_cg_sect * 512))
-            _cg_dmodel=$(trim "$(cat "$SYSROOT/sys/block/$_cg_d/device/model" 2>/dev/null)")
-            _cg_dmodel=$(printf '%s' "$_cg_dmodel" | tr '\r\n|' '   ')
-            # #709: cached SMART verdict (never probes), ok->passed for the GUI.
-            _cg_dsmart=$(smart_hello_field "$_cg_d")
-            case "$_cg_dsmart" in ok) _cg_dsmart=passed ;; warn|fail|passed) ;; *) _cg_dsmart=unchecked ;; esac
-            # ‏#867/#874: זיכרון השרת גובר על SMART -- דיסק שכשל בכתיבה (לפי סידורי
-            # או חריץ) עובר SMART. השדה השישי הוא הסיבה שהשרת סיווג (cable/disk),
-            # ריק כשירוק. ‏disk_failure_cause יושב ב-failmark.sh: גם השער קורא אותו.
-            _cg_dcause=$(disk_failure_cause "$_cg_d") && _cg_dsmart=failed_last
-            [ "$_cg_dsmart" = fail ] && _cg_dcause=$(smart_field "$_cg_d" 2)   # #1366: why F1 -- field 6
-            # #1366: 199 only when smartctl read it (disk_link_json's rule), over the hello's threshold
-            _cg_crc=$(disk_link_json "$_cg_d" | sed -n 's/.*"crc":\([0-9][0-9]*\).*/\1/p')
-            case "$_cg_crcmax" in ''|0|*[!0-9]*) _cg_crc= ;; *) [ -n "$_cg_crc" ] && [ "$_cg_crc" -gt "$_cg_crcmax" ] || _cg_crc= ;; esac
-            _cg_link=$(disk_link "$_cg_d")   # #432: "<speed> <max>", null = not read -- fields 7/8
-            printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$_cg_last" "$_cg_dport" "$_cg_d" \
-                "$_cg_dmodel" "$_cg_dsize" "$_cg_dsmart" "$_cg_dcause" "${_cg_link% *}" "${_cg_link#* }" "$_cg_crc" >> "$_cg_idle" || return 1
-        done
-        sort -t'|' -k1,1n -k2,2n "$_cg_idle" > "$_cg_idle.sorted" || return 1
-        sed 's/^[01]|/cdisk=/' "$_cg_idle.sorted" >> "$_cg_next" || return 1
+        cloner_cdisks "$(list_disks)" >> "$_cg_next" || return 1
     fi
 
     if [ -f "$GUI_DIR/smart-request" ]; then
@@ -172,6 +135,44 @@ cloner_gui_state() {
     # #410: when this snapshot was taken -- the screen shows its age.
     printf 'updated=%s\n' "$(date +%s)" >> "$_cg_next" || return 1
     mv "$_cg_next" "$GUI_DIR/state"
+}
+
+# cdisk=port|dev|model|size|smart|cause|link|link_max|crc (#432/#1366; not the build's disk=, #688) of
+# the disks in $1: all on the idle screen, the drawers on the restore screen (lcpull.sh).
+# #867: by disk number (sda can be disk 3), a disk with no slot last; the prefix after the sort.
+cloner_cdisks() {
+    _cg_idle="$GUI_DIR/cdisk.unsorted"
+    : > "$_cg_idle" || return 1
+    disk_failures_refresh || :   # #874: זיכרון השרת מה-hello האחרון; כשל = הקובץ הקודם
+    # ‏#1366: סף ה-CRC המוחלט מה-hello (הגדרה בקונסולה); ריק = שרת ישן — לא צובעים.
+    _cg_crcmax=$(json_get "$RUN_DIR/response.json" ".crc_warn_threshold" 2>/dev/null)
+    for _cg_d in $1; do
+        _cg_dport=$(disk_port "$_cg_d")
+        case "$_cg_dport" in ''|*[!0-9]*) _cg_dport=0 ;; esac
+        # #1495: sorted by the drawer of the mapping, "not mapped" (0) last; fields 10/11
+        _cg_dn=$(disk_drawer "$_cg_d" "$_cg_dport"); _cg_last=0; [ "${_cg_dn%%|*}" = 0 ] && _cg_last=1
+        _cg_sect=$(cat "$SYSROOT/sys/block/$_cg_d/size" 2>/dev/null)
+        case "$_cg_sect" in ''|*[!0-9]*) _cg_sect=0 ;; esac
+        _cg_dsize=$((_cg_sect * 512))
+        _cg_dmodel=$(trim "$(cat "$SYSROOT/sys/block/$_cg_d/device/model" 2>/dev/null)")
+        _cg_dmodel=$(printf '%s' "$_cg_dmodel" | tr '\r\n|' '   ')
+        # #709: cached SMART verdict (never probes), ok->passed for the GUI.
+        _cg_dsmart=$(smart_hello_field "$_cg_d")
+        case "$_cg_dsmart" in ok) _cg_dsmart=passed ;; warn|fail|passed) ;; *) _cg_dsmart=unchecked ;; esac
+        # ‏#867/#874: זיכרון השרת גובר על SMART -- דיסק שכשל בכתיבה (לפי סידורי
+        # או חריץ) עובר SMART. השדה השישי הוא הסיבה שהשרת סיווג (cable/disk),
+        # ריק כשירוק. ‏disk_failure_cause יושב ב-failmark.sh: גם השער קורא אותו.
+        _cg_dcause=$(disk_failure_cause "$_cg_d") && _cg_dsmart=failed_last
+        [ "$_cg_dsmart" = fail ] && _cg_dcause=$(smart_field "$_cg_d" 2)   # #1366: why F1 -- field 6
+        # #1366: 199 only when smartctl read it (disk_link_json's rule), over the hello's threshold
+        _cg_crc=$(disk_link_json "$_cg_d" | sed -n 's/.*"crc":\([0-9][0-9]*\).*/\1/p')
+        case "$_cg_crcmax" in ''|0|*[!0-9]*) _cg_crc= ;; *) [ -n "$_cg_crc" ] && [ "$_cg_crc" -gt "$_cg_crcmax" ] || _cg_crc= ;; esac
+        _cg_link=$(disk_link "$_cg_d")   # #432: "<speed> <max>", null = not read -- fields 7/8
+        printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$_cg_last" "${_cg_dn%%|*}" "$_cg_dport" "$_cg_d" \
+            "$_cg_dmodel" "$_cg_dsize" "$_cg_dsmart" "$_cg_dcause" "${_cg_link% *}" "${_cg_link#* }" "$_cg_crc" "$_cg_dn" >> "$_cg_idle" || return 1
+    done
+    sort -t'|' -k1,1n -k2,2n -k3,3n "$_cg_idle" > "$_cg_idle.sorted" || return 1
+    sed 's/^[01]|[0-9]*|/cdisk=/' "$_cg_idle.sorted"
 }
 
 cloner_gui_state_loop() {

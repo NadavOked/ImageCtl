@@ -97,6 +97,10 @@ def test_fixed_groups_cannot_be_deleted(server):
     assert admin.delete("/api/console/groups/grp_CLONERS").status_code == 400
     assert admin.delete("/api/console/groups/grp_BUILD").status_code == 400
     setup_classroom(server)
+    # ‏#1016: כיתה עם מחשבים מסורבת (409); אחרי שהוסרו -- נמחקת.
+    assert admin.delete("/api/console/groups/grp_LAB1").status_code == 409
+    for m in admin.get("/api/console/machines?group=grp_LAB1").json():
+        assert admin.delete(f"/api/console/machines/{m['mac']}").status_code == 200
     assert admin.delete("/api/console/groups/grp_LAB1").status_code == 200
 
 

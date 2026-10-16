@@ -385,10 +385,38 @@ test('final mockup: the delete-image window lists what happens; "in use" unknown
   assert.match(run('formOptions.note'),/הפעולה אינה הפיכה/);
 });
 
-test('final mockup: "פתח סבב עם אימג\' זה" selects the image in the round form and goes to the deploy page',()=>{
+test('final mockup: "פתח סבב עם אימג\' זה" selects the image in the round form and opens the round window',async()=>{
   const {run}=setup();
-  run('roomOperator=()=>true; selectPageById=(p)=>{ globalThis.went=p; }; closeDrawer=()=>{}; openRoundWithImage("img_lnx001")');
+  run('roomOperator=()=>true; globalThis.opened=0; selectPageById=(p)=>{ globalThis.went=p; }; closeDrawer=()=>{}; openRoomRound=()=>{ globalThis.opened++; }; api=async()=>({round:null,machines:[]})');
+  await run('openRoundWithImage("img_lnx001")');
   assert.equal(run('DEPLOY.form.image'),'img_lnx001'); assert.equal(run('DEPLOY.form.src'),'library'); assert.equal(run('went'),'deploy');
-  run('roomOperator=()=>false; DEPLOY.form.image=""; went=""; openRoundWithImage("img_lnx001")');
-  assert.equal(run('DEPLOY.form.image'),''); assert.equal(run('went'),'');
+  assert.equal(run('opened'),1,'the round window opens with the image already chosen');
+  run('roomOperator=()=>false; DEPLOY.form.image=""; went=""; opened=0');
+  await run('openRoundWithImage("img_lnx001")');
+  assert.equal(run('DEPLOY.form.image'),''); assert.equal(run('went'),''); assert.equal(run('opened'),0);
+});
+
+test('library "הפץ" opens the round with this image; an active round shows a clear message with a link, no new choice',async()=>{
+  const {run}=setup();
+  run('roomOperator=()=>true; globalThis.opened=0; globalThis.went=""; selectPageById=(p)=>{ globalThis.went=p; }; closeDrawer=()=>{}; openRoomRound=()=>{ globalThis.opened++; }; api=async()=>({round:null,machines:[]}); DEPLOY.form.image=""');
+  await run('deployImage("img_7f3a91")');
+  assert.equal(run('DEPLOY.form.image'),'img_7f3a91','the image is already in the round form'); assert.equal(run('went'),'deploy'); assert.equal(run('opened'),1);
+  run('DEPLOY.form.image=""; went=""; opened=0; globalThis.modal=null; openModalContent=(t,b,ok,fn)=>{ globalThis.modal={t,b,ok,fn}; }; api=async()=>({round:{id:"rnd_1",image_id:"img_lnx001",image_name:"Ubuntu 24.04",wave_number:2,wave_state:"running"},machines:[]})');
+  await run('deployImage("img_7f3a91")');
+  assert.equal(run('modal.t'),'כבר יש סבב פעיל'); assert.match(run('modal.b'),/כבר יש סבב פעיל — Ubuntu 24\.04/); assert.match(run('modal.b'),/selectPageById\('deploy'\)/);
+  assert.equal(run('DEPLOY.form.image'),''); assert.equal(run('opened'),0); assert.equal(run('went'),'');
+  run('modal=null; globalThis.said=""; toast=(m)=>{ globalThis.said=m; }; api=async()=>{ throw new Error("boom"); }');
+  await run('deployImage("img_7f3a91")');
+  assert.match(run('said'),/החדר לא נקרא/,'room not read is an error, not an empty window'); assert.equal(run('opened'),0);
+});
+
+test('classroom deploy button is hidden when classrooms are off (v1); when on, an active round gets the same message',()=>{
+  const {run}=setup();
+  run('ME.capabilities={classrooms:false}');
+  assert.equal(run('classroomsOn()'),false);
+  assert.doesNotMatch(run('groupKpis({id:"grp_X",role:"classroom",label:"303"},[])'),/deployToGroup/);
+  run('ME.capabilities={classrooms:true}; globalThis.n=0; globalThis.modal=null; roomOperator=()=>true; openModalContent=(t,b)=>{ globalThis.modal={t,b}; }; selectPageById=()=>{ globalThis.n++; }; OVERVIEW={session:{id:"s1",image_name:"Office",state:"open"}}; ROOM=null');
+  assert.match(run('groupKpis({id:"grp_X",role:"classroom",label:"303"},[])'),/deployToGroup/);
+  run('deployToGroup("grp_X")'); assert.equal(run('modal.t'),'כבר יש סבב פעיל'); assert.equal(run('n'),0);
+  run('ME.capabilities={classrooms:false}; modal=null; deployToGroup("grp_X")'); assert.equal(run('modal'),null);
 });

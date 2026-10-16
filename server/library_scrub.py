@@ -66,7 +66,7 @@ def scrub_library(library: ImageLibrary, image_id: str | None = None, conn=None)
     ``unavailable`` image is not saved: it is not a verification result, and
     it must not overwrite the last real one (a ``drift`` above all)."""
     if image_id is not None and not valid_image_id(image_id):
-        raise ValueError("invalid image id")
+        raise ValueError("מזהה אימג' לא תקין")
     manifests = library.scan()
     if image_id is not None:
         manifest = manifests.get(image_id)

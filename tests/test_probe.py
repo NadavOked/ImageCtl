@@ -135,7 +135,7 @@ def test_power_error_when_supplies_exist_but_none_are_readable(fake_machine):
     d.mkdir(parents=True)
     (d / "type").write_text("\n")   # ריק אחרי trim — לא קריא
     err = probe_of(fake_machine["sysroot"])["power"]
-    assert err == {"error": "no readable supply"}
+    assert err == {"error": "אין ספק חשמל קריא"}
 
 
 def test_rtc_measured_and_garbage_is_error(fake_machine):
@@ -171,7 +171,7 @@ def test_cpu_measured_missing_vuln_dir_is_null(fake_machine):
 
 def test_cpuinfo_present_but_empty_is_error(fake_machine):
     (fake_machine["sysroot"] / "proc/cpuinfo").write_text("\n")
-    assert probe_of(fake_machine["sysroot"])["cpu"] == {"error": "cpuinfo unreadable"}
+    assert probe_of(fake_machine["sysroot"])["cpu"] == {"error": "לא ניתן לקרוא את cpuinfo"}
 
 
 def test_memory_ecc_and_dimms_stub(fake_machine, tmp_path):
@@ -319,7 +319,7 @@ exit 0
     _stub(stubs, "smartctl", "echo '{}'; exit 2\n")   # bit 1 = open failed
     disks = {d["name"]: d for d in probe_of(sysroot, stubs=stubs,
                                             devroot=fake_machine["dev"])["disks"]}
-    assert "could not open" in disks["sda"]["smart_errors"]["error"]
+    assert "לא הצליח לפתוח" in disks["sda"]["smart_errors"]["error"]
 
 
 def test_nvme_smart_log_is_capped(fake_machine, tmp_path):
@@ -330,7 +330,7 @@ def test_nvme_smart_log_is_capped(fake_machine, tmp_path):
     disk = next(d for d in probe_of(
         sysroot, extra="NVME_MAX_S=1; ", stubs=stubs,
         devroot=fake_machine["dev"])["disks"] if d["name"] == "nvme0n1")
-    assert disk["nvme_smart"] == {"error": "nvme smart-log did not answer"}
+    assert disk["nvme_smart"] == {"error": "nvme smart-log לא ענה"}
 
 
 def test_encryption_luks_and_bitlocker(fake_machine, tmp_path):

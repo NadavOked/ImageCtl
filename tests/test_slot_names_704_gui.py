@@ -156,7 +156,8 @@ def test_room_drawer_carries_the_slot_name_as_field_eleven(tmp_path):
     lines = _room_records(tmp_path, ROOM)
     rows = [l.split("=", 1)[1].split("|") for l in lines if l.startswith("room_drawer=")]
     assert [(r[1], r[10]) for r in rows] == [("1", "עליונה"), ("0", "דיסק מיוחד"), ("2", "")], rows
-    assert all(len(r) == 13 for r in rows)   # #432: field 12 = link state, after the name; #1366: 13 = CRC
+    # #432: field 12 = link state, after the name; #1366: 13 = CRC; #1495: 14 = drawer, 15 = connection
+    assert all(len(r) == 15 for r in rows), rows
 
 
 @JQ
@@ -176,7 +177,8 @@ def test_an_older_server_without_names_writes_empty_fields(tmp_path):
         del d["slot_name"]
     lines = _room_records(tmp_path, room)
     assert not [l for l in lines if l.startswith("room_slot_name=")]
-    assert all(l.endswith("|") for l in lines if l.startswith("room_drawer="))
+    rows = [l.split("=", 1)[1].split("|") for l in lines if l.startswith("room_drawer=")]
+    assert rows and all(r[10] == "" for r in rows), rows   # field 11, the name: empty, not made up
 
 
 # --- state.c + המסכים: המקור (בלי מהדר בווינדוס) --------------------------------
@@ -186,7 +188,8 @@ def test_the_parser_reads_all_three_records():
     state_c = _src("state.c")
     assert 'KEY("room_slot_name")' in state_c and 'KEY("cslot_name")' in state_c
     # #432 added field 12 (link state) after the name; the floor is still 8
-    assert "split(val, f, 13) < 8" in state_c, "room_drawer: fields 11-13 optional (an older agent sends 8-12)"
+    assert "int nf = split(val, f, 15);" in state_c and "if (nf < 8) continue;" in state_c, \
+        "room_drawer: fields 11-15 optional (an older agent sends 8-14)"
     assert "m->slot_names[actual_port - 1]" in state_c
     assert re.search(r"fallback.*port == \(int\)port", state_c), \
         "a port-0 drawer drawn in a borrowed slot must not take that slot's name"
@@ -200,7 +203,7 @@ def test_buffers_are_sized_for_the_longest_name():
     assert "char slot_names[MAX_DRAWERS][SLOT_NAME_MAX];" in ui
     assert "char cslot_names[MAX_DRAWERS][SLOT_NAME_MAX];" in ui
     room = _src("screens_room.c")
-    assert "named[SLOT_NAME_MAX + 32]" in room and "label[SLOT_NAME_MAX + 48]" in room
+    assert "named[SLOT_NAME_MAX + 128]" in room and "label[SLOT_NAME_MAX + 128]" in room   # #1495: + "(לא ממופה)"
     cloner = _src("screens_cloner.c")
     assert "disk_name[SLOT_NAME_MAX + 16]" in cloner and "head[SLOT_NAME_MAX + 16 + 160]" in cloner
     standby = _src("screens_standby.c")   # #1304: the standby moved out of screens.c
@@ -221,7 +224,11 @@ def test_every_disk_label_on_the_cloner_screens_goes_through_the_name():
 def test_the_room_grid_uses_the_name_and_falls_back_to_disk_n():
     room = _src("screens_room.c")
     assert "m->slot_names[port - 1]" in room
-    assert '"דיסק %d  %s"' in room, "no name = the live row as before"
+    # #1495: the live row is room_drawer_label + size; no name = "דיסק N" as before
+    assert 'room_drawer_label(m, d, base, sizeof base); snprintf(label, sizeof label, "%s  %s", base, size);' in room
+    rounds = _src("screens_rounds.c")
+    label = rounds[rounds.index("void room_drawer_label("):].split("\n}")[0]
+    assert '"דיסק %d", drawer' in label
 
 
 def test_the_readme_documents_the_records():

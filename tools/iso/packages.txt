@@ -69,6 +69,7 @@ ethtool
 smartmontools
 dmidecode
 efibootmgr
+dmsetup             # #1466: שיכפול מקומי/קליטה — מבט copy-on-write בזיכרון על המקור
 
 # --- [gui] tools/build_initramfs.sh · GUI_PACKAGES (--with-gui) -----------
 fonts-ibm-plex

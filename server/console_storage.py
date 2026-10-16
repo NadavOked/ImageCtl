@@ -15,6 +15,7 @@ RBAC כפול (עיקרון 5 + ההיררכיה החד-כיוונית של #655
 
 from __future__ import annotations
 
+import logging
 import re
 import sqlite3
 from pathlib import Path
@@ -27,6 +28,17 @@ from . import (auth, interserver_api, interserver_auth, monitor, peer_safe, regi
                storage_client, storage_nodes, storage_transfer)
 from .api import ServerContext
 from .db import journal, now_iso
+
+log = logging.getLogger("imagectl.console_storage")
+
+
+def secondary_unreachable(exc: BaseException, port=None) -> str:
+    """הודעה בעברית כשהשרת המשני לא ענה (#1016). הטקסט הגולמי של מערכת
+    ההפעלה ([WinError 10061], connection refused) הולך ללוג בלבד; הכישלון
+    עצמו נשאר גלוי (עיקרון 5)."""
+    log.warning("secondary unreachable: %s: %s", type(exc).__name__, exc)
+    return ("השרת המשני לא עונה בכתובת הזו — בדקו כתובת, פורט "
+            f"{port if port else 8443} וחומת אש")
 
 
 class _NotSent(Exception):
@@ -624,7 +636,7 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
         try:
             spki = storage_client.fetch_server_spki(host, port)
         except Exception as exc:                             # noqa: BLE001
-            raise HTTPException(502, f"לא ניתן לקרוא את תעודת המשני: {exc}")
+            raise HTTPException(502, secondary_unreachable(exc, port))
         return {"secondary_spki": spki, "node_id": interserver_auth.node_id_from_spki(spki)}
 
     @router.post("/storage-nodes/enroll")
@@ -640,7 +652,7 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
         if not expected_spki:
             raise HTTPException(400, "חסר expected_secondary_spki (הצמד את ה-SPKI של המשני)")
         try:
-            interserver_auth.parse_interserver_url(url)
+            _host, enroll_port, _ = interserver_auth.parse_interserver_url(url)
         except interserver_auth.InterserverURLError as exc:
             raise HTTPException(400, str(exc))
 
@@ -657,6 +669,9 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
         except storage_client.InterserverClientError as exc:
             # הודעת ה-detail עלולה לשאת חומר — מסתירים לפני שהיא עוזבת.
             raise HTTPException(502, interserver_auth.redact_secrets(str(exc)))
+        except OSError as exc:
+            # החיבור עצמו לא נפתח (סירוב, אין נתיב, זמן קצוב) — #1016.
+            raise HTTPException(502, secondary_unreachable(exc, enroll_port))
 
         # ‏#883: המזהה — וממנו שם קובץ הטוקן — נגזר מה-SPKI שהמפעיל הצמיד
         # וה-handshake אימת, לא מהצהרת ה-JSON של המשני. חגורה שנייה על

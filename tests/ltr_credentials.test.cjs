@@ -31,7 +31,8 @@ test('unified password component input is dir="ltr"', () => {
 test('sheet username and code fields are ltr', () => {
   assert.match(js, /id: "username", label: "שם משתמש", dir: "ltr"/);
   assert.equal((js.match(/id: "code", label: "הקוד מהאפליקציה", dir: "ltr"/g) || []).length, 2);
-  assert.match(read('branches.js'), /id: "code", label: "[^"]*", dir: "ltr"/);
+  // 16/10 (מוקאפ #1525): קוד הצימוד הוא שמונה תיבות — בתוך מיכל ltr
+  assert.match(read('branches.js'), /<div class="enroll-cin" dir="ltr">/);
   assert.match(read('storage.js'), /type === "password" \? ' dir="ltr"'/);
 });
 

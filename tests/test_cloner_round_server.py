@@ -1,0 +1,353 @@
+"""16/10 — a cloning machine opens a room round on its OWN drawers, from its
+own screen, with no user name and password (Nadav: being at the machine is
+the authorization).
+
+The route is narrow on purpose (``server/cloner_round.py``): only a
+registered cloner, identified like every agent route (#855/#997); only its
+own attached, mapped drawers -- the body carries ports, never MACs; only an
+image allowed for this machine; never while another round is active. It
+opens and nothing else: no close, no start, no power-off. Each refusal below
+is a role or input that must stay out.
+
+Security review (16/10): it fails CLOSED -- identity checking off or not
+installed is a refusal; the screen must be open (a single-use, expiring
+nonce the agent asks for when it shows the screen); one attempt per machine
+per RATE_S; drawers and images from the server's own records, never from
+the request; every attempt journaled.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+pytest.importorskip("fastapi")
+
+from conftest import hello_body
+from server import cloner_round, room
+from server.db import set_setting
+from test_machine_identity import (BUILD, MAC1, MAC2, identity_server,  # noqa: F401
+                                   journal_details)
+
+URL = "/api/v1/agent/cloner-round"
+IMG_256 = "img_7f3a91"     # conftest MANIFEST_256
+IMG_500 = "img_2c8e04"     # conftest MANIFEST_500 -- does not fit a 256 drawer
+DRAWER = 256_060_514_304
+
+
+def register(srv, mac: str, group: str, name: str) -> None:
+    r = srv["admin"].post("/api/console/machines",
+                          json={"mac": mac, "name": name, "group_id": group})
+    assert r.status_code == 200, r.text
+
+
+def drawers_hello(srv, mac: str = MAC1, serials=("S1", "S2", "S3")) -> None:
+    """The cloner's hello with its drawers: port i+1, a serial, 256 GB."""
+    body = hello_body(mac)
+    body["disks"] = [
+        {"dev": f"sd{chr(ord('a') + i)}", "size_bytes": DRAWER, "port": i + 1,
+         "model": "Drawer SSD", "serial": s, "removable": False, "scheme": "gpt",
+         "has_data": False}
+        for i, s in enumerate(serials)]
+    r = srv["station"].post("/api/v1/agent/hello", json=body)
+    assert r.status_code == 200, r.text
+
+
+def cloner(srv) -> None:
+    register(srv, MAC1, "grp_CLONERS", "1")
+    drawers_hello(srv)
+
+
+class Now:
+    t = 1000.0
+
+
+@pytest.fixture(autouse=True)
+def now(monkeypatch):
+    """The route's clock (rate limit, nonce expiry), moved by the tests."""
+    clock = Now()
+    monkeypatch.setattr(cloner_round, "_now", lambda: clock.t)
+    _CLOCKS[:] = [clock]
+    yield clock
+    _CLOCKS.clear()
+
+
+def nonce(srv, client: str = "station", mac: str = MAC1):
+    return srv[client].post(URL + "/nonce", json={"mac": mac})
+
+
+def ask(srv, client: str = "station", fresh: bool = True, **body):
+    """One open attempt, as the agent makes it: a nonce first (fresh=False:
+    none is asked for), and the clock past the rate limit."""
+    payload = {"mac": MAC1, "image_id": IMG_256, "ports": [1, 3], **body}
+    if fresh and "nonce" not in body:
+        got = nonce(srv, client, payload["mac"])
+        if got.status_code == 200:
+            payload["nonce"] = got.json()["nonce"]
+    _advance(cloner_round.RATE_S + 1)
+    return srv[client].post(URL, json=payload)
+
+
+_CLOCKS: list = []
+
+
+def _advance(seconds: float) -> None:
+    for c in _CLOCKS:
+        c.t += seconds
+
+
+def no_round(srv) -> bool:
+    return room.active_round(srv["ctx"].conn) is None
+
+
+# --- what is allowed ---------------------------------------------------------------
+
+def test_a_cloner_opens_a_round_on_its_own_chosen_drawers(identity_server):
+    srv = identity_server
+    cloner(srv)
+    r = ask(srv)
+    assert r.status_code == 200, r.text
+    assert r.json()["ok"] is True and r.json()["id"].startswith("room_")
+    row = room.active_round(srv["ctx"].conn)
+    assert json.loads(row["target_slots_json"]) == [{"mac": MAC1, "ports": [1, 3]}]
+    assert row["target_drives"] == 2 and row["image_id"] == IMG_256
+    assert row["opened_by"] == "מחשב שיכפול 1"
+    # the machine's next hello is the ordinary round answer, for ports 1 and 3 only
+    answer = srv["station"].post("/api/v1/agent/hello", json={
+        **hello_body(MAC1), "disks": json.loads(srv["ctx"].conn.execute(
+            "SELECT disks_json FROM net_devices WHERE mac = ?", (MAC1,)).fetchone()["disks_json"])}).json()
+    assert answer["session"] is not None and answer["session"]["target_ports"] == [1, 3], answer
+
+
+def test_the_journal_says_which_cloner_opened_it(identity_server):
+    srv = identity_server
+    cloner(srv)
+    assert ask(srv).status_code == 200
+    lines = journal_details(srv, "room_open_cloner")
+    assert len(lines) == 1, lines
+    user, detail = lines[0]
+    assert user == "מחשב שיכפול 1"
+    assert "נפתח ממחשב שיכפול 1" in detail and MAC1 in detail and "מגירות 1,3" in detail
+    # the round itself is journaled as every room round, in the machine's name
+    assert [u for u, _d in journal_details(srv, "room_open")] == ["מחשב שיכפול 1"]
+
+
+def test_another_cloner_is_not_written(identity_server):
+    srv = identity_server
+    cloner(srv)
+    register(srv, MAC2, "grp_CLONERS", "2")
+    assert ask(srv).status_code == 200
+    assert room._selected_ports(room.active_round(srv["ctx"].conn), MAC2) == set()
+
+
+def test_a_foreign_mac_in_the_body_is_ignored_the_target_is_the_caller(identity_server):
+    """The body has no MAC list to smuggle: target_slots is built from the
+    verified caller alone, whatever else the body carries."""
+    srv = identity_server
+    cloner(srv)
+    register(srv, MAC2, "grp_CLONERS", "2")
+    r = ask(srv, target_slots=[{"mac": MAC2, "ports": [1]}])
+    assert r.status_code == 200, r.text
+    assert json.loads(room.active_round(srv["ctx"].conn)["target_slots_json"]) == \
+        [{"mac": MAC1, "ports": [1, 3]}]
+
+
+# --- who is refused ----------------------------------------------------------------
+
+def test_another_address_claiming_the_cloner_is_refused(identity_server):
+    srv = identity_server
+    cloner(srv)
+    r = ask(srv, client="stranger")
+    assert r.status_code == 403 and r.json()["code"] == "identity_refused", r.text
+    assert no_round(srv)
+
+
+def test_a_mac_with_no_lease_here_is_refused(identity_server):
+    """MAC2 is a registered cloner -- but the caller's address is not its lease."""
+    srv = identity_server
+    cloner(srv)
+    register(srv, MAC2, "grp_CLONERS", "2")
+    r = ask(srv, mac=MAC2)
+    assert r.status_code == 403 and r.json()["code"].startswith("identity_"), r.text
+    assert no_round(srv)
+
+
+def test_an_unregistered_mac_is_refused(identity_server):
+    srv = identity_server
+    r = ask(srv)
+    assert r.status_code == 403 and r.json()["code"] == "unknown_mac", r.text
+    assert no_round(srv)
+
+
+@pytest.mark.parametrize("mac,group", [(BUILD, "grp_BUILD"), (MAC1, "grp_LAB1")])
+def test_a_build_machine_or_a_student_station_is_refused(identity_server, monkeypatch, mac, group):
+    from server import capabilities
+    monkeypatch.setattr(capabilities, "CLASSROOMS", True)   # a classroom group needs v1.2 on
+    srv = identity_server
+    register(srv, MAC2, "grp_CLONERS", "2")          # a cloner exists: the refusal is about the caller
+    if group == "grp_LAB1":
+        assert srv["admin"].post("/api/console/groups", json={
+            "id": "grp_LAB1", "label": "כיתה LAB1", "role": "classroom"}).status_code == 200
+    register(srv, mac, group, "05")
+    drawers_hello(srv, mac)
+    r = ask(srv, mac=mac)
+    assert r.status_code == 403 and r.json()["code"] == "not_a_cloner", r.text
+    assert no_round(srv)
+    assert journal_details(srv, "cloner_round_refused")
+
+
+# --- what is refused -----------------------------------------------------------------
+
+@pytest.mark.parametrize("ports", [[], None, ["1"], [True], "1,3", [1.5]])
+def test_a_malformed_drawer_choice_is_refused(identity_server, ports):
+    srv = identity_server
+    cloner(srv)
+    r = ask(srv, ports=ports)
+    assert r.status_code == 400 and r.json()["code"] == "bad_ports", r.text
+    assert no_round(srv)
+
+
+@pytest.mark.parametrize("ports", [[4], [1, 1], [9]])
+def test_a_drawer_that_is_not_attached_or_mapped_is_refused(identity_server, ports):
+    srv = identity_server
+    cloner(srv)
+    r = ask(srv, ports=ports)
+    assert r.status_code == 400 and r.json()["code"] == "bad_round", r.text
+    assert no_round(srv)
+
+
+def test_a_drawer_with_no_serial_is_refused_by_name(identity_server):
+    srv = identity_server
+    register(srv, MAC1, "grp_CLONERS", "1")
+    drawers_hello(srv, serials=("S1", "", "S3"))
+    r = ask(srv, ports=[2])
+    assert r.status_code == 400 and "serial" in r.json()["error"], r.text
+    assert no_round(srv)
+
+
+@pytest.mark.parametrize("image", [IMG_500, "img_nothere", ""])
+def test_an_image_not_allowed_for_this_machine_is_refused(identity_server, image):
+    srv = identity_server
+    cloner(srv)
+    r = ask(srv, image_id=image)
+    assert r.status_code in (400, 403), r.text
+    assert r.json()["code"] in ("image_not_allowed", "bad_image"), r.text
+    assert no_round(srv)
+
+
+def test_no_second_round_while_one_is_active(identity_server):
+    srv = identity_server
+    cloner(srv)
+    assert ask(srv).status_code == 200
+    first = room.active_round(srv["ctx"].conn)["id"]
+    r = ask(srv, ports=[2])
+    assert r.status_code == 409 and r.json()["code"] == "round_conflict", r.text
+    assert room.active_round(srv["ctx"].conn)["id"] == first
+
+
+def test_the_route_opens_and_nothing_else(identity_server):
+    """No close, no start, no power-off from the agent port without a session."""
+    srv = identity_server
+    cloner(srv)
+    assert ask(srv).status_code == 200
+    for path in (URL + "/close", URL + "/start"):
+        assert srv["station"].post(path, json={"mac": MAC1}).status_code in (404, 405)
+    for path in ("/api/console/room/close", "/api/console/room/start", "/api/console/room/wake"):
+        assert srv["station"].post(path, json={"confirm_name": "x"}).status_code == 401, path
+    assert room.active_round(srv["ctx"].conn) is not None
+
+
+# --- fails closed (security review, 16/10) -------------------------------------------------
+
+def test_identity_checking_off_is_a_refusal_not_a_pass(identity_server):
+    srv = identity_server
+    cloner(srv)
+    set_setting(srv["ctx"].conn, "identity_check", "false")
+    assert nonce(srv).status_code == 403
+    r = ask(srv, nonce="x" * 32)
+    assert r.status_code == 403 and r.json()["code"] == "identity_unverifiable", r.text
+    assert no_round(srv)
+    assert any("identity check is off" in d for _u, d in journal_details(srv, "cloner_round_refused"))
+
+
+def test_a_server_with_no_identity_guard_installed_refuses(server):
+    """The plain test server has no leases (ctx.leases is None): every other agent
+    route lets that through; this one does not."""
+    register(server, MAC1, "grp_CLONERS", "1")
+    r = server["anon"].post(URL + "/nonce", json={"mac": MAC1})
+    assert r.status_code == 403 and r.json()["code"] == "identity_unverifiable", r.text
+    r = server["anon"].post(URL, json={"mac": MAC1, "nonce": "x", "image_id": IMG_256, "ports": [1]})
+    assert r.status_code == 403 and room.active_round(server["ctx"].conn) is None
+
+
+def test_a_lease_mismatch_gets_no_nonce(identity_server):
+    srv = identity_server
+    cloner(srv)
+    r = nonce(srv, client="stranger")
+    assert r.status_code == 403 and r.json()["code"] == "identity_refused", r.text
+
+
+@pytest.mark.parametrize("how", ["none", "wrong", "expired", "reused", "other_machine"])
+def test_without_the_screens_live_nonce_nothing_opens(identity_server, now, how):
+    srv = identity_server
+    cloner(srv)
+    if how == "none":
+        r = ask(srv, fresh=False)
+    elif how == "wrong":
+        nonce(srv)
+        r = ask(srv, nonce="0" * 32)
+    elif how == "expired":
+        n = nonce(srv).json()["nonce"]
+        now.t += cloner_round.NONCE_TTL_S + 1
+        r = ask(srv, nonce=n)
+    elif how == "reused":
+        n = nonce(srv).json()["nonce"]
+        first = ask(srv, nonce=n, ports=[9])               # spends it, refused for the port
+        assert first.status_code == 400, first.text
+        r = ask(srv, nonce=n)
+    else:                                                  # a nonce is the machine's own
+        register(srv, BUILD, "grp_CLONERS", "9")
+        drawers_hello(srv, BUILD)
+        n = nonce(srv, mac=BUILD).json()["nonce"]
+        r = ask(srv, nonce=n)
+    assert r.status_code == 403 and r.json()["code"] == "bad_nonce", r.text
+    assert no_round(srv)
+
+
+def test_one_attempt_per_machine_in_rate_s(identity_server, now):
+    srv = identity_server
+    cloner(srv)
+    n1 = nonce(srv).json()["nonce"]
+    r1 = srv["station"].post(URL, json={"mac": MAC1, "nonce": n1, "image_id": IMG_256, "ports": [9]})
+    assert r1.status_code == 400, r1.text
+    n2 = nonce(srv).json()["nonce"]
+    r2 = srv["station"].post(URL, json={"mac": MAC1, "nonce": n2, "image_id": IMG_256, "ports": [1]})
+    assert r2.status_code == 429 and r2.json()["code"] == "rate_limited", r2.text
+    assert no_round(srv)
+    now.t += cloner_round.RATE_S
+    r3 = srv["station"].post(URL, json={"mac": MAC1, "nonce": n2, "image_id": IMG_256, "ports": [1]})
+    assert r3.status_code == 200, r3.text
+
+
+def test_drawers_and_images_come_from_the_server_not_the_request(identity_server):
+    """A body that brings its own disks does not make port 4 attached, nor a big image fit."""
+    srv = identity_server
+    cloner(srv)
+    fake = [{"dev": "sdd", "port": 4, "serial": "X4", "size_bytes": 10 ** 13, "removable": False}]
+    r = ask(srv, ports=[4], disks=fake, drawer_slots=["sata:4"])
+    assert r.status_code == 400 and r.json()["code"] == "bad_round", r.text
+    r = ask(srv, image_id=IMG_500, disks=fake)
+    assert r.status_code == 403 and r.json()["code"] == "image_not_allowed", r.text
+    assert no_round(srv)
+
+
+def test_every_attempt_is_journaled(identity_server):
+    srv = identity_server
+    cloner(srv)
+    ask(srv, ports=[9])
+    ask(srv, fresh=False)
+    assert ask(srv).status_code == 200
+    refused = [d for _u, d in journal_details(srv, "cloner_round_refused")]
+    assert len(refused) == 2 and "bad_round" in refused[0] and "bad_nonce" in refused[1], refused
+    assert len(journal_details(srv, "room_open_cloner")) == 1

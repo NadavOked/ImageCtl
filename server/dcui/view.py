@@ -42,6 +42,7 @@ MENU_TEXT = (   # app.MENU_ITEMS, in the same order (#1203: no wizard item -- #1
     ("rnet", "הפעלה מחדש של רשת הניהול", "החלה מחדש של ההגדרה השמורה"),
     ("svc", "הפעלה מחדש של השירותים", "שרת ImageSrv ו־dnsmasq"),
     ("cert", "תעודת אבטחה", "טביעת אצבע, שמות ותוקף"),
+    ("net", "הכתובת שהראשי רואה", "לשרת משני — מאחורי NAT, הכתובת החיצונית"),
 )
 
 RO_NOTE = "· המסך לקריאה בלבד · רענון אחרון {refreshed} · כל 5 שניות"
@@ -83,6 +84,7 @@ class Extras:
     secondaries: tuple[str, ...] = ()
     has_parent: bool = False
     primary_url: str = ""
+    advertised_url: str = ""          # 16/10: the address the primary sees
 
 
 def collect_extras(conn, uptime_path: Path = Path("/proc/uptime")) -> Extras:
@@ -108,7 +110,11 @@ def collect_extras(conn, uptime_path: Path = Path("/proc/uptime")) -> Extras:
         primary = storage_nodes.primary_url(conn)
     except Exception:  # noqa: BLE001
         has_parent, primary = False, ""
-    return Extras(uptime, secondaries, has_parent, primary)
+    try:
+        advertised = storage_nodes.advertised_url(conn)
+    except Exception:  # noqa: BLE001
+        advertised = ""
+    return Extras(uptime, secondaries, has_parent, primary, advertised)
 
 
 # ---- translation of the backend's ASCII messages ------------------------------
@@ -184,7 +190,32 @@ _EXACT = {
     "System reboot failed.": "האתחול נכשל.",
     "System poweroff failed.": "הכיבוי נכשל.",
     "No result.": "אין תוצאה.",
+    "systemctl returned no detail": "systemctl לא החזיר פירוט.",
+    "ip returned no detail": "הפקודה ip לא החזירה פירוט.",
     "Restart/shutdown cancelled; nothing was done.": "בוטל — לא בוצע דבר.",
+    # F4 on a secondary (16/10)
+    "The server database is not available.": "מסד הנתונים של השרת אינו זמין.",
+    "Pairing codes are shown only on a secondary server.": "קוד צימוד מוצג רק בשרת משני.",
+    "This server is already paired; disconnect it first.":
+        "השרת כבר מצומד — מנתקים אותו קודם (F4).",
+    "The pairing window could not be opened.": "לא הצלחנו לפתוח קוד צימוד.",
+    "Pairing code opened.": "קוד הצימוד נפתח.",
+    "Pairing code cancelled; it can no longer be used.":
+        "קוד הצימוד בוטל — אי אפשר להשתמש בו עוד.",
+    "Paired with the primary server.": "השרת מצומד לשרת הראשי.",
+    "The code's state could not be read from the DB.":
+        "לא הצלחנו לבדוק את מצב הקוד מול מסד הנתונים.",
+    "The disconnect could not be written.": "הניתוק לא נכתב — לא ידוע אם השרת עדיין מצומד.",
+    "The primary server is still recorded; the disconnect was not confirmed.":
+        "השרת הראשי עדיין רשום — הניתוק לא אומת.",
+    "Disconnected from the primary server.": "השרת נותק מהשרת הראשי.",
+    "Disconnect cancelled; nothing was changed.": "הניתוק בוטל — לא שונה דבר.",
+    "Invalid address: use host:port, for example 203.0.113.40:8443.":
+        "כתובת לא תקינה: כתובת ופורט, למשל \u2068203.0.113.40:8443\u2069.",
+    "The address could not be saved.": "לא הצלחנו לשמור את הכתובת.",
+    "The address was not read back as saved.": "הכתובת שנקראה בחזרה אינה זו שנשמרה.",
+    "Address saved.": "הכתובת נשמרה.",
+    "Address cleared.": "הכתובת נמחקה — היא לא מוגדרת עוד.",
 }
 
 _PATTERNS = (
@@ -196,6 +227,8 @@ _PATTERNS = (
     (r"Temporary address applied to ([A-Za-z0-9._-]+)\.", "הכתובת הזמנית הוחלה על {0}."),
     (r"Temporary network command failed: (.+)\.", "פקודת הרשת הזמנית נכשלה: {0}."),
     (r"Conflict (\d+)", "התנגשות {0}"),
+    (r"([A-Za-z0-9@._-]+): restart failed", "{0}: ההפעלה מחדש נכשלה"),
+    (r"([A-Za-z0-9@._-]+) did not read back active", "{0} לא חזר למצב פעיל"),
 )
 
 
@@ -491,7 +524,7 @@ def _round_row(snapshot: Snapshot) -> Row:
 def _peer_row(snapshot: Snapshot, extras: Extras) -> Row:
     if snapshot.storage_role == "secondary":
         if not extras.has_parent:
-            return Row("שרת ראשי", "עדיין לא התחבר", "הראשי יוזם את החיבור — אין מה להגדיר כאן",
+            return Row("שרת ראשי", "עדיין לא התחבר", "F4 מציג את קוד הצימוד להקלדה בראשי",
                        "info", "ממתין")
         host = _host_of(extras.primary_url) or "לא ידוע"
         return Row("שרת ראשי", host, "", "ok", "מחובר ✓", "", "", "mono")
@@ -501,6 +534,14 @@ def _peer_row(snapshot: Snapshot, extras: Extras) -> Row:
                    "off", "אין")
     count = f"{len(names)} רשום" if len(names) == 1 else f"{len(names)} רשומים"
     return Row("שרתים משניים", count, " · ".join(iso(name) for name in names), "ok", "רשום")
+
+
+def advertised_row(url: str) -> Row:
+    """16/10: the address the primary types; unset is a yellow warning, not a guess."""
+    if url:
+        return Row("הכתובת שהראשי רואה", url, "מוצגת במסך הקוד (F4)", value_style="mono")
+    return Row("הכתובת שהראשי רואה", "לא הוגדרה", "הגדרות (F2) ← הכתובת שהראשי רואה",
+               "warn", "לא הוגדרה", "warn")
 
 
 def _host_of(url: str) -> str:
@@ -541,6 +582,14 @@ MAIN_KEYS = (("F2", "הגדרות", 1), ("F9", "איפוס סיסמה", 0),
              ("F12", "אתחול / כיבוי", 1), ("F5", "רענון", 0))
 
 
+def main_keys(snapshot: Snapshot, extras: Extras) -> tuple:
+    """F4 only on a secondary (16/10): pair when unpaired, disconnect when paired."""
+    if snapshot.storage_role != "secondary":
+        return MAIN_KEYS
+    f4 = ("F4", "ניתוק מהשרת הראשי" if extras.has_parent else "צימוד לשרת ראשי", 0)
+    return (f4,) + MAIN_KEYS
+
+
 def _main_state(snapshot: Snapshot, extras: Extras, found: list[Problem]) -> tuple[str, str]:
     """(dot, word) for the status line."""
     if found:
@@ -563,11 +612,9 @@ def _hero(frame: Frame, snapshot: Snapshot, extras: Extras, found: list[Problem]
             frame.add("prob", item.sev, index, item.title, item.what, item.todo_m, *item.key)
         return
     if snapshot.storage_role == "secondary" and not extras.has_parent:
-        address = snapshot.management.address.split("/")[0] or "הכתובת של השרת"
         frame.add("hero", "wait", "ממתין לחיבור מהשרת הראשי",
-                  "השרת מוכן. בקונסולה של השרת הראשי: <b>שרתים ← הוספת שרת משני</b>, "
-                  f"והזינו את הכתובת <b>{mono_m(address)}</b> ואת טביעת האצבע שבאריח "
-                  "\"גישה לקונסולה\".", "", "")
+                  "השרת מוכן לצימוד. <b>F4</b> מציג קוד חד־פעמי, את טביעת הזהות ואת הכתובת "
+                  "שמקלידים בקונסולה של השרת הראשי: <b>סניפים ← רישום שרת משני</b>.", "", "")
         return
     if snapshot.storage_role == "secondary":
         host = _host_of(extras.primary_url)
@@ -594,6 +641,8 @@ def _tiles(frame: Frame, snapshot: Snapshot, extras: Extras, today: datetime) ->
     frame.add(*deploy_row(snapshot, extras).record())
     frame.add("tile", "שרתים והפצה", "", "")
     frame.add(*_peer_row(snapshot, extras).record())
+    if snapshot.storage_role == "secondary" and not extras.has_parent:
+        frame.add(*advertised_row(extras.advertised_url).record())
     frame.add(*_round_row(snapshot).record())
     frame.add("tile", "גישה לקונסולה", "", "")
     url = snapshot.console_url if not snapshot.no_address else "אין כתובת"
@@ -820,6 +869,102 @@ def _result_dialog(frame: Frame, runtime) -> None:
     frame.add("d.btn", "חזרה להגדרות", "Enter", "pri", 1)
 
 
+def spki_groups(spki: str) -> list[str]:
+    clean = (spki or "").upper()
+    return [clean[i:i + 4] for i in range(0, len(clean), 4)]
+
+
+def countdown(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
+
+def local_time(iso_value: str) -> str:
+    try:
+        when = datetime.fromisoformat(iso_value)
+    except (TypeError, ValueError):
+        return iso_value or "לא ידוע"
+    return when.astimezone().strftime("%d/%m/%Y %H:%M:%S") if when.tzinfo else \
+        when.strftime("%d/%m/%Y %H:%M:%S")
+
+
+def _pair_dialog(frame: Frame, runtime, wall: float) -> None:
+    """F4 on a secondary (16/10, mockup a2-a4): the code, its time, the
+    identity the primary compares and the address it types."""
+    stage, code = runtime.pair_stage, runtime.pair
+    if stage == "paired":
+        paired = runtime.paired or {}
+        frame.add("dlg", "plain", 560, "✓ השרת מצומד",
+                  "הצימוד הושלם. הקוד בוטל ואי אפשר להשתמש בו שוב.")
+        frame.add("d.kv", "שרת ראשי", paired.get("primary_url") or "לא ידוע", 1)
+        frame.add("d.kv", "מזהה ראשי", paired.get("parent_id") or "לא ידוע", 1)
+        frame.add("d.kv", "זמן", local_time(paired.get("enrolled_at", "")), 1)
+        frame.add("d.btn", "סגירה", "Enter", "pri", 1)
+        return
+    if stage in ("expired", "closed") or code is None:
+        if stage == "closed":
+            frame.add("dlg", "plain", 560, "הקוד נסגר לפני הזמן",
+                      "לא בוצע צימוד. הקוד אינו תקף עוד — הראשי יקבל שגיאה אם יקליד אותו.")
+            frame.add("d.alert", "הסיבה: הקוד הוקלד שגוי 5 פעמים בראשי, או שנפתח קוד אחר.")
+        else:
+            frame.add("dlg", "plain", 560, "הקוד פג תוקף",
+                      "לא בוצע צימוד. הקוד אינו תקף עוד — הראשי יקבל שגיאה אם יקליד אותו.")
+        frame.add("d.btn", "קוד חדש", "Enter", "pri", 1)
+        frame.add("d.btn", "חזרה", "Esc", "plain", 0)
+        return
+    left = code.expires - wall
+    frame.add("dlg", "plain", 680, "קוד צימוד חד־פעמי",
+              "מקלידים את הקוד בשרת הראשי. תקף לשימוש אחד, ומוצג רק על המסך הזה.")
+    frame.add("d.code", code.code, "זמן שנותר", countdown(left), "warn" if left < 60 else "")
+    groups = spki_groups(code.spki)
+    if groups:
+        frame.add("d.kv", "זהות השרת", " ".join(groups[:4]), 1)
+        frame.add("d.kv", "מזהה", code.node_id, 1)
+        frame.add("d.kv", "SPKI SHA-256 מלא", " ".join(groups[:8]), 1)
+        frame.add("d.kv", "", " ".join(groups[8:16]), 1)
+    else:
+        frame.add("d.alert", "<b>לשרת אין עדיין זהות בין־שרתית</b> — הראשי לא יוכל להתחבר. "
+                             "הגדרות (F2) ← הפעלה מחדש של השירותים.")
+    if code.advertised:
+        frame.add("d.kv", "הכתובת שהראשי מקליד", code.advertised, 1)
+    else:
+        frame.add("d.alert", "<b>הכתובת שהראשי רואה לא הוגדרה.</b> "
+                             "הגדרות (F2) ← הכתובת שהראשי רואה.", "warn")
+    frame.add("d.bullet", "<b>בשרת הראשי:</b> סניפים ← רישום שרת משני")
+    frame.add("d.bullet", "<b>מקלידים את הכתובת</b> ומוודאים שהטביעה זהה לזו שכאן")
+    frame.add("d.bullet", "<b>מקלידים את הקוד</b> — 8 תווים, שימוש חד־פעמי")
+    if runtime.pair_error:
+        frame.add("d.error", he(runtime.pair_error))
+    frame.add("d.note", "סגירת המסך (Esc) מבטלת את הקוד. אחרי 5 הקלדות שגויות בראשי הוא נסגר.")
+    frame.add("d.btn", "סגירה", "Esc", "plain", 0)
+    frame.add("d.btn", "קוד חדש", "F5", "plain", 0)
+
+
+def _unpair_dialog(frame: Frame, extras: Extras) -> None:
+    """Mockup a6: the red button is the confirmation -- nothing is typed."""
+    host = _host_of(extras.primary_url)
+    frame.add("dlg", "danger", 560, "לנתק את השרת מהשרת הראשי?",
+              f"הראשי {iso(host)} יפסיק לראות את השרת הזה." if host else
+              "הראשי יפסיק לראות את השרת הזה.")
+    frame.add("d.bullet", "צימוד מחדש דורש קוד חדש (F4).")
+    frame.add("d.bullet", "האימג׳ים באחסון לא נמחקים.")
+    frame.add("d.note", "אין צורך להקליד דבר — הכפתור האדום הוא האישור.")
+    frame.add("d.btn", "ביטול", "Esc", "plain", 0)
+    frame.add("d.btn", "נתק מהשרת הראשי", "Enter", "danger", 1)
+
+
+def _advertised_dialog(frame: Frame, runtime) -> None:
+    frame.add("dlg", "plain", 640, "הכתובת שהראשי רואה",
+              "הכתובת שבה השרת הראשי מגיע לשרת הזה (פורט 8443). מאחורי NAT — הכתובת החיצונית.")
+    frame.add("d.field", "כתובת ופורט", runtime.advert, "text", 1, 1)
+    if runtime.message:
+        frame.add("d.error", he(runtime.message))
+    frame.add("d.note", f"לדוגמה {mono_m('203.0.113.40:8443')} — ‏https:// נוסף לבד. "
+                        "שדה ריק מוחק את ההגדרה.")
+    frame.add("d.btn", "שמירה", "Enter", "pri", 0)
+    frame.add("d.btn", "ביטול", "Esc", "plain", 0)
+
+
 def _settings_body(frame: Frame, runtime, today: datetime) -> None:
     snapshot = runtime.snapshot
     frame.add("ttl", "הגדרות השרת", "רק מה שצריך לעשות מול המכונה עצמה. כל השאר — בקונסולה.")
@@ -851,6 +996,13 @@ def _settings_body(frame: Frame, runtime, today: datetime) -> None:
             frame.add(*service_row(name, snapshot.services.get(name), snapshot,
                                    extras).record("prow"))
         frame.add("pnote", "מחשבים שבאמצע שיכפול עלולים להיכשל בזמן ההפעלה מחדש.")
+    elif selected == 4:
+        frame.add("pane", "הכתובת שהראשי רואה",
+                  "הכתובת שבה השרת הראשי מגיע לשרת המשני הזה (פורט 8443). מוצגת במסך "
+                  "קוד הצימוד (F4) — זו הכתובת שמקלידים בראשי.")
+        extras = getattr(runtime, "extras", None) or Extras()
+        frame.add(*advertised_row(extras.advertised_url).record("prow"))
+        frame.add("pnote", "מאחורי NAT: הכתובת החיצונית של האתר הזה, לא הכתובת המקומית.")
     else:
         frame.add("pane", "תעודת אבטחה",
                   "טביעת האצבע, השמות שבתעודה ותאריך התפוגה — כפי שנקראו מהתעודה עצמה.")
@@ -860,7 +1012,7 @@ def _settings_body(frame: Frame, runtime, today: datetime) -> None:
         frame.add("pnote", "משווים את טביעת האצבע למה שהדפדפן מציג בכניסה הראשונה לקונסולה.")
 
 
-SETTINGS_SCREENS = {"menu", "network", "network_confirm", "tls", "result"}
+SETTINGS_SCREENS = {"menu", "network", "network_confirm", "tls", "result", "advertised"}
 
 
 def render(runtime, now: float, wall: float, clock: str, today: datetime,
@@ -887,7 +1039,7 @@ def render(runtime, now: float, wall: float, clock: str, today: datetime,
         if snapshot.pre_install:
             _keys(frame, (("F2", "כתובת זמנית", 0), ("F5", "רענון", 0)))
         else:
-            _keys(frame, MAIN_KEYS)
+            _keys(frame, main_keys(snapshot, extras))
         lock = runtime.auth.seconds_left(wall)
         message = runtime.message or (f"Authentication locked for {lock} more seconds."
                                       if lock else "")
@@ -930,6 +1082,25 @@ def render(runtime, now: float, wall: float, clock: str, today: datetime,
         rest = "· ממתין לאישור"
         _network_confirm_dialog(frame, runtime, rollback_left)
         _keys(frame, (("C", "אישור", 0), ("R", "החזרה עכשיו", 0), ("Esc", "השארת השעון", 0)))
+    elif screen == "pair":
+        stage = runtime.pair_stage
+        rest = {"code": "· קוד צימוד פעיל", "paired": "· מצומד"}.get(stage, "· הקוד אינו תקף")
+        _pair_dialog(frame, runtime, wall)
+        if stage == "code":
+            _keys(frame, (("F5", "קוד חדש", 0), ("Esc", "סגירה וביטול הקוד", 0)))
+        elif stage == "paired":
+            _keys(frame, (("Enter", "סגירה", 0),))
+        else:
+            _keys(frame, (("Enter", "קוד חדש", 0), ("Esc", "חזרה", 0)))
+    elif screen == "unpair":
+        rest = "· אישור ניתוק"
+        _unpair_dialog(frame, extras)
+        _keys(frame, (("Enter", "נתק", 0), ("Esc", "ביטול", 0)))
+    elif screen == "advertised":
+        rest = "· הכתובת שהראשי רואה"
+        _advertised_dialog(frame, runtime)
+        frame.add("lang", "שדה באנגלית בלבד")
+        _keys(frame, (("Enter", "שמירה", 0), ("Esc", "ביטול", 0)))
     elif screen == "tls":
         rest = "· תעודת אבטחה"
         _tls_dialog(frame, snapshot, today)

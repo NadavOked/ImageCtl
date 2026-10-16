@@ -23,12 +23,26 @@ int lc_can_go(const App *a);                      /* >= 1 target, every one allo
 int lc_any_shrink(const App *a);
 const LcDisk *lc_disk_by_dev(const App *a, const char *dev);
 void lc_gb(char *out, size_t n, double bytes);    /* "149 GB", "610 MB" */
-void lc_disk_label(const LcDisk *d, char *out, size_t n);   /* "דיסק 3", or the device */
+void lc_pct(char *out, size_t n, double share);   /* #1437: "0.2%", "37%" -- floored */
+void lc_rate_sample(LcUi *u, int elapsed, long long copied);   /* #1437: one per reload */
+double lc_rate(const LcUi *u, int *span);         /* bytes/s over the window, -1 = none */
+int lc_unmeasured(const LcState *l);              /* #1440: a partition not measured, 0 = none */
+void lc_disk_label(const LcDisk *d, char *out, size_t n);   /* visible drawer, or an unmapped label */
 void lc_has_text(const LcDisk *d, char *out, size_t n);     /* "Windows · 3 מחיצות · 212 GB בשימוש" */
 void lc_sample(State *s, const char *card);       /* --png: the mockup's scenario */
 int lc_png_setup(App *a, const char *card);       /* 1 = card is a local clone card */
 extern const char *const LC_PNG_CARDS[];
 extern const int LC_PNG_NCARDS;
+
+/* 16/10: "שחזור אימג' מהשרת" -- the restore screen on the cloner (lc_pull.c) */
+int lc_pull_active(const App *a);                 /* force_cloner and lc_screen=pull */
+int lc_pull_selectable(const App *a, int port);   /* an attached drawer with that disk number */
+int lc_pull_ports(const App *a, char *out, size_t n);   /* the ticked ones, "1,3"; how many */
+void lc_pull_names(const App *a, char *out, size_t n);  /* "דיסק 1, דיסק 3" */
+int lc_pull_ready(App *a);                        /* an image and a drawer; else form_error says which */
+void lc_pull_after_reload(App *a);
+double lc_pull_drawers(App *a, cairo_t *cr, Rect area, int draw);
+int lc_pull_handle(App *a, const Event *e);       /* 1 = taken */
 
 /* drawing */
 void screen_lcboot(App *a, cairo_t *cr, double W, double H, double head_h);

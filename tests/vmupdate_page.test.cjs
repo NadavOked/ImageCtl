@@ -260,3 +260,48 @@ test('the status poll refreshes the dock row and announces the VM that came up',
   assert.equal(run('PAINTED'), 1);
   assert.equal(run('TOASTS.length'), 1);
 });
+
+// #1468: the VM's own network identity -- the chip on the VM screen, the named
+// network-failure card, and the "כרטיס לעדכוני VM" card on the NICs tab.
+test('the VM screen shows the address the VM got, or how long it still waits for one', () => {
+  const {run} = setup();
+  const net = (o) => ({interface: 'eno2', mac: '0a:1b:2c:3d:4e:5f', address: null, server: null, at: null, seconds_left: null, ...o});
+  const leased = run(`vmuToolHtml(${st({network: net({state: 'leased', address: '10.20.30.40'})})})`);
+  assert.match(leased, /כתובת <b class="mono">10\.20\.30\.40<\/b>/);
+  assert.match(leased, /eno2/);
+  assert.doesNotMatch(leased, /כרטיס הניהול/);           // the slirp-era chip is gone
+  const waiting = run(`vmuToolHtml(${st({network: net({state: 'waiting', seconds_left: 75})})})`);
+  assert.match(waiting, /ממתין לכתובת מה-DHCP/);
+  assert.match(waiting, /עוד <b class="mono">1:15<\/b>/);
+});
+
+test('no lease is a named network card with the hint and a way to the NIC settings', () => {
+  const {run} = setup();
+  const msg = 'ה-VM ביקש כתובת ב-DHCP (3 בקשות) ולא נענה. השרת רץ ב-ESXi: Forged transmits = Accept';
+  const html = run(`vmuFailCard(${st({state: 'failed', disk_ready: true, booted_at: '2026-10-16T10:00:00+03:00',
+    error: {reason: 'no_lease', message: msg}})})`);
+  assert.match(html, /ה-VM לא קיבל כתובת ברשת/);
+  assert.match(html, /Forged transmits/);
+  assert.match(html, /openNetwork\(1\)/);
+  assert.match(html, /vmuBoot\(\)/);
+  assert.doesNotMatch(html, /נעצר בלי כיבוי/);
+});
+
+test('the NICs tab card shows the MAC with the reservation text, the lease, and a refusal by name', () => {
+  const {run} = setup();
+  run(`VMNET = {interface: 'eno2', mac: '0a:1b:2c:3d:4e:5f', deploy_interface: 'eno3', platform: 'microsoft',
+    hint: 'Enable MAC address spoofing', problem: null, lease_timeout_seconds: 300,
+    lease: {address: '10.20.30.40', server: '10.20.30.1', at: '2026-10-16T10:00:00+03:00', mac: '0a:1b:2c:3d:4e:5f'}}`);
+  const html = run('vmnetCardHtml()');
+  assert.match(html, /כרטיס לעדכוני VM/);
+  assert.match(html, /0a:1b:2c:3d:4e:5f/);
+  assert.match(html, /כתובת שמורה/);
+  assert.match(html, /10\.20\.30\.40/);
+  assert.match(html, /MAC address spoofing/);
+  run(`VMNET = {...VMNET, interface: null, lease: null}`);
+  assert.match(run('vmnetCardHtml()'), /לא נבחר — ה-VM לא יודלק/);
+  run(`VMNET = {...VMNET, interface: 'eno3', problem: {code: 'vm_nic_is_deploy', error: 'eno3 הוא כרטיס ההפצה'}}`);
+  assert.match(run('vmnetCardHtml()'), /eno3 הוא כרטיס ההפצה/);
+  run(`VMNET = null; VMNET_ERR = 'שגיאה 500'`);
+  assert.match(run('vmnetCardHtml()'), /לא נקרא: שגיאה 500/);   // unread is said, not shown as "no card"
+});

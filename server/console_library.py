@@ -19,7 +19,7 @@ from . import auth, minfree
 from .api import ServerContext
 from .images import validate_display_name
 from .library_scrub import forget_scrub, last_scrubs, scrub_library
-from .archive import ArchiveError, import_tar, tar_stream
+from .archive import ArchiveError, import_tar, tar_stream, unreadable_message
 from .db import get_setting, journal, set_setting
 from .sessions import ROOM_PREFIX
 
@@ -107,7 +107,7 @@ def create_library_router(ctx: ServerContext) -> APIRouter:
         except ValueError as exc:
             raise HTTPException(400, str(exc))
         except KeyError:
-            raise HTTPException(404, "image does not exist")
+            raise HTTPException(404, "האימג' לא קיים")
 
     @router.put("/images/{image_id}")
     async def edit_image(image_id: str, request: Request, user=Depends(admin_only)):
@@ -180,7 +180,7 @@ def create_library_router(ctx: ServerContext) -> APIRouter:
         except ArchiveError as exc:
             raise HTTPException(400, str(exc))
         except Exception as exc:                       # tar פגום, קלט חתוך
-            raise HTTPException(400, f"הארכיון לא נקרא: {exc}")
+            raise HTTPException(400, unreadable_message(exc))
         finally:
             temp.unlink(missing_ok=True)
         # ‏#138, נקודת הכניסה שה-Issue מסמן כמסוכנת ביותר: השם והתיקייה

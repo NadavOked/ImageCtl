@@ -61,7 +61,16 @@ def _capture(ctx, name: str, folder: str, files: dict, source_bytes: int):
     manifest = make_manifest(source_bytes, files)
     status, result = uploader.json(
         "PUT", f"/api/v1/capture/{task['id']}/manifest", manifest)
-    check("המניפסט התקבל ואומת", status == 200, str(result))
+    # ‏#1470: ‏202 — המניפסט התקבל, מחשב הבנייה משתחרר, והאימות רץ ברקע.
+    # האימג' בספרייה רק כשהמשימה `done`.
+    check("המניפסט התקבל — האימות ברקע", status == 202, str(result))
+
+    def task_state():
+        _, rows = ctx.console.json("GET", "/api/console/tasks")
+        return next(t for t in rows if t["id"] == task["id"])["state"]
+
+    wait_until(lambda: task_state() != "verifying", "האימות ברקע הסתיים")
+    check("האימות עבר", task_state() == "done", task_state())
     image_id = task["image_id"]
     check("האימג' על הדיסק", (ctx.images_dir / image_id / "manifest.json").is_file())
     check("אזור הביניים נוקה", not list(ctx.images_dir.glob(".capture-*")))

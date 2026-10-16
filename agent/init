@@ -13,6 +13,10 @@ fail() {
     reboot -f
 }
 
+# One poll tick, same as poll_tick in lib/waits.sh (#1450, #1451): _tk =
+# tenths slept; a busybox that refuses `sleep 0.1` costs a real second.
+poll_tick() { if sleep 0.1 2>/dev/null; then _tk=1; else sleep 1; _tk=10; fi; }
+
 mount -t proc     proc     /proc  2>/dev/null
 mount -t sysfs    sysfs    /sys   2>/dev/null
 mount -t devtmpfs devtmpfs /dev   2>/dev/null
@@ -20,7 +24,13 @@ mkdir -p /dev/pts /run
 mount -t devpts   devpts   /dev/pts 2>/dev/null
 mount -t tmpfs    tmpfs    /run   2>/dev/null
 mkdir -p /run/imagectl
+# Boot markers (#1452): /proc/uptime at init, modules, nic, link and dhcp.
+# No network before DHCP, so they ride on the agent-net breadcrumb below.
+_up=""
+boot_mark() { _up="$_up${_up:+,}$1:$(cut -d' ' -f1 /proc/uptime 2>/dev/null)"; }
+boot_mark init
 RUN_DIR="${RUN_DIR:-/run/imagectl}"
+LIB_DIR="${LIB_DIR:-/usr/lib/imagectl}"
 
 # Storage and NIC drivers. The list is generated at build time. A module that
 # does not load has two opposite meanings, and folding them into one line taught
@@ -73,6 +83,15 @@ if [ -n "$_req_fail" ]; then
 else
     rm -f "$RUN_DIR/modules.failed"
 fi
+boot_mark modules
+
+# intel_pstate does not support pre-Sandy Bridge CPUs.  Debian provides the
+# fallback as a module, so try it before the agent starts doing CPU-heavy work.
+# Optional by design (principle 1): a missing helper never stops the boot.
+if [ -f "$LIB_DIR/cpufreq.sh" ]; then
+    . "$LIB_DIR/cpufreq.sh"
+    cpufreq_performance
+fi
 
 # efivars for the SecureBoot bit in hello -- after the module load, because
 # efivarfs is itself one of them (CONFIG_EFIVAR_FS=m).
@@ -87,8 +106,20 @@ if [ -d /sys/firmware/efi ]; then
         || echo "ImageSrv: efivarfs would not mount -- SecureBoot state unknown"
 fi
 
-# Give USB/PCI enumeration a moment before looking for NICs and disks.
-sleep 2
+# Give USB/PCI enumeration up to 2s, continuing as soon as a NIC appears
+# (#1451; was a fixed `sleep 2`). None by then is not an error here: the
+# DHCP loop below keeps looking for 90s.
+_nic_t=0
+while [ "$_nic_t" -lt 20 ]; do
+    _nic_found=0
+    for _d in /sys/class/net/*; do
+        [ -e "$_d" ] || continue
+        [ "${_d##*/}" = lo ] || { _nic_found=1; break; }
+    done
+    [ "$_nic_found" = 1 ] && break
+    poll_tick; _nic_t=$((_nic_t + _tk))
+done
+[ "$_nic_found" = 1 ] && boot_mark nic
 
 # --- the install ISO (#1190) --------------------------------------------------
 # imagectl.mode=installer on the kernel line: this image was booted from the
@@ -96,7 +127,6 @@ sleep 2
 # install is offline) and must never reboot-loop on a network that is not
 # there yet, so it takes over before the DHCP loop below. Only parse_cmdline
 # reads the kernel line (principle 2); the mode is one of its two words.
-LIB_DIR="${LIB_DIR:-/usr/lib/imagectl}"
 if [ -f "$LIB_DIR/common.sh" ]; then
     . "$LIB_DIR/common.sh"
     parse_cmdline
@@ -115,15 +145,37 @@ fi
 ip link set lo up 2>/dev/null
 
 IFACE=""
+_link_marked=0
 _deadline=$(( $(date +%s) + 90 ))
 while [ -z "$IFACE" ]; do
     for _d in /sys/class/net/*; do
-        _n=$(basename "$_d")
+        [ -e "$_d" ] || continue
+        _n=${_d##*/}
         [ "$_n" = "lo" ] && continue
         ip link set "$_n" up 2>/dev/null
-        sleep 1
+    done
+    # Poll every interface's carrier for up to 1s per pass (#1451; was a
+    # `sleep 1` per interface): autonegotiation is noticed within 0.1s.
+    _carrier_t=0
+    while [ "$_carrier_t" -lt 10 ]; do
+        _carrier_found=0
+        for _d in /sys/class/net/*; do
+            [ -e "$_d" ] || continue
+            _n=${_d##*/}
+            [ "$_n" = "lo" ] && continue
+            _carrier=$(cat "$_d/carrier" 2>/dev/null || echo 0)
+            [ "$_carrier" = "1" ] && { _carrier_found=1; break; }
+        done
+        [ "$_carrier_found" = 1 ] && break
+        poll_tick; _carrier_t=$((_carrier_t + _tk))
+    done
+    for _d in /sys/class/net/*; do
+        [ -e "$_d" ] || continue
+        _n=${_d##*/}
+        [ "$_n" = "lo" ] && continue
         _carrier=$(cat "$_d/carrier" 2>/dev/null || echo 0)
         [ "$_carrier" = "1" ] || continue
+        [ "$_link_marked" = 1 ] || { boot_mark link; _link_marked=1; }
         if udhcpc -i "$_n" -n -q -t 4 -T 3 -s /etc/imagectl/udhcpc.script \
             >/dev/null 2>&1; then
             IFACE="$_n"
@@ -132,6 +184,7 @@ while [ -z "$IFACE" ]; do
     done
     [ "$(date +%s)" -lt "$_deadline" ] || fail "no DHCP lease on any interface"
 done
+boot_mark dhcp
 
 IP=$(ip -4 addr show "$IFACE" 2>/dev/null \
      | sed -n 's/.*inet \([0-9.]*\).*/\1/p' | head -n 1)
@@ -159,7 +212,7 @@ echo "ImageSrv: network up on $IFACE ($IP)"
 if [ -f "$LIB_DIR/common.sh" ]; then
     SERVER="$IMAGECTL_SERVER"
     MAC=$(cat "/sys/class/net/$IFACE/address" 2>/dev/null)
-    trace_step agent-net
+    trace_step agent-net "up=$_up"
 fi
 
 # --- hand over ---------------------------------------------------------------

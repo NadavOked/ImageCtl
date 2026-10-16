@@ -143,13 +143,14 @@ enum {
     /* #1322: the boot choice and the local clone */
     HIT_LC_BOOT_SERVER, HIT_LC_BOOT_LOCAL, HIT_LC_BACK, HIT_LC_NEXT, HIT_LC_GO, HIT_LC_CANCEL,
     HIT_LC_STOP, HIT_LC_STOP_GO, HIT_LC_STOP_NO, HIT_LC_OFF, HIT_LC_AGAIN,
+    HIT_LC_BOOT_PULL,     /* 16/10: "שחזור אימג' מהשרת" */
     HIT_INSTALL_SUMMARY_BASE = 1000,
     HIT_INSTALL_NIC_BASE = 1020,
     /* ranges: base + index */
     HIT_DISK_BASE   = 100,   /* .disk-card[data-dev] */
     HIT_CLASS_BASE  = 200,   /* .menu-card[data-class] */
     HIT_OPTION_BASE = 300,   /* a row of the open <select> list */
-    /* #695 room disk: +(machine_index * MAX_DRAWERS)+(port-1) */
+    /* #1495 room disk: +(machine_index * MAX_DRAWERS)+room_drawers index */
     HIT_ROOM_DISK_BASE = 400,
     /* #714 machine name: +machine_index -- toggles all that machine's disks */
     HIT_ROOM_MACHINE_BASE = 700,
@@ -159,13 +160,15 @@ enum {
     HIT_TOOL_DISK_BASE = 900,
     /* owner, 10/10: a folder of the image picker (+index from image_folders) */
     HIT_PICK_FOLDER_BASE = 950,
-    /* #1269 a disk's drivers tag in pick mode: +(machine_index * MAX_DRAWERS)+(port-1) */
+    /* #1495 drivers tag: +(machine_index * MAX_DRAWERS)+room_drawers index */
     HIT_ROOM_DTAG_BASE = 2000,
     /* #65 "כבה אותו" on a missing machine: +index into st.room_missing */
     HIT_ROOM_POWEROFF_BASE = 2400,
     /* #1322: a drawer of the local clone (+disk index), its role buttons
      * (+index * 3 + LCR_*), and "הוצא את דיסק N מהשיכפול" (+index) */
     HIT_LC_BAY_BASE = 3000, HIT_LC_ROLE_BASE = 3100, HIT_LC_DROP_BASE = 3200,
+    /* 16/10: a drawer of the cloner's restore screen (+port, 1..MAX_DRAWERS) */
+    HIT_PULL_DRAWER_BASE = 3300,
 };
 
 typedef struct { Rect r; int id; } Hit;
@@ -192,7 +195,11 @@ enum { CONFIRM_NONE, CONFIRM_RESTORE, CONFIRM_ROOM_STOP, CONFIRM_CLASS_STOP, CON
        CONFIRM_ROOM_POWEROFF,     /* #65: power off one missing cloner */
        CONFIRM_ROOM_POWEROFF_ALL }; /* #1367: power off the room */
 
-typedef struct { char dev[32], model[80]; unsigned long long size_bytes; int has_data, removable; } Disk;
+typedef struct {
+    char dev[32], model[80]; unsigned long long size_bytes; int has_data, removable;
+    int slot_known;
+    int drawer; char conn[32];
+} Disk;
 typedef struct { char id[64], name[96], folder[64]; } Image;
 /* #695: one physical slot of a room machine, for the distribute grid. present
  * is separate from size_bytes (a real disk may report 0). port 0 is the
@@ -208,7 +215,10 @@ typedef struct {
     char drv_state[12], drv_detail[160];
     int link_slow;      /* #432: room_drawer field 12 = link_state "slow" -- orange like a SMART warning */
     long crc_suspect;   /* #1366: field 13 -- the CRC count over crc_warn_threshold, orange; 0 = no */
+    char slot_name[SLOT_NAME_MAX];
+    int drawer; char conn[32];
 } RoomDrawer;
+typedef struct { char conn[32], name[SLOT_NAME_MAX]; int set; } RoomSlot;
 /* #1269: one model the driver library has a package for, in its spelling. */
 typedef struct { char vendor[64], model[128]; } DriverModel;
 typedef struct {
@@ -221,6 +231,7 @@ typedef struct {
     /* #704: [port-1] = the operator's name of that slot (room_drawer field
      * 11, else room_slot_name=); "" = drawn as "דיסק N" as before. */
     char slot_names[MAX_DRAWERS][SLOT_NAME_MAX];
+    RoomSlot rslots[MAX_DRAWERS]; int nrslots;
 } Machine;
 typedef struct { char id[64], label[80]; int machines; } ClassGroup;
 /* One tray of a cloning machine. Labelled/sorted by SATA port, not device
@@ -232,13 +243,17 @@ typedef struct {
     /* #410: from the kiosk's local counter (clonergui.sh:cloner_gui_pace).
      * rate_bps <= 0 / eta_s < 0 = not measured -- never drawn as 0. */
     long long rate_bps; int eta_s;
+    int drawer; char conn[32];
 } Drawer;
 /* A physically connected disk shown on the cloner's IDLE screen (no round yet),
  * so the operator sees what is plugged in before a broadcast starts. */
-typedef struct { int port; char model[48]; unsigned long long size; char smart[16];
+typedef struct { int port; char dev[32], model[48]; unsigned long long size; char smart[16];
                  char cause[16]; /* #874: cable|disk|unclassified for failed_last, else "" */
                  char link[8], link_max[8]; /* #432: "6.0" Gb/s; "" = not read, never "fine" */
-                 long crc_suspect; /* #1366: field 9 -- the CRC count over crc_warn_threshold; 0 = not over / not read */ } IdleDisk;
+                 long crc_suspect; /* #1366: field 9 -- the CRC count over crc_warn_threshold; 0 = not over / not read */
+                 int drawer; char conn[32]; } IdleDisk;
+typedef struct { char conn[32], name[SLOT_NAME_MAX]; int set; } ClonerBay;
+typedef struct { int drawer; char conn[32], model[48]; } COptical;
 
 /* Everything the --state file can say. See README "The --state file". */
 typedef struct State {
@@ -249,6 +264,8 @@ typedef struct State {
     ClassGroup classes[MAX_CLASSES];    int nclasses;
     Drawer drawers[MAX_DRAWERS];        int ndrawers;
     IdleDisk idisks[MAX_DRAWERS];       int nidisks;   /* cloner idle inventory */
+    ClonerBay cbays[MAX_DRAWERS];        int ncbays;
+    COptical copticals[MAX_DRAWERS];     int ncopticals;
     char disk_probe[16];                /* drives / no_disks / no_ports / unchecked */
 
     /* the build machine's own task (station.js drawProgress / drawDone) */
@@ -293,6 +310,7 @@ typedef struct State {
      * /api/v1/agent/state, server_addr= from imagectl.server. Empty = not
      * known, drawn as "לא ידוע" -- never the mockup's numbers. */
     char server_name[64], server_addr[64], server_version[129];
+    char tz[65]; /* #1447: POSIX TZ from the server; empty = not known -> UTC. */
     /* #1269: driver_models=<n> and one driver_model=<vendor>|<model> per
      * model, from GET /api/console/room/driver-models. driver_models_read
      * -1 = the list was not read (also when the key is absent); 0 = read,
@@ -365,6 +383,7 @@ typedef struct { long sec, nsec, size, ino; int seen; } FileMark;
 typedef struct App {
     Screen screen;              /* derived by app_route() from the rest */
     const Theme *theme;
+    const Theme *default_theme; /* #1499: before login, on the cloner screens, after logout */
 
     char title[128];            /* #st-title */
     char mac[40];               /* #st-mac  (dir=ltr, mono) */
@@ -422,6 +441,12 @@ typedef struct App {
      * authorizes a local erase, and its own confirm field -- the machine's
      * registered name since #1073 (was the word ERASE). */
     int restore_image_sel;      /* 0 = "בחרו אימג'…", i = st.images[i-1] */
+    /* 16/10: the cloner's restore screen -- the drawers ticked as targets, by
+     * port ([port], 1..MAX_DRAWERS). Nothing is ticked by itself (#1410). */
+    int pull_sel[MAX_DRAWERS + 1];
+    /* 16/10: the keyboard's place on that screen -- 0 = the image list (the
+     * digits pick folders and images), a port = that drawer has the focus */
+    int pull_focus;
     /* #695: per-disk target overrides, keyed by machine identity + physical
      * port -- outside State so a 2 s state reload does not erase clicks. */
     struct { char mac[24]; int port, selected; } room_selection[MAX_ROOM_SELECTIONS];

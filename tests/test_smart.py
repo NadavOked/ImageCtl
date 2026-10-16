@@ -461,7 +461,7 @@ def test_replace_on_a_red_disk_powers_off_for_the_swap(tmp_path):
                                 failed={"sda": "disk"})
     assert written == ""
     assert (run / "smart/awaiting_replace").read_text().strip() == "sda"
-    assert "awaiting disk swap (failed_last: disk)" in (run / "targets/sda/error").read_text()
+    assert "ממתין להחלפת הדיסק (failed_last: disk)" in (run / "targets/sda/error").read_text(encoding="utf-8")
 
 
 def test_a_red_disk_by_slot_is_red_even_with_a_new_serial(tmp_path):

@@ -22,7 +22,6 @@ import select
 import shutil
 import socket
 import struct
-import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -59,11 +58,14 @@ class TlsPeer:
 class PairError(Exception):
     """כשל בכניסה הבין-שרתית, עם קוד HTTP מפורש (route מתרגם אותו כפי שהוא)."""
 
-    def __init__(self, status: int, detail: str, *, code: str | None = None):
+    def __init__(self, status: int, detail: str, *, code: str | None = None,
+                 headers: dict | None = None):
         super().__init__(detail)
         self.status = status
         self.detail = detail
         self.code = code
+        #: ‏#1456: כותרות שהתשובה חייבת לשאת (‏416 → ``Content-Range``).
+        self.headers = headers or {}
 
     def payload(self) -> dict:
         """גוף התשובה: ``detail`` תמיד, ו-``code`` רק כשיש שם למצב (#1122)."""
@@ -292,17 +294,22 @@ def _own_version() -> str | None:
 # --- קליטת אימג' מהאב (#655 v1, העברה ראשי→משני) -----------------------------
 #
 # הגוף הוא ה-tar של תיקיית האימג' (``archive.tar_stream``), והכניסה לספרייה
-# היא **אותו** ``archive.import_tar`` של העלאה מהדפדפן: חילוץ לאזור ביניים,
-# ‏sha256 של כל מחיצה מול המניפסט, ורק אז ``rename`` לספרייה (עיקרון 6).
+# היא ``archive.import_tar_stream`` — אותם שומרים של העלאה מהדפדפן: חילוץ
+# לאזור ביניים, ‏sha256 של כל מחיצה מול המניפסט, ורק אז ``rename`` לספרייה
+# (עיקרון 6). ‏#1457: החילוץ וה-sha256 נעשים **תוך כדי** קבלת הזרם — בלי קובץ
+# ``.transfer``, בלי העתקה ובלי קריאה שנייה — ולכן אחרי הבייט האחרון נשארת
+# רק הכניסה לספרייה, והראשי לא מחכה לאימות של דקות.
 # קטוע/לא-תואם — נמחק ומדווח בגלוי; לעולם לא תיקייה חלקית בשם אימג'.
 #
 # שני שלבים, כי הגוף הוא עשרות ג'יגה: ``receive_image_precheck`` רץ **לפני**
 # שבייט אחד של גוף נקרא (אימות, תפקיד, מזהה, "כבר קיים", מקום פנוי) —
 # הראשי שולח ``Expect: 100-continue`` ומחכה ל-``100`` — ואז
-# ``receive_image`` כותב את הזרם לקובץ זמני ומכניס לספרייה.
+# ``receive_image`` מחלץ את הזרם לאזור הביניים ומכניס לספרייה.
 
-#: כמה מקום פנוי דורשים לפני קליטה: ה-tar עצמו + החילוץ (עותק) + שוליים.
-FREE_SPACE_FACTOR = 2
+#: כמה מקום פנוי דורשים לפני קליטה: החילוץ (פעם אחת — אין קובץ זמני, #1457)
+#: + שוליים. ה-tar ארוך מסכום הקבצים שבו (כותרות וריפוד), ולכן ``length``
+#: לבדו כבר מכסה את מה שייכתב.
+FREE_SPACE_FACTOR = 1
 FREE_SPACE_MARGIN = 256 * 1024 * 1024
 #: תקרה לגוף JSON בערוץ הבין-שרתי (pair/ping/מכונות): לא זרם, לא ג'יגה.
 MAX_JSON_BODY = 1024 * 1024
@@ -450,7 +457,9 @@ def parse_byte_range(header: str | None, size: int) -> tuple[int, int, int]:
     except ValueError:
         return 200, 0, size - 1
     if start < 0 or start >= size:
-        raise PairError(416, f"טווח לא ניתן לסיפוק: {header}")
+        # ‏#1456: הגודל בתשובה (RFC 9110) — הראיה של הראשי שהקובץ שלו שלם.
+        raise PairError(416, f"טווח לא ניתן לסיפוק: {header}",
+                        headers={"Content-Range": f"bytes */{size}"})
     end = min(max(end, start), size - 1)
     if start == 0 and end == size - 1:
         return 200, 0, end
@@ -518,35 +527,74 @@ def receive_image_precheck(ctx, peer: TlsPeer, *, token: str, protocol_version: 
     return ReceivePlan(image_id=image_id, content_length=length, root=root)
 
 
+class _BodyTooLong(Exception):
+    """הגוף עבר את ה-Content-Length המוצהר."""
+
+
+class _BodyReader:
+    """‏``read(n)`` מעל מנות הגוף, עם ספירה מול Content-Length (‏#1457):
+    ‏``tarfile`` במצב זרם קורא ממנו, ו-``received`` הוא הראיה לכמה הגיע."""
+
+    def __init__(self, chunks: Iterable[bytes], limit: int):
+        self._chunks = iter(chunks)
+        self._buf = b""
+        self.limit = limit
+        self.received = 0
+
+    def read(self, size: int = -1) -> bytes:
+        while not self._buf:
+            chunk = next(self._chunks, None)
+            if chunk is None:
+                return b""
+            self.received += len(chunk)
+            if self.received > self.limit:
+                raise _BodyTooLong()
+            self._buf = bytes(chunk)
+        if size is None or size < 0 or size >= len(self._buf):
+            out, self._buf = self._buf, b""
+        else:
+            out, self._buf = self._buf[:size], self._buf[size:]
+        return out
+
+    def drain(self) -> None:
+        """קורא ומשליך את שארית הגוף — כדי שהספירה תהיה שלמה, וכדי שסיבת
+        דחייה תגיע לראשי כתשובה ולא כ"נותק" באמצע השליחה."""
+        while self.read(1024 * 1024):
+            pass
+
+
 def receive_image(ctx, plan: ReceivePlan, chunks: Iterable[bytes]) -> dict:
-    """כותב את הזרם לקובץ זמני **בתוך** הספרייה (אותה מערכת קבצים), ומכניס
-    דרך ``import_tar`` — שם נעשה אימות ה-sha256. מחזיר את המניפסט שנקלט."""
-    from .archive import ArchiveError, import_tar
+    """מחלץ את הזרם ישר לאזור ביניים **בתוך** הספרייה (אותה מערכת קבצים),
+    עם sha256 תוך כדי כתיבה (``import_tar_stream``, ‏#1457), ומכניס רק אחרי
+    שכל מחיצה תאמה למניפסט. מחזיר את המניפסט שנקלט."""
+    from .archive import ArchiveError, import_tar_stream, unreadable_message
     from .images import validate_display_name
     library = _library(ctx)
-    handle = tempfile.NamedTemporaryFile(delete=False, dir=plan.root,
-                                         suffix=".transfer")
-    temp = Path(handle.name)
-    received = 0
+    body = _BodyReader(chunks, plan.content_length)
+    failure: PairError | None = None
+    manifest = None
     try:
-        with handle:
-            for chunk in chunks:
-                handle.write(chunk)
-                received += len(chunk)
-                if received > plan.content_length:
-                    raise PairError(400, "הגוף ארוך מ-Content-Length המוצהר")
-        if received != plan.content_length:
-            # קטוע = כשל בשם, עם המספרים (עיקרון 4: אין זריקת בייטים בשקט).
-            raise PairError(400, f"ההעברה נקטעה: התקבלו {received} מתוך "
-                                 f"{plan.content_length} בייטים")
         try:
-            manifest = import_tar(temp, plan.root, set(library.scan()))
+            manifest = import_tar_stream(body, plan.root, set(library.scan()),
+                                         max_bytes=plan.content_length)
         except ArchiveError as exc:
-            raise PairError(400, f"האימג' נדחה בקליטה: {exc}")
+            failure = PairError(400, f"האימג' נדחה בקליטה: {exc}")
+        except _BodyTooLong:
+            raise
         except Exception as exc:                       # noqa: BLE001 — tar פגום
-            raise PairError(400, f"הארכיון לא נקרא: {exc}")
-    finally:
-        temp.unlink(missing_ok=True)
+            failure = PairError(400, unreadable_message(exc))
+        body.drain()        # ריפוד אחרי סוף הארכיון, או שארית אחרי דחייה
+    except _BodyTooLong:
+        failure = PairError(400, "הגוף ארוך מ-Content-Length המוצהר")
+    if body.received < plan.content_length:
+        # קטוע = כשל בשם, עם המספרים (עיקרון 4: אין זריקת בייטים בשקט). קודם
+        # לכל סיבה אחרת: tar שנקטע באמצע נראה גם כ"ארכיון פגום".
+        failure = PairError(400, f"ההעברה נקטעה: התקבלו {body.received} מתוך "
+                                 f"{plan.content_length} בייטים")
+    if failure is not None:
+        if manifest is not None:
+            library.delete(manifest["id"])
+        raise failure
     # המניפסט נקרא מהזרם; מזהה שאינו זה שבנתיב הוא אימג' אחר שנכנס בשם
     # מטעה — מוסר מהספרייה ונדחה בגלוי. אותה בדיקת-שם כמו העלאה (#138).
     try:
@@ -960,7 +1008,7 @@ def create_interserver_app(ctx, tls_peer_provider):
         return tls_peer_provider(request)
 
     def _http(exc: PairError) -> HTTPException:
-        return HTTPException(exc.status, exc.detail)
+        return HTTPException(exc.status, exc.detail, headers=exc.headers or None)
 
     def _creds(request: Request) -> dict:
         # דחיית עוגיית קונסולה: הערוץ הבין-שרתי אינו מכיר אימות-קונסולה.
@@ -1144,13 +1192,15 @@ def _read_http_request(conn):
     return method, path, headers, body
 
 
-def _http_response(status: int, payload: object, *, close: bool = False) -> bytes:
+def _http_response(status: int, payload: object, *, close: bool = False,
+                   headers: dict | None = None) -> bytes:
     import json
     body = json.dumps(payload).encode()
     reason = {200: "OK", 100: "Continue", 206: "Partial Content"}.get(status, "ERROR")
     connection = "close" if close else "keep-alive"
+    extra = "".join(f"{k}: {v}\r\n" for k, v in (headers or {}).items())
     return (f"HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\n"
-            f"Content-Length: {len(body)}\r\nConnection: {connection}\r\n\r\n"
+            f"Content-Length: {len(body)}\r\nConnection: {connection}\r\n{extra}\r\n"
             ).encode() + body
 
 
@@ -1355,7 +1405,8 @@ class InterserverTLSServer:
                 protocol_version=headers.get("imagectl-protocol-version", ""),
                 has_console_cookie="imagectl_session" in headers.get("cookie", ""))
         except PairError as extra:
-            conn.sendall(_http_response(extra.status, extra.payload(), close=True))
+            conn.sendall(_http_response(extra.status, extra.payload(), close=True,
+                                        headers=extra.headers))
             return False
         reason = "Partial Content" if plan.status == 206 else "OK"
         lines = [

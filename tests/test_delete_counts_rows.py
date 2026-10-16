@@ -52,6 +52,9 @@ def test_delete_unknown_group_is_404_and_not_journaled(server):
 def test_delete_existing_group_still_works(server):
     admin = server["admin"]
     setup_classroom(server)
+    # ‏#1016: כיתה עם מחשבים אינה נמחקת (409, לא 500) -- מסירים אותם קודם.
+    for m in admin.get("/api/console/machines?group=grp_LAB1").json():
+        assert admin.delete(f"/api/console/machines/{m['mac']}").status_code == 200
     assert admin.delete("/api/console/groups/grp_LAB1").status_code == 200
     assert "group_delete" in events(server)
 

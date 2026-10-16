@@ -19,6 +19,44 @@ static void server_label(const State *s, char *out, size_t n) {
     else snprintf(out, n, "%s", s->server_name[0] ? s->server_name : known(s->server_addr));
 }
 
+/* #1499 (Nadav 16/10): the theme switch in the top-left corner of every
+ * screen -- a click or F2 (main.c: toggle_theme). On the header (dark in both
+ * themes) it is an outline, not a filled pill: the header stays the header
+ * colour across its text row (test_native_gui_fills_the_screen measures that
+ * row; a filled 58px pill took it from 0.71 to 0.599 at 1024 wide). Narrower
+ * on a narrow screen. On the login screen, a field-like box. The glyph is what
+ * a click turns it into, like the console's #theme-toggle: the sun on dark,
+ * the moon on light. IBM Plex has neither code point, so they are vectors
+ * (as before #1090). */
+#define THEME_BTN_H 28.0
+static double theme_btn_w(double W){return W<1200?46:56;}
+static void draw_theme_toggle(App *a,cairo_t *cr,double W,double head_h){
+    const Theme *t=a->theme; int dark=t==&THEME_DARK;
+    Rect b={head_h>0?N_HEADER_PAD:16,head_h>0?(N_HEADER_H-THEME_BTN_H)/2:16,theme_btn_w(W),THEME_BTN_H};
+    Rgb ink=head_h>0?t->header_text:t->ink;
+    if(head_h>0){   /* a 1px outline on the pixel grid: two columns of the text row, not 56 */
+        Rect o={b.x+.5,b.y+.5,b.w-1,b.h-1};
+        draw_set_a(cr,t->header_text,.45);draw_rrect_path(cr,o,RADIUS_SM);cairo_set_line_width(cr,1);cairo_stroke(cr);
+    }else{draw_fill_rrect(cr,b,RADIUS_SM,t->surface);draw_border_rrect(cr,b,RADIUS_SM,t->hair,1);}
+    double cx=b.x+14,cy=b.y+b.h/2;
+    if(dark){                                    /* the sun: back to light */
+        cairo_arc(cr,cx,cy,3.2,0,2*M_PI);draw_set(cr,ink);cairo_fill(cr);
+        cairo_set_line_width(cr,1.4);
+        for(int k=0;k<8;k++){double an=k*M_PI/4;
+            cairo_move_to(cr,cx+5.0*cos(an),cy+5.0*sin(an));cairo_line_to(cr,cx+7.2*cos(an),cy+7.2*sin(an));}
+        cairo_stroke(cr);
+    }else{                                       /* the moon: to dark */
+        cairo_save(cr);                          /* a disc minus a disc: clip the second one out */
+        cairo_rectangle(cr,cx-10,cy-10,20,20);cairo_new_sub_path(cr);cairo_arc(cr,cx+3.0,cy-1.6,5.2,0,2*M_PI);
+        cairo_set_fill_rule(cr,CAIRO_FILL_RULE_EVEN_ODD);cairo_clip(cr);
+        cairo_arc(cr,cx,cy,6,0,2*M_PI);draw_set(cr,ink);cairo_fill(cr);
+        cairo_restore(cr);
+    }
+    Text k=text_make(cr,FONT_MONO,11,600,"F2",0,DIR_LTR);
+    text_draw(cr,&k,b.x+b.w-k.w-7,b.y+(b.h-k.h)/2,ink);text_free(&k);
+    hit_add(a,b,HIT_THEME);
+}
+
 static double draw_header(App *a, cairo_t *cr, double W) {
     const Theme *t=a->theme;
     Rect bar={0,0,W,N_HEADER_H}; draw_fill_rrect(cr,bar,0,t->header);
@@ -39,8 +77,9 @@ static double draw_header(App *a, cairo_t *cr, double W) {
      * #1257: the versions (agent · server) are drawn on their own line below. */
     char srv[160]; server_label(&a->st,srv,sizeof srv);
     const char *keys[]={"מכונה","שרת"};
-    const char *vals[]={known(a->st.machine_name),srv};
     const int local=a->screen==SCREEN_LOCAL;   /* #1322: no server in this flow -- said, in the server's place */
+    /* #1437: the name is the server's; with no hello this boot, the cloner says the MAC it knows itself */
+    const char *vals[]={local&&!a->st.machine_name[0]&&a->mac[0]?a->mac:known(a->st.machine_name),srv};
     for(int i=0;i<(local?1:2);i++){
         Text k=text_make(cr,FONT_SANS,13,400,keys[i],0,DIR_RTL);
         Text v=text_make(cr,FONT_MONO,13,400,vals[i],0,DIR_LTR);
@@ -63,9 +102,11 @@ static double draw_header(App *a, cairo_t *cr, double W) {
     if(sv[0]=='v')sv++;
     int mismatch=ak&&sk&&strcmp(av,sv);
     char versions[360];
-    snprintf(versions,sizeof versions,"סוכן %s%s · שרת %s%s",
+    if(local&&!sk)   /* #1437: no server answered -- not an unknown server version */
+        snprintf(versions,sizeof versions,"סוכן %s%s · שרת: לא מחובר (שיכפול מקומי)",ak?"v":"",ak?av:"לא ידוע");
+    else snprintf(versions,sizeof versions,"סוכן %s%s · שרת %s%s",
              ak?"v":"",ak?av:"לא ידוע",sk?"v":"",sk?sv:"לא ידוע");
-    double vw=right-90; if(vw<100)vw=100;
+    double vw=right-90-theme_btn_w(W)-12; if(vw<100)vw=100;   /* #1499: the clock moved over by the switch */
     Text vt=text_make(cr,FONT_SANS,11,400,versions,vw,DIR_RTL);
     text_draw_r(cr,&vt,right,mismatch?5:(N_HEADER_H-vt.h)/2,t->header_text);
     text_free(&vt);
@@ -74,15 +115,15 @@ static double draw_header(App *a, cairo_t *cr, double W) {
         text_draw_r(cr,&hint,right,N_HEADER_H-hint.h-4,(Rgb){1,.78,.35});
         text_free(&hint);
     }
-    time_t now=time(NULL); struct tm tmv; char clock_s[8]="--:--";
+    time_t now=time(NULL); struct tm tmv; char clock_s[16]="--:--";
     if(a->fixed_clock) snprintf(clock_s,sizeof clock_s,"12:45");   /* the mockup's clock; --png only */
 #ifdef _WIN32
-    else if(now!=(time_t)-1 && localtime_s(&tmv,&now)==0) strftime(clock_s,sizeof clock_s,"%H:%M",&tmv);
+    else if(now!=(time_t)-1 && localtime_s(&tmv,&now)==0) strftime(clock_s,sizeof clock_s,a->st.tz[0]?"%H:%M":"%H:%M UTC",&tmv);
 #else
-    else if(now!=(time_t)-1 && localtime_r(&now,&tmv)) strftime(clock_s,sizeof clock_s,"%H:%M",&tmv);
+    else if(now!=(time_t)-1 && localtime_r(&now,&tmv)) strftime(clock_s,sizeof clock_s,a->st.tz[0]?"%H:%M":"%H:%M UTC",&tmv);
 #endif
     Text clock=text_make(cr,FONT_MONO,14,400,clock_s,0,DIR_LTR);
-    text_draw(cr,&clock,N_HEADER_PAD,(N_HEADER_H-clock.h)/2,t->header_text); text_free(&clock);
+    text_draw(cr,&clock,N_HEADER_PAD+theme_btn_w(W)+12,(N_HEADER_H-clock.h)/2,t->header_text); text_free(&clock);   /* #1499: after the corner switch */
     return N_HEADER_H;
 }
 
@@ -142,7 +183,14 @@ static const char *status_keys(const App *a,char *buf,size_t n){
         return !strcmp(a->st.smart_verdict,"failed_last")
         ? "R  החלף דיסק    Enter / S  המשך בלי הדיסק"
         : "R  החלף דיסק    S  דלג על הדיסק    Enter  כתוב בכל זאת";
-    case SCREEN_RESTORE:return a->pick_in_folder   /* owner 10/10: folder-first */
+    case SCREEN_RESTORE:
+        if(lc_pull_active(a)){   /* 16/10: the drawers by keyboard too */
+            if(a->pull_focus)return "→ ←  מגירה    רווח  סימון    A  כל התקינות    Tab  לאימג'ים    Enter  מחק ושחזר…    Esc  חזרה";
+            return a->pick_in_folder
+            ? "1–9 / [ ]  בחירת אימג'    Esc / Backspace  לתיקיות    Tab  למגירות    A  כל התקינות    Enter  מחק ושחזר…"
+            : "1–9  בחירת תיקייה    Tab  למגירות    A  כל התקינות    Enter  מחק ושחזר…    Esc  חזרה";
+        }
+        return a->pick_in_folder   /* owner 10/10: folder-first */
         ? "1–9 / [ ]  בחירת אימג'    Esc / Backspace  לתיקיות    Enter  מחק ושחזר…"
         : "1–9  בחירת תיקייה    Enter  מחק ושחזר…    Esc  חזרה";
     case SCREEN_STANDBY:return "אין פעולה במסך הזה";   /* "דיסקים: 1 · 2 · 3 SMART" sat where keys go */
@@ -416,6 +464,8 @@ void app_route(App *a){
     const State *s=&a->st;
     if(a->install.active){a->screen=SCREEN_INSTALL;return;}
     /* #1322: the boot choice and the local clone own a cloner's screen while the agent says so */
+    /* 16/10: lc_screen=pull is the build machine's restore screen, its targets the drawers (lc_pull.c) */
+    if((a->force_cloner||a->force_standby)&&s->lc.screen==LC_SCREEN_PULL){a->mode=MODE_RESTORE;a->screen=SCREEN_RESTORE;return;}
     if((a->force_cloner||a->force_standby)&&s->lc.screen){a->screen=s->lc.screen==LC_SCREEN_BOOT?SCREEN_LCBOOT:SCREEN_LOCAL;return;}
     if(a->force_standby){a->screen=SCREEN_STANDBY;return;}
     if(a->force_cloner){a->screen=(s->ndrawers||s->cloner_image[0]||s->smart_pending)?SCREEN_CLONER:SCREEN_STANDBY;return;}
@@ -425,7 +475,7 @@ void app_route(App *a){
         a->watching=0;a->showing_done=1;
         if(s->task==TASK_DONE&&s->task_direct){snprintf(a->done_title,sizeof a->done_title,"ההפצה הישירה הושלמה");snprintf(a->done_sub,sizeof a->done_sub,"הדיסק %s שודר למגירות שנבחרו. שום דבר לא נשמר בשרת.",s->task_disk);}
         else if(s->task==TASK_DONE){snprintf(a->done_title,sizeof a->done_title,"הקליטה הושלמה");snprintf(a->done_sub,sizeof a->done_sub,"\"%s\" נכנס לספרייה.",s->task_name);}
-        else{snprintf(a->done_title,sizeof a->done_title,"המשימה נכשלה");snprintf(a->done_sub,sizeof a->done_sub,"%s",s->task_error[0]?s->task_error:"ראו את היומן בקונסולה.");}
+        else{snprintf(a->done_title,sizeof a->done_title,"המשימה נכשלה");snprintf(a->done_sub,sizeof a->done_sub,RLM "%s",s->task_error[0]?s->task_error:"ראו את היומן בקונסולה.");}   /* #1502: the server sends "sda: ..." */
     }
     if(a->showing_done){a->screen=SCREEN_DONE;return;}
     if(a->mode==MODE_CLASSES&&(a->signed_in||s->has_session)){a->screen=SCREEN_CLASS;return;}
@@ -493,6 +543,17 @@ void draw_confirm_dialog(App *a,cairo_t *cr,double W,double H){
         if(n)snprintf(what,sizeof what,"%d מחשבים באמצע שיכפול מקומי — הדיסקים שלהם יישארו שבורים. לכבות בכל זאת?",n);
         else snprintf(what,sizeof what,"כל מחשבי השיכפול שממתינים ייכבו דרך הסוכן.");
         snprintf(ok,sizeof ok,"%s",n?"כבה בכל זאת":"כבה את כל החדר");
+    }else if(a->confirm==CONFIRM_RESTORE&&lc_pull_active(a)){
+        /* 16/10: the cloner's drawers, by disk number; the round they go into, and its end */
+        const char *img=a->restore_image_sel>0&&a->restore_image_sel<=s->nimages?s->images[a->restore_image_sel-1].name:"";
+        char names[400],mach_i[120],img_i[200];
+        lc_pull_names(a,names,sizeof names);
+        bidi_isolate(known(s->machine_name),mach_i,sizeof mach_i);
+        bidi_isolate(img,img_i,sizeof img_i);
+        snprintf(title,sizeof title,"למחוק את המגירות ולשחזר?");
+        snprintf(what,sizeof what,"כל התוכן של %s במחשב %s יימחק, והאימג' \"%s\" ייכתב עליהן. "
+                 "המחשב יצטרף לסבב בשרת ויכבה בסוף, להחלפת המגירות. אי־אפשר לבטל אחרי שהתחיל.",names,mach_i,img_i);
+        snprintf(ok,sizeof ok,"מחק ושחזר");
     }else if(a->confirm==CONFIRM_RESTORE){
         const Disk *d=NULL;for(int i=0;i<s->ndisks;i++)if(!s->disks[i].removable){d=&s->disks[i];break;}
         const char *img=a->restore_image_sel>0&&a->restore_image_sel<=s->nimages?s->images[a->restore_image_sel-1].name:"";
@@ -573,6 +634,7 @@ static void app_draw_logical(App *a,cairo_t *cr,double W,double H){
     draw_ask_dialog(a,cr,W,H);      /* 11/10: the agent's question, the same way */
     draw_confirm_dialog(a,cr,W,H);  /* #1270 */
     draw_status(a,cr,W,H);draw_toast(a,cr,W,H);
+    draw_theme_toggle(a,cr,W,head_h);   /* #1499: last -- over every screen and dialog, and its hit wins */
 }
 
 /* mockup 10/10 / audit finding 4: one factor for the whole screen, so a

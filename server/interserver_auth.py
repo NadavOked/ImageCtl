@@ -34,10 +34,13 @@ from .db import _write_lock, writing
 #: מדויקת, לא ">=" (עיקרון 5: גרסה לא-מוכרת נדחית, לא "קרוב מספיק").
 PROTOCOL_VERSION = "2.1"
 
-#: חלון ה-pairing נעול לטווח 2–5 דקות; ברירת המחדל המומלצת היא 3.
+#: חלון ה-pairing: ברירת המחדל (ה-API המקומי) היא 3 דקות. התקרה עלתה מ-5
+#: ל-10 דקות בהכרעת נדב (16/10): הקוד שמסך השרת (DCUI, ‏F4) מציג בנוכחות
+#: פיזית תקף 10 דקות — זמן ללכת לקונסולה של הראשי ולהקליד אותו.
 WINDOW_TTL_SECONDS = 180
 WINDOW_TTL_MIN = 120
-WINDOW_TTL_MAX = 300
+WINDOW_TTL_MAX = 600
+PHYSICAL_WINDOW_TTL_SECONDS = 600
 #: כמה ניסיונות קוד לפני שהחלון נסגר מעצמו (rate-limit על קוד אנטרופיה נמוכה).
 MAX_ATTEMPTS = 5
 
@@ -51,8 +54,10 @@ _SALT_BYTES = 16
 
 #: אלפבית הקוד — קריא לאדם, בלי תווים דו-משמעיים (0/O, 1/I/L).
 _CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
-_CODE_GROUPS = 3
-_CODE_GROUP_LEN = 3
+#: ‏``XXXX-XXXX`` — שמונה תווים (הכרעת נדב 16/10, מוקאפ #1525): שמונה
+#: תיבות בקונסולת הראשי. 31^8 ≈ 2^39.6, עם 5 ניסיונות לחלון.
+_CODE_GROUPS = 2
+_CODE_GROUP_LEN = 4
 
 
 # --- אכיפת מקומיות (loopback) -----------------------------------------------
@@ -81,10 +86,10 @@ def is_loopback(host: str | None) -> bool:
 # --- קוד ה-pairing: יצירה, גיבוב איטי, אימות בזמן-קבוע -----------------------
 
 def generate_pairing_code() -> str:
-    """קוד חד-פעמי קריא לאדם, ``XXX-XXX-XXX`` מאלפבית לא-דו-משמעי.
+    """קוד חד-פעמי קריא לאדם, ``XXXX-XXXX`` מאלפבית לא-דו-משמעי.
 
-    ‏``secrets.choice`` ולא ``random`` — זה סוד. תשע ספרות מ-30 תווים הן
-    כ-44 סיביות; עם חלון של דקות ותקרת ניסיונות, די והותר.
+    ‏``secrets.choice`` ולא ``random`` — זה סוד. שמונה תווים מ-31 הם
+    כ-39 סיביות; עם חלון של דקות ותקרת 5 ניסיונות, די והותר.
     """
     groups = [
         "".join(secrets.choice(_CODE_ALPHABET) for _ in range(_CODE_GROUP_LEN))
@@ -370,6 +375,8 @@ _SECRET_PATTERNS = [
     re.compile(r"(?i)(code\s*[:=]\s*)[A-Z0-9-]{5,}"),
     # ‏#860: קוד pairing בצורתו (XXX-XXX-XXX מהאלפבית שלנו) גם בלי `code=`.
     re.compile(r"\b[A-Z0-9]{3}-[A-Z0-9]{3}-[A-Z0-9]{3}\b"),
+    # ‏16/10: והצורה של היום, ‏XXXX-XXXX (שמונה תווים, מסך השרת F4).
+    re.compile(r"\b[A-Z0-9]{4}-[A-Z0-9]{4}\b"),
     re.compile(r"-----BEGIN[^-]*PRIVATE KEY-----.*?-----END[^-]*PRIVATE KEY-----",
                re.DOTALL),
 ]

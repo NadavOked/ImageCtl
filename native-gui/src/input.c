@@ -20,13 +20,18 @@
  * ABS_X/ABS_Y + BTN_LEFT, no BTN_TOUCH -- i.e. imagectl-monitor's uinput
  * device, a tablet, a VM pointer. Position maps 1:1 like touch, but the
  * cursor stays drawn: the person at the screen must see where the remote
- * operator is. */
+ * operator is (owner, again 16/10 in #1475: one shared cursor). */
 enum { DEV_KEYBOARD = 1, DEV_MOUSE = 2, DEV_TOUCH = 4, DEV_ABSPTR = 8 };
+
+/* #1475: agent/monitor.c's UINPUT_NAME, verbatim. The rescan keeps looking
+ * for this device when a monitor serves the screen (input_want_remote). */
+#define MONITOR_UINPUT_NAME "ImageCtl remote monitor"
 
 typedef struct {
     int fd, kinds;
     int abs_min_x, abs_max_x, abs_min_y, abs_max_y;
     int shift, alt;                         /* alt: #1245, the Alt+Shift chord */
+    int remote;                             /* #1475: MONITOR_UINPUT_NAME */
     char path[32];                          /* so a rescan skips it */
 } Dev;
 
@@ -41,7 +46,17 @@ struct Input {
     int caps;           /* #1203: Caps Lock -- the grab hides it from the kernel's
                          * keyboard handler, so it is tracked (and its LED set) here */
     int suspended;      /* #1362: another VT is in front -- not grabbed, events dropped */
+    int want_remote;    /* #1475: keep scanning until the monitor's device is here too */
+    time_t want_until;  /* ...but not for ever: a monitor that never starts */
 };
+
+#define WANT_REMOTE_S 180   /* monitor.sh waits up to 60 s for the mirror, then 5 s restarts */
+
+void input_want_remote(Input *in) {
+    if (!in) return;
+    in->want_remote = 1;
+    in->want_until = time(NULL) + WANT_REMOTE_S;
+}
 
 /* {code, US plain, US shifted, SI-1452 plain}. The fourth column is the
  * Israeli standard layout's base level (#1245): the 27 Hebrew letters and
@@ -95,6 +110,9 @@ static int probe(Input *in, const char *path) {
     unsigned long rel[NBITS(REL_MAX)] = { 0 }, abs_[NBITS(ABS_MAX)] = { 0 };
     if (ioctl(fd, EVIOCGBIT(0, sizeof ev), ev) < 0) { close(fd); return -1; }
     Dev d = { .fd = fd };
+    char name[64] = "";
+    if (ioctl(fd, EVIOCGNAME(sizeof name - 1), name) >= 0 && !strcmp(name, MONITOR_UINPUT_NAME))
+        d.remote = 1;
     if (test_bit(EV_KEY, ev) && ioctl(fd, EVIOCGBIT(EV_KEY, sizeof key), key) >= 0) {
         if (test_bit(KEY_A, key) && test_bit(KEY_Z, key)) d.kinds |= DEV_KEYBOARD;
         if (test_bit(EV_REL, ev) && ioctl(fd, EVIOCGBIT(EV_REL, sizeof rel), rel) >= 0
@@ -154,8 +172,8 @@ void input_rescan(Input *in) {
         snprintf(path, sizeof path, "/dev/input/event%d", i);
         probe(in, path);                           /* probe() skips already-open paths */
     }
-    int kinds = 0;
-    for (int i = 0; i < in->ndev; i++) kinds |= in->dev[i].kinds;
+    int kinds = 0, remote = 0;
+    for (int i = 0; i < in->ndev; i++) { kinds |= in->dev[i].kinds; remote |= in->dev[i].remote; }
     if (in->ndev > before)
         fprintf(stderr, "native-gui: input: device appeared, now %d:%s%s%s%s\n", in->ndev,
                 kinds & DEV_KEYBOARD ? " keyboard" : "", kinds & DEV_MOUSE ? " mouse" : "",
@@ -163,8 +181,13 @@ void input_rescan(Input *in) {
     /* Owner decision: once a keyboard AND a mouse are both present there is
      * nothing left to find, so stop scanning. A machine missing one (a cloner
      * has neither) keeps scanning, so a device plugged in later is still
-     * caught; input_pump re-arms the scan if a device is unplugged. */
-    if ((kinds & DEV_KEYBOARD) && (kinds & DEV_MOUSE)) {
+     * caught; input_pump re-arms the scan if a device is unplugged.
+     * #1475: when the remote monitor is expected (input_want_remote), its
+     * uinput device is part of "everything": the monitor now starts only
+     * after this GUI has written the frame mirror, i.e. after the keyboard
+     * and mouse were already found -- stopping there left it never grabbed. */
+    if ((kinds & DEV_KEYBOARD) && (kinds & DEV_MOUSE) &&
+        (remote || !in->want_remote || now > in->want_until)) {
         in->scan_done = 1;
         fprintf(stderr, "native-gui: input: keyboard+mouse present -- scan stopped\n");
     }

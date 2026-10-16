@@ -51,6 +51,7 @@ MIXED_FANOUT = (
     "shift\n"
     'tmp="$(mktemp)"\n'
     'cat > "$tmp"\n'
+    'fanout_eof "$tmp"\n'
     'for out; do cat "$tmp" > "$out" & done\n'
     "wait\n"
     "first=1\n"

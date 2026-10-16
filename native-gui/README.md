@@ -148,7 +148,8 @@ imagectl-station-gui --mac AA:.. --ip 10.. --auth-cmd 'imagectl-login' --state /
 
 * `--auth-cmd CMD` — on כניסה, CMD receives `<user>\n<pass>\n` on stdin; exit 0
   = signed in, first stdout line = role (`admin` shows the capture card,
-  anything else hides it, as `station.js afterLogin` does). A curl to
+  anything else hides it, as `station.js afterLogin` does), second line = the
+  user's saved theme (`light`/`dark`; `auto` or none = the default; #1499). A curl to
   `/api/console/login` piped through `jq -r .role` fits here; it is not written
   because `agent/` is out of scope.
 * `--state FILE` — the data `station.js` polls for, as `key=value` lines
@@ -225,6 +226,9 @@ response), not a diff.
 ```
 # #st-pick (state.disks; removable ones are filtered out, as drawDisks does)
 disk=<dev>|<model>|<size_bytes>|<has_data 0/1>|<removable 0/1>
+disk_slot=<dev>|<drawer>|<conn>     # #1495: that local disk's number by the drawer mapping (slotnames.sh
+                                    # disk_drawer); the capture list prefixes "דיסק N" -- or, drawer 0,
+                                    # "<conn> (לא ממופה)". No record for a dev = drawn as before
 folder=<name>                       # /api/console/folders, one per line
 
 # #st-progress / #st-done (state.task)
@@ -285,6 +289,13 @@ room_drawer=<machine-index>|<port or 0>|<serial>|<model>|<size>|<smart>|<fresh>|
                                     # ok / slow / unknown; only "slow" colours the slot orange (SMART red wins)
                                     # #1366: |<crc> -- a 13th field, the CRC count when drawer_list[].crc_suspect
                                     # (over crc_warn_threshold); empty = not over / not read. Orange like slow
+                                    # #1495: |<drawer>|<conn> -- fields 14-15, drawer_list[].drawer (null -> 0
+                                    # = not in the mapping) and the connection ("SATA 2", "NVMe 03:00.0").
+                                    # The grid places a drawer by this number, never by port; a 0 is an extra
+                                    # row "<conn> (לא ממופה)" that cannot be picked. Absent = by port, as before
+room_slot=<machine-index>|<drawer>|<conn>|<name>
+                                    # #1495: one per drawer of machines[].drawer_slots, empty ones too -- the
+                                    # grid's rows 1..N and the name of an empty one. Selection stays by port
 room_warn=<text>                    # #432: one line of round.precheck (an open wave only): a drawer the wave
                                     # would write on a link below its port, or with a risen CRC. Orange box
                                     # above the grid; "התחל" asks first. The server's text_he, as the console
@@ -305,9 +316,22 @@ updated=<epoch seconds>             # #410: when the agent wrote this snapshot -
                                     # "עודכן לפני N שניות" (דקות, שעות) and keep counting when the file stops changing
 
 # #st-cloner (clonergui.sh, the kiosk's local truth)
-drawer=<port>|<dev>|<state>|<bytes>|<total>|<error>|<rate_bps>|<eta_s>
+drawer=<port>|<dev>|<state>|<bytes>|<total>|<error>|<rate_bps>|<eta_s>|<drawer>|<conn>
                                     # #410: fields 7-8 measured by the kiosk on the local counter; -1 / absent
                                     # (a six-field record) = not measured -- the line shows bytes only
+                                    # #1495: fields 9-10 = slotnames.sh disk_drawer: the drawer by the mapping
+                                    # (0 = not in it: "SATA n (לא ממופה)", sorted last) and the connection.
+                                    # Absent = an older agent: drawer = port, as before
+cdisk=<port>|<dev>|<model>|<size>|<smart>|<cause>|<link>|<link_max>|<crc>|<drawer>|<conn>
+                                    # the idle inventory (no round targets) -- see the #1304 table below;
+                                    # #1495: fields 10-11 as drawer= fields 9-10
+cdrawer_slot=<drawer>|<conn>|<name> # #1495: one per drawer of the hello's drawer_slots, empty ones too. With
+                                    # them the cloner screens lay out drawers 1..N of the mapping (the cage
+                                    # size is no longer a guess); without them -- an older server, no answer
+                                    # yet -- the convention drawer k = port k, as before
+coptical=<drawer>|<conn>|<model>    # #1495: a CD/DVD drive (/sys/block/sr*, only with sr_mod loaded):
+                                    # "כונן CD/DVD" in its drawer, or an extra row when not mapped -- never
+                                    # a disk, never "ריק", never a target
 cslot_name=<port>|<name>            # #704: the operator's name of SATA slot <port>, from the last hello's
                                     # slot_names (slotnames.sh). Drawn instead of "דיסק N" on the cloner
                                     # cards, its SMART question and the standby list; absent = "דיסק N"
@@ -445,7 +469,7 @@ status bar, no background art. What each part is drawn from:
 | green dot "מחובר. ממתין לסבב." / red X "השרת לא עונה" / grey dot "ממתין לתשובה מהשרת" | `hello_rc`/`hello_age`: 200 at most 120 s old / anything else / no hello yet |
 | "מחובר אל imagectl-ta" | `server_name=`, else `server_addr=` (#1252) |
 | "מאז 12:41" (server down) | only when the last code was a 200 that went stale -- `hello.state` keeps the last *attempt*, so after a failed one the last success is not known and the line is left out |
-| bay name, "דיסק N · SATA N-1" | `cslot_name=` (#704), else "דיסק N"; SATA = port − 1 |
+| bay name, "דיסק N · SATA n" | the bay is drawer N of the mapping (`cdrawer_slot=`, #1495); its name is the slot name there (or `cslot_name=` without a mapping, #704), else "דיסק N"; the connection is that record's `conn`. A disk whose `cdisk=` drawer is 0 is an extra row after the bays: "—" / "לא ממופה" in the number box, "SATA n (לא ממופה)" as its name. A `coptical=` drive is "כונן CD/DVD" in its bay (or an extra row), never "ריק" |
 | size, model | `cdisk=` fields 3–4; the size in market units (500107862016 → "500 GB") |
 | SMART chip, its colour, the bar on the bay, the orange/red line under the cage | `cdisk=` field 5 by the #872 rule: `failed_last` red, `fail` (and an old agent's `warn`) orange, the rest green; `unchecked` says "SMART לא נבדק" |
 | the reason under the name | `fail` → "ה-BIOS יעצור ב-F1 — SMART: …" by field 6, the SMART reason (#1366: `health_failed` / `pending_sectors` 197 / `uncorrectable` 198); `failed_last` → field 6, the server's cause (כבל/חריץ, הדיסק) |
@@ -455,10 +479,10 @@ status bar, no background art. What each part is drawn from:
 
 Not in the data, so not drawn: the mockup's sample reason "12 סקטורים
 הועברו (5)" (the agent sends the verdict, not the counters -- and since
-#872 the counters do not colour a disk), and the number of drawers: the
-console's `drawer_count` (#695) does not reach the cloner, so the cage is
-three bays (#1170) or up to the highest port with a disk or a slot name. A
-two-drawer cloner shows an empty third bay until that count is sent.
+#872 the counters do not colour a disk). The number of drawers is the
+mapping's length (`cdrawer_slot=`, #1495); only without a mapping (an older
+server) is the cage still three bays (#1170) or up to the highest port with a
+disk or a slot name.
 
 ### #1090: the approved mockup and console tokens are the design source
 
@@ -473,7 +497,8 @@ the current screen, not a state key. 1 CSS px = 1 framebuffer pixel.
 
 ### What matches the HTML, and where it does not
 
-The default theme is dark. The 48px header remains dark in both themes, like
+The default theme is light (owner decision 16/10, #1499; the 18/09 mockup's
+default was dark). The 48px header remains dark in both themes, like
 the console app shell; the body uses the selected console tokens. The login
 screen has no app header and uses the approved split form/illustration layout.
 The only aspect-ratio branches are the room's 6/4 columns, the cloner's 88/64px
@@ -484,8 +509,12 @@ percentage, and the restore image grid's 2/1 columns.
    show a tofu box. The moon and sun are drawn as vectors instead.
 2. **`box-shadow` blur.** Cairo has no gaussian blur; shadows are 14 stacked
    translucent layers. Same colour, same offset, softer edge.
-3. **Theme persistence.** The browser remembers the choice in localStorage;
-   here it lives for the process (`--theme dark` to start dark).
+3. **Theme persistence.** Since #1499 (owner 16/10) the theme is the signed-in
+   user's saved preference (`users.theme`, shared with the console): the login
+   answer carries it, and a switch while signed in (the corner button or F2)
+   is saved with `PUT /api/console/me/theme` through the bridge. Before login
+   and on the cloner screens the switch is for the screen only; sign-out goes
+   back to the default (`--theme dark` starts dark).
 4. **Unavailable measurements.** The current state protocol has no per-disk
    rate/ETA or SMART attributes 5/197/199, so those cells show `—`; Health uses
    the available SMART verdict. Likewise, a room node cannot accept the
