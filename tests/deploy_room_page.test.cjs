@@ -257,6 +257,33 @@ test('#447: the wave rate line names the drive that lowered it; without wave_rat
   assert.doesNotMatch(k1,/קצב לגל/,'no wave_rate (old server, build-machine source) → no invented line');
 });
 
+test('Nadav 15/10: the wave rate line says the deploy card and the ceiling it gives; an unread card is said, never guessed', () => {
+  const w={max_bitrate:'6000m',ceiling:'9000m',start:'6000m',basis:'start',by:null,projected:true,unknown_drives:0,drives:4,
+    link:{interface:'eth1',speed_mbps:10000,why:null,applied:true}};
+  let k1=setup({room:roomRunning({wave_rate:w})}).run('deploy(0)');
+  assert.ok(k1.includes('כרטיס ההפצה: <bdi dir="ltr">10Gb/s</bdi> · תקרת שידור: <bdi dir="ltr">1.1GB/s</bdi>'),k1.slice(0,400));
+  k1=setup({room:roomRunning({wave_rate:{...w,ceiling:'2250m',link:{...w.link,speed_mbps:2500}}})}).run('deploy(0)');
+  assert.ok(k1.includes('כרטיס ההפצה: <bdi dir="ltr">2.5Gb/s</bdi> · תקרת שידור: <bdi dir="ltr">281MB/s</bdi>'));
+  k1=setup({room:roomRunning({wave_rate:{...w,ceiling:'900m',max_bitrate:'600m',link:{interface:'ens192',speed_mbps:null,why:'virtual',applied:false}}})}).run('deploy(0)');
+  assert.ok(k1.includes('כרטיס ההפצה: <span title="virtual">כרטיס וירטואלי — המהירות אינה של הקו</span> · תקרת שידור: <bdi dir="ltr">113MB/s</bdi>'));
+  assert.doesNotMatch(k1,/1Gb\/s/,'an unread card is never shown as 1Gb/s');
+  k1=setup({room:roomRunning({wave_rate:{...w,link:undefined}})}).run('deploy(0)');
+  assert.doesNotMatch(k1,/כרטיס ההפצה/,'no link (old server, build-machine source) → no invented line');
+});
+
+test('Nadav 15/10 (b): the slowest cloner that set the cap is named; an assumed 1Gb/s says it is an assumption', () => {
+  const w={max_bitrate:'600m',ceiling:'900m',start:'600m',basis:'start',by:null,projected:true,unknown_drives:0,drives:4,cap_by:'cloner',
+    link:{interface:'eth1',speed_mbps:10000,why:null,applied:true},
+    cloner:{mac:C2,speed_mbps:1000,source:'reported',why:null,assumed:[]}};
+  let k1=setup({room:roomRunning({wave_rate:w})}).run('deploy(0)');
+  assert.ok(k1.includes('כרטיס ההפצה: <bdi dir="ltr">10Gb/s</bdi> · תקרה לפי מחשב 2: <bdi dir="ltr">1Gb/s</bdi> · תקרת שידור: <bdi dir="ltr">113MB/s</bdi>'));
+  assert.doesNotMatch(k1,/הנחה/);
+  k1=setup({room:roomRunning({wave_rate:{...w,cloner:{...w.cloner,source:'assumed',why:'no_probe',assumed:[C2]}}})}).run('deploy(0)');
+  assert.ok(k1.includes('תקרה לפי מחשב 2: <bdi dir="ltr">1Gb/s</bdi> (הנחה — המהירות לא ידועה)'));
+  k1=setup({room:roomRunning({wave_rate:{...w,cap_by:'server'}})}).run('deploy(0)');
+  assert.doesNotMatch(k1,/תקרה לפי/,'the server card set the cap — no cloner is blamed');
+});
+
 test('running wave: the grid is the cloners grid in round mode — write bars, blue writing, orange CRC, red failed drawer; machine "in round · N%"; the notes say what happens without an answer', () => {
   const {run}=setup({room:roomRunning()});
   const html=run('deploy(0)');

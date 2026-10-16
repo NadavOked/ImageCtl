@@ -1274,8 +1274,11 @@ def _wave_rate(ctx, round_row: sqlite3.Row, wave: sqlite3.Row | None) -> dict | 
     if wave is None or wave["state"] != "open" or round_row["state"] != "active":
         return None
     ceiling = ctx.sender.max_bitrate if ctx.sender is not None else None
+    # כרטיס ההפצה (15/10) — רק כשהשרת הוא המשדר; גל ישיר יוצא מהכרטיס של
+    # מחשב הבנייה.
+    link = ctx.sender.link() if ctx.sender is not None and not direct else None
     return {**drive_rates.choose(ctx.conn, wave_drives(ctx.conn, session_id), ceiling,
-                                 session_id, direct=direct),
+                                 session_id, direct=direct, link=link),
             "projected": True}
 
 

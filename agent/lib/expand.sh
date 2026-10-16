@@ -122,7 +122,7 @@ apply_gpt() {
         if [ -n "$_uguid" ]; then _u="-u $_idx:$_uguid"; fi
         if [ -n "$_attrs" ]; then _a="-A $_idx:=:0x$_attrs"; fi
         # shellcheck disable=SC2086 # הפיצול של $_u/$_a מכוון
-        sgdisk -n "$_idx:$_start:$_end" -t "$_idx:$_guid" $_u $_a "$DEVROOT/$1" \
+        sgdisk -a 1 -n "$_idx:$_start:$_end" -t "$_idx:$_guid" $_u $_a "$DEVROOT/$1" \
             >> "$LOG_FILE" 2>&1 || exit 1
     done || return 1
     _dguid=$(json_get "$2" ".disk_guid")
@@ -193,7 +193,7 @@ expand_last() {
     if [ -n "$_attrs" ]; then _a="-A $_idx:=:0x$_attrs"; fi
     # ‏0 בסוף = סוף השטח הפנוי הגדול ביותר, כלומר עד תחילת ה-swap החדשה.
     # shellcheck disable=SC2086 # הפיצול של $_u/$_a מכוון
-    sgdisk -d "$_idx" -n "$_idx:$_start:0" -t "$_idx:$_guid" $_u $_a "$DEVROOT/$1" \
+    sgdisk -a 1 -d "$_idx" -n "$_idx:$_start:0" -t "$_idx:$_guid" $_u $_a "$DEVROOT/$1" \
         >> "$LOG_FILE" 2>&1 || return 1
     # ההרחבה בנתה טבלה **שונה** מזו של apply_gpt, ולכן היא נקראת בחזרה
     # שוב: מי שכתב לא מעיד על עצמו. ‏rereadpt שנכשל היה `|| true` עד כאן,

@@ -251,17 +251,56 @@ STUBS = {
     "pv": '#!/bin/sh\necho 0 >&2\ncat\necho 65536 >&2\n',
     "zstd": '#!/bin/sh\nexec cat\n',
     "partclone.dd": '#!/bin/sh\ncat > /dev/null\n',
+    # ‏#1438: הקליטה והחדר מגבבים ומונים בתוך fanout (‏-S/‏-P), לא ב-tee.
+    "fanout": (
+        '#!/bin/sh\n'
+        'shift\n'
+        'tmp="$(mktemp)"\n'
+        'cat > "$tmp"\n'
+        'fanout_eof "$tmp"\n'
+        'for out; do cat "$tmp" > "$out" & done\n'
+        'wait\n'
+        'for out; do echo "$out ok"; done\n'
+        'rm -f "$tmp"\n'
+    ),
 }
+
+#: ‏#1438: מה שכל fanout מזויף מקבל מעל לגוף שלו. הדגלים נקלפים מהחזית,
+#: כך שהגוף רואה "<buffer> <out>..." כמו קודם. ‏`fanout_eof <file>` עושה
+#: מה שהבינארי עושה בסוף זרם שנקרא כולו: מוסיף את סך הבייטים ל-‏-P
+#: (פורמט pv -n) וכותב ל-‏-S ‏64 ספרות hex ושורה חדשה — בלי "  -" של
+#: sha256sum. גוף שלא קורא לה מדמה fanout שלא הגיע ל-EOF. ‏-H (‏XXH64)
+#: אינו ממודל ונכשל בקול, כדי שזיוף לא יעבור בשקט על דגל שאינו מבין.
+#: כלל "זרם ריק אינו ok" אינו ממודל — הוא של test_fanout.py.
+FANOUT_OPTIONS = (
+    '_fo_S=; _fo_P=\n'
+    'if [ "$1" = --sha256 ]; then sha256sum | cut -c1-64; exit 0; fi\n'
+    'while :; do case "$1" in\n'
+    '  -S) _fo_S=$2; shift 2 ;;\n'
+    '  -P) _fo_P=$2; shift 2 ;;\n'
+    '  -H) echo "fanout stub: -H is not modelled" >&2; exit 2 ;;\n'
+    '  *) break ;;\n'
+    'esac; done\n'
+    'fanout_eof() {\n'
+    '  [ -z "$_fo_P" ] || wc -c < "$1" | tr -d " " >> "$_fo_P"\n'
+    '  [ -z "$_fo_S" ] || sha256sum < "$1" | cut -c1-64 > "$_fo_S"\n'
+    '}\n'
+)
 
 
 def make_stubs(stub_dir: Path, extra: dict | None = None) -> str:
     """זיופים נכתבים מתוך bash דווקא — קובץ שנוצר מווינדוס אינו נחשב
     בר-הרצה ב-Git Bash. ה-chmod חובה: ‏cat > יוצר קובץ בלי סיבית הרצה,
-    וזיוף כזה עובר בווינדוס ונופל ב-CI בלבד."""
+    וזיוף כזה עובר בווינדוס ונופל ב-CI בלבד. ערך None = בלי זיוף (למשל
+    fanout שקומפל לאותה תיקייה)."""
     # שורות אמיתיות ולא "; " — סוגר של here-document חייב להיות לבדו
     # בשורה, ואיחוד בנקודה-פסיק בולע אותו בשקט (הבנאי "עבר" ולא יצר כלום).
     lines = [f"mkdir -p {posix(stub_dir)!r}"]
     for name, body in {**STUBS, **(extra or {})}.items():
+        if body is None:
+            continue
+        if name == "fanout":
+            body = body.replace("#!/bin/sh\n", "#!/bin/sh\n" + FANOUT_OPTIONS, 1)
         lines.append(f"cat > {posix(stub_dir)}/{name} <<'STUB'\n{body}STUB")
         lines.append(f"chmod 0755 {posix(stub_dir)}/{name}")
     lines.append(f'export PATH="$(cd {posix(stub_dir)!r} && pwd):$PATH"')
@@ -275,7 +314,11 @@ FEED_ONLY_THE_FIRST = (
     '#!/bin/sh\n'
     'shift\n'                       # החוצץ
     'first="$1"\n'
-    'cat > "$first"\n'
+    'tmp="$(mktemp)"\n'
+    'cat > "$tmp"\n'
+    'fanout_eof "$tmp"\n'
+    'cat "$tmp" > "$first"\n'
+    'rm -f "$tmp"\n'
     'echo "$first ok"\n'
 )
 
@@ -381,7 +424,11 @@ RECORDING_RECEIVER = (
 FEED_ONE = (
     '#!/bin/sh\n'
     'shift\n'
-    'cat > "$1"\n'
+    'tmp="$(mktemp)"\n'
+    'cat > "$tmp"\n'
+    'fanout_eof "$tmp"\n'
+    'cat "$tmp" > "$1"\n'
+    'rm -f "$tmp"\n'
     'echo "$1 ok"\n'
 )
 
@@ -467,17 +514,19 @@ def test_the_second_stream_waits_longer_for_its_first_byte_than_the_first(tmp_pa
     assert {_flag(b, "--receive-timeout") for b in blocks} == {"20"}
 
 
-#: ‏pv שאינו מדפיס דבר עד הבייט הראשון — כך הקובץ מכיל רק את מה שנשאר
-#: מהמחיצה הקודמת, וזה מה ש-wait_progress קורא בסקירה הראשונה (‏pv -i 2
-#: מדפיס את ה-"0" הראשון רק אחרי שתי שניות; הסקירה היא אחרי אחת).
-PV_SILENT_UNTIL_DATA = '#!/bin/sh\ncat\necho 65536 >&2\n'
+#: ‏#1438: המונה של החדר נכתב עכשיו ב-fanout (‏-P), לא ב-pv. ‏FEED_ONE
+#: שותק עד EOF — כך הקובץ מכיל רק את מה שנשאר מהמחיצה הקודמת, וזה מה
+#: ש-wait_progress קורא בסקירה הראשונה. ‏FEED_ONE_TICKS_ZERO כותב "0"
+#: לפני הבייט הראשון, כמו pv -n — הצורה ש-waits.sh חייב לסנן.
+FEED_ONE_TICKS_ZERO = FEED_ONE.replace(
+    'tmp="$(mktemp)"\n', '[ -z "$_fo_P" ] || echo 0 >> "$_fo_P"\ntmp="$(mktemp)"\n', 1)
 
 
 @pytest.mark.parametrize(
-    "pv", [pytest.param(None, id="pv-ticks-zero"),
-           pytest.param(PV_SILENT_UNTIL_DATA, id="previous-partition-count")])
+    "feed", [pytest.param(FEED_ONE_TICKS_ZERO, id="counter-ticks-zero"),
+             pytest.param(FEED_ONE, id="previous-partition-count")])
 def test_a_drawer_room_waits_out_a_late_second_partition_instead_of_the_stall_ceiling(
-        tmp_path, pv):
+        tmp_path, feed):
     """‏#1430 (מעבדת ה-VM, 15/10): ‏p1 נכתב, והשולח המתין למכונה שכבר
     נכשלה לפני ששידר את p14. המכונה התקינה פקעה אחרי ~361ש' — 300 של
     תקרת השקט ועוד ההמתנות למגירות — ולא אחרי 900 של תקרת ההתחלה.
@@ -486,7 +535,7 @@ def test_a_drawer_room_waits_out_a_late_second_partition_instead_of_the_stall_ce
 
     כאן: הזרם השני שותק 5 שניות — יותר מתקרת השקט (2), פחות מתקרת
     ההתחלה של מחיצה 2+ (20) — ואז מגיע. **בקרה שלילית:** על הקוד הישן
-    המחיצה השנייה נכשלת "פג הזמן -- הזרם לא הגיע". שני הזיופים של pv
+    המחיצה השנייה נכשלת "פג הזמן -- הזרם לא הגיע". שני הזיופים של המונה
     מכסים את שני המנגנונים: המונה של המחיצה הקודמת (drawers.sh) וה-"0"
     שלפני הבייט הראשון (waits.sh) — כל אחד נופל כשרק התיקון שלו חסר."""
     box = tmp_path / "box"
@@ -499,7 +548,7 @@ def test_a_drawer_room_waits_out_a_late_second_partition_instead_of_the_stall_ce
     target.mkdir(parents=True)
     (target / "state").write_text("writing\n")
     out = run_sh(
-        make_stubs(box / "stubs", {"fanout": FEED_ONE, **({"pv": pv} if pv else {})})
+        make_stubs(box / "stubs", {"fanout": feed})
         + f"export RUN_DIR={posix(run)!r} DEVROOT={posix(box)!r} "
         "WAIT_POLL_S=1 WAIT_DRAWER_S=10 WAIT_HELPER_S=10 WAIT_STREAM_STALL_S=2 "
         "WAIT_STREAM_START_S=20 WAIT_STREAM_START_LATER_S=20; "

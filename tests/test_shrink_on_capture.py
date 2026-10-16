@@ -831,7 +831,7 @@ def test_on_the_target_c_is_stretched_and_d_moves_to_the_tail(tmp_path):
     d_sectors = part(m, 4)["size_bytes"] // 512
     assert calls[0].startswith("-d 4 "), calls
     assert calls[1].startswith(f"-n 4:-{d_sectors}:0 "), "‏D: נבראת בזנב, בגודל שהמניפסט מצהיר"
-    assert calls[2].startswith(f"-d 3 -n 3:{WIN_START}:0 "), "‏C: נשארת בתחילתה ונמתחת"
+    assert calls[2].startswith(f"-a 1 -d 3 -n 3:{WIN_START}:0 "), "‏C: נשארת בתחילתה ונמתחת"
     assert len(calls) == 3, calls
 
 
