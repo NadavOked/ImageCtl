@@ -184,7 +184,7 @@ def test_an_image_without_a_system_partition_is_not_judged_by_it(tmp_path):
 @needs_shell
 def test_a_too_small_disk_is_still_named_by_its_shortfall_first(tmp_path):
     rc, err, _ = fits(tmp_path, win11(), NEED - 1)
-    assert err.startswith("disk too small by "), err
+    assert err.startswith("הדיסק קטן מדי ב-"), err
 
 
 # --- the build machine's restore: refused before the table is touched -------

@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -450,11 +451,15 @@ def open_local_pairing(conn, user: tuple[str, str]) -> dict:
     ממנו רק הגיבוב המלוח (:mod:`interserver_auth`).
     """
     assert_local_pairing_allowed(conn, user)
+    return _open_pairing(conn, user[0], interserver_auth.WINDOW_TTL_SECONDS)
+
+
+def _open_pairing(conn, actor: str, ttl_seconds: int) -> dict:
     if has_parent(conn):
         raise ParentAlreadyEnrolledError(
             "כבר קיים אב רשום — נתקו אותו תחילה (break-glass)")
-    code = interserver_auth.open_pairing_window(conn)
-    journal(conn, "storage_pairing_open", node_id(conn), user[0])
+    code = interserver_auth.open_pairing_window(conn, ttl_seconds=ttl_seconds)
+    journal(conn, "storage_pairing_open", node_id(conn), actor)
     status = interserver_auth.pairing_window_status(conn)
     return {
         "code": code,
@@ -482,11 +487,119 @@ def unbind_parent(conn, user: tuple[str, str]) -> None:
     מוחק את רשומת האישור, מנקה את מזהה האב, וסוגר כל חלון pairing פתוח.
     """
     assert_local_pairing_allowed(conn, user)
+    _unbind(conn, user[0])
+
+
+def _unbind(conn, actor: str) -> None:
     with _write_lock, writing(conn):
         conn.execute("DELETE FROM parent_credentials WHERE singleton = 1")
         conn.execute("DELETE FROM pairing_windows WHERE singleton = 1")
     set_setting(conn, PARENT_ID_KEY, "")
-    journal(conn, "storage_parent_unbind", node_id(conn), user[0])
+    journal(conn, "storage_parent_unbind", node_id(conn), actor)
+
+
+# --- אותן פעולות ממסך השרת הפיזי (DCUI, ‏F4) — הכרעת נדב 16/10 -------------
+#
+# וריאנט א' של המוקאפ (#1525): **בלי סיסמה** — הנוכחות ליד המקלדת של השרת
+# היא ההרשאה, כמו איפוס הסיסמה ב-F9. אין כאן route ואין כתובת רשת: הפונקציות
+# נקראות רק מתהליך ה-DCUI, root על tty1, ישירות מול ה-DB — אותו ערוץ של
+# כל פעולה אחרת שלו (server/dcui/actions.py). שומר התפקיד נשאר: ראשי/עצמאי
+# נכשל ב-``NotSecondaryError`` כמו ה-API (409). הסיכון שהוצג לנדב ואושר: הקוד
+# לבדו אינו מספיק — חד-פעמי, ‏10 דקות, 5 ניסיונות, ותקף רק כשמנהל מחובר
+# בקונסולת הראשי מקליד אותו (ואחרי שהשווה את הטביעה).
+
+PHYSICAL_ACTOR = "dcui"
+
+
+def _assert_secondary(conn) -> None:
+    if role(conn) != ROLE_SECONDARY:
+        raise NotSecondaryError(
+            "חלון pairing נפתח רק על שרת משני (secondary)")
+
+
+def open_physical_pairing(conn) -> dict:
+    """F4: פותח חלון של 10 דקות ומחזיר את הקוד **פעם אחת**. משני בלבד,
+    ובלי אב רשום (revoke-first) — בדיוק כמו ``open_local_pairing``."""
+    _assert_secondary(conn)
+    opened = _open_pairing(conn, PHYSICAL_ACTOR,
+                           interserver_auth.PHYSICAL_WINDOW_TTL_SECONDS)
+    # מזהה של **החלון הזה**: חלון שנפתח אחריו (מה-API המקומי, גם באותה
+    # שנייה) מחליף אותו, והמסך צריך לדעת שהקוד שהוא מציג כבר אינו תקף.
+    opened["window_id"] = pairing_window_id(conn)
+    return opened
+
+
+def pairing_window_id(conn) -> str:
+    """מזהה לא-סודי של החלון הפתוח — גיבוב של המלח האקראי שלו (16 בתים
+    חדשים לכל פתיחה); ``""`` כשאין חלון. הקוד והגיבוב שלו אינם יוצאים."""
+    row = conn.execute(
+        "SELECT code_salt FROM pairing_windows WHERE singleton = 1").fetchone()
+    return hashlib.sha256(bytes(row["code_salt"])).hexdigest()[:16] if row else ""
+
+
+def close_physical_pairing(conn, window_id: str) -> bool:
+    """המסך עם הקוד נסגר — הקוד מבוטל. סוגר רק את **החלון שלו**: חלון
+    שנפתח אחריו (מה-API) אינו נמחק. ``True`` כשנסגר."""
+    _assert_secondary(conn)
+    with _write_lock, writing(conn):
+        closed = bool(window_id) and pairing_window_id(conn) == window_id and conn.execute(
+            "DELETE FROM pairing_windows WHERE singleton = 1").rowcount == 1
+    if closed:
+        journal(conn, "storage_pairing_closed", node_id(conn), PHYSICAL_ACTOR)
+    return closed
+
+
+def unbind_parent_physical(conn) -> None:
+    """F4 על משני מצומד: ניתוק מקומי — אותו פינוי של ``unbind_parent``."""
+    _assert_secondary(conn)
+    _unbind(conn, PHYSICAL_ACTOR)
+
+
+def parent_info(conn) -> dict | None:
+    """האב הרשום (מזהה וזמן הרישום) — ``None`` כשאין."""
+    row = conn.execute(
+        "SELECT parent_id, enrolled_at FROM parent_credentials WHERE singleton = 1"
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def identity_display(conn) -> tuple[str, str] | None:
+    """‏(node_id, SPKI) של זהות ה-TLS — מה שהראשי קורא ב-preview — או
+    ``None`` כשעדיין לא נוצרה (השרת לא עלה עם המאזין הבין-שרתי)."""
+    row = _identity_row(conn)
+    return (row["node_id"], row["server_spki"]) if row is not None else None
+
+
+#: הכתובת שבה **הראשי** מגיע למשני (מאחורי NAT — החיצונית). המשני מציג
+#: אותה במסך הקוד; הראשי מקליד אותה. ריק = לא הוגדרה (אזהרה, לא ניחוש).
+ADVERTISED_URL_KEY = "storage:advertised_url"
+
+
+def normalize_advertised_url(raw: str) -> str:
+    """``host:port`` או ``https://host:port`` → ``https://host:port``;
+    ריק → ריק (מחיקה). כל השאר נבדק ב-``parse_interserver_url`` (https,
+    פורט מפורש, בלי משתמש/query) ונכשל בקול."""
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    if "://" not in text:
+        text = "https://" + text
+    host, port, path = interserver_auth.parse_interserver_url(text)
+    if path not in ("", "/"):
+        raise interserver_auth.InterserverURLError("בלי נתיב — רק כתובת ופורט")
+    shown = f"[{host}]" if ":" in host else host
+    return f"https://{shown}:{port}"
+
+
+def advertised_url(conn) -> str:
+    return get_setting(conn, ADVERTISED_URL_KEY) or ""
+
+
+def set_advertised_url(conn, raw: str) -> str:
+    """שומר את הכתובת המנורמלת ומחזיר אותה **כפי שנקראה בחזרה**."""
+    value = normalize_advertised_url(raw)
+    set_setting(conn, ADVERTISED_URL_KEY, value)
+    return advertised_url(conn)
 
 
 # --- זהות ה-TLS של השרת עצמו (#740, tracer 2.1) ----------------------------

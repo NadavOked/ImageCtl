@@ -130,7 +130,7 @@ def test_an_ntfs_partition_without_a_file_never_reaches_mkswap(tmp_path, row, sh
     assert calls(box, "sgdisk") == "", "הדיסק נגע לפני שהמניפסט נבדק"
     # ‏#1408 (77557596): `validate_restore_plan` דוחה את השורה לפני
     # ‏`--zap-all`, בהודעה הקבועה ש-test_restore_plan_1418 נועל.
-    assert target_error(run) == "malformed restore plan -- disk untouched"
+    assert target_error(run) == "תוכנית השחזור פגומה — הדיסק לא שונה"
 
 
 @requires_bash
@@ -179,8 +179,8 @@ def test_no_drawer_is_touched_when_the_plan_is_refused(tmp_path):
     run, prelude = drawer_box(tmp_path)
     # השער חי בתוך `apply_gpt`, לפני ה---zap-all. כאן הוא מועמד לירות:
     # מה שנבדק הוא שהסיבה מגיעה למגירה, ולא נבלעת ב"לא הצלחנו לכתוב טבלה".
-    prelude += ('apply_gpt() { PLAN_ERROR="partition 3 (ntfs) has no file but'
-                ' is not swap -- corrupt manifest"; return 1; }; ')
+    prelude += ('apply_gpt() { PLAN_ERROR="למחיצה 3 (ntfs) אין קובץ והיא אינה swap'
+                ' — המניפסט פגום, הדיסק לא שונה"; return 1; }; ')
 
     out = sh(prelude + "run_restore_drawers multicast http://s img m.json "
              'sda sdb sdc; echo "rc=$?"')

@@ -41,6 +41,18 @@ def test_the_report_is_one_labelled_journal_line(identity_server):
     assert "דיווח המחשב" in line and "לא עבר דרך השרת" in line
 
 
+def test_a_report_with_the_new_fields_is_journaled(identity_server):
+    setup_classroom(identity_server)
+    ok = identity_server["station"].post(
+        "/api/v1/agent/local-clone",
+        json=_report(shrink_path="snapshot", snapshot_teardown="ok", info_s=1, copy_s=2),
+    )
+    assert ok.status_code == 200 and ok.json() == {"ok": True}, ok.text
+    lines = [d for _u, d in journal_details(identity_server, "local_clone")]
+    assert len(lines) == 1, lines
+    assert "שלבים" in lines[0]
+
+
 def test_a_report_from_another_address_is_refused_and_not_journaled(identity_server):
     setup_classroom(identity_server)
     r = identity_server["stranger"].post("/api/v1/agent/local-clone", json=_report())
@@ -68,6 +80,57 @@ def test_a_source_left_shrunk_is_said_in_the_line():
     assert "ולא הוחזר לגודלו" in line
     line = local_clone_report.journal_line(_report(shrunk=True, source_restore="ok"))
     assert "והוחזר לגודלו" in line and "ולא" not in line
+
+
+def test_an_old_agents_report_gives_todays_line():
+    line = local_clone_report.journal_line(_report())
+    assert "עותק בזיכרון" not in line
+    assert "שלבים" not in line
+    assert "כיווץ במקום" not in line and "סורב" not in line
+
+
+def test_the_snapshot_path_says_the_source_was_only_read():
+    line = local_clone_report.journal_line(
+        _report(shrink_path="snapshot", snapshot_teardown="ok", shrunk=False)
+    )
+    assert "המקור נקרא בלבד ולא נכתב" in line
+    assert "לא שוחרר" not in line
+    assert "כווץ זמנית" not in line
+
+
+def test_a_view_that_was_not_released_is_said_in_the_line():
+    line = local_clone_report.journal_line(_report(
+        shrink_path="snapshot",
+        snapshot_teardown="dmsetup remove lc-src-3 failed: Device or resource busy",
+    ))
+    assert "לא שוחרר" in line
+    assert "Device or resource busy" in line
+    assert "לאתחל" in line
+
+
+def test_a_refused_shrink_is_named():
+    line = local_clone_report.journal_line(_report(shrink_path="refused"))
+    assert "סורב" in line and "המקור לא נכתב" in line
+    assert "כיווץ במקום" not in line
+
+
+def test_the_stage_times_are_in_the_line():
+    line = local_clone_report.journal_line(_report(
+        info_s=12, resize_s=95, relocations_mb=3400, copy_s=840,
+        verify_s=3, restore_s=1,
+    ))
+    assert "שלבים: מדידה 12ש', כיווץ 95ש', הועברו 3400MB, העתקה 840ש', אימות 3ש', סיום 1ש'" in line
+
+
+def test_a_stage_that_was_not_measured_is_not_a_zero():
+    line = local_clone_report.journal_line(_report(
+        info_s=None, resize_s="95", copy_s=-1, verify_s=True,
+        relocations_mb=1.5, restore_s=0,
+    ))
+    assert " · שלבים: " in line, line
+    stages = line.split(" · שלבים: ", 1)[1].split(" (דיווח המחשב", 1)[0]
+    assert stages == "סיום 0ש'"
+    assert "מדידה" not in line
 
 
 def test_a_long_error_is_cut_in_the_journal():

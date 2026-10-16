@@ -244,11 +244,13 @@ def test_cloner_draws_a_card_per_disk_it_found_not_three():
     has two SATA ports (audit finding 5, S19)."""
     src = code(_src("screens_cloner.c"))
     assert "port <= 3" not in src and "שלושה דיסקים" not in src
-    ports = body(src, "found_ports")
-    assert "drawer_for_port(s, port) || idle_for_port(s, port)" in ports
-    assert "s->smart_pending && s->smart_port == port" in ports
+    # #1495: one card per drawer record (or idle disk), ordered by the drawer of
+    # the mapping, plus the disk a SMART question is about -- not ports 1..3.
+    entries = body(src, "cloner_entries")
+    assert "for (int i = 0; i < s->ndrawers; i++)" in entries and "for (int i = 0; i < s->nidisks; i++)" in entries
+    assert "s->smart_pending" in entries and "out[i].port == s->smart_port" in entries
     cloner = body(src, "screen_cloner")
-    assert "int ports[MAX_DRAWERS], n = found_ports(&a->st, ports);" in cloner
+    assert "n = cloner_entries(&a->st, entries);" in cloner
 
 
 def test_cloner_smart_answers_are_ordered_by_risk():
@@ -281,7 +283,8 @@ def test_live_round_draws_a_bar_per_reported_disk():
     no disk got a bar with the machine's percentage on it."""
     live = code(body(_src("screens_room.c"), "room_live_grid_draw"))
     assert "m->drawer_count" not in live
-    assert "if (d) found[nfound++] = d;" in live
+    # #1495: every present drawer, sorted by its drawer number (not by port)
+    assert "if (m->room_drawers[j].present)" in live and "room_drawer_after(found[k - 1], v)" in live
     room = code(body(_src("screens_room.c"), "screen_room"))
     assert "found += s->machines[i].room_drawers[j].present;" in room
     assert "if (slots < s->machines[i].drawer_count) slots = s->machines[i].drawer_count;" not in room
@@ -528,8 +531,11 @@ def test_every_status_bar_lists_only_keys_that_work():
     assert "Esc" not in status_line("SCREEN_MESSAGE")                    # default: a message has no way out
     assert "Enter" not in status_line("SCREEN_TOOLS")                    # handle() ignores Enter there
     keys = code(body(_src("screens.c"), "status_keys"))
-    restore = keys[keys.index("case SCREEN_RESTORE:"):].split(";")[0]
-    assert "Tab" not in restore                                          # one field: Tab goes nowhere
+    restore = keys[keys.index("case SCREEN_RESTORE:"):]
+    # the build machine's restore has one field: Tab goes nowhere. The cloner's
+    # pull screen (16/10) has the drawer row, and there Tab does move (lc_pull.c).
+    build = restore[restore.index("}") + 1:].split(";")[0]
+    assert "if(lc_pull_active(a)){" in restore and "Tab" not in build, build
     room = keys[keys.index("case SCREEN_ROOM:"):keys.index("case SCREEN_CLONER:")]
     setup = next(x for x in room.splitlines() if "if(!a->st.has_round)return" in x)
     assert "N  " not in setup                                            # N starts a wave; setup has none

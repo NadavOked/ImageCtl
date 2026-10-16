@@ -25,6 +25,7 @@ name" ו-standby. נדב הכריע: אין מסך טקסט חלופי במכו�
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import subprocess
 import threading
@@ -304,14 +305,27 @@ def test_a_deploy_session_cannot_capture(tmp_path, console):
 # --- הכלל הסטטי: אין עברית על המסך של הסוכן ---------------------------------
 
 
+#: ‏`gui_error "<למסך>" "<ללוג>"` — קבוצה 1 היא הארגומנט של המסך; אחריה
+#: חייב לבוא ארגומנט שני לא-ריק, וממנו והלאה אין עברית.
+SCREEN_ONLY = re.compile(r'^\s*gui_error\s+("[^"]*")\s+"[^"]+"')
+
+
 @pytest.mark.parametrize("name", ("buildmenuitems.sh", "buildmenu.sh",
                                   "buildcapture.sh", "roomflow.sh", "guiparent.sh"))
 def test_the_agent_libs_print_no_hebrew(name):
-    """לקונסולת Linux אין פונט עברי ואין RTL — ‏0 שורות עברית, כמו ui.sh."""
+    """לקונסולת Linux אין פונט עברי ואין RTL — ‏0 שורות עברית, כמו ui.sh.
+
+    חריג אחד, צר (#1503): ‏`gui_error "<עברית>" "<אנגלית>"`. הארגומנט
+    הראשון נכתב רק לקובץ ה-error של הגואי הנייטיב (שהוא עברית RTL),
+    והשני הוא מה שהולך ל-stderr/ללוג. בלי ארגומנט שני `gui_error` כותב
+    ללוג את הראשון — ולכן שורה כזו אינה חריג והיא נופלת כאן."""
     path = AGENT / "lib" / name
     assert path.exists(), f"‏{name} חסר"
     hebrew = [line for line in path.read_text(encoding="utf-8").splitlines()
               if any("֐" <= ch <= "ת" for ch in line)]
+    hebrew = [line for line in hebrew
+              if not ((m := SCREEN_ONLY.match(line))
+                      and not any("֐" <= ch <= "ת" for ch in line[m.end(1):]))]
     assert hebrew == []
 
 

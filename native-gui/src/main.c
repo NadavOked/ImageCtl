@@ -6,7 +6,8 @@
  *   --auth-cmd CMD   login: CMD gets "<user>\n<pass>\n" on stdin; exit 0
  *                    means signed in, and its first stdout line is the
  *                    role ("admin" shows the capture card, anything else
- *                    hides it, like station.js afterLogin).
+ *                    hides it, like station.js afterLogin); the second is
+ *                    the user's saved theme (light|dark|auto, #1499).
  *   --state FILE     key=value lines the agent rewrites (disks, machines,
  *                    the running task...); re-read every 2 s when changed.
  *   stdout           one record per operator action: a token line
@@ -17,11 +18,13 @@
  *                    [local_copy=1]) |
  *                    class-pick | class-start | class-close |
  *                    smart-replace | smart-rescue | smart-skip |
+ *                    (16/10: smart-rescue only from the SMART warning window) |
  *                    shrink-continue|<nonce> | shrink-plain|<nonce> |
  *                    shrink-cancel|<nonce>  (#928) |
  *                    tool-list | tool-run|<id>|<arg>|<confirm>  (#649) |
  *                    touch  (#434: a key press -- the idle clock's activity) |
  *                    logout  (11/10: sign-out; the bridge drops the session) |
+ *                    theme-light | theme-dark  (#1499: a signed-in switch, saved) |
  *                    ask-<answer>|<nonce>  (11/10: the question dialog --
  *                    ask-restore / ask-leave, ask-poweroff / ask-menu)),
  *                    then key=value detail lines, then an empty line.
@@ -47,6 +50,8 @@
 #include "ui.h"
 #include "utf8.h"
 #include "lcui.h"   /* #1322 */
+#include "screens_rounds.h"   /* 16/10: smart_level, cloner_port_label, idle_for_port */
+#include "smartdlg.h"        /* 16/10: the SMART warning window */
 
 static volatile sig_atomic_t stop_now = 0;
 static void on_signal(int sig) { (void)sig; stop_now = 1; }
@@ -63,11 +68,16 @@ static const char *USAGE =
 "  --screen dcui is the server's own screen (#1203): frames on stdin, keys on stdout\n"
 "  (dcui.h); with --png it renders the --state frame file in both themes.\n"
 "  --backend mem draws into --fb-file (default /run/imagectl/fb.mem) for the remote\n"
-"  monitor when the machine has no display (#835); auto falls back to it last.\n";
+"  monitor when the machine has no display (#835); auto falls back to it last.\n"
+"  --fb-mirror PATH also writes every frame shown on a display into PATH in the\n"
+"  same format, so the monitor reads RAM instead of /dev/fb0 (#1475).\n";
 
 /* ---- login through the agent's command ------------------------------------- */
 
-static int run_auth(const char *cmd, const char *user, const char *pass, char *role, size_t n) {
+/* #1499: the answer is "<role>\n<saved theme>\n"; read to EOF (the bridge may
+ * write the two lines in two writes), then split them (theme.c). */
+static int run_auth(const char *cmd, const char *user, const char *pass, char *role, size_t n,
+                    char *saved, size_t sn) {
     int in_p[2], out_p[2];
     if (pipe(in_p) || pipe(out_p)) return -1;
     pid_t pid = fork();
@@ -81,20 +91,28 @@ static int run_auth(const char *cmd, const char *user, const char *pass, char *r
     close(in_p[0]); close(out_p[1]);
     FILE *w = fdopen(in_p[1], "w");
     if (w) { fprintf(w, "%s\n%s\n", user, pass); fclose(w); } else close(in_p[1]);
-    char buf[128] = "";
-    ssize_t r = read(out_p[0], buf, sizeof buf - 1);
+    char buf[256] = "";
+    size_t got = 0;
+    for (;;) {                                       /* to EOF; past a full buffer, drained */
+        char sink[64];
+        int full = got >= sizeof buf - 1;
+        ssize_t r = read(out_p[0], full ? sink : buf + got, full ? sizeof sink : sizeof buf - 1 - got);
+        if (r > 0) { if (!full) got += (size_t)r; continue; }
+        if (r < 0 && errno == EINTR) continue;
+        break;                                       /* EOF or error */
+    }
+    buf[got] = 0;
     close(out_p[0]);
-    if (r > 0) { buf[r] = 0; buf[strcspn(buf, "\r\n")] = 0; }
     int status = 0;
     waitpid(pid, &status, 0);
-    snprintf(role, n, "%s", buf);
+    theme_login_answer(buf, role, n, saved, sn);
     return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
 }
 
 static void do_login(App *a, const char *auth_cmd, int demo) {
-    char role[64] = "";
+    char role[64] = "", saved[16] = "";
     int ok;
-    if (auth_cmd)     ok = run_auth(auth_cmd, a->user, a->pass, role, sizeof role) == 0;
+    if (auth_cmd)     ok = run_auth(auth_cmd, a->user, a->pass, role, sizeof role, saved, sizeof saved) == 0;
     else if (demo)    { ok = a->user[0] != 0; snprintf(role, sizeof role, "admin"); }
     else {
         ok = 0;
@@ -108,6 +126,9 @@ static void do_login(App *a, const char *auth_cmd, int demo) {
     snprintf(a->signed_user, sizeof a->signed_user, "%s", a->user);
     a->admin = strcmp(role, "admin") == 0;
     a->signed_in = 1;
+    /* #1499 (Nadav 16/10): the user's saved theme wins; "auto" or none = the
+     * default. A switch made before login was for that screen only. */
+    a->theme = theme_saved(saved, a->default_theme);
     memset(a->pass, 0, sizeof a->pass);
     a->menu_focus = -1; a->logout_confirming = 0;
     a->mode = MODE_MENU;                            /* afterLogin: both roles start at the menu */
@@ -356,7 +377,17 @@ static int visible_card_ids(const App *a, int ids[5]) {
 
 static void sign_out(App *a) {
     a->signed_in = 0; a->mode = MODE_MENU; a->focus = HIT_USER; a->logout_confirming = 0;
+    a->theme = a->default_theme;   /* #1499: the next person starts at the default */
     emit1("logout");   /* 11/10: the bridge drops the console session too */
+}
+
+/* #1499 (Nadav 16/10): the corner switch (screens.c) or F2, on every screen.
+ * Signed in, the switch is the user's saved theme -- the bridge PUTs it
+ * (guibridge.sh, theme-light|theme-dark); before login and on the cloner
+ * screens nobody is signed in, and it changes this screen only. */
+static void toggle_theme(App *a) {
+    a->theme = a->theme == &THEME_DARK ? &THEME_LIGHT : &THEME_DARK;
+    if (a->signed_in) emit1(a->theme == &THEME_DARK ? "theme-dark" : "theme-light");
 }
 
 /* mockup 10/10: while "להתנתק?" is open it is modal -- Enter or its button
@@ -476,7 +507,23 @@ static void tool_go(App *a) {
     else tool_run(a);
 }
 
-static void start_capture(App *a) {
+/* 16/10 (Nadav): a disk of THIS machine with a SMART warning (dsmart=) is
+ * written or read only after the SMART warning window -- named as the disk
+ * list names it (#1495): "דיסק N" by the drawer mapping, "<conn> (לא ממופה)",
+ * or the device when the mapping was not reported. */
+static int disk_smart_ask(App *a, int kind, int i) {
+    if (i < 0 || i >= a->st.ndisks || !smart_level(a->st.disks[i].smart)) return 0;
+    const Disk *d = &a->st.disks[i];
+    char label[SLOT_NAME_MAX + 64];
+    if (!d->slot_known) snprintf(label, sizeof label, "%s", d->dev);
+    else if (eff_drawer(d->drawer, 0) > 0) snprintf(label, sizeof label, "דיסק %d", eff_drawer(d->drawer, 0));
+    else unmapped_label("", d->conn, 0, d->dev, label, sizeof label);
+    sdlg_open(a, kind, i, d->dev, label, d->smart, d->smart_reason, d->model, d->serial);
+    return 1;
+}
+
+/* smart_seen: the SMART warning window was answered "קלוט ממנו בכל זאת" */
+static void start_capture(App *a, int smart_seen) {
     char name[96]; snprintf(name, sizeof name, "%s", a->name); trim(name);
     if (a->chosen_disk < 0 || !name[0]) {
         snprintf(a->st.form_error, sizeof a->st.form_error, "בחרו כונן ותנו שם לאימג'");
@@ -489,6 +536,7 @@ static void start_capture(App *a) {
         return;
     }
     a->st.form_error[0] = 0;
+    if (!smart_seen && disk_smart_ask(a, SDLG_CAPTURE, a->chosen_disk)) return;   /* 16/10: a source with a warning */
     emit("capture-start");
     emit_kv("dev", a->st.disks[a->chosen_disk].dev);
     emit_kv("name", a->name);
@@ -525,6 +573,40 @@ static void start_restore(App *a) {
     emit_end();
 }
 
+/* #1270 "מחק ושחזר" was confirmed. 16/10: the disk the agent will write --
+ * the first non-removable one (pick_internal_disk) -- with a SMART warning
+ * asks the SMART warning window, and only its red button restores. */
+static void restore_confirmed(App *a) {
+    for (int i = 0; i < a->st.ndisks; i++)
+        if (!a->st.disks[i].removable) { if (disk_smart_ask(a, SDLG_RESTORE, i)) return; break; }
+    start_restore(a);
+}
+
+/* 16/10: "כתוב בכל זאת" on the cloner's SMART prompt opens the window; the
+ * window answers the request it was opened for (the nonce), or nothing. */
+static void cloner_smart_ask(App *a) {
+    if (!a->st.smart_pending || !strcmp(a->st.smart_verdict, "failed_last")) return;   /* #872: red has no rescue */
+    char label[SLOT_NAME_MAX + 64];
+    cloner_port_label(&a->st, a->st.smart_port, label, sizeof label);   /* #1495: by the drawer mapping */
+    const IdleDisk *id = idle_for_port(&a->st, a->st.smart_port);
+    sdlg_open(a, SDLG_CLONER, a->st.smart_port, "", label, a->st.smart_verdict, a->st.smart_reason,
+              a->st.smart_model[0] ? a->st.smart_model : id ? id->model : "", a->st.smart_serial);
+    snprintf(a->sdlg.nonce, sizeof a->sdlg.nonce, "%s", a->st.smart_nonce);
+}
+
+/* The window's answer. "דלג" on the cloner is the prompt's own skip; on this
+ * machine's disk it only closes the window -- nothing was sent. */
+static int smart_modal(App *a, const Event *e) {
+    SmartDlg d;
+    if (!sdlg_handle(a, e, &d)) return 0;
+    if (d.kind == SDLG_CLONER) {
+        if (a->st.smart_pending && !strcmp(a->st.smart_nonce, d.nonce)) emit_smart(a, d.go ? "smart-rescue" : "smart-skip");
+    } else if (d.kind == SDLG_RESTORE && d.go) start_restore(a);
+    else if (d.kind == SDLG_CAPTURE && d.go) start_capture(a, 1);
+    if (e->type == UIEV_CLICK) { a->ptr_x = e->x; a->ptr_y = e->y; }
+    return 1;
+}
+
 static int room_effective_selected(const App *a, const Machine *m, const RoomDrawer *d);
 
 /* #715: the chosen drawers, as the bridge's record value:
@@ -540,7 +622,7 @@ static int room_selection_encode(const App *a, char *out, size_t n) {
         int first = 1;
         for (int i = 0; i < m->nroom_drawers; i++) {
             const RoomDrawer *d = &m->room_drawers[i];
-            if (!d->present || d->port < 1) continue;
+            if (!room_selectable(d)) continue;
             if (!room_effective_selected(a, m, d)) continue;
             int k = snprintf(out + used, n - used, "%s%s%s%d",
                              first ? (drawers ? "/" : "") : ",",
@@ -637,7 +719,7 @@ static int room_local_copies(const State *s) {
 static void confirm_do(App *a) {
     int what = a->confirm;
     a->confirm = CONFIRM_NONE;
-    if (what == CONFIRM_RESTORE) start_restore(a);
+    if (what == CONFIRM_RESTORE) restore_confirmed(a);
     else if (what == CONFIRM_ROOM_START_WARN && a->st.has_round && a->st.wave_open) emit1("room-start");
     else if (what == CONFIRM_ROOM_POWEROFF && poweroff_target_live(a)) {
         /* the server checks again: still missing, wave open, the machine's name */
@@ -686,7 +768,7 @@ static int room_effective_selected(const App *a, const Machine *m,
 }
 
 static void room_toggle_selected(App *a, int mi, int port) {
-    if (mi < 0 || mi >= a->st.nmachines || port < 1 || port > MAX_DRAWERS) return;
+    if (mi < 0 || mi >= a->st.nmachines || port < 1 || port > 32) return;
     Machine *m = &a->st.machines[mi];
     RoomDrawer *d = NULL;
     for (int i = 0; i < m->nroom_drawers; i++)
@@ -694,7 +776,7 @@ static void room_toggle_selected(App *a, int mi, int port) {
             d = &m->room_drawers[i];
             break;
         }
-    if (!m->awake || !d) return;
+    if (!m->awake || !d || !room_selectable(d)) return;
     for (int i = 0; i < a->nroom_selection; i++)
         if (a->room_selection[i].port == port &&
             strcmp(a->room_selection[i].mac, m->mac) == 0) {
@@ -713,6 +795,10 @@ static void room_toggle_selected(App *a, int mi, int port) {
 
 /* #714: set (not toggle) one disk's override. */
 static void room_set_selected(App *a, const Machine *m, int port, int val) {
+    const RoomDrawer *drawer = NULL;
+    for (int j = 0; j < m->nroom_drawers; j++)
+        if (m->room_drawers[j].port == port) { drawer = &m->room_drawers[j]; break; }
+    if (!drawer || !room_selectable(drawer)) return;
     for (int i = 0; i < a->nroom_selection; i++)
         if (a->room_selection[i].port == port &&
             strcmp(a->room_selection[i].mac, m->mac) == 0) {
@@ -738,7 +824,7 @@ static int room_range_all_selected(const App *a, int begin, int end) {
         if (!m->awake) continue;
         for (int j = 0; j < m->nroom_drawers; j++) {
             const RoomDrawer *d = &m->room_drawers[j];
-            if (!d->present) continue;
+            if (!room_selectable(d)) continue;
             any = 1;
             if (!room_effective_selected(a, m, d)) return 0;
         }
@@ -755,7 +841,7 @@ static void room_select_range(App *a, int begin, int end) {
         if (!m->awake) continue;
         for (int j = 0; j < m->nroom_drawers; j++) {
             const RoomDrawer *d = &m->room_drawers[j];
-            if (d->present) room_set_selected(a, m, d->port, val);
+            if (room_selectable(d)) room_set_selected(a, m, d->port, val);
         }
     }
 }
@@ -772,11 +858,25 @@ static void emit_touch(App *a, int demo) {
 
 static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
     if (e->type == UIEV_CLICK || e->type == UIEV_CHAR || e->type == UIEV_KEY) emit_touch(a, demo);
+    /* #1499: the theme switch first -- every screen has it, modals and the
+     * local clone's own key handling included. */
+    if ((e->type == UIEV_KEY && e->key == KEYSYM_F2) ||
+        (e->type == UIEV_CLICK && app_hit(a, e->x, e->y) == HIT_THEME)) {
+        toggle_theme(a);
+        return 0;
+    }
     if (a->screen == SCREEN_LCBOOT || a->screen == SCREEN_LOCAL) {   /* #1322: its own keys and clicks */
         if (e->type == UIEV_MOVE || e->type == UIEV_CLICK) { a->ptr_x = e->x; a->ptr_y = e->y; }
         if (e->type == UIEV_MOVE) a->ptr_visible = !e->is_touch;
         lc_handle(a, e);
         return 0;
+    }
+    if (smart_modal(a, e)) return 0;               /* 16/10: the SMART warning window */
+    /* 16/10: the cloner's restore screen -- its drawers, its way back, its red
+     * button; the folders and the images below are the build machine's */
+    if (a->screen == SCREEN_RESTORE && lc_pull_active(a)) {
+        if (e->type == UIEV_CLICK) { a->ptr_x = e->x; a->ptr_y = e->y; }
+        if (lc_pull_handle(a, e)) return 0;
     }
     if (shrink_modal(a, e)) return 0;              /* #928 */
     if (ask_modal(a, e)) return 0;                 /* 11/10 */
@@ -802,14 +902,18 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
         if (id >= HIT_ROOM_DISK_BASE &&
             id < HIT_ROOM_DISK_BASE + MAX_ROOM_SELECTIONS) {
             int encoded = id - HIT_ROOM_DISK_BASE;
-            room_toggle_selected(a, encoded / MAX_DRAWERS, encoded % MAX_DRAWERS + 1);
+            int mi = encoded / MAX_DRAWERS, j = encoded % MAX_DRAWERS;
+            if (mi < a->st.nmachines && j < a->st.machines[mi].nroom_drawers)
+                room_toggle_selected(a, mi, a->st.machines[mi].room_drawers[j].port);
             break;
         }
         /* #1269: a disk's drivers tag (pick mode): the current model, or "בלי" */
         if (id >= HIT_ROOM_DTAG_BASE &&
             id < HIT_ROOM_DTAG_BASE + MAX_ROOM_SELECTIONS) {
             int encoded = id - HIT_ROOM_DTAG_BASE;
-            room_drv_tag_click(a, encoded / MAX_DRAWERS, encoded % MAX_DRAWERS + 1);
+            int mi = encoded / MAX_DRAWERS, j = encoded % MAX_DRAWERS;
+            if (mi < a->st.nmachines && j < a->st.machines[mi].nroom_drawers)
+                room_drv_tag_click(a, mi, a->st.machines[mi].room_drawers[j].port);
             break;
         }
         /* #65 "כבה אותו": asks first (#1270); the machine's name is the confirmation */
@@ -858,7 +962,6 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
             break;
         }
         switch (id) {
-        case HIT_THEME:  a->theme = a->theme == &THEME_DARK ? &THEME_LIGHT : &THEME_DARK; break;
         case HIT_LOGOUT: sign_out(a); break;     /* the button is the explicit choice; Esc asks */
         case HIT_USER: case HIT_PASS: case HIT_NAME: case HIT_DESC: case HIT_FOLDER_NEW:
         case HIT_ROOM_TARGET: case HIT_TOOL_ARG:
@@ -876,20 +979,20 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
             a->newfolder_shown = !a->newfolder_shown;
             if (a->newfolder_shown) a->focus = HIT_FOLDER_NEW;
             break;
-        case HIT_START:  start_capture(a); break;
+        case HIT_START:  start_capture(a, 0); break;
         case HIT_RESTORE_START: if (restore_ready(a)) a->confirm = CONFIRM_RESTORE; break;   /* #1270: asks first */
         case HIT_BACK:   go_menu(a); emit1("back"); break;
         case HIT_AGAIN:  a->showing_done = 0; go_menu(a); emit1("again"); break;
         case HIT_ROOM_SELECT_ALL: room_select_range(a, 0, a->st.nmachines); break;
         case HIT_ROOM_OPEN:  open_round(a); break;
-        case HIT_ROOM_WAKE:  emit1("room-wake"); break;
-        case HIT_ROOM_START: room_start(a); break;   /* #432: asks first on a warning */
+        case HIT_ROOM_WAKE:  if (a->st.has_round) emit1("room-wake"); break;   /* Nadav 16/10: no round, nothing */
+        case HIT_ROOM_START: if (a->st.has_round) room_start(a); break;   /* #432: asks first on a warning */
         case HIT_ROOM_CLOSE: if (a->st.has_round) a->confirm = CONFIRM_ROOM_STOP; break;   /* #1270 */
         case HIT_ROOM_POWEROFF_ALL: if (a->admin && a->st.room_label[0]) a->confirm = CONFIRM_ROOM_POWEROFF_ALL; break;
         case HIT_CLASS_START: if (class_gate(a)) emit1("class-start"); break;
         case HIT_CLASS_CLOSE: if (class_gate(a)) a->confirm = CONFIRM_CLASS_STOP; break;   /* #1270 */
         case HIT_SMART_REPLACE: emit_smart(a, "smart-replace"); break;
-        case HIT_SMART_RESCUE:  emit_smart(a, "smart-rescue");  break;
+        case HIT_SMART_RESCUE:  cloner_smart_ask(a); break;   /* 16/10: the window first */
         case HIT_SMART_SKIP:    emit_smart(a, "smart-skip");    break;
         /* #649 */
         case HIT_TOOL_LIST:  if (!a->tool_running) { a->tools_view = TOOLS_LIST; a->tool_error[0] = 0; } break;
@@ -939,8 +1042,9 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
             a->restore_image_sel = idx[at] + 1;
             break;
         }
-        if (a->screen == SCREEN_ROOM && (e->ch == 'w' || e->ch == 'W')) { emit1("room-wake"); break; }
-        if (a->screen == SCREEN_ROOM && (e->ch == 'n' || e->ch == 'N')) { room_start(a); break; }
+        /* Nadav 16/10: W and N act on a round -- without one they send nothing (drawn grey) */
+        if (a->screen == SCREEN_ROOM && (e->ch == 'w' || e->ch == 'W')) { if (a->st.has_round) emit1("room-wake"); break; }
+        if (a->screen == SCREEN_ROOM && (e->ch == 'n' || e->ch == 'N')) { if (a->st.has_round) room_start(a); break; }
         if (a->screen == SCREEN_CLONER && a->st.smart_pending) {
             if (e->ch == 's' || e->ch == 'S') { emit_smart(a, "smart-skip"); break; }
             if (e->ch == 'r' || e->ch == 'R') { emit_smart(a, "smart-replace"); break; }
@@ -992,9 +1096,11 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
             else if (a->screen == SCREEN_RESTORE && a->restore_image_sel > 0) {
                 if (restore_ready(a)) a->confirm = CONFIRM_RESTORE;    /* #1270: Enter asks, Enter again erases */
             }
-            else if (a->screen == SCREEN_CLONER && a->st.smart_pending)
-                emit_smart(a, !strcmp(a->st.smart_verdict, "failed_last") ? "smart-skip" : "smart-rescue");
-            else if (a->screen == SCREEN_PICK) start_capture(a);
+            else if (a->screen == SCREEN_CLONER && a->st.smart_pending) {
+                if (!strcmp(a->st.smart_verdict, "failed_last")) emit_smart(a, "smart-skip");
+                else cloner_smart_ask(a);                     /* 16/10: Enter opens the window, it never writes */
+            }
+            else if (a->screen == SCREEN_PICK) start_capture(a, 0);
             else if (a->screen == SCREEN_DONE) { a->showing_done = 0; go_menu(a); emit1("again"); }
             else if (a->screen == SCREEN_CLASS && a->st.has_session) { if (class_gate(a)) emit1("class-start"); }
         } else if (e->key == KEYSYM_BACKSPACE) {
@@ -1030,6 +1136,10 @@ static void after_reload(App *a) {
         (a->confirm == CONFIRM_CLASS_STOP && !a->st.has_session) ||
         (a->confirm == CONFIRM_ROOM_START_WARN && (!a->st.has_round || !a->st.wave_open)) ||   /* #432 */
         (a->confirm == CONFIRM_ROOM_POWEROFF && !poweroff_target_live(a))) a->confirm = CONFIRM_NONE;   /* #65 */
+    /* 16/10: the SMART window about a request that is gone, or a disk that moved, is closed */
+    if (a->sdlg.kind == SDLG_CLONER && (!a->st.smart_pending || strcmp(a->st.smart_nonce, a->sdlg.nonce))) a->sdlg.kind = SDLG_NONE;
+    if ((a->sdlg.kind == SDLG_RESTORE || a->sdlg.kind == SDLG_CAPTURE) &&
+        (a->sdlg.ref >= a->st.ndisks || strcmp(a->st.disks[a->sdlg.ref].dev, a->sdlg.dev))) a->sdlg.kind = SDLG_NONE;
     room_drv_after_reload(a);                             /* #1269: the first model is the default */
     lc_after_reload(a);                                   /* #1322: default roles, the source to measure */
     /* #408: rate from consecutive reads; a counter that went backwards
@@ -1045,8 +1155,8 @@ static void after_reload(App *a) {
 static void sample_state(State *s) {
     memset(s, 0, sizeof *s);
     s->ndisks = 2;
-    s->disks[0] = (Disk){ "/dev/sda", "Samsung SSD 870 EVO 500GB", 500107862016ULL, 1, 0 };
-    s->disks[1] = (Disk){ "/dev/nvme0n1", "WD Blue SN580 1TB", 1000204886016ULL, 0, 0 };
+    s->disks[0] = (Disk){ .dev = "/dev/sda", .model = "Samsung SSD 870 EVO 500GB", .size_bytes = 500107862016ULL, .has_data = 1 };
+    s->disks[1] = (Disk){ .dev = "/dev/nvme0n1", .model = "WD Blue SN580 1TB", .size_bytes = 1000204886016ULL };
     s->nfolders = 2;
     snprintf(s->folders[0], sizeof s->folders[0], "Office");
     snprintf(s->folders[1], sizeof s->folders[1], "הנדסאים");
@@ -1105,14 +1215,16 @@ static void sample_state(State *s) {
     snprintf(s->sess_group, sizeof s->sess_group, "כיתה 12");
     s->sess_open = 1; s->joined = 3; s->expected = 14; s->starts_in = 272;
     s->ndrawers = 3;
-    s->drawers[0] = (Drawer){ 1, "sda", "writing", "", 44814663680ULL, 85899345920ULL, 98000000, 419 };   /* #410 */
-    s->drawers[1] = (Drawer){ 2, "sdb", "failed", "", 0, 85899345920ULL, -1, -1 };
-    s->drawers[2] = (Drawer){ 3, "sdc", "waiting", "", 0, 85899345920ULL, -1, -1 };
+    s->drawers[0] = (Drawer){ 1, "sda", "writing", "", 44814663680ULL, 85899345920ULL, 98000000, 419, 0, "" };   /* #410 */
+    s->drawers[1] = (Drawer){ 2, "sdb", "failed", "", 0, 85899345920ULL, -1, -1, 0, "" };
+    s->drawers[2] = (Drawer){ 3, "sdc", "waiting", "", 0, 85899345920ULL, -1, -1, 0, "" };
     snprintf(s->cloner_image, sizeof s->cloner_image, "Office 2024 — סטנדרט");
     s->smart_pending = 1; s->smart_port = 2;
     snprintf(s->smart_nonce, sizeof s->smart_nonce, "1-2");
     snprintf(s->smart_verdict, sizeof s->smart_verdict, "fail");
     snprintf(s->smart_reason, sizeof s->smart_reason, "health_failed");   /* smart.sh vocabulary */
+    snprintf(s->smart_model, sizeof s->smart_model, "WDC WD5000AAKX-08U6AA0");   /* 16/10: the window's details */
+    snprintf(s->smart_serial, sizeof s->smart_serial, "WD-WCC2EVC71234");
     /* #928: the capture's shrink question -- drawn on the "shrink" card only */
     s->shrink_pending = 1; s->nshrink = 2;
     snprintf(s->shrink_nonce, sizeof s->shrink_nonce, "3-0");
@@ -1141,7 +1253,8 @@ static const char *PNG_CARDS[] = { "login", "menu", "pick", "progress", "done", 
                                    "restore-folder", "room-images", "restore-confirm", "room-drivers", "pick-hebrew",
                                    "room-start-warn", "room-poweroff", "room-poweroff-local-copy",
                                    "room-poweroff-all",
-                                   "growback", "capture-end" };
+                                   "growback", "capture-end",
+                                   "cloner-smart", "restore-smart", "pick-smart" };   /* 16/10 */
 
 /* Put the App in the state that routes to <card>; the flags that override
  * the route (message, task, round, session, done) are cleared first so a
@@ -1154,6 +1267,7 @@ static void png_setup(App *a, const State *base, const char *card) {
     a->showing_done = a->watching = a->force_progress = a->force_cloner = a->force_standby = 0;
     a->signed_in = 1; a->admin = 1; a->mode = MODE_MENU; a->logout_confirming = 0; a->menu_focus = -1;
     a->chosen_disk = -1; a->confirm = CONFIRM_NONE; a->dd_open = 0;
+    memset(&a->sdlg, 0, sizeof a->sdlg);                                       /* 16/10: on its three cards only */
     a->pick_in_folder = 0; a->pick_folder[0] = 0;
     room_drv_reset(a); room_drv_after_reload(a);                               /* #1269: off, but for one card */
     a->focus = HIT_USER; a->lang_he = 0;   /* #1245: every card starts in English (HIT_USER: what main() sets) */
@@ -1190,7 +1304,8 @@ static void png_setup(App *a, const State *base, const char *card) {
         a->mode = MODE_ROOM; a->room_target_set = 0; a->nroom_selection = 0;
         for (int i = 0; i < a->st.nmachines; i++)
             for (int j = 0; a->st.machines[i].awake && j < a->st.machines[i].nroom_drawers; j++)
-                room_set_selected(a, &a->st.machines[i], a->st.machines[i].room_drawers[j].port, 1);
+                if (room_selectable(&a->st.machines[i].room_drawers[j]))
+                    room_set_selected(a, &a->st.machines[i], a->st.machines[i].room_drawers[j].port, 1);
         a->drv_on = 1; a->drv_pick = 1;
         for (int i = 0; i < a->st.nmachines; i++)
             if (a->st.machines[i].awake && a->st.machines[i].nroom_drawers > 1) {
@@ -1235,6 +1350,29 @@ static void png_setup(App *a, const State *base, const char *card) {
     else if (!strcmp(card, "room-images")) { a->mode = MODE_ROOM; a->room_target_set = 0; a->nroom_selection = 0;
                                              a->dd_open = HIT_ROOM_IMAGE; }   /* the picker, on the folders */
     else if (!strcmp(card, "restore"))  { a->mode = MODE_RESTORE; if (base->nimages) a->restore_image_sel = 1; }
+    else if (!strcmp(card, "cloner-smart")) {                                    /* 16/10: Enter on "כתוב בכל זאת" */
+        a->force_cloner = 1;
+        if (!a->st.smart_pending) {
+            a->st.smart_pending = 1; a->st.smart_port = 2;
+            snprintf(a->st.smart_nonce, sizeof a->st.smart_nonce, "1-2");
+            snprintf(a->st.smart_verdict, sizeof a->st.smart_verdict, "fail");
+            snprintf(a->st.smart_reason, sizeof a->st.smart_reason, "pending_sectors");
+        }
+        cloner_smart_ask(a);
+    }
+    else if (!strcmp(card, "restore-smart") || !strcmp(card, "pick-smart")) {    /* 16/10: this machine's disk */
+        int pick = !strcmp(card, "pick-smart");
+        if (!a->st.ndisks) { a->st.ndisks = 1; a->st.disks[0] = (Disk){ .dev = "sda", .model = "Samsung SSD 870 EVO 500GB", .size_bytes = 500107862016ULL, .has_data = 1 }; }
+        Disk *d = &a->st.disks[0];
+        if (!smart_level(d->smart)) {
+            snprintf(d->smart, sizeof d->smart, "fail"); snprintf(d->smart_reason, sizeof d->smart_reason, "pending_sectors");
+            if (!d->serial[0]) snprintf(d->serial, sizeof d->serial, "S5Y2NX0R123456");
+            if (!d->slot_known) { d->slot_known = 1; d->drawer = 1; }   /* #1495: "דיסק 1" */
+        }
+        if (pick) { a->mode = MODE_CAPTURE; a->chosen_disk = 0; snprintf(a->name, sizeof a->name, "Office 2024 — סטנדרט");
+                    a->folder_sel = base->nfolders ? 1 : 0; disk_smart_ask(a, SDLG_CAPTURE, 0); }
+        else { a->mode = MODE_RESTORE; if (base->nimages) a->restore_image_sel = 1; disk_smart_ask(a, SDLG_RESTORE, 0); }
+    }
     else if (!strncmp(card, "tools", 5)) {                                       /* #649 */
         a->mode = MODE_TOOLS; a->tools_view = TOOLS_LIST; a->tool_sel = -1; a->tool_running = 0;
         if (!a->ntools) tools_sample(a);
@@ -1289,7 +1427,10 @@ static int render_png(App *a, const State *base, const char *prefix, int w, int 
                                        SCREEN_ROOM, /* "room-poweroff-local-copy" (#1367): disk-break warning */
                                        SCREEN_ROOM, /* "room-poweroff-all" (#1367): plural disk-break warning */
                                        SCREEN_MENU, /* "growback" (11/10): the dialog over the menu, at boot */
-                                       SCREEN_PROGRESS /* "capture-end" (11/10): the dialog over the capture */ };
+                                       SCREEN_PROGRESS, /* "capture-end" (11/10): the dialog over the capture */
+                                       SCREEN_CLONER,  /* "cloner-smart" (16/10): the SMART warning window */
+                                       SCREEN_RESTORE, /* "restore-smart" (16/10): the same, before a restore */
+                                       SCREEN_PICK     /* "pick-smart" (16/10): the same, before a capture */ };
         /* One entry per card, or want[c] reads past the table -- that is exactly
          * what the lab saw when "direct" was added to PNG_CARDS alone. */
         _Static_assert(sizeof want / sizeof want[0] == sizeof PNG_CARDS / sizeof PNG_CARDS[0],
@@ -1313,7 +1454,8 @@ static int render_png(App *a, const State *base, const char *prefix, int w, int 
         cairo_status_t st = cairo_surface_write_to_png(sf, path);
         cairo_surface_destroy(sf);
         if (st != CAIRO_STATUS_SUCCESS) { fprintf(stderr, "native-gui: %s: %s\n", path, cairo_status_to_string(st)); return 1; }
-        Screen want = a->st.lc.screen == LC_SCREEN_BOOT ? SCREEN_LCBOOT : SCREEN_LOCAL;
+        Screen want = a->st.lc.screen == LC_SCREEN_BOOT ? SCREEN_LCBOOT
+                    : a->st.lc.screen == LC_SCREEN_PULL ? SCREEN_RESTORE : SCREEN_LOCAL;   /* 16/10 */
         if (a->screen != want) { fprintf(stderr, "native-gui: %s routed to screen %d, not %d\n", path, a->screen, want); return 1; }
         printf("wrote %s\n", path);
     }
@@ -1325,7 +1467,8 @@ static int render_png(App *a, const State *base, const char *prefix, int w, int 
 int main(int argc, char **argv) {
     App a;
     memset(&a, 0, sizeof a);
-    a.theme = &THEME_DARK;                          /* approved native mockup: dark by default */
+    a.theme = &THEME_LIGHT;                         /* owner decision 16/10 (#1499): light by default --
+                                                       it replaced the 18/09 mockup's dark default */
     a.focus = HIT_USER;
     a.menu_focus = -1;
     a.chosen_disk = -1;
@@ -1333,7 +1476,7 @@ int main(int argc, char **argv) {
     a.st.hello_age = -1;
     a.st.hello_rc = -1;
     snprintf(a.title, sizeof a.title, "מחשב בניית אימג'ים");
-    const char *auth_cmd = NULL, *png = NULL, *backend = "auto", *fb_file = NULL, *screen = NULL, *role = "deploy";
+    const char *auth_cmd = NULL, *png = NULL, *backend = "auto", *fb_file = NULL, *fb_mirror = NULL, *screen = NULL, *role = "deploy";
     InstallBridge wizard = { "python3 -m server.wizard.bridge", "/opt/imagectl-src", 0 };
     int install_screen = 0, dcui_screen = 0;
     StateFile sf_state; memset(&sf_state, 0, sizeof sf_state);
@@ -1352,6 +1495,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(o, "--theme")) { a.theme = !strcmp(argv[++i], "dark") ? &THEME_DARK : &THEME_LIGHT; }
         else if (!strcmp(o, "--backend")) backend = argv[++i];
         else if (!strcmp(o, "--fb-file")) fb_file = argv[++i];
+        else if (!strcmp(o, "--fb-mirror")) fb_mirror = argv[++i];
         else if (!strcmp(o, "--auth-cmd")) auth_cmd = argv[++i];
         else if (!strcmp(o, "--install-cmd") || !strcmp(o, "--wizard-cmd")) wizard.cmd = argv[++i];
         else if (!strcmp(o, "--install-cwd") || !strcmp(o, "--wizard-cwd")) wizard.cwd = argv[++i];
@@ -1363,6 +1507,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(o, "--size")) { if (sscanf(argv[++i], "%dx%d", &pw, &ph) != 2 || pw < 320 || ph < 240) { fputs(USAGE, stderr); return 2; } }
         else { fprintf(stderr, "unknown option %s\n%s", o, USAGE); return 2; }
     }
+    a.default_theme = a.theme;                      /* #1499: what login "auto" and logout return to */
     a.admin = a.signed_in && strcmp(role, "admin") == 0;
     if (screen) {
         if (!strcmp(screen, "progress"))   a.force_progress = 1;
@@ -1422,6 +1567,8 @@ int main(int argc, char **argv) {
     char err[1024];
     Backend *b = backend_open(backend, fb_file, err, sizeof err);
     if (!b) { fprintf(stderr, "native-gui: cannot open a display: %s\n", err); return 1; }
+    if (fb_mirror && backend_mirror(b, fb_mirror, err, sizeof err) < 0)
+        fprintf(stderr, "native-gui: no frame mirror for the remote monitor: %s\n", err);
     int W = backend_width(b), H = backend_height(b);
     fprintf(stderr, "native-gui: display %dx%d\n", W, H);
 
@@ -1431,6 +1578,7 @@ int main(int argc, char **argv) {
      * was ready. Keep the display up; input_rescan() in the loop grabs a
      * device the moment it appears (and a hot-plugged mouse too). */
     Input *in = no_input ? NULL : input_open(W, H);
+    if (fb_mirror || fb_file) input_want_remote(in);   /* #1475: a monitor serves this screen */
 
     signal(SIGINT, on_signal); signal(SIGTERM, on_signal);
     cairo_surface_t *sf = backend_surface(b);

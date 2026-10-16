@@ -27,8 +27,8 @@ LIB = REPO / "agent" / "lib"
 pytestmark = requires_native(("bash", BASH))
 
 LIBS = ("common", "jsonq", "waits", "sysinfo", "progress", "restore", "diskfit", "expand", "grow",
-        "drawers", "verdict", "failmark", "manifest", "hibernation", "shrinkplan", "shrink",
-        "shrinkmem", "smart", "guistate", "attended", "lcinv", "lcplan", "lccopy", "localclone", "lcwait", "idle", "lcgui")   # attended, lcwait, idle: #1367
+        "drawers", "verdict", "failmark", "ntfsboot", "manifest", "hibernation", "shrinkplan", "shrink",
+        "shrinkmem", "smart", "guistate", "attended", "lcinv", "lcplan", "lcsnap", "lccopy", "localclone", "lcwait", "idle", "lcgui")   # attended, lcwait, idle: #1367
 
 
 def run(tmp_path: Path, script: str, timeout: int = 60, **env) -> subprocess.CompletedProcess:
@@ -101,10 +101,20 @@ def test_a_gui_that_dies_is_the_server(tmp_path):
     assert "SESSION" not in out.stdout and "from the server" in out.stdout
 
 
-def test_one_disk_has_no_choice_and_other_roles_none(tmp_path):
-    one = run(tmp_path, 'list_drawers() { echo sda; }; D_ROLE=cloner; local_clone_arm; '
-              'test -f "$LC/screen" && echo SHOWN || echo HIDDEN')
-    assert "HIDDEN" in one.stdout and "fewer than two disks" in one.stdout
+def test_one_disk_is_offered_without_the_local_clone_and_other_roles_none(tmp_path):
+    """16/10: one disk is still a target for "restore from the server" -- the
+    choice is shown, the local clone is not offered (boot.local=0); no disk at
+    all is no choice."""
+    for d in ("one", "two", "none"):
+        (tmp_path / d).mkdir()
+    one = run(tmp_path / "one", 'list_drawers() { echo sda; }; D_ROLE=cloner; local_clone_arm; '
+              'test -f "$LC/screen" && echo SHOWN || echo HIDDEN; echo "local=$(cat "$LC/boot.local")"')
+    assert "SHOWN" in one.stdout and "local=0" in one.stdout, one.stdout
+    two = run(tmp_path / "two", 'list_drawers() { echo sda; echo sdb; }; D_ROLE=cloner; local_clone_arm; echo "local=$(cat "$LC/boot.local")"')
+    assert "local=1" in two.stdout, two.stdout
+    none = run(tmp_path / "none", 'list_drawers() { :; }; D_ROLE=cloner; local_clone_arm; '
+               'test -f "$LC/screen" && echo SHOWN || echo HIDDEN')
+    assert "HIDDEN" in none.stdout and "no disks" in none.stdout, none.stdout
     station = run(tmp_path, 'list_drawers() { echo sda; echo sdb; }; D_ROLE=classroom; local_clone_arm; '
                   'test -f "$LC/screen" && echo SHOWN || echo HIDDEN')
     assert "HIDDEN" in station.stdout
@@ -124,7 +134,7 @@ DISP = ('mkdir -p "$LC/inv"; for d in sda sdb sdc; do echo "1|$d|m|s|1|ok|ok|W|1
 
 
 def test_boot_decisions_only_on_the_boot_screen(tmp_path):
-    out = run(tmp_path, DISP + 'echo boot > "$LC/screen"; try boot-local; cat "$LC/boot.decision"; '
+    out = run(tmp_path, DISP + 'echo boot > "$LC/screen"; echo 1 > "$LC/boot.local"; try boot-local; cat "$LC/boot.decision"; '
               'echo local > "$LC/screen"; echo idle > "$LC/phase"; try boot-server')
     assert "ok boot-local" in out.stdout and "\nlocal\n" in "\n" + out.stdout
     assert "refused boot-server" in out.stdout
@@ -293,7 +303,7 @@ def test_the_choice_wraps_the_idle_cloner_and_nothing_else():
 
 def test_the_kernel_command_line_is_not_read():
     """Principle 2: nothing of the local clone travels on the command line."""
-    for name in ("lcinv", "lcplan", "lccopy", "localclone", "lcwait", "lcgui"):
+    for name in ("lcinv", "lcplan", "lcsnap", "lccopy", "localclone", "lcwait", "lcgui"):
         text = (LIB / f"{name}.sh").read_text(encoding="utf-8")
         assert "/proc/cmdline" not in text and "imagectl.mode" not in text and "parse_cmdline" not in text, name
 

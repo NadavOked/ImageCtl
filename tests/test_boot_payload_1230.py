@@ -73,12 +73,14 @@ def _host(tmp_path: Path) -> Path:
     (host / "etc" / "iso-release.json").write_text(
         json.dumps({"source_date_epoch": ISO_EPOCH}), encoding="utf-8", newline="\n")
     (host / "boot").mkdir()
+    (host / "var-tmp").mkdir()                   # ‏#1465: ‏/var/tmp של הבנייה
     return host
 
 
 def _host_env(host: Path) -> dict:
     return {"IMAGECTL_MODULES_DIR": posix(host / "modules"),
-            "IMAGECTL_KERNEL_DIR": posix(host / "kernels")}
+            "IMAGECTL_KERNEL_DIR": posix(host / "kernels"),
+            "IMAGECTL_BUILD_TMPDIR": posix(host / "var-tmp")}
 
 
 def _with_payload_builder(tree: Path) -> None:

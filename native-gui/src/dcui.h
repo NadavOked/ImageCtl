@@ -8,7 +8,7 @@
  *           frame ends with an empty line (docs/interfaces.md s31,
  *           server/dcui/view.py). Fields named *_m there are Pango markup.
  *   stdout  "READY WxH" once the screen is open, then one token per key:
- *           "KEY F2|F5|F9|F12|ENTER|ESC|TAB|BACKTAB|BACKSPACE|UP|DOWN|LEFT|RIGHT",
+ *           "KEY F2|F4|F5|F9|F12|ENTER|ESC|TAB|BACKTAB|BACKSPACE|UP|DOWN|LEFT|RIGHT",
  *           "CHAR <hex>" (always the US layout: every field here is English
  *           only -- the keyboard is forced to English), "CAPS 0|1".
  *           "FAIL <why>" (#1362) instead of READY when the screen could not
@@ -59,7 +59,7 @@ typedef struct { char caps[24], label[96]; int lock; } DcuiKey;
 
 /* One element of the dialog, in order; a run of opts or btns is one row. */
 enum { DEL_P = 1, DEL_FIELD, DEL_HINT, DEL_NOTE, DEL_OPT, DEL_RADIO, DEL_ALERT,
-       DEL_BULLET, DEL_KV, DEL_ERROR, DEL_BTN };
+       DEL_BULLET, DEL_KV, DEL_ERROR, DEL_BTN, DEL_CODE };
 typedef struct {
     int type;
     char a[DCUI_FIELD];                 /* main text (markup for p/note/alert/bullet/hint) */

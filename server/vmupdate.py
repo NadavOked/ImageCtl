@@ -25,7 +25,6 @@ import json
 import logging
 import os
 
-import re
 import secrets
 import shutil
 import socket
@@ -38,7 +37,7 @@ from typing import Callable
 
 from . import vmdisk, vmnet
 from .capture import validate_manifest_files
-from .db import get_setting, journal, now_iso, set_settings
+from .db import get_setting, journal, now_iso, set_setting, set_settings
 from .images import (
     ImageLibrary, image_os, lineage_of, streamed_partitions, validate_display_name,
 )
@@ -73,8 +72,12 @@ OVMF = {
     False: ("OVMF_CODE_4M.fd", "OVMF_VARS_4M.fd"),
     True: ("OVMF_CODE_4M.secboot.fd", "OVMF_VARS_4M.ms.fd"),
 }
-#: MAC קבוע: Windows רואה את אותו כרטיס בכל פתיחה, ולא צובר "Ethernet 7".
-VM_MAC = "52:54:00:13:34:01"
+#: ‏#1468: הרשת של ה-VM — הכרטיס שהמפעיל בחר, ה-MAC שהשרת ייצר פעם אחת
+#: (Windows רואה את אותו כרטיס בכל פתיחה, וה-DHCP של המכללה — כתובת שמורה),
+#: וה-lease האחרון שנראה (לתצוגה ליד הבחירה).
+NIC_KEY = "vmupdate:nic"
+MAC_KEY = "vmupdate:mac"
+LEASE_KEY = "vmupdate:lease"
 
 #: מצבים שבהם יש תהליך או תהליכון שעובד — אין לגעת בדיסק.
 BUSY = ("preparing", "running", "stopping", "saving")
@@ -149,23 +152,44 @@ class Machine:
             return None
         return vmdisk.VmUser(entry.pw_uid, entry.pw_gid)
 
-    def resolvers(self) -> list[str]:
-        return vmnet.resolvers()
+    # -- הרשת של ה-VM (‏#1468, ‏`vmnet`) --
 
-    def firewall(self, uid: int, egress_if: str, dns: list[str]) -> str | None:
-        return vmnet.apply(uid, egress_if, dns)
+    def firewall(self, uid: int, mac: str) -> str | None:
+        return vmnet.apply(uid, mac)
 
-    def egress(self) -> tuple[str | None, str | None]:
-        """(הכרטיס שחיבור לאינטרנט יוצא דרכו, None) או (None, למה לא נקבע)."""
+    def firewall_off(self) -> str | None:
+        return vmnet.remove()
+
+    def nic_exists(self, name: str) -> bool:
+        return vmnet.nic_exists(name)
+
+    def stacked(self, name: str) -> set[str] | None:
+        return vmnet.stacked(name)
+
+    def macvtap(self, lower: str, mac: str) -> tuple[int | None, str | None]:
+        """(fd פתוח של ‏/dev/tapN, None) או (None, הסיבה). ה-fd עובר ל-QEMU."""
+        path, why = vmnet.macvtap_up(lower, mac)
+        if path is None:
+            return None, why
         try:
-            proc = subprocess.run(["ip", "-o", "route", "get", "1.1.1.1"], capture_output=True,
-                                  text=True, timeout=5, stdin=subprocess.DEVNULL)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            return None, f"ip route get נכשל: {exc}"
-        match = re.search(r"\bdev\s+(\S+)", proc.stdout)
-        if proc.returncode != 0 or match is None:
-            return None, (proc.stderr.strip() or "אין נתיב לאינטרנט")
-        return match.group(1), None
+            fd = os.open(path, os.O_RDWR | getattr(os, "O_CLOEXEC", 0))
+        except OSError as exc:
+            vmnet.macvtap_down()
+            return None, f"{path} לא נפתח: {exc.strerror}"
+        return fd, None
+
+    def close_tap(self, fd: int) -> None:
+        os.close(fd)
+
+    def macvtap_down(self) -> str | None:
+        return vmnet.macvtap_down()
+
+    def watch_lease(self, mac: str, timeout: float, stop: Callable[[], bool],
+                    on_ack: Callable[[str, str | None], None]) -> dict:
+        return vmnet.watch_lease(vmnet.TAP_NAME, mac, timeout, stop, on_ack)
+
+    def platform(self) -> str | None:
+        return vmnet.detect_virt()
 
 
 # --- QEMU ---------------------------------------------------------------------
@@ -183,10 +207,15 @@ SANDBOX = "on,obsolete=deny,spawn=deny,resourcecontrol=deny"
 
 
 def qemu_argv(*, workdir: Path, memory_mib: int, cpus: int, accel: str,
-              secure_boot: bool, ovmf_dir: Path = OVMF_DIR,
+              secure_boot: bool, tap_fd: int, mac: str, ovmf_dir: Path = OVMF_DIR,
               run_as: str = vmnet.VM_USER) -> list[str]:
-    """שורת הפקודה. **אין** `bridge`/`tap`, ‏`hostfwd`/`guestfwd`/`smb`, ואין
-    `-vnc` על TCP. ‏QEMU רץ כ-`run_as` — ה-uid שחומת האש (`vmnet`) מגבילה."""
+    """שורת הפקודה. הרשת היחידה: ה-fd של ה-macvtap שהשרת יצר (‏#1468), עם `mac`.
+    **אין** `-netdev user` (slirp), ‏`bridge`, ‏`hostfwd`/`guestfwd`/`smb`, ואין
+    `-vnc` על TCP. ‏QEMU רץ כ-`run_as` — ה-uid שחומת האש (`vmnet`) חוסמת."""
+    if type(tap_fd) is not int or tap_fd < 3:
+        raise ValueError(f"fd לא תקין ל-macvtap: {tap_fd!r}")
+    if not vmnet.valid_mac(mac):
+        raise ValueError(f"MAC לא תקין: {mac!r}")
     code, _vars = OVMF[secure_boot]
     machine = f"q35,accel={accel}" + (",smm=on" if secure_boot else "")
     argv = [
@@ -206,10 +235,12 @@ def qemu_argv(*, workdir: Path, memory_mib: int, cpus: int, accel: str,
         "-drive", f"file={workdir / 'disk.raw'},format=raw,if=none,id=disk0,"
                   "discard=unmap,detect-zeroes=unmap",
         "-device", "ide-hd,drive=disk0,bus=ide.0,bootindex=1",
-        "-netdev", "user,id=net0,ipv6=off",
+        # ‏#1468: ‏macvtap (bridge) על הכרטיס שנבחר. השרת פתח את ‏/dev/tapN ומעביר
+        # את ה-fd (`pass_fds`) — QEMU אינו יוצר דבר ברשת בעצמו.
+        "-netdev", f"tap,id=net0,fd={tap_fd}",
         # ‏romfile= ריק: בלי ROM של PXE. ‏Windows אינו צריך אותו, ו-OVMF לא
-        # ינסה אתחול רשת (דקות של המתנה, ו-DHCP/TFTP מול slirp בלי טעם).
-        "-device", f"e1000e,netdev=net0,mac={VM_MAC},romfile=",
+        # ינסה אתחול רשת — בוילן של המכללה זה היה DHCP/TFTP מול שרתים אמיתיים.
+        "-device", f"e1000e,netdev=net0,mac={mac},romfile=",
         "-vga", "std",
         "-device", "qemu-xhci", "-device", "usb-tablet",
         # ‏force-shared: כמה צופים (השולט + מנהלים שצופים) על אותו מסך.
@@ -299,6 +330,24 @@ class _Progress:
 # --- המנוע ----------------------------------------------------------------------
 
 
+class _Tap:
+    """ה-fd של ה-macvtap בתוך `with` — נסגר ביציאה מהבלוק בכל מסלול.
+
+    ‏CodeQL (‏py/file-not-closed) אינו רואה סגירה דרך `machine.close_tap(fd)`
+    — קריאה דרך אובייקט מוזרק — ודיווח על ה-fd מ-`_net_up` כ"לא נסגר".
+    ‏`with` על עוטף הוא הצורה שהוא מזהה; הסגירה עצמה נשארת `close_tap`,
+    כדי שהטסטים ימשיכו להזריק `Machine` מזויף."""
+
+    def __init__(self, machine, fd: int) -> None:
+        self.machine, self.fd = machine, fd
+
+    def __enter__(self) -> int:
+        return self.fd
+
+    def __exit__(self, *_exc) -> None:
+        self.machine.close_tap(self.fd)
+
+
 class VmUpdate:
     """VM אחד בכל פעם. כל המתודות הציבוריות בטוחות לקריאה מכל תהליכון."""
 
@@ -311,7 +360,8 @@ class VmUpdate:
                  popen: Callable[..., subprocess.Popen] = subprocess.Popen,
                  qmp_call: Callable[[Path, str], dict] = qmp,
                  now: Callable[[], float] = time.time,
-                 maintenance_every: float | None = MAINTENANCE_S):
+                 maintenance_every: float | None = MAINTENANCE_S,
+                 lease_timeout: float = vmnet.LEASE_TIMEOUT_S):
         self.conn = conn
         self.library = library
         self.host = host or vmdisk.Host()
@@ -339,6 +389,12 @@ class VmUpdate:
         self._every = maintenance_every
         self._ticker: threading.Thread | None = None
         self._guarded_at = 0.0
+        #: ‏#1468 (סקירת אבטחה 16/10): טעינת הטבלה ופירוק הרשת לעולם אינם חופפים.
+        #: ‏`_net_live` דלוק מ-`_net_up` שהצליח ועד ש-`_net_down` מתחיל, ונבדק תחת
+        #: אותו מנעול שבו נטענת הטבלה — טעינה אחרי פירוק אינה אפשרית.
+        self._net_lock = threading.Lock()
+        self._net_live = False
+        self.lease_timeout = lease_timeout
         self._state = self._recover()
         self.maintenance()
         self._ensure_ticker()
@@ -360,7 +416,7 @@ class VmUpdate:
         try:
             state = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(state, dict) or "state" not in state:
-                raise ValueError("no state")
+                raise ValueError("אין שדה state")
         except (OSError, ValueError) as exc:
             return {"state": "failed", "disk_ready": False, "decided_at_ts": None,
                     "undecided_since_ts": self._now(),
@@ -381,6 +437,11 @@ class VmUpdate:
                 self._qmp(self.workdir / "qmp.sock", "quit")   # QEMU שנשאר יתום
             except QmpError:
                 pass   # הצפוי: ‏QEMU מת עם השרת. המצב כבר אומר "נקטע".
+            if was in ("running", "stopping"):
+                # ה-macvtap וכלל הכתובת נשארו מהתהליך שמת (#1468)
+                why = self._net_down()
+                if why:
+                    state["warnings"] = list(state.get("warnings") or []) + [why]
             self._save_state(state)
         return state
 
@@ -462,6 +523,14 @@ class VmUpdate:
                               "total_bytes": prog.total_bytes, "partition": prog.partition,
                               "partitions": prog.partitions}
                              if state.get("state") in ("preparing", "saving") else None)
+        net = state.get("network")
+        if isinstance(net, dict):   # ‏#1468: הכתובת שה-VM קיבל, או כמה נשאר לחכות לה
+            net = dict(net)
+            since_ts = net.pop("since_ts", None)
+            net["seconds_left"] = (max(0, int(since_ts + self.lease_timeout - now))
+                                   if running and net.get("state") == "waiting" and since_ts
+                                   else None)
+            state["network"] = net
         if state.get("state") != "idle":
             disk = self.workdir / "disk.raw"
             try:
@@ -511,12 +580,15 @@ class VmUpdate:
             if not force and self._now() - self._guarded_at < MAINTENANCE_S:
                 return
             self._guarded_at = self._now()
-            egress = self._state.get("egress_interface")
+            mac = self._state.get("vm_mac")
             user = self.machine.vm_user()
             proc = self._proc
-        why = ("אין כרטיס יציאה רשום" if not egress else
-               "משתמש ה-VM אינו קיים" if user is None else
-               self.machine.firewall(user.uid, egress, self.machine.resolvers()))
+        with self._net_lock:
+            if not self._net_live:
+                return   # הרשת כבר מתפרקת (או לא עלתה) — אין מה לטעון מחדש
+            why = ("אין MAC רשום ל-VM" if not mac else
+                   "משתמש ה-VM אינו קיים" if user is None else
+                   self.machine.firewall(user.uid, mac))
         if why is None:
             return
         journal(self.conn, "vmupdate_firewall_lost",
@@ -681,18 +753,124 @@ class VmUpdate:
             raise Refusal(503, "cpus", f"ל-VM הוגדרו {settings['cpus']} ליבות ובשרת {cores} — "
                                        "נדרשת לפחות ליבה אחת לשרת", vm_cpus=settings["cpus"],
                           server_cpus=cores)
-        dev, why = self.machine.egress()
-        if dev is None:
-            raise Refusal(503, "no_egress", f"אין נתיב לאינטרנט מהשרת ({why}) — עדכון בלי "
-                                            "אינטרנט אינו עדכון")
+        nic = get_setting(self.conn, NIC_KEY)
+        if not nic:
+            raise Refusal(409, "vm_nic_unset",
+                          "לא נבחר כרטיס לעדכוני VM — בחרו אותו ברשת › כרטיסי רשת, ובקשו "
+                          "מה-IT כתובת שמורה ל-MAC שמוצג שם")
+        self._vm_nic_check(nic)
+        return accel, nic
+
+    # -- הרשת של ה-VM (‏#1468) ---------------------------------------------------
+
+    def _vm_nic_check(self, name: object) -> None:
+        """כרטיס שה-VM יכול לשבת עליו: קיים, ואינו כרטיס ההפצה ואינו מעליו/מתחתיו
+        (חבר ב-bond, הורה/ילד VLAN). כרטיס הניהול **מותר** (נדב 16/10: רשת הניהול
+        יכולה להיות גם רשת הכיתות)."""
+        if not vmnet.valid_ifname(name) or name in ("lo", vmnet.TAP_NAME):
+            raise Refusal(400, "vm_nic_invalid", f"שם כרטיס לא תקין: {name!r}")
+        if not self.machine.nic_exists(name):
+            raise Refusal(404, "vm_nic_missing", f"הכרטיס {name} אינו קיים בשרת", interface=name)
         deploy = self.deploy_interface()
-        if deploy and dev == deploy:
-            raise Refusal(409, "egress_on_deploy",
-                          f"החיבור לאינטרנט יוצא דרך כרטיס ההפצה ({dev}) — ה-VM לא יופעל: "
-                          "התעבורה שלו חייבת לצאת מכרטיס הניהול", interface=dev)
-        if not self.machine.resolvers():
-            raise Refusal(503, "no_dns", "אין שרת שמות (nameserver) בשרת — ל-VM לא יהיה DNS")
-        return accel, dev
+        if not deploy:
+            return
+        if name == deploy:
+            raise Refusal(409, "vm_nic_is_deploy",
+                          f"{name} הוא כרטיס ההפצה — ה-VM לעולם אינו מחובר לרשת שמשדרת "
+                          "לכיתות. בחרו כרטיס אחר (כרטיס הניהול מותר)", interface=name)
+        related = self.machine.stacked(name)
+        if related is None:
+            raise Refusal(503, "vm_nic_unchecked",
+                          f"לא ניתן לבדוק אם {name} קשור לכרטיס ההפצה {deploy} (bond/VLAN) — "
+                          "ה-VM לא יחובר אליו", interface=name)
+        if deploy in related:
+            raise Refusal(409, "vm_nic_is_deploy",
+                          f"{name} קשור לכרטיס ההפצה {deploy} (bond/VLAN) — ה-VM לעולם אינו "
+                          "מחובר לרשת שמשדרת לכיתות. בחרו כרטיס אחר", interface=name)
+
+    def ensure_mac(self) -> str:
+        """ה-MAC של ה-VM — נוצר **פעם אחת** ונשמר; אותו MAC אחרי אתחול ועדכון."""
+        with self._lock:
+            mac = get_setting(self.conn, MAC_KEY)
+            if vmnet.valid_mac(mac):
+                return mac
+            fresh = vmnet.new_mac()
+            set_setting(self.conn, MAC_KEY, fresh)
+            if get_setting(self.conn, MAC_KEY) != fresh:
+                raise Refusal(503, "vm_mac", "ה-MAC של ה-VM לא נשמר ב-DB")
+            journal(self.conn, "vmupdate_mac_created",
+                    f"{fresh}" + (f" (הקודם לא תקין: {mac!r})" if mac else ""))
+            return fresh
+
+    def _lease_record(self) -> dict | None:
+        try:
+            value = json.loads(get_setting(self.conn, LEASE_KEY) or "null")
+        except ValueError:
+            return None
+        return value if isinstance(value, dict) else None
+
+    def network_view(self) -> dict:
+        """מה שמסך הכרטיסים מציג ליד הבחירה."""
+        nic = get_setting(self.conn, NIC_KEY) or None
+        mac = self.ensure_mac()
+        lease = self._lease_record()
+        virt = self.machine.platform()
+        problem = None
+        if nic:
+            try:
+                self._vm_nic_check(nic)
+            except Refusal as exc:
+                problem = {"code": exc.reason, "error": exc.message}
+        return {"interface": nic, "mac": mac, "deploy_interface": self.deploy_interface(),
+                "lease": lease if lease and lease.get("mac") == mac else None,
+                "platform": virt, "hint": vmnet.platform_hint(virt), "problem": problem,
+                "lease_timeout_seconds": int(self.lease_timeout)}
+
+    def set_network(self, name: object, user: str) -> dict:
+        """‏`name=None` מבטל את הבחירה (ה-VM לא יודלק עד שייבחר כרטיס)."""
+        if name is not None:
+            self._vm_nic_check(name)
+        before = get_setting(self.conn, NIC_KEY) or None
+        set_setting(self.conn, NIC_KEY, name or "")
+        if (get_setting(self.conn, NIC_KEY) or None) != name:
+            raise Refusal(503, "vm_nic_unsaved", "הבחירה לא נשמרה ב-DB")
+        journal(self.conn, "vmupdate_network_set", f"{before or '—'} → {name or '—'}", user)
+        return self.network_view()
+
+    def _net_up(self, nic: str) -> int:
+        """‏macvtap + חומת האש — לפני **כל** הדלקה. מחזיר את ה-fd ל-QEMU."""
+        user = self.machine.vm_user()
+        if user is None:
+            raise Refusal(503, "vm_user", f"משתמש המערכת {vmnet.VM_USER} אינו קיים")
+        mac = self.ensure_mac()
+        fd, why = self.machine.macvtap(nic, mac)
+        if fd is None:
+            raise Refusal(503, "macvtap",
+                          f"החיבור של ה-VM לכרטיס {nic} לא נוצר — ה-VM לא יודלק: {why}. "
+                          + vmnet.platform_hint(self.machine.platform()), interface=nic)
+        with self._net_lock:
+            why = self.machine.firewall(user.uid, mac)
+            self._net_live = why is None
+        if why is not None:
+            self.machine.close_tap(fd)
+            self.machine.macvtap_down()
+            raise Refusal(503, "firewall", f"בידוד הרשת של ה-VM לא נטען — ה-VM לא יודלק: {why}")
+        self._guarded_at = self._now()
+        return fd
+
+    def _net_down(self) -> str | None:
+        """אחרי ש-QEMU יצא: ה-macvtap והטבלה יורדים. כשל נרשם בשמו. תחת `_net_lock`,
+        ו-`_net_live` כבה **לפני** הפירוק — טעינה מקבילה (`_guard_network`) כבר לא
+        תחזיר את הטבלה אחריו."""
+        with self._net_lock:
+            self._net_live = False
+            problems = [w for w in (self.machine.macvtap_down(), self.machine.firewall_off())
+                        if w]
+        if not problems:
+            return None
+        message = "פירוק הרשת של ה-VM לא הושלם: " + " · ".join(problems)
+        journal(self.conn, "vmupdate_net_teardown_failed", message)
+        return message
 
     def _check_space(self, manifest: dict) -> None:
         """‏#1390: מה הפתיחה והשמירה **תופסות בפועל**, לא הגודל הלוגי.
@@ -728,16 +906,6 @@ class VmUpdate:
                 f"פנויים {_gb(free)}{note}", need_bytes=need, free_bytes=free,
                 **({"unmeasured_partitions": unmeasured} if unmeasured else {}))
 
-    def _firewall(self, egress_if: str) -> None:
-        """הבידוד (`vmnet`) — לפני **כל** הדלקה, עם הכרטיס של עכשיו."""
-        user = self.machine.vm_user()
-        if user is None:
-            raise Refusal(503, "vm_user", f"משתמש המערכת {vmnet.VM_USER} אינו קיים")
-        why = self.machine.firewall(user.uid, egress_if, self.machine.resolvers())
-        if why is not None:
-            raise Refusal(503, "firewall", f"בידוד הרשת של ה-VM לא נטען — ה-VM לא יודלק: {why}")
-        self._guarded_at = self._now()
-
     # -- פעולות -----------------------------------------------------------
 
     def start(self, image_id: str, user: str) -> dict:
@@ -771,7 +939,8 @@ class VmUpdate:
                 "lineage": lineage_of(manifest), "started_by": user,
                 "controller": user, "controller_since": now_iso(), "control_request": None,
                 "control_last": None, "created_at": now_iso(), "accel": accel,
-                "egress_interface": egress, "secure_boot": secure_boot,
+                "egress_interface": egress, "vm_mac": self.ensure_mac(),
+                "network": None, "secure_boot": secure_boot,
                 "memory_mib": settings["memory_mib"], "cpus": settings["cpus"],
                 "disk_ready": False, "forced": False, "warnings": [], "error": None,
                 "result": None,
@@ -806,7 +975,6 @@ class VmUpdate:
             template = self.ovmf_dir / OVMF[self._state["secure_boot"]][1]
             shutil.copyfile(template, self.workdir / "vars.fd")
             self._set(disk_bytes=built.disk_bytes, warnings=built.warnings, disk_ready=True)
-            self._firewall(self._state["egress_interface"])
             self._boot(user)
         except Refusal as exc:
             self._fail(exc.reason, exc.message, disk_ready=True, user=user)
@@ -836,37 +1004,103 @@ class VmUpdate:
                       disk_ready=disk_ready)
 
     def _boot(self, user: str) -> None:
-        argv = qemu_argv(workdir=self.workdir, memory_mib=self._state["memory_mib"],
-                         cpus=self._state["cpus"], accel=self._state["accel"],
-                         secure_boot=self._state["secure_boot"], ovmf_dir=self.ovmf_dir)
-        for stale in ("qmp.sock", "vnc.sock"):
-            (self.workdir / stale).unlink(missing_ok=True)
-        logfile = (self.workdir / "qemu.log").open("ab")
+        nic = self._state["egress_interface"]
+        mac = self.ensure_mac()
+        fd = self._net_up(nic)
         try:
-            proc = self._popen(argv, stdin=subprocess.DEVNULL, stdout=logfile, stderr=logfile,
-                               preexec_fn=_lower_priority if os.name == "posix" else None,
-                               close_fds=True)
-        finally:
-            logfile.close()
+            # ה-fd נסגר ביציאה מה-with בשני המסלולים — ל-QEMU יש עותק משלו
+            # (‏pass_fds), ובחריגה הוא נסגר לפני `_net_down`, כמו קודם.
+            with _Tap(self.machine, fd):
+                argv = qemu_argv(workdir=self.workdir, memory_mib=self._state["memory_mib"],
+                                 cpus=self._state["cpus"], accel=self._state["accel"],
+                                 secure_boot=self._state["secure_boot"], tap_fd=fd, mac=mac,
+                                 ovmf_dir=self.ovmf_dir)
+                for stale in ("qmp.sock", "vnc.sock"):
+                    (self.workdir / stale).unlink(missing_ok=True)
+                with (self.workdir / "qemu.log").open("ab") as logfile:
+                    proc = self._popen(argv, stdin=subprocess.DEVNULL, stdout=logfile,
+                                       stderr=logfile,
+                                       preexec_fn=_lower_priority if os.name == "posix" else None,
+                                       close_fds=True, pass_fds=(fd,))
+        except BaseException:
+            self._net_down()
+            raise
         with self._lock:
             self._proc = proc
             self._state.update(state="running", booted_at=now_iso(), booted_at_ts=self._now(),
                                stopped_at=None, stopped_at_ts=None, forced=False, error=None,
-                               shutdown_requested_ts=None)
+                               shutdown_requested_ts=None, vm_mac=mac,
+                               network={"interface": nic, "mac": mac, "state": "waiting",
+                                        "address": None, "server": None, "at": None,
+                                        "since_ts": self._now()})
+            # ‏#1468: היומן לפני ש-`running` נראה ב-status() (כמו ב-_fail) — מי שראה
+            # `running` רואה גם את השורה. אחרי השחרור קורא יכול היה להקדים אותה.
+            journal(self.conn, "vmupdate_running", f"{self._state['image_id']} {nic} {mac}", user)
             self._set()
-        journal(self.conn, "vmupdate_running", f"{self._state['image_id']}", user)
         self._spawn(self._watch, proc)
+        self._spawn(self._lease, proc, nic, mac)
+
+    def _lease(self, proc: subprocess.Popen, nic: str, mac: str) -> None:
+        """הראיה שה-VM קיבל כתובת: DHCPACK תקף ל-MAC שלו (`vmnet.watch_lease`). ההאזנה
+        נמשכת כל זמן שה-VM רץ — חידוש עם כתובת אחרת מתעדכן במסך. בלי ACK תוך
+        `lease_timeout` — ה-VM נכבה וההודעה אומרת למה, עם הרמז לפלטפורמה. הכתובת
+        **מוצגת** בלבד: הבידוד במארח הוא לפי MAC, ואינו נשען על ה-DHCP."""
+        def on_ack(address: str, server: str | None) -> None:
+            with self._lock:
+                if self._proc is not proc:
+                    return
+                net = dict(self._state.get("network") or {})
+                if net.get("state") == "leased" and net.get("address") == address:
+                    return   # חידוש לאותה כתובת — אין מה לעדכן
+                record = {"address": address, "server": server, "mac": mac,
+                          "interface": nic, "at": now_iso()}
+                # הרשומה והיומן לפני שהמצב נראה החוצה — מי שרואה "leased" רואה גם אותם
+                set_setting(self.conn, LEASE_KEY, json.dumps(record))
+                journal(self.conn, "vmupdate_lease",
+                        f"{mac} ← {address} (DHCP {server or '?'}) · {nic}")
+                net.update(state="leased", address=address, server=server, at=record["at"])
+                self._set(network=net)
+
+        result = self.machine.watch_lease(mac, self.lease_timeout,
+                                          lambda: self._proc is not proc, on_ack)
+        if self._proc is not proc or result.get("address"):
+            return   # ה-VM כבה (אחרי lease או לפניו) — אין למי לסרב
+        message = vmnet.no_lease_message(result, nic, mac, self.lease_timeout,
+                                         self.machine.platform())
+        journal(self.conn, "vmupdate_no_lease", message)
+        self._refuse_net(proc, "no_lease", message)
+
+    def _refuse_net(self, proc: subprocess.Popen, reason: str, message: str) -> None:
+        """ה-VM נכבה בכוח, ו-`_watch` מסמן `failed` עם הסיבה (הדיסק שלם)."""
+        with self._lock:
+            if self._proc is not proc:
+                return
+            net = dict(self._state.get("network") or {})
+            if reason == "no_lease":
+                net["state"] = "no_lease"
+            self._state["net_error"] = {"reason": reason, "message": message}
+            self._set(network=net, forced=True, state="stopping")
+        try:
+            self._qmp(self.workdir / "qmp.sock", "quit")
+        except QmpError:
+            proc.kill()
 
     def _watch(self, proc: subprocess.Popen) -> None:
         rc = proc.wait()
+        down = self._net_down()
         with self._lock:
             if self._proc is not proc:
                 return
             self._proc = None
             was = self._state.get("state")
             forced = self._state.get("forced")
+            net_error = self._state.pop("net_error", None)
             self._state.update(stopped_at=now_iso(), stopped_at_ts=self._now())
-            if rc != 0 and not forced and was == "running":
+            if down:
+                self._state["warnings"] = list(self._state.get("warnings") or []) + [down]
+            if net_error:
+                self._state.update(state="failed", disk_ready=True, error=net_error)
+            elif rc != 0 and not forced and was == "running":
                 tail = self._qemu_log_tail()
                 self._state.update(state="failed", disk_ready=True,
                                    error={"reason": "qemu_exit",
@@ -937,7 +1171,6 @@ class VmUpdate:
             self._tools(None, secure_boot)
             accel, egress = self._check_vm({"memory_mib": self._state["memory_mib"],
                                             "cpus": self._state["cpus"]})
-            self._firewall(egress)
             self._state.update(accel=accel, egress_interface=egress)
             if not (self.workdir / "vars.fd").exists():
                 shutil.copyfile(self.ovmf_dir / OVMF[secure_boot][1], self.workdir / "vars.fd")
@@ -1071,7 +1304,7 @@ class VmUpdate:
         except Refusal as exc:
             return {"ok": False, "code": exc.reason, "error": exc.message, "details": exc.numbers}
         return {"ok": True, "accel": accel, "egress_interface": egress,
-                "secure_boot": secure_boot_for(manifest),
+                "vm_mac": self.ensure_mac(), "secure_boot": secure_boot_for(manifest),
                 "disk_bytes": vmdisk.disk_bytes_for(manifest), **settings}
 
     def discard(self, user: str) -> dict:

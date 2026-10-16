@@ -15,6 +15,7 @@ The approved mockup (Nadav 12/10, C:\\ImageCtl-Lab\\design-approved\\dcui) is
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -486,6 +487,16 @@ int main(void) {
     int done = dcui_feed(&f, l4);
     printf("done=%d host=%s url=[%s] version=%s clock=%s admin=[%s] keys=%d lock=%d\n",
            done, f.host, f.url, f.version, f.clock, f.admin, f.nkeys, f.keys[0].lock);
+    /* 16/10: F4 on a secondary, the pairing code box and the yellow alert */
+    tok((Event){ .type = UIEV_KEY, .key = KEYSYM_F4 }, 0);
+    char m1[] = "frame\tmain", m2[] = "dlg\tplain\t680\tT\tL",
+         m3[] = "d.code\tK7M4-X9QD\tleft\t09:42\twarn", m4[] = "d.alert\tA\twarn",
+         m5[] = "d.alert\tB", m6[] = "";
+    dcui_feed(&f, m1); dcui_feed(&f, m2); dcui_feed(&f, m3); dcui_feed(&f, m4); dcui_feed(&f, m5);
+    dcui_feed(&f, m6);
+    printf("nel=%d code=%d %s/%s/%s/%s alert=%d %s/%s/[%s]\n", f.nel, f.el[0].type == DEL_CODE,
+           f.el[0].a, f.el[0].b, f.el[0].c, f.el[0].d, f.el[1].type == DEL_ALERT,
+           f.el[1].a, f.el[1].c, f.el[2].c);
     return 0;
 }
 '''
@@ -503,6 +514,33 @@ def test_keys_are_forced_to_english_and_records_keep_empty_fields(tmp_path):
     assert out[:9] == ["CHAR 61", "CHAR 41", "CHAR 61", "CHAR 21", "KEY F12", "KEY BACKTAB",
                        "-", "-", "CAPS 1"]
     assert out[9] == "done=1 host=TA url=[] version=v1 clock=20:17 admin=[] keys=1 lock=1"
+    assert out[10] == "KEY F4"
+    assert out[11] == "nel=3 code=1 K7M4-X9QD/left/09:42/warn alert=1 A/warn/[]"
+
+
+@NATIVE
+def test_the_pairing_code_box_and_the_yellow_alert_are_drawn(built, tmp_path):
+    """16/10: an element the GUI does not know is skipped silently -- so the
+    frame without ``d.code`` (and the alert without ``warn``) must render
+    differently, or the box/colour is not drawn at all."""
+    frames = samples.frames()
+
+    def render(name: str, text: str) -> bytes:
+        path = tmp_path / f"{name}.frame"
+        path.write_text(text, encoding="utf-8", newline="\n")
+        proc = subprocess.run([str(built), "--screen", "dcui", "--png", str(tmp_path / name),
+                               "--size", "1024x768", "--state", str(path)],
+                              capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+        assert proc.returncode == 0, proc.stderr
+        return (tmp_path / f"{name}-light.png").read_bytes()
+
+    full = frames["13-pair-code"]
+    without = "".join(line for line in full.splitlines(True) if not line.startswith("d.code\t"))
+    assert render("code", full) != render("no-code", without)
+    yellow = frames["13b-pair-code-no-address"]
+    red = re.sub(r"^(d\.alert\t[^\n]*)\twarn$", r"\1", yellow, flags=re.M)
+    assert red != yellow
+    assert render("yellow", yellow) != render("red", red)
 
 
 @NATIVE

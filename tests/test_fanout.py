@@ -216,6 +216,77 @@ def test_xxh64_mode_matches_python_reference_for_large_input(fanout):
     assert result.stdout == f"{xxh64_reference(data)}\n".encode()
 
 
+@pytest.mark.parametrize("size", [0, 1, 55, 56, 63, 64, 65, 1000, 3 * 1024 * 1024 + 19])
+@needs_fanout
+def test_sha256_file_matches_hashlib_at_block_boundaries(fanout, tmp_path, size):
+    data = os.urandom(size)
+    sha_file = tmp_path / "stream.sha256"
+    output = tmp_path / "target" / "feed"
+    output.parent.mkdir()
+    output.write_bytes(b"")
+    code, _, _ = run_fanout(fanout, [output], data, flags=("-S", sha_file))
+    assert code == (1 if size == 0 else 0)
+    assert sha_file.read_text() == f"{hashlib.sha256(data).hexdigest()}\n"
+
+
+@pytest.mark.parametrize("data, expected", [
+    (b"abc", "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"),
+    (b"", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
+])
+@needs_fanout
+def test_sha256_mode_matches_fips_vectors(fanout, data, expected):
+    result = subprocess.run([str(fanout), "--sha256"], input=data, capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == f"{expected}\n".encode()
+
+
+@needs_fanout
+def test_xxh64_and_sha256_are_written_together(fanout, tmp_path):
+    data = os.urandom(3 * 1024 * 1024 + 19)
+    xxh_file, sha_file = tmp_path / "stream.xxh64", tmp_path / "stream.sha256"
+    output = tmp_path / "target" / "feed"
+    output.parent.mkdir()
+    output.write_bytes(b"")
+    code, report, _ = run_fanout(
+        fanout, [output], data, flags=("-H", xxh_file, "-S", sha_file),
+    )
+    assert code == 0 and report == {"target": "ok"}, report
+    assert xxh_file.read_text() == f"{xxh64_reference(data)}\n"
+    assert sha_file.read_text() == f"{hashlib.sha256(data).hexdigest()}\n"
+
+
+@needs_fanout
+def test_read_error_never_creates_sha256_evidence(fanout, tmp_path):
+    sha_file = tmp_path / "must-not-exist"
+    output = tmp_path / "target" / "feed"
+    output.parent.mkdir()
+    output.write_bytes(b"")
+    input_fd = os.open(tmp_path, os.O_RDONLY)
+    try:
+        result = subprocess.run(
+            [str(fanout), "-S", str(sha_file), BUFFER, str(output)],
+            stdin=input_fd, capture_output=True, timeout=30,
+        )
+    finally:
+        os.close(input_fd)
+    assert result.returncode == 2
+    assert not sha_file.exists()
+
+
+@needs_fanout
+def test_sha256_read_error_prints_no_digest(fanout, tmp_path):
+    input_fd = os.open(tmp_path, os.O_RDONLY)
+    try:
+        result = subprocess.run(
+            [str(fanout), "--sha256"], stdin=input_fd,
+            capture_output=True, timeout=30,
+        )
+    finally:
+        os.close(input_fd)
+    assert result.returncode == 2
+    assert result.stdout == b""
+
+
 @needs_fanout
 def test_hash_and_stream_progress_cover_every_input_byte(fanout, tmp_path):
     data = os.urandom(3 * 1024 * 1024 + 19)

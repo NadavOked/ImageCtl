@@ -13,7 +13,7 @@ import sqlite3
 
 from boot.grub_menu import normalize_mac as lenient_mac
 
-from . import disk_failures, slot_names
+from . import capture_detail, disk_failures, slot_names
 from .db import journal, now_iso, update_one
 from .tasks import CAPTURE_STAGES, OPEN_STATES, claim_task
 
@@ -378,6 +378,7 @@ def _ingest_task(conn: sqlite3.Connection, task_id: str, mac: str,
         return {"ok": False, "error": "this is not your task", "code": "bad_token"}
 
     known_stage = stage if isinstance(stage, str) and stage in CAPTURE_STAGES else None
+    capture_detail.sanitize(targets)   # ‏#1505: טבלת המחיצות — תקינה או נזרקת בשלמותה
     now = now_iso()
     written = sum(_int(t.get("bytes_written")) for t in targets)
     total = sum(_int(t.get("bytes_total")) for t in targets)
@@ -415,6 +416,7 @@ def _ingest_task(conn: sqlite3.Connection, task_id: str, mac: str,
         return {"ok": False, "error": "the task is no longer open",
                 "code": "not_open"}
     conn.commit()
+    capture_detail.record(task_id, targets, written)   # ‏#1505: דגימה לקצב ול-ETA
     if state == "failed" and row["state"] != "failed":
         journal(conn, "capture_failed", f"{task_id} {errors or 'agent reported failure'}")
     if new_state == "done":

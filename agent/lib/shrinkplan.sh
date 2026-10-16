@@ -75,7 +75,15 @@ shrink_plan() {
         ntfsresize --info --no-progress-bar "$_sp_node" > "$RUN_DIR/ntfsresize.info.$_sp_idx" 2>&1
         _sp_min=$(sed -n 's/.*You might resize at \([0-9][0-9]*\) bytes.*/\1/p' "$RUN_DIR/ntfsresize.info.$_sp_idx" | head -n 1)
         case "$_sp_min" in ''|*[!0-9]*)
-            SHRINK_ERROR="לא הצלחנו לבדוק כמה אפשר לכווץ את מחיצה $_sp_idx (ntfsresize --info): $(tail -n 1 "$RUN_DIR/ntfsresize.info.$_sp_idx" 2>/dev/null | tr -d '\r') — הריצו chkdsk בווינדוס וקלטו מחדש; הדיסק לא שונה"
+            # #1502 (metal 16/10): the tool's own words stay in the log and in
+            # ntfsresize.info.N; the screen gets Hebrew first and the fix.
+            log "partition $_sp_idx: ntfsresize --info gave no minimum: $(tail -n 1 "$RUN_DIR/ntfsresize.info.$_sp_idx" 2>/dev/null | tr -d '\r')"
+            LC_ALL=C grep -qF "NTFS is inconsistent" "$RUN_DIR/ntfsresize.info.$_sp_idx"; _sp_rc=$?
+            if [ "$_sp_rc" -eq 0 ]; then
+                SHRINK_ERROR="מחיצה $_sp_idx בדיסק $1 לא עקבית (NTFS) — בחלונות: chkdsk /f על הכונן, אתחלו פעמיים, כבו ב-shutdown /s /t 0 וקלטו מחדש. הדיסק לא שונה."
+            else   # 1 = another refusal, 2 = grep itself failed: neither is a diagnosis
+                SHRINK_ERROR="לא הצלחנו לבדוק כמה אפשר לכווץ את מחיצה $_sp_idx בדיסק $1 — פרטי ntfsresize ביומן הסוכן. הדיסק לא שונה."
+            fi
             return 1 ;;
         esac
         _sp_new=$(_shrink_target "$_sp_min" "$_sp_cur")

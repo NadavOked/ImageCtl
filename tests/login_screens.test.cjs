@@ -265,7 +265,7 @@ test('final mockup: "החשבון שלי" is a page in the tree (ניהול), sa
   const html = run('account()');
   assert.match(html, /<div class="obj-name">החשבון שלי<span class="pill info">מנהל<\/span><\/div>/);
   assert.match(html, /class="obj-sub"[^>]*>nadav</);
-  assert.match(html, /openSessionInfo\(\)">פרטי Session/);
+  assert.match(html, /openSessionInfo\(\)">פרטי החיבור/);
   assert.equal((html.match(/c6 card/g) || []).length, 3, 'password, MFA and backup codes are half-width cards');
   assert.doesNotMatch(html, /<span>חשבון<\/span>/);
   assert.match(html, /accountChangePassword\(\)">שנה סיסמה/);

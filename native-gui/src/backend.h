@@ -24,6 +24,11 @@ int backend_width(const Backend *b);
 int backend_height(const Backend *b);
 cairo_surface_t *backend_surface(Backend *b);     /* offscreen RGB24 */
 void backend_present(Backend *b);
+/* #1475: also write every presented frame into a memory-framebuffer file at
+ * `path` (mem's layout and seqlock, the display's size), so imagectl-monitor
+ * reads RAM and sees from `seq` when nothing changed. No-op for mem. 0, or
+ * -1 + why -- the display itself is unaffected either way. */
+int backend_mirror(Backend *b, const char *path, char *err, size_t n);
 /* #1362: 0 when the kernel confirms the last frame is on the screen (DRM:
  * the CRTC scans our framebuffer, DirtyFB accepted); -1 + why otherwise.
  * fbdev/mem have nothing to read back and return 0. */

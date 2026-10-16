@@ -57,13 +57,13 @@ grow_filesystem() {
                 else
                     _rc=$?
                     log "WARNING: $2: final ntfsfix -d failed (rc=$_rc); volume may boot into chkdsk"
-                    GROW_ERROR="filesystem grew, but the NTFS dirty flag stayed (ntfsfix -d rc=$_rc)"
+                    GROW_ERROR="מערכת הקבצים הורחבה, אך דגל ה-dirty של NTFS נשאר (ntfsfix -d rc=$_rc)"
                     return 1
                 fi
                 return 0
             else
                 _rc=$?
-                GROW_ERROR="ntfsresize failed (rc=$_rc)"
+                GROW_ERROR="ntfsresize נכשל (rc=$_rc)"
                 log "WARNING: $2: ntfsresize failed (rc=$_rc); grow deferred"
                 return 1
             fi ;;
@@ -89,15 +89,15 @@ grow_filesystem() {
             _m="$RUN_DIR/grow"
             mkdir -p "$_m"
             if ! mount -t btrfs "$2" "$_m" >> "$LOG_FILE" 2>&1; then
-                GROW_ERROR="could not mount btrfs filesystem"
+                GROW_ERROR="לא הצלחנו לעגן את מערכת הקבצים btrfs"
                 return 1
             fi
             btrfs filesystem resize max "$_m" >> "$LOG_FILE" 2>&1
             _rc=$?
             umount "$_m" >> "$LOG_FILE" 2>&1
             _umrc=$?
-            if [ "$_rc" -ne 0 ]; then GROW_ERROR="btrfs resize failed (rc=$_rc)"; return 1; fi
-            if [ "$_umrc" -ne 0 ]; then GROW_ERROR="btrfs grew, but remained mounted (umount rc=$_umrc)"; return 1; fi
+            if [ "$_rc" -ne 0 ]; then GROW_ERROR="שינוי הגודל של btrfs נכשל (rc=$_rc)"; return 1; fi
+            if [ "$_umrc" -ne 0 ]; then GROW_ERROR="btrfs הורחב, אך נשאר מעוגן (umount rc=$_umrc)"; return 1; fi
             return 0 ;;
         xfs)
             # XFS גדל רק mounted: xfs_growfs על נקודת העגינה, לא על
@@ -105,7 +105,7 @@ grow_filesystem() {
             _m="$RUN_DIR/grow"
             mkdir -p "$_m"
             if ! mount -t xfs "$2" "$_m" >> "$LOG_FILE" 2>&1; then
-                GROW_ERROR="could not mount xfs filesystem"
+                GROW_ERROR="לא הצלחנו לעגן את מערכת הקבצים xfs"
                 return 1
             fi
             xfs_growfs "$_m" >> "$LOG_FILE" 2>&1
@@ -113,11 +113,11 @@ grow_filesystem() {
             umount "$_m" >> "$LOG_FILE" 2>&1
             _umrc=$?
             if [ "$_rc" -ne 0 ]; then
-                GROW_ERROR="xfs_growfs failed (rc=$_rc)"
+                GROW_ERROR="xfs_growfs נכשל (rc=$_rc)"
                 log "$2: xfs_growfs נכשל (rc=${_rc:-לא נרשם})"
                 return 1
             fi
-            if [ "$_umrc" -ne 0 ]; then GROW_ERROR="xfs grew, but remained mounted (umount rc=$_umrc)"; return 1; fi
+            if [ "$_umrc" -ne 0 ]; then GROW_ERROR="xfs הורחב, אך נשאר מעוגן (umount rc=$_umrc)"; return 1; fi
             return 0 ;;
         *)
             # המועמד כבר גדל ב-GPT. "אין כלי" אינו הצלחה (#444).
@@ -142,7 +142,7 @@ finish_grow() {
     else
         _idx="?"; _fs="?"
     fi
-    _grow_warning="done (grow deferred): partition ${_idx:-?} (${_fs:-?}); ${GROW_ERROR:-filesystem growth failed}"
+    _grow_warning="הושלם, אך ההרחבה נדחתה: מחיצה ${_idx:-?} (${_fs:-?}); ${GROW_ERROR:-הרחבת מערכת הקבצים נכשלה}"
     log "WARNING: $1: $_grow_warning"
     target_set "$1" "done" "$_grow_warning"
     return 0

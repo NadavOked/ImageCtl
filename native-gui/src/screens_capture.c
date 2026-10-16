@@ -4,7 +4,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
-#include "widgets.h"
+#include "screens_rounds.h"
 
 /* ---- #st-pick -------------------------------------------------------------- */
 
@@ -32,6 +32,17 @@ void screen_pick(App *a, cairo_t *cr, double W, double H, double head_h) {
     /* drawDisks: internal disks only (removable filtered out) */
     int idx[MAX_DISKS], n = 0;
     for (int i = 0; i < s->ndisks; i++) if (!s->disks[i].removable) idx[n++] = i;
+    for (int i = 1; i < n; i++) {
+        int v = idx[i], vd = s->disks[v].slot_known ? eff_drawer(s->disks[v].drawer, 0) : 0;
+        int j = i;
+        while (j > 0) {
+            const Disk *p = &s->disks[idx[j - 1]];
+            int pd = p->slot_known ? eff_drawer(p->drawer, 0) : 0;
+            if (!vd || (pd && pd <= vd)) break;
+            idx[j] = idx[j - 1]; j--;
+        }
+        idx[j] = v;
+    }
 
     /* nativePick .disk-row: grid 44px | 1fr | auto, gap 12, padding 12, radius 3;
      * .disk-main strong 12px + small 9px muted ("/dev/nvme0n1 · 1.0 TB");
@@ -49,9 +60,15 @@ void screen_pick(App *a, cairo_t *cr, double W, double H, double head_h) {
     }
     for (int k = 0; k < n; k++) {
         const Disk *d = &s->disks[idx[k]];
-        char size[32], small[96];
+        char size[32], small[256], label[128];
         fmt_bytes(size, sizeof size, (double)d->size_bytes);
-        snprintf(small, sizeof small, "%s · %s", d->dev, size);
+        if (!d->slot_known) snprintf(small, sizeof small, "%s · %s", d->dev, size);
+        else if (eff_drawer(d->drawer, 0) > 0)
+            snprintf(small, sizeof small, "דיסק %d · %s · %s", eff_drawer(d->drawer, 0), d->dev, size);
+        else {
+            unmapped_label("", d->conn, 0, d->dev, label, sizeof label);
+            snprintf(small, sizeof small, "%s · %s · %s", label, d->dev, size);
+        }
         dd[k] = text_make(cr, FONT_SANS, N_DISK_SIDE, 400, d->has_data ? "יש מערכת על הכונן" : "ריק", 0, DIR_RTL);
         text_w[k] = inner - 2 * N_DISK_PAD - N_DISK_ICON_COL - 2 * N_DISK_COL_GAP - dd[k].w;
         db[k] = rtl_block_make(cr, N_DISK_TITLE, 700, d->model[0] ? d->model : "כונן", text_w[k]);
@@ -178,13 +195,13 @@ void screen_progress(App *a, cairo_t *cr, double W, double H, double head_h) {
     /* drawProgress, unless the agent set the texts itself (a cloning
      * machine or a class receiver shows this card with no operator). The
      * old "קולט: <name>" head is now label "קליטת אימג׳" + the name. */
-    char title[160], sub[1024], pct[96], bytes[64] = "—", total[64] = "—", rate[64] = "—";
+    char title[160], sub[1100], pct[96], bytes[64] = "—", total[64] = "—", rate[64] = "—";   /* sub: RLM + task_error[1024] whole, like done_sub (#1502) */
     const char *label = s->title[0] ? "משימה" : s->task_direct ? "הפצה ישירה" : "קליטת אימג׳";
     if (s->title[0])              snprintf(title, sizeof title, "%s", s->title);
     else if (s->task_direct)      snprintf(title, sizeof title, "משדר מהדיסק %s למחשבי השיכפול", s->task_disk);   /* #715 */
     else if (s->task_name[0])     snprintf(title, sizeof title, "%s", s->task_name);
     else                          snprintf(title, sizeof title, "קולט…");          /* index.html default */
-    if (s->task_error[0])         snprintf(sub, sizeof sub, "%s", s->task_error);
+    if (s->task_error[0])         snprintf(sub, sizeof sub, "\xE2\x80\x8F%s", s->task_error);   /* #1502: RLM -- "sda: ..." would lay the line out LTR */
     else if (s->sub[0])           snprintf(sub, sizeof sub, "%s", s->sub);
     else if (s->task == TASK_PENDING) snprintf(sub, sizeof sub, "ממתין לסוכן — ודאו שהמחשב עלה ב-PXE");
     else if (s->task_disk[0])     snprintf(sub, sizeof sub, "כונן המקור: %s", s->task_disk);

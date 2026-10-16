@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <linux/fb.h>
 #include <linux/kd.h>
 #include <linux/vt.h>
@@ -52,6 +53,8 @@ struct Backend {
     int vt_process;                             /* #1362: VT_SETMODE VT_PROCESS is ours */
     /* fbdev flush */
     struct fb_var_screeninfo fbvar;             /* for FBIOPAN_DISPLAY */
+    /* #1475: a memory-framebuffer copy of every frame, for the monitor */
+    uint8_t *mir_map; size_t mir_len; int mir_fd;
 };
 
 /* ---- VT: keep the kernel console from drawing over us --------------------- */
@@ -212,11 +215,43 @@ static int mem_open(Backend *b, const char *path, char *err, size_t n) {
     return 0;
 }
 
+/* ---- mirror (#1475) ------------------------------------------------------------------
+ * With a display, imagectl-monitor used to read /dev/fb0 itself: a full
+ * 1920x1080 read from write-combined video memory on every tick, changed or
+ * not -- 60% of a hardware thread on cloner 2 during a local clone (i5-650,
+ * owner, 16/10). The GUI already holds each frame in RAM, so it also writes
+ * it into the same memory-framebuffer file the headless path uses (layout and
+ * seqlock as mem above, at the display's own size). The monitor then reads
+ * RAM, and an unchanged `seq` tells it nothing changed -- no read at all. */
+int backend_mirror(Backend *b, const char *path, char *err, size_t n) {
+    if (b->kind == KIND_MEM) return 0;          /* the frame already is the file */
+    int fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (fd < 0) { snprintf(err, n, "%s: %s", path, strerror(errno)); return -1; }
+    size_t len = MEMFB_HEADER_BYTES + (size_t)b->w * 4 * (size_t)b->h;
+    /* No O_TRUNC, and grow only: a monitor may still map a larger file
+     * from an earlier run, and a shrink under it is SIGBUS (see mem_open). */
+    struct stat st;
+    if (fstat(fd, &st) < 0) { snprintf(err, n, "%s: fstat: %s", path, strerror(errno)); close(fd); return -1; }
+    if ((size_t)st.st_size < len && ftruncate(fd, (off_t)len) < 0) {
+        snprintf(err, n, "%s: ftruncate: %s", path, strerror(errno)); close(fd); return -1;
+    }
+    uint8_t *map = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (map == MAP_FAILED) { snprintf(err, n, "%s: mmap: %s", path, strerror(errno)); close(fd); return -1; }
+    struct memfb_header *h = (struct memfb_header *)map;
+    if (__atomic_load_n(&h->seq, __ATOMIC_SEQ_CST) & 1u) __atomic_add_fetch(&h->seq, 1, __ATOMIC_SEQ_CST);
+    h->width = (uint32_t)b->w; h->height = (uint32_t)b->h; h->stride = (uint32_t)b->w * 4;
+    h->format = MEMFB_FORMAT_XRGB8888;
+    memcpy(h->magic, MEMFB_MAGIC, sizeof h->magic);   /* last: the file is valid only now */
+    b->mir_map = map; b->mir_len = len; b->mir_fd = fd;
+    fprintf(stderr, "native-gui: mirroring frames into %s for the remote monitor\n", path);
+    return 0;
+}
+
 /* ---- common ------------------------------------------------------------------------ */
 
 Backend *backend_open(const char *kind, const char *mem_path, char *err, size_t n) {
     Backend *b = calloc(1, sizeof *b);
-    b->fd = -1; b->tty_fd = -1;
+    b->fd = -1; b->tty_fd = -1; b->mir_fd = -1;
     int ok = -1;
     char e1[512] = "", e2[512] = "", e3[512] = "";
     if (strcmp(kind, "drm") == 0)        ok = drm_open(b, err, n);
@@ -252,6 +287,14 @@ void backend_present(Backend *b) {
     for (int y = 0; y < b->h; y++)
         memcpy(b->pix + (size_t)y * b->pitch, src + (size_t)y * stride, row);
     if (b->kind == KIND_MEM) mem_seq_step(b);   /* even: the frame is whole */
+    if (b->mir_map) {                           /* #1475: same seqlock, RAM to RAM */
+        struct memfb_header *mh = (struct memfb_header *)b->mir_map;
+        uint8_t *mpix = b->mir_map + MEMFB_HEADER_BYTES;
+        __atomic_add_fetch(&mh->seq, 1, __ATOMIC_SEQ_CST);     /* odd: being written */
+        for (int y = 0; y < b->h; y++)
+            memcpy(mpix + (size_t)y * row, src + (size_t)y * stride, row);
+        __atomic_add_fetch(&mh->seq, 1, __ATOMIC_SEQ_CST);     /* even: whole */
+    }
     /* On a modern i915 (Gen9+, e.g. the build laptop's Coffee Lake) the CPU's
      * writes to the mmap'd /dev/fb0 do not reach the scanout on their own: the
      * fb is write-combined and the display engine uses framebuffer compression,
@@ -339,6 +382,8 @@ void backend_close(Backend *b) {
     vt_restore(b);
     if (b->off) cairo_surface_destroy(b->off);
     if (b->map && b->map != MAP_FAILED) munmap(b->map, b->map_len);
+    if (b->mir_map) munmap(b->mir_map, b->mir_len);
+    if (b->mir_fd >= 0) close(b->mir_fd);
     if (b->kind == KIND_DRM && b->fd >= 0) {
         if (b->saved) {
             drmModeSetCrtc(b->fd, b->saved->crtc_id, b->saved->buffer_id, b->saved->x, b->saved->y,
