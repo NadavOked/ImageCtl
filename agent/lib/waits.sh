@@ -114,6 +114,12 @@ next_stream_ceiling() {
 # ‏udp-receiver ו-curl קיבלו תקרות משלהם, ולכן unblock_fifo קיים: הם
 # מטפלים בשורש, וההריגה כאן היא רשת הביטחון האחרונה.
 
+# One poll tick (#1450). Sets _tk to the tenths actually slept. Debian's
+# busybox is built with FLOAT_DURATION, but one built without it refuses
+# `sleep 0.1` at once -- and a refused tick must cost a real second, never
+# zero: a hot loop would call every smartctl "timed out" within milliseconds.
+poll_tick() { if sleep 0.1 2>/dev/null; then _tk=1; else sleep 1; _tk=10; fi; }
+
 capped_run() {
     # $1 = תקרה בשניות, $2 = קובץ ל-stdout של הפקודה, $3.. = הפקודה (‏stderr
     # ללוג). מחזיר את קוד היציאה של הפקודה עצמה; כשלא הסתיימה בזמן --
@@ -121,19 +127,19 @@ capped_run() {
     # ‏CAPPED_TIMED_OUT ולא את הקוד: אצל smartctl כל קוד 0-255 הוא תשובה.
     # ‏**בלי wait אחרי ההריגה**: תהליך שתקוע ב-ioctl (מצב D) אינו מת מ-kill -9,
     # ו-wait עליו הוא בדיוק הקפיאה שהפונקציה הזו קיימת כדי לסיים (#1367).
-    _cr_max="$1"; _cr_out="$2"; shift 2; CAPPED_TIMED_OUT=0; _cr_t=0
+    _cr_max="$1"; _cr_limit=$((_cr_max * 10)); _cr_out="$2"; shift 2; CAPPED_TIMED_OUT=0; _cr_t=0
     # a log that cannot be opened must not stop the command itself (a redirect
     # that fails runs nothing): no log directory (host, tests) = no stderr
     _cr_err="${LOG_FILE:-/dev/null}"; [ -d "${_cr_err%/*}" ] || _cr_err=/dev/null
     "$@" > "$_cr_out" 2>> "$_cr_err" < /dev/null &
     _cr_pid=$!
     while kill -0 "$_cr_pid" 2>/dev/null; do
-        if [ "$_cr_t" -ge "$_cr_max" ]; then
+        if [ "$_cr_t" -ge "$_cr_limit" ]; then
             log "פג הזמן: $1 לא ענה תוך $_cr_max שניות -- נעזב, לא נבדק" >&2
             kill -9 "$_cr_pid" 2>/dev/null; CAPPED_TIMED_OUT=1
             return "$WAIT_TIMED_OUT"
         fi
-        sleep 1; _cr_t=$((_cr_t + 1))
+        poll_tick; _cr_t=$((_cr_t + _tk))
     done
     wait "$_cr_pid"
 }

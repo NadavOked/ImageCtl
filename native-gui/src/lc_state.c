@@ -64,10 +64,10 @@ int lc_state_line(State *s, const char *key, char *val) {
         p->idx = atoi(f[0]); cpy(p->label, sizeof p->label, f[1]); cpy(p->fs, sizeof p->fs, f[2]);
         p->bytes = ll(f[3]); p->size = ll(f[4]); cpy(p->state, sizeof p->state, f[5]); p->in = ll(f[6]);
     } else if (!strcmp(key, "lc_tgt") && l->ntgts < LC_MAX_DISKS) {
-        lc_split(val, f, 8);
+        lc_split(val, f, 9);
         LcTgt *t = &l->tgts[l->ntgts++];
         cpy(t->dev, sizeof t->dev, f[0]); cpy(t->state, sizeof t->state, f[1]); t->bytes = ll(f[2]);
-        t->part = atoi(f[3]); t->ok = atoi(f[4]); cpy(t->error, sizeof t->error, f[6]); t->total = ll(f[7]);
+        t->part = atoi(f[3]); t->ok = atoi(f[4]); cpy(t->error, sizeof t->error, f[6]); t->total = ll(f[7]); t->ntfs_boot = atoi(f[8]);
         t->has_table = sscanf(f[5], "%d,%lld,%lld,%lld", &t->grown_idx, &t->grown_bytes, &t->src_bytes, &t->free_bytes) == 4;
     }
     return 1;
@@ -189,6 +189,7 @@ static void default_roles(App *a) {
 void lc_after_reload(App *a) {
     LcState *l = &a->st.lc;
     if (l->screen != LC_SCREEN_BOOT) a->lcu.pause_sent = 0;
+    if (l->has_run) lc_rate_sample(&a->lcu, l->elapsed, l->copied); else a->lcu.rate_n = 0;   /* #1437 */
     if (l->screen != LC_SCREEN_LOCAL) { a->lcu.nroles = 0; a->lcu.last_phase[0] = 0; a->lcu.start_sent = 0; return; }
     if (!strcmp(a->lcu.last_phase, "done") && !strcmp(l->phase, "idle")) a->lcu.nroles = 0;   /* "שכפול נוסף" */
     if (strcmp(l->phase, "idle")) a->lcu.start_sent = 0;

@@ -119,6 +119,25 @@ def where(role: str) -> str:
     return "במחיצת הלינוקס הראשית" if role == "linux" else "ב-C:"
 
 
+def _unchecked_text(gb: int, role: str) -> str:
+    return (f"לא נבדק אם יישארו {gb}GB פנויים {where(role)} — "
+            f"לא נמדד כמה תפוס בה (used_bytes חסר)")
+
+
+def unchecked(manifest: dict, gb: int) -> str | None:
+    """‏#1494: הסיבה שהכלל **אינו ניתן לבדיקה** על האימג' הזה בכל דיסק שהוא —
+    ‏`used_bytes` של מחיצת המערכת לא נמדד — או `None`. הסוכן מסרב לזה בכל
+    מגירה (`min_free_check`), ולכן הקונסולה משביתה את האימג' וחדר השיכפולים
+    אינו פותח לו סבב: סבב שוודאי ייכשל בכל מגירה אינו "לא ידוע". אותה
+    מחרוזת של הסוכן."""
+    if gb <= 0:
+        return None
+    sys_part = system_partition(manifest)
+    if sys_part is None or _whole(sys_part.get("used_bytes")) is not None:
+        return None
+    return _unchecked_text(gb, sys_part["role"])
+
+
 def refusal(manifest: dict, disk_bytes: int, gb: int) -> str | None:
     """המחרוזת של הסוכן (‏`min_free_check`) לדיסק בגודל נתון, או `None`
     כשנשאר מספיק. אותה מחרוזת בדיוק, כדי שהמפעיל יראה סיבה אחת."""
@@ -129,8 +148,7 @@ def refusal(manifest: dict, disk_bytes: int, gb: int) -> str | None:
         return None
     free, role = result
     if free is None:
-        return (f"לא נבדק אם יישארו {gb}GB פנויים {where(role)} — "
-                f"לא נמדד כמה תפוס בה (used_bytes חסר)")
+        return _unchecked_text(gb, role)
     if free >= gb * GIB:
         return None
     return f"לא נכנס — יישארו רק {free / GIB:.1f} GB פנויים {where(role)}, המינימום {gb}GB"

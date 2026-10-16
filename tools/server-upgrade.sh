@@ -306,6 +306,9 @@ elif [[ -e "$ISO_MANIFEST" ]]; then
 else
     rollback "$FLAGS_FILE חסר ואין $ISO_MANIFEST — לא ידוע אילו initrd לבנות, והמכונות היו נשארות על initrd ישן"
 fi
+# ‏#1463: שלב משלו — הבנייה היא ~90% מהעדכון (498 ש' בשרת המעבדה, 16/10), ומסך העדכון
+# נותן לו תקרה משלו. בלי זה `install` היה 8:43 מול תקרה של 10 דקות בלי מעבר שלב.
+stage payload
 save_payload || rollback "שמירת עותק של המטען הקודם ב-$PAYLOAD_SAVE נכשלה — לא בונים בלי דרך חזרה"
 bash tools/boot-payload-build.sh --http-root "$HTTP_ROOT" --manifest "$ISO_MANIFEST" "${payload_args[@]}" \
     || rollback "בניית ה-initrd נכשלה (הפירוט ב-$LOG)"

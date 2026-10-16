@@ -64,7 +64,7 @@ def _setup(tmp_path: Path, *, live_ok: bool = True, previous: str | None = "v0.4
 
 def _stage_order(status: dict) -> list[str]:
     stages = status["stages"]
-    return sorted(stages, key=lambda k: (stages[k], ["fetch", "verify", "install", "restart", "done"].index(k)))
+    return sorted(stages, key=lambda k: (stages[k], ["fetch", "verify", "install", "payload", "restart", "done"].index(k)))
 
 
 def test_a_successful_run_records_every_stage_with_a_timestamp_and_ends_done(tmp_path, bindir):
@@ -76,8 +76,9 @@ def test_a_successful_run_records_every_stage_with_a_timestamp_and_ends_done(tmp
 
     assert proc.returncode == 0, (tmp_path / "upgrade.log").read_text(encoding="utf-8")
     assert status["state"] == "done" and status["stage"] == "done"
-    assert list(status["stages"]) == ["fetch", "verify", "install", "restart", "done"]
-    assert _stage_order(status) == ["fetch", "verify", "install", "restart", "done"]
+    # #1463: payload (the initrd build, ~90% of the run) is a stage of its own
+    assert list(status["stages"]) == ["fetch", "verify", "install", "payload", "restart", "done"]
+    assert _stage_order(status) == ["fetch", "verify", "install", "payload", "restart", "done"]
     assert all(ts.endswith("+00:00") and ts >= STARTED for ts in status["stages"].values())
     assert "reason" not in status and "error" not in status
     # the run update.py started: same clock, same operator, same "from"
@@ -143,7 +144,7 @@ def test_install_failure_that_rolled_back_is_reason_rollback_and_detail_is_the_c
     status = _status(data)
 
     assert proc.returncode != 0
-    assert (status["state"], status["reason"], status["stage"]) == ("failed", "rollback", "install")
+    assert (status["state"], status["reason"], status["stage"]) == ("failed", "rollback", "payload")
     assert status["detail"].startswith("בניית ה-initrd נכשלה")
     assert "הוחזר ל-v0.48.0" in status["error"] and "הוחזר" not in status["detail"]
     assert "restart" not in status["stages"]
@@ -184,7 +185,7 @@ def test_a_rollback_that_failed_too_keeps_the_cause_as_the_reason(tmp_path, bind
     _run(tmp_path, bindir, repo, data, TAG)
     status = _status(data)
 
-    assert (status["reason"], status["stage"]) == ("install", "install")
+    assert (status["reason"], status["stage"]) == ("install", "payload")
     assert "נכשלה גם היא" in status["error"]
 
 

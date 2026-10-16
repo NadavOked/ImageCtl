@@ -51,7 +51,7 @@ void draw_shrink_dialog(App *a, cairo_t *cr, double W, double H) {
     char explanation[1400];
     snprintf(explanation, sizeof explanation, "%s%s%s",
         "המחיצות מוחזרות לגודלן כשהקליטה מסתיימת. ווינדוס עולה בכל מקרה.",
-        a->st.task_error[0] ? "\n" : "", a->st.task_error);
+        a->st.task_error[0] ? "\n\xE2\x80\x8F" : "", a->st.task_error);   /* #1502: RLM -- a new paragraph, "sda: ..." */
     Text lead = rtl_block_make(cr, 14, 400, explanation, inner);
     Text rows[MAX_SHRINK_PARTS];
     double rows_h = 0;

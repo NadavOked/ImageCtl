@@ -30,6 +30,53 @@ const TRANSFER_STATE = {
   done: ["הושלם", "ok"], failed: ["נכשל", "err"],
 };
 
+/* ‏#1462: קצב, ETA וזמן שעבר — רק ממה שנמדד. הקצב הוא הפרש בין שתי דגימות
+   (bytes_sent, updated_at) שהדף ראה, **שתיהן בשעון השרת**, בחלון של עד דקה;
+   פחות משתי דגימות או פחות משתי שניות ביניהן = "מודד קצב…", לא 0. הזמן שעבר
+   בשלב האימות הוא seconds_since_update מהשרת (null = לא מוצג), לא שעון הדפדפן. */
+const TRANSFER_SAMPLES = new Map();   // id → [{t: ms (updated_at), b: bytes_sent}]
+const RATE_WINDOW_MS = 60000;
+const RATE_MIN_SPAN_MS = 2000;        // updated_at ברזולוציית שניות
+const STALL_AFTER_S = 30;             // בלי עדכון מנה (64MiB) זמן כזה — אומרים את זה, לא ETA
+
+function transferRate(t) {
+  if (t.state !== "sending") { TRANSFER_SAMPLES.delete(t.id); return null; }
+  const at = Date.parse(t.updated_at || "");
+  const bytes = Number(t.bytes_sent);
+  const list = TRANSFER_SAMPLES.get(t.id) || [];
+  if (Number.isFinite(at) && Number.isFinite(bytes)) {
+    const last = list[list.length - 1];
+    if (!last || at > last.t) list.push({ t: at, b: bytes });
+    while (list.length > 2 && at - list[1].t >= RATE_WINDOW_MS) list.shift();
+    TRANSFER_SAMPLES.set(t.id, list);
+  }
+  if (list.length < 2) return null;
+  const a = list[0], z = list[list.length - 1];
+  if (z.t - a.t < RATE_MIN_SPAN_MS || z.b < a.b) return null;
+  return (z.b - a.b) * 1000 / (z.t - a.t);
+}
+
+function transferPace(t) {
+  const since = t.seconds_since_update;
+  if (t.state === "verifying") {
+    const spent = fmtSpan(since);
+    return spent ? `עברו ${spent}` : "";
+  }
+  if (t.state !== "sending") return "";
+  const rate = transferRate(t);
+  if (since != null && since >= STALL_AFTER_S) return `אין התקדמות ${fmtSpan(since)}`;
+  if (rate == null) return "מודד קצב…";
+  const speed = `${(rate / 1e6).toFixed(1)} MB/s`;
+  const left = Number(t.bytes_total) - Number(t.bytes_sent);
+  const eta = rate > 0 && left >= 0 ? fmtSpan(left / rate) : null;
+  return eta ? `${speed} · נותרו כ-${eta}` : speed;
+}
+
+function transferStateLabel(t) {
+  if (t.state === "verifying" && t.direction === "pull") return ["הראשי מאמת sha256", ""];
+  return TRANSFER_STATE[t.state] || [t.state, ""];
+}
+
 function stopBranchPolling() { clearInterval(BRANCH_TIMER); BRANCH_TIMER = null; }
 function stopBranchesListPolling() { clearInterval(BRANCHES_LIST_TIMER); BRANCHES_LIST_TIMER = null; }
 
@@ -43,6 +90,7 @@ async function loadBranchesData() {
   BRANCH_GROUPS = groups;
   BRANCH_NODES = nodes;
   BRANCH_TRANSFERS = transfers;
+  await loadTransferCap();
   for (const n of nodes) {
     // עוד לפני הבדיקה — מה שהשרת זוכר: "ענתה לאחרונה HH:MM" גם כשהעמוד לא היה בפוקוס.
     const remembered = { lastSeenAt: n.last_seen_at || null, lastErrorAt: n.last_error_at || null, error: n.last_error || "" };
@@ -158,12 +206,14 @@ function transferDirectionHtml(t) {
 }
 
 function branchTransferRow(t) {
-  const [label, cls] = TRANSFER_STATE[t.state] || [t.state, ""];
+  const [label, cls] = transferStateLabel(t);
   const active = ["sending", "verifying", "queued"].includes(t.state);
   const pct = t.bytes_total ? Math.min(100, Math.round(100 * t.bytes_sent / t.bytes_total)) : 0;
-  const progress = active
-    ? UI.barRow(pct, "", `${esc(formatGB(t.bytes_sent))} / ${esc(formatGB(t.bytes_total))}`)
-    : (t.state === "done" ? UI.barRow(100) : UI.barRow(null));
+  const pace = transferPace(t);
+  const progress = (active
+    ? UI.barRow(pct, t.state === "verifying" ? "indeterminate" : "", `${esc(formatGB(t.bytes_sent))} / ${esc(formatGB(t.bytes_total))}`)
+    : (t.state === "done" ? UI.barRow(100) : UI.barRow(null)))
+    + (pace ? `<div class="sub transfer-pace">${esc(pace)}</div>` : "");
   const state = UI.status(cls, label) + (t.error ? `<div class="sub">${esc(t.error)}</div>` : "");
   const retry = t.state === "failed"
     ? `<button class="btn sm" onclick="retryBranchTransfer('${encodeId(t.node_id)}','${encodeId(t.image_id)}')">נסה שוב</button>` : "";
@@ -186,7 +236,7 @@ function branchesTransfersTab() {
     rows: BRANCH_TRANSFERS.map(branchTransferRow),
     empty: "אין העברות.",
   });
-  return `<div class="c12 card"><div class="card-b${BRANCH_TRANSFERS.length ? " flush" : ""}">${table}</div></div>`;
+  return `<div class="c12 card">${transferCapStrip("card-h")}<div class="card-b${BRANCH_TRANSFERS.length ? " flush" : ""}">${table}</div></div>`;
 }
 
 function maybeStartBranchesListPolling() {
@@ -389,10 +439,14 @@ function renderBranchTransfers(nid, target = null, limit = 8) {
   const rows = BRANCH_TRANSFERS.filter((t) => t.node_id === nid).slice(0, limit);
   if (!rows.length) { box.innerHTML = `<div class="sub">אין העברות.</div>`; return; }
   box.innerHTML = rows.map((t) => {
-    const [label, cls] = TRANSFER_STATE[t.state] || [t.state, ""];
+    const [label, cls] = transferStateLabel(t);
     const pct = t.bytes_total ? Math.min(100, Math.round(100 * t.bytes_sent / t.bytes_total)) : 0;
+    const pace = transferPace(t);
+    const meter = t.state === "verifying"
+      ? `<div class="bar indeterminate" style="margin-top:6px"><i></i></div>`
+      : `<div class="progress" style="margin-top:6px"><i style="width:${pct}%"></i></div>`;
     const bar = ["sending", "verifying", "queued"].includes(t.state)
-      ? `<div class="progress" style="margin-top:6px"><i style="width:${pct}%"></i></div><span class="sub">${esc(formatGB(t.bytes_sent))} מתוך ${esc(formatGB(t.bytes_total))} (${pct}%)</span>`
+      ? `${meter}<span class="sub">${esc(formatGB(t.bytes_sent))} מתוך ${esc(formatGB(t.bytes_total))} (${pct}%)${pace ? ` · <span class="transfer-pace">${esc(pace)}</span>` : ""}</span>`
       : "";
     const err = t.error ? `<div class="notice warn" role="status">${esc(t.error)}</div>` : "";
     const dir = t.direction === "pull" ? transferDirectionHtml(t) : "";
@@ -462,7 +516,7 @@ async function loadBranchView() {
     : api(`/storage-nodes/${encodeId(n.id)}/images`).catch((e) => (
       { connected: false, unchecked: true, error: e.message, images: [] }));
   const [transfers, images, remote] = await Promise.all([
-    api("/storage-transfers"), api("/images"), remoteP,
+    api("/storage-transfers"), api("/images"), remoteP, loadTransferCap(),
   ]);
   if (stale()) return;
   BRANCH_TRANSFERS = transfers;
@@ -489,6 +543,7 @@ async function loadBranchView() {
       <h4>ספריית האימג'ים של המשני</h4>
       ${libBody}
       <h4>העברות</h4>
+      ${transferCapStrip("sub")}
       <div id="branch-transfers-${esc(n.id)}"></div>
     </div></div>`;
   $("#branch-view-transfer").onclick = () => openTransferSheet(n, images, async () => loadBranchView());
@@ -501,4 +556,55 @@ async function loadBranchView() {
       renderBranchTransfers(n.id, null, 20);
     }).catch(() => {});
   }, 2000);
+}
+
+/* ---------- #1473: הגבלת קצב להעברות בין אתרים (הכרעת נדב 16/10) ----------
+   אופציונלי, ברירת מחדל ללא הגבלה; Mb/s לכל העברה, על push ועל pull. הערך הוא
+   מה שבתוקף בשרת (GET /settings → intersite_rate_cap_mbps, "0" = ללא הגבלה);
+   לא נקרא — נאמר שלא נקרא ולמה, לא "ללא הגבלה" (עיקרון 5). השינוי תופס גם
+   העברה שכבר רצה, תוך שתי שניות (server/transfer_cap.py). */
+const TRANSFER_CAP_KEY = "intersite_rate_cap_mbps";
+const TRANSFER_CAP_MAX = 100000;
+let TRANSFER_CAP = { mbps: null, error: "" };
+
+async function loadTransferCap() {
+  try {
+    const values = await api("/settings");
+    const n = Number(values && values[TRANSFER_CAP_KEY]);
+    TRANSFER_CAP = Number.isInteger(n) && n >= 0
+      ? { mbps: n, error: "" } : { mbps: null, error: "השרת לא החזיר ערך" };
+  } catch (e) { TRANSFER_CAP = { mbps: null, error: e.message }; }
+}
+
+function transferCapText() {
+  const m = TRANSFER_CAP.mbps;
+  if (m == null) return `לא נקרא: ${esc(TRANSFER_CAP.error || "בלי סיבה")}`;
+  if (m === 0) return "ללא הגבלה";
+  const mb = m / 8;
+  return `עד ${ltr(`${m} Mb/s`)} (${ltr(`${Number.isInteger(mb) ? mb : mb.toFixed(1)} MB/s`)}) לכל העברה`;
+}
+
+/* cls: "card-h" — שורת כותרת בכרטיס (לשונית "העברות"); "sub" — שורה מתחת ל-h4 (דף המשני). */
+function transferCapStrip(cls) {
+  const btn = isAdmin() && TRANSFER_CAP.mbps != null
+    ? ` <button class="btn sm flat" type="button" onclick="transferCapSheet()">שינוי</button>` : "";
+  return `<div class="${cls} transfer-cap" title="חל על העברה לסניף ועל העברה מסניף לראשי; השינוי תופס גם העברה שכבר רצה"><span>הגבלת קצב בין אתרים: <b>${transferCapText()}</b></span>${btn}</div>`;
+}
+
+function transferCapSheet() {
+  if (!isAdmin()) return;
+  sheet({ title: "הגבלת קצב בין אתרים",
+    sub: "כמה מהקו בין האתרים מותר להעברת אימג' אחת — לסניף ומהסניף. 0 = ללא הגבלה (ברירת המחדל). השינוי תופס גם העברה שכבר רצה.",
+    fields: [{ id: "v", label: `קצב מרבי לכל העברה (Mb/s, 0–${TRANSFER_CAP_MAX})`, type: "number", value: String(TRANSFER_CAP.mbps || 0) }],
+    onSubmit: async (v) => {
+      const raw = String(v.v == null ? "" : v.v).trim();
+      const n = Number(raw);
+      if (raw === "" || !Number.isInteger(n) || n < 0 || n > TRANSFER_CAP_MAX) {
+        throw new Error(`הגבלת קצב: מספר שלם 0–${TRANSFER_CAP_MAX} (Mb/s)`);
+      }
+      await post("/settings", { [TRANSFER_CAP_KEY]: n });
+      toast(n ? `הקצב בין אתרים מוגבל ל-${n} Mb/s — נרשם ביומן` : "ללא הגבלת קצב בין אתרים — נרשם ביומן");
+      await loadTransferCap();
+      if (current === "branch") loadBranchView(); else renderCurrent();
+    } });
 }

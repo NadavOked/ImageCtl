@@ -11,7 +11,7 @@ gui_state() {
     jq -er '
       def clean: tostring | gsub("[\\r\\n|]"; " ");
       if (.known | type) != "boolean" or (.disks | type) != "array" then error("bad station state") else . end |
-      if .known == false then "message=Machine is not registered|Contact IT"
+      if .known == false then "message=המחשב אינו רשום במערכת|פנו לצוות ה-IT"
       else
         (.disks[] | select(.removable == false) |
           "disk=" + ([.dev,.model,.size_bytes,(if .has_data then 1 else 0 end),0] | map(clean) | join("|"))),
@@ -167,9 +167,9 @@ gui_header_state() {
     if [ -r "$1" ]; then
         jq -r 'def c: (. // "") | tostring | gsub("[\\r\\n|]"; " ");
             "machine_name=\(.name | c)", "server_name=\(.server_name | c)",
-            "server_version=\(.server_version | c)"' "$1" || return 1
+            "server_version=\(.server_version | c)", "tz=\(.tz | c)"' "$1" || return 1
     else
-        printf 'machine_name=\nserver_name=\nserver_version=\n'
+        printf 'machine_name=\nserver_name=\nserver_version=\ntz=\n'
     fi
     gui_server_addr || return 1
     printf 'agent_version=%s\n' "${AGENT_VERSION:-unknown}"
@@ -189,6 +189,9 @@ gui_hello_state() {
         _hello_age=$((_now - _hello_at))
     fi
     printf 'hello_age=%s\nhello_rc=%s\n' "$_hello_age" "$_hello_rc"
+    # #1483: a power-off that came back (safe_poweroff) -- on every screen, said
+    [ -s "$RUN_DIR/power.fail" ] && printf 'toast=%s\n' "$(tr -d '\r\n|' < "$RUN_DIR/power.fail")"
+    return 0
 }
 
 gui_shrink_state() {
@@ -207,7 +210,7 @@ gui_state_loop() {
     while :; do
         if ! gui_state; then
             printf 'native-gui: state could not be verified\n' >&2
-            { printf 'message=State could not be verified|Check connection; see agent log\n' &&
+            { printf 'message=לא ניתן לאמת את מצב התחנה|בדקו את החיבור לשרת. הפרטים ביומן הסוכן\n' &&
                 gui_server_addr && gui_shrink_state && gui_ask_state; } > "$GUI_DIR/state.next" &&
                 mv "$GUI_DIR/state.next" "$GUI_DIR/state" || return 1
         fi

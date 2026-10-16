@@ -101,7 +101,7 @@ def test_a_machine_never_captured_has_no_last_capture(server):
 def test_the_last_finished_capture_brings_its_used_bytes(server):
     mac = setup_build_machine(server)
     tid = make_task(server, mac).json()["id"]
-    assert do_capture(server, tid).status_code == 200
+    assert do_capture(server, tid).status_code == 202
     # קליטה מאוחרת שנכשלה אינה "הקליטה האחרונה" — אין לה מניפסט.
     failed = make_task(server, mac, name="אחרת").json()["id"]
     _report(server, failed, mac, state="failed")
@@ -115,7 +115,7 @@ def test_the_last_finished_capture_brings_its_used_bytes(server):
 def test_an_image_no_longer_in_the_library_says_so(server):
     mac = setup_build_machine(server)
     tid = make_task(server, mac).json()["id"]
-    assert do_capture(server, tid).status_code == 200
+    assert do_capture(server, tid).status_code == 202
     image_id = server["ctx"].conn.execute("SELECT image_id FROM tasks WHERE id = ?", (tid,)).fetchone()[0]
     shutil.rmtree(server["ctx"].library.root / image_id)
     last = _machine(server, mac)["last_capture"]
@@ -127,7 +127,7 @@ def test_an_unmeasured_partition_is_unknown_not_a_partial_sum(server):
     tid = make_task(server, mac).json()["id"]
     manifest = manifest_for()
     manifest["partitions"][1]["used_bytes"] = None
-    assert do_capture(server, tid, manifest=manifest).status_code == 200
+    assert do_capture(server, tid, manifest=manifest).status_code == 202
     last = _machine(server, mac)["last_capture"]
     assert last["in_library"] is True and last["used_bytes"] is None
 

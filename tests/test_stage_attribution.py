@@ -155,7 +155,7 @@ def grow_drawers(tmp_path, *, fs="ntfs", disks=("sda",), stubs=None,
         + f"export RUN_DIR={posix(run)!r} DEVROOT={posix(run)!r}/dev; "
         f". {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/waits.sh; "
         f". {posix(AGENT)}/lib/progress.sh; . {posix(AGENT)}/lib/restore.sh; "
-        f". {posix(AGENT)}/lib/expand.sh; . {posix(AGENT)}/lib/grow.sh; . {posix(AGENT)}/lib/drawers.sh; . {posix(AGENT)}/lib/verdict.sh; . {posix(AGENT)}/lib/failmark.sh; "
+        f". {posix(AGENT)}/lib/expand.sh; . {posix(AGENT)}/lib/grow.sh; . {posix(AGENT)}/lib/drawers.sh; . {posix(AGENT)}/lib/verdict.sh; . {posix(AGENT)}/lib/failmark.sh; . {posix(AGENT)}/lib/ntfsboot.sh; "
         f". {posix(AGENT)}/lib/writecheck.sh; "
         "disk_fits() { return 0; }; apply_gpt() { return 0; }; "
         "write_check() { return 0; }; write_speed_verdict() { return 0; }; "
@@ -211,7 +211,7 @@ def test_grow_failure_defers_growth_without_failing_clone(tmp_path, runner, fs, 
     assert out.strip().endswith("rc=0"), out
     assert state_of(run, "sda") == "done"
     err = error_of(run, "sda")
-    assert "done (grow deferred)" in err, err
+    assert "ההרחבה נדחתה" in err, err
     assert fs in err, err
     assert (run / "state").read_text(encoding="utf-8").strip() == "done"
 
@@ -249,7 +249,7 @@ def test_ntfsfix_failure_still_attempts_double_force_resize(tmp_path):
     })
     assert out.strip().endswith("rc=0"), out
     assert state_of(run, "sda") == "done"
-    assert "dirty flag stayed" in error_of(run, "sda"), error_of(run, "sda")
+    assert "דגל ה-dirty" in error_of(run, "sda"), error_of(run, "sda")
     # ‏ntfsfix -b -d לפני ה-resize, וגם ntfsfix -d האחרון — שניהם רצו.
     calls = (run / "ntfsfix.called").read_text(encoding="utf-8").strip().splitlines()
     dev = f"{posix(run)}/dev/sda2"
@@ -270,7 +270,7 @@ def test_one_drawer_deferring_grow_leaves_the_machine_done(tmp_path):
     assert state_of(run, "sda") == "done"
     assert error_of(run, "sda") == ""
     assert state_of(run, "sdb") == "done"
-    assert "done (grow deferred)" in error_of(run, "sdb")
+    assert "ההרחבה נדחתה" in error_of(run, "sdb")
     assert (run / "state").read_text(encoding="utf-8").strip() == "done"
 
 
@@ -339,7 +339,7 @@ def test_xfs_grow_does_not_run_the_tool_if_mount_failed(tmp_path):
     run, out = grow_drawers(tmp_path, fs="xfs", stubs=_xfs_stubs(mount="1"))
     assert out.strip().endswith("rc=0"), out
     assert state_of(run, "sda") == "done"
-    assert "done (grow deferred)" in error_of(run, "sda")
+    assert "ההרחבה נדחתה" in error_of(run, "sda")
     log = run / "order.log"
     lines = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
     assert any(line.startswith("mount ") for line in lines), lines
@@ -361,7 +361,7 @@ def _plan_drawers(tmp_path, *, plan_cmd, restore_cmd="return 0",
         f". {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/waits.sh; "
         f". {posix(AGENT)}/lib/progress.sh; . {posix(AGENT)}/lib/restore.sh; "
         f". {posix(AGENT)}/lib/expand.sh; . {posix(AGENT)}/lib/grow.sh; "
-        f". {posix(AGENT)}/lib/drawers.sh; . {posix(AGENT)}/lib/verdict.sh; . {posix(AGENT)}/lib/failmark.sh; "
+        f". {posix(AGENT)}/lib/drawers.sh; . {posix(AGENT)}/lib/verdict.sh; . {posix(AGENT)}/lib/failmark.sh; . {posix(AGENT)}/lib/ntfsboot.sh; "
         f". {posix(AGENT)}/lib/writecheck.sh; "
         "disk_fits() { return 0; }; apply_gpt() { return 0; }; "
         "write_check() { return 0; }; write_speed_verdict() { return 0; }; "
@@ -388,7 +388,7 @@ def test_manifest_plan_failure_after_gpt_fails_every_drawer(tmp_path):
     assert (run / "state").read_text(encoding="utf-8").strip() == "failed"
     for dev in ("sda", "sdb"):
         assert state_of(run, dev) == "failed", error_of(run, dev)
-        assert "could not read the partition plan" in error_of(run, dev)
+        assert "לא הצלחנו לקרוא את תוכנית המחיצות" in error_of(run, dev)
     assert not (run / "wrote").exists()
 
 
@@ -400,7 +400,7 @@ def test_an_empty_plan_is_not_a_finished_loop(tmp_path):
     assert (run / "state").read_text(encoding="utf-8").strip() == "failed"
     for dev in ("sda", "sdb"):
         assert state_of(run, dev) == "failed", error_of(run, dev)
-        assert "wrote 0 of 0 partitions" in error_of(run, dev)
+        assert "נכתבו 0 מתוך 0 מחיצות" in error_of(run, dev)
     assert not (run / "wrote").exists()
 
 
@@ -422,7 +422,7 @@ def test_a_plan_that_stops_midway_fails_the_surviving_drawers(tmp_path):
     assert (run / "state").read_text(encoding="utf-8").strip() == "failed"
     for dev in ("sda", "sdb"):
         assert state_of(run, dev) == "failed", error_of(run, dev)
-        assert "wrote 1 of 2 partitions" in error_of(run, dev)
+        assert "נכתבו 1 מתוך 2 מחיצות" in error_of(run, dev)
     assert (run / "wrote").read_text(encoding="utf-8").count("ran") == 2
 
 

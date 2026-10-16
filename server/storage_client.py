@@ -33,7 +33,9 @@ REQUEST_TIMEOUT = 15.0
 STREAM_IDLE_TIMEOUT = 60.0
 #: ‏#1286: אחרי שכל גוף ה-PUT יצא, המשני מחלץ את ה-tar ומאמת sha256 לפני
 #: שהוא עונה — דקות של שקט לגיטימי. התקרה לשקט הזה יחסית לגודל: קצב רצפה
-#: שנבחר (לא נמדד) כחמישית מ-106MB/s של סבב המעבדה (17/09).
+#: שנבחר (לא נמדד) כחמישית מ-106MB/s של סבב המעבדה (17/09). ‏#1457: משני
+#: מעודכן מחלץ ומאמת **תוך כדי** הזרם, ואחרי הבייט האחרון נשארת לו רק הכניסה
+#: לספרייה; התקרה נשארת בשביל משני בגרסה קודמת, שעדיין עושה את העבודה אחרי.
 VERIFY_MIN_RATE = 20 * 1024 * 1024
 
 
@@ -323,7 +325,9 @@ class PinnedMTLSClient:
 
         ``dest`` הוא ``Path``. אם הקובץ קיים וגודלו > 0 נשלח
         ``Range: bytes={size}-``: ‏206 ממשיך בסוף, ‏200 דורס (השרת התעלם
-        מהטווח), ‏416 = היעד כבר שלם. בלי ``Content-Length`` — כשל, לא
+        מהטווח), ‏416 = היעד כבר שלם **רק** אם ``Content-Range: bytes */N``
+        שווה לגודלו (‏#1456; אחרת כשל), ואחריו חיבור חדש — המשני סוגר
+        את החיבור על 416. בלי ``Content-Length`` — כשל, לא
         קריאה עד סגירת החיבור (עיקרון 5, keep-alive). מחזיר את גודל היעד.
         """
         from pathlib import Path
@@ -345,14 +349,23 @@ class PinnedMTLSClient:
         self._conn.sendall(("\r\n".join(lines) + "\r\n\r\n").encode())
         status, headers, rest = _read_http_headers(self._conn)
         if status == 416 and resume_from > 0:
-            # כבר שלם — לרוקן גוף JSON אם יש, כדי לא לשבור keep-alive.
-            extra = int(headers.get("content-length", "0") or 0)
-            body = rest
-            while len(body) < extra:
-                chunk = self._conn.recv(4096)
-                if not chunk:
-                    break
-                body += chunk
+            # ‏#1456: המשני סוגר את החיבור אחרי 416. חיבור חדש לבקשה הבאה —
+            # אחרת הקובץ הבא נשלח על חיבור סגור ונכשל בכל ניסיון חוזר.
+            self.close()
+            # 416 לבדו אינו "שלם" (עיקרון 5): שלם = הגודל שהמשני מדווח
+            # (‏``Content-Range: bytes */N``) שווה לגודל היעד. ה-sha256 נבדק
+            # אחר כך מול המניפסט, כמו לכל קובץ.
+            reported = headers.get("content-range", "")
+            total = reported.rpartition("/")[2] if reported.startswith("bytes */") else ""
+            if not total.isdigit():
+                raise InterserverClientError(
+                    f"{path}: 416 בלי Content-Range — המשני לא דיווח את גודל הקובץ,"
+                    f" ולא ידוע אם {resume_from} הבייטים שכבר הורדו הם הקובץ השלם")
+            if int(total) != resume_from:
+                raise InterserverClientError(
+                    f"{path}: 416 — ביעד {resume_from} בייטים, ובמשני הקובץ"
+                    f" {int(total)} בייטים; הקובץ החלקי אינו הקובץ שבמשני")
+            self.open()
             return resume_from
         if status not in (200, 206):
             raw = rest
