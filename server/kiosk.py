@@ -39,9 +39,13 @@ from .station import create_station_router
 #:  - groups ו-POST sessions — **אין להם היום צרכן בסוכן** (זרימת הכיתה שלו
 #:    עוברת ב-`/api/v1/agent/groups` ו-`/api/v1/agent/sessions`); groups אינו
 #:    מוגש ב-v1 (‏`KIOSK_CLASS_ONLY_ROUTES`), ו-POST sessions מסרב 409 בלי כיתות.
+#:  - PUT me/theme — ‏#1499 (נדב 16/10): החלפת ערכה בגואי נשמרת למשתמש עצמו
+#:    (`guibridge.sh`, ‏theme-light|theme-dark) — גם ל-deploy. זו העדפה של
+#:    המשתמש על עצמו, לא הגדרת ניהול; ‏`GET /me` נשאר מחוץ לרשימה.
 #: כל נתיב ניהול אחר באותם ראוטרים **אינו** נכנס.
 KIOSK_CONSOLE_ROUTES = frozenset({
     ("POST", "/api/console/login"),
+    ("PUT", "/api/console/me/theme"),
     ("GET", "/api/console/groups"),
     ("GET", "/api/console/images"),
     ("GET", "/api/console/folders"),

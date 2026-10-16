@@ -275,7 +275,10 @@ def test_firstboot_never_passes_deploy_if_builds_payload_and_starts_wizard() -> 
     # של בניית --source הוא git archive. הזמן מגיע ממניפסט ה-ISO (נמדד ב-QEMU 19/09).
     assert '--manifest "$ETC/iso-release.json"' in code
     helper = _strip_comments(PAYLOAD_BUILD.read_text(encoding="utf-8"))
-    assert helper.count("--skip-apt") == 2, "שני initrd (טקסט + GUI), שניהם בלי apt — החבילות מה-ISO"
+    # ‏#1465: הסקריפט מזכיר את הדגל גם בתזמון המקבילי — סופרים רק בברירת המחדל של ה-ISO.
+    iso_default = re.search(r'^    lines=\((.*?)\)$', helper, re.MULTILINE | re.DOTALL)
+    assert iso_default, "boot-payload-build.sh: the ISO default lines=(...) not found"
+    assert iso_default.group(1).count("--skip-apt") == 2, "שני initrd (טקסט + GUI), שניהם בלי apt — החבילות מה-ISO"
     assert '--source-date-epoch "$EPOCH"' in helper and "source_date_epoch" in helper
     assert "--with-gui" in helper
     assert 'systemctl start imagectl-wizard' in code

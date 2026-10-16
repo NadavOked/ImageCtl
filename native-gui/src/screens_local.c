@@ -308,7 +308,7 @@ void lc_draw_source(App *a, cairo_t *cr, double W, double H, double head_h) {
     for (int i = 0; i < n; i++) {
         if (blocked(a, i) && !bad) {
             char lb[48], v[260]; Rgb c; lc_disk_label(&l->disks[i], lb, sizeof lb); verdict_text(a, &l->disks[i], src, v, sizeof v, &c);
-            snprintf(msg, sizeof msg, "%s: %s", lb, v); bad = 1;
+            snprintf(msg, sizeof msg, "\xE2\x80\x8F%s: %s", lb, v); bad = 1;   /* #1502: RLM -- lb is the raw dev when the port is unknown */
         }
         const LcFit *f = lc_fit_of(a, l->disks[i].dev);
         if (lc_role_of(a, l->disks[i].dev) == LCR_TARGET && (!f || f->verdict == LCV_MEASURING)) meas = 1;

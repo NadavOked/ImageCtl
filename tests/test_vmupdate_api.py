@@ -17,7 +17,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from server import auth, vmdisk
+from server import auth, vmdisk, vmupdate
+from server.db import set_setting
 from server.vmupdate_api import create_vmupdate_viewer_router, qemu_handshake
 from test_vmupdate import FakeMachine, FakeQemu, fake_build, wait_for
 
@@ -34,6 +35,7 @@ def vm(server, tmp_path, monkeypatch):
         (ovmf / name).write_bytes(b"fw")
     qemu = FakeQemu()
     engine.machine = FakeMachine()
+    set_setting(engine.conn, vmupdate.NIC_KEY, "eth0")   # ‏#1468: "כרטיס לעדכוני VM"
     engine.ovmf_dir = ovmf
     engine._popen = qemu.popen
     engine._qmp = qemu.qmp

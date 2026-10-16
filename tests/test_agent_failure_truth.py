@@ -41,8 +41,8 @@ def test_final_ntfsfix_failure_is_done_with_the_dirty_flag_warning(tmp_path):
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip().endswith("rc=0")
     assert (run / "targets/sda/state").read_text().strip() == "done"
-    warning = (run / "targets/sda/error").read_text()
-    assert "filesystem grew" in warning and "dirty flag stayed" in warning
+    warning = (run / "targets/sda/error").read_text(encoding="utf-8")
+    assert "מערכת הקבצים הורחבה" in warning and "דגל ה-dirty" in warning
     assert "rc=9" in warning
 
 
@@ -56,7 +56,7 @@ def test_mounted_grow_is_not_success_when_unmount_fails(tmp_path, fs, grower):
     })
     out = sh(setup + f'grow_filesystem {fs} /dev/sda1; r=$?; echo "rc=$r error=$GROW_ERROR"')
     assert out.returncode == 0, out.stderr
-    assert "rc=1" in out.stdout and "remained mounted" in out.stdout
+    assert "rc=1" in out.stdout and "נשאר מעוגן" in out.stdout
     assert "umount refused" in (run / "agent.log").read_text()
 
 
@@ -94,5 +94,5 @@ def test_restore_plan_count_failure_is_named_before_any_partition_stream(tmp_pat
     out = sh(script)
     assert out.returncode == 0, out.stderr
     assert "rc=1" in out.stdout and "STREAMED" not in out.stdout
-    assert (run / "failure").read_text().strip() == "could not count partitions in the restore plan"
+    assert (run / "failure").read_text(encoding="utf-8").strip() == "לא הצלחנו לספור את המחיצות בתוכנית השחזור"
 

@@ -165,7 +165,7 @@ def create(conn: sqlite3.Connection, username: str, password: str, role: str, by
            *, is_builtin: bool = False, must_change_password: bool = False,
            check_policy: bool = True) -> None:
     if role not in ("admin", "deploy"):
-        raise ValueError("role must be admin or deploy")
+        raise ValueError("התפקיד חייב להיות admin או deploy")
     username = username.strip()
     if not username:
         raise ValueError("שם משתמש ריק")

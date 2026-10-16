@@ -96,7 +96,7 @@ Recorder = Callable[[str, str], bool]
 
 
 def record_step(record: Recorder | None, raw_mac: object, raw_step: object,
-                client_ip: str | None) -> bool:
+                client_ip: str | None, *, raw_up: object = None) -> bool:
     """רושם פירור אחד. לעולם לא זורקת — הקורא מחזיר ל-GRUB 200 בכל מקרה.
 
     כל דחייה נכתבת ליומן השרת, ובכוונה: הבקשה עצמה היא הדבר היחיד
@@ -118,10 +118,23 @@ def record_step(record: Recorder | None, raw_mac: object, raw_step: object,
                     raw_step, mac)
         return False
     try:
-        return bool(record(mac, raw_step))
+        recorded = bool(record(mac, raw_step))
     except Exception:  # noqa: BLE001 — אבחון שמפיל בקשת אתחול הוא נזק
         log.exception("could not record boot step %s for %s", raw_step, mac)
         return False
+    if recorded and raw_up is not None:
+        try:
+            marks = trace.parse_marks(raw_up)
+            if marks is None:
+                log.warning("boot marks %r from %s (%s) are malformed -- not logged",
+                            raw_up, mac, client_ip)
+            else:
+                log.info("boot marks %s %s: %s", raw_step, mac,
+                         " ".join(f"{key}={value:.2f}"
+                                  for key, value in marks.items()))
+        except Exception:  # noqa: BLE001 — diagnostics never alter the step result
+            log.exception("could not log boot marks for %s", mac)
+    return recorded
 
 
 def gui_initrd_path(boot_dir: str | Path | None) -> str | None:
@@ -221,7 +234,8 @@ def create_boot_asgi(resolve: Resolver, config: GrubConfig,
             record_step(record,
                         (params.get("mac") or [None])[0],
                         (params.get("s") or [None])[0],
-                        client_ip)
+                        client_ip,
+                        raw_up=(params.get("up") or [None])[0])
             await send_all(send, 200, trace.TINY_BODY, MEDIA_TYPE.encode())
             return
 

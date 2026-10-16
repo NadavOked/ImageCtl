@@ -120,7 +120,7 @@ test('one grouped table: header counters + pills, three tabs, build → cloners 
   assert.match(b1,/st warn">ממתין למפעיל: תפריט</,'prompt beats everything');
   assert.doesNotMatch(b1,/monitorMachine\(/,'monitor lives only on the monitor page (Nadav 17/09: "במקום החדש שביקשתי ורק שם")');
   const c2=between(html,'data-mac="78:ac:c0:9b:11:c2"','data-mac="b4:2e:99:07:1a:c1"');
-  assert.match(c2,/3 חריצי SATA/); assert.match(c2,/3 · <bdi dir="ltr">256GB<\/bdi> <span class="pill err">דיסק 3 אדום</);
+  assert.match(c2,/3 חריצים/,'#1485: the slot count of a cloner (by its mapping)'); assert.match(c2,/3 · <bdi dir="ltr">256GB<\/bdi> <span class="pill err">דיסק 3 אדום</);
   assert.doesNotMatch(c2,/sd[abc]/,'never sd*'); assert.match(c2,/st ok">מחובר</);
   const l1=between(html,'data-mac="b4:2e:99:07:1a:c1"','data-mac="b4:2e:99:07:1a:c2"');
   assert.match(l1,/st run">בסבב · ממתין להתחלה</); assert.doesNotMatch(l1,/monitorMachine/,'classroom rows: no monitor (server allows build/cloner only)');
@@ -212,10 +212,11 @@ test('the machine drawer: header line, actions (monitor, WoL for the room, "requ
   assert.doesNotMatch(html,/SSH|SHA256:/,'#1266: no SSH host-key row in the drawer');
   assert.match(html,/<div class="sec" data-cnt="3">דיסקים<\/div>/,'#1300: the disks tab carries its count');
   assert.doesNotMatch(html,/דיווח אחרון/,'the compact disk list omits the report caption');
-  assert.match(html,/<tr data-slot="sata%3A1"><td><b>דיסק 1<\/b><\/td><td><span class="mono">SATA 0<\/span><\/td><td>870 <bdi dir="ltr">256GB<\/bdi><\/td>/);
-  assert.doesNotMatch(html,/S5Y30|SMART תקין|SMART לא נבדק/,'serials and non-bad SMART are absent from the disk list');
+  assert.match(html,/<table class="n-tbl disk-map"><thead><tr><th>דיסק<\/th><th>חיבור<\/th><th>גודל<\/th><th>SMART<\/th>/,'#1485: the mockup table (W.machDrawer) + the connection column');
+  assert.match(html,/<tr class="" data-slot="1"><td><b>דיסק 1<\/b><\/td><td><select class="n-in conn-sel"[^>]*><option value="sata:1" selected>SATA 0<\/option>[^]*?<\/select><\/td><td><span class="mono"><bdi dir="ltr">256GB<\/bdi><\/span> <span class="cap">870<\/span><\/td>/);
+  assert.doesNotMatch(html,/S5Y30|SMART תקין|SMART לא נבדק/,'serials are absent from the disk list; SMART is a chip in its own column');
   assert.doesNotMatch(html,/sd[abc]/,'never sd*');
-  assert.match(html,/3 חריצים מוגדרים · <a[^>]*editDrawerCount\(/);
+  assert.match(html,/slotEditAdd\('78%3Aac%3Ac0%3A9b%3A11%3Ac2'\)">\+ הוסף חריץ</,'#1485: the count is set in the disks tab — the separate dialog is gone'); assert.doesNotMatch(html,/editDrawerCount/);
   assert.match(html,/<span class="k">דגם<\/span><span class="v">LENOVO M720q</); assert.match(html,/<span class="k">TPM<\/span><span class="v">לא נבדק</); assert.match(html,/דף הדרייברים לא נטען/);
   assert.match(html,/טוען את היומן…/);
   const j=requests.find(r=>r.url.startsWith('/api/console/journal?'));
@@ -227,10 +228,10 @@ test('the machine drawer: header line, actions (monitor, WoL for the room, "requ
   run('removeMachine("78:ac:c0:9b:11:c2")'); assert.equal(run('formOptions.verify'),undefined,'#1270: no typed name'); assert.equal(run('formOptions.danger'),true);
 
   run("openMachineDetail('c8%3Ad9%3Ad2%3A0b%3Afe%3A34')"); html=node('#drawerBody').innerHTML; balanced(html);
-  assert.match(html,/המכונה מעולם לא דיווחה על כוננים/); assert.match(html,/המכונה מעולם לא דיווחה על חומרה/); assert.doesNotMatch(html,/חריצים מוגדרים/,'slots are a cloner thing');
+  assert.match(html,/המכונה מעולם לא דיווחה על חומרה/); assert.match(html,/המכונה מעולם לא דיווחה על כוננים/,'no slots declared and nothing reported is said, not drawn');
   run("openMachineDetail('a0:48:1c:8a:18:40')"); html=node('#drawerBody').innerHTML;
-  assert.match(html,/2 חריצים מוגדרים/);
-  assert.match(html,/data-slot="sata%3A1"[^]*SATA 0[^]*ריק[^]*data-slot="sata%3A2"[^]*SATA 1[^]*ריק/,'reported-empty cloner renders its configured slots as empty rows');
+  assert.match(html,/<div class="sec" data-cnt="2">דיסקים/);
+  assert.match(html,/data-slot="1"[^]*selected>SATA 0[^]*ריק[^]*data-slot="2"[^]*selected>SATA 1[^]*ריק/,'reported-empty cloner renders its configured slots as empty rows');
   run("openMachineDetail('b4:2e:99:07:1a:c3')"); html=node('#drawerBody').innerHTML;
   assert.match(html,/title="v2">WoL ואתחול מרחוק — לתחנות כיתה ב-v2</,'classroom: WoL (#984) and reboot are v2, not buttons'); assert.doesNotMatch(html,/monitorMachine|openMachineMonitor/); assert.match(html,/st warn">חסר בסבב</);
   assert.doesNotMatch(html,/rebootMachine\(|wakeMachine\(/);
@@ -246,6 +247,28 @@ test('#977 §7: firmware, Secure Boot and the agent version from /machines in "w
   set({firmware:'uefi',secure_boot:null}); assert.match(cell('קושחה'),/UEFI · <span class="muted">Secure Boot לא דווח<\/span>/,'null is not off');
   set({firmware:'bios',secure_boot:null}); assert.match(cell('קושחה'),/^BIOS$/,'BIOS has no Secure Boot to report');
   set({agent_version:'unknown'}); assert.match(cell('סוכן'),/לא ידוע — סוכן ישן/,'the server stores "unknown" for a missing/invalid version');
+});
+
+test('Nadav 15/10: the NIC speed in the drawer and on the cloner card — reported, set by hand, or assumed (said as an assumption); admin edit PUTs nic_speed_mbps', async () => {
+  const {run,node,requests}=setup();
+  const mac='78:ac:c0:9b:11:c2';
+  const cell=()=>{ const h=node('#drawerBody').innerHTML; const m=h.match(/<span class="k">כרטיס רשת<\/span><span class="v">(.*?)<\/span>(?=<span class="k">|<\/div>)/); return m&&m[1]; };
+  const set=(f)=>run(`Object.assign(MACHINES.find(m=>m.mac==='${mac}'),${JSON.stringify(f)}); openMachineDetail('${mac}')`);
+  set({nic_speed:{speed_mbps:1000,source:'reported',why:null}}); assert.match(cell(),/^1Gb\/s \(מדווח\) <a[^>]*editNicSpeed\(/);
+  set({nic_speed:{speed_mbps:2500,source:'manual',why:null}}); assert.match(cell(),/^2.5Gb\/s \(הוגדר ידנית\)/);
+  set({nic_speed:{speed_mbps:1000,source:'assumed',why:'no_probe'}}); assert.match(cell(),/^לא ידוע — הונח 1Gb\/s/,'an assumption is never shown as a measurement');
+  assert.doesNotMatch(cell(),/מדווח/);
+  set({nic_speed:undefined}); assert.match(cell(),/^לא ידוע/,'old server: no field = unknown');
+  assert.equal(run(`machineSub(Object.assign({},MACHINES.find(m=>m.mac==='${mac}'),{nic_speed:{speed_mbps:10000,source:'reported'}}))`).includes('כרטיס רשת: 10Gb/s (מדווח)'),true);
+  set({nic_speed:{speed_mbps:2500,source:'manual',why:null}});
+  run(`editNicSpeed('${encodeURIComponent(mac)}')`);
+  assert.equal(run('formOptions.fields[0].value'),'2500');
+  assert.deepEqual(JSON.parse(run('JSON.stringify(formOptions.fields[0].options.map(o=>o.label))')),['אוטומטי','1Gb/s','2.5Gb/s','10Gb/s']);
+  await run('formOptions.onSubmit({nic_speed:"auto"})');
+  const put=requests.filter(r=>r.options.method==='PUT').pop();
+  assert.equal(put.url,'/api/console/machines/78%3Aac%3Ac0%3A9b%3A11%3Ac2'); assert.deepEqual(JSON.parse(put.options.body),{nic_speed_mbps:null});
+  await run('formOptions.onSubmit({nic_speed:"10000"})');
+  assert.deepEqual(JSON.parse(requests.filter(r=>r.options.method==='PUT').pop().options.body),{nic_speed_mbps:10000});
 });
 
 test('#977 §4: reboot from the drawer — a confirm window with the consequences and a red button (#1270), the machine name rides along, the answer is "requested"', async () => {
@@ -300,8 +323,8 @@ test('the class as an object: crumbs, header, KPIs with meaning only, the same t
   assert.doesNotMatch(html,/קידומת/,'prefix comes only from a session'); assert.match(html,/<div class="kpi "><div class="l">סבב פעיל<\/div><div class="v"><bdi dir="auto">אין/);
   assert.match(html,/<div class="kpi "><div class="l">דיסקים<\/div><div class="v"><bdi dir="auto">לא נקרא/,'failures unread ≠ none');
   run("openClass('grp_CLONERS')"); html=run('machines(0)');
-  assert.match(html,/wakeRoom\(\)">הער את כולם \(WoL\)</); assert.doesNotMatch(html,/הפץ לכיתה|renameGroup/); assert.match(html,/role="tab"[^>]*>מגירות</,'wave 3a: the cloners object');
-  assert.match(html,/crumbs">[^]*<span>מחשבי שיכפול<\/span><span>\/<\/span><span>מחשבי שיכפול<\/span>/,'same pattern serves the fixed groups (wave 3a)');
+  assert.match(html,/poweroffRoom\('grp_CLONERS'\)">כיבוי כולם…</); assert.doesNotMatch(html,/הפץ לכיתה|renameGroup|role="tab"/,'#1485: the cloners page of the mockup — no tabs');
+  assert.match(html,/crumbs">[^]*openMachinesPage\(\)">מחשבים<\/a><span>\/<\/span><span>מחשבי שיכפול<\/span><\/div>/,'the fixed group is the "מחשבי שיכפול" page of the mockup');
 });
 
 test('tree clicks: every group opens its object (wave 3a: build/cloner too); an unknown group id filters the table with a visible, clearable strip', () => {
@@ -403,32 +426,26 @@ test('deploy role: the page is not allowed at all, and the tree node is admin-on
 });
 
 // --- נדב 17/09: צומת-אב בעץ = דף המחשבים ממוקד לתפקיד, בלי "נראו ברשת" ---------
-test('a parent tree node opens the machines page focused on one role, without the seen-on-network tab', () => {
-  const {run,ctx,fixtures}=setup();
+test('#1485: the tree leaves "מחשבי בנייה" / "מחשבי שיכפול" open the mockup pages of the fixed groups; "כיתות" stays the focused table', () => {
+  const {run}=setup();
   run("selectMachinesRole('build')");
   assert.equal(run('MACHINES_ROLE'),'build'); assert.equal(run('MACHINES_CLASS'),null); assert.equal(run('MACHINES_FILTER'),null);
   let html=run('machines(0)'); balanced(html);
   assert.match(html,/obj-name">מחשבי בנייה</,'the page is named after the role');
-  assert.match(html,/2 רשומים/); assert.doesNotMatch(html,/2 כיתות · 2 מחשבי בנייה/,'counters are for this role only');
-  assert.doesNotMatch(html,/role="tab"[^>]*>נראו ברשת/,'no seen-on-network tab');
-  assert.match(html,/role="tab"[^>]*>מחשבי בנייה</); assert.match(html,/role="tab"[^>]*>דיסקים אדומים \(1\)</);
-  assert.match(html,/openAddMachine\(\{role:'build'\}\)">\+ מחשב/);
+  assert.doesNotMatch(html,/role="tab"/,'P.build has no tabs');
+  assert.match(html,/openAddMachine\(\{group:'grp_BUILD'\}\)">\+ מחשב בנייה/);
   assert.doesNotMatch(html,/ייבוא בהדבקה|ייצוא CSV/,'role pages use cards instead of filtered-table controls');
-  assert.match(html,/class="mgrid wide"/); assert.match(html,/>קליטה<\/button>/);
+  assert.match(html,/class="c12 grid2"/);
   assert.doesNotMatch(html,/data-mac="78:ac:c0:9b:11:c2"/,'cloners are not in the build page');
   assert.match(html,/data-mac="c8:d9:d2:0b:fe:32"/,'the build machine is');
   run('MACHINES=[]'); html=run('machines(0)');
-  assert.match(html,/openAddMachine\(\{role:'build'\}\)">\+ מחשב/,'the zero-machine role page keeps the fixed build group');
-  ctx.MACHINES=fixtures.machines;
-  // הלשונית השנייה של הדף הממוקד היא דיסקים אדומים (לא "נראו ברשת")
-  html=run('machines(1)'); assert.match(html,/clearDiskFailure|דיסקים אדומים/); assert.doesNotMatch(html,/renderSeenDevices|לא רשום — רשום/);
+  assert.match(html,/אין מחשב בנייה רשום/); assert.match(html,/openAddMachine\(\{group:'grp_BUILD'\}\)">\+ מחשב בנייה/,'the zero-machine page keeps the fixed build group');
   run("selectMachinesRole('cloner')"); html=run('machines(0)');
-  assert.match(html,/openAddMachine\(\{role:'cloner'\}\)">\+ מחשב/);
-  assert.doesNotMatch(html,/ייבוא בהדבקה|ייצוא CSV/); assert.match(html,/wakeRoom\(\)">הער את כולם \(WoL\)/); assert.match(html,/poweroffRoom\('grp_CLONERS'\)">כיבוי כולם/);
+  assert.match(html,/openAddMachine\(\{group:'grp_CLONERS'\}\)">\+ מחשב שיכפול/);
+  assert.doesNotMatch(html,/ייבוא בהדבקה|ייצוא CSV|wakeRoom/); assert.match(html,/poweroffRoom\('grp_CLONERS'\)">כיבוי כולם…/);
   run("selectMachinesRole('classroom')"); html=run('machines(0)');
   assert.match(html,/obj-name">כיתות</); assert.match(html,/2 כיתות/);
   assert.doesNotMatch(html,/data-mac="c8:d9:d2:0b:fe:32"/);
-  // חזרה ל"מחשבים" מנקה את המיקוד
   run('openMachinesPage()'); assert.equal(run('MACHINES_ROLE'),null);
   assert.match(run('machines(0)'),/obj-name">מחשבים</);
 });

@@ -50,6 +50,7 @@ capture_space_preflight() {
         else
             _cs_used=$(_used_bytes "$_cs_node" "$_cs_fs")
         fi
+        cd_used "$_cs_i" "$_cs_used" 2>/dev/null || :   # #1505
         case "$_cs_used" in ''|*[!0-9]*) _cs_used=null ;; esac
         _cs_parts="$_cs_parts${_cs_parts:+,}{\"index\":$_cs_i,\"used_bytes\":$_cs_used}"
     done < "$3"
@@ -78,8 +79,10 @@ capture_stage() {
 }
 
 upload_manifest() {
-    # $1 = task id, $2 = manifest path. The server checks every sha256 inside
-    # this PUT -- that wait is the "verify" stage.
+    # $1 = task id, $2 = manifest path. #1470: the server answers 202 after its
+    # cheap checks (every file arrived, the sha256 it computed while receiving
+    # matches) and re-reads every file in the background; the image enters the
+    # library only when that passes. This machine is released here.
     capture_stage verify
     curl -sfS -X PUT -H "Content-Type: application/json" \
         -H "X-Imagectl-Task-Token: ${TASK_TOKEN:-}" \

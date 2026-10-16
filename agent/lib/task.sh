@@ -48,7 +48,7 @@ do_task() {
             # 11/10 (askgui.sh). Power off is the default: no GUI, no answer
             # within CAPTURE_END_ASK_S -- the drive is pulled from a machine
             # that is off, the protection that was here before #409.
-            case "$(attended "Capture complete: power off, or back to the menu" \
+            case "$(attended "הקליטה הושלמה: לכבות או לחזור לתפריט" \
                     gui_ask_choice capture-end "${CAPTURE_END_ASK_S:-20}" "" "${CAPTURE_END_ASK_S:-20}")" in
                 menu)
                     log "capture complete -- back to the menu (operator's choice)"
@@ -58,10 +58,10 @@ do_task() {
             esac
             [ "${IMAGECTL_TEST:-0}" = "1" ] && exit 0
             finish_and_stop
-            # #1222: finish_and_stop returns only when no NIC took Wake-on-LAN
+            # #1222: finish_and_stop returns only when the machine stayed on (#1483: WoL, or poweroff)
             # (#587) -- the machine stays on, like the idle power-off. The
             # capture is done and reported; this is not the failure path.
-            task_done_stays_on "Capture complete. The image is in the library."
+            task_done_stays_on "Capture complete. The server is verifying the image before it enters the library."
             return 0
         fi
         log "manifest upload failed"
@@ -79,9 +79,18 @@ task_done_stays_on() {
     # armed for Wake-on-LAN: say so on the screen and go back to the loop.
     # _build_standby keeps this screen up: build_console_screen does not boot
     # the machine to its local disk for want of a GUI after a finished task.
-    log "task complete -- wol not armed, staying powered on"
+    # #1483: the reason safe_poweroff gave. Not always Wake-on-LAN: a poweroff
+    # that came back (HP-BUILD 16/10) was logged "wol not armed" a line after
+    # "wol: eth0 armed" -- two contradicting lines, and the real one unsaid.
+    if [ "${POWEROFF_WHY:-}" = poweroff ]; then
+        log "task complete -- the power-off did not take, staying powered on"
+        _td_why="The power-off command returned and this computer is still on: power it off by hand."
+    else
+        log "task complete -- wol not armed, staying powered on"
+        _td_why="Wake-on-LAN could not be armed, so this computer stays on."
+    fi
     ui_clear; ui_header
     echo "  $1"
-    echo "  Wake-on-LAN could not be armed, so this computer stays on."
+    echo "  $_td_why"
     _build_standby=1
 }

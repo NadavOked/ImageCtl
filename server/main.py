@@ -18,7 +18,7 @@ import threading
 import urllib.parse
 from pathlib import Path
 
-from . import deploy_net, identity
+from . import deploy_net, drive_rates, identity
 
 
 def _configure_stdio() -> None:
@@ -527,6 +527,9 @@ def main() -> None:
                              # ‏#1013: קובץ ה-dnsmasq הראשי נגזר מה-DB בעלייה —
                              # כאן בלבד, מאותו טעם כמו known_macs_hooks.
                              sync_dnsmasq=True,
+                             # הכרעת נדב 15/10: הגג והפתיחה של הקצב לפי מהירות
+                             # כרטיס ההפצה — כאן בלבד, כמו sync_dnsmasq.
+                             link_speed=drive_rates.read_link,
                              # ‏#855: מותקן כאן תמיד — כמו known_macs_hooks,
                              # ומאותו טעם: ברירת מחדל ב-create_runtime הייתה
                              # קוראת את קובץ המכונה בכל הרצת pytest.
@@ -539,7 +542,9 @@ def main() -> None:
                                            "servers_nic": servers_nic_status},
                              deploy=deploy_ctx,
                              # ‏#1372: המארח של עדכון ה-VM — שואל, ומכין אם חסר.
-                             vm_host=True)
+                             vm_host=True,
+                             # ‏#1494: used_bytes לאימג'ים ישנים מכותרת partclone.
+                             backfill_used_bytes=True)
     # ‏#1372: עדכון מהכפתור רץ בסקריפט של התג **הישן**, ולכן ההכנה של הגרסה
     # הזו אינה תלויה בו: מארח שאינו מוכן — install/vmupdate-host.sh שלנו, ברקע.
     # ‏getattr: בדיקות של main מחליפות את create_runtime ברשומה משלהן.
