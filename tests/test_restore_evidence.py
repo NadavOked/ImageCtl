@@ -292,7 +292,7 @@ def test_apply_gpt_restores_partition_attribute_bits(tmp_path):
     out = sh(prelude + 'apply_gpt sda m.json; echo "rc=$?"')
     assert rc_of(out) == "rc=0", out
     calls = (box / "sgdisk.calls").read_text().splitlines()
-    creates = [line for line in calls if line.startswith("-n ")]
+    creates = [line for line in calls if line.startswith("-a 1 -n ")]
     assert len(creates) == len(plan)
     for index, call in enumerate(creates, 1):
         assert f"-A {index}:=:0x{attrs}" in call, call

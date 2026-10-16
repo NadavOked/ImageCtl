@@ -186,7 +186,7 @@ build_disk_entry() {
 
     printf '{"dev":"%s","size_bytes":%s,"model":"%s","serial":%s,"removable":%s,"scheme":"%s","has_data":%s,"port":%s,"smart":"%s","smart_reason":"%s"%s}' \
         "$_name" "$_size" "$(json_escape "$_model")" "$_serial_json" \
-        "$_removable" "$_scheme" "$_has" "$_port_json" "$_smart" "$(json_escape "$_smart_r")" "$(command -v disk_link_json >/dev/null 2>&1 && disk_link_json "$_name")"   # #432
+        "$_removable" "$_scheme" "$_has" "$_port_json" "$_smart" "$(json_escape "$_smart_r")" "$(command -v disk_link_json >/dev/null 2>&1 && disk_link_json "$_name")$(command -v disk_pci_json >/dev/null 2>&1 && disk_pci_json "$_name")"   # #432+#1485
 }
 
 list_disks() {
@@ -275,5 +275,5 @@ build_hello() {
         "$_mac" "$_all" "$IP" "$_uuid_json" \
         "$(detect_firmware)" "$(detect_secure_boot)" "$AGENT_VERSION" \
         "$(detect_memory_bytes)" "$_joining" "$_disks" "$(disk_probe)" \
-        "$_msecret" "$(command -v inventory_json >/dev/null 2>&1 && inventory_json)$(command -v probe_json >/dev/null 2>&1 && probe_json)$(command -v netprobe_json >/dev/null 2>&1 && netprobe_json)" "$_wol"
+        "$_msecret" "$(command -v inventory_json >/dev/null 2>&1 && inventory_json)$(command -v probe_json >/dev/null 2>&1 && probe_json)$(command -v netprobe_json >/dev/null 2>&1 && netprobe_json)$(command -v optical_json >/dev/null 2>&1 && optical_json)" "$_wol"
 }

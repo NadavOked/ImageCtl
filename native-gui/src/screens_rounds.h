@@ -29,9 +29,22 @@ int smart_level(const char *smart);
 Rgb smart_color(const Theme *t, const char *smart);
 const char *smart_he(const char *smart);
 const IdleDisk *idle_for_port(const State *s, int port);
+/* #1495: drawer mapping. A zero struct field is the legacy port convention. */
+int eff_drawer(int drawer, int port);
+void conn_text(const char *conn, int port, const char *dev, char *out, size_t n);
+void unmapped_label(const char *name, const char *conn, int port, const char *dev, char *out, size_t n);
+int cloner_bay_count(const State *s);
+const IdleDisk *idle_for_bay(const State *s, int bay);
+const Drawer *drawer_for_bay(const State *s, int bay);
+const COptical *optical_for_bay(const State *s, int bay);
+void cloner_bay_conn(const State *s, int bay, char *out, size_t n);
 /* #704: the cloner's label of SATA slot <port> -- its cslot_name, else
  * "דיסק N". <out> >= SLOT_NAME_MAX + 16 bytes, or a long name is cut. */
-void cloner_slot_label(const State *s, int port, char *out, size_t n);
+void cloner_slot_label(const State *s, int bay, char *out, size_t n);
+void cloner_port_label(const State *s, int port, char *out, size_t n);
+int room_selectable(const RoomDrawer *d);
+void room_drawer_label(const Machine *m, const RoomDrawer *d, char *out, size_t n);
+int room_rows(const Machine *m);
 /* The status span of room.js machineRows / classes.js renderLive, as Pango
  * markup (room-ok / room-bad / room-warn colours); <out> >= 640 bytes. */
 void room_status_markup(const App *a, const Machine *m, int mode, char *out, size_t n);
@@ -71,7 +84,7 @@ int image_options(const App *, const char **, char (*)[168], int);
 int room_drv_options(const App *a, const char **opts, char (*buf)[200], int max);
 double room_drv_block_height(App *a, cairo_t *cr, double w);
 Rect room_drv_block_draw(App *a, cairo_t *cr, double x, double y, double w);
-void room_drv_tag_draw(App *a, cairo_t *cr, Rect slot, const Machine *m, int mi, int port);
+void room_drv_tag_draw(App *a, cairo_t *cr, Rect slot, const Machine *m, int mi, int drawer_index);
 Text room_drv_summary_make(App *a, cairo_t *cr, double w);
 double room_drv_summary_height(const Text *t);
 void room_drv_summary_draw(App *a, cairo_t *cr, double x, double y, double w, Text *t);

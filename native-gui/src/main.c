@@ -47,6 +47,7 @@
 #include "ui.h"
 #include "utf8.h"
 #include "lcui.h"   /* #1322 */
+#include "screens_rounds.h"
 
 static volatile sig_atomic_t stop_now = 0;
 static void on_signal(int sig) { (void)sig; stop_now = 1; }
@@ -540,7 +541,7 @@ static int room_selection_encode(const App *a, char *out, size_t n) {
         int first = 1;
         for (int i = 0; i < m->nroom_drawers; i++) {
             const RoomDrawer *d = &m->room_drawers[i];
-            if (!d->present || d->port < 1) continue;
+            if (!room_selectable(d)) continue;
             if (!room_effective_selected(a, m, d)) continue;
             int k = snprintf(out + used, n - used, "%s%s%s%d",
                              first ? (drawers ? "/" : "") : ",",
@@ -686,7 +687,7 @@ static int room_effective_selected(const App *a, const Machine *m,
 }
 
 static void room_toggle_selected(App *a, int mi, int port) {
-    if (mi < 0 || mi >= a->st.nmachines || port < 1 || port > MAX_DRAWERS) return;
+    if (mi < 0 || mi >= a->st.nmachines || port < 1 || port > 32) return;
     Machine *m = &a->st.machines[mi];
     RoomDrawer *d = NULL;
     for (int i = 0; i < m->nroom_drawers; i++)
@@ -694,7 +695,7 @@ static void room_toggle_selected(App *a, int mi, int port) {
             d = &m->room_drawers[i];
             break;
         }
-    if (!m->awake || !d) return;
+    if (!m->awake || !d || !room_selectable(d)) return;
     for (int i = 0; i < a->nroom_selection; i++)
         if (a->room_selection[i].port == port &&
             strcmp(a->room_selection[i].mac, m->mac) == 0) {
@@ -713,6 +714,10 @@ static void room_toggle_selected(App *a, int mi, int port) {
 
 /* #714: set (not toggle) one disk's override. */
 static void room_set_selected(App *a, const Machine *m, int port, int val) {
+    const RoomDrawer *drawer = NULL;
+    for (int j = 0; j < m->nroom_drawers; j++)
+        if (m->room_drawers[j].port == port) { drawer = &m->room_drawers[j]; break; }
+    if (!drawer || !room_selectable(drawer)) return;
     for (int i = 0; i < a->nroom_selection; i++)
         if (a->room_selection[i].port == port &&
             strcmp(a->room_selection[i].mac, m->mac) == 0) {
@@ -738,7 +743,7 @@ static int room_range_all_selected(const App *a, int begin, int end) {
         if (!m->awake) continue;
         for (int j = 0; j < m->nroom_drawers; j++) {
             const RoomDrawer *d = &m->room_drawers[j];
-            if (!d->present) continue;
+            if (!room_selectable(d)) continue;
             any = 1;
             if (!room_effective_selected(a, m, d)) return 0;
         }
@@ -755,7 +760,7 @@ static void room_select_range(App *a, int begin, int end) {
         if (!m->awake) continue;
         for (int j = 0; j < m->nroom_drawers; j++) {
             const RoomDrawer *d = &m->room_drawers[j];
-            if (d->present) room_set_selected(a, m, d->port, val);
+            if (room_selectable(d)) room_set_selected(a, m, d->port, val);
         }
     }
 }
@@ -802,14 +807,18 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
         if (id >= HIT_ROOM_DISK_BASE &&
             id < HIT_ROOM_DISK_BASE + MAX_ROOM_SELECTIONS) {
             int encoded = id - HIT_ROOM_DISK_BASE;
-            room_toggle_selected(a, encoded / MAX_DRAWERS, encoded % MAX_DRAWERS + 1);
+            int mi = encoded / MAX_DRAWERS, j = encoded % MAX_DRAWERS;
+            if (mi < a->st.nmachines && j < a->st.machines[mi].nroom_drawers)
+                room_toggle_selected(a, mi, a->st.machines[mi].room_drawers[j].port);
             break;
         }
         /* #1269: a disk's drivers tag (pick mode): the current model, or "בלי" */
         if (id >= HIT_ROOM_DTAG_BASE &&
             id < HIT_ROOM_DTAG_BASE + MAX_ROOM_SELECTIONS) {
             int encoded = id - HIT_ROOM_DTAG_BASE;
-            room_drv_tag_click(a, encoded / MAX_DRAWERS, encoded % MAX_DRAWERS + 1);
+            int mi = encoded / MAX_DRAWERS, j = encoded % MAX_DRAWERS;
+            if (mi < a->st.nmachines && j < a->st.machines[mi].nroom_drawers)
+                room_drv_tag_click(a, mi, a->st.machines[mi].room_drawers[j].port);
             break;
         }
         /* #65 "כבה אותו": asks first (#1270); the machine's name is the confirmation */
@@ -1045,8 +1054,8 @@ static void after_reload(App *a) {
 static void sample_state(State *s) {
     memset(s, 0, sizeof *s);
     s->ndisks = 2;
-    s->disks[0] = (Disk){ "/dev/sda", "Samsung SSD 870 EVO 500GB", 500107862016ULL, 1, 0 };
-    s->disks[1] = (Disk){ "/dev/nvme0n1", "WD Blue SN580 1TB", 1000204886016ULL, 0, 0 };
+    s->disks[0] = (Disk){ "/dev/sda", "Samsung SSD 870 EVO 500GB", 500107862016ULL, 1, 0, 0, 0, "" };
+    s->disks[1] = (Disk){ "/dev/nvme0n1", "WD Blue SN580 1TB", 1000204886016ULL, 0, 0, 0, 0, "" };
     s->nfolders = 2;
     snprintf(s->folders[0], sizeof s->folders[0], "Office");
     snprintf(s->folders[1], sizeof s->folders[1], "הנדסאים");
@@ -1105,9 +1114,9 @@ static void sample_state(State *s) {
     snprintf(s->sess_group, sizeof s->sess_group, "כיתה 12");
     s->sess_open = 1; s->joined = 3; s->expected = 14; s->starts_in = 272;
     s->ndrawers = 3;
-    s->drawers[0] = (Drawer){ 1, "sda", "writing", "", 44814663680ULL, 85899345920ULL, 98000000, 419 };   /* #410 */
-    s->drawers[1] = (Drawer){ 2, "sdb", "failed", "", 0, 85899345920ULL, -1, -1 };
-    s->drawers[2] = (Drawer){ 3, "sdc", "waiting", "", 0, 85899345920ULL, -1, -1 };
+    s->drawers[0] = (Drawer){ 1, "sda", "writing", "", 44814663680ULL, 85899345920ULL, 98000000, 419, 0, "" };   /* #410 */
+    s->drawers[1] = (Drawer){ 2, "sdb", "failed", "", 0, 85899345920ULL, -1, -1, 0, "" };
+    s->drawers[2] = (Drawer){ 3, "sdc", "waiting", "", 0, 85899345920ULL, -1, -1, 0, "" };
     snprintf(s->cloner_image, sizeof s->cloner_image, "Office 2024 — סטנדרט");
     s->smart_pending = 1; s->smart_port = 2;
     snprintf(s->smart_nonce, sizeof s->smart_nonce, "1-2");
@@ -1190,7 +1199,8 @@ static void png_setup(App *a, const State *base, const char *card) {
         a->mode = MODE_ROOM; a->room_target_set = 0; a->nroom_selection = 0;
         for (int i = 0; i < a->st.nmachines; i++)
             for (int j = 0; a->st.machines[i].awake && j < a->st.machines[i].nroom_drawers; j++)
-                room_set_selected(a, &a->st.machines[i], a->st.machines[i].room_drawers[j].port, 1);
+                if (room_selectable(&a->st.machines[i].room_drawers[j]))
+                    room_set_selected(a, &a->st.machines[i], a->st.machines[i].room_drawers[j].port, 1);
         a->drv_on = 1; a->drv_pick = 1;
         for (int i = 0; i < a->st.nmachines; i++)
             if (a->st.machines[i].awake && a->st.machines[i].nroom_drawers > 1) {

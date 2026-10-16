@@ -329,6 +329,10 @@ def create_runtime(
     # ‏#1372: ראו ``ServerRuntime.vm_host``. ‏False כברירת מחדל מאותו טעם כמו
     # ``sync_dnsmasq``: רק ``main`` שואל את המארח שהוא רץ עליו.
     vm_host: bool = False,
+    # הכרעת נדב 15/10: ‏`drive_rates.read_link` — מהירות כרטיס ההפצה, הגג
+    # והפתיחה של הקצב לפיה. ‏None כברירת מחדל מאותו טעם כמו ``sync_dnsmasq``:
+    # רק ``main`` קורא את ‎/sys של המכונה; בלעדיו — 600m/900m של היום.
+    link_speed=None,
 ) -> ServerRuntime:
     """בונה את המצב המשותף פעם אחת ומריץ את האתחול החד-פעמי.
 
@@ -429,11 +433,13 @@ def create_runtime(
         **({"max_wait": sender_max_wait} if sender_max_wait is not None else {}),
         **({"start_timeout": sender_start_timeout}
            if sender_start_timeout is not None else {}),
+        link_speed=link_speed,
         # ‏#447 + קצב אוטומטי (11/10): הקצב לגל — מהגל הקודם עם אותם כוננים
-        # והכוננים שבו, לעולם לא מעל `max_bitrate` (בלעדיו — 900m).
+        # והכוננים שבו, לעולם לא מעל `max_bitrate` (בלעדיו — 900m) ולא מעל
+        # 90% מהקישור של כרטיס ההפצה (15/10).
         wave_bitrate=lambda session: drive_rates.decide(
             conn, session["id"], lambda: room.wave_drives(conn, session["id"]),
-            sender.max_bitrate),
+            sender.max_bitrate, link=sender.link),
         # ‏#1430: `store` נבנה למטה (הוא צריך את `sender.stop`); הקריאה
         # היא מתהליכון השולח, הרבה אחרי שהפונקציה הזו סיימה.
         live_receivers=lambda session_id: store.live_count(session_id),

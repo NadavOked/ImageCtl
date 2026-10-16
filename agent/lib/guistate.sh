@@ -27,6 +27,8 @@ gui_state() {
            elif (.bytes_total // 0) > 0 then "pct=\((100 * .bytes_written / .bytes_total)|floor)"
            else "pct=-1" end) end)
       end' "$GUI_DIR/station.json" > "$GUI_DIR/state.next" || return 1
+    # #1495: each local disk's drawer by the mapping -- the capture list's "דיסק N"
+    disk_slot_records >> "$GUI_DIR/state.next" || return 1
     # #880: menu_class=0|1 -- the class card only when the last hello said
     # so (class_deploy_on, buildmenu.sh). Always written: an absent record
     # reads as 0 in state.c, so the card never shows by omission.
@@ -82,6 +84,9 @@ gui_state() {
             fi
             jq -r '
               def clean: ((. // "") | tostring | gsub("[\\r\\n|]"; " "));
+              # #1495: a connection as the console writes it (console.js connText)
+              def conn: if test("^sata:[0-9]+$") then "SATA \((ltrimstr("sata:") | tonumber) - 1)"
+                elif startswith("nvme:") then "NVMe \(ltrimstr("nvme:") | ltrimstr("0000:"))" else "" end;
               def row: "machine=" + ([.name,.mac,(if .awake then 1 else 0 end),
                 (if .joined then 1 else 0 end),.fresh_drawers,.state,
                 (if (.bytes_total // 0)>0 then (100*.bytes_written/.bytes_total|floor) else -1 end),0,
@@ -121,8 +126,17 @@ gui_state() {
                       # #432: ok / slow / unknown ("" = an older server); only slow colours.
                       (.link_state // ""),
                       # #1366: the CRC count when over crc_warn_threshold, "" = not (or unread).
-                      (if .crc_suspect == true then (.crc // "") else "" end)]
+                      (if .crc_suspect == true then (.crc // "") else "" end),
+                      # #1495: the drawer by the mapping (null = not in it -> 0; an
+                      # older server without the field -> "" = by port), and the connection.
+                      (if has("drawer") then (.drawer // 0) else "" end),
+                      (if (.port | type) == "number" then "sata:\(.port)"
+                       elif (.pci | type) == "string" then "nvme:\(.pci)" else "" end | conn)]
                      | map(clean) | join("|"))),
+                # #1495: every drawer of the mapping, empty ones too, with its slot name.
+                (($m.drawer_slots // []) | to_entries[] | .value as $k |
+                  "room_slot=" + ([$mi, (.key + 1), ($k | conn), (($m.slot_names // {})[$k] // "")]
+                   | map(clean) | join("|"))),
                 # #704: names of the SATA slots, empty ones included.
                 (($m.slot_names // {}) | to_entries[] | select(.key | test("^sata:[1-9][0-9]?$")) |
                   "room_slot_name=" + ([$mi, (.key | ltrimstr("sata:")), .value] | map(clean) | join("|")))) end' \

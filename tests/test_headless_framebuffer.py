@@ -202,12 +202,20 @@ def test_monitor_without_a_screen_waits_for_the_gui_file(tmp_path):
 @requires_native(("bash", BASH))
 def test_monitor_without_a_screen_serves_the_gui_file(tmp_path):
     """אין fb0 אבל הגואי כבר כותב `fb.mem`: המוניטור עולה עם `--fb` על
-    הקובץ, ושער התפקיד לא זז — משכפל עדיין בלי `--input`."""
+    הקובץ, ומשכפל מקבל `--input` (#1454, נדב 16/10)."""
     args, _ = _monitor_start(tmp_path, posix(tmp_path / "no-such-fb0"), mem_file=True)
     assert args is not None, "המוניטור לא עלה למרות שהקובץ קיים"
     words = args.split()
     assert "--fb" in words and words[words.index("--fb") + 1].endswith("/run/" + FILE_NAME)
-    assert "--input" not in words, args
+    assert "--input" in words, args
+
+
+@requires_native(("bash", BASH))
+def test_a_cloner_with_a_screen_gets_keyboard_and_mouse(tmp_path):
+    """#1454: היום יש למשכפל מקלדת ועכבר — המוניטור נותן שליטה כמו לבנייה."""
+    args, log = _monitor_start(tmp_path, "/dev/null", role="cloner")
+    assert args is not None and "--input" in args.split(), args
+    assert "(input enabled)" in log, log
 
 
 def _gui_backend_args(tmp_path, fb_dev, backend_env=None):

@@ -28,18 +28,6 @@ int standby_conn(const State *s) {
     return STANDBY_OFF;                                     /* no answer, an error, or a stale 200 */
 }
 
-/* The drawers drawn: three, as #1170 drew them, and more when a disk or an
- * operator's slot name (#704) sits in a higher port. The real count is the
- * console's drawer_count (#695), and it does not reach the cloner -- so a
- * two-drawer cloner still shows an empty third bay (the cage is laid out
- * for any count; the count is what is missing). */
-static int standby_bays(const State *s) {
-    int n = 3;
-    for (int p = 4; p <= MAX_DRAWERS; p++)
-        if (s->cslot_names[p - 1][0] || idle_for_port(s, p)) n = p;
-    return n;
-}
-
 /* Market size, as on the disk's label: 500107862016 -> "500 GB". */
 void disk_size(unsigned long long b, char *out, size_t n) {
     double v = (double)b;
@@ -149,9 +137,10 @@ void sb_hatch(cairo_t *cr, const Theme *t, Rect r) {
     cairo_restore(cr);
 }
 
-static void sb_bay(App *a, cairo_t *cr, Rect b, int port) {
+static void sb_bay(App *a, cairo_t *cr, Rect b, int bay,
+                   const IdleDisk *d, const COptical *o) {
     const Theme *t = a->theme; const State *s = &a->st;
-    const IdleDisk *d = idle_for_port(s, port);
+    int unmapped = bay == 0;
     int lvl = d ? smart_level(d->smart) : 0;
     Rgb col = d ? smart_color(t, d->smart) : t->led_idle;
     int slow = d && !lvl && (link_slow(d) || d->crc_suspect);   /* #432/#1366: orange like a SMART warning, below it */
@@ -162,9 +151,9 @@ static void sb_bay(App *a, cairo_t *cr, Rect b, int port) {
 
     cairo_save(cr);
     draw_rrect_path(cr, b, 4); cairo_clip(cr);
-    draw_set(cr, d ? t->surface : t->porcelain); cairo_paint(cr);
+    draw_set(cr, d || o ? t->surface : t->porcelain); cairo_paint(cr);
     Rect face = { b.x + SB_GRIP_W + 1, b.y, b.w - SB_GRIP_W - SB_NUM_W - 2, b.h };
-    if (!d) sb_hatch(cr, t, face);
+    if (!d && !o) sb_hatch(cr, t, face);
     cairo_rectangle(cr, b.x + b.w - SB_NUM_W, b.y, 1, b.h);   /* .num border-inline-end */
     cairo_rectangle(cr, b.x + SB_GRIP_W, b.y, 1, b.h);        /* .grip border-inline-start */
     draw_set(cr, t->hair); cairo_fill(cr);
@@ -173,9 +162,9 @@ static void sb_bay(App *a, cairo_t *cr, Rect b, int port) {
     draw_border_rrect(cr, b, 4, acc ? acol : t->hair, 1);
 
     /* .num: the drawer's number, big, and "מגירה" */
-    char num[8]; snprintf(num, sizeof num, "%d", port);
+    char num[16]; if (unmapped) snprintf(num, sizeof num, "%s", "—"); else snprintf(num, sizeof num, "%d", bay);
     Text nb = text_make(cr, FONT_MONO, 44, 600, num, 0, DIR_LTR);
-    Text nl = text_make(cr, FONT_SANS, 11, 400, "מגירה", 0, DIR_RTL);
+    Text nl = text_make(cr, FONT_SANS, 11, 400, unmapped ? "לא ממופה" : "מגירה", 0, DIR_RTL);
     double nh = 44 + 6 + nl.h, ny = cy - nh / 2, nr = b.x + b.w - 20;
     text_draw_r(cr, &nb, nr, ny + (44 - nb.h) / 2.0, t->ink);
     text_draw_r(cr, &nl, nr, ny + 50, t->muted);
@@ -192,13 +181,24 @@ static void sb_bay(App *a, cairo_t *cr, Rect b, int port) {
      * model (or "ריק") at the left end */
     double fr = face.x + face.w - 26, fl = face.x + 26;
     char name[SLOT_NAME_MAX + 16], sub[SLOT_NAME_MAX + 48];
-    char lk[40] = "", slow_why[96] = "";   /* #432: the link on the sub line, the slow reason */
-    cloner_slot_label(s, port, name, sizeof name);
-    /* #432: the link on the sub line -- the speed, or "לא ידוע", never blank */
-    if (d && d->link[0]) snprintf(lk, sizeof lk, " · %s Gb/s", d->link);
-    else if (d) snprintf(lk, sizeof lk, " · קישור לא ידוע");
-    if (s->cslot_names[port - 1][0]) snprintf(sub, sizeof sub, "דיסק %d · SATA %d%s", port, port - 1, lk);
-    else snprintf(sub, sizeof sub, "SATA %d%s", port - 1, lk);
+    char lk[48] = "", slow_why[96] = "", conn[64];   /* #432: the link on the sub line, the slow reason */
+    if (unmapped && d) {
+        const char *slot_name = d->port >= 1 && d->port <= MAX_DRAWERS ? s->cslot_names[d->port - 1] : "";
+        unmapped_label(slot_name, d->conn, d->port, d->dev, name, sizeof name);
+        if (d->link[0]) snprintf(sub, sizeof sub, "%s Gb/s", d->link); else sub[0] = 0;
+    } else if (unmapped && o) {
+        snprintf(name, sizeof name, "%s", "כונן CD/DVD");
+        conn_text(o->conn, 0, "", sub, sizeof sub);
+    } else {
+        cloner_bay_conn(s, bay, conn, sizeof conn);
+        if (o) snprintf(name, sizeof name, "%s", "כונן CD/DVD");
+        else cloner_slot_label(s, bay, name, sizeof name);
+        if (d && d->link[0]) snprintf(lk, sizeof lk, " · %s Gb/s", d->link);
+        else if (d) snprintf(lk, sizeof lk, " · קישור לא ידוע");
+        int named = s->ncbays > 0 ? s->cbays[bay - 1].name[0] != 0 : s->cslot_names[bay - 1][0] != 0;
+        if (named) snprintf(sub, sizeof sub, "דיסק %d · %s%s", bay, conn, lk);
+        else snprintf(sub, sizeof sub, "%s%s", conn, lk);
+    }
     const char *why = d ? reason_he(d) : NULL;
     if (!why && slow) {
         if (link_slow(d)) snprintf(slow_why, sizeof slow_why, "קישור %s מתוך %s Gb/s — לבדוק כבל", d->link, d->link_max);
@@ -215,6 +215,15 @@ static void sb_bay(App *a, cairo_t *cr, Rect b, int port) {
     double names_w = fmax(tn.w, fmax(ts.w, tw.w));
     text_free(&tn); text_free(&ts); if (why) text_free(&tw);
 
+    if (o) {
+        Text md = o->model[0] ? text_make(cr, FONT_MONO, 13, 400, o->model, 0, DIR_LTR)
+                              : (Text){ NULL, 0, 0 };
+        Text no = text_make(cr, FONT_SANS, 13, 400, "לא יעד לשיכפול", 0, DIR_RTL);
+        double oh = (md.layout ? md.h + 2 : 0) + no.h, oy = cy - oh / 2;
+        if (md.layout) { text_draw(cr, &md, fl, oy, t->muted); oy += md.h + 2; text_free(&md); }
+        text_draw(cr, &no, fl, oy, t->muted); text_free(&no);
+        return;
+    }
     if (!d) {
         Text e = text_make(cr, FONT_SANS, 15, 400, "ריק — אפשר להכניס דיסק", 0, DIR_RTL);
         text_draw(cr, &e, fl, cy - e.h / 2.0, t->muted); text_free(&e);
@@ -233,11 +242,14 @@ static void sb_bay(App *a, cairo_t *cr, Rect b, int port) {
 
 void screen_standby(App *a, cairo_t *cr, double W, double H, double head_h) {
     const Theme *t = a->theme; const State *s = &a->st;
-    int conn = standby_conn(s), n = standby_bays(s), present = 0;
-    for (int p = 1; p <= n; p++) {
-        const IdleDisk *d = idle_for_port(s, p);
+    int conn = standby_conn(s), bays = cloner_bay_count(s), present = 0, unmapped_disks = 0, unmapped_opticals = 0;
+    for (int p = 1; p <= bays; p++) {
+        const IdleDisk *d = idle_for_bay(s, p);
         present += d != NULL;
     }
+    for (int i = 0; i < s->nidisks; i++) unmapped_disks += eff_drawer(s->idisks[i].drawer, s->idisks[i].port) == 0;
+    for (int i = 0; i < s->ncopticals; i++) unmapped_opticals += eff_drawer(s->copticals[i].drawer, 0) == 0;
+    int n = bays + unmapped_disks + unmapped_opticals;
     double cw = fmin(SB_CAGE_W, W - 2 * N_PAD), x0 = (W - cw) / 2, xr = x0 + cw;
     double y = head_h + 34;
 
@@ -282,12 +294,23 @@ void screen_standby(App *a, cairo_t *cr, double W, double H, double head_h) {
     /* .note lines under the cage, measured first: the bays shrink to leave them room */
     Text notes[2 * MAX_DRAWERS]; Rgb note_c[2 * MAX_DRAWERS]; int note_l[2 * MAX_DRAWERS];
     int nn = 0; double notes_h = 0;
+    const IdleDisk *disk_rows[MAX_DRAWERS]; int ndisk_rows = 0;
+    for (int p = 1; p <= bays && ndisk_rows < MAX_DRAWERS; p++) {
+        const IdleDisk *d = idle_for_bay(s, p); if (d) disk_rows[ndisk_rows++] = d;
+    }
+    for (int i = 0; i < s->nidisks && ndisk_rows < MAX_DRAWERS; i++)
+        if (eff_drawer(s->idisks[i].drawer, s->idisks[i].port) == 0) disk_rows[ndisk_rows++] = &s->idisks[i];
     for (int kind = 0; kind < 2; kind++)
-    for (int p = 1; p <= n && nn < 2 * MAX_DRAWERS; p++) {
-        const IdleDisk *d = idle_for_port(s, p);
-        if (!d || (kind == 0 ? !smart_level(d->smart) : !link_slow(d) && !d->crc_suspect)) continue;
+    for (int i = 0; i < ndisk_rows && nn < 2 * MAX_DRAWERS; i++) {
+        const IdleDisk *d = disk_rows[i];
+        if (kind == 0 ? !smart_level(d->smart) : !link_slow(d) && !d->crc_suspect) continue;
         char label[SLOT_NAME_MAX + 16], msg[SLOT_NAME_MAX + 120], lmsg[SLOT_NAME_MAX + 200];
-        cloner_slot_label(s, p, label, sizeof label);
+        int bay = eff_drawer(d->drawer, d->port);
+        if (bay > 0) cloner_slot_label(s, bay, label, sizeof label);
+        else {
+            const char *slot_name = d->port >= 1 && d->port <= MAX_DRAWERS ? s->cslot_names[d->port - 1] : "";
+            unmapped_label(slot_name, d->conn, d->port, d->dev, label, sizeof label);
+        }
         if (kind == 0) snprintf(msg, sizeof msg, RLM "%s: %s — לפני כתיבה אליו תופיע שאלה.", label, chip_he(d->smart));
         else if (link_slow(d)) snprintf(lmsg, sizeof lmsg, RLM "%s: קישור SATA %s מתוך %s Gb/s — לבדוק כבל או מגירה. לפני התחלת סבב תופיע אזהרה.",
                       label, d->link, d->link_max);
@@ -301,7 +324,7 @@ void screen_standby(App *a, cairo_t *cr, double W, double H, double head_h) {
 
     /* .cage */
     Text lr = text_make(cr, FONT_SANS, 12, 400, "מגירות הדיסקים במחשב — מלמעלה למטה", 0, DIR_RTL);
-    char cnt[48]; snprintf(cnt, sizeof cnt, "%d מתוך %d עם דיסק", present, n);
+    char cnt[48]; snprintf(cnt, sizeof cnt, "%d מתוך %d עם דיסק", present, bays);
     Text ll = text_make(cr, FONT_SANS, 12, 400, cnt, 0, DIR_RTL);
     double lh = 16;   /* .lbl: 12px/1.3, on whole pixels so every hairline below is one crisp row */
     double chrome = 1 + 14 + lh + 10 + 14 + 1, bay_h = SB_BAY_H;
@@ -316,8 +339,18 @@ void screen_standby(App *a, cairo_t *cr, double W, double H, double head_h) {
     text_draw_r(cr, &lr, cage.x + cage.w - 18, by + (lh - lr.h) / 2, t->muted);
     text_draw(cr, &ll, cage.x + 18, by + (lh - ll.h) / 2, t->muted);
     by += lh + 10;
-    for (int p = 1; p <= n; p++) {
-        sb_bay(a, cr, (Rect){ cage.x + 15, by, cage.w - 30, bay_h }, p);
+    for (int p = 1; p <= bays; p++) {
+        const IdleDisk *d = idle_for_bay(s, p);
+        sb_bay(a, cr, (Rect){ cage.x + 15, by, cage.w - 30, bay_h }, p,
+               d, d ? NULL : optical_for_bay(s, p));
+        by += bay_h + SB_BAY_GAP;
+    }
+    for (int i = 0; i < s->nidisks; i++) if (eff_drawer(s->idisks[i].drawer, s->idisks[i].port) == 0) {
+        sb_bay(a, cr, (Rect){ cage.x + 15, by, cage.w - 30, bay_h }, 0, &s->idisks[i], NULL);
+        by += bay_h + SB_BAY_GAP;
+    }
+    for (int i = 0; i < s->ncopticals; i++) if (eff_drawer(s->copticals[i].drawer, 0) == 0) {
+        sb_bay(a, cr, (Rect){ cage.x + 15, by, cage.w - 30, bay_h }, 0, NULL, &s->copticals[i]);
         by += bay_h + SB_BAY_GAP;
     }
     if (conn == STANDBY_OFF) { cairo_pop_group_to_source(cr); cairo_paint_with_alpha(cr, .72); }

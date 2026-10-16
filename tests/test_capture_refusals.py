@@ -468,12 +468,16 @@ PIPE_INPUT = "#!/bin/sh\nhead -c 4096 /dev/zero\nexit 0\n"
 
 MIDPIPE_FAILURES = [
     ("zstd", "#!/bin/sh\ncat\nexit 7\n", 7),
-    ("pv", "#!/bin/sh\necho 0 >&2\ncat\necho 4096 >&2\nexit 8\n", 8),
+    # ‏#1438: fanout במקום pv|tee|sha256sum — מעביר הכול, מגבב, ויוצא 9.
     (
-        "tee",
+        "fanout",
         "#!/bin/sh\n"
-        "real=$(PATH=/usr/bin:/bin command -v tee)\n"
-        '"$real" "$@"\n'
+        "shift\n"
+        'tmp="$(mktemp)"\n'
+        'cat > "$tmp"\n'
+        'fanout_eof "$tmp"\n'
+        'cat "$tmp" > "$1"\n'
+        'rm -f "$tmp"\n'
         "exit 9\n",
         9,
     ),
@@ -483,7 +487,7 @@ MIDPIPE_FAILURES = [
 @pytest.mark.parametrize(("stage", "stub", "expected_rc"), MIDPIPE_FAILURES)
 def test_a_mid_pipeline_capture_failure_is_not_ingested(
         tmp_path, stage, stub, expected_rc):
-    """zstd/pv/tee שנפל אחרי שהזרים את כל הקלט היה נבלע: ב-ash אין
+    """zstd/fanout (לפני #1438: pv/tee) שנפל אחרי שהזרים את כל הקלט היה נבלע: ב-ash אין
     pipefail, ו-sha256sum יוצא 0 על קלט חלקי. האימג' הקטוע נרשם תקין."""
     box, run, out = capture_run(
         tmp_path,

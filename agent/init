@@ -21,6 +21,7 @@ mount -t devpts   devpts   /dev/pts 2>/dev/null
 mount -t tmpfs    tmpfs    /run   2>/dev/null
 mkdir -p /run/imagectl
 RUN_DIR="${RUN_DIR:-/run/imagectl}"
+LIB_DIR="${LIB_DIR:-/usr/lib/imagectl}"
 
 # Storage and NIC drivers. The list is generated at build time. A module that
 # does not load has two opposite meanings, and folding them into one line taught
@@ -74,6 +75,14 @@ else
     rm -f "$RUN_DIR/modules.failed"
 fi
 
+# intel_pstate does not support pre-Sandy Bridge CPUs.  Debian provides the
+# fallback as a module, so try it before the agent starts doing CPU-heavy work.
+# Optional by design (principle 1): a missing helper never stops the boot.
+if [ -f "$LIB_DIR/cpufreq.sh" ]; then
+    . "$LIB_DIR/cpufreq.sh"
+    cpufreq_performance
+fi
+
 # efivars for the SecureBoot bit in hello -- after the module load, because
 # efivarfs is itself one of them (CONFIG_EFIVAR_FS=m).
 #
@@ -96,7 +105,6 @@ sleep 2
 # install is offline) and must never reboot-loop on a network that is not
 # there yet, so it takes over before the DHCP loop below. Only parse_cmdline
 # reads the kernel line (principle 2); the mode is one of its two words.
-LIB_DIR="${LIB_DIR:-/usr/lib/imagectl}"
 if [ -f "$LIB_DIR/common.sh" ]; then
     . "$LIB_DIR/common.sh"
     parse_cmdline

@@ -87,11 +87,11 @@ netprobe_json() {
         fi
         if [ ! -s "$_pc" ]; then
             printf ',"netprobe":{"pending":true}'
-            ( _netprobe_fresh > "$_pc.tmp" && mv "$_pc.tmp" "$_pc" && printf '%s' "$_now" > "$_pc.at" ) &
+            ( _netprobe_fresh > "$_pc.tmp" && mv "$_pc.tmp" "$_pc" && printf '%s' "$_now" > "$_pc.at" ) > /dev/null 2>&1 < /dev/null &
             return
         fi
         cat "$_pc"
-        ( _netprobe_fresh > "$_pc.tmp" && mv "$_pc.tmp" "$_pc" && printf '%s' "$_now" > "$_pc.at" ) &
+        ( _netprobe_fresh > "$_pc.tmp" && mv "$_pc.tmp" "$_pc" && printf '%s' "$_now" > "$_pc.at" ) > /dev/null 2>&1 < /dev/null &
         return
     fi
     _netprobe_fresh
