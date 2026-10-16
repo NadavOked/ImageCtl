@@ -76,7 +76,7 @@ def tar_size(directory: Path) -> int:
         path = guarded_image_path(directory, entry.name)
         if path is None:
             if entry.is_symlink():
-                raise ArchiveError(f"symbolic link is forbidden in an image archive: {entry.name}")
+                raise ArchiveError(f"קישור סימבולי אסור בארכיון אימג': {entry.name}")
             continue
         size = path.stat().st_size
         total += BLOCK + size + (-size % BLOCK)
@@ -89,7 +89,7 @@ def tar_stream(directory: Path, arcname: str) -> Iterator[bytes]:
         path = guarded_image_path(directory, entry.name)
         if path is None:
             if entry.is_symlink():
-                raise ArchiveError(f"symbolic link is forbidden in an image archive: {entry.name}")
+                raise ArchiveError(f"קישור סימבולי אסור בארכיון אימג': {entry.name}")
             continue
         size = path.stat().st_size
         yield _header(f"{arcname}/{path.name}", size, int(path.stat().st_mtime))
@@ -110,15 +110,26 @@ def tar_stream(directory: Path, arcname: str) -> Iterator[bytes]:
 # --- ייבוא -------------------------------------------------------------------
 
 
+def _safe_name(member: tarfile.TarInfo) -> str:
+    """שם הפריט אם הוא קובץ רגיל בנתיב יחסי שאינו יוצא מהתיקייה; אחרת נדחה."""
+    name = member.name.replace("\\", "/")
+    if not member.isfile():
+        raise ArchiveError(f"הארכיון מכיל פריט שאינו קובץ: {name}")
+    # ‏``isfile`` מקבל גם sparse ו-CONTTYPE. פריט sparse נפרש לבייטים רבים
+    # בהרבה ממה שנשלח, ועוקף את בדיקת המקום הפנוי ואת תקרת הגודל (#1457).
+    if member.type not in (tarfile.REGTYPE, tarfile.AREGTYPE):
+        raise ArchiveError(f"הארכיון מכיל פריט מסוג שאינו נתמך "
+                           f"(sparse/contiguous): {name}")
+    if name.startswith("/") or ".." in Path(name).parts:
+        raise ArchiveError(f"נתיב לא בטוח בארכיון: {name}")
+    return name
+
+
 def _safe_members(tar: tarfile.TarFile) -> list[tarfile.TarInfo]:
     """רק קבצים רגילים, בלי נתיבים מוחלטים, יציאה מהתיקייה או קישורים."""
     members = []
     for member in tar.getmembers():
-        name = member.name.replace("\\", "/")
-        if not member.isfile():
-            raise ArchiveError(f"הארכיון מכיל פריט שאינו קובץ: {name}")
-        if name.startswith("/") or ".." in Path(name).parts:
-            raise ArchiveError(f"נתיב לא בטוח בארכיון: {name}")
+        _safe_name(member)
         members.append(member)
     if not members:
         raise ArchiveError("הארכיון ריק")
@@ -177,77 +188,143 @@ def import_tar(archive: Path, images_root: Path, existing_ids: set[str]) -> dict
         with tarfile.open(archive, "r:*") as tar:
             members = _safe_members(tar)
             tar.extractall(staging, members=members, filter="data")
-
-        roots = {Path(m.name.replace("\\", "/")).parts[0] for m in members}
-        if len(roots) != 1:
-            raise ArchiveError("הארכיון חייב להכיל תיקיית אימג' אחת")
-        folder = staging / roots.pop()
-
-        manifest_path = folder / "manifest.json"
-        if not manifest_path.is_file():
-            raise ArchiveError("אין manifest.json בארכיון")
-        # תיקייה עם manifest.json מצהירה "כאן מונח אימג'". כל עוד הבייטים
-        # לא נבדקו ההצהרה אינה נכונה, ולכן המניפסט שוכב תחת שם אחר: ייבוא
-        # שנקטע — נפילת שרת, הפסקת חשמל — אינו משאיר על הדיסק, שהוא מקור
-        # האמת, תיקייה חלקית שנראית כמו אימג' שלם.
-        unverified = folder / UNVERIFIED
-        manifest_path.replace(unverified)
-        manifest = json.loads(unverified.read_text(encoding="utf-8"))
-        problem = ImageLibrary._validate(manifest)
-        if problem:
-            raise ArchiveError(f"מניפסט לא תקין: {_shown(problem)}")
-        # המזהה שבמניפסט הוא שם התיקייה שהאימג' ייכנס אליה, והמניפסט הזה
-        # הגיע מקובץ שמישהו העלה: `../evil` בשדה הזה הוא כתיבה אל מחוץ
-        # לספרייה (‏#110). מזהה שאינו בצורת המזהים הוא מניפסט לא תקין,
-        # והוא נדחה בשמו — לא מנוקה בשקט לצורה שכן תעבור.
-        if not valid_image_id(manifest["id"]):
-            raise ArchiveError(f"מזהה אימג' לא תקין במניפסט: {_shown(manifest['id'])}")
-        _refuse_taken(manifest["id"], existing_ids)
-
-        # קריאה טרייה, אחרי האימות: אימג' מאומת בעל אותו מזהה אינו נדחק
-        # ואינו נדרס — הייבוא נדחה, והקיים נשאר כפי שהוא. תיקיית האימג'
-        # אינה חייבת להיקרא בשם המזהה, ולכן `target.exists()` לבדו אינו
-        # מוצא התנגשות מזהים.
-        _refuse_taken(manifest["id"], set(ImageLibrary(images_root).scan()))
-        # חגורה שנייה, על הנתיב עצמו ולא על המזהה: מה שנכנס לספרייה חייב
-        # לנחות בתוכה. ‏`target.exists()` לבדו אינו גבול — יעד מחוץ לשורש
-        # שאינו קיים עובר אותו בשקט, וזה בדיוק המקרה המסוכן.
-        target = inside(images_root / manifest["id"], images_root)
-        if target is None:
-            raise ArchiveError(
-                f"יעד האימג' יוצא משורש הספרייה: {_shown(manifest['id'])}")
-        if target.exists():
-            raise ArchiveError(f"התיקייה {manifest['id']} כבר קיימת")
-
-        try:
-            folder.rename(target)
-        except OSError as exc:
-            if target.exists():
-                raise ArchiveError(
-                    f"התיקייה {manifest['id']} כבר קיימת") from exc
-            raise
-
-        verified = False
-        try:
-            for part in streamed_partitions(manifest):
-                # ‏`_safe_members` שמר על מה שנכתב לדיסק, אבל השם הזה נקרא
-                # מהמניפסט ולא מחברי ה-tar. הבדיקה קודמת לכל נגיעה בקובץ:
-                # ‏`is_file` על נתיב שהתוקף בחר הוא כבר תשובה על מה קיים בשרת.
-                name = part["file"]
-                path = inside(target / name, target) if isinstance(name, str) else None
-                if path is None:
-                    raise ArchiveError(f"נתיב קובץ מחיצה לא בטוח במניפסט: {_shown(name)}")
-                if not path.is_file():
-                    raise ArchiveError(f"חסר קובץ מחיצה בארכיון: {_shown(name)}")
-                if _sha256(path) != part["sha256"]:
-                    raise ArchiveError(f"אימות נכשל: {_shown(name)} אינו תואם ל-sha256")
-
-            (target / UNVERIFIED).replace(target / "manifest.json")
-            verified = True
-        finally:
-            if not verified:
-                _clear(target)
-
-        return manifest
+        return _admit(staging, [m.name.replace("\\", "/") for m in members],
+                      images_root, existing_ids, lambda path, _key: _sha256(path))
     finally:
         _clear(staging)
+
+
+def import_tar_stream(source, images_root: Path, existing_ids: set[str], *,
+                      max_bytes: int) -> dict:
+    """כמו ``import_tar``, אבל מזרם שנקרא **פעם אחת** (‏#1457, קליטה במשני).
+
+    כל קובץ נכתב ישר לאזור הביניים, וה-sha256 שלו מחושב **על אותם בייטים
+    בזמן הכתיבה** — בלי קובץ ``.transfer`` זמני, בלי העתקה של ``extractall``
+    ובלי קריאה שנייה לאימות. ההשוואה מול המניפסט, השם הזמני של המניפסט,
+    ובדיקות ההתנגשות והנתיב — אותו ``_admit`` של ``import_tar``: אימג' נכנס
+    לספרייה רק אחרי שכל מחיצה תאמה (עיקרון 6). ``source`` הוא אובייקט עם
+    ``read(n)``; ספירת הבייטים מול Content-Length היא של הקורא.
+    ``max_bytes`` — תקרה לסך הבייטים שנכתבים לדיסק (אורך הגוף המוצהר, שעליו
+    נבדק המקום הפנוי): כתיבה שעוברת אותה נעצרת בשמה.
+    """
+    staging = images_root / f"{STAGING_PREFIX}{secrets.token_hex(4)}"
+    staging.mkdir(parents=True)
+    try:
+        base = staging.resolve()
+        names: list[str] = []
+        digests: dict[str, str] = {}
+        total = 0
+        with tarfile.open(fileobj=source, mode="r|", bufsize=CHUNK) as tar:
+            for member in tar:
+                name = _safe_name(member)
+                dest = inside(staging / name, staging)
+                if dest is None or dest == base:
+                    raise ArchiveError(f"נתיב לא בטוח בארכיון: {_shown(name)}")
+                if dest.exists():
+                    raise ArchiveError(f"קובץ כפול בארכיון: {_shown(name)}")
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                data = tar.extractfile(member)
+                digest = hashlib.sha256()
+                written = 0
+                with dest.open("xb") as out:
+                    while chunk := data.read(CHUNK):
+                        total += len(chunk)
+                        if total > max_bytes:
+                            raise ArchiveError(f"הארכיון נפרש מעבר ל-{max_bytes} "
+                                               f"בייטים המוצהרים")
+                        digest.update(chunk)
+                        out.write(chunk)
+                        written += len(chunk)
+                if written != member.size:
+                    raise ArchiveError(f"הקובץ {_shown(name)} נקטע בארכיון: "
+                                       f"{written} מתוך {member.size} בייטים")
+                rel = dest.relative_to(base).parts
+                digests["/".join(rel[1:])] = digest.hexdigest()
+                names.append(name)
+        if not names:
+            raise ArchiveError("הארכיון ריק")
+        return _admit(staging, names, images_root, existing_ids,
+                      lambda _path, key: digests.get(key))
+    finally:
+        _clear(staging)
+
+
+def _admit(staging: Path, names: list[str], images_root: Path,
+           existing_ids: set[str], digest_of) -> dict:
+    """מה שאחרי החילוץ, משותף ל-``import_tar`` ול-``import_tar_stream``:
+    מניפסט לא-מאומת, בדיקות מזהה/התנגשות/נתיב, ‏sha256 של כל מחיצה מול
+    המניפסט, ורק אז ``manifest.json``. ``digest_of(path, key)`` מחזיר את
+    ה-sha256 של קובץ המחיצה (``key`` = הנתיב היחסי בתיקיית האימג'), או
+    ``None`` אם לא חושב — וזה כשל, לא התאמה."""
+    roots = {Path(name).parts[0] for name in names}
+    if len(roots) != 1:
+        raise ArchiveError("הארכיון חייב להכיל תיקיית אימג' אחת")
+    folder = staging / roots.pop()
+
+    manifest_path = folder / "manifest.json"
+    if not manifest_path.is_file():
+        raise ArchiveError("אין manifest.json בארכיון")
+    # תיקייה עם manifest.json מצהירה "כאן מונח אימג'". כל עוד הבייטים
+    # לא נבדקו ההצהרה אינה נכונה, ולכן המניפסט שוכב תחת שם אחר: ייבוא
+    # שנקטע — נפילת שרת, הפסקת חשמל — אינו משאיר על הדיסק, שהוא מקור
+    # האמת, תיקייה חלקית שנראית כמו אימג' שלם.
+    unverified = folder / UNVERIFIED
+    manifest_path.replace(unverified)
+    manifest = json.loads(unverified.read_text(encoding="utf-8"))
+    problem = ImageLibrary._validate(manifest)
+    if problem:
+        raise ArchiveError(f"מניפסט לא תקין: {_shown(problem)}")
+    # המזהה שבמניפסט הוא שם התיקייה שהאימג' ייכנס אליה, והמניפסט הזה
+    # הגיע מקובץ שמישהו העלה: `../evil` בשדה הזה הוא כתיבה אל מחוץ
+    # לספרייה (‏#110). מזהה שאינו בצורת המזהים הוא מניפסט לא תקין,
+    # והוא נדחה בשמו — לא מנוקה בשקט לצורה שכן תעבור.
+    if not valid_image_id(manifest["id"]):
+        raise ArchiveError(f"מזהה אימג' לא תקין במניפסט: {_shown(manifest['id'])}")
+    _refuse_taken(manifest["id"], existing_ids)
+
+    # קריאה טרייה, אחרי האימות: אימג' מאומת בעל אותו מזהה אינו נדחק
+    # ואינו נדרס — הייבוא נדחה, והקיים נשאר כפי שהוא. תיקיית האימג'
+    # אינה חייבת להיקרא בשם המזהה, ולכן `target.exists()` לבדו אינו
+    # מוצא התנגשות מזהים.
+    _refuse_taken(manifest["id"], set(ImageLibrary(images_root).scan()))
+    # חגורה שנייה, על הנתיב עצמו ולא על המזהה: מה שנכנס לספרייה חייב
+    # לנחות בתוכה. ‏`target.exists()` לבדו אינו גבול — יעד מחוץ לשורש
+    # שאינו קיים עובר אותו בשקט, וזה בדיוק המקרה המסוכן.
+    target = inside(images_root / manifest["id"], images_root)
+    if target is None:
+        raise ArchiveError(
+            f"יעד האימג' יוצא משורש הספרייה: {_shown(manifest['id'])}")
+    if target.exists():
+        raise ArchiveError(f"התיקייה {manifest['id']} כבר קיימת")
+
+    try:
+        folder.rename(target)
+    except OSError as exc:
+        if target.exists():
+            raise ArchiveError(
+                f"התיקייה {manifest['id']} כבר קיימת") from exc
+        raise
+
+    verified = False
+    try:
+        for part in streamed_partitions(manifest):
+            # ‏`_safe_members` שמר על מה שנכתב לדיסק, אבל השם הזה נקרא
+            # מהמניפסט ולא מחברי ה-tar. הבדיקה קודמת לכל נגיעה בקובץ:
+            # ‏`is_file` על נתיב שהתוקף בחר הוא כבר תשובה על מה קיים בשרת.
+            name = part["file"]
+            path = inside(target / name, target) if isinstance(name, str) else None
+            if path is None:
+                raise ArchiveError(f"נתיב קובץ מחיצה לא בטוח במניפסט: {_shown(name)}")
+            if not path.is_file():
+                raise ArchiveError(f"חסר קובץ מחיצה בארכיון: {_shown(name)}")
+            key = path.relative_to(target.resolve()).as_posix()
+            if digest_of(path, key) != part["sha256"]:
+                raise ArchiveError(f"אימות נכשל: {_shown(name)} אינו תואם ל-sha256")
+
+        (target / UNVERIFIED).replace(target / "manifest.json")
+        verified = True
+    finally:
+        if not verified:
+            _clear(target)
+
+    return manifest

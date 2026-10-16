@@ -9,7 +9,8 @@
   כונן בגל עמד בקצב. מדידה שחסרה = נשאר במקום (עיקרון 5).
 * **למטה** — שידורים חוזרים מעל סף קטן (‏‎-25%), או כונן איטי מוכר (#447).
 * **רצפה** — רבע מקצב הפתיחה; **גג** — לעולם לא מעליו.
-* **זיכרון** — הגל האחרון עם אותם כוננים הוא נקודת המוצא.
+* **זיכרון** — לכל מחשב שיכפול (MAC) הגל האחרון שלו הוא נקודת המוצא, והגל
+  יוצא מהמינימום על המכונות; מכונה שלא נראתה — פתיחה (#1471, נדב 16/10).
 """
 
 from __future__ import annotations
@@ -32,7 +33,11 @@ def conn(tmp_path):
     return db.connect(tmp_path / "imagectl.db")
 
 
-def _drive(serial, model="EVO 870", mac="aa:bb:cc:00:00:21", port=1):
+MAC_A = "aa:bb:cc:00:00:21"          # מחשב שיכפול 1
+MAC_B = "aa:bb:cc:00:00:22"          # מחשב שיכפול 2
+
+
+def _drive(serial, model="EVO 870", mac=MAC_A, port=1):
     return {"serial": serial, "model": model, "mac": mac, "port": port}
 
 
@@ -50,11 +55,12 @@ STREAM_FULL = 0.95                  # ‏udp-sender מגיע ל-95.7% מהתקר
 
 def _wave(conn, session, serials=("S1", "S2"), ceiling=None, loss=CLEAN,
           sent=SENT, kept_up=True, measured=True, stream=STREAM_FULL,
-          stream_s=600):
+          stream_s=600, mac=MAC_A):
     """גל שלם: השרת בחר קצב ויצא, כל כונן השאיר דגימה, והשולח דיווח.
-    ‏`stream` — הקצב הממוצע של הזרם עצמו, כחלק מקצב הגל (‏None = לא נמדד)."""
-    rate = drive_rates.decide(conn, session, lambda: [_drive(s) for s in serials],
-                              ceiling)
+    ‏`stream` — הקצב הממוצע של הזרם עצמו, כחלק מקצב הגל (‏None = לא נמדד).
+    ‏`mac` — מחשב השיכפול של כל הכוננים בגל (#1471)."""
+    rate = drive_rates.decide(conn, session,
+                              lambda: [_drive(s, mac=mac) for s in serials], ceiling)
     cap = drive_rates.parse_bitrate(rate) // 8
     for serial in serials:
         _kept(conn, session, serial, cap if kept_up else cap // 2, cap)
@@ -66,8 +72,11 @@ def _wave(conn, session, serials=("S1", "S2"), ceiling=None, loss=CLEAN,
     return rate
 
 
-def _next(conn, serials=("S1", "S2"), ceiling=None):
-    return drive_rates.choose(conn, [_drive(s) for s in serials], ceiling)
+def _next(conn, serials=("S1", "S2"), ceiling=None, macs=None):
+    """‏`macs` — המכונה של כל כונן, באותו סדר (‏None = כולם על מחשב 1)."""
+    macs = macs or [MAC_A] * len(serials)
+    return drive_rates.choose(conn, [_drive(s, mac=m) for s, m in zip(serials, macs)],
+                              ceiling)
 
 
 # --- הפתיחה -----------------------------------------------------------------
@@ -91,9 +100,14 @@ def test_a_configured_cap_below_600m_is_where_it_opens(conn):
 
 
 def test_a_configured_cap_above_900m_raises_the_roof_not_the_start(conn):
+    # ‏15/10 (ב): מחשב שיכפול שמהירותו לא ידועה מונח 1Gb/s — ואז הגג 900m גם
+    # מתחת ל-"1g". כשהמקבל הוגדר 10G — הגג המוגדר הוא שקובע, כמו קודם.
+    from server import nic_speed                                # noqa: PLC0415
+    assert _next(conn, ceiling="1g")["ceiling"] == "900m"
+    nic_speed.set_manual(conn, _drive("S1")["mac"], 10000)
     got = _next(conn, ceiling="1g")
     assert got["max_bitrate"] == "600m"
-    assert got["ceiling"] == "1g"
+    assert got["ceiling"] == "1000m" and got["cap_by"] == "configured"
 
 
 # --- למעלה: רק על ראיה --------------------------------------------------------
@@ -298,13 +312,14 @@ def test_a_known_slow_drive_still_lowers_the_room(conn):
 # --- זיכרון בין סבבים -----------------------------------------------------------
 
 
-def test_the_last_wave_with_the_same_drives_is_the_starting_point(conn):
+def test_the_last_wave_of_the_machine_is_the_starting_point(conn):
     _wave(conn, "ses_room", serials=("S1", "S2"))          # 600 נקי
     _wave(conn, "ses_room2", serials=("S1", "S2"))         # 700 נקי
-    _wave(conn, "ses_other", serials=("X1",), loss=MANY)   # חדר אחר, רע
+    _wave(conn, "ses_other", serials=("X1",), loss=MANY, mac=MAC_B)   # מכונה אחרת, רע
     got = _next(conn, serials=("S1", "S2"))
     assert got["max_bitrate"] == "800m"
     assert got["previous"]["session_id"] == "ses_room2"
+    assert got["previous"]["mac"] == MAC_A
 
 
 def test_the_next_wave_of_a_round_with_fewer_drives_continues(conn):
@@ -314,12 +329,72 @@ def test_the_next_wave_of_a_round_with_fewer_drives_continues(conn):
     assert got["previous"]["session_id"] == "ses_1"
 
 
-def test_a_new_drive_in_the_room_starts_over(conn):
-    """כונן שלא היה בגל הקודם — אין לו ראיה שהוא עומד ב-700m."""
+def test_new_drawers_on_a_known_machine_continue_from_its_last_wave(conn):
+    """#1471, הכרעת נדב 16/10 — בקרה שלילית: בחדר מחליפים מגירות בכל גל.
+    עד היום כונן שלא היה בגל הקודם החזיר את כל הגל לפתיחה (600m), ולכן
+    הקצב לא טיפס לעולם. הזיכרון הוא של המכונה: הגל הקודם שלה נקי — עולים."""
     _wave(conn, "ses_1", serials=("S1", "S2"))
-    got = _next(conn, serials=("S1", "S2", "NEW"))
+    got = _next(conn, serials=("N1", "N2", "N3"))
+    assert got["max_bitrate"] == "700m"
+    assert got["basis"] == "up"
+    assert got["previous"]["session_id"] == "ses_1"
+    assert got["previous"]["mac"] == MAC_A
+
+
+def test_drawers_that_change_every_wave_still_climb_to_the_roof(conn):
+    seen = [_wave(conn, f"ses_{n}", serials=(f"D{n}a", f"D{n}b")) for n in range(5)]
+    assert seen == ["600m", "700m", "800m", "900m", "900m"]
+
+
+def test_a_machine_never_seen_starts_the_whole_wave_at_the_opening_rate(conn):
+    """מחשב שיכפול חדש (או שהוחלף — MAC חדש): אין לו ראיה שהוא עומד ב-700m.
+    כל הגל יוצא בפתיחה, נמדד, ובפעם הבאה הוא מוכר."""
+    _wave(conn, "ses_1", serials=("S1",))
+    got = _next(conn, serials=("S1", "B1"), macs=[MAC_A, MAC_B])
     assert got["max_bitrate"] == "600m"
-    assert got["basis"] == "start"
+    assert got["basis"] == "start" and got["previous"] is None
+    _wave(conn, "ses_2", serials=("S1", "B1"), mac=MAC_B)   # נמדד — עכשיו מוכר
+    assert _next(conn, serials=("S2", "B2"), macs=[MAC_A, MAC_B])["max_bitrate"] == "700m"
+
+
+def test_the_slowest_remembered_machine_sets_the_wave(conn):
+    """מכונה A יצאה לאחרונה בגל נקי (→700m), מכונה B בגל עם שידורים חוזרים
+    (→450m). גל עם שתיהן יוצא מהמינימום — והמכונה שקבעה נקובה."""
+    _wave(conn, "ses_a", serials=("S1",))
+    _wave(conn, "ses_b", serials=("B1",), loss=MANY, mac=MAC_B)
+    got = _next(conn, serials=("S2", "B2"), macs=[MAC_A, MAC_B])
+    assert got["max_bitrate"] == "450m"
+    assert got["basis"] == "down"
+    assert got["previous"]["session_id"] == "ses_b" and got["previous"]["mac"] == MAC_B
+
+
+def test_each_machine_is_judged_by_its_own_last_wave(conn):
+    _wave(conn, "ses_1", serials=("S1",))                    # A: 600 נקי
+    _wave(conn, "ses_2", serials=("S2",))                    # A: 700 נקי → 800
+    _wave(conn, "ses_3", serials=("B1",), mac=MAC_B)         # B: 600 נקי → 700
+    got = _next(conn, serials=("S3", "B2"), macs=[MAC_A, MAC_B])
+    assert got["max_bitrate"] == "700m"
+    assert got["previous"]["session_id"] == "ses_3"
+
+
+def test_a_drive_without_a_machine_is_an_unknown_machine(conn):
+    """עיקרון 5: כונן בלי MAC אינו "מכונה מוכרת" — פתיחה, לא התעלמות. גם
+    כשגל קודם נרשם עם כונן בלי MAC: ‏None אינו מכונה שאפשר לזכור."""
+    _wave(conn, "ses_0", serials=("S0",), mac=None)
+    _wave(conn, "ses_1", serials=("S1",))
+    got = drive_rates.choose(conn, [_drive("S2"), _drive("S3", mac=None)], None)
+    assert got["max_bitrate"] == "600m" and got["basis"] == "start"
+
+
+def test_a_known_slow_drawer_still_lowers_a_remembered_machine(conn):
+    """ההגנה לכל כונן (#447) נשארת: המכונה מורישה 700m, אבל מגירה שהגבילה
+    בשני גלים שונים (50MB/s) מורידה את הגל אליה × 0.9."""
+    for n in range(2):
+        _kept(conn, f"ses_old{n}", "SLOW", 50 * MB, 75 * MB)
+    _wave(conn, "ses_1", serials=("S1",))
+    got = _next(conn, serials=("N1", "SLOW"))
+    assert got["max_bitrate"] == "360m"
+    assert got["basis"] == "learned" and got["by"]["serial"] == "SLOW"
 
 
 def test_a_wave_is_not_its_own_previous(conn):

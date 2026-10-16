@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 
 from server.tasks import TOKEN_HEADER
 
@@ -84,9 +85,25 @@ def do_capture(server, task_id, manifest=None, files=None, token=None):
                                  "p3.windows.pcl.zst": PART_B}).items():
         anon.put(f"/api/v1/capture/{task_id}/files/{name}",
                  content=data, headers=head)
-    return anon.put(f"/api/v1/capture/{task_id}/manifest",
-                    content=json.dumps(manifest or manifest_for()).encode(),
-                    headers=head)
+    response = anon.put(f"/api/v1/capture/{task_id}/manifest",
+                        content=json.dumps(manifest or manifest_for()).encode(),
+                        headers=head)
+    if response.status_code == 202:
+        wait_verified(server, task_id)
+    return response
+
+
+def wait_verified(server, task_id: str, timeout: float = 15.0) -> str:
+    """‏#1470: ה-PUT של המניפסט עונה 202 והאימות רץ ברקע. מחכים שהמשימה
+    תצא מ-`verifying` — ומחזירים את המצב שאליו הגיעה, לא מניחים אותו."""
+    deadline = time.monotonic() + timeout
+    while True:
+        row = server["ctx"].conn.execute(
+            "SELECT state FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if row["state"] != "verifying":
+            return row["state"]
+        assert time.monotonic() < deadline, f"{task_id} עדיין verifying אחרי {timeout}s"
+        time.sleep(0.02)
 
 
 # --- יצירת המשימה -----------------------------------------------------------
@@ -183,7 +200,7 @@ def test_a_full_capture_lands_in_the_library(server, images_root):
     created = make_task(server, mac).json()
 
     response = do_capture(server, created["id"])
-    assert response.status_code == 200
+    assert response.status_code == 202
 
     folder = images_root / created["image_id"]
     assert (folder / "p1.esp.pcl.zst").read_bytes() == PART_A
@@ -214,7 +231,7 @@ def test_intake_stores_the_real_requirement_not_the_source_disk_size(server, ima
     mac = setup_build_machine(server)
     created = make_task(server, mac).json()
     sent = manifest_for()
-    assert do_capture(server, created["id"], manifest=sent).status_code == 200
+    assert do_capture(server, created["id"], manifest=sent).status_code == 202
 
     raw = json.loads((images_root / created["image_id"] / "manifest.json")
                      .read_text(encoding="utf-8"))
@@ -336,7 +353,7 @@ def test_a_linux_image_without_disk_guid_is_accepted(server):
     response = do_capture(
         server, created["id"], manifest=linux,
         files={"p1.esp.pcl.zst": PART_A, "p2.linux.pcl.zst": PART_B})
-    assert response.status_code == 200, response.text
+    assert response.status_code == 202, response.text
 
 
 def test_a_tampered_partition_never_enters_the_library(server, images_root):
@@ -429,7 +446,7 @@ def test_a_root_followed_only_by_swap_is_still_expandable(server):
                   "size_bytes": 536870912, "used_bytes": 0,
                   "file": None, "sha256": None, "expandable": False})
     response = do_capture(server, created["id"], manifest=manifest_for(parts))
-    assert response.status_code == 200, response.text
+    assert response.status_code == 202, response.text
 
 
 def test_a_recovery_partition_after_the_expandable_one_is_accepted(server):
@@ -452,7 +469,7 @@ def test_a_recovery_partition_after_the_expandable_one_is_accepted(server):
         files={"p1.esp.pcl.zst": PART_A, "p3.windows.pcl.zst": PART_B,
                "p4.recovery.pcl.zst": PART_A},
     )
-    assert response.status_code == 200, response.text
+    assert response.status_code == 202, response.text
 
 
 def test_a_system_partition_after_the_expandable_one_is_still_refused(server):
@@ -490,7 +507,7 @@ def test_the_line_is_drawn_by_start_sector_not_by_list_order(server):
         server, created["id"], manifest=manifest_for(parts),
         files={"p1.linux.pcl.zst": PART_A, "p15.esp.pcl.zst": PART_B},
     )
-    assert response.status_code == 200, response.text
+    assert response.status_code == 202, response.text
 
 
 def test_an_unknown_family_is_refused(server):

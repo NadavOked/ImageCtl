@@ -58,6 +58,9 @@ rm -rf "$RUN_DIR"; mkdir -p "$RUN_DIR"
 export DEVROOT=$F/dev; mkdir -p "$DEVROOT"
 for d in $(awk '{ print $2 }' "$F/devs"); do n=${d#/dev/}; ln -sf "$d" "$DEVROOT/$n"
   for p in 1 2 3 4; do ln -sf "${d}p$p" "$DEVROOT/${n}p$p"; done; done
+# #1466: the RAM view's own nodes (device-mapper and brd) -- RAM, not a disk of the host
+# (as in test_local_clone_engine's driver; without them lcsnap.sh refuses the view)
+ln -sfn /dev/mapper "$DEVROOT/mapper"; for i in 0 1 2 3; do ln -sf "/dev/ram$i" "$DEVROOT/ram$i"; done
 %(sources)s
 dev() { awk -v n="$1" '$1 == n { sub("/dev/", "", $2); print $2 }' "$F/devs"; }
 SRC=$(dev src); NEAR=$(dev near)
@@ -71,6 +74,7 @@ lc_run "$SRC" " $NEAR" "$SHRINK"
 t=$RUN_DIR/targets/$NEAR
 echo "target $(cat "$t/state" 2>/dev/null)|$(cat "$t/error" 2>/dev/null | tr '\n' ' ')"
 echo "restore $(cat "$LC/run/source_restore" 2>/dev/null)"
+echo "path $(cat "$LC/run/shrink_path" 2>/dev/null)"
 '''
 
 
@@ -106,7 +110,7 @@ def _run(tmp_path: Path, fx: Path, fanout: Path, server: str) -> dict:
     out = {"raw": run.stdout + run.stderr}
     for line in run.stdout.splitlines():
         key, _, val = line.partition(" ")
-        if key in ("verdict", "target", "restore"):
+        if key in ("verdict", "target", "restore", "path"):
             out[key] = val
     assert run.returncode == 0, out["raw"][-4000:]
     return out
@@ -114,6 +118,8 @@ def _run(tmp_path: Path, fx: Path, fanout: Path, server: str) -> dict:
 
 def test_the_tail_moves_back_and_the_smaller_drive_takes_the_copy(tmp_path, tail_disks, fanout_bin):
     fill, fx, devs = tail_disks
+    if fill != 170 and _tool("dmsetup") is None:
+        pytest.skip("dmsetup is not installed: the RAM view (#1466) cannot be built here")
     src, near = devs["src"], devs["near"]
     src_table, src_files, rec_raw = _table(src), _files(src, fx), _raw_sha(src + "p4")
     srv = _Server()
@@ -144,7 +150,8 @@ def test_the_tail_moves_back_and_the_smaller_drive_takes_the_copy(tmp_path, tail
     same = ("Partition GUID code", "Partition unique GUID", "Attribute flags", "Partition name", "Partition size")
     assert {k: r[k] for k in same} == {k: r0[k] for k in same}
     assert _files(near, fx) == src_files
-    # the source: its exact table back, its files, and its Recovery never written
-    assert res["restore"] == "ok", res["raw"][-3000:]
+    # #1466: the tail was taken on a RAM view of C:, released afterwards -- the
+    # source was never written, so there is nothing to grow back ("" = released)
+    assert res.get("path") == "snapshot" and res["restore"] == "", res["raw"][-3000:]
     assert _table(src) == src_table and _files(src, fx) == src_files
     assert _raw_sha(src + "p4") == rec_raw

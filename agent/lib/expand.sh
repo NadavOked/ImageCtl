@@ -106,12 +106,12 @@ apply_gpt() {
     _bad=$(awk -F'|' '$4 != "swap" && ($7 == "" || $7 == "null") {
         printf "%s%s (%s)", (n++ ? ", " : ""), $1, $4 }' "$RUN_DIR/gate.plan")
     if [ -n "$_bad" ]; then
-        PLAN_ERROR="partition $_bad has no file but is not swap -- corrupt manifest"
+        PLAN_ERROR="למחיצה $_bad אין קובץ והיא אינה swap — המניפסט פגום, הדיסק לא שונה"
         log "$1: $PLAN_ERROR"
         return 1
     fi
 
-    target_write_started "$1" || { PLAN_ERROR="could not record the target identity before writing"; return 1; }
+    target_write_started "$1" || { PLAN_ERROR="לא הצלחנו לתעד את זהות היעד לפני הכתיבה"; return 1; }
     sgdisk --zap-all "$DEVROOT/$1" >> "$LOG_FILE" 2>&1 || return 1
     manifest_plan "$2" | while IFS='|' read -r _idx _guid _role _fs _start _size _f _sha _exp _uguid _uuid _attrs; do
         _end=$((_start + _size / 512 - 1))
@@ -122,7 +122,7 @@ apply_gpt() {
         if [ -n "$_uguid" ]; then _u="-u $_idx:$_uguid"; fi
         if [ -n "$_attrs" ]; then _a="-A $_idx:=:0x$_attrs"; fi
         # shellcheck disable=SC2086 # הפיצול של $_u/$_a מכוון
-        sgdisk -n "$_idx:$_start:$_end" -t "$_idx:$_guid" $_u $_a "$DEVROOT/$1" \
+        sgdisk -a 1 -n "$_idx:$_start:$_end" -t "$_idx:$_guid" $_u $_a "$DEVROOT/$1" \
             >> "$LOG_FILE" 2>&1 || exit 1
     done || return 1
     _dguid=$(json_get "$2" ".disk_guid")
@@ -185,7 +185,7 @@ expand_last() {
     [ $((_disk_sectors - _table_end - _tailsec)) -gt 2097152 ] || return 0
 
     log "expanding partition $_idx to fill the disk"
-    _move_to_tail "$1" "$_tail" || return 1
+    _move_to_tail "$1" "$_tail" "$_disk_sectors" || return 1
     # ההרחבה בונה את המחיצה מחדש — ה-GUID הייחודי חייב לשרוד גם אותה,
     # אחרת ה-BCD מאבד את מחיצת המערכת שהרגע שוחזרה (#26).
     _u=""; _a=""
@@ -193,7 +193,7 @@ expand_last() {
     if [ -n "$_attrs" ]; then _a="-A $_idx:=:0x$_attrs"; fi
     # ‏0 בסוף = סוף השטח הפנוי הגדול ביותר, כלומר עד תחילת ה-swap החדשה.
     # shellcheck disable=SC2086 # הפיצול של $_u/$_a מכוון
-    sgdisk -d "$_idx" -n "$_idx:$_start:0" -t "$_idx:$_guid" $_u $_a "$DEVROOT/$1" \
+    sgdisk -a 1 -d "$_idx" -n "$_idx:$_start:0" -t "$_idx:$_guid" $_u $_a "$DEVROOT/$1" \
         >> "$LOG_FILE" 2>&1 || return 1
     # ההרחבה בנתה טבלה **שונה** מזו של apply_gpt, ולכן היא נקראת בחזרה
     # שוב: מי שכתב לא מעיד על עצמו. ‏rereadpt שנכשל היה `|| true` עד כאן,
@@ -267,11 +267,10 @@ _move_to_tail() {
     # $1 = disk name, $2 = the plan lines that sit after the candidate, in
     # any order (may be empty). Deleted first, then recreated from the disk's
     # last one inwards, so that their order on the platter survives the move.
-    # The size is given as a negative start -- "that many sectors before the
-    # end of the free space" -- and the end as 0: an explicit sector would
-    # bypass sgdisk's own 2048-sector alignment, and a misaligned partition
-    # costs real speed on an SSD. The index is kept: it is what the stream
-    # writes by, and what the swap's mkswap lands on.
+    # $3 = disk sectors. Start aligned down to 2048 (SSD speed), size EXACT
+    # (#1467): `-n i:-N:0` let sgdisk align the start and keep the end, so
+    # the partition came out up to 2047 sectors larger than the source's.
+    # The index is kept: it is what the stream writes by (and mkswap).
     printf '%s\n' "$2" | while IFS='|' read -r _si _rest; do
         [ -n "$_si" ] || continue
         sgdisk -d "$_si" "$DEVROOT/$1" >> "$LOG_FILE" 2>&1 || exit 1
@@ -292,7 +291,9 @@ _move_to_tail() {
         if [ -n "$_su" ]; then _su_arg="-u $_si:$_su"; fi
         if [ -n "$_sa" ]; then _sa_arg="-A $_si:=:0x$_sa"; fi
         # shellcheck disable=SC2086 # הפיצול של $_su_arg/$_sa_arg מכוון
-        sgdisk -n "$_si:-$((_sb / 512)):0" -t "$_si:$_sg" $_su_arg $_sa_arg "$DEVROOT/$1" \
+        _sx=$(( (${_sx_end:-$(($3 - 34))} - _sb / 512 + 1) / 2048 * 2048 ))
+        sgdisk -a 1 -n "$_si:$_sx:$((_sx + _sb / 512 - 1))" -t "$_si:$_sg" $_su_arg $_sa_arg "$DEVROOT/$1" \
             >> "$LOG_FILE" 2>&1 || exit 1
+        _sx_end=$((_sx - 1))
     done || return 1
 }

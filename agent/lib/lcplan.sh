@@ -11,11 +11,13 @@
 # and moves what follows it to the tail (#58/#648), verify_table reads the
 # GUIDs back. Nothing here re-implements those -- see expand.sh.
 #
-# A smaller target (owner, 13/10): the source's NTFS system partitions are
-# shrunk IN PLACE with the capture's own code (shrink.sh, #87/#929), the
-# compacted layout is copied, and the source is grown back after -- the
-# server records the original layout first (#926). The question shrink.sh
-# asks a person is the confirm dialog itself: the start record carries it.
+# A smaller target (owner, 13/10; 16/10 option B): the source is NEVER
+# written. The shrink runs on a RAM copy-on-write view of each partition
+# (lcsnap.sh, #1466) and the compacted layout is copied from it. When that
+# view cannot be had -- no device-mapper, not enough RAM, a table that does
+# not read back -- the copy to the smaller target is REFUSED by name, before
+# any target is written; there is no in-place shrink here any more (the
+# capture keeps its own, shrink.sh). The confirm dialog is the person's yes.
 
 LC_ERROR=""
 
@@ -39,24 +41,42 @@ lc_entry() {
     awk -F'|' -v i="$1" -v f="$2" '$1 == i { print $f; exit }' "$LC/run/entries"
 }
 
+lc_shrink_plan() {
+    # $1 = source. $LC/run/shrink.plan: lc_measure's own, when it was taken on
+    # this very disk and table (#1466 P2: a second --info is one more walk of
+    # the MFT in the critical path for the same answer, and ntfsresize -s
+    # re-checks every constraint itself); otherwise measured now. A check that
+    # cannot run (cmp, a missing file) measures again -- never a reuse.
+    _pl_m="$LC/measure/$1"
+    if [ -s "$_pl_m.plan" ] && [ "$(cat "$_pl_m.serial" 2>/dev/null)" = "$(_lc_clean "$(disk_serial "$1")")" ] \
+        && cmp -s "$_pl_m.parts" "$LC/run/parts.txt" && cp "$_pl_m.plan" "$LC/run/shrink.plan"; then
+        log "local clone: the shrink plan measured on the source screen is reused (same disk, same table)"; return 0
+    fi
+    shrink_plan "$1" "$LC/run/parts.txt" 512 || { LC_ERROR=$SHRINK_ERROR; return 1; }
+    cp "$RUN_DIR/shrink.plan" "$LC/run/shrink.plan" || { LC_ERROR="לא הצלחנו לשמור את תוכנית הכיווץ"; return 1; }
+}
+
 lc_shrink_source() {
-    # $1 = source disk. The capture's shrink, unchanged, in a subshell whose
-    # only adapter is the question: the person already answered it in the
-    # confirm dialog (lc-start carried shrink=1). shrink_before_capture opens
-    # the server record (#926) before the first write and rewrites parts.txt
-    # to the compacted layout. 1 + LC_ERROR = the source was not shrunk, or
-    # was put back (shrink.sh's own rule).
-    LC_ERROR=""; rm -f "$LC/run/shrink.err"
-    (
-        attended() { echo continue; }
-        CAPTURE_SINK=upload
-        shrink_before_capture "$1" "$LC/run/parts.txt" 512 \
-            || { printf '%s' "${SHRINK_ERROR:-הכיווץ נכשל}" > "$LC/run/shrink.err"; exit 1; }
-    ) < /dev/null && return 0
-    LC_ERROR=$(cat "$LC/run/shrink.err" 2>/dev/null)
-    # A failure after the first write leaves the mark: put the source back now.
-    shrink_restore_source "$1" || LC_ERROR="$LC_ERROR; $(cat "$RUN_DIR/targets/$1/error" 2>/dev/null)"
-    return 1
+    # $1 = source disk. 0 = the copy goes on with the compacted layout, read
+    # from the views; 1 + LC_ERROR (Hebrew, with the numbers) = refused or
+    # failed -- the source was not written, and the caller writes no smaller
+    # target. Writes $LC/run/shrink_path (snapshot|refused) and the stage
+    # times (P1): info_s (until the first write to a view), resize_s.
+    LC_ERROR=""; _ss_r="$LC/run"; rm -f "$_ss_r/resize_at"; _ss_t0=$(date +%s)
+    lc_shrink_plan "$1" || return 1
+    [ -s "$_ss_r/shrink.plan" ] || { log "local clone: nothing to shrink on the source"; return 0; }
+    lc_snap_shrink "$1"; _ss_rc=$?
+    case "$_ss_rc" in
+        0) echo snapshot > "$_ss_r/shrink_path"; log "local clone: the source was shrunk through a read-only view -- the source disk is not written" ;;
+        3) echo refused > "$_ss_r/shrink_path"; _ss_rc=1
+           log "local clone: no read-only view -- the smaller target is refused, the source is never written: $LC_SNAP_WHY"
+           LC_ERROR="אין עותק לקריאה בלבד: $LC_SNAP_WHY — המקור לא נכתב" ;;
+        *) echo snapshot > "$_ss_r/shrink_path" ;;   # the view path ran and failed: LC_ERROR says how
+    esac
+    _ss_t1=$(date +%s); _ss_tm=$(cat "$_ss_r/resize_at" 2>/dev/null)
+    case "$_ss_tm" in ''|*[!0-9]*) echo $((_ss_t1 - _ss_t0)) > "$_ss_r/info_s"; return "$_ss_rc" ;; esac
+    echo $((_ss_tm - _ss_t0)) > "$_ss_r/info_s"; echo $((_ss_t1 - _ss_tm)) > "$_ss_r/resize_s"
+    return "$_ss_rc"
 }
 
 lc_manifest() {

@@ -50,7 +50,7 @@ def consistent_db_copy(conn: sqlite3.Connection) -> bytes:
             # לא רק שהוא נכתב (עיקרון 5).
             verdict = _integrity(target)
             if verdict != "ok":
-                raise RuntimeError(f"integrity_check on the backup copy: {verdict}")
+                raise RuntimeError(f"בדיקת integrity_check על עותק הגיבוי נכשלה: {verdict}")
         finally:
             target.close()
         return path.read_bytes()

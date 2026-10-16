@@ -90,7 +90,7 @@ def run(tmp_path: Path, body: str, table: str = TABLE, efi: bool = True,
 
 def hellos(box: Path) -> list[dict]:
     f = box / "run" / "hellos"
-    return [json.loads(line) for line in f.read_text().splitlines() if line] if f.exists() else []
+    return [json.loads(line) for line in f.read_text(encoding="utf-8").splitlines() if line] if f.exists() else []
 
 
 def test_boot_next_goes_to_the_local_disk_and_is_read_back(tmp_path):
@@ -102,18 +102,18 @@ def test_boot_next_goes_to_the_local_disk_and_is_read_back(tmp_path):
 
 def test_a_write_that_did_not_read_back_is_a_failure(tmp_path):
     out, _, _ = run(tmp_path, 'boot_next_local; echo "rc=$?"', ignore_n=True)
-    assert "failed:BootNext read back ''" in out and "rc=1" in out, out
+    assert "failed:BootNext נקרא בחזרה ''" in out and "rc=1" in out, out
 
 
 def test_no_local_disk_entry_is_said(tmp_path):
     out, _, box = run(tmp_path, 'boot_next_local; echo "rc=$?"', table=NETWORK_ONLY)
-    assert "failed:no local-disk Boot#### entry" in out and "rc=1" in out, out
+    assert "failed:אין רשומת Boot#### של דיסק מקומי" in out and "rc=1" in out, out
     assert "-n" not in (box / "bin" / "calls").read_text()
 
 
 def test_legacy_bios_is_skipped_by_name(tmp_path):
     out, _, box = run(tmp_path, 'boot_next_local; echo "rc=$?"', efi=False)
-    assert "skipped:no efivars" in out and "rc=1" in out, out
+    assert "skipped:אין efivars" in out and "rc=1" in out, out
     assert not (box / "bin" / "calls").exists()
 
 
@@ -131,9 +131,10 @@ def test_a_boot_next_that_failed_is_on_the_screen_and_in_the_report(tmp_path):
     out, rc, box = run(tmp_path, "gui_unavailable_local recovery", table=NETWORK_ONLY)
     assert rc == 86
     assert "could NOT be pointed at the local disk" in out
-    assert "no local-disk Boot#### entry" in out
+    assert "server console journal" in out        # the cause is Hebrew: it goes to the journal, not to the ASCII tty
     assert out.isascii(), out
     (h,) = hellos(box)
+    assert h["gui_failed"]["detail"] == "אין רשומת Boot#### של דיסק מקומי"
     assert h["gui_failed"]["screen"] == "recovery"
     assert h["gui_failed"]["boot_next"] == "failed"
 

@@ -812,6 +812,9 @@ def test_swap_is_recreated_not_streamed():
     assert '"uuid\\":' in capture
 
 
+@requires_native(("jq", shutil.which("jq")),
+                 why="write_hostname קורא את תוכנית המחיצות ב-manifest_plan (jq); בלעדיו התשובה"
+                     " הנכונה היא manifest_plan_failed, לא מסלול Linux")
 def test_a_linux_image_is_named_through_etc_hostname(tmp_path):
     """שם המחשב במניפסט בלי מחיצת windows הולך למסלול Linux — לא לרג'יסטרי."""
     run = tmp_path / "run"
@@ -829,7 +832,7 @@ def test_a_linux_image_is_named_through_etc_hostname(tmp_path):
     # אין כונן אמיתי בבדיקה, ולכן ההרכבה נכשלת — אבל של מחיצת Linux.
     assert result["ok"] is False
     assert result["code"] == "mount_failed"
-    assert "linux" in result["error"]
+    assert "הלינוקס" in result["error"]
 
 
 def test_linux_hostname_files_are_rewritten_the_installer_way(tmp_path):
@@ -1161,6 +1164,12 @@ def run_expand(tmp_path, plan, disk_sectors, override=None):
     )
 
 
+
+def tail_n(idx, sectors, end=976773168 - 34):
+    """#1467: `_move_to_tail` -- start aligned down to 2048, size exact."""
+    start = (end - sectors + 1) // 2048 * 2048
+    return f"-a 1 -n {idx}:{start}:{start + sectors - 1}", start
+
 def test_a_trailing_swap_is_rebuilt_at_the_tail_and_the_root_takes_the_rest(tmp_path):
     """‏256→500 עם swap אחרונה: ה-swap נמחקת, נבראת מחדש בזנב בגודל
     שהמניפסט מצהיר, והשורש נמתח עד תחילתה (#46)."""
@@ -1170,11 +1179,11 @@ def test_a_trailing_swap_is_rebuilt_at_the_tail_and_the_root_takes_the_rest(tmp_
     # ‏-<סקטורים> = כך וכך סקטורים לפני סוף השטח הפנוי; ‏0 = סופו. ערך
     # שלילי ולא סקטור מפורש כדי לא לעקוף את יישור ה-2048 של sgdisk.
     assert calls[1] == (
-        f"-n 3:-{SWAP_SECTORS}:0 -t 3:0657FD6D-A4AB-43C4-84E5-0933C84B4F4F "
+        f"{tail_n(3, SWAP_SECTORS)[0]} -t 3:0657FD6D-A4AB-43C4-84E5-0933C84B4F4F "
         f"-u 3:33333333-3333-3333-3333-333333333333 {test_dev(tmp_path)}/sda"
     )
     assert calls[2] == (
-        "-d 2 -n 2:206848:0 -t 2:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
+        "-a 1 -d 2 -n 2:206848:0 -t 2:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
         f"-u 2:22222222-2222-2222-2222-222222222222 {test_dev(tmp_path)}/sda"
     )
     assert len(calls) == 3
@@ -1206,7 +1215,7 @@ def test_expansion_without_swap_leaves_the_old_path_alone(tmp_path):
     rc, calls, marker = run_expand(tmp_path, plan, disk_sectors=976773168)
     assert rc == "rc=0"
     assert calls == [
-        "-d 2 -n 2:206848:0 -t 2:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
+        "-a 1 -d 2 -n 2:206848:0 -t 2:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
         f"-u 2:22222222-2222-2222-2222-222222222222 {test_dev(tmp_path)}/sda"
     ]
     assert marker == "2|ext4"
@@ -1228,7 +1237,7 @@ def test_an_unmarked_debian_manifest_is_expanded_all_the_same(tmp_path):
     assert rc == "rc=0"
     assert calls[0] == f"-d 3 {test_dev(tmp_path)}/sda"
     assert calls[2] == (
-        "-d 2 -n 2:206848:0 -t 2:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
+        "-a 1 -d 2 -n 2:206848:0 -t 2:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
         f"-u 2:22222222-2222-2222-2222-222222222222 {test_dev(tmp_path)}/sda"
     )
     assert marker == "2|ext4"
@@ -1241,7 +1250,7 @@ def test_an_unmarked_windows_manifest_picks_the_system_partition(tmp_path):
                                    disk_sectors=976773168)
     assert rc == "rc=0"
     assert calls[0] == f"-d 4 {test_dev(tmp_path)}/sda"
-    assert calls[2].startswith("-d 3 -n 3:649216:0 ")
+    assert calls[2].startswith("-a 1 -d 3 -n 3:649216:0 ")
     assert marker == "3|ntfs"
 
 
@@ -1252,7 +1261,7 @@ def test_an_unmarked_cloud_manifest_picks_the_root_that_is_first_in_the_list(tmp
                                    disk_sectors=976773168)
     assert rc == "rc=0"
     assert calls == [
-        "-d 1 -n 1:2099200:0 -t 1:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
+        "-a 1 -d 1 -n 1:2099200:0 -t 1:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
         f"-u 1:dddddddd-dddd-dddd-dddd-dddddddddddd {test_dev(tmp_path)}/sda"
     ]
     assert marker == "1|ext4"
@@ -1280,7 +1289,7 @@ def test_a_manifest_that_marks_exactly_one_partition_overrides_the_choice(tmp_pa
     assert marker == "2|ext4", "הסימון המפורש לא גבר על הבחירה האוטומטית"
     assert calls[0] == f"-d 3 {test_dev(tmp_path)}/sda"
     assert calls[2] == (
-        "-d 2 -n 2:616448:0 -t 2:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
+        "-a 1 -d 2 -n 2:616448:0 -t 2:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
         f"-u 2:22222222-2222-2222-2222-222222222222 {test_dev(tmp_path)}/sda"
     )
 
@@ -1334,7 +1343,7 @@ def test_a_manual_override_picks_a_different_partition_than_auto_would(tmp_path)
     assert marker == "2|ext4"
     assert calls[0] == f"-d 3 {test_dev(tmp_path)}/sda"
     assert calls[2] == (
-        "-d 2 -n 2:616448:0 -t 2:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
+        "-a 1 -d 2 -n 2:616448:0 -t 2:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
         f"-u 2:22222222-2222-2222-2222-222222222222 {test_dev(tmp_path)}/sda"
     )
 
@@ -1358,9 +1367,9 @@ def test_a_trailing_recovery_moves_to_the_tail_and_windows_takes_the_rest(tmp_pa
     assert rc == "rc=0"
     assert calls == [
         f"-d 4 {test_dev(tmp_path)}/sda",
-        f"-n 4:-{RECOVERY_SECTORS}:0 -t 4:DE94BBA4-06D1-4D40-A16A-BFD50179D6AC "
+        f"{tail_n(4, RECOVERY_SECTORS)[0]} -t 4:DE94BBA4-06D1-4D40-A16A-BFD50179D6AC "
         f"-u 4:44444444-4444-4444-4444-444444444444 {test_dev(tmp_path)}/sda",
-        "-d 3 -n 3:649216:0 -t 3:EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "
+        "-a 1 -d 3 -n 3:649216:0 -t 3:EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "
         f"-u 3:33333333-3333-3333-3333-333333333333 {test_dev(tmp_path)}/sda",
     ]
     assert marker == "3|ntfs"
@@ -1390,11 +1399,11 @@ def test_the_tail_keeps_its_order_on_the_disk_not_its_order_in_the_list(tmp_path
     # על הדיסק — נבראת ראשונה, ורק אחריה ה-swap שלפניה.
     assert sorted(calls[:2]) == [f"-d 4 {test_dev(tmp_path)}/sda", f"-d 5 {test_dev(tmp_path)}/sda"]
     assert calls[2] == (
-        f"-n 4:-{RECOVERY_SECTORS}:0 -t 4:DE94BBA4-06D1-4D40-A16A-BFD50179D6AC "
+        f"{tail_n(4, RECOVERY_SECTORS)[0]} -t 4:DE94BBA4-06D1-4D40-A16A-BFD50179D6AC "
         f"-u 4:44444444-4444-4444-4444-444444444444 {test_dev(tmp_path)}/sda"
     )
     assert calls[3] == (
-        f"-n 5:-{4294967296 // 512}:0 -t 5:0657FD6D-A4AB-43C4-84E5-0933C84B4F4F "
+        f"{tail_n(5, 4294967296 // 512, end=tail_n(4, RECOVERY_SECTORS)[1] - 1)[0]} -t 5:0657FD6D-A4AB-43C4-84E5-0933C84B4F4F "
         f"-u 5:55555555-5555-5555-5555-555555555555 {test_dev(tmp_path)}/sda"
     )
     assert marker == "3|ntfs"
@@ -1414,7 +1423,7 @@ def test_the_cloud_root_is_stretched_although_it_is_first_in_the_list(tmp_path):
     rc, calls, marker = run_expand(tmp_path, CLOUD_PLAN, disk_sectors=976773168)
     assert rc == "rc=0"
     assert calls == [
-        "-d 1 -n 1:2099200:0 -t 1:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
+        "-a 1 -d 1 -n 1:2099200:0 -t 1:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
         f"-u 1:dddddddd-dddd-dddd-dddd-dddddddddddd {test_dev(tmp_path)}/sda"
     ]
     assert marker == "1|ext4"
@@ -1471,9 +1480,14 @@ def test_the_stream_lands_on_the_node_of_the_index_not_on_a_start_sector(tmp_pat
     digest = hashlib.sha256(payload).hexdigest()
     # ‏chmod חובה: ‏cat > יוצר קובץ בלי סיבית הרצה, וזיוף שלא ניתן להרצה
     # עובר בווינדוס (שם כל קובץ "בר-הרצה") ונופל ב-CI בלבד.
+    # #1444: the station counts and hashes inside fanout (-S <sha> -P <counter>
+    # <buffer> <feed>), not pv | tee | sha256sum.
     stubs = (
-        f"cat > {posix(stub_dir)}/pv <<'STUB'\n"
-        "#!/bin/sh\necho 0 >&2\ncat\necho 14 >&2\n"
+        f"cat > {posix(stub_dir)}/fanout <<'STUB'\n"
+        "#!/bin/sh\n"
+        'tmp=$(mktemp); cat > "$tmp"\n'
+        'sha256sum < "$tmp" | cut -c1-64 > "$2"; wc -c < "$tmp" | tr -d " " >> "$4"\n'
+        'cat "$tmp" > "$6"; rm -f "$tmp"\n'
         "STUB\n"
         f"cat > {posix(stub_dir)}/zstd <<'STUB'\n#!/bin/sh\nexec cat\nSTUB\n"
         f"cat > {posix(stub_dir)}/partclone.ntfs <<'STUB'\n"
@@ -1481,7 +1495,7 @@ def test_the_stream_lands_on_the_node_of_the_index_not_on_a_start_sector(tmp_pat
         f'printf "%s\\n" "$*" >> {posix(calls)}\n'
         "cat > /dev/null\n"
         "STUB\n"
-        f"chmod 0755 {posix(stub_dir)}/pv {posix(stub_dir)}/zstd "
+        f"chmod 0755 {posix(stub_dir)}/fanout {posix(stub_dir)}/zstd "
         f"{posix(stub_dir)}/partclone.ntfs\n"
     )
     out = sh(
@@ -1495,6 +1509,8 @@ def test_the_stream_lands_on_the_node_of_the_index_not_on_a_start_sector(tmp_pat
         # ‏/dev/sda4 אינו קיים בסביבת הבדיקה, ובדיקת ההתקן היא הבדיקה
         # הראשונה בצינור (#51). היא מוחלפת כאן ונבדקת בנפרד.
         "node_is_block() { true; }; "
+        # ‏#1487: סקטור אתחול הגיבוי נבדק ב-test_ntfs_backup_boot_1487.py; ה-partclone כאן זורק את הזרם.
+        "ntfs_boot_target() { true; }; "
         f"restore_partition unicast http://s img sda 4 ntfs p4.recovery.pcl.zst "
         f'{digest} "" > {posix(box)}/pipe.out 2>&1; echo "rc=$?"'
     )
@@ -1542,7 +1558,7 @@ def swap_box(tmp_path, disks=("sda",)):
         f'export RUN_DIR={posix(run)!r} DEVROOT={posix(run)!r}/dev; '
         f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/waits.sh; '
         f'. {posix(AGENT)}/lib/progress.sh; '
-        f'. {posix(AGENT)}/lib/restore.sh; . {posix(AGENT)}/lib/drawers.sh; . {posix(AGENT)}/lib/verdict.sh; . {posix(AGENT)}/lib/failmark.sh; '
+        f'. {posix(AGENT)}/lib/restore.sh; . {posix(AGENT)}/lib/drawers.sh; . {posix(AGENT)}/lib/verdict.sh; . {posix(AGENT)}/lib/failmark.sh; . {posix(AGENT)}/lib/ntfsboot.sh; '
         "log() { :; }; "
         # ‏/dev/sdaN אינו קיים כאן, ומסלול ה-swap עובר באותה בדיקת התקן
         # של כל כתיבה (#51). היא נבדקת בנפרד ב-test_restore_evidence.py.
@@ -1719,6 +1735,11 @@ REAL_BINARIES_USED = {
     "dmidecode",
     # ‏#433 — רשומת Boot#### לווינדוס המשוחזר על UEFI (bootentry.sh).
     "efibootmgr",
+    # ‏#1466 — שיכפול מקומי: כיווץ עותק copy-on-write בזיכרון ולא את המקור (lcsnap.sh).
+    "dmsetup",
+    # #1493 — the GUI starts under /usr/bin/nice (guibridge.sh); Debian 13's
+    # busybox-static has no nice applet, so coreutils' binary is packed.
+    "nice",
 }
 
 #: מקומפל מהמקור בבנאי ולכן אינו ברשימת ה-BINARIES שנאספת מהמערכת.
@@ -1765,7 +1786,7 @@ def _fanout_buffer_for(tmp_path, mem_available_kb, drawers):
     )
     out = sh(
         f"export SYSROOT={posix(root)!r}; "
-        f". {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/drawers.sh; . {posix(AGENT)}/lib/verdict.sh; . {posix(AGENT)}/lib/failmark.sh; "
+        f". {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/drawers.sh; . {posix(AGENT)}/lib/verdict.sh; . {posix(AGENT)}/lib/failmark.sh; . {posix(AGENT)}/lib/ntfsboot.sh; "
         f"_fanout_buffer {drawers}"
     )
     return int(out.strip())
@@ -1896,6 +1917,8 @@ def _monitor_spawn_args(tmp_path, role=None, flag="1", ip="10.0.0.9",
         'export IMAGECTL_SERVER=http://10.0.0.1:8080; '
         'export RUN_DIR=' + repr(posix(run)) + '; '
         'export IP=' + ip + '; export MONITOR_BIN=/bin/sh; export FB_DEV=/dev/null; '
+        # #1475: no GUI mirror here -- serve fb0 at once instead of waiting.
+        'export MONITOR_MIRROR_WAIT_S=0; '
         'log() { :; }; '
         + role_line +
         '. ' + posix(AGENT) + '/lib/monitor.sh; '
@@ -1906,12 +1929,12 @@ def _monitor_spawn_args(tmp_path, role=None, flag="1", ip="10.0.0.9",
     return out.read_text(encoding="utf-8").strip() if out.exists() else None
 
 
-def test_monitor_runs_view_only_on_a_cloner(tmp_path):
-    """קלונר: המוניטור עולה אך **בלי** --input — צפייה בלבד, בלי uinput.
-    זה מה שמונע שליטה במחשב שיכפול (אין מקלדת/עכבר על קלונר)."""
+def test_monitor_gives_a_cloner_keyboard_and_mouse(tmp_path):
+    """קלונר: #1454 (נדב 16/10) — למשכפל יש היום מקלדת ועכבר, ולכן המוניטור
+    עולה עם --input כמו במחשב בנייה. הפך את 'צפייה בלבד' של #690."""
     args = _monitor_spawn_args(tmp_path, role="cloner")
     assert args is not None, "המוניטור לא עלה על קלונר"
-    assert "--input" not in args.split(), args
+    assert "--input" in args.split(), args
     assert "--bind" in args and "10.0.0.9" in args
 
 

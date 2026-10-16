@@ -53,12 +53,14 @@ void draw_ask_dialog(App *a, cairo_t *cr, double W, double H) {
         secondary = "השאר כמו שהוא";
         hint_s = "הרשומה נשארת פתוחה בקונסולה, וקליטה מהדיסק הזה תסורב עד שיוחזר";
     } else {
-        snprintf(title_s, sizeof title_s, "%s", "הקליטה הסתיימה — האימג' בספרייה");
+        /* #1470: the machine is released after the upload; the server re-reads every
+           file before the image enters the library -- it is not there yet. */
+        snprintf(title_s, sizeof title_s, "%s", "הקליטה הסתיימה — השרת מאמת את האימג'");
         snprintf(lead_s, sizeof lead_s, "המחשב יכבה בעוד %s שניות אם לא תבחרו. אחרי הכיבוי אפשר לשלוף את הדיסק בבטחה.",
             a->st.ask_subject);
         primary = "כבה";
         secondary = "חזרה לתפריט";
-        hint_s = "המחשב נשאר דלוק ומציג את התפריט — להפיץ מיד את האימג' החדש";
+        hint_s = "המחשב נשאר דלוק ומציג את התפריט — האימג' החדש יופיע להפצה כשהאימות בשרת יעבור";
     }
     Text title = rtl_block_make(cr, 22, 600, title_s, inner);
     Text lead = rtl_block_make(cr, 14, 400, lead_s, inner);

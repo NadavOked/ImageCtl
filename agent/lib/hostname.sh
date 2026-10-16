@@ -93,13 +93,13 @@ write_hostname() {
 
     case "$_name" in
         *[!A-Za-z0-9-]*|"")
-            printf '{"ok":false,"error":"invalid hostname","code":"bad_hostname"}\n'
+            printf '{"ok":false,"error":"שם המחשב אינו תקין","code":"bad_hostname"}\n'
             return 1 ;;
     esac
     # NetBIOS caps names at 15 characters; a longer one is silently truncated
     # by Windows and the machine ends up with a name nobody expects.
     [ "${#_name}" -le 15 ] || {
-        printf '{"ok":false,"error":"hostname longer than 15 characters","code":"bad_hostname"}\n'
+        printf '{"ok":false,"error":"שם המחשב ארוך מ-15 תווים","code":"bad_hostname"}\n'
         return 1
     }
 
@@ -108,7 +108,7 @@ write_hostname() {
     # (spec section 14) -- there is no separate "which OS" flag to get wrong.
     _hostname_plan="$RUN_DIR/hostname.plan"
     if ! manifest_plan "$_manifest" > "$_hostname_plan"; then
-        printf '{"ok":false,"error":"could not read the partition plan","code":"manifest_plan_failed"}\n'
+        printf '{"ok":false,"error":"לא הצלחנו לקרוא את תוכנית המחיצות","code":"manifest_plan_failed"}\n'
         return 1
     fi
     # grep: 0 = found, 1 = not found (an answer), 2+ = the check broke.
@@ -117,7 +117,7 @@ write_hostname() {
     grep -qE '^[^|]*\|[^|]*\|linux\|' "$_hostname_plan"
     _lin_rc=$?
     if [ "$_plan_rc" -gt 1 ] || [ "$_lin_rc" -gt 1 ]; then
-        printf '{"ok":false,"error":"could not check the partition plan","code":"manifest_plan_check_failed"}\n'
+        printf '{"ok":false,"error":"לא הצלחנו לבדוק את תוכנית המחיצות","code":"manifest_plan_check_failed"}\n'
         return 1
     fi
     if [ "$_plan_rc" -eq 1 ]; then
@@ -145,11 +145,11 @@ _write_hostname_both() {
         printf '{"ok":true,"hostname":"%s","method":"%s+%s"}\n' "$_name" "$HOSTNAME_METHOD" "$HOSTNAME_METHOD_LINUX"
         return 0
     elif [ "$_wrc" -eq 0 ]; then
-        printf '{"ok":false,"error":"the linux side was not named (windows was): %s","code":"named_windows_only"}\n' "$_lerr"
+        printf '{"ok":false,"error":"צד הלינוקס לא קיבל שם (צד Windows קיבל): %s","code":"named_windows_only"}\n' "$_lerr"
     elif [ "$_lrc" -eq 0 ]; then
-        printf '{"ok":false,"error":"the windows side was not named (linux was): %s","code":"named_linux_only"}\n' "$_werr"
+        printf '{"ok":false,"error":"צד Windows לא קיבל שם (צד הלינוקס קיבל): %s","code":"named_linux_only"}\n' "$_werr"
     else
-        printf '{"ok":false,"error":"neither side was named: windows: %s; linux: %s","code":"named_neither"}\n' "$_werr" "$_lerr"
+        printf '{"ok":false,"error":"אף צד לא קיבל שם — Windows: %s; לינוקס: %s","code":"named_neither"}\n' "$_werr" "$_lerr"
     fi
     return 1
 }
@@ -158,20 +158,20 @@ _write_hostname_windows() {
     # The offline-registry path. Uses write_hostname's _disk/_manifest/_name/
     # _hostname_plan; emits the section 5 result.
     _mnt=$(_mount_windows "$_disk" "$_manifest" "$_hostname_plan") || {
-        printf '{"ok":false,"error":"could not mount the windows partition","code":"mount_failed"}\n'
+        printf '{"ok":false,"error":"לא הצלחנו לעגן את מחיצת Windows","code":"mount_failed"}\n'
         return 1
     }
 
     _hive="$_mnt/Windows/System32/config/SYSTEM"
     if [ ! -f "$_hive" ]; then
         umount "$_mnt" 2>/dev/null
-        printf '{"ok":false,"error":"SYSTEM hive not found","code":"no_hive"}\n'
+        printf '{"ok":false,"error":"כוורת SYSTEM לא נמצאה","code":"no_hive"}\n'
         return 1
     fi
 
     _cs=$(_control_set "$_hive") || {
         umount "$_mnt" 2>/dev/null
-        printf '{"ok":false,"error":"could not read the active control set","code":"no_controlset"}\n'
+        printf '{"ok":false,"error":"לא הצלחנו לקרוא את ה-ControlSet הפעיל","code":"no_controlset"}\n'
         return 1
     }
     log "writing hostname $_name into $_cs" >&2
@@ -202,11 +202,11 @@ _write_hostname_windows() {
     if [ "$_rc" -ne 0 ] || [ "$_rc2" -ne 0 ] || [ "$_back" != "$_name" ] \
         || [ "$_back_host" != "$_name" ] || [ "$_back_nv" != "$_name" ]; then
         log "hostname verify failed: wrote '$_name', read back computer='$_back' hostname='$_back_host' nv='$_back_nv' (rc=$_rc/$_rc2)" >&2
-        printf '{"ok":false,"error":"registry edit failed","code":"hive_write_failed"}\n'
+        printf '{"ok":false,"error":"עריכת הרג׳יסטרי נכשלה","code":"hive_write_failed"}\n'
         return 1
     fi
     if [ "$_umrc" -ne 0 ]; then
-        printf '{"ok":false,"error":"could not unmount after the registry edit","code":"umount_failed"}\n'
+        printf '{"ok":false,"error":"לא הצלחנו לנתק את המחיצה אחרי עריכת הרג׳יסטרי","code":"umount_failed"}\n'
         return 1
     fi
     printf '{"ok":true,"hostname":"%s","method":"%s"}\n' "$_name" "$HOSTNAME_METHOD"
@@ -247,7 +247,7 @@ name_this_machine() {
     # ‏hostname.json ב-tmpfs נמחק באתחול (#106). אחרי אזהרה קודמת, לא במקומה.
     if [ "$_hrc" -ne 0 ]; then
         _why=$(json_get "$RUN_DIR/hostname.json" ".error")
-        { [ -n "$_why" ] && [ "$_why" != "null" ]; } || _why="unknown reason (rc=$_hrc)"
+        { [ -n "$_why" ] && [ "$_why" != "null" ]; } || _why="סיבה לא ידועה (rc=$_hrc)"
         _why="שם המחשב לא נכתב: $_why"
         _errf="$RUN_DIR/targets/$1/error"
         [ -s "$_errf" ] && _why="$(cat "$_errf") | $_why"

@@ -2,7 +2,13 @@
 # Read-only capture guards: NTFS fast-startup/hibernation (#651) and
 # BitLocker (#671). Both run before a byte moves; capture.sh calls them.
 
-CAPTURE_HIBERNATED_MESSAGE="הדיסק מהובר — כבה את Windows כיבוי מלא (fast-startup כבוי) וקלוט מחדש"
+capture_hibernated_message() {
+    # $1 = partition node. #1502 (metal 16/10, probe rc=14): with Fast Startup
+    # on, the normal Start-menu shutdown IS a hibernation -- say so, and give
+    # the one fix that works. Hebrew first: a line that opens with an LTR token
+    # ("sda: ...") is laid out LTR on the screen and the Hebrew turns over.
+    echo "חלונות במחיצה ${1#/dev/} נכבה ב-Fast Startup — גם כיבוי רגיל משאיר אותו נעול. בחלונות: הריצו כמנהל powercfg /h off, כבו, וקלטו מחדש."
+}
 
 capture_ntfs_hibernation_reason() {
     # $1=partition node, $2=private mount point. Empty output means clean.
@@ -19,7 +25,7 @@ capture_ntfs_hibernation_reason() {
     _hn_rc=$?
     case "$_hn_rc" in
         0) ;;
-        14|15) echo "$CAPTURE_HIBERNATED_MESSAGE"; return 1 ;;
+        14|15) capture_hibernated_message "$_hn_node"; return 1 ;;
         *) echo "לא הצלחנו לבדוק מצב שינה ב-$_hn_node (ntfs-3g.probe rc=$_hn_rc)"; return 2 ;;
     esac
 

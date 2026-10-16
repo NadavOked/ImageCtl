@@ -41,7 +41,7 @@ target_init() {
     echo "$2" > "$_t/total"
     rm -f "$_t/error" "$_t/crc_delta" "$_t/ata_log" "$_t/ata_log.json" "$_t/ident" "$_t/evidence_only" \
         "$_t/boot_ca_state" "$_t/boot_ca_reason" "$_t/write_check_state" "$_t/write_check_reason" "$_t/write_check_mbps" \
-        "$_t/write_started"
+        "$_t/write_started" "$_t/ntfs_boot"
     # ‏#874: מאיפה dmesg נספר בכשל -- ריק (אין /proc/uptime) = מההתחלה.
     cut -d' ' -f1 "$SYSROOT/proc/uptime" > "$_t/since" 2>/dev/null
 }
@@ -163,7 +163,7 @@ build_progress() {
         _entry=$(printf '{"dev":"%s","bytes_written":%s,"bytes_total":%s,"state":"%s"' \
             "$_dev" "$(target_bytes "$_dev")" "$_total" "$_tstate")
         # ‏#435: רק בקליטה (task id). המכנה בציר הבלוקים, לצד bytes_* הדחוסים.
-        [ -n "${3:-}" ] && _entry="$_entry$(_source_progress_json "$_dev")"
+        [ -n "${3:-}" ] && _entry="$_entry$(_source_progress_json "$_dev")$(cd_json 2>/dev/null)"
         if [ -f "$_d/error" ]; then
             _entry="$_entry,\"error\":\"$(json_escape "$(cat "$_d/error")")\""
         fi

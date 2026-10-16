@@ -27,8 +27,8 @@ LIB = REPO / "agent" / "lib"
 pytestmark = requires_native(("bash", BASH))
 
 LIBS = ("common", "jsonq", "waits", "sysinfo", "progress", "restore", "diskfit", "expand", "grow",
-        "drawers", "verdict", "failmark", "manifest", "hibernation", "shrinkplan", "shrink",
-        "shrinkmem", "smart", "guistate", "attended", "lcinv", "lcplan", "lccopy", "localclone", "lcwait", "idle", "lcgui")   # attended, lcwait, idle: #1367
+        "drawers", "verdict", "failmark", "ntfsboot", "manifest", "hibernation", "shrinkplan", "shrink",
+        "shrinkmem", "smart", "guistate", "attended", "lcinv", "lcplan", "lcsnap", "lccopy", "localclone", "lcwait", "idle", "lcgui")   # attended, lcwait, idle: #1367
 
 
 def run(tmp_path: Path, script: str, timeout: int = 60, **env) -> subprocess.CompletedProcess:
@@ -293,7 +293,7 @@ def test_the_choice_wraps_the_idle_cloner_and_nothing_else():
 
 def test_the_kernel_command_line_is_not_read():
     """Principle 2: nothing of the local clone travels on the command line."""
-    for name in ("lcinv", "lcplan", "lccopy", "localclone", "lcwait", "lcgui"):
+    for name in ("lcinv", "lcplan", "lcsnap", "lccopy", "localclone", "lcwait", "lcgui"):
         text = (LIB / f"{name}.sh").read_text(encoding="utf-8")
         assert "/proc/cmdline" not in text and "imagectl.mode" not in text and "parse_cmdline" not in text, name
 

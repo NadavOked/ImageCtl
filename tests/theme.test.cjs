@@ -104,7 +104,11 @@ test('inline script applies cached dark before /me (no flash)', () => {
   assert.equal(attrs['data-theme'], 'dark');
 });
 
-test('inline script follows prefers-color-scheme when there is no cache', () => {
+// #1499 (Nadav 16/10): the default for everyone is light -- "auto" in the DB
+// is light and nothing follows the operating system. Every test below runs
+// with the system set to dark: that is the setting the old code obeyed.
+
+test('inline script is light when there is no cache, even on a dark system', () => {
   const attrs = {};
   const ctx = vm.createContext({
     localStorage: {getItem: () => null},
@@ -112,31 +116,36 @@ test('inline script follows prefers-color-scheme when there is no cache', () => 
     window: {matchMedia: () => ({matches: true})},
   });
   vm.runInContext(inlineScript(), ctx);
-  assert.equal(attrs['data-theme'], 'dark');
+  assert.equal(attrs['data-theme'], 'light');
 });
 
-test('auto follows matchMedia live', () => {
-  const s = setup({systemDark: false});
+test('auto is light on a dark system, uncached, and does not follow it', () => {
+  const s = setup({systemDark: true});
   s.run('applyServerTheme({theme:"auto"})');
   assert.equal(s.attrs['data-theme'], 'light');
   assert.equal(s.store['imagectl-theme'], undefined);
-  s.setSystem(true);
-  assert.equal(s.attrs['data-theme'], 'dark');
-  s.setSystem(false);
+  assert.equal(s.mediaListeners.length, 0, 'nothing listens to prefers-color-scheme');
+  s.setSystem(false); s.setSystem(true);
   assert.equal(s.attrs['data-theme'], 'light');
 });
 
-test('dark beats a light system and is cached', () => {
+test('a user who saved dark gets dark, cached', () => {
   const s = setup({systemDark: false});
   s.run('applyServerTheme({theme:"dark"})');
   assert.equal(s.attrs['data-theme'], 'dark');
   assert.equal(s.store['imagectl-theme'], 'dark');
-  s.setSystem(false);
-  assert.equal(s.attrs['data-theme'], 'dark', 'explicit dark must not follow the system');
 });
 
-test('logout clears the cache and returns to system', () => {
-  const s = setup({systemDark: false});
+test('a theme the server does not define is light', () => {
+  const s = setup({systemDark: true});
+  s.run('applyServerTheme({theme:"blue"})');
+  assert.equal(s.attrs['data-theme'], 'light');
+  s.run('applyServerTheme({})');
+  assert.equal(s.attrs['data-theme'], 'light');
+});
+
+test('logout clears the cache and returns to light', () => {
+  const s = setup({systemDark: true});
   s.run('applyServerTheme({theme:"dark"})');
   assert.equal(s.store['imagectl-theme'], 'dark');
   s.run('showLogin()');
@@ -144,19 +153,26 @@ test('logout clears the cache and returns to system', () => {
   assert.equal(s.attrs['data-theme'], 'light');
 });
 
-test('header toggle cycles auto → light → dark and PUTs /me/theme', async () => {
+test('header toggle switches what is shown -- auto → dark → light -- and saves each', async () => {
   const s = setup({systemDark: true});
   s.run('applyServerTheme({theme:"auto"})');
-  assert.equal(s.run('themePref'), 'auto');
   await s.run('toggleTheme()');
-  assert.equal(s.run('themePref'), 'light');
-  assert.equal(s.attrs['data-theme'], 'light');
-  await s.run('toggleTheme()');
+  assert.equal(s.attrs['data-theme'], 'dark');
   assert.equal(s.run('themePref'), 'dark');
   await s.run('toggleTheme()');
-  assert.equal(s.run('themePref'), 'auto');
+  assert.equal(s.attrs['data-theme'], 'light');
+  assert.equal(s.run('themePref'), 'light');
   const puts = s.requests.filter((r) => r.url === '/api/console/me/theme');
-  assert.equal(puts.length, 3);
-  assert.deepEqual(puts.map((r) => JSON.parse(r.options.body).theme), ['light', 'dark', 'auto']);
+  assert.deepEqual(puts.map((r) => JSON.parse(r.options.body).theme), ['dark', 'light']);
   assert.ok(puts.every((r) => r.options.method === 'PUT'));
+});
+
+test('the appearance card offers light and dark only; auto shows light pressed', () => {
+  const s = setup({systemDark: true});
+  s.run('applyServerTheme({theme:"auto"})');
+  const html = s.run('appearanceCard()');
+  assert.doesNotMatch(html, /לפי המערכת/);
+  assert.match(html, /setThemePref\('light'\)" aria-pressed="true">בהיר/);
+  assert.match(html, /setThemePref\('dark'\)" aria-pressed="false">כהה/);
+  assert.equal(s.run('setThemePref("auto")'), undefined, 'auto is not a choice any more');
 });

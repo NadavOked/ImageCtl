@@ -40,6 +40,10 @@ def test_unknown_mac_gets_nothing_and_raises_an_alert(server):
     assert answer.pop("server_name")
     assert "server_version" in answer
     answer.pop("server_version")
+    # #1447: the zone (null where the server has no zoneinfo) and the clock
+    assert "tz" in answer
+    answer.pop("tz")
+    assert isinstance(answer.pop("now"), int)
     assert answer == {
         "schema": 1, "known": False, "role": "unknown", "group": None,
         "task": None, "session": None, "allowed_images": [],
