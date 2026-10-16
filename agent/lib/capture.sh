@@ -11,15 +11,16 @@
 # תיאור הדיסק במניפסט — ‏role, ‏fs, ‏uuid, ‏used_bytes, ‏os ו-expandable — יושב
 # ב-manifest.sh; שני הקבצים נטענים יחד. כאן נשאר מה שמזרים את הבייטים עצמם.
 # שערי הקריאה-בלבד (מהובר #651, BitLocker #671) יושבים ב-hibernation.sh;
-# כיווץ מחיצת המקור לפני הזרם והחזרתה אחריו (#87) — ב-shrink.sh.
+# כיווץ מחיצת המקור לפני הזרם (#87), על עותק בזיכרון בלבד (#1466) — ב-shrink.sh.
 # לאן התוצאה הולכת — ההעלאה, המניפסט וסיבת הכשל — ב-capturesink.sh (#1217).
 
 # ‏#72, נמדד ולא נאמד (‏4GiB מראש `p3` של tiny11, שרת המעבדה): רמה 9 עולה
 # פי 3.1 בזמן ומחזירה 1.1% — ‏~80MB על 7.3GB, ‏4 שניות בשידור שאורך 5:54.
 CAPTURE_LEVEL="${CAPTURE_LEVEL:-3}"
-# מספר מפורש ולא `-T0` שנגזר מליבות היעד (‏OOM על 512MB, ‏#21): שתי ליבות
-# נמדדו מהירות כמו `-T0` ובשיא 72MB — פחות מ-112MB של רמה 9 שהייתה כאן.
-CAPTURE_THREADS="${CAPTURE_THREADS:-2}"
+# ‏-T0 = כל הליבות (הכרעת נדב 16/10). ‏"-T2 מהיר כמו -T0" נמדד על שרת המעבדה (2 ליבות).
+# ‏HP-BUILD (‏i5-8400, ‏6 ליבות, קליטה של ~20GB, top כל 15ש', 16/10): ‏zstd ‏15-32% מהמכונה
+# (= תקרת -T2) בזמן ש-33-56% idle; העלאה ~70MB/s, שיא 117. ‏OOM של #21 היה במכונת 512MB.
+CAPTURE_THREADS="${CAPTURE_THREADS:-0}"
 # ‏#87: הכונן ה**קטן ביותר** שהאימג' הזה חייב להיכנס אליו, בבייטים.
 # ריק = לא נבדק — וזה נרשם במניפסט כ-`null` ולא כמספר, כי "לא בדקנו"
 # ו"בדקנו, נכנס" הם שני מצבים שונים (עיקרון 5). הערך אינו נגזר מהמשפחה:
@@ -42,7 +43,7 @@ capture_disk() {
     node_is_block "$_node_base" || { _capture_failed "$_disk" "אין דיסק כזה: /dev/$_disk"; return 1; }
     _sector_size=$(logical_block_size "$_node_base")
     [ -n "$_sector_size" ] \
-        || { _capture_failed "$_disk" "logical sector size unavailable: /dev/$_disk"; return 1; }
+        || { _capture_failed "$_disk" "גודל הסקטור הלוגי של /dev/$_disk לא זמין"; return 1; }
     _scheme=$(disk_scheme "$_node_base")
     [ "$_scheme" = "gpt" ] || { _capture_failed "$_disk" "הכונן אינו GPT (נמצא: $_scheme)"; return 1; }
 
@@ -89,7 +90,7 @@ capture_disk() {
     done < "$_parts"
     # ‏#87: אחרי שער המהובר ולפני חישוב הפריסה — הכיווץ משכתב את $_parts,
     # וכל מה שלמטה (הרצפה, השער החמישי, המניפסט) רואה את הפריסה המצומצמת.
-    capture_stage shrink
+    capture_stage shrink; cd_init "$_disk" "$_parts" "$_sector_size" 2>/dev/null || :   # #1505: the console's partition table
     capture_space_preflight "$_task" "$_disk" "$_parts" "$_sector_size" \
         || { _capture_failed "$_disk" "$CAPTURE_SPACE_ERROR"; return 1; }
     shrink_before_capture "$_disk" "$_parts" "$_sector_size" \
@@ -140,13 +141,13 @@ capture_disk() {
         _floor_json="$CAPTURE_TARGET_BYTES"
     fi
 
-    capture_stage stream
+    capture_stage stream; cd_init "$_disk" "$_parts" "$_sector_size" 2>/dev/null || :   # sizes after the shrink
     _json_parts=""
     _total=0
     # ‏#85: ה-ESP נקרא שוב אחרי הלולאה, לגזירת החותם של מטעני האתחול.
     _esp_node=""
     while IFS='|' read -r _idx _guid _uguid _first _sizesec; do
-        _node=$(partition_node "$_disk" "$_idx")
+        _node=$(lc_src_node "$_disk" "$_idx")   # #1466: a shrunk partition is read from its RAM view
         _attrs=$(awk -F'|' -v i="$_idx" '$1 == i { print $2 }' "$RUN_DIR/partition.attrs")
         _fs=$(_fs_of "$_node")
         _why=$(_bitlocker_reason "$_idx" "$_fs" "$_node")
@@ -163,13 +164,13 @@ capture_disk() {
             # נשמר — בלעדיו שורת ה-swap ב-fstab לא תמצא את החתימה (#48).
             _uuid=$(_uuid_of "$_node")
             if [ -n "$_uuid" ]; then _ujson="\"$_uuid\""; else _ujson="null"; fi
-            log "partition $_idx (swap): recorded, not read"
+            log "partition $_idx (swap): recorded, not read"; cd_part "$_idx" swap swap done 2>/dev/null || :
             _json_parts="$_json_parts{\"index\":$_idx,\"type_guid\":\"$_guid\",\"unique_guid\":\"$_uguid\",\"attrs\":\"$_attrs\",\"uuid\":$_ujson,\"role\":\"swap\",\"fs\":\"swap\",\"start_sector\":$_first,\"size_bytes\":$((_sizesec * _sector_size)),\"used_bytes\":0,\"file\":null,\"sha256\":null,\"expandable\":false$(shrink_json_extra "$_idx" "$_first" "$_sizesec" "$_sector_size")},"
             continue
         fi
         _file="p$_idx.$_role.pcl.zst"
-        _used=$(_used_bytes "$_node" "$_fs")
-        log "partition $_idx ($_role, $_fs): reading"
+        _used=$(_used_bytes "$_node" "$_fs"); cd_used "$_idx" "$_used" 2>/dev/null || :
+        log "partition $_idx ($_role, $_fs): reading"; cd_part "$_idx" "$_role" "$_fs" reading 2>/dev/null || :
 
         _out="$RUN_DIR/upload.$_idx"
         rm -f "$_out"
@@ -181,18 +182,22 @@ capture_disk() {
         _uppid=$!
 
         rm -f "$RUN_DIR/sha.$_idx" "$RUN_DIR/pcl.$_idx.rc" \
-            "$RUN_DIR/zstd.$_idx.rc" "$RUN_DIR/pv.$_idx.rc" "$RUN_DIR/tee.$_idx.rc" \
+            "$RUN_DIR/zstd.$_idx.rc" "$RUN_DIR/fanout.$_idx.rc" "$_out.bytes" \
             "$RUN_DIR/targets/$_disk/partclone.err"   # ‏#1254: האחוז של המחיצה הזו בלבד (progress.sh)
         _pcl=$(partclone_for_fs "$_fs")
         # The read-only preflight above has already refused dirty/hibernated
         # NTFS. -I remains read-only and partclone's rc still decides success.
         _ignore=""
         [ "$_fs" = ntfs ] && _ignore="-I"
+        # ‏#1472: ‏-a0 -z 524288 כמו lccopy.sh:116-119 (נמדד שם); ‏fanout -S מגבב את כל הזרם.
+        [ "$_pcl" = partclone.dd ] || _ignore="$_ignore -a0 -z 524288"
         # ה-rc של כל שלב נלכד במפורש: ב-busybox ash אין pipefail, ו-$? של
-        # הצינור הוא של sha256sum — שמצליח גם על קלט ריק, וככה כשל אמצע
-        # הפך לקובץ "מוצלח" (מעבדה #12, קליטה קטועה #776). ברקע, עם עין על מונה ה-pv:
-        # ‏`tee "$_out"` נחסם ב-open() עד שה-curl יפתח את ה-fifo לקריאה, ו-curl
-        # שנפל מיד (שרת שסירב) משאיר אותו חסום לנצח. כונן איטי לעומת זאת פשוט
+        # הצינור הוא של השלב האחרון בלבד — ‏sha256sum שמצליח גם על קלט ריק
+        # הפך כשל אמצע לקובץ "מוצלח" (מעבדה #12, קליטה קטועה #776).
+        # ‏#1438: מונה, גיבוב והעתקה ל-fifo — בתוך fanout ולא pv|tee|sha256sum
+        # (‏tee של busybox מעתיק 1KiB לקריאה). ‏-S נכתב רק בסוף זרם שנקרא
+        # כולו; ‏-P בפורמט pv -n. ‏open() של ה-fifo תחום ב-fanout (5ש'), ו-curl
+        # שנפל אחריו הוא EPIPE = ‏rc 1. ברקע, עם עין על המונה: כונן איטי
         # מתקדם לאט — ולכן המדד הוא חוסר התקדמות, לא משך.
         (
             # shellcheck disable=SC2046 # דגלי partclone_mode הם רשימת מילים
@@ -201,18 +206,16 @@ capture_disk() {
               echo "$?" > "$RUN_DIR/pcl.$_idx.rc"; } \
                 | { zstd -"$CAPTURE_LEVEL" -T"$CAPTURE_THREADS" -c 2>> "$LOG_FILE"
                     echo "$?" > "$RUN_DIR/zstd.$_idx.rc"; } \
-                | { pv -n -b -i 2 2>> "$RUN_DIR/targets/$_disk/bytes.raw"
-                    echo "$?" > "$RUN_DIR/pv.$_idx.rc"; } \
-                | { tee "$_out"
-                    echo "$?" > "$RUN_DIR/tee.$_idx.rc"; } \
-                | sha256sum > "$RUN_DIR/sha.$_idx"
+                | { fanout -S "$RUN_DIR/sha.$_idx" -P "$RUN_DIR/targets/$_disk/bytes.raw" \
+                        16777216 "$_out" > "$RUN_DIR/fanout.$_idx.out" 2>> "$LOG_FILE"
+                    echo "$?" > "$RUN_DIR/fanout.$_idx.rc"; }
         ) &
         _readpid=$!
         _stage=pipeline
         if wait_progress "$_readpid" "$RUN_DIR/targets/$_disk/bytes.raw" \
                 "$WAIT_STREAM_START_S" "$WAIT_STREAM_STALL_S" \
                 "קריאת מחיצה $_idx מ-$_disk" "$_out"; then
-            for _stage in tee pv zstd pcl; do
+            for _stage in fanout zstd pcl; do
                 _rc=$(cat "$RUN_DIR/$_stage.$_idx.rc" 2>/dev/null || echo 1)
                 [ "$_rc" -eq 0 ] || break
             done
@@ -227,31 +230,34 @@ capture_disk() {
         # ובתקרה: ‏curl שנתקע בפתיחת ה-fifo לא ייתלה כאן לנצח.
         wait_pid "$_uppid" "$WAIT_HELPER_S" "העלאת מחיצה $_idx" \
             || echo "$WAIT_TIMED_OUT" > "$RUN_DIR/up.$_idx.rc"
-        rm -f "$_out"
+        rm -f "$_out" "$_out.bytes"
 
         _uprc=$(cat "$RUN_DIR/up.$_idx.rc" 2>/dev/null || echo 1)
         if [ "$_rc" -ne 0 ] || [ "$_uprc" -ne 0 ]; then
             # הסיבה מהכלי עצמו — זה מה שהקונסולה תציג ליד failed.
             _why=$(tail -n 1 "$RUN_DIR/targets/$_disk/partclone.log" 2>/dev/null | tr -d '\r')
+            log "partition $_idx capture tool said: ${_why:-nothing}"   # the tool's own line: log, not the headline
             _capture_failed "$_disk" \
-                "partition $_idx: ${_why:-capture failed} (stage=$_stage rc=$_rc upload=$_uprc)"
+                "מחיצה $_idx: הקליטה נכשלה (שלב=$_stage rc=$_rc העלאה=$_uprc)"
             return 1
         fi
 
-        _sha=$(awk '{print $1}' "$RUN_DIR/sha.$_idx")
+        _sha=$(awk '{print $1}' "$RUN_DIR/sha.$_idx" 2>/dev/null)
+        # ‏-S נכתב רק ב-EOF נקי (#1438): בלי ערך — אין ראיה, ואין "sha256":"" במניפסט.
+        is_sha256 "$_sha" || { _capture_failed "$_disk" "partition $_idx: ה-sha256 לא חושב -- אין ראיה שהזרם הגיע שלם"; return 1; }
         # הבייטים של המחיצה הזו בלבד — מונה ה-pv שלה. target_bytes מחזיר
         # מצטבר-סבב, וחיבורו בכל סיבוב ניפח את total_compressed_bytes
         # פי כמה (האימג' הראשון במעבדה: 1.8GB במקום 490MB, ‏#12).
         _bytes=$(tr -d '\r' < "$RUN_DIR/targets/$_disk/bytes.raw" 2>/dev/null | tail -n 1)
         [ -n "$_bytes" ] || _bytes=0
         _total=$((_total + _bytes))
-        target_partition_done "$_disk"
+        target_partition_done "$_disk"; cd_part "$_idx" "$_role" "$_fs" done 2>/dev/null || :
 
         # Every partition is written not expandable; _mark_expandable picks
         # the one candidate once the whole list is known.
         _json_parts="$_json_parts{\"index\":$_idx,\"type_guid\":\"$_guid\",\"unique_guid\":\"$_uguid\",\"attrs\":\"$_attrs\",\"role\":\"$_role\",\"fs\":\"$_fs\",\"start_sector\":$_first,\"size_bytes\":$((_sizesec * _sector_size)),\"used_bytes\":$_used,\"file\":\"$_file\",\"sha256\":\"$_sha\",\"expandable\":false$(shrink_json_extra "$_idx" "$_first" "$_sizesec" "$_sector_size")},"
     done < "$_parts"
-    # ‏#87: הבייטים עברו; מחשב הבנייה מקבל את מחיצתו בחזרה. כשל = אזהרה בלבד.
+    # ‏#1466: הבייטים עברו; העותק בזיכרון משוחרר (המקור לא נכתב). כשל = אזהרה בלבד.
     capture_stage restore_size
     shrink_restore_source "$_disk"
 

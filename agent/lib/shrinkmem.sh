@@ -6,13 +6,10 @@
 # בלי שאיש יודע: ווינדוס עולה, ‏C: קטן, והסוכן כבר לא זוכר מה היה. אותה
 # משפחה כמו #856 ו-#874, ואותו פתרון — **השרת זוכר**, לפי סידורי:
 #
-# 1. **לפני הכתיבה הראשונה למקור** (‏shrink_before_capture, לפני
-#    `ntfsresize -s`) הסוכן שולח `shrink-open` — **רשומה אחת לדיסק** עם
-#    `partitions`: הכניסה המלאה של **כל** מחיצה שתכווץ (‏#929), כל מה
-#    ש-shrink_restore_source צריך. בלי 2xx עם `ok` — **הכיווץ לא מתחיל**
-#    (עיקרון 5: בלי רשומה אין כתיבה). דיסק בלי סידורי אינו נרשם, ולכן
-#    אינו מכווץ. שרת שאינו מכיר `partitions` (לפני #929) עונה 400 — ולכן
-#    גם הוא אינו מכווץ: זיכרון של חצי מהמחיצות גרוע מאין זיכרון.
+# 1. **‏#1466 (16/10): הסוכן כבר אינו פותח רשומות.** הכיווץ רץ על עותק
+#    בזיכרון והמקור אינו נכתב, ולכן אין מה לזכור. `shrink_open_record`
+#    הוסר; מה שנשאר כאן הוא לדיסקים שכווצו במקום **לפני** #1466 ועדיין
+#    רשומים בשרת: הסגירה, ההערה וההצעה באתחול.
 # 2. אחרי החזרה מוצלחת של **כולן** — `shrink-close`. סגירה שנכשלה היא
 #    אזהרה: הדיסק כבר בגודלו, הרשומה נשארת כתומה בקונסולה, והאתחול הבא
 #    סוגר אותה בעצמו (‏shrink_offer_pending רואה שהכול כבר בגודלו).
@@ -33,46 +30,6 @@ _sm_post() {
     _mp=$(curl -sS --max-time "$HTTP_TIMEOUT" --retry "$HTTP_RETRIES" -o "$3" -w '%{http_code}' \
         -H "Content-Type: application/json" --data-binary "@$2" "$SERVER/api/v1/agent/$1") || _mp=000
     printf '%s' "$_mp"
-}
-
-shrink_open_record() {
-    # $1 disk $2 stage file (idx|start|size|newsec|type|uguid|name|attrs, שורה
-    # למחיצה) $3 plan file (…|cur_bytes|new_bytes, לפי idx). ‏0 = השרת ענה 200
-    # עם ok ו-id (נכתב ל-targets/$1/shrink_id). כל דבר אחר = 1 עם
-    # SHRINKMEM_ERROR, והקורא אינו מכווץ.
-    SHRINKMEM_ERROR=""
-    _so_ser=$(disk_serial "$1")
-    [ -n "$_so_ser" ] || { SHRINKMEM_ERROR="לדיסק $1 אין מספר סידורי — לשרת אין במה לזכור שהוא כווץ; קלטו בלי לכווץ. הדיסק לא שונה"; return 1; }
-    _so_port=$(disk_port "$1"); case "$_so_port" in ''|*[!0-9]*) _so_port=null ;; esac
-    _so_resp="${RESP:-$RUN_DIR/response.json}"
-    _so_parts=""; _so_list=""
-    while IFS='|' read -r _so_idx _so_start _so_size _so_new _so_type _so_uguid _so_name _so_attr <&3; do
-        [ -n "$_so_idx" ] || continue
-        _so_ntfs=$(awk -F'|' -v i="$_so_idx" '$1 == i { print $6 }' "$3"); case "$_so_ntfs" in ''|*[!0-9]*) _so_ntfs=null ;; esac
-        _so_parts="$_so_parts${_so_parts:+,}$(printf '{"idx":%s,"start_sector":%s,"size_sectors":%s,"type_guid":"%s","unique_guid":%s,"attrs":%s,"name":%s,"ntfs_bytes":%s}' \
-            "$_so_idx" "$_so_start" "$_so_size" "$_so_type" "$(_sm_json_str "$_so_uguid")" "$(_sm_json_str "$_so_attr")" "$(_sm_json_str "$_so_name")" "$_so_ntfs")"
-        _so_list="$_so_list${_so_list:+, }$_so_idx"
-    done 3< "$2"
-    printf '{"mac":"%s","dev":"%s","serial":%s,"port":%s,"model":%s,"image_name":%s,"task_id":%s,"partitions":[%s]}' \
-        "${MAC:-}" "$1" "$(_sm_json_str "$_so_ser")" "$_so_port" \
-        "$(_sm_json_str "$(trim "$(cat "$SYSROOT/sys/block/$1/device/model" 2>/dev/null)")")" \
-        "$(_sm_json_str "$(json_get "$_so_resp" ".task.name")")" "$(_sm_json_str "$(json_get "$_so_resp" ".task.id")")" \
-        "$_so_parts" > "$RUN_DIR/shrink_open.json"
-    _so_code=$(_sm_post shrink-open "$RUN_DIR/shrink_open.json" "$RUN_DIR/shrink_open.resp")
-    _so_id=$(json_get "$RUN_DIR/shrink_open.resp" ".id")
-    if [ "$_so_code" = 200 ] && [ "$(json_get "$RUN_DIR/shrink_open.resp" ".ok")" = true ]; then
-        case "$_so_id" in ''|*[!0-9]*) ;; *)
-            mkdir -p "$RUN_DIR/targets/$1"; echo "$_so_id" > "$RUN_DIR/targets/$1/shrink_id"
-            log "shrink record #$_so_id opened on the server for $1 (serial $_so_ser, partitions $_so_list)"
-            return 0 ;;
-        esac
-    fi
-    if [ "$_so_code" = 409 ]; then
-        SHRINKMEM_ERROR="לפי זיכרון השרת הדיסק הזה כבר מכווץ (רשומה #$_so_id מ-$(json_get "$RUN_DIR/shrink_open.resp" ".opened_at")) ולא הוחזר לגודלו — אתחלו את מחשב הבנייה ובחרו החזרה, או נקו את הרשומה בקונסולה. הדיסק לא שונה"
-    else
-        SHRINKMEM_ERROR="השרת לא רשם את הפריסה המקורית של מחיצה $_so_list לפני הכיווץ (http $_so_code: $(json_get "$RUN_DIR/shrink_open.resp" ".error")) — בלי רשומה אין כיווץ. הדיסק לא שונה"
-    fi
-    return 1
 }
 
 shrink_close_record() {

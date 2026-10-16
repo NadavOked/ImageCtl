@@ -87,6 +87,28 @@ console_post() {
         "$SERVER/api/console/$1"
 }
 
+gui_saved_theme() {
+    # #1499 (Nadav 16/10): the theme the signed-in user saved (users.theme),
+    # from the login answer console_signin kept. light|dark as saved; auto,
+    # absent or anything else = auto, which the GUI draws as its default.
+    jq -r 'if .theme == "light" or .theme == "dark" then .theme else "auto" end' \
+        "$RUN_DIR/console_login.json" 2>/dev/null || echo auto
+}
+
+gui_theme_save() {
+    # #1499: a switch made in the GUI while signed in is the user's own saved
+    # theme -- the console's PUT /me/theme, with the GUI's session. 200 only.
+    case "$1" in light|dark) ;; *) return 1 ;; esac
+    printf '{"theme":"%s"}' "$1" > "$RUN_DIR/gui-theme.json" || return 1
+    _gt=$(curl -sS --max-time "$HTTP_TIMEOUT" --retry "$HTTP_RETRIES" -X PUT \
+        -b "$CONSOLE_JAR" -o "$RUN_DIR/gui-theme-resp.json" -w '%{http_code}' \
+        -H "Content-Type: application/json" --data-binary "@$RUN_DIR/gui-theme.json" \
+        "$SERVER/api/console/me/theme") || _gt=000
+    [ "$_gt" = 200 ] && return 0
+    console_say "$_gt" "Saving the theme"
+    gui_error "ערכת הנושא לא נשמרה (http $_gt)" "The theme was not saved (http $_gt)"   # $1 screen (Hebrew, #1503), $2 log
+}
+
 console_say() {
     # $1 = HTTP code, $2 = what was being attempted. One English line into
     # the agent log -- the GUI's error toast points there ("see agent log").

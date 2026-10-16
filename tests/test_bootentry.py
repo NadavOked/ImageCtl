@@ -158,7 +158,7 @@ def test_a_create_that_exits_zero_but_does_not_read_back_is_a_failure(tmp_path):
     """‏R17: הקושחה רשאית להשמיט רשומה שאינה לרוחה. כתיבה אינה ראיה."""
     box = Box(tmp_path, env="FAKE_CREATE=drop")
     result = box.ensure()
-    assert result["state"] == "failed" and "read back" in result["error"]
+    assert result["state"] == "failed" and "בקריאה בחזרה" in result["error"]
     assert box.target_state() == "done"                     # השחזור עצמו הושלם
     assert box.target_error() and "Boot####" in box.target_error()
 

@@ -1,4 +1,5 @@
-"""‏#87: כיווץ מחיצת ה-NTFS של דיסק המקור לפני הקליטה, והחזרתה אחריה.
+"""‏#87: כיווץ מחיצת ה-NTFS של דיסק המקור לקליטה -- ומאז #1466 (הכרעת נדב
+16/10) **על עותק copy-on-write בזיכרון בלבד**: המקור אינו נכתב לעולם.
 
 דיסק בנייה של 512GB עם 100GB בשימוש ייצר עד כאן אימג' של 512GB, ובדיקה
 2.7 חסמה אותו בצדק על כל כונן 256. הכיווץ (‏agent/lib/shrink.sh) רץ
@@ -108,12 +109,61 @@ case "$*" in
   *--info*) echo "Current volume size: $((({WIN_SECTORS} * 512) - 512)) bytes"
             echo "You might resize at {MIN_BYTES} bytes or 100000 MB (freeing 411000 MB)."
             exit 0 ;;
+  "-n "*) echo "Needed relocations : 2560 (${{RELOC_MB:-10}} MB)"; exit 0 ;;
   "-s "*|*" -s "*) IFS= read -r ans; echo "ntfsresize stdin=${{ans:-EOF}}" >> "$RUN_DIR/order.log" ;;
 esac
 exit "${{NTFSRESIZE_RC:-0}}"
 '''
+
+#: ‏#1466: צד הקרנל של העותק בזיכרון. ‏dmsetup/modprobe/rmmod נרשמים ב-order.log;
+#: ‏modprobe brd מקים /sys/block/ramN ו-/dev/ramN, ‏dmsetup create מקים את
+#: /dev/mapper/<שם> (512 אפסים -- שער ה-BitLocker קורא אותו) ושומר את הטבלה
+#: כפי שהקרנל היה מחזיר אותה (major:minor).
+DMSETUP_STUB = r'''#!/bin/sh
+echo "dmsetup $*" >> "$RUN_DIR/order.log"
+case "$1" in
+  create) [ -z "${FAIL_DM_CREATE:-}" ] || exit 1
+          nm=$2; set -- $4
+          mkdir -p "$DEVROOT/mapper"; head -c 512 /dev/zero > "$DEVROOT/mapper/$nm"
+          echo "254:$(ls "$RUN_DIR" | grep -c '^mm\.')" > "$RUN_DIR/mm.$nm"
+          case "$3" in
+            snapshot) echo "$1 $2 $3 $(cat "$SYSROOT/sys/class/block/${4##*/}/dev") $(cat "$SYSROOT/sys/block/${5##*/}/dev") $6 $7" ;;
+            linear) echo "$1 $2 $3 $(cat "$RUN_DIR/mm.${4##*/}") $5" ;;
+          esac > "$RUN_DIR/dm.$nm" ;;
+  table) cat "$RUN_DIR/dm.$2" ;;
+  info) eval "nm=\${$#}"; cat "$RUN_DIR/mm.$nm" ;;
+  status) if [ -n "${DM_INVALID:-}" ]; then echo "0 1 snapshot Invalid"; else echo "0 1 snapshot 2048/4194304 16"; fi ;;
+  remove) [ -z "${FAIL_DM_REMOVE:-}" ] || exit 1; rm -f "$DEVROOT/mapper/$3" "$RUN_DIR/dm.$3" "$RUN_DIR/mm.$3" ;;
+  ls) l=$(cd "$RUN_DIR" && ls dm.* 2>/dev/null | sed 's/^dm\.//')
+      if [ -n "$l" ]; then for n in $l; do printf '%s\t(254:0)\n' "$n"; done; else echo "No devices found"; fi ;;
+esac
+exit 0
+'''
+MODPROBE_STUB = r'''#!/bin/sh
+echo "modprobe $*" >> "$RUN_DIR/order.log"
+[ "$1" = brd ] || exit 0
+mkdir -p "$SYSROOT/sys/module/brd"; n=${2#rd_nr=}; sz=${3#rd_size=}; i=0
+while [ "$i" -lt "$n" ]; do
+  mkdir -p "$SYSROOT/sys/block/ram$i"; echo $((sz * 2)) > "$SYSROOT/sys/block/ram$i/size"
+  echo "1:$i" > "$SYSROOT/sys/block/ram$i/dev"; : > "$DEVROOT/ram$i"; i=$((i + 1))
+done
+'''
+RMMOD_STUB = '#!/bin/sh\necho "rmmod $*" >> "$RUN_DIR/order.log"\nrm -rf "$SYSROOT/sys/module/$1"\n'
+
+
+def view_sys(sizes: dict[int, int]) -> str:
+    """/proc/meminfo ו-/sys/class/block/sdaN כפי שהקרנל היה מראה אותם (SYSROOT = הקופסה)."""
+    t = 'mkdir -p "$SYSROOT/proc"; echo "MemAvailable:   ${MEM_KIB:-8388608} kB" > "$SYSROOT/proc/meminfo"; '
+    for idx, sectors in sizes.items():
+        t += (f'mkdir -p "$SYSROOT/sys/class/block/sda{idx}"; echo {sectors} > "$SYSROOT/sys/class/block/sda{idx}/size"; '
+              f'echo 8:{idx} > "$SYSROOT/sys/class/block/sda{idx}/dev"; ')
+    return t
 NTFSFIX_OK = '#!/bin/sh\necho "ntfsfix $*" >> "$RUN_DIR/order.log"\nexit 0\n'
-BLOCKDEV_OK = '#!/bin/sh\necho "blockdev $*" >> "$RUN_DIR/order.log"\nexit 0\n'
+#: ‏--getsize64 של צומת mapper: האורך מהטבלה שלו, כמו שהקרנל היה אומר (#1466).
+BLOCKDEV_OK = ('#!/bin/sh\necho "blockdev $*" >> "$RUN_DIR/order.log"\n'
+               '[ "$1" = --getsize64 ] || exit 0\n'
+               'l=$(awk \'{ print $2 }\' "$RUN_DIR/dm.${2##*/}" 2>/dev/null); [ -n "$l" ] || exit 1\n'
+               'echo $((l * 512))\n')
 PARTCLONE_LOGGED = ('#!/bin/sh\necho "partclone $*" >> "$RUN_DIR/order.log"\n'
                     'head -c 4096 /dev/zero\nexit 0\n')
 
@@ -123,8 +173,8 @@ FS_MAP = ('_fs_of() { case "$1" in *3|*4) echo ntfs ;; *) echo vfat ;; esac; }; 
           'capture_ntfs_hibernation_reason() { return 0; }; '
           # ‏#1369: מחיצה 3 היא C: — יש בה Windows\System32 (נבדק ב-test_capture_measure_1368).
           '_system_role() { echo windows; }; '
-          # ‏#926: לדיסק יש סידורי — בלעדיו הרשומה בשרת מסורבת והכיווץ לא מתחיל.
           'disk_serial() { printf S926; }; disk_port() { printf 1; }; ')
+FS_MAP += view_sys({3: WIN_SECTORS, 4: REC_SECTORS})
 SAY_YES = 'shrink_ask() { echo continue; }; '
 SAY_PLAIN = 'shrink_ask() { echo plain; }; '
 SAY_CANCEL = 'shrink_ask() { echo cancel; }; '
@@ -136,6 +186,7 @@ def stubs(**extra: str) -> dict[str, str]:
         "sgdisk": SGDISK_WIN_REC, "curl": CURL_SHRINK_SERVER,
         "partclone.ntfs": PARTCLONE_LOGGED, "partclone.dd": PIPE_INPUT, "partclone.fat": PIPE_INPUT,
         "ntfsresize": NTFSRESIZE_OK, "ntfsfix": NTFSFIX_OK, "blockdev": BLOCKDEV_OK,
+        "dmsetup": DMSETUP_STUB, "modprobe": MODPROBE_STUB, "rmmod": RMMOD_STUB,   # #1466
     }
     base.update(extra)
     return base
@@ -149,6 +200,14 @@ def order(run: Path) -> list[str]:
 def sgdisk_calls(run: Path) -> list[str]:
     path = run / "sgdisk.calls"
     return path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+
+
+def source_writes(steps: list[str], box: Path) -> list[str]:
+    """#1466: כל צעד שכותב לדיסק המקור או לטבלה שלו -- חייב להיות ריק."""
+    src = f"{posix(box / 'dev')}/sda"
+    return [st for st in steps
+            if st.startswith(("blockdev --rereadpt", "shrink-open"))
+            or (st.startswith(("ntfsresize", "ntfsfix")) and src in st and "--info" not in st)]
 
 
 def rewrites(run: Path) -> list[str]:
@@ -204,41 +263,33 @@ def test_nothing_to_shrink_returns_the_current_size_itself():
 # --- המסלול המלא: כיווץ, זרם, החזרה ---------------------------------------------
 
 
-def test_a_windows_disk_is_shrunk_before_the_stream_and_grown_back_after(tmp_path):
-    """הסדר הוא הבטיחות: fix לפני resize, טבלה אחרי מערכת קבצים, קריאה
-    חוזרת לפני שהזרם מתחיל, וההחזרה — טבלה ואז מערכת קבצים — אחרי הזרם."""
+def test_a_windows_disk_is_shrunk_on_a_ram_view_and_the_source_is_never_written(tmp_path):
+    """#1466: --info על המקור (קריאה), ואז עותק: ‏dm-snapshot מעל sda3 על ram0,
+    ‏-n (התקציב), ‏-s ו-ntfsfix -d **על העותק**, ‏partclone קורא את העותק,
+    והעותק משוחרר אחרי הזרם. אף צעד כותב אינו נוגע ב-sda ואין רשומה בשרת."""
     box, run, out = capture_run(tmp_path, stubs=stubs(), shell_pre=FS_MAP + SAY_YES)
     assert out.strip().endswith("rc=0"), out + (box / "capture.out").read_text(encoding="utf-8", errors="replace")
-
-    current = WIN_SECTORS * 512
-    new = shrink_target(MIN_BYTES, current)
-    new_sectors = new // 512
+    new = shrink_target(MIN_BYTES, WIN_SECTORS * 512)
+    dev = posix(box / "dev")
+    view = f"{dev}/mapper/lc-src-3"
+    cut = f"{dev}/mapper/lc-cut-3"
     steps = order(run)
-    node = f"{posix(box / 'dev')}/sda3"
-
-    def at(prefix: str, after: int = 0) -> int:
-        for i, line in enumerate(steps):
-            if i >= after and line.startswith(prefix):
-                return i
-        raise AssertionError(f"{prefix!r} לא נמצא אחרי {after} ב-{steps}")
-
-    info = at("ntfsresize --info")
-    resize = at(f"ntfsresize -s {new} --no-progress-bar {node}", info)
-    reread = at("blockdev --rereadpt", resize)
-    fix_after = at(f"ntfsfix -d {node}", reread)
-    stream = at("partclone", fix_after)
-    # ההחזרה: טבלה (rereadpt שני), ואז מתיחה (double force), ואז fix.
-    reread_back = at("blockdev --rereadpt", stream)
-    grow = at(f"ntfsresize -f -f --no-progress-bar {node}", reread_back)
-    at(f"ntfsfix -d {node}", grow)
-
-    shrink_end = WIN_START + new_sectors - 1
-    shrunk = rewrites(run)
-    assert len(shrunk) == 2, shrunk
-    assert f"-n 3:{WIN_START}:{shrink_end} -t 3:{WIN_GUID} -u 3:{WIN_UGUID} -c 3:Basic data partition -A 3:=:0x0000000000000000" in shrunk[0], shrunk[0]
-    assert f"-n 3:{WIN_START}:{WIN_START + WIN_SECTORS - 1} -t 3:{WIN_GUID} -u 3:{WIN_UGUID} -c 3:Basic data partition" in shrunk[1], shrunk[1]
-    # הסימון נמחק אחרי ההחזרה — פעם אחת, לא שוב ב-_capture_failed.
+    positions(steps,
+              f"ntfsresize --info --no-progress-bar {dev}/sda3",
+              "modprobe dm-snapshot", "modprobe brd rd_nr=1",
+              f"dmsetup create lc-src-3 --table 0 {WIN_SECTORS} snapshot {dev}/sda3 {dev}/ram0 N 8",
+              "dmsetup table lc-src-3",
+              f"ntfsresize -n -s {new} --no-progress-bar {view}",
+              f"ntfsresize -s {new} --no-progress-bar {view}", f"ntfsfix -d {view}",
+              f"dmsetup create lc-cut-3 --table 0 {new // 512} linear {view} 0", f"blockdev --getsize64 {cut}",
+              "partclone", "dmsetup remove --retry lc-cut-3", "dmsetup remove --retry lc-src-3", "dmsetup ls", "rmmod brd")
+    assert [st for st in steps if st.startswith("partclone") and "sda3" in st] == [], "partclone קרא את המקור ולא את העותק"
+    # the cut -- the view at exactly the new length -- not the view: partclone -c records the device size
+    assert any(st.startswith("partclone") and cut in st for st in steps), steps
+    assert source_writes(steps, box) == [], source_writes(steps, box)
+    assert not rewrites(run), "טבלת המקור לא נכתבת"
     assert not (run / "targets" / "sda" / "shrunk").exists()
+    assert not (box / "dev" / "mapper" / "lc-src-3").exists() and not (box / "sys" / "module" / "brd").exists()
 
 
 def test_the_manifest_describes_the_compacted_layout(tmp_path):
@@ -338,59 +389,43 @@ def test_without_a_gui_no_key_shrinks_anything(tmp_path):
 # --- כשל בכל צעד = הקליטה נכשלת בגלוי, והמקור מוחזר -----------------------------
 
 
-def test_a_failed_ntfsresize_fails_the_capture_and_says_the_state_is_unknown(tmp_path):
+def test_a_failed_ntfsresize_on_the_view_fails_the_capture_and_the_source_is_untouched(tmp_path):
     box, run, out = capture_run(tmp_path, stubs=stubs(), shell_pre=FS_MAP + SAY_YES,
                                 env={"NTFSRESIZE_RC": "3"})
     reason = refusal_reason(box, run, out)
-    assert "ntfsresize" in reason and "rc=3" in reason, reason
-    assert "chkdsk" in reason, "אחרי resize שנפל המצב לא ידוע — וזה מה שההודעה חייבת לומר"
-    assert not rewrites(run), "הטבלה לא נגעה אחרי resize שנפל"
+    assert "rc=3" in reason and "המקור לא נכתב" in reason, reason
+    assert source_writes(order(run), box) == [] and not rewrites(run)
+    assert "rmmod brd" in order(run), "העותק משוחרר גם בכשל"
     assert not (run / "new-manifest.json").exists()
 
 
-def test_a_table_that_reads_back_wrong_fails_and_the_source_is_restored(tmp_path):
-    """‏sgdisk יצא 0, הקרנל קרא, והגודל שחזר מהדיסק אינו מה שביקשנו (#51):
-    כשל גלוי, ולפני היציאה המקור מקבל את הטבלה המקורית בחזרה."""
-    box, run, out = capture_run(tmp_path, stubs=stubs(), shell_pre=FS_MAP + SAY_YES,
-                                env={"SGDISK_READBACK_LIES": "1"})
+@pytest.mark.parametrize("env,pre,why", [
+    ({"MEM_KIB": str(1024 * 1024)}, "", "פנויים 1024 MB זיכרון, ו-1024 MB שמורים להעתקה עצמה"),
+    ({"RELOC_MB": "8000"}, "", "להזזת 8000 MB נדרשים 9056 MB זיכרון, ויש 7168 MB"),
+    ({"FAIL_DM_CREATE": "1"}, "", "dmsetup create lc-src-3 נכשל"),
+    ({"DM_INVALID": "1"}, "", "אינו תקין אחרי הכיווץ"),
+    ({}, 'mkdir -p "$SYSROOT/sys/module/brd"; ', "כבר טעון"),
+])
+def test_no_view_stops_the_capture_by_name_and_writes_nothing(tmp_path, env, pre, why):
+    """#1466: אין עותק -- הקליטה נעצרת, הסיבה עם המספרים מגיעה לקונסולה, ונאמר
+    איך מקבלים אימג' בגודל מלא ("בלי כיווץ", שאינו כותב דבר). אין נפילה לכיווץ
+    במקום: אף צעד כותב על sda ואף שורה בטבלה שלו."""
+    box, run, out = capture_run(tmp_path, stubs=stubs(), shell_pre=FS_MAP + SAY_YES + pre, env=env)
     reason = refusal_reason(box, run, out)
-    assert "טבלת המחיצות לא אושרה" in reason and "שלב 3" in reason, reason
-    calls = rewrites(run)
-    assert len(calls) == 2, calls
-    assert f"-n 3:{WIN_START}:{WIN_START + WIN_SECTORS - 1}" in calls[1], "ההחזרה לא רצה"
-    assert [s for s in order(run) if s.startswith("ntfsresize -f -f")], "מערכת הקבצים לא נמתחה בחזרה"
-    assert not (run / "new-manifest.json").exists()
+    assert why in reason and "המקור לא נכתב" in reason and "בלי כיווץ" in reason, reason
+    assert source_writes(order(run), box) == [], source_writes(order(run), box)
+    assert not rewrites(run) and not (run / "new-manifest.json").exists()
+    assert not [st for st in order(run) if st.startswith("partclone")], "הזרם לא התחיל"
 
 
-def test_a_failed_grow_back_after_a_failed_shrink_reaches_the_console(tmp_path):
-    """שני כשלים בזה אחר זה: הטבלה לא אושרה (שלב 3), ובהחזרה הטבלה חזרה אבל
-    מערכת הקבצים לא נמתחה. עד כאן הסיבה השנייה נכתבה ליומן (tmpfs) בלבד
-    ונדרסה בשדה error — והמפעיל לא ידע אם דיסק הבנייה נשאר מכווץ. שתי
-    הסיבות חייבות להגיע לקונסולה, בסדר הזה."""
-    box, run, out = capture_run(tmp_path, stubs=stubs(ntfsresize=NTFSRESIZE_GROW_FAILS),
-                                shell_pre=FS_MAP + SAY_YES, env={"SGDISK_READBACK_LIES": "1"})
-    reason = refusal_reason(box, run, out)
-    assert "טבלת המחיצות לא אושרה" in reason, reason
-    assert "המקור לא הוחזר לגודלו" in reason, reason
-    assert reason.index("טבלת המחיצות לא אושרה") < reason.index("המקור לא הוחזר לגודלו")
-    assert "ראו ביומן" not in reason, "היומן נמחק באתחול -- הסיבה חייבת להיות כאן"
-
-
-def test_the_entry_is_recreated_unaligned_and_its_start_is_read_back(tmp_path):
-    """‏sgdisk -n מזיז תחילה שאינה כפולה של 2048 בלי לצעוק (CreatePartition →
-    Align). כניסה שנוצרת מחדש חייבת להיווצר **בדיוק** במקומה (‏-a 1), והקריאה
-    החוזרת משווה גם את התחילה, לא רק את הגודל: תחילה שזזה = NTFS שאינו
-    בתחילת המחיצה = ווינדוס שלא עולה."""
-    box, run, out = capture_run(tmp_path, stubs=stubs(), shell_pre=FS_MAP + SAY_YES)
+def test_a_view_that_was_not_released_after_the_capture_is_a_warning(tmp_path):
+    """האימג' עבר והמקור לא נכתב; עותק שלא שוחרר מחזיק זיכרון -- אזהרה בשדה
+    error, לא כשל קליטה."""
+    box, run, out = capture_run(tmp_path, stubs=stubs(), shell_pre=FS_MAP + SAY_YES, env={"FAIL_DM_REMOVE": "1"})
     assert out.strip().endswith("rc=0"), out
-    for call in rewrites(run):
-        assert call.startswith("-a 1 -d 3 -n 3:"), call
-
-    box, run, out = capture_run(tmp_path / "lies", stubs=stubs(), shell_pre=FS_MAP + SAY_YES,
-                                env={"SGDISK_START_LIES": "1"})
-    reason = refusal_reason(box, run, out)
-    assert "טבלת המחיצות לא אושרה" in reason and "שלב 3" in reason, reason
-    assert not (run / "new-manifest.json").exists()
+    assert (run / "new-manifest.json").exists()
+    warning = (run / "targets" / "sda" / "error").read_text(encoding="utf-8")
+    assert "העותק בזיכרון לא שוחרר" in warning and "dmsetup remove lc-src-3 failed" in warning, warning
 
 
 def test_an_entry_whose_flags_cannot_be_read_is_not_shrunk(tmp_path):
@@ -405,31 +440,58 @@ def test_an_entry_whose_flags_cannot_be_read_is_not_shrunk(tmp_path):
 
 
 def test_the_source_is_never_treated_like_a_clone_target(tmp_path):
-    """‏grow.sh מריץ `ntfsfix -b -d` על **יעד** שיכפול — ‏-b מוחק את רשימת
-    הקלאסטרים הפגומים, וזה נכון לדיסק חדש שקיבל עותק. על דיסק הבנייה זה
-    מוחק את הזיכרון של הסקטורים הפגומים שלו, ומעקף את הסירוב של ntfsresize
-    עצמו לדיסק כזה (בלי -b משלו הוא יוצא 1). ולכן: ‏ntfsfix על המקור רק
-    ‏-d ורק **אחרי** ה-resize; והכיווץ בלי -f — ווליום מלוכלך מסורב על ידי
-    ntfsresize בקול ("Volume is scheduled for check"), ו-"y" מפורש עונה על
-    השאלה שלו, כי EOF שם הוא המשך."""
+    """‏ntfsfix -b מוחק את רשימת הקלאסטרים הפגומים -- לעולם לא, גם לא על העותק;
+    ‏ntfsfix רק -d ורק על העותק אחרי ה-resize; הכיווץ בלי -f ועם "y" מפורש
+    (‏EOF בשאלה של ntfsresize הוא המשך)."""
     box, run, out = capture_run(tmp_path, stubs=stubs(), shell_pre=FS_MAP + SAY_YES)
     assert out.strip().endswith("rc=0"), out
     steps = order(run)
-    assert not [s for s in steps if s.startswith("ntfsfix -b")], steps
-    node = f"{posix(box / 'dev')}/sda3"
-    assert f"ntfsresize --info --no-progress-bar {node}" in steps, steps
-    assert [s for s in steps if s.startswith("ntfsresize -s ")], steps
+    assert not [st for st in steps if st.startswith("ntfsfix -b")], steps
+    dev = posix(box / "dev")
+    assert f"ntfsresize --info --no-progress-bar {dev}/sda3" in steps, steps
     assert "ntfsresize stdin=y" in steps, steps
-    fixes = [s for s in steps if s.startswith("ntfsfix")]
-    assert fixes == [f"ntfsfix -d {node}", f"ntfsfix -d {node}"], fixes
+    fixes = [st for st in steps if st.startswith("ntfsfix")]
+    assert fixes == [f"ntfsfix -d {dev}/mapper/lc-src-3"], fixes
 
 
 def test_an_unreadable_minimum_is_a_refusal_not_a_skip(tmp_path):
     """‏ntfsresize --info שלא הדפיס מספר: "לא הצלחנו לבדוק" ≠ "אין מה לכווץ"."""
-    silent = '#!/bin/sh\necho "ntfsresize $*" >> "$RUN_DIR/order.log"\necho "ERROR: NTFS is inconsistent"\nexit 1\n'
+    # #1502: the tool's raw line is not in the headline -- it is in the log and the info file.
+    silent = '#!/bin/sh\necho "ntfsresize $*" >> "$RUN_DIR/order.log"\necho "ERROR: Volume is scheduled for check"\nexit 1\n'
     box, run, out = capture_run(tmp_path, stubs=stubs(ntfsresize=silent), shell_pre=FS_MAP + SAY_YES)
     reason = refusal_reason(box, run, out)
-    assert "לא הצלחנו לבדוק" in reason and "inconsistent" in reason, reason
+    assert "לא הצלחנו לבדוק" in reason and "בדיסק sda" in reason, reason
+    assert "scheduled" not in reason and "ERROR" not in reason, reason
+    assert "א" <= reason[0] <= "ת", reason
+    assert "scheduled for check" in (run / "ntfsresize.info.3").read_text(encoding="utf-8")
+    assert not (run / "new-manifest.json").exists()
+
+
+#: #1502, metal 16/10: what ntfsresize --info printed on the build machine (shortened).
+INCONSISTENT = (
+    "Cluster accounting failed at 12345 (0x3039): extra cluster in $Bitmap\n"
+    "Cluster accounting failed at 12346 (0x303a): extra cluster in $Bitmap\n"
+    "Cluster accounting failed at 12347 (0x303b): extra cluster in $Bitmap\n"
+    "ERROR: NTFS is inconsistent. Run chkdsk /f on Windows then reboot it TWICE!\n"
+    "The usage of the /f parameter is very IMPORTANT! No modification was\n"
+    "and will be made to NTFS by this software until it gets repaired.\n"
+)
+
+
+def test_an_inconsistent_ntfs_is_named_in_hebrew_with_the_fix(tmp_path):
+    """#1502 (metal 16/10): the headline was "sda: 3 לא הצלחנו לבדוק ...
+    (ntfsresize --info): and will be made to NTFS by this software until it
+    gets repaired." -- the tool's last line, in English, inside a Hebrew line.
+    Now: Hebrew first, what the state is and what to do; the raw output stays
+    in the info file."""
+    stub = ('#!/bin/sh\necho "ntfsresize $*" >> "$RUN_DIR/order.log"\ncat << \'EOF\'\n'
+            + INCONSISTENT + 'EOF\nexit 1\n')
+    box, run, out = capture_run(tmp_path, stubs=stubs(ntfsresize=stub), shell_pre=FS_MAP + SAY_YES)
+    reason = refusal_reason(box, run, out)
+    assert reason.startswith("מחיצה 3 בדיסק sda לא עקבית (NTFS)"), reason
+    assert "chkdsk /f" in reason and "shutdown /s /t 0" in reason and "הדיסק לא שונה" in reason, reason
+    assert "will be made" not in reason and "Cluster accounting" not in reason, reason
+    assert "NTFS is inconsistent" in (run / "ntfsresize.info.3").read_text(encoding="utf-8")
     assert not (run / "new-manifest.json").exists()
 
 
@@ -442,24 +504,6 @@ case "$*" in
 esac
 exit 0
 '''
-
-
-def test_a_grow_back_failure_after_the_capture_is_a_warning_not_a_failure(tmp_path):
-    """האימג' כבר עבר; ווינדוס עולה ממחיצה קטנה. ‏rc=0, מניפסט קיים,
-    והאזהרה בשדה error כדי שהמפעיל ידע שהמקור נשאר מכווץ."""
-    box, run, out = capture_run(tmp_path, stubs=stubs(ntfsresize=NTFSRESIZE_GROW_FAILS), shell_pre=FS_MAP + SAY_YES)
-    assert out.strip().endswith("rc=0"), out
-    assert (run / "new-manifest.json").exists()
-    warning = (run / "targets" / "sda" / "error").read_text(encoding="utf-8")
-    assert "המקור לא הוחזר לגודלו" in warning, warning
-
-
-def test_the_grow_back_can_be_switched_off(tmp_path):
-    box, run, out = capture_run(tmp_path, stubs=stubs(), shell_pre=FS_MAP + SAY_YES,
-                                env={"CAPTURE_SHRINK_RESTORE": "0"})
-    assert out.strip().endswith("rc=0"), out
-    assert not [s for s in order(run) if s.startswith("ntfsresize -f -f")]
-    assert len(rewrites(run)) == 1
 
 
 # --- מתי לא מכווצים ------------------------------------------------------------
@@ -488,10 +532,10 @@ def test_a_hibernated_disk_is_refused_before_the_shrink_is_even_measured(tmp_pat
     """‏#651 קודם: ntfsresize מסרב למהובר ממילא, אבל השער שלנו רץ לפניו,
     ואף קריאה — גם לא --info — לא מגיעה לדיסק."""
     hibernated = ('_fs_of() { echo ntfs; }; '
-                  'capture_ntfs_hibernation_reason() { echo "$CAPTURE_HIBERNATED_MESSAGE"; return 1; }; ')
+                  'capture_ntfs_hibernation_reason() { capture_hibernated_message "$1"; return 1; }; ')
     box, run, out = capture_run(tmp_path, stubs=stubs(), shell_pre=hibernated + SAY_YES)
     reason = refusal_reason(box, run, out)
-    assert "הדיסק מהובר" in reason
+    assert "Fast Startup" in reason
     assert order(run) == []
 
 
@@ -570,6 +614,7 @@ case "$*" in
     exit 0 ;;
   *"-f -f"*)
     [ -n "${{NTFSRESIZE_GROW_FAIL_ON:-}}" ] && case "$*" in *"$NTFSRESIZE_GROW_FAIL_ON") exit 5 ;; esac ;;
+  "-n "*) echo "Needed relocations : 2560 (10 MB)"; exit 0 ;;
   "-s "*|*" -s "*)
     IFS= read -r ans; echo "ntfsresize stdin=${{ans:-EOF}}" >> "$RUN_DIR/order.log"
     [ -n "${{NTFSRESIZE_FAIL_ON:-}}" ] && case "$*" in *"$NTFSRESIZE_FAIL_ON") echo "ERROR: resize failed"; exit 3 ;; esac ;;
@@ -579,7 +624,7 @@ exit 0
 
 #: ‏partclone שנופל על מחיצה 4 בלבד — כשל באמצע הזרם, אחרי ששתיהן כווצו.
 PARTCLONE_FAILS_ON_4 = ('#!/bin/sh\necho "partclone $*" >> "$RUN_DIR/order.log"\n'
-                        'case " $* " in *"/sda4 "*) echo "read error on sda4" >&2; exit 1 ;; esac\n'
+                        'case " $* " in *"/lc-cut-4 "*) echo "read error on the view of sda4" >&2; exit 1 ;; esac\n'
                         'head -c 4096 /dev/zero\nexit 0\n')
 
 FS_MAP_C_D = ('_fs_of() { case "$1" in *3|*4) echo ntfs ;; *) echo vfat ;; esac; }; '
@@ -587,6 +632,7 @@ FS_MAP_C_D = ('_fs_of() { case "$1" in *3|*4) echo ntfs ;; *) echo vfat ;; esac;
               # ‏#1369: ‏C: היא המערכת; ‏D: — אותו GUID, בלי Windows\System32 — היא data.
               '_system_role() { case "$2" in *3) echo windows ;; *) echo data ;; esac; }; '
               'disk_serial() { printf S926; }; disk_port() { printf 1; }; ')
+FS_MAP_C_D += view_sys({3: WIN_SECTORS, 4: DATA_SECTORS})
 FS_MAP_C_EXT4 = FS_MAP_C_D.replace("*3|*4) echo ntfs", "*3) echo ntfs ;; *4) echo ext4")
 
 SSD_256 = "256060514304"
@@ -622,11 +668,10 @@ def rewritten_indexes(run: Path) -> list[str]:
     return [c.split(" -d ")[1].split(" ")[0] for c in rewrites(run)]
 
 
-def test_c_and_d_are_both_shrunk_in_place_and_grown_back_in_reverse(tmp_path):
-    """הכרעת נדב 17/09: **כל** מחיצת NTFS-data מכווצת **במקומה** — ‏D: נשארת
-    בתחילתה על המקור, רק הגודל משתנה — ובסדר: מדידה של שתיהן לפני כתיבה
-    ראשונה, רשומה אחת בשרת, ‏C: ואז D:, הזרם, ואז ההחזרה בסדר הפוך —
-    ‏D: ואז C: — והרשומה נסגרת רק אחרי ששתיהן חזרו."""
+def test_c_and_d_are_both_shrunk_on_their_views_and_the_source_is_never_written(tmp_path):
+    """#929 + #1466: **כל** מחיצת NTFS-data מכווצת -- כל אחת על עותק משלה
+    (ram0, ‏ram1), שתי המדידות לפני העותק הראשון, ‏C: ואז D:, הזרם מהעותקים,
+    ואז שחרור. אין רשומה בשרת ואין שורה בטבלת המקור."""
     box, run, out = capture_run(tmp_path, stubs=two_stubs(), shell_pre=FS_MAP_C_D + SAY_YES)
     assert out.strip().endswith("rc=0"), out + (box / "capture.out").read_text(encoding="utf-8", errors="replace")
     new_c, new_d, _, _ = two_targets()
@@ -635,36 +680,24 @@ def test_c_and_d_are_both_shrunk_in_place_and_grown_back_in_reverse(tmp_path):
     positions(steps,
               f"ntfsresize --info --no-progress-bar {dev}/sda3",
               f"ntfsresize --info --no-progress-bar {dev}/sda4",
-              "shrink-open",
-              f"ntfsresize -s {new_c} --no-progress-bar {dev}/sda3", "blockdev --rereadpt", f"ntfsfix -d {dev}/sda3",
-              f"ntfsresize -s {new_d} --no-progress-bar {dev}/sda4", "blockdev --rereadpt", f"ntfsfix -d {dev}/sda4",
-              "partclone",
-              f"ntfsresize -f -f --no-progress-bar {dev}/sda4", f"ntfsfix -d {dev}/sda4",
-              f"ntfsresize -f -f --no-progress-bar {dev}/sda3", f"ntfsfix -d {dev}/sda3",
-              "shrink-close")
-    assert steps.count("shrink-open") == 1 and steps.count("shrink-close") == 1, steps
-    assert steps.index("shrink-open") > max(i for i, s in enumerate(steps) if s.startswith("ntfsresize --info")), \
-        "שתי המדידות לפני הרשומה — לא נרשם כיווץ שלא נמדד"
-
-    calls = rewrites(run)
-    assert len(calls) == 4, calls
-    assert f"-a 1 -d 3 -n 3:{WIN_START}:{WIN_START + new_c // 512 - 1} -t 3:{WIN_GUID} -u 3:{WIN_UGUID} -c 3:Basic data partition -A 3:=:0x0000000000000000" in calls[0], calls[0]
-    assert f"-a 1 -d 4 -n 4:{DATA_START}:{DATA_START + new_d // 512 - 1} -t 4:{WIN_GUID} -u 4:{DATA_UGUID} -c 4:Data -A 4:=:0x0000000000000000" in calls[1], \
-        "D: מכווצת **במקומה** — אותה תחילה על המקור"
-    assert f"-d 4 -n 4:{DATA_START}:{DATA_START + DATA_SECTORS - 1}" in calls[2], "ההחזרה בסדר הפוך: D: ראשונה"
-    assert f"-d 3 -n 3:{WIN_START}:{WIN_START + WIN_SECTORS - 1}" in calls[3], calls[3]
-    assert not (run / "targets" / "sda" / "shrunk").exists()
+              "modprobe brd rd_nr=2",
+              f"dmsetup create lc-src-3 --table 0 {WIN_SECTORS} snapshot {dev}/sda3 {dev}/ram0 N 8",
+              f"dmsetup create lc-src-4 --table 0 {DATA_SECTORS} snapshot {dev}/sda4 {dev}/ram1 N 8",
+              f"ntfsresize -s {new_c} --no-progress-bar {dev}/mapper/lc-src-3", f"ntfsfix -d {dev}/mapper/lc-src-3",
+              f"ntfsresize -s {new_d} --no-progress-bar {dev}/mapper/lc-src-4", f"ntfsfix -d {dev}/mapper/lc-src-4",
+              "partclone", "dmsetup remove --retry lc-cut-4", "dmsetup remove --retry lc-cut-3",
+              "dmsetup remove --retry lc-src-4", "dmsetup remove --retry lc-src-3", "rmmod brd")
+    assert source_writes(steps, box) == [] and not rewrites(run), source_writes(steps, box)
+    assert "shrink-open" not in steps and "shrink-close" not in steps
 
 
-def test_the_source_gpt_reads_back_exactly_what_it_was(tmp_path):
-    """הטבלה על המקור אחרי הקליטה זהה לזו שלפניה — הגדלים (מה שהזיוף
-    זוכר) והתחילות (מה שההחזרה כותבת) — לכל מחיצה שכווצה."""
+def test_the_source_gpt_is_never_written(tmp_path):
+    """הטבלה על המקור לא נכתבה כלל: אף `sgdisk -d/-n`, והזיוף לא זכר גודל חדש."""
     box, run, out = capture_run(tmp_path, stubs=two_stubs(), shell_pre=FS_MAP_C_D + SAY_YES)
     assert out.strip().endswith("rc=0"), out
-    assert (run / "sgdisk.sizes").read_text(encoding="utf-8") == f"3={WIN_SECTORS}\n4={DATA_SECTORS}\n"
-    restores = rewrites(run)[2:]
-    assert [c.split(" -n ")[1].split(" ")[0] for c in restores] == \
-        [f"4:{DATA_START}:{DATA_START + DATA_SECTORS - 1}", f"3:{WIN_START}:{WIN_START + WIN_SECTORS - 1}"]
+    assert not rewrites(run)
+    assert not (run / "sgdisk.sizes").exists() or \
+        (run / "sgdisk.sizes").read_text(encoding="utf-8") == f"3={WIN_SECTORS}\n4={DATA_SECTORS}\n"
 
 
 def test_the_manifest_compacts_both_and_marks_the_system_expandable(tmp_path):
@@ -728,52 +761,28 @@ def test_one_question_lists_every_partition(tmp_path):
     assert not rewrites(run) and not [s for s in order(run) if s.startswith("ntfsresize -s")]
 
 
-def test_a_failure_in_the_second_stream_grows_both_back_and_closes_after_both(tmp_path):
-    """‏partclone נופל על D: אחרי ששתיהן כווצו: ‏C: ו-D: חוזרות לגודלן —
-    ‏D: ואז C: — והרשומה בשרת (#926) נסגרת רק אחרי ש**שתיהן** חזרו."""
+def test_a_failure_in_the_second_stream_releases_both_views(tmp_path):
+    """‏partclone נופל על העותק של D: אחרי ששתיהן כווצו: הקליטה נכשלת בשם,
+    ושני העותקים משוחררים -- המקור לא נכתב, ואין מה להחזיר."""
     box, run, out = capture_run(tmp_path, stubs=two_stubs(**{"partclone.ntfs": PARTCLONE_FAILS_ON_4}),
                                 shell_pre=FS_MAP_C_D + SAY_YES)
     reason = refusal_reason(box, run, out)
-    assert "partition 4" in reason, reason
-    dev = posix(box / "dev")
+    assert "מחיצה 4" in reason, reason   # #1503: the capture's refusal is Hebrew on the screen
     steps = order(run)
-    positions(steps, f"ntfsresize -f -f --no-progress-bar {dev}/sda4", f"ntfsfix -d {dev}/sda4",
-              f"ntfsresize -f -f --no-progress-bar {dev}/sda3", f"ntfsfix -d {dev}/sda3", "shrink-close")
-    assert steps.count("shrink-close") == 1
-    calls = rewrites(run)
-    assert len(calls) == 4, calls
-    assert f"-d 4 -n 4:{DATA_START}:{DATA_START + DATA_SECTORS - 1}" in calls[2]
-    assert f"-d 3 -n 3:{WIN_START}:{WIN_START + WIN_SECTORS - 1}" in calls[3]
-    assert (run / "sgdisk.sizes").read_text(encoding="utf-8") == f"3={WIN_SECTORS}\n4={DATA_SECTORS}\n"
+    positions(steps, "dmsetup remove --retry lc-src-4", "dmsetup remove --retry lc-src-3", "rmmod brd")
+    assert source_writes(steps, box) == [] and not rewrites(run)
     assert not (run / "new-manifest.json").exists()
 
 
-def test_a_grow_back_that_fails_on_one_partition_keeps_the_record_open_and_names_it(tmp_path):
-    """‏D: חזרה, ‏C: לא (ntfsresize -f -f על sda3 נפל): אין shrink-close,
-    האזהרה נוקבת במחיצה 3 בלבד, והשרת מקבל את הסיבה (shrink-note)."""
+def test_a_failed_shrink_of_the_second_view_fails_by_name_and_writes_nothing(tmp_path):
+    """‏ntfsresize -s נופל על העותק של D: אחרי ש-C: כבר כווצה (בעותק שלה):
+    הקליטה נכשלת בשם (מחיצה 4, ‏rc=3), שני העותקים משוחררים, המקור לא נכתב."""
     box, run, out = capture_run(tmp_path, stubs=two_stubs(), shell_pre=FS_MAP_C_D + SAY_YES,
-                                env={"NTFSRESIZE_GROW_FAIL_ON": "3"})
-    assert out.strip().endswith("rc=0"), out
-    warning = (run / "targets" / "sda" / "error").read_text(encoding="utf-8")
-    assert "המקור לא הוחזר לגודלו" in warning and "מחיצה 3" in warning, warning
-    assert "מחיצה 4" not in warning, "‏D: חזרה — היא אינה חלק מהאזהרה"
-    assert "shrink-close" not in order(run)
-    assert [s for s in order(run) if s.startswith("shrink-note")]
-    # ‏D: כן הוחזרה במלואה — הטבלה, המתיחה והניקוי — למרות הכשל ב-C:.
-    dev = posix(box / "dev")
-    positions(order(run), f"ntfsresize -f -f --no-progress-bar {dev}/sda4", f"ntfsfix -d {dev}/sda4")
-
-
-def test_a_failed_shrink_of_the_second_partition_grows_the_first_back(tmp_path):
-    """‏ntfsresize -s נופל על D: אחרי ש-C: כבר כווצה: הקליטה נכשלת בשם
-    (מחיצה 4, chkdsk), ‏C: חוזרת לגודלה, וטבלת D: לא נגעה."""
-    box, run, out = capture_run(tmp_path, stubs=two_stubs(), shell_pre=FS_MAP_C_D + SAY_YES,
-                                env={"NTFSRESIZE_FAIL_ON": "4"})
+                                env={"NTFSRESIZE_FAIL_ON": "lc-src-4"})
     reason = refusal_reason(box, run, out)
-    assert "מחיצה 4" in reason and "rc=3" in reason and "chkdsk" in reason, reason
-    assert rewritten_indexes(run) == ["3", "3"], rewrites(run)
-    assert f"-n 3:{WIN_START}:{WIN_START + WIN_SECTORS - 1}" in rewrites(run)[1]
-    assert (run / "sgdisk.sizes").read_text(encoding="utf-8") == f"3={WIN_SECTORS}\n4={DATA_SECTORS}\n"
+    assert "מחיצה 4" in reason and "rc=3" in reason and "המקור לא נכתב" in reason, reason
+    assert source_writes(order(run), box) == [] and not rewrites(run)
+    assert "rmmod brd" in order(run)
 
 
 def test_a_partition_that_cannot_be_measured_refuses_the_whole_capture(tmp_path):
@@ -782,7 +791,8 @@ def test_a_partition_that_cannot_be_measured_refuses_the_whole_capture(tmp_path)
     box, run, out = capture_run(tmp_path, stubs=two_stubs(), shell_pre=FS_MAP_C_D + SAY_YES,
                                 env={"NTFSRESIZE_INFO_FAIL_ON": "4"})
     reason = refusal_reason(box, run, out)
-    assert "מחיצה 4" in reason and "לא הצלחנו לבדוק" in reason and "chkdsk" in reason, reason
+    # #1502: the stub's "NTFS is inconsistent" is named as such, with the fix
+    assert "מחיצה 4" in reason and "לא עקבית" in reason and "chkdsk" in reason, reason
     steps = order(run)
     assert steps == [s for s in steps if s.startswith("ntfsresize --info")], steps
     assert not rewrites(run) and not (run / "new-manifest.json").exists()
@@ -798,8 +808,9 @@ def test_a_non_ntfs_data_partition_is_named_when_the_image_still_does_not_fit(tm
     assert "מחיצה 4" in reason and "ext4" in reason and "NTFS בלבד" in reason, reason
     assert f"{DATA_SECTORS * 512 / 1e9:.1f} GB" in reason, reason
     assert "אינה האחרונה" not in reason, "ההודעה הישנה של #929 — הכיווץ כבר אינו מוגבל לאחרונה"
-    # ‏C: כן כווצה והוחזרה; ‏D: לא נמדדה אפילו.
-    assert rewritten_indexes(run) == ["3", "3"]
+    # ‏C: כווצה על העותק שלה (המקור לא נכתב); ‏D: לא נמדדה אפילו.
+    assert not rewrites(run) and source_writes(order(run), box) == []
+    assert [st for st in order(run) if st.startswith("dmsetup create lc-src-3")]
     assert not [s for s in order(run) if s.startswith("ntfsresize --info") and s.endswith("sda4")]
 
 
@@ -830,8 +841,8 @@ def test_on_the_target_c_is_stretched_and_d_moves_to_the_tail(tmp_path):
     assert marker == "3|ntfs", marker
     d_sectors = part(m, 4)["size_bytes"] // 512
     assert calls[0].startswith("-d 4 "), calls
-    assert calls[1].startswith(f"-n 4:-{d_sectors}:0 "), "‏D: נבראת בזנב, בגודל שהמניפסט מצהיר"
-    assert calls[2].startswith(f"-d 3 -n 3:{WIN_START}:0 "), "‏C: נשארת בתחילתה ונמתחת"
+    assert calls[1].startswith(__import__("test_agent").tail_n(4, d_sectors)[0] + " "), "‏D: נבראת בזנב, בגודל שהמניפסט מצהיר"
+    assert calls[2].startswith(f"-a 1 -d 3 -n 3:{WIN_START}:0 "), "‏C: נשארת בתחילתה ונמתחת"
     assert len(calls) == 3, calls
 
 
@@ -853,15 +864,29 @@ def test_the_agent_loads_shrink_before_capture():
 
 
 def test_every_shrink_step_checks_its_exit_code():
-    """אין `|| true` ואין `2>/dev/null` על צעד הרסני (עיקרון 5)."""
+    """אין `|| true` ואין `2>/dev/null` על צעד הרסני (עיקרון 5) -- בהחזרה
+    (shrink.sh, לדיסקים שכווצו לפני #1466) ובעותק (lcsnap.sh)."""
     src = (AGENT / "lib" / "shrink.sh").read_text(encoding="utf-8")
-    assert "|| true" not in src
-    assert "ntfsfix -b" not in src, "‏-b מוחק את רשימת הקלאסטרים הפגומים -- לעולם לא על המקור"
-    for tool in ("ntfsfix -d", "ntfsresize -s", "ntfsresize -f -f", "sgdisk -a 1 -d", "blockdev --rereadpt"):
-        assert tool in src, tool
-        for line in src.splitlines():
-            if tool in line and not line.strip().startswith("#"):
-                assert "2>/dev/null" not in line, line
+    snap = (AGENT / "lib" / "lcsnap.sh").read_text(encoding="utf-8")
+    assert "|| true" not in src and "|| true" not in snap
+    assert "ntfsfix -b" not in src + snap, "‏-b מוחק את רשימת הקלאסטרים הפגומים"
+    for text, tools in ((src, ("ntfsfix -d", "ntfsresize -f -f", "sgdisk -a 1 -d", "blockdev --rereadpt")),
+                        (snap, ("ntfsfix -d", "ntfsresize -s", "dmsetup", "rmmod brd"))):
+        for tool in tools:
+            assert tool in text, tool
+            for line in text.splitlines():
+                if tool in line and not line.strip().startswith("#"):
+                    assert "2>/dev/null" not in line, line
+
+
+def test_the_capture_never_shrinks_the_source_in_place():
+    """#1466: הכיווץ במקום הוסר מהקליטה -- אין `ntfsresize -s` ב-shrink.sh,
+    ואין רשומת shrink-open בסוכן."""
+    src = (AGENT / "lib" / "shrink.sh").read_text(encoding="utf-8")
+    code = "\n".join(line.split("#")[0] for line in src.splitlines())
+    assert "ntfsresize -s" not in code and "shrink_open_record" not in code
+    mem = (AGENT / "lib" / "shrinkmem.sh").read_text(encoding="utf-8")
+    assert "shrink_open_record" not in "\n".join(line.split("#")[0] for line in mem.splitlines())
 
 
 def test_the_interfaces_document_carries_the_new_fields():

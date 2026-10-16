@@ -130,7 +130,8 @@ def test_validate_maps_the_engine_failure_code_to_the_field_and_never_touches_a_
     m = _machine(tmp_path)
     rc, out, err = bridge(m, "validate", {**FORM, "hostname": "bad host", "step": "3"})
     assert rc == 0, err
-    assert out["errors.hostname"] == ["hostname must be an RFC-1123 label"]
+    assert out["errors.hostname"] == ["שם השרת אינו תקין — אותיות לטיניות, ספרות ומקף, עד 63 תווים, בלי מקף בתחילה או בסוף"]
+    assert "[invalid-hostname] hostname must be an RFC-1123 label" in err, "the engine's English line stays in the log"
     calls = m["calls"].read_text()
     assert "--dry-run" in calls and all("--dry-run" in l for l in calls.splitlines() if "--inventory" not in l)
     assert not (m["run"] / "answers").exists(), "validate never writes the real answers"
@@ -384,7 +385,7 @@ def test_engine_refusal_lands_on_the_address_field(tmp_path):
         "printf 'installer: [primary-unverified] the primary was not verified\\n' >&2; exit 2; fi\n"
         "if [ \"$2\" = --dry-run ]"))
     rc, out, _ = bridge(m, "validate", {**SECONDARY, "step": "2"})
-    assert rc == 0 and out["errors.primary_url"] == ["the primary was not verified"]
+    assert rc == 0 and out["errors.primary_url"] == ["השרת הראשי לא אומת — הריצו בדיקת חיבור עד שהיא ירוקה"]
 
 
 def test_check_primary_green_end_to_end_against_the_real_listener(tmp_path):

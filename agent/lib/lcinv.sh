@@ -179,6 +179,8 @@ lc_measure() {
     if ! shrink_plan "$1" "$LC/measure/$1.parts" 512; then
         echo "failed||$(_lc_clean "$SHRINK_ERROR")" > "$_lm_out"; return 1
     fi
+    # #1466 P2: the run reuses this plan (lc_shrink_plan) on the same disk and table.
+    cp "$RUN_DIR/shrink.plan" "$LC/measure/$1.plan" && _lc_clean "$(disk_serial "$1")" > "$LC/measure/$1.serial" || rm -f "$LC/measure/$1.plan"
     if [ ! -s "$RUN_DIR/shrink.plan" ]; then
         echo "done|$_lm_need|אין מה לכווץ במקור" > "$_lm_out"; return 0
     fi
@@ -241,7 +243,10 @@ lc_min_free() {
     # manifest built from the inventory: roles as the inventory checked them (lc_role), used bytes
     # from inv/<src>.used (an unread one stays null -- unchecked).
     _fm_m="$LC/fit.json"; _fm_p=""
-    [ "$(min_free_gb)" -gt 0 ] || { echo ok; return 0; }   # 0 = the rule is off
+    # #1484: a value that is not a number is "not checked", never "ok" -- in the
+    # kiosk min_free_gb was "not found", "bad number" fell through to ok.
+    _fm_g=$(min_free_gb); case "$_fm_g" in ''|*[!0-9]*) echo "unchecked|לא הצלחנו לקרוא כמה מקום פנוי נדרש"; return 0 ;; esac
+    [ "$_fm_g" -gt 0 ] || { echo ok; return 0; }   # 0 = the rule is off
     [ -s "$3" ] || { echo "unchecked|לא הצלחנו לקרוא את פריסת המקור"; return 0; }
     while IFS='|' read -r _fm_i _fm_t _fm_u _fm_f _fm_s; do
         _fm_b=$(awk -F'|' -v i="$_fm_i" '$1 == i { print $2; exit }' "$LC/inv/$1.used" 2>/dev/null)

@@ -59,8 +59,8 @@ pytestmark = requires_native(
 )
 
 LIBS = ("common", "jsonq", "waits", "sysinfo", "progress", "restore", "diskfit", "expand", "grow", "drawers",
-        "verdict", "failmark", "manifest", "hibernation", "shrinkplan", "shrink", "shrinkmem", "smart",
-        "lcinv", "lcplan", "lccopy", "localclone")
+        "verdict", "failmark", "ntfsboot", "manifest", "hibernation", "shrinkplan", "shrink", "shrinkmem", "smart",
+        "lcinv", "lcplan", "lcsnap", "lccopy", "localclone")
 
 DRIVER = r'''
 set -u
@@ -77,6 +77,8 @@ echo 0 > "$RUN_DIR/min_free_gb"
 export DEVROOT=$F/dev; mkdir -p "$DEVROOT"
 for d in $(awk '{ print $2 }' "$F/devs"); do n=${d#/dev/}; ln -sf "$d" "$DEVROOT/$n"
   for p in 1 2 3 4 5 6 7 8 9; do ln -sf "${d}p$p" "$DEVROOT/${n}p$p"; done; done
+# #1466: the RAM view's own nodes (device-mapper and brd) -- RAM, not a disk of the host
+ln -sfn /dev/mapper "$DEVROOT/mapper"; for i in 0 1 2 3; do ln -sf "/dev/ram$i" "$DEVROOT/ram$i"; done
 %(sources)s
 dev() { awk -v n="$1" '$1 == n { sub("/dev/", "", $2); print $2 }' "$F/devs"; }
 SRC=$(dev src)
@@ -160,12 +162,13 @@ def disks(tmp_path):
         _root("sh", str(FIXTURE), "teardown", str(fx), timeout=120)
 
 
-def _engine(tmp_path, fx: Path, fanout: Path, targets: str, shrink: int, server: str = "", stop_at: str = "") -> dict:
+def _engine(tmp_path, fx: Path, fanout: Path, targets: str, shrink: int, server: str = "", stop_at: str = "",
+            env: tuple[str, ...] = ()) -> dict:
     sources = "\n".join(f'. "$LIB_DIR/{n}.sh"' for n in LIBS)
     script = tmp_path / "drive.sh"
     script.write_text(DRIVER % {"lib": LIB, "sources": sources}, newline="\n")
     run = _root(f"PATH={fanout}:{os.environ.get('PATH', '')}:{SBIN}", f"SERVER={server}", f"STOP_AT={stop_at}",
-                "LC_STALL_S=120", "sh", str(script), str(fx), targets, str(shrink), timeout=1500)
+                "LC_STALL_S=120", *env, "sh", str(script), str(fx), targets, str(shrink), timeout=1500)
     out = {"raw": run.stdout + run.stderr, "verdict": {}, "target": {}}
     for line in run.stdout.splitlines():
         if line.startswith("verdict "):
@@ -204,6 +207,14 @@ def _no_table(dev: str) -> bool:
     return "EFI PART" not in head.stdout
 
 
+def _first_last_md5(part: str) -> tuple[str, str]:
+    """md5 of a partition's first and last 512 bytes, read with dd -- not by the engine."""
+    out = _root("sh", "-c", f'n=$(blockdev --getsz {part}) && dd if={part} bs=512 count=1 status=none | md5sum'
+                            f' && dd if={part} bs=512 skip=$((n - 1)) count=1 status=none | md5sum').stdout.split()
+    assert len(out) == 4, out
+    return out[0], out[2]
+
+
 def _size(part: dict) -> int:
     return int(part["Partition size"].split()[0])
 
@@ -231,6 +242,12 @@ def test_identical_and_larger_copies_a_failing_target_alone_and_refusals(tmp_pat
     assert _files(devs["same"], fx) == src_files and _files(devs["big"], fx) == src_files
     for d in ("same", "big"):
         assert _root("cmp", "-n", "16777216", devs["src"] + "p2", devs[d] + "p2").returncode == 0, d
+    # #1487: the NTFS backup boot sector (the partition's last sector; mkntfs
+    # fills the partition) -- partclone -r does not write it. The metal check.
+    for d in ("src", "same", "big"):
+        for p in ("p3", "p4"):
+            first, last = _first_last_md5(devs[d] + p)
+            assert first == last, (d, p, first, last)
     # refused before a byte: not checked (no server for the shrink) and too small
     assert t["small"]["state"] == "failed" and "לא נבדק" in t["small"]["error"] and _no_table(devs["small"])
     assert t["tiny"]["state"] == "failed" and "חסרים" in t["tiny"]["error"] and _no_table(devs["tiny"])
@@ -241,34 +258,56 @@ def test_identical_and_larger_copies_a_failing_target_alone_and_refusals(tmp_pat
     assert res["phase"] == "done" and res["report"].startswith("failed|")   # no server: said, not hidden
 
 
-def test_a_smaller_target_through_the_temporary_shrink(tmp_path, disks, fanout_bin):
+def test_no_ram_for_a_view_refuses_the_smaller_target_and_writes_nothing(tmp_path, disks, fanout_bin):
+    """#1466 option B (owner, 16/10): no RAM left for a view once the reserve is
+    taken -> the smaller target is refused by name, before a byte; the source
+    is never shrunk in place, and the target that fits is copied as usual."""
     fx, devs = disks
     src_table, src_files = _table(devs["src"]), _files(devs["src"], fx)
+    src_sha = _root("sha256sum", devs["src"]).stdout.split()[0]
     srv = _Server()
     try:
-        res = _engine(tmp_path, fx, fanout_bin, "small tiny same", 1, server=srv.url)
+        res = _engine(tmp_path, fx, fanout_bin, "small same", 1, server=srv.url,
+                      env=("LC_SNAP_RESERVE_MB=100000000",))
     finally:
         srv.close()
     v, t = res["verdict"], res["target"]
-    assert v == {"small": "shrink", "tiny": "short", "same": "fits"}, res["raw"][-3000:]
-    assert t["small"]["state"] == "done" and t["same"]["state"] == "done", res["raw"][-3000:]
-    assert t["tiny"]["state"] == "failed" and _no_table(devs["tiny"])
-    small = _table(devs["small"])
-    assert small["guid"] == src_table["guid"]
-    for i in (1, 2, 3, 4, 5):
-        a, b = small["parts"][i], src_table["parts"][i]
-        assert {k: a[k] for k in ("Partition GUID code", "Partition unique GUID", "Attribute flags", "Partition name")} \
-            == {k: b[k] for k in ("Partition GUID code", "Partition unique GUID", "Attribute flags", "Partition name")}, i
-    assert _size(small["parts"][3]) < _size(src_table["parts"][3])          # the compacted layout
-    assert _files(devs["small"], fx) == src_files and _files(devs["same"], fx) == src_files
-    # the source is back to its size, its files untouched, and the server held the record meanwhile
-    assert _table(devs["src"]) == src_table and _files(devs["src"], fx) == src_files
-    assert res["restore"] == "ok"
-    kinds = [k for k, _b in srv.posts]
-    assert kinds.index("shrink-open") < kinds.index("shrink-close") < kinds.index("local-clone"), kinds
+    assert v == {"small": "shrink", "same": "fits"}, res["raw"][-3000:]
+    assert t["small"]["state"] == "failed" and "שמורים להעתקה עצמה" in t["small"]["error"], res["raw"][-3000:]
+    assert _no_table(devs["small"])
+    assert t["same"]["state"] == "done" and _files(devs["same"], fx) == src_files
+    assert _root("sha256sum", devs["src"]).stdout.split()[0] == src_sha            # not one byte written
+    assert _table(devs["src"]) == src_table
+    assert "shrink-open" not in [k for k, _b in srv.posts]
     report = dict(srv.posts)["local-clone"]
-    assert report["shrunk"] is True and report["source_restore"] == "ok"
-    assert {x["state"] for x in report["targets"]} == {"done", "failed"}
+    assert report["shrink_path"] == "refused" and report["shrunk"] is False, report
+
+
+@pytest.mark.skipif(_tool("dmsetup") is None, reason="dmsetup is not installed: the RAM view (#1466) cannot be built here")
+def test_a_smaller_target_through_a_ram_view_leaves_the_source_bytes_identical(tmp_path, disks, fanout_bin):
+    """#1466 (owner, 16/10): dm-snapshot over the source partition, the store on brd --
+    the source disk is only read: every byte of it is the same after the copy."""
+    fx, devs = disks
+    src_table, src_files = _table(devs["src"]), _files(devs["src"], fx)
+    src_sha = _root("sha256sum", devs["src"]).stdout.split()[0]
+    srv = _Server()
+    try:
+        res = _engine(tmp_path, fx, fanout_bin, "small same", 1, server=srv.url)
+    finally:
+        srv.close()
+    v, t = res["verdict"], res["target"]
+    assert v["small"] == "shrink", res["raw"][-3000:]
+    assert t["small"]["state"] == "done" and t["same"]["state"] == "done", res["raw"][-3000:]
+    assert _size(_table(devs["small"])["parts"][3]) < _size(src_table["parts"][3])   # the compacted layout
+    assert _files(devs["small"], fx) == src_files and _files(devs["same"], fx) == src_files
+    assert _root("sha256sum", devs["src"]).stdout.split()[0] == src_sha            # not one byte written
+    assert _table(devs["src"]) == src_table
+    report = dict(srv.posts)["local-clone"]
+    assert report["shrink_path"] == "snapshot" and report["snapshot_teardown"] == "ok", report
+    assert report["shrunk"] is False and isinstance(report["relocations_mb"], int), report
+    assert "shrink-open" not in [k for k, _b in srv.posts]                         # nothing to put back
+    left = _root("dmsetup", "ls").stdout
+    assert "lc-src-" not in left and not Path("/sys/module/brd").exists(), left
 
 
 def test_without_the_confirmed_shrink_the_small_target_is_not_written(tmp_path, disks, fanout_bin):

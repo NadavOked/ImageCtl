@@ -12,16 +12,20 @@
 
 const UPD_POLL_MS = 3000;          // בקשה זעירה כל 3 שניות, מדפדפן אחד
 const UPD_CEIL_MS = 10 * 60 * 1000; // תקרת הזמן: 10 דקות בלי התקדמות
+/* ‏#1463: תקרה לשלב, כשהשרת עונה. בניית ה-initrd לבדה: 498 ש' בשרת המעבדה (6 vCPU, הרצה נפרדת,
+   ‏16/10) — 10 דקות היו מכריזות "לא התקדם" על שרת איטי יותר שעדיין בונה. */
+const UPD_STAGE_CEIL_MS = { payload: 25 * 60 * 1000 };
 const UPD_RELOAD_S = 5;            // "נכנס לקונסולה בעוד 5 ש׳"
 const UPD_LOG = "/var/log/imagectl/server-upgrade.log";
-/* ארבעת השלבים — 1:1 מול stage שהסקריפט כותב (‏done = אחרי האחרון). */
+/* ארבעת השלבים — מול stage שהסקריפט כותב (‏done = אחרי האחרון). ‏payload (‏#1463) הוא חלק
+   מ"מתקין" על המסך (המוקאפ של 13/10), אבל שלב משלו לתקרה ולתיאור. */
 const UPD_STEPS = [
   { k: "fetch", t: "מוריד את הגרסה", d: "מ-github.com" },
   { k: "verify", t: "בודק חתימה", d: "מול המפתח שמותקן בשרת" },
   { k: "install", t: "מתקין", d: "קבצי השרת וקבצי האתחול של המחשבים" },
   { k: "restart", t: "עולה מחדש", d: "הקונסולה מתנתקת לרגע — זה צפוי" },
 ];
-const UPD_STAGE_IDX = { fetch: 0, verify: 1, install: 2, restart: 3, done: 4 };
+const UPD_STAGE_IDX = { fetch: 0, verify: 1, install: 2, payload: 2, restart: 3, done: 4 };
 const UPD_FAIL_PHASE = { signature: "sigfail", fetch: "dlfail", rollback: "rollback" };
 const UPD_NET_RE = /could not resolve host|couldn't resolve host|timed out|timeout|connection refused|network is unreachable|no route to host/i;
 const UPD_IC = {
@@ -74,7 +78,7 @@ function updStart({ tag, from = null, by = null, status = null }) {
   const now = updClock();
   UPD = { tag, from, by, phase: "run", status: null, skew: 0, startedMs: null, stageIdx: -1,
           changeAt: now, off: false, offAt: null, tries: 0, backAfter: null, mode: "status",
-          lastReadAt: null, noSession: false, cd: UPD_RELOAD_S, liveVersion: null, stuck: false };
+          lastReadAt: null, noSession: false, cd: UPD_RELOAD_S, liveVersion: null, stuck: false, stage: null };
   if (status) { updApply(status, true); updCheckCeiling(); }
   if (typeof pollTimer !== "undefined") clearInterval(pollTimer);   // הדגימה הרגילה של הקונסולה נעצרת — השרת עומד לרדת
   updShow();
@@ -132,12 +136,12 @@ function updApply(st, first = false) {
   if (finished) { updDone(); return; }
   if (st.state !== "running" && st.state !== "done") { UPD.phase = "failed"; return; }   // idle / לא מוכר — לא "ממתין"
   const idx = st.stage in UPD_STAGE_IDX ? UPD_STAGE_IDX[st.stage] : 0;
-  if (idx !== UPD.stageIdx) {
-    UPD.stageIdx = idx;
+  if (idx !== UPD.stageIdx || st.stage !== UPD.stage) {
+    UPD.stageIdx = idx; UPD.stage = st.stage;
     const at = updTs(st.stage) || started;
     UPD.changeAt = first && Number.isFinite(at) ? at - UPD.skew : now;
   }
-  if (UPD.phase === "timeout" && now - UPD.changeAt <= UPD_CEIL_MS) UPD.phase = "run";
+  if (UPD.phase === "timeout" && now - UPD.changeAt <= updCeil()) UPD.phase = "run";
 }
 
 function updDone() {
@@ -162,8 +166,11 @@ function updReload() {
   updNavigate(location.pathname + "?updated=" + encodeURIComponent(UPD.tag));
 }
 
+/* התקרה של השלב הנוכחי. שרת שלא עונה — תמיד 10 דקות: זו ההפעלה מחדש, לא הבנייה. */
+function updCeil() { return (UPD && !UPD.off && UPD_STAGE_CEIL_MS[UPD.stage]) || UPD_CEIL_MS; }
+const updCeilMin = () => Math.round(updCeil() / 60000);
 function updCheckCeiling() {
-  if (UPD.phase === "run" && updClock() - UPD.changeAt > UPD_CEIL_MS) {
+  if (UPD.phase === "run" && updClock() - UPD.changeAt > updCeil()) {
     UPD.phase = "timeout"; UPD.stuck = !UPD.off;
     clearTimeout(updPollTimer);
   }
@@ -193,7 +200,7 @@ async function updPoll(manual = false) {
     }
   }
   if (!UPD) return;
-  if (manual && before === "timeout" && UPD.phase === "timeout" && updClock() - UPD.changeAt <= UPD_CEIL_MS) UPD.phase = "run";
+  if (manual && before === "timeout" && UPD.phase === "timeout" && updClock() - UPD.changeAt <= updCeil()) UPD.phase = "run";
   updCheckCeiling();
   updRender();
   updSchedule();
@@ -336,8 +343,10 @@ function updHtml() {
     sub = [FROM ? `מ-${updV(FROM)}` : "", startTs ? `התחיל ב-${esc(fmtClock(startTs))}${u.by ? ` על ידי ${esc(u.by)}` : ""}` : "",
       "אל תכבו את השרת"].filter(Boolean).join(" · ");
     const at = updShownStep();
-    steps = updStepsHtml(UPD_STEPS.map((_, i) => i < at ? "done" : i === at ? "cur" : "pend"));
-    hint = "בדרך כלל 2–4 דקות. אם השרת לא יחזור תוך 10 דקות, נעצור ונסביר מה לבדוק. אפשר לסגור את הדף — העדכון ממשיך בשרת.";
+    steps = updStepsHtml(UPD_STEPS.map((_, i) => i < at ? "done" : i === at ? "cur" : "pend"),
+      u.stage === "payload" && !u.off ? { 2: "בונה את קבצי האתחול של המחשבים — החלק הארוך" } : {});
+    // ‏#1463: נמדד 16/10 בשרת המעבדה (update_status.stages) — 8:49 מקצה לקצה, 8:43 מהם בשלב install.
+    hint = "בדרך כלל 8–10 דקות, רובן בבניית קבצי האתחול של המחשבים. אם שלב לא יתקדם בזמן הצפוי, נעצור ונסביר מה לבדוק. אפשר לסגור את הדף — העדכון ממשיך בשרת.";
   } else if (u.phase === "done") {
     badge = updBadge("ok", "ok");
     title = `עודכן ל-${updV(TO)} ✓`;
@@ -355,7 +364,7 @@ function updHtml() {
     }
   } else if (u.phase === "timeout") {
     badge = updBadge("warn", "warn");
-    title = u.stuck ? "העדכון לא התקדם תוך 10 דקות" : "השרת לא חזר תוך 10 דקות";
+    title = u.stuck ? `העדכון לא התקדם תוך ${updCeilMin()} דקות` : "השרת לא חזר תוך 10 דקות";
     sub = `העדכון ל-${updV(TO)} אולי עדיין רץ, ואולי נתקע. הקונסולה הפסיקה לחכות.`;
     const w = updShownStep();
     const why = u.stuck ? `לא התקדם מאז ${updHms(u.changeAt + u.skew)}` : `השרת התנתק ב-${updHms(u.offAt + u.skew)} ולא ענה מאז`;
@@ -367,7 +376,7 @@ function updHtml() {
       <li><span>הכתובת של הקונסולה בלשונית חדשה<small><span class="mono">${esc(origin)}</span></small></span></li>
       <li><span>יומן העדכון בשרת<small><span class="mono">${UPD_LOG}</span> — השורה האחרונה אומרת באיזה שלב זה עצר.</small></span></li>
     </ol>`;
-    foot = `<span class="n-hint" id="updFootHint">הבדיקה האוטומטית נעצרה. אף שלב לא בוטל בשרת.</span>${u.stuck ? updBtn("חזרה לקונסולה", "updClose()") : ""}${updBtn("חכה עוד 10 דקות", "updWaitMore()")}${updBtn("בדוק עכשיו", "updCheckNow()", "pri")}`;
+    foot = `<span class="n-hint" id="updFootHint">הבדיקה האוטומטית נעצרה. אף שלב לא בוטל בשרת.</span>${u.stuck ? updBtn("חזרה לקונסולה", "updClose()") : ""}${updBtn(`חכה עוד ${updCeilMin()} דקות`, "updWaitMore()")}${updBtn("בדוק עכשיו", "updCheckNow()", "pri")}`;
   } else if (u.phase === "sigfail") {
     const unchecked = /unchecked:/.test(String(st.detail || st.error || ""));
     badge = updBadge("bad", "shield");

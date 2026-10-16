@@ -47,21 +47,21 @@ probe_power() {
         esac
     done
     [ "$_any" = 1 ] || { _pn; return; }
-    [ -n "$_name" ] || { _pe "no readable supply"; return; }
+    [ -n "$_name" ] || { _pe "אין ספק חשמל קריא"; return; }
     _bat=false; [ "$_mains" = 0 ] && [ "$_dis" = 1 ] && _bat=true
     printf '{"on_battery":%s,"supply":%s}' "$_bat" "$(_js "$_name")"
 }
 
 probe_rtc() {
     if _hw=$(_rf "$SYSFS_ROOT/class/rtc/rtc0/since_epoch"); then
-        _num "$_hw" >/dev/null || { _pe "rtc since_epoch not a number"; return; }
+        _num "$_hw" >/dev/null || { _pe "שעון החומרה (RTC) החזיר ערך שאינו מספר"; return; }
     elif _have "$HWCLOCK"; then
-        _raw=$("$HWCLOCK" -r 2>/dev/null) || { _pe "hwclock -r failed"; return; }
+        _raw=$("$HWCLOCK" -r 2>/dev/null) || { _pe "hwclock -r נכשל"; return; }
         _hw=$(date -D '%a %b %e %H:%M:%S %Y' -d "$_raw" +%s 2>/dev/null) \
-            || { _pe "hwclock output not epoch"; return; }
+            || { _pe "הפלט של hwclock אינו זמן epoch"; return; }
     else _pn; return; fi
-    _sys=$(date +%s 2>/dev/null) || { _pe "date +%s failed"; return; }
-    _num "$_sys" >/dev/null || { _pe "system epoch not a number"; return; }
+    _sys=$(date +%s 2>/dev/null) || { _pe "date +%s נכשל"; return; }
+    _num "$_sys" >/dev/null || { _pe "זמן המערכת אינו מספר"; return; }
     printf '{"hwclock_epoch":%s,"system_epoch":%s,"skew_seconds":%s}' \
         "$_hw" "$_sys" "$((_hw - _sys))"
 }
@@ -71,7 +71,7 @@ probe_cpu() {
     _model=$(trim "$(awk -F': ' '/^model name|^Processor|^Hardware/{print $2; exit}' "$_f")")
     _cores=$(awk '/^processor/{n++} END{print n+0}' "$_f")
     _ucode=$(trim "$(awk -F': ' '/^microcode/{print $2; exit}' "$_f")")
-    [ -n "$_model" ] || [ "$_cores" != 0 ] || { _pe "cpuinfo unreadable"; return; }
+    [ -n "$_model" ] || [ "$_cores" != 0 ] || { _pe "לא ניתן לקרוא את cpuinfo"; return; }
     _mj=null; [ -n "$_model" ] && _mj=$(_js "$_model")
     _uj=null; [ -n "$_ucode" ] && _uj=$(_js "$_ucode")
     _vuln=null
@@ -91,7 +91,7 @@ probe_cpu() {
 probe_memory() {
     _f="$PROC_ROOT/meminfo"; [ -r "$_f" ] || { _pn; return; }
     _kb=$(awk '/^MemTotal:/{print $2; exit}' "$_f")
-    _num "$_kb" >/dev/null || { _pe "MemTotal missing"; return; }
+    _num "$_kb" >/dev/null || { _pe "MemTotal חסר"; return; }
     _dimms=null
     if _have "$DMIDECODE"; then
         _raw=$("$DMIDECODE" -t 17 2>/dev/null) && _dimms=$(printf '%s\n' "$_raw" | awk '
@@ -103,7 +103,7 @@ probe_memory() {
                 sz=$2; if($3~/GB/)sz=sz*1073741824; else if($3~/MB/)sz=sz*1048576 }
             /^[[:space:]]*Speed:/{ if($2~/^[0-9]/) sp=$2 }
             /^[[:space:]]*Manufacturer:/{ mf=$2; for(i=3;i<=NF;i++) mf=mf " " $i }
-            END{emit()}') && _dimms="[$_dimms]" || _dimms=$(_pe "dmidecode failed")
+            END{emit()}') && _dimms="[$_dimms]" || _dimms=$(_pe "dmidecode נכשל")
     fi
     _ecc=null
     if [ -d "$SYSFS_ROOT/devices/system/edac/mc" ]; then
@@ -115,7 +115,7 @@ probe_memory() {
                 || { _bad=1; break; }
             _ce=$((_ce+_c)); _ue=$((_ue+_u))
         done
-        [ -n "$_bad" ] && _ecc=$(_pe "ecc counters unreadable")
+        [ -n "$_bad" ] && _ecc=$(_pe "מוני ה-ECC אינם קריאים")
         [ -z "$_bad" ] && [ "$_n" = 1 ] \
             && _ecc=$(printf '{"ce_count":%s,"ue_count":%s}' "$_ce" "$_ue")
     fi
@@ -179,7 +179,7 @@ probe_kernel() {
     _ldj=null; _tnj=null
     if _ld=$(_rf "$SYSFS_ROOT/kernel/security/lockdown"); then _ldj=$(_js "$_ld"); fi
     if _tn=$(_rf "$PROC_ROOT/sys/kernel/tainted"); then
-        _num "$_tn" >/dev/null && _tnj="$_tn" || { _pe "taint not a number"; return; }
+        _num "$_tn" >/dev/null && _tnj="$_tn" || { _pe "ערך ה-taint של הקרנל אינו מספר"; return; }
     fi
     [ "$_ldj" = "null" ] && [ "$_tnj" = "null" ] && { _pn; return; }
     printf '{"lockdown":%s,"taint":%s}' "$_ldj" "$_tnj"
@@ -199,9 +199,9 @@ probe_pstore() {
 
 probe_oem_key() {
     _f="$SYSFS_ROOT/firmware/acpi/tables/MSDM"; [ -r "$_f" ] || { _pn; return; }
-    _k=$(dd if="$_f" bs=1 skip=56 count=29 2>/dev/null) || { _pe "MSDM unreadable"; return; }
+    _k=$(dd if="$_f" bs=1 skip=56 count=29 2>/dev/null) || { _pe "טבלת MSDM אינה קריאה"; return; }
     case "$_k" in ?????-?????-?????-?????-?????) _js "$_k" ;;
-        *) _pe "MSDM key not 29-byte ASCII" ;; esac
+        *) _pe "מפתח MSDM אינו ASCII של 29 בייט" ;; esac
 }
 
 probe_disks() {
@@ -223,17 +223,17 @@ probe_disks() {
                     && _me=$(_jint "$_jsn" media_errors) && _us=$(_jint "$_jsn" unsafe_shutdowns) \
                     && [ -n "$_cw" ] && [ -n "$_pu" ] && [ -n "$_me" ] && [ -n "$_us" ] \
                     && _nv=$(printf '{"critical_warning":%s,"percentage_used":%s,"media_errors":%s,"unsafe_shutdowns":%s}' \
-                        "$_cw" "$_pu" "$_me" "$_us") || { [ "$CAPPED_TIMED_OUT" = 1 ] && _nv=$(_pe "nvme smart-log did not answer") || _nv=$(_pe "nvme smart-log failed"); }
+                        "$_cw" "$_pu" "$_me" "$_us") || { [ "$CAPPED_TIMED_OUT" = 1 ] && _nv=$(_pe "nvme smart-log לא ענה") || _nv=$(_pe "nvme smart-log נכשל"); }
             fi ;;
         esac
         _se=null
         if _have "$SMARTCTL"; then
             _sf="${TMPDIR:-/tmp}/probe.$$.$_n.smart"; [ -d "${RUN_DIR:-}" ] && _sf="$RUN_DIR/probe.$_n.smart"; capped_run "$SMARTCTL_MAX_S" "$_sf" "$SMARTCTL" -l error -j "$DEVROOT/$_n"; _rc=$?; _sj=$(cat "$_sf" 2>/dev/null)   # #1367: in build_hello -- capped
-            if [ "$CAPPED_TIMED_OUT" = 1 ]; then _se=$(_pe "smartctl did not answer within ${SMARTCTL_MAX_S}s on $_n"); elif [ $((_rc & 2)) -ne 0 ]; then _se=$(_pe "smartctl could not open $_n")
+            if [ "$CAPPED_TIMED_OUT" = 1 ]; then _se=$(_pe "smartctl לא ענה תוך ${SMARTCTL_MAX_S} שניות על $_n"); elif [ $((_rc & 2)) -ne 0 ]; then _se=$(_pe "smartctl לא הצליח לפתוח את $_n")
             else
                 _cnt=$(_jint "$_sj" count); [ -z "$_cnt" ] && _cnt=$(_jint "$_sj" error_count)
                 [ -n "$_cnt" ] && _se=$(printf '{"count":%s}' "$_cnt") \
-                    || _se=$(_pe "smartctl json has no count")
+                    || _se=$(_pe "ב-JSON של smartctl אין מונה")
             fi
         fi
         [ "$_c" = 0 ] || printf ','; _c=1

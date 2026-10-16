@@ -195,7 +195,7 @@ def test_the_hello_probe_names_a_drive_that_does_not_answer(tmp_path):
               f'. {posix(LIB)}/common.sh; . {posix(LIB)}/waits.sh; . {posix(LIB)}/probe.sh; '
               't0=$(date +%s); d=$(probe_disks); echo "$d"; echo "dt=$(( $(date +%s) - t0 ))"')
     assert out.returncode == 0, out.stderr
-    assert '"smart_errors":{"error":"smartctl did not answer within 2s on sda"}' in out.stdout, out.stdout
+    assert '"smart_errors":{"error":"smartctl לא ענה תוך 2 שניות על sda"}' in out.stdout, out.stdout
     assert int(out.stdout.split("dt=")[1].split()[0]) < 15
 
 
