@@ -177,7 +177,7 @@ def test_open_window_rejects_ttl_outside_locked_range(conn):
     with pytest.raises(ValueError):
         interserver_auth.open_pairing_window(conn, ttl_seconds=60)     # < 120
     with pytest.raises(ValueError):
-        interserver_auth.open_pairing_window(conn, ttl_seconds=600)    # > 300
+        interserver_auth.open_pairing_window(conn, ttl_seconds=601)    # > 600 (16/10: DCUI F4)
 
 
 # --- (ב') מרוץ ב-verify_and_consume_code (#745) -----------------------------

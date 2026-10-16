@@ -159,6 +159,33 @@ def test_a_cancellation_during_the_upload_is_not_undone(server, images_root):
     assert not leftovers, leftovers
 
 
+def test_a_cancel_that_removed_the_staging_folder_is_409_not_500(server, images_root, monkeypatch, tmp_path):
+    """#1470 + #532, on every platform: on Linux the cancel above removes the
+    staging folder while the stream still writes into the open handle, so the
+    sha record #1470 writes beside the file has no folder left
+    (FileNotFoundError). That was a 500 before the task-state check could say
+    409 -- the Testrunner caught it, Windows cannot (an open file pins its
+    folder). Here the record's folder is simply missing."""
+    import server.capture as capture
+    gone = tmp_path / "removed-staging"
+    monkeypatch.setattr(capture, "upload_sha_path", lambda path: gone / (path.name + ".sha256"))
+    mac = setup_build_machine(server)
+    created = make_task(server, mac).json()
+    token = task_token(server, created["id"])
+
+    def body_that_cancels_midway():
+        yield PART_A[:8]
+        server["admin"].post(f"/api/console/tasks/{created['id']}/cancel")
+        yield PART_A[8:]
+
+    r = server["anon"].put(
+        f"/api/v1/capture/{created['id']}/files/p1.esp.pcl.zst",
+        content=body_that_cancels_midway(), headers={TOKEN_HEADER: token})
+    assert r.status_code == 409, r.text
+    tasks = {t["id"]: t for t in server["admin"].get("/api/console/tasks").json()}
+    assert tasks[created["id"]]["state"] == "cancelled"
+
+
 # --- #535: דיווח שאינו הורג משימה סגורה --------------------------------------
 
 
@@ -183,7 +210,7 @@ def test_a_failure_report_cannot_kill_a_finished_task(server):
     """
     mac = setup_build_machine(server)
     created = make_task(server, mac).json()
-    assert do_capture(server, created["id"]).status_code == 200
+    assert do_capture(server, created["id"]).status_code == 202
 
     r = _report(server, created["id"], mac, "failed")
     assert r.json()["code"] == "not_open", r.json()
@@ -271,7 +298,7 @@ def test_the_upload_still_succeeds_after_a_forged_failure_report(server):
     mac = setup_build_machine(server)
     created = make_task(server, mac).json()
     assert _report(server, created["id"], mac, "failed", token="").status_code == 403
-    assert do_capture(server, created["id"]).status_code == 200
+    assert do_capture(server, created["id"]).status_code == 202
     assert _task_state(server, created["id"]) == "done"
 
 
@@ -283,7 +310,7 @@ def test_a_closed_task_still_answers_not_open_to_its_own_reporter(server):
     mac = setup_build_machine(server)
     created = make_task(server, mac).json()
     token = task_token(server, created["id"])
-    assert do_capture(server, created["id"]).status_code == 200
+    assert do_capture(server, created["id"]).status_code == 202
 
     r = _report(server, created["id"], mac, "done", token=token)
     assert r.status_code == 200, r.text

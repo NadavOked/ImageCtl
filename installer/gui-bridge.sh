@@ -15,8 +15,7 @@
 #                  green only with name + fingerprint of the key TLS showed
 #   finish         what the done screen shows after a reboot-less handoff
 #   eject          eject the install medium (reported, never fatal)
-#   reboot         reboot -f -- only the GUI's "restart" (button or the done
-#                  screen's countdown, #1250) reaches here
+#   reboot         reboot -f; only the GUI's "restart" (button/countdown, #1250)
 #   boot-local     eject + reboot, for a disk that already carries ImageCtl
 #
 # No jq-less JSON parsing: jq is in the image (agent/ uses it). Every value
@@ -40,6 +39,8 @@ PRIMARY_CHECK="${PRIMARY_CHECK:-$RUN_DIR/primary-check}"
 PRIMARY_ALIVE_PATH=/api/interserver/v1/alive
 # shellcheck source=installer/lib/answers.sh
 . "$BRIDGE_DIR/lib/answers.sh"   # normalize_primary_url -- one rule, engine and GUI
+# shellcheck source=installer/lib/fielderrors.sh
+. "$BRIDGE_DIR/lib/fielderrors.sh"   # field_for_code, he_for_code (#1503)
 
 ACTION=${1:-}; [ -n "$ACTION" ] || { echo 'usage: gui-bridge.sh <action> < form.json' >&2; exit 2; }
 INPUT=$(cat)
@@ -134,20 +135,6 @@ write_answers() {
     } > "$_wa_out"
 }
 
-# The engine's failure code -> the GUI field that owns it (errors.<field>=).
-field_for_code() {
-    case "$1" in
-        invalid-disk|iso-target|missing-key) printf disk ;;
-        invalid-role) printf role ;; invalid-primary-url|primary-unverified) printf primary_url ;;
-        invalid-interface|invalid-mac|mac-mismatch|interface-check) printf interface ;;
-        invalid-network-mode) printf mode ;; invalid-address) printf address ;;
-        invalid-netmask) printf netmask ;; invalid-gateway) printf gateway ;; invalid-dns) printf dns ;;
-        invalid-network) printf address ;; invalid-hostname) printf hostname ;;
-        invalid-admin-user) printf admin_user ;; invalid-admin-password) printf password ;;
-        *) printf disk ;;
-    esac
-}
-
 password_errors() {
     _pe_p=$(field password); _pe_c=$(field password_confirm); _pe_bad=0
     [ "${#_pe_p}" -ge 8 ] || { emit errors.password 'לפחות 8 תווים'; _pe_bad=1; }
@@ -168,7 +155,8 @@ engine_validate() {
     _ev_code=$(printf '%s\n' "$_ev_err" | sed -n 's/^installer: \[\([a-z-]*\)\].*/\1/p' | head -n1)
     _ev_msg=$(printf '%s\n' "$_ev_err" | sed -n 's/^installer: \[[a-z-]*\] //p' | head -n1)
     [ -n "$_ev_msg" ] || _ev_msg=$(printf '%s\n' "$_ev_err" | tail -n1)
-    emit "errors.$(field_for_code "${_ev_code:-unknown}")" "$_ev_msg"
+    printf 'gui-bridge: validation [%s] %s\n' "${_ev_code:-unknown}" "$_ev_msg" >&2   # the English line is the log
+    emit "errors.$(field_for_code "${_ev_code:-unknown}")" "$(he_for_code "${_ev_code:-unknown}")"
     return 1
 }
 

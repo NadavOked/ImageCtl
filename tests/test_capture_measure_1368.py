@@ -264,7 +264,7 @@ def _task_row(server, task_id):
 def test_a_finished_capture_carries_its_compressed_total(server):
     created = make_task(server, setup_build_machine(server)).json()
     manifest = manifest_for()
-    assert do_capture(server, created["id"], manifest).status_code == 200
+    assert do_capture(server, created["id"], manifest).status_code == 202
     row = _task_row(server, created["id"])
     assert row["state"] == "done"
     assert row["bytes_total"] == manifest["total_compressed_bytes"] > 0

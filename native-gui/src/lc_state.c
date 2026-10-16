@@ -12,6 +12,7 @@
 #include <time.h>
 #include "lcui.h"
 #include "screens_rounds.h"
+#include "smartdlg.h"   /* 16/10 */
 
 static int lc_split(char *v, char *f[], int max) {
     int n = 0; static char empty[1] = "";
@@ -35,18 +36,28 @@ int lc_state_line(State *s, const char *key, char *val) {
     LcState *l = &s->lc; char *f[16];
     if (strncmp(key, "lc_", 3)) return 0;
     if (!strcmp(key, "lc_round")) l->round_open = !strcmp(val, "open");   /* #1367: anything else draws nothing */
-    else if (!strcmp(key, "lc_screen")) l->screen = !strcmp(val, "boot") ? LC_SCREEN_BOOT : !strcmp(val, "local") ? LC_SCREEN_LOCAL : LC_SCREEN_NONE;
+    else if (!strcmp(key, "lc_screen")) l->screen = !strcmp(val, "boot") ? LC_SCREEN_BOOT : !strcmp(val, "local") ? LC_SCREEN_LOCAL
+                                                   : !strcmp(val, "pull") ? LC_SCREEN_PULL : LC_SCREEN_NONE;
+    else if (!strcmp(key, "lc_local")) l->local_ok = !strcmp(val, "1");   /* 16/10: anything else = not offered */
     else if (!strcmp(key, "lc_boot")) { lc_split(val, f, 3); l->boot_deadline = ll(f[0]); l->boot_paused = atoi(f[1]) == 1; l->boot_now = ll(f[2]); }
     else if (!strcmp(key, "lc_inv")) l->inv_done = !strcmp(val, "done");
     else if (!strcmp(key, "lc_phase")) cpy(l->phase, sizeof l->phase, val);
     else if (!strcmp(key, "lc_disk") && l->ndisks < LC_MAX_DISKS) {
-        if (lc_split(val, f, 13) < 13) return 1;
+        int nf = lc_split(val, f, 15);
+        if (nf < 13) return 1;
         LcDisk *d = &l->disks[l->ndisks++];
         d->port = atoi(f[0]); cpy(d->dev, sizeof d->dev, f[1]); cpy(d->model, sizeof d->model, f[2]);
         cpy(d->serial, sizeof d->serial, f[3]); d->size = strtoull(f[4], NULL, 10);
         cpy(d->smart, sizeof d->smart, f[5]); cpy(d->smart_reason, sizeof d->smart_reason, f[6]);
         cpy(d->os, sizeof d->os, f[7]); d->nparts = atoi(f[8]); d->used = f[9][0] ? ll(f[9]) : -1;
         d->need = f[10][0] ? ll(f[10]) : -1; d->usable = atoi(f[11]) == 1; cpy(d->why, sizeof d->why, f[12]);
+        if (nf >= 14 && f[13][0]) {
+            char *end = NULL; long drawer = strtol(f[13], &end, 10);
+            size_t digits = strspn(f[13], "0123456789");
+            d->drawer = digits == strlen(f[13]) && end && *end == 0 &&
+                        drawer >= 1 && drawer <= MAX_DRAWERS ? (int)drawer : -1;
+        }
+        if (nf >= 15) cpy(d->conn, sizeof d->conn, f[14]);
     } else if (!strcmp(key, "lc_src")) { lc_split(val, f, 2); cpy(l->src, sizeof l->src, f[0]); cpy(l->src_measure, sizeof l->src_measure, f[1]); }
     else if (!strcmp(key, "lc_fit") && l->nfits < LC_MAX_DISKS) {
         lc_split(val, f, 4);
@@ -54,20 +65,21 @@ int lc_state_line(State *s, const char *key, char *val) {
         cpy(x->dev, sizeof x->dev, f[0]); x->verdict = verdict_of(f[1]); x->need = f[2][0] ? ll(f[2]) : -1;
         cpy(x->reason, sizeof x->reason, f[3]);
     } else if (!strcmp(key, "lc_run")) {
-        lc_split(val, f, 8); l->has_run = 1;
+        lc_split(val, f, 9); l->has_run = 1;
         cpy(l->run_src, sizeof l->run_src, f[0]); l->total = !strcmp(f[1], "null") ? -1 : ll(f[1]);
         l->copied = ll(f[2]); l->elapsed = atoi(f[3]); l->shrunk = atoi(f[4]) == 1;
         cpy(l->report, sizeof l->report, f[5]); l->cur_part = atoi(f[6]); cpy(l->src_restore, sizeof l->src_restore, f[7]);
+        cpy(l->shrink_path, sizeof l->shrink_path, f[8]);   /* #1477; an older agent sends 8 fields -- "" */
     } else if (!strcmp(key, "lc_part") && l->nparts < LC_MAX_PARTS) {
         lc_split(val, f, 7);
         LcPart *p = &l->parts[l->nparts++];
         p->idx = atoi(f[0]); cpy(p->label, sizeof p->label, f[1]); cpy(p->fs, sizeof p->fs, f[2]);
         p->bytes = ll(f[3]); p->size = ll(f[4]); cpy(p->state, sizeof p->state, f[5]); p->in = ll(f[6]);
     } else if (!strcmp(key, "lc_tgt") && l->ntgts < LC_MAX_DISKS) {
-        lc_split(val, f, 8);
+        lc_split(val, f, 9);
         LcTgt *t = &l->tgts[l->ntgts++];
         cpy(t->dev, sizeof t->dev, f[0]); cpy(t->state, sizeof t->state, f[1]); t->bytes = ll(f[2]);
-        t->part = atoi(f[3]); t->ok = atoi(f[4]); cpy(t->error, sizeof t->error, f[6]); t->total = ll(f[7]);
+        t->part = atoi(f[3]); t->ok = atoi(f[4]); cpy(t->error, sizeof t->error, f[6]); t->total = ll(f[7]); t->ntfs_boot = atoi(f[8]);
         t->has_table = sscanf(f[5], "%d,%lld,%lld,%lld", &t->grown_idx, &t->grown_bytes, &t->src_bytes, &t->free_bytes) == 4;
     }
     return 1;
@@ -163,22 +175,30 @@ static void measure_source(App *a) {
     emit_line(line);
 }
 
+/* SMART that asks before writing (fail, orange) or failed the last clone (red): "דלג" by default. */
+static int smart_skip(const LcDisk *d) { return smart_level(d->smart) > 0; }
+
 static void set_source(App *a, int i) {
     if (i < 0 || i >= a->st.lc.ndisks || !a->st.lc.disks[i].usable) return;
     int old = lc_source_index(a);
     if (old == i) return;
     set_stored(a, a->st.lc.disks[i].dev, LCR_SOURCE);
-    if (old >= 0) set_stored(a, a->st.lc.disks[old].dev, LCR_TARGET);   /* the mockup's swap */
+    /* the mockup's swap -- 16/10: a warned disk is a target only through the SMART window */
+    if (old >= 0) set_stored(a, a->st.lc.disks[old].dev, smart_skip(&a->st.lc.disks[old]) ? LCR_SKIP : LCR_TARGET);
     measure_source(a);
 }
 
-/* SMART that asks before writing (fail, orange) or failed the last clone (red): "דלג" by default. */
-static int smart_skip(const LcDisk *d) { return smart_level(d->smart) > 0; }
+/* 16/10 (Nadav): the SMART warning window about drawer i (smartdlg.c). */
+static void smart_ask(App *a, int kind, int i) {
+    const LcDisk *d = &a->st.lc.disks[i]; char label[48];
+    lc_disk_label(d, label, sizeof label);
+    sdlg_open(a, kind, i, d->dev, label, d->smart, d->smart_reason, d->model, d->serial);
+}
 
 static void default_roles(App *a) {
     const LcState *l = &a->st.lc; int src = -1;
-    a->lcu.nroles = 0; a->lcu.measured[0] = 0;
-    for (int i = 0; i < l->ndisks; i++) if (l->disks[i].port == 3 && l->disks[i].usable) src = i;    /* SATA 2 = drawer 3 */
+    a->lcu.nroles = 0; a->lcu.measured[0] = 0; a->lcu.src_ack[0] = 0;
+    for (int i = 0; i < l->ndisks; i++) if (eff_drawer(l->disks[i].drawer, l->disks[i].port) == 3 && l->disks[i].usable) src = i;    /* drawer 3 */
     for (int i = 0; src < 0 && i < l->ndisks; i++) if (l->disks[i].usable && l->disks[i].os[0]) src = i;
     for (int i = 0; src < 0 && i < l->ndisks; i++) if (l->disks[i].usable) src = i;
     for (int i = 0; i < l->ndisks; i++)
@@ -189,6 +209,12 @@ static void default_roles(App *a) {
 void lc_after_reload(App *a) {
     LcState *l = &a->st.lc;
     if (l->screen != LC_SCREEN_BOOT) a->lcu.pause_sent = 0;
+    if (l->screen == LC_SCREEN_PULL) lc_pull_after_reload(a);   /* 16/10: a drawer that is gone is not ticked */
+    if (l->has_run) lc_rate_sample(&a->lcu, l->elapsed, l->copied); else a->lcu.rate_n = 0;   /* #1437 */
+    /* 16/10: the SMART window about a drawer that moved, or off the source view, is closed */
+    if ((a->sdlg.kind == SDLG_LC_TARGET || a->sdlg.kind == SDLG_LC_SOURCE) &&
+        (l->screen != LC_SCREEN_LOCAL || strcmp(l->phase, "idle") || a->sdlg.ref >= l->ndisks ||
+         strcmp(l->disks[a->sdlg.ref].dev, a->sdlg.dev))) a->sdlg.kind = SDLG_NONE;
     if (l->screen != LC_SCREEN_LOCAL) { a->lcu.nroles = 0; a->lcu.last_phase[0] = 0; a->lcu.start_sent = 0; return; }
     if (!strcmp(a->lcu.last_phase, "done") && !strcmp(l->phase, "idle")) a->lcu.nroles = 0;   /* "שכפול נוסף" */
     if (strcmp(l->phase, "idle")) a->lcu.start_sent = 0;
@@ -221,7 +247,29 @@ static void role_click(App *a, int i, int r) {
     if (r == LCR_SOURCE) { set_source(a, i); return; }
     if (stored_role(a, dev) == LCR_SOURCE) return;             /* the source changes by choosing another */
     if (r == LCR_TARGET && !lc_target_ok(a, i)) return;        /* "לא נכנס" / "לא נבדק" cannot be a target */
+    /* 16/10: a warned drawer becomes a target only through the SMART window */
+    if (r == LCR_TARGET && stored_role(a, dev) != LCR_TARGET && smart_skip(&a->st.lc.disks[i])) { smart_ask(a, SDLG_LC_TARGET, i); return; }
     set_stored(a, dev, r);
+}
+
+/* "המשך לאישור": 16/10 -- a source with a SMART warning asks the window first
+ * (reading a failing disk is allowed, to rescue it), once per source. */
+static void open_confirm(App *a) {
+    int s = lc_source_index(a);
+    if (!lc_can_go(a)) return;
+    if (s >= 0 && smart_skip(&a->st.lc.disks[s]) && strcmp(a->lcu.src_ack, a->st.lc.disks[s].dev)) { smart_ask(a, SDLG_LC_SOURCE, s); return; }
+    a->lcu.confirm = 1; a->lcu.focus = LCF_CANCEL;
+}
+
+/* The window's answer: only its red button changes anything, and only when
+ * the drawer is still the one it was opened for. */
+static void smart_answer(App *a, const SmartDlg *d) {
+    if (!d->kind || !d->go || d->ref < 0 || d->ref >= a->st.lc.ndisks || strcmp(a->st.lc.disks[d->ref].dev, d->dev)) return;
+    if (d->kind == SDLG_LC_TARGET && lc_target_ok(a, d->ref) && stored_role(a, d->dev) != LCR_SOURCE) set_stored(a, d->dev, LCR_TARGET);
+    else if (d->kind == SDLG_LC_SOURCE && lc_source_index(a) == d->ref) {
+        snprintf(a->lcu.src_ack, sizeof a->lcu.src_ack, "%s", a->st.lc.disks[d->ref].dev);   /* the same name (checked above), same size */
+        open_confirm(a);
+    }
 }
 
 static void cycle_role(App *a, int dir) {
@@ -240,6 +288,20 @@ static void cycle_role(App *a, int dir) {
 
 static void back(App *a) { a->lcu.nroles = 0; emit_line("lc-back"); }
 
+/* 16/10: "שחזור אימג' מהשרת" -- the restore screen starts with nothing chosen */
+static void boot_pull(App *a) {
+    memset(a->pull_sel, 0, sizeof a->pull_sel); a->pull_focus = 0;
+    a->restore_image_sel = 0; a->pick_in_folder = 0; a->pick_folder[0] = 0; a->confirm = 0;
+    a->st.form_error[0] = 0;
+    emit_line("boot-pull");
+}
+
+static void boot_choose(App *a, int focus) {
+    if (focus == 2) boot_pull(a);
+    else if (focus == 1) { if (a->st.lc.local_ok) emit_line("boot-local"); }   /* one disk: nothing to copy to */
+    else emit_line("boot-server");
+}
+
 static int boot_handle(App *a, const Event *e) {
     LcUi *u = &a->lcu;
     int touch = e->type == UIEV_CHAR || e->type == UIEV_KEY || e->type == UIEV_CLICK || e->type == UIEV_SCROLL;
@@ -248,19 +310,27 @@ static int boot_handle(App *a, const Event *e) {
         else if ((e->x - u->move_x) * (e->x - u->move_x) + (e->y - u->move_y) * (e->y - u->move_y) > 16) touch = 1;
     }
     if (touch && !a->st.lc.boot_paused && !u->pause_sent) { u->pause_sent = 1; emit_line("boot-pause"); }
+    /* the focus walks the cards that can be chosen: 0, 1 (two disks or more), 2 */
+    int order[3] = { 0, 1, 2 }, n = 3;
+    if (!a->st.lc.local_ok) { order[1] = 2; n = 2; if (u->boot_focus == 1) u->boot_focus = 0; }
     if (e->type == UIEV_CHAR) {
-        if (e->ch == '1') emit_line("boot-server");
-        else if (e->ch == '2') emit_line("boot-local");
-        else if (e->ch == ' ') emit_line(u->boot_focus ? "boot-local" : "boot-server");
+        if (e->ch >= '1' && e->ch <= '3') boot_choose(a, e->ch - '1');
+        else if (e->ch == ' ') boot_choose(a, u->boot_focus);
     } else if (e->type == UIEV_KEY) {
-        if (e->key == KEYSYM_LEFT) u->boot_focus = 1;              /* RTL: "שיכפול מקומי" is on the left */
-        else if (e->key == KEYSYM_RIGHT) u->boot_focus = 0;
-        else if (e->key == KEYSYM_TAB || e->key == KEYSYM_BACKTAB) u->boot_focus = !u->boot_focus;
-        else if (e->key == KEYSYM_ENTER) emit_line(u->boot_focus ? "boot-local" : "boot-server");
+        if (e->key == KEYSYM_DOWN) u->boot_focus = 2;               /* the restore card is the row below */
+        else if (e->key == KEYSYM_UP) { if (u->boot_focus == 2) u->boot_focus = 0; }
+        else if (e->key == KEYSYM_LEFT && u->boot_focus == 0 && a->st.lc.local_ok) u->boot_focus = 1;   /* RTL: "שיכפול מקומי" is on the left */
+        else if (e->key == KEYSYM_RIGHT && u->boot_focus == 1) u->boot_focus = 0;
+        else if (e->key == KEYSYM_TAB || e->key == KEYSYM_BACKTAB) {
+            int at = 0, d = e->key == KEYSYM_TAB ? 1 : n - 1;
+            for (int i = 0; i < n; i++) if (order[i] == u->boot_focus) at = i;
+            u->boot_focus = order[(at + d) % n];
+        } else if (e->key == KEYSYM_ENTER) boot_choose(a, u->boot_focus);
     } else if (e->type == UIEV_CLICK) {
         int id = app_hit(a, e->x, e->y);
-        if (id == HIT_LC_BOOT_SERVER) emit_line("boot-server");
-        else if (id == HIT_LC_BOOT_LOCAL) emit_line("boot-local");
+        if (id == HIT_LC_BOOT_SERVER) boot_choose(a, 0);
+        else if (id == HIT_LC_BOOT_LOCAL) boot_choose(a, 1);
+        else if (id == HIT_LC_BOOT_PULL) boot_choose(a, 2);
     }
     return 1;
 }
@@ -293,6 +363,11 @@ static int dir_of(const Event *e) {
 
 static int local_handle(App *a, const Event *e) {
     LcUi *u = &a->lcu; int view = lc_view(a), id = e->type == UIEV_CLICK ? app_hit(a, e->x, e->y) : 0;
+    if (a->sdlg.kind == SDLG_LC_TARGET || a->sdlg.kind == SDLG_LC_SOURCE) {   /* 16/10: modal */
+        SmartDlg d;
+        if (sdlg_handle(a, e, &d)) smart_answer(a, &d);
+        return 1;
+    }
     if (view == LCVIEW_SOURCE && u->confirm) {
         int stops[LC_MAX_DISKS + 2], n = confirm_stops(a, stops);
         if (e->type == UIEV_KEY) {
@@ -310,7 +385,7 @@ static int local_handle(App *a, const Event *e) {
     }
     if (view == LCVIEW_SOURCE) {
         if (e->type == UIEV_CHAR && e->ch >= '1' && e->ch <= '9') {
-            for (int i = 0; i < a->st.lc.ndisks; i++) if (a->st.lc.disks[i].port == e->ch - '0') { u->bay = i; u->focus = LCF_BAY; set_source(a, i); }
+            for (int i = 0; i < a->st.lc.ndisks; i++) if (eff_drawer(a->st.lc.disks[i].drawer, a->st.lc.disks[i].port) == e->ch - '0') { u->bay = i; u->focus = LCF_BAY; set_source(a, i); }
         } else if (e->type == UIEV_KEY) {
             if (e->key == KEYSYM_ESC) back(a);
             else if (e->key == KEYSYM_UP && u->bay > 0) { u->bay--; u->focus = LCF_BAY; }
@@ -321,14 +396,14 @@ static int local_handle(App *a, const Event *e) {
                 u->confirm = 0; focus_step(a, stops, n, e->key == KEYSYM_TAB ? 1 : -1);
             } else if (e->key == KEYSYM_ENTER) {
                 if (u->focus == LCF_BACK) back(a);
-                else if (u->focus == LCF_NEXT && lc_can_go(a)) { u->confirm = 1; u->focus = LCF_CANCEL; }
+                else if (u->focus == LCF_NEXT && lc_can_go(a)) open_confirm(a);
                 else if (u->focus == LCF_BAY && lc_can_go(a)) u->focus = LCF_NEXT;
             }
         } else if (e->type == UIEV_CLICK) {
             if (id >= HIT_LC_ROLE_BASE && id < HIT_LC_ROLE_BASE + 3 * LC_MAX_DISKS) role_click(a, (id - HIT_LC_ROLE_BASE) / 3, (id - HIT_LC_ROLE_BASE) % 3);
             else if (id >= HIT_LC_BAY_BASE && id < HIT_LC_BAY_BASE + LC_MAX_DISKS) { u->bay = id - HIT_LC_BAY_BASE; u->focus = LCF_BAY; }
             else if (id == HIT_LC_BACK) back(a);
-            else if (id == HIT_LC_NEXT && lc_can_go(a)) { u->confirm = 1; u->focus = LCF_CANCEL; }
+            else if (id == HIT_LC_NEXT && lc_can_go(a)) open_confirm(a);
         }
         return 1;
     }
@@ -357,6 +432,7 @@ static int local_handle(App *a, const Event *e) {
 
 int lc_handle(App *a, const Event *e) {
     if (a->screen == SCREEN_LCBOOT) return boot_handle(a, e);
+    if (a->screen == SCREEN_RESTORE && lc_pull_active(a)) return lc_pull_handle(a, e);   /* 16/10 (lc_pull.c) */
     if (a->screen != SCREEN_LOCAL) return 0;
     if (e->type == UIEV_MOVE) return 0;            /* the pointer still moves */
     return local_handle(a, e);

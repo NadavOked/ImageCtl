@@ -1,6 +1,6 @@
 # smart.sh -- SMART health gate on the restore side (#652), like Clonezilla.
-# POSIX sh (busybox ash). Checked only before writing to a target, never on
-# capture and never on a machine that is only booting local.
+# POSIX sh (busybox ash). Checked before writing to a target, and (16/10) on the
+# build machine's capture/restore screens (guistate.sh) -- never on a machine that is only booting local.
 #
 # עיקרון 5, בצורתו החזקה ביותר: **SMART הוא שער החלטה, לא שער חסימה.**
 # רק ממצא בריאות שלילי עוצר ומבקש בחירה מהמפעיל. אין SMART, כונן USB,

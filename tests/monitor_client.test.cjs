@@ -11,7 +11,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const root = path.resolve(__dirname, '../server/static');
 
-function setup(search = '?mac=aa:bb:cc:dd:ee:ff&name=Cloner01', doc = {}) {
+function setup(search = '?mac=aa:bb:cc:dd:ee:ff&name=Cloner01', doc = {}, extra = {}) {
   const listeners = {}, docListeners = {}, timers = [];
   const stub = () => ({textContent: '', className: '', value: '', style: {}, onclick: null, disabled: false, title: '',
     addEventListener(name, fn) { (listeners[name] ||= []).push(fn); (this.__l ||= {})[name] = fn; }, focus() {}, getBoundingClientRect() { return {left: 0, top: 0, width: 1, height: 1}; },
@@ -32,6 +32,7 @@ function setup(search = '?mac=aa:bb:cc:dd:ee:ff&name=Cloner01', doc = {}) {
       documentElement: {classList: {_s: new Set(), add(c) { this._s.add(c); }, remove(c) { this._s.delete(c); }, contains(c) { return this._s.has(c); }}}, ...doc},
     WebSocket: FakeWebSocket, setTimeout: (fn, ms) => { timers.push({fn, ms}); return timers.length; }, clearTimeout() {},
     fetch: async (url, options) => { fetches.push({url, options}); return ctx.__fetchReply || {ok: true, json: async () => ({})}; },
+    Date, ...extra,
   });
   vm.runInContext(fs.readFileSync(path.join(root, 'monitor.js'), 'utf8'), ctx);
   const run = (s) => vm.runInContext(s, ctx);
@@ -158,4 +159,74 @@ test('stage 3: fullscreen button — the whole page goes fullscreen (so the powe
 test('stage 3: a browser without fullscreen gets a disabled button with a reason — not a button that does nothing', () => {
   const {run} = setup();   // fullscreenEnabled חסר = לא מאומת
   assert.equal(run("fsBtn.disabled"), true); assert.match(run("fsBtn.title"), /אינו מאפשר מסך מלא/);
+});
+
+/* ---------- #1475: מיפוי העכבר, יציאה מה-canvas, וקצב התזוזות ---------- */
+/* ה-canvas כפי שנמדד בדף האמיתי (Chromium, viewport 1600×700, fb 1920×1080,
+   16/10): מתחת לסרגל של 48px, מוקטן ל-0.6037 ומרוכז. */
+const SCALED = {left: 220.45, top: 48, width: 1159.1063, height: 651.9938};
+const FULL = {left: 0, top: 0, width: 1920, height: 1080};       // מסך מלא, 1:1
+const HALF = {left: 0, top: 0, width: 960, height: 540};
+
+function pointerPage(rect) {
+  const clock = {now: 1000};
+  const page = setup(undefined, {}, {Date: {now: () => clock.now}});
+  page.run('fbWidth = 1920; fbHeight = 1080;');
+  const canvas = page.run('canvas');
+  canvas.getBoundingClientRect = () => ({...rect, right: rect.left + rect.width, bottom: rect.top + rect.height});
+  canvas.setPointerCapture = (id) => { (canvas.captured ||= []).push(id); };
+  const sent = () => page.sockets[0].sent.map((b) => [b[1], (b[2] << 8) | b[3], (b[4] << 8) | b[5]]);
+  const fire = (name, clientX, clientY, more = {}) =>
+    canvas.__l[name]({clientX, clientY, button: 0, pointerId: 7, preventDefault() {}, ...more});
+  return {...page, clock, canvas, sent, fire};
+}
+
+test('#1475: canvas corners and centre land on the right framebuffer pixel — scaled under the toolbar, full screen, half size', () => {
+  const at = (rect, x, y) => pointerPage(rect).run(`fbCoords({clientX: ${x}, clientY: ${y}})`);
+  const r = SCALED;
+  assert.deepEqual(Array.from(at(r, r.left, r.top)), [0, 0], 'top-left corner');
+  assert.deepEqual(Array.from(at(r, r.left + r.width - 0.01, r.top + r.height - 0.01)), [1919, 1079], 'bottom-right corner');
+  assert.deepEqual(Array.from(at(r, r.left + r.width / 2, r.top + r.height / 2)), [960, 540], 'centre');
+  assert.deepEqual(Array.from(at(r, r.left + r.width / 2, 24)), [960, 0], 'over the toolbar = the top row, not an offset');
+  assert.deepEqual(Array.from(at(r, r.left - 50, r.top + r.height + 50)), [0, 1079], 'outside = clamped to the edge');
+  // 1:1 (מסך מלא): הפיקסל שמתחת לסמן. ‏round היה נותן 101,201.
+  assert.deepEqual(Array.from(at(FULL, 100.7, 200.6)), [100, 200], 'full screen 1:1 is the pixel under the pointer');
+  assert.deepEqual(Array.from(at(FULL, 1919.99, 1079.99)), [1919, 1079]);
+  // חצי גודל: ‏CSS 5.9 מכסה את פיקסלי fb ‏10–11; floor(11.8) = 11.
+  assert.deepEqual(Array.from(at(HALF, 5.9, 5.2)), [11, 10]);
+});
+
+test('#1475: leaving the canvas sends the edge position — the remote pointer reaches the top instead of staying at the last inside sample', () => {
+  const {fire, sent, clock, timers} = pointerPage(SCALED);
+  const midX = SCALED.left + SCALED.width / 2;
+  fire('pointermove', midX, SCALED.top + SCALED.height / 2);   // מרכז
+  clock.now += 100;
+  fire('pointerleave', midX, 24);                              // עלה לסרגל
+  timers.splice(0).forEach((t) => t.fn());
+  assert.deepEqual(sent().at(-1), [0, 960, 0], `sent: ${JSON.stringify(sent())}`);
+});
+
+test('#1475: moves are coalesced to one per 33 ms and the latest always goes out; buttons are never delayed and capture the pointer', () => {
+  const {fire, sent, clock, timers, canvas} = pointerPage(FULL);
+  fire('pointermove', 10, 10);                                 // מיד
+  fire('pointermove', 11, 11);                                 // בתוך החלון — ממתין
+  fire('pointermove', 12, 12);                                 // מחליף את הממתין
+  assert.deepEqual(sent(), [[0, 10, 10]]);
+  assert.equal(timers.length, 1, 'one trailing timer, not one per move');
+  assert.equal(timers[0].ms, 33);
+  clock.now += 33; timers.splice(0)[0].fn();
+  assert.deepEqual(sent(), [[0, 10, 10], [0, 12, 12]], 'the latest position, once');
+  fire('pointerdown', 13, 13);                                 // בתוך החלון — ובכל זאת מיד
+  fire('pointerup', 300, 2000);                                // שחרור מחוץ ל-canvas (לכוד)
+  assert.deepEqual(sent().slice(2), [[1, 13, 13], [0, 300, 1079]]);
+  assert.deepEqual(canvas.captured, [7], 'pointer captured on press: a drag out of the canvas keeps going');
+});
+
+test('#1475: one shared cursor — the browser hides its own over the canvas; the one drawn by the GUI is the cursor', () => {
+  // נדב 16/10: הסמן המצויר במכונה הוא הסמן; מי שליד המכונה רואה אותו. סמן
+  // דפדפן גלוי מעל ה-canvas = שני סמנים. מחוץ ל-canvas (סרגל) הדפדפן מראה כרגיל.
+  const html = fs.readFileSync(path.join(root, 'monitor.html'), 'utf8');
+  const rule = html.match(/#screen\s*\{([^}]*)\}/);
+  assert.ok(rule, 'no #screen rule in monitor.html');
+  assert.match(rule[1], /cursor:\s*none\s*;/);
 });

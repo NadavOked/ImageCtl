@@ -133,7 +133,7 @@ def magic_packet(mac: str) -> bytes:
     """
     canonical = normalize_mac(mac)
     if canonical is None:
-        raise ValueError(f"not a mac address: {mac!r}")
+        raise ValueError(f"כתובת MAC לא תקינה: {mac!r}")
     return b"\xff" * 6 + bytes.fromhex(canonical.replace(":", "")) * 16
 
 
@@ -164,8 +164,8 @@ def broadcast_sender(
     def send(packet: bytes) -> None:
         if interface and bind_to_device is None:
             raise OSError(
-                f"cannot pin wol to {interface}: SO_BINDTODEVICE is not "
-                "available here; refusing to broadcast on every interface"
+                f"לא ניתן להצמיד את Wake-on-LAN לממשק {interface}: SO_BINDTODEVICE "
+                "אינו זמין כאן — לא משדרים על כל הממשקים"
             )
         if interface:
             state, why = link_state(interface, sysfs=sysfs)

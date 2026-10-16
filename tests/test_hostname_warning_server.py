@@ -16,7 +16,7 @@ pytest.importorskip("fastapi")
 from test_closed_session_report import _session
 from server import reports
 
-WARNING = "שם המחשב לא נכתב: registry edit failed"
+WARNING = "שם המחשב לא נכתב: עריכת הרג׳יסטרי נכשלה"
 
 
 def _done_with_warning(sid: str, mac: str) -> dict:

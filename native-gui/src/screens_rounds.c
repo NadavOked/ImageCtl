@@ -37,19 +37,135 @@ const char *smart_he(const char *smart) {
     return smart;
 }
 
+/* The prompt's reason is the agent's code word (smart.sh: smart_classify /
+ * disk_failure_cause); the screen says it in words, and shows an unknown
+ * code as-is rather than hiding it. Shared by the cloner's prompt and the
+ * SMART warning window (smartdlg.c, 16/10). */
+const char *smart_reason_text(const char *reason) {
+    if (!reason || !reason[0] || !strcmp(reason, "ok")) return "";
+    /* #1366: the three reasons of fail -- what stops an HP BIOS on "press F1" */
+    if (!strcmp(reason, "health_failed")) return "ה-BIOS יעצור ב-F1 — SMART: בדיקת הבריאות נכשלה";
+    if (!strcmp(reason, "pending_sectors")) return "ה-BIOS יעצור ב-F1 — SMART: סקטורים ממתינים (197)";
+    if (!strcmp(reason, "uncorrectable")) return "ה-BIOS יעצור ב-F1 — SMART: סקטורים שלא ניתנים לתיקון (198)";
+    if (!strcmp(reason, "no_health")) return "הדיסק אינו מדווח על בריאות";
+    if (!strcmp(reason, "no_smartctl")) return "smartctl חסר ב-initramfs";
+    if (!strcmp(reason, "timeout")) return "smartctl לא ענה בזמן — לא נבדק";   /* #1367 */
+    if (!strcmp(reason, "pending")) return "ממתין להכרעה";
+    return reason;
+}
+
 const IdleDisk *idle_for_port(const State *s, int port) {
     for (int i = 0; i < s->nidisks; i++)
         if (s->idisks[i].port == port) return &s->idisks[i];
     return NULL;
 }
 
-/* #704: "דיסק N" on the cloner screens -- or the operator's name of that SATA
- * slot (cslot_name=, from the last hello). No name = exactly as before. */
-void cloner_slot_label(const State *s, int port, char *out, size_t n) {
-    if (port >= 1 && port <= MAX_DRAWERS && s->cslot_names[port - 1][0])
-        snprintf(out, n, "%s", s->cslot_names[port - 1]);
+/* #1495: the drawer the operator sees; zero means it is outside the mapping. */
+int eff_drawer(int drawer, int port) {
+    return drawer > 0 ? drawer : drawer < 0 ? 0 :
+           (port >= 1 && port <= MAX_DRAWERS ? port : 0);
+}
+
+void conn_text(const char *conn, int port, const char *dev, char *out, size_t n) {
+    if (conn && conn[0]) snprintf(out, n, "%s", conn);
+    else if (port >= 1) snprintf(out, n, "SATA %d", port - 1);
+    else if (dev && dev[0]) snprintf(out, n, "%s", dev);
+    else snprintf(out, n, "%s", "חיבור לא מזוהה");
+}
+
+void unmapped_label(const char *name, const char *conn, int port, const char *dev,
+                    char *out, size_t n) {
+    char what[SLOT_NAME_MAX + 64];
+    if (name && name[0]) snprintf(what, sizeof what, "%s", name);
+    else conn_text(conn, port, dev, what, sizeof what);
+    snprintf(out, n, "%s (לא ממופה)", what);
+}
+
+int cloner_bay_count(const State *s) {
+    if (s->ncbays > 0) return s->ncbays;
+    int bays = 3;
+    for (int p = 4; p <= MAX_DRAWERS; p++)
+        if (s->cslot_names[p - 1][0] || idle_for_port(s, p)) bays = p;
+    return bays;
+}
+
+const IdleDisk *idle_for_bay(const State *s, int bay) {
+    for (int i = 0; i < s->nidisks; i++)
+        if (eff_drawer(s->idisks[i].drawer, s->idisks[i].port) == bay) return &s->idisks[i];
+    return NULL;
+}
+
+const Drawer *drawer_for_bay(const State *s, int bay) {
+    for (int i = 0; i < s->ndrawers; i++)
+        if (eff_drawer(s->drawers[i].drawer, s->drawers[i].port) == bay) return &s->drawers[i];
+    return NULL;
+}
+
+const COptical *optical_for_bay(const State *s, int bay) {
+    for (int i = 0; i < s->ncopticals; i++)
+        if (eff_drawer(s->copticals[i].drawer, 0) == bay) return &s->copticals[i];
+    return NULL;
+}
+
+void cloner_bay_conn(const State *s, int bay, char *out, size_t n) {
+    if (s->ncbays > 0 && bay >= 1 && bay <= s->ncbays && s->cbays[bay - 1].conn[0])
+        snprintf(out, n, "%s", s->cbays[bay - 1].conn);
+    else if (s->ncbays == 0)
+        snprintf(out, n, "SATA %d", bay - 1);
     else
-        snprintf(out, n, "דיסק %d", port);
+        snprintf(out, n, "%s", "חיבור לא מזוהה");
+}
+
+/* The argument is a visible bay, not a wire port. */
+void cloner_slot_label(const State *s, int bay, char *out, size_t n) {
+    if (s->ncbays > 0 && bay >= 1 && bay <= s->ncbays && s->cbays[bay - 1].name[0])
+        snprintf(out, n, "%s", s->cbays[bay - 1].name);
+    else if (s->ncbays == 0 && bay >= 1 && bay <= MAX_DRAWERS && s->cslot_names[bay - 1][0])
+        snprintf(out, n, "%s", s->cslot_names[bay - 1]);
+    else
+        snprintf(out, n, "דיסק %d", bay);
+}
+
+void cloner_port_label(const State *s, int port, char *out, size_t n) {
+    const Drawer *d = NULL;
+    const IdleDisk *id = idle_for_port(s, port);
+    for (int i = 0; i < s->ndrawers; i++) if (s->drawers[i].port == port) { d = &s->drawers[i]; break; }
+    int drawer = d ? eff_drawer(d->drawer, port) : id ? eff_drawer(id->drawer, port) : 0;
+    if (drawer > 0) { cloner_slot_label(s, drawer, out, n); return; }
+    if (d || id) {
+        const char *name = port >= 1 && port <= MAX_DRAWERS ? s->cslot_names[port - 1] : "";
+        unmapped_label(name, d ? d->conn : id->conn, port, d ? d->dev : id->dev, out, n);
+        return;
+    }
+    cloner_slot_label(s, port, out, n);
+}
+
+int room_selectable(const RoomDrawer *d) {
+    return d->present && d->port >= 1 && eff_drawer(d->drawer, d->port) > 0;
+}
+
+void room_drawer_label(const Machine *m, const RoomDrawer *d, char *out, size_t n) {
+    int drawer = eff_drawer(d->drawer, d->port);
+    if (drawer > 0) {
+        if (d->slot_name[0]) snprintf(out, n, "%s", d->slot_name);
+        else if (drawer <= MAX_DRAWERS && m->rslots[drawer - 1].name[0])
+            snprintf(out, n, "%s", m->rslots[drawer - 1].name);
+        else if (d->port >= 1 && d->port <= MAX_DRAWERS && m->slot_names[d->port - 1][0])
+            snprintf(out, n, "%s", m->slot_names[d->port - 1]);
+        else snprintf(out, n, "דיסק %d", drawer);
+    } else {
+        unmapped_label(d->slot_name, d->conn, d->port, "", out, n);
+    }
+}
+
+int room_rows(const Machine *m) {
+    int rows = m->nrslots > 0 ? m->nrslots : m->drawer_count;
+    if (rows < 1) rows = 1;
+    if (rows > MAX_DRAWERS) rows = MAX_DRAWERS;
+    for (int i = 0; i < m->nroom_drawers; i++)
+        if (m->room_drawers[i].present && eff_drawer(m->room_drawers[i].drawer,
+                                                     m->room_drawers[i].port) == 0) rows++;
+    return rows;
 }
 
 /* The status span, as Pango markup (room-ok / room-bad / room-warn / sub). */

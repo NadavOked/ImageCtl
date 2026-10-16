@@ -66,18 +66,18 @@ _drivers_fetch() {
     # verifying sha256 as it goes. Reads the rows file ($1): name|path|sha|url.
     # Returns 1 with the reason in $_dr_why.
     while IFS='|' read -r _pkg _path _sha _url; do
-        case "$_pkg" in ''|*/*|*..*|.*) _dr_why="bad package name '$_pkg'"; return 1 ;; esac
-        case "$_path" in ''|/*|*..*|*\\*) _dr_why="bad file path '$_path' in $_pkg"; return 1 ;; esac
+        case "$_pkg" in ''|*/*|*..*|.*) _dr_why="שם חבילה לא תקין: '$_pkg'"; return 1 ;; esac
+        case "$_path" in ''|/*|*..*|*\\*) _dr_why="נתיב קובץ לא תקין '$_path' בחבילה $_pkg"; return 1 ;; esac
         _dst="$RUN_DIR/drivers/$_pkg/$_path"
         mkdir -p "${_dst%/*}"
         if ! http_get_stream "$SERVER$_url" > "$_dst" 2>> "$LOG_FILE"; then
-            _dr_why="download failed: $_pkg/$_path"; return 1
+            _dr_why="ההורדה נכשלה: $_pkg/$_path"; return 1
         fi
         _got=$(_file_sha256 "$_dst")
         if ! is_sha256 "$_got"; then
-            _dr_why="sha256 not computed: $_pkg/$_path"; return 1
+            _dr_why="ה-sha256 לא חושב: $_pkg/$_path"; return 1
         elif [ "$_got" != "$_sha" ]; then
-            _dr_why="sha256 mismatch: $_pkg/$_path"; return 1
+            _dr_why="אי-התאמת sha256: $_pkg/$_path"; return 1
         fi
     done < "$1"
     return 0
@@ -88,12 +88,12 @@ _drivers_copy() {
     # NTFS and reads every file back against the manifest's sha256.
     while IFS='|' read -r _pkg _path _sha _url; do
         _to="$1/$DRIVERS_WIN_DIR/$_pkg/$_path"
-        mkdir -p "${_to%/*}" 2>> "$LOG_FILE" || { _dr_why="mkdir failed on the disk: $_pkg"; return 1; }
+        mkdir -p "${_to%/*}" 2>> "$LOG_FILE" || { _dr_why="mkdir נכשל בדיסק: $_pkg"; return 1; }
         if ! cp "$RUN_DIR/drivers/$_pkg/$_path" "$_to" 2>> "$LOG_FILE"; then
-            _dr_why="copy failed: $_pkg/$_path"; return 1
+            _dr_why="ההעתקה נכשלה: $_pkg/$_path"; return 1
         fi
         if [ "$(_file_sha256 "$_to")" != "$_sha" ]; then
-            _dr_why="read-back mismatch on the disk: $_pkg/$_path"; return 1
+            _dr_why="אי-התאמה בקריאה חזרה מהדיסק: $_pkg/$_path"; return 1
         fi
     done < "$2"
     return 0
@@ -105,7 +105,7 @@ _device_path_add() {
     # value's own type, without which %SystemRoot% is not expanded. Idempotent.
     _cur=$(hivewrite -g "$1" "$DEVICE_PATH_KEY" DevicePath 2>> "$LOG_FILE")
     _grc=$?
-    if [ "$_grc" -ne 0 ]; then _dr_why="could not read DevicePath (rc=$_grc)"; return 1; fi
+    if [ "$_grc" -ne 0 ]; then _dr_why="לא הצלחנו לקרוא את DevicePath (rc=$_grc)"; return 1; fi
     case "$_cur" in
         *ImageCtl\\Drivers*) log "DevicePath already lists ImageCtl\\Drivers"; return 0 ;;
         '') _new="$DEVICE_PATH_ENTRY" ;;
@@ -115,7 +115,7 @@ _device_path_add() {
     _wrc=$?
     _back=$(hivewrite -g "$1" "$DEVICE_PATH_KEY" DevicePath 2>> "$LOG_FILE")
     if [ "$_wrc" -ne 0 ] || [ "$_back" != "$_new" ]; then
-        _dr_why="DevicePath write not verified (rc=$_wrc, read back '$_back')"; return 1
+        _dr_why="כתיבת DevicePath לא אומתה (rc=$_wrc, נקרא בחזרה '$_back')"; return 1
     fi
     log "DevicePath = $_new"
     return 0
@@ -138,7 +138,7 @@ _stage_drivers() {
     rm -f "${DR_OUT:-$RUN_DIR/drivers.json}"
     _dr_plan="$RUN_DIR/drivers.plan"
     if ! manifest_plan "$2" > "$_dr_plan"; then
-        _drivers_fail "could not read the partition plan"
+        _drivers_fail "לא הצלחנו לקרוא את תוכנית המחיצות"
         return 0
     fi
     grep -qE '^[^|]*\|[^|]*\|windows\|' "$_dr_plan"; _dr_plan_rc=$?
@@ -147,7 +147,7 @@ _stage_drivers() {
         return 0
     fi
     if [ "$_dr_plan_rc" -ne 0 ]; then
-        _drivers_fail "could not check the partition plan"
+        _drivers_fail "לא הצלחנו לבדוק את תוכנית המחיצות"
         return 0
     fi
     _q="mac=$MAC"
@@ -156,23 +156,23 @@ _stage_drivers() {
 
     _ans="$RUN_DIR/drivers.answer"
     if ! http_get "$SERVER/api/v1/agent/drivers?$_q" > "$_ans" 2>> "$LOG_FILE"; then
-        _drivers_fail "the server did not answer the drivers query"; return 0
+        _drivers_fail "השרת לא ענה לשאילתת הדרייברים"; return 0
     fi
-    [ "$(json_get "$_ans" ".ok")" = "true" ] || { _drivers_fail "the drivers answer was not read"; return 0; }
+    [ "$(json_get "$_ans" ".ok")" = "true" ] || { _drivers_fail "לא הצלחנו לקרוא את תשובת הדרייברים"; return 0; }
     if [ -n "${DR_PORT:-}" ]; then
         # #1269: no model for this port is a skip; a model with no package is a failure (below).
         [ "$(json_get "$_ans" ".chosen")" != "null" ] || { _drivers_result "skipped" "" "no_model"; return 0; }
     # עיקרון 5: "אין מלאי בשרת" אינו "אין חבילה תואמת" -- הראשון הוא כשל.
     elif [ "$(json_get "$_ans" ".inventory")" != "true" ]; then
-        _drivers_fail "the server has no inventory for this machine"; return 0
+        _drivers_fail "לשרת אין מלאי של המחשב הזה"; return 0
     fi
 
     _rows="$RUN_DIR/drivers.rows"
     json_get "$_ans" '.packages[] as $p | $p.files[] | "\($p.name)|\(.path)|\(.sha256)|\(.url)"' > "$_rows"
     _names=$(json_get "$_ans" '.packages[].name')
     case "$_names" in
-        null) _drivers_fail "could not read the package list"; return 0 ;;
-        '')   if [ -n "${DR_PORT:-}" ]; then _drivers_fail "the server has no driver package for the chosen model"
+        null) _drivers_fail "לא הצלחנו לקרוא את רשימת החבילות"; return 0 ;;
+        '')   if [ -n "${DR_PORT:-}" ]; then _drivers_fail "לשרת אין חבילת דרייברים לדגם שנבחר"
               else _drivers_result "no_match" ""; fi; return 0 ;;
     esac
     _list=""
@@ -183,10 +183,10 @@ _stage_drivers() {
     _drivers_fetch "$_rows" || { _drivers_fail "$_dr_why"; return 0; }
 
     _dr_mnt=$(_mount_windows "$1" "$2" "$_dr_plan") || {
-        _dr_mnt=""; _drivers_fail "could not mount the windows partition"; return 0
+        _dr_mnt=""; _drivers_fail "לא הצלחנו לעגן את מחיצת Windows"; return 0
     }
     _hive="$_dr_mnt/Windows/System32/config/SOFTWARE"
-    [ -f "$_hive" ] || { _drivers_fail "SOFTWARE hive not found"; return 0; }
+    [ -f "$_hive" ] || { _drivers_fail "כוורת SOFTWARE לא נמצאה"; return 0; }
     for _n in $_names; do rm -rf "${_dr_mnt:?}/${DRIVERS_WIN_DIR:?}/$_n"; done   # SC2115: לעולם לא "/"
     _drivers_copy "$_dr_mnt" "$_rows" || { _drivers_fail "$_dr_why"; return 0; }
     _device_path_add "$_hive" || { _drivers_fail "$_dr_why"; return 0; }
@@ -197,7 +197,7 @@ _stage_drivers() {
     _umount_checked "$_dr_mnt"
     _umrc=$?
     _dr_mnt=""
-    [ "$_umrc" -eq 0 ] || { _drivers_fail "could not unmount after staging (rc=$_umrc)"; return 0; }
+    [ "$_umrc" -eq 0 ] || { _drivers_fail "לא הצלחנו לנתק את המחיצה אחרי הנחת הדרייברים (rc=$_umrc)"; return 0; }
 
     _drivers_result "staged" "$_list"
     return 0

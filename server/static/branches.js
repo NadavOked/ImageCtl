@@ -30,6 +30,53 @@ const TRANSFER_STATE = {
   done: ["הושלם", "ok"], failed: ["נכשל", "err"],
 };
 
+/* ‏#1462: קצב, ETA וזמן שעבר — רק ממה שנמדד. הקצב הוא הפרש בין שתי דגימות
+   (bytes_sent, updated_at) שהדף ראה, **שתיהן בשעון השרת**, בחלון של עד דקה;
+   פחות משתי דגימות או פחות משתי שניות ביניהן = "מודד קצב…", לא 0. הזמן שעבר
+   בשלב האימות הוא seconds_since_update מהשרת (null = לא מוצג), לא שעון הדפדפן. */
+const TRANSFER_SAMPLES = new Map();   // id → [{t: ms (updated_at), b: bytes_sent}]
+const RATE_WINDOW_MS = 60000;
+const RATE_MIN_SPAN_MS = 2000;        // updated_at ברזולוציית שניות
+const STALL_AFTER_S = 30;             // בלי עדכון מנה (64MiB) זמן כזה — אומרים את זה, לא ETA
+
+function transferRate(t) {
+  if (t.state !== "sending") { TRANSFER_SAMPLES.delete(t.id); return null; }
+  const at = Date.parse(t.updated_at || "");
+  const bytes = Number(t.bytes_sent);
+  const list = TRANSFER_SAMPLES.get(t.id) || [];
+  if (Number.isFinite(at) && Number.isFinite(bytes)) {
+    const last = list[list.length - 1];
+    if (!last || at > last.t) list.push({ t: at, b: bytes });
+    while (list.length > 2 && at - list[1].t >= RATE_WINDOW_MS) list.shift();
+    TRANSFER_SAMPLES.set(t.id, list);
+  }
+  if (list.length < 2) return null;
+  const a = list[0], z = list[list.length - 1];
+  if (z.t - a.t < RATE_MIN_SPAN_MS || z.b < a.b) return null;
+  return (z.b - a.b) * 1000 / (z.t - a.t);
+}
+
+function transferPace(t) {
+  const since = t.seconds_since_update;
+  if (t.state === "verifying") {
+    const spent = fmtSpan(since);
+    return spent ? `עברו ${spent}` : "";
+  }
+  if (t.state !== "sending") return "";
+  const rate = transferRate(t);
+  if (since != null && since >= STALL_AFTER_S) return `אין התקדמות ${fmtSpan(since)}`;
+  if (rate == null) return "מודד קצב…";
+  const speed = `${(rate / 1e6).toFixed(1)} MB/s`;
+  const left = Number(t.bytes_total) - Number(t.bytes_sent);
+  const eta = rate > 0 && left >= 0 ? fmtSpan(left / rate) : null;
+  return eta ? `${speed} · נותרו כ-${eta}` : speed;
+}
+
+function transferStateLabel(t) {
+  if (t.state === "verifying" && t.direction === "pull") return ["הראשי מאמת sha256", ""];
+  return TRANSFER_STATE[t.state] || [t.state, ""];
+}
+
 function stopBranchPolling() { clearInterval(BRANCH_TIMER); BRANCH_TIMER = null; }
 function stopBranchesListPolling() { clearInterval(BRANCHES_LIST_TIMER); BRANCHES_LIST_TIMER = null; }
 
@@ -43,6 +90,7 @@ async function loadBranchesData() {
   BRANCH_GROUPS = groups;
   BRANCH_NODES = nodes;
   BRANCH_TRANSFERS = transfers;
+  await loadTransferCap();
   for (const n of nodes) {
     // עוד לפני הבדיקה — מה שהשרת זוכר: "ענתה לאחרונה HH:MM" גם כשהעמוד לא היה בפוקוס.
     const remembered = { lastSeenAt: n.last_seen_at || null, lastErrorAt: n.last_error_at || null, error: n.last_error || "" };
@@ -158,12 +206,14 @@ function transferDirectionHtml(t) {
 }
 
 function branchTransferRow(t) {
-  const [label, cls] = TRANSFER_STATE[t.state] || [t.state, ""];
+  const [label, cls] = transferStateLabel(t);
   const active = ["sending", "verifying", "queued"].includes(t.state);
   const pct = t.bytes_total ? Math.min(100, Math.round(100 * t.bytes_sent / t.bytes_total)) : 0;
-  const progress = active
-    ? UI.barRow(pct, "", `${esc(formatGB(t.bytes_sent))} / ${esc(formatGB(t.bytes_total))}`)
-    : (t.state === "done" ? UI.barRow(100) : UI.barRow(null));
+  const pace = transferPace(t);
+  const progress = (active
+    ? UI.barRow(pct, t.state === "verifying" ? "indeterminate" : "", `${esc(formatGB(t.bytes_sent))} / ${esc(formatGB(t.bytes_total))}`)
+    : (t.state === "done" ? UI.barRow(100) : UI.barRow(null)))
+    + (pace ? `<div class="sub transfer-pace">${esc(pace)}</div>` : "");
   const state = UI.status(cls, label) + (t.error ? `<div class="sub">${esc(t.error)}</div>` : "");
   const retry = t.state === "failed"
     ? `<button class="btn sm" onclick="retryBranchTransfer('${encodeId(t.node_id)}','${encodeId(t.image_id)}')">נסה שוב</button>` : "";
@@ -186,7 +236,7 @@ function branchesTransfersTab() {
     rows: BRANCH_TRANSFERS.map(branchTransferRow),
     empty: "אין העברות.",
   });
-  return `<div class="c12 card"><div class="card-b${BRANCH_TRANSFERS.length ? " flush" : ""}">${table}</div></div>`;
+  return `<div class="c12 card">${transferCapStrip("card-h")}<div class="card-b${BRANCH_TRANSFERS.length ? " flush" : ""}">${table}</div></div>`;
 }
 
 function maybeStartBranchesListPolling() {
@@ -249,13 +299,33 @@ function branchesGroupsTab() {
 /* מתעדכנת לאחר כל רינדור של לשונית "קבוצות" — renderBranchGroups
    (storage_nodes.js) כותבת ל-#branch-groups ומחברת את הכפתורים/הגרירה. */
 function wireBranchesGroupsTab() {
-  if (current !== "branches" || currentTab !== 2) return;
+  if (current !== "branches" || currentTab !== 2 || !(BRANCH_NODES || []).length) return;
   renderBranchGroups(BRANCH_GROUPS, loadBranchesData);
+}
+
+/* 16/10 (ביקורת הקונסולה): הדף מוצג לראשי/עצמאי גם כשאין עדיין משני —
+   אחרת אין מאיפה לרשום את הראשון. בלי משני: לשונית אחת, מצב ריק וכפתור
+   רישום בולט; העברות וקבוצות מופיעות רק כשיש משני רשום. */
+function branchesEmptyState() {
+  const button = isAdmin()
+    ? `<button class="btn primary" data-testid="enroll-first" onclick="openEnrollSheet()">+ רישום שרת משני</button>` : "";
+  return `<div class="c12 card"><div class="card-b branches-empty" data-testid="branches-empty">
+    <h3>אין עדיין שרת משני</h3>
+    <p class="muted">שרת משני הוא שרת ImageSrv באתר אחר. במסך השרת של המשני, <b>F4</b> מציג את הכתובת, את טביעת הזהות ואת קוד הצימוד — ואותם מקלידים כאן.</p>
+    ${button}</div></div>`;
 }
 
 function branchesPage(tab = 0) {
   const nodes = BRANCH_NODES || [];
   const groups = BRANCH_GROUPS || [];
+  if (!nodes.length) {
+    const header = UI.objHeader({
+      crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "סניפים" }],
+      icon: "server", name: "סניפים", sub: "אין שרתים משניים", pill: "", actions: "",
+      tabs: ["שרתים"], tab: 0,
+    });
+    return `<div class="page">${header}<div class="body">${branchesEmptyState()}</div></div>`;
+  }
   const notResponding = nodes.filter((n) => (BRANCH_CONN[n.id] || {}).state === "err").length;
   const sub = `${nodes.length} ${nodes.length === 1 ? "שרת משני" : "שרתים משניים"} · ${groups.length} ${groups.length === 1 ? "קבוצה" : "קבוצות"}`;
   const pill = notResponding ? UI.pill("err", `${notResponding} ${notResponding === 1 ? "לא מגיב" : "לא מגיבים"}`) : "";
@@ -347,23 +417,90 @@ function openEnrollSheet() {
   });
 }
 
+/* 16/10 (מוקאפ #1525, ג׳1–ג׳3): המשני מציג את הקוד ואת "זהות השרת" במסך
+   השרת שלו (F4). כאן: הטביעה בקבוצות של ארבעה, עם ארבע הראשונות מודגשות —
+   הן "זהות השרת" שעל המשני וגם סיומת מזהה המשני — ושמונה תיבות לקוד
+   (interserver_auth: ‏XXXX-XXXX, בלי 0/O/1/I/L). הכפתור כבוי עד שכל
+   השמונה מלאות. */
+const ENROLL_CODE_LEN = 8;
+const ENROLL_CODE_CHAR = /^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]$/;
+
+function enrollSpkiGroups(spki) {
+  return String(spki || "").toUpperCase().match(/.{1,4}/g) || [];
+}
+
+function enrollConfirmHtml(step1, preview) {
+  const groups = enrollSpkiGroups(preview.secondary_spki);
+  const boxes = Array.from({ length: ENROLL_CODE_LEN }, (_, i) =>
+    `${i === ENROLL_CODE_LEN / 2 ? '<span class="enroll-d" aria-hidden="true">-</span>' : ""}<input class="enroll-c" id="enroll-c-${i}" maxlength="1" inputmode="text" autocomplete="off" spellcheck="false" aria-label="תו ${i + 1} מתוך ${ENROLL_CODE_LEN}">`).join("");
+  return `<div class="enroll-cmp"><div class="t">① השווה לטביעה שמוצגת על מסך המשני — שם "זהות השרת"</div>
+      <div class="enroll-fp mono" dir="ltr">${groups.slice(0, 4).map((g) => `<span class="enroll-hl">${esc(g)}</span>`).join(" ")}</div>
+      <div class="enroll-rest mono" dir="ltr">${esc(groups.join(" "))}</div></div>
+    <div class="detail-grid"><div class="detail-box"><span class="k">מזהה משני</span><span class="v mono" dir="ltr">${esc(preview.node_id)}</span></div><div class="detail-box"><span class="k">כתובת שנבדקה</span><span class="v mono" dir="ltr">${esc(step1.url)}</span></div></div>
+    <div class="enroll-code-h">② קוד חד-פעמי (מוצג על המשני)</div>
+    <div class="enroll-cin" dir="ltr">${boxes}</div>
+    <div class="n-help">מוצג על מסך המשני תחת "צימוד לשרת ראשי" (F4). 8 תווים, שימוש חד-פעמי.</div>`;
+}
+
+function enrollCodeBoxes(form) {
+  return form && form.querySelectorAll ? Array.from(form.querySelectorAll(".enroll-c")) : [];
+}
+
+function enrollCodeValue(form) {
+  return enrollCodeBoxes(form).map((b) => String(b.value || "").toUpperCase()).join("");
+}
+
+function wireEnrollCode(form) {
+  const boxes = enrollCodeBoxes(form);
+  const submit = form && form.querySelector ? form.querySelector("#sf-submit") : null;
+  const sync = () => {
+    const ready = boxes.length === ENROLL_CODE_LEN && boxes.every((b) => ENROLL_CODE_CHAR.test(b.value));
+    if (submit) submit.disabled = !ready;
+    boxes.forEach((b) => b.classList.remove("err"));
+  };
+  boxes.forEach((box, i) => {
+    box.addEventListener("input", () => {
+      const typed = String(box.value || "").toUpperCase().split("").filter((c) => ENROLL_CODE_CHAR.test(c));
+      box.value = typed[0] || "";
+      // הדבקה של הקוד כולו (או המשכו) לתיבה אחת — מתפזרת קדימה
+      typed.slice(1).forEach((c, k) => { if (boxes[i + 1 + k]) boxes[i + 1 + k].value = c; });
+      const next = boxes[Math.min(i + typed.length, boxes.length - 1)];
+      if (typed.length && next && next.focus) next.focus();
+      sync();
+    });
+    box.addEventListener("keydown", (event) => {
+      if (event.key === "Backspace" && !box.value && boxes[i - 1]) boxes[i - 1].focus();
+    });
+  });
+  sync();
+}
+
 function openEnrollConfirmSheet(step1, preview) {
   sheet({
     title: "רישום שרת משני — שלב 2 מתוך 2: אישור והקוד",
-    sub: "השווה את ה-SPKI מול מה שמוצג על המשני, ורק אז הקלד את הקוד החד-פעמי שהוצג שם.",
-    note: `<div class="detail-grid"><div class="detail-box"><span class="k">SPKI</span><span class="v mono" dir="ltr">${esc(preview.secondary_spki)}</span></div><div class="detail-box"><span class="k">מזהה משני</span><span class="v mono" dir="ltr">${esc(preview.node_id)}</span></div></div>`,
-    fields: [{ id: "code", label: "קוד חד-פעמי (מוצג על המשני)", dir: "ltr" }],
+    sub: "הטביעה למטה נקראה מהכתובת שהוקלדה. אם היא אינה זהה למה שמוצג על המשני — אל תמשיך.",
+    note: enrollConfirmHtml(step1, preview),
     submitLabel: "רשום שרת משני",
-    onSubmit: async (v) => {
-      await post("/storage-nodes/enroll", {
-        url: step1.url, protocol_version: ENROLL_PROTOCOL_VERSION, code: v.code,
-        expected_secondary_spki: preview.secondary_spki,
-        label: step1.label, group_id: step1.group_id || null,
-      });
+    onSubmit: async () => {
+      const form = $("#sheet");
+      const code = enrollCodeValue(form);
+      if (code.length !== ENROLL_CODE_LEN) throw new Error("יש להקליד את כל 8 התווים של הקוד.");
+      try {
+        await post("/storage-nodes/enroll", {
+          url: step1.url, protocol_version: ENROLL_PROTOCOL_VERSION,
+          code: `${code.slice(0, 4)}-${code.slice(4)}`,
+          expected_secondary_spki: preview.secondary_spki,
+          label: step1.label, group_id: step1.group_id || null,
+        });
+      } catch (error) {
+        enrollCodeBoxes(form).forEach((b) => b.classList.add("err"));
+        throw new Error(`${error.message} — אם הקוד שגוי או שפג תוקפו: על המשני F5 ← קוד חדש, ואז נסה שוב.`);
+      }
       toast(`השרת המשני "${step1.label}" נרשם.`);
       await loadBranchesData();
     },
   });
+  wireEnrollCode($("#sheet"));
 }
 
 function openBranchGroupSheet() {
@@ -389,10 +526,14 @@ function renderBranchTransfers(nid, target = null, limit = 8) {
   const rows = BRANCH_TRANSFERS.filter((t) => t.node_id === nid).slice(0, limit);
   if (!rows.length) { box.innerHTML = `<div class="sub">אין העברות.</div>`; return; }
   box.innerHTML = rows.map((t) => {
-    const [label, cls] = TRANSFER_STATE[t.state] || [t.state, ""];
+    const [label, cls] = transferStateLabel(t);
     const pct = t.bytes_total ? Math.min(100, Math.round(100 * t.bytes_sent / t.bytes_total)) : 0;
+    const pace = transferPace(t);
+    const meter = t.state === "verifying"
+      ? `<div class="bar indeterminate" style="margin-top:6px"><i></i></div>`
+      : `<div class="progress" style="margin-top:6px"><i style="width:${pct}%"></i></div>`;
     const bar = ["sending", "verifying", "queued"].includes(t.state)
-      ? `<div class="progress" style="margin-top:6px"><i style="width:${pct}%"></i></div><span class="sub">${esc(formatGB(t.bytes_sent))} מתוך ${esc(formatGB(t.bytes_total))} (${pct}%)</span>`
+      ? `${meter}<span class="sub">${esc(formatGB(t.bytes_sent))} מתוך ${esc(formatGB(t.bytes_total))} (${pct}%)${pace ? ` · <span class="transfer-pace">${esc(pace)}</span>` : ""}</span>`
       : "";
     const err = t.error ? `<div class="notice warn" role="status">${esc(t.error)}</div>` : "";
     const dir = t.direction === "pull" ? transferDirectionHtml(t) : "";
@@ -462,7 +603,7 @@ async function loadBranchView() {
     : api(`/storage-nodes/${encodeId(n.id)}/images`).catch((e) => (
       { connected: false, unchecked: true, error: e.message, images: [] }));
   const [transfers, images, remote] = await Promise.all([
-    api("/storage-transfers"), api("/images"), remoteP,
+    api("/storage-transfers"), api("/images"), remoteP, loadTransferCap(),
   ]);
   if (stale()) return;
   BRANCH_TRANSFERS = transfers;
@@ -489,6 +630,7 @@ async function loadBranchView() {
       <h4>ספריית האימג'ים של המשני</h4>
       ${libBody}
       <h4>העברות</h4>
+      ${transferCapStrip("sub")}
       <div id="branch-transfers-${esc(n.id)}"></div>
     </div></div>`;
   $("#branch-view-transfer").onclick = () => openTransferSheet(n, images, async () => loadBranchView());
@@ -501,4 +643,55 @@ async function loadBranchView() {
       renderBranchTransfers(n.id, null, 20);
     }).catch(() => {});
   }, 2000);
+}
+
+/* ---------- #1473: הגבלת קצב להעברות בין אתרים (הכרעת נדב 16/10) ----------
+   אופציונלי, ברירת מחדל ללא הגבלה; Mb/s לכל העברה, על push ועל pull. הערך הוא
+   מה שבתוקף בשרת (GET /settings → intersite_rate_cap_mbps, "0" = ללא הגבלה);
+   לא נקרא — נאמר שלא נקרא ולמה, לא "ללא הגבלה" (עיקרון 5). השינוי תופס גם
+   העברה שכבר רצה, תוך שתי שניות (server/transfer_cap.py). */
+const TRANSFER_CAP_KEY = "intersite_rate_cap_mbps";
+const TRANSFER_CAP_MAX = 100000;
+let TRANSFER_CAP = { mbps: null, error: "" };
+
+async function loadTransferCap() {
+  try {
+    const values = await api("/settings");
+    const n = Number(values && values[TRANSFER_CAP_KEY]);
+    TRANSFER_CAP = Number.isInteger(n) && n >= 0
+      ? { mbps: n, error: "" } : { mbps: null, error: "השרת לא החזיר ערך" };
+  } catch (e) { TRANSFER_CAP = { mbps: null, error: e.message }; }
+}
+
+function transferCapText() {
+  const m = TRANSFER_CAP.mbps;
+  if (m == null) return `לא נקרא: ${esc(TRANSFER_CAP.error || "בלי סיבה")}`;
+  if (m === 0) return "ללא הגבלה";
+  const mb = m / 8;
+  return `עד ${ltr(`${m} Mb/s`)} (${ltr(`${Number.isInteger(mb) ? mb : mb.toFixed(1)} MB/s`)}) לכל העברה`;
+}
+
+/* cls: "card-h" — שורת כותרת בכרטיס (לשונית "העברות"); "sub" — שורה מתחת ל-h4 (דף המשני). */
+function transferCapStrip(cls) {
+  const btn = isAdmin() && TRANSFER_CAP.mbps != null
+    ? ` <button class="btn sm flat" type="button" onclick="transferCapSheet()">שינוי</button>` : "";
+  return `<div class="${cls} transfer-cap" title="חל על העברה לסניף ועל העברה מסניף לראשי; השינוי תופס גם העברה שכבר רצה"><span>הגבלת קצב בין אתרים: <b>${transferCapText()}</b></span>${btn}</div>`;
+}
+
+function transferCapSheet() {
+  if (!isAdmin()) return;
+  sheet({ title: "הגבלת קצב בין אתרים",
+    sub: "כמה מהקו בין האתרים מותר להעברת אימג' אחת — לסניף ומהסניף. 0 = ללא הגבלה (ברירת המחדל). השינוי תופס גם העברה שכבר רצה.",
+    fields: [{ id: "v", label: `קצב מרבי לכל העברה (Mb/s, 0–${TRANSFER_CAP_MAX})`, type: "number", value: String(TRANSFER_CAP.mbps || 0) }],
+    onSubmit: async (v) => {
+      const raw = String(v.v == null ? "" : v.v).trim();
+      const n = Number(raw);
+      if (raw === "" || !Number.isInteger(n) || n < 0 || n > TRANSFER_CAP_MAX) {
+        throw new Error(`הגבלת קצב: מספר שלם 0–${TRANSFER_CAP_MAX} (Mb/s)`);
+      }
+      await post("/settings", { [TRANSFER_CAP_KEY]: n });
+      toast(n ? `הקצב בין אתרים מוגבל ל-${n} Mb/s — נרשם ביומן` : "ללא הגבלת קצב בין אתרים — נרשם ביומן");
+      await loadTransferCap();
+      if (current === "branch") loadBranchView(); else renderCurrent();
+    } });
 }

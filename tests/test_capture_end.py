@@ -151,7 +151,7 @@ def test_the_question_is_the_gui_dialog_through_attended(tmp_path, reports):
     capture-end, עם השניות של CAPTURE_END_ASK_S כ-subject וכתקרה."""
     result = run_end(tmp_path, url_of(reports), answer=None, gui="poweroff")
     asked = [t for t in result["trace"] if t.startswith("ASKED ")]
-    assert asked == ["ASKED Capture complete: power off, or back to the menu"]
+    assert asked == ["ASKED הקליטה הושלמה: לכבות או לחזור לתפריט"]
     assert "DIALOG capture-end 20  20" in result["trace"], result["trace"]
 
 

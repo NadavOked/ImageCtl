@@ -89,7 +89,7 @@ void lc_dialog_head(App *a, cairo_t *cr, Rect box, const char *title, const char
 /* ---- words ----------------------------------------------------------------------- */
 
 static void sata_of(const LcDisk *d, char *out, size_t n) {
-    if (d->port > 0) snprintf(out, n, "SATA %d", d->port - 1); else snprintf(out, n, "%s", d->dev);
+    conn_text(d->conn, d->port, d->dev, out, n);
 }
 
 static const char *smart_reason_he(const LcDisk *d) {
@@ -189,7 +189,8 @@ static void bay(App *a, cairo_t *cr, Rect b, int i, const LcDisk *src) {
     hit_add(a, b, HIT_LC_BAY_BASE + i);
     double alpha = blk ? .8 : role == LCR_SKIP ? .55 : 1;
     cairo_push_group(cr);
-    char num[16]; snprintf(num, sizeof num, "%d", d->port > 0 ? d->port : i + 1);
+    int drawer = eff_drawer(d->drawer, d->port);
+    char num[16]; if (drawer > 0) snprintf(num, sizeof num, "%d", drawer); else snprintf(num, sizeof num, "%s", "—");
     Text nb = text_make(cr, FONT_MONO, 40, 600, num, 0, DIR_LTR), nl = text_make(cr, FONT_SANS, 11, 400, "מגירה", 0, DIR_RTL);
     double nr = b.x + b.w - 18, ny = cy - (40 + 6 + nl.h) / 2;
     text_draw_r(cr, &nb, nr, ny + (40 - nb.h) / 2, t->ink); text_draw_r(cr, &nl, nr, ny + 46, t->muted);
@@ -270,8 +271,8 @@ void lc_draw_source(App *a, cairo_t *cr, double W, double H, double head_h) {
         }
         char u[48]; lc_gb(u, sizeof u, (double)src->used);
         snprintf(s2, sizeof s2, src->used < 0 ? "כמה בשימוש: לא נמדד%s" : RLM "%s להעתקה%s", src->used < 0 ? "" : u,
-                 lc_any_shrink(a) ? " · המקור יכווץ זמנית" : "");
-        if (src->used < 0) snprintf(s2, sizeof s2, "כמה בשימוש: לא נמדד%s", lc_any_shrink(a) ? " · המקור יכווץ זמנית" : "");
+                 lc_any_shrink(a) ? " · כיווץ על עותק בזיכרון" : "");
+        if (src->used < 0) snprintf(s2, sizeof s2, "כמה בשימוש: לא נמדד%s", lc_any_shrink(a) ? " · כיווץ על עותק בזיכרון" : "");
     } else { snprintf(s1, sizeof s1, "אין יעד"); snprintf(s2, sizeof s2, "בחרו לפחות יעד אחד"); }
     Text m1 = text_make(cr, FONT_SANS, 12, 400, s1, 0, DIR_RTL), m2 = text_make(cr, FONT_SANS, 16, 600, s2, 0, DIR_RTL);
     double hh = fmax(h1.h + 4 + p.h, m1.h + m2.h);
@@ -308,7 +309,7 @@ void lc_draw_source(App *a, cairo_t *cr, double W, double H, double head_h) {
     for (int i = 0; i < n; i++) {
         if (blocked(a, i) && !bad) {
             char lb[48], v[260]; Rgb c; lc_disk_label(&l->disks[i], lb, sizeof lb); verdict_text(a, &l->disks[i], src, v, sizeof v, &c);
-            snprintf(msg, sizeof msg, "%s: %s", lb, v); bad = 1;
+            snprintf(msg, sizeof msg, "\xE2\x80\x8F%s: %s", lb, v); bad = 1;   /* #1502: RLM -- lb is the raw dev when the port is unknown */
         }
         const LcFit *f = lc_fit_of(a, l->disks[i].dev);
         if (lc_role_of(a, l->disks[i].dev) == LCR_TARGET && (!f || f->verdict == LCV_MEASURING)) meas = 1;
@@ -327,7 +328,8 @@ void lc_draw_source(App *a, cairo_t *cr, double W, double H, double head_h) {
 static double wrow(App *a, cairo_t *cr, double x, double y, double w, int i, const LcDisk *src, int draw) {
     const Theme *t = a->theme; const LcDisk *d = &a->st.lc.disks[i];
     char num[16], head[200], has[200], sz[32], z[600], v[300], mk[1400], e[600], col[8], sata[32];
-    snprintf(num, sizeof num, "%d", d->port > 0 ? d->port : i + 1);
+    int drawer = eff_drawer(d->drawer, d->port);
+    if (drawer > 0) snprintf(num, sizeof num, "%d", drawer); else snprintf(num, sizeof num, "%s", "—");
     char lb[48]; lc_disk_label(d, lb, sizeof lb); sata_of(d, sata, sizeof sata);
     char model_i[96]; bidi_isolate(d->model[0] ? d->model : d->dev, model_i, sizeof model_i);
     snprintf(head, sizeof head, "%s · %s", lb, model_i);
@@ -402,10 +404,11 @@ void lc_draw_confirm(App *a, cairo_t *cr, double W, double H) {
     /* measure first: the dialog's height is its content's */
     Text th = text_make(cr, FONT_SANS, 22, 600, title, (int)(inner - 42), DIR_RTL), tlh = text_make(cr, FONT_SANS, 14, 400, lead, (int)(inner - 42), DIR_RTL);
     double rows = 0; for (int k = 0; k < nt; k++) rows += wrow(a, cr, 0, 0, inner, idx[k], src, 0) + (k ? 1 : 0);
-    const char *sn = shrink ? "יכווץ זמנית ויוחזר לגודלו בסוף" : "נקרא בלבד, לא ישתנה";
+    /* #1477: a local clone shrinks only a RAM view of the source (#1466) -- it is read only either way */
+    const char *sn = shrink ? "נקרא בלבד — יכווץ עותק בזיכרון" : "נקרא בלבד, לא ישתנה";
     Text ss = text_make(cr, FONT_SANS, 13, shrink ? 600 : 400, sn, 0, DIR_RTL);
     Text sr = text_make(cr, FONT_SANS, 13, 400, srow, (int)(inner - 28 - ss.w - 80), DIR_RTL);
-    Text shr = shrink ? text_make(cr, FONT_SANS, 13, 400, "כדי שהנתונים ייכנסו ליעד הקטן, מחיצות ה-NTFS של המקור יכווצו במקומן לפני ההעתקה ויוחזרו לגודלן בסוף. אם ההחזרה תיכשל — הנתונים במקור נשארים שלמים, והמחיצה פשוט קטנה יותר.", (int)(inner - 40), DIR_RTL)
+    Text shr = shrink ? text_make(cr, FONT_SANS, 13, 400, "כדי שהנתונים ייכנסו ליעד הקטן, מחיצות ה-NTFS יכווצו בעותק בזיכרון לפני ההעתקה — המקור נקרא בלבד ולא נכתב. אם אין מספיק זיכרון לעותק, היעד הקטן לא ייכתב, והסיבה תוצג.", (int)(inner - 40), DIR_RTL)
                       : (Text){ NULL, 0, 0 };
     char u[48], meta[300]; lc_gb(u, sizeof u, (double)src->used);
     snprintf(meta, sizeof meta, src->used < 0 ? "כמה בשימוש במקור: לא נמדד · כל יעד ייבדק בסוף מול המקור (xxh64 לכל מחיצה, וטבלת המחיצות נקראת בחזרה)."

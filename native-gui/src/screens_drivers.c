@@ -121,6 +121,10 @@ static int drv_slot(const App *a, const Machine *m, int port, const char **vendo
 void room_drv_tag_click(App *a, int mi, int port) {
     if (!room_drv_active(a) || !a->drv_pick || mi < 0 || mi >= a->st.nmachines) return;
     const Machine *m = &a->st.machines[mi];
+    const RoomDrawer *drawer = NULL;
+    for (int j = 0; j < m->nroom_drawers; j++)
+        if (m->room_drawers[j].port == port) { drawer = &m->room_drawers[j]; break; }
+    if (!drawer || !room_selectable(drawer)) return;
     const char *v, *md;
     if (drv_slot(a, m, port, &v, &md) && drv_same(v, md, a->drv_vendor, a->drv_model))
         drv_map_set(a, m->mac, port, "", "");
@@ -144,7 +148,7 @@ int room_drv_encode(App *a, char *out, size_t n) {
         const Machine *m = &a->st.machines[mi];
         for (int j = 0; j < m->nroom_drawers; j++) {
             const RoomDrawer *d = &m->room_drawers[j];
-            if (!d->present || d->port < 1 || !drv_selected(a, m, d)) continue;
+            if (!room_selectable(d) || !drv_selected(a, m, d)) continue;
             chosen++;
             const char *v, *md;
             if (!drv_slot(a, m, d->port, &v, &md)) continue;          /* "בלי" */
@@ -285,9 +289,11 @@ Rect room_drv_block_draw(App *a, cairo_t *cr, double x, double y, double w) {
 
 /* .dtag: at the slot's left (the inline end), the model or "בלי"; a click
  * is room_drv_tag_click. Drawn after the slot, so its hit wins. */
-void room_drv_tag_draw(App *a, cairo_t *cr, Rect slot, const Machine *m, int mi, int port) {
+void room_drv_tag_draw(App *a, cairo_t *cr, Rect slot, const Machine *m, int mi, int drawer_index) {
     if (!room_drv_active(a) || !a->drv_pick) return;
+    if (drawer_index < 0 || drawer_index >= m->nroom_drawers) return;
     const Theme *t = a->theme;
+    int port = m->room_drawers[drawer_index].port;
     const char *v, *md;
     int has = drv_slot(a, m, port, &v, &md);
     double h = fmin(DRV_TAG_H, slot.h - 2);
@@ -301,7 +307,7 @@ void room_drv_tag_draw(App *a, cairo_t *cr, Rect slot, const Machine *m, int mi,
     text_draw(cr, &tt, tag.x + DRV_TAG_PAD, tag.y + (tag.h - tt.h) / 2, has ? t->ink : t->muted);
     cairo_restore(cr);
     text_free(&tt);
-    hit_add(a, tag, HIT_ROOM_DTAG_BASE + mi * MAX_DRAWERS + (port - 1));
+    hit_add(a, tag, HIT_ROOM_DTAG_BASE + mi * MAX_DRAWERS + drawer_index);
 }
 
 /* ---- the summary ------------------------------------------------------------- */
@@ -321,7 +327,7 @@ Text room_drv_summary_make(App *a, cairo_t *cr, double w) {
         int gn[MAX_DRAWERS], ng = 0;
         for (int j = 0; j < m->nroom_drawers; j++) {
             const RoomDrawer *d = &m->room_drawers[j];
-            if (!d->present || d->port < 1 || !drv_selected(a, m, d)) continue;
+            if (!room_selectable(d) || !drv_selected(a, m, d)) continue;
             const char *v, *md;
             if (!drv_slot(a, m, d->port, &v, &md)) v = md = "";
             int k = 0;
@@ -386,8 +392,9 @@ Text room_drv_results_make(cairo_t *cr, const State *s, double w, int *any_faile
             int failed = !strcmp(d->drv_state, "failed"), staged = !strcmp(d->drv_state, "staged");
             const char *word = staged ? "הונחו" : failed ? "לא הונחו" : "דולגו";
             const char *detail = staged || failed ? d->drv_detail : drv_reason_he(d->drv_detail);
-            int k = snprintf(buf + used, cap - used, "%sדרייברים · %s · דיסק %d: %s%s%s",
-                             used ? "\n" : "", m->name[0] ? m->name : m->mac, d->port, word,
+            char label[SLOT_NAME_MAX + 64]; room_drawer_label(m, d, label, sizeof label);
+            int k = snprintf(buf + used, cap - used, "%sדרייברים · %s · %s: %s%s%s",
+                              used ? "\n" : "", m->name[0] ? m->name : m->mac, label, word,
                              detail[0] ? " — " : "", detail);
             if (k < 0 || (size_t)k >= cap - used) {
                 buf[used] = 0; strcat(buf, used ? more : more + 1);

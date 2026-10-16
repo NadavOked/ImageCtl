@@ -4,10 +4,10 @@
 אובדן חשמל בין `ntfsresize -s` לבין ההחזרה השאיר את דיסק הבנייה מכווץ
 בלי שאיש יודע. ‏`agent/lib/shrinkmem.sh`:
 
-* **לפני הכתיבה הראשונה** — `shrink-open` לשרת (‏`shrink_open_record`);
-  בלי 200+ok+id **אין** `ntfsresize -s` (עיקרון 5). דיסק בלי סידורי, שרת
-  שענה 500/000, או 409 "כבר פתוח" — סירובים נבדלים, בשם, לפני שנכתב בייט.
-* **אחרי ההחזרה** — `shrink-close`; החזרה שנכשלה משאירה את הרשומה פתוחה.
+* **‏#1466 (16/10): הקליטה כבר אינה פותחת רשומה.** הכיווץ רץ על עותק
+  בזיכרון והמקור אינו נכתב -- אין מה לזכור. מה שנבדק כאן הוא לדיסקים
+  שכווצו במקום **לפני** #1466: רשומה פתוחה ב-hello עוצרת קליטה, וההחזרה
+  באתחול סוגרת אותה (`shrink-close`); החזרה שנכשלה משאירה אותה פתוחה.
 * **באתחול** (‏`shrink_offer_pending`, מלולאת מחשב הבנייה): הרשומה מה-hello
   מושווית לכניסה **על הדיסק** (‏sgdisk -i), ורק אם התחילה וה-GUID הייחודי
   תואמים והגודל קטן — שאלה ליד המכונה: החזר / השאר. **בלי תשובה — השאר.**
@@ -79,90 +79,18 @@ def step(steps: list[str], prefix: str) -> int:
 # --- בקליטה: הרשומה לפני הכיווץ, הסגירה אחרי ההחזרה --------------------------------
 
 
-def test_the_record_is_opened_before_the_first_write_and_closed_after_the_grow_back(tmp_path):
-    """הסדר: ‏shrink-open לפני `ntfsresize -s`, ‏shrink-close אחרי ה-ntfsfix
-    האחרון של ההחזרה. הגוף נושא את הכניסה המלאה והזהות; הסגירה — את
-    הסידורי ואת ה-id שהשרת נתן; והסימון המקומי (shrink_id) נמחק."""
-    box, run, out = capture_run(tmp_path, stubs=stubs(), shell_pre=FS_MAP + SAY_YES)
-    assert out.strip().endswith("rc=0"), out
-    steps = order(run)
-    opened = step(steps, "shrink-open")
-    assert opened < step(steps, "ntfsresize -s "), steps
-    assert step(steps, "ntfsresize --info") < opened, "ההרשמה אחרי המדידה — לא נרשם כיווץ שלא יקרה"
-    grow = step(steps, "ntfsresize -f -f")
-    closed = step(steps, "shrink-close")
-    assert grow < closed, steps
-    assert steps.index(f"ntfsfix -d {posix(box / 'dev')}/sda3", grow) < closed
-
-    (body,) = sent(run, "shrink_open")
-    assert body["serial"] == SERIAL and body["port"] == 1 and body["dev"] == "sda"
-    # ‏#929: רשומה אחת לדיסק, עם רשימת המחיצות — לא שדות של מחיצה אחת בראש הגוף.
-    assert "idx" not in body, body
-    assert body["partitions"] == [{
-        "idx": 3, "start_sector": WIN_START, "size_sectors": WIN_SECTORS,
-        "type_guid": WIN_GUID, "unique_guid": WIN_UGUID,
-        "attrs": "0000000000000000", "name": "Basic data partition", "ntfs_bytes": WIN_SECTORS * 512}]
-    (close,) = sent(run, "shrink_close")
-    assert close["serial"] == SERIAL and close["id"] == 7
-    assert not (run / "targets" / "sda" / "shrink_id").exists()
-
-
-def test_the_serial_and_the_task_come_from_sysfs_and_the_hello_answer(tmp_path):
-    """הזהות נקראת מ-sysfs (device/serial, device/model) והמשימה מתשובת
-    ה-hello (task.name/id) — לא ממשתנים שהבדיקה שתלה."""
-    box = tmp_path / "box"
-    dev_dir = box / "sys" / "block" / "sda" / "device"
-    dev_dir.mkdir(parents=True)
-    (dev_dir / "serial").write_text("WD-REAL-1\n", encoding="utf-8")
-    (dev_dir / "model").write_text("WDC WDS500\n", encoding="utf-8")
-    resp = tmp_path / "response.json"
-    resp.write_text(json.dumps(
-        {"task": {"id": "tsk_106", "type": "capture", "disk": "sda", "name": "win11-office"}}), encoding="utf-8")
-    no_serial_fake = FS_MAP.replace('disk_serial() { printf S926; }; disk_port() { printf 1; }; ', "")
-    box, run, out = capture_run(tmp_path, stubs=stubs(), shell_pre=no_serial_fake + SAY_YES,
-                                env={"RESP": posix(resp)})
-    assert out.strip().endswith("rc=0"), out
-    (body,) = sent(run, "shrink_open")
-    assert body["serial"] == "WD-REAL-1" and body["model"] == "WDC WDS500"
-    assert [p["idx"] for p in body["partitions"]] == [3]
-    assert body["image_name"] == "win11-office" and body["task_id"] == "tsk_106"
-    assert body["port"] is None, "בקופסה אין ata<N> — פורט לא ידוע הוא null, לא 0"
-
-
-@pytest.mark.parametrize("http", ["500", "000"])
-def test_a_server_that_did_not_record_the_layout_means_no_shrink(tmp_path, http):
-    """‏500 = השרת סירב, ‏000 = לא נשאל כלל (curl 7). בשניהם: אין
-    `ntfsresize -s`, אין טבלה, והסיבה נוקבת בקוד — לא "נכשל"."""
-    box, run, out = capture_run(tmp_path, stubs=stubs(), shell_pre=FS_MAP + SAY_YES,
-                                env={"SHRINK_OPEN_HTTP": http})
-    reason = refusal_reason(box, run, out)
-    assert "השרת לא רשם" in reason and f"http {http}" in reason, reason
-    assert "הדיסק לא שונה" in reason
-    steps = order(run)
-    assert not [s for s in steps if s.startswith(("ntfsresize -s", "ntfsfix", "ntfsresize -f"))], steps
-    assert not rewrites(run)
-    assert not (run / "new-manifest.json").exists()
-    assert len(sent(run, "shrink_open")) == 1, "הניסיון נעשה — פעם אחת"
-
-
-def test_a_record_that_is_already_open_on_the_server_refuses_in_words(tmp_path):
-    """‏409: לפי זיכרון השרת הדיסק כבר מכווץ מקליטה קודמת. לא מכווצים
-    פעמיים, והסיבה אומרת מה לעשות (החזרה באתחול / "נקה")."""
-    box, run, out = capture_run(tmp_path, stubs=stubs(), shell_pre=FS_MAP + SAY_YES,
-                                env={"SHRINK_OPEN_HTTP": "409"})
-    reason = refusal_reason(box, run, out)
-    assert "כבר מכווץ" in reason and "#3" in reason and "נקו את הרשומה" in reason, reason
-    assert not [s for s in order(run) if s.startswith("ntfsresize -s")]
-    assert not rewrites(run)
-
-
-def test_a_disk_without_a_serial_is_not_shrunk_and_the_server_is_not_asked(tmp_path):
+@pytest.mark.parametrize("http", ["200", "500", "000"])
+def test_a_capture_shrink_asks_the_server_nothing_and_needs_no_serial(tmp_path, http):
+    """#1466: המקור אינו נכתב, ולכן אין רשומה: לא shrink-open ולא shrink-close,
+    בלי קשר למה שהשרת היה עונה ולמספר הסידורי -- והכיווץ (על העותק) עובר."""
     no_serial = FS_MAP.replace("printf S926", ":")
-    box, run, out = capture_run(tmp_path, stubs=stubs(), shell_pre=no_serial + SAY_YES)
-    reason = refusal_reason(box, run, out)
-    assert "אין מספר סידורי" in reason and "קלטו בלי לכווץ" in reason, reason
-    assert sent(run, "shrink_open") == []
-    assert not [s for s in order(run) if s.startswith("ntfsresize -s")]
+    box, run, out = capture_run(tmp_path, stubs=stubs(), shell_pre=no_serial + SAY_YES,
+                                env={"SHRINK_OPEN_HTTP": http})
+    assert out.strip().endswith("rc=0"), out
+    steps = order(run)
+    assert "shrink-open" not in steps and "shrink-close" not in steps, steps
+    assert sent(run, "shrink_open") == [] and sent(run, "shrink_close") == []
+    assert [st for st in steps if st.startswith("ntfsresize -s ") and "/mapper/lc-src-3" in st], steps
     assert not rewrites(run)
 
 
@@ -178,28 +106,6 @@ def test_a_pending_record_in_the_hello_answer_refuses_before_the_question(tmp_pa
     assert "asked" not in order(run)
     assert sent(run, "shrink_open") == []
     assert not rewrites(run)
-
-
-def test_a_failed_grow_back_leaves_the_record_open(tmp_path):
-    """ההחזרה נכשלה (ntfsresize -f -f) — הדיסק עדיין מכווץ, והרשומה
-    **נשארת** בשרת: אין shrink-close. האזהרה של #87 נשארת בשדה error."""
-    box, run, out = capture_run(tmp_path, stubs=stubs(ntfsresize=NTFSRESIZE_GROW_FAILS), shell_pre=FS_MAP + SAY_YES)
-    assert out.strip().endswith("rc=0"), out
-    assert sent(run, "shrink_close") == []
-    assert "shrink-close" not in order(run)
-    assert "המקור לא הוחזר לגודלו" in (run / "targets" / "sda" / "error").read_text(encoding="utf-8")
-
-
-def test_a_close_the_server_refused_is_a_warning_not_a_failure(tmp_path):
-    """הדיסק כבר בגודלו; רשומה שלא נסגרה נשארת כתומה בקונסולה עד "נקה"
-    (או עד האתחול הבא). הקליטה עצמה הצליחה — rc=0, מניפסט קיים."""
-    box, run, out = capture_run(tmp_path, stubs=stubs(), shell_pre=FS_MAP + SAY_YES,
-                                env={"SHRINK_CLOSE_HTTP": "404"})
-    assert out.strip().endswith("rc=0"), out
-    assert (run / "new-manifest.json").exists()
-    assert len(sent(run, "shrink_close")) == 1
-    assert "did not close shrink record 7" in log_of(run)
-    assert "http 404" in log_of(run)
 
 
 # --- באתחול: ההצעה להחזיר, על מחשב הבנייה ------------------------------------------
@@ -491,18 +397,6 @@ def test_a_filesystem_size_that_cannot_be_read_is_not_a_fit(tmp_path):
     assert "could not read the NTFS volume size" in log_of(run) and "stays open" in log_of(run)
 
 
-def test_a_grow_failure_after_the_table_was_restored_sends_the_reason_in_the_capture(tmp_path):
-    """הצד של הקליטה (shrink_restore_source): הטבלה הוחזרה, המתיחה נפלה —
-    הרשומה נשארת פתוחה (אין close) **והסיבה מגיעה לשרת** (shrink-note), לא
-    רק לשדה error של היעד."""
-    box, run, out = capture_run(tmp_path, stubs=stubs(ntfsresize=NTFSRESIZE_GROW_FAILS), shell_pre=FS_MAP + SAY_YES)
-    assert out.strip().endswith("rc=0"), out
-    assert sent(run, "shrink_close") == []
-    (note,) = sent(run, "shrink_note")
-    assert note["id"] == 7 and note["serial"] == SERIAL
-    assert "המקור לא הוחזר לגודלו" in note["note"] and "ntfsresize could not grow" in note["note"]
-
-
 def test_two_disks_with_the_same_serial_are_ambiguous_and_neither_is_touched(tmp_path):
     """שני דיסקים במכונה עם אותו סידורי ("0000000000000000" של גשר USB, ‏VM
     בלי סידורי אמיתי): הרשומה יכולה להיות של כל אחד מהם, והשער השני אינו
@@ -651,16 +545,6 @@ def test_a_pending_two_partition_record_in_the_hello_refuses_the_capture_naming_
 
 
 # --- הנעילות המבניות ------------------------------------------------------------
-
-
-def test_the_open_runs_after_the_operator_said_yes_and_before_the_resize():
-    src = (AGENT / "lib" / "shrink.sh").read_text(encoding="utf-8")
-    yes = src.index("continue) ;;")
-    opened = src.index("shrink_open_record ")
-    resize = src.index("| ntfsresize -s ")
-    assert yes < opened < resize, (yes, opened, resize)
-    assert 'SHRINK_ERROR="$SHRINKMEM_ERROR"; return 1' in src
-    assert "shrink_close_record" in src[src.index("shrink_restore_source()"):]
 
 
 def test_the_agent_loads_shrinkmem_after_shrink_and_offers_after_the_gui():

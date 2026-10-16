@@ -53,7 +53,7 @@ STILL_BARE = frozenset({
     "capture.py:_fail",
     "capture.py:cancel",
     "capture.py:create_capture",
-    "capture.py:finish_capture",
+    # ‏finish_capture יצא מהחוב ב-#1470: ה-UPDATE ל-verifying בתוך writing().
     "capture.py:upload_partition",
     "console_dhcp.py:forget",
     "console_net.py:add_device",

@@ -269,8 +269,7 @@ function vmuToolHtml(st) {
   const left = `<div class="grp"><button class="btn sm" type="button"${dis} onclick="vmuCtrlAltDel()">${VMU_ICON.kbd} Ctrl+Alt+Del</button>`
     + `<button class="btn sm" type="button"${dis} onclick="vmuPasteDialog()">${VMU_ICON.paste} הדבקה כטקסט</button>`
     + `<button class="btn sm" type="button" onclick="vmuFullscreen(true)">${VMU_ICON.full} מסך מלא</button></div>`;
-  const chips = `<div class="chips">${vmuChip('<span class="vmu-led"></span>אינטרנט', "")}`
-    + `<span class="vmu-chip">דרך כרטיס הניהול${st.egress_interface ? ` <b class="mono">${esc(st.egress_interface)}</b>` : ""}</span>`
+  const chips = `<div class="chips">${vmuNetChip(st)}`
     + `<span class="vmu-chip">זמן ריצה <b class="mono" data-k="runtime">${vmuClock(st.runtime_seconds)}</b></span>`
     + `<span class="vmu-chip opt"><b class="mono">${res.cpus || "?"}</b> ליבות · <b class="mono">${res.memory_mib ? Math.round(res.memory_mib / 1024) : "?"} GB</b></span>`
     + `<span class="vmu-chip opt">${esc(res.accel === "kvm" ? "KVM" : res.accel === "tcg" ? "אמולציה (TCG)" : "")}</span></div>`;
@@ -358,6 +357,16 @@ function vmuFailCard(st) {
       body: `<div class="ubody">${UI.note(hib ? "warn" : "err", esc(e.message || ""))}${UI.note("info", "הדיסק הזמני נשמר — שום עבודה לא אבדה.")}${tech}</div>`,
       foot: st.you_control ? `<button class="btn danger" type="button" onclick="vmuDiscardDialog()">${VMU_ICON.trash} מחק שינויים…</button><span class="sp"></span>`
         + `<button class="btn" type="button" onclick="vmuBoot()">הפעל שוב</button><button class="btn primary" type="button" onclick="vmuSaveDialog()">נסה שוב</button>` : "" });
+  }
+  if (["no_lease", "macvtap", "firewall"].includes(e.reason) || String(e.reason || "").startsWith("vm_nic")) {
+    return vmuCard({ key: "failnet:" + e.reason, badge: VMU_ICON.x, badgeCls: "bad",
+      title: e.reason === "no_lease" ? "ה-VM לא קיבל כתובת ברשת — הוא כובה" : "ה-VM לא חובר לרשת",
+      sub: `${esc(vmuName(st))} — הדיסק הזמני שלם, שום עבודה לא אבדה`,
+      body: `<div class="ubody">${UI.note("err", esc(e.message || ""))}${tech}</div>`,
+      hint: "אחרי התיקון — הפעל שוב. הכרטיס וה-MAC: רשת › כרטיסי רשת › כרטיס לעדכוני VM.",
+      foot: `<button class="btn" type="button" onclick="openNetwork(1)">כרטיסי רשת</button><span class="sp"></span>`
+        + (st.you_control ? `<button class="btn danger" type="button" onclick="vmuDiscardDialog()">${VMU_ICON.trash} מחיקה</button>`
+          + `<button class="btn primary" type="button" onclick="vmuBoot()">${VMU_ICON.power} הפעל שוב</button>` : "") });
   }
   return vmuCard({ key: "failcrash:" + e.reason, badge: VMU_ICON.x, badgeCls: "bad",
     title: e.reason === "interrupted" ? "השרת הופעל מחדש באמצע" : "ה-VM נעצר בלי כיבוי",
@@ -797,4 +806,77 @@ if (typeof document !== "undefined" && typeof document.addEventListener === "fun
   document.addEventListener("click", (e) => {
     if (VMU.prs.pop && !(e.target && e.target.closest && e.target.closest(".prs-pop"))) { VMU.prs.pop = false; if (current === "vmupdate") vmuPaint(); }
   });
+}
+
+/* ---------- ‏#1468: "כרטיס לעדכוני VM" (לשונית כרטיסי רשת) ----------
+   ל-VM זהות משלו: macvtap על הכרטיס שנבחר, עם MAC שהשרת ייצר פעם אחת. כאן:
+   הבחירה (sheet), ה-MAC עם ההנחיה לכתובת שמורה, והכתובת שה-VM קיבל בפועל.
+   ‏GET/PUT ‏/vmupdate/network (docs/interfaces.md סעיף 33). לא נקרא = "לא נקרא". */
+let VMNET = null, VMNET_ERR = "";
+
+async function vmnetLoad() {
+  try {
+    const v = await vmuCall("GET", "/network");
+    if (!v || typeof v.mac !== "string") throw new Error("תשובה שאינה הגדרת הרשת של ה-VM");
+    VMNET = v; VMNET_ERR = "";
+  } catch (e) { VMNET = null; VMNET_ERR = e.message; }
+  return VMNET;
+}
+
+function vmnetCardHtml() {
+  if (!VMNET) return `<div class="c12">${UI.note("warn", `‏/vmupdate/network לא נקרא${VMNET_ERR ? `: ${esc(VMNET_ERR)}` : ""} — הכרטיס וה-MAC של ה-VM אינם ידועים`)}</div>`;
+  const v = VMNET, lease = v.lease;
+  const nic = v.interface
+    ? `<b class="mono">${esc(v.interface)}</b>`
+    : `<span class="muted">לא נבחר — ה-VM לא יודלק</span>`;
+  const got = lease
+    ? `<b class="mono">${esc(lease.address)}</b> <span class="muted">· ${esc(vmuHHMM(lease.at) || "")}${lease.server ? ` · מ-DHCP ${esc(lease.server)}` : ""}</span>`
+    : `<span class="muted">עוד לא נראתה — תוצג אחרי שה-VM יקבל כתובת</span>`;
+  const kv = UI.kv([
+    ["כרטיס", nic],
+    ["MAC של ה-VM", `<b class="mono" data-testid="vmnet-mac">${esc(v.mac)}</b> <button class="btn sm" type="button" onclick="vmnetCopy()">העתקה</button>`],
+    ["הכתובת שה-VM קיבל", got],
+  ]);
+  const minutes = Math.round((v.lease_timeout_seconds || 300) / 60);
+  const notes = (v.problem ? UI.note("err", esc(v.problem.error)) : "")
+    + UI.note("info", `צרו ב-DHCP של הרשת הזאת <b>כתובת שמורה</b> ל-MAC <b class="mono">${esc(v.mac)}</b> — כך חומת האש של המכללה תזהה את ה-VM לפי הכתובת שלו. ה-MAC קבוע: הוא לא משתנה באתחול או בעדכון של השרת.`)
+    + UI.note("info", `ה-VM מקבל כתובת בעצמו (DHCP). את השרת עצמו הוא אינו רואה ברשת הזאת; מה שעובר דרך הנתב — חומת האש של המכללה צריכה לחסום. אם תוך ${minutes} דק' מההדלקה לא תגיע כתובת — הוא נכבה, וההודעה אומרת למה. ${esc(v.hint || "")}`);
+  return UI.card({ title: "כרטיס לעדכוני VM", cls: "c12",
+    acts: `<button class="btn sm" type="button" onclick="vmnetChoose()">בחירה…</button>`,
+    body: kv + notes });
+}
+
+function vmnetCopy() {
+  const mac = VMNET && VMNET.mac;
+  if (!mac) return;
+  try { navigator.clipboard.writeText(mac).then(() => toast("ה-MAC הועתק"), () => toast(mac)); } catch (e) { toast(mac); }
+}
+
+function vmnetChoose() {
+  const v = VMNET || {};
+  const nics = (typeof NETW !== "undefined" && Array.isArray(NETW.nics)) ? NETW.nics : [];
+  const options = [{ value: "", label: "— לא נבחר (ה-VM לא יודלק) —" }].concat(nics
+    .filter((n) => n.name && n.name !== "lo" && n.name !== "imagectl-vm0")
+    .map((n) => ({ value: n.name, label: n.name === v.deploy_interface ? `${n.name} — כרטיס ההפצה (לא ניתן)` : n.name })));
+  sheet({ title: "כרטיס לעדכוני VM", sub: "הרשת שבה ה-VM לעדכון יקבל כתובת משלו",
+    fields: [{ id: "nic", type: "select", label: "כרטיס", value: v.interface || "", options,
+      help: "כרטיס ההפצה אינו ניתן. כרטיס הניהול מותר — גם כשהוא רשת הכיתות." }],
+    note: UI.note("info", `ה-MAC של ה-VM: <b class="mono">${esc(v.mac || "")}</b> — לכתובת שמורה ב-DHCP.`),
+    onSubmit: async (values) => {
+      const chosen = values.nic || null;
+      VMNET = await vmuCall("PUT", "/network", { interface: chosen });
+      toast(chosen ? `ה-VM יתחבר דרך ${chosen}` : "הבחירה בוטלה");
+      if (typeof renderCurrent === "function") renderCurrent();
+    } });
+}
+
+/* במסך ה-VM: הכתובת שה-VM קיבל, או כמה נשאר לחכות לה. */
+function vmuNetChip(st) {
+  const net = st.network;
+  if (!net) return vmuChip("כרטיס", esc(st.egress_interface || ""));
+  const where = ` · <b class="mono">${esc(net.interface || "")}</b>`;
+  if (net.state === "leased") return `<span class="vmu-chip"><span class="vmu-led"></span>כתובת <b class="mono">${esc(net.address)}</b>${where}</span>`;
+  if (net.state === "no_lease") return `<span class="vmu-chip">לא התקבלה כתובת${where}</span>`;
+  const left = net.seconds_left != null ? ` · עוד <b class="mono">${vmuClock(net.seconds_left)}</b>` : "";
+  return `<span class="vmu-chip">ממתין לכתובת מה-DHCP${where}${left}</span>`;
 }

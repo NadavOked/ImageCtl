@@ -52,15 +52,17 @@ GOOD_FANOUT = (
     'shift\n'
     'tmp="$(mktemp)"\n'
     'cat > "$tmp"\n'
+    'fanout_eof "$tmp"\n'
     'for out; do cat "$tmp" > "$out" & done\n'
     'wait\n'
     'for out; do echo "$out ok"; done\n'
     'rm -f "$tmp"\n'
 )
 
-#: ‏sha256sum שיוצא בלי לכתוב ערך — התוצאה של עוזר שנהרג או שפג זמנו.
-#: ‏`sha.out` נשאר ריק, ואין שום ערך שנקרא בחזרה.
-SILENT_SHA = '#!/bin/sh\ncat > /dev/null\n'
+#: ‏#1438: fanout שמדווח ok על כל מגירה ולא כותב את ‏-S — המקבילה של
+#: sha256sum שיצא בלי ערך, מאז שהגיבוב של החדר עבר לתוך fanout.
+FANOUT_WITHOUT_HASH = GOOD_FANOUT.replace('fanout_eof "$tmp"\n', "", 1)
+assert FANOUT_WITHOUT_HASH != GOOD_FANOUT, "the fake still hashes"
 
 
 def drawer_run(tmp_path, script_tail: str, stubs: dict, disks=("sda", "sdb"),
@@ -82,7 +84,7 @@ def drawer_run(tmp_path, script_tail: str, stubs: dict, disks=("sda", "sdb"),
         "WAIT_STREAM_START_S=20 WAIT_STREAM_STALL_S=20; "
         f". {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/waits.sh; "
         f". {posix(AGENT)}/lib/progress.sh; . {posix(AGENT)}/lib/restore.sh; "
-        f". {posix(AGENT)}/lib/drawers.sh; . {posix(AGENT)}/lib/verdict.sh; . {posix(AGENT)}/lib/failmark.sh; "
+        f". {posix(AGENT)}/lib/drawers.sh; . {posix(AGENT)}/lib/verdict.sh; . {posix(AGENT)}/lib/failmark.sh; . {posix(AGENT)}/lib/ntfsboot.sh; "
         + "".join(f"target_init {d} {len(PAYLOAD)}; " for d in disks)
         + source + script_tail
     )
@@ -163,7 +165,7 @@ def test_a_sha_that_was_never_computed_is_not_called_a_mismatch(tmp_path):
     """
     run, out = drawer_run(
         tmp_path, call(GOOD_SHA),
-        {"fanout": GOOD_FANOUT, "sha256sum": SILENT_SHA},
+        {"fanout": FANOUT_WITHOUT_HASH},
     )
     assert out.strip().endswith("rc=1"), out
 
@@ -222,7 +224,7 @@ def station_run(tmp_path, sha: str, stubs: dict) -> tuple[Path, str]:
         "WAIT_POLL_S=1 WAIT_HELPER_S=3 "
         "WAIT_STREAM_START_S=20 WAIT_STREAM_STALL_S=20; "
         f". {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/waits.sh; "
-        f". {posix(AGENT)}/lib/progress.sh; . {posix(AGENT)}/lib/restore.sh; "
+        f". {posix(AGENT)}/lib/progress.sh; . {posix(AGENT)}/lib/restore.sh; . {posix(AGENT)}/lib/ntfsboot.sh; "
         f"target_init sda {len(PAYLOAD)}; "
         f'stream_source() {{ cat {posix(payload)!r}; }}; '
         "node_is_block() { true; }; "
@@ -234,7 +236,8 @@ def station_run(tmp_path, sha: str, stubs: dict) -> tuple[Path, str]:
 
 def test_the_single_station_also_separates_not_computed_from_not_matching(tmp_path):
     """אותו קיפול בדיוק היה במסלול התחנה הבודדת, ובאותה שורה."""
-    run, out = station_run(tmp_path, GOOD_SHA, {"sha256sum": SILENT_SHA})
+    # #1444: the station hashes inside fanout too -- "no -S" is the silent hash.
+    run, out = station_run(tmp_path, GOOD_SHA, {"fanout": FANOUT_WITHOUT_HASH})
     assert out.strip().endswith("rc=1"), out
     log = log_of(run)
     assert "לא חושב" in log, log

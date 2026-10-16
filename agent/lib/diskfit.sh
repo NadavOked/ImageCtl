@@ -49,12 +49,12 @@ disk_fits() {
     case "$_h" in ''|*[!0-9]*) _h="" ;; esac
     if [ -z "$_n" ] || [ -z "$_h" ]; then
         target_set "$1" "failed" \
-            "cannot tell whether the image fits: needs=${_n:-unknown} disk=${_h:-unknown}"
+            "לא ניתן לדעת אם האימג' נכנס: נדרש ${_n:-לא ידוע} בייט, בדיסק ${_h:-לא ידוע}"
         return 1
     fi
     if [ "$_h" -lt "$_n" ]; then    # #1171: the gap itself in MiB, before the two 12-digit numbers
-        target_set "$1" "failed" "disk too small by $(( (_n - _h + 1048575) / 1048576 )) MiB\
- (needs $_n bytes, has $_h; $((_n - _h)) bytes short)"
+        target_set "$1" "failed" "הדיסק קטן מדי ב-$(( (_n - _h + 1048575) / 1048576 )) MiB\
+ (נדרשים $_n בייט, בדיסק $_h; חסרים $((_n - _h)) בייט)"
         return 1
     fi
     # #1354: נכנס = גם נשאר מקום לעבוד. אותו יעד, אותו רגע, לפני שנגענו בו.

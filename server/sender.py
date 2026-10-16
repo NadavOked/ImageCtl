@@ -399,6 +399,7 @@ class SenderEngine:
         simulate: bool = False,
         wave_bitrate: Callable[[dict], str | None] | None = None,
         live_receivers: Callable[[str], int] | None = None,
+        link_speed: Callable[[str | None], dict] | None = None,
     ):
         self.library = library
         self.runner = runner
@@ -432,6 +433,10 @@ class SenderEngine:
         # אותו מבזבז את כל `--max-wait` (600ש' במחיצה 2+) על מכונה מתה —
         # עד שהמכונה התקינה פוקעת. בלעדיו — הצילום של `joined` מתחילת הגל.
         self.live_receivers = live_receivers
+        # הכרעת נדב 15/10: מהירות הקישור של `interface` (‏`drive_rates.read_link`)
+        # — הגג והפתיחה של הקצב לפיה. ‏None = לא מחובר (בדיקות; ‏`server.main`
+        # מחבר תמיד): "לא נקרא", וההתנהגות של היום — לא ניחוש של 1GbE.
+        self.link_speed = link_speed
         self.on_event = on_event or (lambda event, detail: None)
         #: ‏#705: ‏`gate(interface)` → סיבת סירוב או None — השידור כבוי בכרטיס
         #: (רשת ← חיבורים פיזיים ← שירותים). ‏`create_runtime` מתקין.
@@ -678,6 +683,12 @@ class SenderEngine:
         if max_bitrate:
             cmd[1:1] = ["--max-bitrate", max_bitrate]
         return cmd
+
+    def link(self) -> dict:
+        """כרטיס ההפצה ומהירותו (‏`drive_rates.read_link`), או למה לא נקראה."""
+        if self.link_speed is None:
+            return {"interface": self.interface, "speed_mbps": None, "why": "not_wired"}
+        return self.link_speed(self.interface)
 
     def multicast_params(self) -> dict:
         """הפרמטרים שמחשב בנייה משדר בהם כשהוא המקור (‏#715, ממשק 3).

@@ -1,3 +1,4 @@
+#include <string.h>
 #include "theme.h"
 
 #define HEX(v) { (((v)>>16)&255)/255.0, (((v)>>8)&255)/255.0, ((v)&255)/255.0 }
@@ -228,3 +229,28 @@ const double N_ROOM_TITLE = 24; /* css: .ph h1 | font-size | 0 */
 const double N_CLONER_TITLE = 24; /* css: .ph h1 | font-size | 0 */
 const double N_RESTORE_NAME = 15; /* css: .tgt b | font-size | 0 */
 const double N_DIM_ALPHA = 0.6; /* css: .node.off | opacity | 0 */
+
+/* ---- #1499: the signed-in user's saved theme (theme.h) ---------------------- */
+
+const Theme *theme_saved(const char *saved, const Theme *fallback) {
+    if (saved && !strcmp(saved, "light")) return &THEME_LIGHT;
+    if (saved && !strcmp(saved, "dark")) return &THEME_DARK;
+    return fallback;                       /* "auto", "" or a value nobody defined */
+}
+
+/* Copies line <which> (0-based) of <out> into <dst>, without its \r\n. */
+static void answer_line(const char *out, int which, char *dst, size_t n) {
+    if (!n) return;
+    dst[0] = 0;
+    for (; which > 0 && out; which--) { out = strchr(out, '\n'); if (out) out++; }
+    if (!out) return;
+    size_t len = strcspn(out, "\r\n");
+    if (len >= n) len = n - 1;
+    memcpy(dst, out, len);
+    dst[len] = 0;
+}
+
+void theme_login_answer(const char *out, char *role, size_t rn, char *saved, size_t sn) {
+    answer_line(out ? out : "", 0, role, rn);
+    answer_line(out ? out : "", 1, saved, sn);
+}

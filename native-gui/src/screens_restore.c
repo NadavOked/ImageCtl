@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "screens_rounds.h"
+#include "lcui.h"   /* 16/10: on the cloner the targets are its drawers (lc_pull.c) */
 
 /* #706 / #1090: the destructive local restore is deliberately a single,
  * visible page. Images are cards, not a transient select popup, so the
@@ -18,10 +19,11 @@ static void restore_arrow(cairo_t *cr, Rgb c, double cx, double cy, double w) {
     cairo_stroke(cr);
 }
 
-static void restore_title(cairo_t *cr, const Theme *t, double W, double *y) {
-    Text h = rtl_block_make(cr, N_TITLE, 600, "שחזור אימג' למחשב הזה", W - 2 * N_PAD);
+static void restore_title(cairo_t *cr, const Theme *t, double W, double *y, int pull) {
+    Text h = rtl_block_make(cr, N_TITLE, 600, pull ? "שחזור אימג' מהשרת" : "שחזור אימג' למחשב הזה", W - 2 * N_PAD);
     Text p = rtl_block_make(cr, 13, 400,
-        "בוחרים מקור, בודקים את הדיסק הפנימי ומאשרים בחלון.",
+        pull ? "בוחרים מקור, מסמנים את המגירות שייכתבו ומאשרים בחלון."
+             : "בוחרים מקור, בודקים את הדיסק הפנימי ומאשרים בחלון.",
         W - 2 * N_PAD);
     text_draw_r(cr, &h, W - N_PAD, *y, t->ink);
     *y += h.h + 4;
@@ -45,7 +47,8 @@ void screen_restore(App *a, cairo_t *cr, double W, double H, double head_h) {
     const Theme *t = a->theme;
     const State *s = &a->st;
     double y = head_h + 22;
-    restore_title(cr, t, W, &y);
+    int pull = lc_pull_active(a);
+    restore_title(cr, t, W, &y, pull);
 
     const Disk *target = NULL;
     for (int i = 0; i < s->ndisks; i++) {
@@ -60,16 +63,21 @@ void screen_restore(App *a, cairo_t *cr, double W, double H, double head_h) {
     double panel_gap = 14;
     double panel_w = (avail_w - arrow_w - 2 * panel_gap) / 2;
     double panel_h = 150;
+    double pad = 22;
+    /* 16/10: the drawers go under the target's two lines; the panels grow to hold them */
+    Rect cells = {N_PAD + pad, y + pad + 56, panel_w - 2 * pad, 0};
+    double cells_h = pull ? lc_pull_drawers(a, cr, cells, 0) : 0;
+    if (pull && 56 + cells_h + 2 * pad > panel_h) panel_h = 56 + cells_h + 2 * pad;
+    int has_target = pull ? cells_h > 0 : target != NULL;
     Rect source = {W - N_PAD - panel_w, y, panel_w, panel_h};
     Rect dest = {N_PAD, y, panel_w, panel_h};
     draw_fill_rrect(cr, source, t->radius, t->surface);
     draw_border_rrect(cr, source, t->radius, t->hair, 1);
     draw_fill_rrect(cr, dest, t->radius, t->surface);
-    draw_border_rrect(cr, dest, t->radius, target ? t->hair : t->danger, 1);
+    draw_border_rrect(cr, dest, t->radius, has_target ? t->hair : t->danger, 1);
     restore_arrow(cr, t->indigo, N_PAD + panel_w + panel_gap + arrow_w / 2,
                   y + panel_h / 2, 30);
 
-    double pad = 22;
     Text sh = rtl_block_make(cr, 15, 600, "מקור", source.w - 2 * pad);
     Text sl = rtl_block_make(cr, 12, 400, "ספריית ImageSrv", source.w - 2 * pad);
     const char *selected = "טרם נבחר אימג'";
@@ -83,7 +91,14 @@ void screen_restore(App *a, cairo_t *cr, double W, double H, double head_h) {
                 a->restore_image_sel ? t->ink : t->muted);
 
     char target_name[128], target_info[128];
-    if (target) {
+    if (pull) {
+        int k = lc_pull_ports(a, NULL, 0);
+        if (!has_target) snprintf(target_name, sizeof target_name, "לא נמצאו מגירות");
+        else if (!k) snprintf(target_name, sizeof target_name, "סמנו מגירות");
+        else if (k == 1) snprintf(target_name, sizeof target_name, "מגירה אחת");
+        else snprintf(target_name, sizeof target_name, "%d מגירות", k);
+        target_info[0] = 0;
+    } else if (target) {
         char size[32];
         fmt_bytes(size, sizeof size, (double)target->size_bytes);
         snprintf(target_name, sizeof target_name, "%s",
@@ -94,19 +109,28 @@ void screen_restore(App *a, cairo_t *cr, double W, double H, double head_h) {
         snprintf(target_info, sizeof target_info, "השחזור חסום");
     }
     Text dh = rtl_block_make(cr, 15, 600, "יעד", dest.w - 2 * pad);
-    Text dl = rtl_block_make(cr, 12, 400, "הדיסק המקומי", dest.w - 2 * pad);
+    Text dl = rtl_block_make(cr, 12, 400, pull ? "מגירות המחשב — לחצו כדי לסמן" : "הדיסק המקומי", dest.w - 2 * pad);
     Text dv = rtl_block_make(cr, 18, 600, target_name, dest.w - 2 * pad);
     Text di = text_make(cr, FONT_MONO, 12, 400, target_info, 0, DIR_LTR);
     double dy = dest.y + pad;
     text_draw_r(cr, &dh, dest.x + dest.w - pad, dy, t->ink); dy += dh.h + 10;
     text_draw_r(cr, &dl, dest.x + dest.w - pad, dy, t->muted); dy += dl.h + 8;
-    text_draw_r(cr, &dv, dest.x + dest.w - pad, dy, target ? t->ink : t->danger_fg);
-    dy += dv.h + 5;
-    text_draw_r(cr, &di, dest.x + dest.w - pad, dy, t->muted);
+    if (pull) {
+        /* the count where the disk's name is, then the drawers themselves */
+        Text dc = text_make(cr, FONT_SANS, 13, 600, target_name, 0, DIR_RTL);
+        text_draw(cr, &dc, dest.x + pad, dest.y + pad, has_target ? t->ink : t->danger_fg);
+        text_free(&dc);
+        lc_pull_drawers(a, cr, cells, 1);
+    } else {
+        text_draw_r(cr, &dv, dest.x + dest.w - pad, dy, target ? t->ink : t->danger_fg);
+        dy += dv.h + 5;
+        text_draw_r(cr, &di, dest.x + dest.w - pad, dy, t->muted);
+    }
 
     y += panel_h + 14;
-    Text warning = alert_make(cr,
-        "אזהרה: השחזור יחליף את כל תוכן דיסק היעד. אי־אפשר לבטל את הפעולה לאחר שהחלה.",
+    Text warning = alert_make(cr, pull
+        ? "אזהרה: השחזור יחליף את כל תוכן המגירות שסומנו. אי־אפשר לבטל את הפעולה לאחר שהחלה."
+        : "אזהרה: השחזור יחליף את כל תוכן דיסק היעד. אי־אפשר לבטל את הפעולה לאחר שהחלה.",
         avail_w);
     draw_alert(cr, t, (Rect){N_PAD, y, avail_w, alert_height(&warning)}, &warning);
     y += alert_height(&warning) + 17;
@@ -190,7 +214,8 @@ void screen_restore(App *a, cairo_t *cr, double W, double H, double head_h) {
     if (y < controls_y) y = controls_y;
     /* #1270 (owner, 10/10): no typed name -- "מחק ושחזר" opens a confirm
      * dialog once an image is chosen and there is a disk to write to */
-    int ready = target && a->restore_image_sel > 0 && a->restore_image_sel <= s->nimages;
+    int ready = (pull ? lc_pull_ports(a, NULL, 0) > 0 : target != NULL)
+             && a->restore_image_sel > 0 && a->restore_image_sel <= s->nimages;
     Text start = btn_label(cr, "מחק ושחזר…");
     double sw = btn_width(&start);
     Rect start_box = {N_PAD, y, sw, N_BUTTON_H};
@@ -200,6 +225,7 @@ void screen_restore(App *a, cairo_t *cr, double W, double H, double head_h) {
     double bw = btn_width(&back);
     draw_btn(a, cr, (Rect){N_PAD + sw + 10, y, bw, N_BUTTON_H}, &back, BTN_PLAIN, HIT_BACK);
     Text label = rtl_block_make(cr, 12, 400, ready ? "השחזור יתחיל אחרי אישור בחלון."
+                                           : pull ? "בחרו אימג' וסמנו מגירה אחת לפחות כדי להמשיך."
                                                   : "בחרו אימג' כדי להמשיך.", avail_w - sw - bw - 40);
     text_draw_r(cr, &label, W - N_PAD, y + (N_BUTTON_H - label.h) / 2, t->muted);
     if (s->form_error[0]) {
