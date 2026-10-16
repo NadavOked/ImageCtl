@@ -2493,7 +2493,33 @@ function roomWaveRate(r) {
     why = `נקבע לפי ${esc(w.by.model || "כונן")} <span class="mono">${esc(w.by.serial)}</span>${where}`;
   } else why = WAVE_RATE_WHY[w.basis] || esc(w.basis || "");
   const unknown = w.unknown_drives ? ` · ${w.unknown_drives} כוננים בלי היסטוריה` : "";
-  return ` · ${w.projected ? "צפוי " : ""}קצב לגל: ${value} (${why})${unknown}`;
+  return ` · ${w.projected ? "צפוי " : ""}קצב לגל: ${value} (${why})${unknown}${roomWaveLink(w)}`;
+}
+/* הכרעת נדב 15/10: הגג לפי כרטיס ההפצה של השרת (wave_rate.link). מהירות שלא נקראה — נאמר
+   שלא נקראה ולמה, והתקרה הקבועה; לעולם לא "1Gb/s" מנוחש (עיקרון 5). בלי link — כלום. */
+const LINK_WHY = { no_interface: "לא ידוע איזה כרטיס", absent: "הכרטיס לא נמצא", unreadable: "הקישור לא נקרא",
+  unknown: "הכרטיס לא מדווח מהירות", virtual: "כרטיס וירטואלי — המהירות אינה של הקו", not_wired: "לא נבדק" };
+function linkSpeedText(mbps) { return mbps >= 1000 ? `${mbps / 1000}Gb/s` : `${mbps}Mb/s`; }
+function bitrateBytesText(raw) {
+  const m = /^(\d+(?:\.\d+)?)([kmg]?)$/.exec(String(raw || "").toLowerCase());
+  if (!m) return String(raw || "");
+  const bytes = Number(m[1]) * ({ "": 1, k: 1e3, m: 1e6, g: 1e9 })[m[2]] / 8;
+  return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)}GB/s` : `${Math.round(bytes / 1e6)}MB/s`;
+}
+function roomWaveLink(w) {
+  const l = w.link, c = w.cloner;
+  let out = "";
+  if (l) {
+    const card = l.applied ? ltr(linkSpeedText(l.speed_mbps)) : `<span title="${esc(l.why || "")}">${esc(LINK_WHY[l.why] || "מהירות לא נקראה")}</span>`;
+    out += ` · כרטיס ההפצה: ${card}`;
+  }
+  /* 15/10 (ב): מחשב השיכפול האיטי קבע את התקרה — בשמו; מהירות שהונחה נאמרת כהנחה */
+  if (c && w.cap_by === "cloner") {
+    const m = (ROOM.machines || []).find((x) => x.mac === c.mac);
+    const who = m ? machineName(m) : c.mac;
+    out += ` · תקרה לפי ${esc(who)}: ${ltr(linkSpeedText(c.speed_mbps))}${c.source === "assumed" ? " (הנחה — המהירות לא ידועה)" : ""}`;
+  }
+  return l || (c && w.cap_by === "cloner") ? `${out} · תקרת שידור: ${ltr(bitrateBytesText(w.ceiling))}` : "";
 }
 function roomKpis(r, st, pct) {
   const stalled = !!ROOM.stream_stalled, open = r.wave_state === "open";
@@ -3720,7 +3746,25 @@ function machineSub(m) {
   const tpm = m.inventory && m.inventory.tpm;
   if (tpm && tpm.present) parts.push(`TPM ${tpm.version || ""}`.trim());
   if (machineRole(m) === "cloner" && m.drawer_count != null) parts.push(`${m.drawer_count} חריצי SATA`);
+  if (machineRole(m) === "cloner" && m.nic_speed) parts.push(`כרטיס רשת: ${nicSpeedText(m.nic_speed)}`);
   return parts.filter(Boolean).join(" · ");
+}
+/* הכרעת נדב 15/10: מהירות כרטיס ההפצה של מכונה (/machines.nic_speed) — ידנית / מדווחת / הנחה.
+   הנחה נאמרת כהנחה, לעולם לא כמדידה. */
+const NIC_SPEED_SOURCE = { manual: "הוגדר ידנית", reported: "מדווח" };
+function nicSpeedText(n) {
+  if (!n || typeof n.speed_mbps !== "number") return "לא ידוע";
+  if (n.source === "assumed") return `לא ידוע — הונח ${linkSpeedText(n.speed_mbps)}`;
+  return `${linkSpeedText(n.speed_mbps)} (${NIC_SPEED_SOURCE[n.source] || n.source})`;
+}
+function editNicSpeed(mac) {
+  const m = findMachine(mac); if (!m || !isAdmin()) return;
+  const cur = m.nic_speed && m.nic_speed.source === "manual" ? String(m.nic_speed.speed_mbps) : "auto";
+  sheet({ title: "מהירות כרטיס רשת", sub: `${machineName(m) || m.mac} — תקרת הגל לא תעבור את המחשב האיטי בגל`,
+    fields: [{ id: "nic_speed", type: "segment", label: "מהירות", value: cur,
+      help: "אוטומטי = מה שהמחשב מדווח; כשאינו מדווח — מניחים 1Gb/s.",
+      options: [["auto", "אוטומטי"], ["1000", "1Gb/s"], ["2500", "2.5Gb/s"], ["10000", "10Gb/s"]].map(([value, label]) => ({ value, label })) }],
+    onSubmit: async (v) => { await put("/machines/" + encodeId(m.mac), { nic_speed_mbps: v.nic_speed === "auto" ? null : Number(v.nic_speed) }); await loadMachines(); openMachineDetail(m.mac); } });
 }
 /* דיסק N = החריץ שהסוכן דיווח (`port`, 1-based); בלי `port` — המקום ברשימה. SATA = N-1. */
 function diskSlot(d, i) { return d.port != null ? Number(d.port) : i + 1; }
@@ -4813,6 +4857,7 @@ function machineDrawerHtml(m) {
     ["קבוצה", (g ? esc(g.label) : `<span class="muted">ללא קבוצה</span>`) + (admin ? ` ${UI.link("העבר", `moveMachineSheet('${macEnc}')`)}` : "")],
     ["MAC", `<span class="mono">${esc(m.mac)}</span>` + (admin ? ` ${UI.link("עריכה", `editMachineMac('${macEnc}')`)}` : "")],
     ["IP אחרון", net && net.ip ? `<span class="mono">${esc(net.ip)}</span>` : `<span class="muted">—</span>`],
+    ["כרטיס רשת", esc(nicSpeedText(m.nic_speed)) + (admin ? ` ${UI.link("שנה", `editNicSpeed('${macEnc}')`)}` : "")],
   ].concat(m.note ? [["הערה", esc(m.note)]] : []));
   const inv = m.inventory, dmi = (inv && inv.dmi) || {};
   let drivers = `<span class="muted">דף הדרייברים לא נטען</span>`;

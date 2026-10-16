@@ -20,7 +20,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import PlainTextResponse
 
 from . import (auth, capabilities, console_login, console_mfa, console_presence, crcwarn, minfree,
-               dhcp, disk_failures, drive_rates, identity, inventory, probe, registry, room,
+               dhcp, disk_failures, drive_rates, identity, inventory, nic_speed, probe,
+               registry, room,
                shrink_records, slot_names,
                storage_locations, storage_nodes, users)
 from .api import ServerContext
@@ -53,7 +54,8 @@ WRITE_SETTINGS = {"recovery_require_login", "session_wait_seconds",
 
 #: #406: השדות שעריכת מכונה מכירה. שדה מחוץ לרשימה = טעות של הקורא,
 #: והוא נדחה ב-400 במקום להיבלע ולהחזיר ``{"ok": True}`` שלא שינה כלום.
-EDIT_MACHINE_FIELDS = {"name", "group_id", "drawer_count", "mac"}   # mac: #977 §5
+EDIT_MACHINE_FIELDS = {"name", "group_id", "drawer_count", "mac",   # mac: #977 §5
+                       "nic_speed_mbps"}   # 15/10: מהירות כרטיס ידנית, null = אוטומטי
 #: ‏#1127: שדה טקסט חופשי (שם קבוצה/מכונה) — תקרת אורך, כי הוא נכנס ליומן,
 #: לתפריט GRUB ולמסך; בלי תקרה שורה של מגה-בייט היא DoS שקט על הקונסולה.
 TEXT_FIELD_MAX = 100
@@ -478,6 +480,8 @@ def create_console_router(
             row["probe"] = sample["probe"] if sample else None
             row["probe_seen_at"] = sample["sampled_at"] if sample else None
             row["probe_verdicts"] = probe.verdicts(row["probe"])
+            # ‏15/10: מהירות כרטיס ההפצה — ידנית / מדווחת / הונחה 1Gb/s.
+            row["nic_speed"] = nic_speed.view(ctx.conn, row["mac"], row["probe"], sampled=True)
             row["last_capture"] = last_captures.get(row["mac"])
             row["slot_names"] = names.get(row["mac"], {})
             # ‏#1367: באמצע שיכפול מקומי עכשיו — "אתחל" שואל לפני (room.local_copy_now)
@@ -572,6 +576,11 @@ def create_console_router(
             return {"ok": True, "mac": new,
                     "network": _sync_known_macs(user[0]) if changed else None}
         drawer_count = _drawer_count(body.get("drawer_count"))   # #695
+        # ‏15/10: נבדק **לפני** כל כתיבה — ערך פסול אינו משאיר חצי עריכה.
+        speed = body.get("nic_speed_mbps")
+        if "nic_speed_mbps" in body and speed is not None and (
+                isinstance(speed, bool) or speed not in nic_speed.CHOICES):
+            raise HTTPException(400, "מהירות כרטיס: אוטומטי (null), 1000, 2500 או 10000")
         try:
             registry.update_machine(
                 ctx.conn, mac, body.get("name"), body.get("group_id"), user[0]
@@ -588,6 +597,11 @@ def create_console_router(
                     raise HTTPException(404, "מכונה לא קיימת")
             journal(ctx.conn, "machine_drawer_count",
                     f"{registry.normalize_mac(mac)} count={drawer_count}", user[0])
+        if "nic_speed_mbps" in body:
+            canonical = registry.normalize_mac(mac)
+            nic_speed.set_manual(ctx.conn, canonical, speed)
+            journal(ctx.conn, "machine_nic_speed",
+                    f"{canonical} " + (f"{speed}Mb/s" if speed else "auto"), user[0])
         return {"ok": True}
 
     @router.put("/machines/{mac}/slot-names")

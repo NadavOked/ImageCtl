@@ -63,7 +63,9 @@ lc_gui_run() {
         "$(cat "$_gr_r/report" 2>/dev/null | cut -d'|' -f1)" "${_gr_cur%%|*}" \
         "$(_lc_clean "$(cat "$_gr_r/source_restore" 2>/dev/null)")"
     if [ -f "$_gr_r/manifest.json" ]; then
-        jq -r '.partitions[] | "\(.index)|\(.role)|\(.fs)|\(if .fs == "swap" then 0 elif .used_bytes != null then .used_bytes else .size_bytes end)|\(.size_bytes)"' \
+        # #1440: a used_bytes that was not measured is -1, said "לא נמדד" -- never the
+        # partition's size under the word "בשימוש" (496 GB shown, 203 GB in use).
+        jq -r '.partitions[] | "\(.index)|\(.role)|\(.fs)|\(if .fs == "swap" then 0 elif .used_bytes != null then .used_bytes else -1 end)|\(.size_bytes)"' \
             "$_gr_r/manifest.json" 2>/dev/null | while IFS='|' read -r _gr_i _gr_role _gr_fs _gr_b _gr_z; do
             _gr_st="wait"
             if cat "$_gr_r/source.sha" "$_gr_r/swaps" 2>/dev/null | awk -F'|' -v i="$_gr_i" '$1 == i { f = 1 } END { exit !f }'; then _gr_st="done"
