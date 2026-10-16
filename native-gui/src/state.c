@@ -23,6 +23,20 @@ static int split(char *v, char *f[], int max) {
 static void cp(char *dst, size_t n, const char *src) { snprintf(dst, n, "%s", src); }
 static int  num(const char *s, int dflt) { return s[0] ? atoi(s) : dflt; }
 
+static void apply_tz(const char *tz) {
+    static char applied[65];
+    const char *value = tz[0] ? tz : "UTC0";
+    if (!strcmp(applied, value)) return;
+#ifdef _WIN32
+    if (_putenv_s("TZ", value) != 0) return;
+    _tzset();
+#else
+    if (setenv("TZ", value, 1) != 0) return;
+    tzset();
+#endif
+    cp(applied, sizeof applied, value);
+}
+
 /* A strict non-negative integer: the whole field, digits only, no sign, no
  * leading space, no trailing junk, in range. Returns 0 on any of those so a
  * corrupt state record is rejected rather than folded to a wrong 0/huge value
@@ -394,6 +408,11 @@ void state_parse(State *s, FILE *fp) {
         else if (KEY("server_name")) cp(s->server_name, sizeof s->server_name, val);         /* #1252 */
         else if (KEY("server_addr")) cp(s->server_addr, sizeof s->server_addr, val);         /* #1252 */
         else if (KEY("server_version")) cp(s->server_version, sizeof s->server_version, val); /* #1252 */
+        else if (KEY("tz")) {
+            size_t n = strlen(val);
+            if (n >= 1 && n <= 64 && strspn(val, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789<>+-,./:") == n)
+                cp(s->tz, sizeof s->tz, val);
+        }
         else if (KEY("hello_age")) {
             unsigned long long v;
             if (parse_uint(val, &v) && v <= INT_MAX) s->hello_age = (int)v;
@@ -494,6 +513,7 @@ int state_poll(StateFile *f, State *s) {
     fclose(fp);
     next.stale = stale;
     *s = next;
+    apply_tz(s->tz);
     f->mtime = st.st_mtime; f->size = st.st_size; f->loaded = 1;
     return 1;
 }

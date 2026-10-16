@@ -94,18 +94,26 @@ arm_wol() {
 safe_poweroff() {
     # Every S5 path ends here. Failure is persisted before the last hello;
     # staying on leaves the ordinary heartbeat another chance if it fails.
+    # POWEROFF_WHY names a refusal for a screen to say (#1483): wol|poweroff;
+    # power.fail is the one every screen draws (guistate.sh gui_hello_state).
+    POWEROFF_WHY=""; rm -f "$RUN_DIR/power.fail"
     if ! arm_wol; then
         printf '%s\n' false > "$RUN_DIR/wol_armed"
         log "wol: not all supported wired interfaces were armed -- not powering off"
         command -V send_hello >/dev/null 2>&1 && send_hello || :
-        return 1
+        POWEROFF_WHY=wol; return 1
     fi
     rm -f "$RUN_DIR/wol_armed"
     if [ -n "${2:-}" ]; then "$2" || return 1; fi
     log "${1:-power}: powering off with wake-on-LAN armed"
     if [ "${IMAGECTL_TEST:-0}" = 1 ]; then echo "TEST-POWEROFF"; return 0; fi
     sync
-    poweroff
+    # #1483: -f. PID 1 is agent/init, a shell: busybox poweroff without -f only
+    # signals it, the kernel drops the signal, and it exits 0 -- still on.
+    poweroff -f
+    _po_rc=$?; log "${1:-power}: poweroff -f returned rc=$_po_rc -- the machine is still on"
+    echo "המחשב לא כובה: פקודת הכיבוי חזרה (rc=$_po_rc). כבו אותו בכפתור ההפעלה." > "$RUN_DIR/power.fail"
+    POWEROFF_WHY=poweroff; return 1
 }
 
 finish_and_stop() {
@@ -222,11 +230,11 @@ http_get_stream() {
 TRACE_TIMEOUT="${TRACE_TIMEOUT:-3}"
 
 trace_step() {
-    # $1 = step name. Uses $SERVER and $MAC, which the agent sets before it
-    # can do anything else anyway.
+    # $1 = step name; optional $2 = one key=value query fragment. Uses
+    # $SERVER and $MAC, which the agent sets before it can do anything else.
     [ -n "$SERVER" ] && [ -n "$MAC" ] || return 0
     if curl -sf -m "$TRACE_TIMEOUT" \
-        "$SERVER/boot/step?mac=$MAC&s=$1" > /dev/null 2>&1; then
+        "$SERVER/boot/step?mac=$MAC&s=$1${2:+&$2}" > /dev/null 2>&1; then
         return 0
     fi
     log "boot step '$1' was not delivered -- continuing"

@@ -197,12 +197,16 @@ fi
 # efibootmgr (#433): the Boot#### entry for the restored Windows on UEFI;
 # copy_bin pulls libefiboot/libefivar/libpopt through ldd and stops the
 # build if one is missing.
+# dmsetup (#1466): the local clone shrinks a RAM copy-on-write view of the source (dm-snapshot over the partition, brd as the store) -- copy_bin pulls libdevmapper and its libs through ldd and stops the build if one is missing.
+# nice (#1493): the native GUI starts as `/usr/bin/nice -n 10`. Debian 13's
+# static busybox (1:1.37.0-6+b9, lab server 16/10) has no nice applet, so
+# coreutils' own binary is packed (coreutils is in the apt list below).
 BINARIES=(curl jq zstd pv sgdisk blockdev sha256sum od hdparm ntfsresize openssl
           ntfs-3g ntfs-3g.probe ntfsfix umount blkid df mount ethtool smartctl
           e2fsck resize2fs btrfs xfs_growfs
           udp-receiver udp-sender partclone.ntfs partclone.fat partclone.ext4
           partclone.btrfs partclone.dd
-          dmidecode efibootmgr)
+          dmidecode efibootmgr dmsetup nice)
 
 if [ "$SKIP_APT" -eq 0 ]; then
     export DEBIAN_FRONTEND=noninteractive
@@ -210,7 +214,7 @@ if [ "$SKIP_APT" -eq 0 ]; then
         busybox-static zstd partclone udpcast gdisk curl jq pv \
         ntfs-3g libhivex-dev hdparm coreutils util-linux openssl \
         e2fsprogs btrfs-progs xfsprogs cpio gzip gcc libc6-dev ethtool \
-        smartmontools dmidecode efibootmgr
+        smartmontools dmidecode efibootmgr dmsetup
     # #1050: the toolbox delta -- only what the selection needs, or nothing.
     if [ "${#TOOL_PKGS[@]}" -gt 0 ]; then
         echo "tools: installing ${TOOL_PKGS[*]}"
@@ -547,6 +551,12 @@ if [ "$WITH_GUI" -eq 1 ]; then
             || { echo "--with-gui: font face missing or empty: $fontdir/$face.ttf" >&2; exit 1; }
         cp -L "$src" "$ROOT$fontdir/"
     done
+    # gui_main starts the GUI as `/usr/bin/nice -n 10` so partclone/fanout win
+    # the CPU (#1493). That is coreutils' nice from BINARIES (the static busybox
+    # has no applet); without it the GUI never starts, and that shows only on
+    # a machine -- so stop here.
+    [ -x "$ROOT/usr/bin/nice" ] \
+        || { echo "--with-gui: no nice binary packed ($ROOT/usr/bin/nice); the GUI starts under it (#1493)" >&2; exit 1; }
 
     cat > "$ROOT/usr/bin/imagectl-kiosk" << 'EOF'
 #!/bin/sh
@@ -595,6 +605,7 @@ MODSRC="/lib/modules/$KVER"
 MODULE_SUBDIRS=(kernel/drivers/net/ethernet kernel/drivers/net/phy
                 kernel/drivers/net/mdio     kernel/drivers/nvme
                 kernel/drivers/ata          kernel/drivers/scsi
+                kernel/drivers/cpufreq
                 kernel/drivers/usb/storage
                 # Hyper-V: vmbus הוא התשתית, net/hyperv הוא הכרטיס.
                 # בלעדיהם הסוכן במעבדת ה-VM (issue #12) עולה בלי דיסק ורשת.
@@ -648,10 +659,18 @@ MODULE_SUBDIRS=(kernel/drivers/net/ethernet kernel/drivers/net/phy
 # ולארוז את ‏kernel/drivers/net כולו זו לא התשובה: ‏+11MB דחוסים על
 # ‏35.9MB קיימים, ‏31% לכל אתחול PXE בכיתה, כדי לקבל דרייברים לחומרה
 # שלא קיימת במכללה. ההצהרה כאן עולה ‏~150KB — והיא גם נבדקת.
+# These four are not a platform: dm-mod + dm-snapshot (+ dm-bufio, its
+# dependency) make the copy-on-write view, and brd is its RAM store
+# (agent/lib/lcsnap.sh). They are loaded on demand by the agent with modprobe,
+# NOT at boot, so they are deliberately absent from etc/imagectl/modules. A
+# missing module stops the build like any declared module (#78). A kernel with
+# one built in also stops here on purpose: the agent sizes brd through its
+# rd_size module parameter, and a built-in brd cannot be sized.
 REQUIRED_MODULES=(hv_netvsc   hv_storvsc      # Hyper-V
                   vmxnet3     vmw_pvscsi      # VMware ESXi
                   virtio_net  virtio_blk      # KVM / Proxmox
-                  xen-netfront xen-blkfront)  # Xen
+                  xen-netfront xen-blkfront   # Xen
+                  dm-mod dm-snapshot dm-bufio brd)   # #1466: local clone, read-only source
 
 # מערכות הקבצים שהמערכת נשענת עליהן — מוצהרות, ולא נוכחות במקרה. עד
 # כאן הן הגיעו כתוצר לוואי של `MODULE_SUBDIRS` וסגירת התלויות, ולכן
@@ -664,7 +683,8 @@ REQUIRED_MODULES=(hv_netvsc   hv_storvsc      # Hyper-V
 # ‏efivarfs — ‏`secure_boot` במניפסט (#84).
 #
 # ‏`exfat` ו-`isofs` אינם כאן בכוונה, אחרי חיפוש: אין בקוד קורא להם.
-# הסוכן עולה מהרשת ולא ממדיה אופטית — אין `sr0`, אין `iso9660` ואין
+# הסוכן עולה מהרשת ולא ממדיה אופטית — `sr0` רק נספר ב-hello (#1485: ‏sr_mod
+# ברשימת הטעינה למטה; נטען מעץ kernel/drivers/scsi), אף פעם לא מעוגן; אין `iso9660` ואין
 # ‏`mount` על מדיה בשום מקום ברפו — ומחיצת exFAT באורח נשלחת
 # ל-`partclone.dd` (ברירת המחדל של `_tool_for` ב-restore.sh), שקורא
 # בלוקים ולא מערכת קבצים. הדבר היחיד שהמודול היה מוסיף הוא `used_bytes`
@@ -792,93 +812,135 @@ fi
     echo "$MODSRC/modules.softdep is missing -- soft dependencies cannot be verified" >&2
     exit 1
 }
+# ‏#1464: מעבר אחד. הלולאה הקודמת הריצה `find` על כל עץ המודולים, ושלוש
+# תת-מעטפות לכל קובץ, לכל שם softdep של כל מודול בכל סבב (‏~10^4 fork לשם).
+# עכשיו: רשימת העץ פעם אחת, ובכל סבב awk אחד שמחשב תוכנית ("H"/"S" = להעתיק,
+# "M" = softdep שלא נפתר) ולולאת shell שמעתיקה. אותה סמנטיקה בדיוק — הטסט
+# tests/test_initramfs_closure_1464.py מריץ את הישנה (fixtures/) מול זו על אותם
+# עצים, והתמונה משוחזרת (#1125), כך שמה שנארז הוא אותם בייטים.
+# ‏softdep הוא לפעמים *יכולת* ולא קובץ: btrfs רוצה blake2b-256, וטבלת ה-alias
+# ממפה אותו ל-blake2b_generic (‏`alias crypto-blake2b-256 blake2b_generic`) —
+# נפתר דרך modules.alias לפני שמכריזים "חסר" (נמצא בבניית --installer, 21/09).
+_closure_candidates=$(mktemp "$ROOT/module-closure.XXXXXX")
+find "$MODSRC" -type f -name '*.ko*' > "$_closure_candidates"
 _closure_round=0
 _closure_changed=1
 while [ "$_closure_changed" -eq 1 ]; do
     _closure_changed=0
     _closure_round=$((_closure_round + 1))
-    for _rel in $(cd "$ROOT/lib/modules/$KVER" && find . -name '*.ko*' | sed 's|^\./||'); do
-        for _dep in $(awk -F: -v k="$_rel" '$1 == k {print $2}' "$MODSRC/modules.dep"); do
-            if [ ! -f "$ROOT/lib/modules/$KVER/$_dep" ] && [ -f "$MODSRC/$_dep" ]; then
-                mkdir -p "$ROOT/lib/modules/$KVER/$(dirname "$_dep")"
-                cp -a "$MODSRC/$_dep" "$ROOT/lib/modules/$KVER/$_dep"
-                _closure_changed=1
-            fi
-        done
-        _module=$(basename "$_rel")
-        _module=${_module%%.ko*}
-        _module=$(printf '%s' "$_module" | tr '-' '_')
-        for _soft in $(awk -v want="$_module" '
-            $1 == "softdep" {
-                mod=$2; gsub(/-/, "_", mod)
-                if (mod == want) for (i=3; i<=NF; i++)
-                    if ($i != "pre:" && $i != "post:") print $i
-            }' "$MODSRC/modules.softdep"); do
-            _soft=$(printf '%s' "$_soft" | tr '-' '_')
-            _soft_found=0
-            # a file, not a pipe: the flags set inside must survive the loop,
-            # and the tests run this snippet under dash, so no process
-            # substitution either (SC2044 on the public run, 22/09)
-            _cands=$(mktemp "$ROOT/module-candidates.XXXXXX"); find "$MODSRC" -type f -name '*.ko*' > "$_cands"
-            while IFS= read -r _candidate; do
-                _candidate_name=$(basename "$_candidate")
-                _candidate_name=${_candidate_name%%.ko*}
-                _candidate_name=$(printf '%s' "$_candidate_name" | tr '-' '_')
-                case "$_candidate_name" in
-                    "$_soft"|"$_soft"_*)
-                        _soft_found=1
-                        _dep=${_candidate#"$MODSRC"/}
-                        if [ ! -f "$ROOT/lib/modules/$KVER/$_dep" ]; then
-                            mkdir -p "$ROOT/lib/modules/$KVER/$(dirname "$_dep")"
-                            cp -a "$_candidate" "$ROOT/lib/modules/$KVER/$_dep"
-                            _closure_changed=1
-                        fi ;;
-                esac
-            done < "$_cands"; rm -f "$_cands"
-            # A softdep names a *capability*, not always a file: btrfs wants
-            # blake2b-256, which the alias table maps to blake2b_generic
-            # (`alias crypto-blake2b-256 blake2b_generic`). Resolve through
-            # modules.alias before declaring it missing (found on the first
-            # --installer build, 21/09).
-            if [ "$_soft_found" -eq 0 ] && [ -f "$MODSRC/modules.alias" ]; then
-                _soft_dash=$(printf '%s' "$_soft" | tr '_' '-')
-                for _alias_mod in $(awk -v a="crypto-$_soft_dash" -v b="$_soft_dash" '$1 == "alias" && ($2 == a || $2 == b) { print $3 }' "$MODSRC/modules.alias" | sort -u); do
-                    _alias_mod=$(printf '%s' "$_alias_mod" | tr '-' '_')
-                    _cands=$(mktemp "$ROOT/module-candidates.XXXXXX"); find "$MODSRC" -type f -name '*.ko*' > "$_cands"
-                    while IFS= read -r _candidate; do
-                        _candidate_name=$(basename "$_candidate"); _candidate_name=${_candidate_name%%.ko*}
-                        _candidate_name=$(printf '%s' "$_candidate_name" | tr '-' '_')
-                        [ "$_candidate_name" = "$_alias_mod" ] || continue
-                        _soft_found=1
-                        _dep=${_candidate#"$MODSRC"/}
-                        if [ ! -f "$ROOT/lib/modules/$KVER/$_dep" ]; then
-                            mkdir -p "$ROOT/lib/modules/$KVER/$(dirname "$_dep")"
-                            cp -a "$_candidate" "$ROOT/lib/modules/$KVER/$_dep"
-                            _closure_changed=1
-                        fi
-                    done < "$_cands"; rm -f "$_cands"
-                    if [ "$_soft_found" -eq 0 ] && awk -v want="$_alias_mod" '
-                        { n=$0; sub(/^.*\//, "", n); sub(/\.ko.*$/, "", n); gsub(/-/, "_", n) }
-                        n == want { found=1 } END { exit !found }' "$MODSRC/modules.builtin"; then
-                        _soft_found=1
-                    fi
-                done
-            fi
-            if [ "$_soft_found" -eq 0 ]; then
-                if ! awk -v want="$_soft" '
-                    { n=$0; sub(/^.*\//, "", n); sub(/\.ko.*$/, "", n); gsub(/-/, "_", n) }
-                    n == want { found=1 } END { exit !found }' "$MODSRC/modules.builtin"
-                then
-                    echo "soft dependency $_soft of $_module is missing under $MODSRC" >&2
-                    exit 1
-                fi
-            fi
-        done
-    done
+    _closure_staged=$(mktemp "$ROOT/module-closure.XXXXXX")
+    _closure_plan=$(mktemp "$ROOT/module-closure.XXXXXX")
+    (cd "$ROOT/lib/modules/$KVER" && find . -name '*.ko*' | sed 's|^\./||') > "$_closure_staged"
+    _closure_alias=$MODSRC/modules.alias
+    _closure_builtin=$MODSRC/modules.builtin
+    _closure_have_alias=1
+    _closure_have_builtin=1
+    [ -f "$_closure_alias" ] || { _closure_alias=/dev/null; _closure_have_alias=0; }
+    [ -f "$_closure_builtin" ] || { _closure_builtin=/dev/null; _closure_have_builtin=0; }
+    awk -v src="$MODSRC" -v staged_file="$_closure_staged" \
+        -v dep_file="$MODSRC/modules.dep" -v soft_file="$MODSRC/modules.softdep" \
+        -v alias_file="$_closure_alias" -v builtin_file="$_closure_builtin" \
+        -v candidates_file="$_closure_candidates" \
+        -v have_alias="$_closure_have_alias" -v have_builtin="$_closure_have_builtin" '
+        function norm(p, n) {
+            n=p; sub(/^.*\//, "", n); sub(/\.ko.*$/, "", n); gsub(/-/, "_", n)
+            return n
+        }
+        FILENAME == staged_file { staged[++staged_count]=$0; next }
+        FILENAME == dep_file {
+            colon=index($0, ":")
+            if (colon) {
+                key=substr($0, 1, colon-1); rest=substr($0, colon+1)
+                count=split(rest, words)
+                for (i=1; i<=count; i++) if (words[i] != "")
+                    hard[key, ++hard_count[key]]=words[i]
+            }
+            next
+        }
+        FILENAME == soft_file {
+            if ($1 == "softdep") {
+                module=$2; gsub(/-/, "_", module)
+                for (i=3; i<=NF; i++) if ($i != "pre:" && $i != "post:") {
+                    value=$i; gsub(/-/, "_", value)
+                    soft[module, ++soft_count[module]]=value
+                }
+            }
+            next
+        }
+        FILENAME == alias_file {
+            if ($1 == "alias") alias_of[$2]=alias_of[$2] " " $3
+            next
+        }
+        FILENAME == builtin_file { builtin[norm($0)]=1; next }
+        FILENAME == candidates_file {
+            candidate[++candidate_count]=substr($0, length(src)+2)
+            candidate_name[candidate_count]=norm($0)
+            next
+        }
+        END {
+            for (si=1; si<=staged_count; si++) {
+                rel=staged[si]
+                for (hi=1; hi<=hard_count[rel]; hi++) print "H " hard[rel, hi]
+                module=norm(rel)
+                for (sj=1; sj<=soft_count[module]; sj++) {
+                    want=soft[module, sj]; found=0
+                    for (ci=1; ci<=candidate_count; ci++)
+                        if (candidate_name[ci] == want || index(candidate_name[ci], want "_") == 1) {
+                            found=1; print "S " candidate[ci]
+                        }
+                    if (!found && have_alias) {
+                        # Exact match here, unlike the prefix match above (as before).
+                        dash=want; gsub(/_/, "-", dash)
+                        alias_count=split(alias_of["crypto-" dash] alias_of[dash], alias_value, " ")
+                        for (ai=1; ai<=alias_count; ai++) {
+                            alias_module=alias_value[ai]; gsub(/-/, "_", alias_module)
+                            for (ci=1; ci<=candidate_count; ci++)
+                                if (candidate_name[ci] == alias_module) {
+                                    found=1; print "S " candidate[ci]
+                                }
+                            if (!found && have_builtin && (alias_module in builtin)) found=1
+                        }
+                    }
+                    if (!found && have_builtin && (want in builtin)) found=1
+                    if (!found) print "M " want " " module
+                }
+            }
+        }' "$_closure_staged" "$MODSRC/modules.dep" "$MODSRC/modules.softdep" \
+        "$_closure_alias" "$_closure_builtin" "$_closure_candidates" > "$_closure_plan" || {
+            echo "module closure: awk could not read the module metadata under $MODSRC" >&2
+            rm -f "$_closure_staged" "$_closure_plan" "$_closure_candidates"
+            exit 1
+        }
+    # ‏"M" נאסף בלולאה ולא נבדק ב-`grep`: קוד 2 שלו ("לא נקרא") היה מתקפל ל"אין חסר".
+    _closure_missing=0
+    while IFS= read -r _line; do
+        _kind=${_line%% *}
+        _dep=${_line#* }
+        case "$_kind" in
+            H) [ -f "$MODSRC/$_dep" ] || continue ;;
+            S) ;;
+            M) _soft=${_dep%% *}; _module=${_dep#* }
+               echo "soft dependency $_soft of $_module is missing under $MODSRC" >&2
+               _closure_missing=1; continue ;;
+            *) echo "module closure: unexpected plan line: $_line" >&2
+               _closure_missing=1; continue ;;
+        esac
+        if [ ! -f "$ROOT/lib/modules/$KVER/$_dep" ]; then
+            mkdir -p "$ROOT/lib/modules/$KVER/$(dirname "$_dep")"
+            cp -a "$MODSRC/$_dep" "$ROOT/lib/modules/$KVER/$_dep"
+            _closure_changed=1
+        fi
+    done < "$_closure_plan"
+    rm -f "$_closure_staged" "$_closure_plan"
+    if [ "$_closure_missing" -ne 0 ]; then
+        rm -f "$_closure_candidates"
+        exit 1
+    fi
     # תקרה: גרף התלויות של הקרנל אינו מעגלי, אבל לולאה אינסופית בבנייה
     # גרועה מאימג' חסר.
     [ "$_closure_round" -ge 10 ] && break
 done
+rm -f "$_closure_candidates"
 echo "module dependency closure: $(find "$ROOT/lib/modules/$KVER" -name '*.ko*' | wc -l) modules after $_closure_round rounds"
 # modules.order and modules.builtin are depmod's input next to the .ko
 # files; without them it indexes an incomplete tree and init reports
@@ -909,7 +971,11 @@ _phy_mods=$(find "$ROOT/lib/modules/$KVER/kernel/drivers/net/phy" \
     # ה-HCDים, ורק אחר כך usb-storage ו-usbhid שנשענים עליהם.
     printf '%s\n' usbcore xhci_hcd xhci_pci ehci_hcd ehci_pci
     printf '%s\n' ohci_hcd ohci_pci uhci_hcd
-    printf '%s\n' ahci nvme sd_mod uas usb-storage hv_vmbus hv_storvsc
+    # ‏sr_mod (#1485): כונן CD/DVD מדווח ב-hello (`optical`) כדי שלעולם לא
+    # ייראה כחריץ דיסק ריק. הוא יושב בעץ kernel/drivers/scsi שכבר נארז (cdrom
+    # נגרר ב-modules.dep). אם לא נטען — אין /sys/module/sr_mod, והסוכן מדווח
+    # ‏null ("לא נבדק"), לעולם לא [] ("אין כונן").
+    printf '%s\n' ahci nvme sd_mod sr_mod uas usb-storage hv_vmbus hv_storvsc
     # Optional Intel TCO hardware recovery; dependencies follow modules.dep.
     printf '%s\n' lpc_ich iTCO_wdt
     # בקרי הדיסק של ESXi, ‏KVM ו-Xen. ‏`virtio_pci` הוא built-in, ולכן

@@ -17,10 +17,10 @@ boot_next_local() {
     # BootOrder first, then any other entry. BootOrder is NOT touched.
     _bl_vars="${SYSROOT:-}/sys/firmware/efi/efivars"
     if [ ! -d "$_bl_vars" ] || [ -z "$(ls -A "$_bl_vars" 2>/dev/null)" ]; then
-        echo "skipped:no efivars (legacy BIOS, or efivarfs not mounted)"; return 1
+        echo "skipped:אין efivars (BIOS ישן, או ש-efivarfs לא מעוגן)"; return 1
     fi
-    command -v efibootmgr >/dev/null 2>&1 || { echo "failed:efibootmgr is not in this initramfs"; return 1; }
-    _bl_table=$(efibootmgr -v 2>> "$LOG_FILE") || { echo "failed:efibootmgr -v did not read the table"; return 1; }
+    command -v efibootmgr >/dev/null 2>&1 || { echo "failed:efibootmgr אינו קיים ב-initramfs"; return 1; }
+    _bl_table=$(efibootmgr -v 2>> "$LOG_FILE") || { echo "failed:efibootmgr -v לא קרא את הטבלה"; return 1; }
     _bl_order=$(printf '%s\n' "$_bl_table" | sed -n 's/^BootOrder: *//p' | tr ',' ' ')
     _bl_all=$(printf '%s\n' "$_bl_table" | sed -n 's/^Boot\([0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]\).*/\1/p')
     _bl_num=""
@@ -30,12 +30,12 @@ boot_next_local() {
         case "$_bl_line" in *MAC\(*|*IPv4\(*|*IPv6\(*|*[Pp][Xx][Ee]*) continue ;; esac
         _bl_num=$(printf '%s' "$_bl_n" | tr 'a-f' 'A-F'); break
     done
-    [ -n "$_bl_num" ] || { echo "failed:no local-disk Boot#### entry"; return 1; }
+    [ -n "$_bl_num" ] || { echo "failed:אין רשומת Boot#### של דיסק מקומי"; return 1; }
     efibootmgr -n "$_bl_num" >> "$LOG_FILE" 2>&1
     _bl_rc=$?
     _bl_next=$(efibootmgr 2>> "$LOG_FILE" | sed -n 's/^BootNext: *//p' | tr 'a-f' 'A-F' | tr -d ' \r')
     if [ "$_bl_next" != "$_bl_num" ]; then
-        echo "failed:BootNext read back '$_bl_next', not Boot$_bl_num (efibootmgr -n rc=$_bl_rc)"; return 1
+        echo "failed:BootNext נקרא בחזרה '$_bl_next' ולא Boot$_bl_num (efibootmgr -n rc=$_bl_rc)"; return 1
     fi
     echo "set:Boot$_bl_num"
 }

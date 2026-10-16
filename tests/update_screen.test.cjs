@@ -243,6 +243,56 @@ test('stuck while the server answers: the same ceiling, named "did not progress"
   assert.match(h, /onclick="updClose\(\)">חזרה לקונסולה</);
 });
 
+test('#1463: the hint says the measured 8–10 minutes, not 2–4', async () => {
+  const t = await started({}, 'install');
+  const h = t.html();
+  assert.match(h, /בדרך כלל 8–10 דקות, רובן בבניית קבצי האתחול של המחשבים/);
+  assert.doesNotMatch(h, /2–4/);
+});
+
+test('#1463: payload (the initrd build) is a stage of its own — shown as "installing", with its own 25-minute ceiling', async () => {
+  const t = await started({}, 'install');
+  t.clock.now += 300000; t.run('updTick()');   // 5 minutes of install
+  const stages = {...running('install').stages, payload: at(330)};
+  t.fixtures['/update/status'] = running('install', {stage: 'payload', stages, now: at(330)});
+  await t.poll();
+  let h = t.html();
+  assert.deepEqual(steps(h), ['done', 'done', 'cur', 'pend'], 'payload is drawn as the install step');
+  assert.match(h, /בונה את קבצי האתחול של המחשבים — החלק הארוך/);
+  const entered = t.run('UPD.changeAt');
+  t.clock.now = entered + 11 * 60000; t.run('updTick()');
+  assert.equal(t.run('UPD.phase'), 'run', '11 minutes into the build is not "did not progress"');
+  t.clock.now = entered + 25 * 60000; t.run('updTick()');
+  assert.equal(t.run('UPD.phase'), 'run', 'exactly 25:00 is still waiting');
+  t.clock.now = entered + 25 * 60000 + 1000; t.run('updTick()');
+  h = t.html();
+  assert.equal(t.run('UPD.phase'), 'timeout', 'the ceiling still exists (principle 5)');
+  assert.match(h, /העדכון לא התקדם תוך 25 דקות/);
+  assert.match(h, /onclick="updWaitMore\(\)">חכה עוד 25 דקות</);
+});
+
+test('#1463: entering payload resets the ceiling — install and payload each get their own window', async () => {
+  const t = await started({}, 'install');
+  t.clock.now += 9 * 60000; t.run('updTick()');
+  assert.equal(t.run('UPD.phase'), 'run');
+  const stages = {...running('install').stages, payload: at(560)};
+  t.fixtures['/update/status'] = running('install', {stage: 'payload', stages, now: at(560)});
+  await t.poll();
+  t.clock.now += 2 * 60000; t.run('updTick()');   // 11 minutes since the run entered install
+  assert.equal(t.run('UPD.phase'), 'run');
+});
+
+test('#1463: the server not answering during payload keeps the 10-minute ceiling — that is a restart, not the build', async () => {
+  const t = await started({}, 'install');
+  t.fixtures['/update/status'] = running('install', {stage: 'payload', stages: {...running('install').stages, payload: at(30)}, now: at(30)});
+  await t.poll();
+  t.fixtures['/update/status'] = 'down'; t.fixtures['/health/live'] = 'down';
+  await t.poll();
+  t.clock.now += 601000; t.run('updTick()');
+  assert.equal(t.run('UPD.phase'), 'timeout');
+  assert.match(t.html(), /השרת לא חזר תוך 10 דקות/);
+});
+
 test('sigfail: refused, the server stays on the old version, and there is no "try again"', async () => {
   const t = await started();
   t.fixtures['/update/status'] = failed('signature', 'verify', {detail: 'התג v0.72.0 לא אומת כחתום — העדכון נדחה, העץ לא הוחלף: unsigned: no signature', error: 'התג v0.72.0 לא אומת כחתום — unsigned: no signature'});
@@ -388,7 +438,7 @@ test('confirm (S338): three consequences, a red button, no typing — and "apply
   assert.equal(s.sub, 'מגרסה v0.71.0');
   assert.equal(s.danger, true); assert.equal(s.submitLabel, 'החלת העדכון'); assert.equal(s.fields, undefined);
   assert.equal((s.note.match(/<li/g) || []).length, 3);
-  assert.match(s.note, /השרת יופעל מחדש\. הקונסולה תראה את שלבי העדכון ותיכנס לבד כשהשרת יחזור — בדרך כלל 2–4 דקות\./);
+  assert.match(s.note, /השרת יופעל מחדש\. הקונסולה תראה את שלבי העדכון ותיכנס לבד כשהשרת יחזור — בדרך כלל 8–10 דקות\./);
   assert.match(s.note, /מחשב שיעלה מהרשת בדקות האלה יעלה מהדיסק המקומי\./);
   assert.match(s.note, /רק גרסה חתומה מותקנת\. אם משהו נכשל, השרת נשאר על <span class="mono">v0\.71\.0<\/span> או חוזר אליה\./);
   assert.equal(s.hint, 'אין סבב פתוח — אפשר לעדכן עכשיו');

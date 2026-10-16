@@ -94,61 +94,71 @@ direct_send_one() {
     # wire hash equals the manifest hash.
     _do_node=$(partition_node "$1" "$2"); _do_pcl=$(partclone_for_fs "$3")
     _do_ignore=""; [ "$3" = ntfs ] && _do_ignore="-I"
-    _do_log="$RUN_DIR/dsend.$2.log"; _do_fifo="$RUN_DIR/dsha.$2.fifo"
+    _do_log="$RUN_DIR/dsend.$2.log"; _do_fifo="$RUN_DIR/dfeed.$2.fifo"
     # #957: the first partition waits for the wave to start; the later ones
     # wait for the slowest drawer in the room, and their udp-sender carries
     # the server's later max-wait/start-timeout (up to 780s) -- so the
     # progress ceiling here must outlast it (900, waits.sh).
     next_stream_ceiling
     rm -f "$_do_log" "$_do_fifo" "$RUN_DIR/dsha.$2" "$RUN_DIR/dsend.$2.rc" \
-        "$RUN_DIR/dpcl.$2.rc" "$RUN_DIR/dzstd.$2.rc" "$RUN_DIR/dtee.$2.rc"
+        "$RUN_DIR/dpcl.$2.rc" "$RUN_DIR/dzstd.$2.rc" "$RUN_DIR/dfanout.$2.rc"
     mkfifo "$_do_fifo"
-    sha256sum < "$_do_fifo" > "$RUN_DIR/dsha.$2" &
-    _do_shapid=$!
     log "partition $2 ($3): sending"
     # Each stage's rc is captured by name (no pipefail in busybox ash), and
     # the pipeline runs in the background under wait_progress, watching the
-    # pv counter: udp-sender waits for its receivers before it reads a byte,
+    # -P counter: udp-sender waits for its receivers before it reads a byte,
     # and a slow drawer is allowed to slow it -- a stopped stream is not.
+    # #1444: the counter and the wire hash are inside fanout (-P, -S), not
+    # pv | tee | sha256sum of busybox (#1438). One reader and no siblings to
+    # shield, so fanout's own stall eviction (150s, #674) is pushed past the
+    # shell ceiling: waiting for receivers is not a hung drive, and
+    # wait_progress stays the only ceiling here, exactly as it was with tee.
+    _do_evict=$(( (STREAM_START_CEILING + WAIT_STREAM_STALL_S + 60) * 1000 ))
     # shellcheck disable=SC2046 # partclone_mode's flags are a word list
     (
+        { direct_udp_send "$5" "$6" "$7" "$8" "$9" "${10}" < "$_do_fifo" >> "$_do_log" 2>&1
+          echo "$?" > "$RUN_DIR/dsend.$2.rc"; } &
+        _do_spid=$!
         { "$_do_pcl" $(partclone_mode "$_do_pcl" -c) $_do_ignore -s "$_do_node" \
               -L "$RUN_DIR/targets/$1/partclone.log" 2>> "$LOG_FILE"
           echo "$?" > "$RUN_DIR/dpcl.$2.rc"; } \
             | { zstd -"$CAPTURE_LEVEL" -T"$CAPTURE_THREADS" -c 2>> "$LOG_FILE"
                 echo "$?" > "$RUN_DIR/dzstd.$2.rc"; } \
-            | { pv -n -b -i 2 2>> "$RUN_DIR/targets/$1/bytes.raw"; } \
-            | { tee "$_do_fifo"; echo "$?" > "$RUN_DIR/dtee.$2.rc"; } \
-            | { direct_udp_send "$5" "$6" "$7" "$8" "$9" "${10}" >> "$_do_log" 2>&1
-                echo "$?" > "$RUN_DIR/dsend.$2.rc"; }
+            | { FANOUT_STALL_EVICT_MS="$_do_evict" fanout -S "$RUN_DIR/dsha.$2" \
+                    -P "$RUN_DIR/targets/$1/bytes.raw" 16777216 "$_do_fifo" \
+                    > /dev/null 2>> "$LOG_FILE"
+                echo "$?" > "$RUN_DIR/dfanout.$2.rc"; }
+        # fanout that died before open() leaves udp-sender blocked in it (#49).
+        grep -qx 0 "$RUN_DIR/dfanout.$2.rc" || unblock_fifo "$_do_fifo"
+        wait_pid "$_do_spid" "$WAIT_DRAWER_S" "udp-sender of partition $2"
     ) &
     _do_pid=$!
     if wait_progress "$_do_pid" "$RUN_DIR/targets/$1/bytes.raw" \
             "$STREAM_START_CEILING" "$WAIT_STREAM_STALL_S" "שידור מחיצה $2 מ-$1" "$_do_fifo"; then
         _do_stage=none
-        for _do_s in dsend dtee dzstd dpcl; do
+        for _do_s in dsend dfanout dzstd dpcl; do
             _do_rc=$(cat "$RUN_DIR/$_do_s.$2.rc" 2>/dev/null || echo 1)
             [ "$_do_rc" -eq 0 ] || { _do_stage="$_do_s"; break; }
         done
     else
         _do_rc="$WAIT_TIMED_OUT"; _do_stage=timeout
     fi
-    wait_pid "$_do_shapid" "$WAIT_HELPER_S" "חישוב ה-sha256 של מחיצה $2"
-    rm -f "$_do_fifo"
+    rm -f "$_do_fifo" "$_do_fifo.bytes"
     if [ "$_do_rc" -ne 0 ]; then
-        _direct_failed "$1" "partition $2: send failed (stage=$_do_stage rc=$_do_rc) $(tail -n 1 "$_do_log" 2>/dev/null | tr -d '\r')"
+        log "direct send tool said: $(tail -n 1 "$_do_log" 2>/dev/null | tr -d '\r')"
+        _direct_failed "$1" "מחיצה $2: השליחה נכשלה (שלב=$_do_stage rc=$_do_rc)"
         return 1
     fi
     # Exit 0 is not a transfer (#438): without receivers udp-sender times
     # out quietly and still exits 0. The line in its own log is the evidence.
     grep -qF "$DIRECT_TRANSFER_STARTED" "$_do_log" 2>/dev/null \
-        || { _direct_failed "$1" "partition $2: no cloning machine joined the stream (udp-sender never started the transfer)"; return 1; }
+        || { _direct_failed "$1" "מחיצה $2: אף מחשב משכפל לא הצטרף לזרם (udp-sender לא התחיל את ההעברה)"; return 1; }
     _do_got=$(awk '{print $1}' "$RUN_DIR/dsha.$2" 2>/dev/null)
     if ! is_sha256 "$_do_got"; then
-        _direct_failed "$1" "partition $2: the wire sha256 was not computed -- no evidence the stream matched the manifest"
+        _direct_failed "$1" "מחיצה $2: ה-sha256 של מה שנשלח לא חושב — אין ראיה שהזרם תאם למניפסט"
         return 1
     elif [ "$_do_got" != "$4" ]; then
-        _direct_failed "$1" "partition $2: the bytes sent differ from the manifest (disk changed between reads, or the pipeline is not deterministic)"
+        _direct_failed "$1" "מחיצה $2: הבייטים שנשלחו שונים מהמניפסט (הדיסק השתנה בין קריאות, או שהצינור אינו דטרמיניסטי)"
         return 1
     fi
     target_partition_done "$1"
@@ -161,9 +171,9 @@ direct_send_run() {
     CAPTURE_SINK=discard capture_disk "$1" "$2" || return 1
     _dr_manifest="$RUN_DIR/new-manifest.json"
     direct_manifest_put "$1" "$_dr_manifest" \
-        || { _direct_failed "$2" "the server did not accept the live manifest"; return 1; }
+        || { _direct_failed "$2" "השרת לא קיבל את המניפסט החי"; return 1; }
     echo "waiting" > "$RUN_DIR/state"
-    direct_wait_running "$1" || { _direct_failed "$2" "the wave did not start"; return 1; }
+    direct_wait_running "$1" || { _direct_failed "$2" "הגל לא התחיל"; return 1; }
 
     # The multicast parameters come from the hello that said "running" --
     # the server's, so the stream behaves like a library round (#437/#438).
@@ -183,12 +193,12 @@ direct_send_run() {
     for _dr_v in "$_dr_pb" "$_dr_minr" "$_dr_maxw" "$_dr_startt" \
                  "$_dr_maxw_l" "$_dr_startt_l" "$_dr_retries"; do
         case "$_dr_v" in ''|*[!0-9]*)
-            _direct_failed "$2" "multicast parameters unreadable: '$_dr_mc'"; return 1 ;;
+            _direct_failed "$2" "פרמטרי המולטיקאסט אינם קריאים: '$_dr_mc'"; return 1 ;;
         esac
     done
     _dr_plan="$RUN_DIR/direct.plan"
     manifest_plan "$_dr_manifest" > "$_dr_plan" \
-        || { _direct_failed "$2" "could not read the partition plan from the live manifest"; return 1; }
+        || { _direct_failed "$2" "לא הצלחנו לקרוא את תוכנית המחיצות מהמניפסט החי"; return 1; }
     _dr_total=$(json_get "$_dr_manifest" ".total_compressed_bytes")
     case "$_dr_total" in ''|*[!0-9]*) _dr_total=0 ;; esac
     target_init "$2" "$_dr_total"
@@ -209,7 +219,7 @@ direct_send_run() {
     done 3< "$_dr_plan"
     # done is a count against the manifest, never "nothing failed" (#51).
     if [ "$_dr_expected" -lt 1 ] || [ "$_dr_sent" -ne "$_dr_expected" ]; then
-        _direct_failed "$2" "sent $_dr_sent of $_dr_expected partitions"
+        _direct_failed "$2" "נשלחו $_dr_sent מתוך $_dr_expected מחיצות"
         return 1
     fi
     log "direct send complete: $_dr_sent partitions from $2"
@@ -235,7 +245,7 @@ direct_send_task() {
         [ "${IMAGECTL_TEST:-0}" = "1" ] && exit 0
         sleep 20
         finish_and_stop
-        # #1222: returns only when Wake-on-LAN was not armed -- still done.
+        # #1222/#1483: returns only when it stayed on (WoL, or poweroff came back) -- still done.
         task_done_stays_on "Direct deployment complete. The drawers were written."
         return 0
     fi

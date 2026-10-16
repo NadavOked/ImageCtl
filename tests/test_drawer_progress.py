@@ -42,6 +42,7 @@ COUNTING_FANOUT = (
     'shift\n'                       # החוצץ
     'tmp="$(mktemp)"\n'
     'cat > "$tmp"\n'
+    'fanout_eof "$tmp"\n'
     'size=$(wc -c < "$tmp" | tr -d " ")\n'
     'for out; do cat "$tmp" > "$out" & done\n'
     'wait\n'
@@ -79,7 +80,7 @@ def test_each_drawer_reports_the_bytes_that_were_written_to_it(tmp_path):
         "WAIT_STREAM_START_S=20 WAIT_STREAM_STALL_S=20; "
         f". {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/waits.sh; "
         f". {posix(AGENT)}/lib/progress.sh; . {posix(AGENT)}/lib/restore.sh; "
-        f". {posix(AGENT)}/lib/drawers.sh; . {posix(AGENT)}/lib/verdict.sh; . {posix(AGENT)}/lib/failmark.sh; "
+        f". {posix(AGENT)}/lib/drawers.sh; . {posix(AGENT)}/lib/verdict.sh; . {posix(AGENT)}/lib/failmark.sh; . {posix(AGENT)}/lib/ntfsboot.sh; "
         "target_init sda 131072; target_init sdb 131072; "
         f'stream_source() {{ cat {posix(payload)!r}; }}; '
         "restore_partition_drawers unicast http://s img 3 dd part.zst "
@@ -115,14 +116,14 @@ def test_the_compiled_fanout_writes_the_counter_the_agent_reads(tmp_path):
         (run / "targets" / dev).mkdir(parents=True)
 
     out = run_sh(
-        make_stubs(stubs)
+        make_stubs(stubs, {"fanout": None})   # the compiled one, not the fake
         + f"export RUN_DIR={posix(run)!r} DEVROOT={posix(box)!r} "
         # מאגר קטן: המכונה הזו לא צריכה 256MB למגירה כדי להעביר 64KB.
         "FANOUT_BUFFER=1048576 WAIT_POLL_S=1 WAIT_DRAWER_S=10 WAIT_HELPER_S=10 "
         "WAIT_STREAM_START_S=20 WAIT_STREAM_STALL_S=20; "
         f". {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/waits.sh; "
         f". {posix(AGENT)}/lib/progress.sh; . {posix(AGENT)}/lib/restore.sh; "
-        f". {posix(AGENT)}/lib/drawers.sh; . {posix(AGENT)}/lib/verdict.sh; . {posix(AGENT)}/lib/failmark.sh; "
+        f". {posix(AGENT)}/lib/drawers.sh; . {posix(AGENT)}/lib/verdict.sh; . {posix(AGENT)}/lib/failmark.sh; . {posix(AGENT)}/lib/ntfsboot.sh; "
         "target_init sda 131072; target_init sdb 131072; "
         f'stream_source() {{ cat {posix(payload)!r}; }}; '
         "restore_partition_drawers unicast http://s img 3 dd part.zst "
@@ -148,7 +149,7 @@ def drawer_box(tmp_path, disks=("sda", "sdb", "sdc"), failed=()) -> tuple[Path, 
         f"export RUN_DIR={posix(run)!r} DEVROOT={posix(run)!r}/dev; "
         f". {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/waits.sh; "
         f". {posix(AGENT)}/lib/progress.sh; . {posix(AGENT)}/lib/restore.sh; "
-        f". {posix(AGENT)}/lib/expand.sh; . {posix(AGENT)}/lib/grow.sh; . {posix(AGENT)}/lib/drawers.sh; . {posix(AGENT)}/lib/verdict.sh; . {posix(AGENT)}/lib/failmark.sh; "
+        f". {posix(AGENT)}/lib/expand.sh; . {posix(AGENT)}/lib/grow.sh; . {posix(AGENT)}/lib/drawers.sh; . {posix(AGENT)}/lib/verdict.sh; . {posix(AGENT)}/lib/failmark.sh; . {posix(AGENT)}/lib/ntfsboot.sh; "
         f". {posix(AGENT)}/lib/writecheck.sh; "
         "log() { :; }; disk_fits() { return 0; }; apply_gpt() { return 0; }; "
         "write_check() { return 0; }; write_speed_verdict() { return 0; }; "

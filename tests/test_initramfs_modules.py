@@ -122,6 +122,12 @@ def test_the_builder_packs_the_usb_core_and_host_trees(tmp_path: Path):
     assert "kernel/drivers/usb/host" in text
 
 
+def test_the_builder_packs_the_cpufreq_tree():
+    """Older Intel CPUs need Debian's modular acpi-cpufreq fallback (#1441)."""
+    text = BUILDER.read_text(encoding="utf-8")
+    assert "kernel/drivers/cpufreq" in text
+
+
 def test_psmouse_is_in_the_modules_load_list(tmp_path: Path):
     """‏#1204: ‏VM של ESXi (govc) מקבל בקר PS/2 בלבד, בלי בקר USB. בלי
     ‏psmouse (שכולל את פרוטוקול vmmouse) אין עכבר במתקין הגרפי בכלל,
@@ -416,7 +422,16 @@ FS_LAYOUT = {
     "crc32c-intel": "kernel/arch/x86/crypto",
 }
 
-LAYOUT = {**PLATFORM_LAYOUT, **FS_LAYOUT}
+#: #1466: the local clone's read-only source -- a dm-snapshot view of the
+#: source partition with its copy-on-write store on a brd RAM disk.
+LC_LAYOUT = {
+    "dm-mod": "kernel/drivers/md",
+    "dm-snapshot": "kernel/drivers/md",
+    "dm-bufio": "kernel/drivers/md",
+    "brd": "kernel/drivers/block",
+}
+
+LAYOUT = {**PLATFORM_LAYOUT, **FS_LAYOUT, **LC_LAYOUT}
 
 
 def declared(array: str) -> list[str]:
@@ -494,6 +509,33 @@ def test_a_driver_that_sits_loose_under_drivers_net_is_still_packed(tmp_path: Pa
     assert done.returncode == 0, done.stderr
     assert (packed / "kernel/drivers/net/virtio_net.ko.xz").is_file()
     assert (packed / "kernel/drivers/net/xen-netfront.ko.xz").is_file()
+
+
+@requires_native("bash", why="REQUIRED_MODULES הוא מערך bash")
+@pytest.mark.parametrize("absent", sorted(LC_LAYOUT))
+def test_the_build_stops_when_a_local_clone_view_module_is_missing(tmp_path: Path, absent: str):
+    """#1466: without dm-snapshot or brd the local clone falls back to shrinking the
+    source in place -- legal, but exactly what the owner ruled out. A kernel without
+    one of them is caught by the build, not by a cloner in a classroom."""
+    done, _ = run_required(tmp_path, [m for m in LAYOUT if m != absent])
+    assert done.returncode != 0, f"{absent} missing and the build passed"
+    assert absent in done.stderr, done.stderr
+
+
+@requires_native("bash", why="REQUIRED_MODULES הוא מערך bash")
+def test_the_local_clone_view_modules_are_packed_by_name(tmp_path: Path):
+    done, packed = run_required(tmp_path, list(LAYOUT))
+    assert done.returncode == 0, done.stderr
+    for mod, where in LC_LAYOUT.items():
+        assert (packed / where / f"{mod}.ko.xz").is_file(), f"{mod} not packed"
+
+
+def test_the_local_clone_view_modules_are_not_loaded_at_boot():
+    """brd loaded at boot would come up at its default size, and the agent could not size it."""
+    text = BUILDER.read_text(encoding="utf-8")
+    boot = text[text.index("printf '%s\\n' usbcore"):text.index('> "$ROOT/etc/imagectl/modules"')]
+    for mod in ("brd", "dm-snapshot", "dm_snapshot", "dm-mod", "dm_mod"):
+        assert mod not in boot, mod
 
 
 @requires_native("bash", why="REQUIRED_MODULES הוא מערך bash")

@@ -6,7 +6,8 @@
  *   --auth-cmd CMD   login: CMD gets "<user>\n<pass>\n" on stdin; exit 0
  *                    means signed in, and its first stdout line is the
  *                    role ("admin" shows the capture card, anything else
- *                    hides it, like station.js afterLogin).
+ *                    hides it, like station.js afterLogin); the second is
+ *                    the user's saved theme (light|dark|auto, #1499).
  *   --state FILE     key=value lines the agent rewrites (disks, machines,
  *                    the running task...); re-read every 2 s when changed.
  *   stdout           one record per operator action: a token line
@@ -22,6 +23,7 @@
  *                    tool-list | tool-run|<id>|<arg>|<confirm>  (#649) |
  *                    touch  (#434: a key press -- the idle clock's activity) |
  *                    logout  (11/10: sign-out; the bridge drops the session) |
+ *                    theme-light | theme-dark  (#1499: a signed-in switch, saved) |
  *                    ask-<answer>|<nonce>  (11/10: the question dialog --
  *                    ask-restore / ask-leave, ask-poweroff / ask-menu)),
  *                    then key=value detail lines, then an empty line.
@@ -63,11 +65,16 @@ static const char *USAGE =
 "  --screen dcui is the server's own screen (#1203): frames on stdin, keys on stdout\n"
 "  (dcui.h); with --png it renders the --state frame file in both themes.\n"
 "  --backend mem draws into --fb-file (default /run/imagectl/fb.mem) for the remote\n"
-"  monitor when the machine has no display (#835); auto falls back to it last.\n";
+"  monitor when the machine has no display (#835); auto falls back to it last.\n"
+"  --fb-mirror PATH also writes every frame shown on a display into PATH in the\n"
+"  same format, so the monitor reads RAM instead of /dev/fb0 (#1475).\n";
 
 /* ---- login through the agent's command ------------------------------------- */
 
-static int run_auth(const char *cmd, const char *user, const char *pass, char *role, size_t n) {
+/* #1499: the answer is "<role>\n<saved theme>\n"; read to EOF (the bridge may
+ * write the two lines in two writes), then split them (theme.c). */
+static int run_auth(const char *cmd, const char *user, const char *pass, char *role, size_t n,
+                    char *saved, size_t sn) {
     int in_p[2], out_p[2];
     if (pipe(in_p) || pipe(out_p)) return -1;
     pid_t pid = fork();
@@ -81,20 +88,28 @@ static int run_auth(const char *cmd, const char *user, const char *pass, char *r
     close(in_p[0]); close(out_p[1]);
     FILE *w = fdopen(in_p[1], "w");
     if (w) { fprintf(w, "%s\n%s\n", user, pass); fclose(w); } else close(in_p[1]);
-    char buf[128] = "";
-    ssize_t r = read(out_p[0], buf, sizeof buf - 1);
+    char buf[256] = "";
+    size_t got = 0;
+    for (;;) {                                       /* to EOF; past a full buffer, drained */
+        char sink[64];
+        int full = got >= sizeof buf - 1;
+        ssize_t r = read(out_p[0], full ? sink : buf + got, full ? sizeof sink : sizeof buf - 1 - got);
+        if (r > 0) { if (!full) got += (size_t)r; continue; }
+        if (r < 0 && errno == EINTR) continue;
+        break;                                       /* EOF or error */
+    }
+    buf[got] = 0;
     close(out_p[0]);
-    if (r > 0) { buf[r] = 0; buf[strcspn(buf, "\r\n")] = 0; }
     int status = 0;
     waitpid(pid, &status, 0);
-    snprintf(role, n, "%s", buf);
+    theme_login_answer(buf, role, n, saved, sn);
     return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
 }
 
 static void do_login(App *a, const char *auth_cmd, int demo) {
-    char role[64] = "";
+    char role[64] = "", saved[16] = "";
     int ok;
-    if (auth_cmd)     ok = run_auth(auth_cmd, a->user, a->pass, role, sizeof role) == 0;
+    if (auth_cmd)     ok = run_auth(auth_cmd, a->user, a->pass, role, sizeof role, saved, sizeof saved) == 0;
     else if (demo)    { ok = a->user[0] != 0; snprintf(role, sizeof role, "admin"); }
     else {
         ok = 0;
@@ -108,6 +123,9 @@ static void do_login(App *a, const char *auth_cmd, int demo) {
     snprintf(a->signed_user, sizeof a->signed_user, "%s", a->user);
     a->admin = strcmp(role, "admin") == 0;
     a->signed_in = 1;
+    /* #1499 (Nadav 16/10): the user's saved theme wins; "auto" or none = the
+     * default. A switch made before login was for that screen only. */
+    a->theme = theme_saved(saved, a->default_theme);
     memset(a->pass, 0, sizeof a->pass);
     a->menu_focus = -1; a->logout_confirming = 0;
     a->mode = MODE_MENU;                            /* afterLogin: both roles start at the menu */
@@ -356,7 +374,17 @@ static int visible_card_ids(const App *a, int ids[5]) {
 
 static void sign_out(App *a) {
     a->signed_in = 0; a->mode = MODE_MENU; a->focus = HIT_USER; a->logout_confirming = 0;
+    a->theme = a->default_theme;   /* #1499: the next person starts at the default */
     emit1("logout");   /* 11/10: the bridge drops the console session too */
+}
+
+/* #1499 (Nadav 16/10): the corner switch (screens.c) or F2, on every screen.
+ * Signed in, the switch is the user's saved theme -- the bridge PUTs it
+ * (guibridge.sh, theme-light|theme-dark); before login and on the cloner
+ * screens nobody is signed in, and it changes this screen only. */
+static void toggle_theme(App *a) {
+    a->theme = a->theme == &THEME_DARK ? &THEME_LIGHT : &THEME_DARK;
+    if (a->signed_in) emit1(a->theme == &THEME_DARK ? "theme-dark" : "theme-light");
 }
 
 /* mockup 10/10: while "להתנתק?" is open it is modal -- Enter or its button
@@ -772,6 +800,13 @@ static void emit_touch(App *a, int demo) {
 
 static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
     if (e->type == UIEV_CLICK || e->type == UIEV_CHAR || e->type == UIEV_KEY) emit_touch(a, demo);
+    /* #1499: the theme switch first -- every screen has it, modals and the
+     * local clone's own key handling included. */
+    if ((e->type == UIEV_KEY && e->key == KEYSYM_F2) ||
+        (e->type == UIEV_CLICK && app_hit(a, e->x, e->y) == HIT_THEME)) {
+        toggle_theme(a);
+        return 0;
+    }
     if (a->screen == SCREEN_LCBOOT || a->screen == SCREEN_LOCAL) {   /* #1322: its own keys and clicks */
         if (e->type == UIEV_MOVE || e->type == UIEV_CLICK) { a->ptr_x = e->x; a->ptr_y = e->y; }
         if (e->type == UIEV_MOVE) a->ptr_visible = !e->is_touch;
@@ -858,7 +893,6 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
             break;
         }
         switch (id) {
-        case HIT_THEME:  a->theme = a->theme == &THEME_DARK ? &THEME_LIGHT : &THEME_DARK; break;
         case HIT_LOGOUT: sign_out(a); break;     /* the button is the explicit choice; Esc asks */
         case HIT_USER: case HIT_PASS: case HIT_NAME: case HIT_DESC: case HIT_FOLDER_NEW:
         case HIT_ROOM_TARGET: case HIT_TOOL_ARG:
@@ -1325,7 +1359,8 @@ static int render_png(App *a, const State *base, const char *prefix, int w, int 
 int main(int argc, char **argv) {
     App a;
     memset(&a, 0, sizeof a);
-    a.theme = &THEME_DARK;                          /* approved native mockup: dark by default */
+    a.theme = &THEME_LIGHT;                         /* owner decision 16/10 (#1499): light by default --
+                                                       it replaced the 18/09 mockup's dark default */
     a.focus = HIT_USER;
     a.menu_focus = -1;
     a.chosen_disk = -1;
@@ -1333,7 +1368,7 @@ int main(int argc, char **argv) {
     a.st.hello_age = -1;
     a.st.hello_rc = -1;
     snprintf(a.title, sizeof a.title, "מחשב בניית אימג'ים");
-    const char *auth_cmd = NULL, *png = NULL, *backend = "auto", *fb_file = NULL, *screen = NULL, *role = "deploy";
+    const char *auth_cmd = NULL, *png = NULL, *backend = "auto", *fb_file = NULL, *fb_mirror = NULL, *screen = NULL, *role = "deploy";
     InstallBridge wizard = { "python3 -m server.wizard.bridge", "/opt/imagectl-src", 0 };
     int install_screen = 0, dcui_screen = 0;
     StateFile sf_state; memset(&sf_state, 0, sizeof sf_state);
@@ -1352,6 +1387,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(o, "--theme")) { a.theme = !strcmp(argv[++i], "dark") ? &THEME_DARK : &THEME_LIGHT; }
         else if (!strcmp(o, "--backend")) backend = argv[++i];
         else if (!strcmp(o, "--fb-file")) fb_file = argv[++i];
+        else if (!strcmp(o, "--fb-mirror")) fb_mirror = argv[++i];
         else if (!strcmp(o, "--auth-cmd")) auth_cmd = argv[++i];
         else if (!strcmp(o, "--install-cmd") || !strcmp(o, "--wizard-cmd")) wizard.cmd = argv[++i];
         else if (!strcmp(o, "--install-cwd") || !strcmp(o, "--wizard-cwd")) wizard.cwd = argv[++i];
@@ -1363,6 +1399,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(o, "--size")) { if (sscanf(argv[++i], "%dx%d", &pw, &ph) != 2 || pw < 320 || ph < 240) { fputs(USAGE, stderr); return 2; } }
         else { fprintf(stderr, "unknown option %s\n%s", o, USAGE); return 2; }
     }
+    a.default_theme = a.theme;                      /* #1499: what login "auto" and logout return to */
     a.admin = a.signed_in && strcmp(role, "admin") == 0;
     if (screen) {
         if (!strcmp(screen, "progress"))   a.force_progress = 1;
@@ -1422,6 +1459,8 @@ int main(int argc, char **argv) {
     char err[1024];
     Backend *b = backend_open(backend, fb_file, err, sizeof err);
     if (!b) { fprintf(stderr, "native-gui: cannot open a display: %s\n", err); return 1; }
+    if (fb_mirror && backend_mirror(b, fb_mirror, err, sizeof err) < 0)
+        fprintf(stderr, "native-gui: no frame mirror for the remote monitor: %s\n", err);
     int W = backend_width(b), H = backend_height(b);
     fprintf(stderr, "native-gui: display %dx%d\n", W, H);
 
@@ -1431,6 +1470,7 @@ int main(int argc, char **argv) {
      * was ready. Keep the display up; input_rescan() in the loop grabs a
      * device the moment it appears (and a hot-plugged mouse too). */
     Input *in = no_input ? NULL : input_open(W, H);
+    if (fb_mirror || fb_file) input_want_remote(in);   /* #1475: a monitor serves this screen */
 
     signal(SIGINT, on_signal); signal(SIGTERM, on_signal);
     cairo_surface_t *sf = backend_surface(b);

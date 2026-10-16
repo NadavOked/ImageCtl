@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+import re
+
 __all__ = [
     "STEP_PATH",
     "STEPS",
@@ -25,7 +27,9 @@ __all__ = [
     "AGENT_STEPS",
     "TINY_BODY",
     "GRUB_FUNCTION_NAME",
+    "INIT_MARKS",
     "is_step",
+    "parse_marks",
     "grub_function",
     "grub_call",
 ]
@@ -99,6 +103,29 @@ STEP_INDEX: dict[str, int] = {name: i for i, name in enumerate(STEPS + LOCAL_STE
 #: מי מדווח מה. ‏`menu` אינו באף אחת מהן — הוא נרשם בצד השרת.
 GRUB_STEPS: tuple[str, ...] = STEPS[1:6]
 AGENT_STEPS: tuple[str, ...] = STEPS[6:]
+
+#: ‏#1452: נקודות הזמן ש-`agent/init` מודד (שניות `/proc/uptime`) ושולח
+#: כ-`up=` עם `agent-net` — לפני DHCP אין רשת. רשימה סגורה, כמו STEPS.
+INIT_MARKS: tuple[str, ...] = ("init", "modules", "nic", "link", "dhcp")
+_MARK_VALUE = re.compile(r"[0-9]{1,7}(?:\.[0-9]{1,3})?")
+
+
+def parse_marks(raw: object) -> dict[str, float] | None:
+    """Parse /proc/uptime seconds carried on agent-net by agent/init.
+
+    Before DHCP there is no network; the key list is closed for the same
+    reason that STEPS is closed.
+    """
+    if not isinstance(raw, str) or not raw or len(raw) > 200:
+        return None
+    marks: dict[str, float] = {}
+    for item in raw.split(","):
+        key, separator, value = item.partition(":")
+        if (not separator or key not in INIT_MARKS or key in marks
+                or _MARK_VALUE.fullmatch(value) is None):
+            return None
+        marks[key] = float(value)
+    return marks
 
 #: שם הפונקציה בקובץ ה-GRUB. מוקדם בכוונה — ‏`trace` לבדו קרוב מדי
 #: לשמות שגרסת GRUB עתידית עלולה לתפוס.

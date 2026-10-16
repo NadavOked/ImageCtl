@@ -79,10 +79,10 @@ _write_hostname_linux() {
     _root=$(_mount_linux "$1" "$2" "${4:-}")
     case $? in
         0) ;;
-        2) printf '{"ok":false,"error":"no /etc on the linux partition","code":"no_etc"}\n'; return 1 ;;
-        3) printf '{"ok":false,"error":"no btrfs subvolume holds /etc","code":"no_root_subvolume"}\n'; return 1 ;;
-        4) printf '{"ok":false,"error":"several btrfs subvolumes hold /etc","code":"ambiguous_root_subvolume"}\n'; return 1 ;;
-        *) printf '{"ok":false,"error":"could not mount the linux partition","code":"mount_failed"}\n'; return 1 ;;
+        2) printf '{"ok":false,"error":"אין תיקיית /etc במחיצת הלינוקס","code":"no_etc"}\n'; return 1 ;;
+        3) printf '{"ok":false,"error":"אף תת-כרך btrfs אינו מחזיק את /etc","code":"no_root_subvolume"}\n'; return 1 ;;
+        4) printf '{"ok":false,"error":"כמה תתי-כרכי btrfs מחזיקים את /etc","code":"ambiguous_root_subvolume"}\n'; return 1 ;;
+        *) printf '{"ok":false,"error":"לא הצלחנו לעגן את מחיצת הלינוקס","code":"mount_failed"}\n'; return 1 ;;
     esac
     log "writing hostname $3 into $_root/etc/hostname" >&2
     _write_linux_files "$_root/etc" "$3"
@@ -92,11 +92,11 @@ _write_hostname_linux() {
     _umount_checked "$RUN_DIR/linux"
     _umrc=$?
     if [ "$_rc" -ne 0 ]; then
-        printf '{"ok":false,"error":"could not write /etc/hostname","code":"hostname_write_failed"}\n'
+        printf '{"ok":false,"error":"לא הצלחנו לכתוב את /etc/hostname","code":"hostname_write_failed"}\n'
         return 1
     fi
     if [ "$_umrc" -ne 0 ]; then
-        printf '{"ok":false,"error":"could not unmount after writing /etc/hostname","code":"umount_failed"}\n'
+        printf '{"ok":false,"error":"לא הצלחנו לנתק את המחיצה אחרי כתיבת /etc/hostname","code":"umount_failed"}\n'
         return 1
     fi
     printf '{"ok":true,"hostname":"%s","method":"%s"}\n' "$3" "$HOSTNAME_METHOD_LINUX"

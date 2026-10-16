@@ -184,6 +184,8 @@ _EXACT = {
     "System reboot failed.": "האתחול נכשל.",
     "System poweroff failed.": "הכיבוי נכשל.",
     "No result.": "אין תוצאה.",
+    "systemctl returned no detail": "systemctl לא החזיר פירוט.",
+    "ip returned no detail": "הפקודה ip לא החזירה פירוט.",
     "Restart/shutdown cancelled; nothing was done.": "בוטל — לא בוצע דבר.",
 }
 
@@ -196,6 +198,8 @@ _PATTERNS = (
     (r"Temporary address applied to ([A-Za-z0-9._-]+)\.", "הכתובת הזמנית הוחלה על {0}."),
     (r"Temporary network command failed: (.+)\.", "פקודת הרשת הזמנית נכשלה: {0}."),
     (r"Conflict (\d+)", "התנגשות {0}"),
+    (r"([A-Za-z0-9@._-]+): restart failed", "{0}: ההפעלה מחדש נכשלה"),
+    (r"([A-Za-z0-9@._-]+) did not read back active", "{0} לא חזר למצב פעיל"),
 )
 
 

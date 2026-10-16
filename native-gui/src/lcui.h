@@ -23,6 +23,10 @@ int lc_can_go(const App *a);                      /* >= 1 target, every one allo
 int lc_any_shrink(const App *a);
 const LcDisk *lc_disk_by_dev(const App *a, const char *dev);
 void lc_gb(char *out, size_t n, double bytes);    /* "149 GB", "610 MB" */
+void lc_pct(char *out, size_t n, double share);   /* #1437: "0.2%", "37%" -- floored */
+void lc_rate_sample(LcUi *u, int elapsed, long long copied);   /* #1437: one per reload */
+double lc_rate(const LcUi *u, int *span);         /* bytes/s over the window, -1 = none */
+int lc_unmeasured(const LcState *l);              /* #1440: a partition not measured, 0 = none */
 void lc_disk_label(const LcDisk *d, char *out, size_t n);   /* "דיסק 3", or the device */
 void lc_has_text(const LcDisk *d, char *out, size_t n);     /* "Windows · 3 מחיצות · 212 GB בשימוש" */
 void lc_sample(State *s, const char *card);       /* --png: the mockup's scenario */
