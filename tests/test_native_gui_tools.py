@@ -214,6 +214,7 @@ def _state_records(tmp_path: Path, hello: dict | None, station: dict = STATION) 
         f'SERVER=http://127.0.0.1:9 MAC=aa:bb:cc:dd:ee:ff IMAGECTL_TEST=1; '
         f'. {a}/lib/common.sh; . {a}/lib/jsonq.sh; . {a}/lib/buildmenuitems.sh; . {a}/lib/buildmenu.sh; '
         f'. {a}/lib/guistate.sh; . {a}/lib/askgui.sh; '
+        'disk_slot_records() { :; }; '   # #1495: disk numbering is test_drawer_map_gui_1495's
         + f'http_get() {{ cat {posix(run / "station.json")!r}; }}; gui_state'
     )
     out = sh(script)

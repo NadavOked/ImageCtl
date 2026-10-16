@@ -2364,6 +2364,7 @@ function roomMachines() {
     const m = findMachine(rm.mac) || {};
     return { ...m, mac: rm.mac, suffix: machineName(m) || rm.name || rm.mac, group_id: m.group_id || "grp_CLONERS",
       drawer_count: rm.drawer_count != null ? rm.drawer_count : (m.drawer_count ?? null),
+      drawer_slots: Array.isArray(rm.drawer_slots) ? rm.drawer_slots : (m.drawer_slots ?? null),   // #1485
       disks: Array.isArray(rm.drawer_list) ? rm.drawer_list : (m.disks ?? null), prompt: m.prompt || null,
       disk_probe: rm.disk_probe ?? m.disk_probe ?? null };
   }));
@@ -2493,7 +2494,33 @@ function roomWaveRate(r) {
     why = `נקבע לפי ${esc(w.by.model || "כונן")} <span class="mono">${esc(w.by.serial)}</span>${where}`;
   } else why = WAVE_RATE_WHY[w.basis] || esc(w.basis || "");
   const unknown = w.unknown_drives ? ` · ${w.unknown_drives} כוננים בלי היסטוריה` : "";
-  return ` · ${w.projected ? "צפוי " : ""}קצב לגל: ${value} (${why})${unknown}`;
+  return ` · ${w.projected ? "צפוי " : ""}קצב לגל: ${value} (${why})${unknown}${roomWaveLink(w)}`;
+}
+/* הכרעת נדב 15/10: הגג לפי כרטיס ההפצה של השרת (wave_rate.link). מהירות שלא נקראה — נאמר
+   שלא נקראה ולמה, והתקרה הקבועה; לעולם לא "1Gb/s" מנוחש (עיקרון 5). בלי link — כלום. */
+const LINK_WHY = { no_interface: "לא ידוע איזה כרטיס", absent: "הכרטיס לא נמצא", unreadable: "הקישור לא נקרא",
+  unknown: "הכרטיס לא מדווח מהירות", virtual: "כרטיס וירטואלי — המהירות אינה של הקו", not_wired: "לא נבדק" };
+function linkSpeedText(mbps) { return mbps >= 1000 ? `${mbps / 1000}Gb/s` : `${mbps}Mb/s`; }
+function bitrateBytesText(raw) {
+  const m = /^(\d+(?:\.\d+)?)([kmg]?)$/.exec(String(raw || "").toLowerCase());
+  if (!m) return String(raw || "");
+  const bytes = Number(m[1]) * ({ "": 1, k: 1e3, m: 1e6, g: 1e9 })[m[2]] / 8;
+  return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)}GB/s` : `${Math.round(bytes / 1e6)}MB/s`;
+}
+function roomWaveLink(w) {
+  const l = w.link, c = w.cloner;
+  let out = "";
+  if (l) {
+    const card = l.applied ? ltr(linkSpeedText(l.speed_mbps)) : `<span title="${esc(l.why || "")}">${esc(LINK_WHY[l.why] || "מהירות לא נקראה")}</span>`;
+    out += ` · כרטיס ההפצה: ${card}`;
+  }
+  /* 15/10 (ב): מחשב השיכפול האיטי קבע את התקרה — בשמו; מהירות שהונחה נאמרת כהנחה */
+  if (c && w.cap_by === "cloner") {
+    const m = (ROOM.machines || []).find((x) => x.mac === c.mac);
+    const who = m ? machineName(m) : c.mac;
+    out += ` · תקרה לפי ${esc(who)}: ${ltr(linkSpeedText(c.speed_mbps))}${c.source === "assumed" ? " (הנחה — המהירות לא ידועה)" : ""}`;
+  }
+  return l || (c && w.cap_by === "cloner") ? `${out} · תקרת שידור: ${ltr(bitrateBytesText(w.ceiling))}` : "";
 }
 function roomKpis(r, st, pct) {
   const stalled = !!ROOM.stream_stalled, open = r.wave_state === "open";
@@ -2674,7 +2701,8 @@ function roomPickSlots(kids) {
       const tooSmall = !!(d && Number.isFinite(need) && need > 0 && Number(d.size_bytes) < need);
       const preflightRed = !!(d && d.write_preflight && ["slow", "failed"].includes(d.write_preflight.state));
       const red = health === "err" || tooSmall || preflightRed;
-      return { m, s, d, awake, key, health, tooSmall, preflightRed, red, ok: awake && !!d && !!d.serial && d.port != null && !red };
+      // #1485: כונן שאינו ממופה (‏s.n null) אינו יעד — השרת מקבל רק פורט שבמיפוי
+      return { m, s, d, awake, key, health, tooSmall, preflightRed, red, ok: awake && !!d && !!d.serial && d.port != null && s.n != null && !red };
     });
   });
 }
@@ -2719,18 +2747,19 @@ function roomPickGrid(kids) {
     const pick = mine.filter((x) => x.ok), n = pick.filter((x) => DEPLOY.form.sel[x.key]).length;
     const sub = !awake ? "כבוי · יידלק ב-WoL" : "ער";
     const slots = mine.map((x) => {
-      if (!x.d) return `<div class="dk st-e" role="img" aria-label="דיסק ${x.s.n} ריק">דיסק ${x.s.n} · ריק</div>`;
+      const label = rowLabel(x.m, x.s);   // #1485: the mapped number; an unmapped drive is said, not numbered
+      if (!x.d) return `<div class="dk st-e" role="img" aria-label="${esc(label)} ריק">${esc(label)} · ${x.s.optical ? "כונן CD/DVD" : "ריק"}</div>`;
       const warn = !x.red && x.health === "warn", cls = x.red ? "d" : warn ? "w" : "g", on = x.ok && !!DEPLOY.form.sel[x.key];
       const selectedImage = (IMAGES || []).find((i) => i.id === DEPLOY.form.image) || {};
       const fitWhy = x.tooSmall ? imageFitReason(selectedImage, { name: machineName(x.m), port: x.s.n, size_bytes: Number(x.d.size_bytes) }) : null;
       const preflight = x.d.write_preflight || null;
       const why = fitWhy || (x.preflightRed ? (preflight.reason || (preflight.state === "slow" ? "בדיקת הכתיבה איטית" : "בדיקת הכתיבה נכשלה")) : x.red ? (smartText(x.d) || "הדיסק אינו ניתן לבחירה") : roomPickWarning(x.d));
       const state = x.red ? "לא ניתן לסימון" : warn ? "אזהרה" : "נכנס";
-      return `<label class="dk st-${cls}${on ? " sel" : ""}" data-key="${esc(x.key)}"><input class="dk-in" type="checkbox"${on ? " checked" : ""}${x.ok ? ` onchange="roomPick('${esc(x.key)}')"` : " disabled"}><span class="dk-t">דיסק ${x.s.n}</span><span class="dk-sz">${ltr(marketedDiskSize(x.d.size_bytes))}</span><span class="dk-br">${esc(x.d.model || "דגם לא ידוע")}</span>${why ? `<span class="dk-why">${esc(why)}</span>` : ""}${UI.pill(cls === "g" ? "ok" : cls === "w" ? "warn" : "err", state)}</label>`;
+      return `<label class="dk st-${cls}${on ? " sel" : ""}" data-key="${esc(x.key)}"><input class="dk-in" type="checkbox"${on ? " checked" : ""}${x.ok ? ` onchange="roomPick('${esc(x.key)}')"` : " disabled"}><span class="dk-t">${esc(label)}</span><span class="dk-sz">${ltr(marketedDiskSize(x.d.size_bytes))}</span><span class="dk-br">${esc(x.d.model || "דגם לא ידוע")}</span>${why ? `<span class="dk-why">${esc(why)}</span>` : ""}<span class="n-chip${cls === "g" ? "" : cls === "w" ? " w" : " d"}">${esc(x.s.n == null ? "לא ממופה" : state)}</span></label>`;
     }).join("");
     return `<section class="rn-m${!awake ? " off" : ""}" data-mac="${esc(m.mac)}"><div class="rn-mh"><div class="rn-nm"><h4>${esc(machineName(m))}</h4><span class="st"><i class="led${awake ? " ok" : ""}"></i>${sub}</span></div><span class="rn-cnt" aria-live="polite"><b>${n}</b> מתוך ${pick.length} נבחרו</span><button class="btn sm" type="button" onclick="roomPickMachine('${esc(m.mac)}')">בחר הכול</button><button class="btn sm" type="button" onclick="roomPickClearMachine('${esc(m.mac)}')">נקה</button></div><div class="rn-ds">${slots || `<div class="muted">לא דווחו מגירות</div>`}</div></section>`;
   }).join("");
-  return `<div class="full rn-pick"><div class="rn-ph"><span>${ready.length} מגירות ניתנות לבחירה</span><span class="rn-all"><button type="button" class="btn sm" onclick="roomPickAll()">בחר הכול</button><button type="button" class="btn sm" onclick="roomPickClearAll()">נקה הכול</button></span></div><ul class="rn-legend" aria-label="מקרא"><li><i class="rn-sw sel"></i>נבחר</li><li><i class="rn-sw g"></i>נכנס</li><li><i class="rn-sw w"></i>אזהרה — אפשר לסמן</li><li><i class="rn-sw d"></i>לא ניתן לסימון</li><li><i class="rn-sw e"></i>ריק</li></ul>` + (kids.length ? `<div class="rn-grid">${cards}</div>` : `<div class="muted">אין משכפלים בחדר</div>`) + `<p class="muted">"בחר הכול" מסמן רק מגירות ירוקות; מגירה באזהרה מסמנים בנפרד. מחשב כבוי יידלק ב-WoL כשהסבב נפתח.</p></div>`;
+  return `<h3 class="n-sec-h full">מחשבים ומגירות</h3><div class="full rn-pick"><div class="rn-ph"><span>${ready.length} מגירות ניתנות לבחירה · <b>${nsel} נבחרו</b></span><span class="rn-all"><button type="button" class="btn sm" onclick="roomPickAll()">בחר הכול</button><button type="button" class="btn sm" onclick="roomPickClearAll()">נקה הכול</button></span></div><ul class="rn-legend" aria-label="מקרא"><li><i class="rn-sw sel"></i>נבחר</li><li><i class="rn-sw g"></i>נכנס</li><li><i class="rn-sw w"></i>אזהרה — אפשר לסמן</li><li><i class="rn-sw d"></i>לא ניתן לסימון</li><li><i class="rn-sw e"></i>ריק</li></ul>` + (kids.length ? `<div class="rn-grid">${cards}</div>` : `<div class="muted">אין משכפלים בחדר</div>`) + `<p class="muted">"בחר הכול" מסמן רק מגירות ירוקות; מגירה באזהרה מסמנים בנפרד. מחשב כבוי יידלק ב-WoL כשהסבב נפתח.</p></div>`;
 }
 /* חלון סבב חדר חדש: אימג' ("נכנס לדיסק מ-X GB"; #953: מה שלא נכנס למגירה
    הקטנה מושבת עם הסיבה — לא מוסתר) → מקור (ספרייה / דיסק מחשב בנייה, #715) → פתח סבב
@@ -2757,19 +2786,33 @@ function roomNewWindow(kids) {
   const dflt = roomTargetDefault(kids), target = f.target !== "" ? f.target : String(dflt.n);
   const source = `<div class="n-seg rn-src" role="group" aria-label="מקור הסבב"><button type="button" aria-pressed="${!direct}" onclick="roomFormSet('src','library')">מהשרת (הספרייה)</button><button type="button" aria-pressed="${direct}" onclick="roomFormSet('src','build_disk')"${builders.length ? "" : " disabled"}>מדיסק מחשב בנייה (הפצה ישירה)</button></div>${builders.length ? "" : `<div class="muted">אין מחשב בנייה שדיווח על דיסקים</div>`}`;
   const fields = direct && builder
-    ? `<label>מחשב בנייה<select id="rn-builder" onchange="roomFormSet('builder',this.value)">${builders.map((m) => `<option value="${esc(m.mac)}"${m.mac === builder.mac ? " selected" : ""}>${esc(machineName(m))}</option>`).join("")}</select></label>
-       <label>דיסק המקור<select id="rn-disk" onchange="roomFormSet('disk',this.value)">${builder.disks.map((d, i) => `<option value="${esc(d.dev)}"${(f.disk || builder.disks[0].dev) === d.dev ? " selected" : ""}>דיסק ${diskSlot(d, i)} · ${marketedDiskSize(d.size_bytes)} · ${esc(d.model || "")}</option>`).join("")}</select></label>
+    ? `<h3 class="n-sec-h full">מקור</h3><label>מחשב בנייה<select id="rn-builder" onchange="roomFormSet('builder',this.value)">${builders.map((m) => `<option value="${esc(m.mac)}"${m.mac === builder.mac ? " selected" : ""}>${esc(machineName(m))}</option>`).join("")}</select></label>
+       <label>דיסק המקור<select id="rn-disk" onchange="roomFormSet('disk',this.value)">${builder.disks.map((d, i) => `<option value="${esc(d.dev)}"${(f.disk || builder.disks[0].dev) === d.dev ? " selected" : ""}>${esc(diskLabel(builder, d))} · ${marketedDiskSize(d.size_bytes)} · ${esc(d.model || "")}</option>`).join("")}</select></label>
        <div class="full muted">היעד: הדיסקים שסומנו בגריד למטה — הפצה ישירה דורשת בחירה מפורשת. סבב יחיד, לא מצטבר.</div>`
-    : `<label>תיקייה<select id="rn-folder" onchange="roomFormSet('folder',this.value)">${folderOpts}</select></label>
+    : `<h3 class="n-sec-h full">אימג'</h3><label>תיקייה<select id="rn-folder" onchange="roomFormSet('folder',this.value)">${folderOpts}</select></label>
        <label>אימג'<select id="rn-image" onchange="roomFormSet('image',this.value)"${folder == null ? " disabled" : ""}>${opts}</select></label>
        <label>גרסה<select id="rn-version"><option>גרסה נוכחית · מסומנת (ברירת מחדל)</option></select></label>
-       <label>יעד — כמה דיסקים בסך הכול (בכל הגלים)<input type="number" id="rn-target" min="1" value="${esc(target)}" oninput="roomFormSet('target',this.value)"></label>
-       <div><span class="muted">המגירה הקטנה ביותר בחדר</span><div class="rn-floor">${floor ? ltr(marketedDiskSize(floor.size_bytes)) : "לא ידוע"}</div><div class="muted">${floorNote}</div></div>
-       <div class="full muted">${chosen && gbCeil(chosen.min_target_bytes) != null ? `האימג' נכנס לדיסק מ-${ltr(gbCeil(chosen.min_target_bytes) + " GB")}. ` : ""}ברירת המחדל = ${dflt.n} ${dflt.why}.</div>`;
+       <div class="full n-help">${chosen && gbCeil(chosen.min_target_bytes) != null ? `האימג' נכנס לדיסק מ-<b>${ltr(gbCeil(chosen.min_target_bytes) + " GB")}</b>. ` : ""}אימג' שלא נכנס למגירה הקטנה ביותר בחדר מושבת ברשימה, עם הסיבה.</div>
+       <h3 class="n-sec-h full">יעד</h3>
+       <div class="full rn-2"><label>כמה דיסקים בסך הכול (בכל הגלים)<input type="number" id="rn-target" min="1" value="${esc(target)}" oninput="roomFormSet('target',this.value)"><span class="n-help">ברירת המחדל = ${dflt.n} ${dflt.why}.</span></label>
+       <div><span class="n-lbl">המגירה הקטנה ביותר בחדר</span><div class="rn-floor">${floor ? ltr(marketedDiskSize(floor.size_bytes)) : "לא ידוע"}</div><div class="n-help">${floorNote}</div></div></div>`;
   const err = DEPLOY.err ? UI.note("err", `הסבב לא נפתח: ${esc(DEPLOY.err)}`) : "";
-  const machines = new Set(roomSelected(kids).map((x) => x.m.mac)).size, waves = nsel ? Math.ceil((direct ? nsel : Number(target) || nsel) / nsel) : 0;
-  const submit = op ? `<div class="full rn-submit"><span class="rn-sum${nsel ? "" : " need"}" aria-live="polite">${nsel ? `נבחרו ${nsel} דיסקים ב-${machines} מחשבים · משוער ${waves} גלים` : "יש לסמן לפחות דיסק אחד"}</span><button class="btn primary" onclick="openRoomRoundSubmit()"${nsel ? "" : " disabled"}${DEPLOY.busy ? " aria-busy=\"true\"" : ""}>פתח סבב</button></div>` : `<div class="full muted">פתיחת סבב — למנהל או למפעיל הפצה.</div>`;
+  const submit = op ? "" : `<div class="full muted">פתיחת סבב — למנהל או למפעיל הפצה.</div>`;
   return `<div class="rnew">${err ? `<div class="full">${err}</div>` : ""}<div class="full">${source}</div>${fields}${roomPickGrid(kids)}${roomDriversBlock(kids, direct)}${submit}</div>`;
+}
+/* ‏#1485 (נדב 16/10, המוקאפ S350): הפעולה הראשית בשורת התחתית של החלון — תמיד גלויה, גם כשהגריד ארוך —
+   ולצידה הסיכום ("נבחרו N דיסקים ב-M מחשבים · משוער K גלים"). ‏null = אין מה לפתוח (לא מפעיל). */
+/* שורת התחתית של החלון: "פתח סבב" ממתין לדיסק מסומן (פעולה שעוד אין לה קלט — לא "דורש API"). */
+function roomFooterSync(kids) {
+  const st = roomSubmitState(kids), ok = document.getElementById("modalOk"), hint = document.getElementById("modalHint");
+  if (ok) { ok.disabled = !st.n || !!DEPLOY.busy; if (ok.setAttribute) ok.setAttribute("aria-busy", String(!!DEPLOY.busy)); }
+  if (hint) { hint.textContent = st.text; hint.className = "n-hint rn-sum" + (st.n ? "" : " need"); if (hint.setAttribute) hint.setAttribute("aria-live", "polite"); }
+}
+function roomSubmitState(kids) {
+  const f = DEPLOY.form, nsel = roomSelected(kids).length, direct = f.src === "build_disk";
+  const target = f.target !== "" ? f.target : String(roomTargetDefault(kids).n);
+  const machines = new Set(roomSelected(kids).map((x) => x.m.mac)).size, waves = nsel ? Math.ceil((direct ? nsel : Number(target) || nsel) / nsel) : 0;
+  return { n: nsel, text: nsel ? `נבחרו ${nsel} ${nsel === 1 ? "דיסק" : "דיסקים"} ב-${machines} ${machines === 1 ? "מחשב" : "מחשבים"} · משוער ${waves === 1 ? "גל אחד" : `${waves} גלים`}` : "יש לסמן לפחות דיסק אחד" };
 }
 /* ‏#1269: דרייברים לפי דגם, לכל דיסק יעד — אופציונלי, כבוי כברירת מחדל. אין "אוטומטי": החומרה
    שזוהתה היא של המשכפל, לא של המכונה שתקבל את הדיסק (interfaces.md §17) — דגם מפורש או "בלי".
@@ -2801,7 +2844,7 @@ function roomDriversBlock(kids, direct) {
     `<option value="${i}"${cur && cur.vendor === m.vendor && cur.model === m.model ? " selected" : ""}>${esc(m.vendor + " " + m.model)}</option>`).join("");
   const slots = roomDriverSlots(kids);
   const all = `<label>דגם לכל הדיסקים<select id="rn-drv-all" onchange="roomDrvAll(this.value)"><option value="-" selected>— להחיל על כולם —</option>${opts({})}</select></label>`;
-  const rows = slots.map(({ m, port, key }) => `<label>${esc(machineName(m))} · דיסק ${port}<select data-drv="${esc(key)}" onchange="roomDrvSet('${esc(key)}',this.value)">${opts(DEPLOY.form.drvMap[key])}</select></label>`).join("");
+  const rows = slots.map(({ m, port, key }) => `<label>${esc(machineName(m))} · ${esc(diskLabel(m, { port }))}<select data-drv="${esc(key)}" onchange="roomDrvSet('${esc(key)}',this.value)">${opts(DEPLOY.form.drvMap[key])}</select></label>`).join("");
   const scope = "";
   return `<details class="full rn-drv" open><summary>דרייברים לפי דגם <small>(אופציונלי)</small></summary><div class="rn-db">${sw}<div class="rn-drivers">${slots.length ? all + rows : `<div class="muted">סמנו דיסקים בגריד כדי לבחור להם דגם</div>`}<div class="muted">${esc(roomDriversSummary(slots))}${esc(scope)}</div></div></div></details>`;
 }
@@ -3719,29 +3762,101 @@ function machineSub(m) {
   const parts = [machineModel(m)];
   const tpm = m.inventory && m.inventory.tpm;
   if (tpm && tpm.present) parts.push(`TPM ${tpm.version || ""}`.trim());
-  if (machineRole(m) === "cloner" && m.drawer_count != null) parts.push(`${m.drawer_count} חריצי SATA`);
+  if (["cloner", "build"].includes(machineRole(m)) && (m.drawer_count != null || Array.isArray(m.drawer_slots))) { const n = drawerSlots(m).length; parts.push(n === 1 ? "חריץ אחד" : `${n} חריצים`); }   // #1485
+  if (machineRole(m) === "cloner" && m.nic_speed) parts.push(`כרטיס רשת: ${nicSpeedText(m.nic_speed)}`);
   return parts.filter(Boolean).join(" · ");
 }
-/* דיסק N = החריץ שהסוכן דיווח (`port`, 1-based); בלי `port` — המקום ברשימה. SATA = N-1. */
-function diskSlot(d, i) { return d.port != null ? Number(d.port) : i + 1; }
+/* הכרעת נדב 15/10: מהירות כרטיס ההפצה של מכונה (/machines.nic_speed) — ידנית / מדווחת / הנחה.
+   הנחה נאמרת כהנחה, לעולם לא כמדידה. */
+const NIC_SPEED_SOURCE = { manual: "הוגדר ידנית", reported: "מדווח" };
+function nicSpeedText(n) {
+  if (!n || typeof n.speed_mbps !== "number") return "לא ידוע";
+  if (n.source === "assumed") return `לא ידוע — הונח ${linkSpeedText(n.speed_mbps)}`;
+  return `${linkSpeedText(n.speed_mbps)} (${NIC_SPEED_SOURCE[n.source] || n.source})`;
+}
+function editNicSpeed(mac) {
+  const m = findMachine(mac); if (!m || !isAdmin()) return;
+  const cur = m.nic_speed && m.nic_speed.source === "manual" ? String(m.nic_speed.speed_mbps) : "auto";
+  sheet({ title: "מהירות כרטיס רשת", sub: `${machineName(m) || m.mac} — תקרת הגל לא תעבור את המחשב האיטי בגל`,
+    fields: [{ id: "nic_speed", type: "segment", label: "מהירות", value: cur,
+      help: "אוטומטי = מה שהמחשב מדווח; כשאינו מדווח — מניחים 1Gb/s.",
+      options: [["auto", "אוטומטי"], ["1000", "1Gb/s"], ["2500", "2.5Gb/s"], ["10000", "10Gb/s"]].map(([value, label]) => ({ value, label })) }],
+    onSubmit: async (v) => { await put("/machines/" + encodeId(m.mac), { nic_speed_mbps: v.nic_speed === "auto" ? null : Number(v.nic_speed) }); await loadMachines(); openMachineDetail(m.mac); } });
+}
+/* ‏#1485 (נדב 16/10): מיפוי מגירה → חיבור לכל משכפל ומחשב בנייה (‏/machines[].drawer_slots).
+   איבר i הוא "דיסק i+1": ‏sata:<port> (‏ataN מה-hello; על הלוח "SATA port-1") או nvme:<כתובת PCI
+   של הבקר> — יציב בין אתחולים, לא nvme0n1. בלי השדה (שרת ישן) — המוסכמה המוצהרת: דיסק k =
+   ‏sata:k עד drawer_count. כונן שהחיבור שלו אינו במיפוי: "SATA n (לא ממופה)" — לעולם לא מספר
+   מנוחש. ‏port נשאר הזהות על החוט (‏target_slots), המיפוי הוא המספר שהמפעיל רואה. */
+function connKey(d) { return d && d.port != null ? `sata:${Number(d.port)}` : d && d.pci ? `nvme:${d.pci}` : null; }
+function connText(key) {
+  const s = /^sata:(\d+)$/.exec(key || ""), n = /^nvme:(.+)$/.exec(key || "");
+  return s ? `SATA ${Number(s[1]) - 1}` : n ? `NVMe ${n[1].replace(/^0000:/, "")}` : "חיבור לא מזוהה";
+}
+function drawerSlots(m) {
+  if (m && Array.isArray(m.drawer_slots)) return m.drawer_slots;
+  const n = m && m.drawer_count != null ? Number(m.drawer_count) : 0;
+  return Array.from({ length: n }, (_, i) => `sata:${i + 1}`);
+}
+/* מספר הדיסק של כונן לפי המיפוי; ‏null = לא ממופה. */
+function diskNumber(m, d) { const k = connKey(d), i = k ? drawerSlots(m).indexOf(k) : -1; return i >= 0 ? i + 1 : null; }
 /* ‏#704: השם שהמפעיל נתן לחיבור (‏/machines[].slot_names). המפתח הוא החיבור —
    ‏sata:<port>, ולכונן בלי port (‏NVMe/USB) ‏serial:<serial> — כמו server/slot_names.py.
-   חריץ ריק (d=null) הוא sata:<n>. בלי שם: "דיסק N" כמו היום (‏SATA 0 → דיסק 1). */
+   חריץ ריק (d=null) הוא החיבור שהמיפוי נותן לדיסק n. בלי שם: "דיסק N". */
 function slotKey(d) { return d.port != null ? `sata:${Number(d.port)}` : d.serial ? `serial:${d.serial}` : null; }
 function slotName(m, n, d) {
-  const k = d ? slotKey(d) : `sata:${n}`, names = (m && m.slot_names) || {};
+  const k = d ? slotKey(d) : n != null ? drawerSlots(m)[n - 1] : null, names = (m && m.slot_names) || {};
   return k && Object.prototype.hasOwnProperty.call(names, k) ? names[k] : null;
 }
 function slotLabel(m, n, d) { return slotName(m, n, d) || `דיסק ${n}`; }
+/* "דיסק N" (או שם החריץ) של כונן, ו"SATA n (לא ממופה)" כשהחיבור שלו אינו במיפוי. */
+function diskLabel(m, d) { const n = diskNumber(m, d); return n != null ? slotLabel(m, n, d) : rowLabel(m, { n: null, key: connKey(d), disk: d, optical: null }); }
+/* שורות החריצים של מכונה: דיסק 1..N לפי המיפוי, אחריהם כוננים שאינם ממופים, ואחריהם כונן
+   CD/DVD (‏/machines[].optical) — אף פעם לא חריץ דיסק, לא "ריק", לא מקור ולא יעד. ‏src = הכוננים
+   (‏/machines.disks, או drawer_list של /room בסבב). */
+function driveRows(m, src) {
+  const disks = Array.isArray(src) ? src : [], optical = Array.isArray(m.optical) ? m.optical : [], used = new Set();
+  const opticalAt = (key) => optical.find((o) => o && o.port != null && `sata:${Number(o.port)}` === key) || null;
+  const rows = drawerSlots(m).map((key, i) => {
+    const disk = disks.find((d) => connKey(d) === key) || null;
+    if (disk) used.add(disk);
+    return { n: i + 1, key, disk, optical: disk ? null : opticalAt(key) };
+  });
+  disks.forEach((d) => { if (!used.has(d)) rows.push({ n: null, key: connKey(d), disk: d, optical: null }); });
+  optical.forEach((o) => { if (o && !rows.some((r) => r.optical === o)) rows.push({ n: null, key: o.port != null ? `sata:${Number(o.port)}` : null, disk: null, optical: o }); });
+  return rows;
+}
+/* החיבור של שורה כטקסט. בלי מפתח (סוכן ישן: NVMe בלי pci, USB, בקר SCSI) — אומרים מה ידוע, לא ממציאים. */
+function rowConn(r) {
+  if (r.key) return connText(r.key);
+  const d = r.disk || {};
+  return /^nvme/.test(d.dev || "") ? "NVMe — אין כתובת PCI" : d.removable ? "USB" : "חיבור לא מזוהה";
+}
+function rowLabel(m, r) {
+  if (r.optical) return "כונן CD/DVD";
+  if (r.n != null) return slotLabel(m, r.n, r.disk);
+  const name = r.disk ? slotName(m, null, r.disk) : null;   // #704: שם לכונן בלי חריץ (serial:) נשאר שלו
+  return `${name || rowConn(r)} (לא ממופה)`;
+}
 /* #874: אדום לפי סידורי (הדיסק נודד) **וגם** לפי מכונה+חריץ (לפעמים הפורט אשם). */
 function machineDiskFailures(m) {
   const serials = new Set((m.disks || []).map((d) => d.serial).filter(Boolean));
   return (DISK_FAILURES || []).filter((f) => (f.mac === m.mac && f.port != null) || (f.serial && serials.has(f.serial)));
 }
+/* מספר הדיסק של רשומת כשל לפי המיפוי; ‏null = החיבור אינו ממופה (או הדיסק לא כאן). */
 function failureSlot(m, f) {
-  if (f.mac === m.mac && f.port != null) return Number(f.port);
-  const i = (m.disks || []).findIndex((d) => d.serial && d.serial === f.serial);
-  return i >= 0 ? diskSlot(m.disks[i], i) : null;
+  if (f.mac === m.mac && f.port != null) { const i = drawerSlots(m).indexOf(`sata:${Number(f.port)}`); return i >= 0 ? i + 1 : null; }
+  const d = (m.disks || []).find((x) => x.serial && x.serial === f.serial);
+  return d ? diskNumber(m, d) : null;
+}
+function failureLabel(m, f) {
+  const n = failureSlot(m, f);
+  return n != null ? slotLabel(m, n, null) : f.port != null ? `SATA ${f.port - 1} (לא ממופה)` : "דיסק ?";
+}
+/* כשל שייך לשורה: אותו סידורי, או אותה מכונה ואותו חיבור. */
+function rowFailure(m, r, fails) {
+  return fails.find((f) => (r.disk && f.serial && f.serial === r.disk.serial)
+    || (f.mac === m.mac && f.port != null && r.key === `sata:${Number(f.port)}`)) || null;
 }
 function failureCauseText(f) {
   const cause = FAILURE_CAUSE_HE[f.cause] || f.cause || "";
@@ -3838,7 +3953,7 @@ function machineRowHtml(m) {
   const items = [["פרטים", `openMachineDetail('${macEnc}')`]];
   if (isAdmin()) {
     items.push(["שינוי שם…", `renameMachine('${macEnc}')`], ["העבר לקבוצה…", `moveMachineSheet('${macEnc}')`]);
-    if (role === "cloner") items.push(["מספר חריצי SATA…", `editDrawerCount('${macEnc}')`]);
+    if (role === "cloner" || role === "build") items.push(["חריצים וחיבורים…", `openMachineDetail('${macEnc}','disks')`]);   // #1485: בלשונית "דיסקים" של הפאנל
     items.push(["הסרה מהרישום…", `removeMachine('${macEnc}')`, "danger"]);
   }
   return { attrs: `data-mac="${esc(m.mac)}"${sel ? ' class="sel"' : ""}`, cells: [
@@ -3959,6 +4074,9 @@ function machines(tab = 0) {
     if (g) return groupPage(g, tab);
     MACHINES_CLASS = null;
   }
+  /* ‏#1485: העלים "מחשבי בנייה" / "מחשבי שיכפול" בעץ הם הדף של הקבוצה הקבועה (P.build / P.cloners). */
+  const fixedGroup = (MACHINES_ROLE === "build" || MACHINES_ROLE === "cloner") ? GROUPS.find((g) => g.role === MACHINES_ROLE) : null;
+  if (fixedGroup) return groupPage(fixedGroup, 0);
   const all = machinesScope(), count = (role) => all.filter((m) => machineRole(m) === role).length;
   const classN = classroomsOn() ? GROUPS.filter((g) => g.role === "classroom").length : 0;
   const sub = MACHINES_ROLE
@@ -3972,18 +4090,13 @@ function machines(tab = 0) {
   const pill = (red ? UI.pill("err", `${red} ${red === 1 ? "דיסק אדום" : "דיסקים אדומים"}`) : "")
     + (unreg ? UI.pill("warn", `${unreg} ${unreg === 1 ? "לא רשום" : "לא רשומים"}`) : "");
   const addRole = MACHINES_ROLE === "build" || MACHINES_ROLE === "cloner" ? `role:'${MACHINES_ROLE}'` : "";
-  const roleGroup = MACHINES_ROLE ? GROUPS.find((g) => g.role === MACHINES_ROLE) : null;
-  const roleActions = MACHINES_ROLE === "build" && roleGroup ? `<button class="btn primary" onclick="openCapture().catch(e => toast(e.message))">+ קליטה</button><button class="btn" onclick="wakeGroup('${encodeId(roleGroup.id)}')">הער את כולם (WoL)</button>`
-    : MACHINES_ROLE === "cloner" && roleGroup ? `<button class="btn" onclick="wakeRoom()">הער את כולם (WoL)</button><button class="btn danger" onclick="poweroffRoom('${encodeId(roleGroup.id)}')">כיבוי כולם</button>` : "";
   const actions = (isAdmin()
-    ? roleActions + `<button class="btn primary" onclick="openAddMachine({${addRole}})">+ מחשב</button>${!MACHINES_ROLE && classroomsOn() ? `<button class="btn" onclick="addGroupSheet()">+ כיתה</button>` : ""}${MACHINES_ROLE ? "" : `<button class="btn" onclick="openAddMachine({${addRole}${addRole ? "," : ""}tab:1})">ייבוא בהדבקה</button><a class="btn" href="/api/console/machines.csv" download>ייצוא CSV</a>`}`
+    ? `<button class="btn primary" onclick="openAddMachine({${addRole}})">+ מחשב</button>${!MACHINES_ROLE && classroomsOn() ? `<button class="btn" onclick="addGroupSheet()">+ כיתה</button>` : ""}${MACHINES_ROLE ? "" : `<button class="btn" onclick="openAddMachine({${addRole}${addRole ? "," : ""}tab:1})">ייבוא בהדבקה</button><a class="btn" href="/api/console/machines.csv" download>ייצוא CSV</a>`}`
     : "") + `<button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>`;
   const name = MACHINES_ROLE ? ROLE_PAGE_HE[MACHINES_ROLE] : "מחשבים";
   const header = UI.objHeader({ crumbs, icon: "machine", name, sub: esc(sub.join(" · ")), pill, actions, tabs: machinesTabs(), tab });
   const redTab = MACHINES_ROLE ? 1 : 2;
-  const roleCards = MACHINES_ROLE === "build" && roleGroup ? buildersCard(roleGroup, all)
-    : MACHINES_ROLE === "cloner" && roleGroup ? clonerGridCard(roleGroup, all, false) : "";
-  const body = (!MACHINES_ROLE && tab === 1) ? seenDevicesCard() : tab === redTab ? diskFailuresCard() + shrinkRecordsCard() : roleCards || machinesTableCard();
+  const body = (!MACHINES_ROLE && tab === 1) ? seenDevicesCard() : tab === redTab ? diskFailuresCard() + shrinkRecordsCard() : machinesTableCard();
   return `<div class="page">${header}<div class="body">${body}</div></div>`;
 }
 function clearMachinesFilter() {
@@ -4021,8 +4134,7 @@ function openClass(gidEnc) {
 /* ---------- הקבוצה כאובייקט (class.md, cloners.md, builders.md) — groupPage מקבל קבוצה, והתוכן לפי role ---------- */
 function groupTabs(g) {
   if (g.role === "classroom") return ["סיכום", "מחשבים", "סבבים"];
-  if (g.role === "cloner") return ["סיכום", "מגירות", "סבבים"];
-  if (g.role === "build") return ["סיכום", "קליטות"];
+  if (g.role === "cloner" || g.role === "build") return [];   // #1485: P.cloners / P.build — דף אחד בלי לשוניות
   return ["סיכום", "מחשבים"];
 }
 function groupKpis(g, kids) {
@@ -4074,18 +4186,16 @@ function roomHistoryHtml() {
       `${h.written_drives || 0}/${h.target_drives || 0}`, active && h === active ? "פעיל" : esc(roomRoundMinutes(h)), active && h === active ? UI.pill("info", WAVE_HE[h.wave_state] || "פעיל") : roomRoundResult(h),
       `<span class="mono">${esc(h.created_at ? (isToday(h.created_at) ? fmtClock(h.created_at) : fmtDate(h.created_at)) : "—")}</span>`]) });
 }
-/* ציר הסבבים: הסבב הפעיל (כיתה — /overview.session; משכפלים — /room.round) + ההיסטוריה (משכפלים — /room/history; אחרים — "דורש API"). */
+/* ציר הסבבים של קבוצה: הסבב הפעיל (/overview.session) + ההיסטוריה ("דורש API"). סבבי חדר המשכפלים —
+   בדף ההפצה (roomHistoryHtml); דף המשכפלים לפי המוקאפ אינו מציג אותם (#1485). */
 function groupRoundsCard(g, cls) {
-  const s = groupSession(g.id), r = g.role === "cloner" ? roomRound() : null;
+  const s = groupSession(g.id);
   const events = [];
   if (s) events.push({ t: "עכשיו", cls: s.state === "failed" ? "err" : "info", text: `${esc(sessionImage(s))} · ${esc(sessionStateText(s))}, ${s.joined || 0}/${sessionExpected(s)} הצטרפו · ${UI.link("לסבב", "selectPageById('deploy')")}`, who: "" });
-  if (r) events.push({ t: "עכשיו", cls: r.state === "failed" ? "err" : ROOM.stream_stalled ? "warn" : "info", text: `${esc(r.image_name || r.image_id || "")} · גל ${r.wave_number || 1} · ${r.state === "failed" ? esc(`נכשל: ${r.failed_reason || "סיבה לא ידועה"}`) + " · " : ""}${r.written_drives || 0}/${r.target_drives || 0} נכתבו${ROOM.stream_stalled ? " · הזרם עצר" : ""} · ${UI.link("לסבב", "selectPageById('deploy')")}`, who: r.opened_by || "" });
   const now = events.length ? UI.timeline(events) + `<div style="margin-top:12px"></div>` : "";
-  const unread = g.role === "cloner" && ROOM == null ? UI.note("warn", "החדר לא נקרא — הסבב הפעיל לא ידוע.") + `<div style="margin-top:12px"></div>` : "";
   const what = g.role === "classroom" ? "לכיתה" : "לקבוצה";
-  const note = g.role === "cloner" ? roomHistoryHtml()
-    : UI.note("info", `היסטוריית סבבים ${what} — <b title="אין endpoint לסבבים סגורים לפי קבוצה">דורש API</b> (היום רק ${UI.link("ביומן", "selectPageById('logs')")}).`);
-  return UI.card({ title: g.role === "classroom" ? "סבבים של הכיתה" : g.role === "cloner" ? "סבבים בחדר" : "סבבים", cls, body: unread + now + note });
+  const note = UI.note("info", `היסטוריית סבבים ${what} — <b title="אין endpoint לסבבים סגורים לפי קבוצה">דורש API</b> (היום רק ${UI.link("ביומן", "selectPageById('logs')")}).`);
+  return UI.card({ title: g.role === "classroom" ? "סבבים של הכיתה" : "סבבים", cls, body: now + note });
 }
 /* הכיתה (class.md): KPI, הטבלה שטוחה, סבבים. */
 function classView(g, kids, tab) {
@@ -4105,9 +4215,11 @@ function classView(g, kids, tab) {
 function groupPage(g, tab = 0) {
   const kids = (MACHINES || []).filter((m) => machineGroupId(m) === g.id);
   const view = g.role === "cloner" ? clonersView(g, kids, tab) : g.role === "build" ? buildersView(g, kids, tab) : classView(g, kids, tab);
+  /* ‏#1485: הקבוצות הקבועות הן הדפים "מחשבי בנייה" / "מחשבי שיכפול" של המוקאפ — אותו שם ושביל כמו העלה בעץ. */
+  const fixed = g.role === "build" || g.role === "cloner", name = fixed ? ROLE_PAGE_HE[g.role] : g.label;
   const header = UI.objHeader({
-    crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "מלאי" }, { label: "מחשבים", onclick: "openMachinesPage()" }, { label: ROLE_GROUP_HE[g.role] || "קבוצות" }, { label: g.label }],
-    icon: g.role === "classroom" ? "group" : g.role === "build" ? "build" : "copy", name: g.label, sub: esc(view.sub), pill: view.pill,
+    crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "מלאי" }, { label: "מחשבים", onclick: "openMachinesPage()" }].concat(fixed ? [{ label: name }] : [{ label: ROLE_GROUP_HE[g.role] || "קבוצות" }, { label: g.label }]),
+    icon: g.role === "classroom" ? "group" : g.role === "build" ? "build" : "copy", name, sub: esc(view.sub), pill: view.pill,
     actions: view.actions + `<button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>`, tabs: groupTabs(g), tab });
   return `<div class="page">${header}<div class="body">${view.body}</div></div>`;
 }
@@ -4155,7 +4267,9 @@ function smartText(d) {
 /* מכונה · דיסק N · SATA N-1 של רשומת כשל (#874). */
 function failureWhere(f) {
   const m = findMachine(f.mac);
-  return (m ? machineName(m) : f.mac) + (f.port != null ? ` · ${slotLabel(m, Number(f.port), null)} · SATA ${f.port - 1}` : "");
+  if (f.port == null) return m ? machineName(m) : f.mac;
+  const mapped = m && failureSlot(m, f) != null;
+  return (m ? machineName(m) : f.mac) + ` · ${m ? failureLabel(m, f) : `SATA ${f.port - 1}`}${mapped ? ` · SATA ${f.port - 1}` : ""}`;
 }
 function groupFailures(kids) {
   const macs = new Set(kids.map((m) => m.mac));
@@ -4164,25 +4278,16 @@ function groupFailures(kids) {
 }
 /* החריצים של משכפל, לפי "דיסק N". בסבב — drawer_list מ-/room (מצב, בייטים, SMART,
    CRC לכל מגירה); בלי סבב — /machines[].disks[] (dev, size, model, serial, port, smart).
-   מספר החריצים: drawer_count שהוגדר; ואם לא — הפורט הגבוה ביותר או מספר הדיסקים
-   (ברירת המחדל של השרת, #710). דיסק בפורט גבוה מהמוגדר אינו מוסתר. */
+   ‏#1485: השורות לפי המיפוי (driveRows) — דיסק 1..N, ואחריהם כונן שאינו ממופה (‏n=null,
+   "SATA n (לא ממופה)") וכונן CD/DVD. כונן לא ממופה אינו מוסתר ואינו מקבל מספר מנוחש. */
 function machineSlots(m) {
   const rm = roomMachine(m.mac);
   const live = !!(roomRound() && rm && Array.isArray(rm.drawer_list));
-  const src = live ? rm.drawer_list : (m.disks || []);
-  const byN = new Map();
-  src.forEach((d, i) => { const n = diskSlot(d, i); if (!byN.has(n)) byN.set(n, d); });
-  const ports = [...byN.keys()];
-  const declared = m.drawer_count != null ? Number(m.drawer_count) : 0;   // לא ברירת המחדל של השרת (1) — מכונה שלא דיווחה ולא הוגדרה מקבלת הודעה, לא חריץ מומצא
-  const total = Math.max(declared, ports.length ? Math.max(...ports) : 0);
+  const src = live ? rm.drawer_list : m.disks;
+  const mm = rm && Array.isArray(rm.drawer_slots) ? { ...m, drawer_slots: rm.drawer_slots } : m;
   const fails = machineDiskFailures(m);
-  const slots = [];
-  for (let n = 1; n <= total; n++) {
-    const d = byN.get(n) || null;
-    const fail = fails.find((f) => failureSlot(m, f) === n || (d && f.serial && f.serial === d.serial)) || null;
-    slots.push({ n, disk: d, live: live && d ? d : null, fail });
-  }
-  return { slots, live, declared: m.drawer_count != null };
+  const slots = driveRows(mm, src).map((r) => ({ ...r, live: live && r.disk ? r.disk : null, fail: r.optical ? null : rowFailure(m, r, fails) }));
+  return { slots, live, declared: true };
 }
 /* צבע החריץ: אדום (נכשל בעבר / נכשל בסבב) > כתום (SMART fail = F1 (#1366), אזהרה, CRC עלה/חשוד)
    > כחול (כותב/מאמת) > ירוק (SMART תקין / נכתב) > אפור (לא נבדק) · מקווקו = ריק. */
@@ -4210,9 +4315,10 @@ function linkText(d) {
    השאר (דגם, מספר סידורי, SATA, SMART, סיבת כשל) עובר ל-title (tooltip)
    ולמגירה (disksHtml) שלא השתנתה. */
 function diskTitle(m, s, d) {
-  if (!d) return `דיסק ${s.n} · SATA ${s.n - 1} · ${m.disks == null ? "לא דווח" : "ריק"}`;
+  if (s.optical) return ["כונן CD/DVD", rowConn(s), s.optical.model || "", s.n != null ? `ממופה כדיסק ${s.n} — לא יעד` : ""].filter(Boolean).join(" · ");
+  if (!d) return `דיסק ${s.n} · ${rowConn(s)} · ${m.disks == null ? "לא דווח" : "ריק"}`;
   /* ‏#704: מלבן עם שם — ה-tooltip פותח ב"דיסק N", כדי שהמספר לא ייעלם. */
-  const parts = [slotName(m, s.n, d) ? `דיסק ${s.n}` : "", `SATA ${s.n - 1}`, d.model || "", d.serial || ""].filter(Boolean);
+  const parts = [s.n != null && slotName(m, s.n, d) ? `דיסק ${s.n}` : "", s.n != null ? rowConn(s) : `${rowConn(s)} — לא ממופה לאף דיסק`, d.model || "", d.serial || ""].filter(Boolean);
   if (s.fail) parts.push(`אדום ${fmtDate(s.fail.at)} · ${failureCauseText(s.fail)}`);
   else if (d.state === "failed") parts.push(`נכשל בסבב${d.error ? " — " + d.error : ""}`);
   if (s.live && d.state && d.state !== "failed") parts.push(DRAWER_STATE_HE[d.state] || d.state);
@@ -4235,7 +4341,8 @@ function driversOutcomeText(o) {
 }
 function slotHtml(m, s, admin) {
   const cls = slotClass(s), d = s.disk, title = esc(diskTitle(m, s, d));
-  if (!d) return `<div class="disk empty" data-slot="${s.n}" title="${title}"><b>${esc(slotLabel(m, s.n, null))}</b><span class="cap">${m.disks == null ? "לא דווח" : "ריק"}</span></div>`;
+  if (s.optical) return `<div class="disk empty" data-slot="${s.n ?? ""}" title="${title}"><b>${esc(rowLabel(m, s))}</b><span class="cap">${esc(rowConn(s))}</span></div>`;
+  if (!d) return `<div class="disk empty" data-slot="${s.n}" title="${title}"><b>${esc(rowLabel(m, s))}</b><span class="cap">${m.disks == null ? "לא דווח" : "ריק"}</span></div>`;
   const cap = d.size_bytes ? `<span class="cap mono">${ltr(marketedDiskSize(d.size_bytes))}</span>` : `<span class="cap">—</span>`;
   let bar = "";
   if (s.live && d.state) {
@@ -4243,7 +4350,7 @@ function slotHtml(m, s, admin) {
     bar = UI.barRow(pct, d.state === "failed" ? "err" : d.state === "done" ? "ok" : cls === "warn" ? "warn" : "");
   }
   const clear = s.fail && admin ? `<button class="btn sm" onclick="clearDiskFailure(${Number(s.fail.id)})">נקה</button>` : "";
-  return `<div class="disk ${cls}" data-slot="${s.n}" title="${title}"><b>${esc(slotLabel(m, s.n, d))}</b>${cap}${bar}${clear}</div>`;
+  return `<div class="disk ${cls}" data-slot="${s.n ?? ""}" title="${title}"><b>${esc(rowLabel(m, s))}</b>${cap}${bar}${clear}</div>`;
 }
 function clonerState(m) {
   const rm = roomMachine(m.mac);
@@ -4262,16 +4369,16 @@ function clonerCardHtml(m, admin, room = false) {
      לדעת אם נכתב. נאמר לפי חריץ, מתחת לגריד (#1033: המלבן עצמו נשאר שתי שורות). ‏`=== null`
      ולא `!fresh`: ‏false = נכתב, ו-undefined = רשומת /machines שאין בה `fresh` כלל. */
   const unid = slots.filter((s) => s.disk && s.disk.fresh === null)
-    .map((s) => UI.note("warn", `<b>לא ניתן לזהות את הכונן בחריץ ${s.n}</b> — אין לו מספר סידורי, ולכן הסבב אינו יודע אם נכתב.`)).join("");
+    .map((s) => UI.note("warn", `<b>לא ניתן לזהות את הכונן ב${s.n != null ? `חריץ ${s.n}` : esc(rowConn(s))}</b> — אין לו מספר סידורי, ולכן הסבב אינו יודע אם נכתב.`)).join("");
   const failed = slots.filter((s) => s.disk && slotClass(s) === "err");
-  const failedLine = failed.map((s) => `<div class="machine-fail">דיסק ${s.n} אדום — נכשל בכתיבה</div>`).join("");
+  const failedLine = failed.map((s) => `<div class="machine-fail">${esc(rowLabel(m, s))} אדום — נכשל בכתיבה</div>`).join("");
   const roundProgress = st.round ? `<div class="machine-round">${esc(st.round)}</div>` : "";
   const body = slots.length ? `${roundProgress}<div class="slots">${slots.map((s) => slotHtml(m, s, admin)).join("")}</div>${failedLine}${unid}`
-    : UI.note("", `מספר החריצים לא הוגדר והמכונה ${m.disks == null ? "מעולם לא דיווחה על דיסקים" : "דיווחה: " + zeroDisksText(m)}.${admin ? ` ${UI.link("הגדר חריצים", `editDrawerCount('${macEnc}')`)}` : ""}`);
+    : UI.note("", `מספר החריצים לא הוגדר והמכונה ${m.disks == null ? "מעולם לא דיווחה על דיסקים" : "דיווחה: " + zeroDisksText(m)}.${admin ? ` ${UI.link("הגדר חריצים", `openMachineDetail('${macEnc}','disks')`)}` : ""}`);
   const wol = `<button class="btn sm" onclick="wakeMachine('${macEnc}')" title="WoL למכונה הזו בלבד (#984); לכל החדר — בכותרת">WoL</button>`;
   const acts = room
     ? (st.off && roomOperator() ? wol : "")
-    : admin ? `<button class="btn sm" onclick="openMachineDetail('${macEnc}')">פרטים</button><button class="btn sm" onclick="editDrawerCount('${macEnc}')">חריצים</button>${wol}` : "";
+    : admin ? `<button class="btn sm" onclick="openMachineDetail('${macEnc}')">פרטים</button><button class="btn sm" onclick="openMachineDetail('${macEnc}','disks')">חריצים</button>${wol}` : "";
   if (!room) return `<div class="mcard${st.cls ? "" : " off"}" data-mac="${esc(m.mac)}"><div class="mcard-h"><span class="st ${st.cls}"><b>${esc(machineName(m) || m.mac)}</b></span><span class="muted">${meta}</span></div>${body}${acts ? `<div class="acts">${acts}</div>` : ""}</div>`;
   const details = meta.split(" · ").slice(1).join(" · ");
   return `<div class="mcard${st.off ? " off" : ""}${failed.length ? " err" : ""}" data-mac="${esc(m.mac)}"><div class="mcard-h"><b>${esc(machineName(m) || m.mac)}</b>${UI.pill(st.cls, st.text)}${details ? `<span class="muted">${details}</span>` : ""}</div>${body}${acts ? `<div class="acts">${acts}</div>` : ""}</div>`;
@@ -4279,52 +4386,74 @@ function clonerCardHtml(m, admin, room = false) {
 function clonerLegend() {
   return `<div class="legend"><span><i class="sw-ok"></i>SMART תקין / נכתב</span><span><i class="sw-run"></i>כותב</span><span><i class="sw-warn"></i>אזהרה — כותב</span><span><i class="sw-err"></i>אדום — נכשל, מדלג</span><span><i class="sw-empty"></i>חריץ ריק</span></div>`;
 }
-function clonerGridCard(g, kids, big) {
-  const admin = isAdmin(), r = roomRound();
-  const small = ROOM == null ? "החדר לא נקרא — הדיסקים לפי הדיווח האחרון ב-hello" : r ? "בסבב — מצב כל מגירה מ-/room" : "אין סבב — הדיסקים לפי הדיווח האחרון ב-hello";
-  const body = kids.length ? `<div class="mgrid${big ? " big" : ""}">${sortMachinesBySuffix(kids).map((m) => clonerCardHtml(m, admin)).join("")}</div>`
+/* ‏#1485 (נדב 16/10): דף "מחשבי שיכפול" לפי המוקאפ המאושר (docs/design/apple-mockups/console-full.html,
+   ‏P.cloners): כרטיס "המחשבים והחריצים" — כרטיס לכל מכונה (שם + מצב, MAC, שורת דיסק לכל חריץ:
+   "דיסק N" · פס · מצב), לחיצה פותחת את הפאנל, "חריצים" פותח אותו בלשונית "דיסקים" — ושם
+   המיפוי לחיבורים. אחריו "מחשבים שלא דיווחו" עם WoL. סבב נפתח מדף ההפצה; היסטוריית הסבבים שם. */
+const MACH_PILL = { ok: "ok", warn: "warn", err: "err", run: "info" };
+function dskRowHtml(m, s) {
+  const d = s.disk, title = esc(diskTitle(m, s, d));
+  const row = (label, bar, status, cls = "") => `<div class="dsk${cls ? " " + cls : ""}" data-slot="${s.n ?? ""}" title="${title}"><span>${esc(label)}</span>${bar}<b>${esc(status)}</b></div>`;
+  const full = (cls) => `<div class="bar ${cls}"><i style="--w:100%"></i></div>`, none = `<div class="bar"><i style="--w:0%"></i></div>`;
+  if (s.optical) return row("CD/DVD", none, rowConn(s), "opt");
+  if (s.n == null) return row(rowLabel(m, s).replace(/ \(לא ממופה\)$/, ""), none, "לא ממופה", "unmapped");
+  if (!d) return row(slotLabel(m, s.n, null), none, m.disks == null ? "לא דווח" : "ריק", "vacant");
+  const cls = slotClass(s);
+  if (s.live && d.state) {
+    const pct = d.bytes_total > 0 ? Math.round(100 * (d.bytes_written || 0) / d.bytes_total) : d.state === "done" ? 100 : 0;
+    const status = d.state === "failed" ? "נכשל" : d.state === "done" ? "נכתב" : d.state === "verifying" ? "מאמת" : `${pct}%`;
+    return row(slotLabel(m, s.n, d), `<div class="bar ${d.state === "failed" ? "err" : d.state === "done" ? "ok" : cls === "warn" ? "warn" : ""}"><i style="--w:${d.state === "failed" ? 100 : pct}%"></i></div>`, status);
+  }
+  const status = cls === "err" ? "אדום" : cls === "warn" ? "אזהרה" : cls === "ok" ? "תקין" : "לא נבדק";
+  return row(slotLabel(m, s.n, d), full(cls === "err" ? "err" : cls === "warn" ? "warn" : cls === "ok" ? "ok" : "idle"), status);
+}
+function clonerMachHtml(m, admin) {
+  const macEnc = encodeId(m.mac), st = clonerState(m), { slots } = machineSlots(m);
+  const red = slots.some((s) => s.disk && slotClass(s) === "err");
+  const unid = slots.filter((s) => s.disk && s.disk.fresh === null)
+    .map((s) => `<div class="mach-note">לא ניתן לזהות את הכונן ב${s.n != null ? `חריץ ${s.n}` : esc(rowConn(s))} — אין לו מספר סידורי</div>`).join("");
+  const rows = slots.length ? slots.map((s) => dskRowHtml(m, s)).join("")
+    : `<div class="mach-note">${m.disks == null ? "מעולם לא דיווח על דיסקים" : esc(zeroDisksText(m))}</div>`;
+  const open = admin ? ` role="button" tabindex="0" onclick="openMachineDetail('${macEnc}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openMachineDetail('${macEnc}')}"` : "";
+  const acts = admin ? `<div class="acts"><button class="btn sm" type="button" onclick="event.stopPropagation();openMachineDetail('${macEnc}','disks')">חריצים</button></div>` : "";
+  return `<div class="mach${red ? " err" : !st.cls ? " off" : ""}" data-mac="${esc(m.mac)}"${open}><div class="mt"><span>${esc(machineName(m) || m.mac)}</span>${UI.pill(MACH_PILL[st.cls] || "", st.text)}${red ? UI.pill("err", "דיסק אדום") : ""}</div><div class="ms mono">${esc(m.mac)}</div><div class="dsks">${rows}</div>${unid}${acts}</div>`;
+}
+function clonerGridCard(g, kids) {
+  const admin = isAdmin();
+  const body = kids.length ? `<div class="rgrid">${sortMachinesBySuffix(kids).map((m) => clonerMachHtml(m, admin)).join("")}</div>`
     : UI.empty("אין מחשבי שיכפול רשומים — הוסיפו את הראשון (MAC + שם).", admin ? `<button class="btn primary" onclick="openAddMachine({group:'${encodeId(g.id)}'})">+ מחשב שיכפול</button>` : "");
-  return UI.card({ title: "המחשבים והחריצים", small, acts: clonerLegend(), cls: "c12", body });
+  return UI.card({ title: "המחשבים והחריצים", small: admin && kids.length ? "לחיצה על כרטיס פותחת פרטים" : "", cls: "c12", body });
+}
+/* מחשב "לא דיווח": אין hello מעל 10 דקות (‏/net.last_seen), או שלא נראה מעולם. ‏/net לא נקרא = לא נבדק. */
+function silentMachines(kids) {
+  if (!NET) return null;
+  return kids.filter((m) => { const n = netFor(m.mac); return !n || !n.last_seen || Date.now() - new Date(n.last_seen).getTime() > 10 * 60000; });
+}
+function silentCard(kids) {
+  const admin = isAdmin(), silent = silentMachines(kids);
+  const body = silent == null ? UI.note("warn", "רשימת הרשת לא נקראה — אי אפשר לדעת מי לא דיווח")
+    : !silent.length ? UI.empty("מחשב ללא hello מעל 10 דקות יופיע כאן עם אפשרות להעיר אותו (WoL).", "", "כל המחשבים הרשומים דיווחו")
+    : UI.datagrid({ columns: ["מחשב", "נראה לאחרונה", ""], rows: sortMachinesBySuffix(silent).map((m) => { const n = netFor(m.mac); return [
+      `<b>${esc(machineName(m) || m.mac)}</b>`, esc(seenAgo(n && n.last_seen)),
+      admin ? `<button class="btn sm" onclick="wakeMachine('${encodeId(m.mac)}')">WoL</button>` : ""]; }) });
+  return UI.card({ title: "מחשבים שלא דיווחו", cls: "c12", flush: !!(silent && silent.length), body });
 }
 function clonerStats(kids) {
   const all = kids.map((m) => machineSlots(m).slots);
   const count = (fn) => all.reduce((n, slots) => n + slots.filter(fn).length, 0);
   return {
-    slots: count(() => true), filled: count((s) => s.disk), redInSlot: count((s) => s.fail),
-    writing: count((s) => s.live && (s.live.state === "writing" || s.live.state === "verifying")),
-    failedNow: count((s) => s.live && s.live.state === "failed"),
+    slots: count((s) => s.n != null), filled: count((s) => s.disk), redInSlot: count((s) => s.fail),
     on: MONITOR_ROWS ? kids.filter((m) => (monitorRow(m.mac) || {}).online).length : null,
   };
 }
-function clonerKpis(kids, st, fails) {
-  const r = roomRound(), admin = isAdmin();
-  const off = MONITOR_ROWS ? kids.filter((m) => !(monitorRow(m.mac) || {}).online).map(machineName) : [];
-  const k1 = st.on == null ? UI.kpi({ label: "מחוברים", value: "לא נקרא", sub: "‏/monitor/machines לא נטען" })
-    : UI.kpi({ cls: st.on ? "ok" : "", label: "מחוברים", value: st.on, unit: `/ ${kids.length}`, sub: !kids.length ? "אין מחשבי שיכפול" : off.length ? `${esc(off.join(", "))} — ${off.length === 1 ? "לא מחובר" : "לא מחוברים"}` : "כל המשכפלים מחוברים" });
-  const k2 = ROOM == null ? UI.kpi({ label: "סבב פעיל", value: "לא נקרא", sub: "‏/room לא נטען" })
-    : r ? UI.kpi({ cls: ROOM.stream_stalled ? "warn" : "info", label: "סבב פעיל", value: `גל ${r.wave_number || 1}`, sub: `${esc(r.image_name || r.image_id || "")} · ${r.written_drives || 0} נכתבו · ${r.remaining_drives != null ? r.remaining_drives : "?"} נשארו${ROOM.stream_stalled ? " · הזרם עצר" : ""} · ${UI.link("לסבב", "selectPageById('deploy')")}` })
-    : UI.kpi({ label: "סבב פעיל", value: "אין", sub: admin ? UI.link("פתח סבב במשכפלים…", "openRoomRound()") : "" });
-  const k3 = UI.kpi({ cls: st.redInSlot ? "warn" : st.filled ? "ok" : "", label: "דיסקים בחריצים", value: st.filled, unit: `/ ${st.slots}`,
-    sub: st.slots ? `${st.writing} כותבים · ${st.redInSlot} אדומים · ${st.slots - st.filled} ריקים` : "לא הוגדרו חריצים ולא דווחו דיסקים" });
-  const k4 = DISK_FAILURES == null ? UI.kpi({ label: "דיסקים אדומים", value: "לא נקרא", sub: "רשימת הכשלים לא נטענה" })
-    : fails.length ? UI.kpi({ cls: "err", label: "דיסקים אדומים", value: fails.length, sub: esc(fails.map(failureWhere).join(" · ")) })
-    : UI.kpi({ cls: st.filled ? "ok" : "", label: "דיסקים אדומים", value: st.filled ? "אין" : "לא דווחו", sub: st.filled ? "אף דיסק בחדר לא נכשל בכתיבה" : "אף משכפל לא דיווח על דיסקים" });
-  const waiting = kids.filter((m) => m.prompt).length, stalled = ROOM && ROOM.stream_stalled ? 1 : 0;
-  const care = waiting + fails.length + st.failedNow + stalled;
-  const careSub = [waiting ? `${waiting} ממתינים למפעיל` : "", fails.length ? `${fails.length} אדומים` : "", st.failedNow ? `${st.failedNow} נכשלו בסבב` : "", stalled ? "הזרם עצר" : ""].filter(Boolean).join(" · ");
-  return k1 + k2 + k3 + k4 + UI.kpi({ cls: care ? "warn" : "", label: "דורש טיפול", value: care, sub: careSub || "אין ממתינים, אדומים או כשלים" });
-}
-function clonersView(g, kids, tab) {
+function clonersView(g, kids) {
   const gidEnc = encodeId(g.id), admin = isAdmin(), r = roomRound(), st = clonerStats(kids), fails = groupFailures(kids);
-  const sub = ["קבוצה קבועה", `${kids.length} ${kids.length === 1 ? "מחשב" : "מחשבים"}`, `${st.slots} חריצים`, st.on == null ? "מחוברים: לא נקרא" : `${st.on} מחוברים`,
-    `${st.filled} דיסקים בחריצים`, DISK_FAILURES ? `${fails.length} אדומים` : "אדומים: לא נקרא"].join(" · ");
+  const sub = [`${kids.length} ${kids.length === 1 ? "מחשב" : "מחשבים"}`, st.on == null ? "מחוברים: לא נקרא" : `${st.on} מחוברים`,
+    DISK_FAILURES ? (fails.length === 1 ? "דיסק אדום אחד" : `${fails.length} דיסקים אדומים`) : "אדומים: לא נקרא"].join(" · ");
   const pill = r ? UI.pill(ROOM.stream_stalled ? "warn" : "info", `סבב פעיל — גל ${r.wave_number || 1}, ${r.written_drives || 0}/${r.target_drives || 0}${ROOM.stream_stalled ? " · הזרם עצר" : ""}`)
     : ROOM == null ? UI.pill("", "החדר לא נקרא") : "";
-  const actions = admin ? `<button class="btn primary" onclick="openRoomRound()">פתח סבב במשכפלים…</button><button class="btn" onclick="wakeRoom()">הער את כולם (WoL)</button><button class="btn" onclick="openAddMachine({group:'${gidEnc}'})">+ מחשב שיכפול</button><button class="btn danger" onclick="poweroffRoom('${gidEnc}')">כיבוי כולם</button>` : "";
-  const body = tab === 1 ? clonerGridCard(g, kids, true)
-    : tab === 2 ? groupRoundsCard(g, "c12")
-    : `<div class="c12 kpis">${clonerKpis(kids, st, fails)}</div>` + clonerGridCard(g, kids, false) + diskFailuresCard(kids, "c8") + groupRoundsCard(g, "c4");
-  return { sub, pill, actions, body };
+  const actions = admin ? `<button class="btn" onclick="openAddMachine({group:'${gidEnc}'})">+ מחשב שיכפול</button><button class="btn danger" onclick="poweroffRoom('${gidEnc}')">כיבוי כולם…</button>` : "";
+  return { sub, pill, actions, body: clonerGridCard(g, kids) + silentCard(kids) };
 }
 /* ‏#980 §1: כיבוי כל המשכפלים — **דרך הסוכן**: השרת רושם בקשה, היא נוסעת ב-hello הבא של כל
    משכפל, והסוכן דורך WoL (arm_wol, #587) ורק אז נכבה. לא poweroff -f מהשרת. התשובה היא כמה
@@ -4342,8 +4471,10 @@ function poweroffRoom(gidEnc) {
 /* חלון "התחל סבב" משותף לדף ההפצה ולמסך החדר; כל ההתנהגות נשארת בתוכו. */
 function openRoomRound() {
   if (!roomOperator() || ROOM == null || roomRound()) return;
-  openModalContent("התחל סבב", roomNewWindow(roomMachines()), "סגירה", "closeModal()", false,
+  const kids = roomMachines();
+  openModalContent("התחל סבב", roomNewWindow(kids), "פתח סבב", "openRoomRoundSubmit()", false,
     "בחרו אימג׳, יעד ומגירות · מחשבים כבויים יידלקו ב-WoL", "wide");
+  roomFooterSync(kids);
 }
 /* רענון חי: /room כל 2 שניות כשאובייקט המשכפלים פתוח (כמו /overview בדף ההפצה); רינדור רק על שינוי. */
 async function refreshGroupLive() {
@@ -4372,8 +4503,8 @@ function activeTasks(kids) { return groupTasks(kids).filter((t) => t.state === "
 /* "דיסק N" לפי הדיווח האחרון של המכונה; כשהמכונה לא דיווחה — שם ההתקן שנבחר בקליטה, כמו שהוא. */
 function taskDisk(t) {
   const m = findMachine(t.mac);
-  const i = m && Array.isArray(m.disks) ? m.disks.findIndex((d) => d.dev === t.disk) : -1;
-  return i >= 0 ? `דיסק ${diskSlot(m.disks[i], i)}` : t.disk ? `<span class="mono">${esc(t.disk)}</span>` : "—";
+  const d = m && Array.isArray(m.disks) ? m.disks.find((x) => x.dev === t.disk) : null;
+  return d ? esc(diskLabel(m, d)) : t.disk ? `<span class="mono">${esc(t.disk)}</span>` : "—";
 }
 function taskWho(t) { const m = findMachine(t.mac); return m ? machineName(m) || m.mac : t.machine || t.mac || ""; }
 function fmtDuration(from, to) {
@@ -4433,49 +4564,48 @@ function beforeCaptureHtml(m) {
   }, "NTFS לא נבדק");
   return `${used} · ${ntfs}`;
 }
-function captureNowCard(kids) {
-  const admin = isAdmin(), active = activeTasks(kids);
-  if (!CAPTURE_TASKS_READ) return UI.card({ title: "קליטה בתהליך", cls: "c12", body: UI.note("warn", "רשימת הקליטות לא נקראה") });
-  if (!active.length) return UI.card({ title: "קליטה בתהליך", cls: "c12", body: UI.empty('אין קליטה בתהליך — "+ קליטת אימג\'…" פותחת אחת; המשימה ממתינה שמחשב הבנייה יעלה ב-PXE.',
-    admin ? `<button class="btn primary" onclick="openCapture().catch(e => toast(e.message))">+ קליטת אימג'…</button>` : "") });
-  const items = active.map((t) => {
-    const who = taskWho(t), waiting = t.state === "pending", v = Progress.view(t);
-    const head = waiting ? UI.status("warn", `ממתין ש${who} יעלה ב-PXE`) : UI.status("run", `נקלט מ${who} · ${v.label}`);
-    const kv = UI.kv([
-      ["מחשב · דיסק", `${esc(who)} · ${taskDisk(t)}`],
-      ["התקדמות", waiting ? `<span class="muted">טרם החלה</span>` : Progress.bar(t) + `<span class="cap">${esc(v.label)}</span>`],
-      ["נקראו", waiting ? `<span class="muted">—</span>` : ltr(fmtBytes(t.bytes_written))],
-      ["משך", waiting ? `<span class="muted">—</span>` : esc(fmtDuration(t.created_at, t.updated_at))],
-      ["נוצרה", `${ltr(fmtWhen(t.created_at))} (${esc(ago(t.created_at))})`],
-      ["שלבים", captureStagesHtml(t)],
-    ]);
-    const acts = admin ? `<div class="acts"><button class="btn danger" onclick="cancelCaptureVerified('${encodeId(t.id)}')">בטל קליטה</button><button class="btn" onclick="wakeMachine('${encodeId(t.mac)}')">WoL ל-${esc(who)}</button></div>` : "";
-    return `<div class="cap-now" data-task="${esc(t.id)}"><div class="mcard-h"><b>${esc(t.name || "")}</b>${head}</div>${kv}${acts}</div>`;
-  });
-  return UI.card({ title: active.length === 1 ? "קליטה בתהליך" : `${active.length} קליטות בתהליך`, cls: "c12", body: items.join("") });
+/* ‏#1485 (נדב 16/10): דף "מחשבי בנייה" לפי המוקאפ (‏P.build): כרטיס לכל מחשב — כתובת, MAC,
+   דיסקים (לפי המיפוי, כונן CD/DVD בשמו — לא "ריק" ולא חריץ דיסק), קליטה אחרונה (או הקליטה שרצה
+   עכשיו, עם שלביה), ושלושה כפתורים: קליטה · פתח פרטים · שינוי שם. "לפני קליטה" (#980 §6) נשאר
+   כשורה נוספת — הרחבה למוקאפ. קליטה ממחשב כבוי מותרת: המשימה ממתינה ל-PXE (זו הזרימה). */
+function builderDrivesHtml(m) {
+  const rows = driveRows(m, m.disks);
+  if (m.disks == null && !rows.some((r) => r.optical)) return `<span class="muted">לא דיווח</span>`;
+  const shown = rows.filter((r) => r.disk || r.optical);
+  if (!shown.length) return `<span class="muted">${esc(m.disks && !m.disks.length ? zeroDisksText(m) : "אין כוננים בחריצים")}</span>`;
+  return `<ul class="drv-list">${shown.map((r) => {
+    if (r.optical) return `<li><b>כונן CD/DVD</b> <span class="muted">· ${esc(rowConn(r))}${r.optical.model ? ` · <bdi>${esc(r.optical.model)}</bdi>` : ""}</span></li>`;
+    const d = r.disk;
+    return `<li${r.n == null ? ' class="warn"' : ""}><b>${esc(rowLabel(m, r))}</b> · ${ltr(marketedDiskSize(d.size_bytes))} · <bdi>${esc(diskBrand(d.model))}</bdi>${r.n != null ? ` <span class="muted">· ${esc(rowConn(r))}</span>` : ""}</li>`;
+  }).join("")}</ul>`;
+}
+function builderCaptureHtml(m, admin) {
+  const task = activeTasks([m])[0] || null;
+  if (task) {
+    const v = Progress.view(task), waiting = task.state === "pending";
+    return `<div>${esc(task.name || "")} · ${waiting ? "ממתין ל-PXE" : `${esc(v.label)} עכשיו`}</div>${waiting ? "" : Progress.bar(task)}<div class="cap">${captureStagesHtml(task)}</div>`
+      + (admin ? `<div>${UI.link("ביטול הקליטה…", `cancelCaptureVerified('${encodeId(task.id)}')`)}</div>` : "");
+  }
+  if (!CAPTURE_TASKS_READ) return `<span class="muted">לא נקרא</span>`;
+  const last = groupTasks([m]).filter((t) => t.state === "done").sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)))[0];
+  return last ? `${esc(last.name || "")} · ${esc(fmtDate(last.updated_at))}` : "—";
 }
 function builderCardHtml(m, admin) {
-  const macEnc = encodeId(m.mac), net = netFor(m.mac), st = machineState(m);
-  let d0 = null, n0 = 0;
-  (m.disks || []).forEach((d, i) => { const n = diskSlot(d, i); if (!d0 || n < n0) { d0 = d; n0 = n; } });
-  const inv = m.inventory, tpm = inv && inv.tpm, model = machineModel(m);
-  const task = activeTasks([m])[0] || null;
-  const state = `<span class="st ${esc(st.cls)}"><span class="clamp" title="${esc(st.text)}">${esc(st.text)}</span></span>` + (task ? " " + UI.pill(task.state === "pending" ? "warn" : "info", task.state === "pending" ? "קליטה ממתינה" : "קליטה רצה") : "");
-  const kv = UI.kv([
-    ["דגם", inv == null ? `<span class="muted">לא דיווח</span>` : esc(model || "—") + (tpm && tpm.present ? ` · TPM ${esc(tpm.version || "")}`.trimEnd() : "")],
-    ["לפני קליטה", beforeCaptureHtml(m)],
-    ["מצב", state],
-  ]);
-  const drives = slotsTableHtml(m, false, false, true);
-  const acts = admin ? `<div class="acts">${task ? "" : `<button class="btn sm primary" onclick="openCapture('${macEnc}').catch(e => toast(e.message))">קליטה</button>`}<button class="btn sm" onclick="openMachineDetail('${macEnc}')">פרטים</button><button class="btn sm" onclick="renameMachine('${macEnc}')">שינוי שם</button><button class="btn sm" onclick="wakeMachine('${macEnc}')">WoL</button></div>` : "";
-  const meta = [net && net.ip ? `<span class="mono">${esc(net.ip)}</span>` : "", esc(NET ? seenAgo(net && net.last_seen) : "לא נקרא")].filter(Boolean).join(" · ");
-  return `<div class="mcard${st.cls ? "" : " off"}" data-mac="${esc(m.mac)}"><div class="mcard-h"><span class="st ${st.cls}"><b>${esc(machineName(m) || m.mac)}</b></span><span class="muted">${meta}</span></div>${kv}<div class="machine-drives">${drives}</div>${acts}</div>`;
+  const macEnc = encodeId(m.mac), net = netFor(m.mac), st = machineState(m), task = activeTasks([m])[0] || null;
+  const kv = `<dl class="kvd">`
+    + `<dt>כתובת</dt><dd>${net && net.ip ? `<span class="mono">${esc(net.ip)}</span>` : "—"}</dd>`
+    + `<dt>MAC</dt><dd><span class="mono">${esc(m.mac)}</span></dd>`
+    + `<dt>דיסקים</dt><dd>${builderDrivesHtml(m)}</dd>`
+    + `<dt>קליטה אחרונה</dt><dd>${builderCaptureHtml(m, admin)}</dd>`
+    + `<dt>לפני קליטה</dt><dd>${beforeCaptureHtml(m)}</dd></dl>`;
+  const acts = admin ? `<div class="acts">${task ? "" : `<button class="btn primary" onclick="openCapture('${macEnc}').catch(e => toast(e.message))">קליטה</button>`}<button class="btn" onclick="openMachineDetail('${macEnc}')">פתח פרטים</button><button class="btn" onclick="renameMachine('${macEnc}')">שינוי שם</button></div>` : "";
+  const help = st.cls ? "" : `<p class="card-help">המחשב לא מחובר עכשיו — קליטה תמתין שיעלה ב-PXE.${admin ? ` אפשר להעיר אותו ${UI.link("דרך WoL", `wakeMachine('${macEnc}')`)}.` : ""}</p>`;
+  return `<div class="card bcard" data-mac="${esc(m.mac)}"><div class="card-h"><span>${esc(machineName(m) || m.mac)} ${UI.pill(MACH_PILL[st.cls] || "", st.text)}${task ? " " + UI.pill(task.state === "pending" ? "warn" : "info", task.state === "pending" ? "קליטה ממתינה" : "קליטה רצה") : ""}</span></div><div class="card-b">${kv}${acts}${help}</div></div>`;
 }
 function buildersCard(g, kids) {
   const admin = isAdmin();
-  const body = kids.length ? `<div class="mgrid wide">${sortMachinesBySuffix(kids).map((m) => builderCardHtml(m, admin)).join("")}</div>`
-    : UI.empty("אין מחשב בנייה רשום — הוסיפו אותו (MAC + שם) כדי לקלוט ממנו אימג'.", admin ? `<button class="btn primary" onclick="openAddMachine({group:'${encodeId(g.id)}'})">+ מחשב בנייה</button>` : "");
-  return UI.card({ title: "המחשבים", small: '"מחובר" מ-/monitor/machines · מה על המסך מ-hello', cls: "c12", body });
+  if (!kids.length) return UI.card({ title: "מחשבי בנייה", cls: "c12", body: UI.empty("אין מחשב בנייה רשום — הוסיפו אותו (MAC + שם) כדי לקלוט ממנו אימג'.", admin ? `<button class="btn primary" onclick="openAddMachine({group:'${encodeId(g.id)}'})">+ מחשב בנייה</button>` : "") });
+  return `<div class="c12 grid2">${sortMachinesBySuffix(kids).map((m) => builderCardHtml(m, admin)).join("")}</div>`;
 }
 function capturesTableCard(kids, cls) {
   const rows = groupTasks(kids).map((t) => ({ attrs: `data-task="${esc(t.id)}"`, cells: [
@@ -4490,23 +4620,14 @@ function capturesTableCard(kids, cls) {
     : UI.datagrid({ columns: ["אימג'", "תיקייה", "מחשב · דיסק", "מצב", "נקראו", "משך", "אזהרה / שגיאה", "מתי"], rows, empty: "אין קליטות עדיין — \"+ קליטת אימג'…\" פותחת את הראשונה" });
   return UI.card({ title: "קליטות אחרונות", small: "עד 20 האחרונות מ-/tasks", cls, flush: true, body });
 }
-function buildersView(g, kids, tab) {
-  const gidEnc = encodeId(g.id), admin = isAdmin(), active = activeTasks(kids);
+function buildersView(g, kids) {
+  const gidEnc = encodeId(g.id), admin = isAdmin();
   const on = MONITOR_ROWS ? kids.filter((m) => (monitorRow(m.mac) || {}).online).length : null;
-  const last = groupTasks(kids).filter((t) => t.state === "done").sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)))[0] || null;
-  const pending = active.filter((t) => t.state === "pending").length, running = active.length - pending;
-  const sub = ["קבוצה קבועה", `${kids.length} ${kids.length === 1 ? "מחשב" : "מחשבים"}`, on == null ? "מחוברים: לא נקרא" : `${on} מחוברים`,
-    !CAPTURE_TASKS_READ ? "קליטות: לא נקרא" : active.length ? [pending ? `${pending === 1 ? "קליטה אחת ממתינה" : `${pending} קליטות ממתינות`}` : "", running ? `${running === 1 ? "קליטה אחת רצה" : `${running} קליטות רצות`}` : ""].filter(Boolean).join(" · ") : "אין קליטה בתהליך",
-    last ? `אימג' אחרון שנקלט: ${last.name} (${fmtDate(last.updated_at)})` : ""].filter(Boolean).join(" · ");
+  const sub = [`${kids.length} ${kids.length === 1 ? "מחשב" : "מחשבים"}`, on == null ? "מחוברים: לא נקרא" : on === 1 ? "מחשב אחד מחובר" : `${on} מחוברים`].join(" · ");
+  const active = activeTasks(kids), pending = active.filter((t) => t.state === "pending").length;
   const pill = !active.length ? "" : active.length > 1 ? UI.pill("info", `${active.length} קליטות בתהליך`) : UI.pill(pending ? "warn" : "info", pending ? "קליטה ממתינה" : "קליטה רצה");
-  const actions = admin ? `<button class="btn primary" onclick="openCapture().catch(e => toast(e.message))">+ קליטת אימג'…</button><button class="btn" onclick="openDirectRound()">הפצה ישירה למשכפלים…</button><button class="btn" onclick="openAddMachine({group:'${gidEnc}'})">+ מחשב בנייה</button><button class="btn" onclick="wakeGroup('${gidEnc}')">הער את כולם (WoL)</button>` : "";
-  const body = tab === 1 ? capturesTableCard(kids, "c12") : captureNowCard(kids) + buildersCard(g, kids) + capturesTableCard(kids, "c12");
-  return { sub, pill, actions, body };
-}
-/* ‏#715 קיים ב-API (‏POST /room עם source.kind=build_disk) — הפתיחה נשארת בדף ההפצה ובמסך מחשב הבנייה. */
-function openDirectRound() {
-  selectPageById("deploy");
-  toast("הפצה ישירה מדיסק הבנייה נפתחת ממסך מחשב הבנייה או מדף ההפצה (#715)");
+  const actions = admin ? `<button class="btn" onclick="openAddMachine({group:'${gidEnc}'})">+ מחשב בנייה</button>` : "";
+  return { sub, pill, actions, body: buildersCard(g, kids) + capturesTableCard(kids, "c12") };
 }
 
 /* ---------- לשונית "נראו ברשת" — /net כ-datagrid; "רשום" הוא הפעולה הראשית לשורה לא רשומה ---------- */
@@ -4596,31 +4717,13 @@ function diskBoxesHtml(m) {
   if (!m.disks.length) return UI.note("warn", `המכונה דיווחה — ואין בה אף כונן: ${zeroDisksText(m)}.`);
   const fails = machineDiskFailures(m);
   const boxes = m.disks.map((d, i) => {
-    const n = diskSlot(d, i);
-    const red = fails.find((f) => failureSlot(m, f) === n);
+    const n = d.port != null ? Number(d.port) : i + 1;   // תחנת כיתה: בלי מיפוי (#1485 — משכפל/בנייה בלבד)
+    const red = fails.find((f) => (f.mac === m.mac && f.port != null ? Number(f.port) === n : f.serial && f.serial === d.serial));
     const cls = red ? "err" : d.smart === "ok" ? "ok" : d.smart === "warn" || d.smart === "fail" ? "warn" : "";   // #1366: fail = F1, orange
     const smart = d.smart === "fail" ? smartF1Text(d.smart_reason) : d.smart ? `SMART ${SMART_HE[d.smart] || d.smart}` : "SMART לא נבדק";
     return `<div class="disk ${cls}"><b>${esc(slotLabel(m, n, d))}</b><span>SATA ${n - 1}</span><span>${ltr(marketedDiskSize(d.size_bytes))}</span><span class="cap">${esc(d.model || "—")}${d.serial ? ` · <span class="mono">${esc(d.serial)}</span>` : ""}</span><span class="cap">${red ? `אדום — ${esc(failureCauseText(red))}` : esc(smart)}</span></div>`;
   }).join("");
   return `<div class="disks">${boxes}</div>`;
-}
-/* ‏#704 "חריצים וכוננים" (נדב 11/10): כל כונן שהסוכן דיווח — SATA לפי port, ואחריו
-   NVMe/USB לפי סוג החיבור — וחריצי SATA ריקים עד drawer_count. הסוכן מדווח רק
-   כוננים מחוברים (‏hello.disks), ולכן "ריק" נגזר מהמספר שהוגדר — ונאמר כך. */
-function connLabel(d) {
-  const nv = /^nvme(\d+)/.exec(d.dev || ""), mmc = /^mmcblk(\d+)/.exec(d.dev || "");
-  if (nv) return `NVMe ${nv[1]}`;
-  if (mmc) return `eMMC ${mmc[1]}`;
-  return d.removable ? "USB" : "ללא חריץ מזוהה";
-}
-function slotRows(m) {
-  const disks = Array.isArray(m.disks) ? m.disks : [], byPort = new Map(), rows = [];
-  disks.forEach((d) => { if (d.port != null && !byPort.has(Number(d.port))) byPort.set(Number(d.port), d); });
-  const declared = m.drawer_count != null ? Number(m.drawer_count) : 0;
-  const top = Math.max(declared, byPort.size ? Math.max(...byPort.keys()) : 0);
-  for (let p = 1; p <= top; p++) rows.push({ key: `sata:${p}`, conn: `SATA ${p - 1}`, n: p, disk: byPort.get(p) || null });
-  disks.forEach((d, i) => { if (d.port == null) rows.push({ key: slotKey(d), conn: connLabel(d), n: diskSlot(d, i), disk: d }); });
-  return rows;
 }
 function diskBrand(model) {
   const word = String(model || "").trim().split(/\s+/)[0];
@@ -4637,29 +4740,13 @@ function marketedDiskSize(bytes) {
   const match = sizes.find(([size]) => n <= size * 1.01);
   return match ? match[1] : fitsDisk(n).replace(" ", "");
 }
-function slotsTableHtml(m, admin, rename = true, allSmart = false) {
-  const slots = slotRows(m);
-  if (!slots.length && m.disks == null) return UI.note("", "המכונה מעולם לא דיווחה על כוננים.");
-  if (!slots.length) return UI.note("warn", `המכונה דיווחה — ואין בה אף כונן: ${zeroDisksText(m)}.`);
-  const rows = slots.map((r) => {
-    const d = r.disk, name = slotLabel(m, r.n, d);
-    const smart = !d ? "" : d.smart === "ok" ? (allSmart ? UI.status("ok", "SMART תקין") : "") : d.smart === "warn" ? UI.status("warn", "SMART אזהרה")
-      : ["fail", "failed_last"].includes(d.smart) ? UI.status("err", d.smart === "fail" ? "SMART תקלה" : SMART_HE[d.smart]) : allSmart ? UI.status("", "SMART לא נבדק") : "";
-    const serial = allSmart && d && d.serial ? ` <span class="cap mono" title="${esc(d.serial)}">${esc(d.serial)}</span>` : "";
-    const what = d ? `${esc(diskBrand(d.model))} ${ltr(marketedDiskSize(d.size_bytes))}${serial}${smart ? ` ${smart}` : ""}`
-      : `<span class="muted">${m.disks == null ? "לא דווח" : "ריק"}</span>`;
-    const act = admin && rename && r.key ? UI.link("שנה שם", `renameSlot('${encodeId(m.mac)}','${encodeId(r.key)}')`) : "";
-    return { attrs: `data-slot="${esc(encodeId(r.key || ""))}"`, cells: [`<b>${esc(name)}</b>`, `<span class="mono">${esc(r.conn)}</span>`, what, act] };
-  });
-  return UI.datagrid({ columns: ["שם", "חריץ", "כונן", ""], rows, empty: "אין חריצים מוגדרים ולא דווחו כוננים" });
-}
 function renameSlot(mac, keyEnc) {
   const m = findMachine(mac); if (!m || !isAdmin()) return;
   let key = keyEnc; try { key = decodeURIComponent(keyEnc); } catch (e) {}
-  const row = slotRows(m).find((r) => r.key === key);
+  const row = driveRows(m, m.disks).find((r) => !r.optical && (r.disk ? slotKey(r.disk) : r.key) === key);
   if (!row) { toast("החיבור כבר לא מדווח — רעננו"); return; }
-  const def = `דיסק ${row.n}`;
-  sheet({ title: "שם לחיבור", sub: `${machineName(m) || m.mac} · ${row.conn}`,
+  const def = row.n != null ? `דיסק ${row.n}` : rowConn(row);
+  sheet({ title: "שם לחיבור", sub: `${machineName(m) || m.mac} · ${rowConn(row)}`,
     fields: [{ id: "name", label: "שם", value: slotName(m, row.n, row.disk) || "", placeholder: def,
       help: `עד 24 תווים: אותיות, ספרות, רווח ו- - . # ( ) /. ריק = חזרה ל"${def}".`
         + (key.startsWith("serial:") ? " לחיבור הזה אין חריץ מדווח (NVMe/USB), ולכן השם צמוד לכונן לפי המספר הסידורי." : " השם נשאר על החריץ גם כשמחליפים בו דיסק.") }],
@@ -4813,6 +4900,7 @@ function machineDrawerHtml(m) {
     ["קבוצה", (g ? esc(g.label) : `<span class="muted">ללא קבוצה</span>`) + (admin ? ` ${UI.link("העבר", `moveMachineSheet('${macEnc}')`)}` : "")],
     ["MAC", `<span class="mono">${esc(m.mac)}</span>` + (admin ? ` ${UI.link("עריכה", `editMachineMac('${macEnc}')`)}` : "")],
     ["IP אחרון", net && net.ip ? `<span class="mono">${esc(net.ip)}</span>` : `<span class="muted">—</span>`],
+    ["כרטיס רשת", esc(nicSpeedText(m.nic_speed)) + (admin ? ` ${UI.link("שנה", `editNicSpeed('${macEnc}')`)}` : "")],
   ].concat(m.note ? [["הערה", esc(m.note)]] : []));
   const inv = m.inventory, dmi = (inv && inv.dmi) || {};
   let drivers = `<span class="muted">דף הדרייברים לא נטען</span>`;
@@ -4832,8 +4920,6 @@ function machineDrawerHtml(m) {
     ["דרייברים מתאימים", drivers],
   ]));
   const grp = (title, body) => `<div class="mgrp"><div class="grp">${title}</div>${body}</div>`;
-  const slots = role === "cloner"
-    ? `<div class="cap" style="margin-top:6px">${m.drawer_count != null ? `${m.drawer_count} חריצים מוגדרים` : "מספר החריצים לא הוגדר"}${admin ? ` · ${UI.link("שנה", `editDrawerCount('${macEnc}')`)}` : ""}</div>` : "";
   const h = MCH.history[m.mac];
   const history = Array.isArray(h) && h.length
     ? UI.timeline(h.slice(0, 20).map((r) => ({ t: isToday(r.ts) ? fmtClock(r.ts) : fmtDate(r.ts), cls: journalCls(r), text: esc(r.label || r.event || "") + (r.text ? " — " + esc(r.text) : ""), who: r.user || "" })))
@@ -4852,14 +4938,20 @@ function machineDrawerHtml(m) {
     + grp("זיהוי ורשת", ident)
     + grp(`מערכת וחומרה${m.inventory_seen_at ? ` <small>(${esc(ago(m.inventory_seen_at))})</small>` : ""}`, hw)
     + grp(`בריאות המכונה${m.probe_seen_at ? ` <small>(נדגם ${esc(ago(m.probe_seen_at))})</small>` : ""}`, machineVerdictsHtml(m) + machineHealthHtml(m))
-    + `<div><div class="sec" data-cnt="${disks ?? ""}">דיסקים</div>${slots}${station ? slotsTableHtml(m, admin, role === "cloner") : diskBoxesHtml(m)}</div>`
+    + `<div><div class="sec" data-cnt="${station ? drawerSlots(m).length : disks ?? ""}">דיסקים</div>${station ? diskMapHtml(m, admin) : diskBoxesHtml(m)}</div>`
     + `<div><div class="sec" data-cnt="${Array.isArray(h) && h.length ? Math.min(h.length, 20) : ""}">היסטוריה</div>${history}</div>${foot}</div>`;
 }
-function openMachineDetail(mac) {
+function openMachineDetail(mac, tab = "") {
   if (!isAdmin()) return;
+  try { mac = decodeURIComponent(mac); } catch (e) {}
   const m = findMachine(mac);
   if (!m) { toast("מחשב לא נמצא"); return; }
+  if (SLOT_EDIT && SLOT_EDIT.mac !== m.mac) SLOT_EDIT = null;
   openDrawer(machineName(m) || m.mac, machineDrawerHtml(m));
+  if (tab === "disks") {   // ‏#1485: "חריצים" — ישר ללשונית "דיסקים"
+    const t = [...document.querySelectorAll("#drawerTabs .n-tab")].findIndex((b) => /^דיסקים/.test(b.textContent || ""));
+    if (t >= 0) selectDrawerTab(t);
+  }
   const gen = drawerGeneration;
   // ‏#1300: מצב מתג המוניטור — לכפתור "פתח במוניטור" (דף המוניטור, אם נטען, כבר נשא אותו)
   if (!(MONITOR && MONITOR.settings) && !MON_SETTINGS && ["build", "cloner"].includes(machineRole(m)))
@@ -4908,13 +5000,106 @@ function moveMachineSheet(mac) {
   sheet({ title: "העבר לקבוצה", sub: machineName(m) || m.mac, fields: [{ id: "group_id", type: "select", label: "קבוצה", options: groupOptions(machineGroupId(m)), value: machineGroupId(m) }],
     onSubmit: async (v) => { await put("/machines/" + encodeId(m.mac), { group_id: v.group_id }); await loadMachines(); openMachineDetail(m.mac); } });
 }
-function editDrawerCount(mac) {
-  const m = findMachine(mac); if (!m || !isAdmin()) return;
-  sheet({ title: "מספר חריצי SATA", sub: `${machineName(m) || m.mac} — כמה דיסקים המחשב אמור לקבל בסבב (#695)`,
-    fields: [{ id: "drawer_count", type: "segment", label: "מספר חריצים", value: String(m.drawer_count || 1),
-      help: "קובע כמה מלבני דיסק מוצגים בחדר המשכפלים. חריץ ריק לא מונע סבב.",
-      options: Array.from({ length: 8 }, (_, i) => ({ value: String(i + 1), label: String(i + 1) })) }],
-    onSubmit: async (v) => { await put("/machines/" + encodeId(m.mac), { drawer_count: Number(v.drawer_count) }); await loadMachines(); openMachineDetail(m.mac); } });
+/* ‏#1485 (נדב 16/10): לשונית "דיסקים" בפאנל המכונה (המוקאפ: דיסק | גודל | SMART) + עמודת "חיבור":
+   לכל דיסק בוחרים לאיזה חיבור הוא מחובר — SATA 0..7 או בקר NVMe (לפי כתובת PCI, לא nvme0n1).
+   "+ הוסף חריץ" / "הסר חריץ" קובעים את מספר החריצים (במקום חלון "מספר חריצי SATA"). חיבור תפוס
+   מנוטרל בשורות האחרות — אין כפילות; השרת בודק שוב. השינוי נשמר רק ב"שמירה" (‏PUT drawer_slots). */
+let SLOT_EDIT = null;   // { mac, slots } — עריכה שלא נשמרה; ‏null = מה שבשרת
+function slotEditOf(m) { return SLOT_EDIT && SLOT_EDIT.mac === m.mac ? SLOT_EDIT.slots : null; }
+function connOptions(m, slots) {
+  const keys = Array.from({ length: 8 }, (_, i) => `sata:${i + 1}`);
+  (m.disks || []).forEach((d) => { const k = connKey(d); if (k && k.startsWith("nvme:") && !keys.includes(k)) keys.push(k); });
+  slots.forEach((k) => { if (!keys.includes(k)) keys.push(k); });
+  return keys;
+}
+/* תג SMART כמו במוקאפ (‏pill → ‏.n-chip: ירוק / w כתום / d אדום / n אפור — "לא נבדק" אינו ירוק). */
+function smartPill(d, fail) {
+  const chip = (cls, text) => `<span class="n-chip${cls ? " " + cls : ""}">${esc(text)}</span>`;
+  if (fail) return chip("d", "נכשל");
+  if (d.smart === "ok") return chip("", "תקין");
+  if (d.smart === "warn" || d.smart === "fail") return chip("w", d.smart === "fail" ? "F1" : "אזהרה");
+  if (d.smart === "failed_last") return chip("d", "נכשל בשיכפול הקודם");
+  return chip("n", "לא נבדק");
+}
+function diskMapHtml(m, admin) {
+  const macEnc = encodeId(m.mac), edit = slotEditOf(m), slots = edit || drawerSlots(m), cloner = machineRole(m) === "cloner";
+  const mm = { ...m, drawer_slots: slots }, rows = driveRows(mm, m.disks), fails = machineDiskFailures(m);
+  const opts = connOptions(m, slots);
+  const body = rows.map((r) => {
+    const d = r.disk, fail = r.optical ? null : rowFailure(m, r, fails);
+    const conn = admin && r.n != null
+      ? `<select class="n-in conn-sel" aria-label="${esc(`החיבור של דיסק ${r.n}`)}" onchange="slotEditSet('${macEnc}',${r.n - 1},this.value)">${opts.map((k) => { const at = slots.indexOf(k); return `<option value="${esc(k)}"${k === r.key ? " selected" : ""}>${esc(connText(k))}${at >= 0 && k !== r.key ? ` · דיסק ${at + 1}` : ""}</option>`; }).join("")}</select>`
+      : `<span class="mono">${esc(rowConn(r))}</span>`;
+    const size = r.optical ? `<span class="muted">${esc(r.optical.model || "כונן אופטי")}</span>`
+      : d ? `<span class="mono">${ltr(marketedDiskSize(d.size_bytes))}</span> <span class="cap">${esc(diskBrand(d.model))}</span>`
+      : `<span class="muted">${m.disks == null ? "לא דווח" : "ריק"}</span>`;
+    const smart = r.optical ? `<span class="muted">—</span>` : d ? smartPill(d, fail) : "";
+    const nameKey = d ? slotKey(d) : r.key && r.key.startsWith("sata:") ? r.key : null;   // #704: שמות — למשכפל בלבד
+    const acts = [admin && cloner && !r.optical && nameKey ? UI.link("שם", `renameSlot('${macEnc}','${encodeId(nameKey)}')`) : "",
+      admin && fail ? UI.link("נקה", `clearDiskFailure(${Number(fail.id)})`) : ""].filter(Boolean).join(" · ");
+    const cls = r.optical ? "opt" : r.n == null ? "unmapped" : !d ? "vacant" : "";
+    return `<tr class="${cls}" data-slot="${r.n ?? ""}"><td><b>${esc(rowLabel(m, r))}</b></td><td>${conn}</td><td>${size}</td><td>${smart}</td><td class="acts-cell">${acts}</td></tr>`;
+  }).join("");
+  const table = rows.length ? `<table class="n-tbl disk-map"><thead><tr><th>דיסק</th><th>חיבור</th><th>גודל</th><th>SMART</th><th><span class="sr">פעולות</span></th></tr></thead><tbody>${body}</tbody></table>`
+    : UI.note("", m.disks == null ? "המכונה מעולם לא דיווחה על כוננים." : `המכונה דיווחה — ואין בה אף כונן: ${zeroDisksText(m)}.`);
+  if (!admin) return table;
+  const dirty = !!edit && JSON.stringify(edit) !== JSON.stringify(drawerSlots(m));
+  const free = opts.find((k) => k.startsWith("sata:") && !slots.includes(k));
+  /* בגבול (8 חריצים / חריץ אחד) הכפתור לא מוצג — לא כפתור מנוטרל (README §8). */
+  const tools = (dirty ? `<div class="map-dirty">${slots.length === 1 ? "חריץ אחד" : `${slots.length} חריצים`} · השינוי עוד לא נשמר</div>` : "")
+    + `<div class="map-tools">${slots.length < 8 && free ? `<button class="btn sm" type="button" onclick="slotEditAdd('${macEnc}')">+ הוסף חריץ</button>` : ""}${slots.length > 1 ? `<button class="btn sm" type="button" onclick="slotEditRemove('${macEnc}')">הסר חריץ</button>` : ""}`
+    + (dirty ? `<button class="btn sm" type="button" onclick="slotEditCancel('${macEnc}')">ביטול</button><button class="btn sm primary" type="button" onclick="slotEditSave('${macEnc}')">שמירת החיבורים</button>`
+      : m.drawer_slots_custom ? `<button class="btn sm" type="button" onclick="slotEditReset('${macEnc}')">חזרה לברירת המחדל</button>` : "")
+    + `</div><p class="error n-formerr" id="slot-err" role="alert"></p>`;
+  return table + tools + `<p class="map-help">לכל דיסק — לאיזה חיבור במחשב הוא מחובר. ברירת המחדל: דיסק 1 = SATA 0, דיסק 2 = SATA 1. בחירת חיבור של דיסק אחר מחליפה ביניהם. כונן CD/DVD אינו חריץ דיסק ולעולם אינו מקור קליטה או יעד.</p>`;
+}
+function slotEditRedraw(m) { setDrawerBody(machineDrawerHtml(m)); }
+function slotEditStart(mac) {
+  let id = mac; try { id = decodeURIComponent(mac); } catch (e) {}
+  const m = findMachine(id); if (!m || !isAdmin()) return null;
+  if (!slotEditOf(m)) SLOT_EDIT = { mac: m.mac, slots: drawerSlots(m).slice() };
+  return m;
+}
+/* חיבור שכבר של דיסק אחר — מחליפים ביניהם, כך שלעולם אין כפילות ואין צורך בחריץ פנוי זמני. */
+function slotEditSet(mac, i, key) {
+  const m = slotEditStart(mac); if (!m) return;
+  const slots = SLOT_EDIT.slots, j = slots.indexOf(key);
+  if (j >= 0 && j !== i) slots[j] = slots[i];
+  slots[i] = key;
+  slotEditRedraw(m);
+}
+function slotEditAdd(mac) {
+  const m = slotEditStart(mac); if (!m) return;
+  const free = connOptions(m, SLOT_EDIT.slots).find((k) => k.startsWith("sata:") && !SLOT_EDIT.slots.includes(k));
+  if (free && SLOT_EDIT.slots.length < 8) SLOT_EDIT.slots.push(free);
+  slotEditRedraw(m);
+}
+function slotEditRemove(mac) { const m = slotEditStart(mac); if (!m) return; if (SLOT_EDIT.slots.length > 1) SLOT_EDIT.slots.pop(); slotEditRedraw(m); }
+function slotEditCancel(mac) {
+  let id = mac; try { id = decodeURIComponent(mac); } catch (e) {}
+  SLOT_EDIT = null;
+  const m = findMachine(id); if (m) slotEditRedraw(m);
+}
+async function slotEditSave(mac) {
+  const m = slotEditStart(mac); if (!m) return;
+  const err = document.getElementById("slot-err");
+  try {
+    await put("/machines/" + encodeId(m.mac), { drawer_slots: SLOT_EDIT.slots });
+    SLOT_EDIT = null;
+    await loadMachines();
+    const fresh = findMachine(m.mac); if (fresh) slotEditRedraw(fresh);
+    toast("החיבורים נשמרו");
+  } catch (e) { if (err) err.textContent = e.message; }
+}
+async function slotEditReset(mac) {
+  let id = mac; try { id = decodeURIComponent(mac); } catch (e) {}
+  const m = findMachine(id); if (!m || !isAdmin()) return;
+  try {
+    await put("/machines/" + encodeId(m.mac), { drawer_slots: null });
+    SLOT_EDIT = null; await loadMachines();
+    const fresh = findMachine(m.mac); if (fresh) slotEditRedraw(fresh);
+    toast("המיפוי חזר לברירת המחדל");
+  } catch (e) { const err = document.getElementById("slot-err"); if (err) err.textContent = e.message; }
 }
 function removeMachine(mac) {
   const m = findMachine(mac); if (!m || !isAdmin()) return;
@@ -8428,9 +8613,10 @@ async function openCapture(preMac = "") {
   const preFolder = folders.some((f) => f.name === IMAGES_FOLDER) ? IMAGES_FOLDER : "";
 
   const selected = builders.find((m) => m.mac === preMac) || builders[0];
-  const diskOptions = (m) => (Array.isArray(m && m.disks) ? m.disks : []).map((d, i) => ({
+  /* ‏#1485: רק כוננים (‏disks) — כונן CD/DVD אינו ברשימה ולעולם אינו מקור; המספר לפי המיפוי. */
+  const diskOptions = (m) => (Array.isArray(m && m.disks) ? m.disks : []).map((d) => ({
     value: d.dev,
-    label: `דיסק ${diskSlot(d, i)} · ${marketedDiskSize(d.size_bytes)} · ${d.model || "דגם לא ידוע"}`,
+    label: `${diskLabel(m, d)} · ${marketedDiskSize(d.size_bytes)} · ${d.model || "דגם לא ידוע"}`,
   }));
   sheet({
     title: "קליטה ממחשב בנייה",

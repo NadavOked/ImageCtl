@@ -145,6 +145,14 @@ lc_session() {
     done
 }
 
+lc_run_total() {
+    # $1 = manifest. The bytes the copy reads: the used blocks, swap 0. #1440: one
+    # partition not measured makes the total not known (null) -- its size is not
+    # what partclone reads, and a total built on it ran the time left 2.5x long.
+    jq -r 'if any(.partitions[]; .fs != "swap" and .used_bytes == null) then null
+        else [.partitions[] | if .fs == "swap" then 0 else .used_bytes end] | add end' "$1"
+}
+
 lc_run() {
     # $1 = source, $2 = targets (words), $3 = 1 when the confirm dialog showed
     # and the person accepted a temporary shrink of the source.
@@ -191,8 +199,7 @@ EOF
     fi
     _any_alive "$_lr_all" || { lc_end; return 1; }
     lc_manifest "$_lr_src" "$_lr_r/parts.txt" || { _fail_alive "$_lr_all" "${LC_ERROR:-לא הצלחנו לתאר את המקור}"; lc_end; return 1; }
-    jq -r '[.partitions[] | if .fs == "swap" then 0 elif .used_bytes != null then .used_bytes else .size_bytes end] | add' \
-        "$_lr_r/manifest.json" > "$_lr_r/total" 2>> "$LOG_FILE"
+    lc_run_total "$_lr_r/manifest.json" > "$_lr_r/total" 2>> "$LOG_FILE"
     for _lr_t in $_lr_all; do
         [ "$(cat "$RUN_DIR/targets/$_lr_t/state")" = failed ] && continue
         cp "$_lr_r/total" "$RUN_DIR/targets/$_lr_t/total"

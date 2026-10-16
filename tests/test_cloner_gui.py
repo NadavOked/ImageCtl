@@ -173,8 +173,8 @@ def test_a_drawer_record_reports_the_local_bytes_and_port(tmp_path):
     45 (40+5) ו-sdb הוא 0 — שני מספרים שונים, מהקבצים המקומיים."""
     lines = state_lines(tmp_path)
     # ‏#410: שדות 7–8 הם קצב ו-ETA; ‏-1 = לא נמדד (דגימה ראשונה / לא כותבת).
-    assert "drawer=1|sda|writing|45|100||-1|-1" in lines
-    assert "drawer=2|sdb|waiting|0|100||-1|-1" in lines
+    assert "drawer=1|sda|writing|45|100||-1|-1|1|SATA 0" in lines
+    assert "drawer=2|sdb|waiting|0|100||-1|-1|2|SATA 1" in lines
 
 
 def test_a_second_sample_carries_the_rate_and_eta_from_the_local_counter(tmp_path):
@@ -187,7 +187,7 @@ def test_a_second_sample_carries_the_rate_and_eta_from_the_local_counter(tmp_pat
     target(run, "sda", "writing", 1000, 0, "50")
     out = sh(env(run, gui) + PRELUDE + PORTS + "cloner_gui_state")
     assert out.returncode == 0, out.stderr
-    assert "drawer=1|sda|writing|50|1000||-1|-1" in (gui / "state").read_text().splitlines()
+    assert "drawer=1|sda|writing|50|1000||-1|-1|1|SATA 0" in (gui / "state").read_text().splitlines()
     t0, b0 = (gui / "pace.sda").read_text().split()
     assert b0 == "50"
     (gui / "pace.sda").write_text(f"{int(t0) - 10} 50\n", newline="\n")
@@ -195,7 +195,7 @@ def test_a_second_sample_carries_the_rate_and_eta_from_the_local_counter(tmp_pat
     out = sh(env(run, gui) + PRELUDE + PORTS + "cloner_gui_state")
     assert out.returncode == 0, out.stderr
     line = [l for l in (gui / "state").read_text().splitlines() if l.startswith("drawer=")][0]
-    port, dev, state, bytes_, total, err, rate, eta = line[len("drawer="):].split("|")
+    port, dev, state, bytes_, total, err, rate, eta, drawer, conn = line[len("drawer="):].split("|")   # #1495: +9-10
     assert bytes_ == "250"
     assert 15 <= int(rate) <= 20, rate                      # 200 / (10s + הזמן בין הריצות)
     assert eta == str((1000 - 250) // int(rate))
@@ -210,7 +210,7 @@ def test_a_drawer_that_stopped_writing_drops_its_anchor_and_reports_unmeasured(t
     target(run, "sda", "done", 1000, 1000, "")
     out = sh(env(run, gui) + PRELUDE + PORTS + "cloner_gui_state")
     assert out.returncode == 0, out.stderr
-    assert "drawer=1|sda|done|1000|1000||-1|-1" in (gui / "state").read_text().splitlines()
+    assert "drawer=1|sda|done|1000|1000||-1|-1|1|SATA 0" in (gui / "state").read_text().splitlines()
     assert not (gui / "pace.sda").exists()
 
 
@@ -238,7 +238,7 @@ def test_an_error_pipe_cannot_corrupt_the_record(tmp_path):
     out = sh(env(run, gui) + PRELUDE + PORTS + "cloner_gui_state")
     assert out.returncode == 0, out.stderr
     drawer = [l for l in (gui / "state").read_text().splitlines() if l.startswith("drawer=")][0]
-    assert drawer.count("|") == 7, drawer          # בדיוק שמונה שדות (#410: +קצב, +ETA)
+    assert drawer.count("|") == 9, drawer          # בדיוק עשרה שדות (#410: +קצב, +ETA; #1495: +מגירה, +חיבור)
     assert "bad   disk line2" in drawer
 
 
@@ -269,7 +269,9 @@ def test_the_kiosk_load_chain_carries_the_cached_smart_verdict(tmp_path):
     lines = (gui / "state").read_text().splitlines()
     # ‏#874: השדה השישי (הסיבה מזיכרון השרת) ריק על דיסק ירוק.
     # ‏#432: 7/8 = הקישור — ‏null כשהדיסק אינו מאחורי libata (כאן: תיקייה, לא קישור).
-    assert any(l.startswith("cdisk=") and l.endswith("|passed||null|null|") for l in lines)   # #1366: field 9, no CRC colour, lines
+    # #1495: 10/11 = the drawer and the connection -- a disk with no ATA port and no
+    # NVMe address is not in any mapping: 0, connection unknown (never a guessed number)
+    assert any(l.startswith("cdisk=") and l.endswith("|passed||null|null||0|") for l in lines), lines   # #1366: field 9, no CRC colour
 
 
 # --- ‏#867/#874: המלאי הממתין — ממוין לפי מספר הדיסק, ונושא את זיכרון השרת ----
@@ -346,8 +348,8 @@ def test_a_disk_the_server_remembers_reports_failed_last_with_its_cause(tmp_path
     לצדו נשאר `passed` בלי סיבה. ‏sgdisk אינו נקרא. בקרה שלילית: על main
     שניהם `passed` (הזיוף לא מדפיס טבלה), ו-`sgdisk -p` נקרא."""
     lines = idle_state(tmp_path, {"sda": "1", "sdb": "2"}, failed={"sda": "cable"})
-    assert lines[0] == "cdisk=1|sda|Model sda|512000|failed_last|cable|null|null|", lines
-    assert lines[1] == "cdisk=2|sdb|Model sdb|512000|passed||null|null|", lines
+    assert lines[0] == "cdisk=1|sda|Model sda|512000|failed_last|cable|null|null||1|SATA 0", lines
+    assert lines[1] == "cdisk=2|sdb|Model sdb|512000|passed||null|null||2|SATA 1", lines
 
 
 def test_the_memory_is_read_from_the_last_hello_every_second(tmp_path):
@@ -505,7 +507,8 @@ def bridge_setup(tmp_path: Path, screen: str) -> tuple[str, Path]:
              f'. {posix(AGENT)}/lib/guistate.sh; . {posix(AGENT)}/lib/askgui.sh; . {posix(AGENT)}/lib/sysinfo.sh; '
              f'. {posix(AGENT)}/lib/progress.sh; . {posix(AGENT)}/lib/clonergui.sh; '
              f'. {posix(AGENT)}/lib/guibridge.sh; '
-             'gui_role() { echo GUI_ROLE_CALLED >&2; return 1; }; ')
+             'gui_role() { echo GUI_ROLE_CALLED >&2; return 1; }; '
+             'disk_slot_records() { :; }; ')   # #1495: disk numbering is test_drawer_map_gui_1495's
     return setup, gui
 
 

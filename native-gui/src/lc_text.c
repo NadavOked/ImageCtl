@@ -1,10 +1,52 @@
 /* #1322: the local clone's words -- amounts, a disk's label and contents,
  * the status bar -- and the --png scenario (the approved mockup's: three
  * drawers, drawer 3 the source). */
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include "lcui.h"
 #include "screens_rounds.h"
+
+/* #1437: a share as the screen says it -- floored, so 100% is only the end,
+ * and one decimal under 10%: 1 GB of 500 is "0.2%", not "0%". */
+void lc_pct(char *out, size_t n, double share) {
+    double p = (share < 0 ? 0 : share > 1 ? 1 : share) * 100;
+    if (p < 10) snprintf(out, n, "%.1f%%", floor(p * 10 + 1e-9) / 10);
+    else snprintf(out, n, "%.0f%%", floor(p + 1e-9));
+}
+
+/* #1437: one (elapsed, copied) sample per reload. Time going back is a new
+ * run: the window starts over. Bytes going back is a reading between two of
+ * the agent's writes (src.base, bytes.raw): skipped, the window is kept.
+ * Nothing before the first byte is a sample -- the preparation (measure,
+ * shrink, the tables) is not copying, and averaging it in made the first
+ * minutes say 444 minutes. One sample at least LC_RATE_WIN s old is kept. */
+void lc_rate_sample(LcUi *u, int elapsed, long long copied) {
+    if (u->rate_n && elapsed < u->rate_e[u->rate_n - 1]) u->rate_n = 0;
+    if (copied <= 0 || (u->rate_n && copied < u->rate_c[u->rate_n - 1])) return;
+    if (u->rate_n && elapsed == u->rate_e[u->rate_n - 1]) { u->rate_c[u->rate_n - 1] = copied; return; }
+    int drop = 0;
+    while (u->rate_n - drop >= 2 && elapsed - u->rate_e[drop + 1] >= LC_RATE_WIN) drop++;
+    if (u->rate_n - drop >= LC_RATE_MAX) drop++;
+    if (drop) {
+        memmove(u->rate_e, u->rate_e + drop, (size_t)(u->rate_n - drop) * sizeof u->rate_e[0]);
+        memmove(u->rate_c, u->rate_c + drop, (size_t)(u->rate_n - drop) * sizeof u->rate_c[0]);
+        u->rate_n -= drop;
+    }
+    u->rate_e[u->rate_n] = elapsed; u->rate_c[u->rate_n++] = copied;
+}
+
+/* bytes/s over the window; *span = the seconds it covers (0 = fewer than two samples) */
+double lc_rate(const LcUi *u, int *span) {
+    *span = u->rate_n >= 2 ? u->rate_e[u->rate_n - 1] - u->rate_e[0] : 0;
+    return *span > 0 ? (double)(u->rate_c[u->rate_n - 1] - u->rate_c[0]) / *span : -1;
+}
+
+/* the first partition whose used bytes were not measured (#1440); 0 = all were */
+int lc_unmeasured(const LcState *l) {
+    for (int i = 0; i < l->nparts; i++) if (l->parts[i].bytes < 0) return l->parts[i].idx;
+    return 0;
+}
 
 /* An amount as an isolated LTR run (FSI ... PDI): "149 GB" inside a Hebrew
  * sentence stays "149 GB", never "GB 149". */
@@ -18,8 +60,9 @@ void lc_gb(char *out, size_t n, double b) {
 }
 
 void lc_disk_label(const LcDisk *d, char *out, size_t n) {
-    if (d->port > 0) snprintf(out, n, "דיסק %d", d->port);
-    else snprintf(out, n, "%s", d->dev);
+    int drawer = eff_drawer(d->drawer, d->port);
+    if (drawer > 0) snprintf(out, n, "דיסק %d", drawer);
+    else unmapped_label("", d->conn, d->port, d->dev, out, n);
 }
 
 void lc_has_text(const LcDisk *d, char *out, size_t n) {
@@ -174,6 +217,10 @@ int lc_png_setup(App *a, const char *card) {
     if (a->st.lc.screen != LC_SCREEN_LOCAL) return 1;
     lc_after_reload(a);
     LcUi *u = &a->lcu;
+    if (a->st.lc.has_run && a->st.lc.elapsed > LC_RATE_WIN) {   /* #1437: a full window at the mockup's own pace */
+        const LcState *l = &a->st.lc; long long back = (long long)((double)l->copied * LC_RATE_WIN / l->elapsed);
+        u->rate_n = 0; lc_rate_sample(u, l->elapsed - LC_RATE_WIN, l->copied - back); lc_rate_sample(u, l->elapsed, l->copied);
+    }
     if (!strcmp(card, "lcsource-blocked") || !strcmp(card, "lcsource-shrink") || !strcmp(card, "lcconfirm-shrink") || !strcmp(card, "lcsource-measuring")) {
         u->nroles = 0;                     /* drawer 1 chosen as the source by the person */
         const char *dev[3] = { "sda", "sdb", "sdc" }; int r[3] = { LCR_SOURCE, LCR_TARGET, LCR_TARGET };

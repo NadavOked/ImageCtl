@@ -64,7 +64,7 @@ def test_a_windows_plan_with_msr_passes_and_sgdisk_sees_the_real_disk(tmp_path):
     assert "-A 1:=:0x8000000000000000" in args
     # ‏#1434: ההדמיה מתחילה מטבלה ריקה (--clear); בלעדיה המחיצות הקיימות
     # נשארות בזיכרון, ו-n- נכשל על כל דיסק משומש
-    assert args.startswith("--pretend --clear "), args
+    assert args.startswith("-a 1 --pretend --clear "), args
 
 
 def test_a_file_name_with_a_path_separator_is_still_rejected(tmp_path):
