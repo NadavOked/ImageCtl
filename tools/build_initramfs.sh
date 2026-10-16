@@ -595,6 +595,7 @@ MODSRC="/lib/modules/$KVER"
 MODULE_SUBDIRS=(kernel/drivers/net/ethernet kernel/drivers/net/phy
                 kernel/drivers/net/mdio     kernel/drivers/nvme
                 kernel/drivers/ata          kernel/drivers/scsi
+                kernel/drivers/cpufreq
                 kernel/drivers/usb/storage
                 # Hyper-V: vmbus הוא התשתית, net/hyperv הוא הכרטיס.
                 # בלעדיהם הסוכן במעבדת ה-VM (issue #12) עולה בלי דיסק ורשת.

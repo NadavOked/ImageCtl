@@ -189,6 +189,7 @@ static void default_roles(App *a) {
 void lc_after_reload(App *a) {
     LcState *l = &a->st.lc;
     if (l->screen != LC_SCREEN_BOOT) a->lcu.pause_sent = 0;
+    if (l->has_run) lc_rate_sample(&a->lcu, l->elapsed, l->copied); else a->lcu.rate_n = 0;   /* #1437 */
     if (l->screen != LC_SCREEN_LOCAL) { a->lcu.nroles = 0; a->lcu.last_phase[0] = 0; a->lcu.start_sent = 0; return; }
     if (!strcmp(a->lcu.last_phase, "done") && !strcmp(l->phase, "idle")) a->lcu.nroles = 0;   /* "שכפול נוסף" */
     if (strcmp(l->phase, "idle")) a->lcu.start_sent = 0;

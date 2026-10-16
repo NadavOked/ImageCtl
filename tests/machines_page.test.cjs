@@ -248,6 +248,28 @@ test('#977 §7: firmware, Secure Boot and the agent version from /machines in "w
   set({agent_version:'unknown'}); assert.match(cell('סוכן'),/לא ידוע — סוכן ישן/,'the server stores "unknown" for a missing/invalid version');
 });
 
+test('Nadav 15/10: the NIC speed in the drawer and on the cloner card — reported, set by hand, or assumed (said as an assumption); admin edit PUTs nic_speed_mbps', async () => {
+  const {run,node,requests}=setup();
+  const mac='78:ac:c0:9b:11:c2';
+  const cell=()=>{ const h=node('#drawerBody').innerHTML; const m=h.match(/<span class="k">כרטיס רשת<\/span><span class="v">(.*?)<\/span>(?=<span class="k">|<\/div>)/); return m&&m[1]; };
+  const set=(f)=>run(`Object.assign(MACHINES.find(m=>m.mac==='${mac}'),${JSON.stringify(f)}); openMachineDetail('${mac}')`);
+  set({nic_speed:{speed_mbps:1000,source:'reported',why:null}}); assert.match(cell(),/^1Gb\/s \(מדווח\) <a[^>]*editNicSpeed\(/);
+  set({nic_speed:{speed_mbps:2500,source:'manual',why:null}}); assert.match(cell(),/^2.5Gb\/s \(הוגדר ידנית\)/);
+  set({nic_speed:{speed_mbps:1000,source:'assumed',why:'no_probe'}}); assert.match(cell(),/^לא ידוע — הונח 1Gb\/s/,'an assumption is never shown as a measurement');
+  assert.doesNotMatch(cell(),/מדווח/);
+  set({nic_speed:undefined}); assert.match(cell(),/^לא ידוע/,'old server: no field = unknown');
+  assert.equal(run(`machineSub(Object.assign({},MACHINES.find(m=>m.mac==='${mac}'),{nic_speed:{speed_mbps:10000,source:'reported'}}))`).includes('כרטיס רשת: 10Gb/s (מדווח)'),true);
+  set({nic_speed:{speed_mbps:2500,source:'manual',why:null}});
+  run(`editNicSpeed('${encodeURIComponent(mac)}')`);
+  assert.equal(run('formOptions.fields[0].value'),'2500');
+  assert.deepEqual(JSON.parse(run('JSON.stringify(formOptions.fields[0].options.map(o=>o.label))')),['אוטומטי','1Gb/s','2.5Gb/s','10Gb/s']);
+  await run('formOptions.onSubmit({nic_speed:"auto"})');
+  const put=requests.filter(r=>r.options.method==='PUT').pop();
+  assert.equal(put.url,'/api/console/machines/78%3Aac%3Ac0%3A9b%3A11%3Ac2'); assert.deepEqual(JSON.parse(put.options.body),{nic_speed_mbps:null});
+  await run('formOptions.onSubmit({nic_speed:"10000"})');
+  assert.deepEqual(JSON.parse(requests.filter(r=>r.options.method==='PUT').pop().options.body),{nic_speed_mbps:10000});
+});
+
 test('#977 §4: reboot from the drawer — a confirm window with the consequences and a red button (#1270), the machine name rides along, the answer is "requested"', async () => {
   const {run,requests,fixtures}=setup();
   fixtures['/machines/78%3Aac%3Ac0%3A9b%3A11%3Ac2/reboot']={requested:1,ttl_s:120};

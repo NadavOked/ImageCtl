@@ -181,7 +181,7 @@ capture_disk() {
         _uppid=$!
 
         rm -f "$RUN_DIR/sha.$_idx" "$RUN_DIR/pcl.$_idx.rc" \
-            "$RUN_DIR/zstd.$_idx.rc" "$RUN_DIR/pv.$_idx.rc" "$RUN_DIR/tee.$_idx.rc" \
+            "$RUN_DIR/zstd.$_idx.rc" "$RUN_DIR/fanout.$_idx.rc" "$_out.bytes" \
             "$RUN_DIR/targets/$_disk/partclone.err"   # ‏#1254: האחוז של המחיצה הזו בלבד (progress.sh)
         _pcl=$(partclone_for_fs "$_fs")
         # The read-only preflight above has already refused dirty/hibernated
@@ -189,10 +189,12 @@ capture_disk() {
         _ignore=""
         [ "$_fs" = ntfs ] && _ignore="-I"
         # ה-rc של כל שלב נלכד במפורש: ב-busybox ash אין pipefail, ו-$? של
-        # הצינור הוא של sha256sum — שמצליח גם על קלט ריק, וככה כשל אמצע
-        # הפך לקובץ "מוצלח" (מעבדה #12, קליטה קטועה #776). ברקע, עם עין על מונה ה-pv:
-        # ‏`tee "$_out"` נחסם ב-open() עד שה-curl יפתח את ה-fifo לקריאה, ו-curl
-        # שנפל מיד (שרת שסירב) משאיר אותו חסום לנצח. כונן איטי לעומת זאת פשוט
+        # הצינור הוא של השלב האחרון בלבד — ‏sha256sum שמצליח גם על קלט ריק
+        # הפך כשל אמצע לקובץ "מוצלח" (מעבדה #12, קליטה קטועה #776).
+        # ‏#1438: מונה, גיבוב והעתקה ל-fifo — בתוך fanout ולא pv|tee|sha256sum
+        # (‏tee של busybox מעתיק 1KiB לקריאה). ‏-S נכתב רק בסוף זרם שנקרא
+        # כולו; ‏-P בפורמט pv -n. ‏open() של ה-fifo תחום ב-fanout (5ש'), ו-curl
+        # שנפל אחריו הוא EPIPE = ‏rc 1. ברקע, עם עין על המונה: כונן איטי
         # מתקדם לאט — ולכן המדד הוא חוסר התקדמות, לא משך.
         (
             # shellcheck disable=SC2046 # דגלי partclone_mode הם רשימת מילים
@@ -201,18 +203,16 @@ capture_disk() {
               echo "$?" > "$RUN_DIR/pcl.$_idx.rc"; } \
                 | { zstd -"$CAPTURE_LEVEL" -T"$CAPTURE_THREADS" -c 2>> "$LOG_FILE"
                     echo "$?" > "$RUN_DIR/zstd.$_idx.rc"; } \
-                | { pv -n -b -i 2 2>> "$RUN_DIR/targets/$_disk/bytes.raw"
-                    echo "$?" > "$RUN_DIR/pv.$_idx.rc"; } \
-                | { tee "$_out"
-                    echo "$?" > "$RUN_DIR/tee.$_idx.rc"; } \
-                | sha256sum > "$RUN_DIR/sha.$_idx"
+                | { fanout -S "$RUN_DIR/sha.$_idx" -P "$RUN_DIR/targets/$_disk/bytes.raw" \
+                        16777216 "$_out" > "$RUN_DIR/fanout.$_idx.out" 2>> "$LOG_FILE"
+                    echo "$?" > "$RUN_DIR/fanout.$_idx.rc"; }
         ) &
         _readpid=$!
         _stage=pipeline
         if wait_progress "$_readpid" "$RUN_DIR/targets/$_disk/bytes.raw" \
                 "$WAIT_STREAM_START_S" "$WAIT_STREAM_STALL_S" \
                 "קריאת מחיצה $_idx מ-$_disk" "$_out"; then
-            for _stage in tee pv zstd pcl; do
+            for _stage in fanout zstd pcl; do
                 _rc=$(cat "$RUN_DIR/$_stage.$_idx.rc" 2>/dev/null || echo 1)
                 [ "$_rc" -eq 0 ] || break
             done
@@ -227,7 +227,7 @@ capture_disk() {
         # ובתקרה: ‏curl שנתקע בפתיחת ה-fifo לא ייתלה כאן לנצח.
         wait_pid "$_uppid" "$WAIT_HELPER_S" "העלאת מחיצה $_idx" \
             || echo "$WAIT_TIMED_OUT" > "$RUN_DIR/up.$_idx.rc"
-        rm -f "$_out"
+        rm -f "$_out" "$_out.bytes"
 
         _uprc=$(cat "$RUN_DIR/up.$_idx.rc" 2>/dev/null || echo 1)
         if [ "$_rc" -ne 0 ] || [ "$_uprc" -ne 0 ]; then
@@ -238,7 +238,9 @@ capture_disk() {
             return 1
         fi
 
-        _sha=$(awk '{print $1}' "$RUN_DIR/sha.$_idx")
+        _sha=$(awk '{print $1}' "$RUN_DIR/sha.$_idx" 2>/dev/null)
+        # ‏-S נכתב רק ב-EOF נקי (#1438): בלי ערך — אין ראיה, ואין "sha256":"" במניפסט.
+        is_sha256 "$_sha" || { _capture_failed "$_disk" "partition $_idx: ה-sha256 לא חושב -- אין ראיה שהזרם הגיע שלם"; return 1; }
         # הבייטים של המחיצה הזו בלבד — מונה ה-pv שלה. target_bytes מחזיר
         # מצטבר-סבב, וחיבורו בכל סיבוב ניפח את total_compressed_bytes
         # פי כמה (האימג' הראשון במעבדה: 1.8GB במקום 490MB, ‏#12).

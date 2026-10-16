@@ -39,8 +39,9 @@ static double draw_header(App *a, cairo_t *cr, double W) {
      * #1257: the versions (agent · server) are drawn on their own line below. */
     char srv[160]; server_label(&a->st,srv,sizeof srv);
     const char *keys[]={"מכונה","שרת"};
-    const char *vals[]={known(a->st.machine_name),srv};
     const int local=a->screen==SCREEN_LOCAL;   /* #1322: no server in this flow -- said, in the server's place */
+    /* #1437: the name is the server's; with no hello this boot, the cloner says the MAC it knows itself */
+    const char *vals[]={local&&!a->st.machine_name[0]&&a->mac[0]?a->mac:known(a->st.machine_name),srv};
     for(int i=0;i<(local?1:2);i++){
         Text k=text_make(cr,FONT_SANS,13,400,keys[i],0,DIR_RTL);
         Text v=text_make(cr,FONT_MONO,13,400,vals[i],0,DIR_LTR);
@@ -63,7 +64,9 @@ static double draw_header(App *a, cairo_t *cr, double W) {
     if(sv[0]=='v')sv++;
     int mismatch=ak&&sk&&strcmp(av,sv);
     char versions[360];
-    snprintf(versions,sizeof versions,"סוכן %s%s · שרת %s%s",
+    if(local&&!sk)   /* #1437: no server answered -- not an unknown server version */
+        snprintf(versions,sizeof versions,"סוכן %s%s · שרת: לא מחובר (שיכפול מקומי)",ak?"v":"",ak?av:"לא ידוע");
+    else snprintf(versions,sizeof versions,"סוכן %s%s · שרת %s%s",
              ak?"v":"",ak?av:"לא ידוע",sk?"v":"",sk?sv:"לא ידוע");
     double vw=right-90; if(vw<100)vw=100;
     Text vt=text_make(cr,FONT_SANS,11,400,versions,vw,DIR_RTL);

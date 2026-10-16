@@ -99,14 +99,12 @@ restore_partition_drawers() {
 
     # sha256 is taken on the compressed bytes as received, once for the
     # machine: every drawer is fed the same bytes, so one check covers them all.
-    rm -f "$RUN_DIR/shafifo" "$RUN_DIR/sha.out"
-    mkfifo "$RUN_DIR/shafifo"
-    sha256sum < "$RUN_DIR/shafifo" > "$RUN_DIR/sha.out" &
-    _shapid=$!
-
-    # ברקע, עם עין על מונה ה-pv: זרם שלא הזיז בייט חייב להסתיים בדיווח.
+    # #1438: inside fanout (-S hash, -P counter in pv -n format), not
+    # pv|tee|sha256sum -- busybox tee copies 1KiB per read. -S is written only
+    # at a clean EOF. In the background, watching the counter: a stream that
+    # never moved a byte must still end in a report.
     # shellcheck disable=SC2086 # word splitting of the fifo list is wanted
-    rm -f "$RUN_DIR/fanout.rc" "$RUN_DIR/source.rc" "$RUN_DIR/bytes.raw"  # #1430: old count != 1st byte
+    rm -f "$RUN_DIR/sha.out" "$RUN_DIR/fanout.rc" "$RUN_DIR/source.rc" "$RUN_DIR/bytes.raw"  # #1430: old count != 1st byte
     next_stream_ceiling   # #957: המחיצה הראשונה ממתינה למפעיל, הבאות לחדר
     (
         # ה-rc של המקור נלכד לחוד: ב-POSIX sh ‏$? של צינור הוא של האחרון
@@ -114,16 +112,15 @@ restore_partition_drawers() {
         # הגיע לכאן כ-fanout שיצא 0 על בייטים חלקיים (#73).
         { stream_source "$_mode" "$_server" "$_image" "$_file" "$STREAM_START_CEILING"
           echo "$?" > "$RUN_DIR/source.rc"; } \
-            | pv -n -b -i 2 2>> "$RUN_DIR/bytes.raw" \
-            | tee "$RUN_DIR/shafifo" \
-            | fanout "$(_fanout_buffer "$(echo "$_feeds" | wc -w)")" $_feeds \
+            | fanout -S "$RUN_DIR/sha.out" -P "$RUN_DIR/bytes.raw" \
+                "$(_fanout_buffer "$(echo "$_feeds" | wc -w)")" $_feeds \
                 > "$RUN_DIR/fanout.out" 2>> "$LOG_FILE"
         echo "$?" > "$RUN_DIR/fanout.rc"
     ) &
     _streampid=$!
     if wait_progress "$_streampid" "$RUN_DIR/bytes.raw" \
             "$STREAM_START_CEILING" "$WAIT_STREAM_STALL_S" \
-            "הזרם של מחיצה $_idx ($_file)" "$RUN_DIR/shafifo"; then
+            "הזרם של מחיצה $_idx ($_file)"; then
         _fanout_rc=$(cat "$RUN_DIR/fanout.rc" 2>/dev/null || echo 1)
     else
         _fanout_rc="$WAIT_TIMED_OUT"
@@ -143,8 +140,6 @@ restore_partition_drawers() {
         fail_written_target "$_d" \
             "partition $_idx: פג הזמן -- המגירה לא סיימה לכתוב"
     done
-    wait_pid "$_shapid" "$WAIT_HELPER_S" "חישוב ה-sha256 של מחיצה $_idx"
-    rm -f "$RUN_DIR/shafifo"
 
     # ה-sha התואם הוא הראיה החיובית שהזרם הגיע שלם, ולכן הוא נשאל ראשון:
     # מקור שיצא בקוד מוזר על זרם שאומת אינו כישלון. כשאין ראיה — שואלים
@@ -155,6 +150,9 @@ restore_partition_drawers() {
     _src=$(cat "$RUN_DIR/source.rc" 2>/dev/null)
     _got=$(awk '{print $1}' "$RUN_DIR/sha.out" 2>/dev/null)
     _why=""
+    # grep: 0 = found, 1 = not found (an answer!), 2 = the check broke.
+    grep -q ' ok$' "$RUN_DIR/fanout.out" 2>/dev/null
+    _ok_rc=$?
     if is_sha256 "$_got" && [ "$_got" = "$_sha" ]; then
         _why=""
     elif [ "$_fanout_rc" = "$WAIT_TIMED_OUT" ]; then
@@ -162,7 +160,9 @@ restore_partition_drawers() {
     elif [ "$_fanout_rc" != "0" ] && [ "$_fanout_rc" != "1" ]; then
         # ‏2 של fanout, ‏137 של OOM (#21) = ההפצה עצמה נפלה.
         _why="הפצת הזרם למגירות נכשלה (fanout rc=${_fanout_rc:-לא נרשם})"
-    elif ! is_sha256 "$_got"; then
+    elif ! is_sha256 "$_got" && { [ "$_fanout_rc" != "1" ] || [ "$_ok_rc" = "0" ]; }; then
+        # (rc=1 with no ok line is judged below: fanout stopped before EOF
+        # when the last drawer died, so -S wrote nothing by design -- #1438.)
         # אין ערך שנקרא בחזרה, ולכן אין ראיה גם לכך שהבייטים שגויים.
         _why="ה-sha256 לא חושב -- אין ראיה שהזרם הגיע שלם"
     elif [ "$_fanout_rc" = "1" ]; then
@@ -170,15 +170,11 @@ restore_partition_drawers() {
         # ה**שלמות** (#520) נפרדות, וההבחנה ביניהן היא **האם מישהו שרד**:
         #
         #   אין שורת ok  -- כל המגירות מתו, ‏fanout הפסיק לקרוא, המקור
-        #                   קיבל 141 **בגללנו**, וה-sha חלקי כתוצאה.
+        #                   קיבל 141 **בגללנו**, ואין sha (‏-S רק ב-EOF).
         #                   זו תקלת דיסק, ואין להאשים את הרשת (#440).
         #   יש שורת ok   -- הזרם נקרא עד סופו, והבייטים נמדדו ונמצאו
         #                   שגויים. המגירה ההיא עומדת להיחתם ‏done,
         #                   ואסור בלי ראיה (#520).
-        #
-        # ‏grep: ‏0 = נמצא, ‏1 = לא נמצא (תשובה!), ‏2 = הבדיקה נשברה.
-        grep -q ' ok$' "$RUN_DIR/fanout.out" 2>/dev/null
-        _ok_rc=$?
         if [ "$_ok_rc" = "0" ]; then
             _why="אי-התאמת sha256 בקובץ $_file"
         elif [ "$_ok_rc" = "1" ]; then

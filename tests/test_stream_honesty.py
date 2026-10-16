@@ -52,11 +52,17 @@ GOOD_FANOUT = (
     'shift\n'
     'tmp="$(mktemp)"\n'
     'cat > "$tmp"\n'
+    'fanout_eof "$tmp"\n'
     'for out; do cat "$tmp" > "$out" & done\n'
     'wait\n'
     'for out; do echo "$out ok"; done\n'
     'rm -f "$tmp"\n'
 )
+
+#: ‏#1438: fanout שמדווח ok על כל מגירה ולא כותב את ‏-S — המקבילה של
+#: sha256sum שיצא בלי ערך, מאז שהגיבוב של החדר עבר לתוך fanout.
+FANOUT_WITHOUT_HASH = GOOD_FANOUT.replace('fanout_eof "$tmp"\n', "", 1)
+assert FANOUT_WITHOUT_HASH != GOOD_FANOUT, "the fake still hashes"
 
 #: ‏sha256sum שיוצא בלי לכתוב ערך — התוצאה של עוזר שנהרג או שפג זמנו.
 #: ‏`sha.out` נשאר ריק, ואין שום ערך שנקרא בחזרה.
@@ -163,7 +169,7 @@ def test_a_sha_that_was_never_computed_is_not_called_a_mismatch(tmp_path):
     """
     run, out = drawer_run(
         tmp_path, call(GOOD_SHA),
-        {"fanout": GOOD_FANOUT, "sha256sum": SILENT_SHA},
+        {"fanout": FANOUT_WITHOUT_HASH},
     )
     assert out.strip().endswith("rc=1"), out
 
