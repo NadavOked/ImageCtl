@@ -84,7 +84,7 @@ cloner_gui_state() {
     # "connected" -- and must not freeze the drawers' progress with it.
     gui_hello_state >> "$_cg_next" || :
     # #704: the operator's slot names (slotnames.sh); a failed read keeps the last file.
-    slot_names_refresh || :
+    slot_names_refresh || :; drawer_slots_refresh || :
     slot_names_records >> "$_cg_next" || return 1
 
     _cg_any=0

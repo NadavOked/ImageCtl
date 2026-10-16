@@ -384,7 +384,7 @@ def test_engine_refusal_lands_on_the_address_field(tmp_path):
         "printf 'installer: [primary-unverified] the primary was not verified\\n' >&2; exit 2; fi\n"
         "if [ \"$2\" = --dry-run ]"))
     rc, out, _ = bridge(m, "validate", {**SECONDARY, "step": "2"})
-    assert rc == 0 and out["errors.primary_url"] == ["the primary was not verified"]
+    assert rc == 0 and out["errors.primary_url"] == ["השרת הראשי לא אומת — הריצו בדיקת חיבור עד שהיא ירוקה"]
 
 
 def test_check_primary_green_end_to_end_against_the_real_listener(tmp_path):

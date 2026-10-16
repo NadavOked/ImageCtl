@@ -1,28 +1,23 @@
-# shrink.sh -- ‏#87: כיווץ מחיצות ה-NTFS של דיסק המקור לפני הקליטה,
-# והחזרתן לגודלן אחריה ("resizable image" של FOG). POSIX sh (busybox ash).
+# shrink.sh -- ‏#87: כיווץ מחיצות ה-NTFS של דיסק המקור לקליטה ("resizable
+# image" של FOG). POSIX sh (busybox ash).
 #
 # דיסק בנייה של 512GB עם 100GB בשימוש מייצר אימג' של 512GB, ובדיקה 2.7
 # (‏disk_fits) חוסמת אותו בצדק על כל כונן 256. הרצפה של מחיצה היא הגודל
-# שבו נקלטה -- partclone מסרב לשחזר לתוך מחיצה קטנה ממנה -- ולכן הדרך
-# היחידה היא לכווץ את המחיצה **על המקור** לפני שהזרם מתחיל:
-# ‏ntfsresize --info (קריאה בלבד) → גודל מינימלי + מרווח → אישור של אדם
-# ליד המכונה → ntfsresize -s → כניסת GPT קטנה יותר → הקרנל קורא את הטבלה
-# → ntfsfix -d. השחזור (#648, ‏expand_last/grow_expanded) מותח את המחיצה
-# האחרונה בחזרה לכונן היעד בלי שינוי.
+# שבו נקלטה -- partclone מסרב לשחזר לתוך מחיצה קטנה ממנה -- ולכן מה
+# שנקלט חייב להיות מערכת קבצים מכווצת.
+#
+# ‏#1466 (הכרעת נדב 16/10): **דיסק המקור אינו נכתב לעולם.** הכיווץ רץ על
+# עותק copy-on-write בזיכרון (lcsnap.sh: ‏dm-snapshot מעל המחיצה, המאגר
+# ב-brd), ו-partclone קורא את העותק: ‏ntfsresize --info (קריאה בלבד) →
+# גודל מינימלי + מרווח → אישור של אדם ליד המכונה → עותק, ‏ntfsresize -n
+# (התקציב) → ‏ntfsresize -s ו-ntfsfix -d **על העותק** → הזרם → שחרור העותק.
+# אין sgdisk, אין rereadpt ואין רשומה בשרת (#926): אין מה להחזיר. אין
+# עותק -- הקליטה נעצרת בשם ועם המספרים; "בלי כיווץ" בשאלה הוא האימג'
+# בגודל מלא, והוא קריאה בלבד.
 #
 # ‏#929 (הכרעת נדב 17/09): **כל** מחיצות ה-NTFS-data מכווצות, כל אחת
-# **במקומה** ובסדר start_sector -- ‏C: ואז D: -- ומוחזרות בסדר הפוך. אף
-# מחיצה אינה מוזזת על המקור: רק הגודל בכניסה שלה משתנה. המדידה, היעד
-# והשאלה (אחת לכולן) יושבים ב-shrinkplan.sh; כאן רק מה שכותב.
-#
-# ‏**המקור אינו יעד שיכפול.** ‏grow.sh מריץ ntfsfix עם `-b -d` על דיסק חדש שקיבל
-# עותק; כאן `-b` היה מוחק את רשימת הקלאסטרים הפגומים ($BadClus) של דיסק
-# הבנייה -- ו-ntfsresize, שמסרב בעצמו לדיסק עם סקטורים פגומים (יוצא 1 בלי
-# ‏-b משלו), היה מעביר נתונים לתוכם. לכן ntfsfix כאן רק `-d`, ורק **אחרי**
-# ‏resize -- שהשער של #651 כבר הוכיח שהווליום נקי לפניו. ובאותה רוח: הכיווץ
-# רץ **בלי `-f`** -- ווליום מלוכלך מסורב על ידי ntfsresize בקול ("Volume is
-# scheduled for check"), ועם "y" מפורש ל-stdin: השאלה "proceed?" שלו רואה
-# ‏EOF כ**המשך** (proceed_question: fgets שנכשל אינו עוצר), ולא כביטול.
+# במקומה בפריסה, בסדר start_sector. המדידה, היעד והשאלה (אחת לכולן)
+# יושבים ב-shrinkplan.sh.
 #
 # המניפסט מתאר פריסה **מצומצמת**: כל מחיצה שיושבת אחרי מחיצה מכווצת
 # (‏D: אחרי C:, ‏recovery של Windows 11) נרשמת עם תחילה שזזה אחורה בסכום
@@ -30,9 +25,15 @@
 # בונה את הטבלה הזו על היעד ו-expand_last דוחף את הזנב לסופו. ההפרשים הם
 # כפולות של MiB ולכן היישור (2048) נשמר.
 #
+# ‏**ההחזרה במקום** (‏_shrink_gpt, ‏_shrink_restore_one, ‏shrink_restore_source)
+# נשארת לדיסקים שכווצו במקום **לפני** #1466 ועדיין רשומים בשרת: ההצעה
+# באתחול (shrinkoffer.sh) מחזירה אותם לגודלם. היא לא מכווצת דבר.
+# שם, ‏ntfsfix רק `-d`: ‏`-b` היה מוחק את רשימת הקלאסטרים הפגומים של דיסק
+# הבנייה ($BadClus).
+#
 # מה שאסור: כיווץ NTFS מהובר/מלוכלך (השער של #651 רץ לפני הקורא הזה),
 # ושידור ישיר (‏CAPTURE_SINK=discard, ‏#715) -- הקריאה השנייה שם משווה sha256
-# לראשונה, ומחיצה שהוחזרה לגודלה ביניהן אינה אותם בייטים.
+# לראשונה, ועותק שנבנה פעמיים אינו מובטח להיות אותם בייטים.
 #
 # כל צעד נבדק בקוד יציאה ובקריאה חוזרת (עיקרון 5): "לא הצלחנו לכווץ"
 # הוא כשל גלוי של הקליטה, לא "כווצנו". ‏SHRINK_ERROR נושא את הסיבה אל
@@ -102,45 +103,27 @@ shrink_before_capture() {
         plain) log "partitions captured at their full size by the operator's choice"; return 0 ;;
         *) SHRINK_ERROR="הכיווץ לא אושר ליד המכונה ($_sb_q) — הקליטה בוטלה"; return 1 ;;
     esac
-    # הכניסות (שם, דגלים) של **כולן** נקראות לפני הכתיבה הראשונה: קריאה
-    # שנכשלת במחיצה השנייה לא תמצא את הראשונה כבר מכווצת. שורת ה-stage היא
-    # בדיוק שורת הסימון של ההחזרה: idx|start|size|newsec|type|uguid|name|attrs.
-    _sb_stage="$RUN_DIR/shrink.stage"; : > "$_sb_stage"
-    while IFS='|' read -r _sb_idx _sb_guid _sb_uguid _sb_start _sb_size _sb_cur _sb_new <&3; do
-        [ -n "$_sb_idx" ] || continue
-        _shrink_entry "$1" "$_sb_idx" > "$RUN_DIR/shrink.entry" || return 1
-        printf '%s|%s|%s|%s|%s|%s|%s\n' "$_sb_idx" "$_sb_start" "$_sb_size" $((_sb_new / $3)) "$_sb_guid" "$_sb_uguid" \
-            "$(cat "$RUN_DIR/shrink.entry")" >> "$_sb_stage"
-    done 3< "$_sb_plan"
-    # ‏#926: הפריסה המקורית של **כל** המחיצות נרשמת **בשרת** -- רשומה אחת
-    # לדיסק -- לפני הכתיבה הראשונה; tmpfs מת עם אובדן חשמל. בלי רשומה אין כיווץ.
-    shrink_open_record "$1" "$_sb_stage" "$_sb_plan" || { SHRINK_ERROR="$SHRINKMEM_ERROR"; return 1; }
-    mkdir -p "$RUN_DIR/targets/$1"
-    while IFS='|' read -r _sb_idx _sb_start _sb_size _sb_newsec _sb_guid _sb_uguid _sb_name _sb_attr <&3; do
-        [ -n "$_sb_idx" ] || continue
-        _sb_node=$(partition_node "$1" "$_sb_idx"); _sb_new=$((_sb_newsec * $3))
-        log "shrinking partition $_sb_idx on $1: $((_sb_size * $3)) -> $_sb_new bytes"
-        # בלי -f ועם "y" מפורש -- ראו למעלה. ‏$? של הצינור הוא של ntfsresize.
-        printf 'y\n' | ntfsresize -s "$_sb_new" --no-progress-bar "$_sb_node" >> "$LOG_FILE" 2>&1; _sb_rc=$?
-        [ "$_sb_rc" -eq 0 ] || {
-            SHRINK_ERROR="ntfsresize נכשל בכיווץ מחיצה $_sb_idx (rc=$_sb_rc): $(tail -n 1 "$LOG_FILE" 2>/dev/null | tr -d '\r') — מערכת הקבצים עלולה להיות במצב לא ידוע; הריצו chkdsk בווינדוס לפני קליטה חוזרת"
-            return 1; }
-        # הסימון נכתב לפני הטבלה: מכאן כל כשל מחזיר את המקור לגודלו (‏_capture_failed).
-        printf '%s|%s|%s|%s|%s|%s|%s|%s\n' "$_sb_idx" "$_sb_start" "$_sb_size" "$_sb_newsec" "$_sb_guid" "$_sb_uguid" "$_sb_name" "$_sb_attr" \
-            >> "$RUN_DIR/targets/$1/shrunk"
-        _shrink_gpt "$1" "$_sb_idx" "$_sb_start" "$_sb_newsec" "$_sb_guid" "$_sb_uguid" "$_sb_name" "$_sb_attr"; _sb_rc=$?
-        [ "$_sb_rc" -eq 0 ] || {
-            SHRINK_ERROR="מערכת הקבצים במחיצה $_sb_idx כווצה ל-$_sb_new בייט, אך טבלת המחיצות לא אושרה (שלב $_sb_rc: 1=sgdisk 2=rereadpt 3=התחילה או הגודל שנקראו בחזרה שונים) — המקור הוחזר לגודלו, אלא אם מצורפת כאן סיבה נוספת"
-            return 1; }
-        # ‏ntfsresize מסמן dirty לבדיקה בווינדוס; ניקוי אחרון, אחרת partclone -I
-        # מעתיק את הדגל לכל תחנה (‏chkdsk באתחול הראשון).
-        ntfsfix -d "$_sb_node" >> "$LOG_FILE" 2>&1; _sb_rc=$?
-        [ "$_sb_rc" -eq 0 ] || { SHRINK_ERROR="דגל ה-dirty לא נוקה אחרי הכיווץ של מחיצה $_sb_idx (ntfsfix -d rc=$_sb_rc)"; return 1; }
-        log "partition $_sb_idx shrunk: $_sb_size -> $_sb_newsec sectors"
-    done 3< "$_sb_stage"
-    cp "$2" "$RUN_DIR/parts.orig.txt" || { SHRINK_ERROR="לא הצלחנו לשמור את הפריסה המקורית"; return 1; }
-    _shrink_compact "$RUN_DIR/targets/$1/shrunk" "$RUN_DIR/parts.orig.txt" > "$2" \
-        || { SHRINK_ERROR="לא הצלחנו לכתוב את הפריסה המצומצמת"; return 1; }
+    # ‏#1466 (הכרעת נדב 16/10): **המקור אינו נכתב לעולם**. הכיווץ רץ על עותק
+    # copy-on-write בזיכרון (lcsnap.sh: ‏dm-snapshot מעל המחיצה, המאגר ב-brd),
+    # ‏partclone קורא ממנו (lc_src_node ב-capture.sh), ואין ntfsresize/ntfsfix/
+    # ‏sgdisk על המקור ואין רשומה בשרת (#926) -- אין מה להחזיר. אין עותק (אין
+    # dm, אין מקום, טבלה שלא נקראה בחזרה): הקליטה **נעצרת** בשם ועם המספרים;
+    # ‏"בלי כיווץ" בשאלה הוא הדרך לאימג' בגודל מלא, והוא לא כותב דבר.
+    [ "$3" = 512 ] || { SHRINK_ERROR="סקטור של $3 בייט: העותק בזיכרון נבנה על סקטורים של 512 בלבד — המקור לא נכתב והקליטה נעצרה; קלטו בלי כיווץ"; return 1; }
+    LC_SNAP_RUN="$RUN_DIR/capsnap"; rm -rf "$LC_SNAP_RUN"
+    { mkdir -p "$LC_SNAP_RUN" && cp "$_sb_plan" "$LC_SNAP_RUN/shrink.plan" && cp "$2" "$LC_SNAP_RUN/parts.txt"; } \
+        || { SHRINK_ERROR="לא הצלחנו להכין את העותק בזיכרון — המקור לא נכתב"; return 1; }
+    # #1505: the live table -- every planned partition is shrinking while its view is
+    while IFS='|' read -r _sb_idx _sb_rest; do cd_state "$_sb_idx" shrinking 2>/dev/null || :; done < "$_sb_plan"
+    lc_snap_shrink "$1"; _sb_rc=$?
+    case "$_sb_rc" in
+        0) cp "$LC_SNAP_RUN/parts.txt" "$2" || { SHRINK_ERROR="לא הצלחנו לכתוב את הפריסה המצומצמת — המקור לא נכתב"; return 1; }
+           log "partitions shrunk on a RAM view of $1 -- the source disk is not written"
+           while IFS='|' read -r _sb_idx _sb_rest; do cd_state "$_sb_idx" waiting 2>/dev/null || :; done < "$_sb_plan" ;;
+        3) SHRINK_ERROR="אין עותק לקריאה בלבד לכיווץ: $LC_SNAP_WHY — המקור לא נכתב והקליטה נעצרה; לאימג' בגודל מלא קלטו שוב ובחרו בלי כיווץ"
+           return 1 ;;
+        *) SHRINK_ERROR="${LC_ERROR:-הכיווץ של העותק נכשל — המקור לא נכתב}"; return 1 ;;
+    esac
 }
 
 _shrink_compact() {
@@ -173,9 +156,9 @@ _shrink_restore_one() {
     log "restoring partition $2 on $1 to $4 sectors"
     if _shrink_gpt "$1" "$2" "$3" "$4" "$6" "$7" "$8" "$9"; then
         if ntfsresize -f -f --no-progress-bar "$_sr1_node" >> "$LOG_FILE" 2>&1; then
-            ntfsfix -d "$_sr1_node" >> "$LOG_FILE" 2>&1 || _sr1_why="dirty flag not cleared after the grow (ntfsfix -d)"
-        else _sr1_why="ntfsresize could not grow the filesystem back"; fi
-    else _sr1_why="the partition table was not restored (step $?)"; fi
+            ntfsfix -d "$_sr1_node" >> "$LOG_FILE" 2>&1 || _sr1_why="דגל ה-dirty לא נוקה אחרי המתיחה (ntfsfix -d)"
+        else _sr1_why="ntfsresize לא הצליח למתוח את מערכת הקבצים בחזרה"; fi
+    else _sr1_why="טבלת המחיצות לא שוחזרה (שלב $?)"; fi
     [ -n "$_sr1_why" ] || { log "partition $2 restored to $4 sectors"; return 0; }
     _sr1_why="מחיצה $2 נשארה $5 סקטורים במקום $4: $_sr1_why"
     return 1
@@ -187,6 +170,12 @@ shrink_restore_source() {
     # נמחק. ‏0 גם כשאין מה להחזיר. כשל = אזהרה בשדה error, לא כשל קליטה;
     # והרשומה בשרת (#926) נסגרת רק כש**כולן** חזרו -- מחיצה אחת שנשארה
     # מכווצת היא דיסק מכווץ.
+    # ‏#1466: העותק בזיכרון של הקליטה הזו משוחרר ונקרא בחזרה; כשל = אזהרה.
+    if [ -n "${LC_SNAP_RUN:-}" ] && ! lc_snap_teardown; then
+        _sr_msg="המקור לא נכתב, אבל העותק בזיכרון לא שוחרר ($LC_SNAP_TD) — אתחלו את מחשב הבנייה לפני קליטה נוספת"
+        log "WARNING: $1: $_sr_msg"; echo "$_sr_msg" > "$RUN_DIR/targets/$1/error"; unset LC_SNAP_RUN; return 1
+    fi
+    unset LC_SNAP_RUN
     _sr_mark="$RUN_DIR/targets/$1/shrunk"
     [ -f "$_sr_mark" ] || return 0
     awk '{ a[NR] = $0 } END { for (i = NR; i >= 1; i--) print a[i] }' "$_sr_mark" > "$RUN_DIR/shrink.undo"

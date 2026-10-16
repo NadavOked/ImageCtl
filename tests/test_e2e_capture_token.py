@@ -18,8 +18,8 @@ from tools.e2e.phase_capture import _capture
 class _Resp:
     """תשובת urlopen מינימלית — status + body, בלי רשת."""
 
-    def __init__(self, body: bytes = b"{}"):
-        self.status = 200
+    def __init__(self, body: bytes = b"{}", status: int = 200):
+        self.status = status
         self.headers = {}
         self._body = body
 
@@ -51,6 +51,8 @@ def test_phase_capture_uploader_sends_the_task_token(monkeypatch, tmp_path):
     images.mkdir()
     staging = images / ".capture-ab12"
     seen: list[dict] = []
+    #: ‏#1470: אחרי המניפסט המשימה עוברת ל-verifying ואז done (האימות ברקע).
+    state = {"task": "running"}
 
     builder = SimpleNamespace(
         mac="aa:bb:cc:00:00:10",
@@ -61,7 +63,7 @@ def test_phase_capture_uploader_sends_the_task_token(monkeypatch, tmp_path):
         if method == "POST" and path.endswith("/capture"):
             return 200, task
         if method == "GET" and path.endswith("/tasks"):
-            return 200, [{"id": task["id"], "state": "running",
+            return 200, [{"id": task["id"], "state": state["task"],
                           "bytes_written": 1}]
         return 200, {}
 
@@ -79,7 +81,9 @@ def test_phase_capture_uploader_sends_the_task_token(monkeypatch, tmp_path):
             if staging.exists():
                 shutil.rmtree(staging)
             builder.answer = {"task": None, "session": None}
-            return _Resp(json.dumps({"ok": True}).encode())
+            state["task"] = "done"
+            # ‏#1470: ‏202 — המניפסט התקבל והאימות רץ ברקע
+            return _Resp(json.dumps({"ok": True, "state": "verifying"}).encode(), status=202)
         return _Resp(json.dumps({"ok": True}).encode())
 
     monkeypatch.setattr("tools.e2e.harness.urllib.request.urlopen", fake_urlopen)

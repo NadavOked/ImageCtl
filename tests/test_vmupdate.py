@@ -21,7 +21,7 @@ import pytest
 
 from conftest import MANIFEST_256, write_image
 from server import vmdisk, vmupdate
-from server.db import connect
+from server.db import connect, set_setting
 from server.images import ImageLibrary
 
 DISK_GUID = "0E239172-A515-D8B4-92A1-AD790E239172"
@@ -32,16 +32,36 @@ OWNED = {**copy.deepcopy(SOURCE), "id": "img_0bb001", "name": "Owned",
 NEW_BYTES = b"new partition bytes after windows update"
 
 
+#: ה-fd שה-macvtap המזויף "פותח" — מספר ש-qemu_argv מקבל (≥3), לא fd אמיתי.
+TAP_FD = 17
+#: ‏#1468: ה-lease שהרשת "נותנת" בטסטים שמבקשים אותו.
+LEASE = {"address": "10.20.30.40", "server": "10.20.30.1", "requests": 1, "ignored": 0,
+         "error": None}
+
+
 class FakeMachine:
+    """‏`lease=None` (ברירת המחדל): ה-DHCP "עוד לא ענה" עד שה-VM כבה — מחזור
+    החיים נבדק בלי שהראיה ל-lease משנה אותו. ‏dict בלי address — אין lease, מיד.
+    ‏dict עם address, או רשימה של כאלה (חידושים) — כל אחד נמסר ל-`on_ack`, וההאזנה
+    נמשכת עד שה-VM כבה, כמו ב-`vmnet.watch_lease`."""
+
     def __init__(self, *, kvm=None, mem=32768, cpus=8, free=10**13, missing=(),
-                 egress=("eth0", None), firewall=None, user=True, dns=("192.0.2.53",)):
+                 firewall=None, user=True, nics=("eth0", "eth1", "eth2"), stacked=None,
+                 macvtap=None, lease=None, platform="vmware"):
         self._kvm, self._mem, self._cpus, self._free = kvm, mem, cpus, free
         self.missing = set(missing)
-        self._egress = egress
         self._firewall = firewall
         self._user = user
-        self._dns = list(dns)
+        self.nics = set(nics)
+        self._stacked = stacked or {}
+        self._macvtap = macvtap
+        self._lease = lease
+        self._platform = platform
         self.firewalls: list[tuple] = []
+        self.taps: list[tuple] = []
+        self.closed: list[int] = []
+        self.downs = 0
+        self.firewall_offs = 0
 
     def guestfs(self):
         return "python3-guestfs" not in self.missing
@@ -49,12 +69,45 @@ class FakeMachine:
     def vm_user(self):
         return vmdisk.VmUser(999, 989) if self._user else None
 
-    def resolvers(self):
-        return self._dns
-
-    def firewall(self, uid, egress_if, dns):
-        self.firewalls.append((uid, egress_if, tuple(dns)))
+    def firewall(self, uid, mac):
+        self.firewalls.append((uid, mac))
         return self._firewall
+
+    def firewall_off(self):
+        self.firewall_offs += 1
+        return None
+
+    def nic_exists(self, name):
+        return name in self.nics
+
+    def stacked(self, name):
+        return set(self._stacked.get(name, ())) if self._stacked.get(name) != "unreadable" else None
+
+    def macvtap(self, lower, mac):
+        self.taps.append((lower, mac))
+        return (None, self._macvtap) if self._macvtap else (TAP_FD, None)
+
+    def close_tap(self, fd):
+        self.closed.append(fd)
+
+    def macvtap_down(self):
+        self.downs += 1
+        return None
+
+    def watch_lease(self, mac, timeout, stop, on_ack):
+        leases = self._lease if isinstance(self._lease, list) else [self._lease]
+        if self._lease is not None and not leases[0].get("address"):
+            return dict(leases[0])
+        last = {"address": None, "server": None, "requests": 0, "ignored": 0, "error": None}
+        for lease in leases if self._lease is not None else []:
+            on_ack(lease["address"], lease["server"])
+            last = dict(lease)
+        while not stop():
+            time.sleep(0.01)
+        return last
+
+    def platform(self):
+        return self._platform
 
     def kvm(self):
         return self._kvm
@@ -73,9 +126,6 @@ class FakeMachine:
 
     def exists(self, path):
         return Path(path).name not in self.missing
-
-    def egress(self):
-        return self._egress
 
 
 class FakeProc:
@@ -105,11 +155,13 @@ class FakeQemu:
     def __init__(self, qmp_fails=False):
         self.procs: list[FakeProc] = []
         self.qmp_calls: list[str] = []
+        self.kwargs: list[dict] = []
         self.qmp_fails = qmp_fails
 
-    def popen(self, argv, **_kw):
+    def popen(self, argv, **kw):
         proc = FakeProc(argv)
         self.procs.append(proc)
+        self.kwargs.append(kw)
         return proc
 
     def qmp(self, _path, command):
@@ -166,6 +218,7 @@ def lab(tmp_path, monkeypatch):
     monkeypatch.setattr(vmdisk, "build_disk", fake_build)
     monkeypatch.setattr(vmdisk, "capture_disk", fake_capture())
     conn = connect(tmp_path / "imagectl.db")
+    set_setting(conn, vmupdate.NIC_KEY, "eth0")   # ‏#1468: "כרטיס לעדכוני VM"
     library = ImageLibrary(root)
     qemu = FakeQemu()
 
@@ -254,16 +307,8 @@ def test_missing_tools_are_named(lab):
     assert "qemu-system-x86_64" in exc.message and "OVMF_VARS_4M.ms.fd" in exc.message
 
 
-def test_egress_through_the_deploy_card_is_refused(lab):
-    engine = lab["make"](FakeMachine(egress=("eth1", None)), deploy_interface=lambda: "eth1")
-    exc = refusal(engine)
-    assert (exc.status, exc.reason) == (409, "egress_on_deploy")
-    assert "eth1" in exc.message
-
-
-def test_no_route_out_is_refused(lab):
-    exc = refusal(lab["make"](FakeMachine(egress=(None, "Network is unreachable"))))
-    assert exc.reason == "no_egress" and "Network is unreachable" in exc.message
+# ‏#1468: הכרטיס של ה-VM (הפצה מסורבת, ניהול מותר, macvtap, ‏lease) —
+# ‏`test_vmnet_1468.py`.
 
 
 def test_unknown_image_is_404(lab):
@@ -282,20 +327,43 @@ def test_start_builds_boots_and_the_argv_never_bridges(lab):
     assert status["resources"]["memory_mib"] == 16384 and status["resources"]["cpus"] == 4
     argv = lab["qemu"].procs[0].args
     joined = " ".join(argv)
-    assert "-netdev user,id=net0,ipv6=off" in joined
-    assert "e1000e" in joined and "ide-hd" in joined
-    assert "bridge" not in joined and "tap" not in joined
+    mac = vmupdate.get_setting(lab["conn"], vmupdate.MAC_KEY)
+    assert f"-netdev tap,id=net0,fd={TAP_FD}" in joined     # #1468: macvtap, לא slirp
+    assert f"e1000e,netdev=net0,mac={mac},romfile=" in joined and "ide-hd" in joined
+    assert "user,id=" not in joined and "bridge" not in joined
     assert f"unix:{engine.workdir / 'vnc.sock'},share=force-shared" in argv
     # הבידוד: QEMU רץ כמשתמש ה-VM, ואין שום פתח נכנס או שיתוף
     assert argv[argv.index("-run-with") + 1] == "user=imagectl-vm"
-    for forbidden in ("hostfwd", "guestfwd", "smb=", "tap", "bridge", "-vnc :", "tcp:"):
+    for forbidden in ("hostfwd", "guestfwd", "smb=", "bridge", "-vnc :", "tcp:", "ifname=",
+                      "script="):
         assert forbidden not in joined, forbidden
     assert "elevateprivileges" not in joined     # נשבר עם run-with (SIGSYS, נמדד)
-    # חומת האש נטענה לפני ההדלקה, עם כרטיס היציאה ושרתי השמות
-    assert engine.machine.firewalls == [(999, "eth0", ("192.0.2.53",))]
+    # ה-macvtap על הכרטיס שנבחר, והבידוד נטען לפני ההדלקה — בלי כתובת עדיין
+    assert engine.machine.taps == [("eth0", mac)]
+    assert engine.machine.firewalls == [(999, mac)]
+    assert lab["qemu"].kwargs[0]["pass_fds"] == (TAP_FD,)
+    assert engine.machine.closed == [TAP_FD]     # ל-QEMU עותק משלו
     assert "OVMF_CODE_4M.secboot.fd" in joined
     assert (engine.workdir / "vars.fd").read_bytes() == b"OVMF_VARS_4M.ms.fd"
     assert events(lab["conn"])[-2:] == ["vmupdate_start", "vmupdate_running"]
+
+
+def test_whoever_sees_running_also_sees_its_journal_row(lab, monkeypatch):
+    """‏#1468: ‏`running` ושורת היומן שלו הם רגע אחד. כשהיומן נכתב אחרי שחרור
+    הנעילה, קורא של status() ראה `running` בלי השורה (נכשל בריצה מלאה תחת עומס).
+    כאן הכתיבה איטית בכוונה, כדי שהחלון יהיה תמיד פתוח ולא רק תחת עומס."""
+    real = vmupdate.journal
+
+    def slow(conn, event, *args, **kwargs):
+        if event == "vmupdate_running":
+            time.sleep(0.5)
+        return real(conn, event, *args, **kwargs)
+
+    monkeypatch.setattr(vmupdate, "journal", slow)
+    engine = lab["make"]()
+    engine.start("img_7f3a91", "noc")
+    wait_for(engine, "running")
+    assert events(lab["conn"])[-1] == "vmupdate_running", events(lab["conn"])
 
 
 def test_a_second_vm_is_refused_while_one_is_open(lab):
@@ -478,7 +546,8 @@ def test_secure_boot_is_off_only_on_evidence_of_unsigned_loaders(boot_ca, expect
 
 def test_qemu_argv_without_secure_boot_uses_the_plain_firmware(tmp_path):
     argv = vmupdate.qemu_argv(workdir=tmp_path, memory_mib=512, cpus=1, accel="kvm",
-                              secure_boot=False, ovmf_dir=Path("/fw"))
+                              secure_boot=False, tap_fd=TAP_FD, mac="02:00:00:00:00:01",
+                              ovmf_dir=Path("/fw"))
     joined = " ".join(argv)
     assert "smm=on" not in joined and str(Path("/fw") / "OVMF_CODE_4M.fd") in joined
     assert "-cpu host" in joined and "-m 512" in joined
@@ -518,15 +587,13 @@ def test_a_firewall_that_did_not_load_keeps_the_vm_off(lab):
     status = wait_for(engine, "failed")
     assert status["error"]["reason"] == "firewall" and "nft -f נכשל" in status["error"]["message"]
     assert lab["qemu"].procs == [] and status["disk_ready"] is True
+    # ה-macvtap שכבר נוצר אינו נשאר פתוח ותלוי (#1468)
+    assert engine.machine.closed == [TAP_FD] and engine.machine.downs == 1
 
 
 def test_without_the_vm_user_nothing_starts(lab):
     exc = refusal(lab["make"](FakeMachine(user=False)))
     assert exc.reason == "vm_user" and "imagectl-vm" in exc.message
-
-
-def test_without_dns_nothing_starts(lab):
-    assert refusal(lab["make"](FakeMachine(dns=()))).reason == "no_dns"
 
 
 def test_missing_guestfs_is_named(lab):

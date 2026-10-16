@@ -643,3 +643,76 @@ def test_the_agent_sends_its_steps_to_the_declared_path():
         text = (AGENT / name).read_text(encoding="utf-8")
         for hit in re.findall(r"/boot/step\?[^\"' ]*", text):
             assert hit.startswith("/boot/step?mac=") and "&s=" in hit
+
+
+def test_parse_marks_accepts_the_init_markers():
+    assert trace.parse_marks(
+        "init:1.50,modules:9.02,nic:9.10,link:11.40,dhcp:12.30"
+    ) == {"init": 1.5, "modules": 9.02, "nic": 9.1,
+          "link": 11.4, "dhcp": 12.3}
+
+
+@pytest.mark.parametrize("raw", [
+    "", "init", "init:", "init:abc", "bogus:1.0", "init:1.0,init:2.0",
+    "init:1.0;rm -rf /", "x" * 201, None, 5,
+])
+def test_parse_marks_refuses_garbage(raw):
+    assert trace.parse_marks(raw) is None
+
+
+def test_init_marks_ride_on_agent_net_and_are_logged(caplog):
+    spy = Spy()
+    with caplog.at_level("INFO", logger="imagectl.boot"):
+        status, body = call(
+            "/step",
+            f"mac={MAC}&s=agent-net&up=init:1.50,modules:9.02,dhcp:12.30",
+            spy,
+        )
+    assert status == 200 and body == trace.TINY_BODY
+    assert spy.steps == [(MAC, "agent-net")]
+    assert any("modules=9.02" in record.message and "dhcp=12.30" in record.message
+               for record in caplog.records if record.levelname == "INFO")
+
+
+def test_malformed_marks_do_not_cost_the_step(caplog):
+    spy = Spy()
+    with caplog.at_level("WARNING", logger="imagectl.boot"):
+        call("/step", f"mac={MAC}&s=agent-net&up=init:abc", spy)
+    assert spy.steps == [(MAC, "agent-net")]
+    assert any("malformed" in record.message for record in caplog.records
+               if record.levelname == "WARNING")
+
+
+def test_marks_of_a_step_that_was_not_recorded_are_not_logged(caplog):
+    with caplog.at_level("INFO", logger="imagectl.boot"):
+        call("/step", f"mac={MAC}&s=agent-net&up=init:1.50",
+             lambda mac, step: False)
+    assert not any("boot marks" in record.message for record in caplog.records
+                   if record.levelname == "INFO")
+
+
+def test_a_step_without_marks_logs_no_marks(caplog):
+    with caplog.at_level("INFO", logger="imagectl.boot"):
+        call("/step", f"mac={MAC}&s=agent-net", Spy())
+    assert not any("boot marks" in record.message for record in caplog.records)
+
+
+@requires_bash
+def test_trace_step_carries_the_marks_in_the_url():
+    result = sh(
+        f'set -e; RUN_DIR=$(mktemp -d); export RUN_DIR; '
+        f'. {posix(AGENT)}/lib/common.sh; '
+        'curl() { for a in "$@"; do echo "$a"; done > "$RUN_DIR/url"; return 0; }; '
+        f'SERVER=http://s; MAC={MAC}; '
+        'trace_step agent-net "up=init:1.50,dhcp:3.20"; cat "$RUN_DIR/url"; '
+        'trace_step agent-start; cat "$RUN_DIR/url"'
+    )
+    assert result.returncode == 0, result.stderr
+    urls = [line for line in result.stdout.splitlines() if line.startswith("http://")]
+    assert f"http://s/boot/step?mac={MAC}&s=agent-net&up=init:1.50,dhcp:3.20" in urls
+    assert urls[-1].endswith("&s=agent-start") and not urls[-1].endswith("&")
+
+
+def test_init_sends_its_marks_on_agent_net():
+    text = (AGENT / "init").read_text(encoding="utf-8")
+    assert re.search(r'trace_step agent-net "up=\$_up"', text)

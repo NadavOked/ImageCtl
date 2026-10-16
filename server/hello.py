@@ -17,8 +17,9 @@ import re
 import sqlite3
 from urllib.parse import urlsplit
 
-from . import (bootguard, capabilities, crcwarn, direct, disk_failures, inventory, minfree, probe,
-               registry, room, room_drivers, shrink_records, slot_names)
+from . import (bootguard, capabilities, crcwarn, direct, disk_failures, drawer_slots,
+               inventory, minfree, probe, registry, room, room_drivers, shrink_records,
+               slot_names, timezone)
 from .agent_version import server_version
 from .db import get_setting, journal, net_seen
 from .images import ImageLibrary
@@ -82,7 +83,7 @@ PROBE_HEADER = b"x-imagectl-probe"
 #: ‏64KB/שדה ועומק 8 — הסוכן שלנו שולח קילובייטים בודדים ועומק 3.
 HELLO_FIELD_MAX_BYTES = 64 * 1024
 HELLO_FIELD_MAX_DEPTH = 8
-HELLO_CAPPED_FIELDS = ("inventory", "probe", "netprobe")
+HELLO_CAPPED_FIELDS = ("inventory", "probe", "netprobe", "optical")
 
 
 def _json_depth(value: object, depth: int = 1) -> int:
@@ -206,6 +207,7 @@ def _unknown(conn: sqlite3.Connection, mac: str, client_ip: str | None,
         "name": None,
         "server_name": server_name(conn),
         "server_version": server_version(),
+        "tz": timezone.posix_tz(conn),
         "role": "unknown",
         "group": None,
         "task": None,
@@ -244,6 +246,8 @@ def build_answer(
     secure_boot: int | None = None,
     agent_version: str | None = None,
     local_clone: str | None = None,
+    optical: list | None = None,
+    optical_reported: bool = False,
 ) -> dict:
     # כל מגע של המכונה נרשם ברשימת ההתקנים, גם של מכונה שאינה רשומה
     # בטבלה — ככה מתגלה MAC לא מוכר, וזה חלק מעיקרון 1. ‏hello הוא POST
@@ -261,7 +265,9 @@ def build_answer(
                  monitor_secret=monitor_secret, monitor_auth=monitor_auth,
                  prompt=prompt, disk_probe=disk_probe,
                  firmware=firmware, secure_boot=secure_boot, agent_version=agent_version,
-                 local_clone=local_clone)
+                 local_clone=local_clone,
+                 optical_json=json.dumps(optical) if optical is not None else None,
+                 update_optical=optical_reported)
         # ‏#720: המלאי החומרתי (schema 2) נשמר מגורסת — שורה חדשה רק כשהשתנה.
         # ‏None = הסוכן לא שלח (schema 1) או שלח פגום: הגרסה הקודמת נשארת.
         if hw_inventory is not None:
@@ -293,6 +299,7 @@ def build_answer(
         "name": machine["suffix"],
         "server_name": server_name(conn),
         "server_version": server_version(),
+        "tz": timezone.posix_tz(conn),
         "role": machine["role"],
         "group": {
             "id": machine["group_id"],
@@ -322,6 +329,9 @@ def build_answer(
     }
     if machine["role"] == "cloner" and machine["drawer_count"] is not None:
         answer["drawer_count"] = machine["drawer_count"]
+    if machine["role"] in ("cloner", "build"):
+        answer["drawer_slots"] = drawer_slots.effective(
+            machine["drawer_count"], machine["drawer_slots"])
 
     # משימה גוברת על סבב: היא מופנית למכונה הזו, לא לקבוצה.
     if answer["task"] is not None:

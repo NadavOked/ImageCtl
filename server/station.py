@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse
 
 from .progress_view import capture_progress
 from .agent_version import server_version
-from . import capabilities, storage_locations
+from . import capabilities, storage_locations, timezone
 from .api import ServerContext, _error, agent_credentials, identity_gate
 from .db import get_setting, journal
 from .hello import class_deploy_enabled
@@ -163,6 +163,7 @@ def create_station_router(ctx: ServerContext,
             # not read -- the screen then says "unknown", never a number.
             # The version itself is "server_version" above (#1257: read once).
             "server_name": get_setting(ctx.conn, "server_name") or socket.gethostname(),
+            "tz": timezone.posix_tz(ctx.conn),
             "task": {
                 "id": task["id"], "type": task["type"], "state": task["state"],
                 "disk": task["disk"], "name": task["name"], "error": task["error"],
@@ -211,7 +212,7 @@ def create_station_router(ctx: ServerContext,
         if role not in ROUND_OPENER_ROLES:
             journal(ctx.conn, "agent_role_refused",
                     f'{body.get("username", "")} role={role} at station round open')
-            return _error(403, "this role may not open a round", "role_not_allowed")
+            return _error(403, "התפקיד הזה אינו רשאי לפתוח סבב", "role_not_allowed")
 
         group_id = body.get("group_id", "")
         group = ctx.conn.execute(

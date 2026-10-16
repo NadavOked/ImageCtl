@@ -1,5 +1,7 @@
 """#1378: every agent S5 path arms WoL and reports an unverified arm."""
 
+import re
+
 from conftest import hello_body, setup_classroom
 from test_agent import AGENT
 
@@ -9,9 +11,11 @@ def test_every_poweroff_path_uses_the_one_guard():
              AGENT / "lib/localclone.sh", AGENT / "lib/lcwait.sh",
              AGENT / "monitor.c"]
     text = "\n".join(path.read_text(encoding="utf-8") for path in files)
-    calls = [line for line in text.splitlines() if line.strip() == "poweroff"]
+    calls = [line.strip() for line in text.splitlines() if re.match(r"\s*poweroff(\s|$)", line)]
     assert len(calls) == 1, "only safe_poweroff may invoke poweroff"
-    assert "poweroff -f" not in text
+    # #1483: and with -f. PID 1 is agent/init, a shell: busybox poweroff
+    # without -f only signals it and exits 0 -- the machine stays on.
+    assert calls == ["poweroff -f"], calls
     for path in files[1:]:
         body = path.read_text(encoding="utf-8")
         if "poweroff" in body:

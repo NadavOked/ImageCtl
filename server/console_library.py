@@ -107,7 +107,7 @@ def create_library_router(ctx: ServerContext) -> APIRouter:
         except ValueError as exc:
             raise HTTPException(400, str(exc))
         except KeyError:
-            raise HTTPException(404, "image does not exist")
+            raise HTTPException(404, "האימג' לא קיים")
 
     @router.put("/images/{image_id}")
     async def edit_image(image_id: str, request: Request, user=Depends(admin_only)):

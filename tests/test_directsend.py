@@ -169,7 +169,7 @@ TWO_PARTITIONS = (
 
 
 def direct_run(tmp_path, *, answer=None, env=None, udp_silent=False, partitions=1,
-               timeout=45):
+               timeout=45, udp_sender=None):
     box = tmp_path / "box"
     dev, run = box / "dev", box / "run"
     dev.mkdir(parents=True); run.mkdir(parents=True)
@@ -191,12 +191,13 @@ def direct_run(tmp_path, *, answer=None, env=None, udp_silent=False, partitions=
             **(env or {})}
     exports = "".join(f"export {k}={v!r}; " for k, v in envs.items())
     stubs = {"sgdisk": TWO_PARTITIONS if partitions == 2 else ONE_PARTITION,
-             "partclone.dd": PARTCLONE, "udp-sender": UDP_SENDER, "curl": CURL_RECORD}
+             "partclone.dd": PARTCLONE, "udp-sender": udp_sender or UDP_SENDER,
+             "curl": CURL_RECORD}
     if shutil.which("jq") is None:
         stubs["jq"] = JQ_STUB
     libs = " ".join(f". {posix(AGENT)}/lib/{n}.sh;" for n in (
         "common", "sysinfo", "waits", "jsonq", "progress", "restore", "manifest",
-        "bootca", "hibernation", "shrinkplan", "shrink", "capture", "capturesink", "directsend", "ui"))   # ‏#87/#929: shrink*.sh לפני capture.sh, כמו בסוכן; #1217: capturesink.sh
+        "bootca", "hibernation", "shrinkplan", "shrink", "lcsnap", "capture", "capturesink", "directsend", "ui"))   # ‏#87/#929: shrink*.sh לפני capture.sh, כמו בסוכן; #1217: capturesink.sh; #1466: lcsnap.sh (lc_src_node), כמו בסוכן
     out = run_sh(
         make_stubs(box / "stubs", stubs) + exports + libs
         + f' node_is_block() {{ grep -qxF "$1" {posix(nodes)!r} 2>/dev/null; }}; '
@@ -264,14 +265,14 @@ def test_a_sender_that_exits_zero_without_transferring_is_a_failure(tmp_path):
     assert out.strip().endswith("rc=1"), out
     report = _progress(box)
     assert report["state"] == "failed"
-    assert "no cloning machine joined" in report["targets"][0]["error"]
+    assert "אף מחשב משכפל לא הצטרף לזרם" in report["targets"][0]["error"]   # #1503
 
 
 def test_bytes_that_differ_from_the_manifest_fail_at_the_source_by_name(tmp_path):
     box, run, out = direct_run(tmp_path, env={"PCL_SECOND": "B"})
     assert out.strip().endswith("rc=1"), out
     report = _progress(box)
-    assert "differ from the manifest" in report["targets"][0]["error"]
+    assert "הבייטים שנשלחו שונים מהמניפסט" in report["targets"][0]["error"]   # #1503
 
 
 def test_a_closed_wave_or_a_task_that_is_no_longer_ours_does_not_send(tmp_path):
@@ -279,4 +280,4 @@ def test_a_closed_wave_or_a_task_that_is_no_longer_ours_does_not_send(tmp_path):
         box, run, out = direct_run(tmp_path / name, answer=answer)
         assert out.strip().endswith("rc=1"), out
         assert not (box / "udp.argv").exists(), name
-        assert "did not start" in _progress(box)["targets"][0]["error"]
+        assert "הגל לא התחיל" in _progress(box)["targets"][0]["error"]   # #1503

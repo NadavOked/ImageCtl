@@ -69,7 +69,7 @@ def test_a_failed_hostname_write_ends_done_with_a_visible_warning(tmp_path):
     assert (run / "targets/sda/state").read_text().strip() == "done"
     err = target_error(run)
     assert err.startswith("שם המחשב לא נכתב: "), err
-    assert "registry edit failed" in err, err                       # הסיבה מ-write_hostname
+    assert "עריכת הרג׳יסטרי נכשלה" in err, err                       # הסיבה מ-write_hostname
     # והשדה מגיע לדיווח שהשרת מקבל (סעיף 4) — done + error, JSON תקין.
     report = final_report(run, script + 'name_this_machine sda sess1 >/dev/null; ')
     (target,) = report["targets"]
@@ -99,7 +99,7 @@ def test_the_hostname_warning_joins_an_earlier_grow_warning(tmp_path):
     assert out.returncode == 0, out.stderr
     err = target_error(run)
     assert "done (grow deferred)" in err, err
-    assert "שם המחשב לא נכתב: registry edit failed" in err, err
+    assert "שם המחשב לא נכתב: עריכת הרג׳יסטרי נכשלה" in err, err
 
 
 def test_no_prefix_means_no_name_and_no_warning(tmp_path):

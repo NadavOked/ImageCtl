@@ -93,6 +93,18 @@ def create_vmupdate_router(ctx: ServerContext, engine: VmUpdate) -> APIRouter:
                 f"memory_mib={saved['memory_mib']} cpus={saved['cpus']}", user[0])
         return saved
 
+    @router.get("/network")
+    def get_network(user=Depends(admin_only)):
+        """‏#1468: "כרטיס לעדכוני VM", ה-MAC שנוצר לו, וה-lease האחרון."""
+        return act(engine.network_view)
+
+    @router.put("/network")
+    def put_network(body: dict, user=Depends(admin_only)):
+        if set(body) != {"interface"}:
+            return JSONResponse({"ok": False, "error": "הגוף חייב להיות {\"interface\": שם|null}",
+                                 "code": "vm_nic_invalid"}, status_code=400)
+        return act(engine.set_network, body["interface"], user[0])
+
     @router.get("/status")
     def status(user=Depends(admin_only)):
         # הקריאה הזו היא גם ה"דופק" של המנהל (הכרעה 6): השולט שלא שאל

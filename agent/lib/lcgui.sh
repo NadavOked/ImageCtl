@@ -55,15 +55,25 @@ lc_gui_run() {
     _gr_t0=$(cat "$_gr_r/started" 2>/dev/null); _gr_t1=$(cat "$_gr_r/ended" 2>/dev/null)
     case "$_gr_t0" in ''|*[!0-9]*) _gr_t0=$_gr_now ;; esac
     case "$_gr_t1" in ''|*[!0-9]*) _gr_t1=$_gr_now ;; esac
-    _gr_b0=$(_last_number "$_gr_r/src.base"); _gr_b1=$(_last_number "$_gr_r/bytes.raw")
+    # #1484: not there = not started, said so -- src.base is written when the first
+    # partition ends, bytes.raw when one begins (lccopy.sh). Not a read that failed.
+    _gr_b0=0; [ -f "$_gr_r/src.base" ] && _gr_b0=$(_last_number "$_gr_r/src.base")
+    _gr_b1=0; [ -f "$_gr_r/bytes.raw" ] && _gr_b1=$(_last_number "$_gr_r/bytes.raw")
     _gr_cp=$(( ${_gr_b0:-0} + ${_gr_b1:-0} ))
     _gr_cur=$(cat "$_gr_r/cur" 2>/dev/null)
-    printf 'lc_run=%s|%s|%s|%s|%s|%s|%s|%s\n' "$(cat "$_gr_r/src" 2>/dev/null)" "$(_lc_num "$(cat "$_gr_r/total" 2>/dev/null)")" \
+    # #1477: the shrink's path as lc_shrink_source wrote it (snapshot|refused);
+    # anything else is empty -- the screen does not guess it.
+    _gr_sp=$(cat "$_gr_r/shrink_path" 2>/dev/null); case "$_gr_sp" in snapshot|refused) ;; *) _gr_sp="" ;; esac
+    printf 'lc_run=%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$(cat "$_gr_r/src" 2>/dev/null)" "$(_lc_num "$(cat "$_gr_r/total" 2>/dev/null)")" \
         "$_gr_cp" "$((_gr_t1 - _gr_t0))" "$([ -f "$_gr_r/shrunk" ] && echo 1 || echo 0)" \
         "$(cat "$_gr_r/report" 2>/dev/null | cut -d'|' -f1)" "${_gr_cur%%|*}" \
-        "$(_lc_clean "$(cat "$_gr_r/source_restore" 2>/dev/null)")"
+        "$(_lc_clean "$(cat "$_gr_r/source_restore" 2>/dev/null)")" "$_gr_sp"
+    # #1483: what became of "כבה את המחשב" -- powering off, or why not
+    [ -s "$_gr_r/notice" ] && printf 'toast=%s\n' "$(_lc_clean "$(cat "$_gr_r/notice")")"
     if [ -f "$_gr_r/manifest.json" ]; then
-        jq -r '.partitions[] | "\(.index)|\(.role)|\(.fs)|\(if .fs == "swap" then 0 elif .used_bytes != null then .used_bytes else .size_bytes end)|\(.size_bytes)"' \
+        # #1440: a used_bytes that was not measured is -1, said "לא נמדד" -- never the
+        # partition's size under the word "בשימוש" (496 GB shown, 203 GB in use).
+        jq -r '.partitions[] | "\(.index)|\(.role)|\(.fs)|\(if .fs == "swap" then 0 elif .used_bytes != null then .used_bytes else -1 end)|\(.size_bytes)"' \
             "$_gr_r/manifest.json" 2>/dev/null | while IFS='|' read -r _gr_i _gr_role _gr_fs _gr_b _gr_z; do
             _gr_st="wait"
             if cat "$_gr_r/source.sha" "$_gr_r/swaps" 2>/dev/null | awk -F'|' -v i="$_gr_i" '$1 == i { f = 1 } END { exit !f }'; then _gr_st="done"
@@ -76,9 +86,10 @@ lc_gui_run() {
     for _gr_d in $(cat "$_gr_r/targets" 2>/dev/null); do
         _gr_t="$RUN_DIR/targets/$_gr_d"
         _gr_ok=$(awk 'END { print NR }' "$_gr_t/lc_ok" 2>/dev/null)
-        printf 'lc_tgt=%s|%s|%s|%s|%s|%s|%s|%s\n' "$_gr_d" "$(cat "$_gr_t/state" 2>/dev/null)" "$(target_bytes "$_gr_d")" \
+        _gr_nb=$(awk 'END { print NR }' "$_gr_t/ntfs_boot" 2>/dev/null)   # #1487: NTFS backup boot sectors read back
+        printf 'lc_tgt=%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$_gr_d" "$(cat "$_gr_t/state" 2>/dev/null)" "$(target_bytes "$_gr_d")" \
             "$(cat "$_gr_t/lc_part" 2>/dev/null)" "${_gr_ok:-0}" "$(cat "$_gr_t/lc_table" 2>/dev/null | tr '|' ',')" \
-            "$(_lc_clean "$(cat "$_gr_t/error" 2>/dev/null)")" "$(cat "$_gr_t/total" 2>/dev/null)"
+            "$(_lc_clean "$(cat "$_gr_t/error" 2>/dev/null)")" "$(cat "$_gr_t/total" 2>/dev/null)" "${_gr_nb:-0}"
     done
 }
 
@@ -118,7 +129,10 @@ EOF
         lc-stop)
             case "$_gd_ph" in copying|shrinking) _lc_req stop.req stop ;; *) return 1 ;; esac ;;
         lc-poweroff|lc-again)
-            case "$_gd_ph" in done|stopped) _lc_req end.req "${token#lc-}" ;; *) return 1 ;; esac ;;
+            case "$_gd_ph" in done|stopped) _lc_req end.req "${token#lc-}" ;;
+                *) [ "$token" = lc-poweroff ] && [ -d "$LC/run" ] && \
+                       _lc_req run/notice "המחשב לא כובה: השיכפול עוד לא הסתיים בצד הסוכן ($_gd_ph). נסו שוב בעוד רגע."   # #1483: aloud
+                   return 1 ;; esac ;;
         lc-back)
             [ "$_gd_scr" = local ] && [ "$_gd_ph" = idle ] || return 1
             _lc_req end.req back ;;

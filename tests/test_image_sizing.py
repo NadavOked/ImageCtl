@@ -337,7 +337,7 @@ def test_a_disk_whose_size_cannot_be_read_fails_instead_of_writing(tmp_path):
     run, path, prelude = fits_box(tmp_path, "exit 1", image=GOLDEN_FROM_VM)
     out = sh(prelude + f'disk_fits sda {posix(path)!r}; echo "rc=$?"')
     assert out.strip().endswith("rc=1")
-    assert "cannot tell whether the image fits" in \
+    assert "לא ניתן לדעת אם האימג' נכנס" in \
         (run / "targets" / "sda" / "error").read_text(encoding="utf-8")
 
 

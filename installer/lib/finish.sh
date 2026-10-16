@@ -83,6 +83,14 @@ UUID=$_wh_esp_uuid /boot/efi vfat umask=0077 0 1
 127.0.1.1 $ANSWER_HOSTNAME
 ::1 localhost ip6-localhost ip6-loopback
 "
+    # #1447: Debian's default is Etc/UTC; the DCUI clock reads the OS zone.
+    # Install Israel's zone before enabling time synchronization.
+    must_run timezone-missing "Asia/Jerusalem is not in the target's zoneinfo" \
+        chroot "$TARGET" test -f /usr/share/zoneinfo/Asia/Jerusalem
+    must_run timezone "could not set the server timezone" \
+        chroot "$TARGET" ln -sf /usr/share/zoneinfo/Asia/Jerusalem /etc/localtime
+    write_target 0644 /etc/timezone "Asia/Jerusalem
+"
     # Journal ordering, TLS validity, and session expiry all depend on a sane
     # clock. The package is in the offline ISO pool; enabling it here makes
     # synchronization start on the first installed-system boot.

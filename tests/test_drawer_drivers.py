@@ -127,7 +127,7 @@ def test_a_chosen_model_without_packages_is_failed_openly_not_no_match(tmp_path)
     box = Drawers(tmp_path, ports=[2], packages={})
     box.stage_drawers()
     result = box.outcome("sdb")
-    assert result["state"] == "failed" and "chosen model" in result["error"]
+    assert result["state"] == "failed" and "לדגם שנבחר" in result["error"]
     assert box.staged_files() == {} and box.calls() == []
     assert box.state() == "partial"
 
