@@ -59,7 +59,7 @@ _boot_set_zero() {
     _bw=$?
     _bb=$(_boot_dword "$1" "$2" "$3")
     if [ "$_bw" -ne 0 ] || [ "$_bb" != "0" ]; then
-        _bs_why="$2\\$3=0 not verified (rc=$_bw, read back '$_bb')"; return 1
+        _bs_why="$2\\$3=0 לא אומת (rc=$_bw, נקרא בחזרה '$_bb')"; return 1
     fi
     return 0
 }
@@ -69,21 +69,21 @@ boot_storage_enable() {
     _dr_boot=""; _bs_why=""
     _bs_svc=$(boot_storage_service "$1") || { _boot_result skipped "" "unknown_bus"; return 0; }
     _bs_hive="$2/Windows/System32/config/SYSTEM"
-    [ -f "$_bs_hive" ] || { _boot_result failed "$_bs_svc" "SYSTEM hive not found"; return 0; }
+    [ -f "$_bs_hive" ] || { _boot_result failed "$_bs_svc" "כוורת SYSTEM לא נמצאה"; return 0; }
     _bs_cs=$(_control_set "$_bs_hive" 2>> "$LOG_FILE") || {
-        _boot_result failed "$_bs_svc" "could not read Select\\Current"; return 0; }
+        _boot_result failed "$_bs_svc" "לא הצלחנו לקרוא את Select\\Current"; return 0; }
     _bs_key="$_bs_cs\\Services\\$_bs_svc"
 
     _bs_start=$(_boot_dword "$_bs_hive" "$_bs_key" Start); _bs_rc=$?
     # A Windows without the service (stornvme on Windows 7) cannot boot from
     # this disk at all -- that is a finding, not a skip.
-    [ "$_bs_rc" -eq 3 ] && { _boot_result failed "$_bs_svc" "the image has no $_bs_svc service"; return 0; }
-    [ "$_bs_rc" -eq 0 ] || { _boot_result failed "$_bs_svc" "could not read $_bs_key\\Start (rc=$_bs_rc)"; return 0; }
+    [ "$_bs_rc" -eq 3 ] && { _boot_result failed "$_bs_svc" "באימג' אין את השירות $_bs_svc"; return 0; }
+    [ "$_bs_rc" -eq 0 ] || { _boot_result failed "$_bs_svc" "לא הצלחנו לקרוא את $_bs_key\\Start (rc=$_bs_rc)"; return 0; }
     _bs_over=$(_boot_dword "$_bs_hive" "$_bs_key\\StartOverride" 0); _bs_orc=$?
     case "$_bs_orc" in
         0) ;;
         3) _bs_over="" ;;   # no StartOverride key or value: Start alone decides
-        *) _boot_result failed "$_bs_svc" "could not read StartOverride (rc=$_bs_orc)"; return 0 ;;
+        *) _boot_result failed "$_bs_svc" "לא הצלחנו לקרוא את StartOverride (rc=$_bs_orc)"; return 0 ;;
     esac
 
     if [ "$_bs_start" = "0" ] && { [ -z "$_bs_over" ] || [ "$_bs_over" = "0" ]; }; then

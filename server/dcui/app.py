@@ -10,7 +10,7 @@ from pathlib import Path
 from server import netcfg, netcfg_rollback
 from server.db import connect
 
-from . import actions
+from . import actions, pairing
 from .data import (DATA_DIR, NicInfo, Snapshot, collect_snapshot,
                    demo_snapshot)
 
@@ -21,6 +21,7 @@ MENU_ITEMS = (
     "Restart Management Network",
     "Restart Services",
     "Display TLS Certificate",
+    "Primary-Visible Address",
 )
 
 
@@ -79,10 +80,13 @@ def _fingerprint_lines(value: str) -> tuple[str, str]:
 
 def render_main(snapshot: Snapshot, message: str = "") -> list[str]:
     shown_version = snapshot.version + (" [UNVERIFIED]" if not snapshot.version_verified else "")
+    footer = ("<F4> Pairing  <F2> Customize  <F9> Reset Password  <F12> Power  <F5> Refresh"
+              if snapshot.storage_role == "secondary" else
+              "<F2> Customize  <F9> Reset Password  <F12> Restart/Shutdown  <F5> Refresh")
     canvas = Canvas(
         _title("ImageSrv Server Operations Console",
                f"{shown_version}  {snapshot.storage_role}"),
-        "<F2> Customize  <F9> Reset Password  <F12> Restart/Shutdown  <F5> Refresh",
+        footer,
     )
     fp1, fp2 = _fingerprint_lines(snapshot.fingerprint)
     canvas.put(4, 4, "Hostname:")
@@ -262,6 +266,8 @@ def render_menu(snapshot: Snapshot, selected: int = 0, seconds: int = 90) -> lis
          "Live state is read back before success."),
         ("Restart Services", "Restarts imagectl-server and dnsmasq only", "when dnsmasq is enabled, then reads back", "each service state."),
         ("Display TLS Certificate", "Shows SHA-256, certificate SANs and", "the not-after date read from the cert."),
+        ("Primary-Visible Address", "The address at which the primary", "server reaches this secondary (port",
+         "8443); behind NAT, the outside one.", "F4 shows it on the pairing screen."),
     )
     for row, line in enumerate(descriptions[selected], start=4):
         canvas.put(row, 38, line, 39)
@@ -370,6 +376,87 @@ def render_message(title: str, message: str, details: tuple[str, ...] = (),
     return canvas.lines()
 
 
+def _clock(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
+
+def spki_groups(spki: str) -> list[str]:
+    """64 hex -> 16 upper-case groups of four, as the primary shows them."""
+    clean = spki.upper()
+    return [clean[i:i + 4] for i in range(0, len(clean), 4)]
+
+
+def render_pair(code: pairing.Code | None, stage: str, now_wall: float,
+                error: str = "", paired: dict | None = None) -> list[str]:
+    """F4 on a secondary (16/10): the one-time code, by physical presence."""
+    footers = {
+        "code": "<F5> New code         <Esc> Close (the code is cancelled)",
+        "paired": "<Enter/Esc> Back to main screen",
+    }
+    canvas = Canvas(_title("Pairing with the Primary Server", "secondary server"),
+                    footers.get(stage, "<Enter> New code      <Esc> Back to main screen"))
+    if stage == "paired":
+        paired = paired or {}
+        canvas.put(5, 4, "Paired. The code was used and can not be used again.")
+        canvas.put(8, 4, f"Primary server:  {paired.get('primary_url') or 'unknown'}", 72)
+        canvas.put(9, 4, f"Primary ID:      {paired.get('parent_id') or 'unknown'}", 72)
+        canvas.put(10, 4, f"Paired at:       {paired.get('enrolled_at') or 'unknown'}", 72)
+        return canvas.lines()
+    if stage in ("expired", "closed") or code is None:
+        canvas.put(5, 4, "WARNING: " + ("The code expired." if stage == "expired" else
+                                        "The code was closed before its time."))
+        canvas.put(7, 4, "It can no longer be used, and no pairing was made.")
+        if stage == "closed":
+            canvas.put(8, 4, "(Wrong tries on the primary, or a newer code was opened.)")
+        canvas.put(10, 4, "Press <Enter> for a new code.")
+        return canvas.lines()
+    canvas.put(4, 4, "One-time pairing code -- type it on the primary server:")
+    canvas.put(6, 20, code.code)
+    canvas.put(6, 40, f"({_clock(code.expires - now_wall)} left)")
+    groups = spki_groups(code.spki)
+    if groups:
+        canvas.put(8, 4, f"Server identity:  {' '.join(groups[:4])}   ({code.node_id})", 72)
+        canvas.put(9, 4, f"Full SPKI SHA-256: {' '.join(groups[:8])}", 72)
+        canvas.put(10, 23, " ".join(groups[8:16]), 54)
+    else:
+        canvas.put(8, 4, "WARNING: This server has no inter-server identity yet;", 72)
+        canvas.put(9, 4, "the primary cannot connect. Restart the services (F2).", 72)
+    if code.advertised:
+        canvas.put(12, 4, f"Address the primary types: {code.advertised}", 72)
+    else:
+        canvas.put(12, 4, "WARNING: The address the primary sees is not set.", 72)
+        canvas.put(13, 4, "Set it in F2 > Primary-Visible Address.", 72)
+    canvas.put(15, 4, "On the primary: Branches > Register secondary. Type the address,")
+    canvas.put(16, 4, "check that the identity matches this screen, then type the code.")
+    canvas.put(18, 4, "Single use, 10 minutes, 5 wrong tries. Leaving this screen cancels it.")
+    if error:
+        canvas.put(20, 4, error, 72)
+    return canvas.lines()
+
+
+def render_unpair(primary_url: str = "") -> list[str]:
+    canvas = Canvas(_title("Disconnect from the Primary Server", "secondary server"),
+                    "<Enter> Disconnect                      <Esc> Cancel (nothing changes)")
+    canvas.put(5, 4, "WARNING: Disconnect this server from the primary server?")
+    canvas.put(7, 4, f"The primary {primary_url} stops seeing this server.", 72)
+    canvas.put(8, 4, "Pairing again needs a new code (F4). Images in storage are not deleted.")
+    canvas.put(11, 4, "No typing is needed: <Enter> on this screen is the confirmation.")
+    return canvas.lines()
+
+
+def render_advertised(value: str, seconds: int = 90, error: str = "") -> list[str]:
+    canvas = Canvas(_title("Primary-Visible Address", f"admin  (auto-logout in {seconds} s)"),
+                    "<Enter> Save                            <Esc> Cancel")
+    canvas.put(4, 4, "The address at which the primary server reaches this server")
+    canvas.put(5, 4, "(port 8443). Behind NAT: the outside address. Empty clears it.")
+    canvas.put(8, 4, f"Address:  [ {value[:44]:<44}_ ]")
+    canvas.put(10, 4, "Example: 203.0.113.40:8443   (https:// is added)")
+    if error:
+        canvas.put(13, 4, error, 72)
+    return canvas.lines()
+
+
 def render_demo() -> str:
     snapshot = demo_snapshot()
     interfaces = [snapshot.management,
@@ -417,6 +504,14 @@ class Runtime:
     power_focus: str = "cancel"
     caps: bool = False
     extras: object = None
+    # 16/10: F4 on a secondary -- the code screen (pair_stage: code | expired |
+    # closed | paired), the disconnect confirmation, and F2's address field.
+    pair: pairing.Code | None = None
+    pair_stage: str = "code"
+    pair_checked: float = 0.0
+    pair_error: str = ""
+    paired: dict = field(default_factory=dict)
+    advert: str = ""
 
     def seconds(self, now: float) -> int:
         return max(0, actions.AUTH_IDLE_SECONDS - int(now - self.last_key_at))
@@ -480,6 +575,14 @@ def _current_lines(runtime: Runtime, now: float) -> list[str]:
                             runtime.message, runtime.power_focus)
     if runtime.screen == "tls":
         return render_tls(runtime.snapshot, seconds)
+    if runtime.screen == "pair":
+        return render_pair(runtime.pair, runtime.pair_stage, time.time(),
+                           runtime.pair_error, runtime.paired)
+    if runtime.screen == "unpair":
+        return render_unpair(pairing.paired_details(runtime.conn)["primary_url"]
+                             if runtime.conn is not None else "")
+    if runtime.screen == "advertised":
+        return render_advertised(runtime.advert, seconds, runtime.message)
     result = runtime.result or actions.ActionResult(False, runtime.message or "No result.")
     return render_message("Action Result", result.message, result.details, seconds)
 
@@ -598,6 +701,81 @@ def _open_menu_item(runtime: Runtime) -> None:
     elif item == 3:
         actions.note_tls_display(runtime.conn)
         runtime.screen = "tls"
+    elif item == 4:
+        current = pairing.advertised(runtime.conn)
+        runtime.advert = current.removeprefix("https://")
+        runtime.screen = "advertised"
+
+
+#: Never logged out after 90 s: no admin session behind them, and the code
+#: screen stays up for the code's 10 minutes.
+NO_ADMIN_SCREENS = {"main", "auth", "pair"}
+ADVERT_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.:-[]/")
+
+
+def _new_code(runtime: Runtime) -> None:
+    result, code = pairing.open_code(runtime.conn)
+    runtime.pair_error = ""
+    if code is None:
+        runtime.screen, runtime.message = "main", result.message
+        return
+    runtime.pair, runtime.pair_stage = code, "code"
+    runtime.pair_checked = time.monotonic()
+    runtime.screen, runtime.message = "pair", ""
+
+
+def _f4(runtime: Runtime) -> None:
+    """F4 exists only on a secondary: a code when unpaired, the disconnect
+    confirmation when paired.  On a primary/standalone it does nothing."""
+    if runtime.snapshot.storage_role != "secondary":
+        return
+    if runtime.conn is None:
+        runtime.message = "The server database is not available."
+        return
+    if pairing.has_parent(runtime.conn):
+        runtime.screen, runtime.message = "unpair", ""
+    else:
+        _new_code(runtime)
+
+
+def _leave_pair(runtime: Runtime, message: str = "") -> None:
+    if runtime.pair_stage == "code" and runtime.conn is not None and runtime.pair:
+        pairing.close_code(runtime.conn, runtime.pair)
+        message = message or "Pairing code cancelled; it can no longer be used."
+    runtime.pair = None
+    runtime.screen, runtime.message = "main", message
+
+
+def _pair_key(runtime: Runtime, key: object, enter: bool, escape: bool,
+              curses_module) -> None:
+    if runtime.pair_stage == "code":
+        if escape:
+            _leave_pair(runtime)
+        elif key == curses_module.KEY_F5:
+            _new_code(runtime)
+    elif runtime.pair_stage == "paired":
+        if enter or escape:
+            _leave_pair(runtime, "Paired with the primary server.")
+    elif escape:
+        _leave_pair(runtime)
+    elif enter:
+        _new_code(runtime)
+
+
+def check_pairing(runtime: Runtime, now: float, wall: float) -> None:
+    """Once a second on the code screen: did the primary use it, did it end."""
+    if runtime.screen != "pair" or runtime.pair_stage != "code" or runtime.pair is None:
+        return
+    if now - runtime.pair_checked < 1.0:
+        return
+    runtime.pair_checked = now
+    found = pairing.state(runtime.conn, runtime.pair, wall)
+    runtime.pair_error = ("The code's state could not be read from the DB."
+                          if found == "unchecked" else "")
+    if found == "paired":
+        runtime.pair_stage, runtime.paired = "paired", pairing.paired_details(runtime.conn)
+    elif found in ("expired", "closed"):
+        runtime.pair_stage = found
 
 
 def _network_key(runtime: Runtime, key: object, curses_module) -> None:
@@ -647,7 +825,7 @@ def _handle_key(runtime: Runtime, key: object, curses_module) -> bool:
     # not 10/27 (#1249: the F9 reset needs Enter on the real tty1).
     enter = key in (10, 13, "\n", "\r", curses_module.KEY_ENTER)
     escape = key in (27, "\x1b")
-    if runtime.screen != "main" and runtime.screen != "auth" and runtime.seconds(now) <= 0:
+    if runtime.screen not in NO_ADMIN_SCREENS and runtime.seconds(now) <= 0:
         runtime.screen = "main"
         runtime.message = "Session expired after 90 seconds without a key."
         return True
@@ -663,6 +841,8 @@ def _handle_key(runtime: Runtime, key: object, curses_module) -> bool:
             return True
         if key == curses_module.KEY_F5:
             _refresh(runtime)
+        elif key == curses_module.KEY_F4:
+            _f4(runtime)
         elif key == curses_module.KEY_F9:
             _start_reset(runtime)
         elif key in (curses_module.KEY_F2, curses_module.KEY_F12):
@@ -686,6 +866,30 @@ def _handle_key(runtime: Runtime, key: object, curses_module) -> bool:
         return True
     if runtime.screen == "reset":
         _reset_key(runtime, key, enter, escape, curses_module)
+        return True
+    if runtime.screen == "pair":
+        _pair_key(runtime, key, enter, escape, curses_module)
+        return True
+    if runtime.screen == "unpair":
+        if enter:
+            result = pairing.disconnect(runtime.conn)
+            runtime.screen, runtime.message = "main", result.message
+        elif escape:
+            runtime.screen, runtime.message = "main", "Disconnect cancelled; nothing was changed."
+        return True
+    if runtime.screen == "advertised":
+        if escape:
+            runtime.screen, runtime.message = "menu", ""
+        elif enter:
+            runtime.result = pairing.save_advertised(runtime.conn, runtime.advert)
+            if runtime.result.ok:
+                runtime.screen, runtime.message = "result", ""
+            else:
+                runtime.message = runtime.result.message
+        elif _is_backspace(key, curses_module):
+            runtime.advert = runtime.advert[:-1]
+        elif isinstance(key, str) and key in ADVERT_CHARS and len(runtime.advert) < 64:
+            runtime.advert += key
         return True
     if runtime.screen == "preinstall_network":
         if escape:
@@ -797,9 +1001,10 @@ def tick(runtime: Runtime, now: float) -> None:
     refresh, the 90 s auto-logout and the end of a network rollback window."""
     if runtime.screen == "main" and now - runtime.last_refresh >= 5:
         _refresh(runtime)
-    if runtime.screen not in {"main", "auth"} and runtime.seconds(now) <= 0:
+    if runtime.screen not in NO_ADMIN_SCREENS and runtime.seconds(now) <= 0:
         runtime.screen = "main"
         runtime.message = "Session expired after 90 seconds without a key."
+    check_pairing(runtime, now, time.time())
     if (runtime.screen == "network_confirm"
             and netcfg_rollback.read_pending(runtime.data_dir / "netcfg") is None):
         active, detail = actions.netcfg_host.timer_active()

@@ -172,11 +172,11 @@ read_unique_guid() {
     # not a GUID. ‏stderr ליומן ולא ל-/dev/null: הסיבה של הכלי היא הראיה.
     _rg_out=$(sgdisk -i "$2" "$1" 2>> "$LOG_FILE")
     _rg_rc=$?
-    [ "$_rg_rc" -eq 0 ] || { echo "sgdisk -i $2 failed (rc=$_rg_rc)"; return 1; }
+    [ "$_rg_rc" -eq 0 ] || { echo "sgdisk -i $2 נכשל (rc=$_rg_rc)"; return 1; }
     _rg=$(printf '%s\n' "$_rg_out" \
         | awk -F': ' '/Partition unique GUID/ { print $2; exit }' | awk '{print $1}')
-    [ -n "$_rg" ] || { echo "sgdisk -i $2 printed no unique GUID"; return 2; }
-    valid_guid "$_rg" || { echo "sgdisk -i $2 printed '$_rg', which is not a GUID"; return 3; }
+    [ -n "$_rg" ] || { echo "sgdisk -i $2 לא הדפיס GUID ייחודי"; return 2; }
+    valid_guid "$_rg" || { echo "sgdisk -i $2 הדפיס '$_rg', שאינו GUID"; return 3; }
     echo "$_rg"
 }
 
@@ -217,9 +217,9 @@ verify_unique_guids() {
             continue
         fi
         if ! _vg=$(read_unique_guid "$DEVROOT/$1" "$_vi"); then
-            PLAN_ERROR="partition $_vi: unique GUID could not be read back from the disk ($_vg)"
+            PLAN_ERROR="מחיצה $_vi: לא הצלחנו לקרוא בחזרה מהדיסק את ה-GUID הייחודי ($_vg)"
         elif [ "$(printf '%s' "$_vg" | tr 'a-f' 'A-F')" != "$(printf '%s' "$_vu" | tr 'a-f' 'A-F')" ]; then
-            PLAN_ERROR="partition $_vi: unique GUID on the disk is $_vg, not $_vu (#26)"
+            PLAN_ERROR="מחיצה $_vi: ה-GUID הייחודי בדיסק הוא $_vg ולא $_vu (#26)"
         else
             _vn=$((_vn + 1))
             continue

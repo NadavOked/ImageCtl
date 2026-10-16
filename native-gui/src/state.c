@@ -23,6 +23,20 @@ static int split(char *v, char *f[], int max) {
 static void cp(char *dst, size_t n, const char *src) { snprintf(dst, n, "%s", src); }
 static int  num(const char *s, int dflt) { return s[0] ? atoi(s) : dflt; }
 
+static void apply_tz(const char *tz) {
+    static char applied[65];
+    const char *value = tz[0] ? tz : "UTC0";
+    if (!strcmp(applied, value)) return;
+#ifdef _WIN32
+    if (_putenv_s("TZ", value) != 0) return;
+    _tzset();
+#else
+    if (setenv("TZ", value, 1) != 0) return;
+    tzset();
+#endif
+    cp(applied, sizeof applied, value);
+}
+
 /* A strict non-negative integer: the whole field, digits only, no sign, no
  * leading space, no trailing junk, in range. Returns 0 on any of those so a
  * corrupt state record is rejected rather than folded to a wrong 0/huge value
@@ -35,6 +49,14 @@ static int parse_uint(const char *s, unsigned long long *out) {
     if (errno != 0 || *end != '\0') return 0;
     *out = v;
     return 1;
+}
+
+/* Mapping fields distinguish an absent legacy value (0) from an explicit
+ * invalid/not-mapped value (-1). */
+static int parse_drawer(const char *s) {
+    unsigned long long v;
+    if (!s[0]) return 0;
+    return parse_uint(s, &v) && v >= 1 && v <= MAX_DRAWERS ? (int)v : -1;
 }
 
 /* #695: room-grid helpers. */
@@ -69,6 +91,9 @@ void state_parse(State *s, FILE *fp) {
     unsigned long long shrink_declared = 0; int shrink_seen = 0, shrink_bad = 0;
     /* 11/10: the agent's question dialog is all-or-nothing the same way. */
     unsigned long long ask_declared = 0; int ask_seen = 0, ask_bad = 0;
+    struct { char dev[32], conn[32]; int drawer, known; } disk_slots[MAX_DISKS];
+    int ndisk_slots = 0;
+    memset(disk_slots, 0, sizeof disk_slots);
     char line[4096];
     while (fgets(line, sizeof line, fp)) {
         size_t len = strlen(line);
@@ -110,6 +135,18 @@ void state_parse(State *s, FILE *fp) {
             cp(d->dev, sizeof d->dev, f[0]); cp(d->model, sizeof d->model, f[1]);
             d->size_bytes = strtoull(f[2], NULL, 10);
             d->has_data = num(f[3], 0); d->removable = num(f[4], 0);
+        } else if (KEY("disk_slot")) {
+            if (split(val, f, 3) < 2 || !f[0][0]) continue;
+            int at = -1;
+            for (int i = 0; i < ndisk_slots; i++) if (!strcmp(disk_slots[i].dev, f[0])) { at = i; break; }
+            if (at < 0) {
+                if (ndisk_slots >= MAX_DISKS) continue;
+                at = ndisk_slots++;
+            }
+            cp(disk_slots[at].dev, sizeof disk_slots[at].dev, f[0]);
+            disk_slots[at].drawer = parse_drawer(f[1]);
+            cp(disk_slots[at].conn, sizeof disk_slots[at].conn, f[2]);
+            disk_slots[at].known = 1;
         } else if (KEY("folder") && s->nfolders < MAX_FOLDERS) {
             cp(s->folders[s->nfolders++], sizeof s->folders[0], val);
         } else if (KEY("image") && s->nimages < MAX_IMAGES) {
@@ -150,18 +187,21 @@ void state_parse(State *s, FILE *fp) {
              * #704: |slot-name -- optional, "" = "דיסק N"
              * #432: |link-state -- optional; only "slow" colours the slot
              * #1366: |crc -- optional; the count when over the threshold, "" = not */
-            if (split(val, f, 13) < 8) continue;
+            int nf = split(val, f, 15);
+            if (nf < 8) continue;
             unsigned long long mi, port, size;
             if (!parse_uint(f[0], &mi) ||
-                !parse_uint(f[1], &port) || port > MAX_DRAWERS ||
+                !parse_uint(f[1], &port) || port > 32 ||
                 !parse_uint(f[4], &size))
                 continue;
             Machine *m = machine_at(s, mi);
             if (!m || m->nroom_drawers >= MAX_DRAWERS) continue;
             if (m->drawer_count < 1) m->drawer_count = MAX_DRAWERS;
+            int mapped_record = nf >= 14 && f[13][0];
+            if (!mapped_record && port > MAX_DRAWERS) continue;
             int actual_port = (int)port;
-            if (actual_port == 0) actual_port = room_fallback_port(m);
-            if (actual_port < 1 || actual_port > m->drawer_count) continue;
+            if (!mapped_record && actual_port == 0) actual_port = room_fallback_port(m);
+            if (!mapped_record && (actual_port < 1 || actual_port > m->drawer_count)) continue;
             RoomDrawer *d = &m->room_drawers[m->nroom_drawers++];
             d->port = actual_port;
             d->present = 1;
@@ -182,14 +222,18 @@ void state_parse(State *s, FILE *fp) {
             }
             /* #704: the drawer's own name (by its slot; NVMe by serial) wins
              * over a room_slot_name= for the same port, in any order. */
-            if (f[10][0]) cp(m->slot_names[actual_port - 1], sizeof m->slot_names[0], f[10]);
+            cp(d->slot_name, sizeof d->slot_name, f[10]);
+            if (f[10][0] && actual_port >= 1 && actual_port <= MAX_DRAWERS)
+                cp(m->slot_names[actual_port - 1], sizeof m->slot_names[0], f[10]);
             /* A port-0 drawer only borrows the slot it is drawn in: that SATA
              * slot's name is not its name. */
-            else if (port == 0) m->slot_names[actual_port - 1][0] = 0;
-            d->fallback = port == 0;
+            else if (!mapped_record && port == 0) m->slot_names[actual_port - 1][0] = 0;
+            d->fallback = mapped_record ? 0 : port == 0;
             d->link_slow = !strcmp(f[11], "slow");
             unsigned long long crc;
             d->crc_suspect = parse_uint(f[12], &crc) && crc > 0 && crc < 100000000ULL ? (long)crc : 0;
+            d->drawer = mapped_record ? parse_drawer(f[13]) : 0;
+            if (mapped_record) cp(d->conn, sizeof d->conn, f[14]);
         } else if (KEY("room_warn")) {
             /* #432: one line of round.precheck; an empty one is not a warning */
             if (!val[0]) continue;
@@ -224,12 +268,39 @@ void state_parse(State *s, FILE *fp) {
                 if (m->room_drawers[i].fallback && m->room_drawers[i].port == (int)port) borrowed = 1;
             if (borrowed) continue;
             cp(m->slot_names[port - 1], sizeof m->slot_names[0], f[2]);
+        } else if (KEY("room_slot")) {
+            if (split(val, f, 4) < 3) continue;
+            unsigned long long mi, slot;
+            if (!parse_uint(f[0], &mi) || !parse_uint(f[1], &slot) ||
+                slot < 1 || slot > MAX_DRAWERS) continue;
+            Machine *m = machine_at(s, mi);
+            if (!m) continue;
+            RoomSlot *rs = &m->rslots[slot - 1];
+            cp(rs->conn, sizeof rs->conn, f[2]);
+            cp(rs->name, sizeof rs->name, f[3]);
+            rs->set = 1;
+            if ((int)slot > m->nrslots) m->nrslots = (int)slot;
         } else if (KEY("cslot_name")) {
             /* #704: port|name -- the cloner's own slot names (slotnames.sh) */
             if (split(val, f, 2) != 2 || !f[1][0]) continue;
             unsigned long long port;
             if (!parse_uint(f[0], &port) || port < 1 || port > MAX_DRAWERS) continue;
             cp(s->cslot_names[port - 1], sizeof s->cslot_names[0], f[1]);
+        } else if (KEY("cdrawer_slot")) {
+            if (split(val, f, 3) < 2) continue;
+            unsigned long long bay;
+            if (!parse_uint(f[0], &bay) || bay < 1 || bay > MAX_DRAWERS) continue;
+            ClonerBay *cb = &s->cbays[bay - 1];
+            cp(cb->conn, sizeof cb->conn, f[1]);
+            cp(cb->name, sizeof cb->name, f[2]);
+            cb->set = 1;
+            if ((int)bay > s->ncbays) s->ncbays = (int)bay;
+        } else if (KEY("coptical") && s->ncopticals < MAX_DRAWERS) {
+            if (split(val, f, 3) < 1) continue;
+            COptical *o = &s->copticals[s->ncopticals++];
+            o->drawer = parse_drawer(f[0]);
+            cp(o->conn, sizeof o->conn, f[1]);
+            cp(o->model, sizeof o->model, f[2]);
         } else if (KEY("driver_models")) {
             /* #1269: how many models the bridge read; -1 = it could not read them */
             if (!strcmp(val, "-1")) { s->driver_models_read = -1; continue; }
@@ -243,7 +314,7 @@ void state_parse(State *s, FILE *fp) {
             cp(dm->vendor, sizeof dm->vendor, f[0]);
             cp(dm->model, sizeof dm->model, f[1]);
         } else if (KEY("drawer") && s->ndrawers < MAX_DRAWERS) {
-            int nf = split(val, f, 8);
+            int nf = split(val, f, 10);
             if (nf < 5) continue;                     /* malformed -- no phantom drawer */
             unsigned long long port, bytes, total;
             if (!parse_uint(f[0], &port) || port > INT_MAX) continue;  /* reject, don't fold to 0 */
@@ -260,6 +331,8 @@ void state_parse(State *s, FILE *fp) {
              * -1 / absent = not measured. */
             d->rate_bps = nf >= 8 && f[6][0] ? strtoll(f[6], NULL, 10) : -1;
             d->eta_s = nf >= 8 ? num(f[7], -1) : -1;
+            d->drawer = nf >= 9 ? parse_drawer(f[8]) : 0;
+            if (nf >= 10) cp(d->conn, sizeof d->conn, f[9]);
         } else if (KEY("cdisk") && s->nidisks < MAX_DRAWERS) {
             /* cdisk=port|dev|model|size|smart|cause -- the cloner's idle
              * inventory. NOT "disk=" -- that key already holds the build
@@ -267,13 +340,14 @@ void state_parse(State *s, FILE *fp) {
              * first (#688). The 5th field (#709) and the 6th (#874: the
              * server's cause for failed_last) are optional so an older agent
              * still parses. */
-            int nf = split(val, f, 9);   /* #1366: field 9, the CRC count over the threshold */
+            int nf = split(val, f, 11);   /* #1495: drawer and connection are fields 10/11 */
             if (nf < 4) continue;
             unsigned long long port, size;
             if (!parse_uint(f[0], &port) || port > INT_MAX) continue;
             if (!parse_uint(f[3], &size)) continue;
             IdleDisk *id = &s->idisks[s->nidisks++];
             id->port = (int)port;
+            cp(id->dev, sizeof id->dev, f[1]);
             cp(id->model, sizeof id->model, f[2]);
             id->size = size;
             /* Only warn/fail/failed_last read as unhealthy; anything else --
@@ -301,6 +375,8 @@ void state_parse(State *s, FILE *fp) {
             }
             unsigned long long crc;
             id->crc_suspect = nf >= 9 && parse_uint(f[8], &crc) && crc > 0 && crc < 100000000ULL ? (long)crc : 0;
+            id->drawer = nf >= 10 ? parse_drawer(f[9]) : 0;
+            if (nf >= 11) cp(id->conn, sizeof id->conn, f[10]);
         } else if (KEY("disk_probe")) {
             if (!strcmp(val, "drives") || !strcmp(val, "no_disks") ||
                 !strcmp(val, "no_ports") || !strcmp(val, "unchecked"))
@@ -394,6 +470,11 @@ void state_parse(State *s, FILE *fp) {
         else if (KEY("server_name")) cp(s->server_name, sizeof s->server_name, val);         /* #1252 */
         else if (KEY("server_addr")) cp(s->server_addr, sizeof s->server_addr, val);         /* #1252 */
         else if (KEY("server_version")) cp(s->server_version, sizeof s->server_version, val); /* #1252 */
+        else if (KEY("tz")) {
+            size_t n = strlen(val);
+            if (n >= 1 && n <= 64 && strspn(val, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789<>+-,./:") == n)
+                cp(s->tz, sizeof s->tz, val);
+        }
         else if (KEY("hello_age")) {
             unsigned long long v;
             if (parse_uint(val, &v) && v <= INT_MAX) s->hello_age = (int)v;
@@ -437,6 +518,15 @@ void state_parse(State *s, FILE *fp) {
         else if (KEY("toast"))         cp(s->toast, sizeof s->toast, val);
         else fprintf(stderr, "native-gui: state: unknown key '%s' ignored\n", key);
 #undef KEY
+    }
+    for (int i = 0; i < ndisk_slots; i++) {
+        if (!disk_slots[i].known) continue;
+        for (int j = 0; j < s->ndisks; j++) if (!strcmp(s->disks[j].dev, disk_slots[i].dev)) {
+            s->disks[j].slot_known = 1;
+            s->disks[j].drawer = disk_slots[i].drawer;
+            cp(s->disks[j].conn, sizeof s->disks[j].conn, disk_slots[i].conn);
+            break;
+        }
     }
     s->shrink_pending = shrink_seen && !shrink_bad && shrink_declared > 0 &&
                         (unsigned long long)s->nshrink == shrink_declared;
@@ -494,6 +584,7 @@ int state_poll(StateFile *f, State *s) {
     fclose(fp);
     next.stale = stale;
     *s = next;
+    apply_tz(s->tz);
     f->mtime = st.st_mtime; f->size = st.st_size; f->loaded = 1;
     return 1;
 }

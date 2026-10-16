@@ -291,6 +291,15 @@ def run_native_pack(tmp_path: Path, fault: str = ""):
     gui.mkdir(parents=True)
     root = tmp_path / "root"
     (root / "usr/bin").mkdir(parents=True)
+    # #1493: coreutils' nice, packed by copy_bin (BINARIES) before this block.
+    # Debian 13's busybox-static has no nice applet, so a $ROOT/bin/nice link
+    # must not satisfy the gate -- it is planted on the "nice" fault too.
+    (root / "bin").mkdir()
+    (root / "bin/nice").write_text("busybox applet link", encoding="utf-8")
+    if fault != "nice":
+        nice = root / "usr/bin/nice"
+        nice.write_text("#!/bin/sh\nshift 2\nexec \"$@\"\n", encoding="utf-8")
+        nice.chmod(0o755)
     fonts = tmp_path / "fonts"
     fonts.mkdir()
     faces = ["IBMPlexSansHebrew-Regular", "IBMPlexSansHebrew-Medium",
@@ -365,6 +374,7 @@ def test_native_pack_includes_binary_closure_fonts_and_placeholder(tmp_path):
 @pytest.mark.parametrize("fault, message", [
     ("make", ""), ("binary", "native GUI binary missing"),
     ("library", "unresolved native GUI libraries"), ("font", "font face missing"),
+    ("nice", "no nice binary packed"),
 ])
 def test_native_pack_stops_on_build_or_missing_runtime_files(tmp_path, fault, message):
     done, root, *_ = run_native_pack(tmp_path, fault)

@@ -1,10 +1,10 @@
 """‏#1334 — שני ממצאי האבטחה: האורח אינו מגיע למארח ולרשתות הפנימיות, והדיסק
 שהאורח שינה אינו נקרא כ-root ואינו נעגן בקרנל של השרת.
 
-1. **רשת** (`server/vmnet.py`): הטבלה שנטענת לפני כל הדלקה — כרטיס הניהול
-   בלבד, אין loopback/כתובות המארח/RFC1918/multicast/IPv6, ‏DNS רק לשרתי
-   השמות; ושורת הפקודה של QEMU (ב-`test_vmupdate.py`) — ‏`-run-with` למשתמש
-   ה-VM, בלי hostfwd/guestfwd/smb.
+1. **רשת** (`server/vmnet.py`, ‏#1468): הטבלה שנטענת לפני כל הדלקה — משתמש
+   ה-VM אינו שולח דבר, ומה שבא מה-MAC/הכתובת של האורח אינו מגיע למארח; ושורת
+   הפקודה של QEMU (ב-`test_vmupdate.py`) — ‏`-run-with` למשתמש ה-VM, ‏macvtap
+   בלבד, בלי hostfwd/guestfwd/smb. ה-macvtap וה-lease — `test_vmnet_1468.py`.
 2. **הדיסק** (`server/vmdisk.py`): ערך שנקרא מהדיסק ואינו בפורמט הצפוי —
    נדחה לפני שהוא נוגע בפקודה; מחיצה שמערכת הקבצים שלה אינה זו שבמניפסט
    המקור — נדחית לפני כל loop, ‏partclone או כיווץ.
@@ -21,47 +21,39 @@ import pytest
 
 from server import vmdisk, vmnet
 
-# --- 1. רשת ---------------------------------------------------------------------
+# --- 1. רשת (‏#1468: macvtap — הטבלה חוסמת את משתמש ה-VM ואת האורח במארח) -----
+
+MAC = "0a:1b:2c:3d:4e:5f"
 
 
-def test_the_ruleset_confines_only_the_vm_user_and_only_to_the_mgmt_card():
-    text = vmnet.ruleset(999, "eno1", ["10.0.0.53", "127.0.0.53"])
+def test_the_ruleset_blocks_the_vm_user_and_the_guest_from_the_host():
+    text = vmnet.ruleset(999, MAC)
     lines = [ln.strip() for ln in text.splitlines()]
-    order = lambda needle: next(i for i, ln in enumerate(lines) if needle in ln)  # noqa: E731
-    assert "meta skuid 999 jump vm" in lines              # שאר השרת אינו מושפע
-    # #1405: no negative uid match -- an orphaned socket (no owner) must never fall
-    # into the drop rules; it stays on the hook chain's accept policy
+    # QEMU עם macvtap אינו צריך socket רשת אחד: כל מה שמשתמש ה-VM שולח — נזרק
+    assert "meta skuid 999 drop" in lines
+    # #1405: no negative uid match -- an orphaned socket stays on the accept policy
     assert not any("skuid !=" in ln for ln in lines)
-    hook = lines.index("chain out {")
-    assert lines[hook + 1].startswith("type filter hook output") and "policy accept" in lines[hook + 1]
-    assert lines[hook + 3] == "}" and "chain vm {" in lines         # every drop lives in `vm`
-    assert order("chain vm {") < order('oifname != "eno1" drop')
-    assert "meta nfproto ipv6 drop" in lines
-    assert 'oifname != "eno1" drop' in lines              # רק כרטיס הניהול
-    assert "fib daddr type { local, broadcast, multicast, anycast } drop" in lines
-    denied = next(ln for ln in lines if ln.startswith("ip daddr {") and ln.endswith("drop"))
-    for net in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8",
-                "169.254.0.0/16", "100.64.0.0/10", "224.0.0.0/4"):
-        assert net in denied
-    # החריג היחיד: פורט 53 לשרתי השמות — ולפני כל drop
-    dns = order("th dport 53 accept")
-    assert "10.0.0.53" in lines[dns] and "127.0.0.53" in lines[dns]
-    assert dns < order('oifname != "eno1" drop') < order("fib daddr") < order("ip daddr { 0.0.0.0/8")
-    assert lines[-3] == "accept"                          # מה שנשאר: אינטרנט, דרך eno1
+    out = lines.index("chain out {")
+    assert lines[out + 1].startswith("type filter hook output") and "policy accept" in lines[out + 1]
+    # במארח: כל מסגרת מה-MAC של האורח — בטבלת `inet`, כלומר IPv4 **ו-IPv6** (סקירה 16/10)
+    assert lines[0] == "add table inet imagectl_vm"
+    inn = lines.index("chain in {")
+    assert lines[inn + 1].startswith("type filter hook input") and "policy accept" in lines[inn + 1]
+    assert lines[inn + 2:inn + 4] == [f"ether saddr {MAC} drop", "}"]
+    # שום כתובת מה-DHCP אינה נכנסת לטבלה — ACK מזויף אינו יכול לבחור מה המארח זורק
+    assert not any("saddr" in ln and "ether" not in ln for ln in lines)
+    assert not any("nfproto" in ln or "ip6" in ln for ln in lines)     # אין החרגה למשפחה
+    # אין יותר "יציאה רק דרך כרטיס הניהול" של slirp: האורח יוצא בכתובת שלו
+    assert not any("oifname" in ln or "dport 53" in ln for ln in lines)
 
 
-@pytest.mark.parametrize("uid,ifname,dns", [
-    (0, "eno1", []), (999, 'eno1" accept; #', []), (999, "eno1", ["1.1.1.1; drop"])])
-def test_the_ruleset_rejects_values_it_cannot_trust(uid, ifname, dns):
+@pytest.mark.parametrize("uid,mac", [
+    (0, MAC), (999, "01:1b:2c:3d:4e:5f"),                   # multicast — לא ה-MAC שלנו
+    (999, "00:1b:2c:3d:4e:5f"),                              # globally administered
+    (999, 'x" drop; #')])
+def test_the_ruleset_rejects_values_it_cannot_trust(uid, mac):
     with pytest.raises(ValueError):
-        vmnet.ruleset(uid, ifname, dns)
-
-
-def test_resolvers_reads_ipv4_nameservers_only(tmp_path):
-    conf = tmp_path / "resolv.conf"
-    conf.write_text("nameserver 10.1.1.1\nnameserver ::1\nnameserver x\nsearch lab\n"
-                    "nameserver 10.1.1.1\n", encoding="utf-8")
-    assert vmnet.resolvers(conf) == ["10.1.1.1"]
+        vmnet.ruleset(uid, mac)
 
 
 def _runner(listed: str, rc: int = 0):
@@ -75,15 +67,19 @@ def _runner(listed: str, rc: int = 0):
 
 
 def test_apply_loads_and_reads_the_table_back():
-    good = vmnet.ruleset(999, "eno1", []).replace("add table", "").replace("delete table", "")
+    good = vmnet.ruleset(999, MAC).replace("add table", "").replace("delete table", "")
     run, calls = _runner(good)
-    assert vmnet.apply(999, "eno1", [], run=run) is None
-    assert calls[0][0] == ["nft", "-f", "-"] and "skuid 999 jump vm" in calls[0][1]
+    assert vmnet.apply(999, MAC, run=run) is None
+    assert calls[0][0] == ["nft", "-f", "-"] and "skuid 999 drop" in calls[0][1]
 
 
 def test_a_table_that_did_not_come_back_is_a_refusal_not_a_pass():
     run, _calls = _runner("table inet imagectl_vm {\n}\n")
-    assert "לא ידוע מה נטען" in vmnet.apply(999, "eno1", [], run=run)
+    assert "לא ידוע מה נטען" in vmnet.apply(999, MAC, run=run)
+    # כלל ה-MAC שלא חזר — גם הוא סירוב, לא "בערך נטען"
+    partial = vmnet.ruleset(999, MAC).replace(f"ether saddr {MAC} drop", "")
+    run, _calls = _runner(partial)
+    assert f"ether saddr {MAC} drop" in vmnet.apply(999, MAC, run=run)
 
 
 # --- 2. הדיסק שהאורח שינה ----------------------------------------------------------

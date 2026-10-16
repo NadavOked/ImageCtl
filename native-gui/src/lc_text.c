@@ -1,10 +1,52 @@
 /* #1322: the local clone's words -- amounts, a disk's label and contents,
  * the status bar -- and the --png scenario (the approved mockup's: three
  * drawers, drawer 3 the source). */
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include "lcui.h"
 #include "screens_rounds.h"
+
+/* #1437: a share as the screen says it -- floored, so 100% is only the end,
+ * and one decimal under 10%: 1 GB of 500 is "0.2%", not "0%". */
+void lc_pct(char *out, size_t n, double share) {
+    double p = (share < 0 ? 0 : share > 1 ? 1 : share) * 100;
+    if (p < 10) snprintf(out, n, "%.1f%%", floor(p * 10 + 1e-9) / 10);
+    else snprintf(out, n, "%.0f%%", floor(p + 1e-9));
+}
+
+/* #1437: one (elapsed, copied) sample per reload. Time going back is a new
+ * run: the window starts over. Bytes going back is a reading between two of
+ * the agent's writes (src.base, bytes.raw): skipped, the window is kept.
+ * Nothing before the first byte is a sample -- the preparation (measure,
+ * shrink, the tables) is not copying, and averaging it in made the first
+ * minutes say 444 minutes. One sample at least LC_RATE_WIN s old is kept. */
+void lc_rate_sample(LcUi *u, int elapsed, long long copied) {
+    if (u->rate_n && elapsed < u->rate_e[u->rate_n - 1]) u->rate_n = 0;
+    if (copied <= 0 || (u->rate_n && copied < u->rate_c[u->rate_n - 1])) return;
+    if (u->rate_n && elapsed == u->rate_e[u->rate_n - 1]) { u->rate_c[u->rate_n - 1] = copied; return; }
+    int drop = 0;
+    while (u->rate_n - drop >= 2 && elapsed - u->rate_e[drop + 1] >= LC_RATE_WIN) drop++;
+    if (u->rate_n - drop >= LC_RATE_MAX) drop++;
+    if (drop) {
+        memmove(u->rate_e, u->rate_e + drop, (size_t)(u->rate_n - drop) * sizeof u->rate_e[0]);
+        memmove(u->rate_c, u->rate_c + drop, (size_t)(u->rate_n - drop) * sizeof u->rate_c[0]);
+        u->rate_n -= drop;
+    }
+    u->rate_e[u->rate_n] = elapsed; u->rate_c[u->rate_n++] = copied;
+}
+
+/* bytes/s over the window; *span = the seconds it covers (0 = fewer than two samples) */
+double lc_rate(const LcUi *u, int *span) {
+    *span = u->rate_n >= 2 ? u->rate_e[u->rate_n - 1] - u->rate_e[0] : 0;
+    return *span > 0 ? (double)(u->rate_c[u->rate_n - 1] - u->rate_c[0]) / *span : -1;
+}
+
+/* the first partition whose used bytes were not measured (#1440); 0 = all were */
+int lc_unmeasured(const LcState *l) {
+    for (int i = 0; i < l->nparts; i++) if (l->parts[i].bytes < 0) return l->parts[i].idx;
+    return 0;
+}
 
 /* An amount as an isolated LTR run (FSI ... PDI): "149 GB" inside a Hebrew
  * sentence stays "149 GB", never "GB 149". */
@@ -18,8 +60,9 @@ void lc_gb(char *out, size_t n, double b) {
 }
 
 void lc_disk_label(const LcDisk *d, char *out, size_t n) {
-    if (d->port > 0) snprintf(out, n, "דיסק %d", d->port);
-    else snprintf(out, n, "%s", d->dev);
+    int drawer = eff_drawer(d->drawer, d->port);
+    if (drawer > 0) snprintf(out, n, "דיסק %d", drawer);
+    else unmapped_label("", d->conn, d->port, d->dev, out, n);
 }
 
 void lc_has_text(const LcDisk *d, char *out, size_t n) {
@@ -73,7 +116,7 @@ static const char *lc_status_base(const App *a, Rgb *dot) {
         if (nf == 1) return "הסתיים · יעד אחד נכשל";
         snprintf(buf, sizeof buf, "הסתיים · %d יעדים נכשלו", nf); return buf;
     }
-    if (!strcmp(l->phase, "shrinking")) return "מכווץ את המקור זמנית";
+    if (!strcmp(l->phase, "shrinking")) return "מכין עותק מכווץ בזיכרון";   /* #1477: the source is read only */
     if (!strcmp(l->phase, "verifying")) return "בודק את היעדים";
     if (!strcmp(l->phase, "restoring")) return "מחזיר את המקור לגודלו";
     if (!strcmp(l->phase, "stopped")) { *dot = t->warn; return "נעצר"; }
@@ -85,7 +128,9 @@ static const char *lc_status_base(const App *a, Rgb *dot) {
 }
 
 const char *lc_status_keys(const App *a) {
-    if (a->screen == SCREEN_LCBOOT) return "→ ←  מעבר    Enter  בחירה    1  מהשרת    2  שיכפול מקומי";
+    if (a->screen == SCREEN_LCBOOT) return a->st.lc.local_ok   /* 16/10: 3 -- restore from the server */
+        ? "→ ← ↓  מעבר    Enter  בחירה    1  מהשרת    2  שיכפול מקומי    3  שחזור אימג' מהשרת"
+        : "↓ ↑  מעבר    Enter  בחירה    1  מהשרת    3  שחזור אימג' מהשרת";
     int view = lc_view(a);
     if (view == LCVIEW_SOURCE) return a->lcu.confirm ? "Tab / → ←  מעבר    Enter  בחירה    Esc  חזרה"
                                                      : "↑ ↓  מגירה    → ←  תפקיד    1 2 3  קבע כמקור    Tab  כפתורים    Esc  חזרה";
@@ -97,7 +142,8 @@ const char *lc_status_keys(const App *a) {
 
 const char *const LC_PNG_CARDS[] = { "lcboot", "lcboot-paused", "lcsource", "lcsource-measuring", "lcsource-blocked",
                                      "lcsource-shrink", "lcconfirm", "lcconfirm-shrink", "lcprogress", "lcprogress-fail",
-                                     "lcstop", "lcdone", "lcdone-ok", "lcboot-round", "lcsource-round" };   /* -round: #1367 */
+                                     "lcstop", "lcdone", "lcdone-ok", "lcboot-round", "lcsource-round",   /* -round: #1367 */
+                                     "lcboot-one", "lcboot-pull", "lcpull", "lcpull-confirm", "lcpull-keys" };   /* 16/10: one disk; restore from the server */
 const int LC_PNG_NCARDS = (int)(sizeof LC_PNG_CARDS / sizeof LC_PNG_CARDS[0]);
 
 static void disk(LcState *l, int port, const char *dev, const char *model, unsigned long long size, const char *smart,
@@ -129,8 +175,22 @@ void lc_sample(State *s, const char *card) {
     LcState *l = &s->lc; memset(l, 0, sizeof *l);
     snprintf(s->machine_name, sizeof s->machine_name, "CLONER-02");
     l->round_open = strstr(card, "-round") != NULL;   /* #1367: a round opened on the server meanwhile */
+    if (!strncmp(card, "lcpull", 6)) {   /* 16/10: the restore screen with three drawers, two ticked on -confirm */
+        l->screen = LC_SCREEN_PULL;
+        s->nidisks = 0;
+        static const struct { int port; const char *model, *smart; unsigned long long size; } D[3] = {
+            { 1, "Samsung SSD 870 EVO", "passed", 500107862016ULL }, { 2, "WDC WD5000AAKX", "fail", 500107862016ULL },
+            { 3, "Crucial MX500", "passed", 480103981056ULL } };
+        for (int i = 0; i < 3; i++) {
+            IdleDisk *d = &s->idisks[s->nidisks++]; memset(d, 0, sizeof *d);
+            d->port = D[i].port; d->size = D[i].size;
+            snprintf(d->model, sizeof d->model, "%s", D[i].model); snprintf(d->smart, sizeof d->smart, "%s", D[i].smart);
+        }
+        return;
+    }
     if (!strncmp(card, "lcboot", 6)) {
         l->screen = LC_SCREEN_BOOT; l->boot_now = 1000; l->boot_deadline = 1017;
+        l->local_ok = strcmp(card, "lcboot-one") != 0;   /* 16/10: one disk -- the local card is off */
         l->boot_paused = !strcmp(card, "lcboot-paused") || l->round_open;
         return;
     }
@@ -171,9 +231,23 @@ int lc_png_setup(App *a, const char *card) {
     memset(&a->lcu, 0, sizeof a->lcu);
     a->force_cloner = 1;
     if (!strcmp(card, "lcboot-paused") || !strcmp(card, "lcboot-round")) { a->lcu.boot_focus = 1; a->lcu.pause_sent = 1; }
+    if (!strcmp(card, "lcboot-pull")) { a->lcu.boot_focus = 2; a->lcu.pause_sent = 1; }   /* 16/10: the focus on the third card */
+    if (a->st.lc.screen == LC_SCREEN_PULL) {             /* 16/10: an image chosen; on -confirm drawers 1 and 3 and the dialog */
+        memset(a->pull_sel, 0, sizeof a->pull_sel);
+        a->mode = MODE_RESTORE; a->pick_in_folder = 0;
+        if (a->st.nimages) a->restore_image_sel = 1;
+        a->pull_focus = 0;
+        if (!strcmp(card, "lcpull-confirm")) { a->pull_sel[1] = a->pull_sel[3] = 1; a->confirm = CONFIRM_RESTORE; }
+        if (!strcmp(card, "lcpull-keys")) { a->pull_sel[1] = 1; a->pull_focus = 3; }   /* the keyboard on drawer 3 */
+        return 1;
+    }
     if (a->st.lc.screen != LC_SCREEN_LOCAL) return 1;
     lc_after_reload(a);
     LcUi *u = &a->lcu;
+    if (a->st.lc.has_run && a->st.lc.elapsed > LC_RATE_WIN) {   /* #1437: a full window at the mockup's own pace */
+        const LcState *l = &a->st.lc; long long back = (long long)((double)l->copied * LC_RATE_WIN / l->elapsed);
+        u->rate_n = 0; lc_rate_sample(u, l->elapsed - LC_RATE_WIN, l->copied - back); lc_rate_sample(u, l->elapsed, l->copied);
+    }
     if (!strcmp(card, "lcsource-blocked") || !strcmp(card, "lcsource-shrink") || !strcmp(card, "lcconfirm-shrink") || !strcmp(card, "lcsource-measuring")) {
         u->nroles = 0;                     /* drawer 1 chosen as the source by the person */
         const char *dev[3] = { "sda", "sdb", "sdc" }; int r[3] = { LCR_SOURCE, LCR_TARGET, LCR_TARGET };

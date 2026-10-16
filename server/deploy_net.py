@@ -27,6 +27,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import uuid
@@ -124,7 +125,9 @@ def _run(cmd: list[str], *, stdin_text: str | None = None,
         done = subprocess.run(cmd, capture_output=True, text=True,
                               timeout=timeout, check=False, **kwargs)
     except (OSError, subprocess.SubprocessError) as exc:
-        return False, "", str(exc)
+        # הטקסט הגולמי של מערכת ההפעלה ([WinError 2]…) — ללוג בלבד (#1016).
+        logging.getLogger(__name__).warning("deploy_net: %s failed to run: %s", cmd[:3], exc)
+        return False, "", f"הפקודה {cmd[0]} לא הצליחה לרוץ — הפרטים ביומן השרת"
     return done.returncode == 0, done.stdout, (done.stderr or "").strip()
 
 

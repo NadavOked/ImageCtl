@@ -235,6 +235,7 @@ http_get() {{ cat {posix(state)!r}; }}
 class_deploy_on() {{ return 1; }}
 tools_on() {{ return 1; }}
 gui_shrink_state() {{ :; }}
+disk_slot_records() {{ :; }}
 gui_state
 ''')
     assert result.returncode == 0, result.stderr

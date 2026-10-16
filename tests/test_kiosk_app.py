@@ -47,6 +47,8 @@ from test_server_room import cloner_hello  # noqa: E402
 EXPECTED_KIOSK_ROUTES = frozenset({
     # תת-קבוצת /api/console המסוננת (allowlist הקיוסק)
     ("POST", "/api/console/login"),
+    # ‏#1499 (נדב 16/10): ערכת הנושא של המשתמש עצמו, נשמרת מהגואי — גם ל-deploy
+    ("PUT", "/api/console/me/theme"),
     ("GET", "/api/console/groups"),
     ("GET", "/api/console/images"),
     ("GET", "/api/console/folders"),

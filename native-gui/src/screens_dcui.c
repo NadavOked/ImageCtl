@@ -745,20 +745,44 @@ static double radio_el(Dlg *d, const DcuiEl *e, double y, int draw) {
     return h;
 }
 
+/* 16/10 (mockup a2): the pairing code, large and centred, with the time left
+ * at the box's left end. The code is [A-Z0-9-] only (the backend's alphabet). */
+static double code_el(Dlg *d, const DcuiEl *e, double y, int draw) {
+    G *g = d->g; const Theme *t = g->t;
+    char m[DCUI_FIELD + 64];                  /* e->a whole: no truncation */
+    snprintf(m, sizeof m, "<span letter_spacing=\"6144\">%s</span>", e->a);
+    Text code = mk(g, FONT_MONO, 44, 700, m, 0, 1, 1);
+    Text lab = rtl(g, 12.5, 400, e->b, 0), tm = mono(g, 22, 700, e->c);
+    double side = fmax(lab.w, tm.w) + 32, h = fmax(code.h, lab.h + 4 + tm.h) + 32;
+    if (draw) {
+        Rect r = { d->x, y, d->w, h };
+        draw_fill_rrect(g->cr, r, 8, t->indigo);
+        draw_fill_rrect(g->cr, (Rect){ r.x + 1, r.y + 1, r.w - 2, r.h - 2 }, 7, t->indigo_soft);
+        double cx = r.x + side + (r.w - side - code.w) / 2;
+        put_l(g, &code, cx, y + (h - code.h) / 2, t->ink);
+        double ty = y + (h - lab.h - 4 - tm.h) / 2;
+        put_l(g, &lab, r.x + 16, ty, t->muted);
+        put_l(g, &tm, r.x + 16, ty + lab.h + 4, !strcmp(e->d, "warn") ? t->warn : t->ink);
+    }
+    text_free(&code); text_free(&lab); text_free(&tm);
+    return h;
+}
+
 static double cons_el(Dlg *d, const DcuiEl *e, double y, int draw) {
     G *g = d->g; const Theme *t = g->t;
-    const int hot = e->type == DEL_ALERT;
+    const int hot = e->type == DEL_ALERT, warn = hot && !strcmp(e->c, "warn");
     double pad = hot ? 12 : 0, w = d->w - 2 * pad - 20 - 10;
     Text tx = rtlm(g, 13.5, 400, e->a, w);
     double h = (hot ? 10 : 0) + fmax(22, tx.h) + (hot ? 10 : 0);
     if (draw) {
-        if (hot) {
-            draw_fill_rrect(g->cr, (Rect){ d->x, y, d->w, h }, 6, t->danger);
-            draw_fill_rrect(g->cr, (Rect){ d->x + 1, y + 1, d->w - 2, h - 2 }, 5, t->danger_soft);
+        if (hot) {                                      /* warn: the yellow of a pill */
+            draw_fill_rrect(g->cr, (Rect){ d->x, y, d->w, h }, 6, warn ? t->warn : t->danger);
+            draw_fill_rrect(g->cr, (Rect){ d->x + 1, y + 1, d->w - 2, h - 2 }, 5,
+                            warn ? t->warning_soft : t->danger_soft);
         }
         double right = d->x + d->w - pad, top = y + (hot ? 10 : 0);
         cairo_arc(g->cr, right - 10, top + 11, 10, 0, 2 * M_PI);
-        draw_set(g->cr, hot ? t->danger : t->hover); cairo_fill(g->cr);
+        draw_set(g->cr, hot ? (warn ? t->warn : t->danger) : t->hover); cairo_fill(g->cr);
         Text b = rtl(g, 12, 700, hot ? "!" : "\xe2\x80\xa2", 0);
         text_draw(g->cr, &b, right - 10 - b.w / 2.0, top + 11 - b.h / 2.0, hot ? on_fill(g) : t->muted);
         text_free(&b);
@@ -868,6 +892,7 @@ static double dialog_body(Dlg *d, double y0, int draw) {
             while (j < f->nel && f->el[j].type == DEL_BTN) j++;
             y += 22; y += btn_row(d, i, j, y, draw);
             break;
+        case DEL_CODE: y += 18; y += code_el(d, e, y, draw); break;
         }
         prev = e->type;
         i = j;

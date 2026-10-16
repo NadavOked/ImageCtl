@@ -1,7 +1,14 @@
 /* #1322: "איך להפעיל את המחשב?" -- the cloner's boot choice, mockup state 1
  * (localclone.html .boot). Two cards: "מהשרת" (the default, a 20 s count
  * that the AGENT keeps -- this screen only draws its deadline) and "שיכפול
- * מקומי". Any touch stops the count (lc_state.c sends boot-pause). */
+ * מקומי". Any touch stops the count (lc_state.c sends boot-pause).
+ *
+ * 16/10 (Nadav): a third choice, "שחזור אימג' מהשרת" (key 3), as a card
+ * across the width under the two -- the two keep the mockup's place. It is
+ * the same card (surface, hairline, the key chip, the indigo-soft icon
+ * tile); only its icon is new, drawn from the other two's pieces (a server
+ * over a disk, the arrow between). With one disk the local clone card stays
+ * but is off: there is nothing to copy to (lc_local=0). */
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -13,14 +20,21 @@
 #define LB_GAP    18.0
 #define LB_CARD_H 228.0   /* .ch min-height */
 #define LB_PAD    26.0
+#define LB_PULL_H 124.0   /* 16/10: the third card, across the width */
 
-/* The two icons of the mockup, 24-unit SVG paths stroked at 28px. */
+/* The two icons of the mockup, 24-unit SVG paths stroked at 28px; 2 = the
+ * restore card's (16/10): a server above, a disk below, the arrow down. */
 static void lb_icon(cairo_t *cr, Rect box, int local, Rgb c) {
     cairo_save(cr);
     cairo_translate(cr, box.x, box.y); cairo_scale(cr, box.w / 24.0, box.h / 24.0);
     cairo_set_line_width(cr, 1.7); cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND); cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
     draw_set(cr, c);
-    if (!local) {   /* two servers, their LEDs, the link */
+    if (local == 2) {
+        draw_rrect_path(cr, (Rect){ 4, 2, 16, 6 }, 1.5); cairo_move_to(cr, 8, 5); cairo_line_to(cr, 8.01, 5);
+        draw_rrect_path(cr, (Rect){ 3, 16, 18, 5 }, 1);
+        cairo_move_to(cr, 12, 8); cairo_line_to(cr, 12, 15);
+        cairo_move_to(cr, 9.5, 12.5); cairo_line_to(cr, 12, 15); cairo_line_to(cr, 14.5, 12.5);
+    } else if (!local) {   /* two servers, their LEDs, the link */
         draw_rrect_path(cr, (Rect){ 4, 3, 16, 7 }, 1.5); draw_rrect_path(cr, (Rect){ 4, 14, 16, 7 }, 1.5);
         cairo_move_to(cr, 8, 6.5); cairo_line_to(cr, 8.01, 6.5); cairo_move_to(cr, 8, 17.5); cairo_line_to(cr, 8.01, 17.5);
         cairo_move_to(cr, 12, 10); cairo_line_to(cr, 12, 14);
@@ -45,11 +59,13 @@ static double lb_left(const App *a) {
 
 static void lb_card(App *a, cairo_t *cr, Rect r, int local, int paused, int focus) {
     const Theme *t = a->theme; int dark = t == &THEME_DARK;
+    int off = local && !a->st.lc.local_ok;          /* 16/10: one disk -- nothing to copy to */
     draw_box_shadow(cr, r, 6, 10, 24, -16, dark ? (Rgb){ 0, 0, 0 } : t->header, dark ? .40 : .18);
     draw_fill_rrect(cr, r, 6, t->surface);
-    draw_border_rrect(cr, r, 6, !local || hovered(a, r) ? t->indigo : t->hair, 1);   /* .ch.def / :hover */
+    draw_border_rrect(cr, r, 6, !local || (!off && hovered(a, r)) ? t->indigo : t->hair, 1);   /* .ch.def / :hover */
     if (focus) draw_border_rrect(cr, (Rect){ r.x - 3.5, r.y - 3.5, r.w + 7, r.h + 7 }, 9, t->indigo, 3);
-    hit_add(a, r, local ? HIT_LC_BOOT_LOCAL : HIT_LC_BOOT_SERVER);
+    if (!off) hit_add(a, r, local ? HIT_LC_BOOT_LOCAL : HIT_LC_BOOT_SERVER);
+    if (off) cairo_push_group(cr);
     /* .kk: the key, at the top-left corner */
     Text k = text_make(cr, FONT_MONO, 12, 500, local ? "2" : "1", 0, DIR_LTR);
     Rect kr = { r.x + 18, r.y + 18, k.w + 14, 22 };
@@ -68,8 +84,10 @@ static void lb_card(App *a, cairo_t *cr, Rect r, int local, int paused, int focu
     text_draw_r(cr, &ds, right, y, t->muted); text_free(&ds);
     double bottom = r.y + r.h - 22;
     if (local) {
-        Text w = text_make(cr, FONT_SANS, 12, 500, "הדיסקים שיוגדרו כיעד יימחקו. לפני כן יוצג אישור.", (int)inner, DIR_RTL);
-        text_draw_r(cr, &w, right, bottom - w.h, t->warn); text_free(&w);
+        Text w = text_make(cr, FONT_SANS, 12, 500, off ? "במחשב יש דיסק אחד — אין לאן להעתיק."
+                                                        : "הדיסקים שיוגדרו כיעד יימחקו. לפני כן יוצג אישור.", (int)inner, DIR_RTL);
+        text_draw_r(cr, &w, right, bottom - w.h, off ? t->muted : t->warn); text_free(&w);
+        if (off) { cairo_pop_group_to_source(cr); cairo_paint_with_alpha(cr, .5); }
         return;
     }
     /* .cd: the count -- the words, the seconds, the bar that empties toward the left */
@@ -91,6 +109,32 @@ static void lb_card(App *a, cairo_t *cr, Rect r, int local, int paused, int focu
     }
 }
 
+/* 16/10: "שחזור אימג' מהשרת" -- the same card, laid out across: the icon
+ * tile at the start, the title, what it does and what it erases beside it. */
+static void lb_pull_card(App *a, cairo_t *cr, Rect r, int focus) {
+    const Theme *t = a->theme; int dark = t == &THEME_DARK;
+    draw_box_shadow(cr, r, 6, 10, 24, -16, dark ? (Rgb){ 0, 0, 0 } : t->header, dark ? .40 : .18);
+    draw_fill_rrect(cr, r, 6, t->surface);
+    draw_border_rrect(cr, r, 6, hovered(a, r) ? t->indigo : t->hair, 1);
+    if (focus) draw_border_rrect(cr, (Rect){ r.x - 3.5, r.y - 3.5, r.w + 7, r.h + 7 }, 9, t->indigo, 3);
+    hit_add(a, r, HIT_LC_BOOT_PULL);
+    Text k = text_make(cr, FONT_MONO, 12, 500, "3", 0, DIR_LTR);
+    Rect kr = { r.x + 18, r.y + 18, k.w + 14, 22 };
+    draw_fill_rrect(cr, kr, 3, t->field); draw_border_rrect(cr, kr, 3, t->hair, 1);
+    text_draw(cr, &k, kr.x + 7, kr.y + (22 - k.h) / 2.0, t->ink); text_free(&k);
+    double right = r.x + r.w - LB_PAD, y = r.y + LB_PAD;
+    Rect ic = { right - 52, y, 52, 52 };
+    draw_fill_rrect(cr, ic, 8, t->indigo_soft); lb_icon(cr, (Rect){ ic.x + 12, ic.y + 12, 28, 28 }, 2, t->action_fg);
+    double tr = right - 52 - 18, inner = tr - (kr.x + kr.w + 18);
+    Text tt = text_make(cr, FONT_SANS, 22, 600, "שחזור אימג' מהשרת", 0, DIR_RTL);
+    text_draw_r(cr, &tt, tr, y - 2, t->ink); y += tt.h + 4; text_free(&tt);
+    Text ds = text_make(cr, FONT_SANS, 14, 400, "בוחרים אימג' מספריית השרת ומגירות במחשב הזה. המחשב נכתב בסבב מהשרת, ונכבה בסוף.",
+                        (int)inner, DIR_RTL);
+    text_draw_r(cr, &ds, tr, y, t->muted); y += ds.h + 6; text_free(&ds);
+    Text w = text_make(cr, FONT_SANS, 12, 500, "המגירות שיסומנו יימחקו. לפני כן יוצג אישור.", (int)inner, DIR_RTL);
+    text_draw_r(cr, &w, tr, y, t->warn); text_free(&w);
+}
+
 void screen_lcboot(App *a, cairo_t *cr, double W, double H, double head_h) {
     const Theme *t = a->theme;
     int paused = a->st.lc.boot_paused || a->lcu.pause_sent;
@@ -106,7 +150,9 @@ void screen_lcboot(App *a, cairo_t *cr, double W, double H, double head_h) {
     text_draw(cr, &lead, (W - lead.w) / 2, y + (18.2 - lead.h) / 2, rnote ? t->warn : t->muted); y += 18.2 + 34; text_free(&lead);
     lb_card(a, cr, (Rect){ x0 + cw - cardw, y, cardw, LB_CARD_H }, 0, paused, a->lcu.boot_focus == 0);
     lb_card(a, cr, (Rect){ x0, y, cardw, LB_CARD_H }, 1, paused, a->lcu.boot_focus == 1);
-    y += LB_CARD_H + 20;
+    y += LB_CARD_H + LB_GAP;
+    lb_pull_card(a, cr, (Rect){ x0, y, cw, LB_PULL_H }, a->lcu.boot_focus == 2);   /* 16/10 */
+    y += LB_PULL_H + 20;
     if (!paused) {
         Text note = text_make(cr, FONT_SANS, 13, 400, "כל מקש, לחיצה או תזוזת עכבר עוצרים את הספירה.", 0, DIR_RTL);
         text_draw(cr, &note, (W - note.w) / 2, y + (20 - note.h) / 2, t->muted); text_free(&note);

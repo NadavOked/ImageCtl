@@ -244,18 +244,53 @@ async function serverCutText() {
 }
 
 /* --- קלט: עכבר ומקלדת (רק כשלא view-only) --------------------------------- */
+/* ‏#1475: הפיקסל שמתחת לסמן — floor ולא round (round הסיט חצי פיקסל-fb),
+   ומיקום מחוץ ל-canvas (סרגל הכלים, הפס השחור, גרירה החוצה) נצמד לקצה. */
 function fbCoords(event) {
   const rect = canvas.getBoundingClientRect();
-  const x = Math.round((event.clientX - rect.left) / rect.width * fbWidth);
-  const y = Math.round((event.clientY - rect.top) / rect.height * fbHeight);
+  const x = Math.floor((event.clientX - rect.left) * fbWidth / rect.width);
+  const y = Math.floor((event.clientY - rect.top) * fbHeight / rect.height);
   return [Math.max(0, Math.min(fbWidth - 1, x)), Math.max(0, Math.min(fbHeight - 1, y))];
 }
 
+/* ‏#1475: תזוזה נשלחת לכל היותר פעם ב-POINTER_MS, והאחרונה תמיד יוצאת
+   (trailing). כל PointerEvent גורם לגואי במכונה לצייר פריים מלא, ודפדפן
+   שולח 60–144 תזוזות בשנייה — יותר ממה שהמוניטור מחזיר (25fps בזמן קלט),
+   ועל חשבון ה-CPU של השיכפול. לחיצה ושחרור אינם מושהים לעולם. */
+const POINTER_MS = 33;
 let buttonMask = 0;
+let pendingMove = null;
+let moveTimer = null;
+let lastPointerAt = -Infinity;
+
+function sendPointer(x, y) {
+  lastPointerAt = Date.now();
+  send([5, buttonMask, (x >> 8) & 255, x & 255, (y >> 8) & 255, y & 255]);
+}
+
+function flushMove() {
+  moveTimer = null;
+  if (!pendingMove) return;
+  const [x, y] = pendingMove;
+  pendingMove = null;
+  sendPointer(x, y);
+}
+
 function pointer(event) {
   if (viewOnly) return;
+  pendingMove = fbCoords(event);
+  if (moveTimer) return;
+  const wait = lastPointerAt + POINTER_MS - Date.now();
+  if (wait <= 0) flushMove();
+  else moveTimer = setTimeout(flushMove, wait);
+}
+
+function pointerButton(event) {
+  if (viewOnly) return;
+  if (moveTimer) { clearTimeout(moveTimer); moveTimer = null; }
+  pendingMove = null;
   const [x, y] = fbCoords(event);
-  send([5, buttonMask, (x >> 8) & 255, x & 255, (y >> 8) & 255, y & 255]);
+  sendPointer(x, y);
 }
 
 function keyEvent(keysym, down) {
@@ -338,12 +373,18 @@ function connect() {
 }
 
 /* קלט המסך: קליק תופס פוקוס, המקלדת נלכדת כל עוד ה-canvas ממוקד. */
-canvas.addEventListener("mousemove", pointer);
-canvas.addEventListener("mousedown", (e) => {
+/* ‏#1475: אירועי pointer עם לכידה — גרירה שיוצאת מה-canvas ממשיכה,
+   והשחרור מגיע גם מחוצה לו (בלעדיה הכפתור נשאר לחוץ במכונה). יציאה
+   מה-canvas שולחת את המיקום המוצמד לקצה: עד כאן הסמן המרוחק נשאר
+   בדגימה האחרונה שנפלה בפנים — "נמוך מדי" כשהעכבר עולה לסרגל. */
+canvas.addEventListener("pointermove", pointer);
+canvas.addEventListener("pointerleave", pointer);
+canvas.addEventListener("pointerdown", (e) => {
   e.preventDefault(); canvas.focus();
-  buttonMask |= (1 << e.button); pointer(e);
+  if (canvas.setPointerCapture) canvas.setPointerCapture(e.pointerId);
+  buttonMask |= (1 << e.button); pointerButton(e);
 });
-canvas.addEventListener("mouseup", (e) => { buttonMask &= ~(1 << e.button); pointer(e); });
+canvas.addEventListener("pointerup", (e) => { buttonMask &= ~(1 << e.button); pointerButton(e); });
 canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 canvas.addEventListener("keydown", (e) => { e.preventDefault(); keyEvent(keysymFor(e), true); });
 canvas.addEventListener("keyup", (e) => { e.preventDefault(); keyEvent(keysymFor(e), false); });

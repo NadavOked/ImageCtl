@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,7 +45,8 @@ from .console_library import create_library_router
 from .console_drivers import create_agent_drivers_router, create_drivers_router   # #720
 from .console_tools import create_tools_router   # #649 שלב 1
 from .drivers import DriverLibrary
-from .capture import create_agent_capture_router, create_console_capture_router
+from .capture import (create_agent_capture_router, create_console_capture_router,
+                      start_verification)
 from .console_net import create_net_router
 from .nic_services import create_nic_services_router
 from . import console_dhcp
@@ -58,7 +60,9 @@ from .update import (PUBLIC_UPDATE_URL, create_update_router, current_version, d
 from .hello import make_resolver, off_deploy_vlan, self_probe
 from .images import ImageLibrary
 from .kiosk import create_kiosk_router
+from .cloner_round import create_cloner_round_router
 from . import room
+from . import usedbackfill
 from .room import CLONERS_GROUP, create_room_router
 from .room_console import create_room_console_router
 from .wake_api import create_wake_router
@@ -262,6 +266,23 @@ def _install_room_clock(app: FastAPI, rt: ServerRuntime) -> None:
     app.router.lifespan_context = lifespan
 
 
+def _backfill_used_bytes(conn: Connection, library: ImageLibrary) -> None:
+    """‏#1494: שורת יומן לכל אימג' שנוסתה בו השלמה — מה נכתב, ומה לא ולמה."""
+    def report(result: dict) -> None:
+        written = ", ".join(f"p{i}={b}" for i, b in sorted(result["written"].items()))
+        if written:
+            journal(conn, "image_used_bytes_derived",
+                    f"{result['image_id']}: used_bytes מכותרת partclone — {written}")
+        if result["problems"]:
+            journal(conn, "image_used_bytes_underived",
+                    f"{result['image_id']}: לא הושלם — {'; '.join(result['problems'])}")
+    try:
+        usedbackfill.backfill(library, report=report)
+    except Exception:                       # תהליכון רקע: חריגה אינה נבלעת בשקט
+        log.exception("used_bytes backfill failed")
+        journal(conn, "image_used_bytes_underived", "ההשלמה נכשלה — ראו יומן השרת")
+
+
 def create_runtime(
     data_dir: str | Path,
     images_root: str | Path,
@@ -329,6 +350,15 @@ def create_runtime(
     # ‏#1372: ראו ``ServerRuntime.vm_host``. ‏False כברירת מחדל מאותו טעם כמו
     # ``sync_dnsmasq``: רק ``main`` שואל את המארח שהוא רץ עליו.
     vm_host: bool = False,
+    # הכרעת נדב 15/10: ‏`drive_rates.read_link` — מהירות כרטיס ההפצה, הגג
+    # והפתיחה של הקצב לפיה. ‏None כברירת מחדל מאותו טעם כמו ``sync_dnsmasq``:
+    # רק ``main`` קורא את ‎/sys של המכונה; בלעדיו — 600m/900m של היום.
+    link_speed=None,
+    # ‏#1494: השלמת `used_bytes` לאימג'ים ישנים מכותרת partclone, ברקע, פעם
+    # אחת בעלייה. ‏False כברירת מחדל מאותו טעם כמו ``sync_dnsmasq``: רק
+    # ``main`` מדליק; בבדיקות תהליכון רקע שמריץ zstd על ספריית tmp היה כותב
+    # ליומן בזמן לא צפוי.
+    backfill_used_bytes: bool = False,
 ) -> ServerRuntime:
     """בונה את המצב המשותף פעם אחת ומריץ את האתחול החד-פעמי.
 
@@ -362,6 +392,13 @@ def create_runtime(
     # אוטומטי ולא דיווח-והמפעיל-ימחק, בראש work_areas.py. עולה מיד אחרי
     # פתיחת ה-DB: זה מקור הראיה, ואין מה לסחוף בלעדיו.
     sweep_work_areas(conn, library.root)
+
+    # ‏#1494: אימג' שנקלט לפני #1368 נושא `used_bytes: null`, וכלל המקום הפנוי
+    # (‏#1354) מסרב לו בכל מגירה. ברקע: קריאת כותרת למחיצה מהירה, אבל מיקום
+    # רשת שנפל לא יעכב את עליית השרת; כל קריאה תחומה בטיימר משלה.
+    if backfill_used_bytes:
+        threading.Thread(target=_backfill_used_bytes, args=(conn, library),
+                         name="used-bytes-backfill", daemon=True).start()
 
     # ‏#56: זרוע ההחזרה (`imagectl-netrollback`) רצה כשהשרת **לא** רץ —
     # זו כל מטרתה — ולכן אין לה חיבור ל-DB. היא משאירה פירור על הדיסק,
@@ -429,11 +466,13 @@ def create_runtime(
         **({"max_wait": sender_max_wait} if sender_max_wait is not None else {}),
         **({"start_timeout": sender_start_timeout}
            if sender_start_timeout is not None else {}),
-        # ‏#447 + קצב אוטומטי (11/10): הקצב לגל — מהגל הקודם עם אותם כוננים
-        # והכוננים שבו, לעולם לא מעל `max_bitrate` (בלעדיו — 900m).
+        link_speed=link_speed,
+        # ‏#447 + קצב אוטומטי (11/10): הקצב לגל — מהגל הקודם של כל מחשב שיכפול
+        # (#1471) והכוננים שבו, לעולם לא מעל `max_bitrate` (בלעדיו — 900m) ולא מעל
+        # 90% מהקישור של כרטיס ההפצה (15/10).
         wave_bitrate=lambda session: drive_rates.decide(
             conn, session["id"], lambda: room.wave_drives(conn, session["id"]),
-            sender.max_bitrate),
+            sender.max_bitrate, link=sender.link),
         # ‏#1430: `store` נבנה למטה (הוא צריך את `sender.stop`); הקריאה
         # היא מתהליכון השולח, הרבה אחרי שהפונקציה הזו סיימה.
         live_receivers=lambda session_id: store.live_count(session_id),
@@ -474,7 +513,11 @@ def create_runtime(
     # 1). ‏`sender.status()` הוא הראיה החיובית היחידה שסבב עדיין משודר;
     # מנוע שזה עתה נבנה אינו משדר דבר. אחרי ה-sweep (שמשאיר `running`
     # במכוון) ולפני שמישהו יכול לקרוא את הסבב "פעיל" ב-hello.
-    reconcile_on_start(conn, library.root, sender.status())
+    reconciled = reconcile_on_start(conn, library.root, sender.status())
+    # ‏#1470: קליטה שהאימות שלה נקטע באתחול — האימות רץ מחדש מההתחלה, ברקע;
+    # האימג' נשאר מחוץ לספרייה עד שהוא עובר.
+    for task_id in reconciled["tasks_reverify"]:
+        start_verification(conn, library.root, task_id)
     # ‏#720: ספריית חבילות הדרייברים — תיקייה ליד ה-DB, לא בספריית האימג'ים.
     ctx = ServerContext(conn=conn, library=library, store=store, sender=sender,
                         drivers=DriverLibrary(data_dir / "drivers"),
@@ -655,6 +698,7 @@ def _add_agent_routes(app: FastAPI, rt: ServerRuntime) -> None:
     הוא הצרכן היחיד."""
     app.include_router(create_agent_router(rt.ctx, rt.server_base, rt.data_dir))
     app.include_router(create_agent_drivers_router(rt.ctx))   # #720
+    app.include_router(create_cloner_round_router(rt.ctx))   # 16/10: a cloner opens a round on its own drawers
     app.include_router(create_agent_capture_router(rt.ctx))
     app.include_router(direct.create_direct_router(rt.ctx))   # #715
     # ‏17/09 (מדוד על השרת החי): הכניסה במסך מחשב הבנייה קיבלה 404 —

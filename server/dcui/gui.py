@@ -41,10 +41,11 @@ POLL_SECONDS = 0.2
 
 #: curses' own numbers, so app._handle_key sees the same keys from both screens.
 KEYS = SimpleNamespace(KEY_DOWN=258, KEY_UP=259, KEY_LEFT=260, KEY_RIGHT=261,
-                       KEY_BACKSPACE=263, KEY_F2=266, KEY_F5=269, KEY_F9=273,
-                       KEY_F12=276, KEY_ENTER=343, KEY_BTAB=353)
+                       KEY_BACKSPACE=263, KEY_F2=266, KEY_F4=268, KEY_F5=269,
+                       KEY_F9=273, KEY_F12=276, KEY_ENTER=343, KEY_BTAB=353)
 _NAMED = {
-    "F2": KEYS.KEY_F2, "F5": KEYS.KEY_F5, "F9": KEYS.KEY_F9, "F12": KEYS.KEY_F12,
+    "F2": KEYS.KEY_F2, "F4": KEYS.KEY_F4, "F5": KEYS.KEY_F5, "F9": KEYS.KEY_F9,
+    "F12": KEYS.KEY_F12,
     "ENTER": "\n", "ESC": "\x1b", "TAB": "\t", "BACKTAB": KEYS.KEY_BTAB,
     "BACKSPACE": KEYS.KEY_BACKSPACE, "UP": KEYS.KEY_UP, "DOWN": KEYS.KEY_DOWN,
     "LEFT": KEYS.KEY_LEFT, "RIGHT": KEYS.KEY_RIGHT,

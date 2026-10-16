@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from boot.grub_menu import normalize_mac as lenient_mac
 
 from . import auth, inventory, room_drivers
+from .archive import unreadable_message
 from .api import ServerContext, identity_gate
 from .db import journal
 from .drivers import DriverError, DriverLibrary, for_model, match
@@ -66,7 +67,7 @@ def create_drivers_router(ctx: ServerContext) -> APIRouter:
         except DriverError as exc:
             raise HTTPException(400, str(exc))
         except Exception as exc:                       # tar פגום, קלט חתוך
-            raise HTTPException(400, f"הארכיון לא נקרא: {exc}")
+            raise HTTPException(400, unreadable_message(exc))
         finally:
             temp.unlink(missing_ok=True)
         journal(ctx.conn, "driver_upload",

@@ -13,7 +13,7 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
-from . import actions, view
+from . import actions, pairing, view
 from .app import Runtime
 from .data import DeployRound, NicInfo, ServiceState, Snapshot
 
@@ -53,6 +53,12 @@ SECONDARY = replace(
 )
 
 
+#: 16/10 (mockup #1525, a2): the code screen's data.
+SPKI = "a1b2c3d4e5f607189c3e5d27b04f8a61e2d7c93b5a0f14e8d6b27c39a5e01f84"
+CODE = pairing.Code("K7M4-X9QD", "5e0c41f2a9d7b380", NOW + 582,
+                    "sn_" + SPKI[:16], SPKI, "https://203.0.113.40:8443")
+
+
 def _runtime(snapshot: Snapshot, extras: view.Extras, **state) -> Runtime:
     runtime = Runtime(Path("/nonexistent"), None, snapshot, last_key_at=NOW - 6)
     runtime.extras = extras
@@ -74,6 +80,7 @@ def runtimes() -> dict[str, Runtime]:
         "ens34", "10.45.0.1/16", "static", "up", "1000", "00:50:56:aa:45:01", ""))
     paired = view.Extras(uptime_seconds=3 * 86400, has_parent=True,
                          primary_url="https://10.20.10.5:8443")
+    waiting_nat = view.Extras(uptime_seconds=1500, advertised_url="https://203.0.113.40:8443")
     form = {"interface": "ens33", "mode": "static", "address": "10.20.10.9",
             "netmask": "24", "gateway": "10.20.10.1", "dns": "10.20.10.2"}
     preinstall = replace(
@@ -114,6 +121,20 @@ def runtimes() -> dict[str, Runtime]:
             preinstall, view.Extras(), screen="preinstall_network",
             form={"interface": "ens33", "address": "10.20.10.37/24", "gateway": ""},
             form_field=2),
+        # 16/10: F4 on a secondary (mockup #1525, variant A: a1-a6)
+        "13-pair-code": _runtime(SECONDARY, waiting_nat, screen="pair", pair=CODE),
+        "13b-pair-code-no-address": _runtime(
+            SECONDARY, view.Extras(uptime_seconds=1500), screen="pair",
+            pair=replace(CODE, advertised="", expires=NOW + 41)),
+        "13c-pair-expired": _runtime(SECONDARY, waiting_nat, screen="pair", pair=CODE,
+                                     pair_stage="expired"),
+        "13d-paired": _runtime(SECONDARY, paired, screen="pair", pair=CODE, pair_stage="paired",
+                               paired={"parent_id": "sn_5e91c07a2b4d6f13",
+                                       "enrolled_at": "2026-10-12T17:19:09+00:00",
+                                       "primary_url": "https://10.20.10.5:8443"}),
+        "14-unpair": _runtime(connected, paired, screen="unpair"),
+        "15-advertised": _runtime(SECONDARY, waiting_nat, screen="advertised", menu_index=4,
+                                  advert="203.0.113.40:8443"),
     }
 
 

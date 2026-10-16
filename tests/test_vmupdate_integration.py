@@ -40,7 +40,7 @@ from pathlib import Path
 import pytest
 
 from server import vmdisk, vmupdate
-from server.db import connect
+from server.db import connect, set_setting
 from server.images import ImageLibrary, required_bytes
 
 TOOLS = ("losetup", "sgdisk", "partclone.fat", "partclone.ntfs", "mkfs.vfat", "mkntfs",
@@ -203,8 +203,12 @@ def test_open_boot_payload_save_and_reopen(tmp_path, library_root):
     assert library.get("img_1334aa") is not None, "the test image itself must be valid"
     conn = connect(tmp_path / "imagectl.db")
     vmupdate.write_settings(conn, {"memory_mib": 1024, "cpus": 1})
+    # ‏#1468: ה-VM על macvtap בכרטיס היציאה של המכונה. ה-UEFI Shell אינו עושה DHCP,
+    # ולכן תקרת ה-lease גבוהה מזמן המטען — כאן נבדק החיבור, לא ה-lease.
+    nic = sh("ip", "-o", "-4", "route", "get", "1.1.1.1").split(" dev ")[1].split()[0]
+    set_setting(conn, vmupdate.NIC_KEY, nic)
     engine = vmupdate.VmUpdate(conn, library, allow_tcg=True, ram_reserve_mib=256,
-                               growth_reserve_bytes=64 * MIB)
+                               growth_reserve_bytes=64 * MIB, lease_timeout=3600)
 
     # 1. אימג' → דיסק → VM. ‏boot_ca == [] → בלי Secure Boot (ה-Shell אינו חתום).
     engine.start("img_1334aa", "root")
@@ -229,6 +233,14 @@ def test_open_boot_payload_save_and_reopen(tmp_path, library_root):
     owners = [line.split()[0] for line in sh("ps", "-e", "-o", "uid=,args=").splitlines()
               if "imagectl-vmupdate,process=" in line]
     assert owners and set(owners) == {str(uid)}, owners
+    qemu_line = next(line for line in sh("ps", "-e", "-o", "args=").splitlines()
+                     if "imagectl-vmupdate,process=" in line)
+    assert "tap,id=net0,fd=" in qemu_line and "user,id=" not in qemu_line
+    mac = engine.ensure_mac()
+    link = sh("ip", "-d", "-o", "link", "show", "dev", "imagectl-vm0")
+    assert f"imagectl-vm0@{nic}" in link and "macvtap mode bridge" in link and mac in link
+    table = sh("nft", "list", "table", "inet", "imagectl_vm")
+    assert f"skuid {uid} drop" in table and f"ether saddr {mac} drop" in table
     host_ip = sh("ip", "-o", "-4", "route", "get", "1.1.1.1").split(" src ")[1].split()[0]
     for target in ("127.0.0.1", host_ip, "10.255.255.1"):
         probe = subprocess.run(
@@ -241,6 +253,13 @@ def test_open_boot_payload_save_and_reopen(tmp_path, library_root):
     # 3. המטען רץ ב-UEFI Shell ומכבה — ‏QEMU יוצא 0, המצב stopped.
     stopped = wait_state(engine, "stopped", 900)
     assert stopped["forced"] is False and stopped["runtime_seconds"] >= 0
+    # ה-macvtap והטבלה ירדו עם QEMU (#1468)
+    gone = subprocess.run(["ip", "-o", "link", "show", "dev", "imagectl-vm0"], env=ENV,
+                          capture_output=True, stdin=subprocess.DEVNULL)
+    assert gone.returncode != 0, gone.stdout
+    table_gone = subprocess.run(["nft", "list", "table", "inet", "imagectl_vm"], env=ENV,
+                                capture_output=True, stdin=subprocess.DEVNULL)
+    assert table_gone.returncode != 0, table_gone.stdout
 
     # 4. שמירה כגרסה חדשה.
     engine.save("root", "IT v2", "after the payload")

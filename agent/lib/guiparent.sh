@@ -16,7 +16,7 @@ gui_unavailable_local() {
     # 11/10: the next boot goes to the local disk (BootNext), not back here
     # -- and the console hears about it (localboot.sh).
     _gu_bn=$(boot_next_local); _gu_state=${_gu_bn%%:*}; _gu_why=${_gu_bn#*:}
-    log "BootNext to the local disk: $_gu_bn"
+    log "BootNext to the local disk: $_gu_state (the Hebrew detail is in the console journal)"   # log() also prints to the ASCII tty
     gui_failed_report "${1:-operator}" "$_gu_state" "$_gu_why" || :
     ui_clear; ui_header
     echo "  The graphical interface did not start."
@@ -24,7 +24,7 @@ gui_unavailable_local() {
         echo "  Booting from the local disk."
     else
         echo "  Rebooting. The next boot could NOT be pointed at the local disk:"
-        echo "  $_gu_why"
+        echo "  (details: see the server console journal)"
     fi
     [ "${IMAGECTL_TEST:-0}" = "1" ] || sleep "$GUI_FAIL_SHOW_S"
     die_local "native GUI unavailable (${1:-operator} screen)"

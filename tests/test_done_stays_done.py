@@ -93,6 +93,32 @@ def test_a_capture_that_could_not_arm_wol_stays_done(tmp_path, reports):
     assert_done_stays_done(result, reports)
 
 
+#: #1483: Wake-on-LAN armed, and the power-off came back -- busybox poweroff
+#: without -f against a shell PID 1 (HP-BUILD, 16/10). Still done, and said
+#: as what it was, not as Wake-on-LAN.
+POWEROFF_RETURNS = (
+    'arm_wol() { echo "WOL-ARMED" >> "$RUN_DIR/trace"; return 0; }; '
+    'poweroff() { echo "POWEROFF $*" >> "$RUN_DIR/trace"; return 0; }; '
+    'reboot() { echo "REBOOT" >> "$RUN_DIR/trace"; exit 0; }; '
+    'sleep() { :; }; sync() { :; }; '
+    'shrink_gui_release() { :; }; '
+    'ui_error_hold() { echo "HOLD $1" >> "$RUN_DIR/trace"; echo "  FAILED: $1"; }; '
+)
+
+
+@native_tools
+def test_a_capture_whose_poweroff_came_back_stays_done_and_says_why(tmp_path, reports):
+    result = run_path(
+        tmp_path, url_of(reports), CALL,
+        answer=TASK_ANSWER, stubs=CAPTURE_STUBS + POWEROFF_RETURNS, env=ENV,
+    )
+    assert "POWEROFF -f" in result["trace"], result["trace"]
+    assert [r["state"] for r in reports.received] == ["done"]
+    assert "wol not armed" not in result["log"], result["log"]
+    assert "the power-off did not take" in result["log"], result["log"]
+    assert "still on" in result["out"] and "RETURNED rc=0 standby=1" in result["out"], result["out"]
+
+
 @native_tools
 def test_a_direct_send_that_could_not_arm_wol_stays_done(tmp_path, reports):
     """אותה צורה ב-`direct_send_task` (#715): ההפצה הושלמה, ה-WoL לא
