@@ -1,6 +1,6 @@
 """‏#833: המוניטור ב-view-only חייב לשרוד לקוח ששולח קלט.
 
-‏`monitor.sh` נותן `--input` רק למחשב הבנייה; משכפל רץ view-only. שם
+‏`monitor.sh` נותן `--input` לבנייה ולמשכפל (#1454); view-only נשאר מצב של monitor.c. שם
 ‏`agent/monitor.c` השאיר את ‏`kbdAddEvent`/`ptrAddEvent` כ-`NULL`,
 ‏ו-LibVNCServer קורא להם **בלי בדיקה** — הלקוח של הקונסולה שולח
 ‏PointerEvent מיד אחרי ה-handshake, והתהליך קפץ לכתובת 0 (‏`segfault at 0
@@ -210,15 +210,17 @@ class Monitor:
 
     def __init__(self, tmp_path: Path, binary: Path, *, secret: str | None = SECRET,
                  env: dict | None = None, extra: tuple[str, ...] = (),
-                 allow_from: str | None = "127.0.0.1"):
+                 allow_from: str | None = "127.0.0.1",
+                 width: int = WIDTH, height: int = HEIGHT):
         fb = tmp_path / "fb0.raw"
-        fb.write_bytes(bytes([0x10, 0x20, 0x30, 0x00]) * (WIDTH * HEIGHT))
+        self.fb = fb
+        fb.write_bytes(bytes([0x10, 0x20, 0x30, 0x00]) * (width * height))
         self.port = _free_port()
         self.log_path = tmp_path / "monitor.log"
         self.log = open(self.log_path, "wb")
         self.secret_file = tmp_path / "monitor.secret"
         argv = [str(binary), "--bind", "127.0.0.1", "--port", str(self.port),
-                "--fps", "10", "--fb", str(fb), "--geometry", f"{WIDTH}x{HEIGHT}"]
+                "--fps", "10", "--fb", str(fb), "--geometry", f"{width}x{height}"]
         if secret is not None:
             self.secret_file.write_text(secret + "\n")
             argv += ["--secret-file", str(self.secret_file)]
@@ -944,3 +946,174 @@ def test_source_serves_the_framebuffers_own_format_and_bounds():
     assert c.index("layout_error(&var, &fix, pixel_offset)") < c.index("mmap(NULL")
     assert c.index("__atomic_thread_fence(__ATOMIC_ACQUIRE)") < c.rindex(
         "__atomic_load_n(frame_seq, __ATOMIC_ACQUIRE)")
+
+
+# --- ‏#1475: רק מה שהשתנה יוצא לרשת -------------------------------------------
+#
+# עד #1475 כל טיק העתיק את כל ה-fb וסימן את **כל** המסך כמשתנה, והלקוח
+# (Raw בלבד) קיבל 1920×1080×4 = 8.3MB בכל עדכון — גם כשרק הסמן זז. זה
+# היה רוב הקופצניות של הסמן במוניטור (נדב, משכפל 2, 16/10). עכשיו הסריקה
+# משווה אריחים של 64×32 ומסמנת רק את מה שהשתנה.
+
+TILE_W, TILE_H = 64, 32
+
+
+def _read_update(sock: socket.socket) -> list[tuple[int, int, int, int, bytes]]:
+    """‏FramebufferUpdate אחד: רשימת (x, y, w, h, פיקסלים) של מלבני Raw."""
+    kind = _recv_exact(sock, 1)[0]
+    assert kind == 0, f"expected FramebufferUpdate (0), got message type {kind}"
+    _recv_exact(sock, 1)
+    count = struct.unpack(">H", _recv_exact(sock, 2))[0]
+    rects = []
+    for _ in range(count):
+        x, y, w, h, encoding = struct.unpack(">HHHHi", _recv_exact(sock, 12))
+        assert encoding == 0, f"unexpected encoding {encoding}"
+        rects.append((x, y, w, h, _recv_exact(sock, w * h * 4)))
+    return rects
+
+
+@NATIVE
+def test_only_the_changed_tile_is_sent_and_an_idle_screen_sends_nothing(tmp_path):
+    """מסך 256×128 (‏4×4 אריחים). אחרי העדכון המלא: (א) בקשה incremental בלי
+    שום שינוי — **שום** עדכון בתוך 0.8 שנ' (שמונה טיקים ב-10fps); (ב) שינוי
+    של 2×2 פיקסלים ב-(200,100) — אותה בקשה נענית במלבן אחד, האריח
+    (192,96) 64×32, עם הפיקסלים החדשים. הראיה החיובית היא (ב): השתיקה
+    ב-(א) אינה "החיבור מת".
+    בקרה שלילית: על הקוד שלפני #1475 (‏`rfbMarkRectAsModified(screen, 0, 0,
+    var.xres, var.yres)` בכל טיק) — (א) מקבל את כל המסך, ‏256×128, תוך טיק."""
+    width, height = 256, 128
+    binary = _build(tmp_path)
+    monitor = Monitor(tmp_path, binary, width=width, height=height)
+    try:
+        with monitor.connect() as sock:
+            assert _handshake(sock) == (width, height)
+            assert _request_update(sock, width, height) == width * height * 4
+
+            sock.sendall(struct.pack(">BBHHHH", 3, 1, 0, 0, width, height))
+            sock.settimeout(0.8)
+            try:
+                early = sock.recv(1)
+            except socket.timeout:
+                early = b""
+            assert early == b"", "an unchanged screen still produced an update"
+
+            patch = bytes([0xAA, 0xBB, 0xCC, 0x00]) * 2
+            with open(monitor.fb, "r+b") as fb:
+                for row in (100, 101):
+                    fb.seek((row * width + 200) * 4)
+                    fb.write(patch)
+            sock.settimeout(5)
+            rects = _read_update(sock)
+    finally:
+        log = monitor.stop()
+    assert [(x, y, w, h) for x, y, w, h, _ in rects] == [(192, 96, TILE_W, TILE_H)], (
+        f"rects: {[(x, y, w, h) for x, y, w, h, _ in rects]}\nlog: {log[-1500:]}")
+    pixels = rects[0][4]
+    at = ((100 - 96) * TILE_W + (200 - 192)) * 4
+    assert pixels[at:at + 3] == bytes([0xAA, 0xBB, 0xCC]), pixels[at:at + 4].hex()
+    assert pixels[:3] == FIXTURE_BGRX[:3], "the rest of the tile is the old colour"
+
+
+def test_source_scans_tiles_sends_at_once_and_speeds_up_on_input():
+    """שומר-מקור (רץ גם בלי gcc) לשלושת חלקי #1475 שאין להם טסט התנהגות כאן:
+    שליחה מיד (‏deferUpdateTime 0), קצב פעיל אחרי קלט בשני ה-callbacks של
+    מצב הקלט בלבד, ואין עוד סימון של כל המסך בכל טיק.
+    בקרה שלילית: על הקוד שלפני #1475 אף אחת מהמחרוזות החדשות אינה בקובץ,
+    והסימון המלא קיים."""
+    c = _source()
+    assert "screen->deferUpdateTime = 0;" in c
+    assert "rfbMarkRectAsModified(screen, 0, 0, var.xres, var.yres)" not in c
+    for callback in ("static void keyboard_event(", "static void pointer_event("):
+        body = c[c.index(callback):]
+        body = body[:body.index("\n}\n")]
+        assert "input_seen();" in body, callback
+    for callback in ("static void keyboard_event_ignored(",
+                     "static void pointer_event_ignored("):
+        body = c[c.index(callback):]
+        body = body[:body.index("\n}\n")]
+        assert "input_seen" not in body, f"view-only must not change anything: {callback}"
+    # fb.mem: seq שלא זז = אין קריאה בכלל.
+    assert "seq_before == served_seq" in c
+
+
+#: ‏interfaces.md §15 — הכותרת של fb.mem: קסם, ואז width, height, stride,
+#: format, seq (‏u32 LE), מרופדת ל-4096.
+MEMFB_SEQ_AT = 24
+
+
+def _memfb(path: Path, width: int, height: int, seq: int) -> None:
+    header = b"IMCTLFB1" + struct.pack("<5I", width, height, width * 4, 1, seq)
+    path.write_bytes(header.ljust(4096, b"\0") + FIXTURE_BGRX * (width * height))
+
+
+@NATIVE
+def test_an_unchanged_memfb_seq_is_not_even_read(tmp_path):
+    """‏#1475, הדרישה מהמדידה על הברזל (60% מתהליכון בזמן שיכפול): כשהגואי לא
+    הציג פריים חדש, הטיק עולה קריאה אטומית אחת. הראיה: פיקסל משתנה בקובץ
+    **בלי** ש-seq זז — שום עדכון בתוך 0.8 שנ' (המוניטור לא קרא את הפיקסלים);
+    ‏seq זז ב-2 (פריים שלם) — אותה בקשה נענית באריח שבו הפיקסל, ורק בו.
+    בקרה שלילית: על הקוד שלפני #1475 (‏`rfbMarkRectAsModified(screen, 0, 0,
+    var.xres, var.yres)` בכל טיק שה-seq זוגי) — עדכון מלא תוך טיק."""
+    width, height = 128, 64
+    mem = tmp_path / "fb.mem"
+    _memfb(mem, width, height, seq=2)
+    binary = _build(tmp_path)
+    monitor = Monitor(tmp_path, binary, extra=("--fb", str(mem)))
+    try:
+        with monitor.connect() as sock:
+            assert _handshake(sock) == (width, height)
+            first = _request_pixels(sock, width, height)
+            assert first[:3] == FIXTURE_BGRX[:3], first[:4].hex()
+
+            sock.sendall(struct.pack(">BBHHHH", 3, 1, 0, 0, width, height))
+            with open(mem, "r+b") as fb:
+                fb.seek(4096 + (40 * width + 100) * 4)
+                fb.write(bytes([0xAA, 0xBB, 0xCC, 0x00]))
+            sock.settimeout(0.8)
+            try:
+                early = sock.recv(1)
+            except socket.timeout:
+                early = b""
+            assert early == b"", "the monitor read and sent a frame whose seq did not move"
+
+            with open(mem, "r+b") as fb:
+                fb.seek(MEMFB_SEQ_AT)
+                fb.write(struct.pack("<I", 4))
+            sock.settimeout(5)
+            rects = _read_update(sock)
+    finally:
+        log = monitor.stop()
+    assert [(x, y, w, h) for x, y, w, h, _ in rects] == [(64, 32, TILE_W, TILE_H)], (
+        f"rects: {[(x, y, w, h) for x, y, w, h, _ in rects]}\nlog: {log[-1500:]}")
+    pixels = rects[0][4]
+    at = ((40 - 32) * TILE_W + (100 - 64)) * 4
+    assert pixels[at:at + 3] == bytes([0xAA, 0xBB, 0xCC]), pixels[at:at + 4].hex()
+
+
+# --- ‏#1475: מדידה — כמה עולה סריקה של 1920×1080 ----------------------------
+#
+# מיקרו-בנצ'מרק של לולאת הסריקה עצמה (`scan_tiles` מתוך monitor.c, מהודר
+# כמו שהוא) מול מה שהקוד הישן עשה בכל טיק (‏memcpy של כל הפריים). לא טסט
+# ביצועים עם סף הדוק — המספרים מודפסים לדוח (‏`-s`), והטסט נופל רק אם
+# סריקה של מסך שלא השתנה יקרה פי 4 מההעתקה שהחליפה.
+
+BENCH_C = REPO / "tests" / "monitor_scan_bench.c"
+
+
+@NATIVE
+def test_scan_cost_at_1920x1080_is_measured(tmp_path):
+    binary = tmp_path / "monitor-scan-bench"
+    cc = shutil.which("cc") or shutil.which("gcc")
+    build = subprocess.run(
+        [cc, "-O2", "-Wall", "-Wextra", "-I", str(REPO / "agent"), "-o", str(binary), str(BENCH_C),
+         str(HMAC_C), "-lvncserver"],
+        capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
+    assert build.returncode == 0, build.stderr
+    run = subprocess.run([str(binary)], capture_output=True, text=True,
+                         timeout=120, stdin=subprocess.DEVNULL)
+    assert run.returncode == 0, run.stdout + run.stderr
+    print(run.stdout)
+    got = dict(line.split("=", 1) for line in run.stdout.split() if "=" in line)
+    copy_us, unchanged_us = float(got["copy_us"]), float(got["scan_unchanged_us"])
+    assert float(got["scan_one_tile_us"]) > 0
+    assert unchanged_us < 4 * copy_us, run.stdout

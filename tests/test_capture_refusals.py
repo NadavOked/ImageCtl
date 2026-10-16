@@ -158,6 +158,13 @@ CURL_NO_SERVER = (
 JQ_STUB = '#!/bin/sh\nexec python "' + posix(Path(__file__).parent / "jq_shim.py") + '" "$@"\n'
 
 
+#: ‏#1466: קליטה עם כיווץ מריצה עכשיו גם את צד העותק בזיכרון (dmsetup, modprobe,
+#: ‏rmmod -- כעשרה תהליכים מזויפים). בווינדוס (Git Bash) זה 34-45 שניות לקליטה,
+#: נמדד 16/10 -- ממש על התקרה הכללית של 45, ולכן לקליטה תקרה משלה. היא עדיין
+#: תקרה: מסלול שנתקע נכשל כאן, לא תלוי לנצח.
+CAPTURE_TIMEOUT = 90
+
+
 def capture_run(tmp_path, *, present=True, image=GPT_DISK, stubs=None,
                 disk="sda", env=None, shell_pre="") -> tuple[Path, Path, str]:
     """מריץ את `capture_disk` האמיתי מול דיסק מזויף, ומחזיר (box, run, out).
@@ -221,8 +228,9 @@ def capture_run(tmp_path, *, present=True, image=GPT_DISK, stubs=None,
         f". {posix(AGENT)}/lib/ui.sh; . {posix(AGENT)}/lib/attended.sh; "
         # ‏#926: shrinkmem.sh — הרשומה בשרת לפני הכיווץ; נטען אחרי shrink.sh כמו בסוכן.
         # ‏#929: shrinkplan.sh (המדידה והשאלה) לפניו, shrinkoffer.sh (ההצעה באתחול) אחריו.
-        f". {posix(AGENT)}/lib/shrinkplan.sh; . {posix(AGENT)}/lib/shrink.sh; "
+        f". {posix(AGENT)}/lib/shrinkplan.sh; . {posix(AGENT)}/lib/shrink.sh; . {posix(AGENT)}/lib/lcsnap.sh; "   # #1466: the RAM view
         f". {posix(AGENT)}/lib/shrinkmem.sh; . {posix(AGENT)}/lib/shrinkoffer.sh; "
+        f". {posix(AGENT)}/lib/capturedetail.sh; "   # #1505: the console's partition table, loaded before capture.sh like the agent does
         f". {posix(AGENT)}/lib/capture.sh; . {posix(AGENT)}/lib/capturesink.sh; "   # #1217
         f'node_is_block() {{ grep -qxF "$1" {posix(nodes)!r} 2>/dev/null; }}; '
         # ‏shell_pre רץ **אחרי** שרשרת הטעינה, ולכן הוא יכול להחליף
@@ -230,7 +238,8 @@ def capture_run(tmp_path, *, present=True, image=GPT_DISK, stubs=None,
         + shell_pre
         + f"capture_disk {TASK} {disk} > {posix(box)}/capture.out 2>&1; "
         'echo "rc=$?"; '
-        f"build_progress '' {MAC} {TASK} > {posix(box)}/progress.json"
+        f"build_progress '' {MAC} {TASK} > {posix(box)}/progress.json",
+        timeout=CAPTURE_TIMEOUT,
     )
     return box, run, out
 
@@ -468,12 +477,16 @@ PIPE_INPUT = "#!/bin/sh\nhead -c 4096 /dev/zero\nexit 0\n"
 
 MIDPIPE_FAILURES = [
     ("zstd", "#!/bin/sh\ncat\nexit 7\n", 7),
-    ("pv", "#!/bin/sh\necho 0 >&2\ncat\necho 4096 >&2\nexit 8\n", 8),
+    # ‏#1438: fanout במקום pv|tee|sha256sum — מעביר הכול, מגבב, ויוצא 9.
     (
-        "tee",
+        "fanout",
         "#!/bin/sh\n"
-        "real=$(PATH=/usr/bin:/bin command -v tee)\n"
-        '"$real" "$@"\n'
+        "shift\n"
+        'tmp="$(mktemp)"\n'
+        'cat > "$tmp"\n'
+        'fanout_eof "$tmp"\n'
+        'cat "$tmp" > "$1"\n'
+        'rm -f "$tmp"\n'
         "exit 9\n",
         9,
     ),
@@ -483,7 +496,7 @@ MIDPIPE_FAILURES = [
 @pytest.mark.parametrize(("stage", "stub", "expected_rc"), MIDPIPE_FAILURES)
 def test_a_mid_pipeline_capture_failure_is_not_ingested(
         tmp_path, stage, stub, expected_rc):
-    """zstd/pv/tee שנפל אחרי שהזרים את כל הקלט היה נבלע: ב-ash אין
+    """zstd/fanout (לפני #1438: pv/tee) שנפל אחרי שהזרים את כל הקלט היה נבלע: ב-ash אין
     pipefail, ו-sha256sum יוצא 0 על קלט חלקי. האימג' הקטוע נרשם תקין."""
     box, run, out = capture_run(
         tmp_path,
@@ -496,7 +509,7 @@ def test_a_mid_pipeline_capture_failure_is_not_ingested(
     )
 
     reason = refusal_reason(box, run, out)
-    assert f"stage={stage}" in reason, reason
+    assert f"שלב={stage}" in reason, reason
     assert f"rc={expected_rc}" in reason, reason
     assert (run / f"{stage}.1.rc").read_text().strip() == str(expected_rc)
     assert not (run / "new-manifest.json").exists()

@@ -14,6 +14,7 @@ import json
 import logging
 import re
 import shutil
+import threading
 from pathlib import Path
 
 log = logging.getLogger("imagectl.images")
@@ -391,6 +392,13 @@ def validate_display_name(value: str, what: str = "השם") -> str:
     return text
 
 
+def _replace_json(path: Path, data: dict) -> None:
+    """כתיבה אטומית של manifest.json: קובץ זמני באותה תיקייה, ואז replace."""
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
 class ImageLibrary:
     def __init__(self, root: str | Path):
         self.root = Path(root)
@@ -402,6 +410,10 @@ class ImageLibrary:
         self._default_pointers = None
         self._invalid_reporter = None
         self._reported_invalid: set[tuple[str, str]] = set()
+        # ‏#1494: שני כותבים ל-manifest.json — עריכת שדות תצוגה והשלמת
+        # `used_bytes` מכותרת partclone. קריאה-שינוי-כתיבה של אחד בלי השני
+        # הייתה מוחקת את מה שהשני כתב (שינוי שם של המפעיל, למשל).
+        self._write_lock = threading.Lock()
 
     def bind_invalid_reporter(self, reporter) -> None:
         """Report each rejected on-disk manifest once to the operator journal."""
@@ -677,7 +689,7 @@ class ImageLibrary:
         ‏`min_free_gb` (‏#1354) — ההגדרה, כדי ש"נכנס לדיסק מ-X" יכלול אותה.
         """
         # ייבוא מקומי: ‏minfree ← imagefit ← images. במעלה הקובץ זה מעגל.
-        from .minfree import min_disk_bytes
+        from .minfree import min_disk_bytes, unchecked
         result = []
         scanned = self.scan()
         chosen = set(self.defaults(scanned).values())
@@ -700,6 +712,9 @@ class ImageLibrary:
                     "min_target_bytes": min_disk_bytes(manifest, min_free_gb),
                     "layout_bytes": required_bytes(manifest),
                     "min_free_gb": min_free_gb,
+                    # ‏#1494: הכלל אינו ניתן לבדיקה (‏`used_bytes` של מחיצת
+                    # המערכת לא נמדד) — הסוכן יסרב בכל מגירה. מחרוזת הסוכן, או None.
+                    "min_free_unchecked": unchecked(manifest, min_free_gb),
                     "used_bytes": used_bytes_total(manifest),
                     "total_compressed_bytes": manifest.get("total_compressed_bytes", 0),
                     "partitions": len(manifest.get("partitions") or []),
@@ -737,10 +752,14 @@ class ImageLibrary:
         if not manifest.get("_dir") or not manifest.get("_available", True):
             raise ValueError("האימג' לא זמין — המיקום אינו נגיש")
         path = Path(manifest["_dir"]) / "manifest.json"
+        with self._write_lock:
+            return self._write_meta_locked(path, changes)
+
+    def _write_meta_locked(self, path: Path, changes: dict) -> bool:
         raw = json.loads(path.read_text(encoding="utf-8"))
         for key, value in changes.items():
             if key not in self.EDITABLE_FIELDS:
-                raise ValueError(f"field not editable: {key}")
+                raise ValueError(f"השדה {key} אינו ניתן לעריכה")
             # ‏`folder` ריק לגיטימי — אימג' שאינו בתיקייה. ‏`name` ריק
             # אינו: אימג' בלי שם אינו ניתן לבחירה במסך התחנה, והוא
             # היה עובר כאן בשקט כי התנאי הקודם דילג על ערך ריק.
@@ -750,10 +769,49 @@ class ImageLibrary:
                 value = validate_display_name(
                     str(value), "שם האימג'" if key == "name" else "שם התיקייה")
             raw[key] = value
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(path)
+        _replace_json(path, raw)
         return True
+
+    #: ‏#1494: המקור של `used_bytes` שלא נמדד בקליטה אלא נגזר אחריה.
+    USED_BYTES_SOURCES = ("partclone_header",)
+
+    def record_used_bytes(self, image_id: str, values: dict[int, int], source: str) -> list[int]:
+        """משלים `used_bytes` למחיצות שלא נמדדו בקליטה (‏#1494) — ורק להן.
+
+        ‏`values` = ‏{index: בייטים}. נכתב ל-manifest.json עצמו (עיקרון 3: הדיסק
+        הוא מקור האמת, והסוכן קורא את `used_bytes` מהמניפסט שהשרת מגיש),
+        אטומית, ולצד כל ערך `used_bytes_source` — ערך נגזר אינו מתחזה למדידה.
+        מחיצה שכבר יש לה `used_bytes` אינה נדרסת. מניפסט שהשינוי היה הופך
+        לפסול בעיני `_validate` (למשל `used_bytes` גדול מהמחיצה) — אינו נכתב
+        כלל, כי אימג' פסול נעלם מהספרייה. מחזיר את האינדקסים שנכתבו.
+        """
+        if source not in self.USED_BYTES_SOURCES:
+            raise ValueError(f"unknown used_bytes source: {source}")
+        manifest = self.get(image_id)
+        if manifest is None or not manifest.get("_dir") or not manifest.get("_available", True):
+            return []
+        path = Path(manifest["_dir"]) / "manifest.json"
+        with self._write_lock:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            written = []
+            for part in raw.get("partitions") or []:
+                if not isinstance(part, dict) or part.get("used_bytes") is not None:
+                    continue
+                index = _whole(part.get("index"))
+                value = values.get(index) if index is not None else None
+                if _whole(value) is None:
+                    continue
+                part["used_bytes"] = value
+                part["used_bytes_source"] = source
+                written.append(index)
+            if not written:
+                return []
+            problem = self._validate(raw)
+            if problem:
+                log.warning("not recording used_bytes for %s: %s", image_id, problem)
+                return []
+            _replace_json(path, raw)
+            return sorted(written)
 
     def delete(self, image_id: str) -> bool:
         """מוחק את תיקיית האימג' כולה. האישור בהקלדת שם — אצל הקורא."""

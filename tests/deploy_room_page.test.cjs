@@ -129,7 +129,11 @@ test('no round: header counters, "no round" pill, Start-round window action, WoL
   const form=run('roomNewWindow(roomMachines())');
   assert.match(form,/aria-pressed="true"[^>]*>מהשרת \(הספרייה\)/); assert.match(form,/aria-pressed="false"[^>]*>מדיסק מחשב בנייה \(הפצה ישירה\)/,'a builder that reported disks → #715 offered');
   assert.match(form,/<select id="rn-image"/); assert.match(form,/<input type="number" id="rn-target" min="1" value="5"/,'default target = the ready drawers, like the GUI (5 awake)');
-  assert.match(form,/openRoomRoundSubmit\(\)"[^>]*>פתח סבב/); assert.match(form,/ברירת המחדל = 5 מגירות מוכנות/); assert.match(form,/id="rn-version"><option>גרסה נוכחית · מסומנת/);   // אפשרות אחת, לא מנוטרל (README §8)
+  assert.doesNotMatch(form,/openRoomRoundSubmit/,'#1485 (S350): the primary action is in the window footer, not at the end of the body');
+  run('openRoomRound()');
+  assert.equal(run("document.getElementById('modalOk').textContent"),'פתח סבב'); assert.equal(run("document.getElementById('modalOk').disabled"),true,'nothing ticked → the footer action waits');
+  assert.equal(run("document.getElementById('modalHint').textContent"),'יש לסמן לפחות דיסק אחד'); assert.match(run("document.getElementById('modalHint').className"),/rn-sum need/);
+  assert.match(form,/ברירת המחדל = 5 מגירות מוכנות/); assert.match(form,/id="rn-version"><option>גרסה נוכחית · מסומנת/);   // אפשרות אחת, לא מנוטרל (README §8)
   assert.equal(run('typeof formOptions'),'undefined');
   // הגריד עד סוף הכרטיס (`UI.card`) — לא לפי ספירת </div>: כרטיס בלי פעולות נסגר מוקדם יותר
   const grid=between(html,'<div class="mgrid">','<div class="c12 rnotes">')||between(html,'<div class="mgrid">');
@@ -170,7 +174,21 @@ test('#1354: when the minimum free space is what makes an image too big, the rea
   assert.equal(run(`imageFitReason({min_target_bytes:300e9,layout_bytes:300e9,min_free_gb:20},${floor})`),
     "דיסק 3 במחשב מחשב 2 הוא 256GB, האימג' צריך 300GB", 'the layout alone is too big: no suffix');
   assert.equal(run(`imageFitReason({min_target_bytes:null,layout_bytes:242553716736,min_free_gb:20},${floor})`), null,
-    'C: not measured: the agent refuses it by name ("not checked"), as the server does');
+    'C: not measured is not a SIZE refusal -- imageDeployBlock (#1494) blocks it by the agent\'s name ("not checked")');
+});
+
+test('#1494: an image the agent cannot check for free space (C: used_bytes not measured) is disabled with the agent\'s reason -- not offered as "size unknown", with or without a known floor', () => {
+  const {run}=setup();
+  const why="לא נבדק אם יישארו 20GB פנויים ב-C: — לא נמדד כמה תפוס בה (used_bytes חסר)";
+  run(`IMAGES[2].min_free_unchecked=${JSON.stringify(why)}`);
+  run("roomFormSet('folder','-')");
+  let html=run('roomNewWindow(roomMachines())');
+  assert.match(html,/<option value="img_3" disabled>kali · גודל נדרש לא ידוע — לא ניתן לפרוס: לא נבדק אם יישארו 20GB פנויים ב-C: — לא נמדד כמה תפוס בה \(used_bytes חסר\)<\/option>/);
+  assert.match(html,/<option value="img_1">office365 · נכנס לדיסק מ-54 GB<\/option>/,'a measured image is untouched');
+  run('delete ROOM.disk_floor'); html=run('roomNewWindow(roomMachines())');
+  assert.match(html,/<option value="img_3" disabled>/,'no floor known: still disabled -- the refusal does not depend on drawer size');
+  assert.equal(run('imageDeployBlock(IMAGES[0])'),null);
+  assert.equal(run('imageDeployBlock({min_free_unchecked:null})'),null);
 });
 
 test('folder-first image pick (like the GUI): folders with counts first, the image list is disabled until one is chosen and shows only that folder; a chosen image decides the folder; changing folder clears the image', () => {
@@ -244,7 +262,7 @@ test('#447: the wave rate line names the drive that lowered it; without wave_rat
   let k1=setup({room:roomRunning({wave_rate:learned})}).run('deploy(0)');
   assert.match(k1,/קצב לגל: <bdi dir="ltr">108m<\/bdi> \(נקבע לפי 870 EVO <span class="mono">S5Y31<\/span> · מחשב 2 דיסק 2\) · 2 כוננים בלי היסטוריה/);
   k1=setup({room:roomRunning({wave_rate:{...learned,basis:'start',max_bitrate:'600m',by:null,unknown_drives:0,projected:true}})}).run('deploy(0)');
-  assert.match(k1,/צפוי קצב לגל: <bdi dir="ltr">600m<\/bdi> \(קצב פתיחה — אין גל קודם עם אותם כוננים\)/);
+  assert.match(k1,/צפוי קצב לגל: <bdi dir="ltr">600m<\/bdi> \(קצב פתיחה — מחשב שיכפול בלי גל קודם\)/);
   assert.doesNotMatch(k1,/בלי היסטוריה/);
   /* the automatic rate (Nadav 11/10): the reason the server moved — no new control, only the reason */
   for (const [basis,rate,why] of [['up','700m','עלה — הגל הקודם נקי'],['down','450m','ירד — שידורים חוזרים'],
@@ -255,6 +273,33 @@ test('#447: the wave rate line names the drive that lowered it; without wave_rat
   }
   k1=setup({room:roomRunning()}).run('deploy(0)');
   assert.doesNotMatch(k1,/קצב לגל/,'no wave_rate (old server, build-machine source) → no invented line');
+});
+
+test('Nadav 15/10: the wave rate line says the deploy card and the ceiling it gives; an unread card is said, never guessed', () => {
+  const w={max_bitrate:'6000m',ceiling:'9000m',start:'6000m',basis:'start',by:null,projected:true,unknown_drives:0,drives:4,
+    link:{interface:'eth1',speed_mbps:10000,why:null,applied:true}};
+  let k1=setup({room:roomRunning({wave_rate:w})}).run('deploy(0)');
+  assert.ok(k1.includes('כרטיס ההפצה: <bdi dir="ltr">10Gb/s</bdi> · תקרת שידור: <bdi dir="ltr">1.1GB/s</bdi>'),k1.slice(0,400));
+  k1=setup({room:roomRunning({wave_rate:{...w,ceiling:'2250m',link:{...w.link,speed_mbps:2500}}})}).run('deploy(0)');
+  assert.ok(k1.includes('כרטיס ההפצה: <bdi dir="ltr">2.5Gb/s</bdi> · תקרת שידור: <bdi dir="ltr">281MB/s</bdi>'));
+  k1=setup({room:roomRunning({wave_rate:{...w,ceiling:'900m',max_bitrate:'600m',link:{interface:'ens192',speed_mbps:null,why:'virtual',applied:false}}})}).run('deploy(0)');
+  assert.ok(k1.includes('כרטיס ההפצה: <span title="virtual">כרטיס וירטואלי — המהירות אינה של הקו</span> · תקרת שידור: <bdi dir="ltr">113MB/s</bdi>'));
+  assert.doesNotMatch(k1,/1Gb\/s/,'an unread card is never shown as 1Gb/s');
+  k1=setup({room:roomRunning({wave_rate:{...w,link:undefined}})}).run('deploy(0)');
+  assert.doesNotMatch(k1,/כרטיס ההפצה/,'no link (old server, build-machine source) → no invented line');
+});
+
+test('Nadav 15/10 (b): the slowest cloner that set the cap is named; an assumed 1Gb/s says it is an assumption', () => {
+  const w={max_bitrate:'600m',ceiling:'900m',start:'600m',basis:'start',by:null,projected:true,unknown_drives:0,drives:4,cap_by:'cloner',
+    link:{interface:'eth1',speed_mbps:10000,why:null,applied:true},
+    cloner:{mac:C2,speed_mbps:1000,source:'reported',why:null,assumed:[]}};
+  let k1=setup({room:roomRunning({wave_rate:w})}).run('deploy(0)');
+  assert.ok(k1.includes('כרטיס ההפצה: <bdi dir="ltr">10Gb/s</bdi> · תקרה לפי מחשב 2: <bdi dir="ltr">1Gb/s</bdi> · תקרת שידור: <bdi dir="ltr">113MB/s</bdi>'));
+  assert.doesNotMatch(k1,/הנחה/);
+  k1=setup({room:roomRunning({wave_rate:{...w,cloner:{...w.cloner,source:'assumed',why:'no_probe',assumed:[C2]}}})}).run('deploy(0)');
+  assert.ok(k1.includes('תקרה לפי מחשב 2: <bdi dir="ltr">1Gb/s</bdi> (הנחה — המהירות לא ידועה)'));
+  k1=setup({room:roomRunning({wave_rate:{...w,cap_by:'server'}})}).run('deploy(0)');
+  assert.doesNotMatch(k1,/תקרה לפי/,'the server card set the cap — no cloner is blamed');
 });
 
 test('running wave: the grid is the cloners grid in round mode — write bars, blue writing, orange CRC, red failed drawer; machine "in round · N%"; the notes say what happens without an answer', () => {
@@ -576,10 +621,10 @@ test('#1275 pick grid: one card per cloner and one checkbox label per present di
   assert.equal((g.match(/type="checkbox"/g)||[]).length,5,'every present drawer uses a real checkbox');
   assert.doesNotMatch(g,/class="dk[^"]* sel/,'no default selection');
   assert.match(g,/דיסק 1<\/span><span class="dk-sz"><bdi[^>]*>256GB<\/bdi>/,'rows use the existing marketed disk size helper');
-  assert.match(g,/<span class="pill ok">נכנס<\/span>/,'green uses the console pill style');
-  assert.match(g,/<span class="pill warn">אזהרה<\/span>/,'warning uses the console pill style');
+  assert.match(g,/<span class="n-chip">נכנס<\/span>/,'green: the mockup pill (n-chip — the window is not .page)');
+  assert.match(g,/<span class="n-chip w">אזהרה<\/span>/,'warning: orange chip');
   assert.match(g,/5 מגירות ניתנות לבחירה/); assert.match(g,/בחר הכול/); assert.match(g,/נקה הכול/);
-  assert.match(html,/<span class="rn-sum need" aria-live="polite">יש לסמן לפחות דיסק אחד<\/span><button class="btn primary" onclick="openRoomRoundSubmit\(\)" disabled>/);
+  assert.deepEqual(JSON.parse(run('JSON.stringify(roomSubmitState(roomMachines()))')),{n:0,text:'יש לסמן לפחות דיסק אחד'},'the footer summary; the action is disabled until a disk is ticked');
   assert.match(pcard(html,C3),/כבוי · יידלק ב-WoL/);
 });
 
@@ -589,12 +634,13 @@ test('#1275 pick grid: selection keeps warning colour, adds blue selection state
   const c2=pcard(html,C2);
   assert.match(c2,new RegExp(`class="dk st-w sel" data-key="${C2}@2"><input class="dk-in" type="checkbox" checked`),'selected warning keeps orange class and gains selection');
   assert.match(c2,/<b>1<\/b> מתוך 3 נבחרו/); assert.match(c2,/class="dk st-g" data-key=/);
-  assert.match(html,/נבחרו 1 דיסקים ב-1 מחשבים · משוער 5 גלים/); assert.doesNotMatch(html,/openRoomRoundSubmit\(\)" disabled/);
+  assert.equal(run('roomSubmitState(roomMachines()).text'),'נבחרו דיסק 1 ב-מחשב 1 · משוער 5 גלים'.replace('דיסק 1','1 דיסק').replace('מחשב 1','1 מחשב'));
+  run('openRoomRound()'); assert.equal(run("document.getElementById('modalOk').disabled"),false,'a ticked disk enables the footer action');
   run(`roomPick('${C2}@2')`); assert.doesNotMatch(pcard(run('roomNewWindow(roomMachines())'),C2),/st-w sel/,'second click clears');
   run(`roomPickMachine('${C2}')`); html=run('roomNewWindow(roomMachines())'); assert.match(pcard(html,C2),/<b>2<\/b> מתוך 3 נבחרו/,'machine select-all skips orange');
   run(`roomPickClearMachine('${C2}')`); assert.match(pcard(run('roomNewWindow(roomMachines())'),C2),/<b>0<\/b> מתוך 3 נבחרו/);
-  run('roomPickAll()'); assert.match(run('roomNewWindow(roomMachines())'),/נבחרו 4 דיסקים ב-2 מחשבים/,'room select-all selects green only');
-  run('roomPickClearAll()'); assert.match(run('roomNewWindow(roomMachines())'),/יש לסמן לפחות דיסק אחד/);
+  run('roomPickAll()'); assert.match(run('roomSubmitState(roomMachines()).text'),/נבחרו 4 דיסקים ב-2 מחשבים/,'room select-all selects green only');
+  run('roomPickClearAll()'); assert.equal(run('roomSubmitState(roomMachines()).n'),0);
 });
 
 test('#1275 safety: off, empty, unidentified, and red drawers cannot be ticked; red checkbox is disabled', () => {
@@ -604,14 +650,14 @@ test('#1275 safety: off, empty, unidentified, and red drawers cannot be ticked; 
   room.machines[1].drawer_list=[drawer('sda',1,'S5Y30',{smart:'fail',smart_reason:'pending_sectors'})];                     // חריצים 2,3 ריקים
   const {run}=setup({room});
   run(`roomPick('${C3}@1'); roomPick('${C2}@2'); roomPick('${C2}@3'); roomPick('${C1}@2')`);   // כולם נדחים
-  const html=run('roomNewWindow(roomMachines())'); balanced(html); assert.match(html,/יש לסמן לפחות דיסק אחד/,'nothing selectable was selected');
+  const html=run('roomNewWindow(roomMachines())'); balanced(html); assert.equal(run('roomSubmitState(roomMachines()).n'),0,'nothing selectable was selected');
   const c1=pcard(html,C1);
   assert.match(c1,new RegExp(`class="dk st-d" data-key="${C1}@1"><input class="dk-in" type="checkbox" disabled`),'red is a disabled checkbox');
-  assert.match(c1,/<span class="pill err">לא ניתן לסימון<\/span>/,'red uses the console pill style');
+  assert.match(c1,/<span class="n-chip d">לא ניתן לסימון<\/span>/,'red: the red chip');
   assert.match(c1,new RegExp(`data-key="${C1}@2"><input class="dk-in" type="checkbox" disabled`),'no serial → disabled'); assert.match(c1,/class="dk-sz"><bdi[^>]*>—<\/bdi>/);
   assert.equal((pcard(html,C2).match(/class="dk st-e"/g)||[]).length,2,'two dashed empty slots');
   assert.match(pcard(html,C2),/class="dk st-w"[^>]*>[\s\S]*ה-BIOS יעצור ב-F1 — SMART: סקטורים ממתינים \(197\)/,'#1366: SMART F1 is orange and uses smart_reason');
-  run(`roomPick('${C1}@1')`); assert.match(run('roomNewWindow(roomMachines())'),/יש לסמן לפחות דיסק אחד/,'red cannot enter selection state');
+  run(`roomPick('${C1}@1')`); assert.equal(run('roomSubmitState(roomMachines()).n'),0,'red cannot enter selection state');
 });
 
 test('#1366 start-round colours: CRC/F1/link are orange; slow write preflight is red and cannot be ticked', () => {

@@ -74,7 +74,10 @@ async def finish_login(conn, request: Request, response: Response, *,
         auth.attach_cookie(response, conn, stored, role, tls)
         users.record_login(conn, stored, ip)
         journal(conn, "login", "kiosk", stored)
-        return {"username": stored, "role": role, "idle_seconds": _idle(conn)}
+        # ‏#1499 (נדב 16/10): ערכת הנושא השמורה של המשתמש — ה-GUI הנייטיבי
+        # של מחשב הבנייה נפתח בה. ‏auto/light/dark; ‏auto = ברירת המחדל (בהיר).
+        return {"username": stored, "role": role, "idle_seconds": _idle(conn),
+                "theme": users.get_theme(conn, stored)}
 
     if info["must_change_password"]:
         auth.attach_cookie(response, conn, stored, role, tls,

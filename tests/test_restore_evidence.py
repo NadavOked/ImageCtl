@@ -292,7 +292,7 @@ def test_apply_gpt_restores_partition_attribute_bits(tmp_path):
     out = sh(prelude + 'apply_gpt sda m.json; echo "rc=$?"')
     assert rc_of(out) == "rc=0", out
     calls = (box / "sgdisk.calls").read_text().splitlines()
-    creates = [line for line in calls if line.startswith("-n ")]
+    creates = [line for line in calls if line.startswith("-a 1 -n ")]
     assert len(creates) == len(plan)
     for index, call in enumerate(creates, 1):
         assert f"-A {index}:=:0x{attrs}" in call, call
@@ -365,7 +365,7 @@ def test_a_malformed_full_plan_fails_the_named_target_without_zapping(tmp_path, 
 
     assert rc_of(out) == "rc=1", out
     assert (run / "targets" / "sda" / "state").read_text().strip() == "failed"
-    assert "disk untouched" in (run / "targets" / "sda" / "error").read_text()
+    assert "הדיסק לא שונה" in (run / "targets" / "sda" / "error").read_text(encoding="utf-8")
     calls = (box / "sgdisk.calls").read_text() if (box / "sgdisk.calls").exists() else ""
     assert not any("--zap-all" in line and "--pretend" not in line for line in calls.splitlines())
 
@@ -405,7 +405,7 @@ def test_a_table_the_kernel_never_took_stops_it_before_the_first_byte(tmp_path):
     out = sh(restore_run(prelude))
     assert rc_of(out) == "rc=1", out
     assert state_of(run) == "failed"
-    assert target_error(run) == "could not write the partition table"
+    assert target_error(run) == "לא הצלחנו לכתוב את טבלת המחיצות"
     assert wrote(run) == []
 
 
@@ -417,7 +417,7 @@ def test_done_is_decided_by_the_count_and_not_by_the_absence_of_a_failure(tmp_pa
     assert rc_of(out) == "rc=1", out
     assert state_of(run) == "failed"
     # ‏#845: אחרי הסיבה מצטרפת תוצאת הסימון על הדיסק, ולכן startswith.
-    assert target_error(run).startswith("wrote 2 of 3 partitions"), target_error(run)
+    assert target_error(run).startswith("נכתבו 2 מתוך 3 מחיצות"), target_error(run)
     assert wrote(run) == ["1", "2", "3"]
 
 
@@ -548,8 +548,8 @@ def test_a_disk_too_small_says_by_how_much(tmp_path):
     out = sh(prelude + 'disk_fits sda m.json; echo "rc=$?"')
     assert rc_of(out) == "rc=1", out
     err = target_error(run)
-    assert err.startswith("disk too small by 2 MiB"), err
-    assert "1744896 bytes short" in err and "needs 256062259200" in err, err
+    assert err.startswith("הדיסק קטן מדי ב-2 MiB"), err
+    assert "חסרים 1744896 בייט" in err and "נדרשים 256062259200 בייט" in err, err
     assert state_of(run / "targets" / "sda") == "failed"
 
 

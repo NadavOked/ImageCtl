@@ -28,7 +28,8 @@ def run_idle(tmp_path: Path, setup: str, script: str) -> str:
         f'export RUN_DIR={posix(run)!r} IDLE_POWEROFF_S=2 IDLE_WARN_S=1; '
         f'. {posix(LIB)}/common.sh; . {posix(LIB)}/idle.sh; '
         f'log() {{ printf "%s\\n" "$*"; }}; sync() {{ :; }}; '
-        f'poweroff() {{ printf "POWEROFF %s\\n" "$*" >> {posix(calls)!r}; }}; '
+        # #1483: poweroff -f does not return -- one that returns is a failed power-off
+        f'poweroff() {{ printf "POWEROFF %s\\n" "$*" >> {posix(calls)!r}; exit 0; }}; '
         f'reboot() {{ printf "REBOOT %s\\n" "$*" >> {posix(calls)!r}; }}; '
         'arm_wol() { return 0; }; '
         + setup + '; ' + script
@@ -43,7 +44,7 @@ def test_idle_past_the_threshold_warns_then_powers_off(tmp_path):
     out, calls = run_idle(tmp_path, _since(tmp_path, 10), "idle_check")
     assert "power-off in 1s unless a key is pressed" in out
     assert "no activity for 2s: powering off with wake-on-LAN armed" in out
-    assert calls.read_text(encoding="utf-8") == "POWEROFF \n"
+    assert calls.read_text(encoding="utf-8") == "POWEROFF -f\n"
 
 
 def test_a_key_press_during_the_countdown_cancels_it(tmp_path):
@@ -82,6 +83,16 @@ def test_without_wol_the_machine_stays_on_and_says_so(tmp_path):
     assert not calls.exists()
 
 
+def test_a_poweroff_that_returns_is_logged_with_its_rc_not_taken_as_off(tmp_path):
+    """#1483, metal 16/10 (cloner 2): "powering off with wake-on-LAN armed"
+    every ~45 s and the machine stayed up -- poweroff came back and nothing
+    said so. A return is a failure, logged with its rc; the clock restarts."""
+    out, calls = run_idle(tmp_path, _since(tmp_path, 10) + '; poweroff() { echo "POWEROFF $*"; return 3; }',
+                          "idle_check; echo rc=$?")
+    assert "POWEROFF -f" in out, out
+    assert "poweroff -f returned rc=3 -- the machine is still on" in out and "rc=1" in out, out
+
+
 def test_the_clock_beats_only_in_poll_sleep_and_the_failure_hold_never_reaches_it():
     poll = (LIB / "poll.sh").read_text(encoding="utf-8")
     assert "command -v idle_check >/dev/null 2>&1 && idle_check" in poll
@@ -110,7 +121,7 @@ def test_a_console_poweroff_in_the_answer_powers_off_a_busy_waiting_machine(tmp_
     out, calls = run_idle(tmp_path, _since(tmp_path, 0) + "; " + _PA
                           + '; echo poweroff > "$RUN_DIR/pa"', "idle_check")
     assert "the console asked to power off: powering off with wake-on-LAN armed" in out
-    assert calls.read_text(encoding="utf-8") == "POWEROFF \n"
+    assert calls.read_text(encoding="utf-8") == "POWEROFF -f\n"
 
 
 def test_a_console_poweroff_without_wol_stays_on_and_says_so(tmp_path):

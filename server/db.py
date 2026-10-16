@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS machines (
     note     TEXT NOT NULL DEFAULT '',
     drawer_count INTEGER NOT NULL DEFAULT 3    -- מספר המגירות/פורטים שהוגדר במסוף
                  CHECK (drawer_count BETWEEN 1 AND 8),
+    drawer_slots TEXT,                    -- NULL = drawer k is sata:k
     added_at TEXT NOT NULL
 );
 
@@ -315,7 +316,8 @@ CREATE TABLE IF NOT EXISTS net_devices (
     description TEXT NOT NULL DEFAULT '',
     first_seen  TEXT,
     last_seen   TEXT,
-    disks_json  TEXT                    -- הדיסקים מה-hello האחרון, כפי שדווחו
+    disks_json  TEXT,                   -- הדיסקים מה-hello האחרון, כפי שדווחו
+    optical_json TEXT                   -- NULL = the agent never reported optical drives
 );
 
 -- בריאות ה-SMART וההכרעה על כל דיסק יעד בסבב שחזור (#652). שורה אחת
@@ -643,6 +645,8 @@ ADDED_COLUMNS = [
     # מספר המגירות שהוגדר לכל מחשב שכפול במסוף (#695).
     ("machines", "drawer_count",
      "INTEGER NOT NULL DEFAULT 3 CHECK (drawer_count BETWEEN 1 AND 8)"),
+    ("machines", "drawer_slots", "TEXT"),
+    ("net_devices", "optical_json", "TEXT"),
     # בחירת דיסקי היעד לסבב, לכל מכונה. NULL = סבב ישן (התנהגות "כל הדיסקים").
     # '[]' הוא בחירה ריקה מפורשת ואינו חוקי לסבב חדש (#695).
     ("room_rounds", "target_slots_json", "TEXT"),
@@ -698,6 +702,10 @@ ADDED_COLUMNS = [
     # אליו. NULL = לא דווח (סוכן ישן, או משימה שטרם החלה) — לא "שלב ראשון".
     ("tasks", "stage", "TEXT"),
     ("tasks", "stage_started_at", "TEXT"),
+    # ‏#1470: האימות ברקע אחרי הקליטה — בייטים שנקראו שוב מהדיסק מתוך הסך.
+    # ‏NULL = המשימה לא הגיעה לאימות (כל שורה שקדמה למיגרציה), לא "אפס".
+    ("tasks", "verify_bytes", "INTEGER"),
+    ("tasks", "verify_total", "INTEGER"),
     # ‏#740: חומר האמון הבין-שרתי על הראשי. NULL בשורות משני שקדמו ל-#740
     # (נרשמו לפני שכבת ה-mTLS) — הן תצוגה בלבד עד שנרשמות מחדש. שורה
     # חדשה מ-``enroll_node`` ממלאת את כולן.
@@ -1234,7 +1242,9 @@ def _net_seen_unchanged(row: sqlite3.Row, ip: str | None,
                         firmware: str | None = None,
                         secure_boot: int | None = None,
                         agent_version: str | None = None,
-                        local_clone: str | None = None) -> bool:
+                        local_clone: str | None = None,
+                        optical_json: str | None = None,
+                        update_optical: bool = False) -> bool:
     """האם השורה כבר אומרת בדיוק את מה שהכתיבה הזו הייתה כותבת.
 
     ראיה חיובית בלבד (עיקרון 5): חותמת שאי אפשר לפענח, חותמת בלי אזור
@@ -1253,6 +1263,8 @@ def _net_seen_unchanged(row: sqlite3.Row, ip: str | None,
     if prompt != row["prompt"]:   # #906: גם המעבר שאלה→אין-שאלה נכתב
         return False
     if local_clone != row["local_clone"]:   # #1367: גם הסוף שלו נכתב
+        return False
+    if update_optical and optical_json != row["optical_json"]:
         return False
     if disk_probe is not None and disk_probe != row["disk_probe"]:   # #402
         return False
@@ -1283,6 +1295,8 @@ def net_seen(
     secure_boot: int | None = None,
     agent_version: str | None = None,
     local_clone: str | None = None,
+    optical_json: str | None = None,
+    update_optical: bool = False,
 ) -> None:
     """כל מגע של מכונה עם השרת — hello או תפריט אתחול — נרשם כאן.
 
@@ -1305,13 +1319,16 @@ def net_seen(
     now = datetime.now(timezone.utc)
     row = conn.execute(
         "SELECT ip, last_seen, disks_json, monitor_secret, monitor_auth, prompt,"
-        " disk_probe, firmware, secure_boot, agent_version, local_clone FROM net_devices WHERE mac = ?", (mac,)
+        " disk_probe, firmware, secure_boot, agent_version, local_clone, optical_json"
+        " FROM net_devices WHERE mac = ?", (mac,)
     ).fetchone()
     if row is not None and _net_seen_unchanged(row, ip, disks_json, now,
                                                monitor_secret, monitor_auth,
                                                prompt, disk_probe,
                                                firmware, secure_boot, agent_version,
-                                               local_clone=local_clone):
+                                               local_clone=local_clone,
+                                               optical_json=optical_json,
+                                               update_optical=update_optical):
         return
 
     ts = now.isoformat(timespec="seconds")
@@ -1324,8 +1341,8 @@ def net_seen(
         conn.execute(
             "INSERT INTO net_devices (mac, ip, first_seen, last_seen, disks_json,"
             " monitor_secret, monitor_auth, prompt, disk_probe, firmware, secure_boot, agent_version,"
-            " local_clone)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            " local_clone, optical_json)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (mac) DO UPDATE SET ip = COALESCE(excluded.ip, ip),"
             " last_seen = ?, disks_json = COALESCE(excluded.disks_json, disks_json),"
             " monitor_secret = COALESCE(excluded.monitor_secret, monitor_secret),"
@@ -1333,12 +1350,14 @@ def net_seen(
             " THEN excluded.monitor_auth ELSE monitor_auth END,"
             " prompt = excluded.prompt,"
             " local_clone = excluded.local_clone,"   # #1367: always, like prompt
+            " optical_json = CASE WHEN ? THEN excluded.optical_json ELSE optical_json END,"
             " disk_probe = COALESCE(excluded.disk_probe, disk_probe),"
             " firmware = COALESCE(excluded.firmware, firmware),"
             " secure_boot = COALESCE(excluded.secure_boot, secure_boot),"
             " agent_version = COALESCE(excluded.agent_version, agent_version)",
             (mac, ip, ts, ts, disks_json, monitor_secret, monitor_auth, prompt,
-             disk_probe, firmware, secure_boot, agent_version, local_clone, ts),
+             disk_probe, firmware, secure_boot, agent_version, local_clone, optical_json,
+             ts, int(update_optical)),
         )
 
 

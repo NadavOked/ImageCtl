@@ -5,7 +5,12 @@ const Progress = (() => {
   function view(task) {
     let read = task.bytes_written, total = task.bytes_total, suffix = "";
     const source = task.source_progress;
-    if (source && Number.isInteger(source.partition) && source.partition > 0 &&
+    // ‏#1470: קליטה `verifying` — ההתקדמות היא הקריאה החוזרת מדיסק השרת, לא ההעלאה.
+    if (task.state === "verifying" && count(task.verify_bytes) && count(task.verify_total) && task.verify_total > 0) {
+      read = task.verify_bytes;
+      total = task.verify_total;
+      suffix = " · אימות";
+    } else if (source && Number.isInteger(source.partition) && source.partition > 0 &&
         count(source.blocks_read) && count(source.blocks_total) && source.blocks_total > 0 &&
         source.blocks_read <= source.blocks_total) {
       read = source.blocks_read;

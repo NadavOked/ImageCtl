@@ -76,11 +76,8 @@ monitor_start() {
         kill -0 "$_monitor_pid" 2>/dev/null && return 0
 
     case "${D_ROLE:-}" in
-        build)
+        build|cloner)   # #1454: a cloner has a keyboard and mouse too (owner 16/10)
             _monitor_input=--input
-            ;;
-        cloner)
-            _monitor_input=
             ;;
         classroom)
             # Deliberate future gate: classroom monitoring is not built.
@@ -115,19 +112,48 @@ monitor_start() {
     # draws into $RUN_DIR/fb.mem and the monitor serves that file. Until the
     # GUI has created it there is nothing to serve; the poll loop calls back
     # here every round, so wait quietly rather than restart-loop a FATAL.
+    # #1475: with a screen too, the GUI mirrors every frame into the same
+    # file (--fb-mirror, guibridge.sh): RAM, plus a seqlock that says when
+    # nothing changed. Serving /dev/fb0 itself is a full read of
+    # write-combined video memory on every tick -- 60% of a hardware thread
+    # on cloner 2 during a local clone (owner, 16/10). So fb.mem wins
+    # whenever it is there; /dev/fb0 only when no mirror has appeared within
+    # MONITOR_MIRROR_WAIT_S (a GUI that never started), and the log says so.
     _monitor_fb=
-    if [ ! -c "$FB_DEV" ]; then
-        [ -s "$RUN_DIR/fb.mem" ] || {
+    if [ -s "$RUN_DIR/fb.mem" ]; then
+        _monitor_fb="--fb $RUN_DIR/fb.mem"
+    elif [ ! -c "$FB_DEV" ]; then
+        [ "${_monitor_wait_logged:-0}" = 1 ] ||
+            log "monitor: no $FB_DEV; waiting for the GUI's fb.mem"
+        _monitor_wait_logged=1
+        return 1
+    else
+        _mnow=$(date +%s)
+        case "$_mnow" in
+            ''|*[!0-9]*) _mnow= ;;
+        esac
+        [ -n "${_monitor_mirror_since:-}" ] || _monitor_mirror_since=$_mnow
+        if [ -n "$_mnow" ] && [ -n "$_monitor_mirror_since" ] &&
+           [ $((_mnow - _monitor_mirror_since)) -lt "${MONITOR_MIRROR_WAIT_S:-60}" ]; then
             [ "${_monitor_wait_logged:-0}" = 1 ] ||
-                log "monitor: no $FB_DEV; waiting for the GUI's fb.mem"
+                log "monitor: waiting for the GUI's frame mirror $RUN_DIR/fb.mem"
             _monitor_wait_logged=1
             return 1
-        }
-        _monitor_fb="--fb $RUN_DIR/fb.mem"
+        fi
+        log "monitor: no frame mirror from the GUI; serving $FB_DEV directly" \
+            "(a full video-memory read every tick)"
     fi
 
-    # shellcheck disable=SC2086 # optional --input/--fb are intentionally words.
-    _monitor_spawn "$MONITOR_BIN" --bind "$IP" --port "$MONITOR_PORT" \
+    # #1475: the clone path wins the CPU -- the monitor is nice 10. No nice
+    # is said, not silently skipped.
+    _monitor_nice="nice -n 10"
+    command -v nice >/dev/null 2>&1 || {
+        _monitor_nice=
+        log "monitor: no nice; running at normal priority"
+    }
+
+    # shellcheck disable=SC2086 # optional nice/--input/--fb are intentionally words.
+    _monitor_spawn $_monitor_nice "$MONITOR_BIN" --bind "$IP" --port "$MONITOR_PORT" \
         --fps 10 --secret-file "$_msf" --allow-from "$_allow" \
         $_monitor_input $_monitor_fb
     log "monitor: supervisor started on $IP:$MONITOR_PORT" \
