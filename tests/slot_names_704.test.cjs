@@ -51,78 +51,80 @@ function setup({names2={'sata:2':'האמצעית','serial:NV-1':'דיסק מיו
   run('CAPTURE_TASKS_READ=true; ROOM_KEY=JSON.stringify(ROOM);');
   return {run,requests,fixtures};
 }
-const card=(html,mac)=>html.slice(html.indexOf(`data-mac="${mac}"`)).split(/<div class="mcard(?: off)?"/)[0];
-const slot=(html,n)=>{ const m=html.match(new RegExp(`<div class="disk[^"]*" data-slot="${n}"[^>]*>[^]*?</div>`)); assert.ok(m,'slot '+n); return m[0]; };
+// ‏#1485: the cloner page is the mockup's .mach card — a row per slot: <span>label</span> · bar · <b>status</b>
+const card=(html,mac)=>{ const i=html.lastIndexOf('<div class="mach',html.indexOf(`data-mac="${mac}"`)); return html.slice(i).split(/(?=<div class="mach[ "])/)[0]; };
+const slot=(html,n)=>{ const m=html.match(new RegExp(`<div class="dsk[^"]*" data-slot="${n}"[^>]*>[^]*?</b></div>`)); assert.ok(m,'slot '+n); return m[0]; };
+const diskTab=(html)=>{ const i=html.indexOf('">דיסקים</div>'); assert.ok(i>=0,'no disks section'); const to=html.indexOf('<div class="sec"',i); return html.slice(i,to<0?undefined:to); };
 
 test('grid: a named slot shows its name; an unnamed slot stays "דיסק N"; the number survives in the tooltip', () => {
   const {run}=setup();
   run("openClass('grp_CLONERS')"); const html=run('machines(0)');
   const c2=card(html,C2);
-  assert.match(slot(c2,1),/<b>דיסק 1<\/b>/,'no name → as today');
-  assert.match(slot(c2,3),/<b>דיסק 3<\/b>/);
+  assert.match(slot(c2,1),/<span>דיסק 1<\/span>/,'no name → as today');
+  assert.match(slot(c2,3),/<span>דיסק 3<\/span>/);
   const c1=card(html,C1);
-  assert.match(slot(c1,2),/<b>תחתונה<\/b><span class="cap">ריק<\/span>/,'an empty slot keeps its name — the name is the slot, not the disk');
+  assert.match(slot(c1,2),/<span>תחתונה<\/span><div class="bar"><i style="--w:0%"><\/i><\/div><b>ריק<\/b>/,'an empty slot keeps its name — the name is the slot, not the disk');
   assert.match(slot(c1,2),/title="דיסק 2 · SATA 1 · ריק"/,'the tooltip still says the number');
-  assert.match(slot(c1,1),/<b>דיסק 1<\/b><span class="cap">ריק<\/span>/);
+  assert.match(slot(c1,1),/<span>דיסק 1<\/span>[^]*<b>ריק<\/b>/);
 });
 
 test('grid during a round: the name follows the slot — a new disk (other serial) in SATA 1 is still "האמצעית"', () => {
   const {run}=setup({round:true});
   run("openClass('grp_CLONERS')"); const html=run('machines(0)');
   const s2=slot(card(html,C2),2);
-  assert.match(s2,/<b>האמצעית<\/b>/);
+  assert.match(s2,/<span>האמצעית<\/span>/);
   assert.match(s2,/title="דיסק 2 · SATA 1 · 870 EVO · S-9/,'named slot: the tooltip opens with "דיסק N"');
 });
 
 test('a name is escaped, never HTML', () => {
   const {run}=setup({names2:{'sata:1':'a<b>&"'}});
   run("openClass('grp_CLONERS')"); const html=run('machines(0)');
-  assert.match(slot(card(html,C2),1),/<b>a&lt;b&gt;&amp;&quot;<\/b>/);
+  assert.match(slot(card(html,C2),1),/<span>a&lt;b&gt;&amp;&quot;<\/span>/);
 });
 
-test('drawer disk list: one compact row per SATA/NVMe/USB slot, rename only for admin', () => {
+test('drawer disk table: drawers 1..N by the mapping, then drives outside it (named NVMe keeps its name), rename only for admin', () => {
   const {run}=setup();
   run(`openMachineDetail('${C2}')`); const html=run('drawerHtml');
-  const sec=html.slice(html.indexOf('<div class="sec" data-cnt="4">דיסקים</div>'));
-  assert.doesNotMatch(html,/חריצים וכוננים|דיווח אחרון|ברירת מחדל|>S-1<|>S-3<|>NV-1</);
-  const rows=[...sec.matchAll(/<tr data-slot="([^"]*)">([^]*?)<\/tr>/g)].map(m=>[decodeURIComponent(m[1]),m[2]]);
-  assert.deepEqual(rows.map(r=>r[0]),['sata:1','sata:2','sata:3','serial:NV-1',''],'SATA 0..2 by port (2 empty), then NVMe, then the USB stick that has no serial');
-  const [s0,s1,s2,nv,usb]=rows.map(r=>r[1]);
-  assert.match(s0,/<b>דיסק 1<\/b>/); assert.match(s0,/SATA 0/); assert.match(s0,/870 [^]*256GB/);
-  assert.match(s1,/<b>האמצעית<\/b>/); assert.match(s1,/SATA 1/); assert.match(s1,/ריק/);
-  assert.match(s2,/<b>דיסק 3<\/b>/); assert.match(s2,/SATA 2/); assert.match(s2,/870 [^]*256GB/);
-  assert.match(nv,/<b>דיסק מיוחד<\/b>/); assert.match(nv,/NVMe 0/); assert.match(nv,/870 [^]*256GB/);
-  assert.match(usb,/USB/); assert.match(usb,/Usb [^]*256GB/); assert.doesNotMatch(usb,/renameSlot/,'no stable key → no rename');
+  const sec=diskTab(html);
+  assert.doesNotMatch(sec,/>S-1<|>S-3<|>NV-1</,'serials stay out of the table');
+  const rows=[...sec.matchAll(/<tr class="([^"]*)" data-slot="([^"]*)">([^]*?)<\/tr>/g)].map(m=>[m[1],m[2],m[3]]);
+  assert.deepEqual(rows.map(r=>[r[0],r[1]]),[['','1'],['vacant','2'],['','3'],['unmapped',''],['unmapped','']],'SATA 0..2 by the convention (2 empty), then NVMe and USB, which have no connection key');
+  const [s0,s1,s2,nv,usb]=rows.map(r=>r[2]);
+  assert.match(s0,/<b>דיסק 1<\/b>/); assert.match(s0,/selected>SATA 0</); assert.match(s0,/256GB[^]*870/);
+  assert.match(s1,/<b>האמצעית<\/b>/); assert.match(s1,/selected>SATA 1</); assert.match(s1,/ריק/);
+  assert.match(s2,/<b>דיסק 3<\/b>/); assert.match(s2,/selected>SATA 2</);
+  assert.match(nv,/<b>דיסק מיוחד \(לא ממופה\)<\/b>/,'#704 name kept; no number guessed'); assert.match(nv,/NVMe — אין כתובת PCI/);
+  assert.match(usb,/<b>USB \(לא ממופה\)<\/b>/); assert.doesNotMatch(usb,/renameSlot/,'no stable key → no rename');
   assert.match(s1,new RegExp(`renameSlot\\('${encodeURIComponent(C2)}','sata%3A2'\\)`));
   assert.match(nv,/renameSlot\('[^']+','serial%3ANV-1'\)/);
 });
 
-test('drawer disk marketing label normalises vendor and size; SMART appears only when bad', () => {
+test('drawer disk table: marketing size and vendor; SMART is a chip in its own column (mockup: תקין / נכשל)', () => {
   const {run}=setup();
   run(`MACHINES[1].disks=[
     {dev:'sda',port:1,serial:'a',model:'SAMSUNG MZ7LN256',size_bytes:238*1024**3,smart:'ok'},
     {dev:'sdb',port:2,serial:'b',model:'WESTERN WD500',size_bytes:466*1024**3,smart:'warn'},
     {dev:'sdc',port:3,serial:'c',model:'KINGSTON X',size_bytes:931*1024**3,smart:'fail'}];`);
-  const html=run(`machineDrawerHtml(findMachine('${C2}'))`);
-  assert.match(html,/Samsung [^]*?256GB/); assert.doesNotMatch(html,/SMART תקין/);
-  assert.match(html,/Western [^]*?500GB[^]*SMART אזהרה/);
-  assert.match(html,/Kingston [^]*?1TB[^]*SMART תקלה/);
+  const html=diskTab(run(`machineDrawerHtml(findMachine('${C2}'))`));
+  assert.match(html,/256GB<\/bdi><\/span> <span class="cap">Samsung<\/span><\/td><td><span class="n-chip">תקין<\/span>/);
+  assert.match(html,/500GB<\/bdi><\/span> <span class="cap">Western<\/span><\/td><td><span class="n-chip w">אזהרה<\/span>/);
+  assert.match(html,/1TB<\/bdi><\/span> <span class="cap">Kingston<\/span><\/td><td><span class="n-chip w">F1<\/span>/,'#1366: fail = the F1 stop, orange');
 });
 
-test('build machines use the same compact rows without slot rename controls', () => {
+test('build machines use the same table and mapping, without slot rename controls', () => {
   const {run}=setup();
   run(`GROUPS[0].role='build'`);
-  const html=run(`machineDrawerHtml(findMachine('${C2}'))`);
-  assert.match(html,/<th>שם<\/th><th>חריץ<\/th><th>כונן<\/th>/);
-  assert.match(html,/SATA 0/); assert.match(html,/870 [^]*256GB/);
-  assert.doesNotMatch(html,/renameSlot|חריצים מוגדרים|דיווח אחרון|חריצים וכוננים/);
+  const html=diskTab(run(`machineDrawerHtml(findMachine('${C2}'))`));
+  assert.match(html,/<th>דיסק<\/th><th>חיבור<\/th><th>גודל<\/th><th>SMART<\/th>/);
+  assert.match(html,/selected>SATA 0</); assert.match(html,/256GB[^]*870/); assert.match(html,/slotEditAdd\(/,'#1485: the count and mapping for build machines too');
+  assert.doesNotMatch(html,/renameSlot/);
 });
 
 test('rename sheet: PUTs {slot, name}; empty clears to the default with null', async () => {
   const {run,requests}=setup();
   run(`renameSlot('${encodeURIComponent(C2)}','serial%3ANV-1')`);
   const o=run('formOptions');
-  assert.match(o.sub,/NVMe 0/); assert.equal(o.fields[0].value,'דיסק מיוחד');
+  assert.match(o.sub,/NVMe — אין כתובת PCI/); assert.equal(o.fields[0].value,'דיסק מיוחד');
   assert.match(o.fields[0].help,/24/); assert.match(o.fields[0].help,/סידורי/);
   await o.onSubmit({name:'  דיסק 4  '});
   let put=requests.find(r=>r.options.method==='PUT');
@@ -149,11 +151,11 @@ test('the drawer for a non-admin has no rename link', () => {
 test('without any names everything reads exactly as before', () => {
   const {run}=setup({names1:{},names2:{}});
   run("openClass('grp_CLONERS')"); const html=run('machines(0)');
-  for(const n of [1,2,3]) assert.match(slot(card(html,C2),n),new RegExp(`<b>דיסק ${n}</b>`));
+  for(const n of [1,2,3]) assert.match(slot(card(html,C2),n),new RegExp(`<span>דיסק ${n}</span>`));
   assert.match(slot(card(html,C1),2),/title="דיסק 2 · SATA 1 · ריק"/);
   const {run:run2}=setup({names1:{},names2:{}});
   // old server: no slot_names field at all
   run2('MACHINES.forEach(m=>delete m.slot_names)');
   run2("openClass('grp_CLONERS')");
-  assert.match(slot(card(run2('machines(0)'),C2),1),/<b>דיסק 1<\/b>/);
+  assert.match(slot(card(run2('machines(0)'),C2),1),/<span>דיסק 1<\/span>/);
 });

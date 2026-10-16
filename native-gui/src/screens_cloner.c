@@ -18,20 +18,59 @@ static const char *drawer_state_he(const char *s) {
     return "ממתין";
 }
 
-static const Drawer *drawer_for_port(const State *s, int port) {
-    for (int i = 0; i < s->ndrawers; i++)
-        if (s->drawers[i].port == port) return &s->drawers[i];
-    return NULL;
+typedef struct {
+    int port, synthetic;
+    const Drawer *drawer;
+    const IdleDisk *idle;
+} ClonerEntry;
+
+static int entry_drawer(const ClonerEntry *e) {
+    return e->drawer ? eff_drawer(e->drawer->drawer, e->port) :
+           e->idle ? eff_drawer(e->idle->drawer, e->port) : 0;
 }
 
-/* The ports with something to show, ascending: a drawer, an idle disk, or
- * the port a SMART question is about. Returns how many. */
-static int found_ports(const State *s, int *out) {
+static int entry_after(const ClonerEntry *a, const ClonerEntry *b) {
+    int ad = entry_drawer(a), bd = entry_drawer(b);
+    if (ad && bd) return ad > bd;
+    if (ad != 0) return 0;
+    if (bd != 0) return 1;
+    return a->port > b->port;
+}
+
+static int cloner_entries(const State *s, ClonerEntry *out) {
     int n = 0;
-    for (int port = 1; port <= MAX_DRAWERS; port++)
-        if (drawer_for_port(s, port) || idle_for_port(s, port) ||
-            (s->smart_pending && s->smart_port == port)) out[n++] = port;
+    if (s->ndrawers > 0) {
+        for (int i = 0; i < s->ndrawers; i++)
+            out[n++] = (ClonerEntry){ s->drawers[i].port, 0, &s->drawers[i],
+                                      idle_for_port(s, s->drawers[i].port) };
+    } else {
+        for (int i = 0; i < s->nidisks; i++)
+            out[n++] = (ClonerEntry){ s->idisks[i].port, 0, NULL, &s->idisks[i] };
+    }
+    if (s->smart_pending) {
+        int found = 0;
+        for (int i = 0; i < n; i++) if (out[i].port == s->smart_port) found = 1;
+        if (!found && n < MAX_DRAWERS + 1)
+            out[n++] = (ClonerEntry){ s->smart_port, 1, NULL, NULL };
+    }
+    for (int i = 1; i < n; i++) {
+        ClonerEntry v = out[i]; int j = i;
+        while (j > 0 && entry_after(&out[j - 1], &v)) { out[j] = out[j - 1]; j--; }
+        out[j] = v;
+    }
     return n;
+}
+
+static void entry_label(const State *s, const ClonerEntry *e, char *out, size_t n) {
+    int bay = entry_drawer(e);
+    if (bay > 0) cloner_slot_label(s, bay, out, n);
+    else if (e->synthetic) cloner_slot_label(s, e->port, out, n);
+    else {
+        const char *name = e->port >= 1 && e->port <= MAX_DRAWERS ? s->cslot_names[e->port - 1] : "";
+        const char *conn = e->drawer ? e->drawer->conn : e->idle ? e->idle->conn : "";
+        const char *dev = e->drawer ? e->drawer->dev : e->idle ? e->idle->dev : "";
+        unmapped_label(name, conn, e->port, dev, out, n);
+    }
 }
 
 static void cloner_title(cairo_t *cr, const Theme *t, const State *s, int ndisks,
@@ -90,9 +129,11 @@ static int smart_pill_kind(const char *smart) {
 /* One disk card. With draw 0 it only measures: the cards of a row share the
  * row's height, so every card is measured before any is drawn. Returns the
  * card's content height. */
-static double disk_card(App *a, cairo_t *cr, Rect card, int port,
-                        const Drawer *d, const IdleDisk *idle, int draw) {
+static double disk_card(App *a, cairo_t *cr, Rect card, const ClonerEntry *entry, int draw) {
     const Theme *t = a->theme;
+    int port = entry->port;
+    const Drawer *d = entry->drawer;
+    const IdleDisk *idle = entry->idle;
     int pending = a->st.smart_pending && a->st.smart_port == port;
     Rgb accent = drawer_accent(t, d, pending);
     if (!d && idle) accent = smart_color(t, idle->smart);
@@ -113,7 +154,7 @@ static double disk_card(App *a, cairo_t *cr, Rect card, int port,
     /* the head: "דיסק N" -- or the operator's name of the slot (#704) -- at
      * the start, the state pill at the end */
     char disk_name[SLOT_NAME_MAX + 16];
-    cloner_slot_label(&a->st, port, disk_name, sizeof disk_name);
+    entry_label(&a->st, entry, disk_name, sizeof disk_name);
     Text name = rtl_block_make(cr, 16, 600, disk_name, w);
     if (draw) {
         const char *word = pending ? "נדרשת החלטה" : drawer_state_he(d ? d->state : "waiting");
@@ -239,7 +280,7 @@ static double key_button(App *a, cairo_t *cr, double x, double y, const char *la
 
 void screen_cloner(App *a, cairo_t *cr, double W, double H, double head_h) {
     const Theme *t = a->theme;
-    int ports[MAX_DRAWERS], n = found_ports(&a->st, ports);
+    ClonerEntry entries[MAX_DRAWERS + 1]; int n = cloner_entries(&a->st, entries);
     double y = head_h + 18;
     cloner_title(cr, t, &a->st, n, W, &y);
 
@@ -254,12 +295,10 @@ void screen_cloner(App *a, cairo_t *cr, double W, double H, double head_h) {
     for (int k = 0; k < n; k += cols) {
         double row_h = 0;
         for (int j = k; j < k + cols && j < n; j++)
-            row_h = dmax(row_h, disk_card(a, cr, (Rect){ 0, 0, card_w, 0 }, ports[j],
-                                          drawer_for_port(&a->st, ports[j]), idle_for_port(&a->st, ports[j]), 0));
+            row_h = dmax(row_h, disk_card(a, cr, (Rect){ 0, 0, card_w, 0 }, &entries[j], 0));
         for (int j = k; j < k + cols && j < n; j++) {
             Rect card = { W - N_PAD - card_w - (j - k) * (card_w + gap), y, card_w, row_h };
-            disk_card(a, cr, card, ports[j], drawer_for_port(&a->st, ports[j]),
-                      idle_for_port(&a->st, ports[j]), 1);
+            disk_card(a, cr, card, &entries[j], 1);
         }
         y += row_h + gap;
     }
@@ -275,7 +314,7 @@ void screen_cloner(App *a, cairo_t *cr, double W, double H, double head_h) {
         int red = !strcmp(a->st.smart_verdict, "failed_last");
         char head[SLOT_NAME_MAX + 16 + 160], disk[SLOT_NAME_MAX + 16];
         const char *why = a->st.smart_reason[0] ? smart_reason_he(a->st.smart_reason) : smart_he(a->st.smart_verdict);
-        cloner_slot_label(&a->st, a->st.smart_port, disk, sizeof disk);   /* #704 */
+        cloner_port_label(&a->st, a->st.smart_port, disk, sizeof disk);   /* #1495 */
         snprintf(head, sizeof head, "%s · %s.", disk, why);
         Text h1 = rtl_block_make(cr, 13, 600, head, W / 2);
         Text h2 = rtl_block_make(cr, 12, 400, "מה לעשות עם הדיסק הזה?", W / 2);

@@ -69,7 +69,7 @@ validate_restore_plan() {
         $11 ~ /[[:cntrl:]|]/ || ($11 != "" && $11 !~ /^([0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}|[0-9A-F]{4}-[0-9A-F]{4}|[0-9A-F]{16})$/) { exit 1 }
         $12 !~ /^([0-9A-F]{16})?$/ { exit 1 }
         END { if (NR < 1) exit 1 }' "$_vp" || { PLAN_ERROR="malformed restore plan -- disk untouched"; return 1; }
-    set -- sgdisk --pretend --clear   # ‏#1434: --zap-all בהדמיה משאיר את הטבלה הקיימת בזיכרון
+    set -- sgdisk -a 1 --pretend --clear   # ‏#1434: --zap-all בהדמיה משאיר את הטבלה הקיימת בזיכרון
     while IFS='|' read -r _i _g _r _fs _s _z _f _h _e _u _uuid _a; do
         _last=$((_s + _z / 512 - 1)); set -- "$@" -n "$_i:$_s:$_last" -t "$_i:$_g"
         [ -z "$_u" ] || set -- "$@" -u "$_i:$_u"

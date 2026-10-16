@@ -42,6 +42,7 @@ COUNTING_FANOUT = (
     'shift\n'                       # החוצץ
     'tmp="$(mktemp)"\n'
     'cat > "$tmp"\n'
+    'fanout_eof "$tmp"\n'
     'size=$(wc -c < "$tmp" | tr -d " ")\n'
     'for out; do cat "$tmp" > "$out" & done\n'
     'wait\n'
@@ -115,7 +116,7 @@ def test_the_compiled_fanout_writes_the_counter_the_agent_reads(tmp_path):
         (run / "targets" / dev).mkdir(parents=True)
 
     out = run_sh(
-        make_stubs(stubs)
+        make_stubs(stubs, {"fanout": None})   # the compiled one, not the fake
         + f"export RUN_DIR={posix(run)!r} DEVROOT={posix(box)!r} "
         # מאגר קטן: המכונה הזו לא צריכה 256MB למגירה כדי להעביר 64KB.
         "FANOUT_BUFFER=1048576 WAIT_POLL_S=1 WAIT_DRAWER_S=10 WAIT_HELPER_S=10 "

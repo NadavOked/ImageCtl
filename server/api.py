@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from boot.grub_menu import normalize_mac as lenient_mac
 
-from . import (agent_loops, disk_events, foreign_vlan, identity, inventory,
+from . import (agent_loops, disk_events, drawer_slots, foreign_vlan, identity, inventory,
                login_guard, probe, pulls, registry, reports, shrink_records, users)
 from .auth import COOKIE_NAME, read_session
 from .db import journal
@@ -176,6 +176,7 @@ def create_agent_router(ctx: ServerContext,
 
         client_ip = request.client.host if request.client else None
         disks = body.get("disks") if isinstance(body.get("disks"), list) else None
+        optical = drawer_slots.clean_optical(body.get("optical")) if "optical" in body else None
         reported_ip = body.get("ip") if isinstance(body.get("ip"), str) else None
         off_vlan = off_deploy_vlan(request.scope, server_base)
         # ‏hello של דופק (`joining: false`) אומר "אני חי" בלי לבקש להצטרף.
@@ -251,7 +252,8 @@ def create_agent_router(ctx: ServerContext,
             hw_inventory=hw_inventory, hw_probe=hw_probe,
             prompt=prompt, disk_probe=disk_probe,
             firmware=firmware, secure_boot=secure_boot,
-            agent_version=agent_version, local_clone=local_clone,
+            agent_version=agent_version, local_clone=local_clone, optical=optical,
+            optical_reported=True,
             # ‏#715: פרמטרי השידור למקור שהוא מחשב בנייה — של המנוע, אם יש.
             multicast=ctx.sender.multicast_params() if ctx.sender is not None else None,
         )

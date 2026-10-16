@@ -21,11 +21,33 @@ static double node_head_h(const RoomGrid *g) { return g->name_h + 2 + g->small_h
 #define SLOT_RING 5.0           /* 2px gap + 3px ring */
 #define SLOT_GAP  (2 * SLOT_RING)
 
-static const RoomDrawer *room_drawer_at(const Machine *m, int port) {
+static const RoomDrawer *room_drawer_row(const Machine *m, int row, int *index) {
+    int mapped_rows = m->nrslots > 0 ? m->nrslots : m->drawer_count;
+    if (mapped_rows < 1) mapped_rows = 1;
+    if (mapped_rows > MAX_DRAWERS) mapped_rows = MAX_DRAWERS;
+    if (row < mapped_rows) {
+        for (int i = 0; i < m->nroom_drawers; i++)
+            if (m->room_drawers[i].present &&
+                eff_drawer(m->room_drawers[i].drawer, m->room_drawers[i].port) == row + 1) {
+                *index = i; return &m->room_drawers[i];
+            }
+        *index = -1; return NULL;
+    }
+    int wanted = row - mapped_rows;
     for (int i = 0; i < m->nroom_drawers; i++)
-        if (m->room_drawers[i].present && m->room_drawers[i].port == port)
-            return &m->room_drawers[i];
-    return NULL;
+        if (m->room_drawers[i].present &&
+            eff_drawer(m->room_drawers[i].drawer, m->room_drawers[i].port) == 0) {
+            if (wanted-- == 0) { *index = i; return &m->room_drawers[i]; }
+        }
+    *index = -1; return NULL;
+}
+
+static int room_drawer_after(const RoomDrawer *a, const RoomDrawer *b) {
+    int ad = eff_drawer(a->drawer, a->port), bd = eff_drawer(b->drawer, b->port);
+    if (ad && bd) return ad > bd;
+    if (ad != 0) return 0;
+    if (bd != 0) return 1;
+    return a->port > b->port;
 }
 
 static int room_selection_override(const App *a, const Machine *m, int port,
@@ -50,8 +72,6 @@ static RoomGrid room_grid_make(cairo_t *cr, double w, int n, int max_slots,
     g.name_h = dmax(text_line_height(cr, FONT_SANS, N_NODE_TITLE), N_NODE_DOT);
     g.small_h = text_line_height(cr, FONT_SANS, N_NODE_SUB);
     if (n <= 0) return g;
-    if (max_slots > MAX_DRAWERS) max_slots = MAX_DRAWERS;
-
     g.cols = n < wanted_cols ? n : wanted_cols;
     g.rows = (n + g.cols - 1) / g.cols;
     g.card_w = (w - (g.cols - 1) * g.gap) / g.cols;
@@ -131,7 +151,7 @@ static int room_machine_all_selected(const App *a, const Machine *m) {
     int any = 0;
     for (int i = 0; i < m->nroom_drawers; i++) {
         const RoomDrawer *d = &m->room_drawers[i];
-        if (!d->present) continue;
+        if (!room_selectable(d)) continue;
         any = 1;
         if (!room_selection_override(a, m, d->port, d->selected)) return 0;
     }
@@ -148,7 +168,7 @@ static void room_machine_draw(App *a, cairo_t *cr, const Machine *m, int mi,
     int warn = m->awake && room_machine_has_warn(m);
     int nsel = 0;                                  /* owner, 10/10: say how many are picked */
     for (int i = 0; m->awake && i < m->nroom_drawers; i++)
-        if (m->room_drawers[i].present && room_selection_override(a, m, m->room_drawers[i].port, m->room_drawers[i].selected)) nsel++;
+        if (room_selectable(&m->room_drawers[i]) && room_selection_override(a, m, m->room_drawers[i].port, m->room_drawers[i].selected)) nsel++;
     char st[96];
     if (m->awake && nsel) snprintf(st, sizeof st, "ער · %d מגירות מוכנות · %d נבחרו", m->fresh_drawers, nsel);
     else if (m->awake)    snprintf(st, sizeof st, "ער · %d מגירות מוכנות", m->fresh_drawers);
@@ -162,16 +182,19 @@ static void room_machine_draw(App *a, cairo_t *cr, const Machine *m, int mi,
     text_free(&small);
     if (nsel) draw_border_rrect(cr, item, RADIUS_SM, t->indigo, 2);   /* a machine with picked disks */
 
-    int slots = m->drawer_count;
-    if (slots < 1) slots = 1;
-    if (slots > MAX_DRAWERS) slots = MAX_DRAWERS;
+    int slots = room_rows(m);
+    int mapped_rows = m->nrslots > 0 ? m->nrslots : m->drawer_count;
+    if (mapped_rows < 1) mapped_rows = 1;
+    if (mapped_rows > MAX_DRAWERS) mapped_rows = MAX_DRAWERS;
 
     double sx = card.x, sy = card.y + SLOT_RING, sw = card.w;
-    for (int port = 1; port <= slots; port++) {
-        const RoomDrawer *d = room_drawer_at(m, port);
-        Rect slot = { sx, sy + (port - 1) * (g->slot_h + SLOT_GAP), sw, g->slot_h };
-        int selected = d && room_selection_override(a, m, port, d->selected);
-        int avail = m->awake && d;
+    for (int row = 0; row < slots; row++) {
+        int j = -1, drawer = row + 1, port = drawer;
+        const RoomDrawer *d = room_drawer_row(m, row, &j);
+        int mapped = row < mapped_rows;
+        Rect slot = { sx, sy + row * (g->slot_h + SLOT_GAP), sw, g->slot_h };
+        int selected = d && room_selectable(d) && room_selection_override(a, m, d->port, d->selected);
+        int avail = m->awake && d && room_selectable(d);
         /* owner, 10/10: picked vs not must read at a glance. Picked = the
          * SMART colour solid, a 3px action ring 2px outside and a check at
          * the start. Available but not picked = the same colour lightened
@@ -195,8 +218,11 @@ static void room_machine_draw(App *a, cairo_t *cr, const Machine *m, int mi,
         /* #704: the operator's name of the slot -- "name · capacity" on a disk,
          * the name alone (muted) on an empty or unreachable slot. No name =
          * the capacity alone, exactly as before. */
-        const char *sname = m->slot_names[port - 1];
-        if (!avail && sname[0]) {
+        const char *sname = "";
+        if (mapped && m->nrslots > 0) sname = m->rslots[drawer - 1].name;
+        else if (mapped) sname = m->slot_names[port - 1];
+        const char *dname = d && d->slot_name[0] ? d->slot_name : sname;
+        if (!avail && mapped && sname[0] && !(d && m->awake)) {
             Text nt = text_make(cr, FONT_SANS, g->slot_h >= N_CLONE_TITLE ? N_HEADER_FONT : N_IMAGE_SUB,
                                 500, sname, 0, DIR_RTL);
             cairo_save(cr);
@@ -206,18 +232,24 @@ static void room_machine_draw(App *a, cairo_t *cr, const Machine *m, int mi,
             cairo_restore(cr);
             text_free(&nt);
         }
-        if (avail) {
-            char capacity[24], named[SLOT_NAME_MAX + 32] = "";
+        /* #1495: a mapped row says "name · capacity" or the capacity alone, as
+         * before (the row is the number); a row not in the mapping says
+         * "SATA n (לא ממופה)" -- it cannot be picked. */
+        if (d && (m->awake || !mapped)) {
+            char capacity[32] = "", named[SLOT_NAME_MAX + 128], label[SLOT_NAME_MAX + 64];
             fmt_bytes(capacity, sizeof capacity, (double)d->size_bytes);
-            if (sname[0]) snprintf(named, sizeof named, "%s · %s", sname, capacity);
+            room_drawer_label(m, d, label, sizeof label);
+            if (!mapped) snprintf(named, sizeof named, "%s", label);
+            else if (dname[0]) snprintf(named, sizeof named, "%s · %s", dname, capacity);
+            else snprintf(named, sizeof named, "%s", capacity);
             Text ct = text_make(cr, FONT_SANS, g->slot_h >= N_CLONE_TITLE ? N_HEADER_FONT : N_IMAGE_SUB,
-                                selected ? 700 : 600, sname[0] ? named : capacity, 0,
-                                sname[0] ? DIR_RTL : DIR_LTR);
+                                selected ? 700 : 600, named, 0,
+                                !mapped || dname[0] ? DIR_RTL : DIR_LTR);
             cairo_save(cr);
             cairo_rectangle(cr, slot.x + 2, slot.y + 1, slot.w - 4, slot.h - 2);
             cairo_clip(cr);
             text_draw(cr, &ct, slot.x + (slot.w - ct.w) / 2,
-                      slot.y + (slot.h - ct.h) / 2, selected ? t->on_ink : t->ink);
+                      slot.y + (slot.h - ct.h) / 2, selected ? t->on_ink : !avail ? t->muted : t->ink);
             if (selected && slot.h >= 12) {          /* the check at the slot's start (right, RTL) */
                 double h = fmin(slot.h * .5, 14), cx = slot.x + slot.w - 8 - h, cy = slot.y + (slot.h - h) / 2;
                 cairo_move_to(cr, cx + h * .12, cy + h * .52);
@@ -232,10 +264,10 @@ static void room_machine_draw(App *a, cairo_t *cr, const Machine *m, int mi,
         }
 
         /* Empty slots and every slot on an off machine are display-only. */
-        if (m->awake && d)
-            hit_add(a, slot, HIT_ROOM_DISK_BASE + mi * MAX_DRAWERS + (port - 1));
+        if (avail)
+            hit_add(a, slot, HIT_ROOM_DISK_BASE + mi * MAX_DRAWERS + j);
         /* #1269: a chosen disk's drivers tag in pick mode -- after the slot, so its hit wins */
-        if (m->awake && d && selected) room_drv_tag_draw(a, cr, slot, m, mi, port);
+        if (avail && selected) room_drv_tag_draw(a, cr, slot, m, mi, j);
     }
 }
 
@@ -255,8 +287,9 @@ static Text room_unidentified_make(cairo_t *cr, const State *s, double w) {
             const RoomDrawer *d = &m->room_drawers[j];
             if (!d->present || !d->unidentified) continue;
             line = buf + used;
-            int k = snprintf(line, cap - used, "%sלא ניתן לזהות את הכונן בחריץ %d · %s",
-                             used ? "\n" : "", d->port, m->name[0] ? m->name : m->mac);
+            char label[SLOT_NAME_MAX + 64]; room_drawer_label(m, d, label, sizeof label);
+            int k = snprintf(line, cap - used, "%sלא ניתן לזהות את הכונן — %s · %s",
+                              used ? "\n" : "", label, m->name[0] ? m->name : m->mac);
             if (k < 0 || (size_t)k >= cap - used) {
                 snprintf(line, sizeof buf - used, "%s", more);
                 return text_make(cr, FONT_SANS, N_SUB, 600, buf, (int)w, DIR_RTL);
@@ -321,19 +354,20 @@ static void room_live_grid_draw(App *a, cairo_t *cr, double x, double y, double 
          * drawers, by port), not per configured slot -- a slot with no disk
          * was drawn as "דיסק 3 —" with the machine's progress on it. */
         const RoomDrawer *found[MAX_DRAWERS]; int nfound = 0;
-        for (int port = 1; port <= MAX_DRAWERS; port++) {
-            const RoomDrawer *d = room_drawer_at(m, port);
-            if (d) found[nfound++] = d;
+        for (int j = 0; j < m->nroom_drawers; j++) if (m->room_drawers[j].present) {
+            const RoomDrawer *v = &m->room_drawers[j]; int k = nfound;
+            while (k > 0 && room_drawer_after(found[k - 1], v)) { found[k] = found[k - 1]; k--; }
+            found[k] = v; nfound++;
         }
         int slots = nfound ? nfound : 1;
         double slot_h = body.h / slots;
         for (int k = 0; k < slots; k++) {
             const RoomDrawer *d = nfound ? found[k] : NULL;
             /* #704: the slot's name instead of "דיסק N" when the operator gave one */
-            char size[32] = "—", label[SLOT_NAME_MAX + 48], percent[16];
+            char size[32] = "—", label[SLOT_NAME_MAX + 128], base[SLOT_NAME_MAX + 64], percent[16];
             if (d && d->size_bytes) fmt_bytes(size, sizeof size, (double)d->size_bytes);
-            if (d && m->slot_names[d->port - 1][0]) snprintf(label, sizeof label, "%s  %s", m->slot_names[d->port - 1], size);
-            else if (d) snprintf(label, sizeof label, "דיסק %d  %s", d->port, size);
+            /* #1495: "דיסק N" by the drawer (room_drawer_label), never by port */
+            if (d) { room_drawer_label(m, d, base, sizeof base); snprintf(label, sizeof label, "%s  %s", base, size); }
             else   snprintf(label, sizeof label, "%s", "לא דווחו דיסקים");
             snprintf(percent, sizeof percent, "%d%%", pct);
             Text lt = rtl_block_make(cr, 11, 500, label, body.w - 48);
@@ -504,7 +538,7 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
         Text ready_t = sub_make(cr, rd, inner);
         int max_slots = 1;
         for (int i = 0; i < s->nmachines; i++)
-            if (s->machines[i].drawer_count > max_slots) max_slots = s->machines[i].drawer_count;
+            if (room_rows(&s->machines[i]) > max_slots) max_slots = room_rows(&s->machines[i]);
         RoomGrid grid = room_grid_make(cr, inner, s->nmachines, max_slots,
                                        room_cols, (H-head_h-N_STATUS_H)/2);
         Text err = error_make(cr, s->room_error, inner);

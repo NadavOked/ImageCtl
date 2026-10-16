@@ -44,6 +44,7 @@ PRELUDE = (
     f'. {posix(AGENT)}/lib/jsonq.sh; '
     f'. {posix(AGENT)}/lib/buildmenuitems.sh; . {posix(AGENT)}/lib/buildmenu.sh; '
     f'. {posix(AGENT)}/lib/guistate.sh; . {posix(AGENT)}/lib/askgui.sh; '
+    'disk_slot_records() { :; }; '   # #1495: disk numbering is test_drawer_map_gui_1495's
 )
 
 

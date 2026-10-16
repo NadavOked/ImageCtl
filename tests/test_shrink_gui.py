@@ -256,7 +256,8 @@ kill $G 2>/dev/null; true
 
 STATE_PRE = (f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/jsonq.sh; '
              f'. {posix(AGENT)}/lib/buildmenuitems.sh; . {posix(AGENT)}/lib/guistate.sh; '
-             f'. {posix(AGENT)}/lib/askgui.sh; ')
+             f'. {posix(AGENT)}/lib/askgui.sh; '
+             'disk_slot_records() { :; }; ')   # #1495: disk numbering is test_drawer_map_gui_1495's
 
 
 def test_gui_shrink_state_copies_the_request(tmp_path):

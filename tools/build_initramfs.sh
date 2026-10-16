@@ -595,6 +595,7 @@ MODSRC="/lib/modules/$KVER"
 MODULE_SUBDIRS=(kernel/drivers/net/ethernet kernel/drivers/net/phy
                 kernel/drivers/net/mdio     kernel/drivers/nvme
                 kernel/drivers/ata          kernel/drivers/scsi
+                kernel/drivers/cpufreq
                 kernel/drivers/usb/storage
                 # Hyper-V: vmbus הוא התשתית, net/hyperv הוא הכרטיס.
                 # בלעדיהם הסוכן במעבדת ה-VM (issue #12) עולה בלי דיסק ורשת.
@@ -664,7 +665,8 @@ REQUIRED_MODULES=(hv_netvsc   hv_storvsc      # Hyper-V
 # ‏efivarfs — ‏`secure_boot` במניפסט (#84).
 #
 # ‏`exfat` ו-`isofs` אינם כאן בכוונה, אחרי חיפוש: אין בקוד קורא להם.
-# הסוכן עולה מהרשת ולא ממדיה אופטית — אין `sr0`, אין `iso9660` ואין
+# הסוכן עולה מהרשת ולא ממדיה אופטית — `sr0` רק נספר ב-hello (#1485: ‏sr_mod
+# ברשימת הטעינה למטה; נטען מעץ kernel/drivers/scsi), אף פעם לא מעוגן; אין `iso9660` ואין
 # ‏`mount` על מדיה בשום מקום ברפו — ומחיצת exFAT באורח נשלחת
 # ל-`partclone.dd` (ברירת המחדל של `_tool_for` ב-restore.sh), שקורא
 # בלוקים ולא מערכת קבצים. הדבר היחיד שהמודול היה מוסיף הוא `used_bytes`
@@ -909,7 +911,11 @@ _phy_mods=$(find "$ROOT/lib/modules/$KVER/kernel/drivers/net/phy" \
     # ה-HCDים, ורק אחר כך usb-storage ו-usbhid שנשענים עליהם.
     printf '%s\n' usbcore xhci_hcd xhci_pci ehci_hcd ehci_pci
     printf '%s\n' ohci_hcd ohci_pci uhci_hcd
-    printf '%s\n' ahci nvme sd_mod uas usb-storage hv_vmbus hv_storvsc
+    # ‏sr_mod (#1485): כונן CD/DVD מדווח ב-hello (`optical`) כדי שלעולם לא
+    # ייראה כחריץ דיסק ריק. הוא יושב בעץ kernel/drivers/scsi שכבר נארז (cdrom
+    # נגרר ב-modules.dep). אם לא נטען — אין /sys/module/sr_mod, והסוכן מדווח
+    # ‏null ("לא נבדק"), לעולם לא [] ("אין כונן").
+    printf '%s\n' ahci nvme sd_mod sr_mod uas usb-storage hv_vmbus hv_storvsc
     # Optional Intel TCO hardware recovery; dependencies follow modules.dep.
     printf '%s\n' lpc_ich iTCO_wdt
     # בקרי הדיסק של ESXi, ‏KVM ו-Xen. ‏`virtio_pci` הוא built-in, ולכן
