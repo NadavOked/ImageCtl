@@ -124,6 +124,9 @@ def plan(conn, images_root: str | Path) -> tuple[list[Path], list[tuple[Path, st
             kept.append((path, "אין שורה למשימה הזאת בבסיס הנתונים"))
         elif row[0] in OPEN_STATES:
             kept.append((path, f"המשימה עדיין {row[0]}"))
+        elif row[0] == "verifying":
+            # ‏#1470: האימג' ממתין לאימות ברקע — ‏`reconcile_on_start` מריץ אותו מחדש.
+            kept.append((path, "האימג' ממתין לאימות"))
         elif row[0] in DEAD_STATES:
             doomed.append(path)
         else:

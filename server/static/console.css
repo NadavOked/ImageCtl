@@ -770,7 +770,7 @@ button:focus-visible,[role="button"]:focus-visible,.inventory-node:focus-visible
 .page .room-wave-line{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .page .mcard-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:var(--t-base);min-width:0}
 .page .mcard-h .muted{font-size:var(--t-sm);overflow-wrap:anywhere}
-.page .mcard .acts,.page .cap-now .acts{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:auto}
+.page .mcard .acts{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:auto}
 .page .mcard .kv{font-size:var(--t-sm)}
 /* #1033: מלבן אנכי למכונה, דיסקים מוערמים לפי SATA (דיסק 1 למעלה) — לא זה
    ליד זה. תיבת דיסק = שתי שורות בלבד (דיסק N / קיבולת), השאר ב-title. */
@@ -793,9 +793,11 @@ button:focus-visible,[role="button"]:focus-visible,.inventory-node:focus-visible
 .page .legend i.sw-warn{border-color:var(--warn-ink);background:color-mix(in srgb,var(--warn-ink) 10%,var(--surface))}
 .page .legend i.sw-err{border-color:var(--danger);background:color-mix(in srgb,var(--danger) 10%,var(--surface))}
 .page .legend i.sw-empty{border-style:dashed;background:transparent}
-.page .cap-now{display:grid;gap:10px;padding-bottom:12px;margin-bottom:12px;border-bottom:1px solid var(--hair)}
-.page .cap-now:last-child{padding-bottom:0;margin-bottom:0;border-bottom:0}
-.page .cap-now .bar{display:inline-block;width:min(260px,100%);height:6px;vertical-align:middle;margin-inline-end:8px}
+/* ‏#1505: פאנל פירוט הקליטה במגירה — ארבעה מדדים בשתי עמודות, וטבלת מחיצות שנכנסת לרוחב המגירה */
+.page.cap-detail .kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+.page.cap-detail .dg td{white-space:nowrap}
+.page.cap-detail .dg .bar-row{min-width:80px;margin-top:4px;gap:6px}
+.page.cap-detail .dg td:last-child{padding-inline-end:12px}
 @media(max-width:740px){.page .mgrid,.page .mgrid.big{grid-template-columns:repeat(auto-fill,minmax(140px,1fr))}.page .legend{gap:6px}}
 @media(max-width:400px){.page .mgrid,.page .mgrid.big{grid-template-columns:repeat(2,minmax(0,1fr))}}
 /* ---------- #954 גל 4: סבב הפצה — חדר המשכפלים: טופס סבב חדש inline, הערות למפעיל ---------- */
@@ -1112,18 +1114,6 @@ th,.table th,.page .dg th{letter-spacing:.02em}
 .task-table .pill.info{background:var(--indigo-soft);color:var(--clr-action-fg);border-color:color-mix(in srgb,var(--indigo) 40%,var(--surface))}
 /* #1391: שורה שנפתחת בלחיצה (עדכון ב-VM) */
 .task-table tr.go{cursor:pointer}.task-table tr.go:focus-visible td{outline:2px solid var(--indigo);outline-offset:-2px}
-/* ---------- כרטיס מחשב בנייה צר (נדב, 10/10) ----------
-   .mgrid נתן לכל כרטיס מינימום 140px, ובעמודת kv של max-content/1fr הערכים התכווצו ל-min-content:
-   "HP / HP / Desktop / Pro G2" ו"ממתין למפעיל…" נשברו מילה-מילה. עכשיו: כרטיס בנייה ברוחב סביר
-   (minmax(320px,1fr), ובמסך צר — כל השורה), עמודת הערכים minmax(0,1fr), שבירה-בכוח רק ל-mono
-   (serial/MAC), serial בשורה אחת עם … ו-title מלא, וטקסט מצב ארוך עד 3 שורות (title מלא). */
-.page .mgrid.wide{grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),1fr))}
-.page .mcard .kv .v .mono{display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom}
-.page .mcard .machine-drives td .mono{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.page .mcard .kv .v{overflow-wrap:break-word;word-break:normal}
-.page .mcard .kv .st{white-space:normal;align-items:flex-start}
-.page .mcard .kv .st::before{margin-top:.4em}
-.page .mcard .clamp{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;min-width:0}
 /* ---------- דשבורדים: עקביות (apple-pending-4) ----------
    מספרים/זמנים/אחוזים ב-tabular-nums בכל הדף (לא רק ב-KPI); אותה "פרטים טכניים" בהודעות כמו בשורת "דורש טיפול". */
 .page{font-variant-numeric:tabular-nums}
@@ -1761,3 +1751,64 @@ body.tasks-open .app>.task-dock{bottom:var(--task-h,220px);border-top:1px solid 
 .rnew .dk-in{position:static;width:16px;height:16px;margin:0;accent-color:var(--indigo);flex:none}.rnew .dk-t{font-weight:600;min-width:46px}.rnew .dk-sz{font-weight:600;font-variant-numeric:tabular-nums;direction:ltr;unicode-bidi:isolate;min-width:52px}.rnew .dk-br,.rnew .dk-why{color:var(--muted);font-size:var(--t-xs)}.rnew .dk-why{flex:1;min-width:0}.rnew .dk .pill{margin-inline-start:auto;flex:none}
 .rnew .rn-drv{border:1px solid var(--hair);border-radius:var(--r);margin-top:6px}.rnew .rn-drv>summary{cursor:pointer;padding:10px 14px;font-weight:600}.rnew .rn-db{padding:10px 14px 14px;border-top:1px solid var(--field-line)}.rnew .rn-submit{display:flex;align-items:center;gap:12px}.rnew .rn-sum{flex:1}
 @media (max-width:640px){.rnew{grid-template-columns:minmax(0,1fr)}.rnew .dk{flex-wrap:wrap}}
+/* ---------- #1485 (נדב 16/10): דפי "מחשבי שיכפול" / "מחשבי בנייה" ולשונית "דיסקים" לפי
+   docs/design/apple-mockups/console-full.html (P.cloners .rgrid/.mach/.dsk, P.build .grid2/.kv, W.machDrawer .n-tbl) ---------- */
+.page .rgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(210px,100%),1fr));gap:12px}
+.page .mach{border:1px solid var(--clr-border);border-radius:var(--r);padding:12px;background:var(--clr-surface);min-width:0;transition:transform var(--dur-press) var(--ease),box-shadow var(--dur-fast),border-color var(--dur-fast)}
+.page .mach[role=button]{cursor:pointer}
+.page .mach[role=button]:hover{border-color:var(--clr-action);box-shadow:var(--shadow-card)}.page .mach[role=button]:active{transform:scale(.985)}
+.page .mach:focus-visible{outline:2px solid var(--clr-action);outline-offset:2px}
+.page .mach .mt{display:flex;align-items:center;gap:8px;font-weight:600;margin-bottom:2px;flex-wrap:wrap}
+.page .mach .mt .pill{font-size:var(--t-xs);font-weight:600;padding:1px 9px;border-radius:99px}
+.page .mach .ms{font-size:var(--t-xs);color:var(--clr-muted);margin-bottom:10px}
+.page .mach .dsks{display:grid;gap:6px}
+.page .mach .dsk{display:grid;grid-template-columns:62px minmax(0,1fr) auto;align-items:center;gap:8px;font-size:var(--t-xs);color:var(--clr-muted)}
+.page .mach .dsk .bar{min-width:40px}
+.page .mach .dsk>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.page .mach .dsk b{font-weight:600;color:var(--clr-text);font-variant-numeric:tabular-nums;text-align:end;white-space:nowrap}
+.page .mach .dsk.unmapped b{color:var(--warn-ink)}
+.page .mach .dsk.opt span,.page .mach .dsk.vacant b{color:var(--clr-muted);font-weight:500}
+.page .mach .mach-note{font-size:var(--t-xs);color:var(--clr-muted);margin-top:8px}
+.page .mach.err{border-color:var(--clr-danger);background:var(--clr-danger-soft)}
+.page .mach.off{opacity:.75;border-style:dashed}
+.page .mach .acts{display:flex;gap:6px;margin-top:10px}
+.page .bar.idle i{background:var(--led-idle)}
+.page .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(340px,100%),1fr));gap:16px}
+.page .grid2>.card{min-width:0}
+.page dl.kvd{display:grid;grid-template-columns:150px minmax(0,1fr);margin:0;font-size:var(--t-base)}
+.page dl.kvd dt,.page dl.kvd dd{margin:0;padding:8px 0;border-bottom:1px solid var(--clr-row-border);min-width:0;overflow-wrap:anywhere}
+.page dl.kvd dt{color:var(--clr-muted)}
+.page .bcard .acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+.page .card-help{margin:8px 0 0;color:var(--clr-muted);font-size:var(--t-xs)}
+.page .drv-list{list-style:none;margin:0;padding:0;display:grid;gap:2px}
+.page .drv-list li.warn b{color:var(--warn-ink)}
+/* לשונית "דיסקים" בפאנל: הפאנים יוצאים מ-.page.drw (drawerEnhance), ולכן בלי .page — וגוברים על table/td הגלובליים */
+.n-tbl{width:100%;border-collapse:collapse;font-size:var(--t-base);background:none}
+.n-tbl th{text-align:start;font-size:var(--t-xs);font-weight:600;color:var(--clr-muted);padding:0 0 8px 8px;background:none;border-bottom:0;letter-spacing:0}
+.n-tbl td{padding:8px 0 8px 8px;border-top:1px solid var(--clr-row-border);border-bottom:0;vertical-align:middle}
+.n-tbl tbody tr:nth-child(even),.n-tbl tbody tr:hover{background:none}
+.disk-map tr.vacant td b,.disk-map tr.opt td b{color:var(--clr-muted);font-weight:500}
+.disk-map tr.unmapped td b{color:var(--warn-ink)}
+.disk-map .cap{font-size:var(--t-xs);color:var(--clr-muted)}
+.disk-map .mono{font-family:var(--font-mono);direction:ltr;unicode-bidi:isolate}
+.disk-map .muted{color:var(--clr-muted)}
+.win .disk-map .conn-sel{display:inline-block;height:30px;width:auto;min-width:118px;padding-block:0;padding-inline:10px 30px;font-size:var(--t-sm)}
+.disk-map .acts-cell{white-space:nowrap;text-align:end;font-size:var(--t-sm)}
+.disk-map .acts-cell a{color:var(--clr-action-fg);cursor:pointer;text-decoration:none}
+.map-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px}
+.map-dirty{margin-top:12px;font-size:var(--t-xs);color:var(--warn-ink)}
+.map-help{font-size:var(--t-xs);color:var(--clr-muted);margin-top:10px}
+/* S211: בקר מקטעים בתוך sheet — היה מעוצב רק תחת .page, וב-sheet יצא בסגנון ברירת המחדל של הדפדפן */
+.win .n-seg{display:inline-flex;padding:2px;background:var(--clr-hover);border-radius:var(--r-sm);max-width:100%;flex-wrap:wrap}
+.win .n-seg button{border:0;background:transparent;padding:5px 14px;border-radius:calc(var(--r-sm) - 1px);font-size:var(--t-sm);font-weight:500;color:var(--clr-muted);cursor:pointer;min-height:28px}
+.win .n-seg button[aria-pressed=true]{background:var(--clr-surface);color:var(--clr-text);box-shadow:var(--shadow-card)}
+.win .n-seg button:focus-visible{outline:2px solid var(--clr-action);outline-offset:1px}
+/* #1485 (S350): "התחל סבב" — כותרות המקטעים של המוקאפ בתוך הגריד, יעד + מגירה קטנה בשני טורים, סיכום בשורת התחתית */
+.rnew .n-sec-h{margin:10px 0 -4px}.rnew .n-sec-h:first-child{margin-top:0}
+.rnew .rn-2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}
+.rnew .rn-floor{font-size:var(--t-md);font-weight:700}
+.rnew .n-help{font-size:var(--t-xs);color:var(--clr-muted);margin:0}
+.rnew label .n-help{display:block;margin-top:6px;font-weight:400}
+.rnew .dk .n-chip{margin-inline-start:auto}
+#modalHint.rn-sum.need{color:var(--warn-ink)}
+@media (max-width:640px){.rnew .rn-2{grid-template-columns:minmax(0,1fr)}}

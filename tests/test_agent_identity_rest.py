@@ -22,7 +22,7 @@ pytest.importorskip("fastapi")
 
 from conftest import hello_body, setup_classroom
 from server.tasks import TOKEN_HEADER, staging_dir
-from test_capture import (PART_A, PART_B, make_task, manifest_for,
+from test_capture import (PART_A, PART_B, make_task, manifest_for, sha,
                           setup_build_machine, task_token)
 from test_direct_server import _live_manifest, _open_direct
 from test_machine_identity import (BUILD, IMAGE, MAC1, STATION_IP, STRANGER_IP,  # noqa: F401
@@ -256,6 +256,9 @@ def test_switching_identity_off_opens_agent_reads(identity_server, path):
 # --- capture: האסימון וגם זהות הרשת, לפני קריאת הגוף -------------------------
 
 
+ACCEPTED = {"files": 200, "manifest": 202}
+
+
 def _capture_request(server, client, task_id, kind):
     headers = {TOKEN_HEADER: task_token(server, task_id)}
     if kind == "files":
@@ -265,6 +268,9 @@ def _capture_request(server, client, task_id, kind):
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "p1.esp.pcl.zst").write_bytes(PART_A)
     (folder / "p3.windows.pcl.zst").write_bytes(PART_B)
+    # ‏#1470: מה שההעלאה הייתה רושמת — ה-sha256 שחושב בזמן הקבלה.
+    (folder / "p1.esp.pcl.zst.upload-sha256").write_text(sha(PART_A), encoding="ascii")
+    (folder / "p3.windows.pcl.zst.upload-sha256").write_text(sha(PART_B), encoding="ascii")
     return client.put(f"/api/v1/capture/{task_id}/manifest",
                       content=json.dumps(manifest_for()).encode(), headers=headers)
 
@@ -279,8 +285,9 @@ def test_capture_with_the_task_token_still_needs_the_task_macs_lease(
                                      created["id"], kind))
     assert any(f"({where})" in d for d in journal_where(identity_server,
                                                          "identity_refused"))
+    # ‏#1470: המניפסט עונה 202 — התקבל, והאימות רץ ברקע.
     assert _capture_request(identity_server, identity_server["station"],
-                            created["id"], kind).status_code == 200
+                            created["id"], kind).status_code == ACCEPTED[kind]
 
 
 @pytest.mark.parametrize("kind", ["files", "manifest"])
@@ -298,7 +305,7 @@ def test_switching_identity_off_opens_capture_with_a_valid_token(identity_server
     assert identity_server["admin"].post(
         "/api/console/settings", json={"identity_check": False}).status_code == 200
     assert _capture_request(identity_server, identity_server["stranger"],
-                            created["id"], kind).status_code == 200
+                            created["id"], kind).status_code == ACCEPTED[kind]
 
 
 # --- direct.py: המניפסט החי --------------------------------------------------

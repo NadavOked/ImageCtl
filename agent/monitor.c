@@ -49,8 +49,27 @@
 #define UINPUT_NAME "ImageCtl remote monitor"
 #define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
 
+/*
+ * #1475: the scan. Each tick compares the framebuffer with the copy the
+ * clients were last given, TILE_W x TILE_H at a time, and marks only the
+ * tiles that changed -- a moved pointer is a few KB on the wire, not a
+ * whole 1920x1080x4 Raw frame (8.3 MB) every tick. The rate is --fps while
+ * nobody touches the screen and ACTIVE_FPS for ACTIVE_MS after the last
+ * key or pointer event from the console, so the pointer the operator sees
+ * follows the hand; a screen that merely changes (a progress bar) does not
+ * raise the rate -- it would hold the fast rate for the whole clone.
+ */
+#define ACTIVE_FPS 25
+#define ACTIVE_MS 2000
+#define TORN_RETRY_US 2000      /* fb.mem mid-frame: look again soon, not a tick later */
+#define TORN_RETRIES 10         /* then back to the tick: a GUI that died mid-frame */
+#define TILE_W 64
+#define TILE_H 32
+#define STATS_US 60000000LL     /* one cost line a minute while a client watches */
+
 static volatile sig_atomic_t stopping;
 static int input_fd = -1;
+static long long active_until_us;
 /* Framebuffer size, the ABS range of the uinput pointer; set in main
  * before create_uinput. */
 static int fb_width;
@@ -86,6 +105,26 @@ static void stop_handler(int signo) {
 static void fatal(const char *what) {
     fprintf(stderr, "imagectl-monitor: FATAL: %s: %s\n", what, strerror(errno));
     exit(EXIT_FAILURE);
+}
+
+static long long now_us(void) {
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000000LL + ts.tv_nsec / 1000;
+}
+
+/* This process's CPU time, all threads (#1475 cost line). */
+static long long cpu_us(void) {
+    struct timespec ts;
+
+    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts);
+    return (long long)ts.tv_sec * 1000000LL + ts.tv_nsec / 1000;
+}
+
+/* Input mode only: a key or pointer event from the console (#1475). */
+static void input_seen(void) {
+    active_until_us = now_us() + ACTIVE_MS * 1000LL;
 }
 
 static int parse_int(const char *text, int minimum, int maximum,
@@ -274,6 +313,7 @@ static void keyboard_event(rfbBool down, rfbKeySym symbol,
 
     if (input_fd < 0)
         return;
+    input_seen();
     code = keycode_for(symbol);
     if (code < 0) {
         if (down)
@@ -499,6 +539,7 @@ static void pointer_event(int buttons, int x, int y, rfbClientPtr client) {
 
     if (input_fd < 0)
         return;
+    input_seen();
 
     if (x < 0)
         x = 0;
@@ -675,6 +716,75 @@ static const char *layout_error(const struct fb_var_screeninfo *var,
     return NULL;
 }
 
+/*
+ * One pass of the #1475 scan. A row that matches costs one memcmp; a row
+ * that does not is compared tile by tile and only the changed tiles are
+ * copied and flagged in `dirty` (rows x cols, one byte a tile). The flags
+ * are a pending set, cleared only by flush_tiles(): a pass that turns out
+ * torn (fb.mem seqlock moved) keeps them, so the tiles it already copied
+ * -- now equal to the source and invisible to the next memcmp -- are still
+ * sent once a whole frame is in.
+ */
+static void scan_tiles(const uint8_t *source, size_t source_stride,
+                       uint8_t *copy, unsigned width, unsigned height,
+                       unsigned char *dirty, unsigned cols) {
+    size_t row_bytes = (size_t)width * 4;
+    unsigned x_tile, y;
+
+    for (y = 0; y < height; y++) {
+        const uint8_t *from = source + (size_t)y * source_stride;
+        uint8_t *to = copy + (size_t)y * row_bytes;
+        unsigned char *flags = dirty + (size_t)(y / TILE_H) * cols;
+
+        if (!memcmp(from, to, row_bytes))
+            continue;
+        for (x_tile = 0; x_tile < cols; x_tile++) {
+            size_t offset = (size_t)x_tile * TILE_W * 4;
+            size_t length = row_bytes - offset < (size_t)TILE_W * 4
+                                ? row_bytes - offset : (size_t)TILE_W * 4;
+
+            if (memcmp(from + offset, to + offset, length)) {
+                memcpy(to + offset, from + offset, length);
+                flags[x_tile] = 1;
+            }
+        }
+    }
+}
+
+/* Marks each horizontal run of flagged tiles as one rectangle and clears
+ * the flags; returns how many tiles went out. A full-screen change is one
+ * rectangle per tile row, not one per tile. */
+static unsigned long flush_tiles(rfbScreenInfoPtr screen, unsigned char *dirty,
+                                 unsigned cols, unsigned rows,
+                                 unsigned width, unsigned height) {
+    unsigned long tiles = 0;
+    unsigned row, col;
+
+    for (row = 0; row < rows; row++) {
+        unsigned char *flags = dirty + (size_t)row * cols;
+        int y1 = (int)(row * TILE_H);
+        int y2 = (int)((row + 1) * TILE_H < height ? (row + 1) * TILE_H : height);
+
+        col = 0;
+        while (col < cols) {
+            unsigned start = col;
+            int x2;
+
+            if (!flags[col]) {
+                col++;
+                continue;
+            }
+            while (col < cols && flags[col]) {
+                flags[col++] = 0;
+                tiles++;
+            }
+            x2 = (int)(col * TILE_W < width ? col * TILE_W : width);
+            rfbMarkRectAsModified(screen, (int)(start * TILE_W), y1, x2, y2);
+        }
+    }
+    return tiles;
+}
+
 static void usage(const char *program) {
     fprintf(stderr,
             "usage: %s --bind ADDRESS --secret-file FILE --allow-from ADDRESS\n"
@@ -705,6 +815,13 @@ int main(int argc, char **argv) {
     int input_enabled = 0;
     int fb_fd;
     int i;
+    unsigned tile_cols, tile_rows;
+    unsigned char *dirty;
+    long long last_scan = 0, stats_since = 0, stats_cpu = 0, scan_cost = 0;
+    unsigned long scans = 0, skipped = 0, tiles_sent = 0;
+    uint32_t served_seq = 0;             /* fb.mem seq of the last whole scan */
+    int served = 0;
+    int retry = 0;
 
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--bind") && i + 1 < argc)
@@ -829,6 +946,11 @@ int main(int argc, char **argv) {
     rfb_framebuffer = calloc((size_t)var.xres * var.yres, 4);
     if (!rfb_framebuffer)
         fatal("allocate RFB framebuffer");
+    tile_cols = (var.xres + TILE_W - 1) / TILE_W;
+    tile_rows = (var.yres + TILE_H - 1) / TILE_H;
+    dirty = calloc((size_t)tile_cols * tile_rows, 1);
+    if (!dirty)
+        fatal("allocate tile flags");
 
     screen = rfbGetScreen(&argc, argv, var.xres, var.yres, 8, 3, 4);
     if (!screen)
@@ -841,6 +963,11 @@ int main(int argc, char **argv) {
     screen->serverFormat.greenShift = (uint8_t)var.green.offset;
     screen->serverFormat.blueShift = (uint8_t)var.blue.offset;
     screen->alwaysShared = TRUE;
+    /* #1475: send the moment a scan marks a change and a request is open.
+     * The library's default (5 ms) only starts the clock inside
+     * rfbProcessEvents and sends on the *next* call -- with a loop that
+     * sleeps a whole tick there, every frame left one tick late. */
+    screen->deferUpdateTime = 0;
     /* #1221: rfbGetScreen() installs its own 8x7 black-and-white "X"
      * software cursor (screen->cursor). rfbShowCursor()/rfbHideCursor()
      * bake it straight into the outgoing framebuffer, at cl->cursorX/Y,
@@ -900,42 +1027,104 @@ int main(int argc, char **argv) {
             bind_address, port, var.xres, var.yres, fps);
 
     while (!stopping && rfbIsActive(screen)) {
-        unsigned int y;
-        uint32_t seq_before = 0;
-        uint8_t *destination = (uint8_t *)rfb_framebuffer;
         const uint8_t *source =
             mapped + pixel_offset + (size_t)var.yoffset * fix.line_length +
             (size_t)var.xoffset * 4;
+        uint32_t seq_before = 0;
+        long long now = now_us(), period, began;
+        int whole = 1;
+
+        /* Nobody watching: no scan at all -- the monitor of a cloner that
+         * no one has open costs nothing (#1475; it used to copy the whole
+         * framebuffer every tick regardless). The first scan after a
+         * client arrives finds every changed tile. */
+        if (!screen->clientHead) {
+            stats_since = 0;
+            scans = skipped = tiles_sent = 0;
+            scan_cost = 0;
+            rfbProcessEvents(screen, 1000000 / fps > 999999 ? 999999 : 1000000 / fps);
+            continue;
+        }
+        if (retry && retry <= TORN_RETRIES)
+            period = TORN_RETRY_US;
+        else if (now < active_until_us && fps < ACTIVE_FPS)
+            period = 1000000LL / ACTIVE_FPS;
+        else
+            period = 1000000LL / fps;
+        if (now - last_scan < period) {
+            long long idle_us = last_scan + period - now;
+            /* select() takes tv_usec < 1 s; an input event wakes it early
+             * and the period is recomputed at the active rate. */
+            rfbProcessEvents(screen, idle_us > 999999 ? 999999 : (long)idle_us);
+            continue;
+        }
+        last_scan = began = now;
+
+        /* The measurement for the cloner's CPU budget (#1475), once a
+         * minute while a client watches: this process's own CPU time (the
+         * RFB sends included), how often the frame was scanned, what a
+         * scan cost, how often an unchanged seq made the tick free. */
+        if (!stats_since) {
+            stats_since = began;
+            stats_cpu = cpu_us();
+        } else if (began - stats_since >= STATS_US) {
+            long long cpu = cpu_us();
+
+            fprintf(stderr, "imagectl-monitor: in %llds: cpu %lld ms (%lld%% of one "
+                    "thread), %lu scans avg %lld us, %lu unchanged ticks, "
+                    "%lu tiles of %dx%d sent\n",
+                    (began - stats_since) / 1000000LL, (cpu - stats_cpu) / 1000,
+                    (cpu - stats_cpu) * 100 / (began - stats_since), scans,
+                    scans ? scan_cost / (long long)scans : 0LL, skipped,
+                    tiles_sent, TILE_W, TILE_H);
+            scans = skipped = tiles_sent = 0;
+            scan_cost = 0;
+            stats_since = began;
+            stats_cpu = cpu;
+        }
 
         /* Memory framebuffer: odd seq = the GUI is mid-frame; a seq that
-         * moved during the copy = we read a torn frame. Either way keep
-         * the last whole frame on the wire and try again next tick. */
+         * moved during the scan = we read a torn frame. Either way the
+         * tiles stay pending and we look again in TORN_RETRY_US -- the GUI
+         * rewrites the whole frame on every pointer move, so a full tick
+         * of backoff was a visible stall exactly while the mouse moved. */
         if (frame_seq) {
             seq_before = __atomic_load_n(frame_seq, __ATOMIC_ACQUIRE);
-            if (seq_before & 1u) {
-                rfbProcessEvents(screen, 1000000 / fps);
+            if (seq_before & 1u)
+                whole = 0;
+            /* #1475: the GUI has not presented since the last whole scan --
+             * the frame is the one the clients already have. One atomic
+             * load is the whole cost of an idle tick. */
+            else if (served && seq_before == served_seq && !retry) {
+                skipped++;
+                rfbProcessEvents(screen, 0);
                 continue;
             }
         }
-
-        for (y = 0; y < var.yres; y++)
-            memcpy(destination + (size_t)y * var.xres * 4,
-                   source + (size_t)y * fix.line_length,
-                   (size_t)var.xres * 4);
-
-        /* Seqlock reader (#850): an acquire load orders what comes after
-         * it, not the copy before it; the fence keeps every pixel read
-         * ahead of the re-check, so a torn copy cannot pass for whole. */
-        if (frame_seq)
-            __atomic_thread_fence(__ATOMIC_ACQUIRE);
-        if (frame_seq &&
-            __atomic_load_n(frame_seq, __ATOMIC_ACQUIRE) != seq_before) {
-            rfbProcessEvents(screen, 1000000 / fps);
-            continue;
+        if (whole) {
+            scan_tiles(source, fix.line_length, (uint8_t *)rfb_framebuffer,
+                       var.xres, var.yres, dirty, tile_cols);
+            scans++;
+            scan_cost += now_us() - began;
+            /* Seqlock reader (#850): an acquire load orders what comes
+             * after it, not the scan before it; the fence keeps every pixel
+             * read ahead of the re-check, so a torn copy cannot pass for
+             * whole. */
+            if (frame_seq) {
+                __atomic_thread_fence(__ATOMIC_ACQUIRE);
+                if (__atomic_load_n(frame_seq, __ATOMIC_ACQUIRE) != seq_before)
+                    whole = 0;
+            }
         }
-
-        rfbMarkRectAsModified(screen, 0, 0, var.xres, var.yres);
-        rfbProcessEvents(screen, 1000000 / fps);
+        retry = whole ? 0 : retry > TORN_RETRIES ? retry : retry + 1;
+        if (whole) {
+            tiles_sent += flush_tiles(screen, dirty, tile_cols, tile_rows,
+                                      var.xres, var.yres);
+            served_seq = seq_before;
+            served = 1;
+        }
+        /* Send now (deferUpdateTime 0), not after the next wait. */
+        rfbProcessEvents(screen, 0);
     }
 
     /* Clients first, uinput second (#839): rfbScreenCleanup stops the
@@ -949,6 +1138,7 @@ int main(int argc, char **argv) {
     }
     munmap(mapped, mapped_length);
     close(fb_fd);
+    free(dirty);
     free(rfb_framebuffer);
     return EXIT_SUCCESS;
 }

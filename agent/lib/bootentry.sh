@@ -87,12 +87,12 @@ ensure_boot_entry() {
 
     _esp_idx=$(manifest_plan "$2" 2>/dev/null | awk -F'|' -v g="$ESP_TYPE_GUID" \
         'toupper($2) == g || $3 == "esp" { print $1; exit }')
-    [ -n "$_esp_idx" ] || { _bootentry_fail "$1" "no ESP in the manifest"; return 0; }
+    [ -n "$_esp_idx" ] || { _bootentry_fail "$1" "אין מחיצת ESP במניפסט"; return 0; }
     _esp_node=$(partition_node "$1" "$_esp_idx")
     _esp_uuid=$(blkid -s PARTUUID -o value "$_esp_node" 2>> "$LOG_FILE" | tr 'A-F' 'a-f')
     case "$_esp_uuid" in
         [0-9a-f]*-*-*-*-[0-9a-f]*) ;;
-        *) _bootentry_fail "$1" "could not read the PARTUUID of $_esp_node"; return 0 ;;
+        *) _bootentry_fail "$1" "לא הצלחנו לקרוא את ה-PARTUUID של $_esp_node"; return 0 ;;
     esac
 
     _num=$(_bootentry_find "$_esp_idx" "$_esp_uuid")
@@ -106,7 +106,7 @@ ensure_boot_entry() {
         # be in the table, pointing at this disk's ESP.
         _num=$(_bootentry_find "$_esp_idx" "$_esp_uuid")
         if [ -z "$_num" ]; then
-            _bootentry_fail "$1" "efibootmgr --create-only rc=$_crc and no Boot#### for HD($_esp_idx,GPT,$_esp_uuid)/$BOOTENTRY_LOADER read back"
+            _bootentry_fail "$1" "efibootmgr --create-only rc=$_crc ולא נמצא Boot#### עבור HD($_esp_idx,GPT,$_esp_uuid)/$BOOTENTRY_LOADER בקריאה בחזרה"
             return 0
         fi
         _state="created"
@@ -116,7 +116,7 @@ ensure_boot_entry() {
     _nrc=$?
     _next=$(efibootmgr 2>> "$LOG_FILE" | sed -n 's/^BootNext: *//p' | tr 'a-f' 'A-F' | tr -d ' \r')
     if [ "$_next" != "$_num" ]; then
-        _bootentry_fail "$1" "Boot$_num $_state, but BootNext read back '$_next' (efibootmgr -n rc=$_nrc)"
+        _bootentry_fail "$1" "Boot$_num $_state, אך BootNext נקרא בחזרה '$_next' (efibootmgr -n rc=$_nrc)"
         return 0
     fi
     _bootentry_result "$_state" "$_num"

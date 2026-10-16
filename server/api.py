@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from sqlite3 import Connection
@@ -16,7 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from boot.grub_menu import normalize_mac as lenient_mac
 
-from . import (agent_loops, disk_events, foreign_vlan, identity, inventory,
+from . import (agent_loops, disk_events, drawer_slots, foreign_vlan, identity, inventory,
                login_guard, probe, pulls, registry, reports, shrink_records, users)
 from .auth import COOKIE_NAME, read_session
 from .db import journal
@@ -176,6 +177,7 @@ def create_agent_router(ctx: ServerContext,
 
         client_ip = request.client.host if request.client else None
         disks = body.get("disks") if isinstance(body.get("disks"), list) else None
+        optical = drawer_slots.clean_optical(body.get("optical")) if "optical" in body else None
         reported_ip = body.get("ip") if isinstance(body.get("ip"), str) else None
         off_vlan = off_deploy_vlan(request.scope, server_base)
         # ‏hello של דופק (`joining: false`) אומר "אני חי" בלי לבקש להצטרף.
@@ -251,7 +253,8 @@ def create_agent_router(ctx: ServerContext,
             hw_inventory=hw_inventory, hw_probe=hw_probe,
             prompt=prompt, disk_probe=disk_probe,
             firmware=firmware, secure_boot=secure_boot,
-            agent_version=agent_version, local_clone=local_clone,
+            agent_version=agent_version, local_clone=local_clone, optical=optical,
+            optical_reported=True,
             # ‏#715: פרמטרי השידור למקור שהוא מחשב בנייה — של המנוע, אם יש.
             multicast=ctx.sender.multicast_params() if ctx.sender is not None else None,
         )
@@ -290,6 +293,11 @@ def create_agent_router(ctx: ServerContext,
             gui_failure.note(ctx.conn, mac, body.get("gui_failed"), known=bool(answer["known"]))
         if body.get("wol_armed") is False and answer["known"]:
             journal(ctx.conn, "wol_arm_failed", mac)
+        # #1447: the agent has no NTP and the RTC may drift or have a dead
+        # battery (cloner 2 ran 13 min ahead on metal 16/10). The server's
+        # clock, read last so it is as fresh as the reply; hello.sh sets
+        # the machine's clock from it. Only in the real hello, not the menu.
+        answer["now"] = int(time.time())
         return JSONResponse(answer)
 
     @router.post("/agent/login")

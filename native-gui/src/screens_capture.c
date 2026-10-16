@@ -178,13 +178,13 @@ void screen_progress(App *a, cairo_t *cr, double W, double H, double head_h) {
     /* drawProgress, unless the agent set the texts itself (a cloning
      * machine or a class receiver shows this card with no operator). The
      * old "קולט: <name>" head is now label "קליטת אימג׳" + the name. */
-    char title[160], sub[1024], pct[96], bytes[64] = "—", total[64] = "—", rate[64] = "—";
+    char title[160], sub[1100], pct[96], bytes[64] = "—", total[64] = "—", rate[64] = "—";   /* sub: RLM + task_error[1024] whole, like done_sub (#1502) */
     const char *label = s->title[0] ? "משימה" : s->task_direct ? "הפצה ישירה" : "קליטת אימג׳";
     if (s->title[0])              snprintf(title, sizeof title, "%s", s->title);
     else if (s->task_direct)      snprintf(title, sizeof title, "משדר מהדיסק %s למחשבי השיכפול", s->task_disk);   /* #715 */
     else if (s->task_name[0])     snprintf(title, sizeof title, "%s", s->task_name);
     else                          snprintf(title, sizeof title, "קולט…");          /* index.html default */
-    if (s->task_error[0])         snprintf(sub, sizeof sub, "%s", s->task_error);
+    if (s->task_error[0])         snprintf(sub, sizeof sub, "\xE2\x80\x8F%s", s->task_error);   /* #1502: RLM -- "sda: ..." would lay the line out LTR */
     else if (s->sub[0])           snprintf(sub, sizeof sub, "%s", s->sub);
     else if (s->task == TASK_PENDING) snprintf(sub, sizeof sub, "ממתין לסוכן — ודאו שהמחשב עלה ב-PXE");
     else if (s->task_disk[0])     snprintf(sub, sizeof sub, "כונן המקור: %s", s->task_disk);

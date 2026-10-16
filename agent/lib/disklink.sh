@@ -77,3 +77,36 @@ disk_link_json() {
     fi
     printf ',"link_gbps":%s,"link_max_gbps":%s,"crc":%s' "${_dl_sm% *}" "${_dl_sm#* }" "$_dl_crc"
 }
+
+disk_pci_json() {
+    # The controller PCI address is the component immediately before /nvme/.
+    _dl_path=$(readlink -f "$SYSROOT/sys/block/$1/device" 2>/dev/null)
+    _dl_pci=${_dl_path%%/nvme/*}
+    [ "$_dl_pci" != "$_dl_path" ] && _dl_pci=${_dl_pci##*/} || _dl_pci=''
+    if printf '%s\n' "$_dl_pci" | grep -Eq '^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]$'; then
+        printf ',"pci":"%s"' "$_dl_pci"
+    else
+        printf ',"pci":null'
+    fi
+}
+
+optical_json() {
+    # Optical drives are inventory only: never include them in disks/targets
+    # (#1485). Without sr_mod there is no /sys/block/sr* to look at: that is
+    # null ("could not look"), never [] ("looked, none") -- principle 5.
+    [ -d "$SYSROOT/sys/module/sr_mod" ] || { printf ',"optical":null'; return 0; }
+    printf ',"optical":['
+    _dl_first=1
+    for _dl_dir in "$SYSROOT"/sys/block/sr*; do
+        [ -e "$_dl_dir" ] || continue
+        _dl_dev=${_dl_dir##*/}
+        _dl_model=$(trim "$(cat "$_dl_dir/device/model" 2>/dev/null)")
+        _dl_port=$(port_from_path "$(readlink -f "$_dl_dir/device" 2>/dev/null)")
+        [ -n "$_dl_port" ] || _dl_port=null
+        [ "$_dl_first" = 1 ] || printf ','
+        _dl_first=0
+        printf '{"dev":"%s","model":"%s","port":%s}' \
+            "$_dl_dev" "$(json_escape "$_dl_model")" "$_dl_port"
+    done
+    printf ']'
+}

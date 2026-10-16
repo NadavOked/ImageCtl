@@ -198,3 +198,33 @@ def test_a_clean_wave_with_the_same_drives_raises_the_next_one(room_server):
     shown = room(admin)["round"]["wave_rate"]
     assert shown["basis"] == "up"
     assert shown["previous"]["session_id"] == "ses_before"
+
+
+def test_new_drawers_in_the_same_cloners_raise_the_next_wave(room_server):
+    """#1471 (הכרעת נדב 16/10) קצה-לקצה: הגל הקודם יצא ב-600m לאותם שני מחשבי
+    שיכפול עם **מגירות אחרות** (O1–O4), נקי. הזיכרון הוא של המכונות — הגל הזה
+    (S1–S4) יוצא ב-700m. עד היום: מגירה שלא הייתה בגל הקודם = 600m."""
+    ctx, admin = room_server["ctx"], room_server["admin"]
+    roster = [{"mac": mac, "serial": s, "model": "Drawer SSD"}
+              for mac, s in ((CLONER1, "O1"), (CLONER1, "O2"), (CLONER2, "O3"),
+                             (CLONER2, "O4"))]
+    ctx.conn.execute(
+        "INSERT INTO wave_rates (session_id, decision, at, stream) VALUES (?,?,?,?)",
+        ("ses_before", json.dumps({"max_bitrate": "600m", "roster": roster}),
+         "2026-10-16T09:00:00+00:00",
+         json.dumps({"sent_bytes": 10 ** 10, "loss_blocks": 0,
+                     "stream_bps": 71 * MB, "stream_s": 140.8})))
+    for d in roster:
+        ctx.conn.execute(
+            "INSERT INTO drive_rates (serial, model, session_id, rate_bps, cap_bps,"
+            " bytes, seconds, at) VALUES (?,?,?,?,?,?,?,?)",
+            (d["serial"], "Drawer SSD", "ses_before", 75 * MB, 75 * MB, 75 * MB * 1000,
+             1000, "2026-10-16T09:20:00+00:00"))
+    ctx.conn.commit()
+    _open_and_join(room_server)
+    assert admin.post("/api/console/room/start").status_code == 200
+    assert _sent_bitrate(room_server) == "700m"
+    shown = room(admin)["round"]["wave_rate"]
+    assert shown["basis"] == "up"
+    assert shown["previous"]["session_id"] == "ses_before"
+    assert shown["previous"]["mac"] in (CLONER1, CLONER2)

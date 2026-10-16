@@ -20,9 +20,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import PlainTextResponse
 
 from . import (auth, capabilities, console_login, console_mfa, console_presence, crcwarn, minfree,
-               dhcp, disk_failures, drive_rates, identity, inventory, probe, registry, room,
+               dhcp, disk_failures, drawer_slots, drive_rates, identity, inventory, nic_speed, probe,
+               registry, room,
                shrink_records, slot_names,
-               storage_locations, storage_nodes, users)
+               storage_locations, storage_nodes, transfer_cap, users)
 from .api import ServerContext
 from .db import (_write_lock, get_setting, journal, now_iso, set_settings,
                  update_one, writing)
@@ -49,11 +50,14 @@ WRITE_SETTINGS = {"recovery_require_login", "session_wait_seconds",
                   crcwarn.SETTING,
                   # ‏#1354: מינימום GB פנויים במחיצת המערכת אחרי שחזור (0–500).
                   minfree.SETTING,
+                  # ‏#1473: תקרת קצב להעברות בין אתרים, Mb/s (0 = ללא הגבלה).
+                  transfer_cap.SETTING,
                   auto_reboot.MODE, auto_reboot.TIME, auto_reboot.WEEKDAY}
 
 #: #406: השדות שעריכת מכונה מכירה. שדה מחוץ לרשימה = טעות של הקורא,
 #: והוא נדחה ב-400 במקום להיבלע ולהחזיר ``{"ok": True}`` שלא שינה כלום.
-EDIT_MACHINE_FIELDS = {"name", "group_id", "drawer_count", "mac"}   # mac: #977 §5
+EDIT_MACHINE_FIELDS = {"name", "group_id", "drawer_count", "drawer_slots", "mac",   # mac: #977 §5
+                       "nic_speed_mbps"}   # 15/10: מהירות כרטיס ידנית, null = אוטומטי
 #: ‏#1127: שדה טקסט חופשי (שם קבוצה/מכונה) — תקרת אורך, כי הוא נכנס ליומן,
 #: לתפריט GRUB ולמסך; בלי תקרה שורה של מגה-בייט היא DoS שקט על הקונסולה.
 TEXT_FIELD_MAX = 100
@@ -438,8 +442,8 @@ def create_console_router(
         # ‏null = מעולם לא דיווחה (או שהדיווח האחרון היה פגום); [] = דיווחה
         # בפועל אפס כוננים — שני ממצאים שונים, ואסור לקפל (עיקרון 5).
         query = (
-            "SELECT m.mac, m.suffix, m.group_id, m.note, m.drawer_count,"
-            " m.added_at, d.disks_json, d.last_seen AS disks_reported_at,"
+            "SELECT m.mac, m.suffix, m.group_id, m.note, m.drawer_count, m.drawer_slots,"
+            " m.added_at, d.disks_json, d.optical_json, d.last_seen AS disks_reported_at,"
             " d.prompt,"   # #906: מה המכונה ממתינה עליו לאדם (NULL = לא ממתינה)
             " d.disk_probe,"   # #402: למה אפס דיסקים (NULL = סוכן ישן)
             " d.firmware, d.secure_boot,"   # #500: כפי שהסוכן מדד (NULL = לא דווח)
@@ -465,6 +469,11 @@ def create_console_router(
             row = dict(r)
             disks_json = row.pop("disks_json")
             row["disks"] = json.loads(disks_json) if disks_json is not None else None
+            stored_slots = row.pop("drawer_slots")
+            row["drawer_slots"] = drawer_slots.effective(row["drawer_count"], stored_slots)
+            row["drawer_slots_custom"] = stored_slots is not None
+            optical_json = row.pop("optical_json")
+            row["optical"] = json.loads(optical_json) if optical_json is not None else None
             # ‏#1366: מונה ה-CRC המוחלט מעל הסף — אותו דגל כמו במסך החדר.
             for d in row["disks"] if isinstance(row["disks"], list) else []:
                 if isinstance(d, dict):
@@ -478,6 +487,8 @@ def create_console_router(
             row["probe"] = sample["probe"] if sample else None
             row["probe_seen_at"] = sample["sampled_at"] if sample else None
             row["probe_verdicts"] = probe.verdicts(row["probe"])
+            # ‏15/10: מהירות כרטיס ההפצה — ידנית / מדווחת / הונחה 1Gb/s.
+            row["nic_speed"] = nic_speed.view(ctx.conn, row["mac"], row["probe"], sampled=True)
             row["last_capture"] = last_captures.get(row["mac"])
             row["slot_names"] = names.get(row["mac"], {})
             # ‏#1367: באמצע שיכפול מקומי עכשיו — "אתחל" שואל לפני (room.local_copy_now)
@@ -572,6 +583,28 @@ def create_console_router(
             return {"ok": True, "mac": new,
                     "network": _sync_known_macs(user[0]) if changed else None}
         drawer_count = _drawer_count(body.get("drawer_count"))   # #695
+        canonical = registry.normalize_mac(mac)
+        current = ctx.conn.execute(
+            "SELECT drawer_slots FROM machines WHERE mac = ?", (canonical,)
+        ).fetchone() if canonical is not None else None
+        mapping_sent = "drawer_slots" in body
+        mapping = None
+        if mapping_sent and body["drawer_slots"] is not None:
+            try:
+                mapping = drawer_slots.parse(body["drawer_slots"])
+            except ValueError as exc:
+                raise HTTPException(400, str(exc))
+            if "drawer_count" in body and drawer_count != len(mapping):
+                raise HTTPException(400, "מספר המגירות אינו תואם למספר החיבורים במיפוי")
+            drawer_count = len(mapping)
+        if ("drawer_count" in body and not mapping_sent and current is not None
+                and current["drawer_slots"] is not None):
+            raise HTTPException(400, "למכונה יש מיפוי חיבורים מותאם; יש לשלוח גם drawer_slots")
+        # ‏15/10: נבדק **לפני** כל כתיבה — ערך פסול אינו משאיר חצי עריכה.
+        speed = body.get("nic_speed_mbps")
+        if "nic_speed_mbps" in body and speed is not None and (
+                isinstance(speed, bool) or speed not in nic_speed.CHOICES):
+            raise HTTPException(400, "מהירות כרטיס: אוטומטי (null), 1000, 2500 או 10000")
         try:
             registry.update_machine(
                 ctx.conn, mac, body.get("name"), body.get("group_id"), user[0]
@@ -588,6 +621,21 @@ def create_console_router(
                     raise HTTPException(404, "מכונה לא קיימת")
             journal(ctx.conn, "machine_drawer_count",
                     f"{registry.normalize_mac(mac)} count={drawer_count}", user[0])
+        if mapping_sent:
+            with _write_lock, writing(ctx.conn):
+                if not update_one(
+                    ctx.conn, "UPDATE machines SET drawer_slots = ? WHERE mac = ?",
+                    (json.dumps(mapping) if mapping is not None else None, canonical),
+                ):
+                    raise HTTPException(404, "מכונה לא קיימת")
+            journal(ctx.conn, "machine_drawer_slots",
+                    f"{canonical} " + (",".join(mapping) if mapping is not None else "default"),
+                    user[0])
+        if "nic_speed_mbps" in body:
+            canonical = registry.normalize_mac(mac)
+            nic_speed.set_manual(ctx.conn, canonical, speed)
+            journal(ctx.conn, "machine_nic_speed",
+                    f"{canonical} " + (f"{speed}Mb/s" if speed else "auto"), user[0])
         return {"ok": True}
 
     @router.put("/machines/{mac}/slot-names")
@@ -1021,6 +1069,8 @@ def create_console_router(
         values[crcwarn.SETTING] = str(crcwarn.threshold(ctx.conn))
         # ‏#1354: הערך שבתוקף — ברירת המחדל כשלא נקבע, לא "לא נקבע".
         values[minfree.SETTING] = str(minfree.min_free_gb(ctx.conn))
+        # ‏#1473: הערך שבתוקף — "0" (ללא הגבלה) כשלא נקבע או כשהשמור פגום.
+        values[transfer_cap.SETTING] = str(transfer_cap.cap_mbps(ctx.conn))
         mode, at, weekday = auto_reboot.settings(ctx.conn)
         values.update({auto_reboot.MODE: mode, auto_reboot.TIME: at,
                        auto_reboot.WEEKDAY: str(weekday)})
@@ -1059,6 +1109,13 @@ def create_console_router(
                 raise HTTPException(
                     400, f"מינימום מקום פנוי: מספר שלם 0–{minfree.MIN_FREE_GB_MAX}")
             body[minfree.SETTING] = str(gb)
+        # ‏#1473: אותו דפוס — נבדק לפני שנכתב דבר.
+        if transfer_cap.SETTING in body:
+            mbps = transfer_cap.parse(body[transfer_cap.SETTING])
+            if mbps is None:
+                raise HTTPException(
+                    400, f"הגבלת קצב בין אתרים: מספר שלם 0–{transfer_cap.MAXIMUM} (Mb/s)")
+            body[transfer_cap.SETTING] = str(mbps)
         normalized = {}
         for key, value in body.items():
             if isinstance(value, bool):

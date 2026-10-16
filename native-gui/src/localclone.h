@@ -8,6 +8,11 @@
 
 #define LC_MAX_DISKS 8
 #define LC_MAX_PARTS 16
+/* #1437: the speed and the time left are measured over the last LC_RATE_WIN s
+ * of the copy, not averaged since the start (which counts the preparation) */
+#define LC_RATE_WIN 60
+#define LC_RATE_MIN 5                            /* the speed needs this many s of bytes */
+#define LC_RATE_MAX 128
 
 enum { LC_SCREEN_NONE, LC_SCREEN_BOOT, LC_SCREEN_LOCAL };
 /* the verdict of one target against the chosen source (lcinv.sh lc_verdict) */
@@ -25,11 +30,12 @@ typedef struct {
 } LcDisk;
 /* lc_fit=dev|verdict|need|reason */
 typedef struct { char dev[16]; int verdict; long long need; char reason[240]; } LcFit;
-/* lc_part=idx|label|fs|bytes|size|state|in */
+/* lc_part=idx|label|fs|bytes|size|state|in -- bytes -1 = used not measured (#1440) */
 typedef struct { int idx; char label[24], fs[16], state[8]; long long bytes, size, in; } LcPart;
-/* lc_tgt=dev|state|bytes|part|ok|grown_idx,grown_bytes,src_bytes,free|error|total */
+/* lc_tgt=dev|state|bytes|part|ok|grown_idx,grown_bytes,src_bytes,free|error|total|ntfs_boot */
 typedef struct {
     char dev[16], state[16]; long long bytes, total; int part, ok, has_table;
+    int ntfs_boot;                               /* #1487: NTFS backup boot sectors written and read back */
     int grown_idx; long long grown_bytes, src_bytes, free_bytes; char error[400];
 } LcTgt;
 
@@ -58,6 +64,8 @@ typedef struct {
     int confirm, stop;                           /* the two dialogs */
     double start_sent;                           /* monotonic s of lc-start; the progress view until the agent answers */
     char last_phase[16];                         /* done -> idle ("שכפול נוסף"): the roles start over */
+    /* #1437: (elapsed, copied) as the agent wrote them, one per reload, from the first byte */
+    int rate_e[LC_RATE_MAX]; long long rate_c[LC_RATE_MAX]; int rate_n;
 } LcUi;
 
 enum { LCF_BAY, LCF_BACK, LCF_NEXT, LCF_GO, LCF_CANCEL, LCF_DROP, LCF_STOP, LCF_STOP_GO, LCF_STOP_NO, LCF_OFF, LCF_AGAIN };
