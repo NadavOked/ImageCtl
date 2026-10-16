@@ -7,6 +7,7 @@ did, and it becomes one journal line, labelled as the machine's own report.
 Best effort from the agent's side: a refused report changes nothing on the
 machine's screen. Nothing here is trusted beyond a line of text -- it is not
 a round, not a disk failure record, and it moves no state.
+#1466 adds a read-only shrink path and optional stage timers to that report.
 """
 
 from __future__ import annotations
@@ -39,6 +40,24 @@ def _amount(value: Any) -> str:
     return "כמות לא נמדדה"
 
 
+def _stages(body: dict) -> str:
+    """Return the measured local-clone stages in journal display order."""
+    fields = (
+        ("info_s", "מדידה {v}ש'"),
+        ("resize_s", "כיווץ {v}ש'"),
+        ("relocations_mb", "הועברו {v}MB"),
+        ("copy_s", "העתקה {v}ש'"),
+        ("verify_s", "אימות {v}ש'"),
+        ("restore_s", "סיום {v}ש'"),
+    )
+    measured = []
+    for key, label in fields:
+        value = body.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            measured.append(label.format(v=value))
+    return ", ".join(measured)
+
+
 def journal_line(body: dict) -> str:
     """The journal's detail for one report, or BadReport."""
     source = _drawer(body.get("source"))
@@ -67,4 +86,16 @@ def journal_line(body: dict) -> str:
         restore = body.get("source_restore")
         line += " · המקור כווץ זמנית " + ("והוחזר לגודלו" if restore == "ok"
                                           else "ולא הוחזר לגודלו — לבדוק את המקור")
+    shrink_path = body.get("shrink_path")
+    if shrink_path == "snapshot":
+        line += " · כיווץ על עותק בזיכרון — המקור נקרא בלבד ולא נכתב"
+        teardown = body.get("snapshot_teardown")
+        if isinstance(teardown, str) and teardown not in ("", "ok"):
+            error = " ".join(teardown.split())[:ERROR_MAX]
+            line += f" · העותק בזיכרון לא שוחרר ({error}) — לאתחל את המחשב לפני שיכפול נוסף"
+    elif shrink_path == "refused":
+        line += " · יעד קטן סורב: לא היה עותק בזיכרון (device-mapper או מקום) — המקור לא נכתב"
+    stages = _stages(body)
+    if stages:
+        line += " · שלבים: " + stages
     return line + " (דיווח המחשב — השיכפול לא עבר דרך השרת)"

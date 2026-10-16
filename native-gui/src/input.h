@@ -47,6 +47,9 @@ Input *input_open(int screen_w, int screen_h);
  * keyboard). Self-throttled to at most once a second; cheap to call every
  * loop. Already-open devices are left untouched. */
 void input_rescan(Input *in);
+/* #1475: a remote monitor will create its uinput device (agent/monitor.c's
+ * UINPUT_NAME) -- do not stop rescanning before it is grabbed too. */
+void input_want_remote(Input *in);
 int input_fill_pollfds(Input *in, struct pollfd *out, int max);
 /* Read whatever is ready; then drain with input_next(). */
 void input_pump(Input *in, const struct pollfd *fds, int n);

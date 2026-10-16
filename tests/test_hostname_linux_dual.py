@@ -108,7 +108,7 @@ def test_no_subvolume_holding_etc_is_a_named_failure(tmp_path):
     assert rc == 1
     assert result["ok"] is False
     assert result["code"] == "no_root_subvolume", result
-    assert "subvolume" in result["error"]
+    assert "תת-כרך" in result["error"]
     assert "0 top-level subvolumes hold /etc" in (run / "agent.log").read_text()
 
 
@@ -152,7 +152,7 @@ def test_dual_boot_linux_failed_says_only_windows(tmp_path):
     rc, result = name(script)
     assert rc == 1 and result["ok"] is False
     assert result["code"] == "named_windows_only", result
-    assert "could not mount the linux partition" in result["error"]
+    assert "לא הצלחנו לעגן את מחיצת הלינוקס" in result["error"]
     assert "ComputerName LAB1-05" in written(run / "hivewrites")  # הצד השני כן נכתב
 
 
@@ -161,7 +161,7 @@ def test_dual_boot_windows_failed_says_only_linux(tmp_path):
     rc, result = name(script)
     assert rc == 1
     assert result["code"] == "named_linux_only", result
-    assert "SYSTEM hive not found" in result["error"]
+    assert "כוורת SYSTEM לא נמצאה" in result["error"]
     assert written(run / "linux/etc/hostname") == "LAB1-05"
 
 
@@ -170,8 +170,8 @@ def test_dual_boot_both_failed_says_neither_with_both_reasons(tmp_path):
     rc, result = name(script)
     assert rc == 1
     assert result["code"] == "named_neither", result
-    assert "SYSTEM hive not found" in result["error"]
-    assert "could not mount the linux partition" in result["error"]
+    assert "כוורת SYSTEM לא נמצאה" in result["error"]
+    assert "לא הצלחנו לעגן את מחיצת הלינוקס" in result["error"]
 
 
 def test_a_partial_dual_boot_name_reaches_the_report_as_a_warning(tmp_path):
@@ -186,4 +186,4 @@ def test_a_partial_dual_boot_name_reaches_the_report_as_a_warning(tmp_path):
     assert out.returncode == 0, out.stderr
     assert written(run / "targets/sda/state") == "done"
     err = written(run / "targets/sda/error")
-    assert err.startswith("שם המחשב לא נכתב: the linux side was not named"), err
+    assert err.startswith("שם המחשב לא נכתב: צד הלינוקס לא קיבל שם"), err

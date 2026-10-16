@@ -148,6 +148,33 @@ field_for_code() {
     esac
 }
 
+# The engine's failure code -> the Hebrew line under the field (#1503). The
+# engine's own English message stays in the log (engine_validate prints it).
+he_for_code() {
+    case "$1" in
+        iso-target) printf '%s' 'לא ניתן להתקין על המדיה שממנה אתחלתם' ;;
+        missing-key) printf '%s' 'חסר פרט בהגדרות ההתקנה' ;;
+        invalid-disk) printf '%s' 'הדיסק שנבחר אינו תקין' ;;
+        invalid-role) printf '%s' 'תפקיד השרת אינו תקין' ;;
+        invalid-primary-url) printf '%s' 'כתובת השרת הראשי אינה תקינה (כתובת IP או שם, או https://HOST:8443)' ;;
+        primary-unverified) printf '%s' 'השרת הראשי לא אומת — הריצו בדיקת חיבור עד שהיא ירוקה' ;;
+        invalid-interface) printf '%s' 'כרטיס הרשת שנבחר אינו תקין' ;;
+        invalid-mac) printf '%s' 'כתובת ה-MAC של כרטיס הרשת אינה תקינה' ;;
+        mac-mismatch) printf '%s' 'כתובת ה-MAC אינה שייכת לכרטיס הרשת שנבחר' ;;
+        interface-check) printf '%s' 'לא הצלחנו לקרוא את כתובת ה-MAC של כרטיס הרשת' ;;
+        invalid-network-mode) printf '%s' 'מצב הרשת חייב להיות DHCP או כתובת קבועה' ;;
+        invalid-network) printf '%s' 'ב-DHCP יש להשאיר את שדות הכתובת ריקים' ;;
+        invalid-address) printf '%s' 'כתובת ה-IP אינה תקינה' ;;
+        invalid-netmask) printf '%s' 'מסכת הרשת אינה תקינה' ;;
+        invalid-gateway) printf '%s' 'כתובת השער אינה תקינה' ;;
+        invalid-dns) printf '%s' 'רשימת שרתי ה-DNS אינה תקינה (כתובות מופרדות בפסיק)' ;;
+        invalid-hostname) printf '%s' 'שם השרת אינו תקין — אותיות לטיניות, ספרות ומקף, עד 63 תווים, בלי מקף בתחילה או בסוף' ;;
+        invalid-admin-user) printf '%s' 'שם המנהל אינו תקין — אותיות קטנות, ספרות ו-. _ - עד 32 תווים, בלי מקף בתחילה' ;;
+        invalid-admin-password) printf '%s' 'הסיסמה לא יכולה להיות ריקה' ;;
+        *) printf '%s' 'ההגדרות לא עברו בדיקה' ;;
+    esac
+}
+
 password_errors() {
     _pe_p=$(field password); _pe_c=$(field password_confirm); _pe_bad=0
     [ "${#_pe_p}" -ge 8 ] || { emit errors.password 'לפחות 8 תווים'; _pe_bad=1; }
@@ -168,7 +195,8 @@ engine_validate() {
     _ev_code=$(printf '%s\n' "$_ev_err" | sed -n 's/^installer: \[\([a-z-]*\)\].*/\1/p' | head -n1)
     _ev_msg=$(printf '%s\n' "$_ev_err" | sed -n 's/^installer: \[[a-z-]*\] //p' | head -n1)
     [ -n "$_ev_msg" ] || _ev_msg=$(printf '%s\n' "$_ev_err" | tail -n1)
-    emit "errors.$(field_for_code "${_ev_code:-unknown}")" "$_ev_msg"
+    printf 'gui-bridge: validation [%s] %s\n' "${_ev_code:-unknown}" "$_ev_msg" >&2   # the English line is the log
+    emit "errors.$(field_for_code "${_ev_code:-unknown}")" "$(he_for_code "${_ev_code:-unknown}")"
     return 1
 }
 

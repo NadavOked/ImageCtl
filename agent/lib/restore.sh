@@ -50,9 +50,9 @@ validate_restore_plan() {
     # complete table without writing it; this must run before --zap-all.
     _vp="$RUN_DIR/preflight.plan"
     _vdisk=$1; _vman=$2   # ‏#1418: `set --` למטה דורס את $1/$2
-    manifest_plan "$2" > "$_vp" || { PLAN_ERROR="malformed restore plan -- disk untouched"; return 1; }
+    manifest_plan "$2" > "$_vp" || { PLAN_ERROR="תוכנית השחזור פגומה — הדיסק לא שונה"; return 1; }
     _vsectors=$(blockdev --getsz "$DEVROOT/$1" 2>> "$LOG_FILE")
-    case "$_vsectors" in ''|*[!0-9]*) PLAN_ERROR="target size unavailable -- disk untouched"; return 1 ;; esac
+    case "$_vsectors" in ''|*[!0-9]*) PLAN_ERROR="לא ניתן לקרוא את גודל דיסק היעד — הדיסק לא שונה"; return 1 ;; esac
     awk -F'|' -v cap="$_vsectors" '
         BEGIN { n = 0 }
         NF < 11 || NF > 12 { exit 1 }
@@ -68,15 +68,15 @@ validate_restore_plan() {
         $10 != "" && $10 !~ /^[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}$/ { exit 1 }
         $11 ~ /[[:cntrl:]|]/ || ($11 != "" && $11 !~ /^([0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}|[0-9A-F]{4}-[0-9A-F]{4}|[0-9A-F]{16})$/) { exit 1 }
         $12 !~ /^([0-9A-F]{16})?$/ { exit 1 }
-        END { if (NR < 1) exit 1 }' "$_vp" || { PLAN_ERROR="malformed restore plan -- disk untouched"; return 1; }
-    set -- sgdisk --pretend --clear   # ‏#1434: --zap-all בהדמיה משאיר את הטבלה הקיימת בזיכרון
+        END { if (NR < 1) exit 1 }' "$_vp" || { PLAN_ERROR="תוכנית השחזור פגומה — הדיסק לא שונה"; return 1; }
+    set -- sgdisk -a 1 --pretend --clear   # ‏#1434: --zap-all בהדמיה משאיר את הטבלה הקיימת בזיכרון
     while IFS='|' read -r _i _g _r _fs _s _z _f _h _e _u _uuid _a; do
         _last=$((_s + _z / 512 - 1)); set -- "$@" -n "$_i:$_s:$_last" -t "$_i:$_g"
         [ -z "$_u" ] || set -- "$@" -u "$_i:$_u"
         [ -z "$_a" ] || set -- "$@" -A "$_i:=:0x$_a"
     done < "$_vp"
     _dg=$(json_get "$_vman" ".disk_guid"); [ -z "$_dg" ] || [ "$_dg" = null ] || set -- "$@" -U "$_dg"
-    "$@" "$DEVROOT/$_vdisk" >> "$LOG_FILE" 2>&1 || { PLAN_ERROR="sgdisk rejected restore plan -- disk untouched"; return 1; }
+    "$@" "$DEVROOT/$_vdisk" >> "$LOG_FILE" 2>&1 || { PLAN_ERROR="sgdisk דחה את תוכנית השחזור — הדיסק לא שונה"; return 1; }
 }
 
 partclone_for_fs() {
@@ -147,7 +147,7 @@ is_sha256() {
 
 restore_partition() {
     # $1=mode $2=server $3=image_id $4=disk $5=index $6=fs $7=file $8=sha256 $9=uuid
-    # Pipeline: source | pv (byte counter) | tee (sha fork) | zstd -d | partclone
+    # Pipeline: source | fanout (-P counter, -S sha) > feed; zstd -d < feed | partclone
     _tdir="$RUN_DIR/targets/$4"
     _node=$(partition_node "$4" "$5")
     _pcl=$(partclone_for_fs "$6")
@@ -166,35 +166,35 @@ restore_partition() {
     fi
 
     next_stream_ceiling   # #957: אחרי ה-swap — נספרים רק זרמים
-    rm -f "$_tdir/shafifo" "$_tdir/sha.out" "$_tdir/pipe.rc"
-    mkfifo "$_tdir/shafifo"
-    sha256sum < "$_tdir/shafifo" > "$_tdir/sha.out" &
-    _shapid=$!
-
-    # הצינור רץ ברקע כדי שתהיה עין שמסתכלת עליו. מונה ה-pv הוא ההוכחה
-    # היחידה שמשהו זז, ו-wait_progress מודד בדיוק אותו: כונן איטי מעכב
-    # ומותר לו, זרם שנעצר חייב להיגמר בדיווח ולא בקפיאה.
+    rm -f "$_tdir/feed" "$_tdir/sha.out" "$_tdir/pipe.rc" "$_tdir/fanout.rc"
+    mkfifo "$_tdir/feed"
+    # הצינור רץ ברקע כדי שתהיה עין שמסתכלת עליו: המונה (‏-P, פורמט pv -n)
+    # הוא ההוכחה היחידה שמשהו זז, ו-wait_progress מודד בדיוק אותו. ‏#1444:
+    # מונה וגיבוב בתוך fanout ולא pv|tee|sha256sum של busybox (‏#1438).
     # shellcheck disable=SC2046 # דגלי partclone_mode הם רשימת מילים
     (
-        stream_source "$1" "$2" "$3" "$7" "$STREAM_START_CEILING" \
-            | pv -n -b -i 2 2>> "$_tdir/bytes.raw" \
-            | tee "$_tdir/shafifo" \
-            | zstd -dc 2>> "$LOG_FILE" \
+        { zstd -dc < "$_tdir/feed" 2>> "$LOG_FILE" \
             | "$_pcl" $(partclone_mode "$_pcl" -r) -s - -O "$_node" \
                 -L "$_tdir/partclone.log" 2>> "$LOG_FILE"
-        echo "$?" > "$_tdir/pipe.rc"
+          echo "$?" > "$_tdir/pipe.rc"; } &
+        _wpid=$!
+        stream_source "$1" "$2" "$3" "$7" "$STREAM_START_CEILING" \
+            | fanout -S "$_tdir/sha.out" -P "$_tdir/bytes.raw" 16777216 "$_tdir/feed" \
+                > /dev/null 2>> "$LOG_FILE"
+        echo "$?" > "$_tdir/fanout.rc"
+        grep -qx 0 "$_tdir/fanout.rc" || unblock_fifo "$_tdir/feed"   # מת לפני open (#49)
+        wait_pid "$_wpid" "$WAIT_DRAWER_S" "כתיבת מחיצה $5 על $4"
     ) &
     _pipepid=$!
-
     if wait_progress "$_pipepid" "$_tdir/bytes.raw" \
             "$STREAM_START_CEILING" "$WAIT_STREAM_STALL_S" \
-            "מחיצה $5 ($7) על $4" "$_tdir/shafifo"; then
+            "מחיצה $5 ($7) על $4" "$_tdir/feed"; then
         _rc=$(cat "$_tdir/pipe.rc" 2>/dev/null || echo 1)
+        [ "$_rc" -ne 0 ] || _rc=$(cat "$_tdir/fanout.rc" 2>/dev/null || echo 1)
     else
         _rc="$WAIT_TIMED_OUT"
     fi
-    wait_pid "$_shapid" "$WAIT_HELPER_S" "חישוב ה-sha256 של מחיצה $5"
-    rm -f "$_tdir/shafifo"
+    rm -f "$_tdir/feed" "$_tdir/feed.bytes"
 
     if [ "$_rc" -ne 0 ]; then
         log "partition $5 ($7): write failed (rc=$_rc)"
@@ -202,8 +202,8 @@ restore_partition() {
     fi
 
     # Verification is on the compressed bytes as received; in multicast there
-    # is no asking again. ‏sha256sum שנהרג יחד עם הצינור (או שפג זמנו למעלה)
-    # משאיר קובץ ריק, וההשוואה הישירה הפכה היעדר ראיה לטענה על בייטים (#73).
+    # is no asking again. ‏-S נכתב רק ב-EOF נקי: fanout שנהרג (או שפג זמנו)
+    # לא משאיר ערך, וההשוואה הישירה הייתה הופכת היעדר ראיה לטענה על בייטים (#73).
     _got=$(awk '{print $1}' "$_tdir/sha.out" 2>/dev/null)
     if ! is_sha256 "$_got"; then
         log "partition $5 ($7): ה-sha256 לא חושב -- אין ראיה שהזרם הגיע שלם"
@@ -212,7 +212,7 @@ restore_partition() {
         log "partition $5 ($7): sha256 mismatch"
         return 1
     fi
-    target_partition_done "$4"
+    ntfs_boot_target "$4" "$5" "$6" && target_partition_done "$4"   # #1487
 }
 
 run_restore() {
@@ -255,11 +255,11 @@ run_restore() {
     fi
     if [ "$_table" -ne 1 ]; then
         case "$PLAN_ERROR" in
-            *"corrupt manifest"|*"disk untouched")
+            *"הדיסק לא שונה")
                 # The manifest gate is before --zap-all: report the named refusal
                 # without turning a deliberately untouched disk into a failed write.
                 target_set "$2" "failed" "$PLAN_ERROR" ;;
-            *)  fail_written_target "$2" "${PLAN_ERROR:-could not write the partition table}" ;;
+            *)  fail_written_target "$2" "${PLAN_ERROR:-לא הצלחנו לכתוב את טבלת המחיצות}" ;;
         esac
         echo "failed" > "$RUN_DIR/state"
         return 1
@@ -268,7 +268,7 @@ run_restore() {
     # Materialize once; fd 3 keeps tools in the loop from consuming the plan.
     _plan="$RUN_DIR/restore.plan"
     if ! manifest_plan "$5" > "$_plan"; then
-        fail_written_target "$2" "could not read the partition plan from the manifest"
+        fail_written_target "$2" "לא הצלחנו לקרוא את תוכנית המחיצות מהמניפסט"
         echo "failed" > "$RUN_DIR/state"
         return 1
     fi
@@ -276,7 +276,7 @@ run_restore() {
     _expected_rc=$?
     case "$_expected" in ''|*[!0-9]*) _expected_rc=1 ;; esac
     if [ "$_expected_rc" -ne 0 ]; then
-        fail_written_target "$2" "could not count partitions in the restore plan"
+        fail_written_target "$2" "לא הצלחנו לספור את המחיצות בתוכנית השחזור"
         echo "failed" > "$RUN_DIR/state"; return 1
     fi
     _written=0; STREAMED_PARTITIONS=0   # #957: הזרם הראשון של השחזור הזה
@@ -288,7 +288,7 @@ run_restore() {
     done 3< "$_plan"
 
     if [ "$_expected" -lt 1 ] || [ "$_written" -ne "$_expected" ]; then
-        fail_written_target "$2" "wrote $_written of $_expected partitions"
+        fail_written_target "$2" "נכתבו $_written מתוך $_expected מחיצות"
         echo "failed" > "$RUN_DIR/state"
         return 1
     fi

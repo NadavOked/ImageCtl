@@ -185,27 +185,16 @@ def test_new_server_fields_are_documented_in_interfaces_md():
 
 # ---------- כרטיס מחשב בנייה צר (נדב, 10/10) ----------
 
-def test_builder_cards_get_a_sensible_width_and_the_value_column_can_shrink():
+def test_build_card_is_the_mockup_kv_card_and_long_values_wrap():
+    """#1485: the narrow build card (10/10) became the console-full.html P.build card — a dl
+    with a 150px label column and minmax(0,1fr) values that wrap, inside a grid of min 340px."""
     css = _css()
-    assert "minmax(min(100%,320px),1fr)" in _rule(css, ".page .mgrid.wide")
-    assert "grid-template-columns:max-content minmax(0,1fr)" in _rule(css, ".page .kv")
-    # שבירה-בכוח (anywhere) רק ל-mono (serial/MAC), לא לכל ערך
-    assert "overflow-wrap:break-word" in _rule(css, ".page .kv .v")
-    assert "overflow-wrap:anywhere" in _rule(css, ".page .kv .v .mono")
-
-
-def test_long_state_text_is_clamped_to_three_lines_and_the_serial_is_one_ellipsis_line():
-    css = _css()
-    clamp = _rule(css, ".page .mcard .clamp")
-    assert "-webkit-line-clamp:3" in clamp and "overflow:hidden" in clamp
-    mono = _rule(css, ".page .mcard .kv .v .mono")
-    assert "text-overflow:ellipsis" in mono and "white-space:nowrap" in mono and "max-width:100%" in mono
+    kvd = _rule(css, ".page dl.kvd")
+    assert "grid-template-columns:150px minmax(0,1fr)" in kvd
+    assert "overflow-wrap:anywhere" in _rule(css, ".page dl.kvd dt,.page dl.kvd dd")
+    assert "minmax(min(340px,100%),1fr)" in _rule(css, ".page .grid2")
     js = _js()
-    assert '<span class="cap mono" title="${esc(d.serial)}">${esc(d.serial)}</span>' in js, "serial מלא ב-title"
-    drive_mono = _rule(css, ".page .mcard .machine-drives td .mono")
-    assert "text-overflow:ellipsis" in drive_mono and "white-space:nowrap" in drive_mono and "max-width:100%" in drive_mono
-    assert 'class="mgrid wide">${sortMachinesBySuffix(kids).map((m) => builderCardHtml' in js
-    assert '<span class="clamp" title="${esc(st.text)}">' in js
+    assert '<div class="c12 grid2">${sortMachinesBySuffix(kids).map((m) => builderCardHtml' in js
 
 
 # ---------- דשבורדים: עקביות ----------

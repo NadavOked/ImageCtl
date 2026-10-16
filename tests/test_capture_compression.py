@@ -18,9 +18,11 @@
 ל-`-T` התהפכה במדידה:** ‏`-3 -T2` הוא 72MB בשיא, פחות מ-112MB של רמה 9
 שרצה כאן עד היום. הברירה החדשה מהירה יותר *וגם* קלה יותר בזיכרון.
 
-‏`-T2` ולא `-T0` בכל זאת: ‏`-T0` נגזר ממספר הליבות של המכונה שקולטת,
-וזו צריכת זיכרון שאיש לא הצהיר עליה. על מכונת 512MB (‏#21 — ‏OOM אמיתי)
-זה ההבדל בין מספר שנבחר למספר שהתגלה.
+עד 16/10 הברירה הייתה `-T2` ולא `-T0`, בגלל ה-OOM של #21 (מכונת 512MB).
+המדידה שלמעלה היא של שרת בן **2 ליבות** — שם `-T2` ו-`-T0` זהים. על
+HP-BUILD (‏i5-8400, ‏6 ליבות, קליטה של ~20GB, ‏top כל 15ש', ‏16/10) ‏`-T2`
+היה התקרה: ‏zstd ‏15-32% מהמכונה ו-33-56% idle, העלאה ~70MB/s מול שיא
+117. נדב הכריע (16/10): ‏`-T0`, רמה 3 נשארת.
 """
 
 from __future__ import annotations
@@ -49,12 +51,33 @@ def test_the_measured_level_is_the_default():
     assert defaults()["level"] == "3"
 
 
-def test_the_thread_count_is_stated_and_not_derived_from_the_machine():
-    """‏`-T0` הוא "כמה ליבות שיש", כלומר צריכת זיכרון שאיש לא הצהיר
-    עליה — ועל מכונת 512MB זה ה-OOM של #21. מספר מפורש, קטן וקבוע."""
-    threads = defaults()["threads"]
-    assert threads == "2"
-    assert threads != "0", "‏-T0 נגזר מהמכונה, ולא מהחלטה"
+def test_capture_compresses_on_every_core():
+    """הכרעת נדב 16/10: ‏`-T0`. ה-`-T2` נמדד "מהיר כמו ‎-T0" על שרת המעבדה
+    בן 2 הליבות — שם אין הבדל. על HP-BUILD (‏i5-8400, ‏6 ליבות, קליטה של
+    ‏~20GB, ‏top כל 15ש', ‏16/10) ‏zstd נתקע על 15-32% מהמכונה (‏~1.9 ליבות =
+    התקרה של ‎-T2) בזמן ש-33-56% מה-CPU עמד בטל, וההעלאה ממוצעת ~70MB/s
+    מול שיא 117 של קו ה-1GbE. בקרה שלילית: על `CAPTURE_THREADS=2` זה נופל."""
+    assert defaults()["threads"] == "0"
+
+
+def test_the_real_capture_pipeline_hands_zstd_t0(tmp_path):
+    """The real `capture_disk` (test_capture_refusals harness), with a zstd
+    that records its argv: what the pipeline actually ran with, not what the
+    source text says. Negative control: with the old default (2) it is -T2."""
+    from test_capture_refusals import ONE_PARTITION, capture_run
+    from test_fanout_hash_1438 import CURL_KEEP, RAW
+
+    argv = tmp_path / "zstd.argv"
+    stubs = {
+        "sgdisk": ONE_PARTITION,
+        "curl": CURL_KEEP,
+        "zstd": '#!/bin/sh\nprintf "%s\\n" "$@" >> "$ZARGV"\ncat\n',
+        "partclone.dd": "#!/bin/sh\nprintf '%s' '" + RAW.decode() + "'\n",
+    }
+    _box, _run, out = capture_run(tmp_path, stubs=stubs, env={
+        "ZARGV": posix(argv), "UPLOADED": posix(tmp_path / "uploaded.bin")})
+    assert out.strip().endswith("rc=0"), out
+    assert argv.read_text(encoding="utf-8").split() == ["-3", "-T0", "-c"]
 
 
 def test_both_stay_overridable_from_the_environment():

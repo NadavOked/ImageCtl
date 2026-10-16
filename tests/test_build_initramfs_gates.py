@@ -182,7 +182,7 @@ def declared_subdirs() -> list[str]:
         names += code.split(")", 1)[0].split()
         if closed:
             break
-    assert len(names) == 21, names
+    assert len(names) == 22, names   # #1441: + kernel/drivers/cpufreq
     return names
 
 

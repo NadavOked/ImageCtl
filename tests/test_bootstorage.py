@@ -83,7 +83,7 @@ def test_an_image_without_the_service_is_a_failure_not_a_skip(tmp_path):
     box = Box(tmp_path, system=system)
     _, result = box.stage("nvme0n1")
     assert result["state"] == "staged", "החבילות הונחו — התוצאה שלהן נשארת"
-    assert result["boot"]["state"] == "failed" and "no stornvme service" in result["boot"]["error"]
+    assert result["boot"]["state"] == "failed" and "באימג' אין את השירות stornvme" in result["boot"]["error"]
     assert sys_writes(box) == []
     assert box.state() == "done"
 
@@ -100,7 +100,7 @@ def test_a_read_that_breaks_is_not_a_missing_service(tmp_path):
 def test_a_write_that_does_not_read_back_is_a_failure(tmp_path):
     box = Box(tmp_path, env="FAKE_SYS_NOOP=1")
     _, result = box.stage("sda")
-    assert result["boot"]["state"] == "failed" and "not verified" in result["boot"]["error"]
+    assert result["boot"]["state"] == "failed" and "לא אומת" in result["boot"]["error"]
     assert box.sysval(f"{SVC}/storahci/Start") == "3"
 
 
@@ -126,7 +126,7 @@ def test_a_missing_system_hive_is_a_failure(tmp_path):
     _, result = box.stage("sda")
     assert result["state"] == "staged"
     assert result["boot"] == {"state": "failed", "service": "storahci",
-                              "error": "SYSTEM hive not found"}
+                              "error": "כוורת SYSTEM לא נמצאה"}
 
 
 @pytest.mark.parametrize("disk", ["vda", "mmcblk0"])
@@ -218,7 +218,7 @@ def test_a_drawers_failed_boot_storage_is_journaled_once_with_its_dev(room_serve
     _, wave = _wave(room_server, [{"mac": CLONER1, "port": 2, **M70Q}])
     anon = room_server["anon"]
     cloner_hello(anon, CLONER1, ["S1", "S2"])
-    boot = {"state": "failed", "service": "storahci", "error": "SYSTEM hive not found"}
+    boot = {"state": "failed", "service": "storahci", "error": "כוורת SYSTEM לא נמצאה"}
     body = {"session_id": wave, "mac": CLONER1, "state": "done", "targets": [
         {"dev": "sda", "bytes_written": 9, "bytes_total": 9, "state": "done"},
         {"dev": "sdb", "bytes_written": 9, "bytes_total": 9, "state": "done",
@@ -231,4 +231,4 @@ def test_a_drawers_failed_boot_storage_is_journaled_once_with_its_dev(room_serve
     assert by_dev["sdb"]["boot"] == boot
     rows = [e for e in room_server["admin"].get("/api/console/journal").json()
             if e["event"] == "boot_storage_failed"]
-    assert len(rows) == 1 and "sdb" in rows[0]["text"] and "SYSTEM hive" in rows[0]["text"]
+    assert len(rows) == 1 and "sdb" in rows[0]["text"] and "כוורת SYSTEM" in rows[0]["text"]

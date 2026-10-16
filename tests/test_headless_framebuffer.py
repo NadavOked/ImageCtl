@@ -151,7 +151,7 @@ def test_interfaces_documents_the_memory_framebuffer():
 # --- (ב) הסוכן: monitor.sh ו-guibridge.sh מול FB_DEV ------------------------
 
 
-def _monitor_start(tmp_path, fb_dev, role="cloner", mem_file=False):
+def _monitor_start(tmp_path, fb_dev, role="cloner", mem_file=False, env=""):
     """מריץ monitor_start עם `_monitor_spawn` מזויף (כמו test_agent) ומחזיר
     ‏(ארגומנטים או None, מה שנרשם ליומן)."""
     out = tmp_path / "spawn-args"
@@ -168,7 +168,7 @@ def _monitor_start(tmp_path, fb_dev, role="cloner", mem_file=False):
         'export IP=10.0.0.9; export MONITOR_BIN=/bin/sh; '
         'export RUN_DIR=' + repr(posix(run_dir)) + '; '
         'export FB_DEV=' + repr(fb_dev) + '; '
-        f'export D_ROLE={role}; '
+        f'export D_ROLE={role}; ' + env +
         'log() { echo "$*" >> "$LOGF"; }; '
         '. ' + posix(AGENT) + '/lib/monitor.sh; '
         '_monitor_spawn() { echo "$@" > "$OUT"; _monitor_pid=4242; }; '
@@ -181,12 +181,31 @@ def _monitor_start(tmp_path, fb_dev, role="cloner", mem_file=False):
 
 
 @requires_native(("bash", BASH))
-def test_monitor_with_a_screen_is_unchanged(tmp_path):
-    """יש `/dev/fb0` (כאן: `/dev/null`, התקן תווים): בלי `--fb` — ‏monitor.c
-    פותח את `/dev/fb0` שלו כמו היום. המסלול הקיים לא נשבר."""
-    args, _ = _monitor_start(tmp_path, "/dev/null", role="build")
+def test_monitor_with_a_screen_serves_the_guis_mirror(tmp_path):
+    """‏#1475: יש `/dev/fb0` (כאן `/dev/null`) **וגם** המראה של הגואי
+    (‏`--fb-mirror`): המוניטור מגיש את `fb.mem` — זיכרון רגיל עם seq — ולא קורא
+    את זיכרון הווידאו של fb0 בכל טיק (60% מתהליכון על משכפל 2, 16/10).
+    בקרה שלילית: על הקוד שלפני #1475 ‏`--fb` אינו בשורה כשיש fb0."""
+    args, _ = _monitor_start(tmp_path, "/dev/null", role="build", mem_file=True)
     assert args is not None
-    assert "--fb" not in args.split() and "--input" in args.split(), args
+    words = args.split()
+    assert words[:3] == ["nice", "-n", "10"], f"the clone path must win the CPU: {args}"
+    assert "--fb" in words and words[words.index("--fb") + 1].endswith("/run/" + FILE_NAME), args
+    assert "--input" in words, args
+
+
+@requires_native(("bash", BASH))
+def test_monitor_with_a_screen_waits_for_the_mirror_then_falls_back(tmp_path):
+    """‏#1475: יש fb0 ועוד אין מראה — ממתינים (פעם אחת ביומן); אחרי
+    ‏MONITOR_MIRROR_WAIT_S בלי מראה (גואי שלא עלה) — ‏`/dev/fb0` עצמו, והיומן
+    אומר שזה המסלול היקר. מסך ריק בקונסולה אינו ברירת המחדל."""
+    args, log = _monitor_start(tmp_path, "/dev/null", role="build")
+    assert args is None, args
+    assert log.count("monitor:") == 1 and "frame mirror" in log, log
+    args, log = _monitor_start(tmp_path, "/dev/null", role="build",
+                               env="export MONITOR_MIRROR_WAIT_S=0; ")
+    assert args is not None and "--fb" not in args.split(), args
+    assert "serving /dev/null directly" in log, log
 
 
 @requires_native(("bash", BASH))
@@ -202,16 +221,25 @@ def test_monitor_without_a_screen_waits_for_the_gui_file(tmp_path):
 @requires_native(("bash", BASH))
 def test_monitor_without_a_screen_serves_the_gui_file(tmp_path):
     """אין fb0 אבל הגואי כבר כותב `fb.mem`: המוניטור עולה עם `--fb` על
-    הקובץ, ושער התפקיד לא זז — משכפל עדיין בלי `--input`."""
+    הקובץ, ומשכפל מקבל `--input` (#1454, נדב 16/10)."""
     args, _ = _monitor_start(tmp_path, posix(tmp_path / "no-such-fb0"), mem_file=True)
     assert args is not None, "המוניטור לא עלה למרות שהקובץ קיים"
     words = args.split()
     assert "--fb" in words and words[words.index("--fb") + 1].endswith("/run/" + FILE_NAME)
-    assert "--input" not in words, args
+    assert "--input" in words, args
 
 
-def _gui_backend_args(tmp_path, fb_dev, backend_env=None):
+@requires_native(("bash", BASH))
+def test_a_cloner_with_a_screen_gets_keyboard_and_mouse(tmp_path):
+    """#1454: היום יש למשכפל מקלדת ועכבר — המוניטור נותן שליטה כמו לבנייה."""
+    args, log = _monitor_start(tmp_path, "/dev/null", role="cloner", mem_file=True)
+    assert args is not None and "--input" in args.split(), args
+    assert "(input enabled)" in log, log
+
+
+def _gui_backend_args(tmp_path, fb_dev, backend_env=None, monitor=False):
     env = f'export GUI_BACKEND={backend_env}; ' if backend_env else 'unset GUI_BACKEND; '
+    env += 'export IMAGECTL_MONITOR=1; ' if monitor else 'unset IMAGECTL_MONITOR; '
     script = (
         env + 'export RUN_DIR=/run/imagectl; export FB_DEV=' + repr(fb_dev) + '; '
         '. ' + posix(AGENT) + '/lib/guibridge.sh; gui_backend_args')
@@ -394,3 +422,51 @@ def test_monitor_refuses_a_file_that_is_not_a_framebuffer(tmp_path):
     assert "memory framebuffer" in proc.stderr, proc.stderr
     # The refusal is about the file, not about the secret (#839 usage).
     assert "usage:" not in proc.stderr, proc.stderr
+
+
+@requires_native(("bash", BASH))
+def test_gui_mirrors_its_frames_when_the_monitor_is_on(tmp_path):
+    """‏#1475: עם מסך ועם המוניטור דלוק הגואי גם כותב כל פריים ל-`fb.mem`
+    (‏`--fb-mirror`); המוניטור כבוי — שורת הפקודה כמו היום, בלי עלות.
+    בקרה שלילית: על הקוד שלפני #1475 אין `--fb-mirror` בכלל."""
+    assert _gui_backend_args(tmp_path, "/dev/null", monitor=True) == (
+        f"--backend fbdev --fb-mirror /run/imagectl/{FILE_NAME}")
+    assert _gui_backend_args(tmp_path, "/dev/null", "drm", monitor=True) == (
+        f"--backend drm --fb-mirror /run/imagectl/{FILE_NAME}")
+    assert _gui_backend_args(tmp_path, posix(tmp_path / "no-such-fb0"), monitor=True) == (
+        f"--backend mem --fb-file /run/imagectl/{FILE_NAME}")
+
+
+def test_gui_source_mirrors_under_the_seqlock_and_keeps_one_shared_cursor():
+    """שומר-מקור (רץ גם בלי gcc) לחלק של #1475 שבגואי:
+    (1) המראה נכתבת בין שני צעדי seq — המוניטור לא יגיש פריים קרוע;
+    (2) **סמן אחד משותף** (נדב 16/10, כמו #949): כל תזוזה — גם מהתקן
+    ה-uinput של המוניטור — מזיזה את הסמן שמצויר בפריים ומציגה פריים, כך
+    שהאריח שלו משתנה ונשלח; אין סימון "מרוחק" שמדלג על הציור;
+    (3) הסריקה לא נעצרת לפני שהתקן המוניטור (לפי **השם**, זהה ל-monitor.c)
+    נתפס.
+    בקרה שלילית: על הקוד שלפני #1475 המראה ו-(3) אינם בקבצים; על הגרסה
+    הקודמת של הענף (‏e8e1ef19) — (2) נכשל על `ptr_remote`."""
+    gui = REPO / "native-gui" / "src"
+    backend = (gui / "backend.c").read_text(encoding="utf-8")
+    present = backend[backend.index("if (b->mir_map) {"):]
+    present = present[:present.index("\n    }\n")]
+    steps = [i for i in range(len(present)) if present.startswith("__atomic_add_fetch(&mh->seq", i)]
+    assert len(steps) == 2, present
+    assert steps[0] < present.index("memcpy(") < steps[1], present
+    input_c = (gui / "input.c").read_text(encoding="utf-8")
+    monitor_c = MONITOR_C.read_text(encoding="utf-8")
+    assert '#define MONITOR_UINPUT_NAME "ImageCtl remote monitor"' in input_c
+    assert '#define UINPUT_NAME "ImageCtl remote monitor"' in monitor_c
+    screens = (gui / "screens.c").read_text(encoding="utf-8")
+    assert "void app_draw_pointer(App *a,cairo_t *cr){if(a->ptr_visible)draw_cursor(" in screens
+    main_c = (gui / "main.c").read_text(encoding="utf-8")
+    moved = main_c[main_c.index("if (moved) {"):]
+    assert moved.split("\n")[1].strip().startswith("need_present = 1;"), moved[:200]
+    for text in (input_c, main_c, screens):
+        assert "is_remote" not in text and "ptr_remote" not in text
+    # (4) המוניטור עולה עכשיו **אחרי** שהגואי כתב את המראה — כלומר אחרי
+    # שמקלדת ועכבר כבר נמצאו. בלי זה הסריקה נעצרה, והתקן ה-uinput של
+    # המוניטור לא נתפס לעולם: שליטה מרחוק מתה בשקט.
+    assert "(remote || !in->want_remote || now > in->want_until)" in input_c
+    assert "if (fb_mirror || fb_file) input_want_remote(in);" in main_c

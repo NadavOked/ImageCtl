@@ -61,7 +61,21 @@ def test_probe_dirty_or_hibernated_flags_are_reported(tmp_path):
     for rc in (14, 15):
         result = _reason(tmp_path / str(rc), probe_rc=rc)
         assert result[0] == 1
-        assert "הדיסק מהובר" in result[1]
+        assert "Fast Startup" in result[1]
+
+
+def test_the_hibernated_refusal_is_hebrew_first_and_gives_the_fix_that_works(tmp_path):
+    """#1502 (metal 16/10, probe rc=14): Nadav shut Windows down with the
+    normal button and was refused again -- with Fast Startup on, that IS a
+    hibernation. The line says so, names the partition, gives
+    `powercfg /h off`, and opens with a Hebrew letter: the old text reached
+    the screen as "sda: ..." and an LTR first token turned the Hebrew over."""
+    rc, reason = _reason(tmp_path, probe_rc=14)
+    assert rc == 1
+    assert "א" <= reason[0] <= "ת", reason
+    assert "במחיצה fake " in reason, reason                  # /dev/fake -> fake
+    assert "גם כיבוי רגיל" in reason and "powercfg /h off" in reason, reason
+    assert "כיבוי מלא" not in reason        # the advice that did not work on the metal
 
 
 def test_probe_failure_is_not_clean(tmp_path):
@@ -99,11 +113,11 @@ def test_hibernated_capture_stops_before_upload_but_clean_capture_proceeds(tmp_p
     hibernated = (
         override
         + 'capture_ntfs_hibernation_reason() { '
-        + 'echo "$CAPTURE_HIBERNATED_MESSAGE"; return 1; }; '
+        + 'capture_hibernated_message "$1"; return 1; }; '
     )
     box, run, out = capture_run(tmp_path / "dirty", stubs=common, shell_pre=hibernated)
     reason = refusal_reason(box, run, out)
-    assert "הדיסק מהובר" in reason
+    assert "Fast Startup" in reason and "powercfg /h off" in reason
     assert not (run / "new-manifest.json").exists()
 
     box, run, out = capture_run(
@@ -113,3 +127,22 @@ def test_hibernated_capture_stops_before_upload_but_clean_capture_proceeds(tmp_p
     )
     assert out.strip().endswith("rc=0"), out
     assert (run / "new-manifest.json").exists()
+
+
+def test_the_gui_draws_a_task_error_as_a_right_to_left_paragraph():
+    """#1502: the server hands the task error over as "sda: <reason>"
+    (server/reports.py), and Pango takes a paragraph's direction from its first
+    strong letter (text.c: auto-dir) -- the "s" of "sda" laid the whole Hebrew
+    line out left-to-right. Every place that draws it opens with an RLM (U+200F),
+    as the room and standby screens already do. Read from the source: the GUI
+    compiles on Linux only, and the rendered layout is the lab's to see."""
+    src = AGENT.parent / "native-gui" / "src"
+    rlm = r"\xE2\x80\x8F"
+    capture = (src / "screens_capture.c").read_text(encoding="utf-8")
+    assert f'snprintf(sub, sizeof sub, "{rlm}%s", s->task_error);' in capture
+    screens = (src / "screens.c").read_text(encoding="utf-8")
+    assert 'snprintf(a->done_sub,sizeof a->done_sub,RLM "%s",s->task_error[0]?' in screens
+    shrink = (src / "screens_shrink.c").read_text(encoding="utf-8")
+    assert f'a->st.task_error[0] ? "\\n{rlm}" : ""' in shrink
+    local = (src / "screens_local.c").read_text(encoding="utf-8")
+    assert f'snprintf(msg, sizeof msg, "{rlm}%s: %s", lb, v);' in local

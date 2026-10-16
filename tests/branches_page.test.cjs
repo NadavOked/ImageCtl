@@ -287,3 +287,45 @@ test('after login the console holds the /me capabilities, so the branches tab is
   assert.equal(run('ME && ME.capabilities && ME.capabilities.interbranch_transfer'), true);
   assert.equal(run('pageAllowed("branches")'), true);
 });
+
+// #1473 (נדב 16/10): הגבלת קצב בין אתרים — אופציונלית, ברירת מחדל ללא הגבלה, ליד ההעברות.
+test('#1473: the transfers tab shows the inter-site rate cap in force; unlimited by default; unread is said', async () => {
+  let {run} = setup({...base, '/settings': {intersite_rate_cap_mbps: '0'}});
+  await run('loadBranchesData()');
+  let html = run('branchesPage(1)');
+  assert.match(html, /הגבלת קצב בין אתרים: <b>ללא הגבלה<\/b>/);
+  assert.match(html, /onclick="transferCapSheet\(\)"/, 'admin can change it from here');
+  ({run} = setup({...base, '/settings': {intersite_rate_cap_mbps: '200'}}));
+  await run('loadBranchesData()');
+  html = run('branchesPage(1)');
+  assert.match(html, /עד <bdi dir="ltr">200 Mb\/s<\/bdi> \(<bdi dir="ltr">25 MB\/s<\/bdi>\) לכל העברה/);
+  ({run} = setup({...base, '/settings': new Error('500')}));
+  await run('loadBranchesData()');
+  html = run('branchesPage(1)');
+  assert.match(html, /הגבלת קצב בין אתרים: <b>לא נקרא: /, 'an unread setting is never shown as "unlimited"');
+  assert.doesNotMatch(html, /ללא הגבלה/);
+  assert.doesNotMatch(html, /transferCapSheet/, 'no change button on a value that was not read');
+});
+
+test('#1473: the change sheet posts the whole number to /settings and refuses anything else', async () => {
+  const {run, calls} = setup({...base, '/settings': {intersite_rate_cap_mbps: '0'}});
+  await run('loadBranchesData()');
+  run('__sheet=null; sheet=(o)=>{ __sheet=o; };');
+  run('transferCapSheet()');
+  assert.equal(run('__sheet.fields[0].value'), '0');
+  for (const bad of ['-1', '1.5', 'abc', '', '100001']) {
+    await assert.rejects(run(`__sheet.onSubmit({v: ${JSON.stringify(bad)}})`), /מספר שלם 0–100000/);
+  }
+  assert.ok(!calls.some((c) => c.method === 'POST' && c.url.endsWith('/settings')), 'nothing posted for a bad value');
+  await run('__sheet.onSubmit({v: "50"})');
+  const post = calls.find((c) => c.method === 'POST' && c.url.endsWith('/settings'));
+  assert.deepEqual(post.body, {intersite_rate_cap_mbps: 50});
+});
+
+test('#1473: a deploy user sees the cap but has no change button', async () => {
+  const {run} = setup({...base, '/settings': {intersite_rate_cap_mbps: '100'}}, {role: 'deploy'});
+  await run('loadBranchesData()');
+  const html = run('branchesTransfersTab()');
+  assert.match(html, /עד <bdi dir="ltr">100 Mb\/s<\/bdi>/);
+  assert.doesNotMatch(html, /transferCapSheet/);
+});

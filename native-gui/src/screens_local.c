@@ -270,8 +270,8 @@ void lc_draw_source(App *a, cairo_t *cr, double W, double H, double head_h) {
         }
         char u[48]; lc_gb(u, sizeof u, (double)src->used);
         snprintf(s2, sizeof s2, src->used < 0 ? "כמה בשימוש: לא נמדד%s" : RLM "%s להעתקה%s", src->used < 0 ? "" : u,
-                 lc_any_shrink(a) ? " · המקור יכווץ זמנית" : "");
-        if (src->used < 0) snprintf(s2, sizeof s2, "כמה בשימוש: לא נמדד%s", lc_any_shrink(a) ? " · המקור יכווץ זמנית" : "");
+                 lc_any_shrink(a) ? " · כיווץ על עותק בזיכרון" : "");
+        if (src->used < 0) snprintf(s2, sizeof s2, "כמה בשימוש: לא נמדד%s", lc_any_shrink(a) ? " · כיווץ על עותק בזיכרון" : "");
     } else { snprintf(s1, sizeof s1, "אין יעד"); snprintf(s2, sizeof s2, "בחרו לפחות יעד אחד"); }
     Text m1 = text_make(cr, FONT_SANS, 12, 400, s1, 0, DIR_RTL), m2 = text_make(cr, FONT_SANS, 16, 600, s2, 0, DIR_RTL);
     double hh = fmax(h1.h + 4 + p.h, m1.h + m2.h);
@@ -308,7 +308,7 @@ void lc_draw_source(App *a, cairo_t *cr, double W, double H, double head_h) {
     for (int i = 0; i < n; i++) {
         if (blocked(a, i) && !bad) {
             char lb[48], v[260]; Rgb c; lc_disk_label(&l->disks[i], lb, sizeof lb); verdict_text(a, &l->disks[i], src, v, sizeof v, &c);
-            snprintf(msg, sizeof msg, "%s: %s", lb, v); bad = 1;
+            snprintf(msg, sizeof msg, "\xE2\x80\x8F%s: %s", lb, v); bad = 1;   /* #1502: RLM -- lb is the raw dev when the port is unknown */
         }
         const LcFit *f = lc_fit_of(a, l->disks[i].dev);
         if (lc_role_of(a, l->disks[i].dev) == LCR_TARGET && (!f || f->verdict == LCV_MEASURING)) meas = 1;
@@ -402,10 +402,11 @@ void lc_draw_confirm(App *a, cairo_t *cr, double W, double H) {
     /* measure first: the dialog's height is its content's */
     Text th = text_make(cr, FONT_SANS, 22, 600, title, (int)(inner - 42), DIR_RTL), tlh = text_make(cr, FONT_SANS, 14, 400, lead, (int)(inner - 42), DIR_RTL);
     double rows = 0; for (int k = 0; k < nt; k++) rows += wrow(a, cr, 0, 0, inner, idx[k], src, 0) + (k ? 1 : 0);
-    const char *sn = shrink ? "יכווץ זמנית ויוחזר לגודלו בסוף" : "נקרא בלבד, לא ישתנה";
+    /* #1477: a local clone shrinks only a RAM view of the source (#1466) -- it is read only either way */
+    const char *sn = shrink ? "נקרא בלבד — יכווץ עותק בזיכרון" : "נקרא בלבד, לא ישתנה";
     Text ss = text_make(cr, FONT_SANS, 13, shrink ? 600 : 400, sn, 0, DIR_RTL);
     Text sr = text_make(cr, FONT_SANS, 13, 400, srow, (int)(inner - 28 - ss.w - 80), DIR_RTL);
-    Text shr = shrink ? text_make(cr, FONT_SANS, 13, 400, "כדי שהנתונים ייכנסו ליעד הקטן, מחיצות ה-NTFS של המקור יכווצו במקומן לפני ההעתקה ויוחזרו לגודלן בסוף. אם ההחזרה תיכשל — הנתונים במקור נשארים שלמים, והמחיצה פשוט קטנה יותר.", (int)(inner - 40), DIR_RTL)
+    Text shr = shrink ? text_make(cr, FONT_SANS, 13, 400, "כדי שהנתונים ייכנסו ליעד הקטן, מחיצות ה-NTFS יכווצו בעותק בזיכרון לפני ההעתקה — המקור נקרא בלבד ולא נכתב. אם אין מספיק זיכרון לעותק, היעד הקטן לא ייכתב, והסיבה תוצג.", (int)(inner - 40), DIR_RTL)
                       : (Text){ NULL, 0, 0 };
     char u[48], meta[300]; lc_gb(u, sizeof u, (double)src->used);
     snprintf(meta, sizeof meta, src->used < 0 ? "כמה בשימוש במקור: לא נמדד · כל יעד ייבדק בסוף מול המקור (xxh64 לכל מחיצה, וטבלת המחיצות נקראת בחזרה)."
