@@ -208,7 +208,7 @@ def test_matched_packages_land_on_the_disk_and_device_path_keeps_the_stock_entry
 def test_a_download_whose_sha256_differs_stops_before_the_disk_is_touched(tmp_path):
     box = Box(tmp_path, answer=answer_for(FILES, tamper="intel-nic/x64/e1d68x64.sys"))
     _, result = box.stage()
-    assert result["state"] == "failed" and "sha256 mismatch: intel-nic/x64/e1d68x64.sys" in result["error"]
+    assert result["state"] == "failed" and "אי-התאמת sha256: intel-nic/x64/e1d68x64.sys" in result["error"]
     assert result["packages"] == []
     assert box.staged_files() == {}, "בייט אחד לא הועתק לדיסק"
     assert box.hive.read_text().strip() == STOCK, "DevicePath לא נגע"
@@ -220,7 +220,7 @@ def test_a_file_the_server_cannot_serve_is_a_failure_not_a_partial_stage(tmp_pat
     box = Box(tmp_path)
     (box.server / "pkgs/ahci-fix/storahci.inf").unlink()
     _, result = box.stage()
-    assert result["state"] == "failed" and "download failed: ahci-fix/storahci.inf" in result["error"]
+    assert result["state"] == "failed" and "ההורדה נכשלה: ahci-fix/storahci.inf" in result["error"]
     assert box.staged_files() == {}
 
 
@@ -229,7 +229,7 @@ def test_a_copy_that_does_not_read_back_is_a_failure(tmp_path):
     box = Box(tmp_path, stubs={"cp": 'printf garbage > "$2"; exit 0',
                                "umount": 'echo umount "$@" >> "$FAKE_SERVER/umounts"; exit 0'})
     _, result = box.stage()
-    assert result["state"] == "failed" and "read-back mismatch on the disk" in result["error"]
+    assert result["state"] == "failed" and "אי-התאמה בקריאה חזרה מהדיסק" in result["error"]
     assert box.hive.read_text().strip() == STOCK
     assert box.calls() == [], "לא הגענו לרג'יסטרי"
     assert (box.server / "umounts").read_text().count("umount") == 1, "הכשל משחרר את המאונט"
@@ -246,13 +246,13 @@ def test_no_matching_package_is_no_match_and_touches_nothing(tmp_path):
 def test_no_inventory_on_the_server_is_failed_not_no_match(tmp_path):
     box = Box(tmp_path, packages={}, answer=answer_for({}, inventory=False))
     _, result = box.stage()
-    assert result["state"] == "failed" and "no inventory" in result["error"]
+    assert result["state"] == "failed" and "אין מלאי" in result["error"]
 
 
 def test_a_server_that_does_not_answer_is_failed(tmp_path):
     box = Box(tmp_path, env="FAKE_QUERY_RC=7")
     _, result = box.stage()
-    assert result["state"] == "failed" and "did not answer" in result["error"]
+    assert result["state"] == "failed" and "לא ענה" in result["error"]
     assert box.state() == "done"
 
 
@@ -268,7 +268,7 @@ def test_a_failed_manifest_plan_is_failed_even_after_partial_windows_output(tmp_
     box = Box(tmp_path, plan=WIN_PLAN, plan_rc=7)
     _, result = box.stage()
     assert result["state"] == "failed"
-    assert "partition plan" in result["error"]
+    assert "תוכנית המחיצות" in result["error"]
     assert box.calls() == [] and box.staged_files() == {}
 
 
@@ -291,7 +291,7 @@ def test_a_registry_write_that_fails_is_reported_and_the_disk_is_released(tmp_pa
     box = Box(tmp_path, env="FAKE_HIVE_RC=4",
               stubs={"umount": 'echo umount "$@" >> "$FAKE_SERVER/umounts"; exit 0'})
     _, result = box.stage()
-    assert result["state"] == "failed" and "DevicePath write not verified" in result["error"]
+    assert result["state"] == "failed" and "כתיבת DevicePath לא אומתה" in result["error"]
     assert box.hive.read_text().strip() == STOCK
     assert (box.server / "umounts").read_text().count("umount") == 1
     assert box.state() == "done"
@@ -300,20 +300,20 @@ def test_a_registry_write_that_fails_is_reported_and_the_disk_is_released(tmp_pa
 def test_a_missing_software_hive_is_a_failure(tmp_path):
     box = Box(tmp_path, device_path=None)
     _, result = box.stage()
-    assert result["state"] == "failed" and "SOFTWARE hive" in result["error"]
+    assert result["state"] == "failed" and "כוורת SOFTWARE" in result["error"]
 
 
 def test_a_mount_that_fails_is_reported(tmp_path):
     box = Box(tmp_path, stubs={"ntfs-3g": "exit 1"})
     _, result = box.stage()
-    assert result["state"] == "failed" and "mount" in result["error"]
+    assert result["state"] == "failed" and "לעגן" in result["error"]
     assert box.staged_files() == {}
 
 
 def test_an_unmount_that_fails_is_not_success(tmp_path):
     box = Box(tmp_path, stubs={"umount": "exit 32"})
     _, result = box.stage()
-    assert result["state"] == "failed" and "unmount" in result["error"]
+    assert result["state"] == "failed" and "לנתק" in result["error"]
 
 
 @pytest.mark.parametrize("path", ["../escape.inf", "/abs.inf", "x\\y.inf"])
@@ -322,7 +322,7 @@ def test_a_path_that_leaves_the_package_folder_is_refused(tmp_path, path):
     answer["packages"][0]["files"][0]["path"] = path
     box = Box(tmp_path, packages={"pkg": {"a.inf": b"x"}}, answer=answer)
     _, result = box.stage()
-    assert result["state"] == "failed" and "bad file path" in result["error"]
+    assert result["state"] == "failed" and "נתיב קובץ לא תקין" in result["error"]
     assert not (box.run / "drivers").exists() or not list((box.run / "drivers").rglob("*"))
 
 

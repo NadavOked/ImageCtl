@@ -12,8 +12,8 @@ smart_disk_label() {
     # ה-web מציגה "דיסק N" מאותו port.
     _sl_p=$(disk_port "$1")
     case "$_sl_p" in
-        ''|*[!0-9]*) printf 'Disk %s' "$1" ;;
-        *)           printf 'Disk %s' "$_sl_p" ;;
+        ''|*[!0-9]*) printf '%s %s' "${2:-Disk}" "$1" ;;   # $2 = the word: 'דיסק' for the console prompt, default for the ASCII tty
+        *)           printf '%s %s' "${2:-Disk}" "$_sl_p" ;;
     esac
 }
 
@@ -95,8 +95,8 @@ smart_preflight() {
                 _pf_write="$_pf_write $_pf_d"
                 ;;
             warn|fail|failed_last)
-                _pf_dec=$(smart_choice "$(smart_disk_label "$_pf_d")" \
-                    "$([ "$_pf_v" = failed_last ] && echo 'failed the previous clone' || echo "SMART $_pf_v ($_pf_r)")" \
+                _pf_dec=$(smart_choice "$(smart_disk_label "$_pf_d" דיסק)" \
+                    "$([ "$_pf_v" = failed_last ] && echo 'נכשל בשיכפול הקודם' || echo "SMART $_pf_v ($_pf_r)")" \
                     "$_pf_d" "$_pf_v" "$_pf_r" "$_pf_def")
                 case "$_pf_dec" in
                     rescue)
@@ -104,11 +104,11 @@ smart_preflight() {
                         _pf_write="$_pf_write $_pf_d"
                         ;;
                     skip)
-                        target_set "$_pf_d" "skipped" "operator skipped ($_pf_v: $_pf_r)"
+                        target_set "$_pf_d" "skipped" "המפעיל דילג ($_pf_v: $_pf_r)"
                         smart_send_event "$_pf_ses" "$_pf_d" "$_pf_v" "$_pf_r" skipped skip
                         ;;
                     replace)
-                        target_set "$_pf_d" "replacing" "awaiting disk swap ($_pf_v: $_pf_r)"
+                        target_set "$_pf_d" "replacing" "ממתין להחלפת הדיסק ($_pf_v: $_pf_r)"
                         smart_send_event "$_pf_ses" "$_pf_d" "$_pf_v" "$_pf_r" replacing replace
                         echo "$_pf_d" >> "$RUN_DIR/smart/awaiting_replace"
                         ;;
@@ -160,14 +160,20 @@ smart_replace_stop() {
     smart_replace_screen
     [ "${IMAGECTL_TEST:-0}" = "1" ] && exit 0
     finish_and_stop
-    # finish_and_stop returns only when Wake-on-LAN was not armed (#587).
+    # finish_and_stop returns only when it stayed on: WoL (#587), or poweroff came back (#1483).
     # Nothing failed and the disk still has to come out, so this is not
     # "skipped" / "no drawer completed", and not back into the round either
     # (the next hello hands the same round back, with this progress_loop
     # still running): hold on this screen, heartbeat on (#64), for a
     # power-off by hand.
-    log "smart: replace chosen -- wol not armed, staying powered on"
-    echo "  Wake-on-LAN could not be armed: power off by hand for the swap."
+    # #1483: or the power-off itself came back -- said as what it was
+    if [ "${POWEROFF_WHY:-}" = poweroff ]; then
+        log "smart: replace chosen -- the power-off did not take, staying powered on"
+        echo "  The power-off command returned: power off by hand for the swap."
+    else
+        log "smart: replace chosen -- wol not armed, staying powered on"
+        echo "  Wake-on-LAN could not be armed: power off by hand for the swap."
+    fi
     HOLD_PROMPT="Replace the flagged disk: power off by hand"
     hold_watch hold_beat
 }

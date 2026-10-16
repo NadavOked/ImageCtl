@@ -347,3 +347,228 @@ def test_list_images_and_manifest_from_disk(paired_ctx):
     man = interserver_api.image_manifest(
         ctx, peer, image_id=PULL_ID, **_creds(token))
     assert man["id"] == PULL_ID and "_dir" not in man
+
+
+# --- #1456: חידוש אחרי ניתוק בקובץ השלישי ------------------------------------
+#
+# קובץ שכבר שלם שולח ``Range: bytes=<size>-``; המשני עונה 416 וסוגר את
+# החיבור. הלקוח המשיך על החיבור הסגור, והקובץ הבא נכשל בכל "נסה שוב".
+# הטסט למעלה מנתק בקובץ הראשון — ולכן לא ראה את זה.
+
+PULL3 = {
+    **PULL,
+    "id": "img_c0ffe3",
+    "partitions": [
+        MANIFEST_256["partitions"][0],
+        {
+            "index": 2, "type_guid": "E3C9E316-0B5C-4DB8-817D-F92DF00215AE",
+            "role": "msr", "fs": "", "start_sector": 206848,
+            "size_bytes": 16777216, "used_bytes": 16777216,
+            "file": "p2.msr.pcl.zst", "sha256": "dd" * 32, "expandable": False,
+        },
+        MANIFEST_256["partitions"][1],
+    ],
+}
+PULL3_ID = PULL3["id"]
+PULL3_FILES = ["p1.esp.pcl.zst", "p2.msr.pcl.zst", "p3.win.pcl.zst"]
+
+
+def test_resume_after_drop_in_third_file_completes_and_verifies(
+        server, secondary, paired, monkeypatch):
+    write_image(secondary["root"], PULL3)
+    real = storage_client.PinnedMTLSClient.get_stream
+
+    def drop_in_third(self, path, token, dest, **kwargs):
+        dest = Path(dest)
+        if path.endswith("/files/p3.win.pcl.zst"):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(PARTITION_BYTES[:8])
+            raise storage_client.InterserverClientError("נותק אחרי 8 בייטים")
+        return real(self, path, token, dest, **kwargs)
+
+    monkeypatch.setattr(storage_client.PinnedMTLSClient, "get_stream", drop_in_third)
+    admin = server["admin"]
+    tid = admin.post(f"/api/console/storage-nodes/{paired}/pull",
+                     json={"image_id": PULL3_ID}).json()["id"]
+    row = _wait(admin, paired, tid)
+    assert row["state"] == "failed", row
+    left = _incoming(server) / PULL3_ID
+    assert (left / "p1.esp.pcl.zst").read_bytes() == PARTITION_BYTES
+    assert (left / "p2.msr.pcl.zst").read_bytes() == PARTITION_BYTES
+    assert (left / "p3.win.pcl.zst").read_bytes() == PARTITION_BYTES[:8]
+
+    monkeypatch.setattr(storage_client.PinnedMTLSClient, "get_stream", real)
+    tid2 = admin.post(f"/api/console/storage-nodes/{paired}/pull",
+                      json={"image_id": PULL3_ID}).json()["id"]
+    row2 = _wait(admin, paired, tid2)
+    assert row2["state"] == "done", row2
+    assert row2["bytes_sent"] == row2["bytes_total"] == 3 * len(PARTITION_BYTES)
+    landed = server["ctx"].library.get(PULL3_ID)
+    got = Path(landed["_dir"])
+    digest = hashlib.sha256(PARTITION_BYTES).hexdigest()
+    for name in PULL3_FILES:
+        assert (got / name).read_bytes() == PARTITION_BYTES, name
+    assert [p["sha256"] for p in landed["partitions"]] == [digest] * 3
+    assert not left.exists()
+
+
+def _client(server, paired, tmp_path):
+    node = storage_nodes.node_row(server["ctx"].conn, paired)
+    return storage_nodes.node_client(server["ctx"].conn, tmp_path / "data", node)
+
+
+def test_416_on_complete_file_reconnects_for_the_next_request(
+        server, secondary, paired, tmp_path):
+    write_image(secondary["root"], PULL3)
+    client, token = _client(server, paired, tmp_path)
+    done = tmp_path / "done"
+    done.write_bytes(PARTITION_BYTES)
+    fresh = tmp_path / "fresh"
+    with client:
+        n = client.get_stream(f"/images/{PULL3_ID}/files/p1.esp.pcl.zst", token, done)
+        m = client.get_stream(f"/images/{PULL3_ID}/files/p2.msr.pcl.zst", token, fresh)
+    assert n == m == len(PARTITION_BYTES)
+    assert done.read_bytes() == PARTITION_BYTES
+    assert fresh.read_bytes() == PARTITION_BYTES
+
+
+def test_416_on_a_file_that_is_not_the_secondary_size_is_a_failure(
+        server, secondary, paired, tmp_path):
+    """עיקרון 5: 416 לבדו אינו ראיה ש"הקובץ שלם". יעד גדול מהקובץ במשני
+    — כשל עם שני המספרים, לא "כבר הורד"."""
+    write_image(secondary["root"], PULL3)
+    client, token = _client(server, paired, tmp_path)
+    longer = tmp_path / "longer"
+    longer.write_bytes(PARTITION_BYTES + b"EXTRA")
+    with client:
+        with pytest.raises(storage_client.InterserverClientError) as e:
+            client.get_stream(f"/images/{PULL3_ID}/files/p1.esp.pcl.zst", token, longer)
+    msg = str(e.value)
+    assert str(len(PARTITION_BYTES) + 5) in msg and str(len(PARTITION_BYTES)) in msg
+    assert longer.read_bytes() == PARTITION_BYTES + b"EXTRA"
+
+
+def test_416_without_a_reported_size_is_a_failure(
+        server, secondary, paired, tmp_path, monkeypatch):
+    """משני שלא אמר מה גודל הקובץ (‏416 בלי ``Content-Range``, משני ישן) —
+    לא בדקנו, ולכן לא "שלם"."""
+    write_image(secondary["root"], PULL3)
+
+    def bare_416(header, size):
+        raise interserver_api.PairError(416, "טווח לא ניתן לסיפוק")
+
+    monkeypatch.setattr(interserver_api, "parse_byte_range", bare_416)
+    client, token = _client(server, paired, tmp_path)
+    same = tmp_path / "same"
+    same.write_bytes(PARTITION_BYTES)
+    with client:
+        with pytest.raises(storage_client.InterserverClientError) as e:
+            client.get_stream(f"/images/{PULL3_ID}/files/p1.esp.pcl.zst", token, same)
+    assert "Content-Range" in str(e.value)
+
+
+@pytest.mark.parametrize("via", ["tls", "fastapi"])
+def test_secondary_416_reports_the_file_size(paired_ctx, via):
+    """RFC 9110 §15.5.17: ‏416 נושא ``Content-Range: bytes */<size>``."""
+    ctx, peer, token = paired_ctx
+    write_image(Path(ctx.library.root), PULL)
+    headers = {"Authorization": f"Bearer {token}",
+               "ImageCtl-Protocol-Version": "2.1",
+               "Range": f"bytes={len(PARTITION_BYTES)}-"}
+    path = f"/api/interserver/v1/images/{PULL_ID}/files/p1.esp.pcl.zst"
+    if via == "fastapi":
+        if TestClient is None:
+            pytest.skip("fastapi required")
+        app = interserver_api.create_interserver_app(ctx, lambda _req: peer)
+        resp = TestClient(app).get(path, headers=headers)
+        assert resp.status_code == 416
+        assert resp.headers["content-range"] == f"bytes */{len(PARTITION_BYTES)}"
+        return
+    with pytest.raises(interserver_api.PairError) as e:
+        interserver_api.image_file_plan(
+            ctx, peer, image_id=PULL_ID, filename="p1.esp.pcl.zst",
+            range_header=headers["Range"], **_creds(token))
+    assert e.value.status == 416
+    raw = interserver_api._http_response(e.value.status, e.value.payload(),
+                                         close=True, headers=e.value.headers)
+    assert f"\r\nContent-Range: bytes */{len(PARTITION_BYTES)}\r\n".encode() in raw
+
+
+# --- #1458: מקום פנוי בראשי לפני pull ----------------------------------------
+
+def _pull_with_free(server, paired, monkeypatch, free):
+    def fake_free(path):
+        if isinstance(free, Exception):
+            raise free
+        return free
+
+    monkeypatch.setattr(storage_transfer, "_free_bytes", fake_free)
+    admin = server["admin"]
+    tid = admin.post(f"/api/console/storage-nodes/{paired}/pull",
+                     json={"image_id": PULL3_ID}).json()["id"]
+    return _wait(admin, paired, tid)
+
+
+def _pull_need(already=0):
+    return 3 * len(PARTITION_BYTES) - already + storage_transfer.PULL_FREE_SPACE_MARGIN
+
+
+def test_pull_refused_up_front_when_free_space_is_one_byte_short(
+        server, secondary, paired, monkeypatch):
+    write_image(secondary["root"], PULL3)
+    need = _pull_need()
+    row = _pull_with_free(server, paired, monkeypatch, need - 1)
+    assert row["state"] == "failed", row
+    assert "מקום" in row["error"]
+    assert str(need) in row["error"] and str(need - 1) in row["error"]
+    assert row["bytes_sent"] == 0
+    assert not (_incoming(server) / PULL3_ID).exists()
+    assert PULL3_ID not in server["ctx"].library.scan()
+
+
+def test_pull_proceeds_when_free_space_is_exactly_enough(
+        server, secondary, paired, monkeypatch):
+    write_image(secondary["root"], PULL3)
+    row = _pull_with_free(server, paired, monkeypatch, _pull_need())
+    assert row["state"] == "done", row
+    assert PULL3_ID in server["ctx"].library.scan()
+
+
+def test_pull_resume_needs_only_the_remainder(server, secondary, paired, monkeypatch):
+    """בחידוש, מה שכבר ב-``.incoming`` כבר תפוס — דרישת המקום המלאה הייתה
+    חוסמת בדיוק את החידוש שחוסך את ההורדה מחדש."""
+    write_image(secondary["root"], PULL3)
+    left = _incoming(server) / PULL3_ID
+    left.mkdir(parents=True)
+    (left / "p1.esp.pcl.zst").write_bytes(PARTITION_BYTES)
+    (left / "p2.msr.pcl.zst").write_bytes(PARTITION_BYTES[:8])
+    already = len(PARTITION_BYTES) + 8
+    short = _pull_with_free(server, paired, monkeypatch, _pull_need(already) - 1)
+    assert short["state"] == "failed", short
+    assert str(_pull_need(already)) in short["error"]
+    row = _pull_with_free(server, paired, monkeypatch, _pull_need(already))
+    assert row["state"] == "done", row
+
+
+def test_pull_fails_when_free_space_cannot_be_read(
+        server, secondary, paired, monkeypatch):
+    write_image(secondary["root"], PULL3)
+    row = _pull_with_free(server, paired, monkeypatch, OSError("EIO"))
+    assert row["state"] == "failed", row
+    assert "מקום" in row["error"] and "EIO" in row["error"]
+    assert not (_incoming(server) / PULL3_ID).exists()
+
+
+def test_pull_fails_when_secondary_reports_no_size(
+        server, secondary, paired, monkeypatch):
+    write_image(secondary["root"], PULL3)
+    real = interserver_api.list_images
+
+    def sizeless(*args, **kwargs):
+        return [{**row, "size_bytes": None} for row in real(*args, **kwargs)]
+
+    monkeypatch.setattr(interserver_api, "list_images", sizeless)
+    row = _pull_with_free(server, paired, monkeypatch, 10 ** 15)
+    assert row["state"] == "failed", row
+    assert "size_bytes" in row["error"]
+    assert not (_incoming(server) / PULL3_ID).exists()

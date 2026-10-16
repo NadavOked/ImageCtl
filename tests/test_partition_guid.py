@@ -90,7 +90,7 @@ def test_a_windows_partition_without_a_unique_guid_fails_the_capture(tmp_path):
     box, run, out = capture(tmp_path, source_disk(WINDOWS_TYPE, uguid_line=""))
     reason = refusal_reason(box, run, out)
     assert "מחיצה 1" in reason, reason
-    assert "Windows" in reason and "no unique GUID" in reason, reason
+    assert "Windows" in reason and "GUID ייחודי" in reason, reason
     assert not (run / "new-manifest.json").exists()
 
 
@@ -102,7 +102,7 @@ def test_a_linux_partition_without_a_unique_guid_stays_exempt_but_is_named(tmp_p
     written = manifest_of(run)
     assert written["os"] == "linux"
     assert written["partitions"][0]["unique_guid"] == ""
-    assert "partition 1: sgdisk -i 1 printed no unique GUID" in capture_log(run)
+    assert "partition 1: sgdisk -i 1 לא הדפיס GUID ייחודי" in capture_log(run)
     assert "exempt" in capture_log(run)
 
 
@@ -125,7 +125,7 @@ def test_a_unique_guid_that_is_not_a_guid_fails_the_capture_on_any_image(tmp_pat
     line = f'  echo "Partition unique GUID: {value}"\n'
     box, run, out = capture(tmp_path, source_disk(type_guid, uguid_line=line))
     reason = refusal_reason(box, run, out)
-    assert "מחיצה 1" in reason and "not a GUID" in reason, reason
+    assert "מחיצה 1" in reason and "שאינו GUID" in reason, reason
     assert not (run / "new-manifest.json").exists()
 
 
@@ -155,14 +155,14 @@ def test_a_unique_guid_the_disk_did_not_keep_fails_the_restore(tmp_path):
     assert state_of(run) == "failed"
     assert wrote(run) == [], "מחיצה נכתבה על טבלה עם GUID שגוי"
     err = target_error(run)
-    assert "partition 2" in err and "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA" in err, err
+    assert "מחיצה 2" in err and "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA" in err, err
     assert "22222222-2222-2222-2222-222222222222" in err, err
 
 
 @pytest.mark.parametrize("mode,expect", [
-    ("sgdisk_failed", "failed (rc=2)"),
-    ("no_value", "printed no unique GUID"),
-    ("garbage", "not a GUID"),
+    ("sgdisk_failed", "נכשל (rc=2)"),
+    ("no_value", "לא הדפיס GUID ייחודי"),
+    ("garbage", "שאינו GUID"),
 ])
 def test_a_unique_guid_that_could_not_be_read_back_fails_the_restore(tmp_path, mode, expect):
     """‏"לא הצלחנו לקרוא בחזרה" אינו "תואם" (עיקרון 5), בשלוש צורותיו."""
@@ -176,7 +176,7 @@ def test_a_unique_guid_that_could_not_be_read_back_fails_the_restore(tmp_path, m
     assert state_of(run) == "failed"
     assert wrote(run) == []
     err = target_error(run)
-    assert "partition 2" in err and "could not be read back" in err and expect in err, err
+    assert "מחיצה 2" in err and "לא הצלחנו לקרוא בחזרה" in err and expect in err, err
 
 
 def test_a_partition_without_a_guid_in_the_manifest_is_logged_not_checked(tmp_path):
@@ -220,6 +220,6 @@ def test_the_expansion_reads_the_unique_guids_back_too(tmp_path):
              + 'expand_last sda m.json; echo "rc=$?"')
     assert rc_of(out) == "rc=1", out
     assert "expanding partition 2" in log_of(run)
-    assert "partition 2: unique GUID on the disk is AAAAAAAA" in log_of(run)
+    assert "מחיצה 2: ה-GUID הייחודי בדיסק הוא AAAAAAAA" in log_of(run)
     assert not (run / "targets" / "sda" / "expanded").exists(), \
         "סימון ההרחבה נכתב בלי שה-GUID אושר"

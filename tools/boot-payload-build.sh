@@ -26,7 +26,7 @@
 #                         [--manifest FILE] [--write-flags FILE] [--build-log FILE]
 #
 # משתני סביבה (לבדיקות): IMAGECTL_MODULES_DIR (/lib/modules),
-# ‏IMAGECTL_KERNEL_DIR (/boot).
+# ‏IMAGECTL_KERNEL_DIR (/boot), IMAGECTL_BUILD_TMPDIR (/var/tmp).
 
 set -euo pipefail
 
@@ -108,10 +108,26 @@ fi
 [[ "$EPOCH" =~ ^[0-9]+$ ]] || die "SOURCE_DATE_EPOCH is not a number: '$EPOCH'"
 say "kernel $KVER, SOURCE_DATE_EPOCH=$EPOCH, ${#lines[@]} build(s)"
 
-# --- הבנייה, ל-.new ------------------------------------------------------------
+# --- הבנייה, ל-.new — במקביל (#1465) ---------------------------------------------
+# שתי הבניות היו 498 ש' זו אחר זו (שרת המעבדה, 6 vCPU, 16/10); במקביל — הארוכה
+# מביניהן. עץ ה-staging (מאות MB לבנייה) הולך ל-/var/tmp שעל הדיסק ולא ל-/tmp,
+# שבדביאן 13 הוא tmpfs: שתי בניות במקביל היו שתיים כאלה ב-RAM.
+# סדרתי בכל זאת: שורת --with-gui (שתיים כאלה היו מריצות `make -B` לאותו
+# native-gui/imagectl-station-gui) ושורה בלי --skip-apt (נעילת dpkg). כולן בתור אחד.
+# הפסק לפי ראיה חיובית בלבד: קובץ rc שאומר 0 ו-.new לא ריק; כל השאר — כשל בשם.
 if [[ -n "$BUILD_LOG" ]]; then exec 3>>"$BUILD_LOG"; else exec 3>&1; fi
 install -d "$HTTP_ROOT"
-for n in "${!lines[@]}"; do
+BUILD_TMP="${IMAGECTL_BUILD_TMPDIR:-/var/tmp}"
+[[ -d "$BUILD_TMP" && -w "$BUILD_TMP" ]] \
+    || die "build temp dir $BUILD_TMP is not a writable directory; the previous payload is untouched"
+export TMPDIR="$BUILD_TMP"
+LOGDIR=$(mktemp -d "$TMPDIR/imagectl-payload.XXXXXX")
+trap 'rm -rf "$LOGDIR"' EXIT
+t0=$SECONDS
+
+build_line() {   # build_line <n>: one build_initramfs.sh run; the verdict is $LOGDIR/<n>.rc
+    local n=$1 out i rc
+    local -a words
     out="${outputs[$n]}"
     read -r -a words <<<"${lines[$n]}"
     for i in "${!words[@]}"; do
@@ -119,11 +135,59 @@ for n in "${!lines[@]}"; do
     done
     rm -f "$out.new"
     say "building $out (${lines[$n]})"
-    bash "$APP_DIR/tools/build_initramfs.sh" "${words[@]}" \
-        --kernel-version "$KVER" --source-date-epoch "$EPOCH" >&3 2>&1 \
-        || die "Build failed: ${lines[$n]}; the previous payload is untouched"
-    [[ -s "$out.new" ]] || die "$out is empty after the build; the previous payload is untouched"
+    if bash "$APP_DIR/tools/build_initramfs.sh" "${words[@]}" \
+        --kernel-version "$KVER" --source-date-epoch "$EPOCH" >"$LOGDIR/$n.log" 2>&1; then
+        rc=0
+    else
+        rc=$?
+    fi
+    echo "$rc" > "$LOGDIR/$n.rc"
+}
+
+serial=()
+parallel=()
+for n in "${!lines[@]}"; do
+    case " ${lines[$n]} " in
+        *" --with-gui "*) serial+=("$n") ;;
+        *" --skip-apt "*) parallel+=("$n") ;;
+        *) serial+=("$n") ;;
+    esac
 done
+pids=()
+if ((${#serial[@]})); then
+    (for n in "${serial[@]}"; do build_line "$n"; done) &
+    pids+=("$!")
+fi
+for n in "${parallel[@]}"; do
+    build_line "$n" &
+    pids+=("$!")
+done
+for pid in "${pids[@]}"; do wait "$pid" || true; done   # the verdict is the .rc files, below
+
+# היומנים לפי סדר השורות, לא משולבים.
+for n in "${!lines[@]}"; do
+    printf '=== build_initramfs.sh %s ===\n' "${lines[$n]}" >&3
+    if [[ -f "$LOGDIR/$n.log" ]]; then cat "$LOGDIR/$n.log" >&3; fi
+done
+
+failures=()
+for n in "${!lines[@]}"; do
+    rc=unknown
+    if [[ -f "$LOGDIR/$n.rc" ]]; then rc=$(<"$LOGDIR/$n.rc"); fi
+    if [[ "$rc" != 0 ]]; then
+        failures+=("Build failed: ${lines[$n]} (exit ${rc:-unknown})")
+    elif [[ ! -s "${outputs[$n]}.new" ]]; then
+        failures+=("${outputs[$n]} is empty after the build")
+    fi
+done
+if ((${#failures[@]})); then
+    for f in "${failures[@]}"; do say "$f"; done
+    # השורה האחרונה היא מה ש-firstboot מציג: הכשל הראשון בשמו, ולא רק מספר.
+    more=""
+    if ((${#failures[@]} > 1)); then more=" (+$((${#failures[@]} - 1)) more)"; fi
+    die "${failures[0]}$more; the previous payload is untouched"
+fi
+say "built ${#lines[@]} initrd(s) in $((SECONDS - t0)) s (${#parallel[@]} parallel, ${#serial[@]} in the serial queue)"
 install -m 0644 "$VMLINUZ" "$HTTP_ROOT/vmlinuz.new"
 
 # --- הכול נבנה: מחליפים יחד -----------------------------------------------------

@@ -64,14 +64,14 @@ def test_a_windows_plan_with_msr_passes_and_sgdisk_sees_the_real_disk(tmp_path):
     assert "-A 1:=:0x8000000000000000" in args
     # ‏#1434: ההדמיה מתחילה מטבלה ריקה (--clear); בלעדיה המחיצות הקיימות
     # נשארות בזיכרון, ו-n- נכשל על כל דיסק משומש
-    assert args.startswith("--pretend --clear "), args
+    assert args.startswith("-a 1 --pretend --clear "), args
 
 
 def test_a_file_name_with_a_path_separator_is_still_rejected(tmp_path):
     for bad in ("../p3.img.zst", "sub\\p3.img.zst", ""):
         rows = ROWS[:2] + [ROWS[2].replace("p3.img.zst", bad)]
         out, args = _validate_in(tmp_path, bad, rows)
-        assert out == "FAIL malformed restore plan -- disk untouched", (bad, out)
+        assert out == "FAIL תוכנית השחזור פגומה — הדיסק לא שונה", (bad, out)
         assert args == "", "sgdisk רץ על תוכנית שנדחתה"
 
 
@@ -99,7 +99,7 @@ def test_partitions_out_of_disk_order_pass_and_a_real_overlap_is_rejected(tmp_pa
     assert out == "OK", out
     overlap = ROWS[:2] + [ROWS[2].replace("|239616|", "|206848|")]   # על MSR
     out, args = _validate_in(tmp_path, "overlap", overlap)
-    assert out == "FAIL malformed restore plan -- disk untouched", out
+    assert out == "FAIL תוכנית השחזור פגומה — הדיסק לא שונה", out
     assert args == ""
 
 
@@ -117,4 +117,4 @@ def test_a_local_clone_plan_and_a_swap_partition_pass_without_a_stream_file(tmp_
                 ROWS[2].replace(f"p3.img.zst|{SHA}", "|"),                  # ntfs בלי קובץ
                 ROWS[2].replace(f"p3.img.zst|{SHA}", "local:../p3|")):
         out, args = _validate_in(tmp_path, bad, ROWS[:2] + [bad])
-        assert out == "FAIL malformed restore plan -- disk untouched", (bad, out)
+        assert out == "FAIL תוכנית השחזור פגומה — הדיסק לא שונה", (bad, out)

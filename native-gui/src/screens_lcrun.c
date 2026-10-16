@@ -19,10 +19,19 @@ static void mmss(int s, char *out, size_t n) {
     else snprintf(out, n, "%02d:%02d", s / 60, s % 60);
 }
 
-static void left_text(double secs, char *out, size_t n) {
-    if (secs < 0) snprintf(out, n, "הזמן שנותר עוד לא נמדד");
-    else if (secs < 90) snprintf(out, n, "פחות מ-2 דק' נותרו");
-    else snprintf(out, n, "כ-%.0f דק' נותרו", secs / 60);
+/* #1437/#1440: the time left only from a total that was measured and a full
+ * window of the copy's own pace; otherwise it says which of those is missing. */
+static void left_text(const LcState *l, int um, double rate, int span, char *out, size_t n) {
+    if (um) snprintf(out, n, "הזמן שנותר לא ידוע — מחיצה %d לא נמדדה", um);
+    else if (l->total < 0) snprintf(out, n, "הזמן שנותר לא ידוע — הסך לא נמדד");
+    else if (span < LC_RATE_WIN) snprintf(out, n, "מחשב את הזמן שנותר…");
+    else if (rate <= 0) snprintf(out, n, "הזמן שנותר לא ידוע — ההעתקה לא מתקדמת");
+    else {
+        double secs = ((double)l->total - (double)l->copied) / rate;
+        if (secs < 60) snprintf(out, n, "פחות מדקה נותרה");
+        else if (secs < 90) snprintf(out, n, "פחות מ-2 דק' נותרו");
+        else snprintf(out, n, "כ-%.0f דק' נותרו", secs / 60);
+    }
 }
 
 static const LcDisk *disk_of(const App *a, const char *dev) { return lc_disk_by_dev(a, dev); }
@@ -43,18 +52,24 @@ static void met(App *a, cairo_t *cr, Rect r, const char *l, const char *v, const
     text_free(&tl); text_free(&tv);
 }
 
+/* a partition's weight in the row: its used bytes, or its size when they were not measured (#1440) */
+static long long layout_bytes(const LcPart *p) { return p->bytes >= 0 ? p->bytes : p->size; }
+
 static void part_box(App *a, cairo_t *cr, Rect r, const LcPart *p) {
     const Theme *t = a->theme; int done = !strcmp(p->state, "done"), now = !strcmp(p->state, "copy"), bad = !strcmp(p->state, "failed");
     draw_fill_rrect(cr, r, 4, t->surface); draw_border_rrect(cr, r, 4, now ? t->indigo : bad ? t->danger : t->hair, 1);
     double share = done ? 1 : now && p->bytes > 0 ? fmin(1, (double)p->in / (double)p->bytes) : 0;
-    char head[64], st[32], d[160], b1[48], b2[48];
+    char head[64], st[48], d[160], b1[48], b2[48];
     snprintf(head, sizeof head, "%d · %s", p->idx, p->label);
-    if (done) snprintf(st, sizeof st, "✓ הועתקה"); else if (now) snprintf(st, sizeof st, "%.0f%%", share * 100);
+    if (done) snprintf(st, sizeof st, "✓ הועתקה");
+    else if (now && p->bytes < 0) lc_gb(st, sizeof st, (double)p->in);   /* #1440: no share of an unmeasured whole */
+    else if (now) lc_pct(st, sizeof st, share);
     else if (bad) snprintf(st, sizeof st, "נכשלה"); else snprintf(st, sizeof st, "ממתינה");
     lc_gb(b1, sizeof b1, (double)p->bytes); lc_gb(b2, sizeof b2, (double)p->size);
     const char *fs = !strcmp(p->fs, "vfat") ? "FAT32" : !strcmp(p->fs, "ntfs") ? "NTFS" : p->fs[0] && strcmp(p->fs, "unknown") ? p->fs : NULL;
     if (!strcmp(p->fs, "swap")) snprintf(d, sizeof d, "swap · נוצרת מחדש");
     else if (!fs) snprintf(d, sizeof d, "ללא מ״ק · %s · מועתקת מלאה", b2);
+    else if (p->bytes < 0) snprintf(d, sizeof d, "%s · %s · בשימוש: לא נמדד", fs, b2);   /* #1440 */
     else if (p->bytes < p->size) snprintf(d, sizeof d, "%s · %s בשימוש מתוך %s", fs, b1, b2);
     else snprintf(d, sizeof d, "%s · %s בשימוש", fs, b1);
     Text th = text_make(cr, FONT_SANS, 12, 600, head, 0, DIR_RTL), ts = text_make(cr, FONT_SANS, 12, 500, st, 0, DIR_RTL);
@@ -95,7 +110,9 @@ static void tbay(App *a, cairo_t *cr, Rect b, const LcTgt *g) {
     double px = fl, pw = fr - 220 - 16 - fl;
     double share = g->total > 0 ? fmin(1, (double)g->bytes / (double)g->total) : 0;
     if (ok) share = 1;
-    char line[460], pct[16]; snprintf(pct, sizeof pct, "%.0f%%", share * 100);
+    char line[460], pct[24];
+    if (ok || g->total > 0) lc_pct(pct, sizeof pct, share);
+    else snprintf(pct, sizeof pct, "%.1f GB", (double)g->bytes / 1e9);   /* #1440: the total was not measured */
     const LcPart *cp = NULL; for (int i = 0; i < a->st.lc.nparts; i++) if (a->st.lc.parts[i].idx == g->part) cp = &a->st.lc.parts[i];
     if (bad) snprintf(line, sizeof line, "נכשל: %s", g->error);
     else if (ok) snprintf(line, sizeof line, "הושלם · נבדק");
@@ -128,7 +145,8 @@ void lc_draw_progress(App *a, cairo_t *cr, double W, double H, double head_h) {
     for (int i = 0; i < l->ntgts; i++) if (!tfailed(tgt_of(a, i))) { char n2[48]; label_dev(a, l->tgts[i].dev, n2, sizeof n2);
         k += snprintf(names + k, sizeof names - k > 0 ? sizeof names - k : 0, "%s%s", k ? "ול" : "ל", n2); }
     if (!l->has_run) { snprintf(h1, sizeof h1, "מתחיל…"); snprintf(s2, sizeof s2, "בודק שוב את המקור ואת היעדים לפני הכתיבה."); }
-    else if (!strcmp(l->phase, "shrinking")) { snprintf(h1, sizeof h1, "מכווץ זמנית את המקור…"); snprintf(s2, sizeof s2, "המחיצות יוחזרו לגודלן בסוף ההעתקה."); }
+    /* #1477: a local clone shrinks only a RAM view (#1466) -- the source is never written, on either path */
+    else if (!strcmp(l->phase, "shrinking")) { snprintf(h1, sizeof h1, "מכין עותק מכווץ בזיכרון…"); snprintf(s2, sizeof s2, "המקור נקרא בלבד ולא נכתב."); }
     else if (!strcmp(l->phase, "verifying")) { snprintf(h1, sizeof h1, "בודק את היעדים…"); snprintf(s2, sizeof s2, "טבלת המחיצות נקראת בחזרה מכל יעד."); }
     else if (!strcmp(l->phase, "restoring")) { snprintf(h1, sizeof h1, "מחזיר את המקור לגודלו…"); snprintf(s2, sizeof s2, "ההעתקה הסתיימה."); }
     else if (!strcmp(l->phase, "stopped")) { snprintf(h1, sizeof h1, "השיכפול נעצר"); snprintf(s2, sizeof s2, "היעדים כתובים בחלקם ואינם שמישים."); }
@@ -137,9 +155,12 @@ void lc_draw_progress(App *a, cairo_t *cr, double W, double H, double head_h) {
         snprintf(s2, sizeof s2, "%s נכשל ונעצר. השאר לא הושפעו.", fn); }
     else if (!alive) { snprintf(h1, sizeof h1, "כל היעדים נכשלו"); snprintf(s2, sizeof s2, "המקור לא שונה."); }
     else { snprintf(h1, sizeof h1, "מעתיק %s%s", names, alive > 1 ? " במקביל" : ""); snprintf(s2, sizeof s2, "המקור נקרא פעם אחת ונכתב לכל היעדים יחד."); }
-    double rate = l->elapsed > 0 ? (double)l->copied / l->elapsed : -1, pct = l->total > 0 ? fmin(1, (double)l->copied / l->total) : 0;
-    double left = rate > 0 && l->total > 0 ? ((double)l->total - l->copied) / rate : -1;
-    char big[16], lt[64]; snprintf(big, sizeof big, "%.0f%%", floor(pct * 100)); left_text(left, lt, sizeof lt);
+    /* #1440: one partition not measured and the whole is not known -- no percent of it, no time left */
+    int um = lc_unmeasured(l), whole = !um && l->total > 0, span;
+    double rate = lc_rate(&a->lcu, &span);   /* #1437: the window, not the average since the start */
+    char big[24], lt[96];
+    if (whole) lc_pct(big, sizeof big, (double)l->copied / l->total); else snprintf(big, sizeof big, "—");
+    left_text(l, um, rate, span, lt, sizeof lt);
     Text tlb = text_make(cr, FONT_SANS, 12, 500, lb, 0, DIR_RTL), th1 = text_make(cr, FONT_SANS, 26, 600, h1, (int)(cw - 260), DIR_RTL);
     Text ts2 = text_make(cr, FONT_SANS, 13, 400, s2, (int)(cw - 260), DIR_RTL);
     Text tb = text_make(cr, FONT_MONO, 64, 400, big, 0, DIR_LTR), tlt = text_make(cr, FONT_SANS, 13, 400, lt, 0, DIR_RTL);
@@ -151,20 +172,22 @@ void lc_draw_progress(App *a, cairo_t *cr, double W, double H, double head_h) {
     y += hh + 16;
     /* .mets -- speed (right), copied, time passed (left) */
     double mw = (cw - 24) / 3, mh = 80;
-    char v1[48], v2[160], v3[32], c1[48], c2[48], hint[160] = "";
-    if (rate > 0) snprintf(v1, sizeof v1, "%.0f MB/s", rate / 1e6); else snprintf(v1, sizeof v1, "עוד לא נמדדה");
-    double gc = l->copied / 1e9, gt = l->total / 1e9;
+    char v1[48], v2[160], v3[32], c1[48], c2[48], hint[160] = "", ch[96] = "בלוקים בשימוש בלבד";
+    if (span >= LC_RATE_MIN && rate >= 0) snprintf(v1, sizeof v1, "%.0f MB/s", rate / 1e6); else snprintf(v1, sizeof v1, "עוד לא נמדדה");
+    double gc = l->copied / 1e9, gt = whole ? l->total / 1e9 : gc;
     snprintf(c1, sizeof c1, gt >= 100 ? "%.0f" : gt >= 10 ? "%.1f" : "%.2f", gc); snprintf(c2, sizeof c2, gt >= 100 ? "%.0f" : gt >= 10 ? "%.1f" : "%.2f", gt);
-    if (l->total > 0) snprintf(v2, sizeof v2, "%s / %s GB", c1, c2); else snprintf(v2, sizeof v2, "%s GB", c1);
+    if (whole) snprintf(v2, sizeof v2, "%s / %s GB", c1, c2); else snprintf(v2, sizeof v2, "%s GB", c1);
+    if (um) snprintf(ch, sizeof ch, "הסך לא ידוע — מחיצה %d לא נמדדה", um);
+    else if (!whole) snprintf(ch, sizeof ch, "הסך לא ידוע — לא נמדד");
     mmss(l->elapsed, v3, sizeof v3);
     if (nf && alive) snprintf(hint, sizeof hint, "היעד שנכשל יצא מהזרם — הוא כבר לא מאט אותו");
     met(a, cr, (Rect){ xr - mw, y, mw, mh }, "מהירות", v1, hint, t->led_ok);
-    met(a, cr, (Rect){ xr - 2 * mw - 12, y, mw, mh }, "הועתקו", v2, "בלוקים בשימוש בלבד", t->muted);
+    met(a, cr, (Rect){ xr - 2 * mw - 12, y, mw, mh }, "הועתקו", v2, ch, um || !whole ? t->warn : t->muted);
     met(a, cr, (Rect){ x0, y, mw, mh }, "זמן שעבר", v3, "", t->muted);
     y += mh + 12;
     /* .parts -- the biggest partition gets 2.4 shares, as the mockup's Windows */
     if (l->nparts) {
-        int bigi = 0; for (int i = 1; i < l->nparts; i++) if (l->parts[i].bytes > l->parts[bigi].bytes) bigi = i;
+        int bigi = 0; for (int i = 1; i < l->nparts; i++) if (layout_bytes(&l->parts[i]) > layout_bytes(&l->parts[bigi])) bigi = i;
         double shares = l->nparts - 1 + 2.4, unit = (cw - 6 * (l->nparts - 1)) / shares, px = xr;
         for (int i = 0; i < l->nparts; i++) {
             double w = unit * (i == bigi ? 2.4 : 1);
@@ -218,6 +241,11 @@ static double res_card(App *a, cairo_t *cr, double x, double y, double w, const 
         else snprintf(h3, sizeof h3, "%s · זהה למקור", name);
         snprintf(li[n], sizeof li[n], "%d מחיצות הועתקו · xxh64 של כל מחיצה תואם למה שנקרא מהמקור", g->ok); mk[n++] = 1;
         snprintf(li[n], sizeof li[n], "טבלת המחיצות נקראה בחזרה מהדיסק — זהה למקור, כולל מזהי GUID"); mk[n++] = 1;
+        if (g->ntfs_boot > 0) {   /* #1487: partclone -r does not write it; the agent copies and reads it back */
+            if (g->ntfs_boot == 1) snprintf(li[n], sizeof li[n], "סקטור אתחול גיבוי נכתב ואומת (מחיצת NTFS אחת)");
+            else snprintf(li[n], sizeof li[n], "סקטור אתחול גיבוי נכתב ואומת (%d מחיצות NTFS)", g->ntfs_boot);
+            mk[n++] = 1;
+        }
         if (g->has_table && g->grown_idx > 0) {
             char was[48]; lc_gb(was, sizeof was, (double)g->src_bytes);
             snprintf(li[n], sizeof li[n], "מחיצה %d הוגדלה מ-%s ל-%s, עד סוף הדיסק; מה שאחריה הועבר לסוף, בגודלו", g->grown_idx, was, gb); mk[n++] = 0;
@@ -280,7 +308,7 @@ void lc_draw_done(App *a, cairo_t *cr, double W, double H, double head_h) {
     else if (nf == l->ntgts) snprintf(h1, sizeof h1, "השיכפול נכשל — אף יעד לא הושלם");
     else snprintf(h1, sizeof h1, "השיכפול הסתיים — %d מתוך %d הצליחו", l->ntgts - nf, l->ntgts);
     const LcDisk *src = disk_of(a, l->run_src); label_dev(a, l->run_src, sl, sizeof sl);
-    lc_gb(tot, sizeof tot, (double)l->total); mmss(l->elapsed, el, sizeof el);
+    lc_gb(tot, sizeof tot, (double)(l->total >= 0 ? l->total : l->copied)); mmss(l->elapsed, el, sizeof el);   /* #1440: what was read */
     bidi_isolate(src && src->model[0] ? src->model : l->run_src, mi, sizeof mi);
     snprintf(p, sizeof p, RLM "%s · %s דקות · מקור: %s (%s)", tot, el, sl, mi);
     Text th = text_make(cr, FONT_SANS, 26, 600, h1, 0, DIR_RTL), tp = text_make(cr, FONT_SANS, 14, 400, p, 0, DIR_RTL);
@@ -290,6 +318,7 @@ void lc_draw_done(App *a, cairo_t *cr, double W, double H, double head_h) {
     /* the source: read only, or shrunk for the copy and grown back -- or not, said in red */
     char sn[500]; int bad = l->src_restore[0] && strcmp(l->src_restore, "ok");
     if (bad) snprintf(sn, sizeof sn, "%s (המקור): %s", sl, l->src_restore);
+    else if (!strcmp(l->shrink_path, "snapshot")) snprintf(sn, sizeof sn, "%s (המקור) נקרא בלבד ולא שונה — הכיווץ נעשה על עותק בזיכרון.", sl);   /* #1477 */
     else if (l->shrunk) snprintf(sn, sizeof sn, "%s (המקור) כווץ זמנית לשיכפול והוחזר לגודלו המקורי.", sl);
     else snprintf(sn, sizeof sn, "%s (המקור) נקרא בלבד ולא שונה.", sl);
     Text ts = text_make(cr, FONT_SANS, 13, bad ? 600 : 400, sn, (int)(cw - 20), DIR_RTL);

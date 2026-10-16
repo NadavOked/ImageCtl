@@ -36,7 +36,9 @@ from test_shrink_on_capture import (
     order,
     part,
     rewrites,
+    source_writes,
     stubs,
+    view_sys,
 )
 
 pytestmark = requires_native(("bash", BASH))
@@ -104,11 +106,13 @@ echo "   3         {WIN_START}      {REC_START - 1}   237.0 GiB   0700  Basic da
 echo "   4       {REC_START}       {REC_END - 1}   960.6 MiB  2700  Recovery"
 '''
 
-#: ntfsresize: --info reports $NTFS_MIN as the minimum; -s and -f -f exit 0.
+#: ntfsresize: --info reports $NTFS_MIN as the minimum; -n (#1466: the budget
+#: of the RAM view) reports 10 MB of relocations; -s and -f -f exit 0.
 NTFSRESIZE = '''#!/bin/sh
 echo "ntfsresize $*" >> "$RUN_DIR/order.log"
 case "$*" in
   *--info*) echo "You might resize at $NTFS_MIN bytes or 1 MB (freeing 1 MB)."; exit 0 ;;
+  "-n "*) echo "Needed relocations : 2560 (10 MB)"; exit 0 ;;
   "-s "*|*" -s "*) IFS= read -r ans ;;
 esac
 exit 0
@@ -119,8 +123,10 @@ ASK = 'shrink_ask() { echo asked >> "$RUN_DIR/order.log"; echo continue; }; '
 
 def _capture(tmp_path, ntfs_min: int, disk_sectors: int = DISK_SECTORS, env: dict | None = None):
     size = f'echo {disk_sectors} > "$SYSROOT/sys/block/sda/size"; '
+    # #1466: the kernel's view of THIS layout's partitions (FS_MAP's is the 512GB disk's)
+    sysfs = view_sys({3: WIN_SECTORS, 4: REC_SECTORS})
     return capture_run(tmp_path, stubs=stubs(sgdisk=SGDISK, ntfsresize=NTFSRESIZE, blockdev=BLOCKDEV_OK),
-                       shell_pre=FS_MAP + size + ASK, env={"NTFS_MIN": str(ntfs_min), **(env or {})})
+                       shell_pre=FS_MAP + sysfs + size + ASK, env={"NTFS_MIN": str(ntfs_min), **(env or {})})
 
 
 def _layout_need(parts: list[tuple[int, int]]) -> int:
@@ -143,7 +149,9 @@ def test_a_nearly_full_c_gives_the_tail_and_the_image_fits_the_smaller_drive(tmp
     steps = order(run)
     assert "asked" in steps, "a shrink nobody said yes to is not a shrink"
     dev = posix(box / "dev")
-    assert f"ntfsresize -s {WIN_BYTES - TAIL} --no-progress-bar {dev}/sda3" in steps, steps
+    # #1466: the tail is taken on the RAM view of C:, never on the source
+    assert f"ntfsresize -s {WIN_BYTES - TAIL} --no-progress-bar {dev}/mapper/lc-src-3" in steps, steps
+    assert source_writes(steps, box) == [], source_writes(steps, box)
     m = manifest(run)
     win, rec = part(m, 3), part(m, 4)
     assert win["size_bytes"] == WIN_BYTES - TAIL and win["shrunk_from_bytes"] == WIN_BYTES
@@ -161,13 +169,10 @@ def test_the_recovery_is_never_measured_written_or_moved_on_the_source(tmp_path)
     box, run, out = _capture(tmp_path, NEARLY_FULL_MIN)
     assert out.strip().endswith("rc=0"), out
     assert not [s for s in order(run) if s.startswith("ntfsresize") and s.endswith("sda4")]
-    assert not [c for c in rewrites(run) if " -d 4 " in f" {c} "]
-    # C: is back to its size: the source table reads back exactly what it was
-    assert (run / "sgdisk.sizes").read_text(encoding="utf-8") == f"3={WIN_SECTORS}\n4={REC_SECTORS}\n"
-    assert len(rewrites(run)) == 2, "C: shrunk once and grown back once -- nothing else rewritten"
-    shrunk, back = rewrites(run)
-    assert f"-n 3:{WIN_START}:{WIN_START + (WIN_BYTES - TAIL) // 512 - 1} " in shrunk, shrunk
-    assert f"-n 3:{WIN_START}:{REC_START - 1} " in back, back
+    assert not [s for s in order(run) if "lc-src-4" in s], "no RAM view of the recovery is made"
+    # #1466: the source table is never written -- the tail lives in the manifest only
+    assert rewrites(run) == [], rewrites(run)
+    assert source_writes(order(run), box) == [], source_writes(order(run), box)
 
 
 def test_a_packed_c_is_not_shrunk_and_the_shortfall_is_named(tmp_path):

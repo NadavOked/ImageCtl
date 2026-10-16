@@ -269,7 +269,7 @@ def test_dry_run_prints_the_exact_command_sequence_and_redacts_secrets(tmp_path)
         "mkdir", "cp", "cp", "verify-package-pool", "write-target",
         "write-target", "write-target", "write-target", "cp", "printf",
         "chroot", "chroot", "chroot", "write-target", "write-target", "chroot", "blkid", "blkid",
-        "write-target", "write-target", "write-target", "chroot", "write-target",
+        "write-target", "write-target", "write-target", "chroot", "chroot", "write-target", "chroot", "write-target",
         "write-target-secret", "umount", "umount", "umount", "umount",
         "umount", "umount", "sync",
     ]

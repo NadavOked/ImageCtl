@@ -3,7 +3,8 @@
 הראשי **דוחף**: משימת רקע קוראת את תיקיית האימג' מהספרייה שעל הדיסק
 (``archive.tar_stream`` — אותו tar של "הורדה למחשב"), ומזרימה אותה למשני
 דרך הערוץ הבין-שרתי המאומת (mTLS 1.3, SPKI-pin, טוקן כרוך לתעודה —
-‏#740). המשני מכניס דרך ``import_tar`` — ‏sha256 של כל מחיצה מול המניפסט
+‏#740). המשני מכניס דרך ``import_tar_stream`` (‏#1457: חילוץ ו-sha256 תוך כדי
+הזרם) — ‏sha256 של כל מחיצה מול המניפסט
 **לפני** שהאימג' נכנס לספרייה (עיקרון 6); הראשי לא מקבל "הצלחה" אלא
 מתשובת 200 שאחרי האימות.
 
@@ -27,10 +28,11 @@ import logging
 import shutil
 import threading
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-from . import interserver_auth, storage_client, storage_nodes
+from . import interserver_auth, storage_client, storage_nodes, transfer_cap
 from .db import _write_lock, journal, now_iso, writing
 
 log = logging.getLogger("imagectl.storage_transfer")
@@ -43,6 +45,10 @@ PROGRESS_STEP = 64 * 1024 * 1024
 LIST_LIMIT = 20
 #: תיקיית הביניים של pull — אזור עבודה (מתחיל בנקודה) שהספרייה מדלגת עליו.
 INCOMING = ".incoming"
+#: ‏#1458: שוליים מעל קבצי המחיצה ב-pull — כמו ``FREE_SPACE_MARGIN`` של
+#: הקליטה במשני. בלי מכפיל: הקבצים נכתבים ל-``.incoming`` ונכנסים לספרייה
+#: ב-``rename`` על אותה מערכת קבצים, בלי עותק.
+PULL_FREE_SPACE_MARGIN = 256 * 1024 * 1024
 
 _cancel_flags: dict[str, threading.Event] = {}
 _cancel_lock = threading.Lock()
@@ -85,7 +91,23 @@ def list_transfers(conn, user: tuple[str, str], *,
         " t.created_at, t.updated_at, t.direction"
         " FROM storage_transfers t JOIN storage_nodes n ON n.id = t.node_id"
         " ORDER BY t.created_at DESC, t.id LIMIT ?", (limit,)).fetchall()
-    return [dict(r) for r in rows]
+    now = datetime.now(timezone.utc)
+    return [{**dict(r), "seconds_since_update": _seconds_since(r["updated_at"], now)}
+            for r in rows]
+
+
+def _seconds_since(stamp: str | None, now: datetime) -> int | None:
+    """‏#1462: כמה שניות עברו מאז העדכון האחרון של השורה — בשעון **השרת**, כדי
+    שהקונסולה לא תחסיר את שעון הדפדפן מזמן של השרת. בשלב ``verifying`` זה
+    הזמן שעבר מאז הכניסה לשלב (אין עדכון באמצעו); ב-``sending`` — מאז מנת
+    ה-64MiB האחרונה. ‏``None`` = חותמת שלא נקראה, לא 0."""
+    try:
+        then = datetime.fromisoformat(stamp)
+    except (TypeError, ValueError):
+        return None
+    if then.tzinfo is None:
+        return None
+    return max(0, int((now - then).total_seconds()))
 
 
 def _set_state(conn, transfer_id: str, state: str, *, bytes_sent: int | None = None,
@@ -185,11 +207,14 @@ def _push(ctx, data_dir, transfer_id: str, row) -> None:
     client, token = storage_nodes.node_client(conn, data_dir, node)
     image_id = row["image_id"]
     last = {"mark": 0}
+    # ‏#1473: ‏put_stream קורא לזה אחרי כל מנה שנשלחה — ההמתנה כאן היא הקצב.
+    pace = transfer_cap.pacer(conn)
 
     def on_progress(sent: int) -> None:
         if sent - last["mark"] >= PROGRESS_STEP:
             last["mark"] = sent
             _set_state(conn, transfer_id, "sending", bytes_sent=sent)
+        pace(sent)
 
     _set_state(conn, transfer_id, "sending", bytes_sent=0)
     with client:
@@ -201,7 +226,8 @@ def _push(ctx, data_dir, transfer_id: str, row) -> None:
         def chunks():
             for chunk in tar_stream(Path(manifest["_dir"]), image_id):
                 yield chunk
-            # כל הבייטים יצאו; מכאן המשני מאמת sha256 — וזה יכול לארוך דקות.
+            # כל הבייטים יצאו; מכאן המשני משווה sha256 ומכניס לספרייה. משני
+            # מעודכן כבר חישב תוך כדי (#1457); משני ישן מחלץ ומאמת עכשיו — דקות.
             _set_state(conn, transfer_id, "verifying", bytes_sent=row["bytes_total"])
 
         result = client.put_stream(f"/images/{image_id}", token, chunks(),
@@ -227,6 +253,31 @@ def _clear_incoming(path: Path) -> None:
     shutil.rmtree(path, ignore_errors=True)
     if path.exists():
         log.warning("pull incoming was left behind at %s", path)
+
+
+def _free_bytes(path: Path) -> int:
+    return shutil.disk_usage(path).free
+
+
+def _check_pull_space(root: Path, incoming: Path, files: list[str], total: int) -> None:
+    """‏#1458: לפני הבייט הראשון — האם מה שנשאר להוריד נכנס לספרייה.
+
+    ‏``total`` הוא ``size_bytes`` של המשני (סכום קבצי המחיצה). מה שכבר
+    ב-``.incoming`` מניסיון קודם כבר תופס מקום, ולכן מנוכה. "לא הצלחנו
+    לבדוק" — גודל שלא דווח או מקום שלא נקרא — הוא כשל, לא "נכנס" (עיקרון 5)."""
+    if total <= 0:
+        raise RuntimeError("המשני לא דיווח את גודל האימג' (size_bytes) —"
+                           " לא ניתן לבדוק אם יש מקום בראשי")
+    already = sum((incoming / name).stat().st_size for name in files
+                  if (incoming / name).is_file())
+    need = max(total - already, 0) + PULL_FREE_SPACE_MARGIN
+    try:
+        free = _free_bytes(root)
+    except OSError as exc:
+        raise RuntimeError(f"לא ניתן לקרוא את המקום הפנוי בספריית הראשי: {exc}") from exc
+    if free < need:
+        raise RuntimeError(f"אין די מקום פנוי בראשי: נדרשים {need} בייטים, פנויים {free}"
+                           f" (חסרים {need - free})")
 
 
 def _sha256_file(path: Path) -> str:
@@ -352,6 +403,8 @@ def _pull(ctx, data_dir, transfer_id: str, row, incoming: Path | None) -> None:
     if incoming is None:
         raise RuntimeError("תיקיית הביניים יוצאת משורש הספרייה")
     last = {"mark": 0}
+    # ‏#1473: הקריאה בקצב התקרה — חלון ה-TCP מאט את המשני ששולח (`transfer_cap`).
+    pace = transfer_cap.pacer(conn)
 
     def on_progress(sent: int) -> None:
         if _is_cancelled(transfer_id):
@@ -359,6 +412,7 @@ def _pull(ctx, data_dir, transfer_id: str, row, incoming: Path | None) -> None:
         if sent - last["mark"] >= PROGRESS_STEP:
             last["mark"] = sent
             _set_state(conn, transfer_id, "sending", bytes_sent=sent)
+        pace(sent)
 
     client, token = storage_nodes.node_client(conn, data_dir, node)
     with client:
@@ -387,6 +441,7 @@ def _pull(ctx, data_dir, transfer_id: str, row, incoming: Path | None) -> None:
         if manifest.get("folder"):
             validate_display_name(str(manifest["folder"]), "שם התיקייה")
         files = [p["file"] for p in streamed_partitions(manifest)]
+        _check_pull_space(root, incoming, files, total)
         incoming.mkdir(parents=True, exist_ok=True)
         completed = 0
         for filename in files:

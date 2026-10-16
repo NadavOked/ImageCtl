@@ -366,7 +366,7 @@ def test_a_station_whose_second_partition_failed_carries_evidence_and_is_not_ren
     assert out.strip().endswith("rc=1"), out
     assert rename_calls(box) == [], sgdisk_calls(box)
     assert zap_calls(box) == [f"--zap-all {posix(box)}/dev/sda"]
-    assert error_of(run, "sda") == "wrote 1 of 3 partitions"
+    assert error_of(run, "sda") == "נכתבו 1 מתוך 3 מחיצות"
     assert (run / "targets" / "sda" / "ata_log").read_text().strip() == "[ 99999999.0] ata1: SError: { ICRC }"
 
 

@@ -18,17 +18,28 @@
 
 LC_STALL_S="${LC_STALL_S:-${WAIT_STREAM_STALL_S:-300}}"
 
+_lc_gpt_why() {
+    # #1455: apply_gpt's own steps (zap, -n, -U, -e, rereadpt) log their cause
+    # but set no PLAN_ERROR; the card then said only "not written". The log's
+    # last lines name the step and sgdisk's/blockdev's own words.
+    [ -n "${PLAN_ERROR:-}" ] && { printf '%s
+' "$PLAN_ERROR"; return; }
+    printf 'טבלת המחיצות לא נכתבה: %s
+' "$(tail -n 3 "$LOG_FILE" 2>/dev/null | tr '
+' ' ' | cut -c1-240)"
+}
+
 lc_prepare_target() {
     # $1 = target, $2 = manifest. The table exactly as on the source (GUIDs
     # included), grown to a larger disk -- run_restore_drawers' own sequence.
     target_set "$1" writing
     disk_fits "$1" "$2" || return 1
     if ! apply_gpt "$1" "$2"; then
-        fail_written_target "$1" "${PLAN_ERROR:-טבלת המחיצות לא נכתבה}"; return 1
+        fail_written_target "$1" "$(_lc_gpt_why)"; return 1
     fi
     if ! EXPAND_OVERRIDE=auto expand_last "$1" "$2"; then
         log "WARNING: expansion failed on $1 -- writing at the source's own size"
-        apply_gpt "$1" "$2" || { fail_written_target "$1" "${PLAN_ERROR:-טבלת המחיצות לא נכתבה}"; return 1; }
+        apply_gpt "$1" "$2" || { fail_written_target "$1" "$(_lc_gpt_why)"; return 1; }
     fi
     lc_set_names "$1" || { fail_written_target "$1" "שמות המחיצות לא נכתבו (sgdisk -c)"; return 1; }
     blockdev --rereadpt "$DEVROOT/$1" >> "$LOG_FILE" 2>&1 \
@@ -117,9 +128,10 @@ lc_stream() {
     # על מחשב שיכפול 2: ‏108 → 157MB/s. ה-r- קורא את מצב ה-checksum מהכותרת.
     # חוצץ 512KB (‏-z): ‏160 → 170MB/s, ‏1MB נמדד פעמיים (160/160); 4MB ‏114, ‏16MB ‏106.
     [ "$_ls_pcl" = partclone.dd ] || _ls_ign="$_ls_ign -a0 -z 524288"
+    # #1466: a partition shrunk through a RAM view is read from the view (lc_src_node).
     (
         # shellcheck disable=SC2046 # partclone_mode flags are a word list
-        "$_ls_pcl" $(partclone_mode "$_ls_pcl" -c) $_ls_ign -s "$(partition_node "$_ls_src" "$_ls_i")" \
+        "$_ls_pcl" $(partclone_mode "$_ls_pcl" -c) $_ls_ign -s "$(lc_src_node "$_ls_src" "$_ls_i")" \
             -L "$_ls_r/partclone.log" > "$_ls_r/src.fifo" 2>> "$_ls_r/partclone.err" &
         echo "$!" > "$_ls_r/src.pid"; wait "$!"; echo "$?" > "$_ls_r/src.rc"
     ) &
@@ -156,13 +168,14 @@ lc_stream() {
         return 1
     fi
     echo "$_ls_i|$_ls_sha" >> "$_ls_r/source.sha"
-    for _ls_t in "$@"; do lc_judge "$_ls_t" "$_ls_i" "$_ls_sha"; done
+    for _ls_t in "$@"; do lc_judge "$_ls_t" "$_ls_i" "$_ls_sha" "$_ls_fs"; done
     echo "$_ls_i|done" > "$_ls_r/cur"
     _any_alive "$*"
 }
 
 lc_judge() {
-    # $1 = target, $2 = idx, $3 = the source's xxh64. The four records.
+    # $1 = target, $2 = idx, $3 = the source's xxh64, $4 = fs. The four records,
+    # then the NTFS backup boot sector partclone -r does not write (#1487).
     _lj_d="$RUN_DIR/targets/$1"
     [ "$(cat "$_lj_d/state")" = failed ] && return 0
     _lj_line=$(grep -F "$_lj_d/feed " "$LC/run/fanout.out" 2>/dev/null)
@@ -181,6 +194,8 @@ lc_judge() {
         fail_written_target "$1" "מחיצה $2: ה-xxh64 של מה שהיעד קיבל לא חושב — אין ראיה"
     elif [ "$_lj_sha" != "$3" ]; then
         fail_written_target "$1" "מחיצה $2: xxh64 של מה שהיעד קיבל ($(printf '%.12s' "$_lj_sha")) שונה מהמקור ($(printf '%.12s' "$3"))"
+    elif ! ntfs_boot_target "$1" "$2" "$4"; then
+        fail_written_target "$1" "$NTFS_BOOT_ERROR"
     else
         target_partition_done "$1"; echo "$2" >> "$_lj_d/lc_ok"
     fi

@@ -20,11 +20,12 @@
  * only be a failed target. A drive that is quietly short a few megabytes in
  * the middle is far worse than one that visibly failed.
  *
- * Usage:  fanout [-H hash-file] [-P progress-file]
+ * Usage:  fanout [-H hash-file] [-S sha256-file] [-P progress-file]
  *                <bytes-per-target-buffer> <out1> [out2] [out3] ...
- *         fanout --xxh64
- * -H writes the stream's XXH64 after a clean EOF; -P appends input bytes.
+ *         fanout --xxh64 | --sha256
+ * -H writes XXH64 and -S writes SHA-256 after a clean EOF; -P appends input bytes.
  * --xxh64 hashes stdin and writes the 16-digit lowercase digest to stdout.
+ * --sha256 hashes stdin and writes the 64-digit lowercase digest to stdout.
  * Input:  stdin.
  * Output: one line per finished target on stdout: "<path> ok" | "<path> failed <reason>"
  *         plus, for each target, a running byte count appended to "<path>.bytes".
@@ -200,6 +201,116 @@ static uint64_t xxh_digest(const struct xxh64 *h)
     return x;
 }
 
+/* Streaming SHA-256 (FIPS 180-4). Whole blocks are compressed directly from
+ * the caller's input buffer; only a partial block is copied into tail. The
+ * eight ROUND calls per loop keep the dependency chain visible to gcc while
+ * avoiding a branch for every round. */
+struct sha256 {
+    uint64_t total;
+    uint32_t h[8];
+    unsigned char tail[64];
+    size_t tail_len;
+};
+
+static const uint32_t sha_k[64] = {
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+};
+
+#define ROR32(x,n) (((x) >> (n)) | ((x) << (32 - (n))))
+#define SHA_ROUND(a,b,c,d,e,f,g,h,i) do { \
+    uint32_t t1 = (h) + (ROR32((e),6) ^ ROR32((e),11) ^ ROR32((e),25)) + \
+                  (((e) & (f)) ^ (~(e) & (g))) + sha_k[(i)] + w[(i)]; \
+    uint32_t t2 = (ROR32((a),2) ^ ROR32((a),13) ^ ROR32((a),22)) + \
+                  (((a) & (b)) ^ ((a) & (c)) ^ ((b) & (c))); \
+    (d) += t1; (h) = t1 + t2; \
+} while (0)
+
+static uint32_t get32be(const unsigned char *p)
+{
+    return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 |
+           (uint32_t)p[2] << 8 | (uint32_t)p[3];
+}
+
+static void sha_block(struct sha256 *s, const unsigned char *p)
+{
+    uint32_t w[64], a = s->h[0], b = s->h[1], c = s->h[2], d = s->h[3];
+    uint32_t e = s->h[4], f = s->h[5], g = s->h[6], h = s->h[7];
+    for (int i = 0; i < 16; i++) w[i] = get32be(p + 4 * i);
+    for (int i = 16; i < 64; i++) {
+        uint32_t x = w[i - 15], y = w[i - 2];
+        w[i] = w[i - 16] + (ROR32(x,7) ^ ROR32(x,18) ^ (x >> 3)) +
+               w[i - 7] + (ROR32(y,17) ^ ROR32(y,19) ^ (y >> 10));
+    }
+    for (int i = 0; i < 64; i += 8) {
+        SHA_ROUND(a,b,c,d,e,f,g,h,i);   SHA_ROUND(h,a,b,c,d,e,f,g,i+1);
+        SHA_ROUND(g,h,a,b,c,d,e,f,i+2); SHA_ROUND(f,g,h,a,b,c,d,e,i+3);
+        SHA_ROUND(e,f,g,h,a,b,c,d,i+4); SHA_ROUND(d,e,f,g,h,a,b,c,i+5);
+        SHA_ROUND(c,d,e,f,g,h,a,b,i+6); SHA_ROUND(b,c,d,e,f,g,h,a,i+7);
+    }
+    s->h[0] += a; s->h[1] += b; s->h[2] += c; s->h[3] += d;
+    s->h[4] += e; s->h[5] += f; s->h[6] += g; s->h[7] += h;
+}
+
+static void sha_init(struct sha256 *s)
+{
+    static const uint32_t initial[8] = {
+        0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,
+        0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19
+    };
+    memcpy(s->h, initial, sizeof initial);
+    s->total = s->tail_len = 0;
+}
+
+static void sha_update(struct sha256 *s, const void *data, size_t n)
+{
+    const unsigned char *p = data;
+    s->total += n;
+    if (s->tail_len) {
+        size_t take = 64 - s->tail_len;
+        if (take > n) take = n;
+        memcpy(s->tail + s->tail_len, p, take);
+        s->tail_len += take; p += take; n -= take;
+        if (s->tail_len == 64) { sha_block(s, s->tail); s->tail_len = 0; }
+    }
+    while (n >= 64) { sha_block(s, p); p += 64; n -= 64; }
+    if (n) { memcpy(s->tail, p, n); s->tail_len = n; }
+}
+
+static void sha_digest(const struct sha256 *input, unsigned char out[32])
+{
+    struct sha256 s = *input;
+    uint64_t bits = s.total * 8;
+    s.tail[s.tail_len++] = 0x80;
+    if (s.tail_len > 56) {
+        memset(s.tail + s.tail_len, 0, 64 - s.tail_len);
+        sha_block(&s, s.tail);
+        s.tail_len = 0;
+    }
+    memset(s.tail + s.tail_len, 0, 56 - s.tail_len);
+    for (int i = 0; i < 8; i++) s.tail[63 - i] = (unsigned char)(bits >> (8 * i));
+    sha_block(&s, s.tail);
+    for (int i = 0; i < 8; i++) {
+        out[4*i] = (unsigned char)(s.h[i] >> 24); out[4*i+1] = (unsigned char)(s.h[i] >> 16);
+        out[4*i+2] = (unsigned char)(s.h[i] >> 8); out[4*i+3] = (unsigned char)s.h[i];
+    }
+}
+
+static void sha_hex(const struct sha256 *s, char line[65])
+{
+    static const char hex[] = "0123456789abcdef";
+    unsigned char digest[32];
+    sha_digest(s, digest);
+    for (int i = 0; i < 32; i++) { line[2*i] = hex[digest[i] >> 4]; line[2*i+1] = hex[digest[i] & 15]; }
+    line[64] = '\0';
+}
+
 static void widen_pipe(int fd, const char *name)
 {
     struct stat st;
@@ -219,21 +330,30 @@ static int append_count(int fd, long long count, const char *name)
     return 0;
 }
 
-static int hash_only(void)
+static int hash_only(int use_sha256)
 {
     unsigned char buf[READ_CHUNK];
     struct xxh64 h;
+    struct sha256 s;
     xxh_init(&h);
+    sha_init(&s);
     widen_pipe(STDIN_FILENO, "stdin");
     for (;;) {
         ssize_t n = read(STDIN_FILENO, buf, sizeof buf);
-        if (n > 0) { xxh_update(&h, buf, (size_t)n); continue; }
+        if (n > 0) {
+            if (use_sha256) sha_update(&s, buf, (size_t)n);
+            else xxh_update(&h, buf, (size_t)n);
+            continue;
+        }
         if (n == 0) break;
         if (errno == EINTR) continue;
         fprintf(stderr, "fanout: read error: %s\n", strerror(errno));
         return 2;
     }
-    if (printf("%016llx\n", (unsigned long long)xxh_digest(&h)) < 0 || fflush(stdout) != 0)
+    char sha_line[65];
+    if (use_sha256) sha_hex(&s, sha_line);
+    if ((use_sha256 ? printf("%s\n", sha_line) :
+         printf("%016llx\n", (unsigned long long)xxh_digest(&h))) < 0 || fflush(stdout) != 0)
         return 2;
     return 0;
 }
@@ -456,22 +576,24 @@ static void make_room(size_t n)
 
 int main(int argc, char **argv)
 {
-    const char *hash_path = NULL, *progress_path = NULL;
+    const char *hash_path = NULL, *sha_path = NULL, *progress_path = NULL;
     int progress_fd = -1, argi = 1, reached_eof = 0;
     long long progress_last = 0;
     struct xxh64 hash;
+    struct sha256 sha;
     /* Writing to a pipe whose reader has gone raises SIGPIPE, and the default
      * action would kill this process outright -- taking down every healthy
      * drawer because one drive died. Ignoring it turns that into the EPIPE
      * that the write path already reports as a single failed target. */
     signal(SIGPIPE, SIG_IGN);
 
-    if (argc == 2 && strcmp(argv[1], "--xxh64") == 0)
-        return hash_only();
-    while (argi < argc && (strcmp(argv[argi], "-H") == 0 || strcmp(argv[argi], "-P") == 0)) {
-        const char **slot = strcmp(argv[argi], "-H") == 0 ? &hash_path : &progress_path;
+    if (argc == 2 && (strcmp(argv[1], "--xxh64") == 0 || strcmp(argv[1], "--sha256") == 0))
+        return hash_only(strcmp(argv[1], "--sha256") == 0);
+    while (argi < argc && (strcmp(argv[argi], "-H") == 0 || strcmp(argv[argi], "-S") == 0 || strcmp(argv[argi], "-P") == 0)) {
+        const char **slot = strcmp(argv[argi], "-H") == 0 ? &hash_path :
+                            strcmp(argv[argi], "-S") == 0 ? &sha_path : &progress_path;
         if (++argi >= argc) {
-            fprintf(stderr, "usage: fanout [-H file] [-P file] <buffer-bytes> <out> [out...]\n");
+            fprintf(stderr, "usage: fanout [-H file] [-S file] [-P file] <buffer-bytes> <out> [out...]\n");
             return 2;
         }
         *slot = argv[argi++];
@@ -479,14 +601,17 @@ int main(int argc, char **argv)
 
     /* The stall ceiling is a production constant; the env var exists so the
      * negative-control tests can trip eviction in milliseconds instead of
-     * minutes. FANOUT_EXPECTED_BYTES is the length check that separates an
-     * empty stdin, a producer that died mid-stream, and a complete image --
-     * without it those three share one EOF path and all look like ok (#427). */
+     * minutes, and so a single reader that legitimately waits longer
+     * (udp-sender before its receivers join, directsend.sh, #1444) can
+     * leave the ceiling to the shell. FANOUT_EXPECTED_BYTES is the length
+     * check that separates an empty stdin, a producer that died mid-stream,
+     * and a complete image -- without it those three share one EOF path and
+     * all look like ok (#427). */
     stall_evict_ms = env_ll("FANOUT_STALL_EVICT_MS", STALL_EVICT_MS);
     expected_bytes = env_ll("FANOUT_EXPECTED_BYTES", 0);
 
     if (argc - argi < 2) {
-        fprintf(stderr, "usage: fanout [-H file] [-P file] <buffer-bytes> <out> [out...]\n");
+        fprintf(stderr, "usage: fanout [-H file] [-S file] [-P file] <buffer-bytes> <out> [out...]\n");
         return 2;
     }
     long long cap = atoll(argv[argi]);
@@ -530,6 +655,7 @@ int main(int argc, char **argv)
 
     widen_pipe(STDIN_FILENO, "stdin");
     xxh_init(&hash);
+    sha_init(&sha);
     if (progress_path) {
         progress_fd = open(progress_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
         if (progress_fd < 0)
@@ -560,7 +686,10 @@ int main(int argc, char **argv)
             return 2;
         }
         stdin_got += (long long)got;
-        xxh_update(&hash, chunk, (size_t)got);
+        /* Only what was asked for (#1492): the room round and capture pass -S
+         * alone, and an XXH64 nobody writes is a second pass over every byte. */
+        if (hash_path) xxh_update(&hash, chunk, (size_t)got);
+        if (sha_path) sha_update(&sha, chunk, (size_t)got);
         if (progress_fd >= 0 && now_ms() - progress_last >= COUNTER_MS) {
             progress_last = now_ms();
             if (append_count(progress_fd, stdin_got, progress_path) < 0) {
@@ -597,6 +726,24 @@ int main(int argc, char **argv)
         if (close(fd) != 0) {
             fprintf(stderr, "fanout: could not write stream hash %s: %s\n",
                     hash_path, strerror(errno));
+            return 2;
+        }
+    }
+    if (sha_path && reached_eof) {
+        char line[66];
+        int fd = open(sha_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        sha_hex(&sha, line);
+        line[64] = '\n'; line[65] = '\0';
+        if (fd < 0 || write(fd, line, 65) != 65) {
+            int saved = errno;
+            if (fd >= 0) close(fd);
+            fprintf(stderr, "fanout: could not write stream SHA-256 %s: %s\n",
+                    sha_path, strerror(saved));
+            return 2;
+        }
+        if (close(fd) != 0) {
+            fprintf(stderr, "fanout: could not write stream SHA-256 %s: %s\n",
+                    sha_path, strerror(errno));
             return 2;
         }
     }

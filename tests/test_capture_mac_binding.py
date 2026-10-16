@@ -47,7 +47,7 @@ def captured_manifest(server, images_root: Path, mac: str) -> dict:
     """קליטה שלמה מהמכונה הזו, ומה שהונח בספרייה בסופה."""
     created = make_task(server, mac).json()
     response = do_capture(server, created["id"])
-    assert response.status_code == 200, response.text
+    assert response.status_code == 202, response.text
     path = images_root / created["image_id"] / "manifest.json"
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -108,7 +108,7 @@ def test_the_machine_cannot_declare_its_own_binding(server, images_root):
     created = make_task(server, ids["mac1"]).json()
     sent = manifest_for()
     sent["machine_mac"] = None                 # "אני חופשי", לטענת המכונה
-    assert do_capture(server, created["id"], manifest=sent).status_code == 200
+    assert do_capture(server, created["id"], manifest=sent).status_code == 202
 
     written = json.loads((images_root / created["image_id"] / "manifest.json")
                          .read_text(encoding="utf-8"))
@@ -123,7 +123,7 @@ def test_a_machine_that_left_the_registry_produces_a_bound_image(server, images_
     conn = server["ctx"].conn
     conn.execute("DELETE FROM machines WHERE mac = ?", (mac,))
     conn.commit()
-    assert do_capture(server, created["id"]).status_code == 200
+    assert do_capture(server, created["id"]).status_code == 202
 
     written = json.loads((images_root / created["image_id"] / "manifest.json")
                          .read_text(encoding="utf-8"))

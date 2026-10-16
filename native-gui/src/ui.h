@@ -293,6 +293,7 @@ typedef struct State {
      * /api/v1/agent/state, server_addr= from imagectl.server. Empty = not
      * known, drawn as "לא ידוע" -- never the mockup's numbers. */
     char server_name[64], server_addr[64], server_version[129];
+    char tz[65]; /* #1447: POSIX TZ from the server; empty = not known -> UTC. */
     /* #1269: driver_models=<n> and one driver_model=<vendor>|<model> per
      * model, from GET /api/console/room/driver-models. driver_models_read
      * -1 = the list was not read (also when the key is absent); 0 = read,
@@ -365,6 +366,7 @@ typedef struct { long sec, nsec, size, ino; int seen; } FileMark;
 typedef struct App {
     Screen screen;              /* derived by app_route() from the rest */
     const Theme *theme;
+    const Theme *default_theme; /* #1499: before login, on the cloner screens, after logout */
 
     char title[128];            /* #st-title */
     char mac[40];               /* #st-mac  (dir=ltr, mono) */

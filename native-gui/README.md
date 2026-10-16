@@ -148,7 +148,8 @@ imagectl-station-gui --mac AA:.. --ip 10.. --auth-cmd 'imagectl-login' --state /
 
 * `--auth-cmd CMD` — on כניסה, CMD receives `<user>\n<pass>\n` on stdin; exit 0
   = signed in, first stdout line = role (`admin` shows the capture card,
-  anything else hides it, as `station.js afterLogin` does). A curl to
+  anything else hides it, as `station.js afterLogin` does), second line = the
+  user's saved theme (`light`/`dark`; `auto` or none = the default; #1499). A curl to
   `/api/console/login` piped through `jq -r .role` fits here; it is not written
   because `agent/` is out of scope.
 * `--state FILE` — the data `station.js` polls for, as `key=value` lines
@@ -473,7 +474,8 @@ the current screen, not a state key. 1 CSS px = 1 framebuffer pixel.
 
 ### What matches the HTML, and where it does not
 
-The default theme is dark. The 48px header remains dark in both themes, like
+The default theme is light (owner decision 16/10, #1499; the 18/09 mockup's
+default was dark). The 48px header remains dark in both themes, like
 the console app shell; the body uses the selected console tokens. The login
 screen has no app header and uses the approved split form/illustration layout.
 The only aspect-ratio branches are the room's 6/4 columns, the cloner's 88/64px
@@ -484,8 +486,12 @@ percentage, and the restore image grid's 2/1 columns.
    show a tofu box. The moon and sun are drawn as vectors instead.
 2. **`box-shadow` blur.** Cairo has no gaussian blur; shadows are 14 stacked
    translucent layers. Same colour, same offset, softer edge.
-3. **Theme persistence.** The browser remembers the choice in localStorage;
-   here it lives for the process (`--theme dark` to start dark).
+3. **Theme persistence.** Since #1499 (owner 16/10) the theme is the signed-in
+   user's saved preference (`users.theme`, shared with the console): the login
+   answer carries it, and a switch while signed in (the corner button or F2)
+   is saved with `PUT /api/console/me/theme` through the bridge. Before login
+   and on the cloner screens the switch is for the screen only; sign-out goes
+   back to the default (`--theme dark` starts dark).
 4. **Unavailable measurements.** The current state protocol has no per-disk
    rate/ETA or SMART attributes 5/197/199, so those cells show `—`; Health uses
    the available SMART verdict. Likewise, a room node cannot accept the
