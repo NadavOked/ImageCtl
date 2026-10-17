@@ -161,16 +161,18 @@ def test_new_server_not_answering_in_time_rolls_back_at_stage_restart(tmp_path, 
     assert "/health/live" in status["detail"]
 
 
-def test_without_a_previous_tag_the_cause_is_the_reason(tmp_path, bindir):
-    """No rollback happened, so "rollback" would be a lie: the reason is what failed."""
+def test_without_a_previous_tag_it_still_rolls_back_to_the_starting_commit(tmp_path, bindir):
+    """‏#1546: בלי `update_previous` (הרצה ידנית) יעד החזרה הוא הקומיט שהעץ
+    היה עליו — החזרה קרתה, ולכן ה-reason הוא rollback. כשל של החזרה עצמה
+    שומר את הסיבה כ-reason (הטסט הבא)."""
     data, repo = _setup(tmp_path, live_ok=False, previous=None)
     _success_tools(bindir)
 
     _run(tmp_path, bindir, repo, data, TAG)
     status = _status(data)
 
-    assert (status["reason"], status["stage"]) == ("timeout", "restart")
-    assert "לא הוחזר" in status["error"]
+    assert (status["reason"], status["stage"]) == ("rollback", "restart")
+    assert "הוחזר ל-" in status["error"] and "לא הוחזר" not in status["error"]
 
 
 def test_a_rollback_that_failed_too_keeps_the_cause_as_the_reason(tmp_path, bindir):

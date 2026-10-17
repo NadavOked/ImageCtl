@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import struct
 
 from fastapi import APIRouter, Depends, WebSocket
@@ -22,10 +23,24 @@ from starlette.websockets import WebSocketDisconnect
 from . import auth, monitor, viewer_sessions
 from .api import ServerContext
 from .db import journal
-from .vmupdate import Refusal, VmUpdate, read_settings, write_settings
+from .images import DISPLAY_NAME_RULE
+from .vmupdate import SETTINGS, Refusal, VmUpdate, read_settings, write_settings
+
+log = logging.getLogger("imagectl.vmupdate_api")
 
 #: ה-VM אינו פתוח (או עוד לא הגיע לריצה) — אין מסך לחבר.
 WS_NO_VM = 4409
+
+#: ‏#1535: הסירובים של ה-API נבנים מהכללים עצמם, לא מטקסט של חריגה —
+#: הטקסט המלא הולך ליומן השרת.
+SETTINGS_RULE = "הגדרות ה-VM לא נשמרו — מותרים רק " + ", ".join(
+    f"{name} (מספר שלם בין {low} ל-{high})" for name, (_key, _default, low, high) in SETTINGS.items())
+NAME_RULE = f"שם הגרסה אינו תקין — {DISPLAY_NAME_RULE}"
+
+
+def _one_line(exc: Exception) -> str:
+    """טקסט החריגה ליומן — בלי שבירת שורה (ערכים מהגוף של הבקשה)."""
+    return str(exc).replace("\r", " ").replace("\n", " ")
 
 
 def _refused(exc: Refusal) -> JSONResponse:
@@ -87,7 +102,8 @@ def create_vmupdate_router(ctx: ServerContext, engine: VmUpdate) -> APIRouter:
         try:
             saved = write_settings(ctx.conn, body)
         except ValueError as exc:
-            return JSONResponse({"ok": False, "error": str(exc), "code": "settings"},
+            log.info("vmupdate settings refused: %s", _one_line(exc))
+            return JSONResponse({"ok": False, "error": SETTINGS_RULE, "code": "settings"},
                                 status_code=400)
         journal(ctx.conn, "vmupdate_settings",
                 f"memory_mib={saved['memory_mib']} cpus={saved['cpus']}", user[0])
@@ -157,7 +173,8 @@ def create_vmupdate_router(ctx: ServerContext, engine: VmUpdate) -> APIRouter:
         try:
             return act(engine.save, user[0], name, body.get("description") or "")
         except ValueError as exc:   # validate_display_name — נדחה בשמו, לא מנוקה
-            return JSONResponse({"ok": False, "error": str(exc), "code": "name"},
+            log.info("vmupdate save refused: %s", _one_line(exc))
+            return JSONResponse({"ok": False, "error": NAME_RULE, "code": "name"},
                                 status_code=400)
 
     @router.post("/discard")

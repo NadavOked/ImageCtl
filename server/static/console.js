@@ -6463,15 +6463,36 @@ function netLeaseText(v) {
   const n = Number(m[1]), u = { s: ["שנייה", "שניות"], m: ["דקה", "דקות"], h: ["שעה", "שעות"], d: ["יום", "ימים"] }[m[2]];
   return n === 1 ? u[0] : `${n} ${u[1]}`;
 }
+/* ‏#1263: כרטיס הניהול אינו יכול להיות רשת ההפצה. */
+function deployCandidates() { return (NETW.nics || []).filter((n) => n.present && !n.trunk && !isMgmtNic(n.name)); }
+/* ‏#1556: ברירת המחדל אינה גם הכרטיס שהקונסולה מחוברת דרכו (בשרת חיפה כרטיס
+   הניהול לא היה ידוע, והראשון — eth0 של הקונסולה — נבחר). כששניהם לא ידועים
+   אין ברירת מחדל: מי שלא יודע דרך מה הוא מחובר חייב להניח שזה כל כרטיס. */
+function deployDefaultNic(candidates) {
+  const via = NETCFG && NETCFG.console_interface;
+  if (!via && !(NETCFG && NETCFG.management_interface)) return null;
+  return candidates.find((n) => n.name !== via) || null;
+}
+function netPickDeploy() {
+  const via = NETCFG && NETCFG.console_interface;
+  sheet({ title: "הגדר כרשת הפצה", sub: "על איזה כרטיס ירוץ ה-DHCP למחשבי השיכפול והבנייה", submitLabel: "המשך",
+    fields: [{ id: "nic", label: "כרטיס", type: "select", value: "",
+      options: [{ value: "", label: "— בחרו כרטיס —" },
+        ...deployCandidates().map((n) => ({ value: n.name, label: n.name + (n.name === via ? " — הקונסולה מחוברת דרכו" : "") }))] }],
+    onSubmit: async (v) => {
+      if (!v.nic) throw new Error("בחרו כרטיס");
+      return () => editDeployNet(v.nic);
+    } });
+}
 function networkDeployTab() {
   const nics = NETW.nics, focus = netDeployNic();
-  // ‏#1263: כרטיס הניהול אינו יכול להיות רשת ההפצה
-  const candidate = (nics || []).find((n) => n.present && !n.trunk && !isMgmtNic(n.name));
+  const candidates = deployCandidates(), candidate = deployDefaultNic(candidates);
   const header = netHeader(2);
   let body;
   if (nics === null) body = `<div class="c12">${UI.note("err", `לא הצלחתי לקרוא את כרטיסי הרשת: ${esc(NETW.err.interfaces || "")}`)}</div>`;
   else if (!focus) {
-    const act = candidate ? `<button class="btn primary" onclick="netEditDeploy('${encodeId(candidate.name)}')">הגדר כרשת הפצה</button>` : "";
+    const act = candidate ? `<button class="btn primary" onclick="netEditDeploy('${encodeId(candidate.name)}')">הגדר כרשת הפצה</button>`
+      : candidates.length ? `<button class="btn primary" onclick="netPickDeploy()">הגדר כרשת הפצה</button>` : "";
     body = netUnreadNotes() + UI.card({ title: "רשת ההפצה", cls: "c12",
       body: UI.empty("אין כרטיס מוגדר כרשת הפצה — \"הגדר כרשת הפצה\" על אחד הכרטיסים. DHCP הוא ההגדרה המסוכנת ביותר במערכת (#53): השרת בודק לפני ההדלקה מי כבר עונה.", act) });
   } else {

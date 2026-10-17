@@ -650,18 +650,35 @@ def partition_loop(host: Host, disk: Path, part: dict, user: VmUser, *, writable
         raise DiskError("loop", f"הבעלות על {node} לא הוחזרה ל-{LOOP_OWNER} — בדקו ידנית")
 
 
-def boot_files(box: "Appliance", esp: int, paths: list[str], run_dir: Path) -> Path:
+#: ‏#1535: משתמש ה-VM מגיע לאזור העבודה **דרך הקבוצה שלו בלבד** — ‏`as_user`
+#: ו-`agent_shell.call` רצים עם `--regid` שלו ו-`--clear-groups`. ‏root נשאר
+#: הבעלים (הוא כותב כאן, ולכן אסור שמשתמש ה-VM ישתול symlink), ו"אחרים" — אפס.
+#: תיקייה: מעבר בלבד (‏`[ -f "$ESPROOT$p" ]` על נתיבים ידועים; אין רשימה).
+VM_PASS_MODE = 0o710
+#: קובץ אתחול שהורד: קריאה, לחתימות של `boot_ca_json`.
+VM_READ_MODE = 0o640
+
+
+def share_with_vm(path: str | Path, gid: int, mode: int) -> None:
+    """הקבוצה של `path` = הקבוצה של משתמש ה-VM, ו-`mode`. הבעלים (root) אינו
+    משתנה. כשל — ‏PermissionError, לא הרשאה רחבה יותר בשקט (עיקרון 5)."""
+    os.chown(path, -1, gid)
+    os.chmod(path, mode)
+
+
+def boot_files(box: "Appliance", esp: int, paths: list[str], run_dir: Path, gid: int) -> Path:
     """קובצי האתחול של ה-ESP, בתיקייה **חדשה של root** (‏mkdtemp) — root
     כותב רק לשם, ואיש אחר אינו יכול לשתול בה symlink. אחרי ההורדה היא
-    נפתחת לקריאה (בעלות root נשארת), ומשתמש ה-VM קורא ממנה את החתימות."""
+    נפתחת **לקבוצה של משתמש ה-VM בלבד** (בעלות root נשארת), והוא קורא ממנה
+    את החתימות."""
     target = Path(tempfile.mkdtemp(prefix="esp-", dir=run_dir))
     box.fetch(esp, paths, target)
     for folder, _dirs, files in os.walk(target, followlinks=False):
-        os.chmod(folder, 0o755)
+        share_with_vm(folder, gid, VM_PASS_MODE)
         for name in files:
             path = os.path.join(folder, name)
             if not os.path.islink(path):
-                os.chmod(path, 0o644)
+                share_with_vm(path, gid, VM_READ_MODE)
     return target
 
 
@@ -696,10 +713,11 @@ def capture_disk(host: Host, workdir: Path, out_dir: Path, progress: Progress,
     run_dir = workdir / "run"
     run_dir.mkdir(parents=True, exist_ok=True)
     # ‏root בלבד כותב כאן (משתמש ה-VM מקבל תת-תיקיות חדשות בלבד, ‏fresh_user_dir),
-    # בלי תלות ב-umask של התהליך.
+    # בלי תלות ב-umask של התהליך. משתמש ה-VM רק עובר כאן (‏#1535) — ‏QEMU פותח
+    # את הדיסק כ-root לפני `-run-with`, והשמירה רצה כשהוא כבוי.
     for folder in (workdir, run_dir):
         if hasattr(os, "chown"):
-            os.chmod(folder, 0o755)
+            share_with_vm(folder, user.gid, VM_PASS_MODE)
     _clear_stale(workdir, run_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     source = json.loads((workdir / "source-manifest.json").read_text(encoding="utf-8"))
@@ -782,7 +800,7 @@ def capture_disk(host: Host, workdir: Path, out_dir: Path, progress: Progress,
             part["sectors"] = new // SECTOR
             shrunk.append(part["index"])
         esp = next((p for p in table if partition_role(p["type_guid"]) == "esp"), None)
-        boot_dir = (boot_files(box, esp["index"], _boot_paths(host, run_dir), run_dir)
+        boot_dir = (boot_files(box, esp["index"], _boot_paths(host, run_dir), run_dir, user.gid)
                     if esp is not None else None)
     finally:
         box.close()

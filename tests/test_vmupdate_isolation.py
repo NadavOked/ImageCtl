@@ -148,8 +148,10 @@ def capture_with(tmp_path, guest):
     (work / "disk.raw").write_bytes(b"")
     (work / "source-manifest.json").write_text(json.dumps(SOURCE), encoding="utf-8")
     with pytest.raises(vmdisk.DiskError) as caught:
+        # ‏#1535: ‏capture_disk מוסר את אזור העבודה לקבוצה של משתמש ה-VM (‏chown) —
+        # בלי root, רק לקבוצה שלנו. ה-uid אינו נוגע בדיסק לפני האימות.
         vmdisk.capture_disk(NoHost(), work, work / "out", lambda n: None,
-                            user=vmdisk.VmUser(999, 989),
+                            user=vmdisk.VmUser(999, os.getgid() if hasattr(os, "getgid") else 989),
                             appliance=lambda disk: vmdisk.Appliance(disk, factory=lambda: guest))
     return caught.value
 
@@ -303,7 +305,7 @@ def test_boot_files_never_land_through_a_stale_planted_symlink(tmp_path):
     (run_dir / "u-old").symlink_to(outside)
     vmdisk._clear_stale(work, run_dir)
     assert not (work / "unpriv").exists() and not (run_dir / "esp-old").exists()
-    target = vmdisk.boot_files(FakeBox(), 1, ["/EFI/BOOT/bootx64.efi"], run_dir)
+    target = vmdisk.boot_files(FakeBox(), 1, ["/EFI/BOOT/bootx64.efi"], run_dir, os.getgid())
     assert target.parent == run_dir and not target.is_symlink()
     assert (target / "EFI" / "BOOT" / "bootx64.efi").read_bytes() == b"MZ"
     assert os.lstat(target).st_uid == os.geteuid()

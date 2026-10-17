@@ -7,11 +7,12 @@
 #
 # מה שהוא עושה, בסדר הזה, ולמה בסדר הזה (‏#1131 ס' 5–6):
 #   0. סבב פתוח/רץ = לא משדרגים (גם כשמופעל ידנית, לא רק מהקונסולה).
-#   1. התג הקודם — מה ש-update.py שמר (update_previous) — הוא יעד החזרה.
+#   1. יעד החזרה — הקומיט שהעץ עליו לפני הריצה (‏#1546); השם מ-update_previous
+#      רק כשהוא מצביע עליו.
 #   2. fetch, אימות חתימת התג (#1277), checkout — מחוץ לארגז החול של שרת ה-web.
 #   3. יחידות systemd — קודם, כדי ש-daemon-reload יראה כל שינוי בהן.
 #   4. initrd (#1230) — tools/boot-payload-build.sh לפי הדגלים השמורים, מול
-#      הקרנל שנגזר עכשיו. בלי דגלים ובלי ראיה שזה שרת ISO — חזרה, לא דילוג.
+#      הקרנל שנגזר עכשיו. בלי דגלים — ברירת המחדל המתועדת (‏#1546), לא דילוג.
 #   5. restart, ואז **ראיה חיובית** שהחדש רץ: is-active + `/health/live`
 #      שמדווח בדיוק את התג + verify-boot-payload.sh.
 #   5ב. ‏#1361: restart למסך השרת (imagectl-dcui) — אחרי האימות; כשל = אזהרה.
@@ -144,7 +145,23 @@ from server import update
 print(get_setting(connect(db), update.PREVIOUS_KEY) or "")
 PYEOF
 )" || die "קריאת התג הקודם מה-DB נכשלה"
-[[ -n "$PREV" ]] || echo "אין תג קודם שמור (update_previous) — בכשל לא תהיה חזרה אוטומטית"
+# ‏#1546: יעד החזרה הוא מה שהעץ עליו **עכשיו** — לא רק מה שב-DB. בהרצה ידנית
+# ‏update_previous ריק (שרת חיפה, 17/10: כשל בלי checkout ובלי restart), ואחרי
+# עדכון קודם הוא נשאר על התג שלפני **אותו** עדכון. השם מה-DB נשמר רק כשהוא
+# מצביע על אותו קומיט. בלי HEAD קריא — לא משדרגים: אין לאן לחזור.
+if ! PRE_HEAD="$(git rev-parse HEAD 2>&1)" || [[ -z "$PRE_HEAD" ]]; then
+    why="git rev-parse HEAD נכשל לפני השדרוג (${PRE_HEAD:-בלי פלט}) — אין יעד חזרה, לא משדרגים"
+    set_status failed "$why" install "$why"
+    die "$why"
+fi
+if [[ -z "$PREV" ]]; then
+    echo "אין תג קודם שמור (update_previous) — יעד החזרה הוא הקומיט הנוכחי $PRE_HEAD"
+    PREV="$PRE_HEAD"
+# ‏`|| true`: תג שלא נפתר אינו ראיה שזה אותו קומיט — ולכן יעד החזרה הוא HEAD.
+elif [[ "$(git rev-parse --verify -q "$PREV^{commit}" || true)" != "$PRE_HEAD" ]]; then
+    echo "update_previous ($PREV) אינו מה שהעץ עליו — יעד החזרה הוא הקומיט הנוכחי $PRE_HEAD"
+    PREV="$PRE_HEAD"
+fi
 
 # 2. רק היחידה המנותקת רשאית לכתוב לעץ. כשל git נכתב לסטטוס כלשונו,
 # ולפני שנגענו ביחידות, ב-initrd או בשירות הרץ.
@@ -233,10 +250,6 @@ rollback() {   # rollback <סיבה> [<סוג>]
     local why="$1" cause="${2:-install}"
     trap - ERR
     echo "--- $(date -Is) upgrade to $TAG FAILED: $why ---"
-    if [[ -z "$PREV" ]]; then
-        set_status failed "$why · אין תג קודם שמור — לא הוחזר" "$cause" "$why"
-        die "$why (אין תג קודם — לא הוחזר)"
-    fi
     echo "מחזיר ל-$PREV"
     if git checkout --detach "$PREV"; then
         # המטען חוזר לפני ה-restart: השרת הישן עולה כבר מול ה-initrd שלו.
@@ -296,15 +309,19 @@ fi
 #   * ‏$FLAGS_FILE קיים — הבניות שנרשמו בהתקנה (תפקיד + --output בלבד).
 #   * חסר, בשרת שהותקן מה-ISO (יש $ISO_MANIFEST) — firstboot של לפני #1230
 #     בנה בדיוק את ברירת המחדל של ה-ISO ולא רשם אותה. בונים אותה ורושמים.
-#   * חסר, ואין ראיה איך השרת נבנה — לא מנחשים דגלים (עיקרון 5): חזרה
-#     לתג הקודם, בשם. מי שבנה ידנית כותב את הקובץ ומנסה שוב.
+#   * חסר, בשרת שהותקן ב-setup-boot-server.sh (‏#1546, שרת חיפה) — ברירת המחדל
+#     **המתועדת** (docs/server-install.md, ‏install/verify-boot-payload.sh):
+#     ‏initrd.img + initrd.img.gui ב-$HTTP_ROOT — אותן שורות. זה לא ניחוש
+#     דגלים: אלה הקבצים שהשרת מגיש. בנייה שנכשלת חוזרת לתג הקודם, בשם.
 if [[ -e "$FLAGS_FILE" ]]; then
     payload_args=(--flags-file "$FLAGS_FILE")
-elif [[ -e "$ISO_MANIFEST" ]]; then
-    echo "$FLAGS_FILE חסר בשרת מה-ISO — בונה את ברירת המחדל של ה-ISO ורושם אותה"
-    payload_args=(--iso-default --write-flags "$FLAGS_FILE")
 else
-    rollback "$FLAGS_FILE חסר ואין $ISO_MANIFEST — לא ידוע אילו initrd לבנות, והמכונות היו נשארות על initrd ישן"
+    if [[ -e "$ISO_MANIFEST" ]]; then
+        echo "$FLAGS_FILE חסר בשרת מה-ISO — בונה את ברירת המחדל של ה-ISO ורושם אותה"
+    else
+        echo "$FLAGS_FILE חסר ואין $ISO_MANIFEST — בונה את ברירת המחדל המתועדת (initrd.img + initrd.img.gui ב-$HTTP_ROOT) ורושם אותה"
+    fi
+    payload_args=(--iso-default --write-flags "$FLAGS_FILE")
 fi
 # ‏#1463: שלב משלו — הבנייה היא ~90% מהעדכון (498 ש' בשרת המעבדה, 16/10), ומסך העדכון
 # נותן לו תקרה משלו. בלי זה `install` היה 8:43 מול תקרה של 10 דקות בלי מעבר שלב.

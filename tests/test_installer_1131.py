@@ -393,6 +393,47 @@ def test_health_live_is_unauthenticated_and_reports_the_version(tmp_path, images
     assert client.get("/api/console/health").status_code == 401           # הבריאות עצמה — admin
 
 
+def test_health_live_reports_the_version_the_process_loaded_not_the_tree_on_disk(
+        tmp_path, images_root, clock):
+    """‏#1546: בשרת חיפה העץ עבר ל-v0.75.0, השירות לא אותחל, ו-`/health/live`
+    אמר v0.75.0 — הוא קרא את הדיסק בכל בקשה. זו הראיה ש-server-upgrade.sh
+    נשען עליה ("החדש רץ"), ולכן היא חייבת להיות של התהליך, לא של העץ."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+    from server.app import create_app
+    on_disk = {"tag": "v0.74.2"}
+    app = create_app(tmp_path / "data", images_root, "http://10.44.12.10:8080", now_fn=clock,
+                     update_hooks={"describe": lambda repo_dir: on_disk["tag"]}, repo_dir="/repo")
+    client = TestClient(app)
+    on_disk["tag"] = "v0.75.0"                     # checkout בלי restart
+    assert client.get("/api/console/health/live").json()["version"] == "v0.74.2"
+
+
+def test_health_live_unread_at_startup_is_reread_until_it_succeeds_then_locked(
+        tmp_path, images_root, clock):
+    """‏#1546: גרסה שלא נקראה בעלייה אינה ננעלת כ"לא ידוע" — `/health/live`
+    קורא שוב עד שהצליח (וכל עוד נכשל, מחזיר `version_error` בשם), ואז נועל."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+    from server.app import create_app
+    from server.update import VersionError
+    on_disk = {"tag": None}
+
+    def describe(repo_dir):
+        if on_disk["tag"] is None:
+            raise VersionError("not-a-git-tree", "no git here")
+        return on_disk["tag"]
+    app = create_app(tmp_path / "data", images_root, "http://10.44.12.10:8080", now_fn=clock,
+                     update_hooks={"describe": describe}, repo_dir="/repo")
+    client = TestClient(app)
+    assert client.get("/api/console/health/live").json() == {
+        "ok": True, "version": None, "version_error": "not-a-git-tree"}
+    on_disk["tag"] = "v0.75.0"
+    assert client.get("/api/console/health/live").json()["version"] == "v0.75.0"
+    on_disk["tag"] = "v0.76.0"                     # checkout בלי restart — כבר נעול
+    assert client.get("/api/console/health/live").json()["version"] == "v0.75.0"
+
+
 # --- tools/server-upgrade.sh (‏#1131 ס' 5–6 / ס' 12) ---------------------------------
 
 def _fake_repo(tmp_path: Path, *, live_ok: bool, payload_ok: bool = True) -> Path:
@@ -530,16 +571,45 @@ def test_upgrade_refuses_while_a_round_is_open_even_when_run_by_hand(tmp_path, b
     assert status and status["state"] == "failed" and "סבב פתוח" in status["error"]
 
 
-def test_upgrade_without_a_saved_previous_tag_fails_in_name_without_rollback(tmp_path, bindir):
+def test_upgrade_without_a_saved_previous_tag_rolls_back_to_the_commit_it_started_from(tmp_path, bindir):
+    """‏#1546: בהרצה ידנית אין `update_previous` ב-DB. עד #1546 הכשל יצא בלי
+    checkout ובלי restart — העץ נשאר על התג החדש והתהליך הישן רץ (שרת חיפה,
+    17/10). יעד החזרה הוא הקומיט שהעץ היה עליו לפני הריצה."""
     data = tmp_path / "data"
     _seed_db(data, previous=None)
     repo = _fake_repo(tmp_path, live_ok=False)
     _upgrade_fakes(bindir)
     proc = _run_upgrade(tmp_path, bindir, repo, data)
     assert proc.returncode != 0
-    assert not [c for c in calls(tmp_path) if c.startswith("git checkout")]
+    seen = calls(tmp_path)
+    assert "git checkout --detach commit-of-v0.49.0" in seen, seen
+    assert seen.count("systemctl restart imagectl-server") == 2          # החדש, ואז החזרה
     status = _status(data)
-    assert status and status["state"] == "failed" and "אין תג קודם" in status["error"]
+    assert status and status["state"] == "failed"
+    assert "הוחזר ל-commit-of-v0.49.0" in status["error"] and "אין תג קודם" not in status["error"]
+
+
+def test_a_stale_saved_previous_tag_is_not_the_rollback_target(tmp_path, bindir):
+    """‏#1546: ‏`update_previous` אינו נמחק לעולם. הרצה ידנית אחרי עדכון קודם
+    מהקונסולה הייתה "חוזרת" לתג שלפני **אותו** עדכון — לא למה שרץ. יעד
+    החזרה הוא מה שהעץ עליו, ו-`update_previous` רק כשהוא מצביע עליו."""
+    data = tmp_path / "data"
+    _seed_db(data, previous="v0.47.0")
+    repo = _fake_repo(tmp_path, live_ok=False)
+    _upgrade_fakes(bindir)
+    git = bindir / "git"   # ‏v0.47.0 מצביע על קומיט אחר מזה שהעץ עליו
+    git.write_text(git.read_text(encoding="utf-8").replace(
+        'case "$1" in describe)',
+        'case "$*" in *"v0.47.0^{commit}"*) echo "commit-of-v0.47.0"; exit 0 ;; esac\n'
+        'case "$1" in -C) shift 2 ;; esac\n'
+        'case "$1" in describe)'), encoding="utf-8", newline="\n")
+    proc = _run_upgrade(tmp_path, bindir, repo, data)
+    assert proc.returncode != 0
+    seen = calls(tmp_path)
+    assert "git checkout --detach v0.47.0" not in seen
+    assert "git checkout --detach commit-of-v0.49.0" in seen, seen
+    status = _status(data)
+    assert status and status["state"] == "failed" and "הוחזר ל-commit-of-v0.49.0" in status["error"]
 
 
 def test_console_live_rereads_the_pinned_cert_on_every_attempt():

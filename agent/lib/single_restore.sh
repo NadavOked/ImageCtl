@@ -43,8 +43,34 @@ single_restore_run() {
     fi
     # A failed restore stays visible until a person clears it (#133/#108); the
     # reporter keeps running when pull_open succeeded so the console sees it.
+    single_restore_failed_screen "$_sr_disk" || log "restore failed -- no GUI for the failure screen, the console line only"
     ui_error_hold "restore did not complete" hold_beat
     return 1
+}
+
+SR_GUI_BIN="${SR_GUI_BIN:-/usr/bin/imagectl-station-gui}"
+
+single_restore_failed_screen() {
+    # $1 = disk. #1545 (metal 17/10): the bridge released the display for the
+    # write (guiparent.sh), so a failure was English on the bare tty -- no
+    # Hebrew font there (ui.sh) -- and never said why. The GUI comes back as
+    # a display-only message screen with the target's own reason; its clicks
+    # go nowhere (stdout is /dev/null), and the tty hold under it keeps the
+    # heartbeat. The GUI calls a state older than 10 s stale, so the file is
+    # touched for as long as that GUI process lives -- and no longer.
+    [ -x "$SR_GUI_BIN" ] || return 1
+    _sf="$RUN_DIR/gui/failed.state"
+    mkdir -p "$RUN_DIR/gui" || return 1
+    _sw=$(head -n 1 "$RUN_DIR/targets/$1/error" 2>/dev/null | tr -d '\r|')
+    # msg_sub is 200 bytes in the GUI; a longer reason would be cut mid-letter.
+    if [ -z "$_sw" ] || [ "$(printf '%s' "$_sw" | wc -c)" -gt 190 ]; then _sw="הסיבה המלאה ביומן הסוכן ובקונסולה"; fi
+    printf 'message=השחזור נכשל — השאירו את המחשב דלוק ופנו ל-IT|%s\n' "$_sw" > "$_sf" || return 1
+    # shellcheck disable=SC2046 # --backend/--fb-file are words (guibridge.sh)
+    FONTCONFIG_FILE=/etc/imagectl/fonts.conf "$SR_GUI_BIN" $(gui_backend_args) \
+        --mac "$MAC" --ip "${IP:-}" --state "$_sf" > /dev/null 2>> "$LOG_FILE" &
+    _sf_pid=$!
+    ( while kill -0 "$_sf_pid" 2>/dev/null; do touch "$_sf"; sleep 2; done ) &
+    log "restore failed -- shown on the GUI: $_sw"
 }
 
 pick_internal_disk() {

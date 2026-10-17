@@ -25,7 +25,7 @@ from . import auth, room_console, wol
 from .api import ServerContext
 from .db import journal
 from .registry import normalize_mac
-from .room import CLONERS_GROUP, ROOM_OPERATOR_ROLES, visible_round
+from .room import ROOM_OPERATOR_ROLES, visible_round
 
 #: מי מתעורר מהקונסולה ב-v1 — מחשבי בנייה ושיכפול. ‏classroom = v2.
 WAKEABLE_ROLES = ("build", "cloner")
@@ -99,7 +99,7 @@ def create_wake_router(
                 (canonical,)).fetchone():
             raise HTTPException(409, "למחשב יש משימה פתוחה — בטלו אותה לפני אתחול")
         shown = visible_round(ctx.conn)
-        if (row["group_id"] == CLONERS_GROUP and shown is not None
+        if (row["role"] == "cloner" and shown is not None   # #1554: כל קבוצת משכפלים
                 and shown["state"] in ("active", "closing")):
             raise HTTPException(409, "יש סבב חדר פעיל — עצרו אותו לפני אתחול משכפל")
         # ‏#1367 (נדב 14/10): אושר מעל אזהרת "באמצע שיכפול מקומי" — רק `true` ממש

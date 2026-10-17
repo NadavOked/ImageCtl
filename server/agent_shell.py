@@ -121,8 +121,11 @@ def fresh_user_dir(parent: Path, uid: int, gid: int) -> Path:
     ה-fd שנפתח ב-`O_NOFOLLOW|O_DIRECTORY` — לא על נתיב."""
     parent = Path(parent)
     if not parent.exists():
-        parent.mkdir(parents=True, mode=0o755)
-        os.chmod(parent, 0o755)          # לא לפי ה-umask של מי שקרא
+        # ‏#1535: המשתמש רק **עובר** דרך ההורה אל הילד שלו — דרך הקבוצה שלו
+        # (`--regid`, ‏`--clear-groups`), ולא כ"אחרים". ‏0o710, לא לפי ה-umask.
+        parent.mkdir(parents=True, mode=0o700)
+        os.chown(parent, -1, gid)
+        os.chmod(parent, 0o710)
     st = os.lstat(parent)
     if (not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid()
             or st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
