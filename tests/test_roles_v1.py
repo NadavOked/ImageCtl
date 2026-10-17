@@ -86,6 +86,7 @@ def _safe_hooks(tmp_path: Path) -> dict:
             "netcfg_read_conf": lambda name, root=None: None,
             "netcfg_local_address": lambda request: "10.10.10.8",
             "netcfg_boot_id": lambda *a: "boot-A",
+            "netcfg_foreign_manager": lambda: None,   # #1558: ifupdown, לא המכונה המריצה
             "netcfg_write_conf": fail, "netcfg_write_resolv": fail, "netcfg_apply": fail,
         },
     }

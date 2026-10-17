@@ -231,21 +231,29 @@ def test_upgrade_rebuilds_both_initrds_against_the_kernel_installed_now(tmp_path
     assert verify > max(i for i, c in enumerate(seen) if c.startswith("build_initramfs "))
 
 
-def test_upgrade_without_flags_on_a_non_iso_server_rolls_back_and_builds_nothing(tmp_path):
+def test_upgrade_without_flags_on_a_non_iso_server_builds_the_documented_default_and_records_it(tmp_path):
+    """‏#1546: שרת שהותקן ב-setup-boot-server.sh (שרת חיפה, 17/10) — אין
+    ‏initrd.flags ואין iso-release.json. עד #1546 כל עדכון שלו חזר אחורה.
+    ברירת המחדל מתועדת (docs/server-install.md, ‏verify-boot-payload.sh):
+    ‏initrd.img + initrd.img.gui ב-HTTP_ROOT — אותן שורות של ה-ISO."""
     host = _host(tmp_path)
     bindir = tmp_path / "bin"
     bindir.mkdir()
     (host / "boot" / "initrd.img").write_text("old initrd\n", encoding="utf-8")
+    flags = tmp_path / "etc-imagectl" / "initrd.flags"
 
-    proc, log, status = _upgrade(tmp_path, host, bindir, flags=None)
-    assert proc.returncode != 0
-    assert status and status["state"] == "failed"
-    assert "missing.flags" in status["error"] and "הוחזר ל-v0.59.0" in status["error"]
-    assert "שנבנה מ-" not in status["error"], "no initrd was built, the status must not say one was kept"
+    proc, log, status = _upgrade(tmp_path, host, bindir, flags=flags)
+    assert proc.returncode == 0, log
+    assert (status or {}).get("state") != "failed"
+    assert "ברירת המחדל המתועדת" in log
     seen = calls(tmp_path)
-    assert "git checkout --detach v0.59.0" in seen
-    assert not [c for c in seen if c.startswith(("build_initramfs ", "verify-boot-payload "))]
-    assert (host / "boot" / "initrd.img").read_text(encoding="utf-8") == "old initrd\n"
+    assert not [c for c in seen if c.startswith("git checkout")]
+    builds = [c for c in seen if c.startswith("build_initramfs ")]
+    assert len(builds) == 2 and sum("--with-gui" in b for b in builds) == 1
+    boot = posix(host / "boot")
+    assert _flag_lines(flags) == [f"--skip-apt --output {boot}/initrd.img",
+                                  f"--skip-apt --with-gui --output {boot}/initrd.img.gui"]
+    assert (host / "boot" / "initrd.img").read_text(encoding="utf-8") == f"initrd gui=0 kver={OLD_KVER}\n"
 
 
 def test_upgrade_without_flags_on_an_iso_server_builds_the_iso_default_and_records_it(tmp_path):

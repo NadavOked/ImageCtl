@@ -112,7 +112,8 @@ apply_gpt() {
     fi
 
     target_write_started "$1" || { PLAN_ERROR="לא הצלחנו לתעד את זהות היעד לפני הכתיבה"; return 1; }
-    sgdisk --zap-all "$DEVROOT/$1" >> "$LOG_FILE" 2>&1 || return 1
+    # ‏#1545: על טבלה ישנה פגומה --zap-all מוחק ויוצא 2 (gptcl.cc); השני רץ על דיסק נקי וחייב 0
+    sgdisk --zap-all "$DEVROOT/$1" >> "$LOG_FILE" 2>&1 || { log "$1: zap-all exited non-zero (damaged old table?) -- again on the wiped disk"; sgdisk --zap-all "$DEVROOT/$1" >> "$LOG_FILE" 2>&1; } || return 1
     manifest_plan "$2" | while IFS='|' read -r _idx _guid _role _fs _start _size _f _sha _exp _uguid _uuid _attrs; do
         _end=$((_start + _size / 512 - 1))
         # ה-GUID הייחודי משוחזר כשיש: ה-BCD של Windows מאתר את מחיצת

@@ -17,6 +17,7 @@
 
 let BRANCH_TIMER = null;          // פולינג העברות בדף שרת משני יחיד (branch)
 let BRANCHES_LIST_TIMER = null;   // פולינג לשונית "העברות" בדף הסניפים
+let BRANCH_LIVE_TIMER = null;     // מצב חדר/קליטה חי בכרטיסי המשניים
 let BRANCH_TRANSFERS = [];
 let BRANCH_GROUPS = [];
 let BRANCH_NODES = [];
@@ -79,11 +80,13 @@ function transferStateLabel(t) {
 
 function stopBranchPolling() { clearInterval(BRANCH_TIMER); BRANCH_TIMER = null; }
 function stopBranchesListPolling() { clearInterval(BRANCHES_LIST_TIMER); BRANCHES_LIST_TIMER = null; }
+function stopBranchLivePolling() { clearInterval(BRANCH_LIVE_TIMER); BRANCH_LIVE_TIMER = null; }
 
 /* ---------- דף "סניפים" (רשימת המשניים, own) ---------- */
 
 async function loadBranchesData() {
   stopBranchesListPolling();
+  stopBranchLivePolling();
   const [groups, nodes, transfers] = await Promise.all([
     api("/storage-node-groups"), api("/storage-nodes"), api("/storage-transfers"),
   ]);
@@ -100,6 +103,7 @@ async function loadBranchesData() {
   await Promise.all(nodes.filter((n) => !n.disabled_at).map((n) =>
     checkBranchConnection(n).catch(() => {})));
   maybeStartBranchesListPolling();
+  maybeStartBranchLivePolling();
 }
 
 /* ‏probe=true (#1017, "בדוק חיבור" מהשורה): POST …/check — /ping בלבד, בלי מכונות;
@@ -113,8 +117,17 @@ async function checkBranchConnection(n, probe = false) {
     const contact = { lastSeenAt: answer.last_seen_at || null, lastErrorAt: answer.last_error_at || null };
     // ‏/check אינו שולף מכונות — המונה מהקריאה האחרונה ל-/machines נשאר (הוא נמדד, לא הומצא).
     const machines = probe ? prev.machines : (answer.connected ? answer.machines : prev.machines);
+    let room = prev.room, images = prev.images, liveError = "";
+    if (!probe && answer.connected) {
+      const prefix = `/storage-nodes/${encodeId(n.id)}/console`;
+      const live = await Promise.allSettled([api(`${prefix}/room`), api(`${prefix}/images`)]);
+      if (live[0].status === "fulfilled") room = live[0].value;
+      else liveError = live[0].reason.message;
+      if (live[1].status === "fulfilled") images = live[1].value;
+      else liveError = liveError || live[1].reason.message;
+    }
     result = answer.connected
-      ? { state: "ok", machines, ...contact }
+      ? { state: "ok", machines, room, images, liveError, ...contact }
       : { state: "err", error: answer.error || "", machines, ...contact };
   } catch (e) {
     // הבקשה לראשי עצמו נכשלה — לא נרשם בשרת, ולכן בלי זמן (לא שעון הדפדפן).
@@ -127,6 +140,27 @@ async function checkBranchConnection(n, probe = false) {
   if (connCell) { const st = branchStatusHtml(n.id); connCell.className = st.cls; connCell.innerHTML = st.html; }
   if (machinesCell) machinesCell.textContent = Array.isArray(result.machines) ? String(result.machines.length) : "—";
   if (current === "branches" && currentTab === 0) updateAlertBadge();
+}
+
+async function refreshBranchLive(n) {
+  const prev = BRANCH_CONN[n.id] || {};
+  if (prev.state !== "ok") return;
+  const prefix = `/storage-nodes/${encodeId(n.id)}/console`;
+  const live = await Promise.allSettled([api(`${prefix}/room`), api(`${prefix}/images`)]);
+  BRANCH_CONN[n.id] = { ...prev,
+    room: live[0].status === "fulfilled" ? live[0].value : prev.room,
+    images: live[1].status === "fulfilled" ? live[1].value : prev.images,
+    liveError: live.find((x) => x.status === "rejected")?.reason?.message || "" };
+}
+
+function maybeStartBranchLivePolling() {
+  if (current !== "branches" || currentTab !== 0 || !BRANCH_NODES.some((n) => !n.disabled_at)) return;
+  stopBranchLivePolling();
+  BRANCH_LIVE_TIMER = setInterval(async () => {
+    if (current !== "branches" || currentTab !== 0 || document.hidden) { stopBranchLivePolling(); return; }
+    await Promise.all(BRANCH_NODES.filter((n) => !n.disabled_at).map((n) => refreshBranchLive(n)));
+    renderCurrent();
+  }, 2000);
 }
 
 /* "בודק חיבור…" רק לפני המדידה הראשונה; אחריה — "מחובר · ענתה HH:MM" או
@@ -195,7 +229,85 @@ function branchesServersTab() {
     rows: BRANCH_NODES.map(branchNodeRow),
     empty: "אין שרתים משניים רשומים.",
   });
-  return `<div class="c12 card"><div class="card-b${BRANCH_NODES.length ? " flush" : ""}">${table}</div></div>`;
+  return `<div class="c12 card"><div class="card-b${BRANCH_NODES.length ? " flush" : ""}">${table}</div></div>
+    ${BRANCH_NODES.map(branchControlCard).join("")}`;
+}
+
+function branchMachineName(m) { return m.name || m.suffix || m.hostname || m.mac; }
+function branchMachineRole(m) {
+  const role = m.role || m.kind || "";
+  return role === "cloner" || m.group_id === "grp_CLONERS" ? "cloner" : role === "build" ? "build" : role;
+}
+function branchSmartClass(d) {
+  if (d.state === "failed" || d.smart === "failed_last") return "err";
+  if (d.smart === "warn" || d.smart === "fail") return "warn";
+  if (d.state === "writing" || d.state === "verifying") return "run";
+  if (d.smart === "ok" || d.state === "done") return "ok";
+  return "";
+}
+function branchDrawerHtml(d, i) {
+  const label = d.slot_name || `דיסק ${d.slot || d.port || i + 1}`;
+  const state = d.state ? (DRAWER_STATE_HE[d.state] || d.state) : smartText(d);
+  return `<span class="disk ${branchSmartClass(d)}" title="${esc(state)}"><b>${esc(label)}</b><span class="cap">${esc(state)}</span></span>`;
+}
+function branchCaptureText(m) {
+  const c = m.last_capture || m.capture;
+  if (!c) return "אין קליטה פעילה";
+  const state = c.state === "running" ? "קליטה פעילה" : c.state === "failed" ? "קליטה נכשלה" : c.state === "done" ? "קליטה הושלמה" : c.state;
+  return `${state}${c.image_name ? ` · ${c.image_name}` : ""}`;
+}
+function branchMachineHtml(nid, m, roomMachine) {
+  const role = branchMachineRole(m), live = roomMachine || {};
+  const disks = Array.isArray(live.drawer_list) ? live.drawer_list : (Array.isArray(m.disks) ? m.disks : []);
+  const roleHe = role === "cloner" ? "משכפל" : role === "build" ? "מחשב בנייה" : "מחשב";
+  const status = live.awake === true || m.online === true || m.awake === true ? "מחובר" : "לא מחובר";
+  const drawers = role === "cloner" ? `<div class="slots">${disks.length ? disks.map(branchDrawerHtml).join("") : `<span class="muted">לא דווחו מגירות</span>`}</div>` : "";
+  const capture = role === "build" ? `<div class="sub">${esc(branchCaptureText(m))}</div>` : "";
+  return `<div class="mcard" data-branch-machine="${esc(m.mac)}"><div class="mcard-h"><b>${esc(branchMachineName(m))}</b><span class="muted">${roleHe} · ${status}</span></div>${drawers}${capture}<div class="acts"><button class="btn sm" onclick="branchMonitor('${encodeId(nid)}','${encodeId(m.mac)}','${encodeId(branchMachineName(m))}')">מוניטור</button></div></div>`;
+}
+function branchRoundHtml(n, c) {
+  const r = c.room && c.room.round;
+  if (!r) return `<span class="muted">אין סבב פעיל</span>`;
+  const state = r.state === "failed" ? "נכשל" : r.wave_state === "active" ? "משדר" : r.wave_state === "open" ? "ממתין להתחלה" : (r.state || "פעיל");
+  return `<b>${esc(r.image_name || r.image_id || "סבב")}</b> · ${esc(state)} · נכתבו ${Number(r.written_drives || 0)} מתוך ${Number(r.target_drives || 0)}`;
+}
+function branchControlCard(n) {
+  const c = BRANCH_CONN[n.id] || {};
+  if (n.disabled_at) return `<div class="c12 card"><div class="card-h"><span>${esc(n.label)} · שליטה</span></div><div class="card-b">${UI.note("warn", "השרת מושבת — לא נשאל")}</div></div>`;
+  if (c.state !== "ok") return `<div class="c12 card"><div class="card-h"><span>${esc(n.label)} · שליטה</span></div><div class="card-b">${UI.note("warn", `לא נקרא: ${esc(c.error || "השרת לא ענה")}`)}</div></div>`;
+  const roomMachines = new Map((((c.room || {}).machines) || []).map((m) => [m.mac, m]));
+  const machines = (c.machines || []).filter((m) => ["cloner", "build"].includes(branchMachineRole(m)));
+  const actions = c.room && c.room.round
+    ? `<button class="btn danger" onclick="stopBranchRound('${encodeId(n.id)}')">עצור סבב</button>`
+    : `<button class="btn primary" onclick="openBranchRound('${encodeId(n.id)}')" ${(c.images || []).length ? "" : "disabled"}>פתח סבב</button>`;
+  return `<div class="c12 card" data-branch-control="${esc(n.id)}"><div class="card-h"><span>${esc(n.label)} · חדר ומחשבים</span><span>${branchRoundHtml(n, c)}</span></div><div class="card-b">${c.liveError ? UI.note("warn", `מצב חי לא נקרא: ${esc(c.liveError)}`) : ""}<div class="action-strip">${actions}</div><div class="machine-grid">${machines.length ? machines.map((m) => branchMachineHtml(n.id, m, roomMachines.get(m.mac))).join("") : UI.empty("אין מחשבי בנייה או משכפלים רשומים")}</div></div></div>`;
+}
+
+function openBranchRound(nidEnc) {
+  let nid = nidEnc; try { nid = decodeURIComponent(nid); } catch (e) {}
+  const c = BRANCH_CONN[nid] || {}, n = BRANCH_NODES.find((x) => x.id === nid);
+  const images = Array.isArray(c.images) ? c.images : [];
+  if (!n || !images.length) { toast("אין אימג'ים בספריית המשני"); return; }
+  const count = Math.max(1, (c.machines || []).filter((m) => branchMachineRole(m) === "cloner").reduce((sum, m) => sum + (Array.isArray(m.disks) ? m.disks.length : 0), 0));
+  sheet({ title: `פתיחת סבב ב-${n.label}`, sub: "האימג' והסבב שייכים לשרת המשני.",
+    fields: [{ id: "image_id", label: "אימג'", type: "select", value: images[0].id, options: images.map((x) => ({ value: x.id, label: x.name })) },
+      { id: "target_drives", label: "מספר דיסקי יעד", type: "number", value: String(count) }],
+    submitLabel: "פתח סבב", onSubmit: async (v) => {
+      const target = Number(v.target_drives);
+      if (!Number.isInteger(target) || target < 1) throw new Error("מספר דיסקי היעד חייב להיות מספר שלם וחיובי");
+      await post(`/storage-nodes/${encodeId(nid)}/console/room`, { image_id: v.image_id, target_drives: target, expand_partition: false });
+      toast(`הסבב נפתח ב-${n.label}`); await refreshBranchLive(n); renderCurrent();
+    } });
+}
+
+function stopBranchRound(nidEnc) {
+  let nid = nidEnc; try { nid = decodeURIComponent(nid); } catch (e) {}
+  const c = BRANCH_CONN[nid] || {}, n = BRANCH_NODES.find((x) => x.id === nid), r = c.room && c.room.round;
+  if (!n || !r) return;
+  const name = r.image_name || r.image_id || "";
+  sheet({ title: `לעצור את הסבב ב-${n.label}?`, sub: `הסבב על "${name}" ייעצר`, danger: true,
+    note: impactList([["b", "השידור נפסק והגל נסגר"], ["w", "מגירות שלא נכתבו נשארות טריות"]]), submitLabel: "עצירת הסבב",
+    onSubmit: async () => { await post(`/storage-nodes/${encodeId(nid)}/console/room/close`, { confirm_name: name }); toast(`הסבב נעצר ב-${n.label}`); await refreshBranchLive(n); renderCurrent(); } });
 }
 
 function transferDirectionHtml(t) {

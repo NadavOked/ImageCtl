@@ -218,6 +218,7 @@ def lab(tmp_path: Path, images_root: Path, clock):
         "netcfg_timer_active": lambda *a: (True, "active"),
         "netcfg_now": clock, "netcfg_boot_id": lambda *a: "boot-A",
         "netcfg_local_address": lambda request: fake["local"],
+        "netcfg_foreign_manager": lambda: None,   # #1558: ifupdown, לא המכונה המריצה
         "netcfg_management": lambda: "eth0",
     }
     deploy_hooks = {

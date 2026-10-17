@@ -311,14 +311,22 @@ RESTORE_STUB = (
     'echo "RESTORE $1" >> "$RUN_DIR/trace"; '
     'if [ "${RESTORE_RESULT:-ok}" = "ok" ]; then '
     'echo done > "$RUN_DIR/state"; target_set "$2" "done"; return 0; fi; '
-    'echo failed > "$RUN_DIR/state"; target_set "$2" "failed" "no"; return 1; }; '
+    'echo failed > "$RUN_DIR/state"; target_set "$2" "failed" "${RESTORE_REASON:-no}"; return 1; }; '
+)
+
+#: ‏#1545: הגואי שמסך הכישלון מעלה — רושם מה קיבל ומה היה בקובץ המצב, ויוצא.
+GUI_STUB = (
+    '#!/bin/sh\n'
+    'printf "%s\\n" "$*" > "$RUN_DIR/gui.args"\n'
+    'cat "$RUN_DIR/gui/failed.state" > "$RUN_DIR/gui.seen"\n'
 )
 
 
 def station(tmp_path, *, pull_code: str = "200",
             pull_answer: str = '{"id":"ses_pull01","kind":"unicast"}',
             restore: str = "ok", real_loop: bool = False,
-            keys: tuple[str, ...] = ("1", "ERASE", "")) -> dict:
+            keys: tuple[str, ...] = ("1", "ERASE", ""),
+            gui: bool = False, reason: str = "no") -> dict:
     """מריץ את `single_restore_run` האמיתי מקצה לקצה עם תפרים מזויפים.
     ‏`keys` הם מקשים שמחכים ב-stdin — הכתיבה אינה קוראת אותם (GUI בלבד).
 
@@ -347,7 +355,15 @@ def station(tmp_path, *, pull_code: str = "200",
     else:
         await_file, await_text = posix(run / "trace"), "LOOP "
 
+    # ‏#1545: בלי gui=True הנתיב לא קיים — גם על מכונה שיש בה גואי מותקן
+    gui_bin = tmp_path / "station-gui"
+    if gui:
+        gui_bin.write_text(GUI_STUB, encoding="utf-8", newline="\n")
+        gui_bin.chmod(0o755)
+
     script = (
+        f"export SR_GUI_BIN={shlex.quote(posix(gui_bin))} "
+        f"RESTORE_REASON={shlex.quote(reason)}; "
         f"export RUN_DIR={shlex.quote(posix(run))} MAC={MAC!r} "
         f'SERVER="http://127.0.0.1:1" '
         f'RESP={shlex.quote(posix(run / "resp.json"))} '
@@ -357,7 +373,7 @@ def station(tmp_path, *, pull_code: str = "200",
         f"AWAIT_TEXT={shlex.quote(await_text)}; "
         f". {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/jsonq.sh; "
         f". {posix(AGENT)}/lib/progress.sh; . {posix(AGENT)}/lib/pull.sh; "
-        f". {posix(AGENT)}/lib/ui.sh; "
+        f". {posix(AGENT)}/lib/ui.sh; . {posix(AGENT)}/lib/guibridge.sh; "   # #1545: gui_backend_args
         f". {posix(AGENT)}/lib/single_restore.sh; "   # #706: the GUI restore's write
         'pick_internal_disk() { echo sda; }; '
         'http_get() { cat "$RUN_DIR/manifest.src.json"; }; '
@@ -474,6 +490,39 @@ def test_a_failed_restore_leaves_the_stream_on_the_screen(tmp_path):
     assert "TEST-HOLD" in result["out"]
     assert "FAILED: restore did not complete" in result["out"]
     assert "closed" not in result["log"]
+
+
+PLAN_REFUSED = "sgdisk דחה את תוכנית השחזור — הדיסק לא שונה"
+
+
+def test_a_failed_restore_brings_the_gui_back_in_hebrew_with_the_reason(tmp_path):
+    """‏#1545 (ברזל 17/10): הגשר שחרר את התצוגה לכתיבה, והכישלון היה טקסט
+    באנגלית על tty שחור בלי הסיבה. הגואי חוזר כמסך הודעה: כותרת בעברית,
+    והסיבה של היעד עצמו. ה-hold שמתחתיו (פעימה, TEST-HOLD) לא השתנה.
+    בקרה שלילית: לפני התיקון הגואי לא מופעל כלל (`gui.seen` לא נוצר)."""
+    result = station(tmp_path, restore="fail", keys=("1", "ERASE"), gui=True, reason=PLAN_REFUSED)
+    run = tmp_path / "run"
+    seen = (run / "gui.seen").read_text(encoding="utf-8") if (run / "gui.seen").exists() else ""
+    assert seen == f"message=השחזור נכשל — השאירו את המחשב דלוק ופנו ל-IT|{PLAN_REFUSED}\n", (seen, result["out"])
+    title, sub = seen[len("message="):].rstrip("\n").split("|")
+    assert len(title.encode()) < 96 and len(sub.encode()) < 200   # msg_title[96], msg_sub[200] ב-ui.h
+    args = (run / "gui.args").read_text(encoding="utf-8")
+    assert f"--state {posix(run)}/gui/failed.state" in args and "--backend " in args, args
+    assert "TEST-HOLD" in result["out"]          # הפעימה וה-hold נשארו
+    assert "closed" not in result["log"]
+
+
+def test_a_reason_too_long_for_the_gui_is_replaced_not_cut_mid_letter(tmp_path):
+    result = station(tmp_path, restore="fail", keys=("1", "ERASE"), gui=True, reason="א" * 120)
+    seen = (tmp_path / "run" / "gui.seen").read_text(encoding="utf-8")
+    assert seen.endswith("|הסיבה המלאה ביומן הסוכן ובקונסולה\n"), (seen, result["out"])
+
+
+def test_without_a_gui_binary_the_failure_stays_on_the_console(tmp_path):
+    result = station(tmp_path, restore="fail", keys=("1", "ERASE"), reason=PLAN_REFUSED)
+    assert not (tmp_path / "run" / "gui.seen").exists()
+    assert "FAILED: restore did not complete" in result["out"]
+    assert "no GUI for the failure screen" in result["log"]
 
 
 def test_the_closing_report_that_did_not_arrive_is_not_silence(tmp_path):

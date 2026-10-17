@@ -662,6 +662,9 @@ CONSOLE_GETS: tuple[tuple[str, type], ...] = (
 #: (כיבוי 8443 במשני מנתק אותו מהראשי — ואין דרך להדליק בחזרה מכאן), מחיקת אימג'/
 #: מכונה וכל העלאה.
 CONSOLE_WRITES: tuple[tuple[str, str], ...] = (
+    # שליטת הראשי בסבב של המשני (הכרעת נדב 17/10): פתיחה ועצירה בלבד.
+    # start/wake/answer/poweroff אינם נפתחים אגב כך — הרשימה היא (שיטה, נתיב).
+    ("POST", r"/room"), ("POST", r"/room/close"),
     ("POST", r"/users"), ("PUT", r"/users/[^/]+"), ("DELETE", r"/users/[^/]+"),
     ("POST", r"/settings"),
     # רשת: כרטיסים ו-DHCP (‏/net/interfaces) וכתובות (‏/net/config). שינוי כתובת שמנתק

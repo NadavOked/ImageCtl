@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -370,6 +371,7 @@ def net_server(tmp_path: Path, images_root: Path, clock):
         "dnsmasq": [],              # מה נכתב ל-dnsmasq (לשונית ה-DHCP)
         "proxy": [],                # ומה לאינסטנס ה-proxy
         "management": "",           # ‏#1263: כרטיס הניהול שהמתקין רשם ("" = לא ידוע)
+        "foreign": None,            # ‏#1558: מנהל רשת שאינו ifupdown (None = ifupdown)
         "probe": dhcp.ProbeResult(True, ()),   # מי כבר עונה ל-DHCP (‏#53)
     }
 
@@ -403,6 +405,7 @@ def net_server(tmp_path: Path, images_root: Path, clock):
         "netcfg_boot_id": lambda *a: "boot-A",
         "netcfg_local_address": lambda request: fake["local"],
         "netcfg_management": lambda: fake["management"],
+        "netcfg_foreign_manager": lambda: fake["foreign"],   # #1558
     }
     # שתי הלשוניות הן שני ראוטרים, ולכן **שתי** הזרקות: הבדיקה שמוודאת
     # שהצדדים מסכימים חוצה אל `/api/console/net/interfaces` — הראוטר של
@@ -509,6 +512,60 @@ def test_a_bad_setting_is_refused_before_anything_is_written(net_server):
     assert "כתובת הכרטיס אינה תקינה" in response.json()["detail"]
     assert net_server["fake"]["confs"] == {}
     assert net_server["fake"]["applied"] == []
+
+
+NETPLAN = "הרשת בשרת הזה מנוהלת ב-netplan (/etc/netplan/50-cloud-init.yaml)"
+
+
+@pytest.mark.parametrize("send", ["put", "put_deploy"])
+def test_a_server_whose_network_is_not_ifupdown_is_refused_before_anything_is_touched(
+        net_server, send):
+    """‏#1558: שרת חיפה (netplan + networkd + resolved). עד #1558 הקונסולה זיינה
+    החזרה, כתבה ל-interfaces.d ול-resolv.conf והריצה ifup — ודיווחה תסמינים
+    ("Read-only file system", ‏"unknown interface") במקום הסיבה."""
+    fake = net_server["fake"]
+    fake["foreign"] = NETPLAN
+    response = globals()[send](net_server)   # put_deploy מוגדר למטה בקובץ
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert "netplan" in detail and "ifupdown" in detail and "לא נכתב ולא הוחל דבר" in detail
+    assert fake["writes"] == [] and fake["confs"] == {} and fake["applied"] == []
+    assert fake["resolv"] == "nameserver 10.44.0.5\n"
+    assert not (net_server["state_dir"] / "pending.json").exists(), "rollback armed for a change that never ran"
+    assert fake["dnsmasq"] == [], "the deploy DHCP must not move without its address"
+
+
+def test_foreign_manager_names_netplan_networkd_and_resolved(tmp_path):
+    netplan, networkd = tmp_path / "netplan", tmp_path / "network"
+    resolv = tmp_path / "resolv.conf"
+    resolv.write_text("nameserver 10.0.0.1\n", encoding="utf-8")
+    assert netcfg_host.foreign_manager(netplan, networkd, resolv) is None   # שרת ISO: אין אף אחד
+    netplan.mkdir(); networkd.mkdir()
+    assert netcfg_host.foreign_manager(netplan, networkd, resolv) is None   # תיקיות ריקות
+    (networkd / "10-eth0.link").write_text("", encoding="utf-8")          # ‏.link אינו ניהול כתובת
+    assert netcfg_host.foreign_manager(netplan, networkd, resolv) is None
+    (networkd / "20-eth0.network").write_text("", encoding="utf-8")
+    assert "systemd-networkd" in netcfg_host.foreign_manager(netplan, networkd, resolv)
+    (netplan / "50-cloud-init.yaml").write_text("", encoding="utf-8")
+    assert "netplan" in netcfg_host.foreign_manager(netplan, networkd, resolv)
+
+
+def test_foreign_manager_that_could_not_look_is_not_ifupdown(tmp_path):
+    """עיקרון 5: תיקייה שלא נקראה (כאן — קובץ במקום תיקייה) אינה "אין netplan"."""
+    not_a_dir = tmp_path / "netplan"
+    not_a_dir.write_text("", encoding="utf-8")
+    found = netcfg_host.foreign_manager(not_a_dir, tmp_path / "none", tmp_path / "none.conf")
+    assert found and "לא ניתן לבדוק" in found
+
+
+def test_foreign_manager_names_a_resolved_stub_symlink(tmp_path):
+    resolv = tmp_path / "resolv.conf"
+    try:
+        os.symlink("../run/systemd/resolve/stub-resolv.conf", resolv)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks need privileges on this Windows host")
+    found = netcfg_host.foreign_manager(tmp_path / "a", tmp_path / "b", resolv)
+    assert found and "systemd-resolved" in found
 
 
 def test_a_card_that_is_not_in_the_machine_is_refused(net_server):
@@ -812,6 +869,17 @@ def test_the_read_names_the_management_card_and_never_guesses_it(net_server):
     from server.db import set_setting
     set_setting(net_server["ctx"].conn, "dcui:management_interface", "eth1")
     assert net_server["admin"].get(CONF).json()["management_interface"] == "eth1"
+
+
+def test_the_read_names_the_card_the_console_came_through(net_server):
+    """‏#1556: בשרת חיפה כרטיס הניהול לא היה ידוע, ו"הגדר כרשת הפצה" בחר את
+    ‏eth0 — הכרטיס שהקונסולה מחוברת דרכו. השרת יודע מאיזו כתובת שלו הבקשה
+    הגיעה; זה הכרטיס שאסור להציע כברירת מחדל. לא נקבע = ‏null, לא ניחוש."""
+    assert net_server["admin"].get(CONF).json().get("console_interface", "absent") == "eth0"
+    net_server["fake"]["local"] = "10.44.9.10"
+    assert net_server["admin"].get(CONF).json().get("console_interface", "absent") == "eth1"
+    net_server["fake"]["local"] = "127.0.0.1"          # מנהרה / loopback — אין כרטיס כזה
+    assert net_server["admin"].get(CONF).json().get("console_interface", "absent") is None
 
 
 def test_installed_management_reads_servers_if_from_the_firstboot_status(tmp_path):

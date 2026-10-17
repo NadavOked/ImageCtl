@@ -256,6 +256,21 @@ def test_a_failing_sgdisk_e_no_longer_looks_like_a_written_table(tmp_path):
     assert "could not move the GPT backup" in log_of(run)
 
 
+def test_a_zap_all_that_fails_twice_stops_the_restore(tmp_path):
+    """‏#1545: על טבלה ישנה פגומה ‏`--zap-all` מוחק ויוצא 2, ולכן הוא רץ
+    פעם שנייה — אבל רק השנייה שיצאה 0 היא ראיה לדיסק נקי. שתיים שנכשלו
+    אינן מתקפלות להצלחה (עיקרון 5). ההצלחה בפעם השנייה — עם sgdisk אמיתי
+    על GPT פגום, ב-test_damaged_gpt_1545.py."""
+    box, run, prelude = build_box(tmp_path, sgdisk_fail=["--zap-all *"])
+    out = sh(prelude + 'apply_gpt sda m.json; echo "rc=$?"')
+    assert rc_of(out) == "rc=1", out
+    zaps = [c for c in (box / "sgdisk.calls").read_text().splitlines() if c.startswith("--zap-all ")]
+    assert len(zaps) == 2, zaps
+    assert "again on the wiped disk" in log_of(run)
+    assert not [c for c in (box / "sgdisk.calls").read_text().splitlines()
+                if " -n " in f" {c}" and "--pretend" not in c], "נכתבה טבלה אחרי מחיקה שנכשלה"
+
+
 def test_a_kernel_that_refused_the_table_stops_the_restore(tmp_path):
     """‏`blockdev --rereadpt` היה `|| true`, והוא הסימן היחיד שהקרנל קיבל
     את הטבלה ובנה את `/dev/sdaN`. בלעדיו partclone כותב לקובץ ב-RAM."""
