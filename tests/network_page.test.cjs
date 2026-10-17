@@ -527,6 +527,25 @@ test('deploy network: stored ≠ live (dhcp_diverged) is orange, live not read i
   assert.match(t.run('networkPage(0)'),/class="pill ">DHCP כבוי</,'the diagram shares the header');
 });
 
+test('#1556: management NIC unknown → "הגדר כרשת הפצה" never defaults to the NIC the console came through; both unknown → a picker with nothing chosen',async()=>{
+  const none=NICS.map(n=>({...n,enabled:false,proxy:false,dhcp_live:{state:'off',checked:true,detail:''},dhcp_live_label:'כבוי'}));
+  // שרת חיפה: אין firstboot.status, הקונסולה מחוברת דרך הכרטיס הראשון
+  let t=await loaded({'/net/interfaces':none,'/net/config':{...NETCFG,management_interface:null,console_interface:'ens18'}});
+  let html=card(t.run('networkPage(2)'),'רשת ההפצה');
+  assert.match(html,/<button class="btn primary" onclick="netEditDeploy\('ens19'\)">הגדר כרשת הפצה</,'skips ens18 — the console is on it');
+  // לא ידוע דרך מה הקונסולה מחוברת, ולא ידוע מי הניהול — לא מנחשים: בוחרים
+  t=await loaded({'/net/interfaces':none,'/net/config':{...NETCFG,management_interface:null,console_interface:null}});
+  html=card(t.run('networkPage(2)'),'רשת ההפצה');
+  assert.match(html,/<button class="btn primary" onclick="netPickDeploy\(\)">הגדר כרשת הפצה</);
+  t.run('netPickDeploy()');
+  const pick=t.run('sheets[sheets.length-1]'), field=pick.fields.find(f=>f.id==='nic');
+  assert.equal(field.value,'','nothing is chosen for the operator');
+  assert.equal(JSON.stringify(field.options.map(o=>o.value)),JSON.stringify(['','ens18','ens19','ens21']),'present, not trunk, not management');
+  await assert.rejects(pick.onSubmit({nic:''}),/בחרו כרטיס/);
+  const next=await pick.onSubmit({nic:'ens19'}); next();
+  assert.equal(t.run('sheets[sheets.length-1]').title,'רשת הפצה — ens19');
+});
+
 /* ‏#1039: חכירות dnsmasq — מכונה שקיבלה כתובת ולא הגיעה ל-hello נראית רק שם; "לא נקרא" בשם, לא טבלה ריקה. */
 test('deploy network: leases unread are named, never an empty table (principle 5)',async()=>{
   let t=await loaded({'/net/interfaces/ens19/leases':{interface:'ens19',checked:false,reason:'/var/lib/misc/dnsmasq.leases: Permission denied',path:'/var/lib/misc/dnsmasq.leases',leases:null}});

@@ -72,9 +72,11 @@ const base = {
   ],
   '/images': [{id: 'img_7f3a91', name: 'Office 365', folder: 'Windows', total_compressed_bytes: 12 * 1024 ** 3}],
   [`/storage-nodes/${NODE}/machines`]: {connected: true, error: null, node_id: 'sn_0123456789abcdef', machines: [
-    {mac: 'aa:bb:cc:dd:ee:01', name: 'Builder-H', role: 'build', ip: '10.20.0.77', online: true},
-    {mac: 'aa:bb:cc:dd:ee:02', name: 'Cloner-H', role: 'cloner', ip: null, online: false},
+    {mac: 'aa:bb:cc:dd:ee:01', name: 'Builder-H', role: 'build', ip: '10.20.0.77', online: true, last_capture: {state: 'running', image_name: 'Haifa capture'}},
+    {mac: 'aa:bb:cc:dd:ee:02', name: 'Cloner-H', role: 'cloner', ip: null, online: false, disks: [{port: 1, smart: 'ok'}, {port: 2, smart: 'warn'}]},
   ]},
+  [`/storage-nodes/${NODE}/console/room`]: {round: null, machines: [{mac: 'aa:bb:cc:dd:ee:02', awake: true, drawer_list: [{port: 1, smart: 'ok'}, {port: 2, smart: 'warn'}]}]},
+  [`/storage-nodes/${NODE}/console/images`]: [{id: 'img_h1', name: 'Windows Haifa'}],
 };
 
 test('the branches page has three tabs: שרתים, העברות, קבוצות', () => {
@@ -129,6 +131,37 @@ test('the servers tab lists each secondary with a measured connection, not a fro
   assert.doesNotMatch(html, /בודק חיבור/, 'the connection check already resolved before the row was read');
   assert.match(html, /Office 365/, 'the last transfer shows in the row');
   assert.match(html, /data-node-row="n0de"/);
+  assert.match(html, /data-branch-control="n0de"/);
+  assert.match(html, /Builder-H/); assert.match(html, /מחשב בנייה · מחובר/);
+  assert.match(html, /קליטה פעילה · Haifa capture/);
+  assert.match(html, /Cloner-H/); assert.match(html, /משכפל · מחובר/);
+  assert.match(html, /SMART תקין/); assert.match(html, /SMART אזהרה/);
+  assert.match(html, /פתח סבב/); assert.match(html, /מוניטור/);
+});
+
+test('opening a secondary round uses one of its images and only the console room proxy', async () => {
+  const {run, calls} = setup(base);
+  await run('loadBranchesData()');
+  run('__sheet=null; sheet=(o)=>{ __sheet=o; };');
+  run(`openBranchRound('${NODE}')`);
+  assert.match(run('__sheet.title'), /פתיחת סבב ב-חיפה/);
+  assert.equal(run('__sheet.fields[0].options[0].label'), 'Windows Haifa');
+  await run('__sheet.onSubmit({image_id: "img_h1", target_drives: "2"})');
+  const req = calls.find((c) => c.method === 'POST' && c.url.endsWith('/storage-nodes/n0de/console/room'));
+  assert.deepEqual(req.body, {image_id: 'img_h1', target_drives: 2, expand_partition: false});
+});
+
+test('stopping a secondary round is a destructive sheet and posts its returned image name', async () => {
+  const fixtures = {...base, [`/storage-nodes/${NODE}/console/room`]: {round: {state: 'active', wave_state: 'active', image_id: 'img_h1', image_name: 'Windows Haifa', target_drives: 2, written_drives: 1}, machines: []}};
+  const {run, calls} = setup(fixtures);
+  await run('loadBranchesData()');
+  const html = run('branchesPage(0)');
+  assert.match(html, /Windows Haifa/); assert.match(html, /משדר/); assert.match(html, /נכתבו 1 מתוך 2/);
+  run('__sheet=null; sheet=(o)=>{ __sheet=o; };'); run(`stopBranchRound('${NODE}')`);
+  assert.equal(run('__sheet.danger'), true); assert.equal(run('__sheet.fields'), undefined);
+  await run('__sheet.onSubmit()');
+  const req = calls.find((c) => c.method === 'POST' && c.url.endsWith('/storage-nodes/n0de/console/room/close'));
+  assert.deepEqual(req.body, {confirm_name: 'Windows Haifa'});
 });
 
 test('an unreachable secondary shows the reason and the server-recorded time (#1017), not an empty page and not the browser clock', async () => {

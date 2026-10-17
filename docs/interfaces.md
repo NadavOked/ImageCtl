@@ -1867,6 +1867,7 @@ udp-receiver | zstd -d | partclone.<fs> --restore --output /dev/<מחיצת הי
                     "slaves": [],                         // ‏#1264: חברי ה-bond (רק בשורת ה-bond)
                     "member_of": null } ],                // ‏#1264: "bond0" בשורת כל חבר
   "management_interface": "eth0",   // ‏#1263: null = לא ידוע (לא ניחוש)
+  "console_interface": "eth0",      // ‏#1556: הכרטיס שהבקשה הגיעה דרכו; null = לא נקבע
   "deploy_bond": null,              // ‏#1264: רשת הפצה על שני כרטיסים — ראו "/second" למטה
   "live": { "checked": true,        // false = לא נקרא, ולא "אין"
             "reason": "",
@@ -1895,6 +1896,12 @@ udp-receiver | zstd -d | partclone.<fs> --restore --output /dev/<מחיצת הי
 **אינה מנחשת** לפי איזה כרטיס נושא כתובת. בקונסולה הוא מסומן "ניהול", ואופן
 ההגדרה שלו לקוח DHCP או כתובת ידנית בלבד.
 
+‏`console_interface` (‏#1556) — הכרטיס שנושא את הכתובת שהבקשה הזו הגיעה
+אליה (ה-sockname של החיבור, אותו מקור שקובע אם שינוי "נוגע בקונסולה").
+‏`null` — הכתובת אינה של אף כרטיס (‏loopback, מנהרה) או שלא נקראה. הקונסולה
+לא מציעה אותו כברירת מחדל של "הגדר כרשת הפצה"; כשגם הוא וגם כרטיס הניהול
+לא ידועים — אין ברירת מחדל, והמפעיל בוחר.
+
 הקריאה הזו גם **מרוקנת את הפירורים** של זרוע ההחזרה אל היומן (למטה).
 
 ### `POST /api/console/net/config/{שם}/preview` (admin)
@@ -1911,6 +1918,13 @@ resolv_after, problems, changed}` — הקובץ שייכתב, לפני ואחר
 (עיקרון 7). קלט לא תקין מוחזר כ-400 עם **כל** הבעיות יחד, מופרדות
 ב-`·` — כולל בעיות ה-DHCP של אותו כרטיס, שנבדקות באותה קריאה ולא
 בזו אחר זו.
+
+‏**409 כשהרשת אינה מנוהלת ב-ifupdown** (‏#1558) — לפני זרוע ההחזרה ולפני
+כל קובץ, גם ב-`/deploy`: יש `/etc/netplan/*.yaml`, או `/etc/systemd/network/*.network`,
+או ש-`/etc/resolv.conf` הוא symlink של systemd-resolved
+(‏`netcfg_host.foreign_manager`). תיקייה שלא נקראה (חוץ מ"אינה קיימת") —
+גם 409, בשמה. המתקין שלנו מתקין ifupdown בלבד; זה שרת שהותקן אחרת
+(שרת חיפה, 17/10).
 
 תשובה: `{"ok": bool, "verified": bool, "apply_error": null|"...",
 "mismatches": [...], "interface": {…}, "rollback": {…}}`.
@@ -3415,6 +3429,7 @@ push — אחרי כל מנה של ה-tar ששולחים, ממתינים עד ש
 
 | סדר | `CONSOLE_WRITES` |
 |---|---|
+| חדר המשכפלים | `POST /room` · `POST /room/close` — הראשי רשאי לפתוח סבב במשני מאימג' של המשני ולעצור אותו. `start` / `wake` / `answer` / `poweroff` וכל נתיב חדר אחר נשארים מחוץ לרשימה |
 | משתמשים | `POST /users` · `PUT /users/{name}` · `DELETE /users/{name}` |
 | רשת | `POST /net/interfaces` · `PUT /net/interfaces/{n}` · `PUT /net/interfaces/{n}/description` · `DELETE /net/interfaces/{n}` · `POST /net/config/{n}/preview` · `PUT /net/config/{n}` · `PUT /net/config/{n}/deploy` · `PUT /net/config/{n}/second` · `POST /net/config/confirm`. שינוי כתובת שמנתק את המשני מהראשי חוזר לבד — האישור לא יגיע, וה-rollback של המשני (#1263) מחזיר. ‏`…/probe` (שולח DHCP) אינו ברשימה, ולכן הפעלת DHCP שדורשת בדיקה מוקדמת תסורב במשני בגלוי |
 | הגדרות | `POST /settings` (מפתחות `WRITE_SETTINGS` בלבד — הנתיב עצמו מסרב לאחר; כל מפתח נרשם ב-`setting_change` בשם `primary:<user>`) |
@@ -5255,7 +5270,11 @@ admin מתאפס (‏`mfa_enabled=0`, הסוד, `mfa_enrolled_at`, `mfa_last_ste
 `interfaces.d`, ‏`resolv.conf` וסמן `netcfg/pending.json` דרך אותם
 `netcfg`/`netcfg_host`/`netcfg_rollback` של הקונסולה. אישור מוחק רק את
 הסמן וכותב `dcui:management_interface`; Esc או פקיעה משאירים אותו
-ל-`imagectl-netrollback.timer`.
+ל-`imagectl-netrollback.timer`. ‏"Restart Management Network" אינו
+משנה הגדרה ואינו כותב קובץ, ולכן **אינו דורך סמן ואינו מבקש אישור**
+(#1537): ‏`ifdown`/`ifup` על הכרטיס, וההצלחה היא ההגדרה השמורה שנקראה
+בחזרה מהמצב החי (`netcfg_host.mismatches`). כשסמן של Configure עוד
+ממתין, הריסטארט מסרב בלי לגעת בכרטיס.
 
 כל ניסיון אימות ופעולה נרשמים עם `user=dcui`. שמות האירועים:
 `dcui_auth_success`, ‏`dcui_auth_failure`, ‏`dcui_auth_locked`,

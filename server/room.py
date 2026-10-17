@@ -34,7 +34,9 @@ from .sessions import SessionError, SessionStore, SessionSuperseded
 
 log = logging.getLogger("imagectl.room")
 
-CLONERS_GROUP = "grp_CLONERS"
+CLONERS_GROUP = registry.CLONERS_GROUP
+#: ‏#1554: חברי החדר — כל קבוצה בתפקיד cloner (ראו registry.ROOM_GROUPS).
+_IN_ROOM = f"group_id IN {registry.ROOM_GROUPS}"
 #: מי רשאי להפעיל את חדר השיכפולים. רשימת-היתר מפורשת, ולא "מחובר".
 #:
 #: אותה הכרעה כמו ``station.ROUND_OPENER_ROLES`` (#94), ובאותו נימוק:
@@ -394,8 +396,7 @@ def disk_floor(conn: sqlite3.Connection, selected: list[dict] | None = None
               if selected is not None else None)
     floor = None
     for row in conn.execute(
-        "SELECT mac, suffix FROM machines WHERE group_id = ? ORDER BY suffix",
-        (CLONERS_GROUP,),
+        f"SELECT mac, suffix FROM machines WHERE {_IN_ROOM} ORDER BY suffix",
     ):
         if chosen is not None and row["mac"] not in chosen:
             continue
@@ -463,8 +464,8 @@ def _validate_target_slots(conn: sqlite3.Connection, raw) -> list[dict]:
         if mac is None or mac in seen_macs or not isinstance(ports, list):
             raise ValueError("בחירת דיסקי היעד אינה תקינה")
         row = conn.execute(
-            "SELECT drawer_count, drawer_slots FROM machines WHERE mac = ? AND group_id = ?",
-            (mac, CLONERS_GROUP),
+            f"SELECT drawer_count, drawer_slots FROM machines WHERE mac = ? AND {_IN_ROOM}",
+            (mac,),
         ).fetchone()
         if row is None:
             raise ValueError("נבחר מחשב שאינו שייך לחדר השכפול")
@@ -518,7 +519,7 @@ def open_round(ctx, image_id: str, target_drives: int, user: str,
     # ה-round ולא ב-session של גל בודד — כל גל חדש קורא אותה מחדש.
     expand_choice = validate_expand_choice(manifest, expand_partition)
     machines = ctx.conn.execute(
-        "SELECT COUNT(*) AS n FROM machines WHERE group_id = ?", (CLONERS_GROUP,)
+        f"SELECT COUNT(*) AS n FROM machines WHERE {_IN_ROOM}"
     ).fetchone()["n"]
     if machines == 0:
         raise ValueError("אין מחשבי שיכפול רשומים — רשמו אותם בקונסולה קודם")
@@ -964,7 +965,7 @@ def _attach_wave(conn: sqlite3.Connection, store: SessionStore,
         wave_id = existing["id"]
     else:
         machines = conn.execute(
-            "SELECT COUNT(*) AS n FROM machines WHERE group_id = ?", (CLONERS_GROUP,)
+            f"SELECT COUNT(*) AS n FROM machines WHERE {_IN_ROOM}"
         ).fetchone()["n"]
         try:
             wave_id = store.open(
@@ -1041,7 +1042,7 @@ def _finish_wave(conn: sqlite3.Connection, store: SessionStore,
 
     # היעד לא הושג — הגל הבא נפתח מעצמו וממתין למגירות מוחלפות.
     machines = conn.execute(
-        "SELECT COUNT(*) AS n FROM machines WHERE group_id = ?", (CLONERS_GROUP,)
+        f"SELECT COUNT(*) AS n FROM machines WHERE {_IN_ROOM}"
     ).fetchone()["n"]
     current = conn.execute(
         "SELECT state, wave_session_id FROM room_rounds WHERE id = ?",
@@ -1177,7 +1178,7 @@ def status_view(ctx) -> dict:
         " d.last_seen, d.disk_probe, d.local_clone"
         " FROM machines m"
         " LEFT JOIN net_devices d ON d.mac = m.mac"
-        " WHERE m.group_id = ? ORDER BY m.suffix", (CLONERS_GROUP,)
+        f" WHERE m.{_IN_ROOM} ORDER BY m.suffix"
     ):
         member = member_of.get(row["mac"])
         drawers = drawer_list(ctx.conn, row["mac"], written, member,
