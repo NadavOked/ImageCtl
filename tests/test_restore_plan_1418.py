@@ -48,7 +48,10 @@ def _validate(tmp_path: Path, rows: list[str]) -> tuple[str, str]:
         + f'manifest_plan() {{ cat "{plan.as_posix()}"; }}\n'
         'blockdev() { echo 500118192; }\n'
         'json_get() { [ "$1" = manifest.json ] && echo 11111111-2222-3333-4444-555555555555; }\n'
-        f'sgdisk() {{ echo "$*" > "{calls.as_posix()}"; }}\n'
+        # ‏#1545: וגודל הקובץ שעליו רצה ההדמיה (הארגומנט האחרון). ‏ls -ln ולא
+        # wc -c: ‏wc של busybox קורא את כל 256GB של הקובץ הדליל, בייט-בייט.
+        f'sgdisk() {{ echo "$*" > "{calls.as_posix()}"; for _l; do :; done; '
+        f'ls -ln "$_l" > "{calls.as_posix()}.size"; }}\n'
         'if validate_restore_plan sda manifest.json; then echo OK; else echo "FAIL $PLAN_ERROR"; fi\n'
     )
     out = bb(tmp_path, body).strip()
@@ -58,7 +61,13 @@ def _validate(tmp_path: Path, rows: list[str]) -> tuple[str, str]:
 def test_a_windows_plan_with_msr_passes_and_sgdisk_sees_the_real_disk(tmp_path):
     out, args = _validate(tmp_path, ROWS)
     assert out == "OK", out
-    assert args.endswith(f" {(tmp_path / 'dev').as_posix()}/sda"), args                       # ‏#1418: לא /dev/sgdisk
+    # ‏#1418: לא /dev/sgdisk. ‏#1545: וגם לא הדיסק החי — קובץ דליל בגודלו (500118192
+    # סקטורים): טבלה ישנה פגומה על הדיסק גורמת ל-sgdisk לצאת 2 על כל תוכנית
+    disk = tmp_path / "run" / "preflight.disk"
+    assert args.endswith(f" {disk.as_posix()}"), args
+    listed = (tmp_path / "sgdisk.args.size").read_text().split()
+    assert listed[4] == str(500118192 * 512), listed   # הגודל מ-blockdev --getsz של הדיסק
+    assert not disk.exists(), "קובץ ההדמיה נשאר ב-tmpfs"
     assert "-U 11111111-2222-3333-4444-555555555555" in args       # ‏#1418: המניפסט, לא "--pretend"
     assert "-n 2:206848:" in args and f"-t 2:{MSR}" in args        # ‏#1419: MSR נשאר בטבלה
     assert "-A 1:=:0x8000000000000000" in args

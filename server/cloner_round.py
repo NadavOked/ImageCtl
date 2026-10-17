@@ -48,7 +48,7 @@ from boot.grub_menu import normalize_mac as lenient_mac
 from . import identity, registry
 from .api import ServerContext, _error, identity_gate
 from .db import journal
-from .room import CLONERS_GROUP, open_round
+from .room import open_round
 from .sessions import SessionError
 
 #: הנתיב, על פורט הסוכן (‏`/api/v1/agent/*`, ‏#824).
@@ -109,7 +109,7 @@ def create_cloner_round_router(ctx: ServerContext) -> APIRouter:
         machine = registry.lookup(ctx.conn, mac)
         if machine is None:
             return None, None, refuse(mac, 403, "המחשב אינו רשום במערכת", "unknown_mac")
-        if machine["group_id"] != CLONERS_GROUP or machine["role"] != "cloner":
+        if machine["role"] != "cloner":   # #1554: כל קבוצת משכפלים, לא רק grp_CLONERS
             return None, None, refuse(mac, 403, "רק מחשב שיכפול פותח סבב מהמסך שלו", "not_a_cloner",
                                       f"אינו מחשב שיכפול ({machine['role']})")
         return body, mac, machine

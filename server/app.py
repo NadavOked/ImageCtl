@@ -741,6 +741,16 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
     # ‏#1297: warm the per-HEAD cache at application startup.  Requests reuse
     # it; a checkout changes HEAD and therefore computes a fresh value.
     display_version(update_hooks, repo_dir)
+    # ‏#1546: ‏`/health/live` היא הראיה של server-upgrade.sh ש"החדש רץ" — ולכן
+    # היא הגרסה שהתהליך **טען**, לא מה שעל הדיסק עכשיו (שרת חיפה, 17/10: העץ
+    # על v0.75.0, תהליך של v0.74.2, ו-live אמר v0.75.0). קריאה שנכשלה בעלייה
+    # אינה ננעלת — היא נקראת שוב עד שהיא מצליחה, ואז ננעלת.
+    live_version = [read_version(update_hooks, repo_dir)]
+
+    def running_version():
+        if live_version[0].version is None:
+            live_version[0] = read_version(update_hooks, repo_dir)
+        return live_version[0]
     # ‏#1073: למשתמש הפצה אין קונסולה — `deploy` מקבל 403 על **כל** נתיב
     # ניהול, גם עם עוגייה שפורט הסוכן הנפיק (אותו סוד). ה-dependency נוסף
     # כאן, בהרכבה, ולא בתוך הראוטרים: ‏`kiosk.py` בונה מהם עותקים משלו
@@ -782,7 +792,7 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
         ctx, rt.server_base, health_hooks,
         dnsmasq_apply=lambda what, user_id: console_dhcp.apply_dnsmasq(
             ctx, dhcp_hooks, rt.deploy, what, user_id),
-        version=lambda: read_version(update_hooks, repo_dir)))   # #1159
+        version=running_version))   # #1159, #1546
     include(create_update_router(
         ctx, repo_dir, rt.server_base, rt.update_hooks,
         public_url=PUBLIC_UPDATE_URL,

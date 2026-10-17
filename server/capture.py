@@ -323,8 +323,10 @@ def create_agent_capture_router(ctx: ServerContext) -> APIRouter:
             # המשימה פתוחה ובכל זאת התיקייה איננה: אין ראיה לבייטים — כשל בשם, לא "ok".
             _fail(ctx.conn, task_id, gone)
             raise HTTPException(500, gone)
-        # codeql[py/log-injection] false positive: task_id נמצא ב-DB, ושם הקובץ עבר SAFE_FILE (#291)
-        log.info("capture %s: received %s", task_id, filename)
+        # ‏#1535: ‏task_id ושם הקובץ באים מה-URL — שבירת שורה אינה מגיעה ליומן,
+        # גם אם בדיקה למעלה תשתנה (לא נשען על SAFE_FILE ועל ה-DB לבדם).
+        log.info("capture %s: received %s", task_id.replace("\r", " ").replace("\n", " "),
+                 filename.replace("\r", " ").replace("\n", " "))
         return {"ok": True, "sha256": got}
 
     # ‏#1470 (הכרעת נדב 16/10): ‏202 — המניפסט התקבל והבדיקות הזולות עברו,

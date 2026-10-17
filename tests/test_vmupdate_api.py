@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 
@@ -92,6 +93,40 @@ def test_save_rejects_a_bad_name_by_name(server, vm):
     wait_for(vm["engine"], "stopped")
     bad = admin.post(BASE + "/save", json={"name": " leading"})
     assert bad.status_code == 400 and bad.json()["code"] == "name"
+
+
+# --- ‏#1535: הסירוב ללקוח נבנה מהכלל, לא מטקסט החריגה; הטקסט — ליומן, בשורה אחת ---
+
+
+def _api_log(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.name == "imagectl.vmupdate_api"]
+
+
+def test_a_settings_refusal_states_the_rule_and_not_the_exception_1535(server, vm, caplog):
+    with caplog.at_level(logging.INFO, logger="imagectl.vmupdate_api"):
+        bad = server["admin"].put(BASE + "/settings", json={"evil\r\nkey": 1})
+    body = bad.json()
+    assert bad.status_code == 400 and body["code"] == "settings"
+    assert "evil" not in body["error"], body["error"]
+    assert "memory_mib (מספר שלם בין 1024" in body["error"] and "cpus (מספר שלם בין 1 ל-256)" in body["error"]
+    logged = _api_log(caplog)
+    assert len(logged) == 1 and "evil" in logged[0], logged
+    assert "\n" not in logged[0] and "\r" not in logged[0], logged
+
+
+def test_a_bad_version_name_is_refused_by_the_rule_without_echoing_it_1535(server, vm, caplog):
+    admin = server["admin"]
+    admin.post(BASE + "/start", json={"image_id": "img_7f3a91"})
+    wait_for(vm["engine"], "running")
+    admin.post(BASE + "/shutdown")
+    wait_for(vm["engine"], "stopped")
+    with caplog.at_level(logging.INFO, logger="imagectl.vmupdate_api"):
+        bad = admin.post(BASE + "/save", json={"name": "x\nFORGED<b>"})
+    body = bad.json()
+    assert bad.status_code == 400 and body["code"] == "name"
+    assert "FORGED" not in body["error"] and body["error"].startswith("שם הגרסה אינו תקין — מותרים")
+    logged = _api_log(caplog)
+    assert len(logged) == 1 and "FORGED" in logged[0] and "\n" not in logged[0], logged
 
 
 # --- ה-WebSocket ----------------------------------------------------------------
