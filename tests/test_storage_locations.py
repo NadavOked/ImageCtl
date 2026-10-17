@@ -811,3 +811,27 @@ def test_connect_with_fstab_failure_is_not_connected(env):
     row = sl.get(env["ctx"].conn, loc_id)
     assert row["state"] != "connected"
     assert env["fake"].umounts[-1] == row["mount_point"]
+
+
+# --- #1552: ארגז החול של השירות חייב לתת ל-iscsiadm לכתוב ----------------------
+
+#: מה ש-iscsiadm כותב: תיקיית הנעילה (נוצרת ב-mkdir אם אינה קיימת — ומכאן
+#: "Could not open /run/lock/iscsi" בשרת חיפה, 17/10), ורשומות discovery/node.
+ISCSIADM_WRITES = ("/run/lock/iscsi", "/var/lib/iscsi", "/etc/iscsi")
+
+
+def test_the_server_unit_lets_iscsiadm_write_its_lock_and_node_records():
+    """‏#1552: ‏ProtectSystem=strict הופך הכול לקריאה-בלבד מלבד ReadWritePaths.
+    נתיב שאינו מכוסה = "גלה יעדים" שנכשל ב-Read-only file system בכל שרת מותקן,
+    וכל טסט עם hooks מזויפים עובר. ‏/run/lock/iscsi עצמו לא קיים בעליית
+    היחידה, ולכן מה שנפתח הוא /run/lock שבו iscsiadm יוצר אותו."""
+    unit = (Path(__file__).resolve().parents[1] / "install" / "imagectl-server.service").read_text(
+        encoding="utf-8")
+    assert "ProtectSystem=strict" in unit
+    rw = [p.lstrip("-") for p in next(
+        line for line in unit.splitlines()
+        if line.startswith("ReadWritePaths=")).split("=", 1)[1].split()]
+    for need in ISCSIADM_WRITES:
+        assert any(need == p or need.startswith(p.rstrip("/") + "/") for p in rw), \
+            f"{need} is read-only for iscsiadm under ProtectSystem=strict"
+    assert "/run" not in rw and "/var" not in rw, "the sandbox is opened wider than iscsiadm needs"

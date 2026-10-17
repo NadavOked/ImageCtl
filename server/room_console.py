@@ -24,6 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from . import auth, smart_ask
 from .db import _write_lock, journal, now_iso, writing
+from .registry import ROOM_GROUPS
 from .room import CLONERS_GROUP, ROOM_OPERATOR_ROLES, round_label, visible_round
 
 #: מה שהשרת מבקש מסוכן דרך ה-hello. ‏reboot — "אתחול מרחוק" ממגירת המחשב
@@ -48,7 +49,7 @@ def request_poweroff(conn: sqlite3.Connection, user: str) -> int:
     """רושם בקשת כיבוי לכל משכפל רשום. מחזיר כמה בקשות נרשמו — **לא**
     כמה נכבו: הראיה לכיבוי היא שה-hello נפסק (`awake` ב-`/room`)."""
     macs = [r["mac"] for r in conn.execute(
-        "SELECT mac FROM machines WHERE group_id = ?", (CLONERS_GROUP,))]
+        f"SELECT mac FROM machines WHERE group_id IN {ROOM_GROUPS}")]   # #1554
     return request_power(conn, macs, POWEROFF, user)
 
 
@@ -169,7 +170,7 @@ def create_room_console_router(ctx) -> APIRouter:
             body = {}
         mac = body.get("mac")
         known = isinstance(mac, str) and ctx.conn.execute(
-            "SELECT 1 FROM machines WHERE mac = ? AND group_id = ?", (mac, CLONERS_GROUP)).fetchone()
+            f"SELECT 1 FROM machines WHERE mac = ? AND group_id IN {ROOM_GROUPS}", (mac,)).fetchone()
         if not known:
             raise HTTPException(404, "מחשב שיכפול לא מוכר")
         try:
@@ -195,7 +196,7 @@ def create_room_console_router(ctx) -> APIRouter:
             raise HTTPException(409, "יש סבב חדר פעיל — עצרו אותו לפני כיבוי החדר")
         confirmed = isinstance(body, dict) and body.get("confirm_local_copy") is True
         macs = [r["mac"] for r in ctx.conn.execute(
-            "SELECT mac FROM machines WHERE group_id = ?", (CLONERS_GROUP,))]
+            f"SELECT mac FROM machines WHERE group_id IN {ROOM_GROUPS}")]   # #1554
         count = request_power(ctx.conn, macs, POWEROFF, user[0], confirmed=confirmed)
         journal(ctx.conn, "room_poweroff", f"requested={count}" +
                 (" local copy confirmed" if confirmed else ""), user[0])

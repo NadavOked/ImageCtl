@@ -212,6 +212,22 @@ direct_send_run() {
     _dr_sent=0; STREAMED_PARTITIONS=0
     while IFS='|' read -r _dr_idx _dr_g _dr_role _dr_fs _dr_st _dr_sz _dr_f _dr_sha _dr_e _dr_ug _dr_uu _dr_attrs <&3; do
         case "$_dr_f" in ''|null) continue ;; esac
+        # #1432: the hello that opened the wave is only a snapshot. A drawer
+        # that failed on partition 1 must not remain in partition 2's
+        # --min-receivers. Ask the server immediately before every stream;
+        # it also turns zero live targets into a failed session instead of
+        # returning a value that would broadcast to nobody.
+        if ! send_hello \
+                || [ "$(json_get "$RESP" ".task.id")" != "$1" ] \
+                || [ "$(json_get "$RESP" ".task.direct.session_state")" != "running" ]; then
+            _direct_failed "$2" "השרת עצר את ההפצה הישירה לפני מחיצה $_dr_idx"
+            return 1
+        fi
+        _dr_minr=$(json_get "$RESP" ".task.direct.multicast.min_receivers")
+        case "$_dr_minr" in ''|0|*[!0-9]*)
+            _direct_failed "$2" "מספר המקבלים למחיצה $_dr_idx אינו תקין: '$_dr_minr'"
+            return 1 ;;
+        esac
         # The first stream waits for the operator; every later one waits for
         # the drawers still writing the previous partition (#957).
         _dr_w="$_dr_maxw"; _dr_t="$_dr_startt"

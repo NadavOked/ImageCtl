@@ -156,6 +156,12 @@ _EXACT = {
         "המצב החי שנקרא בחזרה אינו מה שביקשנו.",
     "Network change applied; confirm within 60 seconds.":
         "השינוי הוחל. מאשרים תוך 60 שניות.",
+    "Management network restarted; the address read back live.":
+        "רשת הניהול הופעלה מחדש, והכתובת נקראה בחזרה מהמצב החי.",
+    "Management network restart was not verified.": "ההפעלה מחדש של רשת הניהול לא אומתה.",
+    "ifdown/ifup failed.": "‏ifdown/ifup נכשל.",
+    "Live read-back did not match the saved configuration.":
+        "המצב החי שנקרא בחזרה אינו ההגדרה השמורה.",
     "The management interface has no saved configuration.":
         "אין הגדרה שמורה לכרטיס הניהול.",
     "The saved management network configuration is invalid.":
@@ -983,10 +989,11 @@ def _settings_body(frame: Frame, runtime, today: datetime) -> None:
         frame.add("pnote", "רשת ההפצה לא מוגדרת כאן — בקונסולה: רשת ← הפצה.")
     elif selected == 1:
         frame.add("pane", "הפעלה מחדש של רשת הניהול",
-                  f"מחיל מחדש את ההגדרה השמורה של {mono_m(mgmt.name)}, עם אותה רשת ביטחון של "
-                  "60 שניות. ההצלחה נקבעת לפי המצב החי שנקרא בחזרה.")
+                  f"מוריד ומעלה את {mono_m(mgmt.name)} עם ההגדרה השמורה, בלי לשנות דבר. "
+                  "ההצלחה נקבעת לפי הכתובת שנקראת בחזרה מהמצב החי.")
         frame.add(*nic_row("עכשיו", mgmt).record("prow"))
-        frame.add("pnote", "<b>רשת ביטחון:</b> אם הכתובת לא חוזרת, ההגדרה הקודמת חוזרת לבד.")
+        frame.add("pnote", "אין כאן שינוי ולכן אין מה לאשר. לשינוי כתובת — "
+                           "הגדרת רשת הניהול, עם רשת הביטחון.")
     elif selected == 2:
         frame.add("pane", "הפעלה מחדש של השירותים",
                   f"מפעיל מחדש את {mono_m('imagectl-server')}, ואת {mono_m('dnsmasq')} רק כשהוא מופעל — ואז קורא "

@@ -831,6 +831,7 @@ def test_first_deploy_from_the_deploy_window_derives_the_address_then_completes(
         "netcfg_timer_active": lambda *a: (True, "active"),
         "netcfg_now": clock, "netcfg_boot_id": lambda *a: "boot-A",
         "netcfg_local_address": lambda request: "10.1.2.3",
+        "netcfg_foreign_manager": lambda: None,   # #1558: ifupdown, לא המכונה המריצה
         "netcfg_management": lambda: "eth0",
     }
     deploy_hooks = {
