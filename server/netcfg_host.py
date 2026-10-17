@@ -21,6 +21,7 @@ hooks ולעולם לא לגעת ברשת האמיתית, בדיוק כמו `dhc
 from __future__ import annotations
 
 import ipaddress
+import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -98,6 +99,43 @@ def sourced(main: str | Path = INTERFACES_MAIN,
     marker = str(root).rstrip("/")
     return any(line.strip().startswith("source") and marker in line
                for line in text.splitlines())
+
+
+#: ‏#1558: מנהלי רשת אחרים — כשהם מנהלים את המכונה, ifupdown (מה שהקונסולה
+#: כותבת אליו) אינו מחיל דבר. המתקין שלנו (ISO) מתקין ifupdown בלבד.
+NETPLAN_DIR = "/etc/netplan"
+NETWORKD_DIR = "/etc/systemd/network"
+
+
+def foreign_manager(netplan_dir: str | Path = NETPLAN_DIR,
+                    networkd_dir: str | Path = NETWORKD_DIR,
+                    resolv: str | Path = RESOLV_CONF) -> str | None:
+    """‏None = הרשת מנוהלת ב-ifupdown; אחרת — מה מנהל אותה, בעברית.
+
+    שרת חיפה (17/10): netplan + networkd + resolved. הקונסולה כתבה
+    ‏`interfaces.d`, ‏`ifup` לא הכיר את הכרטיס, ו-resolv.conf היה symlink
+    לקריאה-בלבד — והמפעיל ראה את התסמינים, לא את הסיבה. תיקייה שלא נקראה
+    (חוץ מ"לא קיימת") היא "לא הצלחנו לבדוק" — ולכן גם היא תשובה שאינה None.
+    """
+    for directory, suffix, who in ((netplan_dir, ".yaml", "netplan"),
+                                   (networkd_dir, ".network", "systemd-networkd")):
+        try:
+            found = sorted(n for n in os.listdir(directory) if n.endswith(suffix))
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            return f"לא ניתן לבדוק אם הרשת מנוהלת ב-{who} ({directory}: {exc.strerror or exc})"
+        if found:
+            more = f" ועוד {len(found) - 1}" if len(found) > 1 else ""
+            return f"הרשת בשרת הזה מנוהלת ב-{who} ({directory}/{found[0]}{more})"
+    if Path(resolv).is_symlink():
+        try:
+            target = os.readlink(resolv)
+        except OSError as exc:
+            return f"לא ניתן לקרוא את {resolv} ({exc.strerror or exc})"
+        if "systemd/resolve" in target:
+            return f"‏{resolv} מנוהל ב-systemd-resolved (‏→ {target})"
+    return None
 
 
 # --- קליטת כרטיס מהקובץ הראשי (המתקין, #1088) ---------------------------------
@@ -480,6 +518,7 @@ def default_hooks() -> dict:
         "netcfg_apply": apply_interface,
         "netcfg_state": read_state,
         "netcfg_sourced": sourced,
+        "netcfg_foreign_manager": foreign_manager,   # #1558
         "netcfg_timer_active": timer_active,
         # ‏#1264: רשת הפצה על שני כרטיסים.
         "netcfg_down": down_interface,

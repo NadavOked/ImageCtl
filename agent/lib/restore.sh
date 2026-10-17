@@ -48,8 +48,8 @@ manifest_plan() {
 validate_restore_plan() {
     # $1=disk, $2=manifest. Validate every row and ask sgdisk to parse the
     # complete table without writing it; this must run before --zap-all.
-    _vp="$RUN_DIR/preflight.plan"
-    _vdisk=$1; _vman=$2   # ‏#1418: `set --` למטה דורס את $1/$2
+    _vp="$RUN_DIR/preflight.plan"; _vimg="$RUN_DIR/preflight.disk"   # ‏#1545: ההדמיה על קובץ דליל — על הדיסק החי טבלה ישנה פגומה = sgdisk מתעלם מ--n ויוצא 2
+    _vman=$2   # ‏#1418: `set --` למטה דורס את $1/$2
     manifest_plan "$2" > "$_vp" || { PLAN_ERROR="תוכנית השחזור פגומה — הדיסק לא שונה"; return 1; }
     _vsectors=$(blockdev --getsz "$DEVROOT/$1" 2>> "$LOG_FILE")
     case "$_vsectors" in ''|*[!0-9]*) PLAN_ERROR="לא ניתן לקרוא את גודל דיסק היעד — הדיסק לא שונה"; return 1 ;; esac
@@ -76,7 +76,8 @@ validate_restore_plan() {
         [ -z "$_a" ] || set -- "$@" -A "$_i:=:0x$_a"
     done < "$_vp"
     _dg=$(json_get "$_vman" ".disk_guid"); [ -z "$_dg" ] || [ "$_dg" = null ] || set -- "$@" -U "$_dg"
-    "$@" "$DEVROOT/$_vdisk" >> "$LOG_FILE" 2>&1 || { PLAN_ERROR="sgdisk דחה את תוכנית השחזור — הדיסק לא שונה"; return 1; }
+    rm -f "$_vimg"; dd if=/dev/zero of="$_vimg" bs=512 count=0 seek="$_vsectors" 2>> "$LOG_FILE" || { PLAN_ERROR="לא ניתן להכין את בדיקת התוכנית — הדיסק לא שונה"; return 1; }
+    "$@" "$_vimg" >> "$LOG_FILE" 2>&1; _vrc=$?; rm -f "$_vimg"; [ "$_vrc" -eq 0 ] || { PLAN_ERROR="sgdisk דחה את תוכנית השחזור — הדיסק לא שונה"; return 1; }
 }
 
 partclone_for_fs() {

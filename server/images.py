@@ -369,6 +369,9 @@ def has_disk_guid(manifest: dict) -> bool:
 #: ו-`nicdesc:eth0 ` מ-#130 הוא בדיוק מה שהוא עושה: מפתח אחר לגמרי
 #: מזה שהמפעיל התכוון לו, בלי שום סימן.
 DISPLAY_NAME_RE = re.compile(r"[A-Za-z0-9א-ת]([A-Za-z0-9א-ת ._-]{0,46}[A-Za-z0-9א-ת])?")
+#: הכלל במילים — לחריגה, ול-API שמחזיר אותו בלי טקסט של חריגה (‏#1535).
+DISPLAY_NAME_RULE = ("מותרים אותיות אנגליות או עבריות, ספרות, רווח, נקודה, מקף וקו תחתון; "
+                     "מתחיל באות או בספרה, עד 48 תווים")
 
 
 def validate_display_name(value: str, what: str = "השם") -> str:
@@ -386,9 +389,7 @@ def validate_display_name(value: str, what: str = "השם") -> str:
     # כשהרווח כן נשמר במקום אחד ולא באחר.
     text = value or ""
     if not DISPLAY_NAME_RE.fullmatch(text):
-        raise ValueError(
-            f"{what} {text!r} אינו תקין — מותרים אותיות אנגליות או עבריות, ספרות, "
-            "רווח, נקודה, מקף וקו תחתון; מתחיל באות או בספרה, עד 48 תווים")
+        raise ValueError(f"{what} {text!r} אינו תקין — {DISPLAY_NAME_RULE}")
     return text
 
 

@@ -160,7 +160,7 @@ function nicsvcOpen(enc) {
   if (!row) { toast(`אין כרטיס ${name} במצב השירותים`); return; }
   NICSVC_DRAFT = { name, base: new Set(row.services), draft: new Set(row.services), tried: false };
   const n = nicsvcNic(name) || {};
-  const role = typeof netRolePill === "function" && n.name ? String(netRolePill(n)).replace(/<[^>]*>/g, "") : "";
+  const role = typeof netRolePill === "function" && n.name ? stripTags(netRolePill(n)) : "";
   const sub = [n.description, row.address || "בלי כתובת", role].filter(Boolean).join(" · ");
   openDrawer(`שירותים — ${name}`, nicsvcDrawerHtml(), { sub });
   nicsvcFoot();

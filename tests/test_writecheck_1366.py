@@ -80,7 +80,24 @@ D=$1; ID=$2
 dmsetup remove "wcerr$ID" 2>/dev/null; dmsetup remove "wczero$ID" 2>/dev/null
 [ -f "$D/devs" ] && while read -r n d; do case "$d" in /dev/loop*) losetup -d "$d" ;; esac; done < "$D/devs"
 umount "$D/full" 2>/dev/null
+# #1534: the cleanup is proven, not assumed -- read back that nothing this fixture
+# created is left: its two dm names (exact field, wcerr1x1 is a prefix of wcerr1x10),
+# a loop backed by a file under $D, the tmpfs. A listing that could not run is a leftover.
+for _try in 1 2 3 4 5 6 7 8 9 10; do
+    left=""
+    dl=$(dmsetup ls) || left="$left dmsetup-ls-failed"
+    hit=$(printf '%s\n' "$dl" | awk -v a="wcerr$ID" -v b="wczero$ID" '$1 == a || $1 == b { printf " dm:%s", $1 }')
+    left="$left$hit"
+    lo=$(losetup -a) || left="$left losetup-a-failed"
+    case "$lo" in *"$D/"*) left="$left loop:$(printf '%s\n' "$lo" | grep -F "$D/" | cut -d: -f1 | tr '\n' ' ')" ;; esac
+    grep -qF " $D/full " /proc/mounts; rc=$?
+    [ "$rc" -eq 1 ] || left="$left mount:$D/full(rc=$rc)"
+    [ -n "$left" ] || break
+    sleep 0.5
+    umount "$D/full" 2>/dev/null   # its loop may have been detached lazily, after the first try
+done
 rm -rf "$D/run" "$D/dev" "$D"/*.img
+[ -z "$left" ] || { echo "teardown left behind:$left" >&2; exit 1; }
 '''
 
 DRIVER = r'''
@@ -160,7 +177,8 @@ def fx(tmp_path):
         assert up.returncode == 0, up.stdout + up.stderr
         yield d
     finally:
-        _root("sh", str(tmp_path / "teardown.sh"), str(d), ident, timeout=120)
+        down = _root("sh", str(tmp_path / "teardown.sh"), str(d), ident, timeout=120)
+        assert down.returncode == 0, down.stdout + down.stderr   # #1534: proven, not assumed
 
 
 def _agent(fx: Path, mode: str, *args: str, env: tuple[str, ...] = ()) -> dict:
@@ -245,9 +263,15 @@ def test_the_room_writes_only_the_selected_drawers(fx):
     names = dict(line.split() for line in (fx / "devs").read_text().splitlines())
     order = list(names)                 # port = line number in the driver
     ports = [str(order.index(n) + 1) for n in ("good", "err")]
-    res = _agent(fx, "room", *ports)
+    # #1534: the speed floor is not what this test is about (test_writecheck_speed_1366.py
+    # is). Its 50 MB/s, measured on a sparse file on a CI runner's disk, read 26 MB/s
+    # once (run 38961297623, 3.12): good went red "slow" and RR was 1 -- the selection
+    # was right. The verdict still runs here; only its floor is the test's own.
+    res = _agent(fx, "room", *ports, env=("WRITECHECK_MIN_MBPS=1",))
     t = res["t"]
-    assert res["RR"] == 0 and len(res["sel"]) == 2, res["raw"][-3000:]
+    # the selection is exactly the two drawers the fixture made, by their kernel names
+    kernel = dict(line.split() for line in (fx / "names").read_text().splitlines())
+    assert res["RR"] == 0 and res["sel"] == [kernel["good"], kernel["err"]], res["raw"][-3000:]
     assert t["good"]["state"] == "done" and t["good"]["wstate"] == "ok", t["good"]
     assert t["err"]["state"] == "failed" and t["err"]["error"].startswith(HEAD + "אמצע"), t["err"]
     calls = (fx / "calls").read_text().split("\n")
@@ -258,10 +282,11 @@ def test_the_room_writes_only_the_selected_drawers(fx):
 
 
 def test_the_station_fails_before_the_table(fx):
-    bad = _agent(fx, "station", "err")
+    floor = ("WRITECHECK_MIN_MBPS=1",)   # #1534: the runner's disk speed is not the subject
+    bad = _agent(fx, "station", "err", env=floor)
     assert bad["RS"] == 1 and (fx / "calls").read_text() == "", bad["raw"][-3000:]
     assert bad["t"]["err"]["error"].startswith(HEAD + "אמצע")
-    good = _agent(fx, "station", "good")
+    good = _agent(fx, "station", "good", env=floor)
     assert good["RS"] == 1 and (fx / "calls").read_text().startswith("gpt "), good["raw"][-3000:]
     assert good["t"]["good"]["wstate"] == "ok"
     assert not good["t"]["good"]["error"].startswith(HEAD)    # it failed later, at the (stubbed) table

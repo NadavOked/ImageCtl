@@ -103,6 +103,20 @@ def test_writes_are_admin_only(server, paired):
     assert resp.status_code == 403
 
 
+@pytest.mark.parametrize("path", ["/room", "/room/close"])
+def test_secondary_round_control_is_admin_only_on_a_primary(server, secondary, paired, path):
+    """הנתיבים החדשים אינם משנים את שער הכניסה: deploy=403, משני=409,
+    ובשני המצבים המשני המרוחק אינו נשאל."""
+    from server import db                                      # noqa: PLC0415
+    url = f"/api/console/storage-nodes/{paired}/console{path}"
+    before = _untouched(server, paired)
+    assert server["deploy"].post(url, json={}).status_code == 403
+    db.set_setting(server["ctx"].conn, storage_nodes.ROLE_KEY, "secondary")
+    assert server["admin"].post(url, json={}).status_code == 409
+    assert _untouched(server, paired) == before
+    assert _journal(secondary["conn"]) == []
+
+
 def test_writes_go_only_from_a_primary(server, secondary, paired):
     """שרת שאינו standalone אינו מנהל ילדים — 409, והמשני לא נשאל (ההיררכיה חד-כיוונית)."""
     from server import db                                      # noqa: PLC0415
@@ -229,6 +243,17 @@ def test_run_console_write_rechecks_the_allowlist_and_the_cap():
     assert interserver_api.run_console_write(object(), "POST", "/images/x/delete", "", "p", b"")[0] == 404
     big = b"x" * (interserver_api.MAX_CONSOLE_WRITE_BODY + 1)
     assert interserver_api.run_console_write(object(), "POST", "/users", "", "p", big)[0] == 413
+
+
+@pytest.mark.parametrize(("method", "path", "allowed"), [
+    ("POST", "/room", True), ("POST", "/room/close", True),
+    ("GET", "/room", False), ("PUT", "/room", False),
+    ("POST", "/room/start", False), ("POST", "/room/wake", False),
+    ("POST", "/room/answer", False), ("POST", "/room/poweroff", False),
+    ("POST", "/room/close/extra", False), ("POST", "/monitor/aa:bb/power", False),
+])
+def test_only_open_and_stop_are_added_to_the_secondary_room_write_allowlist(method, path, allowed):
+    assert interserver_api.console_write_allowed(method, path) is allowed
 
 
 # --- הגדרות -----------------------------------------------------------------------

@@ -355,7 +355,9 @@ def build_answer(
             # היא לא מצטרפת לגל, וממשיכה להמתין (wait_poll).
             return answer
 
-    session = store.active_for_group(machine["group_id"])
+    # ‏#1554: גל החדר הוא session על grp_CLONERS; משכפל מכל קבוצת משכפלים מצטרף אליו.
+    session = store.active_for_group(
+        room.CLONERS_GROUP if machine["role"] == "cloner" else machine["group_id"])
     if session is None:
         return answer
 
